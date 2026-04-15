@@ -151,9 +151,13 @@ export fn snail_renderer_deinit() void {
     pipeline.deinit();
 }
 
-export fn snail_renderer_upload_atlas(atlas: *const AtlasImpl) void {
-    pipeline.uploadCurveTexture(atlas.inner.curve_data, atlas.inner.curve_width, atlas.inner.curve_height);
-    pipeline.uploadBandTexture(atlas.inner.band_data, atlas.inner.band_width, atlas.inner.band_height);
+export fn snail_renderer_upload_atlas(atlas: *AtlasImpl) void {
+    const a = &atlas.inner;
+    if (a.gl_curve_texture == 0) {
+        a.gl_curve_texture = pipeline.createCurveTexture(a.curve_data, a.curve_width, a.curve_height);
+        a.gl_band_texture = pipeline.createBandTexture(a.band_data, a.band_width, a.band_height);
+    }
+    pipeline.bindTextures(a.gl_curve_texture, a.gl_band_texture);
 }
 
 export fn snail_renderer_set_subpixel(enabled: bool) void {

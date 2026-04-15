@@ -29,8 +29,10 @@ pub const FillRule = enum(c_int) {
 
 var vao: gl.GLuint = 0;
 var vbo: gl.GLuint = 0;
-var curve_texture: gl.GLuint = 0;
-var band_texture: gl.GLuint = 0;
+
+// Currently bound textures (for dedup)
+var bound_curve: gl.GLuint = 0;
+var bound_band: gl.GLuint = 0;
 
 pub fn init() !void {
     program = try linkProgram(shaders.vertex_shader, shaders.fragment_shader);
@@ -78,13 +80,13 @@ pub fn deinit() void {
     if (program_subpixel != 0) gl.glDeleteProgram(program_subpixel);
     if (vao != 0) gl.glDeleteVertexArrays(1, &vao);
     if (vbo != 0) gl.glDeleteBuffers(1, &vbo);
-    if (curve_texture != 0) gl.glDeleteTextures(1, &curve_texture);
-    if (band_texture != 0) gl.glDeleteTextures(1, &band_texture);
 }
 
-pub fn uploadCurveTexture(data: []const u16, width: u32, height: u32) void {
-    if (curve_texture == 0) gl.glGenTextures(1, &curve_texture);
-    gl.glBindTexture(gl.GL_TEXTURE_2D, curve_texture);
+/// Create a curve texture and upload data. Returns the GL handle.
+pub fn createCurveTexture(data: []const u16, width: u32, height: u32) gl.GLuint {
+    var tex: gl.GLuint = 0;
+    gl.glGenTextures(1, &tex);
+    gl.glBindTexture(gl.GL_TEXTURE_2D, tex);
     gl.glTexImage2D(
         gl.GL_TEXTURE_2D,
         0,
@@ -100,11 +102,14 @@ pub fn uploadCurveTexture(data: []const u16, width: u32, height: u32) void {
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST);
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE);
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE);
+    return tex;
 }
 
-pub fn uploadBandTexture(data: []const u16, width: u32, height: u32) void {
-    if (band_texture == 0) gl.glGenTextures(1, &band_texture);
-    gl.glBindTexture(gl.GL_TEXTURE_2D, band_texture);
+/// Create a band texture and upload data. Returns the GL handle.
+pub fn createBandTexture(data: []const u16, width: u32, height: u32) gl.GLuint {
+    var tex: gl.GLuint = 0;
+    gl.glGenTextures(1, &tex);
+    gl.glBindTexture(gl.GL_TEXTURE_2D, tex);
     gl.glTexImage2D(
         gl.GL_TEXTURE_2D,
         0,
@@ -120,6 +125,40 @@ pub fn uploadBandTexture(data: []const u16, width: u32, height: u32) void {
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST);
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE);
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE);
+    return tex;
+}
+
+/// Delete a texture and zero the handle.
+pub fn deleteTexture(tex: *gl.GLuint) void {
+    if (tex.* != 0) {
+        gl.glDeleteTextures(1, tex);
+        tex.* = 0;
+    }
+}
+
+/// Bind atlas textures (skips if already bound).
+pub fn bindTextures(curve: gl.GLuint, band: gl.GLuint) void {
+    if (curve != bound_curve) {
+        gl.glActiveTexture(gl.GL_TEXTURE0);
+        gl.glBindTexture(gl.GL_TEXTURE_2D, curve);
+        bound_curve = curve;
+    }
+    if (band != bound_band) {
+        gl.glActiveTexture(gl.GL_TEXTURE1);
+        gl.glBindTexture(gl.GL_TEXTURE_2D, band);
+        bound_band = band;
+    }
+}
+
+// Legacy API (used by C API — uploads to atlas-owned handles)
+pub fn uploadCurveTexture(data: []const u16, width: u32, height: u32) void {
+    const tex = createCurveTexture(data, width, height);
+    bound_curve = tex;
+}
+
+pub fn uploadBandTexture(data: []const u16, width: u32, height: u32) void {
+    const tex = createBandTexture(data, width, height);
+    bound_band = tex;
 }
 
 pub fn drawText(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
@@ -135,12 +174,8 @@ pub fn drawText(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f
     gl.glUniform2f(u_vp, viewport_w, viewport_h);
     gl.glUniform1i(u_fr, @intFromEnum(fill_rule));
 
-    gl.glActiveTexture(gl.GL_TEXTURE0);
-    gl.glBindTexture(gl.GL_TEXTURE_2D, curve_texture);
+    // Textures are already bound by uploadAtlas/bindTextures
     gl.glUniform1i(u_ct, 0);
-
-    gl.glActiveTexture(gl.GL_TEXTURE1);
-    gl.glBindTexture(gl.GL_TEXTURE_2D, band_texture);
     gl.glUniform1i(u_bt, 1);
 
     gl.glBindVertexArray(vao);

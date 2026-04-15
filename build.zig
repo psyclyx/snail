@@ -97,6 +97,8 @@ pub fn build(b: *std.Build) void {
     });
     bench_cmp_module.addOptions("build_options", options);
     bench_cmp_module.linkSystemLibrary("freetype2", .{});
+    bench_cmp_module.linkSystemLibrary("glfw3", .{});
+    bench_cmp_module.linkSystemLibrary("gl", .{});
     if (enable_harfbuzz) bench_cmp_module.linkSystemLibrary("harfbuzz", .{});
 
     const bench_cmp_exe = b.addExecutable(.{ .name = "snail-bench-compare", .root_module = bench_cmp_module });

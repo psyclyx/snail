@@ -89,6 +89,10 @@ pub const Atlas = struct {
     // HarfBuzz shaper (full OpenType, compile-time optional)
     hb_shaper: if (build_options.enable_harfbuzz) ?harfbuzz.HarfBuzzShaper else void = if (build_options.enable_harfbuzz) null else {},
 
+    // GPU texture handles (created on first upload, 0 = not yet uploaded)
+    gl_curve_texture: u32 = 0,
+    gl_band_texture: u32 = 0,
+
     pub const GlyphInfo = struct {
         bbox: bezier.BBox,
         advance_width: u16,
@@ -288,6 +292,9 @@ pub const Atlas = struct {
         // Re-parse all glyphs and rebuild textures
         const result = try buildTextureData(allocator, font, &seen);
 
+        // Invalidate GPU textures (caller must re-upload)
+        self.invalidateGpuTextures();
+
         // Free old data
         allocator.free(self.curve_data);
         allocator.free(self.band_data);
@@ -338,6 +345,7 @@ pub const Atlas = struct {
 
         const result = try buildTextureData(self.allocator, font, &seen);
 
+        self.invalidateGpuTextures();
         self.allocator.free(self.curve_data);
         self.allocator.free(self.band_data);
         self.glyph_map.deinit();
@@ -353,7 +361,16 @@ pub const Atlas = struct {
         return true;
     }
 
+    /// Invalidate GPU textures (must re-upload after this).
+    fn invalidateGpuTextures(self: *Atlas) void {
+        if (self.gl_curve_texture != 0) {
+            pipeline.deleteTexture(&self.gl_curve_texture);
+            pipeline.deleteTexture(&self.gl_band_texture);
+        }
+    }
+
     pub fn deinit(self: *Atlas) void {
+        self.invalidateGpuTextures();
         if (comptime build_options.enable_harfbuzz) {
             if (self.hb_shaper) |*hbs| hbs.deinit();
         }
@@ -577,6 +594,12 @@ pub const Batch = struct {
         font_size: f32,
     ) f32 {
         _ = self;
+        // Use HarfBuzz for measurement when available
+        if (comptime build_options.enable_harfbuzz) {
+            if (atlas.hb_shaper) |hbs| {
+                return hbs.measureWidth(text, font_size);
+            }
+        }
         const scale = font_size / @as(f32, @floatFromInt(font.unitsPerEm()));
         var width: f32 = 0;
         var prev_gid: u16 = 0;
@@ -628,11 +651,31 @@ pub const Renderer = struct {
         pipeline.deinit();
     }
 
-    /// Upload atlas texture data to GPU. Call once per atlas, or on atlas rebuild.
+    /// Upload atlas texture data to GPU (if not already uploaded) and bind.
+    /// First call creates GL textures; subsequent calls just bind.
+    /// Call again after atlas rebuild (addCodepoints/addGlyphsForText) to re-upload.
     pub fn uploadAtlas(self: *Renderer, atlas: *const Atlas) void {
         _ = self;
-        pipeline.uploadCurveTexture(atlas.curve_data, atlas.curve_width, atlas.curve_height);
-        pipeline.uploadBandTexture(atlas.band_data, atlas.band_width, atlas.band_height);
+        const a = @constCast(atlas);
+        if (a.gl_curve_texture == 0) {
+            // First upload: create textures and upload data
+            a.gl_curve_texture = pipeline.createCurveTexture(atlas.curve_data, atlas.curve_width, atlas.curve_height);
+            a.gl_band_texture = pipeline.createBandTexture(atlas.band_data, atlas.band_width, atlas.band_height);
+        }
+        pipeline.bindTextures(a.gl_curve_texture, a.gl_band_texture);
+    }
+
+    /// Force re-upload of atlas textures (call after atlas data changes).
+    pub fn reuploadAtlas(self: *Renderer, atlas: *const Atlas) void {
+        _ = self;
+        const a = @constCast(atlas);
+        if (a.gl_curve_texture != 0) {
+            pipeline.deleteTexture(&a.gl_curve_texture);
+            pipeline.deleteTexture(&a.gl_band_texture);
+        }
+        a.gl_curve_texture = pipeline.createCurveTexture(atlas.curve_data, atlas.curve_width, atlas.curve_height);
+        a.gl_band_texture = pipeline.createBandTexture(atlas.band_data, atlas.band_width, atlas.band_height);
+        pipeline.bindTextures(a.gl_curve_texture, a.gl_band_texture);
     }
 
     /// Draw a batch of glyph vertices.
