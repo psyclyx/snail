@@ -142,7 +142,8 @@ pub const fragment_shader =
     \\    int hCount = int(hbd.x);
     \\
     \\    for (int i = 0; i < hCount; i++) {
-    \\        ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec3(hLoc.x + i, hLoc.y, layer), 0).xy);
+    \\        ivec2 bLoc_h = calcBandLoc(hLoc, uint(i));
+    \\        ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec3(bLoc_h, layer), 0).xy);
     \\        vec4 p12 = texelFetch(u_curve_tex, ivec3(cLoc, layer), 0) - vec4(rc, rc);
     \\        vec2 p3 = texelFetch(u_curve_tex, ivec3(cLoc.x + 1, cLoc.y, layer), 0).xy - rc;
     \\
@@ -170,7 +171,8 @@ pub const fragment_shader =
     \\    int vCount = int(vbd.x);
     \\
     \\    for (int i = 0; i < vCount; i++) {
-    \\        ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec3(vLoc.x + i, vLoc.y, layer), 0).xy);
+    \\        ivec2 bLoc_v = calcBandLoc(vLoc, uint(i));
+    \\        ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec3(bLoc_v, layer), 0).xy);
     \\        vec4 p12 = texelFetch(u_curve_tex, ivec3(cLoc, layer), 0) - vec4(rc, rc);
     \\        vec2 p3 = texelFetch(u_curve_tex, ivec3(cLoc.x + 1, cLoc.y, layer), 0).xy - rc;
     \\
@@ -271,13 +273,16 @@ pub const fragment_shader_subpixel =
     \\    return loc;
     \\}
     \\
-    \\// Evaluate horizontal coverage at a given x offset from render coordinate
-    \\float evalHorizCoverage(vec2 rc, float xOffset, vec2 ppe,
-    \\                        ivec2 gLoc, ivec2 hLoc, int hCount, int layer) {
+    \\// Evaluate horizontal coverage at a given x offset from render coordinate.
+    \\// Returns vec2(xcov, xwgt) — coverage winding and proximity-to-edge weight.
+    \\vec2 evalHorizCoverage(vec2 rc, float xOffset, vec2 ppe,
+    \\                       ivec2 gLoc, ivec2 hLoc, int hCount, int layer) {
     \\    float xcov = 0.0;
+    \\    float xwgt = 0.0;
     \\    vec2 samplePos = rc + vec2(xOffset, 0.0);
     \\    for (int i = 0; i < hCount; i++) {
-    \\        ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec3(hLoc.x + i, hLoc.y, layer), 0).xy);
+    \\        ivec2 bLoc_h = calcBandLoc(hLoc, uint(i));
+    \\        ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec3(bLoc_h, layer), 0).xy);
     \\        vec4 p12 = texelFetch(u_curve_tex, ivec3(cLoc, layer), 0) - vec4(samplePos, samplePos);
     \\        vec2 p3 = texelFetch(u_curve_tex, ivec3(cLoc.x + 1, cLoc.y, layer), 0).xy - samplePos;
     \\
@@ -286,11 +291,17 @@ pub const fragment_shader_subpixel =
     \\        uint code = calcRootCode(p12.y, p12.w, p3.y);
     \\        if (code != 0u) {
     \\            vec2 r = solveHorizPoly(p12, p3) * ppe.x;
-    \\            if ((code & 1u) != 0u) xcov += clamp(r.x + 0.5, 0.0, 1.0);
-    \\            if (code > 1u)         xcov -= clamp(r.y + 0.5, 0.0, 1.0);
+    \\            if ((code & 1u) != 0u) {
+    \\                xcov += clamp(r.x + 0.5, 0.0, 1.0);
+    \\                xwgt = max(xwgt, clamp(1.0 - abs(r.x) * 2.0, 0.0, 1.0));
+    \\            }
+    \\            if (code > 1u) {
+    \\                xcov -= clamp(r.y + 0.5, 0.0, 1.0);
+    \\                xwgt = max(xwgt, clamp(1.0 - abs(r.y) * 2.0, 0.0, 1.0));
+    \\            }
     \\        }
     \\    }
-    \\    return xcov;
+    \\    return vec2(xcov, xwgt);
     \\}
     \\
     \\void main() {
@@ -310,9 +321,12 @@ pub const fragment_shader_subpixel =
     \\    int hCount = int(hbd.x);
     \\
     \\    // Evaluate horizontal coverage at 3 subpixel positions (R, G, B)
-    \\    float xcov_r = evalHorizCoverage(rc, -subpixelOffset, ppe, gLoc, hLoc, hCount, layer);
-    \\    float xcov_g = evalHorizCoverage(rc, 0.0,             ppe, gLoc, hLoc, hCount, layer);
-    \\    float xcov_b = evalHorizCoverage(rc, +subpixelOffset, ppe, gLoc, hLoc, hCount, layer);
+    \\    vec2 cw_r = evalHorizCoverage(rc, -subpixelOffset, ppe, gLoc, hLoc, hCount, layer);
+    \\    vec2 cw_g = evalHorizCoverage(rc, 0.0,             ppe, gLoc, hLoc, hCount, layer);
+    \\    vec2 cw_b = evalHorizCoverage(rc, +subpixelOffset, ppe, gLoc, hLoc, hCount, layer);
+    \\    float xcov_r = cw_r.x; float xwgt_r = cw_r.y;
+    \\    float xcov_g = cw_g.x; float xwgt_g = cw_g.y;
+    \\    float xcov_b = cw_b.x; float xwgt_b = cw_b.y;
     \\
     \\    // Vertical band (shared across all subpixels — same y for all)
     \\    float ycov = 0.0, ywgt = 0.0;
@@ -321,7 +335,8 @@ pub const fragment_shader_subpixel =
     \\    int vCount = int(vbd.x);
     \\
     \\    for (int i = 0; i < vCount; i++) {
-    \\        ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec3(vLoc.x + i, vLoc.y, layer), 0).xy);
+    \\        ivec2 bLoc_v = calcBandLoc(vLoc, uint(i));
+    \\        ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec3(bLoc_v, layer), 0).xy);
     \\        vec4 p12 = texelFetch(u_curve_tex, ivec3(cLoc, layer), 0) - vec4(rc, rc);
     \\        vec2 p3 = texelFetch(u_curve_tex, ivec3(cLoc.x + 1, cLoc.y, layer), 0).xy - rc;
     \\
@@ -341,13 +356,19 @@ pub const fragment_shader_subpixel =
     \\        }
     \\    }
     \\
-    \\    // Combine per-subpixel horizontal + shared vertical into RGB coverage
-    \\    // For subpixel, we use horizontal coverage directly (no weighting blend)
-    \\    // since each subpixel has its own horizontal sample
+    \\    // Combine per-subpixel horizontal + shared vertical into RGB coverage.
+    \\    // Mirror the non-subpixel weighted blend (xcov*xwgt + ycov*ywgt) per channel,
+    \\    // so horizontal edges are correctly anti-aliased rather than hard-clipped.
     \\    vec3 cov;
-    \\    cov.r = clamp(max(applyFillRule(xcov_r), min(applyFillRule(xcov_r), applyFillRule(ycov))), 0.0, 1.0);
-    \\    cov.g = clamp(max(applyFillRule(xcov_g), min(applyFillRule(xcov_g), applyFillRule(ycov))), 0.0, 1.0);
-    \\    cov.b = clamp(max(applyFillRule(xcov_b), min(applyFillRule(xcov_b), applyFillRule(ycov))), 0.0, 1.0);
+    \\    float wsum_r = xwgt_r + ywgt; float blended_r = xcov_r * xwgt_r + ycov * ywgt;
+    \\    float wsum_g = xwgt_g + ywgt; float blended_g = xcov_g * xwgt_g + ycov * ywgt;
+    \\    float wsum_b = xwgt_b + ywgt; float blended_b = xcov_b * xwgt_b + ycov * ywgt;
+    \\    cov.r = clamp(max(applyFillRule(blended_r / max(wsum_r, 1.0/65536.0)),
+    \\                      min(applyFillRule(xcov_r), applyFillRule(ycov))), 0.0, 1.0);
+    \\    cov.g = clamp(max(applyFillRule(blended_g / max(wsum_g, 1.0/65536.0)),
+    \\                      min(applyFillRule(xcov_g), applyFillRule(ycov))), 0.0, 1.0);
+    \\    cov.b = clamp(max(applyFillRule(blended_b / max(wsum_b, 1.0/65536.0)),
+    \\                      min(applyFillRule(xcov_b), applyFillRule(ycov))), 0.0, 1.0);
     \\    // sRGB gamma: linear → sRGB transfer function
     \\    cov = mix(cov * 12.92,
     \\              1.055 * pow(cov, vec3(1.0 / 2.4)) - 0.055,

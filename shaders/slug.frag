@@ -85,7 +85,8 @@ void main() {
     int hCount = int(hbd.x);
 
     for (int i = 0; i < hCount; i++) {
-        ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec3(hLoc.x + i, hLoc.y, layer), 0).xy);
+        ivec2 bLoc_h = calcBandLoc(hLoc, uint(i));
+        ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec3(bLoc_h, layer), 0).xy);
         vec4 p12 = texelFetch(u_curve_tex, ivec3(cLoc, layer), 0) - vec4(rc, rc);
         vec2 p3 = texelFetch(u_curve_tex, ivec3(cLoc.x + 1, cLoc.y, layer), 0).xy - rc;
 
@@ -113,7 +114,8 @@ void main() {
     int vCount = int(vbd.x);
 
     for (int i = 0; i < vCount; i++) {
-        ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec3(vLoc.x + i, vLoc.y, layer), 0).xy);
+        ivec2 bLoc_v = calcBandLoc(vLoc, uint(i));
+        ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec3(bLoc_v, layer), 0).xy);
         vec4 p12 = texelFetch(u_curve_tex, ivec3(cLoc, layer), 0) - vec4(rc, rc);
         vec2 p3 = texelFetch(u_curve_tex, ivec3(cLoc.x + 1, cLoc.y, layer), 0).xy - rc;
 
