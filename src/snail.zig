@@ -18,6 +18,7 @@
 const std = @import("std");
 pub const ttf = @import("font/ttf.zig");
 pub const opentype = @import("font/opentype.zig");
+pub const snail_file = @import("font/snail_file.zig");
 pub const bezier = @import("math/bezier.zig");
 pub const vec = @import("math/vec.zig");
 const curve_tex = @import("render/curve_texture.zig");
@@ -384,5 +385,6 @@ test {
     _ = @import("render/curve_texture.zig");
     _ = @import("render/band_texture.zig");
     _ = @import("font/opentype.zig");
+    _ = @import("font/snail_file.zig");
     _ = @import("c_api.zig");
 }
