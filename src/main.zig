@@ -266,7 +266,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
             // Word-wrapped paragraph
             const paragraph = "Direct Bezier curve evaluation in the fragment shader produces " ++
                 "resolution-independent text at any size, rotation, or perspective transform. " ++
-                "No texture atlases, no signed distance fields.";
+                "No pre-rasterized glyph bitmaps, no signed distance fields.";
             _ = batch.addStringWrapped(&atlas, &font, paragraph, 30, y, 12, col1_max_w, 17, gray);
 
             // Right column — script showcase in same batch (texture array = one draw call)
@@ -279,10 +279,10 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
                 .{ .label = "Emoji", .text = emoji_text, .sf = &emoji, .color = white },
             };
             for (scripts) |s| {
-                _ = batch.addString(&atlas, &font, s.label, col2_x, sy, 11, gray);
-                sy -= 16;
                 _ = batch.addString(&s.sf.atlas, &s.sf.font, s.text, col2_x, sy, 28, s.color);
-                sy -= 46;
+                sy -= 34;
+                _ = batch.addString(&atlas, &font, s.label, col2_x, sy, 10, gray);
+                sy -= 22;
             }
         }
 
@@ -297,7 +297,10 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
             var hud = snail.Batch.init(vbuf[batch.len..]);
             _ = hud.addString(&atlas, &font, "snail - GPU Bezier curve font rendering", 10, 30, 12, gray);
             const hb_str = if (build_options.enable_harfbuzz) " | HarfBuzz ON" else "";
-            _ = hud.addString(&atlas, &font, "Z/X zoom | R rotate | S stress | L subpixel order" ++ hb_str, 10, 14, 12, gray);
+            const sp_name = renderer.subpixelOrder().name();
+            var hud_line2_buf: [128]u8 = undefined;
+            const hud_line2 = std.fmt.bufPrint(&hud_line2_buf, "Z/X zoom | R rotate | S stress | L subpixel: {s}{s}", .{ sp_name, hb_str }) catch "Z/X zoom | R rotate | S stress | L subpixel order";
+            _ = hud.addString(&atlas, &font, hud_line2, 10, 14, 12, gray);
             if (hud.glyphCount() > 0) {
                 renderer.draw(hud.slice(), projection, w, h);
             }
