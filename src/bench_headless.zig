@@ -1,6 +1,6 @@
 //! End-to-end rendering benchmark. Measures actual GPU frame time
 //! including layout + upload + draw + finish.
-//! Headless (invisible window + FBO for GL; visible window for Vulkan).
+//! Headless: GL uses a hidden window + FBO; Vulkan renders to a VkImage (no swapchain).
 //! Answers: "how fast will this be?"
 
 const std = @import("std");

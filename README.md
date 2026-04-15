@@ -162,14 +162,14 @@ Pass a `SnailAllocator` to `snail_atlas_init` for custom allocation, or `NULL` f
 | `Font` | Immutable after init. Safe for concurrent reads from any thread. |
 | `Atlas` | Immutable after init. Safe for concurrent reads from any thread. |
 | `Batch` | Operates on caller-owned buffers. Multiple batches reading the same Atlas from different threads is safe. |
-| `Renderer` | **GL thread only.** `init`, `uploadAtlas`, `draw`, `setSubpixel` must all be called from the thread with the active GL context. |
+| `Renderer` | **Single-thread per context.** GL: all calls must be on the thread with the active GL context. Vulkan: all calls must be externally synchronized. |
 
 Typical game pattern:
-1. **Load thread**: `Font.init` + `Atlas.init` (CPU-only, no GL needed)
-2. **GL thread**: `Renderer.uploadAtlas` (once), `Renderer.draw` (per frame)
-3. **Any thread(s)**: `Batch.addString` into thread-local buffers, submit to GL thread for drawing
+1. **Load thread**: `Font.init` + `Atlas.init` (CPU-only, no GPU context needed)
+2. **Render thread**: `Renderer.uploadAtlas` (once), `Renderer.draw` (per frame)
+3. **Any thread(s)**: `Batch.addString` into thread-local buffers, submit to render thread for drawing
 
-Static text (HUD, menus): build the `Batch` once, reuse the vertex slice every frame. The draw call is just a VBO upload + single `glDrawArrays`.
+Static text (HUD, menus): build the `Batch` once, reuse the vertex slice every frame. The draw call is a VBO upload + single `glDrawElements`.
 
 ## Architecture
 
@@ -184,7 +184,9 @@ src/
   math/                  Vec2, Mat4, QuadBezier, quadratic root solver
   render/
     shaders.zig          GLSL 330 vertex + fragment shaders (Slug algorithm)
-    pipeline.zig         OpenGL state management
+    pipeline.zig         OpenGL state management (GL 3.3/4.4)
+    vulkan_pipeline.zig  Vulkan state management (descriptor sets, ring VBO, EBO)
+    vulkan_shaders.zig   SPIR-V shaders (compiled from GLSL at build time)
     curve_texture.zig    RGBA16F curve control point texture
     band_texture.zig     RG16UI spatial band subdivision texture
     vertex.zig           glyph quad vertex generation (5x vec4 per vertex)
