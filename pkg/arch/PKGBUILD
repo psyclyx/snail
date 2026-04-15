@@ -1,0 +1,35 @@
+# Maintainer: psyclyx
+pkgname=snail
+pkgver=0.0.1
+pkgrel=1
+pkgdesc='GPU font rendering via direct Bézier curve evaluation (Slug algorithm)'
+arch=('x86_64')
+url='https://github.com/psyclyx/snail'
+license=('MIT')
+depends=('glfw' 'libgl')
+makedepends=('zig>=0.16')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+    cd "$pkgname-$pkgver"
+    XDG_CACHE_HOME="$srcdir/.cache" zig build \
+        --release=fast \
+        --prefix "$srcdir/install" \
+        -Dtarget=native
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+
+    install -Dm644 "$srcdir/install/lib/libsnail.so" "$pkgdir/usr/lib/libsnail.so"
+    install -Dm644 "$srcdir/install/lib/libsnail.a" "$pkgdir/usr/lib/libsnail.a"
+    install -Dm644 "$srcdir/install/include/snail.h" "$pkgdir/usr/include/snail.h"
+
+    # pkgconfig
+    install -d "$pkgdir/usr/lib/pkgconfig"
+    sed "s|@PREFIX@|/usr|g" snail.pc.in > "$pkgdir/usr/lib/pkgconfig/snail.pc"
+
+    # license
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

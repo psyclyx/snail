@@ -1,0 +1,335 @@
+//! snail — GPU font rendering via direct Bézier curve evaluation (Slug algorithm).
+//!
+//! Usage:
+//!   const font = try snail.Font.init(allocator, ttf_bytes);
+//!   defer font.deinit();
+//!
+//!   var atlas = try snail.Atlas.init(allocator, &font, codepoints);
+//!   defer atlas.deinit();
+//!
+//!   var renderer = try snail.Renderer.init();
+//!   defer renderer.deinit();
+//!   renderer.uploadAtlas(&atlas);
+//!
+//!   var batch = snail.Batch.init(&vertex_buf);
+//!   batch.addString(&atlas, &font, "Hello", x, y, size, color);
+//!   renderer.draw(batch.slice(), mvp, viewport_w, viewport_h);
+
+const std = @import("std");
+pub const ttf = @import("font/ttf.zig");
+pub const bezier = @import("math/bezier.zig");
+pub const vec = @import("math/vec.zig");
+const curve_tex = @import("render/curve_texture.zig");
+const band_tex = @import("render/band_texture.zig");
+const vertex_mod = @import("render/vertex.zig");
+const pipeline = @import("render/pipeline.zig");
+
+pub const Mat4 = vec.Mat4;
+pub const Vec2 = vec.Vec2;
+
+// Re-export vertex constants for buffer sizing
+pub const FLOATS_PER_VERTEX = vertex_mod.FLOATS_PER_VERTEX;
+pub const VERTICES_PER_GLYPH = vertex_mod.VERTICES_PER_GLYPH;
+pub const FLOATS_PER_GLYPH = FLOATS_PER_VERTEX * VERTICES_PER_GLYPH;
+
+/// A parsed TrueType font. Immutable after init.
+/// Thread-safe for concurrent reads (glyphIndex, getKerning).
+pub const Font = struct {
+    inner: ttf.Font,
+
+    /// Parse a TrueType font from raw file data.
+    /// The data slice must outlive the Font.
+    pub fn init(data: []const u8) !Font {
+        return .{ .inner = try ttf.Font.init(data) };
+    }
+
+    pub fn deinit(self: *Font) void {
+        _ = self;
+    }
+
+    pub fn unitsPerEm(self: *const Font) u16 {
+        return self.inner.units_per_em;
+    }
+
+    pub fn glyphIndex(self: *const Font, codepoint: u32) !u16 {
+        return self.inner.glyphIndex(codepoint);
+    }
+
+    pub fn getKerning(self: *const Font, left: u16, right: u16) !i16 {
+        return self.inner.getKerning(left, right);
+    }
+};
+
+/// Pre-built GPU texture data for a set of glyphs.
+/// Create once, upload to Renderer, then use with Batch.
+pub const Atlas = struct {
+    allocator: std.mem.Allocator,
+    font: *const Font,
+
+    // GPU texture data (CPU-side, ready for upload)
+    curve_data: []f32,
+    curve_width: u32,
+    curve_height: u32,
+    band_data: []u16,
+    band_width: u32,
+    band_height: u32,
+
+    // Per-glyph lookup
+    glyph_map: std.AutoHashMap(u16, GlyphInfo),
+
+    pub const GlyphInfo = struct {
+        bbox: bezier.BBox,
+        advance_width: u16,
+        band_entry: band_tex.GlyphBandEntry,
+    };
+
+    /// Build an atlas for the given codepoints.
+    /// Thread-safe: uses its own GlyphCache internally.
+    pub fn init(allocator: std.mem.Allocator, font: *const Font, codepoints: []const u32) !Atlas {
+        var cache = ttf.GlyphCache.init(allocator);
+        defer cache.deinit();
+
+        var glyph_ids: std.ArrayList(u16) = .empty;
+        defer glyph_ids.deinit(allocator);
+
+        var glyph_curves_list: std.ArrayList(curve_tex.GlyphCurves) = .empty;
+        defer glyph_curves_list.deinit(allocator);
+
+        var seen = std.AutoHashMap(u16, void).init(allocator);
+        defer seen.deinit();
+
+        var glyph_infos: std.ArrayList(struct { gid: u16, advance: u16, bbox: bezier.BBox }) = .empty;
+        defer glyph_infos.deinit(allocator);
+
+        for (codepoints) |cp| {
+            const gid = font.inner.glyphIndex(cp) catch continue;
+            if (gid == 0 or seen.contains(gid)) continue;
+            try seen.put(gid, {});
+
+            const glyph = font.inner.parseGlyph(allocator, &cache, gid) catch continue;
+
+            var all_curves: std.ArrayList(bezier.QuadBezier) = .empty;
+            defer all_curves.deinit(allocator);
+            for (glyph.contours) |contour| {
+                try all_curves.appendSlice(allocator, contour.curves);
+            }
+
+            const owned = try allocator.dupe(bezier.QuadBezier, all_curves.items);
+            try glyph_curves_list.append(allocator, .{
+                .curves = owned,
+                .bbox = glyph.metrics.bbox,
+            });
+            try glyph_ids.append(allocator, gid);
+            try glyph_infos.append(allocator, .{
+                .gid = gid,
+                .advance = glyph.metrics.advance_width,
+                .bbox = glyph.metrics.bbox,
+            });
+        }
+
+        // Build curve texture
+        var ct = try curve_tex.buildCurveTexture(allocator, glyph_curves_list.items);
+        errdefer ct.texture.deinit();
+        errdefer allocator.free(ct.entries);
+
+        // Build band data
+        var glyph_band_data: std.ArrayList(band_tex.GlyphBandData) = .empty;
+        defer {
+            for (glyph_band_data.items) |*bd| band_tex.freeGlyphBandData(allocator, bd);
+            glyph_band_data.deinit(allocator);
+        }
+        for (glyph_curves_list.items, 0..) |gc, i| {
+            var bd = try band_tex.buildGlyphBandData(allocator, gc.curves, gc.bbox, ct.entries[i]);
+            try glyph_band_data.append(allocator, bd);
+            _ = &bd;
+        }
+
+        var bt = try band_tex.buildBandTexture(allocator, glyph_band_data.items);
+        errdefer bt.texture.deinit();
+        errdefer allocator.free(bt.entries);
+
+        // Build lookup map
+        var glyph_map = std.AutoHashMap(u16, GlyphInfo).init(allocator);
+        for (glyph_infos.items, 0..) |info, i| {
+            try glyph_map.put(info.gid, .{
+                .bbox = info.bbox,
+                .advance_width = info.advance,
+                .band_entry = bt.entries[i],
+            });
+        }
+
+        // Take ownership of texture data, free temp structures
+        const curve_data = ct.texture.data;
+        const band_data_owned = bt.texture.data;
+        allocator.free(ct.entries);
+        allocator.free(bt.entries);
+        for (glyph_curves_list.items) |gc| allocator.free(gc.curves);
+
+        return .{
+            .allocator = allocator,
+            .font = font,
+            .curve_data = curve_data,
+            .curve_width = ct.texture.width,
+            .curve_height = ct.texture.height,
+            .band_data = band_data_owned,
+            .band_width = bt.texture.width,
+            .band_height = bt.texture.height,
+            .glyph_map = glyph_map,
+        };
+    }
+
+    /// Build atlas from ASCII byte slice (convenience).
+    pub fn initAscii(allocator: std.mem.Allocator, font: *const Font, chars: []const u8) !Atlas {
+        var codepoints = try allocator.alloc(u32, chars.len);
+        defer allocator.free(codepoints);
+        for (chars, 0..) |ch, i| codepoints[i] = ch;
+        return init(allocator, font, codepoints);
+    }
+
+    pub fn deinit(self: *Atlas) void {
+        self.allocator.free(self.curve_data);
+        self.allocator.free(self.band_data);
+        self.glyph_map.deinit();
+    }
+};
+
+/// Accumulates glyph vertices into a caller-provided buffer.
+/// Zero allocations. Can be pre-built for static text.
+pub const Batch = struct {
+    buf: []f32,
+    len: usize, // floats written
+
+    pub fn init(buf: []f32) Batch {
+        return .{ .buf = buf, .len = 0 };
+    }
+
+    pub fn reset(self: *Batch) void {
+        self.len = 0;
+    }
+
+    pub fn glyphCount(self: *const Batch) usize {
+        return self.len / FLOATS_PER_GLYPH;
+    }
+
+    pub fn slice(self: *const Batch) []const f32 {
+        return self.buf[0..self.len];
+    }
+
+    /// Append a single glyph quad. Returns false if buffer is full.
+    pub fn addGlyph(
+        self: *Batch,
+        x: f32,
+        y: f32,
+        font_size: f32,
+        bbox: bezier.BBox,
+        band_entry: band_tex.GlyphBandEntry,
+        color: [4]f32,
+    ) bool {
+        if (self.len + FLOATS_PER_GLYPH > self.buf.len) return false;
+        vertex_mod.generateGlyphVertices(self.buf[self.len..], x, y, font_size, bbox, band_entry, color);
+        self.len += FLOATS_PER_GLYPH;
+        return true;
+    }
+
+    /// Lay out and append a string. Returns advance width in pixels.
+    pub fn addString(
+        self: *Batch,
+        atlas: *const Atlas,
+        font: *const Font,
+        text: []const u8,
+        x: f32,
+        y: f32,
+        font_size: f32,
+        color: [4]f32,
+    ) f32 {
+        const scale = font_size / @as(f32, @floatFromInt(font.unitsPerEm()));
+        var cursor_x = x;
+        var prev_gid: u16 = 0;
+
+        for (text) |ch| {
+            const gid = font.glyphIndex(ch) catch continue;
+            if (gid == 0) {
+                cursor_x += scale * 500;
+                prev_gid = 0;
+                continue;
+            }
+
+            if (prev_gid != 0) {
+                const kern = font.getKerning(prev_gid, gid) catch 0;
+                cursor_x += @as(f32, @floatFromInt(kern)) * scale;
+            }
+
+            const info = atlas.glyph_map.get(gid) orelse {
+                cursor_x += scale * 500;
+                prev_gid = gid;
+                continue;
+            };
+
+            if (info.band_entry.h_band_count > 0 and info.band_entry.v_band_count > 0) {
+                if (!self.addGlyph(cursor_x, y, font_size, info.bbox, info.band_entry, color)) break;
+            }
+
+            cursor_x += @as(f32, @floatFromInt(info.advance_width)) * scale;
+            prev_gid = gid;
+        }
+
+        return cursor_x - x;
+    }
+};
+
+/// GPU renderer. Owns shader programs and texture handles.
+/// Requires an active OpenGL 3.3+ context.
+pub const Renderer = struct {
+    _init: bool = true,
+
+    pub fn init() !Renderer {
+        try pipeline.init();
+        return .{};
+    }
+
+    pub fn deinit(self: *Renderer) void {
+        _ = self;
+        pipeline.deinit();
+    }
+
+    /// Upload atlas texture data to GPU. Call once per atlas, or on atlas rebuild.
+    pub fn uploadAtlas(self: *Renderer, atlas: *const Atlas) void {
+        _ = self;
+        pipeline.uploadCurveTexture(atlas.curve_data, atlas.curve_width, atlas.curve_height);
+        pipeline.uploadBandTexture(atlas.band_data, atlas.band_width, atlas.band_height);
+    }
+
+    /// Draw a batch of glyph vertices.
+    pub fn draw(self: *Renderer, vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
+        _ = self;
+        pipeline.drawText(vertices, mvp, viewport_w, viewport_h);
+    }
+
+    /// Toggle subpixel LCD rendering.
+    pub fn setSubpixel(self: *Renderer, enabled: bool) void {
+        _ = self;
+        pipeline.subpixel_enabled = enabled;
+    }
+
+    pub fn subpixelEnabled(self: *const Renderer) bool {
+        _ = self;
+        return pipeline.subpixel_enabled;
+    }
+};
+
+/// Default ASCII printable character set (space through tilde).
+pub const ASCII_PRINTABLE = blk: {
+    var chars: [95]u8 = undefined;
+    for (0..95) |i| chars[i] = @intCast(32 + i);
+    break :blk chars;
+};
+
+test {
+    _ = @import("math/vec.zig");
+    _ = @import("math/bezier.zig");
+    _ = @import("math/roots.zig");
+    _ = @import("font/ttf.zig");
+    _ = @import("render/curve_texture.zig");
+    _ = @import("render/band_texture.zig");
+    _ = @import("c_api.zig");
+}
