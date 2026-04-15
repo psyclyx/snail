@@ -91,6 +91,7 @@ pub const HarfBuzzShaper = struct {
         color: [4]f32,
         atlas_glyph_map: anytype,
         batch: anytype,
+        atlas_layer: u8,
     ) f32 {
         const shaped = self.shapeText(text);
         if (shaped.count == 0 or shaped.infos == null or shaped.positions == null) return 0;
@@ -108,7 +109,7 @@ pub const HarfBuzzShaper = struct {
 
             if (atlas_glyph_map.get(gid)) |info| {
                 if (info.band_entry.h_band_count > 0 and info.band_entry.v_band_count > 0) {
-                    if (!batch.addGlyph(glyph_x, glyph_y, font_size, info.bbox, info.band_entry, color)) break;
+                    if (!batch.addGlyph(glyph_x, glyph_y, font_size, info.bbox, info.band_entry, color, atlas_layer)) break;
                 }
             }
 

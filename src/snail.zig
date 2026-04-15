@@ -93,6 +93,9 @@ pub const Atlas = struct {
     gl_curve_texture: u32 = 0,
     gl_band_texture: u32 = 0,
 
+    // Texture array layer index (assigned by Renderer.uploadAtlas)
+    gl_layer: u8 = 0,
+
     pub const GlyphInfo = struct {
         bbox: bezier.BBox,
         advance_width: u16,
@@ -412,9 +415,10 @@ pub const Batch = struct {
         bbox: bezier.BBox,
         band_entry: band_tex.GlyphBandEntry,
         color: [4]f32,
+        atlas_layer: u8,
     ) bool {
         if (self.len + FLOATS_PER_GLYPH > self.buf.len) return false;
-        vertex_mod.generateGlyphVertices(self.buf[self.len..], x, y, font_size, bbox, band_entry, color);
+        vertex_mod.generateGlyphVertices(self.buf[self.len..], x, y, font_size, bbox, band_entry, color, atlas_layer);
         self.len += FLOATS_PER_GLYPH;
         return true;
     }
@@ -442,7 +446,7 @@ pub const Batch = struct {
         for (glyphs) |sg| {
             const info = atlas.glyph_map.get(sg.glyph_id) orelse continue;
             if (info.band_entry.h_band_count > 0 and info.band_entry.v_band_count > 0) {
-                if (!self.addGlyph(x + sg.x_offset, y + sg.y_offset, font_size, info.bbox, info.band_entry, color)) break;
+                if (!self.addGlyph(x + sg.x_offset, y + sg.y_offset, font_size, info.bbox, info.band_entry, color, atlas.gl_layer)) break;
             }
             count += 1;
         }
@@ -466,7 +470,7 @@ pub const Batch = struct {
         // Use HarfBuzz when available (zero-allocation path)
         if (comptime build_options.enable_harfbuzz) {
             if (atlas.hb_shaper) |hbs| {
-                return hbs.shapeAndEmit(text, font_size, x, y, color, &atlas.glyph_map, self);
+                return hbs.shapeAndEmit(text, font_size, x, y, color, &atlas.glyph_map, self, atlas.gl_layer);
             }
         }
 
@@ -517,7 +521,7 @@ pub const Batch = struct {
             };
 
             if (info.band_entry.h_band_count > 0 and info.band_entry.v_band_count > 0) {
-                if (!self.addGlyph(cursor_x, y, font_size, info.bbox, info.band_entry, color)) break;
+                if (!self.addGlyph(cursor_x, y, font_size, info.bbox, info.band_entry, color, atlas.gl_layer)) break;
             }
 
             cursor_x += @as(f32, @floatFromInt(info.advance_width)) * scale;
@@ -651,31 +655,19 @@ pub const Renderer = struct {
         pipeline.deinit();
     }
 
-    /// Upload atlas texture data to GPU (if not already uploaded) and bind.
-    /// First call creates GL textures; subsequent calls just bind.
-    /// Call again after atlas rebuild (addCodepoints/addGlyphsForText) to re-upload.
-    pub fn uploadAtlas(self: *Renderer, atlas: *const Atlas) void {
+    /// Upload one or more atlases as a texture array.
+    /// All atlases in the array can be rendered in a single draw call —
+    /// the layer index is encoded in vertex data automatically.
+    /// Call again after atlas data changes to rebuild the array.
+    pub fn uploadAtlases(self: *Renderer, atlases: []const *const Atlas) void {
         _ = self;
-        const a = @constCast(atlas);
-        if (a.gl_curve_texture == 0) {
-            // First upload: create textures and upload data
-            a.gl_curve_texture = pipeline.createCurveTexture(atlas.curve_data, atlas.curve_width, atlas.curve_height);
-            a.gl_band_texture = pipeline.createBandTexture(atlas.band_data, atlas.band_width, atlas.band_height);
-        }
-        pipeline.bindTextures(a.gl_curve_texture, a.gl_band_texture);
+        pipeline.buildTextureArrays(atlases);
     }
 
-    /// Force re-upload of atlas textures (call after atlas data changes).
-    pub fn reuploadAtlas(self: *Renderer, atlas: *const Atlas) void {
-        _ = self;
-        const a = @constCast(atlas);
-        if (a.gl_curve_texture != 0) {
-            pipeline.deleteTexture(&a.gl_curve_texture);
-            pipeline.deleteTexture(&a.gl_band_texture);
-        }
-        a.gl_curve_texture = pipeline.createCurveTexture(atlas.curve_data, atlas.curve_width, atlas.curve_height);
-        a.gl_band_texture = pipeline.createBandTexture(atlas.band_data, atlas.band_width, atlas.band_height);
-        pipeline.bindTextures(a.gl_curve_texture, a.gl_band_texture);
+    /// Convenience: upload a single atlas (layer 0).
+    pub fn uploadAtlas(self: *Renderer, atlas: *const Atlas) void {
+        const arr = [1]*const Atlas{atlas};
+        self.uploadAtlases(&arr);
     }
 
     /// Draw a batch of glyph vertices.

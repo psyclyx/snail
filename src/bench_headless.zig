@@ -151,79 +151,62 @@ fn runMultiFontScenario(
         total_glyphs += b.glyphCount();
     }
 
-    // Naive: one draw call per line (worst case — alternating atlas switches)
+    // Static: pre-built single batch
+    var probe = snail.Batch.init(vbuf);
+    {
+        var y: f32 = HEIGHT - 30;
+        for (font_sets) |fs| {
+            _ = probe.addString(fs.atlas, fs.font, fs.text, 10, y, fs.font_size, white);
+            y -= fs.font_size * 1.5;
+        }
+    }
+    const static_slice = probe.slice();
+
     for (0..WARMUP) |_| {
         gl.glClear(gl.GL_COLOR_BUFFER_BIT);
-        drawNaive(font_sets, renderer, vbuf, mvp, white);
+        renderer.draw(static_slice, mvp, WIDTH, HEIGHT);
     }
     gl.glFinish();
-    const t_naive = nowNs();
+    const t_static = nowNs();
     for (0..FRAMES) |_| {
         gl.glClear(gl.GL_COLOR_BUFFER_BIT);
-        drawNaive(font_sets, renderer, vbuf, mvp, white);
+        renderer.draw(static_slice, mvp, WIDTH, HEIGHT);
     }
     gl.glFinish();
-    const naive_ns = nowNs() - t_naive;
-    const naive_fps = @as(f64, FRAMES) / (@as(f64, @floatFromInt(naive_ns)) / 1e9);
-    const naive_us = @as(f64, @floatFromInt(naive_ns)) / 1000.0 / FRAMES;
+    const static_ns = nowNs() - t_static;
+    const static_fps = @as(f64, FRAMES) / (@as(f64, @floatFromInt(static_ns)) / 1e9);
+    const static_us = @as(f64, @floatFromInt(static_ns)) / 1000.0 / FRAMES;
 
-    // Batched: group by atlas, one draw call per unique atlas
+    // Dynamic: rebuild single batch every frame
     for (0..WARMUP) |_| {
         gl.glClear(gl.GL_COLOR_BUFFER_BIT);
-        drawBatched(font_sets, renderer, vbuf, mvp, white);
+        drawSingleBatch(font_sets, renderer, vbuf, mvp, white);
     }
     gl.glFinish();
-    const t_batched = nowNs();
+    const t_dynamic = nowNs();
     for (0..FRAMES) |_| {
         gl.glClear(gl.GL_COLOR_BUFFER_BIT);
-        drawBatched(font_sets, renderer, vbuf, mvp, white);
+        drawSingleBatch(font_sets, renderer, vbuf, mvp, white);
     }
     gl.glFinish();
-    const batched_ns = nowNs() - t_batched;
-    const batched_fps = @as(f64, FRAMES) / (@as(f64, @floatFromInt(batched_ns)) / 1e9);
-    const batched_us = @as(f64, @floatFromInt(batched_ns)) / 1000.0 / FRAMES;
+    const dynamic_ns = nowNs() - t_dynamic;
+    const dynamic_fps = @as(f64, FRAMES) / (@as(f64, @floatFromInt(dynamic_ns)) / 1e9);
+    const dynamic_us = @as(f64, @floatFromInt(dynamic_ns)) / 1000.0 / FRAMES;
 
-    std.debug.print("  {s:<30} {d:>5} glyphs   naive: {d:>8.0} FPS ({d:>6.1} us)   batched: {d:>8.0} FPS ({d:>6.1} us)\n", .{
-        name, total_glyphs, naive_fps, naive_us, batched_fps, batched_us,
+    std.debug.print("  {s:<30} {d:>5} glyphs   static: {d:>8.0} FPS ({d:>6.1} us)   dynamic: {d:>8.0} FPS ({d:>6.1} us)\n", .{
+        name, total_glyphs, static_fps, static_us, dynamic_fps, dynamic_us,
     });
 }
 
-/// Naive: one draw per line, atlas switch every line.
-fn drawNaive(font_sets: []const FontEntry, renderer: *snail.Renderer, vbuf: []f32, mvp: snail.Mat4, color: [4]f32) void {
+/// Single draw: all fonts in one batch (texture arrays).
+fn drawSingleBatch(font_sets: []const FontEntry, renderer: *snail.Renderer, vbuf: []f32, mvp: snail.Mat4, color: [4]f32) void {
+    var batch = snail.Batch.init(vbuf);
     var y: f32 = HEIGHT - 30;
     for (font_sets) |fs| {
-        renderer.uploadAtlas(fs.atlas);
-        var b = snail.Batch.init(vbuf);
-        _ = b.addString(fs.atlas, fs.font, fs.text, 10, y, fs.font_size, color);
-        if (b.glyphCount() > 0) renderer.draw(b.slice(), mvp, WIDTH, HEIGHT);
+        _ = batch.addString(fs.atlas, fs.font, fs.text, 10, y, fs.font_size, color);
         y -= fs.font_size * 1.5;
     }
-}
-
-/// Batched: group all lines by atlas, one draw per unique atlas.
-fn drawBatched(font_sets: []const FontEntry, renderer: *snail.Renderer, vbuf: []f32, mvp: snail.Mat4, color: [4]f32) void {
-    var y_positions: [64]f32 = undefined;
-    var y: f32 = HEIGHT - 30;
-    for (font_sets, 0..) |fs, i| {
-        y_positions[i] = y;
-        y -= fs.font_size * 1.5;
-    }
-
-    var drawn = [_]bool{false} ** 64;
-    for (font_sets, 0..) |fs, i| {
-        if (drawn[i]) continue;
-        renderer.uploadAtlas(fs.atlas);
-        var batch = snail.Batch.init(vbuf);
-        _ = batch.addString(fs.atlas, fs.font, fs.text, 10, y_positions[i], fs.font_size, color);
-        drawn[i] = true;
-        for (font_sets[i + 1 ..], i + 1..) |fs2, j| {
-            if (!drawn[j] and fs2.atlas == fs.atlas) {
-                _ = batch.addString(fs2.atlas, fs2.font, fs2.text, 10, y_positions[j], fs2.font_size, color);
-                drawn[j] = true;
-            }
-        }
-        if (batch.glyphCount() > 0) renderer.draw(batch.slice(), mvp, WIDTH, HEIGHT);
-    }
+    if (batch.glyphCount() > 0) renderer.draw(batch.slice(), mvp, WIDTH, HEIGHT);
 }
 
 pub fn main() !void {
@@ -255,7 +238,7 @@ pub fn main() !void {
     defer gl.glDeleteFramebuffers(1, &fbo);
     defer gl.glDeleteTextures(1, &fbo_tex);
 
-    // Setup: Latin font
+    // Setup
     const t_setup = nowNs();
     var font = try snail.Font.init(assets.noto_sans_regular);
     defer font.deinit();
@@ -263,36 +246,13 @@ pub fn main() !void {
     defer atlas.deinit();
     var renderer = try snail.Renderer.init();
     defer renderer.deinit();
-    renderer.uploadAtlas(&atlas);
-    const setup_us = @as(f64, @floatFromInt(nowNs() - t_setup)) / 1000.0;
+    // Upload deferred until all atlases are ready (see below)
 
     const vbuf = try allocator.alloc(f32, 30000 * snail.FLOATS_PER_GLYPH);
     defer allocator.free(vbuf);
     const mvp = snail.Mat4.ortho(0, WIDTH, 0, HEIGHT, -1, 1);
 
-    const hb_str = if (build_options.enable_harfbuzz) "ON" else "OFF";
-
-    std.debug.print(
-        \\
-        \\=== snail end-to-end rendering ({d}x{d}, {d} frames/test, HarfBuzz: {s}) ===
-        \\  Setup (font + atlas + GL): {d:.0} us
-        \\
-        \\  "static" = pre-built vertex buffer, draw only (game HUD, menus)
-        \\  "dynamic" = rebuild vertices + draw every frame (chat, editor, debug)
-        \\
-    , .{ WIDTH, HEIGHT, FRAMES, hb_str, setup_us });
-
-    // ── Latin scenarios ──
-    std.debug.print("  --- Latin (built-in shaper{s}) ---\n", .{
-        if (build_options.enable_harfbuzz) " + HarfBuzz" else "",
-    });
-    runScenario("Game HUD (2 lines)", buildHud, &atlas, &font, &renderer, vbuf, mvp);
-    runScenario("Multi-size (6 sizes)", buildMultiSize, &atlas, &font, &renderer, vbuf, mvp);
-    runScenario("Body text (6 paragraphs)", buildParagraph, &atlas, &font, &renderer, vbuf, mvp);
-    runScenario("Torture (fill screen)", buildTorture, &atlas, &font, &renderer, vbuf, mvp);
-
-    // ── Multi-script scenarios (HarfBuzz) ──
-    std.debug.print("\n  --- Multi-script ---\n", .{});
+    // ── Multi-script font setup (before texture array build) ──
 
     // Arabic
     var arabic_font = try snail.Font.init(assets.noto_sans_arabic);
@@ -360,6 +320,34 @@ pub fn main() !void {
         }
     }
 
+    // Upload all atlases as texture array (single-draw multi-font)
+    renderer.uploadAtlases(&[_]*const snail.Atlas{
+        &atlas, &arabic_atlas, &deva_atlas, &thai_atlas,
+    });
+    const setup_us = @as(f64, @floatFromInt(nowNs() - t_setup)) / 1000.0;
+
+    const hb_str = if (build_options.enable_harfbuzz) "ON" else "OFF";
+    std.debug.print(
+        \\
+        \\=== snail end-to-end rendering ({d}x{d}, {d} frames/test, HarfBuzz: {s}) ===
+        \\  Setup (4 fonts + atlases + texture array): {d:.0} us
+        \\
+        \\  "static" = pre-built vertex buffer, draw only (game HUD, menus)
+        \\  "dynamic" = rebuild vertices + draw every frame (chat, editor, debug)
+        \\
+    , .{ WIDTH, HEIGHT, FRAMES, hb_str, setup_us });
+
+    // ── Latin scenarios ──
+    std.debug.print("  --- Latin (built-in shaper{s}) ---\n", .{
+        if (build_options.enable_harfbuzz) " + HarfBuzz" else "",
+    });
+    runScenario("Game HUD (2 lines)", buildHud, &atlas, &font, &renderer, vbuf, mvp);
+    runScenario("Multi-size (6 sizes)", buildMultiSize, &atlas, &font, &renderer, vbuf, mvp);
+    runScenario("Body text (6 paragraphs)", buildParagraph, &atlas, &font, &renderer, vbuf, mvp);
+    runScenario("Torture (fill screen)", buildTorture, &atlas, &font, &renderer, vbuf, mvp);
+
+    std.debug.print("\n  --- Multi-script ---\n", .{});
+
     // Single-script benchmarks (Arabic repeated to fill lines)
     const buildArabic = struct {
         fn f(batch: *snail.Batch, a: *const snail.Atlas, fo: *const snail.Font) void {
@@ -381,10 +369,7 @@ pub fn main() !void {
         }
     }.f;
 
-    renderer.uploadAtlas(&arabic_atlas);
     runScenario("Arabic (12 lines)", buildArabic, &arabic_atlas, &arabic_font, &renderer, vbuf, mvp);
-
-    renderer.uploadAtlas(&deva_atlas);
     runScenario("Devanagari (12 lines)", buildDevanagari, &deva_atlas, &deva_font, &renderer, vbuf, mvp);
 
     // Multi-font: simulate game UI with mixed scripts

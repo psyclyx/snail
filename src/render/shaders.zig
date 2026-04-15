@@ -66,8 +66,8 @@ pub const fragment_shader =
     \\flat in vec4 v_banding;
     \\flat in ivec4 v_glyph;
     \\
-    \\uniform sampler2D u_curve_tex;
-    \\uniform usampler2D u_band_tex;
+    \\uniform sampler2DArray u_curve_tex;
+    \\uniform usampler2DArray u_band_tex;
     \\uniform int u_fill_rule; // 0 = non-zero winding (default), 1 = even-odd
     \\
     \\out vec4 frag_color;
@@ -86,7 +86,6 @@ pub const fragment_shader =
     \\// Apply fill rule to winding number
     \\float applyFillRule(float winding) {
     \\    if (u_fill_rule == 1) {
-    \\        // Even-odd: take fractional part of winding/2, scale back
     \\        return 1.0 - abs(fract(winding * 0.5) * 2.0 - 1.0);
     \\    }
     \\    return abs(winding);
@@ -130,22 +129,22 @@ pub const fragment_shader =
     \\    vec2 epp = fwidth(rc);
     \\    vec2 ppe = 1.0 / epp;
     \\
-    \\    ivec2 bandMax = v_glyph.zw;
-    \\    bandMax.y &= 0x00FF;
+    \\    int layer = (v_glyph.w >> 8) & 0xFF;
+    \\    ivec2 bandMax = ivec2(v_glyph.z, v_glyph.w & 0xFF);
     \\    ivec2 bandIdx = clamp(ivec2(rc * v_banding.xy + v_banding.zw), ivec2(0), bandMax);
     \\    ivec2 gLoc = v_glyph.xy;
     \\
     \\    float xcov = 0.0, xwgt = 0.0;
     \\
     \\    // Horizontal band
-    \\    uvec2 hbd = texelFetch(u_band_tex, ivec2(gLoc.x + bandIdx.y, gLoc.y), 0).xy;
+    \\    uvec2 hbd = texelFetch(u_band_tex, ivec3(gLoc.x + bandIdx.y, gLoc.y, layer), 0).xy;
     \\    ivec2 hLoc = calcBandLoc(gLoc, hbd.y);
     \\    int hCount = int(hbd.x);
     \\
     \\    for (int i = 0; i < hCount; i++) {
-    \\        ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec2(hLoc.x + i, hLoc.y), 0).xy);
-    \\        vec4 p12 = texelFetch(u_curve_tex, cLoc, 0) - vec4(rc, rc);
-    \\        vec2 p3 = texelFetch(u_curve_tex, ivec2(cLoc.x + 1, cLoc.y), 0).xy - rc;
+    \\        ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec3(hLoc.x + i, hLoc.y, layer), 0).xy);
+    \\        vec4 p12 = texelFetch(u_curve_tex, ivec3(cLoc, layer), 0) - vec4(rc, rc);
+    \\        vec2 p3 = texelFetch(u_curve_tex, ivec3(cLoc.x + 1, cLoc.y, layer), 0).xy - rc;
     \\
     \\        if (max(max(p12.x, p12.z), p3.x) * ppe.x < -0.5) break;
     \\
@@ -166,14 +165,14 @@ pub const fragment_shader =
     \\    float ycov = 0.0, ywgt = 0.0;
     \\
     \\    // Vertical band
-    \\    uvec2 vbd = texelFetch(u_band_tex, ivec2(gLoc.x + bandMax.y + 1 + bandIdx.x, gLoc.y), 0).xy;
+    \\    uvec2 vbd = texelFetch(u_band_tex, ivec3(gLoc.x + bandMax.y + 1 + bandIdx.x, gLoc.y, layer), 0).xy;
     \\    ivec2 vLoc = calcBandLoc(gLoc, vbd.y);
     \\    int vCount = int(vbd.x);
     \\
     \\    for (int i = 0; i < vCount; i++) {
-    \\        ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec2(vLoc.x + i, vLoc.y), 0).xy);
-    \\        vec4 p12 = texelFetch(u_curve_tex, cLoc, 0) - vec4(rc, rc);
-    \\        vec2 p3 = texelFetch(u_curve_tex, ivec2(cLoc.x + 1, cLoc.y), 0).xy - rc;
+    \\        ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec3(vLoc.x + i, vLoc.y, layer), 0).xy);
+    \\        vec4 p12 = texelFetch(u_curve_tex, ivec3(cLoc, layer), 0) - vec4(rc, rc);
+    \\        vec2 p3 = texelFetch(u_curve_tex, ivec3(cLoc.x + 1, cLoc.y, layer), 0).xy - rc;
     \\
     \\        if (max(max(p12.y, p12.w), p3.y) * ppe.y < -0.5) break;
     \\
@@ -214,8 +213,8 @@ pub const fragment_shader_subpixel =
     \\flat in vec4 v_banding;
     \\flat in ivec4 v_glyph;
     \\
-    \\uniform sampler2D u_curve_tex;
-    \\uniform usampler2D u_band_tex;
+    \\uniform sampler2DArray u_curve_tex;
+    \\uniform usampler2DArray u_band_tex;
     \\uniform int u_fill_rule; // 0 = non-zero winding (default), 1 = even-odd
     \\
     \\out vec4 frag_color;
@@ -274,13 +273,13 @@ pub const fragment_shader_subpixel =
     \\
     \\// Evaluate horizontal coverage at a given x offset from render coordinate
     \\float evalHorizCoverage(vec2 rc, float xOffset, vec2 ppe,
-    \\                        ivec2 gLoc, ivec2 hLoc, int hCount) {
+    \\                        ivec2 gLoc, ivec2 hLoc, int hCount, int layer) {
     \\    float xcov = 0.0;
     \\    vec2 samplePos = rc + vec2(xOffset, 0.0);
     \\    for (int i = 0; i < hCount; i++) {
-    \\        ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec2(hLoc.x + i, hLoc.y), 0).xy);
-    \\        vec4 p12 = texelFetch(u_curve_tex, cLoc, 0) - vec4(samplePos, samplePos);
-    \\        vec2 p3 = texelFetch(u_curve_tex, ivec2(cLoc.x + 1, cLoc.y), 0).xy - samplePos;
+    \\        ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec3(hLoc.x + i, hLoc.y, layer), 0).xy);
+    \\        vec4 p12 = texelFetch(u_curve_tex, ivec3(cLoc, layer), 0) - vec4(samplePos, samplePos);
+    \\        vec2 p3 = texelFetch(u_curve_tex, ivec3(cLoc.x + 1, cLoc.y, layer), 0).xy - samplePos;
     \\
     \\        if (max(max(p12.x, p12.z), p3.x) * ppe.x < -0.5) break;
     \\
@@ -300,31 +299,31 @@ pub const fragment_shader_subpixel =
     \\    vec2 ppe = 1.0 / epp;
     \\    float subpixelOffset = epp.x / 3.0;
     \\
-    \\    ivec2 bandMax = v_glyph.zw;
-    \\    bandMax.y &= 0x00FF;
+    \\    int layer = (v_glyph.w >> 8) & 0xFF;
+    \\    ivec2 bandMax = ivec2(v_glyph.z, v_glyph.w & 0xFF);
     \\    ivec2 bandIdx = clamp(ivec2(rc * v_banding.xy + v_banding.zw), ivec2(0), bandMax);
     \\    ivec2 gLoc = v_glyph.xy;
     \\
     \\    // Fetch horizontal band data (shared across subpixels)
-    \\    uvec2 hbd = texelFetch(u_band_tex, ivec2(gLoc.x + bandIdx.y, gLoc.y), 0).xy;
+    \\    uvec2 hbd = texelFetch(u_band_tex, ivec3(gLoc.x + bandIdx.y, gLoc.y, layer), 0).xy;
     \\    ivec2 hLoc = calcBandLoc(gLoc, hbd.y);
     \\    int hCount = int(hbd.x);
     \\
     \\    // Evaluate horizontal coverage at 3 subpixel positions (R, G, B)
-    \\    float xcov_r = evalHorizCoverage(rc, -subpixelOffset, ppe, gLoc, hLoc, hCount);
-    \\    float xcov_g = evalHorizCoverage(rc, 0.0,             ppe, gLoc, hLoc, hCount);
-    \\    float xcov_b = evalHorizCoverage(rc, +subpixelOffset, ppe, gLoc, hLoc, hCount);
+    \\    float xcov_r = evalHorizCoverage(rc, -subpixelOffset, ppe, gLoc, hLoc, hCount, layer);
+    \\    float xcov_g = evalHorizCoverage(rc, 0.0,             ppe, gLoc, hLoc, hCount, layer);
+    \\    float xcov_b = evalHorizCoverage(rc, +subpixelOffset, ppe, gLoc, hLoc, hCount, layer);
     \\
     \\    // Vertical band (shared across all subpixels — same y for all)
     \\    float ycov = 0.0, ywgt = 0.0;
-    \\    uvec2 vbd = texelFetch(u_band_tex, ivec2(gLoc.x + bandMax.y + 1 + bandIdx.x, gLoc.y), 0).xy;
+    \\    uvec2 vbd = texelFetch(u_band_tex, ivec3(gLoc.x + bandMax.y + 1 + bandIdx.x, gLoc.y, layer), 0).xy;
     \\    ivec2 vLoc = calcBandLoc(gLoc, vbd.y);
     \\    int vCount = int(vbd.x);
     \\
     \\    for (int i = 0; i < vCount; i++) {
-    \\        ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec2(vLoc.x + i, vLoc.y), 0).xy);
-    \\        vec4 p12 = texelFetch(u_curve_tex, cLoc, 0) - vec4(rc, rc);
-    \\        vec2 p3 = texelFetch(u_curve_tex, ivec2(cLoc.x + 1, cLoc.y), 0).xy - rc;
+    \\        ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec3(vLoc.x + i, vLoc.y, layer), 0).xy);
+    \\        vec4 p12 = texelFetch(u_curve_tex, ivec3(cLoc, layer), 0) - vec4(rc, rc);
+    \\        vec2 p3 = texelFetch(u_curve_tex, ivec3(cLoc.x + 1, cLoc.y, layer), 0).xy - rc;
     \\
     \\        if (max(max(p12.y, p12.w), p3.y) * ppe.y < -0.5) break;
     \\

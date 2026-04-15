@@ -27,6 +27,7 @@ pub fn generateGlyphVertices(
     bbox: BBox,
     band_entry: band_tex.GlyphBandEntry,
     color: [4]f32,
+    atlas_layer: u8,
 ) void {
     // Object-space glyph quad corners (scaled to font_size)
     const x0 = x + bbox.min.x * font_size;
@@ -42,8 +43,10 @@ pub fn generateGlyphVertices(
 
     // Pack glyph location into tex.z as uint bits in a float
     const gz: u32 = @as(u32, band_entry.glyph_x) | (@as(u32, band_entry.glyph_y) << 16);
+    // Pack: bits 0-15 = h_band_count-1, bits 16-23 = v_band_count-1, bits 24-31 = atlas layer
     const gw: u32 = @as(u32, band_entry.h_band_count - 1) |
-        (@as(u32, band_entry.v_band_count - 1) << 16);
+        (@as(u32, band_entry.v_band_count - 1) << 16) |
+        (@as(u32, atlas_layer) << 24);
 
     const gz_f: f32 = @bitCast(gz);
     const gw_f: f32 = @bitCast(gw);
@@ -126,7 +129,7 @@ test "vertex generation produces correct count and layout" {
     };
     const color = [4]f32{ 1.0, 0.5, 0.0, 1.0 };
 
-    generateGlyphVertices(&buf, 100.0, 200.0, 24.0, bbox, band_entry, color);
+    generateGlyphVertices(&buf, 100.0, 200.0, 24.0, bbox, band_entry, color, 0);
 
     // Check vertex count: 6 vertices * 20 floats
     const expected_floats = FLOATS_PER_VERTEX * VERTICES_PER_GLYPH;

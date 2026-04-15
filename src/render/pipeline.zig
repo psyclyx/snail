@@ -5,6 +5,7 @@ const shaders = @import("shaders.zig");
 const vertex = @import("vertex.zig");
 const vec = @import("../math/vec.zig");
 const Mat4 = vec.Mat4;
+const snail_mod = @import("../snail.zig");
 
 var program: gl.GLuint = 0;
 var program_subpixel: gl.GLuint = 0;
@@ -30,9 +31,11 @@ pub const FillRule = enum(c_int) {
 var vao: gl.GLuint = 0;
 var vbo: gl.GLuint = 0;
 
-// State tracking to skip redundant GL calls
-var bound_curve: gl.GLuint = 0;
-var bound_band: gl.GLuint = 0;
+// Texture array handles
+var curve_array: gl.GLuint = 0;
+var band_array: gl.GLuint = 0;
+
+// State tracking
 var active_program: gl.GLuint = 0;
 var frame_begun: bool = false;
 
@@ -69,8 +72,6 @@ pub fn init() !void {
     gl.glVertexAttribPointer(4, 4, gl.GL_FLOAT, gl.GL_FALSE, stride, @ptrFromInt(16 * @sizeOf(f32)));
     gl.glEnableVertexAttribArray(4);
 
-    // Leave VAO bound — we only have one
-    // Enable blend once — we always need it for text
     gl.glEnable(gl.GL_BLEND);
     gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA);
 }
@@ -80,86 +81,150 @@ pub fn deinit() void {
     if (program_subpixel != 0) gl.glDeleteProgram(program_subpixel);
     if (vao != 0) gl.glDeleteVertexArrays(1, &vao);
     if (vbo != 0) gl.glDeleteBuffers(1, &vbo);
+    if (curve_array != 0) gl.glDeleteTextures(1, &curve_array);
+    if (band_array != 0) gl.glDeleteTextures(1, &band_array);
 }
 
-/// Create a curve texture and upload data. Returns the GL handle.
-pub fn createCurveTexture(data: []const u16, width: u32, height: u32) gl.GLuint {
-    var tex: gl.GLuint = 0;
-    gl.glGenTextures(1, &tex);
-    gl.glBindTexture(gl.GL_TEXTURE_2D, tex);
-    gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA16F, @intCast(width), @intCast(height), 0, gl.GL_RGBA, gl.GL_HALF_FLOAT, data.ptr);
-    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST);
-    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST);
-    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE);
-    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE);
-    // Restore previously bound texture
-    if (bound_curve != 0) {
-        gl.glBindTexture(gl.GL_TEXTURE_2D, bound_curve);
+/// Build GL_TEXTURE_2D_ARRAY for curve and band data from multiple atlases.
+/// Each atlas becomes one layer. Assigns gl_layer on each atlas.
+pub fn buildTextureArrays(atlases: []const *const snail_mod.Atlas) void {
+    // Delete old arrays
+    if (curve_array != 0) gl.glDeleteTextures(1, &curve_array);
+    if (band_array != 0) gl.glDeleteTextures(1, &band_array);
+
+    const layer_count: gl.GLsizei = @intCast(atlases.len);
+
+    // Find max dimensions (width is always 4096, height varies)
+    var max_curve_h: u32 = 1;
+    var max_band_h: u32 = 1;
+    for (atlases) |a| {
+        if (a.curve_height > max_curve_h) max_curve_h = a.curve_height;
+        if (a.band_height > max_band_h) max_band_h = a.band_height;
     }
-    return tex;
-}
 
-/// Create a band texture and upload data. Returns the GL handle.
-pub fn createBandTexture(data: []const u16, width: u32, height: u32) gl.GLuint {
-    var tex: gl.GLuint = 0;
-    gl.glGenTextures(1, &tex);
-    gl.glBindTexture(gl.GL_TEXTURE_2D, tex);
-    gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RG16UI, @intCast(width), @intCast(height), 0, gl.GL_RG_INTEGER, gl.GL_UNSIGNED_SHORT, data.ptr);
-    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST);
-    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST);
-    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE);
-    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE);
-    if (bound_band != 0) {
-        gl.glActiveTexture(gl.GL_TEXTURE1);
-        gl.glBindTexture(gl.GL_TEXTURE_2D, bound_band);
+    // Create curve texture array (RGBA16F)
+    gl.glGenTextures(1, &curve_array);
+    gl.glActiveTexture(gl.GL_TEXTURE0);
+    gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, curve_array);
+    gl.glTexImage3D(
+        gl.GL_TEXTURE_2D_ARRAY,
+        0,
+        gl.GL_RGBA16F,
+        @intCast(atlases[0].curve_width),
+        @intCast(max_curve_h),
+        layer_count,
+        0,
+        gl.GL_RGBA,
+        gl.GL_HALF_FLOAT,
+        null, // allocate only
+    );
+    gl.glTexParameteri(gl.GL_TEXTURE_2D_ARRAY, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST);
+    gl.glTexParameteri(gl.GL_TEXTURE_2D_ARRAY, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST);
+    gl.glTexParameteri(gl.GL_TEXTURE_2D_ARRAY, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE);
+    gl.glTexParameteri(gl.GL_TEXTURE_2D_ARRAY, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE);
+
+    // Create band texture array (RG16UI)
+    gl.glGenTextures(1, &band_array);
+    gl.glActiveTexture(gl.GL_TEXTURE1);
+    gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, band_array);
+    gl.glTexImage3D(
+        gl.GL_TEXTURE_2D_ARRAY,
+        0,
+        gl.GL_RG16UI,
+        @intCast(atlases[0].band_width),
+        @intCast(max_band_h),
+        layer_count,
+        0,
+        gl.GL_RG_INTEGER,
+        gl.GL_UNSIGNED_SHORT,
+        null,
+    );
+    gl.glTexParameteri(gl.GL_TEXTURE_2D_ARRAY, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST);
+    gl.glTexParameteri(gl.GL_TEXTURE_2D_ARRAY, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST);
+    gl.glTexParameteri(gl.GL_TEXTURE_2D_ARRAY, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE);
+    gl.glTexParameteri(gl.GL_TEXTURE_2D_ARRAY, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE);
+
+    // Upload each atlas as a layer
+    for (atlases, 0..) |atlas, i| {
+        const a = @constCast(atlas);
+        a.gl_layer = @intCast(i);
+
+        // Upload curve data into layer i
         gl.glActiveTexture(gl.GL_TEXTURE0);
+        gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, curve_array);
+        gl.glTexSubImage3D(
+            gl.GL_TEXTURE_2D_ARRAY,
+            0,
+            0, 0, @intCast(i), // x, y, layer offsets
+            @intCast(atlas.curve_width),
+            @intCast(atlas.curve_height),
+            1, // one layer
+            gl.GL_RGBA,
+            gl.GL_HALF_FLOAT,
+            atlas.curve_data.ptr,
+        );
+
+        // Upload band data into layer i
+        gl.glActiveTexture(gl.GL_TEXTURE1);
+        gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, band_array);
+        gl.glTexSubImage3D(
+            gl.GL_TEXTURE_2D_ARRAY,
+            0,
+            0, 0, @intCast(i),
+            @intCast(atlas.band_width),
+            @intCast(atlas.band_height),
+            1,
+            gl.GL_RG_INTEGER,
+            gl.GL_UNSIGNED_SHORT,
+            atlas.band_data.ptr,
+        );
     }
-    return tex;
+
+    // Reset state
+    active_program = 0;
+    frame_begun = false;
 }
 
-/// Delete a texture and zero the handle.
 pub fn deleteTexture(tex: *gl.GLuint) void {
     if (tex.* != 0) {
-        // Invalidate bound state if this texture was bound
-        if (tex.* == bound_curve) bound_curve = 0;
-        if (tex.* == bound_band) bound_band = 0;
         gl.glDeleteTextures(1, tex);
         tex.* = 0;
     }
 }
 
-/// Bind atlas textures (skips if already bound).
+// Legacy single-texture APIs (used by C API for backward compat)
+pub fn createCurveTexture(data: []const u16, width: u32, height: u32) gl.GLuint {
+    _ = data;
+    _ = width;
+    _ = height;
+    return 0; // No-op — use buildTextureArrays
+}
+
+pub fn createBandTexture(data: []const u16, width: u32, height: u32) gl.GLuint {
+    _ = data;
+    _ = width;
+    _ = height;
+    return 0;
+}
+
 pub fn bindTextures(curve: gl.GLuint, band: gl.GLuint) void {
-    if (curve != bound_curve) {
-        gl.glActiveTexture(gl.GL_TEXTURE0);
-        gl.glBindTexture(gl.GL_TEXTURE_2D, curve);
-        bound_curve = curve;
-    }
-    if (band != bound_band) {
-        gl.glActiveTexture(gl.GL_TEXTURE1);
-        gl.glBindTexture(gl.GL_TEXTURE_2D, band);
-        bound_band = band;
-    }
-}
-
-// Legacy API (used by C API)
-pub fn uploadCurveTexture(data: []const u16, width: u32, height: u32) void {
-    const tex = createCurveTexture(data, width, height);
-    bound_curve = tex;
-}
-
-pub fn uploadBandTexture(data: []const u16, width: u32, height: u32) void {
-    const tex = createBandTexture(data, width, height);
-    bound_band = tex;
+    _ = curve;
+    _ = band;
+    // No-op — texture arrays are always bound
 }
 
 pub fn drawText(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
     const prog = if (subpixel_enabled) program_subpixel else program;
 
-    // Only re-set program and uniforms if program changed (or first call this frame)
     if (prog != active_program or !frame_begun) {
         gl.glUseProgram(prog);
         active_program = prog;
+
+        // Bind texture arrays
+        gl.glActiveTexture(gl.GL_TEXTURE0);
+        gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, curve_array);
+        gl.glActiveTexture(gl.GL_TEXTURE1);
+        gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, band_array);
 
         const u_ct = if (subpixel_enabled) sp_curve_tex_loc else curve_tex_loc;
         const u_bt = if (subpixel_enabled) sp_band_tex_loc else band_tex_loc;
@@ -168,7 +233,6 @@ pub fn drawText(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f
         frame_begun = true;
     }
 
-    // These may change between draws
     const u_mvp = if (subpixel_enabled) sp_mvp_loc else mvp_loc;
     const u_vp = if (subpixel_enabled) sp_viewport_loc else viewport_loc;
     const u_fr = if (subpixel_enabled) sp_fill_rule_loc else fill_rule_loc;
@@ -176,7 +240,6 @@ pub fn drawText(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f
     gl.glUniform2f(u_vp, viewport_w, viewport_h);
     gl.glUniform1i(u_fr, @intFromEnum(fill_rule));
 
-    // Upload vertex data (GL_STREAM_DRAW tells driver to expect frequent updates)
     gl.glBufferData(
         gl.GL_ARRAY_BUFFER,
         @intCast(vertices.len * @sizeOf(f32)),
@@ -188,7 +251,6 @@ pub fn drawText(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f
     gl.glDrawArrays(gl.GL_TRIANGLES, 0, vertex_count);
 }
 
-/// Call at frame boundaries to allow state re-evaluation.
 pub fn resetFrameState() void {
     frame_begun = false;
 }

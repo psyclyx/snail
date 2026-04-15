@@ -75,6 +75,16 @@ pub fn main() !void {
     var renderer = try snail.Renderer.init();
     defer renderer.deinit();
 
+    // Upload all atlases as texture array (enables single-draw multi-font rendering)
+    renderer.uploadAtlases(&[_]*const snail.Atlas{
+        &atlas,
+        &arabic.atlas,
+        &devanagari.atlas,
+        &mongolian.atlas,
+        &thai.atlas,
+        &emoji.atlas,
+    });
+
     // Vertex buffer: enough for ~10000 glyphs
     const buf_size = 10000 * snail.FLOATS_PER_GLYPH;
     const vbuf = try allocator.alloc(f32, buf_size);
@@ -146,12 +156,10 @@ pub fn main() !void {
         const green = [4]f32{ 0.4, 0.9, 0.5, 1 };
         const pink = [4]f32{ 0.9, 0.5, 0.7, 1 };
 
-        var total_glyphs: usize = 0;
+        // Everything goes into one batch — texture arrays enable single-draw multi-font
+        var batch = snail.Batch.init(vbuf);
 
         if (stress_test) {
-            // Stress test: fill screen with Latin text
-            renderer.uploadAtlas(&atlas);
-            var batch = snail.Batch.init(vbuf);
             const stress_sizes = [_]f32{ 10, 14, 18, 24, 32, 48 };
             var sy: f32 = h - 20;
             var si: usize = 0;
@@ -161,23 +169,16 @@ pub fn main() !void {
                 sy -= fs * 1.3;
                 si += 1;
             }
-            if (batch.glyphCount() > 0) {
-                renderer.draw(batch.slice(), mvp, w, h);
-            }
-            total_glyphs += batch.glyphCount();
         } else {
-            // ── Latin section ──
-            renderer.uploadAtlas(&atlas);
-            var batch = snail.Batch.init(vbuf);
             var y: f32 = h - 50;
 
-            // Title
+            // Title + subtitle
             _ = batch.addString(&atlas, &font, "snail", 30, y, 64, white);
             y -= 72;
             _ = batch.addString(&atlas, &font, "GPU font rendering via direct Bezier curve evaluation", 30, y, 16, gray);
             y -= 30;
 
-            // Multi-size
+            // Multi-size Latin
             for ([_]f32{ 12, 16, 24, 36, 48 }) |fs| {
                 _ = batch.addString(&atlas, &font, "The quick brown fox jumps over the lazy dog", 30, y, fs, white);
                 y -= fs * 1.35;
@@ -194,65 +195,38 @@ pub fn main() !void {
             _ = batch.addString(&atlas, &font, "fi fl ffi ffl office difficult", 30, y, 24, white);
             y -= 34;
 
-            if (batch.glyphCount() > 0) {
-                renderer.draw(batch.slice(), mvp, w, h);
-            }
-            total_glyphs += batch.glyphCount();
+            // Word-wrapped paragraph
+            const paragraph = "Direct Bezier curve evaluation in the fragment shader produces resolution-independent, " ++
+                "crisp text at any size, rotation, or perspective transform. No texture atlases, no signed distance fields.";
+            _ = batch.addStringWrapped(&atlas, &font, paragraph, 30, y, 13, w * 0.45, 18, gray);
 
-            // ── Script showcase (right column) ──
+            // Script showcase (right column) — same batch, different fonts!
             const col2_x: f32 = w * 0.52;
             var sy: f32 = h - 50;
-
-            // Labels + script text pairs
-            const scripts = [_]struct {
-                label: []const u8,
-                text: []const u8,
-                sf: *ScriptFont,
-                color: [4]f32,
-            }{
+            const scripts = [_]struct { label: []const u8, text: []const u8, sf: *ScriptFont, color: [4]f32 }{
                 .{ .label = "Arabic", .text = arabic_text, .sf = &arabic, .color = green },
                 .{ .label = "Devanagari", .text = devanagari_text, .sf = &devanagari, .color = cyan },
                 .{ .label = "Thai", .text = thai_text, .sf = &thai, .color = yellow },
                 .{ .label = "Mongolian", .text = mongolian_text, .sf = &mongolian, .color = pink },
                 .{ .label = "Emoji", .text = emoji_text, .sf = &emoji, .color = white },
             };
-
             for (scripts) |s| {
-                // Label (Latin font)
-                renderer.uploadAtlas(&atlas);
-                var label_batch = snail.Batch.init(vbuf);
-                _ = label_batch.addString(&atlas, &font, s.label, col2_x, sy, 12, gray);
-                if (label_batch.glyphCount() > 0)
-                    renderer.draw(label_batch.slice(), mvp, w, h);
-                total_glyphs += label_batch.glyphCount();
+                _ = batch.addString(&atlas, &font, s.label, col2_x, sy, 12, gray);
                 sy -= 18;
-
-                // Script text
-                renderer.uploadAtlas(&s.sf.atlas);
-                var script_batch = snail.Batch.init(vbuf);
-                _ = script_batch.addString(&s.sf.atlas, &s.sf.font, s.text, col2_x, sy, 32, s.color);
-                if (script_batch.glyphCount() > 0)
-                    renderer.draw(script_batch.slice(), mvp, w, h);
-                total_glyphs += script_batch.glyphCount();
+                _ = batch.addString(&s.sf.atlas, &s.sf.font, s.text, col2_x, sy, 32, s.color);
                 sy -= 50;
             }
-
-            // Description paragraph at bottom
-            renderer.uploadAtlas(&atlas);
-            var para_batch = snail.Batch.init(vbuf);
-            const paragraph = "Direct Bezier curve evaluation in the fragment shader produces resolution-independent, " ++
-                "crisp text at any size, rotation, or perspective transform. No texture atlases, no signed distance fields.";
-            _ = para_batch.addStringWrapped(&atlas, &font, paragraph, 30, y, 13, w * 0.45, 18, gray);
-            if (para_batch.glyphCount() > 0) {
-                renderer.draw(para_batch.slice(), mvp, w, h);
-            }
-            total_glyphs += para_batch.glyphCount();
         }
 
-        // HUD (no rotation/zoom)
+        // Main scene: one draw call for ALL fonts
+        if (batch.glyphCount() > 0) {
+            renderer.draw(batch.slice(), mvp, w, h);
+        }
+        const total_glyphs = batch.glyphCount();
+
+        // HUD (separate draw for different MVP)
         {
-            renderer.uploadAtlas(&atlas);
-            var hud = snail.Batch.init(vbuf);
+            var hud = snail.Batch.init(vbuf[batch.len..]);
             _ = hud.addString(&atlas, &font, "snail - GPU Bezier curve font rendering", 10, 30, 12, gray);
             const hb_str = if (build_options.enable_harfbuzz) " | HarfBuzz ON" else "";
             _ = hud.addString(&atlas, &font, "Z/X zoom | R rotate | S stress | L subpixel" ++ hb_str, 10, 14, 12, gray);
