@@ -92,6 +92,14 @@ pub const Atlas = struct {
     // HarfBuzz shaper (full OpenType, compile-time optional)
     hb_shaper: if (build_options.enable_harfbuzz) ?harfbuzz.HarfBuzzShaper else void = if (build_options.enable_harfbuzz) null else {},
 
+    // COLRv0 lookup data — raw font bytes and table offsets, valid for program
+    // lifetime (font data is @embedFile).  Stored separately so getColrLayers
+    // can be called at render time without going through the potentially-stale
+    // atlas.font pointer.
+    colr_font_data: []const u8 = &.{},
+    colr_offset: u32 = 0,
+    cpal_offset: u32 = 0,
+
     // GPU texture handles (created on first upload, 0 = not yet uploaded)
     gl_curve_texture: u32 = 0,
     gl_band_texture: u32 = 0,
@@ -270,6 +278,12 @@ pub const Atlas = struct {
             .glyph_map = result.glyph_map,
             .shaper = shaper,
             .hb_shaper = hb_shaper,
+            // Store raw font bytes + COLR offsets for render-time lookups.
+            // font.inner.data is @embedFile (static lifetime); safe to outlive
+            // the font pointer.
+            .colr_font_data = font.inner.data,
+            .colr_offset = font.inner.colr_offset,
+            .cpal_offset = font.inner.cpal_offset,
         };
         try atlas.buildGlyphLut();
         return atlas;
@@ -423,11 +437,14 @@ pub const Atlas = struct {
         self.glyph_lut_len = @intCast(size);
     }
 
-    /// Return the COLRv0 layers for a glyph, delegating to the font.
-    /// Returns empty slice if this atlas has no font or the glyph has no COLR data.
+    /// Return the COLRv0 layers for a glyph.
+    /// Uses colr_font_data/colr_offset/cpal_offset stored at init time —
+    /// safe to call at render time even after the original Font pointer goes stale.
     pub fn getColrLayers(self: *const Atlas, glyph_id: u16, buf: []ttf.Font.ColrLayer) []ttf.Font.ColrLayer {
-        const font = self.font orelse return buf[0..0];
-        return font.inner.getColrLayers(glyph_id, buf);
+        if (self.colr_offset == 0) return buf[0..0];
+        // Build a minimal Font shell pointing at the static font bytes.
+        const temp = ttf.Font{ .data = self.colr_font_data, .colr_offset = self.colr_offset, .cpal_offset = self.cpal_offset };
+        return temp.getColrLayers(glyph_id, buf);
     }
 
     /// Fast glyph lookup: O(1) array access with HashMap fallback.

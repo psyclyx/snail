@@ -1,5 +1,31 @@
 const std = @import("std");
 
+/// For use as a dependency: returns a module with only the core snail library.
+/// No GLFW, no Vulkan — the consumer must provide a GL 3.3+ context.
+pub fn module(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
+    const options = b.addOptions();
+    options.addOption(bool, "enable_profiling", false);
+    options.addOption(bool, "enable_harfbuzz", false);
+    options.addOption(bool, "enable_vulkan", false);
+    options.addOption(bool, "force_gl33", true);
+
+    // Stub vulkan_shaders module (never used when enable_vulkan=false)
+    const vk_stub = b.createModule(.{
+        .root_source_file = b.addWriteFiles().add("vk_stub.zig", ""),
+    });
+
+    const mod = b.createModule(.{
+        .root_source_file = b.path("src/snail.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    mod.addOptions("build_options", options);
+    mod.linkSystemLibrary("gl", .{});
+    mod.addImport("vulkan_shaders", vk_stub);
+    return mod;
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -129,9 +155,7 @@ pub fn build(b: *std.Build) void {
     bench_cmp_module.linkSystemLibrary("freetype2", .{});
 
     const bench_cmp_exe = b.addExecutable(.{ .name = "snail-bench-compare", .root_module = bench_cmp_module });
-    b.installArtifact(bench_cmp_exe);
     const run_bench_cmp = b.addRunArtifact(bench_cmp_exe);
-    run_bench_cmp.step.dependOn(b.getInstallStep());
     const bench_cmp_step = b.step("bench-compare", "Run comparative benchmark vs FreeType");
     bench_cmp_step.dependOn(&run_bench_cmp.step);
 
@@ -146,16 +170,12 @@ pub fn build(b: *std.Build) void {
     configureModule(bench_hl_module, options, enable_harfbuzz, vk_shaders_mod);
 
     const bench_hl_exe = b.addExecutable(.{ .name = "snail-bench-headless", .root_module = bench_hl_module });
-    b.installArtifact(bench_hl_exe);
     const run_bench_hl = b.addRunArtifact(bench_hl_exe);
-    run_bench_hl.step.dependOn(b.getInstallStep());
     const bench_hl_step = b.step("bench-headless", "Run headless rendering benchmark");
     bench_hl_step.dependOn(&run_bench_hl.step);
 
     const bench_exe = b.addExecutable(.{ .name = "snail-bench", .root_module = bench_module });
-    b.installArtifact(bench_exe);
     const run_bench = b.addRunArtifact(bench_exe);
-    run_bench.step.dependOn(b.getInstallStep());
     const bench_step = b.step("bench", "Run benchmarks");
     bench_step.dependOn(&run_bench.step);
 
@@ -171,9 +191,7 @@ pub fn build(b: *std.Build) void {
     bench_suite_module.linkSystemLibrary("freetype2", .{});
 
     const bench_suite_exe = b.addExecutable(.{ .name = "snail-bench-suite", .root_module = bench_suite_module });
-    b.installArtifact(bench_suite_exe);
     const run_bench_suite = b.addRunArtifact(bench_suite_exe);
-    run_bench_suite.step.dependOn(b.getInstallStep());
     const bench_suite_step = b.step("bench-suite", "Run consolidated benchmark suite");
     bench_suite_step.dependOn(&run_bench_suite.step);
 
