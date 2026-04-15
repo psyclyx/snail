@@ -227,39 +227,50 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
                 si += 1;
             }
         } else {
-            var y: f32 = h - 50;
+            // Left column: x=30..col2_x-20; right column: col2_x..w
+            const col2_x: f32 = w * 0.52;
+            const col1_max_w: f32 = col2_x - 50; // keep text out of the right column
+
+            var y: f32 = h - 70;
 
             // Title + subtitle
             _ = batch.addString(&atlas, &font, "snail", 30, y, 64, white);
-            y -= 72;
-            _ = batch.addString(&atlas, &font, "GPU font rendering via direct Bezier curve evaluation", 30, y, 16, gray);
-            y -= 30;
+            y -= 76;
+            _ = batch.addString(&atlas, &font, "GPU font rendering via direct Bezier curve evaluation", 30, y, 14, gray);
+            y -= 26;
 
-            // Multi-size Latin
-            for ([_]f32{ 12, 16, 24, 36, 48 }) |fs| {
-                _ = batch.addString(&atlas, &font, "The quick brown fox jumps over the lazy dog", 30, y, fs, white);
-                y -= fs * 1.35;
+            // Multi-size Latin — strings chosen so each line fits within col1_max_w
+            const size_rows = [_]struct { fs: f32, text: []const u8 }{
+                .{ .fs = 11, .text = "The quick brown fox jumps over the lazy dog 0123456789" },
+                .{ .fs = 14, .text = "The quick brown fox jumps over the lazy dog" },
+                .{ .fs = 20, .text = "The quick brown fox jumps over" },
+                .{ .fs = 28, .text = "Pack my box with five" },
+                .{ .fs = 40, .text = "How vexingly quick" },
+            };
+            for (size_rows) |row| {
+                _ = batch.addString(&atlas, &font, row.text, 30, y, row.fs, white);
+                y -= row.fs * 1.4;
             }
-            y -= 8;
+            y -= 6;
 
             // Character sets
-            _ = batch.addString(&atlas, &font, "ABCDEFGHIJKLMNOPQRSTUVWXYZ 0123456789", 30, y, 18, cyan);
+            _ = batch.addString(&atlas, &font, "ABCDEFGHIJKLMNOPQRSTUVWXYZ 0123456789", 30, y, 14, cyan);
+            y -= 20;
+            _ = batch.addString(&atlas, &font, "abcdefghijklmnopqrstuvwxyz !@#$%^&*()", 30, y, 14, yellow);
             y -= 24;
-            _ = batch.addString(&atlas, &font, "abcdefghijklmnopqrstuvwxyz !@#$%^&*()", 30, y, 18, yellow);
-            y -= 28;
 
             // Ligatures
-            _ = batch.addString(&atlas, &font, "fi fl ffi ffl office difficult", 30, y, 24, white);
-            y -= 34;
+            _ = batch.addString(&atlas, &font, "fi fl ffi ffl office difficult affect", 30, y, 18, white);
+            y -= 28;
 
             // Word-wrapped paragraph
-            const paragraph = "Direct Bezier curve evaluation in the fragment shader produces resolution-independent, " ++
-                "crisp text at any size, rotation, or perspective transform. No texture atlases, no signed distance fields.";
-            _ = batch.addStringWrapped(&atlas, &font, paragraph, 30, y, 13, w * 0.45, 18, gray);
+            const paragraph = "Direct Bezier curve evaluation in the fragment shader produces " ++
+                "resolution-independent text at any size, rotation, or perspective transform. " ++
+                "No texture atlases, no signed distance fields.";
+            _ = batch.addStringWrapped(&atlas, &font, paragraph, 30, y, 12, col1_max_w, 17, gray);
 
-            // Script showcase (right column) — same batch, different fonts!
-            const col2_x: f32 = w * 0.52;
-            var sy: f32 = h - 50;
+            // Right column — script showcase in same batch (texture array = one draw call)
+            var sy: f32 = h - 70;
             const scripts = [_]struct { label: []const u8, text: []const u8, sf: *ScriptFont, color: [4]f32 }{
                 .{ .label = "Arabic", .text = arabic_text, .sf = &arabic, .color = green },
                 .{ .label = "Devanagari", .text = devanagari_text, .sf = &devanagari, .color = cyan },
@@ -268,10 +279,10 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
                 .{ .label = "Emoji", .text = emoji_text, .sf = &emoji, .color = white },
             };
             for (scripts) |s| {
-                _ = batch.addString(&atlas, &font, s.label, col2_x, sy, 12, gray);
-                sy -= 18;
-                _ = batch.addString(&s.sf.atlas, &s.sf.font, s.text, col2_x, sy, 32, s.color);
-                sy -= 50;
+                _ = batch.addString(&atlas, &font, s.label, col2_x, sy, 11, gray);
+                sy -= 16;
+                _ = batch.addString(&s.sf.atlas, &s.sf.font, s.text, col2_x, sy, 28, s.color);
+                sy -= 46;
             }
         }
 

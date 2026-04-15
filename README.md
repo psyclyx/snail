@@ -231,7 +231,15 @@ Layout is **100–124x faster**: snail reads pre-parsed metrics; FreeType calls 
 
 ### End-to-end rendering (`zig build bench-headless`)
 
-Offscreen FBO/image, 1280×720, 2000 frames per scenario, ReleaseFast:
+**Methodology**: fully headless — no display, no window system involvement in the measured path.
+
+- **OpenGL**: hidden GLFW window (`GLFW_VISIBLE=false`) with a 1280×720 FBO. Each frame renders into the FBO, then calls `glFinish` to wait for GPU completion before timing the next frame. The window never appears on screen; GLFW is used only to obtain a GL context.
+- **Vulkan**: no window, no surface, no swapchain. Renders into a `VkImage` (`VK_FORMAT_R8G8B8A8_UNORM`) allocated in device memory. `vkQueueWaitIdle` after each submit ensures full CPU+GPU frame time is measured with no pipelining. This is a conservative lower bound — real applications pipeline CPU and GPU work across frames.
+
+Both backends render 2000 frames per scenario at 1280×720, ReleaseFast. Frame time = wall time / 2000.
+
+**Static**: vertex buffer built once, reused every frame — simulates a game HUD or static menu.  
+**Dynamic**: vertex buffer rebuilt from glyph metrics every frame — simulates chat, debug overlay, or any text that changes each frame.
 
 #### OpenGL 4.4 (persistent mapped)
 
@@ -260,10 +268,6 @@ Offscreen FBO/image, 1280×720, 2000 frames per scenario, ReleaseFast:
 | Game UI (3 fonts) | 54 | 19,785 | 50.5 us | 17,550 | 57.0 us |
 | Chat (6 msgs, 4 fonts) | 104 | 18,449 | 54.2 us | 15,089 | 66.3 us |
 | Multi-font torture (24 lines) | 510 | 12,355 | 80.9 us | 7,581 | 131.9 us |
-
-**Static**: pre-built vertex buffer, draw call only (game HUD, menus).  
-**Dynamic**: rebuild vertices + draw every frame (chat, editor, debug text).  
-Vulkan numbers reflect per-frame CPU+GPU time with no frame pipelining (conservative lower bound).
 
 ### Other GPU font renderers
 
