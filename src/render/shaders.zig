@@ -68,6 +68,7 @@ pub const fragment_shader =
     \\
     \\uniform sampler2D u_curve_tex;
     \\uniform usampler2D u_band_tex;
+    \\uniform int u_fill_rule; // 0 = non-zero winding (default), 1 = even-odd
     \\
     \\out vec4 frag_color;
     \\
@@ -80,6 +81,15 @@ pub const fragment_shader =
     \\    uint shift = (i2 & 2u) | (i1 & ~2u);
     \\    shift = (i3 & 4u) | (shift & ~4u);
     \\    return ((0x2E74u >> shift) & 0x0101u);
+    \\}
+    \\
+    \\// Apply fill rule to winding number
+    \\float applyFillRule(float winding) {
+    \\    if (u_fill_rule == 1) {
+    \\        // Even-odd: take fractional part of winding/2, scale back
+    \\        return 1.0 - abs(fract(winding * 0.5) * 2.0 - 1.0);
+    \\    }
+    \\    return abs(winding);
     \\}
     \\
     \\vec2 solveHorizPoly(vec4 p12, vec2 p3) {
@@ -182,8 +192,9 @@ pub const fragment_shader =
     \\    }
     \\
     \\    float wsum = xwgt + ywgt;
-    \\    float coverage = max(abs(xcov * xwgt + ycov * ywgt) / max(wsum, 1.0 / 65536.0),
-    \\                         min(abs(xcov), abs(ycov)));
+    \\    float blended = xcov * xwgt + ycov * ywgt;
+    \\    float coverage = max(applyFillRule(blended / max(wsum, 1.0 / 65536.0)),
+    \\                         min(applyFillRule(xcov), applyFillRule(ycov)));
     \\    coverage = clamp(coverage, 0.0, 1.0);
     \\    // sRGB gamma: linear → sRGB transfer function
     \\    coverage = (coverage <= 0.0031308)
@@ -205,6 +216,7 @@ pub const fragment_shader_subpixel =
     \\
     \\uniform sampler2D u_curve_tex;
     \\uniform usampler2D u_band_tex;
+    \\uniform int u_fill_rule; // 0 = non-zero winding (default), 1 = even-odd
     \\
     \\out vec4 frag_color;
     \\
@@ -217,6 +229,14 @@ pub const fragment_shader_subpixel =
     \\    uint shift = (i2 & 2u) | (i1 & ~2u);
     \\    shift = (i3 & 4u) | (shift & ~4u);
     \\    return ((0x2E74u >> shift) & 0x0101u);
+    \\}
+    \\
+    \\// Apply fill rule to winding number
+    \\float applyFillRule(float winding) {
+    \\    if (u_fill_rule == 1) {
+    \\        return 1.0 - abs(fract(winding * 0.5) * 2.0 - 1.0);
+    \\    }
+    \\    return abs(winding);
     \\}
     \\
     \\vec2 solveHorizPoly(vec4 p12, vec2 p3) {
@@ -326,9 +346,9 @@ pub const fragment_shader_subpixel =
     \\    // For subpixel, we use horizontal coverage directly (no weighting blend)
     \\    // since each subpixel has its own horizontal sample
     \\    vec3 cov;
-    \\    cov.r = clamp(max(abs(xcov_r), min(abs(xcov_r), abs(ycov))), 0.0, 1.0);
-    \\    cov.g = clamp(max(abs(xcov_g), min(abs(xcov_g), abs(ycov))), 0.0, 1.0);
-    \\    cov.b = clamp(max(abs(xcov_b), min(abs(xcov_b), abs(ycov))), 0.0, 1.0);
+    \\    cov.r = clamp(max(applyFillRule(xcov_r), min(applyFillRule(xcov_r), applyFillRule(ycov))), 0.0, 1.0);
+    \\    cov.g = clamp(max(applyFillRule(xcov_g), min(applyFillRule(xcov_g), applyFillRule(ycov))), 0.0, 1.0);
+    \\    cov.b = clamp(max(applyFillRule(xcov_b), min(applyFillRule(xcov_b), applyFillRule(ycov))), 0.0, 1.0);
     \\    // sRGB gamma: linear → sRGB transfer function
     \\    cov = mix(cov * 12.92,
     \\              1.055 * pow(cov, vec3(1.0 / 2.4)) - 0.055,

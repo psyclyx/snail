@@ -70,6 +70,11 @@ void snail_renderer_deinit(void);
 void snail_renderer_upload_atlas(const SnailAtlas *atlas);
 void snail_renderer_set_subpixel(bool enabled);
 
+/* Fill rule: 0 = non-zero winding (TrueType default), 1 = even-odd */
+#define SNAIL_FILL_NONZERO 0
+#define SNAIL_FILL_EVENODD 1
+void snail_renderer_set_fill_rule(int rule);
+
 /* mvp: 16 floats, column-major 4x4 matrix */
 void snail_renderer_draw(const float *vertices, size_t num_floats,
                          const float *mvp,

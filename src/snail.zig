@@ -332,6 +332,8 @@ pub const Batch = struct {
     }
 };
 
+pub const FillRule = pipeline.FillRule;
+
 /// GPU renderer. Owns shader programs and texture handles.
 /// Requires an active OpenGL 3.3+ context.
 pub const Renderer = struct {
@@ -369,6 +371,17 @@ pub const Renderer = struct {
     pub fn subpixelEnabled(self: *const Renderer) bool {
         _ = self;
         return pipeline.subpixel_enabled;
+    }
+
+    /// Set fill rule: non_zero (default, TrueType) or even_odd (PostScript/CFF).
+    pub fn setFillRule(self: *Renderer, rule: FillRule) void {
+        _ = self;
+        pipeline.fill_rule = rule;
+    }
+
+    pub fn fillRule(self: *const Renderer) FillRule {
+        _ = self;
+        return pipeline.fill_rule;
     }
 };
 

@@ -16,8 +16,16 @@ var sp_mvp_loc: gl.GLint = -1;
 var sp_viewport_loc: gl.GLint = -1;
 var sp_curve_tex_loc: gl.GLint = -1;
 var sp_band_tex_loc: gl.GLint = -1;
+var fill_rule_loc: gl.GLint = -1;
+var sp_fill_rule_loc: gl.GLint = -1;
 
 pub var subpixel_enabled: bool = false;
+pub var fill_rule: FillRule = .non_zero;
+
+pub const FillRule = enum(c_int) {
+    non_zero = 0,
+    even_odd = 1,
+};
 
 var vao: gl.GLuint = 0;
 var vbo: gl.GLuint = 0;
@@ -30,12 +38,14 @@ pub fn init() !void {
     viewport_loc = gl.glGetUniformLocation(program, "u_viewport");
     curve_tex_loc = gl.glGetUniformLocation(program, "u_curve_tex");
     band_tex_loc = gl.glGetUniformLocation(program, "u_band_tex");
+    fill_rule_loc = gl.glGetUniformLocation(program, "u_fill_rule");
 
     program_subpixel = try linkProgram(shaders.vertex_shader, shaders.fragment_shader_subpixel);
     sp_mvp_loc = gl.glGetUniformLocation(program_subpixel, "u_mvp");
     sp_viewport_loc = gl.glGetUniformLocation(program_subpixel, "u_viewport");
     sp_curve_tex_loc = gl.glGetUniformLocation(program_subpixel, "u_curve_tex");
     sp_band_tex_loc = gl.glGetUniformLocation(program_subpixel, "u_band_tex");
+    sp_fill_rule_loc = gl.glGetUniformLocation(program_subpixel, "u_fill_rule");
 
     gl.glGenVertexArrays(1, &vao);
     gl.glGenBuffers(1, &vbo);
@@ -118,10 +128,12 @@ pub fn drawText(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f
     const u_vp = if (subpixel_enabled) sp_viewport_loc else viewport_loc;
     const u_ct = if (subpixel_enabled) sp_curve_tex_loc else curve_tex_loc;
     const u_bt = if (subpixel_enabled) sp_band_tex_loc else band_tex_loc;
+    const u_fr = if (subpixel_enabled) sp_fill_rule_loc else fill_rule_loc;
 
     gl.glUseProgram(prog);
     gl.glUniformMatrix4fv(u_mvp, 1, gl.GL_FALSE, &mvp.data);
     gl.glUniform2f(u_vp, viewport_w, viewport_h);
+    gl.glUniform1i(u_fr, @intFromEnum(fill_rule));
 
     gl.glActiveTexture(gl.GL_TEXTURE0);
     gl.glBindTexture(gl.GL_TEXTURE_2D, curve_texture);

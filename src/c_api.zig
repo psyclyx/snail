@@ -149,6 +149,10 @@ export fn snail_renderer_set_subpixel(enabled: bool) void {
     pipeline.subpixel_enabled = enabled;
 }
 
+export fn snail_renderer_set_fill_rule(rule: c_int) void {
+    pipeline.fill_rule = @enumFromInt(rule);
+}
+
 export fn snail_renderer_draw(vertices: [*]const f32, num_floats: usize, mvp: [*]const f32, viewport_w: f32, viewport_h: f32) void {
     const mat = snail.Mat4{ .data = mvp[0..16].* };
     pipeline.drawText(vertices[0..num_floats], mat, viewport_w, viewport_h);
