@@ -16,17 +16,20 @@ var window: ?*c.GLFWwindow = null;
 pub fn init(width: u32, height: u32, title: [*:0]const u8) !void {
     if (c.glfwInit() != c.GLFW_TRUE) return error.GlfwInitFailed;
 
-    c.glfwWindowHint(c.GLFW_CONTEXT_VERSION_MAJOR, 3);
-    c.glfwWindowHint(c.GLFW_CONTEXT_VERSION_MINOR, 3);
+    // Try GL 4.4 first, fall back to 3.3
+    c.glfwWindowHint(c.GLFW_CONTEXT_VERSION_MAJOR, 4);
+    c.glfwWindowHint(c.GLFW_CONTEXT_VERSION_MINOR, 4);
     c.glfwWindowHint(c.GLFW_OPENGL_PROFILE, c.GLFW_OPENGL_CORE_PROFILE);
 
-    window = c.glfwCreateWindow(
-        @intCast(width),
-        @intCast(height),
-        title,
-        null,
-        null,
-    ) orelse return error.WindowCreateFailed;
+    window = c.glfwCreateWindow(@intCast(width), @intCast(height), title, null, null);
+
+    if (window == null) {
+        // Retry with GL 3.3
+        c.glfwWindowHint(c.GLFW_CONTEXT_VERSION_MAJOR, 3);
+        c.glfwWindowHint(c.GLFW_CONTEXT_VERSION_MINOR, 3);
+        window = c.glfwCreateWindow(@intCast(width), @intCast(height), title, null, null)
+            orelse return error.WindowCreateFailed;
+    }
 
     c.glfwMakeContextCurrent(window);
     c.glfwSwapInterval(1);

@@ -741,6 +741,11 @@ pub const Renderer = struct {
         _ = self;
         return pipeline.fill_rule;
     }
+
+    pub fn backendName(self: *const Renderer) []const u8 {
+        _ = self;
+        return pipeline.getBackendName();
+    }
 };
 
 /// Default ASCII printable character set (space through tilde).

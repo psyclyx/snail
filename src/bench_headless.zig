@@ -214,13 +214,20 @@ pub fn main() !void {
     defer _ = da.deinit();
     const allocator = da.allocator();
 
-    // Hidden window
+    // Hidden window — try GL 4.4 first, fall back to 3.3
     if (platform.c.glfwInit() != platform.c.GLFW_TRUE) return error.GlfwInitFailed;
     platform.c.glfwWindowHint(platform.c.GLFW_VISIBLE, platform.c.GLFW_FALSE);
-    platform.c.glfwWindowHint(platform.c.GLFW_CONTEXT_VERSION_MAJOR, 3);
-    platform.c.glfwWindowHint(platform.c.GLFW_CONTEXT_VERSION_MINOR, 3);
+    platform.c.glfwWindowHint(platform.c.GLFW_CONTEXT_VERSION_MAJOR, 4);
+    platform.c.glfwWindowHint(platform.c.GLFW_CONTEXT_VERSION_MINOR, 4);
     platform.c.glfwWindowHint(platform.c.GLFW_OPENGL_PROFILE, platform.c.GLFW_OPENGL_CORE_PROFILE);
-    const win = platform.c.glfwCreateWindow(WIDTH, HEIGHT, "bench", null, null) orelse return error.WindowFailed;
+    var win = platform.c.glfwCreateWindow(WIDTH, HEIGHT, "bench", null, null);
+    if (win == null) {
+        platform.c.glfwWindowHint(platform.c.GLFW_CONTEXT_VERSION_MAJOR, 3);
+        platform.c.glfwWindowHint(platform.c.GLFW_CONTEXT_VERSION_MINOR, 3);
+        platform.c.glfwWindowHint(platform.c.GLFW_VISIBLE, platform.c.GLFW_FALSE);
+        win = platform.c.glfwCreateWindow(WIDTH, HEIGHT, "bench", null, null);
+    }
+    if (win == null) return error.WindowFailed;
     platform.c.glfwMakeContextCurrent(win);
     defer platform.c.glfwDestroyWindow(win);
     defer platform.c.glfwTerminate();
@@ -327,15 +334,17 @@ pub fn main() !void {
     const setup_us = @as(f64, @floatFromInt(nowNs() - t_setup)) / 1000.0;
 
     const hb_str = if (build_options.enable_harfbuzz) "ON" else "OFF";
+    const pipeline = @import("render/pipeline.zig");
     std.debug.print(
         \\
-        \\=== snail end-to-end rendering ({d}x{d}, {d} frames/test, HarfBuzz: {s}) ===
+        \\=== snail end-to-end rendering ===
+        \\  Backend: {s} | HarfBuzz: {s} | {d}x{d} | {d} frames/test
         \\  Setup (4 fonts + atlases + texture array): {d:.0} us
         \\
         \\  "static" = pre-built vertex buffer, draw only (game HUD, menus)
         \\  "dynamic" = rebuild vertices + draw every frame (chat, editor, debug)
         \\
-    , .{ WIDTH, HEIGHT, FRAMES, hb_str, setup_us });
+    , .{ pipeline.getBackendName(), hb_str, WIDTH, HEIGHT, FRAMES, setup_us });
 
     // ── Latin scenarios ──
     std.debug.print("  --- Latin (built-in shaper{s}) ---\n", .{

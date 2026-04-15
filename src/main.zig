@@ -101,8 +101,9 @@ pub fn main() !void {
     var fps_display: f32 = 0;
 
     std.debug.print("snail \xe2\x80\x94 GPU B\xc3\xa9zier font rendering\n", .{});
-    std.debug.print("{} glyphs (Latin), HarfBuzz: {s}\n", .{
+    std.debug.print("{} glyphs (Latin), Backend: {s}, HarfBuzz: {s}\n", .{
         atlas.glyph_map.count(),
+        renderer.backendName(),
         if (build_options.enable_harfbuzz) "ON" else "OFF",
     });
     std.debug.print("Keys: Z/X zoom, R rotate, S stress, L subpixel, Esc quit\n", .{});

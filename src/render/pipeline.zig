@@ -7,6 +7,30 @@ const vec = @import("../math/vec.zig");
 const Mat4 = vec.Mat4;
 const snail_mod = @import("../snail.zig");
 
+// ── Backend selection ──
+
+pub const Backend = enum { gl33, gl44 };
+var backend: Backend = .gl33;
+
+pub fn getBackendName() []const u8 {
+    return switch (backend) {
+        .gl33 => "GL 3.3",
+        .gl44 => "GL 4.4 (persistent mapped)",
+    };
+}
+
+fn detectBackend() Backend {
+    const ver = gl.glGetString(gl.GL_VERSION) orelse return .gl33;
+    if (ver[0] < '0' or ver[0] > '9') return .gl33;
+    if (ver[2] < '0' or ver[2] > '9') return .gl33;
+    const major = ver[0] - '0';
+    const minor = ver[2] - '0';
+    if (major > 4 or (major == 4 and minor >= 4)) return .gl44;
+    return .gl33;
+}
+
+// ── Shared state ──
+
 var program: gl.GLuint = 0;
 var program_subpixel: gl.GLuint = 0;
 var mvp_loc: gl.GLint = -1;
@@ -31,17 +55,28 @@ pub const FillRule = enum(c_int) {
 var vao: gl.GLuint = 0;
 var vbo: gl.GLuint = 0;
 var ebo: gl.GLuint = 0;
-var ebo_glyph_capacity: u32 = 0; // how many glyphs the EBO can handle
+var ebo_glyph_capacity: u32 = 0;
 
-// Texture array handles
 var curve_array: gl.GLuint = 0;
 var band_array: gl.GLuint = 0;
 
-// State tracking
 var active_program: gl.GLuint = 0;
 var frame_begun: bool = false;
 
+// ── GL 4.4 persistent mapping state ──
+
+const RING_SEGMENTS = 3;
+const RING_TOTAL_BYTES = 4 * 1024 * 1024; // 4 MB (~50k glyphs)
+const RING_SEGMENT_BYTES = RING_TOTAL_BYTES / RING_SEGMENTS;
+
+var persistent_map: ?[*]u8 = null;
+var ring_fences: [RING_SEGMENTS]gl.GLsync = .{null} ** RING_SEGMENTS;
+var ring_segment: u32 = 0;
+
+// ── Init / Deinit ──
+
 pub fn init() !void {
+    // Compile shaders (shared between backends)
     program = try linkProgram(shaders.vertex_shader, shaders.fragment_shader);
     mvp_loc = gl.glGetUniformLocation(program, "u_mvp");
     viewport_loc = gl.glGetUniformLocation(program, "u_viewport");
@@ -56,34 +91,92 @@ pub fn init() !void {
     sp_band_tex_loc = gl.glGetUniformLocation(program_subpixel, "u_band_tex");
     sp_fill_rule_loc = gl.glGetUniformLocation(program_subpixel, "u_fill_rule");
 
+    backend = detectBackend();
+
+    switch (backend) {
+        .gl33 => initGl33(),
+        .gl44 => initGl44(),
+    }
+
+    gl.glEnable(gl.GL_BLEND);
+    gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA);
+}
+
+fn initGl33() void {
     gl.glGenVertexArrays(1, &vao);
     gl.glGenBuffers(1, &vbo);
     gl.glGenBuffers(1, &ebo);
     gl.glBindVertexArray(vao);
     gl.glBindBuffer(gl.GL_ARRAY_BUFFER, vbo);
     gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, ebo);
-
-    // Pre-build index buffer for 10000 quads
     ensureEboCapacity(10000);
+    setupVertexAttribs();
+}
 
+fn initGl44() void {
+    // DSA: create VAO, VBO, EBO without binding
+    gl.glCreateVertexArrays(1, &vao);
+    gl.glCreateBuffers(1, &vbo);
+    gl.glCreateBuffers(1, &ebo);
+
+    // Persistent mapped VBO
+    const flags: gl.GLbitfield = gl.GL_MAP_WRITE_BIT | gl.GL_MAP_PERSISTENT_BIT | gl.GL_MAP_COHERENT_BIT;
+    gl.glNamedBufferStorage(vbo, RING_TOTAL_BYTES, null, flags);
+    persistent_map = @ptrCast(gl.glMapNamedBufferRange(vbo, 0, RING_TOTAL_BYTES, flags));
+
+    if (persistent_map == null) {
+        // Fallback to GL 3.3 if mapping fails
+        std.debug.print("snail: persistent mapping failed, falling back to GL 3.3\n", .{});
+        gl.glDeleteVertexArrays(1, &vao);
+        gl.glDeleteBuffers(1, &vbo);
+        gl.glDeleteBuffers(1, &ebo);
+        backend = .gl33;
+        initGl33();
+        return;
+    }
+
+    // DSA vertex attribs
+    const stride: gl.GLint = vertex.FLOATS_PER_VERTEX * @sizeOf(f32);
+    gl.glVertexArrayVertexBuffer(vao, 0, vbo, 0, stride);
+    gl.glVertexArrayElementBuffer(vao, ebo);
+
+    inline for (0..5) |i| {
+        const loc: u32 = @intCast(i);
+        gl.glEnableVertexArrayAttrib(vao, loc);
+        gl.glVertexArrayAttribFormat(vao, loc, 4, gl.GL_FLOAT, gl.GL_FALSE, @intCast(i * 4 * @sizeOf(f32)));
+        gl.glVertexArrayAttribBinding(vao, loc, 0);
+    }
+
+    // EBO (static data, not persistently mapped)
+    gl.glBindVertexArray(vao);
+    gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, ebo);
+    ensureEboCapacity(10000);
+}
+
+fn setupVertexAttribs() void {
     const stride: gl.GLsizei = vertex.FLOATS_PER_VERTEX * @sizeOf(f32);
-
-    gl.glVertexAttribPointer(0, 4, gl.GL_FLOAT, gl.GL_FALSE, stride, @ptrFromInt(0));
-    gl.glEnableVertexAttribArray(0);
-    gl.glVertexAttribPointer(1, 4, gl.GL_FLOAT, gl.GL_FALSE, stride, @ptrFromInt(4 * @sizeOf(f32)));
-    gl.glEnableVertexAttribArray(1);
-    gl.glVertexAttribPointer(2, 4, gl.GL_FLOAT, gl.GL_FALSE, stride, @ptrFromInt(8 * @sizeOf(f32)));
-    gl.glEnableVertexAttribArray(2);
-    gl.glVertexAttribPointer(3, 4, gl.GL_FLOAT, gl.GL_FALSE, stride, @ptrFromInt(12 * @sizeOf(f32)));
-    gl.glEnableVertexAttribArray(3);
-    gl.glVertexAttribPointer(4, 4, gl.GL_FLOAT, gl.GL_FALSE, stride, @ptrFromInt(16 * @sizeOf(f32)));
-    gl.glEnableVertexAttribArray(4);
-
-    gl.glEnable(gl.GL_BLEND);
-    gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA);
+    inline for (0..5) |i| {
+        gl.glVertexAttribPointer(@intCast(i), 4, gl.GL_FLOAT, gl.GL_FALSE, stride, @ptrFromInt(i * 4 * @sizeOf(f32)));
+        gl.glEnableVertexAttribArray(@intCast(i));
+    }
 }
 
 pub fn deinit() void {
+    if (backend == .gl44) {
+        // Delete fences
+        for (&ring_fences) |*f| {
+            if (f.*) |fence| {
+                gl.glDeleteSync(fence);
+                f.* = null;
+            }
+        }
+        // Unmap persistent buffer
+        if (persistent_map != null) {
+            _ = gl.glUnmapNamedBuffer(vbo);
+            persistent_map = null;
+        }
+    }
+
     if (program != 0) gl.glDeleteProgram(program);
     if (program_subpixel != 0) gl.glDeleteProgram(program_subpixel);
     if (vao != 0) gl.glDeleteVertexArrays(1, &vao);
@@ -93,16 +186,13 @@ pub fn deinit() void {
     if (band_array != 0) gl.glDeleteTextures(1, &band_array);
 }
 
-/// Build GL_TEXTURE_2D_ARRAY for curve and band data from multiple atlases.
-/// Each atlas becomes one layer. Assigns gl_layer on each atlas.
+// ── Texture array management ──
+
 pub fn buildTextureArrays(atlases: []const *const snail_mod.Atlas) void {
-    // Delete old arrays
     if (curve_array != 0) gl.glDeleteTextures(1, &curve_array);
     if (band_array != 0) gl.glDeleteTextures(1, &band_array);
 
     const layer_count: gl.GLsizei = @intCast(atlases.len);
-
-    // Find max dimensions (width is always 4096, height varies)
     var max_curve_h: u32 = 1;
     var max_band_h: u32 = 1;
     for (atlases) |a| {
@@ -110,116 +200,102 @@ pub fn buildTextureArrays(atlases: []const *const snail_mod.Atlas) void {
         if (a.band_height > max_band_h) max_band_h = a.band_height;
     }
 
-    // Create curve texture array (RGBA16F)
-    gl.glGenTextures(1, &curve_array);
-    gl.glActiveTexture(gl.GL_TEXTURE0);
-    gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, curve_array);
-    gl.glTexImage3D(
-        gl.GL_TEXTURE_2D_ARRAY,
-        0,
-        gl.GL_RGBA16F,
-        @intCast(atlases[0].curve_width),
-        @intCast(max_curve_h),
-        layer_count,
-        0,
-        gl.GL_RGBA,
-        gl.GL_HALF_FLOAT,
-        null, // allocate only
-    );
-    gl.glTexParameteri(gl.GL_TEXTURE_2D_ARRAY, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST);
-    gl.glTexParameteri(gl.GL_TEXTURE_2D_ARRAY, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST);
-    gl.glTexParameteri(gl.GL_TEXTURE_2D_ARRAY, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE);
-    gl.glTexParameteri(gl.GL_TEXTURE_2D_ARRAY, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE);
-
-    // Create band texture array (RG16UI)
-    gl.glGenTextures(1, &band_array);
-    gl.glActiveTexture(gl.GL_TEXTURE1);
-    gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, band_array);
-    gl.glTexImage3D(
-        gl.GL_TEXTURE_2D_ARRAY,
-        0,
-        gl.GL_RG16UI,
-        @intCast(atlases[0].band_width),
-        @intCast(max_band_h),
-        layer_count,
-        0,
-        gl.GL_RG_INTEGER,
-        gl.GL_UNSIGNED_SHORT,
-        null,
-    );
-    gl.glTexParameteri(gl.GL_TEXTURE_2D_ARRAY, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST);
-    gl.glTexParameteri(gl.GL_TEXTURE_2D_ARRAY, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST);
-    gl.glTexParameteri(gl.GL_TEXTURE_2D_ARRAY, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE);
-    gl.glTexParameteri(gl.GL_TEXTURE_2D_ARRAY, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE);
-
-    // Upload each atlas as a layer
-    for (atlases, 0..) |atlas, i| {
-        const a = @constCast(atlas);
-        a.gl_layer = @intCast(i);
-
-        // Upload curve data into layer i
-        gl.glActiveTexture(gl.GL_TEXTURE0);
-        gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, curve_array);
-        gl.glTexSubImage3D(
-            gl.GL_TEXTURE_2D_ARRAY,
-            0,
-            0, 0, @intCast(i), // x, y, layer offsets
-            @intCast(atlas.curve_width),
-            @intCast(atlas.curve_height),
-            1, // one layer
-            gl.GL_RGBA,
-            gl.GL_HALF_FLOAT,
-            atlas.curve_data.ptr,
-        );
-
-        // Upload band data into layer i
-        gl.glActiveTexture(gl.GL_TEXTURE1);
-        gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, band_array);
-        gl.glTexSubImage3D(
-            gl.GL_TEXTURE_2D_ARRAY,
-            0,
-            0, 0, @intCast(i),
-            @intCast(atlas.band_width),
-            @intCast(atlas.band_height),
-            1,
-            gl.GL_RG_INTEGER,
-            gl.GL_UNSIGNED_SHORT,
-            atlas.band_data.ptr,
-        );
+    switch (backend) {
+        .gl33 => buildTextureArraysGl33(atlases, layer_count, max_curve_h, max_band_h),
+        .gl44 => buildTextureArraysGl44(atlases, layer_count, max_curve_h, max_band_h),
     }
 
-    // Reset state
     active_program = 0;
     frame_begun = false;
 }
 
-pub fn deleteTexture(tex: *gl.GLuint) void {
-    if (tex.* != 0) {
-        gl.glDeleteTextures(1, tex);
-        tex.* = 0;
+fn buildTextureArraysGl33(atlases: []const *const snail_mod.Atlas, layer_count: gl.GLsizei, max_curve_h: u32, max_band_h: u32) void {
+    // Curve array
+    gl.glGenTextures(1, &curve_array);
+    gl.glActiveTexture(gl.GL_TEXTURE0);
+    gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, curve_array);
+    gl.glTexImage3D(gl.GL_TEXTURE_2D_ARRAY, 0, gl.GL_RGBA16F,
+        @intCast(atlases[0].curve_width), @intCast(max_curve_h), layer_count,
+        0, gl.GL_RGBA, gl.GL_HALF_FLOAT, null);
+    setTexParams(gl.GL_TEXTURE_2D_ARRAY);
+
+    // Band array
+    gl.glGenTextures(1, &band_array);
+    gl.glActiveTexture(gl.GL_TEXTURE1);
+    gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, band_array);
+    gl.glTexImage3D(gl.GL_TEXTURE_2D_ARRAY, 0, gl.GL_RG16UI,
+        @intCast(atlases[0].band_width), @intCast(max_band_h), layer_count,
+        0, gl.GL_RG_INTEGER, gl.GL_UNSIGNED_SHORT, null);
+    setTexParams(gl.GL_TEXTURE_2D_ARRAY);
+
+    // Upload layers
+    for (atlases, 0..) |atlas, i| {
+        @constCast(atlas).gl_layer = @intCast(i);
+        gl.glActiveTexture(gl.GL_TEXTURE0);
+        gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, curve_array);
+        gl.glTexSubImage3D(gl.GL_TEXTURE_2D_ARRAY, 0, 0, 0, @intCast(i),
+            @intCast(atlas.curve_width), @intCast(atlas.curve_height), 1,
+            gl.GL_RGBA, gl.GL_HALF_FLOAT, atlas.curve_data.ptr);
+        gl.glActiveTexture(gl.GL_TEXTURE1);
+        gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, band_array);
+        gl.glTexSubImage3D(gl.GL_TEXTURE_2D_ARRAY, 0, 0, 0, @intCast(i),
+            @intCast(atlas.band_width), @intCast(atlas.band_height), 1,
+            gl.GL_RG_INTEGER, gl.GL_UNSIGNED_SHORT, atlas.band_data.ptr);
     }
 }
 
-// Legacy single-texture APIs (used by C API for backward compat)
-pub fn createCurveTexture(data: []const u16, width: u32, height: u32) gl.GLuint {
-    _ = data;
-    _ = width;
-    _ = height;
-    return 0; // No-op — use buildTextureArrays
+fn buildTextureArraysGl44(atlases: []const *const snail_mod.Atlas, layer_count: gl.GLsizei, max_curve_h: u32, max_band_h: u32) void {
+    // DSA texture creation
+    gl.glCreateTextures(gl.GL_TEXTURE_2D_ARRAY, 1, &curve_array);
+    gl.glTextureStorage3D(curve_array, 1, gl.GL_RGBA16F,
+        @intCast(atlases[0].curve_width), @intCast(max_curve_h), layer_count);
+    setTexParamsDSA(curve_array);
+
+    gl.glCreateTextures(gl.GL_TEXTURE_2D_ARRAY, 1, &band_array);
+    gl.glTextureStorage3D(band_array, 1, gl.GL_RG16UI,
+        @intCast(atlases[0].band_width), @intCast(max_band_h), layer_count);
+    setTexParamsDSA(band_array);
+
+    // Upload layers via DSA
+    for (atlases, 0..) |atlas, i| {
+        @constCast(atlas).gl_layer = @intCast(i);
+        gl.glTextureSubImage3D(curve_array, 0, 0, 0, @intCast(i),
+            @intCast(atlas.curve_width), @intCast(atlas.curve_height), 1,
+            gl.GL_RGBA, gl.GL_HALF_FLOAT, atlas.curve_data.ptr);
+        gl.glTextureSubImage3D(band_array, 0, 0, 0, @intCast(i),
+            @intCast(atlas.band_width), @intCast(atlas.band_height), 1,
+            gl.GL_RG_INTEGER, gl.GL_UNSIGNED_SHORT, atlas.band_data.ptr);
+    }
+
+    // Bind to texture units via DSA
+    gl.glBindTextureUnit(0, curve_array);
+    gl.glBindTextureUnit(1, band_array);
 }
 
-pub fn createBandTexture(data: []const u16, width: u32, height: u32) gl.GLuint {
-    _ = data;
-    _ = width;
-    _ = height;
-    return 0;
+fn setTexParams(target: gl.GLenum) void {
+    gl.glTexParameteri(target, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST);
+    gl.glTexParameteri(target, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST);
+    gl.glTexParameteri(target, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE);
+    gl.glTexParameteri(target, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE);
 }
 
-pub fn bindTextures(curve: gl.GLuint, band: gl.GLuint) void {
-    _ = curve;
-    _ = band;
-    // No-op — texture arrays are always bound
+fn setTexParamsDSA(tex: gl.GLuint) void {
+    gl.glTextureParameteri(tex, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST);
+    gl.glTextureParameteri(tex, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST);
+    gl.glTextureParameteri(tex, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE);
+    gl.glTextureParameteri(tex, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE);
 }
+
+// ── Legacy API stubs ──
+
+pub fn deleteTexture(tex: *gl.GLuint) void {
+    if (tex.* != 0) { gl.glDeleteTextures(1, tex); tex.* = 0; }
+}
+pub fn createCurveTexture(_: []const u16, _: u32, _: u32) gl.GLuint { return 0; }
+pub fn createBandTexture(_: []const u16, _: u32, _: u32) gl.GLuint { return 0; }
+pub fn bindTextures(_: gl.GLuint, _: gl.GLuint) void {}
+
+// ── Draw ──
 
 pub fn drawText(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
     const prog = if (subpixel_enabled) program_subpixel else program;
@@ -228,11 +304,15 @@ pub fn drawText(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f
         gl.glUseProgram(prog);
         active_program = prog;
 
-        // Bind texture arrays
-        gl.glActiveTexture(gl.GL_TEXTURE0);
-        gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, curve_array);
-        gl.glActiveTexture(gl.GL_TEXTURE1);
-        gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, band_array);
+        if (backend == .gl44) {
+            gl.glBindTextureUnit(0, curve_array);
+            gl.glBindTextureUnit(1, band_array);
+        } else {
+            gl.glActiveTexture(gl.GL_TEXTURE0);
+            gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, curve_array);
+            gl.glActiveTexture(gl.GL_TEXTURE1);
+            gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, band_array);
+        }
 
         const u_ct = if (subpixel_enabled) sp_curve_tex_loc else curve_tex_loc;
         const u_bt = if (subpixel_enabled) sp_band_tex_loc else band_tex_loc;
@@ -248,33 +328,64 @@ pub fn drawText(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f
     gl.glUniform2f(u_vp, viewport_w, viewport_h);
     gl.glUniform1i(u_fr, @intFromEnum(fill_rule));
 
-    gl.glBufferData(
-        gl.GL_ARRAY_BUFFER,
-        @intCast(vertices.len * @sizeOf(f32)),
-        vertices.ptr,
-        gl.GL_STREAM_DRAW,
-    );
+    const byte_size = vertices.len * @sizeOf(f32);
+
+    switch (backend) {
+        .gl33 => {
+            gl.glBufferData(gl.GL_ARRAY_BUFFER, @intCast(byte_size), vertices.ptr, gl.GL_STREAM_DRAW);
+        },
+        .gl44 => {
+            const offset = @as(usize, ring_segment) * RING_SEGMENT_BYTES;
+
+            // Wait for this segment's fence (from RING_SEGMENTS frames ago — should be done)
+            if (ring_fences[ring_segment]) |fence| {
+                const status = gl.glClientWaitSync(fence, 0, 0);
+                if (status != gl.GL_ALREADY_SIGNALED and status != gl.GL_CONDITION_SATISFIED) {
+                    // Rare: GPU still using this segment, must wait
+                    _ = gl.glClientWaitSync(fence, gl.GL_SYNC_FLUSH_COMMANDS_BIT, 1_000_000_000);
+                }
+                gl.glDeleteSync(fence);
+                ring_fences[ring_segment] = null;
+            }
+
+            // Copy into persistent map
+            if (byte_size <= RING_SEGMENT_BYTES) {
+                const dst = persistent_map.?[offset..][0..byte_size];
+                const src: [*]const u8 = @ptrCast(vertices.ptr);
+                @memcpy(dst, src[0..byte_size]);
+            } else {
+                // Overflow: rare, use subdata
+                gl.glNamedBufferSubData(vbo, 0, @intCast(byte_size), vertices.ptr);
+            }
+
+            // Point VAO to this segment's offset
+            const stride: gl.GLint = vertex.FLOATS_PER_VERTEX * @sizeOf(f32);
+            if (byte_size <= RING_SEGMENT_BYTES) {
+                gl.glVertexArrayVertexBuffer(vao, 0, vbo, @intCast(offset), stride);
+            } else {
+                gl.glVertexArrayVertexBuffer(vao, 0, vbo, 0, stride);
+            }
+        },
+    }
 
     const glyph_count = vertices.len / (vertex.FLOATS_PER_VERTEX * vertex.VERTICES_PER_GLYPH);
     ensureEboCapacity(@intCast(glyph_count));
     const index_count: gl.GLsizei = @intCast(glyph_count * 6);
     gl.glDrawElements(gl.GL_TRIANGLES, index_count, gl.GL_UNSIGNED_INT, null);
+
+    if (backend == .gl44) {
+        ring_fences[ring_segment] = gl.glFenceSync(gl.GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        ring_segment = (ring_segment + 1) % RING_SEGMENTS;
+    }
 }
 
-/// Ensure the EBO has indices for at least `glyph_count` quads.
 fn ensureEboCapacity(glyph_count: u32) void {
     if (glyph_count <= ebo_glyph_capacity) return;
-
-    // Grow to at least requested, with some headroom
     const target = @max(glyph_count, ebo_glyph_capacity * 2);
     const index_count = target * 6;
 
-    // Build index data on stack for reasonable sizes, heap otherwise
     var stack_buf: [60000]u32 = undefined;
-    const indices: []u32 = if (index_count <= stack_buf.len)
-        stack_buf[0..index_count]
-    else
-        return; // 10000 glyphs should be enough; don't allocate
+    const indices: []u32 = if (index_count <= stack_buf.len) stack_buf[0..index_count] else return;
 
     for (0..target) |i| {
         const base: u32 = @intCast(i * 4);
@@ -287,18 +398,15 @@ fn ensureEboCapacity(glyph_count: u32) void {
         indices[idx + 5] = base + 3;
     }
 
-    gl.glBufferData(
-        gl.GL_ELEMENT_ARRAY_BUFFER,
-        @intCast(index_count * @sizeOf(u32)),
-        indices.ptr,
-        gl.GL_STATIC_DRAW,
-    );
+    gl.glBufferData(gl.GL_ELEMENT_ARRAY_BUFFER, @intCast(index_count * @sizeOf(u32)), indices.ptr, gl.GL_STATIC_DRAW);
     ebo_glyph_capacity = target;
 }
 
 pub fn resetFrameState() void {
     frame_begun = false;
 }
+
+// ── Shader compilation ──
 
 fn compileShader(shader_type: gl.GLenum, source: [*c]const u8) ?gl.GLuint {
     const shader = gl.glCreateShader(shader_type);
@@ -311,9 +419,7 @@ fn compileShader(shader_type: gl.GLenum, source: [*c]const u8) ?gl.GLuint {
         var buf: [4096]u8 = undefined;
         var len: gl.GLsizei = 0;
         gl.glGetShaderInfoLog(shader, 4096, &len, &buf);
-        if (len > 0) {
-            std.debug.print("Shader compile error:\n{s}\n", .{buf[0..@intCast(len)]});
-        }
+        if (len > 0) std.debug.print("Shader compile error:\n{s}\n", .{buf[0..@intCast(len)]});
         gl.glDeleteShader(shader);
         return null;
     }
@@ -337,9 +443,7 @@ fn linkProgram(vs_src: [*c]const u8, fs_src: [*c]const u8) !gl.GLuint {
         var buf: [4096]u8 = undefined;
         var len: gl.GLsizei = 0;
         gl.glGetProgramInfoLog(prog, 4096, &len, &buf);
-        if (len > 0) {
-            std.debug.print("Shader link error:\n{s}\n", .{buf[0..@intCast(len)]});
-        }
+        if (len > 0) std.debug.print("Shader link error:\n{s}\n", .{buf[0..@intCast(len)]});
         return error.ShaderLinkFailed;
     }
     return prog;
