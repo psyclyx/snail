@@ -166,6 +166,13 @@ pub fn detectCurrentMonitorSubpixelOrder(base: SubpixelOrder) SubpixelOrder {
         if (cx >= mx and cx < mx + mode[0].width and
             cy >= my and cy < my + mode[0].height)
         {
+            // On HiDPI displays (content scale > 1), subpixel rendering is
+            // unnecessary and can cause color fringing — default to grayscale AA.
+            var xscale: f32 = 1.0;
+            var yscale: f32 = 1.0;
+            c.glfwGetMonitorContentScale(m, &xscale, &yscale);
+            if (xscale > 1.0 or yscale > 1.0) return .none;
+
             var pw: c_int = 0;
             var ph: c_int = 0;
             c.glfwGetMonitorPhysicalSize(m, &pw, &ph);

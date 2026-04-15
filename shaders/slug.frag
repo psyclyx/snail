@@ -137,8 +137,8 @@ void main() {
             vec4 color = texelFetch(u_layer_tex, loc + ivec2(2, 0), 0);
             if (color.r < 0.0) color = v_color;
             ivec2 lGLoc = ivec2(info.xy);
-            int bandMaxH = int(info.z) & 0xFFFF;
-            int bandMaxV = (int(info.z) >> 16) & 0xFFFF;
+            int bandMaxH = floatBitsToInt(info.z) & 0xFFFF;
+            int bandMaxV = (floatBitsToInt(info.z) >> 16) & 0xFFFF;
             int texLayer = int(info.w);
             float cov = evalGlyphCoverage(rc, epp, ppe, lGLoc,
                                           ivec2(bandMaxH, bandMaxV), band, texLayer);
