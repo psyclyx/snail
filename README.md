@@ -19,43 +19,31 @@ The Slug patent (US 10,373,352) was [dedicated to the public domain](https://ter
 
 ## Build
 
-### Arch Linux
+```sh
+zig build run                       # interactive demo (OpenGL)
+zig build run -Dvulkan=true         # Vulkan backend
+zig build run -Dharfbuzz=true       # full OpenType shaping (Arabic, Devanagari, Thai…)
+zig build test                      # unit tests
+zig build bench                     # GPU frame-time benchmarks
+zig build install --release=fast    # install libsnail + header to zig-out/
+```
+
+Requires [Zig 0.16](https://ziglang.org/download/), GLFW, OpenGL, Vulkan loader + headers, shaderc, and pkg-config.
+
+**Nix** — reproducible dev shell with all dependencies:
+
+```sh
+nix develop        # flake dev shell (all deps)
+nix build .#lib    # build libsnail + header
+nix build .#demo   # build snail-demo
+
+nix-shell          # legacy (non-flake) dev shell
+```
+
+**Arch Linux** — install as a system package:
 
 ```sh
 cd pkg/arch && makepkg -si
-```
-
-Installs `libsnail.so`, `libsnail.a`, and `snail.h`.
-
-### Manual
-
-Install dependencies:
-
-| Package | Arch | Ubuntu/Debian |
-|---------|------|---------------|
-| Zig 0.16 | [ziglang.org/download](https://ziglang.org/download/) | same |
-| GLFW | `glfw` | `libglfw3-dev` |
-| OpenGL | `libgl` | `libgl-dev` |
-| Vulkan loader | `vulkan-icd-loader` | `libvulkan-dev` |
-| Vulkan headers | `vulkan-headers` | `libvulkan-dev` |
-| GLSL compiler | `shaderc` | `glslang-tools` |
-| pkg-config | `pkg-config` | `pkg-config` |
-
-```sh
-zig build --release=fast          # build library + demo
-zig build run                     # interactive demo
-zig build test                    # unit tests
-zig build bench                   # benchmarks
-zig build -Dprofile=true          # enable profiling instrumentation
-zig build -Dharfbuzz=true         # enable HarfBuzz text shaping (+ install harfbuzz dev package)
-zig build valgrind                # run tests under valgrind
-```
-
-### Nix
-
-```sh
-nix-shell                         # enters shell with all deps
-zig build run
 ```
 
 Demo controls: `Z`/`X` zoom, `R` rotate, `S` stress test, `L` cycle subpixel order (none → RGB → BGR → VRGB → VBGR).
