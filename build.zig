@@ -135,6 +135,27 @@ pub fn build(b: *std.Build) void {
     const bench_step = b.step("bench", "Run benchmarks");
     bench_step.dependOn(&run_bench.step);
 
+    // ── Benchmark suite (consolidated) ──
+    const bench_suite_module = b.createModule(.{
+        .root_source_file = b.path("src/bench_suite.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .link_libc = true,
+        .imports = &.{.{ .name = "assets", .module = assets_mod }},
+    });
+    bench_suite_module.addOptions("build_options", options);
+    bench_suite_module.linkSystemLibrary("glfw3", .{});
+    bench_suite_module.linkSystemLibrary("gl", .{});
+    bench_suite_module.linkSystemLibrary("freetype2", .{});
+    if (enable_harfbuzz) bench_suite_module.linkSystemLibrary("harfbuzz", .{});
+
+    const bench_suite_exe = b.addExecutable(.{ .name = "snail-bench-suite", .root_module = bench_suite_module });
+    b.installArtifact(bench_suite_exe);
+    const run_bench_suite = b.addRunArtifact(bench_suite_exe);
+    run_bench_suite.step.dependOn(b.getInstallStep());
+    const bench_suite_step = b.step("bench-suite", "Run consolidated benchmark suite");
+    bench_suite_step.dependOn(&run_bench_suite.step);
+
     // ── Valgrind ──
     const valgrind_step = b.step("valgrind", "Run tests under valgrind (memory checking)");
     const valgrind = b.addSystemCommand(&.{
