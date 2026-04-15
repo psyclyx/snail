@@ -72,18 +72,18 @@ pub fn deinit() void {
     if (band_texture != 0) gl.glDeleteTextures(1, &band_texture);
 }
 
-pub fn uploadCurveTexture(data: []const f32, width: u32, height: u32) void {
+pub fn uploadCurveTexture(data: []const u16, width: u32, height: u32) void {
     if (curve_texture == 0) gl.glGenTextures(1, &curve_texture);
     gl.glBindTexture(gl.GL_TEXTURE_2D, curve_texture);
     gl.glTexImage2D(
         gl.GL_TEXTURE_2D,
         0,
-        gl.GL_RGBA32F,
+        gl.GL_RGBA16F,
         @intCast(width),
         @intCast(height),
         0,
         gl.GL_RGBA,
-        gl.GL_FLOAT,
+        gl.GL_HALF_FLOAT,
         data.ptr,
     );
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST);

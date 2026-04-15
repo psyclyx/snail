@@ -67,7 +67,7 @@ pub const Atlas = struct {
     font: *const Font,
 
     // GPU texture data (CPU-side, ready for upload)
-    curve_data: []f32,
+    curve_data: []u16,
     curve_width: u32,
     curve_height: u32,
     band_data: []u16,
