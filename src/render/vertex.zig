@@ -9,10 +9,11 @@ const curve_tex = @import("curve_texture.zig");
 /// Per-vertex data: 5 vec4s = 20 floats per vertex
 pub const FLOATS_PER_VERTEX: usize = 20;
 
-/// Per-glyph quad = 6 vertices (2 triangles)
-pub const VERTICES_PER_GLYPH: usize = 6;
+/// Per-glyph quad = 4 unique vertices (indexed drawing, 6 indices)
+pub const VERTICES_PER_GLYPH: usize = 4;
 
-/// Generate vertex data for a glyph quad.
+/// Generate vertex data for a glyph quad (4 corners).
+/// Paired with an index buffer (0,1,2, 0,2,3 per quad) for drawing.
 /// Each vertex has 5 vec4 attributes:
 ///   pos: (x, y, nx, ny)        — object-space position + normal for dilation
 ///   tex: (em_x, em_y, gz, gw)  — em-space coords + packed glyph data
@@ -41,7 +42,7 @@ pub fn generateGlyphVertices(
     const em_x1 = bbox.max.x;
     const em_y1 = bbox.max.y;
 
-    // Pack glyph location into tex.z as uint bits in a float
+    // Pack glyph location into tex.zw as uint bits in float
     const gz: u32 = @as(u32, band_entry.glyph_x) | (@as(u32, band_entry.glyph_y) << 16);
     // Pack: bits 0-15 = h_band_count-1, bits 16-23 = v_band_count-1, bits 24-31 = atlas layer
     const gw: u32 = @as(u32, band_entry.h_band_count - 1) |
@@ -52,56 +53,36 @@ pub fn generateGlyphVertices(
     const gw_f: f32 = @bitCast(gw);
 
     // Inverse Jacobian: maps object-space displacement to em-space
-    // For axis-aligned rendering: j = (1/font_size, 0, 0, 1/font_size)
     const inv_scale = 1.0 / font_size;
-    const j00 = inv_scale;
-    const j01: f32 = 0;
-    const j10: f32 = 0;
-    const j11 = inv_scale;
 
-    // Band transform
-    const bnd = [4]f32{
-        band_entry.band_scale_x,
-        band_entry.band_scale_y,
-        band_entry.band_offset_x,
-        band_entry.band_offset_y,
+    // Write 4 corners: BL, BR, TR, TL
+    // Index buffer provides: 0,1,2, 0,2,3 (two triangles)
+    const corners = [4]struct { px: f32, py: f32, nx: f32, ny: f32, ex: f32, ey: f32 }{
+        .{ .px = x0, .py = y0, .nx = -1, .ny = -1, .ex = em_x0, .ey = em_y0 },
+        .{ .px = x1, .py = y0, .nx = 1, .ny = -1, .ex = em_x1, .ey = em_y0 },
+        .{ .px = x1, .py = y1, .nx = 1, .ny = 1, .ex = em_x1, .ey = em_y1 },
+        .{ .px = x0, .py = y1, .nx = -1, .ny = 1, .ex = em_x0, .ey = em_y1 },
     };
 
-    // Corner normals (pointing outward from quad center for dilation)
-    const corners = [4]struct { x: f32, y: f32, nx: f32, ny: f32, em_x: f32, em_y: f32 }{
-        .{ .x = x0, .y = y0, .nx = -1, .ny = -1, .em_x = em_x0, .em_y = em_y0 }, // bottom-left
-        .{ .x = x1, .y = y0, .nx = 1, .ny = -1, .em_x = em_x1, .em_y = em_y0 }, // bottom-right
-        .{ .x = x1, .y = y1, .nx = 1, .ny = 1, .em_x = em_x1, .em_y = em_y1 }, // top-right
-        .{ .x = x0, .y = y1, .nx = -1, .ny = 1, .em_x = em_x0, .em_y = em_y1 }, // top-left
-    };
-
-    // Two triangles: 0-1-2, 0-2-3
-    const indices = [6]u8{ 0, 1, 2, 0, 2, 3 };
-
-    for (indices, 0..) |ci, vi| {
-        const c = corners[ci];
+    inline for (0..4) |vi| {
+        const c = corners[vi];
         const base = vi * FLOATS_PER_VERTEX;
-        // pos
-        buf[base + 0] = c.x;
-        buf[base + 1] = c.y;
+        buf[base + 0] = c.px;
+        buf[base + 1] = c.py;
         buf[base + 2] = c.nx;
         buf[base + 3] = c.ny;
-        // tex
-        buf[base + 4] = c.em_x;
-        buf[base + 5] = c.em_y;
+        buf[base + 4] = c.ex;
+        buf[base + 5] = c.ey;
         buf[base + 6] = gz_f;
         buf[base + 7] = gw_f;
-        // jac
-        buf[base + 8] = j00;
-        buf[base + 9] = j01;
-        buf[base + 10] = j10;
-        buf[base + 11] = j11;
-        // bnd
-        buf[base + 12] = bnd[0];
-        buf[base + 13] = bnd[1];
-        buf[base + 14] = bnd[2];
-        buf[base + 15] = bnd[3];
-        // col
+        buf[base + 8] = inv_scale;
+        buf[base + 9] = 0;
+        buf[base + 10] = 0;
+        buf[base + 11] = inv_scale;
+        buf[base + 12] = band_entry.band_scale_x;
+        buf[base + 13] = band_entry.band_scale_y;
+        buf[base + 14] = band_entry.band_offset_x;
+        buf[base + 15] = band_entry.band_offset_y;
         buf[base + 16] = color[0];
         buf[base + 17] = color[1];
         buf[base + 18] = color[2];
@@ -131,12 +112,12 @@ test "vertex generation produces correct count and layout" {
 
     generateGlyphVertices(&buf, 100.0, 200.0, 24.0, bbox, band_entry, color, 0);
 
-    // Check vertex count: 6 vertices * 20 floats
+    // Check: 4 vertices * 20 floats = 80
     const expected_floats = FLOATS_PER_VERTEX * VERTICES_PER_GLYPH;
-    try std.testing.expectEqual(@as(usize, 120), expected_floats);
+    try std.testing.expectEqual(@as(usize, 80), expected_floats);
 
     // First vertex (corner 0 = bottom-left): position
-    const v0_x = 100.0 + 0.0 * 24.0; // x + bbox.min.x * font_size
+    const v0_x = 100.0 + 0.0 * 24.0;
     const v0_y = 200.0 + (-0.2) * 24.0;
     try std.testing.expectApproxEqAbs(v0_x, buf[0], 0.001);
     try std.testing.expectApproxEqAbs(v0_y, buf[1], 0.001);
@@ -146,8 +127,8 @@ test "vertex generation produces correct count and layout" {
     try std.testing.expectApproxEqAbs(@as(f32, -1.0), buf[3], 0.001);
 
     // Em-space coords
-    try std.testing.expectApproxEqAbs(@as(f32, 0.0), buf[4], 0.001); // bbox.min.x
-    try std.testing.expectApproxEqAbs(@as(f32, -0.2), buf[5], 0.001); // bbox.min.y
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), buf[4], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, -0.2), buf[5], 0.001);
 
     // Color (last 4 floats of vertex)
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), buf[16], 0.001);

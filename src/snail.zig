@@ -80,8 +80,10 @@ pub const Atlas = struct {
     band_width: u32,
     band_height: u32,
 
-    // Per-glyph lookup
+    // Per-glyph lookup (dense array indexed by glyph ID for O(1) access)
     glyph_map: std.AutoHashMap(u16, GlyphInfo),
+    glyph_lut: ?[]GlyphInfo = null, // dense lookup: glyph_lut[gid], h_band_count==0 means absent
+    glyph_lut_len: u32 = 0,
 
     // OpenType shaper (ligatures + GPOS kerning)
     shaper: ?opentype.Shaper,
@@ -233,7 +235,7 @@ pub const Atlas = struct {
             harfbuzz.HarfBuzzShaper.init(font.inner.data, font.unitsPerEm()) catch null
         else {};
 
-        return .{
+        var atlas = Atlas{
             .allocator = allocator,
             .font = font,
             .curve_data = result.curve_data,
@@ -246,6 +248,8 @@ pub const Atlas = struct {
             .shaper = shaper,
             .hb_shaper = hb_shaper,
         };
+        try atlas.buildGlyphLut();
+        return atlas;
     }
 
     /// Build atlas from ASCII byte slice (convenience).
@@ -311,6 +315,7 @@ pub const Atlas = struct {
         self.band_width = result.band_width;
         self.band_height = result.band_height;
         self.glyph_map = result.glyph_map;
+        try self.buildGlyphLut();
 
         return true;
     }
@@ -360,11 +365,49 @@ pub const Atlas = struct {
         self.band_width = result.band_width;
         self.band_height = result.band_height;
         self.glyph_map = result.glyph_map;
+        try self.buildGlyphLut();
 
         return true;
     }
 
     /// Invalidate GPU textures (must re-upload after this).
+    /// Build dense lookup table from glyph_map for O(1) glyph access.
+    fn buildGlyphLut(self: *Atlas) !void {
+        if (self.glyph_lut) |lut| self.allocator.free(lut);
+
+        // Find max glyph ID
+        var max_gid: u32 = 0;
+        var it = self.glyph_map.keyIterator();
+        while (it.next()) |k| {
+            if (k.* > max_gid) max_gid = k.*;
+        }
+
+        const size = max_gid + 1;
+        const lut = try self.allocator.alloc(GlyphInfo, size);
+        // Zero-fill (h_band_count == 0 means absent)
+        @memset(lut, std.mem.zeroes(GlyphInfo));
+
+        var map_it = self.glyph_map.iterator();
+        while (map_it.next()) |entry| {
+            lut[entry.key_ptr.*] = entry.value_ptr.*;
+        }
+
+        self.glyph_lut = lut;
+        self.glyph_lut_len = @intCast(size);
+    }
+
+    /// Fast glyph lookup: O(1) array access with HashMap fallback.
+    pub fn getGlyph(self: *const Atlas, gid: u16) ?GlyphInfo {
+        if (self.glyph_lut) |lut| {
+            if (gid < self.glyph_lut_len) {
+                const info = lut[gid];
+                if (info.band_entry.h_band_count > 0) return info;
+            }
+            return null;
+        }
+        return self.glyph_map.get(gid);
+    }
+
     fn invalidateGpuTextures(self: *Atlas) void {
         if (self.gl_curve_texture != 0) {
             pipeline.deleteTexture(&self.gl_curve_texture);
@@ -374,6 +417,7 @@ pub const Atlas = struct {
 
     pub fn deinit(self: *Atlas) void {
         self.invalidateGpuTextures();
+        if (self.glyph_lut) |lut| self.allocator.free(lut);
         if (comptime build_options.enable_harfbuzz) {
             if (self.hb_shaper) |*hbs| hbs.deinit();
         }
@@ -444,7 +488,7 @@ pub const Batch = struct {
     ) usize {
         var count: usize = 0;
         for (glyphs) |sg| {
-            const info = atlas.glyph_map.get(sg.glyph_id) orelse continue;
+            const info = atlas.getGlyph(sg.glyph_id) orelse continue;
             if (info.band_entry.h_band_count > 0 and info.band_entry.v_band_count > 0) {
                 if (!self.addGlyph(x + sg.x_offset, y + sg.y_offset, font_size, info.bbox, info.band_entry, color, atlas.gl_layer)) break;
             }
@@ -470,7 +514,7 @@ pub const Batch = struct {
         // Use HarfBuzz when available (zero-allocation path)
         if (comptime build_options.enable_harfbuzz) {
             if (atlas.hb_shaper) |hbs| {
-                return hbs.shapeAndEmit(text, font_size, x, y, color, &atlas.glyph_map, self, atlas.gl_layer);
+                return hbs.shapeAndEmit(text, font_size, x, y, color, atlas, self, atlas.gl_layer);
             }
         }
 
@@ -514,7 +558,7 @@ pub const Batch = struct {
                 cursor_x += @as(f32, @floatFromInt(kern)) * scale;
             }
 
-            const info = atlas.glyph_map.get(gid) orelse {
+            const info = atlas.getGlyph(gid) orelse {
                 cursor_x += scale * 500;
                 prev_gid = gid;
                 continue;
@@ -626,7 +670,7 @@ pub const Batch = struct {
                 }
                 width += @as(f32, @floatFromInt(kern)) * scale;
             }
-            const info = atlas.glyph_map.get(gid) orelse {
+            const info = atlas.getGlyph(gid) orelse {
                 width += scale * 500;
                 prev_gid = gid;
                 continue;

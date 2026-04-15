@@ -30,6 +30,8 @@ pub const FillRule = enum(c_int) {
 
 var vao: gl.GLuint = 0;
 var vbo: gl.GLuint = 0;
+var ebo: gl.GLuint = 0;
+var ebo_glyph_capacity: u32 = 0; // how many glyphs the EBO can handle
 
 // Texture array handles
 var curve_array: gl.GLuint = 0;
@@ -56,8 +58,13 @@ pub fn init() !void {
 
     gl.glGenVertexArrays(1, &vao);
     gl.glGenBuffers(1, &vbo);
+    gl.glGenBuffers(1, &ebo);
     gl.glBindVertexArray(vao);
     gl.glBindBuffer(gl.GL_ARRAY_BUFFER, vbo);
+    gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, ebo);
+
+    // Pre-build index buffer for 10000 quads
+    ensureEboCapacity(10000);
 
     const stride: gl.GLsizei = vertex.FLOATS_PER_VERTEX * @sizeOf(f32);
 
@@ -81,6 +88,7 @@ pub fn deinit() void {
     if (program_subpixel != 0) gl.glDeleteProgram(program_subpixel);
     if (vao != 0) gl.glDeleteVertexArrays(1, &vao);
     if (vbo != 0) gl.glDeleteBuffers(1, &vbo);
+    if (ebo != 0) gl.glDeleteBuffers(1, &ebo);
     if (curve_array != 0) gl.glDeleteTextures(1, &curve_array);
     if (band_array != 0) gl.glDeleteTextures(1, &band_array);
 }
@@ -247,8 +255,45 @@ pub fn drawText(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f
         gl.GL_STREAM_DRAW,
     );
 
-    const vertex_count: gl.GLsizei = @intCast(vertices.len / vertex.FLOATS_PER_VERTEX);
-    gl.glDrawArrays(gl.GL_TRIANGLES, 0, vertex_count);
+    const glyph_count = vertices.len / (vertex.FLOATS_PER_VERTEX * vertex.VERTICES_PER_GLYPH);
+    ensureEboCapacity(@intCast(glyph_count));
+    const index_count: gl.GLsizei = @intCast(glyph_count * 6);
+    gl.glDrawElements(gl.GL_TRIANGLES, index_count, gl.GL_UNSIGNED_INT, null);
+}
+
+/// Ensure the EBO has indices for at least `glyph_count` quads.
+fn ensureEboCapacity(glyph_count: u32) void {
+    if (glyph_count <= ebo_glyph_capacity) return;
+
+    // Grow to at least requested, with some headroom
+    const target = @max(glyph_count, ebo_glyph_capacity * 2);
+    const index_count = target * 6;
+
+    // Build index data on stack for reasonable sizes, heap otherwise
+    var stack_buf: [60000]u32 = undefined;
+    const indices: []u32 = if (index_count <= stack_buf.len)
+        stack_buf[0..index_count]
+    else
+        return; // 10000 glyphs should be enough; don't allocate
+
+    for (0..target) |i| {
+        const base: u32 = @intCast(i * 4);
+        const idx = i * 6;
+        indices[idx + 0] = base + 0;
+        indices[idx + 1] = base + 1;
+        indices[idx + 2] = base + 2;
+        indices[idx + 3] = base + 0;
+        indices[idx + 4] = base + 2;
+        indices[idx + 5] = base + 3;
+    }
+
+    gl.glBufferData(
+        gl.GL_ELEMENT_ARRAY_BUFFER,
+        @intCast(index_count * @sizeOf(u32)),
+        indices.ptr,
+        gl.GL_STATIC_DRAW,
+    );
+    ebo_glyph_capacity = target;
 }
 
 pub fn resetFrameState() void {
