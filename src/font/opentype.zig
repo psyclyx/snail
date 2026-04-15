@@ -443,3 +443,77 @@ pub const Shaper = struct {
         return vr.x_advance;
     }
 };
+
+// ── Tests ──
+
+const ttf = @import("ttf.zig");
+const assets = @import("assets");
+
+test "shaper init with real font" {
+    const font = try ttf.Font.init(assets.noto_sans_regular);
+    if (font.gsub_offset == 0) return; // font has no GSUB, skip
+
+    var shaper = try Shaper.init(std.testing.allocator, font.data, font.gsub_offset, font.gpos_offset);
+    defer shaper.deinit();
+
+    // Should have found liga feature lookups
+    try std.testing.expect(shaper.liga_lookups.len > 0);
+}
+
+test "ligature substitution fi" {
+    const font = try ttf.Font.init(assets.noto_sans_regular);
+    if (font.gsub_offset == 0) return;
+
+    var shaper = try Shaper.init(std.testing.allocator, font.data, font.gsub_offset, font.gpos_offset);
+    defer shaper.deinit();
+
+    // Get glyph IDs for 'f' and 'i'
+    const f_gid = try font.glyphIndex('f');
+    const i_gid = try font.glyphIndex('i');
+
+    var glyphs = [_]u16{ f_gid, i_gid };
+    const new_len = try shaper.applyLigatures(&glyphs);
+
+    // fi should be substituted to a single ligature glyph
+    try std.testing.expectEqual(@as(usize, 1), new_len);
+    // The result should be different from either input
+    try std.testing.expect(glyphs[0] != f_gid);
+    try std.testing.expect(glyphs[0] != i_gid);
+}
+
+test "discover ligature glyphs" {
+    const font = try ttf.Font.init(assets.noto_sans_regular);
+    if (font.gsub_offset == 0) return;
+
+    var seen = std.AutoHashMap(u16, void).init(std.testing.allocator);
+    defer seen.deinit();
+
+    // Add some base glyphs
+    const f_gid = try font.glyphIndex('f');
+    const i_gid = try font.glyphIndex('i');
+    const l_gid = try font.glyphIndex('l');
+    try seen.put(f_gid, {});
+    try seen.put(i_gid, {});
+    try seen.put(l_gid, {});
+
+    const liga_glyphs = try discoverLigatureGlyphs(
+        std.testing.allocator, font.data, font.gsub_offset, &seen,
+    );
+    defer if (liga_glyphs.len > 0) std.testing.allocator.free(liga_glyphs);
+
+    // Should discover fi, fl ligature glyphs
+    try std.testing.expect(liga_glyphs.len >= 2);
+}
+
+test "coverage index not found returns null" {
+    // Build a minimal coverage format 1 table: [format=1, count=1, glyph=42]
+    var data = [_]u8{ 0, 1, 0, 1, 0, 42 };
+    const result = try coverageIndex(&data, 0, 99);
+    try std.testing.expect(result == null);
+}
+
+test "coverage index format 1 found" {
+    var data = [_]u8{ 0, 1, 0, 1, 0, 42 };
+    const result = try coverageIndex(&data, 0, 42);
+    try std.testing.expectEqual(@as(?u16, 0), result);
+}

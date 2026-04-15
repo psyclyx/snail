@@ -1,0 +1,53 @@
+# Valgrind suppressions for snail
+# Suppress known false positives from GPU drivers and system libraries.
+# These are all in nvidia driver or glibc internals — not our code.
+
+# NVIDIA driver allocations (never freed by design)
+{
+   nvidia_glcore_leak
+   Memcheck:Leak
+   ...
+   obj:*/libnvidia-glcore.so*
+}
+{
+   nvidia_gpucomp_leak
+   Memcheck:Leak
+   ...
+   obj:*/libnvidia-gpucomp.so*
+}
+{
+   nvidia_glx_leak
+   Memcheck:Leak
+   ...
+   obj:*/libGLX_nvidia.so*
+}
+
+# NVIDIA driver realloc(0) and posix_memalign(0) — nvidia convention
+{
+   nvidia_realloc_zero
+   Memcheck:ReallocZero
+   fun:realloc
+   obj:*/libnvidia-glcore.so*
+}
+{
+   nvidia_posix_memalign_zero
+   Memcheck:UnsafeZeroSize
+   fun:posix_memalign
+   obj:*/libnvidia-glcore.so*
+}
+
+# glibc dynamic linker
+{
+   glibc_dl_init
+   Memcheck:Leak
+   ...
+   obj:*/ld-linux-x86-64.so*
+}
+
+# glibc dlopen
+{
+   glibc_dlopen
+   Memcheck:Leak
+   ...
+   fun:dlopen_doit
+}

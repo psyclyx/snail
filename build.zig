@@ -125,4 +125,17 @@ pub fn build(b: *std.Build) void {
     run_bench.step.dependOn(b.getInstallStep());
     const bench_step = b.step("bench", "Run benchmarks");
     bench_step.dependOn(&run_bench.step);
+
+    // ── Valgrind ──
+    const valgrind_step = b.step("valgrind", "Run tests under valgrind (memory checking)");
+    const valgrind = b.addSystemCommand(&.{
+        "valgrind",
+        "--leak-check=full",
+        "--show-leak-kinds=definite,indirect",
+        "--error-exitcode=1",
+        "--track-origins=yes",
+        "--suppressions=valgrind.supp",
+    });
+    valgrind.addArtifactArg(unit_tests);
+    valgrind_step.dependOn(&valgrind.step);
 }

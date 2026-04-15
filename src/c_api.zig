@@ -191,6 +191,35 @@ export fn snail_batch_add_string(
     return advance;
 }
 
+export fn snail_batch_add_shaped(
+    buf: [*]f32,
+    buf_capacity: usize,
+    buf_len: *usize,
+    atlas: *const AtlasImpl,
+    glyph_ids: [*]const u16,
+    x_offsets: [*]const f32,
+    y_offsets: [*]const f32,
+    num_glyphs: usize,
+    x: f32,
+    y: f32,
+    font_size: f32,
+    color: [*]const f32,
+) usize {
+    var batch = snail.Batch.init(buf[buf_len.*..buf_capacity]);
+    var shaped_buf: [1024]snail.Batch.ShapedGlyph = undefined;
+    const count = @min(num_glyphs, shaped_buf.len);
+    for (0..count) |i| {
+        shaped_buf[i] = .{
+            .glyph_id = glyph_ids[i],
+            .x_offset = x_offsets[i],
+            .y_offset = y_offsets[i],
+        };
+    }
+    const added = batch.addShaped(&atlas.inner, shaped_buf[0..count], x, y, font_size, color[0..4].*);
+    buf_len.* += batch.len;
+    return added;
+}
+
 export fn snail_batch_add_string_wrapped(
     buf: [*]f32,
     buf_capacity: usize,

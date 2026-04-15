@@ -338,6 +338,36 @@ pub const Batch = struct {
         return true;
     }
 
+    /// A pre-shaped glyph with position. Produced by external shapers (HarfBuzz).
+    pub const ShapedGlyph = struct {
+        glyph_id: u16,
+        x_offset: f32, // pixel offset from string origin
+        y_offset: f32,
+    };
+
+    /// Append pre-shaped glyphs. Use this when text has been shaped externally
+    /// (e.g. by HarfBuzz). Each glyph's position is relative to (x, y).
+    /// Returns the number of glyphs successfully added.
+    pub fn addShaped(
+        self: *Batch,
+        atlas: *const Atlas,
+        glyphs: []const ShapedGlyph,
+        x: f32,
+        y: f32,
+        font_size: f32,
+        color: [4]f32,
+    ) usize {
+        var count: usize = 0;
+        for (glyphs) |sg| {
+            const info = atlas.glyph_map.get(sg.glyph_id) orelse continue;
+            if (info.band_entry.h_band_count > 0 and info.band_entry.v_band_count > 0) {
+                if (!self.addGlyph(x + sg.x_offset, y + sg.y_offset, font_size, info.bbox, info.band_entry, color)) break;
+            }
+            count += 1;
+        }
+        return count;
+    }
+
     /// Lay out and append a string. Applies ligature substitution and
     /// GPOS kerning if available, falling back to kern table.
     /// Returns advance width in pixels.

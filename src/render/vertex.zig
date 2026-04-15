@@ -105,3 +105,54 @@ pub fn generateGlyphVertices(
         buf[base + 19] = color[3];
     }
 }
+
+test "vertex generation produces correct count and layout" {
+    const bezier_mod = @import("../math/bezier.zig");
+    var buf: [FLOATS_PER_VERTEX * VERTICES_PER_GLYPH]f32 = undefined;
+
+    const bbox = bezier_mod.BBox{
+        .min = Vec2.new(0.0, -0.2),
+        .max = Vec2.new(0.5, 0.8),
+    };
+    const band_entry = band_tex.GlyphBandEntry{
+        .glyph_x = 10,
+        .glyph_y = 5,
+        .h_band_count = 2,
+        .v_band_count = 3,
+        .band_scale_x = 4.0,
+        .band_scale_y = 2.0,
+        .band_offset_x = 0.1,
+        .band_offset_y = 0.2,
+    };
+    const color = [4]f32{ 1.0, 0.5, 0.0, 1.0 };
+
+    generateGlyphVertices(&buf, 100.0, 200.0, 24.0, bbox, band_entry, color);
+
+    // Check vertex count: 6 vertices * 20 floats
+    const expected_floats = FLOATS_PER_VERTEX * VERTICES_PER_GLYPH;
+    try std.testing.expectEqual(@as(usize, 120), expected_floats);
+
+    // First vertex (corner 0 = bottom-left): position
+    const v0_x = 100.0 + 0.0 * 24.0; // x + bbox.min.x * font_size
+    const v0_y = 200.0 + (-0.2) * 24.0;
+    try std.testing.expectApproxEqAbs(v0_x, buf[0], 0.001);
+    try std.testing.expectApproxEqAbs(v0_y, buf[1], 0.001);
+
+    // Normal for bottom-left: (-1, -1)
+    try std.testing.expectApproxEqAbs(@as(f32, -1.0), buf[2], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, -1.0), buf[3], 0.001);
+
+    // Em-space coords
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), buf[4], 0.001); // bbox.min.x
+    try std.testing.expectApproxEqAbs(@as(f32, -0.2), buf[5], 0.001); // bbox.min.y
+
+    // Color (last 4 floats of vertex)
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), buf[16], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), buf[17], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), buf[18], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), buf[19], 0.001);
+
+    // Inverse Jacobian (1/font_size diagonal)
+    try std.testing.expectApproxEqAbs(1.0 / 24.0, buf[8], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), buf[9], 0.0001);
+}
