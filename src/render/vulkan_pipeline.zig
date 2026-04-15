@@ -78,6 +78,9 @@ var curve_memory: vk.VkDeviceMemory = null;
 var band_image: vk.VkImage = null;
 var band_view: vk.VkImageView = null;
 var band_memory: vk.VkDeviceMemory = null;
+var layer_image: vk.VkImage = null;
+var layer_view: vk.VkImageView = null;
+var layer_memory: vk.VkDeviceMemory = null;
 var sampler_nearest: vk.VkSampler = null;
 
 // Transfer command pool (one-shot uploads)
@@ -110,8 +113,8 @@ pub fn init(vk_ctx: VulkanContext) !void {
     });
     try check(vk.vkCreateSampler(ctx.device, &sampler_info, null, &sampler_nearest));
 
-    // Descriptor set layout: 2 combined image samplers
-    const bindings = [2]vk.VkDescriptorSetLayoutBinding{
+    // Descriptor set layout: 3 combined image samplers (curve, band, layer info)
+    const bindings = [3]vk.VkDescriptorSetLayoutBinding{
         std.mem.zeroInit(vk.VkDescriptorSetLayoutBinding, .{
             .binding = 0,
             .descriptorType = vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -126,10 +129,17 @@ pub fn init(vk_ctx: VulkanContext) !void {
             .stageFlags = vk.VK_SHADER_STAGE_FRAGMENT_BIT,
             .pImmutableSamplers = &sampler_nearest,
         }),
+        std.mem.zeroInit(vk.VkDescriptorSetLayoutBinding, .{
+            .binding = 2,
+            .descriptorType = vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+            .stageFlags = vk.VK_SHADER_STAGE_FRAGMENT_BIT,
+            .pImmutableSamplers = &sampler_nearest,
+        }),
     };
     const dsl_info = std.mem.zeroInit(vk.VkDescriptorSetLayoutCreateInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-        .bindingCount = 2,
+        .bindingCount = 3,
         .pBindings = &bindings,
     });
     try check(vk.vkCreateDescriptorSetLayout(ctx.device, &dsl_info, null, &desc_set_layout));
@@ -152,7 +162,7 @@ pub fn init(vk_ctx: VulkanContext) !void {
 
     // Descriptor pool + set
     const pool_size = [1]vk.VkDescriptorPoolSize{
-        .{ .type = vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 2 },
+        .{ .type = vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 3 },
     };
     const dp_info = std.mem.zeroInit(vk.VkDescriptorPoolCreateInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
@@ -273,8 +283,22 @@ pub fn buildTextureArrays(atlases: []const *const snail_mod.Atlas) void {
         @constCast(atlas).gl_layer = @intCast(i);
     }
 
+    // Build COLR layer info image (2D, not array) from the first atlas that has data
+    for (atlases) |a| {
+        if (a.layer_info_data) |lid| {
+            layer_image = createImage2D(a.layer_info_width, a.layer_info_height, vk.VK_FORMAT_R32G32B32A32_SFLOAT) catch break;
+            layer_memory = allocateImageMemory(layer_image) catch break;
+            _ = vk.vkBindImageMemory(ctx.device, layer_image, layer_memory, 0);
+            uploadLayerInfoData(lid, a.layer_info_width, a.layer_info_height) catch break;
+            layer_view = createImageView2D(layer_image, vk.VK_FORMAT_R32G32B32A32_SFLOAT) catch break;
+            break;
+        }
+    }
+
     // Update descriptor set
-    const image_infos = [2]vk.VkDescriptorImageInfo{
+    // Use a 1x1 dummy for layer_view if no COLR data exists
+    const effective_layer_view = if (layer_view != null) layer_view else curve_view;
+    const image_infos = [3]vk.VkDescriptorImageInfo{
         .{
             .sampler = sampler_nearest,
             .imageView = curve_view,
@@ -285,8 +309,13 @@ pub fn buildTextureArrays(atlases: []const *const snail_mod.Atlas) void {
             .imageView = band_view,
             .imageLayout = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
         },
+        .{
+            .sampler = sampler_nearest,
+            .imageView = effective_layer_view,
+            .imageLayout = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        },
     };
-    const writes = [2]vk.VkWriteDescriptorSet{
+    const writes = [3]vk.VkWriteDescriptorSet{
         std.mem.zeroInit(vk.VkWriteDescriptorSet, .{
             .sType = vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
             .dstSet = desc_set,
@@ -303,8 +332,16 @@ pub fn buildTextureArrays(atlases: []const *const snail_mod.Atlas) void {
             .descriptorType = vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             .pImageInfo = &image_infos[1],
         }),
+        std.mem.zeroInit(vk.VkWriteDescriptorSet, .{
+            .sType = vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = desc_set,
+            .dstBinding = 2,
+            .descriptorCount = 1,
+            .descriptorType = vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .pImageInfo = &image_infos[2],
+        }),
     };
-    vk.vkUpdateDescriptorSets(ctx.device, 2, &writes, 0, null);
+    vk.vkUpdateDescriptorSets(ctx.device, 3, &writes, 0, null);
 }
 
 // ── Draw ──
@@ -773,6 +810,114 @@ fn initIndexBuffer() !void {
     vk.vkUnmapMemory(ctx.device, index_memory);
 }
 
+fn createImage2D(width: u32, height: u32, format: vk.VkFormat) !vk.VkImage {
+    const ci = std.mem.zeroInit(vk.VkImageCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = vk.VK_IMAGE_TYPE_2D,
+        .format = format,
+        .extent = .{ .width = width, .height = height, .depth = 1 },
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .samples = vk.VK_SAMPLE_COUNT_1_BIT,
+        .tiling = vk.VK_IMAGE_TILING_OPTIMAL,
+        .usage = vk.VK_IMAGE_USAGE_TRANSFER_DST_BIT | vk.VK_IMAGE_USAGE_SAMPLED_BIT,
+        .sharingMode = vk.VK_SHARING_MODE_EXCLUSIVE,
+        .initialLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED,
+    });
+    var image: vk.VkImage = null;
+    try check(vk.vkCreateImage(ctx.device, &ci, null, &image));
+    return image;
+}
+
+fn createImageView2D(image: vk.VkImage, format: vk.VkFormat) !vk.VkImageView {
+    const ci = std.mem.zeroInit(vk.VkImageViewCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image = image,
+        .viewType = vk.VK_IMAGE_VIEW_TYPE_2D,
+        .format = format,
+        .subresourceRange = .{
+            .aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT,
+            .baseMipLevel = 0,
+            .levelCount = 1,
+            .baseArrayLayer = 0,
+            .layerCount = 1,
+        },
+    });
+    var view: vk.VkImageView = null;
+    try check(vk.vkCreateImageView(ctx.device, &ci, null, &view));
+    return view;
+}
+
+fn uploadLayerInfoData(data: []f32, width: u32, height: u32) !void {
+    const px_bytes: usize = 4 * 4; // RGBA32F = 4 channels * 4 bytes
+    const total_bytes: vk.VkDeviceSize = @intCast(@as(usize, width) * @as(usize, height) * px_bytes);
+
+    // Create staging buffer
+    var staging_buf: vk.VkBuffer = null;
+    var staging_mem: vk.VkDeviceMemory = null;
+    try createBuffer(total_bytes, vk.VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+        &staging_buf, &staging_mem);
+    defer {
+        vk.vkDestroyBuffer(ctx.device, staging_buf, null);
+        vk.vkFreeMemory(ctx.device, staging_mem, null);
+    }
+
+    // Map and copy
+    var map_ptr: ?*anyopaque = null;
+    try check(vk.vkMapMemory(ctx.device, staging_mem, 0, total_bytes, 0, &map_ptr));
+    const dst: [*]u8 = @ptrCast(map_ptr);
+    const src: [*]const u8 = @ptrCast(data.ptr);
+    @memcpy(dst[0..@intCast(total_bytes)], src[0..@intCast(total_bytes)]);
+    vk.vkUnmapMemory(ctx.device, staging_mem);
+
+    // Record transfer commands
+    var cmd: vk.VkCommandBuffer = null;
+    const alloc_info = std.mem.zeroInit(vk.VkCommandBufferAllocateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = transfer_cmd_pool,
+        .level = vk.VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    });
+    try check(vk.vkAllocateCommandBuffers(ctx.device, &alloc_info, &cmd));
+
+    const begin_info = std.mem.zeroInit(vk.VkCommandBufferBeginInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = vk.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    });
+    try check(vk.vkBeginCommandBuffer(cmd, &begin_info));
+
+    transitionImageLayout(cmd, layer_image, 1,
+        vk.VK_IMAGE_LAYOUT_UNDEFINED, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+    const region = std.mem.zeroInit(vk.VkBufferImageCopy, .{
+        .bufferOffset = 0,
+        .imageSubresource = .{
+            .aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT,
+            .mipLevel = 0,
+            .baseArrayLayer = 0,
+            .layerCount = 1,
+        },
+        .imageExtent = .{ .width = width, .height = height, .depth = 1 },
+    });
+    vk.vkCmdCopyBufferToImage(cmd, staging_buf, layer_image,
+        vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    transitionImageLayout(cmd, layer_image, 1,
+        vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+    try check(vk.vkEndCommandBuffer(cmd));
+
+    const submit_info = std.mem.zeroInit(vk.VkSubmitInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &cmd,
+    });
+    try check(vk.vkQueueSubmit(ctx.graphics_queue, 1, &submit_info, null));
+    _ = vk.vkQueueWaitIdle(ctx.graphics_queue);
+    vk.vkFreeCommandBuffers(ctx.device, transfer_cmd_pool, 1, &cmd);
+}
+
 fn destroyTextureResources() void {
     if (curve_view != null) { vk.vkDestroyImageView(ctx.device, curve_view, null); curve_view = null; }
     if (curve_image != null) { vk.vkDestroyImage(ctx.device, curve_image, null); curve_image = null; }
@@ -780,6 +925,9 @@ fn destroyTextureResources() void {
     if (band_view != null) { vk.vkDestroyImageView(ctx.device, band_view, null); band_view = null; }
     if (band_image != null) { vk.vkDestroyImage(ctx.device, band_image, null); band_image = null; }
     if (band_memory != null) { vk.vkFreeMemory(ctx.device, band_memory, null); band_memory = null; }
+    if (layer_view != null) { vk.vkDestroyImageView(ctx.device, layer_view, null); layer_view = null; }
+    if (layer_image != null) { vk.vkDestroyImage(ctx.device, layer_image, null); layer_image = null; }
+    if (layer_memory != null) { vk.vkFreeMemory(ctx.device, layer_memory, null); layer_memory = null; }
 }
 
 fn check(result: vk.VkResult) !void {

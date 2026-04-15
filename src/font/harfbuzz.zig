@@ -108,7 +108,16 @@ pub const HarfBuzzShaper = struct {
             const glyph_x = x + (cursor_x + @as(f32, @floatFromInt(pos.x_offset))) * scale;
             const glyph_y = y + (cursor_y + @as(f32, @floatFromInt(pos.y_offset))) * scale;
 
-            // COLRv0: expand base glyph into per-layer outline glyphs with palette colors
+            // COLRv0: single multi-layer quad (seamless compositing in shader)
+            if (atlas.colr_base_map) |cbm| {
+                if (cbm.get(gid)) |cbi| {
+                    if (!batch.addColrGlyph(glyph_x, glyph_y, font_size, cbi, color)) break;
+                    cursor_x += @as(f32, @floatFromInt(pos.x_advance));
+                    cursor_y += @as(f32, @floatFromInt(pos.y_advance));
+                    continue;
+                }
+            }
+            // Fallback: per-layer expansion
             var layer_buf: [64]ttf.Font.ColrLayer = undefined;
             const layers = atlas.getColrLayers(gid, &layer_buf);
             if (layers.len > 0) {

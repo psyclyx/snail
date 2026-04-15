@@ -110,6 +110,12 @@ pub const Atlas = struct {
     colr_offset: u32 = 0,
     cpal_offset: u32 = 0,
 
+    // COLRv0 multi-layer info texture (RGBA32F, for single-pass compositing)
+    layer_info_data: ?[]f32 = null,
+    layer_info_width: u32 = 0,
+    layer_info_height: u32 = 0,
+    colr_base_map: ?std.AutoHashMap(u16, ColrBaseInfo) = null,
+
     // GPU texture handles (created on first upload, 0 = not yet uploaded)
     gl_curve_texture: u32 = 0,
     gl_band_texture: u32 = 0,
@@ -121,6 +127,14 @@ pub const Atlas = struct {
         bbox: bezier.BBox,
         advance_width: u16,
         band_entry: band_tex.GlyphBandEntry,
+    };
+
+    /// Pre-built multi-layer info for a COLRv0 base glyph.
+    pub const ColrBaseInfo = struct {
+        info_x: u16, // texel position in layer_info texture
+        info_y: u16,
+        layer_count: u8,
+        union_bbox: bezier.BBox,
     };
 
     const TextureResult = struct {
@@ -150,6 +164,116 @@ pub const Atlas = struct {
             const layers = font.inner.getColrLayers(gid, &layer_buf);
             for (layers) |layer| try seen.put(layer.glyph_id, {});
         }
+    }
+
+    /// Build a layer info texture and base-glyph map for single-pass COLR compositing.
+    /// Must be called after buildTextureData (needs per-layer GlyphInfo entries).
+    fn buildColrLayerInfo(
+        self: *Atlas,
+        font: *const Font,
+        allocator: std.mem.Allocator,
+    ) !void {
+        if (font.inner.colr_offset == 0) return;
+
+        const TEX_WIDTH: u32 = 4096;
+
+        // Collect base glyphs that have COLR layers
+        var base_glyphs: std.ArrayList(u16) = .empty;
+        defer base_glyphs.deinit(allocator);
+
+        var layer_buf: [64]ttf.Font.ColrLayer = undefined;
+        var map_it = self.glyph_map.keyIterator();
+        while (map_it.next()) |gid_ptr| {
+            const layers = font.inner.getColrLayers(gid_ptr.*, &layer_buf);
+            if (layers.len > 0) try base_glyphs.append(allocator, gid_ptr.*);
+        }
+        if (base_glyphs.items.len == 0) return;
+
+        // First pass: count total texels needed (3 per layer)
+        var total_texels: u32 = 0;
+        for (base_glyphs.items) |gid| {
+            const layers = font.inner.getColrLayers(gid, &layer_buf);
+            total_texels += @intCast(layers.len * 3);
+        }
+
+        const height = @max(1, (total_texels + TEX_WIDTH - 1) / TEX_WIDTH);
+        const data = try allocator.alloc(f32, TEX_WIDTH * height * 4); // RGBA32F
+        @memset(data, 0);
+
+        var colr_map = std.AutoHashMap(u16, ColrBaseInfo).init(allocator);
+
+        // Second pass: pack layer info
+        var texel_offset: u32 = 0;
+        for (base_glyphs.items) |gid| {
+            const layers = font.inner.getColrLayers(gid, &layer_buf);
+            if (layers.len == 0) continue;
+
+            const info_x: u16 = @intCast(texel_offset % TEX_WIDTH);
+            const info_y: u16 = @intCast(texel_offset / TEX_WIDTH);
+
+            // Compute union bbox across all layers
+            var union_bbox = bezier.BBox{
+                .min = .{ .x = std.math.inf(f32), .y = std.math.inf(f32) },
+                .max = .{ .x = -std.math.inf(f32), .y = -std.math.inf(f32) },
+            };
+
+            for (layers) |layer| {
+                const linfo = self.glyph_map.get(layer.glyph_id) orelse continue;
+                union_bbox.min.x = @min(union_bbox.min.x, linfo.bbox.min.x);
+                union_bbox.min.y = @min(union_bbox.min.y, linfo.bbox.min.y);
+                union_bbox.max.x = @max(union_bbox.max.x, linfo.bbox.max.x);
+                union_bbox.max.y = @max(union_bbox.max.y, linfo.bbox.max.y);
+            }
+
+            // Pack each layer: 3 texels (12 floats) per layer
+            for (layers) |layer| {
+                const linfo = self.glyph_map.get(layer.glyph_id) orelse continue;
+                const be = linfo.band_entry;
+
+                // Texel 0: glyph location + band counts + atlas layer
+                const t0 = texel_offset;
+                const t0_x = t0 % TEX_WIDTH;
+                const t0_y = t0 / TEX_WIDTH;
+                data[(t0_y * TEX_WIDTH + t0_x) * 4 + 0] = @floatFromInt(be.glyph_x);
+                data[(t0_y * TEX_WIDTH + t0_x) * 4 + 1] = @floatFromInt(be.glyph_y);
+                // Pack h_band_count-1 and v_band_count-1 as float bits
+                const band_packed: u32 = @as(u32, be.h_band_count - 1) | (@as(u32, be.v_band_count - 1) << 16);
+                data[(t0_y * TEX_WIDTH + t0_x) * 4 + 2] = @bitCast(band_packed);
+                data[(t0_y * TEX_WIDTH + t0_x) * 4 + 3] = @floatFromInt(self.gl_layer);
+
+                // Texel 1: band transform
+                const t1 = texel_offset + 1;
+                const t1_x = t1 % TEX_WIDTH;
+                const t1_y = t1 / TEX_WIDTH;
+                data[(t1_y * TEX_WIDTH + t1_x) * 4 + 0] = be.band_scale_x;
+                data[(t1_y * TEX_WIDTH + t1_x) * 4 + 1] = be.band_scale_y;
+                data[(t1_y * TEX_WIDTH + t1_x) * 4 + 2] = be.band_offset_x;
+                data[(t1_y * TEX_WIDTH + t1_x) * 4 + 3] = be.band_offset_y;
+
+                // Texel 2: color (RGBA, or -1,-1,-1,-1 for foreground sentinel)
+                const t2 = texel_offset + 2;
+                const t2_x = t2 % TEX_WIDTH;
+                const t2_y = t2 / TEX_WIDTH;
+                data[(t2_y * TEX_WIDTH + t2_x) * 4 + 0] = layer.color[0];
+                data[(t2_y * TEX_WIDTH + t2_x) * 4 + 1] = layer.color[1];
+                data[(t2_y * TEX_WIDTH + t2_x) * 4 + 2] = layer.color[2];
+                data[(t2_y * TEX_WIDTH + t2_x) * 4 + 3] = layer.color[3];
+
+                texel_offset += 3;
+            }
+
+            try colr_map.put(gid, .{
+                .info_x = info_x,
+                .info_y = info_y,
+                .layer_count = @intCast(layers.len),
+                .union_bbox = union_bbox,
+            });
+        }
+
+        self.layer_info_data = data;
+        self.layer_info_width = TEX_WIDTH;
+        self.layer_info_height = height;
+        self.colr_base_map = colr_map;
     }
 
     /// Build curve/band textures and glyph map from a set of glyph IDs.
@@ -295,6 +419,7 @@ pub const Atlas = struct {
             .colr_offset = font.inner.colr_offset,
             .cpal_offset = font.inner.cpal_offset,
         };
+        try atlas.buildColrLayerInfo(font, allocator);
         try atlas.buildGlyphLut();
         return atlas;
     }
@@ -364,6 +489,12 @@ pub const Atlas = struct {
         self.band_width = result.band_width;
         self.band_height = result.band_height;
         self.glyph_map = result.glyph_map;
+
+        // Rebuild COLR layer info
+        if (self.layer_info_data) |lid| { allocator.free(lid); self.layer_info_data = null; }
+        if (self.colr_base_map) |*cbm| { @constCast(cbm).deinit(); self.colr_base_map = null; }
+        try self.buildColrLayerInfo(font, allocator);
+
         try self.buildGlyphLut();
 
         return true;
@@ -483,6 +614,8 @@ pub const Atlas = struct {
             if (self.hb_shaper) |*hbs| hbs.deinit();
         }
         if (self.shaper) |*s| @constCast(s).deinit();
+        if (self.layer_info_data) |lid| self.allocator.free(lid);
+        if (self.colr_base_map) |*cbm| @constCast(cbm).deinit();
         self.allocator.free(self.curve_data);
         self.allocator.free(self.band_data);
         self.glyph_map.deinit();
@@ -528,6 +661,24 @@ pub const Batch = struct {
         return true;
     }
 
+    /// Append a multi-layer COLR glyph quad. Returns false if buffer is full.
+    pub fn addColrGlyph(
+        self: *Batch,
+        x: f32,
+        y: f32,
+        font_size: f32,
+        info: Atlas.ColrBaseInfo,
+        color: [4]f32,
+    ) bool {
+        if (self.len + FLOATS_PER_GLYPH > self.buf.len) return false;
+        vertex_mod.generateMultiLayerGlyphVertices(
+            self.buf[self.len..], x, y, font_size,
+            info.union_bbox, info.info_x, info.info_y, info.layer_count, color,
+        );
+        self.len += FLOATS_PER_GLYPH;
+        return true;
+    }
+
     /// A pre-shaped glyph with position. Produced by external shapers (HarfBuzz).
     pub const ShapedGlyph = struct {
         glyph_id: u16,
@@ -549,6 +700,15 @@ pub const Batch = struct {
     ) usize {
         var count: usize = 0;
         for (glyphs) |sg| {
+            // Multi-layer COLR path: single quad per emoji
+            if (atlas.colr_base_map) |cbm| {
+                if (cbm.get(sg.glyph_id)) |cbi| {
+                    if (!self.addColrGlyph(x + sg.x_offset, y + sg.y_offset, font_size, cbi, color)) break;
+                    count += 1;
+                    continue;
+                }
+            }
+            // Fallback: per-layer expansion (for atlases without layer info)
             var layer_buf: [64]ttf.Font.ColrLayer = undefined;
             const layers = atlas.getColrLayers(sg.glyph_id, &layer_buf);
             if (layers.len > 0) {
@@ -631,7 +791,17 @@ pub const Batch = struct {
                 cursor_x += @as(f32, @floatFromInt(kern)) * scale;
             }
 
-            // COLRv0: expand to per-layer outline glyphs with palette colors
+            // COLRv0: single multi-layer quad (seamless compositing in shader)
+            if (atlas.colr_base_map) |cbm| {
+                if (cbm.get(gid)) |cbi| {
+                    _ = self.addColrGlyph(cursor_x, y, font_size, cbi, color);
+                    const advance = if (atlas.glyph_map.get(gid)) |bi| bi.advance_width else font.inner.units_per_em;
+                    cursor_x += @as(f32, @floatFromInt(advance)) * scale;
+                    prev_gid = gid;
+                    continue;
+                }
+            }
+            // Fallback: per-layer expansion
             {
                 var layer_buf: [64]ttf.Font.ColrLayer = undefined;
                 const layers = font.inner.getColrLayers(gid, &layer_buf);

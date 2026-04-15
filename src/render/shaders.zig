@@ -68,11 +68,13 @@ pub const fragment_shader =
     \\
     \\uniform sampler2DArray u_curve_tex;
     \\uniform usampler2DArray u_band_tex;
+    \\uniform sampler2D u_layer_tex;
     \\uniform int u_fill_rule; // 0 = non-zero winding (default), 1 = even-odd
     \\
     \\out vec4 frag_color;
     \\
     \\#define kLogBandTextureWidth 12
+    \\#define MAX_COLR_LAYERS 32
     \\
     \\uint calcRootCode(float y1, float y2, float y3) {
     \\    uint i1 = floatBitsToUint(y1) >> 31u;
@@ -83,7 +85,6 @@ pub const fragment_shader =
     \\    return ((0x2E74u >> shift) & 0x0101u);
     \\}
     \\
-    \\// Apply fill rule to winding number
     \\float applyFillRule(float winding) {
     \\    if (u_fill_rule == 1) {
     \\        return 1.0 - abs(fract(winding * 0.5) * 2.0 - 1.0);
@@ -124,86 +125,106 @@ pub const fragment_shader =
     \\    return loc;
     \\}
     \\
-    \\void main() {
-    \\    vec2 rc = v_texcoord;
-    \\    vec2 epp = fwidth(rc);
-    \\    vec2 ppe = 1.0 / epp;
-    \\
-    \\    int layer = (v_glyph.w >> 8) & 0xFF;
-    \\    ivec2 bandMax = ivec2(v_glyph.z, v_glyph.w & 0xFF);
-    \\    ivec2 bandIdx = clamp(ivec2(rc * v_banding.xy + v_banding.zw), ivec2(0), bandMax);
-    \\    ivec2 gLoc = v_glyph.xy;
+    \\// Evaluate Slug coverage for a single glyph layer.
+    \\float evalGlyphCoverage(vec2 rc, vec2 epp, vec2 ppe,
+    \\                        ivec2 gLoc, ivec2 bandMax, vec4 banding, int texLayer) {
+    \\    ivec2 bandIdx = clamp(ivec2(rc * banding.xy + banding.zw), ivec2(0), bandMax);
     \\
     \\    float xcov = 0.0, xwgt = 0.0;
-    \\
-    \\    // Horizontal band
-    \\    uvec2 hbd = texelFetch(u_band_tex, ivec3(gLoc.x + bandIdx.y, gLoc.y, layer), 0).xy;
+    \\    uvec2 hbd = texelFetch(u_band_tex, ivec3(gLoc.x + bandIdx.y, gLoc.y, texLayer), 0).xy;
     \\    ivec2 hLoc = calcBandLoc(gLoc, hbd.y);
     \\    int hCount = int(hbd.x);
-    \\
     \\    for (int i = 0; i < hCount; i++) {
     \\        ivec2 bLoc_h = calcBandLoc(hLoc, uint(i));
-    \\        ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec3(bLoc_h, layer), 0).xy);
-    \\        vec4 p12 = texelFetch(u_curve_tex, ivec3(cLoc, layer), 0) - vec4(rc, rc);
-    \\        vec2 p3 = texelFetch(u_curve_tex, ivec3(cLoc.x + 1, cLoc.y, layer), 0).xy - rc;
-    \\
+    \\        ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec3(bLoc_h, texLayer), 0).xy);
+    \\        vec4 p12 = texelFetch(u_curve_tex, ivec3(cLoc, texLayer), 0) - vec4(rc, rc);
+    \\        vec2 p3 = texelFetch(u_curve_tex, ivec3(cLoc.x + 1, cLoc.y, texLayer), 0).xy - rc;
     \\        if (max(max(p12.x, p12.z), p3.x) * ppe.x < -0.5) break;
-    \\
     \\        uint code = calcRootCode(p12.y, p12.w, p3.y);
     \\        if (code != 0u) {
     \\            vec2 r = solveHorizPoly(p12, p3) * ppe.x;
-    \\            if ((code & 1u) != 0u) {
-    \\                xcov += clamp(r.x + 0.5, 0.0, 1.0);
-    \\                xwgt = max(xwgt, clamp(1.0 - abs(r.x) * 2.0, 0.0, 1.0));
-    \\            }
-    \\            if (code > 1u) {
-    \\                xcov -= clamp(r.y + 0.5, 0.0, 1.0);
-    \\                xwgt = max(xwgt, clamp(1.0 - abs(r.y) * 2.0, 0.0, 1.0));
-    \\            }
+    \\            if ((code & 1u) != 0u) { xcov += clamp(r.x + 0.5, 0.0, 1.0); xwgt = max(xwgt, clamp(1.0 - abs(r.x) * 2.0, 0.0, 1.0)); }
+    \\            if (code > 1u) { xcov -= clamp(r.y + 0.5, 0.0, 1.0); xwgt = max(xwgt, clamp(1.0 - abs(r.y) * 2.0, 0.0, 1.0)); }
     \\        }
     \\    }
     \\
     \\    float ycov = 0.0, ywgt = 0.0;
-    \\
-    \\    // Vertical band
-    \\    uvec2 vbd = texelFetch(u_band_tex, ivec3(gLoc.x + bandMax.y + 1 + bandIdx.x, gLoc.y, layer), 0).xy;
+    \\    uvec2 vbd = texelFetch(u_band_tex, ivec3(gLoc.x + bandMax.y + 1 + bandIdx.x, gLoc.y, texLayer), 0).xy;
     \\    ivec2 vLoc = calcBandLoc(gLoc, vbd.y);
     \\    int vCount = int(vbd.x);
-    \\
     \\    for (int i = 0; i < vCount; i++) {
     \\        ivec2 bLoc_v = calcBandLoc(vLoc, uint(i));
-    \\        ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec3(bLoc_v, layer), 0).xy);
-    \\        vec4 p12 = texelFetch(u_curve_tex, ivec3(cLoc, layer), 0) - vec4(rc, rc);
-    \\        vec2 p3 = texelFetch(u_curve_tex, ivec3(cLoc.x + 1, cLoc.y, layer), 0).xy - rc;
-    \\
+    \\        ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec3(bLoc_v, texLayer), 0).xy);
+    \\        vec4 p12 = texelFetch(u_curve_tex, ivec3(cLoc, texLayer), 0) - vec4(rc, rc);
+    \\        vec2 p3 = texelFetch(u_curve_tex, ivec3(cLoc.x + 1, cLoc.y, texLayer), 0).xy - rc;
     \\        if (max(max(p12.y, p12.w), p3.y) * ppe.y < -0.5) break;
-    \\
     \\        uint code = calcRootCode(p12.x, p12.z, p3.x);
     \\        if (code != 0u) {
     \\            vec2 r = solveVertPoly(p12, p3) * ppe.y;
-    \\            if ((code & 1u) != 0u) {
-    \\                ycov -= clamp(r.x + 0.5, 0.0, 1.0);
-    \\                ywgt = max(ywgt, clamp(1.0 - abs(r.x) * 2.0, 0.0, 1.0));
-    \\            }
-    \\            if (code > 1u) {
-    \\                ycov += clamp(r.y + 0.5, 0.0, 1.0);
-    \\                ywgt = max(ywgt, clamp(1.0 - abs(r.y) * 2.0, 0.0, 1.0));
-    \\            }
+    \\            if ((code & 1u) != 0u) { ycov -= clamp(r.x + 0.5, 0.0, 1.0); ywgt = max(ywgt, clamp(1.0 - abs(r.x) * 2.0, 0.0, 1.0)); }
+    \\            if (code > 1u) { ycov += clamp(r.y + 0.5, 0.0, 1.0); ywgt = max(ywgt, clamp(1.0 - abs(r.y) * 2.0, 0.0, 1.0)); }
     \\        }
     \\    }
     \\
     \\    float wsum = xwgt + ywgt;
     \\    float blended = xcov * xwgt + ycov * ywgt;
-    \\    float coverage = max(applyFillRule(blended / max(wsum, 1.0 / 65536.0)),
-    \\                         min(applyFillRule(xcov), applyFillRule(ycov)));
-    \\    coverage = clamp(coverage, 0.0, 1.0);
-    \\    // sRGB gamma: linear → sRGB transfer function
-    \\    coverage = (coverage <= 0.0031308)
-    \\        ? coverage * 12.92
-    \\        : 1.055 * pow(coverage, 1.0 / 2.4) - 0.055;
+    \\    float cov = max(applyFillRule(blended / max(wsum, 1.0 / 65536.0)),
+    \\                    min(applyFillRule(xcov), applyFillRule(ycov)));
+    \\    return clamp(cov, 0.0, 1.0);
+    \\}
     \\
-    \\    if (coverage < 1.0/255.0) discard;
-    \\    frag_color = v_color * coverage;
+    \\float srgbGamma(float c) {
+    \\    return (c <= 0.0031308) ? c * 12.92 : 1.055 * pow(c, 1.0 / 2.4) - 0.055;
+    \\}
+    \\
+    \\void main() {
+    \\    vec2 rc = v_texcoord;
+    \\    vec2 epp = fwidth(rc);
+    \\    vec2 ppe = 1.0 / epp;
+    \\
+    \\    int atlas_layer = (v_glyph.w >> 8) & 0xFF;
+    \\
+    \\    if (atlas_layer == 0xFF) {
+    \\        // Multi-layer COLR glyph: composite all layers in-shader
+    \\        int layer_count = v_glyph.z;
+    \\        ivec2 infoBase = v_glyph.xy; // pointer into layer info texture
+    \\
+    \\        vec4 result = vec4(0.0);
+    \\        for (int l = 0; l < MAX_COLR_LAYERS && l < layer_count; l++) {
+    \\            // Fetch per-layer data (3 texels each) with row wrapping
+    \\            ivec2 loc = ivec2(infoBase.x + l * 3, infoBase.y);
+    \\            loc.y += loc.x >> kLogBandTextureWidth;
+    \\            loc.x &= (1 << kLogBandTextureWidth) - 1;
+    \\
+    \\            vec4 info  = texelFetch(u_layer_tex, loc, 0);
+    \\            vec4 band  = texelFetch(u_layer_tex, loc + ivec2(1, 0), 0);
+    \\            vec4 color = texelFetch(u_layer_tex, loc + ivec2(2, 0), 0);
+    \\
+    \\            if (color.r < 0.0) color = v_color; // foreground sentinel
+    \\
+    \\            ivec2 lGLoc = ivec2(info.xy);
+    \\            int bandMaxH = int(info.z) & 0xFFFF;
+    \\            int bandMaxV = (int(info.z) >> 16) & 0xFFFF;
+    \\            int texLayer = int(info.w);
+    \\
+    \\            float cov = evalGlyphCoverage(rc, epp, ppe, lGLoc,
+    \\                                          ivec2(bandMaxH, bandMaxV), band, texLayer);
+    \\            cov = srgbGamma(cov);
+    \\
+    \\            vec4 premul = color * cov;
+    \\            result = premul + result * (1.0 - premul.a);
+    \\        }
+    \\        if (result.a < 1.0/255.0) discard;
+    \\        frag_color = result;
+    \\    } else {
+    \\        // Single-layer glyph (unchanged path)
+    \\        float cov = evalGlyphCoverage(rc, epp, ppe, v_glyph.xy,
+    \\                                      ivec2(v_glyph.z, v_glyph.w & 0xFF),
+    \\                                      v_banding, atlas_layer);
+    \\        cov = srgbGamma(cov);
+    \\        if (cov < 1.0/255.0) discard;
+    \\        frag_color = v_color * cov;
+    \\    }
     \\}
 ;
 
@@ -217,12 +238,14 @@ pub const fragment_shader_subpixel =
     \\
     \\uniform sampler2DArray u_curve_tex;
     \\uniform usampler2DArray u_band_tex;
+    \\uniform sampler2D u_layer_tex;
     \\uniform int u_fill_rule;      // 0 = non-zero winding (default), 1 = even-odd
     \\uniform int u_subpixel_order; // 1=RGB, 2=BGR, 3=VRGB, 4=VBGR
     \\
     \\out vec4 frag_color;
     \\
     \\#define kLogBandTextureWidth 12
+    \\#define MAX_COLR_LAYERS 32
     \\
     \\uint calcRootCode(float y1, float y2, float y3) {
     \\    uint i1 = floatBitsToUint(y1) >> 31u;
@@ -271,6 +294,55 @@ pub const fragment_shader_subpixel =
     \\    loc.y += loc.x >> kLogBandTextureWidth;
     \\    loc.x &= (1 << kLogBandTextureWidth) - 1;
     \\    return loc;
+    \\}
+    \\
+    \\// Evaluate Slug coverage for a single glyph layer (non-subpixel).
+    \\float evalGlyphCoverage(vec2 rc, vec2 epp, vec2 ppe,
+    \\                        ivec2 gLoc, ivec2 bandMax, vec4 banding, int texLayer) {
+    \\    ivec2 bandIdx = clamp(ivec2(rc * banding.xy + banding.zw), ivec2(0), bandMax);
+    \\    float xcov = 0.0, xwgt = 0.0;
+    \\    uvec2 hbd = texelFetch(u_band_tex, ivec3(gLoc.x + bandIdx.y, gLoc.y, texLayer), 0).xy;
+    \\    ivec2 hLoc = calcBandLoc(gLoc, hbd.y);
+    \\    int hCount = int(hbd.x);
+    \\    for (int i = 0; i < hCount; i++) {
+    \\        ivec2 bLoc_h = calcBandLoc(hLoc, uint(i));
+    \\        ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec3(bLoc_h, texLayer), 0).xy);
+    \\        vec4 p12 = texelFetch(u_curve_tex, ivec3(cLoc, texLayer), 0) - vec4(rc, rc);
+    \\        vec2 p3 = texelFetch(u_curve_tex, ivec3(cLoc.x + 1, cLoc.y, texLayer), 0).xy - rc;
+    \\        if (max(max(p12.x, p12.z), p3.x) * ppe.x < -0.5) break;
+    \\        uint code = calcRootCode(p12.y, p12.w, p3.y);
+    \\        if (code != 0u) {
+    \\            vec2 r = solveHorizPoly(p12, p3) * ppe.x;
+    \\            if ((code & 1u) != 0u) { xcov += clamp(r.x + 0.5, 0.0, 1.0); xwgt = max(xwgt, clamp(1.0 - abs(r.x) * 2.0, 0.0, 1.0)); }
+    \\            if (code > 1u) { xcov -= clamp(r.y + 0.5, 0.0, 1.0); xwgt = max(xwgt, clamp(1.0 - abs(r.y) * 2.0, 0.0, 1.0)); }
+    \\        }
+    \\    }
+    \\    float ycov = 0.0, ywgt = 0.0;
+    \\    uvec2 vbd = texelFetch(u_band_tex, ivec3(gLoc.x + bandMax.y + 1 + bandIdx.x, gLoc.y, texLayer), 0).xy;
+    \\    ivec2 vLoc = calcBandLoc(gLoc, vbd.y);
+    \\    int vCount = int(vbd.x);
+    \\    for (int i = 0; i < vCount; i++) {
+    \\        ivec2 bLoc_v = calcBandLoc(vLoc, uint(i));
+    \\        ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec3(bLoc_v, texLayer), 0).xy);
+    \\        vec4 p12 = texelFetch(u_curve_tex, ivec3(cLoc, texLayer), 0) - vec4(rc, rc);
+    \\        vec2 p3 = texelFetch(u_curve_tex, ivec3(cLoc.x + 1, cLoc.y, texLayer), 0).xy - rc;
+    \\        if (max(max(p12.y, p12.w), p3.y) * ppe.y < -0.5) break;
+    \\        uint code = calcRootCode(p12.x, p12.z, p3.x);
+    \\        if (code != 0u) {
+    \\            vec2 r = solveVertPoly(p12, p3) * ppe.y;
+    \\            if ((code & 1u) != 0u) { ycov -= clamp(r.x + 0.5, 0.0, 1.0); ywgt = max(ywgt, clamp(1.0 - abs(r.x) * 2.0, 0.0, 1.0)); }
+    \\            if (code > 1u) { ycov += clamp(r.y + 0.5, 0.0, 1.0); ywgt = max(ywgt, clamp(1.0 - abs(r.y) * 2.0, 0.0, 1.0)); }
+    \\        }
+    \\    }
+    \\    float wsum = xwgt + ywgt;
+    \\    float blended = xcov * xwgt + ycov * ywgt;
+    \\    float cov = max(applyFillRule(blended / max(wsum, 1.0 / 65536.0)),
+    \\                    min(applyFillRule(xcov), applyFillRule(ycov)));
+    \\    return clamp(cov, 0.0, 1.0);
+    \\}
+    \\
+    \\float srgbGamma(float c) {
+    \\    return (c <= 0.0031308) ? c * 12.92 : 1.055 * pow(c, 1.0 / 2.4) - 0.055;
     \\}
     \\
     \\// Evaluate horizontal coverage (against vertical glyph edges) at xOffset from rc.
@@ -355,12 +427,42 @@ pub const fragment_shader_subpixel =
     \\    vec2 epp = fwidth(rc);
     \\    vec2 ppe = 1.0 / epp;
     \\
-    \\    int layer = (v_glyph.w >> 8) & 0xFF;
+    \\    int atlas_layer = (v_glyph.w >> 8) & 0xFF;
+    \\
+    \\    if (atlas_layer == 0xFF) {
+    \\        // Multi-layer COLR: use non-subpixel evaluation (color emoji don't need subpixel AA)
+    \\        int layer_count = v_glyph.z;
+    \\        ivec2 infoBase = v_glyph.xy;
+    \\        vec4 result = vec4(0.0);
+    \\        for (int l = 0; l < MAX_COLR_LAYERS && l < layer_count; l++) {
+    \\            ivec2 loc = ivec2(infoBase.x + l * 3, infoBase.y);
+    \\            loc.y += loc.x >> kLogBandTextureWidth;
+    \\            loc.x &= (1 << kLogBandTextureWidth) - 1;
+    \\            vec4 info  = texelFetch(u_layer_tex, loc, 0);
+    \\            vec4 band  = texelFetch(u_layer_tex, loc + ivec2(1, 0), 0);
+    \\            vec4 color = texelFetch(u_layer_tex, loc + ivec2(2, 0), 0);
+    \\            if (color.r < 0.0) color = v_color;
+    \\            ivec2 lGLoc = ivec2(info.xy);
+    \\            int bandMaxH = int(info.z) & 0xFFFF;
+    \\            int bandMaxV = (int(info.z) >> 16) & 0xFFFF;
+    \\            int texLayer = int(info.w);
+    \\            float cov = evalGlyphCoverage(rc, epp, ppe, lGLoc,
+    \\                                          ivec2(bandMaxH, bandMaxV), band, texLayer);
+    \\            cov = srgbGamma(cov);
+    \\            vec4 premul = color * cov;
+    \\            result = premul + result * (1.0 - premul.a);
+    \\        }
+    \\        if (result.a < 1.0/255.0) discard;
+    \\        frag_color = result;
+    \\        return;
+    \\    }
+    \\
+    \\    // Single-layer subpixel path
+    \\    int layer = atlas_layer;
     \\    ivec2 bandMax = ivec2(v_glyph.z, v_glyph.w & 0xFF);
     \\    ivec2 bandIdx = clamp(ivec2(rc * v_banding.xy + v_banding.zw), ivec2(0), bandMax);
     \\    ivec2 gLoc = v_glyph.xy;
     \\
-    \\    // Fetch both band headers upfront — needed by both horizontal and vertical paths.
     \\    uvec2 hbd = texelFetch(u_band_tex, ivec3(gLoc.x + bandIdx.y, gLoc.y, layer), 0).xy;
     \\    ivec2 hLoc = calcBandLoc(gLoc, hbd.y);
     \\    int hCount = int(hbd.x);
@@ -372,7 +474,6 @@ pub const fragment_shader_subpixel =
     \\    vec3 cov;
     \\
     \\    if (u_subpixel_order <= 2) {
-    \\        // Horizontal subpixels: RGB (1) runs left→right, BGR (2) right→left.
     \\        float sp = epp.x / 3.0;
     \\        float s = (u_subpixel_order == 2) ? -1.0 : 1.0;
     \\        vec2 cw_r = evalHorizCoverage(rc, -sp * s, ppe, gLoc, hLoc, hCount, layer);
@@ -381,7 +482,6 @@ pub const fragment_shader_subpixel =
     \\        vec2 cw_v = evalVertCoverage(rc, 0.0, ppe, vLoc, vCount, layer);
     \\        cov = blendSubpixel(cw_r, cw_g, cw_b, cw_v);
     \\    } else {
-    \\        // Vertical subpixels: VRGB (3) runs top→bottom, VBGR (4) bottom→top.
     \\        float sp = epp.y / 3.0;
     \\        float s = (u_subpixel_order == 4) ? -1.0 : 1.0;
     \\        vec2 cw_h = evalHorizCoverage(rc, 0.0, ppe, gLoc, hLoc, hCount, layer);
@@ -391,7 +491,6 @@ pub const fragment_shader_subpixel =
     \\        cov = blendSubpixel(cw_r, cw_g, cw_b, cw_h);
     \\    }
     \\
-    \\    // sRGB gamma: linear → sRGB transfer function
     \\    cov = mix(cov * 12.92,
     \\              1.055 * pow(cov, vec3(1.0 / 2.4)) - 0.055,
     \\              step(vec3(0.0031308), cov));

@@ -44,6 +44,8 @@ var sp_band_tex_loc: gl.GLint = -1;
 var fill_rule_loc: gl.GLint = -1;
 var sp_fill_rule_loc: gl.GLint = -1;
 var sp_subpixel_order_loc: gl.GLint = -1;
+var layer_tex_loc: gl.GLint = -1;
+var sp_layer_tex_loc: gl.GLint = -1;
 
 pub var subpixel_order: SubpixelOrder = .none;
 pub var fill_rule: FillRule = .non_zero;
@@ -64,6 +66,7 @@ var ebo: gl.GLuint = 0;
 
 var curve_array: gl.GLuint = 0;
 var band_array: gl.GLuint = 0;
+var layer_info_tex: gl.GLuint = 0;
 
 var active_program: gl.GLuint = 0;
 var frame_begun: bool = false;
@@ -90,6 +93,7 @@ pub fn init() !void {
     curve_tex_loc = gl.glGetUniformLocation(program, "u_curve_tex");
     band_tex_loc = gl.glGetUniformLocation(program, "u_band_tex");
     fill_rule_loc = gl.glGetUniformLocation(program, "u_fill_rule");
+    layer_tex_loc = gl.glGetUniformLocation(program, "u_layer_tex");
 
     program_subpixel = try linkProgram(shaders.vertex_shader, shaders.fragment_shader_subpixel);
     sp_mvp_loc = gl.glGetUniformLocation(program_subpixel, "u_mvp");
@@ -98,6 +102,7 @@ pub fn init() !void {
     sp_band_tex_loc = gl.glGetUniformLocation(program_subpixel, "u_band_tex");
     sp_fill_rule_loc = gl.glGetUniformLocation(program_subpixel, "u_fill_rule");
     sp_subpixel_order_loc = gl.glGetUniformLocation(program_subpixel, "u_subpixel_order");
+    sp_layer_tex_loc = gl.glGetUniformLocation(program_subpixel, "u_layer_tex");
 
     backend = detectBackend();
 
@@ -194,6 +199,7 @@ pub fn deinit() void {
     if (ebo != 0) gl.glDeleteBuffers(1, &ebo);
     if (curve_array != 0) gl.glDeleteTextures(1, &curve_array);
     if (band_array != 0) gl.glDeleteTextures(1, &band_array);
+    if (layer_info_tex != 0) gl.glDeleteTextures(1, &layer_info_tex);
 }
 
 // ── Texture array management ──
@@ -201,6 +207,7 @@ pub fn deinit() void {
 pub fn buildTextureArrays(atlases: []const *const snail_mod.Atlas) void {
     if (curve_array != 0) gl.glDeleteTextures(1, &curve_array);
     if (band_array != 0) gl.glDeleteTextures(1, &band_array);
+    if (layer_info_tex != 0) gl.glDeleteTextures(1, &layer_info_tex);
 
     const layer_count: gl.GLsizei = @intCast(atlases.len);
     var max_curve_h: u32 = 1;
@@ -213,6 +220,24 @@ pub fn buildTextureArrays(atlases: []const *const snail_mod.Atlas) void {
     switch (backend) {
         .gl33 => buildTextureArraysGl33(atlases, layer_count, max_curve_h, max_band_h),
         .gl44 => buildTextureArraysGl44(atlases, layer_count, max_curve_h, max_band_h),
+    }
+
+    // Build COLR layer info texture (shared across all atlases, first one with data wins)
+    layer_info_tex = 0;
+    for (atlases) |a| {
+        if (a.layer_info_data) |lid| {
+            gl.glGenTextures(1, &layer_info_tex);
+            gl.glActiveTexture(gl.GL_TEXTURE2);
+            gl.glBindTexture(gl.GL_TEXTURE_2D, layer_info_tex);
+            gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA32F,
+                @intCast(a.layer_info_width), @intCast(a.layer_info_height), 0,
+                gl.GL_RGBA, gl.GL_FLOAT, @ptrCast(lid.ptr));
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST);
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST);
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE);
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE);
+            break;
+        }
     }
 
     active_program = 0;
@@ -328,17 +353,24 @@ pub fn drawText(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f
         if (backend == .gl44) {
             gl.glBindTextureUnit(0, curve_array);
             gl.glBindTextureUnit(1, band_array);
+            if (layer_info_tex != 0) gl.glBindTextureUnit(2, layer_info_tex);
         } else {
             gl.glActiveTexture(gl.GL_TEXTURE0);
             gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, curve_array);
             gl.glActiveTexture(gl.GL_TEXTURE1);
             gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, band_array);
+            if (layer_info_tex != 0) {
+                gl.glActiveTexture(gl.GL_TEXTURE2);
+                gl.glBindTexture(gl.GL_TEXTURE_2D, layer_info_tex);
+            }
         }
 
         const u_ct = if (using_sp) sp_curve_tex_loc else curve_tex_loc;
         const u_bt = if (using_sp) sp_band_tex_loc else band_tex_loc;
+        const u_lt = if (using_sp) sp_layer_tex_loc else layer_tex_loc;
         gl.glUniform1i(u_ct, 0);
         gl.glUniform1i(u_bt, 1);
+        gl.glUniform1i(u_lt, 2);
         frame_begun = true;
     }
 

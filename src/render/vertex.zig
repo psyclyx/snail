@@ -90,6 +90,73 @@ pub fn generateGlyphVertices(
     }
 }
 
+/// Generate vertex data for a multi-layer COLR glyph (single quad, all layers).
+/// The fragment shader reads per-layer data from the layer info texture.
+pub fn generateMultiLayerGlyphVertices(
+    buf: []f32,
+    x: f32,
+    y: f32,
+    font_size: f32,
+    union_bbox: BBox,
+    info_x: u16,
+    info_y: u16,
+    layer_count: u8,
+    color: [4]f32,
+) void {
+    const x0 = x + union_bbox.min.x * font_size;
+    const y0 = y + union_bbox.min.y * font_size;
+    const x1 = x + union_bbox.max.x * font_size;
+    const y1 = y + union_bbox.max.y * font_size;
+
+    const em_x0 = union_bbox.min.x;
+    const em_y0 = union_bbox.min.y;
+    const em_x1 = union_bbox.max.x;
+    const em_y1 = union_bbox.max.y;
+
+    // gz: layer info texture pointer (info_x | info_y << 16)
+    const gz: u32 = @as(u32, info_x) | (@as(u32, info_y) << 16);
+    // gw: layer_count in low 16 bits, 0xFF sentinel in atlas_layer byte (bits 24-31)
+    const gw: u32 = @as(u32, layer_count) | (0xFF << 24);
+
+    const gz_f: f32 = @bitCast(gz);
+    const gw_f: f32 = @bitCast(gw);
+    const inv_scale = 1.0 / font_size;
+
+    const corners = [4]struct { px: f32, py: f32, nx: f32, ny: f32, ex: f32, ey: f32 }{
+        .{ .px = x0, .py = y0, .nx = -1, .ny = -1, .ex = em_x0, .ey = em_y0 },
+        .{ .px = x1, .py = y0, .nx = 1, .ny = -1, .ex = em_x1, .ey = em_y0 },
+        .{ .px = x1, .py = y1, .nx = 1, .ny = 1, .ex = em_x1, .ey = em_y1 },
+        .{ .px = x0, .py = y1, .nx = -1, .ny = 1, .ex = em_x0, .ey = em_y1 },
+    };
+
+    inline for (0..4) |vi| {
+        const c = corners[vi];
+        const base = vi * FLOATS_PER_VERTEX;
+        buf[base + 0] = c.px;
+        buf[base + 1] = c.py;
+        buf[base + 2] = c.nx;
+        buf[base + 3] = c.ny;
+        buf[base + 4] = c.ex;
+        buf[base + 5] = c.ey;
+        buf[base + 6] = gz_f;
+        buf[base + 7] = gw_f;
+        buf[base + 8] = inv_scale;
+        buf[base + 9] = 0;
+        buf[base + 10] = 0;
+        buf[base + 11] = inv_scale;
+        // Band transform zeroed — per-layer banding comes from layer info texture
+        buf[base + 12] = 0;
+        buf[base + 13] = 0;
+        buf[base + 14] = 0;
+        buf[base + 15] = 0;
+        // Fallback text color (for layers with palette index 0xFFFF)
+        buf[base + 16] = color[0];
+        buf[base + 17] = color[1];
+        buf[base + 18] = color[2];
+        buf[base + 19] = color[3];
+    }
+}
+
 test "vertex generation produces correct count and layout" {
     const bezier_mod = @import("../math/bezier.zig");
     var buf: [FLOATS_PER_VERTEX * VERTICES_PER_GLYPH]f32 = undefined;
