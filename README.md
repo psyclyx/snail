@@ -26,7 +26,9 @@ nix-shell
 zig build run            # interactive demo
 zig build test           # unit tests
 zig build bench          # benchmarks
-zig build -Dprofile=true # enable profiling instrumentation
+zig build -Dprofile=true   # enable profiling instrumentation
+zig build -Dharfbuzz=true  # enable HarfBuzz text shaping
+zig build valgrind         # run tests under valgrind
 ```
 
 Demo controls: `Z`/`X` zoom, `R` rotate, `S` stress test, `L` toggle subpixel rendering.
@@ -103,7 +105,18 @@ renderer.setFillRule(.even_odd);
 
 ### OpenType shaping
 
-Automatic ligature substitution (GSUB type 4) and kerning (GPOS type 2) with kern table fallback. Ligature glyphs are auto-discovered from GSUB tables during atlas construction.
+Built-in ligature substitution (GSUB type 4) and kerning (GPOS type 2) with kern table fallback. Sufficient for Latin, Cyrillic, and Greek text.
+
+For complex scripts (Arabic, Devanagari, Thai, etc.), compile with `-Dharfbuzz=true`:
+
+```zig
+// HarfBuzz is used automatically by addString() when enabled
+_ = try atlas.addGlyphsForText("مرحبا بالعالم"); // discover Arabic glyphs
+renderer.uploadAtlas(&atlas);
+_ = batch.addString(&atlas, &font, "مرحبا بالعالم", x, y, 32, color);
+```
+
+When HarfBuzz is not compiled in, `addString` uses the built-in shaper. The `addShaped()` API is always available for callers who use an external shaper.
 
 ### C API
 
@@ -158,6 +171,7 @@ src/
   c_api.zig              C bindings (extern functions)
   font/ttf.zig           TrueType parser (head, maxp, cmap, glyf, loca, hhea, hmtx, kern)
   font/opentype.zig      OpenType shaper (GSUB ligatures, GPOS kerning)
+  font/harfbuzz.zig      HarfBuzz integration (optional, -Dharfbuzz=true)
   font/snail_file.zig    .snail preprocessed format (zero-parse loading)
   math/                  Vec2, Mat4, QuadBezier, quadratic root solver
   render/
