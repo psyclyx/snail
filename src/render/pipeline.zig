@@ -356,7 +356,7 @@ pub fn drawText(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f
     // Draw in chunks that fit within EBO / ring segment capacity
     var glyphs_drawn: usize = 0;
     while (glyphs_drawn < total_glyphs) {
-        const chunk = @min(total_glyphs - glyphs_drawn, MAX_GLYPHS_PER_SEGMENT);
+        const chunk: usize = @min(total_glyphs - glyphs_drawn, MAX_GLYPHS_PER_SEGMENT);
         const float_offset = glyphs_drawn * floats_per_glyph;
         const byte_size = chunk * BYTES_PER_GLYPH;
 
