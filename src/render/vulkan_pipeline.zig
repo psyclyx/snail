@@ -54,9 +54,11 @@ var desc_set_layout: vk.VkDescriptorSetLayout = null;
 var desc_pool: vk.VkDescriptorPool = null;
 var desc_set: vk.VkDescriptorSet = null;
 
-// Vertex/index buffers (ring buffer)
-const RING_SEGMENTS = 3;
-const RING_TOTAL_BYTES = 4 * 1024 * 1024; // 4 MB
+// Vertex ring buffer — must have enough segments so that in-flight frames
+// never share a segment.  With MAX_FRAMES_IN_FLIGHT=2 and up to 2 draw
+// calls per frame (scene + HUD), we need at least 4 segments.
+const RING_SEGMENTS = 4;
+const RING_TOTAL_BYTES = 16 * 1024 * 1024; // 16 MB (4 MB per segment — fits 10k glyphs)
 const RING_SEGMENT_BYTES = RING_TOTAL_BYTES / RING_SEGMENTS;
 const INITIAL_EBO_GLYPHS = 10000; // pre-allocate; avoids vkDeviceWaitIdle on first frame
 
@@ -311,17 +313,22 @@ pub fn drawText(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f
     const cmd = active_cmd orelse return;
     if (vertices.len == 0) return;
 
-    const byte_size = vertices.len * @sizeOf(f32);
-    const glyph_count = vertices.len / (vertex.FLOATS_PER_VERTEX * vertex.VERTICES_PER_GLYPH);
+    var byte_size = vertices.len * @sizeOf(f32);
+    var glyph_count = vertices.len / (vertex.FLOATS_PER_VERTEX * vertex.VERTICES_PER_GLYPH);
     if (glyph_count == 0) return;
+
+    // Clamp to ring segment capacity (avoid silently skipping the copy)
+    const max_glyphs = RING_SEGMENT_BYTES / (vertex.FLOATS_PER_VERTEX * vertex.VERTICES_PER_GLYPH * @sizeOf(f32));
+    if (glyph_count > max_glyphs) {
+        glyph_count = max_glyphs;
+        byte_size = glyph_count * vertex.FLOATS_PER_VERTEX * vertex.VERTICES_PER_GLYPH * @sizeOf(f32);
+    }
 
     // Copy vertices into ring segment
     const offset: vk.VkDeviceSize = @as(vk.VkDeviceSize, ring_segment) * RING_SEGMENT_BYTES;
-    if (byte_size <= RING_SEGMENT_BYTES) {
-        const dst = persistent_map.?[offset..][0..byte_size];
-        const src: [*]const u8 = @ptrCast(vertices.ptr);
-        @memcpy(dst, src[0..byte_size]);
-    }
+    const dst = persistent_map.?[offset..][0..byte_size];
+    const src: [*]const u8 = @ptrCast(vertices.ptr);
+    @memcpy(dst, src[0..byte_size]);
 
     // Ensure index buffer capacity
     ensureEboCapacity(@intCast(glyph_count));
