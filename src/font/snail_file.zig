@@ -155,7 +155,7 @@ pub fn load(allocator: std.mem.Allocator, data: []const u8) !snail.Atlas {
 
     return .{
         .allocator = allocator,
-        .font = undefined, // not available from .snail files
+        .font = null, // not available from .snail files
         .curve_data = curve_data,
         .curve_width = header.curve_width,
         .curve_height = header.curve_height,

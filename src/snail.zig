@@ -66,7 +66,7 @@ pub const Font = struct {
 /// Create once, upload to Renderer, then use with Batch.
 pub const Atlas = struct {
     allocator: std.mem.Allocator,
-    font: *const Font,
+    font: ?*const Font, // null for .snail-loaded atlases
 
     // GPU texture data (CPU-side, ready for upload)
     curve_data: []u16,
@@ -240,6 +240,7 @@ pub const Atlas = struct {
     /// Returns true if new glyphs were added (caller must re-upload via
     /// Renderer.uploadAtlas). Returns false if all codepoints were already present.
     pub fn addCodepoints(self: *Atlas, new_codepoints: []const u32) !bool {
+        const font = self.font orelse return error.NoFontAvailable;
         const allocator = self.allocator;
 
         // Collect all glyph IDs: existing + new
@@ -253,7 +254,7 @@ pub const Atlas = struct {
         // Add new codepoints
         var added_any = false;
         for (new_codepoints) |cp| {
-            const gid = self.font.inner.glyphIndex(cp) catch continue;
+            const gid = font.inner.glyphIndex(cp) catch continue;
             if (gid == 0) continue;
             if (seen.contains(gid)) continue;
             try seen.put(gid, {});
@@ -265,14 +266,14 @@ pub const Atlas = struct {
         // Discover ligature glyphs for the expanded set
         {
             const liga_glyphs = try opentype.discoverLigatureGlyphs(
-                allocator, self.font.inner.data, self.font.inner.gsub_offset, &seen,
+                allocator, font.inner.data, font.inner.gsub_offset, &seen,
             );
             defer if (liga_glyphs.len > 0) allocator.free(liga_glyphs);
             for (liga_glyphs) |lg| try seen.put(lg, {});
         }
 
         // Re-parse all glyphs and rebuild textures
-        const result = try buildTextureData(allocator, self.font, &seen);
+        const result = try buildTextureData(allocator, font, &seen);
 
         // Free old data
         allocator.free(self.curve_data);
