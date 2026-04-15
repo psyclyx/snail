@@ -4,7 +4,7 @@ GPU font rendering via direct Bézier curve evaluation. A Zig implementation of 
 
 ![snail rendering text at multiple sizes](assets/screenshot_sizes.png)
 
-Text is rendered by evaluating quadratic Bézier curves per-pixel in a fragment shader. No texture atlases, no signed distance fields, no pre-rasterization. Glyphs are resolution-independent and render correctly at any size, rotation, or perspective transform.
+Text is rendered by evaluating quadratic Bézier curves per-pixel in a fragment shader. No pre-rasterized glyph bitmaps, no signed distance fields. Glyphs are resolution-independent and render correctly at any size, rotation, or perspective transform. Curve geometry is packed into GPU textures at load time; coverage is computed analytically at runtime.
 
 ## Based on
 
