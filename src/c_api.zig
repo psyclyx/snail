@@ -191,6 +191,28 @@ export fn snail_batch_add_string(
     return advance;
 }
 
+export fn snail_batch_add_string_wrapped(
+    buf: [*]f32,
+    buf_capacity: usize,
+    buf_len: *usize,
+    atlas: *const AtlasImpl,
+    font: *const FontImpl,
+    text: [*]const u8,
+    text_len: usize,
+    x: f32,
+    y: f32,
+    font_size: f32,
+    max_width: f32,
+    line_height: f32,
+    color: [*]const f32,
+) f32 {
+    var batch = snail.Batch.init(buf[buf_len.*..buf_capacity]);
+    const wrapped_font = snail.Font{ .inner = font.inner };
+    const height = batch.addStringWrapped(&atlas.inner, &wrapped_font, text[0..text_len], x, y, font_size, max_width, line_height, color[0..4].*);
+    buf_len.* += batch.len;
+    return height;
+}
+
 // ── Constants ──
 
 export fn snail_floats_per_glyph() usize {

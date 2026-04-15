@@ -72,9 +72,38 @@ For static UI text, build the `Batch` once and call `Renderer.draw` each frame w
 
 For dynamic text (input fields, counters, chat), rebuild the `Batch` each frame. At ~0.5 us/glyph, laying out 1000 glyphs costs ~0.5 ms.
 
+### Dynamic glyph loading
+
+Add glyphs to an existing atlas at runtime without rebuilding from scratch:
+
+```zig
+const new_codepoints = [_]u32{ 0x00E9, 0x00F1, 0x00FC }; // é, ñ, ü
+if (try atlas.addCodepoints(&new_codepoints)) {
+    renderer.uploadAtlas(&atlas); // re-upload only if new glyphs were added
+}
+```
+
+### Word wrapping
+
+```zig
+_ = batch.addStringWrapped(&atlas, &font, paragraph, x, y, 14.0, max_width, 20.0, color);
+```
+
+### Fill rule
+
+Supports both non-zero winding (TrueType default) and even-odd fill rules:
+
+```zig
+renderer.setFillRule(.even_odd);
+```
+
 ### Subpixel rendering
 
 `renderer.setSubpixel(true)` enables LCD subpixel antialiasing. The fragment shader evaluates coverage at three horizontal offsets (one per RGB subpixel), tripling effective horizontal resolution. Most visible on standard-DPI displays at small font sizes.
+
+### OpenType shaping
+
+Automatic ligature substitution (GSUB type 4) and kerning (GPOS type 2) with kern table fallback. Ligature glyphs are auto-discovered from GSUB tables during atlas construction.
 
 ### C API
 
@@ -128,11 +157,13 @@ src/
   snail.zig              public API: Font, Atlas, Renderer, Batch
   c_api.zig              C bindings (extern functions)
   font/ttf.zig           TrueType parser (head, maxp, cmap, glyf, loca, hhea, hmtx, kern)
+  font/opentype.zig      OpenType shaper (GSUB ligatures, GPOS kerning)
+  font/snail_file.zig    .snail preprocessed format (zero-parse loading)
   math/                  Vec2, Mat4, QuadBezier, quadratic root solver
   render/
     shaders.zig          GLSL 330 vertex + fragment shaders (Slug algorithm)
     pipeline.zig         OpenGL state management
-    curve_texture.zig    RGBA32F curve control point texture
+    curve_texture.zig    RGBA16F curve control point texture
     band_texture.zig     RG16UI spatial band subdivision texture
     vertex.zig           glyph quad vertex generation (5x vec4 per vertex)
   profile/timer.zig      comptime-gated CPU timers (zero overhead when disabled)
@@ -144,7 +175,7 @@ include/
 
 1. **TTF parsing**: extract glyph outlines as quadratic Bézier curves from TrueType font files.
 
-2. **Curve texture**: pack all control points into an RGBA32F texture. Each curve occupies two texels: `(p1.x, p1.y, p2.x, p2.y)` and `(p3.x, p3.y, -, -)`.
+2. **Curve texture**: pack all control points into an RGBA16F texture. Each curve occupies two texels: `(p1.x, p1.y, p2.x, p2.y)` and `(p3.x, p3.y, -, -)`.
 
 3. **Band texture**: subdivide each glyph's bounding box into horizontal and vertical bands. Each band stores which curves intersect it. This reduces per-pixel work from O(all curves) to O(curves in band).
 

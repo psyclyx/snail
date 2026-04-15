@@ -96,6 +96,15 @@ float snail_batch_add_string(float *buf, size_t buf_capacity, size_t *buf_len,
                              float x, float y, float font_size,
                              const float *color);
 
+/* Lay out and append glyph vertices with word wrapping.
+ * Returns total height used in pixels. */
+float snail_batch_add_string_wrapped(float *buf, size_t buf_capacity, size_t *buf_len,
+                                     const SnailAtlas *atlas, const SnailFont *font,
+                                     const char *text, size_t text_len,
+                                     float x, float y, float font_size,
+                                     float max_width, float line_height,
+                                     const float *color);
+
 /* ── Constants ── */
 
 size_t snail_floats_per_glyph(void);
