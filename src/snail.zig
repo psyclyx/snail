@@ -17,6 +17,7 @@
 
 const std = @import("std");
 pub const ttf = @import("font/ttf.zig");
+pub const opentype = @import("font/opentype.zig");
 pub const bezier = @import("math/bezier.zig");
 pub const vec = @import("math/vec.zig");
 const curve_tex = @import("render/curve_texture.zig");
@@ -77,6 +78,9 @@ pub const Atlas = struct {
     // Per-glyph lookup
     glyph_map: std.AutoHashMap(u16, GlyphInfo),
 
+    // OpenType shaper (ligatures + GPOS kerning)
+    shaper: ?opentype.Shaper,
+
     pub const GlyphInfo = struct {
         bbox: bezier.BBox,
         advance_width: u16,
@@ -101,11 +105,26 @@ pub const Atlas = struct {
         var glyph_infos: std.ArrayList(struct { gid: u16, advance: u16, bbox: bezier.BBox }) = .empty;
         defer glyph_infos.deinit(allocator);
 
+        // Collect base glyphs
         for (codepoints) |cp| {
             const gid = font.inner.glyphIndex(cp) catch continue;
-            if (gid == 0 or seen.contains(gid)) continue;
+            if (gid == 0) continue;
             try seen.put(gid, {});
+        }
 
+        // Discover ligature output glyphs by scanning GSUB tables directly
+        {
+            const liga_glyphs = try opentype.discoverLigatureGlyphs(
+                allocator, font.inner.data, font.inner.gsub_offset, &seen,
+            );
+            defer if (liga_glyphs.len > 0) allocator.free(liga_glyphs);
+            for (liga_glyphs) |lg| try seen.put(lg, {});
+        }
+
+        // Parse all collected glyph IDs
+        var seen_it = seen.keyIterator();
+        while (seen_it.next()) |gid_ptr| {
+            const gid = gid_ptr.*;
             const glyph = font.inner.parseGlyph(allocator, &cache, gid) catch continue;
 
             var all_curves: std.ArrayList(bezier.QuadBezier) = .empty;
@@ -165,6 +184,14 @@ pub const Atlas = struct {
         allocator.free(bt.entries);
         for (glyph_curves_list.items) |gc| allocator.free(gc.curves);
 
+        // Initialize OpenType shaper
+        const shaper: ?opentype.Shaper = opentype.Shaper.init(
+            allocator,
+            font.inner.data,
+            font.inner.gsub_offset,
+            font.inner.gpos_offset,
+        ) catch null;
+
         return .{
             .allocator = allocator,
             .font = font,
@@ -175,6 +202,7 @@ pub const Atlas = struct {
             .band_width = bt.texture.width,
             .band_height = bt.texture.height,
             .glyph_map = glyph_map,
+            .shaper = shaper,
         };
     }
 
@@ -187,6 +215,7 @@ pub const Atlas = struct {
     }
 
     pub fn deinit(self: *Atlas) void {
+        if (self.shaper) |*s| @constCast(s).deinit();
         self.allocator.free(self.curve_data);
         self.allocator.free(self.band_data);
         self.glyph_map.deinit();
@@ -231,7 +260,9 @@ pub const Batch = struct {
         return true;
     }
 
-    /// Lay out and append a string. Returns advance width in pixels.
+    /// Lay out and append a string. Applies ligature substitution and
+    /// GPOS kerning if available, falling back to kern table.
+    /// Returns advance width in pixels.
     pub fn addString(
         self: *Batch,
         atlas: *const Atlas,
@@ -244,18 +275,39 @@ pub const Batch = struct {
     ) f32 {
         const scale = font_size / @as(f32, @floatFromInt(font.unitsPerEm()));
         var cursor_x = x;
-        var prev_gid: u16 = 0;
 
+        // Convert text to glyph IDs
+        var glyph_buf: [1024]u16 = undefined;
+        var glyph_count: usize = 0;
         for (text) |ch| {
-            const gid = font.glyphIndex(ch) catch continue;
+            if (glyph_count >= glyph_buf.len) break;
+            glyph_buf[glyph_count] = font.glyphIndex(ch) catch 0;
+            glyph_count += 1;
+        }
+
+        // Apply ligature substitution
+        if (atlas.shaper) |shaper| {
+            glyph_count = shaper.applyLigatures(glyph_buf[0..glyph_count]) catch glyph_count;
+        }
+
+        // Layout
+        var prev_gid: u16 = 0;
+        for (glyph_buf[0..glyph_count]) |gid| {
             if (gid == 0) {
                 cursor_x += scale * 500;
                 prev_gid = 0;
                 continue;
             }
 
+            // Kerning: prefer GPOS, fall back to kern table
             if (prev_gid != 0) {
-                const kern = font.getKerning(prev_gid, gid) catch 0;
+                var kern: i16 = 0;
+                if (atlas.shaper) |shaper| {
+                    kern = shaper.getKernAdjustment(prev_gid, gid) catch 0;
+                }
+                if (kern == 0) {
+                    kern = font.getKerning(prev_gid, gid) catch 0;
+                }
                 cursor_x += @as(f32, @floatFromInt(kern)) * scale;
             }
 
@@ -331,5 +383,6 @@ test {
     _ = @import("font/ttf.zig");
     _ = @import("render/curve_texture.zig");
     _ = @import("render/band_texture.zig");
+    _ = @import("font/opentype.zig");
     _ = @import("c_api.zig");
 }

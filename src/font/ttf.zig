@@ -59,6 +59,8 @@ pub const Font = struct {
     hmtx_offset: u32 = 0,
     maxp_offset: u32 = 0,
     kern_offset: u32 = 0,
+    gsub_offset: u32 = 0,
+    gpos_offset: u32 = 0,
     index_to_loc_format: i16 = 0,
     num_h_metrics: u16 = 0,
 
@@ -101,7 +103,9 @@ pub const Font = struct {
             else if (std.mem.eql(u8, tag, "loca")) self.loca_offset = table_offset
             else if (std.mem.eql(u8, tag, "hhea")) self.hhea_offset = table_offset
             else if (std.mem.eql(u8, tag, "hmtx")) self.hmtx_offset = table_offset
-            else if (std.mem.eql(u8, tag, "kern")) self.kern_offset = table_offset;
+            else if (std.mem.eql(u8, tag, "kern")) self.kern_offset = table_offset
+            else if (std.mem.eql(u8, tag, "GSUB")) self.gsub_offset = table_offset
+            else if (std.mem.eql(u8, tag, "GPOS")) self.gpos_offset = table_offset;
             offset += 16;
         }
         if (self.head_offset == 0 or self.glyf_offset == 0 or self.loca_offset == 0)

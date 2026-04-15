@@ -111,6 +111,8 @@ pub fn main() !void {
             _ = batch.addString(&atlas, &font, "ABCDEFGHIJKLMNOPQRSTUVWXYZ 0123456789", 30, y, 24, cyan);
             y -= 36;
             _ = batch.addString(&atlas, &font, "abcdefghijklmnopqrstuvwxyz !@#$%^&*()", 30, y, 24, yellow);
+            y -= 36;
+            _ = batch.addString(&atlas, &font, "fi fl ffi ffl office difficult", 30, y, 36, white);
         }
 
         if (batch.glyphCount() > 0) {
