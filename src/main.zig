@@ -1,9 +1,43 @@
 const std = @import("std");
 const snail = @import("snail.zig");
+const build_options = @import("build_options");
 const platform = @import("render/platform.zig");
 const gl = platform.gl;
 const assets = @import("assets");
 const screenshot = @import("render/screenshot.zig");
+
+const ScriptFont = struct {
+    font: snail.Font,
+    atlas: snail.Atlas,
+
+    fn init(allocator: std.mem.Allocator, data: []const u8, sample_text: []const u8) !ScriptFont {
+        var font = try snail.Font.init(data);
+        var atlas = try snail.Atlas.init(allocator, &font, &.{});
+
+        // Use HarfBuzz to discover glyphs from sample text when available
+        if (comptime build_options.enable_harfbuzz) {
+            _ = try atlas.addGlyphsForText(sample_text);
+        } else {
+            // Fallback: add codepoints directly from UTF-8
+            var cps: [512]u32 = undefined;
+            var n: usize = 0;
+            const view = std.unicode.Utf8View.initUnchecked(sample_text);
+            var it = view.iterator();
+            while (it.nextCodepoint()) |cp| {
+                if (n >= cps.len) break;
+                cps[n] = cp;
+                n += 1;
+            }
+            _ = try atlas.addCodepoints(cps[0..n]);
+        }
+        return .{ .font = font, .atlas = atlas };
+    }
+
+    fn deinit(self: *ScriptFont) void {
+        self.atlas.deinit();
+        self.font.deinit();
+    }
+};
 
 pub fn main() !void {
     var da: std.heap.DebugAllocator(.{}) = .init;
@@ -13,20 +47,37 @@ pub fn main() !void {
     try platform.init(1280, 720, "snail");
     defer platform.deinit();
 
-    // Library API usage
+    // Latin font (primary)
     var font = try snail.Font.init(assets.noto_sans_regular);
     defer font.deinit();
 
     var atlas = try snail.Atlas.initAscii(allocator, &font, &snail.ASCII_PRINTABLE);
     defer atlas.deinit();
 
+    // Script fonts
+    const arabic_text = "\xd8\xa8\xd8\xb3\xd9\x85 \xd8\xa7\xd9\x84\xd9\x84\xd9\x87 \xd8\xa7\xd9\x84\xd8\xb1\xd8\xad\xd9\x85\xd9\x86 \xd8\xa7\xd9\x84\xd8\xb1\xd8\xad\xd9\x8a\xd9\x85"; // بسم الله الرحمن الرحيم
+    const devanagari_text = "\xe0\xa4\xa8\xe0\xa4\xae\xe0\xa4\xb8\xe0\xa5\x8d\xe0\xa4\xa4\xe0\xa5\x87 \xe0\xa4\xb8\xe0\xa4\x82\xe0\xa4\xb8\xe0\xa4\xbe\xe0\xa4\xb0"; // नमस्ते संसार
+    const mongolian_text = "\xe1\xa0\xae\xe1\xa0\xa4\xe1\xa0\xa9\xe1\xa0\xa0\xe1\xa0\xa4\xe1\xa0\xaf"; // ᠮᠤᠩᠠᠤᠯ
+    const thai_text = "\xe0\xb8\xaa\xe0\xb8\xa7\xe0\xb8\xb1\xe0\xb8\xaa\xe0\xb8\x94\xe0\xb8\xb5\xe0\xb8\x84\xe0\xb8\xa3\xe0\xb8\xb1\xe0\xb8\x9a"; // สวัสดีครับ
+    const emoji_text = "\xe2\x9c\xa8\xf0\x9f\x8c\x8d\xf0\x9f\x8e\xae\xf0\x9f\x93\x90\xe2\x98\x85\xe2\x99\xa5\xe2\x9a\xa1"; // ✨🌍🎮📐☆♥⚡
+
+    var arabic = try ScriptFont.init(allocator, assets.noto_sans_arabic, arabic_text);
+    defer arabic.deinit();
+    var devanagari = try ScriptFont.init(allocator, assets.noto_sans_devanagari, devanagari_text);
+    defer devanagari.deinit();
+    var mongolian = try ScriptFont.init(allocator, assets.noto_sans_mongolian, mongolian_text);
+    defer mongolian.deinit();
+    var thai = try ScriptFont.init(allocator, assets.noto_sans_thai, thai_text);
+    defer thai.deinit();
+    var emoji = try ScriptFont.init(allocator, assets.noto_emoji, emoji_text);
+    defer emoji.deinit();
+
     var renderer = try snail.Renderer.init();
     defer renderer.deinit();
-    renderer.uploadAtlas(&atlas);
 
-    // Vertex buffer: enough for ~5000 glyphs
-    const buf_size = 5000 * snail.FLOATS_PER_GLYPH;
-    var vbuf = try allocator.alloc(f32, buf_size);
+    // Vertex buffer: enough for ~10000 glyphs
+    const buf_size = 10000 * snail.FLOATS_PER_GLYPH;
+    const vbuf = try allocator.alloc(f32, buf_size);
     defer allocator.free(vbuf);
 
     var angle: f32 = 0;
@@ -39,8 +90,11 @@ pub fn main() !void {
     var fps_frames: u32 = 0;
     var fps_display: f32 = 0;
 
-    std.debug.print("snail — GPU Bézier font rendering\n", .{});
-    std.debug.print("{} glyphs prepared, {} UPM\n", .{ atlas.glyph_map.count(), font.unitsPerEm() });
+    std.debug.print("snail \xe2\x80\x94 GPU B\xc3\xa9zier font rendering\n", .{});
+    std.debug.print("{} glyphs (Latin), HarfBuzz: {s}\n", .{
+        atlas.glyph_map.count(),
+        if (build_options.enable_harfbuzz) "ON" else "OFF",
+    });
     std.debug.print("Keys: Z/X zoom, R rotate, S stress, L subpixel, Esc quit\n", .{});
 
     while (!platform.shouldClose()) {
@@ -85,13 +139,19 @@ pub fn main() !void {
             )),
         ));
 
-        var batch = snail.Batch.init(vbuf);
         const white = [4]f32{ 1, 1, 1, 1 };
         const gray = [4]f32{ 0.6, 0.6, 0.65, 1 };
         const cyan = [4]f32{ 0.4, 0.8, 0.9, 1 };
         const yellow = [4]f32{ 0.9, 0.8, 0.3, 1 };
+        const green = [4]f32{ 0.4, 0.9, 0.5, 1 };
+        const pink = [4]f32{ 0.9, 0.5, 0.7, 1 };
+
+        var total_glyphs: usize = 0;
 
         if (stress_test) {
+            // Stress test: fill screen with Latin text
+            renderer.uploadAtlas(&atlas);
+            var batch = snail.Batch.init(vbuf);
             const stress_sizes = [_]f32{ 10, 14, 18, 24, 32, 48 };
             var sy: f32 = h - 20;
             var si: usize = 0;
@@ -101,46 +161,101 @@ pub fn main() !void {
                 sy -= fs * 1.3;
                 si += 1;
             }
+            if (batch.glyphCount() > 0) {
+                renderer.draw(batch.slice(), mvp, w, h);
+            }
+            total_glyphs += batch.glyphCount();
         } else {
+            // ── Latin section ──
+            renderer.uploadAtlas(&atlas);
+            var batch = snail.Batch.init(vbuf);
             var y: f32 = h - 50;
-            // Title sizes
-            _ = batch.addString(&atlas, &font, "snail", 30, y, 72, white);
-            y -= 80;
-            _ = batch.addString(&atlas, &font, "GPU font rendering via direct Bezier curve evaluation", 30, y, 18, gray);
-            y -= 36;
 
-            // Multi-size samples
+            // Title
+            _ = batch.addString(&atlas, &font, "snail", 30, y, 64, white);
+            y -= 72;
+            _ = batch.addString(&atlas, &font, "GPU font rendering via direct Bezier curve evaluation", 30, y, 16, gray);
+            y -= 30;
+
+            // Multi-size
             for ([_]f32{ 12, 16, 24, 36, 48 }) |fs| {
                 _ = batch.addString(&atlas, &font, "The quick brown fox jumps over the lazy dog", 30, y, fs, white);
-                y -= fs * 1.4;
+                y -= fs * 1.35;
             }
-            y -= 10;
+            y -= 8;
 
-            // Character set
-            _ = batch.addString(&atlas, &font, "ABCDEFGHIJKLMNOPQRSTUVWXYZ 0123456789", 30, y, 20, cyan);
+            // Character sets
+            _ = batch.addString(&atlas, &font, "ABCDEFGHIJKLMNOPQRSTUVWXYZ 0123456789", 30, y, 18, cyan);
+            y -= 24;
+            _ = batch.addString(&atlas, &font, "abcdefghijklmnopqrstuvwxyz !@#$%^&*()", 30, y, 18, yellow);
             y -= 28;
-            _ = batch.addString(&atlas, &font, "abcdefghijklmnopqrstuvwxyz !@#$%^&*()", 30, y, 20, yellow);
-            y -= 32;
 
             // Ligatures
-            _ = batch.addString(&atlas, &font, "fi fl ffi ffl office difficult", 30, y, 28, white);
-            y -= 40;
+            _ = batch.addString(&atlas, &font, "fi fl ffi ffl office difficult", 30, y, 24, white);
+            y -= 34;
 
-            // Word-wrapped paragraph
+            if (batch.glyphCount() > 0) {
+                renderer.draw(batch.slice(), mvp, w, h);
+            }
+            total_glyphs += batch.glyphCount();
+
+            // ── Script showcase (right column) ──
+            const col2_x: f32 = w * 0.52;
+            var sy: f32 = h - 50;
+
+            // Labels + script text pairs
+            const scripts = [_]struct {
+                label: []const u8,
+                text: []const u8,
+                sf: *ScriptFont,
+                color: [4]f32,
+            }{
+                .{ .label = "Arabic", .text = arabic_text, .sf = &arabic, .color = green },
+                .{ .label = "Devanagari", .text = devanagari_text, .sf = &devanagari, .color = cyan },
+                .{ .label = "Thai", .text = thai_text, .sf = &thai, .color = yellow },
+                .{ .label = "Mongolian", .text = mongolian_text, .sf = &mongolian, .color = pink },
+                .{ .label = "Emoji", .text = emoji_text, .sf = &emoji, .color = white },
+            };
+
+            for (scripts) |s| {
+                // Label (Latin font)
+                renderer.uploadAtlas(&atlas);
+                var label_batch = snail.Batch.init(vbuf);
+                _ = label_batch.addString(&atlas, &font, s.label, col2_x, sy, 12, gray);
+                if (label_batch.glyphCount() > 0)
+                    renderer.draw(label_batch.slice(), mvp, w, h);
+                total_glyphs += label_batch.glyphCount();
+                sy -= 18;
+
+                // Script text
+                renderer.uploadAtlas(&s.sf.atlas);
+                var script_batch = snail.Batch.init(vbuf);
+                _ = script_batch.addString(&s.sf.atlas, &s.sf.font, s.text, col2_x, sy, 32, s.color);
+                if (script_batch.glyphCount() > 0)
+                    renderer.draw(script_batch.slice(), mvp, w, h);
+                total_glyphs += script_batch.glyphCount();
+                sy -= 50;
+            }
+
+            // Description paragraph at bottom
+            renderer.uploadAtlas(&atlas);
+            var para_batch = snail.Batch.init(vbuf);
             const paragraph = "Direct Bezier curve evaluation in the fragment shader produces resolution-independent, " ++
                 "crisp text at any size, rotation, or perspective transform. No texture atlases, no signed distance fields.";
-            _ = batch.addStringWrapped(&atlas, &font, paragraph, 30, y, 14, w - 60, 20, gray);
-        }
-
-        if (batch.glyphCount() > 0) {
-            renderer.draw(batch.slice(), mvp, w, h);
+            _ = para_batch.addStringWrapped(&atlas, &font, paragraph, 30, y, 13, w * 0.45, 18, gray);
+            if (para_batch.glyphCount() > 0) {
+                renderer.draw(para_batch.slice(), mvp, w, h);
+            }
+            total_glyphs += para_batch.glyphCount();
         }
 
         // HUD (no rotation/zoom)
         {
-            var hud = snail.Batch.init(vbuf[batch.len..]);
+            renderer.uploadAtlas(&atlas);
+            var hud = snail.Batch.init(vbuf);
             _ = hud.addString(&atlas, &font, "snail - GPU Bezier curve font rendering", 10, 30, 12, gray);
-            _ = hud.addString(&atlas, &font, "Z/X zoom | R rotate | S stress | L subpixel", 10, 14, 12, gray);
+            const hb_str = if (build_options.enable_harfbuzz) " | HarfBuzz ON" else "";
+            _ = hud.addString(&atlas, &font, "Z/X zoom | R rotate | S stress | L subpixel" ++ hb_str, 10, 14, 12, gray);
             if (hud.glyphCount() > 0) {
                 renderer.draw(hud.slice(), projection, w, h);
             }
@@ -155,7 +270,7 @@ pub fn main() !void {
             }
         }
         if (frame_count % 60 == 0 and fps_display > 0) {
-            std.debug.print("\rFPS: {d:.0}  Glyphs: {}   ", .{ fps_display, batch.glyphCount() });
+            std.debug.print("\rFPS: {d:.0}  Glyphs: {}   ", .{ fps_display, total_glyphs });
         }
         frame_count += 1;
 

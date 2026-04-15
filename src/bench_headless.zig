@@ -4,6 +4,7 @@
 
 const std = @import("std");
 const snail = @import("snail.zig");
+const build_options = @import("build_options");
 const platform = @import("render/platform.zig");
 const gl = platform.gl;
 const assets = @import("assets");
@@ -19,17 +20,18 @@ const PARAGRAPH =
     "Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. " ++
     "Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris.";
 
+// Arabic: "In the name of God, the Most Gracious, the Most Merciful"
+const ARABIC_TEXT = "\xd8\xa8\xd8\xb3\xd9\x85 \xd8\xa7\xd9\x84\xd9\x84\xd9\x87 \xd8\xa7\xd9\x84\xd8\xb1\xd8\xad\xd9\x85\xd9\x86 \xd8\xa7\xd9\x84\xd8\xb1\xd8\xad\xd9\x8a\xd9\x85";
+// Devanagari: "Hello World"
+const DEVANAGARI_TEXT = "\xe0\xa4\xa8\xe0\xa4\xae\xe0\xa4\xb8\xe0\xa5\x8d\xe0\xa4\xa4\xe0\xa5\x87 \xe0\xa4\xb8\xe0\xa4\x82\xe0\xa4\xb8\xe0\xa4\xbe\xe0\xa4\xb0";
+// Thai: "Hello"
+const THAI_TEXT = "\xe0\xb8\xaa\xe0\xb8\xa7\xe0\xb8\xb1\xe0\xb8\xaa\xe0\xb8\x94\xe0\xb8\xb5\xe0\xb8\x84\xe0\xb8\xa3\xe0\xb8\xb1\xe0\xb8\x9a";
+
 fn nowNs() u64 {
     var ts: std.c.timespec = undefined;
     _ = std.c.clock_gettime(.MONOTONIC, &ts);
     return @intCast(@as(i128, ts.sec) * 1_000_000_000 + ts.nsec);
 }
-
-const Scenario = struct {
-    name: []const u8,
-    build_fn: *const fn (*snail.Batch, *const snail.Atlas, *const snail.Font) void,
-    expected_glyphs: usize,
-};
 
 fn buildHud(batch: *snail.Batch, atlas: *const snail.Atlas, font: *const snail.Font) void {
     _ = batch.addString(atlas, font, "Score: 12345  FPS: 60  Level 7", 10, HEIGHT - 20, 18, .{ 1, 1, 1, 1 });
@@ -120,8 +122,71 @@ fn runScenario(
     const dynamic_fps = @as(f64, FRAMES) / (@as(f64, @floatFromInt(dynamic_ns)) / 1e9);
     const dynamic_us = @as(f64, @floatFromInt(dynamic_ns)) / 1000.0 / FRAMES;
 
-    std.debug.print("  {s:<30} {d:>4} glyphs   static: {d:>8.0} FPS ({d:>6.1} us)   dynamic: {d:>8.0} FPS ({d:>6.1} us)\n", .{
+    std.debug.print("  {s:<30} {d:>5} glyphs   static: {d:>8.0} FPS ({d:>6.1} us)   dynamic: {d:>8.0} FPS ({d:>6.1} us)\n", .{
         name, glyphs, static_fps, static_us, dynamic_fps, dynamic_us,
+    });
+}
+
+const FontEntry = struct {
+    atlas: *const snail.Atlas,
+    font: *const snail.Font,
+    text: []const u8,
+    font_size: f32,
+};
+
+/// Multi-font scenario: renders text from multiple script fonts in one frame.
+/// Each font requires an atlas swap (texture re-upload).
+fn runMultiFontScenario(
+    name: []const u8,
+    font_sets: []const FontEntry,
+    renderer: *snail.Renderer,
+    vbuf: []f32,
+    mvp: snail.Mat4,
+) void {
+    const white = [4]f32{ 1, 1, 1, 1 };
+    var total_glyphs: usize = 0;
+
+    // Probe glyph count
+    for (font_sets) |fs| {
+        var b = snail.Batch.init(vbuf);
+        _ = b.addString(fs.atlas, fs.font, fs.text, 10, 400, fs.font_size, white);
+        total_glyphs += b.glyphCount();
+    }
+
+    // Warmup
+    for (0..WARMUP) |_| {
+        gl.glClear(gl.GL_COLOR_BUFFER_BIT);
+        var y: f32 = HEIGHT - 30;
+        for (font_sets) |fs| {
+            renderer.uploadAtlas(fs.atlas);
+            var b = snail.Batch.init(vbuf);
+            _ = b.addString(fs.atlas, fs.font, fs.text, 10, y, fs.font_size, white);
+            if (b.glyphCount() > 0) renderer.draw(b.slice(), mvp, WIDTH, HEIGHT);
+            y -= fs.font_size * 1.5;
+        }
+    }
+    gl.glFinish();
+
+    // Dynamic only (multi-font always requires rebuilding per font)
+    const t = nowNs();
+    for (0..FRAMES) |_| {
+        gl.glClear(gl.GL_COLOR_BUFFER_BIT);
+        var y: f32 = HEIGHT - 30;
+        for (font_sets) |fs| {
+            renderer.uploadAtlas(fs.atlas);
+            var b = snail.Batch.init(vbuf);
+            _ = b.addString(fs.atlas, fs.font, fs.text, 10, y, fs.font_size, white);
+            if (b.glyphCount() > 0) renderer.draw(b.slice(), mvp, WIDTH, HEIGHT);
+            y -= fs.font_size * 1.5;
+        }
+    }
+    gl.glFinish();
+    const ns = nowNs() - t;
+    const fps = @as(f64, FRAMES) / (@as(f64, @floatFromInt(ns)) / 1e9);
+    const us = @as(f64, @floatFromInt(ns)) / 1000.0 / FRAMES;
+
+    std.debug.print("  {s:<30} {d:>5} glyphs                                    dynamic: {d:>8.0} FPS ({d:>6.1} us)\n", .{
+        name, total_glyphs, fps, us,
     });
 }
 
@@ -154,7 +219,7 @@ pub fn main() !void {
     defer gl.glDeleteFramebuffers(1, &fbo);
     defer gl.glDeleteTextures(1, &fbo_tex);
 
-    // Setup
+    // Setup: Latin font
     const t_setup = nowNs();
     var font = try snail.Font.init(assets.noto_sans_regular);
     defer font.deinit();
@@ -169,20 +234,156 @@ pub fn main() !void {
     defer allocator.free(vbuf);
     const mvp = snail.Mat4.ortho(0, WIDTH, 0, HEIGHT, -1, 1);
 
+    const hb_str = if (build_options.enable_harfbuzz) "ON" else "OFF";
+
     std.debug.print(
         \\
-        \\=== snail end-to-end rendering ({d}x{d}, {d} frames/test) ===
+        \\=== snail end-to-end rendering ({d}x{d}, {d} frames/test, HarfBuzz: {s}) ===
         \\  Setup (font + atlas + GL): {d:.0} us
         \\
         \\  "static" = pre-built vertex buffer, draw only (game HUD, menus)
         \\  "dynamic" = rebuild vertices + draw every frame (chat, editor, debug)
         \\
-    , .{ WIDTH, HEIGHT, FRAMES, setup_us });
+    , .{ WIDTH, HEIGHT, FRAMES, hb_str, setup_us });
 
+    // ── Latin scenarios ──
+    std.debug.print("  --- Latin (built-in shaper{s}) ---\n", .{
+        if (build_options.enable_harfbuzz) " + HarfBuzz" else "",
+    });
     runScenario("Game HUD (2 lines)", buildHud, &atlas, &font, &renderer, vbuf, mvp);
     runScenario("Multi-size (6 sizes)", buildMultiSize, &atlas, &font, &renderer, vbuf, mvp);
     runScenario("Body text (6 paragraphs)", buildParagraph, &atlas, &font, &renderer, vbuf, mvp);
     runScenario("Torture (fill screen)", buildTorture, &atlas, &font, &renderer, vbuf, mvp);
+
+    // ── Multi-script scenarios (HarfBuzz) ──
+    std.debug.print("\n  --- Multi-script ---\n", .{});
+
+    // Arabic
+    var arabic_font = try snail.Font.init(assets.noto_sans_arabic);
+    defer arabic_font.deinit();
+    var arabic_atlas = try snail.Atlas.init(allocator, &arabic_font, &.{});
+    defer arabic_atlas.deinit();
+    {
+        if (comptime build_options.enable_harfbuzz) {
+            _ = try arabic_atlas.addGlyphsForText(ARABIC_TEXT);
+        } else {
+            var cps: [256]u32 = undefined;
+            var n: usize = 0;
+            const view = std.unicode.Utf8View.initUnchecked(ARABIC_TEXT);
+            var it = view.iterator();
+            while (it.nextCodepoint()) |cp| {
+                if (n >= cps.len) break;
+                cps[n] = cp;
+                n += 1;
+            }
+            _ = try arabic_atlas.addCodepoints(cps[0..n]);
+        }
+    }
+
+    // Devanagari
+    var deva_font = try snail.Font.init(assets.noto_sans_devanagari);
+    defer deva_font.deinit();
+    var deva_atlas = try snail.Atlas.init(allocator, &deva_font, &.{});
+    defer deva_atlas.deinit();
+    {
+        if (comptime build_options.enable_harfbuzz) {
+            _ = try deva_atlas.addGlyphsForText(DEVANAGARI_TEXT);
+        } else {
+            var cps: [256]u32 = undefined;
+            var n: usize = 0;
+            const view = std.unicode.Utf8View.initUnchecked(DEVANAGARI_TEXT);
+            var it = view.iterator();
+            while (it.nextCodepoint()) |cp| {
+                if (n >= cps.len) break;
+                cps[n] = cp;
+                n += 1;
+            }
+            _ = try deva_atlas.addCodepoints(cps[0..n]);
+        }
+    }
+
+    // Thai
+    var thai_font = try snail.Font.init(assets.noto_sans_thai);
+    defer thai_font.deinit();
+    var thai_atlas = try snail.Atlas.init(allocator, &thai_font, &.{});
+    defer thai_atlas.deinit();
+    {
+        if (comptime build_options.enable_harfbuzz) {
+            _ = try thai_atlas.addGlyphsForText(THAI_TEXT);
+        } else {
+            var cps: [256]u32 = undefined;
+            var n: usize = 0;
+            const view = std.unicode.Utf8View.initUnchecked(THAI_TEXT);
+            var it = view.iterator();
+            while (it.nextCodepoint()) |cp| {
+                if (n >= cps.len) break;
+                cps[n] = cp;
+                n += 1;
+            }
+            _ = try thai_atlas.addCodepoints(cps[0..n]);
+        }
+    }
+
+    // Single-script benchmarks (Arabic repeated to fill lines)
+    const buildArabic = struct {
+        fn f(batch: *snail.Batch, a: *const snail.Atlas, fo: *const snail.Font) void {
+            var y: f32 = HEIGHT - 30;
+            for (0..12) |_| {
+                _ = batch.addString(a, fo, ARABIC_TEXT, 10, y, 24, .{ 1, 1, 1, 1 });
+                y -= 32;
+            }
+        }
+    }.f;
+
+    const buildDevanagari = struct {
+        fn f(batch: *snail.Batch, a: *const snail.Atlas, fo: *const snail.Font) void {
+            var y: f32 = HEIGHT - 30;
+            for (0..12) |_| {
+                _ = batch.addString(a, fo, DEVANAGARI_TEXT, 10, y, 24, .{ 1, 1, 1, 1 });
+                y -= 32;
+            }
+        }
+    }.f;
+
+    renderer.uploadAtlas(&arabic_atlas);
+    runScenario("Arabic (12 lines)", buildArabic, &arabic_atlas, &arabic_font, &renderer, vbuf, mvp);
+
+    renderer.uploadAtlas(&deva_atlas);
+    runScenario("Devanagari (12 lines)", buildDevanagari, &deva_atlas, &deva_font, &renderer, vbuf, mvp);
+
+    // Multi-font: simulate game UI with mixed scripts
+    std.debug.print("\n  --- Multi-font (atlas switching) ---\n", .{});
+
+    const game_ui_fonts = [_]FontEntry{
+        .{ .atlas = &atlas, .font = &font, .text = "Score: 12345  Level 7", .font_size = 18 },
+        .{ .atlas = &arabic_atlas, .font = &arabic_font, .text = ARABIC_TEXT, .font_size = 24 },
+        .{ .atlas = &atlas, .font = &font, .text = "Health: 100%  Ammo: 42", .font_size = 16 },
+    };
+    runMultiFontScenario("Game UI (3 fonts)", &game_ui_fonts, &renderer, vbuf, mvp);
+
+    const chat_fonts = [_]FontEntry{
+        .{ .atlas = &atlas, .font = &font, .text = "Alice: Hey, how's it going?", .font_size = 16 },
+        .{ .atlas = &arabic_atlas, .font = &arabic_font, .text = ARABIC_TEXT, .font_size = 16 },
+        .{ .atlas = &deva_atlas, .font = &deva_font, .text = DEVANAGARI_TEXT, .font_size = 16 },
+        .{ .atlas = &atlas, .font = &font, .text = "Charlie: Let's meet at the cafe", .font_size = 16 },
+        .{ .atlas = &thai_atlas, .font = &thai_font, .text = THAI_TEXT, .font_size = 16 },
+        .{ .atlas = &atlas, .font = &font, .text = "Eve: Sounds good!", .font_size = 16 },
+    };
+    runMultiFontScenario("Chat (6 msgs, 4 fonts)", &chat_fonts, &renderer, vbuf, mvp);
+
+    // Torture: fill screen with alternating scripts
+    var torture_fonts: [24]FontEntry = undefined;
+    const mixed_texts = [_]struct { atlas: *const snail.Atlas, font: *const snail.Font, text: []const u8 }{
+        .{ .atlas = &atlas, .font = &font, .text = SENTENCE },
+        .{ .atlas = &arabic_atlas, .font = &arabic_font, .text = ARABIC_TEXT },
+        .{ .atlas = &deva_atlas, .font = &deva_font, .text = DEVANAGARI_TEXT },
+        .{ .atlas = &thai_atlas, .font = &thai_font, .text = THAI_TEXT },
+    };
+    for (&torture_fonts, 0..) |*tf, i| {
+        const src = mixed_texts[i % mixed_texts.len];
+        tf.* = .{ .atlas = src.atlas, .font = src.font, .text = src.text, .font_size = 16 };
+    }
+    runMultiFontScenario("Torture (24 lines, 4 fonts)", &torture_fonts, &renderer, vbuf, mvp);
 
     std.debug.print("\n=========================================================\n", .{});
 }
