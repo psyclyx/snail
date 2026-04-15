@@ -115,6 +115,18 @@ float snail_batch_add_string_wrapped(float *buf, size_t buf_capacity, size_t *bu
                                      float max_width, float line_height,
                                      const float *color);
 
+/* ── HarfBuzz (compile-time optional: -Dharfbuzz=true) ── */
+
+/* Returns true if HarfBuzz support was compiled in. */
+bool snail_harfbuzz_available(void);
+
+/* Discover glyphs needed for text via HarfBuzz shaping and add them to atlas.
+ * Sets *added to true if new glyphs were added (caller must re-upload).
+ * No-op if HarfBuzz not compiled in. */
+int  snail_atlas_add_glyphs_for_text(SnailAtlas *atlas,
+                                     const char *text, size_t text_len,
+                                     bool *added);
+
 /* ── Constants ── */
 
 size_t snail_floats_per_glyph(void);

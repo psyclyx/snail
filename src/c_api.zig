@@ -242,6 +242,24 @@ export fn snail_batch_add_string_wrapped(
     return height;
 }
 
+// ── HarfBuzz ──
+
+const build_options = @import("build_options");
+
+export fn snail_harfbuzz_available() bool {
+    return build_options.enable_harfbuzz;
+}
+
+export fn snail_atlas_add_glyphs_for_text(
+    atlas: *AtlasImpl,
+    text: [*]const u8,
+    text_len: usize,
+    added: *bool,
+) c_int {
+    added.* = atlas.inner.addGlyphsForText(text[0..text_len]) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    return SNAIL_OK;
+}
+
 // ── Constants ──
 
 export fn snail_floats_per_glyph() usize {

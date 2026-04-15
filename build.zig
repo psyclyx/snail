@@ -5,9 +5,11 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const enable_profiling = b.option(bool, "profile", "Enable profiling instrumentation") orelse false;
+    const enable_harfbuzz = b.option(bool, "harfbuzz", "Enable HarfBuzz text shaping") orelse false;
 
     const options = b.addOptions();
     options.addOption(bool, "enable_profiling", enable_profiling);
+    options.addOption(bool, "enable_harfbuzz", enable_harfbuzz);
 
     const assets_mod = b.createModule(.{ .root_source_file = b.path("assets/assets.zig") });
 
@@ -21,6 +23,7 @@ pub fn build(b: *std.Build) void {
     lib_module.addOptions("build_options", options);
     lib_module.linkSystemLibrary("glfw3", .{});
     lib_module.linkSystemLibrary("gl", .{});
+    if (enable_harfbuzz) lib_module.linkSystemLibrary("harfbuzz", .{});
 
     const shared_lib = b.addLibrary(.{ .name = "snail", .root_module = lib_module, .linkage = .dynamic });
     b.installArtifact(shared_lib);
@@ -45,6 +48,7 @@ pub fn build(b: *std.Build) void {
     demo_module.addOptions("build_options", options);
     demo_module.linkSystemLibrary("glfw3", .{});
     demo_module.linkSystemLibrary("gl", .{});
+    if (enable_harfbuzz) demo_module.linkSystemLibrary("harfbuzz", .{});
 
     const exe = b.addExecutable(.{ .name = "snail-demo", .root_module = demo_module });
     b.installArtifact(exe);
@@ -66,6 +70,7 @@ pub fn build(b: *std.Build) void {
     test_module.addOptions("build_options", options);
     test_module.linkSystemLibrary("glfw3", .{});
     test_module.linkSystemLibrary("gl", .{});
+    if (enable_harfbuzz) test_module.linkSystemLibrary("harfbuzz", .{});
 
     const unit_tests = b.addTest(.{ .root_module = test_module });
     const run_unit_tests = b.addRunArtifact(unit_tests);
@@ -92,6 +97,7 @@ pub fn build(b: *std.Build) void {
     });
     bench_cmp_module.addOptions("build_options", options);
     bench_cmp_module.linkSystemLibrary("freetype2", .{});
+    if (enable_harfbuzz) bench_cmp_module.linkSystemLibrary("harfbuzz", .{});
 
     const bench_cmp_exe = b.addExecutable(.{ .name = "snail-bench-compare", .root_module = bench_cmp_module });
     b.installArtifact(bench_cmp_exe);
@@ -111,6 +117,7 @@ pub fn build(b: *std.Build) void {
     bench_hl_module.addOptions("build_options", options);
     bench_hl_module.linkSystemLibrary("glfw3", .{});
     bench_hl_module.linkSystemLibrary("gl", .{});
+    if (enable_harfbuzz) bench_hl_module.linkSystemLibrary("harfbuzz", .{});
 
     const bench_hl_exe = b.addExecutable(.{ .name = "snail-bench-headless", .root_module = bench_hl_module });
     b.installArtifact(bench_hl_exe);

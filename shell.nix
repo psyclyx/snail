@@ -17,6 +17,7 @@ pkgs.mkShell {
     wayland-scanner
     libxkbcommon
     freetype
+    harfbuzz
     # For competitor benchmarks
     cmake
     gnumake
@@ -33,5 +34,6 @@ pkgs.mkShell {
     glfw
     wayland
     libxkbcommon
+    harfbuzz
   ];
 }

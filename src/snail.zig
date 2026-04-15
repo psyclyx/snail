@@ -16,6 +16,7 @@
 //!   renderer.draw(batch.slice(), mvp, viewport_w, viewport_h);
 
 const std = @import("std");
+const build_options = @import("build_options");
 pub const ttf = @import("font/ttf.zig");
 pub const opentype = @import("font/opentype.zig");
 pub const snail_file = @import("font/snail_file.zig");
@@ -25,6 +26,9 @@ const curve_tex = @import("render/curve_texture.zig");
 const band_tex = @import("render/band_texture.zig");
 const vertex_mod = @import("render/vertex.zig");
 const pipeline = @import("render/pipeline.zig");
+pub const harfbuzz = if (build_options.enable_harfbuzz) @import("font/harfbuzz.zig") else struct {
+    pub const HarfBuzzShaper = void;
+};
 
 pub const Mat4 = vec.Mat4;
 pub const Vec2 = vec.Vec2;
@@ -81,6 +85,9 @@ pub const Atlas = struct {
 
     // OpenType shaper (ligatures + GPOS kerning)
     shaper: ?opentype.Shaper,
+
+    // HarfBuzz shaper (full OpenType, compile-time optional)
+    hb_shaper: if (build_options.enable_harfbuzz) ?harfbuzz.HarfBuzzShaper else void = if (build_options.enable_harfbuzz) null else {},
 
     pub const GlyphInfo = struct {
         bbox: bezier.BBox,
@@ -214,6 +221,11 @@ pub const Atlas = struct {
             font.inner.gpos_offset,
         ) catch null;
 
+        // Initialize HarfBuzz shaper (compile-time optional)
+        const hb_shaper = if (comptime build_options.enable_harfbuzz)
+            harfbuzz.HarfBuzzShaper.init(font.inner.data, font.unitsPerEm()) catch null
+        else {};
+
         return .{
             .allocator = allocator,
             .font = font,
@@ -225,6 +237,7 @@ pub const Atlas = struct {
             .band_height = result.band_height,
             .glyph_map = result.glyph_map,
             .shaper = shaper,
+            .hb_shaper = hb_shaper,
         };
     }
 
@@ -292,7 +305,58 @@ pub const Atlas = struct {
         return true;
     }
 
+    /// Discover glyphs needed for text via HarfBuzz shaping and add them
+    /// to the atlas. Returns true if new glyphs were added.
+    /// Requires -Dharfbuzz=true. Returns false if HarfBuzz is not available.
+    pub fn addGlyphsForText(self: *Atlas, text: []const u8) !bool {
+        if (comptime !build_options.enable_harfbuzz) return false;
+        const hbs = self.hb_shaper orelse return false;
+
+        const glyph_ids = try hbs.discoverGlyphs(self.allocator, text);
+        defer if (glyph_ids.len > 0) self.allocator.free(glyph_ids);
+
+        if (glyph_ids.len == 0) return false;
+
+        const font = self.font orelse return error.NoFontAvailable;
+
+        // Check if any are new
+        var seen = std.AutoHashMap(u16, void).init(self.allocator);
+        defer seen.deinit();
+
+        var existing_it = self.glyph_map.keyIterator();
+        while (existing_it.next()) |k| try seen.put(k.*, {});
+
+        var added_any = false;
+        for (glyph_ids) |gid| {
+            if (!seen.contains(gid)) {
+                try seen.put(gid, {});
+                added_any = true;
+            }
+        }
+
+        if (!added_any) return false;
+
+        const result = try buildTextureData(self.allocator, font, &seen);
+
+        self.allocator.free(self.curve_data);
+        self.allocator.free(self.band_data);
+        self.glyph_map.deinit();
+
+        self.curve_data = result.curve_data;
+        self.curve_width = result.curve_width;
+        self.curve_height = result.curve_height;
+        self.band_data = result.band_data;
+        self.band_width = result.band_width;
+        self.band_height = result.band_height;
+        self.glyph_map = result.glyph_map;
+
+        return true;
+    }
+
     pub fn deinit(self: *Atlas) void {
+        if (comptime build_options.enable_harfbuzz) {
+            if (self.hb_shaper) |*hbs| hbs.deinit();
+        }
         if (self.shaper) |*s| @constCast(s).deinit();
         self.allocator.free(self.curve_data);
         self.allocator.free(self.band_data);
@@ -368,8 +432,9 @@ pub const Batch = struct {
         return count;
     }
 
-    /// Lay out and append a string. Applies ligature substitution and
-    /// GPOS kerning if available, falling back to kern table.
+    /// Lay out and append a string. Uses HarfBuzz for shaping when
+    /// available (-Dharfbuzz=true), otherwise applies built-in ligature
+    /// substitution and GPOS/kern kerning.
     /// Returns advance width in pixels.
     pub fn addString(
         self: *Batch,
@@ -381,6 +446,13 @@ pub const Batch = struct {
         font_size: f32,
         color: [4]f32,
     ) f32 {
+        // Use HarfBuzz when available (zero-allocation path)
+        if (comptime build_options.enable_harfbuzz) {
+            if (atlas.hb_shaper) |hbs| {
+                return hbs.shapeAndEmit(text, font_size, x, y, color, &atlas.glyph_map, self);
+            }
+        }
+
         const scale = font_size / @as(f32, @floatFromInt(font.unitsPerEm()));
         var cursor_x = x;
 
