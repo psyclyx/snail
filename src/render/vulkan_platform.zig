@@ -339,6 +339,283 @@ pub fn queueWaitIdle() void {
     if (graphics_queue != null) _ = vk.vkQueueWaitIdle(graphics_queue);
 }
 
+// ── Offscreen (headless) Vulkan path ──
+// No window, no surface, no swapchain, no present.
+// Equivalent to GL's hidden-window FBO. Used by benchmarks.
+
+const OFFSCREEN_FORMAT: vk.VkFormat = vk.VK_FORMAT_R8G8B8A8_UNORM;
+
+var offscreen_image: vk.VkImage = null;
+var offscreen_memory: vk.VkDeviceMemory = null;
+var offscreen_view: vk.VkImageView = null;
+var offscreen_render_pass: vk.VkRenderPass = null;
+var offscreen_framebuffer: vk.VkFramebuffer = null;
+var offscreen_cmd: vk.VkCommandBuffer = null;
+var offscreen_extent: vk.VkExtent2D = .{ .width = 0, .height = 0 };
+
+/// Initialise Vulkan for offscreen rendering. No window or swapchain.
+/// Call deinitOffscreen() when done.
+pub fn initOffscreen(width: u32, height: u32) !vkp.VulkanContext {
+    try createInstanceOffscreen();
+    try pickPhysicalDeviceOffscreen();
+    try createDeviceOffscreen();
+    try createCommandResourcesOffscreen();
+    offscreen_extent = .{ .width = width, .height = height };
+    try createOffscreenResources(width, height);
+
+    return .{
+        .physical_device = @ptrCast(physical_device),
+        .device = @ptrCast(device),
+        .graphics_queue = @ptrCast(graphics_queue),
+        .queue_family_index = queue_family_index,
+        .render_pass = @ptrCast(offscreen_render_pass),
+        .color_format = @intCast(OFFSCREEN_FORMAT),
+    };
+}
+
+pub fn deinitOffscreen() void {
+    if (device != null) _ = vk.vkDeviceWaitIdle(device);
+    if (offscreen_framebuffer != null) vk.vkDestroyFramebuffer(device, offscreen_framebuffer, null);
+    if (offscreen_render_pass != null) vk.vkDestroyRenderPass(device, offscreen_render_pass, null);
+    if (offscreen_view != null) vk.vkDestroyImageView(device, offscreen_view, null);
+    if (offscreen_image != null) vk.vkDestroyImage(device, offscreen_image, null);
+    if (offscreen_memory != null) vk.vkFreeMemory(device, offscreen_memory, null);
+    if (command_pool != null) vk.vkDestroyCommandPool(device, command_pool, null);
+    if (device != null) vk.vkDestroyDevice(device, null);
+    if (instance != null) vk.vkDestroyInstance(instance, null);
+    offscreen_image = null; offscreen_memory = null; offscreen_view = null;
+    offscreen_render_pass = null; offscreen_framebuffer = null; offscreen_cmd = null;
+    command_pool = null; device = null; instance = null; graphics_queue = null;
+    physical_device = null;
+}
+
+/// Begin an offscreen frame. Returns the command buffer to record into.
+/// Waits for the previous submit to complete before resetting the command buffer.
+pub fn beginFrameOffscreen() vk.VkCommandBuffer {
+    _ = vk.vkQueueWaitIdle(graphics_queue);
+    _ = vk.vkResetCommandBuffer(offscreen_cmd, 0);
+
+    const begin_info = std.mem.zeroInit(vk.VkCommandBufferBeginInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = vk.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    });
+    _ = vk.vkBeginCommandBuffer(offscreen_cmd, &begin_info);
+
+    const clear_value = vk.VkClearValue{ .color = .{ .float32 = .{ 0.12, 0.12, 0.14, 1.0 } } };
+    const rp_info = std.mem.zeroInit(vk.VkRenderPassBeginInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+        .renderPass = offscreen_render_pass,
+        .framebuffer = offscreen_framebuffer,
+        .renderArea = .{ .offset = .{ .x = 0, .y = 0 }, .extent = offscreen_extent },
+        .clearValueCount = 1,
+        .pClearValues = &clear_value,
+    });
+    vk.vkCmdBeginRenderPass(offscreen_cmd, &rp_info, vk.VK_SUBPASS_CONTENTS_INLINE);
+
+    return offscreen_cmd;
+}
+
+/// End the offscreen frame: close render pass and submit. Use queueWaitIdle() to sync.
+pub fn endFrameOffscreen() void {
+    vk.vkCmdEndRenderPass(offscreen_cmd);
+    _ = vk.vkEndCommandBuffer(offscreen_cmd);
+
+    const submit_info = std.mem.zeroInit(vk.VkSubmitInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &offscreen_cmd,
+    });
+    _ = vk.vkQueueSubmit(graphics_queue, 1, &submit_info, null);
+}
+
+fn createInstanceOffscreen() !void {
+    const app_info = std.mem.zeroInit(vk.VkApplicationInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_APPLICATION_INFO,
+        .pApplicationName = "snail-bench",
+        .apiVersion = vk.VK_API_VERSION_1_0,
+    });
+    const ci = std.mem.zeroInit(vk.VkInstanceCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+        .pApplicationInfo = &app_info,
+    });
+    try checkVk(vk.vkCreateInstance(&ci, null, &instance));
+}
+
+fn pickPhysicalDeviceOffscreen() !void {
+    var count: u32 = 0;
+    _ = vk.vkEnumeratePhysicalDevices(instance, &count, null);
+    if (count == 0) return error.NoVulkanDevices;
+    var devices: [16]vk.VkPhysicalDevice = .{null} ** 16;
+    var actual: u32 = @min(count, 16);
+    _ = vk.vkEnumeratePhysicalDevices(instance, &actual, &devices);
+    for (devices[0..actual]) |dev| {
+        if (dev == null) continue;
+        if (findGraphicsQueueFamily(dev)) |qf| {
+            physical_device = dev;
+            queue_family_index = qf;
+            return;
+        }
+    }
+    return error.NoSuitableDevice;
+}
+
+fn findGraphicsQueueFamily(dev: vk.VkPhysicalDevice) ?u32 {
+    var count: u32 = 0;
+    vk.vkGetPhysicalDeviceQueueFamilyProperties(dev, &count, null);
+    var props: [32]vk.VkQueueFamilyProperties = undefined;
+    var actual: u32 = @min(count, 32);
+    vk.vkGetPhysicalDeviceQueueFamilyProperties(dev, &actual, &props);
+    for (0..actual) |i| {
+        if (props[i].queueFlags & vk.VK_QUEUE_GRAPHICS_BIT != 0) return @intCast(i);
+    }
+    return null;
+}
+
+fn createDeviceOffscreen() !void {
+    const priority: f32 = 1.0;
+    const queue_ci = std.mem.zeroInit(vk.VkDeviceQueueCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+        .queueFamilyIndex = queue_family_index,
+        .queueCount = 1,
+        .pQueuePriorities = &priority,
+    });
+    const dev_ci = std.mem.zeroInit(vk.VkDeviceCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+        .queueCreateInfoCount = 1,
+        .pQueueCreateInfos = &queue_ci,
+    });
+    try checkVk(vk.vkCreateDevice(physical_device, &dev_ci, null, &device));
+    vk.vkGetDeviceQueue(device, queue_family_index, 0, &graphics_queue);
+    present_queue = graphics_queue;
+}
+
+fn createCommandResourcesOffscreen() !void {
+    const cp_ci = std.mem.zeroInit(vk.VkCommandPoolCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .flags = vk.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+        .queueFamilyIndex = queue_family_index,
+    });
+    try checkVk(vk.vkCreateCommandPool(device, &cp_ci, null, &command_pool));
+
+    const cb_ai = std.mem.zeroInit(vk.VkCommandBufferAllocateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = command_pool,
+        .level = vk.VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    });
+    try checkVk(vk.vkAllocateCommandBuffers(device, &cb_ai, &offscreen_cmd));
+}
+
+fn findMemoryType(type_filter: u32, properties: vk.VkMemoryPropertyFlags) !u32 {
+    var mem_props: vk.VkPhysicalDeviceMemoryProperties = undefined;
+    vk.vkGetPhysicalDeviceMemoryProperties(physical_device, &mem_props);
+    for (0..mem_props.memoryTypeCount) |i| {
+        const bit: u32 = @as(u32, 1) << @intCast(i);
+        if ((type_filter & bit != 0) and
+            (mem_props.memoryTypes[i].propertyFlags & properties) == properties)
+        {
+            return @intCast(i);
+        }
+    }
+    return error.NoSuitableMemoryType;
+}
+
+fn createOffscreenResources(width: u32, height: u32) !void {
+    // Image
+    const img_ci = std.mem.zeroInit(vk.VkImageCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = vk.VK_IMAGE_TYPE_2D,
+        .format = OFFSCREEN_FORMAT,
+        .extent = .{ .width = width, .height = height, .depth = 1 },
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .samples = vk.VK_SAMPLE_COUNT_1_BIT,
+        .tiling = vk.VK_IMAGE_TILING_OPTIMAL,
+        .usage = vk.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+        .sharingMode = vk.VK_SHARING_MODE_EXCLUSIVE,
+        .initialLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED,
+    });
+    try checkVk(vk.vkCreateImage(device, &img_ci, null, &offscreen_image));
+
+    var mem_req: vk.VkMemoryRequirements = undefined;
+    vk.vkGetImageMemoryRequirements(device, offscreen_image, &mem_req);
+    const mem_type = try findMemoryType(mem_req.memoryTypeBits, vk.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    const alloc_info = std.mem.zeroInit(vk.VkMemoryAllocateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = mem_req.size,
+        .memoryTypeIndex = mem_type,
+    });
+    try checkVk(vk.vkAllocateMemory(device, &alloc_info, null, &offscreen_memory));
+    try checkVk(vk.vkBindImageMemory(device, offscreen_image, offscreen_memory, 0));
+
+    // Image view
+    const iv_ci = std.mem.zeroInit(vk.VkImageViewCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image = offscreen_image,
+        .viewType = vk.VK_IMAGE_VIEW_TYPE_2D,
+        .format = OFFSCREEN_FORMAT,
+        .subresourceRange = .{
+            .aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT,
+            .baseMipLevel = 0,
+            .levelCount = 1,
+            .baseArrayLayer = 0,
+            .layerCount = 1,
+        },
+    });
+    try checkVk(vk.vkCreateImageView(device, &iv_ci, null, &offscreen_view));
+
+    // Render pass (final layout COLOR_ATTACHMENT_OPTIMAL, not PRESENT_SRC_KHR)
+    const color_att = std.mem.zeroInit(vk.VkAttachmentDescription, .{
+        .format = OFFSCREEN_FORMAT,
+        .samples = vk.VK_SAMPLE_COUNT_1_BIT,
+        .loadOp = vk.VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = vk.VK_ATTACHMENT_STORE_OP_STORE,
+        .stencilLoadOp = vk.VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .stencilStoreOp = vk.VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initialLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED,
+        .finalLayout = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+    });
+    const color_ref = vk.VkAttachmentReference{
+        .attachment = 0,
+        .layout = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+    };
+    const subpass = std.mem.zeroInit(vk.VkSubpassDescription, .{
+        .pipelineBindPoint = vk.VK_PIPELINE_BIND_POINT_GRAPHICS,
+        .colorAttachmentCount = 1,
+        .pColorAttachments = &color_ref,
+    });
+    const dependency = std.mem.zeroInit(vk.VkSubpassDependency, .{
+        .srcSubpass = vk.VK_SUBPASS_EXTERNAL,
+        .dstSubpass = 0,
+        .srcStageMask = vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .dstStageMask = vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .srcAccessMask = 0,
+        .dstAccessMask = vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+    });
+    const rp_ci = std.mem.zeroInit(vk.VkRenderPassCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+        .attachmentCount = 1,
+        .pAttachments = &color_att,
+        .subpassCount = 1,
+        .pSubpasses = &subpass,
+        .dependencyCount = 1,
+        .pDependencies = &dependency,
+    });
+    try checkVk(vk.vkCreateRenderPass(device, &rp_ci, null, &offscreen_render_pass));
+
+    // Framebuffer
+    const fb_ci = std.mem.zeroInit(vk.VkFramebufferCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+        .renderPass = offscreen_render_pass,
+        .attachmentCount = 1,
+        .pAttachments = &offscreen_view,
+        .width = width,
+        .height = height,
+        .layers = 1,
+    });
+    try checkVk(vk.vkCreateFramebuffer(device, &fb_ci, null, &offscreen_framebuffer));
+}
+
 // Re-export GLFW key constants
 pub const GLFW_KEY_ESCAPE = c.GLFW_KEY_ESCAPE;
 pub const GLFW_KEY_R = c.GLFW_KEY_R;

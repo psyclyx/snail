@@ -223,20 +223,22 @@ fn runScenarioVulkan(
     const static_slice = probe.slice();
 
     for (0..WARMUP) |_| {
-        if (vulkan_platform.beginFrame()) |cmd| {
+        {
+            const cmd = vulkan_platform.beginFrameOffscreen();
             renderer.setCommandBuffer(cmd);
             renderer.draw(static_slice, mvp, WIDTH, HEIGHT);
-            vulkan_platform.endFrame();
+            vulkan_platform.endFrameOffscreen();
         }
     }
     vulkan_platform.queueWaitIdle();
 
     const t_static = nowNs();
     for (0..FRAMES) |_| {
-        if (vulkan_platform.beginFrame()) |cmd| {
+        {
+            const cmd = vulkan_platform.beginFrameOffscreen();
             renderer.setCommandBuffer(cmd);
             renderer.draw(static_slice, mvp, WIDTH, HEIGHT);
-            vulkan_platform.endFrame();
+            vulkan_platform.endFrameOffscreen();
         }
     }
     vulkan_platform.queueWaitIdle();
@@ -247,10 +249,11 @@ fn runScenarioVulkan(
     for (0..WARMUP) |_| {
         var b = snail.Batch.init(vbuf);
         buildFn(&b, atlas, font);
-        if (vulkan_platform.beginFrame()) |cmd| {
+        {
+            const cmd = vulkan_platform.beginFrameOffscreen();
             renderer.setCommandBuffer(cmd);
             renderer.draw(b.slice(), mvp, WIDTH, HEIGHT);
-            vulkan_platform.endFrame();
+            vulkan_platform.endFrameOffscreen();
         }
     }
     vulkan_platform.queueWaitIdle();
@@ -259,10 +262,11 @@ fn runScenarioVulkan(
     for (0..FRAMES) |_| {
         var b = snail.Batch.init(vbuf);
         buildFn(&b, atlas, font);
-        if (vulkan_platform.beginFrame()) |cmd| {
+        {
+            const cmd = vulkan_platform.beginFrameOffscreen();
             renderer.setCommandBuffer(cmd);
             renderer.draw(b.slice(), mvp, WIDTH, HEIGHT);
-            vulkan_platform.endFrame();
+            vulkan_platform.endFrameOffscreen();
         }
     }
     vulkan_platform.queueWaitIdle();
@@ -302,19 +306,21 @@ fn runMultiFontScenarioVulkan(
     const static_slice = probe.slice();
 
     for (0..WARMUP) |_| {
-        if (vulkan_platform.beginFrame()) |cmd| {
+        {
+            const cmd = vulkan_platform.beginFrameOffscreen();
             renderer.setCommandBuffer(cmd);
             renderer.draw(static_slice, mvp, WIDTH, HEIGHT);
-            vulkan_platform.endFrame();
+            vulkan_platform.endFrameOffscreen();
         }
     }
     vulkan_platform.queueWaitIdle();
     const t_static = nowNs();
     for (0..FRAMES) |_| {
-        if (vulkan_platform.beginFrame()) |cmd| {
+        {
+            const cmd = vulkan_platform.beginFrameOffscreen();
             renderer.setCommandBuffer(cmd);
             renderer.draw(static_slice, mvp, WIDTH, HEIGHT);
-            vulkan_platform.endFrame();
+            vulkan_platform.endFrameOffscreen();
         }
     }
     vulkan_platform.queueWaitIdle();
@@ -323,19 +329,21 @@ fn runMultiFontScenarioVulkan(
     const static_us = @as(f64, @floatFromInt(static_ns)) / 1000.0 / FRAMES;
 
     for (0..WARMUP) |_| {
-        if (vulkan_platform.beginFrame()) |cmd| {
+        {
+            const cmd = vulkan_platform.beginFrameOffscreen();
             renderer.setCommandBuffer(cmd);
             drawSingleBatchVulkan(font_sets, renderer, vbuf, mvp, white);
-            vulkan_platform.endFrame();
+            vulkan_platform.endFrameOffscreen();
         }
     }
     vulkan_platform.queueWaitIdle();
     const t_dynamic = nowNs();
     for (0..FRAMES) |_| {
-        if (vulkan_platform.beginFrame()) |cmd| {
+        {
+            const cmd = vulkan_platform.beginFrameOffscreen();
             renderer.setCommandBuffer(cmd);
             drawSingleBatchVulkan(font_sets, renderer, vbuf, mvp, white);
-            vulkan_platform.endFrame();
+            vulkan_platform.endFrameOffscreen();
         }
     }
     vulkan_platform.queueWaitIdle();
@@ -537,8 +545,8 @@ pub fn main() !void {
 
     // ── Vulkan section ──
     {
-        const vk_ctx = try vulkan_platform.init(WIDTH, HEIGHT, "snail-bench-vk");
-        defer vulkan_platform.deinit();
+        const vk_ctx = try vulkan_platform.initOffscreen(WIDTH, HEIGHT);
+        defer vulkan_platform.deinitOffscreen();
 
         const t_setup = nowNs();
         var font = try snail.Font.init(assets.noto_sans_regular);
