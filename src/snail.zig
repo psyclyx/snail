@@ -406,6 +406,106 @@ pub const Batch = struct {
 
         return cursor_x - x;
     }
+
+    /// Lay out a string with word wrapping at max_width pixels.
+    /// Returns the total height used (from y downward).
+    pub fn addStringWrapped(
+        self: *Batch,
+        atlas: *const Atlas,
+        font: *const Font,
+        text: []const u8,
+        x: f32,
+        y: f32,
+        font_size: f32,
+        max_width: f32,
+        line_height: f32,
+        color: [4]f32,
+    ) f32 {
+        var line_y = y;
+        var remaining = text;
+
+        while (remaining.len > 0) {
+            // Find the longest prefix that fits in max_width
+            var best_break: usize = 0;
+            var last_space: usize = 0;
+            var i: usize = 0;
+
+            while (i < remaining.len) : (i += 1) {
+                if (remaining[i] == ' ' or remaining[i] == '\t') {
+                    last_space = i;
+                }
+                if (remaining[i] == '\n') {
+                    best_break = i;
+                    break;
+                }
+                // Measure up to this point
+                const w = self.measureGlyphWidth(atlas, font, remaining[0 .. i + 1], font_size);
+                if (w > max_width and i > 0) {
+                    // Went over — break at last space, or force break here
+                    best_break = if (last_space > 0) last_space else i;
+                    break;
+                }
+                best_break = i + 1;
+            }
+
+            if (best_break == 0 and remaining.len > 0) best_break = 1;
+
+            // Render this line
+            _ = self.addString(atlas, font, remaining[0..best_break], x, line_y, font_size, color);
+            line_y -= line_height;
+
+            // Skip past break character
+            if (best_break < remaining.len and (remaining[best_break] == ' ' or remaining[best_break] == '\n')) {
+                remaining = remaining[best_break + 1 ..];
+            } else {
+                remaining = remaining[best_break..];
+            }
+        }
+
+        return y - line_y;
+    }
+
+    /// Measure the advance width of a string without emitting vertices.
+    fn measureGlyphWidth(
+        self: *const Batch,
+        atlas: *const Atlas,
+        font: *const Font,
+        text: []const u8,
+        font_size: f32,
+    ) f32 {
+        _ = self;
+        const scale = font_size / @as(f32, @floatFromInt(font.unitsPerEm()));
+        var width: f32 = 0;
+        var prev_gid: u16 = 0;
+        const view = std.unicode.Utf8View.initUnchecked(text);
+        var it = view.iterator();
+        while (it.nextCodepoint()) |cp| {
+            const gid = font.glyphIndex(cp) catch 0;
+            if (gid == 0) {
+                width += scale * 500;
+                prev_gid = 0;
+                continue;
+            }
+            if (prev_gid != 0) {
+                var kern: i16 = 0;
+                if (atlas.shaper) |shaper| {
+                    kern = shaper.getKernAdjustment(prev_gid, gid) catch 0;
+                }
+                if (kern == 0) {
+                    kern = font.getKerning(prev_gid, gid) catch 0;
+                }
+                width += @as(f32, @floatFromInt(kern)) * scale;
+            }
+            const info = atlas.glyph_map.get(gid) orelse {
+                width += scale * 500;
+                prev_gid = gid;
+                continue;
+            };
+            width += @as(f32, @floatFromInt(info.advance_width)) * scale;
+            prev_gid = gid;
+        }
+        return width;
+    }
 };
 
 pub const FillRule = pipeline.FillRule;

@@ -103,16 +103,33 @@ pub fn main() !void {
             }
         } else {
             var y: f32 = h - 50;
-            for ([_]f32{ 12, 18, 24, 36, 48, 72, 96 }) |fs| {
+            // Title sizes
+            _ = batch.addString(&atlas, &font, "snail", 30, y, 72, white);
+            y -= 80;
+            _ = batch.addString(&atlas, &font, "GPU font rendering via direct Bezier curve evaluation", 30, y, 18, gray);
+            y -= 36;
+
+            // Multi-size samples
+            for ([_]f32{ 12, 16, 24, 36, 48 }) |fs| {
                 _ = batch.addString(&atlas, &font, "The quick brown fox jumps over the lazy dog", 30, y, fs, white);
                 y -= fs * 1.4;
             }
-            y -= 20;
-            _ = batch.addString(&atlas, &font, "ABCDEFGHIJKLMNOPQRSTUVWXYZ 0123456789", 30, y, 24, cyan);
-            y -= 36;
-            _ = batch.addString(&atlas, &font, "abcdefghijklmnopqrstuvwxyz !@#$%^&*()", 30, y, 24, yellow);
-            y -= 36;
-            _ = batch.addString(&atlas, &font, "fi fl ffi ffl office difficult", 30, y, 36, white);
+            y -= 10;
+
+            // Character set
+            _ = batch.addString(&atlas, &font, "ABCDEFGHIJKLMNOPQRSTUVWXYZ 0123456789", 30, y, 20, cyan);
+            y -= 28;
+            _ = batch.addString(&atlas, &font, "abcdefghijklmnopqrstuvwxyz !@#$%^&*()", 30, y, 20, yellow);
+            y -= 32;
+
+            // Ligatures
+            _ = batch.addString(&atlas, &font, "fi fl ffi ffl office difficult", 30, y, 28, white);
+            y -= 40;
+
+            // Word-wrapped paragraph
+            const paragraph = "Direct Bezier curve evaluation in the fragment shader produces resolution-independent, " ++
+                "crisp text at any size, rotation, or perspective transform. No texture atlases, no signed distance fields.";
+            _ = batch.addStringWrapped(&atlas, &font, paragraph, 30, y, 14, w - 60, 20, gray);
         }
 
         if (batch.glyphCount() > 0) {
