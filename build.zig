@@ -7,23 +7,31 @@ pub fn build(b: *std.Build) void {
     const enable_profiling = b.option(bool, "profile", "Enable profiling instrumentation") orelse false;
     const enable_harfbuzz = b.option(bool, "harfbuzz", "Enable HarfBuzz text shaping") orelse false;
     const enable_vulkan = b.option(bool, "vulkan", "Use Vulkan backend for the demo") orelse false;
+    const force_gl33 = b.option(bool, "gl33", "Force OpenGL 3.3 core profile (skip 4.4 attempt)") orelse false;
 
     const options = b.addOptions();
     options.addOption(bool, "enable_profiling", enable_profiling);
     options.addOption(bool, "enable_harfbuzz", enable_harfbuzz);
     options.addOption(bool, "enable_vulkan", enable_vulkan);
+    options.addOption(bool, "force_gl33", force_gl33);
 
     const assets_mod = b.createModule(.{ .root_source_file = b.path("assets/assets.zig") });
 
     // ── SPIR-V shader compilation (always built for Vulkan support) ──
     const vk_shaders_mod = blk: {
-        const compile_vert = b.addSystemCommand(&.{ "glslc", "-fshader-stage=vert", "shaders/slug.vert", "-o" });
+        const compile_vert = b.addSystemCommand(&.{ "glslc", "-fshader-stage=vert" });
+        compile_vert.addFileArg(b.path("shaders/slug.vert"));
+        compile_vert.addArg("-o");
         const vert_spv = compile_vert.addOutputFileArg("slug.vert.spv");
 
-        const compile_frag = b.addSystemCommand(&.{ "glslc", "-fshader-stage=frag", "shaders/slug.frag", "-o" });
+        const compile_frag = b.addSystemCommand(&.{ "glslc", "-fshader-stage=frag" });
+        compile_frag.addFileArg(b.path("shaders/slug.frag"));
+        compile_frag.addArg("-o");
         const frag_spv = compile_frag.addOutputFileArg("slug.frag.spv");
 
-        const compile_frag_sp = b.addSystemCommand(&.{ "glslc", "-fshader-stage=frag", "shaders/slug_subpixel.frag", "-o" });
+        const compile_frag_sp = b.addSystemCommand(&.{ "glslc", "-fshader-stage=frag" });
+        compile_frag_sp.addFileArg(b.path("shaders/slug_subpixel.frag"));
+        compile_frag_sp.addArg("-o");
         const frag_sp_spv = compile_frag_sp.addOutputFileArg("slug_subpixel.frag.spv");
 
         const mod = b.createModule(.{

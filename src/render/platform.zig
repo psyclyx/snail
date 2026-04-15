@@ -1,4 +1,5 @@
 const std = @import("std");
+const build_options = @import("build_options");
 
 pub const c = @cImport({
     @cDefine("GLFW_INCLUDE_NONE", "");
@@ -16,15 +17,17 @@ var window: ?*c.GLFWwindow = null;
 pub fn init(width: u32, height: u32, title: [*:0]const u8) !void {
     if (c.glfwInit() != c.GLFW_TRUE) return error.GlfwInitFailed;
 
-    // Try GL 4.4 first, fall back to 3.3
-    c.glfwWindowHint(c.GLFW_CONTEXT_VERSION_MAJOR, 4);
-    c.glfwWindowHint(c.GLFW_CONTEXT_VERSION_MINOR, 4);
     c.glfwWindowHint(c.GLFW_OPENGL_PROFILE, c.GLFW_OPENGL_CORE_PROFILE);
 
-    window = c.glfwCreateWindow(@intCast(width), @intCast(height), title, null, null);
+    if (!build_options.force_gl33) {
+        // Try GL 4.4 first
+        c.glfwWindowHint(c.GLFW_CONTEXT_VERSION_MAJOR, 4);
+        c.glfwWindowHint(c.GLFW_CONTEXT_VERSION_MINOR, 4);
+        window = c.glfwCreateWindow(@intCast(width), @intCast(height), title, null, null);
+    }
 
     if (window == null) {
-        // Retry with GL 3.3
+        // Fall back to (or start at) GL 3.3
         c.glfwWindowHint(c.GLFW_CONTEXT_VERSION_MAJOR, 3);
         c.glfwWindowHint(c.GLFW_CONTEXT_VERSION_MINOR, 3);
         window = c.glfwCreateWindow(@intCast(width), @intCast(height), title, null, null)
