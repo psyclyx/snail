@@ -30,9 +30,11 @@ pub const FillRule = enum(c_int) {
 var vao: gl.GLuint = 0;
 var vbo: gl.GLuint = 0;
 
-// Currently bound textures (for dedup)
+// State tracking to skip redundant GL calls
 var bound_curve: gl.GLuint = 0;
 var bound_band: gl.GLuint = 0;
+var active_program: gl.GLuint = 0;
+var frame_begun: bool = false;
 
 pub fn init() !void {
     program = try linkProgram(shaders.vertex_shader, shaders.fragment_shader);
@@ -56,23 +58,21 @@ pub fn init() !void {
 
     const stride: gl.GLsizei = vertex.FLOATS_PER_VERTEX * @sizeOf(f32);
 
-    // pos (location 0)
     gl.glVertexAttribPointer(0, 4, gl.GL_FLOAT, gl.GL_FALSE, stride, @ptrFromInt(0));
     gl.glEnableVertexAttribArray(0);
-    // tex (location 1)
     gl.glVertexAttribPointer(1, 4, gl.GL_FLOAT, gl.GL_FALSE, stride, @ptrFromInt(4 * @sizeOf(f32)));
     gl.glEnableVertexAttribArray(1);
-    // jac (location 2)
     gl.glVertexAttribPointer(2, 4, gl.GL_FLOAT, gl.GL_FALSE, stride, @ptrFromInt(8 * @sizeOf(f32)));
     gl.glEnableVertexAttribArray(2);
-    // bnd (location 3)
     gl.glVertexAttribPointer(3, 4, gl.GL_FLOAT, gl.GL_FALSE, stride, @ptrFromInt(12 * @sizeOf(f32)));
     gl.glEnableVertexAttribArray(3);
-    // col (location 4)
     gl.glVertexAttribPointer(4, 4, gl.GL_FLOAT, gl.GL_FALSE, stride, @ptrFromInt(16 * @sizeOf(f32)));
     gl.glEnableVertexAttribArray(4);
 
-    gl.glBindVertexArray(0);
+    // Leave VAO bound — we only have one
+    // Enable blend once — we always need it for text
+    gl.glEnable(gl.GL_BLEND);
+    gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA);
 }
 
 pub fn deinit() void {
@@ -87,21 +87,15 @@ pub fn createCurveTexture(data: []const u16, width: u32, height: u32) gl.GLuint 
     var tex: gl.GLuint = 0;
     gl.glGenTextures(1, &tex);
     gl.glBindTexture(gl.GL_TEXTURE_2D, tex);
-    gl.glTexImage2D(
-        gl.GL_TEXTURE_2D,
-        0,
-        gl.GL_RGBA16F,
-        @intCast(width),
-        @intCast(height),
-        0,
-        gl.GL_RGBA,
-        gl.GL_HALF_FLOAT,
-        data.ptr,
-    );
+    gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA16F, @intCast(width), @intCast(height), 0, gl.GL_RGBA, gl.GL_HALF_FLOAT, data.ptr);
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST);
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST);
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE);
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE);
+    // Restore previously bound texture
+    if (bound_curve != 0) {
+        gl.glBindTexture(gl.GL_TEXTURE_2D, bound_curve);
+    }
     return tex;
 }
 
@@ -110,27 +104,25 @@ pub fn createBandTexture(data: []const u16, width: u32, height: u32) gl.GLuint {
     var tex: gl.GLuint = 0;
     gl.glGenTextures(1, &tex);
     gl.glBindTexture(gl.GL_TEXTURE_2D, tex);
-    gl.glTexImage2D(
-        gl.GL_TEXTURE_2D,
-        0,
-        gl.GL_RG16UI,
-        @intCast(width),
-        @intCast(height),
-        0,
-        gl.GL_RG_INTEGER,
-        gl.GL_UNSIGNED_SHORT,
-        data.ptr,
-    );
+    gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RG16UI, @intCast(width), @intCast(height), 0, gl.GL_RG_INTEGER, gl.GL_UNSIGNED_SHORT, data.ptr);
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST);
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST);
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE);
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE);
+    if (bound_band != 0) {
+        gl.glActiveTexture(gl.GL_TEXTURE1);
+        gl.glBindTexture(gl.GL_TEXTURE_2D, bound_band);
+        gl.glActiveTexture(gl.GL_TEXTURE0);
+    }
     return tex;
 }
 
 /// Delete a texture and zero the handle.
 pub fn deleteTexture(tex: *gl.GLuint) void {
     if (tex.* != 0) {
+        // Invalidate bound state if this texture was bound
+        if (tex.* == bound_curve) bound_curve = 0;
+        if (tex.* == bound_band) bound_band = 0;
         gl.glDeleteTextures(1, tex);
         tex.* = 0;
     }
@@ -150,7 +142,7 @@ pub fn bindTextures(curve: gl.GLuint, band: gl.GLuint) void {
     }
 }
 
-// Legacy API (used by C API — uploads to atlas-owned handles)
+// Legacy API (used by C API)
 pub fn uploadCurveTexture(data: []const u16, width: u32, height: u32) void {
     const tex = createCurveTexture(data, width, height);
     bound_curve = tex;
@@ -163,23 +155,28 @@ pub fn uploadBandTexture(data: []const u16, width: u32, height: u32) void {
 
 pub fn drawText(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
     const prog = if (subpixel_enabled) program_subpixel else program;
+
+    // Only re-set program and uniforms if program changed (or first call this frame)
+    if (prog != active_program or !frame_begun) {
+        gl.glUseProgram(prog);
+        active_program = prog;
+
+        const u_ct = if (subpixel_enabled) sp_curve_tex_loc else curve_tex_loc;
+        const u_bt = if (subpixel_enabled) sp_band_tex_loc else band_tex_loc;
+        gl.glUniform1i(u_ct, 0);
+        gl.glUniform1i(u_bt, 1);
+        frame_begun = true;
+    }
+
+    // These may change between draws
     const u_mvp = if (subpixel_enabled) sp_mvp_loc else mvp_loc;
     const u_vp = if (subpixel_enabled) sp_viewport_loc else viewport_loc;
-    const u_ct = if (subpixel_enabled) sp_curve_tex_loc else curve_tex_loc;
-    const u_bt = if (subpixel_enabled) sp_band_tex_loc else band_tex_loc;
     const u_fr = if (subpixel_enabled) sp_fill_rule_loc else fill_rule_loc;
-
-    gl.glUseProgram(prog);
     gl.glUniformMatrix4fv(u_mvp, 1, gl.GL_FALSE, &mvp.data);
     gl.glUniform2f(u_vp, viewport_w, viewport_h);
     gl.glUniform1i(u_fr, @intFromEnum(fill_rule));
 
-    // Textures are already bound by uploadAtlas/bindTextures
-    gl.glUniform1i(u_ct, 0);
-    gl.glUniform1i(u_bt, 1);
-
-    gl.glBindVertexArray(vao);
-    gl.glBindBuffer(gl.GL_ARRAY_BUFFER, vbo);
+    // Upload vertex data (GL_STREAM_DRAW tells driver to expect frequent updates)
     gl.glBufferData(
         gl.GL_ARRAY_BUFFER,
         @intCast(vertices.len * @sizeOf(f32)),
@@ -187,15 +184,13 @@ pub fn drawText(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f
         gl.GL_STREAM_DRAW,
     );
 
-    // Enable blending
-    gl.glEnable(gl.GL_BLEND);
-    gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA);
-
     const vertex_count: gl.GLsizei = @intCast(vertices.len / vertex.FLOATS_PER_VERTEX);
     gl.glDrawArrays(gl.GL_TRIANGLES, 0, vertex_count);
+}
 
-    gl.glDisable(gl.GL_BLEND);
-    gl.glBindVertexArray(0);
+/// Call at frame boundaries to allow state re-evaluation.
+pub fn resetFrameState() void {
+    frame_begun = false;
 }
 
 fn compileShader(shader_type: gl.GLenum, source: [*c]const u8) ?gl.GLuint {

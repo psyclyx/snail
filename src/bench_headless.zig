@@ -134,8 +134,7 @@ const FontEntry = struct {
     font_size: f32,
 };
 
-/// Multi-font scenario: renders text from multiple script fonts in one frame.
-/// Each font requires an atlas swap (texture re-upload).
+/// Multi-font scenario: tests both naive (per-line draw) and batched (group by atlas).
 fn runMultiFontScenario(
     name: []const u8,
     font_sets: []const FontEntry,
@@ -144,50 +143,87 @@ fn runMultiFontScenario(
     mvp: snail.Mat4,
 ) void {
     const white = [4]f32{ 1, 1, 1, 1 };
-    var total_glyphs: usize = 0;
 
-    // Probe glyph count
+    var total_glyphs: usize = 0;
     for (font_sets) |fs| {
         var b = snail.Batch.init(vbuf);
         _ = b.addString(fs.atlas, fs.font, fs.text, 10, 400, fs.font_size, white);
         total_glyphs += b.glyphCount();
     }
 
-    // Warmup
+    // Naive: one draw call per line (worst case — alternating atlas switches)
     for (0..WARMUP) |_| {
         gl.glClear(gl.GL_COLOR_BUFFER_BIT);
-        var y: f32 = HEIGHT - 30;
-        for (font_sets) |fs| {
-            renderer.uploadAtlas(fs.atlas);
-            var b = snail.Batch.init(vbuf);
-            _ = b.addString(fs.atlas, fs.font, fs.text, 10, y, fs.font_size, white);
-            if (b.glyphCount() > 0) renderer.draw(b.slice(), mvp, WIDTH, HEIGHT);
-            y -= fs.font_size * 1.5;
-        }
+        drawNaive(font_sets, renderer, vbuf, mvp, white);
     }
     gl.glFinish();
-
-    // Dynamic only (multi-font always requires rebuilding per font)
-    const t = nowNs();
+    const t_naive = nowNs();
     for (0..FRAMES) |_| {
         gl.glClear(gl.GL_COLOR_BUFFER_BIT);
-        var y: f32 = HEIGHT - 30;
-        for (font_sets) |fs| {
-            renderer.uploadAtlas(fs.atlas);
-            var b = snail.Batch.init(vbuf);
-            _ = b.addString(fs.atlas, fs.font, fs.text, 10, y, fs.font_size, white);
-            if (b.glyphCount() > 0) renderer.draw(b.slice(), mvp, WIDTH, HEIGHT);
-            y -= fs.font_size * 1.5;
-        }
+        drawNaive(font_sets, renderer, vbuf, mvp, white);
     }
     gl.glFinish();
-    const ns = nowNs() - t;
-    const fps = @as(f64, FRAMES) / (@as(f64, @floatFromInt(ns)) / 1e9);
-    const us = @as(f64, @floatFromInt(ns)) / 1000.0 / FRAMES;
+    const naive_ns = nowNs() - t_naive;
+    const naive_fps = @as(f64, FRAMES) / (@as(f64, @floatFromInt(naive_ns)) / 1e9);
+    const naive_us = @as(f64, @floatFromInt(naive_ns)) / 1000.0 / FRAMES;
 
-    std.debug.print("  {s:<30} {d:>5} glyphs                                    dynamic: {d:>8.0} FPS ({d:>6.1} us)\n", .{
-        name, total_glyphs, fps, us,
+    // Batched: group by atlas, one draw call per unique atlas
+    for (0..WARMUP) |_| {
+        gl.glClear(gl.GL_COLOR_BUFFER_BIT);
+        drawBatched(font_sets, renderer, vbuf, mvp, white);
+    }
+    gl.glFinish();
+    const t_batched = nowNs();
+    for (0..FRAMES) |_| {
+        gl.glClear(gl.GL_COLOR_BUFFER_BIT);
+        drawBatched(font_sets, renderer, vbuf, mvp, white);
+    }
+    gl.glFinish();
+    const batched_ns = nowNs() - t_batched;
+    const batched_fps = @as(f64, FRAMES) / (@as(f64, @floatFromInt(batched_ns)) / 1e9);
+    const batched_us = @as(f64, @floatFromInt(batched_ns)) / 1000.0 / FRAMES;
+
+    std.debug.print("  {s:<30} {d:>5} glyphs   naive: {d:>8.0} FPS ({d:>6.1} us)   batched: {d:>8.0} FPS ({d:>6.1} us)\n", .{
+        name, total_glyphs, naive_fps, naive_us, batched_fps, batched_us,
     });
+}
+
+/// Naive: one draw per line, atlas switch every line.
+fn drawNaive(font_sets: []const FontEntry, renderer: *snail.Renderer, vbuf: []f32, mvp: snail.Mat4, color: [4]f32) void {
+    var y: f32 = HEIGHT - 30;
+    for (font_sets) |fs| {
+        renderer.uploadAtlas(fs.atlas);
+        var b = snail.Batch.init(vbuf);
+        _ = b.addString(fs.atlas, fs.font, fs.text, 10, y, fs.font_size, color);
+        if (b.glyphCount() > 0) renderer.draw(b.slice(), mvp, WIDTH, HEIGHT);
+        y -= fs.font_size * 1.5;
+    }
+}
+
+/// Batched: group all lines by atlas, one draw per unique atlas.
+fn drawBatched(font_sets: []const FontEntry, renderer: *snail.Renderer, vbuf: []f32, mvp: snail.Mat4, color: [4]f32) void {
+    var y_positions: [64]f32 = undefined;
+    var y: f32 = HEIGHT - 30;
+    for (font_sets, 0..) |fs, i| {
+        y_positions[i] = y;
+        y -= fs.font_size * 1.5;
+    }
+
+    var drawn = [_]bool{false} ** 64;
+    for (font_sets, 0..) |fs, i| {
+        if (drawn[i]) continue;
+        renderer.uploadAtlas(fs.atlas);
+        var batch = snail.Batch.init(vbuf);
+        _ = batch.addString(fs.atlas, fs.font, fs.text, 10, y_positions[i], fs.font_size, color);
+        drawn[i] = true;
+        for (font_sets[i + 1 ..], i + 1..) |fs2, j| {
+            if (!drawn[j] and fs2.atlas == fs.atlas) {
+                _ = batch.addString(fs2.atlas, fs2.font, fs2.text, 10, y_positions[j], fs2.font_size, color);
+                drawn[j] = true;
+            }
+        }
+        if (batch.glyphCount() > 0) renderer.draw(batch.slice(), mvp, WIDTH, HEIGHT);
+    }
 }
 
 pub fn main() !void {
