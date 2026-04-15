@@ -115,6 +115,25 @@ pub const Atlas = struct {
         glyph_map: std.AutoHashMap(u16, GlyphInfo),
     };
 
+    /// Expand a glyph-ID set with the COLRv0 layer glyphs of every base glyph
+    /// already in the set.  Must be called before buildTextureData so the layer
+    /// glyphs get their own atlas entries (they are rendered independently with
+    /// per-layer palette colors).  No-op when the font has no COLR table.
+    fn expandColrLayers(font: *const Font, allocator: std.mem.Allocator, seen: *std.AutoHashMap(u16, void)) !void {
+        if (font.inner.colr_offset == 0) return;
+
+        var keys: std.ArrayList(u16) = .empty;
+        defer keys.deinit(allocator);
+        var it = seen.keyIterator();
+        while (it.next()) |k| try keys.append(allocator, k.*);
+
+        var layer_buf: [64]ttf.Font.ColrLayer = undefined;
+        for (keys.items) |gid| {
+            const layers = font.inner.getColrLayers(gid, &layer_buf);
+            for (layers) |layer| try seen.put(layer.glyph_id, {});
+        }
+    }
+
     /// Build curve/band textures and glyph map from a set of glyph IDs.
     fn buildTextureData(allocator: std.mem.Allocator, font: *const Font, glyph_id_set: *const std.AutoHashMap(u16, void)) !TextureResult {
         var cache = ttf.GlyphCache.init(allocator);
@@ -221,6 +240,9 @@ pub const Atlas = struct {
             for (liga_glyphs) |lg| try seen.put(lg, {});
         }
 
+        // Add COLRv0 layer glyphs so each layer gets its own atlas entry
+        try expandColrLayers(font, allocator, &seen);
+
         const result = try buildTextureData(allocator, font, &seen);
 
         // Initialize OpenType shaper
@@ -297,6 +319,8 @@ pub const Atlas = struct {
             for (liga_glyphs) |lg| try seen.put(lg, {});
         }
 
+        try expandColrLayers(font, allocator, &seen);
+
         // Re-parse all glyphs and rebuild textures
         const result = try buildTextureData(allocator, font, &seen);
 
@@ -352,6 +376,8 @@ pub const Atlas = struct {
 
         if (!added_any) return false;
 
+        try expandColrLayers(font, self.allocator, &seen);
+
         const result = try buildTextureData(self.allocator, font, &seen);
 
         self.invalidateGpuTextures();
@@ -395,6 +421,13 @@ pub const Atlas = struct {
 
         self.glyph_lut = lut;
         self.glyph_lut_len = @intCast(size);
+    }
+
+    /// Return the COLRv0 layers for a glyph, delegating to the font.
+    /// Returns empty slice if this atlas has no font or the glyph has no COLR data.
+    pub fn getColrLayers(self: *const Atlas, glyph_id: u16, buf: []ttf.Font.ColrLayer) []ttf.Font.ColrLayer {
+        const font = self.font orelse return buf[0..0];
+        return font.inner.getColrLayers(glyph_id, buf);
     }
 
     /// Fast glyph lookup: O(1) array access with HashMap fallback.
@@ -489,9 +522,21 @@ pub const Batch = struct {
     ) usize {
         var count: usize = 0;
         for (glyphs) |sg| {
-            const info = atlas.getGlyph(sg.glyph_id) orelse continue;
-            if (info.band_entry.h_band_count > 0 and info.band_entry.v_band_count > 0) {
-                if (!self.addGlyph(x + sg.x_offset, y + sg.y_offset, font_size, info.bbox, info.band_entry, color, atlas.gl_layer)) break;
+            var layer_buf: [64]ttf.Font.ColrLayer = undefined;
+            const layers = atlas.getColrLayers(sg.glyph_id, &layer_buf);
+            if (layers.len > 0) {
+                for (layers) |layer| {
+                    const linfo = atlas.getGlyph(layer.glyph_id) orelse continue;
+                    if (linfo.band_entry.h_band_count > 0 and linfo.band_entry.v_band_count > 0) {
+                        const lcolor: [4]f32 = if (layer.color[0] < 0) color else layer.color;
+                        if (!self.addGlyph(x + sg.x_offset, y + sg.y_offset, font_size, linfo.bbox, linfo.band_entry, lcolor, atlas.gl_layer)) break;
+                    }
+                }
+            } else {
+                const info = atlas.getGlyph(sg.glyph_id) orelse { count += 1; continue; };
+                if (info.band_entry.h_band_count > 0 and info.band_entry.v_band_count > 0) {
+                    if (!self.addGlyph(x + sg.x_offset, y + sg.y_offset, font_size, info.bbox, info.band_entry, color, atlas.gl_layer)) break;
+                }
             }
             count += 1;
         }
@@ -557,6 +602,25 @@ pub const Batch = struct {
                     kern = font.getKerning(prev_gid, gid) catch 0;
                 }
                 cursor_x += @as(f32, @floatFromInt(kern)) * scale;
+            }
+
+            // COLRv0: expand to per-layer outline glyphs with palette colors
+            {
+                var layer_buf: [64]ttf.Font.ColrLayer = undefined;
+                const layers = font.inner.getColrLayers(gid, &layer_buf);
+                if (layers.len > 0) {
+                    for (layers) |layer| {
+                        const linfo = atlas.getGlyph(layer.glyph_id) orelse continue;
+                        if (linfo.band_entry.h_band_count > 0 and linfo.band_entry.v_band_count > 0) {
+                            const lcolor: [4]f32 = if (layer.color[0] < 0) color else layer.color;
+                            _ = self.addGlyph(cursor_x, y, font_size, linfo.bbox, linfo.band_entry, lcolor, atlas.gl_layer);
+                        }
+                    }
+                    const advance = if (atlas.glyph_map.get(gid)) |bi| bi.advance_width else font.inner.units_per_em;
+                    cursor_x += @as(f32, @floatFromInt(advance)) * scale;
+                    prev_gid = gid;
+                    continue;
+                }
             }
 
             const info = atlas.getGlyph(gid) orelse {

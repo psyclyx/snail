@@ -73,7 +73,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
     const devanagari_text = "\xe0\xa4\xa8\xe0\xa4\xae\xe0\xa4\xb8\xe0\xa5\x8d\xe0\xa4\xa4\xe0\xa5\x87 \xe0\xa4\xb8\xe0\xa4\x82\xe0\xa4\xb8\xe0\xa4\xbe\xe0\xa4\xb0"; // नमस्ते संसार
     const mongolian_text = "\xe1\xa0\xae\xe1\xa0\xa4\xe1\xa0\xa9\xe1\xa0\xa0\xe1\xa0\xa4\xe1\xa0\xaf"; // ᠮᠤᠩᠠᠤᠯ
     const thai_text = "\xe0\xb8\xaa\xe0\xb8\xa7\xe0\xb8\xb1\xe0\xb8\xaa\xe0\xb8\x94\xe0\xb8\xb5\xe0\xb8\x84\xe0\xb8\xa3\xe0\xb8\xb1\xe0\xb8\x9a"; // สวัสดีครับ
-    const emoji_text = "\xe2\x9c\xa8\xf0\x9f\x8c\x8d\xf0\x9f\x8e\xae\xf0\x9f\x93\x90\xe2\x98\x85\xe2\x99\xa5\xe2\x9a\xa1"; // ✨🌍🎮📐☆♥⚡
+    const emoji_text = "\xe2\x9c\xa8\xf0\x9f\x8c\x8d\xf0\x9f\x8e\xa8\xf0\x9f\x9a\x80\xf0\x9f\x90\x89\xf0\x9f\x8c\x88\xf0\x9f\x98\x80\xf0\x9f\x94\xa5"; // ✨🌍🎨🚀🐉🌈😀🔥
 
     var arabic = try ScriptFont.init(allocator, assets.noto_sans_arabic, arabic_text);
     defer arabic.deinit();
@@ -83,7 +83,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
     defer mongolian.deinit();
     var thai = try ScriptFont.init(allocator, assets.noto_sans_thai, thai_text);
     defer thai.deinit();
-    var emoji = try ScriptFont.init(allocator, assets.noto_emoji, emoji_text);
+    var emoji = try ScriptFont.init(allocator, assets.twemoji_mozilla, emoji_text);
     defer emoji.deinit();
 
     var renderer = if (use_vulkan)
@@ -279,10 +279,10 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
                 .{ .label = "Emoji", .text = emoji_text, .sf = &emoji, .color = white },
             };
             for (scripts) |s| {
-                _ = batch.addString(&s.sf.atlas, &s.sf.font, s.text, col2_x, sy, 28, s.color);
-                sy -= 34;
                 _ = batch.addString(&atlas, &font, s.label, col2_x, sy, 10, gray);
-                sy -= 22;
+                sy -= 26;
+                _ = batch.addString(&s.sf.atlas, &s.sf.font, s.text, col2_x, sy, 28, s.color);
+                sy -= 40;
             }
         }
 

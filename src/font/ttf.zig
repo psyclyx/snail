@@ -61,6 +61,8 @@ pub const Font = struct {
     kern_offset: u32 = 0,
     gsub_offset: u32 = 0,
     gpos_offset: u32 = 0,
+    colr_offset: u32 = 0,
+    cpal_offset: u32 = 0,
     index_to_loc_format: i16 = 0,
     num_h_metrics: u16 = 0,
 
@@ -105,7 +107,9 @@ pub const Font = struct {
             else if (std.mem.eql(u8, tag, "hmtx")) self.hmtx_offset = table_offset
             else if (std.mem.eql(u8, tag, "kern")) self.kern_offset = table_offset
             else if (std.mem.eql(u8, tag, "GSUB")) self.gsub_offset = table_offset
-            else if (std.mem.eql(u8, tag, "GPOS")) self.gpos_offset = table_offset;
+            else if (std.mem.eql(u8, tag, "GPOS")) self.gpos_offset = table_offset
+            else if (std.mem.eql(u8, tag, "COLR")) self.colr_offset = table_offset
+            else if (std.mem.eql(u8, tag, "CPAL")) self.cpal_offset = table_offset;
             offset += 16;
         }
         if (self.head_offset == 0 or self.glyf_offset == 0 or self.loca_offset == 0)
@@ -436,6 +440,72 @@ pub const Font = struct {
         };
         try cache.map.put(glyph_id, glyph);
         return glyph;
+    }
+
+    /// A single COLRv0 layer: the outline glyph to render and its RGBA color.
+    /// color = (-1,-1,-1,-1) is a sentinel meaning "use the text foreground color".
+    pub const ColrLayer = struct {
+        glyph_id: u16,
+        color: [4]f32,
+    };
+
+    /// Fill buf with the COLRv0 layers for base_glyph_id.
+    /// Returns the populated prefix of buf; empty if the glyph has no COLR data.
+    /// Binary-searches the (sorted) base glyph record table, then resolves colors
+    /// from CPAL palette 0.  All offsets in the COLR/CPAL tables are relative to
+    /// their respective table starts, as the spec requires.
+    pub fn getColrLayers(self: *const Font, base_glyph_id: u16, buf: []ColrLayer) []ColrLayer {
+        if (self.colr_offset == 0 or self.cpal_offset == 0 or buf.len == 0) return buf[0..0];
+        const colr = self.colr_offset;
+        const cpal = self.cpal_offset;
+
+        const num_base = readU16(self.data, colr + 2) catch return buf[0..0];
+        if (num_base == 0) return buf[0..0];
+        const base_off = readU32(self.data, colr + 4) catch return buf[0..0];
+        const layer_off = readU32(self.data, colr + 8) catch return buf[0..0];
+
+        // Binary search: base glyph records are sorted by GID (spec requirement)
+        var lo: u32 = 0;
+        var hi: u32 = num_base;
+        const rec = blk: {
+            while (lo < hi) {
+                const mid = (lo + hi) / 2;
+                const off = colr + base_off + mid * 6;
+                const g = readU16(self.data, off) catch return buf[0..0];
+                if (g == base_glyph_id) break :blk off;
+                if (g < base_glyph_id) lo = mid + 1 else hi = mid;
+            }
+            return buf[0..0];
+        };
+
+        const first_layer = readU16(self.data, rec + 2) catch return buf[0..0];
+        const num_layers = readU16(self.data, rec + 4) catch return buf[0..0];
+        if (num_layers == 0) return buf[0..0];
+
+        const color_recs_off = readU32(self.data, cpal + 8) catch return buf[0..0];
+
+        const count = @min(num_layers, @as(u16, @intCast(buf.len)));
+        for (0..count) |i| {
+            const layer_rec = colr + layer_off + (@as(u32, first_layer) + @as(u32, @intCast(i))) * 4;
+            const layer_gid = readU16(self.data, layer_rec) catch break;
+            const pal_idx = readU16(self.data, layer_rec + 2) catch break;
+
+            if (pal_idx == 0xFFFF) {
+                // Foreground color: sentinel for "use text color"
+                buf[i] = .{ .glyph_id = layer_gid, .color = .{ -1, -1, -1, -1 } };
+            } else {
+                const entry = cpal + color_recs_off + @as(u32, pal_idx) * 4;
+                if (entry + 3 >= self.data.len) break;
+                // CPAL stores BGRA
+                buf[i] = .{ .glyph_id = layer_gid, .color = .{
+                    @as(f32, @floatFromInt(self.data[entry + 2])) / 255.0,
+                    @as(f32, @floatFromInt(self.data[entry + 1])) / 255.0,
+                    @as(f32, @floatFromInt(self.data[entry + 0])) / 255.0,
+                    @as(f32, @floatFromInt(self.data[entry + 3])) / 255.0,
+                } };
+            }
+        }
+        return buf[0..count];
     }
 
     pub fn getKerning(self: *const Font, left: u16, right: u16) !i16 {

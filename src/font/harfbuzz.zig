@@ -6,6 +6,7 @@ const std = @import("std");
 const hb = @cImport({
     @cInclude("hb.h");
 });
+const ttf = @import("ttf.zig");
 
 pub const ShapedGlyph = struct {
     glyph_id: u16,
@@ -107,7 +108,19 @@ pub const HarfBuzzShaper = struct {
             const glyph_x = x + (cursor_x + @as(f32, @floatFromInt(pos.x_offset))) * scale;
             const glyph_y = y + (cursor_y + @as(f32, @floatFromInt(pos.y_offset))) * scale;
 
-            if (atlas.getGlyph(gid)) |info| {
+            // COLRv0: expand base glyph into per-layer outline glyphs with palette colors
+            var layer_buf: [64]ttf.Font.ColrLayer = undefined;
+            const layers = atlas.getColrLayers(gid, &layer_buf);
+            if (layers.len > 0) {
+                for (layers) |layer| {
+                    if (atlas.getGlyph(layer.glyph_id)) |linfo| {
+                        if (linfo.band_entry.h_band_count > 0 and linfo.band_entry.v_band_count > 0) {
+                            const lcolor: [4]f32 = if (layer.color[0] < 0) color else layer.color;
+                            if (!batch.addGlyph(glyph_x, glyph_y, font_size, linfo.bbox, linfo.band_entry, lcolor, atlas_layer)) break;
+                        }
+                    }
+                }
+            } else if (atlas.getGlyph(gid)) |info| {
                 if (!batch.addGlyph(glyph_x, glyph_y, font_size, info.bbox, info.band_entry, color, atlas_layer)) break;
             }
 
