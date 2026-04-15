@@ -7,7 +7,7 @@ const std = @import("std");
 const snail = @import("snail.zig");
 const build_options = @import("build_options");
 const platform = @import("render/platform.zig");
-const vulkan_platform = @import("render/vulkan_platform.zig");
+const vulkan_platform = if (build_options.enable_vulkan) @import("render/vulkan_platform.zig") else undefined;
 const gl = platform.gl;
 const assets = @import("assets");
 
@@ -206,9 +206,12 @@ fn drawSingleBatch(font_sets: []const FontEntry, renderer: *snail.Renderer, vbuf
     if (batch.glyphCount() > 0) renderer.draw(batch.slice(), mvp, WIDTH, HEIGHT);
 }
 
-// ── Vulkan scenario runners ──
+// ── Vulkan scenario runners (conditional on -Dvulkan=true) ──
 
-fn runScenarioVulkan(
+const runScenarioVulkan = if (build_options.enable_vulkan) runScenarioVulkanImpl else @compileError("vulkan disabled");
+const runMultiFontScenarioVulkan = if (build_options.enable_vulkan) runMultiFontScenarioVulkanImpl else @compileError("vulkan disabled");
+
+fn runScenarioVulkanImpl(
     name: []const u8,
     buildFn: *const fn (*snail.Batch, *const snail.Atlas, *const snail.Font) void,
     atlas: *const snail.Atlas,
@@ -279,7 +282,7 @@ fn runScenarioVulkan(
     });
 }
 
-fn runMultiFontScenarioVulkan(
+fn runMultiFontScenarioVulkanImpl(
     name: []const u8,
     font_sets: []const FontEntry,
     renderer: *snail.Renderer,
@@ -543,8 +546,8 @@ pub fn main() !void {
         std.debug.print("\n=========================================================\n", .{});
     }
 
-    // ── Vulkan section ──
-    {
+    // ── Vulkan section (requires -Dvulkan=true) ──
+    if (comptime build_options.enable_vulkan) {
         const vk_ctx = try vulkan_platform.initOffscreen(WIDTH, HEIGHT);
         defer vulkan_platform.deinitOffscreen();
 

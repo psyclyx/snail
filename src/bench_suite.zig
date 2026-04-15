@@ -6,7 +6,7 @@ const std = @import("std");
 const snail = @import("snail.zig");
 const build_options = @import("build_options");
 const platform = @import("render/platform.zig");
-const vulkan_platform = @import("render/vulkan_platform.zig");
+const vulkan_platform = if (build_options.enable_vulkan) @import("render/vulkan_platform.zig") else undefined;
 const gl = platform.gl;
 const pipeline = @import("render/pipeline.zig");
 const assets = @import("assets");
@@ -172,7 +172,9 @@ fn runMultiFontScenario(
 
 // ── Vulkan scenario runners ──
 
-fn runScenarioVulkan(
+const runScenarioVulkan = if (build_options.enable_vulkan) runScenarioVulkanImpl else @compileError("vulkan disabled");
+
+fn runScenarioVulkanImpl(
     name: []const u8,
     buildFn: *const fn (*snail.Batch, *const snail.Atlas, *const snail.Font) void,
     atlas: *const snail.Atlas,
@@ -529,8 +531,8 @@ pub fn main() !void {
         runMultiFontScenario("Multi-font torture (4 fonts)", &torture_entries, &renderer, vbuf, mvp);
     }
 
-    // ── Vulkan rendering section ──
-    {
+    // ── Vulkan rendering section (requires -Dvulkan=true) ──
+    if (comptime build_options.enable_vulkan) {
         const vk_ctx = try vulkan_platform.initOffscreen(WIDTH, HEIGHT);
         defer vulkan_platform.deinitOffscreen();
 
