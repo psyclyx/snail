@@ -454,13 +454,14 @@ fn createGraphicsPipeline(frag_code: []const u8) !vk.VkPipeline {
         .rasterizationSamples = vk.VK_SAMPLE_COUNT_1_BIT,
     });
 
-    // Alpha blending (SRC_ALPHA, ONE_MINUS_SRC_ALPHA)
+    // Premultiplied alpha blending: shader outputs (color * coverage, alpha * coverage),
+    // so src factor is ONE to avoid double-multiplying coverage.
     const blend_attach = std.mem.zeroInit(vk.VkPipelineColorBlendAttachmentState, .{
         .blendEnable = vk.VK_TRUE,
-        .srcColorBlendFactor = vk.VK_BLEND_FACTOR_SRC_ALPHA,
+        .srcColorBlendFactor = vk.VK_BLEND_FACTOR_ONE,
         .dstColorBlendFactor = vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
         .colorBlendOp = vk.VK_BLEND_OP_ADD,
-        .srcAlphaBlendFactor = vk.VK_BLEND_FACTOR_SRC_ALPHA,
+        .srcAlphaBlendFactor = vk.VK_BLEND_FACTOR_ONE,
         .dstAlphaBlendFactor = vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
         .alphaBlendOp = vk.VK_BLEND_OP_ADD,
         .colorWriteMask = vk.VK_COLOR_COMPONENT_R_BIT | vk.VK_COLOR_COMPONENT_G_BIT | vk.VK_COLOR_COMPONENT_B_BIT | vk.VK_COLOR_COMPONENT_A_BIT,

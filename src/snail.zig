@@ -1,7 +1,7 @@
 //! snail — GPU font rendering via direct Bézier curve evaluation (Slug algorithm).
 //!
 //! Usage:
-//!   const font = try snail.Font.init(allocator, ttf_bytes);
+//!   const font = try snail.Font.init(ttf_bytes);
 //!   defer font.deinit();
 //!
 //!   var atlas = try snail.Atlas.init(allocator, &font, codepoints);
@@ -819,6 +819,15 @@ pub const Renderer = struct {
     pub fn uploadAtlas(self: *Renderer, atlas: *const Atlas) void {
         const arr = [1]*const Atlas{atlas};
         self.uploadAtlases(&arr);
+    }
+
+    /// Reset cached GL state (program, textures). Call once per frame
+    /// before draw() when other renderers share the GL context.
+    pub fn beginFrame(self: *Renderer) void {
+        switch (self.backend) {
+            .gl => pipeline.resetFrameState(),
+            .vulkan => {},
+        }
     }
 
     /// Draw a batch of glyph vertices.

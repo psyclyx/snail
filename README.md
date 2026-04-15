@@ -52,7 +52,7 @@ Demo controls: `Z`/`X` zoom, `R` rotate, `S` stress test, `L` cycle subpixel ord
 const snail = @import("snail");
 
 // Parse font (one-time)
-var font = try snail.Font.init(allocator, ttf_bytes);
+var font = try snail.Font.init(ttf_bytes);
 defer font.deinit();
 
 // Build GPU textures for desired glyphs (one-time)
@@ -69,7 +69,8 @@ var buf: [5000 * snail.FLOATS_PER_GLYPH]f32 = undefined;
 var batch = snail.Batch.init(&buf);
 _ = batch.addString(&atlas, &font, "Hello, world!", x, y, 48.0, .{ 1, 1, 1, 1 });
 
-// Draw
+// Draw (call beginFrame() once per frame when sharing a GL context with other renderers)
+renderer.beginFrame();
 renderer.draw(batch.slice(), mvp, viewport_w, viewport_h);
 ```
 
@@ -81,6 +82,7 @@ renderer.draw(batch.slice(), mvp, viewport_w, viewport_h);
 | `Atlas.init` | Once per glyph set | ~500 us for 95 ASCII glyphs |
 | `Renderer.uploadAtlas` | Once (or on atlas rebuild) | GPU texture upload |
 | `Batch.addString` | Per-frame (dynamic) or once (static) | ~0.5 us per glyph |
+| `Renderer.beginFrame` | Per-frame | Resets cached GL state (call before `draw` when sharing a GL context) |
 | `Renderer.draw` | Per-frame | Single draw call per batch |
 
 For static UI text, build the `Batch` once and call `Renderer.draw` each frame with the same `batch.slice()`. The vertex buffer is caller-owned and zero-allocation.
@@ -204,7 +206,7 @@ snail_mod.addImport("vulkan_shaders", vk_stub);
 root_module.addImport("snail", snail_mod);
 ```
 
-The caller must have an active OpenGL 3.3+ context before calling `Renderer.init()`. snail manages its own GL state (shader programs, VAOs, textures, blend/depth) per draw call.
+The caller must have an active OpenGL 3.3+ context before calling `Renderer.init()`. snail manages its own GL state (shader programs, VAOs, textures, blend/depth) per draw call. If other renderers share the GL context, call `renderer.beginFrame()` once per frame before `draw()` so snail re-binds its cached state.
 
 ### Thread safety
 

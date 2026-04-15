@@ -107,7 +107,9 @@ pub fn init() !void {
     }
 
     gl.glEnable(gl.GL_BLEND);
-    gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA);
+    // Shader outputs premultiplied alpha (frag_color = v_color * coverage),
+    // so use GL_ONE for src to avoid double-multiplying coverage.
+    gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA);
 }
 
 fn initGl33() void {
@@ -314,7 +316,7 @@ pub fn drawText(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f
 
     gl.glDisable(gl.GL_DEPTH_TEST);
     gl.glEnable(gl.GL_BLEND);
-    gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA);
+    gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA);
 
     const using_sp = subpixel_order != .none;
     const prog = if (using_sp) program_subpixel else program;
