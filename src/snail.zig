@@ -609,4 +609,6 @@ test {
     _ = @import("font/opentype.zig");
     _ = @import("font/snail_file.zig");
     _ = @import("c_api.zig");
+    _ = @import("render/vertex.zig");
+    _ = @import("torture_test.zig");
 }
