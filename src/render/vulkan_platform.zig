@@ -333,6 +333,12 @@ pub fn isKeyPressed(key: c_int) bool {
     return down and !was_down;
 }
 
+/// Block until all GPU work submitted to the graphics queue is complete.
+/// Equivalent to glFinish() for benchmarking sync points.
+pub fn queueWaitIdle() void {
+    if (graphics_queue != null) _ = vk.vkQueueWaitIdle(graphics_queue);
+}
+
 // Re-export GLFW key constants
 pub const GLFW_KEY_ESCAPE = c.GLFW_KEY_ESCAPE;
 pub const GLFW_KEY_R = c.GLFW_KEY_R;
