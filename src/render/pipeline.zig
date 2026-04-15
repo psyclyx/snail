@@ -1,6 +1,5 @@
 const std = @import("std");
-const platform = @import("platform.zig");
-const gl = platform.gl;
+const gl = @import("gl.zig").gl;
 const shaders = @import("shaders.zig");
 const vertex = @import("vertex.zig");
 const vec = @import("../math/vec.zig");

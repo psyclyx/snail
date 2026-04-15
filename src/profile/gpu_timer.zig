@@ -1,8 +1,7 @@
 const std = @import("std");
 const build_options = @import("build_options");
 const profiling_enabled = build_options.enable_profiling;
-const platform = @import("../render/platform.zig");
-const gl = platform.gl;
+const gl = @import("../render/gl.zig").gl;
 const timer = @import("timer.zig");
 
 pub const GpuTimer = if (profiling_enabled) struct {

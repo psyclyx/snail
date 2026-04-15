@@ -26,7 +26,15 @@ const curve_tex = @import("render/curve_texture.zig");
 const band_tex = @import("render/band_texture.zig");
 const vertex_mod = @import("render/vertex.zig");
 const pipeline = @import("render/pipeline.zig");
-const vulkan_pipeline = @import("render/vulkan_pipeline.zig");
+const vulkan_pipeline = if (build_options.enable_vulkan) @import("render/vulkan_pipeline.zig") else struct {
+    pub const VulkanContext = void;
+    pub fn init(_: anytype) !void {}
+    pub fn deinit() void {}
+    pub fn buildTextureArrays(_: anytype) void {}
+    pub fn drawText(_: anytype, _: anytype, _: anytype, _: anytype) void {}
+    pub var subpixel_order: @import("render/subpixel_order.zig").SubpixelOrder = .none;
+    pub fn setCommandBuffer(_: anytype) void {}
+};
 pub const harfbuzz = if (build_options.enable_harfbuzz) @import("font/harfbuzz.zig") else struct {
     pub const HarfBuzzShaper = void;
 };

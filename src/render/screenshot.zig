@@ -1,6 +1,5 @@
 const std = @import("std");
-const platform = @import("platform.zig");
-const gl = platform.gl;
+const gl = @import("gl.zig").gl;
 
 /// Write raw RGBA pixels as a TGA file
 pub fn writeTga(path: [*:0]const u8, pixels: []const u8, width: u32, height: u32) void {
