@@ -61,6 +61,11 @@ int  snail_atlas_init(const SnailAllocator *allocator, /* NULL for libc */
                       const SnailFont *font,
                       const uint32_t *codepoints, size_t num_codepoints,
                       SnailAtlas **out);
+/* Add codepoints to an existing atlas. Returns SNAIL_OK on success.
+ * Sets *added to true if new glyphs were added (caller must re-upload). */
+int  snail_atlas_add_codepoints(SnailAtlas *atlas,
+                                const uint32_t *codepoints, size_t num_codepoints,
+                                bool *added);
 void snail_atlas_deinit(SnailAtlas *atlas);
 
 /* ── Renderer (GL thread only) ── */

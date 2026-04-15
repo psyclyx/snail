@@ -88,42 +88,29 @@ pub const Atlas = struct {
         band_entry: band_tex.GlyphBandEntry,
     };
 
-    /// Build an atlas for the given codepoints.
-    /// Thread-safe: uses its own GlyphCache internally.
-    pub fn init(allocator: std.mem.Allocator, font: *const Font, codepoints: []const u32) !Atlas {
+    const TextureResult = struct {
+        curve_data: []u16,
+        curve_width: u32,
+        curve_height: u32,
+        band_data: []u16,
+        band_width: u32,
+        band_height: u32,
+        glyph_map: std.AutoHashMap(u16, GlyphInfo),
+    };
+
+    /// Build curve/band textures and glyph map from a set of glyph IDs.
+    fn buildTextureData(allocator: std.mem.Allocator, font: *const Font, glyph_id_set: *const std.AutoHashMap(u16, void)) !TextureResult {
         var cache = ttf.GlyphCache.init(allocator);
         defer cache.deinit();
-
-        var glyph_ids: std.ArrayList(u16) = .empty;
-        defer glyph_ids.deinit(allocator);
 
         var glyph_curves_list: std.ArrayList(curve_tex.GlyphCurves) = .empty;
         defer glyph_curves_list.deinit(allocator);
 
-        var seen = std.AutoHashMap(u16, void).init(allocator);
-        defer seen.deinit();
-
-        var glyph_infos: std.ArrayList(struct { gid: u16, advance: u16, bbox: bezier.BBox }) = .empty;
+        const GlyphMeta = struct { gid: u16, advance: u16, bbox: bezier.BBox };
+        var glyph_infos: std.ArrayList(GlyphMeta) = .empty;
         defer glyph_infos.deinit(allocator);
 
-        // Collect base glyphs
-        for (codepoints) |cp| {
-            const gid = font.inner.glyphIndex(cp) catch continue;
-            if (gid == 0) continue;
-            try seen.put(gid, {});
-        }
-
-        // Discover ligature output glyphs by scanning GSUB tables directly
-        {
-            const liga_glyphs = try opentype.discoverLigatureGlyphs(
-                allocator, font.inner.data, font.inner.gsub_offset, &seen,
-            );
-            defer if (liga_glyphs.len > 0) allocator.free(liga_glyphs);
-            for (liga_glyphs) |lg| try seen.put(lg, {});
-        }
-
-        // Parse all collected glyph IDs
-        var seen_it = seen.keyIterator();
+        var seen_it = glyph_id_set.keyIterator();
         while (seen_it.next()) |gid_ptr| {
             const gid = gid_ptr.*;
             const glyph = font.inner.parseGlyph(allocator, &cache, gid) catch continue;
@@ -139,7 +126,6 @@ pub const Atlas = struct {
                 .curves = owned,
                 .bbox = glyph.metrics.bbox,
             });
-            try glyph_ids.append(allocator, gid);
             try glyph_infos.append(allocator, .{
                 .gid = gid,
                 .advance = glyph.metrics.advance_width,
@@ -178,12 +164,47 @@ pub const Atlas = struct {
             });
         }
 
-        // Take ownership of texture data, free temp structures
+        // Take ownership, free temp structures
         const curve_data = ct.texture.data;
         const band_data_owned = bt.texture.data;
         allocator.free(ct.entries);
         allocator.free(bt.entries);
         for (glyph_curves_list.items) |gc| allocator.free(gc.curves);
+
+        return .{
+            .curve_data = curve_data,
+            .curve_width = ct.texture.width,
+            .curve_height = ct.texture.height,
+            .band_data = band_data_owned,
+            .band_width = bt.texture.width,
+            .band_height = bt.texture.height,
+            .glyph_map = glyph_map,
+        };
+    }
+
+    /// Build an atlas for the given codepoints.
+    /// Thread-safe: uses its own GlyphCache internally.
+    pub fn init(allocator: std.mem.Allocator, font: *const Font, codepoints: []const u32) !Atlas {
+        var seen = std.AutoHashMap(u16, void).init(allocator);
+        defer seen.deinit();
+
+        // Collect base glyphs
+        for (codepoints) |cp| {
+            const gid = font.inner.glyphIndex(cp) catch continue;
+            if (gid == 0) continue;
+            try seen.put(gid, {});
+        }
+
+        // Discover ligature output glyphs by scanning GSUB tables directly
+        {
+            const liga_glyphs = try opentype.discoverLigatureGlyphs(
+                allocator, font.inner.data, font.inner.gsub_offset, &seen,
+            );
+            defer if (liga_glyphs.len > 0) allocator.free(liga_glyphs);
+            for (liga_glyphs) |lg| try seen.put(lg, {});
+        }
+
+        const result = try buildTextureData(allocator, font, &seen);
 
         // Initialize OpenType shaper
         const shaper: ?opentype.Shaper = opentype.Shaper.init(
@@ -196,13 +217,13 @@ pub const Atlas = struct {
         return .{
             .allocator = allocator,
             .font = font,
-            .curve_data = curve_data,
-            .curve_width = ct.texture.width,
-            .curve_height = ct.texture.height,
-            .band_data = band_data_owned,
-            .band_width = bt.texture.width,
-            .band_height = bt.texture.height,
-            .glyph_map = glyph_map,
+            .curve_data = result.curve_data,
+            .curve_width = result.curve_width,
+            .curve_height = result.curve_height,
+            .band_data = result.band_data,
+            .band_width = result.band_width,
+            .band_height = result.band_height,
+            .glyph_map = result.glyph_map,
             .shaper = shaper,
         };
     }
@@ -213,6 +234,61 @@ pub const Atlas = struct {
         defer allocator.free(codepoints);
         for (chars, 0..) |ch, i| codepoints[i] = ch;
         return init(allocator, font, codepoints);
+    }
+
+    /// Add new codepoints to the atlas, rebuilding textures as needed.
+    /// Returns true if new glyphs were added (caller must re-upload via
+    /// Renderer.uploadAtlas). Returns false if all codepoints were already present.
+    pub fn addCodepoints(self: *Atlas, new_codepoints: []const u32) !bool {
+        const allocator = self.allocator;
+
+        // Collect all glyph IDs: existing + new
+        var seen = std.AutoHashMap(u16, void).init(allocator);
+        defer seen.deinit();
+
+        // Add existing glyphs
+        var existing_it = self.glyph_map.keyIterator();
+        while (existing_it.next()) |k| try seen.put(k.*, {});
+
+        // Add new codepoints
+        var added_any = false;
+        for (new_codepoints) |cp| {
+            const gid = self.font.inner.glyphIndex(cp) catch continue;
+            if (gid == 0) continue;
+            if (seen.contains(gid)) continue;
+            try seen.put(gid, {});
+            added_any = true;
+        }
+
+        if (!added_any) return false;
+
+        // Discover ligature glyphs for the expanded set
+        {
+            const liga_glyphs = try opentype.discoverLigatureGlyphs(
+                allocator, self.font.inner.data, self.font.inner.gsub_offset, &seen,
+            );
+            defer if (liga_glyphs.len > 0) allocator.free(liga_glyphs);
+            for (liga_glyphs) |lg| try seen.put(lg, {});
+        }
+
+        // Re-parse all glyphs and rebuild textures
+        const result = try buildTextureData(allocator, self.font, &seen);
+
+        // Free old data
+        allocator.free(self.curve_data);
+        allocator.free(self.band_data);
+        self.glyph_map.deinit();
+
+        // Install new data
+        self.curve_data = result.curve_data;
+        self.curve_width = result.curve_width;
+        self.curve_height = result.curve_height;
+        self.band_data = result.band_data;
+        self.band_width = result.band_width;
+        self.band_height = result.band_height;
+        self.glyph_map = result.glyph_map;
+
+        return true;
     }
 
     pub fn deinit(self: *Atlas) void {

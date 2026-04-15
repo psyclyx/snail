@@ -122,6 +122,17 @@ export fn snail_atlas_init(
     return SNAIL_OK;
 }
 
+export fn snail_atlas_add_codepoints(
+    atlas: *AtlasImpl,
+    codepoints: [*]const u32,
+    num_codepoints: usize,
+    added: *bool,
+) c_int {
+    const cp_slice = codepoints[0..num_codepoints];
+    added.* = atlas.inner.addCodepoints(cp_slice) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    return SNAIL_OK;
+}
+
 export fn snail_atlas_deinit(atlas: ?*AtlasImpl) void {
     if (atlas) |a| {
         a.inner.deinit();
