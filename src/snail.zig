@@ -26,6 +26,19 @@ const curve_tex = @import("render/curve_texture.zig");
 const band_tex = @import("render/band_texture.zig");
 const vertex_mod = @import("render/vertex.zig");
 const pipeline = @import("render/pipeline.zig");
+const vulkan_pipeline = if (build_options.enable_vulkan) @import("render/vulkan_pipeline.zig") else struct {
+    pub const VulkanContext = void;
+    pub const VkFillRule = enum(c_int) { non_zero = 0, even_odd = 1 };
+    pub var subpixel_enabled: bool = false;
+    pub var fill_rule: VkFillRule = .non_zero;
+    pub fn init(_: anytype) !void {}
+    pub fn deinit() void {}
+    pub fn buildTextureArrays(_: anytype) void {}
+    pub fn drawText(_: anytype, _: anytype, _: anytype, _: anytype) void {}
+    pub fn setCommandBuffer(_: anytype) void {}
+    pub fn getBackendName() []const u8 { return "Vulkan (disabled)"; }
+    pub fn resetFrameState() void {}
+};
 pub const harfbuzz = if (build_options.enable_harfbuzz) @import("font/harfbuzz.zig") else struct {
     pub const HarfBuzzShaper = void;
 };
@@ -683,20 +696,33 @@ pub const Batch = struct {
 };
 
 pub const FillRule = pipeline.FillRule;
+pub const RenderBackend = enum { gl, vulkan };
+pub const VulkanContext = if (build_options.enable_vulkan) vulkan_pipeline.VulkanContext else void;
 
 /// GPU renderer. Owns shader programs and texture handles.
-/// Requires an active OpenGL 3.3+ context.
+/// For OpenGL: requires an active GL 3.3+ context.
+/// For Vulkan: requires a VulkanContext from the caller.
 pub const Renderer = struct {
-    _init: bool = true,
+    backend: RenderBackend = .gl,
 
+    /// Initialize with the current OpenGL context.
     pub fn init() !Renderer {
         try pipeline.init();
-        return .{};
+        return .{ .backend = .gl };
+    }
+
+    /// Initialize with a Vulkan context (device, queue, render pass).
+    pub fn initVulkan(vk_ctx: VulkanContext) !Renderer {
+        if (comptime !build_options.enable_vulkan) return error.VulkanNotEnabled;
+        try vulkan_pipeline.init(vk_ctx);
+        return .{ .backend = .vulkan };
     }
 
     pub fn deinit(self: *Renderer) void {
-        _ = self;
-        pipeline.deinit();
+        switch (self.backend) {
+            .gl => pipeline.deinit(),
+            .vulkan => vulkan_pipeline.deinit(),
+        }
     }
 
     /// Upload one or more atlases as a texture array.
@@ -704,8 +730,10 @@ pub const Renderer = struct {
     /// the layer index is encoded in vertex data automatically.
     /// Call again after atlas data changes to rebuild the array.
     pub fn uploadAtlases(self: *Renderer, atlases: []const *const Atlas) void {
-        _ = self;
-        pipeline.buildTextureArrays(atlases);
+        switch (self.backend) {
+            .gl => pipeline.buildTextureArrays(atlases),
+            .vulkan => vulkan_pipeline.buildTextureArrays(atlases),
+        }
     }
 
     /// Convenience: upload a single atlas (layer 0).
@@ -716,35 +744,53 @@ pub const Renderer = struct {
 
     /// Draw a batch of glyph vertices.
     pub fn draw(self: *Renderer, vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
-        _ = self;
-        pipeline.drawText(vertices, mvp, viewport_w, viewport_h);
+        switch (self.backend) {
+            .gl => pipeline.drawText(vertices, mvp, viewport_w, viewport_h),
+            .vulkan => vulkan_pipeline.drawText(vertices, mvp, viewport_w, viewport_h),
+        }
+    }
+
+    /// Set the Vulkan command buffer for the current frame.
+    /// Must be called before draw() when using Vulkan backend.
+    pub fn setCommandBuffer(self: *Renderer, cmd: anytype) void {
+        if (self.backend == .vulkan) vulkan_pipeline.setCommandBuffer(cmd);
     }
 
     /// Toggle subpixel LCD rendering.
     pub fn setSubpixel(self: *Renderer, enabled: bool) void {
-        _ = self;
-        pipeline.subpixel_enabled = enabled;
+        switch (self.backend) {
+            .gl => pipeline.subpixel_enabled = enabled,
+            .vulkan => vulkan_pipeline.subpixel_enabled = enabled,
+        }
     }
 
     pub fn subpixelEnabled(self: *const Renderer) bool {
-        _ = self;
-        return pipeline.subpixel_enabled;
+        return switch (self.backend) {
+            .gl => pipeline.subpixel_enabled,
+            .vulkan => vulkan_pipeline.subpixel_enabled,
+        };
     }
 
     /// Set fill rule: non_zero (default, TrueType) or even_odd (PostScript/CFF).
     pub fn setFillRule(self: *Renderer, rule: FillRule) void {
-        _ = self;
-        pipeline.fill_rule = rule;
+        switch (self.backend) {
+            .gl => pipeline.fill_rule = rule,
+            .vulkan => vulkan_pipeline.fill_rule = @enumFromInt(@intFromEnum(rule)),
+        }
     }
 
     pub fn fillRule(self: *const Renderer) FillRule {
-        _ = self;
-        return pipeline.fill_rule;
+        return switch (self.backend) {
+            .gl => pipeline.fill_rule,
+            .vulkan => @enumFromInt(@intFromEnum(vulkan_pipeline.fill_rule)),
+        };
     }
 
     pub fn backendName(self: *const Renderer) []const u8 {
-        _ = self;
-        return pipeline.getBackendName();
+        return switch (self.backend) {
+            .gl => pipeline.getBackendName(),
+            .vulkan => vulkan_pipeline.getBackendName(),
+        };
     }
 };
 

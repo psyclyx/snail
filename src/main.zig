@@ -1,10 +1,13 @@
 const std = @import("std");
 const snail = @import("snail.zig");
 const build_options = @import("build_options");
-const platform = @import("render/platform.zig");
-const gl = platform.gl;
 const assets = @import("assets");
 const screenshot = @import("render/screenshot.zig");
+
+// Backend-specific platform
+const use_vulkan = build_options.enable_vulkan;
+const platform = if (use_vulkan) @import("render/vulkan_platform.zig") else @import("render/platform.zig");
+const gl = if (use_vulkan) struct {} else @import("render/platform.zig").gl;
 
 const ScriptFont = struct {
     font: snail.Font,
@@ -44,8 +47,18 @@ pub fn main() !void {
     defer _ = da.deinit();
     const allocator = da.allocator();
 
-    try platform.init(1280, 720, "snail");
-    defer platform.deinit();
+    if (use_vulkan) {
+        const vk_ctx = try platform.init(1280, 720, "snail");
+        defer platform.deinit();
+        return mainLoop(allocator, vk_ctx);
+    } else {
+        try platform.init(1280, 720, "snail");
+        defer platform.deinit();
+        return mainLoop(allocator, {});
+    }
+}
+
+fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
 
     // Latin font (primary)
     var font = try snail.Font.init(assets.noto_sans_regular);
@@ -72,7 +85,10 @@ pub fn main() !void {
     var emoji = try ScriptFont.init(allocator, assets.noto_emoji, emoji_text);
     defer emoji.deinit();
 
-    var renderer = try snail.Renderer.init();
+    var renderer = if (use_vulkan)
+        try snail.Renderer.initVulkan(vk_ctx)
+    else
+        try snail.Renderer.init();
     defer renderer.deinit();
 
     // Upload all atlases as texture array (enables single-draw multi-font rendering)
@@ -121,23 +137,35 @@ pub fn main() !void {
             fps_frames = 0;
         }
 
-        if (platform.isKeyPressed(platform.c.GLFW_KEY_R)) rotate = !rotate;
-        if (platform.isKeyPressed(platform.c.GLFW_KEY_S)) stress_test = !stress_test;
-        if (platform.isKeyPressed(platform.c.GLFW_KEY_L)) {
+        const KEY_R = if (use_vulkan) platform.GLFW_KEY_R else platform.c.GLFW_KEY_R;
+        const KEY_S = if (use_vulkan) platform.GLFW_KEY_S else platform.c.GLFW_KEY_S;
+        const KEY_L = if (use_vulkan) platform.GLFW_KEY_L else platform.c.GLFW_KEY_L;
+        const KEY_Z = if (use_vulkan) platform.GLFW_KEY_Z else platform.c.GLFW_KEY_Z;
+        const KEY_X = if (use_vulkan) platform.GLFW_KEY_X else platform.c.GLFW_KEY_X;
+
+        if (platform.isKeyPressed(KEY_R)) rotate = !rotate;
+        if (platform.isKeyPressed(KEY_S)) stress_test = !stress_test;
+        if (platform.isKeyPressed(KEY_L)) {
             renderer.setSubpixel(!renderer.subpixelEnabled());
             std.debug.print("Subpixel: {s}\n", .{if (renderer.subpixelEnabled()) "ON" else "OFF"});
         }
         if (rotate) angle += dt * 0.5;
-        if (platform.isKeyDown(platform.c.GLFW_KEY_Z)) zoom *= 1.0 + dt * 2.0;
-        if (platform.isKeyDown(platform.c.GLFW_KEY_X)) zoom *= 1.0 - dt * 2.0;
+        if (platform.isKeyDown(KEY_Z)) zoom *= 1.0 + dt * 2.0;
+        if (platform.isKeyDown(KEY_X)) zoom *= 1.0 - dt * 2.0;
 
         const size = platform.getWindowSize();
         const w: f32 = @floatFromInt(size[0]);
         const h: f32 = @floatFromInt(size[1]);
         if (w < 1 or h < 1) continue;
 
-        gl.glViewport(0, 0, @intCast(size[0]), @intCast(size[1]));
-        platform.clear(0.12, 0.12, 0.14, 1.0);
+        // Begin frame (Vulkan: acquire swapchain image + begin render pass)
+        if (use_vulkan) {
+            const cmd = platform.beginFrame() orelse continue;
+            renderer.setCommandBuffer(cmd);
+        } else {
+            gl.glViewport(0, 0, @intCast(size[0]), @intCast(size[1]));
+            platform.clear(0.12, 0.12, 0.14, 1.0);
+        }
 
         const projection = snail.Mat4.ortho(0, w, 0, h, -1, 1);
         const cx = w / 2.0;
@@ -236,7 +264,7 @@ pub fn main() !void {
             }
         }
 
-        if (frame_count == 2) {
+        if (!use_vulkan and frame_count == 2) {
             const iw: u32 = @intFromFloat(w);
             const ih: u32 = @intFromFloat(h);
             if (screenshot.captureFramebuffer(allocator, iw, ih) catch null) |px| {
@@ -249,7 +277,11 @@ pub fn main() !void {
         }
         frame_count += 1;
 
-        platform.swapBuffers();
+        if (use_vulkan) {
+            platform.endFrame();
+        } else {
+            platform.swapBuffers();
+        }
     }
 }
 

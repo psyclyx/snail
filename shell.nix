@@ -18,6 +18,10 @@ pkgs.mkShell {
     libxkbcommon
     freetype
     harfbuzz
+    vulkan-loader
+    vulkan-headers
+    vulkan-validation-layers
+    shaderc
     # For competitor benchmarks
     cmake
     gnumake
@@ -35,5 +39,6 @@ pkgs.mkShell {
     wayland
     libxkbcommon
     harfbuzz
+    vulkan-loader
   ];
 }
