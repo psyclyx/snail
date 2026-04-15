@@ -5,32 +5,38 @@ let
   pkgs = import sources.nixpkgs {
     overlays = [ zig-flake.overlays.default ];
   };
-in
-pkgs.stdenv.mkDerivation {
-  pname = "snail";
-  version = "0.0.1";
-  src = ./.;
+  zig = pkgs.zigpkgs.master;
 
-  nativeBuildInputs = with pkgs; [
-    zigpkgs.master
-    pkg-config
-  ];
+  buildDeps = with pkgs; [ glfw libGL vulkan-loader vulkan-headers shaderc ];
 
-  buildInputs = with pkgs; [
-    glfw
-    libGL
-    wayland
-    wayland-protocols
-    libxkbcommon
-  ];
+  common = {
+    version = "0.0.1";
+    src = ./.;
+    nativeBuildInputs = [ zig pkgs.pkg-config ];
+    buildInputs = buildDeps;
+    preBuild = "export XDG_CACHE_HOME=$TMPDIR/.cache";
+    buildPhase = "zig build --release=fast";
+  };
 
-  buildPhase = ''
-    export XDG_CACHE_HOME="$TMPDIR/.cache"
-    zig build --release=fast
-  '';
+  lib = pkgs.stdenv.mkDerivation (common // {
+    pname = "snail";
+    installPhase = ''
+      mkdir -p $out/{lib,include,lib/pkgconfig}
+      cp zig-out/lib/libsnail.so  $out/lib/
+      cp zig-out/lib/libsnail.a   $out/lib/
+      cp zig-out/include/snail.h  $out/include/
+      sed "s|@PREFIX@|$out|g" snail.pc.in > $out/lib/pkgconfig/snail.pc
+    '';
+  });
 
-  installPhase = ''
-    mkdir -p $out/bin
-    cp zig-out/bin/snail $out/bin/
-  '';
-}
+  demo = pkgs.stdenv.mkDerivation (common // {
+    pname = "snail-demo";
+    installPhase = ''
+      mkdir -p $out/bin
+      cp zig-out/bin/snail-demo $out/bin/snail-demo
+    '';
+  });
+
+  shell = import ./shell.nix;
+
+in { inherit lib demo shell; default = lib; }

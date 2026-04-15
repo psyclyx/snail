@@ -30,14 +30,12 @@ zig build install --release=fast    # install libsnail + header to zig-out/
 
 Requires [Zig 0.16](https://ziglang.org/download/), GLFW, OpenGL, Vulkan loader + headers, shaderc, and pkg-config.
 
-**Nix** — reproducible dev shell with all dependencies:
+**Nix** — reproducible dev shell and build:
 
 ```sh
-nix develop        # flake dev shell (all deps)
-nix build .#lib    # build libsnail + header
-nix build .#demo   # build snail-demo
-
-nix-shell          # legacy (non-flake) dev shell
+nix-shell               # dev shell with all deps
+nix-build -A lib        # build libsnail + header
+nix-build -A demo       # build snail-demo
 ```
 
 **Arch Linux** — install as a system package:
