@@ -299,29 +299,29 @@ Both backends render 2000 frames per scenario at 1280×720, ReleaseFast. Frame t
 
 | Scenario | Glyphs | Static FPS | Static frame | Dynamic FPS | Dynamic frame |
 |----------|--------|-----------|-------------|------------|--------------|
-| Game HUD (2 lines) | 45 | 38,695 | 25.8 us | 41,095 | 24.3 us |
-| Multi-size (6 sizes) | 270 | 25,094 | 39.9 us | 25,146 | 39.8 us |
-| Body text (6 paragraphs) | 978 | 15,020 | 66.6 us | 8,342 | 119.9 us |
-| Torture (fill screen) | 4,075 | 4,918 | 203.3 us | 2,062 | 485.0 us |
-| Arabic (12 lines) | 228 | 29,401 | 34.0 us | 23,981 | 41.7 us |
-| Devanagari (12 lines) | 132 | 36,556 | 27.4 us | 36,702 | 27.2 us |
-| Game UI (3 fonts) | 54 | 40,413 | 24.7 us | 40,497 | 24.7 us |
-| Chat (6 msgs, 4 fonts) | 104 | 36,819 | 27.2 us | 37,430 | 26.7 us |
-| Multi-font torture (24 lines) | 510 | 21,771 | 45.9 us | 15,625 | 64.0 us |
+| Game HUD (2 lines) | 45 | 39,690 | 25.2 us | 41,073 | 24.3 us |
+| Multi-size (6 sizes) | 270 | 26,337 | 38.0 us | 26,888 | 37.2 us |
+| Body text (6 paragraphs) | 978 | 15,170 | 65.9 us | 8,734 | 114.5 us |
+| Torture (fill screen) | 4,075 | 12,316 | 81.2 us | 2,145 | 466.3 us |
+| Arabic (12 lines) | 228 | 30,072 | 33.3 us | 25,296 | 39.5 us |
+| Devanagari (12 lines) | 132 | 37,482 | 26.7 us | 37,184 | 26.9 us |
+| Game UI (3 fonts) | 54 | 41,363 | 24.2 us | 41,154 | 24.3 us |
+| Chat (6 msgs, 4 fonts) | 104 | 37,305 | 26.8 us | 37,877 | 26.4 us |
+| Multi-font torture (24 lines) | 510 | 22,037 | 45.4 us | 15,682 | 63.8 us |
 
 #### Vulkan (offscreen, per-frame sync)
 
 | Scenario | Glyphs | Static FPS | Static frame | Dynamic FPS | Dynamic frame |
 |----------|--------|-----------|-------------|------------|--------------|
-| Game HUD (2 lines) | 45 | 21,455 | 46.6 us | 21,392 | 46.7 us |
-| Multi-size (6 sizes) | 270 | 15,156 | 66.0 us | 14,971 | 66.8 us |
-| Body text (6 paragraphs) | 978 | 9,066 | 110.3 us | 6,630 | 150.8 us |
-| Torture (fill screen) | 4,075 | 3,409 | 293.3 us | 1,998 | 500.5 us |
-| Arabic (12 lines) | 228 | 16,345 | 61.2 us | 15,757 | 63.5 us |
-| Devanagari (12 lines) | 132 | 18,191 | 55.0 us | 18,199 | 54.9 us |
-| Game UI (3 fonts) | 54 | 19,785 | 50.5 us | 17,550 | 57.0 us |
-| Chat (6 msgs, 4 fonts) | 104 | 18,449 | 54.2 us | 15,089 | 66.3 us |
-| Multi-font torture (24 lines) | 510 | 12,355 | 80.9 us | 7,581 | 131.9 us |
+| Game HUD (2 lines) | 45 | 21,609 | 46.3 us | 21,909 | 45.6 us |
+| Multi-size (6 sizes) | 270 | 15,560 | 64.3 us | 15,222 | 65.7 us |
+| Body text (6 paragraphs) | 978 | 9,438 | 106.0 us | 6,627 | 150.9 us |
+| Torture (fill screen) | 4,075 | 6,513 | 153.5 us | 1,957 | 511.1 us |
+| Arabic (12 lines) | 228 | 16,953 | 59.0 us | 15,820 | 63.2 us |
+| Devanagari (12 lines) | 132 | 19,005 | 52.6 us | 19,255 | 51.9 us |
+| Game UI (3 fonts) | 54 | 20,925 | 47.8 us | 18,013 | 55.5 us |
+| Chat (6 msgs, 4 fonts) | 104 | 19,581 | 51.1 us | 15,601 | 64.1 us |
+| Multi-font torture (24 lines) | 510 | 12,729 | 78.6 us | 7,428 | 134.6 us |
 
 ### Other GPU font renderers
 

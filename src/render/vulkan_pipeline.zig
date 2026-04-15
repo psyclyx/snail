@@ -58,9 +58,10 @@ var desc_set: vk.VkDescriptorSet = null;
 // never share a segment.  With MAX_FRAMES_IN_FLIGHT=2 and up to 2 draw
 // calls per frame (scene + HUD), we need at least 4 segments.
 const RING_SEGMENTS = 4;
-const RING_TOTAL_BYTES = 16 * 1024 * 1024; // 16 MB (4 MB per segment — fits 10k glyphs)
+const RING_TOTAL_BYTES = 16 * 1024 * 1024; // 16 MB
 const RING_SEGMENT_BYTES = RING_TOTAL_BYTES / RING_SEGMENTS;
-const INITIAL_EBO_GLYPHS = 10000; // pre-allocate; avoids vkDeviceWaitIdle on first frame
+const BYTES_PER_GLYPH = vertex.FLOATS_PER_VERTEX * vertex.VERTICES_PER_GLYPH * @sizeOf(f32);
+const MAX_GLYPHS_PER_SEGMENT = RING_SEGMENT_BYTES / BYTES_PER_GLYPH;
 
 var vertex_buffer: vk.VkBuffer = null;
 var vertex_memory: vk.VkDeviceMemory = null;
@@ -69,7 +70,6 @@ var ring_segment: u32 = 0;
 
 var index_buffer: vk.VkBuffer = null;
 var index_memory: vk.VkDeviceMemory = null;
-var ebo_glyph_capacity: u32 = 0;
 
 // Textures
 var curve_image: vk.VkImage = null;
@@ -193,8 +193,8 @@ pub fn init(vk_ctx: VulkanContext) !void {
     });
     try check(vk.vkCreateCommandPool(ctx.device, &cp_info, null, &transfer_cmd_pool));
 
-    // Pre-allocate index buffer so the first draw doesn't trigger vkDeviceWaitIdle
-    ensureEboCapacity(INITIAL_EBO_GLYPHS);
+    // Index buffer: deterministic quad pattern, generated once for max segment capacity
+    try initIndexBuffer();
 
     initialized = true;
 }
@@ -313,41 +313,16 @@ pub fn drawText(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f
     const cmd = active_cmd orelse return;
     if (vertices.len == 0) return;
 
-    var byte_size = vertices.len * @sizeOf(f32);
-    var glyph_count = vertices.len / (vertex.FLOATS_PER_VERTEX * vertex.VERTICES_PER_GLYPH);
-    if (glyph_count == 0) return;
+    const floats_per_glyph = vertex.FLOATS_PER_VERTEX * vertex.VERTICES_PER_GLYPH;
+    const total_glyphs = vertices.len / floats_per_glyph;
+    if (total_glyphs == 0) return;
 
-    // Clamp to ring segment capacity (avoid silently skipping the copy)
-    const max_glyphs = RING_SEGMENT_BYTES / (vertex.FLOATS_PER_VERTEX * vertex.VERTICES_PER_GLYPH * @sizeOf(f32));
-    if (glyph_count > max_glyphs) {
-        glyph_count = max_glyphs;
-        byte_size = glyph_count * vertex.FLOATS_PER_VERTEX * vertex.VERTICES_PER_GLYPH * @sizeOf(f32);
-    }
-
-    // Copy vertices into ring segment
-    const offset: vk.VkDeviceSize = @as(vk.VkDeviceSize, ring_segment) * RING_SEGMENT_BYTES;
-    const dst = persistent_map.?[offset..][0..byte_size];
-    const src: [*]const u8 = @ptrCast(vertices.ptr);
-    @memcpy(dst, src[0..byte_size]);
-
-    // Ensure index buffer capacity
-    ensureEboCapacity(@intCast(glyph_count));
-
-    // Bind pipeline
+    // Bind pipeline + state (shared across all chunks)
     const pip = if (subpixel_order != .none) pipeline_subpixel else pipeline_normal;
     vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pip);
-
-    // Bind vertex buffer at ring offset
-    const offsets = [1]vk.VkDeviceSize{offset};
-    vk.vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer, &offsets);
-
-    // Bind index buffer
     vk.vkCmdBindIndexBuffer(cmd, index_buffer, 0, vk.VK_INDEX_TYPE_UINT32);
-
-    // Bind descriptor set
     vk.vkCmdBindDescriptorSets(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, @ptrCast(&desc_set), 0, null);
 
-    // Push constants
     const pc = PushConstants{
         .mvp = mvp.data,
         .viewport = .{ viewport_w, viewport_h },
@@ -356,7 +331,6 @@ pub fn drawText(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f
     };
     vk.vkCmdPushConstants(cmd, pipeline_layout, vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(PushConstants), &pc);
 
-    // Set dynamic viewport and scissor
     const vp = vk.VkViewport{
         .x = 0,
         .y = 0,
@@ -373,12 +347,25 @@ pub fn drawText(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f
     };
     vk.vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-    // Draw indexed
-    const index_count: u32 = @intCast(glyph_count * 6);
-    vk.vkCmdDrawIndexed(cmd, index_count, 1, 0, 0, 0);
+    // Draw in chunks that fit within a single ring segment
+    var glyphs_drawn: usize = 0;
+    while (glyphs_drawn < total_glyphs) {
+        const chunk = @min(total_glyphs - glyphs_drawn, MAX_GLYPHS_PER_SEGMENT);
+        const float_offset = glyphs_drawn * floats_per_glyph;
+        const byte_size = chunk * BYTES_PER_GLYPH;
 
-    // Advance ring segment
-    ring_segment = (ring_segment + 1) % RING_SEGMENTS;
+        const ring_offset: vk.VkDeviceSize = @as(vk.VkDeviceSize, ring_segment) * RING_SEGMENT_BYTES;
+        const dst = persistent_map.?[ring_offset..][0..byte_size];
+        const src: [*]const u8 = @ptrCast(vertices[float_offset..].ptr);
+        @memcpy(dst, src[0..byte_size]);
+
+        const offsets = [1]vk.VkDeviceSize{ring_offset};
+        vk.vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer, &offsets);
+        vk.vkCmdDrawIndexed(cmd, @intCast(chunk * 6), 1, 0, 0, 0);
+
+        ring_segment = (ring_segment + 1) % RING_SEGMENTS;
+        glyphs_drawn += chunk;
+    }
 }
 
 pub fn resetFrameState() void {
@@ -754,16 +741,24 @@ fn transitionImageLayout(cmd: vk.VkCommandBuffer, image: vk.VkImage, layer_count
     vk.vkCmdPipelineBarrier(cmd, src_stage, dst_stage, 0, 0, null, 0, null, 1, &barrier);
 }
 
-fn ensureEboCapacity(glyph_count: u32) void {
-    if (glyph_count <= ebo_glyph_capacity) return;
-    const target = @max(glyph_count, ebo_glyph_capacity * 2);
-    const target_capped: u32 = @min(target, 10000); // cap for stack allocation
-    const index_count: u32 = target_capped * 6;
+fn initIndexBuffer() !void {
+    const index_count: u32 = MAX_GLYPHS_PER_SEGMENT * 6;
+    const buf_size: vk.VkDeviceSize = @as(vk.VkDeviceSize, index_count) * @sizeOf(u32);
 
-    var indices: [60000]u32 = undefined;
-    if (index_count > indices.len) return;
+    try createBuffer(
+        buf_size,
+        vk.VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+        vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+        &index_buffer,
+        &index_memory,
+    );
 
-    for (0..target_capped) |i| {
+    // Map and generate the deterministic quad index pattern directly into GPU memory
+    var map_ptr: ?*anyopaque = null;
+    try check(vk.vkMapMemory(ctx.device, index_memory, 0, buf_size, 0, &map_ptr));
+    const indices: [*]u32 = @ptrCast(@alignCast(map_ptr));
+
+    for (0..MAX_GLYPHS_PER_SEGMENT) |i| {
         const base: u32 = @intCast(i * 4);
         const idx = i * 6;
         indices[idx + 0] = base + 0;
@@ -774,26 +769,7 @@ fn ensureEboCapacity(glyph_count: u32) void {
         indices[idx + 5] = base + 3;
     }
 
-    // Recreate index buffer
-    if (index_buffer != null) {
-        vk.vkDestroyBuffer(ctx.device, index_buffer, null);
-        vk.vkFreeMemory(ctx.device, index_memory, null);
-        index_buffer = null;
-        index_memory = null;
-    }
-
-    const buf_size: vk.VkDeviceSize = @intCast(index_count * @sizeOf(u32));
-    createBuffer(buf_size, vk.VK_BUFFER_USAGE_INDEX_BUFFER_BIT | vk.VK_BUFFER_USAGE_TRANSFER_DST_BIT, vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &index_buffer, &index_memory) catch return;
-
-    // Map and copy
-    var map_ptr: ?*anyopaque = null;
-    if (vk.vkMapMemory(ctx.device, index_memory, 0, buf_size, 0, &map_ptr) != vk.VK_SUCCESS) return;
-    const dst: [*]u8 = @ptrCast(map_ptr);
-    const src: [*]const u8 = @ptrCast(&indices);
-    @memcpy(dst[0..@intCast(buf_size)], src[0..@intCast(buf_size)]);
     vk.vkUnmapMemory(ctx.device, index_memory);
-
-    ebo_glyph_capacity = target_capped;
 }
 
 fn destroyTextureResources() void {

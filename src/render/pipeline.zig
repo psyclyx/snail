@@ -61,7 +61,6 @@ pub const FillRule = enum(c_int) {
 var vao: gl.GLuint = 0;
 var vbo: gl.GLuint = 0;
 var ebo: gl.GLuint = 0;
-var ebo_glyph_capacity: u32 = 0;
 
 var curve_array: gl.GLuint = 0;
 var band_array: gl.GLuint = 0;
@@ -72,8 +71,10 @@ var frame_begun: bool = false;
 // ── GL 4.4 persistent mapping state ──
 
 const RING_SEGMENTS = 3;
-const RING_TOTAL_BYTES = 4 * 1024 * 1024; // 4 MB (~50k glyphs)
+const RING_TOTAL_BYTES = 12 * 1024 * 1024; // 12 MB (4 MB per segment)
 const RING_SEGMENT_BYTES = RING_TOTAL_BYTES / RING_SEGMENTS;
+const BYTES_PER_GLYPH = vertex.FLOATS_PER_VERTEX * vertex.VERTICES_PER_GLYPH * @sizeOf(f32);
+const MAX_GLYPHS_PER_SEGMENT = RING_SEGMENT_BYTES / BYTES_PER_GLYPH;
 
 var persistent_map: ?[*]u8 = null;
 var ring_fences: [RING_SEGMENTS]gl.GLsync = .{null} ** RING_SEGMENTS;
@@ -116,7 +117,7 @@ fn initGl33() void {
     gl.glBindVertexArray(vao);
     gl.glBindBuffer(gl.GL_ARRAY_BUFFER, vbo);
     gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, ebo);
-    ensureEboCapacity(10000);
+    initEbo();
     setupVertexAttribs();
 }
 
@@ -157,7 +158,7 @@ fn initGl44() void {
     // EBO (static data, not persistently mapped)
     gl.glBindVertexArray(vao);
     gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, ebo);
-    ensureEboCapacity(10000);
+    initEbo();
 }
 
 fn setupVertexAttribs() void {
@@ -347,78 +348,74 @@ pub fn drawText(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f
     gl.glUniform1i(u_fr, @intFromEnum(fill_rule));
     if (using_sp) gl.glUniform1i(sp_subpixel_order_loc, @intFromEnum(subpixel_order));
 
-    const byte_size = vertices.len * @sizeOf(f32);
+    const floats_per_glyph = vertex.FLOATS_PER_VERTEX * vertex.VERTICES_PER_GLYPH;
+    const total_glyphs = vertices.len / floats_per_glyph;
 
-    switch (backend) {
-        .gl33 => {
-            gl.glBufferData(gl.GL_ARRAY_BUFFER, @intCast(byte_size), vertices.ptr, gl.GL_STREAM_DRAW);
-        },
-        .gl44 => {
-            const offset = @as(usize, ring_segment) * RING_SEGMENT_BYTES;
+    // Draw in chunks that fit within EBO / ring segment capacity
+    var glyphs_drawn: usize = 0;
+    while (glyphs_drawn < total_glyphs) {
+        const chunk = @min(total_glyphs - glyphs_drawn, MAX_GLYPHS_PER_SEGMENT);
+        const float_offset = glyphs_drawn * floats_per_glyph;
+        const byte_size = chunk * BYTES_PER_GLYPH;
 
-            // Wait for this segment's fence (from RING_SEGMENTS frames ago — should be done)
-            if (ring_fences[ring_segment]) |fence| {
-                const status = gl.glClientWaitSync(fence, 0, 0);
-                if (status != gl.GL_ALREADY_SIGNALED and status != gl.GL_CONDITION_SATISFIED) {
-                    // Rare: GPU still using this segment, must wait
-                    _ = gl.glClientWaitSync(fence, gl.GL_SYNC_FLUSH_COMMANDS_BIT, 1_000_000_000);
+        switch (backend) {
+            .gl33 => {
+                gl.glBufferData(gl.GL_ARRAY_BUFFER, @intCast(byte_size), @ptrCast(vertices[float_offset..].ptr), gl.GL_STREAM_DRAW);
+            },
+            .gl44 => {
+                const offset = @as(usize, ring_segment) * RING_SEGMENT_BYTES;
+
+                if (ring_fences[ring_segment]) |fence| {
+                    const status = gl.glClientWaitSync(fence, 0, 0);
+                    if (status != gl.GL_ALREADY_SIGNALED and status != gl.GL_CONDITION_SATISFIED) {
+                        _ = gl.glClientWaitSync(fence, gl.GL_SYNC_FLUSH_COMMANDS_BIT, 1_000_000_000);
+                    }
+                    gl.glDeleteSync(fence);
+                    ring_fences[ring_segment] = null;
                 }
-                gl.glDeleteSync(fence);
-                ring_fences[ring_segment] = null;
-            }
 
-            // Copy into persistent map
-            if (byte_size <= RING_SEGMENT_BYTES) {
                 const dst = persistent_map.?[offset..][0..byte_size];
-                const src: [*]const u8 = @ptrCast(vertices.ptr);
+                const src: [*]const u8 = @ptrCast(vertices[float_offset..].ptr);
                 @memcpy(dst, src[0..byte_size]);
-            } else {
-                // Overflow: rare, use subdata
-                gl.glNamedBufferSubData(vbo, 0, @intCast(byte_size), vertices.ptr);
-            }
 
-            // Point VAO to this segment's offset
-            const stride: gl.GLint = vertex.FLOATS_PER_VERTEX * @sizeOf(f32);
-            if (byte_size <= RING_SEGMENT_BYTES) {
+                const stride: gl.GLint = vertex.FLOATS_PER_VERTEX * @sizeOf(f32);
                 gl.glVertexArrayVertexBuffer(vao, 0, vbo, @intCast(offset), stride);
-            } else {
-                gl.glVertexArrayVertexBuffer(vao, 0, vbo, 0, stride);
-            }
-        },
-    }
+            },
+        }
 
-    const glyph_count = vertices.len / (vertex.FLOATS_PER_VERTEX * vertex.VERTICES_PER_GLYPH);
-    ensureEboCapacity(@intCast(glyph_count));
-    const index_count: gl.GLsizei = @intCast(glyph_count * 6);
-    gl.glDrawElements(gl.GL_TRIANGLES, index_count, gl.GL_UNSIGNED_INT, null);
+        const index_count: gl.GLsizei = @intCast(chunk * 6);
+        gl.glDrawElements(gl.GL_TRIANGLES, index_count, gl.GL_UNSIGNED_INT, null);
 
-    if (backend == .gl44) {
-        ring_fences[ring_segment] = gl.glFenceSync(gl.GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-        ring_segment = (ring_segment + 1) % RING_SEGMENTS;
+        if (backend == .gl44) {
+            ring_fences[ring_segment] = gl.glFenceSync(gl.GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+            ring_segment = (ring_segment + 1) % RING_SEGMENTS;
+        }
+
+        glyphs_drawn += chunk;
     }
 }
 
-fn ensureEboCapacity(glyph_count: u32) void {
-    if (glyph_count <= ebo_glyph_capacity) return;
-    const target = @max(glyph_count, ebo_glyph_capacity * 2);
-    const index_count = target * 6;
+fn initEbo() void {
+    const total_indices: usize = MAX_GLYPHS_PER_SEGMENT * 6;
+    const buf_size: gl.GLsizeiptr = @intCast(total_indices * @sizeOf(u32));
+    gl.glBufferData(gl.GL_ELEMENT_ARRAY_BUFFER, buf_size, null, gl.GL_STATIC_DRAW);
 
-    var stack_buf: [60000]u32 = undefined;
-    const indices: []u32 = if (index_count <= stack_buf.len) stack_buf[0..index_count] else return;
-
-    for (0..target) |i| {
-        const base: u32 = @intCast(i * 4);
-        const idx = i * 6;
-        indices[idx + 0] = base + 0;
-        indices[idx + 1] = base + 1;
-        indices[idx + 2] = base + 2;
-        indices[idx + 3] = base + 0;
-        indices[idx + 4] = base + 2;
-        indices[idx + 5] = base + 3;
+    // Generate the deterministic quad index pattern directly into GPU memory
+    const ptr = gl.glMapBufferRange(gl.GL_ELEMENT_ARRAY_BUFFER, 0, buf_size, gl.GL_MAP_WRITE_BIT);
+    if (ptr) |raw| {
+        const indices: [*]u32 = @ptrCast(@alignCast(raw));
+        for (0..MAX_GLYPHS_PER_SEGMENT) |i| {
+            const base: u32 = @intCast(i * 4);
+            const idx = i * 6;
+            indices[idx + 0] = base + 0;
+            indices[idx + 1] = base + 1;
+            indices[idx + 2] = base + 2;
+            indices[idx + 3] = base + 0;
+            indices[idx + 4] = base + 2;
+            indices[idx + 5] = base + 3;
+        }
+        _ = gl.glUnmapBuffer(gl.GL_ELEMENT_ARRAY_BUFFER);
     }
-
-    gl.glBufferData(gl.GL_ELEMENT_ARRAY_BUFFER, @intCast(index_count * @sizeOf(u32)), indices.ptr, gl.GL_STATIC_DRAW);
-    ebo_glyph_capacity = target;
 }
 
 pub fn resetFrameState() void {
