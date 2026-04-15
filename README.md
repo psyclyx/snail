@@ -31,7 +31,7 @@ zig build -Dharfbuzz=true  # enable HarfBuzz text shaping
 zig build valgrind         # run tests under valgrind
 ```
 
-Demo controls: `Z`/`X` zoom, `R` rotate, `S` stress test, `L` toggle subpixel rendering.
+Demo controls: `Z`/`X` zoom, `R` rotate, `S` stress test, `L` cycle subpixel order (none → RGB → BGR → VRGB → VBGR).
 
 ## Usage
 
@@ -101,7 +101,15 @@ renderer.setFillRule(.even_odd);
 
 ### Subpixel rendering
 
-`renderer.setSubpixel(true)` enables LCD subpixel antialiasing. The fragment shader evaluates coverage at three horizontal offsets (one per RGB subpixel), tripling effective horizontal resolution. Most visible on standard-DPI displays at small font sizes.
+`renderer.setSubpixelOrder(.rgb)` enables LCD subpixel antialiasing. The fragment shader evaluates coverage at three sub-pixel offsets, tripling effective resolution in the subpixel axis. Most visible on standard-DPI displays at small font sizes.
+
+All five orders are supported: `.none` (off), `.rgb`, `.bgr`, `.vrgb`, `.vbgr`. The demo auto-detects the system order via fontconfig and corrects for rotated monitors; the L key cycles orders at runtime.
+
+```zig
+renderer.setSubpixelOrder(.rgb);   // horizontal RGB (most common)
+renderer.setSubpixelOrder(.vrgb);  // vertical RGB (rotated display)
+renderer.setSubpixelOrder(.none);  // disable (OLED/HiDPI)
+```
 
 ### OpenType shaping
 
@@ -203,33 +211,59 @@ Curves within each band are sorted by descending maximum coordinate, enabling ea
 
 `zig build bench` — internal microbenchmarks. `zig build bench-compare` — head-to-head vs FreeType.
 
-### snail vs FreeType
+### snail vs FreeType (`zig build bench-compare`)
 
-NotoSans-Regular.ttf, 73 ASCII glyphs, ReleaseFast:
+NotoSans-Regular.ttf, 95 ASCII glyphs, ReleaseFast:
 
-| Metric | snail (GPU Slug) | FreeType (CPU) |
-|--------|-----------------|----------------|
-| Font load | 1 us | 31 us |
-| Glyph prep (73 glyphs) | 1,377 us (all sizes) | 1,265 us (48px only) |
-| Layout throughput | **1.2 us/string** | 516 us/string |
-| Texture memory | 96 KB (all sizes) | 56 KB (single size) |
-| Re-rasterize for new size | **0** (resolution-independent) | ~1,000 us per size |
+| Metric | snail | FreeType |
+|--------|-------|----------|
+| Font load | 2 us | 31 us |
+| Glyph prep (1 size) | 1,665 us | 1,319 us |
+| Glyph prep (7 sizes) | **1,665 us** | 8,508 us |
+| Layout: 13-char string | **1.0 us** | 101 us |
+| Layout: 53-char sentence | **4.4 us** | 506 us |
+| Layout: 175-char paragraph | **15.5 us** | 1,804 us |
+| Layout: paragraph × 7 sizes | **105 us** | 13,060 us |
+| Texture memory | 96 KB (all sizes) | 63 KB (1 size) / 525 KB (7 sizes) |
+| Re-rasterize for new size | **0** (resolution-independent) | ~1,200 us per size |
 
-Layout is **430x faster** because snail reads metrics from parsed data while FreeType must load each glyph via its hinting engine. snail's glyph preparation is a one-time cost that covers all sizes — FreeType must re-rasterize the entire glyph set for each pixel size (~1ms per size).
+Layout is **100–124x faster**: snail reads pre-parsed metrics; FreeType calls `FT_Load_Glyph` per character through the hinting engine.
 
 ### End-to-end rendering (`zig build bench-headless`)
 
-Headless FBO, 1280x720, 2000 frames per scenario, ReleaseFast:
+Offscreen FBO/image, 1280×720, 2000 frames per scenario, ReleaseFast:
+
+#### OpenGL 4.4 (persistent mapped)
 
 | Scenario | Glyphs | Static FPS | Static frame | Dynamic FPS | Dynamic frame |
 |----------|--------|-----------|-------------|------------|--------------|
-| Game HUD (2 lines) | 45 | 279,622 | 3.6 us | 205,414 | 4.9 us |
-| Multi-size (6 sizes) | 270 | 98,689 | 10.1 us | 53,018 | 18.9 us |
-| Body text (6 paragraphs) | 978 | 30,249 | 33.1 us | 15,707 | 63.7 us |
-| Torture (fill screen) | 4,075 | 8,121 | 123.1 us | 3,899 | 256.5 us |
+| Game HUD (2 lines) | 45 | 40,008 | 25.0 us | 41,794 | 23.9 us |
+| Multi-size (6 sizes) | 270 | 25,473 | 39.3 us | 25,608 | 39.1 us |
+| Body text (6 paragraphs) | 978 | 14,836 | 67.4 us | 8,891 | 112.5 us |
+| Torture (fill screen) | 4,075 | 4,901 | 204.0 us | 2,212 | 452.1 us |
+| Arabic (12 lines) | 228 | 29,875 | 33.5 us | 25,913 | 38.6 us |
+| Devanagari (12 lines) | 132 | 35,880 | 27.9 us | 36,706 | 27.2 us |
+| Game UI (3 fonts) | 54 | 39,856 | 25.1 us | 39,408 | 25.4 us |
+| Chat (6 msgs, 4 fonts) | 104 | 36,193 | 27.6 us | 36,927 | 27.1 us |
+| Multi-font torture (24 lines) | 510 | 21,700 | 46.1 us | 16,724 | 59.8 us |
 
-**Static**: pre-built vertex buffer, draw call only (game HUD, menus).
-**Dynamic**: rebuild vertices + draw every frame (chat, editor, debug text).
+#### Vulkan (offscreen, per-frame sync)
+
+| Scenario | Glyphs | Static FPS | Static frame | Dynamic FPS | Dynamic frame |
+|----------|--------|-----------|-------------|------------|--------------|
+| Game HUD (2 lines) | 45 | 21,455 | 46.6 us | 21,392 | 46.7 us |
+| Multi-size (6 sizes) | 270 | 15,156 | 66.0 us | 14,971 | 66.8 us |
+| Body text (6 paragraphs) | 978 | 9,066 | 110.3 us | 6,630 | 150.8 us |
+| Torture (fill screen) | 4,075 | 3,409 | 293.3 us | 1,998 | 500.5 us |
+| Arabic (12 lines) | 228 | 16,345 | 61.2 us | 15,757 | 63.5 us |
+| Devanagari (12 lines) | 132 | 18,191 | 55.0 us | 18,199 | 54.9 us |
+| Game UI (3 fonts) | 54 | 19,785 | 50.5 us | 17,550 | 57.0 us |
+| Chat (6 msgs, 4 fonts) | 104 | 18,449 | 54.2 us | 15,089 | 66.3 us |
+| Multi-font torture (24 lines) | 510 | 12,355 | 80.9 us | 7,581 | 131.9 us |
+
+**Static**: pre-built vertex buffer, draw call only (game HUD, menus).  
+**Dynamic**: rebuild vertices + draw every frame (chat, editor, debug text).  
+Vulkan numbers reflect per-frame CPU+GPU time with no frame pipelining (conservative lower bound).
 
 ### Other GPU font renderers
 
@@ -239,7 +273,7 @@ Headless FBO, 1280x720, 2000 frames per scenario, ReleaseFast:
 | [slug_wgpu](https://github.com/santiagosantos08/slug_wgpu) | Rust | wgpu | FOSS Slug implementation. |
 | [gpu-font-rendering](https://github.com/GreenLightning/gpu-font-rendering) | C++ | OpenGL | Dobbie/Lengyel technique. |
 | [Pathfinder](https://github.com/pcwalton/pathfinder) | Rust | GL/Metal | General vector graphics GPU rasterizer. |
-| **snail** | **Zig** | **OpenGL 3.3** | **This project. C API. MIT licensed.** |
+| **snail** | **Zig** | **OpenGL 3.3+ / Vulkan** | **This project. C API. MIT licensed.** |
 
 ## Packaging
 
