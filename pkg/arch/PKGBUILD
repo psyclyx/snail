@@ -6,8 +6,8 @@ pkgdesc='GPU font rendering via direct Bézier curve evaluation (Slug algorithm)
 arch=('x86_64')
 url='https://github.com/psyclyx/snail'
 license=('MIT')
-depends=('glfw' 'libgl')
-makedepends=('zig>=0.16')
+depends=('glfw' 'libgl' 'vulkan-icd-loader')
+makedepends=('zig>=0.16' 'vulkan-headers' 'shaderc' 'pkg-config' 'freetype2')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
 sha256sums=('SKIP')
 
@@ -22,7 +22,7 @@ build() {
 package() {
     cd "$pkgname-$pkgver"
 
-    install -Dm644 "$srcdir/install/lib/libsnail.so" "$pkgdir/usr/lib/libsnail.so"
+    install -Dm755 "$srcdir/install/lib/libsnail.so" "$pkgdir/usr/lib/libsnail.so"
     install -Dm644 "$srcdir/install/lib/libsnail.a" "$pkgdir/usr/lib/libsnail.a"
     install -Dm644 "$srcdir/install/include/snail.h" "$pkgdir/usr/include/snail.h"
 

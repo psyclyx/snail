@@ -19,16 +19,43 @@ The Slug patent (US 10,373,352) was [dedicated to the public domain](https://ter
 
 ## Build
 
-Requires [Nix](https://nixos.org/) (provides Zig 0.16, GLFW, OpenGL):
+### Arch Linux
 
 ```sh
-nix-shell
-zig build run            # interactive demo
-zig build test           # unit tests
-zig build bench          # benchmarks
-zig build -Dprofile=true   # enable profiling instrumentation
-zig build -Dharfbuzz=true  # enable HarfBuzz text shaping
-zig build valgrind         # run tests under valgrind
+cd pkg/arch && makepkg -si
+```
+
+Installs `libsnail.so`, `libsnail.a`, and `snail.h`.
+
+### Manual
+
+Install dependencies:
+
+| Package | Arch | Ubuntu/Debian |
+|---------|------|---------------|
+| Zig 0.16 | [ziglang.org/download](https://ziglang.org/download/) | same |
+| GLFW | `glfw` | `libglfw3-dev` |
+| OpenGL | `libgl` | `libgl-dev` |
+| Vulkan loader | `vulkan-icd-loader` | `libvulkan-dev` |
+| Vulkan headers | `vulkan-headers` | `libvulkan-dev` |
+| GLSL compiler | `shaderc` | `glslang-tools` |
+| pkg-config | `pkg-config` | `pkg-config` |
+
+```sh
+zig build --release=fast          # build library + demo
+zig build run                     # interactive demo
+zig build test                    # unit tests
+zig build bench                   # benchmarks
+zig build -Dprofile=true          # enable profiling instrumentation
+zig build -Dharfbuzz=true         # enable HarfBuzz text shaping (+ install harfbuzz dev package)
+zig build valgrind                # run tests under valgrind
+```
+
+### Nix
+
+```sh
+nix-shell                         # enters shell with all deps
+zig build run
 ```
 
 Demo controls: `Z`/`X` zoom, `R` rotate, `S` stress test, `L` cycle subpixel order (none → RGB → BGR → VRGB → VBGR).
@@ -280,16 +307,6 @@ Both backends render 2000 frames per scenario at 1280×720, ReleaseFast. Frame t
 | [gpu-font-rendering](https://github.com/GreenLightning/gpu-font-rendering) | C++ | OpenGL | Dobbie/Lengyel technique. |
 | [Pathfinder](https://github.com/pcwalton/pathfinder) | Rust | GL/Metal | General vector graphics GPU rasterizer. |
 | **snail** | **Zig** | **OpenGL 3.3+ / Vulkan** | **This project. C API. MIT licensed.** |
-
-## Packaging
-
-### Arch Linux
-
-```sh
-cd pkg/arch && makepkg -si
-```
-
-Installs `libsnail.so`, `libsnail.a`, and `snail.h` to `/usr/lib` and `/usr/include`.
 
 ## License
 
