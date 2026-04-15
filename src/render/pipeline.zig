@@ -305,6 +305,16 @@ pub fn bindTextures(_: gl.GLuint, _: gl.GLuint) void {}
 // ── Draw ──
 
 pub fn drawText(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
+    // Ensure correct VAO is bound (may have been unbound by other renderers)
+    gl.glBindVertexArray(vao);
+    if (backend == .gl33) {
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, vbo);
+    }
+
+    gl.glDisable(gl.GL_DEPTH_TEST);
+    gl.glEnable(gl.GL_BLEND);
+    gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA);
+
     const using_sp = subpixel_order != .none;
     const prog = if (using_sp) program_subpixel else program;
 
