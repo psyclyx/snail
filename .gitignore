@@ -2,3 +2,5 @@
 zig-out/
 result
 vgcore.*
+.direnv/
+.envrc

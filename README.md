@@ -28,7 +28,7 @@ zig build bench                     # GPU frame-time benchmarks
 zig build install --release=fast    # install libsnail + header to zig-out/
 ```
 
-Requires [Zig 0.16](https://ziglang.org/download/), GLFW, OpenGL, Vulkan loader + headers, shaderc, and pkg-config.
+Requires [Zig 0.16](https://ziglang.org/download/), GLFW, OpenGL, and pkg-config. Vulkan loader + headers and shaderc are only needed with `-Dvulkan=true`.
 
 **Nix** — reproducible dev shell and build:
 
@@ -166,7 +166,45 @@ snail_batch_add_string(vertices, sizeof(vertices)/sizeof(float), &len,
 snail_renderer_draw(vertices, len, mvp, viewport_w, viewport_h);
 ```
 
-Pass a `SnailAllocator` to `snail_atlas_init` for custom allocation, or `NULL` for libc malloc/free.
+Pass a `SnailAllocator` to `snail_atlas_init` for custom allocation, or `NULL` for libc malloc/free. The C API is OpenGL-only; Vulkan requires the Zig API.
+
+### Using as a Zig dependency
+
+Add snail to your `build.zig.zon`:
+
+```zig
+.dependencies = .{
+    .snail = .{ .path = "../snail" },  // or .url for remote
+},
+```
+
+In your `build.zig`, create a snail module configured for your project. The library only requires OpenGL — no GLFW, no Vulkan:
+
+```zig
+const snail_dep = b.dependency("snail", .{});
+
+const snail_opts = b.addOptions();
+snail_opts.addOption(bool, "enable_profiling", false);
+snail_opts.addOption(bool, "enable_harfbuzz", false);
+snail_opts.addOption(bool, "enable_vulkan", false);
+snail_opts.addOption(bool, "force_gl33", true);
+
+const vk_stub = b.createModule(.{
+    .root_source_file = b.addWriteFiles().add("vk_stub.zig", ""),
+});
+const snail_mod = b.createModule(.{
+    .root_source_file = snail_dep.path("src/snail.zig"),
+    .target = target,
+    .optimize = optimize,
+    .link_libc = true,
+});
+snail_mod.addOptions("build_options", snail_opts);
+snail_mod.linkSystemLibrary("gl", .{});
+snail_mod.addImport("vulkan_shaders", vk_stub);
+root_module.addImport("snail", snail_mod);
+```
+
+The caller must have an active OpenGL 3.3+ context before calling `Renderer.init()`. snail manages its own GL state (shader programs, VAOs, textures, blend/depth) per draw call.
 
 ### Thread safety
 
@@ -196,9 +234,10 @@ src/
   font/snail_file.zig    .snail preprocessed format (zero-parse loading)
   math/                  Vec2, Mat4, QuadBezier, quadratic root solver
   render/
+    gl.zig               OpenGL cImport (shared by pipeline and library consumers)
     shaders.zig          GLSL 330 vertex + fragment shaders (Slug algorithm)
     pipeline.zig         OpenGL state management (GL 3.3/4.4)
-    vulkan_pipeline.zig  Vulkan state management (descriptor sets, ring VBO, EBO)
+    vulkan_pipeline.zig  Vulkan state management (optional, -Dvulkan=true)
     vulkan_shaders.zig   SPIR-V shaders (compiled from GLSL at build time)
     curve_texture.zig    RGBA16F curve control point texture
     band_texture.zig     RG16UI spatial band subdivision texture
@@ -260,15 +299,15 @@ Both backends render 2000 frames per scenario at 1280×720, ReleaseFast. Frame t
 
 | Scenario | Glyphs | Static FPS | Static frame | Dynamic FPS | Dynamic frame |
 |----------|--------|-----------|-------------|------------|--------------|
-| Game HUD (2 lines) | 45 | 40,008 | 25.0 us | 41,794 | 23.9 us |
-| Multi-size (6 sizes) | 270 | 25,473 | 39.3 us | 25,608 | 39.1 us |
-| Body text (6 paragraphs) | 978 | 14,836 | 67.4 us | 8,891 | 112.5 us |
-| Torture (fill screen) | 4,075 | 4,901 | 204.0 us | 2,212 | 452.1 us |
-| Arabic (12 lines) | 228 | 29,875 | 33.5 us | 25,913 | 38.6 us |
-| Devanagari (12 lines) | 132 | 35,880 | 27.9 us | 36,706 | 27.2 us |
-| Game UI (3 fonts) | 54 | 39,856 | 25.1 us | 39,408 | 25.4 us |
-| Chat (6 msgs, 4 fonts) | 104 | 36,193 | 27.6 us | 36,927 | 27.1 us |
-| Multi-font torture (24 lines) | 510 | 21,700 | 46.1 us | 16,724 | 59.8 us |
+| Game HUD (2 lines) | 45 | 38,695 | 25.8 us | 41,095 | 24.3 us |
+| Multi-size (6 sizes) | 270 | 25,094 | 39.9 us | 25,146 | 39.8 us |
+| Body text (6 paragraphs) | 978 | 15,020 | 66.6 us | 8,342 | 119.9 us |
+| Torture (fill screen) | 4,075 | 4,918 | 203.3 us | 2,062 | 485.0 us |
+| Arabic (12 lines) | 228 | 29,401 | 34.0 us | 23,981 | 41.7 us |
+| Devanagari (12 lines) | 132 | 36,556 | 27.4 us | 36,702 | 27.2 us |
+| Game UI (3 fonts) | 54 | 40,413 | 24.7 us | 40,497 | 24.7 us |
+| Chat (6 msgs, 4 fonts) | 104 | 36,819 | 27.2 us | 37,430 | 26.7 us |
+| Multi-font torture (24 lines) | 510 | 21,771 | 45.9 us | 15,625 | 64.0 us |
 
 #### Vulkan (offscreen, per-frame sync)
 

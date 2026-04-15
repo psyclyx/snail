@@ -43,8 +43,8 @@ pub fn build(b: *std.Build) void {
 
     const assets_mod = b.createModule(.{ .root_source_file = b.path("assets/assets.zig") });
 
-    // ── SPIR-V shader compilation (always built for Vulkan support) ──
-    const vk_shaders_mod = blk: {
+    // ── SPIR-V shader compilation (only when Vulkan enabled) ──
+    const vk_shaders_mod: *std.Build.Module = if (enable_vulkan) blk: {
         const compile_vert = b.addSystemCommand(&.{ "glslc", "-fshader-stage=vert" });
         compile_vert.addFileArg(b.path("shaders/slug.vert"));
         compile_vert.addArg("-o");
@@ -67,15 +67,17 @@ pub fn build(b: *std.Build) void {
         mod.addAnonymousImport("slug.frag.spv", .{ .root_source_file = frag_spv });
         mod.addAnonymousImport("slug_subpixel.frag.spv", .{ .root_source_file = frag_sp_spv });
         break :blk mod;
-    };
+    } else b.createModule(.{
+        .root_source_file = b.addWriteFiles().add("vk_stub.zig", ""),
+    });
 
-    // Helper: configure a module with GL + Vulkan + optional HarfBuzz
+    // Helper: configure a module with GLFW + GL + optional Vulkan/HarfBuzz
     const configureModule = struct {
-        fn f(mod: *std.Build.Module, opts: *std.Build.Step.Options, harfbuzz: bool, vk_shaders: *std.Build.Module) void {
+        fn f(mod: *std.Build.Module, opts: *std.Build.Step.Options, harfbuzz: bool, vulkan: bool, vk_shaders: *std.Build.Module) void {
             mod.addOptions("build_options", opts);
             mod.linkSystemLibrary("glfw3", .{});
             mod.linkSystemLibrary("gl", .{});
-            mod.linkSystemLibrary("vulkan", .{});
+            if (vulkan) mod.linkSystemLibrary("vulkan", .{});
             mod.addImport("vulkan_shaders", vk_shaders);
             if (harfbuzz) mod.linkSystemLibrary("harfbuzz", .{});
         }
@@ -88,7 +90,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
-    configureModule(lib_module, options, enable_harfbuzz, vk_shaders_mod);
+    configureModule(lib_module, options, enable_harfbuzz, enable_vulkan, vk_shaders_mod);
 
     const shared_lib = b.addLibrary(.{ .name = "snail", .root_module = lib_module, .linkage = .dynamic });
     b.installArtifact(shared_lib);
@@ -107,7 +109,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .imports = &.{.{ .name = "assets", .module = assets_mod }},
     });
-    configureModule(demo_module, options, enable_harfbuzz, vk_shaders_mod);
+    configureModule(demo_module, options, enable_harfbuzz, enable_vulkan, vk_shaders_mod);
 
     const exe = b.addExecutable(.{ .name = "snail-demo", .root_module = demo_module });
     b.installArtifact(exe);
@@ -126,7 +128,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .imports = &.{.{ .name = "assets", .module = assets_mod }},
     });
-    configureModule(test_module, options, enable_harfbuzz, vk_shaders_mod);
+    configureModule(test_module, options, enable_harfbuzz, enable_vulkan, vk_shaders_mod);
 
     const unit_tests = b.addTest(.{ .root_module = test_module });
     const run_unit_tests = b.addRunArtifact(unit_tests);
@@ -151,7 +153,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .imports = &.{.{ .name = "assets", .module = assets_mod }},
     });
-    configureModule(bench_cmp_module, options, enable_harfbuzz, vk_shaders_mod);
+    configureModule(bench_cmp_module, options, enable_harfbuzz, enable_vulkan, vk_shaders_mod);
     bench_cmp_module.linkSystemLibrary("freetype2", .{});
 
     const bench_cmp_exe = b.addExecutable(.{ .name = "snail-bench-compare", .root_module = bench_cmp_module });
@@ -167,7 +169,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .imports = &.{.{ .name = "assets", .module = assets_mod }},
     });
-    configureModule(bench_hl_module, options, enable_harfbuzz, vk_shaders_mod);
+    configureModule(bench_hl_module, options, enable_harfbuzz, enable_vulkan, vk_shaders_mod);
 
     const bench_hl_exe = b.addExecutable(.{ .name = "snail-bench-headless", .root_module = bench_hl_module });
     const run_bench_hl = b.addRunArtifact(bench_hl_exe);
@@ -187,7 +189,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .imports = &.{.{ .name = "assets", .module = assets_mod }},
     });
-    configureModule(bench_suite_module, options, enable_harfbuzz, vk_shaders_mod);
+    configureModule(bench_suite_module, options, enable_harfbuzz, enable_vulkan, vk_shaders_mod);
     bench_suite_module.linkSystemLibrary("freetype2", .{});
 
     const bench_suite_exe = b.addExecutable(.{ .name = "snail-bench-suite", .root_module = bench_suite_module });

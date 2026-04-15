@@ -32,8 +32,10 @@ const vulkan_pipeline = if (build_options.enable_vulkan) @import("render/vulkan_
     pub fn deinit() void {}
     pub fn buildTextureArrays(_: anytype) void {}
     pub fn drawText(_: anytype, _: anytype, _: anytype, _: anytype) void {}
-    pub var subpixel_order: @import("render/subpixel_order.zig").SubpixelOrder = .none;
     pub fn setCommandBuffer(_: anytype) void {}
+    pub fn getBackendName() []const u8 { return "vulkan (disabled)"; }
+    pub var subpixel_order: @import("render/subpixel_order.zig").SubpixelOrder = .none;
+    pub var fill_rule: pipeline.FillRule = .non_zero;
 };
 pub const harfbuzz = if (build_options.enable_harfbuzz) @import("font/harfbuzz.zig") else struct {
     pub const HarfBuzzShaper = void;
