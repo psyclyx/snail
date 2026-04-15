@@ -277,12 +277,14 @@ pub const Batch = struct {
         const scale = font_size / @as(f32, @floatFromInt(font.unitsPerEm()));
         var cursor_x = x;
 
-        // Convert text to glyph IDs
+        // Convert UTF-8 text to glyph IDs
         var glyph_buf: [1024]u16 = undefined;
         var glyph_count: usize = 0;
-        for (text) |ch| {
+        const view = std.unicode.Utf8View.initUnchecked(text);
+        var it = view.iterator();
+        while (it.nextCodepoint()) |cp| {
             if (glyph_count >= glyph_buf.len) break;
-            glyph_buf[glyph_count] = font.glyphIndex(ch) catch 0;
+            glyph_buf[glyph_count] = font.glyphIndex(cp) catch 0;
             glyph_count += 1;
         }
 

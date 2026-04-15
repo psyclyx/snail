@@ -185,7 +185,10 @@ pub const fragment_shader =
     \\    float coverage = max(abs(xcov * xwgt + ycov * ywgt) / max(wsum, 1.0 / 65536.0),
     \\                         min(abs(xcov), abs(ycov)));
     \\    coverage = clamp(coverage, 0.0, 1.0);
-    \\    coverage = sqrt(coverage);
+    \\    // sRGB gamma: linear → sRGB transfer function
+    \\    coverage = (coverage <= 0.0031308)
+    \\        ? coverage * 12.92
+    \\        : 1.055 * pow(coverage, 1.0 / 2.4) - 0.055;
     \\
     \\    if (coverage < 1.0/255.0) discard;
     \\    frag_color = v_color * coverage;
@@ -326,7 +329,10 @@ pub const fragment_shader_subpixel =
     \\    cov.r = clamp(max(abs(xcov_r), min(abs(xcov_r), abs(ycov))), 0.0, 1.0);
     \\    cov.g = clamp(max(abs(xcov_g), min(abs(xcov_g), abs(ycov))), 0.0, 1.0);
     \\    cov.b = clamp(max(abs(xcov_b), min(abs(xcov_b), abs(ycov))), 0.0, 1.0);
-    \\    cov = sqrt(cov);
+    \\    // sRGB gamma: linear → sRGB transfer function
+    \\    cov = mix(cov * 12.92,
+    \\              1.055 * pow(cov, vec3(1.0 / 2.4)) - 0.055,
+    \\              step(vec3(0.0031308), cov));
     \\
     \\    if (max(max(cov.r, cov.g), cov.b) < 1.0/255.0) discard;
     \\    frag_color = vec4(v_color.rgb * cov, max(max(cov.r, cov.g), cov.b) * v_color.a);
