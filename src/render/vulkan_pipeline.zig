@@ -57,6 +57,7 @@ var desc_set: vk.VkDescriptorSet = null;
 const RING_SEGMENTS = 3;
 const RING_TOTAL_BYTES = 4 * 1024 * 1024; // 4 MB
 const RING_SEGMENT_BYTES = RING_TOTAL_BYTES / RING_SEGMENTS;
+const INITIAL_EBO_GLYPHS = 10000; // pre-allocate; avoids vkDeviceWaitIdle on first frame
 
 var vertex_buffer: vk.VkBuffer = null;
 var vertex_memory: vk.VkDeviceMemory = null;
@@ -188,6 +189,9 @@ pub fn init(vk_ctx: VulkanContext) !void {
         .queueFamilyIndex = ctx.queue_family_index,
     });
     try check(vk.vkCreateCommandPool(ctx.device, &cp_info, null, &transfer_cmd_pool));
+
+    // Pre-allocate index buffer so the first draw doesn't trigger vkDeviceWaitIdle
+    ensureEboCapacity(INITIAL_EBO_GLYPHS);
 
     initialized = true;
 }
@@ -744,8 +748,8 @@ fn transitionImageLayout(cmd: vk.VkCommandBuffer, image: vk.VkImage, layer_count
 fn ensureEboCapacity(glyph_count: u32) void {
     if (glyph_count <= ebo_glyph_capacity) return;
     const target = @max(glyph_count, ebo_glyph_capacity * 2);
-    const target_capped = @min(target, 10000); // cap for stack allocation
-    const index_count = target_capped * 6;
+    const target_capped: u32 = @min(target, 10000); // cap for stack allocation
+    const index_count: u32 = target_capped * 6;
 
     var indices: [60000]u32 = undefined;
     if (index_count > indices.len) return;
@@ -762,7 +766,6 @@ fn ensureEboCapacity(glyph_count: u32) void {
     }
 
     // Recreate index buffer
-    _ = vk.vkDeviceWaitIdle(ctx.device);
     if (index_buffer != null) {
         vk.vkDestroyBuffer(ctx.device, index_buffer, null);
         vk.vkFreeMemory(ctx.device, index_memory, null);

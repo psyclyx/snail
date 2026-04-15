@@ -45,6 +45,52 @@ var current_frame: u32 = 0;
 var current_image_index: u32 = 0;
 var framebuffer_resized: bool = false;
 
+// ── Frame timing ──
+fn nowNs() u64 {
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(.MONOTONIC, &ts);
+    return @intCast(@as(i128, ts.sec) * 1_000_000_000 + ts.nsec);
+}
+
+const FrameTimings = struct {
+    wait_fence_us: f64 = 0,
+    acquire_us: f64 = 0,
+    rp_setup_us: f64 = 0,   // vkCmdBeginRenderPass and preamble after acquire
+    cpu_work_us: f64 = 0,   // main loop work between beginFrame() return and endFrame() entry
+    rp_close_us: f64 = 0,   // vkCmdEndRenderPass + vkEndCommandBuffer
+    submit_us: f64 = 0,
+    present_us: f64 = 0,
+    total_us: f64 = 0,
+    count: u64 = 0,
+    window_start_ns: u64 = 0,
+
+    fn add(_: *FrameTimings, field: *f64, val_us: f64) void {
+        field.* += val_us;
+    }
+
+    fn report(self: *FrameTimings) void {
+        if (self.count == 0) return;
+        const n: f64 = @floatFromInt(self.count);
+        std.debug.print(
+            "\r[vk] fence={d:.0} acquire={d:.0} rp_setup={d:.0} cpu={d:.0} rp_close={d:.0} submit={d:.0} present={d:.0} total={d:.0} (all us)  \n",
+            .{
+                self.wait_fence_us / n,
+                self.acquire_us / n,
+                self.rp_setup_us / n,
+                self.cpu_work_us / n,
+                self.rp_close_us / n,
+                self.submit_us / n,
+                self.present_us / n,
+                self.total_us / n,
+            },
+        );
+        self.* = .{ .window_start_ns = self.window_start_ns };
+    }
+};
+var ft = FrameTimings{};
+var frame_start_ns: u64 = 0;
+var cmd_ready_ns: u64 = 0; // set just before beginFrame returns
+
 // ── Key input state ──
 var prev_keys: [512]bool = .{false} ** 512;
 
@@ -102,9 +148,16 @@ pub fn deinit() void {
 /// Begin a new frame. Returns the command buffer to record into.
 /// Returns null if the swapchain needs recreation (caller should skip the frame).
 pub fn beginFrame() ?vk.VkCommandBuffer {
+    frame_start_ns = nowNs();
+
+    const t0 = nowNs();
     _ = vk.vkWaitForFences(device, 1, &in_flight_fences[current_frame], vk.VK_TRUE, std.math.maxInt(u64));
+    const t1 = nowNs();
 
     const result = vk.vkAcquireNextImageKHR(device, swapchain, std.math.maxInt(u64), image_available_sems[current_frame], null, &current_image_index);
+    const t2 = nowNs();
+    ft.add(&ft.wait_fence_us, @as(f64, @floatFromInt(t1 - t0)) / 1000.0);
+    ft.add(&ft.acquire_us, @as(f64, @floatFromInt(t2 - t1)) / 1000.0);
     if (result == vk.VK_ERROR_OUT_OF_DATE_KHR) {
         recreateSwapchain() catch return null;
         return null;
@@ -131,14 +184,22 @@ pub fn beginFrame() ?vk.VkCommandBuffer {
     });
     vk.vkCmdBeginRenderPass(cmd, &rp_info, vk.VK_SUBPASS_CONTENTS_INLINE);
 
+    cmd_ready_ns = nowNs();
+    ft.add(&ft.rp_setup_us, @as(f64, @floatFromInt(cmd_ready_ns - t2)) / 1000.0);
+
     return cmd;
 }
 
 /// End frame: close render pass, submit, present.
 pub fn endFrame() void {
+    const ef_start = nowNs();
+    ft.add(&ft.cpu_work_us, @as(f64, @floatFromInt(ef_start - cmd_ready_ns)) / 1000.0);
+
     const cmd = command_buffers[current_frame];
     vk.vkCmdEndRenderPass(cmd);
     _ = vk.vkEndCommandBuffer(cmd);
+    const after_close = nowNs();
+    ft.add(&ft.rp_close_us, @as(f64, @floatFromInt(after_close - ef_start)) / 1000.0);
 
     const wait_stages = [1]vk.VkPipelineStageFlags{vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
     const submit_info = std.mem.zeroInit(vk.VkSubmitInfo, .{
@@ -151,7 +212,9 @@ pub fn endFrame() void {
         .signalSemaphoreCount = 1,
         .pSignalSemaphores = &render_finished_sems[current_frame],
     });
+    const ts0 = after_close;
     _ = vk.vkQueueSubmit(graphics_queue, 1, &submit_info, in_flight_fences[current_frame]);
+    const ts1 = nowNs();
 
     const present_info = std.mem.zeroInit(vk.VkPresentInfoKHR, .{
         .sType = vk.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
@@ -162,6 +225,20 @@ pub fn endFrame() void {
         .pImageIndices = &current_image_index,
     });
     const result = vk.vkQueuePresentKHR(present_queue, &present_info);
+    const ts2 = nowNs();
+
+    ft.add(&ft.submit_us, @as(f64, @floatFromInt(ts1 - ts0)) / 1000.0);
+    ft.add(&ft.present_us, @as(f64, @floatFromInt(ts2 - ts1)) / 1000.0);
+    ft.add(&ft.total_us, @as(f64, @floatFromInt(ts2 - frame_start_ns)) / 1000.0);
+    ft.count += 1;
+
+    // Print averages once per second
+    if (ft.window_start_ns == 0) ft.window_start_ns = frame_start_ns;
+    if (ts2 - ft.window_start_ns >= 1_000_000_000) {
+        ft.report();
+        ft.window_start_ns = ts2;
+    }
+
     if (result == vk.VK_ERROR_OUT_OF_DATE_KHR or result == vk.VK_SUBOPTIMAL_KHR or framebuffer_resized) {
         framebuffer_resized = false;
         recreateSwapchain() catch {};
@@ -318,6 +395,20 @@ fn createSwapchain(width: u32, height: u32) !void {
         }
     }
 
+    // Pick present mode: prefer MAILBOX (triple-buffer, no blocking) over FIFO
+    var pm_count: u32 = 0;
+    _ = vk.vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device, surface, &pm_count, null);
+    var present_modes: [8]vk.VkPresentModeKHR = undefined;
+    var pm_actual: u32 = @min(pm_count, 8);
+    _ = vk.vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device, surface, &pm_actual, &present_modes);
+    var chosen_present_mode: vk.VkPresentModeKHR = vk.VK_PRESENT_MODE_FIFO_KHR;
+    for (present_modes[0..pm_actual]) |pm| {
+        if (pm == vk.VK_PRESENT_MODE_MAILBOX_KHR) {
+            chosen_present_mode = vk.VK_PRESENT_MODE_MAILBOX_KHR;
+            break;
+        }
+    }
+
     // Extent
     if (capabilities.currentExtent.width != 0xFFFFFFFF) {
         swapchain_extent = capabilities.currentExtent;
@@ -345,7 +436,7 @@ fn createSwapchain(width: u32, height: u32) !void {
         .imageSharingMode = vk.VK_SHARING_MODE_EXCLUSIVE,
         .preTransform = capabilities.currentTransform,
         .compositeAlpha = vk.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-        .presentMode = vk.VK_PRESENT_MODE_FIFO_KHR,
+        .presentMode = chosen_present_mode,
         .clipped = vk.VK_TRUE,
     });
     try checkVk(vk.vkCreateSwapchainKHR(device, &sc_ci, null, &swapchain));
