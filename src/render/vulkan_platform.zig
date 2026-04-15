@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const vkp = @import("vulkan_pipeline.zig");
+const SubpixelOrder = @import("subpixel_order.zig").SubpixelOrder;
 
 // Single cImport for both GLFW+Vulkan to avoid type incompatibility
 const c = @cImport({
@@ -17,6 +18,12 @@ const vk = c;
 const MAX_FRAMES_IN_FLIGHT = 2;
 
 var window: ?*c.GLFWwindow = null;
+var monitor_changed: bool = false;
+
+fn onWindowMoved(_: ?*c.GLFWwindow, _: c_int, _: c_int) callconv(.c) void {
+    monitor_changed = true;
+}
+
 var instance: vk.VkInstance = null;
 var surface: vk.VkSurfaceKHR = null;
 var physical_device: vk.VkPhysicalDevice = null;
@@ -106,6 +113,7 @@ pub fn init(width: u32, height: u32, title: [*:0]const u8) !vkp.VulkanContext {
 
     window = c.glfwCreateWindow(@intCast(width), @intCast(height), title, null, null) orelse return error.WindowCreateFailed;
     _ = c.glfwSetFramebufferSizeCallback(window, framebufferSizeCallback);
+    _ = c.glfwSetWindowPosCallback(window, onWindowMoved);
 
     try createInstance();
     try createSurface();
@@ -125,6 +133,57 @@ pub fn init(width: u32, height: u32, title: [*:0]const u8) !vkp.VulkanContext {
         .render_pass = @ptrCast(render_pass),
         .color_format = @intCast(swapchain_format),
     };
+}
+
+/// Returns true once after the window has moved (which may indicate a monitor change).
+pub fn consumeMonitorChanged() bool {
+    const v = monitor_changed;
+    monitor_changed = false;
+    return v;
+}
+
+/// Detect the subpixel order for the monitor currently containing the window centre.
+/// Applies a rotation correction if the monitor's physical and video orientations differ.
+pub fn detectCurrentMonitorSubpixelOrder(base: SubpixelOrder) SubpixelOrder {
+    const win = window orelse return base;
+    var wx: c_int = 0;
+    var wy: c_int = 0;
+    c.glfwGetWindowPos(win, &wx, &wy);
+    var ww: c_int = 0;
+    var wh: c_int = 0;
+    c.glfwGetWindowSize(win, &ww, &wh);
+    const cx: c_int = wx + @divTrunc(ww, 2);
+    const cy: c_int = wy + @divTrunc(wh, 2);
+
+    var count: c_int = 0;
+    const monitors = c.glfwGetMonitors(&count) orelse return base;
+    for (0..@as(usize, @intCast(count))) |i| {
+        const m = monitors[i];
+        var mx: c_int = 0;
+        var my: c_int = 0;
+        c.glfwGetMonitorPos(m, &mx, &my);
+        const mode = c.glfwGetVideoMode(m) orelse continue;
+        if (cx >= mx and cx < mx + mode[0].width and
+            cy >= my and cy < my + mode[0].height)
+        {
+            var pw: c_int = 0;
+            var ph: c_int = 0;
+            c.glfwGetMonitorPhysicalSize(m, &pw, &ph);
+            const vid_landscape = mode[0].width > mode[0].height;
+            const phy_landscape = pw > ph;
+            if (vid_landscape != phy_landscape) {
+                return switch (base) {
+                    .rgb  => .vrgb,
+                    .bgr  => .vbgr,
+                    .vrgb => .rgb,
+                    .vbgr => .bgr,
+                    .none => .none,
+                };
+            }
+            return base;
+        }
+    }
+    return base;
 }
 
 pub fn deinit() void {

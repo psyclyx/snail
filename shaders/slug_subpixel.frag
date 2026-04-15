@@ -12,6 +12,7 @@ layout(push_constant) uniform PushConstants {
     mat4 mvp;
     vec2 viewport;
     int fill_rule;
+    int subpixel_order; // 1=RGB, 2=BGR, 3=VRGB, 4=VBGR
 };
 
 layout(location = 0) out vec4 frag_color;
@@ -67,18 +68,18 @@ ivec2 calcBandLoc(ivec2 glyphLoc, uint offset) {
     return loc;
 }
 
-// Evaluate horizontal coverage at a given x offset from render coordinate.
-// Returns vec2(xcov, xwgt) — coverage winding and proximity-to-edge weight.
+// Evaluate horizontal coverage (against vertical glyph edges) at xOffset from rc.
+// Returns vec2(xcov, xwgt).
 vec2 evalHorizCoverage(vec2 rc, float xOffset, vec2 ppe,
                        ivec2 gLoc, ivec2 hLoc, int hCount, int layer) {
     float xcov = 0.0;
     float xwgt = 0.0;
-    vec2 samplePos = rc + vec2(xOffset, 0.0);
+    vec2 sp = rc + vec2(xOffset, 0.0);
     for (int i = 0; i < hCount; i++) {
         ivec2 bLoc_h = calcBandLoc(hLoc, uint(i));
         ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec3(bLoc_h, layer), 0).xy);
-        vec4 p12 = texelFetch(u_curve_tex, ivec3(cLoc, layer), 0) - vec4(samplePos, samplePos);
-        vec2 p3 = texelFetch(u_curve_tex, ivec3(cLoc.x + 1, cLoc.y, layer), 0).xy - samplePos;
+        vec4 p12 = texelFetch(u_curve_tex, ivec3(cLoc, layer), 0) - vec4(sp, sp);
+        vec2 p3 = texelFetch(u_curve_tex, ivec3(cLoc.x + 1, cLoc.y, layer), 0).xy - sp;
 
         if (max(max(p12.x, p12.z), p3.x) * ppe.x < -0.5) break;
 
@@ -98,41 +99,18 @@ vec2 evalHorizCoverage(vec2 rc, float xOffset, vec2 ppe,
     return vec2(xcov, xwgt);
 }
 
-void main() {
-    vec2 rc = v_texcoord;
-    vec2 epp = fwidth(rc);
-    vec2 ppe = 1.0 / epp;
-    float subpixelOffset = epp.x / 3.0;
-
-    int layer = (v_glyph.w >> 8) & 0xFF;
-    ivec2 bandMax = ivec2(v_glyph.z, v_glyph.w & 0xFF);
-    ivec2 bandIdx = clamp(ivec2(rc * v_banding.xy + v_banding.zw), ivec2(0), bandMax);
-    ivec2 gLoc = v_glyph.xy;
-
-    // Fetch horizontal band data (shared across subpixels)
-    uvec2 hbd = texelFetch(u_band_tex, ivec3(gLoc.x + bandIdx.y, gLoc.y, layer), 0).xy;
-    ivec2 hLoc = calcBandLoc(gLoc, hbd.y);
-    int hCount = int(hbd.x);
-
-    // Evaluate horizontal coverage at 3 subpixel positions (R, G, B)
-    vec2 cw_r = evalHorizCoverage(rc, -subpixelOffset, ppe, gLoc, hLoc, hCount, layer);
-    vec2 cw_g = evalHorizCoverage(rc, 0.0,             ppe, gLoc, hLoc, hCount, layer);
-    vec2 cw_b = evalHorizCoverage(rc, +subpixelOffset, ppe, gLoc, hLoc, hCount, layer);
-    float xcov_r = cw_r.x; float xwgt_r = cw_r.y;
-    float xcov_g = cw_g.x; float xwgt_g = cw_g.y;
-    float xcov_b = cw_b.x; float xwgt_b = cw_b.y;
-
-    // Vertical band (shared across all subpixels)
-    float ycov = 0.0, ywgt = 0.0;
-    uvec2 vbd = texelFetch(u_band_tex, ivec3(gLoc.x + bandMax.y + 1 + bandIdx.x, gLoc.y, layer), 0).xy;
-    ivec2 vLoc = calcBandLoc(gLoc, vbd.y);
-    int vCount = int(vbd.x);
-
+// Evaluate vertical coverage (against horizontal glyph edges) at yOffset from rc.
+// Returns vec2(ycov, ywgt).
+vec2 evalVertCoverage(vec2 rc, float yOffset, vec2 ppe,
+                      ivec2 vLoc, int vCount, int layer) {
+    float ycov = 0.0;
+    float ywgt = 0.0;
+    vec2 sp = rc + vec2(0.0, yOffset);
     for (int i = 0; i < vCount; i++) {
         ivec2 bLoc_v = calcBandLoc(vLoc, uint(i));
         ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec3(bLoc_v, layer), 0).xy);
-        vec4 p12 = texelFetch(u_curve_tex, ivec3(cLoc, layer), 0) - vec4(rc, rc);
-        vec2 p3 = texelFetch(u_curve_tex, ivec3(cLoc.x + 1, cLoc.y, layer), 0).xy - rc;
+        vec4 p12 = texelFetch(u_curve_tex, ivec3(cLoc, layer), 0) - vec4(sp, sp);
+        vec2 p3 = texelFetch(u_curve_tex, ivec3(cLoc.x + 1, cLoc.y, layer), 0).xy - sp;
 
         if (max(max(p12.y, p12.w), p3.y) * ppe.y < -0.5) break;
 
@@ -149,20 +127,69 @@ void main() {
             }
         }
     }
+    return vec2(ycov, ywgt);
+}
 
-    // Combine per-subpixel horizontal + shared vertical into RGB coverage.
-    // Mirror the non-subpixel weighted blend (xcov*xwgt + ycov*ywgt) per channel,
-    // so horizontal edges are correctly anti-aliased rather than hard-clipped.
+// Blend three per-subpixel coverage samples against a shared orthogonal sample.
+// cw_{r,g,b} = (coverage, weight) for each subpixel channel.
+// cw_o       = (coverage, weight) for the orthogonal (shared) axis.
+vec3 blendSubpixel(vec2 cw_r, vec2 cw_g, vec2 cw_b, vec2 cw_o) {
+    float wsum_r = cw_r.y + cw_o.y; float blend_r = cw_r.x * cw_r.y + cw_o.x * cw_o.y;
+    float wsum_g = cw_g.y + cw_o.y; float blend_g = cw_g.x * cw_g.y + cw_o.x * cw_o.y;
+    float wsum_b = cw_b.y + cw_o.y; float blend_b = cw_b.x * cw_b.y + cw_o.x * cw_o.y;
+    return vec3(
+        clamp(max(applyFillRule(blend_r / max(wsum_r, 1.0/65536.0)),
+                  min(applyFillRule(cw_r.x), applyFillRule(cw_o.x))), 0.0, 1.0),
+        clamp(max(applyFillRule(blend_g / max(wsum_g, 1.0/65536.0)),
+                  min(applyFillRule(cw_g.x), applyFillRule(cw_o.x))), 0.0, 1.0),
+        clamp(max(applyFillRule(blend_b / max(wsum_b, 1.0/65536.0)),
+                  min(applyFillRule(cw_b.x), applyFillRule(cw_o.x))), 0.0, 1.0)
+    );
+}
+
+void main() {
+    vec2 rc = v_texcoord;
+    vec2 epp = fwidth(rc);
+    vec2 ppe = 1.0 / epp;
+
+    int layer = (v_glyph.w >> 8) & 0xFF;
+    ivec2 bandMax = ivec2(v_glyph.z, v_glyph.w & 0xFF);
+    ivec2 bandIdx = clamp(ivec2(rc * v_banding.xy + v_banding.zw), ivec2(0), bandMax);
+    ivec2 gLoc = v_glyph.xy;
+
+    // Fetch both band headers upfront — needed by both horizontal and vertical paths.
+    uvec2 hbd = texelFetch(u_band_tex, ivec3(gLoc.x + bandIdx.y, gLoc.y, layer), 0).xy;
+    ivec2 hLoc = calcBandLoc(gLoc, hbd.y);
+    int hCount = int(hbd.x);
+
+    uvec2 vbd = texelFetch(u_band_tex, ivec3(gLoc.x + bandMax.y + 1 + bandIdx.x, gLoc.y, layer), 0).xy;
+    ivec2 vLoc = calcBandLoc(gLoc, vbd.y);
+    int vCount = int(vbd.x);
+
     vec3 cov;
-    float wsum_r = xwgt_r + ywgt; float blended_r = xcov_r * xwgt_r + ycov * ywgt;
-    float wsum_g = xwgt_g + ywgt; float blended_g = xcov_g * xwgt_g + ycov * ywgt;
-    float wsum_b = xwgt_b + ywgt; float blended_b = xcov_b * xwgt_b + ycov * ywgt;
-    cov.r = clamp(max(applyFillRule(blended_r / max(wsum_r, 1.0/65536.0)),
-                      min(applyFillRule(xcov_r), applyFillRule(ycov))), 0.0, 1.0);
-    cov.g = clamp(max(applyFillRule(blended_g / max(wsum_g, 1.0/65536.0)),
-                      min(applyFillRule(xcov_g), applyFillRule(ycov))), 0.0, 1.0);
-    cov.b = clamp(max(applyFillRule(blended_b / max(wsum_b, 1.0/65536.0)),
-                      min(applyFillRule(xcov_b), applyFillRule(ycov))), 0.0, 1.0);
+
+    if (subpixel_order <= 2) {
+        // Horizontal subpixels: RGB (1) subpixels run left→right,
+        //                       BGR (2) runs right→left (flip sign).
+        float sp = epp.x / 3.0;
+        float s = (subpixel_order == 2) ? -1.0 : 1.0;
+        vec2 cw_r = evalHorizCoverage(rc, -sp * s, ppe, gLoc, hLoc, hCount, layer);
+        vec2 cw_g = evalHorizCoverage(rc,  0.0,    ppe, gLoc, hLoc, hCount, layer);
+        vec2 cw_b = evalHorizCoverage(rc, +sp * s, ppe, gLoc, hLoc, hCount, layer);
+        vec2 cw_v = evalVertCoverage(rc, 0.0, ppe, vLoc, vCount, layer);
+        cov = blendSubpixel(cw_r, cw_g, cw_b, cw_v);
+    } else {
+        // Vertical subpixels: VRGB (3) subpixels run top→bottom,
+        //                     VBGR (4) runs bottom→top (flip sign).
+        float sp = epp.y / 3.0;
+        float s = (subpixel_order == 4) ? -1.0 : 1.0;
+        vec2 cw_h = evalHorizCoverage(rc, 0.0, ppe, gLoc, hLoc, hCount, layer);
+        vec2 cw_r = evalVertCoverage(rc, -sp * s, ppe, vLoc, vCount, layer);
+        vec2 cw_g = evalVertCoverage(rc,  0.0,    ppe, vLoc, vCount, layer);
+        vec2 cw_b = evalVertCoverage(rc, +sp * s, ppe, vLoc, vCount, layer);
+        cov = blendSubpixel(cw_r, cw_g, cw_b, cw_h);
+    }
+
     // sRGB gamma: linear -> sRGB transfer function
     cov = mix(cov * 12.92,
               1.055 * pow(cov, vec3(1.0 / 2.4)) - 0.055,

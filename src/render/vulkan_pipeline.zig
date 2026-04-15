@@ -3,6 +3,7 @@ const vertex = @import("vertex.zig");
 const vec = @import("../math/vec.zig");
 const Mat4 = vec.Mat4;
 const snail_mod = @import("../snail.zig");
+const SubpixelOrder = @import("subpixel_order.zig").SubpixelOrder;
 
 pub const vk = @cImport({
     @cInclude("vulkan/vulkan.h");
@@ -23,7 +24,7 @@ const PushConstants = extern struct {
     mvp: [16]f32, // mat4, column-major
     viewport: [2]f32,
     fill_rule: i32,
-    _pad: i32 = 0, // align to 16 bytes
+    subpixel_order: i32 = 1, // 1=RGB, 2=BGR, 3=VRGB, 4=VBGR; replaces former padding
 };
 
 comptime {
@@ -82,7 +83,7 @@ var transfer_cmd_pool: vk.VkCommandPool = null;
 
 // Per-frame state
 var active_cmd: vk.VkCommandBuffer = null;
-pub var subpixel_enabled: bool = false;
+pub var subpixel_order: SubpixelOrder = .none;
 pub var fill_rule: FillRule = .non_zero;
 
 pub const FillRule = enum(c_int) {
@@ -326,7 +327,7 @@ pub fn drawText(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f
     ensureEboCapacity(@intCast(glyph_count));
 
     // Bind pipeline
-    const pip = if (subpixel_enabled) pipeline_subpixel else pipeline_normal;
+    const pip = if (subpixel_order != .none) pipeline_subpixel else pipeline_normal;
     vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pip);
 
     // Bind vertex buffer at ring offset
@@ -344,6 +345,7 @@ pub fn drawText(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f
         .mvp = mvp.data,
         .viewport = .{ viewport_w, viewport_h },
         .fill_rule = @intFromEnum(fill_rule),
+        .subpixel_order = @intFromEnum(subpixel_order),
     };
     vk.vkCmdPushConstants(cmd, pipeline_layout, vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(PushConstants), &pc);
 

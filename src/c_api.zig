@@ -161,7 +161,7 @@ export fn snail_renderer_upload_atlas(atlas: *AtlasImpl) void {
 }
 
 export fn snail_renderer_set_subpixel(enabled: bool) void {
-    pipeline.subpixel_enabled = enabled;
+    pipeline.subpixel_order = if (enabled) .rgb else .none;
 }
 
 export fn snail_renderer_set_fill_rule(rule: c_int) void {

@@ -684,6 +684,7 @@ pub const Batch = struct {
 };
 
 pub const FillRule = pipeline.FillRule;
+pub const SubpixelOrder = @import("render/subpixel_order.zig").SubpixelOrder;
 pub const RenderBackend = enum { gl, vulkan };
 pub const VulkanContext = vulkan_pipeline.VulkanContext;
 
@@ -743,19 +744,28 @@ pub const Renderer = struct {
         if (self.backend == .vulkan) vulkan_pipeline.setCommandBuffer(cmd);
     }
 
-    /// Toggle subpixel LCD rendering.
-    pub fn setSubpixel(self: *Renderer, enabled: bool) void {
+    /// Set LCD subpixel rendering order. Use .none to disable subpixel rendering.
+    pub fn setSubpixelOrder(self: *Renderer, order: SubpixelOrder) void {
         switch (self.backend) {
-            .gl => pipeline.subpixel_enabled = enabled,
-            .vulkan => vulkan_pipeline.subpixel_enabled = enabled,
+            .gl => pipeline.subpixel_order = order,
+            .vulkan => vulkan_pipeline.subpixel_order = order,
         }
     }
 
-    pub fn subpixelEnabled(self: *const Renderer) bool {
+    pub fn subpixelOrder(self: *const Renderer) SubpixelOrder {
         return switch (self.backend) {
-            .gl => pipeline.subpixel_enabled,
-            .vulkan => vulkan_pipeline.subpixel_enabled,
+            .gl => pipeline.subpixel_order,
+            .vulkan => vulkan_pipeline.subpixel_order,
         };
+    }
+
+    /// Convenience: enable subpixel with RGB order, or disable. Prefer setSubpixelOrder.
+    pub fn setSubpixel(self: *Renderer, enabled: bool) void {
+        self.setSubpixelOrder(if (enabled) .rgb else .none);
+    }
+
+    pub fn subpixelEnabled(self: *const Renderer) bool {
+        return self.subpixelOrder() != .none;
     }
 
     /// Set fill rule: non_zero (default, TrueType) or even_odd (PostScript/CFF).

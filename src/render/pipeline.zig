@@ -6,6 +6,7 @@ const vertex = @import("vertex.zig");
 const vec = @import("../math/vec.zig");
 const Mat4 = vec.Mat4;
 const snail_mod = @import("../snail.zig");
+const SubpixelOrder = @import("subpixel_order.zig").SubpixelOrder;
 
 // ── Backend selection ──
 
@@ -43,9 +44,15 @@ var sp_curve_tex_loc: gl.GLint = -1;
 var sp_band_tex_loc: gl.GLint = -1;
 var fill_rule_loc: gl.GLint = -1;
 var sp_fill_rule_loc: gl.GLint = -1;
+var sp_subpixel_order_loc: gl.GLint = -1;
 
-pub var subpixel_enabled: bool = false;
+pub var subpixel_order: SubpixelOrder = .none;
 pub var fill_rule: FillRule = .non_zero;
+
+// Legacy alias used by snail.zig's setSubpixel convenience wrapper
+pub fn subpixelEnabled() bool {
+    return subpixel_order != .none;
+}
 
 pub const FillRule = enum(c_int) {
     non_zero = 0,
@@ -90,6 +97,7 @@ pub fn init() !void {
     sp_curve_tex_loc = gl.glGetUniformLocation(program_subpixel, "u_curve_tex");
     sp_band_tex_loc = gl.glGetUniformLocation(program_subpixel, "u_band_tex");
     sp_fill_rule_loc = gl.glGetUniformLocation(program_subpixel, "u_fill_rule");
+    sp_subpixel_order_loc = gl.glGetUniformLocation(program_subpixel, "u_subpixel_order");
 
     backend = detectBackend();
 
@@ -298,7 +306,8 @@ pub fn bindTextures(_: gl.GLuint, _: gl.GLuint) void {}
 // ── Draw ──
 
 pub fn drawText(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
-    const prog = if (subpixel_enabled) program_subpixel else program;
+    const using_sp = subpixel_order != .none;
+    const prog = if (using_sp) program_subpixel else program;
 
     if (prog != active_program or !frame_begun) {
         gl.glUseProgram(prog);
@@ -314,19 +323,20 @@ pub fn drawText(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f
             gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, band_array);
         }
 
-        const u_ct = if (subpixel_enabled) sp_curve_tex_loc else curve_tex_loc;
-        const u_bt = if (subpixel_enabled) sp_band_tex_loc else band_tex_loc;
+        const u_ct = if (using_sp) sp_curve_tex_loc else curve_tex_loc;
+        const u_bt = if (using_sp) sp_band_tex_loc else band_tex_loc;
         gl.glUniform1i(u_ct, 0);
         gl.glUniform1i(u_bt, 1);
         frame_begun = true;
     }
 
-    const u_mvp = if (subpixel_enabled) sp_mvp_loc else mvp_loc;
-    const u_vp = if (subpixel_enabled) sp_viewport_loc else viewport_loc;
-    const u_fr = if (subpixel_enabled) sp_fill_rule_loc else fill_rule_loc;
+    const u_mvp = if (using_sp) sp_mvp_loc else mvp_loc;
+    const u_vp  = if (using_sp) sp_viewport_loc else viewport_loc;
+    const u_fr  = if (using_sp) sp_fill_rule_loc else fill_rule_loc;
     gl.glUniformMatrix4fv(u_mvp, 1, gl.GL_FALSE, &mvp.data);
     gl.glUniform2f(u_vp, viewport_w, viewport_h);
     gl.glUniform1i(u_fr, @intFromEnum(fill_rule));
+    if (using_sp) gl.glUniform1i(sp_subpixel_order_loc, @intFromEnum(subpixel_order));
 
     const byte_size = vertices.len * @sizeOf(f32);
 

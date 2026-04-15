@@ -3,6 +3,7 @@ const snail = @import("snail.zig");
 const build_options = @import("build_options");
 const assets = @import("assets");
 const screenshot = @import("render/screenshot.zig");
+const subpixel_detect = @import("render/subpixel_detect.zig");
 
 // Backend-specific platform
 const use_vulkan = build_options.enable_vulkan;
@@ -91,6 +92,11 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         try snail.Renderer.init();
     defer renderer.deinit();
 
+    // Detect system subpixel order and apply, accounting for monitor rotation.
+    const sys_order = subpixel_detect.detect();
+    const initial_order = platform.detectCurrentMonitorSubpixelOrder(sys_order);
+    renderer.setSubpixelOrder(initial_order);
+
     // Upload all atlases as texture array (enables single-draw multi-font rendering)
     renderer.uploadAtlases(&[_]*const snail.Atlas{
         &atlas,
@@ -122,7 +128,8 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         renderer.backendName(),
         if (build_options.enable_harfbuzz) "ON" else "OFF",
     });
-    std.debug.print("Keys: Z/X zoom, R rotate, S stress, L subpixel, Esc quit\n", .{});
+    std.debug.print("Subpixel order: {s}\n", .{renderer.subpixelOrder().name()});
+    std.debug.print("Keys: Z/X zoom, R rotate, S stress, L subpixel order, Esc quit\n", .{});
 
     while (!platform.shouldClose()) {
         const now = platform.getTime();
@@ -143,11 +150,28 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         const KEY_Z = if (use_vulkan) platform.GLFW_KEY_Z else platform.c.GLFW_KEY_Z;
         const KEY_X = if (use_vulkan) platform.GLFW_KEY_X else platform.c.GLFW_KEY_X;
 
+        // Re-detect subpixel order when the window moves to a different monitor.
+        if (platform.consumeMonitorChanged()) {
+            const order = platform.detectCurrentMonitorSubpixelOrder(sys_order);
+            if (order != renderer.subpixelOrder()) {
+                renderer.setSubpixelOrder(order);
+                std.debug.print("Monitor change: subpixel order -> {s}\n", .{order.name()});
+            }
+        }
+
         if (platform.isKeyPressed(KEY_R)) rotate = !rotate;
         if (platform.isKeyPressed(KEY_S)) stress_test = !stress_test;
         if (platform.isKeyPressed(KEY_L)) {
-            renderer.setSubpixel(!renderer.subpixelEnabled());
-            std.debug.print("Subpixel: {s}\n", .{if (renderer.subpixelEnabled()) "ON" else "OFF"});
+            // Cycle through all orders so you can manually verify each one.
+            const next: snail.SubpixelOrder = switch (renderer.subpixelOrder()) {
+                .none  => .rgb,
+                .rgb   => .bgr,
+                .bgr   => .vrgb,
+                .vrgb  => .vbgr,
+                .vbgr  => .none,
+            };
+            renderer.setSubpixelOrder(next);
+            std.debug.print("Subpixel: {s}\n", .{renderer.subpixelOrder().name()});
         }
         if (rotate) angle += dt * 0.5;
         if (platform.isKeyDown(KEY_Z)) zoom *= 1.0 + dt * 2.0;
@@ -262,7 +286,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
             var hud = snail.Batch.init(vbuf[batch.len..]);
             _ = hud.addString(&atlas, &font, "snail - GPU Bezier curve font rendering", 10, 30, 12, gray);
             const hb_str = if (build_options.enable_harfbuzz) " | HarfBuzz ON" else "";
-            _ = hud.addString(&atlas, &font, "Z/X zoom | R rotate | S stress | L subpixel" ++ hb_str, 10, 14, 12, gray);
+            _ = hud.addString(&atlas, &font, "Z/X zoom | R rotate | S stress | L subpixel order" ++ hb_str, 10, 14, 12, gray);
             if (hud.glyphCount() > 0) {
                 renderer.draw(hud.slice(), projection, w, h);
             }
