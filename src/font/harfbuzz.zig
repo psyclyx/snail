@@ -111,7 +111,7 @@ pub const HarfBuzzShaper = struct {
             // COLRv0: single multi-layer quad (seamless compositing in shader)
             if (atlas.colr_base_map) |cbm| {
                 if (cbm.get(gid)) |cbi| {
-                    if (!batch.addColrGlyph(glyph_x, glyph_y, font_size, cbi, color)) break;
+                    if (!batch.addColrGlyph(glyph_x, glyph_y, font_size, cbi, color, atlas_layer)) break;
                     cursor_x += @as(f32, @floatFromInt(pos.x_advance));
                     cursor_y += @as(f32, @floatFromInt(pos.y_advance));
                     continue;

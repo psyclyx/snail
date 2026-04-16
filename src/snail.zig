@@ -669,11 +669,12 @@ pub const Batch = struct {
         font_size: f32,
         info: Atlas.ColrBaseInfo,
         color: [4]f32,
+        atlas_layer: u8,
     ) bool {
         if (self.len + FLOATS_PER_GLYPH > self.buf.len) return false;
         vertex_mod.generateMultiLayerGlyphVertices(
             self.buf[self.len..], x, y, font_size,
-            info.union_bbox, info.info_x, info.info_y, info.layer_count, color,
+            info.union_bbox, info.info_x, info.info_y, info.layer_count, color, atlas_layer,
         );
         self.len += FLOATS_PER_GLYPH;
         return true;
@@ -703,7 +704,7 @@ pub const Batch = struct {
             // Multi-layer COLR path: single quad per emoji
             if (atlas.colr_base_map) |cbm| {
                 if (cbm.get(sg.glyph_id)) |cbi| {
-                    if (!self.addColrGlyph(x + sg.x_offset, y + sg.y_offset, font_size, cbi, color)) break;
+                    if (!self.addColrGlyph(x + sg.x_offset, y + sg.y_offset, font_size, cbi, color, atlas.gl_layer)) break;
                     count += 1;
                     continue;
                 }
@@ -794,7 +795,7 @@ pub const Batch = struct {
             // COLRv0: single multi-layer quad (seamless compositing in shader)
             if (atlas.colr_base_map) |cbm| {
                 if (cbm.get(gid)) |cbi| {
-                    _ = self.addColrGlyph(cursor_x, y, font_size, cbi, color);
+                    _ = self.addColrGlyph(cursor_x, y, font_size, cbi, color, atlas.gl_layer);
                     const advance = if (atlas.glyph_map.get(gid)) |bi| bi.advance_width else font.inner.units_per_em;
                     cursor_x += @as(f32, @floatFromInt(advance)) * scale;
                     prev_gid = gid;

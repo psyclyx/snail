@@ -102,6 +102,7 @@ pub fn generateMultiLayerGlyphVertices(
     info_y: u16,
     layer_count: u8,
     color: [4]f32,
+    atlas_layer: u8,
 ) void {
     const x0 = x + union_bbox.min.x * font_size;
     const y0 = y + union_bbox.min.y * font_size;
@@ -144,11 +145,13 @@ pub fn generateMultiLayerGlyphVertices(
         buf[base + 9] = 0;
         buf[base + 10] = 0;
         buf[base + 11] = inv_scale;
-        // Band transform zeroed — per-layer banding comes from layer info texture
+        // Band transform: xyz zeroed (per-layer banding from layer info texture),
+        // w = atlas texture array layer (needed because layer info is built before
+        // gl_layer is assigned by uploadAtlases).
         buf[base + 12] = 0;
         buf[base + 13] = 0;
         buf[base + 14] = 0;
-        buf[base + 15] = 0;
+        buf[base + 15] = @floatFromInt(atlas_layer);
         // Fallback text color (for layers with palette index 0xFFFF)
         buf[base + 16] = color[0];
         buf[base + 17] = color[1];

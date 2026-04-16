@@ -197,7 +197,7 @@ void main() {
             ivec2 lGLoc = ivec2(info.xy);
             int bandMaxH = floatBitsToInt(info.z) & 0xFFFF;
             int bandMaxV = (floatBitsToInt(info.z) >> 16) & 0xFFFF;
-            int texLayer = int(info.w);
+            int texLayer = int(v_banding.w);
             float cov = evalGlyphCoverage(rc, epp, ppe, lGLoc,
                                           ivec2(bandMaxH, bandMaxV), band, texLayer);
             cov = srgbGamma(cov);
