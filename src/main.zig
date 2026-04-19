@@ -43,6 +43,67 @@ const ScriptFont = struct {
     }
 };
 
+fn addRoundedRect(
+    batch: *snail.VectorBatch,
+    rect: snail.VectorRect,
+    fill: [4]f32,
+    border: [4]f32,
+    border_width: f32,
+    corner_radius: f32,
+) void {
+    _ = batch.addRoundedRect(rect, fill, border, border_width, corner_radius);
+}
+
+fn buildPrimitiveShowcase(batch: *snail.VectorBatch, w: f32, h: f32) void {
+    const left_panel_w = w * 0.47;
+    const right_panel_x = w * 0.5;
+    const right_panel_w = w - right_panel_x - 24;
+
+    addRoundedRect(batch, .{ .x = 18, .y = 18, .w = left_panel_w, .h = h - 96 }, .{ 0.08, 0.09, 0.11, 0.88 }, .{ 0.22, 0.24, 0.28, 1 }, 1.5, 24);
+    addRoundedRect(batch, .{ .x = right_panel_x, .y = 18, .w = right_panel_w, .h = h - 96 }, .{ 0.07, 0.08, 0.1, 0.82 }, .{ 0.18, 0.2, 0.24, 1 }, 1.5, 24);
+
+    _ = batch.addEllipse(
+        .{ .x = right_panel_x + right_panel_w - 220, .y = 54, .w = 180, .h = 180 },
+        .{ 0.28, 0.72, 0.92, 0.16 },
+        .{ 0.28, 0.72, 0.92, 0.7 },
+        2,
+    );
+    _ = batch.addEllipse(
+        .{ .x = right_panel_x + right_panel_w - 160, .y = 94, .w = 96, .h = 96 },
+        .{ 0.95, 0.72, 0.24, 0.22 },
+        .{ 0.95, 0.72, 0.24, 0.82 },
+        1.5,
+    );
+
+    addRoundedRect(batch, .{ .x = 36, .y = 44, .w = 148, .h = 28 }, .{ 0.18, 0.46, 0.82, 0.22 }, .{ 0.18, 0.46, 0.82, 0.9 }, 1.5, 14);
+    addRoundedRect(batch, .{ .x = 36, .y = 84, .w = 220, .h = 14 }, .{ 0.86, 0.91, 0.96, 0.08 }, .{ 0.86, 0.91, 0.96, 0.3 }, 1, 7);
+
+    addRoundedRect(
+        batch,
+        .{ .x = right_panel_x + 24, .y = h - 156, .w = right_panel_w - 48, .h = 92 },
+        .{ 0.1, 0.12, 0.15, 0.9 },
+        .{ 0.3, 0.33, 0.4, 1 },
+        1.5,
+        20,
+    );
+    addRoundedRect(
+        batch,
+        .{ .x = right_panel_x + 42, .y = h - 132, .w = right_panel_w * 0.42, .h = 18 },
+        .{ 0.28, 0.72, 0.92, 0.18 },
+        .{ 0.28, 0.72, 0.92, 0.85 },
+        1,
+        9,
+    );
+    addRoundedRect(
+        batch,
+        .{ .x = right_panel_x + 42, .y = h - 98, .w = right_panel_w * 0.3, .h = 18 },
+        .{ 0.96, 0.72, 0.28, 0.16 },
+        .{ 0.96, 0.72, 0.28, 0.82 },
+        1,
+        9,
+    );
+}
+
 pub fn main() !void {
     var da: std.heap.DebugAllocator(.{}) = .init;
     defer _ = da.deinit();
@@ -111,6 +172,8 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
     const buf_size = 10000 * snail.FLOATS_PER_GLYPH;
     const vbuf = try allocator.alloc(f32, buf_size);
     defer allocator.free(vbuf);
+    const shape_buf = try allocator.alloc(f32, 256 * snail.VECTOR_FLOATS_PER_PRIMITIVE);
+    defer allocator.free(shape_buf);
 
     var angle: f32 = 0;
     var zoom: f32 = 1.0;
@@ -212,6 +275,13 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         const yellow = [4]f32{ 0.9, 0.8, 0.3, 1 };
         const green = [4]f32{ 0.4, 0.9, 0.5, 1 };
         const pink = [4]f32{ 0.9, 0.5, 0.7, 1 };
+
+        renderer.beginFrame();
+        var shapes = snail.VectorBatch.init(shape_buf);
+        buildPrimitiveShowcase(&shapes, w, h);
+        if (shapes.shapeCount() > 0) {
+            renderer.drawVector(shapes.slice(), w, h);
+        }
 
         // Everything goes into one batch — texture arrays enable single-draw multi-font
         var batch = snail.Batch.init(vbuf);

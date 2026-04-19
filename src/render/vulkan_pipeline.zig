@@ -1,5 +1,6 @@
 const std = @import("std");
 const vertex = @import("vertex.zig");
+const vector_vertex = @import("vector_vertex.zig");
 const vec = @import("../math/vec.zig");
 const Mat4 = vec.Mat4;
 const snail_mod = @import("../snail.zig");
@@ -17,6 +18,8 @@ const vk_shaders = @import("vulkan_shaders");
 const vert_spv = vk_shaders.vert_spv;
 const frag_spv = vk_shaders.frag_spv;
 const frag_subpixel_spv = vk_shaders.frag_subpixel_spv;
+const vector_vert_spv = vk_shaders.vector_vert_spv;
+const vector_frag_spv = vk_shaders.vector_frag_spv;
 
 // ── Push constants layout (matches GLSL) ──
 
@@ -49,6 +52,7 @@ var initialized: bool = false;
 
 var pipeline_normal: vk.VkPipeline = null;
 var pipeline_subpixel: vk.VkPipeline = null;
+var pipeline_vector: vk.VkPipeline = null;
 var pipeline_layout: vk.VkPipelineLayout = null;
 var desc_set_layout: vk.VkDescriptorSetLayout = null;
 var desc_pool: vk.VkDescriptorPool = null;
@@ -62,6 +66,8 @@ const RING_TOTAL_BYTES = 16 * 1024 * 1024; // 16 MB
 const RING_SEGMENT_BYTES = RING_TOTAL_BYTES / RING_SEGMENTS;
 const BYTES_PER_GLYPH = vertex.FLOATS_PER_VERTEX * vertex.VERTICES_PER_GLYPH * @sizeOf(f32);
 const MAX_GLYPHS_PER_SEGMENT = RING_SEGMENT_BYTES / BYTES_PER_GLYPH;
+const BYTES_PER_VECTOR_PRIMITIVE = vector_vertex.FLOATS_PER_PRIMITIVE * @sizeOf(f32);
+const MAX_VECTOR_PRIMITIVES_PER_SEGMENT = RING_SEGMENT_BYTES / BYTES_PER_VECTOR_PRIMITIVE;
 
 var vertex_buffer: vk.VkBuffer = null;
 var vertex_memory: vk.VkDeviceMemory = null;
@@ -182,6 +188,7 @@ pub fn init(vk_ctx: VulkanContext) !void {
     // Graphics pipelines
     pipeline_normal = try createGraphicsPipeline(frag_spv);
     pipeline_subpixel = try createGraphicsPipeline(frag_subpixel_spv);
+    pipeline_vector = try createVectorGraphicsPipeline();
 
     // Vertex ring buffer (persistent mapped)
     try createBuffer(
@@ -227,6 +234,7 @@ pub fn deinit() void {
     }
     if (desc_pool != null) vk.vkDestroyDescriptorPool(ctx.device, desc_pool, null);
     if (desc_set_layout != null) vk.vkDestroyDescriptorSetLayout(ctx.device, desc_set_layout, null);
+    if (pipeline_vector != null) vk.vkDestroyPipeline(ctx.device, pipeline_vector, null);
     if (pipeline_subpixel != null) vk.vkDestroyPipeline(ctx.device, pipeline_subpixel, null);
     if (pipeline_normal != null) vk.vkDestroyPipeline(ctx.device, pipeline_normal, null);
     if (pipeline_layout != null) vk.vkDestroyPipelineLayout(ctx.device, pipeline_layout, null);
@@ -367,22 +375,7 @@ pub fn drawText(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f
         .subpixel_order = @intFromEnum(subpixel_order),
     };
     vk.vkCmdPushConstants(cmd, pipeline_layout, vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(PushConstants), &pc);
-
-    const vp = vk.VkViewport{
-        .x = 0,
-        .y = 0,
-        .width = viewport_w,
-        .height = viewport_h,
-        .minDepth = 0,
-        .maxDepth = 1,
-    };
-    vk.vkCmdSetViewport(cmd, 0, 1, &vp);
-
-    const scissor = vk.VkRect2D{
-        .offset = .{ .x = 0, .y = 0 },
-        .extent = .{ .width = @intFromFloat(viewport_w), .height = @intFromFloat(viewport_h) },
-    };
-    vk.vkCmdSetScissor(cmd, 0, 1, &scissor);
+    setViewportAndScissor(cmd, viewport_w, viewport_h);
 
     // Draw in chunks that fit within a single ring segment
     var glyphs_drawn: usize = 0;
@@ -402,6 +395,43 @@ pub fn drawText(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f
 
         ring_segment = (ring_segment + 1) % RING_SEGMENTS;
         glyphs_drawn += chunk;
+    }
+}
+
+pub fn drawVector(vertices: []const f32, viewport_w: f32, viewport_h: f32) void {
+    const cmd = active_cmd orelse return;
+    if (vertices.len == 0) return;
+
+    const total_primitives = vertices.len / vector_vertex.FLOATS_PER_PRIMITIVE;
+    if (total_primitives == 0) return;
+
+    vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_vector);
+    const pc = PushConstants{
+        .mvp = Mat4.identity.data,
+        .viewport = .{ viewport_w, viewport_h },
+        .fill_rule = 0,
+        .subpixel_order = 0,
+    };
+    vk.vkCmdPushConstants(cmd, pipeline_layout, vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(PushConstants), &pc);
+    setViewportAndScissor(cmd, viewport_w, viewport_h);
+
+    var primitives_drawn: usize = 0;
+    while (primitives_drawn < total_primitives) {
+        const chunk: usize = @min(total_primitives - primitives_drawn, MAX_VECTOR_PRIMITIVES_PER_SEGMENT);
+        const float_offset = primitives_drawn * vector_vertex.FLOATS_PER_PRIMITIVE;
+        const byte_size = chunk * BYTES_PER_VECTOR_PRIMITIVE;
+
+        const ring_offset: vk.VkDeviceSize = @as(vk.VkDeviceSize, ring_segment) * RING_SEGMENT_BYTES;
+        const dst = persistent_map.?[ring_offset..][0..byte_size];
+        const src: [*]const u8 = @ptrCast(vertices[float_offset..].ptr);
+        @memcpy(dst, src[0..byte_size]);
+
+        const offsets = [1]vk.VkDeviceSize{ring_offset};
+        vk.vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer, &offsets);
+        vk.vkCmdDraw(cmd, @intCast(chunk * vector_vertex.VERTICES_PER_PRIMITIVE), 1, 0, 0);
+
+        ring_segment = (ring_segment + 1) % RING_SEGMENTS;
+        primitives_drawn += chunk;
     }
 }
 
@@ -534,6 +564,145 @@ fn createGraphicsPipeline(frag_code: []const u8) !vk.VkPipeline {
     var pip: vk.VkPipeline = null;
     try check(vk.vkCreateGraphicsPipelines(ctx.device, null, 1, &ci, null, &pip));
     return pip;
+}
+
+fn createVectorGraphicsPipeline() !vk.VkPipeline {
+    const vert_module = try createShaderModule(vector_vert_spv);
+    defer vk.vkDestroyShaderModule(ctx.device, vert_module, null);
+    const frag_module = try createShaderModule(vector_frag_spv);
+    defer vk.vkDestroyShaderModule(ctx.device, frag_module, null);
+
+    const stages = [2]vk.VkPipelineShaderStageCreateInfo{
+        std.mem.zeroInit(vk.VkPipelineShaderStageCreateInfo, .{
+            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .stage = vk.VK_SHADER_STAGE_VERTEX_BIT,
+            .module = vert_module,
+            .pName = "main",
+        }),
+        std.mem.zeroInit(vk.VkPipelineShaderStageCreateInfo, .{
+            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .stage = vk.VK_SHADER_STAGE_FRAGMENT_BIT,
+            .module = frag_module,
+            .pName = "main",
+        }),
+    };
+
+    const stride: u32 = vector_vertex.FLOATS_PER_VERTEX * @sizeOf(f32);
+    const binding = vk.VkVertexInputBindingDescription{
+        .binding = 0,
+        .stride = stride,
+        .inputRate = vk.VK_VERTEX_INPUT_RATE_VERTEX,
+    };
+
+    const attrs = [5]vk.VkVertexInputAttributeDescription{
+        .{ .location = 0, .binding = 0, .format = vk.VK_FORMAT_R32G32_SFLOAT, .offset = 0 },
+        .{ .location = 1, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 2 * @sizeOf(f32) },
+        .{ .location = 2, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 6 * @sizeOf(f32) },
+        .{ .location = 3, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 10 * @sizeOf(f32) },
+        .{ .location = 4, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 14 * @sizeOf(f32) },
+    };
+
+    const vi_info = std.mem.zeroInit(vk.VkPipelineVertexInputStateCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        .vertexBindingDescriptionCount = 1,
+        .pVertexBindingDescriptions = &binding,
+        .vertexAttributeDescriptionCount = 5,
+        .pVertexAttributeDescriptions = &attrs,
+    });
+
+    const ia_info = std.mem.zeroInit(vk.VkPipelineInputAssemblyStateCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        .topology = vk.VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+    });
+
+    const dyn_states = [2]vk.VkDynamicState{
+        vk.VK_DYNAMIC_STATE_VIEWPORT,
+        vk.VK_DYNAMIC_STATE_SCISSOR,
+    };
+    const dyn_info = std.mem.zeroInit(vk.VkPipelineDynamicStateCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        .dynamicStateCount = 2,
+        .pDynamicStates = &dyn_states,
+    });
+
+    const vp_info = std.mem.zeroInit(vk.VkPipelineViewportStateCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        .viewportCount = 1,
+        .scissorCount = 1,
+    });
+
+    const rast_info = std.mem.zeroInit(vk.VkPipelineRasterizationStateCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        .polygonMode = vk.VK_POLYGON_MODE_FILL,
+        .cullMode = vk.VK_CULL_MODE_NONE,
+        .frontFace = vk.VK_FRONT_FACE_COUNTER_CLOCKWISE,
+        .lineWidth = 1.0,
+    });
+
+    const ms_info = std.mem.zeroInit(vk.VkPipelineMultisampleStateCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        .rasterizationSamples = vk.VK_SAMPLE_COUNT_1_BIT,
+    });
+
+    const blend_attach = std.mem.zeroInit(vk.VkPipelineColorBlendAttachmentState, .{
+        .blendEnable = vk.VK_TRUE,
+        .srcColorBlendFactor = vk.VK_BLEND_FACTOR_ONE,
+        .dstColorBlendFactor = vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+        .colorBlendOp = vk.VK_BLEND_OP_ADD,
+        .srcAlphaBlendFactor = vk.VK_BLEND_FACTOR_ONE,
+        .dstAlphaBlendFactor = vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+        .alphaBlendOp = vk.VK_BLEND_OP_ADD,
+        .colorWriteMask = vk.VK_COLOR_COMPONENT_R_BIT | vk.VK_COLOR_COMPONENT_G_BIT | vk.VK_COLOR_COMPONENT_B_BIT | vk.VK_COLOR_COMPONENT_A_BIT,
+    });
+
+    const blend_info = std.mem.zeroInit(vk.VkPipelineColorBlendStateCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        .attachmentCount = 1,
+        .pAttachments = &blend_attach,
+    });
+
+    const ds_info = std.mem.zeroInit(vk.VkPipelineDepthStencilStateCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+    });
+
+    const ci = std.mem.zeroInit(vk.VkGraphicsPipelineCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        .stageCount = 2,
+        .pStages = &stages,
+        .pVertexInputState = &vi_info,
+        .pInputAssemblyState = &ia_info,
+        .pViewportState = &vp_info,
+        .pRasterizationState = &rast_info,
+        .pMultisampleState = &ms_info,
+        .pDepthStencilState = &ds_info,
+        .pColorBlendState = &blend_info,
+        .pDynamicState = &dyn_info,
+        .layout = pipeline_layout,
+        .renderPass = ctx.render_pass,
+        .subpass = 0,
+    });
+
+    var pip: vk.VkPipeline = null;
+    try check(vk.vkCreateGraphicsPipelines(ctx.device, null, 1, &ci, null, &pip));
+    return pip;
+}
+
+fn setViewportAndScissor(cmd: vk.VkCommandBuffer, viewport_w: f32, viewport_h: f32) void {
+    const vp = vk.VkViewport{
+        .x = 0,
+        .y = 0,
+        .width = viewport_w,
+        .height = viewport_h,
+        .minDepth = 0,
+        .maxDepth = 1,
+    };
+    vk.vkCmdSetViewport(cmd, 0, 1, &vp);
+
+    const scissor = vk.VkRect2D{
+        .offset = .{ .x = 0, .y = 0 },
+        .extent = .{ .width = @intFromFloat(viewport_w), .height = @intFromFloat(viewport_h) },
+    };
+    vk.vkCmdSetScissor(cmd, 0, 1, &scissor);
 }
 
 fn createShaderModule(code: []const u8) !vk.VkShaderModule {

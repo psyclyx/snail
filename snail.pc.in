@@ -7,4 +7,4 @@ Description: GPU font rendering via direct Bézier curve evaluation (Slug algori
 Version: 0.0.1
 Libs: -L${libdir} -lsnail
 Cflags: -I${includedir}
-Requires: glfw3 gl
+Requires: gl harfbuzz

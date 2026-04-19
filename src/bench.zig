@@ -3,6 +3,7 @@ const assets = @import("assets");
 const ttf = @import("font/ttf.zig");
 const curve_tex = @import("render/curve_texture.zig");
 const band_tex = @import("render/band_texture.zig");
+const vector_vertex = @import("render/vector_vertex.zig");
 const bezier = @import("math/bezier.zig");
 const roots = @import("math/roots.zig");
 const vec_mod = @import("math/vec.zig");
@@ -114,6 +115,49 @@ pub fn main() !void {
         }
         std.mem.doNotOptimizeAway(&dummy);
         std.debug.print("  Quadratic solve: {d:.1} ns/iter\n", .{elapsed(t) * 1000.0 / @as(f64, @floatFromInt(iters))});
+    }
+
+    std.debug.print("\nVector:\n", .{});
+    {
+        const iters: u32 = 100_000;
+        var buf: [vector_vertex.FLOATS_PER_PRIMITIVE]f32 = undefined;
+        t = nowNs();
+        for (0..iters) |i| {
+            const xf: f32 = @floatFromInt(i % 64);
+            const yf: f32 = @floatFromInt((i / 64) % 64);
+            vector_vertex.generateRoundedRectVertices(
+                &buf,
+                .{ .x = xf * 14, .y = yf * 10, .w = 80, .h = 28 },
+                .{ 0.2, 0.5, 0.9, 1 },
+                .{ 0.95, 0.98, 1, 1 },
+                1.5,
+                9,
+            );
+            std.mem.doNotOptimizeAway(&buf);
+        }
+        std.debug.print("  Rounded rect packing: {d:.1} ns/shape\n", .{
+            elapsed(t) * 1000.0 / @as(f64, @floatFromInt(iters)),
+        });
+    }
+    {
+        const iters: u32 = 100_000;
+        var buf: [vector_vertex.FLOATS_PER_PRIMITIVE]f32 = undefined;
+        t = nowNs();
+        for (0..iters) |i| {
+            const xf: f32 = @floatFromInt(i % 96);
+            const yf: f32 = @floatFromInt((i / 96) % 48);
+            vector_vertex.generateEllipseVertices(
+                &buf,
+                .{ .x = xf * 9, .y = yf * 11, .w = 18, .h = 18 },
+                .{ 0.95, 0.55, 0.2, 0.9 },
+                .{ 0.15, 0.15, 0.2, 1 },
+                1,
+            );
+            std.mem.doNotOptimizeAway(&buf);
+        }
+        std.debug.print("  Ellipse packing: {d:.1} ns/shape\n", .{
+            elapsed(t) * 1000.0 / @as(f64, @floatFromInt(iters)),
+        });
     }
 
     // Band quality analysis

@@ -65,6 +65,17 @@ const FontEntry = struct {
     font_size: f32,
 };
 
+fn addRoundedRect(
+    batch: *snail.VectorBatch,
+    rect: snail.VectorRect,
+    fill: [4]f32,
+    border: [4]f32,
+    border_width: f32,
+    corner_radius: f32,
+) void {
+    _ = batch.addRoundedRect(rect, fill, border, border_width, corner_radius);
+}
+
 fn buildHud(batch: *snail.Batch, atlas: *const snail.Atlas, font: *const snail.Font) void {
     _ = batch.addString(atlas, font, "Score: 12345  FPS: 60  Level 7", 10, HEIGHT - 20, 18, white);
     _ = batch.addString(atlas, font, "Health: 100%  Ammo: 42/120", 10, HEIGHT - 44, 18, .{ 0.8, 0.2, 0.2, 1 });
@@ -94,6 +105,64 @@ fn buildTorture(batch: *snail.Batch, atlas: *const snail.Atlas, font: *const sna
         _ = batch.addString(atlas, font, PARAGRAPH, 5, y, sizes[si % sizes.len], white);
         y -= sizes[si % sizes.len] * 1.2;
         si += 1;
+    }
+}
+
+fn buildVectorShowcase(batch: *snail.VectorBatch) void {
+    addRoundedRect(batch, .{ .x = 24, .y = 24, .w = 420, .h = 180 }, .{ 0.08, 0.09, 0.11, 0.9 }, .{ 0.25, 0.28, 0.33, 1 }, 1.5, 24);
+    addRoundedRect(batch, .{ .x = 472, .y = 24, .w = 360, .h = 180 }, .{ 0.09, 0.11, 0.14, 0.88 }, .{ 0.2, 0.24, 0.3, 1 }, 1.5, 22);
+    addRoundedRect(batch, .{ .x = 40, .y = 52, .w = 132, .h = 28 }, .{ 0.2, 0.48, 0.86, 0.2 }, .{ 0.2, 0.48, 0.86, 0.9 }, 1.0, 14);
+    addRoundedRect(batch, .{ .x = 40, .y = 96, .w = 216, .h = 14 }, .{ 0.92, 0.95, 0.99, 0.08 }, .{ 0.92, 0.95, 0.99, 0.28 }, 1.0, 7);
+    addRoundedRect(batch, .{ .x = 40, .y = 126, .w = 168, .h = 18 }, .{ 0.95, 0.74, 0.28, 0.16 }, .{ 0.95, 0.74, 0.28, 0.84 }, 1.0, 9);
+    _ = batch.addEllipse(
+        .{ .x = 642, .y = 48, .w = 144, .h = 144 },
+        .{ 0.28, 0.72, 0.92, 0.16 },
+        .{ 0.28, 0.72, 0.92, 0.78 },
+        2,
+    );
+    _ = batch.addEllipse(
+        .{ .x = 688, .y = 88, .w = 72, .h = 72 },
+        .{ 0.96, 0.74, 0.28, 0.22 },
+        .{ 0.96, 0.74, 0.28, 0.9 },
+        1.5,
+    );
+    addRoundedRect(batch, .{ .x = 880, .y = 24, .w = 376, .h = 180 }, .{ 0.08, 0.1, 0.12, 0.84 }, .{ 0.18, 0.21, 0.26, 1 }, 1.5, 20);
+    addRoundedRect(batch, .{ .x = 904, .y = 54, .w = 220, .h = 20 }, .{ 0.32, 0.84, 0.56, 0.16 }, .{ 0.32, 0.84, 0.56, 0.9 }, 1.0, 10);
+    addRoundedRect(batch, .{ .x = 904, .y = 92, .w = 148, .h = 20 }, .{ 0.84, 0.42, 0.78, 0.14 }, .{ 0.84, 0.42, 0.78, 0.84 }, 1.0, 10);
+}
+
+fn buildVectorStress(batch: *snail.VectorBatch) void {
+    var row: usize = 0;
+    var y: f32 = 18;
+    while (y < HEIGHT - 46) : ({
+        y += 34;
+        row += 1;
+    }) {
+        var col: usize = 0;
+        var x: f32 = 18;
+        while (x < WIDTH - 78) : ({
+            x += 56;
+            col += 1;
+        }) {
+            const even = ((row + col) & 1) == 0;
+            const fill = if (even)
+                [4]f32{ 0.16, 0.46, 0.86, 0.2 }
+            else
+                [4]f32{ 0.95, 0.7, 0.25, 0.18 };
+            const border = if (even)
+                [4]f32{ 0.16, 0.46, 0.86, 0.82 }
+            else
+                [4]f32{ 0.95, 0.7, 0.25, 0.82 };
+            addRoundedRect(batch, .{ .x = x, .y = y, .w = 42, .h = 22 }, fill, border, 1, 7);
+            if ((row + col) % 3 == 0) {
+                _ = batch.addEllipse(
+                    .{ .x = x + 10, .y = y + 4, .w = 22, .h = 14 },
+                    .{ 0.92, 0.96, 1, 0.1 },
+                    .{ 0.92, 0.96, 1, 0.3 },
+                    1,
+                );
+            }
+        }
     }
 }
 
@@ -168,6 +237,58 @@ fn runMultiFontScenario(
     const d_fps = @as(f64, FRAMES) / (@as(f64, @floatFromInt(d_ns)) / 1e9);
     const d_us = @as(f64, @floatFromInt(d_ns)) / 1000.0 / FRAMES;
     std.debug.print("  {s:<32} {d:>5}  {d:>8.0} ({d:>6.1})  {d:>8.0} ({d:>6.1})\n", .{ name, total_glyphs, s_fps, s_us, d_fps, d_us });
+}
+
+fn runVectorScenario(
+    name: []const u8,
+    buildFn: *const fn (*snail.VectorBatch) void,
+    renderer: *snail.Renderer,
+    vbuf: []f32,
+) void {
+    var probe = snail.VectorBatch.init(vbuf);
+    buildFn(&probe);
+    const shapes = probe.shapeCount();
+    const static_slice = probe.slice();
+
+    for (0..WARMUP) |_| {
+        gl.glClear(gl.GL_COLOR_BUFFER_BIT);
+        renderer.beginFrame();
+        renderer.drawVector(static_slice, WIDTH, HEIGHT);
+    }
+    gl.glFinish();
+    const t_s = nowNs();
+    for (0..FRAMES) |_| {
+        gl.glClear(gl.GL_COLOR_BUFFER_BIT);
+        renderer.beginFrame();
+        renderer.drawVector(static_slice, WIDTH, HEIGHT);
+    }
+    gl.glFinish();
+    const s_ns = nowNs() - t_s;
+
+    for (0..WARMUP) |_| {
+        gl.glClear(gl.GL_COLOR_BUFFER_BIT);
+        renderer.beginFrame();
+        var b = snail.VectorBatch.init(vbuf);
+        buildFn(&b);
+        renderer.drawVector(b.slice(), WIDTH, HEIGHT);
+    }
+    gl.glFinish();
+    const t_d = nowNs();
+    for (0..FRAMES) |_| {
+        gl.glClear(gl.GL_COLOR_BUFFER_BIT);
+        renderer.beginFrame();
+        var b = snail.VectorBatch.init(vbuf);
+        buildFn(&b);
+        renderer.drawVector(b.slice(), WIDTH, HEIGHT);
+    }
+    gl.glFinish();
+    const d_ns = nowNs() - t_d;
+
+    const s_fps = @as(f64, FRAMES) / (@as(f64, @floatFromInt(s_ns)) / 1e9);
+    const s_us = @as(f64, @floatFromInt(s_ns)) / 1000.0 / FRAMES;
+    const d_fps = @as(f64, FRAMES) / (@as(f64, @floatFromInt(d_ns)) / 1e9);
+    const d_us = @as(f64, @floatFromInt(d_ns)) / 1000.0 / FRAMES;
+    std.debug.print("  {s:<32} {d:>5}  {d:>8.0} ({d:>6.1})  {d:>8.0} ({d:>6.1})\n", .{ name, shapes, s_fps, s_us, d_fps, d_us });
 }
 
 // ── Vulkan scenario runners ──
@@ -310,6 +431,66 @@ fn runMultiFontScenarioVulkan(
     std.debug.print("  {s:<32} {d:>5}  {d:>8.0} ({d:>6.1})  {d:>8.0} ({d:>6.1})\n", .{ name, total_glyphs, s_fps, s_us, d_fps, d_us });
 }
 
+fn runVectorScenarioVulkan(
+    name: []const u8,
+    buildFn: *const fn (*snail.VectorBatch) void,
+    renderer: *snail.Renderer,
+    vbuf: []f32,
+) void {
+    var probe = snail.VectorBatch.init(vbuf);
+    buildFn(&probe);
+    const shapes = probe.shapeCount();
+    const static_slice = probe.slice();
+
+    for (0..WARMUP) |_| {
+        const cmd = vulkan_platform.beginFrameOffscreen();
+        renderer.setCommandBuffer(cmd);
+        renderer.beginFrame();
+        renderer.drawVector(static_slice, WIDTH, HEIGHT);
+        vulkan_platform.endFrameOffscreen();
+    }
+    vulkan_platform.queueWaitIdle();
+    const t_s = nowNs();
+    for (0..FRAMES) |_| {
+        const cmd = vulkan_platform.beginFrameOffscreen();
+        renderer.setCommandBuffer(cmd);
+        renderer.beginFrame();
+        renderer.drawVector(static_slice, WIDTH, HEIGHT);
+        vulkan_platform.endFrameOffscreen();
+    }
+    vulkan_platform.queueWaitIdle();
+    const s_ns = nowNs() - t_s;
+
+    for (0..WARMUP) |_| {
+        const cmd = vulkan_platform.beginFrameOffscreen();
+        renderer.setCommandBuffer(cmd);
+        renderer.beginFrame();
+        var b = snail.VectorBatch.init(vbuf);
+        buildFn(&b);
+        renderer.drawVector(b.slice(), WIDTH, HEIGHT);
+        vulkan_platform.endFrameOffscreen();
+    }
+    vulkan_platform.queueWaitIdle();
+    const t_d = nowNs();
+    for (0..FRAMES) |_| {
+        const cmd = vulkan_platform.beginFrameOffscreen();
+        renderer.setCommandBuffer(cmd);
+        renderer.beginFrame();
+        var b = snail.VectorBatch.init(vbuf);
+        buildFn(&b);
+        renderer.drawVector(b.slice(), WIDTH, HEIGHT);
+        vulkan_platform.endFrameOffscreen();
+    }
+    vulkan_platform.queueWaitIdle();
+    const d_ns = nowNs() - t_d;
+
+    const s_fps = @as(f64, FRAMES) / (@as(f64, @floatFromInt(s_ns)) / 1e9);
+    const s_us = @as(f64, @floatFromInt(s_ns)) / 1000.0 / FRAMES;
+    const d_fps = @as(f64, FRAMES) / (@as(f64, @floatFromInt(d_ns)) / 1e9);
+    const d_us = @as(f64, @floatFromInt(d_ns)) / 1000.0 / FRAMES;
+    std.debug.print("  {s:<32} {d:>5}  {d:>8.0} ({d:>6.1})  {d:>8.0} ({d:>6.1})\n", .{ name, shapes, s_fps, s_us, d_fps, d_us });
+}
+
 // ── FreeType layout benchmark ──
 
 fn benchFreetypeLayout(font_data: []const u8) !struct { short: f64, sentence: f64, paragraph: f64, torture: f64 } {
@@ -435,6 +616,8 @@ pub fn main() !void {
 
         const vbuf = try allocator.alloc(f32, 30000 * snail.FLOATS_PER_GLYPH);
         defer allocator.free(vbuf);
+        const vector_buf = try allocator.alloc(f32, 4096 * snail.VECTOR_FLOATS_PER_PRIMITIVE);
+        defer allocator.free(vector_buf);
         const mvp = snail.Mat4.ortho(0, WIDTH, 0, HEIGHT, -1, 1);
 
         // ── Header ──
@@ -529,6 +712,15 @@ pub fn main() !void {
             te.* = .{ .atlas = src.atlas, .font = src.font, .text = src.text, .font_size = 16 };
         }
         runMultiFontScenario("Multi-font torture (4 fonts)", &torture_entries, &renderer, vbuf, mvp);
+
+        std.debug.print(
+            \\
+            \\  ── Vector Rendering (OpenGL) ──
+            \\  Scenario                          Shapes  static FPS (us)   dynamic FPS (us)
+            \\
+        , .{});
+        runVectorScenario("Primitive showcase", buildVectorShowcase, &renderer, vector_buf);
+        runVectorScenario("Primitive stress", buildVectorStress, &renderer, vector_buf);
     }
 
     // ── Vulkan rendering section (requires -Dvulkan=true) ──
@@ -570,6 +762,8 @@ pub fn main() !void {
 
         const vbuf = try allocator.alloc(f32, 30000 * snail.FLOATS_PER_GLYPH);
         defer allocator.free(vbuf);
+        const vector_buf = try allocator.alloc(f32, 4096 * snail.VECTOR_FLOATS_PER_PRIMITIVE);
+        defer allocator.free(vector_buf);
         const mvp = snail.Mat4.ortho(0, WIDTH, 0, HEIGHT, -1, 1);
 
         std.debug.print(
@@ -621,6 +815,15 @@ pub fn main() !void {
             te.* = .{ .atlas = src.atlas, .font = src.font, .text = src.text, .font_size = 16 };
         }
         runMultiFontScenarioVulkan("Multi-font torture (4 fonts)", &torture_entries, &renderer, vbuf, mvp);
+
+        std.debug.print(
+            \\
+            \\  ── Vector Rendering (Vulkan) ──
+            \\  Scenario                          Shapes  static FPS (us)   dynamic FPS (us)
+            \\
+        , .{});
+        runVectorScenarioVulkan("Primitive showcase", buildVectorShowcase, &renderer, vector_buf);
+        runVectorScenarioVulkan("Primitive stress", buildVectorStress, &renderer, vector_buf);
     }
 
     std.debug.print(

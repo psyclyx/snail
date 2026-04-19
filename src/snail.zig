@@ -25,13 +25,16 @@ pub const vec = @import("math/vec.zig");
 const curve_tex = @import("render/curve_texture.zig");
 const band_tex = @import("render/band_texture.zig");
 const vertex_mod = @import("render/vertex.zig");
+const vector_vertex_mod = @import("render/vector_vertex.zig");
 const pipeline = @import("render/pipeline.zig");
+const vector_pipeline = @import("render/vector_pipeline.zig");
 const vulkan_pipeline = if (build_options.enable_vulkan) @import("render/vulkan_pipeline.zig") else struct {
     pub const VulkanContext = void;
     pub fn init(_: anytype) !void {}
     pub fn deinit() void {}
     pub fn buildTextureArrays(_: anytype) void {}
     pub fn drawText(_: anytype, _: anytype, _: anytype, _: anytype) void {}
+    pub fn drawVector(_: anytype, _: anytype, _: anytype) void {}
     pub fn setCommandBuffer(_: anytype) void {}
     pub fn getBackendName() []const u8 { return "vulkan (disabled)"; }
     pub var subpixel_order: @import("render/subpixel_order.zig").SubpixelOrder = .none;
@@ -48,6 +51,13 @@ pub const Vec2 = vec.Vec2;
 pub const FLOATS_PER_VERTEX = vertex_mod.FLOATS_PER_VERTEX;
 pub const VERTICES_PER_GLYPH = vertex_mod.VERTICES_PER_GLYPH;
 pub const FLOATS_PER_GLYPH = FLOATS_PER_VERTEX * VERTICES_PER_GLYPH;
+pub const VectorRect = vector_vertex_mod.Rect;
+pub const VectorPrimitiveKind = vector_vertex_mod.PrimitiveKind;
+pub const VECTOR_FLOATS_PER_VERTEX = vector_vertex_mod.FLOATS_PER_VERTEX;
+pub const VECTOR_VERTICES_PER_PRIMITIVE = vector_vertex_mod.VERTICES_PER_PRIMITIVE;
+pub const VECTOR_FLOATS_PER_PRIMITIVE = vector_vertex_mod.FLOATS_PER_PRIMITIVE;
+pub const VECTOR_VERTICES_PER_ROUNDED_RECT = VECTOR_VERTICES_PER_PRIMITIVE;
+pub const VECTOR_FLOATS_PER_ROUNDED_RECT = VECTOR_FLOATS_PER_PRIMITIVE;
 
 /// A parsed TrueType font. Immutable after init.
 /// Thread-safe for concurrent reads (glyphIndex, getKerning).
@@ -945,6 +955,83 @@ pub const Batch = struct {
     }
 };
 
+/// Accumulates vector primitives into a caller-provided buffer.
+/// Currently supports rect, rounded_rect, and ellipse primitives.
+pub const VectorBatch = struct {
+    buf: []f32,
+    len: usize,
+
+    pub fn init(buf: []f32) VectorBatch {
+        return .{ .buf = buf, .len = 0 };
+    }
+
+    pub fn reset(self: *VectorBatch) void {
+        self.len = 0;
+    }
+
+    pub fn shapeCount(self: *const VectorBatch) usize {
+        return self.len / VECTOR_FLOATS_PER_PRIMITIVE;
+    }
+
+    pub fn slice(self: *const VectorBatch) []const f32 {
+        return self.buf[0..self.len];
+    }
+
+    fn addPrimitive(
+        self: *VectorBatch,
+        kind: VectorPrimitiveKind,
+        rect: VectorRect,
+        fill: [4]f32,
+        border: [4]f32,
+        border_width: f32,
+        corner_radius: f32,
+    ) bool {
+        if (self.len + VECTOR_FLOATS_PER_PRIMITIVE > self.buf.len) return false;
+        vector_vertex_mod.generatePrimitiveVertices(
+            self.buf[self.len..],
+            kind,
+            rect,
+            fill,
+            border,
+            border_width,
+            corner_radius,
+        );
+        self.len += VECTOR_FLOATS_PER_PRIMITIVE;
+        return true;
+    }
+
+    pub fn addRect(
+        self: *VectorBatch,
+        rect: VectorRect,
+        fill: [4]f32,
+        border: [4]f32,
+        border_width: f32,
+    ) bool {
+        return self.addPrimitive(.rect, rect, fill, border, border_width, 0);
+    }
+
+    pub fn addRoundedRect(
+        self: *VectorBatch,
+        rect: VectorRect,
+        fill: [4]f32,
+        border: [4]f32,
+        border_width: f32,
+        corner_radius: f32,
+    ) bool {
+        return self.addPrimitive(.rounded_rect, rect, fill, border, border_width, corner_radius);
+    }
+
+    pub fn addEllipse(
+        self: *VectorBatch,
+        rect: VectorRect,
+        fill: [4]f32,
+        border: [4]f32,
+        border_width: f32,
+    ) bool {
+        return self.addPrimitive(.ellipse, rect, fill, border, border_width, 0);
+    }
+};
+
 pub const FillRule = pipeline.FillRule;
 pub const SubpixelOrder = @import("render/subpixel_order.zig").SubpixelOrder;
 pub const RenderBackend = enum { gl, vulkan };
@@ -959,6 +1046,7 @@ pub const Renderer = struct {
     /// Initialize with the current OpenGL context.
     pub fn init() !Renderer {
         try pipeline.init();
+        try vector_pipeline.init();
         return .{ .backend = .gl };
     }
 
@@ -970,7 +1058,10 @@ pub const Renderer = struct {
 
     pub fn deinit(self: *Renderer) void {
         switch (self.backend) {
-            .gl => pipeline.deinit(),
+            .gl => {
+                vector_pipeline.deinit();
+                pipeline.deinit();
+            },
             .vulkan => vulkan_pipeline.deinit(),
         }
     }
@@ -996,7 +1087,10 @@ pub const Renderer = struct {
     /// before draw() when other renderers share the GL context.
     pub fn beginFrame(self: *Renderer) void {
         switch (self.backend) {
-            .gl => pipeline.resetFrameState(),
+            .gl => {
+                pipeline.resetFrameState();
+                vector_pipeline.resetFrameState();
+            },
             .vulkan => {},
         }
     }
@@ -1006,6 +1100,18 @@ pub const Renderer = struct {
         switch (self.backend) {
             .gl => pipeline.drawText(vertices, mvp, viewport_w, viewport_h),
             .vulkan => vulkan_pipeline.drawText(vertices, mvp, viewport_w, viewport_h),
+        }
+    }
+
+    /// Draw vector primitives batched by VectorBatch.
+    pub fn drawVector(self: *Renderer, vertices: []const f32, viewport_w: f32, viewport_h: f32) void {
+        switch (self.backend) {
+            .gl => {
+                vector_pipeline.drawPrimitives(vertices, viewport_w, viewport_h);
+                // Text pipeline caches GL state across draws; vector draws invalidate it.
+                pipeline.resetFrameState();
+            },
+            .vulkan => vulkan_pipeline.drawVector(vertices, viewport_w, viewport_h),
         }
     }
 
@@ -1080,5 +1186,63 @@ test {
     _ = @import("font/snail_file.zig");
     _ = @import("c_api.zig");
     _ = @import("render/vertex.zig");
+    _ = @import("render/vector_vertex.zig");
+    _ = @import("render/vector_pipeline.zig");
     _ = @import("torture_test.zig");
+}
+
+test "vector batch stores one rounded rect" {
+    var buf: [VECTOR_FLOATS_PER_PRIMITIVE]f32 = undefined;
+    var batch = VectorBatch.init(&buf);
+
+    try std.testing.expect(batch.addRoundedRect(
+        .{ .x = 10, .y = 20, .w = 30, .h = 40 },
+        .{ 1, 0, 0, 1 },
+        .{ 0, 0, 0, 1 },
+        2,
+        6,
+    ));
+    try std.testing.expectEqual(@as(usize, 1), batch.shapeCount());
+    try std.testing.expectEqual(@as(usize, VECTOR_FLOATS_PER_PRIMITIVE), batch.slice().len);
+    try std.testing.expectApproxEqAbs(@as(f32, 10), batch.slice()[2], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 20), batch.slice()[3], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1), batch.slice()[14], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 6), batch.slice()[15], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 2), batch.slice()[16], 0.001);
+}
+
+test "vector batch rejects overflow" {
+    var buf: [VECTOR_FLOATS_PER_PRIMITIVE - 1]f32 = undefined;
+    var batch = VectorBatch.init(&buf);
+
+    try std.testing.expect(!batch.addRoundedRect(
+        .{ .x = 0, .y = 0, .w = 10, .h = 10 },
+        .{ 1, 1, 1, 1 },
+        .{ 0, 0, 0, 1 },
+        1,
+        2,
+    ));
+    try std.testing.expectEqual(@as(usize, 0), batch.shapeCount());
+    try std.testing.expectEqual(@as(usize, 0), batch.slice().len);
+}
+
+test "vector batch stores multiple primitive kinds" {
+    var buf: [VECTOR_FLOATS_PER_PRIMITIVE * 3]f32 = undefined;
+    var batch = VectorBatch.init(&buf);
+
+    try std.testing.expect(batch.addRect(
+        .{ .x = 0, .y = 0, .w = 20, .h = 10 },
+        .{ 1, 1, 1, 1 },
+        .{ 0, 0, 0, 0 },
+        0,
+    ));
+    try std.testing.expect(batch.addEllipse(
+        .{ .x = 5, .y = 5, .w = 12, .h = 12 },
+        .{ 0, 1, 0, 1 },
+        .{ 0, 0, 0, 1 },
+        1,
+    ));
+    try std.testing.expectEqual(@as(usize, 2), batch.shapeCount());
+    try std.testing.expectApproxEqAbs(@as(f32, 0), batch.slice()[14], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 2), batch.slice()[VECTOR_FLOATS_PER_PRIMITIVE + 14], 0.001);
 }

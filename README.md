@@ -20,15 +20,17 @@ The Slug patent (US 10,373,352) was [dedicated to the public domain](https://ter
 ## Build
 
 ```sh
-zig build run                       # interactive demo (OpenGL)
-zig build run -Dvulkan=true         # Vulkan backend
-zig build run -Dharfbuzz=true       # full OpenType shaping (Arabic, Devanagari, Thai…)
-zig build test                      # unit tests
-zig build bench                     # GPU frame-time benchmarks
+zig build test                      # unit tests (core library; no GLFW)
+zig build bench                     # CPU prep + vector packing benchmarks (no GLFW)
+zig build demo                      # build the interactive demo (OpenGL + GLFW)
+zig build run                       # run the interactive demo (OpenGL + GLFW)
+zig build run -Dvulkan=true         # Vulkan demo backend
+zig build run -Dharfbuzz=false      # disable HarfBuzz and use the built-in shaper only
+zig build bench-suite               # hidden-window benchmark suite
 zig build install --release=fast    # install libsnail + header to zig-out/
 ```
 
-Requires [Zig 0.16](https://ziglang.org/download/), GLFW, OpenGL, and pkg-config. Vulkan loader + headers and shaderc are only needed with `-Dvulkan=true`.
+Core library builds require [Zig 0.16](https://ziglang.org/download/), OpenGL, HarfBuzz, and pkg-config. The interactive demo and hidden-window GPU benchmarks additionally require GLFW. Vulkan loader + headers and shaderc are only needed with `-Dvulkan=true`.
 
 **Nix** — reproducible dev shell and build:
 
@@ -74,6 +76,35 @@ renderer.beginFrame();
 renderer.draw(batch.slice(), mvp, viewport_w, viewport_h);
 ```
 
+### Vector primitives
+
+snail also exposes a zero-allocation vector batcher for simple analytic 2D primitives. Rectangles, rounded rectangles, and ellipses are packed into caller-owned buffers and drawn in pixel space.
+
+```zig
+var shape_buf: [256 * snail.VECTOR_FLOATS_PER_PRIMITIVE]f32 = undefined;
+var shapes = snail.VectorBatch.init(&shape_buf);
+
+_ = shapes.addRoundedRect(
+    .{ .x = 24, .y = 24, .w = 240, .h = 96 },
+    .{ 0.12, 0.16, 0.22, 0.92 },
+    .{ 0.35, 0.55, 0.95, 1.0 },
+    2.0,
+    18.0,
+);
+_ = shapes.addEllipse(
+    .{ .x = 300, .y = 32, .w = 72, .h = 72 },
+    .{ 0.95, 0.72, 0.28, 0.2 },
+    .{ 0.95, 0.72, 0.28, 0.9 },
+    1.5,
+);
+
+renderer.beginFrame();
+renderer.drawVector(shapes.slice(), viewport_w, viewport_h);
+renderer.draw(text_batch.slice(), mvp, viewport_w, viewport_h);
+```
+
+`Renderer.drawVector` uses the same pixel-space batch format on both OpenGL and Vulkan backends.
+
 ### Performance model
 
 | Operation | Frequency | Cost |
@@ -82,8 +113,10 @@ renderer.draw(batch.slice(), mvp, viewport_w, viewport_h);
 | `Atlas.init` | Once per glyph set | ~500 us for 95 ASCII glyphs |
 | `Renderer.uploadAtlas` | Once (or on atlas rebuild) | GPU texture upload |
 | `Batch.addString` | Per-frame (dynamic) or once (static) | ~0.5 us per glyph |
+| `VectorBatch.addRoundedRect` | Per-frame (dynamic) or once (static) | Zero-allocation CPU packing |
 | `Renderer.beginFrame` | Per-frame | Resets cached GL state (call before `draw` when sharing a GL context) |
 | `Renderer.draw` | Per-frame | Single draw call per batch |
+| `Renderer.drawVector` | Per-frame | Single draw call per vector batch |
 
 For static UI text, build the `Batch` once and call `Renderer.draw` each frame with the same `batch.slice()`. The vertex buffer is caller-owned and zero-allocation.
 
@@ -180,7 +213,15 @@ Add snail to your `build.zig.zon`:
 },
 ```
 
-In your `build.zig`, create a snail module configured for your project. The library only requires OpenGL — no GLFW, no Vulkan:
+In your `build.zig`, the simplest path is to use snail's helper module. This links OpenGL and enables HarfBuzz by default, but does not pull in GLFW:
+
+```zig
+const snail_dep = b.dependency("snail", .{});
+const snail_mod = @import("snail").module(snail_dep.builder, target, optimize);
+root_module.addImport("snail", snail_mod);
+```
+
+If you need non-default build options, construct the module manually:
 
 ```zig
 const snail_dep = b.dependency("snail", .{});
@@ -206,7 +247,7 @@ snail_mod.addImport("vulkan_shaders", vk_stub);
 root_module.addImport("snail", snail_mod);
 ```
 
-The caller must have an active OpenGL 3.3+ context before calling `Renderer.init()`. snail manages its own GL state (shader programs, VAOs, textures, blend/depth) per draw call. If other renderers share the GL context, call `renderer.beginFrame()` once per frame before `draw()` so snail re-binds its cached state.
+The caller must have an active OpenGL 3.3+ context before calling `Renderer.init()`. snail manages its own GL state (shader programs, VAOs, textures, blend/depth) per draw call. If other renderers share the GL context, call `renderer.beginFrame()` once per frame before `draw()` / `drawVector()` so snail re-binds its cached state.
 
 ### Thread safety
 
@@ -244,6 +285,8 @@ src/
     curve_texture.zig    RGBA16F curve control point texture
     band_texture.zig     RG16UI spatial band subdivision texture
     vertex.zig           glyph quad vertex generation (5x vec4 per vertex)
+    vector_vertex.zig    vector primitive vertex packing
+    vector_pipeline.zig  OpenGL vector primitive pipeline
   profile/timer.zig      comptime-gated CPU timers (zero overhead when disabled)
 include/
   snail.h                C header
