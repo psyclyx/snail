@@ -8,7 +8,7 @@ fn configureCoreModule(
     vk_shaders: *std.Build.Module,
 ) void {
     mod.addOptions("build_options", opts);
-    mod.linkSystemLibrary("gl", .{});
+    mod.linkSystemLibrary("OpenGL", .{});
     mod.addImport("vulkan_shaders", vk_shaders);
     if (vulkan) mod.linkSystemLibrary("vulkan", .{});
     if (harfbuzz) mod.linkSystemLibrary("harfbuzz", .{});
