@@ -115,6 +115,11 @@ pub fn init() !void {
     // Shader outputs premultiplied alpha (frag_color = v_color * coverage),
     // so use GL_ONE for src to avoid double-multiplying coverage.
     gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA);
+
+    // Enable sRGB framebuffer so GL handles gamma correction during blending.
+    // The fragment shaders output linear coverage; GL linearizes existing
+    // framebuffer values before blending and applies sRGB gamma on write.
+    gl.glEnable(gl.GL_FRAMEBUFFER_SRGB);
 }
 
 fn initGl33() void {

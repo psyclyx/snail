@@ -209,7 +209,6 @@ pub const fragment_shader =
     \\
     \\            float cov = evalGlyphCoverage(rc, epp, ppe, lGLoc,
     \\                                          ivec2(bandMaxH, bandMaxV), band, texLayer);
-    \\            cov = srgbGamma(cov);
     \\
     \\            vec4 premul = color * cov;
     \\            result = premul + result * (1.0 - premul.a);
@@ -221,7 +220,6 @@ pub const fragment_shader =
     \\        float cov = evalGlyphCoverage(rc, epp, ppe, v_glyph.xy,
     \\                                      ivec2(v_glyph.z, v_glyph.w & 0xFF),
     \\                                      v_banding, atlas_layer);
-    \\        cov = srgbGamma(cov);
     \\        if (cov < 1.0/255.0) discard;
     \\        frag_color = v_color * cov;
     \\    }
@@ -448,7 +446,6 @@ pub const fragment_shader_subpixel =
     \\            int texLayer = int(v_banding.w);
     \\            float cov = evalGlyphCoverage(rc, epp, ppe, lGLoc,
     \\                                          ivec2(bandMaxH, bandMaxV), band, texLayer);
-    \\            cov = srgbGamma(cov);
     \\            vec4 premul = color * cov;
     \\            result = premul + result * (1.0 - premul.a);
     \\        }
@@ -490,10 +487,6 @@ pub const fragment_shader_subpixel =
     \\        vec2 cw_b = evalVertCoverage(rc, +sp * s, ppe, vLoc, vCount, layer);
     \\        cov = blendSubpixel(cw_r, cw_g, cw_b, cw_h);
     \\    }
-    \\
-    \\    cov = mix(cov * 12.92,
-    \\              1.055 * pow(cov, vec3(1.0 / 2.4)) - 0.055,
-    \\              step(vec3(0.0031308), cov));
     \\
     \\    if (max(max(cov.r, cov.g), cov.b) < 1.0/255.0) discard;
     \\    frag_color = vec4(v_color.rgb * cov, max(max(cov.r, cov.g), cov.b) * v_color.a);
