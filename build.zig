@@ -160,6 +160,29 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
 
+    // ── Extra module tests (cpu_renderer, etc.) ──
+    const snail_mod = b.createModule(.{
+        .root_source_file = b.path("src/snail.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    configureCoreModule(snail_mod, options, enable_harfbuzz, enable_vulkan, vk_shaders_mod);
+
+    const extra_test_module = b.createModule(.{
+        .root_source_file = b.path("src/extra/cpu_renderer.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "assets", .module = assets_mod },
+            .{ .name = "snail", .module = snail_mod },
+        },
+    });
+    const extra_tests = b.addTest(.{ .root_module = extra_test_module });
+    const run_extra_tests = b.addRunArtifact(extra_tests);
+    test_step.dependOn(&run_extra_tests.step);
+
     // ── Benchmarks ──
     const bench_module = b.createModule(.{
         .root_source_file = b.path("src/bench.zig"),
