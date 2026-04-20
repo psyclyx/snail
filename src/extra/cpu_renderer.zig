@@ -8,6 +8,16 @@ const snail = @import("snail");
 const bezier = snail.bezier;
 const GlyphBandEntry = std.meta.fieldInfo(snail.Atlas.GlyphInfo, .band_entry).type;
 
+fn srgbToLinear(v: f32) f32 {
+    if (v <= 0.04045) return v / 12.92;
+    return std.math.pow(f32, (v + 0.055) / 1.055, 2.4);
+}
+
+fn linearToSrgb(v: f32) f32 {
+    if (v <= 0.0031308) return v * 12.92;
+    return 1.055 * std.math.pow(f32, v, 1.0 / 2.4) - 0.055;
+}
+
 const kLogBandTextureWidth: u5 = 12;
 const BAND_TEX_WIDTH: u32 = 1 << kLogBandTextureWidth;
 
@@ -149,22 +159,27 @@ pub const CpuRenderer = struct {
 
                 if (cov < 1.0 / 255.0) continue;
 
-                // Alpha-blend into buffer
+                // Alpha-blend in linear space, then write sRGB output.
+                // The SHM buffer is sRGB — compositor displays it directly.
                 const off = row * self.stride + col * 4;
                 const src_a = color[3] * cov;
-                const dst_r = @as(f32, @floatFromInt(self.pixels[off + 0])) / 255.0;
-                const dst_g = @as(f32, @floatFromInt(self.pixels[off + 1])) / 255.0;
-                const dst_b = @as(f32, @floatFromInt(self.pixels[off + 2])) / 255.0;
+
+                // Linearize destination (sRGB → linear)
+                const dst_r = srgbToLinear(@as(f32, @floatFromInt(self.pixels[off + 0])) / 255.0);
+                const dst_g = srgbToLinear(@as(f32, @floatFromInt(self.pixels[off + 1])) / 255.0);
+                const dst_b = srgbToLinear(@as(f32, @floatFromInt(self.pixels[off + 2])) / 255.0);
                 const dst_a = @as(f32, @floatFromInt(self.pixels[off + 3])) / 255.0;
 
+                // Blend in linear space (premultiplied alpha)
                 const out_r = color[0] * src_a + dst_r * (1.0 - src_a);
                 const out_g = color[1] * src_a + dst_g * (1.0 - src_a);
                 const out_b = color[2] * src_a + dst_b * (1.0 - src_a);
                 const out_a = src_a + dst_a * (1.0 - src_a);
 
-                self.pixels[off + 0] = @intFromFloat(@min(@max(out_r * 255.0, 0.0), 255.0));
-                self.pixels[off + 1] = @intFromFloat(@min(@max(out_g * 255.0, 0.0), 255.0));
-                self.pixels[off + 2] = @intFromFloat(@min(@max(out_b * 255.0, 0.0), 255.0));
+                // Convert back to sRGB for output
+                self.pixels[off + 0] = @intFromFloat(@min(@max(linearToSrgb(out_r) * 255.0, 0.0), 255.0));
+                self.pixels[off + 1] = @intFromFloat(@min(@max(linearToSrgb(out_g) * 255.0, 0.0), 255.0));
+                self.pixels[off + 2] = @intFromFloat(@min(@max(linearToSrgb(out_b) * 255.0, 0.0), 255.0));
                 self.pixels[off + 3] = @intFromFloat(@min(@max(out_a * 255.0, 0.0), 255.0));
             }
         }
