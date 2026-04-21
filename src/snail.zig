@@ -36,7 +36,9 @@ const vulkan_pipeline = if (build_options.enable_vulkan) @import("render/vulkan_
     pub fn drawText(_: anytype, _: anytype, _: anytype, _: anytype) void {}
     pub fn drawVector(_: anytype, _: anytype, _: anytype, _: anytype) void {}
     pub fn setCommandBuffer(_: anytype) void {}
-    pub fn getBackendName() []const u8 { return "vulkan (disabled)"; }
+    pub fn getBackendName() []const u8 {
+        return "vulkan (disabled)";
+    }
     pub var subpixel_order: @import("render/subpixel_order.zig").SubpixelOrder = .none;
     pub var fill_rule: pipeline.FillRule = .non_zero;
 };
@@ -112,6 +114,14 @@ pub const Font = struct {
         return self.inner.getKerning(left, right);
     }
 };
+
+fn isRenderableTextCodepoint(codepoint: u32) bool {
+    if (codepoint > std.math.maxInt(u21)) return false;
+    if (!std.unicode.utf8ValidCodepoint(@intCast(codepoint))) return false;
+    if (codepoint < 0x20) return false;
+    if (codepoint >= 0x7F and codepoint < 0xA0) return false;
+    return true;
+}
 
 /// Pre-built GPU texture data for a set of glyphs.
 /// Create once, upload to Renderer, then use with Batch.
@@ -536,7 +546,10 @@ pub const Atlas = struct {
 
         {
             const liga_glyphs = try opentype.discoverLigatureGlyphs(
-                allocator, font.inner.data, font.inner.gsub_offset, &seen,
+                allocator,
+                font.inner.data,
+                font.inner.gsub_offset,
+                &seen,
             );
             defer if (liga_glyphs.len > 0) allocator.free(liga_glyphs);
             for (liga_glyphs) |lg| try seen.put(lg, {});
@@ -587,18 +600,18 @@ pub const Atlas = struct {
         var seen = try collectGlyphIds(&self.glyph_map, self.allocator);
         defer seen.deinit();
 
-        var added_any = false;
         for (new_codepoints) |cp| {
             const gid = font.inner.glyphIndex(cp) catch continue;
             if (gid == 0 or seen.contains(gid)) continue;
             try seen.put(gid, {});
-            added_any = true;
         }
-        if (!added_any) return null;
 
         {
             const liga_glyphs = try opentype.discoverLigatureGlyphs(
-                self.allocator, font.inner.data, font.inner.gsub_offset, &seen,
+                self.allocator,
+                font.inner.data,
+                font.inner.gsub_offset,
+                &seen,
             );
             defer if (liga_glyphs.len > 0) self.allocator.free(liga_glyphs);
             for (liga_glyphs) |lg| try seen.put(lg, {});
@@ -637,6 +650,39 @@ pub const Atlas = struct {
         var page_map = page_result.glyph_map;
         page_map.deinit();
         return next;
+    }
+
+    /// Discover glyphs needed to render UTF-8 text and return a new atlas
+    /// snapshot with any missing glyphs appended as a new page.
+    ///
+    /// When HarfBuzz is enabled, this uses full text shaping. Otherwise it
+    /// falls back to codepoint-driven discovery plus built-in ligature loading.
+    pub fn extendText(self: *const Atlas, text: []const u8) !?Atlas {
+        if (comptime build_options.enable_harfbuzz) {
+            return self.extendGlyphsForText(text);
+        }
+
+        var unique_codepoints = std.AutoHashMap(u32, void).init(self.allocator);
+        defer unique_codepoints.deinit();
+
+        const view = std.unicode.Utf8View.init(text) catch return null;
+        var it = view.iterator();
+        while (it.nextCodepoint()) |codepoint| {
+            if (!isRenderableTextCodepoint(codepoint)) continue;
+            try unique_codepoints.put(codepoint, {});
+        }
+        if (unique_codepoints.count() == 0) return null;
+
+        var codepoints = try self.allocator.alloc(u32, unique_codepoints.count());
+        defer self.allocator.free(codepoints);
+
+        var index: usize = 0;
+        var key_it = unique_codepoints.keyIterator();
+        while (key_it.next()) |codepoint| : (index += 1) {
+            codepoints[index] = codepoint.*;
+        }
+
+        return self.extendCodepoints(codepoints);
     }
 
     /// Discover glyphs needed for text via HarfBuzz shaping and return a new atlas
@@ -848,8 +894,16 @@ pub const Batch = struct {
     ) bool {
         if (self.len + FLOATS_PER_GLYPH > self.buf.len) return false;
         vertex_mod.generateMultiLayerGlyphVertices(
-            self.buf[self.len..], x, y, font_size,
-            info.union_bbox, info.info_x, info.info_y, info.layer_count, color, atlas_layer,
+            self.buf[self.len..],
+            x,
+            y,
+            font_size,
+            info.union_bbox,
+            info.info_x,
+            info.info_y,
+            info.layer_count,
+            color,
+            atlas_layer,
         );
         self.len += FLOATS_PER_GLYPH;
         return true;
@@ -899,7 +953,10 @@ pub const Batch = struct {
                     }
                 }
             } else {
-                const info = atlas.getGlyph(sg.glyph_id) orelse { count += 1; continue; };
+                const info = atlas.getGlyph(sg.glyph_id) orelse {
+                    count += 1;
+                    continue;
+                };
                 if (info.band_entry.h_band_count > 0 and info.band_entry.v_band_count > 0) {
                     if (!self.addGlyph(x + sg.x_offset, y + sg.y_offset, font_size, info.bbox, info.band_entry, color, view.glyphLayer(info.page_index))) break;
                 }

@@ -17,23 +17,7 @@ const ScriptFont = struct {
     fn init(allocator: std.mem.Allocator, data: []const u8, sample_text: []const u8) !ScriptFont {
         var font = try snail.Font.init(data);
         var atlas = try snail.Atlas.init(allocator, &font, &.{});
-
-        // Use HarfBuzz to discover glyphs from sample text when available
-        if (comptime build_options.enable_harfbuzz) {
-            _ = snail.replaceAtlas(&atlas, try atlas.extendGlyphsForText(sample_text));
-        } else {
-            // Fallback: add codepoints directly from UTF-8
-            var cps: [512]u32 = undefined;
-            var n: usize = 0;
-            const view = std.unicode.Utf8View.initUnchecked(sample_text);
-            var it = view.iterator();
-            while (it.nextCodepoint()) |cp| {
-                if (n >= cps.len) break;
-                cps[n] = cp;
-                n += 1;
-            }
-            _ = snail.replaceAtlas(&atlas, try atlas.extendCodepoints(cps[0..n]));
-        }
+        _ = snail.replaceAtlas(&atlas, try atlas.extendText(sample_text));
         return .{ .font = font, .atlas = atlas };
     }
 
@@ -312,11 +296,11 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         if (platform.isKeyPressed(KEY_L)) {
             // Cycle through all orders so you can manually verify each one.
             const next: snail.SubpixelOrder = switch (renderer.subpixelOrder()) {
-                .none  => .rgb,
-                .rgb   => .bgr,
-                .bgr   => .vrgb,
-                .vrgb  => .vbgr,
-                .vbgr  => .none,
+                .none => .rgb,
+                .rgb => .bgr,
+                .bgr => .vrgb,
+                .vrgb => .vbgr,
+                .vbgr => .none,
             };
             renderer.setSubpixelOrder(next);
             std.debug.print("Subpixel: {s}\n", .{renderer.subpixelOrder().name()});

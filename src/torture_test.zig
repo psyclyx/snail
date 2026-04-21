@@ -147,6 +147,35 @@ test "extend preserves existing glyph handles" {
     try std.testing.expect(next.pageCount() > atlas.pageCount());
 }
 
+test "extendText discovers shaped glyphs for UTF-8 text" {
+    const allocator = std.testing.allocator;
+
+    var font = try snail.Font.init(assets.noto_sans_regular);
+    defer font.deinit();
+
+    if (font.inner.gsub_offset == 0) return;
+
+    var shaper = try snail.opentype.Shaper.init(allocator, font.inner.data, font.inner.gsub_offset, font.inner.gpos_offset);
+    defer shaper.deinit();
+
+    const f_gid = try font.glyphIndex('f');
+    const i_gid = try font.glyphIndex('i');
+    var shaped = [_]u16{ f_gid, i_gid };
+    const shaped_len = try shaper.applyLigatures(&shaped);
+    if (shaped_len != 1) return;
+    const fi_gid = shaped[0];
+
+    var atlas = try snail.Atlas.init(allocator, &font, &[_]u32{'A'});
+    defer atlas.deinit();
+
+    try std.testing.expect(atlas.getGlyph(fi_gid) == null);
+
+    var extended_text = try atlas.extendText("fi");
+    try std.testing.expect(extended_text != null);
+    defer if (extended_text) |*next| next.deinit();
+    try std.testing.expect(extended_text.?.getGlyph(fi_gid) != null);
+}
+
 test "compact returns a single-page atlas snapshot" {
     const allocator = std.testing.allocator;
 

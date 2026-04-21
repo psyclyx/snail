@@ -153,6 +153,17 @@ For dynamic text (input fields, counters, chat), rebuild the `Batch` each frame.
 Add glyphs at runtime by creating a new snapshot, then swap the atlas pointer and re-upload the returned pages:
 
 ```zig
+if (try atlas.extendText("مرحبا بالعالم")) |next| {
+    snail.replaceAtlas(&atlas, next);
+    atlas_view = renderer.uploadAtlas(&atlas);
+}
+```
+
+`Atlas.extendText()` is the high-level entry point for UTF-8 strings. It uses HarfBuzz shaping when available, otherwise it falls back to codepoint discovery plus built-in ligature loading.
+
+Lower-level entry points are still available when you already have codepoints or shaped glyph runs:
+
+```zig
 const new_codepoints = [_]u32{ 0x00E9, 0x00F1, 0x00FC }; // é, ñ, ü
 if (try atlas.extendCodepoints(&new_codepoints)) |next| {
     snail.replaceAtlas(&atlas, next);
@@ -194,7 +205,7 @@ For complex scripts (Arabic, Devanagari, Thai, etc.), compile with `-Dharfbuzz=t
 
 ```zig
 // HarfBuzz is used automatically by addString() when enabled
-if (try atlas.extendGlyphsForText("مرحبا بالعالم")) |next| {
+if (try atlas.extendText("مرحبا بالعالم")) |next| {
     snail.replaceAtlas(&atlas, next);
     atlas_view = renderer.uploadAtlas(&atlas);
 }
