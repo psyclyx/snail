@@ -79,7 +79,7 @@ fn benchSnail(allocator: std.mem.Allocator, font_data: []const u8) !SnailResults
     defer atlas.deinit();
     const glyph_prep_us = usFrom(t);
 
-    const tex_bytes = atlas.curve_data.len * 4 + atlas.band_data.len * 2;
+    const tex_bytes = atlas.textureByteLen();
 
     // Layout benchmarks
     var vbuf: [20000 * snail.FLOATS_PER_GLYPH]f32 = undefined;

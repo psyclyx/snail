@@ -57,66 +57,92 @@ const snail = @import("snail");
 var font = try snail.Font.init(ttf_bytes);
 defer font.deinit();
 
-// Build GPU textures for desired glyphs (one-time)
+// Build an immutable atlas snapshot for the glyphs you want
 var atlas = try snail.Atlas.initAscii(allocator, &font, &snail.ASCII_PRINTABLE);
 defer atlas.deinit();
 
-// Create renderer and upload atlas (requires GL 3.3+ context)
+// Create renderer and upload atlas pages (requires GL 3.3+ context)
 var renderer = try snail.Renderer.init();
 defer renderer.deinit();
-renderer.uploadAtlas(&atlas);
+var atlas_view = renderer.uploadAtlas(&atlas);
 
 // Build a vertex batch (per-frame for dynamic text, or once for static)
 var buf: [5000 * snail.FLOATS_PER_GLYPH]f32 = undefined;
 var batch = snail.Batch.init(&buf);
-_ = batch.addString(&atlas, &font, "Hello, world!", x, y, 48.0, .{ 1, 1, 1, 1 });
+_ = batch.addString(atlas_view, &font, "Hello, world!", x, y, 48.0, .{ 1, 1, 1, 1 });
 
 // Draw (call beginFrame() once per frame when sharing a GL context with other renderers)
 renderer.beginFrame();
 renderer.draw(batch.slice(), mvp, viewport_w, viewport_h);
 ```
 
-### Vector primitives
+Atlas uploads now return lightweight `AtlasView` values. Existing glyph handles remain stable across `extendCodepoints()` and `extendGlyphsForText()` because those operations return a new atlas snapshot that shares old pages. `compact()` returns a new snapshot too, but may repack handles.
 
-snail also exposes a zero-allocation vector batcher for simple analytic 2D primitives. Rectangles, rounded rectangles, and ellipses are packed into caller-owned buffers and drawn in pixel space.
+### Vector primitives and pictures
+
+snail's vector side is explicit and style-oriented: you describe fill/stroke state, optional per-primitive affine transforms, and pack analytic rectangles / rounded rectangles / ellipses into a caller-owned buffer. Static vector UI can then be frozen into an immutable `VectorPicture`.
 
 ```zig
 var shape_buf: [256 * snail.VECTOR_FLOATS_PER_PRIMITIVE]f32 = undefined;
 var shapes = snail.VectorBatch.init(&shape_buf);
 
-_ = shapes.addRoundedRect(
+const card_fill = snail.VectorFillStyle{ .color = .{ 0.12, 0.16, 0.22, 0.92 } };
+const card_stroke = snail.VectorStrokeStyle{ .color = .{ 0.35, 0.55, 0.95, 1.0 }, .width = 2.0 };
+
+_ = shapes.addRoundedRectStyled(
     .{ .x = 24, .y = 24, .w = 240, .h = 96 },
-    .{ 0.12, 0.16, 0.22, 0.92 },
-    .{ 0.35, 0.55, 0.95, 1.0 },
-    2.0,
+    card_fill,
+    card_stroke,
     18.0,
+    .identity,
 );
-_ = shapes.addEllipse(
+_ = shapes.addEllipseStyled(
     .{ .x = 300, .y = 32, .w = 72, .h = 72 },
-    .{ 0.95, 0.72, 0.28, 0.2 },
-    .{ 0.95, 0.72, 0.28, 0.9 },
-    1.5,
+    .{ .color = .{ 0.95, 0.72, 0.28, 0.2 } },
+    .{ .color = .{ 0.95, 0.72, 0.28, 0.9 }, .width = 1.5 },
+    snail.VectorTransform2D.translate(0, 0),
 );
 
+var picture = try shapes.freeze(allocator);
+defer picture.deinit();
+
 renderer.beginFrame();
-renderer.drawVector(shapes.slice(), viewport_w, viewport_h);
+renderer.drawVectorPicture(&picture, viewport_w, viewport_h); // top-left pixel-space convenience
 renderer.draw(text_batch.slice(), mvp, viewport_w, viewport_h);
 ```
 
-`Renderer.drawVector` uses the same pixel-space batch format on both OpenGL and Vulkan backends.
+For scene-style transforms, use `Renderer.drawVectorTransformed()` / `drawVectorPictureTransformed()` with your own `Mat4`. The renderer expands vector quads automatically so edge antialiasing is not clipped at primitive bounds.
+
+### CPU renderer
+
+For headless output or bootstrap frames, `src/extra/cpu_renderer.zig` exposes a software raster path that shares Snail's atlas data and vector packing model:
+
+```zig
+const cpu_renderer = @import("extra/cpu_renderer.zig");
+
+var soft = cpu_renderer.CpuRenderer.init(pixel_buf.ptr, width, height, stride);
+soft.clear(0, 0, 0, 0);
+soft.drawGlyph(&atlas, &font, 'A', 12, 28, 24, .{ 1, 1, 1, 1 });
+soft.drawVector(shape_batch.slice());
+soft.drawVectorPicture(&picture);
+```
+
+The CPU vector path consumes the same packed `VectorBatch` / `VectorPicture` data as the GPU path, including per-primitive `VectorTransform2D` transforms. It currently mirrors the pixel-space `drawVector()` convenience path, not the global-`Mat4` `drawVectorTransformed()` API.
 
 ### Performance model
 
 | Operation | Frequency | Cost |
 |-----------|-----------|------|
-| `Font.init` | Once per font | ~1 us |
-| `Atlas.init` | Once per glyph set | ~500 us for 95 ASCII glyphs |
-| `Renderer.uploadAtlas` | Once (or on atlas rebuild) | GPU texture upload |
-| `Batch.addString` | Per-frame (dynamic) or once (static) | ~0.5 us per glyph |
-| `VectorBatch.addRoundedRect` | Per-frame (dynamic) or once (static) | Zero-allocation CPU packing |
+| `Font.init` | Once per font | ~2 us |
+| `Atlas.init` | Once per glyph set | ~1.9 ms for 95 ASCII glyphs |
+| `Atlas.extendCodepoints` | On late glyph discovery | Allocates a new snapshot, preserving old handles |
+| `Renderer.uploadAtlas` | Once per atlas generation | GPU texture upload for atlas pages |
+| `Batch.addString` | Per-frame (dynamic) or once (static) | ~1.2 us for 13 chars, ~12.7 us for 175 chars |
+| `VectorBatch.addRoundedRectStyled` | Per-frame (dynamic) or once (static) | ~5.5 ns per primitive |
+| `VectorBatch.freeze` | Static UI / icons | Clone once into an immutable `VectorPicture` |
 | `Renderer.beginFrame` | Per-frame | Resets cached GL state (call before `draw` when sharing a GL context) |
 | `Renderer.draw` | Per-frame | Single draw call per batch |
-| `Renderer.drawVector` | Per-frame | Single draw call per vector batch |
+| `Renderer.drawVector` / `drawVectorPicture` | Per-frame | Single draw call per vector batch or picture |
 
 For static UI text, build the `Batch` once and call `Renderer.draw` each frame with the same `batch.slice()`. The vertex buffer is caller-owned and zero-allocation.
 
@@ -124,19 +150,20 @@ For dynamic text (input fields, counters, chat), rebuild the `Batch` each frame.
 
 ### Dynamic glyph loading
 
-Add glyphs to an existing atlas at runtime without rebuilding from scratch:
+Add glyphs at runtime by creating a new snapshot, then swap the atlas pointer and re-upload the returned pages:
 
 ```zig
 const new_codepoints = [_]u32{ 0x00E9, 0x00F1, 0x00FC }; // é, ñ, ü
-if (try atlas.addCodepoints(&new_codepoints)) {
-    renderer.uploadAtlas(&atlas); // re-upload only if new glyphs were added
+if (try atlas.extendCodepoints(&new_codepoints)) |next| {
+    snail.replaceAtlas(&atlas, next);
+    atlas_view = renderer.uploadAtlas(&atlas);
 }
 ```
 
 ### Word wrapping
 
 ```zig
-_ = batch.addStringWrapped(&atlas, &font, paragraph, x, y, 14.0, max_width, 20.0, color);
+_ = batch.addStringWrapped(atlas_view, &font, paragraph, x, y, 14.0, max_width, 20.0, color);
 ```
 
 ### Fill rule
@@ -167,9 +194,11 @@ For complex scripts (Arabic, Devanagari, Thai, etc.), compile with `-Dharfbuzz=t
 
 ```zig
 // HarfBuzz is used automatically by addString() when enabled
-_ = try atlas.addGlyphsForText("مرحبا بالعالم"); // discover Arabic glyphs
-renderer.uploadAtlas(&atlas);
-_ = batch.addString(&atlas, &font, "مرحبا بالعالم", x, y, 32, color);
+if (try atlas.extendGlyphsForText("مرحبا بالعالم")) |next| {
+    snail.replaceAtlas(&atlas, next);
+    atlas_view = renderer.uploadAtlas(&atlas);
+}
+_ = batch.addString(atlas_view, &font, "مرحبا بالعالم", x, y, 32, color);
 ```
 
 When HarfBuzz is not compiled in, `addString` uses the built-in shaper. The `addShaped()` API is always available for callers who use an external shaper.
@@ -199,6 +228,15 @@ snail_batch_add_string(vertices, sizeof(vertices)/sizeof(float), &len,
                        atlas, font, "Hello", 5, x, y, 48.0f, color);
 
 snail_renderer_draw(vertices, len, mvp, viewport_w, viewport_h);
+
+float vector_buf[64 * snail_vector_floats_per_primitive()];
+size_t vector_len = 0;
+SnailVectorRect panel = {24, 24, 240, 96};
+SnailVectorFillStyle fill = {{0.12f, 0.16f, 0.22f, 0.92f}};
+SnailVectorStrokeStyle stroke = {{0.35f, 0.55f, 0.95f, 1.0f}, 2.0f};
+snail_vector_batch_add_rounded_rect_ex(vector_buf, sizeof(vector_buf)/sizeof(float), &vector_len,
+                                       panel, &fill, &stroke, 18.0f, NULL);
+snail_renderer_draw_vector_pixels(vector_buf, vector_len, viewport_w, viewport_h);
 ```
 
 Pass a `SnailAllocator` to `snail_atlas_init` for custom allocation, or `NULL` for libc malloc/free. The C API is OpenGL-only; Vulkan requires the Zig API.
@@ -254,8 +292,9 @@ The caller must have an active OpenGL 3.3+ context before calling `Renderer.init
 | Type | Thread model |
 |------|-------------|
 | `Font` | Immutable after init. Safe for concurrent reads from any thread. |
-| `Atlas` | Immutable after init. Safe for concurrent reads from any thread. |
-| `Batch` | Operates on caller-owned buffers. Multiple batches reading the same Atlas from different threads is safe. |
+| `Atlas` | Immutable snapshot. `extend*()` returns a new snapshot that preserves existing handles; `compact()` returns a new snapshot and may repack them. Safe for concurrent reads. |
+| `Batch` | Operates on caller-owned buffers. Multiple batches reading the same `AtlasView` from different threads is safe. |
+| `VectorPicture` | Immutable after creation. Safe for concurrent reads from any thread. |
 | `Renderer` | **Single-thread per context.** GL: all calls must be on the thread with the active GL context. Vulkan: all calls must be externally synchronized. |
 
 Typical game pattern:
@@ -300,7 +339,7 @@ include/
 
 3. **Band texture**: subdivide each glyph's bounding box into horizontal and vertical bands. Each band stores which curves intersect it. This reduces per-pixel work from O(all curves) to O(curves in band).
 
-4. **Vertex shader**: apply dynamic dilation (expand glyph quads by ~0.5px along normals using the inverse Jacobian of the MVP transform) to prevent dropped pixels at edges.
+4. **Vertex shader**: apply dynamic dilation (expand glyph quads by ~0.5px along normals using the inverse Jacobian of the MVP transform) to prevent dropped pixels at edges. Vector primitives use the same idea in a simpler form by expanding their analytic quad envelope so edge AA is not clipped.
 
 5. **Fragment shader**: for each pixel, determine its band, fetch the relevant curves, cast horizontal and vertical rays, solve the resulting quadratic equations, classify roots via control point sign patterns (the core Slug technique), accumulate a winding number, and convert to fractional coverage for antialiasing.
 
@@ -316,17 +355,17 @@ NotoSans-Regular.ttf, 95 ASCII glyphs, ReleaseFast:
 
 | Metric | snail | FreeType |
 |--------|-------|----------|
-| Font load | 2 us | 31 us |
-| Glyph prep (1 size) | 1,665 us | 1,319 us |
-| Glyph prep (7 sizes) | **1,665 us** | 8,508 us |
-| Layout: 13-char string | **1.0 us** | 101 us |
-| Layout: 53-char sentence | **4.4 us** | 506 us |
-| Layout: 175-char paragraph | **15.5 us** | 1,804 us |
-| Layout: paragraph × 7 sizes | **105 us** | 13,060 us |
-| Texture memory | 96 KB (all sizes) | 63 KB (1 size) / 525 KB (7 sizes) |
-| Re-rasterize for new size | **0** (resolution-independent) | ~1,200 us per size |
+| Font load | 2.4 us | 32.2 us |
+| Glyph prep (1 size) | 1,893.3 us | 1,386.2 us |
+| Glyph prep (7 sizes) | **1,893.3 us** | 8,792.1 us |
+| Layout: 13-char string | **1.5 us** | 102.4 us |
+| Layout: 53-char sentence | **4.0 us** | 501.8 us |
+| Layout: 175-char paragraph | **12.7 us** | 1,794.3 us |
+| Layout: paragraph × 7 sizes | **89.4 us** | 13,135.8 us |
+| Texture memory | 64 KB (all sizes) | 63 KB (1 size) / 525 KB (7 sizes) |
+| Re-rasterize for new size | **0** (resolution-independent) | ~1,234 us per extra size |
 
-Layout is **100–124x faster**: snail reads pre-parsed metrics; FreeType calls `FT_Load_Glyph` per character through the hinting engine.
+Layout is still around **68–147x faster** on this machine: snail reads pre-parsed metrics; FreeType calls `FT_Load_Glyph` per character through the hinting engine.
 
 ### End-to-end rendering (`zig build bench-headless`)
 
@@ -344,15 +383,15 @@ Both backends render 2000 frames per scenario at 1280×720, ReleaseFast. Frame t
 
 | Scenario | Glyphs | Static FPS | Static frame | Dynamic FPS | Dynamic frame |
 |----------|--------|-----------|-------------|------------|--------------|
-| Game HUD (2 lines) | 45 | 39,690 | 25.2 us | 41,073 | 24.3 us |
-| Multi-size (6 sizes) | 270 | 26,337 | 38.0 us | 26,888 | 37.2 us |
-| Body text (6 paragraphs) | 978 | 15,170 | 65.9 us | 8,734 | 114.5 us |
-| Torture (fill screen) | 4,075 | 12,316 | 81.2 us | 2,145 | 466.3 us |
-| Arabic (12 lines) | 228 | 30,072 | 33.3 us | 25,296 | 39.5 us |
-| Devanagari (12 lines) | 132 | 37,482 | 26.7 us | 37,184 | 26.9 us |
-| Game UI (3 fonts) | 54 | 41,363 | 24.2 us | 41,154 | 24.3 us |
-| Chat (6 msgs, 4 fonts) | 104 | 37,305 | 26.8 us | 37,877 | 26.4 us |
-| Multi-font torture (24 lines) | 510 | 22,037 | 45.4 us | 15,682 | 63.8 us |
+| Game HUD (2 lines) | 45 | 39,692 | 25.2 us | 42,443 | 23.6 us |
+| Multi-size (6 sizes) | 270 | 26,464 | 37.8 us | 25,641 | 39.0 us |
+| Body text (6 paragraphs) | 978 | 15,104 | 66.2 us | 10,810 | 92.5 us |
+| Torture (fill screen) | 4,075 | 4,992 | 200.3 us | 2,698 | 370.6 us |
+| Arabic (12 lines) | 264 | 42,296 | 23.6 us | 21,379 | 46.8 us |
+| Devanagari (12 lines) | 120 | 53,980 | 18.5 us | 19,277 | 51.9 us |
+| Game UI (3 fonts) | 57 | 44,798 | 22.3 us | 42,422 | 23.6 us |
+| Chat (6 msgs, 4 fonts) | 106 | 41,106 | 24.3 us | 37,798 | 26.5 us |
+| Multi-font torture (24 lines) | 522 | 22,928 | 43.6 us | 11,460 | 87.3 us |
 
 #### Vulkan (offscreen, per-frame sync)
 
@@ -367,6 +406,13 @@ Both backends render 2000 frames per scenario at 1280×720, ReleaseFast. Frame t
 | Game UI (3 fonts) | 54 | 20,925 | 47.8 us | 18,013 | 55.5 us |
 | Chat (6 msgs, 4 fonts) | 104 | 19,581 | 51.1 us | 15,601 | 64.1 us |
 | Multi-font torture (24 lines) | 510 | 12,729 | 78.6 us | 7,428 | 134.6 us |
+
+#### Vector primitives (OpenGL)
+
+| Scenario | Shapes | Static FPS | Static frame | Dynamic FPS | Dynamic frame |
+|----------|--------|-----------|-------------|------------|--------------|
+| Primitive showcase | 10 | 432,942 | 2.3 us | 366,279 | 2.7 us |
+| Primitive stress | 587 | 38,746 | 25.8 us | 29,683 | 33.7 us |
 
 ### Other GPU font renderers
 

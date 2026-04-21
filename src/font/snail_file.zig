@@ -50,12 +50,20 @@ const GlyphEntry = extern struct {
 
 /// Serialize an Atlas to a byte buffer. Caller owns returned memory.
 pub fn serialize(allocator: std.mem.Allocator, atlas: *const snail.Atlas, units_per_em: u16) ![]u8 {
-    const glyph_count: u32 = @intCast(atlas.glyph_map.count());
+    var compacted: ?snail.Atlas = null;
+    defer if (compacted) |*owned| owned.deinit();
+    const source = blk: {
+        if (atlas.pageCount() == 1) break :blk atlas;
+        compacted = try atlas.compact();
+        break :blk &compacted.?;
+    };
+    const page = source.page(0);
+    const glyph_count: u32 = @intCast(source.glyph_map.count());
 
     const header_size = @sizeOf(Header);
     const glyph_size = @as(usize, glyph_count) * @sizeOf(GlyphEntry);
-    const curve_size = atlas.curve_data.len * 2;
-    const band_size = atlas.band_data.len * 2;
+    const curve_size = page.curve_data.len * 2;
+    const band_size = page.band_data.len * 2;
     const total = header_size + glyph_size + curve_size + band_size;
 
     var buf = try allocator.alloc(u8, total);
@@ -67,19 +75,19 @@ pub fn serialize(allocator: std.mem.Allocator, atlas: *const snail.Atlas, units_
         .version = VERSION,
         .units_per_em = units_per_em,
         .glyph_count = glyph_count,
-        .curve_texels = atlas.curve_width * atlas.curve_height,
-        .curve_width = @intCast(atlas.curve_width),
-        .curve_height = @intCast(atlas.curve_height),
-        .band_texels = atlas.band_width * atlas.band_height,
-        .band_width = @intCast(atlas.band_width),
-        .band_height = @intCast(atlas.band_height),
+        .curve_texels = page.curve_width * page.curve_height,
+        .curve_width = @intCast(page.curve_width),
+        .curve_height = @intCast(page.curve_height),
+        .band_texels = page.band_width * page.band_height,
+        .band_width = @intCast(page.band_width),
+        .band_height = @intCast(page.band_height),
         ._pad = .{0} ** 4,
     };
     @memcpy(buf[0..header_size], std.mem.asBytes(&header));
 
     // Glyph entries
     var offset: usize = header_size;
-    var it = atlas.glyph_map.iterator();
+    var it = source.glyph_map.iterator();
     while (it.next()) |entry| {
         const gid = entry.key_ptr.*;
         const info = entry.value_ptr.*;
@@ -104,12 +112,12 @@ pub fn serialize(allocator: std.mem.Allocator, atlas: *const snail.Atlas, units_
     }
 
     // Curve data
-    const curve_bytes: []const u8 = @as([*]const u8, @ptrCast(atlas.curve_data.ptr))[0..curve_size];
+    const curve_bytes: []const u8 = @as([*]const u8, @ptrCast(page.curve_data.ptr))[0..curve_size];
     @memcpy(buf[offset..][0..curve_size], curve_bytes);
     offset += curve_size;
 
     // Band data
-    const band_bytes: []const u8 = @as([*]const u8, @ptrCast(atlas.band_data.ptr))[0..band_size];
+    const band_bytes: []const u8 = @as([*]const u8, @ptrCast(page.band_data.ptr))[0..band_size];
     @memcpy(buf[offset..][0..band_size], band_bytes);
 
     return buf;
@@ -117,28 +125,36 @@ pub fn serialize(allocator: std.mem.Allocator, atlas: *const snail.Atlas, units_
 
 /// Write an Atlas to a .snail file.
 pub fn write(atlas: *const snail.Atlas, font: *const snail.Font, path: [*:0]const u8) !void {
+    var compacted: ?snail.Atlas = null;
+    defer if (compacted) |*owned| owned.deinit();
+    const source = blk: {
+        if (atlas.pageCount() == 1) break :blk atlas;
+        compacted = try atlas.compact();
+        break :blk &compacted.?;
+    };
+    const page = source.page(0);
     const c_file = std.c.fopen(path, "wb") orelse return error.FileOpenFailed;
     defer _ = std.c.fclose(c_file);
 
-    const glyph_count: u32 = @intCast(atlas.glyph_map.count());
+    const glyph_count: u32 = @intCast(source.glyph_map.count());
 
     const header = Header{
         .magic = MAGIC,
         .version = VERSION,
         .units_per_em = font.unitsPerEm(),
         .glyph_count = glyph_count,
-        .curve_texels = atlas.curve_width * atlas.curve_height,
-        .curve_width = @intCast(atlas.curve_width),
-        .curve_height = @intCast(atlas.curve_height),
-        .band_texels = atlas.band_width * atlas.band_height,
-        .band_width = @intCast(atlas.band_width),
-        .band_height = @intCast(atlas.band_height),
+        .curve_texels = page.curve_width * page.curve_height,
+        .curve_width = @intCast(page.curve_width),
+        .curve_height = @intCast(page.curve_height),
+        .band_texels = page.band_width * page.band_height,
+        .band_width = @intCast(page.band_width),
+        .band_height = @intCast(page.band_height),
         ._pad = .{0} ** 4,
     };
 
     if (std.c.fwrite(std.mem.asBytes(&header), @sizeOf(Header), 1, c_file) != 1) return error.WriteFailed;
 
-    var it = atlas.glyph_map.iterator();
+    var it = source.glyph_map.iterator();
     while (it.next()) |entry| {
         const gid = entry.key_ptr.*;
         const info = entry.value_ptr.*;
@@ -161,8 +177,8 @@ pub fn write(atlas: *const snail.Atlas, font: *const snail.Font, path: [*:0]cons
         if (std.c.fwrite(std.mem.asBytes(&ge), @sizeOf(GlyphEntry), 1, c_file) != 1) return error.WriteFailed;
     }
 
-    if (std.c.fwrite(atlas.curve_data.ptr, 2, atlas.curve_data.len, c_file) != atlas.curve_data.len) return error.WriteFailed;
-    if (std.c.fwrite(atlas.band_data.ptr, 2, atlas.band_data.len, c_file) != atlas.band_data.len) return error.WriteFailed;
+    if (std.c.fwrite(page.curve_data.ptr, 2, page.curve_data.len, c_file) != page.curve_data.len) return error.WriteFailed;
+    if (std.c.fwrite(page.band_data.ptr, 2, page.band_data.len, c_file) != page.band_data.len) return error.WriteFailed;
 }
 
 /// Load a .snail file into an Atlas. The returned atlas is ready for
@@ -209,6 +225,7 @@ pub fn load(allocator: std.mem.Allocator, data: []const u8) !snail.Atlas {
                 .band_offset_x = ge_ptr.band_offset_x,
                 .band_offset_y = ge_ptr.band_offset_y,
             },
+            .page_index = 0,
         });
     }
 
@@ -223,18 +240,19 @@ pub fn load(allocator: std.mem.Allocator, data: []const u8) !snail.Atlas {
     const band_src: [*]const u16 = @ptrCast(@alignCast(data[curve_data_end..].ptr));
     @memcpy(band_data, band_src[0..band_u16_count]);
 
-    return .{
-        .allocator = allocator,
-        .font = null,
-        .curve_data = curve_data,
-        .curve_width = header.curve_width,
-        .curve_height = header.curve_height,
-        .band_data = band_data,
-        .band_width = header.band_width,
-        .band_height = header.band_height,
-        .glyph_map = glyph_map,
-        .shaper = null,
-    };
+    const page = try snail.AtlasPage.init(
+        allocator,
+        curve_data,
+        header.curve_width,
+        header.curve_height,
+        band_data,
+        header.band_width,
+        header.band_height,
+    );
+    const pages = try allocator.alloc(*snail.AtlasPage, 1);
+    pages[0] = page;
+
+    return snail.Atlas.initFromParts(allocator, null, pages, glyph_map);
 }
 
 // ── Tests ──
@@ -261,14 +279,14 @@ test "snail file roundtrip" {
 
     // Verify glyph counts match
     try std.testing.expectEqual(atlas.glyph_map.count(), loaded.glyph_map.count());
-    try std.testing.expectEqual(atlas.curve_width, loaded.curve_width);
-    try std.testing.expectEqual(atlas.curve_height, loaded.curve_height);
-    try std.testing.expectEqual(atlas.band_width, loaded.band_width);
-    try std.testing.expectEqual(atlas.band_height, loaded.band_height);
+    try std.testing.expectEqual(atlas.page(0).curve_width, loaded.page(0).curve_width);
+    try std.testing.expectEqual(atlas.page(0).curve_height, loaded.page(0).curve_height);
+    try std.testing.expectEqual(atlas.page(0).band_width, loaded.page(0).band_width);
+    try std.testing.expectEqual(atlas.page(0).band_height, loaded.page(0).band_height);
 
     // Verify curve data matches
-    try std.testing.expectEqualSlices(u16, atlas.curve_data, loaded.curve_data);
-    try std.testing.expectEqualSlices(u16, atlas.band_data, loaded.band_data);
+    try std.testing.expectEqualSlices(u16, atlas.page(0).curve_data, loaded.page(0).curve_data);
+    try std.testing.expectEqualSlices(u16, atlas.page(0).band_data, loaded.page(0).band_data);
 
     // Verify glyph info roundtrips
     var it = atlas.glyph_map.iterator();

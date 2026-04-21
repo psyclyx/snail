@@ -7,6 +7,8 @@ const std = @import("std");
 const snail = @import("snail");
 const bezier = snail.bezier;
 const GlyphBandEntry = std.meta.fieldInfo(snail.Atlas.GlyphInfo, .band_entry).type;
+const Vec2 = snail.Vec2;
+const Transform2D = snail.VectorTransform2D;
 
 fn srgbToLinear(v: f32) f32 {
     if (v <= 0.04045) return v / 12.92;
@@ -69,6 +71,19 @@ pub const CpuRenderer = struct {
         }
     }
 
+    /// Draw packed vector primitives in top-left pixel space.
+    /// Supports the same per-primitive transforms as the GPU vector path.
+    pub fn drawVector(self: *CpuRenderer, vertices: []const f32) void {
+        var i: usize = 0;
+        while (i + snail.VECTOR_FLOATS_PER_PRIMITIVE <= vertices.len) : (i += snail.VECTOR_FLOATS_PER_PRIMITIVE) {
+            self.drawPackedVectorPrimitive(vertices[i .. i + snail.VECTOR_FLOATS_PER_PRIMITIVE]);
+        }
+    }
+
+    pub fn drawVectorPicture(self: *CpuRenderer, picture: *const snail.VectorPicture) void {
+        self.drawVector(picture.slice());
+    }
+
     /// Render a single glyph using the Slug algorithm (CPU evaluation).
     /// Same inputs as snail.Batch.addGlyph -- uses atlas curve/band data.
     pub fn drawGlyph(
@@ -100,6 +115,7 @@ pub const CpuRenderer = struct {
     ) void {
         const be = info.band_entry;
         const bbox = info.bbox;
+        const page = atlas.page(info.page_index);
 
         // Scale from em-space to pixels
         const scale = font_size;
@@ -145,7 +161,7 @@ pub const CpuRenderer = struct {
                 const em_y = (y - py_f) / scale;
 
                 const cov = evalGlyphCoverage(
-                    atlas,
+                    page,
                     em_x,
                     em_y,
                     epp_x,
@@ -184,14 +200,201 @@ pub const CpuRenderer = struct {
             }
         }
     }
+
+    fn drawPackedVectorPrimitive(self: *CpuRenderer, packed_primitive: []const f32) void {
+        const primitive = PackedVectorPrimitive.fromSlice(packed_primitive) orelse return;
+        if (primitive.rect.w <= 0 or primitive.rect.h <= 0) return;
+
+        const inverse = inverseTransform(primitive.transform) orelse return;
+        const bounds = primitive.pixelBounds();
+        const px0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.x))), 0);
+        const py0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.y))), 0);
+        const px1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.x))), @as(i32, @intCast(self.width)));
+        const py1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.y))), @as(i32, @intCast(self.height)));
+        if (px0 >= px1 or py0 >= py1) return;
+
+        const aa = primitive.antiAliasWidth(inverse);
+        var row: u32 = @intCast(py0);
+        while (row < @as(u32, @intCast(py1))) : (row += 1) {
+            var col: u32 = @intCast(px0);
+            while (col < @as(u32, @intCast(px1))) : (col += 1) {
+                const world = Vec2.new(@as(f32, @floatFromInt(col)) + 0.5, @as(f32, @floatFromInt(row)) + 0.5);
+                const local_world = inverse.applyPoint(world);
+                const local_px = Vec2.new(local_world.x - primitive.rect.x, local_world.y - primitive.rect.y);
+                const src = primitive.sample(local_px, aa);
+                if (src[3] < 1.0 / 255.0) continue;
+                self.blendPremultipliedPixel(row, col, src);
+            }
+        }
+    }
+
+    fn blendPremultipliedPixel(self: *CpuRenderer, row: u32, col: u32, src: [4]f32) void {
+        const off = row * self.stride + col * 4;
+        const dst_r = srgbToLinear(@as(f32, @floatFromInt(self.pixels[off + 0])) / 255.0);
+        const dst_g = srgbToLinear(@as(f32, @floatFromInt(self.pixels[off + 1])) / 255.0);
+        const dst_b = srgbToLinear(@as(f32, @floatFromInt(self.pixels[off + 2])) / 255.0);
+        const dst_a = @as(f32, @floatFromInt(self.pixels[off + 3])) / 255.0;
+
+        const src_a = clamp01(src[3]);
+        const out_r = src[0] + dst_r * (1.0 - src_a);
+        const out_g = src[1] + dst_g * (1.0 - src_a);
+        const out_b = src[2] + dst_b * (1.0 - src_a);
+        const out_a = src_a + dst_a * (1.0 - src_a);
+
+        self.pixels[off + 0] = @intFromFloat(@min(@max(linearToSrgb(out_r) * 255.0, 0.0), 255.0));
+        self.pixels[off + 1] = @intFromFloat(@min(@max(linearToSrgb(out_g) * 255.0, 0.0), 255.0));
+        self.pixels[off + 2] = @intFromFloat(@min(@max(linearToSrgb(out_b) * 255.0, 0.0), 255.0));
+        self.pixels[off + 3] = @intFromFloat(@min(@max(out_a * 255.0, 0.0), 255.0));
+    }
 };
+
+const PackedVectorPrimitive = struct {
+    rect: snail.VectorRect,
+    fill: [4]f32,
+    border: [4]f32,
+    kind: snail.VectorPrimitiveKind,
+    corner_radius: f32,
+    border_width: f32,
+    expand: f32,
+    transform: Transform2D,
+
+    fn fromSlice(packed_primitive: []const f32) ?PackedVectorPrimitive {
+        if (packed_primitive.len < snail.VECTOR_FLOATS_PER_PRIMITIVE) return null;
+        const kind_raw = @as(i32, @intFromFloat(@round(packed_primitive[12])));
+        const kind = switch (kind_raw) {
+            0 => snail.VectorPrimitiveKind.rect,
+            1 => snail.VectorPrimitiveKind.rounded_rect,
+            2 => snail.VectorPrimitiveKind.ellipse,
+            else => return null,
+        };
+
+        return .{
+            .rect = .{
+                .x = packed_primitive[0],
+                .y = packed_primitive[1],
+                .w = packed_primitive[2],
+                .h = packed_primitive[3],
+            },
+            .fill = .{ packed_primitive[4], packed_primitive[5], packed_primitive[6], packed_primitive[7] },
+            .border = .{ packed_primitive[8], packed_primitive[9], packed_primitive[10], packed_primitive[11] },
+            .kind = kind,
+            .corner_radius = packed_primitive[13],
+            .border_width = packed_primitive[14],
+            .expand = packed_primitive[15],
+            .transform = .{
+                .xx = packed_primitive[16],
+                .xy = packed_primitive[17],
+                .tx = packed_primitive[18],
+                .yx = packed_primitive[20],
+                .yy = packed_primitive[21],
+                .ty = packed_primitive[22],
+            },
+        };
+    }
+
+    fn pixelBounds(self: PackedVectorPrimitive) struct { min: Vec2, max: Vec2 } {
+        const min_x = self.rect.x - self.expand;
+        const min_y = self.rect.y - self.expand;
+        const max_x = self.rect.x + self.rect.w + self.expand;
+        const max_y = self.rect.y + self.rect.h + self.expand;
+        const corners = [_]Vec2{
+            self.transform.applyPoint(.{ .x = min_x, .y = min_y }),
+            self.transform.applyPoint(.{ .x = max_x, .y = min_y }),
+            self.transform.applyPoint(.{ .x = max_x, .y = max_y }),
+            self.transform.applyPoint(.{ .x = min_x, .y = max_y }),
+        };
+
+        var min = corners[0];
+        var max = corners[0];
+        for (corners[1..]) |p| {
+            min.x = @min(min.x, p.x);
+            min.y = @min(min.y, p.y);
+            max.x = @max(max.x, p.x);
+            max.y = @max(max.y, p.y);
+        }
+        return .{ .min = min, .max = max };
+    }
+
+    fn antiAliasWidth(self: PackedVectorPrimitive, inverse: Transform2D) f32 {
+        _ = self;
+        const dx = Vec2.new(inverse.xx, inverse.yx);
+        const dy = Vec2.new(inverse.xy, inverse.yy);
+        return @max(0.5, @max(dx.length(), dy.length()));
+    }
+
+    fn sample(self: PackedVectorPrimitive, local_px: Vec2, aa: f32) [4]f32 {
+        const half_size = Vec2.new(self.rect.w * 0.5, self.rect.h * 0.5);
+        var radius = std.math.clamp(self.corner_radius, 0.0, @min(half_size.x, half_size.y));
+        const border_width = std.math.clamp(self.border_width, 0.0, @min(half_size.x, half_size.y));
+        const p = Vec2.new(local_px.x - half_size.x, local_px.y - half_size.y);
+
+        if (self.kind == .rect) radius = 0;
+        const outer_dist = if (self.kind == .ellipse)
+            sdEllipse(p, half_size)
+        else
+            sdRoundRect(p, half_size, radius);
+        const outer_alpha = 1.0 - smoothstep01(outer_dist / aa);
+
+        var inner_alpha = outer_alpha;
+        if (border_width > 0.0) {
+            const inner_half = Vec2.new(@max(half_size.x - border_width, 0.0), @max(half_size.y - border_width, 0.0));
+            const inner_radius = std.math.clamp(radius - border_width, 0.0, @min(inner_half.x, inner_half.y));
+            const inner_dist = if (self.kind == .ellipse)
+                sdEllipse(p, inner_half)
+            else
+                sdRoundRect(p, inner_half, inner_radius);
+            inner_alpha = 1.0 - smoothstep01(inner_dist / aa);
+        }
+
+        const border_alpha = @max(outer_alpha - inner_alpha, 0.0);
+        return .{
+            self.border[0] * border_alpha + self.fill[0] * inner_alpha,
+            self.border[1] * border_alpha + self.fill[1] * inner_alpha,
+            self.border[2] * border_alpha + self.fill[2] * inner_alpha,
+            self.border[3] * border_alpha + self.fill[3] * inner_alpha,
+        };
+    }
+};
+
+fn inverseTransform(transform: Transform2D) ?Transform2D {
+    const det = transform.xx * transform.yy - transform.xy * transform.yx;
+    if (@abs(det) < 1.0 / 65536.0) return null;
+    const inv_det = 1.0 / det;
+    return .{
+        .xx = transform.yy * inv_det,
+        .xy = -transform.xy * inv_det,
+        .tx = (transform.xy * transform.ty - transform.yy * transform.tx) * inv_det,
+        .yx = -transform.yx * inv_det,
+        .yy = transform.xx * inv_det,
+        .ty = (transform.yx * transform.tx - transform.xx * transform.ty) * inv_det,
+    };
+}
+
+fn sdRoundRect(p: Vec2, half_size: Vec2, radius: f32) f32 {
+    const q = Vec2.new(
+        @abs(p.x) - half_size.x + radius,
+        @abs(p.y) - half_size.y + radius,
+    );
+    const max_q = Vec2.new(@max(q.x, 0.0), @max(q.y, 0.0));
+    return max_q.length() + @min(@max(q.x, q.y), 0.0) - radius;
+}
+
+fn sdEllipse(p: Vec2, half_size: Vec2) f32 {
+    const safe_half = Vec2.new(@max(half_size.x, 1e-4), @max(half_size.y, 1e-4));
+    return (Vec2.new(p.x / safe_half.x, p.y / safe_half.y).length() - 1.0) * @min(safe_half.x, safe_half.y);
+}
+
+fn smoothstep01(x: f32) f32 {
+    const t = clamp01(x);
+    return t * t * (3.0 - 2.0 * t);
+}
 
 // ---------------------------------------------------------------------------
 // Slug algorithm: CPU port of evalGlyphCoverage from shaders.zig
 // ---------------------------------------------------------------------------
 
 fn evalGlyphCoverage(
-    atlas: *const snail.Atlas,
+    page: *const snail.AtlasPage,
     em_x: f32,
     em_y: f32,
     epp_x: f32,
@@ -220,7 +423,7 @@ fn evalGlyphCoverage(
     {
         // Horizontal band header is at glyph_loc + band_idx_y (index into h bands)
         const h_header_pos = glyph_x + @as(u32, @intCast(band_idx_y));
-        const h_header = readBandTexel(atlas, h_header_pos, glyph_y);
+        const h_header = readBandTexel(page, h_header_pos, glyph_y);
         const h_count = h_header[0];
         const h_offset = h_header[1];
 
@@ -229,13 +432,13 @@ fn evalGlyphCoverage(
         var i: u32 = 0;
         while (i < h_count) : (i += 1) {
             const b_loc = calcBandLoc(h_loc[0], h_loc[1], @intCast(i));
-            const curve_ref = readBandTexel(atlas, b_loc[0], b_loc[1]);
+            const curve_ref = readBandTexel(page, b_loc[0], b_loc[1]);
             const curve_loc_x = curve_ref[0];
             const curve_loc_y = curve_ref[1];
 
             // Read curve control points (em-space), translate relative to pixel
-            const p12 = readCurveTexelF32(atlas, curve_loc_x, curve_loc_y);
-            const p3 = readCurveTexelF32_p3(atlas, curve_loc_x + 1, curve_loc_y);
+            const p12 = readCurveTexelF32(page, curve_loc_x, curve_loc_y);
+            const p3 = readCurveTexelF32_p3(page, curve_loc_x + 1, curve_loc_y);
 
             const p1x = p12[0] - em_x;
             const p1y = p12[1] - em_y;
@@ -269,7 +472,7 @@ fn evalGlyphCoverage(
     {
         // Vertical band header is at glyph_loc + (h_band_count) + band_idx_x
         const v_header_pos = glyph_x + @as(u32, @intCast(band_max_h)) + 1 + @as(u32, @intCast(band_idx_x));
-        const v_header = readBandTexel(atlas, v_header_pos, glyph_y);
+        const v_header = readBandTexel(page, v_header_pos, glyph_y);
         const v_count = v_header[0];
         const v_offset = v_header[1];
 
@@ -278,12 +481,12 @@ fn evalGlyphCoverage(
         var i: u32 = 0;
         while (i < v_count) : (i += 1) {
             const b_loc = calcBandLoc(v_loc[0], v_loc[1], @intCast(i));
-            const curve_ref = readBandTexel(atlas, b_loc[0], b_loc[1]);
+            const curve_ref = readBandTexel(page, b_loc[0], b_loc[1]);
             const curve_loc_x = curve_ref[0];
             const curve_loc_y = curve_ref[1];
 
-            const p12 = readCurveTexelF32(atlas, curve_loc_x, curve_loc_y);
-            const p3 = readCurveTexelF32_p3(atlas, curve_loc_x + 1, curve_loc_y);
+            const p12 = readCurveTexelF32(page, curve_loc_x, curve_loc_y);
+            const p3 = readCurveTexelF32_p3(page, curve_loc_x + 1, curve_loc_y);
 
             const p1x = p12[0] - em_x;
             const p1y = p12[1] - em_y;
@@ -326,34 +529,34 @@ fn evalGlyphCoverage(
 
 /// Read a band texture texel (RG16UI) at the given texel coordinates.
 /// The band texture is laid out as a 1D array of u16 pairs, row-major.
-fn readBandTexel(atlas: *const snail.Atlas, tx: u32, ty: u32) [2]u32 {
-    const idx = (ty * atlas.band_width + tx) * 2;
-    if (idx + 1 >= atlas.band_data.len) return .{ 0, 0 };
+fn readBandTexel(page: *const snail.AtlasPage, tx: u32, ty: u32) [2]u32 {
+    const idx = (ty * page.band_width + tx) * 2;
+    if (idx + 1 >= page.band_data.len) return .{ 0, 0 };
     return .{
-        @as(u32, atlas.band_data[idx]),
-        @as(u32, atlas.band_data[idx + 1]),
+        @as(u32, page.band_data[idx]),
+        @as(u32, page.band_data[idx + 1]),
     };
 }
 
 /// Read curve texture texel 0 (p1.x, p1.y, p2.x, p2.y) as f32 values.
-fn readCurveTexelF32(atlas: *const snail.Atlas, tx: u32, ty: u32) [4]f32 {
-    const idx = (ty * atlas.curve_width + tx) * 4;
-    if (idx + 3 >= atlas.curve_data.len) return .{ 0, 0, 0, 0 };
+fn readCurveTexelF32(page: *const snail.AtlasPage, tx: u32, ty: u32) [4]f32 {
+    const idx = (ty * page.curve_width + tx) * 4;
+    if (idx + 3 >= page.curve_data.len) return .{ 0, 0, 0, 0 };
     return .{
-        f16ToF32(atlas.curve_data[idx + 0]),
-        f16ToF32(atlas.curve_data[idx + 1]),
-        f16ToF32(atlas.curve_data[idx + 2]),
-        f16ToF32(atlas.curve_data[idx + 3]),
+        f16ToF32(page.curve_data[idx + 0]),
+        f16ToF32(page.curve_data[idx + 1]),
+        f16ToF32(page.curve_data[idx + 2]),
+        f16ToF32(page.curve_data[idx + 3]),
     };
 }
 
 /// Read curve texture texel 1 (p3.x, p3.y) as f32 values.
-fn readCurveTexelF32_p3(atlas: *const snail.Atlas, tx: u32, ty: u32) [2]f32 {
-    const idx = (ty * atlas.curve_width + tx) * 4;
-    if (idx + 1 >= atlas.curve_data.len) return .{ 0, 0 };
+fn readCurveTexelF32_p3(page: *const snail.AtlasPage, tx: u32, ty: u32) [2]f32 {
+    const idx = (ty * page.curve_width + tx) * 4;
+    if (idx + 1 >= page.curve_data.len) return .{ 0, 0 };
     return .{
-        f16ToF32(atlas.curve_data[idx + 0]),
-        f16ToF32(atlas.curve_data[idx + 1]),
+        f16ToF32(page.curve_data[idx + 0]),
+        f16ToF32(page.curve_data[idx + 1]),
     };
 }
 
@@ -543,4 +746,73 @@ test "cpu renderer renders glyphs" {
         if (byte != 0) non_zero_count += 1;
     }
     try testing.expect(non_zero_count > 100); // Glyphs should produce significant output
+}
+
+test "cpu renderer renders vector rect" {
+    const testing = std.testing;
+
+    const width: u32 = 48;
+    const height: u32 = 32;
+    const stride = width * 4;
+    const buf = try testing.allocator.alloc(u8, stride * height);
+    defer testing.allocator.free(buf);
+
+    var renderer = CpuRenderer.init(buf.ptr, width, height, stride);
+    renderer.clear(0, 0, 0, 0);
+
+    var shape_buf: [snail.VECTOR_FLOATS_PER_PRIMITIVE]f32 = undefined;
+    var batch = snail.VectorBatch.init(&shape_buf);
+    try testing.expect(batch.addRect(
+        .{ .x = 8, .y = 6, .w = 18, .h = 12 },
+        .{ 1, 0, 0, 1 },
+        .{ 0, 0, 0, 0 },
+        0,
+    ));
+
+    renderer.drawVector(batch.slice());
+
+    const inside = ((12 * stride) + (16 * 4));
+    try testing.expect(buf[inside + 0] > 200);
+    try testing.expectEqual(@as(u8, 0), buf[inside + 1]);
+    try testing.expectEqual(@as(u8, 0), buf[inside + 2]);
+    try testing.expect(buf[inside + 3] > 200);
+
+    const outside = ((2 * stride) + (2 * 4));
+    try testing.expectEqual(@as(u8, 0), buf[outside + 0]);
+    try testing.expectEqual(@as(u8, 0), buf[outside + 3]);
+}
+
+test "cpu renderer renders transformed vector picture" {
+    const testing = std.testing;
+
+    const width: u32 = 64;
+    const height: u32 = 40;
+    const stride = width * 4;
+    const buf = try testing.allocator.alloc(u8, stride * height);
+    defer testing.allocator.free(buf);
+
+    var renderer = CpuRenderer.init(buf.ptr, width, height, stride);
+    renderer.clear(0, 0, 0, 0);
+
+    var shape_buf: [snail.VECTOR_FLOATS_PER_PRIMITIVE]f32 = undefined;
+    var batch = snail.VectorBatch.init(&shape_buf);
+    try testing.expect(batch.addRectStyled(
+        .{ .x = 0, .y = 0, .w = 10, .h = 8 },
+        .{ .color = .{ 0, 1, 0, 1 } },
+        null,
+        .{ .tx = 20, .ty = 10 },
+    ));
+
+    var picture = try batch.freeze(testing.allocator);
+    defer picture.deinit();
+
+    renderer.drawVectorPicture(&picture);
+
+    const translated = ((13 * stride) + (24 * 4));
+    try testing.expect(buf[translated + 1] > 200);
+    try testing.expect(buf[translated + 3] > 200);
+
+    const original = ((3 * stride) + (4 * 4));
+    try testing.expectEqual(@as(u8, 0), buf[original + 1]);
+    try testing.expectEqual(@as(u8, 0), buf[original + 3]);
 }

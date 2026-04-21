@@ -29,13 +29,18 @@ test "torture: full pipeline" {
         0x00E6, 0x00E7, 0x00E8, 0x00E9, 0x00EA, 0x00EB, // æ-ë
         0x00F1, 0x00F6, 0x00FC, 0x00DF, // ñ, ö, ü, ß
     };
-    const added = try atlas.addCodepoints(&extended);
-    try std.testing.expect(added);
+    if (try atlas.extendCodepoints(&extended)) |next| {
+        atlas.deinit();
+        atlas = next;
+        try std.testing.expect(true);
+    } else {
+        try std.testing.expect(false);
+    }
     try std.testing.expect(atlas.glyph_map.count() > initial_count);
 
     // Adding same codepoints again should be a no-op
-    const added2 = try atlas.addCodepoints(&extended);
-    try std.testing.expect(!added2);
+    const added2 = try atlas.extendCodepoints(&extended);
+    try std.testing.expect(added2 == null);
 
     // .snail roundtrip
     const serialized = try snail_file.serialize(allocator, &atlas, font.unitsPerEm());
@@ -44,6 +49,8 @@ test "torture: full pipeline" {
     var loaded = try snail_file.load(allocator, serialized);
     defer loaded.deinit();
     try std.testing.expectEqual(atlas.glyph_map.count(), loaded.glyph_map.count());
+
+    const atlas_view = snail.AtlasView{ .atlas = &atlas, .layer_base = 0 };
 
     // Batch generation: large vertex buffer, many strings
     const buf_size = 10000 * snail.FLOATS_PER_GLYPH;
@@ -65,7 +72,7 @@ test "torture: full pipeline" {
     var y: f32 = 1000;
     for ([_]f32{ 10, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 64, 72, 96 }) |size| {
         for (test_strings) |s| {
-            _ = batch.addString(&atlas, &font, s, 0, y, size, .{ 1, 1, 1, 1 });
+            _ = batch.addString(&atlas_view, &font, s, 0, y, size, .{ 1, 1, 1, 1 });
             y -= size * 1.3;
         }
     }
@@ -82,7 +89,7 @@ test "torture: full pipeline" {
         "pariatur. Excepteur sint occaecat cupidatat non proident, sunt in " ++
         "culpa qui officia deserunt mollit anim id est laborum.";
 
-    const height = batch.addStringWrapped(&atlas, &font, paragraph, 0, 800, 14, 600, 20, .{ 1, 1, 1, 1 });
+    const height = batch.addStringWrapped(&atlas_view, &font, paragraph, 0, 800, 14, 600, 20, .{ 1, 1, 1, 1 });
     try std.testing.expect(height > 0);
     try std.testing.expect(batch.glyphCount() > 200);
 
@@ -96,12 +103,64 @@ test "torture: full pipeline" {
         .{ .glyph_id = f_gid, .x_offset = 20, .y_offset = 0 },
         .{ .glyph_id = i_gid, .x_offset = 30, .y_offset = 0 },
     };
-    const shaped_count = batch.addShaped(&atlas, &shaped, 100, 200, 24, .{ 1, 0, 0, 1 });
+    const shaped_count = batch.addShaped(&atlas_view, &shaped, 100, 200, 24, .{ 1, 0, 0, 1 });
     try std.testing.expectEqual(@as(usize, 4), shaped_count);
 
     // Rebuild atlas from scratch (tests full deallocation + rebuild path)
     var atlas2 = try snail.Atlas.init(allocator, &font, &[_]u32{ 'X', 'Y', 'Z' });
     defer atlas2.deinit();
-    _ = try atlas2.addCodepoints(&[_]u32{ 'A', 'B', 'C', 'D', 'E' });
-    _ = try atlas2.addCodepoints(&[_]u32{ 'a', 'b', 'c', 'd', 'e' });
+    if (try atlas2.extendCodepoints(&[_]u32{ 'A', 'B', 'C', 'D', 'E' })) |next| {
+        atlas2.deinit();
+        atlas2 = next;
+    }
+    if (try atlas2.extendCodepoints(&[_]u32{ 'a', 'b', 'c', 'd', 'e' })) |next| {
+        atlas2.deinit();
+        atlas2 = next;
+    }
+}
+
+test "extend preserves existing glyph handles" {
+    const allocator = std.testing.allocator;
+
+    var font = try snail.Font.init(assets.noto_sans_regular);
+    defer font.deinit();
+
+    var atlas = try snail.Atlas.init(allocator, &font, &[_]u32{ 'A', 'B', 'C' });
+    defer atlas.deinit();
+
+    const gid_a = try font.glyphIndex('A');
+    const gid_b = try font.glyphIndex('B');
+    const before_a = atlas.getGlyph(gid_a) orelse return error.MissingGlyph;
+    const before_b = atlas.getGlyph(gid_b) orelse return error.MissingGlyph;
+
+    var next = (try atlas.extendCodepoints(&[_]u32{ 0x00E9, 0x00F1, 0x00FC })) orelse
+        return error.ExpectedExtension;
+    defer next.deinit();
+
+    const after_a = next.getGlyph(gid_a) orelse return error.MissingGlyph;
+    const after_b = next.getGlyph(gid_b) orelse return error.MissingGlyph;
+
+    try std.testing.expectEqual(before_a.page_index, after_a.page_index);
+    try std.testing.expectEqual(before_a.band_entry.glyph_x, after_a.band_entry.glyph_x);
+    try std.testing.expectEqual(before_a.band_entry.glyph_y, after_a.band_entry.glyph_y);
+    try std.testing.expectEqual(before_b.page_index, after_b.page_index);
+    try std.testing.expect(next.pageCount() > atlas.pageCount());
+}
+
+test "compact returns a single-page atlas snapshot" {
+    const allocator = std.testing.allocator;
+
+    var font = try snail.Font.init(assets.noto_sans_regular);
+    defer font.deinit();
+
+    var atlas = try snail.Atlas.init(allocator, &font, &[_]u32{ 'A', 'B', 'C' });
+    defer atlas.deinit();
+    if (try atlas.extendCodepoints(&[_]u32{ 0x00E9, 0x00F1, 0x00FC })) |next| {
+        atlas.deinit();
+        atlas = next;
+    }
+
+    var compacted = try atlas.compact();
+    defer compacted.deinit();
+    try std.testing.expectEqual(@as(usize, 1), compacted.pageCount());
 }

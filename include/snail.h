@@ -2,10 +2,15 @@
  *
  * Thread safety:
  *   - Font: immutable after init, safe for concurrent reads.
- *   - Atlas: immutable after init, safe for concurrent reads.
+ *   - Atlas snapshots: immutable after init/extend/compact, safe for concurrent reads.
  *   - Batch (snail_batch_*): operates on caller-owned buffers. Multiple batches
  *     reading the same Atlas/Font from different threads is safe.
  *   - Renderer (snail_renderer_*): must be called from the GL thread only.
+ *
+ * Atlas handle stability:
+ *   - Extending an atlas returns a new snapshot that preserves existing glyph
+ *     handles and page-local positions.
+ *   - Compacting returns a new snapshot and may change handles/page placement.
  *
  * Memory:
  *   - Pass NULL for allocator to use libc malloc/free.
@@ -47,6 +52,24 @@ typedef struct {
 typedef struct SnailFont  SnailFont;
 typedef struct SnailAtlas SnailAtlas;
 
+typedef struct {
+    float x, y, w, h;
+} SnailVectorRect;
+
+typedef struct {
+    float xx, xy, tx;
+    float yx, yy, ty;
+} SnailVectorTransform2D;
+
+typedef struct {
+    float color[4];
+} SnailVectorFillStyle;
+
+typedef struct {
+    float color[4];
+    float width;
+} SnailVectorStrokeStyle;
+
 /* ── Font (thread-safe after init) ── */
 
 int      snail_font_init(const uint8_t *data, size_t len, SnailFont **out);
@@ -55,14 +78,22 @@ uint16_t snail_font_units_per_em(const SnailFont *font);
 uint16_t snail_font_glyph_index(const SnailFont *font, uint32_t codepoint);
 int16_t  snail_font_get_kerning(const SnailFont *font, uint16_t left, uint16_t right);
 
-/* ── Atlas (thread-safe after init) ── */
+/* ── Atlas snapshots (thread-safe after creation) ── */
 
 int  snail_atlas_init(const SnailAllocator *allocator, /* NULL for libc */
                       const SnailFont *font,
                       const uint32_t *codepoints, size_t num_codepoints,
                       SnailAtlas **out);
-/* Add codepoints to an existing atlas. Returns SNAIL_OK on success.
- * Sets *added to true if new glyphs were added (caller must re-upload). */
+/* Return a new atlas snapshot extended with any missing codepoints.
+ * Existing handles remain valid in the returned snapshot. If no new glyphs are
+ * needed, *out is set to NULL and SNAIL_OK is returned. */
+int  snail_atlas_extend_codepoints(const SnailAtlas *atlas,
+                                   const uint32_t *codepoints, size_t num_codepoints,
+                                   SnailAtlas **out);
+/* Return a compacted atlas snapshot. Compaction may change glyph handles. */
+int  snail_atlas_compact(const SnailAtlas *atlas, SnailAtlas **out);
+/* Legacy compatibility helper: mutate an atlas handle in place by replacing it
+ * with an extended snapshot. Not thread-safe with concurrent readers. */
 int  snail_atlas_add_codepoints(SnailAtlas *atlas,
                                 const uint32_t *codepoints, size_t num_codepoints,
                                 bool *added);
@@ -84,6 +115,11 @@ void snail_renderer_set_fill_rule(int rule);
 void snail_renderer_draw(const float *vertices, size_t num_floats,
                          const float *mvp,
                          float viewport_w, float viewport_h);
+void snail_renderer_draw_vector(const float *vertices, size_t num_floats,
+                                const float *mvp,
+                                float viewport_w, float viewport_h);
+void snail_renderer_draw_vector_pixels(const float *vertices, size_t num_floats,
+                                       float viewport_w, float viewport_h);
 
 /* ── Batch (any thread, caller-owned buffer) ── */
 
@@ -120,9 +156,15 @@ float snail_batch_add_string_wrapped(float *buf, size_t buf_capacity, size_t *bu
 /* Returns true if HarfBuzz support was compiled in. */
 bool snail_harfbuzz_available(void);
 
-/* Discover glyphs needed for text via HarfBuzz shaping and add them to atlas.
- * Sets *added to true if new glyphs were added (caller must re-upload).
+/* Return a new atlas snapshot extended with any glyphs discovered by shaping
+ * the given text. Existing handles remain valid in the returned snapshot.
+ * If no new glyphs are needed, *out is set to NULL and SNAIL_OK is returned.
  * No-op if HarfBuzz not compiled in. */
+int  snail_atlas_extend_glyphs_for_text(const SnailAtlas *atlas,
+                                        const char *text, size_t text_len,
+                                        SnailAtlas **out);
+/* Legacy compatibility helper: mutate an atlas handle in place by replacing it
+ * with an extended snapshot. Not thread-safe with concurrent readers. */
 int  snail_atlas_add_glyphs_for_text(SnailAtlas *atlas,
                                      const char *text, size_t text_len,
                                      bool *added);
@@ -130,6 +172,41 @@ int  snail_atlas_add_glyphs_for_text(SnailAtlas *atlas,
 /* ── Constants ── */
 
 size_t snail_floats_per_glyph(void);
+size_t snail_vector_floats_per_primitive(void);
+
+/* ── Vector batch (caller-owned float buffer) ── */
+
+bool snail_vector_batch_add_rect(float *buf, size_t buf_capacity, size_t *buf_len,
+                                 SnailVectorRect rect,
+                                 const float *fill, const float *border,
+                                 float border_width);
+bool snail_vector_batch_add_rounded_rect(float *buf, size_t buf_capacity, size_t *buf_len,
+                                         SnailVectorRect rect,
+                                         const float *fill, const float *border,
+                                         float border_width, float corner_radius);
+bool snail_vector_batch_add_ellipse(float *buf, size_t buf_capacity, size_t *buf_len,
+                                    SnailVectorRect rect,
+                                    const float *fill, const float *border,
+                                    float border_width);
+
+/* Style-oriented vector helpers. `transform` may be NULL for identity.
+ * `fill` or `stroke` may be NULL to omit that portion. */
+bool snail_vector_batch_add_rect_ex(float *buf, size_t buf_capacity, size_t *buf_len,
+                                    SnailVectorRect rect,
+                                    const SnailVectorFillStyle *fill,
+                                    const SnailVectorStrokeStyle *stroke,
+                                    const SnailVectorTransform2D *transform);
+bool snail_vector_batch_add_rounded_rect_ex(float *buf, size_t buf_capacity, size_t *buf_len,
+                                            SnailVectorRect rect,
+                                            const SnailVectorFillStyle *fill,
+                                            const SnailVectorStrokeStyle *stroke,
+                                            float corner_radius,
+                                            const SnailVectorTransform2D *transform);
+bool snail_vector_batch_add_ellipse_ex(float *buf, size_t buf_capacity, size_t *buf_len,
+                                       SnailVectorRect rect,
+                                       const SnailVectorFillStyle *fill,
+                                       const SnailVectorStrokeStyle *stroke,
+                                       const SnailVectorTransform2D *transform);
 
 #ifdef __cplusplus
 }

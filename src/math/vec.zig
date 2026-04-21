@@ -55,6 +55,54 @@ pub const Vec4 = struct {
     }
 };
 
+pub const Transform2D = struct {
+    xx: f32 = 1,
+    xy: f32 = 0,
+    tx: f32 = 0,
+    yx: f32 = 0,
+    yy: f32 = 1,
+    ty: f32 = 0,
+
+    pub const identity = Transform2D{};
+
+    pub fn translate(x: f32, y: f32) Transform2D {
+        return .{ .tx = x, .ty = y };
+    }
+
+    pub fn scale(x: f32, y: f32) Transform2D {
+        return .{ .xx = x, .yy = y };
+    }
+
+    pub fn rotate(angle_rad: f32) Transform2D {
+        const c = @cos(angle_rad);
+        const s = @sin(angle_rad);
+        return .{
+            .xx = c,
+            .xy = -s,
+            .yx = s,
+            .yy = c,
+        };
+    }
+
+    pub fn multiply(a: Transform2D, b: Transform2D) Transform2D {
+        return .{
+            .xx = a.xx * b.xx + a.xy * b.yx,
+            .xy = a.xx * b.xy + a.xy * b.yy,
+            .tx = a.xx * b.tx + a.xy * b.ty + a.tx,
+            .yx = a.yx * b.xx + a.yy * b.yx,
+            .yy = a.yx * b.xy + a.yy * b.yy,
+            .ty = a.yx * b.tx + a.yy * b.ty + a.ty,
+        };
+    }
+
+    pub fn applyPoint(self: Transform2D, p: Vec2) Vec2 {
+        return .{
+            .x = self.xx * p.x + self.xy * p.y + self.tx,
+            .y = self.yx * p.x + self.yy * p.y + self.ty,
+        };
+    }
+};
+
 pub const Mat4 = struct {
     data: [16]f32,
 
@@ -154,4 +202,13 @@ test "Mat4 ortho produces valid projection" {
     const m = Mat4.ortho(0, 800, 600, 0, -1, 1);
     // Top-left corner should map to (-1, 1)
     try std.testing.expectApproxEqAbs(m.data[0], 2.0 / 800.0, 1e-6);
+}
+
+test "Transform2D multiply composes affine transforms" {
+    const t = Transform2D.translate(12, -4);
+    const r = Transform2D.rotate(std.math.pi / 2.0);
+    const combined = Transform2D.multiply(t, r);
+    const p = combined.applyPoint(.{ .x = 2, .y = 0 });
+    try std.testing.expectApproxEqAbs(p.x, 12.0, 1e-6);
+    try std.testing.expectApproxEqAbs(p.y, -2.0, 1e-6);
 }

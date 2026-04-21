@@ -259,16 +259,24 @@ pub fn buildTextureArrays(atlases: []const *const snail_mod.Atlas) void {
     _ = vk.vkDeviceWaitIdle(ctx.device);
     destroyTextureResources();
 
-    const layer_count: u32 = @intCast(atlases.len);
+    if (atlases.len == 0) return;
+
+    var total_layers: usize = 0;
     var max_curve_h: u32 = 1;
     var max_band_h: u32 = 1;
     for (atlases) |a| {
-        if (a.curve_height > max_curve_h) max_curve_h = a.curve_height;
-        if (a.band_height > max_band_h) max_band_h = a.band_height;
+        total_layers += a.pageCount();
+        for (0..a.pageCount()) |page_index| {
+            const page = a.page(@intCast(page_index));
+            if (page.curve_height > max_curve_h) max_curve_h = page.curve_height;
+            if (page.band_height > max_band_h) max_band_h = page.band_height;
+        }
     }
+    const layer_count: u32 = @intCast(total_layers);
 
-    const curve_w = atlases[0].curve_width;
-    const band_w = atlases[0].band_width;
+    const first_page = atlases[0].page(0);
+    const curve_w = first_page.curve_width;
+    const band_w = first_page.band_width;
 
     // Create images
     curve_image = createImage2DArray(curve_w, max_curve_h, layer_count, vk.VK_FORMAT_R16G16B16A16_SFLOAT) catch return;
@@ -285,11 +293,6 @@ pub fn buildTextureArrays(atlases: []const *const snail_mod.Atlas) void {
     // Create image views
     curve_view = createImageView(curve_image, vk.VK_FORMAT_R16G16B16A16_SFLOAT, layer_count) catch return;
     band_view = createImageView(band_image, vk.VK_FORMAT_R16G16_UINT, layer_count) catch return;
-
-    // Set atlas layer indices
-    for (atlases, 0..) |atlas, i| {
-        @constCast(atlas).gl_layer = @intCast(i);
-    }
 
     // Build COLR layer info image (2D, not array) from the first atlas that has data
     for (atlases) |a| {
@@ -398,7 +401,7 @@ pub fn drawText(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f
     }
 }
 
-pub fn drawVector(vertices: []const f32, viewport_w: f32, viewport_h: f32) void {
+pub fn drawVector(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
     const cmd = active_cmd orelse return;
     if (vertices.len == 0) return;
 
@@ -407,7 +410,7 @@ pub fn drawVector(vertices: []const f32, viewport_w: f32, viewport_h: f32) void 
 
     vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_vector);
     const pc = PushConstants{
-        .mvp = Mat4.identity.data,
+        .mvp = mvp.data,
         .viewport = .{ viewport_w, viewport_h },
         .fill_rule = 0,
         .subpixel_order = 0,
@@ -428,7 +431,7 @@ pub fn drawVector(vertices: []const f32, viewport_w: f32, viewport_h: f32) void 
 
         const offsets = [1]vk.VkDeviceSize{ring_offset};
         vk.vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer, &offsets);
-        vk.vkCmdDraw(cmd, @intCast(chunk * vector_vertex.VERTICES_PER_PRIMITIVE), 1, 0, 0);
+        vk.vkCmdDraw(cmd, 6, @intCast(chunk), 0, 0);
 
         ring_segment = (ring_segment + 1) % RING_SEGMENTS;
         primitives_drawn += chunk;
@@ -467,7 +470,7 @@ fn createGraphicsPipeline(frag_code: []const u8) !vk.VkPipeline {
     const binding = vk.VkVertexInputBindingDescription{
         .binding = 0,
         .stride = stride,
-        .inputRate = vk.VK_VERTEX_INPUT_RATE_VERTEX,
+        .inputRate = vk.VK_VERTEX_INPUT_RATE_INSTANCE,
     };
 
     const attrs = [5]vk.VkVertexInputAttributeDescription{
@@ -594,19 +597,20 @@ fn createVectorGraphicsPipeline() !vk.VkPipeline {
         .inputRate = vk.VK_VERTEX_INPUT_RATE_VERTEX,
     };
 
-    const attrs = [5]vk.VkVertexInputAttributeDescription{
-        .{ .location = 0, .binding = 0, .format = vk.VK_FORMAT_R32G32_SFLOAT, .offset = 0 },
-        .{ .location = 1, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 2 * @sizeOf(f32) },
-        .{ .location = 2, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 6 * @sizeOf(f32) },
-        .{ .location = 3, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 10 * @sizeOf(f32) },
-        .{ .location = 4, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 14 * @sizeOf(f32) },
+    const attrs = [6]vk.VkVertexInputAttributeDescription{
+        .{ .location = 0, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 0 },
+        .{ .location = 1, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 4 * @sizeOf(f32) },
+        .{ .location = 2, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 8 * @sizeOf(f32) },
+        .{ .location = 3, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 12 * @sizeOf(f32) },
+        .{ .location = 4, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 16 * @sizeOf(f32) },
+        .{ .location = 5, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 20 * @sizeOf(f32) },
     };
 
     const vi_info = std.mem.zeroInit(vk.VkPipelineVertexInputStateCreateInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
         .vertexBindingDescriptionCount = 1,
         .pVertexBindingDescriptions = &binding,
-        .vertexAttributeDescriptionCount = 5,
+        .vertexAttributeDescriptionCount = 6,
         .pVertexAttributeDescriptions = &attrs,
     });
 
@@ -809,8 +813,11 @@ fn uploadTextureData(atlases: []const *const snail_mod.Atlas, _: u32, _: u32, _:
 
     var total_staging: usize = 0;
     for (atlases) |a| {
-        total_staging += @as(usize, a.curve_width) * @as(usize, a.curve_height) * curve_px_bytes;
-        total_staging += @as(usize, a.band_width) * @as(usize, a.band_height) * band_px_bytes;
+        for (0..a.pageCount()) |page_index| {
+            const page = a.page(@intCast(page_index));
+            total_staging += @as(usize, page.curve_width) * @as(usize, page.curve_height) * curve_px_bytes;
+            total_staging += @as(usize, page.band_width) * @as(usize, page.band_height) * band_px_bytes;
+        }
     }
 
     // Create staging buffer
@@ -838,32 +845,36 @@ fn uploadTextureData(atlases: []const *const snail_mod.Atlas, _: u32, _: u32, _:
     var band_regions: [256]vk.VkBufferImageCopy = undefined;
     var staging_offset: usize = 0;
 
-    for (atlases, 0..) |atlas, i| {
-        // Copy curve data
-        const curve_size = @as(usize, atlas.curve_width) * @as(usize, atlas.curve_height) * curve_px_bytes;
-        const curve_bytes: [*]const u8 = @ptrCast(atlas.curve_data.ptr);
-        @memcpy(staging_data[staging_offset..][0..curve_size], curve_bytes[0..curve_size]);
-        var cr: vk.VkBufferImageCopy = std.mem.zeroes(vk.VkBufferImageCopy);
-        cr.bufferOffset = @intCast(staging_offset);
-        cr.imageSubresource.aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT;
-        cr.imageSubresource.baseArrayLayer = @intCast(i);
-        cr.imageSubresource.layerCount = 1;
-        cr.imageExtent = .{ .width = atlas.curve_width, .height = atlas.curve_height, .depth = 1 };
-        curve_regions[i] = cr;
-        staging_offset += curve_size;
+    var layer_index: usize = 0;
+    for (atlases) |atlas| {
+        for (0..atlas.pageCount()) |page_index| {
+            const page = atlas.page(@intCast(page_index));
 
-        // Copy band data
-        const band_size = @as(usize, atlas.band_width) * @as(usize, atlas.band_height) * band_px_bytes;
-        const band_bytes: [*]const u8 = @ptrCast(atlas.band_data.ptr);
-        @memcpy(staging_data[staging_offset..][0..band_size], band_bytes[0..band_size]);
-        var br: vk.VkBufferImageCopy = std.mem.zeroes(vk.VkBufferImageCopy);
-        br.bufferOffset = @intCast(staging_offset);
-        br.imageSubresource.aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT;
-        br.imageSubresource.baseArrayLayer = @intCast(i);
-        br.imageSubresource.layerCount = 1;
-        br.imageExtent = .{ .width = atlas.band_width, .height = atlas.band_height, .depth = 1 };
-        band_regions[i] = br;
-        staging_offset += band_size;
+            const curve_size = @as(usize, page.curve_width) * @as(usize, page.curve_height) * curve_px_bytes;
+            const curve_bytes: [*]const u8 = @ptrCast(page.curve_data.ptr);
+            @memcpy(staging_data[staging_offset..][0..curve_size], curve_bytes[0..curve_size]);
+            var cr: vk.VkBufferImageCopy = std.mem.zeroes(vk.VkBufferImageCopy);
+            cr.bufferOffset = @intCast(staging_offset);
+            cr.imageSubresource.aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT;
+            cr.imageSubresource.baseArrayLayer = @intCast(layer_index);
+            cr.imageSubresource.layerCount = 1;
+            cr.imageExtent = .{ .width = page.curve_width, .height = page.curve_height, .depth = 1 };
+            curve_regions[layer_index] = cr;
+            staging_offset += curve_size;
+
+            const band_size = @as(usize, page.band_width) * @as(usize, page.band_height) * band_px_bytes;
+            const band_bytes: [*]const u8 = @ptrCast(page.band_data.ptr);
+            @memcpy(staging_data[staging_offset..][0..band_size], band_bytes[0..band_size]);
+            var br: vk.VkBufferImageCopy = std.mem.zeroes(vk.VkBufferImageCopy);
+            br.bufferOffset = @intCast(staging_offset);
+            br.imageSubresource.aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT;
+            br.imageSubresource.baseArrayLayer = @intCast(layer_index);
+            br.imageSubresource.layerCount = 1;
+            br.imageExtent = .{ .width = page.band_width, .height = page.band_height, .depth = 1 };
+            band_regions[layer_index] = br;
+            staging_offset += band_size;
+            layer_index += 1;
+        }
     }
 
     vk.vkUnmapMemory(ctx.device, staging_mem);

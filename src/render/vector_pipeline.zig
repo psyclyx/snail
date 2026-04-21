@@ -1,22 +1,24 @@
 const std = @import("std");
 const gl = @import("gl.zig").gl;
 const vector_vertex = @import("vector_vertex.zig");
+const Mat4 = @import("../math/vec.zig").Mat4;
 
 var program: gl.GLuint = 0;
 var vao: gl.GLuint = 0;
 var vbo: gl.GLuint = 0;
-var u_viewport: gl.GLint = -1;
+var u_mvp: gl.GLint = -1;
 
 const vertex_shader =
     \\#version 330 core
     \\
-    \\layout(location = 0) in vec2 a_local;
-    \\layout(location = 1) in vec4 a_rect;
-    \\layout(location = 2) in vec4 a_fill;
-    \\layout(location = 3) in vec4 a_border;
-    \\layout(location = 4) in vec4 a_params;
+    \\layout(location = 0) in vec4 a_rect;
+    \\layout(location = 1) in vec4 a_fill;
+    \\layout(location = 2) in vec4 a_border;
+    \\layout(location = 3) in vec4 a_params;
+    \\layout(location = 4) in vec4 a_tx0;
+    \\layout(location = 5) in vec4 a_tx1;
     \\
-    \\uniform vec2 u_viewport;
+    \\uniform mat4 u_mvp;
     \\
     \\out vec2 v_local_px;
     \\flat out vec4 v_rect;
@@ -24,13 +26,28 @@ const vertex_shader =
     \\flat out vec4 v_border;
     \\flat out vec3 v_shape;
     \\
-    \\void main() {
-    \\    vec2 pixel = a_rect.xy + a_local * a_rect.zw;
-    \\    vec2 ndc = (pixel / u_viewport) * 2.0 - 1.0;
-    \\    ndc.y = -ndc.y;
-    \\    gl_Position = vec4(ndc, 0.0, 1.0);
+    \\const vec2 kLocal[6] = vec2[6](
+    \\    vec2(0.0, 0.0),
+    \\    vec2(1.0, 0.0),
+    \\    vec2(1.0, 1.0),
+    \\    vec2(0.0, 0.0),
+    \\    vec2(1.0, 1.0),
+    \\    vec2(0.0, 1.0)
+    \\);
     \\
-    \\    v_local_px = a_local * a_rect.zw;
+    \\void main() {
+    \\    vec2 a_local = kLocal[gl_VertexID];
+    \\    float expand = a_params.w;
+    \\    vec2 expanded_size = a_rect.zw + vec2(expand * 2.0);
+    \\    vec2 local_px = -vec2(expand) + a_local * expanded_size;
+    \\    vec2 local = a_rect.xy + local_px;
+    \\    vec2 world = vec2(
+    \\        dot(a_tx0.xyz, vec3(local, 1.0)),
+    \\        dot(a_tx1.xyz, vec3(local, 1.0))
+    \\    );
+    \\    gl_Position = u_mvp * vec4(world, 0.0, 1.0);
+    \\
+    \\    v_local_px = local_px;
     \\    v_rect = a_rect;
     \\    v_fill = a_fill;
     \\    v_border = a_border;
@@ -93,7 +110,7 @@ const fragment_shader =
 
 pub fn init() !void {
     program = try linkProgram(vertex_shader, fragment_shader);
-    u_viewport = gl.glGetUniformLocation(program, "u_viewport");
+    u_mvp = gl.glGetUniformLocation(program, "u_mvp");
 
     gl.glGenVertexArrays(1, &vao);
     gl.glGenBuffers(1, &vbo);
@@ -101,16 +118,24 @@ pub fn init() !void {
     gl.glBindBuffer(gl.GL_ARRAY_BUFFER, vbo);
 
     const stride: gl.GLsizei = vector_vertex.FLOATS_PER_VERTEX * @sizeOf(f32);
-    gl.glVertexAttribPointer(0, 2, gl.GL_FLOAT, gl.GL_FALSE, stride, @ptrFromInt(0));
+    gl.glVertexAttribPointer(0, 4, gl.GL_FLOAT, gl.GL_FALSE, stride, @ptrFromInt(0));
     gl.glEnableVertexAttribArray(0);
-    gl.glVertexAttribPointer(1, 4, gl.GL_FLOAT, gl.GL_FALSE, stride, @ptrFromInt(2 * @sizeOf(f32)));
+    gl.glVertexAttribPointer(1, 4, gl.GL_FLOAT, gl.GL_FALSE, stride, @ptrFromInt(4 * @sizeOf(f32)));
     gl.glEnableVertexAttribArray(1);
-    gl.glVertexAttribPointer(2, 4, gl.GL_FLOAT, gl.GL_FALSE, stride, @ptrFromInt(6 * @sizeOf(f32)));
+    gl.glVertexAttribPointer(2, 4, gl.GL_FLOAT, gl.GL_FALSE, stride, @ptrFromInt(8 * @sizeOf(f32)));
     gl.glEnableVertexAttribArray(2);
-    gl.glVertexAttribPointer(3, 4, gl.GL_FLOAT, gl.GL_FALSE, stride, @ptrFromInt(10 * @sizeOf(f32)));
+    gl.glVertexAttribPointer(3, 4, gl.GL_FLOAT, gl.GL_FALSE, stride, @ptrFromInt(12 * @sizeOf(f32)));
     gl.glEnableVertexAttribArray(3);
-    gl.glVertexAttribPointer(4, 4, gl.GL_FLOAT, gl.GL_FALSE, stride, @ptrFromInt(14 * @sizeOf(f32)));
+    gl.glVertexAttribPointer(4, 4, gl.GL_FLOAT, gl.GL_FALSE, stride, @ptrFromInt(16 * @sizeOf(f32)));
     gl.glEnableVertexAttribArray(4);
+    gl.glVertexAttribPointer(5, 4, gl.GL_FLOAT, gl.GL_FALSE, stride, @ptrFromInt(20 * @sizeOf(f32)));
+    gl.glEnableVertexAttribArray(5);
+    gl.glVertexAttribDivisor(0, 1);
+    gl.glVertexAttribDivisor(1, 1);
+    gl.glVertexAttribDivisor(2, 1);
+    gl.glVertexAttribDivisor(3, 1);
+    gl.glVertexAttribDivisor(4, 1);
+    gl.glVertexAttribDivisor(5, 1);
     gl.glBindVertexArray(0);
 }
 
@@ -121,13 +146,15 @@ pub fn deinit() void {
     program = 0;
     vao = 0;
     vbo = 0;
-    u_viewport = -1;
+    u_mvp = -1;
 }
 
 pub fn resetFrameState() void {}
 
-pub fn drawPrimitives(vertices: []const f32, viewport_w: f32, viewport_h: f32) void {
+pub fn drawPrimitives(vertices: []const f32, mvp: Mat4) void {
     if (vertices.len == 0) return;
+    const primitive_count = vertices.len / vector_vertex.FLOATS_PER_PRIMITIVE;
+    if (primitive_count == 0) return;
 
     gl.glBindVertexArray(vao);
     gl.glBindBuffer(gl.GL_ARRAY_BUFFER, vbo);
@@ -142,8 +169,8 @@ pub fn drawPrimitives(vertices: []const f32, viewport_w: f32, viewport_h: f32) v
     gl.glEnable(gl.GL_BLEND);
     gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA);
     gl.glUseProgram(program);
-    gl.glUniform2f(u_viewport, viewport_w, viewport_h);
-    gl.glDrawArrays(gl.GL_TRIANGLES, 0, @intCast(vertices.len / vector_vertex.FLOATS_PER_VERTEX));
+    gl.glUniformMatrix4fv(u_mvp, 1, gl.GL_FALSE, &mvp.data);
+    gl.glDrawArraysInstanced(gl.GL_TRIANGLES, 0, 6, @intCast(primitive_count));
 }
 
 fn compileShader(shader_type: gl.GLenum, source: [*c]const u8) ?gl.GLuint {

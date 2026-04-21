@@ -214,13 +214,20 @@ pub fn buildTextureArrays(atlases: []const *const snail_mod.Atlas) void {
     if (band_array != 0) gl.glDeleteTextures(1, &band_array);
     if (layer_info_tex != 0) gl.glDeleteTextures(1, &layer_info_tex);
 
-    const layer_count: gl.GLsizei = @intCast(atlases.len);
+    if (atlases.len == 0) return;
+
+    var total_layers: usize = 0;
     var max_curve_h: u32 = 1;
     var max_band_h: u32 = 1;
     for (atlases) |a| {
-        if (a.curve_height > max_curve_h) max_curve_h = a.curve_height;
-        if (a.band_height > max_band_h) max_band_h = a.band_height;
+        total_layers += a.pageCount();
+        for (0..a.pageCount()) |page_index| {
+            const page = a.page(@intCast(page_index));
+            if (page.curve_height > max_curve_h) max_curve_h = page.curve_height;
+            if (page.band_height > max_band_h) max_band_h = page.band_height;
+        }
     }
+    const layer_count: gl.GLsizei = @intCast(total_layers);
 
     switch (backend) {
         .gl33 => buildTextureArraysGl33(atlases, layer_count, max_curve_h, max_band_h),
@@ -250,12 +257,13 @@ pub fn buildTextureArrays(atlases: []const *const snail_mod.Atlas) void {
 }
 
 fn buildTextureArraysGl33(atlases: []const *const snail_mod.Atlas, layer_count: gl.GLsizei, max_curve_h: u32, max_band_h: u32) void {
+    const first_page = atlases[0].page(0);
     // Curve array
     gl.glGenTextures(1, &curve_array);
     gl.glActiveTexture(gl.GL_TEXTURE0);
     gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, curve_array);
     gl.glTexImage3D(gl.GL_TEXTURE_2D_ARRAY, 0, gl.GL_RGBA16F,
-        @intCast(atlases[0].curve_width), @intCast(max_curve_h), layer_count,
+        @intCast(first_page.curve_width), @intCast(max_curve_h), layer_count,
         0, gl.GL_RGBA, gl.GL_HALF_FLOAT, null);
     setTexParams(gl.GL_TEXTURE_2D_ARRAY);
 
@@ -264,47 +272,56 @@ fn buildTextureArraysGl33(atlases: []const *const snail_mod.Atlas, layer_count: 
     gl.glActiveTexture(gl.GL_TEXTURE1);
     gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, band_array);
     gl.glTexImage3D(gl.GL_TEXTURE_2D_ARRAY, 0, gl.GL_RG16UI,
-        @intCast(atlases[0].band_width), @intCast(max_band_h), layer_count,
+        @intCast(first_page.band_width), @intCast(max_band_h), layer_count,
         0, gl.GL_RG_INTEGER, gl.GL_UNSIGNED_SHORT, null);
     setTexParams(gl.GL_TEXTURE_2D_ARRAY);
 
     // Upload layers
-    for (atlases, 0..) |atlas, i| {
-        @constCast(atlas).gl_layer = @intCast(i);
-        gl.glActiveTexture(gl.GL_TEXTURE0);
-        gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, curve_array);
-        gl.glTexSubImage3D(gl.GL_TEXTURE_2D_ARRAY, 0, 0, 0, @intCast(i),
-            @intCast(atlas.curve_width), @intCast(atlas.curve_height), 1,
-            gl.GL_RGBA, gl.GL_HALF_FLOAT, atlas.curve_data.ptr);
-        gl.glActiveTexture(gl.GL_TEXTURE1);
-        gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, band_array);
-        gl.glTexSubImage3D(gl.GL_TEXTURE_2D_ARRAY, 0, 0, 0, @intCast(i),
-            @intCast(atlas.band_width), @intCast(atlas.band_height), 1,
-            gl.GL_RG_INTEGER, gl.GL_UNSIGNED_SHORT, atlas.band_data.ptr);
+    var layer_index: usize = 0;
+    for (atlases) |atlas| {
+        for (0..atlas.pageCount()) |page_index| {
+            const page = atlas.page(@intCast(page_index));
+            gl.glActiveTexture(gl.GL_TEXTURE0);
+            gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, curve_array);
+            gl.glTexSubImage3D(gl.GL_TEXTURE_2D_ARRAY, 0, 0, 0, @intCast(layer_index),
+                @intCast(page.curve_width), @intCast(page.curve_height), 1,
+                gl.GL_RGBA, gl.GL_HALF_FLOAT, page.curve_data.ptr);
+            gl.glActiveTexture(gl.GL_TEXTURE1);
+            gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, band_array);
+            gl.glTexSubImage3D(gl.GL_TEXTURE_2D_ARRAY, 0, 0, 0, @intCast(layer_index),
+                @intCast(page.band_width), @intCast(page.band_height), 1,
+                gl.GL_RG_INTEGER, gl.GL_UNSIGNED_SHORT, page.band_data.ptr);
+            layer_index += 1;
+        }
     }
 }
 
 fn buildTextureArraysGl44(atlases: []const *const snail_mod.Atlas, layer_count: gl.GLsizei, max_curve_h: u32, max_band_h: u32) void {
+    const first_page = atlases[0].page(0);
     // DSA texture creation
     gl.glCreateTextures(gl.GL_TEXTURE_2D_ARRAY, 1, &curve_array);
     gl.glTextureStorage3D(curve_array, 1, gl.GL_RGBA16F,
-        @intCast(atlases[0].curve_width), @intCast(max_curve_h), layer_count);
+        @intCast(first_page.curve_width), @intCast(max_curve_h), layer_count);
     setTexParamsDSA(curve_array);
 
     gl.glCreateTextures(gl.GL_TEXTURE_2D_ARRAY, 1, &band_array);
     gl.glTextureStorage3D(band_array, 1, gl.GL_RG16UI,
-        @intCast(atlases[0].band_width), @intCast(max_band_h), layer_count);
+        @intCast(first_page.band_width), @intCast(max_band_h), layer_count);
     setTexParamsDSA(band_array);
 
     // Upload layers via DSA
-    for (atlases, 0..) |atlas, i| {
-        @constCast(atlas).gl_layer = @intCast(i);
-        gl.glTextureSubImage3D(curve_array, 0, 0, 0, @intCast(i),
-            @intCast(atlas.curve_width), @intCast(atlas.curve_height), 1,
-            gl.GL_RGBA, gl.GL_HALF_FLOAT, atlas.curve_data.ptr);
-        gl.glTextureSubImage3D(band_array, 0, 0, 0, @intCast(i),
-            @intCast(atlas.band_width), @intCast(atlas.band_height), 1,
-            gl.GL_RG_INTEGER, gl.GL_UNSIGNED_SHORT, atlas.band_data.ptr);
+    var layer_index: usize = 0;
+    for (atlases) |atlas| {
+        for (0..atlas.pageCount()) |page_index| {
+            const page = atlas.page(@intCast(page_index));
+            gl.glTextureSubImage3D(curve_array, 0, 0, 0, @intCast(layer_index),
+                @intCast(page.curve_width), @intCast(page.curve_height), 1,
+                gl.GL_RGBA, gl.GL_HALF_FLOAT, page.curve_data.ptr);
+            gl.glTextureSubImage3D(band_array, 0, 0, 0, @intCast(layer_index),
+                @intCast(page.band_width), @intCast(page.band_height), 1,
+                gl.GL_RG_INTEGER, gl.GL_UNSIGNED_SHORT, page.band_data.ptr);
+            layer_index += 1;
+        }
     }
 
     // Bind to texture units via DSA

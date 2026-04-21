@@ -20,7 +20,7 @@ const ScriptFont = struct {
 
         // Use HarfBuzz to discover glyphs from sample text when available
         if (comptime build_options.enable_harfbuzz) {
-            _ = try atlas.addGlyphsForText(sample_text);
+            _ = snail.replaceAtlas(&atlas, try atlas.extendGlyphsForText(sample_text));
         } else {
             // Fallback: add codepoints directly from UTF-8
             var cps: [512]u32 = undefined;
@@ -32,7 +32,7 @@ const ScriptFont = struct {
                 cps[n] = cp;
                 n += 1;
             }
-            _ = try atlas.addCodepoints(cps[0..n]);
+            _ = snail.replaceAtlas(&atlas, try atlas.extendCodepoints(cps[0..n]));
         }
         return .{ .font = font, .atlas = atlas };
     }
@@ -159,6 +159,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
     renderer.setSubpixelOrder(initial_order);
 
     // Upload all atlases as texture array (enables single-draw multi-font rendering)
+    var atlas_views: [6]snail.AtlasView = undefined;
     renderer.uploadAtlases(&[_]*const snail.Atlas{
         &atlas,
         &arabic.atlas,
@@ -166,7 +167,13 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         &mongolian.atlas,
         &thai.atlas,
         &emoji.atlas,
-    });
+    }, &atlas_views);
+    const atlas_view = &atlas_views[0];
+    const arabic_view = &atlas_views[1];
+    const devanagari_view = &atlas_views[2];
+    const mongolian_view = &atlas_views[3];
+    const thai_view = &atlas_views[4];
+    const emoji_view = &atlas_views[5];
 
     // Vertex buffer: enough for ~10000 glyphs
     const buf_size = 10000 * snail.FLOATS_PER_GLYPH;
@@ -259,15 +266,18 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
             snail.Mat4.ortho(0, w, h, 0, -1, 1)
         else
             snail.Mat4.ortho(0, w, 0, h, -1, 1);
+        const vector_projection = snail.Mat4.ortho(0, w, h, 0, -1, 1);
         const cx = w / 2.0;
         const cy = h / 2.0;
-        const mvp = snail.Mat4.multiply(projection, snail.Mat4.multiply(
+        const scene_transform = snail.Mat4.multiply(
             snail.Mat4.translate(cx, cy, 0),
             snail.Mat4.multiply(snail.Mat4.scaleUniform(zoom), snail.Mat4.multiply(
                 snail.Mat4.rotateZ(angle),
                 snail.Mat4.translate(-cx, -cy, 0),
             )),
-        ));
+        );
+        const mvp = snail.Mat4.multiply(projection, scene_transform);
+        const vector_mvp = snail.Mat4.multiply(vector_projection, scene_transform);
 
         const white = [4]f32{ 1, 1, 1, 1 };
         const gray = [4]f32{ 0.6, 0.6, 0.65, 1 };
@@ -280,7 +290,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         var shapes = snail.VectorBatch.init(shape_buf);
         buildPrimitiveShowcase(&shapes, w, h);
         if (shapes.shapeCount() > 0) {
-            renderer.drawVector(shapes.slice(), w, h);
+            renderer.drawVectorTransformed(shapes.slice(), vector_mvp, w, h);
         }
 
         // Everything goes into one batch — texture arrays enable single-draw multi-font
@@ -292,7 +302,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
             var si: usize = 0;
             while (sy > 0) {
                 const fs = stress_sizes[si % stress_sizes.len];
-                _ = batch.addString(&atlas, &font, "The quick brown fox jumps over the lazy dog 0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ", 10, sy, fs, white);
+                _ = batch.addString(atlas_view, &font, "The quick brown fox jumps over the lazy dog 0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ", 10, sy, fs, white);
                 sy -= fs * 1.3;
                 si += 1;
             }
@@ -304,9 +314,9 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
             var y: f32 = h - 70;
 
             // Title + subtitle
-            _ = batch.addString(&atlas, &font, "snail", 30, y, 64, white);
+            _ = batch.addString(atlas_view, &font, "snail", 30, y, 64, white);
             y -= 76;
-            _ = batch.addString(&atlas, &font, "GPU font rendering via direct Bezier curve evaluation", 30, y, 14, gray);
+            _ = batch.addString(atlas_view, &font, "GPU font rendering via direct Bezier curve evaluation", 30, y, 14, gray);
             y -= 26;
 
             // Multi-size Latin — strings chosen so each line fits within col1_max_w
@@ -318,26 +328,26 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
                 .{ .fs = 40, .text = "How vexingly quick" },
             };
             for (size_rows) |row| {
-                _ = batch.addString(&atlas, &font, row.text, 30, y, row.fs, white);
+                _ = batch.addString(atlas_view, &font, row.text, 30, y, row.fs, white);
                 y -= row.fs * 1.4;
             }
             y -= 6;
 
             // Character sets
-            _ = batch.addString(&atlas, &font, "ABCDEFGHIJKLMNOPQRSTUVWXYZ 0123456789", 30, y, 14, cyan);
+            _ = batch.addString(atlas_view, &font, "ABCDEFGHIJKLMNOPQRSTUVWXYZ 0123456789", 30, y, 14, cyan);
             y -= 20;
-            _ = batch.addString(&atlas, &font, "abcdefghijklmnopqrstuvwxyz !@#$%^&*()", 30, y, 14, yellow);
+            _ = batch.addString(atlas_view, &font, "abcdefghijklmnopqrstuvwxyz !@#$%^&*()", 30, y, 14, yellow);
             y -= 24;
 
             // Ligatures
-            _ = batch.addString(&atlas, &font, "fi fl ffi ffl office difficult affect", 30, y, 18, white);
+            _ = batch.addString(atlas_view, &font, "fi fl ffi ffl office difficult affect", 30, y, 18, white);
             y -= 28;
 
             // Word-wrapped paragraph
             const paragraph = "Direct Bezier curve evaluation in the fragment shader produces " ++
                 "resolution-independent text at any size, rotation, or perspective transform. " ++
                 "No pre-rasterized glyph bitmaps, no signed distance fields.";
-            _ = batch.addStringWrapped(&atlas, &font, paragraph, 30, y, 12, col1_max_w, 17, gray);
+            _ = batch.addStringWrapped(atlas_view, &font, paragraph, 30, y, 12, col1_max_w, 17, gray);
 
             // Right column — script showcase in same batch (texture array = one draw call)
             var sy: f32 = h - 70;
@@ -349,9 +359,15 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
                 .{ .label = "Emoji", .text = emoji_text, .sf = &emoji, .color = white },
             };
             for (scripts) |s| {
-                _ = batch.addString(&atlas, &font, s.label, col2_x, sy, 10, gray);
+                _ = batch.addString(atlas_view, &font, s.label, col2_x, sy, 10, gray);
                 sy -= 26;
-                _ = batch.addString(&s.sf.atlas, &s.sf.font, s.text, col2_x, sy, 28, s.color);
+                _ = batch.addString(switch (s.label[0]) {
+                    'A' => arabic_view,
+                    'D' => devanagari_view,
+                    'M' => mongolian_view,
+                    'T' => thai_view,
+                    else => emoji_view,
+                }, &s.sf.font, s.text, col2_x, sy, 28, s.color);
                 sy -= 40;
             }
         }
@@ -365,12 +381,12 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         // HUD (separate draw for different MVP)
         {
             var hud = snail.Batch.init(vbuf[batch.len..]);
-            _ = hud.addString(&atlas, &font, "snail - GPU Bezier curve font rendering", 10, 30, 12, gray);
+            _ = hud.addString(atlas_view, &font, "snail - GPU Bezier curve font rendering", 10, 30, 12, gray);
             const hb_str = if (build_options.enable_harfbuzz) " | HarfBuzz ON" else "";
             const sp_name = renderer.subpixelOrder().name();
             var hud_line2_buf: [128]u8 = undefined;
             const hud_line2 = std.fmt.bufPrint(&hud_line2_buf, "Z/X zoom | R rotate | S stress | L subpixel: {s}{s}", .{ sp_name, hb_str }) catch "Z/X zoom | R rotate | S stress | L subpixel order";
-            _ = hud.addString(&atlas, &font, hud_line2, 10, 14, 12, gray);
+            _ = hud.addString(atlas_view, &font, hud_line2, 10, 14, 12, gray);
             if (hud.glyphCount() > 0) {
                 renderer.draw(hud.slice(), projection, w, h);
             }

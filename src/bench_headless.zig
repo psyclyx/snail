@@ -425,14 +425,14 @@ pub fn main() !void {
         defer arabic_atlas.deinit();
         {
             if (comptime build_options.enable_harfbuzz) {
-                _ = try arabic_atlas.addGlyphsForText(ARABIC_TEXT);
+                _ = snail.replaceAtlas(&arabic_atlas, try arabic_atlas.extendGlyphsForText(ARABIC_TEXT));
             } else {
                 var cps: [256]u32 = undefined;
                 var n: usize = 0;
                 const view = std.unicode.Utf8View.initUnchecked(ARABIC_TEXT);
                 var it = view.iterator();
                 while (it.nextCodepoint()) |cp| { if (n >= cps.len) break; cps[n] = cp; n += 1; }
-                _ = try arabic_atlas.addCodepoints(cps[0..n]);
+                _ = snail.replaceAtlas(&arabic_atlas, try arabic_atlas.extendCodepoints(cps[0..n]));
             }
         }
 
@@ -442,14 +442,14 @@ pub fn main() !void {
         defer deva_atlas.deinit();
         {
             if (comptime build_options.enable_harfbuzz) {
-                _ = try deva_atlas.addGlyphsForText(DEVANAGARI_TEXT);
+                _ = snail.replaceAtlas(&deva_atlas, try deva_atlas.extendGlyphsForText(DEVANAGARI_TEXT));
             } else {
                 var cps: [256]u32 = undefined;
                 var n: usize = 0;
                 const view = std.unicode.Utf8View.initUnchecked(DEVANAGARI_TEXT);
                 var it = view.iterator();
                 while (it.nextCodepoint()) |cp| { if (n >= cps.len) break; cps[n] = cp; n += 1; }
-                _ = try deva_atlas.addCodepoints(cps[0..n]);
+                _ = snail.replaceAtlas(&deva_atlas, try deva_atlas.extendCodepoints(cps[0..n]));
             }
         }
 
@@ -459,18 +459,19 @@ pub fn main() !void {
         defer thai_atlas.deinit();
         {
             if (comptime build_options.enable_harfbuzz) {
-                _ = try thai_atlas.addGlyphsForText(THAI_TEXT);
+                _ = snail.replaceAtlas(&thai_atlas, try thai_atlas.extendGlyphsForText(THAI_TEXT));
             } else {
                 var cps: [256]u32 = undefined;
                 var n: usize = 0;
                 const view = std.unicode.Utf8View.initUnchecked(THAI_TEXT);
                 var it = view.iterator();
                 while (it.nextCodepoint()) |cp| { if (n >= cps.len) break; cps[n] = cp; n += 1; }
-                _ = try thai_atlas.addCodepoints(cps[0..n]);
+                _ = snail.replaceAtlas(&thai_atlas, try thai_atlas.extendCodepoints(cps[0..n]));
             }
         }
 
-        renderer.uploadAtlases(&[_]*const snail.Atlas{ &atlas, &arabic_atlas, &deva_atlas, &thai_atlas });
+        var atlas_views: [4]snail.AtlasView = undefined;
+        renderer.uploadAtlases(&[_]*const snail.Atlas{ &atlas, &arabic_atlas, &deva_atlas, &thai_atlas }, &atlas_views);
         const setup_us = @as(f64, @floatFromInt(nowNs() - t_setup)) / 1000.0;
 
         const gl_pipeline = @import("render/pipeline.zig");
@@ -569,14 +570,14 @@ pub fn main() !void {
         defer arabic_atlas.deinit();
         {
             if (comptime build_options.enable_harfbuzz) {
-                _ = try arabic_atlas.addGlyphsForText(ARABIC_TEXT);
+                _ = snail.replaceAtlas(&arabic_atlas, try arabic_atlas.extendGlyphsForText(ARABIC_TEXT));
             } else {
                 var cps: [256]u32 = undefined;
                 var n: usize = 0;
                 const view = std.unicode.Utf8View.initUnchecked(ARABIC_TEXT);
                 var it = view.iterator();
                 while (it.nextCodepoint()) |cp| { if (n >= cps.len) break; cps[n] = cp; n += 1; }
-                _ = try arabic_atlas.addCodepoints(cps[0..n]);
+                _ = snail.replaceAtlas(&arabic_atlas, try arabic_atlas.extendCodepoints(cps[0..n]));
             }
         }
 
@@ -586,14 +587,14 @@ pub fn main() !void {
         defer deva_atlas.deinit();
         {
             if (comptime build_options.enable_harfbuzz) {
-                _ = try deva_atlas.addGlyphsForText(DEVANAGARI_TEXT);
+                _ = snail.replaceAtlas(&deva_atlas, try deva_atlas.extendGlyphsForText(DEVANAGARI_TEXT));
             } else {
                 var cps: [256]u32 = undefined;
                 var n: usize = 0;
                 const view = std.unicode.Utf8View.initUnchecked(DEVANAGARI_TEXT);
                 var it = view.iterator();
                 while (it.nextCodepoint()) |cp| { if (n >= cps.len) break; cps[n] = cp; n += 1; }
-                _ = try deva_atlas.addCodepoints(cps[0..n]);
+                _ = snail.replaceAtlas(&deva_atlas, try deva_atlas.extendCodepoints(cps[0..n]));
             }
         }
 
@@ -603,18 +604,19 @@ pub fn main() !void {
         defer thai_atlas.deinit();
         {
             if (comptime build_options.enable_harfbuzz) {
-                _ = try thai_atlas.addGlyphsForText(THAI_TEXT);
+                _ = snail.replaceAtlas(&thai_atlas, try thai_atlas.extendGlyphsForText(THAI_TEXT));
             } else {
                 var cps: [256]u32 = undefined;
                 var n: usize = 0;
                 const view = std.unicode.Utf8View.initUnchecked(THAI_TEXT);
                 var it = view.iterator();
                 while (it.nextCodepoint()) |cp| { if (n >= cps.len) break; cps[n] = cp; n += 1; }
-                _ = try thai_atlas.addCodepoints(cps[0..n]);
+                _ = snail.replaceAtlas(&thai_atlas, try thai_atlas.extendCodepoints(cps[0..n]));
             }
         }
 
-        renderer.uploadAtlases(&[_]*const snail.Atlas{ &atlas, &arabic_atlas, &deva_atlas, &thai_atlas });
+        var atlas_views: [4]snail.AtlasView = undefined;
+        renderer.uploadAtlases(&[_]*const snail.Atlas{ &atlas, &arabic_atlas, &deva_atlas, &thai_atlas }, &atlas_views);
         const setup_us = @as(f64, @floatFromInt(nowNs() - t_setup)) / 1000.0;
 
         std.debug.print(
