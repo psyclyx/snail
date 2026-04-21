@@ -104,21 +104,24 @@ fn buildDemoLayout(w: f32, h: f32) DemoLayout {
         .w = right_panel.w - 48,
         .h = 92,
     });
+    const left_text_x = left_panel.x + 12;
+    const accent_width = @min(left_panel.w * 0.38, 188.0);
+    const rule_width = @min(left_panel.w * 0.52, 272.0);
 
     return .{
         .left_panel = left_panel,
         .right_panel = right_panel,
         .accent_pill = snapRect(.{
-            .x = left_panel.x + 18,
-            .y = left_panel.y + 26,
-            .w = 148,
-            .h = 28,
+            .x = left_text_x,
+            .y = left_panel.y + 34,
+            .w = accent_width,
+            .h = 22,
         }),
         .accent_rule = snapRect(.{
-            .x = left_panel.x + 18,
-            .y = left_panel.y + 66,
-            .w = 220,
-            .h = 14,
+            .x = left_text_x,
+            .y = left_panel.y + 68,
+            .w = rule_width,
+            .h = 12,
         }),
         .orb_outer = orb_outer,
         .orb_inner = orb_inner,
@@ -135,7 +138,7 @@ fn buildDemoLayout(w: f32, h: f32) DemoLayout {
             .w = footer_panel.w * 0.32,
             .h = 18,
         }),
-        .left_text_x = left_panel.x + 12,
+        .left_text_x = left_text_x,
         .right_text_x = right_panel.x + 26,
         .left_text_max_w = left_panel.w - 24,
     };
@@ -158,8 +161,8 @@ fn buildPrimitiveShowcase(batch: *snail.VectorBatch, layout: DemoLayout) void {
         1.5,
     );
 
-    addRoundedRect(batch, layout.accent_pill, .{ 0.18, 0.46, 0.82, 0.22 }, .{ 0.18, 0.46, 0.82, 0.9 }, 1.5, 14);
-    addRoundedRect(batch, layout.accent_rule, .{ 0.86, 0.91, 0.96, 0.08 }, .{ 0.86, 0.91, 0.96, 0.3 }, 1, 7);
+    addRoundedRect(batch, layout.accent_pill, .{ 0.18, 0.46, 0.82, 0.22 }, .{ 0.18, 0.46, 0.82, 0.9 }, 1.5, 11);
+    addRoundedRect(batch, layout.accent_rule, .{ 0.86, 0.91, 0.96, 0.08 }, .{ 0.86, 0.91, 0.96, 0.3 }, 1, 6);
 
     addRoundedRect(batch, layout.footer_panel, .{ 0.1, 0.12, 0.15, 0.9 }, .{ 0.3, 0.33, 0.4, 1 }, 1.5, 20);
     addRoundedRect(batch, layout.footer_bar_primary, .{ 0.28, 0.72, 0.92, 0.18 }, .{ 0.28, 0.72, 0.92, 0.85 }, 1, 9);
