@@ -1,6 +1,6 @@
 const std = @import("std");
 const gl = @import("gl.zig").gl;
-const SubpixelOrder = @import("subpixel_order.zig").SubpixelOrder;
+const text_pipeline = @import("pipeline.zig");
 const vector_vertex = @import("vector_vertex.zig");
 const Mat4 = @import("../math/vec.zig").Mat4;
 
@@ -9,8 +9,6 @@ var vao: gl.GLuint = 0;
 var vbo: gl.GLuint = 0;
 var u_mvp: gl.GLint = -1;
 var u_subpixel_order: gl.GLint = -1;
-
-pub var subpixel_order: SubpixelOrder = .none;
 
 const vertex_shader =
     \\#version 330 core
@@ -172,7 +170,6 @@ pub fn deinit() void {
     vbo = 0;
     u_mvp = -1;
     u_subpixel_order = -1;
-    subpixel_order = .none;
 }
 
 pub fn resetFrameState() void {}
@@ -196,7 +193,7 @@ pub fn drawPrimitives(vertices: []const f32, mvp: Mat4) void {
     gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA);
     gl.glUseProgram(program);
     gl.glUniformMatrix4fv(u_mvp, 1, gl.GL_FALSE, &mvp.data);
-    gl.glUniform1i(u_subpixel_order, @intFromEnum(subpixel_order));
+    gl.glUniform1i(u_subpixel_order, @intFromEnum(text_pipeline.subpixel_order));
     gl.glDrawArraysInstanced(gl.GL_TRIANGLES, 0, 6, @intCast(primitive_count));
 }
 

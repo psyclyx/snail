@@ -1518,10 +1518,7 @@ pub const Renderer = struct {
     /// Set LCD subpixel rendering order. Use .none to disable subpixel rendering.
     pub fn setSubpixelOrder(self: *Renderer, order: SubpixelOrder) void {
         switch (self.backend) {
-            .gl => {
-                pipeline.subpixel_order = order;
-                vector_pipeline.subpixel_order = order;
-            },
+            .gl => pipeline.subpixel_order = order,
             .vulkan => vulkan_pipeline.subpixel_order = order,
         }
     }
