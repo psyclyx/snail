@@ -46,7 +46,7 @@ nix-build -A demo       # build snail-demo
 cd pkg/arch && makepkg -si
 ```
 
-Demo controls: `Z`/`X` zoom, `R` rotate, `S` stress test, `L` cycle subpixel order (none → RGB → BGR → VRGB → VBGR).
+Demo controls: arrow keys pan, `Z`/`X` zoom, `R` rotate, `S` stress test, `L` cycle subpixel order (none → RGB → BGR → VRGB → VBGR).
 
 ## Usage
 

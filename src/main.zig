@@ -249,6 +249,8 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
 
     var angle: f32 = 0;
     var zoom: f32 = 1.0;
+    var pan_x: f32 = 0;
+    var pan_y: f32 = 0;
     var rotate = false;
     var stress_test = false;
     var last_time = platform.getTime();
@@ -264,7 +266,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         if (build_options.enable_harfbuzz) "ON" else "OFF",
     });
     std.debug.print("Subpixel order: {s}\n", .{renderer.subpixelOrder().name()});
-    std.debug.print("Keys: Z/X zoom, R rotate, S stress, L subpixel order, Esc quit\n", .{});
+    std.debug.print("Keys: arrows pan, Z/X zoom, R rotate, S stress, L subpixel order, Esc quit\n", .{});
 
     while (!platform.shouldClose()) {
         const now = platform.getTime();
@@ -284,6 +286,10 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         const KEY_L = if (use_vulkan) platform.GLFW_KEY_L else platform.c.GLFW_KEY_L;
         const KEY_Z = if (use_vulkan) platform.GLFW_KEY_Z else platform.c.GLFW_KEY_Z;
         const KEY_X = if (use_vulkan) platform.GLFW_KEY_X else platform.c.GLFW_KEY_X;
+        const KEY_LEFT = if (use_vulkan) platform.GLFW_KEY_LEFT else platform.c.GLFW_KEY_LEFT;
+        const KEY_RIGHT = if (use_vulkan) platform.GLFW_KEY_RIGHT else platform.c.GLFW_KEY_RIGHT;
+        const KEY_UP = if (use_vulkan) platform.GLFW_KEY_UP else platform.c.GLFW_KEY_UP;
+        const KEY_DOWN = if (use_vulkan) platform.GLFW_KEY_DOWN else platform.c.GLFW_KEY_DOWN;
 
         // Re-detect subpixel order when the window moves to a different monitor.
         if (platform.consumeMonitorChanged()) {
@@ -311,6 +317,12 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         if (rotate) angle += dt * 0.5;
         if (platform.isKeyDown(KEY_Z)) zoom *= 1.0 + dt * 2.0;
         if (platform.isKeyDown(KEY_X)) zoom *= 1.0 - dt * 2.0;
+        const pan_speed: f32 = 900.0;
+        const pan_step = pan_speed * dt;
+        if (platform.isKeyDown(KEY_LEFT)) pan_x += pan_step;
+        if (platform.isKeyDown(KEY_RIGHT)) pan_x -= pan_step;
+        if (platform.isKeyDown(KEY_UP)) pan_y += pan_step;
+        if (platform.isKeyDown(KEY_DOWN)) pan_y -= pan_step;
 
         const size = platform.getWindowSize();
         const w: f32 = @floatFromInt(size[0]);
@@ -335,15 +347,17 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         const vector_projection = snail.Mat4.ortho(0, w, h, 0, -1, 1);
         const cx = w / 2.0;
         const cy = h / 2.0;
-        const scene_transform = snail.Mat4.multiply(
+        const scene_core = snail.Mat4.multiply(
             snail.Mat4.translate(cx, cy, 0),
             snail.Mat4.multiply(snail.Mat4.scaleUniform(zoom), snail.Mat4.multiply(
                 snail.Mat4.rotateZ(angle),
                 snail.Mat4.translate(-cx, -cy, 0),
             )),
         );
-        const mvp = snail.Mat4.multiply(projection, scene_transform);
-        const vector_mvp = snail.Mat4.multiply(vector_projection, scene_transform);
+        const text_scene_transform = snail.Mat4.multiply(snail.Mat4.translate(pan_x, -pan_y, 0), scene_core);
+        const vector_scene_transform = snail.Mat4.multiply(snail.Mat4.translate(pan_x, pan_y, 0), scene_core);
+        const mvp = snail.Mat4.multiply(projection, text_scene_transform);
+        const vector_mvp = snail.Mat4.multiply(vector_projection, vector_scene_transform);
 
         const white = [4]f32{ 1, 1, 1, 1 };
         const gray = [4]f32{ 0.6, 0.6, 0.65, 1 };
@@ -451,7 +465,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
             const hb_str = if (build_options.enable_harfbuzz) " | HarfBuzz ON" else "";
             const sp_name = renderer.subpixelOrder().name();
             var hud_line2_buf: [128]u8 = undefined;
-            const hud_line2 = std.fmt.bufPrint(&hud_line2_buf, "Z/X zoom | R rotate | S stress | L subpixel: {s}{s}", .{ sp_name, hb_str }) catch "Z/X zoom | R rotate | S stress | L subpixel order";
+            const hud_line2 = std.fmt.bufPrint(&hud_line2_buf, "Arrows pan | Z/X zoom | R rotate | S stress | L subpixel: {s}{s}", .{ sp_name, hb_str }) catch "Arrows pan | Z/X zoom | R rotate | S stress | L subpixel order";
             _ = hud.addString(atlas_view, &font, hud_line2, 10, 14, 12, gray);
             if (hud.glyphCount() > 0) {
                 renderer.draw(hud.slice(), projection, w, h);

@@ -630,6 +630,10 @@ pub const GLFW_KEY_S = c.GLFW_KEY_S;
 pub const GLFW_KEY_L = c.GLFW_KEY_L;
 pub const GLFW_KEY_Z = c.GLFW_KEY_Z;
 pub const GLFW_KEY_X = c.GLFW_KEY_X;
+pub const GLFW_KEY_LEFT = c.GLFW_KEY_LEFT;
+pub const GLFW_KEY_RIGHT = c.GLFW_KEY_RIGHT;
+pub const GLFW_KEY_UP = c.GLFW_KEY_UP;
+pub const GLFW_KEY_DOWN = c.GLFW_KEY_DOWN;
 
 // ── Vulkan setup internals ──
 
