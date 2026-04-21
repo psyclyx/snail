@@ -123,7 +123,7 @@ const cpu_renderer = @import("extra/cpu_renderer.zig");
 var soft = cpu_renderer.CpuRenderer.init(pixel_buf.ptr, width, height, stride);
 soft.clear(0, 0, 0, 0);
 soft.drawGlyph(&atlas, &font, 'A', 12, 28, 24, .{ 1, 1, 1, 1 });
-soft.drawVector(shape_batch.slice());
+soft.drawVector(shapes.slice());
 soft.drawVectorPicture(&picture);
 ```
 
