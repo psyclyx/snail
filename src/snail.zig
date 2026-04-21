@@ -840,12 +840,53 @@ pub const Batch = struct {
     buf: []f32,
     len: usize, // floats written
 
+    const glyph_stack_capacity = 256;
+
+    const PreparedGlyphs = struct {
+        slice: []const u16,
+        owned: ?[]u16 = null,
+
+        fn deinit(self: *const PreparedGlyphs, allocator: std.mem.Allocator) void {
+            if (self.owned) |buf| allocator.free(buf);
+        }
+    };
+
     fn coerceAtlasView(atlas_like: anytype) AtlasView {
         const T = @TypeOf(atlas_like);
         return switch (T) {
             *const AtlasView, *AtlasView => atlas_like.*,
             *const Atlas, *Atlas => .{ .atlas = atlas_like, .layer_base = 0 },
             else => @compileError("expected *Atlas or *AtlasView"),
+        };
+    }
+
+    fn prepareGlyphs(atlas: *const Atlas, font: *const Font, text: []const u8, stack_buf: []u16) ?PreparedGlyphs {
+        if (text.len == 0) return .{ .slice = &.{} };
+
+        var owned: ?[]u16 = null;
+        const capacity = @max(text.len, 1);
+        const buf = if (capacity <= stack_buf.len)
+            stack_buf[0..capacity]
+        else blk: {
+            owned = atlas.allocator.alloc(u16, capacity) catch return null;
+            break :blk owned.?;
+        };
+
+        var glyph_count: usize = 0;
+        const utf8_view = std.unicode.Utf8View.initUnchecked(text);
+        var it = utf8_view.iterator();
+        while (it.nextCodepoint()) |cp| {
+            buf[glyph_count] = font.glyphIndex(cp) catch 0;
+            glyph_count += 1;
+        }
+
+        if (atlas.shaper) |shaper| {
+            glyph_count = shaper.applyLigatures(buf[0..glyph_count]) catch glyph_count;
+        }
+
+        return .{
+            .slice = buf[0..glyph_count],
+            .owned = owned,
         };
     }
 
@@ -992,26 +1033,13 @@ pub const Batch = struct {
 
         const scale = font_size / @as(f32, @floatFromInt(font.unitsPerEm()));
         var cursor_x = x;
-
-        // Convert UTF-8 text to glyph IDs
-        var glyph_buf: [1024]u16 = undefined;
-        var glyph_count: usize = 0;
-        const utf8_view = std.unicode.Utf8View.initUnchecked(text);
-        var it = utf8_view.iterator();
-        while (it.nextCodepoint()) |cp| {
-            if (glyph_count >= glyph_buf.len) break;
-            glyph_buf[glyph_count] = font.glyphIndex(cp) catch 0;
-            glyph_count += 1;
-        }
-
-        // Apply ligature substitution
-        if (atlas.shaper) |shaper| {
-            glyph_count = shaper.applyLigatures(glyph_buf[0..glyph_count]) catch glyph_count;
-        }
+        var glyph_stack: [glyph_stack_capacity]u16 = undefined;
+        var prepared = prepareGlyphs(atlas, font, text, &glyph_stack) orelse return 0;
+        defer prepared.deinit(atlas.allocator);
 
         // Layout
         var prev_gid: u16 = 0;
-        for (glyph_buf[0..glyph_count]) |gid| {
+        for (prepared.slice) |gid| {
             if (gid == 0) {
                 cursor_x += scale * 500;
                 prev_gid = 0;
@@ -1157,10 +1185,11 @@ pub const Batch = struct {
         const scale = font_size / @as(f32, @floatFromInt(font.unitsPerEm()));
         var width: f32 = 0;
         var prev_gid: u16 = 0;
-        const utf8_view = std.unicode.Utf8View.initUnchecked(text);
-        var it = utf8_view.iterator();
-        while (it.nextCodepoint()) |cp| {
-            const gid = font.glyphIndex(cp) catch 0;
+        var glyph_stack: [glyph_stack_capacity]u16 = undefined;
+        var prepared = prepareGlyphs(atlas, font, text, &glyph_stack) orelse return 0;
+        defer prepared.deinit(atlas.allocator);
+
+        for (prepared.slice) |gid| {
             if (gid == 0) {
                 width += scale * 500;
                 prev_gid = 0;
@@ -1489,7 +1518,10 @@ pub const Renderer = struct {
     /// Set LCD subpixel rendering order. Use .none to disable subpixel rendering.
     pub fn setSubpixelOrder(self: *Renderer, order: SubpixelOrder) void {
         switch (self.backend) {
-            .gl => pipeline.subpixel_order = order,
+            .gl => {
+                pipeline.subpixel_order = order;
+                vector_pipeline.subpixel_order = order;
+            },
             .vulkan => vulkan_pipeline.subpixel_order = order,
         }
     }

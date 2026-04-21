@@ -187,7 +187,7 @@ renderer.setFillRule(.even_odd);
 
 ### Subpixel rendering
 
-`renderer.setSubpixelOrder(.rgb)` enables LCD subpixel antialiasing. The fragment shader evaluates coverage at three sub-pixel offsets, tripling effective resolution in the subpixel axis. Most visible on standard-DPI displays at small font sizes.
+`renderer.setSubpixelOrder(.rgb)` enables LCD subpixel antialiasing. The fragment shader evaluates coverage at three sub-pixel offsets, tripling effective resolution in the subpixel axis. This applies to both glyphs and analytic vector primitives. Most visible on standard-DPI displays at small font sizes.
 
 All five orders are supported: `.none` (off), `.rgb`, `.bgr`, `.vrgb`, `.vbgr`. The demo auto-detects the system order via fontconfig and corrects for rotated monitors; the L key cycles orders at runtime.
 

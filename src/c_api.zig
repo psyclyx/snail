@@ -246,7 +246,9 @@ export fn snail_renderer_upload_atlas(atlas: *AtlasImpl) void {
 }
 
 export fn snail_renderer_set_subpixel(enabled: bool) void {
-    pipeline.subpixel_order = if (enabled) .rgb else .none;
+    const order = if (enabled) snail.SubpixelOrder.rgb else snail.SubpixelOrder.none;
+    pipeline.subpixel_order = order;
+    vector_pipeline.subpixel_order = order;
 }
 
 export fn snail_renderer_set_fill_rule(rule: c_int) void {
