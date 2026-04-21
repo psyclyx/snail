@@ -54,54 +54,132 @@ fn addRoundedRect(
     _ = batch.addRoundedRect(rect, fill, border, border_width, corner_radius);
 }
 
-fn buildPrimitiveShowcase(batch: *snail.VectorBatch, w: f32, h: f32) void {
-    const left_panel_w = w * 0.47;
-    const right_panel_x = w * 0.5;
-    const right_panel_w = w - right_panel_x - 24;
+fn snapPx(value: f32) f32 {
+    return @round(value);
+}
 
-    addRoundedRect(batch, .{ .x = 18, .y = 18, .w = left_panel_w, .h = h - 96 }, .{ 0.08, 0.09, 0.11, 0.88 }, .{ 0.22, 0.24, 0.28, 1 }, 1.5, 24);
-    addRoundedRect(batch, .{ .x = right_panel_x, .y = 18, .w = right_panel_w, .h = h - 96 }, .{ 0.07, 0.08, 0.1, 0.82 }, .{ 0.18, 0.2, 0.24, 1 }, 1.5, 24);
+fn snapRect(rect: snail.VectorRect) snail.VectorRect {
+    return .{
+        .x = snapPx(rect.x),
+        .y = snapPx(rect.y),
+        .w = snapPx(rect.w),
+        .h = snapPx(rect.h),
+    };
+}
+
+const DemoLayout = struct {
+    left_panel: snail.VectorRect,
+    right_panel: snail.VectorRect,
+    accent_pill: snail.VectorRect,
+    accent_rule: snail.VectorRect,
+    orb_outer: snail.VectorRect,
+    orb_inner: snail.VectorRect,
+    footer_panel: snail.VectorRect,
+    footer_bar_primary: snail.VectorRect,
+    footer_bar_secondary: snail.VectorRect,
+    left_text_x: f32,
+    right_text_x: f32,
+    left_text_max_w: f32,
+};
+
+fn buildDemoLayout(w: f32, h: f32) DemoLayout {
+    const panel_margin = 18.0;
+    const panel_gap = 16.0;
+    const panel_top = 18.0;
+    const panel_height = @max(h - 64.0, 240.0);
+    const split_x = snapPx(w * 0.5);
+    const left_panel = snapRect(.{
+        .x = panel_margin,
+        .y = panel_top,
+        .w = split_x - panel_margin - panel_gap,
+        .h = panel_height,
+    });
+    const right_panel = snapRect(.{
+        .x = split_x,
+        .y = panel_top,
+        .w = w - split_x - panel_margin,
+        .h = panel_height,
+    });
+
+    const orb_outer = snapRect(.{
+        .x = right_panel.x + right_panel.w - 220,
+        .y = right_panel.y + 36,
+        .w = 180,
+        .h = 180,
+    });
+    const orb_inner = snapRect(.{
+        .x = orb_outer.x + (orb_outer.w - 96) * 0.5,
+        .y = orb_outer.y + (orb_outer.h - 96) * 0.5,
+        .w = 96,
+        .h = 96,
+    });
+
+    const footer_panel = snapRect(.{
+        .x = right_panel.x + 24,
+        .y = right_panel.y + right_panel.h - 110,
+        .w = right_panel.w - 48,
+        .h = 92,
+    });
+
+    return .{
+        .left_panel = left_panel,
+        .right_panel = right_panel,
+        .accent_pill = snapRect(.{
+            .x = left_panel.x + 18,
+            .y = left_panel.y + 26,
+            .w = 148,
+            .h = 28,
+        }),
+        .accent_rule = snapRect(.{
+            .x = left_panel.x + 18,
+            .y = left_panel.y + 66,
+            .w = 220,
+            .h = 14,
+        }),
+        .orb_outer = orb_outer,
+        .orb_inner = orb_inner,
+        .footer_panel = footer_panel,
+        .footer_bar_primary = snapRect(.{
+            .x = footer_panel.x + 18,
+            .y = footer_panel.y + 24,
+            .w = footer_panel.w * 0.46,
+            .h = 18,
+        }),
+        .footer_bar_secondary = snapRect(.{
+            .x = footer_panel.x + 18,
+            .y = footer_panel.y + 58,
+            .w = footer_panel.w * 0.32,
+            .h = 18,
+        }),
+        .left_text_x = left_panel.x + 12,
+        .right_text_x = right_panel.x + 26,
+        .left_text_max_w = left_panel.w - 24,
+    };
+}
+
+fn buildPrimitiveShowcase(batch: *snail.VectorBatch, layout: DemoLayout) void {
+    addRoundedRect(batch, layout.left_panel, .{ 0.08, 0.09, 0.11, 0.88 }, .{ 0.22, 0.24, 0.28, 1 }, 1.5, 24);
+    addRoundedRect(batch, layout.right_panel, .{ 0.07, 0.08, 0.1, 0.82 }, .{ 0.18, 0.2, 0.24, 1 }, 1.5, 24);
 
     _ = batch.addEllipse(
-        .{ .x = right_panel_x + right_panel_w - 220, .y = 54, .w = 180, .h = 180 },
+        layout.orb_outer,
         .{ 0.28, 0.72, 0.92, 0.16 },
         .{ 0.28, 0.72, 0.92, 0.7 },
         2,
     );
     _ = batch.addEllipse(
-        .{ .x = right_panel_x + right_panel_w - 160, .y = 94, .w = 96, .h = 96 },
+        layout.orb_inner,
         .{ 0.95, 0.72, 0.24, 0.22 },
         .{ 0.95, 0.72, 0.24, 0.82 },
         1.5,
     );
 
-    addRoundedRect(batch, .{ .x = 36, .y = 44, .w = 148, .h = 28 }, .{ 0.18, 0.46, 0.82, 0.22 }, .{ 0.18, 0.46, 0.82, 0.9 }, 1.5, 14);
-    addRoundedRect(batch, .{ .x = 36, .y = 84, .w = 220, .h = 14 }, .{ 0.86, 0.91, 0.96, 0.08 }, .{ 0.86, 0.91, 0.96, 0.3 }, 1, 7);
+    addRoundedRect(batch, layout.accent_pill, .{ 0.18, 0.46, 0.82, 0.22 }, .{ 0.18, 0.46, 0.82, 0.9 }, 1.5, 14);
+    addRoundedRect(batch, layout.accent_rule, .{ 0.86, 0.91, 0.96, 0.08 }, .{ 0.86, 0.91, 0.96, 0.3 }, 1, 7);
 
-    addRoundedRect(
-        batch,
-        .{ .x = right_panel_x + 24, .y = h - 156, .w = right_panel_w - 48, .h = 92 },
-        .{ 0.1, 0.12, 0.15, 0.9 },
-        .{ 0.3, 0.33, 0.4, 1 },
-        1.5,
-        20,
-    );
-    addRoundedRect(
-        batch,
-        .{ .x = right_panel_x + 42, .y = h - 132, .w = right_panel_w * 0.42, .h = 18 },
-        .{ 0.28, 0.72, 0.92, 0.18 },
-        .{ 0.28, 0.72, 0.92, 0.85 },
-        1,
-        9,
-    );
-    addRoundedRect(
-        batch,
-        .{ .x = right_panel_x + 42, .y = h - 98, .w = right_panel_w * 0.3, .h = 18 },
-        .{ 0.96, 0.72, 0.28, 0.16 },
-        .{ 0.96, 0.72, 0.28, 0.82 },
-        1,
-        9,
-    );
+    addRoundedRect(batch, layout.footer_panel, .{ 0.1, 0.12, 0.15, 0.9 }, .{ 0.3, 0.33, 0.4, 1 }, 1.5, 20);
+    addRoundedRect(batch, layout.footer_bar_primary, .{ 0.28, 0.72, 0.92, 0.18 }, .{ 0.28, 0.72, 0.92, 0.85 }, 1, 9);
+    addRoundedRect(batch, layout.footer_bar_secondary, .{ 0.96, 0.72, 0.28, 0.16 }, .{ 0.96, 0.72, 0.28, 0.82 }, 1, 9);
 }
 
 pub fn main() !void {
@@ -251,6 +329,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         const w: f32 = @floatFromInt(size[0]);
         const h: f32 = @floatFromInt(size[1]);
         if (w < 1 or h < 1) continue;
+        const layout = buildDemoLayout(w, h);
 
         // Begin frame (Vulkan: acquire swapchain image + begin render pass)
         if (use_vulkan) {
@@ -288,7 +367,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
 
         renderer.beginFrame();
         var shapes = snail.VectorBatch.init(shape_buf);
-        buildPrimitiveShowcase(&shapes, w, h);
+        buildPrimitiveShowcase(&shapes, layout);
         if (shapes.shapeCount() > 0) {
             renderer.drawVectorTransformed(shapes.slice(), vector_mvp, w, h);
         }
@@ -308,15 +387,15 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
             }
         } else {
             // Left column: x=30..col2_x-20; right column: col2_x..w
-            const col2_x: f32 = w * 0.52;
-            const col1_max_w: f32 = col2_x - 50; // keep text out of the right column
+            const col2_x = layout.right_text_x;
+            const col1_max_w = layout.left_text_max_w;
 
             var y: f32 = h - 70;
 
             // Title + subtitle
-            _ = batch.addString(atlas_view, &font, "snail", 30, y, 64, white);
+            _ = batch.addString(atlas_view, &font, "snail", layout.left_text_x, y, 64, white);
             y -= 76;
-            _ = batch.addString(atlas_view, &font, "GPU font rendering via direct Bezier curve evaluation", 30, y, 14, gray);
+            _ = batch.addString(atlas_view, &font, "GPU font rendering via direct Bezier curve evaluation", layout.left_text_x, y, 14, gray);
             y -= 26;
 
             // Multi-size Latin — strings chosen so each line fits within col1_max_w
@@ -328,26 +407,26 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
                 .{ .fs = 40, .text = "How vexingly quick" },
             };
             for (size_rows) |row| {
-                _ = batch.addString(atlas_view, &font, row.text, 30, y, row.fs, white);
+                _ = batch.addString(atlas_view, &font, row.text, layout.left_text_x, y, row.fs, white);
                 y -= row.fs * 1.4;
             }
             y -= 6;
 
             // Character sets
-            _ = batch.addString(atlas_view, &font, "ABCDEFGHIJKLMNOPQRSTUVWXYZ 0123456789", 30, y, 14, cyan);
+            _ = batch.addString(atlas_view, &font, "ABCDEFGHIJKLMNOPQRSTUVWXYZ 0123456789", layout.left_text_x, y, 14, cyan);
             y -= 20;
-            _ = batch.addString(atlas_view, &font, "abcdefghijklmnopqrstuvwxyz !@#$%^&*()", 30, y, 14, yellow);
+            _ = batch.addString(atlas_view, &font, "abcdefghijklmnopqrstuvwxyz !@#$%^&*()", layout.left_text_x, y, 14, yellow);
             y -= 24;
 
             // Ligatures
-            _ = batch.addString(atlas_view, &font, "fi fl ffi ffl office difficult affect", 30, y, 18, white);
+            _ = batch.addString(atlas_view, &font, "fi fl ffi ffl office difficult affect", layout.left_text_x, y, 18, white);
             y -= 28;
 
             // Word-wrapped paragraph
             const paragraph = "Direct Bezier curve evaluation in the fragment shader produces " ++
                 "resolution-independent text at any size, rotation, or perspective transform. " ++
                 "No pre-rasterized glyph bitmaps, no signed distance fields.";
-            _ = batch.addStringWrapped(atlas_view, &font, paragraph, 30, y, 12, col1_max_w, 17, gray);
+            _ = batch.addStringWrapped(atlas_view, &font, paragraph, layout.left_text_x, y, 12, col1_max_w, 17, gray);
 
             // Right column — script showcase in same batch (texture array = one draw call)
             var sy: f32 = h - 70;
