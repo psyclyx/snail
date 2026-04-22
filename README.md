@@ -2,7 +2,7 @@
 
 GPU font rendering via direct Bézier curve evaluation. A Zig implementation of the [Slug algorithm](https://sluglibrary.com/).
 
-![snail rendering text at multiple sizes](assets/screenshot_sizes.png)
+![snail demo scene rendered offscreen](assets/demo_screenshot.png)
 
 Text is rendered by evaluating quadratic Bézier curves per-pixel in a fragment shader. No pre-rasterized glyph bitmaps, no signed distance fields. Glyphs are resolution-independent and render correctly at any size, rotation, or perspective transform. Curve geometry is packed into GPU textures at load time; coverage is computed analytically at runtime.
 
@@ -30,6 +30,7 @@ zig build bench-suite -Dvulkan=true # combined suite with additional Vulkan text
 zig build demo                      # build the interactive demo (Wayland + EGL)
 zig build run                       # run the interactive demo (Wayland + EGL)
 zig build run -Dvulkan=true         # Vulkan demo backend (Wayland surface)
+zig build screenshot                # render the demo scene offscreen to zig-out/demo-screenshot.tga
 zig build run -Dharfbuzz=false      # disable HarfBuzz and use the built-in shaper only
 zig build install --release=fast    # install libsnail + header to zig-out/
 ```
@@ -413,16 +414,7 @@ For `bench-headless` and `bench-suite`:
 - OpenGL: EGL pbuffer + FBO.
 - Vulkan: offscreen `VkImage`; no window, surface, or swapchain in the measured path.
 
-Reference run from April 22, 2026 on this machine:
-
-- `bench`: `Parse 62 glyphs` = `487.9 us`; `Band texture` = `181.6 us`.
-- `bench-compare`: `Paragraph` = `12.5 us` vs FreeType `1790.3 us`; `Torture` = `84.1 us` vs `13111.9 us`.
-- `bench-headless`: OpenGL `Body text` = `68.5 us` static / `93.4 us` dynamic; Vulkan `Body text` = `106.8 us` static / `125.3 us` dynamic.
-- `bench-headless`: OpenGL `Chat` = `26.1 us` static / `26.2 us` dynamic; Vulkan `Chat` = `48.7 us` static / `68.9 us` dynamic.
-- `bench-suite`: OpenGL `Primitive stress` = `347.6 us` static / `347.6 us` dynamic; Vulkan `Primitive stress` = `254.8 us` static / `256.5 us` dynamic.
-- Current hotspot: Vulkan text is still slower than OpenGL in the offscreen benches, especially small dynamic and multi-font text.
-
-These numbers are machine-specific. For current results on a different system, rerun the benchmark commands locally and compare the same lines.
+Benchmark results are machine-specific. Rerun the commands locally and compare the same lines when checking regressions.
 
 ### Other GPU font renderers
 

@@ -301,13 +301,17 @@ pub fn queueWaitIdle() void {
 // Equivalent to GL's offscreen EGL+pbuffer+FBO path. Used by benchmarks.
 
 const OFFSCREEN_FORMAT: vk.VkFormat = vk.VK_FORMAT_R8G8B8A8_UNORM;
+const OFFSCREEN_FRAMES_IN_FLIGHT = 8;
 
 var offscreen_image: vk.VkImage = null;
 var offscreen_memory: vk.VkDeviceMemory = null;
 var offscreen_view: vk.VkImageView = null;
 var offscreen_render_pass: vk.VkRenderPass = null;
 var offscreen_framebuffer: vk.VkFramebuffer = null;
-var offscreen_cmd: vk.VkCommandBuffer = null;
+var offscreen_cmds: [OFFSCREEN_FRAMES_IN_FLIGHT]vk.VkCommandBuffer = .{null} ** OFFSCREEN_FRAMES_IN_FLIGHT;
+var offscreen_fences: [OFFSCREEN_FRAMES_IN_FLIGHT]vk.VkFence = .{null} ** OFFSCREEN_FRAMES_IN_FLIGHT;
+var offscreen_frame: u32 = 0;
+var offscreen_active_frame: u32 = 0;
 var offscreen_extent: vk.VkExtent2D = .{ .width = 0, .height = 0 };
 
 /// Initialise Vulkan for offscreen rendering. No window or swapchain.
@@ -337,6 +341,9 @@ pub fn deinitOffscreen() void {
     if (offscreen_view != null) vk.vkDestroyImageView(device, offscreen_view, null);
     if (offscreen_image != null) vk.vkDestroyImage(device, offscreen_image, null);
     if (offscreen_memory != null) vk.vkFreeMemory(device, offscreen_memory, null);
+    for (offscreen_fences) |fence| {
+        if (fence != null) vk.vkDestroyFence(device, fence, null);
+    }
     if (command_pool != null) vk.vkDestroyCommandPool(device, command_pool, null);
     if (device != null) vk.vkDestroyDevice(device, null);
     if (instance != null) vk.vkDestroyInstance(instance, null);
@@ -345,7 +352,10 @@ pub fn deinitOffscreen() void {
     offscreen_view = null;
     offscreen_render_pass = null;
     offscreen_framebuffer = null;
-    offscreen_cmd = null;
+    offscreen_cmds = .{null} ** OFFSCREEN_FRAMES_IN_FLIGHT;
+    offscreen_fences = .{null} ** OFFSCREEN_FRAMES_IN_FLIGHT;
+    offscreen_frame = 0;
+    offscreen_active_frame = 0;
     command_pool = null;
     device = null;
     instance = null;
@@ -354,16 +364,22 @@ pub fn deinitOffscreen() void {
 }
 
 /// Begin an offscreen frame. Returns the command buffer to record into.
-/// Waits for the previous submit to complete before resetting the command buffer.
+/// Waits only for the current ring slot, allowing the CPU to queue several
+/// frames ahead during headless benchmarks instead of idling every frame.
 pub fn beginFrameOffscreen() vk.VkCommandBuffer {
-    _ = vk.vkQueueWaitIdle(graphics_queue);
-    _ = vk.vkResetCommandBuffer(offscreen_cmd, 0);
+    const frame = offscreen_frame;
+    const fence = offscreen_fences[frame];
+    _ = vk.vkWaitForFences(device, 1, &fence, vk.VK_TRUE, std.math.maxInt(u64));
+    _ = vk.vkResetFences(device, 1, &fence);
+
+    const cmd = offscreen_cmds[frame];
+    _ = vk.vkResetCommandBuffer(cmd, 0);
 
     const begin_info = std.mem.zeroInit(vk.VkCommandBufferBeginInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .flags = vk.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
     });
-    _ = vk.vkBeginCommandBuffer(offscreen_cmd, &begin_info);
+    _ = vk.vkBeginCommandBuffer(cmd, &begin_info);
 
     const clear_value = vk.VkClearValue{ .color = .{ .float32 = .{ 0.12, 0.12, 0.14, 1.0 } } };
     const rp_info = std.mem.zeroInit(vk.VkRenderPassBeginInfo, .{
@@ -374,22 +390,27 @@ pub fn beginFrameOffscreen() vk.VkCommandBuffer {
         .clearValueCount = 1,
         .pClearValues = &clear_value,
     });
-    vk.vkCmdBeginRenderPass(offscreen_cmd, &rp_info, vk.VK_SUBPASS_CONTENTS_INLINE);
+    vk.vkCmdBeginRenderPass(cmd, &rp_info, vk.VK_SUBPASS_CONTENTS_INLINE);
 
-    return offscreen_cmd;
+    offscreen_active_frame = frame;
+    return cmd;
 }
 
 /// End the offscreen frame: close render pass and submit. Use queueWaitIdle() to sync.
 pub fn endFrameOffscreen() void {
-    vk.vkCmdEndRenderPass(offscreen_cmd);
-    _ = vk.vkEndCommandBuffer(offscreen_cmd);
+    const frame = offscreen_active_frame;
+    const cmd = offscreen_cmds[frame];
+    const fence = offscreen_fences[frame];
+    vk.vkCmdEndRenderPass(cmd);
+    _ = vk.vkEndCommandBuffer(cmd);
 
     const submit_info = std.mem.zeroInit(vk.VkSubmitInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_SUBMIT_INFO,
         .commandBufferCount = 1,
-        .pCommandBuffers = &offscreen_cmd,
+        .pCommandBuffers = &cmd,
     });
-    _ = vk.vkQueueSubmit(graphics_queue, 1, &submit_info, null);
+    _ = vk.vkQueueSubmit(graphics_queue, 1, &submit_info, fence);
+    offscreen_frame = (frame + 1) % OFFSCREEN_FRAMES_IN_FLIGHT;
 }
 
 fn createInstanceOffscreen() !void {
@@ -465,9 +486,17 @@ fn createCommandResourcesOffscreen() !void {
         .sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
         .commandPool = command_pool,
         .level = vk.VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        .commandBufferCount = 1,
+        .commandBufferCount = OFFSCREEN_FRAMES_IN_FLIGHT,
     });
-    try checkVk(vk.vkAllocateCommandBuffers(device, &cb_ai, &offscreen_cmd));
+    try checkVk(vk.vkAllocateCommandBuffers(device, &cb_ai, &offscreen_cmds));
+
+    const fence_ci = std.mem.zeroInit(vk.VkFenceCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+        .flags = vk.VK_FENCE_CREATE_SIGNALED_BIT,
+    });
+    for (&offscreen_fences) |*fence| {
+        try checkVk(vk.vkCreateFence(device, &fence_ci, null, fence));
+    }
 }
 
 fn findMemoryType(type_filter: u32, properties: vk.VkMemoryPropertyFlags) !u32 {

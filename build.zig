@@ -263,6 +263,21 @@ pub fn build(b: *std.Build) void {
     const bench_suite_step = b.step("bench-suite", "Run consolidated benchmark suite");
     bench_suite_step.dependOn(&run_bench_suite.step);
 
+    // ── Headless demo screenshot ──
+    const screenshot_module = b.createModule(.{
+        .root_source_file = b.path("src/screenshot_demo.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .link_libc = true,
+        .imports = &.{.{ .name = "assets", .module = assets_mod }},
+    });
+    configureEglOffscreenModule(screenshot_module, options, enable_harfbuzz, enable_vulkan, vk_shaders_mod);
+
+    const screenshot_exe = b.addExecutable(.{ .name = "snail-screenshot", .root_module = screenshot_module });
+    const run_screenshot = b.addRunArtifact(screenshot_exe);
+    const screenshot_step = b.step("screenshot", "Render the demo scene offscreen and write zig-out/demo-screenshot.tga");
+    screenshot_step.dependOn(&run_screenshot.step);
+
     // ── Valgrind ──
     const valgrind_step = b.step("valgrind", "Run tests under valgrind (memory checking)");
     const valgrind = b.addSystemCommand(&.{
