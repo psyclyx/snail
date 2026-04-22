@@ -427,31 +427,27 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
             _ = batch.addString(atlas_view, &font, demo_title_text, layout.left_text_x, y, demo_title_font_size, white);
             y = textYFromTop(h, layout.subtitle_baseline_top);
             _ = batch.addString(atlas_view, &font, demo_subtitle_text, layout.left_text_x, y, demo_subtitle_font_size, subtitle_color);
-            y -= 28;
+            y -= 24;
 
-            // Multi-size Latin — strings chosen so each line fits within col1_max_w
+            // Accent block
+            _ = batch.addString(atlas_view, &font, "ZINC JAZZ / BRISK GLOW / 1979", layout.left_text_x, y, 14, cyan);
+            y -= 20;
+            _ = batch.addString(atlas_view, &font, "thin flicker, velvet hush, soft shuffle", layout.left_text_x, y, 14, yellow);
+            y -= 24;
+            _ = batch.addString(atlas_view, &font, "affine office shuffle cliff flora", layout.left_text_x, y, 18, white);
+            y -= 30;
+
+            // Pangram ladder
             const size_rows = [_]struct { fs: f32, text: []const u8 }{
-                .{ .fs = 11, .text = "The wizard quickly jinxed the gnomes before they vaporized." },
-                .{ .fs = 14, .text = "Sphinx of black quartz, judge my vow." },
-                .{ .fs = 20, .text = "Waltz, bad nymph, for quick jigs vex." },
-                .{ .fs = 28, .text = "Pack my box with five" },
-                .{ .fs = 40, .text = "How vexingly quick" },
+                .{ .fs = 20, .text = "The wizard quickly jinxed the gnomes before they vaporized." },
+                .{ .fs = 28, .text = "Sphinx of black quartz, judge my vow." },
+                .{ .fs = 40, .text = "Waltz, bad nymph, for quick jigs vex." },
             };
             for (size_rows) |row| {
                 _ = batch.addString(atlas_view, &font, row.text, layout.left_text_x, y, row.fs, white);
                 y -= row.fs * 1.4;
             }
-            y -= 6;
-
-            // Character sets
-            _ = batch.addString(atlas_view, &font, "ZINC JAZZ / BRISK GLOW / 1979", layout.left_text_x, y, 14, cyan);
-            y -= 20;
-            _ = batch.addString(atlas_view, &font, "thin flicker, velvet hush, soft shuffle", layout.left_text_x, y, 14, yellow);
-            y -= 24;
-
-            // Ligatures
-            _ = batch.addString(atlas_view, &font, "affine office shuffle cliff flora", layout.left_text_x, y, 18, white);
-            y -= 28;
+            y -= 10;
 
             // Word-wrapped paragraph
             const paragraph = "Quiet counters, brisk stems, bright edges. Fragments stack like poster scraps: clipped vows, quick glints, soft pauses.";
