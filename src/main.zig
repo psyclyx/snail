@@ -30,11 +30,9 @@ const ScriptFont = struct {
 const demo_title_text = "snail";
 const demo_subtitle_text = "GPU font rendering via direct Bezier curve evaluation";
 const pulse_title_text = "scale pulse";
-const pulse_caption_text = "shrinks and grows";
 const demo_title_font_size = 58.0;
 const demo_subtitle_font_size = 13.0;
 const pulse_title_font_size = 26.0;
-const pulse_caption_font_size = 15.0;
 
 fn addRoundedRect(
     batch: *snail.VectorBatch,
@@ -91,7 +89,7 @@ const DemoLayout = struct {
     left_panel: snail.VectorRect,
     right_panel: snail.VectorRect,
     accent_pill: snail.VectorRect,
-    pulse_panel: snail.VectorRect,
+    pulse_anchor: snail.VectorRect,
     orb_outer: snail.VectorRect,
     orb_inner: snail.VectorRect,
     footer_panel: snail.VectorRect,
@@ -107,7 +105,6 @@ const DemoLayout = struct {
 const DemoTextMetrics = struct {
     title_advance: f32,
     pulse_title_advance: f32,
-    pulse_caption_advance: f32,
 };
 
 fn buildDemoLayout(w: f32, h: f32, metrics: DemoTextMetrics) DemoLayout {
@@ -154,12 +151,11 @@ fn buildDemoLayout(w: f32, h: f32, metrics: DemoTextMetrics) DemoLayout {
     const pill_y = left_panel.y + 10.0;
     const pill_x = left_panel.x + 14.0;
     const accent_width = std.math.clamp(metrics.title_advance + 56.0, 180.0, left_panel.w - 26.0);
-    const pulse_panel_h = std.math.clamp(left_panel.h * 0.22, 128.0, 156.0);
-    const pulse_panel = snapRect(.{
-        .x = left_panel.x + 24,
-        .y = left_panel.y + left_panel.h - pulse_panel_h - 30,
-        .w = left_panel.w - 48,
-        .h = pulse_panel_h,
+    const pulse_anchor = snapRect(.{
+        .x = left_panel.x + left_panel.w - 220,
+        .y = left_panel.y + 36,
+        .w = 180,
+        .h = 180,
     });
 
     return .{
@@ -171,7 +167,7 @@ fn buildDemoLayout(w: f32, h: f32, metrics: DemoTextMetrics) DemoLayout {
             .w = accent_width,
             .h = 56,
         }),
-        .pulse_panel = pulse_panel,
+        .pulse_anchor = pulse_anchor,
         .orb_outer = orb_outer,
         .orb_inner = orb_inner,
         .footer_panel = footer_panel,
@@ -198,7 +194,6 @@ fn buildDemoLayout(w: f32, h: f32, metrics: DemoTextMetrics) DemoLayout {
 fn buildPrimitiveShowcase(batch: *snail.VectorBatch, layout: DemoLayout) void {
     addRoundedRect(batch, layout.left_panel, .{ 0.08, 0.09, 0.11, 0.88 }, .{ 0.22, 0.24, 0.28, 1 }, 1.5, 24);
     addRoundedRect(batch, layout.right_panel, .{ 0.07, 0.08, 0.1, 0.82 }, .{ 0.18, 0.2, 0.24, 1 }, 1.5, 24);
-    addRoundedRect(batch, layout.pulse_panel, .{ 0.07, 0.09, 0.12, 0.9 }, .{ 0.2, 0.24, 0.31, 0.9 }, 1.25, 18);
 
     _ = batch.addEllipse(
         layout.orb_outer,
@@ -222,28 +217,12 @@ fn buildPrimitiveShowcase(batch: *snail.VectorBatch, layout: DemoLayout) void {
 
 fn buildPulseAnimatedVectors(batch: *snail.VectorBatch, metrics: DemoTextMetrics) void {
     const chip_w = snapPx(@max(metrics.pulse_title_advance + 88.0, 226.0));
-    const caption_w = snapPx(@max(metrics.pulse_caption_advance + 44.0, 184.0));
-    const chip = centeredRect(chip_w, 60, -2);
-    const caption_box = centeredRect(caption_w, 24, 42);
-    const accent = centeredRect(18, 18, -2);
+    const chip = centeredRect(chip_w, 60, 0);
     addRoundedRect(batch, chip, .{ 0.2, 0.48, 0.86, 0.2 }, .{ 0.34, 0.7, 0.96, 0.9 }, 1.5, 16);
-    addRoundedRect(batch, caption_box, .{ 0.86, 0.9, 0.96, 0.08 }, .{ 0.86, 0.9, 0.96, 0.3 }, 1, 7);
-    _ = batch.addEllipse(
-        .{
-            .x = chip.x - 28,
-            .y = accent.y,
-            .w = accent.w,
-            .h = accent.h,
-        },
-        .{ 0.96, 0.74, 0.28, 0.18 },
-        .{ 0.96, 0.74, 0.28, 0.9 },
-        1.25,
-    );
 }
 
 fn buildPulseAnimatedText(batch: *snail.Batch, view: *const snail.AtlasView, font: *const snail.Font, metrics: DemoTextMetrics) void {
     _ = batch.addString(view, font, pulse_title_text, -metrics.pulse_title_advance * 0.5, 0, pulse_title_font_size, .{ 1, 1, 1, 1 });
-    _ = batch.addString(view, font, pulse_caption_text, -metrics.pulse_caption_advance * 0.5, -38, pulse_caption_font_size, .{ 0.72, 0.83, 0.92, 1 });
 }
 
 pub fn main() !void {
@@ -320,7 +299,6 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
     const metrics: DemoTextMetrics = .{
         .title_advance = measureStringAdvance(atlas_view, &font, demo_title_text, demo_title_font_size),
         .pulse_title_advance = measureStringAdvance(atlas_view, &font, pulse_title_text, pulse_title_font_size),
-        .pulse_caption_advance = measureStringAdvance(atlas_view, &font, pulse_caption_text, pulse_caption_font_size),
     };
 
     // Vertex buffer: enough for ~10000 glyphs
@@ -443,8 +421,8 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         const vector_scene_transform = snail.Mat4.multiply(snail.Mat4.translate(pan_x, pan_y, 0), scene_core);
         const mvp = snail.Mat4.multiply(projection, text_scene_transform);
         const vector_mvp = snail.Mat4.multiply(vector_projection, vector_scene_transform);
-        const pulse_center_x = layout.pulse_panel.x + layout.pulse_panel.w * 0.5;
-        const pulse_center_y = layout.pulse_panel.y + layout.pulse_panel.h * 0.5;
+        const pulse_center_x = layout.pulse_anchor.x + layout.pulse_anchor.w * 0.5;
+        const pulse_center_y = layout.pulse_anchor.y + layout.pulse_anchor.h * 0.5;
         const pulse_scale = 1.0 + 0.18 * @sin(anim_time * 1.8);
         const pulse_vector_local = snail.Mat4.multiply(
             snail.Mat4.translate(pulse_center_x, pulse_center_y, 0),
