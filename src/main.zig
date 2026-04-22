@@ -66,7 +66,7 @@ const DemoLayout = struct {
     left_text_max_w: f32,
 };
 
-fn buildDemoLayout(w: f32, h: f32) DemoLayout {
+fn buildDemoLayout(w: f32, h: f32, title_advance: f32) DemoLayout {
     const panel_margin = 18.0;
     const panel_gap = 16.0;
     const panel_top = 18.0;
@@ -105,23 +105,26 @@ fn buildDemoLayout(w: f32, h: f32) DemoLayout {
         .h = 92,
     });
     const left_text_x = left_panel.x + 12;
-    const accent_width = @min(left_panel.w * 0.38, 188.0);
-    const rule_width = @min(left_panel.w * 0.52, 272.0);
+    const title_baseline_top = 70.0;
+    const pill_y = title_baseline_top + 10.0;
+    const pill_x = left_text_x + 6.0;
+    const accent_width = std.math.clamp(title_advance + 34.0, 144.0, left_panel.w * 0.42);
+    const rule_width = std.math.clamp(title_advance + 128.0, 232.0, left_panel.w - 36.0);
 
     return .{
         .left_panel = left_panel,
         .right_panel = right_panel,
         .accent_pill = snapRect(.{
-            .x = left_text_x,
-            .y = left_panel.y + 34,
+            .x = pill_x,
+            .y = pill_y,
             .w = accent_width,
-            .h = 22,
+            .h = 20,
         }),
         .accent_rule = snapRect(.{
             .x = left_text_x,
-            .y = left_panel.y + 68,
+            .y = pill_y + 34,
             .w = rule_width,
-            .h = 12,
+            .h = 10,
         }),
         .orb_outer = orb_outer,
         .orb_inner = orb_inner,
@@ -240,6 +243,12 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
     const thai_view = &atlas_views[4];
     const emoji_view = &atlas_views[5];
 
+    const title_advance = blk: {
+        var probe_buf: [8 * snail.FLOATS_PER_GLYPH]f32 = undefined;
+        var probe = snail.Batch.init(&probe_buf);
+        break :blk probe.addString(atlas_view, &font, "snail", 0, 0, 64, .{ 1, 1, 1, 1 });
+    };
+
     // Vertex buffer: enough for ~10000 glyphs
     const buf_size = 10000 * snail.FLOATS_PER_GLYPH;
     const vbuf = try allocator.alloc(f32, buf_size);
@@ -328,7 +337,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         const w: f32 = @floatFromInt(size[0]);
         const h: f32 = @floatFromInt(size[1]);
         if (w < 1 or h < 1) continue;
-        const layout = buildDemoLayout(w, h);
+        const layout = buildDemoLayout(w, h, title_advance);
 
         // Begin frame (Vulkan: acquire swapchain image + begin render pass)
         if (use_vulkan) {
