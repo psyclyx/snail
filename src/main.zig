@@ -28,11 +28,9 @@ const ScriptFont = struct {
 };
 
 const demo_title_text = "snail";
-const demo_subtitle_text = "GPU font rendering via direct Bezier curve evaluation";
-const pulse_title_text = "scale pulse";
+const demo_subtitle_text = "Sharp forms. Quick rhythm.";
 const demo_title_font_size = 58.0;
 const demo_subtitle_font_size = 13.0;
-const pulse_title_font_size = 26.0;
 
 fn addRoundedRect(
     batch: *snail.VectorBatch,
@@ -58,14 +56,6 @@ fn snapRect(rect: snail.VectorRect) snail.VectorRect {
     };
 }
 
-fn matScale(x: f32, y: f32, z: f32) snail.Mat4 {
-    var m = snail.Mat4.identity;
-    m.data[0] = x;
-    m.data[5] = y;
-    m.data[10] = z;
-    return m;
-}
-
 fn centeredRect(w: f32, h: f32, center_y: f32) snail.VectorRect {
     return .{
         .x = -w * 0.5,
@@ -89,7 +79,6 @@ const DemoLayout = struct {
     left_panel: snail.VectorRect,
     right_panel: snail.VectorRect,
     accent_pill: snail.VectorRect,
-    pulse_anchor: snail.VectorRect,
     orb_outer: snail.VectorRect,
     orb_inner: snail.VectorRect,
     footer_panel: snail.VectorRect,
@@ -104,7 +93,6 @@ const DemoLayout = struct {
 
 const DemoTextMetrics = struct {
     title_advance: f32,
-    pulse_title_advance: f32,
 };
 
 fn buildDemoLayout(w: f32, h: f32, metrics: DemoTextMetrics) DemoLayout {
@@ -151,13 +139,6 @@ fn buildDemoLayout(w: f32, h: f32, metrics: DemoTextMetrics) DemoLayout {
     const pill_y = left_panel.y + 10.0;
     const pill_x = left_panel.x + 14.0;
     const accent_width = std.math.clamp(metrics.title_advance + 56.0, 180.0, left_panel.w - 26.0);
-    const pulse_anchor = snapRect(.{
-        .x = left_panel.x + left_panel.w - 244,
-        .y = left_panel.y + 36,
-        .w = 180,
-        .h = 180,
-    });
-
     return .{
         .left_panel = left_panel,
         .right_panel = right_panel,
@@ -167,7 +148,6 @@ fn buildDemoLayout(w: f32, h: f32, metrics: DemoTextMetrics) DemoLayout {
             .w = accent_width,
             .h = 56,
         }),
-        .pulse_anchor = pulse_anchor,
         .orb_outer = orb_outer,
         .orb_inner = orb_inner,
         .footer_panel = footer_panel,
@@ -213,16 +193,6 @@ fn buildPrimitiveShowcase(batch: *snail.VectorBatch, layout: DemoLayout) void {
     addRoundedRect(batch, layout.footer_panel, .{ 0.1, 0.12, 0.15, 0.9 }, .{ 0.3, 0.33, 0.4, 1 }, 1.5, 20);
     addRoundedRect(batch, layout.footer_bar_primary, .{ 0.28, 0.72, 0.92, 0.18 }, .{ 0.28, 0.72, 0.92, 0.85 }, 1, 9);
     addRoundedRect(batch, layout.footer_bar_secondary, .{ 0.96, 0.72, 0.28, 0.16 }, .{ 0.96, 0.72, 0.28, 0.82 }, 1, 9);
-}
-
-fn buildPulseAnimatedVectors(batch: *snail.VectorBatch, metrics: DemoTextMetrics) void {
-    const chip_w = snapPx(@max(metrics.pulse_title_advance + 88.0, 226.0));
-    const chip = centeredRect(chip_w, 60, 0);
-    addRoundedRect(batch, chip, .{ 0.2, 0.48, 0.86, 0.2 }, .{ 0.34, 0.7, 0.96, 0.9 }, 1.5, 16);
-}
-
-fn buildPulseAnimatedText(batch: *snail.Batch, view: *const snail.AtlasView, font: *const snail.Font, metrics: DemoTextMetrics) void {
-    _ = batch.addString(view, font, pulse_title_text, -metrics.pulse_title_advance * 0.5, -6, pulse_title_font_size, .{ 1, 1, 1, 1 });
 }
 
 pub fn main() !void {
@@ -298,7 +268,6 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
 
     const metrics: DemoTextMetrics = .{
         .title_advance = measureStringAdvance(atlas_view, &font, demo_title_text, demo_title_font_size),
-        .pulse_title_advance = measureStringAdvance(atlas_view, &font, pulse_title_text, pulse_title_font_size),
     };
 
     // Vertex buffer: enough for ~10000 glyphs
@@ -314,7 +283,6 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
     var pan_y: f32 = 0;
     var rotate = false;
     var stress_test = false;
-    var anim_time: f32 = 0;
     var last_time = platform.getTime();
     var frame_count: u32 = 0;
     var fps_timer: f64 = 0;
@@ -334,8 +302,6 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         const now = platform.getTime();
         const dt: f32 = @floatCast(now - last_time);
         last_time = now;
-        anim_time += dt;
-
         fps_timer += dt;
         fps_frames += 1;
         if (fps_timer >= 1.0) {
@@ -421,19 +387,6 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         const vector_scene_transform = snail.Mat4.multiply(snail.Mat4.translate(pan_x, pan_y, 0), scene_core);
         const mvp = snail.Mat4.multiply(projection, text_scene_transform);
         const vector_mvp = snail.Mat4.multiply(vector_projection, vector_scene_transform);
-        const pulse_center_x = layout.pulse_anchor.x + layout.pulse_anchor.w * 0.5;
-        const pulse_center_y = layout.pulse_anchor.y + layout.pulse_anchor.h * 0.5;
-        const pulse_scale = 1.0 + 0.18 * @sin(anim_time * 1.8);
-        const pulse_vector_local = snail.Mat4.multiply(
-            snail.Mat4.translate(pulse_center_x, pulse_center_y, 0),
-            matScale(pulse_scale, pulse_scale, 1.0),
-        );
-        const pulse_text_local = snail.Mat4.multiply(
-            snail.Mat4.translate(pulse_center_x, textYFromTop(h, pulse_center_y), 0),
-            matScale(pulse_scale, pulse_scale, 1.0),
-        );
-        const pulse_vector_mvp = snail.Mat4.multiply(vector_projection, snail.Mat4.multiply(vector_scene_transform, pulse_vector_local));
-        const pulse_text_mvp = snail.Mat4.multiply(projection, snail.Mat4.multiply(text_scene_transform, pulse_text_local));
 
         const white = [4]f32{ 1, 1, 1, 1 };
         const gray = [4]f32{ 0.6, 0.6, 0.65, 1 };
@@ -478,9 +431,9 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
 
             // Multi-size Latin — strings chosen so each line fits within col1_max_w
             const size_rows = [_]struct { fs: f32, text: []const u8 }{
-                .{ .fs = 11, .text = "The quick brown fox jumps over the lazy dog 0123456789" },
-                .{ .fs = 14, .text = "The quick brown fox jumps over the lazy dog" },
-                .{ .fs = 20, .text = "The quick brown fox jumps over" },
+                .{ .fs = 11, .text = "Sphinx of black quartz, judge my vow 0123456789" },
+                .{ .fs = 14, .text = "Quick zephyrs blow, vexing daft Jim" },
+                .{ .fs = 20, .text = "Glib jocks quiz nymphs" },
                 .{ .fs = 28, .text = "Pack my box with five" },
                 .{ .fs = 40, .text = "How vexingly quick" },
             };
@@ -491,19 +444,17 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
             y -= 6;
 
             // Character sets
-            _ = batch.addString(atlas_view, &font, "ABCDEFGHIJKLMNOPQRSTUVWXYZ 0123456789", layout.left_text_x, y, 14, cyan);
+            _ = batch.addString(atlas_view, &font, "ZINC JAZZ / BRISK GLOW / 1979", layout.left_text_x, y, 14, cyan);
             y -= 20;
-            _ = batch.addString(atlas_view, &font, "abcdefghijklmnopqrstuvwxyz !@#$%^&*()", layout.left_text_x, y, 14, yellow);
+            _ = batch.addString(atlas_view, &font, "thin flicker, velvet hush, soft shuffle", layout.left_text_x, y, 14, yellow);
             y -= 24;
 
             // Ligatures
-            _ = batch.addString(atlas_view, &font, "fi fl ffi ffl office difficult affect", layout.left_text_x, y, 18, white);
+            _ = batch.addString(atlas_view, &font, "affine office shuffle cliff flora", layout.left_text_x, y, 18, white);
             y -= 28;
 
             // Word-wrapped paragraph
-            const paragraph = "Direct Bezier curve evaluation in the fragment shader produces " ++
-                "resolution-independent text at any size, rotation, or perspective transform. " ++
-                "No pre-rasterized glyph bitmaps, no signed distance fields.";
+            const paragraph = "Quiet counters, brisk stems, bright edges. Fragments stack like poster scraps: clipped vows, quick glints, soft pauses.";
             _ = batch.addStringWrapped(atlas_view, &font, paragraph, layout.left_text_x, y, 12, col1_max_w, 17, gray);
 
             // Right column — script showcase in same batch (texture array = one draw call)
@@ -533,27 +484,12 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         if (batch.glyphCount() > 0) {
             renderer.draw(batch.slice(), mvp, w, h);
         }
-        var total_glyphs = batch.glyphCount();
-
-        if (!stress_test) {
-            var pulse_shapes = snail.VectorBatch.init(shape_buf);
-            buildPulseAnimatedVectors(&pulse_shapes, metrics);
-            if (pulse_shapes.shapeCount() > 0) {
-                renderer.drawVectorTransformed(pulse_shapes.slice(), pulse_vector_mvp, w, h);
-            }
-
-            var pulse_batch = snail.Batch.init(vbuf);
-            buildPulseAnimatedText(&pulse_batch, atlas_view, &font, metrics);
-            if (pulse_batch.glyphCount() > 0) {
-                renderer.draw(pulse_batch.slice(), pulse_text_mvp, w, h);
-            }
-            total_glyphs += pulse_batch.glyphCount();
-        }
+        const total_glyphs = batch.glyphCount();
 
         // HUD (separate draw for different MVP)
         {
             var hud = snail.Batch.init(vbuf[batch.len..]);
-            _ = hud.addString(atlas_view, &font, "snail - GPU Bezier curve font rendering", 10, 30, 12, gray);
+            _ = hud.addString(atlas_view, &font, "snail demo", 10, 30, 12, gray);
             const hb_str = if (build_options.enable_harfbuzz) " | HarfBuzz ON" else "";
             const sp_name = renderer.subpixelOrder().name();
             var hud_line2_buf: [128]u8 = undefined;
