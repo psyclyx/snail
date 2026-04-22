@@ -26,6 +26,7 @@ zig build bench-compare             # CPU prep/layout comparison vs FreeType (no
 zig build bench-headless            # offscreen OpenGL end-to-end frame timing
 zig build bench-headless -Dvulkan=true # offscreen OpenGL + Vulkan end-to-end frame timing
 zig build bench-suite               # combined layout + rendering suite (text + vectors)
+zig build bench-suite -Dvulkan=true # combined suite with additional Vulkan text/vector passes
 zig build demo                      # build the interactive demo (Wayland + EGL)
 zig build run                       # run the interactive demo (Wayland + EGL)
 zig build run -Dvulkan=true         # Vulkan demo backend (Wayland surface)
@@ -386,7 +387,14 @@ There are four benchmark entry points. They answer different questions.
 - `zig build bench-headless`
   Fully offscreen end-to-end frame timing. This is the command to use when you want per-frame numbers for text rendering. It includes layout, batch generation, uploads, draw, and explicit GPU synchronization. OpenGL runs by default; `-Dvulkan=true` adds the Vulkan offscreen path.
 - `zig build bench-suite`
-  Combined regression suite. It includes the FreeType layout comparison plus text and vector rendering scenarios in one run. Use it when you want one broad pass instead of one focused benchmark.
+  Combined regression suite. It includes the FreeType layout comparison plus text and vector rendering scenarios in one run. Use it when you want one broad pass instead of one focused benchmark. `-Dvulkan=true` adds Vulkan text and vector passes after the OpenGL pass.
+
+What to watch in the output:
+
+- `bench`: `Parse 62 glyphs` and `Band texture` are the main atlas/prep lines.
+- `bench-compare`: `Glyph prep (7 sizes)`, `Paragraph`, and `Torture` are the lines that usually move first.
+- `bench-headless`: `Body text`, `Torture`, and `Chat` are the most useful text-rendering lines. Compare `static` vs `dynamic`.
+- `bench-suite`: watch `Paragraph`, `Body text`, `Multi-font torture`, and `Primitive stress`. This is the best single regression pass.
 
 Current sampling defaults:
 
@@ -405,7 +413,16 @@ For `bench-headless` and `bench-suite`:
 - OpenGL: EGL pbuffer + FBO.
 - Vulkan: offscreen `VkImage`; no window, surface, or swapchain in the measured path.
 
-Machine-specific numbers go stale quickly. For current results, run the benchmark command locally and use the output it prints.
+Reference run from April 22, 2026 on this machine:
+
+- `bench`: `Parse 62 glyphs` = `487.9 us`; `Band texture` = `181.6 us`.
+- `bench-compare`: `Paragraph` = `12.5 us` vs FreeType `1790.3 us`; `Torture` = `84.1 us` vs `13111.9 us`.
+- `bench-headless`: OpenGL `Body text` = `68.5 us` static / `93.4 us` dynamic; Vulkan `Body text` = `106.8 us` static / `125.3 us` dynamic.
+- `bench-headless`: OpenGL `Chat` = `26.1 us` static / `26.2 us` dynamic; Vulkan `Chat` = `48.7 us` static / `68.9 us` dynamic.
+- `bench-suite`: OpenGL `Primitive stress` = `347.6 us` static / `347.6 us` dynamic; Vulkan `Primitive stress` = `254.8 us` static / `256.5 us` dynamic.
+- Current hotspot: Vulkan text is still slower than OpenGL in the offscreen benches, especially small dynamic and multi-font text.
+
+These numbers are machine-specific. For current results on a different system, rerun the benchmark commands locally and compare the same lines.
 
 ### Other GPU font renderers
 
