@@ -484,7 +484,9 @@ const kPathEllipseSegmentCount: usize = 16;
 
 fn applyFillRule(fill_rule: FillRule, winding: f32) f32 {
     if (fill_rule == .even_odd) {
-        return 1.0 - @abs(@mod(winding * 0.5, 1.0) * 2.0 - 1.0);
+        const x = winding * 0.5;
+        const frac = x - @floor(x);
+        return 1.0 - @abs(frac * 2.0 - 1.0);
     }
     return @abs(winding);
 }
