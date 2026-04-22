@@ -118,10 +118,9 @@ pub const HarfBuzzShaper = struct {
                 }
             }
             // Fallback: per-layer expansion
-            var layer_buf: [64]ttf.Font.ColrLayer = undefined;
-            const layers = atlas.getColrLayers(gid, &layer_buf);
-            if (layers.len > 0) {
-                for (layers) |layer| {
+            var layer_it = atlas.colrLayers(gid);
+            if (layer_it.count() > 0) {
+                while (layer_it.next()) |layer| {
                     if (atlas.getGlyph(layer.glyph_id)) |linfo| {
                         if (linfo.band_entry.h_band_count > 0 and linfo.band_entry.v_band_count > 0) {
                             const lcolor: [4]f32 = if (layer.color[0] < 0) color else layer.color;

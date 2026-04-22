@@ -232,7 +232,7 @@ pub const Atlas = struct {
     pub const ColrBaseInfo = struct {
         info_x: u16, // texel position in layer_info texture
         info_y: u16,
-        layer_count: u8,
+        layer_count: u16,
         union_bbox: bezier.BBox,
         page_index: u16,
     };
@@ -331,10 +331,9 @@ pub const Atlas = struct {
         var it = seen.keyIterator();
         while (it.next()) |k| try keys.append(allocator, k.*);
 
-        var layer_buf: [64]ttf.Font.ColrLayer = undefined;
         for (keys.items) |gid| {
-            const layers = font.inner.getColrLayers(gid, &layer_buf);
-            for (layers) |layer| try seen.put(layer.glyph_id, {});
+            var layer_it = font.inner.colrLayers(gid);
+            while (layer_it.next()) |layer| try seen.put(layer.glyph_id, {});
         }
     }
 
@@ -352,18 +351,16 @@ pub const Atlas = struct {
         var base_glyphs: std.ArrayList(u16) = .empty;
         defer base_glyphs.deinit(allocator);
 
-        var layer_buf: [64]ttf.Font.ColrLayer = undefined;
         var map_it = self.glyph_map.keyIterator();
         while (map_it.next()) |gid_ptr| {
-            const layers = font.inner.getColrLayers(gid_ptr.*, &layer_buf);
-            if (layers.len > 0) try base_glyphs.append(allocator, gid_ptr.*);
+            if (font.inner.colrLayerCount(gid_ptr.*) > 0) try base_glyphs.append(allocator, gid_ptr.*);
         }
         if (base_glyphs.items.len == 0) return;
 
         var total_texels: u32 = 0;
         for (base_glyphs.items) |gid| {
-            const layers = font.inner.getColrLayers(gid, &layer_buf);
-            if (layers.len > 0) total_texels += @intCast(layers.len * 3);
+            const layer_count = font.inner.colrLayerCount(gid);
+            if (layer_count > 0) total_texels += @as(u32, layer_count) * 3;
         }
         if (total_texels == 0) return;
 
@@ -376,8 +373,8 @@ pub const Atlas = struct {
 
         var texel_offset: u32 = 0;
         for (base_glyphs.items) |gid| {
-            const layers = font.inner.getColrLayers(gid, &layer_buf);
-            if (layers.len == 0) continue;
+            const layer_count = font.inner.colrLayerCount(gid);
+            if (layer_count == 0) continue;
 
             const info_x: u16 = @intCast(texel_offset % TEX_WIDTH);
             const info_y: u16 = @intCast(texel_offset / TEX_WIDTH);
@@ -390,7 +387,8 @@ pub const Atlas = struct {
             var layer_page_index: ?u16 = null;
             var layers_share_page = true;
 
-            for (layers) |layer| {
+            var bounds_it = font.inner.colrLayers(gid);
+            while (bounds_it.next()) |layer| {
                 const linfo = self.glyph_map.get(layer.glyph_id) orelse {
                     layers_share_page = false;
                     continue;
@@ -406,7 +404,8 @@ pub const Atlas = struct {
                 union_bbox.max.y = @max(union_bbox.max.y, linfo.bbox.max.y);
             }
 
-            for (layers) |layer| {
+            var layer_it = font.inner.colrLayers(gid);
+            while (layer_it.next()) |layer| {
                 const linfo = self.glyph_map.get(layer.glyph_id) orelse continue;
                 const be = linfo.band_entry;
 
@@ -443,7 +442,7 @@ pub const Atlas = struct {
             try colr_map.put(gid, .{
                 .info_x = info_x,
                 .info_y = info_y,
-                .layer_count = @intCast(layers.len),
+                .layer_count = layer_count,
                 .union_bbox = union_bbox,
                 .page_index = layer_page_index.?,
             });
@@ -806,13 +805,19 @@ pub const Atlas = struct {
         return total;
     }
 
-    /// Return the COLRv0 layers for a glyph.
+    /// Return an iterator over the COLRv0 layers for a glyph.
     /// Uses colr_font_data/colr_offset/cpal_offset stored at init time —
     /// safe to call at render time even after the original Font pointer goes stale.
-    pub fn getColrLayers(self: *const Atlas, glyph_id: u16, buf: []ttf.Font.ColrLayer) []ttf.Font.ColrLayer {
-        if (self.colr_offset == 0) return buf[0..0];
+    pub fn colrLayers(self: *const Atlas, glyph_id: u16) ttf.Font.ColrLayerIterator {
+        if (self.colr_offset == 0) return .{ .data = self.colr_font_data };
         const temp = ttf.Font{ .data = self.colr_font_data, .colr_offset = self.colr_offset, .cpal_offset = self.cpal_offset };
-        return temp.getColrLayers(glyph_id, buf);
+        return temp.colrLayers(glyph_id);
+    }
+
+    pub fn colrLayerCount(self: *const Atlas, glyph_id: u16) u16 {
+        if (self.colr_offset == 0) return 0;
+        const temp = ttf.Font{ .data = self.colr_font_data, .colr_offset = self.colr_offset, .cpal_offset = self.cpal_offset };
+        return temp.colrLayerCount(glyph_id);
     }
 
     pub fn getGlyph(self: *const Atlas, gid: u16) ?GlyphInfo {
@@ -1087,10 +1092,9 @@ pub const Batch = struct {
                 }
             }
             // Fallback: per-layer expansion (for atlases without layer info)
-            var layer_buf: [64]ttf.Font.ColrLayer = undefined;
-            const layers = atlas.getColrLayers(sg.glyph_id, &layer_buf);
-            if (layers.len > 0) {
-                for (layers) |layer| {
+            var layer_it = atlas.colrLayers(sg.glyph_id);
+            if (layer_it.count() > 0) {
+                while (layer_it.next()) |layer| {
                     const linfo = atlas.getGlyph(layer.glyph_id) orelse continue;
                     if (linfo.band_entry.h_band_count > 0 and linfo.band_entry.v_band_count > 0) {
                         const lcolor: [4]f32 = if (layer.color[0] < 0) color else layer.color;
@@ -1174,10 +1178,9 @@ pub const Batch = struct {
             }
             // Fallback: per-layer expansion
             {
-                var layer_buf: [64]ttf.Font.ColrLayer = undefined;
-                const layers = font.inner.getColrLayers(gid, &layer_buf);
-                if (layers.len > 0) {
-                    for (layers) |layer| {
+                var layer_it = font.inner.colrLayers(gid);
+                if (layer_it.count() > 0) {
+                    while (layer_it.next()) |layer| {
                         const linfo = atlas.getGlyph(layer.glyph_id) orelse continue;
                         if (linfo.band_entry.h_band_count > 0 and linfo.band_entry.v_band_count > 0) {
                             const lcolor: [4]f32 = if (layer.color[0] < 0) color else layer.color;

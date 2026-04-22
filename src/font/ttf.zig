@@ -504,61 +504,128 @@ pub const Font = struct {
         color: [4]f32,
     };
 
-    /// Fill buf with the COLRv0 layers for base_glyph_id.
-    /// Returns the populated prefix of buf; empty if the glyph has no COLR data.
-    /// Binary-searches the (sorted) base glyph record table, then resolves colors
-    /// from CPAL palette 0.  All offsets in the COLR/CPAL tables are relative to
-    /// their respective table starts, as the spec requires.
-    pub fn getColrLayers(self: *const Font, base_glyph_id: u16, buf: []ColrLayer) []ColrLayer {
-        if (self.colr_offset == 0 or self.cpal_offset == 0 or buf.len == 0) return buf[0..0];
+    const ColrRecord = struct {
+        first_layer: u16,
+        num_layers: u16,
+        layer_off: u32,
+        color_recs_off: u32,
+    };
+
+    pub const ColrLayerIterator = struct {
+        data: []const u8,
+        colr_offset: u32 = 0,
+        layer_off: u32 = 0,
+        first_layer: u16 = 0,
+        num_layers: u16 = 0,
+        color_recs_off: u32 = 0,
+        index: u16 = 0,
+
+        pub fn count(self: *const ColrLayerIterator) u16 {
+            return self.num_layers;
+        }
+
+        pub fn next(self: *ColrLayerIterator) ?ColrLayer {
+            if (self.index >= self.num_layers) return null;
+
+            const layer_index = self.index;
+            self.index += 1;
+
+            const layer_rec = self.colr_offset + self.layer_off + (@as(u32, self.first_layer) + @as(u32, layer_index)) * 4;
+            const layer_gid = readU16(self.data, layer_rec) catch {
+                self.index = self.num_layers;
+                return null;
+            };
+            const pal_idx = readU16(self.data, layer_rec + 2) catch {
+                self.index = self.num_layers;
+                return null;
+            };
+
+            if (pal_idx == 0xFFFF) {
+                return .{ .glyph_id = layer_gid, .color = .{ -1, -1, -1, -1 } };
+            }
+
+            const entry = self.color_recs_off + @as(u32, pal_idx) * 4;
+            if (entry + 3 >= self.data.len) {
+                self.index = self.num_layers;
+                return null;
+            }
+
+            return .{
+                .glyph_id = layer_gid,
+                .color = .{
+                    @as(f32, @floatFromInt(self.data[entry + 2])) / 255.0,
+                    @as(f32, @floatFromInt(self.data[entry + 1])) / 255.0,
+                    @as(f32, @floatFromInt(self.data[entry + 0])) / 255.0,
+                    @as(f32, @floatFromInt(self.data[entry + 3])) / 255.0,
+                },
+            };
+        }
+    };
+
+    fn findColrRecord(self: *const Font, base_glyph_id: u16) ?ColrRecord {
+        if (self.colr_offset == 0 or self.cpal_offset == 0) return null;
         const colr = self.colr_offset;
         const cpal = self.cpal_offset;
 
-        const num_base = readU16(self.data, colr + 2) catch return buf[0..0];
-        if (num_base == 0) return buf[0..0];
-        const base_off = readU32(self.data, colr + 4) catch return buf[0..0];
-        const layer_off = readU32(self.data, colr + 8) catch return buf[0..0];
+        const num_base = readU16(self.data, colr + 2) catch return null;
+        if (num_base == 0) return null;
+        const base_off = readU32(self.data, colr + 4) catch return null;
+        const layer_off = readU32(self.data, colr + 8) catch return null;
 
-        // Binary search: base glyph records are sorted by GID (spec requirement)
         var lo: u32 = 0;
         var hi: u32 = num_base;
         const rec = blk: {
             while (lo < hi) {
                 const mid = (lo + hi) / 2;
                 const off = colr + base_off + mid * 6;
-                const g = readU16(self.data, off) catch return buf[0..0];
+                const g = readU16(self.data, off) catch return null;
                 if (g == base_glyph_id) break :blk off;
                 if (g < base_glyph_id) lo = mid + 1 else hi = mid;
             }
-            return buf[0..0];
+            return null;
         };
 
-        const first_layer = readU16(self.data, rec + 2) catch return buf[0..0];
-        const num_layers = readU16(self.data, rec + 4) catch return buf[0..0];
-        if (num_layers == 0) return buf[0..0];
+        const first_layer = readU16(self.data, rec + 2) catch return null;
+        const num_layers = readU16(self.data, rec + 4) catch return null;
+        if (num_layers == 0) return null;
 
-        const color_recs_off = readU32(self.data, cpal + 8) catch return buf[0..0];
+        const color_recs_off = readU32(self.data, cpal + 8) catch return null;
+        return .{
+            .first_layer = first_layer,
+            .num_layers = num_layers,
+            .layer_off = layer_off,
+            .color_recs_off = cpal + color_recs_off,
+        };
+    }
 
-        const count = @min(num_layers, @as(u16, @intCast(buf.len)));
-        for (0..count) |i| {
-            const layer_rec = colr + layer_off + (@as(u32, first_layer) + @as(u32, @intCast(i))) * 4;
-            const layer_gid = readU16(self.data, layer_rec) catch break;
-            const pal_idx = readU16(self.data, layer_rec + 2) catch break;
+    pub fn colrLayers(self: *const Font, base_glyph_id: u16) ColrLayerIterator {
+        const rec = self.findColrRecord(base_glyph_id) orelse return .{ .data = self.data };
+        return .{
+            .data = self.data,
+            .colr_offset = self.colr_offset,
+            .layer_off = rec.layer_off,
+            .first_layer = rec.first_layer,
+            .num_layers = rec.num_layers,
+            .color_recs_off = rec.color_recs_off,
+        };
+    }
 
-            if (pal_idx == 0xFFFF) {
-                // Foreground color: sentinel for "use text color"
-                buf[i] = .{ .glyph_id = layer_gid, .color = .{ -1, -1, -1, -1 } };
-            } else {
-                const entry = cpal + color_recs_off + @as(u32, pal_idx) * 4;
-                if (entry + 3 >= self.data.len) break;
-                // CPAL stores BGRA
-                buf[i] = .{ .glyph_id = layer_gid, .color = .{
-                    @as(f32, @floatFromInt(self.data[entry + 2])) / 255.0,
-                    @as(f32, @floatFromInt(self.data[entry + 1])) / 255.0,
-                    @as(f32, @floatFromInt(self.data[entry + 0])) / 255.0,
-                    @as(f32, @floatFromInt(self.data[entry + 3])) / 255.0,
-                } };
-            }
+    pub fn colrLayerCount(self: *const Font, base_glyph_id: u16) u16 {
+        const rec = self.findColrRecord(base_glyph_id) orelse return 0;
+        return rec.num_layers;
+    }
+
+    /// Fill buf with the COLRv0 layers for base_glyph_id.
+    /// Returns the populated prefix of buf; empty if the glyph has no COLR data.
+    /// Binary-searches the (sorted) base glyph record table, then resolves colors
+    /// from CPAL palette 0.  All offsets in the COLR/CPAL tables are relative to
+    /// their respective table starts, as the spec requires.
+    pub fn getColrLayers(self: *const Font, base_glyph_id: u16, buf: []ColrLayer) []ColrLayer {
+        if (buf.len == 0) return buf[0..0];
+        var it = self.colrLayers(base_glyph_id);
+        var count: usize = 0;
+        while (count < buf.len) : (count += 1) {
+            buf[count] = it.next() orelse break;
         }
         return buf[0..count];
     }
@@ -680,6 +747,20 @@ test "parse real font" {
     var total_curves: usize = 0;
     for (glyph.contours) |contour| total_curves += contour.curves.len;
     try std.testing.expect(total_curves > 0);
+}
+
+test "COLR iterator exposes full layer count" {
+    const font_data = @import("assets").twemoji_mozilla;
+    const font = try Font.init(font_data);
+    const glyph_id = try font.glyphIndex(0x1F600);
+    const expected = font.colrLayerCount(glyph_id);
+    try std.testing.expect(expected > 0);
+
+    var it = font.colrLayers(glyph_id);
+    var actual: u16 = 0;
+    while (it.next()) |_| actual += 1;
+
+    try std.testing.expectEqual(expected, actual);
 }
 
 test "parse multiple glyphs" {

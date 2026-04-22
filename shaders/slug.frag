@@ -18,8 +18,6 @@ layout(push_constant) uniform PushConstants {
 layout(location = 0) out vec4 frag_color;
 
 #define kLogBandTextureWidth 12
-#define MAX_COLR_LAYERS 32
-
 uint calcRootCode(float y1, float y2, float y3) {
     uint i1 = floatBitsToUint(y1) >> 31u;
     uint i2 = floatBitsToUint(y2) >> 30u;
@@ -113,10 +111,6 @@ float evalGlyphCoverage(vec2 rc, vec2 epp, vec2 ppe,
     return clamp(cov, 0.0, 1.0);
 }
 
-float srgbGamma(float c) {
-    return (c <= 0.0031308) ? c * 12.92 : 1.055 * pow(c, 1.0 / 2.4) - 0.055;
-}
-
 vec4 premultiplyColor(vec4 color, float cov) {
     float alpha = color.a * cov;
     return vec4(color.rgb * alpha, alpha);
@@ -133,7 +127,7 @@ void main() {
         int layer_count = v_glyph.z;
         ivec2 infoBase = v_glyph.xy;
         vec4 result = vec4(0.0);
-        for (int l = 0; l < MAX_COLR_LAYERS && l < layer_count; l++) {
+        for (int l = 0; l < layer_count; l++) {
             ivec2 loc = ivec2(infoBase.x + l * 3, infoBase.y);
             loc.y += loc.x >> kLogBandTextureWidth;
             loc.x &= (1 << kLogBandTextureWidth) - 1;
@@ -147,7 +141,6 @@ void main() {
             int texLayer = int(v_banding.w);
             float cov = evalGlyphCoverage(rc, epp, ppe, lGLoc,
                                           ivec2(bandMaxH, bandMaxV), band, texLayer);
-            cov = srgbGamma(cov);
             vec4 premul = premultiplyColor(color, cov);
             result = premul + result * (1.0 - premul.a);
         }
@@ -157,7 +150,6 @@ void main() {
         float cov = evalGlyphCoverage(rc, epp, ppe, v_glyph.xy,
                                       ivec2(v_glyph.z, v_glyph.w & 0xFF),
                                       v_banding, atlas_layer);
-        cov = srgbGamma(cov);
         if (cov < 1.0/255.0) discard;
         frag_color = premultiplyColor(v_color, cov);
     }

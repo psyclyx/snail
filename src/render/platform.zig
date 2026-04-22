@@ -57,12 +57,7 @@ pub fn init(width: u32, height: u32, title: [*:0]const u8) !void {
         egl_window = null;
     }
 
-    egl_surface = egl.eglCreateWindowSurface(
-        egl_display,
-        config,
-        @as(egl.EGLNativeWindowType, @intCast(@intFromPtr(egl_window.?))),
-        null,
-    );
+    egl_surface = createWindowSurface(egl_display, config, @as(egl.EGLNativeWindowType, @intCast(@intFromPtr(egl_window.?))));
     if (egl_surface == egl.EGL_NO_SURFACE) return error.EglSurfaceCreateFailed;
     errdefer {
         _ = egl.eglDestroySurface(egl_display, egl_surface);
@@ -74,6 +69,30 @@ pub fn init(width: u32, height: u32, title: [*:0]const u8) !void {
     }
 
     _ = egl.eglSwapInterval(egl_display, 1);
+}
+
+fn createWindowSurface(display: egl.EGLDisplay, config: egl.EGLConfig, native_window: egl.EGLNativeWindowType) egl.EGLSurface {
+    if (hasExtension(display, "EGL_KHR_gl_colorspace")) {
+        const attrs = [_]egl.EGLint{
+            egl.EGL_GL_COLORSPACE_KHR, egl.EGL_GL_COLORSPACE_SRGB_KHR,
+            egl.EGL_NONE,
+        };
+        const surface = egl.eglCreateWindowSurface(display, config, native_window, &attrs);
+        if (surface != egl.EGL_NO_SURFACE) return surface;
+    }
+    return egl.eglCreateWindowSurface(display, config, native_window, null);
+}
+
+fn hasExtension(display: egl.EGLDisplay, name: []const u8) bool {
+    const ext_ptr = egl.eglQueryString(display, egl.EGL_EXTENSIONS);
+    if (ext_ptr == null) return false;
+    const exts = std.mem.span(ext_ptr);
+
+    var it = std.mem.tokenizeScalar(u8, exts, ' ');
+    while (it.next()) |ext| {
+        if (std.mem.eql(u8, ext, name)) return true;
+    }
+    return false;
 }
 
 pub fn consumeMonitorChanged() bool {

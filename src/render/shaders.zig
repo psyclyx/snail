@@ -74,8 +74,6 @@ pub const fragment_shader =
     \\out vec4 frag_color;
     \\
     \\#define kLogBandTextureWidth 12
-    \\#define MAX_COLR_LAYERS 32
-    \\
     \\uint calcRootCode(float y1, float y2, float y3) {
     \\    uint i1 = floatBitsToUint(y1) >> 31u;
     \\    uint i2 = floatBitsToUint(y2) >> 30u;
@@ -195,7 +193,7 @@ pub const fragment_shader =
     \\        ivec2 infoBase = v_glyph.xy; // pointer into layer info texture
     \\
     \\        vec4 result = vec4(0.0);
-    \\        for (int l = 0; l < MAX_COLR_LAYERS && l < layer_count; l++) {
+    \\        for (int l = 0; l < layer_count; l++) {
     \\            // Fetch per-layer data (3 texels each) with row wrapping
     \\            ivec2 loc = ivec2(infoBase.x + l * 3, infoBase.y);
     \\            loc.y += loc.x >> kLogBandTextureWidth;
@@ -248,8 +246,6 @@ pub const fragment_shader_subpixel =
     \\out vec4 frag_color;
     \\
     \\#define kLogBandTextureWidth 12
-    \\#define MAX_COLR_LAYERS 32
-    \\
     \\uint calcRootCode(float y1, float y2, float y3) {
     \\    uint i1 = floatBitsToUint(y1) >> 31u;
     \\    uint i2 = floatBitsToUint(y2) >> 30u;
@@ -447,7 +443,7 @@ pub const fragment_shader_subpixel =
     \\        int layer_count = v_glyph.z;
     \\        ivec2 infoBase = v_glyph.xy;
     \\        vec4 result = vec4(0.0);
-    \\        for (int l = 0; l < MAX_COLR_LAYERS && l < layer_count; l++) {
+    \\        for (int l = 0; l < layer_count; l++) {
     \\            ivec2 loc = ivec2(infoBase.x + l * 3, infoBase.y);
     \\            loc.y += loc.x >> kLogBandTextureWidth;
     \\            loc.x &= (1 << kLogBandTextureWidth) - 1;

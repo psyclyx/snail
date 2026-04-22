@@ -100,7 +100,7 @@ pub fn generateMultiLayerGlyphVertices(
     union_bbox: BBox,
     info_x: u16,
     info_y: u16,
-    layer_count: u8,
+    layer_count: u16,
     color: [4]f32,
     atlas_layer: u8,
 ) void {
@@ -209,4 +209,21 @@ test "vertex generation produces correct count and layout" {
     // Inverse Jacobian (1/font_size diagonal)
     try std.testing.expectApproxEqAbs(1.0 / 24.0, buf[8], 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 0.0), buf[9], 0.0001);
+}
+
+test "multi-layer glyph vertices preserve wide layer counts" {
+    const bezier_mod = @import("../math/bezier.zig");
+    var buf: [FLOATS_PER_VERTEX * VERTICES_PER_GLYPH]f32 = undefined;
+
+    const bbox = bezier_mod.BBox{
+        .min = Vec2.new(0.0, -0.2),
+        .max = Vec2.new(0.5, 0.8),
+    };
+    const color = [4]f32{ 1.0, 1.0, 1.0, 1.0 };
+
+    generateMultiLayerGlyphVertices(&buf, 10.0, 20.0, 24.0, bbox, 12, 34, 300, color, 7);
+
+    const packed_bits: u32 = @bitCast(buf[7]);
+    try std.testing.expectEqual(@as(u32, 300), packed_bits & 0xFFFF);
+    try std.testing.expectEqual(@as(u32, 0xFF), packed_bits >> 24);
 }
