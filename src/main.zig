@@ -152,7 +152,7 @@ fn buildDemoLayout(w: f32, h: f32, metrics: DemoTextMetrics) DemoLayout {
     const pill_x = left_panel.x + 14.0;
     const accent_width = std.math.clamp(metrics.title_advance + 56.0, 180.0, left_panel.w - 26.0);
     const pulse_anchor = snapRect(.{
-        .x = left_panel.x + left_panel.w - 220,
+        .x = left_panel.x + left_panel.w - 244,
         .y = left_panel.y + 36,
         .w = 180,
         .h = 180,
@@ -222,7 +222,7 @@ fn buildPulseAnimatedVectors(batch: *snail.VectorBatch, metrics: DemoTextMetrics
 }
 
 fn buildPulseAnimatedText(batch: *snail.Batch, view: *const snail.AtlasView, font: *const snail.Font, metrics: DemoTextMetrics) void {
-    _ = batch.addString(view, font, pulse_title_text, -metrics.pulse_title_advance * 0.5, 0, pulse_title_font_size, .{ 1, 1, 1, 1 });
+    _ = batch.addString(view, font, pulse_title_text, -metrics.pulse_title_advance * 0.5, -6, pulse_title_font_size, .{ 1, 1, 1, 1 });
 }
 
 pub fn main() !void {
