@@ -72,6 +72,16 @@ typedef struct {
     float width;
 } SnailVectorStrokeStyle;
 
+typedef struct {
+    float min_x, min_y, max_x, max_y;
+} SnailBBox;
+
+typedef struct {
+    uint16_t advance_width;
+    int16_t lsb;
+    SnailBBox bbox;
+} SnailGlyphMetrics;
+
 /* ── Font (thread-safe after init) ── */
 
 int      snail_font_init(const uint8_t *data, size_t len, SnailFont **out);
@@ -79,6 +89,10 @@ void     snail_font_deinit(SnailFont *font);
 uint16_t snail_font_units_per_em(const SnailFont *font);
 uint16_t snail_font_glyph_index(const SnailFont *font, uint32_t codepoint);
 int16_t  snail_font_get_kerning(const SnailFont *font, uint16_t left, uint16_t right);
+/* Read direct glyph metrics from font tables without building an atlas. */
+int      snail_font_glyph_metrics(const SnailFont *font, uint16_t glyph_id, SnailGlyphMetrics *out);
+int      snail_font_advance_width(const SnailFont *font, uint16_t glyph_id, int16_t *out);
+int      snail_font_bbox(const SnailFont *font, uint16_t glyph_id, SnailBBox *out);
 
 /* ── Atlas snapshots (thread-safe after creation) ── */
 
@@ -92,6 +106,12 @@ int  snail_atlas_init(const SnailAllocator *allocator, /* NULL for libc */
 int  snail_atlas_extend_codepoints(const SnailAtlas *atlas,
                                    const uint32_t *codepoints, size_t num_codepoints,
                                    SnailAtlas **out);
+/* Return a new atlas snapshot extended with any missing glyph IDs.
+ * Existing handles remain valid in the returned snapshot. If no new glyphs are
+ * needed, *out is set to NULL and SNAIL_OK is returned. */
+int  snail_atlas_extend_glyph_ids(const SnailAtlas *atlas,
+                                  const uint16_t *glyph_ids, size_t num_glyph_ids,
+                                  SnailAtlas **out);
 /* Return a compacted atlas snapshot. Compaction may change glyph handles. */
 int  snail_atlas_compact(const SnailAtlas *atlas, SnailAtlas **out);
 /* Legacy compatibility helper: mutate an atlas handle in place by replacing it

@@ -98,18 +98,7 @@ pub const Font = struct {
             if (offset + 16 > self.data.len) return error.UnexpectedEof;
             const tag = self.data[offset .. offset + 4];
             const table_offset = try readU32(self.data, offset + 8);
-            if (std.mem.eql(u8, tag, "head")) self.head_offset = table_offset
-            else if (std.mem.eql(u8, tag, "maxp")) self.maxp_offset = table_offset
-            else if (std.mem.eql(u8, tag, "cmap")) self.cmap_offset = table_offset
-            else if (std.mem.eql(u8, tag, "glyf")) self.glyf_offset = table_offset
-            else if (std.mem.eql(u8, tag, "loca")) self.loca_offset = table_offset
-            else if (std.mem.eql(u8, tag, "hhea")) self.hhea_offset = table_offset
-            else if (std.mem.eql(u8, tag, "hmtx")) self.hmtx_offset = table_offset
-            else if (std.mem.eql(u8, tag, "kern")) self.kern_offset = table_offset
-            else if (std.mem.eql(u8, tag, "GSUB")) self.gsub_offset = table_offset
-            else if (std.mem.eql(u8, tag, "GPOS")) self.gpos_offset = table_offset
-            else if (std.mem.eql(u8, tag, "COLR")) self.colr_offset = table_offset
-            else if (std.mem.eql(u8, tag, "CPAL")) self.cpal_offset = table_offset;
+            if (std.mem.eql(u8, tag, "head")) self.head_offset = table_offset else if (std.mem.eql(u8, tag, "maxp")) self.maxp_offset = table_offset else if (std.mem.eql(u8, tag, "cmap")) self.cmap_offset = table_offset else if (std.mem.eql(u8, tag, "glyf")) self.glyf_offset = table_offset else if (std.mem.eql(u8, tag, "loca")) self.loca_offset = table_offset else if (std.mem.eql(u8, tag, "hhea")) self.hhea_offset = table_offset else if (std.mem.eql(u8, tag, "hmtx")) self.hmtx_offset = table_offset else if (std.mem.eql(u8, tag, "kern")) self.kern_offset = table_offset else if (std.mem.eql(u8, tag, "GSUB")) self.gsub_offset = table_offset else if (std.mem.eql(u8, tag, "GPOS")) self.gpos_offset = table_offset else if (std.mem.eql(u8, tag, "COLR")) self.colr_offset = table_offset else if (std.mem.eql(u8, tag, "CPAL")) self.cpal_offset = table_offset;
             offset += 16;
         }
         if (self.head_offset == 0 or self.glyf_offset == 0 or self.loca_offset == 0)
@@ -127,6 +116,10 @@ pub const Font = struct {
 
     fn parseHhea(self: *Font) !void {
         self.num_h_metrics = try readU16(self.data, self.hhea_offset + 34);
+    }
+
+    fn validateGlyphId(self: *const Font, glyph_id: u16) ParseError!void {
+        if (glyph_id >= self.num_glyphs) return error.InvalidFont;
     }
 
     pub fn glyphIndex(self: *const Font, codepoint: u32) !u16 {
@@ -245,12 +238,43 @@ pub const Font = struct {
         OutOfMemory,
     };
 
+    /// Read per-glyph metrics directly from font tables without building an atlas.
+    pub fn glyphMetrics(self: *const Font, glyph_id: u16) ParseError!GlyphMetrics {
+        try self.validateGlyphId(glyph_id);
+
+        var metrics = try self.getHMetrics(glyph_id);
+        const glyph_len = try self.glyphLength(glyph_id);
+        if (glyph_len == 0) return metrics;
+
+        const base = self.glyf_offset + try self.glyphOffset(glyph_id);
+        const xmin: f32 = @floatFromInt(try readI16(self.data, base + 2));
+        const ymin: f32 = @floatFromInt(try readI16(self.data, base + 4));
+        const xmax: f32 = @floatFromInt(try readI16(self.data, base + 6));
+        const ymax: f32 = @floatFromInt(try readI16(self.data, base + 8));
+        const scale = 1.0 / @as(f32, @floatFromInt(self.units_per_em));
+        metrics.bbox = .{
+            .min = Vec2.new(xmin * scale, ymin * scale),
+            .max = Vec2.new(xmax * scale, ymax * scale),
+        };
+        return metrics;
+    }
+
+    pub fn advanceWidth(self: *const Font, glyph_id: u16) ParseError!i16 {
+        try self.validateGlyphId(glyph_id);
+        const metrics = try self.getHMetrics(glyph_id);
+        return std.math.cast(i16, metrics.advance_width) orelse error.InvalidFont;
+    }
+
+    pub fn bbox(self: *const Font, glyph_id: u16) ParseError!BBox {
+        return (try self.glyphMetrics(glyph_id)).bbox;
+    }
+
     /// Parse a glyph's outlines. Uses cache for compound glyph component lookups.
     /// Thread-safe when each caller uses a separate cache and allocator.
     pub fn parseGlyph(self: *const Font, allocator: std.mem.Allocator, cache: *GlyphCache, glyph_id: u16) ParseError!Glyph {
         if (cache.map.get(glyph_id)) |cached| return cached;
 
-        var metrics = try self.getHMetrics(glyph_id);
+        const metrics = try self.glyphMetrics(glyph_id);
         const glyph_len = try self.glyphLength(glyph_id);
 
         if (glyph_len == 0) {
@@ -261,16 +285,6 @@ pub const Font = struct {
 
         const base = self.glyf_offset + try self.glyphOffset(glyph_id);
         const num_contours = try readI16(self.data, base);
-
-        const xmin: f32 = @floatFromInt(try readI16(self.data, base + 2));
-        const ymin: f32 = @floatFromInt(try readI16(self.data, base + 4));
-        const xmax: f32 = @floatFromInt(try readI16(self.data, base + 6));
-        const ymax: f32 = @floatFromInt(try readI16(self.data, base + 8));
-        const scale = 1.0 / @as(f32, @floatFromInt(self.units_per_em));
-        metrics.bbox = .{
-            .min = Vec2.new(xmin * scale, ymin * scale),
-            .max = Vec2.new(xmax * scale, ymax * scale),
-        };
 
         if (num_contours < 0) {
             return self.parseCompoundGlyph(allocator, cache, glyph_id, base, metrics);
@@ -414,9 +428,7 @@ pub const Font = struct {
                 dy = @as(f32, @floatFromInt(b2)) * sf;
                 offset += 2;
             }
-            if (comp_flags & 8 != 0) offset += 2
-            else if (comp_flags & 64 != 0) offset += 4
-            else if (comp_flags & 128 != 0) offset += 8;
+            if (comp_flags & 8 != 0) offset += 2 else if (comp_flags & 64 != 0) offset += 4 else if (comp_flags & 128 != 0) offset += 8;
 
             const component = try self.parseGlyph(allocator, cache, component_glyph_id);
             for (component.contours) |contour| {
@@ -525,9 +537,7 @@ pub const Font = struct {
                     const mid = (lo + hi) / 2;
                     const pair_off = pairs_base + mid * 6;
                     const pair_key = try readU32(self.data, pair_off);
-                    if (pair_key == key) return try readI16(self.data, pair_off + 4)
-                    else if (pair_key < key) lo = mid + 1
-                    else hi = mid;
+                    if (pair_key == key) return try readI16(self.data, pair_off + 4) else if (pair_key < key) lo = mid + 1 else hi = mid;
                 }
             }
             const table_len = try readU16(self.data, offset + 2);
@@ -572,14 +582,21 @@ fn contourToCurves(allocator: std.mem.Allocator, point_flags: []const u8, x_coor
 
     var start_idx: usize = 0;
     for (0..pts.len) |i| {
-        if (pts[i].on_curve) { start_idx = i; break; }
+        if (pts[i].on_curve) {
+            start_idx = i;
+            break;
+        }
     }
 
     var idx = start_idx;
     var iterations: usize = 0;
     while (iterations < pts.len + 1) {
         const p0 = pts[idx % pts.len];
-        if (!p0.on_curve) { idx += 1; iterations += 1; continue; }
+        if (!p0.on_curve) {
+            idx += 1;
+            iterations += 1;
+            continue;
+        }
         const next1 = pts[(idx + 1) % pts.len];
         if (next1.on_curve) {
             try curves.append(allocator, .{ .p0 = p0.pos, .p1 = Vec2.lerp(p0.pos, next1.pos, 0.5), .p2 = next1.pos });
@@ -645,4 +662,27 @@ test "space glyph has no contours" {
     const glyph = try font.parseGlyph(std.testing.allocator, &cache, space_id);
     try std.testing.expectEqual(@as(usize, 0), glyph.contours.len);
     try std.testing.expect(glyph.metrics.advance_width > 0);
+}
+
+test "direct glyph metrics match parsed glyph metrics" {
+    const font_data = @import("assets").noto_sans_regular;
+    const font = try Font.init(font_data);
+    var cache = GlyphCache.init(std.testing.allocator);
+    defer cache.deinit();
+
+    const glyph_id = try font.glyphIndex('M');
+    const direct = try font.glyphMetrics(glyph_id);
+    const glyph = try font.parseGlyph(std.testing.allocator, &cache, glyph_id);
+
+    try std.testing.expectEqual(direct.advance_width, glyph.metrics.advance_width);
+    try std.testing.expectEqual(direct.lsb, glyph.metrics.lsb);
+    try std.testing.expectApproxEqAbs(direct.bbox.min.x, glyph.metrics.bbox.min.x, 1e-6);
+    try std.testing.expectApproxEqAbs(direct.bbox.min.y, glyph.metrics.bbox.min.y, 1e-6);
+    try std.testing.expectApproxEqAbs(direct.bbox.max.x, glyph.metrics.bbox.max.x, 1e-6);
+    try std.testing.expectApproxEqAbs(direct.bbox.max.y, glyph.metrics.bbox.max.y, 1e-6);
+
+    try std.testing.expectEqual(try font.advanceWidth(glyph_id), @as(i16, @intCast(direct.advance_width)));
+    const bbox = try font.bbox(glyph_id);
+    try std.testing.expectApproxEqAbs(direct.bbox.min.x, bbox.min.x, 1e-6);
+    try std.testing.expectApproxEqAbs(direct.bbox.max.y, bbox.max.y, 1e-6);
 }

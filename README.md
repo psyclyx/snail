@@ -57,6 +57,11 @@ const snail = @import("snail");
 var font = try snail.Font.init(ttf_bytes);
 defer font.deinit();
 
+const cell_gid = try font.glyphIndex('M');
+const cell_advance = try font.advanceWidth(cell_gid);
+const cell_bbox = try font.bbox(cell_gid);
+_ = .{ cell_advance, cell_bbox };
+
 // Build an immutable atlas snapshot for the glyphs you want
 var atlas = try snail.Atlas.initAscii(allocator, &font, &snail.ASCII_PRINTABLE);
 defer atlas.deinit();
@@ -76,7 +81,7 @@ renderer.beginFrame();
 renderer.draw(batch.slice(), mvp, viewport_w, viewport_h);
 ```
 
-Atlas uploads now return lightweight `AtlasView` values. Existing glyph handles remain stable across `extendCodepoints()` and `extendGlyphsForText()` because those operations return a new atlas snapshot that shares old pages. `compact()` returns a new snapshot too, but may repack handles.
+Atlas uploads now return lightweight `AtlasView` values. Existing glyph handles remain stable across `extendGlyphIds()`, `extendCodepoints()`, and `extendGlyphsForText()` because those operations return a new atlas snapshot that shares old pages. `compact()` returns a new snapshot too, but may repack handles.
 
 ### Vector primitives and pictures
 
@@ -122,7 +127,7 @@ const cpu_renderer = @import("extra/cpu_renderer.zig");
 
 var soft = cpu_renderer.CpuRenderer.init(pixel_buf.ptr, width, height, stride);
 soft.clear(0, 0, 0, 0);
-soft.drawGlyph(&atlas, &font, 'A', 12, 28, 24, .{ 1, 1, 1, 1 });
+soft.drawGlyphId(&atlas, try font.glyphIndex('A'), 12, 28, 24, .{ 1, 1, 1, 1 });
 soft.drawVector(shapes.slice());
 soft.drawVectorPicture(&picture);
 ```
@@ -166,6 +171,12 @@ Lower-level entry points are still available when you already have codepoints or
 ```zig
 const new_codepoints = [_]u32{ 0x00E9, 0x00F1, 0x00FC }; // é, ñ, ü
 if (try atlas.extendCodepoints(&new_codepoints)) |next| {
+    snail.replaceAtlas(&atlas, next);
+    atlas_view = renderer.uploadAtlas(&atlas);
+}
+
+const glyph_ids = [_]u16{ try font.glyphIndex('M'), try font.glyphIndex('W') };
+if (try atlas.extendGlyphIds(&glyph_ids)) |next| {
     snail.replaceAtlas(&atlas, next);
     atlas_view = renderer.uploadAtlas(&atlas);
 }

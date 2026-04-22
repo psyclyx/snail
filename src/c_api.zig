@@ -36,7 +36,7 @@ fn toZigAllocator(ca: *const SnailAllocator) std.mem.Allocator {
         }
     };
     return .{
-        .ptr = @constCast(@ptrCast(ca)),
+        .ptr = @ptrCast(@constCast(ca)),
         .vtable = &.{ .alloc = S.alloc, .resize = S.resize, .remap = S.remap, .free = S.free },
     };
 }
@@ -98,6 +98,19 @@ pub const SnailVectorStrokeStyle = extern struct {
     width: f32,
 };
 
+pub const SnailBBox = extern struct {
+    min_x: f32,
+    min_y: f32,
+    max_x: f32,
+    max_y: f32,
+};
+
+pub const SnailGlyphMetrics = extern struct {
+    advance_width: u16,
+    lsb: i16,
+    bbox: SnailBBox,
+};
+
 fn wrapAtlas(atlas: snail.Atlas, allocator: std.mem.Allocator, out: *?*AtlasImpl) c_int {
     const impl = std.heap.smp_allocator.create(AtlasImpl) catch {
         var doomed = atlas;
@@ -137,6 +150,15 @@ fn toVectorStroke(stroke: ?*const SnailVectorStrokeStyle) ?snail.VectorStrokeSty
     return null;
 }
 
+fn wrapBBox(bbox: snail.BBox) SnailBBox {
+    return .{
+        .min_x = bbox.min.x,
+        .min_y = bbox.min.y,
+        .max_x = bbox.max.x,
+        .max_y = bbox.max.y,
+    };
+}
+
 // ── Font ──
 
 export fn snail_font_init(data: [*]const u8, len: usize, out: *?*FontImpl) c_int {
@@ -165,6 +187,26 @@ export fn snail_font_get_kerning(font: *const FontImpl, left: u16, right: u16) i
     return font.inner.getKerning(left, right) catch 0;
 }
 
+export fn snail_font_glyph_metrics(font: *const FontImpl, glyph_id: u16, out: *SnailGlyphMetrics) c_int {
+    const metrics = font.inner.glyphMetrics(glyph_id) catch return SNAIL_ERR_INVALID_FONT;
+    out.* = .{
+        .advance_width = metrics.advance_width,
+        .lsb = metrics.lsb,
+        .bbox = wrapBBox(metrics.bbox),
+    };
+    return SNAIL_OK;
+}
+
+export fn snail_font_advance_width(font: *const FontImpl, glyph_id: u16, out: *i16) c_int {
+    out.* = font.inner.advanceWidth(glyph_id) catch return SNAIL_ERR_INVALID_FONT;
+    return SNAIL_OK;
+}
+
+export fn snail_font_bbox(font: *const FontImpl, glyph_id: u16, out: *SnailBBox) c_int {
+    out.* = wrapBBox(font.inner.bbox(glyph_id) catch return SNAIL_ERR_INVALID_FONT);
+    return SNAIL_OK;
+}
+
 // ── Atlas ──
 
 export fn snail_atlas_init(
@@ -189,6 +231,19 @@ export fn snail_atlas_extend_codepoints(
 ) c_int {
     const cp_slice = codepoints[0..num_codepoints];
     const next = atlas.inner.extendCodepoints(cp_slice) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    if (next) |new_atlas| return wrapAtlas(new_atlas, atlas.allocator, out);
+    out.* = null;
+    return SNAIL_OK;
+}
+
+export fn snail_atlas_extend_glyph_ids(
+    atlas: *const AtlasImpl,
+    glyph_ids: [*]const u16,
+    num_glyph_ids: usize,
+    out: *?*AtlasImpl,
+) c_int {
+    const gid_slice = glyph_ids[0..num_glyph_ids];
+    const next = atlas.inner.extendGlyphIds(gid_slice) catch return SNAIL_ERR_OUT_OF_MEMORY;
     if (next) |new_atlas| return wrapAtlas(new_atlas, atlas.allocator, out);
     out.* = null;
     return SNAIL_OK;

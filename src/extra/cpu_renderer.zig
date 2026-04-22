@@ -123,10 +123,33 @@ pub const CpuRenderer = struct {
         color: [4]f32, // RGBA 0-1
     ) void {
         const gid = font.glyphIndex(codepoint) catch return;
-        if (gid == 0) return;
-        const info = atlas.getGlyph(gid) orelse return;
-        if (info.band_entry.h_band_count == 0 or info.band_entry.v_band_count == 0) return;
+        self.drawGlyphId(atlas, gid, x, y, font_size, color);
+    }
 
+    pub fn drawGlyphId(
+        self: *CpuRenderer,
+        atlas: *const snail.Atlas,
+        glyph_id: u16,
+        x: f32,
+        y: f32,
+        font_size: f32,
+        color: [4]f32,
+    ) void {
+        if (glyph_id == 0) return;
+        const info = atlas.getGlyph(glyph_id) orelse return;
+        self.drawGlyphInfo(atlas, info, x, y, font_size, color);
+    }
+
+    pub fn drawGlyphInfo(
+        self: *CpuRenderer,
+        atlas: *const snail.Atlas,
+        info: snail.Atlas.GlyphInfo,
+        x: f32,
+        y: f32,
+        font_size: f32,
+        color: [4]f32,
+    ) void {
+        if (info.band_entry.h_band_count == 0 or info.band_entry.v_band_count == 0) return;
         self.renderGlyphInternal(atlas, info, x, y, font_size, color);
     }
 
@@ -1124,14 +1147,10 @@ test "cpu renderer renders glyphs" {
 
     const em_scale = font_size / @as(f32, @floatFromInt(font.unitsPerEm()));
     for (text) |ch| {
-        renderer.drawGlyph(&atlas, &font, @as(u32, ch), cursor_x, baseline_y, font_size, white);
-        // Advance cursor
-        const gid = font.glyphIndex(@as(u32, ch)) catch 0;
-        if (atlas.getGlyph(gid)) |info| {
-            cursor_x += @as(f32, @floatFromInt(info.advance_width)) * em_scale;
-        } else {
-            cursor_x += font_size * 0.5;
-        }
+        const gid = try font.glyphIndex(@as(u32, ch));
+        renderer.drawGlyphId(&atlas, gid, cursor_x, baseline_y, font_size, white);
+        const advance = try font.advanceWidth(gid);
+        cursor_x += @as(f32, @floatFromInt(advance)) * em_scale;
     }
 
     // Verify non-zero pixels exist in the rendered area

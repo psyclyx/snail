@@ -147,6 +147,26 @@ test "extend preserves existing glyph handles" {
     try std.testing.expect(next.pageCount() > atlas.pageCount());
 }
 
+test "extendGlyphIds appends direct glyph ids" {
+    const allocator = std.testing.allocator;
+
+    var font = try snail.Font.init(assets.noto_sans_regular);
+    defer font.deinit();
+
+    var atlas = try snail.Atlas.init(allocator, &font, &[_]u32{'A'});
+    defer atlas.deinit();
+
+    const e_acute = try font.glyphIndex(0x00E9);
+    try std.testing.expect(e_acute != 0);
+    try std.testing.expect(atlas.getGlyph(e_acute) == null);
+
+    var next = (try atlas.extendGlyphIds(&[_]u16{e_acute})) orelse return error.ExpectedExtension;
+    defer next.deinit();
+
+    try std.testing.expect(next.getGlyph(e_acute) != null);
+    try std.testing.expect((try next.extendGlyphIds(&[_]u16{e_acute})) == null);
+}
+
 test "extendText discovers shaped glyphs for UTF-8 text" {
     const allocator = std.testing.allocator;
 
@@ -174,6 +194,29 @@ test "extendText discovers shaped glyphs for UTF-8 text" {
     try std.testing.expect(extended_text != null);
     defer if (extended_text) |*next| next.deinit();
     try std.testing.expect(extended_text.?.getGlyph(fi_gid) != null);
+}
+
+test "extendShapedGlyphs discovers shaped glyph ids" {
+    const allocator = std.testing.allocator;
+
+    var font = try snail.Font.init(assets.noto_sans_regular);
+    defer font.deinit();
+
+    const f_gid = try font.glyphIndex('f');
+    const i_gid = try font.glyphIndex('i');
+    const shaped = [_]snail.Batch.ShapedGlyph{
+        .{ .glyph_id = f_gid, .x_offset = 0, .y_offset = 0 },
+        .{ .glyph_id = i_gid, .x_offset = 10, .y_offset = 0 },
+    };
+
+    var atlas = try snail.Atlas.init(allocator, &font, &[_]u32{'A'});
+    defer atlas.deinit();
+
+    var next = (try atlas.extendShapedGlyphs(&shaped)) orelse return error.ExpectedExtension;
+    defer next.deinit();
+
+    try std.testing.expect(next.getGlyph(f_gid) != null);
+    try std.testing.expect(next.getGlyph(i_gid) != null);
 }
 
 test "compact returns a single-page atlas snapshot" {

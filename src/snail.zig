@@ -48,6 +48,8 @@ pub const harfbuzz = if (build_options.enable_harfbuzz) @import("font/harfbuzz.z
 
 pub const Mat4 = vec.Mat4;
 pub const Vec2 = vec.Vec2;
+pub const BBox = bezier.BBox;
+pub const GlyphMetrics = ttf.GlyphMetrics;
 pub const VectorTransform2D = vec.Transform2D;
 
 // Re-export vertex constants for buffer sizing
@@ -114,6 +116,18 @@ pub const Font = struct {
 
     pub fn getKerning(self: *const Font, left: u16, right: u16) !i16 {
         return self.inner.getKerning(left, right);
+    }
+
+    pub fn glyphMetrics(self: *const Font, glyph_id: u16) !GlyphMetrics {
+        return self.inner.glyphMetrics(glyph_id);
+    }
+
+    pub fn advanceWidth(self: *const Font, glyph_id: u16) !i16 {
+        return self.inner.advanceWidth(glyph_id);
+    }
+
+    pub fn bbox(self: *const Font, glyph_id: u16) !BBox {
+        return self.inner.bbox(glyph_id);
     }
 };
 
@@ -246,6 +260,63 @@ pub const Atlas = struct {
         var it = map.keyIterator();
         while (it.next()) |gid_ptr| try seen.put(gid_ptr.*, {});
         return seen;
+    }
+
+    fn cloneWithAppendedGlyphs(self: *const Atlas, new_only: *const std.AutoHashMap(u16, void)) !?Atlas {
+        const font = self.font orelse return error.NoFontAvailable;
+        if (new_only.count() == 0) return null;
+
+        const new_page_index: u16 = @intCast(self.pages.len);
+        const page_result = try buildPageData(self.allocator, font, new_only, new_page_index);
+        errdefer {
+            page_result.page.release();
+            var page_map = page_result.glyph_map;
+            page_map.deinit();
+        }
+
+        const pages = try self.allocator.alloc(*AtlasPage, self.pages.len + 1);
+        errdefer self.allocator.free(pages);
+        for (self.pages, 0..) |atlas_page, i| pages[i] = atlas_page.retain();
+        pages[self.pages.len] = page_result.page;
+
+        var glyph_map = std.AutoHashMap(u16, GlyphInfo).init(self.allocator);
+        errdefer glyph_map.deinit();
+        var existing = self.glyph_map.iterator();
+        while (existing.next()) |entry| try glyph_map.put(entry.key_ptr.*, entry.value_ptr.*);
+        var appended = page_result.glyph_map.iterator();
+        while (appended.next()) |entry| try glyph_map.put(entry.key_ptr.*, entry.value_ptr.*);
+
+        const next = try initFromParts(self.allocator, font, pages, glyph_map);
+        var page_map = page_result.glyph_map;
+        page_map.deinit();
+        return next;
+    }
+
+    fn extendGlyphIdSet(self: *const Atlas, requested: *const std.AutoHashMap(u16, void)) !?Atlas {
+        const font = self.font orelse return error.NoFontAvailable;
+
+        var seen = try collectGlyphIds(&self.glyph_map, self.allocator);
+        defer seen.deinit();
+
+        var added_any = false;
+        var requested_it = requested.keyIterator();
+        while (requested_it.next()) |gid_ptr| {
+            const gid = gid_ptr.*;
+            if (gid == 0 or seen.contains(gid)) continue;
+            try seen.put(gid, {});
+            added_any = true;
+        }
+        if (!added_any) return null;
+
+        try expandColrLayers(font, self.allocator, &seen);
+
+        var new_only = std.AutoHashMap(u16, void).init(self.allocator);
+        defer new_only.deinit();
+        var seen_it = seen.keyIterator();
+        while (seen_it.next()) |gid_ptr| {
+            if (!self.glyph_map.contains(gid_ptr.*)) try new_only.put(gid_ptr.*, {});
+        }
+        return self.cloneWithAppendedGlyphs(&new_only);
     }
 
     /// Expand a glyph-ID set with the COLRv0 layer glyphs of every base glyph
@@ -594,6 +665,19 @@ pub const Atlas = struct {
         return initFromParts(self.allocator, self.font, pages, glyph_map);
     }
 
+    /// Return a new atlas snapshot with any missing glyph IDs appended as a new
+    /// page. Existing glyph handles remain stable across extend.
+    pub fn extendGlyphIds(self: *const Atlas, glyph_ids: []const u16) !?Atlas {
+        var requested = std.AutoHashMap(u16, void).init(self.allocator);
+        defer requested.deinit();
+
+        for (glyph_ids) |gid| {
+            if (gid == 0) continue;
+            try requested.put(gid, {});
+        }
+        return self.extendGlyphIdSet(&requested);
+    }
+
     /// Return a new atlas snapshot with any missing codepoints appended as a new page.
     /// Existing glyph handles remain stable across extend.
     pub fn extendCodepoints(self: *const Atlas, new_codepoints: []const u32) !?Atlas {
@@ -602,10 +686,14 @@ pub const Atlas = struct {
         var seen = try collectGlyphIds(&self.glyph_map, self.allocator);
         defer seen.deinit();
 
+        var requested = std.AutoHashMap(u16, void).init(self.allocator);
+        defer requested.deinit();
+
         for (new_codepoints) |cp| {
-            const gid = font.inner.glyphIndex(cp) catch continue;
+            const gid = font.glyphIndex(cp) catch continue;
             if (gid == 0 or seen.contains(gid)) continue;
             try seen.put(gid, {});
+            try requested.put(gid, {});
         }
 
         {
@@ -616,42 +704,12 @@ pub const Atlas = struct {
                 &seen,
             );
             defer if (liga_glyphs.len > 0) self.allocator.free(liga_glyphs);
-            for (liga_glyphs) |lg| try seen.put(lg, {});
+            for (liga_glyphs) |lg| {
+                if (lg == 0 or self.glyph_map.contains(lg)) continue;
+                try requested.put(lg, {});
+            }
         }
-        try expandColrLayers(font, self.allocator, &seen);
-
-        var new_only = std.AutoHashMap(u16, void).init(self.allocator);
-        defer new_only.deinit();
-        var it = seen.keyIterator();
-        while (it.next()) |gid_ptr| {
-            if (!self.glyph_map.contains(gid_ptr.*)) try new_only.put(gid_ptr.*, {});
-        }
-        if (new_only.count() == 0) return null;
-
-        const new_page_index: u16 = @intCast(self.pages.len);
-        const page_result = try buildPageData(self.allocator, font, &new_only, new_page_index);
-        errdefer {
-            page_result.page.release();
-            var page_map = page_result.glyph_map;
-            page_map.deinit();
-        }
-
-        const pages = try self.allocator.alloc(*AtlasPage, self.pages.len + 1);
-        errdefer self.allocator.free(pages);
-        for (self.pages, 0..) |atlas_page, i| pages[i] = atlas_page.retain();
-        pages[self.pages.len] = page_result.page;
-
-        var glyph_map = std.AutoHashMap(u16, GlyphInfo).init(self.allocator);
-        errdefer glyph_map.deinit();
-        var existing = self.glyph_map.iterator();
-        while (existing.next()) |entry| try glyph_map.put(entry.key_ptr.*, entry.value_ptr.*);
-        var appended = page_result.glyph_map.iterator();
-        while (appended.next()) |entry| try glyph_map.put(entry.key_ptr.*, entry.value_ptr.*);
-
-        const next = try initFromParts(self.allocator, font, pages, glyph_map);
-        var page_map = page_result.glyph_map;
-        page_map.deinit();
-        return next;
+        return self.extendGlyphIdSet(&requested);
     }
 
     /// Discover glyphs needed to render UTF-8 text and return a new atlas
@@ -692,57 +750,23 @@ pub const Atlas = struct {
     pub fn extendGlyphsForText(self: *const Atlas, text: []const u8) !?Atlas {
         if (comptime !build_options.enable_harfbuzz) return null;
         const hbs = self.hb_shaper orelse return null;
-        const font = self.font orelse return error.NoFontAvailable;
+        _ = self.font orelse return error.NoFontAvailable;
 
         const glyph_ids = try hbs.discoverGlyphs(self.allocator, text);
         defer if (glyph_ids.len > 0) self.allocator.free(glyph_ids);
-        if (glyph_ids.len == 0) return null;
+        return self.extendGlyphIds(glyph_ids);
+    }
 
-        var seen = try collectGlyphIds(&self.glyph_map, self.allocator);
-        defer seen.deinit();
+    /// Convenience adapter for externally shaped glyph runs.
+    pub fn extendShapedGlyphs(self: *const Atlas, glyphs: []const Batch.ShapedGlyph) !?Atlas {
+        var requested = std.AutoHashMap(u16, void).init(self.allocator);
+        defer requested.deinit();
 
-        var added_any = false;
-        for (glyph_ids) |gid| {
-            if (seen.contains(gid)) continue;
-            try seen.put(gid, {});
-            added_any = true;
+        for (glyphs) |glyph| {
+            if (glyph.glyph_id == 0) continue;
+            try requested.put(glyph.glyph_id, {});
         }
-        if (!added_any) return null;
-
-        try expandColrLayers(font, self.allocator, &seen);
-
-        var new_only = std.AutoHashMap(u16, void).init(self.allocator);
-        defer new_only.deinit();
-        var it = seen.keyIterator();
-        while (it.next()) |gid_ptr| {
-            if (!self.glyph_map.contains(gid_ptr.*)) try new_only.put(gid_ptr.*, {});
-        }
-        if (new_only.count() == 0) return null;
-
-        const new_page_index: u16 = @intCast(self.pages.len);
-        const page_result = try buildPageData(self.allocator, font, &new_only, new_page_index);
-        errdefer {
-            page_result.page.release();
-            var page_map = page_result.glyph_map;
-            page_map.deinit();
-        }
-
-        const pages = try self.allocator.alloc(*AtlasPage, self.pages.len + 1);
-        errdefer self.allocator.free(pages);
-        for (self.pages, 0..) |atlas_page, i| pages[i] = atlas_page.retain();
-        pages[self.pages.len] = page_result.page;
-
-        var glyph_map = std.AutoHashMap(u16, GlyphInfo).init(self.allocator);
-        errdefer glyph_map.deinit();
-        var existing = self.glyph_map.iterator();
-        while (existing.next()) |entry| try glyph_map.put(entry.key_ptr.*, entry.value_ptr.*);
-        var appended = page_result.glyph_map.iterator();
-        while (appended.next()) |entry| try glyph_map.put(entry.key_ptr.*, entry.value_ptr.*);
-
-        const next = try initFromParts(self.allocator, font, pages, glyph_map);
-        var page_map = page_result.glyph_map;
-        page_map.deinit();
-        return next;
+        return self.extendGlyphIdSet(&requested);
     }
 
     /// Return a compacted atlas snapshot. Handles are stable across extend, but
