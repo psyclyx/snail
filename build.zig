@@ -14,7 +14,25 @@ fn configureCoreModule(
     if (harfbuzz) mod.linkSystemLibrary("harfbuzz", .{});
 }
 
-fn configureWindowedModule(
+fn configureDemoModule(
+    mod: *std.Build.Module,
+    b: *std.Build,
+    opts: *std.Build.Step.Options,
+    harfbuzz: bool,
+    vulkan: bool,
+    vk_shaders: *std.Build.Module,
+) void {
+    configureCoreModule(mod, opts, harfbuzz, vulkan, vk_shaders);
+    mod.linkSystemLibrary("wayland-client", .{});
+    if (!vulkan) {
+        mod.linkSystemLibrary("wayland-egl", .{});
+        mod.linkSystemLibrary("EGL", .{});
+    }
+    mod.addIncludePath(b.path("src/render"));
+    mod.addCSourceFile(.{ .file = b.path("src/render/xdg-shell-client-protocol.c") });
+}
+
+fn configureEglOffscreenModule(
     mod: *std.Build.Module,
     opts: *std.Build.Step.Options,
     harfbuzz: bool,
@@ -22,11 +40,11 @@ fn configureWindowedModule(
     vk_shaders: *std.Build.Module,
 ) void {
     configureCoreModule(mod, opts, harfbuzz, vulkan, vk_shaders);
-    mod.linkSystemLibrary("glfw3", .{});
+    mod.linkSystemLibrary("EGL", .{});
 }
 
 /// For use as a dependency: returns a module with only the core snail library.
-/// No GLFW, no Vulkan — the consumer must provide a GL 3.3+ context.
+/// No demo windowing, no Vulkan — the consumer must provide a GL 3.3+ context.
 pub fn module(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
     const options = b.addOptions();
     options.addOption(bool, "enable_profiling", false);
@@ -132,7 +150,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .imports = &.{.{ .name = "assets", .module = assets_mod }},
     });
-    configureWindowedModule(demo_module, options, enable_harfbuzz, enable_vulkan, vk_shaders_mod);
+    configureDemoModule(demo_module, b, options, enable_harfbuzz, enable_vulkan, vk_shaders_mod);
 
     const exe = b.addExecutable(.{ .name = "snail-demo", .root_module = demo_module });
     const install_demo = b.addInstallArtifact(exe, .{});
@@ -217,7 +235,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .imports = &.{.{ .name = "assets", .module = assets_mod }},
     });
-    configureWindowedModule(bench_hl_module, options, enable_harfbuzz, enable_vulkan, vk_shaders_mod);
+    configureEglOffscreenModule(bench_hl_module, options, enable_harfbuzz, enable_vulkan, vk_shaders_mod);
 
     const bench_hl_exe = b.addExecutable(.{ .name = "snail-bench-headless", .root_module = bench_hl_module });
     const run_bench_hl = b.addRunArtifact(bench_hl_exe);
@@ -237,7 +255,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .imports = &.{.{ .name = "assets", .module = assets_mod }},
     });
-    configureWindowedModule(bench_suite_module, options, enable_harfbuzz, enable_vulkan, vk_shaders_mod);
+    configureEglOffscreenModule(bench_suite_module, options, enable_harfbuzz, enable_vulkan, vk_shaders_mod);
     bench_suite_module.linkSystemLibrary("freetype2", .{});
 
     const bench_suite_exe = b.addExecutable(.{ .name = "snail-bench-suite", .root_module = bench_suite_module });

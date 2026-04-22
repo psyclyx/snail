@@ -1,28 +1,32 @@
-//! Demo-only Vulkan platform: GLFW window + Vulkan instance/device/swapchain.
+//! Demo-only Vulkan platform: Wayland window + Vulkan instance/device/swapchain.
 //! Not part of the library — the library accepts a VulkanContext from the caller.
 
 const std = @import("std");
 const vkp = @import("vulkan_pipeline.zig");
 const SubpixelOrder = @import("subpixel_order.zig").SubpixelOrder;
+const wayland = @import("wayland_window.zig");
 
-// Single cImport for both GLFW+Vulkan to avoid type incompatibility
 const c = @cImport({
     @cInclude("vulkan/vulkan.h");
-    @cDefine("GLFW_INCLUDE_NONE", "");
-    @cInclude("GLFW/glfw3.h");
+    @cInclude("vulkan/vulkan_wayland.h");
 });
 
-// Use GLFW's Vulkan types (same @cImport means compatible types)
 const vk = c;
 
 const MAX_FRAMES_IN_FLIGHT = 2;
 
-var window: ?*c.GLFWwindow = null;
-var monitor_changed: bool = false;
+pub const KEY_ESCAPE = wayland.KEY_ESCAPE;
+pub const KEY_R = wayland.KEY_R;
+pub const KEY_S = wayland.KEY_S;
+pub const KEY_L = wayland.KEY_L;
+pub const KEY_Z = wayland.KEY_Z;
+pub const KEY_X = wayland.KEY_X;
+pub const KEY_LEFT = wayland.KEY_LEFT;
+pub const KEY_RIGHT = wayland.KEY_RIGHT;
+pub const KEY_UP = wayland.KEY_UP;
+pub const KEY_DOWN = wayland.KEY_DOWN;
 
-fn onWindowMoved(_: ?*c.GLFWwindow, _: c_int, _: c_int) callconv(.c) void {
-    monitor_changed = true;
-}
+var window: ?*wayland.Window = null;
 
 var instance: vk.VkInstance = null;
 var surface: vk.VkSurfaceKHR = null;
@@ -62,9 +66,9 @@ fn nowNs() u64 {
 const FrameTimings = struct {
     wait_fence_us: f64 = 0,
     acquire_us: f64 = 0,
-    rp_setup_us: f64 = 0,   // vkCmdBeginRenderPass and preamble after acquire
-    cpu_work_us: f64 = 0,   // main loop work between beginFrame() return and endFrame() entry
-    rp_close_us: f64 = 0,   // vkCmdEndRenderPass + vkEndCommandBuffer
+    rp_setup_us: f64 = 0, // vkCmdBeginRenderPass and preamble after acquire
+    cpu_work_us: f64 = 0, // main loop work between beginFrame() return and endFrame() entry
+    rp_close_us: f64 = 0, // vkCmdEndRenderPass + vkEndCommandBuffer
     submit_us: f64 = 0,
     present_us: f64 = 0,
     total_us: f64 = 0,
@@ -98,22 +102,15 @@ var ft = FrameTimings{};
 var frame_start_ns: u64 = 0;
 var cmd_ready_ns: u64 = 0; // set just before beginFrame returns
 
-// ── Key input state ──
-var prev_keys: [512]bool = .{false} ** 512;
-
 pub fn init(width: u32, height: u32, title: [*:0]const u8) !vkp.VulkanContext {
     // Note: vulkan_platform.zig and vulkan_pipeline.zig have separate @cImport blocks
     // for Vulkan, creating incompatible opaque pointer types. We use @ptrCast at the
     // boundary to convert between them.
-    if (c.glfwInit() != c.GLFW_TRUE) return error.GlfwInitFailed;
-    errdefer c.glfwTerminate();
-
-    c.glfwWindowHint(c.GLFW_CLIENT_API, c.GLFW_NO_API);
-    c.glfwWindowHint(c.GLFW_RESIZABLE, c.GLFW_TRUE);
-
-    window = c.glfwCreateWindow(@intCast(width), @intCast(height), title, null, null) orelse return error.WindowCreateFailed;
-    _ = c.glfwSetFramebufferSizeCallback(window, framebufferSizeCallback);
-    _ = c.glfwSetWindowPosCallback(window, onWindowMoved);
+    window = try wayland.Window.init(width, height, title);
+    errdefer {
+        window.?.deinit();
+        window = null;
+    }
 
     try createInstance();
     try createSurface();
@@ -137,59 +134,12 @@ pub fn init(width: u32, height: u32, title: [*:0]const u8) !vkp.VulkanContext {
 
 /// Returns true once after the window has moved (which may indicate a monitor change).
 pub fn consumeMonitorChanged() bool {
-    const v = monitor_changed;
-    monitor_changed = false;
-    return v;
+    return false;
 }
 
-/// Detect the subpixel order for the monitor currently containing the window centre.
-/// Applies a rotation correction if the monitor's physical and video orientations differ.
+/// Wayland does not expose reliable monitor geometry/content-scale details here,
+/// so the demo currently uses the fontconfig-detected base order unchanged.
 pub fn detectCurrentMonitorSubpixelOrder(base: SubpixelOrder) SubpixelOrder {
-    const win = window orelse return base;
-    var wx: c_int = 0;
-    var wy: c_int = 0;
-    c.glfwGetWindowPos(win, &wx, &wy);
-    var ww: c_int = 0;
-    var wh: c_int = 0;
-    c.glfwGetWindowSize(win, &ww, &wh);
-    const cx: c_int = wx + @divTrunc(ww, 2);
-    const cy: c_int = wy + @divTrunc(wh, 2);
-
-    var count: c_int = 0;
-    const monitors = c.glfwGetMonitors(&count) orelse return base;
-    for (0..@as(usize, @intCast(count))) |i| {
-        const m = monitors[i];
-        var mx: c_int = 0;
-        var my: c_int = 0;
-        c.glfwGetMonitorPos(m, &mx, &my);
-        const mode = c.glfwGetVideoMode(m) orelse continue;
-        if (cx >= mx and cx < mx + mode[0].width and
-            cy >= my and cy < my + mode[0].height)
-        {
-            // On HiDPI displays (content scale > 1), subpixel rendering is
-            // unnecessary and can cause color fringing — default to grayscale AA.
-            var xscale: f32 = 1.0;
-            var yscale: f32 = 1.0;
-            c.glfwGetMonitorContentScale(m, &xscale, &yscale);
-            if (xscale > 1.0 or yscale > 1.0) return .none;
-
-            var pw: c_int = 0;
-            var ph: c_int = 0;
-            c.glfwGetMonitorPhysicalSize(m, &pw, &ph);
-            const vid_landscape = mode[0].width > mode[0].height;
-            const phy_landscape = pw > ph;
-            if (vid_landscape != phy_landscape) {
-                return switch (base) {
-                    .rgb  => .vrgb,
-                    .bgr  => .vbgr,
-                    .vrgb => .rgb,
-                    .vbgr => .bgr,
-                    .none => .none,
-                };
-            }
-            return base;
-        }
-    }
     return base;
 }
 
@@ -207,8 +157,8 @@ pub fn deinit() void {
     if (device != null) vk.vkDestroyDevice(device, null);
     if (surface != null) vk.vkDestroySurfaceKHR(instance, surface, null);
     if (instance != null) vk.vkDestroyInstance(instance, null);
-    if (window) |w| c.glfwDestroyWindow(w);
-    c.glfwTerminate();
+    if (window) |w| w.deinit();
+    window = null;
 }
 
 /// Begin a new frame. Returns the command buffer to record into.
@@ -314,8 +264,12 @@ pub fn endFrame() void {
 }
 
 pub fn shouldClose() bool {
-    c.glfwPollEvents();
-    return c.glfwWindowShouldClose(window) == c.GLFW_TRUE;
+    if (window) |w| {
+        w.pumpEvents();
+        if (w.consumeResized()) framebuffer_resized = true;
+        return w.shouldClose();
+    }
+    return true;
 }
 
 pub fn getWindowSize() [2]u32 {
@@ -323,21 +277,17 @@ pub fn getWindowSize() [2]u32 {
 }
 
 pub fn getTime() f64 {
-    return c.glfwGetTime();
+    return wayland.getTime();
 }
 
-pub fn isKeyDown(key: c_int) bool {
-    if (window) |w| return c.glfwGetKey(w, key) == c.GLFW_PRESS;
+pub fn isKeyDown(key: u32) bool {
+    if (window) |w| return w.isKeyDown(key);
     return false;
 }
 
-pub fn isKeyPressed(key: c_int) bool {
-    const idx: usize = @intCast(@as(u32, @bitCast(key)));
-    if (idx >= 512) return false;
-    const down = isKeyDown(key);
-    const was_down = prev_keys[idx];
-    prev_keys[idx] = down;
-    return down and !was_down;
+pub fn isKeyPressed(key: u32) bool {
+    if (window) |w| return w.isKeyPressed(key);
+    return false;
 }
 
 /// Block until all GPU work submitted to the graphics queue is complete.
@@ -348,7 +298,7 @@ pub fn queueWaitIdle() void {
 
 // ── Offscreen (headless) Vulkan path ──
 // No window, no surface, no swapchain, no present.
-// Equivalent to GL's hidden-window FBO. Used by benchmarks.
+// Equivalent to GL's offscreen EGL+pbuffer+FBO path. Used by benchmarks.
 
 const OFFSCREEN_FORMAT: vk.VkFormat = vk.VK_FORMAT_R8G8B8A8_UNORM;
 
@@ -390,9 +340,16 @@ pub fn deinitOffscreen() void {
     if (command_pool != null) vk.vkDestroyCommandPool(device, command_pool, null);
     if (device != null) vk.vkDestroyDevice(device, null);
     if (instance != null) vk.vkDestroyInstance(instance, null);
-    offscreen_image = null; offscreen_memory = null; offscreen_view = null;
-    offscreen_render_pass = null; offscreen_framebuffer = null; offscreen_cmd = null;
-    command_pool = null; device = null; instance = null; graphics_queue = null;
+    offscreen_image = null;
+    offscreen_memory = null;
+    offscreen_view = null;
+    offscreen_render_pass = null;
+    offscreen_framebuffer = null;
+    offscreen_cmd = null;
+    command_pool = null;
+    device = null;
+    instance = null;
+    graphics_queue = null;
     physical_device = null;
 }
 
@@ -623,18 +580,6 @@ fn createOffscreenResources(width: u32, height: u32) !void {
     try checkVk(vk.vkCreateFramebuffer(device, &fb_ci, null, &offscreen_framebuffer));
 }
 
-// Re-export GLFW key constants
-pub const GLFW_KEY_ESCAPE = c.GLFW_KEY_ESCAPE;
-pub const GLFW_KEY_R = c.GLFW_KEY_R;
-pub const GLFW_KEY_S = c.GLFW_KEY_S;
-pub const GLFW_KEY_L = c.GLFW_KEY_L;
-pub const GLFW_KEY_Z = c.GLFW_KEY_Z;
-pub const GLFW_KEY_X = c.GLFW_KEY_X;
-pub const GLFW_KEY_LEFT = c.GLFW_KEY_LEFT;
-pub const GLFW_KEY_RIGHT = c.GLFW_KEY_RIGHT;
-pub const GLFW_KEY_UP = c.GLFW_KEY_UP;
-pub const GLFW_KEY_DOWN = c.GLFW_KEY_DOWN;
-
 // ── Vulkan setup internals ──
 
 fn createInstance() !void {
@@ -647,22 +592,28 @@ fn createInstance() !void {
         .apiVersion = vk.VK_API_VERSION_1_0,
     });
 
-    // Get required extensions from GLFW
-    var glfw_ext_count: u32 = 0;
-    const glfw_exts = c.glfwGetRequiredInstanceExtensions(&glfw_ext_count);
+    const extensions = [_][*c]const u8{
+        vk.VK_KHR_SURFACE_EXTENSION_NAME,
+        vk.VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME,
+    };
 
     const ci = std.mem.zeroInit(vk.VkInstanceCreateInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
         .pApplicationInfo = &app_info,
-        .enabledExtensionCount = glfw_ext_count,
-        .ppEnabledExtensionNames = glfw_exts,
+        .enabledExtensionCount = @as(u32, @intCast(extensions.len)),
+        .ppEnabledExtensionNames = @as([*c]const [*c]const u8, @ptrCast(&extensions)),
     });
     try checkVk(vk.vkCreateInstance(&ci, null, &instance));
 }
 
 fn createSurface() !void {
-    if (c.glfwCreateWindowSurface(instance, window, null, &surface) != vk.VK_SUCCESS)
-        return error.SurfaceCreateFailed;
+    const win = window orelse return error.WindowCreateFailed;
+    const ci = std.mem.zeroInit(vk.VkWaylandSurfaceCreateInfoKHR, .{
+        .sType = vk.VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR,
+        .display = @as(?*vk.struct_wl_display_1, @ptrCast(win.display)),
+        .surface = @as(?*vk.struct_wl_surface_2, @ptrCast(win.surface)),
+    });
+    try checkVk(vk.vkCreateWaylandSurfaceKHR(instance, &ci, null, &surface));
 }
 
 fn pickPhysicalDevice() !void {
@@ -920,23 +871,17 @@ fn cleanupSwapchain() void {
 }
 
 fn recreateSwapchain() !void {
-    // Wait for minimized window
-    var w: c_int = 0;
-    var h: c_int = 0;
-    c.glfwGetFramebufferSize(window, &w, &h);
-    while (w == 0 or h == 0) {
-        c.glfwGetFramebufferSize(window, &w, &h);
-        c.glfwWaitEvents();
+    const win = window orelse return error.WindowCreateFailed;
+    var size = win.getWindowSize();
+    while (size[0] == 0 or size[1] == 0) {
+        win.pumpEvents();
+        size = win.getWindowSize();
     }
 
     _ = vk.vkDeviceWaitIdle(device);
     cleanupSwapchain();
-    try createSwapchain(@intCast(w), @intCast(h));
+    try createSwapchain(size[0], size[1]);
     try createFramebuffers();
-}
-
-fn framebufferSizeCallback(_: ?*c.GLFWwindow, _: c_int, _: c_int) callconv(.c) void {
-    framebuffer_resized = true;
 }
 
 fn checkVk(result: vk.VkResult) !void {

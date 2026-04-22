@@ -8,7 +8,7 @@ const subpixel_detect = @import("render/subpixel_detect.zig");
 // Backend-specific platform
 const use_vulkan = build_options.enable_vulkan;
 const platform = if (use_vulkan) @import("render/vulkan_platform.zig") else @import("render/platform.zig");
-const gl = if (use_vulkan) struct {} else @import("render/platform.zig").gl;
+const gl = if (use_vulkan) struct {} else @import("render/gl.zig").gl;
 
 const ScriptFont = struct {
     font: snail.Font,
@@ -221,7 +221,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
     defer atlas.deinit();
 
     // Script fonts
-    const arabic_text = "\xd8\xa8\xd8\xb3\xd9\x85 \xd8\xa7\xd9\x84\xd9\x84\xd9\x87 \xd8\xa7\xd9\x84\xd8\xb1\xd8\xad\xd9\x85\xd9\x86 \xd8\xa7\xd9\x84\xd8\xb1\xd8\xad\xd9\x8a\xd9\x85"; // بسم الله الرحمن الرحيم
+    const arabic_text = "\xd9\x85\xd8\xb1\xd8\xad\xd8\xa8\xd8\xa7 \xd8\xa8\xd8\xa7\xd9\x84\xd8\xb9\xd8\xa7\xd9\x84\xd9\x85"; // مرحبا بالعالم
     const devanagari_text = "\xe0\xa4\xa8\xe0\xa4\xae\xe0\xa4\xb8\xe0\xa5\x8d\xe0\xa4\xa4\xe0\xa5\x87 \xe0\xa4\xb8\xe0\xa4\x82\xe0\xa4\xb8\xe0\xa4\xbe\xe0\xa4\xb0"; // नमस्ते संसार
     const mongolian_text = "\xe1\xa0\xae\xe1\xa0\xa4\xe1\xa0\xa9\xe1\xa0\xa0\xe1\xa0\xa4\xe1\xa0\xaf"; // ᠮᠤᠩᠠᠤᠯ
     const thai_text = "\xe0\xb8\xaa\xe0\xb8\xa7\xe0\xb8\xb1\xe0\xb8\xaa\xe0\xb8\x94\xe0\xb8\xb5\xe0\xb8\x84\xe0\xb8\xa3\xe0\xb8\xb1\xe0\xb8\x9a"; // สวัสดีครับ
@@ -310,15 +310,16 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
             fps_frames = 0;
         }
 
-        const KEY_R = if (use_vulkan) platform.GLFW_KEY_R else platform.c.GLFW_KEY_R;
-        const KEY_S = if (use_vulkan) platform.GLFW_KEY_S else platform.c.GLFW_KEY_S;
-        const KEY_L = if (use_vulkan) platform.GLFW_KEY_L else platform.c.GLFW_KEY_L;
-        const KEY_Z = if (use_vulkan) platform.GLFW_KEY_Z else platform.c.GLFW_KEY_Z;
-        const KEY_X = if (use_vulkan) platform.GLFW_KEY_X else platform.c.GLFW_KEY_X;
-        const KEY_LEFT = if (use_vulkan) platform.GLFW_KEY_LEFT else platform.c.GLFW_KEY_LEFT;
-        const KEY_RIGHT = if (use_vulkan) platform.GLFW_KEY_RIGHT else platform.c.GLFW_KEY_RIGHT;
-        const KEY_UP = if (use_vulkan) platform.GLFW_KEY_UP else platform.c.GLFW_KEY_UP;
-        const KEY_DOWN = if (use_vulkan) platform.GLFW_KEY_DOWN else platform.c.GLFW_KEY_DOWN;
+        const KEY_R = platform.KEY_R;
+        const KEY_S = platform.KEY_S;
+        const KEY_L = platform.KEY_L;
+        const KEY_Z = platform.KEY_Z;
+        const KEY_X = platform.KEY_X;
+        const KEY_ESCAPE = platform.KEY_ESCAPE;
+        const KEY_LEFT = platform.KEY_LEFT;
+        const KEY_RIGHT = platform.KEY_RIGHT;
+        const KEY_UP = platform.KEY_UP;
+        const KEY_DOWN = platform.KEY_DOWN;
 
         // Re-detect subpixel order when the window moves to a different monitor.
         if (platform.consumeMonitorChanged()) {
@@ -331,6 +332,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
 
         if (platform.isKeyPressed(KEY_R)) rotate = !rotate;
         if (platform.isKeyPressed(KEY_S)) stress_test = !stress_test;
+        if (platform.isKeyPressed(KEY_ESCAPE)) break;
         if (platform.isKeyPressed(KEY_L)) {
             // Cycle through all orders so you can manually verify each one.
             const next: snail.SubpixelOrder = switch (renderer.subpixelOrder()) {

@@ -10,12 +10,10 @@ pkgs.mkShell {
   packages = with pkgs; [
     zigpkgs.master
     pkg-config
-    glfw
     libGL
     wayland
     wayland-protocols
     wayland-scanner
-    libxkbcommon
     freetype
     harfbuzz
     vulkan-loader
@@ -35,9 +33,7 @@ pkgs.mkShell {
 
   LD_LIBRARY_PATH = with pkgs; pkgs.lib.makeLibraryPath [
     libGL
-    glfw
     wayland
-    libxkbcommon
     harfbuzz
     vulkan-loader
   ];

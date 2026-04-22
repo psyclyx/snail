@@ -29,7 +29,7 @@ let
 
   demo = pkgs.stdenv.mkDerivation (common // {
     pname = "snail-demo";
-    buildInputs = with pkgs; [ glfw libGL harfbuzz ];
+    buildInputs = with pkgs; [ libGL harfbuzz wayland ];
     buildPhase = "zig build demo --release=fast";
     installPhase = ''
       mkdir -p $out/bin

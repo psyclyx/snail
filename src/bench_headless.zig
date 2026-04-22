@@ -1,14 +1,14 @@
 //! End-to-end rendering benchmark. Measures actual GPU frame time
 //! including layout + upload + draw + finish.
-//! Headless: GL uses a hidden window + FBO; Vulkan renders to a VkImage (no swapchain).
+//! Headless: GL uses an offscreen EGL pbuffer + FBO; Vulkan renders to a VkImage (no swapchain).
 //! Answers: "how fast will this be?"
 
 const std = @import("std");
 const snail = @import("snail.zig");
 const build_options = @import("build_options");
-const platform = @import("render/platform.zig");
+const egl_offscreen = @import("render/egl_offscreen.zig");
 const vulkan_platform = if (build_options.enable_vulkan) @import("render/vulkan_platform.zig") else undefined;
-const gl = platform.gl;
+const gl = @import("render/gl.zig").gl;
 const assets = @import("assets");
 
 const WIDTH = 1280;
@@ -378,22 +378,8 @@ pub fn main() !void {
 
     // ── OpenGL section ──
     {
-        if (platform.c.glfwInit() != platform.c.GLFW_TRUE) return error.GlfwInitFailed;
-        platform.c.glfwWindowHint(platform.c.GLFW_VISIBLE, platform.c.GLFW_FALSE);
-        platform.c.glfwWindowHint(platform.c.GLFW_CONTEXT_VERSION_MAJOR, 4);
-        platform.c.glfwWindowHint(platform.c.GLFW_CONTEXT_VERSION_MINOR, 4);
-        platform.c.glfwWindowHint(platform.c.GLFW_OPENGL_PROFILE, platform.c.GLFW_OPENGL_CORE_PROFILE);
-        var win = platform.c.glfwCreateWindow(WIDTH, HEIGHT, "bench", null, null);
-        if (win == null) {
-            platform.c.glfwWindowHint(platform.c.GLFW_CONTEXT_VERSION_MAJOR, 3);
-            platform.c.glfwWindowHint(platform.c.GLFW_CONTEXT_VERSION_MINOR, 3);
-            platform.c.glfwWindowHint(platform.c.GLFW_VISIBLE, platform.c.GLFW_FALSE);
-            win = platform.c.glfwCreateWindow(WIDTH, HEIGHT, "bench", null, null);
-        }
-        if (win == null) return error.WindowFailed;
-        platform.c.glfwMakeContextCurrent(win);
-        defer platform.c.glfwDestroyWindow(win);
-        defer platform.c.glfwTerminate();
+        var gl_ctx = try egl_offscreen.Context.init(WIDTH, HEIGHT);
+        defer gl_ctx.deinit();
 
         var fbo: gl.GLuint = 0;
         var fbo_tex: gl.GLuint = 0;
@@ -431,7 +417,11 @@ pub fn main() !void {
                 var n: usize = 0;
                 const view = std.unicode.Utf8View.initUnchecked(ARABIC_TEXT);
                 var it = view.iterator();
-                while (it.nextCodepoint()) |cp| { if (n >= cps.len) break; cps[n] = cp; n += 1; }
+                while (it.nextCodepoint()) |cp| {
+                    if (n >= cps.len) break;
+                    cps[n] = cp;
+                    n += 1;
+                }
                 _ = snail.replaceAtlas(&arabic_atlas, try arabic_atlas.extendCodepoints(cps[0..n]));
             }
         }
@@ -448,7 +438,11 @@ pub fn main() !void {
                 var n: usize = 0;
                 const view = std.unicode.Utf8View.initUnchecked(DEVANAGARI_TEXT);
                 var it = view.iterator();
-                while (it.nextCodepoint()) |cp| { if (n >= cps.len) break; cps[n] = cp; n += 1; }
+                while (it.nextCodepoint()) |cp| {
+                    if (n >= cps.len) break;
+                    cps[n] = cp;
+                    n += 1;
+                }
                 _ = snail.replaceAtlas(&deva_atlas, try deva_atlas.extendCodepoints(cps[0..n]));
             }
         }
@@ -465,7 +459,11 @@ pub fn main() !void {
                 var n: usize = 0;
                 const view = std.unicode.Utf8View.initUnchecked(THAI_TEXT);
                 var it = view.iterator();
-                while (it.nextCodepoint()) |cp| { if (n >= cps.len) break; cps[n] = cp; n += 1; }
+                while (it.nextCodepoint()) |cp| {
+                    if (n >= cps.len) break;
+                    cps[n] = cp;
+                    n += 1;
+                }
                 _ = snail.replaceAtlas(&thai_atlas, try thai_atlas.extendCodepoints(cps[0..n]));
             }
         }
@@ -499,13 +497,19 @@ pub fn main() !void {
         const buildArabic = struct {
             fn f(batch: *snail.Batch, a: *const snail.Atlas, fo: *const snail.Font) void {
                 var y: f32 = HEIGHT - 30;
-                for (0..12) |_| { _ = batch.addString(a, fo, ARABIC_TEXT, 10, y, 24, .{ 1, 1, 1, 1 }); y -= 32; }
+                for (0..12) |_| {
+                    _ = batch.addString(a, fo, ARABIC_TEXT, 10, y, 24, .{ 1, 1, 1, 1 });
+                    y -= 32;
+                }
             }
         }.f;
         const buildDevanagari = struct {
             fn f(batch: *snail.Batch, a: *const snail.Atlas, fo: *const snail.Font) void {
                 var y: f32 = HEIGHT - 30;
-                for (0..12) |_| { _ = batch.addString(a, fo, DEVANAGARI_TEXT, 10, y, 24, .{ 1, 1, 1, 1 }); y -= 32; }
+                for (0..12) |_| {
+                    _ = batch.addString(a, fo, DEVANAGARI_TEXT, 10, y, 24, .{ 1, 1, 1, 1 });
+                    y -= 32;
+                }
             }
         }.f;
 
@@ -576,7 +580,11 @@ pub fn main() !void {
                 var n: usize = 0;
                 const view = std.unicode.Utf8View.initUnchecked(ARABIC_TEXT);
                 var it = view.iterator();
-                while (it.nextCodepoint()) |cp| { if (n >= cps.len) break; cps[n] = cp; n += 1; }
+                while (it.nextCodepoint()) |cp| {
+                    if (n >= cps.len) break;
+                    cps[n] = cp;
+                    n += 1;
+                }
                 _ = snail.replaceAtlas(&arabic_atlas, try arabic_atlas.extendCodepoints(cps[0..n]));
             }
         }
@@ -593,7 +601,11 @@ pub fn main() !void {
                 var n: usize = 0;
                 const view = std.unicode.Utf8View.initUnchecked(DEVANAGARI_TEXT);
                 var it = view.iterator();
-                while (it.nextCodepoint()) |cp| { if (n >= cps.len) break; cps[n] = cp; n += 1; }
+                while (it.nextCodepoint()) |cp| {
+                    if (n >= cps.len) break;
+                    cps[n] = cp;
+                    n += 1;
+                }
                 _ = snail.replaceAtlas(&deva_atlas, try deva_atlas.extendCodepoints(cps[0..n]));
             }
         }
@@ -610,7 +622,11 @@ pub fn main() !void {
                 var n: usize = 0;
                 const view = std.unicode.Utf8View.initUnchecked(THAI_TEXT);
                 var it = view.iterator();
-                while (it.nextCodepoint()) |cp| { if (n >= cps.len) break; cps[n] = cp; n += 1; }
+                while (it.nextCodepoint()) |cp| {
+                    if (n >= cps.len) break;
+                    cps[n] = cp;
+                    n += 1;
+                }
                 _ = snail.replaceAtlas(&thai_atlas, try thai_atlas.extendCodepoints(cps[0..n]));
             }
         }
@@ -643,13 +659,19 @@ pub fn main() !void {
         const buildArabic = struct {
             fn f(batch: *snail.Batch, a: *const snail.Atlas, fo: *const snail.Font) void {
                 var y: f32 = HEIGHT - 30;
-                for (0..12) |_| { _ = batch.addString(a, fo, ARABIC_TEXT, 10, y, 24, .{ 1, 1, 1, 1 }); y -= 32; }
+                for (0..12) |_| {
+                    _ = batch.addString(a, fo, ARABIC_TEXT, 10, y, 24, .{ 1, 1, 1, 1 });
+                    y -= 32;
+                }
             }
         }.f;
         const buildDevanagari = struct {
             fn f(batch: *snail.Batch, a: *const snail.Atlas, fo: *const snail.Font) void {
                 var y: f32 = HEIGHT - 30;
-                for (0..12) |_| { _ = batch.addString(a, fo, DEVANAGARI_TEXT, 10, y, 24, .{ 1, 1, 1, 1 }); y -= 32; }
+                for (0..12) |_| {
+                    _ = batch.addString(a, fo, DEVANAGARI_TEXT, 10, y, 24, .{ 1, 1, 1, 1 });
+                    y -= 32;
+                }
             }
         }.f;
 

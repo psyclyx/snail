@@ -1,119 +1,118 @@
 const std = @import("std");
 const build_options = @import("build_options");
 const SubpixelOrder = @import("subpixel_order.zig").SubpixelOrder;
+const wayland = @import("wayland_window.zig");
+pub const gl = @import("gl.zig").gl;
 
-pub const c = @cImport({
-    @cDefine("GLFW_INCLUDE_NONE", "");
-    @cInclude("GLFW/glfw3.h");
+const egl = @cImport({
+    @cInclude("EGL/egl.h");
+    @cInclude("EGL/eglext.h");
+    @cInclude("wayland-egl.h");
 });
 
-pub const gl = @cImport({
-    @cDefine("GL_GLEXT_PROTOTYPES", "1");
-    @cInclude("GL/gl.h");
-    @cInclude("GL/glext.h");
-});
+pub const KEY_R = wayland.KEY_R;
+pub const KEY_S = wayland.KEY_S;
+pub const KEY_L = wayland.KEY_L;
+pub const KEY_Z = wayland.KEY_Z;
+pub const KEY_X = wayland.KEY_X;
+pub const KEY_ESCAPE = wayland.KEY_ESCAPE;
+pub const KEY_LEFT = wayland.KEY_LEFT;
+pub const KEY_RIGHT = wayland.KEY_RIGHT;
+pub const KEY_UP = wayland.KEY_UP;
+pub const KEY_DOWN = wayland.KEY_DOWN;
 
-var window: ?*c.GLFWwindow = null;
-var monitor_changed: bool = false;
-
-fn onWindowMoved(_: ?*c.GLFWwindow, _: c_int, _: c_int) callconv(.c) void {
-    monitor_changed = true;
-}
+var app: ?*wayland.Window = null;
+var egl_display: egl.EGLDisplay = egl.EGL_NO_DISPLAY;
+var egl_context: egl.EGLContext = egl.EGL_NO_CONTEXT;
+var egl_surface: egl.EGLSurface = egl.EGL_NO_SURFACE;
+var egl_window: ?*egl.wl_egl_window = null;
 
 pub fn init(width: u32, height: u32, title: [*:0]const u8) !void {
-    if (c.glfwInit() != c.GLFW_TRUE) return error.GlfwInitFailed;
-
-    c.glfwWindowHint(c.GLFW_OPENGL_PROFILE, c.GLFW_OPENGL_CORE_PROFILE);
-
-    if (!build_options.force_gl33) {
-        // Try GL 4.4 first
-        c.glfwWindowHint(c.GLFW_CONTEXT_VERSION_MAJOR, 4);
-        c.glfwWindowHint(c.GLFW_CONTEXT_VERSION_MINOR, 4);
-        window = c.glfwCreateWindow(@intCast(width), @intCast(height), title, null, null);
+    app = try wayland.Window.init(width, height, title);
+    errdefer {
+        var doomed = app.?;
+        doomed.deinit();
+        app = null;
     }
 
-    if (window == null) {
-        // Fall back to (or start at) GL 3.3
-        c.glfwWindowHint(c.GLFW_CONTEXT_VERSION_MAJOR, 3);
-        c.glfwWindowHint(c.GLFW_CONTEXT_VERSION_MINOR, 3);
-        window = c.glfwCreateWindow(@intCast(width), @intCast(height), title, null, null)
-            orelse return error.WindowCreateFailed;
+    egl_display = try initEglDisplay();
+    errdefer {
+        _ = egl.eglTerminate(egl_display);
+        egl_display = egl.EGL_NO_DISPLAY;
     }
 
-    c.glfwMakeContextCurrent(window);
-    c.glfwSwapInterval(1);
-    _ = c.glfwSetWindowPosCallback(window, onWindowMoved);
+    var config: egl.EGLConfig = null;
+    try chooseConfig(egl_display, &config);
+
+    egl_context = try createContext(egl_display, config);
+    errdefer {
+        _ = egl.eglDestroyContext(egl_display, egl_context);
+        egl_context = egl.EGL_NO_CONTEXT;
+    }
+
+    const size = app.?.getWindowSize();
+    egl_window = egl.wl_egl_window_create(@ptrCast(app.?.surface), @intCast(size[0]), @intCast(size[1])) orelse return error.EglSurfaceCreateFailed;
+    errdefer {
+        egl.wl_egl_window_destroy(egl_window.?);
+        egl_window = null;
+    }
+
+    egl_surface = egl.eglCreateWindowSurface(
+        egl_display,
+        config,
+        @as(egl.EGLNativeWindowType, @intCast(@intFromPtr(egl_window.?))),
+        null,
+    );
+    if (egl_surface == egl.EGL_NO_SURFACE) return error.EglSurfaceCreateFailed;
+    errdefer {
+        _ = egl.eglDestroySurface(egl_display, egl_surface);
+        egl_surface = egl.EGL_NO_SURFACE;
+    }
+
+    if (egl.eglMakeCurrent(egl_display, egl_surface, egl_surface, egl_context) == egl.EGL_FALSE) {
+        return error.EglMakeCurrentFailed;
+    }
+
+    _ = egl.eglSwapInterval(egl_display, 1);
 }
 
-/// Returns true once after the window has moved (which may indicate a monitor change).
 pub fn consumeMonitorChanged() bool {
-    const v = monitor_changed;
-    monitor_changed = false;
-    return v;
+    return false;
 }
 
-/// Detect the subpixel order for the monitor currently containing the window centre.
-/// Applies a rotation correction if the monitor's physical and video orientations differ
-/// (i.e. the display is rotated 90°/270°). Falls back to `base` when uncertain.
 pub fn detectCurrentMonitorSubpixelOrder(base: SubpixelOrder) SubpixelOrder {
-    const win = window orelse return base;
-    var wx: c_int = 0;
-    var wy: c_int = 0;
-    c.glfwGetWindowPos(win, &wx, &wy);
-    var ww: c_int = 0;
-    var wh: c_int = 0;
-    c.glfwGetWindowSize(win, &ww, &wh);
-    const cx: c_int = wx + @divTrunc(ww, 2);
-    const cy: c_int = wy + @divTrunc(wh, 2);
-
-    var count: c_int = 0;
-    const monitors = c.glfwGetMonitors(&count) orelse return base;
-    for (0..@as(usize, @intCast(count))) |i| {
-        const m = monitors[i];
-        var mx: c_int = 0;
-        var my: c_int = 0;
-        c.glfwGetMonitorPos(m, &mx, &my);
-        const mode = c.glfwGetVideoMode(m) orelse continue;
-        if (cx >= mx and cx < mx + mode[0].width and
-            cy >= my and cy < my + mode[0].height)
-        {
-            // On HiDPI displays (content scale > 1), subpixel rendering is
-            // unnecessary and can cause color fringing — default to grayscale AA.
-            var xscale: f32 = 1.0;
-            var yscale: f32 = 1.0;
-            c.glfwGetMonitorContentScale(m, &xscale, &yscale);
-            if (xscale > 1.0 or yscale > 1.0) return .none;
-
-            // If physical size orientation differs from video mode orientation the
-            // monitor is rotated; flip between horizontal and vertical subpixel orders.
-            var pw: c_int = 0;
-            var ph: c_int = 0;
-            c.glfwGetMonitorPhysicalSize(m, &pw, &ph);
-            const vid_landscape = mode[0].width > mode[0].height;
-            const phy_landscape = pw > ph;
-            if (vid_landscape != phy_landscape) {
-                return switch (base) {
-                    .rgb  => .vrgb,
-                    .bgr  => .vbgr,
-                    .vrgb => .rgb,
-                    .vbgr => .bgr,
-                    .none => .none,
-                };
-            }
-            return base;
-        }
-    }
+    _ = build_options;
     return base;
 }
 
 pub fn deinit() void {
-    if (window) |w| c.glfwDestroyWindow(w);
-    c.glfwTerminate();
+    if (app) |window| {
+        _ = egl.eglMakeCurrent(egl_display, egl.EGL_NO_SURFACE, egl.EGL_NO_SURFACE, egl.EGL_NO_CONTEXT);
+        if (egl_surface != egl.EGL_NO_SURFACE) _ = egl.eglDestroySurface(egl_display, egl_surface);
+        if (egl_window) |win| egl.wl_egl_window_destroy(win);
+        if (egl_context != egl.EGL_NO_CONTEXT) _ = egl.eglDestroyContext(egl_display, egl_context);
+        if (egl_display != egl.EGL_NO_DISPLAY) _ = egl.eglTerminate(egl_display);
+        egl_surface = egl.EGL_NO_SURFACE;
+        egl_context = egl.EGL_NO_CONTEXT;
+        egl_display = egl.EGL_NO_DISPLAY;
+        egl_window = null;
+        window.deinit();
+        app = null;
+    }
 }
 
 pub fn shouldClose() bool {
-    c.glfwPollEvents();
-    return c.glfwWindowShouldClose(window) == c.GLFW_TRUE;
+    if (app) |window| {
+        window.pumpEvents();
+        if (window.consumeResized()) {
+            const size = window.getWindowSize();
+            if (egl_window) |win| {
+                egl.wl_egl_window_resize(win, @intCast(size[0]), @intCast(size[1]), 0, 0);
+            }
+        }
+        return window.shouldClose();
+    }
+    return true;
 }
 
 pub fn clear(r: f32, g: f32, b: f32, a: f32) void {
@@ -122,36 +121,88 @@ pub fn clear(r: f32, g: f32, b: f32, a: f32) void {
 }
 
 pub fn swapBuffers() void {
-    if (window) |w| c.glfwSwapBuffers(w);
+    _ = egl.eglSwapBuffers(egl_display, egl_surface);
 }
 
 pub fn getWindowSize() [2]u32 {
-    var w: c_int = 0;
-    var h: c_int = 0;
-    if (window) |win| c.glfwGetFramebufferSize(win, &w, &h);
-    return .{ @intCast(w), @intCast(h) };
+    if (app) |window| return window.getWindowSize();
+    return .{ 0, 0 };
 }
 
 pub fn getTime() f64 {
-    return c.glfwGetTime();
+    return wayland.getTime();
 }
 
-pub fn isKeyDown(key: c_int) bool {
-    if (window) |w| return c.glfwGetKey(w, key) == c.GLFW_PRESS;
+pub fn isKeyDown(key: u32) bool {
+    if (app) |window| return window.isKeyDown(key);
     return false;
 }
 
-pub fn getWindow() ?*c.GLFWwindow {
-    return window;
+pub fn isKeyPressed(key: u32) bool {
+    if (app) |window| return window.isKeyPressed(key);
+    return false;
 }
 
-var prev_keys: [512]bool = .{false} ** 512;
+fn initEglDisplay() !egl.EGLDisplay {
+    const get_platform_display = @as(
+        ?*const fn (egl.EGLenum, ?*anyopaque, ?[*]const egl.EGLint) callconv(.c) egl.EGLDisplay,
+        @ptrCast(egl.eglGetProcAddress("eglGetPlatformDisplayEXT")),
+    );
 
-pub fn isKeyPressed(key: c_int) bool {
-    const idx: usize = @intCast(@as(u32, @bitCast(key)));
-    if (idx >= 512) return false;
-    const down = isKeyDown(key);
-    const was_down = prev_keys[idx];
-    prev_keys[idx] = down;
-    return down and !was_down;
+    var display: egl.EGLDisplay = egl.EGL_NO_DISPLAY;
+    if (get_platform_display) |func| {
+        display = func(egl.EGL_PLATFORM_WAYLAND_KHR, @ptrCast(app.?.display), null);
+    }
+    if (display == egl.EGL_NO_DISPLAY) {
+        display = egl.eglGetDisplay(@ptrCast(app.?.display));
+    }
+    if (display == egl.EGL_NO_DISPLAY) return error.EglDisplayFailed;
+
+    var major: egl.EGLint = 0;
+    var minor: egl.EGLint = 0;
+    if (egl.eglInitialize(display, &major, &minor) == egl.EGL_FALSE) return error.EglInitializeFailed;
+    if (egl.eglBindAPI(egl.EGL_OPENGL_API) == egl.EGL_FALSE) return error.EglBindApiFailed;
+    return display;
+}
+
+fn chooseConfig(display: egl.EGLDisplay, out: *egl.EGLConfig) !void {
+    const attrs = [_]egl.EGLint{
+        egl.EGL_SURFACE_TYPE,    egl.EGL_WINDOW_BIT,
+        egl.EGL_RENDERABLE_TYPE, egl.EGL_OPENGL_BIT,
+        egl.EGL_RED_SIZE,        8,
+        egl.EGL_GREEN_SIZE,      8,
+        egl.EGL_BLUE_SIZE,       8,
+        egl.EGL_ALPHA_SIZE,      8,
+        egl.EGL_NONE,
+    };
+
+    var config: egl.EGLConfig = null;
+    var count: egl.EGLint = 0;
+    if (egl.eglChooseConfig(display, &attrs, &config, 1, &count) == egl.EGL_FALSE or count == 0) {
+        return error.EglConfigFailed;
+    }
+    out.* = config;
+}
+
+fn createContext(display: egl.EGLDisplay, config: egl.EGLConfig) !egl.EGLContext {
+    if (!build_options.force_gl33) {
+        const attrs_44 = [_]egl.EGLint{
+            egl.EGL_CONTEXT_MAJOR_VERSION_KHR,       4,
+            egl.EGL_CONTEXT_MINOR_VERSION_KHR,       4,
+            egl.EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR, egl.EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR,
+            egl.EGL_NONE,
+        };
+        const ctx = egl.eglCreateContext(display, config, egl.EGL_NO_CONTEXT, &attrs_44);
+        if (ctx != egl.EGL_NO_CONTEXT) return ctx;
+    }
+
+    const attrs_33 = [_]egl.EGLint{
+        egl.EGL_CONTEXT_MAJOR_VERSION_KHR,       3,
+        egl.EGL_CONTEXT_MINOR_VERSION_KHR,       3,
+        egl.EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR, egl.EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR,
+        egl.EGL_NONE,
+    };
+    const ctx = egl.eglCreateContext(display, config, egl.EGL_NO_CONTEXT, &attrs_33);
+    if (ctx == egl.EGL_NO_CONTEXT) return error.EglContextCreateFailed;
+    return ctx;
 }
