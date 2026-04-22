@@ -52,7 +52,9 @@ const PARAGRAPH =
     "Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. " ++
     "Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris.";
 const SIZES = [_]u32{ 12, 18, 24, 36, 48, 72, 96 };
-const LAYOUT_ITERS = 500;
+const BENCH_TIME_MULTIPLIER = 10;
+const PREP_RUNS = BENCH_TIME_MULTIPLIER;
+const LAYOUT_ITERS = 500 * BENCH_TIME_MULTIPLIER;
 
 // ── snail measurements ──
 
@@ -68,16 +70,27 @@ const SnailResults = struct {
 
 fn benchSnail(allocator: std.mem.Allocator, font_data: []const u8) !SnailResults {
     // Font load
-    var t = nowNs();
+    var font_load_total_us: f64 = 0;
+    for (0..PREP_RUNS) |_| {
+        const t = nowNs();
+        _ = try ttf.Font.init(font_data);
+        font_load_total_us += usFrom(t);
+    }
+    const font_load_us = font_load_total_us / PREP_RUNS;
     const font_inner = try ttf.Font.init(font_data);
-    const font_load_us = usFrom(t);
 
     // Glyph prep: parse all ASCII + build curve/band textures
-    t = nowNs();
     var font_wrapped = snail.Font{ .inner = font_inner };
+    var glyph_prep_total_us: f64 = 0;
+    for (0..PREP_RUNS) |_| {
+        const t = nowNs();
+        var tmp_atlas = try snail.Atlas.initAscii(allocator, &font_wrapped, &PRINTABLE_ASCII);
+        glyph_prep_total_us += usFrom(t);
+        tmp_atlas.deinit();
+    }
+    const glyph_prep_us = glyph_prep_total_us / PREP_RUNS;
     var atlas = try snail.Atlas.initAscii(allocator, &font_wrapped, &PRINTABLE_ASCII);
     defer atlas.deinit();
-    const glyph_prep_us = usFrom(t);
 
     const tex_bytes = atlas.textureByteLen();
 
@@ -86,7 +99,7 @@ fn benchSnail(allocator: std.mem.Allocator, font_data: []const u8) !SnailResults
     const white = [4]f32{ 1, 1, 1, 1 };
 
     // Short string
-    t = nowNs();
+    var t = nowNs();
     for (0..LAYOUT_ITERS) |_| {
         var b = snail.Batch.init(&vbuf);
         _ = b.addString(&atlas, &font_wrapped, SHORT, 0, 0, 24, white);
@@ -153,7 +166,22 @@ const FTResults = struct {
 
 fn benchFreetype(font_data: []const u8) !FTResults {
     // Font load
-    var t = nowNs();
+    var font_load_total_us: f64 = 0;
+    for (0..PREP_RUNS) |_| {
+        var load_library: c.FT_Library = null;
+        const t = nowNs();
+        if (c.FT_Init_FreeType(&load_library) != 0) return error.FTInitFailed;
+        var load_face: c.FT_Face = null;
+        if (c.FT_New_Memory_Face(load_library, font_data.ptr, @intCast(font_data.len), 0, &load_face) != 0) {
+            _ = c.FT_Done_FreeType(load_library);
+            return error.FTFaceFailed;
+        }
+        font_load_total_us += usFrom(t);
+        _ = c.FT_Done_Face(load_face);
+        _ = c.FT_Done_FreeType(load_library);
+    }
+    const font_load_us = font_load_total_us / PREP_RUNS;
+
     var library: c.FT_Library = null;
     if (c.FT_Init_FreeType(&library) != 0) return error.FTInitFailed;
     defer _ = c.FT_Done_FreeType(library);
@@ -161,35 +189,46 @@ fn benchFreetype(font_data: []const u8) !FTResults {
     if (c.FT_New_Memory_Face(library, font_data.ptr, @intCast(font_data.len), 0, &face) != 0)
         return error.FTFaceFailed;
     defer _ = c.FT_Done_Face(face);
-    const font_load_us = usFrom(t);
 
     // Glyph prep: rasterize all ASCII at 48px (single size)
-    _ = c.FT_Set_Pixel_Sizes(face, 0, 48);
-    t = nowNs();
     var bitmap_bytes_single: usize = 0;
-    for (&PRINTABLE_ASCII) |ch| {
-        const gi = c.FT_Get_Char_Index(face, ch);
-        if (gi == 0) continue;
-        if (c.FT_Load_Glyph(face, gi, c.FT_LOAD_DEFAULT) != 0) continue;
-        if (c.FT_Render_Glyph(face.*.glyph, c.FT_RENDER_MODE_NORMAL) != 0) continue;
-        bitmap_bytes_single += @as(usize, face.*.glyph.*.bitmap.width) * @as(usize, face.*.glyph.*.bitmap.rows);
-    }
-    const glyph_prep_us = usFrom(t);
-
-    // Glyph prep: rasterize at ALL 7 sizes
-    t = nowNs();
-    var bitmap_bytes_all: usize = 0;
-    for (SIZES) |sz| {
-        _ = c.FT_Set_Pixel_Sizes(face, 0, sz);
+    var glyph_prep_total_us: f64 = 0;
+    for (0..PREP_RUNS) |run| {
+        _ = c.FT_Set_Pixel_Sizes(face, 0, 48);
+        var run_bytes: usize = 0;
+        const t = nowNs();
         for (&PRINTABLE_ASCII) |ch| {
             const gi = c.FT_Get_Char_Index(face, ch);
             if (gi == 0) continue;
             if (c.FT_Load_Glyph(face, gi, c.FT_LOAD_DEFAULT) != 0) continue;
             if (c.FT_Render_Glyph(face.*.glyph, c.FT_RENDER_MODE_NORMAL) != 0) continue;
-            bitmap_bytes_all += @as(usize, face.*.glyph.*.bitmap.width) * @as(usize, face.*.glyph.*.bitmap.rows);
+            run_bytes += @as(usize, face.*.glyph.*.bitmap.width) * @as(usize, face.*.glyph.*.bitmap.rows);
         }
+        glyph_prep_total_us += usFrom(t);
+        if (run == 0) bitmap_bytes_single = run_bytes;
     }
-    const glyph_prep_all_sizes_us = usFrom(t);
+    const glyph_prep_us = glyph_prep_total_us / PREP_RUNS;
+
+    // Glyph prep: rasterize at ALL 7 sizes
+    var bitmap_bytes_all: usize = 0;
+    var glyph_prep_all_total_us: f64 = 0;
+    for (0..PREP_RUNS) |run| {
+        var run_bytes: usize = 0;
+        const t = nowNs();
+        for (SIZES) |sz| {
+            _ = c.FT_Set_Pixel_Sizes(face, 0, sz);
+            for (&PRINTABLE_ASCII) |ch| {
+                const gi = c.FT_Get_Char_Index(face, ch);
+                if (gi == 0) continue;
+                if (c.FT_Load_Glyph(face, gi, c.FT_LOAD_DEFAULT) != 0) continue;
+                if (c.FT_Render_Glyph(face.*.glyph, c.FT_RENDER_MODE_NORMAL) != 0) continue;
+                run_bytes += @as(usize, face.*.glyph.*.bitmap.width) * @as(usize, face.*.glyph.*.bitmap.rows);
+            }
+        }
+        glyph_prep_all_total_us += usFrom(t);
+        if (run == 0) bitmap_bytes_all = run_bytes;
+    }
+    const glyph_prep_all_sizes_us = glyph_prep_all_total_us / PREP_RUNS;
 
     // Layout benchmarks — FreeType layout requires FT_Load_Glyph per character
     // to get advance widths (this is the real-world cost)
@@ -220,7 +259,7 @@ fn benchFreetype(font_data: []const u8) !FTResults {
     const ctx = LayoutCtx{ .face = face };
 
     // Short
-    t = nowNs();
+    var t = nowNs();
     for (0..LAYOUT_ITERS) |_| ctx.layoutString(SHORT);
     const layout_short_us = usFrom(t) / LAYOUT_ITERS;
 
@@ -271,7 +310,7 @@ pub fn main() !void {
     std.debug.print(
         \\
         \\=== snail vs FreeType ===
-        \\NotoSans-Regular.ttf, 95 ASCII glyphs, {d} layout iterations
+        \\NotoSans-Regular.ttf, 95 ASCII glyphs, {d} prep runs, {d} layout samples/scenario
         \\
         \\                              snail            FreeType
         \\                              -----            --------
@@ -291,6 +330,7 @@ pub fn main() !void {
         \\                          {s}      {s}
         \\
         \\  Notes:
+        \\    - prep timings above are averages over {d} runs
         \\    - snail glyph prep is resolution-independent (same cost for any/all sizes)
         \\    - FreeType must re-rasterize per size ({d:.0} us per additional size)
         \\    - snail layout reads pre-parsed metrics; FreeType calls FT_Load_Glyph per char
@@ -299,18 +339,27 @@ pub fn main() !void {
         \\========================
         \\
     , .{
+        PREP_RUNS,
         LAYOUT_ITERS,
-        fmtUs(s.font_load_us),      fmtUs(f.font_load_us),
-        fmtUs(s.glyph_prep_us),     fmtUs(f.glyph_prep_us),
-        fmtUs(s.glyph_prep_us),     fmtUs(f.glyph_prep_all_sizes_us),
+        fmtUs(s.font_load_us),
+        fmtUs(f.font_load_us),
+        fmtUs(s.glyph_prep_us),
+        fmtUs(f.glyph_prep_us),
+        fmtUs(s.glyph_prep_us),
+        fmtUs(f.glyph_prep_all_sizes_us),
         @as(f64, @floatFromInt(s.texture_bytes)) / 1024.0,
         @as(f64, @floatFromInt(f.bitmap_bytes_single)) / 1024.0,
         @as(f64, @floatFromInt(f.bitmap_bytes_all)) / 1024.0,
         SHORT,
-        fmtUs(s.layout_short_us),   fmtUs(f.layout_short_us),
-        fmtUs(s.layout_sentence_us), fmtUs(f.layout_sentence_us),
-        fmtUs(s.layout_paragraph_us), fmtUs(f.layout_paragraph_us),
-        fmtUs(s.layout_torture_us), fmtUs(f.layout_torture_us),
+        fmtUs(s.layout_short_us),
+        fmtUs(f.layout_short_us),
+        fmtUs(s.layout_sentence_us),
+        fmtUs(f.layout_sentence_us),
+        fmtUs(s.layout_paragraph_us),
+        fmtUs(f.layout_paragraph_us),
+        fmtUs(s.layout_torture_us),
+        fmtUs(f.layout_torture_us),
+        PREP_RUNS,
         (f.glyph_prep_all_sizes_us - f.glyph_prep_us) / 6.0,
     });
 }

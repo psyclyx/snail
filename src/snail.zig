@@ -32,7 +32,7 @@ const vulkan_pipeline = if (build_options.enable_vulkan) @import("render/vulkan_
     pub const VulkanContext = void;
     pub fn init(_: anytype) !void {}
     pub fn deinit() void {}
-    pub fn buildTextureArrays(_: anytype) void {}
+    pub fn buildTextureArrays(_: anytype, _: anytype) void {}
     pub fn drawText(_: anytype, _: anytype, _: anytype, _: anytype) void {}
     pub fn drawVector(_: anytype, _: anytype, _: anytype, _: anytype) void {}
     pub fn setCommandBuffer(_: anytype) void {}
@@ -867,6 +867,10 @@ pub const Batch = struct {
     len: usize, // floats written
 
     const glyph_stack_capacity = 256;
+    const WrapBreak = struct {
+        break_pos: usize,
+        skip_len: usize,
+    };
 
     const PreparedGlyphs = struct {
         slice: []const u16,
@@ -913,6 +917,80 @@ pub const Batch = struct {
         return .{
             .slice = buf[0..glyph_count],
             .owned = owned,
+        };
+    }
+
+    fn sliceOffset(base: []const u8, part: []const u8) usize {
+        return @intFromPtr(part.ptr) - @intFromPtr(base.ptr);
+    }
+
+    fn findForcedWrapBreak(
+        self: *const Batch,
+        atlas_like: anytype,
+        font: *const Font,
+        text: []const u8,
+        font_size: f32,
+        max_width: f32,
+    ) usize {
+        if (text.len == 0) return 0;
+
+        const utf8_view = std.unicode.Utf8View.initUnchecked(text);
+        var it = utf8_view.iterator();
+        var best_break: usize = 0;
+        var fallback_break: usize = text.len;
+
+        while (it.nextCodepointSlice()) |cp_slice| {
+            const end = sliceOffset(text, cp_slice) + cp_slice.len;
+            if (best_break == 0) fallback_break = end;
+            if (self.measureGlyphWidth(atlas_like, font, text[0..end], font_size) > max_width) break;
+            best_break = end;
+        }
+
+        return if (best_break > 0) best_break else fallback_break;
+    }
+
+    fn findWrapBreak(
+        self: *const Batch,
+        atlas_like: anytype,
+        font: *const Font,
+        text: []const u8,
+        font_size: f32,
+        max_width: f32,
+    ) WrapBreak {
+        if (text.len == 0) return .{ .break_pos = 0, .skip_len = 0 };
+
+        const utf8_view = std.unicode.Utf8View.initUnchecked(text);
+        var it = utf8_view.iterator();
+        var last_fit = WrapBreak{ .break_pos = 0, .skip_len = 0 };
+
+        while (it.nextCodepointSlice()) |cp_slice| {
+            const start = sliceOffset(text, cp_slice);
+            const codepoint = std.unicode.utf8Decode(cp_slice) catch unreachable;
+            if (codepoint != ' ' and codepoint != '\t') continue;
+            if (start == 0) continue;
+
+            if (self.measureGlyphWidth(atlas_like, font, text[0..start], font_size) > max_width) {
+                if (last_fit.break_pos > 0) return last_fit;
+                return .{
+                    .break_pos = self.findForcedWrapBreak(atlas_like, font, text[0..start], font_size, max_width),
+                    .skip_len = 0,
+                };
+            }
+
+            last_fit = .{
+                .break_pos = start,
+                .skip_len = cp_slice.len,
+            };
+        }
+
+        if (self.measureGlyphWidth(atlas_like, font, text, font_size) <= max_width) {
+            return .{ .break_pos = text.len, .skip_len = 0 };
+        }
+        if (last_fit.break_pos > 0) return last_fit;
+
+        return .{
+            .break_pos = self.findForcedWrapBreak(atlas_like, font, text, font_size, max_width),
+            .skip_len = 0,
         };
     }
 
@@ -1150,41 +1228,36 @@ pub const Batch = struct {
         var remaining = text;
 
         while (remaining.len > 0) {
-            // Find the longest prefix that fits in max_width
-            var best_break: usize = 0;
-            var last_space: usize = 0;
-            var i: usize = 0;
+            const line_end = blk: {
+                const utf8_view = std.unicode.Utf8View.initUnchecked(remaining);
+                var it = utf8_view.iterator();
+                while (it.nextCodepointSlice()) |cp_slice| {
+                    const cp = std.unicode.utf8Decode(cp_slice) catch unreachable;
+                    if (cp == '\n') break :blk sliceOffset(remaining, cp_slice);
+                }
+                break :blk remaining.len;
+            };
 
-            while (i < remaining.len) : (i += 1) {
-                if (remaining[i] == ' ' or remaining[i] == '\t') {
-                    last_space = i;
-                }
-                if (remaining[i] == '\n') {
-                    best_break = i;
-                    break;
-                }
-                // Measure up to this point
-                const w = self.measureGlyphWidth(view, font, remaining[0 .. i + 1], font_size);
-                if (w > max_width and i > 0) {
-                    // Went over — break at last space, or force break here
-                    best_break = if (last_space > 0) last_space else i;
-                    break;
-                }
-                best_break = i + 1;
+            if (line_end == 0 and remaining.len > 0) {
+                line_y -= line_height;
+                remaining = remaining[1..];
+                continue;
             }
 
-            if (best_break == 0 and remaining.len > 0) best_break = 1;
+            const break_info = self.findWrapBreak(view, font, remaining[0..line_end], font_size, max_width);
+            if (break_info.break_pos == 0) break;
 
-            // Render this line
-            _ = self.addString(view, font, remaining[0..best_break], x, line_y, font_size, color);
+            _ = self.addString(view, font, remaining[0..break_info.break_pos], x, line_y, font_size, color);
             line_y -= line_height;
 
-            // Skip past break character
-            if (best_break < remaining.len and (remaining[best_break] == ' ' or remaining[best_break] == '\n')) {
-                remaining = remaining[best_break + 1 ..];
-            } else {
-                remaining = remaining[best_break..];
-            }
+            const consumed = if (break_info.break_pos < line_end)
+                break_info.break_pos + break_info.skip_len
+            else if (line_end < remaining.len)
+                line_end + 1
+            else
+                line_end;
+
+            remaining = remaining[consumed..];
         }
 
         return y - line_y;
@@ -1468,17 +1541,8 @@ pub const Renderer = struct {
     pub fn uploadAtlases(self: *Renderer, atlases: []const *const Atlas, out_views: []AtlasView) void {
         std.debug.assert(atlases.len == out_views.len);
         switch (self.backend) {
-            .gl => pipeline.buildTextureArrays(atlases),
-            .vulkan => vulkan_pipeline.buildTextureArrays(atlases),
-        }
-
-        var layer_base: u16 = 0;
-        for (atlases, 0..) |atlas, i| {
-            out_views[i] = .{
-                .atlas = atlas,
-                .layer_base = layer_base,
-            };
-            layer_base += @intCast(atlas.pageCount());
+            .gl => pipeline.buildTextureArrays(atlases, out_views),
+            .vulkan => vulkan_pipeline.buildTextureArrays(atlases, out_views),
         }
     }
 
@@ -1700,4 +1764,34 @@ test "vector batch can freeze into immutable picture" {
     defer picture.deinit();
     try std.testing.expectEqual(batch.slice().len, picture.slice().len);
     try std.testing.expectEqual(@as(usize, 1), picture.shapeCount());
+}
+
+test "addStringWrapped preserves blank lines" {
+    const assets = @import("assets");
+
+    var font = try Font.init(assets.noto_sans_regular);
+    var atlas = try Atlas.initAscii(std.testing.allocator, &font, &ASCII_PRINTABLE);
+    defer atlas.deinit();
+
+    var buf: [128 * FLOATS_PER_GLYPH]f32 = undefined;
+    var batch = Batch.init(&buf);
+    const height = batch.addStringWrapped(&atlas, &font, "A\n\nB", 0, 100, 16, 200, 10, .{ 1, 1, 1, 1 });
+
+    try std.testing.expectApproxEqAbs(@as(f32, 30), height, 0.001);
+    try std.testing.expectEqual(@as(usize, 2), batch.glyphCount());
+}
+
+test "addStringWrapped forces UTF-8 breaks on codepoint boundaries" {
+    const assets = @import("assets");
+
+    var font = try Font.init(assets.noto_sans_regular);
+    var atlas = try Atlas.init(std.testing.allocator, &font, &[_]u32{0x00E9});
+    defer atlas.deinit();
+
+    var buf: [128 * FLOATS_PER_GLYPH]f32 = undefined;
+    var batch = Batch.init(&buf);
+    const height = batch.addStringWrapped(&atlas, &font, "\xc3\xa9\xc3\xa9", 0, 40, 16, 0.01, 10, .{ 1, 1, 1, 1 });
+
+    try std.testing.expectApproxEqAbs(@as(f32, 20), height, 0.001);
+    try std.testing.expectEqual(@as(usize, 2), batch.glyphCount());
 }

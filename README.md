@@ -21,11 +21,11 @@ The Slug patent (US 10,373,352) was [dedicated to the public domain](https://ter
 
 ```sh
 zig build test                      # unit tests
-zig build bench                     # microbenchmarks (prep, math, vector packing)
-zig build bench-compare             # snail vs FreeType
-zig build bench-headless            # offscreen OpenGL end-to-end rendering
-zig build bench-headless -Dvulkan=true # OpenGL + Vulkan end-to-end rendering
-zig build bench-suite               # consolidated GL suite (layout + text + vectors)
+zig build bench                     # CPU microbenchmarks (font prep, atlas build, math, vector packing)
+zig build bench-compare             # CPU prep/layout comparison vs FreeType (no GPU draw)
+zig build bench-headless            # offscreen OpenGL end-to-end frame timing
+zig build bench-headless -Dvulkan=true # offscreen OpenGL + Vulkan end-to-end frame timing
+zig build bench-suite               # combined layout + rendering suite (text + vectors)
 zig build demo                      # build the interactive demo (Wayland + EGL)
 zig build run                       # run the interactive demo (Wayland + EGL)
 zig build run -Dvulkan=true         # Vulkan demo backend (Wayland surface)
@@ -377,67 +377,35 @@ Curves within each band are sorted by descending maximum coordinate, enabling ea
 
 ## Benchmarks
 
-`zig build bench` runs internal microbenchmarks. `zig build bench-compare` compares prep/layout against FreeType. `zig build bench-headless` measures fully offscreen frame time, and `zig build bench-suite` prints the consolidated OpenGL suite including vector primitives.
+There are four benchmark entry points. They answer different questions.
 
-### snail vs FreeType (`zig build bench-compare`)
+- `zig build bench`
+  CPU-only microbenchmarks for isolated code paths: font init, glyph parsing, atlas texture preparation, math kernels, and vector vertex packing. No renderer, no GPU draw, and no FreeType comparison.
+- `zig build bench-compare`
+  CPU-side prep and layout comparison against FreeType. This measures font load, glyph prep, and layout cost. GPU drawing is intentionally excluded.
+- `zig build bench-headless`
+  Fully offscreen end-to-end frame timing. This is the command to use when you want per-frame numbers for text rendering. It includes layout, batch generation, uploads, draw, and explicit GPU synchronization. OpenGL runs by default; `-Dvulkan=true` adds the Vulkan offscreen path.
+- `zig build bench-suite`
+  Combined regression suite. It includes the FreeType layout comparison plus text and vector rendering scenarios in one run. Use it when you want one broad pass instead of one focused benchmark.
 
-NotoSans-Regular.ttf, 95 ASCII glyphs, ReleaseFast, 500 layout iterations:
+Current sampling defaults:
 
-| Metric | snail | FreeType |
-|--------|-------|----------|
-| Font load | 2.5 us | 41.4 us |
-| Glyph prep (1 size) | 1,677.2 us | 1,395.3 us |
-| Glyph prep (7 sizes) | **1,677.2 us** | 8,859.6 us |
-| Layout: 13-char string | **1.2 us** | 103.3 us |
-| Layout: 53-char sentence | **3.8 us** | 522.1 us |
-| Layout: 175-char paragraph | **15.1 us** | 1,882.8 us |
-| Layout: paragraph × 7 sizes | **90.1 us** | 13,540.2 us |
-| Texture memory | 64 KB (all sizes) | 63 KB (1 size) / 525 KB (7 sizes) |
-| Re-rasterize for new size | **0** (resolution-independent) | ~1,244 us per extra size |
+- `bench`: hot-loop iteration counts are 10x higher than before, and prep timings are averaged across repeated runs where applicable.
+- `bench-compare`: 5,000 layout samples per scenario.
+- `bench-headless`: 1,000 warmup frames and 20,000 measured frames per scenario.
+- `bench-suite`: 5,000 layout samples plus 1,000 warmup and 20,000 measured frames per rendering scenario.
 
-snail still pays more upfront than FreeType for one raster size, but that prep cost stays flat across sizes and layout remains roughly `84-150x` faster on this machine.
+For `bench-headless` and `bench-suite`:
 
-### End-to-end rendering (`zig build bench-headless`)
+- `static` means the vertex buffer is built once and reused every frame.
+- `dynamic` means vertices are rebuilt every frame before drawing.
 
-**Methodology**: fully headless — no display, no window system involvement in the measured path.
+`bench-headless` uses fully offscreen backends:
 
-- **OpenGL**: offscreen EGL pbuffer + 1280×720 FBO. Each frame renders into the FBO, then calls `glFinish` to wait for GPU completion before timing the next frame.
-- **Vulkan**: no window, no surface, no swapchain. Renders into a `VkImage` (`VK_FORMAT_R8G8B8A8_UNORM`) allocated in device memory. `vkQueueWaitIdle` after each submit ensures full CPU+GPU frame time is measured with no pipelining. This is a conservative lower bound — real applications pipeline CPU and GPU work across frames.
+- OpenGL: EGL pbuffer + FBO.
+- Vulkan: offscreen `VkImage`; no window, surface, or swapchain in the measured path.
 
-Both backends render 2000 frames per scenario at 1280×720, ReleaseFast. Frame time = wall time / 2000.
-
-**Static**: vertex buffer built once, reused every frame — simulates a game HUD or static menu.  
-**Dynamic**: vertex buffer rebuilt from glyph metrics every frame — simulates chat, debug overlay, or any text that changes each frame.
-
-#### OpenGL 4.4 (persistent mapped)
-
-| Scenario | Glyphs | Static FPS | Static frame | Dynamic FPS | Dynamic frame |
-|----------|--------|-----------|-------------|------------|--------------|
-| Game HUD (2 lines) | 45 | 26,079 | 38.3 us | 28,149 | 35.5 us |
-| Multi-size (6 sizes) | 270 | 17,674 | 56.6 us | 16,556 | 60.4 us |
-| Body text (6 paragraphs) | 978 | 9,858 | 101.4 us | 7,147 | 139.9 us |
-| Torture (fill screen) | 4,075 | 3,167 | 315.7 us | 2,100 | 476.1 us |
-| Arabic (12 lines) | 264 | 28,173 | 35.5 us | 14,136 | 70.7 us |
-| Devanagari (12 lines) | 120 | 37,301 | 26.8 us | 12,870 | 77.7 us |
-| Game UI (3 fonts) | 57 | 29,155 | 34.3 us | 26,466 | 37.8 us |
-| Chat (6 msgs, 4 fonts) | 106 | 24,818 | 40.3 us | 26,943 | 37.1 us |
-| Multi-font torture (24 lines) | 522 | 14,941 | 66.9 us | 8,166 | 122.5 us |
-
-#### Vulkan (offscreen, per-frame sync)
-
-| Scenario | Glyphs | Static FPS | Static frame | Dynamic FPS | Dynamic frame |
-|----------|--------|-----------|-------------|------------|--------------|
-| Game HUD (2 lines) | 45 | 16,338 | 61.2 us | 15,911 | 62.9 us |
-| Multi-size (6 sizes) | 270 | 14,999 | 66.7 us | 10,919 | 91.6 us |
-| Body text (6 paragraphs) | 978 | 12,857 | 77.8 us | 5,177 | 193.2 us |
-| Torture (fill screen) | 4,075 | 6,669 | 149.9 us | 1,689 | 592.1 us |
-| Arabic (12 lines) | 264 | 16,559 | 60.4 us | 8,134 | 122.9 us |
-| Devanagari (12 lines) | 120 | 15,688 | 63.7 us | 7,131 | 140.2 us |
-| Game UI (3 fonts) | 57 | 15,487 | 64.6 us | 13,454 | 74.3 us |
-| Chat (6 msgs, 4 fonts) | 106 | 16,697 | 59.9 us | 10,471 | 95.5 us |
-| Multi-font torture (24 lines) | 522 | 15,465 | 64.7 us | 4,975 | 201.0 us |
-
-`zig build bench-suite` currently reports about `77 us` for a 10-shape OpenGL vector showcase and `224 us` for a 587-shape stress scene.
+Machine-specific numbers go stale quickly. For current results, run the benchmark command locally and use the output it prints.
 
 ### Other GPU font renderers
 

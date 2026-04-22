@@ -64,71 +64,97 @@ pub fn buildGlyphBandData(
     const epsilon: f32 = 1.0 / 1024.0;
     const bbox_w = bbox.max.x - bbox.min.x;
     const bbox_h = bbox.max.y - bbox.min.y;
+    const max_band_count = 12;
+    std.debug.assert(h_bands <= max_band_count and v_bands <= max_band_count);
 
-    // Assign curves to horizontal bands
-    var h_lists: std.ArrayList(std.ArrayList(u16)) = .empty;
-    defer {
-        for (h_lists.items) |*l| l.deinit(allocator);
-        h_lists.deinit(allocator);
-    }
-    for (0..h_bands) |_| {
-        var l: std.ArrayList(u16) = .empty;
-        try h_lists.append(allocator, l);
-        _ = &l;
-    }
+    var curve_bboxes = try allocator.alloc(BBox, curves.len);
+    defer allocator.free(curve_bboxes);
 
-    for (curves, 0..) |curve, ci| {
-        const cb = curve.boundingBox();
-        for (0..h_bands) |bi| {
-            const t0 = @as(f32, @floatFromInt(bi)) / @as(f32, @floatFromInt(h_bands));
-            const t1 = @as(f32, @floatFromInt(bi + 1)) / @as(f32, @floatFromInt(h_bands));
-            const band_min = bbox.min.y + bbox_h * t0 - epsilon;
-            const band_max = bbox.min.y + bbox_h * t1 + epsilon;
-            if (cb.max.y >= band_min and cb.min.y <= band_max) {
-                try h_lists.items[bi].append(allocator, @intCast(ci));
-            }
+    var h_band_min: [max_band_count]f32 = undefined;
+    var h_band_max: [max_band_count]f32 = undefined;
+    var v_band_min: [max_band_count]f32 = undefined;
+    var v_band_max: [max_band_count]f32 = undefined;
+    var h_lists: [max_band_count]std.ArrayList(u16) = undefined;
+    var v_lists: [max_band_count]std.ArrayList(u16) = undefined;
+    var h_inited: usize = 0;
+    var v_inited: usize = 0;
+    errdefer {
+        while (h_inited > 0) {
+            h_inited -= 1;
+            h_lists[h_inited].deinit(allocator);
+        }
+        while (v_inited > 0) {
+            v_inited -= 1;
+            v_lists[v_inited].deinit(allocator);
         }
     }
 
-    // Assign curves to vertical bands
-    var v_lists: std.ArrayList(std.ArrayList(u16)) = .empty;
-    defer {
-        for (v_lists.items) |*l| l.deinit(allocator);
-        v_lists.deinit(allocator);
+    for (0..h_bands) |bi| {
+        const t0 = @as(f32, @floatFromInt(bi)) / @as(f32, @floatFromInt(h_bands));
+        const t1 = @as(f32, @floatFromInt(bi + 1)) / @as(f32, @floatFromInt(h_bands));
+        h_band_min[bi] = bbox.min.y + bbox_h * t0 - epsilon;
+        h_band_max[bi] = bbox.min.y + bbox_h * t1 + epsilon;
+        h_lists[bi] = try std.ArrayList(u16).initCapacity(allocator, curves.len);
+        h_inited += 1;
     }
-    for (0..v_bands) |_| {
-        var l: std.ArrayList(u16) = .empty;
-        try v_lists.append(allocator, l);
-        _ = &l;
+    for (0..v_bands) |bi| {
+        const t0 = @as(f32, @floatFromInt(bi)) / @as(f32, @floatFromInt(v_bands));
+        const t1 = @as(f32, @floatFromInt(bi + 1)) / @as(f32, @floatFromInt(v_bands));
+        v_band_min[bi] = bbox.min.x + bbox_w * t0 - epsilon;
+        v_band_max[bi] = bbox.min.x + bbox_w * t1 + epsilon;
+        v_lists[bi] = try std.ArrayList(u16).initCapacity(allocator, curves.len);
+        v_inited += 1;
     }
 
+    var band_lists_ready = false;
+    defer {
+        if (band_lists_ready) {
+            for (h_lists[0..@as(usize, h_bands)]) |*band| band.deinit(allocator);
+            for (v_lists[0..@as(usize, v_bands)]) |*band| band.deinit(allocator);
+        } else {
+            while (h_inited > 0) {
+                h_inited -= 1;
+                h_lists[h_inited].deinit(allocator);
+            }
+            while (v_inited > 0) {
+                v_inited -= 1;
+                v_lists[v_inited].deinit(allocator);
+            }
+        }
+    }
+    band_lists_ready = true;
+
+    // Record band membership once per curve and append to pre-sized lists.
     for (curves, 0..) |curve, ci| {
         const cb = curve.boundingBox();
+        curve_bboxes[ci] = cb;
+        const curve_idx: u16 = @intCast(ci);
+        for (0..h_bands) |bi| {
+            if (cb.max.y >= h_band_min[bi] and cb.min.y <= h_band_max[bi]) {
+                h_lists[bi].appendAssumeCapacity(curve_idx);
+            }
+        }
         for (0..v_bands) |bi| {
-            const t0 = @as(f32, @floatFromInt(bi)) / @as(f32, @floatFromInt(v_bands));
-            const t1 = @as(f32, @floatFromInt(bi + 1)) / @as(f32, @floatFromInt(v_bands));
-            const band_min = bbox.min.x + bbox_w * t0 - epsilon;
-            const band_max = bbox.min.x + bbox_w * t1 + epsilon;
-            if (cb.max.x >= band_min and cb.min.x <= band_max) {
-                try v_lists.items[bi].append(allocator, @intCast(ci));
+            if (cb.max.x >= v_band_min[bi] and cb.min.x <= v_band_max[bi]) {
+                v_lists[bi].appendAssumeCapacity(curve_idx);
             }
         }
     }
 
     // Sort curves within bands: horizontal bands by descending max x, vertical by descending max y
-    for (h_lists.items) |*band| {
-        sortCurveIndicesDescendingX(band.items, curves);
+    for (h_lists[0..@as(usize, h_bands)]) |band| {
+        sortCurveIndicesDescendingX(band.items, curve_bboxes);
     }
-    for (v_lists.items) |*band| {
-        sortCurveIndicesDescendingY(band.items, curves);
+    for (v_lists[0..@as(usize, v_bands)]) |band| {
+        sortCurveIndicesDescendingY(band.items, curve_bboxes);
     }
 
-    // Pack into band texture format
+    // Pack into band texture format.
     // Layout: [h_bands headers] [v_bands headers] [h_band_indices...] [v_band_indices...]
     const header_count: u32 = @as(u32, h_bands) + @as(u32, v_bands);
     var total_indices: u32 = 0;
-    for (h_lists.items) |band| total_indices += @intCast(band.items.len);
-    for (v_lists.items) |band| total_indices += @intCast(band.items.len);
+    for (h_lists[0..@as(usize, h_bands)]) |band| total_indices += @intCast(band.items.len);
+    for (v_lists[0..@as(usize, v_bands)]) |band| total_indices += @intCast(band.items.len);
 
     const total_texels = header_count + total_indices;
     var data = try allocator.alloc(u16, total_texels * 2);
@@ -137,7 +163,7 @@ pub fn buildGlyphBandData(
     // Write horizontal band headers
     var index_offset: u32 = header_count;
     for (0..h_bands) |bi| {
-        const band = h_lists.items[bi];
+        const band = h_lists[bi];
         data[bi * 2 + 0] = @intCast(band.items.len); // curve count
         data[bi * 2 + 1] = @intCast(index_offset); // offset from glyph loc
         index_offset += @intCast(band.items.len);
@@ -146,7 +172,7 @@ pub fn buildGlyphBandData(
     // Write vertical band headers
     for (0..v_bands) |bi| {
         const off = (@as(usize, h_bands) + bi) * 2;
-        const band = v_lists.items[bi];
+        const band = v_lists[bi];
         data[off + 0] = @intCast(band.items.len);
         data[off + 1] = @intCast(index_offset);
         index_offset += @intCast(band.items.len);
@@ -154,7 +180,7 @@ pub fn buildGlyphBandData(
 
     // Write horizontal band index entries (curveLoc in curve texture)
     var write_pos: u32 = header_count;
-    for (h_lists.items) |band| {
+    for (h_lists[0..h_bands]) |band| {
         for (band.items) |curve_idx| {
             // Each curve occupies 2 texels in curve texture starting at curve_entry.start
             const curve_texel = @as(u32, curve_entry.offset) + @as(u32, curve_idx) * 2;
@@ -167,7 +193,7 @@ pub fn buildGlyphBandData(
     }
 
     // Write vertical band index entries
-    for (v_lists.items) |band| {
+    for (v_lists[0..v_bands]) |band| {
         for (band.items) |curve_idx| {
             const curve_texel = @as(u32, curve_entry.offset) + @as(u32, curve_idx) * 2;
             const cx = curve_texel % TEX_WIDTH;
@@ -196,28 +222,28 @@ pub fn buildGlyphBandData(
     };
 }
 
-fn sortCurveIndicesDescendingX(indices: []u16, curves: []const QuadBezier) void {
+fn sortCurveIndicesDescendingX(indices: []u16, bboxes: []const BBox) void {
     const Context = struct {
-        curves: []const QuadBezier,
+        bboxes: []const BBox,
         pub fn lessThan(ctx: @This(), a: u16, b: u16) bool {
-            const ca = ctx.curves[a].boundingBox();
-            const cb = ctx.curves[b].boundingBox();
+            const ca = ctx.bboxes[a];
+            const cb = ctx.bboxes[b];
             return ca.max.x > cb.max.x;
         }
     };
-    std.mem.sort(u16, indices, Context{ .curves = curves }, Context.lessThan);
+    std.mem.sort(u16, indices, Context{ .bboxes = bboxes }, Context.lessThan);
 }
 
-fn sortCurveIndicesDescendingY(indices: []u16, curves: []const QuadBezier) void {
+fn sortCurveIndicesDescendingY(indices: []u16, bboxes: []const BBox) void {
     const Context = struct {
-        curves: []const QuadBezier,
+        bboxes: []const BBox,
         pub fn lessThan(ctx: @This(), a: u16, b: u16) bool {
-            const ca = ctx.curves[a].boundingBox();
-            const cb = ctx.curves[b].boundingBox();
+            const ca = ctx.bboxes[a];
+            const cb = ctx.bboxes[b];
             return ca.max.y > cb.max.y;
         }
     };
-    std.mem.sort(u16, indices, Context{ .curves = curves }, Context.lessThan);
+    std.mem.sort(u16, indices, Context{ .bboxes = bboxes }, Context.lessThan);
 }
 
 /// Pack all glyph band data into a single band texture
@@ -273,13 +299,10 @@ pub fn buildBandTexture(
             .band_offset_y = g.band_offset_y,
         };
 
-        // Copy glyph's band data into the texture
-        const src = g.data;
-        for (0..g.texel_count) |ti| {
-            const dst_texel = texel_offset + @as(u32, @intCast(ti));
-            const dst_idx = dst_texel * 2;
-            data[dst_idx + 0] = src[ti * 2 + 0];
-            data[dst_idx + 1] = src[ti * 2 + 1];
+        // Copy glyph's band data into the texture.
+        if (g.data.len > 0) {
+            const dst_idx = texel_offset * 2;
+            @memcpy(data[dst_idx .. dst_idx + g.data.len], g.data);
         }
         texel_offset += g.texel_count;
     }

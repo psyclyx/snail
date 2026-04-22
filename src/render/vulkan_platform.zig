@@ -699,19 +699,9 @@ fn createSwapchain(width: u32, height: u32) !void {
         }
     }
 
-    // Pick present mode: prefer MAILBOX (triple-buffer, no blocking) over FIFO
-    var pm_count: u32 = 0;
-    _ = vk.vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device, surface, &pm_count, null);
-    var present_modes: [8]vk.VkPresentModeKHR = undefined;
-    var pm_actual: u32 = @min(pm_count, 8);
-    _ = vk.vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device, surface, &pm_actual, &present_modes);
-    var chosen_present_mode: vk.VkPresentModeKHR = vk.VK_PRESENT_MODE_FIFO_KHR;
-    for (present_modes[0..pm_actual]) |pm| {
-        if (pm == vk.VK_PRESENT_MODE_MAILBOX_KHR) {
-            chosen_present_mode = vk.VK_PRESENT_MODE_MAILBOX_KHR;
-            break;
-        }
-    }
+    // Prefer a throttled interactive present mode for the demo so it does not
+    // monopolize the GPU and make the desktop difficult to recover.
+    const chosen_present_mode: vk.VkPresentModeKHR = vk.VK_PRESENT_MODE_FIFO_KHR;
 
     // Extent
     if (capabilities.currentExtent.width != 0xFFFFFFFF) {

@@ -89,6 +89,23 @@ var layer_view: vk.VkImageView = null;
 var layer_memory: vk.VkDeviceMemory = null;
 var sampler_nearest: vk.VkSampler = null;
 
+const MAX_ATLASES = 64;
+const MAX_PAGES_PER_ATLAS = 256;
+
+const AtlasSlot = struct {
+    atlas: ?*const snail_mod.Atlas = null,
+    base_layer: u32 = 0,
+    capacity_pages: u32 = 0,
+    uploaded_pages: u32 = 0,
+    page_ptrs: [MAX_PAGES_PER_ATLAS]?*const snail_mod.AtlasPage = std.mem.zeroes([MAX_PAGES_PER_ATLAS]?*const snail_mod.AtlasPage),
+};
+
+var atlas_slots: [MAX_ATLASES]AtlasSlot = std.mem.zeroes([MAX_ATLASES]AtlasSlot);
+var atlas_slot_count: usize = 0;
+var allocated_curve_height: u32 = 0;
+var allocated_band_height: u32 = 0;
+var allocated_layer_count: u32 = 0;
+
 // Transfer command pool (one-shot uploads)
 var transfer_cmd_pool: vk.VkCommandPool = null;
 
@@ -222,6 +239,7 @@ pub fn deinit() void {
 
     if (transfer_cmd_pool != null) vk.vkDestroyCommandPool(ctx.device, transfer_cmd_pool, null);
     destroyTextureResources();
+    resetAtlasUploadState();
     if (sampler_nearest != null) vk.vkDestroySampler(ctx.device, sampler_nearest, null);
     if (index_buffer != null) {
         vk.vkDestroyBuffer(ctx.device, index_buffer, null);
@@ -255,46 +273,191 @@ pub fn setCommandBuffer(cmd: anytype) void {
 
 // ── Texture array management ──
 
-pub fn buildTextureArrays(atlases: []const *const snail_mod.Atlas) void {
+pub fn buildTextureArrays(atlases: []const *const snail_mod.Atlas, out_views: []snail_mod.AtlasView) void {
+    std.debug.assert(atlases.len == out_views.len);
     _ = vk.vkDeviceWaitIdle(ctx.device);
+
+    if (atlases.len == 0) {
+        destroyTextureResources();
+        resetAtlasUploadState();
+        return;
+    }
+
+    const can_incremental = texturesReady() and atlasSlotsCompatible(atlases);
+    if (!can_incremental) {
+        rebuildTextureArrays(atlases, out_views);
+    } else if (!appendTexturePages(atlases)) {
+        rebuildTextureArrays(atlases, out_views);
+    } else {
+        fillAtlasViews(atlases, out_views);
+        rebuildLayerInfoTexture(atlases);
+        updateDescriptorSet();
+    }
+}
+
+fn rebuildTextureArrays(atlases: []const *const snail_mod.Atlas, out_views: []snail_mod.AtlasView) void {
     destroyTextureResources();
+    resetAtlasUploadState();
 
-    if (atlases.len == 0) return;
-
-    var total_layers: usize = 0;
+    var total_layers: u32 = 0;
     var max_curve_h: u32 = 1;
     var max_band_h: u32 = 1;
-    for (atlases) |a| {
-        total_layers += a.pageCount();
-        for (0..a.pageCount()) |page_index| {
-            const page = a.page(@intCast(page_index));
+    for (atlases, 0..) |atlas, i| {
+        if (i >= MAX_ATLASES) return;
+        const page_count: u32 = @intCast(atlas.pageCount());
+        const capacity = atlasCapacity(page_count);
+        const slot = &atlas_slots[i];
+        slot.* = .{
+            .atlas = atlas,
+            .base_layer = total_layers,
+            .capacity_pages = capacity,
+            .uploaded_pages = page_count,
+        };
+        for (0..page_count) |page_index| {
+            const page = atlas.page(@intCast(page_index));
+            slot.page_ptrs[page_index] = page;
             if (page.curve_height > max_curve_h) max_curve_h = page.curve_height;
             if (page.band_height > max_band_h) max_band_h = page.band_height;
         }
+        total_layers += capacity;
     }
-    const layer_count: u32 = @intCast(total_layers);
+
+    atlas_slot_count = atlases.len;
+    allocated_curve_height = heightCapacity(max_curve_h);
+    allocated_band_height = heightCapacity(max_band_h);
+    allocated_layer_count = total_layers;
 
     const first_page = atlases[0].page(0);
     const curve_w = first_page.curve_width;
     const band_w = first_page.band_width;
 
     // Create images
-    curve_image = createImage2DArray(curve_w, max_curve_h, layer_count, vk.VK_FORMAT_R16G16B16A16_SFLOAT) catch return;
+    curve_image = createImage2DArray(curve_w, allocated_curve_height, allocated_layer_count, vk.VK_FORMAT_R16G16B16A16_SFLOAT) catch return;
     curve_memory = allocateImageMemory(curve_image) catch return;
     _ = vk.vkBindImageMemory(ctx.device, curve_image, curve_memory, 0);
 
-    band_image = createImage2DArray(band_w, max_band_h, layer_count, vk.VK_FORMAT_R16G16_UINT) catch return;
+    band_image = createImage2DArray(band_w, allocated_band_height, allocated_layer_count, vk.VK_FORMAT_R16G16_UINT) catch return;
     band_memory = allocateImageMemory(band_image) catch return;
     _ = vk.vkBindImageMemory(ctx.device, band_image, band_memory, 0);
 
     // Upload via staging buffer
-    uploadTextureData(atlases, curve_w, max_curve_h, band_w, max_band_h, layer_count) catch return;
+    uploadTextureData(atlases, null, allocated_layer_count, vk.VK_IMAGE_LAYOUT_UNDEFINED) catch return;
 
     // Create image views
-    curve_view = createImageView(curve_image, vk.VK_FORMAT_R16G16B16A16_SFLOAT, layer_count) catch return;
-    band_view = createImageView(band_image, vk.VK_FORMAT_R16G16_UINT, layer_count) catch return;
+    curve_view = createImageView(curve_image, vk.VK_FORMAT_R16G16B16A16_SFLOAT, allocated_layer_count) catch return;
+    band_view = createImageView(band_image, vk.VK_FORMAT_R16G16_UINT, allocated_layer_count) catch return;
 
-    // Build COLR layer info image (2D, not array) from the first atlas that has data
+    rebuildLayerInfoTexture(atlases);
+    fillAtlasViews(atlases, out_views);
+    updateDescriptorSet();
+}
+
+fn appendTexturePages(atlases: []const *const snail_mod.Atlas) bool {
+    var max_curve_h: u32 = allocated_curve_height;
+    var max_band_h: u32 = allocated_band_height;
+    var start_pages: [MAX_ATLASES]u32 = undefined;
+
+    for (atlases, 0..) |atlas, i| {
+        if (i >= atlas_slot_count) return false;
+        const slot = &atlas_slots[i];
+        const page_count: u32 = @intCast(atlas.pageCount());
+        if (page_count < slot.uploaded_pages or page_count > slot.capacity_pages) return false;
+        start_pages[i] = slot.uploaded_pages;
+        for (0..slot.uploaded_pages) |page_index| {
+            if (slot.page_ptrs[page_index] != atlas.page(@intCast(page_index))) return false;
+        }
+        for (0..page_count) |page_index| {
+            const page = atlas.page(@intCast(page_index));
+            if (page.curve_height > max_curve_h) max_curve_h = page.curve_height;
+            if (page.band_height > max_band_h) max_band_h = page.band_height;
+        }
+    }
+
+    if (atlases.len != atlas_slot_count) return false;
+    if (max_curve_h > allocated_curve_height or max_band_h > allocated_band_height) return false;
+    uploadTextureData(atlases, start_pages[0..atlases.len], allocated_layer_count, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) catch return false;
+
+    for (atlases, 0..) |atlas, i| {
+        const slot = &atlas_slots[i];
+        const old_pages = slot.uploaded_pages;
+        const new_pages: u32 = @intCast(atlas.pageCount());
+        for (old_pages..new_pages) |page_index| {
+            slot.page_ptrs[page_index] = atlas.page(@intCast(page_index));
+        }
+        slot.atlas = atlas;
+        slot.uploaded_pages = new_pages;
+    }
+
+    return true;
+}
+
+fn texturesReady() bool {
+    return curve_image != null and band_image != null and atlas_slot_count > 0;
+}
+
+fn atlasSlotsCompatible(atlases: []const *const snail_mod.Atlas) bool {
+    if (atlases.len != atlas_slot_count) return false;
+    for (atlases, 0..) |atlas, i| {
+        const slot = &atlas_slots[i];
+        const page_count: u32 = @intCast(atlas.pageCount());
+        if (page_count < slot.uploaded_pages or page_count > slot.capacity_pages) return false;
+        for (0..slot.uploaded_pages) |page_index| {
+            if (slot.page_ptrs[page_index] != atlas.page(@intCast(page_index))) return false;
+        }
+    }
+    return true;
+}
+
+fn fillAtlasViews(atlases: []const *const snail_mod.Atlas, out_views: []snail_mod.AtlasView) void {
+    for (atlases, 0..) |atlas, i| {
+        out_views[i] = .{
+            .atlas = atlas,
+            .layer_base = @intCast(atlas_slots[i].base_layer),
+        };
+    }
+}
+
+fn resetAtlasUploadState() void {
+    atlas_slot_count = 0;
+    allocated_curve_height = 0;
+    allocated_band_height = 0;
+    allocated_layer_count = 0;
+    for (&atlas_slots) |*slot| slot.* = .{};
+}
+
+fn roundUpPowerOfTwo(value: u32) u32 {
+    if (value <= 1) return 1;
+    var v = value - 1;
+    v |= v >> 1;
+    v |= v >> 2;
+    v |= v >> 4;
+    v |= v >> 8;
+    v |= v >> 16;
+    return v + 1;
+}
+
+fn atlasCapacity(page_count: u32) u32 {
+    return @max(4, roundUpPowerOfTwo(page_count + 1));
+}
+
+fn heightCapacity(height: u32) u32 {
+    return roundUpPowerOfTwo(@max(height, 1));
+}
+
+fn rebuildLayerInfoTexture(atlases: []const *const snail_mod.Atlas) void {
+    if (layer_view != null) {
+        vk.vkDestroyImageView(ctx.device, layer_view, null);
+        layer_view = null;
+    }
+    if (layer_image != null) {
+        vk.vkDestroyImage(ctx.device, layer_image, null);
+        layer_image = null;
+    }
+    if (layer_memory != null) {
+        vk.vkFreeMemory(ctx.device, layer_memory, null);
+        layer_memory = null;
+    }
+
     for (atlases) |a| {
         if (a.layer_info_data) |lid| {
             layer_image = createImage2D(a.layer_info_width, a.layer_info_height, vk.VK_FORMAT_R32G32B32A32_SFLOAT) catch break;
@@ -305,9 +468,9 @@ pub fn buildTextureArrays(atlases: []const *const snail_mod.Atlas) void {
             break;
         }
     }
+}
 
-    // Update descriptor set
-    // Use a 1x1 dummy for layer_view if no COLR data exists
+fn updateDescriptorSet() void {
     const effective_layer_view = if (layer_view != null) layer_view else curve_view;
     const image_infos = [3]vk.VkDescriptorImageInfo{
         .{
@@ -806,19 +969,29 @@ fn createImageView(image: vk.VkImage, format: vk.VkFormat, layer_count: u32) !vk
     return view;
 }
 
-fn uploadTextureData(atlases: []const *const snail_mod.Atlas, _: u32, _: u32, _: u32, _: u32, layer_count: u32) !void {
+fn uploadTextureData(
+    atlases: []const *const snail_mod.Atlas,
+    start_pages: ?[]const u32,
+    layer_count: u32,
+    old_layout: vk.VkImageLayout,
+) !void {
     // Calculate staging buffer sizes
     const curve_px_bytes: usize = 4 * 2; // RGBA16F = 4 channels * 2 bytes
     const band_px_bytes: usize = 2 * 2; // RG16UI = 2 channels * 2 bytes
 
     var total_staging: usize = 0;
-    for (atlases) |a| {
-        for (0..a.pageCount()) |page_index| {
+    var region_count: u32 = 0;
+    for (atlases, 0..) |atlas, i| {
+        const start_page = if (start_pages) |sp| sp[i] else 0;
+        for (start_page..atlas.pageCount()) |page_index| {
+            region_count += 1;
+            const a = atlas;
             const page = a.page(@intCast(page_index));
             total_staging += @as(usize, page.curve_width) * @as(usize, page.curve_height) * curve_px_bytes;
             total_staging += @as(usize, page.band_width) * @as(usize, page.band_height) * band_px_bytes;
         }
     }
+    if (region_count == 0) return;
 
     // Create staging buffer
     var staging_buf: vk.VkBuffer = null;
@@ -845,10 +1018,13 @@ fn uploadTextureData(atlases: []const *const snail_mod.Atlas, _: u32, _: u32, _:
     var band_regions: [256]vk.VkBufferImageCopy = undefined;
     var staging_offset: usize = 0;
 
-    var layer_index: usize = 0;
-    for (atlases) |atlas| {
-        for (0..atlas.pageCount()) |page_index| {
+    var region_index: usize = 0;
+    for (atlases, 0..) |atlas, i| {
+        const start_page = if (start_pages) |sp| sp[i] else 0;
+        const base_layer = atlas_slots[i].base_layer;
+        for (start_page..atlas.pageCount()) |page_index| {
             const page = atlas.page(@intCast(page_index));
+            const layer = base_layer + @as(u32, @intCast(page_index));
 
             const curve_size = @as(usize, page.curve_width) * @as(usize, page.curve_height) * curve_px_bytes;
             const curve_bytes: [*]const u8 = @ptrCast(page.curve_data.ptr);
@@ -856,10 +1032,10 @@ fn uploadTextureData(atlases: []const *const snail_mod.Atlas, _: u32, _: u32, _:
             var cr: vk.VkBufferImageCopy = std.mem.zeroes(vk.VkBufferImageCopy);
             cr.bufferOffset = @intCast(staging_offset);
             cr.imageSubresource.aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT;
-            cr.imageSubresource.baseArrayLayer = @intCast(layer_index);
+            cr.imageSubresource.baseArrayLayer = layer;
             cr.imageSubresource.layerCount = 1;
             cr.imageExtent = .{ .width = page.curve_width, .height = page.curve_height, .depth = 1 };
-            curve_regions[layer_index] = cr;
+            curve_regions[region_index] = cr;
             staging_offset += curve_size;
 
             const band_size = @as(usize, page.band_width) * @as(usize, page.band_height) * band_px_bytes;
@@ -868,12 +1044,12 @@ fn uploadTextureData(atlases: []const *const snail_mod.Atlas, _: u32, _: u32, _:
             var br: vk.VkBufferImageCopy = std.mem.zeroes(vk.VkBufferImageCopy);
             br.bufferOffset = @intCast(staging_offset);
             br.imageSubresource.aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT;
-            br.imageSubresource.baseArrayLayer = @intCast(layer_index);
+            br.imageSubresource.baseArrayLayer = layer;
             br.imageSubresource.layerCount = 1;
             br.imageExtent = .{ .width = page.band_width, .height = page.band_height, .depth = 1 };
-            band_regions[layer_index] = br;
+            band_regions[region_index] = br;
             staging_offset += band_size;
-            layer_index += 1;
+            region_index += 1;
         }
     }
 
@@ -895,13 +1071,13 @@ fn uploadTextureData(atlases: []const *const snail_mod.Atlas, _: u32, _: u32, _:
     });
     try check(vk.vkBeginCommandBuffer(cmd, &begin_info));
 
-    // Transition images UNDEFINED -> TRANSFER_DST
-    transitionImageLayout(cmd, curve_image, layer_count, vk.VK_IMAGE_LAYOUT_UNDEFINED, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-    transitionImageLayout(cmd, band_image, layer_count, vk.VK_IMAGE_LAYOUT_UNDEFINED, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    // Transition images into transfer dst for the upload.
+    transitionImageLayout(cmd, curve_image, layer_count, old_layout, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    transitionImageLayout(cmd, band_image, layer_count, old_layout, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
     // Copy buffer to images
-    vk.vkCmdCopyBufferToImage(cmd, staging_buf, curve_image, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, layer_count, &curve_regions);
-    vk.vkCmdCopyBufferToImage(cmd, staging_buf, band_image, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, layer_count, &band_regions);
+    vk.vkCmdCopyBufferToImage(cmd, staging_buf, curve_image, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region_count, &curve_regions);
+    vk.vkCmdCopyBufferToImage(cmd, staging_buf, band_image, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region_count, &band_regions);
 
     // Transition TRANSFER_DST -> SHADER_READ_ONLY
     transitionImageLayout(cmd, curve_image, layer_count, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -931,6 +1107,11 @@ fn transitionImageLayout(cmd: vk.VkCommandBuffer, image: vk.VkImage, layer_count
         src_access = 0;
         dst_access = vk.VK_ACCESS_TRANSFER_WRITE_BIT;
         src_stage = vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+        dst_stage = vk.VK_PIPELINE_STAGE_TRANSFER_BIT;
+    } else if (old_layout == vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL and new_layout == vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
+        src_access = vk.VK_ACCESS_SHADER_READ_BIT;
+        dst_access = vk.VK_ACCESS_TRANSFER_WRITE_BIT;
+        src_stage = vk.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
         dst_stage = vk.VK_PIPELINE_STAGE_TRANSFER_BIT;
     } else if (old_layout == vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL and new_layout == vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
         src_access = vk.VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -1035,9 +1216,7 @@ fn uploadLayerInfoData(data: []f32, width: u32, height: u32) !void {
     // Create staging buffer
     var staging_buf: vk.VkBuffer = null;
     var staging_mem: vk.VkDeviceMemory = null;
-    try createBuffer(total_bytes, vk.VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-        vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-        &staging_buf, &staging_mem);
+    try createBuffer(total_bytes, vk.VK_BUFFER_USAGE_TRANSFER_SRC_BIT, vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &staging_buf, &staging_mem);
     defer {
         vk.vkDestroyBuffer(ctx.device, staging_buf, null);
         vk.vkFreeMemory(ctx.device, staging_mem, null);
@@ -1067,8 +1246,7 @@ fn uploadLayerInfoData(data: []f32, width: u32, height: u32) !void {
     });
     try check(vk.vkBeginCommandBuffer(cmd, &begin_info));
 
-    transitionImageLayout(cmd, layer_image, 1,
-        vk.VK_IMAGE_LAYOUT_UNDEFINED, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    transitionImageLayout(cmd, layer_image, 1, vk.VK_IMAGE_LAYOUT_UNDEFINED, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
     const region = std.mem.zeroInit(vk.VkBufferImageCopy, .{
         .bufferOffset = 0,
@@ -1080,11 +1258,9 @@ fn uploadLayerInfoData(data: []f32, width: u32, height: u32) !void {
         },
         .imageExtent = .{ .width = width, .height = height, .depth = 1 },
     });
-    vk.vkCmdCopyBufferToImage(cmd, staging_buf, layer_image,
-        vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    vk.vkCmdCopyBufferToImage(cmd, staging_buf, layer_image, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
-    transitionImageLayout(cmd, layer_image, 1,
-        vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    transitionImageLayout(cmd, layer_image, 1, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
     try check(vk.vkEndCommandBuffer(cmd));
 
@@ -1099,15 +1275,42 @@ fn uploadLayerInfoData(data: []f32, width: u32, height: u32) !void {
 }
 
 fn destroyTextureResources() void {
-    if (curve_view != null) { vk.vkDestroyImageView(ctx.device, curve_view, null); curve_view = null; }
-    if (curve_image != null) { vk.vkDestroyImage(ctx.device, curve_image, null); curve_image = null; }
-    if (curve_memory != null) { vk.vkFreeMemory(ctx.device, curve_memory, null); curve_memory = null; }
-    if (band_view != null) { vk.vkDestroyImageView(ctx.device, band_view, null); band_view = null; }
-    if (band_image != null) { vk.vkDestroyImage(ctx.device, band_image, null); band_image = null; }
-    if (band_memory != null) { vk.vkFreeMemory(ctx.device, band_memory, null); band_memory = null; }
-    if (layer_view != null) { vk.vkDestroyImageView(ctx.device, layer_view, null); layer_view = null; }
-    if (layer_image != null) { vk.vkDestroyImage(ctx.device, layer_image, null); layer_image = null; }
-    if (layer_memory != null) { vk.vkFreeMemory(ctx.device, layer_memory, null); layer_memory = null; }
+    if (curve_view != null) {
+        vk.vkDestroyImageView(ctx.device, curve_view, null);
+        curve_view = null;
+    }
+    if (curve_image != null) {
+        vk.vkDestroyImage(ctx.device, curve_image, null);
+        curve_image = null;
+    }
+    if (curve_memory != null) {
+        vk.vkFreeMemory(ctx.device, curve_memory, null);
+        curve_memory = null;
+    }
+    if (band_view != null) {
+        vk.vkDestroyImageView(ctx.device, band_view, null);
+        band_view = null;
+    }
+    if (band_image != null) {
+        vk.vkDestroyImage(ctx.device, band_image, null);
+        band_image = null;
+    }
+    if (band_memory != null) {
+        vk.vkFreeMemory(ctx.device, band_memory, null);
+        band_memory = null;
+    }
+    if (layer_view != null) {
+        vk.vkDestroyImageView(ctx.device, layer_view, null);
+        layer_view = null;
+    }
+    if (layer_image != null) {
+        vk.vkDestroyImage(ctx.device, layer_image, null);
+        layer_image = null;
+    }
+    if (layer_memory != null) {
+        vk.vkFreeMemory(ctx.device, layer_memory, null);
+        layer_memory = null;
+    }
 }
 
 fn check(result: vk.VkResult) !void {

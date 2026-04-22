@@ -8,6 +8,9 @@ const bezier = @import("math/bezier.zig");
 const roots = @import("math/roots.zig");
 const vec_mod = @import("math/vec.zig");
 
+const BENCH_TIME_MULTIPLIER = 10;
+const PREP_RUNS = BENCH_TIME_MULTIPLIER;
+
 fn nowNs() u64 {
     var ts: std.c.timespec = undefined;
     _ = std.c.clock_gettime(.MONOTONIC, &ts);
@@ -23,29 +26,41 @@ pub fn main() !void {
     defer _ = da.deinit();
     const allocator = da.allocator();
 
-    std.debug.print("\n=== Snail Benchmarks ===\n\n", .{});
+    std.debug.print("\n=== Snail Microbenchmarks ===\n\n", .{});
 
     const font_data = assets.noto_sans_regular;
 
     // Font init
-    std.debug.print("Font Parsing:\n", .{});
-    var t = nowNs();
+    std.debug.print("Prep (avg over {} runs):\n", .{PREP_RUNS});
+    var font_load_total_us: f64 = 0;
+    for (0..PREP_RUNS) |_| {
+        const t = nowNs();
+        _ = try ttf.Font.init(font_data);
+        font_load_total_us += elapsed(t);
+    }
     const font = try ttf.Font.init(font_data);
-    std.debug.print("  Font.init: {d:.1} us\n", .{elapsed(t)});
-
-    var cache = ttf.GlyphCache.init(allocator);
-    defer cache.deinit();
+    std.debug.print("  Font.init: {d:.1} us\n", .{font_load_total_us / PREP_RUNS});
 
     // Parse glyphs
     const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-    t = nowNs();
-    for (chars) |ch| {
-        const gid = try font.glyphIndex(ch);
-        _ = try font.parseGlyph(allocator, &cache, gid);
+    var parse_total_us: f64 = 0;
+    for (0..PREP_RUNS) |_| {
+        var run_cache = ttf.GlyphCache.init(allocator);
+        const t = nowNs();
+        for (chars) |ch| {
+            const gid = try font.glyphIndex(ch);
+            _ = try font.parseGlyph(allocator, &run_cache, gid);
+        }
+        parse_total_us += elapsed(t);
+        run_cache.deinit();
     }
-    std.debug.print("  Parse {} glyphs: {d:.1} us total, {d:.2} us/glyph\n", .{
-        chars.len, elapsed(t), elapsed(t) / @as(f64, @floatFromInt(chars.len)),
+    const parse_avg_us = parse_total_us / PREP_RUNS;
+    std.debug.print("  Parse {} glyphs: {d:.1} us avg, {d:.2} us/glyph\n", .{
+        chars.len, parse_avg_us, parse_avg_us / @as(f64, @floatFromInt(chars.len)),
     });
+
+    var cache = ttf.GlyphCache.init(allocator);
+    defer cache.deinit();
 
     // Build curve texture
     std.debug.print("\nData Preparation:\n", .{});
@@ -65,27 +80,42 @@ pub fn main() !void {
         try glyph_curves.append(allocator, .{ .curves = owned, .bbox = glyph.metrics.bbox });
     }
 
-    t = nowNs();
-    var ct = try curve_tex.buildCurveTexture(allocator, glyph_curves.items);
-    defer ct.texture.deinit();
-    defer allocator.free(ct.entries);
-    std.debug.print("  Curve texture: {d:.1} us\n", .{elapsed(t)});
+    var curve_total_us: f64 = 0;
+    for (0..PREP_RUNS) |_| {
+        const t = nowNs();
+        var tmp_ct = try curve_tex.buildCurveTexture(allocator, glyph_curves.items);
+        curve_total_us += elapsed(t);
+        tmp_ct.texture.deinit();
+        allocator.free(tmp_ct.entries);
+    }
+    std.debug.print("  Curve texture: {d:.1} us\n", .{curve_total_us / PREP_RUNS});
 
-    t = nowNs();
-    var bds: std.ArrayList(band_tex.GlyphBandData) = .empty;
-    defer {
-        for (bds.items) |*bd| band_tex.freeGlyphBandData(allocator, bd);
-        bds.deinit(allocator);
+    var base_ct = try curve_tex.buildCurveTexture(allocator, glyph_curves.items);
+    defer base_ct.texture.deinit();
+    defer allocator.free(base_ct.entries);
+
+    var band_total_us: f64 = 0;
+    var band_glyph_count: usize = 0;
+    for (0..PREP_RUNS) |_| {
+        var bds: std.ArrayList(band_tex.GlyphBandData) = .empty;
+        defer {
+            for (bds.items) |*bd| band_tex.freeGlyphBandData(allocator, bd);
+            bds.deinit(allocator);
+        }
+
+        const t = nowNs();
+        for (glyph_curves.items, 0..) |gc, i| {
+            var bd = try band_tex.buildGlyphBandData(allocator, gc.curves, gc.bbox, base_ct.entries[i]);
+            try bds.append(allocator, bd);
+            _ = &bd;
+        }
+        var bt = try band_tex.buildBandTexture(allocator, bds.items);
+        band_total_us += elapsed(t);
+        band_glyph_count = bds.items.len;
+        bt.texture.deinit();
+        allocator.free(bt.entries);
     }
-    for (glyph_curves.items, 0..) |gc, i| {
-        var bd = try band_tex.buildGlyphBandData(allocator, gc.curves, gc.bbox, ct.entries[i]);
-        try bds.append(allocator, bd);
-        _ = &bd;
-    }
-    var bt = try band_tex.buildBandTexture(allocator, bds.items);
-    defer bt.texture.deinit();
-    defer allocator.free(bt.entries);
-    std.debug.print("  Band texture ({} glyphs): {d:.1} us\n", .{ bds.items.len, elapsed(t) });
+    std.debug.print("  Band texture ({} glyphs): {d:.1} us\n", .{ band_glyph_count, band_total_us / PREP_RUNS });
 
     // Math benchmarks
     std.debug.print("\nMath:\n", .{});
@@ -95,8 +125,8 @@ pub fn main() !void {
             .p1 = vec_mod.Vec2.new(0.5, 1),
             .p2 = vec_mod.Vec2.new(1, 0),
         };
-        const iters: u32 = 100_000;
-        t = nowNs();
+        const iters: u32 = 100_000 * BENCH_TIME_MULTIPLIER;
+        const t = nowNs();
         var dummy: f32 = 0;
         for (0..iters) |i| {
             dummy += q.evaluate(@as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(iters))).x;
@@ -105,8 +135,8 @@ pub fn main() !void {
         std.debug.print("  Bezier eval: {d:.1} ns/iter\n", .{elapsed(t) * 1000.0 / @as(f64, @floatFromInt(iters))});
     }
     {
-        const iters: u32 = 1_000_000;
-        t = nowNs();
+        const iters: u32 = 1_000_000 * BENCH_TIME_MULTIPLIER;
+        const t = nowNs();
         var dummy: f32 = 0;
         for (0..iters) |i| {
             const f = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(iters));
@@ -119,9 +149,9 @@ pub fn main() !void {
 
     std.debug.print("\nVector:\n", .{});
     {
-        const iters: u32 = 100_000;
+        const iters: u32 = 100_000 * BENCH_TIME_MULTIPLIER;
         var buf: [vector_vertex.FLOATS_PER_PRIMITIVE]f32 = undefined;
-        t = nowNs();
+        const t = nowNs();
         for (0..iters) |i| {
             const xf: f32 = @floatFromInt(i % 64);
             const yf: f32 = @floatFromInt((i / 64) % 64);
@@ -140,9 +170,9 @@ pub fn main() !void {
         });
     }
     {
-        const iters: u32 = 100_000;
+        const iters: u32 = 100_000 * BENCH_TIME_MULTIPLIER;
         var buf: [vector_vertex.FLOATS_PER_PRIMITIVE]f32 = undefined;
-        t = nowNs();
+        const t = nowNs();
         for (0..iters) |i| {
             const xf: f32 = @floatFromInt(i % 96);
             const yf: f32 = @floatFromInt((i / 96) % 48);

@@ -297,7 +297,8 @@ export fn snail_renderer_deinit() void {
 
 export fn snail_renderer_upload_atlas(atlas: *AtlasImpl) void {
     const arr = [1]*const snail.Atlas{&atlas.inner};
-    pipeline.buildTextureArrays(&arr);
+    var views = [1]snail.AtlasView{undefined};
+    pipeline.buildTextureArrays(&arr, &views);
 }
 
 export fn snail_renderer_set_subpixel_order(order: c_int) void {

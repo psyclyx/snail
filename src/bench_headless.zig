@@ -13,8 +13,9 @@ const assets = @import("assets");
 
 const WIDTH = 1280;
 const HEIGHT = 720;
-const WARMUP = 100;
-const FRAMES = 2000;
+const BENCH_TIME_MULTIPLIER = 10;
+const WARMUP = 100 * BENCH_TIME_MULTIPLIER;
+const FRAMES = 2000 * BENCH_TIME_MULTIPLIER;
 
 const SENTENCE = "The quick brown fox jumps over the lazy dog 0123456789";
 const PARAGRAPH =
@@ -476,13 +477,13 @@ pub fn main() !void {
         std.debug.print(
             \\
             \\=== snail end-to-end rendering ===
-            \\  Backend: {s} | HarfBuzz: {s} | {d}x{d} | {d} frames/test
+            \\  Backend: {s} | HarfBuzz: {s} | {d}x{d} | {d} warmup + {d} measured frames/test
             \\  Setup (4 fonts + atlases + texture array): {d:.0} us
             \\
             \\  "static" = pre-built vertex buffer, draw only (game HUD, menus)
             \\  "dynamic" = rebuild vertices + draw every frame (chat, editor, debug)
             \\
-        , .{ gl_pipeline.getBackendName(), hb_str, WIDTH, HEIGHT, FRAMES, setup_us });
+        , .{ gl_pipeline.getBackendName(), hb_str, WIDTH, HEIGHT, WARMUP, FRAMES, setup_us });
 
         std.debug.print("  --- Latin (built-in shaper{s}) ---\n", .{
             if (build_options.enable_harfbuzz) " + HarfBuzz" else "",
@@ -638,13 +639,13 @@ pub fn main() !void {
         std.debug.print(
             \\
             \\=== snail end-to-end rendering ===
-            \\  Backend: Vulkan | HarfBuzz: {s} | {d}x{d} | {d} frames/test
+            \\  Backend: Vulkan | HarfBuzz: {s} | {d}x{d} | {d} warmup + {d} measured frames/test
             \\  Setup (4 fonts + atlases + texture array): {d:.0} us
             \\
             \\  "static" = pre-built vertex buffer, draw only (game HUD, menus)
             \\  "dynamic" = rebuild vertices + draw every frame (chat, editor, debug)
             \\
-        , .{ hb_str, WIDTH, HEIGHT, FRAMES, setup_us });
+        , .{ hb_str, WIDTH, HEIGHT, WARMUP, FRAMES, setup_us });
 
         std.debug.print("  --- Latin (built-in shaper{s}) ---\n", .{
             if (build_options.enable_harfbuzz) " + HarfBuzz" else "",

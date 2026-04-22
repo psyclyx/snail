@@ -4,12 +4,65 @@ const text_pipeline = @import("pipeline.zig");
 const vector_vertex = @import("vector_vertex.zig");
 const Mat4 = @import("../math/vec.zig").Mat4;
 
+const Backend = enum { gl33, gl44 };
+
 var program: gl.GLuint = 0;
 var vao: gl.GLuint = 0;
 var vbo: gl.GLuint = 0;
 var u_mvp: gl.GLint = -1;
 var u_fill_rule: gl.GLint = -1;
 var u_subpixel_order: gl.GLint = -1;
+var backend: Backend = .gl33;
+
+const RING_SEGMENTS = 3;
+const RING_TOTAL_BYTES = 12 * 1024 * 1024;
+const RING_SEGMENT_BYTES = RING_TOTAL_BYTES / RING_SEGMENTS;
+const BYTES_PER_PRIMITIVE = vector_vertex.FLOATS_PER_PRIMITIVE * @sizeOf(f32);
+const MAX_PRIMITIVES_PER_SEGMENT = @max(1, RING_SEGMENT_BYTES / BYTES_PER_PRIMITIVE);
+
+var persistent_map: ?[*]u8 = null;
+var ring_fences: [RING_SEGMENTS]gl.GLsync = .{null} ** RING_SEGMENTS;
+var ring_segment: u32 = 0;
+
+fn detectBackend() Backend {
+    const ver = gl.glGetString(gl.GL_VERSION) orelse return .gl33;
+    if (ver[0] < '0' or ver[0] > '9') return .gl33;
+    if (ver[2] < '0' or ver[2] > '9') return .gl33;
+    const major = ver[0] - '0';
+    const minor = ver[2] - '0';
+    if (major > 4 or (major == 4 and minor >= 4)) return .gl44;
+    return .gl33;
+}
+
+fn setupVertexAttribsGl33() void {
+    gl.glBindVertexArray(vao);
+    gl.glBindBuffer(gl.GL_ARRAY_BUFFER, vbo);
+    const stride: gl.GLsizei = vector_vertex.FLOATS_PER_VERTEX * @sizeOf(f32);
+    inline for (0..6) |i| {
+        gl.glVertexAttribPointer(
+            @intCast(i),
+            4,
+            gl.GL_FLOAT,
+            gl.GL_FALSE,
+            stride,
+            @ptrFromInt(i * 4 * @sizeOf(f32)),
+        );
+        gl.glEnableVertexAttribArray(@intCast(i));
+        gl.glVertexAttribDivisor(@intCast(i), 1);
+    }
+    gl.glBindVertexArray(0);
+}
+
+fn waitForRingSegment(segment: usize) void {
+    if (ring_fences[segment]) |fence| {
+        const status = gl.glClientWaitSync(fence, 0, 0);
+        if (status != gl.GL_ALREADY_SIGNALED and status != gl.GL_CONDITION_SATISFIED) {
+            _ = gl.glClientWaitSync(fence, gl.GL_SYNC_FLUSH_COMMANDS_BIT, 1_000_000_000);
+        }
+        gl.glDeleteSync(fence);
+        ring_fences[segment] = null;
+    }
+}
 
 const vertex_shader =
     \\#version 330 core
@@ -419,34 +472,49 @@ pub fn init() !void {
     u_fill_rule = gl.glGetUniformLocation(program, "u_fill_rule");
     u_subpixel_order = gl.glGetUniformLocation(program, "u_subpixel_order");
 
-    gl.glGenVertexArrays(1, &vao);
-    gl.glGenBuffers(1, &vbo);
-    gl.glBindVertexArray(vao);
-    gl.glBindBuffer(gl.GL_ARRAY_BUFFER, vbo);
+    backend = detectBackend();
+    switch (backend) {
+        .gl33 => {
+            gl.glGenVertexArrays(1, &vao);
+            gl.glGenBuffers(1, &vbo);
+            setupVertexAttribsGl33();
+        },
+        .gl44 => {
+            gl.glCreateVertexArrays(1, &vao);
+            gl.glCreateBuffers(1, &vbo);
 
-    const stride: gl.GLsizei = vector_vertex.FLOATS_PER_VERTEX * @sizeOf(f32);
-    gl.glVertexAttribPointer(0, 4, gl.GL_FLOAT, gl.GL_FALSE, stride, @ptrFromInt(0));
-    gl.glEnableVertexAttribArray(0);
-    gl.glVertexAttribPointer(1, 4, gl.GL_FLOAT, gl.GL_FALSE, stride, @ptrFromInt(4 * @sizeOf(f32)));
-    gl.glEnableVertexAttribArray(1);
-    gl.glVertexAttribPointer(2, 4, gl.GL_FLOAT, gl.GL_FALSE, stride, @ptrFromInt(8 * @sizeOf(f32)));
-    gl.glEnableVertexAttribArray(2);
-    gl.glVertexAttribPointer(3, 4, gl.GL_FLOAT, gl.GL_FALSE, stride, @ptrFromInt(12 * @sizeOf(f32)));
-    gl.glEnableVertexAttribArray(3);
-    gl.glVertexAttribPointer(4, 4, gl.GL_FLOAT, gl.GL_FALSE, stride, @ptrFromInt(16 * @sizeOf(f32)));
-    gl.glEnableVertexAttribArray(4);
-    gl.glVertexAttribPointer(5, 4, gl.GL_FLOAT, gl.GL_FALSE, stride, @ptrFromInt(20 * @sizeOf(f32)));
-    gl.glEnableVertexAttribArray(5);
-    gl.glVertexAttribDivisor(0, 1);
-    gl.glVertexAttribDivisor(1, 1);
-    gl.glVertexAttribDivisor(2, 1);
-    gl.glVertexAttribDivisor(3, 1);
-    gl.glVertexAttribDivisor(4, 1);
-    gl.glVertexAttribDivisor(5, 1);
-    gl.glBindVertexArray(0);
+            const flags: gl.GLbitfield = gl.GL_MAP_WRITE_BIT | gl.GL_MAP_PERSISTENT_BIT | gl.GL_MAP_COHERENT_BIT;
+            gl.glNamedBufferStorage(vbo, RING_TOTAL_BYTES, null, flags);
+            persistent_map = @ptrCast(gl.glMapNamedBufferRange(vbo, 0, RING_TOTAL_BYTES, flags));
+
+            if (persistent_map == null) {
+                gl.glDeleteVertexArrays(1, &vao);
+                gl.glDeleteBuffers(1, &vbo);
+                vao = 0;
+                vbo = 0;
+                backend = .gl33;
+                gl.glGenVertexArrays(1, &vao);
+                gl.glGenBuffers(1, &vbo);
+                setupVertexAttribsGl33();
+            } else {
+                setupVertexAttribsGl33();
+            }
+        },
+    }
 }
 
 pub fn deinit() void {
+    if (backend == .gl44 and persistent_map != null) {
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, vbo);
+        _ = gl.glUnmapBuffer(gl.GL_ARRAY_BUFFER);
+        persistent_map = null;
+    }
+    for (&ring_fences) |*fence_slot| {
+        if (fence_slot.*) |fence| {
+            gl.glDeleteSync(fence);
+            fence_slot.* = null;
+        }
+    }
     if (program != 0) gl.glDeleteProgram(program);
     if (vao != 0) gl.glDeleteVertexArrays(1, &vao);
     if (vbo != 0) gl.glDeleteBuffers(1, &vbo);
@@ -465,15 +533,6 @@ pub fn drawPrimitives(vertices: []const f32, mvp: Mat4) void {
     const primitive_count = vertices.len / vector_vertex.FLOATS_PER_PRIMITIVE;
     if (primitive_count == 0) return;
 
-    gl.glBindVertexArray(vao);
-    gl.glBindBuffer(gl.GL_ARRAY_BUFFER, vbo);
-    gl.glBufferData(
-        gl.GL_ARRAY_BUFFER,
-        @intCast(vertices.len * @sizeOf(f32)),
-        @ptrCast(vertices.ptr),
-        gl.GL_STREAM_DRAW,
-    );
-
     gl.glDisable(gl.GL_DEPTH_TEST);
     gl.glEnable(gl.GL_BLEND);
     gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA);
@@ -481,7 +540,52 @@ pub fn drawPrimitives(vertices: []const f32, mvp: Mat4) void {
     gl.glUniformMatrix4fv(u_mvp, 1, gl.GL_FALSE, &mvp.data);
     gl.glUniform1i(u_fill_rule, @intFromEnum(text_pipeline.fill_rule));
     gl.glUniform1i(u_subpixel_order, @intFromEnum(text_pipeline.subpixel_order));
-    gl.glDrawArraysInstanced(gl.GL_TRIANGLES, 0, 6, @intCast(primitive_count));
+
+    gl.glBindVertexArray(vao);
+
+    var drawn: usize = 0;
+    while (drawn < primitive_count) {
+        const chunk: usize = @min(primitive_count - drawn, MAX_PRIMITIVES_PER_SEGMENT);
+        const float_offset = drawn * vector_vertex.FLOATS_PER_PRIMITIVE;
+        const byte_size = chunk * BYTES_PER_PRIMITIVE;
+
+        if (backend == .gl44 and persistent_map != null) {
+            const segment = @as(usize, ring_segment);
+            waitForRingSegment(segment);
+
+            const offset = segment * RING_SEGMENT_BYTES;
+            const dst = persistent_map.?[offset..][0..byte_size];
+            const src: [*]const u8 = @ptrCast(vertices[float_offset..].ptr);
+            @memcpy(dst, src[0..byte_size]);
+
+            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, vbo);
+            const stride: gl.GLsizei = vector_vertex.FLOATS_PER_VERTEX * @sizeOf(f32);
+            inline for (0..6) |i| {
+                gl.glVertexAttribPointer(
+                    @intCast(i),
+                    4,
+                    gl.GL_FLOAT,
+                    gl.GL_FALSE,
+                    stride,
+                    @ptrFromInt(offset + i * 4 * @sizeOf(f32)),
+                );
+            }
+            gl.glDrawArraysInstanced(gl.GL_TRIANGLES, 0, 6, @intCast(chunk));
+            ring_fences[segment] = gl.glFenceSync(gl.GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+            ring_segment = (ring_segment + 1) % RING_SEGMENTS;
+        } else {
+            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, vbo);
+            gl.glBufferData(
+                gl.GL_ARRAY_BUFFER,
+                @intCast(byte_size),
+                @ptrCast(vertices[float_offset..].ptr),
+                gl.GL_STREAM_DRAW,
+            );
+            gl.glDrawArraysInstanced(gl.GL_TRIANGLES, 0, 6, @intCast(chunk));
+        }
+
+        drawn += chunk;
+    }
 }
 
 fn compileShader(shader_type: gl.GLenum, source: [*c]const u8) ?gl.GLuint {

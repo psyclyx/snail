@@ -65,6 +65,9 @@ pub const Font = struct {
     cpal_offset: u32 = 0,
     index_to_loc_format: i16 = 0,
     num_h_metrics: u16 = 0,
+    cmap_subtable_offset: u32 = 0,
+    cmap_subtable_format: u16 = 0,
+    ascii_glyph_lut: [128]u16 = .{0} ** 128,
 
     pub fn init(data: []const u8) !Font {
         var font = Font{ .data = data };
@@ -72,6 +75,7 @@ pub const Font = struct {
         try font.parseHead();
         try font.parseMaxp();
         try font.parseHhea();
+        try font.initCmapLookup();
         return font;
     }
 
@@ -122,12 +126,14 @@ pub const Font = struct {
         if (glyph_id >= self.num_glyphs) return error.InvalidFont;
     }
 
-    pub fn glyphIndex(self: *const Font, codepoint: u32) !u16 {
+    fn initCmapLookup(self: *Font) !void {
         if (self.cmap_offset == 0) return error.MissingRequiredTable;
+
         const base = self.cmap_offset;
         const num_subtables = try readU16(self.data, base + 2);
         var best_offset: u32 = 0;
         var best_format: u16 = 0;
+
         for (0..num_subtables) |i| {
             const rec = base + 4 + @as(u32, @intCast(i)) * 8;
             const platform_id = try readU16(self.data, rec);
@@ -143,10 +149,29 @@ pub const Font = struct {
                 }
             }
         }
+
         if (best_offset == 0) return error.NoCmapSubtable;
-        return switch (best_format) {
-            4 => self.cmapFormat4Lookup(best_offset, codepoint),
-            12 => self.cmapFormat12Lookup(best_offset, codepoint),
+
+        self.cmap_subtable_offset = best_offset;
+        self.cmap_subtable_format = best_format;
+
+        for (0..self.ascii_glyph_lut.len) |i| {
+            self.ascii_glyph_lut[i] = try self.glyphIndexSlow(@intCast(i));
+        }
+    }
+
+    pub fn glyphIndex(self: *const Font, codepoint: u32) !u16 {
+        if (codepoint < self.ascii_glyph_lut.len) {
+            return self.ascii_glyph_lut[@intCast(codepoint)];
+        }
+        return self.glyphIndexSlow(codepoint);
+    }
+
+    fn glyphIndexSlow(self: *const Font, codepoint: u32) !u16 {
+        if (self.cmap_subtable_offset == 0) return error.NoCmapSubtable;
+        return switch (self.cmap_subtable_format) {
+            4 => self.cmapFormat4Lookup(self.cmap_subtable_offset, codepoint),
+            12 => self.cmapFormat12Lookup(self.cmap_subtable_offset, codepoint),
             else => error.UnsupportedCmapFormat,
         };
     }
@@ -159,41 +184,59 @@ pub const Font = struct {
         const start_codes = end_codes + @as(u32, seg_count) * 2 + 2;
         const id_deltas = start_codes + @as(u32, seg_count) * 2;
         const id_range_offsets = id_deltas + @as(u32, seg_count) * 2;
-        for (0..seg_count) |i| {
-            const idx: u32 = @intCast(i);
-            const end_code = try readU16(self.data, end_codes + idx * 2);
-            if (end_code >= cp) {
-                const start_code = try readU16(self.data, start_codes + idx * 2);
-                if (start_code > cp) return 0;
-                const range_offset = try readU16(self.data, id_range_offsets + idx * 2);
-                if (range_offset == 0) {
-                    const delta = try readI16(self.data, id_deltas + idx * 2);
-                    return @bitCast(@as(i16, @bitCast(cp)) +% delta);
-                } else {
-                    const glyph_addr = id_range_offsets + idx * 2 + range_offset + (cp - start_code) * 2;
-                    const glyph_id = try readU16(self.data, glyph_addr);
-                    if (glyph_id == 0) return 0;
-                    const delta = try readI16(self.data, id_deltas + idx * 2);
-                    return @bitCast(@as(i16, @bitCast(glyph_id)) +% delta);
-                }
+        var lo: u32 = 0;
+        var hi: u32 = seg_count;
+        while (lo < hi) {
+            const mid = (lo + hi) / 2;
+            const end_code = try readU16(self.data, end_codes + mid * 2);
+            if (end_code < cp) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
             }
         }
-        return 0;
+        if (lo >= seg_count) return 0;
+
+        const idx = lo;
+        const start_code = try readU16(self.data, start_codes + idx * 2);
+        if (start_code > cp) return 0;
+
+        const range_offset = try readU16(self.data, id_range_offsets + idx * 2);
+        if (range_offset == 0) {
+            const delta = try readI16(self.data, id_deltas + idx * 2);
+            return @bitCast(@as(i16, @bitCast(cp)) +% delta);
+        }
+
+        const glyph_addr = id_range_offsets + idx * 2 + range_offset + (cp - start_code) * 2;
+        const glyph_id = try readU16(self.data, glyph_addr);
+        if (glyph_id == 0) return 0;
+        const delta = try readI16(self.data, id_deltas + idx * 2);
+        return @bitCast(@as(i16, @bitCast(glyph_id)) +% delta);
     }
 
     fn cmapFormat12Lookup(self: *const Font, offset: u32, codepoint: u32) !u16 {
         const n_groups = try readU32(self.data, offset + 12);
         const groups_base = offset + 16;
-        for (0..n_groups) |i| {
-            const g = groups_base + @as(u32, @intCast(i)) * 12;
-            const start_char = try readU32(self.data, g);
-            const end_char = try readU32(self.data, g + 4);
-            const start_glyph = try readU32(self.data, g + 8);
-            if (codepoint >= start_char and codepoint <= end_char) {
-                return @intCast(start_glyph + (codepoint - start_char));
+        var lo: u32 = 0;
+        var hi: u32 = n_groups;
+        while (lo < hi) {
+            const mid = (lo + hi) / 2;
+            const start_char = try readU32(self.data, groups_base + mid * 12);
+            if (start_char <= codepoint) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
             }
         }
-        return 0;
+        if (lo == 0) return 0;
+
+        const idx = lo - 1;
+        const g = groups_base + idx * 12;
+        const start_char = try readU32(self.data, g);
+        const end_char = try readU32(self.data, g + 4);
+        if (codepoint > end_char) return 0;
+        const start_glyph = try readU32(self.data, g + 8);
+        return @intCast(start_glyph + (codepoint - start_char));
     }
 
     fn glyphOffset(self: *const Font, glyph_id: u16) !u32 {

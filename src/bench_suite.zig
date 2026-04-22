@@ -18,9 +18,10 @@ const c_ft = @cImport({
 
 const WIDTH = 1280;
 const HEIGHT = 720;
-const WARMUP = 100;
-const FRAMES = 2000;
-const LAYOUT_ITERS = 500;
+const BENCH_TIME_MULTIPLIER = 10;
+const WARMUP = 100 * BENCH_TIME_MULTIPLIER;
+const FRAMES = 2000 * BENCH_TIME_MULTIPLIER;
+const LAYOUT_ITERS = 500 * BENCH_TIME_MULTIPLIER;
 
 const SHORT = "Hello, world!";
 const SENTENCE = "The quick brown fox jumps over the lazy dog 0123456789";
@@ -709,14 +710,14 @@ pub fn main() !void {
         std.debug.print(
             \\
             \\=== snail benchmark suite ===
-            \\  Backend: {s} | HarfBuzz: {s} | {d}x{d} | {d} frames/test
+            \\  Backend: {s} | HarfBuzz: {s} | {d}x{d} | {d} warmup + {d} measured frames/test
             \\  Setup (4 fonts + atlases + texture array): {d:.0} us
             \\
-        , .{ pipeline.getBackendName(), hb_str, WIDTH, HEIGHT, FRAMES, setup_us });
+        , .{ pipeline.getBackendName(), hb_str, WIDTH, HEIGHT, WARMUP, FRAMES, setup_us });
 
         // ── Layout: snail vs FreeType ──
         std.debug.print(
-            \\  ── Layout ({d} iters, snail vs FreeType) ──
+            \\  ── Layout ({d} samples/scenario, snail vs FreeType) ──
             \\  Scenario                          snail       FreeType    speedup
             \\
         , .{LAYOUT_ITERS});
@@ -912,11 +913,11 @@ pub fn main() !void {
         std.debug.print(
             \\
             \\  ── Rendering (Vulkan) ──
-            \\  Backend: Vulkan | HarfBuzz: {s} | {d}x{d} | {d} frames/test
+            \\  Backend: Vulkan | HarfBuzz: {s} | {d}x{d} | {d} warmup + {d} measured frames/test
             \\  Setup (4 fonts + atlases + texture array): {d:.0} us
             \\  Scenario                          Glyphs  static FPS (us)   dynamic FPS (us)
             \\
-        , .{ hb_str, WIDTH, HEIGHT, FRAMES, setup_us });
+        , .{ hb_str, WIDTH, HEIGHT, WARMUP, FRAMES, setup_us });
 
         runScenarioVulkan("Game HUD (2 lines)", buildHud, &atlas, &font, &renderer, vbuf, mvp);
         runScenarioVulkan("Multi-size (6 sizes)", buildMultiSize, &atlas, &font, &renderer, vbuf, mvp);

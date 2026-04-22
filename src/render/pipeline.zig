@@ -83,6 +83,23 @@ var persistent_map: ?[*]u8 = null;
 var ring_fences: [RING_SEGMENTS]gl.GLsync = .{null} ** RING_SEGMENTS;
 var ring_segment: u32 = 0;
 
+const MAX_ATLASES = 64;
+const MAX_PAGES_PER_ATLAS = 256;
+
+const AtlasSlot = struct {
+    atlas: ?*const snail_mod.Atlas = null,
+    base_layer: u32 = 0,
+    capacity_pages: u32 = 0,
+    uploaded_pages: u32 = 0,
+    page_ptrs: [MAX_PAGES_PER_ATLAS]?*const snail_mod.AtlasPage = .{null} ** MAX_PAGES_PER_ATLAS,
+};
+
+var atlas_slots: [MAX_ATLASES]AtlasSlot = std.mem.zeroes([MAX_ATLASES]AtlasSlot);
+var atlas_slot_count: usize = 0;
+var allocated_curve_height: u32 = 0;
+var allocated_band_height: u32 = 0;
+var allocated_layer_count: u32 = 0;
+
 // ── Init / Deinit ──
 
 pub fn init() !void {
@@ -202,48 +219,269 @@ pub fn deinit() void {
     if (vao != 0) gl.glDeleteVertexArrays(1, &vao);
     if (vbo != 0) gl.glDeleteBuffers(1, &vbo);
     if (ebo != 0) gl.glDeleteBuffers(1, &ebo);
-    if (curve_array != 0) gl.glDeleteTextures(1, &curve_array);
-    if (band_array != 0) gl.glDeleteTextures(1, &band_array);
-    if (layer_info_tex != 0) gl.glDeleteTextures(1, &layer_info_tex);
+    destroyTextureResources();
+    resetAtlasUploadState();
 }
 
 // ── Texture array management ──
 
-pub fn buildTextureArrays(atlases: []const *const snail_mod.Atlas) void {
+fn destroyTextureResources() void {
     if (curve_array != 0) gl.glDeleteTextures(1, &curve_array);
     if (band_array != 0) gl.glDeleteTextures(1, &band_array);
     if (layer_info_tex != 0) gl.glDeleteTextures(1, &layer_info_tex);
+    curve_array = 0;
+    band_array = 0;
+    layer_info_tex = 0;
+}
+
+pub fn buildTextureArrays(atlases: []const *const snail_mod.Atlas, out_views: []snail_mod.AtlasView) void {
+    std.debug.assert(atlases.len == out_views.len);
+
+    if (atlases.len == 0) {
+        destroyTextureResources();
+        resetAtlasUploadState();
+        return;
+    }
+
+    const can_incremental = texturesReady() and atlasSlotsCompatible(atlases);
+    if (!can_incremental) {
+        rebuildTextureArrays(atlases, out_views);
+    } else if (!appendTexturePages(atlases)) {
+        rebuildTextureArrays(atlases, out_views);
+    } else {
+        fillAtlasViews(atlases, out_views);
+        rebuildLayerInfoTexture(atlases);
+        active_program = 0;
+        frame_begun = false;
+    }
+}
+
+fn rebuildTextureArrays(atlases: []const *const snail_mod.Atlas, out_views: []snail_mod.AtlasView) void {
+    destroyTextureResources();
+    resetAtlasUploadState();
+
+    var max_curve_h: u32 = 1;
+    var max_band_h: u32 = 1;
+    var total_layers: u32 = 0;
+
+    for (atlases, 0..) |atlas, i| {
+        if (i >= MAX_ATLASES) return;
+        const page_count: u32 = @intCast(atlas.pageCount());
+        const capacity = atlasCapacity(page_count);
+        const slot = &atlas_slots[i];
+        slot.* = .{
+            .atlas = atlas,
+            .base_layer = total_layers,
+            .capacity_pages = capacity,
+            .uploaded_pages = page_count,
+        };
+        for (0..page_count) |page_index| {
+            const page = atlas.page(@intCast(page_index));
+            slot.page_ptrs[page_index] = page;
+            if (page.curve_height > max_curve_h) max_curve_h = page.curve_height;
+            if (page.band_height > max_band_h) max_band_h = page.band_height;
+        }
+        total_layers += capacity;
+    }
+
+    atlas_slot_count = atlases.len;
+    allocated_curve_height = heightCapacity(max_curve_h);
+    allocated_band_height = heightCapacity(max_band_h);
+    allocated_layer_count = total_layers;
 
     if (atlases.len == 0) return;
 
-    var total_layers: usize = 0;
-    var max_curve_h: u32 = 1;
-    var max_band_h: u32 = 1;
-    for (atlases) |a| {
-        total_layers += a.pageCount();
-        for (0..a.pageCount()) |page_index| {
-            const page = a.page(@intCast(page_index));
+    createTextureArrays(atlases[0], allocated_layer_count, allocated_curve_height, allocated_band_height);
+    uploadAllPages(atlases);
+    rebuildLayerInfoTexture(atlases);
+    fillAtlasViews(atlases, out_views);
+    active_program = 0;
+    frame_begun = false;
+}
+
+fn appendTexturePages(atlases: []const *const snail_mod.Atlas) bool {
+    var max_curve_h: u32 = allocated_curve_height;
+    var max_band_h: u32 = allocated_band_height;
+    var start_pages: [MAX_ATLASES]u32 = undefined;
+
+    for (atlases, 0..) |atlas, i| {
+        if (i >= atlas_slot_count) return false;
+        const slot = &atlas_slots[i];
+        const page_count: u32 = @intCast(atlas.pageCount());
+        if (page_count < slot.uploaded_pages or page_count > slot.capacity_pages) return false;
+        start_pages[i] = slot.uploaded_pages;
+        for (0..slot.uploaded_pages) |page_index| {
+            if (slot.page_ptrs[page_index] != atlas.page(@intCast(page_index))) return false;
+        }
+        for (0..page_count) |page_index| {
+            const page = atlas.page(@intCast(page_index));
             if (page.curve_height > max_curve_h) max_curve_h = page.curve_height;
             if (page.band_height > max_band_h) max_band_h = page.band_height;
         }
     }
-    const layer_count: gl.GLsizei = @intCast(total_layers);
+
+    if (atlases.len != atlas_slot_count) return false;
+    if (max_curve_h > allocated_curve_height or max_band_h > allocated_band_height) return false;
 
     switch (backend) {
-        .gl33 => buildTextureArraysGl33(atlases, layer_count, max_curve_h, max_band_h),
-        .gl44 => buildTextureArraysGl44(atlases, layer_count, max_curve_h, max_band_h),
+        .gl33 => uploadTexturePagesGl33WithStarts(atlases, start_pages[0..atlases.len]),
+        .gl44 => uploadTexturePagesGl44WithStarts(atlases, start_pages[0..atlases.len]),
     }
 
-    // Build COLR layer info texture (shared across all atlases, first one with data wins)
+    for (atlases, 0..) |atlas, i| {
+        const slot = &atlas_slots[i];
+        const old_pages = slot.uploaded_pages;
+        const new_pages: u32 = @intCast(atlas.pageCount());
+        for (old_pages..new_pages) |page_index| {
+            slot.page_ptrs[page_index] = atlas.page(@intCast(page_index));
+        }
+        slot.atlas = atlas;
+        slot.uploaded_pages = new_pages;
+    }
+
+    return true;
+}
+
+fn texturesReady() bool {
+    return curve_array != 0 and band_array != 0 and atlas_slot_count > 0;
+}
+
+fn atlasSlotsCompatible(atlases: []const *const snail_mod.Atlas) bool {
+    if (atlases.len != atlas_slot_count) return false;
+    for (atlases, 0..) |atlas, i| {
+        const slot = &atlas_slots[i];
+        const page_count: u32 = @intCast(atlas.pageCount());
+        if (page_count < slot.uploaded_pages or page_count > slot.capacity_pages) return false;
+        for (0..slot.uploaded_pages) |page_index| {
+            if (slot.page_ptrs[page_index] != atlas.page(@intCast(page_index))) return false;
+        }
+    }
+    return true;
+}
+
+fn fillAtlasViews(atlases: []const *const snail_mod.Atlas, out_views: []snail_mod.AtlasView) void {
+    for (atlases, 0..) |atlas, i| {
+        out_views[i] = .{
+            .atlas = atlas,
+            .layer_base = @intCast(atlas_slots[i].base_layer),
+        };
+    }
+}
+
+fn resetAtlasUploadState() void {
+    atlas_slot_count = 0;
+    allocated_curve_height = 0;
+    allocated_band_height = 0;
+    allocated_layer_count = 0;
+    for (&atlas_slots) |*slot| slot.* = .{};
+}
+
+fn roundUpPowerOfTwo(value: u32) u32 {
+    if (value <= 1) return 1;
+    var v = value - 1;
+    v |= v >> 1;
+    v |= v >> 2;
+    v |= v >> 4;
+    v |= v >> 8;
+    v |= v >> 16;
+    return v + 1;
+}
+
+fn atlasCapacity(page_count: u32) u32 {
+    return @max(4, roundUpPowerOfTwo(page_count + 1));
+}
+
+fn heightCapacity(height: u32) u32 {
+    return roundUpPowerOfTwo(@max(height, 1));
+}
+
+fn createTextureArrays(first_atlas: *const snail_mod.Atlas, layer_count: u32, max_curve_h: u32, max_band_h: u32) void {
+    const first_page = first_atlas.page(0);
+
+    switch (backend) {
+        .gl33 => {
+            gl.glGenTextures(1, &curve_array);
+            gl.glActiveTexture(gl.GL_TEXTURE0);
+            gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, curve_array);
+            gl.glTexImage3D(gl.GL_TEXTURE_2D_ARRAY, 0, gl.GL_RGBA16F, @intCast(first_page.curve_width), @intCast(max_curve_h), @intCast(layer_count), 0, gl.GL_RGBA, gl.GL_HALF_FLOAT, null);
+            setTexParams(gl.GL_TEXTURE_2D_ARRAY);
+
+            gl.glGenTextures(1, &band_array);
+            gl.glActiveTexture(gl.GL_TEXTURE1);
+            gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, band_array);
+            gl.glTexImage3D(gl.GL_TEXTURE_2D_ARRAY, 0, gl.GL_RG16UI, @intCast(first_page.band_width), @intCast(max_band_h), @intCast(layer_count), 0, gl.GL_RG_INTEGER, gl.GL_UNSIGNED_SHORT, null);
+            setTexParams(gl.GL_TEXTURE_2D_ARRAY);
+        },
+        .gl44 => {
+            gl.glCreateTextures(gl.GL_TEXTURE_2D_ARRAY, 1, &curve_array);
+            gl.glTextureStorage3D(curve_array, 1, gl.GL_RGBA16F, @intCast(first_page.curve_width), @intCast(max_curve_h), @intCast(layer_count));
+            setTexParamsDSA(curve_array);
+
+            gl.glCreateTextures(gl.GL_TEXTURE_2D_ARRAY, 1, &band_array);
+            gl.glTextureStorage3D(band_array, 1, gl.GL_RG16UI, @intCast(first_page.band_width), @intCast(max_band_h), @intCast(layer_count));
+            setTexParamsDSA(band_array);
+            gl.glBindTextureUnit(0, curve_array);
+            gl.glBindTextureUnit(1, band_array);
+        },
+    }
+}
+
+fn uploadAllPages(atlases: []const *const snail_mod.Atlas) void {
+    switch (backend) {
+        .gl33 => uploadTexturePagesGl33WithStarts(atlases, null),
+        .gl44 => uploadTexturePagesGl44WithStarts(atlases, null),
+    }
+}
+
+fn uploadTexturePagesGl33(atlases: []const *const snail_mod.Atlas) void {
+    uploadTexturePagesGl33WithStarts(atlases, null);
+}
+
+fn uploadTexturePagesGl44(atlases: []const *const snail_mod.Atlas) void {
+    uploadTexturePagesGl44WithStarts(atlases, null);
+}
+
+fn uploadTexturePagesGl33WithStarts(atlases: []const *const snail_mod.Atlas, start_pages: ?[]const u32) void {
+    for (atlases, 0..) |atlas, i| {
+        const start_page = if (start_pages) |sp| sp[i] else 0;
+        const base_layer = atlas_slots[i].base_layer;
+        for (start_page..atlas.pageCount()) |page_index| {
+            const page = atlas.page(@intCast(page_index));
+            const layer = base_layer + @as(u32, @intCast(page_index));
+            const layer_z: gl.GLint = @intCast(layer);
+            gl.glActiveTexture(gl.GL_TEXTURE0);
+            gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, curve_array);
+            gl.glTexSubImage3D(gl.GL_TEXTURE_2D_ARRAY, 0, 0, 0, layer_z, @intCast(page.curve_width), @intCast(page.curve_height), 1, gl.GL_RGBA, gl.GL_HALF_FLOAT, page.curve_data.ptr);
+            gl.glActiveTexture(gl.GL_TEXTURE1);
+            gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, band_array);
+            gl.glTexSubImage3D(gl.GL_TEXTURE_2D_ARRAY, 0, 0, 0, layer_z, @intCast(page.band_width), @intCast(page.band_height), 1, gl.GL_RG_INTEGER, gl.GL_UNSIGNED_SHORT, page.band_data.ptr);
+        }
+    }
+}
+
+fn uploadTexturePagesGl44WithStarts(atlases: []const *const snail_mod.Atlas, start_pages: ?[]const u32) void {
+    for (atlases, 0..) |atlas, i| {
+        const start_page = if (start_pages) |sp| sp[i] else 0;
+        const base_layer = atlas_slots[i].base_layer;
+        for (start_page..atlas.pageCount()) |page_index| {
+            const page = atlas.page(@intCast(page_index));
+            const layer = base_layer + @as(u32, @intCast(page_index));
+            const layer_z: gl.GLint = @intCast(layer);
+            gl.glTextureSubImage3D(curve_array, 0, 0, 0, layer_z, @intCast(page.curve_width), @intCast(page.curve_height), 1, gl.GL_RGBA, gl.GL_HALF_FLOAT, page.curve_data.ptr);
+            gl.glTextureSubImage3D(band_array, 0, 0, 0, layer_z, @intCast(page.band_width), @intCast(page.band_height), 1, gl.GL_RG_INTEGER, gl.GL_UNSIGNED_SHORT, page.band_data.ptr);
+        }
+    }
+}
+
+fn rebuildLayerInfoTexture(atlases: []const *const snail_mod.Atlas) void {
+    if (layer_info_tex != 0) gl.glDeleteTextures(1, &layer_info_tex);
     layer_info_tex = 0;
     for (atlases) |a| {
         if (a.layer_info_data) |lid| {
             gl.glGenTextures(1, &layer_info_tex);
             gl.glActiveTexture(gl.GL_TEXTURE2);
             gl.glBindTexture(gl.GL_TEXTURE_2D, layer_info_tex);
-            gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA32F,
-                @intCast(a.layer_info_width), @intCast(a.layer_info_height), 0,
-                gl.GL_RGBA, gl.GL_FLOAT, @ptrCast(lid.ptr));
+            gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA32F, @intCast(a.layer_info_width), @intCast(a.layer_info_height), 0, gl.GL_RGBA, gl.GL_FLOAT, @ptrCast(lid.ptr));
             gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST);
             gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST);
             gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE);
@@ -251,82 +489,6 @@ pub fn buildTextureArrays(atlases: []const *const snail_mod.Atlas) void {
             break;
         }
     }
-
-    active_program = 0;
-    frame_begun = false;
-}
-
-fn buildTextureArraysGl33(atlases: []const *const snail_mod.Atlas, layer_count: gl.GLsizei, max_curve_h: u32, max_band_h: u32) void {
-    const first_page = atlases[0].page(0);
-    // Curve array
-    gl.glGenTextures(1, &curve_array);
-    gl.glActiveTexture(gl.GL_TEXTURE0);
-    gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, curve_array);
-    gl.glTexImage3D(gl.GL_TEXTURE_2D_ARRAY, 0, gl.GL_RGBA16F,
-        @intCast(first_page.curve_width), @intCast(max_curve_h), layer_count,
-        0, gl.GL_RGBA, gl.GL_HALF_FLOAT, null);
-    setTexParams(gl.GL_TEXTURE_2D_ARRAY);
-
-    // Band array
-    gl.glGenTextures(1, &band_array);
-    gl.glActiveTexture(gl.GL_TEXTURE1);
-    gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, band_array);
-    gl.glTexImage3D(gl.GL_TEXTURE_2D_ARRAY, 0, gl.GL_RG16UI,
-        @intCast(first_page.band_width), @intCast(max_band_h), layer_count,
-        0, gl.GL_RG_INTEGER, gl.GL_UNSIGNED_SHORT, null);
-    setTexParams(gl.GL_TEXTURE_2D_ARRAY);
-
-    // Upload layers
-    var layer_index: usize = 0;
-    for (atlases) |atlas| {
-        for (0..atlas.pageCount()) |page_index| {
-            const page = atlas.page(@intCast(page_index));
-            gl.glActiveTexture(gl.GL_TEXTURE0);
-            gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, curve_array);
-            gl.glTexSubImage3D(gl.GL_TEXTURE_2D_ARRAY, 0, 0, 0, @intCast(layer_index),
-                @intCast(page.curve_width), @intCast(page.curve_height), 1,
-                gl.GL_RGBA, gl.GL_HALF_FLOAT, page.curve_data.ptr);
-            gl.glActiveTexture(gl.GL_TEXTURE1);
-            gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, band_array);
-            gl.glTexSubImage3D(gl.GL_TEXTURE_2D_ARRAY, 0, 0, 0, @intCast(layer_index),
-                @intCast(page.band_width), @intCast(page.band_height), 1,
-                gl.GL_RG_INTEGER, gl.GL_UNSIGNED_SHORT, page.band_data.ptr);
-            layer_index += 1;
-        }
-    }
-}
-
-fn buildTextureArraysGl44(atlases: []const *const snail_mod.Atlas, layer_count: gl.GLsizei, max_curve_h: u32, max_band_h: u32) void {
-    const first_page = atlases[0].page(0);
-    // DSA texture creation
-    gl.glCreateTextures(gl.GL_TEXTURE_2D_ARRAY, 1, &curve_array);
-    gl.glTextureStorage3D(curve_array, 1, gl.GL_RGBA16F,
-        @intCast(first_page.curve_width), @intCast(max_curve_h), layer_count);
-    setTexParamsDSA(curve_array);
-
-    gl.glCreateTextures(gl.GL_TEXTURE_2D_ARRAY, 1, &band_array);
-    gl.glTextureStorage3D(band_array, 1, gl.GL_RG16UI,
-        @intCast(first_page.band_width), @intCast(max_band_h), layer_count);
-    setTexParamsDSA(band_array);
-
-    // Upload layers via DSA
-    var layer_index: usize = 0;
-    for (atlases) |atlas| {
-        for (0..atlas.pageCount()) |page_index| {
-            const page = atlas.page(@intCast(page_index));
-            gl.glTextureSubImage3D(curve_array, 0, 0, 0, @intCast(layer_index),
-                @intCast(page.curve_width), @intCast(page.curve_height), 1,
-                gl.GL_RGBA, gl.GL_HALF_FLOAT, page.curve_data.ptr);
-            gl.glTextureSubImage3D(band_array, 0, 0, 0, @intCast(layer_index),
-                @intCast(page.band_width), @intCast(page.band_height), 1,
-                gl.GL_RG_INTEGER, gl.GL_UNSIGNED_SHORT, page.band_data.ptr);
-            layer_index += 1;
-        }
-    }
-
-    // Bind to texture units via DSA
-    gl.glBindTextureUnit(0, curve_array);
-    gl.glBindTextureUnit(1, band_array);
 }
 
 fn setTexParams(target: gl.GLenum) void {
@@ -346,10 +508,17 @@ fn setTexParamsDSA(tex: gl.GLuint) void {
 // ── Legacy API stubs ──
 
 pub fn deleteTexture(tex: *gl.GLuint) void {
-    if (tex.* != 0) { gl.glDeleteTextures(1, tex); tex.* = 0; }
+    if (tex.* != 0) {
+        gl.glDeleteTextures(1, tex);
+        tex.* = 0;
+    }
 }
-pub fn createCurveTexture(_: []const u16, _: u32, _: u32) gl.GLuint { return 0; }
-pub fn createBandTexture(_: []const u16, _: u32, _: u32) gl.GLuint { return 0; }
+pub fn createCurveTexture(_: []const u16, _: u32, _: u32) gl.GLuint {
+    return 0;
+}
+pub fn createBandTexture(_: []const u16, _: u32, _: u32) gl.GLuint {
+    return 0;
+}
 pub fn bindTextures(_: gl.GLuint, _: gl.GLuint) void {}
 
 // ── Draw ──
@@ -397,8 +566,8 @@ pub fn drawText(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f
     }
 
     const u_mvp = if (using_sp) sp_mvp_loc else mvp_loc;
-    const u_vp  = if (using_sp) sp_viewport_loc else viewport_loc;
-    const u_fr  = if (using_sp) sp_fill_rule_loc else fill_rule_loc;
+    const u_vp = if (using_sp) sp_viewport_loc else viewport_loc;
+    const u_fr = if (using_sp) sp_fill_rule_loc else fill_rule_loc;
     gl.glUniformMatrix4fv(u_mvp, 1, gl.GL_FALSE, &mvp.data);
     gl.glUniform2f(u_vp, viewport_w, viewport_h);
     gl.glUniform1i(u_fr, @intFromEnum(fill_rule));
