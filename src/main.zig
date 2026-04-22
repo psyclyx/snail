@@ -431,9 +431,9 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
 
             // Multi-size Latin — strings chosen so each line fits within col1_max_w
             const size_rows = [_]struct { fs: f32, text: []const u8 }{
-                .{ .fs = 11, .text = "Sphinx of black quartz, judge my vow 0123456789" },
-                .{ .fs = 14, .text = "Quick zephyrs blow, vexing daft Jim" },
-                .{ .fs = 20, .text = "Glib jocks quiz nymphs" },
+                .{ .fs = 11, .text = "The wizard quickly jinxed the gnomes before they vaporized." },
+                .{ .fs = 14, .text = "Sphinx of black quartz, judge my vow." },
+                .{ .fs = 20, .text = "Waltz, bad nymph, for quick jigs vex." },
                 .{ .fs = 28, .text = "Pack my box with five" },
                 .{ .fs = 40, .text = "How vexingly quick" },
             };
