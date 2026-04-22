@@ -412,7 +412,7 @@ pub fn drawVector(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h:
     const pc = PushConstants{
         .mvp = mvp.data,
         .viewport = .{ viewport_w, viewport_h },
-        .fill_rule = 0,
+        .fill_rule = @intFromEnum(fill_rule),
         .subpixel_order = @intFromEnum(subpixel_order),
     };
     vk.vkCmdPushConstants(cmd, pipeline_layout, vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(PushConstants), &pc);

@@ -80,7 +80,7 @@ Atlas uploads now return lightweight `AtlasView` values. Existing glyph handles 
 
 ### Vector primitives and pictures
 
-snail's vector side is explicit and style-oriented: you describe fill/stroke state, optional per-primitive affine transforms, and pack analytic rectangles / rounded rectangles / ellipses into a caller-owned buffer. Static vector UI can then be frozen into an immutable `VectorPicture`.
+snail's vector side is explicit and style-oriented: you describe fill/stroke state, optional per-primitive affine transforms, and pack rectangles / rounded rectangles / ellipses into a caller-owned buffer. Static vector UI can then be frozen into an immutable `VectorPicture`. Those primitives still draw from one packed record each, but coverage is evaluated from procedural quadratic curves with the same Slug root-solving math used for text.
 
 ```zig
 var shape_buf: [256 * snail.VECTOR_FLOATS_PER_PRIMITIVE]f32 = undefined;
@@ -336,7 +336,7 @@ src/
     band_texture.zig     RG16UI spatial band subdivision texture
     vertex.zig           glyph quad vertex generation (5x vec4 per vertex)
     vector_vertex.zig    vector primitive vertex packing
-    vector_pipeline.zig  OpenGL vector primitive pipeline
+    vector_pipeline.zig  OpenGL vector primitive pipeline (procedural Slug coverage)
   profile/timer.zig      comptime-gated CPU timers (zero overhead when disabled)
 include/
   snail.h                C header
@@ -350,9 +350,9 @@ include/
 
 3. **Band texture**: subdivide each glyph's bounding box into horizontal and vertical bands. Each band stores which curves intersect it. This reduces per-pixel work from O(all curves) to O(curves in band).
 
-4. **Vertex shader**: apply dynamic dilation (expand glyph quads by ~0.5px along normals using the inverse Jacobian of the MVP transform) to prevent dropped pixels at edges. Vector primitives use the same idea in a simpler form by expanding their analytic quad envelope so edge AA is not clipped.
+4. **Vertex shader**: apply dynamic dilation (expand glyph quads by ~0.5px along normals using the inverse Jacobian of the MVP transform) to prevent dropped pixels at edges. Vector primitives keep the same one-quad envelope idea so edge coverage is not clipped.
 
-5. **Fragment shader**: for each pixel, determine its band, fetch the relevant curves, cast horizontal and vertical rays, solve the resulting quadratic equations, classify roots via control point sign patterns (the core Slug technique), accumulate a winding number, and convert to fractional coverage for antialiasing.
+5. **Fragment shader**: for each pixel, determine its band, fetch the relevant curves, cast horizontal and vertical rays, solve the resulting quadratic equations, classify roots via control point sign patterns (the core Slug technique), accumulate a winding number, and convert to fractional coverage for antialiasing. Vector primitives follow the same coverage model, but generate their quadratic curves procedurally from the packed rect / rounded-rect / ellipse parameters instead of looking them up from the glyph atlas.
 
 Curves within each band are sorted by descending maximum coordinate, enabling early exit when no further curves can affect the pixel.
 
