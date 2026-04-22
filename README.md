@@ -20,17 +20,20 @@ The Slug patent (US 10,373,352) was [dedicated to the public domain](https://ter
 ## Build
 
 ```sh
-zig build test                      # unit tests (core library; no GLFW)
-zig build bench                     # CPU prep + vector packing benchmarks (no GLFW)
-zig build demo                      # build the interactive demo (OpenGL + GLFW)
-zig build run                       # run the interactive demo (OpenGL + GLFW)
-zig build run -Dvulkan=true         # Vulkan demo backend
+zig build test                      # unit tests
+zig build bench                     # microbenchmarks (prep, math, vector packing)
+zig build bench-compare             # snail vs FreeType
+zig build bench-headless            # offscreen OpenGL end-to-end rendering
+zig build bench-headless -Dvulkan=true # OpenGL + Vulkan end-to-end rendering
+zig build bench-suite               # consolidated GL suite (layout + text + vectors)
+zig build demo                      # build the interactive demo (Wayland + EGL)
+zig build run                       # run the interactive demo (Wayland + EGL)
+zig build run -Dvulkan=true         # Vulkan demo backend (Wayland surface)
 zig build run -Dharfbuzz=false      # disable HarfBuzz and use the built-in shaper only
-zig build bench-suite               # hidden-window benchmark suite
 zig build install --release=fast    # install libsnail + header to zig-out/
 ```
 
-Core library builds require [Zig 0.16](https://ziglang.org/download/), OpenGL, HarfBuzz, and pkg-config. The interactive demo and hidden-window GPU benchmarks additionally require GLFW. Vulkan loader + headers and shaderc are only needed with `-Dvulkan=true`.
+Core library builds require [Zig 0.16](https://ziglang.org/download/), OpenGL, HarfBuzz, and pkg-config. The interactive demo is Linux/Wayland-only and adds Wayland + EGL for the OpenGL path. Headless OpenGL benchmarks use EGL offscreen contexts and do not require a window system. Vulkan loader + headers and shaderc are only needed with `-Dvulkan=true`.
 
 **Nix** — reproducible dev shell and build:
 
@@ -138,12 +141,12 @@ The CPU vector path consumes the same packed `VectorBatch` / `VectorPicture` dat
 
 | Operation | Frequency | Cost |
 |-----------|-----------|------|
-| `Font.init` | Once per font | ~2 us |
-| `Atlas.init` | Once per glyph set | ~1.9 ms for 95 ASCII glyphs |
+| `Font.init` | Once per font | ~2.0 us |
+| `Atlas.init` | Once per glyph set | ~1.7 ms for 95 ASCII glyphs |
 | `Atlas.extendCodepoints` | On late glyph discovery | Allocates a new snapshot, preserving old handles |
 | `Renderer.uploadAtlas` | Once per atlas generation | GPU texture upload for atlas pages |
-| `Batch.addString` | Per-frame (dynamic) or once (static) | ~1.2 us for 13 chars, ~12.7 us for 175 chars |
-| `VectorBatch.addRoundedRectStyled` | Per-frame (dynamic) or once (static) | ~5.5 ns per primitive |
+| `Batch.addString` | Per-frame (dynamic) or once (static) | ~1.2 us for 13 chars, ~15.1 us for 175 chars |
+| `VectorBatch.addRoundedRectStyled` | Per-frame (dynamic) or once (static) | ~1.5 ns per primitive |
 | `VectorBatch.freeze` | Static UI / icons | Clone once into an immutable `VectorPicture` |
 | `Renderer.beginFrame` | Per-frame | Resets cached GL state (call before `draw` when sharing a GL context) |
 | `Renderer.draw` | Per-frame | Single draw call per batch |
@@ -151,7 +154,7 @@ The CPU vector path consumes the same packed `VectorBatch` / `VectorPicture` dat
 
 For static UI text, build the `Batch` once and call `Renderer.draw` each frame with the same `batch.slice()`. The vertex buffer is caller-owned and zero-allocation.
 
-For dynamic text (input fields, counters, chat), rebuild the `Batch` each frame. At ~0.5 us/glyph, laying out 1000 glyphs costs ~0.5 ms.
+For dynamic text (input fields, counters, chat), rebuild the `Batch` each frame. On this machine, Latin layout is roughly `0.08-0.09 us/glyph`, so 1000 glyphs stays comfortably sub-millisecond.
 
 ### Dynamic glyph loading
 
@@ -202,7 +205,7 @@ renderer.setFillRule(.even_odd);
 
 `renderer.setSubpixelOrder(.rgb)` enables LCD subpixel antialiasing. The fragment shader evaluates coverage at three sub-pixel offsets, tripling effective resolution in the subpixel axis. This applies to both glyphs and procedural vector primitives. Most visible on standard-DPI displays at small font sizes.
 
-All five orders are supported: `.none` (off), `.rgb`, `.bgr`, `.vrgb`, `.vbgr`. The demo auto-detects the system order via fontconfig and corrects for rotated monitors; the L key cycles orders at runtime.
+All five orders are supported: `.none` (off), `.rgb`, `.bgr`, `.vrgb`, `.vbgr`. The demo auto-detects the system base order via fontconfig, and the `L` key cycles orders at runtime.
 
 ```zig
 renderer.setSubpixelOrder(.rgb);   // horizontal RGB (most common)
@@ -275,7 +278,7 @@ Add snail to your `build.zig.zon`:
 },
 ```
 
-In your `build.zig`, the simplest path is to use snail's helper module. This links OpenGL and enables HarfBuzz by default, but does not pull in GLFW:
+In your `build.zig`, the simplest path is to use snail's helper module. This links OpenGL and enables HarfBuzz by default, but does not pull in the demo's Wayland/EGL deps:
 
 ```zig
 const snail_dep = b.dependency("snail", .{});
@@ -304,7 +307,7 @@ const snail_mod = b.createModule(.{
     .link_libc = true,
 });
 snail_mod.addOptions("build_options", snail_opts);
-snail_mod.linkSystemLibrary("gl", .{});
+snail_mod.linkSystemLibrary("OpenGL", .{});
 snail_mod.addImport("vulkan_shaders", vk_stub);
 root_module.addImport("snail", snail_mod);
 ```
@@ -341,6 +344,9 @@ src/
   math/                  Vec2, Mat4, QuadBezier, quadratic root solver
   render/
     gl.zig               OpenGL cImport (shared by pipeline and library consumers)
+    platform.zig         demo OpenGL platform (Wayland + EGL)
+    wayland_window.zig   demo Wayland window/input glue
+    egl_offscreen.zig    offscreen EGL context helper for benchmarks
     shaders.zig          GLSL 330 vertex + fragment shaders (Slug algorithm)
     pipeline.zig         OpenGL state management (GL 3.3/4.4)
     vulkan_pipeline.zig  Vulkan state management (optional, -Dvulkan=true)
@@ -371,31 +377,31 @@ Curves within each band are sorted by descending maximum coordinate, enabling ea
 
 ## Benchmarks
 
-`zig build bench` — internal microbenchmarks. `zig build bench-compare` — head-to-head vs FreeType.
+`zig build bench` runs internal microbenchmarks. `zig build bench-compare` compares prep/layout against FreeType. `zig build bench-headless` measures fully offscreen frame time, and `zig build bench-suite` prints the consolidated OpenGL suite including vector primitives.
 
 ### snail vs FreeType (`zig build bench-compare`)
 
-NotoSans-Regular.ttf, 95 ASCII glyphs, ReleaseFast:
+NotoSans-Regular.ttf, 95 ASCII glyphs, ReleaseFast, 500 layout iterations:
 
 | Metric | snail | FreeType |
 |--------|-------|----------|
-| Font load | 2.4 us | 32.2 us |
-| Glyph prep (1 size) | 1,893.3 us | 1,386.2 us |
-| Glyph prep (7 sizes) | **1,893.3 us** | 8,792.1 us |
-| Layout: 13-char string | **1.5 us** | 102.4 us |
-| Layout: 53-char sentence | **4.0 us** | 501.8 us |
-| Layout: 175-char paragraph | **12.7 us** | 1,794.3 us |
-| Layout: paragraph × 7 sizes | **89.4 us** | 13,135.8 us |
+| Font load | 2.5 us | 41.4 us |
+| Glyph prep (1 size) | 1,677.2 us | 1,395.3 us |
+| Glyph prep (7 sizes) | **1,677.2 us** | 8,859.6 us |
+| Layout: 13-char string | **1.2 us** | 103.3 us |
+| Layout: 53-char sentence | **3.8 us** | 522.1 us |
+| Layout: 175-char paragraph | **15.1 us** | 1,882.8 us |
+| Layout: paragraph × 7 sizes | **90.1 us** | 13,540.2 us |
 | Texture memory | 64 KB (all sizes) | 63 KB (1 size) / 525 KB (7 sizes) |
-| Re-rasterize for new size | **0** (resolution-independent) | ~1,234 us per extra size |
+| Re-rasterize for new size | **0** (resolution-independent) | ~1,244 us per extra size |
 
-Layout is still around **68–147x faster** on this machine: snail reads pre-parsed metrics; FreeType calls `FT_Load_Glyph` per character through the hinting engine.
+snail still pays more upfront than FreeType for one raster size, but that prep cost stays flat across sizes and layout remains roughly `84-150x` faster on this machine.
 
 ### End-to-end rendering (`zig build bench-headless`)
 
 **Methodology**: fully headless — no display, no window system involvement in the measured path.
 
-- **OpenGL**: hidden GLFW window (`GLFW_VISIBLE=false`) with a 1280×720 FBO. Each frame renders into the FBO, then calls `glFinish` to wait for GPU completion before timing the next frame. The window never appears on screen; GLFW is used only to obtain a GL context.
+- **OpenGL**: offscreen EGL pbuffer + 1280×720 FBO. Each frame renders into the FBO, then calls `glFinish` to wait for GPU completion before timing the next frame.
 - **Vulkan**: no window, no surface, no swapchain. Renders into a `VkImage` (`VK_FORMAT_R8G8B8A8_UNORM`) allocated in device memory. `vkQueueWaitIdle` after each submit ensures full CPU+GPU frame time is measured with no pipelining. This is a conservative lower bound — real applications pipeline CPU and GPU work across frames.
 
 Both backends render 2000 frames per scenario at 1280×720, ReleaseFast. Frame time = wall time / 2000.
@@ -407,36 +413,31 @@ Both backends render 2000 frames per scenario at 1280×720, ReleaseFast. Frame t
 
 | Scenario | Glyphs | Static FPS | Static frame | Dynamic FPS | Dynamic frame |
 |----------|--------|-----------|-------------|------------|--------------|
-| Game HUD (2 lines) | 45 | 39,692 | 25.2 us | 42,443 | 23.6 us |
-| Multi-size (6 sizes) | 270 | 26,464 | 37.8 us | 25,641 | 39.0 us |
-| Body text (6 paragraphs) | 978 | 15,104 | 66.2 us | 10,810 | 92.5 us |
-| Torture (fill screen) | 4,075 | 4,992 | 200.3 us | 2,698 | 370.6 us |
-| Arabic (12 lines) | 264 | 42,296 | 23.6 us | 21,379 | 46.8 us |
-| Devanagari (12 lines) | 120 | 53,980 | 18.5 us | 19,277 | 51.9 us |
-| Game UI (3 fonts) | 57 | 44,798 | 22.3 us | 42,422 | 23.6 us |
-| Chat (6 msgs, 4 fonts) | 106 | 41,106 | 24.3 us | 37,798 | 26.5 us |
-| Multi-font torture (24 lines) | 522 | 22,928 | 43.6 us | 11,460 | 87.3 us |
+| Game HUD (2 lines) | 45 | 26,079 | 38.3 us | 28,149 | 35.5 us |
+| Multi-size (6 sizes) | 270 | 17,674 | 56.6 us | 16,556 | 60.4 us |
+| Body text (6 paragraphs) | 978 | 9,858 | 101.4 us | 7,147 | 139.9 us |
+| Torture (fill screen) | 4,075 | 3,167 | 315.7 us | 2,100 | 476.1 us |
+| Arabic (12 lines) | 264 | 28,173 | 35.5 us | 14,136 | 70.7 us |
+| Devanagari (12 lines) | 120 | 37,301 | 26.8 us | 12,870 | 77.7 us |
+| Game UI (3 fonts) | 57 | 29,155 | 34.3 us | 26,466 | 37.8 us |
+| Chat (6 msgs, 4 fonts) | 106 | 24,818 | 40.3 us | 26,943 | 37.1 us |
+| Multi-font torture (24 lines) | 522 | 14,941 | 66.9 us | 8,166 | 122.5 us |
 
 #### Vulkan (offscreen, per-frame sync)
 
 | Scenario | Glyphs | Static FPS | Static frame | Dynamic FPS | Dynamic frame |
 |----------|--------|-----------|-------------|------------|--------------|
-| Game HUD (2 lines) | 45 | 21,609 | 46.3 us | 21,909 | 45.6 us |
-| Multi-size (6 sizes) | 270 | 15,560 | 64.3 us | 15,222 | 65.7 us |
-| Body text (6 paragraphs) | 978 | 9,438 | 106.0 us | 6,627 | 150.9 us |
-| Torture (fill screen) | 4,075 | 6,513 | 153.5 us | 1,957 | 511.1 us |
-| Arabic (12 lines) | 228 | 16,953 | 59.0 us | 15,820 | 63.2 us |
-| Devanagari (12 lines) | 132 | 19,005 | 52.6 us | 19,255 | 51.9 us |
-| Game UI (3 fonts) | 54 | 20,925 | 47.8 us | 18,013 | 55.5 us |
-| Chat (6 msgs, 4 fonts) | 104 | 19,581 | 51.1 us | 15,601 | 64.1 us |
-| Multi-font torture (24 lines) | 510 | 12,729 | 78.6 us | 7,428 | 134.6 us |
+| Game HUD (2 lines) | 45 | 16,338 | 61.2 us | 15,911 | 62.9 us |
+| Multi-size (6 sizes) | 270 | 14,999 | 66.7 us | 10,919 | 91.6 us |
+| Body text (6 paragraphs) | 978 | 12,857 | 77.8 us | 5,177 | 193.2 us |
+| Torture (fill screen) | 4,075 | 6,669 | 149.9 us | 1,689 | 592.1 us |
+| Arabic (12 lines) | 264 | 16,559 | 60.4 us | 8,134 | 122.9 us |
+| Devanagari (12 lines) | 120 | 15,688 | 63.7 us | 7,131 | 140.2 us |
+| Game UI (3 fonts) | 57 | 15,487 | 64.6 us | 13,454 | 74.3 us |
+| Chat (6 msgs, 4 fonts) | 106 | 16,697 | 59.9 us | 10,471 | 95.5 us |
+| Multi-font torture (24 lines) | 522 | 15,465 | 64.7 us | 4,975 | 201.0 us |
 
-#### Vector primitives (OpenGL)
-
-| Scenario | Shapes | Static FPS | Static frame | Dynamic FPS | Dynamic frame |
-|----------|--------|-----------|-------------|------------|--------------|
-| Primitive showcase | 10 | 432,942 | 2.3 us | 366,279 | 2.7 us |
-| Primitive stress | 587 | 38,746 | 25.8 us | 29,683 | 33.7 us |
+`zig build bench-suite` currently reports about `77 us` for a 10-shape OpenGL vector showcase and `224 us` for a 587-shape stress scene.
 
 ### Other GPU font renderers
 
