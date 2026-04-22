@@ -51,11 +51,64 @@ fn snapRect(rect: snail.VectorRect) snail.VectorRect {
     };
 }
 
+fn matScale(x: f32, y: f32, z: f32) snail.Mat4 {
+    var m = snail.Mat4.identity;
+    m.data[0] = x;
+    m.data[5] = y;
+    m.data[10] = z;
+    return m;
+}
+
+fn matRotateX(angle_rad: f32) snail.Mat4 {
+    const cos = @cos(angle_rad);
+    const sin = @sin(angle_rad);
+    var m = snail.Mat4.identity;
+    m.data[5] = cos;
+    m.data[6] = sin;
+    m.data[9] = -sin;
+    m.data[10] = cos;
+    return m;
+}
+
+fn matRotateY(angle_rad: f32) snail.Mat4 {
+    const cos = @cos(angle_rad);
+    const sin = @sin(angle_rad);
+    var m = snail.Mat4.identity;
+    m.data[0] = cos;
+    m.data[2] = -sin;
+    m.data[8] = sin;
+    m.data[10] = cos;
+    return m;
+}
+
+fn matPixelPerspective(depth: f32) snail.Mat4 {
+    var m = snail.Mat4.identity;
+    m.data[11] = -1.0 / depth;
+    return m;
+}
+
+fn centeredRect(w: f32, h: f32, center_y: f32) snail.VectorRect {
+    return .{
+        .x = -w * 0.5,
+        .y = center_y - h * 0.5,
+        .w = w,
+        .h = h,
+    };
+}
+
+fn measureStringAdvance(view: *const snail.AtlasView, font: *const snail.Font, text: []const u8, font_size: f32) f32 {
+    var probe_buf: [64 * snail.FLOATS_PER_GLYPH]f32 = undefined;
+    var probe = snail.Batch.init(&probe_buf);
+    return probe.addString(view, font, text, 0, 0, font_size, .{ 1, 1, 1, 1 });
+}
+
 const DemoLayout = struct {
     left_panel: snail.VectorRect,
     right_panel: snail.VectorRect,
     accent_pill: snail.VectorRect,
     accent_rule: snail.VectorRect,
+    pulse_panel: snail.VectorRect,
+    tumble_panel: snail.VectorRect,
     orb_outer: snail.VectorRect,
     orb_inner: snail.VectorRect,
     footer_panel: snail.VectorRect,
@@ -66,7 +119,15 @@ const DemoLayout = struct {
     left_text_max_w: f32,
 };
 
-fn buildDemoLayout(w: f32, h: f32, title_advance: f32) DemoLayout {
+const DemoTextMetrics = struct {
+    title_advance: f32,
+    pulse_title_advance: f32,
+    pulse_caption_advance: f32,
+    tumble_title_advance: f32,
+    tumble_caption_advance: f32,
+};
+
+fn buildDemoLayout(w: f32, h: f32, metrics: DemoTextMetrics) DemoLayout {
     const panel_margin = 18.0;
     const panel_gap = 16.0;
     const panel_top = 18.0;
@@ -108,8 +169,22 @@ fn buildDemoLayout(w: f32, h: f32, title_advance: f32) DemoLayout {
     const title_baseline_top = 70.0;
     const pill_y = title_baseline_top + 10.0;
     const pill_x = left_text_x + 6.0;
-    const accent_width = std.math.clamp(title_advance + 34.0, 144.0, left_panel.w * 0.42);
-    const rule_width = std.math.clamp(title_advance + 128.0, 232.0, left_panel.w - 36.0);
+    const accent_width = std.math.clamp(metrics.title_advance + 34.0, 144.0, left_panel.w * 0.42);
+    const rule_width = std.math.clamp(metrics.title_advance + 128.0, 232.0, left_panel.w - 36.0);
+    const pulse_panel_h = std.math.clamp(left_panel.h * 0.22, 128.0, 156.0);
+    const tumble_panel_h = std.math.clamp(right_panel.h * 0.26, 148.0, 176.0);
+    const pulse_panel = snapRect(.{
+        .x = left_panel.x + 24,
+        .y = left_panel.y + left_panel.h - pulse_panel_h - 30,
+        .w = left_panel.w - 48,
+        .h = pulse_panel_h,
+    });
+    const tumble_panel = snapRect(.{
+        .x = right_panel.x + 24,
+        .y = footer_panel.y - tumble_panel_h - 14,
+        .w = right_panel.w - 48,
+        .h = tumble_panel_h,
+    });
 
     return .{
         .left_panel = left_panel,
@@ -126,6 +201,8 @@ fn buildDemoLayout(w: f32, h: f32, title_advance: f32) DemoLayout {
             .w = rule_width,
             .h = 10,
         }),
+        .pulse_panel = pulse_panel,
+        .tumble_panel = tumble_panel,
         .orb_outer = orb_outer,
         .orb_inner = orb_inner,
         .footer_panel = footer_panel,
@@ -150,6 +227,8 @@ fn buildDemoLayout(w: f32, h: f32, title_advance: f32) DemoLayout {
 fn buildPrimitiveShowcase(batch: *snail.VectorBatch, layout: DemoLayout) void {
     addRoundedRect(batch, layout.left_panel, .{ 0.08, 0.09, 0.11, 0.88 }, .{ 0.22, 0.24, 0.28, 1 }, 1.5, 24);
     addRoundedRect(batch, layout.right_panel, .{ 0.07, 0.08, 0.1, 0.82 }, .{ 0.18, 0.2, 0.24, 1 }, 1.5, 24);
+    addRoundedRect(batch, layout.pulse_panel, .{ 0.07, 0.09, 0.12, 0.9 }, .{ 0.2, 0.24, 0.31, 0.9 }, 1.25, 18);
+    addRoundedRect(batch, layout.tumble_panel, .{ 0.07, 0.09, 0.12, 0.9 }, .{ 0.2, 0.24, 0.31, 0.9 }, 1.25, 18);
 
     _ = batch.addEllipse(
         layout.orb_outer,
@@ -170,6 +249,55 @@ fn buildPrimitiveShowcase(batch: *snail.VectorBatch, layout: DemoLayout) void {
     addRoundedRect(batch, layout.footer_panel, .{ 0.1, 0.12, 0.15, 0.9 }, .{ 0.3, 0.33, 0.4, 1 }, 1.5, 20);
     addRoundedRect(batch, layout.footer_bar_primary, .{ 0.28, 0.72, 0.92, 0.18 }, .{ 0.28, 0.72, 0.92, 0.85 }, 1, 9);
     addRoundedRect(batch, layout.footer_bar_secondary, .{ 0.96, 0.72, 0.28, 0.16 }, .{ 0.96, 0.72, 0.28, 0.82 }, 1, 9);
+}
+
+fn buildPulseAnimatedVectors(batch: *snail.VectorBatch, metrics: DemoTextMetrics) void {
+    const chip_w = snapPx(@max(metrics.pulse_title_advance + 72.0, 210.0));
+    const rule_w = snapPx(@max(metrics.pulse_caption_advance + 88.0, 250.0));
+    const chip = centeredRect(chip_w, 54, -4);
+    const rule = centeredRect(rule_w, 10, 42);
+    const accent = centeredRect(18, 18, -2);
+    addRoundedRect(batch, chip, .{ 0.2, 0.48, 0.86, 0.2 }, .{ 0.34, 0.7, 0.96, 0.9 }, 1.5, 16);
+    addRoundedRect(batch, rule, .{ 0.86, 0.9, 0.96, 0.08 }, .{ 0.86, 0.9, 0.96, 0.3 }, 1, 5);
+    _ = batch.addEllipse(
+        .{
+            .x = chip.x - 28,
+            .y = accent.y,
+            .w = accent.w,
+            .h = accent.h,
+        },
+        .{ 0.96, 0.74, 0.28, 0.18 },
+        .{ 0.96, 0.74, 0.28, 0.9 },
+        1.25,
+    );
+}
+
+fn buildTumbleAnimatedVectors(batch: *snail.VectorBatch, metrics: DemoTextMetrics) void {
+    const halo_w = snapPx(@max(metrics.tumble_caption_advance + 96.0, 290.0));
+    const plaque_w = snapPx(@max(metrics.tumble_title_advance + 84.0, 232.0));
+    _ = batch.addEllipse(
+        centeredRect(halo_w, 54, -46),
+        .{ 0.28, 0.72, 0.92, 0.14 },
+        .{ 0.28, 0.72, 0.92, 0.7 },
+        1.5,
+    );
+    addRoundedRect(batch, centeredRect(plaque_w, 58, 18), .{ 0.16, 0.42, 0.78, 0.22 }, .{ 0.38, 0.76, 0.98, 0.92 }, 1.5, 16);
+    _ = batch.addEllipse(
+        .{ .x = plaque_w * 0.5 - 18, .y = 28, .w = 22, .h = 22 },
+        .{ 0.96, 0.74, 0.28, 0.18 },
+        .{ 0.96, 0.74, 0.28, 0.88 },
+        1.25,
+    );
+}
+
+fn buildPulseAnimatedText(batch: *snail.Batch, view: *const snail.AtlasView, font: *const snail.Font, metrics: DemoTextMetrics) void {
+    _ = batch.addString(view, font, "scale pulse", -metrics.pulse_title_advance * 0.5, 8, 28, .{ 1, 1, 1, 1 });
+    _ = batch.addString(view, font, "shrinks and grows", -metrics.pulse_caption_advance * 0.5, 80, 17, .{ 0.72, 0.83, 0.92, 1 });
+}
+
+fn buildTumbleAnimatedText(batch: *snail.Batch, view: *const snail.AtlasView, font: *const snail.Font, metrics: DemoTextMetrics) void {
+    _ = batch.addString(view, font, "free text off the shape", -metrics.tumble_caption_advance * 0.5, -24, 20, .{ 0.72, 0.86, 0.95, 1 });
+    _ = batch.addString(view, font, "vector anchor", -metrics.tumble_title_advance * 0.5, 28, 28, .{ 1, 1, 1, 1 });
 }
 
 pub fn main() !void {
@@ -243,10 +371,12 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
     const thai_view = &atlas_views[4];
     const emoji_view = &atlas_views[5];
 
-    const title_advance = blk: {
-        var probe_buf: [8 * snail.FLOATS_PER_GLYPH]f32 = undefined;
-        var probe = snail.Batch.init(&probe_buf);
-        break :blk probe.addString(atlas_view, &font, "snail", 0, 0, 64, .{ 1, 1, 1, 1 });
+    const metrics: DemoTextMetrics = .{
+        .title_advance = measureStringAdvance(atlas_view, &font, "snail", 64),
+        .pulse_title_advance = measureStringAdvance(atlas_view, &font, "scale pulse", 28),
+        .pulse_caption_advance = measureStringAdvance(atlas_view, &font, "shrinks and grows", 17),
+        .tumble_title_advance = measureStringAdvance(atlas_view, &font, "vector anchor", 28),
+        .tumble_caption_advance = measureStringAdvance(atlas_view, &font, "free text off the shape", 20),
     };
 
     // Vertex buffer: enough for ~10000 glyphs
@@ -262,6 +392,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
     var pan_y: f32 = 0;
     var rotate = false;
     var stress_test = false;
+    var anim_time: f32 = 0;
     var last_time = platform.getTime();
     var frame_count: u32 = 0;
     var fps_timer: f64 = 0;
@@ -281,6 +412,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         const now = platform.getTime();
         const dt: f32 = @floatCast(now - last_time);
         last_time = now;
+        anim_time += dt;
 
         fps_timer += dt;
         fps_frames += 1;
@@ -337,7 +469,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         const w: f32 = @floatFromInt(size[0]);
         const h: f32 = @floatFromInt(size[1]);
         if (w < 1 or h < 1) continue;
-        const layout = buildDemoLayout(w, h, title_advance);
+        const layout = buildDemoLayout(w, h, metrics);
 
         // Begin frame (Vulkan: acquire swapchain image + begin render pass)
         if (use_vulkan) {
@@ -367,6 +499,29 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         const vector_scene_transform = snail.Mat4.multiply(snail.Mat4.translate(pan_x, pan_y, 0), scene_core);
         const mvp = snail.Mat4.multiply(projection, text_scene_transform);
         const vector_mvp = snail.Mat4.multiply(vector_projection, vector_scene_transform);
+        const pulse_center_x = layout.pulse_panel.x + layout.pulse_panel.w * 0.5;
+        const pulse_center_y = layout.pulse_panel.y + layout.pulse_panel.h * 0.5;
+        const pulse_scale = 1.0 + 0.18 * @sin(anim_time * 1.8);
+        const pulse_local = snail.Mat4.multiply(
+            snail.Mat4.translate(pulse_center_x, pulse_center_y, 0),
+            matScale(pulse_scale, pulse_scale, 1.0),
+        );
+        const pulse_mvp = snail.Mat4.multiply(vector_projection, snail.Mat4.multiply(vector_scene_transform, pulse_local));
+        const tumble_center_x = layout.tumble_panel.x + layout.tumble_panel.w * 0.5;
+        const tumble_center_y = layout.tumble_panel.y + layout.tumble_panel.h * 0.5;
+        const tumble_depth = @max(layout.tumble_panel.w * 1.85, 420.0);
+        const tumble_rotation = snail.Mat4.multiply(
+            snail.Mat4.rotateZ(anim_time * 0.29),
+            snail.Mat4.multiply(
+                matRotateY(anim_time * 0.61),
+                matRotateX(anim_time * 0.47),
+            ),
+        );
+        const tumble_local = snail.Mat4.multiply(
+            snail.Mat4.translate(tumble_center_x, tumble_center_y, 0),
+            snail.Mat4.multiply(matPixelPerspective(tumble_depth), tumble_rotation),
+        );
+        const tumble_mvp = snail.Mat4.multiply(vector_projection, snail.Mat4.multiply(vector_scene_transform, tumble_local));
 
         const white = [4]f32{ 1, 1, 1, 1 };
         const gray = [4]f32{ 0.6, 0.6, 0.65, 1 };
@@ -465,7 +620,35 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         if (batch.glyphCount() > 0) {
             renderer.draw(batch.slice(), mvp, w, h);
         }
-        const total_glyphs = batch.glyphCount();
+        var total_glyphs = batch.glyphCount();
+
+        if (!stress_test) {
+            var pulse_shapes = snail.VectorBatch.init(shape_buf);
+            buildPulseAnimatedVectors(&pulse_shapes, metrics);
+            if (pulse_shapes.shapeCount() > 0) {
+                renderer.drawVectorTransformed(pulse_shapes.slice(), pulse_mvp, w, h);
+            }
+
+            var pulse_batch = snail.Batch.init(vbuf);
+            buildPulseAnimatedText(&pulse_batch, atlas_view, &font, metrics);
+            if (pulse_batch.glyphCount() > 0) {
+                renderer.draw(pulse_batch.slice(), pulse_mvp, w, h);
+            }
+            total_glyphs += pulse_batch.glyphCount();
+
+            var tumble_shapes = snail.VectorBatch.init(shape_buf);
+            buildTumbleAnimatedVectors(&tumble_shapes, metrics);
+            if (tumble_shapes.shapeCount() > 0) {
+                renderer.drawVectorTransformed(tumble_shapes.slice(), tumble_mvp, w, h);
+            }
+
+            var tumble_batch = snail.Batch.init(vbuf);
+            buildTumbleAnimatedText(&tumble_batch, atlas_view, &font, metrics);
+            if (tumble_batch.glyphCount() > 0) {
+                renderer.draw(tumble_batch.slice(), tumble_mvp, w, h);
+            }
+            total_glyphs += tumble_batch.glyphCount();
+        }
 
         // HUD (separate draw for different MVP)
         {
