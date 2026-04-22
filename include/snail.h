@@ -82,6 +82,12 @@ typedef struct {
     SnailBBox bbox;
 } SnailGlyphMetrics;
 
+typedef struct {
+    int16_t ascent;
+    int16_t descent;
+    int16_t line_gap;
+} SnailLineMetrics;
+
 /* ── Font (thread-safe after init) ── */
 
 int      snail_font_init(const uint8_t *data, size_t len, SnailFont **out);
@@ -89,6 +95,7 @@ void     snail_font_deinit(SnailFont *font);
 uint16_t snail_font_units_per_em(const SnailFont *font);
 uint16_t snail_font_glyph_index(const SnailFont *font, uint32_t codepoint);
 int16_t  snail_font_get_kerning(const SnailFont *font, uint16_t left, uint16_t right);
+int      snail_font_line_metrics(const SnailFont *font, SnailLineMetrics *out);
 /* Read direct glyph metrics from font tables without building an atlas. */
 int      snail_font_glyph_metrics(const SnailFont *font, uint16_t glyph_id, SnailGlyphMetrics *out);
 int      snail_font_advance_width(const SnailFont *font, uint16_t glyph_id, int16_t *out);

@@ -62,10 +62,11 @@ const snail = @import("snail");
 var font = try snail.Font.init(ttf_bytes);
 defer font.deinit();
 
+const line_metrics = try font.lineMetrics();
 const cell_gid = try font.glyphIndex('M');
 const cell_advance = try font.advanceWidth(cell_gid);
 const cell_bbox = try font.bbox(cell_gid);
-_ = .{ cell_advance, cell_bbox };
+_ = .{ line_metrics, cell_advance, cell_bbox };
 
 // Build an immutable atlas snapshot for the glyphs you want
 var atlas = try snail.Atlas.initAscii(allocator, &font, &snail.ASCII_PRINTABLE);
@@ -85,6 +86,8 @@ _ = batch.addString(atlas_view, &font, "Hello, world!", x, y, 48.0, .{ 1, 1, 1, 
 renderer.beginFrame();
 renderer.draw(batch.slice(), mvp, viewport_w, viewport_h);
 ```
+
+`font.lineMetrics()` returns `hhea` ascent / descent / line gap in font units. Convert to pixels with the same `font_size / font.unitsPerEm()` scale you use for advances and glyph bounds.
 
 Atlas uploads now return lightweight `AtlasView` values. Existing glyph handles remain stable across `extendGlyphIds()`, `extendCodepoints()`, and `extendGlyphsForText()` because those operations return a new atlas snapshot that shares old pages. `compact()` returns a new snapshot too, but may repack handles.
 
@@ -241,6 +244,9 @@ When HarfBuzz is not compiled in, `addString` uses the built-in shaper. The `add
 
 SnailFont *font;
 snail_font_init(ttf_data, ttf_len, &font);
+
+SnailLineMetrics line_metrics;
+snail_font_line_metrics(font, &line_metrics);
 
 uint32_t codepoints[] = { 'A', 'B', 'C', /* ... */ };
 SnailAtlas *atlas;

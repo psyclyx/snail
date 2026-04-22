@@ -11,6 +11,12 @@ pub const GlyphMetrics = struct {
     bbox: BBox,
 };
 
+pub const LineMetrics = struct {
+    ascent: i16,
+    descent: i16,
+    line_gap: i16,
+};
+
 pub const Contour = struct {
     curves: []const QuadBezier,
 };
@@ -306,6 +312,15 @@ pub const Font = struct {
         try self.validateGlyphId(glyph_id);
         const metrics = try self.getHMetrics(glyph_id);
         return std.math.cast(i16, metrics.advance_width) orelse error.InvalidFont;
+    }
+
+    pub fn lineMetrics(self: *const Font) ParseError!LineMetrics {
+        if (self.hhea_offset == 0) return error.MissingRequiredTable;
+        return .{
+            .ascent = try readI16(self.data, self.hhea_offset + 4),
+            .descent = try readI16(self.data, self.hhea_offset + 6),
+            .line_gap = try readI16(self.data, self.hhea_offset + 8),
+        };
     }
 
     pub fn bbox(self: *const Font, glyph_id: u16) ParseError!BBox {
@@ -809,4 +824,14 @@ test "direct glyph metrics match parsed glyph metrics" {
     const bbox = try font.bbox(glyph_id);
     try std.testing.expectApproxEqAbs(direct.bbox.min.x, bbox.min.x, 1e-6);
     try std.testing.expectApproxEqAbs(direct.bbox.max.y, bbox.max.y, 1e-6);
+}
+
+test "line metrics expose hhea ascent descent and gap" {
+    const font_data = @import("assets").noto_sans_regular;
+    const font = try Font.init(font_data);
+    const metrics = try font.lineMetrics();
+
+    try std.testing.expect(metrics.ascent > 0);
+    try std.testing.expect(metrics.descent < 0);
+    try std.testing.expect(metrics.line_gap >= 0);
 }

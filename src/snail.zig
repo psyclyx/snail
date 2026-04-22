@@ -50,6 +50,8 @@ pub const Mat4 = vec.Mat4;
 pub const Vec2 = vec.Vec2;
 pub const BBox = bezier.BBox;
 pub const GlyphMetrics = ttf.GlyphMetrics;
+/// Font-wide line metrics from the `hhea` table, in font units.
+pub const LineMetrics = ttf.LineMetrics;
 pub const VectorTransform2D = vec.Transform2D;
 
 // Re-export vertex constants for buffer sizing
@@ -120,6 +122,11 @@ pub const Font = struct {
 
     pub fn glyphMetrics(self: *const Font, glyph_id: u16) !GlyphMetrics {
         return self.inner.glyphMetrics(glyph_id);
+    }
+
+    /// Return ascent/descent/line_gap from the font `hhea` table, in font units.
+    pub fn lineMetrics(self: *const Font) !LineMetrics {
+        return self.inner.lineMetrics();
     }
 
     pub fn advanceWidth(self: *const Font, glyph_id: u16) !i16 {
@@ -1797,4 +1804,15 @@ test "addStringWrapped forces UTF-8 breaks on codepoint boundaries" {
 
     try std.testing.expectApproxEqAbs(@as(f32, 20), height, 0.001);
     try std.testing.expectEqual(@as(usize, 2), batch.glyphCount());
+}
+
+test "Font.lineMetrics forwards parser metrics" {
+    const assets = @import("assets");
+
+    var font = try Font.init(assets.noto_sans_regular);
+    const metrics = try font.lineMetrics();
+
+    try std.testing.expect(metrics.ascent > 0);
+    try std.testing.expect(metrics.descent < 0);
+    try std.testing.expect(metrics.line_gap >= 0);
 }

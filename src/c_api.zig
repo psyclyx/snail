@@ -111,6 +111,12 @@ pub const SnailGlyphMetrics = extern struct {
     bbox: SnailBBox,
 };
 
+pub const SnailLineMetrics = extern struct {
+    ascent: i16,
+    descent: i16,
+    line_gap: i16,
+};
+
 fn wrapAtlas(atlas: snail.Atlas, allocator: std.mem.Allocator, out: *?*AtlasImpl) c_int {
     const impl = std.heap.smp_allocator.create(AtlasImpl) catch {
         var doomed = atlas;
@@ -193,6 +199,16 @@ export fn snail_font_glyph_metrics(font: *const FontImpl, glyph_id: u16, out: *S
         .advance_width = metrics.advance_width,
         .lsb = metrics.lsb,
         .bbox = wrapBBox(metrics.bbox),
+    };
+    return SNAIL_OK;
+}
+
+export fn snail_font_line_metrics(font: *const FontImpl, out: *SnailLineMetrics) c_int {
+    const metrics = font.inner.lineMetrics() catch return SNAIL_ERR_INVALID_FONT;
+    out.* = .{
+        .ascent = metrics.ascent,
+        .descent = metrics.descent,
+        .line_gap = metrics.line_gap,
     };
     return SNAIL_OK;
 }
