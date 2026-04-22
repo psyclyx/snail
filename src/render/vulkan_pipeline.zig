@@ -757,7 +757,7 @@ fn createVectorGraphicsPipeline() !vk.VkPipeline {
     const binding = vk.VkVertexInputBindingDescription{
         .binding = 0,
         .stride = stride,
-        .inputRate = vk.VK_VERTEX_INPUT_RATE_VERTEX,
+        .inputRate = vk.VK_VERTEX_INPUT_RATE_INSTANCE,
     };
 
     const attrs = [6]vk.VkVertexInputAttributeDescription{
@@ -857,9 +857,9 @@ fn createVectorGraphicsPipeline() !vk.VkPipeline {
 fn setViewportAndScissor(cmd: vk.VkCommandBuffer, viewport_w: f32, viewport_h: f32) void {
     const vp = vk.VkViewport{
         .x = 0,
-        .y = 0,
+        .y = viewport_h,
         .width = viewport_w,
-        .height = viewport_h,
+        .height = -viewport_h,
         .minDepth = 0,
         .maxDepth = 1,
     };

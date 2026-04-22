@@ -370,11 +370,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
             platform.clear(0.12, 0.12, 0.14, 1.0);
         }
 
-        // Vulkan NDC has Y pointing down; flip top/bottom to match OpenGL convention
-        const projection = if (use_vulkan)
-            snail.Mat4.ortho(0, w, h, 0, -1, 1)
-        else
-            snail.Mat4.ortho(0, w, 0, h, -1, 1);
+        const projection = snail.Mat4.ortho(0, w, 0, h, -1, 1);
         const vector_projection = snail.Mat4.ortho(0, w, h, 0, -1, 1);
         const cx = w / 2.0;
         const cy = h / 2.0;
