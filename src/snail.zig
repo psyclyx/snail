@@ -63,10 +63,12 @@ pub const VECTOR_VERTICES_PER_ROUNDED_RECT = VECTOR_VERTICES_PER_PRIMITIVE;
 pub const VECTOR_FLOATS_PER_ROUNDED_RECT = VECTOR_FLOATS_PER_PRIMITIVE;
 
 pub const VectorFillStyle = struct {
+    // Straight RGBA; the renderer premultiplies internally.
     color: [4]f32,
 };
 
 pub const VectorStrokeStyle = struct {
+    // Straight RGBA; the renderer premultiplies internally.
     color: [4]f32,
     width: f32,
 };

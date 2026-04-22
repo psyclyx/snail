@@ -287,6 +287,16 @@ vec3 blendSubpixel(vec2 cw_r, vec2 cw_g, vec2 cw_b, vec2 cw_o) {
     );
 }
 
+vec4 premultiplyColor(vec4 color, float cov) {
+    float alpha = color.a * cov;
+    return vec4(color.rgb * alpha, alpha);
+}
+
+vec4 premultiplyColorSubpixel(vec4 color, vec3 cov) {
+    vec3 alpha = vec3(color.a) * cov;
+    return vec4(color.rgb * alpha, color.a * max(max(cov.r, cov.g), cov.b));
+}
+
 vec3 evalPathCoverageSubpixel(vec2 rc, vec2 epp, vec2 ppe, int kind, vec2 origin, vec2 size, float radius) {
     if (pc.subpixel_order <= 2) {
         float sp = epp.x / 3.0;
@@ -334,18 +344,13 @@ void main() {
         float inner_cov = has_inner ? evalPathCoverage(rc, ppe, kind, inner_origin, inner_size, inner_radius) : 0.0;
         float fill_cov = (border_width > 0.0) ? (has_inner ? inner_cov : 0.0) : outer_cov;
         float border_cov = (border_width > 0.0) ? (has_inner ? max(outer_cov - inner_cov, 0.0) : outer_cov) : 0.0;
-        frag_color = v_border * border_cov + v_fill * fill_cov;
+        frag_color = premultiplyColor(v_border, border_cov) + premultiplyColor(v_fill, fill_cov);
     } else {
         vec3 outer_cov = evalPathCoverageSubpixel(rc, epp, ppe, kind, origin, size, radius);
         vec3 inner_cov = has_inner ? evalPathCoverageSubpixel(rc, epp, ppe, kind, inner_origin, inner_size, inner_radius) : vec3(0.0);
         vec3 fill_cov = (border_width > 0.0) ? (has_inner ? inner_cov : vec3(0.0)) : outer_cov;
         vec3 border_cov = (border_width > 0.0) ? (has_inner ? max(outer_cov - inner_cov, vec3(0.0)) : outer_cov) : vec3(0.0);
-        float fill_alpha = max(max(fill_cov.r, fill_cov.g), fill_cov.b);
-        float border_alpha = max(max(border_cov.r, border_cov.g), border_cov.b);
-        frag_color = vec4(
-            v_border.rgb * border_cov + v_fill.rgb * fill_cov,
-            v_border.a * border_alpha + v_fill.a * fill_alpha
-        );
+        frag_color = premultiplyColorSubpixel(v_border, border_cov) + premultiplyColorSubpixel(v_fill, fill_cov);
     }
     if (frag_color.a < 1.0 / 255.0) discard;
 }

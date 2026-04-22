@@ -127,7 +127,7 @@ soft.drawVector(shapes.slice());
 soft.drawVectorPicture(&picture);
 ```
 
-The CPU vector path consumes the same packed `VectorBatch` / `VectorPicture` data as the GPU path, including per-primitive `VectorTransform2D` transforms. It currently mirrors the pixel-space `drawVector()` convenience path, not the global-`Mat4` `drawVectorTransformed()` API.
+The CPU vector path consumes the same packed `VectorBatch` / `VectorPicture` data as the GPU path, including per-primitive `VectorTransform2D` transforms, fill rule, and subpixel order. It uses the same procedural quadratic coverage model as the GPU vector path. It still mirrors the pixel-space `drawVector()` convenience path, not the global-`Mat4` `drawVectorTransformed()` API.
 
 ### Performance model
 
@@ -177,6 +177,8 @@ if (try atlas.extendCodepoints(&new_codepoints)) |next| {
 _ = batch.addStringWrapped(atlas_view, &font, paragraph, x, y, 14.0, max_width, 20.0, color);
 ```
 
+All public color inputs are straight RGBA. snail premultiplies internally before blending on both GPU and CPU paths.
+
 ### Fill rule
 
 Supports both non-zero winding (TrueType default) and even-odd fill rules:
@@ -187,7 +189,7 @@ renderer.setFillRule(.even_odd);
 
 ### Subpixel rendering
 
-`renderer.setSubpixelOrder(.rgb)` enables LCD subpixel antialiasing. The fragment shader evaluates coverage at three sub-pixel offsets, tripling effective resolution in the subpixel axis. This applies to both glyphs and analytic vector primitives. Most visible on standard-DPI displays at small font sizes.
+`renderer.setSubpixelOrder(.rgb)` enables LCD subpixel antialiasing. The fragment shader evaluates coverage at three sub-pixel offsets, tripling effective resolution in the subpixel axis. This applies to both glyphs and procedural vector primitives. Most visible on standard-DPI displays at small font sizes.
 
 All five orders are supported: `.none` (off), `.rgb`, `.bgr`, `.vrgb`, `.vbgr`. The demo auto-detects the system order via fontconfig and corrects for rotated monitors; the L key cycles orders at runtime.
 

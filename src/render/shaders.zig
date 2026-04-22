@@ -177,6 +177,11 @@ pub const fragment_shader =
     \\    return (c <= 0.0031308) ? c * 12.92 : 1.055 * pow(c, 1.0 / 2.4) - 0.055;
     \\}
     \\
+    \\vec4 premultiplyColor(vec4 color, float cov) {
+    \\    float alpha = color.a * cov;
+    \\    return vec4(color.rgb * alpha, alpha);
+    \\}
+    \\
     \\void main() {
     \\    vec2 rc = v_texcoord;
     \\    vec2 epp = fwidth(rc);
@@ -210,7 +215,7 @@ pub const fragment_shader =
     \\            float cov = evalGlyphCoverage(rc, epp, ppe, lGLoc,
     \\                                          ivec2(bandMaxH, bandMaxV), band, texLayer);
     \\
-    \\            vec4 premul = color * cov;
+    \\            vec4 premul = premultiplyColor(color, cov);
     \\            result = premul + result * (1.0 - premul.a);
     \\        }
     \\        if (result.a < 1.0/255.0) discard;
@@ -221,7 +226,7 @@ pub const fragment_shader =
     \\                                      ivec2(v_glyph.z, v_glyph.w & 0xFF),
     \\                                      v_banding, atlas_layer);
     \\        if (cov < 1.0/255.0) discard;
-    \\        frag_color = v_color * cov;
+    \\        frag_color = premultiplyColor(v_color, cov);
     \\    }
     \\}
 ;
@@ -343,6 +348,16 @@ pub const fragment_shader_subpixel =
     \\    return (c <= 0.0031308) ? c * 12.92 : 1.055 * pow(c, 1.0 / 2.4) - 0.055;
     \\}
     \\
+    \\vec4 premultiplyColor(vec4 color, float cov) {
+    \\    float alpha = color.a * cov;
+    \\    return vec4(color.rgb * alpha, alpha);
+    \\}
+    \\
+    \\vec4 premultiplyColorSubpixel(vec4 color, vec3 cov) {
+    \\    vec3 alpha = vec3(color.a) * cov;
+    \\    return vec4(color.rgb * alpha, color.a * max(max(cov.r, cov.g), cov.b));
+    \\}
+    \\
     \\// Evaluate horizontal coverage (against vertical glyph edges) at xOffset from rc.
     \\// Returns vec2(xcov, xwgt).
     \\vec2 evalHorizCoverage(vec2 rc, float xOffset, vec2 ppe,
@@ -446,7 +461,7 @@ pub const fragment_shader_subpixel =
     \\            int texLayer = int(v_banding.w);
     \\            float cov = evalGlyphCoverage(rc, epp, ppe, lGLoc,
     \\                                          ivec2(bandMaxH, bandMaxV), band, texLayer);
-    \\            vec4 premul = color * cov;
+    \\            vec4 premul = premultiplyColor(color, cov);
     \\            result = premul + result * (1.0 - premul.a);
     \\        }
     \\        if (result.a < 1.0/255.0) discard;
@@ -489,7 +504,6 @@ pub const fragment_shader_subpixel =
     \\    }
     \\
     \\    if (max(max(cov.r, cov.g), cov.b) < 1.0/255.0) discard;
-    \\    frag_color = vec4(v_color.rgb * cov, max(max(cov.r, cov.g), cov.b) * v_color.a);
+    \\    frag_color = premultiplyColorSubpixel(v_color, cov);
     \\}
 ;
-

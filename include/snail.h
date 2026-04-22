@@ -62,10 +62,12 @@ typedef struct {
 } SnailVectorTransform2D;
 
 typedef struct {
+    /* Straight RGBA; snail premultiplies internally before blending. */
     float color[4];
 } SnailVectorFillStyle;
 
 typedef struct {
+    /* Straight RGBA; snail premultiplies internally before blending. */
     float color[4];
     float width;
 } SnailVectorStrokeStyle;
@@ -104,6 +106,15 @@ void snail_atlas_deinit(SnailAtlas *atlas);
 int  snail_renderer_init(void);
 void snail_renderer_deinit(void);
 void snail_renderer_upload_atlas(const SnailAtlas *atlas);
+
+#define SNAIL_SUBPIXEL_NONE 0
+#define SNAIL_SUBPIXEL_RGB  1
+#define SNAIL_SUBPIXEL_BGR  2
+#define SNAIL_SUBPIXEL_VRGB 3
+#define SNAIL_SUBPIXEL_VBGR 4
+/* Ordered LCD subpixel AA: see SNAIL_SUBPIXEL_* constants above. */
+void snail_renderer_set_subpixel_order(int order);
+/* Legacy convenience wrapper: true = RGB, false = off. */
 void snail_renderer_set_subpixel(bool enabled);
 
 /* Fill rule: 0 = non-zero winding (TrueType default), 1 = even-odd */

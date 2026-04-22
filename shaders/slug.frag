@@ -117,6 +117,11 @@ float srgbGamma(float c) {
     return (c <= 0.0031308) ? c * 12.92 : 1.055 * pow(c, 1.0 / 2.4) - 0.055;
 }
 
+vec4 premultiplyColor(vec4 color, float cov) {
+    float alpha = color.a * cov;
+    return vec4(color.rgb * alpha, alpha);
+}
+
 void main() {
     vec2 rc = v_texcoord;
     vec2 epp = fwidth(rc);
@@ -143,7 +148,7 @@ void main() {
             float cov = evalGlyphCoverage(rc, epp, ppe, lGLoc,
                                           ivec2(bandMaxH, bandMaxV), band, texLayer);
             cov = srgbGamma(cov);
-            vec4 premul = color * cov;
+            vec4 premul = premultiplyColor(color, cov);
             result = premul + result * (1.0 - premul.a);
         }
         if (result.a < 1.0/255.0) discard;
@@ -154,6 +159,6 @@ void main() {
                                       v_banding, atlas_layer);
         cov = srgbGamma(cov);
         if (cov < 1.0/255.0) discard;
-        frag_color = v_color * cov;
+        frag_color = premultiplyColor(v_color, cov);
     }
 }

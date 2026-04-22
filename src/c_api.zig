@@ -245,9 +245,12 @@ export fn snail_renderer_upload_atlas(atlas: *AtlasImpl) void {
     pipeline.buildTextureArrays(&arr);
 }
 
+export fn snail_renderer_set_subpixel_order(order: c_int) void {
+    pipeline.subpixel_order = @enumFromInt(order);
+}
+
 export fn snail_renderer_set_subpixel(enabled: bool) void {
-    const order = if (enabled) snail.SubpixelOrder.rgb else snail.SubpixelOrder.none;
-    pipeline.subpixel_order = order;
+    snail_renderer_set_subpixel_order(if (enabled) @intFromEnum(snail.SubpixelOrder.rgb) else @intFromEnum(snail.SubpixelOrder.none));
 }
 
 export fn snail_renderer_set_fill_rule(rule: c_int) void {
