@@ -59,9 +59,10 @@ var desc_pool: vk.VkDescriptorPool = null;
 var desc_set: vk.VkDescriptorSet = null;
 
 // Vertex ring buffer — must have enough segments so that in-flight frames
-// never share a segment.  With MAX_FRAMES_IN_FLIGHT=2 and up to 2 draw
-// calls per frame (scene + HUD), we need at least 4 segments.
-const RING_SEGMENTS = 4;
+// never share a segment. The demo can issue 3 draws per frame through this
+// buffer (vector chrome + scene text + HUD text), and we keep 2 frames in
+// flight, so reserve at least 6 segments. Use 8 for headroom.
+const RING_SEGMENTS = 8;
 const RING_TOTAL_BYTES = 16 * 1024 * 1024; // 16 MB
 const RING_SEGMENT_BYTES = RING_TOTAL_BYTES / RING_SEGMENTS;
 const BYTES_PER_GLYPH = vertex.FLOATS_PER_VERTEX * vertex.VERTICES_PER_GLYPH * @sizeOf(f32);
@@ -633,7 +634,7 @@ fn createGraphicsPipeline(frag_code: []const u8) !vk.VkPipeline {
     const binding = vk.VkVertexInputBindingDescription{
         .binding = 0,
         .stride = stride,
-        .inputRate = vk.VK_VERTEX_INPUT_RATE_INSTANCE,
+        .inputRate = vk.VK_VERTEX_INPUT_RATE_VERTEX,
     };
 
     const attrs = [5]vk.VkVertexInputAttributeDescription{
