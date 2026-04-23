@@ -101,16 +101,6 @@ pub fn build(b: *std.Build) void {
         compile_frag_sp.addArg("-o");
         const frag_sp_spv = compile_frag_sp.addOutputFileArg("slug_subpixel.frag.spv");
 
-        const compile_vector_vert = b.addSystemCommand(&.{ "glslc", "-fshader-stage=vert" });
-        compile_vector_vert.addFileArg(b.path("shaders/vector.vert"));
-        compile_vector_vert.addArg("-o");
-        const vector_vert_spv = compile_vector_vert.addOutputFileArg("vector.vert.spv");
-
-        const compile_vector_frag = b.addSystemCommand(&.{ "glslc", "-fshader-stage=frag" });
-        compile_vector_frag.addFileArg(b.path("shaders/vector.frag"));
-        compile_vector_frag.addArg("-o");
-        const vector_frag_spv = compile_vector_frag.addOutputFileArg("vector.frag.spv");
-
         const compile_sprite_vert = b.addSystemCommand(&.{ "glslc", "-fshader-stage=vert" });
         compile_sprite_vert.addFileArg(b.path("shaders/sprite.vert"));
         compile_sprite_vert.addArg("-o");
@@ -127,8 +117,6 @@ pub fn build(b: *std.Build) void {
         mod.addAnonymousImport("slug.vert.spv", .{ .root_source_file = vert_spv });
         mod.addAnonymousImport("slug.frag.spv", .{ .root_source_file = frag_spv });
         mod.addAnonymousImport("slug_subpixel.frag.spv", .{ .root_source_file = frag_sp_spv });
-        mod.addAnonymousImport("vector.vert.spv", .{ .root_source_file = vector_vert_spv });
-        mod.addAnonymousImport("vector.frag.spv", .{ .root_source_file = vector_frag_spv });
         mod.addAnonymousImport("sprite.vert.spv", .{ .root_source_file = sprite_vert_spv });
         mod.addAnonymousImport("sprite.frag.spv", .{ .root_source_file = sprite_frag_spv });
         break :blk mod;

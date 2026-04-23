@@ -100,19 +100,6 @@ pub const CpuRenderer = struct {
         }
     }
 
-    /// Draw packed vector primitives in top-left pixel space.
-    /// Supports the same per-primitive transforms as the GPU vector path.
-    pub fn drawVector(self: *CpuRenderer, vertices: []const f32) void {
-        var i: usize = 0;
-        while (i + snail.VECTOR_FLOATS_PER_PRIMITIVE <= vertices.len) : (i += snail.VECTOR_FLOATS_PER_PRIMITIVE) {
-            self.drawPackedVectorPrimitive(vertices[i .. i + snail.VECTOR_FLOATS_PER_PRIMITIVE]);
-        }
-    }
-
-    pub fn drawVectorPicture(self: *CpuRenderer, picture: *const snail.VectorPicture) void {
-        self.drawVector(picture.slice());
-    }
-
     pub fn drawPathPicture(self: *CpuRenderer, picture: *const snail.PathPicture) void {
         self.drawPathPictureTransformed(picture, .identity);
     }
@@ -315,37 +302,6 @@ pub const CpuRenderer = struct {
         }
     }
 
-    fn drawPackedVectorPrimitive(self: *CpuRenderer, packed_primitive: []const f32) void {
-        const primitive = PackedVectorPrimitive.fromSlice(packed_primitive) orelse return;
-        if (primitive.rect.w <= 0 or primitive.rect.h <= 0) return;
-
-        const inverse = inverseTransform(primitive.transform) orelse return;
-        const bounds = primitive.pixelBounds();
-        const px0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.x))), 0);
-        const py0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.y))), 0);
-        const px1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.x))), @as(i32, @intCast(self.width)));
-        const py1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.y))), @as(i32, @intCast(self.height)));
-        if (px0 >= px1 or py0 >= py1) return;
-
-        const epp = primitive.edgePixelsPerPixel(inverse);
-        const ppe = Vec2.new(1.0 / epp.x, 1.0 / epp.y);
-        var row: u32 = @intCast(py0);
-        while (row < @as(u32, @intCast(py1))) : (row += 1) {
-            var col: u32 = @intCast(px0);
-            while (col < @as(u32, @intCast(px1))) : (col += 1) {
-                const world = Vec2.new(@as(f32, @floatFromInt(col)) + 0.5, @as(f32, @floatFromInt(row)) + 0.5);
-                const local_world = inverse.applyPoint(world);
-                const local_px = Vec2.new(local_world.x - primitive.rect.x, local_world.y - primitive.rect.y);
-                const src = if (self.subpixel_order == .none)
-                    primitive.sample(local_px, ppe, self.fill_rule)
-                else
-                    primitive.sampleSubpixel(local_px, epp, ppe, self.fill_rule, self.subpixel_order);
-                if (src[3] < 1.0 / 255.0) continue;
-                self.blendPremultipliedPixel(row, col, src);
-            }
-        }
-    }
-
     fn blendPremultipliedPixel(self: *CpuRenderer, row: u32, col: u32, src: [4]f32) void {
         const off = row * self.stride + col * 4;
         const dst_r = srgbToLinear(@as(f32, @floatFromInt(self.pixels[off + 0])) / 255.0);
@@ -363,176 +319,6 @@ pub const CpuRenderer = struct {
         self.pixels[off + 1] = @intFromFloat(@min(@max(linearToSrgb(out_g) * 255.0, 0.0), 255.0));
         self.pixels[off + 2] = @intFromFloat(@min(@max(linearToSrgb(out_b) * 255.0, 0.0), 255.0));
         self.pixels[off + 3] = @intFromFloat(@min(@max(out_a * 255.0, 0.0), 255.0));
-    }
-};
-
-const PackedVectorPrimitive = struct {
-    rect: snail.VectorRect,
-    fill: [4]f32,
-    border: [4]f32,
-    kind: snail.VectorPrimitiveKind,
-    corner_radius: f32,
-    border_width: f32,
-    expand: f32,
-    transform: Transform2D,
-
-    fn fromSlice(packed_primitive: []const f32) ?PackedVectorPrimitive {
-        if (packed_primitive.len < snail.VECTOR_FLOATS_PER_PRIMITIVE) return null;
-        const kind_raw = @as(i32, @intFromFloat(@round(packed_primitive[12])));
-        const kind = switch (kind_raw) {
-            0 => snail.VectorPrimitiveKind.rect,
-            1 => snail.VectorPrimitiveKind.rounded_rect,
-            2 => snail.VectorPrimitiveKind.ellipse,
-            else => return null,
-        };
-
-        return .{
-            .rect = .{
-                .x = packed_primitive[0],
-                .y = packed_primitive[1],
-                .w = packed_primitive[2],
-                .h = packed_primitive[3],
-            },
-            .fill = .{ packed_primitive[4], packed_primitive[5], packed_primitive[6], packed_primitive[7] },
-            .border = .{ packed_primitive[8], packed_primitive[9], packed_primitive[10], packed_primitive[11] },
-            .kind = kind,
-            .corner_radius = packed_primitive[13],
-            .border_width = packed_primitive[14],
-            .expand = packed_primitive[15],
-            .transform = .{
-                .xx = packed_primitive[16],
-                .xy = packed_primitive[17],
-                .tx = packed_primitive[18],
-                .yx = packed_primitive[20],
-                .yy = packed_primitive[21],
-                .ty = packed_primitive[22],
-            },
-        };
-    }
-
-    fn pixelBounds(self: PackedVectorPrimitive) struct { min: Vec2, max: Vec2 } {
-        const min_x = self.rect.x - self.expand;
-        const min_y = self.rect.y - self.expand;
-        const max_x = self.rect.x + self.rect.w + self.expand;
-        const max_y = self.rect.y + self.rect.h + self.expand;
-        const corners = [_]Vec2{
-            self.transform.applyPoint(.{ .x = min_x, .y = min_y }),
-            self.transform.applyPoint(.{ .x = max_x, .y = min_y }),
-            self.transform.applyPoint(.{ .x = max_x, .y = max_y }),
-            self.transform.applyPoint(.{ .x = min_x, .y = max_y }),
-        };
-
-        var min = corners[0];
-        var max = corners[0];
-        for (corners[1..]) |p| {
-            min.x = @min(min.x, p.x);
-            min.y = @min(min.y, p.y);
-            max.x = @max(max.x, p.x);
-            max.y = @max(max.y, p.y);
-        }
-        return .{ .min = min, .max = max };
-    }
-
-    fn edgePixelsPerPixel(self: PackedVectorPrimitive, inverse: Transform2D) Vec2 {
-        _ = self;
-        return Vec2.new(
-            @max(@abs(inverse.xx) + @abs(inverse.xy), 1.0 / 65536.0),
-            @max(@abs(inverse.yx) + @abs(inverse.yy), 1.0 / 65536.0),
-        );
-    }
-
-    fn sample(self: PackedVectorPrimitive, local_px: Vec2, ppe: Vec2, fill_rule: FillRule) [4]f32 {
-        const cov_parts = self.coverage(local_px, ppe, fill_rule);
-        return addPremultiplied(
-            premultiplyCoverage(self.border, cov_parts.border),
-            premultiplyCoverage(self.fill, cov_parts.fill),
-        );
-    }
-
-    fn sampleSubpixel(
-        self: PackedVectorPrimitive,
-        local_px: Vec2,
-        epp: Vec2,
-        ppe: Vec2,
-        fill_rule: FillRule,
-        subpixel_order: SubpixelOrder,
-    ) [4]f32 {
-        const cov_parts = self.coverageSubpixel(local_px, epp, ppe, fill_rule, subpixel_order);
-        return addPremultiplied(
-            premultiplyCoverageSubpixel(self.border, cov_parts.border),
-            premultiplyCoverageSubpixel(self.fill, cov_parts.fill),
-        );
-    }
-
-    fn coverage(self: PackedVectorPrimitive, local_px: Vec2, ppe: Vec2, fill_rule: FillRule) struct { fill: f32, border: f32 } {
-        const path = self.pathLayout();
-        const outer_cov = evalPathCoverage(local_px, ppe, path.kind, path.origin, path.size, path.radius, fill_rule);
-        const inner_cov = if (path.has_inner)
-            evalPathCoverage(local_px, ppe, path.kind, path.inner_origin, path.inner_size, path.inner_radius, fill_rule)
-        else
-            0.0;
-        return .{
-            .fill = if (path.border_width > 0.0) (if (path.has_inner) inner_cov else 0.0) else outer_cov,
-            .border = if (path.border_width > 0.0) (if (path.has_inner) @max(outer_cov - inner_cov, 0.0) else outer_cov) else 0.0,
-        };
-    }
-
-    fn coverageSubpixel(
-        self: PackedVectorPrimitive,
-        local_px: Vec2,
-        epp: Vec2,
-        ppe: Vec2,
-        fill_rule: FillRule,
-        subpixel_order: SubpixelOrder,
-    ) struct { fill: [3]f32, border: [3]f32 } {
-        const path = self.pathLayout();
-        const outer_cov = evalPathCoverageSubpixel(local_px, epp, ppe, path.kind, path.origin, path.size, path.radius, fill_rule, subpixel_order);
-        const inner_cov = if (path.has_inner)
-            evalPathCoverageSubpixel(local_px, epp, ppe, path.kind, path.inner_origin, path.inner_size, path.inner_radius, fill_rule, subpixel_order)
-        else
-            .{ 0.0, 0.0, 0.0 };
-        return .{
-            .fill = if (path.border_width > 0.0) (if (path.has_inner) inner_cov else .{ 0.0, 0.0, 0.0 }) else outer_cov,
-            .border = if (path.border_width > 0.0) (if (path.has_inner) max3Vec(sub3(outer_cov, inner_cov), .{ 0.0, 0.0, 0.0 }) else outer_cov) else .{ 0.0, 0.0, 0.0 },
-        };
-    }
-
-    fn pathLayout(self: PackedVectorPrimitive) struct {
-        kind: snail.VectorPrimitiveKind,
-        origin: Vec2,
-        size: Vec2,
-        radius: f32,
-        border_width: f32,
-        inner_origin: Vec2,
-        inner_size: Vec2,
-        inner_radius: f32,
-        has_inner: bool,
-    } {
-        const size = Vec2.new(@max(self.rect.w, 0.0), @max(self.rect.h, 0.0));
-        const max_radius = @min(size.x, size.y) * 0.5;
-        var radius = std.math.clamp(self.corner_radius, 0.0, max_radius);
-        const border_width = std.math.clamp(self.border_width, 0.0, max_radius);
-        if (self.kind == .rect) radius = 0.0;
-        const inner_size = Vec2.new(
-            @max(size.x - border_width * 2.0, 0.0),
-            @max(size.y - border_width * 2.0, 0.0),
-        );
-        const inner_max_radius = @min(inner_size.x, inner_size.y) * 0.5;
-        const inner_radius = if (self.kind == .rounded_rect)
-            std.math.clamp(radius - border_width, 0.0, inner_max_radius)
-        else
-            0.0;
-        return .{
-            .kind = self.kind,
-            .origin = Vec2.new(0.0, 0.0),
-            .size = size,
-            .radius = radius,
-            .border_width = border_width,
-            .inner_origin = Vec2.new(border_width, border_width),
-            .inner_size = inner_size,
-            .inner_radius = inner_radius,
-            .has_inner = border_width > 0.0 and inner_size.x > 1.0 / 65536.0 and inner_size.y > 1.0 / 65536.0,
-        };
     }
 };
 
@@ -710,11 +496,6 @@ const CoveragePair = struct {
     wgt: f32,
 };
 
-const QuadraticCurve = struct {
-    p12: [4]f32,
-    p3: Vec2,
-};
-
 const GlyphBandState = struct {
     h_loc: [2]u32,
     h_count: u32,
@@ -726,10 +507,6 @@ const CurveRoots = struct {
     count: u8 = 0,
     t: [3]f32 = .{ 0, 0, 0 },
 };
-
-const kPathArcSegmentsPerCorner: usize = 4;
-const kPathRoundedRectCurveCount: usize = 4 + kPathArcSegmentsPerCorner * 4;
-const kPathEllipseSegmentCount: usize = 16;
 
 fn applyFillRule(fill_rule: FillRule, winding: f32) f32 {
     if (fill_rule == .even_odd) {
@@ -792,15 +569,6 @@ fn premultiplyCoverageSubpixel(color: [4]f32, cov: [3]f32) [4]f32 {
     };
 }
 
-fn addPremultiplied(a: [4]f32, b: [4]f32) [4]f32 {
-    return .{
-        a[0] + b[0],
-        a[1] + b[1],
-        a[2] + b[2],
-        a[3] + b[3],
-    };
-}
-
 fn lerpColor(a: [4]f32, b: [4]f32, t: f32) [4]f32 {
     return .{
         a[0] + (b[0] - a[0]) * t,
@@ -812,214 +580,6 @@ fn lerpColor(a: [4]f32, b: [4]f32, t: f32) [4]f32 {
 
 fn max3(values: [3]f32) f32 {
     return @max(values[0], @max(values[1], values[2]));
-}
-
-fn sub3(a: [3]f32, b: [3]f32) [3]f32 {
-    return .{ a[0] - b[0], a[1] - b[1], a[2] - b[2] };
-}
-
-fn max3Vec(a: [3]f32, b: [3]f32) [3]f32 {
-    return .{
-        @max(a[0], b[0]),
-        @max(a[1], b[1]),
-        @max(a[2], b[2]),
-    };
-}
-
-fn makeLine(p0: Vec2, p1: Vec2) QuadraticCurve {
-    return .{
-        .p12 = .{ p0.x, p0.y, (p0.x + p1.x) * 0.5, (p0.y + p1.y) * 0.5 },
-        .p3 = p1,
-    };
-}
-
-fn makeArc(center: Vec2, radii: Vec2, start_angle: f32, end_angle: f32) QuadraticCurve {
-    const mid_angle = (start_angle + end_angle) * 0.5;
-    const control_scale = 1.0 / @cos((end_angle - start_angle) * 0.5);
-    const p0 = center.add(Vec2.new(@cos(start_angle) * radii.x, @sin(start_angle) * radii.y));
-    const p1 = center.add(Vec2.new(@cos(mid_angle) * radii.x * control_scale, @sin(mid_angle) * radii.y * control_scale));
-    const p2 = center.add(Vec2.new(@cos(end_angle) * radii.x, @sin(end_angle) * radii.y));
-    return .{
-        .p12 = .{ p0.x, p0.y, p1.x, p1.y },
-        .p3 = p2,
-    };
-}
-
-fn curveCountForPath(kind: snail.VectorPrimitiveKind, radius: f32) usize {
-    return switch (kind) {
-        .ellipse => kPathEllipseSegmentCount,
-        .rounded_rect => if (radius > 1.0 / 65536.0) kPathRoundedRectCurveCount else 4,
-        .rect => 4,
-    };
-}
-
-fn getRectCurve(origin: Vec2, size: Vec2, segment: usize) QuadraticCurve {
-    const p0 = origin;
-    const p1 = origin.add(Vec2.new(size.x, 0.0));
-    const p2 = origin.add(size);
-    const p3 = origin.add(Vec2.new(0.0, size.y));
-    return switch (segment) {
-        0 => makeLine(p0, p1),
-        1 => makeLine(p1, p2),
-        2 => makeLine(p2, p3),
-        else => makeLine(p3, p0),
-    };
-}
-
-fn getRoundedRectCurve(origin: Vec2, size: Vec2, radius: f32, segment: usize) QuadraticCurve {
-    if (radius <= 1.0 / 65536.0) return getRectCurve(origin, size, segment);
-
-    const step = std.math.pi / 2.0 / @as(f32, @floatFromInt(kPathArcSegmentsPerCorner));
-    const arc = Vec2.new(radius, radius);
-    const top_left = origin.add(Vec2.new(radius, radius));
-    const top_right = origin.add(Vec2.new(size.x - radius, radius));
-    const bottom_right = origin.add(size).sub(Vec2.new(radius, radius));
-    const bottom_left = origin.add(Vec2.new(radius, size.y - radius));
-
-    var index = segment;
-    if (index == 0) return makeLine(origin.add(Vec2.new(radius, 0.0)), origin.add(Vec2.new(size.x - radius, 0.0)));
-    index -= 1;
-    if (index < kPathArcSegmentsPerCorner) {
-        const start_angle = -std.math.pi / 2.0 + @as(f32, @floatFromInt(index)) * step;
-        return makeArc(top_right, arc, start_angle, start_angle + step);
-    }
-    index -= kPathArcSegmentsPerCorner;
-    if (index == 0) return makeLine(origin.add(Vec2.new(size.x, radius)), origin.add(Vec2.new(size.x, size.y - radius)));
-    index -= 1;
-    if (index < kPathArcSegmentsPerCorner) {
-        const start_angle = @as(f32, @floatFromInt(index)) * step;
-        return makeArc(bottom_right, arc, start_angle, start_angle + step);
-    }
-    index -= kPathArcSegmentsPerCorner;
-    if (index == 0) return makeLine(origin.add(Vec2.new(size.x - radius, size.y)), origin.add(Vec2.new(radius, size.y)));
-    index -= 1;
-    if (index < kPathArcSegmentsPerCorner) {
-        const start_angle = std.math.pi / 2.0 + @as(f32, @floatFromInt(index)) * step;
-        return makeArc(bottom_left, arc, start_angle, start_angle + step);
-    }
-    index -= kPathArcSegmentsPerCorner;
-    if (index == 0) return makeLine(origin.add(Vec2.new(0.0, size.y - radius)), origin.add(Vec2.new(0.0, radius)));
-    index -= 1;
-    const start_angle = std.math.pi + @as(f32, @floatFromInt(index)) * step;
-    return makeArc(top_left, arc, start_angle, start_angle + step);
-}
-
-fn getEllipseCurve(origin: Vec2, size: Vec2, segment: usize) QuadraticCurve {
-    const step = std.math.pi * 2.0 / @as(f32, @floatFromInt(kPathEllipseSegmentCount));
-    const start_angle = -std.math.pi / 2.0 + @as(f32, @floatFromInt(segment)) * step;
-    return makeArc(origin.add(size.scale(0.5)), size.scale(0.5), start_angle, start_angle + step);
-}
-
-fn getPathCurve(kind: snail.VectorPrimitiveKind, origin: Vec2, size: Vec2, radius: f32, segment: usize) QuadraticCurve {
-    return switch (kind) {
-        .rect => getRectCurve(origin, size, segment),
-        .rounded_rect => getRoundedRectCurve(origin, size, radius, segment),
-        .ellipse => getEllipseCurve(origin, size, segment),
-    };
-}
-
-fn evalPathHorizCoverage(rc: Vec2, x_offset: f32, ppe: Vec2, kind: snail.VectorPrimitiveKind, origin: Vec2, size: Vec2, radius: f32) CoveragePair {
-    var result = CoveragePair{ .cov = 0.0, .wgt = 0.0 };
-    const sample_rc = Vec2.new(rc.x + x_offset, rc.y);
-    const curve_count = curveCountForPath(kind, radius);
-    var i: usize = 0;
-    while (i < curve_count) : (i += 1) {
-        const curve = getPathCurve(kind, origin, size, radius, i);
-        const p1x = curve.p12[0] - sample_rc.x;
-        const p1y = curve.p12[1] - sample_rc.y;
-        const p2x = curve.p12[2] - sample_rc.x;
-        const p2y = curve.p12[3] - sample_rc.y;
-        const p3x = curve.p3.x - sample_rc.x;
-        const p3y = curve.p3.y - sample_rc.y;
-        const code = calcRootCode(p1y, p2y, p3y);
-        if (code != 0) {
-            const roots = solveHorizPoly(p1x, p1y, p2x, p2y, p3x, p3y, ppe.x);
-            if ((code & 1) != 0) {
-                result.cov += clamp01(roots[0] + 0.5);
-                result.wgt = @max(result.wgt, clamp01(1.0 - @abs(roots[0]) * 2.0));
-            }
-            if (code > 1) {
-                result.cov -= clamp01(roots[1] + 0.5);
-                result.wgt = @max(result.wgt, clamp01(1.0 - @abs(roots[1]) * 2.0));
-            }
-        }
-    }
-    return result;
-}
-
-fn evalPathVertCoverage(rc: Vec2, y_offset: f32, ppe: Vec2, kind: snail.VectorPrimitiveKind, origin: Vec2, size: Vec2, radius: f32) CoveragePair {
-    var result = CoveragePair{ .cov = 0.0, .wgt = 0.0 };
-    const sample_rc = Vec2.new(rc.x, rc.y + y_offset);
-    const curve_count = curveCountForPath(kind, radius);
-    var i: usize = 0;
-    while (i < curve_count) : (i += 1) {
-        const curve = getPathCurve(kind, origin, size, radius, i);
-        const p1x = curve.p12[0] - sample_rc.x;
-        const p1y = curve.p12[1] - sample_rc.y;
-        const p2x = curve.p12[2] - sample_rc.x;
-        const p2y = curve.p12[3] - sample_rc.y;
-        const p3x = curve.p3.x - sample_rc.x;
-        const p3y = curve.p3.y - sample_rc.y;
-        const code = calcRootCode(p1x, p2x, p3x);
-        if (code != 0) {
-            const roots = solveVertPoly(p1x, p1y, p2x, p2y, p3x, p3y, ppe.y);
-            if ((code & 1) != 0) {
-                result.cov -= clamp01(roots[0] + 0.5);
-                result.wgt = @max(result.wgt, clamp01(1.0 - @abs(roots[0]) * 2.0));
-            }
-            if (code > 1) {
-                result.cov += clamp01(roots[1] + 0.5);
-                result.wgt = @max(result.wgt, clamp01(1.0 - @abs(roots[1]) * 2.0));
-            }
-        }
-    }
-    return result;
-}
-
-fn evalPathCoverage(rc: Vec2, ppe: Vec2, kind: snail.VectorPrimitiveKind, origin: Vec2, size: Vec2, radius: f32, fill_rule: FillRule) f32 {
-    return resolveCoverage(
-        evalPathHorizCoverage(rc, 0.0, ppe, kind, origin, size, radius),
-        evalPathVertCoverage(rc, 0.0, ppe, kind, origin, size, radius),
-        fill_rule,
-    );
-}
-
-fn evalPathCoverageSubpixel(
-    rc: Vec2,
-    epp: Vec2,
-    ppe: Vec2,
-    kind: snail.VectorPrimitiveKind,
-    origin: Vec2,
-    size: Vec2,
-    radius: f32,
-    fill_rule: FillRule,
-    subpixel_order: SubpixelOrder,
-) [3]f32 {
-    return switch (subpixel_order) {
-        .rgb, .bgr => blk: {
-            const s: f32 = if (subpixel_order == .bgr) -1.0 else 1.0;
-            const sp = epp.x / 3.0;
-            break :blk blendSubpixel(
-                evalPathHorizCoverage(rc, -sp * s, ppe, kind, origin, size, radius),
-                evalPathHorizCoverage(rc, 0.0, ppe, kind, origin, size, radius),
-                evalPathHorizCoverage(rc, sp * s, ppe, kind, origin, size, radius),
-                evalPathVertCoverage(rc, 0.0, ppe, kind, origin, size, radius),
-                fill_rule,
-            );
-        },
-        .vrgb, .vbgr => blk: {
-            const s: f32 = if (subpixel_order == .vbgr) -1.0 else 1.0;
-            const sp = epp.y / 3.0;
-            break :blk blendSubpixel(
-                evalPathVertCoverage(rc, -sp * s, ppe, kind, origin, size, radius),
-                evalPathVertCoverage(rc, 0.0, ppe, kind, origin, size, radius),
-                evalPathVertCoverage(rc, sp * s, ppe, kind, origin, size, radius),
-                evalPathHorizCoverage(rc, 0.0, ppe, kind, origin, size, radius),
-                fill_rule,
-            );
-        },
-        .none => .{ 0.0, 0.0, 0.0 },
-    };
 }
 
 fn initGlyphBandState(
@@ -1578,7 +1138,7 @@ test "cpu renderer renders glyphs" {
     try testing.expect(non_zero_count > 100); // Glyphs should produce significant output
 }
 
-test "cpu renderer renders vector rect" {
+test "cpu renderer renders path rect" {
     const testing = std.testing;
 
     const width: u32 = 48;
@@ -1590,16 +1150,16 @@ test "cpu renderer renders vector rect" {
     var renderer = CpuRenderer.init(buf.ptr, width, height, stride);
     renderer.clear(0, 0, 0, 0);
 
-    var shape_buf: [snail.VECTOR_FLOATS_PER_PRIMITIVE]f32 = undefined;
-    var batch = snail.VectorBatch.init(&shape_buf);
-    try testing.expect(batch.addRect(
-        .{ .x = 8, .y = 6, .w = 18, .h = 12 },
-        .{ 1, 0, 0, 1 },
-        .{ 0, 0, 0, 0 },
-        0,
-    ));
+    var builder = snail.PathPictureBuilder.init(testing.allocator);
+    defer builder.deinit();
+    try builder.addFilledRect(.{ .x = 8, .y = 6, .w = 18, .h = 12 }, .{
+        .color = .{ 1, 0, 0, 1 },
+    }, .identity);
 
-    renderer.drawVector(batch.slice());
+    var picture = try builder.freeze(testing.allocator);
+    defer picture.deinit();
+
+    renderer.drawPathPicture(&picture);
 
     const inside = ((12 * stride) + (16 * 4));
     try testing.expect(buf[inside + 0] > 200);
@@ -1612,7 +1172,7 @@ test "cpu renderer renders vector rect" {
     try testing.expectEqual(@as(u8, 0), buf[outside + 3]);
 }
 
-test "cpu renderer renders transformed vector picture" {
+test "cpu renderer renders transformed path picture" {
     const testing = std.testing;
 
     const width: u32 = 64;
@@ -1624,19 +1184,16 @@ test "cpu renderer renders transformed vector picture" {
     var renderer = CpuRenderer.init(buf.ptr, width, height, stride);
     renderer.clear(0, 0, 0, 0);
 
-    var shape_buf: [snail.VECTOR_FLOATS_PER_PRIMITIVE]f32 = undefined;
-    var batch = snail.VectorBatch.init(&shape_buf);
-    try testing.expect(batch.addRectStyled(
-        .{ .x = 0, .y = 0, .w = 10, .h = 8 },
-        .{ .color = .{ 0, 1, 0, 1 } },
-        null,
-        .{ .tx = 20, .ty = 10 },
-    ));
+    var builder = snail.PathPictureBuilder.init(testing.allocator);
+    defer builder.deinit();
+    try builder.addFilledRect(.{ .x = 0, .y = 0, .w = 10, .h = 8 }, .{
+        .color = .{ 0, 1, 0, 1 },
+    }, .identity);
 
-    var picture = try batch.freeze(testing.allocator);
+    var picture = try builder.freeze(testing.allocator);
     defer picture.deinit();
 
-    renderer.drawVectorPicture(&picture);
+    renderer.drawPathPictureTransformed(&picture, .{ .tx = 20, .ty = 10 });
 
     const translated = ((13 * stride) + (24 * 4));
     try testing.expect(buf[translated + 1] > 200);
@@ -1733,7 +1290,7 @@ test "cpu renderer renders image-painted path picture" {
     try testing.expect(buf[right + 3] > 200);
 }
 
-test "cpu renderer premultiplies translucent vector fill" {
+test "cpu renderer premultiplies translucent path fill" {
     const testing = std.testing;
 
     const width: u32 = 40;
@@ -1745,16 +1302,16 @@ test "cpu renderer premultiplies translucent vector fill" {
     var renderer = CpuRenderer.init(buf.ptr, width, height, stride);
     renderer.clear(0, 0, 0, 0);
 
-    var shape_buf: [snail.VECTOR_FLOATS_PER_PRIMITIVE]f32 = undefined;
-    var batch = snail.VectorBatch.init(&shape_buf);
-    try testing.expect(batch.addRect(
-        .{ .x = 8, .y = 6, .w = 16, .h = 10 },
-        .{ 1, 0, 0, 0.5 },
-        .{ 0, 0, 0, 0 },
-        0,
-    ));
+    var builder = snail.PathPictureBuilder.init(testing.allocator);
+    defer builder.deinit();
+    try builder.addFilledRect(.{ .x = 8, .y = 6, .w = 16, .h = 10 }, .{
+        .color = .{ 1, 0, 0, 0.5 },
+    }, .identity);
 
-    renderer.drawVector(batch.slice());
+    var picture = try builder.freeze(testing.allocator);
+    defer picture.deinit();
+
+    renderer.drawPathPicture(&picture);
 
     const inside = ((11 * stride) + (14 * 4));
     try testing.expect(buf[inside + 0] >= 185);
@@ -1765,7 +1322,7 @@ test "cpu renderer premultiplies translucent vector fill" {
     try testing.expect(buf[inside + 3] <= 128);
 }
 
-test "cpu renderer renders collapsed interior as full border" {
+test "cpu renderer renders collapsed inside stroke" {
     const testing = std.testing;
 
     const width: u32 = 32;
@@ -1777,20 +1334,23 @@ test "cpu renderer renders collapsed interior as full border" {
     var renderer = CpuRenderer.init(buf.ptr, width, height, stride);
     renderer.clear(0, 0, 0, 0);
 
-    var shape_buf: [snail.VECTOR_FLOATS_PER_PRIMITIVE]f32 = undefined;
-    var batch = snail.VectorBatch.init(&shape_buf);
-    try testing.expect(batch.addRect(
+    var builder = snail.PathPictureBuilder.init(testing.allocator);
+    defer builder.deinit();
+    try builder.addRect(
         .{ .x = 8, .y = 8, .w = 8, .h = 8 },
-        .{ 1, 0, 0, 1 },
-        .{ 0, 1, 0, 1 },
-        8,
-    ));
+        null,
+        .{ .color = .{ 0, 1, 0, 1 }, .width = 8, .placement = .inside },
+        .identity,
+    );
 
-    renderer.drawVector(batch.slice());
+    var picture = try builder.freeze(testing.allocator);
+    defer picture.deinit();
+
+    renderer.drawPathPicture(&picture);
 
     const center = ((12 * stride) + (12 * 4));
-    try testing.expectEqual(@as(u8, 0), buf[center + 0]);
+    try testing.expect(buf[center + 0] < 8);
     try testing.expect(buf[center + 1] > 200);
-    try testing.expectEqual(@as(u8, 0), buf[center + 2]);
+    try testing.expect(buf[center + 2] < 8);
     try testing.expect(buf[center + 3] > 200);
 }

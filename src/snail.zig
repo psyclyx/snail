@@ -26,10 +26,8 @@ const curve_tex = @import("render/curve_texture.zig");
 const band_tex = @import("render/band_texture.zig");
 const vertex_mod = @import("render/vertex.zig");
 const sprite_vertex_mod = @import("render/sprite_vertex.zig");
-const vector_vertex_mod = @import("render/vector_vertex.zig");
 const pipeline = @import("render/pipeline.zig");
 const sprite_pipeline = @import("render/sprite_pipeline.zig");
-const vector_pipeline = @import("render/vector_pipeline.zig");
 const vulkan_pipeline = if (build_options.enable_vulkan) @import("render/vulkan_pipeline.zig") else struct {
     pub const VulkanContext = void;
     pub fn init(_: anytype) !void {}
@@ -39,7 +37,6 @@ const vulkan_pipeline = if (build_options.enable_vulkan) @import("render/vulkan_
     pub fn drawText(_: anytype, _: anytype, _: anytype, _: anytype) void {}
     pub fn drawTextGrayscale(_: anytype, _: anytype, _: anytype, _: anytype) void {}
     pub fn drawSprites(_: anytype, _: anytype, _: anytype, _: anytype) void {}
-    pub fn drawVector(_: anytype, _: anytype, _: anytype, _: anytype) void {}
     pub fn setCommandBuffer(_: anytype) void {}
     pub fn getBackendName() []const u8 {
         return "vulkan (disabled)";
@@ -75,13 +72,13 @@ pub const FLOATS_PER_GLYPH = FLOATS_PER_VERTEX * VERTICES_PER_GLYPH;
 pub const SPRITE_FLOATS_PER_VERTEX = sprite_vertex_mod.FLOATS_PER_VERTEX;
 pub const SPRITE_VERTICES_PER_SPRITE = sprite_vertex_mod.VERTICES_PER_SPRITE;
 pub const SPRITE_FLOATS_PER_SPRITE = sprite_vertex_mod.FLOATS_PER_SPRITE;
-pub const VectorRect = vector_vertex_mod.Rect;
-pub const VectorPrimitiveKind = vector_vertex_mod.PrimitiveKind;
-pub const VECTOR_FLOATS_PER_VERTEX = vector_vertex_mod.FLOATS_PER_VERTEX;
-pub const VECTOR_VERTICES_PER_PRIMITIVE = vector_vertex_mod.VERTICES_PER_PRIMITIVE;
-pub const VECTOR_FLOATS_PER_PRIMITIVE = vector_vertex_mod.FLOATS_PER_PRIMITIVE;
-pub const VECTOR_VERTICES_PER_ROUNDED_RECT = VECTOR_VERTICES_PER_PRIMITIVE;
-pub const VECTOR_FLOATS_PER_ROUNDED_RECT = VECTOR_FLOATS_PER_PRIMITIVE;
+
+pub const VectorRect = struct {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+};
 
 pub const PathPaintExtend = enum(u8) {
     clamp = 0,
@@ -211,22 +208,6 @@ pub const PathStrokeStyle = struct {
     join: PathStrokeJoin = .miter,
     miter_limit: f32 = 4.0,
     placement: PathStrokeAlign = .center,
-};
-
-pub const VectorShape = union(enum) {
-    rect: VectorRect,
-    rounded_rect: struct {
-        rect: VectorRect,
-        corner_radius: f32,
-    },
-    ellipse: VectorRect,
-};
-
-pub const VectorPrimitive = struct {
-    shape: VectorShape,
-    fill: ?VectorFillStyle = null,
-    stroke: ?VectorStrokeStyle = null,
-    transform: VectorTransform2D = .identity,
 };
 
 /// A parsed TrueType font. Immutable after init.
@@ -1508,187 +1489,6 @@ pub const Batch = struct {
 /// Accumulates vector primitives into a caller-provided buffer.
 /// The public API is object-space and style-based; the packed buffer is the
 /// low-level immediate format consumed by the renderer.
-pub const VectorBatch = struct {
-    buf: []f32,
-    len: usize,
-
-    pub fn init(buf: []f32) VectorBatch {
-        return .{ .buf = buf, .len = 0 };
-    }
-
-    pub fn reset(self: *VectorBatch) void {
-        self.len = 0;
-    }
-
-    pub fn shapeCount(self: *const VectorBatch) usize {
-        return self.len / VECTOR_FLOATS_PER_PRIMITIVE;
-    }
-
-    pub fn slice(self: *const VectorBatch) []const f32 {
-        return self.buf[0..self.len];
-    }
-
-    pub fn freeze(self: *const VectorBatch, allocator: std.mem.Allocator) !VectorPicture {
-        return VectorPicture.initClone(allocator, self.slice());
-    }
-
-    fn addPackedPrimitive(
-        self: *VectorBatch,
-        kind: VectorPrimitiveKind,
-        rect: VectorRect,
-        fill: [4]f32,
-        border: [4]f32,
-        border_width: f32,
-        corner_radius: f32,
-        transform: VectorTransform2D,
-    ) bool {
-        if (self.len + VECTOR_FLOATS_PER_PRIMITIVE > self.buf.len) return false;
-        switch (kind) {
-            .rect => vector_vertex_mod.generateRectVerticesTransformed(
-                self.buf[self.len..],
-                rect,
-                fill,
-                border,
-                border_width,
-                transform,
-            ),
-            .rounded_rect => vector_vertex_mod.generateRoundedRectVerticesTransformed(
-                self.buf[self.len..],
-                rect,
-                fill,
-                border,
-                border_width,
-                corner_radius,
-                transform,
-            ),
-            .ellipse => vector_vertex_mod.generateEllipseVerticesTransformed(
-                self.buf[self.len..],
-                rect,
-                fill,
-                border,
-                border_width,
-                transform,
-            ),
-        }
-        self.len += VECTOR_FLOATS_PER_PRIMITIVE;
-        return true;
-    }
-
-    fn addStyledPrimitive(
-        self: *VectorBatch,
-        kind: VectorPrimitiveKind,
-        rect: VectorRect,
-        fill: ?VectorFillStyle,
-        stroke: ?VectorStrokeStyle,
-        corner_radius: f32,
-        transform: VectorTransform2D,
-    ) bool {
-        const fill_color = if (fill) |style| style.color else [4]f32{ 0, 0, 0, 0 };
-        const border_color = if (stroke) |style| style.color else [4]f32{ 0, 0, 0, 0 };
-        const border_width = if (stroke) |style| style.width else 0;
-        return self.addPackedPrimitive(kind, rect, fill_color, border_color, border_width, corner_radius, transform);
-    }
-
-    pub fn addPrimitive(self: *VectorBatch, primitive: VectorPrimitive) bool {
-        return switch (primitive.shape) {
-            .rect => |rect| self.addStyledPrimitive(.rect, rect, primitive.fill, primitive.stroke, 0, primitive.transform),
-            .rounded_rect => |rr| self.addStyledPrimitive(.rounded_rect, rr.rect, primitive.fill, primitive.stroke, rr.corner_radius, primitive.transform),
-            .ellipse => |rect| self.addStyledPrimitive(.ellipse, rect, primitive.fill, primitive.stroke, 0, primitive.transform),
-        };
-    }
-
-    pub fn addRect(
-        self: *VectorBatch,
-        rect: VectorRect,
-        fill: [4]f32,
-        border: [4]f32,
-        border_width: f32,
-    ) bool {
-        return self.addPackedPrimitive(.rect, rect, fill, border, border_width, 0, .identity);
-    }
-
-    pub fn addRectStyled(
-        self: *VectorBatch,
-        rect: VectorRect,
-        fill: ?VectorFillStyle,
-        stroke: ?VectorStrokeStyle,
-        transform: VectorTransform2D,
-    ) bool {
-        return self.addStyledPrimitive(.rect, rect, fill, stroke, 0, transform);
-    }
-
-    pub fn addRoundedRect(
-        self: *VectorBatch,
-        rect: VectorRect,
-        fill: [4]f32,
-        border: [4]f32,
-        border_width: f32,
-        corner_radius: f32,
-    ) bool {
-        return self.addPackedPrimitive(.rounded_rect, rect, fill, border, border_width, corner_radius, .identity);
-    }
-
-    pub fn addRoundedRectStyled(
-        self: *VectorBatch,
-        rect: VectorRect,
-        fill: ?VectorFillStyle,
-        stroke: ?VectorStrokeStyle,
-        corner_radius: f32,
-        transform: VectorTransform2D,
-    ) bool {
-        return self.addStyledPrimitive(.rounded_rect, rect, fill, stroke, corner_radius, transform);
-    }
-
-    pub fn addEllipse(
-        self: *VectorBatch,
-        rect: VectorRect,
-        fill: [4]f32,
-        border: [4]f32,
-        border_width: f32,
-    ) bool {
-        return self.addPackedPrimitive(.ellipse, rect, fill, border, border_width, 0, .identity);
-    }
-
-    pub fn addEllipseStyled(
-        self: *VectorBatch,
-        rect: VectorRect,
-        fill: ?VectorFillStyle,
-        stroke: ?VectorStrokeStyle,
-        transform: VectorTransform2D,
-    ) bool {
-        return self.addStyledPrimitive(.ellipse, rect, fill, stroke, 0, transform);
-    }
-};
-
-/// Immutable vector resource. Useful for static UI chrome or icons that should
-/// be prepared once and drawn many times.
-pub const VectorPicture = struct {
-    allocator: std.mem.Allocator,
-    vertices: []f32,
-
-    pub fn initClone(allocator: std.mem.Allocator, vertices: []const f32) !VectorPicture {
-        const owned = try allocator.alloc(f32, vertices.len);
-        @memcpy(owned, vertices);
-        return .{
-            .allocator = allocator,
-            .vertices = owned,
-        };
-    }
-
-    pub fn deinit(self: *VectorPicture) void {
-        self.allocator.free(self.vertices);
-        self.* = undefined;
-    }
-
-    pub fn slice(self: *const VectorPicture) []const f32 {
-        return self.vertices;
-    }
-
-    pub fn shapeCount(self: *const VectorPicture) usize {
-        return self.vertices.len / VECTOR_FLOATS_PER_PRIMITIVE;
-    }
-};
-
 pub const SpritePicture = struct {
     allocator: std.mem.Allocator,
     vertices: []f32,
@@ -3158,7 +2958,6 @@ pub const Renderer = struct {
     pub fn init() !Renderer {
         try pipeline.init();
         try sprite_pipeline.init();
-        try vector_pipeline.init();
         return .{ .backend = .gl };
     }
 
@@ -3172,7 +2971,6 @@ pub const Renderer = struct {
         switch (self.backend) {
             .gl => {
                 sprite_pipeline.deinit();
-                vector_pipeline.deinit();
                 pipeline.deinit();
             },
             .vulkan => vulkan_pipeline.deinit(),
@@ -3228,7 +3026,6 @@ pub const Renderer = struct {
             .gl => {
                 pipeline.resetFrameState();
                 sprite_pipeline.resetFrameState();
-                vector_pipeline.resetFrameState();
             },
             .vulkan => {},
         }
@@ -3248,31 +3045,6 @@ pub const Renderer = struct {
             .gl => pipeline.drawTextGrayscale(vertices, mvp, viewport_w, viewport_h),
             .vulkan => vulkan_pipeline.drawTextGrayscale(vertices, mvp, viewport_w, viewport_h),
         }
-    }
-
-    /// Draw vector primitives in pixel space with a top-left origin.
-    pub fn drawVector(self: *Renderer, vertices: []const f32, viewport_w: f32, viewport_h: f32) void {
-        self.drawVectorTransformed(vertices, Mat4.ortho(0, viewport_w, viewport_h, 0, -1, 1), viewport_w, viewport_h);
-    }
-
-    /// Draw vector primitives with an explicit object-to-clip transform.
-    pub fn drawVectorTransformed(self: *Renderer, vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
-        switch (self.backend) {
-            .gl => {
-                vector_pipeline.drawPrimitives(vertices, mvp);
-                // Text pipeline caches GL state across draws; vector draws invalidate it.
-                pipeline.resetFrameState();
-            },
-            .vulkan => vulkan_pipeline.drawVector(vertices, mvp, viewport_w, viewport_h),
-        }
-    }
-
-    pub fn drawVectorPicture(self: *Renderer, picture: *const VectorPicture, viewport_w: f32, viewport_h: f32) void {
-        self.drawVector(picture.slice(), viewport_w, viewport_h);
-    }
-
-    pub fn drawVectorPictureTransformed(self: *Renderer, picture: *const VectorPicture, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
-        self.drawVectorTransformed(picture.slice(), mvp, viewport_w, viewport_h);
     }
 
     /// Draw sprite vertices in pixel space with a top-left origin.
@@ -3371,100 +3143,7 @@ test {
     _ = @import("c_api.zig");
     _ = @import("render/vertex.zig");
     _ = @import("render/sprite_vertex.zig");
-    _ = @import("render/vector_vertex.zig");
-    _ = @import("render/vector_pipeline.zig");
     _ = @import("torture_test.zig");
-}
-
-test "vector batch stores one rounded rect" {
-    var buf: [VECTOR_FLOATS_PER_PRIMITIVE]f32 = undefined;
-    var batch = VectorBatch.init(&buf);
-
-    try std.testing.expect(batch.addRoundedRect(
-        .{ .x = 10, .y = 20, .w = 30, .h = 40 },
-        .{ 1, 0, 0, 1 },
-        .{ 0, 0, 0, 1 },
-        2,
-        6,
-    ));
-    try std.testing.expectEqual(@as(usize, 1), batch.shapeCount());
-    try std.testing.expectEqual(@as(usize, VECTOR_FLOATS_PER_PRIMITIVE), batch.slice().len);
-    try std.testing.expectApproxEqAbs(@as(f32, 10), batch.slice()[0], 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 20), batch.slice()[1], 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 1), batch.slice()[12], 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 6), batch.slice()[13], 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 2), batch.slice()[14], 0.001);
-}
-
-test "vector batch rejects overflow" {
-    var buf: [VECTOR_FLOATS_PER_PRIMITIVE - 1]f32 = undefined;
-    var batch = VectorBatch.init(&buf);
-
-    try std.testing.expect(!batch.addRoundedRect(
-        .{ .x = 0, .y = 0, .w = 10, .h = 10 },
-        .{ 1, 1, 1, 1 },
-        .{ 0, 0, 0, 1 },
-        1,
-        2,
-    ));
-    try std.testing.expectEqual(@as(usize, 0), batch.shapeCount());
-    try std.testing.expectEqual(@as(usize, 0), batch.slice().len);
-}
-
-test "vector batch stores multiple primitive kinds" {
-    var buf: [VECTOR_FLOATS_PER_PRIMITIVE * 3]f32 = undefined;
-    var batch = VectorBatch.init(&buf);
-
-    try std.testing.expect(batch.addRect(
-        .{ .x = 0, .y = 0, .w = 20, .h = 10 },
-        .{ 1, 1, 1, 1 },
-        .{ 0, 0, 0, 0 },
-        0,
-    ));
-    try std.testing.expect(batch.addEllipse(
-        .{ .x = 5, .y = 5, .w = 12, .h = 12 },
-        .{ 0, 1, 0, 1 },
-        .{ 0, 0, 0, 1 },
-        1,
-    ));
-    try std.testing.expectEqual(@as(usize, 2), batch.shapeCount());
-    try std.testing.expectApproxEqAbs(@as(f32, 0), batch.slice()[12], 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 2), batch.slice()[VECTOR_FLOATS_PER_PRIMITIVE + 12], 0.001);
-}
-
-test "vector batch stores styled primitive transform" {
-    var buf: [VECTOR_FLOATS_PER_PRIMITIVE]f32 = undefined;
-    var batch = VectorBatch.init(&buf);
-    const primitive = VectorPrimitive{
-        .shape = .{
-            .rounded_rect = .{
-                .rect = .{ .x = 8, .y = 12, .w = 30, .h = 18 },
-                .corner_radius = 5,
-            },
-        },
-        .fill = .{ .color = .{ 0.1, 0.2, 0.3, 0.4 } },
-        .stroke = .{ .color = .{ 0.9, 0.8, 0.7, 1.0 }, .width = 2.5 },
-        .transform = .{ .xx = 1, .xy = 2, .tx = 3, .yx = 4, .yy = 5, .ty = 6 },
-    };
-    try std.testing.expect(batch.addPrimitive(primitive));
-    try std.testing.expectApproxEqAbs(@as(f32, 3), batch.slice()[18], 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 6), batch.slice()[22], 0.001);
-}
-
-test "vector batch can freeze into immutable picture" {
-    var buf: [VECTOR_FLOATS_PER_PRIMITIVE]f32 = undefined;
-    var batch = VectorBatch.init(&buf);
-    try std.testing.expect(batch.addRect(
-        .{ .x = 0, .y = 0, .w = 20, .h = 10 },
-        .{ 1, 1, 1, 1 },
-        .{ 0, 0, 0, 0 },
-        0,
-    ));
-
-    var picture = try batch.freeze(std.testing.allocator);
-    defer picture.deinit();
-    try std.testing.expectEqual(batch.slice().len, picture.slice().len);
-    try std.testing.expectEqual(@as(usize, 1), picture.shapeCount());
 }
 
 test "vector path approximates cubic commands into quadratic segments and reports bounds" {

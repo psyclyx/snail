@@ -53,26 +53,6 @@ typedef struct SnailFont  SnailFont;
 typedef struct SnailAtlas SnailAtlas;
 
 typedef struct {
-    float x, y, w, h;
-} SnailVectorRect;
-
-typedef struct {
-    float xx, xy, tx;
-    float yx, yy, ty;
-} SnailVectorTransform2D;
-
-typedef struct {
-    /* Straight RGBA; snail premultiplies internally before blending. */
-    float color[4];
-} SnailVectorFillStyle;
-
-typedef struct {
-    /* Straight RGBA; snail premultiplies internally before blending. */
-    float color[4];
-    float width;
-} SnailVectorStrokeStyle;
-
-typedef struct {
     float min_x, min_y, max_x, max_y;
 } SnailBBox;
 
@@ -153,11 +133,6 @@ void snail_renderer_set_fill_rule(int rule);
 void snail_renderer_draw(const float *vertices, size_t num_floats,
                          const float *mvp,
                          float viewport_w, float viewport_h);
-void snail_renderer_draw_vector(const float *vertices, size_t num_floats,
-                                const float *mvp,
-                                float viewport_w, float viewport_h);
-void snail_renderer_draw_vector_pixels(const float *vertices, size_t num_floats,
-                                       float viewport_w, float viewport_h);
 
 /* ── Batch (any thread, caller-owned buffer) ── */
 
@@ -210,41 +185,6 @@ int  snail_atlas_add_glyphs_for_text(SnailAtlas *atlas,
 /* ── Constants ── */
 
 size_t snail_floats_per_glyph(void);
-size_t snail_vector_floats_per_primitive(void);
-
-/* ── Vector batch (caller-owned float buffer) ── */
-
-bool snail_vector_batch_add_rect(float *buf, size_t buf_capacity, size_t *buf_len,
-                                 SnailVectorRect rect,
-                                 const float *fill, const float *border,
-                                 float border_width);
-bool snail_vector_batch_add_rounded_rect(float *buf, size_t buf_capacity, size_t *buf_len,
-                                         SnailVectorRect rect,
-                                         const float *fill, const float *border,
-                                         float border_width, float corner_radius);
-bool snail_vector_batch_add_ellipse(float *buf, size_t buf_capacity, size_t *buf_len,
-                                    SnailVectorRect rect,
-                                    const float *fill, const float *border,
-                                    float border_width);
-
-/* Style-oriented vector helpers. `transform` may be NULL for identity.
- * `fill` or `stroke` may be NULL to omit that portion. */
-bool snail_vector_batch_add_rect_ex(float *buf, size_t buf_capacity, size_t *buf_len,
-                                    SnailVectorRect rect,
-                                    const SnailVectorFillStyle *fill,
-                                    const SnailVectorStrokeStyle *stroke,
-                                    const SnailVectorTransform2D *transform);
-bool snail_vector_batch_add_rounded_rect_ex(float *buf, size_t buf_capacity, size_t *buf_len,
-                                            SnailVectorRect rect,
-                                            const SnailVectorFillStyle *fill,
-                                            const SnailVectorStrokeStyle *stroke,
-                                            float corner_radius,
-                                            const SnailVectorTransform2D *transform);
-bool snail_vector_batch_add_ellipse_ex(float *buf, size_t buf_capacity, size_t *buf_len,
-                                       SnailVectorRect rect,
-                                       const SnailVectorFillStyle *fill,
-                                       const SnailVectorStrokeStyle *stroke,
-                                       const SnailVectorTransform2D *transform);
 
 #ifdef __cplusplus
 }

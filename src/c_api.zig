@@ -5,7 +5,6 @@ const std = @import("std");
 const snail = @import("snail.zig");
 const ttf = @import("font/ttf.zig");
 const pipeline = @import("render/pipeline.zig");
-const vector_pipeline = @import("render/vector_pipeline.zig");
 
 // ── Allocator bridge ──
 
@@ -73,31 +72,6 @@ pub const SNAIL_ERR_GL_FAILED: c_int = -3;
 const FontImpl = struct { inner: ttf.Font };
 const AtlasImpl = struct { inner: snail.Atlas, allocator: std.mem.Allocator };
 
-pub const SnailVectorRect = extern struct {
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
-};
-
-pub const SnailVectorTransform2D = extern struct {
-    xx: f32 = 1,
-    xy: f32 = 0,
-    tx: f32 = 0,
-    yx: f32 = 0,
-    yy: f32 = 1,
-    ty: f32 = 0,
-};
-
-pub const SnailVectorFillStyle = extern struct {
-    color: [4]f32,
-};
-
-pub const SnailVectorStrokeStyle = extern struct {
-    color: [4]f32,
-    width: f32,
-};
-
 pub const SnailBBox = extern struct {
     min_x: f32,
     min_y: f32,
@@ -126,34 +100,6 @@ fn wrapAtlas(atlas: snail.Atlas, allocator: std.mem.Allocator, out: *?*AtlasImpl
     impl.* = .{ .inner = atlas, .allocator = allocator };
     out.* = impl;
     return SNAIL_OK;
-}
-
-fn toVectorRect(rect: SnailVectorRect) snail.VectorRect {
-    return .{ .x = rect.x, .y = rect.y, .w = rect.w, .h = rect.h };
-}
-
-fn toVectorTransform(transform: ?*const SnailVectorTransform2D) snail.VectorTransform2D {
-    if (transform) |t| {
-        return .{
-            .xx = t.xx,
-            .xy = t.xy,
-            .tx = t.tx,
-            .yx = t.yx,
-            .yy = t.yy,
-            .ty = t.ty,
-        };
-    }
-    return .identity;
-}
-
-fn toVectorFill(fill: ?*const SnailVectorFillStyle) ?snail.VectorFillStyle {
-    if (fill) |f| return .{ .color = f.color };
-    return null;
-}
-
-fn toVectorStroke(stroke: ?*const SnailVectorStrokeStyle) ?snail.VectorStrokeStyle {
-    if (stroke) |s| return .{ .color = s.color, .width = s.width };
-    return null;
 }
 
 fn wrapBBox(bbox: snail.BBox) SnailBBox {
@@ -299,15 +245,10 @@ export fn snail_atlas_deinit(atlas: ?*AtlasImpl) void {
 
 export fn snail_renderer_init() c_int {
     pipeline.init() catch return SNAIL_ERR_GL_FAILED;
-    vector_pipeline.init() catch {
-        pipeline.deinit();
-        return SNAIL_ERR_GL_FAILED;
-    };
     return SNAIL_OK;
 }
 
 export fn snail_renderer_deinit() void {
-    vector_pipeline.deinit();
     pipeline.deinit();
 }
 
@@ -332,18 +273,6 @@ export fn snail_renderer_set_fill_rule(rule: c_int) void {
 export fn snail_renderer_draw(vertices: [*]const f32, num_floats: usize, mvp: [*]const f32, viewport_w: f32, viewport_h: f32) void {
     const mat = snail.Mat4{ .data = mvp[0..16].* };
     pipeline.drawText(vertices[0..num_floats], mat, viewport_w, viewport_h);
-}
-
-export fn snail_renderer_draw_vector(vertices: [*]const f32, num_floats: usize, mvp: [*]const f32, viewport_w: f32, viewport_h: f32) void {
-    const mat = snail.Mat4{ .data = mvp[0..16].* };
-    vector_pipeline.drawPrimitives(vertices[0..num_floats], mat);
-    _ = viewport_w;
-    _ = viewport_h;
-}
-
-export fn snail_renderer_draw_vector_pixels(vertices: [*]const f32, num_floats: usize, viewport_w: f32, viewport_h: f32) void {
-    const mat = snail.Mat4.ortho(0, viewport_w, viewport_h, 0, -1, 1);
-    vector_pipeline.drawPrimitives(vertices[0..num_floats], mat);
 }
 
 // ── Batch ──
@@ -422,98 +351,6 @@ export fn snail_batch_add_string_wrapped(
     return height;
 }
 
-export fn snail_vector_batch_add_rect(
-    buf: [*]f32,
-    buf_capacity: usize,
-    buf_len: *usize,
-    rect: SnailVectorRect,
-    fill: [*]const f32,
-    border: [*]const f32,
-    border_width: f32,
-) bool {
-    var batch = snail.VectorBatch.init(buf[buf_len.*..buf_capacity]);
-    const ok = batch.addRect(toVectorRect(rect), fill[0..4].*, border[0..4].*, border_width);
-    buf_len.* += batch.len;
-    return ok;
-}
-
-export fn snail_vector_batch_add_rounded_rect(
-    buf: [*]f32,
-    buf_capacity: usize,
-    buf_len: *usize,
-    rect: SnailVectorRect,
-    fill: [*]const f32,
-    border: [*]const f32,
-    border_width: f32,
-    corner_radius: f32,
-) bool {
-    var batch = snail.VectorBatch.init(buf[buf_len.*..buf_capacity]);
-    const ok = batch.addRoundedRect(toVectorRect(rect), fill[0..4].*, border[0..4].*, border_width, corner_radius);
-    buf_len.* += batch.len;
-    return ok;
-}
-
-export fn snail_vector_batch_add_ellipse(
-    buf: [*]f32,
-    buf_capacity: usize,
-    buf_len: *usize,
-    rect: SnailVectorRect,
-    fill: [*]const f32,
-    border: [*]const f32,
-    border_width: f32,
-) bool {
-    var batch = snail.VectorBatch.init(buf[buf_len.*..buf_capacity]);
-    const ok = batch.addEllipse(toVectorRect(rect), fill[0..4].*, border[0..4].*, border_width);
-    buf_len.* += batch.len;
-    return ok;
-}
-
-export fn snail_vector_batch_add_rect_ex(
-    buf: [*]f32,
-    buf_capacity: usize,
-    buf_len: *usize,
-    rect: SnailVectorRect,
-    fill: ?*const SnailVectorFillStyle,
-    stroke: ?*const SnailVectorStrokeStyle,
-    transform: ?*const SnailVectorTransform2D,
-) bool {
-    var batch = snail.VectorBatch.init(buf[buf_len.*..buf_capacity]);
-    const ok = batch.addRectStyled(toVectorRect(rect), toVectorFill(fill), toVectorStroke(stroke), toVectorTransform(transform));
-    buf_len.* += batch.len;
-    return ok;
-}
-
-export fn snail_vector_batch_add_rounded_rect_ex(
-    buf: [*]f32,
-    buf_capacity: usize,
-    buf_len: *usize,
-    rect: SnailVectorRect,
-    fill: ?*const SnailVectorFillStyle,
-    stroke: ?*const SnailVectorStrokeStyle,
-    corner_radius: f32,
-    transform: ?*const SnailVectorTransform2D,
-) bool {
-    var batch = snail.VectorBatch.init(buf[buf_len.*..buf_capacity]);
-    const ok = batch.addRoundedRectStyled(toVectorRect(rect), toVectorFill(fill), toVectorStroke(stroke), corner_radius, toVectorTransform(transform));
-    buf_len.* += batch.len;
-    return ok;
-}
-
-export fn snail_vector_batch_add_ellipse_ex(
-    buf: [*]f32,
-    buf_capacity: usize,
-    buf_len: *usize,
-    rect: SnailVectorRect,
-    fill: ?*const SnailVectorFillStyle,
-    stroke: ?*const SnailVectorStrokeStyle,
-    transform: ?*const SnailVectorTransform2D,
-) bool {
-    var batch = snail.VectorBatch.init(buf[buf_len.*..buf_capacity]);
-    const ok = batch.addEllipseStyled(toVectorRect(rect), toVectorFill(fill), toVectorStroke(stroke), toVectorTransform(transform));
-    buf_len.* += batch.len;
-    return ok;
-}
-
 // ── HarfBuzz ──
 
 const build_options = @import("build_options");
@@ -555,8 +392,4 @@ export fn snail_atlas_extend_glyphs_for_text(
 
 export fn snail_floats_per_glyph() usize {
     return snail.FLOATS_PER_GLYPH;
-}
-
-export fn snail_vector_floats_per_primitive() usize {
-    return snail.VECTOR_FLOATS_PER_PRIMITIVE;
 }
