@@ -5,6 +5,8 @@
 const std = @import("std");
 const snail = @import("snail.zig");
 const build_options = @import("build_options");
+const demo_banner = @import("demo_banner.zig");
+const demo_banner_scene = @import("demo_banner_scene.zig");
 const egl_offscreen = @import("render/egl_offscreen.zig");
 const vulkan_platform = if (build_options.enable_vulkan) @import("render/vulkan_platform.zig") else undefined;
 const gl = @import("render/gl.zig").gl;
@@ -363,6 +365,92 @@ fn runVectorScenario(
     std.debug.print("  {s:<32} {d:>5}  {d:>8.0} ({d:>6.1})  {d:>8.0} ({d:>6.1})\n", .{ name, shapes, s_fps, s_us, d_fps, d_us });
 }
 
+fn runBannerScene(
+    name: []const u8,
+    allocator: std.mem.Allocator,
+    scene_assets: *const demo_banner_scene.Assets,
+    renderer: *snail.Renderer,
+    text_buf: []f32,
+    path_buf: []f32,
+) !void {
+    const w: f32 = @floatFromInt(WIDTH);
+    const h: f32 = @floatFromInt(HEIGHT);
+    const text_mvp = snail.Mat4.ortho(0, WIDTH, 0, HEIGHT, -1, 1);
+    const path_mvp = snail.Mat4.ortho(0, WIDTH, HEIGHT, 0, -1, 1);
+    const layout = demo_banner.buildLayout(w, h, scene_assets.metrics);
+
+    var picture = try demo_banner_scene.buildPathPicture(allocator, layout);
+    defer picture.deinit();
+
+    var atlas_views: [7]snail.AtlasView = undefined;
+    scene_assets.uploadAtlases(renderer, &picture, &atlas_views);
+
+    var static_paths = snail.PathBatch.init(path_buf);
+    _ = static_paths.addPicture(&atlas_views[6], &picture);
+    const static_path_slice = static_paths.slice();
+    const shape_count = static_paths.shapeCount();
+
+    var static_text = snail.Batch.init(text_buf);
+    demo_banner_scene.populateTextBatch(&static_text, h, layout, scene_assets, &atlas_views);
+    const static_text_slice = static_text.slice();
+    const glyph_count = static_text.glyphCount();
+
+    const clear = demo_banner.clearColor();
+    gl.glClearColor(clear[0], clear[1], clear[2], clear[3]);
+
+    for (0..WARMUP) |_| {
+        gl.glClear(gl.GL_COLOR_BUFFER_BIT);
+        renderer.beginFrame();
+        if (shape_count > 0) renderer.drawPaths(static_path_slice, path_mvp, WIDTH, HEIGHT);
+        if (glyph_count > 0) renderer.draw(static_text_slice, text_mvp, WIDTH, HEIGHT);
+    }
+    gl.glFinish();
+    const t_s = nowNs();
+    for (0..FRAMES) |_| {
+        gl.glClear(gl.GL_COLOR_BUFFER_BIT);
+        renderer.beginFrame();
+        if (shape_count > 0) renderer.drawPaths(static_path_slice, path_mvp, WIDTH, HEIGHT);
+        if (glyph_count > 0) renderer.draw(static_text_slice, text_mvp, WIDTH, HEIGHT);
+    }
+    gl.glFinish();
+    const s_ns = nowNs() - t_s;
+
+    for (0..WARMUP) |_| {
+        gl.glClear(gl.GL_COLOR_BUFFER_BIT);
+        renderer.beginFrame();
+
+        var paths = snail.PathBatch.init(path_buf);
+        _ = paths.addPicture(&atlas_views[6], &picture);
+        if (paths.shapeCount() > 0) renderer.drawPaths(paths.slice(), path_mvp, WIDTH, HEIGHT);
+
+        var text = snail.Batch.init(text_buf);
+        demo_banner_scene.populateTextBatch(&text, h, layout, scene_assets, &atlas_views);
+        if (text.glyphCount() > 0) renderer.draw(text.slice(), text_mvp, WIDTH, HEIGHT);
+    }
+    gl.glFinish();
+    const t_d = nowNs();
+    for (0..FRAMES) |_| {
+        gl.glClear(gl.GL_COLOR_BUFFER_BIT);
+        renderer.beginFrame();
+
+        var paths = snail.PathBatch.init(path_buf);
+        _ = paths.addPicture(&atlas_views[6], &picture);
+        if (paths.shapeCount() > 0) renderer.drawPaths(paths.slice(), path_mvp, WIDTH, HEIGHT);
+
+        var text = snail.Batch.init(text_buf);
+        demo_banner_scene.populateTextBatch(&text, h, layout, scene_assets, &atlas_views);
+        if (text.glyphCount() > 0) renderer.draw(text.slice(), text_mvp, WIDTH, HEIGHT);
+    }
+    gl.glFinish();
+    const d_ns = nowNs() - t_d;
+
+    const s_fps = @as(f64, FRAMES) / (@as(f64, @floatFromInt(s_ns)) / 1e9);
+    const s_us = @as(f64, @floatFromInt(s_ns)) / 1000.0 / FRAMES;
+    const d_fps = @as(f64, FRAMES) / (@as(f64, @floatFromInt(d_ns)) / 1e9);
+    const d_us = @as(f64, @floatFromInt(d_ns)) / 1000.0 / FRAMES;
+    std.debug.print("  {s:<32} {d:>5}  {d:>5}  {d:>8.0} ({d:>6.1})  {d:>8.0} ({d:>6.1})\n", .{ name, glyph_count, shape_count, s_fps, s_us, d_fps, d_us });
+}
+
 // ── Vulkan scenario runners ──
 
 const runScenarioVulkan = if (build_options.enable_vulkan) runScenarioVulkanImpl else @compileError("vulkan disabled");
@@ -589,6 +677,99 @@ fn runVectorScenarioVulkan(
     std.debug.print("  {s:<32} {d:>5}  {d:>8.0} ({d:>6.1})  {d:>8.0} ({d:>6.1})\n", .{ name, shapes, s_fps, s_us, d_fps, d_us });
 }
 
+fn runBannerSceneVulkan(
+    name: []const u8,
+    allocator: std.mem.Allocator,
+    scene_assets: *const demo_banner_scene.Assets,
+    renderer: *snail.Renderer,
+    text_buf: []f32,
+    path_buf: []f32,
+) !void {
+    const w: f32 = @floatFromInt(WIDTH);
+    const h: f32 = @floatFromInt(HEIGHT);
+    const text_mvp = snail.Mat4.ortho(0, WIDTH, 0, HEIGHT, -1, 1);
+    const path_mvp = snail.Mat4.ortho(0, WIDTH, HEIGHT, 0, -1, 1);
+    const layout = demo_banner.buildLayout(w, h, scene_assets.metrics);
+
+    var picture = try demo_banner_scene.buildPathPicture(allocator, layout);
+    defer picture.deinit();
+
+    var atlas_views: [7]snail.AtlasView = undefined;
+    scene_assets.uploadAtlases(renderer, &picture, &atlas_views);
+
+    var static_paths = snail.PathBatch.init(path_buf);
+    _ = static_paths.addPicture(&atlas_views[6], &picture);
+    const static_path_slice = static_paths.slice();
+    const shape_count = static_paths.shapeCount();
+
+    var static_text = snail.Batch.init(text_buf);
+    demo_banner_scene.populateTextBatch(&static_text, h, layout, scene_assets, &atlas_views);
+    const static_text_slice = static_text.slice();
+    const glyph_count = static_text.glyphCount();
+
+    for (0..WARMUP) |_| {
+        const cmd = vulkan_platform.beginFrameOffscreen();
+        renderer.setCommandBuffer(cmd);
+        renderer.beginFrame();
+        if (shape_count > 0) renderer.drawPaths(static_path_slice, path_mvp, WIDTH, HEIGHT);
+        if (glyph_count > 0) renderer.draw(static_text_slice, text_mvp, WIDTH, HEIGHT);
+        vulkan_platform.endFrameOffscreen();
+    }
+    vulkan_platform.queueWaitIdle();
+    const t_s = nowNs();
+    for (0..FRAMES) |_| {
+        const cmd = vulkan_platform.beginFrameOffscreen();
+        renderer.setCommandBuffer(cmd);
+        renderer.beginFrame();
+        if (shape_count > 0) renderer.drawPaths(static_path_slice, path_mvp, WIDTH, HEIGHT);
+        if (glyph_count > 0) renderer.draw(static_text_slice, text_mvp, WIDTH, HEIGHT);
+        vulkan_platform.endFrameOffscreen();
+    }
+    vulkan_platform.queueWaitIdle();
+    const s_ns = nowNs() - t_s;
+
+    for (0..WARMUP) |_| {
+        const cmd = vulkan_platform.beginFrameOffscreen();
+        renderer.setCommandBuffer(cmd);
+        renderer.beginFrame();
+
+        var paths = snail.PathBatch.init(path_buf);
+        _ = paths.addPicture(&atlas_views[6], &picture);
+        if (paths.shapeCount() > 0) renderer.drawPaths(paths.slice(), path_mvp, WIDTH, HEIGHT);
+
+        var text = snail.Batch.init(text_buf);
+        demo_banner_scene.populateTextBatch(&text, h, layout, scene_assets, &atlas_views);
+        if (text.glyphCount() > 0) renderer.draw(text.slice(), text_mvp, WIDTH, HEIGHT);
+
+        vulkan_platform.endFrameOffscreen();
+    }
+    vulkan_platform.queueWaitIdle();
+    const t_d = nowNs();
+    for (0..FRAMES) |_| {
+        const cmd = vulkan_platform.beginFrameOffscreen();
+        renderer.setCommandBuffer(cmd);
+        renderer.beginFrame();
+
+        var paths = snail.PathBatch.init(path_buf);
+        _ = paths.addPicture(&atlas_views[6], &picture);
+        if (paths.shapeCount() > 0) renderer.drawPaths(paths.slice(), path_mvp, WIDTH, HEIGHT);
+
+        var text = snail.Batch.init(text_buf);
+        demo_banner_scene.populateTextBatch(&text, h, layout, scene_assets, &atlas_views);
+        if (text.glyphCount() > 0) renderer.draw(text.slice(), text_mvp, WIDTH, HEIGHT);
+
+        vulkan_platform.endFrameOffscreen();
+    }
+    vulkan_platform.queueWaitIdle();
+    const d_ns = nowNs() - t_d;
+
+    const s_fps = @as(f64, FRAMES) / (@as(f64, @floatFromInt(s_ns)) / 1e9);
+    const s_us = @as(f64, @floatFromInt(s_ns)) / 1000.0 / FRAMES;
+    const d_fps = @as(f64, FRAMES) / (@as(f64, @floatFromInt(d_ns)) / 1e9);
+    const d_us = @as(f64, @floatFromInt(d_ns)) / 1000.0 / FRAMES;
+    std.debug.print("  {s:<32} {d:>5}  {d:>5}  {d:>8.0} ({d:>6.1})  {d:>8.0} ({d:>6.1})\n", .{ name, glyph_count, shape_count, s_fps, s_us, d_fps, d_us });
+}
+
 // ── FreeType layout benchmark ──
 
 fn benchFreetypeLayout(font_data: []const u8) !struct { short: f64, sentence: f64, paragraph: f64, torture: f64 } {
@@ -736,6 +917,8 @@ pub fn main() !void {
         const vector_buf = try allocator.alloc(f32, 4096 * snail.FLOATS_PER_GLYPH);
         defer allocator.free(vector_buf);
         const mvp = snail.Mat4.ortho(0, WIDTH, 0, HEIGHT, -1, 1);
+        var banner_assets = try demo_banner_scene.Assets.init(allocator);
+        defer banner_assets.deinit();
 
         // ── Header ──
         std.debug.print(
@@ -874,6 +1057,14 @@ pub fn main() !void {
         , .{});
         try runVectorScenario("Primitive showcase", allocator, buildVectorShowcase, &renderer, vector_buf);
         try runVectorScenario("Primitive stress", allocator, buildVectorStress, &renderer, vector_buf);
+
+        std.debug.print(
+            \\
+            \\  ── Demo Scene (OpenGL) ──
+            \\  Scenario                          Glyphs  Shapes  static FPS (us)   dynamic FPS (us)
+            \\
+        , .{});
+        try runBannerScene("Demo banner", allocator, &banner_assets, &renderer, vbuf, vector_buf);
     }
 
     // ── Vulkan rendering section (requires -Dvulkan=true) ──
@@ -940,6 +1131,8 @@ pub fn main() !void {
         const vector_buf = try allocator.alloc(f32, 4096 * snail.FLOATS_PER_GLYPH);
         defer allocator.free(vector_buf);
         const mvp = snail.Mat4.ortho(0, WIDTH, 0, HEIGHT, -1, 1);
+        var banner_assets = try demo_banner_scene.Assets.init(allocator);
+        defer banner_assets.deinit();
 
         std.debug.print(
             \\
@@ -1015,6 +1208,14 @@ pub fn main() !void {
         , .{});
         try runVectorScenarioVulkan("Primitive showcase", allocator, buildVectorShowcase, &renderer, vector_buf);
         try runVectorScenarioVulkan("Primitive stress", allocator, buildVectorStress, &renderer, vector_buf);
+
+        std.debug.print(
+            \\
+            \\  ── Demo Scene (Vulkan) ──
+            \\  Scenario                          Glyphs  Shapes  static FPS (us)   dynamic FPS (us)
+            \\
+        , .{});
+        try runBannerSceneVulkan("Demo banner", allocator, &banner_assets, &renderer, vbuf, vector_buf);
     }
 
     std.debug.print(

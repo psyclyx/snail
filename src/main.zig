@@ -2,7 +2,7 @@ const std = @import("std");
 const snail = @import("snail.zig");
 const build_options = @import("build_options");
 const demo_banner = @import("demo_banner.zig");
-const assets = @import("assets");
+const demo_banner_scene = @import("demo_banner_scene.zig");
 const screenshot = @import("render/screenshot.zig");
 const subpixel_detect = @import("render/subpixel_detect.zig");
 
@@ -27,21 +27,8 @@ pub fn main() !void {
 }
 
 fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
-    var font = try snail.Font.init(assets.noto_sans_regular);
-    defer font.deinit();
-    var atlas = try snail.Atlas.initAscii(allocator, &font, &snail.ASCII_PRINTABLE);
-    defer atlas.deinit();
-
-    var arabic = try demo_banner.ScriptFont.init(allocator, assets.noto_sans_arabic, demo_banner.arabic_text);
-    defer arabic.deinit();
-    var devanagari = try demo_banner.ScriptFont.init(allocator, assets.noto_sans_devanagari, demo_banner.devanagari_text);
-    defer devanagari.deinit();
-    var mongolian = try demo_banner.ScriptFont.init(allocator, assets.noto_sans_mongolian, demo_banner.mongolian_text);
-    defer mongolian.deinit();
-    var thai = try demo_banner.ScriptFont.init(allocator, assets.noto_sans_thai, demo_banner.thai_text);
-    defer thai.deinit();
-    var emoji = try demo_banner.ScriptFont.init(allocator, assets.twemoji_mozilla, demo_banner.emoji_text);
-    defer emoji.deinit();
+    var scene_assets = try demo_banner_scene.Assets.init(allocator);
+    defer scene_assets.deinit();
 
     var renderer = if (use_vulkan)
         try snail.Renderer.initVulkan(vk_ctx)
@@ -53,7 +40,6 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
     const initial_order = platform.detectCurrentMonitorSubpixelOrder(sys_order);
     renderer.setSubpixelOrder(initial_order);
 
-    const metrics = demo_banner.measureMetrics(&atlas, &font);
     const vbuf = try allocator.alloc(f32, 10000 * snail.FLOATS_PER_GLYPH);
     defer allocator.free(vbuf);
     const path_buf = try allocator.alloc(f32, 256 * snail.FLOATS_PER_GLYPH);
@@ -78,7 +64,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
 
     std.debug.print("snail - GPU Bezier font rendering\n", .{});
     std.debug.print("{} glyphs (Latin), Backend: {s}, HarfBuzz: {s}\n", .{
-        atlas.glyph_map.count(),
+        scene_assets.latin_atlas.glyph_map.count(),
         renderer.backendName(),
         if (build_options.enable_harfbuzz) "ON" else "OFF",
     });
@@ -145,27 +131,16 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         const h: f32 = @floatFromInt(size[1]);
         if (w < 1.0 or h < 1.0) continue;
 
-        const layout = demo_banner.buildLayout(w, h, metrics);
+        const layout = demo_banner.buildLayout(w, h, scene_assets.metrics);
         const size_key = [2]u32{ size[0], size[1] };
         if (path_picture == null or size_key[0] != uploaded_size[0] or size_key[1] != uploaded_size[1]) {
             if (path_picture) |*picture| {
                 picture.deinit();
                 path_picture = null;
             }
-            var picture_builder = snail.PathPictureBuilder.init(allocator);
-            defer picture_builder.deinit();
-            try demo_banner.buildPathShowcase(&picture_builder, layout);
-            path_picture = try picture_builder.freeze(allocator);
+            path_picture = try demo_banner_scene.buildPathPicture(allocator, layout);
             uploaded_size = size_key;
-            renderer.uploadAtlases(&[_]*const snail.Atlas{
-                &atlas,
-                &arabic.atlas,
-                &devanagari.atlas,
-                &mongolian.atlas,
-                &thai.atlas,
-                &emoji.atlas,
-                &path_picture.?.atlas,
-            }, &atlas_views);
+            scene_assets.uploadAtlases(&renderer, &path_picture.?, &atlas_views);
         }
 
         const atlas_view = &atlas_views[0];
@@ -215,25 +190,12 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
             var si: usize = 0;
             while (sy > 0.0) {
                 const fs = stress_sizes[si % stress_sizes.len];
-                _ = batch.addString(atlas_view, &font, "The quick brown fox jumps over the lazy dog 0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ", 10.0, sy, fs, white);
+                _ = batch.addString(atlas_view, &scene_assets.latin_font, "The quick brown fox jumps over the lazy dog 0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ", 10.0, sy, fs, white);
                 sy -= fs * 1.3;
                 si += 1;
             }
         } else {
-            demo_banner.drawText(&batch, h, layout, .{
-                .latin_font = &font,
-                .latin_view = &atlas_views[0],
-                .arabic_font = &arabic,
-                .arabic_view = &atlas_views[1],
-                .devanagari_font = &devanagari,
-                .devanagari_view = &atlas_views[2],
-                .mongolian_font = &mongolian,
-                .mongolian_view = &atlas_views[3],
-                .thai_font = &thai,
-                .thai_view = &atlas_views[4],
-                .emoji_font = &emoji,
-                .emoji_view = &atlas_views[5],
-            });
+            demo_banner_scene.populateTextBatch(&batch, h, layout, &scene_assets, &atlas_views);
         }
 
         if (batch.glyphCount() > 0) {
@@ -243,12 +205,12 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
 
         {
             var hud = snail.Batch.init(vbuf[batch.len..]);
-            _ = hud.addString(atlas_view, &font, "snail demo", 10.0, 30.0, 12.0, gray);
+            _ = hud.addString(atlas_view, &scene_assets.latin_font, "snail demo", 10.0, 30.0, 12.0, gray);
             const hb_str = if (build_options.enable_harfbuzz) " | HarfBuzz ON" else "";
             const sp_name = renderer.subpixelOrder().name();
             var hud_line2_buf: [128]u8 = undefined;
             const hud_line2 = std.fmt.bufPrint(&hud_line2_buf, "Arrows pan | Z/X zoom | R rotate | S stress | L subpixel: {s}{s}", .{ sp_name, hb_str }) catch "Arrows pan | Z/X zoom | R rotate | S stress | L subpixel order";
-            _ = hud.addString(atlas_view, &font, hud_line2, 10.0, 14.0, 12.0, gray);
+            _ = hud.addString(atlas_view, &scene_assets.latin_font, hud_line2, 10.0, 14.0, 12.0, gray);
             if (hud.glyphCount() > 0) {
                 renderer.draw(hud.slice(), projection, w, h);
             }

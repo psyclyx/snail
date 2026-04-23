@@ -1,7 +1,7 @@
 const std = @import("std");
 const snail = @import("snail.zig");
 const demo_banner = @import("demo_banner.zig");
-const assets = @import("assets");
+const demo_banner_scene = @import("demo_banner_scene.zig");
 const screenshot = @import("render/screenshot.zig");
 const egl_offscreen = @import("render/egl_offscreen.zig");
 const gl = @import("render/gl.zig").gl;
@@ -35,27 +35,13 @@ pub fn main() !void {
     if (gl.glCheckFramebufferStatus(gl.GL_FRAMEBUFFER) != gl.GL_FRAMEBUFFER_COMPLETE) return error.FramebufferIncomplete;
     gl.glViewport(0, 0, SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT);
 
-    var font = try snail.Font.init(assets.noto_sans_regular);
-    defer font.deinit();
-    var atlas = try snail.Atlas.initAscii(allocator, &font, &snail.ASCII_PRINTABLE);
-    defer atlas.deinit();
-
-    var arabic = try demo_banner.ScriptFont.init(allocator, assets.noto_sans_arabic, demo_banner.arabic_text);
-    defer arabic.deinit();
-    var devanagari = try demo_banner.ScriptFont.init(allocator, assets.noto_sans_devanagari, demo_banner.devanagari_text);
-    defer devanagari.deinit();
-    var mongolian = try demo_banner.ScriptFont.init(allocator, assets.noto_sans_mongolian, demo_banner.mongolian_text);
-    defer mongolian.deinit();
-    var thai = try demo_banner.ScriptFont.init(allocator, assets.noto_sans_thai, demo_banner.thai_text);
-    defer thai.deinit();
-    var emoji = try demo_banner.ScriptFont.init(allocator, assets.twemoji_mozilla, demo_banner.emoji_text);
-    defer emoji.deinit();
+    var scene_assets = try demo_banner_scene.Assets.init(allocator);
+    defer scene_assets.deinit();
 
     var renderer = try snail.Renderer.init();
     defer renderer.deinit();
     renderer.setSubpixelOrder(.none);
 
-    const metrics = demo_banner.measureMetrics(&atlas, &font);
     const vbuf = try allocator.alloc(f32, 10000 * snail.FLOATS_PER_GLYPH);
     defer allocator.free(vbuf);
     const path_buf = try allocator.alloc(f32, 256 * snail.FLOATS_PER_GLYPH);
@@ -63,26 +49,15 @@ pub fn main() !void {
 
     const w: f32 = @floatFromInt(SCREENSHOT_WIDTH);
     const h: f32 = @floatFromInt(SCREENSHOT_HEIGHT);
-    const layout = demo_banner.buildLayout(w, h, metrics);
+    const layout = demo_banner.buildLayout(w, h, scene_assets.metrics);
     const projection = snail.Mat4.ortho(0, w, 0, h, -1, 1);
     const vector_projection = snail.Mat4.ortho(0, w, h, 0, -1, 1);
 
-    var picture_builder = snail.PathPictureBuilder.init(allocator);
-    defer picture_builder.deinit();
-    try demo_banner.buildPathShowcase(&picture_builder, layout);
-    var path_picture = try picture_builder.freeze(allocator);
+    var path_picture = try demo_banner_scene.buildPathPicture(allocator, layout);
     defer path_picture.deinit();
 
     var atlas_views: [7]snail.AtlasView = undefined;
-    renderer.uploadAtlases(&[_]*const snail.Atlas{
-        &atlas,
-        &arabic.atlas,
-        &devanagari.atlas,
-        &mongolian.atlas,
-        &thai.atlas,
-        &emoji.atlas,
-        &path_picture.atlas,
-    }, &atlas_views);
+    scene_assets.uploadAtlases(&renderer, &path_picture, &atlas_views);
 
     const clear = demo_banner.clearColor();
     gl.glClearColor(clear[0], clear[1], clear[2], clear[3]);
@@ -97,20 +72,7 @@ pub fn main() !void {
     }
 
     var batch = snail.Batch.init(vbuf);
-    demo_banner.drawText(&batch, h, layout, .{
-        .latin_font = &font,
-        .latin_view = &atlas_views[0],
-        .arabic_font = &arabic,
-        .arabic_view = &atlas_views[1],
-        .devanagari_font = &devanagari,
-        .devanagari_view = &atlas_views[2],
-        .mongolian_font = &mongolian,
-        .mongolian_view = &atlas_views[3],
-        .thai_font = &thai,
-        .thai_view = &atlas_views[4],
-        .emoji_font = &emoji,
-        .emoji_view = &atlas_views[5],
-    });
+    demo_banner_scene.populateTextBatch(&batch, h, layout, &scene_assets, &atlas_views);
     if (batch.glyphCount() > 0) {
         renderer.draw(batch.slice(), projection, w, h);
     }
