@@ -39,7 +39,17 @@ pub const Assets = struct {
             .mongolian = mongolian,
             .thai = thai,
             .emoji = emoji,
-            .metrics = demo_banner.measureMetrics(&latin_atlas, &latin_font),
+            .metrics = demo_banner.measureMetrics(
+                &latin_atlas,
+                &latin_font,
+                .{
+                    &arabic.font,
+                    &devanagari.font,
+                    &thai.font,
+                    &mongolian.font,
+                },
+                &emoji.font,
+            ),
         };
     }
 
@@ -105,5 +115,5 @@ pub fn populateTextBatch(
     scene_assets: *const Assets,
     atlas_views: *const [7]snail.AtlasView,
 ) void {
-    demo_banner.drawText(batch, h, layout, scene_assets.textResources(atlas_views));
+    demo_banner.drawText(batch, h, layout, scene_assets.metrics, scene_assets.textResources(atlas_views));
 }

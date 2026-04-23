@@ -27,6 +27,34 @@ pub const stage_pill_labels = [_][]const u8{
     "cubic",
 };
 
+const badge_font_size: f32 = 13.0;
+const scripts_heading_font_size: f32 = 13.0;
+const script_label_font_size: f32 = 11.0;
+const emoji_font_size: f32 = 26.0;
+const script_label_inset_x: f32 = 18.0;
+const script_label_gap: f32 = 24.0;
+const script_row_gap: f32 = 6.0;
+const script_row_vertical_pad: f32 = 14.0;
+const emoji_pill_vertical_pad: f32 = 10.0;
+const script_band_top_inset: f32 = 16.0;
+const script_band_bottom_inset: f32 = 14.0;
+const emoji_pill_gap: f32 = 10.0;
+const emoji_label_text = "Emoji";
+
+const ScriptRowSpec = struct {
+    label: []const u8,
+    text: []const u8,
+    color: [4]f32,
+    size: f32,
+};
+
+const script_row_specs = [_]ScriptRowSpec{
+    .{ .label = "Arabic", .text = arabic_text, .color = sage, .size = 27.0 },
+    .{ .label = "Devanagari", .text = devanagari_text, .color = teal, .size = 24.0 },
+    .{ .label = "Thai", .text = thai_text, .color = sand, .size = 26.0 },
+    .{ .label = "Mongolian", .text = mongolian_text, .color = blush, .size = 27.0 },
+};
+
 const ink = [4]f32{ 0.95, 0.97, 0.99, 1.0 };
 const mist = [4]f32{ 0.66, 0.75, 0.82, 1.0 };
 const slate = [4]f32{ 0.45, 0.53, 0.60, 1.0 };
@@ -59,6 +87,13 @@ pub const ScriptFont = struct {
 
 pub const TextMetrics = struct {
     badge_advance: f32,
+    script_label_column_w: f32,
+    script_label_extents: LineExtents,
+    script_row_heights: [script_row_specs.len]f32,
+    script_sample_extents: [script_row_specs.len]LineExtents,
+    emoji_pill_h: f32,
+    emoji_extents: LineExtents,
+    script_band_min_h: f32,
 };
 
 pub const Layout = struct {
@@ -72,6 +107,7 @@ pub const Layout = struct {
     emoji_pill: snail.VectorRect,
     script_rows: [4]snail.VectorRect,
     stage_pills: [3]snail.VectorRect,
+    script_text_x: f32,
 };
 
 pub const TextResources = struct {
@@ -106,7 +142,114 @@ fn textYFromTop(h: f32, top_y: f32) f32 {
     return h - top_y;
 }
 
-fn lineExtents(font: *const snail.Font, font_size: f32) struct { ascent: f32, descent: f32 } {
+fn perpLeft(v: snail.Vec2) snail.Vec2 {
+    return .{ .x = -v.y, .y = v.x };
+}
+
+fn addFilledQuadraticRibbon(
+    builder: *snail.PathPictureBuilder,
+    start: snail.Vec2,
+    control: snail.Vec2,
+    end: snail.Vec2,
+    half_width: f32,
+    color: [4]f32,
+    transform: snail.VectorTransform2D,
+) !void {
+    const start_tangent = snail.Vec2.normalize(snail.Vec2.sub(control, start));
+    const end_tangent = snail.Vec2.normalize(snail.Vec2.sub(end, control));
+    const blended_tangent = snail.Vec2.add(start_tangent, end_tangent);
+    const mid_tangent = if (snail.Vec2.length(blended_tangent) > 1e-5)
+        snail.Vec2.normalize(blended_tangent)
+    else
+        snail.Vec2.normalize(snail.Vec2.sub(end, start));
+
+    const start_normal = snail.Vec2.scale(perpLeft(start_tangent), half_width);
+    const mid_normal = snail.Vec2.scale(perpLeft(mid_tangent), half_width);
+    const end_normal = snail.Vec2.scale(perpLeft(end_tangent), half_width);
+    const tip_cap = snail.Vec2.scale(end_tangent, half_width * 0.9);
+
+    var ribbon = snail.VectorPath.init(builder.allocator);
+    defer ribbon.deinit();
+    try ribbon.moveTo(snail.Vec2.add(start, start_normal));
+    try ribbon.quadTo(snail.Vec2.add(control, mid_normal), snail.Vec2.add(end, end_normal));
+    try ribbon.quadTo(snail.Vec2.add(end, tip_cap), snail.Vec2.sub(end, end_normal));
+    try ribbon.quadTo(snail.Vec2.sub(control, mid_normal), snail.Vec2.sub(start, start_normal));
+    try ribbon.close();
+    try builder.addFilledPath(&ribbon, .{ .color = color }, transform);
+}
+
+const TextBounds = struct {
+    min_x: f32,
+    min_y: f32,
+    max_x: f32,
+    max_y: f32,
+
+    fn height(self: @This()) f32 {
+        return self.max_y - self.min_y;
+    }
+
+    fn empty() @This() {
+        return .{
+            .min_x = 0.0,
+            .min_y = 0.0,
+            .max_x = 0.0,
+            .max_y = 0.0,
+        };
+    }
+
+    fn include(self: *@This(), x: f32, y: f32) void {
+        self.min_x = @min(self.min_x, x);
+        self.min_y = @min(self.min_y, y);
+        self.max_x = @max(self.max_x, x);
+        self.max_y = @max(self.max_y, y);
+    }
+};
+
+const MeasuredText = struct {
+    advance: f32,
+    bounds: TextBounds,
+};
+
+const LineExtents = struct {
+    ascent: f32,
+    descent: f32,
+
+    fn height(self: @This()) f32 {
+        return self.ascent + self.descent;
+    }
+};
+
+fn measureText(atlas_like: anytype, font: *const snail.Font, text: []const u8, font_size: f32) MeasuredText {
+    var probe_buf: [128 * snail.FLOATS_PER_GLYPH]f32 = undefined;
+    var probe = snail.Batch.init(&probe_buf);
+    const advance = probe.addString(atlas_like, font, text, 0, 0, font_size, ink);
+    if (probe.glyphCount() == 0) return .{
+        .advance = advance,
+        .bounds = TextBounds.empty(),
+    };
+
+    var bounds = TextBounds{
+        .min_x = std.math.inf(f32),
+        .min_y = std.math.inf(f32),
+        .max_x = -std.math.inf(f32),
+        .max_y = -std.math.inf(f32),
+    };
+    const vertices = probe.slice();
+    var glyph_start: usize = 0;
+    while (glyph_start < vertices.len) : (glyph_start += snail.FLOATS_PER_GLYPH) {
+        inline for (0..snail.VERTICES_PER_GLYPH) |vertex_index| {
+            const base = glyph_start + vertex_index * snail.FLOATS_PER_VERTEX;
+            bounds.include(vertices[base], vertices[base + 1]);
+        }
+    }
+
+    return .{
+        .advance = advance,
+        .bounds = bounds,
+    };
+}
+
+fn lineExtents(font: *const snail.Font, font_size: f32) LineExtents {
     const scale = font_size / @as(f32, @floatFromInt(font.unitsPerEm()));
     const metrics = font.lineMetrics() catch return .{
         .ascent = font_size * 0.82,
@@ -118,29 +261,54 @@ fn lineExtents(font: *const snail.Font, font_size: f32) struct { ascent: f32, de
     };
 }
 
-fn centeredBaselineTop(
+fn centeredBaselineTopFromExtents(extents: LineExtents, rect: snail.VectorRect) f32 {
+    const content_h = extents.height();
+    return rect.y + (rect.h - content_h) * 0.5 + extents.ascent;
+}
+
+pub fn measureMetrics(
+    atlas_like: anytype,
     font: *const snail.Font,
-    font_size: f32,
-    rect: snail.VectorRect,
-    top_pad: f32,
-    bottom_pad: f32,
-    baseline_shift: f32,
-) f32 {
-    const extents = lineExtents(font, font_size);
-    const content_h = extents.ascent + extents.descent;
-    const usable_h = @max(rect.h - top_pad - bottom_pad, content_h);
-    return rect.y + top_pad + (usable_h - content_h) * 0.5 + extents.ascent + baseline_shift;
-}
-
-fn measureStringAdvance(atlas_like: anytype, font: *const snail.Font, text: []const u8, font_size: f32) f32 {
-    var probe_buf: [128 * snail.FLOATS_PER_GLYPH]f32 = undefined;
-    var probe = snail.Batch.init(&probe_buf);
-    return probe.addString(atlas_like, font, text, 0, 0, font_size, ink);
-}
-
-pub fn measureMetrics(atlas_like: anytype, font: *const snail.Font) TextMetrics {
+    script_fonts: [script_row_specs.len]*const snail.Font,
+    emoji_font: *const snail.Font,
+) TextMetrics {
+    const badge = measureText(atlas_like, font, badge_text, badge_font_size);
+    const emoji_label = measureText(atlas_like, font, emoji_label_text, script_label_font_size);
+    const emoji_sample = measureText(atlas_like, emoji_font, emoji_text, emoji_font_size);
+    const label_extents = lineExtents(font, script_label_font_size);
+    const emoji_extents = lineExtents(emoji_font, emoji_font_size);
+    var script_row_heights: [script_row_specs.len]f32 = undefined;
+    var script_sample_extents: [script_row_specs.len]LineExtents = undefined;
+    var max_label_advance: f32 = emoji_label.advance;
+    var script_band_content_h: f32 = 0.0;
+    inline for (script_row_specs, script_fonts, 0..) |spec, script_font, i| {
+        const label = measureText(atlas_like, font, spec.label, script_label_font_size);
+        const sample = measureText(atlas_like, script_font, spec.text, spec.size);
+        const sample_extents = lineExtents(script_font, spec.size);
+        const row_h = snapPx(@max(label.bounds.height(), sample.bounds.height()) + script_row_vertical_pad * 2.0);
+        script_sample_extents[i] = sample_extents;
+        script_row_heights[i] = row_h;
+        max_label_advance = @max(max_label_advance, label.advance);
+        script_band_content_h += row_h;
+    }
+    const emoji_pill_h = snapPx(@max(emoji_label.bounds.height(), emoji_sample.bounds.height()) + emoji_pill_vertical_pad * 2.0);
+    const script_band_min_h = snapPx(
+        script_band_top_inset +
+            script_band_content_h +
+            script_row_gap * @as(f32, @floatFromInt(script_row_specs.len - 1)) +
+            emoji_pill_gap +
+            emoji_pill_h +
+            script_band_bottom_inset,
+    );
     return .{
-        .badge_advance = measureStringAdvance(atlas_like, font, badge_text, 13.0),
+        .badge_advance = badge.advance,
+        .script_label_column_w = snapPx(max_label_advance + script_label_gap),
+        .script_label_extents = label_extents,
+        .script_row_heights = script_row_heights,
+        .script_sample_extents = script_sample_extents,
+        .emoji_pill_h = emoji_pill_h,
+        .emoji_extents = emoji_extents,
+        .script_band_min_h = script_band_min_h,
     };
 }
 
@@ -159,7 +327,7 @@ pub fn buildLayout(w: f32, h: f32, metrics: TextMetrics) Layout {
         .w = std.math.clamp(metrics.badge_advance + 40.0, 220.0, 260.0),
         .h = 34.0,
     });
-    const script_band_h = std.math.clamp(frame.h * 0.34, 236.0, 256.0);
+    const script_band_h = snapPx(@max(metrics.script_band_min_h, std.math.clamp(frame.h * 0.34, 236.0, 320.0)));
     const script_band = snapRect(.{
         .x = frame.x + 18.0,
         .y = frame.y + frame.h - script_band_h - 14.0,
@@ -173,26 +341,29 @@ pub fn buildLayout(w: f32, h: f32, metrics: TextMetrics) Layout {
         .w = std.math.clamp(frame.w * 0.36, 420.0, 600.0),
         .h = specimen_h,
     });
-    const emoji_pill = snapRect(.{
-        .x = script_band.x + 18.0,
-        .y = script_band.y + script_band.h - 50.0,
-        .w = script_band.w - 36.0,
-        .h = 36.0,
-    });
-
-    const script_top = script_band.y + 16.0;
-    const script_bottom = emoji_pill.y - 12.0;
-    const row_gap = 6.0;
-    const row_h = (script_bottom - script_top - row_gap * 3.0) / 4.0;
+    var script_inner_h: f32 = emoji_pill_gap + metrics.emoji_pill_h;
+    inline for (metrics.script_row_heights, 0..) |row_h, i| {
+        script_inner_h += row_h;
+        if (i + 1 < metrics.script_row_heights.len) script_inner_h += script_row_gap;
+    }
+    const script_top = script_band.y + script_band_top_inset + (script_band.h - metrics.script_band_min_h) * 0.5;
     var script_rows: [4]snail.VectorRect = undefined;
-    for (&script_rows, 0..) |*row, i| {
+    var row_y = script_top;
+    for (&script_rows, metrics.script_row_heights) |*row, row_h| {
         row.* = snapRect(.{
             .x = script_band.x + 18.0,
-            .y = script_top + @as(f32, @floatFromInt(i)) * (row_h + row_gap),
+            .y = row_y,
             .w = script_band.w - 36.0,
             .h = row_h,
         });
+        row_y += row_h + script_row_gap;
     }
+    const emoji_pill = snapRect(.{
+        .x = script_band.x + 18.0,
+        .y = script_top + script_inner_h - metrics.emoji_pill_h,
+        .w = script_band.w - 36.0,
+        .h = metrics.emoji_pill_h,
+    });
 
     const path_label_area = snapRect(.{
         .x = specimen_panel.x + specimen_panel.w + 34.0,
@@ -227,18 +398,23 @@ pub fn buildLayout(w: f32, h: f32, metrics: TextMetrics) Layout {
         .emoji_pill = emoji_pill,
         .script_rows = script_rows,
         .stage_pills = stage_pills,
+        .script_text_x = script_band.x + 18.0 + script_label_inset_x + metrics.script_label_column_w,
     };
 }
 
-pub fn drawText(batch: *snail.Batch, h: f32, layout: Layout, resources: TextResources) void {
+pub fn drawText(batch: *snail.Batch, h: f32, layout: Layout, metrics: TextMetrics, resources: TextResources) void {
     const hero_x = layout.frame.x + 30.0;
     const title_size = std.math.clamp(layout.frame.w * 0.11, 88.0, 118.0);
     const subtitle_size = std.math.clamp(layout.frame.w * 0.019, 19.0, 26.0);
     const ligature_size = std.math.clamp(layout.specimen_panel.w * 0.072, 34.0, 48.0);
     const pangram_size = std.math.clamp(layout.specimen_panel.w * 0.034, 18.0, 22.0);
-    const emoji_baseline_top = centeredBaselineTop(&resources.emoji_font.font, 26.0, layout.emoji_pill, 5.0, 6.0, 1.0);
+    const badge_extents = lineExtents(resources.latin_font, badge_font_size);
+    const stage_pill_extents = lineExtents(resources.latin_font, 12.0);
+    const badge_baseline_top = centeredBaselineTopFromExtents(badge_extents, layout.badge_pill);
+    const emoji_label_baseline_top = centeredBaselineTopFromExtents(metrics.script_label_extents, layout.emoji_pill);
+    const emoji_baseline_top = centeredBaselineTopFromExtents(metrics.emoji_extents, layout.emoji_pill);
 
-    _ = batch.addString(resources.latin_view, resources.latin_font, badge_text, layout.badge_pill.x + 16.0, textYFromTop(h, layout.badge_pill.y + 22.0), 13.0, teal);
+    _ = batch.addString(resources.latin_view, resources.latin_font, badge_text, layout.badge_pill.x + 16.0, textYFromTop(h, badge_baseline_top), badge_font_size, teal);
     _ = batch.addString(resources.latin_view, resources.latin_font, title_text, hero_x, textYFromTop(h, layout.frame.y + 116.0), title_size, ink);
     _ = batch.addString(resources.latin_view, resources.latin_font, subtitle_text, hero_x, textYFromTop(h, layout.frame.y + 158.0), subtitle_size, mist);
     _ = batch.addString(resources.latin_view, resources.latin_font, hero_meta_text, hero_x, textYFromTop(h, layout.frame.y + 192.0), 14.0, slate);
@@ -251,38 +427,33 @@ pub fn drawText(batch: *snail.Batch, h: f32, layout: Layout, resources: TextReso
     _ = batch.addString(resources.latin_view, resources.latin_font, pangram_b_text, specimen_x, textYFromTop(h, layout.specimen_panel.y + 162.0), 16.0, ink);
     _ = batch.addString(resources.latin_view, resources.latin_font, specimen_footer_text, specimen_x, textYFromTop(h, layout.specimen_panel.y + layout.specimen_panel.h - 14.0), 12.0, slate);
 
-    _ = batch.addString(resources.latin_view, resources.latin_font, scripts_heading_text, layout.script_band.x + 12.0, textYFromTop(h, layout.script_band.y - 12.0), 13.0, teal);
+    _ = batch.addString(resources.latin_view, resources.latin_font, scripts_heading_text, layout.script_band.x + 12.0, textYFromTop(h, layout.script_band.y - 12.0), scripts_heading_font_size, teal);
 
     const script_items = [_]struct {
-        label: []const u8,
-        text: []const u8,
+        spec: ScriptRowSpec,
         font: *const ScriptFont,
         view: *const snail.AtlasView,
-        color: [4]f32,
-        size: f32,
-        top_pad: f32,
-        bottom_pad: f32,
-        baseline_shift: f32,
     }{
-        .{ .label = "Arabic", .text = arabic_text, .font = resources.arabic_font, .view = resources.arabic_view, .color = sage, .size = 27.0, .top_pad = 7.0, .bottom_pad = 6.0, .baseline_shift = 6.0 },
-        .{ .label = "Devanagari", .text = devanagari_text, .font = resources.devanagari_font, .view = resources.devanagari_view, .color = teal, .size = 24.0, .top_pad = 9.0, .bottom_pad = 7.0, .baseline_shift = 7.0 },
-        .{ .label = "Thai", .text = thai_text, .font = resources.thai_font, .view = resources.thai_view, .color = sand, .size = 26.0, .top_pad = 8.0, .bottom_pad = 6.0, .baseline_shift = 5.5 },
-        .{ .label = "Mongolian", .text = mongolian_text, .font = resources.mongolian_font, .view = resources.mongolian_view, .color = blush, .size = 27.0, .top_pad = 7.0, .bottom_pad = 7.0, .baseline_shift = 4.0 },
+        .{ .spec = script_row_specs[0], .font = resources.arabic_font, .view = resources.arabic_view },
+        .{ .spec = script_row_specs[1], .font = resources.devanagari_font, .view = resources.devanagari_view },
+        .{ .spec = script_row_specs[2], .font = resources.thai_font, .view = resources.thai_view },
+        .{ .spec = script_row_specs[3], .font = resources.mongolian_font, .view = resources.mongolian_view },
     };
-    for (layout.script_rows, script_items) |row, item| {
-        _ = batch.addString(resources.latin_view, resources.latin_font, item.label, row.x + 18.0, textYFromTop(h, row.y + 16.0), 11.0, slate);
-        const baseline_top = centeredBaselineTop(&item.font.font, item.size, row, item.top_pad, item.bottom_pad, item.baseline_shift);
-        _ = batch.addString(item.view, &item.font.font, item.text, row.x + 170.0, textYFromTop(h, baseline_top), item.size, item.color);
+    for (layout.script_rows, script_items, 0..) |row, item, i| {
+        const label_baseline_top = centeredBaselineTopFromExtents(metrics.script_label_extents, row);
+        const sample_baseline_top = centeredBaselineTopFromExtents(metrics.script_sample_extents[i], row);
+        _ = batch.addString(resources.latin_view, resources.latin_font, item.spec.label, row.x + script_label_inset_x, textYFromTop(h, label_baseline_top), script_label_font_size, slate);
+        _ = batch.addString(item.view, &item.font.font, item.spec.text, layout.script_text_x, textYFromTop(h, sample_baseline_top), item.spec.size, item.spec.color);
     }
 
-    _ = batch.addString(resources.latin_view, resources.latin_font, "Emoji", layout.emoji_pill.x + 16.0, textYFromTop(h, layout.emoji_pill.y + 19.0), 11.0, slate);
-    _ = batch.addString(resources.emoji_view, &resources.emoji_font.font, emoji_text, layout.emoji_pill.x + 142.0, textYFromTop(h, emoji_baseline_top), 26.0, ink);
+    _ = batch.addString(resources.latin_view, resources.latin_font, emoji_label_text, layout.emoji_pill.x + script_label_inset_x, textYFromTop(h, emoji_label_baseline_top), script_label_font_size, slate);
+    _ = batch.addString(resources.emoji_view, &resources.emoji_font.font, emoji_text, layout.script_text_x, textYFromTop(h, emoji_baseline_top), emoji_font_size, ink);
 
     _ = batch.addString(resources.latin_view, resources.latin_font, stage_label_text, layout.path_label_area.x, textYFromTop(h, layout.path_label_area.y + 12.0), 12.0, teal);
     _ = batch.addString(resources.latin_view, resources.latin_font, stage_title_text, layout.path_label_area.x, textYFromTop(h, layout.path_label_area.y + 44.0), 23.0, ink);
     _ = batch.addString(resources.latin_view, resources.latin_font, stage_caption_text, layout.path_label_area.x, textYFromTop(h, layout.path_label_area.y + 70.0), 14.0, mist);
     for (layout.stage_pills, stage_pill_labels) |pill, label| {
-        _ = batch.addString(resources.latin_view, resources.latin_font, label, pill.x + 16.0, textYFromTop(h, pill.y + 19.0), 12.0, ink);
+        _ = batch.addString(resources.latin_view, resources.latin_font, label, pill.x + 16.0, textYFromTop(h, centeredBaselineTopFromExtents(stage_pill_extents, pill)), 12.0, ink);
     }
 }
 
@@ -507,27 +678,24 @@ fn addVectorSnail(builder: *snail.PathPictureBuilder, snail_stage: snail.VectorR
         .join = .round,
     }, transform);
 
-    var stalk_a = snail.VectorPath.init(builder.allocator);
-    defer stalk_a.deinit();
-    try stalk_a.moveTo(.{ .x = 308.0, .y = 100.0 });
-    try stalk_a.quadTo(.{ .x = 316.0, .y = 76.0 }, .{ .x = 334.0, .y = 58.0 });
-    try builder.addStrokedPath(&stalk_a, .{
-        .color = .{ 0.86, 0.87, 0.80, 0.92 },
-        .width = 4.0,
-        .cap = .round,
-        .join = .round,
-    }, transform);
-
-    var stalk_b = snail.VectorPath.init(builder.allocator);
-    defer stalk_b.deinit();
-    try stalk_b.moveTo(.{ .x = 294.0, .y = 102.0 });
-    try stalk_b.quadTo(.{ .x = 298.0, .y = 80.0 }, .{ .x = 306.0, .y = 64.0 });
-    try builder.addStrokedPath(&stalk_b, .{
-        .color = .{ 0.86, 0.87, 0.80, 0.82 },
-        .width = 3.4,
-        .cap = .round,
-        .join = .round,
-    }, transform);
+    try addFilledQuadraticRibbon(
+        builder,
+        .{ .x = 308.0, .y = 100.0 },
+        .{ .x = 316.0, .y = 76.0 },
+        .{ .x = 334.0, .y = 58.0 },
+        2.0,
+        .{ 0.86, 0.87, 0.80, 0.92 },
+        transform,
+    );
+    try addFilledQuadraticRibbon(
+        builder,
+        .{ .x = 294.0, .y = 102.0 },
+        .{ .x = 298.0, .y = 80.0 },
+        .{ .x = 306.0, .y = 64.0 },
+        2.0,
+        .{ 0.86, 0.87, 0.80, 0.92 },
+        transform,
+    );
 
     try builder.addFilledEllipse(.{ .x = 330.0, .y = 54.0, .w = 9.0, .h = 9.0 }, .{ .color = .{ 0.98, 0.96, 0.90, 0.95 } }, transform);
     try builder.addFilledEllipse(.{ .x = 303.0, .y = 61.0, .w = 7.0, .h = 7.0 }, .{ .color = .{ 0.98, 0.96, 0.90, 0.88 } }, transform);
