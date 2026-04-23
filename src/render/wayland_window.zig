@@ -30,6 +30,7 @@ pub const Window = struct {
 
     width: u32,
     height: u32,
+    pending_geometry_commit: bool = true,
     resized: bool = false,
     close_requested: bool = false,
     key_down: [256]bool = .{false} ** 256,
@@ -74,6 +75,7 @@ pub const Window = struct {
 
         _ = c.xdg_toplevel_add_listener(self.toplevel, &xdg_toplevel_listener, self);
         c.xdg_toplevel_set_title(self.toplevel, title);
+        c.xdg_toplevel_set_app_id(self.toplevel, "snail-demo");
         c.wl_surface_commit(self.surface);
 
         if (c.wl_display_roundtrip(display) < 0) return error.WaylandRoundtripFailed;
@@ -203,8 +205,19 @@ const wm_base_listener = c.xdg_wm_base_listener{
 };
 
 fn xdgSurfaceConfigure(data: ?*anyopaque, xdg_surface: ?*c.xdg_surface, serial: u32) callconv(.c) void {
+    const self = selfFrom(data);
     c.xdg_surface_ack_configure(xdg_surface.?, serial);
-    _ = selfFrom(data);
+    if (self.pending_geometry_commit and self.width > 0 and self.height > 0) {
+        c.xdg_surface_set_window_geometry(
+            xdg_surface.?,
+            0,
+            0,
+            @intCast(self.width),
+            @intCast(self.height),
+        );
+        c.wl_surface_commit(self.surface);
+        self.pending_geometry_commit = false;
+    }
 }
 
 const xdg_surface_listener = c.xdg_surface_listener{
@@ -219,6 +232,7 @@ fn xdgToplevelConfigure(
     _: ?*c.wl_array,
 ) callconv(.c) void {
     const self = selfFrom(data);
+    self.pending_geometry_commit = true;
     if (width > 0 and height > 0) {
         const w: u32 = @intCast(width);
         const h: u32 = @intCast(height);
