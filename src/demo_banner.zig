@@ -9,18 +9,18 @@ pub const emoji_text = "\xe2\x9c\xa8 \xf0\x9f\x8c\x8d \xf0\x9f\x8e\xa8 \xf0\x9f\
 
 pub const title_text = "snail";
 pub const badge_text = "GPU text + paths";
-pub const subtitle_text = "ligatures / scripts / emoji / paths";
-pub const hero_meta_text = "Latin / RTL / vertical / color";
+pub const subtitle_text = "ligatures / pangrams / scripts / emoji / paths";
+pub const hero_meta_text = "quartz / velvet / zinc / jazz";
 pub const ligature_label_text = "Latin";
 pub const ligature_text = "office affine shuffle flow";
 pub const ligature_caption_text = "ffi / fi / ffl / fl";
-pub const kerning_text = "AV / To / Ta / We";
-pub const numeral_text = "0123456789";
-pub const specimen_footer_text = "kern / gradient / stroke";
+pub const pangram_a_text = "Sphinx of black quartz, judge my vow.";
+pub const pangram_b_text = "Jived fox nymph grabs quick waltz.";
+pub const specimen_footer_text = "AV / To / ffi / 0123456789";
 pub const scripts_heading_text = "Scripts / emoji";
 pub const stage_label_text = "Paths";
 pub const stage_title_text = "fill / gradient / stroke";
-pub const stage_caption_text = "frozen / instanced";
+pub const stage_caption_text = "ribbon / orbit / shell";
 pub const stage_pill_labels = [_][]const u8{
     "round rect",
     "ellipse",
@@ -63,10 +63,11 @@ pub const TextMetrics = struct {
 
 pub const Layout = struct {
     canvas: snail.VectorRect,
-    hero_panel: snail.VectorRect,
     specimen_panel: snail.VectorRect,
-    script_panel: snail.VectorRect,
-    stage_panel: snail.VectorRect,
+    frame: snail.VectorRect,
+    script_band: snail.VectorRect,
+    snail_stage: snail.VectorRect,
+    path_label_area: snail.VectorRect,
     badge_pill: snail.VectorRect,
     emoji_pill: snail.VectorRect,
     script_rows: [4]snail.VectorRect,
@@ -153,77 +154,82 @@ pub fn measureMetrics(atlas_like: anytype, font: *const snail.Font) TextMetrics 
 }
 
 pub fn buildLayout(w: f32, h: f32, metrics: TextMetrics) Layout {
-    const margin_x = snapPx(@max(28.0, w * 0.022));
-    const margin_y = snapPx(@max(28.0, h * 0.045));
-    const gutter = snapPx(@max(22.0, w * 0.015));
-    const hero_w = snapPx(std.math.clamp(w * 0.39, 440.0, 710.0));
-    const hero_panel = snapRect(.{
+    const margin_x = snapPx(@max(26.0, w * 0.02));
+    const margin_y = snapPx(@max(26.0, h * 0.05));
+    const frame = snapRect(.{
         .x = margin_x,
         .y = margin_y,
-        .w = hero_w,
+        .w = w - margin_x * 2.0,
         .h = h - margin_y * 2.0,
     });
-    const right_x = hero_panel.x + hero_panel.w + gutter;
-    const right_w = w - right_x - margin_x;
-    const script_panel = snapRect(.{
-        .x = right_x,
-        .y = margin_y + 10.0,
-        .w = right_w,
-        .h = std.math.clamp(h * 0.44, 320.0, 380.0),
-    });
-    const stage_panel = snapRect(.{
-        .x = right_x + 20.0,
-        .y = script_panel.y + script_panel.h + 22.0,
-        .w = right_w - 20.0,
-        .h = h - (script_panel.y + script_panel.h + 22.0) - margin_y,
-    });
-    const specimen_panel = snapRect(.{
-        .x = hero_panel.x + 24.0,
-        .y = hero_panel.y + hero_panel.h - std.math.clamp(hero_panel.h * 0.42, 260.0, 320.0) - 24.0,
-        .w = hero_panel.w - 48.0,
-        .h = std.math.clamp(hero_panel.h * 0.42, 260.0, 320.0),
-    });
     const badge_pill = snapRect(.{
-        .x = hero_panel.x + 26.0,
-        .y = hero_panel.y + 24.0,
-        .w = std.math.clamp(metrics.badge_advance + 40.0, 220.0, hero_panel.w - 80.0),
+        .x = frame.x + 28.0,
+        .y = frame.y + 22.0,
+        .w = std.math.clamp(metrics.badge_advance + 40.0, 220.0, 260.0),
         .h = 34.0,
+    });
+    const script_band_h = std.math.clamp(frame.h * 0.29, 190.0, 232.0);
+    const script_band = snapRect(.{
+        .x = frame.x + 18.0,
+        .y = frame.y + frame.h - script_band_h - 14.0,
+        .w = frame.w - 36.0,
+        .h = script_band_h,
+    });
+    const specimen_h = std.math.clamp(frame.h * 0.30, 196.0, 228.0);
+    const specimen_panel = snapRect(.{
+        .x = frame.x + 28.0,
+        .y = script_band.y - specimen_h - 36.0,
+        .w = std.math.clamp(frame.w * 0.36, 420.0, 600.0),
+        .h = specimen_h,
     });
     const emoji_pill = snapRect(.{
-        .x = script_panel.x + 22.0,
-        .y = script_panel.y + script_panel.h - 50.0,
-        .w = script_panel.w - 44.0,
-        .h = 34.0,
+        .x = script_band.x + 18.0,
+        .y = script_band.y + script_band.h - 38.0,
+        .w = script_band.w - 36.0,
+        .h = 28.0,
     });
 
-    const script_top = script_panel.y + 50.0;
-    const script_bottom = emoji_pill.y - 10.0;
-    const row_gap = 8.0;
+    const script_top = script_band.y + 16.0;
+    const script_bottom = emoji_pill.y - 8.0;
+    const row_gap = 7.0;
     const row_h = (script_bottom - script_top - row_gap * 3.0) / 4.0;
     var script_rows: [4]snail.VectorRect = undefined;
     for (&script_rows, 0..) |*row, i| {
         row.* = snapRect(.{
-            .x = script_panel.x + 22.0,
+            .x = script_band.x + 18.0,
             .y = script_top + @as(f32, @floatFromInt(i)) * (row_h + row_gap),
-            .w = script_panel.w - 44.0,
+            .w = script_band.w - 36.0,
             .h = row_h,
         });
     }
 
-    const pill_x = stage_panel.x + 42.0;
-    const pill_y = stage_panel.y + stage_panel.h - 122.0;
-    const pill_w = std.math.clamp(stage_panel.w * 0.34, 180.0, 260.0);
+    const path_label_area = snapRect(.{
+        .x = specimen_panel.x + specimen_panel.w + 34.0,
+        .y = specimen_panel.y + 34.0,
+        .w = std.math.clamp(frame.w * 0.16, 180.0, 250.0),
+        .h = 120.0,
+    });
+    const pill_x = path_label_area.x;
+    const pill_y = path_label_area.y + 82.0;
+    const pill_w = std.math.clamp(frame.w * 0.14, 160.0, 232.0);
     var stage_pills: [3]snail.VectorRect = undefined;
     stage_pills[0] = snapRect(.{ .x = pill_x, .y = pill_y, .w = pill_w, .h = 28.0 });
     stage_pills[1] = snapRect(.{ .x = pill_x, .y = pill_y + 38.0, .w = pill_w * 0.82, .h = 28.0 });
     stage_pills[2] = snapRect(.{ .x = pill_x, .y = pill_y + 76.0, .w = pill_w * 0.68, .h = 28.0 });
+    const snail_stage = snapRect(.{
+        .x = frame.x + frame.w * 0.60,
+        .y = frame.y + 94.0,
+        .w = std.math.clamp(frame.w * 0.34, 380.0, 540.0),
+        .h = std.math.clamp(frame.h * 0.56, 300.0, 410.0),
+    });
 
     return .{
         .canvas = .{ .x = 0, .y = 0, .w = w, .h = h },
-        .hero_panel = hero_panel,
+        .frame = frame,
         .specimen_panel = specimen_panel,
-        .script_panel = script_panel,
-        .stage_panel = stage_panel,
+        .script_band = script_band,
+        .snail_stage = snail_stage,
+        .path_label_area = path_label_area,
         .badge_pill = badge_pill,
         .emoji_pill = emoji_pill,
         .script_rows = script_rows,
@@ -232,26 +238,26 @@ pub fn buildLayout(w: f32, h: f32, metrics: TextMetrics) Layout {
 }
 
 pub fn drawText(batch: *snail.Batch, h: f32, layout: Layout, resources: TextResources) void {
-    const hero_x = layout.hero_panel.x + 30.0;
-    const title_size = std.math.clamp(layout.hero_panel.w * 0.16, 82.0, 118.0);
-    const subtitle_size = std.math.clamp(layout.hero_panel.w * 0.033, 18.0, 24.0);
+    const hero_x = layout.frame.x + 30.0;
+    const title_size = std.math.clamp(layout.frame.w * 0.11, 88.0, 118.0);
+    const subtitle_size = std.math.clamp(layout.frame.w * 0.019, 19.0, 26.0);
     const ligature_size = std.math.clamp(layout.specimen_panel.w * 0.072, 34.0, 48.0);
-    const specimen_line_size = std.math.clamp(layout.specimen_panel.w * 0.035, 16.0, 22.0);
+    const pangram_size = std.math.clamp(layout.specimen_panel.w * 0.034, 18.0, 22.0);
 
     _ = batch.addString(resources.latin_view, resources.latin_font, badge_text, layout.badge_pill.x + 16.0, textYFromTop(h, layout.badge_pill.y + 22.0), 13.0, teal);
-    _ = batch.addString(resources.latin_view, resources.latin_font, title_text, hero_x, textYFromTop(h, layout.hero_panel.y + 126.0), title_size, ink);
-    _ = batch.addString(resources.latin_view, resources.latin_font, subtitle_text, hero_x, textYFromTop(h, layout.hero_panel.y + 172.0), subtitle_size, mist);
-    _ = batch.addString(resources.latin_view, resources.latin_font, hero_meta_text, hero_x, textYFromTop(h, layout.hero_panel.y + 214.0), 14.0, slate);
+    _ = batch.addString(resources.latin_view, resources.latin_font, title_text, hero_x, textYFromTop(h, layout.frame.y + 122.0), title_size, ink);
+    _ = batch.addString(resources.latin_view, resources.latin_font, subtitle_text, hero_x, textYFromTop(h, layout.frame.y + 170.0), subtitle_size, mist);
+    _ = batch.addString(resources.latin_view, resources.latin_font, hero_meta_text, hero_x, textYFromTop(h, layout.frame.y + 210.0), 14.0, slate);
 
     const specimen_x = layout.specimen_panel.x + 24.0;
     _ = batch.addString(resources.latin_view, resources.latin_font, ligature_label_text, specimen_x, textYFromTop(h, layout.specimen_panel.y + 26.0), 12.0, teal);
-    _ = batch.addString(resources.latin_view, resources.latin_font, ligature_text, specimen_x, textYFromTop(h, layout.specimen_panel.y + 82.0), ligature_size, ink);
-    _ = batch.addString(resources.latin_view, resources.latin_font, ligature_caption_text, specimen_x, textYFromTop(h, layout.specimen_panel.y + 118.0), 14.0, sand);
-    _ = batch.addString(resources.latin_view, resources.latin_font, kerning_text, specimen_x, textYFromTop(h, layout.specimen_panel.y + 164.0), specimen_line_size, mist);
-    _ = batch.addString(resources.latin_view, resources.latin_font, numeral_text, specimen_x, textYFromTop(h, layout.specimen_panel.y + 198.0), specimen_line_size, ink);
-    _ = batch.addString(resources.latin_view, resources.latin_font, specimen_footer_text, specimen_x, textYFromTop(h, layout.specimen_panel.y + layout.specimen_panel.h - 22.0), 12.0, slate);
+    _ = batch.addString(resources.latin_view, resources.latin_font, ligature_text, specimen_x, textYFromTop(h, layout.specimen_panel.y + 76.0), ligature_size, ink);
+    _ = batch.addString(resources.latin_view, resources.latin_font, ligature_caption_text, specimen_x, textYFromTop(h, layout.specimen_panel.y + 108.0), 14.0, sand);
+    _ = batch.addString(resources.latin_view, resources.latin_font, pangram_a_text, specimen_x, textYFromTop(h, layout.specimen_panel.y + 146.0), pangram_size, mist);
+    _ = batch.addString(resources.latin_view, resources.latin_font, pangram_b_text, specimen_x, textYFromTop(h, layout.specimen_panel.y + 174.0), 16.0, ink);
+    _ = batch.addString(resources.latin_view, resources.latin_font, specimen_footer_text, specimen_x, textYFromTop(h, layout.specimen_panel.y + layout.specimen_panel.h - 16.0), 12.0, slate);
 
-    _ = batch.addString(resources.latin_view, resources.latin_font, scripts_heading_text, layout.script_panel.x + 26.0, textYFromTop(h, layout.script_panel.y + 30.0), 13.0, teal);
+    _ = batch.addString(resources.latin_view, resources.latin_font, scripts_heading_text, layout.script_band.x + 12.0, textYFromTop(h, layout.script_band.y - 16.0), 13.0, teal);
 
     const script_items = [_]struct {
         label: []const u8,
@@ -264,10 +270,10 @@ pub fn drawText(batch: *snail.Batch, h: f32, layout: Layout, resources: TextReso
         bottom_pad: f32,
         baseline_shift: f32,
     }{
-        .{ .label = "Arabic", .text = arabic_text, .font = resources.arabic_font, .view = resources.arabic_view, .color = sage, .size = 27.0, .top_pad = 6.0, .bottom_pad = 6.0, .baseline_shift = 1.5 },
-        .{ .label = "Devanagari", .text = devanagari_text, .font = resources.devanagari_font, .view = resources.devanagari_view, .color = teal, .size = 24.0, .top_pad = 8.0, .bottom_pad = 6.0, .baseline_shift = 2.0 },
-        .{ .label = "Thai", .text = thai_text, .font = resources.thai_font, .view = resources.thai_view, .color = sand, .size = 26.0, .top_pad = 7.0, .bottom_pad = 6.0, .baseline_shift = 1.5 },
-        .{ .label = "Mongolian", .text = mongolian_text, .font = resources.mongolian_font, .view = resources.mongolian_view, .color = blush, .size = 27.0, .top_pad = 6.0, .bottom_pad = 7.0, .baseline_shift = 2.5 },
+        .{ .label = "Arabic", .text = arabic_text, .font = resources.arabic_font, .view = resources.arabic_view, .color = sage, .size = 25.0, .top_pad = 5.0, .bottom_pad = 5.0, .baseline_shift = 1.2 },
+        .{ .label = "Devanagari", .text = devanagari_text, .font = resources.devanagari_font, .view = resources.devanagari_view, .color = teal, .size = 23.0, .top_pad = 6.0, .bottom_pad = 5.0, .baseline_shift = 1.8 },
+        .{ .label = "Thai", .text = thai_text, .font = resources.thai_font, .view = resources.thai_view, .color = sand, .size = 24.0, .top_pad = 6.0, .bottom_pad = 5.0, .baseline_shift = 1.2 },
+        .{ .label = "Mongolian", .text = mongolian_text, .font = resources.mongolian_font, .view = resources.mongolian_view, .color = blush, .size = 25.0, .top_pad = 5.0, .bottom_pad = 6.0, .baseline_shift = 2.1 },
     };
     for (layout.script_rows, script_items) |row, item| {
         _ = batch.addString(resources.latin_view, resources.latin_font, item.label, row.x + 18.0, textYFromTop(h, row.y + 16.0), 11.0, slate);
@@ -278,9 +284,9 @@ pub fn drawText(batch: *snail.Batch, h: f32, layout: Layout, resources: TextReso
     _ = batch.addString(resources.latin_view, resources.latin_font, "Emoji", layout.emoji_pill.x + 16.0, textYFromTop(h, layout.emoji_pill.y + 16.0), 11.0, slate);
     _ = batch.addString(resources.emoji_view, &resources.emoji_font.font, emoji_text, layout.emoji_pill.x + 150.0, textYFromTop(h, layout.emoji_pill.y + layout.emoji_pill.h - 6.0), 28.0, ink);
 
-    _ = batch.addString(resources.latin_view, resources.latin_font, stage_label_text, layout.stage_panel.x + 42.0, textYFromTop(h, layout.stage_panel.y + 48.0), 12.0, teal);
-    _ = batch.addString(resources.latin_view, resources.latin_font, stage_title_text, layout.stage_panel.x + 42.0, textYFromTop(h, layout.stage_panel.y + 82.0), 23.0, ink);
-    _ = batch.addString(resources.latin_view, resources.latin_font, stage_caption_text, layout.stage_panel.x + 42.0, textYFromTop(h, layout.stage_panel.y + 108.0), 14.0, mist);
+    _ = batch.addString(resources.latin_view, resources.latin_font, stage_label_text, layout.path_label_area.x, textYFromTop(h, layout.path_label_area.y + 12.0), 12.0, teal);
+    _ = batch.addString(resources.latin_view, resources.latin_font, stage_title_text, layout.path_label_area.x, textYFromTop(h, layout.path_label_area.y + 44.0), 23.0, ink);
+    _ = batch.addString(resources.latin_view, resources.latin_font, stage_caption_text, layout.path_label_area.x, textYFromTop(h, layout.path_label_area.y + 70.0), 14.0, mist);
     for (layout.stage_pills, stage_pill_labels) |pill, label| {
         _ = batch.addString(resources.latin_view, resources.latin_font, label, pill.x + 16.0, textYFromTop(h, pill.y + 19.0), 12.0, ink);
     }
@@ -301,74 +307,49 @@ pub fn buildPathShowcase(builder: *snail.PathPictureBuilder, layout: Layout) !vo
     );
 
     try builder.addFilledEllipse(.{
-        .x = layout.hero_panel.x - 60.0,
-        .y = layout.hero_panel.y - 40.0,
-        .w = layout.hero_panel.w * 0.95,
-        .h = layout.hero_panel.h * 0.68,
+        .x = layout.frame.x - layout.frame.w * 0.08,
+        .y = layout.frame.y - layout.frame.h * 0.12,
+        .w = layout.frame.w * 0.48,
+        .h = layout.frame.h * 0.86,
     }, .{ .paint = .{ .radial_gradient = .{
-        .center = .{ .x = layout.hero_panel.x + layout.hero_panel.w * 0.28, .y = layout.hero_panel.y + layout.hero_panel.h * 0.18 },
-        .radius = layout.hero_panel.w * 0.46,
+        .center = .{ .x = layout.frame.x + layout.frame.w * 0.22, .y = layout.frame.y + layout.frame.h * 0.18 },
+        .radius = layout.frame.w * 0.24,
         .inner_color = .{ 0.16, 0.34, 0.56, 0.30 },
         .outer_color = .{ 0.16, 0.34, 0.56, 0.0 },
     } } }, .identity);
     try builder.addFilledEllipse(.{
-        .x = layout.stage_panel.x + layout.stage_panel.w * 0.24,
-        .y = layout.stage_panel.y - 60.0,
-        .w = layout.stage_panel.w * 0.84,
-        .h = layout.stage_panel.h * 0.92,
+        .x = layout.snail_stage.x - layout.snail_stage.w * 0.26,
+        .y = layout.snail_stage.y - layout.snail_stage.h * 0.18,
+        .w = layout.snail_stage.w * 1.18,
+        .h = layout.snail_stage.h * 1.12,
     }, .{ .paint = .{ .radial_gradient = .{
-        .center = .{ .x = layout.stage_panel.x + layout.stage_panel.w * 0.72, .y = layout.stage_panel.y + layout.stage_panel.h * 0.34 },
-        .radius = layout.stage_panel.w * 0.42,
+        .center = .{ .x = layout.snail_stage.x + layout.snail_stage.w * 0.58, .y = layout.snail_stage.y + layout.snail_stage.h * 0.36 },
+        .radius = layout.snail_stage.w * 0.44,
         .inner_color = .{ 0.10, 0.24, 0.44, 0.24 },
         .outer_color = .{ 0.10, 0.24, 0.44, 0.0 },
     } } }, .identity);
+    try builder.addFilledEllipse(.{
+        .x = layout.frame.x + layout.frame.w * 0.20,
+        .y = layout.frame.y + layout.frame.h * 0.58,
+        .w = layout.frame.w * 0.42,
+        .h = layout.frame.h * 0.26,
+    }, .{ .paint = .{ .radial_gradient = .{
+        .center = .{ .x = layout.frame.x + layout.frame.w * 0.42, .y = layout.frame.y + layout.frame.h * 0.72 },
+        .radius = layout.frame.w * 0.24,
+        .inner_color = .{ 0.26, 0.18, 0.10, 0.12 },
+        .outer_color = .{ 0.26, 0.18, 0.10, 0.0 },
+    } } }, .identity);
 
     try builder.addRoundedRect(
-        layout.hero_panel,
+        layout.frame,
         .{ .paint = .{ .linear_gradient = .{
-            .start = .{ .x = layout.hero_panel.x, .y = layout.hero_panel.y },
-            .end = .{ .x = layout.hero_panel.x + layout.hero_panel.w * 0.9, .y = layout.hero_panel.y + layout.hero_panel.h },
+            .start = .{ .x = layout.frame.x, .y = layout.frame.y },
+            .end = .{ .x = layout.frame.x + layout.frame.w * 0.9, .y = layout.frame.y + layout.frame.h },
             .start_color = .{ 0.07, 0.11, 0.16, 0.96 },
             .end_color = .{ 0.04, 0.07, 0.10, 0.96 },
         } } },
         .{ .color = .{ 0.23, 0.31, 0.39, 1.0 }, .width = 1.5, .join = .round, .placement = .inside },
-        34.0,
-        .identity,
-    );
-    try builder.addRoundedRect(
-        layout.specimen_panel,
-        .{ .paint = .{ .linear_gradient = .{
-            .start = .{ .x = layout.specimen_panel.x, .y = layout.specimen_panel.y },
-            .end = .{ .x = layout.specimen_panel.x, .y = layout.specimen_panel.y + layout.specimen_panel.h },
-            .start_color = .{ 0.08, 0.10, 0.13, 0.96 },
-            .end_color = .{ 0.04, 0.05, 0.07, 0.96 },
-        } } },
-        .{ .color = .{ 0.19, 0.24, 0.29, 1.0 }, .width = 1.2, .join = .round, .placement = .inside },
-        24.0,
-        .identity,
-    );
-    try builder.addRoundedRect(
-        layout.script_panel,
-        .{ .paint = .{ .linear_gradient = .{
-            .start = .{ .x = layout.script_panel.x, .y = layout.script_panel.y },
-            .end = .{ .x = layout.script_panel.x + layout.script_panel.w, .y = layout.script_panel.y + layout.script_panel.h },
-            .start_color = .{ 0.08, 0.09, 0.12, 0.96 },
-            .end_color = .{ 0.04, 0.05, 0.07, 0.94 },
-        } } },
-        .{ .color = .{ 0.20, 0.24, 0.30, 1.0 }, .width = 1.4, .join = .round, .placement = .inside },
-        28.0,
-        .identity,
-    );
-    try builder.addRoundedRect(
-        layout.stage_panel,
-        .{ .paint = .{ .linear_gradient = .{
-            .start = .{ .x = layout.stage_panel.x, .y = layout.stage_panel.y },
-            .end = .{ .x = layout.stage_panel.x + layout.stage_panel.w, .y = layout.stage_panel.y + layout.stage_panel.h },
-            .start_color = .{ 0.08, 0.10, 0.12, 0.95 },
-            .end_color = .{ 0.04, 0.06, 0.08, 0.94 },
-        } } },
-        .{ .color = .{ 0.19, 0.23, 0.29, 1.0 }, .width = 1.4, .join = .round, .placement = .inside },
-        34.0,
+        40.0,
         .identity,
     );
     try builder.addRoundedRect(
@@ -384,6 +365,30 @@ pub fn buildPathShowcase(builder: *snail.PathPictureBuilder, layout: Layout) !vo
         .identity,
     );
     try builder.addRoundedRect(
+        layout.specimen_panel,
+        .{ .paint = .{ .linear_gradient = .{
+            .start = .{ .x = layout.specimen_panel.x, .y = layout.specimen_panel.y },
+            .end = .{ .x = layout.specimen_panel.x, .y = layout.specimen_panel.y + layout.specimen_panel.h },
+            .start_color = .{ 0.09, 0.11, 0.15, 0.94 },
+            .end_color = .{ 0.05, 0.06, 0.09, 0.96 },
+        } } },
+        .{ .color = .{ 0.22, 0.28, 0.34, 1.0 }, .width = 1.1, .join = .round, .placement = .inside },
+        28.0,
+        .identity,
+    );
+    try builder.addRoundedRect(
+        layout.script_band,
+        .{ .paint = .{ .linear_gradient = .{
+            .start = .{ .x = layout.script_band.x, .y = layout.script_band.y },
+            .end = .{ .x = layout.script_band.x + layout.script_band.w, .y = layout.script_band.y + layout.script_band.h },
+            .start_color = .{ 0.08, 0.09, 0.12, 0.84 },
+            .end_color = .{ 0.05, 0.06, 0.08, 0.90 },
+        } } },
+        .{ .color = .{ 0.19, 0.24, 0.29, 0.96 }, .width = 1.2, .join = .round, .placement = .inside },
+        28.0,
+        .identity,
+    );
+    try builder.addRoundedRect(
         layout.emoji_pill,
         .{ .paint = .{ .linear_gradient = .{
             .start = .{ .x = layout.emoji_pill.x, .y = layout.emoji_pill.y },
@@ -392,7 +397,7 @@ pub fn buildPathShowcase(builder: *snail.PathPictureBuilder, layout: Layout) !vo
             .end_color = .{ 0.08, 0.09, 0.12, 0.94 },
         } } },
         .{ .color = .{ 0.22, 0.28, 0.34, 1.0 }, .width = 1.0, .join = .round, .placement = .inside },
-        18.0,
+        16.0,
         .identity,
     );
 
@@ -416,7 +421,7 @@ pub fn buildPathShowcase(builder: *snail.PathPictureBuilder, layout: Layout) !vo
                 .end_color = colors.end,
             } } },
             .{ .color = colors.stroke, .width = 1.0, .join = .round, .placement = .inside },
-            18.0,
+            row.h * 0.5,
             .identity,
         );
     }
@@ -446,8 +451,8 @@ pub fn buildPathShowcase(builder: *snail.PathPictureBuilder, layout: Layout) !vo
     }
 
     const hero_glow = snapRect(.{
-        .x = layout.hero_panel.x + layout.hero_panel.w - 230.0,
-        .y = layout.hero_panel.y + 36.0,
+        .x = layout.frame.x + layout.frame.w * 0.24,
+        .y = layout.frame.y + 28.0,
         .w = 240.0,
         .h = 240.0,
     });
@@ -458,13 +463,16 @@ pub fn buildPathShowcase(builder: *snail.PathPictureBuilder, layout: Layout) !vo
         .outer_color = .{ 0.30, 0.80, 0.92, 0.0 },
     } } }, .identity);
 
+    const shell_cx = layout.snail_stage.x + layout.snail_stage.w * 0.54;
+    const shell_cy = layout.snail_stage.y + layout.snail_stage.h * 0.40;
     const orbit_outer = snapRect(.{
-        .x = layout.stage_panel.x + layout.stage_panel.w - std.math.clamp(layout.stage_panel.w * 0.46, 280.0, 360.0) - 58.0,
-        .y = layout.stage_panel.y + 22.0,
-        .w = std.math.clamp(layout.stage_panel.w * 0.46, 280.0, 360.0),
-        .h = std.math.clamp(layout.stage_panel.h * 0.78, 220.0, 300.0),
+        .x = shell_cx - layout.snail_stage.w * 0.34,
+        .y = shell_cy - layout.snail_stage.h * 0.34,
+        .w = layout.snail_stage.w * 0.68,
+        .h = layout.snail_stage.h * 0.72,
     });
-    const orbit_inner = insetRect(orbit_outer, orbit_outer.w * 0.16, orbit_outer.h * 0.16);
+    const orbit_mid = insetRect(orbit_outer, orbit_outer.w * 0.11, orbit_outer.h * 0.12);
+    const orbit_inner = insetRect(orbit_outer, orbit_outer.w * 0.22, orbit_outer.h * 0.21);
     try builder.addEllipse(
         orbit_outer,
         .{ .paint = .{ .radial_gradient = .{
@@ -474,6 +482,17 @@ pub fn buildPathShowcase(builder: *snail.PathPictureBuilder, layout: Layout) !vo
             .outer_color = .{ 0.22, 0.56, 0.74, 0.0 },
         } } },
         .{ .color = .{ 0.34, 0.74, 0.78, 0.36 }, .width = 1.4, .join = .round },
+        .identity,
+    );
+    try builder.addEllipse(
+        orbit_mid,
+        .{ .paint = .{ .radial_gradient = .{
+            .center = .{ .x = orbit_mid.x + orbit_mid.w * 0.5, .y = orbit_mid.y + orbit_mid.h * 0.48 },
+            .radius = orbit_mid.w * 0.38,
+            .inner_color = .{ 0.68, 0.90, 0.98, 0.14 },
+            .outer_color = .{ 0.68, 0.90, 0.98, 0.0 },
+        } } },
+        .{ .color = .{ 0.72, 0.90, 0.98, 0.44 }, .width = 1.2, .join = .round },
         .identity,
     );
     try builder.addEllipse(
@@ -490,21 +509,21 @@ pub fn buildPathShowcase(builder: *snail.PathPictureBuilder, layout: Layout) !vo
 
     var hero_ribbon = snail.VectorPath.init(builder.allocator);
     defer hero_ribbon.deinit();
-    try hero_ribbon.moveTo(.{ .x = layout.hero_panel.x + 46.0, .y = layout.hero_panel.y + 252.0 });
+    try hero_ribbon.moveTo(.{ .x = layout.frame.x + 46.0, .y = layout.frame.y + 248.0 });
     try hero_ribbon.cubicTo(
-        .{ .x = layout.hero_panel.x + 156.0, .y = layout.hero_panel.y + 196.0 },
-        .{ .x = layout.hero_panel.x + 324.0, .y = layout.hero_panel.y + 282.0 },
-        .{ .x = layout.hero_panel.x + 458.0, .y = layout.hero_panel.y + 236.0 },
+        .{ .x = layout.frame.x + 166.0, .y = layout.frame.y + 204.0 },
+        .{ .x = layout.frame.x + 336.0, .y = layout.frame.y + 246.0 },
+        .{ .x = layout.path_label_area.x + 28.0, .y = layout.path_label_area.y - 18.0 },
     );
     try hero_ribbon.cubicTo(
-        .{ .x = layout.hero_panel.x + 520.0, .y = layout.hero_panel.y + 214.0 },
-        .{ .x = layout.hero_panel.x + 578.0, .y = layout.hero_panel.y + 170.0 },
-        .{ .x = layout.hero_panel.x + layout.hero_panel.w - 34.0, .y = layout.hero_panel.y + 146.0 },
+        .{ .x = layout.snail_stage.x - 34.0, .y = layout.snail_stage.y - 8.0 },
+        .{ .x = shell_cx - 104.0, .y = shell_cy - 36.0 },
+        .{ .x = shell_cx + 34.0, .y = shell_cy - 18.0 },
     );
     try builder.addStrokedPath(&hero_ribbon, .{
         .paint = .{ .linear_gradient = .{
-            .start = .{ .x = layout.hero_panel.x + 46.0, .y = layout.hero_panel.y + 252.0 },
-            .end = .{ .x = layout.hero_panel.x + layout.hero_panel.w - 34.0, .y = layout.hero_panel.y + 146.0 },
+            .start = .{ .x = layout.frame.x + 46.0, .y = layout.frame.y + 248.0 },
+            .end = .{ .x = shell_cx + 34.0, .y = shell_cy - 18.0 },
             .start_color = .{ 0.95, 0.58, 0.42, 0.62 },
             .end_color = .{ 0.42, 0.84, 0.87, 0.42 },
         } },
@@ -513,40 +532,16 @@ pub fn buildPathShowcase(builder: *snail.PathPictureBuilder, layout: Layout) !vo
         .join = .round,
     }, .identity);
 
-    var stage_arc = snail.VectorPath.init(builder.allocator);
-    defer stage_arc.deinit();
-    try stage_arc.moveTo(.{ .x = layout.stage_panel.x + 42.0, .y = layout.stage_panel.y + 138.0 });
-    try stage_arc.cubicTo(
-        .{ .x = layout.stage_panel.x + 132.0, .y = layout.stage_panel.y + 92.0 },
-        .{ .x = layout.stage_panel.x + 272.0, .y = layout.stage_panel.y + 102.0 },
-        .{ .x = layout.stage_panel.x + 372.0, .y = layout.stage_panel.y + 148.0 },
-    );
-    try stage_arc.cubicTo(
-        .{ .x = layout.stage_panel.x + 460.0, .y = layout.stage_panel.y + 188.0 },
-        .{ .x = layout.stage_panel.x + 578.0, .y = layout.stage_panel.y + 190.0 },
-        .{ .x = layout.stage_panel.x + 676.0, .y = layout.stage_panel.y + 132.0 },
-    );
-    try builder.addStrokedPath(&stage_arc, .{
-        .paint = .{ .linear_gradient = .{
-            .start = .{ .x = layout.stage_panel.x + 42.0, .y = layout.stage_panel.y + 138.0 },
-            .end = .{ .x = layout.stage_panel.x + 676.0, .y = layout.stage_panel.y + 132.0 },
-            .start_color = .{ 0.42, 0.84, 0.87, 0.34 },
-            .end_color = .{ 0.96, 0.82, 0.55, 0.24 },
-        } },
-        .width = 8.0,
-        .cap = .round,
-        .join = .round,
-    }, .identity);
-
-    try addVectorSnail(builder, layout.stage_panel);
+    try addVectorSnail(builder, layout.snail_stage);
 }
 
-fn addVectorSnail(builder: *snail.PathPictureBuilder, stage_panel: snail.VectorRect) !void {
-    const art_width = @min(stage_panel.w * 0.58, 520.0);
+fn addVectorSnail(builder: *snail.PathPictureBuilder, snail_stage: snail.VectorRect) !void {
+    const art_width = @min(snail_stage.w * 0.94, 520.0);
     const scale = art_width / 360.0;
-    const art_height = 220.0 * scale;
-    const art_x = stage_panel.x + stage_panel.w - art_width - 26.0;
-    const art_y = stage_panel.y + stage_panel.h - art_height - 24.0;
+    const shell_center_x = snail_stage.x + snail_stage.w * 0.54;
+    const shell_center_y = snail_stage.y + snail_stage.h * 0.40;
+    const art_x = shell_center_x - 214.0 * scale;
+    const art_y = shell_center_y - 80.0 * scale;
     const transform = snail.VectorTransform2D.multiply(
         snail.VectorTransform2D.translate(art_x, art_y),
         snail.VectorTransform2D.scale(scale, scale),
