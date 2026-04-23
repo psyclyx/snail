@@ -1718,6 +1718,48 @@ fn resolveStrokePaint(style: PathStrokeStyle) PathPaint {
     return style.paint orelse .{ .solid = style.color };
 }
 
+fn translateBBox(bbox: BBox, delta: Vec2) BBox {
+    return .{
+        .min = Vec2.add(bbox.min, delta),
+        .max = Vec2.add(bbox.max, delta),
+    };
+}
+
+fn translatePaint(paint: PathPaint, delta: Vec2) PathPaint {
+    return switch (paint) {
+        .solid => paint,
+        .linear_gradient => |gradient| .{ .linear_gradient = .{
+            .start = Vec2.add(gradient.start, delta),
+            .end = Vec2.add(gradient.end, delta),
+            .start_color = gradient.start_color,
+            .end_color = gradient.end_color,
+            .extend = gradient.extend,
+        } },
+        .radial_gradient => |gradient| .{ .radial_gradient = .{
+            .center = Vec2.add(gradient.center, delta),
+            .radius = gradient.radius,
+            .inner_color = gradient.inner_color,
+            .outer_color = gradient.outer_color,
+            .extend = gradient.extend,
+        } },
+        .image => |image_paint| .{ .image = .{
+            .image = image_paint.image,
+            .uv_transform = .{
+                .xx = image_paint.uv_transform.xx,
+                .xy = image_paint.uv_transform.xy,
+                .tx = image_paint.uv_transform.tx - image_paint.uv_transform.xx * delta.x - image_paint.uv_transform.xy * delta.y,
+                .yx = image_paint.uv_transform.yx,
+                .yy = image_paint.uv_transform.yy,
+                .ty = image_paint.uv_transform.ty - image_paint.uv_transform.yx * delta.x - image_paint.uv_transform.yy * delta.y,
+            },
+            .tint = image_paint.tint,
+            .extend_x = image_paint.extend_x,
+            .extend_y = image_paint.extend_y,
+            .filter = image_paint.filter,
+        } },
+    };
+}
+
 fn fillStyleForStroke(style: PathStrokeStyle) VectorFillStyle {
     return .{
         .color = style.color,
@@ -2856,8 +2898,14 @@ pub const PathPictureBuilder = struct {
         defer allocator.free(glyph_curves);
         var glyph_cursor: usize = 0;
         for (self.paths.items) |path| {
+            const origin = path.bbox.min;
+            const delta = Vec2.new(-origin.x, -origin.y);
             for (path.layers[0..path.layer_count]) |layer| {
-                glyph_curves[glyph_cursor] = .{ .curves = layer.curves, .bbox = layer.bbox };
+                glyph_curves[glyph_cursor] = .{
+                    .curves = layer.curves,
+                    .bbox = translateBBox(layer.bbox, delta),
+                    .origin = origin,
+                };
                 glyph_cursor += 1;
             }
         }
@@ -2913,17 +2961,21 @@ pub const PathPictureBuilder = struct {
             }
 
             var first_glyph_id: u16 = 0;
+            const origin = path.bbox.min;
+            const delta = Vec2.new(-origin.x, -origin.y);
             for (path.layers[0..path.layer_count], 0..) |layer, layer_index| {
                 const glyph_id: u16 = @intCast(glyph_cursor + 1);
                 if (layer_index == 0) first_glyph_id = glyph_id;
+                const local_bbox = translateBBox(layer.bbox, delta);
+                const local_paint = translatePaint(layer.paint, delta);
                 try glyph_map.put(glyph_id, .{
-                    .bbox = layer.bbox,
+                    .bbox = local_bbox,
                     .advance_width = 0,
                     .band_entry = bt.entries[glyph_cursor],
                     .page_index = 0,
                 });
-                writePathPaintRecord(layer_info_data, texel_cursor, bt.entries[glyph_cursor], layer.paint);
-                switch (layer.paint) {
+                writePathPaintRecord(layer_info_data, texel_cursor, bt.entries[glyph_cursor], local_paint);
+                switch (local_paint) {
                     .image => |image_paint| {
                         paint_image_records[glyph_cursor] = .{
                             .image = image_paint.image,
@@ -2939,12 +2991,12 @@ pub const PathPictureBuilder = struct {
 
             instances[path_index] = .{
                 .glyph_id = first_glyph_id,
-                .bbox = path.bbox,
+                .bbox = translateBBox(path.bbox, delta),
                 .page_index = 0,
                 .info_x = @intCast(info_texel_offset % kPathPaintInfoWidth),
                 .info_y = @intCast(info_texel_offset / kPathPaintInfoWidth),
                 .layer_count = path.layer_count,
-                .transform = path.transform,
+                .transform = VectorTransform2D.multiply(path.transform, VectorTransform2D.translate(origin.x, origin.y)),
             };
         }
 
@@ -3384,10 +3436,12 @@ test "open stroked path expands for round caps" {
     var picture = try builder.freeze(std.testing.allocator);
     defer picture.deinit();
     const stroke_info = picture.atlas.getGlyph(picture.instances[0].glyph_id) orelse return error.TestExpectedEqual;
-    try std.testing.expect(stroke_info.bbox.min.x < 0.0);
-    try std.testing.expect(stroke_info.bbox.max.x > 12.0);
-    try std.testing.expect(stroke_info.bbox.min.y < -2.9);
-    try std.testing.expect(stroke_info.bbox.max.y > 2.9);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), stroke_info.bbox.min.x, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 18), stroke_info.bbox.max.x, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), stroke_info.bbox.min.y, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 6), stroke_info.bbox.max.y, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, -3), picture.instances[0].transform.tx, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, -3), picture.instances[0].transform.ty, 0.05);
 }
 
 test "square-capped stroked path extends beyond endpoints" {
@@ -3463,17 +3517,21 @@ test "inside-aligned generic path stroke groups fill and stroke on one instance"
     const fill_info = picture.atlas.getGlyph(picture.instances[0].glyph_id) orelse return error.TestExpectedEqual;
     const stroke_info = picture.atlas.getGlyph(picture.instances[0].glyph_id + 1) orelse return error.TestExpectedEqual;
 
-    try std.testing.expectApproxEqAbs(@as(f32, 10), fill_info.bbox.min.x, 0.05);
-    try std.testing.expectApproxEqAbs(@as(f32, 20), fill_info.bbox.min.y, 0.05);
-    try std.testing.expectApproxEqAbs(@as(f32, 50), fill_info.bbox.max.x, 0.05);
-    try std.testing.expectApproxEqAbs(@as(f32, 38), fill_info.bbox.max.y, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), fill_info.bbox.min.x, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), fill_info.bbox.min.y, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 40), fill_info.bbox.max.x, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 18), fill_info.bbox.max.y, 0.05);
     try std.testing.expect(stroke_info.bbox.min.x < fill_info.bbox.min.x);
     try std.testing.expect(stroke_info.bbox.max.x > fill_info.bbox.max.x);
+    try std.testing.expect(stroke_info.bbox.min.y < fill_info.bbox.min.y);
+    try std.testing.expect(stroke_info.bbox.max.y > fill_info.bbox.max.y);
 
-    try std.testing.expectApproxEqAbs(@as(f32, 10), picture.instances[0].bbox.min.x, 0.05);
-    try std.testing.expectApproxEqAbs(@as(f32, 20), picture.instances[0].bbox.min.y, 0.05);
-    try std.testing.expectApproxEqAbs(@as(f32, 50), picture.instances[0].bbox.max.x, 0.05);
-    try std.testing.expectApproxEqAbs(@as(f32, 38), picture.instances[0].bbox.max.y, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), picture.instances[0].bbox.min.x, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), picture.instances[0].bbox.min.y, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 40), picture.instances[0].bbox.max.x, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 18), picture.instances[0].bbox.max.y, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 10), picture.instances[0].transform.tx, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 20), picture.instances[0].transform.ty, 0.05);
 
     const lid = picture.atlas.layer_info_data orelse return error.TestExpectedEqual;
     try std.testing.expectApproxEqAbs(kPathPaintTagCompositeGroup, lid[3], 0.001);
@@ -3499,14 +3557,63 @@ test "inside-aligned rounded rect helper emits explicit ring geometry" {
     const fill_info = picture.atlas.getGlyph(picture.instances[0].glyph_id) orelse return error.TestExpectedEqual;
     const stroke_info = picture.atlas.getGlyph(picture.instances[0].glyph_id + 1) orelse return error.TestExpectedEqual;
 
+    try std.testing.expectApproxEqAbs(@as(f32, 0), fill_info.bbox.min.x, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), fill_info.bbox.min.y, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 40), fill_info.bbox.max.x, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 18), fill_info.bbox.max.y, 0.05);
     try std.testing.expectApproxEqAbs(fill_info.bbox.min.x, stroke_info.bbox.min.x, 0.05);
     try std.testing.expectApproxEqAbs(fill_info.bbox.min.y, stroke_info.bbox.min.y, 0.05);
     try std.testing.expectApproxEqAbs(fill_info.bbox.max.x, stroke_info.bbox.max.x, 0.05);
     try std.testing.expectApproxEqAbs(fill_info.bbox.max.y, stroke_info.bbox.max.y, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 10), picture.instances[0].transform.tx, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 20), picture.instances[0].transform.ty, 0.05);
 
     const lid = picture.atlas.layer_info_data orelse return error.TestExpectedEqual;
     try std.testing.expectApproxEqAbs(kPathPaintTagCompositeGroup, lid[3], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, @intFromEnum(PathCompositeMode.source_over)), lid[1], 0.001);
+}
+
+test "path picture freeze rebases large coordinates before curve packing" {
+    var absolute_builder = PathPictureBuilder.init(std.testing.allocator);
+    defer absolute_builder.deinit();
+    try absolute_builder.addRoundedRect(
+        .{ .x = 640, .y = 960, .w = 40, .h = 18 },
+        .{ .color = .{ 1, 1, 1, 1 } },
+        null,
+        9.0,
+        .identity,
+    );
+    var absolute_picture = try absolute_builder.freeze(std.testing.allocator);
+    defer absolute_picture.deinit();
+
+    var transformed_builder = PathPictureBuilder.init(std.testing.allocator);
+    defer transformed_builder.deinit();
+    try transformed_builder.addRoundedRect(
+        .{ .x = 0, .y = 0, .w = 40, .h = 18 },
+        .{ .color = .{ 1, 1, 1, 1 } },
+        null,
+        9.0,
+        .{ .tx = 640, .ty = 960 },
+    );
+    var transformed_picture = try transformed_builder.freeze(std.testing.allocator);
+    defer transformed_picture.deinit();
+
+    const absolute_page = absolute_picture.atlas.page(0);
+    try std.testing.expectEqual(curve_tex.f32ToF16(9.0), absolute_page.curve_data[0]);
+    try std.testing.expectEqual(curve_tex.f32ToF16(0.0), absolute_page.curve_data[1]);
+    try std.testing.expectEqual(curve_tex.f32ToF16(20.0), absolute_page.curve_data[2]);
+    try std.testing.expectEqual(curve_tex.f32ToF16(0.0), absolute_page.curve_data[3]);
+    try std.testing.expectEqual(curve_tex.f32ToF16(31.0), absolute_page.curve_data[4]);
+    try std.testing.expectEqual(curve_tex.f32ToF16(0.0), absolute_page.curve_data[5]);
+
+    try std.testing.expectApproxEqAbs(transformed_picture.instances[0].bbox.min.x, absolute_picture.instances[0].bbox.min.x, 0.001);
+    try std.testing.expectApproxEqAbs(transformed_picture.instances[0].bbox.min.y, absolute_picture.instances[0].bbox.min.y, 0.001);
+    try std.testing.expectApproxEqAbs(transformed_picture.instances[0].bbox.max.x, absolute_picture.instances[0].bbox.max.x, 0.001);
+    try std.testing.expectApproxEqAbs(transformed_picture.instances[0].bbox.max.y, absolute_picture.instances[0].bbox.max.y, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 640), absolute_picture.instances[0].transform.tx, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 960), absolute_picture.instances[0].transform.ty, 0.001);
+    try std.testing.expectApproxEqAbs(transformed_picture.instances[0].transform.tx, absolute_picture.instances[0].transform.tx, 0.001);
+    try std.testing.expectApproxEqAbs(transformed_picture.instances[0].transform.ty, absolute_picture.instances[0].transform.ty, 0.001);
 }
 
 test "path picture gradient paint records encode linear and radial paints" {
@@ -3540,13 +3647,13 @@ test "path picture gradient paint records encode linear and radial paints" {
     const lid = picture.atlas.layer_info_data orelse return error.TestExpectedEqual;
     try std.testing.expectApproxEqAbs(kPathPaintTagCompositeGroup, lid[3], 0.001);
     try std.testing.expectApproxEqAbs(kPathPaintTagLinearGradient, lid[7], 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 20), lid[14], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 21), lid[14], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, @floatFromInt(@intFromEnum(PathPaintExtend.reflect))), lid[24], 0.001);
 
     const radial_base = @as(usize, (1 + kPathPaintTexelsPerRecord)) * 4;
     try std.testing.expectApproxEqAbs(kPathPaintTagRadialGradient, lid[radial_base + 3], 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 10), lid[radial_base + 8], 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 5), lid[radial_base + 9], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 11), lid[radial_base + 8], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 6), lid[radial_base + 9], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 12), lid[radial_base + 10], 0.001);
 }
 

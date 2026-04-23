@@ -80,17 +80,22 @@ pub fn buildCurveTexture(
             .count = @intCast(g.curves.len),
             .offset = texel_idx,
         };
+        const delta = Vec2.new(-g.origin.x, -g.origin.y);
 
         for (g.curves) |curve| {
             const base = texel_idx * 4;
-            data[base + 0] = f32ToF16(curve.p0.x);
-            data[base + 1] = f32ToF16(curve.p0.y);
-            data[base + 2] = f32ToF16(curve.p1.x);
-            data[base + 3] = f32ToF16(curve.p1.y);
-            data[base + 4] = f32ToF16(curve.p2.x);
-            data[base + 5] = f32ToF16(curve.p2.y);
-            data[base + 6] = f32ToF16(curve.p3.x);
-            data[base + 7] = f32ToF16(curve.p3.y);
+            const p0 = Vec2.add(curve.p0, delta);
+            const p1 = Vec2.add(curve.p1, delta);
+            const p2 = Vec2.add(curve.p2, delta);
+            const p3 = if (curve.kind == .cubic) Vec2.add(curve.p3, delta) else curve.p3;
+            data[base + 0] = f32ToF16(p0.x);
+            data[base + 1] = f32ToF16(p0.y);
+            data[base + 2] = f32ToF16(p1.x);
+            data[base + 3] = f32ToF16(p1.y);
+            data[base + 4] = f32ToF16(p2.x);
+            data[base + 5] = f32ToF16(p2.y);
+            data[base + 6] = f32ToF16(p3.x);
+            data[base + 7] = f32ToF16(p3.y);
             data[base + 8] = f32ToF16(@floatFromInt(@intFromEnum(curve.kind)));
             data[base + 9] = f32ToF16(curve.weights[0]);
             data[base + 10] = f32ToF16(curve.weights[1]);
@@ -113,6 +118,7 @@ pub fn buildCurveTexture(
 pub const GlyphCurves = struct {
     curves: []const CurveSegment,
     bbox: BBox,
+    origin: Vec2 = .zero,
 };
 
 test "f32ToF16 basic conversions" {
@@ -155,4 +161,32 @@ test "buildCurveTexture packs FP16" {
     try std.testing.expectEqual(@as(u16, 0x3C00), result.texture.data[9]); // w0 = 1
     try std.testing.expectEqual(@as(u16, 0x3C00), result.texture.data[10]); // w1 = 1
     try std.testing.expectEqual(@as(u16, 0x3C00), result.texture.data[11]); // w2 = 1
+}
+
+test "buildCurveTexture rebases coordinates by glyph origin" {
+    const curves = [_]CurveSegment{
+        .{
+            .kind = .quadratic,
+            .p0 = Vec2.new(640, 960),
+            .p1 = Vec2.new(660, 960),
+            .p2 = Vec2.new(680, 960),
+        },
+    };
+    const glyph = GlyphCurves{
+        .curves = &curves,
+        .bbox = .{ .min = Vec2.new(0, 0), .max = Vec2.new(40, 10) },
+        .origin = Vec2.new(640, 960),
+    };
+    const glyphs = [_]GlyphCurves{glyph};
+
+    var result = try buildCurveTexture(std.testing.allocator, &glyphs);
+    defer result.texture.deinit();
+    defer std.testing.allocator.free(result.entries);
+
+    try std.testing.expectEqual(f32ToF16(0.0), result.texture.data[0]);
+    try std.testing.expectEqual(f32ToF16(0.0), result.texture.data[1]);
+    try std.testing.expectEqual(f32ToF16(20.0), result.texture.data[2]);
+    try std.testing.expectEqual(f32ToF16(0.0), result.texture.data[3]);
+    try std.testing.expectEqual(f32ToF16(40.0), result.texture.data[4]);
+    try std.testing.expectEqual(f32ToF16(0.0), result.texture.data[5]);
 }
