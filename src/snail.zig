@@ -2542,6 +2542,38 @@ pub const PathPictureBuilder = struct {
         });
     }
 
+    fn addExplicitInsideStrokeRecord(
+        self: *PathPictureBuilder,
+        fill_path: *const VectorPath,
+        fill: ?VectorFillStyle,
+        stroke_path: *const VectorPath,
+        stroke_paint: PathPaint,
+        transform: VectorTransform2D,
+    ) !void {
+        const stroke_bbox = stroke_path.bounds() orelse return error.EmptyPath;
+        const stroke_curves = try stroke_path.cloneFilledCurves(self.allocator);
+        errdefer self.allocator.free(stroke_curves);
+
+        if (fill) |style| {
+            const fill_bbox = fill_path.bounds() orelse return error.EmptyPath;
+            const fill_curves = try fill_path.cloneFilledCurves(self.allocator);
+            errdefer self.allocator.free(fill_curves);
+            try self.addCompositeRecord(
+                fill_curves,
+                fill_bbox,
+                resolveFillPaint(style),
+                stroke_curves,
+                stroke_bbox,
+                stroke_paint,
+                transform,
+                .source_over,
+            );
+            return;
+        }
+
+        try self.addSingleRecord(stroke_curves, stroke_bbox, stroke_paint, transform);
+    }
+
     fn addCompositeRecord(
         self: *PathPictureBuilder,
         fill_curves: []CurveSegment,
@@ -2645,6 +2677,29 @@ pub const PathPictureBuilder = struct {
         stroke: ?PathStrokeStyle,
         transform: VectorTransform2D,
     ) !void {
+        if (stroke) |stroke_style| {
+            const size = Vec2.new(@max(rect.w, 0.0), @max(rect.h, 0.0));
+            const inset = std.math.clamp(stroke_style.width, 0.0, @min(size.x, size.y) * 0.5);
+            if (stroke_style.placement == .inside and inset > 1e-4) {
+                var fill_path = VectorPath.init(self.allocator);
+                defer fill_path.deinit();
+                try fill_path.addRect(rect);
+
+                var stroke_path = VectorPath.init(self.allocator);
+                defer stroke_path.deinit();
+                try stroke_path.addRect(rect);
+                if (size.x - inset * 2.0 > 1e-4 and size.y - inset * 2.0 > 1e-4) {
+                    try stroke_path.addRectReversed(.{
+                        .x = rect.x + inset,
+                        .y = rect.y + inset,
+                        .w = size.x - inset * 2.0,
+                        .h = size.y - inset * 2.0,
+                    });
+                }
+                return self.addExplicitInsideStrokeRecord(&fill_path, fill, &stroke_path, resolveStrokePaint(stroke_style), transform);
+            }
+        }
+
         var path = VectorPath.init(self.allocator);
         defer path.deinit();
         try path.addRect(rect);
@@ -2659,6 +2714,33 @@ pub const PathPictureBuilder = struct {
         corner_radius: f32,
         transform: VectorTransform2D,
     ) !void {
+        if (stroke) |stroke_style| {
+            const size = Vec2.new(@max(rect.w, 0.0), @max(rect.h, 0.0));
+            const max_radius = @min(size.x, size.y) * 0.5;
+            const radius = std.math.clamp(corner_radius, 0.0, max_radius);
+            const inset = std.math.clamp(stroke_style.width, 0.0, max_radius);
+            if (stroke_style.placement == .inside and inset > 1e-4) {
+                var fill_path = VectorPath.init(self.allocator);
+                defer fill_path.deinit();
+                try fill_path.addRoundedRect(rect, radius);
+
+                var stroke_path = VectorPath.init(self.allocator);
+                defer stroke_path.deinit();
+                try stroke_path.addRoundedRect(rect, radius);
+                if (size.x - inset * 2.0 > 1e-4 and size.y - inset * 2.0 > 1e-4) {
+                    const inner_rect = VectorRect{
+                        .x = rect.x + inset,
+                        .y = rect.y + inset,
+                        .w = size.x - inset * 2.0,
+                        .h = size.y - inset * 2.0,
+                    };
+                    const inner_radius = std.math.clamp(radius - inset, 0.0, @min(inner_rect.w, inner_rect.h) * 0.5);
+                    try stroke_path.addRoundedRectReversed(inner_rect, inner_radius);
+                }
+                return self.addExplicitInsideStrokeRecord(&fill_path, fill, &stroke_path, resolveStrokePaint(stroke_style), transform);
+            }
+        }
+
         var path = VectorPath.init(self.allocator);
         defer path.deinit();
         try path.addRoundedRect(rect, corner_radius);
@@ -2672,6 +2754,29 @@ pub const PathPictureBuilder = struct {
         stroke: ?PathStrokeStyle,
         transform: VectorTransform2D,
     ) !void {
+        if (stroke) |stroke_style| {
+            const size = Vec2.new(@max(rect.w, 0.0), @max(rect.h, 0.0));
+            const inset = std.math.clamp(stroke_style.width, 0.0, @min(size.x, size.y) * 0.5);
+            if (stroke_style.placement == .inside and inset > 1e-4) {
+                var fill_path = VectorPath.init(self.allocator);
+                defer fill_path.deinit();
+                try fill_path.addEllipse(rect);
+
+                var stroke_path = VectorPath.init(self.allocator);
+                defer stroke_path.deinit();
+                try stroke_path.addEllipse(rect);
+                if (size.x - inset * 2.0 > 1e-4 and size.y - inset * 2.0 > 1e-4) {
+                    try stroke_path.addEllipseReversed(.{
+                        .x = rect.x + inset,
+                        .y = rect.y + inset,
+                        .w = size.x - inset * 2.0,
+                        .h = size.y - inset * 2.0,
+                    });
+                }
+                return self.addExplicitInsideStrokeRecord(&fill_path, fill, &stroke_path, resolveStrokePaint(stroke_style), transform);
+            }
+        }
+
         var path = VectorPath.init(self.allocator);
         defer path.deinit();
         try path.addEllipse(rect);
@@ -3336,14 +3441,17 @@ test "rounded rect corners are approximated with quadratic segments" {
     }
 }
 
-test "inside-aligned path stroke groups fill and stroke on one instance" {
+test "inside-aligned generic path stroke groups fill and stroke on one instance" {
+    var path = VectorPath.init(std.testing.allocator);
+    defer path.deinit();
+    try path.addRoundedRect(.{ .x = 10, .y = 20, .w = 40, .h = 18 }, 6.0);
+
     var builder = PathPictureBuilder.init(std.testing.allocator);
     defer builder.deinit();
-    try builder.addRoundedRect(
-        .{ .x = 10, .y = 20, .w = 40, .h = 18 },
+    try builder.addPath(
+        &path,
         .{ .color = .{ 0.1, 0.2, 0.3, 0.4 } },
         .{ .color = .{ 0.8, 0.7, 0.6, 1.0 }, .width = 2.0, .join = .round, .placement = .inside },
-        6.0,
         .identity,
     );
 
@@ -3370,6 +3478,35 @@ test "inside-aligned path stroke groups fill and stroke on one instance" {
     const lid = picture.atlas.layer_info_data orelse return error.TestExpectedEqual;
     try std.testing.expectApproxEqAbs(kPathPaintTagCompositeGroup, lid[3], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, @intFromEnum(PathCompositeMode.fill_stroke_inside)), lid[1], 0.001);
+}
+
+test "inside-aligned rounded rect helper emits explicit ring geometry" {
+    var builder = PathPictureBuilder.init(std.testing.allocator);
+    defer builder.deinit();
+    try builder.addRoundedRect(
+        .{ .x = 10, .y = 20, .w = 40, .h = 18 },
+        .{ .color = .{ 0.1, 0.2, 0.3, 0.4 } },
+        .{ .color = .{ 0.8, 0.7, 0.6, 1.0 }, .width = 2.0, .join = .round, .placement = .inside },
+        6.0,
+        .identity,
+    );
+
+    var picture = try builder.freeze(std.testing.allocator);
+    defer picture.deinit();
+    try std.testing.expectEqual(@as(usize, 1), picture.shapeCount());
+    try std.testing.expectEqual(@as(u16, 2), picture.instances[0].layer_count);
+
+    const fill_info = picture.atlas.getGlyph(picture.instances[0].glyph_id) orelse return error.TestExpectedEqual;
+    const stroke_info = picture.atlas.getGlyph(picture.instances[0].glyph_id + 1) orelse return error.TestExpectedEqual;
+
+    try std.testing.expectApproxEqAbs(fill_info.bbox.min.x, stroke_info.bbox.min.x, 0.05);
+    try std.testing.expectApproxEqAbs(fill_info.bbox.min.y, stroke_info.bbox.min.y, 0.05);
+    try std.testing.expectApproxEqAbs(fill_info.bbox.max.x, stroke_info.bbox.max.x, 0.05);
+    try std.testing.expectApproxEqAbs(fill_info.bbox.max.y, stroke_info.bbox.max.y, 0.05);
+
+    const lid = picture.atlas.layer_info_data orelse return error.TestExpectedEqual;
+    try std.testing.expectApproxEqAbs(kPathPaintTagCompositeGroup, lid[3], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, @intFromEnum(PathCompositeMode.source_over)), lid[1], 0.001);
 }
 
 test "path picture gradient paint records encode linear and radial paints" {
