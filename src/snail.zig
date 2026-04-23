@@ -25,15 +25,20 @@ pub const vec = @import("math/vec.zig");
 const curve_tex = @import("render/curve_texture.zig");
 const band_tex = @import("render/band_texture.zig");
 const vertex_mod = @import("render/vertex.zig");
+const sprite_vertex_mod = @import("render/sprite_vertex.zig");
 const vector_vertex_mod = @import("render/vector_vertex.zig");
 const pipeline = @import("render/pipeline.zig");
+const sprite_pipeline = @import("render/sprite_pipeline.zig");
 const vector_pipeline = @import("render/vector_pipeline.zig");
 const vulkan_pipeline = if (build_options.enable_vulkan) @import("render/vulkan_pipeline.zig") else struct {
     pub const VulkanContext = void;
     pub fn init(_: anytype) !void {}
     pub fn deinit() void {}
     pub fn buildTextureArrays(_: anytype, _: anytype) void {}
+    pub fn buildImageArray(_: anytype, _: anytype) void {}
     pub fn drawText(_: anytype, _: anytype, _: anytype, _: anytype) void {}
+    pub fn drawTextGrayscale(_: anytype, _: anytype, _: anytype, _: anytype) void {}
+    pub fn drawSprites(_: anytype, _: anytype, _: anytype, _: anytype) void {}
     pub fn drawVector(_: anytype, _: anytype, _: anytype, _: anytype) void {}
     pub fn setCommandBuffer(_: anytype) void {}
     pub fn getBackendName() []const u8 {
@@ -49,15 +54,27 @@ pub const harfbuzz = if (build_options.enable_harfbuzz) @import("font/harfbuzz.z
 pub const Mat4 = vec.Mat4;
 pub const Vec2 = vec.Vec2;
 pub const BBox = bezier.BBox;
+const CurveSegment = bezier.CurveSegment;
+const ConicBezier = bezier.ConicBezier;
+const CubicBezier = bezier.CubicBezier;
 pub const GlyphMetrics = ttf.GlyphMetrics;
 /// Font-wide line metrics from the `hhea` table, in font units.
 pub const LineMetrics = ttf.LineMetrics;
 pub const VectorTransform2D = vec.Transform2D;
+pub const PATH_PAINT_INFO_WIDTH: u32 = 4096;
+pub const PATH_PAINT_TEXELS_PER_RECORD: u32 = 6;
+pub const PATH_PAINT_TAG_SOLID: f32 = -1.0;
+pub const PATH_PAINT_TAG_LINEAR_GRADIENT: f32 = -2.0;
+pub const PATH_PAINT_TAG_RADIAL_GRADIENT: f32 = -3.0;
+pub const PATH_PAINT_TAG_IMAGE: f32 = -4.0;
 
 // Re-export vertex constants for buffer sizing
 pub const FLOATS_PER_VERTEX = vertex_mod.FLOATS_PER_VERTEX;
 pub const VERTICES_PER_GLYPH = vertex_mod.VERTICES_PER_GLYPH;
 pub const FLOATS_PER_GLYPH = FLOATS_PER_VERTEX * VERTICES_PER_GLYPH;
+pub const SPRITE_FLOATS_PER_VERTEX = sprite_vertex_mod.FLOATS_PER_VERTEX;
+pub const SPRITE_VERTICES_PER_SPRITE = sprite_vertex_mod.VERTICES_PER_SPRITE;
+pub const SPRITE_FLOATS_PER_SPRITE = sprite_vertex_mod.FLOATS_PER_SPRITE;
 pub const VectorRect = vector_vertex_mod.Rect;
 pub const VectorPrimitiveKind = vector_vertex_mod.PrimitiveKind;
 pub const VECTOR_FLOATS_PER_VERTEX = vector_vertex_mod.FLOATS_PER_VERTEX;
@@ -66,15 +83,134 @@ pub const VECTOR_FLOATS_PER_PRIMITIVE = vector_vertex_mod.FLOATS_PER_PRIMITIVE;
 pub const VECTOR_VERTICES_PER_ROUNDED_RECT = VECTOR_VERTICES_PER_PRIMITIVE;
 pub const VECTOR_FLOATS_PER_ROUNDED_RECT = VECTOR_FLOATS_PER_PRIMITIVE;
 
+pub const PathPaintExtend = enum(u8) {
+    clamp = 0,
+    repeat = 1,
+    reflect = 2,
+};
+
+pub const ImageFilter = enum(u8) {
+    linear = 0,
+    nearest = 1,
+};
+
+pub const Image = struct {
+    allocator: std.mem.Allocator,
+    width: u32,
+    height: u32,
+    pixels: []u8,
+
+    pub fn initRgba8(allocator: std.mem.Allocator, width: u32, height: u32, pixels: []const u8) !Image {
+        if (pixels.len != width * height * 4) return error.InvalidImageData;
+        const owned = try allocator.dupe(u8, pixels);
+        return .{
+            .allocator = allocator,
+            .width = width,
+            .height = height,
+            .pixels = owned,
+        };
+    }
+
+    pub fn deinit(self: *Image) void {
+        self.allocator.free(self.pixels);
+        self.* = undefined;
+    }
+};
+
+pub const ImageView = struct {
+    image: *const Image,
+    layer: u16 = 0,
+    uv_scale: Vec2 = .{ .x = 1.0, .y = 1.0 },
+};
+
+pub const SpriteUvRect = struct {
+    u0: f32 = 0.0,
+    v0: f32 = 0.0,
+    u1: f32 = 1.0,
+    v1: f32 = 1.0,
+};
+
+pub const SpriteAnchor = struct {
+    x: f32 = 0.5,
+    y: f32 = 0.5,
+
+    pub const center = SpriteAnchor{};
+    pub const top_left = SpriteAnchor{ .x = 0.0, .y = 0.0 };
+    pub const top_right = SpriteAnchor{ .x = 1.0, .y = 0.0 };
+    pub const bottom_left = SpriteAnchor{ .x = 0.0, .y = 1.0 };
+    pub const bottom_right = SpriteAnchor{ .x = 1.0, .y = 1.0 };
+};
+
+pub const PathLinearGradient = struct {
+    start: Vec2,
+    end: Vec2,
+    start_color: [4]f32,
+    end_color: [4]f32,
+    extend: PathPaintExtend = .clamp,
+};
+
+pub const PathRadialGradient = struct {
+    center: Vec2,
+    radius: f32,
+    inner_color: [4]f32,
+    outer_color: [4]f32,
+    extend: PathPaintExtend = .clamp,
+};
+
+pub const PathImagePaint = struct {
+    image: *const Image,
+    uv_transform: VectorTransform2D = .identity,
+    tint: [4]f32 = .{ 1, 1, 1, 1 },
+    extend_x: PathPaintExtend = .clamp,
+    extend_y: PathPaintExtend = .clamp,
+    filter: ImageFilter = .linear,
+};
+
+pub const PathPaint = union(enum) {
+    solid: [4]f32,
+    linear_gradient: PathLinearGradient,
+    radial_gradient: PathRadialGradient,
+    image: PathImagePaint,
+};
+
 pub const VectorFillStyle = struct {
     // Straight RGBA; the renderer premultiplies internally.
-    color: [4]f32,
+    color: [4]f32 = .{ 0, 0, 0, 1 },
+    paint: ?PathPaint = null,
 };
 
 pub const VectorStrokeStyle = struct {
     // Straight RGBA; the renderer premultiplies internally.
     color: [4]f32,
     width: f32,
+};
+
+pub const PathStrokeCap = enum {
+    butt,
+    square,
+    round,
+};
+
+pub const PathStrokeJoin = enum {
+    miter,
+    bevel,
+    round,
+};
+
+pub const PathStrokeAlign = enum {
+    center,
+    inside,
+};
+
+pub const PathStrokeStyle = struct {
+    // Straight RGBA; the renderer premultiplies internally.
+    color: [4]f32 = .{ 0, 0, 0, 1 },
+    paint: ?PathPaint = null,
+    width: f32,
+    cap: PathStrokeCap = .butt,
+    join: PathStrokeJoin = .miter,
+    miter_limit: f32 = 4.0,
+    placement: PathStrokeAlign = .center,
 };
 
 pub const VectorShape = union(enum) {
@@ -227,6 +363,7 @@ pub const Atlas = struct {
     layer_info_width: u32 = 0,
     layer_info_height: u32 = 0,
     colr_base_map: ?std.AutoHashMap(u16, ColrBaseInfo) = null,
+    paint_image_records: ?[]?PaintImageRecord = null,
 
     pub const GlyphInfo = struct {
         bbox: bezier.BBox,
@@ -242,6 +379,11 @@ pub const Atlas = struct {
         layer_count: u16,
         union_bbox: bezier.BBox,
         page_index: u16,
+    };
+
+    pub const PaintImageRecord = struct {
+        image: *const Image,
+        texel_offset: u32,
     };
 
     const BuildPageResult = struct {
@@ -483,13 +625,15 @@ pub const Atlas = struct {
             const gid = gid_ptr.*;
             const glyph = font.inner.parseGlyph(allocator, &cache, gid) catch continue;
 
-            var all_curves: std.ArrayList(bezier.QuadBezier) = .empty;
+            var all_curves: std.ArrayList(CurveSegment) = .empty;
             defer all_curves.deinit(allocator);
             for (glyph.contours) |contour| {
-                try all_curves.appendSlice(allocator, contour.curves);
+                for (contour.curves) |curve| {
+                    try all_curves.append(allocator, CurveSegment.fromQuad(curve));
+                }
             }
 
-            const owned = try allocator.dupe(bezier.QuadBezier, all_curves.items);
+            const owned = try allocator.dupe(CurveSegment, all_curves.items);
             try glyph_curves_list.append(allocator, .{
                 .curves = owned,
                 .bbox = glyph.metrics.bbox,
@@ -604,6 +748,7 @@ pub const Atlas = struct {
             .colr_font_data = if (font) |f| f.inner.data else &.{},
             .colr_offset = if (font) |f| f.inner.colr_offset else 0,
             .cpal_offset = if (font) |f| f.inner.cpal_offset else 0,
+            .paint_image_records = null,
         };
         errdefer atlas.deinit();
 
@@ -846,6 +991,7 @@ pub const Atlas = struct {
         if (self.shaper) |*s| @constCast(s).deinit();
         if (self.layer_info_data) |lid| self.allocator.free(lid);
         if (self.colr_base_map) |*cbm| @constCast(cbm).deinit();
+        if (self.paint_image_records) |records| self.allocator.free(records);
         releasePages(self.pages);
         self.allocator.free(self.pages);
         self.glyph_map.deinit();
@@ -855,11 +1001,19 @@ pub const Atlas = struct {
 pub const AtlasView = struct {
     atlas: *const Atlas,
     layer_base: u16 = 0,
+    info_row_base: u16 = 0,
 
     pub fn glyphLayer(self: *const AtlasView, page_index: u16) u8 {
         const layer = self.layer_base + page_index;
         std.debug.assert(layer < 256);
         return @intCast(layer);
+    }
+
+    pub fn layerInfoLoc(self: *const AtlasView, info_x: u16, info_y: u16) struct { x: u16, y: u16 } {
+        return .{
+            .x = info_x,
+            .y = self.info_row_base + info_y,
+        };
     }
 };
 
@@ -1045,7 +1199,10 @@ pub const Batch = struct {
         x: f32,
         y: f32,
         font_size: f32,
-        info: Atlas.ColrBaseInfo,
+        union_bbox: bezier.BBox,
+        info_x: u16,
+        info_y: u16,
+        layer_count: u16,
         color: [4]f32,
         atlas_layer: u8,
     ) bool {
@@ -1055,10 +1212,10 @@ pub const Batch = struct {
             x,
             y,
             font_size,
-            info.union_bbox,
-            info.info_x,
-            info.info_y,
-            info.layer_count,
+            union_bbox,
+            info_x,
+            info_y,
+            layer_count,
             color,
             atlas_layer,
         );
@@ -1093,7 +1250,18 @@ pub const Batch = struct {
             // Multi-layer COLR path: single quad per emoji
             if (atlas.colr_base_map) |cbm| {
                 if (cbm.get(sg.glyph_id)) |cbi| {
-                    if (!self.addColrGlyph(x + sg.x_offset, y + sg.y_offset, font_size, cbi, color, view.glyphLayer(cbi.page_index))) break;
+                    const info_loc = view.layerInfoLoc(cbi.info_x, cbi.info_y);
+                    if (!self.addColrGlyph(
+                        x + sg.x_offset,
+                        y + sg.y_offset,
+                        font_size,
+                        cbi.union_bbox,
+                        info_loc.x,
+                        info_loc.y,
+                        cbi.layer_count,
+                        color,
+                        view.glyphLayer(cbi.page_index),
+                    )) break;
                     count += 1;
                     continue;
                 }
@@ -1176,7 +1344,18 @@ pub const Batch = struct {
             // COLRv0: single multi-layer quad (seamless compositing in shader)
             if (atlas.colr_base_map) |cbm| {
                 if (cbm.get(gid)) |cbi| {
-                    _ = self.addColrGlyph(cursor_x, y, font_size, cbi, color, view.glyphLayer(cbi.page_index));
+                    const info_loc = view.layerInfoLoc(cbi.info_x, cbi.info_y);
+                    _ = self.addColrGlyph(
+                        cursor_x,
+                        y,
+                        font_size,
+                        cbi.union_bbox,
+                        info_loc.x,
+                        info_loc.y,
+                        cbi.layer_count,
+                        color,
+                        view.glyphLayer(cbi.page_index),
+                    );
                     const advance = if (atlas.glyph_map.get(gid)) |bi| bi.advance_width else font.inner.units_per_em;
                     cursor_x += @as(f32, @floatFromInt(advance)) * scale;
                     prev_gid = gid;
@@ -1510,6 +1689,1460 @@ pub const VectorPicture = struct {
     }
 };
 
+pub const SpritePicture = struct {
+    allocator: std.mem.Allocator,
+    vertices: []f32,
+
+    pub fn initClone(allocator: std.mem.Allocator, vertices: []const f32) !SpritePicture {
+        const owned = try allocator.alloc(f32, vertices.len);
+        @memcpy(owned, vertices);
+        return .{
+            .allocator = allocator,
+            .vertices = owned,
+        };
+    }
+
+    pub fn deinit(self: *SpritePicture) void {
+        self.allocator.free(self.vertices);
+        self.* = undefined;
+    }
+
+    pub fn slice(self: *const SpritePicture) []const f32 {
+        return self.vertices;
+    }
+
+    pub fn spriteCount(self: *const SpritePicture) usize {
+        return self.vertices.len / SPRITE_FLOATS_PER_SPRITE;
+    }
+};
+
+pub const SpriteBatch = struct {
+    buf: []f32,
+    len: usize = 0,
+
+    pub fn init(buf: []f32) SpriteBatch {
+        return .{ .buf = buf };
+    }
+
+    pub fn reset(self: *SpriteBatch) void {
+        self.len = 0;
+    }
+
+    pub fn spriteCount(self: *const SpriteBatch) usize {
+        return self.len / SPRITE_FLOATS_PER_SPRITE;
+    }
+
+    pub fn slice(self: *const SpriteBatch) []const f32 {
+        return self.buf[0..self.len];
+    }
+
+    pub fn freeze(self: *const SpriteBatch, allocator: std.mem.Allocator) !SpritePicture {
+        return SpritePicture.initClone(allocator, self.slice());
+    }
+
+    fn coerceImageView(image_like: anytype) ImageView {
+        const T = @TypeOf(image_like);
+        return switch (T) {
+            ImageView => image_like,
+            *const ImageView, *ImageView => image_like.*,
+            else => @compileError("expected ImageView or *ImageView"),
+        };
+    }
+
+    pub fn addSprite(
+        self: *SpriteBatch,
+        image_like: anytype,
+        position: Vec2,
+        size: Vec2,
+        tint: [4]f32,
+    ) bool {
+        return self.addSpriteTransformed(
+            image_like,
+            size,
+            tint,
+            .{},
+            .linear,
+            .center,
+            VectorTransform2D.translate(position.x, position.y),
+        );
+    }
+
+    pub fn addSpriteAt(
+        self: *SpriteBatch,
+        image_like: anytype,
+        position: Vec2,
+        size: Vec2,
+        rotation_rad: f32,
+        anchor: SpriteAnchor,
+        tint: [4]f32,
+        uv_rect: SpriteUvRect,
+        filter: ImageFilter,
+    ) bool {
+        const transform = VectorTransform2D.multiply(
+            VectorTransform2D.translate(position.x, position.y),
+            VectorTransform2D.rotate(rotation_rad),
+        );
+        return self.addSpriteTransformed(image_like, size, tint, uv_rect, filter, anchor, transform);
+    }
+
+    pub fn addSpriteRect(
+        self: *SpriteBatch,
+        image_like: anytype,
+        rect: VectorRect,
+        tint: [4]f32,
+        uv_rect: SpriteUvRect,
+        filter: ImageFilter,
+    ) bool {
+        return self.addSpriteTransformed(
+            image_like,
+            .{ .x = rect.w, .y = rect.h },
+            tint,
+            uv_rect,
+            filter,
+            .top_left,
+            VectorTransform2D.translate(rect.x, rect.y),
+        );
+    }
+
+    pub fn addSpriteTransformed(
+        self: *SpriteBatch,
+        image_like: anytype,
+        size: Vec2,
+        tint: [4]f32,
+        uv_rect: SpriteUvRect,
+        filter: ImageFilter,
+        anchor: SpriteAnchor,
+        transform: VectorTransform2D,
+    ) bool {
+        if (self.len + SPRITE_FLOATS_PER_SPRITE > self.buf.len) return false;
+        const view = coerceImageView(image_like);
+        sprite_vertex_mod.generateSpriteVertices(
+            self.buf[self.len..],
+            view,
+            size,
+            tint,
+            uv_rect,
+            filter,
+            anchor,
+            transform,
+        );
+        self.len += SPRITE_FLOATS_PER_SPRITE;
+        return true;
+    }
+};
+
+const kPathArcSplitMaxDepth: u8 = 8;
+const kPathStrokeOffsetTolerance: f32 = 0.02;
+const kPathStrokeOffsetMaxDepth: u8 = 10;
+const kPathCurveApproxTolerance: f32 = 0.02;
+const kPathCurveApproxMaxDepth: u8 = 8;
+
+fn makePathLineCurve(p0: Vec2, p1: Vec2) bezier.QuadBezier {
+    return .{
+        .p0 = p0,
+        .p1 = Vec2.lerp(p0, p1, 0.5),
+        .p2 = p1,
+    };
+}
+
+fn makePathLineSegment(p0: Vec2, p1: Vec2) CurveSegment {
+    return CurveSegment.fromQuad(makePathLineCurve(p0, p1));
+}
+
+fn makePathArcCurve(center: Vec2, radii: Vec2, start_angle: f32, end_angle: f32) bezier.QuadBezier {
+    const p0 = center.add(Vec2.new(@cos(start_angle) * radii.x, @sin(start_angle) * radii.y));
+    const p2 = center.add(Vec2.new(@cos(end_angle) * radii.x, @sin(end_angle) * radii.y));
+    const t0 = Vec2.new(-@sin(start_angle) * radii.x, @cos(start_angle) * radii.y);
+    const t1 = Vec2.new(-@sin(end_angle) * radii.x, @cos(end_angle) * radii.y);
+    const control = lineIntersection(p0, t0, p2, t1) orelse Vec2.lerp(p0, p2, 0.5);
+    return .{
+        .p0 = p0,
+        .p1 = control,
+        .p2 = p2,
+    };
+}
+
+fn appendAdaptiveArcCurve(
+    path: *VectorPath,
+    center: Vec2,
+    radii: Vec2,
+    start_angle: f32,
+    end_angle: f32,
+    depth: u8,
+) !void {
+    const span = end_angle - start_angle;
+    if (depth == 0 or @abs(span) <= std.math.pi * 0.125 + 1e-6) {
+        try path.appendSegment(CurveSegment.fromQuad(makePathArcCurve(center, radii, start_angle, end_angle)));
+        return;
+    }
+    const mid_angle = (start_angle + end_angle) * 0.5;
+    try appendAdaptiveArcCurve(path, center, radii, start_angle, mid_angle, depth - 1);
+    try appendAdaptiveArcCurve(path, center, radii, mid_angle, end_angle, depth - 1);
+}
+
+fn pointsApproxEqual(a: Vec2, b: Vec2) bool {
+    return @abs(a.x - b.x) <= 1e-4 and @abs(a.y - b.y) <= 1e-4;
+}
+
+fn cross2(a: Vec2, b: Vec2) f32 {
+    return a.x * b.y - a.y * b.x;
+}
+
+fn perpLeft(v: Vec2) Vec2 {
+    return .{ .x = -v.y, .y = v.x };
+}
+
+fn signedAngleBetween(a: Vec2, b: Vec2) f32 {
+    return std.math.atan2(cross2(a, b), Vec2.dot(a, b));
+}
+
+fn lineIntersection(p0: Vec2, d0: Vec2, p1: Vec2, d1: Vec2) ?Vec2 {
+    const denom = cross2(d0, d1);
+    if (@abs(denom) <= 1e-6) return null;
+    const rel = Vec2.sub(p1, p0);
+    const t = cross2(rel, d1) / denom;
+    return Vec2.add(p0, Vec2.scale(d0, t));
+}
+
+fn appendLineIfNeeded(path: *VectorPath, point: Vec2) !void {
+    if (!pointsApproxEqual(path.requireContour().?.current_point, point)) {
+        try path.lineTo(point);
+    }
+}
+
+fn resolveFillPaint(style: VectorFillStyle) PathPaint {
+    return style.paint orelse .{ .solid = style.color };
+}
+
+fn resolveStrokePaint(style: PathStrokeStyle) PathPaint {
+    return style.paint orelse .{ .solid = style.color };
+}
+
+fn fillStyleForStroke(style: PathStrokeStyle) VectorFillStyle {
+    return .{
+        .color = style.color,
+        .paint = style.paint,
+    };
+}
+
+fn reverseCurveSegment(curve: CurveSegment) CurveSegment {
+    return switch (curve.kind) {
+        .quadratic => .{
+            .kind = .quadratic,
+            .p0 = curve.p2,
+            .p1 = curve.p1,
+            .p2 = curve.p0,
+        },
+        .conic => .{
+            .kind = .conic,
+            .p0 = curve.p2,
+            .p1 = curve.p1,
+            .p2 = curve.p0,
+            .weights = .{ curve.weights[2], curve.weights[1], curve.weights[0] },
+        },
+        .cubic => .{
+            .kind = .cubic,
+            .p0 = curve.p3,
+            .p1 = curve.p2,
+            .p2 = curve.p1,
+            .p3 = curve.p0,
+        },
+    };
+}
+
+fn curveUnitTangent(curve: CurveSegment, t: f32) Vec2 {
+    const deriv = curve.derivative(t);
+    if (Vec2.length(deriv) > 1e-5) return Vec2.normalize(deriv);
+
+    const fallback_deltas = [_]f32{ 1e-4, 1e-3, 1e-2, 5e-2 };
+    for (fallback_deltas) |delta| {
+        const t0 = std.math.clamp(t - delta, 0.0, 1.0);
+        const t1 = std.math.clamp(t + delta, 0.0, 1.0);
+        if (@abs(t1 - t0) <= 1e-6) continue;
+        const diff = Vec2.sub(curve.evaluate(t1), curve.evaluate(t0));
+        if (Vec2.length(diff) > 1e-5) return Vec2.normalize(diff);
+    }
+
+    const chord = Vec2.sub(curve.endPoint(), curve.p0);
+    if (Vec2.length(chord) > 1e-5) return Vec2.normalize(chord);
+    return .{ .x = 1.0, .y = 0.0 };
+}
+
+fn offsetCurvePoint(curve: CurveSegment, t: f32, offset: f32) Vec2 {
+    const tangent = curveUnitTangent(curve, t);
+    const normal = perpLeft(tangent);
+    return Vec2.add(curve.evaluate(t), Vec2.scale(normal, offset));
+}
+
+fn fitOffsetCurveQuad(curve: CurveSegment, offset: f32) CurveSegment {
+    const p0 = offsetCurvePoint(curve, 0.0, offset);
+    const pm = offsetCurvePoint(curve, 0.5, offset);
+    const p2 = offsetCurvePoint(curve, 1.0, offset);
+    const control = Vec2.new(
+        pm.x * 2.0 - (p0.x + p2.x) * 0.5,
+        pm.y * 2.0 - (p0.y + p2.y) * 0.5,
+    );
+    return CurveSegment.fromQuad(.{
+        .p0 = p0,
+        .p1 = control,
+        .p2 = p2,
+    });
+}
+
+fn fitCurveQuadratic(curve: CurveSegment) CurveSegment {
+    if (curve.kind == .quadratic) return curve;
+    const p0 = curve.evaluate(0.0);
+    const pm = curve.evaluate(0.5);
+    const p2 = curve.evaluate(1.0);
+    const control = Vec2.new(
+        pm.x * 2.0 - (p0.x + p2.x) * 0.5,
+        pm.y * 2.0 - (p0.y + p2.y) * 0.5,
+    );
+    return CurveSegment.fromQuad(.{
+        .p0 = p0,
+        .p1 = control,
+        .p2 = p2,
+    });
+}
+
+fn curveQuadraticApproxError(curve: CurveSegment) f32 {
+    if (curve.kind == .quadratic) return 0.0;
+    const approx = fitCurveQuadratic(curve).asQuad();
+    var max_error: f32 = 0.0;
+    inline for ([_]f32{ 0.25, 0.75 }) |t| {
+        const expected = curve.evaluate(t);
+        const actual = approx.evaluate(t);
+        max_error = @max(max_error, Vec2.length(Vec2.sub(expected, actual)));
+    }
+    return max_error;
+}
+
+fn appendAdaptiveQuadraticApprox(
+    path: *VectorPath,
+    curve: CurveSegment,
+    depth: u8,
+) !void {
+    if (curve.kind == .quadratic) {
+        try path.appendSegment(curve);
+        return;
+    }
+
+    if (depth == 0 or curveQuadraticApproxError(curve) <= kPathCurveApproxTolerance) {
+        try path.appendSegment(fitCurveQuadratic(curve));
+        return;
+    }
+
+    const halves = curve.split(0.5);
+    try appendAdaptiveQuadraticApprox(path, halves[0], depth - 1);
+    try appendAdaptiveQuadraticApprox(path, halves[1], depth - 1);
+}
+
+fn offsetCurveApproxError(curve: CurveSegment, offset: f32) f32 {
+    const approx = fitOffsetCurveQuad(curve, offset).asQuad();
+    var max_error: f32 = 0.0;
+    inline for ([_]f32{ 0.25, 0.75 }) |t| {
+        const expected = offsetCurvePoint(curve, t, offset);
+        const actual = approx.evaluate(t);
+        max_error = @max(max_error, Vec2.length(Vec2.sub(expected, actual)));
+    }
+    return max_error;
+}
+
+fn appendOffsetCurveApprox(
+    path: *VectorPath,
+    curve: CurveSegment,
+    offset: f32,
+    depth: u8,
+) !void {
+    if (curve.flatness() <= 1e-6) {
+        try path.lineTo(offsetCurvePoint(curve, 1.0, offset));
+        return;
+    }
+
+    if (depth == 0 or offsetCurveApproxError(curve, offset) <= kPathStrokeOffsetTolerance) {
+        try path.appendSegment(fitOffsetCurveQuad(curve, offset));
+        return;
+    }
+
+    const halves = curve.split(0.5);
+    try appendOffsetCurveApprox(path, halves[0], offset, depth - 1);
+    try appendOffsetCurveApprox(path, halves[1], offset, depth - 1);
+}
+
+pub const VectorPath = struct {
+    allocator: std.mem.Allocator,
+    curves: std.ArrayList(CurveSegment) = .empty,
+    contours: std.ArrayList(Contour) = .empty,
+    bbox: ?BBox = null,
+
+    const Contour = struct {
+        curve_start: usize,
+        curve_end: usize,
+        start_point: Vec2,
+        current_point: Vec2,
+        closed: bool,
+    };
+
+    pub fn init(allocator: std.mem.Allocator) VectorPath {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn deinit(self: *VectorPath) void {
+        self.curves.deinit(self.allocator);
+        self.contours.deinit(self.allocator);
+        self.* = undefined;
+    }
+
+    pub fn reset(self: *VectorPath) void {
+        self.curves.clearRetainingCapacity();
+        self.contours.clearRetainingCapacity();
+        self.bbox = null;
+    }
+
+    pub fn bounds(self: *const VectorPath) ?BBox {
+        return self.bbox;
+    }
+
+    pub fn isEmpty(self: *const VectorPath) bool {
+        return self.curves.items.len == 0;
+    }
+
+    pub fn moveTo(self: *VectorPath, point: Vec2) !void {
+        if (self.contours.items.len > 0) {
+            var contour = &self.contours.items[self.contours.items.len - 1];
+            if (contour.curve_end == contour.curve_start and !contour.closed) {
+                contour.start_point = point;
+                contour.current_point = point;
+                self.expandPointBBox(point);
+                return;
+            }
+        }
+        try self.contours.append(self.allocator, .{
+            .curve_start = self.curves.items.len,
+            .curve_end = self.curves.items.len,
+            .start_point = point,
+            .current_point = point,
+            .closed = false,
+        });
+        self.expandPointBBox(point);
+    }
+
+    pub fn lineTo(self: *VectorPath, point: Vec2) !void {
+        const contour = self.requireContour() orelse return error.PathMissingMoveTo;
+        try self.appendSegment(makePathLineSegment(contour.current_point, point));
+    }
+
+    pub fn quadTo(self: *VectorPath, control: Vec2, point: Vec2) !void {
+        const contour = self.requireContour() orelse return error.PathMissingMoveTo;
+        try self.appendSegment(CurveSegment.fromQuad(.{
+            .p0 = contour.current_point,
+            .p1 = control,
+            .p2 = point,
+        }));
+    }
+
+    pub fn cubicTo(self: *VectorPath, control1: Vec2, control2: Vec2, point: Vec2) !void {
+        const contour = self.requireContour() orelse return error.PathMissingMoveTo;
+        try appendAdaptiveQuadraticApprox(self, CurveSegment.fromCubic(.{
+            .p0 = contour.current_point,
+            .p1 = control1,
+            .p2 = control2,
+            .p3 = point,
+        }), kPathCurveApproxMaxDepth);
+    }
+
+    pub fn close(self: *VectorPath) !void {
+        if (self.requireContour()) |initial_contour| {
+            var contour = initial_contour;
+            if (contour.closed) return;
+            if (contour.curve_end > contour.curve_start and !pointsApproxEqual(contour.current_point, contour.start_point)) {
+                try self.appendSegment(makePathLineSegment(contour.current_point, contour.start_point));
+                contour = self.requireContour().?;
+            }
+            contour.closed = true;
+            contour.current_point = contour.start_point;
+        }
+    }
+
+    pub fn addRect(self: *VectorPath, rect: VectorRect) !void {
+        const origin = Vec2.new(rect.x, rect.y);
+        const size = Vec2.new(@max(rect.w, 0.0), @max(rect.h, 0.0));
+        if (size.x <= 0.0 or size.y <= 0.0) return;
+        try self.moveTo(origin);
+        try self.lineTo(origin.add(Vec2.new(size.x, 0.0)));
+        try self.lineTo(origin.add(size));
+        try self.lineTo(origin.add(Vec2.new(0.0, size.y)));
+        try self.close();
+    }
+
+    pub fn addRectReversed(self: *VectorPath, rect: VectorRect) !void {
+        const origin = Vec2.new(rect.x, rect.y);
+        const size = Vec2.new(@max(rect.w, 0.0), @max(rect.h, 0.0));
+        if (size.x <= 0.0 or size.y <= 0.0) return;
+        try self.moveTo(origin);
+        try self.lineTo(origin.add(Vec2.new(0.0, size.y)));
+        try self.lineTo(origin.add(size));
+        try self.lineTo(origin.add(Vec2.new(size.x, 0.0)));
+        try self.close();
+    }
+
+    pub fn addRoundedRect(self: *VectorPath, rect: VectorRect, corner_radius: f32) !void {
+        const origin = Vec2.new(rect.x, rect.y);
+        const size = Vec2.new(@max(rect.w, 0.0), @max(rect.h, 0.0));
+        if (size.x <= 0.0 or size.y <= 0.0) return;
+
+        const max_radius = @min(size.x, size.y) * 0.5;
+        const radius = std.math.clamp(corner_radius, 0.0, max_radius);
+        if (radius <= 1.0 / 65536.0) return self.addRect(rect);
+
+        const arc = Vec2.new(radius, radius);
+        const top_left = origin.add(Vec2.new(radius, radius));
+        const top_right = origin.add(Vec2.new(size.x - radius, radius));
+        const bottom_right = origin.add(size).sub(Vec2.new(radius, radius));
+        const bottom_left = origin.add(Vec2.new(radius, size.y - radius));
+
+        try self.moveTo(origin.add(Vec2.new(radius, 0.0)));
+        try self.lineTo(origin.add(Vec2.new(size.x - radius, 0.0)));
+        try self.appendArc(top_right, arc, -std.math.pi / 2.0, 0.0);
+        try self.lineTo(origin.add(Vec2.new(size.x, size.y - radius)));
+        try self.appendArc(bottom_right, arc, 0.0, std.math.pi / 2.0);
+        try self.lineTo(origin.add(Vec2.new(radius, size.y)));
+        try self.appendArc(bottom_left, arc, std.math.pi / 2.0, std.math.pi);
+        try self.lineTo(origin.add(Vec2.new(0.0, radius)));
+        try self.appendArc(top_left, arc, std.math.pi, std.math.pi * 1.5);
+        try self.close();
+    }
+
+    pub fn addRoundedRectReversed(self: *VectorPath, rect: VectorRect, corner_radius: f32) !void {
+        const origin = Vec2.new(rect.x, rect.y);
+        const size = Vec2.new(@max(rect.w, 0.0), @max(rect.h, 0.0));
+        if (size.x <= 0.0 or size.y <= 0.0) return;
+
+        const max_radius = @min(size.x, size.y) * 0.5;
+        const radius = std.math.clamp(corner_radius, 0.0, max_radius);
+        if (radius <= 1.0 / 65536.0) return self.addRectReversed(rect);
+
+        const arc = Vec2.new(radius, radius);
+        const top_left = origin.add(Vec2.new(radius, radius));
+        const top_right = origin.add(Vec2.new(size.x - radius, radius));
+        const bottom_right = origin.add(size).sub(Vec2.new(radius, radius));
+        const bottom_left = origin.add(Vec2.new(radius, size.y - radius));
+
+        try self.moveTo(origin.add(Vec2.new(0.0, radius)));
+        try self.lineTo(origin.add(Vec2.new(0.0, size.y - radius)));
+        try self.appendArc(bottom_left, arc, std.math.pi, std.math.pi / 2.0);
+        try self.lineTo(origin.add(Vec2.new(size.x - radius, size.y)));
+        try self.appendArc(bottom_right, arc, std.math.pi / 2.0, 0.0);
+        try self.lineTo(origin.add(Vec2.new(size.x, radius)));
+        try self.appendArc(top_right, arc, 0.0, -std.math.pi / 2.0);
+        try self.lineTo(origin.add(Vec2.new(radius, 0.0)));
+        try self.appendArc(top_left, arc, -std.math.pi / 2.0, -std.math.pi);
+        try self.close();
+    }
+
+    pub fn addEllipse(self: *VectorPath, rect: VectorRect) !void {
+        const size = Vec2.new(@max(rect.w, 0.0), @max(rect.h, 0.0));
+        if (size.x <= 0.0 or size.y <= 0.0) return;
+        const center = Vec2.new(rect.x + size.x * 0.5, rect.y + size.y * 0.5);
+        const radii = size.scale(0.5);
+        try self.moveTo(center.add(Vec2.new(0.0, -radii.y)));
+        try self.appendArc(center, radii, -std.math.pi / 2.0, 0.0);
+        try self.appendArc(center, radii, 0.0, std.math.pi / 2.0);
+        try self.appendArc(center, radii, std.math.pi / 2.0, std.math.pi);
+        try self.appendArc(center, radii, std.math.pi, std.math.pi * 1.5);
+        try self.close();
+    }
+
+    pub fn addEllipseReversed(self: *VectorPath, rect: VectorRect) !void {
+        const size = Vec2.new(@max(rect.w, 0.0), @max(rect.h, 0.0));
+        if (size.x <= 0.0 or size.y <= 0.0) return;
+        const center = Vec2.new(rect.x + size.x * 0.5, rect.y + size.y * 0.5);
+        const radii = size.scale(0.5);
+        try self.moveTo(center.add(Vec2.new(0.0, -radii.y)));
+        try self.appendArc(center, radii, -std.math.pi / 2.0, -std.math.pi);
+        try self.appendArc(center, radii, -std.math.pi, -std.math.pi * 1.5);
+        try self.appendArc(center, radii, -std.math.pi * 1.5, -std.math.pi * 2.0);
+        try self.appendArc(center, radii, -std.math.pi * 2.0, -std.math.pi * 2.5);
+        try self.close();
+    }
+
+    fn requireContour(self: *VectorPath) ?*Contour {
+        if (self.contours.items.len == 0) return null;
+        return &self.contours.items[self.contours.items.len - 1];
+    }
+
+    fn appendSegment(self: *VectorPath, curve: CurveSegment) !void {
+        var contour = self.requireContour() orelse return error.PathMissingMoveTo;
+        try self.curves.append(self.allocator, curve);
+        contour = self.requireContour().?;
+        contour.curve_end = self.curves.items.len;
+        contour.current_point = curve.endPoint();
+        self.expandCurveBBox(curve);
+    }
+
+    fn appendArc(self: *VectorPath, center: Vec2, radii: Vec2, start_angle: f32, end_angle: f32) !void {
+        try appendAdaptiveArcCurve(self, center, radii, start_angle, end_angle, kPathArcSplitMaxDepth);
+    }
+
+    fn expandPointBBox(self: *VectorPath, point: Vec2) void {
+        if (self.bbox) |bbox| {
+            self.bbox = .{
+                .min = Vec2.new(@min(bbox.min.x, point.x), @min(bbox.min.y, point.y)),
+                .max = Vec2.new(@max(bbox.max.x, point.x), @max(bbox.max.y, point.y)),
+            };
+        } else {
+            self.bbox = .{ .min = point, .max = point };
+        }
+    }
+
+    fn expandCurveBBox(self: *VectorPath, curve: CurveSegment) void {
+        const cb = curve.boundingBox();
+        if (self.bbox) |bbox| {
+            self.bbox = bbox.merge(cb);
+        } else {
+            self.bbox = cb;
+        }
+    }
+
+    fn cloneFilledCurves(self: *const VectorPath, allocator: std.mem.Allocator) ![]CurveSegment {
+        var close_count: usize = 0;
+        for (self.contours.items) |contour| {
+            if (!contour.closed and contour.curve_end > contour.curve_start and !pointsApproxEqual(contour.current_point, contour.start_point)) {
+                close_count += 1;
+            }
+        }
+        const out = try allocator.alloc(CurveSegment, self.curves.items.len + close_count);
+        @memcpy(out[0..self.curves.items.len], self.curves.items);
+        var write = self.curves.items.len;
+        for (self.contours.items) |contour| {
+            if (!contour.closed and contour.curve_end > contour.curve_start and !pointsApproxEqual(contour.current_point, contour.start_point)) {
+                out[write] = makePathLineSegment(contour.current_point, contour.start_point);
+                write += 1;
+            }
+        }
+        return out;
+    }
+
+    fn cloneStrokedCurves(
+        self: *const VectorPath,
+        allocator: std.mem.Allocator,
+        stroke: PathStrokeStyle,
+    ) !?struct { curves: []CurveSegment, bbox: BBox } {
+        if (stroke.width <= 1e-4 or self.contours.items.len == 0) return null;
+
+        var outline = VectorPath.init(allocator);
+        defer outline.deinit();
+
+        for (self.contours.items) |contour| {
+            if (contour.closed) {
+                try buildClosedStrokeContours(&outline, self.curves.items[contour.curve_start..contour.curve_end], stroke);
+            } else {
+                try buildOpenStrokeContour(&outline, self.curves.items[contour.curve_start..contour.curve_end], stroke);
+            }
+        }
+
+        if (outline.isEmpty()) return null;
+        const curves = try allocator.alloc(CurveSegment, outline.curves.items.len);
+        @memcpy(curves, outline.curves.items);
+        return .{
+            .curves = curves,
+            .bbox = outline.bounds() orelse return error.EmptyPath,
+        };
+    }
+};
+
+fn appendArcSeries(path: *VectorPath, center: Vec2, radius: f32, start_angle: f32, end_angle: f32) !void {
+    if (@abs(end_angle - start_angle) <= 1e-6) return;
+    try appendAdaptiveArcCurve(path, center, Vec2.new(radius, radius), start_angle, end_angle, kPathArcSplitMaxDepth);
+}
+
+fn appendRoundJoin(path: *VectorPath, center: Vec2, prev_normal: Vec2, next_normal: Vec2, half_width: f32) !void {
+    const start_angle = std.math.atan2(prev_normal.y, prev_normal.x);
+    const delta = signedAngleBetween(prev_normal, next_normal);
+    try appendArcSeries(path, center, half_width, start_angle, start_angle + delta);
+}
+
+fn appendRoundCap(path: *VectorPath, center: Vec2, dir: Vec2, half_width: f32, start_cap: bool) !void {
+    const normal = perpLeft(dir);
+    const start_angle = if (start_cap)
+        std.math.atan2(-normal.y, -normal.x)
+    else
+        std.math.atan2(normal.y, normal.x);
+    try appendArcSeries(path, center, half_width, start_angle, start_angle - std.math.pi);
+}
+
+fn appendStrokeJoinForSide(
+    path: *VectorPath,
+    center: Vec2,
+    prev_dir: Vec2,
+    next_dir: Vec2,
+    half_width: f32,
+    side: f32,
+    join: PathStrokeJoin,
+    miter_limit: f32,
+) !void {
+    const turn = cross2(prev_dir, next_dir);
+    const normal_prev = Vec2.scale(perpLeft(prev_dir), side);
+    const normal_next = Vec2.scale(perpLeft(next_dir), side);
+    const prev_offset = Vec2.add(center, Vec2.scale(normal_prev, half_width));
+    const next_offset = Vec2.add(center, Vec2.scale(normal_next, half_width));
+
+    if (@abs(turn) <= 1e-5) {
+        try appendLineIfNeeded(path, next_offset);
+        return;
+    }
+
+    const intersection = lineIntersection(prev_offset, prev_dir, next_offset, next_dir);
+    const is_outer = turn * side > 0.0;
+    if (!is_outer) {
+        if (intersection) |p| {
+            try appendLineIfNeeded(path, p);
+        }
+        try appendLineIfNeeded(path, next_offset);
+        return;
+    }
+
+    switch (join) {
+        .bevel => {
+            try appendLineIfNeeded(path, next_offset);
+        },
+        .round => {
+            try appendRoundJoin(path, center, normal_prev, normal_next, half_width);
+        },
+        .miter => {
+            if (intersection) |p| {
+                if (Vec2.length(Vec2.sub(p, center)) <= half_width * @max(miter_limit, 1.0)) {
+                    try appendLineIfNeeded(path, p);
+                    try appendLineIfNeeded(path, next_offset);
+                    return;
+                }
+            }
+            try appendLineIfNeeded(path, next_offset);
+        },
+    }
+}
+
+fn appendOffsetBoundaryCurve(
+    boundary: *VectorPath,
+    curve: CurveSegment,
+    side: f32,
+    half_width: f32,
+) !void {
+    try appendOffsetCurveApprox(boundary, curve, side * half_width, kPathStrokeOffsetMaxDepth);
+}
+
+fn buildOffsetBoundary(
+    allocator: std.mem.Allocator,
+    curves: []const CurveSegment,
+    closed: bool,
+    side: f32,
+    stroke: PathStrokeStyle,
+) !?VectorPath {
+    if ((!closed and curves.len == 0) or stroke.width <= 1e-4) return null;
+
+    const half_width = stroke.width * 0.5;
+    var boundary = VectorPath.init(allocator);
+    errdefer boundary.deinit();
+
+    const first_curve = curves[0];
+    const start_point = offsetCurvePoint(first_curve, 0.0, side * half_width);
+    try boundary.moveTo(start_point);
+    try appendOffsetBoundaryCurve(&boundary, first_curve, side, half_width);
+
+    if (curves.len > 1) {
+        for (1..curves.len) |i| {
+            const prev_curve = curves[i - 1];
+            const curve = curves[i];
+            try appendStrokeJoinForSide(
+                &boundary,
+                prev_curve.endPoint(),
+                curveUnitTangent(prev_curve, 1.0),
+                curveUnitTangent(curve, 0.0),
+                half_width,
+                side,
+                stroke.join,
+                stroke.miter_limit,
+            );
+            try appendOffsetBoundaryCurve(&boundary, curve, side, half_width);
+        }
+    }
+
+    if (closed) {
+        try appendStrokeJoinForSide(
+            &boundary,
+            curves[curves.len - 1].endPoint(),
+            curveUnitTangent(curves[curves.len - 1], 1.0),
+            curveUnitTangent(curves[0], 0.0),
+            half_width,
+            side,
+            stroke.join,
+            stroke.miter_limit,
+        );
+    }
+
+    return boundary;
+}
+
+fn appendBoundaryCurves(dst: *VectorPath, src: *const VectorPath, reverse: bool) !void {
+    if (!reverse) {
+        for (src.curves.items) |curve| try dst.appendSegment(curve);
+        return;
+    }
+    var i = src.curves.items.len;
+    while (i > 0) {
+        i -= 1;
+        try dst.appendSegment(reverseCurveSegment(src.curves.items[i]));
+    }
+}
+
+fn buildOpenStrokeContour(path: *VectorPath, curves: []const CurveSegment, stroke: PathStrokeStyle) !void {
+    if (curves.len == 0 or stroke.width <= 1e-4) return;
+
+    var left = (try buildOffsetBoundary(path.allocator, curves, false, 1.0, stroke)) orelse return;
+    defer left.deinit();
+    var right = (try buildOffsetBoundary(path.allocator, curves, false, -1.0, stroke)) orelse return;
+    defer right.deinit();
+
+    const half_width = stroke.width * 0.5;
+    const start_dir = curveUnitTangent(curves[0], 0.0);
+    const end_dir = curveUnitTangent(curves[curves.len - 1], 1.0);
+    const start_center = if (stroke.cap == .square)
+        Vec2.sub(curves[0].p0, Vec2.scale(start_dir, half_width))
+    else
+        curves[0].p0;
+    const end_center = if (stroke.cap == .square)
+        Vec2.add(curves[curves.len - 1].endPoint(), Vec2.scale(end_dir, half_width))
+    else
+        curves[curves.len - 1].endPoint();
+    const start_left = Vec2.add(start_center, Vec2.scale(perpLeft(start_dir), half_width));
+    const start_right = Vec2.sub(start_center, Vec2.scale(perpLeft(start_dir), half_width));
+    const end_left = Vec2.add(end_center, Vec2.scale(perpLeft(end_dir), half_width));
+    const end_right = Vec2.sub(end_center, Vec2.scale(perpLeft(end_dir), half_width));
+    const left_start = left.curves.items[0].p0;
+    const right_start = right.curves.items[0].p0;
+    const right_end = right.curves.items[right.curves.items.len - 1].endPoint();
+
+    try path.moveTo(start_right);
+    switch (stroke.cap) {
+        .round => try appendRoundCap(path, curves[0].p0, start_dir, half_width, true),
+        .butt, .square => try appendLineIfNeeded(path, start_left),
+    }
+    try appendLineIfNeeded(path, left_start);
+    try appendBoundaryCurves(path, &left, false);
+    try appendLineIfNeeded(path, end_left);
+    switch (stroke.cap) {
+        .round => try appendRoundCap(path, curves[curves.len - 1].endPoint(), end_dir, half_width, false),
+        .butt, .square => try appendLineIfNeeded(path, end_right),
+    }
+    try appendLineIfNeeded(path, right_end);
+    try appendBoundaryCurves(path, &right, true);
+    try appendLineIfNeeded(path, right_start);
+    try path.close();
+}
+
+fn buildClosedStrokeContours(path: *VectorPath, curves: []const CurveSegment, stroke: PathStrokeStyle) !void {
+    if (curves.len == 0 or stroke.width <= 1e-4) return;
+
+    var left = (try buildOffsetBoundary(path.allocator, curves, true, 1.0, stroke)) orelse return;
+    defer left.deinit();
+    var right = (try buildOffsetBoundary(path.allocator, curves, true, -1.0, stroke)) orelse return;
+    defer right.deinit();
+
+    try path.moveTo(left.curves.items[0].p0);
+    try appendBoundaryCurves(path, &left, false);
+    try path.close();
+
+    try path.moveTo(right.curves.items[right.curves.items.len - 1].endPoint());
+    try appendBoundaryCurves(path, &right, true);
+    try path.close();
+}
+
+const kPathPaintInfoWidth: u32 = PATH_PAINT_INFO_WIDTH;
+const kPathPaintTexelsPerRecord: u32 = PATH_PAINT_TEXELS_PER_RECORD;
+const kPathPaintTagSolid: f32 = PATH_PAINT_TAG_SOLID;
+const kPathPaintTagLinearGradient: f32 = PATH_PAINT_TAG_LINEAR_GRADIENT;
+const kPathPaintTagRadialGradient: f32 = PATH_PAINT_TAG_RADIAL_GRADIENT;
+const kPathPaintTagImage: f32 = PATH_PAINT_TAG_IMAGE;
+const kPathPaintTagCompositeGroup: f32 = -5.0;
+
+const PathCompositeMode = enum(u8) {
+    source_over = 0,
+    fill_stroke_inside = 1,
+};
+
+pub const PathPicture = struct {
+    allocator: std.mem.Allocator,
+    atlas: Atlas,
+    instances: []Instance,
+
+    pub const Instance = struct {
+        glyph_id: u16,
+        bbox: BBox,
+        page_index: u16,
+        info_x: u16,
+        info_y: u16,
+        layer_count: u16 = 1,
+        transform: VectorTransform2D,
+    };
+
+    pub fn deinit(self: *PathPicture) void {
+        self.atlas.deinit();
+        self.allocator.free(self.instances);
+        self.* = undefined;
+    }
+
+    pub fn shapeCount(self: *const PathPicture) usize {
+        return self.instances.len;
+    }
+};
+
+pub const PathPictureBuilder = struct {
+    allocator: std.mem.Allocator,
+    paths: std.ArrayList(PathRecord) = .empty,
+
+    const PathLayerRecord = struct {
+        curves: []CurveSegment,
+        bbox: BBox,
+        paint: PathPaint,
+    };
+
+    const PathRecord = struct {
+        bbox: BBox,
+        transform: VectorTransform2D,
+        layer_count: u16,
+        composite_mode: PathCompositeMode,
+        layers: [2]PathLayerRecord,
+    };
+
+    fn setLayerInfoTexel(data: []f32, texel_width: u32, texel_offset: u32, value: [4]f32) void {
+        const texel_x = texel_offset % texel_width;
+        const texel_y = texel_offset / texel_width;
+        const base = (texel_y * texel_width + texel_x) * 4;
+        data[base + 0] = value[0];
+        data[base + 1] = value[1];
+        data[base + 2] = value[2];
+        data[base + 3] = value[3];
+    }
+
+    fn pathPaintTag(paint: PathPaint) f32 {
+        return switch (paint) {
+            .solid => kPathPaintTagSolid,
+            .linear_gradient => kPathPaintTagLinearGradient,
+            .radial_gradient => kPathPaintTagRadialGradient,
+            .image => kPathPaintTagImage,
+        };
+    }
+
+    fn writePathPaintRecord(
+        data: []f32,
+        texel_offset: u32,
+        band_entry: band_tex.GlyphBandEntry,
+        paint: PathPaint,
+    ) void {
+        const packed_bands: u32 = @as(u32, band_entry.h_band_count - 1) | (@as(u32, band_entry.v_band_count - 1) << 16);
+        setLayerInfoTexel(data, kPathPaintInfoWidth, texel_offset + 0, .{
+            @floatFromInt(band_entry.glyph_x),
+            @floatFromInt(band_entry.glyph_y),
+            @bitCast(packed_bands),
+            pathPaintTag(paint),
+        });
+        setLayerInfoTexel(data, kPathPaintInfoWidth, texel_offset + 1, .{
+            band_entry.band_scale_x,
+            band_entry.band_scale_y,
+            band_entry.band_offset_x,
+            band_entry.band_offset_y,
+        });
+
+        switch (paint) {
+            .solid => |color| {
+                setLayerInfoTexel(data, kPathPaintInfoWidth, texel_offset + 2, color);
+            },
+            .linear_gradient => |gradient| {
+                setLayerInfoTexel(data, kPathPaintInfoWidth, texel_offset + 2, .{
+                    gradient.start.x,
+                    gradient.start.y,
+                    gradient.end.x,
+                    gradient.end.y,
+                });
+                setLayerInfoTexel(data, kPathPaintInfoWidth, texel_offset + 3, gradient.start_color);
+                setLayerInfoTexel(data, kPathPaintInfoWidth, texel_offset + 4, gradient.end_color);
+                setLayerInfoTexel(data, kPathPaintInfoWidth, texel_offset + 5, .{
+                    @floatFromInt(@intFromEnum(gradient.extend)),
+                    0,
+                    0,
+                    0,
+                });
+            },
+            .radial_gradient => |gradient| {
+                setLayerInfoTexel(data, kPathPaintInfoWidth, texel_offset + 2, .{
+                    gradient.center.x,
+                    gradient.center.y,
+                    gradient.radius,
+                    @floatFromInt(@intFromEnum(gradient.extend)),
+                });
+                setLayerInfoTexel(data, kPathPaintInfoWidth, texel_offset + 3, gradient.inner_color);
+                setLayerInfoTexel(data, kPathPaintInfoWidth, texel_offset + 4, gradient.outer_color);
+            },
+            .image => |image| {
+                setLayerInfoTexel(data, kPathPaintInfoWidth, texel_offset + 2, .{
+                    image.uv_transform.xx,
+                    image.uv_transform.xy,
+                    image.uv_transform.tx,
+                    0,
+                });
+                setLayerInfoTexel(data, kPathPaintInfoWidth, texel_offset + 3, .{
+                    image.uv_transform.yx,
+                    image.uv_transform.yy,
+                    image.uv_transform.ty,
+                    @floatFromInt(@intFromEnum(image.filter)),
+                });
+                setLayerInfoTexel(data, kPathPaintInfoWidth, texel_offset + 4, image.tint);
+                setLayerInfoTexel(data, kPathPaintInfoWidth, texel_offset + 5, .{
+                    0,
+                    0,
+                    @floatFromInt(@intFromEnum(image.extend_x)),
+                    @floatFromInt(@intFromEnum(image.extend_y)),
+                });
+            },
+        }
+    }
+
+    pub fn init(allocator: std.mem.Allocator) PathPictureBuilder {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn deinit(self: *PathPictureBuilder) void {
+        for (self.paths.items) |path| {
+            for (path.layers[0..path.layer_count]) |layer| self.allocator.free(layer.curves);
+        }
+        self.paths.deinit(self.allocator);
+        self.* = undefined;
+    }
+
+    fn addSingleRecord(
+        self: *PathPictureBuilder,
+        curves: []CurveSegment,
+        bbox: BBox,
+        paint: PathPaint,
+        transform: VectorTransform2D,
+    ) !void {
+        try self.paths.append(self.allocator, .{
+            .bbox = bbox,
+            .transform = transform,
+            .layer_count = 1,
+            .composite_mode = .source_over,
+            .layers = .{
+                .{
+                    .curves = curves,
+                    .bbox = bbox,
+                    .paint = paint,
+                },
+                undefined,
+            },
+        });
+    }
+
+    fn addCompositeRecord(
+        self: *PathPictureBuilder,
+        fill_curves: []CurveSegment,
+        fill_bbox: BBox,
+        fill_paint: PathPaint,
+        stroke_curves: []CurveSegment,
+        stroke_bbox: BBox,
+        stroke_paint: PathPaint,
+        transform: VectorTransform2D,
+        composite_mode: PathCompositeMode,
+    ) !void {
+        try self.paths.append(self.allocator, .{
+            .bbox = switch (composite_mode) {
+                .source_over => fill_bbox.merge(stroke_bbox),
+                .fill_stroke_inside => fill_bbox,
+            },
+            .transform = transform,
+            .layer_count = 2,
+            .composite_mode = composite_mode,
+            .layers = .{
+                .{
+                    .curves = fill_curves,
+                    .bbox = fill_bbox,
+                    .paint = fill_paint,
+                },
+                .{
+                    .curves = stroke_curves,
+                    .bbox = stroke_bbox,
+                    .paint = stroke_paint,
+                },
+            },
+        });
+    }
+
+    pub fn addPath(
+        self: *PathPictureBuilder,
+        path: *const VectorPath,
+        fill: ?VectorFillStyle,
+        stroke: ?PathStrokeStyle,
+        transform: VectorTransform2D,
+    ) !void {
+        if (fill == null and stroke == null) return error.EmptyStyle;
+        if (path.isEmpty()) return error.EmptyPath;
+
+        if (fill) |style| {
+            const bbox = path.bounds() orelse return error.EmptyPath;
+            const curves = try path.cloneFilledCurves(self.allocator);
+            errdefer self.allocator.free(curves);
+            if (stroke) |stroke_style| {
+                if (try path.cloneStrokedCurves(self.allocator, stroke_style)) |stroke_geom| {
+                    errdefer self.allocator.free(stroke_geom.curves);
+                    const composite_mode: PathCompositeMode = if (stroke_style.placement == .inside)
+                        .fill_stroke_inside
+                    else
+                        .source_over;
+                    try self.addCompositeRecord(
+                        curves,
+                        bbox,
+                        resolveFillPaint(style),
+                        stroke_geom.curves,
+                        stroke_geom.bbox,
+                        resolveStrokePaint(stroke_style),
+                        transform,
+                        composite_mode,
+                    );
+                    return;
+                }
+            }
+            try self.addSingleRecord(curves, bbox, resolveFillPaint(style), transform);
+        }
+        if (stroke) |style| {
+            if (try path.cloneStrokedCurves(self.allocator, style)) |stroke_geom| {
+                errdefer self.allocator.free(stroke_geom.curves);
+                try self.addSingleRecord(stroke_geom.curves, stroke_geom.bbox, resolveStrokePaint(style), transform);
+            }
+        }
+    }
+
+    pub fn addFilledPath(
+        self: *PathPictureBuilder,
+        path: *const VectorPath,
+        fill: VectorFillStyle,
+        transform: VectorTransform2D,
+    ) !void {
+        try self.addPath(path, fill, null, transform);
+    }
+
+    pub fn addStrokedPath(
+        self: *PathPictureBuilder,
+        path: *const VectorPath,
+        stroke: PathStrokeStyle,
+        transform: VectorTransform2D,
+    ) !void {
+        try self.addPath(path, null, stroke, transform);
+    }
+
+    pub fn addRect(
+        self: *PathPictureBuilder,
+        rect: VectorRect,
+        fill: ?VectorFillStyle,
+        stroke: ?PathStrokeStyle,
+        transform: VectorTransform2D,
+    ) !void {
+        var path = VectorPath.init(self.allocator);
+        defer path.deinit();
+        try path.addRect(rect);
+        try self.addPath(&path, fill, stroke, transform);
+    }
+
+    pub fn addRoundedRect(
+        self: *PathPictureBuilder,
+        rect: VectorRect,
+        fill: ?VectorFillStyle,
+        stroke: ?PathStrokeStyle,
+        corner_radius: f32,
+        transform: VectorTransform2D,
+    ) !void {
+        var path = VectorPath.init(self.allocator);
+        defer path.deinit();
+        try path.addRoundedRect(rect, corner_radius);
+        try self.addPath(&path, fill, stroke, transform);
+    }
+
+    pub fn addEllipse(
+        self: *PathPictureBuilder,
+        rect: VectorRect,
+        fill: ?VectorFillStyle,
+        stroke: ?PathStrokeStyle,
+        transform: VectorTransform2D,
+    ) !void {
+        var path = VectorPath.init(self.allocator);
+        defer path.deinit();
+        try path.addEllipse(rect);
+        try self.addPath(&path, fill, stroke, transform);
+    }
+
+    pub fn addFilledRect(
+        self: *PathPictureBuilder,
+        rect: VectorRect,
+        fill: VectorFillStyle,
+        transform: VectorTransform2D,
+    ) !void {
+        try self.addRect(rect, fill, null, transform);
+    }
+
+    pub fn addFilledRoundedRect(
+        self: *PathPictureBuilder,
+        rect: VectorRect,
+        fill: VectorFillStyle,
+        corner_radius: f32,
+        transform: VectorTransform2D,
+    ) !void {
+        try self.addRoundedRect(rect, fill, null, corner_radius, transform);
+    }
+
+    pub fn addFilledEllipse(
+        self: *PathPictureBuilder,
+        rect: VectorRect,
+        fill: VectorFillStyle,
+        transform: VectorTransform2D,
+    ) !void {
+        try self.addEllipse(rect, fill, null, transform);
+    }
+
+    pub fn addStrokedRect(
+        self: *PathPictureBuilder,
+        rect: VectorRect,
+        stroke: PathStrokeStyle,
+        transform: VectorTransform2D,
+    ) !void {
+        try self.addRect(rect, null, stroke, transform);
+    }
+
+    pub fn addStrokedRoundedRect(
+        self: *PathPictureBuilder,
+        rect: VectorRect,
+        stroke: PathStrokeStyle,
+        corner_radius: f32,
+        transform: VectorTransform2D,
+    ) !void {
+        try self.addRoundedRect(rect, null, stroke, corner_radius, transform);
+    }
+
+    pub fn addStrokedEllipse(
+        self: *PathPictureBuilder,
+        rect: VectorRect,
+        stroke: PathStrokeStyle,
+        transform: VectorTransform2D,
+    ) !void {
+        try self.addEllipse(rect, null, stroke, transform);
+    }
+
+    pub fn freeze(self: *const PathPictureBuilder, allocator: std.mem.Allocator) !PathPicture {
+        if (self.paths.items.len == 0) return error.EmptyPicture;
+
+        var total_layer_count: usize = 0;
+        var total_paint_texels: u32 = 0;
+        for (self.paths.items) |path| {
+            total_layer_count += path.layer_count;
+            total_paint_texels += if (path.layer_count == 1)
+                kPathPaintTexelsPerRecord
+            else
+                1 + @as(u32, path.layer_count) * kPathPaintTexelsPerRecord;
+        }
+
+        const glyph_curves = try allocator.alloc(curve_tex.GlyphCurves, total_layer_count);
+        defer allocator.free(glyph_curves);
+        var glyph_cursor: usize = 0;
+        for (self.paths.items) |path| {
+            for (path.layers[0..path.layer_count]) |layer| {
+                glyph_curves[glyph_cursor] = .{ .curves = layer.curves, .bbox = layer.bbox };
+                glyph_cursor += 1;
+            }
+        }
+
+        var ct = try curve_tex.buildCurveTexture(allocator, glyph_curves);
+        errdefer ct.texture.deinit();
+        errdefer allocator.free(ct.entries);
+
+        var glyph_band_data: std.ArrayList(band_tex.GlyphBandData) = .empty;
+        defer {
+            for (glyph_band_data.items) |*bd| band_tex.freeGlyphBandData(allocator, bd);
+            glyph_band_data.deinit(allocator);
+        }
+        for (glyph_curves, 0..) |gc, i| {
+            var bd = try band_tex.buildGlyphBandData(allocator, gc.curves, gc.bbox, ct.entries[i]);
+            try glyph_band_data.append(allocator, bd);
+            _ = &bd;
+        }
+
+        var bt = try band_tex.buildBandTexture(allocator, glyph_band_data.items);
+        errdefer bt.texture.deinit();
+        errdefer allocator.free(bt.entries);
+
+        var glyph_map = std.AutoHashMap(u16, Atlas.GlyphInfo).init(allocator);
+        errdefer glyph_map.deinit();
+
+        const paint_height = @max(1, (total_paint_texels + kPathPaintInfoWidth - 1) / kPathPaintInfoWidth);
+        const layer_info_data = try allocator.alloc(f32, kPathPaintInfoWidth * paint_height * 4);
+        errdefer allocator.free(layer_info_data);
+        @memset(layer_info_data, 0);
+
+        const instances = try allocator.alloc(PathPicture.Instance, self.paths.items.len);
+        errdefer allocator.free(instances);
+
+        const paint_image_records = try allocator.alloc(?Atlas.PaintImageRecord, total_layer_count);
+        errdefer allocator.free(paint_image_records);
+        @memset(paint_image_records, null);
+
+        var has_image_paints = false;
+
+        glyph_cursor = 0;
+        var texel_cursor: u32 = 0;
+        for (self.paths.items, 0..) |path, path_index| {
+            const info_texel_offset = texel_cursor;
+            if (path.layer_count > 1) {
+                setLayerInfoTexel(layer_info_data, kPathPaintInfoWidth, texel_cursor, .{
+                    @floatFromInt(path.layer_count),
+                    @floatFromInt(@intFromEnum(path.composite_mode)),
+                    0,
+                    kPathPaintTagCompositeGroup,
+                });
+                texel_cursor += 1;
+            }
+
+            var first_glyph_id: u16 = 0;
+            for (path.layers[0..path.layer_count], 0..) |layer, layer_index| {
+                const glyph_id: u16 = @intCast(glyph_cursor + 1);
+                if (layer_index == 0) first_glyph_id = glyph_id;
+                try glyph_map.put(glyph_id, .{
+                    .bbox = layer.bbox,
+                    .advance_width = 0,
+                    .band_entry = bt.entries[glyph_cursor],
+                    .page_index = 0,
+                });
+                writePathPaintRecord(layer_info_data, texel_cursor, bt.entries[glyph_cursor], layer.paint);
+                switch (layer.paint) {
+                    .image => |image_paint| {
+                        paint_image_records[glyph_cursor] = .{
+                            .image = image_paint.image,
+                            .texel_offset = texel_cursor,
+                        };
+                        has_image_paints = true;
+                    },
+                    else => {},
+                }
+                texel_cursor += kPathPaintTexelsPerRecord;
+                glyph_cursor += 1;
+            }
+
+            instances[path_index] = .{
+                .glyph_id = first_glyph_id,
+                .bbox = path.bbox,
+                .page_index = 0,
+                .info_x = @intCast(info_texel_offset % kPathPaintInfoWidth),
+                .info_y = @intCast(info_texel_offset / kPathPaintInfoWidth),
+                .layer_count = path.layer_count,
+                .transform = path.transform,
+            };
+        }
+
+        allocator.free(ct.entries);
+        allocator.free(bt.entries);
+
+        const page = try AtlasPage.init(
+            allocator,
+            ct.texture.data,
+            ct.texture.width,
+            ct.texture.height,
+            bt.texture.data,
+            bt.texture.width,
+            bt.texture.height,
+        );
+        errdefer page.release();
+
+        const pages = try allocator.alloc(*AtlasPage, 1);
+        errdefer allocator.free(pages);
+        pages[0] = page;
+
+        var atlas = try Atlas.initFromParts(allocator, null, pages, glyph_map);
+        errdefer atlas.deinit();
+        atlas.layer_info_data = layer_info_data;
+        atlas.layer_info_width = kPathPaintInfoWidth;
+        atlas.layer_info_height = paint_height;
+        if (has_image_paints) {
+            atlas.paint_image_records = paint_image_records;
+        } else {
+            allocator.free(paint_image_records);
+        }
+
+        return .{
+            .allocator = allocator,
+            .atlas = atlas,
+            .instances = instances,
+        };
+    }
+};
+
+pub const PathBatch = struct {
+    buf: []f32,
+    len: usize = 0,
+
+    pub fn init(buf: []f32) PathBatch {
+        return .{ .buf = buf };
+    }
+
+    pub fn reset(self: *PathBatch) void {
+        self.len = 0;
+    }
+
+    pub fn shapeCount(self: *const PathBatch) usize {
+        return self.len / FLOATS_PER_GLYPH;
+    }
+
+    pub fn slice(self: *const PathBatch) []const f32 {
+        return self.buf[0..self.len];
+    }
+
+    fn coerceAtlasView(atlas_like: anytype) AtlasView {
+        const T = @TypeOf(atlas_like);
+        return switch (T) {
+            *const AtlasView, *AtlasView => atlas_like.*,
+            *const Atlas, *Atlas => .{ .atlas = atlas_like, .layer_base = 0 },
+            else => @compileError("expected *Atlas or *AtlasView"),
+        };
+    }
+
+    pub fn addPicture(self: *PathBatch, atlas_like: anytype, picture: *const PathPicture) usize {
+        return self.addPictureTransformed(atlas_like, picture, .identity);
+    }
+
+    pub fn addPictureTransformed(
+        self: *PathBatch,
+        atlas_like: anytype,
+        picture: *const PathPicture,
+        transform: VectorTransform2D,
+    ) usize {
+        const resolved_view = coerceAtlasView(atlas_like);
+        const view = &resolved_view;
+        var count: usize = 0;
+        for (picture.instances) |instance| {
+            if (self.len + FLOATS_PER_GLYPH > self.buf.len) break;
+            const final_transform = VectorTransform2D.multiply(transform, instance.transform);
+            const info_loc = view.layerInfoLoc(instance.info_x, instance.info_y);
+            if (!vertex_mod.generateMultiLayerGlyphVerticesTransformed(
+                self.buf[self.len..],
+                instance.bbox,
+                info_loc.x,
+                info_loc.y,
+                instance.layer_count,
+                .{ 1, 1, 1, 1 },
+                view.glyphLayer(instance.page_index),
+                final_transform,
+            )) continue;
+            self.len += FLOATS_PER_GLYPH;
+            count += 1;
+        }
+        return count;
+    }
+};
+
 pub const FillRule = pipeline.FillRule;
 pub const SubpixelOrder = @import("render/subpixel_order.zig").SubpixelOrder;
 pub const RenderBackend = enum { gl, vulkan };
@@ -1524,6 +3157,7 @@ pub const Renderer = struct {
     /// Initialize with the current OpenGL context.
     pub fn init() !Renderer {
         try pipeline.init();
+        try sprite_pipeline.init();
         try vector_pipeline.init();
         return .{ .backend = .gl };
     }
@@ -1537,6 +3171,7 @@ pub const Renderer = struct {
     pub fn deinit(self: *Renderer) void {
         switch (self.backend) {
             .gl => {
+                sprite_pipeline.deinit();
                 vector_pipeline.deinit();
                 pipeline.deinit();
             },
@@ -1556,6 +3191,23 @@ pub const Renderer = struct {
         }
     }
 
+    /// Upload one or more images to the renderer's shared image array.
+    pub fn uploadImages(self: *Renderer, images: []const *const Image, out_views: []ImageView) void {
+        std.debug.assert(images.len == out_views.len);
+        switch (self.backend) {
+            .gl => pipeline.buildImageArray(images, out_views),
+            .vulkan => vulkan_pipeline.buildImageArray(images, out_views),
+        }
+    }
+
+    /// Convenience: upload a single image and return its current view.
+    pub fn uploadImage(self: *Renderer, image: *const Image) ImageView {
+        const arr = [1]*const Image{image};
+        var views = [1]ImageView{undefined};
+        self.uploadImages(&arr, &views);
+        return views[0];
+    }
+
     /// Convenience: upload a single atlas and return its view.
     pub fn uploadAtlas(self: *Renderer, atlas: *const Atlas) AtlasView {
         const arr = [1]*const Atlas{atlas};
@@ -1564,12 +3216,18 @@ pub const Renderer = struct {
         return views[0];
     }
 
+    /// Convenience: upload the atlas embedded in a frozen path picture.
+    pub fn uploadPathPicture(self: *Renderer, picture: *const PathPicture) AtlasView {
+        return self.uploadAtlas(&picture.atlas);
+    }
+
     /// Reset cached GL state (program, textures). Call once per frame
     /// before draw() when other renderers share the GL context.
     pub fn beginFrame(self: *Renderer) void {
         switch (self.backend) {
             .gl => {
                 pipeline.resetFrameState();
+                sprite_pipeline.resetFrameState();
                 vector_pipeline.resetFrameState();
             },
             .vulkan => {},
@@ -1581,6 +3239,14 @@ pub const Renderer = struct {
         switch (self.backend) {
             .gl => pipeline.drawText(vertices, mvp, viewport_w, viewport_h),
             .vulkan => vulkan_pipeline.drawText(vertices, mvp, viewport_w, viewport_h),
+        }
+    }
+
+    /// Draw analytic path/glyph vertices with grayscale AA, ignoring LCD subpixel mode.
+    pub fn drawPaths(self: *Renderer, vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
+        switch (self.backend) {
+            .gl => pipeline.drawTextGrayscale(vertices, mvp, viewport_w, viewport_h),
+            .vulkan => vulkan_pipeline.drawTextGrayscale(vertices, mvp, viewport_w, viewport_h),
         }
     }
 
@@ -1607,6 +3273,30 @@ pub const Renderer = struct {
 
     pub fn drawVectorPictureTransformed(self: *Renderer, picture: *const VectorPicture, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
         self.drawVectorTransformed(picture.slice(), mvp, viewport_w, viewport_h);
+    }
+
+    /// Draw sprite vertices in pixel space with a top-left origin.
+    pub fn drawSprites(self: *Renderer, vertices: []const f32, viewport_w: f32, viewport_h: f32) void {
+        self.drawSpritesTransformed(vertices, Mat4.ortho(0, viewport_w, viewport_h, 0, -1, 1), viewport_w, viewport_h);
+    }
+
+    /// Draw sprite vertices with an explicit object-to-clip transform.
+    pub fn drawSpritesTransformed(self: *Renderer, vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
+        switch (self.backend) {
+            .gl => {
+                sprite_pipeline.drawSprites(vertices, mvp);
+                pipeline.resetFrameState();
+            },
+            .vulkan => vulkan_pipeline.drawSprites(vertices, mvp, viewport_w, viewport_h),
+        }
+    }
+
+    pub fn drawSpritePicture(self: *Renderer, picture: *const SpritePicture, viewport_w: f32, viewport_h: f32) void {
+        self.drawSprites(picture.slice(), viewport_w, viewport_h);
+    }
+
+    pub fn drawSpritePictureTransformed(self: *Renderer, picture: *const SpritePicture, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
+        self.drawSpritesTransformed(picture.slice(), mvp, viewport_w, viewport_h);
     }
 
     /// Set the Vulkan command buffer for the current frame.
@@ -1680,6 +3370,7 @@ test {
     _ = @import("font/snail_file.zig");
     _ = @import("c_api.zig");
     _ = @import("render/vertex.zig");
+    _ = @import("render/sprite_vertex.zig");
     _ = @import("render/vector_vertex.zig");
     _ = @import("render/vector_pipeline.zig");
     _ = @import("torture_test.zig");
@@ -1774,6 +3465,346 @@ test "vector batch can freeze into immutable picture" {
     defer picture.deinit();
     try std.testing.expectEqual(batch.slice().len, picture.slice().len);
     try std.testing.expectEqual(@as(usize, 1), picture.shapeCount());
+}
+
+test "vector path approximates cubic commands into quadratic segments and reports bounds" {
+    var path = VectorPath.init(std.testing.allocator);
+    defer path.deinit();
+
+    try path.moveTo(.{ .x = 0, .y = 0 });
+    try path.cubicTo(.{ .x = 8, .y = 20 }, .{ .x = 16, .y = -20 }, .{ .x = 24, .y = 0 });
+
+    try std.testing.expect(path.curves.items.len > 0);
+    const last = path.curves.items[path.curves.items.len - 1];
+    try std.testing.expectEqual(bezier.CurveKind.quadratic, last.kind);
+    try std.testing.expectApproxEqAbs(@as(f32, 24), last.p2.x, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), last.p2.y, 0.001);
+
+    const bounds = path.bounds() orelse return error.TestExpectedEqual;
+    try std.testing.expect(bounds.max.y > 0);
+    try std.testing.expect(bounds.min.y < 0);
+}
+
+test "path picture freeze compiles atlas and transformed batch vertices" {
+    var path = VectorPath.init(std.testing.allocator);
+    defer path.deinit();
+    try path.moveTo(.{ .x = 0, .y = 0 });
+    try path.lineTo(.{ .x = 16, .y = 0 });
+    try path.lineTo(.{ .x = 8, .y = 12 });
+
+    var builder = PathPictureBuilder.init(std.testing.allocator);
+    defer builder.deinit();
+    try builder.addFilledPath(&path, .{ .color = .{ 0.8, 0.2, 0.1, 1.0 } }, .{
+        .xx = 1,
+        .xy = 0,
+        .tx = 20,
+        .yx = 0,
+        .yy = 1,
+        .ty = 30,
+    });
+
+    var picture = try builder.freeze(std.testing.allocator);
+    defer picture.deinit();
+    try std.testing.expectEqual(@as(usize, 1), picture.shapeCount());
+    try std.testing.expectEqual(@as(usize, 1), picture.atlas.pageCount());
+
+    var vertex_buf: [FLOATS_PER_GLYPH]f32 = undefined;
+    var batch = PathBatch.init(&vertex_buf);
+    const view = AtlasView{ .atlas = &picture.atlas };
+    try std.testing.expectEqual(@as(usize, 1), batch.addPicture(&view, &picture));
+    try std.testing.expectEqual(@as(usize, FLOATS_PER_GLYPH), batch.slice().len);
+    try std.testing.expectApproxEqAbs(@as(f32, 20), batch.slice()[0], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 30), batch.slice()[1], 0.001);
+    const packed_gw: u32 = @bitCast(batch.slice()[7]);
+    try std.testing.expectEqual(@as(u32, 0xFF), packed_gw >> 24);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), batch.slice()[15], 0.001);
+}
+
+test "path batch offsets layer info rows through atlas views" {
+    var path = VectorPath.init(std.testing.allocator);
+    defer path.deinit();
+    try path.addRect(.{ .x = 0, .y = 0, .w = 20, .h = 10 });
+
+    var builder = PathPictureBuilder.init(std.testing.allocator);
+    defer builder.deinit();
+    try builder.addFilledPath(&path, .{ .color = .{ 0.4, 0.7, 0.9, 1.0 } }, .identity);
+
+    var picture = try builder.freeze(std.testing.allocator);
+    defer picture.deinit();
+
+    var vertex_buf: [FLOATS_PER_GLYPH]f32 = undefined;
+    var batch = PathBatch.init(&vertex_buf);
+    const offset_view = AtlasView{
+        .atlas = &picture.atlas,
+        .layer_base = 3,
+        .info_row_base = 17,
+    };
+    try std.testing.expectEqual(@as(usize, 1), batch.addPicture(&offset_view, &picture));
+    const packed_gz: u32 = @bitCast(batch.slice()[6]);
+    try std.testing.expectEqual(@as(u32, picture.instances[0].info_x), packed_gz & 0xFFFF);
+    try std.testing.expectEqual(@as(u32, offset_view.info_row_base + picture.instances[0].info_y), packed_gz >> 16);
+    try std.testing.expectApproxEqAbs(@as(f32, offset_view.glyphLayer(0)), batch.slice()[15], 0.001);
+}
+
+test "styled path builder emits fill and stroke records" {
+    var path = VectorPath.init(std.testing.allocator);
+    defer path.deinit();
+    try path.addRect(.{ .x = 4, .y = 6, .w = 20, .h = 10 });
+
+    var builder = PathPictureBuilder.init(std.testing.allocator);
+    defer builder.deinit();
+    try builder.addPath(
+        &path,
+        .{ .color = .{ 0.2, 0.4, 0.8, 1.0 } },
+        .{ .color = .{ 0.9, 0.8, 0.2, 1.0 }, .width = 4.0, .join = .round },
+        .identity,
+    );
+
+    var picture = try builder.freeze(std.testing.allocator);
+    defer picture.deinit();
+    try std.testing.expectEqual(@as(usize, 1), picture.shapeCount());
+    try std.testing.expectEqual(@as(u16, 2), picture.instances[0].layer_count);
+    try std.testing.expectEqual(@as(u16, 0), picture.instances[0].info_x);
+    try std.testing.expectEqual(@as(u16, 0), picture.instances[0].info_y);
+
+    const fill_info = picture.atlas.getGlyph(picture.instances[0].glyph_id) orelse return error.TestExpectedEqual;
+    const stroke_info = picture.atlas.getGlyph(picture.instances[0].glyph_id + 1) orelse return error.TestExpectedEqual;
+    try std.testing.expect(stroke_info.bbox.min.x < fill_info.bbox.min.x);
+    try std.testing.expect(stroke_info.bbox.max.x > fill_info.bbox.max.x);
+    try std.testing.expect(stroke_info.bbox.min.y < fill_info.bbox.min.y);
+    try std.testing.expect(stroke_info.bbox.max.y > fill_info.bbox.max.y);
+
+    const lid = picture.atlas.layer_info_data orelse return error.TestExpectedEqual;
+    try std.testing.expectApproxEqAbs(kPathPaintTagCompositeGroup, lid[3], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 2), lid[0], 0.001);
+    try std.testing.expectApproxEqAbs(kPathPaintTagSolid, lid[7], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.2), lid[12], 0.001);
+    try std.testing.expectApproxEqAbs(kPathPaintTagSolid, lid[31], 0.001);
+}
+
+test "open stroked path expands for round caps" {
+    var path = VectorPath.init(std.testing.allocator);
+    defer path.deinit();
+    try path.moveTo(.{ .x = 0, .y = 0 });
+    try path.lineTo(.{ .x = 12, .y = 0 });
+
+    var builder = PathPictureBuilder.init(std.testing.allocator);
+    defer builder.deinit();
+    try builder.addStrokedPath(&path, .{
+        .color = .{ 1.0, 1.0, 1.0, 1.0 },
+        .width = 6.0,
+        .cap = .round,
+        .join = .round,
+    }, .identity);
+
+    var picture = try builder.freeze(std.testing.allocator);
+    defer picture.deinit();
+    const stroke_info = picture.atlas.getGlyph(picture.instances[0].glyph_id) orelse return error.TestExpectedEqual;
+    try std.testing.expect(stroke_info.bbox.min.x < 0.0);
+    try std.testing.expect(stroke_info.bbox.max.x > 12.0);
+    try std.testing.expect(stroke_info.bbox.min.y < -2.9);
+    try std.testing.expect(stroke_info.bbox.max.y > 2.9);
+}
+
+test "square-capped stroked path extends beyond endpoints" {
+    var path = VectorPath.init(std.testing.allocator);
+    defer path.deinit();
+    try path.moveTo(.{ .x = 0, .y = 0 });
+    try path.lineTo(.{ .x = 12, .y = 0 });
+
+    const stroke_geom = (try path.cloneStrokedCurves(std.testing.allocator, .{
+        .width = 6.0,
+        .cap = .square,
+        .join = .miter,
+    })) orelse return error.TestExpectedEqual;
+    defer std.testing.allocator.free(stroke_geom.curves);
+
+    try std.testing.expectApproxEqAbs(@as(f32, -3.0), stroke_geom.bbox.min.x, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 15.0), stroke_geom.bbox.max.x, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, -3.0), stroke_geom.bbox.min.y, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 3.0), stroke_geom.bbox.max.y, 0.05);
+}
+
+test "elliptical stroke outline stays curved without degenerate joins" {
+    var path = VectorPath.init(std.testing.allocator);
+    defer path.deinit();
+    try path.addEllipse(.{ .x = 0, .y = 0, .w = 100, .h = 60 });
+
+    const stroke_geom = (try path.cloneStrokedCurves(std.testing.allocator, .{
+        .width = 8.0,
+        .join = .round,
+    })) orelse return error.TestExpectedEqual;
+    defer std.testing.allocator.free(stroke_geom.curves);
+
+    var curved_count: usize = 0;
+    for (stroke_geom.curves) |curve| {
+        try std.testing.expect(Vec2.length(Vec2.sub(curve.endPoint(), curve.p0)) > 1e-4);
+        const chord_mid = Vec2.lerp(curve.p0, curve.endPoint(), 0.5);
+        const curve_mid = curve.evaluate(0.5);
+        if (Vec2.length(Vec2.sub(curve_mid, chord_mid)) > 1e-3) curved_count += 1;
+    }
+    try std.testing.expect(curved_count >= 8);
+}
+
+test "rounded rect corners are approximated with quadratic segments" {
+    var path = VectorPath.init(std.testing.allocator);
+    defer path.deinit();
+    try path.addRoundedRect(.{ .x = 0, .y = 0, .w = 200, .h = 200 }, 40);
+
+    try std.testing.expect(path.curves.items.len > 8);
+    for (path.curves.items) |curve| {
+        try std.testing.expectEqual(bezier.CurveKind.quadratic, curve.kind);
+    }
+}
+
+test "inside-aligned path stroke groups fill and stroke on one instance" {
+    var builder = PathPictureBuilder.init(std.testing.allocator);
+    defer builder.deinit();
+    try builder.addRoundedRect(
+        .{ .x = 10, .y = 20, .w = 40, .h = 18 },
+        .{ .color = .{ 0.1, 0.2, 0.3, 0.4 } },
+        .{ .color = .{ 0.8, 0.7, 0.6, 1.0 }, .width = 2.0, .join = .round, .placement = .inside },
+        6.0,
+        .identity,
+    );
+
+    var picture = try builder.freeze(std.testing.allocator);
+    defer picture.deinit();
+    try std.testing.expectEqual(@as(usize, 1), picture.shapeCount());
+    try std.testing.expectEqual(@as(u16, 2), picture.instances[0].layer_count);
+
+    const fill_info = picture.atlas.getGlyph(picture.instances[0].glyph_id) orelse return error.TestExpectedEqual;
+    const stroke_info = picture.atlas.getGlyph(picture.instances[0].glyph_id + 1) orelse return error.TestExpectedEqual;
+
+    try std.testing.expectApproxEqAbs(@as(f32, 10), fill_info.bbox.min.x, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 20), fill_info.bbox.min.y, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 50), fill_info.bbox.max.x, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 38), fill_info.bbox.max.y, 0.05);
+    try std.testing.expect(stroke_info.bbox.min.x < fill_info.bbox.min.x);
+    try std.testing.expect(stroke_info.bbox.max.x > fill_info.bbox.max.x);
+
+    try std.testing.expectApproxEqAbs(@as(f32, 10), picture.instances[0].bbox.min.x, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 20), picture.instances[0].bbox.min.y, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 50), picture.instances[0].bbox.max.x, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 38), picture.instances[0].bbox.max.y, 0.05);
+
+    const lid = picture.atlas.layer_info_data orelse return error.TestExpectedEqual;
+    try std.testing.expectApproxEqAbs(kPathPaintTagCompositeGroup, lid[3], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, @intFromEnum(PathCompositeMode.fill_stroke_inside)), lid[1], 0.001);
+}
+
+test "path picture gradient paint records encode linear and radial paints" {
+    var path = VectorPath.init(std.testing.allocator);
+    defer path.deinit();
+    try path.addRect(.{ .x = 0, .y = 0, .w = 20, .h = 10 });
+
+    var builder = PathPictureBuilder.init(std.testing.allocator);
+    defer builder.deinit();
+    try builder.addPath(&path, .{
+        .paint = .{ .linear_gradient = .{
+            .start = .{ .x = 0, .y = 0 },
+            .end = .{ .x = 20, .y = 0 },
+            .start_color = .{ 1, 0, 0, 1 },
+            .end_color = .{ 0, 0, 1, 1 },
+            .extend = .reflect,
+        } },
+    }, .{
+        .paint = .{ .radial_gradient = .{
+            .center = .{ .x = 10, .y = 5 },
+            .radius = 12,
+            .inner_color = .{ 1, 1, 1, 1 },
+            .outer_color = .{ 0, 0, 0, 0 },
+        } },
+        .width = 2,
+    }, .identity);
+
+    var picture = try builder.freeze(std.testing.allocator);
+    defer picture.deinit();
+
+    const lid = picture.atlas.layer_info_data orelse return error.TestExpectedEqual;
+    try std.testing.expectApproxEqAbs(kPathPaintTagCompositeGroup, lid[3], 0.001);
+    try std.testing.expectApproxEqAbs(kPathPaintTagLinearGradient, lid[7], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 20), lid[14], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, @floatFromInt(@intFromEnum(PathPaintExtend.reflect))), lid[24], 0.001);
+
+    const radial_base = @as(usize, (1 + kPathPaintTexelsPerRecord)) * 4;
+    try std.testing.expectApproxEqAbs(kPathPaintTagRadialGradient, lid[radial_base + 3], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 10), lid[radial_base + 8], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 5), lid[radial_base + 9], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 12), lid[radial_base + 10], 0.001);
+}
+
+test "path picture image paint records keep image metadata" {
+    var image = try Image.initRgba8(std.testing.allocator, 2, 2, &.{
+        255, 0,   0,   255,
+        0,   255, 0,   255,
+        0,   0,   255, 255,
+        255, 255, 255, 255,
+    });
+    defer image.deinit();
+
+    var path = VectorPath.init(std.testing.allocator);
+    defer path.deinit();
+    try path.addRect(.{ .x = 0, .y = 0, .w = 12, .h = 8 });
+
+    var builder = PathPictureBuilder.init(std.testing.allocator);
+    defer builder.deinit();
+    try builder.addFilledPath(&path, .{
+        .paint = .{ .image = .{
+            .image = &image,
+            .uv_transform = .{ .xx = 0.5, .xy = 0.0, .tx = 0.25, .yx = 0.0, .yy = 1.0, .ty = 0.0 },
+            .tint = .{ 0.5, 0.75, 1.0, 0.25 },
+            .extend_x = .repeat,
+            .extend_y = .reflect,
+            .filter = .nearest,
+        } },
+    }, .identity);
+
+    var picture = try builder.freeze(std.testing.allocator);
+    defer picture.deinit();
+
+    const records = picture.atlas.paint_image_records orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(usize, 1), records.len);
+    try std.testing.expect(records[0] != null);
+    try std.testing.expect(records[0].?.image == &image);
+    try std.testing.expectEqual(@as(u32, 0), records[0].?.texel_offset);
+
+    const lid = picture.atlas.layer_info_data orelse return error.TestExpectedEqual;
+    try std.testing.expectApproxEqAbs(PATH_PAINT_TAG_IMAGE, lid[3], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), lid[8], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.25), lid[10], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, @floatFromInt(@intFromEnum(ImageFilter.nearest))), lid[15], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), lid[16], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, @floatFromInt(@intFromEnum(PathPaintExtend.repeat))), lid[22], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, @floatFromInt(@intFromEnum(PathPaintExtend.reflect))), lid[23], 0.001);
+}
+
+test "sprite batch packs transformed image quads" {
+    var image = try Image.initRgba8(std.testing.allocator, 4, 2, &.{
+        255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+        255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    });
+    defer image.deinit();
+
+    var buf: [SPRITE_FLOATS_PER_SPRITE]f32 = undefined;
+    var batch = SpriteBatch.init(&buf);
+    try std.testing.expect(batch.addSpriteRect(
+        ImageView{ .image = &image, .layer = 7, .uv_scale = .{ .x = 0.5, .y = 0.25 } },
+        .{ .x = 10, .y = 20, .w = 16, .h = 12 },
+        .{ 1, 0.5, 0.25, 1 },
+        .{ .u0 = 0.25, .v0 = 0.0, .u1 = 0.75, .v1 = 1.0 },
+        .nearest,
+    ));
+    try std.testing.expectEqual(@as(usize, 1), batch.spriteCount());
+    try std.testing.expectApproxEqAbs(@as(f32, 10), batch.slice()[0], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 20), batch.slice()[1], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.125), batch.slice()[2], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.375), batch.slice()[14], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 7), batch.slice()[8], 0.001);
+
+    var picture = try batch.freeze(std.testing.allocator);
+    defer picture.deinit();
+    try std.testing.expectEqual(@as(usize, 1), picture.spriteCount());
 }
 
 test "addStringWrapped preserves blank lines" {

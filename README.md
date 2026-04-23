@@ -126,6 +126,108 @@ renderer.draw(text_batch.slice(), mvp, viewport_w, viewport_h);
 
 For scene-style transforms, use `Renderer.drawVectorTransformed()` / `drawVectorPictureTransformed()` with your own `Mat4`. The renderer expands vector quads automatically so edge antialiasing is not clipped at primitive bounds.
 
+### Arbitrary path pictures
+
+For non-trivial artwork, use the path API instead of the fixed primitive batch. `VectorPath` supports multiple contours plus `moveTo`, `lineTo`, `quadTo`, and `cubicTo`. `PathPictureBuilder` freezes those outlines into the same curve/band texture format used by text, and `PathBatch` instantiates them with per-shape affine transforms.
+
+The path builder supports both fill and stroke styles. Fills can be solid colors, linear gradients, radial gradients, or image paints via `VectorFillStyle.paint`. `PathStrokeStyle` supports the same paint model plus width, line cap, line join, and miter limit, and open-path strokes generate proper caps instead of rectangular hacks.
+
+```zig
+var logo = snail.VectorPath.init(allocator);
+defer logo.deinit();
+
+try logo.moveTo(.{ .x = 0, .y = 0 });
+try logo.lineTo(.{ .x = 44, .y = 0 });
+try logo.cubicTo(.{ .x = 56, .y = 0 }, .{ .x = 56, .y = 28 }, .{ .x = 44, .y = 28 });
+try logo.lineTo(.{ .x = 0, .y = 28 });
+try logo.close();
+
+var picture_builder = snail.PathPictureBuilder.init(allocator);
+defer picture_builder.deinit();
+try picture_builder.addPath(
+    &logo,
+    .{
+        .paint = .{ .linear_gradient = .{
+            .start = .{ .x = 0, .y = 0 },
+            .end = .{ .x = 44, .y = 28 },
+            .start_color = .{ 0.98, 0.68, 0.29, 1.0 },
+            .end_color = .{ 0.86, 0.21, 0.14, 1.0 },
+        } },
+    },
+    .{
+        .paint = .{ .radial_gradient = .{
+            .center = .{ .x = 22, .y = 14 },
+            .radius = 22,
+            .inner_color = .{ 0.05, 0.07, 0.1, 1.0 },
+            .outer_color = .{ 0.12, 0.16, 0.22, 1.0 },
+        } },
+        .width = 3.0,
+        .join = .round,
+        .cap = .round,
+    },
+    snail.VectorTransform2D.translate(40, 32),
+);
+
+var picture = try picture_builder.freeze(allocator);
+defer picture.deinit();
+
+const picture_view = renderer.uploadPathPicture(&picture);
+
+var path_buf: [64 * snail.FLOATS_PER_GLYPH]f32 = undefined;
+var path_batch = snail.PathBatch.init(&path_buf);
+_ = path_batch.addPicture(&picture_view, &picture);
+
+renderer.beginFrame();
+renderer.draw(path_batch.slice(), mvp, viewport_w, viewport_h);
+```
+
+Convenience wrappers are available when you only want one side of the style:
+
+```zig
+try picture_builder.addFilledRoundedRect(rect, fill, 12.0, .identity);
+try picture_builder.addStrokedPath(&path, stroke, .identity);
+```
+
+`PathPicture` is immutable after freezing. Reuse it like a sprite sheet: upload its atlas once, rebuild the `PathBatch` only when transforms or instance placement change. GPU and CPU rendering both understand solid, linear-gradient, radial-gradient, and image path paints.
+
+### Images and sprites
+
+Raster images live in a separate renderer-owned image array. Upload them with `Renderer.uploadImage()` / `uploadImages()`, then build quads with `SpriteBatch` or freeze them into a `SpritePicture` for reuse:
+
+```zig
+var icon = try snail.Image.initRgba8(allocator, 32, 32, rgba_pixels);
+defer icon.deinit();
+
+const icon_view = renderer.uploadImage(&icon);
+
+var sprite_buf: [16 * snail.SPRITE_FLOATS_PER_SPRITE]f32 = undefined;
+var sprites = snail.SpriteBatch.init(&sprite_buf);
+_ = sprites.addSpriteRect(
+    icon_view,
+    .{ .x = 12, .y = 18, .w = 24, .h = 24 },
+    .{ 1, 1, 1, 1 },
+    .{},
+    .linear,
+);
+_ = sprites.addSpriteAt(
+    icon_view,
+    .{ .x = 200, .y = 120 },
+    .{ .x = 32, .y = 32 },
+    std.math.pi / 8.0,
+    .center,
+    .{ 1, 1, 1, 0.85 },
+    .{},
+    .nearest,
+);
+
+renderer.beginFrame();
+renderer.drawSprites(sprites.slice(), viewport_w, viewport_h);
+```
+
+`SpriteBatch.addSpriteRect()` covers UI/icon quads. `addSpriteAt()` is the point-style convenience for games, and `addSpriteTransformed()` accepts a full affine `VectorTransform2D` when you need direct control.
+
+When the renderer grows its internal image array to accommodate a newly uploaded larger image, previously returned `ImageView`s should be reacquired with `uploadImage()` / `uploadImages()` before building the next sprite batch.
+
 ### CPU renderer
 
 For headless output or bootstrap frames, `src/extra/cpu_renderer.zig` exposes a software raster path that shares Snail's atlas data and vector packing model:
@@ -138,9 +240,10 @@ soft.clear(0, 0, 0, 0);
 soft.drawGlyphId(&atlas, try font.glyphIndex('A'), 12, 28, 24, .{ 1, 1, 1, 1 });
 soft.drawVector(shapes.slice());
 soft.drawVectorPicture(&picture);
+soft.drawPathPicture(&path_picture);
 ```
 
-The CPU vector path consumes the same packed `VectorBatch` / `VectorPicture` data as the GPU path, including per-primitive `VectorTransform2D` transforms, fill rule, and subpixel order. It uses the same procedural quadratic coverage model as the GPU vector path. It still mirrors the pixel-space `drawVector()` convenience path, not the global-`Mat4` `drawVectorTransformed()` API.
+The CPU vector path consumes the same packed `VectorBatch` / `VectorPicture` data as the GPU path, including per-primitive `VectorTransform2D` transforms, fill rule, and subpixel order. `drawPathPicture()` uses the same frozen `PathPicture` data as the GPU path, including gradients and image paints. The CPU renderer still mirrors the pixel-space convenience APIs, not the global-`Mat4` transformed GPU entry points.
 
 ### Performance model
 

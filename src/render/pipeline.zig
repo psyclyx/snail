@@ -31,21 +31,22 @@ fn detectBackend() Backend {
 
 // ── Shared state ──
 
-var program: gl.GLuint = 0;
-var program_subpixel: gl.GLuint = 0;
-var mvp_loc: gl.GLint = -1;
-var viewport_loc: gl.GLint = -1;
-var curve_tex_loc: gl.GLint = -1;
-var band_tex_loc: gl.GLint = -1;
-var sp_mvp_loc: gl.GLint = -1;
-var sp_viewport_loc: gl.GLint = -1;
-var sp_curve_tex_loc: gl.GLint = -1;
-var sp_band_tex_loc: gl.GLint = -1;
-var fill_rule_loc: gl.GLint = -1;
-var sp_fill_rule_loc: gl.GLint = -1;
-var sp_subpixel_order_loc: gl.GLint = -1;
-var layer_tex_loc: gl.GLint = -1;
-var sp_layer_tex_loc: gl.GLint = -1;
+const ProgramState = struct {
+    handle: gl.GLuint = 0,
+    mvp_loc: gl.GLint = -1,
+    viewport_loc: gl.GLint = -1,
+    curve_tex_loc: gl.GLint = -1,
+    band_tex_loc: gl.GLint = -1,
+    image_tex_loc: gl.GLint = -1,
+    fill_rule_loc: gl.GLint = -1,
+    subpixel_order_loc: gl.GLint = -1,
+    layer_tex_loc: gl.GLint = -1,
+};
+
+var text_program = ProgramState{};
+var text_subpixel_program = ProgramState{};
+var colr_program = ProgramState{};
+var path_program = ProgramState{};
 
 pub var subpixel_order: SubpixelOrder = .none;
 pub var fill_rule: FillRule = .non_zero;
@@ -67,6 +68,7 @@ var ebo: gl.GLuint = 0;
 var curve_array: gl.GLuint = 0;
 var band_array: gl.GLuint = 0;
 var layer_info_tex: gl.GLuint = 0;
+var image_array: gl.GLuint = 0;
 
 var active_program: gl.GLuint = 0;
 var frame_begun: bool = false;
@@ -85,13 +87,19 @@ var ring_segment: u32 = 0;
 
 const MAX_ATLASES = 64;
 const MAX_PAGES_PER_ATLAS = 256;
+const MAX_IMAGES = 256;
 
 const AtlasSlot = struct {
     atlas: ?*const snail_mod.Atlas = null,
     base_layer: u32 = 0,
+    info_row_base: u32 = 0,
     capacity_pages: u32 = 0,
     uploaded_pages: u32 = 0,
     page_ptrs: [MAX_PAGES_PER_ATLAS]?*const snail_mod.AtlasPage = .{null} ** MAX_PAGES_PER_ATLAS,
+};
+
+const ImageSlot = struct {
+    image: ?*const snail_mod.Image = null,
 };
 
 var atlas_slots: [MAX_ATLASES]AtlasSlot = std.mem.zeroes([MAX_ATLASES]AtlasSlot);
@@ -99,27 +107,19 @@ var atlas_slot_count: usize = 0;
 var allocated_curve_height: u32 = 0;
 var allocated_band_height: u32 = 0;
 var allocated_layer_count: u32 = 0;
+var image_slots: [MAX_IMAGES]ImageSlot = std.mem.zeroes([MAX_IMAGES]ImageSlot);
+var image_slot_count: usize = 0;
+var allocated_image_width: u32 = 0;
+var allocated_image_height: u32 = 0;
+var allocated_image_count: u32 = 0;
 
 // ── Init / Deinit ──
 
 pub fn init() !void {
-    // Compile shaders (shared between backends)
-    program = try linkProgram(shaders.vertex_shader, shaders.fragment_shader);
-    mvp_loc = gl.glGetUniformLocation(program, "u_mvp");
-    viewport_loc = gl.glGetUniformLocation(program, "u_viewport");
-    curve_tex_loc = gl.glGetUniformLocation(program, "u_curve_tex");
-    band_tex_loc = gl.glGetUniformLocation(program, "u_band_tex");
-    fill_rule_loc = gl.glGetUniformLocation(program, "u_fill_rule");
-    layer_tex_loc = gl.glGetUniformLocation(program, "u_layer_tex");
-
-    program_subpixel = try linkProgram(shaders.vertex_shader, shaders.fragment_shader_subpixel);
-    sp_mvp_loc = gl.glGetUniformLocation(program_subpixel, "u_mvp");
-    sp_viewport_loc = gl.glGetUniformLocation(program_subpixel, "u_viewport");
-    sp_curve_tex_loc = gl.glGetUniformLocation(program_subpixel, "u_curve_tex");
-    sp_band_tex_loc = gl.glGetUniformLocation(program_subpixel, "u_band_tex");
-    sp_fill_rule_loc = gl.glGetUniformLocation(program_subpixel, "u_fill_rule");
-    sp_subpixel_order_loc = gl.glGetUniformLocation(program_subpixel, "u_subpixel_order");
-    sp_layer_tex_loc = gl.glGetUniformLocation(program_subpixel, "u_layer_tex");
+    // Keep startup on the lightweight plain-glyph shaders. The heavier path/COLR
+    // shader is linked lazily the first time sentinel runs are drawn.
+    text_program = try loadProgramState("text", shaders.vertex_shader, shaders.fragment_shader_text);
+    text_subpixel_program = try loadProgramState("text-subpixel", shaders.vertex_shader, shaders.fragment_shader_text_subpixel);
 
     backend = detectBackend();
 
@@ -214,18 +214,21 @@ pub fn deinit() void {
         }
     }
 
-    if (program != 0) gl.glDeleteProgram(program);
-    if (program_subpixel != 0) gl.glDeleteProgram(program_subpixel);
+    deleteProgramState(&text_program);
+    deleteProgramState(&text_subpixel_program);
+    deleteProgramState(&colr_program);
+    deleteProgramState(&path_program);
     if (vao != 0) gl.glDeleteVertexArrays(1, &vao);
     if (vbo != 0) gl.glDeleteBuffers(1, &vbo);
     if (ebo != 0) gl.glDeleteBuffers(1, &ebo);
-    destroyTextureResources();
+    destroyAtlasTextureResources();
+    destroyImageResources();
     resetAtlasUploadState();
 }
 
 // ── Texture array management ──
 
-fn destroyTextureResources() void {
+fn destroyAtlasTextureResources() void {
     if (curve_array != 0) gl.glDeleteTextures(1, &curve_array);
     if (band_array != 0) gl.glDeleteTextures(1, &band_array);
     if (layer_info_tex != 0) gl.glDeleteTextures(1, &layer_info_tex);
@@ -234,11 +237,21 @@ fn destroyTextureResources() void {
     layer_info_tex = 0;
 }
 
+fn destroyImageResources() void {
+    if (image_array != 0) gl.glDeleteTextures(1, &image_array);
+    image_array = 0;
+    image_slot_count = 0;
+    allocated_image_width = 0;
+    allocated_image_height = 0;
+    allocated_image_count = 0;
+    for (&image_slots) |*slot| slot.* = .{};
+}
+
 pub fn buildTextureArrays(atlases: []const *const snail_mod.Atlas, out_views: []snail_mod.AtlasView) void {
     std.debug.assert(atlases.len == out_views.len);
 
     if (atlases.len == 0) {
-        destroyTextureResources();
+        destroyAtlasTextureResources();
         resetAtlasUploadState();
         return;
     }
@@ -250,19 +263,219 @@ pub fn buildTextureArrays(atlases: []const *const snail_mod.Atlas, out_views: []
         rebuildTextureArrays(atlases, out_views);
     } else {
         fillAtlasViews(atlases, out_views);
+        ensureAtlasImagesRegistered(atlases);
         rebuildLayerInfoTexture(atlases);
         active_program = 0;
         frame_begun = false;
     }
 }
 
+pub fn buildImageArray(images: []const *const snail_mod.Image, out_views: []snail_mod.ImageView) void {
+    std.debug.assert(images.len == out_views.len);
+    ensureImagesRegistered(images);
+    for (images, 0..) |image, i| {
+        out_views[i] = currentImageView(image);
+    }
+    active_program = 0;
+    frame_begun = false;
+}
+
+pub fn imageTextureArray() gl.GLuint {
+    return image_array;
+}
+
+fn currentImageView(image: *const snail_mod.Image) snail_mod.ImageView {
+    const slot_index = findImageSlot(image) orelse return .{ .image = image };
+    const width_scale = if (allocated_image_width == 0) 1.0 else @as(f32, @floatFromInt(image.width)) / @as(f32, @floatFromInt(allocated_image_width));
+    const height_scale = if (allocated_image_height == 0) 1.0 else @as(f32, @floatFromInt(image.height)) / @as(f32, @floatFromInt(allocated_image_height));
+    return .{
+        .image = image,
+        .layer = @intCast(slot_index),
+        .uv_scale = .{ .x = width_scale, .y = height_scale },
+    };
+}
+
+fn findImageSlot(image: *const snail_mod.Image) ?usize {
+    for (image_slots[0..image_slot_count], 0..) |slot, i| {
+        if (slot.image == image) return i;
+    }
+    return null;
+}
+
+fn ensureAtlasImagesRegistered(atlases: []const *const snail_mod.Atlas) void {
+    var scratch: [MAX_IMAGES]*const snail_mod.Image = undefined;
+    var count: usize = 0;
+    for (atlases) |atlas| {
+        const records = atlas.paint_image_records orelse continue;
+        for (records) |record| {
+            const image = (record orelse continue).image;
+            if (findImageSlot(image) != null) continue;
+            var already_queued = false;
+            for (scratch[0..count]) |queued| {
+                if (queued == image) {
+                    already_queued = true;
+                    break;
+                }
+            }
+            if (!already_queued and count < scratch.len) {
+                scratch[count] = image;
+                count += 1;
+            }
+        }
+    }
+    ensureImagesRegistered(scratch[0..count]);
+}
+
+fn ensureImagesRegistered(images: []const *const snail_mod.Image) void {
+    if (images.len == 0) return;
+
+    var new_images: [MAX_IMAGES]*const snail_mod.Image = undefined;
+    var new_count: usize = 0;
+    var required_width = allocated_image_width;
+    var required_height = allocated_image_height;
+    for (images) |image| {
+        required_width = @max(required_width, image.width);
+        required_height = @max(required_height, image.height);
+        if (findImageSlot(image) != null) continue;
+        if (image_slot_count + new_count >= MAX_IMAGES) break;
+        new_images[new_count] = image;
+        new_count += 1;
+    }
+
+    if (new_count == 0 and image_array != 0) return;
+
+    const required_count: u32 = @intCast(image_slot_count + new_count);
+    const new_width = heightCapacity(@max(required_width, 1));
+    const new_height = heightCapacity(@max(required_height, 1));
+    const needs_rebuild = image_array == 0 or
+        required_count > allocated_image_count or
+        new_width > allocated_image_width or
+        new_height > allocated_image_height;
+
+    if (needs_rebuild) {
+        for (new_images[0..new_count], 0..) |image, i| {
+            image_slots[image_slot_count + i] = .{ .image = image };
+        }
+        image_slot_count += new_count;
+        rebuildImageArray();
+        return;
+    }
+
+    for (new_images[0..new_count], 0..) |image, i| {
+        const slot_index = image_slot_count + i;
+        image_slots[slot_index] = .{ .image = image };
+        uploadImageLayer(image, @intCast(slot_index));
+    }
+    image_slot_count += new_count;
+}
+
+fn rebuildImageArray() void {
+    if (image_array != 0) gl.glDeleteTextures(1, &image_array);
+    image_array = 0;
+
+    if (image_slot_count == 0) {
+        allocated_image_width = 0;
+        allocated_image_height = 0;
+        allocated_image_count = 0;
+        return;
+    }
+
+    var max_width: u32 = 1;
+    var max_height: u32 = 1;
+    for (image_slots[0..image_slot_count]) |slot| {
+        const image = slot.image orelse continue;
+        max_width = @max(max_width, image.width);
+        max_height = @max(max_height, image.height);
+    }
+
+    allocated_image_width = heightCapacity(max_width);
+    allocated_image_height = heightCapacity(max_height);
+    allocated_image_count = atlasCapacity(@intCast(image_slot_count));
+
+    switch (backend) {
+        .gl33 => {
+            gl.glGenTextures(1, &image_array);
+            gl.glActiveTexture(gl.GL_TEXTURE3);
+            gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, image_array);
+            gl.glTexImage3D(
+                gl.GL_TEXTURE_2D_ARRAY,
+                0,
+                gl.GL_SRGB8_ALPHA8,
+                @intCast(allocated_image_width),
+                @intCast(allocated_image_height),
+                @intCast(allocated_image_count),
+                0,
+                gl.GL_RGBA,
+                gl.GL_UNSIGNED_BYTE,
+                null,
+            );
+            setImageTexParams(gl.GL_TEXTURE_2D_ARRAY);
+        },
+        .gl44 => {
+            gl.glCreateTextures(gl.GL_TEXTURE_2D_ARRAY, 1, &image_array);
+            gl.glTextureStorage3D(
+                image_array,
+                1,
+                gl.GL_SRGB8_ALPHA8,
+                @intCast(allocated_image_width),
+                @intCast(allocated_image_height),
+                @intCast(allocated_image_count),
+            );
+            setImageTexParamsDSA(image_array);
+            gl.glBindTextureUnit(3, image_array);
+        },
+    }
+
+    for (image_slots[0..image_slot_count], 0..) |slot, i| {
+        uploadImageLayer(slot.image.?, @intCast(i));
+    }
+}
+
+fn uploadImageLayer(image: *const snail_mod.Image, layer: u32) void {
+    switch (backend) {
+        .gl33 => {
+            gl.glActiveTexture(gl.GL_TEXTURE3);
+            gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, image_array);
+            gl.glTexSubImage3D(
+                gl.GL_TEXTURE_2D_ARRAY,
+                0,
+                0,
+                0,
+                @intCast(layer),
+                @intCast(image.width),
+                @intCast(image.height),
+                1,
+                gl.GL_RGBA,
+                gl.GL_UNSIGNED_BYTE,
+                image.pixels.ptr,
+            );
+        },
+        .gl44 => {
+            gl.glTextureSubImage3D(
+                image_array,
+                0,
+                0,
+                0,
+                @intCast(layer),
+                @intCast(image.width),
+                @intCast(image.height),
+                1,
+                gl.GL_RGBA,
+                gl.GL_UNSIGNED_BYTE,
+                image.pixels.ptr,
+            );
+        },
+    }
+}
+
 fn rebuildTextureArrays(atlases: []const *const snail_mod.Atlas, out_views: []snail_mod.AtlasView) void {
-    destroyTextureResources();
+    destroyAtlasTextureResources();
     resetAtlasUploadState();
 
     var max_curve_h: u32 = 1;
     var max_band_h: u32 = 1;
     var total_layers: u32 = 0;
+    var total_info_rows: u32 = 0;
 
     for (atlases, 0..) |atlas, i| {
         if (i >= MAX_ATLASES) return;
@@ -272,6 +485,7 @@ fn rebuildTextureArrays(atlases: []const *const snail_mod.Atlas, out_views: []sn
         slot.* = .{
             .atlas = atlas,
             .base_layer = total_layers,
+            .info_row_base = total_info_rows,
             .capacity_pages = capacity,
             .uploaded_pages = page_count,
         };
@@ -282,6 +496,7 @@ fn rebuildTextureArrays(atlases: []const *const snail_mod.Atlas, out_views: []sn
             if (page.band_height > max_band_h) max_band_h = page.band_height;
         }
         total_layers += capacity;
+        total_info_rows += atlas.layer_info_height;
     }
 
     atlas_slot_count = atlases.len;
@@ -293,6 +508,7 @@ fn rebuildTextureArrays(atlases: []const *const snail_mod.Atlas, out_views: []sn
 
     createTextureArrays(atlases[0], allocated_layer_count, allocated_curve_height, allocated_band_height);
     uploadAllPages(atlases);
+    ensureAtlasImagesRegistered(atlases);
     rebuildLayerInfoTexture(atlases);
     fillAtlasViews(atlases, out_views);
     active_program = 0;
@@ -339,6 +555,12 @@ fn appendTexturePages(atlases: []const *const snail_mod.Atlas) bool {
         slot.uploaded_pages = new_pages;
     }
 
+    var total_info_rows: u32 = 0;
+    for (atlases, 0..) |atlas, i| {
+        atlas_slots[i].info_row_base = total_info_rows;
+        total_info_rows += atlas.layer_info_height;
+    }
+
     return true;
 }
 
@@ -364,6 +586,7 @@ fn fillAtlasViews(atlases: []const *const snail_mod.Atlas, out_views: []snail_mo
         out_views[i] = .{
             .atlas = atlas,
             .layer_base = @intCast(atlas_slots[i].base_layer),
+            .info_row_base = @intCast(atlas_slots[i].info_row_base),
         };
     }
 }
@@ -473,22 +696,65 @@ fn uploadTexturePagesGl44WithStarts(atlases: []const *const snail_mod.Atlas, sta
     }
 }
 
+fn layerInfoTexelBase(width: u32, x: u32, y: u32) usize {
+    return (y * width + x) * 4;
+}
+
+fn layerInfoTexelBaseOffset(width: u32, x: u32, y: u32, texel_offset: u32) usize {
+    const texel = x + texel_offset;
+    const texel_x = texel % width;
+    const texel_y = y + texel / width;
+    return layerInfoTexelBase(width, texel_x, texel_y);
+}
+
+fn patchImagePaintRecord(data: []f32, width: u32, row_base: u32, texel_offset: u32, view: snail_mod.ImageView) void {
+    const x = texel_offset % width;
+    const y = row_base + texel_offset / width;
+    const transform_base = layerInfoTexelBaseOffset(width, x, y, 2);
+    data[transform_base + 3] = @floatFromInt(view.layer);
+    const extra_base = layerInfoTexelBaseOffset(width, x, y, 5);
+    data[extra_base + 0] = view.uv_scale.x;
+    data[extra_base + 1] = view.uv_scale.y;
+}
+
 fn rebuildLayerInfoTexture(atlases: []const *const snail_mod.Atlas) void {
     if (layer_info_tex != 0) gl.glDeleteTextures(1, &layer_info_tex);
     layer_info_tex = 0;
-    for (atlases) |a| {
-        if (a.layer_info_data) |lid| {
-            gl.glGenTextures(1, &layer_info_tex);
-            gl.glActiveTexture(gl.GL_TEXTURE2);
-            gl.glBindTexture(gl.GL_TEXTURE_2D, layer_info_tex);
-            gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA32F, @intCast(a.layer_info_width), @intCast(a.layer_info_height), 0, gl.GL_RGBA, gl.GL_FLOAT, @ptrCast(lid.ptr));
-            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST);
-            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST);
-            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE);
-            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE);
-            break;
+
+    var total_rows: u32 = 0;
+    for (atlases) |atlas| total_rows += atlas.layer_info_height;
+    if (total_rows == 0) return;
+
+    const width = snail_mod.PATH_PAINT_INFO_WIDTH;
+    const total_texels = @as(usize, width) * @as(usize, total_rows) * 4;
+    var data = std.heap.page_allocator.alloc(f32, total_texels) catch return;
+    defer std.heap.page_allocator.free(data);
+    @memset(data, 0);
+
+    for (atlases, 0..) |atlas, i| {
+        const lid = atlas.layer_info_data orelse continue;
+        const row_base = atlas_slots[i].info_row_base;
+        const row_count = atlas.layer_info_height;
+        const copy_len = @as(usize, atlas.layer_info_width) * @as(usize, row_count) * 4;
+        const dst_base = @as(usize, row_base) * @as(usize, width) * 4;
+        @memcpy(data[dst_base .. dst_base + copy_len], lid[0..copy_len]);
+
+        const records = atlas.paint_image_records orelse continue;
+        for (records) |record| {
+            const image = (record orelse continue).image;
+            const view = currentImageView(image);
+            patchImagePaintRecord(data, width, row_base, record.?.texel_offset, view);
         }
     }
+
+    gl.glGenTextures(1, &layer_info_tex);
+    gl.glActiveTexture(gl.GL_TEXTURE2);
+    gl.glBindTexture(gl.GL_TEXTURE_2D, layer_info_tex);
+    gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA32F, @intCast(width), @intCast(total_rows), 0, gl.GL_RGBA, gl.GL_FLOAT, @ptrCast(data.ptr));
+    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST);
+    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST);
+    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE);
+    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE);
 }
 
 fn setTexParams(target: gl.GLenum) void {
@@ -501,6 +767,20 @@ fn setTexParams(target: gl.GLenum) void {
 fn setTexParamsDSA(tex: gl.GLuint) void {
     gl.glTextureParameteri(tex, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST);
     gl.glTextureParameteri(tex, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST);
+    gl.glTextureParameteri(tex, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE);
+    gl.glTextureParameteri(tex, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE);
+}
+
+fn setImageTexParams(target: gl.GLenum) void {
+    gl.glTexParameteri(target, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR);
+    gl.glTexParameteri(target, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR);
+    gl.glTexParameteri(target, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE);
+    gl.glTexParameteri(target, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE);
+}
+
+fn setImageTexParamsDSA(tex: gl.GLuint) void {
+    gl.glTextureParameteri(tex, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR);
+    gl.glTextureParameteri(tex, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR);
     gl.glTextureParameteri(tex, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE);
     gl.glTextureParameteri(tex, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE);
 }
@@ -523,7 +803,7 @@ pub fn bindTextures(_: gl.GLuint, _: gl.GLuint) void {}
 
 // ── Draw ──
 
-pub fn drawText(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
+fn drawTextInternal(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32, allow_subpixel: bool) void {
     // Ensure correct VAO is bound (may have been unbound by other renderers)
     gl.glBindVertexArray(vao);
     if (backend == .gl33) {
@@ -534,90 +814,46 @@ pub fn drawText(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f
     gl.glEnable(gl.GL_BLEND);
     gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA);
 
-    const using_sp = subpixel_order != .none;
-    const prog = if (using_sp) program_subpixel else program;
-
-    if (prog != active_program or !frame_begun) {
-        gl.glUseProgram(prog);
-        active_program = prog;
-
-        if (backend == .gl44) {
-            gl.glBindTextureUnit(0, curve_array);
-            gl.glBindTextureUnit(1, band_array);
-            if (layer_info_tex != 0) gl.glBindTextureUnit(2, layer_info_tex);
-        } else {
-            gl.glActiveTexture(gl.GL_TEXTURE0);
-            gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, curve_array);
-            gl.glActiveTexture(gl.GL_TEXTURE1);
-            gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, band_array);
-            if (layer_info_tex != 0) {
-                gl.glActiveTexture(gl.GL_TEXTURE2);
-                gl.glBindTexture(gl.GL_TEXTURE_2D, layer_info_tex);
-            }
-        }
-
-        const u_ct = if (using_sp) sp_curve_tex_loc else curve_tex_loc;
-        const u_bt = if (using_sp) sp_band_tex_loc else band_tex_loc;
-        const u_lt = if (using_sp) sp_layer_tex_loc else layer_tex_loc;
-        gl.glUniform1i(u_ct, 0);
-        gl.glUniform1i(u_bt, 1);
-        gl.glUniform1i(u_lt, 2);
-        frame_begun = true;
-    }
-
-    const u_mvp = if (using_sp) sp_mvp_loc else mvp_loc;
-    const u_vp = if (using_sp) sp_viewport_loc else viewport_loc;
-    const u_fr = if (using_sp) sp_fill_rule_loc else fill_rule_loc;
-    gl.glUniformMatrix4fv(u_mvp, 1, gl.GL_FALSE, &mvp.data);
-    gl.glUniform2f(u_vp, viewport_w, viewport_h);
-    gl.glUniform1i(u_fr, @intFromEnum(fill_rule));
-    if (using_sp) gl.glUniform1i(sp_subpixel_order_loc, @intFromEnum(subpixel_order));
-
     const floats_per_glyph = vertex.FLOATS_PER_VERTEX * vertex.VERTICES_PER_GLYPH;
     const total_glyphs = vertices.len / floats_per_glyph;
-
-    // Draw in chunks that fit within EBO / ring segment capacity
-    var glyphs_drawn: usize = 0;
-    while (glyphs_drawn < total_glyphs) {
-        const chunk: usize = @min(total_glyphs - glyphs_drawn, MAX_GLYPHS_PER_SEGMENT);
-        const float_offset = glyphs_drawn * floats_per_glyph;
-        const byte_size = chunk * BYTES_PER_GLYPH;
-
-        switch (backend) {
-            .gl33 => {
-                gl.glBufferData(gl.GL_ARRAY_BUFFER, @intCast(byte_size), @ptrCast(vertices[float_offset..].ptr), gl.GL_STREAM_DRAW);
-            },
-            .gl44 => {
-                const offset = @as(usize, ring_segment) * RING_SEGMENT_BYTES;
-
-                if (ring_fences[ring_segment]) |fence| {
-                    const status = gl.glClientWaitSync(fence, 0, 0);
-                    if (status != gl.GL_ALREADY_SIGNALED and status != gl.GL_CONDITION_SATISFIED) {
-                        _ = gl.glClientWaitSync(fence, gl.GL_SYNC_FLUSH_COMMANDS_BIT, 1_000_000_000);
-                    }
-                    gl.glDeleteSync(fence);
-                    ring_fences[ring_segment] = null;
-                }
-
-                const dst = persistent_map.?[offset..][0..byte_size];
-                const src: [*]const u8 = @ptrCast(vertices[float_offset..].ptr);
-                @memcpy(dst, src[0..byte_size]);
-
-                const stride: gl.GLint = vertex.FLOATS_PER_VERTEX * @sizeOf(f32);
-                gl.glVertexArrayVertexBuffer(vao, 0, vbo, @intCast(offset), stride);
-            },
+    const allow_lcd = allow_subpixel and subpixel_order != .none;
+    var run_start: usize = 0;
+    while (run_start < total_glyphs) {
+        const special = glyphRunIsSpecial(vertices, run_start);
+        var run_end = run_start + 1;
+        while (run_end < total_glyphs and glyphRunIsSpecial(vertices, run_end) == special) {
+            run_end += 1;
         }
 
-        const index_count: gl.GLsizei = @intCast(chunk * 6);
-        gl.glDrawElements(gl.GL_TRIANGLES, index_count, gl.GL_UNSIGNED_INT, null);
-
-        if (backend == .gl44) {
-            ring_fences[ring_segment] = gl.glFenceSync(gl.GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-            ring_segment = (ring_segment + 1) % RING_SEGMENTS;
-        }
-
-        glyphs_drawn += chunk;
+        const state = if (special)
+            ensureColrProgram()
+        else if (allow_lcd)
+            &text_subpixel_program
+        else
+            &text_program;
+        bindProgramState(state, mvp, viewport_w, viewport_h, allow_lcd and !special);
+        drawGlyphRange(vertices, run_start, run_end - run_start);
+        run_start = run_end;
     }
+}
+
+pub fn drawText(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
+    drawTextInternal(vertices, mvp, viewport_w, viewport_h, true);
+}
+
+pub fn drawTextGrayscale(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
+    const state = ensurePathProgram();
+    gl.glBindVertexArray(vao);
+    if (backend == .gl33) {
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, vbo);
+    }
+
+    gl.glDisable(gl.GL_DEPTH_TEST);
+    gl.glEnable(gl.GL_BLEND);
+    gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA);
+
+    bindProgramState(state, mvp, viewport_w, viewport_h, false);
+    drawGlyphRange(vertices, 0, vertices.len / (vertex.FLOATS_PER_VERTEX * vertex.VERTICES_PER_GLYPH));
 }
 
 fn initEbo() void {
@@ -667,7 +903,132 @@ fn compileShader(shader_type: gl.GLenum, source: [*c]const u8) ?gl.GLuint {
     return shader;
 }
 
-fn linkProgram(vs_src: [*c]const u8, fs_src: [*c]const u8) !gl.GLuint {
+fn loadProgramState(cache_label: []const u8, vs_src: [*c]const u8, fs_src: [*c]const u8) !ProgramState {
+    const handle = try linkProgram(cache_label, vs_src, fs_src);
+    return .{
+        .handle = handle,
+        .mvp_loc = gl.glGetUniformLocation(handle, "u_mvp"),
+        .viewport_loc = gl.glGetUniformLocation(handle, "u_viewport"),
+        .curve_tex_loc = gl.glGetUniformLocation(handle, "u_curve_tex"),
+        .band_tex_loc = gl.glGetUniformLocation(handle, "u_band_tex"),
+        .image_tex_loc = gl.glGetUniformLocation(handle, "u_image_tex"),
+        .fill_rule_loc = gl.glGetUniformLocation(handle, "u_fill_rule"),
+        .subpixel_order_loc = gl.glGetUniformLocation(handle, "u_subpixel_order"),
+        .layer_tex_loc = gl.glGetUniformLocation(handle, "u_layer_tex"),
+    };
+}
+
+fn deleteProgramState(state: *ProgramState) void {
+    if (state.handle != 0) gl.glDeleteProgram(state.handle);
+    state.* = .{};
+}
+
+fn ensureColrProgram() *const ProgramState {
+    if (colr_program.handle == 0) {
+        colr_program = loadProgramState("text-colr", shaders.vertex_shader, shaders.fragment_shader_colr) catch @panic("failed to link COLR text shader");
+    }
+    return &colr_program;
+}
+
+fn ensurePathProgram() *const ProgramState {
+    if (path_program.handle == 0) {
+        path_program = loadProgramState("path", shaders.vertex_shader, shaders.fragment_shader_path) catch @panic("failed to link path shader");
+    }
+    return &path_program;
+}
+
+fn bindProgramState(state: *const ProgramState, mvp: Mat4, viewport_w: f32, viewport_h: f32, using_subpixel: bool) void {
+    if (state.handle != active_program or !frame_begun) {
+        gl.glUseProgram(state.handle);
+        active_program = state.handle;
+
+        if (backend == .gl44) {
+            gl.glBindTextureUnit(0, curve_array);
+            gl.glBindTextureUnit(1, band_array);
+            if (state.layer_tex_loc >= 0 and layer_info_tex != 0) gl.glBindTextureUnit(2, layer_info_tex);
+            if (state.image_tex_loc >= 0 and image_array != 0) gl.glBindTextureUnit(3, image_array);
+        } else {
+            gl.glActiveTexture(gl.GL_TEXTURE0);
+            gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, curve_array);
+            gl.glActiveTexture(gl.GL_TEXTURE1);
+            gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, band_array);
+            if (state.layer_tex_loc >= 0 and layer_info_tex != 0) {
+                gl.glActiveTexture(gl.GL_TEXTURE2);
+                gl.glBindTexture(gl.GL_TEXTURE_2D, layer_info_tex);
+            }
+            if (state.image_tex_loc >= 0 and image_array != 0) {
+                gl.glActiveTexture(gl.GL_TEXTURE3);
+                gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, image_array);
+            }
+        }
+
+        if (state.curve_tex_loc >= 0) gl.glUniform1i(state.curve_tex_loc, 0);
+        if (state.band_tex_loc >= 0) gl.glUniform1i(state.band_tex_loc, 1);
+        if (state.layer_tex_loc >= 0) gl.glUniform1i(state.layer_tex_loc, 2);
+        if (state.image_tex_loc >= 0) gl.glUniform1i(state.image_tex_loc, 3);
+        frame_begun = true;
+    }
+
+    gl.glUniformMatrix4fv(state.mvp_loc, 1, gl.GL_FALSE, &mvp.data);
+    gl.glUniform2f(state.viewport_loc, viewport_w, viewport_h);
+    gl.glUniform1i(state.fill_rule_loc, @intFromEnum(fill_rule));
+    if (using_subpixel and state.subpixel_order_loc >= 0) {
+        gl.glUniform1i(state.subpixel_order_loc, @intFromEnum(subpixel_order));
+    }
+}
+
+fn glyphRunIsSpecial(vertices: []const f32, glyph_index: usize) bool {
+    const float_offset = glyph_index * vertex.FLOATS_PER_VERTEX * vertex.VERTICES_PER_GLYPH;
+    const gw_bits: u32 = @bitCast(vertices[float_offset + 7]);
+    return (gw_bits >> 24) == 0xFF;
+}
+
+fn drawGlyphRange(vertices: []const f32, glyph_offset: usize, glyph_count: usize) void {
+    const floats_per_glyph = vertex.FLOATS_PER_VERTEX * vertex.VERTICES_PER_GLYPH;
+    var glyphs_drawn: usize = 0;
+    while (glyphs_drawn < glyph_count) {
+        const chunk: usize = @min(glyph_count - glyphs_drawn, MAX_GLYPHS_PER_SEGMENT);
+        const float_offset = (glyph_offset + glyphs_drawn) * floats_per_glyph;
+        const byte_size = chunk * BYTES_PER_GLYPH;
+
+        switch (backend) {
+            .gl33 => {
+                gl.glBufferData(gl.GL_ARRAY_BUFFER, @intCast(byte_size), @ptrCast(vertices[float_offset..].ptr), gl.GL_STREAM_DRAW);
+            },
+            .gl44 => {
+                const offset = @as(usize, ring_segment) * RING_SEGMENT_BYTES;
+
+                if (ring_fences[ring_segment]) |fence| {
+                    const status = gl.glClientWaitSync(fence, 0, 0);
+                    if (status != gl.GL_ALREADY_SIGNALED and status != gl.GL_CONDITION_SATISFIED) {
+                        _ = gl.glClientWaitSync(fence, gl.GL_SYNC_FLUSH_COMMANDS_BIT, 1_000_000_000);
+                    }
+                    gl.glDeleteSync(fence);
+                    ring_fences[ring_segment] = null;
+                }
+
+                const dst = persistent_map.?[offset..][0..byte_size];
+                const src: [*]const u8 = @ptrCast(vertices[float_offset..].ptr);
+                @memcpy(dst, src[0..byte_size]);
+
+                const stride: gl.GLint = vertex.FLOATS_PER_VERTEX * @sizeOf(f32);
+                gl.glVertexArrayVertexBuffer(vao, 0, vbo, @intCast(offset), stride);
+            },
+        }
+
+        const index_count: gl.GLsizei = @intCast(chunk * 6);
+        gl.glDrawElements(gl.GL_TRIANGLES, index_count, gl.GL_UNSIGNED_INT, null);
+
+        if (backend == .gl44) {
+            ring_fences[ring_segment] = gl.glFenceSync(gl.GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+            ring_segment = (ring_segment + 1) % RING_SEGMENTS;
+        }
+
+        glyphs_drawn += chunk;
+    }
+}
+
+fn linkProgram(_: []const u8, vs_src: [*c]const u8, fs_src: [*c]const u8) !gl.GLuint {
     const vs = compileShader(gl.GL_VERTEX_SHADER, vs_src) orelse return error.VertexShaderFailed;
     defer gl.glDeleteShader(vs);
     const fs = compileShader(gl.GL_FRAGMENT_SHADER, fs_src) orelse return error.FragmentShaderFailed;

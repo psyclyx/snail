@@ -6,6 +6,7 @@
 const std = @import("std");
 const snail = @import("snail");
 const bezier = snail.bezier;
+const CurveSegment = bezier.CurveSegment;
 const GlyphBandEntry = std.meta.fieldInfo(snail.Atlas.GlyphInfo, .band_entry).type;
 const Vec2 = snail.Vec2;
 const Transform2D = snail.VectorTransform2D;
@@ -24,6 +25,8 @@ fn linearToSrgb(v: f32) f32 {
 
 const kLogBandTextureWidth: u5 = 12;
 const BAND_TEX_WIDTH: u32 = 1 << kLogBandTextureWidth;
+const kLogCurveTextureWidth: u5 = 12;
+const CURVE_TEX_WIDTH: u32 = 1 << kLogCurveTextureWidth;
 
 pub const CpuRenderer = struct {
     pixels: [*]u8, // RGBA8888 buffer, caller-owned
@@ -108,6 +111,73 @@ pub const CpuRenderer = struct {
 
     pub fn drawVectorPicture(self: *CpuRenderer, picture: *const snail.VectorPicture) void {
         self.drawVector(picture.slice());
+    }
+
+    pub fn drawPathPicture(self: *CpuRenderer, picture: *const snail.PathPicture) void {
+        self.drawPathPictureTransformed(picture, .identity);
+    }
+
+    pub fn drawPathPictureTransformed(self: *CpuRenderer, picture: *const snail.PathPicture, transform: Transform2D) void {
+        for (picture.instances) |instance| {
+            const info = picture.atlas.getGlyph(instance.glyph_id) orelse continue;
+            const inverse = inverseTransform(Transform2D.multiply(transform, instance.transform)) orelse continue;
+            const final_transform = Transform2D.multiply(transform, instance.transform);
+            const bounds = transformedGlyphBounds(info.bbox, final_transform);
+            const px0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.x))), 0);
+            const py0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.y))), 0);
+            const px1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.x))), @as(i32, @intCast(self.width)));
+            const py1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.y))), @as(i32, @intCast(self.height)));
+            if (px0 >= px1 or py0 >= py1) continue;
+
+            const epp = glyphEdgePixelsPerPixel(inverse);
+            const ppe = Vec2.new(1.0 / epp.x, 1.0 / epp.y);
+            const band_max_h: i32 = @as(i32, @intCast(info.band_entry.h_band_count)) - 1;
+            const band_max_v: i32 = @as(i32, @intCast(info.band_entry.v_band_count)) - 1;
+            const page = picture.atlas.page(info.page_index);
+
+            var row: u32 = @intCast(py0);
+            while (row < @as(u32, @intCast(py1))) : (row += 1) {
+                var col: u32 = @intCast(px0);
+                while (col < @as(u32, @intCast(px1))) : (col += 1) {
+                    const world = Vec2.new(@as(f32, @floatFromInt(col)) + 0.5, @as(f32, @floatFromInt(row)) + 0.5);
+                    const local = inverse.applyPoint(world);
+                    const paint = samplePathPaint(&picture.atlas, instance, local);
+
+                    if (self.subpixel_order == .none) {
+                        const cov = evalGlyphCoverage(
+                            page,
+                            local.x,
+                            local.y,
+                            epp.x,
+                            epp.y,
+                            ppe.x,
+                            ppe.y,
+                            info.band_entry,
+                            band_max_h,
+                            band_max_v,
+                            self.fill_rule,
+                        );
+                        if (cov < 1.0 / 255.0) continue;
+                        self.blendPremultipliedPixel(row, col, premultiplyCoverage(paint, cov));
+                    } else {
+                        const cov = evalGlyphCoverageSubpixel(
+                            page,
+                            local.x,
+                            local.y,
+                            epp,
+                            ppe,
+                            info.band_entry,
+                            band_max_h,
+                            band_max_v,
+                            self.fill_rule,
+                            self.subpixel_order,
+                        );
+                        if (max3(cov) < 1.0 / 255.0) continue;
+                        self.blendPremultipliedPixel(row, col, premultiplyCoverageSubpixel(paint, cov));
+                    }
+                }
+            }
+        }
     }
 
     /// Render a single glyph using the Slug algorithm (CPU evaluation).
@@ -480,6 +550,157 @@ fn inverseTransform(transform: Transform2D) ?Transform2D {
     };
 }
 
+fn transformedGlyphBounds(bbox: snail.BBox, transform: Transform2D) struct { min: Vec2, max: Vec2 } {
+    const corners = [_]Vec2{
+        transform.applyPoint(bbox.min),
+        transform.applyPoint(.{ .x = bbox.max.x, .y = bbox.min.y }),
+        transform.applyPoint(bbox.max),
+        transform.applyPoint(.{ .x = bbox.min.x, .y = bbox.max.y }),
+    };
+
+    var min = corners[0];
+    var max = corners[0];
+    for (corners[1..]) |corner| {
+        min.x = @min(min.x, corner.x);
+        min.y = @min(min.y, corner.y);
+        max.x = @max(max.x, corner.x);
+        max.y = @max(max.y, corner.y);
+    }
+    return .{ .min = min, .max = max };
+}
+
+fn glyphEdgePixelsPerPixel(inverse: Transform2D) Vec2 {
+    return .{
+        .x = @max(@abs(inverse.xx) + @abs(inverse.xy), 1.0 / 65536.0),
+        .y = @max(@abs(inverse.yx) + @abs(inverse.yy), 1.0 / 65536.0),
+    };
+}
+
+fn fetchLayerInfoTexel(data: []const f32, width: u32, info_x: u16, info_y: u16, offset: u32) [4]f32 {
+    const texel = @as(u32, info_x) + offset;
+    const x = texel % width;
+    const y = @as(u32, info_y) + texel / width;
+    const base = (y * width + x) * 4;
+    return .{ data[base + 0], data[base + 1], data[base + 2], data[base + 3] };
+}
+
+fn wrapPaintT(t: f32, extend_mode: snail.PathPaintExtend) f32 {
+    return switch (extend_mode) {
+        .clamp => clamp01(t),
+        .repeat => t - @floor(t),
+        .reflect => blk: {
+            var reflected = @mod(t, 2.0);
+            if (reflected < 0.0) reflected += 2.0;
+            break :blk 1.0 - @abs(reflected - 1.0);
+        },
+    };
+}
+
+fn paintExtendFromFloat(raw: f32) snail.PathPaintExtend {
+    const mode: i32 = @intFromFloat(@round(raw));
+    return switch (mode) {
+        1 => .repeat,
+        2 => .reflect,
+        else => .clamp,
+    };
+}
+
+fn sampleImageTexelLinear(image: *const snail.Image, x: u32, y: u32) [4]f32 {
+    const idx = (@as(usize, y) * @as(usize, image.width) + @as(usize, x)) * 4;
+    return .{
+        srgbToLinear(@as(f32, @floatFromInt(image.pixels[idx + 0])) / 255.0),
+        srgbToLinear(@as(f32, @floatFromInt(image.pixels[idx + 1])) / 255.0),
+        srgbToLinear(@as(f32, @floatFromInt(image.pixels[idx + 2])) / 255.0),
+        @as(f32, @floatFromInt(image.pixels[idx + 3])) / 255.0,
+    };
+}
+
+fn sampleImageLinear(image: *const snail.Image, uv: Vec2, filter: snail.ImageFilter) [4]f32 {
+    if (image.width == 0 or image.height == 0) return .{ 0, 0, 0, 0 };
+    if (filter == .nearest) {
+        const x = @min(@as(u32, @intFromFloat(@max(@floor(uv.x * @as(f32, @floatFromInt(image.width))), 0.0))), image.width - 1);
+        const y = @min(@as(u32, @intFromFloat(@max(@floor(uv.y * @as(f32, @floatFromInt(image.height))), 0.0))), image.height - 1);
+        return sampleImageTexelLinear(image, x, y);
+    }
+
+    const fx = uv.x * @as(f32, @floatFromInt(image.width)) - 0.5;
+    const fy = uv.y * @as(f32, @floatFromInt(image.height)) - 0.5;
+    const x0 = @min(@as(u32, @intFromFloat(@max(@floor(fx), 0.0))), image.width - 1);
+    const y0 = @min(@as(u32, @intFromFloat(@max(@floor(fy), 0.0))), image.height - 1);
+    const x1 = @min(x0 + 1, image.width - 1);
+    const y1 = @min(y0 + 1, image.height - 1);
+    const tx = clamp01(fx - @floor(fx));
+    const ty = clamp01(fy - @floor(fy));
+
+    const c00 = sampleImageTexelLinear(image, x0, y0);
+    const c10 = sampleImageTexelLinear(image, x1, y0);
+    const c01 = sampleImageTexelLinear(image, x0, y1);
+    const c11 = sampleImageTexelLinear(image, x1, y1);
+    const top = lerpColor(c00, c10, tx);
+    const bottom = lerpColor(c01, c11, tx);
+    return lerpColor(top, bottom, ty);
+}
+
+fn samplePathPaint(atlas: *const snail.Atlas, instance: snail.PathPicture.Instance, local: Vec2) [4]f32 {
+    const data = atlas.layer_info_data orelse return .{ 1, 1, 1, 1 };
+    const width = atlas.layer_info_width;
+    const info = fetchLayerInfoTexel(data, width, instance.info_x, instance.info_y, 0);
+    const tag: i32 = @intFromFloat(@round(-info[3]));
+
+    const data0 = fetchLayerInfoTexel(data, width, instance.info_x, instance.info_y, 2);
+    switch (tag) {
+        1 => return data0,
+        2 => {
+            const color0 = fetchLayerInfoTexel(data, width, instance.info_x, instance.info_y, 3);
+            const color1 = fetchLayerInfoTexel(data, width, instance.info_x, instance.info_y, 4);
+            const extra = fetchLayerInfoTexel(data, width, instance.info_x, instance.info_y, 5);
+            const start = Vec2.new(data0[0], data0[1]);
+            const end = Vec2.new(data0[2], data0[3]);
+            const delta = Vec2.sub(end, start);
+            const len_sq = Vec2.dot(delta, delta);
+            var t: f32 = 0.0;
+            if (len_sq > 1e-10) t = Vec2.dot(Vec2.sub(local, start), delta) / len_sq;
+            return lerpColor(color0, color1, wrapPaintT(t, paintExtendFromFloat(extra[0])));
+        },
+        3 => {
+            const color0 = fetchLayerInfoTexel(data, width, instance.info_x, instance.info_y, 3);
+            const color1 = fetchLayerInfoTexel(data, width, instance.info_x, instance.info_y, 4);
+            const center = Vec2.new(data0[0], data0[1]);
+            const radius = @max(@abs(data0[2]), 1.0 / 65536.0);
+            const t = Vec2.length(Vec2.sub(local, center)) / radius;
+            return lerpColor(color0, color1, wrapPaintT(t, paintExtendFromFloat(data0[3])));
+        },
+        4 => {
+            const records = atlas.paint_image_records orelse return .{ 1, 0, 1, 1 };
+            const record_index = (@as(usize, instance.info_y) * @as(usize, width) + @as(usize, instance.info_x)) / snail.PATH_PAINT_TEXELS_PER_RECORD;
+            if (record_index >= records.len) return .{ 1, 0, 1, 1 };
+            const record = records[record_index] orelse return .{ 1, 0, 1, 1 };
+            const data1 = fetchLayerInfoTexel(data, width, instance.info_x, instance.info_y, 3);
+            const tint = fetchLayerInfoTexel(data, width, instance.info_x, instance.info_y, 4);
+            const extra = fetchLayerInfoTexel(data, width, instance.info_x, instance.info_y, 5);
+            const raw_uv = Vec2.new(
+                data0[0] * local.x + data0[1] * local.y + data0[2],
+                data1[0] * local.x + data1[1] * local.y + data1[2],
+            );
+            const scale_x = if (@abs(extra[0]) > 1e-6) extra[0] else 1.0;
+            const scale_y = if (@abs(extra[1]) > 1e-6) extra[1] else 1.0;
+            const uv = Vec2.new(
+                wrapPaintT(raw_uv.x, paintExtendFromFloat(extra[2])) * scale_x,
+                wrapPaintT(raw_uv.y, paintExtendFromFloat(extra[3])) * scale_y,
+            );
+            const filter: snail.ImageFilter = if (@as(i32, @intFromFloat(@round(data1[3]))) == 1) .nearest else .linear;
+            const sample = sampleImageLinear(record.image, uv, filter);
+            return .{
+                sample[0] * tint[0],
+                sample[1] * tint[1],
+                sample[2] * tint[2],
+                sample[3] * tint[3],
+            };
+        },
+        else => return .{ 1, 0, 1, 1 },
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Slug algorithm: CPU port of evalGlyphCoverage from shaders.zig
 // ---------------------------------------------------------------------------
@@ -499,6 +720,11 @@ const GlyphBandState = struct {
     h_count: u32,
     v_loc: [2]u32,
     v_count: u32,
+};
+
+const CurveRoots = struct {
+    count: u8 = 0,
+    t: [3]f32 = .{ 0, 0, 0 },
 };
 
 const kPathArcSegmentsPerCorner: usize = 4;
@@ -572,6 +798,15 @@ fn addPremultiplied(a: [4]f32, b: [4]f32) [4]f32 {
         a[1] + b[1],
         a[2] + b[2],
         a[3] + b[3],
+    };
+}
+
+fn lerpColor(a: [4]f32, b: [4]f32, t: f32) [4]f32 {
+    return .{
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+        a[3] + (b[3] - a[3]) * t,
     };
 }
 
@@ -812,68 +1047,216 @@ fn initGlyphBandState(
     };
 }
 
-fn evalGlyphHorizCoverage(page: *const snail.AtlasPage, rc: Vec2, x_offset: f32, ppe_x: f32, state: GlyphBandState) CoveragePair {
+fn appendCurveRoot(roots: *CurveRoots, t: f32) void {
+    if (t < -1e-5 or t > 1.0 + 1e-5) return;
+    const clamped = std.math.clamp(t, 0.0, 1.0);
+    for (roots.t[0..roots.count]) |existing| {
+        if (@abs(existing - clamped) <= 1e-5) return;
+    }
+    var insert_at: usize = roots.count;
+    while (insert_at > 0 and roots.t[insert_at - 1] > clamped) : (insert_at -= 1) {}
+    var i = roots.count;
+    while (i > insert_at) : (i -= 1) roots.t[i] = roots.t[i - 1];
+    roots.t[insert_at] = clamped;
+    roots.count += 1;
+}
+
+fn solveQuadraticRoots(a: f32, b: f32, c_val: f32) CurveRoots {
+    var roots = CurveRoots{};
+    if (@abs(a) < 1e-10) {
+        if (@abs(b) < 1e-10) return roots;
+        appendCurveRoot(&roots, -c_val / b);
+        return roots;
+    }
+    var disc = b * b - 4.0 * a * c_val;
+    if (disc < 0.0) {
+        if (disc > -1e-6) {
+            disc = 0.0;
+        } else {
+            return roots;
+        }
+    }
+    const sqrt_disc = @sqrt(disc);
+    const inv_2a = 0.5 / a;
+    appendCurveRoot(&roots, (-b - sqrt_disc) * inv_2a);
+    appendCurveRoot(&roots, (-b + sqrt_disc) * inv_2a);
+    return roots;
+}
+
+fn cbrtSigned(v: f32) f32 {
+    if (v == 0.0) return 0.0;
+    return std.math.sign(v) * std.math.pow(f32, @abs(v), 1.0 / 3.0);
+}
+
+fn solveCubicRoots(a: f32, b: f32, c_val: f32, d: f32) CurveRoots {
+    if (@abs(a) < 1e-10) return solveQuadraticRoots(b, c_val, d);
+
+    var roots = CurveRoots{};
+    const inv_a = 1.0 / a;
+    const aa = b * inv_a;
+    const bb = c_val * inv_a;
+    const cc = d * inv_a;
+    const third = 1.0 / 3.0;
+    const p = bb - aa * aa * third;
+    const q = (2.0 * aa * aa * aa) / 27.0 - (aa * bb) * third + cc;
+    const half_q = q * 0.5;
+    const third_p = p * third;
+    const disc = half_q * half_q + third_p * third_p * third_p;
+    const offset = aa * third;
+
+    if (disc > 1e-8) {
+        const sqrt_disc = @sqrt(disc);
+        const u = cbrtSigned(-half_q + sqrt_disc);
+        const v = cbrtSigned(-half_q - sqrt_disc);
+        appendCurveRoot(&roots, u + v - offset);
+        return roots;
+    }
+
+    if (disc >= -1e-8) {
+        const u = cbrtSigned(-half_q);
+        appendCurveRoot(&roots, 2.0 * u - offset);
+        appendCurveRoot(&roots, -u - offset);
+        return roots;
+    }
+
+    const r = @sqrt(-third_p);
+    const phi = std.math.acos(std.math.clamp(-half_q / (r * r * r), -1.0, 1.0));
+    const two_r = 2.0 * r;
+    appendCurveRoot(&roots, two_r * @cos(phi * third) - offset);
+    appendCurveRoot(&roots, two_r * @cos((phi + 2.0 * std.math.pi) * third) - offset);
+    appendCurveRoot(&roots, two_r * @cos((phi + 4.0 * std.math.pi) * third) - offset);
+    return roots;
+}
+
+fn solveSegmentHorizontalRoots(segment: CurveSegment, py: f32) CurveRoots {
+    return switch (segment.kind) {
+        .quadratic => blk: {
+            const a = segment.p0.y - 2.0 * segment.p1.y + segment.p2.y;
+            const b = 2.0 * (segment.p1.y - segment.p0.y);
+            break :blk solveQuadraticRoots(a, b, segment.p0.y - py);
+        },
+        .conic => blk: {
+            const c0 = segment.weights[0] * (segment.p0.y - py);
+            const c1 = segment.weights[1] * (segment.p1.y - py);
+            const c2 = segment.weights[2] * (segment.p2.y - py);
+            break :blk solveQuadraticRoots(c0 - 2.0 * c1 + c2, 2.0 * (c1 - c0), c0);
+        },
+        .cubic => blk: {
+            const a = -segment.p0.y + 3.0 * segment.p1.y - 3.0 * segment.p2.y + segment.p3.y;
+            const b = 3.0 * segment.p0.y - 6.0 * segment.p1.y + 3.0 * segment.p2.y;
+            const c0 = -3.0 * segment.p0.y + 3.0 * segment.p1.y;
+            const d = segment.p0.y - py;
+            break :blk solveCubicRoots(a, b, c0, d);
+        },
+    };
+}
+
+fn solveSegmentVerticalRoots(segment: CurveSegment, px: f32) CurveRoots {
+    return switch (segment.kind) {
+        .quadratic => blk: {
+            const a = segment.p0.x - 2.0 * segment.p1.x + segment.p2.x;
+            const b = 2.0 * (segment.p1.x - segment.p0.x);
+            break :blk solveQuadraticRoots(a, b, segment.p0.x - px);
+        },
+        .conic => blk: {
+            const c0 = segment.weights[0] * (segment.p0.x - px);
+            const c1 = segment.weights[1] * (segment.p1.x - px);
+            const c2 = segment.weights[2] * (segment.p2.x - px);
+            break :blk solveQuadraticRoots(c0 - 2.0 * c1 + c2, 2.0 * (c1 - c0), c0);
+        },
+        .cubic => blk: {
+            const a = -segment.p0.x + 3.0 * segment.p1.x - 3.0 * segment.p2.x + segment.p3.x;
+            const b = 3.0 * segment.p0.x - 6.0 * segment.p1.x + 3.0 * segment.p2.x;
+            const c0 = -3.0 * segment.p0.x + 3.0 * segment.p1.x;
+            const d = segment.p0.x - px;
+            break :blk solveCubicRoots(a, b, c0, d);
+        },
+    };
+}
+
+fn segmentMaxX(segment: CurveSegment) f32 {
+    var result = @max(@max(segment.p0.x, segment.p1.x), segment.p2.x);
+    if (segment.kind == .cubic) result = @max(result, segment.p3.x);
+    return result;
+}
+
+fn segmentMaxY(segment: CurveSegment) f32 {
+    var result = @max(@max(segment.p0.y, segment.p1.y), segment.p2.y);
+    if (segment.kind == .cubic) result = @max(result, segment.p3.y);
+    return result;
+}
+
+fn appendCoverageContribution(result: *CoveragePair, distance: f32, sign: f32) void {
+    result.cov += sign * clamp01(distance + 0.5);
+    result.wgt = @max(result.wgt, clamp01(1.0 - @abs(distance) * 2.0));
+}
+
+fn evalGlyphCoverageAxis(page: *const snail.AtlasPage, sample_rc: Vec2, ppe: f32, loc: [2]u32, count: u32, horizontal: bool) CoveragePair {
     var result = CoveragePair{ .cov = 0.0, .wgt = 0.0 };
-    const sample_rc = Vec2.new(rc.x + x_offset, rc.y);
     var i: u32 = 0;
-    while (i < state.h_count) : (i += 1) {
-        const b_loc = calcBandLoc(state.h_loc[0], state.h_loc[1], i);
+    while (i < count) : (i += 1) {
+        const b_loc = calcBandLoc(loc[0], loc[1], i);
         const curve_ref = readBandTexel(page, b_loc[0], b_loc[1]);
-        const p12 = readCurveTexelF32(page, curve_ref[0], curve_ref[1]);
-        const p3 = readCurveTexelF32_p3(page, curve_ref[0] + 1, curve_ref[1]);
-        const p1x = p12[0] - sample_rc.x;
-        const p1y = p12[1] - sample_rc.y;
-        const p2x = p12[2] - sample_rc.x;
-        const p2y = p12[3] - sample_rc.y;
-        const p3x = p3[0] - sample_rc.x;
-        const p3y = p3[1] - sample_rc.y;
-        if (@max(@max(p1x, p2x), p3x) * ppe_x < -0.5) break;
-        const code = calcRootCode(p1y, p2y, p3y);
-        if (code != 0) {
-            const roots = solveHorizPoly(p1x, p1y, p2x, p2y, p3x, p3y, ppe_x);
+        const segment = readCurveSegment(page, curve_ref[0], curve_ref[1]);
+        const max_coord = if (horizontal)
+            segmentMaxX(segment) - sample_rc.x
+        else
+            segmentMaxY(segment) - sample_rc.y;
+        if (max_coord * ppe < -0.5) break;
+
+        if (segment.kind == .quadratic) {
+            const p0x = segment.p0.x - sample_rc.x;
+            const p0y = segment.p0.y - sample_rc.y;
+            const p1x = segment.p1.x - sample_rc.x;
+            const p1y = segment.p1.y - sample_rc.y;
+            const p2x = segment.p2.x - sample_rc.x;
+            const p2y = segment.p2.y - sample_rc.y;
+            const code = if (horizontal)
+                calcRootCode(p0y, p1y, p2y)
+            else
+                calcRootCode(p0x, p1x, p2x);
+            if (code == 0) continue;
+
+            const roots = if (horizontal)
+                solveHorizPoly(p0x, p0y, p1x, p1y, p2x, p2y, ppe)
+            else
+                solveVertPoly(p0x, p0y, p1x, p1y, p2x, p2y, ppe);
+
             if ((code & 1) != 0) {
-                result.cov += clamp01(roots[0] + 0.5);
-                result.wgt = @max(result.wgt, clamp01(1.0 - @abs(roots[0]) * 2.0));
+                appendCoverageContribution(&result, roots[0], if (horizontal) 1.0 else -1.0);
             }
             if (code > 1) {
-                result.cov -= clamp01(roots[1] + 0.5);
-                result.wgt = @max(result.wgt, clamp01(1.0 - @abs(roots[1]) * 2.0));
+                appendCoverageContribution(&result, roots[1], if (horizontal) -1.0 else 1.0);
             }
+            continue;
+        }
+
+        const roots = if (horizontal)
+            solveSegmentHorizontalRoots(segment, sample_rc.y)
+        else
+            solveSegmentVerticalRoots(segment, sample_rc.x);
+
+        for (roots.t[0..roots.count]) |t| {
+            const point = segment.evaluate(t);
+            const deriv = segment.derivative(t);
+            const derivative_axis = if (horizontal) deriv.y else -deriv.x;
+            if (@abs(derivative_axis) <= 1e-5) continue;
+            const distance = if (horizontal)
+                (point.x - sample_rc.x) * ppe
+            else
+                (point.y - sample_rc.y) * ppe;
+            appendCoverageContribution(&result, distance, if (derivative_axis > 0.0) 1.0 else -1.0);
         }
     }
     return result;
 }
 
+fn evalGlyphHorizCoverage(page: *const snail.AtlasPage, rc: Vec2, x_offset: f32, ppe_x: f32, state: GlyphBandState) CoveragePair {
+    return evalGlyphCoverageAxis(page, Vec2.new(rc.x + x_offset, rc.y), ppe_x, state.h_loc, state.h_count, true);
+}
+
 fn evalGlyphVertCoverage(page: *const snail.AtlasPage, rc: Vec2, y_offset: f32, ppe_y: f32, state: GlyphBandState) CoveragePair {
-    var result = CoveragePair{ .cov = 0.0, .wgt = 0.0 };
-    const sample_rc = Vec2.new(rc.x, rc.y + y_offset);
-    var i: u32 = 0;
-    while (i < state.v_count) : (i += 1) {
-        const b_loc = calcBandLoc(state.v_loc[0], state.v_loc[1], i);
-        const curve_ref = readBandTexel(page, b_loc[0], b_loc[1]);
-        const p12 = readCurveTexelF32(page, curve_ref[0], curve_ref[1]);
-        const p3 = readCurveTexelF32_p3(page, curve_ref[0] + 1, curve_ref[1]);
-        const p1x = p12[0] - sample_rc.x;
-        const p1y = p12[1] - sample_rc.y;
-        const p2x = p12[2] - sample_rc.x;
-        const p2y = p12[3] - sample_rc.y;
-        const p3x = p3[0] - sample_rc.x;
-        const p3y = p3[1] - sample_rc.y;
-        if (@max(@max(p1y, p2y), p3y) * ppe_y < -0.5) break;
-        const code = calcRootCode(p1x, p2x, p3x);
-        if (code != 0) {
-            const roots = solveVertPoly(p1x, p1y, p2x, p2y, p3x, p3y, ppe_y);
-            if ((code & 1) != 0) {
-                result.cov -= clamp01(roots[0] + 0.5);
-                result.wgt = @max(result.wgt, clamp01(1.0 - @abs(roots[0]) * 2.0));
-            }
-            if (code > 1) {
-                result.cov += clamp01(roots[1] + 0.5);
-                result.wgt = @max(result.wgt, clamp01(1.0 - @abs(roots[1]) * 2.0));
-            }
-        }
-    }
-    return result;
+    return evalGlyphCoverageAxis(page, Vec2.new(rc.x, rc.y + y_offset), ppe_y, state.v_loc, state.v_count, false);
 }
 
 fn evalGlyphCoverage(
@@ -974,6 +1357,40 @@ fn readCurveTexelF32_p3(page: *const snail.AtlasPage, tx: u32, ty: u32) [2]f32 {
     return .{
         f16ToF32(page.curve_data[idx + 0]),
         f16ToF32(page.curve_data[idx + 1]),
+    };
+}
+
+fn readCurveTexelF32_meta(page: *const snail.AtlasPage, tx: u32, ty: u32) [4]f32 {
+    return readCurveTexelF32(page, tx, ty);
+}
+
+fn calcCurveLoc(glyph_x: u32, glyph_y: u32, offset: u32) [2]u32 {
+    var loc_x = glyph_x + offset;
+    var loc_y = glyph_y;
+    loc_y += loc_x >> kLogCurveTextureWidth;
+    loc_x &= CURVE_TEX_WIDTH - 1;
+    return .{ loc_x, loc_y };
+}
+
+fn readCurveSegment(page: *const snail.AtlasPage, tx: u32, ty: u32) CurveSegment {
+    const tex0 = readCurveTexelF32(page, tx, ty);
+    const loc1 = calcCurveLoc(tx, ty, 1);
+    const tex1 = readCurveTexelF32(page, loc1[0], loc1[1]);
+    const loc2 = calcCurveLoc(tx, ty, 2);
+    const meta = readCurveTexelF32_meta(page, loc2[0], loc2[1]);
+    const kind_u16: u16 = @intFromFloat(@round(meta[0]));
+    const kind: bezier.CurveKind = switch (kind_u16) {
+        1 => .conic,
+        2 => .cubic,
+        else => .quadratic,
+    };
+    return .{
+        .kind = kind,
+        .p0 = .{ .x = tex0[0], .y = tex0[1] },
+        .p1 = .{ .x = tex0[2], .y = tex0[3] },
+        .p2 = .{ .x = tex1[0], .y = tex1[1] },
+        .p3 = .{ .x = tex1[2], .y = tex1[3] },
+        .weights = .{ meta[1], meta[2], meta[3] },
     };
 }
 
@@ -1228,6 +1645,92 @@ test "cpu renderer renders transformed vector picture" {
     const original = ((3 * stride) + (4 * 4));
     try testing.expectEqual(@as(u8, 0), buf[original + 1]);
     try testing.expectEqual(@as(u8, 0), buf[original + 3]);
+}
+
+test "cpu renderer renders gradient path picture" {
+    const testing = std.testing;
+
+    const width: u32 = 48;
+    const height: u32 = 24;
+    const stride = width * 4;
+    const buf = try testing.allocator.alloc(u8, stride * height);
+    defer testing.allocator.free(buf);
+
+    var renderer = CpuRenderer.init(buf.ptr, width, height, stride);
+    renderer.clear(0, 0, 0, 0);
+
+    var path = snail.VectorPath.init(testing.allocator);
+    defer path.deinit();
+    try path.addRect(.{ .x = 0, .y = 0, .w = 20, .h = 10 });
+
+    var builder = snail.PathPictureBuilder.init(testing.allocator);
+    defer builder.deinit();
+    try builder.addFilledPath(&path, .{
+        .paint = .{ .linear_gradient = .{
+            .start = .{ .x = 0, .y = 0 },
+            .end = .{ .x = 20, .y = 0 },
+            .start_color = .{ 1, 0, 0, 1 },
+            .end_color = .{ 0, 0, 1, 1 },
+        } },
+    }, .{ .tx = 10, .ty = 7 });
+
+    var picture = try builder.freeze(testing.allocator);
+    defer picture.deinit();
+
+    renderer.drawPathPicture(&picture);
+
+    const left = ((11 * stride) + (13 * 4));
+    try testing.expect(buf[left + 0] > buf[left + 2]);
+    try testing.expect(buf[left + 3] > 200);
+
+    const right = ((11 * stride) + (26 * 4));
+    try testing.expect(buf[right + 2] > buf[right + 0]);
+    try testing.expect(buf[right + 3] > 200);
+}
+
+test "cpu renderer renders image-painted path picture" {
+    const testing = std.testing;
+
+    const width: u32 = 40;
+    const height: u32 = 24;
+    const stride = width * 4;
+    const buf = try testing.allocator.alloc(u8, stride * height);
+    defer testing.allocator.free(buf);
+
+    var renderer = CpuRenderer.init(buf.ptr, width, height, stride);
+    renderer.clear(0, 0, 0, 0);
+
+    var image = try snail.Image.initRgba8(testing.allocator, 2, 1, &.{
+        255, 0, 0, 255,
+        0, 0, 255, 255,
+    });
+    defer image.deinit();
+
+    var path = snail.VectorPath.init(testing.allocator);
+    defer path.deinit();
+    try path.addRect(.{ .x = 0, .y = 0, .w = 20, .h = 10 });
+
+    var builder = snail.PathPictureBuilder.init(testing.allocator);
+    defer builder.deinit();
+    try builder.addFilledPath(&path, .{
+        .paint = .{ .image = .{
+            .image = &image,
+            .uv_transform = .{ .xx = 1.0 / 20.0, .xy = 0.0, .tx = 0.0, .yx = 0.0, .yy = 1.0 / 10.0, .ty = 0.0 },
+        } },
+    }, .{ .tx = 8, .ty = 6 });
+
+    var picture = try builder.freeze(testing.allocator);
+    defer picture.deinit();
+
+    renderer.drawPathPicture(&picture);
+
+    const left = ((11 * stride) + (13 * 4));
+    try testing.expect(buf[left + 0] > buf[left + 2]);
+    try testing.expect(buf[left + 3] > 200);
+
+    const right = ((11 * stride) + (22 * 4));
+    try testing.expect(buf[right + 2] > buf[right + 0]);
+    try testing.expect(buf[right + 3] > 200);
 }
 
 test "cpu renderer premultiplies translucent vector fill" {

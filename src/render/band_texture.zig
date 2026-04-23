@@ -1,7 +1,7 @@
 const std = @import("std");
 const bezier_mod = @import("../math/bezier.zig");
 const vec = @import("../math/vec.zig");
-const QuadBezier = bezier_mod.QuadBezier;
+const CurveSegment = bezier_mod.CurveSegment;
 const BBox = bezier_mod.BBox;
 const Vec2 = vec.Vec2;
 const curve_tex = @import("curve_texture.zig");
@@ -42,7 +42,7 @@ fn bandCount(num_curves: usize) u16 {
 /// Build band data for a single glyph, referencing the curve texture.
 pub fn buildGlyphBandData(
     allocator: std.mem.Allocator,
-    curves: []const QuadBezier,
+    curves: []const CurveSegment,
     bbox: BBox,
     curve_entry: curve_tex.GlyphCurveEntry,
 ) !GlyphBandData {
@@ -182,8 +182,7 @@ pub fn buildGlyphBandData(
     var write_pos: u32 = header_count;
     for (h_lists[0..h_bands]) |band| {
         for (band.items) |curve_idx| {
-            // Each curve occupies 2 texels in curve texture starting at curve_entry.start
-            const curve_texel = @as(u32, curve_entry.offset) + @as(u32, curve_idx) * 2;
+            const curve_texel = @as(u32, curve_entry.offset) + @as(u32, curve_idx) * curve_tex.SEGMENT_TEXELS;
             const cx = curve_texel % TEX_WIDTH;
             const cy = curve_texel / TEX_WIDTH;
             data[write_pos * 2 + 0] = @intCast(cx);
@@ -195,7 +194,7 @@ pub fn buildGlyphBandData(
     // Write vertical band index entries
     for (v_lists[0..v_bands]) |band| {
         for (band.items) |curve_idx| {
-            const curve_texel = @as(u32, curve_entry.offset) + @as(u32, curve_idx) * 2;
+            const curve_texel = @as(u32, curve_entry.offset) + @as(u32, curve_idx) * curve_tex.SEGMENT_TEXELS;
             const cx = curve_texel % TEX_WIDTH;
             const cy = curve_texel / TEX_WIDTH;
             data[write_pos * 2 + 0] = @intCast(cx);
@@ -330,9 +329,19 @@ test "bandCount heuristic" {
 }
 
 test "buildGlyphBandData basic" {
-    const curves = [_]QuadBezier{
-        .{ .p0 = Vec2.new(0, 0), .p1 = Vec2.new(0.5, 0.5), .p2 = Vec2.new(1, 0) },
-        .{ .p0 = Vec2.new(1, 0), .p1 = Vec2.new(0.5, -0.5), .p2 = Vec2.new(0, 0) },
+    const curves = [_]CurveSegment{
+        .{
+            .kind = .quadratic,
+            .p0 = Vec2.new(0, 0),
+            .p1 = Vec2.new(0.5, 0.5),
+            .p2 = Vec2.new(1, 0),
+        },
+        .{
+            .kind = .quadratic,
+            .p0 = Vec2.new(1, 0),
+            .p1 = Vec2.new(0.5, -0.5),
+            .p2 = Vec2.new(0, 0),
+        },
     };
     const bbox = BBox{ .min = Vec2.new(0, -0.5), .max = Vec2.new(1, 0.5) };
     const entry = curve_tex.GlyphCurveEntry{ .start_x = 0, .start_y = 0, .count = 2, .offset = 0 };

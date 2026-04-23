@@ -1,5 +1,6 @@
 const std = @import("std");
 const vertex = @import("vertex.zig");
+const sprite_vertex = @import("sprite_vertex.zig");
 const vector_vertex = @import("vector_vertex.zig");
 const vec = @import("../math/vec.zig");
 const Mat4 = vec.Mat4;
@@ -18,6 +19,8 @@ const vk_shaders = @import("vulkan_shaders");
 const vert_spv = vk_shaders.vert_spv;
 const frag_spv = vk_shaders.frag_spv;
 const frag_subpixel_spv = vk_shaders.frag_subpixel_spv;
+const sprite_vert_spv = vk_shaders.sprite_vert_spv;
+const sprite_frag_spv = vk_shaders.sprite_frag_spv;
 const vector_vert_spv = vk_shaders.vector_vert_spv;
 const vector_frag_spv = vk_shaders.vector_frag_spv;
 
@@ -52,6 +55,7 @@ var initialized: bool = false;
 
 var pipeline_normal: vk.VkPipeline = null;
 var pipeline_subpixel: vk.VkPipeline = null;
+var pipeline_sprite: vk.VkPipeline = null;
 var pipeline_vector: vk.VkPipeline = null;
 var pipeline_layout: vk.VkPipelineLayout = null;
 var desc_set_layout: vk.VkDescriptorSetLayout = null;
@@ -67,6 +71,8 @@ const RING_TOTAL_BYTES = 16 * 1024 * 1024; // 16 MB
 const RING_SEGMENT_BYTES = RING_TOTAL_BYTES / RING_SEGMENTS;
 const BYTES_PER_GLYPH = vertex.FLOATS_PER_VERTEX * vertex.VERTICES_PER_GLYPH * @sizeOf(f32);
 const MAX_GLYPHS_PER_SEGMENT = RING_SEGMENT_BYTES / BYTES_PER_GLYPH;
+const BYTES_PER_SPRITE = sprite_vertex.FLOATS_PER_SPRITE * @sizeOf(f32);
+const MAX_SPRITES_PER_SEGMENT: usize = @min(RING_SEGMENT_BYTES / BYTES_PER_SPRITE, MAX_GLYPHS_PER_SEGMENT);
 const BYTES_PER_VECTOR_PRIMITIVE = vector_vertex.FLOATS_PER_PRIMITIVE * @sizeOf(f32);
 const MAX_VECTOR_PRIMITIVES_PER_SEGMENT = RING_SEGMENT_BYTES / BYTES_PER_VECTOR_PRIMITIVE;
 
@@ -88,17 +94,27 @@ var band_memory: vk.VkDeviceMemory = null;
 var layer_image: vk.VkImage = null;
 var layer_view: vk.VkImageView = null;
 var layer_memory: vk.VkDeviceMemory = null;
+var image_image: vk.VkImage = null;
+var image_view: vk.VkImageView = null;
+var image_memory: vk.VkDeviceMemory = null;
 var sampler_nearest: vk.VkSampler = null;
+var sampler_linear: vk.VkSampler = null;
 
 const MAX_ATLASES = 64;
 const MAX_PAGES_PER_ATLAS = 256;
+const MAX_IMAGES = 256;
 
 const AtlasSlot = struct {
     atlas: ?*const snail_mod.Atlas = null,
     base_layer: u32 = 0,
+    info_row_base: u32 = 0,
     capacity_pages: u32 = 0,
     uploaded_pages: u32 = 0,
     page_ptrs: [MAX_PAGES_PER_ATLAS]?*const snail_mod.AtlasPage = std.mem.zeroes([MAX_PAGES_PER_ATLAS]?*const snail_mod.AtlasPage),
+};
+
+const ImageSlot = struct {
+    image: ?*const snail_mod.Image = null,
 };
 
 var atlas_slots: [MAX_ATLASES]AtlasSlot = std.mem.zeroes([MAX_ATLASES]AtlasSlot);
@@ -106,6 +122,11 @@ var atlas_slot_count: usize = 0;
 var allocated_curve_height: u32 = 0;
 var allocated_band_height: u32 = 0;
 var allocated_layer_count: u32 = 0;
+var image_slots: [MAX_IMAGES]ImageSlot = std.mem.zeroes([MAX_IMAGES]ImageSlot);
+var image_slot_count: usize = 0;
+var allocated_image_width: u32 = 0;
+var allocated_image_height: u32 = 0;
+var allocated_image_count: u32 = 0;
 
 // Transfer command pool (one-shot uploads)
 var transfer_cmd_pool: vk.VkCommandPool = null;
@@ -137,8 +158,19 @@ pub fn init(vk_ctx: VulkanContext) !void {
     });
     try check(vk.vkCreateSampler(ctx.device, &sampler_info, null, &sampler_nearest));
 
-    // Descriptor set layout: 3 combined image samplers (curve, band, layer info)
-    const bindings = [3]vk.VkDescriptorSetLayoutBinding{
+    const linear_sampler_info = std.mem.zeroInit(vk.VkSamplerCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+        .magFilter = vk.VK_FILTER_LINEAR,
+        .minFilter = vk.VK_FILTER_LINEAR,
+        .addressModeU = vk.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .addressModeV = vk.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .addressModeW = vk.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .mipmapMode = vk.VK_SAMPLER_MIPMAP_MODE_LINEAR,
+    });
+    try check(vk.vkCreateSampler(ctx.device, &linear_sampler_info, null, &sampler_linear));
+
+    // Descriptor set layout: curve, band, layer info, image array.
+    const bindings = [4]vk.VkDescriptorSetLayoutBinding{
         std.mem.zeroInit(vk.VkDescriptorSetLayoutBinding, .{
             .binding = 0,
             .descriptorType = vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -160,10 +192,17 @@ pub fn init(vk_ctx: VulkanContext) !void {
             .stageFlags = vk.VK_SHADER_STAGE_FRAGMENT_BIT,
             .pImmutableSamplers = &sampler_nearest,
         }),
+        std.mem.zeroInit(vk.VkDescriptorSetLayoutBinding, .{
+            .binding = 3,
+            .descriptorType = vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+            .stageFlags = vk.VK_SHADER_STAGE_FRAGMENT_BIT,
+            .pImmutableSamplers = &sampler_linear,
+        }),
     };
     const dsl_info = std.mem.zeroInit(vk.VkDescriptorSetLayoutCreateInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-        .bindingCount = 3,
+        .bindingCount = 4,
         .pBindings = &bindings,
     });
     try check(vk.vkCreateDescriptorSetLayout(ctx.device, &dsl_info, null, &desc_set_layout));
@@ -186,7 +225,7 @@ pub fn init(vk_ctx: VulkanContext) !void {
 
     // Descriptor pool + set
     const pool_size = [1]vk.VkDescriptorPoolSize{
-        .{ .type = vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 3 },
+        .{ .type = vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 4 },
     };
     const dp_info = std.mem.zeroInit(vk.VkDescriptorPoolCreateInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
@@ -206,6 +245,7 @@ pub fn init(vk_ctx: VulkanContext) !void {
     // Graphics pipelines
     pipeline_normal = try createGraphicsPipeline(frag_spv);
     pipeline_subpixel = try createGraphicsPipeline(frag_subpixel_spv);
+    pipeline_sprite = try createSpriteGraphicsPipeline();
     pipeline_vector = try createVectorGraphicsPipeline();
 
     // Vertex ring buffer (persistent mapped)
@@ -239,8 +279,10 @@ pub fn deinit() void {
     _ = vk.vkDeviceWaitIdle(ctx.device);
 
     if (transfer_cmd_pool != null) vk.vkDestroyCommandPool(ctx.device, transfer_cmd_pool, null);
-    destroyTextureResources();
+    destroyAtlasTextureResources();
+    destroyImageResources();
     resetAtlasUploadState();
+    if (sampler_linear != null) vk.vkDestroySampler(ctx.device, sampler_linear, null);
     if (sampler_nearest != null) vk.vkDestroySampler(ctx.device, sampler_nearest, null);
     if (index_buffer != null) {
         vk.vkDestroyBuffer(ctx.device, index_buffer, null);
@@ -254,6 +296,7 @@ pub fn deinit() void {
     if (desc_pool != null) vk.vkDestroyDescriptorPool(ctx.device, desc_pool, null);
     if (desc_set_layout != null) vk.vkDestroyDescriptorSetLayout(ctx.device, desc_set_layout, null);
     if (pipeline_vector != null) vk.vkDestroyPipeline(ctx.device, pipeline_vector, null);
+    if (pipeline_sprite != null) vk.vkDestroyPipeline(ctx.device, pipeline_sprite, null);
     if (pipeline_subpixel != null) vk.vkDestroyPipeline(ctx.device, pipeline_subpixel, null);
     if (pipeline_normal != null) vk.vkDestroyPipeline(ctx.device, pipeline_normal, null);
     if (pipeline_layout != null) vk.vkDestroyPipelineLayout(ctx.device, pipeline_layout, null);
@@ -279,7 +322,7 @@ pub fn buildTextureArrays(atlases: []const *const snail_mod.Atlas, out_views: []
     _ = vk.vkDeviceWaitIdle(ctx.device);
 
     if (atlases.len == 0) {
-        destroyTextureResources();
+        destroyAtlasTextureResources();
         resetAtlasUploadState();
         return;
     }
@@ -291,18 +334,30 @@ pub fn buildTextureArrays(atlases: []const *const snail_mod.Atlas, out_views: []
         rebuildTextureArrays(atlases, out_views);
     } else {
         fillAtlasViews(atlases, out_views);
+        ensureAtlasImagesRegistered(atlases);
         rebuildLayerInfoTexture(atlases);
         updateDescriptorSet();
     }
 }
 
+pub fn buildImageArray(images: []const *const snail_mod.Image, out_views: []snail_mod.ImageView) void {
+    std.debug.assert(images.len == out_views.len);
+    _ = vk.vkDeviceWaitIdle(ctx.device);
+    ensureImagesRegistered(images);
+    for (images, 0..) |image, i| {
+        out_views[i] = currentImageView(image);
+    }
+    updateDescriptorSet();
+}
+
 fn rebuildTextureArrays(atlases: []const *const snail_mod.Atlas, out_views: []snail_mod.AtlasView) void {
-    destroyTextureResources();
+    destroyAtlasTextureResources();
     resetAtlasUploadState();
 
     var total_layers: u32 = 0;
     var max_curve_h: u32 = 1;
     var max_band_h: u32 = 1;
+    var total_info_rows: u32 = 0;
     for (atlases, 0..) |atlas, i| {
         if (i >= MAX_ATLASES) return;
         const page_count: u32 = @intCast(atlas.pageCount());
@@ -311,6 +366,7 @@ fn rebuildTextureArrays(atlases: []const *const snail_mod.Atlas, out_views: []sn
         slot.* = .{
             .atlas = atlas,
             .base_layer = total_layers,
+            .info_row_base = total_info_rows,
             .capacity_pages = capacity,
             .uploaded_pages = page_count,
         };
@@ -321,6 +377,7 @@ fn rebuildTextureArrays(atlases: []const *const snail_mod.Atlas, out_views: []sn
             if (page.band_height > max_band_h) max_band_h = page.band_height;
         }
         total_layers += capacity;
+        total_info_rows += atlas.layer_info_height;
     }
 
     atlas_slot_count = atlases.len;
@@ -348,6 +405,7 @@ fn rebuildTextureArrays(atlases: []const *const snail_mod.Atlas, out_views: []sn
     curve_view = createImageView(curve_image, vk.VK_FORMAT_R16G16B16A16_SFLOAT, allocated_layer_count) catch return;
     band_view = createImageView(band_image, vk.VK_FORMAT_R16G16_UINT, allocated_layer_count) catch return;
 
+    ensureAtlasImagesRegistered(atlases);
     rebuildLayerInfoTexture(atlases);
     fillAtlasViews(atlases, out_views);
     updateDescriptorSet();
@@ -389,6 +447,12 @@ fn appendTexturePages(atlases: []const *const snail_mod.Atlas) bool {
         slot.uploaded_pages = new_pages;
     }
 
+    var total_info_rows: u32 = 0;
+    for (atlases, 0..) |atlas, i| {
+        atlas_slots[i].info_row_base = total_info_rows;
+        total_info_rows += atlas.layer_info_height;
+    }
+
     return true;
 }
 
@@ -414,8 +478,93 @@ fn fillAtlasViews(atlases: []const *const snail_mod.Atlas, out_views: []snail_mo
         out_views[i] = .{
             .atlas = atlas,
             .layer_base = @intCast(atlas_slots[i].base_layer),
+            .info_row_base = @intCast(atlas_slots[i].info_row_base),
         };
     }
+}
+
+fn currentImageView(image: *const snail_mod.Image) snail_mod.ImageView {
+    const slot_index = findImageSlot(image) orelse return .{ .image = image };
+    const width_scale = if (allocated_image_width == 0) 1.0 else @as(f32, @floatFromInt(image.width)) / @as(f32, @floatFromInt(allocated_image_width));
+    const height_scale = if (allocated_image_height == 0) 1.0 else @as(f32, @floatFromInt(image.height)) / @as(f32, @floatFromInt(allocated_image_height));
+    return .{
+        .image = image,
+        .layer = @intCast(slot_index),
+        .uv_scale = .{ .x = width_scale, .y = height_scale },
+    };
+}
+
+fn findImageSlot(image: *const snail_mod.Image) ?usize {
+    for (image_slots[0..image_slot_count], 0..) |slot, i| {
+        if (slot.image == image) return i;
+    }
+    return null;
+}
+
+fn ensureAtlasImagesRegistered(atlases: []const *const snail_mod.Atlas) void {
+    var scratch: [MAX_IMAGES]*const snail_mod.Image = undefined;
+    var count: usize = 0;
+    for (atlases) |atlas| {
+        const records = atlas.paint_image_records orelse continue;
+        for (records) |record| {
+            const image = (record orelse continue).image;
+            if (findImageSlot(image) != null) continue;
+            var already_queued = false;
+            for (scratch[0..count]) |queued| {
+                if (queued == image) {
+                    already_queued = true;
+                    break;
+                }
+            }
+            if (!already_queued and count < scratch.len) {
+                scratch[count] = image;
+                count += 1;
+            }
+        }
+    }
+    ensureImagesRegistered(scratch[0..count]);
+}
+
+fn ensureImagesRegistered(images: []const *const snail_mod.Image) void {
+    if (images.len == 0) return;
+
+    var new_images: [MAX_IMAGES]*const snail_mod.Image = undefined;
+    var new_count: usize = 0;
+    var required_width = allocated_image_width;
+    var required_height = allocated_image_height;
+    for (images) |image| {
+        required_width = @max(required_width, image.width);
+        required_height = @max(required_height, image.height);
+        if (findImageSlot(image) != null) continue;
+        if (image_slot_count + new_count >= MAX_IMAGES) break;
+        new_images[new_count] = image;
+        new_count += 1;
+    }
+
+    if (new_count == 0 and image_image != null) return;
+
+    const required_count: u32 = @intCast(image_slot_count + new_count);
+    const new_width = heightCapacity(@max(required_width, 1));
+    const new_height = heightCapacity(@max(required_height, 1));
+    const needs_rebuild = image_image == null or
+        required_count > allocated_image_count or
+        new_width > allocated_image_width or
+        new_height > allocated_image_height;
+
+    if (needs_rebuild) {
+        for (new_images[0..new_count], 0..) |image, i| {
+            image_slots[image_slot_count + i] = .{ .image = image };
+        }
+        image_slot_count += new_count;
+        rebuildImageArray();
+        return;
+    }
+
+    for (new_images[0..new_count], 0..) |image, i| {
+        image_slots[image_slot_count + i] = .{ .image = image };
+    }
+    uploadImagesToArray(new_images[0..new_count], @intCast(image_slot_count), vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) catch return;
+    image_slot_count += new_count;
 }
 
 fn resetAtlasUploadState() void {
@@ -445,6 +594,27 @@ fn heightCapacity(height: u32) u32 {
     return roundUpPowerOfTwo(@max(height, 1));
 }
 
+fn layerInfoTexelBase(width: u32, x: u32, y: u32) usize {
+    return (y * width + x) * 4;
+}
+
+fn layerInfoTexelBaseOffset(width: u32, x: u32, y: u32, texel_offset: u32) usize {
+    const texel = x + texel_offset;
+    const texel_x = texel % width;
+    const texel_y = y + texel / width;
+    return layerInfoTexelBase(width, texel_x, texel_y);
+}
+
+fn patchImagePaintRecord(data: []f32, width: u32, row_base: u32, texel_offset: u32, view: snail_mod.ImageView) void {
+    const x = texel_offset % width;
+    const y = row_base + texel_offset / width;
+    const transform_base = layerInfoTexelBaseOffset(width, x, y, 2);
+    data[transform_base + 3] = @floatFromInt(view.layer);
+    const extra_base = layerInfoTexelBaseOffset(width, x, y, 5);
+    data[extra_base + 0] = view.uv_scale.x;
+    data[extra_base + 1] = view.uv_scale.y;
+}
+
 fn rebuildLayerInfoTexture(atlases: []const *const snail_mod.Atlas) void {
     if (layer_view != null) {
         vk.vkDestroyImageView(ctx.device, layer_view, null);
@@ -459,21 +629,42 @@ fn rebuildLayerInfoTexture(atlases: []const *const snail_mod.Atlas) void {
         layer_memory = null;
     }
 
-    for (atlases) |a| {
-        if (a.layer_info_data) |lid| {
-            layer_image = createImage2D(a.layer_info_width, a.layer_info_height, vk.VK_FORMAT_R32G32B32A32_SFLOAT) catch break;
-            layer_memory = allocateImageMemory(layer_image) catch break;
-            _ = vk.vkBindImageMemory(ctx.device, layer_image, layer_memory, 0);
-            uploadLayerInfoData(lid, a.layer_info_width, a.layer_info_height) catch break;
-            layer_view = createImageView2D(layer_image, vk.VK_FORMAT_R32G32B32A32_SFLOAT) catch break;
-            break;
+    var total_rows: u32 = 0;
+    for (atlases) |atlas| total_rows += atlas.layer_info_height;
+    if (total_rows == 0) return;
+
+    const width = snail_mod.PATH_PAINT_INFO_WIDTH;
+    const total_texels = @as(usize, width) * @as(usize, total_rows) * 4;
+    var data = std.heap.page_allocator.alloc(f32, total_texels) catch return;
+    defer std.heap.page_allocator.free(data);
+    @memset(data, 0);
+
+    for (atlases, 0..) |atlas, i| {
+        const lid = atlas.layer_info_data orelse continue;
+        const row_base = atlas_slots[i].info_row_base;
+        const row_count = atlas.layer_info_height;
+        const copy_len = @as(usize, atlas.layer_info_width) * @as(usize, row_count) * 4;
+        const dst_base = @as(usize, row_base) * @as(usize, width) * 4;
+        @memcpy(data[dst_base .. dst_base + copy_len], lid[0..copy_len]);
+
+        const records = atlas.paint_image_records orelse continue;
+        for (records) |record| {
+            const image = (record orelse continue).image;
+            patchImagePaintRecord(data, width, row_base, record.?.texel_offset, currentImageView(image));
         }
     }
+
+    layer_image = createImage2D(width, total_rows, vk.VK_FORMAT_R32G32B32A32_SFLOAT) catch return;
+    layer_memory = allocateImageMemory(layer_image) catch return;
+    _ = vk.vkBindImageMemory(ctx.device, layer_image, layer_memory, 0);
+    uploadLayerInfoData(data, width, total_rows) catch return;
+    layer_view = createImageView2D(layer_image, vk.VK_FORMAT_R32G32B32A32_SFLOAT) catch return;
 }
 
 fn updateDescriptorSet() void {
     const effective_layer_view = if (layer_view != null) layer_view else curve_view;
-    const image_infos = [3]vk.VkDescriptorImageInfo{
+    const effective_image_view = if (image_view != null) image_view else curve_view;
+    const image_infos = [4]vk.VkDescriptorImageInfo{
         .{
             .sampler = sampler_nearest,
             .imageView = curve_view,
@@ -489,8 +680,13 @@ fn updateDescriptorSet() void {
             .imageView = effective_layer_view,
             .imageLayout = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
         },
+        .{
+            .sampler = sampler_linear,
+            .imageView = effective_image_view,
+            .imageLayout = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        },
     };
-    const writes = [3]vk.VkWriteDescriptorSet{
+    const writes = [4]vk.VkWriteDescriptorSet{
         std.mem.zeroInit(vk.VkWriteDescriptorSet, .{
             .sType = vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
             .dstSet = desc_set,
@@ -515,13 +711,21 @@ fn updateDescriptorSet() void {
             .descriptorType = vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             .pImageInfo = &image_infos[2],
         }),
+        std.mem.zeroInit(vk.VkWriteDescriptorSet, .{
+            .sType = vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = desc_set,
+            .dstBinding = 3,
+            .descriptorCount = 1,
+            .descriptorType = vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .pImageInfo = &image_infos[3],
+        }),
     };
-    vk.vkUpdateDescriptorSets(ctx.device, 3, &writes, 0, null);
+    vk.vkUpdateDescriptorSets(ctx.device, 4, &writes, 0, null);
 }
 
 // ── Draw ──
 
-pub fn drawText(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
+fn drawTextInternal(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32, allow_subpixel: bool) void {
     const cmd = active_cmd orelse return;
     if (vertices.len == 0) return;
 
@@ -530,7 +734,8 @@ pub fn drawText(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f
     if (total_glyphs == 0) return;
 
     // Bind pipeline + state (shared across all chunks)
-    const pip = if (subpixel_order != .none) pipeline_subpixel else pipeline_normal;
+    const effective_order: SubpixelOrder = if (allow_subpixel) subpixel_order else .none;
+    const pip = if (effective_order != .none) pipeline_subpixel else pipeline_normal;
     vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pip);
     vk.vkCmdBindIndexBuffer(cmd, index_buffer, 0, vk.VK_INDEX_TYPE_UINT32);
     vk.vkCmdBindDescriptorSets(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, @ptrCast(&desc_set), 0, null);
@@ -539,7 +744,7 @@ pub fn drawText(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f
         .mvp = mvp.data,
         .viewport = .{ viewport_w, viewport_h },
         .fill_rule = @intFromEnum(fill_rule),
-        .subpixel_order = @intFromEnum(subpixel_order),
+        .subpixel_order = @intFromEnum(effective_order),
     };
     vk.vkCmdPushConstants(cmd, pipeline_layout, vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(PushConstants), &pc);
     setViewportAndScissor(cmd, viewport_w, viewport_h);
@@ -563,6 +768,14 @@ pub fn drawText(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f
         ring_segment = (ring_segment + 1) % RING_SEGMENTS;
         glyphs_drawn += chunk;
     }
+}
+
+pub fn drawText(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
+    drawTextInternal(vertices, mvp, viewport_w, viewport_h, true);
+}
+
+pub fn drawTextGrayscale(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
+    drawTextInternal(vertices, mvp, viewport_w, viewport_h, false);
 }
 
 pub fn drawVector(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
@@ -599,6 +812,46 @@ pub fn drawVector(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h:
 
         ring_segment = (ring_segment + 1) % RING_SEGMENTS;
         primitives_drawn += chunk;
+    }
+}
+
+pub fn drawSprites(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
+    const cmd = active_cmd orelse return;
+    if (vertices.len == 0 or image_view == null) return;
+
+    const total_sprites = vertices.len / sprite_vertex.FLOATS_PER_SPRITE;
+    if (total_sprites == 0) return;
+
+    vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_sprite);
+    vk.vkCmdBindIndexBuffer(cmd, index_buffer, 0, vk.VK_INDEX_TYPE_UINT32);
+    vk.vkCmdBindDescriptorSets(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, @ptrCast(&desc_set), 0, null);
+
+    const pc = PushConstants{
+        .mvp = mvp.data,
+        .viewport = .{ viewport_w, viewport_h },
+        .fill_rule = @intFromEnum(fill_rule),
+        .subpixel_order = @intFromEnum(subpixel_order),
+    };
+    vk.vkCmdPushConstants(cmd, pipeline_layout, vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(PushConstants), &pc);
+    setViewportAndScissor(cmd, viewport_w, viewport_h);
+
+    var sprites_drawn: usize = 0;
+    while (sprites_drawn < total_sprites) {
+        const chunk: usize = @min(total_sprites - sprites_drawn, MAX_SPRITES_PER_SEGMENT);
+        const float_offset = sprites_drawn * sprite_vertex.FLOATS_PER_SPRITE;
+        const byte_size = chunk * BYTES_PER_SPRITE;
+
+        const ring_offset: vk.VkDeviceSize = @as(vk.VkDeviceSize, ring_segment) * RING_SEGMENT_BYTES;
+        const dst = persistent_map.?[ring_offset..][0..byte_size];
+        const src: [*]const u8 = @ptrCast(vertices[float_offset..].ptr);
+        @memcpy(dst, src[0..byte_size]);
+
+        const offsets = [1]vk.VkDeviceSize{ring_offset};
+        vk.vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer, &offsets);
+        vk.vkCmdDrawIndexed(cmd, @intCast(chunk * 6), 1, 0, 0, 0);
+
+        ring_segment = (ring_segment + 1) % RING_SEGMENTS;
+        sprites_drawn += chunk;
     }
 }
 
@@ -775,6 +1028,125 @@ fn createVectorGraphicsPipeline() !vk.VkPipeline {
         .vertexBindingDescriptionCount = 1,
         .pVertexBindingDescriptions = &binding,
         .vertexAttributeDescriptionCount = 6,
+        .pVertexAttributeDescriptions = &attrs,
+    });
+
+    const ia_info = std.mem.zeroInit(vk.VkPipelineInputAssemblyStateCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        .topology = vk.VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+    });
+
+    const dyn_states = [2]vk.VkDynamicState{
+        vk.VK_DYNAMIC_STATE_VIEWPORT,
+        vk.VK_DYNAMIC_STATE_SCISSOR,
+    };
+    const dyn_info = std.mem.zeroInit(vk.VkPipelineDynamicStateCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        .dynamicStateCount = 2,
+        .pDynamicStates = &dyn_states,
+    });
+
+    const vp_info = std.mem.zeroInit(vk.VkPipelineViewportStateCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        .viewportCount = 1,
+        .scissorCount = 1,
+    });
+
+    const rast_info = std.mem.zeroInit(vk.VkPipelineRasterizationStateCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        .polygonMode = vk.VK_POLYGON_MODE_FILL,
+        .cullMode = vk.VK_CULL_MODE_NONE,
+        .frontFace = vk.VK_FRONT_FACE_COUNTER_CLOCKWISE,
+        .lineWidth = 1.0,
+    });
+
+    const ms_info = std.mem.zeroInit(vk.VkPipelineMultisampleStateCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        .rasterizationSamples = vk.VK_SAMPLE_COUNT_1_BIT,
+    });
+
+    const blend_attach = std.mem.zeroInit(vk.VkPipelineColorBlendAttachmentState, .{
+        .blendEnable = vk.VK_TRUE,
+        .srcColorBlendFactor = vk.VK_BLEND_FACTOR_ONE,
+        .dstColorBlendFactor = vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+        .colorBlendOp = vk.VK_BLEND_OP_ADD,
+        .srcAlphaBlendFactor = vk.VK_BLEND_FACTOR_ONE,
+        .dstAlphaBlendFactor = vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+        .alphaBlendOp = vk.VK_BLEND_OP_ADD,
+        .colorWriteMask = vk.VK_COLOR_COMPONENT_R_BIT | vk.VK_COLOR_COMPONENT_G_BIT | vk.VK_COLOR_COMPONENT_B_BIT | vk.VK_COLOR_COMPONENT_A_BIT,
+    });
+
+    const blend_info = std.mem.zeroInit(vk.VkPipelineColorBlendStateCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        .attachmentCount = 1,
+        .pAttachments = &blend_attach,
+    });
+
+    const ds_info = std.mem.zeroInit(vk.VkPipelineDepthStencilStateCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+    });
+
+    const ci = std.mem.zeroInit(vk.VkGraphicsPipelineCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        .stageCount = 2,
+        .pStages = &stages,
+        .pVertexInputState = &vi_info,
+        .pInputAssemblyState = &ia_info,
+        .pViewportState = &vp_info,
+        .pRasterizationState = &rast_info,
+        .pMultisampleState = &ms_info,
+        .pDepthStencilState = &ds_info,
+        .pColorBlendState = &blend_info,
+        .pDynamicState = &dyn_info,
+        .layout = pipeline_layout,
+        .renderPass = ctx.render_pass,
+        .subpass = 0,
+    });
+
+    var pip: vk.VkPipeline = null;
+    try check(vk.vkCreateGraphicsPipelines(ctx.device, null, 1, &ci, null, &pip));
+    return pip;
+}
+
+fn createSpriteGraphicsPipeline() !vk.VkPipeline {
+    const vert_module = try createShaderModule(sprite_vert_spv);
+    defer vk.vkDestroyShaderModule(ctx.device, vert_module, null);
+    const frag_module = try createShaderModule(sprite_frag_spv);
+    defer vk.vkDestroyShaderModule(ctx.device, frag_module, null);
+
+    const stages = [2]vk.VkPipelineShaderStageCreateInfo{
+        std.mem.zeroInit(vk.VkPipelineShaderStageCreateInfo, .{
+            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .stage = vk.VK_SHADER_STAGE_VERTEX_BIT,
+            .module = vert_module,
+            .pName = "main",
+        }),
+        std.mem.zeroInit(vk.VkPipelineShaderStageCreateInfo, .{
+            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .stage = vk.VK_SHADER_STAGE_FRAGMENT_BIT,
+            .module = frag_module,
+            .pName = "main",
+        }),
+    };
+
+    const stride: u32 = sprite_vertex.FLOATS_PER_VERTEX * @sizeOf(f32);
+    const binding = vk.VkVertexInputBindingDescription{
+        .binding = 0,
+        .stride = stride,
+        .inputRate = vk.VK_VERTEX_INPUT_RATE_VERTEX,
+    };
+
+    const attrs = [3]vk.VkVertexInputAttributeDescription{
+        .{ .location = 0, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 0 },
+        .{ .location = 1, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 16 },
+        .{ .location = 2, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 32 },
+    };
+
+    const vi_info = std.mem.zeroInit(vk.VkPipelineVertexInputStateCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        .vertexBindingDescriptionCount = 1,
+        .pVertexBindingDescriptions = &binding,
+        .vertexAttributeDescriptionCount = 3,
         .pVertexAttributeDescriptions = &attrs,
     });
 
@@ -1275,7 +1647,123 @@ fn uploadLayerInfoData(data: []f32, width: u32, height: u32) !void {
     vk.vkFreeCommandBuffers(ctx.device, transfer_cmd_pool, 1, &cmd);
 }
 
-fn destroyTextureResources() void {
+fn rebuildImageArray() void {
+    if (image_view != null) {
+        vk.vkDestroyImageView(ctx.device, image_view, null);
+        image_view = null;
+    }
+    if (image_image != null) {
+        vk.vkDestroyImage(ctx.device, image_image, null);
+        image_image = null;
+    }
+    if (image_memory != null) {
+        vk.vkFreeMemory(ctx.device, image_memory, null);
+        image_memory = null;
+    }
+
+    if (image_slot_count == 0) {
+        allocated_image_width = 0;
+        allocated_image_height = 0;
+        allocated_image_count = 0;
+        return;
+    }
+
+    var max_width: u32 = 1;
+    var max_height: u32 = 1;
+    var all_images: [MAX_IMAGES]*const snail_mod.Image = undefined;
+    for (image_slots[0..image_slot_count], 0..) |slot, i| {
+        const image = slot.image orelse continue;
+        all_images[i] = image;
+        max_width = @max(max_width, image.width);
+        max_height = @max(max_height, image.height);
+    }
+
+    allocated_image_width = heightCapacity(max_width);
+    allocated_image_height = heightCapacity(max_height);
+    allocated_image_count = atlasCapacity(@intCast(image_slot_count));
+
+    image_image = createImage2DArray(allocated_image_width, allocated_image_height, allocated_image_count, vk.VK_FORMAT_R8G8B8A8_SRGB) catch return;
+    image_memory = allocateImageMemory(image_image) catch return;
+    _ = vk.vkBindImageMemory(ctx.device, image_image, image_memory, 0);
+    uploadImagesToArray(all_images[0..image_slot_count], 0, vk.VK_IMAGE_LAYOUT_UNDEFINED) catch return;
+    image_view = createImageView(image_image, vk.VK_FORMAT_R8G8B8A8_SRGB, allocated_image_count) catch return;
+}
+
+fn uploadImagesToArray(images: []const *const snail_mod.Image, start_layer: u32, old_layout: vk.VkImageLayout) !void {
+    if (images.len == 0 or image_image == null) return;
+
+    var total_staging: usize = 0;
+    for (images) |image| total_staging += @as(usize, image.width) * @as(usize, image.height) * 4;
+
+    var staging_buf: vk.VkBuffer = null;
+    var staging_mem: vk.VkDeviceMemory = null;
+    try createBuffer(
+        @intCast(total_staging),
+        vk.VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+        &staging_buf,
+        &staging_mem,
+    );
+    defer {
+        vk.vkDestroyBuffer(ctx.device, staging_buf, null);
+        vk.vkFreeMemory(ctx.device, staging_mem, null);
+    }
+
+    var map_ptr: ?*anyopaque = null;
+    try check(vk.vkMapMemory(ctx.device, staging_mem, 0, @intCast(total_staging), 0, &map_ptr));
+    const staging_data: [*]u8 = @ptrCast(map_ptr);
+
+    var regions: [MAX_IMAGES]vk.VkBufferImageCopy = undefined;
+    var staging_offset: usize = 0;
+    for (images, 0..) |image, i| {
+        const size = @as(usize, image.width) * @as(usize, image.height) * 4;
+        @memcpy(staging_data[staging_offset..][0..size], image.pixels[0..size]);
+        regions[i] = std.mem.zeroInit(vk.VkBufferImageCopy, .{
+            .bufferOffset = @as(vk.VkDeviceSize, @intCast(staging_offset)),
+            .imageSubresource = .{
+                .aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT,
+                .mipLevel = 0,
+                .baseArrayLayer = start_layer + @as(u32, @intCast(i)),
+                .layerCount = 1,
+            },
+            .imageExtent = .{ .width = image.width, .height = image.height, .depth = 1 },
+        });
+        staging_offset += size;
+    }
+    vk.vkUnmapMemory(ctx.device, staging_mem);
+
+    var cmd: vk.VkCommandBuffer = null;
+    const alloc_info = std.mem.zeroInit(vk.VkCommandBufferAllocateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = transfer_cmd_pool,
+        .level = vk.VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    });
+    try check(vk.vkAllocateCommandBuffers(ctx.device, &alloc_info, &cmd));
+
+    const begin_info = std.mem.zeroInit(vk.VkCommandBufferBeginInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = vk.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    });
+    try check(vk.vkBeginCommandBuffer(cmd, &begin_info));
+
+    transitionImageLayout(cmd, image_image, allocated_image_count, old_layout, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    vk.vkCmdCopyBufferToImage(cmd, staging_buf, image_image, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, @intCast(images.len), &regions);
+    transitionImageLayout(cmd, image_image, allocated_image_count, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+    try check(vk.vkEndCommandBuffer(cmd));
+
+    const submit_info = std.mem.zeroInit(vk.VkSubmitInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &cmd,
+    });
+    try check(vk.vkQueueSubmit(ctx.graphics_queue, 1, &submit_info, null));
+    _ = vk.vkQueueWaitIdle(ctx.graphics_queue);
+    vk.vkFreeCommandBuffers(ctx.device, transfer_cmd_pool, 1, &cmd);
+}
+
+fn destroyAtlasTextureResources() void {
     if (curve_view != null) {
         vk.vkDestroyImageView(ctx.device, curve_view, null);
         curve_view = null;
@@ -1312,6 +1800,26 @@ fn destroyTextureResources() void {
         vk.vkFreeMemory(ctx.device, layer_memory, null);
         layer_memory = null;
     }
+}
+
+fn destroyImageResources() void {
+    if (image_view != null) {
+        vk.vkDestroyImageView(ctx.device, image_view, null);
+        image_view = null;
+    }
+    if (image_image != null) {
+        vk.vkDestroyImage(ctx.device, image_image, null);
+        image_image = null;
+    }
+    if (image_memory != null) {
+        vk.vkFreeMemory(ctx.device, image_memory, null);
+        image_memory = null;
+    }
+    image_slot_count = 0;
+    allocated_image_width = 0;
+    allocated_image_height = 0;
+    allocated_image_count = 0;
+    for (&image_slots) |*slot| slot.* = .{};
 }
 
 fn check(result: vk.VkResult) !void {

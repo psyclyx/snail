@@ -467,7 +467,7 @@ const fragment_shader =
 ;
 
 pub fn init() !void {
-    program = try linkProgram(vertex_shader, fragment_shader);
+    program = try linkProgram("vector", vertex_shader, fragment_shader);
     u_mvp = gl.glGetUniformLocation(program, "u_mvp");
     u_fill_rule = gl.glGetUniformLocation(program, "u_fill_rule");
     u_subpixel_order = gl.glGetUniformLocation(program, "u_subpixel_order");
@@ -606,7 +606,7 @@ fn compileShader(shader_type: gl.GLenum, source: [*c]const u8) ?gl.GLuint {
     return shader;
 }
 
-fn linkProgram(vs_src: [*c]const u8, fs_src: [*c]const u8) !gl.GLuint {
+fn linkProgram(_: []const u8, vs_src: [*c]const u8, fs_src: [*c]const u8) !gl.GLuint {
     const vs = compileShader(gl.GL_VERTEX_SHADER, vs_src) orelse return error.VertexShaderFailed;
     defer gl.glDeleteShader(vs);
     const fs = compileShader(gl.GL_FRAGMENT_SHADER, fs_src) orelse return error.FragmentShaderFailed;
