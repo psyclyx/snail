@@ -67,14 +67,25 @@ const FontEntry = struct {
 };
 
 fn addRoundedRect(
-    batch: *snail.VectorBatch,
+    builder: *snail.PathPictureBuilder,
     rect: snail.VectorRect,
     fill: [4]f32,
     border: [4]f32,
     border_width: f32,
     corner_radius: f32,
-) void {
-    _ = batch.addRoundedRect(rect, fill, border, border_width, corner_radius);
+) !void {
+    try builder.addRoundedRect(
+        rect,
+        .{ .color = fill },
+        .{
+            .color = border,
+            .width = border_width,
+            .join = .round,
+            .placement = .inside,
+        },
+        corner_radius,
+        .identity,
+    );
 }
 
 fn buildHud(batch: *snail.Batch, atlas: *const snail.Atlas, font: *const snail.Font) void {
@@ -109,30 +120,30 @@ fn buildTorture(batch: *snail.Batch, atlas: *const snail.Atlas, font: *const sna
     }
 }
 
-fn buildVectorShowcase(batch: *snail.VectorBatch) void {
-    addRoundedRect(batch, .{ .x = 24, .y = 24, .w = 420, .h = 180 }, .{ 0.08, 0.09, 0.11, 0.9 }, .{ 0.25, 0.28, 0.33, 1 }, 1.5, 24);
-    addRoundedRect(batch, .{ .x = 472, .y = 24, .w = 360, .h = 180 }, .{ 0.09, 0.11, 0.14, 0.88 }, .{ 0.2, 0.24, 0.3, 1 }, 1.5, 22);
-    addRoundedRect(batch, .{ .x = 40, .y = 52, .w = 132, .h = 28 }, .{ 0.2, 0.48, 0.86, 0.2 }, .{ 0.2, 0.48, 0.86, 0.9 }, 1.0, 14);
-    addRoundedRect(batch, .{ .x = 40, .y = 96, .w = 216, .h = 14 }, .{ 0.92, 0.95, 0.99, 0.08 }, .{ 0.92, 0.95, 0.99, 0.28 }, 1.0, 7);
-    addRoundedRect(batch, .{ .x = 40, .y = 126, .w = 168, .h = 18 }, .{ 0.95, 0.74, 0.28, 0.16 }, .{ 0.95, 0.74, 0.28, 0.84 }, 1.0, 9);
-    _ = batch.addEllipse(
+fn buildVectorShowcase(builder: *snail.PathPictureBuilder) !void {
+    try addRoundedRect(builder, .{ .x = 24, .y = 24, .w = 420, .h = 180 }, .{ 0.08, 0.09, 0.11, 0.9 }, .{ 0.25, 0.28, 0.33, 1 }, 1.5, 24);
+    try addRoundedRect(builder, .{ .x = 472, .y = 24, .w = 360, .h = 180 }, .{ 0.09, 0.11, 0.14, 0.88 }, .{ 0.2, 0.24, 0.3, 1 }, 1.5, 22);
+    try addRoundedRect(builder, .{ .x = 40, .y = 52, .w = 132, .h = 28 }, .{ 0.2, 0.48, 0.86, 0.2 }, .{ 0.2, 0.48, 0.86, 0.9 }, 1.0, 14);
+    try addRoundedRect(builder, .{ .x = 40, .y = 96, .w = 216, .h = 14 }, .{ 0.92, 0.95, 0.99, 0.08 }, .{ 0.92, 0.95, 0.99, 0.28 }, 1.0, 7);
+    try addRoundedRect(builder, .{ .x = 40, .y = 126, .w = 168, .h = 18 }, .{ 0.95, 0.74, 0.28, 0.16 }, .{ 0.95, 0.74, 0.28, 0.84 }, 1.0, 9);
+    try builder.addEllipse(
         .{ .x = 642, .y = 48, .w = 144, .h = 144 },
-        .{ 0.28, 0.72, 0.92, 0.16 },
-        .{ 0.28, 0.72, 0.92, 0.78 },
-        2,
+        .{ .color = .{ 0.28, 0.72, 0.92, 0.16 } },
+        .{ .color = .{ 0.28, 0.72, 0.92, 0.78 }, .width = 2, .placement = .inside },
+        .identity,
     );
-    _ = batch.addEllipse(
+    try builder.addEllipse(
         .{ .x = 688, .y = 88, .w = 72, .h = 72 },
-        .{ 0.96, 0.74, 0.28, 0.22 },
-        .{ 0.96, 0.74, 0.28, 0.9 },
-        1.5,
+        .{ .color = .{ 0.96, 0.74, 0.28, 0.22 } },
+        .{ .color = .{ 0.96, 0.74, 0.28, 0.9 }, .width = 1.5, .placement = .inside },
+        .identity,
     );
-    addRoundedRect(batch, .{ .x = 880, .y = 24, .w = 376, .h = 180 }, .{ 0.08, 0.1, 0.12, 0.84 }, .{ 0.18, 0.21, 0.26, 1 }, 1.5, 20);
-    addRoundedRect(batch, .{ .x = 904, .y = 54, .w = 220, .h = 20 }, .{ 0.32, 0.84, 0.56, 0.16 }, .{ 0.32, 0.84, 0.56, 0.9 }, 1.0, 10);
-    addRoundedRect(batch, .{ .x = 904, .y = 92, .w = 148, .h = 20 }, .{ 0.84, 0.42, 0.78, 0.14 }, .{ 0.84, 0.42, 0.78, 0.84 }, 1.0, 10);
+    try addRoundedRect(builder, .{ .x = 880, .y = 24, .w = 376, .h = 180 }, .{ 0.08, 0.1, 0.12, 0.84 }, .{ 0.18, 0.21, 0.26, 1 }, 1.5, 20);
+    try addRoundedRect(builder, .{ .x = 904, .y = 54, .w = 220, .h = 20 }, .{ 0.32, 0.84, 0.56, 0.16 }, .{ 0.32, 0.84, 0.56, 0.9 }, 1.0, 10);
+    try addRoundedRect(builder, .{ .x = 904, .y = 92, .w = 148, .h = 20 }, .{ 0.84, 0.42, 0.78, 0.14 }, .{ 0.84, 0.42, 0.78, 0.84 }, 1.0, 10);
 }
 
-fn buildVectorStress(batch: *snail.VectorBatch) void {
+fn buildVectorStress(builder: *snail.PathPictureBuilder) !void {
     var row: usize = 0;
     var y: f32 = 18;
     while (y < HEIGHT - 46) : ({
@@ -154,13 +165,13 @@ fn buildVectorStress(batch: *snail.VectorBatch) void {
                 [4]f32{ 0.16, 0.46, 0.86, 0.82 }
             else
                 [4]f32{ 0.95, 0.7, 0.25, 0.82 };
-            addRoundedRect(batch, .{ .x = x, .y = y, .w = 42, .h = 22 }, fill, border, 1, 7);
+            try addRoundedRect(builder, .{ .x = x, .y = y, .w = 42, .h = 22 }, fill, border, 1, 7);
             if ((row + col) % 3 == 0) {
-                _ = batch.addEllipse(
+                try builder.addEllipse(
                     .{ .x = x + 10, .y = y + 4, .w = 22, .h = 14 },
-                    .{ 0.92, 0.96, 1, 0.1 },
-                    .{ 0.92, 0.96, 1, 0.3 },
-                    1,
+                    .{ .color = .{ 0.92, 0.96, 1, 0.1 } },
+                    .{ .color = .{ 0.92, 0.96, 1, 0.3 }, .width = 1, .placement = .inside },
+                    .identity,
                 );
             }
         }
@@ -292,26 +303,36 @@ fn runMultiFontScenario(
 
 fn runVectorScenario(
     name: []const u8,
-    buildFn: *const fn (*snail.VectorBatch) void,
+    allocator: std.mem.Allocator,
+    buildFn: *const fn (*snail.PathPictureBuilder) anyerror!void,
     renderer: *snail.Renderer,
     vbuf: []f32,
-) void {
-    var probe = snail.VectorBatch.init(vbuf);
-    buildFn(&probe);
-    const shapes = probe.shapeCount();
-    const static_slice = probe.slice();
+) !void {
+    var picture_builder = snail.PathPictureBuilder.init(allocator);
+    defer picture_builder.deinit();
+    try buildFn(&picture_builder);
+
+    var picture = try picture_builder.freeze(allocator);
+    defer picture.deinit();
+    const picture_view = renderer.uploadPathPicture(&picture);
+
+    const shapes = picture.shapeCount();
+    const mvp = snail.Mat4.ortho(0, WIDTH, HEIGHT, 0, -1, 1);
+    var static_batch = snail.PathBatch.init(vbuf);
+    _ = static_batch.addPicture(&picture_view, &picture);
+    const static_slice = static_batch.slice();
 
     for (0..WARMUP) |_| {
         gl.glClear(gl.GL_COLOR_BUFFER_BIT);
         renderer.beginFrame();
-        renderer.drawVector(static_slice, WIDTH, HEIGHT);
+        renderer.draw(static_slice, mvp, WIDTH, HEIGHT);
     }
     gl.glFinish();
     const t_s = nowNs();
     for (0..FRAMES) |_| {
         gl.glClear(gl.GL_COLOR_BUFFER_BIT);
         renderer.beginFrame();
-        renderer.drawVector(static_slice, WIDTH, HEIGHT);
+        renderer.draw(static_slice, mvp, WIDTH, HEIGHT);
     }
     gl.glFinish();
     const s_ns = nowNs() - t_s;
@@ -319,18 +340,18 @@ fn runVectorScenario(
     for (0..WARMUP) |_| {
         gl.glClear(gl.GL_COLOR_BUFFER_BIT);
         renderer.beginFrame();
-        var b = snail.VectorBatch.init(vbuf);
-        buildFn(&b);
-        renderer.drawVector(b.slice(), WIDTH, HEIGHT);
+        var b = snail.PathBatch.init(vbuf);
+        _ = b.addPicture(&picture_view, &picture);
+        renderer.draw(b.slice(), mvp, WIDTH, HEIGHT);
     }
     gl.glFinish();
     const t_d = nowNs();
     for (0..FRAMES) |_| {
         gl.glClear(gl.GL_COLOR_BUFFER_BIT);
         renderer.beginFrame();
-        var b = snail.VectorBatch.init(vbuf);
-        buildFn(&b);
-        renderer.drawVector(b.slice(), WIDTH, HEIGHT);
+        var b = snail.PathBatch.init(vbuf);
+        _ = b.addPicture(&picture_view, &picture);
+        renderer.draw(b.slice(), mvp, WIDTH, HEIGHT);
     }
     gl.glFinish();
     const d_ns = nowNs() - t_d;
@@ -500,20 +521,30 @@ fn runMultiFontScenarioVulkan(
 
 fn runVectorScenarioVulkan(
     name: []const u8,
-    buildFn: *const fn (*snail.VectorBatch) void,
+    allocator: std.mem.Allocator,
+    buildFn: *const fn (*snail.PathPictureBuilder) anyerror!void,
     renderer: *snail.Renderer,
     vbuf: []f32,
-) void {
-    var probe = snail.VectorBatch.init(vbuf);
-    buildFn(&probe);
-    const shapes = probe.shapeCount();
-    const static_slice = probe.slice();
+) !void {
+    var picture_builder = snail.PathPictureBuilder.init(allocator);
+    defer picture_builder.deinit();
+    try buildFn(&picture_builder);
+
+    var picture = try picture_builder.freeze(allocator);
+    defer picture.deinit();
+    const picture_view = renderer.uploadPathPicture(&picture);
+
+    const shapes = picture.shapeCount();
+    const mvp = snail.Mat4.ortho(0, WIDTH, HEIGHT, 0, -1, 1);
+    var static_batch = snail.PathBatch.init(vbuf);
+    _ = static_batch.addPicture(&picture_view, &picture);
+    const static_slice = static_batch.slice();
 
     for (0..WARMUP) |_| {
         const cmd = vulkan_platform.beginFrameOffscreen();
         renderer.setCommandBuffer(cmd);
         renderer.beginFrame();
-        renderer.drawVector(static_slice, WIDTH, HEIGHT);
+        renderer.draw(static_slice, mvp, WIDTH, HEIGHT);
         vulkan_platform.endFrameOffscreen();
     }
     vulkan_platform.queueWaitIdle();
@@ -522,7 +553,7 @@ fn runVectorScenarioVulkan(
         const cmd = vulkan_platform.beginFrameOffscreen();
         renderer.setCommandBuffer(cmd);
         renderer.beginFrame();
-        renderer.drawVector(static_slice, WIDTH, HEIGHT);
+        renderer.draw(static_slice, mvp, WIDTH, HEIGHT);
         vulkan_platform.endFrameOffscreen();
     }
     vulkan_platform.queueWaitIdle();
@@ -532,9 +563,9 @@ fn runVectorScenarioVulkan(
         const cmd = vulkan_platform.beginFrameOffscreen();
         renderer.setCommandBuffer(cmd);
         renderer.beginFrame();
-        var b = snail.VectorBatch.init(vbuf);
-        buildFn(&b);
-        renderer.drawVector(b.slice(), WIDTH, HEIGHT);
+        var b = snail.PathBatch.init(vbuf);
+        _ = b.addPicture(&picture_view, &picture);
+        renderer.draw(b.slice(), mvp, WIDTH, HEIGHT);
         vulkan_platform.endFrameOffscreen();
     }
     vulkan_platform.queueWaitIdle();
@@ -543,9 +574,9 @@ fn runVectorScenarioVulkan(
         const cmd = vulkan_platform.beginFrameOffscreen();
         renderer.setCommandBuffer(cmd);
         renderer.beginFrame();
-        var b = snail.VectorBatch.init(vbuf);
-        buildFn(&b);
-        renderer.drawVector(b.slice(), WIDTH, HEIGHT);
+        var b = snail.PathBatch.init(vbuf);
+        _ = b.addPicture(&picture_view, &picture);
+        renderer.draw(b.slice(), mvp, WIDTH, HEIGHT);
         vulkan_platform.endFrameOffscreen();
     }
     vulkan_platform.queueWaitIdle();
@@ -702,7 +733,7 @@ pub fn main() !void {
 
         const vbuf = try allocator.alloc(f32, 30000 * snail.FLOATS_PER_GLYPH);
         defer allocator.free(vbuf);
-        const vector_buf = try allocator.alloc(f32, 4096 * snail.VECTOR_FLOATS_PER_PRIMITIVE);
+        const vector_buf = try allocator.alloc(f32, 4096 * snail.FLOATS_PER_GLYPH);
         defer allocator.free(vector_buf);
         const mvp = snail.Mat4.ortho(0, WIDTH, 0, HEIGHT, -1, 1);
 
@@ -841,8 +872,8 @@ pub fn main() !void {
             \\  Scenario                          Shapes  static FPS (us)   dynamic FPS (us)
             \\
         , .{});
-        runVectorScenario("Primitive showcase", buildVectorShowcase, &renderer, vector_buf);
-        runVectorScenario("Primitive stress", buildVectorStress, &renderer, vector_buf);
+        try runVectorScenario("Primitive showcase", allocator, buildVectorShowcase, &renderer, vector_buf);
+        try runVectorScenario("Primitive stress", allocator, buildVectorStress, &renderer, vector_buf);
     }
 
     // ── Vulkan rendering section (requires -Dvulkan=true) ──
@@ -906,7 +937,7 @@ pub fn main() !void {
 
         const vbuf = try allocator.alloc(f32, 30000 * snail.FLOATS_PER_GLYPH);
         defer allocator.free(vbuf);
-        const vector_buf = try allocator.alloc(f32, 4096 * snail.VECTOR_FLOATS_PER_PRIMITIVE);
+        const vector_buf = try allocator.alloc(f32, 4096 * snail.FLOATS_PER_GLYPH);
         defer allocator.free(vector_buf);
         const mvp = snail.Mat4.ortho(0, WIDTH, 0, HEIGHT, -1, 1);
 
@@ -982,8 +1013,8 @@ pub fn main() !void {
             \\  Scenario                          Shapes  static FPS (us)   dynamic FPS (us)
             \\
         , .{});
-        runVectorScenarioVulkan("Primitive showcase", buildVectorShowcase, &renderer, vector_buf);
-        runVectorScenarioVulkan("Primitive stress", buildVectorStress, &renderer, vector_buf);
+        try runVectorScenarioVulkan("Primitive showcase", allocator, buildVectorShowcase, &renderer, vector_buf);
+        try runVectorScenarioVulkan("Primitive stress", allocator, buildVectorStress, &renderer, vector_buf);
     }
 
     std.debug.print(

@@ -1,10 +1,11 @@
 const std = @import("std");
 const assets = @import("assets");
+const snail = @import("snail.zig");
 const ttf = @import("font/ttf.zig");
 const curve_tex = @import("render/curve_texture.zig");
 const band_tex = @import("render/band_texture.zig");
-const vector_vertex = @import("render/vector_vertex.zig");
 const bezier = @import("math/bezier.zig");
+const CurveSegment = bezier.CurveSegment;
 const roots = @import("math/roots.zig");
 const vec_mod = @import("math/vec.zig");
 
@@ -73,10 +74,12 @@ pub fn main() !void {
     for (chars) |ch| {
         const gid = try font.glyphIndex(ch);
         const glyph = try font.parseGlyph(allocator, &cache, gid);
-        var all: std.ArrayList(bezier.QuadBezier) = .empty;
+        var all: std.ArrayList(CurveSegment) = .empty;
         defer all.deinit(allocator);
-        for (glyph.contours) |contour| try all.appendSlice(allocator, contour.curves);
-        const owned = try allocator.dupe(bezier.QuadBezier, all.items);
+        for (glyph.contours) |contour| {
+            for (contour.curves) |curve| try all.append(allocator, .{ .kind = .quadratic, .p0 = curve.p0, .p1 = curve.p1, .p2 = curve.p2 });
+        }
+        const owned = try allocator.dupe(CurveSegment, all.items);
         try glyph_curves.append(allocator, .{ .curves = owned, .bbox = glyph.metrics.bbox });
     }
 
@@ -149,44 +152,61 @@ pub fn main() !void {
 
     std.debug.print("\nVector:\n", .{});
     {
+        var builder = snail.PathPictureBuilder.init(allocator);
+        defer builder.deinit();
+        try builder.addRoundedRect(
+            .{ .x = 0, .y = 0, .w = 80, .h = 28 },
+            .{ .color = .{ 0.2, 0.5, 0.9, 1 } },
+            .{
+                .color = .{ 0.95, 0.98, 1, 1 },
+                .width = 1.5,
+                .join = .round,
+                .placement = .inside,
+            },
+            9,
+            .identity,
+        );
+        var picture = try builder.freeze(allocator);
+        defer picture.deinit();
+        const view = snail.AtlasView{ .atlas = &picture.atlas, .layer_base = 0 };
+
         const iters: u32 = 100_000 * BENCH_TIME_MULTIPLIER;
-        var buf: [vector_vertex.FLOATS_PER_PRIMITIVE]f32 = undefined;
+        var buf: [snail.FLOATS_PER_GLYPH]f32 = undefined;
         const t = nowNs();
         for (0..iters) |i| {
-            const xf: f32 = @floatFromInt(i % 64);
-            const yf: f32 = @floatFromInt((i / 64) % 64);
-            vector_vertex.generateRoundedRectVertices(
-                &buf,
-                .{ .x = xf * 14, .y = yf * 10, .w = 80, .h = 28 },
-                .{ 0.2, 0.5, 0.9, 1 },
-                .{ 0.95, 0.98, 1, 1 },
-                1.5,
-                9,
-            );
-            std.mem.doNotOptimizeAway(&buf);
+            var batch = snail.PathBatch.init(&buf);
+            _ = i;
+            _ = batch.addPicture(&view, &picture);
+            std.mem.doNotOptimizeAway(batch.slice());
         }
-        std.debug.print("  Rounded rect packing: {d:.1} ns/shape\n", .{
+        std.debug.print("  Path instancing (1 shape): {d:.1} ns/shape\n", .{
             elapsed(t) * 1000.0 / @as(f64, @floatFromInt(iters)),
         });
     }
     {
-        const iters: u32 = 100_000 * BENCH_TIME_MULTIPLIER;
-        var buf: [vector_vertex.FLOATS_PER_PRIMITIVE]f32 = undefined;
+        const shape_count: usize = 64;
+        const iters: u32 = 1_000 * BENCH_TIME_MULTIPLIER;
         const t = nowNs();
         for (0..iters) |i| {
-            const xf: f32 = @floatFromInt(i % 96);
-            const yf: f32 = @floatFromInt((i / 96) % 48);
-            vector_vertex.generateEllipseVertices(
-                &buf,
-                .{ .x = xf * 9, .y = yf * 11, .w = 18, .h = 18 },
-                .{ 0.95, 0.55, 0.2, 0.9 },
-                .{ 0.15, 0.15, 0.2, 1 },
-                1,
-            );
-            std.mem.doNotOptimizeAway(&buf);
+            var builder = snail.PathPictureBuilder.init(allocator);
+            defer builder.deinit();
+            for (0..shape_count) |shape| {
+                const xf: f32 = @floatFromInt((shape + i) % 16);
+                const yf: f32 = @floatFromInt(shape / 16);
+                try builder.addEllipse(
+                    .{ .x = xf * 22, .y = yf * 22, .w = 18, .h = 18 },
+                    .{ .color = .{ 0.95, 0.55, 0.2, 0.9 } },
+                    .{ .color = .{ 0.15, 0.15, 0.2, 1 }, .width = 1, .placement = .inside },
+                    .identity,
+                );
+            }
+            var picture = try builder.freeze(allocator);
+            picture.deinit();
         }
-        std.debug.print("  Ellipse packing: {d:.1} ns/shape\n", .{
-            elapsed(t) * 1000.0 / @as(f64, @floatFromInt(iters)),
+        std.debug.print("  Path freeze ({} shapes): {d:.1} us/picture, {d:.2} us/shape\n", .{
+            shape_count,
+            elapsed(t) / @as(f64, @floatFromInt(iters)),
+            elapsed(t) / (@as(f64, @floatFromInt(iters)) * @as(f64, @floatFromInt(shape_count))),
         });
     }
 
@@ -195,9 +215,11 @@ pub fn main() !void {
     for ("AaBbOogq") |ch| {
         const gid = try font.glyphIndex(ch);
         const glyph = try font.parseGlyph(allocator, &cache, gid);
-        var all: std.ArrayList(bezier.QuadBezier) = .empty;
+        var all: std.ArrayList(CurveSegment) = .empty;
         defer all.deinit(allocator);
-        for (glyph.contours) |contour| try all.appendSlice(allocator, contour.curves);
+        for (glyph.contours) |contour| {
+            for (contour.curves) |curve| try all.append(allocator, .{ .kind = .quadratic, .p0 = curve.p0, .p1 = curve.p1, .p2 = curve.p2 });
+        }
 
         const gc = [_]curve_tex.GlyphCurves{.{ .curves = all.items, .bbox = glyph.metrics.bbox }};
         var ct2 = try curve_tex.buildCurveTexture(allocator, &gc);
