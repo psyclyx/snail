@@ -145,8 +145,8 @@ pub fn measureMetrics(atlas_like: anytype, font: *const snail.Font) TextMetrics 
 }
 
 pub fn buildLayout(w: f32, h: f32, metrics: TextMetrics) Layout {
-    const margin_x = snapPx(@max(26.0, w * 0.02));
-    const margin_y = snapPx(@max(26.0, h * 0.05));
+    const margin_x = snapPx(@max(22.0, w * 0.018));
+    const margin_y = snapPx(@max(22.0, h * 0.04));
     const frame = snapRect(.{
         .x = margin_x,
         .y = margin_y,
@@ -159,30 +159,30 @@ pub fn buildLayout(w: f32, h: f32, metrics: TextMetrics) Layout {
         .w = std.math.clamp(metrics.badge_advance + 40.0, 220.0, 260.0),
         .h = 34.0,
     });
-    const script_band_h = std.math.clamp(frame.h * 0.36, 246.0, 276.0);
+    const script_band_h = std.math.clamp(frame.h * 0.34, 236.0, 256.0);
     const script_band = snapRect(.{
         .x = frame.x + 18.0,
         .y = frame.y + frame.h - script_band_h - 14.0,
         .w = frame.w - 36.0,
         .h = script_band_h,
     });
-    const specimen_h = std.math.clamp(frame.h * 0.28, 204.0, 228.0);
+    const specimen_h = std.math.clamp(frame.h * 0.265, 192.0, 214.0);
     const specimen_panel = snapRect(.{
         .x = frame.x + 28.0,
-        .y = script_band.y - specimen_h - 32.0,
+        .y = script_band.y - specimen_h - 22.0,
         .w = std.math.clamp(frame.w * 0.36, 420.0, 600.0),
         .h = specimen_h,
     });
     const emoji_pill = snapRect(.{
         .x = script_band.x + 18.0,
-        .y = script_band.y + script_band.h - 40.0,
+        .y = script_band.y + script_band.h - 50.0,
         .w = script_band.w - 36.0,
-        .h = 30.0,
+        .h = 36.0,
     });
 
-    const script_top = script_band.y + 18.0;
-    const script_bottom = emoji_pill.y - 10.0;
-    const row_gap = 7.0;
+    const script_top = script_band.y + 16.0;
+    const script_bottom = emoji_pill.y - 12.0;
+    const row_gap = 6.0;
     const row_h = (script_bottom - script_top - row_gap * 3.0) / 4.0;
     var script_rows: [4]snail.VectorRect = undefined;
     for (&script_rows, 0..) |*row, i| {
@@ -195,8 +195,8 @@ pub fn buildLayout(w: f32, h: f32, metrics: TextMetrics) Layout {
     }
 
     const path_label_area = snapRect(.{
-        .x = specimen_panel.x + specimen_panel.w + 42.0,
-        .y = specimen_panel.y + 28.0,
+        .x = specimen_panel.x + specimen_panel.w + 34.0,
+        .y = specimen_panel.y + 22.0,
         .w = std.math.clamp(frame.w * 0.16, 180.0, 250.0),
         .h = 120.0,
     });
@@ -207,8 +207,8 @@ pub fn buildLayout(w: f32, h: f32, metrics: TextMetrics) Layout {
     stage_pills[0] = snapRect(.{ .x = pill_x, .y = pill_y, .w = pill_w, .h = 28.0 });
     stage_pills[1] = snapRect(.{ .x = pill_x, .y = pill_y + 38.0, .w = pill_w * 0.82, .h = 28.0 });
     stage_pills[2] = snapRect(.{ .x = pill_x, .y = pill_y + 76.0, .w = pill_w * 0.68, .h = 28.0 });
-    const snail_stage_top = frame.y + 118.0;
-    const snail_stage_bottom = script_band.y - 34.0;
+    const snail_stage_top = frame.y + 106.0;
+    const snail_stage_bottom = script_band.y - 26.0;
     const snail_stage = snapRect(.{
         .x = frame.x + frame.w * 0.60,
         .y = snail_stage_top,
@@ -236,21 +236,22 @@ pub fn drawText(batch: *snail.Batch, h: f32, layout: Layout, resources: TextReso
     const subtitle_size = std.math.clamp(layout.frame.w * 0.019, 19.0, 26.0);
     const ligature_size = std.math.clamp(layout.specimen_panel.w * 0.072, 34.0, 48.0);
     const pangram_size = std.math.clamp(layout.specimen_panel.w * 0.034, 18.0, 22.0);
+    const emoji_baseline_top = centeredBaselineTop(&resources.emoji_font.font, 26.0, layout.emoji_pill, 5.0, 6.0, 1.0);
 
     _ = batch.addString(resources.latin_view, resources.latin_font, badge_text, layout.badge_pill.x + 16.0, textYFromTop(h, layout.badge_pill.y + 22.0), 13.0, teal);
-    _ = batch.addString(resources.latin_view, resources.latin_font, title_text, hero_x, textYFromTop(h, layout.frame.y + 122.0), title_size, ink);
-    _ = batch.addString(resources.latin_view, resources.latin_font, subtitle_text, hero_x, textYFromTop(h, layout.frame.y + 170.0), subtitle_size, mist);
-    _ = batch.addString(resources.latin_view, resources.latin_font, hero_meta_text, hero_x, textYFromTop(h, layout.frame.y + 210.0), 14.0, slate);
+    _ = batch.addString(resources.latin_view, resources.latin_font, title_text, hero_x, textYFromTop(h, layout.frame.y + 116.0), title_size, ink);
+    _ = batch.addString(resources.latin_view, resources.latin_font, subtitle_text, hero_x, textYFromTop(h, layout.frame.y + 158.0), subtitle_size, mist);
+    _ = batch.addString(resources.latin_view, resources.latin_font, hero_meta_text, hero_x, textYFromTop(h, layout.frame.y + 192.0), 14.0, slate);
 
     const specimen_x = layout.specimen_panel.x + 24.0;
     _ = batch.addString(resources.latin_view, resources.latin_font, ligature_label_text, specimen_x, textYFromTop(h, layout.specimen_panel.y + 26.0), 12.0, teal);
-    _ = batch.addString(resources.latin_view, resources.latin_font, ligature_text, specimen_x, textYFromTop(h, layout.specimen_panel.y + 76.0), ligature_size, ink);
-    _ = batch.addString(resources.latin_view, resources.latin_font, ligature_caption_text, specimen_x, textYFromTop(h, layout.specimen_panel.y + 108.0), 14.0, sand);
-    _ = batch.addString(resources.latin_view, resources.latin_font, pangram_a_text, specimen_x, textYFromTop(h, layout.specimen_panel.y + 146.0), pangram_size, mist);
-    _ = batch.addString(resources.latin_view, resources.latin_font, pangram_b_text, specimen_x, textYFromTop(h, layout.specimen_panel.y + 174.0), 16.0, ink);
-    _ = batch.addString(resources.latin_view, resources.latin_font, specimen_footer_text, specimen_x, textYFromTop(h, layout.specimen_panel.y + layout.specimen_panel.h - 16.0), 12.0, slate);
+    _ = batch.addString(resources.latin_view, resources.latin_font, ligature_text, specimen_x, textYFromTop(h, layout.specimen_panel.y + 70.0), ligature_size, ink);
+    _ = batch.addString(resources.latin_view, resources.latin_font, ligature_caption_text, specimen_x, textYFromTop(h, layout.specimen_panel.y + 100.0), 14.0, sand);
+    _ = batch.addString(resources.latin_view, resources.latin_font, pangram_a_text, specimen_x, textYFromTop(h, layout.specimen_panel.y + 136.0), pangram_size, mist);
+    _ = batch.addString(resources.latin_view, resources.latin_font, pangram_b_text, specimen_x, textYFromTop(h, layout.specimen_panel.y + 162.0), 16.0, ink);
+    _ = batch.addString(resources.latin_view, resources.latin_font, specimen_footer_text, specimen_x, textYFromTop(h, layout.specimen_panel.y + layout.specimen_panel.h - 14.0), 12.0, slate);
 
-    _ = batch.addString(resources.latin_view, resources.latin_font, scripts_heading_text, layout.script_band.x + 12.0, textYFromTop(h, layout.script_band.y - 16.0), 13.0, teal);
+    _ = batch.addString(resources.latin_view, resources.latin_font, scripts_heading_text, layout.script_band.x + 12.0, textYFromTop(h, layout.script_band.y - 12.0), 13.0, teal);
 
     const script_items = [_]struct {
         label: []const u8,
@@ -263,10 +264,10 @@ pub fn drawText(batch: *snail.Batch, h: f32, layout: Layout, resources: TextReso
         bottom_pad: f32,
         baseline_shift: f32,
     }{
-        .{ .label = "Arabic", .text = arabic_text, .font = resources.arabic_font, .view = resources.arabic_view, .color = sage, .size = 27.0, .top_pad = 6.0, .bottom_pad = 6.0, .baseline_shift = 1.5 },
-        .{ .label = "Devanagari", .text = devanagari_text, .font = resources.devanagari_font, .view = resources.devanagari_view, .color = teal, .size = 24.0, .top_pad = 8.0, .bottom_pad = 6.0, .baseline_shift = 2.0 },
-        .{ .label = "Thai", .text = thai_text, .font = resources.thai_font, .view = resources.thai_view, .color = sand, .size = 26.0, .top_pad = 7.0, .bottom_pad = 6.0, .baseline_shift = 1.5 },
-        .{ .label = "Mongolian", .text = mongolian_text, .font = resources.mongolian_font, .view = resources.mongolian_view, .color = blush, .size = 27.0, .top_pad = 6.0, .bottom_pad = 7.0, .baseline_shift = 2.5 },
+        .{ .label = "Arabic", .text = arabic_text, .font = resources.arabic_font, .view = resources.arabic_view, .color = sage, .size = 27.0, .top_pad = 7.0, .bottom_pad = 6.0, .baseline_shift = 6.0 },
+        .{ .label = "Devanagari", .text = devanagari_text, .font = resources.devanagari_font, .view = resources.devanagari_view, .color = teal, .size = 24.0, .top_pad = 9.0, .bottom_pad = 7.0, .baseline_shift = 7.0 },
+        .{ .label = "Thai", .text = thai_text, .font = resources.thai_font, .view = resources.thai_view, .color = sand, .size = 26.0, .top_pad = 8.0, .bottom_pad = 6.0, .baseline_shift = 5.5 },
+        .{ .label = "Mongolian", .text = mongolian_text, .font = resources.mongolian_font, .view = resources.mongolian_view, .color = blush, .size = 27.0, .top_pad = 7.0, .bottom_pad = 7.0, .baseline_shift = 4.0 },
     };
     for (layout.script_rows, script_items) |row, item| {
         _ = batch.addString(resources.latin_view, resources.latin_font, item.label, row.x + 18.0, textYFromTop(h, row.y + 16.0), 11.0, slate);
@@ -274,8 +275,8 @@ pub fn drawText(batch: *snail.Batch, h: f32, layout: Layout, resources: TextReso
         _ = batch.addString(item.view, &item.font.font, item.text, row.x + 170.0, textYFromTop(h, baseline_top), item.size, item.color);
     }
 
-    _ = batch.addString(resources.latin_view, resources.latin_font, "Emoji", layout.emoji_pill.x + 16.0, textYFromTop(h, layout.emoji_pill.y + 16.0), 11.0, slate);
-    _ = batch.addString(resources.emoji_view, &resources.emoji_font.font, emoji_text, layout.emoji_pill.x + 150.0, textYFromTop(h, layout.emoji_pill.y + layout.emoji_pill.h - 6.0), 28.0, ink);
+    _ = batch.addString(resources.latin_view, resources.latin_font, "Emoji", layout.emoji_pill.x + 16.0, textYFromTop(h, layout.emoji_pill.y + 19.0), 11.0, slate);
+    _ = batch.addString(resources.emoji_view, &resources.emoji_font.font, emoji_text, layout.emoji_pill.x + 142.0, textYFromTop(h, emoji_baseline_top), 26.0, ink);
 
     _ = batch.addString(resources.latin_view, resources.latin_font, stage_label_text, layout.path_label_area.x, textYFromTop(h, layout.path_label_area.y + 12.0), 12.0, teal);
     _ = batch.addString(resources.latin_view, resources.latin_font, stage_title_text, layout.path_label_area.x, textYFromTop(h, layout.path_label_area.y + 44.0), 23.0, ink);
