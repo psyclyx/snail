@@ -20,7 +20,7 @@ pub const specimen_footer_text = "AV / To / ffi / 0123456789";
 pub const scripts_heading_text = "Scripts / emoji";
 pub const stage_label_text = "Paths";
 pub const stage_title_text = "fill / gradient / stroke";
-pub const stage_caption_text = "ribbon / orbit / shell";
+pub const stage_caption_text = "frozen / instanced";
 pub const stage_pill_labels = [_][]const u8{
     "round rect",
     "ellipse",
@@ -102,15 +102,6 @@ fn snapRect(rect: snail.VectorRect) snail.VectorRect {
     };
 }
 
-fn insetRect(rect: snail.VectorRect, dx: f32, dy: f32) snail.VectorRect {
-    return snapRect(.{
-        .x = rect.x + dx,
-        .y = rect.y + dy,
-        .w = rect.w - dx * 2.0,
-        .h = rect.h - dy * 2.0,
-    });
-}
-
 fn textYFromTop(h: f32, top_y: f32) f32 {
     return h - top_y;
 }
@@ -168,29 +159,29 @@ pub fn buildLayout(w: f32, h: f32, metrics: TextMetrics) Layout {
         .w = std.math.clamp(metrics.badge_advance + 40.0, 220.0, 260.0),
         .h = 34.0,
     });
-    const script_band_h = std.math.clamp(frame.h * 0.29, 190.0, 232.0);
+    const script_band_h = std.math.clamp(frame.h * 0.36, 246.0, 276.0);
     const script_band = snapRect(.{
         .x = frame.x + 18.0,
         .y = frame.y + frame.h - script_band_h - 14.0,
         .w = frame.w - 36.0,
         .h = script_band_h,
     });
-    const specimen_h = std.math.clamp(frame.h * 0.30, 196.0, 228.0);
+    const specimen_h = std.math.clamp(frame.h * 0.28, 204.0, 228.0);
     const specimen_panel = snapRect(.{
         .x = frame.x + 28.0,
-        .y = script_band.y - specimen_h - 36.0,
+        .y = script_band.y - specimen_h - 32.0,
         .w = std.math.clamp(frame.w * 0.36, 420.0, 600.0),
         .h = specimen_h,
     });
     const emoji_pill = snapRect(.{
         .x = script_band.x + 18.0,
-        .y = script_band.y + script_band.h - 38.0,
+        .y = script_band.y + script_band.h - 40.0,
         .w = script_band.w - 36.0,
-        .h = 28.0,
+        .h = 30.0,
     });
 
-    const script_top = script_band.y + 16.0;
-    const script_bottom = emoji_pill.y - 8.0;
+    const script_top = script_band.y + 18.0;
+    const script_bottom = emoji_pill.y - 10.0;
     const row_gap = 7.0;
     const row_h = (script_bottom - script_top - row_gap * 3.0) / 4.0;
     var script_rows: [4]snail.VectorRect = undefined;
@@ -204,8 +195,8 @@ pub fn buildLayout(w: f32, h: f32, metrics: TextMetrics) Layout {
     }
 
     const path_label_area = snapRect(.{
-        .x = specimen_panel.x + specimen_panel.w + 34.0,
-        .y = specimen_panel.y + 34.0,
+        .x = specimen_panel.x + specimen_panel.w + 42.0,
+        .y = specimen_panel.y + 28.0,
         .w = std.math.clamp(frame.w * 0.16, 180.0, 250.0),
         .h = 120.0,
     });
@@ -216,11 +207,13 @@ pub fn buildLayout(w: f32, h: f32, metrics: TextMetrics) Layout {
     stage_pills[0] = snapRect(.{ .x = pill_x, .y = pill_y, .w = pill_w, .h = 28.0 });
     stage_pills[1] = snapRect(.{ .x = pill_x, .y = pill_y + 38.0, .w = pill_w * 0.82, .h = 28.0 });
     stage_pills[2] = snapRect(.{ .x = pill_x, .y = pill_y + 76.0, .w = pill_w * 0.68, .h = 28.0 });
+    const snail_stage_top = frame.y + 118.0;
+    const snail_stage_bottom = script_band.y - 34.0;
     const snail_stage = snapRect(.{
         .x = frame.x + frame.w * 0.60,
-        .y = frame.y + 94.0,
+        .y = snail_stage_top,
         .w = std.math.clamp(frame.w * 0.34, 380.0, 540.0),
-        .h = std.math.clamp(frame.h * 0.56, 300.0, 410.0),
+        .h = std.math.clamp(snail_stage_bottom - snail_stage_top, 236.0, 320.0),
     });
 
     return .{
@@ -270,10 +263,10 @@ pub fn drawText(batch: *snail.Batch, h: f32, layout: Layout, resources: TextReso
         bottom_pad: f32,
         baseline_shift: f32,
     }{
-        .{ .label = "Arabic", .text = arabic_text, .font = resources.arabic_font, .view = resources.arabic_view, .color = sage, .size = 25.0, .top_pad = 5.0, .bottom_pad = 5.0, .baseline_shift = 1.2 },
-        .{ .label = "Devanagari", .text = devanagari_text, .font = resources.devanagari_font, .view = resources.devanagari_view, .color = teal, .size = 23.0, .top_pad = 6.0, .bottom_pad = 5.0, .baseline_shift = 1.8 },
-        .{ .label = "Thai", .text = thai_text, .font = resources.thai_font, .view = resources.thai_view, .color = sand, .size = 24.0, .top_pad = 6.0, .bottom_pad = 5.0, .baseline_shift = 1.2 },
-        .{ .label = "Mongolian", .text = mongolian_text, .font = resources.mongolian_font, .view = resources.mongolian_view, .color = blush, .size = 25.0, .top_pad = 5.0, .bottom_pad = 6.0, .baseline_shift = 2.1 },
+        .{ .label = "Arabic", .text = arabic_text, .font = resources.arabic_font, .view = resources.arabic_view, .color = sage, .size = 27.0, .top_pad = 6.0, .bottom_pad = 6.0, .baseline_shift = 1.5 },
+        .{ .label = "Devanagari", .text = devanagari_text, .font = resources.devanagari_font, .view = resources.devanagari_view, .color = teal, .size = 24.0, .top_pad = 8.0, .bottom_pad = 6.0, .baseline_shift = 2.0 },
+        .{ .label = "Thai", .text = thai_text, .font = resources.thai_font, .view = resources.thai_view, .color = sand, .size = 26.0, .top_pad = 7.0, .bottom_pad = 6.0, .baseline_shift = 1.5 },
+        .{ .label = "Mongolian", .text = mongolian_text, .font = resources.mongolian_font, .view = resources.mongolian_view, .color = blush, .size = 27.0, .top_pad = 6.0, .bottom_pad = 7.0, .baseline_shift = 2.5 },
     };
     for (layout.script_rows, script_items) |row, item| {
         _ = batch.addString(resources.latin_view, resources.latin_font, item.label, row.x + 18.0, textYFromTop(h, row.y + 16.0), 11.0, slate);
@@ -305,40 +298,6 @@ pub fn buildPathShowcase(builder: *snail.PathPictureBuilder, layout: Layout) !vo
         0.0,
         .identity,
     );
-
-    try builder.addFilledEllipse(.{
-        .x = layout.frame.x - layout.frame.w * 0.08,
-        .y = layout.frame.y - layout.frame.h * 0.12,
-        .w = layout.frame.w * 0.48,
-        .h = layout.frame.h * 0.86,
-    }, .{ .paint = .{ .radial_gradient = .{
-        .center = .{ .x = layout.frame.x + layout.frame.w * 0.22, .y = layout.frame.y + layout.frame.h * 0.18 },
-        .radius = layout.frame.w * 0.24,
-        .inner_color = .{ 0.16, 0.34, 0.56, 0.30 },
-        .outer_color = .{ 0.16, 0.34, 0.56, 0.0 },
-    } } }, .identity);
-    try builder.addFilledEllipse(.{
-        .x = layout.snail_stage.x - layout.snail_stage.w * 0.26,
-        .y = layout.snail_stage.y - layout.snail_stage.h * 0.18,
-        .w = layout.snail_stage.w * 1.18,
-        .h = layout.snail_stage.h * 1.12,
-    }, .{ .paint = .{ .radial_gradient = .{
-        .center = .{ .x = layout.snail_stage.x + layout.snail_stage.w * 0.58, .y = layout.snail_stage.y + layout.snail_stage.h * 0.36 },
-        .radius = layout.snail_stage.w * 0.44,
-        .inner_color = .{ 0.10, 0.24, 0.44, 0.24 },
-        .outer_color = .{ 0.10, 0.24, 0.44, 0.0 },
-    } } }, .identity);
-    try builder.addFilledEllipse(.{
-        .x = layout.frame.x + layout.frame.w * 0.20,
-        .y = layout.frame.y + layout.frame.h * 0.58,
-        .w = layout.frame.w * 0.42,
-        .h = layout.frame.h * 0.26,
-    }, .{ .paint = .{ .radial_gradient = .{
-        .center = .{ .x = layout.frame.x + layout.frame.w * 0.42, .y = layout.frame.y + layout.frame.h * 0.72 },
-        .radius = layout.frame.w * 0.24,
-        .inner_color = .{ 0.26, 0.18, 0.10, 0.12 },
-        .outer_color = .{ 0.26, 0.18, 0.10, 0.0 },
-    } } }, .identity);
 
     try builder.addRoundedRect(
         layout.frame,
@@ -450,98 +409,15 @@ pub fn buildPathShowcase(builder: *snail.PathPictureBuilder, layout: Layout) !vo
         );
     }
 
-    const hero_glow = snapRect(.{
-        .x = layout.frame.x + layout.frame.w * 0.24,
-        .y = layout.frame.y + 28.0,
-        .w = 240.0,
-        .h = 240.0,
-    });
-    try builder.addFilledEllipse(hero_glow, .{ .paint = .{ .radial_gradient = .{
-        .center = .{ .x = hero_glow.x + hero_glow.w * 0.44, .y = hero_glow.y + hero_glow.h * 0.44 },
-        .radius = hero_glow.w * 0.42,
-        .inner_color = .{ 0.30, 0.80, 0.92, 0.22 },
-        .outer_color = .{ 0.30, 0.80, 0.92, 0.0 },
-    } } }, .identity);
-
-    const shell_cx = layout.snail_stage.x + layout.snail_stage.w * 0.54;
-    const shell_cy = layout.snail_stage.y + layout.snail_stage.h * 0.40;
-    const orbit_outer = snapRect(.{
-        .x = shell_cx - layout.snail_stage.w * 0.34,
-        .y = shell_cy - layout.snail_stage.h * 0.34,
-        .w = layout.snail_stage.w * 0.68,
-        .h = layout.snail_stage.h * 0.72,
-    });
-    const orbit_mid = insetRect(orbit_outer, orbit_outer.w * 0.11, orbit_outer.h * 0.12);
-    const orbit_inner = insetRect(orbit_outer, orbit_outer.w * 0.22, orbit_outer.h * 0.21);
-    try builder.addEllipse(
-        orbit_outer,
-        .{ .paint = .{ .radial_gradient = .{
-            .center = .{ .x = orbit_outer.x + orbit_outer.w * 0.5, .y = orbit_outer.y + orbit_outer.h * 0.45 },
-            .radius = orbit_outer.w * 0.42,
-            .inner_color = .{ 0.22, 0.56, 0.74, 0.18 },
-            .outer_color = .{ 0.22, 0.56, 0.74, 0.0 },
-        } } },
-        .{ .color = .{ 0.34, 0.74, 0.78, 0.36 }, .width = 1.4, .join = .round },
-        .identity,
-    );
-    try builder.addEllipse(
-        orbit_mid,
-        .{ .paint = .{ .radial_gradient = .{
-            .center = .{ .x = orbit_mid.x + orbit_mid.w * 0.5, .y = orbit_mid.y + orbit_mid.h * 0.48 },
-            .radius = orbit_mid.w * 0.38,
-            .inner_color = .{ 0.68, 0.90, 0.98, 0.14 },
-            .outer_color = .{ 0.68, 0.90, 0.98, 0.0 },
-        } } },
-        .{ .color = .{ 0.72, 0.90, 0.98, 0.44 }, .width = 1.2, .join = .round },
-        .identity,
-    );
-    try builder.addEllipse(
-        orbit_inner,
-        .{ .paint = .{ .radial_gradient = .{
-            .center = .{ .x = orbit_inner.x + orbit_inner.w * 0.5, .y = orbit_inner.y + orbit_inner.h * 0.48 },
-            .radius = orbit_inner.w * 0.36,
-            .inner_color = .{ 0.96, 0.82, 0.55, 0.14 },
-            .outer_color = .{ 0.96, 0.82, 0.55, 0.0 },
-        } } },
-        .{ .color = .{ 0.96, 0.82, 0.55, 0.30 }, .width = 1.2, .join = .round },
-        .identity,
-    );
-
-    var hero_ribbon = snail.VectorPath.init(builder.allocator);
-    defer hero_ribbon.deinit();
-    try hero_ribbon.moveTo(.{ .x = layout.frame.x + 46.0, .y = layout.frame.y + 248.0 });
-    try hero_ribbon.cubicTo(
-        .{ .x = layout.frame.x + 166.0, .y = layout.frame.y + 204.0 },
-        .{ .x = layout.frame.x + 336.0, .y = layout.frame.y + 246.0 },
-        .{ .x = layout.path_label_area.x + 28.0, .y = layout.path_label_area.y - 18.0 },
-    );
-    try hero_ribbon.cubicTo(
-        .{ .x = layout.snail_stage.x - 34.0, .y = layout.snail_stage.y - 8.0 },
-        .{ .x = shell_cx - 104.0, .y = shell_cy - 36.0 },
-        .{ .x = shell_cx + 34.0, .y = shell_cy - 18.0 },
-    );
-    try builder.addStrokedPath(&hero_ribbon, .{
-        .paint = .{ .linear_gradient = .{
-            .start = .{ .x = layout.frame.x + 46.0, .y = layout.frame.y + 248.0 },
-            .end = .{ .x = shell_cx + 34.0, .y = shell_cy - 18.0 },
-            .start_color = .{ 0.95, 0.58, 0.42, 0.62 },
-            .end_color = .{ 0.42, 0.84, 0.87, 0.42 },
-        } },
-        .width = 14.0,
-        .cap = .round,
-        .join = .round,
-    }, .identity);
-
     try addVectorSnail(builder, layout.snail_stage);
 }
 
 fn addVectorSnail(builder: *snail.PathPictureBuilder, snail_stage: snail.VectorRect) !void {
-    const art_width = @min(snail_stage.w * 0.94, 520.0);
+    const art_width = @min(snail_stage.w * 0.74, 440.0);
     const scale = art_width / 360.0;
-    const shell_center_x = snail_stage.x + snail_stage.w * 0.54;
-    const shell_center_y = snail_stage.y + snail_stage.h * 0.40;
-    const art_x = shell_center_x - 214.0 * scale;
-    const art_y = shell_center_y - 80.0 * scale;
+    const art_height = 220.0 * scale;
+    const art_x = snail_stage.x + snail_stage.w - art_width - 8.0;
+    const art_y = snail_stage.y + snail_stage.h - art_height - 6.0;
     const transform = snail.VectorTransform2D.multiply(
         snail.VectorTransform2D.translate(art_x, art_y),
         snail.VectorTransform2D.scale(scale, scale),
@@ -558,17 +434,6 @@ fn addVectorSnail(builder: *snail.PathPictureBuilder, snail_stage: snail.VectorR
         .inner_color = .{ 0.0, 0.0, 0.0, 0.18 },
         .outer_color = .{ 0.0, 0.0, 0.0, 0.0 },
     } } }, transform);
-    try builder.addEllipse(.{
-        .x = 144.0,
-        .y = 10.0,
-        .w = 146.0,
-        .h = 146.0,
-    }, .{ .paint = .{ .radial_gradient = .{
-        .center = .{ .x = 216.0, .y = 84.0 },
-        .radius = 96.0,
-        .inner_color = .{ 0.28, 0.72, 0.92, 0.18 },
-        .outer_color = .{ 0.28, 0.72, 0.92, 0.0 },
-    } } }, .{ .color = .{ 0.28, 0.72, 0.92, 0.24 }, .width = 1.2, .join = .round }, transform);
 
     var body = snail.VectorPath.init(builder.allocator);
     defer body.deinit();
