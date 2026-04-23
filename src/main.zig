@@ -5,6 +5,9 @@ const demo_banner = @import("demo_banner.zig");
 const assets = @import("assets");
 const screenshot = @import("render/screenshot.zig");
 const subpixel_detect = @import("render/subpixel_detect.zig");
+const libc = @cImport({
+    @cInclude("stdlib.h");
+});
 
 const use_vulkan = build_options.enable_vulkan;
 const platform = if (use_vulkan) @import("render/vulkan_platform.zig") else @import("render/platform.zig");
@@ -75,10 +78,25 @@ fn debugLayout(frame_index: u32, layout: demo_banner.Layout, size: [2]u32) void 
     );
 }
 
+fn enableWaylandProtocolDebug() void {
+    if (!demo_debug_timings) return;
+    if (libc.getenv("WAYLAND_DEBUG") != null) {
+        std.debug.print("[demo] preserving existing WAYLAND_DEBUG={s}\n", .{std.mem.span(libc.getenv("WAYLAND_DEBUG"))});
+        return;
+    }
+    if (libc.setenv("WAYLAND_DEBUG", "client", 1) == 0) {
+        std.debug.print("[demo] enabled WAYLAND_DEBUG=client\n", .{});
+    } else {
+        std.debug.print("[demo] failed to enable WAYLAND_DEBUG=client\n", .{});
+    }
+}
+
 pub fn main() !void {
     var da: std.heap.DebugAllocator(.{}) = .init;
     defer _ = da.deinit();
     const allocator = da.allocator();
+
+    enableWaylandProtocolDebug();
 
     if (use_vulkan) {
         const vk_ctx = try platform.init(1280, 720, "snail");
