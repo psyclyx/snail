@@ -45,6 +45,7 @@ pub fn buildGlyphBandData(
     curves: []const CurveSegment,
     bbox: BBox,
     curve_entry: curve_tex.GlyphCurveEntry,
+    origin: Vec2,
 ) !GlyphBandData {
     if (curves.len == 0) {
         return .{
@@ -64,6 +65,7 @@ pub fn buildGlyphBandData(
     const epsilon: f32 = 1.0 / 1024.0;
     const bbox_w = bbox.max.x - bbox.min.x;
     const bbox_h = bbox.max.y - bbox.min.y;
+    const delta = Vec2.new(-origin.x, -origin.y);
     const max_band_count = 12;
     std.debug.assert(h_bands <= max_band_count and v_bands <= max_band_count);
 
@@ -126,7 +128,11 @@ pub fn buildGlyphBandData(
 
     // Record band membership once per curve and append to pre-sized lists.
     for (curves, 0..) |curve, ci| {
-        const cb = curve.boundingBox();
+        const cb0 = curve.boundingBox();
+        const cb = BBox{
+            .min = Vec2.add(cb0.min, delta),
+            .max = Vec2.add(cb0.max, delta),
+        };
         curve_bboxes[ci] = cb;
         const curve_idx: u16 = @intCast(ci);
         for (0..h_bands) |bi| {
@@ -346,10 +352,34 @@ test "buildGlyphBandData basic" {
     const bbox = BBox{ .min = Vec2.new(0, -0.5), .max = Vec2.new(1, 0.5) };
     const entry = curve_tex.GlyphCurveEntry{ .start_x = 0, .start_y = 0, .count = 2, .offset = 0 };
 
-    var bd = try buildGlyphBandData(std.testing.allocator, &curves, bbox, entry);
+    var bd = try buildGlyphBandData(std.testing.allocator, &curves, bbox, entry, .zero);
     defer freeGlyphBandData(std.testing.allocator, &bd);
 
     try std.testing.expect(bd.h_band_count > 0);
     try std.testing.expect(bd.v_band_count > 0);
     try std.testing.expect(bd.texel_count > 0);
+}
+
+test "buildGlyphBandData rebases curves by origin" {
+    const curves = [_]CurveSegment{
+        .{
+            .kind = .quadratic,
+            .p0 = Vec2.new(640, 960),
+            .p1 = Vec2.new(660, 970),
+            .p2 = Vec2.new(680, 960),
+        },
+    };
+    const bbox = BBox{ .min = Vec2.new(0, 0), .max = Vec2.new(40, 10) };
+    const entry = curve_tex.GlyphCurveEntry{ .start_x = 0, .start_y = 0, .count = 1, .offset = 0 };
+
+    var bd = try buildGlyphBandData(std.testing.allocator, &curves, bbox, entry, Vec2.new(640, 960));
+    defer freeGlyphBandData(std.testing.allocator, &bd);
+
+    try std.testing.expectEqual(@as(u16, 1), bd.h_band_count);
+    try std.testing.expectEqual(@as(u16, 1), bd.v_band_count);
+    try std.testing.expectEqual(@as(u16, 4), bd.texel_count);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.025), bd.band_scale_x, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.1), bd.band_scale_y, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), bd.band_offset_x, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), bd.band_offset_y, 0.0001);
 }

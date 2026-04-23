@@ -1204,6 +1204,62 @@ test "cpu renderer renders transformed path picture" {
     try testing.expectEqual(@as(u8, 0), buf[original + 3]);
 }
 
+test "cpu renderer matches absolute and transformed rounded rect pictures" {
+    const testing = std.testing;
+
+    const width: u32 = 160;
+    const height: u32 = 120;
+    const stride = width * 4;
+    const absolute_buf = try testing.allocator.alloc(u8, stride * height);
+    defer testing.allocator.free(absolute_buf);
+    const transformed_buf = try testing.allocator.alloc(u8, stride * height);
+    defer testing.allocator.free(transformed_buf);
+
+    var absolute_renderer = CpuRenderer.init(absolute_buf.ptr, width, height, stride);
+    absolute_renderer.clear(0, 0, 0, 0);
+    var transformed_renderer = CpuRenderer.init(transformed_buf.ptr, width, height, stride);
+    transformed_renderer.clear(0, 0, 0, 0);
+
+    var absolute_builder = snail.PathPictureBuilder.init(testing.allocator);
+    defer absolute_builder.deinit();
+    try absolute_builder.addRoundedRect(
+        .{ .x = 64, .y = 40, .w = 32, .h = 18 },
+        .{ .paint = .{ .linear_gradient = .{
+            .start = .{ .x = 64, .y = 40 },
+            .end = .{ .x = 96, .y = 58 },
+            .start_color = .{ 0.2, 0.8, 1.0, 1.0 },
+            .end_color = .{ 0.9, 0.7, 0.3, 1.0 },
+        } } },
+        .{ .color = .{ 1, 1, 1, 0.5 }, .width = 2.0, .join = .round, .placement = .inside },
+        9.0,
+        .identity,
+    );
+    var absolute_picture = try absolute_builder.freeze(testing.allocator);
+    defer absolute_picture.deinit();
+
+    var transformed_builder = snail.PathPictureBuilder.init(testing.allocator);
+    defer transformed_builder.deinit();
+    try transformed_builder.addRoundedRect(
+        .{ .x = 0, .y = 0, .w = 32, .h = 18 },
+        .{ .paint = .{ .linear_gradient = .{
+            .start = .{ .x = 0, .y = 0 },
+            .end = .{ .x = 32, .y = 18 },
+            .start_color = .{ 0.2, 0.8, 1.0, 1.0 },
+            .end_color = .{ 0.9, 0.7, 0.3, 1.0 },
+        } } },
+        .{ .color = .{ 1, 1, 1, 0.5 }, .width = 2.0, .join = .round, .placement = .inside },
+        9.0,
+        .{ .tx = 64, .ty = 40 },
+    );
+    var transformed_picture = try transformed_builder.freeze(testing.allocator);
+    defer transformed_picture.deinit();
+
+    absolute_renderer.drawPathPicture(&absolute_picture);
+    transformed_renderer.drawPathPicture(&transformed_picture);
+
+    try testing.expectEqualSlices(u8, absolute_buf, transformed_buf);
+}
+
 test "cpu renderer renders gradient path picture" {
     const testing = std.testing;
 

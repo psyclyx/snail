@@ -108,7 +108,7 @@ pub fn main() !void {
 
         const t = nowNs();
         for (glyph_curves.items, 0..) |gc, i| {
-            var bd = try band_tex.buildGlyphBandData(allocator, gc.curves, gc.bbox, base_ct.entries[i]);
+            var bd = try band_tex.buildGlyphBandData(allocator, gc.curves, gc.bbox, base_ct.entries[i], gc.origin);
             try bds.append(allocator, bd);
             _ = &bd;
         }
@@ -226,7 +226,7 @@ pub fn main() !void {
         defer ct2.texture.deinit();
         defer allocator.free(ct2.entries);
 
-        var bd = try band_tex.buildGlyphBandData(allocator, all.items, glyph.metrics.bbox, ct2.entries[0]);
+        var bd = try band_tex.buildGlyphBandData(allocator, all.items, glyph.metrics.bbox, ct2.entries[0], .zero);
         defer band_tex.freeGlyphBandData(allocator, &bd);
 
         // Count max curves per band from the band data

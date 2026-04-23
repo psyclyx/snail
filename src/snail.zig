@@ -636,7 +636,7 @@ pub const Atlas = struct {
             glyph_band_data.deinit(allocator);
         }
         for (glyph_curves_list.items, 0..) |gc, i| {
-            var bd = try band_tex.buildGlyphBandData(allocator, gc.curves, gc.bbox, ct.entries[i]);
+            var bd = try band_tex.buildGlyphBandData(allocator, gc.curves, gc.bbox, ct.entries[i], gc.origin);
             try glyph_band_data.append(allocator, bd);
             _ = &bd;
         }
@@ -2920,7 +2920,7 @@ pub const PathPictureBuilder = struct {
             glyph_band_data.deinit(allocator);
         }
         for (glyph_curves, 0..) |gc, i| {
-            var bd = try band_tex.buildGlyphBandData(allocator, gc.curves, gc.bbox, ct.entries[i]);
+            var bd = try band_tex.buildGlyphBandData(allocator, gc.curves, gc.bbox, ct.entries[i], gc.origin);
             try glyph_band_data.append(allocator, bd);
             _ = &bd;
         }
