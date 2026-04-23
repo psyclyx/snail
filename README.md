@@ -91,46 +91,47 @@ renderer.draw(batch.slice(), mvp, viewport_w, viewport_h);
 
 Atlas uploads now return lightweight `AtlasView` values. Existing glyph handles remain stable across `extendGlyphIds()`, `extendCodepoints()`, and `extendGlyphsForText()` because those operations return a new atlas snapshot that shares old pages. `compact()` returns a new snapshot too, but may repack handles.
 
-### Vector primitives and pictures
+### Path pictures
 
-snail's vector side is explicit and style-oriented: you describe fill/stroke state, optional per-primitive affine transforms, and pack rectangles / rounded rectangles / ellipses into a caller-owned buffer. Static vector UI can then be frozen into an immutable `VectorPicture`. Those primitives still draw from one packed record each, but coverage is evaluated from procedural quadratic curves with the same Slug root-solving math used for text.
+snail's production vector path is `PathPicture`: freeze vector art once into the same curve/band atlas format used by text, upload that atlas once, then instance it through `PathBatch` each frame. That means vector draws reuse the text pipeline and avoid a separate vector shader compile/pipeline at startup.
+
+`PathPictureBuilder` can add rectangles / rounded rectangles / ellipses directly, or ingest arbitrary `VectorPath` outlines. `PathBatch` writes caller-owned draw vertices, so the per-frame cost is just instancing frozen assets into a reusable float buffer.
 
 ```zig
-var shape_buf: [256 * snail.VECTOR_FLOATS_PER_PRIMITIVE]f32 = undefined;
-var shapes = snail.VectorBatch.init(&shape_buf);
+var picture_builder = snail.PathPictureBuilder.init(allocator);
+defer picture_builder.deinit();
 
-const card_fill = snail.VectorFillStyle{ .color = .{ 0.12, 0.16, 0.22, 0.92 } };
-const card_stroke = snail.VectorStrokeStyle{ .color = .{ 0.35, 0.55, 0.95, 1.0 }, .width = 2.0 };
-
-_ = shapes.addRoundedRectStyled(
+try picture_builder.addRoundedRect(
     .{ .x = 24, .y = 24, .w = 240, .h = 96 },
-    card_fill,
-    card_stroke,
+    .{ .color = .{ 0.12, 0.16, 0.22, 0.92 } },
+    .{ .color = .{ 0.35, 0.55, 0.95, 1.0 }, .width = 2.0, .placement = .inside },
     18.0,
     .identity,
 );
-_ = shapes.addEllipseStyled(
+try picture_builder.addEllipse(
     .{ .x = 300, .y = 32, .w = 72, .h = 72 },
     .{ .color = .{ 0.95, 0.72, 0.28, 0.2 } },
     .{ .color = .{ 0.95, 0.72, 0.28, 0.9 }, .width = 1.5 },
-    snail.VectorTransform2D.translate(0, 0),
+    .identity,
 );
 
-var picture = try shapes.freeze(allocator);
+var picture = try picture_builder.freeze(allocator);
 defer picture.deinit();
 
+const picture_view = renderer.uploadPathPicture(&picture);
+
+var path_buf: [256 * snail.FLOATS_PER_GLYPH]f32 = undefined;
+var paths = snail.PathBatch.init(&path_buf);
+_ = paths.addPicture(&picture_view, &picture);
+
 renderer.beginFrame();
-renderer.drawVectorPicture(&picture, viewport_w, viewport_h); // top-left pixel-space convenience
+renderer.drawPaths(paths.slice(), mvp, viewport_w, viewport_h);
 renderer.draw(text_batch.slice(), mvp, viewport_w, viewport_h);
 ```
 
-For scene-style transforms, use `Renderer.drawVectorTransformed()` / `drawVectorPictureTransformed()` with your own `Mat4`. The renderer expands vector quads automatically so edge antialiasing is not clipped at primitive bounds.
+For non-trivial artwork, build a `VectorPath` with `moveTo`, `lineTo`, `quadTo`, and `cubicTo`, then pass it to `PathPictureBuilder.addPath()`. The fill/stroke model is the same either way: fills can be solid colors, linear gradients, radial gradients, or image paints via `VectorFillStyle.paint`, and `PathStrokeStyle` adds width, cap, join, miter limit, and inside/center placement.
 
-### Arbitrary path pictures
-
-For non-trivial artwork, use the path API instead of the fixed primitive batch. `VectorPath` supports multiple contours plus `moveTo`, `lineTo`, `quadTo`, and `cubicTo`. `PathPictureBuilder` freezes those outlines into the same curve/band texture format used by text, and `PathBatch` instantiates them with per-shape affine transforms.
-
-The path builder supports both fill and stroke styles. Fills can be solid colors, linear gradients, radial gradients, or image paints via `VectorFillStyle.paint`. `PathStrokeStyle` supports the same paint model plus width, line cap, line join, and miter limit, and open-path strokes generate proper caps instead of rectangular hacks.
+Open-path strokes generate proper caps instead of rectangular hacks, and the frozen picture can be instantiated again later with either `PathBatch.addPicture()` or `PathBatch.addPictureTransformed()`.
 
 ```zig
 var logo = snail.VectorPath.init(allocator);
@@ -230,7 +231,7 @@ When the renderer grows its internal image array to accommodate a newly uploaded
 
 ### CPU renderer
 
-For headless output or bootstrap frames, `src/extra/cpu_renderer.zig` exposes a software raster path that shares Snail's atlas data and vector packing model:
+For headless output or bootstrap frames, `src/extra/cpu_renderer.zig` exposes a software raster path that shares Snail's atlas data and frozen path-picture model:
 
 ```zig
 const cpu_renderer = @import("extra/cpu_renderer.zig");
@@ -238,12 +239,10 @@ const cpu_renderer = @import("extra/cpu_renderer.zig");
 var soft = cpu_renderer.CpuRenderer.init(pixel_buf.ptr, width, height, stride);
 soft.clear(0, 0, 0, 0);
 soft.drawGlyphId(&atlas, try font.glyphIndex('A'), 12, 28, 24, .{ 1, 1, 1, 1 });
-soft.drawVector(shapes.slice());
-soft.drawVectorPicture(&picture);
 soft.drawPathPicture(&path_picture);
 ```
 
-The CPU vector path consumes the same packed `VectorBatch` / `VectorPicture` data as the GPU path, including per-primitive `VectorTransform2D` transforms, fill rule, and subpixel order. `drawPathPicture()` uses the same frozen `PathPicture` data as the GPU path, including gradients and image paints. The CPU renderer still mirrors the pixel-space convenience APIs, not the global-`Mat4` transformed GPU entry points.
+`drawPathPicture()` uses the same frozen `PathPicture` data as the GPU path, including gradients and image paints. `drawPathPictureTransformed()` applies an extra affine transform at draw time. Fill rule and subpixel order still match the GPU renderer.
 
 ### Performance model
 
@@ -253,16 +252,19 @@ The CPU vector path consumes the same packed `VectorBatch` / `VectorPicture` dat
 | `Atlas.init` | Once per glyph set | ~1.7 ms for 95 ASCII glyphs |
 | `Atlas.extendCodepoints` | On late glyph discovery | Allocates a new snapshot, preserving old handles |
 | `Renderer.uploadAtlas` | Once per atlas generation | GPU texture upload for atlas pages |
+| `Renderer.uploadPathPicture` | Once per frozen vector asset | Uploads the picture's atlas pages and returns an `AtlasView` |
 | `Batch.addString` | Per-frame (dynamic) or once (static) | ~1.2 us for 13 chars, ~15.1 us for 175 chars |
-| `VectorBatch.addRoundedRectStyled` | Per-frame (dynamic) or once (static) | ~1.5 ns per primitive |
-| `VectorBatch.freeze` | Static UI / icons | Clone once into an immutable `VectorPicture` |
+| `PathBatch.addPicture` | Per-frame | ~12 ns per shape instanced from a frozen picture |
+| `PathPictureBuilder.freeze` | Static UI / icons | ~49 us per shape on the current bench; amortize by freezing once |
 | `Renderer.beginFrame` | Per-frame | Resets cached GL state (call before `draw` when sharing a GL context) |
 | `Renderer.draw` | Per-frame | Single draw call per batch |
-| `Renderer.drawVector` / `drawVectorPicture` | Per-frame | Single draw call per vector batch or picture |
+| `Renderer.drawPaths` | Per-frame | Single draw call per path batch, grayscale AA |
 
 For static UI text, build the `Batch` once and call `Renderer.draw` each frame with the same `batch.slice()`. The vertex buffer is caller-owned and zero-allocation.
 
 For dynamic text (input fields, counters, chat), rebuild the `Batch` each frame. On this machine, Latin layout is roughly `0.08-0.09 us/glyph`, so 1000 glyphs stays comfortably sub-millisecond.
+
+For static vector UI and icons, freeze `PathPicture`s ahead of first paint when possible, upload them once, and reuse the returned `AtlasView` plus `PathBatch` every frame. That keeps startup work on the shared text/path shaders instead of paying for a second vector-specific pipeline.
 
 ### Dynamic glyph loading
 
@@ -366,18 +368,9 @@ snail_batch_add_string(vertices, sizeof(vertices)/sizeof(float), &len,
                        atlas, font, "Hello", 5, x, y, 48.0f, color);
 
 snail_renderer_draw(vertices, len, mvp, viewport_w, viewport_h);
-
-float vector_buf[64 * snail_vector_floats_per_primitive()];
-size_t vector_len = 0;
-SnailVectorRect panel = {24, 24, 240, 96};
-SnailVectorFillStyle fill = {{0.12f, 0.16f, 0.22f, 0.92f}};
-SnailVectorStrokeStyle stroke = {{0.35f, 0.55f, 0.95f, 1.0f}, 2.0f};
-snail_vector_batch_add_rounded_rect_ex(vector_buf, sizeof(vector_buf)/sizeof(float), &vector_len,
-                                       panel, &fill, &stroke, 18.0f, NULL);
-snail_renderer_draw_vector_pixels(vector_buf, vector_len, viewport_w, viewport_h);
 ```
 
-Pass a `SnailAllocator` to `snail_atlas_init` for custom allocation, or `NULL` for libc malloc/free. The C API is OpenGL-only; Vulkan requires the Zig API.
+Pass a `SnailAllocator` to `snail_atlas_init` for custom allocation, or `NULL` for libc malloc/free. The C API is OpenGL-only and currently text-focused; frozen path-picture vectors are exposed through the Zig API. Vulkan also requires the Zig API.
 
 ### Using as a Zig dependency
 
@@ -423,7 +416,7 @@ snail_mod.addImport("vulkan_shaders", vk_stub);
 root_module.addImport("snail", snail_mod);
 ```
 
-The caller must have an active OpenGL 3.3+ context before calling `Renderer.init()`. snail manages its own GL state (shader programs, VAOs, textures, blend/depth) per draw call. If other renderers share the GL context, call `renderer.beginFrame()` once per frame before `draw()` / `drawVector()` so snail re-binds its cached state.
+The caller must have an active OpenGL 3.3+ context before calling `Renderer.init()`. snail manages its own GL state (shader programs, VAOs, textures, blend/depth) per draw call. If other renderers share the GL context, call `renderer.beginFrame()` once per frame before `draw()`, `drawPaths()`, or `drawSprites()` so snail re-binds its cached state.
 
 ### Thread safety
 
@@ -432,7 +425,7 @@ The caller must have an active OpenGL 3.3+ context before calling `Renderer.init
 | `Font` | Immutable after init. Safe for concurrent reads from any thread. |
 | `Atlas` | Immutable snapshot. `extend*()` returns a new snapshot that preserves existing handles; `compact()` returns a new snapshot and may repack them. Safe for concurrent reads. |
 | `Batch` | Operates on caller-owned buffers. Multiple batches reading the same `AtlasView` from different threads is safe. |
-| `VectorPicture` | Immutable after creation. Safe for concurrent reads from any thread. |
+| `PathPicture` | Immutable after creation. Safe for concurrent reads from any thread. |
 | `Renderer` | **Single-thread per context.** GL: all calls must be on the thread with the active GL context. Vulkan: all calls must be externally synchronized. |
 
 Typical game pattern:
@@ -465,8 +458,6 @@ src/
     curve_texture.zig    RGBA16F curve control point texture
     band_texture.zig     RG16UI spatial band subdivision texture
     vertex.zig           glyph quad vertex generation (5x vec4 per vertex)
-    vector_vertex.zig    vector primitive vertex packing
-    vector_pipeline.zig  OpenGL vector primitive pipeline (procedural Slug coverage)
   profile/timer.zig      comptime-gated CPU timers (zero overhead when disabled)
 include/
   snail.h                C header
