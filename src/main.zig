@@ -5,98 +5,15 @@ const demo_banner = @import("demo_banner.zig");
 const assets = @import("assets");
 const screenshot = @import("render/screenshot.zig");
 const subpixel_detect = @import("render/subpixel_detect.zig");
-const libc = @cImport({
-    @cInclude("stdlib.h");
-});
 
 const use_vulkan = build_options.enable_vulkan;
 const platform = if (use_vulkan) @import("render/vulkan_platform.zig") else @import("render/platform.zig");
 const gl = if (use_vulkan) struct {} else @import("render/gl.zig").gl;
-const demo_debug_timings = true;
-const demo_debug_frame_limit: u32 = 300;
-
-fn nowNs() u64 {
-    var ts: std.c.timespec = undefined;
-    _ = std.c.clock_gettime(.MONOTONIC, &ts);
-    return @intCast(@as(i128, ts.sec) * 1_000_000_000 + ts.nsec);
-}
-
-fn nsToMs(ns: u64) f64 {
-    return @as(f64, @floatFromInt(ns)) / 1_000_000.0;
-}
-
-fn debugFrameEnabled(frame_index: u32) bool {
-    return demo_debug_timings and frame_index < demo_debug_frame_limit;
-}
-
-fn debugFrameStart(frame_index: u32, dt: f32, zoom: f32, pan_x: f32, pan_y: f32, angle: f32) u64 {
-    const start = nowNs();
-    if (debugFrameEnabled(frame_index)) {
-        std.debug.print(
-            "[demo][frame {d}] start dt={d:.3}ms zoom={d:.3} pan=({d:.1},{d:.1}) angle={d:.3}\n",
-            .{ frame_index, dt * 1000.0, zoom, pan_x, pan_y, angle },
-        );
-    }
-    return start;
-}
-
-fn debugFrameStep(frame_index: u32, frame_start_ns: u64, step_start_ns: *u64, label: []const u8) void {
-    if (!debugFrameEnabled(frame_index)) return;
-    const now = nowNs();
-    const step_ms = nsToMs(now - step_start_ns.*);
-    const total_ms = nsToMs(now - frame_start_ns);
-    std.debug.print("[demo][frame {d}] {s}: +{d:.3}ms total={d:.3}ms\n", .{
-        frame_index,
-        label,
-        step_ms,
-        total_ms,
-    });
-    step_start_ns.* = now;
-}
-
-fn debugLayout(frame_index: u32, layout: demo_banner.Layout, size: [2]u32) void {
-    if (!debugFrameEnabled(frame_index)) return;
-    std.debug.print(
-        "[demo][frame {d}] window={}x{} hero=({d:.1},{d:.1},{d:.1},{d:.1}) script=({d:.1},{d:.1},{d:.1},{d:.1}) stage=({d:.1},{d:.1},{d:.1},{d:.1})\n",
-        .{
-            frame_index,
-            size[0],
-            size[1],
-            layout.hero_panel.x,
-            layout.hero_panel.y,
-            layout.hero_panel.w,
-            layout.hero_panel.h,
-            layout.script_panel.x,
-            layout.script_panel.y,
-            layout.script_panel.w,
-            layout.script_panel.h,
-            layout.stage_panel.x,
-            layout.stage_panel.y,
-            layout.stage_panel.w,
-            layout.stage_panel.h,
-        },
-    );
-}
-
-fn enableWaylandProtocolDebug() void {
-    if (!demo_debug_timings) return;
-    if (libc.getenv("WAYLAND_DEBUG") != null) {
-        std.debug.print("[demo] preserving existing WAYLAND_DEBUG={s}\n", .{std.mem.span(libc.getenv("WAYLAND_DEBUG"))});
-        return;
-    }
-    if (libc.setenv("WAYLAND_DEBUG", "client", 1) == 0) {
-        std.debug.print("[demo] enabled WAYLAND_DEBUG=client\n", .{});
-    } else {
-        std.debug.print("[demo] failed to enable WAYLAND_DEBUG=client\n", .{});
-    }
-}
 
 pub fn main() !void {
     var da: std.heap.DebugAllocator(.{}) = .init;
     defer _ = da.deinit();
     const allocator = da.allocator();
-
-    enableWaylandProtocolDebug();
 
     if (use_vulkan) {
         const vk_ctx = try platform.init(1280, 720, "snail");
@@ -179,8 +96,6 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
             fps_timer = 0.0;
             fps_frames = 0;
         }
-        const frame_start_ns = debugFrameStart(frame_count, dt, zoom, pan_x, pan_y, angle);
-        var frame_step_ns = frame_start_ns;
 
         const KEY_R = platform.KEY_R;
         const KEY_S = platform.KEY_S;
@@ -229,43 +144,18 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         const w: f32 = @floatFromInt(size[0]);
         const h: f32 = @floatFromInt(size[1]);
         if (w < 1.0 or h < 1.0) continue;
-        debugFrameStep(frame_count, frame_start_ns, &frame_step_ns, "input + window");
 
         const layout = demo_banner.buildLayout(w, h, metrics);
-        debugLayout(frame_count, layout, size);
-        debugFrameStep(frame_count, frame_start_ns, &frame_step_ns, "build layout");
         const size_key = [2]u32{ size[0], size[1] };
         if (path_picture == null or size_key[0] != uploaded_size[0] or size_key[1] != uploaded_size[1]) {
-            if (debugFrameEnabled(frame_count)) {
-                const reason = if (path_picture == null) "path picture missing" else "window size changed";
-                std.debug.print(
-                    "[demo][frame {d}] rebuild picture reason={s} old={}x{} new={}x{}\n",
-                    .{ frame_count, reason, uploaded_size[0], uploaded_size[1], size_key[0], size_key[1] },
-                );
-            }
             if (path_picture) |*picture| {
                 picture.deinit();
                 path_picture = null;
             }
-            debugFrameStep(frame_count, frame_start_ns, &frame_step_ns, "drop old picture");
             var picture_builder = snail.PathPictureBuilder.init(allocator);
             defer picture_builder.deinit();
             try demo_banner.buildPathShowcase(&picture_builder, layout);
-            debugFrameStep(frame_count, frame_start_ns, &frame_step_ns, "build path showcase");
             path_picture = try picture_builder.freeze(allocator);
-            if (debugFrameEnabled(frame_count)) {
-                std.debug.print(
-                    "[demo][frame {d}] picture instances={} layer_info={}x{} pages={}\n",
-                    .{
-                        frame_count,
-                        path_picture.?.instances.len,
-                        path_picture.?.atlas.layer_info_width,
-                        path_picture.?.atlas.layer_info_height,
-                        path_picture.?.atlas.pages.len,
-                    },
-                );
-            }
-            debugFrameStep(frame_count, frame_start_ns, &frame_step_ns, "freeze picture");
             uploaded_size = size_key;
             renderer.uploadAtlases(&[_]*const snail.Atlas{
                 &atlas,
@@ -276,7 +166,6 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
                 &emoji.atlas,
                 &path_picture.?.atlas,
             }, &atlas_views);
-            debugFrameStep(frame_count, frame_start_ns, &frame_step_ns, "upload atlases");
         }
 
         const atlas_view = &atlas_views[0];
@@ -290,7 +179,6 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
             gl.glViewport(0, 0, @intCast(size[0]), @intCast(size[1]));
             platform.clear(clear[0], clear[1], clear[2], clear[3]);
         }
-        debugFrameStep(frame_count, frame_start_ns, &frame_step_ns, "begin frame + clear");
 
         const projection = snail.Mat4.ortho(0, w, 0, h, -1, 1);
         const vector_projection = snail.Mat4.ortho(0, w, h, 0, -1, 1);
@@ -307,23 +195,16 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         const vector_scene_transform = snail.Mat4.multiply(snail.Mat4.translate(pan_x, pan_y, 0), scene_core);
         const mvp = snail.Mat4.multiply(projection, text_scene_transform);
         const vector_mvp = snail.Mat4.multiply(vector_projection, vector_scene_transform);
-        debugFrameStep(frame_count, frame_start_ns, &frame_step_ns, "build transforms");
 
         const white = [4]f32{ 1, 1, 1, 1 };
         const gray = [4]f32{ 0.6, 0.6, 0.65, 1 };
 
         renderer.beginFrame();
-        debugFrameStep(frame_count, frame_start_ns, &frame_step_ns, "renderer.beginFrame");
         if (path_picture) |*picture| {
             var paths = snail.PathBatch.init(path_buf);
             _ = paths.addPicture(path_view, picture);
-            if (debugFrameEnabled(frame_count)) {
-                std.debug.print("[demo][frame {d}] path batch shapes={}\n", .{ frame_count, paths.shapeCount() });
-            }
-            debugFrameStep(frame_count, frame_start_ns, &frame_step_ns, "build path batch");
             if (paths.shapeCount() > 0) {
                 renderer.drawPaths(paths.slice(), vector_mvp, w, h);
-                debugFrameStep(frame_count, frame_start_ns, &frame_step_ns, "draw paths");
             }
         }
 
@@ -354,18 +235,9 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
                 .emoji_view = &atlas_views[5],
             });
         }
-        if (debugFrameEnabled(frame_count)) {
-            std.debug.print("[demo][frame {d}] text batch glyphs={} floats={}\n", .{
-                frame_count,
-                batch.glyphCount(),
-                batch.len,
-            });
-        }
-        debugFrameStep(frame_count, frame_start_ns, &frame_step_ns, "build text batch");
 
         if (batch.glyphCount() > 0) {
             renderer.draw(batch.slice(), mvp, w, h);
-            debugFrameStep(frame_count, frame_start_ns, &frame_step_ns, "draw text");
         }
         const total_glyphs = batch.glyphCount();
 
@@ -381,7 +253,6 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
                 renderer.draw(hud.slice(), projection, w, h);
             }
         }
-        debugFrameStep(frame_count, frame_start_ns, &frame_step_ns, "draw hud");
 
         if (!use_vulkan and frame_count == 2) {
             const iw: u32 = @intFromFloat(w);
@@ -390,7 +261,6 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
                 defer allocator.free(px);
                 screenshot.writeTga("zig-out/frame0.tga", px, iw, ih);
             }
-            debugFrameStep(frame_count, frame_start_ns, &frame_step_ns, "capture screenshot");
         }
         if (frame_count % 60 == 0 and fps_display > 0.0) {
             std.debug.print("\rFPS: {d:.0}  Glyphs: {}   ", .{ fps_display, total_glyphs });
@@ -401,13 +271,6 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
             platform.endFrame();
         } else {
             platform.swapBuffers();
-        }
-        debugFrameStep(frame_count - 1, frame_start_ns, &frame_step_ns, "present");
-        if (debugFrameEnabled(frame_count - 1)) {
-            std.debug.print(
-                "[demo][frame {d}] done total={d:.3}ms\n",
-                .{ frame_count - 1, nsToMs(nowNs() - frame_start_ns) },
-            );
         }
     }
 }
