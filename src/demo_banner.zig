@@ -8,22 +8,23 @@ pub const thai_text = "\xe0\xb8\xaa\xe0\xb8\xa7\xe0\xb8\xb1\xe0\xb8\xaa\xe0\xb8\
 pub const emoji_text = "\xe2\x9c\xa8 \xf0\x9f\x8c\x8d \xf0\x9f\x8e\xa8 \xf0\x9f\x9a\x80 \xf0\x9f\x90\x8c \xf0\x9f\x8c\x88 \xf0\x9f\x94\xa5"; // ✨ 🌍 🎨 🚀 🐌 🌈 🔥
 
 pub const title_text = "snail";
-pub const badge_text = "GPU text + vector atlas";
-pub const subtitle_text = "One atlas for text, scripts, emoji, and paths.";
-pub const ligature_label_text = "Ligatures";
+pub const badge_text = "GPU text + paths";
+pub const subtitle_text = "ligatures / scripts / emoji / paths";
+pub const hero_meta_text = "Latin / RTL / vertical / color";
+pub const ligature_label_text = "Latin";
 pub const ligature_text = "office affine shuffle flow";
-pub const ligature_caption_text = "ffi fi ffl fl, kerning, gradients, strokes";
-pub const pangram_text = "Waltz, bad nymph, for quick jigs vex.";
-pub const paragraph_text = "Bezier glyphs, frozen vector art, and color emoji share one renderer. This banner mixes Latin copy, complex scripts, layered paths, and the snail in one scene.";
-pub const api_text = "Batch.addString  PathPicture.freeze  PathBatch.addPicture";
-pub const scripts_heading_text = "Scripts + emoji";
-pub const stage_label_text = "Frozen vectors";
-pub const stage_title_text = "fills, gradients, inside strokes";
-pub const stage_caption_text = "frozen once, instanced per frame";
+pub const ligature_caption_text = "ffi / fi / ffl / fl";
+pub const kerning_text = "AV / To / Ta / We";
+pub const numeral_text = "0123456789";
+pub const specimen_footer_text = "kern / gradient / stroke";
+pub const scripts_heading_text = "Scripts / emoji";
+pub const stage_label_text = "Paths";
+pub const stage_title_text = "fill / gradient / stroke";
+pub const stage_caption_text = "frozen / instanced";
 pub const stage_pill_labels = [_][]const u8{
-    "rounded rect",
+    "round rect",
     "ellipse",
-    "cubic path",
+    "cubic",
 };
 
 const ink = [4]f32{ 0.95, 0.97, 0.99, 1.0 };
@@ -235,30 +236,20 @@ pub fn drawText(batch: *snail.Batch, h: f32, layout: Layout, resources: TextReso
     const title_size = std.math.clamp(layout.hero_panel.w * 0.16, 82.0, 118.0);
     const subtitle_size = std.math.clamp(layout.hero_panel.w * 0.033, 18.0, 24.0);
     const ligature_size = std.math.clamp(layout.specimen_panel.w * 0.072, 34.0, 48.0);
-    const body_size = std.math.clamp(layout.specimen_panel.w * 0.026, 13.0, 16.0);
+    const specimen_line_size = std.math.clamp(layout.specimen_panel.w * 0.035, 16.0, 22.0);
 
     _ = batch.addString(resources.latin_view, resources.latin_font, badge_text, layout.badge_pill.x + 16.0, textYFromTop(h, layout.badge_pill.y + 22.0), 13.0, teal);
     _ = batch.addString(resources.latin_view, resources.latin_font, title_text, hero_x, textYFromTop(h, layout.hero_panel.y + 126.0), title_size, ink);
     _ = batch.addString(resources.latin_view, resources.latin_font, subtitle_text, hero_x, textYFromTop(h, layout.hero_panel.y + 172.0), subtitle_size, mist);
-    _ = batch.addString(resources.latin_view, resources.latin_font, "Bezier text rendering", hero_x, textYFromTop(h, layout.hero_panel.y + 214.0), 14.0, slate);
+    _ = batch.addString(resources.latin_view, resources.latin_font, hero_meta_text, hero_x, textYFromTop(h, layout.hero_panel.y + 214.0), 14.0, slate);
 
     const specimen_x = layout.specimen_panel.x + 24.0;
     _ = batch.addString(resources.latin_view, resources.latin_font, ligature_label_text, specimen_x, textYFromTop(h, layout.specimen_panel.y + 26.0), 12.0, teal);
-    _ = batch.addString(resources.latin_view, resources.latin_font, ligature_text, specimen_x, textYFromTop(h, layout.specimen_panel.y + 76.0), ligature_size, ink);
-    _ = batch.addString(resources.latin_view, resources.latin_font, ligature_caption_text, specimen_x, textYFromTop(h, layout.specimen_panel.y + 108.0), 14.0, sand);
-    _ = batch.addString(resources.latin_view, resources.latin_font, pangram_text, specimen_x, textYFromTop(h, layout.specimen_panel.y + 148.0), 18.0, ink);
-    _ = batch.addStringWrapped(
-        resources.latin_view,
-        resources.latin_font,
-        paragraph_text,
-        specimen_x,
-        textYFromTop(h, layout.specimen_panel.y + 182.0),
-        body_size,
-        layout.specimen_panel.w - 48.0,
-        body_size * 1.45,
-        mist,
-    );
-    _ = batch.addString(resources.latin_view, resources.latin_font, api_text, specimen_x, textYFromTop(h, layout.specimen_panel.y + layout.specimen_panel.h - 22.0), 12.0, slate);
+    _ = batch.addString(resources.latin_view, resources.latin_font, ligature_text, specimen_x, textYFromTop(h, layout.specimen_panel.y + 82.0), ligature_size, ink);
+    _ = batch.addString(resources.latin_view, resources.latin_font, ligature_caption_text, specimen_x, textYFromTop(h, layout.specimen_panel.y + 118.0), 14.0, sand);
+    _ = batch.addString(resources.latin_view, resources.latin_font, kerning_text, specimen_x, textYFromTop(h, layout.specimen_panel.y + 164.0), specimen_line_size, mist);
+    _ = batch.addString(resources.latin_view, resources.latin_font, numeral_text, specimen_x, textYFromTop(h, layout.specimen_panel.y + 198.0), specimen_line_size, ink);
+    _ = batch.addString(resources.latin_view, resources.latin_font, specimen_footer_text, specimen_x, textYFromTop(h, layout.specimen_panel.y + layout.specimen_panel.h - 22.0), 12.0, slate);
 
     _ = batch.addString(resources.latin_view, resources.latin_font, scripts_heading_text, layout.script_panel.x + 26.0, textYFromTop(h, layout.script_panel.y + 30.0), 13.0, teal);
 
