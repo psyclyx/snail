@@ -113,6 +113,32 @@ fn textYFromTop(h: f32, top_y: f32) f32 {
     return h - top_y;
 }
 
+fn lineExtents(font: *const snail.Font, font_size: f32) struct { ascent: f32, descent: f32 } {
+    const scale = font_size / @as(f32, @floatFromInt(font.unitsPerEm()));
+    const metrics = font.lineMetrics() catch return .{
+        .ascent = font_size * 0.82,
+        .descent = font_size * 0.22,
+    };
+    return .{
+        .ascent = @as(f32, @floatFromInt(metrics.ascent)) * scale,
+        .descent = -@as(f32, @floatFromInt(metrics.descent)) * scale,
+    };
+}
+
+fn centeredBaselineTop(
+    font: *const snail.Font,
+    font_size: f32,
+    rect: snail.VectorRect,
+    top_pad: f32,
+    bottom_pad: f32,
+    baseline_shift: f32,
+) f32 {
+    const extents = lineExtents(font, font_size);
+    const content_h = extents.ascent + extents.descent;
+    const usable_h = @max(rect.h - top_pad - bottom_pad, content_h);
+    return rect.y + top_pad + (usable_h - content_h) * 0.5 + extents.ascent + baseline_shift;
+}
+
 fn measureStringAdvance(atlas_like: anytype, font: *const snail.Font, text: []const u8, font_size: f32) f32 {
     var probe_buf: [128 * snail.FLOATS_PER_GLYPH]f32 = undefined;
     var probe = snail.Batch.init(&probe_buf);
@@ -142,7 +168,7 @@ pub fn buildLayout(w: f32, h: f32, metrics: TextMetrics) Layout {
         .x = right_x,
         .y = margin_y + 10.0,
         .w = right_w,
-        .h = std.math.clamp(h * 0.37, 250.0, 320.0),
+        .h = std.math.clamp(h * 0.44, 320.0, 380.0),
     });
     const stage_panel = snapRect(.{
         .x = right_x + 20.0,
@@ -164,14 +190,14 @@ pub fn buildLayout(w: f32, h: f32, metrics: TextMetrics) Layout {
     });
     const emoji_pill = snapRect(.{
         .x = script_panel.x + 22.0,
-        .y = script_panel.y + script_panel.h - 62.0,
+        .y = script_panel.y + script_panel.h - 50.0,
         .w = script_panel.w - 44.0,
-        .h = 40.0,
+        .h = 34.0,
     });
 
-    const script_top = script_panel.y + 70.0;
-    const script_bottom = emoji_pill.y - 16.0;
-    const row_gap = 10.0;
+    const script_top = script_panel.y + 50.0;
+    const script_bottom = emoji_pill.y - 10.0;
+    const row_gap = 8.0;
     const row_h = (script_bottom - script_top - row_gap * 3.0) / 4.0;
     var script_rows: [4]snail.VectorRect = undefined;
     for (&script_rows, 0..) |*row, i| {
@@ -243,19 +269,23 @@ pub fn drawText(batch: *snail.Batch, h: f32, layout: Layout, resources: TextReso
         view: *const snail.AtlasView,
         color: [4]f32,
         size: f32,
+        top_pad: f32,
+        bottom_pad: f32,
+        baseline_shift: f32,
     }{
-        .{ .label = "Arabic", .text = arabic_text, .font = resources.arabic_font, .view = resources.arabic_view, .color = sage, .size = 29.0 },
-        .{ .label = "Devanagari", .text = devanagari_text, .font = resources.devanagari_font, .view = resources.devanagari_view, .color = teal, .size = 27.0 },
-        .{ .label = "Thai", .text = thai_text, .font = resources.thai_font, .view = resources.thai_view, .color = sand, .size = 28.0 },
-        .{ .label = "Mongolian", .text = mongolian_text, .font = resources.mongolian_font, .view = resources.mongolian_view, .color = blush, .size = 30.0 },
+        .{ .label = "Arabic", .text = arabic_text, .font = resources.arabic_font, .view = resources.arabic_view, .color = sage, .size = 27.0, .top_pad = 6.0, .bottom_pad = 6.0, .baseline_shift = 1.5 },
+        .{ .label = "Devanagari", .text = devanagari_text, .font = resources.devanagari_font, .view = resources.devanagari_view, .color = teal, .size = 24.0, .top_pad = 8.0, .bottom_pad = 6.0, .baseline_shift = 2.0 },
+        .{ .label = "Thai", .text = thai_text, .font = resources.thai_font, .view = resources.thai_view, .color = sand, .size = 26.0, .top_pad = 7.0, .bottom_pad = 6.0, .baseline_shift = 1.5 },
+        .{ .label = "Mongolian", .text = mongolian_text, .font = resources.mongolian_font, .view = resources.mongolian_view, .color = blush, .size = 27.0, .top_pad = 6.0, .bottom_pad = 7.0, .baseline_shift = 2.5 },
     };
     for (layout.script_rows, script_items) |row, item| {
-        _ = batch.addString(resources.latin_view, resources.latin_font, item.label, row.x + 18.0, textYFromTop(h, row.y + 20.0), 11.0, slate);
-        _ = batch.addString(item.view, &item.font.font, item.text, row.x + 170.0, textYFromTop(h, row.y + row.h - 12.0), item.size, item.color);
+        _ = batch.addString(resources.latin_view, resources.latin_font, item.label, row.x + 18.0, textYFromTop(h, row.y + 16.0), 11.0, slate);
+        const baseline_top = centeredBaselineTop(&item.font.font, item.size, row, item.top_pad, item.bottom_pad, item.baseline_shift);
+        _ = batch.addString(item.view, &item.font.font, item.text, row.x + 170.0, textYFromTop(h, baseline_top), item.size, item.color);
     }
 
-    _ = batch.addString(resources.latin_view, resources.latin_font, "Emoji", layout.emoji_pill.x + 16.0, textYFromTop(h, layout.emoji_pill.y + 18.0), 11.0, slate);
-    _ = batch.addString(resources.emoji_view, &resources.emoji_font.font, emoji_text, layout.emoji_pill.x + 150.0, textYFromTop(h, layout.emoji_pill.y + layout.emoji_pill.h - 8.0), 30.0, ink);
+    _ = batch.addString(resources.latin_view, resources.latin_font, "Emoji", layout.emoji_pill.x + 16.0, textYFromTop(h, layout.emoji_pill.y + 16.0), 11.0, slate);
+    _ = batch.addString(resources.emoji_view, &resources.emoji_font.font, emoji_text, layout.emoji_pill.x + 150.0, textYFromTop(h, layout.emoji_pill.y + layout.emoji_pill.h - 6.0), 28.0, ink);
 
     _ = batch.addString(resources.latin_view, resources.latin_font, stage_label_text, layout.stage_panel.x + 42.0, textYFromTop(h, layout.stage_panel.y + 48.0), 12.0, teal);
     _ = batch.addString(resources.latin_view, resources.latin_font, stage_title_text, layout.stage_panel.x + 42.0, textYFromTop(h, layout.stage_panel.y + 82.0), 23.0, ink);
