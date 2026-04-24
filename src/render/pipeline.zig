@@ -107,6 +107,7 @@ var atlas_slot_count: usize = 0;
 var allocated_curve_height: u32 = 0;
 var allocated_band_height: u32 = 0;
 var allocated_layer_count: u32 = 0;
+var atlas_has_special_text_runs: bool = false;
 var image_slots: [MAX_IMAGES]ImageSlot = std.mem.zeroes([MAX_IMAGES]ImageSlot);
 var image_slot_count: usize = 0;
 var allocated_image_width: u32 = 0;
@@ -265,6 +266,7 @@ pub fn buildTextureArrays(atlases: []const *const snail_mod.Atlas, out_views: []
         fillAtlasViews(atlases, out_views);
         ensureAtlasImagesRegistered(atlases);
         rebuildLayerInfoTexture(atlases);
+        atlas_has_special_text_runs = atlasesHaveSpecialTextRuns(atlases);
         active_program = 0;
         frame_begun = false;
     }
@@ -510,6 +512,7 @@ fn rebuildTextureArrays(atlases: []const *const snail_mod.Atlas, out_views: []sn
     uploadAllPages(atlases);
     ensureAtlasImagesRegistered(atlases);
     rebuildLayerInfoTexture(atlases);
+    atlas_has_special_text_runs = atlasesHaveSpecialTextRuns(atlases);
     fillAtlasViews(atlases, out_views);
     active_program = 0;
     frame_begun = false;
@@ -596,7 +599,15 @@ fn resetAtlasUploadState() void {
     allocated_curve_height = 0;
     allocated_band_height = 0;
     allocated_layer_count = 0;
+    atlas_has_special_text_runs = false;
     for (&atlas_slots) |*slot| slot.* = .{};
+}
+
+fn atlasesHaveSpecialTextRuns(atlases: []const *const snail_mod.Atlas) bool {
+    for (atlases) |atlas| {
+        if (atlas.colr_base_map != null) return true;
+    }
+    return false;
 }
 
 fn roundUpPowerOfTwo(value: u32) u32 {
@@ -817,6 +828,13 @@ fn drawTextInternal(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_
     const floats_per_glyph = vertex.FLOATS_PER_VERTEX * vertex.VERTICES_PER_GLYPH;
     const total_glyphs = vertices.len / floats_per_glyph;
     const allow_lcd = allow_subpixel and subpixel_order != .none;
+    if (!atlas_has_special_text_runs) {
+        const state = if (allow_lcd) &text_subpixel_program else &text_program;
+        bindProgramState(state, mvp, viewport_w, viewport_h, allow_lcd);
+        drawGlyphRange(vertices, 0, total_glyphs);
+        return;
+    }
+
     var run_start: usize = 0;
     while (run_start < total_glyphs) {
         const special = glyphRunIsSpecial(vertices, run_start);
