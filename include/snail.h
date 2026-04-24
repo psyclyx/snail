@@ -3,7 +3,7 @@
  * Thread safety:
  *   - Font: immutable after init, safe for concurrent reads.
  *   - Atlas snapshots: immutable after init/extend/compact, safe for concurrent reads.
- *   - Batch (snail_batch_*): operates on caller-owned buffers. Multiple batches
+ *   - TextBatch (snail_batch_*): operates on caller-owned buffers. Multiple batches
  *     reading the same Atlas/Font from different threads is safe.
  *   - Renderer (snail_renderer_*): must be called from the GL thread only.
  *
@@ -49,12 +49,19 @@ typedef struct {
 
 /* ── Opaque types ── */
 
-typedef struct SnailFont  SnailFont;
-typedef struct SnailAtlas SnailAtlas;
+typedef struct SnailFont              SnailFont;
+typedef struct SnailAtlas             SnailAtlas;
+typedef struct SnailShapedRun         SnailShapedRun;
+typedef struct SnailImage             SnailImage;
+typedef struct SnailPath              SnailPath;
+typedef struct SnailPathPictureBuilder SnailPathPictureBuilder;
+typedef struct SnailPathPicture       SnailPathPicture;
 
-typedef struct {
-    float min_x, min_y, max_x, max_y;
-} SnailBBox;
+/* ── Value types ── */
+
+typedef struct { float min_x, min_y, max_x, max_y; } SnailBBox;
+typedef struct { float x, y, w, h; } SnailRect;
+typedef struct { float xx, xy, tx, yx, yy, ty; } SnailTransform2D;
 
 typedef struct {
     uint16_t advance_width;
@@ -63,10 +70,77 @@ typedef struct {
 } SnailGlyphMetrics;
 
 typedef struct {
-    int16_t ascent;
-    int16_t descent;
-    int16_t line_gap;
+    int16_t ascent, descent, line_gap;
 } SnailLineMetrics;
+
+typedef struct {
+    uint16_t glyph_id;
+    float x_offset, y_offset;
+    float x_advance, y_advance;
+    uint32_t source_start, source_end;
+} SnailGlyphPlacement;
+
+/* ── Paint / style types ── */
+
+#define SNAIL_PAINT_SOLID   0
+#define SNAIL_PAINT_LINEAR  1
+#define SNAIL_PAINT_RADIAL  2
+
+#define SNAIL_EXTEND_CLAMP   0
+#define SNAIL_EXTEND_REPEAT  1
+#define SNAIL_EXTEND_REFLECT 2
+
+typedef struct {
+    float start_x, start_y, end_x, end_y;
+    float start_color[4], end_color[4];
+    int extend;
+} SnailLinearGradient;
+
+typedef struct {
+    float center_x, center_y, radius;
+    float inner_color[4], outer_color[4];
+    int extend;
+} SnailRadialGradient;
+
+/* FillStyle: set paint_kind = -1 to use color only.
+ * Set paint_kind to SNAIL_PAINT_SOLID/LINEAR/RADIAL and fill the
+ * corresponding paint_solid/paint_linear/paint_radial field. */
+typedef struct {
+    float color[4];
+    int paint_kind;
+    float paint_solid[4];
+    SnailLinearGradient paint_linear;
+    SnailRadialGradient paint_radial;
+} SnailFillStyle;
+
+#define SNAIL_CAP_BUTT   0
+#define SNAIL_CAP_SQUARE 1
+#define SNAIL_CAP_ROUND  2
+
+#define SNAIL_JOIN_MITER 0
+#define SNAIL_JOIN_BEVEL 1
+#define SNAIL_JOIN_ROUND 2
+
+#define SNAIL_STROKE_CENTER 0
+#define SNAIL_STROKE_INSIDE 1
+
+typedef struct {
+    float color[4];
+    int paint_kind;
+    float paint_solid[4];
+    SnailLinearGradient paint_linear;
+    SnailRadialGradient paint_radial;
+    float width;
+    int cap, join;
+    float miter_limit;
+    int placement;
+} SnailStrokeStyle;
+
+typedef struct { float u0, v0, u1, v1; } SnailSpriteUvRect;
+typedef struct { float x, y; } SnailSpriteAnchor;
+
+/* ── Identity transform helper ── */
+#define SNAIL_TRANSFORM2D_IDENTITY ((SnailTransform2D){1,0,0, 0,1,0})
 
 /* ── Font (thread-safe after init) ── */
 
@@ -75,115 +149,238 @@ void     snail_font_deinit(SnailFont *font);
 uint16_t snail_font_units_per_em(const SnailFont *font);
 uint16_t snail_font_glyph_index(const SnailFont *font, uint32_t codepoint);
 int16_t  snail_font_get_kerning(const SnailFont *font, uint16_t left, uint16_t right);
-int      snail_font_line_metrics(const SnailFont *font, SnailLineMetrics *out);
-/* Read direct glyph metrics from font tables without building an atlas. */
 int      snail_font_glyph_metrics(const SnailFont *font, uint16_t glyph_id, SnailGlyphMetrics *out);
+int      snail_font_line_metrics(const SnailFont *font, SnailLineMetrics *out);
 int      snail_font_advance_width(const SnailFont *font, uint16_t glyph_id, int16_t *out);
 int      snail_font_bbox(const SnailFont *font, uint16_t glyph_id, SnailBBox *out);
 
 /* ── Atlas snapshots (thread-safe after creation) ── */
 
-int  snail_atlas_init(const SnailAllocator *allocator, /* NULL for libc */
-                      const SnailFont *font,
-                      const uint32_t *codepoints, size_t num_codepoints,
-                      SnailAtlas **out);
-/* Return a new atlas snapshot extended with any missing codepoints.
- * Existing handles remain valid in the returned snapshot. If no new glyphs are
- * needed, *out is set to NULL and SNAIL_OK is returned. */
-int  snail_atlas_extend_codepoints(const SnailAtlas *atlas,
-                                   const uint32_t *codepoints, size_t num_codepoints,
-                                   SnailAtlas **out);
-/* Return a new atlas snapshot extended with any missing glyph IDs.
- * Existing handles remain valid in the returned snapshot. If no new glyphs are
- * needed, *out is set to NULL and SNAIL_OK is returned. */
-int  snail_atlas_extend_glyph_ids(const SnailAtlas *atlas,
-                                  const uint16_t *glyph_ids, size_t num_glyph_ids,
-                                  SnailAtlas **out);
-/* Return a compacted atlas snapshot. Compaction may change glyph handles. */
-int  snail_atlas_compact(const SnailAtlas *atlas, SnailAtlas **out);
-/* Legacy compatibility helper: mutate an atlas handle in place by replacing it
- * with an extended snapshot. Not thread-safe with concurrent readers. */
-int  snail_atlas_add_codepoints(SnailAtlas *atlas,
-                                const uint32_t *codepoints, size_t num_codepoints,
-                                bool *added);
-void snail_atlas_deinit(SnailAtlas *atlas);
+int    snail_atlas_init(const SnailAllocator *alloc, const SnailFont *font,
+                        const uint32_t *codepoints, size_t num, SnailAtlas **out);
+int    snail_atlas_init_ascii(const SnailAllocator *alloc, const SnailFont *font,
+                              SnailAtlas **out);
+int    snail_atlas_extend_codepoints(const SnailAtlas *atlas,
+                                     const uint32_t *codepoints, size_t num,
+                                     SnailAtlas **out);
+int    snail_atlas_extend_glyph_ids(const SnailAtlas *atlas,
+                                    const uint16_t *ids, size_t num,
+                                    SnailAtlas **out);
+int    snail_atlas_extend_text(const SnailAtlas *atlas,
+                               const char *text, size_t len,
+                               SnailAtlas **out);
+int    snail_atlas_extend_run(const SnailAtlas *atlas,
+                              const SnailShapedRun *run,
+                              SnailAtlas **out);
+int    snail_atlas_compact(const SnailAtlas *atlas, SnailAtlas **out);
+/* Legacy in-place extend (not thread-safe with concurrent readers). */
+int    snail_atlas_add_codepoints(SnailAtlas *atlas,
+                                  const uint32_t *codepoints, size_t num,
+                                  bool *added);
+void   snail_atlas_deinit(SnailAtlas *atlas);
+size_t snail_atlas_page_count(const SnailAtlas *atlas);
+size_t snail_atlas_texture_byte_len(const SnailAtlas *atlas);
+
+/* ── Shaping ── */
+
+/* Shape UTF-8 text into positioned glyph placements.
+ * Uses the built-in limited shaper (GSUB ligatures + GPOS/kern kerning).
+ * Caller must free the result with snail_shaped_run_deinit(). */
+int    snail_atlas_shape_utf8(const SnailAtlas *atlas, const SnailFont *font,
+                              const char *text, size_t text_len,
+                              float font_size,
+                              SnailShapedRun **out);
+size_t snail_shaped_run_glyph_count(const SnailShapedRun *run);
+/* Copy a single glyph placement by index. Returns false if out of bounds. */
+bool   snail_shaped_run_glyph(const SnailShapedRun *run, size_t index,
+                              SnailGlyphPlacement *out);
+/* Copy all glyph placements into a caller-owned buffer. Returns count copied. */
+size_t snail_shaped_run_copy_glyphs(const SnailShapedRun *run,
+                                    SnailGlyphPlacement *out, size_t capacity);
+float  snail_shaped_run_advance_x(const SnailShapedRun *run);
+float  snail_shaped_run_advance_y(const SnailShapedRun *run);
+void   snail_shaped_run_deinit(SnailShapedRun *run);
+
+/* Write glyph IDs from `run` that are missing from `atlas` into `out`.
+ * Returns the number of unique missing IDs written. */
+size_t snail_atlas_collect_missing_glyph_ids(const SnailAtlas *atlas,
+                                             const SnailShapedRun *run,
+                                             uint16_t *out, size_t capacity);
+
+/* ── Image ── */
+
+int    snail_image_init_rgba8(const SnailAllocator *alloc,
+                              uint32_t width, uint32_t height,
+                              const uint8_t *pixels,
+                              SnailImage **out);
+void   snail_image_deinit(SnailImage *image);
+uint32_t snail_image_width(const SnailImage *image);
+uint32_t snail_image_height(const SnailImage *image);
 
 /* ── Renderer (GL thread only) ── */
 
 int  snail_renderer_init(void);
 void snail_renderer_deinit(void);
 void snail_renderer_upload_atlas(const SnailAtlas *atlas);
+void snail_renderer_upload_image(SnailImage *image);
+void snail_renderer_upload_path_picture(SnailPathPicture *picture);
+void snail_renderer_begin_frame(void);
 
 #define SNAIL_SUBPIXEL_NONE 0
 #define SNAIL_SUBPIXEL_RGB  1
 #define SNAIL_SUBPIXEL_BGR  2
 #define SNAIL_SUBPIXEL_VRGB 3
 #define SNAIL_SUBPIXEL_VBGR 4
-/* Ordered LCD subpixel AA: see SNAIL_SUBPIXEL_* constants above. */
 void snail_renderer_set_subpixel_order(int order);
-/* LCD policy: safe = axis-aligned text with safe per-channel blending when
- * supported, otherwise opaque-backdrop resolve or grayscale fallback;
- * legacy_unsafe = previous behavior with known compositing artifacts. */
+int  snail_renderer_subpixel_order(void);
+
 #define SNAIL_SUBPIXEL_MODE_SAFE 0
 #define SNAIL_SUBPIXEL_MODE_LEGACY_UNSAFE 1
 void snail_renderer_set_subpixel_mode(int mode);
-/* Opaque linear RGBA backdrop used by safe LCD fallback mode. Pass NULL to clear. */
+int  snail_renderer_subpixel_mode(void);
+
 void snail_renderer_set_subpixel_backdrop(const float *rgba_or_null);
-/* Legacy convenience wrapper: true = RGB, false = off. */
 void snail_renderer_set_subpixel(bool enabled);
 
-/* Fill rule: 0 = non-zero winding (TrueType default), 1 = even-odd */
 #define SNAIL_FILL_NONZERO 0
 #define SNAIL_FILL_EVENODD 1
 void snail_renderer_set_fill_rule(int rule);
+int  snail_renderer_fill_rule(void);
+
+const char *snail_renderer_backend_name(void);
 
 /* mvp: 16 floats, column-major 4x4 matrix */
 void snail_renderer_draw_text(const float *vertices, size_t num_floats,
                               const float *mvp,
                               float viewport_w, float viewport_h);
+void snail_renderer_draw_paths(const float *vertices, size_t num_floats,
+                               const float *mvp,
+                               float viewport_w, float viewport_h);
+void snail_renderer_draw_sprites(const float *vertices, size_t num_floats,
+                                 float viewport_w, float viewport_h);
 
 /* ── TextBatch (any thread, caller-owned buffer) ── */
 
-/* Lay out and append glyph vertices for a UTF-8 string.
- * buf + *buf_len: write position. buf_capacity: total buffer size in floats.
- * color: 4 floats (RGBA). Returns advance width in pixels. */
-float snail_batch_add_text(float *buf, size_t buf_capacity, size_t *buf_len,
-                           const SnailAtlas *atlas, const SnailFont *font,
-                           const char *text, size_t text_len,
-                           float x, float y, float font_size,
-                           const float *color);
-
-/* Append pre-shaped glyphs (e.g. from HarfBuzz). Positions are pixel offsets
- * from (x, y). Returns number of glyphs added. */
+float  snail_batch_add_text(float *buf, size_t buf_capacity, size_t *buf_len,
+                            const SnailAtlas *atlas, const SnailFont *font,
+                            const char *text, size_t text_len,
+                            float x, float y, float font_size,
+                            const float *color);
 size_t snail_batch_add_run(float *buf, size_t buf_capacity, size_t *buf_len,
                            const SnailAtlas *atlas,
-                           const uint16_t *glyph_ids,
-                           const float *x_offsets, const float *y_offsets,
-                           size_t num_glyphs,
+                           const SnailShapedRun *run,
                            float x, float y, float font_size,
                            const float *color);
+size_t snail_batch_glyph_count(size_t buf_len);
+
+/* ── SpriteBatch (any thread, caller-owned buffer) ── */
+
+bool snail_sprite_batch_add_sprite(float *buf, size_t buf_capacity, size_t *buf_len,
+                                   const SnailImage *image,
+                                   float pos_x, float pos_y,
+                                   float size_x, float size_y,
+                                   const float *tint);
+bool snail_sprite_batch_add_sprite_rect(float *buf, size_t buf_capacity, size_t *buf_len,
+                                        const SnailImage *image,
+                                        SnailRect rect, const float *tint,
+                                        SnailSpriteUvRect uv, int filter);
+bool snail_sprite_batch_add_sprite_transformed(float *buf, size_t buf_capacity, size_t *buf_len,
+                                               const SnailImage *image,
+                                               float size_x, float size_y,
+                                               const float *tint,
+                                               SnailSpriteUvRect uv, int filter,
+                                               SnailSpriteAnchor anchor,
+                                               SnailTransform2D transform);
+
+/* ── Path (any thread) ── */
+
+int  snail_path_init(const SnailAllocator *alloc, SnailPath **out);
+void snail_path_deinit(SnailPath *path);
+void snail_path_reset(SnailPath *path);
+bool snail_path_is_empty(const SnailPath *path);
+bool snail_path_bounds(const SnailPath *path, SnailBBox *out);
+int  snail_path_move_to(SnailPath *path, float x, float y);
+int  snail_path_line_to(SnailPath *path, float x, float y);
+int  snail_path_quad_to(SnailPath *path, float cx, float cy, float x, float y);
+int  snail_path_cubic_to(SnailPath *path, float c1x, float c1y,
+                         float c2x, float c2y, float x, float y);
+int  snail_path_close(SnailPath *path);
+int  snail_path_add_rect(SnailPath *path, SnailRect rect);
+int  snail_path_add_rounded_rect(SnailPath *path, SnailRect rect, float radius);
+int  snail_path_add_ellipse(SnailPath *path, SnailRect rect);
+
+/* ── PathPictureBuilder (any thread) ── */
+
+int  snail_path_picture_builder_init(const SnailAllocator *alloc,
+                                     SnailPathPictureBuilder **out);
+void snail_path_picture_builder_deinit(SnailPathPictureBuilder *builder);
+/* fill and/or stroke may be NULL to skip that side. */
+int  snail_path_picture_builder_add_path(SnailPathPictureBuilder *builder,
+                                         const SnailPath *path,
+                                         const SnailFillStyle *fill,
+                                         const SnailStrokeStyle *stroke,
+                                         SnailTransform2D transform);
+int  snail_path_picture_builder_add_filled_path(SnailPathPictureBuilder *builder,
+                                                const SnailPath *path,
+                                                SnailFillStyle fill,
+                                                SnailTransform2D transform);
+int  snail_path_picture_builder_add_stroked_path(SnailPathPictureBuilder *builder,
+                                                 const SnailPath *path,
+                                                 SnailStrokeStyle stroke,
+                                                 SnailTransform2D transform);
+int  snail_path_picture_builder_add_rect(SnailPathPictureBuilder *builder,
+                                         SnailRect rect,
+                                         const SnailFillStyle *fill,
+                                         const SnailStrokeStyle *stroke,
+                                         SnailTransform2D transform);
+int  snail_path_picture_builder_add_rounded_rect(SnailPathPictureBuilder *builder,
+                                                 SnailRect rect,
+                                                 const SnailFillStyle *fill,
+                                                 const SnailStrokeStyle *stroke,
+                                                 float corner_radius,
+                                                 SnailTransform2D transform);
+int  snail_path_picture_builder_add_ellipse(SnailPathPictureBuilder *builder,
+                                            SnailRect rect,
+                                            const SnailFillStyle *fill,
+                                            const SnailStrokeStyle *stroke,
+                                            SnailTransform2D transform);
+int  snail_path_picture_builder_freeze(const SnailPathPictureBuilder *builder,
+                                       const SnailAllocator *alloc,
+                                       SnailPathPicture **out);
+
+/* ── PathPicture (thread-safe after creation) ── */
+
+void   snail_path_picture_deinit(SnailPathPicture *picture);
+size_t snail_path_picture_shape_count(const SnailPathPicture *picture);
+
+/* ── PathBatch (any thread, caller-owned buffer) ── */
+
+size_t snail_path_batch_add_picture(float *buf, size_t buf_capacity, size_t *buf_len,
+                                    const SnailPathPicture *picture);
+size_t snail_path_batch_add_picture_transformed(float *buf, size_t buf_capacity,
+                                                size_t *buf_len,
+                                                const SnailPathPicture *picture,
+                                                SnailTransform2D transform);
 
 /* ── HarfBuzz (compile-time optional: -Dharfbuzz=true) ── */
 
-/* Returns true if HarfBuzz support was compiled in. */
 bool snail_harfbuzz_available(void);
-
-/* Return a new atlas snapshot extended with any glyphs discovered by shaping
- * the given text. Existing handles remain valid in the returned snapshot.
- * If no new glyphs are needed, *out is set to NULL and SNAIL_OK is returned.
- * No-op if HarfBuzz not compiled in. */
 int  snail_atlas_extend_glyphs_for_text(const SnailAtlas *atlas,
                                         const char *text, size_t text_len,
                                         SnailAtlas **out);
-/* Legacy compatibility helper: mutate an atlas handle in place by replacing it
- * with an extended snapshot. Not thread-safe with concurrent readers. */
+/* Legacy in-place extend (not thread-safe). */
 int  snail_atlas_add_glyphs_for_text(SnailAtlas *atlas,
                                      const char *text, size_t text_len,
                                      bool *added);
 
 /* ── Constants ── */
 
-size_t snail_floats_per_glyph(void);
+size_t snail_text_floats_per_glyph(void);
+size_t snail_text_floats_per_vertex(void);
+size_t snail_text_vertices_per_glyph(void);
+size_t snail_path_floats_per_shape(void);
+size_t snail_sprite_floats_per_sprite(void);
+size_t snail_floats_per_glyph(void); /* alias for snail_text_floats_per_glyph */
 
 #ifdef __cplusplus
 }
