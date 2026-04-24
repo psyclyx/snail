@@ -73,6 +73,7 @@ pub const fragment_shader_text =
     \\out vec4 frag_color;
     \\
     \\#define kLogBandTextureWidth 12
+    \\#define kDirectEncodingKindBias 4.0
     \\uint calcRootCode(float y1, float y2, float y3) {
     \\    uint i1 = floatBitsToUint(y1) >> 31u;
     \\    uint i2 = floatBitsToUint(y2) >> 30u;
@@ -136,9 +137,19 @@ pub const fragment_shader_text =
     \\        ivec2 bLoc = calcBandLoc(bandLoc, uint(i));
     \\        ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec3(bLoc, layer), 0).xy);
     \\        vec4 tex0 = texelFetch(u_curve_tex, ivec3(cLoc, layer), 0);
-    \\        vec2 p3 = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(cLoc, 1), layer), 0).xy;
-    \\        vec4 p12 = vec4(tex0.xy, tex0.zw) - vec4(rc, rc);
-    \\        p3 -= rc;
+    \\        vec4 tex1 = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(cLoc, 1), layer), 0);
+    \\        vec4 tex2 = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(cLoc, 2), layer), 0);
+    \\        bool direct = tex2.z >= kDirectEncodingKindBias - 0.5;
+    \\        vec4 p12;
+    \\        vec2 p3;
+    \\        if (direct) {
+    \\            p12 = vec4(tex0.xy, tex0.zw) - vec4(rc, rc);
+    \\            p3 = tex1.xy - rc;
+    \\        } else {
+    \\            vec2 anchor = tex0.xy * 256.0 + tex0.zw;
+    \\            p12 = vec4(anchor, anchor + tex1.xy) - vec4(rc, rc);
+    \\            p3 = anchor + tex1.zw - rc;
+    \\        }
     \\        float maxCoord = horizontal ? max(max(p12.x, p12.z), p3.x) : max(max(p12.y, p12.w), p3.y);
     \\        if (maxCoord * ppe < -0.5) break;
     \\        uint code = horizontal ? calcRootCode(p12.y, p12.w, p3.y) : calcRootCode(p12.x, p12.z, p3.x);
@@ -208,6 +219,7 @@ pub const fragment_shader_text_subpixel =
     \\out vec4 frag_color;
     \\
     \\#define kLogBandTextureWidth 12
+    \\#define kDirectEncodingKindBias 4.0
     \\uint calcRootCode(float y1, float y2, float y3) {
     \\    uint i1 = floatBitsToUint(y1) >> 31u;
     \\    uint i2 = floatBitsToUint(y2) >> 30u;
@@ -271,9 +283,19 @@ pub const fragment_shader_text_subpixel =
     \\        ivec2 bLoc = calcBandLoc(bandLoc, uint(i));
     \\        ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec3(bLoc, layer), 0).xy);
     \\        vec4 tex0 = texelFetch(u_curve_tex, ivec3(cLoc, layer), 0);
-    \\        vec2 p3 = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(cLoc, 1), layer), 0).xy;
-    \\        vec4 p12 = vec4(tex0.xy, tex0.zw) - vec4(rc, rc);
-    \\        p3 -= rc;
+    \\        vec4 tex1 = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(cLoc, 1), layer), 0);
+    \\        vec4 tex2 = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(cLoc, 2), layer), 0);
+    \\        bool direct = tex2.z >= kDirectEncodingKindBias - 0.5;
+    \\        vec4 p12;
+    \\        vec2 p3;
+    \\        if (direct) {
+    \\            p12 = vec4(tex0.xy, tex0.zw) - vec4(rc, rc);
+    \\            p3 = tex1.xy - rc;
+    \\        } else {
+    \\            vec2 anchor = tex0.xy * 256.0 + tex0.zw;
+    \\            p12 = vec4(anchor, anchor + tex1.xy) - vec4(rc, rc);
+    \\            p3 = anchor + tex1.zw - rc;
+    \\        }
     \\        float maxCoord = horizontal ? max(max(p12.x, p12.z), p3.x) : max(max(p12.y, p12.w), p3.y);
     \\        if (maxCoord * ppe < -0.5) break;
     \\        uint code = horizontal ? calcRootCode(p12.y, p12.w, p3.y) : calcRootCode(p12.x, p12.z, p3.x);
@@ -372,6 +394,7 @@ pub const fragment_shader_colr =
     \\out vec4 frag_color;
     \\
     \\#define kLogBandTextureWidth 12
+    \\#define kDirectEncodingKindBias 4.0
     \\uint calcRootCode(float y1, float y2, float y3) {
     \\    uint i1 = floatBitsToUint(y1) >> 31u;
     \\    uint i2 = floatBitsToUint(y2) >> 30u;
@@ -442,9 +465,19 @@ pub const fragment_shader_colr =
     \\        ivec2 bLoc = calcBandLoc(bandLoc, uint(i));
     \\        ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec3(bLoc, layer), 0).xy);
     \\        vec4 tex0 = texelFetch(u_curve_tex, ivec3(cLoc, layer), 0);
-    \\        vec2 p3 = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(cLoc, 1), layer), 0).xy;
-    \\        vec4 p12 = vec4(tex0.xy, tex0.zw) - vec4(rc, rc);
-    \\        p3 -= rc;
+    \\        vec4 tex1 = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(cLoc, 1), layer), 0);
+    \\        vec4 tex2 = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(cLoc, 2), layer), 0);
+    \\        bool direct = tex2.z >= kDirectEncodingKindBias - 0.5;
+    \\        vec4 p12;
+    \\        vec2 p3;
+    \\        if (direct) {
+    \\            p12 = vec4(tex0.xy, tex0.zw) - vec4(rc, rc);
+    \\            p3 = tex1.xy - rc;
+    \\        } else {
+    \\            vec2 anchor = tex0.xy * 256.0 + tex0.zw;
+    \\            p12 = vec4(anchor, anchor + tex1.xy) - vec4(rc, rc);
+    \\            p3 = anchor + tex1.zw - rc;
+    \\        }
     \\        float maxCoord = horizontal ? max(max(p12.x, p12.z), p3.x) : max(max(p12.y, p12.w), p3.y);
     \\        if (maxCoord * ppe < -0.5) break;
     \\        uint code = horizontal ? calcRootCode(p12.y, p12.w, p3.y) : calcRootCode(p12.x, p12.z, p3.x);
@@ -529,6 +562,7 @@ pub const fragment_shader_path =
     \\out vec4 frag_color;
     \\
     \\#define kLogBandTextureWidth 12
+    \\#define kDirectEncodingKindBias 4.0
     \\uint calcRootCode(float y1, float y2, float y3) {
     \\    uint i1 = floatBitsToUint(y1) >> 31u;
     \\    uint i2 = floatBitsToUint(y2) >> 30u;
@@ -599,9 +633,19 @@ pub const fragment_shader_path =
     \\        ivec2 bLoc = calcBandLoc(bandLoc, uint(i));
     \\        ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec3(bLoc, layer), 0).xy);
     \\        vec4 tex0 = texelFetch(u_curve_tex, ivec3(cLoc, layer), 0);
-    \\        vec2 p3 = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(cLoc, 1), layer), 0).xy;
-    \\        vec4 p12 = vec4(tex0.xy, tex0.zw) - vec4(rc, rc);
-    \\        p3 -= rc;
+    \\        vec4 tex1 = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(cLoc, 1), layer), 0);
+    \\        vec4 tex2 = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(cLoc, 2), layer), 0);
+    \\        bool direct = tex2.z >= kDirectEncodingKindBias - 0.5;
+    \\        vec4 p12;
+    \\        vec2 p3;
+    \\        if (direct) {
+    \\            p12 = vec4(tex0.xy, tex0.zw) - vec4(rc, rc);
+    \\            p3 = tex1.xy - rc;
+    \\        } else {
+    \\            vec2 anchor = tex0.xy * 256.0 + tex0.zw;
+    \\            p12 = vec4(anchor, anchor + tex1.xy) - vec4(rc, rc);
+    \\            p3 = anchor + tex1.zw - rc;
+    \\        }
     \\        float maxCoord = horizontal ? max(max(p12.x, p12.z), p3.x) : max(max(p12.y, p12.w), p3.y);
     \\        if (maxCoord * ppe < -0.5) break;
     \\        uint code = horizontal ? calcRootCode(p12.y, p12.w, p3.y) : calcRootCode(p12.x, p12.z, p3.x);
@@ -772,6 +816,7 @@ pub const fragment_shader =
     \\out vec4 frag_color;
     \\
     \\#define kLogBandTextureWidth 12
+    \\#define kDirectEncodingKindBias 4.0
     \\uint calcRootCode(float y1, float y2, float y3) {
     \\    uint i1 = floatBitsToUint(y1) >> 31u;
     \\    uint i2 = floatBitsToUint(y2) >> 30u;
@@ -959,14 +1004,26 @@ pub const fragment_shader =
     \\    ivec2 loc1 = offsetCurveLoc(loc, 1);
     \\    vec4 tex1 = texelFetch(u_curve_tex, ivec3(loc1, layer), 0);
     \\    ivec2 loc2 = offsetCurveLoc(loc, 2);
-    \\    vec4 meta = texelFetch(u_curve_tex, ivec3(loc2, layer), 0);
+    \\    vec4 tex2 = texelFetch(u_curve_tex, ivec3(loc2, layer), 0);
+    \\    ivec2 loc3 = offsetCurveLoc(loc, 3);
+    \\    vec4 meta = texelFetch(u_curve_tex, ivec3(loc3, layer), 0);
     \\    SegmentData seg;
-    \\    seg.kind = int(meta.x + 0.5);
-    \\    seg.p0 = tex0.xy;
-    \\    seg.p1 = tex0.zw;
-    \\    seg.p2 = tex1.xy;
-    \\    seg.p3 = tex1.zw;
-    \\    seg.weights = meta.yzw;
+    \\    bool direct = tex2.z >= kDirectEncodingKindBias - 0.5;
+    \\    if (direct) {
+    \\        seg.kind = int(tex2.z - kDirectEncodingKindBias + 0.5);
+    \\        seg.p0 = tex0.xy;
+    \\        seg.p1 = tex0.zw;
+    \\        seg.p2 = tex1.xy;
+    \\        seg.p3 = tex1.zw;
+    \\    } else {
+    \\        vec2 anchor = tex0.xy * 256.0 + tex0.zw;
+    \\        seg.kind = int(tex2.z + 0.5);
+    \\        seg.p0 = anchor;
+    \\        seg.p1 = anchor + tex1.xy;
+    \\        seg.p2 = anchor + tex1.zw;
+    \\        seg.p3 = anchor + tex2.xy;
+    \\    }
+    \\    seg.weights = vec3(tex2.w, meta.x, meta.y);
     \\    return seg;
     \\}
     \\
@@ -1300,6 +1357,7 @@ pub const fragment_shader_subpixel =
     \\out vec4 frag_color;
     \\
     \\#define kLogBandTextureWidth 12
+    \\#define kDirectEncodingKindBias 4.0
     \\uint calcRootCode(float y1, float y2, float y3) {
     \\    uint i1 = floatBitsToUint(y1) >> 31u;
     \\    uint i2 = floatBitsToUint(y2) >> 30u;
@@ -1487,14 +1545,26 @@ pub const fragment_shader_subpixel =
     \\    ivec2 loc1 = offsetCurveLoc(loc, 1);
     \\    vec4 tex1 = texelFetch(u_curve_tex, ivec3(loc1, layer), 0);
     \\    ivec2 loc2 = offsetCurveLoc(loc, 2);
-    \\    vec4 meta = texelFetch(u_curve_tex, ivec3(loc2, layer), 0);
+    \\    vec4 tex2 = texelFetch(u_curve_tex, ivec3(loc2, layer), 0);
+    \\    ivec2 loc3 = offsetCurveLoc(loc, 3);
+    \\    vec4 meta = texelFetch(u_curve_tex, ivec3(loc3, layer), 0);
     \\    SegmentData seg;
-    \\    seg.kind = int(meta.x + 0.5);
-    \\    seg.p0 = tex0.xy;
-    \\    seg.p1 = tex0.zw;
-    \\    seg.p2 = tex1.xy;
-    \\    seg.p3 = tex1.zw;
-    \\    seg.weights = meta.yzw;
+    \\    bool direct = tex2.z >= kDirectEncodingKindBias - 0.5;
+    \\    if (direct) {
+    \\        seg.kind = int(tex2.z - kDirectEncodingKindBias + 0.5);
+    \\        seg.p0 = tex0.xy;
+    \\        seg.p1 = tex0.zw;
+    \\        seg.p2 = tex1.xy;
+    \\        seg.p3 = tex1.zw;
+    \\    } else {
+    \\        vec2 anchor = tex0.xy * 256.0 + tex0.zw;
+    \\        seg.kind = int(tex2.z + 0.5);
+    \\        seg.p0 = anchor;
+    \\        seg.p1 = anchor + tex1.xy;
+    \\        seg.p2 = anchor + tex1.zw;
+    \\        seg.p3 = anchor + tex2.xy;
+    \\    }
+    \\    seg.weights = vec3(tex2.w, meta.x, meta.y);
     \\    return seg;
     \\}
     \\

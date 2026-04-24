@@ -22,7 +22,7 @@ pub const opentype = @import("font/opentype.zig");
 pub const snail_file = @import("font/snail_file.zig");
 pub const bezier = @import("math/bezier.zig");
 pub const vec = @import("math/vec.zig");
-const curve_tex = @import("render/curve_texture.zig");
+pub const curve_tex = @import("render/curve_texture.zig");
 const band_tex = @import("render/band_texture.zig");
 const vertex_mod = @import("render/vertex.zig");
 const sprite_vertex_mod = @import("render/sprite_vertex.zig");
@@ -596,6 +596,7 @@ pub const Atlas = struct {
         defer cache.deinit();
 
         var glyph_curves_list: std.ArrayList(curve_tex.GlyphCurves) = .empty;
+        errdefer for (glyph_curves_list.items) |gc| allocator.free(gc.curves);
         defer glyph_curves_list.deinit(allocator);
 
         const GlyphMeta = struct { gid: u16, advance: u16, bbox: bezier.BBox };
@@ -619,6 +620,8 @@ pub const Atlas = struct {
             try glyph_curves_list.append(allocator, .{
                 .curves = owned,
                 .bbox = glyph.metrics.bbox,
+                .logical_curve_count = owned.len,
+                .prefer_direct_encoding = true,
             });
             try glyph_infos.append(allocator, .{
                 .gid = gid,
@@ -637,7 +640,7 @@ pub const Atlas = struct {
             glyph_band_data.deinit(allocator);
         }
         for (glyph_curves_list.items, 0..) |gc, i| {
-            var bd = try band_tex.buildGlyphBandData(allocator, gc.curves, gc.bbox, ct.entries[i], gc.origin);
+            var bd = try band_tex.buildGlyphBandData(allocator, gc.curves, gc.logical_curve_count, gc.bbox, ct.entries[i], gc.origin, gc.prefer_direct_encoding);
             try glyph_band_data.append(allocator, bd);
             _ = &bd;
         }
@@ -1633,10 +1636,10 @@ pub const SpriteBatch = struct {
 };
 
 const kPathArcSplitMaxDepth: u8 = 8;
-const kPathStrokeOffsetTolerance: f32 = 0.02;
+const kPathStrokeOffsetTolerance: f32 = 0.005;
 const kPathStrokeOffsetMaxDepth: u8 = 10;
-const kPathCurveApproxTolerance: f32 = 0.02;
-const kPathCurveApproxMaxDepth: u8 = 8;
+const kPathCurveApproxTolerance: f32 = 0.005;
+const kPathCurveApproxMaxDepth: u8 = 10;
 const kPathLargePrimitiveTileExtent: f32 = 512.0;
 
 fn makePathLineCurve(p0: Vec2, p1: Vec2) bezier.QuadBezier {
@@ -1664,6 +1667,20 @@ fn makePathArcCurve(center: Vec2, radii: Vec2, start_angle: f32, end_angle: f32)
     };
 }
 
+fn makePathArcConic(center: Vec2, radii: Vec2, start_angle: f32, end_angle: f32) CurveSegment {
+    const p0 = center.add(Vec2.new(@cos(start_angle) * radii.x, @sin(start_angle) * radii.y));
+    const p2 = center.add(Vec2.new(@cos(end_angle) * radii.x, @sin(end_angle) * radii.y));
+    const t0 = Vec2.new(-@sin(start_angle) * radii.x, @cos(start_angle) * radii.y);
+    const t1 = Vec2.new(-@sin(end_angle) * radii.x, @cos(end_angle) * radii.y);
+    const control = lineIntersection(p0, t0, p2, t1) orelse Vec2.lerp(p0, p2, 0.5);
+    return CurveSegment.fromConic(.{
+        .p0 = p0,
+        .p1 = control,
+        .p2 = p2,
+        .w1 = @cos((end_angle - start_angle) * 0.5),
+    });
+}
+
 fn appendAdaptiveArcCurve(
     path: *VectorPath,
     center: Vec2,
@@ -1680,6 +1697,24 @@ fn appendAdaptiveArcCurve(
     const mid_angle = (start_angle + end_angle) * 0.5;
     try appendAdaptiveArcCurve(path, center, radii, start_angle, mid_angle, depth - 1);
     try appendAdaptiveArcCurve(path, center, radii, mid_angle, end_angle, depth - 1);
+}
+
+fn appendAdaptiveArcConic(
+    path: *VectorPath,
+    center: Vec2,
+    radii: Vec2,
+    start_angle: f32,
+    end_angle: f32,
+) !void {
+    const span = end_angle - start_angle;
+    if (@abs(span) <= 1e-6) return;
+    if (@abs(span) > std.math.pi * 0.5 + 1e-6) {
+        const mid_angle = (start_angle + end_angle) * 0.5;
+        try appendAdaptiveArcConic(path, center, radii, start_angle, mid_angle);
+        try appendAdaptiveArcConic(path, center, radii, mid_angle, end_angle);
+        return;
+    }
+    try path.appendSegment(makePathArcConic(center, radii, start_angle, end_angle));
 }
 
 fn pointsApproxEqual(a: Vec2, b: Vec2) bool {
@@ -2132,7 +2167,7 @@ pub const VectorPath = struct {
     }
 
     fn appendArc(self: *VectorPath, center: Vec2, radii: Vec2, start_angle: f32, end_angle: f32) !void {
-        try appendAdaptiveArcCurve(self, center, radii, start_angle, end_angle, kPathArcSplitMaxDepth);
+        try appendAdaptiveArcConic(self, center, radii, start_angle, end_angle);
     }
 
     fn expandPointBBox(self: *VectorPath, point: Vec2) void {
@@ -3084,16 +3119,6 @@ pub const PathPictureBuilder = struct {
         transform: VectorTransform2D,
     ) !void {
         const size = Vec2.new(@max(rect.w, 0.0), @max(rect.h, 0.0));
-        if (shouldTileRoundedRect(size)) {
-            if (stroke) |stroke_style| {
-                if (stroke_style.placement == .inside) {
-                    return self.addLargeInsideStrokeRoundedRect(rect, fill, stroke_style, corner_radius, transform);
-                }
-                return self.addLargeCenterStrokeRoundedRect(rect, fill, stroke_style, corner_radius, transform);
-            } else if (fill) |style| {
-                return self.addLargeFilledRoundedRect(rect, style, corner_radius, transform);
-            }
-        }
 
         if (stroke) |stroke_style| {
             const max_radius = @min(size.x, size.y) * 0.5;
@@ -3234,15 +3259,23 @@ pub const PathPictureBuilder = struct {
 
         const glyph_curves = try allocator.alloc(curve_tex.GlyphCurves, total_layer_count);
         defer allocator.free(glyph_curves);
+        const packed_curve_slices = try allocator.alloc([]CurveSegment, total_layer_count);
+        defer allocator.free(packed_curve_slices);
         var glyph_cursor: usize = 0;
+        defer {
+            for (packed_curve_slices[0..glyph_cursor]) |curves| allocator.free(curves);
+        }
         for (self.paths.items) |path| {
             const origin = bboxCenter(path.bbox);
             const delta = Vec2.new(-origin.x, -origin.y);
             for (path.layers[0..path.layer_count]) |layer| {
+                const packed_curves = try curve_tex.splitCurvesForPacking(allocator, layer.curves);
+                packed_curve_slices[glyph_cursor] = packed_curves;
                 glyph_curves[glyph_cursor] = .{
-                    .curves = layer.curves,
+                    .curves = packed_curves,
                     .bbox = translateBBox(layer.bbox, delta),
                     .origin = origin,
+                    .logical_curve_count = layer.curves.len,
                 };
                 glyph_cursor += 1;
             }
@@ -3258,7 +3291,7 @@ pub const PathPictureBuilder = struct {
             glyph_band_data.deinit(allocator);
         }
         for (glyph_curves, 0..) |gc, i| {
-            var bd = try band_tex.buildGlyphBandData(allocator, gc.curves, gc.bbox, ct.entries[i], gc.origin);
+            var bd = try band_tex.buildGlyphBandData(allocator, gc.curves, gc.logical_curve_count, gc.bbox, ct.entries[i], gc.origin, gc.prefer_direct_encoding);
             try glyph_band_data.append(allocator, bd);
             _ = &bd;
         }
@@ -3866,14 +3899,33 @@ test "quadratic stroked eye stalk contains its centerline midpoint" {
     }
 }
 
-test "rounded rect corners are approximated with quadratic segments" {
+test "rounded rect corners use exact conic arc segments" {
     var path = VectorPath.init(std.testing.allocator);
     defer path.deinit();
     try path.addRoundedRect(.{ .x = 0, .y = 0, .w = 200, .h = 200 }, 40);
 
-    try std.testing.expect(path.curves.items.len > 8);
+    try std.testing.expectEqual(@as(usize, 8), path.curves.items.len);
+    var quadratic_count: usize = 0;
+    var conic_count: usize = 0;
     for (path.curves.items) |curve| {
-        try std.testing.expectEqual(bezier.CurveKind.quadratic, curve.kind);
+        switch (curve.kind) {
+            .quadratic => quadratic_count += 1,
+            .conic => conic_count += 1,
+            else => return error.TestExpectedEqual,
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 4), quadratic_count);
+    try std.testing.expectEqual(@as(usize, 4), conic_count);
+}
+
+test "ellipse quarters use exact conic arc segments" {
+    var path = VectorPath.init(std.testing.allocator);
+    defer path.deinit();
+    try path.addEllipse(.{ .x = 0, .y = 0, .w = 100, .h = 60 });
+
+    try std.testing.expectEqual(@as(usize, 4), path.curves.items.len);
+    for (path.curves.items) |curve| {
+        try std.testing.expectEqual(bezier.CurveKind.conic, curve.kind);
     }
 }
 
@@ -3981,12 +4033,27 @@ test "path picture freeze rebases large coordinates before curve packing" {
     defer transformed_picture.deinit();
 
     const absolute_page = absolute_picture.atlas.page(0);
-    try std.testing.expectEqual(curve_tex.f32ToF16(-11.0), absolute_page.curve_data[0]);
-    try std.testing.expectEqual(curve_tex.f32ToF16(-9.0), absolute_page.curve_data[1]);
-    try std.testing.expectEqual(curve_tex.f32ToF16(0.0), absolute_page.curve_data[2]);
-    try std.testing.expectEqual(curve_tex.f32ToF16(-9.0), absolute_page.curve_data[3]);
-    try std.testing.expectEqual(curve_tex.f32ToF16(11.0), absolute_page.curve_data[4]);
-    try std.testing.expectEqual(curve_tex.f32ToF16(-9.0), absolute_page.curve_data[5]);
+    const f16ToF32 = struct {
+        fn decode(bits: u16) f32 {
+            return @as(f32, @floatCast(@as(f16, @bitCast(bits))));
+        }
+    }.decode;
+    const anchor = curve_tex.decodePackedAnchor(
+        .{
+            .x = f16ToF32(absolute_page.curve_data[0]),
+            .y = f16ToF32(absolute_page.curve_data[1]),
+        },
+        .{
+            .x = f16ToF32(absolute_page.curve_data[2]),
+            .y = f16ToF32(absolute_page.curve_data[3]),
+        },
+    );
+    try std.testing.expectApproxEqAbs(-11.0, anchor.x, 0.001);
+    try std.testing.expectApproxEqAbs(-9.0, anchor.y, 0.001);
+    try std.testing.expectApproxEqAbs(11.0, f16ToF32(absolute_page.curve_data[4]), 0.001);
+    try std.testing.expectApproxEqAbs(0.0, f16ToF32(absolute_page.curve_data[5]), 0.001);
+    try std.testing.expectApproxEqAbs(22.0, f16ToF32(absolute_page.curve_data[6]), 0.001);
+    try std.testing.expectApproxEqAbs(0.0, f16ToF32(absolute_page.curve_data[7]), 0.001);
 
     try std.testing.expectApproxEqAbs(transformed_picture.instances[0].bbox.min.x, absolute_picture.instances[0].bbox.min.x, 0.001);
     try std.testing.expectApproxEqAbs(transformed_picture.instances[0].bbox.min.y, absolute_picture.instances[0].bbox.min.y, 0.001);
@@ -3998,7 +4065,7 @@ test "path picture freeze rebases large coordinates before curve packing" {
     try std.testing.expectApproxEqAbs(transformed_picture.instances[0].transform.ty, absolute_picture.instances[0].transform.ty, 0.001);
 }
 
-test "large rounded rect helper keeps per-shape local coordinates bounded" {
+test "large rounded rect uses generic curve packing without helper tiling" {
     var builder = PathPictureBuilder.init(std.testing.allocator);
     defer builder.deinit();
     try builder.addRoundedRect(
@@ -4011,19 +4078,10 @@ test "large rounded rect helper keeps per-shape local coordinates bounded" {
 
     var picture = try builder.freeze(std.testing.allocator);
     defer picture.deinit();
-    try std.testing.expect(picture.shapeCount() > 4);
-
-    for (picture.instances) |instance| {
-        const info = picture.atlas.getGlyph(instance.glyph_id) orelse return error.TestExpectedEqual;
-        const max_abs = @max(
-            @max(@abs(info.bbox.min.x), @abs(info.bbox.max.x)),
-            @max(@abs(info.bbox.min.y), @abs(info.bbox.max.y)),
-        );
-        try std.testing.expect(max_abs <= kPathLargePrimitiveTileExtent * 0.5 + 0.1);
-    }
+    try std.testing.expectEqual(@as(usize, 1), picture.shapeCount());
 }
 
-test "large rounded rect center stroke keeps per-shape local coordinates bounded" {
+test "large rounded rect center stroke uses generic curve packing without helper tiling" {
     var builder = PathPictureBuilder.init(std.testing.allocator);
     defer builder.deinit();
     try builder.addRoundedRect(
@@ -4036,16 +4094,7 @@ test "large rounded rect center stroke keeps per-shape local coordinates bounded
 
     var picture = try builder.freeze(std.testing.allocator);
     defer picture.deinit();
-    try std.testing.expect(picture.shapeCount() > 5);
-
-    for (picture.instances) |instance| {
-        const info = picture.atlas.getGlyph(instance.glyph_id) orelse return error.TestExpectedEqual;
-        const max_abs = @max(
-            @max(@abs(info.bbox.min.x), @abs(info.bbox.max.x)),
-            @max(@abs(info.bbox.min.y), @abs(info.bbox.max.y)),
-        );
-        try std.testing.expect(max_abs <= kPathLargePrimitiveTileExtent * 0.5 + 6.1);
-    }
+    try std.testing.expectEqual(@as(usize, 1), picture.shapeCount());
 }
 
 test "path picture gradient paint records encode linear and radial paints" {

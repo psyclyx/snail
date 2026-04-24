@@ -1,4 +1,5 @@
 const std = @import("std");
+const SubpixelOrder = @import("subpixel_order.zig").SubpixelOrder;
 
 pub const c = @cImport({
     @cInclude("wayland-client.h");
@@ -18,6 +19,14 @@ pub const KEY_UP = c.KEY_UP;
 pub const KEY_DOWN = c.KEY_DOWN;
 
 pub const Window = struct {
+    const max_outputs = 8;
+    const OutputInfo = struct {
+        wl_output: ?*c.wl_output = null,
+        registry_name: u32 = 0,
+        subpixel: SubpixelOrder = .none,
+        has_subpixel_info: bool = false,
+    };
+
     display: *c.wl_display,
     registry: *c.wl_registry,
     compositor: ?*c.wl_compositor = null,
@@ -30,6 +39,9 @@ pub const Window = struct {
 
     width: u32,
     height: u32,
+    outputs: [max_outputs]OutputInfo = [_]OutputInfo{.{}} ** max_outputs,
+    active_output: ?*c.wl_output = null,
+    monitor_changed: bool = false,
     pending_geometry_commit: bool = true,
     resized: bool = false,
     close_requested: bool = false,
@@ -64,6 +76,7 @@ pub const Window = struct {
 
         self.surface = c.wl_compositor_create_surface(self.compositor.?) orelse return error.SurfaceCreateFailed;
         errdefer c.wl_surface_destroy(self.surface);
+        _ = c.wl_surface_add_listener(self.surface, &surface_listener, self);
 
         self.xdg_surface = c.xdg_wm_base_get_xdg_surface(self.wm_base.?, self.surface) orelse return error.SurfaceCreateFailed;
         errdefer c.xdg_surface_destroy(self.xdg_surface);
@@ -90,6 +103,12 @@ pub const Window = struct {
         if (self.seat) |seat| {
             c.wl_seat_destroy(seat);
             self.seat = null;
+        }
+        for (&self.outputs) |*info| {
+            if (info.wl_output) |output| {
+                c.wl_output_destroy(output);
+                info.* = .{};
+            }
         }
         c.xdg_toplevel_destroy(self.toplevel);
         c.xdg_surface_destroy(self.xdg_surface);
@@ -141,6 +160,25 @@ pub const Window = struct {
         return changed;
     }
 
+    pub fn consumeMonitorChanged(self: *Window) bool {
+        const changed = self.monitor_changed;
+        self.monitor_changed = false;
+        return changed;
+    }
+
+    pub fn currentSubpixelOrder(self: *const Window, fallback: SubpixelOrder) SubpixelOrder {
+        if (self.active_output) |active| {
+            if (self.findOutputInfo(active)) |info| {
+                if (info.has_subpixel_info) return info.subpixel;
+                return fallback;
+            }
+        }
+        for (self.outputs) |info| {
+            if (info.wl_output != null and info.has_subpixel_info) return info.subpixel;
+        }
+        return fallback;
+    }
+
     pub fn isKeyDown(self: *const Window, key: u32) bool {
         if (key >= self.key_down.len) return false;
         return self.key_down[key];
@@ -152,6 +190,27 @@ pub const Window = struct {
         const was_down = self.prev_keys[key];
         self.prev_keys[key] = down;
         return down and !was_down;
+    }
+
+    fn allocOutputInfo(self: *Window) ?*OutputInfo {
+        for (&self.outputs) |*info| {
+            if (info.wl_output == null) return info;
+        }
+        return null;
+    }
+
+    fn findOutputInfo(self: *const Window, output: *c.wl_output) ?*const OutputInfo {
+        for (&self.outputs) |*info| {
+            if (info.wl_output == output) return info;
+        }
+        return null;
+    }
+
+    fn findOutputInfoMut(self: *Window, output: *c.wl_output) ?*OutputInfo {
+        for (&self.outputs) |*info| {
+            if (info.wl_output == output) return info;
+        }
+        return null;
     }
 };
 
@@ -185,10 +244,36 @@ fn registryGlobal(
         if (self.seat) |seat| {
             _ = c.wl_seat_add_listener(seat, &seat_listener, self);
         }
+    } else if (std.mem.eql(u8, iface, "wl_output")) {
+        const slot = self.allocOutputInfo() orelse return;
+        slot.* = .{
+            .wl_output = @ptrCast(c.wl_registry_bind(reg, name, &c.wl_output_interface, @min(version, 2))),
+            .registry_name = name,
+            .subpixel = .none,
+            .has_subpixel_info = false,
+        };
+        if (slot.wl_output) |output| {
+            _ = c.wl_output_add_listener(output, &output_listener, self);
+            if (self.active_output == null) self.active_output = output;
+            self.monitor_changed = true;
+        }
     }
 }
 
-fn registryGlobalRemove(_: ?*anyopaque, _: ?*c.wl_registry, _: u32) callconv(.c) void {}
+fn registryGlobalRemove(data: ?*anyopaque, _: ?*c.wl_registry, name: u32) callconv(.c) void {
+    const self = selfFrom(data);
+    for (&self.outputs) |*info| {
+        if (info.wl_output != null and info.registry_name == name) {
+            if (self.active_output == info.wl_output) {
+                self.active_output = null;
+                self.monitor_changed = true;
+            }
+            c.wl_output_destroy(info.wl_output.?);
+            info.* = .{};
+            return;
+        }
+    }
+}
 
 const registry_listener = c.wl_registry_listener{
     .global = registryGlobal,
@@ -312,4 +397,75 @@ const keyboard_listener = c.wl_keyboard_listener{
     .key = keyboardKey,
     .modifiers = keyboardModifiers,
     .repeat_info = keyboardRepeatInfo,
+};
+
+fn mapOutputSubpixel(subpixel: c_int) ?SubpixelOrder {
+    return switch (subpixel) {
+        c.WL_OUTPUT_SUBPIXEL_NONE => .none,
+        c.WL_OUTPUT_SUBPIXEL_HORIZONTAL_RGB => .rgb,
+        c.WL_OUTPUT_SUBPIXEL_HORIZONTAL_BGR => .bgr,
+        c.WL_OUTPUT_SUBPIXEL_VERTICAL_RGB => .vrgb,
+        c.WL_OUTPUT_SUBPIXEL_VERTICAL_BGR => .vbgr,
+        else => null,
+    };
+}
+
+fn outputGeometry(
+    data: ?*anyopaque,
+    output: ?*c.wl_output,
+    _: i32,
+    _: i32,
+    _: i32,
+    _: i32,
+    subpixel: c_int,
+    _: [*c]const u8,
+    _: [*c]const u8,
+    _: c_int,
+) callconv(.c) void {
+    const self = selfFrom(data);
+    const wl_output = output orelse return;
+    if (self.findOutputInfoMut(wl_output)) |info| {
+        const mapped = mapOutputSubpixel(subpixel);
+        const next_order = mapped orelse .none;
+        const next_has_info = mapped != null;
+        if (info.subpixel != next_order or info.has_subpixel_info != next_has_info) {
+            info.subpixel = next_order;
+            info.has_subpixel_info = next_has_info;
+            if (self.active_output == wl_output) self.monitor_changed = true;
+        }
+    }
+}
+
+fn outputMode(_: ?*anyopaque, _: ?*c.wl_output, _: u32, _: i32, _: i32, _: i32) callconv(.c) void {}
+fn outputDone(_: ?*anyopaque, _: ?*c.wl_output) callconv(.c) void {}
+fn outputScale(_: ?*anyopaque, _: ?*c.wl_output, _: i32) callconv(.c) void {}
+
+const output_listener = c.wl_output_listener{
+    .geometry = outputGeometry,
+    .mode = outputMode,
+    .done = outputDone,
+    .scale = outputScale,
+};
+
+fn surfaceEnter(data: ?*anyopaque, _: ?*c.wl_surface, output: ?*c.wl_output) callconv(.c) void {
+    const self = selfFrom(data);
+    const wl_output = output orelse return;
+    if (self.active_output != wl_output) {
+        self.active_output = wl_output;
+        self.monitor_changed = true;
+    }
+}
+
+fn surfaceLeave(data: ?*anyopaque, _: ?*c.wl_surface, output: ?*c.wl_output) callconv(.c) void {
+    const self = selfFrom(data);
+    const wl_output = output orelse return;
+    if (self.active_output == wl_output) {
+        self.active_output = null;
+        self.monitor_changed = true;
+    }
+}
+
+const surface_listener = c.wl_surface_listener{
+    .enter = surfaceEnter,
+    .leave = surfaceLeave,
 };

@@ -96,11 +96,13 @@ fn hasExtension(display: egl.EGLDisplay, name: []const u8) bool {
 }
 
 pub fn consumeMonitorChanged() bool {
+    if (app) |window| return window.consumeMonitorChanged();
     return false;
 }
 
 pub fn detectCurrentMonitorSubpixelOrder(base: SubpixelOrder) SubpixelOrder {
     _ = build_options;
+    if (app) |window| return window.currentSubpixelOrder(base);
     return base;
 }
 

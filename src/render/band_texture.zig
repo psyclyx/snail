@@ -6,6 +6,13 @@ const BBox = bezier_mod.BBox;
 const Vec2 = vec.Vec2;
 const curve_tex = @import("curve_texture.zig");
 
+const BandGeometry = struct {
+    bbox: BBox,
+    width: f32,
+    height: f32,
+    epsilon: f32,
+};
+
 pub const TEX_WIDTH: u32 = curve_tex.TEX_WIDTH;
 
 /// Result of building band data for a single glyph.
@@ -43,9 +50,11 @@ fn bandCount(num_curves: usize) u16 {
 pub fn buildGlyphBandData(
     allocator: std.mem.Allocator,
     curves: []const CurveSegment,
+    logical_curve_count: usize,
     bbox: BBox,
     curve_entry: curve_tex.GlyphCurveEntry,
     origin: Vec2,
+    prefer_direct_encoding: bool,
 ) !GlyphBandData {
     if (curves.len == 0) {
         return .{
@@ -60,17 +69,52 @@ pub fn buildGlyphBandData(
         };
     }
 
-    const h_bands = bandCount(curves.len);
-    const v_bands = bandCount(curves.len);
-    const epsilon: f32 = 1.0 / 1024.0;
-    const bbox_w = bbox.max.x - bbox.min.x;
-    const bbox_h = bbox.max.y - bbox.min.y;
-    const delta = Vec2.new(-origin.x, -origin.y);
+    const band_curve_count = if (logical_curve_count == 0) curves.len else logical_curve_count;
+    const h_bands = bandCount(band_curve_count);
+    const v_bands = bandCount(band_curve_count);
     const max_band_count = 12;
     std.debug.assert(h_bands <= max_band_count and v_bands <= max_band_count);
 
     var curve_bboxes = try allocator.alloc(BBox, curves.len);
     defer allocator.free(curve_bboxes);
+    const geometry: BandGeometry = blk: {
+        if (prefer_direct_encoding) {
+            const delta = Vec2.new(-origin.x, -origin.y);
+            for (curves, 0..) |curve, ci| {
+                const cb0 = curve.boundingBox();
+                curve_bboxes[ci] = .{
+                    .min = Vec2.add(cb0.min, delta),
+                    .max = Vec2.add(cb0.max, delta),
+                };
+            }
+            const direct_bbox = BBox{
+                .min = Vec2.add(bbox.min, delta),
+                .max = Vec2.add(bbox.max, delta),
+            };
+            break :blk .{
+                .bbox = direct_bbox,
+                .width = direct_bbox.max.x - direct_bbox.min.x,
+                .height = direct_bbox.max.y - direct_bbox.min.y,
+                .epsilon = 1.0 / 1024.0,
+            };
+        }
+
+        const prepared_curves = try curve_tex.prepareGlyphCurvesForPacking(allocator, curves, origin);
+        defer allocator.free(prepared_curves);
+
+        var prepared_bbox = prepared_curves[0].boundingBox();
+        for (prepared_curves, 0..) |curve, ci| {
+            const cb = curve.boundingBox();
+            curve_bboxes[ci] = cb;
+            prepared_bbox = if (ci == 0) cb else prepared_bbox.merge(cb);
+        }
+        break :blk .{
+            .bbox = prepared_bbox,
+            .width = prepared_bbox.max.x - prepared_bbox.min.x,
+            .height = prepared_bbox.max.y - prepared_bbox.min.y,
+            .epsilon = @max(@as(f32, 1.0 / 1024.0), curve_tex.PACKED_BAND_DILATION),
+        };
+    };
 
     var h_band_min: [max_band_count]f32 = undefined;
     var h_band_max: [max_band_count]f32 = undefined;
@@ -94,16 +138,16 @@ pub fn buildGlyphBandData(
     for (0..h_bands) |bi| {
         const t0 = @as(f32, @floatFromInt(bi)) / @as(f32, @floatFromInt(h_bands));
         const t1 = @as(f32, @floatFromInt(bi + 1)) / @as(f32, @floatFromInt(h_bands));
-        h_band_min[bi] = bbox.min.y + bbox_h * t0 - epsilon;
-        h_band_max[bi] = bbox.min.y + bbox_h * t1 + epsilon;
+        h_band_min[bi] = geometry.bbox.min.y + geometry.height * t0 - geometry.epsilon;
+        h_band_max[bi] = geometry.bbox.min.y + geometry.height * t1 + geometry.epsilon;
         h_lists[bi] = try std.ArrayList(u16).initCapacity(allocator, curves.len);
         h_inited += 1;
     }
     for (0..v_bands) |bi| {
         const t0 = @as(f32, @floatFromInt(bi)) / @as(f32, @floatFromInt(v_bands));
         const t1 = @as(f32, @floatFromInt(bi + 1)) / @as(f32, @floatFromInt(v_bands));
-        v_band_min[bi] = bbox.min.x + bbox_w * t0 - epsilon;
-        v_band_max[bi] = bbox.min.x + bbox_w * t1 + epsilon;
+        v_band_min[bi] = geometry.bbox.min.x + geometry.width * t0 - geometry.epsilon;
+        v_band_max[bi] = geometry.bbox.min.x + geometry.width * t1 + geometry.epsilon;
         v_lists[bi] = try std.ArrayList(u16).initCapacity(allocator, curves.len);
         v_inited += 1;
     }
@@ -127,13 +171,7 @@ pub fn buildGlyphBandData(
     band_lists_ready = true;
 
     // Record band membership once per curve and append to pre-sized lists.
-    for (curves, 0..) |curve, ci| {
-        const cb0 = curve.boundingBox();
-        const cb = BBox{
-            .min = Vec2.add(cb0.min, delta),
-            .max = Vec2.add(cb0.max, delta),
-        };
-        curve_bboxes[ci] = cb;
+    for (curve_bboxes, 0..) |cb, ci| {
         const curve_idx: u16 = @intCast(ci);
         for (0..h_bands) |bi| {
             if (cb.max.y >= h_band_min[bi] and cb.min.y <= h_band_max[bi]) {
@@ -210,10 +248,10 @@ pub fn buildGlyphBandData(
     }
 
     // Band transform: maps em-space coords to band indices
-    const band_scale_x = @as(f32, @floatFromInt(v_bands)) / @max(bbox_w, 1e-10);
-    const band_scale_y = @as(f32, @floatFromInt(h_bands)) / @max(bbox_h, 1e-10);
-    const band_offset_x = -bbox.min.x * band_scale_x;
-    const band_offset_y = -bbox.min.y * band_scale_y;
+    const band_scale_x = @as(f32, @floatFromInt(v_bands)) / @max(geometry.width, 1e-10);
+    const band_scale_y = @as(f32, @floatFromInt(h_bands)) / @max(geometry.height, 1e-10);
+    const band_offset_x = -geometry.bbox.min.x * band_scale_x;
+    const band_offset_y = -geometry.bbox.min.y * band_scale_y;
 
     return .{
         .data = data,
@@ -352,7 +390,7 @@ test "buildGlyphBandData basic" {
     const bbox = BBox{ .min = Vec2.new(0, -0.5), .max = Vec2.new(1, 0.5) };
     const entry = curve_tex.GlyphCurveEntry{ .start_x = 0, .start_y = 0, .count = 2, .offset = 0 };
 
-    var bd = try buildGlyphBandData(std.testing.allocator, &curves, bbox, entry, .zero);
+    var bd = try buildGlyphBandData(std.testing.allocator, &curves, curves.len, bbox, entry, .zero, false);
     defer freeGlyphBandData(std.testing.allocator, &bd);
 
     try std.testing.expect(bd.h_band_count > 0);
@@ -371,15 +409,120 @@ test "buildGlyphBandData rebases curves by origin" {
     };
     const bbox = BBox{ .min = Vec2.new(0, 0), .max = Vec2.new(40, 10) };
     const entry = curve_tex.GlyphCurveEntry{ .start_x = 0, .start_y = 0, .count = 1, .offset = 0 };
+    const prepared = try curve_tex.prepareGlyphCurvesForPacking(std.testing.allocator, &curves, Vec2.new(640, 960));
+    defer std.testing.allocator.free(prepared);
+    const prepared_bbox = prepared[0].boundingBox();
 
-    var bd = try buildGlyphBandData(std.testing.allocator, &curves, bbox, entry, Vec2.new(640, 960));
+    var bd = try buildGlyphBandData(std.testing.allocator, &curves, curves.len, bbox, entry, Vec2.new(640, 960), false);
     defer freeGlyphBandData(std.testing.allocator, &bd);
 
     try std.testing.expectEqual(@as(u16, 1), bd.h_band_count);
     try std.testing.expectEqual(@as(u16, 1), bd.v_band_count);
     try std.testing.expectEqual(@as(u16, 4), bd.texel_count);
-    try std.testing.expectApproxEqAbs(@as(f32, 0.025), bd.band_scale_x, 0.0001);
-    try std.testing.expectApproxEqAbs(@as(f32, 0.1), bd.band_scale_y, 0.0001);
-    try std.testing.expectApproxEqAbs(@as(f32, 0), bd.band_offset_x, 0.0001);
-    try std.testing.expectApproxEqAbs(@as(f32, 0), bd.band_offset_y, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0) / prepared_bbox.width(), bd.band_scale_x, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0) / prepared_bbox.height(), bd.band_scale_y, 0.0001);
+    try std.testing.expectApproxEqAbs(-prepared_bbox.min.x * bd.band_scale_x, bd.band_offset_x, 0.0001);
+    try std.testing.expectApproxEqAbs(-prepared_bbox.min.y * bd.band_scale_y, bd.band_offset_y, 0.0001);
+}
+
+test "buildGlyphBandData derives band transform from prepared curve bbox" {
+    const origin = Vec2.new(4096.25, 8192.5);
+    const curves = [_]CurveSegment{
+        .{
+            .kind = .quadratic,
+            .p0 = Vec2.new(4096.375, 8192.625),
+            .p1 = Vec2.new(4128.1875, 8207.3125),
+            .p2 = Vec2.new(4160.4375, 8192.875),
+        },
+    };
+    const entry = curve_tex.GlyphCurveEntry{ .start_x = 0, .start_y = 0, .count = 1, .offset = 0 };
+    const prepared = try curve_tex.prepareGlyphCurvesForPacking(std.testing.allocator, &curves, origin);
+    defer std.testing.allocator.free(prepared);
+    const prepared_bbox = prepared[0].boundingBox();
+
+    var bd = try buildGlyphBandData(
+        std.testing.allocator,
+        &curves,
+        curves.len,
+        .{ .min = Vec2.new(-100, -100), .max = Vec2.new(100, 100) },
+        entry,
+        origin,
+        false,
+    );
+    defer freeGlyphBandData(std.testing.allocator, &bd);
+
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0) / prepared_bbox.width(), bd.band_scale_x, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0) / prepared_bbox.height(), bd.band_scale_y, 0.0001);
+    try std.testing.expectApproxEqAbs(-prepared_bbox.min.x * bd.band_scale_x, bd.band_offset_x, 0.0001);
+    try std.testing.expectApproxEqAbs(-prepared_bbox.min.y * bd.band_scale_y, bd.band_offset_y, 0.0001);
+}
+
+test "buildGlyphBandData uses logical curve count for band count" {
+    const curves = [_]CurveSegment{
+        .{ .kind = .quadratic, .p0 = Vec2.new(0, 0), .p1 = Vec2.new(32, 8), .p2 = Vec2.new(64, 0) },
+        .{ .kind = .quadratic, .p0 = Vec2.new(64, 0), .p1 = Vec2.new(96, -8), .p2 = Vec2.new(128, 0) },
+        .{ .kind = .quadratic, .p0 = Vec2.new(128, 0), .p1 = Vec2.new(160, 8), .p2 = Vec2.new(192, 0) },
+        .{ .kind = .quadratic, .p0 = Vec2.new(192, 0), .p1 = Vec2.new(224, -8), .p2 = Vec2.new(256, 0) },
+        .{ .kind = .quadratic, .p0 = Vec2.new(256, 0), .p1 = Vec2.new(288, 8), .p2 = Vec2.new(320, 0) },
+        .{ .kind = .quadratic, .p0 = Vec2.new(320, 0), .p1 = Vec2.new(352, -8), .p2 = Vec2.new(384, 0) },
+        .{ .kind = .quadratic, .p0 = Vec2.new(384, 0), .p1 = Vec2.new(416, 8), .p2 = Vec2.new(448, 0) },
+    };
+    const entry = curve_tex.GlyphCurveEntry{ .start_x = 0, .start_y = 0, .count = @intCast(curves.len), .offset = 0 };
+    var bd = try buildGlyphBandData(
+        std.testing.allocator,
+        &curves,
+        2,
+        .{ .min = Vec2.new(0, -8), .max = Vec2.new(448, 8) },
+        entry,
+        .zero,
+        false,
+    );
+    defer freeGlyphBandData(std.testing.allocator, &bd);
+
+    try std.testing.expectEqual(@as(u16, 1), bd.h_band_count);
+    try std.testing.expectEqual(@as(u16, 1), bd.v_band_count);
+}
+
+test "buildGlyphBandData keeps direct encoded font bbox semantics" {
+    const origin = Vec2.new(640, 960);
+    const curves = [_]CurveSegment{
+        .{
+            .kind = .quadratic,
+            .p0 = Vec2.new(640.1, 960.1),
+            .p1 = Vec2.new(659.9, 972.2),
+            .p2 = Vec2.new(680.4, 960.4),
+        },
+        .{
+            .kind = .quadratic,
+            .p0 = Vec2.new(680.4, 960.4),
+            .p1 = Vec2.new(699.7, 948.8),
+            .p2 = Vec2.new(720.2, 960.2),
+        },
+    };
+    const entry = curve_tex.GlyphCurveEntry{ .start_x = 0, .start_y = 0, .count = @intCast(curves.len), .offset = 0 };
+    const bbox = BBox{
+        .min = Vec2.new(640.0, 948.0),
+        .max = Vec2.new(721.0, 973.0),
+    };
+    const delta = Vec2.new(-origin.x, -origin.y);
+    const local_bbox = BBox{
+        .min = Vec2.add(bbox.min, delta),
+        .max = Vec2.add(bbox.max, delta),
+    };
+
+    var bd = try buildGlyphBandData(
+        std.testing.allocator,
+        &curves,
+        curves.len,
+        bbox,
+        entry,
+        origin,
+        true,
+    );
+    defer freeGlyphBandData(std.testing.allocator, &bd);
+
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0) / local_bbox.width(), bd.band_scale_x, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0) / local_bbox.height(), bd.band_scale_y, 0.0001);
+    try std.testing.expectApproxEqAbs(-local_bbox.min.x * bd.band_scale_x, bd.band_offset_x, 0.0001);
+    try std.testing.expectApproxEqAbs(-local_bbox.min.y * bd.band_scale_y, bd.band_offset_y, 0.0001);
 }

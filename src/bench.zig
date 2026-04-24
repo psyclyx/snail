@@ -80,7 +80,12 @@ pub fn main() !void {
             for (contour.curves) |curve| try all.append(allocator, .{ .kind = .quadratic, .p0 = curve.p0, .p1 = curve.p1, .p2 = curve.p2 });
         }
         const owned = try allocator.dupe(CurveSegment, all.items);
-        try glyph_curves.append(allocator, .{ .curves = owned, .bbox = glyph.metrics.bbox });
+        try glyph_curves.append(allocator, .{
+            .curves = owned,
+            .bbox = glyph.metrics.bbox,
+            .logical_curve_count = owned.len,
+            .prefer_direct_encoding = true,
+        });
     }
 
     var curve_total_us: f64 = 0;
@@ -108,7 +113,7 @@ pub fn main() !void {
 
         const t = nowNs();
         for (glyph_curves.items, 0..) |gc, i| {
-            var bd = try band_tex.buildGlyphBandData(allocator, gc.curves, gc.bbox, base_ct.entries[i], gc.origin);
+            var bd = try band_tex.buildGlyphBandData(allocator, gc.curves, gc.logical_curve_count, gc.bbox, base_ct.entries[i], gc.origin, gc.prefer_direct_encoding);
             try bds.append(allocator, bd);
             _ = &bd;
         }
@@ -221,12 +226,12 @@ pub fn main() !void {
             for (contour.curves) |curve| try all.append(allocator, .{ .kind = .quadratic, .p0 = curve.p0, .p1 = curve.p1, .p2 = curve.p2 });
         }
 
-        const gc = [_]curve_tex.GlyphCurves{.{ .curves = all.items, .bbox = glyph.metrics.bbox }};
+        const gc = [_]curve_tex.GlyphCurves{.{ .curves = all.items, .bbox = glyph.metrics.bbox, .logical_curve_count = all.items.len, .prefer_direct_encoding = true }};
         var ct2 = try curve_tex.buildCurveTexture(allocator, &gc);
         defer ct2.texture.deinit();
         defer allocator.free(ct2.entries);
 
-        var bd = try band_tex.buildGlyphBandData(allocator, all.items, glyph.metrics.bbox, ct2.entries[0], .zero);
+        var bd = try band_tex.buildGlyphBandData(allocator, all.items, all.items.len, glyph.metrics.bbox, ct2.entries[0], .zero, true);
         defer band_tex.freeGlyphBandData(allocator, &bd);
 
         // Count max curves per band from the band data

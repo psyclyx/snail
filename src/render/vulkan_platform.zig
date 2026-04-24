@@ -134,12 +134,12 @@ pub fn init(width: u32, height: u32, title: [*:0]const u8) !vkp.VulkanContext {
 
 /// Returns true once after the window has moved (which may indicate a monitor change).
 pub fn consumeMonitorChanged() bool {
+    if (window) |w| return w.consumeMonitorChanged();
     return false;
 }
 
-/// Wayland does not expose reliable monitor geometry/content-scale details here,
-/// so the demo currently uses the fontconfig-detected base order unchanged.
 pub fn detectCurrentMonitorSubpixelOrder(base: SubpixelOrder) SubpixelOrder {
+    if (window) |w| return w.currentSubpixelOrder(base);
     return base;
 }
 

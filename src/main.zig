@@ -37,8 +37,8 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
     defer renderer.deinit();
 
     const sys_order = subpixel_detect.detect();
-    const initial_order = platform.detectCurrentMonitorSubpixelOrder(sys_order);
-    renderer.setSubpixelOrder(initial_order);
+    var detected_order = platform.detectCurrentMonitorSubpixelOrder(sys_order);
+    renderer.setSubpixelOrder(detected_order);
 
     const vbuf = try allocator.alloc(f32, 10000 * snail.FLOATS_PER_GLYPH);
     defer allocator.free(vbuf);
@@ -95,10 +95,10 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         const KEY_DOWN = platform.KEY_DOWN;
 
         if (platform.consumeMonitorChanged()) {
-            const order = platform.detectCurrentMonitorSubpixelOrder(sys_order);
-            if (order != renderer.subpixelOrder()) {
-                renderer.setSubpixelOrder(order);
-                std.debug.print("Monitor change: subpixel order -> {s}\n", .{order.name()});
+            detected_order = platform.detectCurrentMonitorSubpixelOrder(sys_order);
+            if (detected_order != renderer.subpixelOrder()) {
+                renderer.setSubpixelOrder(detected_order);
+                std.debug.print("Monitor change: subpixel order -> {s}\n", .{detected_order.name()});
             }
         }
 

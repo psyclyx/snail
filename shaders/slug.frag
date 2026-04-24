@@ -19,6 +19,7 @@ layout(push_constant) uniform PushConstants {
 layout(location = 0) out vec4 frag_color;
 
 #define kLogBandTextureWidth 12
+#define kDirectEncodingKindBias 4.0
 uint calcRootCode(float y1, float y2, float y3) {
     uint i1 = floatBitsToUint(y1) >> 31u;
     uint i2 = floatBitsToUint(y2) >> 30u;
@@ -206,14 +207,26 @@ SegmentData fetchSegment(ivec2 loc, int layer) {
     ivec2 loc1 = offsetCurveLoc(loc, 1);
     vec4 tex1 = texelFetch(u_curve_tex, ivec3(loc1, layer), 0);
     ivec2 loc2 = offsetCurveLoc(loc, 2);
-    vec4 meta = texelFetch(u_curve_tex, ivec3(loc2, layer), 0);
+    vec4 tex2 = texelFetch(u_curve_tex, ivec3(loc2, layer), 0);
+    ivec2 loc3 = offsetCurveLoc(loc, 3);
+    vec4 meta = texelFetch(u_curve_tex, ivec3(loc3, layer), 0);
     SegmentData seg;
-    seg.kind = int(meta.x + 0.5);
-    seg.p0 = tex0.xy;
-    seg.p1 = tex0.zw;
-    seg.p2 = tex1.xy;
-    seg.p3 = tex1.zw;
-    seg.weights = meta.yzw;
+    bool direct = tex2.z >= kDirectEncodingKindBias - 0.5;
+    if (direct) {
+        seg.kind = int(tex2.z - kDirectEncodingKindBias + 0.5);
+        seg.p0 = tex0.xy;
+        seg.p1 = tex0.zw;
+        seg.p2 = tex1.xy;
+        seg.p3 = tex1.zw;
+    } else {
+        vec2 anchor = tex0.xy * 256.0 + tex0.zw;
+        seg.kind = int(tex2.z + 0.5);
+        seg.p0 = anchor;
+        seg.p1 = anchor + tex1.xy;
+        seg.p2 = anchor + tex1.zw;
+        seg.p3 = anchor + tex2.xy;
+    }
+    seg.weights = vec3(tex2.w, meta.x, meta.y);
     return seg;
 }
 

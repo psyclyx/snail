@@ -6,6 +6,7 @@
 const std = @import("std");
 const snail = @import("snail");
 const bezier = snail.bezier;
+const curve_tex = snail.curve_tex;
 const CurveSegment = bezier.CurveSegment;
 const GlyphBandEntry = std.meta.fieldInfo(snail.Atlas.GlyphInfo, .band_entry).type;
 const Vec2 = snail.Vec2;
@@ -898,7 +899,7 @@ fn readBandTexel(page: *const snail.AtlasPage, tx: u32, ty: u32) [2]u32 {
     };
 }
 
-/// Read curve texture texel 0 (p1.x, p1.y, p2.x, p2.y) as f32 values.
+/// Read one curve texture texel as f32 values.
 fn readCurveTexelF32(page: *const snail.AtlasPage, tx: u32, ty: u32) [4]f32 {
     const idx = (ty * page.curve_width + tx) * 4;
     if (idx + 3 >= page.curve_data.len) return .{ 0, 0, 0, 0 };
@@ -907,16 +908,6 @@ fn readCurveTexelF32(page: *const snail.AtlasPage, tx: u32, ty: u32) [4]f32 {
         f16ToF32(page.curve_data[idx + 1]),
         f16ToF32(page.curve_data[idx + 2]),
         f16ToF32(page.curve_data[idx + 3]),
-    };
-}
-
-/// Read curve texture texel 1 (p3.x, p3.y) as f32 values.
-fn readCurveTexelF32_p3(page: *const snail.AtlasPage, tx: u32, ty: u32) [2]f32 {
-    const idx = (ty * page.curve_width + tx) * 4;
-    if (idx + 1 >= page.curve_data.len) return .{ 0, 0 };
-    return .{
-        f16ToF32(page.curve_data[idx + 0]),
-        f16ToF32(page.curve_data[idx + 1]),
     };
 }
 
@@ -937,20 +928,41 @@ fn readCurveSegment(page: *const snail.AtlasPage, tx: u32, ty: u32) CurveSegment
     const loc1 = calcCurveLoc(tx, ty, 1);
     const tex1 = readCurveTexelF32(page, loc1[0], loc1[1]);
     const loc2 = calcCurveLoc(tx, ty, 2);
-    const meta = readCurveTexelF32_meta(page, loc2[0], loc2[1]);
-    const kind_u16: u16 = @intFromFloat(@round(meta[0]));
+    const tex2 = readCurveTexelF32(page, loc2[0], loc2[1]);
+    const loc3 = calcCurveLoc(tx, ty, 3);
+    const meta = readCurveTexelF32_meta(page, loc3[0], loc3[1]);
+    const stored_kind = tex2[2];
+    const kind_u16: u16 = @intCast(if (stored_kind >= curve_tex.DIRECT_ENCODING_KIND_BIAS - 0.5)
+        @as(i32, @intFromFloat(@round(stored_kind - curve_tex.DIRECT_ENCODING_KIND_BIAS)))
+    else
+        @as(i32, @intFromFloat(@round(stored_kind))));
     const kind: bezier.CurveKind = switch (kind_u16) {
         1 => .conic,
         2 => .cubic,
         else => .quadratic,
     };
+    if (stored_kind >= curve_tex.DIRECT_ENCODING_KIND_BIAS - 0.5) {
+        return .{
+            .kind = kind,
+            .p0 = .{ .x = tex0[0], .y = tex0[1] },
+            .p1 = .{ .x = tex0[2], .y = tex0[3] },
+            .p2 = .{ .x = tex1[0], .y = tex1[1] },
+            .p3 = .{ .x = tex1[2], .y = tex1[3] },
+            .weights = .{ tex2[3], meta[0], meta[1] },
+        };
+    }
+
+    const p0 = curve_tex.decodePackedAnchor(
+        .{ .x = tex0[0], .y = tex0[1] },
+        .{ .x = tex0[2], .y = tex0[3] },
+    );
     return .{
         .kind = kind,
-        .p0 = .{ .x = tex0[0], .y = tex0[1] },
-        .p1 = .{ .x = tex0[2], .y = tex0[3] },
-        .p2 = .{ .x = tex1[0], .y = tex1[1] },
-        .p3 = .{ .x = tex1[2], .y = tex1[3] },
-        .weights = .{ meta[1], meta[2], meta[3] },
+        .p0 = p0,
+        .p1 = .{ .x = p0.x + tex1[0], .y = p0.y + tex1[1] },
+        .p2 = .{ .x = p0.x + tex1[2], .y = p0.y + tex1[3] },
+        .p3 = .{ .x = p0.x + tex2[0], .y = p0.y + tex2[1] },
+        .weights = .{ tex2[3], meta[0], meta[1] },
     };
 }
 
@@ -1260,6 +1272,65 @@ test "cpu renderer matches absolute and transformed rounded rect pictures" {
     try testing.expectEqualSlices(u8, absolute_buf, transformed_buf);
 }
 
+test "cpu renderer matches huge-span and normalized curved path pictures" {
+    const testing = std.testing;
+
+    const width: u32 = 144;
+    const height: u32 = 144;
+    const stride = width * 4;
+    const large_buf = try testing.allocator.alloc(u8, stride * height);
+    defer testing.allocator.free(large_buf);
+    const normalized_buf = try testing.allocator.alloc(u8, stride * height);
+    defer testing.allocator.free(normalized_buf);
+
+    var large_renderer = CpuRenderer.init(large_buf.ptr, width, height, stride);
+    large_renderer.clear(0, 0, 0, 0);
+    var normalized_renderer = CpuRenderer.init(normalized_buf.ptr, width, height, stride);
+    normalized_renderer.clear(0, 0, 0, 0);
+
+    var large_path = snail.VectorPath.init(testing.allocator);
+    defer large_path.deinit();
+    try large_path.moveTo(.{ .x = 0, .y = 40 * 64 });
+    try large_path.quadTo(.{ .x = 32 * 64, .y = 0 }, .{ .x = 64 * 64, .y = 40 * 64 });
+    try large_path.quadTo(.{ .x = 32 * 64, .y = 80 * 64 }, .{ .x = 0, .y = 40 * 64 });
+    try large_path.close();
+
+    var large_builder = snail.PathPictureBuilder.init(testing.allocator);
+    defer large_builder.deinit();
+    try large_builder.addFilledPath(
+        &large_path,
+        .{ .color = .{ 0.95, 0.55, 0.15, 1.0 } },
+        Transform2D.multiply(
+            Transform2D.translate(24, 28),
+            Transform2D.scale(1.0 / 64.0, 1.0 / 64.0),
+        ),
+    );
+    var large_picture = try large_builder.freeze(testing.allocator);
+    defer large_picture.deinit();
+
+    var normalized_path = snail.VectorPath.init(testing.allocator);
+    defer normalized_path.deinit();
+    try normalized_path.moveTo(.{ .x = 0, .y = 40 });
+    try normalized_path.quadTo(.{ .x = 32, .y = 0 }, .{ .x = 64, .y = 40 });
+    try normalized_path.quadTo(.{ .x = 32, .y = 80 }, .{ .x = 0, .y = 40 });
+    try normalized_path.close();
+
+    var normalized_builder = snail.PathPictureBuilder.init(testing.allocator);
+    defer normalized_builder.deinit();
+    try normalized_builder.addFilledPath(
+        &normalized_path,
+        .{ .color = .{ 0.95, 0.55, 0.15, 1.0 } },
+        Transform2D.translate(24, 28),
+    );
+    var normalized_picture = try normalized_builder.freeze(testing.allocator);
+    defer normalized_picture.deinit();
+
+    large_renderer.drawPathPicture(&large_picture);
+    normalized_renderer.drawPathPicture(&normalized_picture);
+
+    try testing.expectEqualSlices(u8, large_buf, normalized_buf);
+}
+
 test "cpu renderer renders gradient path picture" {
     const testing = std.testing;
 
@@ -1314,8 +1385,8 @@ test "cpu renderer renders image-painted path picture" {
     renderer.clear(0, 0, 0, 0);
 
     var image = try snail.Image.initRgba8(testing.allocator, 2, 1, &.{
-        255, 0, 0, 255,
-        0, 0, 255, 255,
+        255, 0, 0,   255,
+        0,   0, 255, 255,
     });
     defer image.deinit();
 
