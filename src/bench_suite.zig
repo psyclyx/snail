@@ -379,7 +379,7 @@ fn runBannerScene(
     const path_mvp = snail.Mat4.ortho(0, WIDTH, HEIGHT, 0, -1, 1);
     const layout = demo_banner.buildLayout(w, h, scene_assets.metrics);
 
-    var picture = try demo_banner_scene.buildPathPicture(allocator, layout);
+    var picture = try demo_banner_scene.buildPathPicture(allocator, layout, .normal);
     defer picture.deinit();
 
     var atlas_views: [7]snail.AtlasView = undefined;
@@ -691,7 +691,7 @@ fn runBannerSceneVulkan(
     const path_mvp = snail.Mat4.ortho(0, WIDTH, HEIGHT, 0, -1, 1);
     const layout = demo_banner.buildLayout(w, h, scene_assets.metrics);
 
-    var picture = try demo_banner_scene.buildPathPicture(allocator, layout);
+    var picture = try demo_banner_scene.buildPathPicture(allocator, layout, .normal);
     defer picture.deinit();
 
     var atlas_views: [7]snail.AtlasView = undefined;

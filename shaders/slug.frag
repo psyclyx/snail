@@ -222,6 +222,9 @@ SegmentData fetchSegment(ivec2 loc, int layer) {
 
 vec2 evalSegmentPoint(SegmentData seg, float t) {
     float mt = 1.0 - t;
+    if (seg.kind == 3) {
+        return mix(seg.p0, seg.p2, t);
+    }
     if (seg.kind == 2) {
         return mt * mt * mt * seg.p0 +
             3.0 * mt * mt * t * seg.p1 +
@@ -243,6 +246,9 @@ vec2 evalSegmentPoint(SegmentData seg, float t) {
 
 vec2 evalSegmentDerivative(SegmentData seg, float t) {
     float mt = 1.0 - t;
+    if (seg.kind == 3) {
+        return seg.p2 - seg.p0;
+    }
     if (seg.kind == 2) {
         return 3.0 * mt * mt * (seg.p1 - seg.p0) +
             6.0 * mt * t * (seg.p2 - seg.p1) +
@@ -271,6 +277,9 @@ vec2 evalSegmentDerivative(SegmentData seg, float t) {
 }
 
 SegmentRoots solveSegmentHorizontalRoots(SegmentData seg, float py) {
+    if (seg.kind == 3) {
+        return solveQuadraticRoots(0.0, seg.p2.y - seg.p0.y, seg.p0.y - py);
+    }
     if (seg.kind == 2) {
         float a = -seg.p0.y + 3.0 * seg.p1.y - 3.0 * seg.p2.y + seg.p3.y;
         float b = 3.0 * seg.p0.y - 6.0 * seg.p1.y + 3.0 * seg.p2.y;
@@ -290,6 +299,9 @@ SegmentRoots solveSegmentHorizontalRoots(SegmentData seg, float py) {
 }
 
 SegmentRoots solveSegmentVerticalRoots(SegmentData seg, float px) {
+    if (seg.kind == 3) {
+        return solveQuadraticRoots(0.0, seg.p2.x - seg.p0.x, seg.p0.x - px);
+    }
     if (seg.kind == 2) {
         float a = -seg.p0.x + 3.0 * seg.p1.x - 3.0 * seg.p2.x + seg.p3.x;
         float b = 3.0 * seg.p0.x - 6.0 * seg.p1.x + 3.0 * seg.p2.x;
@@ -309,12 +321,14 @@ SegmentRoots solveSegmentVerticalRoots(SegmentData seg, float px) {
 }
 
 float segmentMaxX(SegmentData seg) {
+    if (seg.kind == 3) return max(seg.p0.x, seg.p2.x);
     float result = max(max(seg.p0.x, seg.p1.x), seg.p2.x);
     if (seg.kind == 2) result = max(result, seg.p3.x);
     return result;
 }
 
 float segmentMaxY(SegmentData seg) {
+    if (seg.kind == 3) return max(seg.p0.y, seg.p2.y);
     float result = max(max(seg.p0.y, seg.p1.y), seg.p2.y);
     if (seg.kind == 2) result = max(result, seg.p3.y);
     return result;

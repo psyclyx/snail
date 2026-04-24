@@ -3,6 +3,58 @@ const snail = @import("snail.zig");
 const demo_banner = @import("demo_banner.zig");
 const assets = @import("assets");
 
+pub const ViewMode = enum(u8) {
+    normal,
+    vectors_only,
+    vector_fill_mask,
+    vector_stroke_mask,
+    vector_layer_tint,
+    vector_bounds,
+
+    pub fn next(self: ViewMode) ViewMode {
+        return switch (self) {
+            .normal => .vectors_only,
+            .vectors_only => .vector_fill_mask,
+            .vector_fill_mask => .vector_stroke_mask,
+            .vector_stroke_mask => .vector_layer_tint,
+            .vector_layer_tint => .vector_bounds,
+            .vector_bounds => .normal,
+        };
+    }
+
+    pub fn label(self: ViewMode) []const u8 {
+        return switch (self) {
+            .normal => "scene",
+            .vectors_only => "vectors only",
+            .vector_fill_mask => "vector fill mask",
+            .vector_stroke_mask => "vector stroke mask",
+            .vector_layer_tint => "vector layer tint",
+            .vector_bounds => "vector bounds",
+        };
+    }
+
+    pub fn isDebug(self: ViewMode) bool {
+        return self != .normal;
+    }
+
+    pub fn showText(self: ViewMode) bool {
+        return self == .normal;
+    }
+
+    pub fn pathDebugView(self: ViewMode) snail.PathPictureDebugView {
+        return switch (self) {
+            .normal, .vectors_only, .vector_bounds => .normal,
+            .vector_fill_mask => .fill_mask,
+            .vector_stroke_mask => .stroke_mask,
+            .vector_layer_tint => .layer_tint,
+        };
+    }
+
+    pub fn showBoundsOverlay(self: ViewMode) bool {
+        return self == .vector_bounds;
+    }
+};
+
 pub const Assets = struct {
     latin_font: snail.Font,
     latin_atlas: snail.Atlas,
@@ -101,11 +153,24 @@ pub const Assets = struct {
 pub fn buildPathPicture(
     allocator: std.mem.Allocator,
     layout: demo_banner.Layout,
+    view_mode: ViewMode,
 ) !snail.PathPicture {
     var picture_builder = snail.PathPictureBuilder.init(allocator);
     defer picture_builder.deinit();
     try demo_banner.buildPathShowcase(&picture_builder, layout);
-    return picture_builder.freeze(allocator);
+    var picture = try picture_builder.freeze(allocator);
+    errdefer picture.deinit();
+    picture.applyDebugView(view_mode.pathDebugView());
+    return picture;
+}
+
+pub fn buildPathOverlayPicture(
+    allocator: std.mem.Allocator,
+    picture: *const snail.PathPicture,
+    view_mode: ViewMode,
+) !?snail.PathPicture {
+    if (!view_mode.showBoundsOverlay()) return null;
+    return try picture.buildBoundsOverlay(allocator, .{});
 }
 
 pub fn populateTextBatch(

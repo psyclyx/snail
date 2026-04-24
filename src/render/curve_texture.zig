@@ -155,24 +155,10 @@ pub fn buildCurveTexture(
             .offset = texel_idx,
         };
         if (g.prefer_direct_encoding) {
-            const delta = Vec2.new(-g.origin.x, -g.origin.y);
-            var prev_original_end: ?Vec2 = null;
-            var prev_quantized_end: ?Vec2 = null;
+            const prepared_curves = try prepareGlyphCurvesForDirectEncoding(allocator, g.curves, g.origin);
+            defer allocator.free(prepared_curves);
 
-            for (g.curves) |curve| {
-                const local_curve = CurveSegment{
-                    .kind = curve.kind,
-                    .p0 = Vec2.add(curve.p0, delta),
-                    .p1 = Vec2.add(curve.p1, delta),
-                    .p2 = Vec2.add(curve.p2, delta),
-                    .p3 = if (curve.kind == .cubic) Vec2.add(curve.p3, delta) else curve.p3,
-                    .weights = curve.weights,
-                };
-                const start_override = if (prev_original_end) |prev_end|
-                    if (pointsApproxEqual(local_curve.p0, prev_end)) prev_quantized_end else null
-                else
-                    null;
-                const quantized_curve = quantizedPreparedDirectLocalCurve(local_curve, start_override);
+            for (prepared_curves) |quantized_curve| {
                 const base = texel_idx * 4;
                 data[base + 0] = f32ToF16(quantized_curve.p0.x);
                 data[base + 1] = f32ToF16(quantized_curve.p0.y);
@@ -188,8 +174,6 @@ pub fn buildCurveTexture(
                 data[base + 11] = f32ToF16(quantized_curve.weights[0]);
                 data[base + 12] = f32ToF16(quantized_curve.weights[1]);
                 data[base + 13] = f32ToF16(quantized_curve.weights[2]);
-                prev_original_end = local_curve.endPoint();
-                prev_quantized_end = quantized_curve.endPoint();
                 texel_idx += SEGMENT_TEXELS;
             }
         } else {
@@ -320,37 +304,86 @@ fn quantizedPreparedDirectLocalCurve(curve: CurveSegment, start_override: ?Vec2)
     };
 }
 
-pub fn prepareGlyphCurvesForPacking(
+fn localizedCurve(curve: CurveSegment, delta: Vec2) CurveSegment {
+    return .{
+        .kind = curve.kind,
+        .p0 = Vec2.add(curve.p0, delta),
+        .p1 = Vec2.add(curve.p1, delta),
+        .p2 = Vec2.add(curve.p2, delta),
+        .p3 = if (curve.kind == .cubic) Vec2.add(curve.p3, delta) else curve.p3,
+        .weights = curve.weights,
+    };
+}
+
+fn snapCurveEndpoint(curve: CurveSegment, point: Vec2) CurveSegment {
+    var snapped = curve;
+    switch (curve.kind) {
+        .cubic => snapped.p3 = point,
+        .quadratic, .conic, .line => snapped.p2 = point,
+    }
+    return snapped;
+}
+
+const PreparedCurveMode = enum {
+    packing,
+    direct,
+};
+
+fn quantizePreparedCurve(curve: CurveSegment, start_override: ?Vec2, comptime mode: PreparedCurveMode) CurveSegment {
+    return switch (mode) {
+        .packing => quantizedPreparedLocalCurve(curve, start_override),
+        .direct => quantizedPreparedDirectLocalCurve(curve, start_override),
+    };
+}
+
+fn prepareGlyphCurves(
     allocator: std.mem.Allocator,
     curves: []const CurveSegment,
     origin: Vec2,
+    comptime mode: PreparedCurveMode,
 ) ![]CurveSegment {
     const out = try allocator.alloc(CurveSegment, curves.len);
     errdefer allocator.free(out);
 
     const delta = Vec2.new(-origin.x, -origin.y);
-    var prev_original_end: ?Vec2 = null;
-    var prev_quantized_end: ?Vec2 = null;
+    var contour_start: usize = 0;
+    while (contour_start < curves.len) {
+        var contour_end = contour_start + 1;
+        while (contour_end < curves.len and pointsApproxEqual(curves[contour_end - 1].endPoint(), curves[contour_end].p0)) {
+            contour_end += 1;
+        }
 
-    for (curves, out) |curve, *dst| {
-        const local_curve = CurveSegment{
-            .kind = curve.kind,
-            .p0 = Vec2.add(curve.p0, delta),
-            .p1 = Vec2.add(curve.p1, delta),
-            .p2 = Vec2.add(curve.p2, delta),
-            .p3 = if (curve.kind == .cubic) Vec2.add(curve.p3, delta) else curve.p3,
-            .weights = curve.weights,
-        };
-        const start_override = if (prev_original_end) |prev_end|
-            if (pointsApproxEqual(local_curve.p0, prev_end)) prev_quantized_end else null
-        else
-            null;
-        dst.* = quantizedPreparedLocalCurve(local_curve, start_override);
-        prev_original_end = local_curve.endPoint();
-        prev_quantized_end = dst.endPoint();
+        var prev_original_end: ?Vec2 = null;
+        var prev_quantized_end: ?Vec2 = null;
+        for (curves[contour_start..contour_end], out[contour_start..contour_end]) |curve, *dst| {
+            const local_curve = localizedCurve(curve, delta);
+            const start_override = if (prev_original_end) |prev_end|
+                if (pointsApproxEqual(local_curve.p0, prev_end)) prev_quantized_end else null
+            else
+                null;
+            dst.* = quantizePreparedCurve(local_curve, start_override, mode);
+            prev_original_end = local_curve.endPoint();
+            prev_quantized_end = dst.endPoint();
+        }
+
+        const first_local = localizedCurve(curves[contour_start], delta);
+        const last_local = localizedCurve(curves[contour_end - 1], delta);
+        if (pointsApproxEqual(first_local.p0, last_local.endPoint())) {
+            out[contour_end - 1] = snapCurveEndpoint(out[contour_end - 1], out[contour_start].p0);
+        }
+
+        contour_start = contour_end;
     }
 
     return out;
+}
+
+pub fn prepareGlyphCurvesForPacking(
+    allocator: std.mem.Allocator,
+    curves: []const CurveSegment,
+    origin: Vec2,
+) ![]CurveSegment {
+    return prepareGlyphCurves(allocator, curves, origin, .packing);
 }
 
 pub fn prepareGlyphCurvesForDirectEncoding(
@@ -358,32 +391,7 @@ pub fn prepareGlyphCurvesForDirectEncoding(
     curves: []const CurveSegment,
     origin: Vec2,
 ) ![]CurveSegment {
-    const out = try allocator.alloc(CurveSegment, curves.len);
-    errdefer allocator.free(out);
-
-    const delta = Vec2.new(-origin.x, -origin.y);
-    var prev_original_end: ?Vec2 = null;
-    var prev_quantized_end: ?Vec2 = null;
-
-    for (curves, out) |curve, *dst| {
-        const local_curve = CurveSegment{
-            .kind = curve.kind,
-            .p0 = Vec2.add(curve.p0, delta),
-            .p1 = Vec2.add(curve.p1, delta),
-            .p2 = Vec2.add(curve.p2, delta),
-            .p3 = if (curve.kind == .cubic) Vec2.add(curve.p3, delta) else curve.p3,
-            .weights = curve.weights,
-        };
-        const start_override = if (prev_original_end) |prev_end|
-            if (pointsApproxEqual(local_curve.p0, prev_end)) prev_quantized_end else null
-        else
-            null;
-        dst.* = quantizedPreparedDirectLocalCurve(local_curve, start_override);
-        prev_original_end = local_curve.endPoint();
-        prev_quantized_end = dst.endPoint();
-    }
-
-    return out;
+    return prepareGlyphCurves(allocator, curves, origin, .direct);
 }
 
 fn decodeStoredSegment(data: []const u16) CurveSegment {
@@ -395,6 +403,7 @@ fn decodeStoredSegment(data: []const u16) CurveSegment {
     const kind: bezier_mod.CurveKind = switch (kind_u16) {
         1 => .conic,
         2 => .cubic,
+        3 => .line,
         else => .quadratic,
     };
     if (stored_kind >= DIRECT_ENCODING_KIND_BIAS - 0.5) {
@@ -587,6 +596,29 @@ test "prepareGlyphCurvesForPacking keeps adjacent joins identical" {
     try std.testing.expectApproxEqAbs(prepared[0].endPoint().y, prepared[1].p0.y, 0.0001);
 }
 
+test "prepareGlyphCurvesForPacking keeps closed contour wrap identical" {
+    const curves = [_]CurveSegment{
+        .{
+            .kind = .quadratic,
+            .p0 = Vec2.new(0.3, 10.2),
+            .p1 = Vec2.new(48.6, 22.7),
+            .p2 = Vec2.new(96.9, 10.2),
+        },
+        .{
+            .kind = .quadratic,
+            .p0 = Vec2.new(96.9, 10.2),
+            .p1 = Vec2.new(48.6, -2.1),
+            .p2 = Vec2.new(0.3, 10.2),
+        },
+    };
+
+    const prepared = try prepareGlyphCurvesForPacking(std.testing.allocator, &curves, .zero);
+    defer std.testing.allocator.free(prepared);
+
+    try std.testing.expectApproxEqAbs(prepared[prepared.len - 1].endPoint().x, prepared[0].p0.x, 0.0001);
+    try std.testing.expectApproxEqAbs(prepared[prepared.len - 1].endPoint().y, prepared[0].p0.y, 0.0001);
+}
+
 test "prepareGlyphCurvesForDirectEncoding keeps adjacent joins identical" {
     const curves = [_]CurveSegment{
         .{
@@ -608,6 +640,29 @@ test "prepareGlyphCurvesForDirectEncoding keeps adjacent joins identical" {
 
     try std.testing.expectApproxEqAbs(prepared[0].endPoint().x, prepared[1].p0.x, 0.0001);
     try std.testing.expectApproxEqAbs(prepared[0].endPoint().y, prepared[1].p0.y, 0.0001);
+}
+
+test "prepareGlyphCurvesForDirectEncoding keeps closed contour wrap identical" {
+    const curves = [_]CurveSegment{
+        .{
+            .kind = .quadratic,
+            .p0 = Vec2.new(1000.3, 2010.2),
+            .p1 = Vec2.new(1048.6, 2022.7),
+            .p2 = Vec2.new(1096.9, 2010.2),
+        },
+        .{
+            .kind = .quadratic,
+            .p0 = Vec2.new(1096.9, 2010.2),
+            .p1 = Vec2.new(1048.6, 1997.9),
+            .p2 = Vec2.new(1000.3, 2010.2),
+        },
+    };
+
+    const prepared = try prepareGlyphCurvesForDirectEncoding(std.testing.allocator, &curves, .zero);
+    defer std.testing.allocator.free(prepared);
+
+    try std.testing.expectApproxEqAbs(prepared[prepared.len - 1].endPoint().x, prepared[0].p0.x, 0.0001);
+    try std.testing.expectApproxEqAbs(prepared[prepared.len - 1].endPoint().y, prepared[0].p0.y, 0.0001);
 }
 
 test "buildCurveTexture supports direct encoding for font glyphs" {
@@ -673,6 +728,41 @@ test "buildCurveTexture direct encoding preserves adjacent joins" {
     const second = decodeStoredSegment(result.texture.data[SEGMENT_TEXELS * 4 .. SEGMENT_TEXELS * 8]);
     try std.testing.expectApproxEqAbs(first.endPoint().x, second.p0.x, 0.0001);
     try std.testing.expectApproxEqAbs(first.endPoint().y, second.p0.y, 0.0001);
+}
+
+test "buildCurveTexture preserves closed contour wrap" {
+    const curves = [_]CurveSegment{
+        .{
+            .kind = .quadratic,
+            .p0 = Vec2.new(0.3, 10.2),
+            .p1 = Vec2.new(48.6, 22.7),
+            .p2 = Vec2.new(96.9, 10.2),
+        },
+        .{
+            .kind = .quadratic,
+            .p0 = Vec2.new(96.9, 10.2),
+            .p1 = Vec2.new(48.6, -2.1),
+            .p2 = Vec2.new(0.3, 10.2),
+        },
+    };
+    const glyph = GlyphCurves{
+        .curves = &curves,
+        .bbox = .{
+            .min = Vec2.new(0.3, -2.1),
+            .max = Vec2.new(96.9, 22.7),
+        },
+        .origin = Vec2.new(48.6, 10.2),
+        .prefer_direct_encoding = true,
+    };
+
+    var result = try buildCurveTexture(std.testing.allocator, &.{glyph});
+    defer result.texture.deinit();
+    defer std.testing.allocator.free(result.entries);
+
+    const first = decodeStoredSegment(result.texture.data[0 .. SEGMENT_TEXELS * 4]);
+    const second = decodeStoredSegment(result.texture.data[SEGMENT_TEXELS * 4 .. SEGMENT_TEXELS * 8]);
+    try std.testing.expectApproxEqAbs(second.endPoint().x, first.p0.x, 0.0001);
+    try std.testing.expectApproxEqAbs(second.endPoint().y, first.p0.y, 0.0001);
 }
 
 test "splitCurvesForPacking bounds per-segment control deltas" {

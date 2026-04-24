@@ -223,6 +223,9 @@ SegmentData fetchSegment(ivec2 loc, int layer) {
 
 vec2 evalSegmentPoint(SegmentData seg, float t) {
     float mt = 1.0 - t;
+    if (seg.kind == 3) {
+        return mix(seg.p0, seg.p2, t);
+    }
     if (seg.kind == 2) {
         return mt * mt * mt * seg.p0 +
             3.0 * mt * mt * t * seg.p1 +
@@ -244,6 +247,9 @@ vec2 evalSegmentPoint(SegmentData seg, float t) {
 
 vec2 evalSegmentDerivative(SegmentData seg, float t) {
     float mt = 1.0 - t;
+    if (seg.kind == 3) {
+        return seg.p2 - seg.p0;
+    }
     if (seg.kind == 2) {
         return 3.0 * mt * mt * (seg.p1 - seg.p0) +
             6.0 * mt * t * (seg.p2 - seg.p1) +
@@ -272,6 +278,9 @@ vec2 evalSegmentDerivative(SegmentData seg, float t) {
 }
 
 SegmentRoots solveSegmentHorizontalRoots(SegmentData seg, float py) {
+    if (seg.kind == 3) {
+        return solveQuadraticRoots(0.0, seg.p2.y - seg.p0.y, seg.p0.y - py);
+    }
     if (seg.kind == 2) {
         float a = -seg.p0.y + 3.0 * seg.p1.y - 3.0 * seg.p2.y + seg.p3.y;
         float b = 3.0 * seg.p0.y - 6.0 * seg.p1.y + 3.0 * seg.p2.y;
@@ -291,6 +300,9 @@ SegmentRoots solveSegmentHorizontalRoots(SegmentData seg, float py) {
 }
 
 SegmentRoots solveSegmentVerticalRoots(SegmentData seg, float px) {
+    if (seg.kind == 3) {
+        return solveQuadraticRoots(0.0, seg.p2.x - seg.p0.x, seg.p0.x - px);
+    }
     if (seg.kind == 2) {
         float a = -seg.p0.x + 3.0 * seg.p1.x - 3.0 * seg.p2.x + seg.p3.x;
         float b = 3.0 * seg.p0.x - 6.0 * seg.p1.x + 3.0 * seg.p2.x;
@@ -310,12 +322,14 @@ SegmentRoots solveSegmentVerticalRoots(SegmentData seg, float px) {
 }
 
 float segmentMaxX(SegmentData seg) {
+    if (seg.kind == 3) return max(seg.p0.x, seg.p2.x);
     float result = max(max(seg.p0.x, seg.p1.x), seg.p2.x);
     if (seg.kind == 2) result = max(result, seg.p3.x);
     return result;
 }
 
 float segmentMaxY(SegmentData seg) {
+    if (seg.kind == 3) return max(seg.p0.y, seg.p2.y);
     float result = max(max(seg.p0.y, seg.p1.y), seg.p2.y);
     if (seg.kind == 2) result = max(result, seg.p3.y);
     return result;
@@ -462,9 +476,9 @@ vec4 premultiplyColor(vec4 color, float cov) {
     return vec4(color.rgb * alpha, alpha);
 }
 
-vec4 premultiplyColorSubpixel(vec4 color, vec3 cov) {
+vec4 premultiplyColorSubpixel(vec4 color, vec3 cov, float alpha_cov) {
     vec3 alpha = vec3(color.a) * cov;
-    return vec4(color.rgb * alpha, color.a * max(max(cov.r, cov.g), cov.b));
+    return vec4(color.rgb * alpha, color.a * alpha_cov);
 }
 
 vec2 evalHorizCoverage(vec2 rc, float xOffset, vec2 ppe,
@@ -491,7 +505,16 @@ vec3 blendSubpixel(vec2 cw_r, vec2 cw_g, vec2 cw_b, vec2 cw_o) {
     );
 }
 
-vec3 evalGlyphCoverageSubpixelLayer(vec2 rc, vec2 epp, vec2 ppe, ivec2 gLoc, ivec2 bandMax, int layer) {
+vec4 blendSubpixelWithAlpha(vec2 cw_r, vec2 cw_g, vec2 cw_b, vec2 cw_o) {
+    vec3 cov = blendSubpixel(cw_r, cw_g, cw_b, cw_o);
+    float wsum = cw_g.y + cw_o.y;
+    float blended = cw_g.x * cw_g.y + cw_o.x * cw_o.y;
+    float alpha_cov = clamp(max(applyFillRule(blended / max(wsum, 1.0/65536.0)),
+                                min(applyFillRule(cw_g.x), applyFillRule(cw_o.x))), 0.0, 1.0);
+    return vec4(cov, alpha_cov);
+}
+
+vec4 evalGlyphCoverageSubpixelLayer(vec2 rc, vec2 epp, vec2 ppe, ivec2 gLoc, ivec2 bandMax, int layer) {
     ivec2 bandIdx = clamp(ivec2(rc * v_banding.xy + v_banding.zw), ivec2(0), bandMax);
 
     uvec2 hbd = texelFetch(u_band_tex, ivec3(gLoc.x + bandIdx.y, gLoc.y, layer), 0).xy;
@@ -509,7 +532,7 @@ vec3 evalGlyphCoverageSubpixelLayer(vec2 rc, vec2 epp, vec2 ppe, ivec2 gLoc, ive
         vec2 cw_g = evalHorizCoverage(rc,  0.0,    ppe, gLoc, hLoc, hCount, layer);
         vec2 cw_b = evalHorizCoverage(rc, +sp * s, ppe, gLoc, hLoc, hCount, layer);
         vec2 cw_v = evalVertCoverage(rc, 0.0, ppe, vLoc, vCount, layer);
-        return blendSubpixel(cw_r, cw_g, cw_b, cw_v);
+        return blendSubpixelWithAlpha(cw_r, cw_g, cw_b, cw_v);
     }
 
     float sp = epp.y / 3.0;
@@ -518,15 +541,15 @@ vec3 evalGlyphCoverageSubpixelLayer(vec2 rc, vec2 epp, vec2 ppe, ivec2 gLoc, ive
     vec2 cw_r = evalVertCoverage(rc, -sp * s, ppe, vLoc, vCount, layer);
     vec2 cw_g = evalVertCoverage(rc,  0.0,    ppe, vLoc, vCount, layer);
     vec2 cw_b = evalVertCoverage(rc, +sp * s, ppe, vLoc, vCount, layer);
-    return blendSubpixel(cw_r, cw_g, cw_b, cw_h);
+    return blendSubpixelWithAlpha(cw_r, cw_g, cw_b, cw_h);
 }
 
 vec4 compositePathGroupSubpixel(vec2 rc, vec2 epp, vec2 ppe, ivec2 infoBase, vec4 header, int texLayer) {
     int layer_count = int(header.x + 0.5);
     int composite_mode = int(header.y + 0.5);
     vec4 result = vec4(0.0);
-    vec3 fill_cov = vec3(0.0);
-    vec3 stroke_cov = vec3(0.0);
+    vec4 fill_cov = vec4(0.0);
+    vec4 stroke_cov = vec4(0.0);
     vec4 fill_paint = vec4(0.0);
     vec4 stroke_paint = vec4(0.0);
 
@@ -536,7 +559,7 @@ vec4 compositePathGroupSubpixel(vec2 rc, vec2 epp, vec2 ppe, ivec2 infoBase, vec
         ivec2 gLoc = ivec2(info.xy);
         ivec2 bandMax = ivec2(floatBitsToInt(info.z) & 0xFFFF,
                               (floatBitsToInt(info.z) >> 16) & 0xFFFF);
-        vec3 cov = evalGlyphCoverageSubpixelLayer(rc, epp, ppe, gLoc, bandMax, texLayer);
+        vec4 cov = evalGlyphCoverageSubpixelLayer(rc, epp, ppe, gLoc, bandMax, texLayer);
         vec4 paint = samplePathPaint(rc, loc, info);
 
         if (composite_mode == 1 && layer_count >= 2 && l < 2) {
@@ -550,14 +573,16 @@ vec4 compositePathGroupSubpixel(vec2 rc, vec2 epp, vec2 ppe, ivec2 infoBase, vec
             continue;
         }
 
-        vec4 premul = premultiplyColorSubpixel(paint, cov);
+        vec4 premul = premultiplyColorSubpixel(paint, cov.rgb, cov.a);
         result = premul + result * (1.0 - premul.a);
     }
 
     if (composite_mode == 1 && layer_count >= 2) {
-        vec3 border_cov = min(fill_cov, stroke_cov);
-        vec3 interior_cov = max(fill_cov - border_cov, vec3(0.0));
-        vec4 combined = premultiplyColorSubpixel(fill_paint, interior_cov) + premultiplyColorSubpixel(stroke_paint, border_cov);
+        vec3 border_cov = min(fill_cov.rgb, stroke_cov.rgb);
+        vec3 interior_cov = max(fill_cov.rgb - border_cov, vec3(0.0));
+        float border_alpha = min(fill_cov.a, stroke_cov.a);
+        float interior_alpha = max(fill_cov.a - border_alpha, 0.0);
+        vec4 combined = premultiplyColorSubpixel(fill_paint, interior_cov, interior_alpha) + premultiplyColorSubpixel(stroke_paint, border_cov, border_alpha);
         result = result + combined * (1.0 - result.a);
     }
 
@@ -596,7 +621,7 @@ void main() {
             ivec2 vLoc = calcBandLoc(gLoc, vbd.y);
             int vCount = int(vbd.x);
 
-            vec3 cov;
+            vec4 cov_alpha;
             if (subpixel_order <= 2) {
                 float sp = epp.x / 3.0;
                 float s = (subpixel_order == 2) ? -1.0 : 1.0;
@@ -604,7 +629,7 @@ void main() {
                 vec2 cw_g = evalHorizCoverage(rc,  0.0,    ppe, gLoc, hLoc, hCount, layer);
                 vec2 cw_b = evalHorizCoverage(rc, +sp * s, ppe, gLoc, hLoc, hCount, layer);
                 vec2 cw_v = evalVertCoverage(rc, 0.0, ppe, vLoc, vCount, layer);
-                cov = blendSubpixel(cw_r, cw_g, cw_b, cw_v);
+                cov_alpha = blendSubpixelWithAlpha(cw_r, cw_g, cw_b, cw_v);
             } else {
                 float sp = epp.y / 3.0;
                 float s = (subpixel_order == 4) ? -1.0 : 1.0;
@@ -612,11 +637,12 @@ void main() {
                 vec2 cw_r = evalVertCoverage(rc, -sp * s, ppe, vLoc, vCount, layer);
                 vec2 cw_g = evalVertCoverage(rc,  0.0,    ppe, vLoc, vCount, layer);
                 vec2 cw_b = evalVertCoverage(rc, +sp * s, ppe, vLoc, vCount, layer);
-                cov = blendSubpixel(cw_r, cw_g, cw_b, cw_h);
+                cov_alpha = blendSubpixelWithAlpha(cw_r, cw_g, cw_b, cw_h);
             }
 
+            vec3 cov = cov_alpha.rgb;
             if (max(max(cov.r, cov.g), cov.b) < 1.0/255.0) discard;
-            frag_color = premultiplyColorSubpixel(samplePathPaint(rc, infoBase, firstInfo), cov);
+            frag_color = premultiplyColorSubpixel(samplePathPaint(rc, infoBase, firstInfo), cov, cov_alpha.a);
             return;
         }
 
@@ -657,7 +683,7 @@ void main() {
     ivec2 vLoc = calcBandLoc(gLoc, vbd.y);
     int vCount = int(vbd.x);
 
-    vec3 cov;
+    vec4 cov_alpha;
 
     if (subpixel_order <= 2) {
         float sp = epp.x / 3.0;
@@ -666,7 +692,7 @@ void main() {
         vec2 cw_g = evalHorizCoverage(rc,  0.0,    ppe, gLoc, hLoc, hCount, layer);
         vec2 cw_b = evalHorizCoverage(rc, +sp * s, ppe, gLoc, hLoc, hCount, layer);
         vec2 cw_v = evalVertCoverage(rc, 0.0, ppe, vLoc, vCount, layer);
-        cov = blendSubpixel(cw_r, cw_g, cw_b, cw_v);
+        cov_alpha = blendSubpixelWithAlpha(cw_r, cw_g, cw_b, cw_v);
     } else {
         float sp = epp.y / 3.0;
         float s = (subpixel_order == 4) ? -1.0 : 1.0;
@@ -674,9 +700,10 @@ void main() {
         vec2 cw_r = evalVertCoverage(rc, -sp * s, ppe, vLoc, vCount, layer);
         vec2 cw_g = evalVertCoverage(rc,  0.0,    ppe, vLoc, vCount, layer);
         vec2 cw_b = evalVertCoverage(rc, +sp * s, ppe, vLoc, vCount, layer);
-        cov = blendSubpixel(cw_r, cw_g, cw_b, cw_h);
+        cov_alpha = blendSubpixelWithAlpha(cw_r, cw_g, cw_b, cw_h);
     }
 
+    vec3 cov = cov_alpha.rgb;
     if (max(max(cov.r, cov.g), cov.b) < 1.0/255.0) discard;
-    frag_color = premultiplyColorSubpixel(v_color, cov);
+    frag_color = premultiplyColorSubpixel(v_color, cov, cov_alpha.a);
 }

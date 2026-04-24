@@ -18,6 +18,7 @@ const MAX_FRAMES_IN_FLIGHT = 2;
 pub const KEY_ESCAPE = wayland.KEY_ESCAPE;
 pub const KEY_R = wayland.KEY_R;
 pub const KEY_S = wayland.KEY_S;
+pub const KEY_D = wayland.KEY_D;
 pub const KEY_L = wayland.KEY_L;
 pub const KEY_Z = wayland.KEY_Z;
 pub const KEY_X = wayland.KEY_X;

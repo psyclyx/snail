@@ -25,6 +25,44 @@ fn curveControlMaxY(curve: CurveSegment) f32 {
     return result;
 }
 
+fn localizeCurve(curve: CurveSegment, origin: Vec2) CurveSegment {
+    const delta = Vec2.new(-origin.x, -origin.y);
+    return .{
+        .kind = curve.kind,
+        .p0 = Vec2.add(curve.p0, delta),
+        .p1 = Vec2.add(curve.p1, delta),
+        .p2 = Vec2.add(curve.p2, delta),
+        .p3 = if (curve.kind == .cubic) Vec2.add(curve.p3, delta) else curve.p3,
+        .weights = curve.weights,
+    };
+}
+
+fn curvePointMaxDelta(original: CurveSegment, quantized: CurveSegment) f32 {
+    var max_delta = @max(
+        @max(@abs(original.p0.x - quantized.p0.x), @abs(original.p0.y - quantized.p0.y)),
+        @max(@abs(original.p1.x - quantized.p1.x), @abs(original.p1.y - quantized.p1.y)),
+    );
+    max_delta = @max(
+        max_delta,
+        @max(@abs(original.p2.x - quantized.p2.x), @abs(original.p2.y - quantized.p2.y)),
+    );
+    if (original.kind == .cubic) {
+        max_delta = @max(
+            max_delta,
+            @max(@abs(original.p3.x - quantized.p3.x), @abs(original.p3.y - quantized.p3.y)),
+        );
+    }
+    return max_delta;
+}
+
+fn directEncodingBandOverlap(curves: []const CurveSegment, prepared_curves: []const CurveSegment, origin: Vec2) f32 {
+    var max_delta: f32 = 1.0 / 1024.0;
+    for (curves, prepared_curves) |curve, prepared_curve| {
+        max_delta = @max(max_delta, curvePointMaxDelta(localizeCurve(curve, origin), prepared_curve));
+    }
+    return max_delta * 2.0 + 1.0 / 1024.0;
+}
+
 pub const TEX_WIDTH: u32 = curve_tex.TEX_WIDTH;
 
 /// Result of building band data for a single glyph.
@@ -115,7 +153,7 @@ pub fn buildGlyphBandData(
                 .bbox = geometry_bbox,
                 .width = geometry_bbox.max.x - geometry_bbox.min.x,
                 .height = geometry_bbox.max.y - geometry_bbox.min.y,
-                .epsilon = 1.0 / 1024.0,
+                .epsilon = directEncodingBandOverlap(curves, prepared_curves, origin),
             };
         }
 

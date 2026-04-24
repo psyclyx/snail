@@ -266,6 +266,7 @@ pub const CurveKind = enum(u16) {
     quadratic = 0,
     conic = 1,
     cubic = 2,
+    line = 3,
 };
 
 pub const CurveSegment = struct {
@@ -282,6 +283,15 @@ pub const CurveSegment = struct {
             .p0 = curve.p0,
             .p1 = curve.p1,
             .p2 = curve.p2,
+        };
+    }
+
+    pub fn fromLine(p0: Vec2, p2: Vec2) CurveSegment {
+        return .{
+            .kind = .line,
+            .p0 = p0,
+            .p1 = Vec2.lerp(p0, p2, 0.5),
+            .p2 = p2,
         };
     }
 
@@ -337,6 +347,7 @@ pub const CurveSegment = struct {
             .quadratic => self.asQuad().evaluate(t),
             .conic => self.asConic().evaluate(t),
             .cubic => self.asCubic().evaluate(t),
+            .line => Vec2.lerp(self.p0, self.p2, t),
         };
     }
 
@@ -351,6 +362,7 @@ pub const CurveSegment = struct {
             },
             .conic => self.asConic().derivative(t),
             .cubic => self.asCubic().derivative(t),
+            .line => Vec2.sub(self.p2, self.p0),
         };
     }
 
@@ -368,6 +380,10 @@ pub const CurveSegment = struct {
                 const halves = self.asCubic().split(t);
                 break :blk .{ CurveSegment.fromCubic(halves[0]), CurveSegment.fromCubic(halves[1]) };
             },
+            .line => blk: {
+                const mid = Vec2.lerp(self.p0, self.p2, t);
+                break :blk .{ CurveSegment.fromLine(self.p0, mid), CurveSegment.fromLine(mid, self.p2) };
+            },
         };
     }
 
@@ -376,6 +392,7 @@ pub const CurveSegment = struct {
             .quadratic => self.asQuad().boundingBox(),
             .conic => self.asConic().boundingBox(),
             .cubic => self.asCubic().boundingBox(),
+            .line => bboxFromPoints(&.{ self.p0, self.p2 }),
         };
     }
 
@@ -384,13 +401,14 @@ pub const CurveSegment = struct {
             .quadratic => self.asQuad().flatness(),
             .conic => self.asConic().flatness(),
             .cubic => self.asCubic().flatness(),
+            .line => 0.0,
         };
     }
 
     pub fn endPoint(self: CurveSegment) Vec2 {
         return switch (self.kind) {
             .cubic => self.p3,
-            .quadratic, .conic => self.p2,
+            .quadratic, .conic, .line => self.p2,
         };
     }
 };

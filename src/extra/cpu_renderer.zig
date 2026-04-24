@@ -160,8 +160,8 @@ pub const CpuRenderer = struct {
                             self.fill_rule,
                             self.subpixel_order,
                         );
-                        if (max3(cov) < 1.0 / 255.0) continue;
-                        self.blendPremultipliedPixel(row, col, premultiplyCoverageSubpixel(paint, cov));
+                        if (max3(cov.rgb) < 1.0 / 255.0) continue;
+                        self.blendPremultipliedPixel(row, col, premultiplyCoverageSubpixel(paint, cov.rgb, cov.alpha));
                     }
                 }
             }
@@ -296,8 +296,8 @@ pub const CpuRenderer = struct {
                         self.fill_rule,
                         self.subpixel_order,
                     );
-                    if (max3(cov) < 1.0 / 255.0) continue;
-                    self.blendPremultipliedPixel(row, col, premultiplyCoverageSubpixel(color, cov));
+                    if (max3(cov.rgb) < 1.0 / 255.0) continue;
+                    self.blendPremultipliedPixel(row, col, premultiplyCoverageSubpixel(color, cov.rgb, cov.alpha));
                 }
             }
         }
@@ -504,6 +504,11 @@ const GlyphBandState = struct {
     v_count: u32,
 };
 
+const SubpixelCoverage = struct {
+    rgb: [3]f32,
+    alpha: f32,
+};
+
 const CurveRoots = struct {
     count: u8 = 0,
     t: [3]f32 = .{ 0, 0, 0 },
@@ -528,25 +533,33 @@ fn resolveCoverage(horiz: CoveragePair, vert: CoveragePair, fill_rule: FillRule)
     return clamp01(cov);
 }
 
-fn blendSubpixel(cw_r: CoveragePair, cw_g: CoveragePair, cw_b: CoveragePair, cw_o: CoveragePair, fill_rule: FillRule) [3]f32 {
+fn blendSubpixel(cw_r: CoveragePair, cw_g: CoveragePair, cw_b: CoveragePair, cw_o: CoveragePair, fill_rule: FillRule) SubpixelCoverage {
     const wsum_r = cw_r.wgt + cw_o.wgt;
     const wsum_g = cw_g.wgt + cw_o.wgt;
     const wsum_b = cw_b.wgt + cw_o.wgt;
     const blend_r = cw_r.cov * cw_r.wgt + cw_o.cov * cw_o.wgt;
     const blend_g = cw_g.cov * cw_g.wgt + cw_o.cov * cw_o.wgt;
     const blend_b = cw_b.cov * cw_b.wgt + cw_o.cov * cw_o.wgt;
+    const alpha_wsum = cw_g.wgt + cw_o.wgt;
+    const alpha_blended = cw_g.cov * cw_g.wgt + cw_o.cov * cw_o.wgt;
     return .{
-        clamp01(@max(
-            applyFillRule(fill_rule, blend_r / @max(wsum_r, 1.0 / 65536.0)),
-            @min(applyFillRule(fill_rule, cw_r.cov), applyFillRule(fill_rule, cw_o.cov)),
-        )),
-        clamp01(@max(
-            applyFillRule(fill_rule, blend_g / @max(wsum_g, 1.0 / 65536.0)),
+        .rgb = .{
+            clamp01(@max(
+                applyFillRule(fill_rule, blend_r / @max(wsum_r, 1.0 / 65536.0)),
+                @min(applyFillRule(fill_rule, cw_r.cov), applyFillRule(fill_rule, cw_o.cov)),
+            )),
+            clamp01(@max(
+                applyFillRule(fill_rule, blend_g / @max(wsum_g, 1.0 / 65536.0)),
+                @min(applyFillRule(fill_rule, cw_g.cov), applyFillRule(fill_rule, cw_o.cov)),
+            )),
+            clamp01(@max(
+                applyFillRule(fill_rule, blend_b / @max(wsum_b, 1.0 / 65536.0)),
+                @min(applyFillRule(fill_rule, cw_b.cov), applyFillRule(fill_rule, cw_o.cov)),
+            )),
+        },
+        .alpha = clamp01(@max(
+            applyFillRule(fill_rule, alpha_blended / @max(alpha_wsum, 1.0 / 65536.0)),
             @min(applyFillRule(fill_rule, cw_g.cov), applyFillRule(fill_rule, cw_o.cov)),
-        )),
-        clamp01(@max(
-            applyFillRule(fill_rule, blend_b / @max(wsum_b, 1.0 / 65536.0)),
-            @min(applyFillRule(fill_rule, cw_b.cov), applyFillRule(fill_rule, cw_o.cov)),
         )),
     };
 }
@@ -561,12 +574,12 @@ fn premultiplyCoverage(color: [4]f32, cov: f32) [4]f32 {
     };
 }
 
-fn premultiplyCoverageSubpixel(color: [4]f32, cov: [3]f32) [4]f32 {
+fn premultiplyCoverageSubpixel(color: [4]f32, cov: [3]f32, alpha_cov: f32) [4]f32 {
     return .{
         color[0] * color[3] * cov[0],
         color[1] * color[3] * cov[1],
         color[2] * color[3] * cov[2],
-        color[3] * max3(cov),
+        color[3] * clamp01(alpha_cov),
     };
 }
 
@@ -691,6 +704,7 @@ fn solveCubicRoots(a: f32, b: f32, c_val: f32, d: f32) CurveRoots {
 
 fn solveSegmentHorizontalRoots(segment: CurveSegment, py: f32) CurveRoots {
     return switch (segment.kind) {
+        .line => solveQuadraticRoots(0.0, segment.p2.y - segment.p0.y, segment.p0.y - py),
         .quadratic => blk: {
             const a = segment.p0.y - 2.0 * segment.p1.y + segment.p2.y;
             const b = 2.0 * (segment.p1.y - segment.p0.y);
@@ -714,6 +728,7 @@ fn solveSegmentHorizontalRoots(segment: CurveSegment, py: f32) CurveRoots {
 
 fn solveSegmentVerticalRoots(segment: CurveSegment, px: f32) CurveRoots {
     return switch (segment.kind) {
+        .line => solveQuadraticRoots(0.0, segment.p2.x - segment.p0.x, segment.p0.x - px),
         .quadratic => blk: {
             const a = segment.p0.x - 2.0 * segment.p1.x + segment.p2.x;
             const b = 2.0 * (segment.p1.x - segment.p0.x);
@@ -736,12 +751,14 @@ fn solveSegmentVerticalRoots(segment: CurveSegment, px: f32) CurveRoots {
 }
 
 fn segmentMaxX(segment: CurveSegment) f32 {
+    if (segment.kind == .line) return @max(segment.p0.x, segment.p2.x);
     var result = @max(@max(segment.p0.x, segment.p1.x), segment.p2.x);
     if (segment.kind == .cubic) result = @max(result, segment.p3.x);
     return result;
 }
 
 fn segmentMaxY(segment: CurveSegment) f32 {
+    if (segment.kind == .line) return @max(segment.p0.y, segment.p2.y);
     var result = @max(@max(segment.p0.y, segment.p1.y), segment.p2.y);
     if (segment.kind == .cubic) result = @max(result, segment.p3.y);
     return result;
@@ -798,6 +815,7 @@ fn evalGlyphCoverageAxis(page: *const snail.AtlasPage, sample_rc: Vec2, ppe: f32
             solveSegmentVerticalRoots(segment, sample_rc.x);
 
         for (roots.t[0..roots.count]) |t| {
+            if (t >= 1.0 - 1e-5) continue;
             const point = segment.evaluate(t);
             const deriv = segment.derivative(t);
             const derivative_axis = if (horizontal) deriv.y else -deriv.x;
@@ -854,7 +872,7 @@ fn evalGlyphCoverageSubpixel(
     band_max_v: i32,
     fill_rule: FillRule,
     subpixel_order: SubpixelOrder,
-) [3]f32 {
+) SubpixelCoverage {
     const rc = Vec2.new(em_x, em_y);
     const state = initGlyphBandState(page, em_x, em_y, be, band_max_h, band_max_v);
     return switch (subpixel_order) {
@@ -880,7 +898,7 @@ fn evalGlyphCoverageSubpixel(
                 fill_rule,
             );
         },
-        .none => .{ 0.0, 0.0, 0.0 },
+        .none => .{ .rgb = .{ 0.0, 0.0, 0.0 }, .alpha = 0.0 },
     };
 }
 
@@ -939,6 +957,7 @@ fn readCurveSegment(page: *const snail.AtlasPage, tx: u32, ty: u32) CurveSegment
     const kind: bezier.CurveKind = switch (kind_u16) {
         1 => .conic,
         2 => .cubic,
+        3 => .line,
         else => .quadratic,
     };
     if (stored_kind >= curve_tex.DIRECT_ENCODING_KIND_BIAS - 0.5) {
@@ -1285,6 +1304,42 @@ test "cpu renderer matches absolute and transformed rounded rect pictures" {
     try expectEqualSlicesWithinU8(absolute_buf, transformed_buf, 1, 16);
 }
 
+test "cpu renderer keeps rounded rect cap joins opaque" {
+    const testing = std.testing;
+
+    const width: u32 = 80;
+    const height: u32 = 40;
+    const stride = width * 4;
+    const buf = try testing.allocator.alloc(u8, stride * height);
+    defer testing.allocator.free(buf);
+
+    var renderer = CpuRenderer.init(buf.ptr, width, height, stride);
+    renderer.clear(0, 0, 0, 0);
+
+    var builder = snail.PathPictureBuilder.init(testing.allocator);
+    defer builder.deinit();
+    try builder.addRoundedRect(
+        .{ .x = 16.5, .y = 12.5, .w = 48.0, .h = 16.0 },
+        .{ .color = .{ 0.2, 0.7, 0.9, 1.0 } },
+        null,
+        8.0,
+        .identity,
+    );
+    var picture = try builder.freeze(testing.allocator);
+    defer picture.deinit();
+
+    renderer.drawPathPicture(&picture);
+
+    const center_row: usize = 20;
+    const seam_col: usize = 24; // sample center x = 24.5, exactly at rect.x + radius
+    const inner_col: usize = 25;
+    const seam_alpha = buf[center_row * stride + seam_col * 4 + 3];
+    const inner_alpha = buf[center_row * stride + inner_col * 4 + 3];
+
+    try testing.expectEqual(@as(u8, 255), inner_alpha);
+    try testing.expectEqual(@as(u8, 255), seam_alpha);
+}
+
 test "cpu renderer matches huge-span and normalized curved path pictures" {
     const testing = std.testing;
 
@@ -1342,6 +1397,55 @@ test "cpu renderer matches huge-span and normalized curved path pictures" {
     normalized_renderer.drawPathPicture(&normalized_picture);
 
     try testing.expectEqualSlices(u8, large_buf, normalized_buf);
+}
+
+test "cpu renderer matches huge-span and normalized rounded rect pictures" {
+    const testing = std.testing;
+
+    const width: u32 = 224;
+    const height: u32 = 112;
+    const stride = width * 4;
+    const large_buf = try testing.allocator.alloc(u8, stride * height);
+    defer testing.allocator.free(large_buf);
+    const normalized_buf = try testing.allocator.alloc(u8, stride * height);
+    defer testing.allocator.free(normalized_buf);
+
+    var large_renderer = CpuRenderer.init(large_buf.ptr, width, height, stride);
+    large_renderer.clear(0, 0, 0, 0);
+    var normalized_renderer = CpuRenderer.init(normalized_buf.ptr, width, height, stride);
+    normalized_renderer.clear(0, 0, 0, 0);
+
+    var large_builder = snail.PathPictureBuilder.init(testing.allocator);
+    defer large_builder.deinit();
+    try large_builder.addRoundedRect(
+        .{ .x = 0, .y = 0, .w = 180 * 64, .h = 40 * 64 },
+        .{ .color = .{ 0.33, 0.39, 0.36, 0.92 } },
+        .{ .color = .{ 0.79, 0.86, 0.78, 1.0 }, .width = 2.0 * 64.0, .join = .round, .placement = .inside },
+        20.0 * 64.0,
+        Transform2D.multiply(
+            Transform2D.translate(20, 24),
+            Transform2D.scale(1.0 / 64.0, 1.0 / 64.0),
+        ),
+    );
+    var large_picture = try large_builder.freeze(testing.allocator);
+    defer large_picture.deinit();
+
+    var normalized_builder = snail.PathPictureBuilder.init(testing.allocator);
+    defer normalized_builder.deinit();
+    try normalized_builder.addRoundedRect(
+        .{ .x = 0, .y = 0, .w = 180, .h = 40 },
+        .{ .color = .{ 0.33, 0.39, 0.36, 0.92 } },
+        .{ .color = .{ 0.79, 0.86, 0.78, 1.0 }, .width = 2.0, .join = .round, .placement = .inside },
+        20.0,
+        Transform2D.translate(20, 24),
+    );
+    var normalized_picture = try normalized_builder.freeze(testing.allocator);
+    defer normalized_picture.deinit();
+
+    large_renderer.drawPathPicture(&large_picture);
+    normalized_renderer.drawPathPicture(&normalized_picture);
+
+    try expectEqualSlicesWithinU8(large_buf, normalized_buf, 1, 16);
 }
 
 test "cpu renderer renders gradient path picture" {

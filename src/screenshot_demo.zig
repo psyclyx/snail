@@ -53,7 +53,7 @@ pub fn main() !void {
     const projection = snail.Mat4.ortho(0, w, 0, h, -1, 1);
     const vector_projection = snail.Mat4.ortho(0, w, h, 0, -1, 1);
 
-    var path_picture = try demo_banner_scene.buildPathPicture(allocator, layout);
+    var path_picture = try demo_banner_scene.buildPathPicture(allocator, layout, .normal);
     defer path_picture.deinit();
 
     var atlas_views: [7]snail.AtlasView = undefined;

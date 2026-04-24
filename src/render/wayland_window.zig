@@ -9,6 +9,7 @@ pub const c = @cImport({
 
 pub const KEY_R = c.KEY_R;
 pub const KEY_S = c.KEY_S;
+pub const KEY_D = c.KEY_D;
 pub const KEY_L = c.KEY_L;
 pub const KEY_Z = c.KEY_Z;
 pub const KEY_X = c.KEY_X;

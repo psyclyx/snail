@@ -65,6 +65,21 @@ pub const PATH_PAINT_TAG_SOLID: f32 = -1.0;
 pub const PATH_PAINT_TAG_LINEAR_GRADIENT: f32 = -2.0;
 pub const PATH_PAINT_TAG_RADIAL_GRADIENT: f32 = -3.0;
 pub const PATH_PAINT_TAG_IMAGE: f32 = -4.0;
+pub const PATH_PAINT_TAG_COMPOSITE_GROUP: f32 = -5.0;
+
+pub const PathPictureDebugView = enum(u8) {
+    normal,
+    fill_mask,
+    stroke_mask,
+    layer_tint,
+};
+
+pub const PathPictureBoundsOverlayOptions = struct {
+    stroke_color: [4]f32 = .{ 1.0, 0.36, 0.24, 0.95 },
+    stroke_width: f32 = 1.0,
+    origin_color: [4]f32 = .{ 1.0, 0.78, 0.22, 0.95 },
+    origin_size: f32 = 6.0,
+};
 
 // Re-export vertex constants for buffer sizing
 pub const FLOATS_PER_VERTEX = vertex_mod.FLOATS_PER_VERTEX;
@@ -617,16 +632,24 @@ pub const Atlas = struct {
             }
 
             const owned = try allocator.dupe(CurveSegment, all_curves.items);
+            const render_bbox = blk: {
+                const prepared = try curve_tex.prepareGlyphCurvesForDirectEncoding(allocator, owned, .zero);
+                defer allocator.free(prepared);
+                if (prepared.len == 0) break :blk glyph.metrics.bbox;
+                var prepared_bbox = prepared[0].boundingBox();
+                for (prepared[1..]) |curve| prepared_bbox = prepared_bbox.merge(curve.boundingBox());
+                break :blk glyph.metrics.bbox.merge(prepared_bbox);
+            };
             try glyph_curves_list.append(allocator, .{
                 .curves = owned,
-                .bbox = glyph.metrics.bbox,
+                .bbox = render_bbox,
                 .logical_curve_count = owned.len,
                 .prefer_direct_encoding = true,
             });
             try glyph_infos.append(allocator, .{
                 .gid = gid,
                 .advance = glyph.metrics.advance_width,
-                .bbox = glyph.metrics.bbox,
+                .bbox = render_bbox,
             });
         }
 
@@ -1651,7 +1674,7 @@ fn makePathLineCurve(p0: Vec2, p1: Vec2) bezier.QuadBezier {
 }
 
 fn makePathLineSegment(p0: Vec2, p1: Vec2) CurveSegment {
-    return CurveSegment.fromQuad(makePathLineCurve(p0, p1));
+    return CurveSegment.fromLine(p0, p1);
 }
 
 fn makePathArcCurve(center: Vec2, radii: Vec2, start_angle: f32, end_angle: f32) bezier.QuadBezier {
@@ -1817,6 +1840,12 @@ fn reverseCurveSegment(curve: CurveSegment) CurveSegment {
     return switch (curve.kind) {
         .quadratic => .{
             .kind = .quadratic,
+            .p0 = curve.p2,
+            .p1 = curve.p1,
+            .p2 = curve.p0,
+        },
+        .line => .{
+            .kind = .line,
             .p0 = curve.p2,
             .p1 = curve.p1,
             .p2 = curve.p0,
@@ -2503,17 +2532,89 @@ const kPathPaintTagSolid: f32 = PATH_PAINT_TAG_SOLID;
 const kPathPaintTagLinearGradient: f32 = PATH_PAINT_TAG_LINEAR_GRADIENT;
 const kPathPaintTagRadialGradient: f32 = PATH_PAINT_TAG_RADIAL_GRADIENT;
 const kPathPaintTagImage: f32 = PATH_PAINT_TAG_IMAGE;
-const kPathPaintTagCompositeGroup: f32 = -5.0;
+const kPathPaintTagCompositeGroup: f32 = PATH_PAINT_TAG_COMPOSITE_GROUP;
 
 const PathCompositeMode = enum(u8) {
     source_over = 0,
     fill_stroke_inside = 1,
 };
 
+fn pathLayerInfoTexelOffset(texel_width: u32, info_x: u16, info_y: u16) u32 {
+    return @as(u32, info_y) * texel_width + @as(u32, info_x);
+}
+
+fn readPathLayerInfoTexel(data: []const f32, texel_width: u32, texel_offset: u32) [4]f32 {
+    const texel_x = texel_offset % texel_width;
+    const texel_y = texel_offset / texel_width;
+    const base = (texel_y * texel_width + texel_x) * 4;
+    return .{
+        data[base + 0],
+        data[base + 1],
+        data[base + 2],
+        data[base + 3],
+    };
+}
+
+fn writePathLayerInfoTexel(data: []f32, texel_width: u32, texel_offset: u32, value: [4]f32) void {
+    const texel_x = texel_offset % texel_width;
+    const texel_y = texel_offset / texel_width;
+    const base = (texel_y * texel_width + texel_x) * 4;
+    data[base + 0] = value[0];
+    data[base + 1] = value[1];
+    data[base + 2] = value[2];
+    data[base + 3] = value[3];
+}
+
+fn paletteColor(index: usize) [4]f32 {
+    const palette = [_][4]f32{
+        .{ 0.27, 0.86, 0.98, 0.96 },
+        .{ 0.98, 0.54, 0.29, 0.96 },
+        .{ 0.58, 0.94, 0.43, 0.96 },
+        .{ 0.95, 0.39, 0.77, 0.96 },
+        .{ 0.99, 0.86, 0.28, 0.96 },
+        .{ 0.56, 0.66, 0.98, 0.96 },
+    };
+    return palette[index % palette.len];
+}
+
+fn blendColor(a: [4]f32, b: [4]f32, t: f32) [4]f32 {
+    return .{
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+        a[3] + (b[3] - a[3]) * t,
+    };
+}
+
+fn debugPaintColor(view: PathPictureDebugView, role: PathPicture.LayerRole, instance_index: usize) [4]f32 {
+    const base = paletteColor(instance_index);
+    return switch (view) {
+        .normal => .{ 0, 0, 0, 0 },
+        .fill_mask => switch (role) {
+            .fill => base,
+            .stroke => .{ 0.0, 0.0, 0.0, 0.0 },
+        },
+        .stroke_mask => switch (role) {
+            .fill => .{ 0.0, 0.0, 0.0, 0.0 },
+            .stroke => base,
+        },
+        .layer_tint => switch (role) {
+            .fill => blendColor(base, .{ 0.15, 0.90, 0.98, 0.96 }, 0.45),
+            .stroke => blendColor(base, .{ 0.98, 0.24, 0.82, 0.96 }, 0.55),
+        },
+    };
+}
+
 pub const PathPicture = struct {
     allocator: std.mem.Allocator,
     atlas: Atlas,
     instances: []Instance,
+    layer_roles: []LayerRole,
+
+    pub const LayerRole = enum(u8) {
+        fill,
+        stroke,
+    };
 
     pub const Instance = struct {
         glyph_id: u16,
@@ -2528,11 +2629,84 @@ pub const PathPicture = struct {
     pub fn deinit(self: *PathPicture) void {
         self.atlas.deinit();
         self.allocator.free(self.instances);
+        self.allocator.free(self.layer_roles);
         self.* = undefined;
     }
 
     pub fn shapeCount(self: *const PathPicture) usize {
         return self.instances.len;
+    }
+
+    pub fn applyDebugView(self: *PathPicture, view: PathPictureDebugView) void {
+        if (view == .normal) return;
+        const data = self.atlas.layer_info_data orelse return;
+        const width = self.atlas.layer_info_width;
+
+        for (self.instances, 0..) |instance, instance_index| {
+            const info_offset = pathLayerInfoTexelOffset(width, instance.info_x, instance.info_y);
+            var header = readPathLayerInfoTexel(data, width, info_offset);
+            var layer_count: usize = 1;
+            var record_base = info_offset;
+
+            if (@abs(header[3] - PATH_PAINT_TAG_COMPOSITE_GROUP) <= 0.001) {
+                layer_count = @intCast(@as(i32, @intFromFloat(@round(header[0]))));
+                header[1] = @floatFromInt(@intFromEnum(PathCompositeMode.source_over));
+                writePathLayerInfoTexel(data, width, info_offset, header);
+                record_base += 1;
+            }
+
+            for (0..layer_count) |layer_index| {
+                const role_index = @as(usize, instance.glyph_id - 1) + layer_index;
+                if (role_index >= self.layer_roles.len) break;
+                const texel_offset = record_base + @as(u32, @intCast(layer_index)) * PATH_PAINT_TEXELS_PER_RECORD;
+                var info = readPathLayerInfoTexel(data, width, texel_offset);
+                info[3] = PATH_PAINT_TAG_SOLID;
+                writePathLayerInfoTexel(data, width, texel_offset, info);
+                writePathLayerInfoTexel(data, width, texel_offset + 2, debugPaintColor(view, self.layer_roles[role_index], instance_index));
+            }
+        }
+    }
+
+    pub fn buildBoundsOverlay(
+        self: *const PathPicture,
+        allocator: std.mem.Allocator,
+        options: PathPictureBoundsOverlayOptions,
+    ) !PathPicture {
+        if (self.instances.len == 0) return error.EmptyPicture;
+
+        var builder = PathPictureBuilder.init(allocator);
+        defer builder.deinit();
+
+        const cross_thickness = @max(options.stroke_width, 1.0);
+        for (self.instances) |instance| {
+            const rect = VectorRect{
+                .x = instance.bbox.min.x,
+                .y = instance.bbox.min.y,
+                .w = instance.bbox.max.x - instance.bbox.min.x,
+                .h = instance.bbox.max.y - instance.bbox.min.y,
+            };
+            try builder.addStrokedRect(
+                rect,
+                .{ .color = options.stroke_color, .width = options.stroke_width, .join = .miter },
+                instance.transform,
+            );
+            if (options.origin_size > 1e-4 and options.origin_color[3] > 1e-4) {
+                try builder.addFilledRect(.{
+                    .x = -options.origin_size,
+                    .y = -cross_thickness * 0.5,
+                    .w = options.origin_size * 2.0,
+                    .h = cross_thickness,
+                }, .{ .color = options.origin_color }, instance.transform);
+                try builder.addFilledRect(.{
+                    .x = -cross_thickness * 0.5,
+                    .y = -options.origin_size,
+                    .w = cross_thickness,
+                    .h = options.origin_size * 2.0,
+                }, .{ .color = options.origin_color }, instance.transform);
+            }
+        }
+
+        return builder.freeze(allocator);
     }
 };
 
@@ -2545,6 +2719,7 @@ pub const PathPictureBuilder = struct {
         bbox: BBox,
         logical_curve_count: usize,
         paint: PathPaint,
+        role: PathPicture.LayerRole,
     };
 
     const PathRecord = struct {
@@ -2666,6 +2841,7 @@ pub const PathPictureBuilder = struct {
         bbox: BBox,
         logical_curve_count: usize,
         paint: PathPaint,
+        role: PathPicture.LayerRole,
         transform: VectorTransform2D,
     ) !void {
         try self.paths.append(self.allocator, .{
@@ -2679,6 +2855,7 @@ pub const PathPictureBuilder = struct {
                     .bbox = bbox,
                     .logical_curve_count = logical_curve_count,
                     .paint = paint,
+                    .role = role,
                 },
                 undefined,
             },
@@ -3006,7 +3183,7 @@ pub const PathPictureBuilder = struct {
             return;
         }
 
-        try self.addSingleRecord(stroke_curves, stroke_bbox, stroke_logical_curve_count, stroke_paint, transform);
+        try self.addSingleRecord(stroke_curves, stroke_bbox, stroke_logical_curve_count, stroke_paint, .stroke, transform);
     }
 
     fn addCompositeRecord(
@@ -3036,12 +3213,14 @@ pub const PathPictureBuilder = struct {
                     .bbox = fill_bbox,
                     .logical_curve_count = fill_logical_curve_count,
                     .paint = fill_paint,
+                    .role = .fill,
                 },
                 .{
                     .curves = stroke_curves,
                     .bbox = stroke_bbox,
                     .logical_curve_count = stroke_logical_curve_count,
                     .paint = stroke_paint,
+                    .role = .stroke,
                 },
             },
         });
@@ -3084,7 +3263,7 @@ pub const PathPictureBuilder = struct {
                     return;
                 }
             }
-            try self.addSingleRecord(curves, bbox, logical_curve_count, resolveFillPaint(style), transform);
+            try self.addSingleRecord(curves, bbox, logical_curve_count, resolveFillPaint(style), .fill, transform);
         }
         if (stroke) |style| {
             if (try path.cloneStrokedCurves(self.allocator, style)) |stroke_geom| {
@@ -3094,6 +3273,7 @@ pub const PathPictureBuilder = struct {
                     stroke_geom.bbox,
                     stroke_geom.logical_curve_count,
                     resolveStrokePaint(style),
+                    .stroke,
                     transform,
                 );
             }
@@ -3355,6 +3535,9 @@ pub const PathPictureBuilder = struct {
         const instances = try allocator.alloc(PathPicture.Instance, self.paths.items.len);
         errdefer allocator.free(instances);
 
+        const layer_roles = try allocator.alloc(PathPicture.LayerRole, total_layer_count);
+        errdefer allocator.free(layer_roles);
+
         const paint_image_records = try allocator.alloc(?Atlas.PaintImageRecord, total_layer_count);
         errdefer allocator.free(paint_image_records);
         @memset(paint_image_records, null);
@@ -3389,6 +3572,7 @@ pub const PathPictureBuilder = struct {
                     .band_entry = bt.entries[glyph_cursor],
                     .page_index = 0,
                 });
+                layer_roles[glyph_cursor] = layer.role;
                 writePathPaintRecord(layer_info_data, texel_cursor, bt.entries[glyph_cursor], local_paint);
                 switch (local_paint) {
                     .image => |image_paint| {
@@ -3448,6 +3632,7 @@ pub const PathPictureBuilder = struct {
             .allocator = allocator,
             .atlas = atlas,
             .instances = instances,
+            .layer_roles = layer_roles,
         };
     }
 };
@@ -4025,16 +4210,16 @@ test "rounded rect corners use exact conic arc segments" {
     try path.addRoundedRect(.{ .x = 0, .y = 0, .w = 200, .h = 200 }, 40);
 
     try std.testing.expectEqual(@as(usize, 8), path.curves.items.len);
-    var quadratic_count: usize = 0;
+    var line_count: usize = 0;
     var conic_count: usize = 0;
     for (path.curves.items) |curve| {
         switch (curve.kind) {
-            .quadratic => quadratic_count += 1,
+            .line => line_count += 1,
             .conic => conic_count += 1,
             else => return error.TestExpectedEqual,
         }
     }
-    try std.testing.expectEqual(@as(usize, 4), quadratic_count);
+    try std.testing.expectEqual(@as(usize, 4), line_count);
     try std.testing.expectEqual(@as(usize, 4), conic_count);
 }
 
@@ -4127,6 +4312,76 @@ test "inside-aligned rounded rect helper emits explicit ring geometry" {
     try std.testing.expectApproxEqAbs(@as(f32, @intFromEnum(PathCompositeMode.fill_stroke_inside)), lid[1], 0.001);
 }
 
+test "path picture records single-layer fill and stroke roles distinctly" {
+    var builder = PathPictureBuilder.init(std.testing.allocator);
+    defer builder.deinit();
+    try builder.addFilledRect(.{ .x = 0, .y = 0, .w = 20, .h = 10 }, .{ .color = .{ 1, 1, 1, 1 } }, .identity);
+    try builder.addStrokedRect(
+        .{ .x = 30, .y = 0, .w = 20, .h = 10 },
+        .{ .color = .{ 1, 0, 0, 1 }, .width = 2.0, .join = .miter },
+        .identity,
+    );
+
+    var picture = try builder.freeze(std.testing.allocator);
+    defer picture.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), picture.layer_roles.len);
+    try std.testing.expectEqual(PathPicture.LayerRole.fill, picture.layer_roles[0]);
+    try std.testing.expectEqual(PathPicture.LayerRole.stroke, picture.layer_roles[1]);
+}
+
+test "path picture debug view remaps composite fill and stroke paints by role" {
+    var builder = PathPictureBuilder.init(std.testing.allocator);
+    defer builder.deinit();
+    try builder.addRoundedRect(
+        .{ .x = 10, .y = 20, .w = 40, .h = 18 },
+        .{ .color = .{ 0.1, 0.2, 0.3, 0.4 } },
+        .{ .color = .{ 0.8, 0.7, 0.6, 1.0 }, .width = 2.0, .join = .round, .placement = .inside },
+        6.0,
+        .identity,
+    );
+
+    var picture = try builder.freeze(std.testing.allocator);
+    defer picture.deinit();
+    picture.applyDebugView(.stroke_mask);
+
+    const width = picture.atlas.layer_info_width;
+    const lid = picture.atlas.layer_info_data orelse return error.TestExpectedEqual;
+    const base = pathLayerInfoTexelOffset(width, picture.instances[0].info_x, picture.instances[0].info_y);
+    const header = readPathLayerInfoTexel(lid, width, base);
+    try std.testing.expectApproxEqAbs(PATH_PAINT_TAG_COMPOSITE_GROUP, header[3], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, @intFromEnum(PathCompositeMode.source_over)), header[1], 0.001);
+
+    const fill_record = readPathLayerInfoTexel(lid, width, base + 1);
+    const fill_color = readPathLayerInfoTexel(lid, width, base + 3);
+    const stroke_record = readPathLayerInfoTexel(lid, width, base + 1 + PATH_PAINT_TEXELS_PER_RECORD);
+    const stroke_color = readPathLayerInfoTexel(lid, width, base + 3 + PATH_PAINT_TEXELS_PER_RECORD);
+    try std.testing.expectApproxEqAbs(PATH_PAINT_TAG_SOLID, fill_record[3], 0.001);
+    try std.testing.expectApproxEqAbs(PATH_PAINT_TAG_SOLID, stroke_record[3], 0.001);
+    try std.testing.expectEqual(PathPicture.LayerRole.fill, picture.layer_roles[0]);
+    try std.testing.expectEqual(PathPicture.LayerRole.stroke, picture.layer_roles[1]);
+    try std.testing.expect(fill_color[3] < 0.001);
+    try std.testing.expect(stroke_color[3] > 0.9);
+}
+
+test "path picture bounds overlay builds guides for each instance" {
+    var builder = PathPictureBuilder.init(std.testing.allocator);
+    defer builder.deinit();
+    try builder.addFilledRect(.{ .x = 0, .y = 0, .w = 20, .h = 10 }, .{ .color = .{ 1, 1, 1, 1 } }, .{ .tx = 30, .ty = 40 });
+
+    var picture = try builder.freeze(std.testing.allocator);
+    defer picture.deinit();
+
+    var overlay = try picture.buildBoundsOverlay(std.testing.allocator, .{ .stroke_width = 2.0, .origin_size = 4.0 });
+    defer overlay.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), overlay.shapeCount());
+    for (overlay.instances) |instance| {
+        try std.testing.expectApproxEqAbs(picture.instances[0].transform.tx, instance.transform.tx, 0.05);
+        try std.testing.expectApproxEqAbs(picture.instances[0].transform.ty, instance.transform.ty, 0.05);
+    }
+}
+
 test "path picture freeze stores large coordinates as direct local curves" {
     var absolute_builder = PathPictureBuilder.init(std.testing.allocator);
     defer absolute_builder.deinit();
@@ -4164,7 +4419,10 @@ test "path picture freeze stores large coordinates as direct local curves" {
     try std.testing.expectApproxEqAbs(-9.0, f16ToF32(absolute_page.curve_data[3]), 0.001);
     try std.testing.expectApproxEqAbs(11.0, f16ToF32(absolute_page.curve_data[4]), 0.001);
     try std.testing.expectApproxEqAbs(-9.0, f16ToF32(absolute_page.curve_data[5]), 0.001);
-    try std.testing.expectEqual(curve_tex.f32ToF16(curve_tex.DIRECT_ENCODING_KIND_BIAS), absolute_page.curve_data[10]);
+    try std.testing.expectEqual(
+        curve_tex.f32ToF16(curve_tex.DIRECT_ENCODING_KIND_BIAS + @as(f32, @floatFromInt(@intFromEnum(bezier.CurveKind.line)))),
+        absolute_page.curve_data[10],
+    );
 
     try std.testing.expectApproxEqAbs(transformed_picture.instances[0].bbox.min.x, absolute_picture.instances[0].bbox.min.x, 0.001);
     try std.testing.expectApproxEqAbs(transformed_picture.instances[0].bbox.min.y, absolute_picture.instances[0].bbox.min.y, 0.001);
