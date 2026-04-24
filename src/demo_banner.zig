@@ -8,23 +8,24 @@ pub const thai_text = "\xe0\xb8\xaa\xe0\xb8\xa7\xe0\xb8\xb1\xe0\xb8\xaa\xe0\xb8\
 pub const emoji_text = "\xe2\x9c\xa8 \xf0\x9f\x8c\x8d \xf0\x9f\x8e\xa8 \xf0\x9f\x9a\x80 \xf0\x9f\x90\x8c \xf0\x9f\x8c\x88 \xf0\x9f\x94\xa5"; // ✨ 🌍 🎨 🚀 🐌 🌈 🔥
 
 pub const title_text = "snail";
-pub const badge_text = "GPU text + paths";
-pub const subtitle_text = "ligatures / pangrams / scripts / emoji / paths";
-pub const hero_meta_text = "quartz / velvet / zinc / jazz";
-pub const ligature_label_text = "Latin";
+pub const badge_text = "analytic text + vectors";
+pub const subtitle_text = "ligatures / scripts / emoji / frozen vectors";
+pub const hero_meta_text = "Zig API / C API / OpenGL / Vulkan";
+pub const ligature_label_text = "Latin / ligatures";
 pub const ligature_text = "office affine shuffle flow";
 pub const ligature_caption_text = "ffi / fi / ffl / fl";
 pub const pangram_a_text = "Sphinx of black quartz, judge my vow.";
 pub const pangram_b_text = "Jived fox nymph grabs quick waltz.";
 pub const specimen_footer_text = "AV / To / ffi / 0123456789";
 pub const scripts_heading_text = "Scripts / emoji";
-pub const stage_label_text = "Paths";
-pub const stage_title_text = "fill / gradient / stroke";
-pub const stage_caption_text = "frozen / instanced";
-pub const stage_pill_labels = [_][]const u8{
+pub const stage_label_text = "Vectors";
+pub const stage_title_text = "shape primitives";
+pub const stage_caption_text = "fill / stroke / gradients";
+pub const stage_shape_labels = [_][]const u8{
+    "rect",
     "round rect",
     "ellipse",
-    "cubic",
+    "path",
 };
 
 const badge_font_size: f32 = 13.0;
@@ -33,6 +34,7 @@ const script_label_font_size: f32 = 11.0;
 const emoji_font_size: f32 = 26.0;
 const script_label_inset_x: f32 = 18.0;
 const script_label_gap: f32 = 24.0;
+const script_sample_inset_x: f32 = 10.0;
 const script_row_gap: f32 = 6.0;
 const script_row_vertical_pad: f32 = 14.0;
 const emoji_pill_vertical_pad: f32 = 10.0;
@@ -47,10 +49,11 @@ const ScriptRowSpec = struct {
     text: []const u8,
     color: [4]f32,
     size: f32,
+    sample_inset_x: f32 = 0.0,
 };
 
 const script_row_specs = [_]ScriptRowSpec{
-    .{ .label = "Arabic", .text = arabic_text, .color = sage, .size = 27.0 },
+    .{ .label = "Arabic", .text = arabic_text, .color = sage, .size = 27.0, .sample_inset_x = 10.0 },
     .{ .label = "Devanagari", .text = devanagari_text, .color = teal, .size = 24.0 },
     .{ .label = "Thai", .text = thai_text, .color = sand, .size = 26.0 },
     .{ .label = "Mongolian", .text = mongolian_text, .color = blush, .size = 27.0 },
@@ -91,8 +94,10 @@ pub const TextMetrics = struct {
     script_label_column_w: f32,
     script_label_extents: LineExtents,
     script_row_heights: [script_row_specs.len]f32,
+    script_sample_bounds: [script_row_specs.len]TextBounds,
     script_sample_extents: [script_row_specs.len]LineExtents,
     emoji_pill_h: f32,
+    emoji_bounds: TextBounds,
     emoji_extents: LineExtents,
     script_band_min_h: f32,
     scripts_heading_gutter_h: f32,
@@ -108,7 +113,7 @@ pub const Layout = struct {
     badge_pill: snail.VectorRect,
     emoji_pill: snail.VectorRect,
     script_rows: [4]snail.VectorRect,
-    stage_pills: [3]snail.VectorRect,
+    stage_rows: [4]snail.VectorRect,
     script_text_x: f32,
 };
 
@@ -292,6 +297,7 @@ pub fn measureMetrics(
     const emoji_extents = lineExtents(emoji_font, emoji_font_size);
     const scripts_heading_extents = lineExtents(font, scripts_heading_font_size);
     var script_row_heights: [script_row_specs.len]f32 = undefined;
+    var script_sample_bounds: [script_row_specs.len]TextBounds = undefined;
     var script_sample_extents: [script_row_specs.len]LineExtents = undefined;
     var max_label_advance: f32 = emoji_label.advance;
     var script_band_content_h: f32 = 0.0;
@@ -300,6 +306,7 @@ pub fn measureMetrics(
         const sample = measureText(atlas_like, script_font, spec.text, spec.size);
         const sample_extents = lineExtents(script_font, spec.size);
         const row_h = snapPx(@max(label.bounds.height(), sample.bounds.height()) + script_row_vertical_pad * 2.0);
+        script_sample_bounds[i] = sample.bounds;
         script_sample_extents[i] = sample_extents;
         script_row_heights[i] = row_h;
         max_label_advance = @max(max_label_advance, label.advance);
@@ -320,8 +327,10 @@ pub fn measureMetrics(
         .script_label_column_w = snapPx(max_label_advance + script_label_gap),
         .script_label_extents = label_extents,
         .script_row_heights = script_row_heights,
+        .script_sample_bounds = script_sample_bounds,
         .script_sample_extents = script_sample_extents,
         .emoji_pill_h = emoji_pill_h,
+        .emoji_bounds = emoji_sample.bounds,
         .emoji_extents = emoji_extents,
         .script_band_min_h = script_band_min_h,
         .scripts_heading_gutter_h = scripts_heading_gutter_h,
@@ -384,16 +393,19 @@ pub fn buildLayout(w: f32, h: f32, metrics: TextMetrics) Layout {
     const path_label_area = snapRect(.{
         .x = specimen_panel.x + specimen_panel.w + 34.0,
         .y = specimen_panel.y + 22.0,
-        .w = std.math.clamp(frame.w * 0.16, 180.0, 250.0),
-        .h = 120.0,
+        .w = std.math.clamp(frame.w * 0.18, 196.0, 260.0),
+        .h = 176.0,
     });
-    const pill_x = path_label_area.x;
-    const pill_y = path_label_area.y + 82.0;
-    const pill_w = std.math.clamp(frame.w * 0.14, 160.0, 232.0);
-    var stage_pills: [3]snail.VectorRect = undefined;
-    stage_pills[0] = snapRect(.{ .x = pill_x, .y = pill_y, .w = pill_w, .h = 28.0 });
-    stage_pills[1] = snapRect(.{ .x = pill_x, .y = pill_y + 38.0, .w = pill_w * 0.82, .h = 28.0 });
-    stage_pills[2] = snapRect(.{ .x = pill_x, .y = pill_y + 76.0, .w = pill_w * 0.68, .h = 28.0 });
+    var stage_rows: [4]snail.VectorRect = undefined;
+    const stage_row_y = path_label_area.y + 84.0;
+    for (&stage_rows, 0..) |*row, i| {
+        row.* = snapRect(.{
+            .x = path_label_area.x,
+            .y = stage_row_y + @as(f32, @floatFromInt(i)) * 30.0,
+            .w = path_label_area.w,
+            .h = 22.0,
+        });
+    }
     const snail_stage_top = frame.y + 106.0;
     const snail_stage_bottom = script_band.y - 26.0;
     const snail_stage = snapRect(.{
@@ -413,9 +425,18 @@ pub fn buildLayout(w: f32, h: f32, metrics: TextMetrics) Layout {
         .badge_pill = badge_pill,
         .emoji_pill = emoji_pill,
         .script_rows = script_rows,
-        .stage_pills = stage_pills,
+        .stage_rows = stage_rows,
         .script_text_x = script_band.x + 18.0 + script_label_inset_x + metrics.script_label_column_w,
     };
+}
+
+fn stageIconRect(row: snail.VectorRect) snail.VectorRect {
+    return snapRect(.{
+        .x = row.x + 2.0,
+        .y = row.y + 3.0,
+        .w = 48.0,
+        .h = row.h - 6.0,
+    });
 }
 
 pub fn drawText(batch: *snail.Batch, h: f32, layout: Layout, metrics: TextMetrics, resources: TextResources) void {
@@ -439,9 +460,9 @@ pub fn drawText(batch: *snail.Batch, h: f32, layout: Layout, metrics: TextMetric
     const specimen_footer_extents = lineExtents(resources.latin_font, 12.0);
     const scripts_heading_extents = lineExtents(resources.latin_font, scripts_heading_font_size);
     const stage_label_extents = lineExtents(resources.latin_font, 12.0);
-    const stage_title_extents = lineExtents(resources.latin_font, 23.0);
+    const stage_title_extents = lineExtents(resources.latin_font, 21.0);
     const stage_caption_extents = lineExtents(resources.latin_font, 14.0);
-    const stage_pill_extents = lineExtents(resources.latin_font, 12.0);
+    const stage_row_extents = lineExtents(resources.latin_font, 12.0);
     const badge_baseline_top = centeredBaselineTopFromExtents(badge_extents, layout.badge_pill);
     const emoji_label_baseline_top = centeredBaselineTopFromExtents(metrics.script_label_extents, layout.emoji_pill);
     const emoji_baseline_top = centeredBaselineTopFromExtents(metrics.emoji_extents, layout.emoji_pill);
@@ -465,8 +486,8 @@ pub fn drawText(batch: *snail.Batch, h: f32, layout: Layout, metrics: TextMetric
     const specimen_footer_top = layout.specimen_panel.y + layout.specimen_panel.h - 20.0 - specimen_footer_extents.ascent;
     const scripts_heading_baseline_top = centeredBaselineTopFromExtents(scripts_heading_extents, scripts_heading_gutter);
     const stage_label_top = layout.path_label_area.y + 12.0 - stage_label_extents.ascent;
-    const stage_title_top = layout.path_label_area.y + 44.0 - stage_title_extents.ascent;
-    const stage_caption_top = layout.path_label_area.y + 70.0 - stage_caption_extents.ascent;
+    const stage_title_top = layout.path_label_area.y + 40.0 - stage_title_extents.ascent;
+    const stage_caption_top = layout.path_label_area.y + 64.0 - stage_caption_extents.ascent;
 
     _ = batch.addString(resources.latin_view, resources.latin_font, badge_text, layout.badge_pill.x + 16.0, textYFromTop(h, badge_baseline_top), badge_font_size, teal);
     _ = batch.addString(resources.latin_view, resources.latin_font, title_text, hero_x, textYFromTop(h, baselineFromTop(hero_title_top, title_extents)), title_size, ink);
@@ -496,18 +517,19 @@ pub fn drawText(batch: *snail.Batch, h: f32, layout: Layout, metrics: TextMetric
     for (layout.script_rows, script_items, 0..) |row, item, i| {
         const label_baseline_top = centeredBaselineTopFromExtents(metrics.script_label_extents, row);
         const sample_baseline_top = centeredBaselineTopFromExtents(metrics.script_sample_extents[i], row);
+        const sample_x = layout.script_text_x + script_sample_inset_x + item.spec.sample_inset_x - metrics.script_sample_bounds[i].min_x;
         _ = batch.addString(resources.latin_view, resources.latin_font, item.spec.label, row.x + script_label_inset_x, textYFromTop(h, label_baseline_top), script_label_font_size, slate);
-        _ = batch.addString(item.view, &item.font.font, item.spec.text, layout.script_text_x, textYFromTop(h, sample_baseline_top), item.spec.size, item.spec.color);
+        _ = batch.addString(item.view, &item.font.font, item.spec.text, sample_x, textYFromTop(h, sample_baseline_top), item.spec.size, item.spec.color);
     }
 
     _ = batch.addString(resources.latin_view, resources.latin_font, emoji_label_text, layout.emoji_pill.x + script_label_inset_x, textYFromTop(h, emoji_label_baseline_top), script_label_font_size, slate);
-    _ = batch.addString(resources.emoji_view, &resources.emoji_font.font, emoji_text, layout.script_text_x, textYFromTop(h, emoji_baseline_top), emoji_font_size, ink);
+    _ = batch.addString(resources.emoji_view, &resources.emoji_font.font, emoji_text, layout.script_text_x + script_sample_inset_x - metrics.emoji_bounds.min_x, textYFromTop(h, emoji_baseline_top), emoji_font_size, ink);
 
     _ = batch.addString(resources.latin_view, resources.latin_font, stage_label_text, layout.path_label_area.x, textYFromTop(h, baselineFromTop(stage_label_top, stage_label_extents)), 12.0, teal);
-    _ = batch.addString(resources.latin_view, resources.latin_font, stage_title_text, layout.path_label_area.x, textYFromTop(h, baselineFromTop(stage_title_top, stage_title_extents)), 23.0, ink);
+    _ = batch.addString(resources.latin_view, resources.latin_font, stage_title_text, layout.path_label_area.x, textYFromTop(h, baselineFromTop(stage_title_top, stage_title_extents)), 21.0, ink);
     _ = batch.addString(resources.latin_view, resources.latin_font, stage_caption_text, layout.path_label_area.x, textYFromTop(h, baselineFromTop(stage_caption_top, stage_caption_extents)), 14.0, mist);
-    for (layout.stage_pills, stage_pill_labels) |pill, label| {
-        _ = batch.addString(resources.latin_view, resources.latin_font, label, pill.x + 16.0, textYFromTop(h, centeredBaselineTopFromExtents(stage_pill_extents, pill)), 12.0, ink);
+    for (layout.stage_rows, stage_shape_labels) |row, label| {
+        _ = batch.addString(resources.latin_view, resources.latin_font, label, row.x + 64.0, textYFromTop(h, centeredBaselineTopFromExtents(stage_row_extents, row)), 12.0, ink);
     }
 }
 
@@ -611,29 +633,72 @@ pub fn buildPathShowcase(builder: *snail.PathPictureBuilder, layout: Layout) !vo
         );
     }
 
-    const pill_colors = [_]struct {
-        start: [4]f32,
-        end: [4]f32,
-        stroke: [4]f32,
-    }{
-        .{ .start = .{ 0.18, 0.40, 0.42, 0.90 }, .end = .{ 0.10, 0.22, 0.24, 0.90 }, .stroke = .{ 0.46, 0.84, 0.86, 0.92 } },
-        .{ .start = .{ 0.40, 0.32, 0.14, 0.90 }, .end = .{ 0.22, 0.18, 0.08, 0.90 }, .stroke = .{ 0.96, 0.82, 0.55, 0.92 } },
-        .{ .start = .{ 0.38, 0.20, 0.12, 0.90 }, .end = .{ 0.22, 0.10, 0.08, 0.90 }, .stroke = .{ 0.95, 0.58, 0.42, 0.92 } },
-    };
-    for (layout.stage_pills, pill_colors) |pill, colors| {
-        try builder.addRoundedRect(
-            pill,
-            .{ .paint = .{ .linear_gradient = .{
-                .start = .{ .x = pill.x, .y = pill.y },
-                .end = .{ .x = pill.x + pill.w, .y = pill.y },
-                .start_color = colors.start,
-                .end_color = colors.end,
-            } } },
-            .{ .color = colors.stroke, .width = 1.0, .join = .round, .placement = .inside },
-            pill.h * 0.5,
-            .identity,
-        );
-    }
+    const rect_icon = stageIconRect(layout.stage_rows[0]);
+    try builder.addRect(
+        rect_icon,
+        .{ .paint = .{ .linear_gradient = .{
+            .start = .{ .x = rect_icon.x, .y = rect_icon.y },
+            .end = .{ .x = rect_icon.x + rect_icon.w, .y = rect_icon.y },
+            .start_color = .{ 0.18, 0.40, 0.42, 0.92 },
+            .end_color = .{ 0.10, 0.22, 0.24, 0.92 },
+        } } },
+        .{ .color = .{ 0.46, 0.84, 0.86, 0.94 }, .width = 1.0, .join = .miter, .placement = .inside },
+        .identity,
+    );
+
+    const rounded_icon = stageIconRect(layout.stage_rows[1]);
+    try builder.addRoundedRect(
+        rounded_icon,
+        .{ .paint = .{ .linear_gradient = .{
+            .start = .{ .x = rounded_icon.x, .y = rounded_icon.y },
+            .end = .{ .x = rounded_icon.x + rounded_icon.w, .y = rounded_icon.y },
+            .start_color = .{ 0.40, 0.32, 0.14, 0.92 },
+            .end_color = .{ 0.22, 0.18, 0.08, 0.92 },
+        } } },
+        .{ .color = .{ 0.96, 0.82, 0.55, 0.94 }, .width = 1.0, .join = .round, .placement = .inside },
+        rounded_icon.h * 0.46,
+        .identity,
+    );
+
+    const ellipse_icon = stageIconRect(layout.stage_rows[2]);
+    try builder.addEllipse(
+        ellipse_icon,
+        .{ .paint = .{ .radial_gradient = .{
+            .center = .{ .x = ellipse_icon.x + ellipse_icon.w * 0.46, .y = ellipse_icon.y + ellipse_icon.h * 0.48 },
+            .radius = ellipse_icon.h * 0.8,
+            .inner_color = .{ 0.96, 0.77, 0.56, 0.96 },
+            .outer_color = .{ 0.44, 0.22, 0.16, 0.94 },
+        } } },
+        .{ .color = .{ 0.98, 0.76, 0.58, 0.94 }, .width = 1.0, .join = .round, .placement = .inside },
+        .identity,
+    );
+
+    const path_icon = stageIconRect(layout.stage_rows[3]);
+    var swash = snail.VectorPath.init(builder.allocator);
+    defer swash.deinit();
+    try swash.moveTo(.{ .x = path_icon.x + 3.0, .y = path_icon.y + path_icon.h * 0.72 });
+    try swash.cubicTo(
+        .{ .x = path_icon.x + 12.0, .y = path_icon.y + 1.0 },
+        .{ .x = path_icon.x + 28.0, .y = path_icon.y + 1.0 },
+        .{ .x = path_icon.x + path_icon.w - 4.0, .y = path_icon.y + path_icon.h * 0.56 },
+    );
+    try swash.cubicTo(
+        .{ .x = path_icon.x + 34.0, .y = path_icon.y + path_icon.h + 1.0 },
+        .{ .x = path_icon.x + 14.0, .y = path_icon.y + path_icon.h + 1.0 },
+        .{ .x = path_icon.x + 7.0, .y = path_icon.y + path_icon.h * 0.60 },
+    );
+    try swash.close();
+    try builder.addPath(
+        &swash,
+        .{ .paint = .{ .linear_gradient = .{
+            .start = .{ .x = path_icon.x + 2.0, .y = path_icon.y + 1.0 },
+            .end = .{ .x = path_icon.x + path_icon.w - 2.0, .y = path_icon.y + path_icon.h - 1.0 },
+            .start_color = .{ 0.82, 0.42, 0.76, 0.94 },
+            .end_color = .{ 0.34, 0.20, 0.58, 0.94 },
+        } } },
+        .{ .color = .{ 0.92, 0.72, 0.98, 0.94 }, .width = 1.0, .join = .round, .placement = .inside },
+        .identity,
+    );
 
     try addVectorSnail(builder, layout.snail_stage);
 }
