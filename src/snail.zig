@@ -1691,6 +1691,7 @@ fn appendAdaptiveArcCurve(
 ) !void {
     const span = end_angle - start_angle;
     if (depth == 0 or @abs(span) <= std.math.pi * 0.125 + 1e-6) {
+        path.band_curve_count += 1;
         try path.appendSegment(CurveSegment.fromQuad(makePathArcCurve(center, radii, start_angle, end_angle)));
         return;
     }
@@ -1714,6 +1715,7 @@ fn appendAdaptiveArcConic(
         try appendAdaptiveArcConic(path, center, radii, mid_angle, end_angle);
         return;
     }
+    path.band_curve_count += 1;
     try path.appendSegment(makePathArcConic(center, radii, start_angle, end_angle));
 }
 
@@ -1946,6 +1948,7 @@ fn appendOffsetCurveApprox(
     }
 
     if (depth == 0 or offsetCurveApproxError(curve, offset) <= kPathStrokeOffsetTolerance) {
+        path.band_curve_count += 1;
         try path.appendSegment(fitOffsetCurveQuad(curve, offset));
         return;
     }
@@ -1960,6 +1963,7 @@ pub const VectorPath = struct {
     curves: std.ArrayList(CurveSegment) = .empty,
     contours: std.ArrayList(Contour) = .empty,
     bbox: ?BBox = null,
+    band_curve_count: usize = 0,
 
     const Contour = struct {
         curve_start: usize,
@@ -1983,6 +1987,7 @@ pub const VectorPath = struct {
         self.curves.clearRetainingCapacity();
         self.contours.clearRetainingCapacity();
         self.bbox = null;
+        self.band_curve_count = 0;
     }
 
     pub fn bounds(self: *const VectorPath) ?BBox {
@@ -2015,11 +2020,13 @@ pub const VectorPath = struct {
 
     pub fn lineTo(self: *VectorPath, point: Vec2) !void {
         const contour = self.requireContour() orelse return error.PathMissingMoveTo;
+        self.band_curve_count += 1;
         try self.appendSegment(makePathLineSegment(contour.current_point, point));
     }
 
     pub fn quadTo(self: *VectorPath, control: Vec2, point: Vec2) !void {
         const contour = self.requireContour() orelse return error.PathMissingMoveTo;
+        self.band_curve_count += 1;
         try self.appendSegment(CurveSegment.fromQuad(.{
             .p0 = contour.current_point,
             .p1 = control,
@@ -2029,6 +2036,7 @@ pub const VectorPath = struct {
 
     pub fn cubicTo(self: *VectorPath, control1: Vec2, control2: Vec2, point: Vec2) !void {
         const contour = self.requireContour() orelse return error.PathMissingMoveTo;
+        self.band_curve_count += 1;
         try appendAdaptiveQuadraticApprox(self, CurveSegment.fromCubic(.{
             .p0 = contour.current_point,
             .p1 = control1,
@@ -2042,6 +2050,7 @@ pub const VectorPath = struct {
             var contour = initial_contour;
             if (contour.closed) return;
             if (contour.curve_end > contour.curve_start and !pointsApproxEqual(contour.current_point, contour.start_point)) {
+                self.band_curve_count += 1;
                 try self.appendSegment(makePathLineSegment(contour.current_point, contour.start_point));
                 contour = self.requireContour().?;
             }
@@ -2209,11 +2218,21 @@ pub const VectorPath = struct {
         return out;
     }
 
+    fn filledBandCurveCount(self: *const VectorPath) usize {
+        var close_count: usize = 0;
+        for (self.contours.items) |contour| {
+            if (!contour.closed and contour.curve_end > contour.curve_start and !pointsApproxEqual(contour.current_point, contour.start_point)) {
+                close_count += 1;
+            }
+        }
+        return self.band_curve_count + close_count;
+    }
+
     fn cloneStrokedCurves(
         self: *const VectorPath,
         allocator: std.mem.Allocator,
         stroke: PathStrokeStyle,
-    ) !?struct { curves: []CurveSegment, bbox: BBox } {
+    ) !?struct { curves: []CurveSegment, bbox: BBox, logical_curve_count: usize } {
         if (stroke.width <= 1e-4 or self.contours.items.len == 0) return null;
 
         var outline = VectorPath.init(allocator);
@@ -2233,6 +2252,7 @@ pub const VectorPath = struct {
         return .{
             .curves = curves,
             .bbox = outline.bounds() orelse return error.EmptyPath,
+            .logical_curve_count = outline.filledBandCurveCount(),
         };
     }
 };
@@ -2371,12 +2391,16 @@ fn buildOffsetBoundary(
 
 fn appendBoundaryCurves(dst: *VectorPath, src: *const VectorPath, reverse: bool) !void {
     if (!reverse) {
-        for (src.curves.items) |curve| try dst.appendSegment(curve);
+        for (src.curves.items) |curve| {
+            dst.band_curve_count += 1;
+            try dst.appendSegment(curve);
+        }
         return;
     }
     var i = src.curves.items.len;
     while (i > 0) {
         i -= 1;
+        dst.band_curve_count += 1;
         try dst.appendSegment(reverseCurveSegment(src.curves.items[i]));
     }
 }
@@ -2519,6 +2543,7 @@ pub const PathPictureBuilder = struct {
     const PathLayerRecord = struct {
         curves: []CurveSegment,
         bbox: BBox,
+        logical_curve_count: usize,
         paint: PathPaint,
     };
 
@@ -2639,6 +2664,7 @@ pub const PathPictureBuilder = struct {
         self: *PathPictureBuilder,
         curves: []CurveSegment,
         bbox: BBox,
+        logical_curve_count: usize,
         paint: PathPaint,
         transform: VectorTransform2D,
     ) !void {
@@ -2651,6 +2677,7 @@ pub const PathPictureBuilder = struct {
                 .{
                     .curves = curves,
                     .bbox = bbox,
+                    .logical_curve_count = logical_curve_count,
                     .paint = paint,
                 },
                 undefined,
@@ -2957,17 +2984,21 @@ pub const PathPictureBuilder = struct {
         const stroke_bbox = stroke_path.bounds() orelse return error.EmptyPath;
         const stroke_curves = try stroke_path.cloneFilledCurves(self.allocator);
         errdefer self.allocator.free(stroke_curves);
+        const stroke_logical_curve_count = stroke_path.filledBandCurveCount();
 
         if (fill) |style| {
             const fill_bbox = fill_path.bounds() orelse return error.EmptyPath;
             const fill_curves = try fill_path.cloneFilledCurves(self.allocator);
             errdefer self.allocator.free(fill_curves);
+            const fill_logical_curve_count = fill_path.filledBandCurveCount();
             try self.addCompositeRecord(
                 fill_curves,
                 fill_bbox,
+                fill_logical_curve_count,
                 resolveFillPaint(style),
                 stroke_curves,
                 stroke_bbox,
+                stroke_logical_curve_count,
                 stroke_paint,
                 transform,
                 .source_over,
@@ -2975,16 +3006,18 @@ pub const PathPictureBuilder = struct {
             return;
         }
 
-        try self.addSingleRecord(stroke_curves, stroke_bbox, stroke_paint, transform);
+        try self.addSingleRecord(stroke_curves, stroke_bbox, stroke_logical_curve_count, stroke_paint, transform);
     }
 
     fn addCompositeRecord(
         self: *PathPictureBuilder,
         fill_curves: []CurveSegment,
         fill_bbox: BBox,
+        fill_logical_curve_count: usize,
         fill_paint: PathPaint,
         stroke_curves: []CurveSegment,
         stroke_bbox: BBox,
+        stroke_logical_curve_count: usize,
         stroke_paint: PathPaint,
         transform: VectorTransform2D,
         composite_mode: PathCompositeMode,
@@ -3001,11 +3034,13 @@ pub const PathPictureBuilder = struct {
                 .{
                     .curves = fill_curves,
                     .bbox = fill_bbox,
+                    .logical_curve_count = fill_logical_curve_count,
                     .paint = fill_paint,
                 },
                 .{
                     .curves = stroke_curves,
                     .bbox = stroke_bbox,
+                    .logical_curve_count = stroke_logical_curve_count,
                     .paint = stroke_paint,
                 },
             },
@@ -3026,6 +3061,7 @@ pub const PathPictureBuilder = struct {
             const bbox = path.bounds() orelse return error.EmptyPath;
             const curves = try path.cloneFilledCurves(self.allocator);
             errdefer self.allocator.free(curves);
+            const logical_curve_count = path.filledBandCurveCount();
             if (stroke) |stroke_style| {
                 if (try path.cloneStrokedCurves(self.allocator, stroke_style)) |stroke_geom| {
                     errdefer self.allocator.free(stroke_geom.curves);
@@ -3036,9 +3072,11 @@ pub const PathPictureBuilder = struct {
                     try self.addCompositeRecord(
                         curves,
                         bbox,
+                        logical_curve_count,
                         resolveFillPaint(style),
                         stroke_geom.curves,
                         stroke_geom.bbox,
+                        stroke_geom.logical_curve_count,
                         resolveStrokePaint(stroke_style),
                         transform,
                         composite_mode,
@@ -3046,12 +3084,18 @@ pub const PathPictureBuilder = struct {
                     return;
                 }
             }
-            try self.addSingleRecord(curves, bbox, resolveFillPaint(style), transform);
+            try self.addSingleRecord(curves, bbox, logical_curve_count, resolveFillPaint(style), transform);
         }
         if (stroke) |style| {
             if (try path.cloneStrokedCurves(self.allocator, style)) |stroke_geom| {
                 errdefer self.allocator.free(stroke_geom.curves);
-                try self.addSingleRecord(stroke_geom.curves, stroke_geom.bbox, resolveStrokePaint(style), transform);
+                try self.addSingleRecord(
+                    stroke_geom.curves,
+                    stroke_geom.bbox,
+                    stroke_geom.logical_curve_count,
+                    resolveStrokePaint(style),
+                    transform,
+                );
             }
         }
     }
@@ -3275,7 +3319,7 @@ pub const PathPictureBuilder = struct {
                     .curves = packed_curves,
                     .bbox = translateBBox(layer.bbox, delta),
                     .origin = origin,
-                    .logical_curve_count = layer.curves.len,
+                    .logical_curve_count = layer.logical_curve_count,
                 };
                 glyph_cursor += 1;
             }
@@ -3690,6 +3734,41 @@ test "vector path approximates cubic commands into quadratic segments and report
     const bounds = path.bounds() orelse return error.TestExpectedEqual;
     try std.testing.expect(bounds.max.y > 0);
     try std.testing.expect(bounds.min.y < 0);
+}
+
+test "vector path band count tracks source cubic commands" {
+    var path = VectorPath.init(std.testing.allocator);
+    defer path.deinit();
+
+    try path.moveTo(.{ .x = 0, .y = 0 });
+    try path.cubicTo(.{ .x = 8, .y = 20 }, .{ .x = 16, .y = -20 }, .{ .x = 24, .y = 0 });
+    try path.close();
+
+    const filled = try path.cloneFilledCurves(std.testing.allocator);
+    defer std.testing.allocator.free(filled);
+
+    try std.testing.expect(filled.len > 2);
+    try std.testing.expectEqual(@as(usize, 2), path.filledBandCurveCount());
+}
+
+test "path picture band heuristic uses source segment count for cubic fills" {
+    var path = VectorPath.init(std.testing.allocator);
+    defer path.deinit();
+
+    try path.moveTo(.{ .x = 0, .y = 0 });
+    try path.cubicTo(.{ .x = 8, .y = 20 }, .{ .x = 16, .y = -20 }, .{ .x = 24, .y = 0 });
+    try path.close();
+
+    var builder = PathPictureBuilder.init(std.testing.allocator);
+    defer builder.deinit();
+    try builder.addFilledPath(&path, .{ .color = .{ 0.8, 0.2, 0.1, 1.0 } }, .identity);
+
+    var picture = try builder.freeze(std.testing.allocator);
+    defer picture.deinit();
+
+    const info = picture.atlas.getGlyph(picture.instances[0].glyph_id) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(u16, 1), info.band_entry.h_band_count);
+    try std.testing.expectEqual(@as(u16, 1), info.band_entry.v_band_count);
 }
 
 test "path picture freeze compiles atlas and transformed batch vertices" {
