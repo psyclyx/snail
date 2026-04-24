@@ -67,6 +67,26 @@ nix-build -A lib    # build libsnail + header
 nix-build -A demo   # build snail-demo
 ```
 
+### Using as a Zig dependency
+
+Add snail to your `build.zig.zon`:
+
+```sh
+zig fetch --save git+https://github.com/psyclyx/snail
+```
+
+Then in your `build.zig`:
+
+```zig
+const snail_dep = b.dependency("snail", .{
+    .target = target,
+    .optimize = optimize,
+});
+exe.root_module.addImport("snail", snail_dep.module("snail"));
+```
+
+Your project needs OpenGL and HarfBuzz available via pkg-config. On NixOS/nix-shell, these are provided automatically. On other systems, install the development packages for your distro.
+
 ## Example: Zig
 
 ```zig

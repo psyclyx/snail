@@ -148,6 +148,15 @@ pub fn build(b: *std.Build) void {
     // Install header
     b.installFile("include/snail.h", "include/snail.h");
 
+    // ── Zig module (for downstream zig package consumers) ──
+    const snail_mod = b.addModule("snail", .{
+        .root_source_file = b.path("src/snail.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    configureCoreModule(snail_mod, options, enable_harfbuzz, enable_vulkan, vk_shaders_mod);
+
     // ── Demo executable ──
     const demo_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -185,14 +194,6 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_unit_tests.step);
 
     // ── Extra module tests (cpu_renderer, etc.) ──
-    const snail_mod = b.createModule(.{
-        .root_source_file = b.path("src/snail.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    configureCoreModule(snail_mod, options, enable_harfbuzz, enable_vulkan, vk_shaders_mod);
-
     const extra_test_module = b.createModule(.{
         .root_source_file = b.path("src/extra/cpu_renderer.zig"),
         .target = target,
