@@ -96,13 +96,6 @@ pub const fragment_shader_text =
     \\    return loc;
     \\}
     \\
-    \\ivec2 offsetCurveLoc(ivec2 base, int offset) {
-    \\    ivec2 loc = ivec2(base.x + offset, base.y);
-    \\    loc.y += loc.x >> kLogBandTextureWidth;
-    \\    loc.x &= (1 << kLogBandTextureWidth) - 1;
-    \\    return loc;
-    \\}
-    \\
     \\vec2 solveHorizPoly(vec4 p12, vec2 p3) {
     \\    vec2 a = p12.xy - p12.zw * 2.0 + p3;
     \\    vec2 b = p12.xy - p12.zw;
@@ -129,47 +122,53 @@ pub const fragment_shader_text =
     \\               (a.y * t2 - b.y * 2.0) * t2 + p12.y);
     \\}
     \\
-    \\vec2 evalAxisCoverage(vec2 rc, float ppe, ivec2 bandLoc, int count, int layer, bool horizontal) {
-    \\    float cov = 0.0;
-    \\    float wgt = 0.0;
-    \\    for (int i = 0; i < count; i++) {
-    \\        ivec2 bLoc = calcBandLoc(bandLoc, uint(i));
-    \\        ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec3(bLoc, layer), 0).xy);
-    \\        vec4 tex0 = texelFetch(u_curve_tex, ivec3(cLoc, layer), 0);
-    \\        vec4 tex1 = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(cLoc, 1), layer), 0);
-    \\        vec4 p12 = vec4(tex0.xy, tex0.zw) - vec4(rc, rc);
-    \\        vec2 p3 = tex1.xy - rc;
-    \\        float maxCoord = horizontal ? max(max(p12.x, p12.z), p3.x) : max(max(p12.y, p12.w), p3.y);
-    \\        if (maxCoord * ppe < -0.5) break;
-    \\        uint code = horizontal ? calcRootCode(p12.y, p12.w, p3.y) : calcRootCode(p12.x, p12.z, p3.x);
-    \\        if (code == 0u) continue;
-    \\        vec2 roots = horizontal ? solveHorizPoly(p12, p3) * ppe : solveVertPoly(p12, p3) * ppe;
-    \\        if ((code & 1u) != 0u) {
-    \\            cov += (horizontal ? 1.0 : -1.0) * clamp(roots.x + 0.5, 0.0, 1.0);
-    \\            wgt = max(wgt, clamp(1.0 - abs(roots.x) * 2.0, 0.0, 1.0));
-    \\        }
-    \\        if (code > 1u) {
-    \\            cov += (horizontal ? -1.0 : 1.0) * clamp(roots.y + 0.5, 0.0, 1.0);
-    \\            wgt = max(wgt, clamp(1.0 - abs(roots.y) * 2.0, 0.0, 1.0));
-    \\        }
-    \\    }
-    \\    return vec2(cov, wgt);
-    \\}
-    \\
     \\float evalGlyphCoverage(vec2 rc, vec2 ppe, ivec2 gLoc, ivec2 bandMax, vec4 banding, int texLayer) {
     \\    ivec2 bandIdx = clamp(ivec2(rc * banding.xy + banding.zw), ivec2(0), bandMax);
+    \\
+    \\    float xcov = 0.0, xwgt = 0.0;
     \\    uvec2 hbd = texelFetch(u_band_tex, ivec3(gLoc.x + bandIdx.y, gLoc.y, texLayer), 0).xy;
     \\    ivec2 hLoc = calcBandLoc(gLoc, hbd.y);
     \\    int hCount = int(hbd.x);
-    \\    vec2 horiz = evalAxisCoverage(rc, ppe.x, hLoc, hCount, texLayer, true);
+    \\    for (int i = 0; i < hCount; i++) {
+    \\        ivec2 bLoc_h = calcBandLoc(hLoc, uint(i));
+    \\        ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec3(bLoc_h, texLayer), 0).xy);
+    \\        vec4 tex0 = texelFetch(u_curve_tex, ivec3(cLoc, texLayer), 0);
+    \\        vec4 tex1 = texelFetch(u_curve_tex, ivec3(cLoc + ivec2(1, 0), texLayer), 0);
+    \\        vec4 p12 = vec4(tex0.xy, tex0.zw) - vec4(rc, rc);
+    \\        vec2 p3 = tex1.xy - rc;
+    \\        if (max(max(p12.x, p12.z), p3.x) * ppe.x < -0.5) break;
+    \\        uint code = calcRootCode(p12.y, p12.w, p3.y);
+    \\        if (code != 0u) {
+    \\            vec2 r = solveHorizPoly(p12, p3) * ppe.x;
+    \\            if ((code & 1u) != 0u) { xcov += clamp(r.x + 0.5, 0.0, 1.0); xwgt = max(xwgt, clamp(1.0 - abs(r.x) * 2.0, 0.0, 1.0)); }
+    \\            if (code > 1u) { xcov -= clamp(r.y + 0.5, 0.0, 1.0); xwgt = max(xwgt, clamp(1.0 - abs(r.y) * 2.0, 0.0, 1.0)); }
+    \\        }
+    \\    }
+    \\
+    \\    float ycov = 0.0, ywgt = 0.0;
     \\    uvec2 vbd = texelFetch(u_band_tex, ivec3(gLoc.x + bandMax.y + 1 + bandIdx.x, gLoc.y, texLayer), 0).xy;
     \\    ivec2 vLoc = calcBandLoc(gLoc, vbd.y);
     \\    int vCount = int(vbd.x);
-    \\    vec2 vert = evalAxisCoverage(rc, ppe.y, vLoc, vCount, texLayer, false);
-    \\    float wsum = horiz.y + vert.y;
-    \\    float blended = horiz.x * horiz.y + vert.x * vert.y;
+    \\    for (int i = 0; i < vCount; i++) {
+    \\        ivec2 bLoc_v = calcBandLoc(vLoc, uint(i));
+    \\        ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec3(bLoc_v, texLayer), 0).xy);
+    \\        vec4 tex0 = texelFetch(u_curve_tex, ivec3(cLoc, texLayer), 0);
+    \\        vec4 tex1 = texelFetch(u_curve_tex, ivec3(cLoc + ivec2(1, 0), texLayer), 0);
+    \\        vec4 p12 = vec4(tex0.xy, tex0.zw) - vec4(rc, rc);
+    \\        vec2 p3 = tex1.xy - rc;
+    \\        if (max(max(p12.y, p12.w), p3.y) * ppe.y < -0.5) break;
+    \\        uint code = calcRootCode(p12.x, p12.z, p3.x);
+    \\        if (code != 0u) {
+    \\            vec2 r = solveVertPoly(p12, p3) * ppe.y;
+    \\            if ((code & 1u) != 0u) { ycov -= clamp(r.x + 0.5, 0.0, 1.0); ywgt = max(ywgt, clamp(1.0 - abs(r.x) * 2.0, 0.0, 1.0)); }
+    \\            if (code > 1u) { ycov += clamp(r.y + 0.5, 0.0, 1.0); ywgt = max(ywgt, clamp(1.0 - abs(r.y) * 2.0, 0.0, 1.0)); }
+    \\        }
+    \\    }
+    \\
+    \\    float wsum = xwgt + ywgt;
+    \\    float blended = xcov * xwgt + ycov * ywgt;
     \\    float cov = max(applyFillRule(blended / max(wsum, 1.0 / 65536.0)),
-    \\                    min(applyFillRule(horiz.x), applyFillRule(vert.x)));
+    \\                    min(applyFillRule(xcov), applyFillRule(ycov)));
     \\    return clamp(cov, 0.0, 1.0);
     \\}
     \\
@@ -231,13 +230,6 @@ pub const fragment_shader_text_subpixel =
     \\    return loc;
     \\}
     \\
-    \\ivec2 offsetCurveLoc(ivec2 base, int offset) {
-    \\    ivec2 loc = ivec2(base.x + offset, base.y);
-    \\    loc.y += loc.x >> kLogBandTextureWidth;
-    \\    loc.x &= (1 << kLogBandTextureWidth) - 1;
-    \\    return loc;
-    \\}
-    \\
     \\vec2 solveHorizPoly(vec4 p12, vec2 p3) {
     \\    vec2 a = p12.xy - p12.zw * 2.0 + p3;
     \\    vec2 b = p12.xy - p12.zw;
@@ -264,39 +256,46 @@ pub const fragment_shader_text_subpixel =
     \\               (a.y * t2 - b.y * 2.0) * t2 + p12.y);
     \\}
     \\
-    \\vec2 evalAxisCoverage(vec2 rc, float ppe, ivec2 bandLoc, int count, int layer, bool horizontal) {
+    \\vec2 evalHorizCoverage(vec2 rc, float xOffset, vec2 ppe, ivec2 hLoc, int hCount, int layer) {
     \\    float cov = 0.0;
     \\    float wgt = 0.0;
-    \\    for (int i = 0; i < count; i++) {
-    \\        ivec2 bLoc = calcBandLoc(bandLoc, uint(i));
+    \\    rc += vec2(xOffset, 0.0);
+    \\    for (int i = 0; i < hCount; i++) {
+    \\        ivec2 bLoc = calcBandLoc(hLoc, uint(i));
     \\        ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec3(bLoc, layer), 0).xy);
     \\        vec4 tex0 = texelFetch(u_curve_tex, ivec3(cLoc, layer), 0);
-    \\        vec4 tex1 = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(cLoc, 1), layer), 0);
+    \\        vec4 tex1 = texelFetch(u_curve_tex, ivec3(cLoc + ivec2(1, 0), layer), 0);
     \\        vec4 p12 = vec4(tex0.xy, tex0.zw) - vec4(rc, rc);
     \\        vec2 p3 = tex1.xy - rc;
-    \\        float maxCoord = horizontal ? max(max(p12.x, p12.z), p3.x) : max(max(p12.y, p12.w), p3.y);
-    \\        if (maxCoord * ppe < -0.5) break;
-    \\        uint code = horizontal ? calcRootCode(p12.y, p12.w, p3.y) : calcRootCode(p12.x, p12.z, p3.x);
+    \\        if (max(max(p12.x, p12.z), p3.x) * ppe.x < -0.5) break;
+    \\        uint code = calcRootCode(p12.y, p12.w, p3.y);
     \\        if (code == 0u) continue;
-    \\        vec2 roots = horizontal ? solveHorizPoly(p12, p3) * ppe : solveVertPoly(p12, p3) * ppe;
-    \\        if ((code & 1u) != 0u) {
-    \\            cov += (horizontal ? 1.0 : -1.0) * clamp(roots.x + 0.5, 0.0, 1.0);
-    \\            wgt = max(wgt, clamp(1.0 - abs(roots.x) * 2.0, 0.0, 1.0));
-    \\        }
-    \\        if (code > 1u) {
-    \\            cov += (horizontal ? -1.0 : 1.0) * clamp(roots.y + 0.5, 0.0, 1.0);
-    \\            wgt = max(wgt, clamp(1.0 - abs(roots.y) * 2.0, 0.0, 1.0));
-    \\        }
+    \\        vec2 roots = solveHorizPoly(p12, p3) * ppe.x;
+    \\        if ((code & 1u) != 0u) { cov += clamp(roots.x + 0.5, 0.0, 1.0); wgt = max(wgt, clamp(1.0 - abs(roots.x) * 2.0, 0.0, 1.0)); }
+    \\        if (code > 1u) { cov -= clamp(roots.y + 0.5, 0.0, 1.0); wgt = max(wgt, clamp(1.0 - abs(roots.y) * 2.0, 0.0, 1.0)); }
     \\    }
     \\    return vec2(cov, wgt);
     \\}
     \\
-    \\vec2 evalHorizCoverage(vec2 rc, float xOffset, vec2 ppe, ivec2 hLoc, int hCount, int layer) {
-    \\    return evalAxisCoverage(rc + vec2(xOffset, 0.0), ppe.x, hLoc, hCount, layer, true);
-    \\}
-    \\
     \\vec2 evalVertCoverage(vec2 rc, float yOffset, vec2 ppe, ivec2 vLoc, int vCount, int layer) {
-    \\    return evalAxisCoverage(rc + vec2(0.0, yOffset), ppe.y, vLoc, vCount, layer, false);
+    \\    float cov = 0.0;
+    \\    float wgt = 0.0;
+    \\    rc += vec2(0.0, yOffset);
+    \\    for (int i = 0; i < vCount; i++) {
+    \\        ivec2 bLoc = calcBandLoc(vLoc, uint(i));
+    \\        ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec3(bLoc, layer), 0).xy);
+    \\        vec4 tex0 = texelFetch(u_curve_tex, ivec3(cLoc, layer), 0);
+    \\        vec4 tex1 = texelFetch(u_curve_tex, ivec3(cLoc + ivec2(1, 0), layer), 0);
+    \\        vec4 p12 = vec4(tex0.xy, tex0.zw) - vec4(rc, rc);
+    \\        vec2 p3 = tex1.xy - rc;
+    \\        if (max(max(p12.y, p12.w), p3.y) * ppe.y < -0.5) break;
+    \\        uint code = calcRootCode(p12.x, p12.z, p3.x);
+    \\        if (code == 0u) continue;
+    \\        vec2 roots = solveVertPoly(p12, p3) * ppe.y;
+    \\        if ((code & 1u) != 0u) { cov -= clamp(roots.x + 0.5, 0.0, 1.0); wgt = max(wgt, clamp(1.0 - abs(roots.x) * 2.0, 0.0, 1.0)); }
+    \\        if (code > 1u) { cov += clamp(roots.y + 0.5, 0.0, 1.0); wgt = max(wgt, clamp(1.0 - abs(roots.y) * 2.0, 0.0, 1.0)); }
+    \\    }
+    \\    return vec2(cov, wgt);
     \\}
     \\
     \\vec3 blendSubpixel(vec2 cw_r, vec2 cw_g, vec2 cw_b, vec2 cw_o) {

@@ -44,13 +44,6 @@ ivec2 calcBandLoc(ivec2 glyphLoc, uint offset) {
     return loc;
 }
 
-ivec2 offsetCurveLoc(ivec2 base, int offset) {
-    ivec2 loc = ivec2(base.x + offset, base.y);
-    loc.y += loc.x >> kLogBandTextureWidth;
-    loc.x &= (1 << kLogBandTextureWidth) - 1;
-    return loc;
-}
-
 ivec2 offsetLayerLoc(ivec2 base, int offset) {
     ivec2 loc = ivec2(base.x + offset, base.y);
     loc.y += loc.x >> kLogBandTextureWidth;
@@ -205,12 +198,9 @@ vec2 solveQuadraticVertDistances(float p0x, float p0y, float p1x, float p1y, flo
 
 SegmentData fetchSegment(ivec2 loc, int layer) {
     vec4 tex0 = texelFetch(u_curve_tex, ivec3(loc, layer), 0);
-    ivec2 loc1 = offsetCurveLoc(loc, 1);
-    vec4 tex1 = texelFetch(u_curve_tex, ivec3(loc1, layer), 0);
-    ivec2 loc2 = offsetCurveLoc(loc, 2);
-    vec4 tex2 = texelFetch(u_curve_tex, ivec3(loc2, layer), 0);
-    ivec2 loc3 = offsetCurveLoc(loc, 3);
-    vec4 meta = texelFetch(u_curve_tex, ivec3(loc3, layer), 0);
+    vec4 tex1 = texelFetch(u_curve_tex, ivec3(loc + ivec2(1, 0), layer), 0);
+    vec4 tex2 = texelFetch(u_curve_tex, ivec3(loc + ivec2(2, 0), layer), 0);
+    vec4 meta = texelFetch(u_curve_tex, ivec3(loc + ivec2(3, 0), layer), 0);
     SegmentData seg;
     bool direct = tex2.z >= kDirectEncodingKindBias - 0.5;
     if (direct) {
