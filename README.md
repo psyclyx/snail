@@ -444,11 +444,10 @@ snail is used in development but is not yet stable. Current limitations:
 - OpenType shaping is limited to GSUB type 4 (ligatures) and GPOS type 2 (pair positioning). Complex scripts require `-Dharfbuzz=true`.
 - No CFF/CFF2 support (TrueType outlines only).
 - No variable fonts.
-- Renderer owns global state per backend. Multiple independent renderers in one process are not yet supported.
+- One renderer per process (pipeline state is module-scoped, tied to the GL/Vulkan context).
 - C API is GL-only (no Vulkan bindings yet).
 
 Planned:
-- Renderer instance isolation (no global state).
 - DynamicAtlas / AtlasCache for high-churn glyph sets.
 - Vulkan C API parity.
 
