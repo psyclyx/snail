@@ -1,10 +1,11 @@
 const std = @import("std");
 const gl = @import("gl.zig").gl;
+const gl_backend = @import("gl_backend.zig");
 const sprite_vertex = @import("sprite_vertex.zig");
 const text_pipeline = @import("pipeline.zig");
 const Mat4 = @import("../math/vec.zig").Mat4;
 
-const Backend = enum { gl33, gl44 };
+const Backend = gl_backend.Backend;
 
 var program: gl.GLuint = 0;
 var vao: gl.GLuint = 0;
@@ -23,16 +24,6 @@ const MAX_SPRITES_PER_SEGMENT: usize = @max(1, RING_SEGMENT_BYTES / BYTES_PER_SP
 var persistent_map: ?[*]u8 = null;
 var ring_fences: [RING_SEGMENTS]gl.GLsync = .{null} ** RING_SEGMENTS;
 var ring_segment: u32 = 0;
-
-fn detectBackend() Backend {
-    const ver = gl.glGetString(gl.GL_VERSION) orelse return .gl33;
-    if (ver[0] < '0' or ver[0] > '9') return .gl33;
-    if (ver[2] < '0' or ver[2] > '9') return .gl33;
-    const major = ver[0] - '0';
-    const minor = ver[2] - '0';
-    if (major > 4 or (major == 4 and minor >= 4)) return .gl44;
-    return .gl33;
-}
 
 const vertex_shader =
     \\#version 330 core
@@ -88,7 +79,7 @@ pub fn init() !void {
     u_mvp = gl.glGetUniformLocation(program, "u_mvp");
     u_image_tex = gl.glGetUniformLocation(program, "u_image_tex");
 
-    backend = detectBackend();
+    backend = gl_backend.detect(gl);
     switch (backend) {
         .gl33 => initGl33(),
         .gl44 => initGl44(),

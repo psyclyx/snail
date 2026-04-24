@@ -17,6 +17,7 @@
 
 const std = @import("std");
 const build_options = @import("build_options");
+const glyph_emit = @import("glyph_emit.zig");
 pub const ttf = @import("font/ttf.zig");
 pub const opentype = @import("font/opentype.zig");
 pub const snail_file = @import("font/snail_file.zig");
@@ -1025,6 +1026,21 @@ pub const AtlasView = struct {
     }
 };
 
+fn coerceAtlasView(atlas_like: anytype) AtlasView {
+    const T = @TypeOf(atlas_like);
+    return switch (T) {
+        *const AtlasView, *AtlasView => atlas_like.*,
+        *const Atlas, *Atlas => .{ .atlas = atlas_like, .layer_base = 0 },
+        else => @compileError("expected *Atlas or *AtlasView"),
+    };
+}
+
+fn glyphAdvanceUnits(atlas: *const Atlas, font: *const Font, gid: u16) ?u16 {
+    if (atlas.glyph_map.get(gid)) |info| return info.advance_width;
+    if (atlas.colrLayerCount(gid) > 0) return font.inner.units_per_em;
+    return null;
+}
+
 pub fn replaceAtlas(current: *Atlas, next: ?Atlas) bool {
     if (next) |replacement| {
         current.deinit();
@@ -1054,15 +1070,6 @@ pub const Batch = struct {
             if (self.owned) |buf| allocator.free(buf);
         }
     };
-
-    fn coerceAtlasView(atlas_like: anytype) AtlasView {
-        const T = @TypeOf(atlas_like);
-        return switch (T) {
-            *const AtlasView, *AtlasView => atlas_like.*,
-            *const Atlas, *Atlas => .{ .atlas = atlas_like, .layer_base = 0 },
-            else => @compileError("expected *Atlas or *AtlasView"),
-        };
-    }
 
     fn prepareGlyphs(atlas: *const Atlas, font: *const Font, text: []const u8, stack_buf: []u16) ?PreparedGlyphs {
         if (text.len == 0) return .{ .slice = &.{} };
@@ -1252,48 +1259,13 @@ pub const Batch = struct {
     ) usize {
         const resolved_view = coerceAtlasView(atlas_like);
         const view = &resolved_view;
-        const atlas = view.atlas;
         var count: usize = 0;
         for (glyphs) |sg| {
-            // Multi-layer COLR path: single quad per emoji
-            if (atlas.colr_base_map) |cbm| {
-                if (cbm.get(sg.glyph_id)) |cbi| {
-                    const info_loc = view.layerInfoLoc(cbi.info_x, cbi.info_y);
-                    if (!self.addColrGlyph(
-                        x + sg.x_offset,
-                        y + sg.y_offset,
-                        font_size,
-                        cbi.union_bbox,
-                        info_loc.x,
-                        info_loc.y,
-                        cbi.layer_count,
-                        color,
-                        view.glyphLayer(cbi.page_index),
-                    )) break;
-                    count += 1;
-                    continue;
-                }
+            switch (glyph_emit.emitGlyph(self, view, sg.glyph_id, x + sg.x_offset, y + sg.y_offset, font_size, color)) {
+                .emitted => count += 1,
+                .skipped => {},
+                .buffer_full => break,
             }
-            // Fallback: per-layer expansion (for atlases without layer info)
-            var layer_it = atlas.colrLayers(sg.glyph_id);
-            if (layer_it.count() > 0) {
-                while (layer_it.next()) |layer| {
-                    const linfo = atlas.getGlyph(layer.glyph_id) orelse continue;
-                    if (linfo.band_entry.h_band_count > 0 and linfo.band_entry.v_band_count > 0) {
-                        const lcolor: [4]f32 = if (layer.color[0] < 0) color else layer.color;
-                        if (!self.addGlyph(x + sg.x_offset, y + sg.y_offset, font_size, linfo.bbox, linfo.band_entry, lcolor, view.glyphLayer(linfo.page_index))) break;
-                    }
-                }
-            } else {
-                const info = atlas.getGlyph(sg.glyph_id) orelse {
-                    count += 1;
-                    continue;
-                };
-                if (info.band_entry.h_band_count > 0 and info.band_entry.v_band_count > 0) {
-                    if (!self.addGlyph(x + sg.x_offset, y + sg.y_offset, font_size, info.bbox, info.band_entry, color, view.glyphLayer(info.page_index))) break;
-                }
-            }
-            count += 1;
         }
         return count;
     }
@@ -1349,56 +1321,14 @@ pub const Batch = struct {
                 cursor_x += @as(f32, @floatFromInt(kern)) * scale;
             }
 
-            // COLRv0: single multi-layer quad (seamless compositing in shader)
-            if (atlas.colr_base_map) |cbm| {
-                if (cbm.get(gid)) |cbi| {
-                    const info_loc = view.layerInfoLoc(cbi.info_x, cbi.info_y);
-                    _ = self.addColrGlyph(
-                        cursor_x,
-                        y,
-                        font_size,
-                        cbi.union_bbox,
-                        info_loc.x,
-                        info_loc.y,
-                        cbi.layer_count,
-                        color,
-                        view.glyphLayer(cbi.page_index),
-                    );
-                    const advance = if (atlas.glyph_map.get(gid)) |bi| bi.advance_width else font.inner.units_per_em;
-                    cursor_x += @as(f32, @floatFromInt(advance)) * scale;
-                    prev_gid = gid;
-                    continue;
-                }
-            }
-            // Fallback: per-layer expansion
-            {
-                var layer_it = font.inner.colrLayers(gid);
-                if (layer_it.count() > 0) {
-                    while (layer_it.next()) |layer| {
-                        const linfo = atlas.getGlyph(layer.glyph_id) orelse continue;
-                        if (linfo.band_entry.h_band_count > 0 and linfo.band_entry.v_band_count > 0) {
-                            const lcolor: [4]f32 = if (layer.color[0] < 0) color else layer.color;
-                            _ = self.addGlyph(cursor_x, y, font_size, linfo.bbox, linfo.band_entry, lcolor, view.glyphLayer(linfo.page_index));
-                        }
-                    }
-                    const advance = if (atlas.glyph_map.get(gid)) |bi| bi.advance_width else font.inner.units_per_em;
-                    cursor_x += @as(f32, @floatFromInt(advance)) * scale;
-                    prev_gid = gid;
-                    continue;
-                }
-            }
+            if (glyph_emit.emitGlyph(self, view, gid, cursor_x, y, font_size, color) == .buffer_full) break;
 
-            const info = atlas.getGlyph(gid) orelse {
+            const advance = glyphAdvanceUnits(atlas, font, gid) orelse {
                 cursor_x += scale * 500;
                 prev_gid = gid;
                 continue;
             };
-
-            if (info.band_entry.h_band_count > 0 and info.band_entry.v_band_count > 0) {
-                if (!self.addGlyph(cursor_x, y, font_size, info.bbox, info.band_entry, color, view.glyphLayer(info.page_index))) break;
-            }
-
-            cursor_x += @as(f32, @floatFromInt(info.advance_width)) * scale;
+            cursor_x += @as(f32, @floatFromInt(advance)) * scale;
             prev_gid = gid;
         }
 
@@ -1501,12 +1431,12 @@ pub const Batch = struct {
                 }
                 width += @as(f32, @floatFromInt(kern)) * scale;
             }
-            const info = atlas.getGlyph(gid) orelse {
+            const advance = glyphAdvanceUnits(atlas, font, gid) orelse {
                 width += scale * 500;
                 prev_gid = gid;
                 continue;
             };
-            width += @as(f32, @floatFromInt(info.advance_width)) * scale;
+            width += @as(f32, @floatFromInt(advance)) * scale;
             prev_gid = gid;
         }
         return width;
@@ -3655,15 +3585,6 @@ pub const PathBatch = struct {
 
     pub fn slice(self: *const PathBatch) []const f32 {
         return self.buf[0..self.len];
-    }
-
-    fn coerceAtlasView(atlas_like: anytype) AtlasView {
-        const T = @TypeOf(atlas_like);
-        return switch (T) {
-            *const AtlasView, *AtlasView => atlas_like.*,
-            *const Atlas, *Atlas => .{ .atlas = atlas_like, .layer_base = 0 },
-            else => @compileError("expected *Atlas or *AtlasView"),
-        };
     }
 
     pub fn addPicture(self: *PathBatch, atlas_like: anytype, picture: *const PathPicture) usize {

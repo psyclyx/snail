@@ -3,6 +3,7 @@
 //! via the HarfBuzz library. Compile with -Dharfbuzz=true.
 
 const std = @import("std");
+const glyph_emit = @import("../glyph_emit.zig");
 const hb = @cImport({
     @cInclude("hb.h");
 });
@@ -93,7 +94,6 @@ pub const HarfBuzzShaper = struct {
         view: anytype,
         batch: anytype,
     ) f32 {
-        const atlas = view.atlas;
         const shaped = self.shapeText(text);
         if (shaped.count == 0 or shaped.infos == null or shaped.positions == null) return 0;
 
@@ -107,41 +107,7 @@ pub const HarfBuzzShaper = struct {
 
             const glyph_x = x + (cursor_x + @as(f32, @floatFromInt(pos.x_offset))) * scale;
             const glyph_y = y + (cursor_y + @as(f32, @floatFromInt(pos.y_offset))) * scale;
-
-            // COLRv0: single multi-layer quad (seamless compositing in shader)
-            if (atlas.colr_base_map) |cbm| {
-                if (cbm.get(gid)) |cbi| {
-                    const info_loc = view.layerInfoLoc(cbi.info_x, cbi.info_y);
-                    if (!batch.addColrGlyph(
-                        glyph_x,
-                        glyph_y,
-                        font_size,
-                        cbi.union_bbox,
-                        info_loc.x,
-                        info_loc.y,
-                        cbi.layer_count,
-                        color,
-                        view.glyphLayer(cbi.page_index),
-                    )) break;
-                    cursor_x += @as(f32, @floatFromInt(pos.x_advance));
-                    cursor_y += @as(f32, @floatFromInt(pos.y_advance));
-                    continue;
-                }
-            }
-            // Fallback: per-layer expansion
-            var layer_it = atlas.colrLayers(gid);
-            if (layer_it.count() > 0) {
-                while (layer_it.next()) |layer| {
-                    if (atlas.getGlyph(layer.glyph_id)) |linfo| {
-                        if (linfo.band_entry.h_band_count > 0 and linfo.band_entry.v_band_count > 0) {
-                            const lcolor: [4]f32 = if (layer.color[0] < 0) color else layer.color;
-                            if (!batch.addGlyph(glyph_x, glyph_y, font_size, linfo.bbox, linfo.band_entry, lcolor, view.glyphLayer(linfo.page_index))) break;
-                        }
-                    }
-                }
-            } else if (atlas.getGlyph(gid)) |info| {
-                if (!batch.addGlyph(glyph_x, glyph_y, font_size, info.bbox, info.band_entry, color, view.glyphLayer(info.page_index))) break;
-            }
+            if (glyph_emit.emitGlyph(batch, view, gid, glyph_x, glyph_y, font_size, color) == .buffer_full) break;
 
             cursor_x += @as(f32, @floatFromInt(pos.x_advance));
             cursor_y += @as(f32, @floatFromInt(pos.y_advance));

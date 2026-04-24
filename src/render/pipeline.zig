@@ -1,6 +1,8 @@
 const std = @import("std");
 const gl = @import("gl.zig").gl;
+const gl_backend = @import("gl_backend.zig");
 const shaders = @import("shaders.zig");
+const upload_common = @import("upload_common.zig");
 const vertex = @import("vertex.zig");
 const vec = @import("../math/vec.zig");
 const Mat4 = vec.Mat4;
@@ -9,7 +11,7 @@ const SubpixelOrder = @import("subpixel_order.zig").SubpixelOrder;
 
 // ── Backend selection ──
 
-pub const Backend = enum { gl33, gl44 };
+pub const Backend = gl_backend.Backend;
 var backend: Backend = .gl33;
 
 pub fn getBackendName() []const u8 {
@@ -17,16 +19,6 @@ pub fn getBackendName() []const u8 {
         .gl33 => "GL 3.3",
         .gl44 => "GL 4.4 (persistent mapped)",
     };
-}
-
-fn detectBackend() Backend {
-    const ver = gl.glGetString(gl.GL_VERSION) orelse return .gl33;
-    if (ver[0] < '0' or ver[0] > '9') return .gl33;
-    if (ver[2] < '0' or ver[2] > '9') return .gl33;
-    const major = ver[0] - '0';
-    const minor = ver[2] - '0';
-    if (major > 4 or (major == 4 and minor >= 4)) return .gl44;
-    return .gl33;
 }
 
 // ── Shared state ──
@@ -50,11 +42,6 @@ var path_program = ProgramState{};
 
 pub var subpixel_order: SubpixelOrder = .none;
 pub var fill_rule: FillRule = .non_zero;
-
-// Legacy alias used by snail.zig's setSubpixel convenience wrapper
-pub fn subpixelEnabled() bool {
-    return subpixel_order != .none;
-}
 
 pub const FillRule = enum(c_int) {
     non_zero = 0,
@@ -85,22 +72,12 @@ var persistent_map: ?[*]u8 = null;
 var ring_fences: [RING_SEGMENTS]gl.GLsync = .{null} ** RING_SEGMENTS;
 var ring_segment: u32 = 0;
 
-const MAX_ATLASES = 64;
-const MAX_PAGES_PER_ATLAS = 256;
-const MAX_IMAGES = 256;
+const MAX_ATLASES = upload_common.MAX_ATLASES;
+const MAX_PAGES_PER_ATLAS = upload_common.MAX_PAGES_PER_ATLAS;
+const MAX_IMAGES = upload_common.MAX_IMAGES;
 
-const AtlasSlot = struct {
-    atlas: ?*const snail_mod.Atlas = null,
-    base_layer: u32 = 0,
-    info_row_base: u32 = 0,
-    capacity_pages: u32 = 0,
-    uploaded_pages: u32 = 0,
-    page_ptrs: [MAX_PAGES_PER_ATLAS]?*const snail_mod.AtlasPage = .{null} ** MAX_PAGES_PER_ATLAS,
-};
-
-const ImageSlot = struct {
-    image: ?*const snail_mod.Image = null,
-};
+const AtlasSlot = upload_common.AtlasSlot(snail_mod.Atlas, snail_mod.AtlasPage, MAX_PAGES_PER_ATLAS);
+const ImageSlot = upload_common.ImageSlot(snail_mod.Image);
 
 var atlas_slots: [MAX_ATLASES]AtlasSlot = std.mem.zeroes([MAX_ATLASES]AtlasSlot);
 var atlas_slot_count: usize = 0;
@@ -122,7 +99,7 @@ pub fn init() !void {
     text_program = try loadProgramState("text", shaders.vertex_shader, shaders.fragment_shader_text);
     text_subpixel_program = try loadProgramState("text-subpixel", shaders.vertex_shader, shaders.fragment_shader_text_subpixel);
 
-    backend = detectBackend();
+    backend = gl_backend.detect(gl);
 
     switch (backend) {
         .gl33 => initGl33(),
@@ -287,44 +264,23 @@ pub fn imageTextureArray() gl.GLuint {
 }
 
 fn currentImageView(image: *const snail_mod.Image) snail_mod.ImageView {
-    const slot_index = findImageSlot(image) orelse return .{ .image = image };
-    const width_scale = if (allocated_image_width == 0) 1.0 else @as(f32, @floatFromInt(image.width)) / @as(f32, @floatFromInt(allocated_image_width));
-    const height_scale = if (allocated_image_height == 0) 1.0 else @as(f32, @floatFromInt(image.height)) / @as(f32, @floatFromInt(allocated_image_height));
-    return .{
-        .image = image,
-        .layer = @intCast(slot_index),
-        .uv_scale = .{ .x = width_scale, .y = height_scale },
-    };
+    return upload_common.currentImageView(
+        snail_mod.ImageView,
+        image_slots[0..],
+        image_slot_count,
+        allocated_image_width,
+        allocated_image_height,
+        image,
+    );
 }
 
 fn findImageSlot(image: *const snail_mod.Image) ?usize {
-    for (image_slots[0..image_slot_count], 0..) |slot, i| {
-        if (slot.image == image) return i;
-    }
-    return null;
+    return upload_common.findImageSlot(image_slots[0..], image_slot_count, image);
 }
 
 fn ensureAtlasImagesRegistered(atlases: []const *const snail_mod.Atlas) void {
     var scratch: [MAX_IMAGES]*const snail_mod.Image = undefined;
-    var count: usize = 0;
-    for (atlases) |atlas| {
-        const records = atlas.paint_image_records orelse continue;
-        for (records) |record| {
-            const image = (record orelse continue).image;
-            if (findImageSlot(image) != null) continue;
-            var already_queued = false;
-            for (scratch[0..count]) |queued| {
-                if (queued == image) {
-                    already_queued = true;
-                    break;
-                }
-            }
-            if (!already_queued and count < scratch.len) {
-                scratch[count] = image;
-                count += 1;
-            }
-        }
-    }
+    const count = upload_common.collectAtlasImages(image_slots[0..], image_slot_count, atlases, scratch[0..]);
     ensureImagesRegistered(scratch[0..count]);
 }
 
@@ -347,8 +303,8 @@ fn ensureImagesRegistered(images: []const *const snail_mod.Image) void {
     if (new_count == 0 and image_array != 0) return;
 
     const required_count: u32 = @intCast(image_slot_count + new_count);
-    const new_width = heightCapacity(@max(required_width, 1));
-    const new_height = heightCapacity(@max(required_height, 1));
+    const new_width = upload_common.heightCapacity(@max(required_width, 1));
+    const new_height = upload_common.heightCapacity(@max(required_height, 1));
     const needs_rebuild = image_array == 0 or
         required_count > allocated_image_count or
         new_width > allocated_image_width or
@@ -390,9 +346,9 @@ fn rebuildImageArray() void {
         max_height = @max(max_height, image.height);
     }
 
-    allocated_image_width = heightCapacity(max_width);
-    allocated_image_height = heightCapacity(max_height);
-    allocated_image_count = atlasCapacity(@intCast(image_slot_count));
+    allocated_image_width = upload_common.heightCapacity(max_width);
+    allocated_image_height = upload_common.heightCapacity(max_height);
+    allocated_image_count = upload_common.atlasCapacity(@intCast(image_slot_count));
 
     switch (backend) {
         .gl33 => {
@@ -474,37 +430,11 @@ fn rebuildTextureArrays(atlases: []const *const snail_mod.Atlas, out_views: []sn
     destroyAtlasTextureResources();
     resetAtlasUploadState();
 
-    var max_curve_h: u32 = 1;
-    var max_band_h: u32 = 1;
-    var total_layers: u32 = 0;
-    var total_info_rows: u32 = 0;
-
-    for (atlases, 0..) |atlas, i| {
-        if (i >= MAX_ATLASES) return;
-        const page_count: u32 = @intCast(atlas.pageCount());
-        const capacity = atlasCapacity(page_count);
-        const slot = &atlas_slots[i];
-        slot.* = .{
-            .atlas = atlas,
-            .base_layer = total_layers,
-            .info_row_base = total_info_rows,
-            .capacity_pages = capacity,
-            .uploaded_pages = page_count,
-        };
-        for (0..page_count) |page_index| {
-            const page = atlas.page(@intCast(page_index));
-            slot.page_ptrs[page_index] = page;
-            if (page.curve_height > max_curve_h) max_curve_h = page.curve_height;
-            if (page.band_height > max_band_h) max_band_h = page.band_height;
-        }
-        total_layers += capacity;
-        total_info_rows += atlas.layer_info_height;
-    }
-
-    atlas_slot_count = atlases.len;
-    allocated_curve_height = heightCapacity(max_curve_h);
-    allocated_band_height = heightCapacity(max_band_h);
-    allocated_layer_count = total_layers;
+    const slot_info = upload_common.rebuildAtlasSlots(atlas_slots[0..], atlases);
+    atlas_slot_count = slot_info.atlas_slot_count;
+    allocated_curve_height = slot_info.allocated_curve_height;
+    allocated_band_height = slot_info.allocated_band_height;
+    allocated_layer_count = slot_info.allocated_layer_count;
 
     if (atlases.len == 0) return;
 
@@ -547,23 +477,7 @@ fn appendTexturePages(atlases: []const *const snail_mod.Atlas) bool {
         .gl44 => uploadTexturePagesGl44WithStarts(atlases, start_pages[0..atlases.len]),
     }
 
-    for (atlases, 0..) |atlas, i| {
-        const slot = &atlas_slots[i];
-        const old_pages = slot.uploaded_pages;
-        const new_pages: u32 = @intCast(atlas.pageCount());
-        for (old_pages..new_pages) |page_index| {
-            slot.page_ptrs[page_index] = atlas.page(@intCast(page_index));
-        }
-        slot.atlas = atlas;
-        slot.uploaded_pages = new_pages;
-    }
-
-    var total_info_rows: u32 = 0;
-    for (atlases, 0..) |atlas, i| {
-        atlas_slots[i].info_row_base = total_info_rows;
-        total_info_rows += atlas.layer_info_height;
-    }
-
+    upload_common.refreshAtlasSlots(atlas_slots[0..], atlases);
     return true;
 }
 
@@ -572,26 +486,11 @@ fn texturesReady() bool {
 }
 
 fn atlasSlotsCompatible(atlases: []const *const snail_mod.Atlas) bool {
-    if (atlases.len != atlas_slot_count) return false;
-    for (atlases, 0..) |atlas, i| {
-        const slot = &atlas_slots[i];
-        const page_count: u32 = @intCast(atlas.pageCount());
-        if (page_count < slot.uploaded_pages or page_count > slot.capacity_pages) return false;
-        for (0..slot.uploaded_pages) |page_index| {
-            if (slot.page_ptrs[page_index] != atlas.page(@intCast(page_index))) return false;
-        }
-    }
-    return true;
+    return upload_common.atlasSlotsCompatible(atlas_slots[0..], atlas_slot_count, atlases);
 }
 
 fn fillAtlasViews(atlases: []const *const snail_mod.Atlas, out_views: []snail_mod.AtlasView) void {
-    for (atlases, 0..) |atlas, i| {
-        out_views[i] = .{
-            .atlas = atlas,
-            .layer_base = @intCast(atlas_slots[i].base_layer),
-            .info_row_base = @intCast(atlas_slots[i].info_row_base),
-        };
-    }
+    upload_common.fillAtlasViews(atlas_slots[0..], atlases, out_views);
 }
 
 fn resetAtlasUploadState() void {
@@ -608,25 +507,6 @@ fn atlasesHaveSpecialTextRuns(atlases: []const *const snail_mod.Atlas) bool {
         if (atlas.colr_base_map != null) return true;
     }
     return false;
-}
-
-fn roundUpPowerOfTwo(value: u32) u32 {
-    if (value <= 1) return 1;
-    var v = value - 1;
-    v |= v >> 1;
-    v |= v >> 2;
-    v |= v >> 4;
-    v |= v >> 8;
-    v |= v >> 16;
-    return v + 1;
-}
-
-fn atlasCapacity(page_count: u32) u32 {
-    return @max(4, roundUpPowerOfTwo(page_count + 1));
-}
-
-fn heightCapacity(height: u32) u32 {
-    return roundUpPowerOfTwo(@max(height, 1));
 }
 
 fn createTextureArrays(first_atlas: *const snail_mod.Atlas, layer_count: u32, max_curve_h: u32, max_band_h: u32) void {
@@ -667,14 +547,6 @@ fn uploadAllPages(atlases: []const *const snail_mod.Atlas) void {
     }
 }
 
-fn uploadTexturePagesGl33(atlases: []const *const snail_mod.Atlas) void {
-    uploadTexturePagesGl33WithStarts(atlases, null);
-}
-
-fn uploadTexturePagesGl44(atlases: []const *const snail_mod.Atlas) void {
-    uploadTexturePagesGl44WithStarts(atlases, null);
-}
-
 fn uploadTexturePagesGl33WithStarts(atlases: []const *const snail_mod.Atlas, start_pages: ?[]const u32) void {
     for (atlases, 0..) |atlas, i| {
         const start_page = if (start_pages) |sp| sp[i] else 0;
@@ -707,27 +579,6 @@ fn uploadTexturePagesGl44WithStarts(atlases: []const *const snail_mod.Atlas, sta
     }
 }
 
-fn layerInfoTexelBase(width: u32, x: u32, y: u32) usize {
-    return (y * width + x) * 4;
-}
-
-fn layerInfoTexelBaseOffset(width: u32, x: u32, y: u32, texel_offset: u32) usize {
-    const texel = x + texel_offset;
-    const texel_x = texel % width;
-    const texel_y = y + texel / width;
-    return layerInfoTexelBase(width, texel_x, texel_y);
-}
-
-fn patchImagePaintRecord(data: []f32, width: u32, row_base: u32, texel_offset: u32, view: snail_mod.ImageView) void {
-    const x = texel_offset % width;
-    const y = row_base + texel_offset / width;
-    const transform_base = layerInfoTexelBaseOffset(width, x, y, 2);
-    data[transform_base + 3] = @floatFromInt(view.layer);
-    const extra_base = layerInfoTexelBaseOffset(width, x, y, 5);
-    data[extra_base + 0] = view.uv_scale.x;
-    data[extra_base + 1] = view.uv_scale.y;
-}
-
 fn rebuildLayerInfoTexture(atlases: []const *const snail_mod.Atlas) void {
     if (layer_info_tex != 0) gl.glDeleteTextures(1, &layer_info_tex);
     layer_info_tex = 0;
@@ -754,7 +605,7 @@ fn rebuildLayerInfoTexture(atlases: []const *const snail_mod.Atlas) void {
         for (records) |record| {
             const image = (record orelse continue).image;
             const view = currentImageView(image);
-            patchImagePaintRecord(data, width, row_base, record.?.texel_offset, view);
+            upload_common.patchImagePaintRecord(data, width, row_base, record.?.texel_offset, view);
         }
     }
 
@@ -795,22 +646,6 @@ fn setImageTexParamsDSA(tex: gl.GLuint) void {
     gl.glTextureParameteri(tex, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE);
     gl.glTextureParameteri(tex, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE);
 }
-
-// ── Legacy API stubs ──
-
-pub fn deleteTexture(tex: *gl.GLuint) void {
-    if (tex.* != 0) {
-        gl.glDeleteTextures(1, tex);
-        tex.* = 0;
-    }
-}
-pub fn createCurveTexture(_: []const u16, _: u32, _: u32) gl.GLuint {
-    return 0;
-}
-pub fn createBandTexture(_: []const u16, _: u32, _: u32) gl.GLuint {
-    return 0;
-}
-pub fn bindTextures(_: gl.GLuint, _: gl.GLuint) void {}
 
 // ── Draw ──
 
