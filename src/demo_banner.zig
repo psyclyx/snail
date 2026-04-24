@@ -20,12 +20,14 @@ pub const specimen_footer_text = "AV / To / ffi / 0123456789";
 pub const scripts_heading_text = "Scripts / emoji";
 pub const stage_label_text = "Vectors";
 pub const stage_title_text = "shape primitives";
-pub const stage_caption_text = "fill / stroke / gradients";
+pub const stage_caption_text = "fill / stroke / gradients / images";
 pub const stage_shape_labels = [_][]const u8{
     "rect",
     "round rect",
     "ellipse",
     "path",
+    "image fill",
+    "sprites",
 };
 
 const badge_font_size: f32 = 13.0;
@@ -126,7 +128,7 @@ pub const Layout = struct {
     badge_pill: snail.Rect,
     emoji_pill: snail.Rect,
     script_rows: [4]snail.Rect,
-    stage_rows: [4]snail.Rect,
+    stage_rows: [6]snail.Rect,
     script_text_x: f32,
 };
 
@@ -415,17 +417,18 @@ pub fn buildLayout(w: f32, h: f32, metrics: TextMetrics) Layout {
 
     const path_label_area = snapRect(.{
         .x = specimen_panel.x + specimen_panel.w + 34.0,
-        .y = specimen_panel.y + 22.0,
+        .y = specimen_panel.y,
         .w = std.math.clamp(frame.w * 0.18, 196.0, 260.0),
-        .h = 176.0,
+        .h = specimen_panel.h,
     });
-    var stage_rows: [4]snail.Rect = undefined;
-    const stage_row_y = path_label_area.y + 84.0;
+    var stage_rows: [6]snail.Rect = undefined;
+    const stage_row_y = path_label_area.y + 94.0;
+    const stage_row_spacing = @min(26.0, (path_label_area.h - 84.0 - 22.0) / 6.0);
     for (&stage_rows, 0..) |*row, i| {
         row.* = snapRect(.{
-            .x = path_label_area.x,
-            .y = stage_row_y + @as(f32, @floatFromInt(i)) * 30.0,
-            .w = path_label_area.w,
+            .x = path_label_area.x + 16.0,
+            .y = stage_row_y + @as(f32, @floatFromInt(i)) * stage_row_spacing,
+            .w = path_label_area.w - 32.0,
             .h = 22.0,
         });
     }
@@ -453,7 +456,7 @@ pub fn buildLayout(w: f32, h: f32, metrics: TextMetrics) Layout {
     };
 }
 
-fn stageIconRect(row: snail.Rect) snail.Rect {
+pub fn stageIconRect(row: snail.Rect) snail.Rect {
     return snapRect(.{
         .x = row.x + 2.0,
         .y = row.y + 3.0,
@@ -538,9 +541,9 @@ pub fn drawText(batch: *snail.TextBatch, h: f32, layout: Layout, metrics: TextMe
     const pangram_b_top = layout.specimen_panel.y + 162.0 - pangram_b_extents.ascent;
     const specimen_footer_top = layout.specimen_panel.y + layout.specimen_panel.h - 20.0 - specimen_footer_extents.ascent;
     const scripts_heading_baseline_top = centeredBaselineTopFromExtents(scripts_heading_extents, scripts_heading_gutter);
-    const stage_label_top = layout.path_label_area.y + 12.0 - stage_label_extents.ascent;
-    const stage_title_top = layout.path_label_area.y + 40.0 - stage_title_extents.ascent;
-    const stage_caption_top = layout.path_label_area.y + 64.0 - stage_caption_extents.ascent;
+    const stage_label_top = layout.path_label_area.y + 26.0 - stage_label_extents.ascent;
+    const stage_title_top = layout.path_label_area.y + 52.0 - stage_title_extents.ascent;
+    const stage_caption_top = layout.path_label_area.y + 74.0 - stage_caption_extents.ascent;
 
     _ = batch.addText(resources.latin_view, resources.latin_font, badge_text, layout.badge_pill.x + 16.0, textYFromTop(h, badge_baseline_top), badge_font_size, teal);
     _ = batch.addText(resources.latin_view, resources.latin_font, title_text, hero_x, textYFromTop(h, baselineFromTop(hero_title_top, title_extents)), title_size, ink);
@@ -578,15 +581,16 @@ pub fn drawText(batch: *snail.TextBatch, h: f32, layout: Layout, metrics: TextMe
     _ = batch.addText(resources.latin_view, resources.latin_font, emoji_label_text, layout.emoji_pill.x + script_label_inset_x, textYFromTop(h, emoji_label_baseline_top), script_label_font_size, slate);
     _ = batch.addText(resources.emoji_view, &resources.emoji_font.font, emoji_text, snapPx(layout.script_text_x + script_sample_inset_x - metrics.emoji_bounds.min_x), textYFromTop(h, emoji_baseline_top), emoji_font_size, ink);
 
-    _ = batch.addText(resources.latin_view, resources.latin_font, stage_label_text, layout.path_label_area.x, textYFromTop(h, baselineFromTop(stage_label_top, stage_label_extents)), 12.0, teal);
-    _ = batch.addText(resources.latin_view, resources.latin_font, stage_title_text, layout.path_label_area.x, textYFromTop(h, baselineFromTop(stage_title_top, stage_title_extents)), 21.0, ink);
-    _ = batch.addText(resources.latin_view, resources.latin_font, stage_caption_text, layout.path_label_area.x, textYFromTop(h, baselineFromTop(stage_caption_top, stage_caption_extents)), 14.0, mist);
+    const stage_x = layout.path_label_area.x + 24.0;
+    _ = batch.addText(resources.latin_view, resources.latin_font, stage_label_text, stage_x, textYFromTop(h, baselineFromTop(stage_label_top, stage_label_extents)), 12.0, teal);
+    _ = batch.addText(resources.latin_view, resources.latin_font, stage_title_text, stage_x, textYFromTop(h, baselineFromTop(stage_title_top, stage_title_extents)), 21.0, ink);
+    _ = batch.addText(resources.latin_view, resources.latin_font, stage_caption_text, stage_x, textYFromTop(h, baselineFromTop(stage_caption_top, stage_caption_extents)), 14.0, mist);
     for (layout.stage_rows, stage_shape_labels) |row, label| {
         _ = batch.addText(resources.latin_view, resources.latin_font, label, row.x + 64.0, textYFromTop(h, centeredBaselineTopFromExtents(stage_row_extents, row)), 12.0, ink);
     }
 }
 
-pub fn buildPathShowcase(builder: *snail.PathPictureBuilder, layout: Layout) !void {
+pub fn buildPathShowcase(builder: *snail.PathPictureBuilder, layout: Layout, image: ?*const snail.Image) !void {
     try builder.addRoundedRect(
         layout.canvas,
         .{ .paint = .{ .linear_gradient = .{
@@ -636,6 +640,20 @@ pub fn buildPathShowcase(builder: *snail.PathPictureBuilder, layout: Layout) !vo
         28.0,
         .identity,
     );
+    // Shapes panel background (aligned with specimen panel)
+    try builder.addRoundedRect(
+        layout.path_label_area,
+        .{ .paint = .{ .linear_gradient = .{
+            .start = .{ .x = layout.path_label_area.x, .y = layout.path_label_area.y },
+            .end = .{ .x = layout.path_label_area.x, .y = layout.path_label_area.y + layout.path_label_area.h },
+            .start_color = .{ 0.09, 0.11, 0.15, 0.94 },
+            .end_color = .{ 0.05, 0.06, 0.09, 0.96 },
+        } } },
+        .{ .color = .{ 0.22, 0.28, 0.34, 1.0 }, .width = 1.1, .join = .round, .placement = .inside },
+        28.0,
+        .identity,
+    );
+
     try builder.addRoundedRect(
         layout.script_band,
         .{ .paint = .{ .linear_gradient = .{
@@ -691,18 +709,24 @@ pub fn buildPathShowcase(builder: *snail.PathPictureBuilder, layout: Layout) !vo
     );
 
     const path_icon = stageIconRect(layout.stage_rows[3]);
+    const px = path_icon.x;
+    const py = path_icon.y;
+    const pw = path_icon.w;
+    const ph = path_icon.h;
     var swash = snail.Path.init(builder.allocator);
     defer swash.deinit();
-    try swash.moveTo(.{ .x = path_icon.x + 3.0, .y = path_icon.y + path_icon.h * 0.72 });
+    // Arrow/chevron shape — clearly not a conic section
+    try swash.moveTo(.{ .x = px + 2, .y = py + ph * 0.5 });
+    try swash.lineTo(.{ .x = px + pw * 0.35, .y = py + 1 });
     try swash.cubicTo(
-        .{ .x = path_icon.x + 12.0, .y = path_icon.y + 1.0 },
-        .{ .x = path_icon.x + 28.0, .y = path_icon.y + 1.0 },
-        .{ .x = path_icon.x + path_icon.w - 4.0, .y = path_icon.y + path_icon.h * 0.56 },
+        .{ .x = px + pw * 0.5, .y = py + ph * 0.15 },
+        .{ .x = px + pw * 0.65, .y = py + ph * 0.05 },
+        .{ .x = px + pw - 2, .y = py + ph * 0.5 },
     );
     try swash.cubicTo(
-        .{ .x = path_icon.x + 34.0, .y = path_icon.y + path_icon.h + 1.0 },
-        .{ .x = path_icon.x + 14.0, .y = path_icon.y + path_icon.h + 1.0 },
-        .{ .x = path_icon.x + 7.0, .y = path_icon.y + path_icon.h * 0.60 },
+        .{ .x = px + pw * 0.65, .y = py + ph * 0.95 },
+        .{ .x = px + pw * 0.5, .y = py + ph * 0.85 },
+        .{ .x = px + pw * 0.35, .y = py + ph - 1 },
     );
     try swash.close();
     try builder.addPath(
@@ -716,6 +740,29 @@ pub fn buildPathShowcase(builder: *snail.PathPictureBuilder, layout: Layout) !vo
         .{ .color = .{ 0.92, 0.72, 0.98, 0.94 }, .width = 1.0, .join = .round, .placement = .inside },
         .identity,
     );
+
+    // Image-paint filled rounded rect (row 5) — uses the procedural image
+    // passed in from the caller. If no image is provided, skip this row.
+    if (image) |img| {
+        const img_icon = stageIconRect(layout.stage_rows[4]);
+        try builder.addRoundedRect(
+            img_icon,
+            .{ .paint = .{ .image = .{
+                .image = img,
+                .uv_transform = snail.Transform2D.multiply(
+                    snail.Transform2D.translate(-img_icon.x, -img_icon.y),
+                    snail.Transform2D.scale(1.0 / 8.0, 1.0 / 8.0),
+                ),
+                .extend_x = .repeat,
+                .extend_y = .repeat,
+            } } },
+            .{ .color = .{ 0.55, 0.65, 0.78, 0.94 }, .width = 1.0, .join = .round, .placement = .inside },
+            img_icon.h * 0.36,
+            .identity,
+        );
+    }
+
+    // Row 6 (sprites) is drawn separately by the main loop via SpriteBatch.
 
     try addVectorSnail(builder, layout.snail_stage);
 }

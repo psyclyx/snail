@@ -55,6 +55,15 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
     var view_mode = demo_banner_scene.ViewMode.normal;
     var uploaded_view_mode = view_mode;
 
+    // ── Tile image for image-paint fill and sprites ──
+    const assets = @import("assets");
+    var tile_image = try snail.Image.initRgba8(allocator, 16, 16, assets.checkerboard_rgba);
+    defer tile_image.deinit();
+    const tile_handle = renderer.uploadImage(&tile_image);
+
+    const sprite_buf = try allocator.alloc(f32, 64 * snail.SPRITE_FLOATS_PER_SPRITE);
+    defer allocator.free(sprite_buf);
+
     var angle: f32 = 0.0;
     var zoom: f32 = 1.0;
     var pan_x: f32 = 0.0;
@@ -162,7 +171,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
                 picture.deinit();
                 overlay_picture = null;
             }
-            path_picture = try demo_banner_scene.buildPathPicture(allocator, layout, view_mode);
+            path_picture = try demo_banner_scene.buildPathPicture(allocator, layout, view_mode, &tile_image);
             uploaded_size = size_key;
             uploaded_view_mode = view_mode;
             scene_assets.uploadAtlases(&renderer, &path_picture.?, &atlas_views);
@@ -214,6 +223,22 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
             }
             if (paths.shapeCount() > 0) {
                 renderer.drawPaths(paths.slice(), vector_mvp, w, h);
+            }
+        }
+
+        // Sprites drawn as part of the scene (under the scene transform)
+        if (view_mode.showText()) {
+            const sprite_row = demo_banner.stageIconRect(layout.stage_rows[5]);
+            const sz = sprite_row.h;
+            const gap: f32 = 2.0;
+            const sx = sprite_row.x;
+            const sy = sprite_row.y;
+            var sprites = snail.SpriteBatch.init(sprite_buf);
+            _ = sprites.addSprite(tile_handle, .{ .x = sx, .y = sy }, .{ .x = sz, .y = sz }, .{ 1, 1, 1, 1 });
+            _ = sprites.addSprite(tile_handle, .{ .x = sx + sz + gap, .y = sy }, .{ .x = sz, .y = sz }, .{ 1, 0.6, 0.3, 0.9 });
+            _ = sprites.addSprite(tile_handle, .{ .x = sx + (sz + gap) * 2, .y = sy }, .{ .x = sz, .y = sz }, .{ 0.4, 0.7, 1, 0.85 });
+            if (sprites.spriteCount() > 0) {
+                renderer.drawSpritesTransformed(sprites.slice(), vector_mvp, w, h);
             }
         }
 

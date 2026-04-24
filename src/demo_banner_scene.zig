@@ -154,10 +154,11 @@ pub fn buildPathPicture(
     allocator: std.mem.Allocator,
     layout: demo_banner.Layout,
     view_mode: ViewMode,
+    tile_image: ?*const snail.Image,
 ) !snail.PathPicture {
     var picture_builder = snail.PathPictureBuilder.init(allocator);
     defer picture_builder.deinit();
-    try demo_banner.buildPathShowcase(&picture_builder, layout);
+    try demo_banner.buildPathShowcase(&picture_builder, layout, tile_image);
     var picture = try picture_builder.freeze(allocator);
     errdefer picture.deinit();
     picture.applyDebugView(view_mode.pathDebugView());
