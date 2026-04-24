@@ -4,6 +4,7 @@
 
 const std = @import("std");
 const snail = @import("snail.zig");
+const opentype = @import("font/opentype.zig");
 const snail_file = @import("font/snail_file.zig");
 const assets = @import("assets");
 
@@ -50,14 +51,14 @@ test "torture: full pipeline" {
     defer loaded.deinit();
     try std.testing.expectEqual(atlas.glyph_map.count(), loaded.glyph_map.count());
 
-    const atlas_view = snail.AtlasView{ .atlas = &atlas, .layer_base = 0 };
+    const atlas_view = snail.AtlasHandle{ .atlas = &atlas, .layer_base = 0 };
 
     // Batch generation: large vertex buffer, many strings
-    const buf_size = 10000 * snail.FLOATS_PER_GLYPH;
+    const buf_size = 10000 * snail.TEXT_FLOATS_PER_GLYPH;
     const vbuf = try allocator.alloc(f32, buf_size);
     defer allocator.free(vbuf);
 
-    var batch = snail.Batch.init(vbuf);
+    var batch = snail.TextBatch.init(vbuf);
 
     // Render many strings at various sizes
     const test_strings = [_][]const u8{
@@ -72,14 +73,14 @@ test "torture: full pipeline" {
     var y: f32 = 1000;
     for ([_]f32{ 10, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 64, 72, 96 }) |size| {
         for (test_strings) |s| {
-            _ = batch.addString(&atlas_view, &font, s, 0, y, size, .{ 1, 1, 1, 1 });
+            _ = batch.addText(&atlas_view, &font, s, 0, y, size, .{ 1, 1, 1, 1 });
             y -= size * 1.3;
         }
     }
 
     try std.testing.expect(batch.glyphCount() > 100);
 
-    // Word wrapping
+    // Large text block (addStringWrapped was removed; exercise addText with a long string)
     batch.reset();
     const paragraph = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. " ++
         "Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. " ++
@@ -89,21 +90,21 @@ test "torture: full pipeline" {
         "pariatur. Excepteur sint occaecat cupidatat non proident, sunt in " ++
         "culpa qui officia deserunt mollit anim id est laborum.";
 
-    const height = batch.addStringWrapped(&atlas_view, &font, paragraph, 0, 800, 14, 600, 20, .{ 1, 1, 1, 1 });
-    try std.testing.expect(height > 0);
+    _ = batch.addText(&atlas_view, &font, paragraph, 0, 800, 14, .{ 1, 1, 1, 1 });
     try std.testing.expect(batch.glyphCount() > 200);
 
     // Pre-shaped glyph API
     batch.reset();
     const f_gid = try font.glyphIndex('f');
     const i_gid = try font.glyphIndex('i');
-    const shaped = [_]snail.Batch.ShapedGlyph{
-        .{ .glyph_id = f_gid, .x_offset = 0, .y_offset = 0 },
-        .{ .glyph_id = i_gid, .x_offset = 10, .y_offset = 0 },
-        .{ .glyph_id = f_gid, .x_offset = 20, .y_offset = 0 },
-        .{ .glyph_id = i_gid, .x_offset = 30, .y_offset = 0 },
+    const shaped = [_]snail.GlyphPlacement{
+        .{ .glyph_id = f_gid, .x_offset = 0, .y_offset = 0, .x_advance = 0, .y_advance = 0, .source_start = 0, .source_end = 0 },
+        .{ .glyph_id = i_gid, .x_offset = 10, .y_offset = 0, .x_advance = 0, .y_advance = 0, .source_start = 0, .source_end = 0 },
+        .{ .glyph_id = f_gid, .x_offset = 20, .y_offset = 0, .x_advance = 0, .y_advance = 0, .source_start = 0, .source_end = 0 },
+        .{ .glyph_id = i_gid, .x_offset = 30, .y_offset = 0, .x_advance = 0, .y_advance = 0, .source_start = 0, .source_end = 0 },
     };
-    const shaped_count = batch.addShaped(&atlas_view, &shaped, 100, 200, 24, .{ 1, 0, 0, 1 });
+    const run = snail.ShapedRun{ .glyphs = &shaped, .advance_x = 0, .advance_y = 0 };
+    const shaped_count = batch.addRun(&atlas_view, &run, 100, 200, 24, .{ 1, 0, 0, 1 });
     try std.testing.expectEqual(@as(usize, 4), shaped_count);
 
     // Rebuild atlas from scratch (tests full deallocation + rebuild path)
@@ -175,7 +176,7 @@ test "extendText discovers shaped glyphs for UTF-8 text" {
 
     if (font.inner.gsub_offset == 0) return;
 
-    var shaper = try snail.opentype.Shaper.init(allocator, font.inner.data, font.inner.gsub_offset, font.inner.gpos_offset);
+    var shaper = try opentype.Shaper.init(allocator, font.inner.data, font.inner.gsub_offset, font.inner.gpos_offset);
     defer shaper.deinit();
 
     const f_gid = try font.glyphIndex('f');
@@ -196,7 +197,7 @@ test "extendText discovers shaped glyphs for UTF-8 text" {
     try std.testing.expect(extended_text.?.getGlyph(fi_gid) != null);
 }
 
-test "extendShapedGlyphs discovers shaped glyph ids" {
+test "extendRun discovers shaped glyph ids" {
     const allocator = std.testing.allocator;
 
     var font = try snail.Font.init(assets.noto_sans_regular);
@@ -204,15 +205,16 @@ test "extendShapedGlyphs discovers shaped glyph ids" {
 
     const f_gid = try font.glyphIndex('f');
     const i_gid = try font.glyphIndex('i');
-    const shaped = [_]snail.Batch.ShapedGlyph{
-        .{ .glyph_id = f_gid, .x_offset = 0, .y_offset = 0 },
-        .{ .glyph_id = i_gid, .x_offset = 10, .y_offset = 0 },
+    const shaped = [_]snail.GlyphPlacement{
+        .{ .glyph_id = f_gid, .x_offset = 0, .y_offset = 0, .x_advance = 0, .y_advance = 0, .source_start = 0, .source_end = 0 },
+        .{ .glyph_id = i_gid, .x_offset = 10, .y_offset = 0, .x_advance = 0, .y_advance = 0, .source_start = 0, .source_end = 0 },
     };
+    const run = snail.ShapedRun{ .glyphs = &shaped, .advance_x = 0, .advance_y = 0 };
 
     var atlas = try snail.Atlas.init(allocator, &font, &[_]u32{'A'});
     defer atlas.deinit();
 
-    var next = (try atlas.extendShapedGlyphs(&shaped)) orelse return error.ExpectedExtension;
+    var next = (try atlas.extendRun(&run)) orelse return error.ExpectedExtension;
     defer next.deinit();
 
     try std.testing.expect(next.getGlyph(f_gid) != null);

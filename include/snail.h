@@ -138,39 +138,30 @@ void snail_renderer_set_subpixel(bool enabled);
 void snail_renderer_set_fill_rule(int rule);
 
 /* mvp: 16 floats, column-major 4x4 matrix */
-void snail_renderer_draw(const float *vertices, size_t num_floats,
-                         const float *mvp,
-                         float viewport_w, float viewport_h);
+void snail_renderer_draw_text(const float *vertices, size_t num_floats,
+                              const float *mvp,
+                              float viewport_w, float viewport_h);
 
-/* ── Batch (any thread, caller-owned buffer) ── */
+/* ── TextBatch (any thread, caller-owned buffer) ── */
 
 /* Lay out and append glyph vertices for a UTF-8 string.
  * buf + *buf_len: write position. buf_capacity: total buffer size in floats.
  * color: 4 floats (RGBA). Returns advance width in pixels. */
-float snail_batch_add_string(float *buf, size_t buf_capacity, size_t *buf_len,
-                             const SnailAtlas *atlas, const SnailFont *font,
-                             const char *text, size_t text_len,
-                             float x, float y, float font_size,
-                             const float *color);
+float snail_batch_add_text(float *buf, size_t buf_capacity, size_t *buf_len,
+                           const SnailAtlas *atlas, const SnailFont *font,
+                           const char *text, size_t text_len,
+                           float x, float y, float font_size,
+                           const float *color);
 
 /* Append pre-shaped glyphs (e.g. from HarfBuzz). Positions are pixel offsets
  * from (x, y). Returns number of glyphs added. */
-size_t snail_batch_add_shaped(float *buf, size_t buf_capacity, size_t *buf_len,
-                              const SnailAtlas *atlas,
-                              const uint16_t *glyph_ids,
-                              const float *x_offsets, const float *y_offsets,
-                              size_t num_glyphs,
-                              float x, float y, float font_size,
-                              const float *color);
-
-/* Lay out and append glyph vertices with word wrapping.
- * Returns total height used in pixels. */
-float snail_batch_add_string_wrapped(float *buf, size_t buf_capacity, size_t *buf_len,
-                                     const SnailAtlas *atlas, const SnailFont *font,
-                                     const char *text, size_t text_len,
-                                     float x, float y, float font_size,
-                                     float max_width, float line_height,
-                                     const float *color);
+size_t snail_batch_add_run(float *buf, size_t buf_capacity, size_t *buf_len,
+                           const SnailAtlas *atlas,
+                           const uint16_t *glyph_ids,
+                           const float *x_offsets, const float *y_offsets,
+                           size_t num_glyphs,
+                           float x, float y, float font_size,
+                           const float *color);
 
 /* ── HarfBuzz (compile-time optional: -Dharfbuzz=true) ── */
 

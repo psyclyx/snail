@@ -10,7 +10,7 @@ const curve_tex = snail.curve_tex;
 const CurveSegment = bezier.CurveSegment;
 const GlyphBandEntry = std.meta.fieldInfo(snail.Atlas.GlyphInfo, .band_entry).type;
 const Vec2 = snail.Vec2;
-const Transform2D = snail.VectorTransform2D;
+const Transform2D = snail.Transform2D;
 const FillRule = snail.FillRule;
 const SubpixelOrder = snail.SubpixelOrder;
 
@@ -379,7 +379,7 @@ fn fetchLayerInfoTexel(data: []const f32, width: u32, info_x: u16, info_y: u16, 
     return .{ data[base + 0], data[base + 1], data[base + 2], data[base + 3] };
 }
 
-fn wrapPaintT(t: f32, extend_mode: snail.PathPaintExtend) f32 {
+fn wrapPaintT(t: f32, extend_mode: snail.PaintExtend) f32 {
     return switch (extend_mode) {
         .clamp => clamp01(t),
         .repeat => t - @floor(t),
@@ -391,7 +391,7 @@ fn wrapPaintT(t: f32, extend_mode: snail.PathPaintExtend) f32 {
     };
 }
 
-fn paintExtendFromFloat(raw: f32) snail.PathPaintExtend {
+fn paintExtendFromFloat(raw: f32) snail.PaintExtend {
     const mode: i32 = @intFromFloat(@round(raw));
     return switch (mode) {
         1 => .repeat,
@@ -1381,7 +1381,7 @@ test "cpu renderer matches huge-span and normalized curved path pictures" {
     var normalized_renderer = CpuRenderer.init(normalized_buf.ptr, width, height, stride);
     normalized_renderer.clear(0, 0, 0, 0);
 
-    var large_path = snail.VectorPath.init(testing.allocator);
+    var large_path = snail.Path.init(testing.allocator);
     defer large_path.deinit();
     try large_path.moveTo(.{ .x = 0, .y = 40 * 64 });
     try large_path.quadTo(.{ .x = 32 * 64, .y = 0 }, .{ .x = 64 * 64, .y = 40 * 64 });
@@ -1401,7 +1401,7 @@ test "cpu renderer matches huge-span and normalized curved path pictures" {
     var large_picture = try large_builder.freeze(testing.allocator);
     defer large_picture.deinit();
 
-    var normalized_path = snail.VectorPath.init(testing.allocator);
+    var normalized_path = snail.Path.init(testing.allocator);
     defer normalized_path.deinit();
     try normalized_path.moveTo(.{ .x = 0, .y = 40 });
     try normalized_path.quadTo(.{ .x = 32, .y = 0 }, .{ .x = 64, .y = 40 });
@@ -1485,7 +1485,7 @@ test "cpu renderer renders gradient path picture" {
     var renderer = CpuRenderer.init(buf.ptr, width, height, stride);
     renderer.clear(0, 0, 0, 0);
 
-    var path = snail.VectorPath.init(testing.allocator);
+    var path = snail.Path.init(testing.allocator);
     defer path.deinit();
     try path.addRect(.{ .x = 0, .y = 0, .w = 20, .h = 10 });
 
@@ -1526,7 +1526,7 @@ test "cpu renderer dithers shallow gradient path picture" {
     var renderer = CpuRenderer.init(buf.ptr, width, height, stride);
     renderer.clear(0, 0, 0, 0);
 
-    var path = snail.VectorPath.init(testing.allocator);
+    var path = snail.Path.init(testing.allocator);
     defer path.deinit();
     try path.addRect(.{ .x = 0, .y = 0, .w = 480, .h = 12 });
 
@@ -1589,7 +1589,7 @@ test "cpu renderer renders image-painted path picture" {
     });
     defer image.deinit();
 
-    var path = snail.VectorPath.init(testing.allocator);
+    var path = snail.Path.init(testing.allocator);
     defer path.deinit();
     try path.addRect(.{ .x = 0, .y = 0, .w = 20, .h = 10 });
 
@@ -1693,12 +1693,12 @@ test "cpu renderer fills both demo eye stalks" {
     var renderer = CpuRenderer.init(buf.ptr, width, height, stride);
     renderer.clear(0, 0, 0, 0);
 
-    var stalk_a = snail.VectorPath.init(testing.allocator);
+    var stalk_a = snail.Path.init(testing.allocator);
     defer stalk_a.deinit();
     try stalk_a.moveTo(.{ .x = 308.0, .y = 100.0 });
     try stalk_a.quadTo(.{ .x = 316.0, .y = 76.0 }, .{ .x = 334.0, .y = 58.0 });
 
-    var stalk_b = snail.VectorPath.init(testing.allocator);
+    var stalk_b = snail.Path.init(testing.allocator);
     defer stalk_b.deinit();
     try stalk_b.moveTo(.{ .x = 294.0, .y = 102.0 });
     try stalk_b.quadTo(.{ .x = 298.0, .y = 80.0 }, .{ .x = 306.0, .y = 64.0 });

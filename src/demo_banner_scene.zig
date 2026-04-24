@@ -119,7 +119,7 @@ pub const Assets = struct {
         self: *const Assets,
         renderer: *snail.Renderer,
         picture: *const snail.PathPicture,
-        atlas_views: *[7]snail.AtlasView,
+        atlas_views: *[7]snail.AtlasHandle,
     ) void {
         renderer.uploadAtlases(&[_]*const snail.Atlas{
             &self.latin_atlas,
@@ -132,7 +132,7 @@ pub const Assets = struct {
         }, atlas_views);
     }
 
-    pub fn textResources(self: *const Assets, atlas_views: *const [7]snail.AtlasView) demo_banner.TextResources {
+    pub fn textResources(self: *const Assets, atlas_views: *const [7]snail.AtlasHandle) demo_banner.TextResources {
         return .{
             .latin_font = &self.latin_font,
             .latin_view = &atlas_views[0],
@@ -174,11 +174,11 @@ pub fn buildPathOverlayPicture(
 }
 
 pub fn populateTextBatch(
-    batch: *snail.Batch,
+    batch: *snail.TextBatch,
     h: f32,
     layout: demo_banner.Layout,
     scene_assets: *const Assets,
-    atlas_views: *const [7]snail.AtlasView,
+    atlas_views: *const [7]snail.AtlasHandle,
 ) void {
     demo_banner.drawText(batch, h, layout, scene_assets.metrics, scene_assets.textResources(atlas_views));
 }

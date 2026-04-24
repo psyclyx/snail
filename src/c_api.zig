@@ -254,7 +254,7 @@ export fn snail_renderer_deinit() void {
 
 export fn snail_renderer_upload_atlas(atlas: *AtlasImpl) void {
     const arr = [1]*const snail.Atlas{&atlas.inner};
-    var views = [1]snail.AtlasView{undefined};
+    var views = [1]snail.AtlasHandle{undefined};
     pipeline.buildTextureArrays(&arr, &views);
 }
 
@@ -281,14 +281,14 @@ export fn snail_renderer_set_fill_rule(rule: c_int) void {
     pipeline.fill_rule = @enumFromInt(rule);
 }
 
-export fn snail_renderer_draw(vertices: [*]const f32, num_floats: usize, mvp: [*]const f32, viewport_w: f32, viewport_h: f32) void {
+export fn snail_renderer_draw_text(vertices: [*]const f32, num_floats: usize, mvp: [*]const f32, viewport_w: f32, viewport_h: f32) void {
     const mat = snail.Mat4{ .data = mvp[0..16].* };
     pipeline.drawText(vertices[0..num_floats], mat, viewport_w, viewport_h);
 }
 
 // ── Batch ──
 
-export fn snail_batch_add_string(
+export fn snail_batch_add_text(
     buf: [*]f32,
     buf_capacity: usize,
     buf_len: *usize,
@@ -301,15 +301,15 @@ export fn snail_batch_add_string(
     font_size: f32,
     color: [*]const f32,
 ) f32 {
-    var batch = snail.Batch.init(buf[buf_len.*..buf_capacity]);
+    var batch = snail.TextBatch.init(buf[buf_len.*..buf_capacity]);
     const wrapped_font = snail.Font{ .inner = font.inner };
-    const view = snail.AtlasView{ .atlas = &atlas.inner, .layer_base = 0 };
-    const advance = batch.addString(&view, &wrapped_font, text[0..text_len], x, y, font_size, color[0..4].*);
+    const view = snail.AtlasHandle{ .atlas = &atlas.inner, .layer_base = 0 };
+    const advance = batch.addText(&view, &wrapped_font, text[0..text_len], x, y, font_size, color[0..4].*);
     buf_len.* += batch.len;
     return advance;
 }
 
-export fn snail_batch_add_shaped(
+export fn snail_batch_add_run(
     buf: [*]f32,
     buf_capacity: usize,
     buf_len: *usize,
@@ -323,43 +323,29 @@ export fn snail_batch_add_shaped(
     font_size: f32,
     color: [*]const f32,
 ) usize {
-    var batch = snail.Batch.init(buf[buf_len.*..buf_capacity]);
-    const view = snail.AtlasView{ .atlas = &atlas.inner, .layer_base = 0 };
-    var shaped_buf: [1024]snail.Batch.ShapedGlyph = undefined;
+    var batch = snail.TextBatch.init(buf[buf_len.*..buf_capacity]);
+    const view = snail.AtlasHandle{ .atlas = &atlas.inner, .layer_base = 0 };
+    var shaped_buf: [1024]snail.GlyphPlacement = undefined;
     const count = @min(num_glyphs, shaped_buf.len);
     for (0..count) |i| {
         shaped_buf[i] = .{
             .glyph_id = glyph_ids[i],
             .x_offset = x_offsets[i],
             .y_offset = y_offsets[i],
+            .x_advance = 0,
+            .y_advance = 0,
+            .source_start = 0,
+            .source_end = 0,
         };
     }
-    const added = batch.addShaped(&view, shaped_buf[0..count], x, y, font_size, color[0..4].*);
+    const run = snail.ShapedRun{
+        .glyphs = shaped_buf[0..count],
+        .advance_x = 0,
+        .advance_y = 0,
+    };
+    const added = batch.addRun(&view, &run, x, y, font_size, color[0..4].*);
     buf_len.* += batch.len;
     return added;
-}
-
-export fn snail_batch_add_string_wrapped(
-    buf: [*]f32,
-    buf_capacity: usize,
-    buf_len: *usize,
-    atlas: *const AtlasImpl,
-    font: *const FontImpl,
-    text: [*]const u8,
-    text_len: usize,
-    x: f32,
-    y: f32,
-    font_size: f32,
-    max_width: f32,
-    line_height: f32,
-    color: [*]const f32,
-) f32 {
-    var batch = snail.Batch.init(buf[buf_len.*..buf_capacity]);
-    const wrapped_font = snail.Font{ .inner = font.inner };
-    const view = snail.AtlasView{ .atlas = &atlas.inner, .layer_base = 0 };
-    const height = batch.addStringWrapped(&view, &wrapped_font, text[0..text_len], x, y, font_size, max_width, line_height, color[0..4].*);
-    buf_len.* += batch.len;
-    return height;
 }
 
 // ── HarfBuzz ──
@@ -402,5 +388,5 @@ export fn snail_atlas_extend_glyphs_for_text(
 // ── Constants ──
 
 export fn snail_floats_per_glyph() usize {
-    return snail.FLOATS_PER_GLYPH;
+    return snail.TEXT_FLOATS_PER_GLYPH;
 }

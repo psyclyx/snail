@@ -11,18 +11,20 @@
 //!   defer renderer.deinit();
 //!   renderer.uploadAtlas(&atlas);
 //!
-//!   var batch = snail.Batch.init(&vertex_buf);
-//!   batch.addString(&atlas, &font, "Hello", x, y, size, color);
-//!   renderer.draw(batch.slice(), mvp, viewport_w, viewport_h);
+//!   var batch = snail.TextBatch.init(&vertex_buf);
+//!   batch.addText(&atlas, &font, "Hello", x, y, size, color);
+//!   renderer.drawText(batch.slice(), mvp, viewport_w, viewport_h);
 
 const std = @import("std");
 const build_options = @import("build_options");
 const glyph_emit = @import("glyph_emit.zig");
-pub const ttf = @import("font/ttf.zig");
-pub const opentype = @import("font/opentype.zig");
-pub const snail_file = @import("font/snail_file.zig");
+const ttf = @import("font/ttf.zig");
+const opentype = @import("font/opentype.zig");
+const snail_file = @import("font/snail_file.zig");
+// Internal modules — not part of the public API surface. Exposed for internal
+// tools (e.g. cpu_renderer) that need raw curve/texture data access.
 pub const bezier = @import("math/bezier.zig");
-pub const vec = @import("math/vec.zig");
+const vec = @import("math/vec.zig");
 pub const curve_tex = @import("render/curve_texture.zig");
 const band_tex = @import("render/band_texture.zig");
 const vertex_mod = @import("render/vertex.zig");
@@ -48,7 +50,7 @@ const vulkan_pipeline = if (build_options.enable_vulkan) @import("render/vulkan_
     pub var subpixel_backdrop: ?[4]f32 = null;
     pub var fill_rule: pipeline.FillRule = .non_zero;
 };
-pub const harfbuzz = if (build_options.enable_harfbuzz) @import("font/harfbuzz.zig") else struct {
+const harfbuzz = if (build_options.enable_harfbuzz) @import("font/harfbuzz.zig") else struct {
     pub const HarfBuzzShaper = void;
 };
 
@@ -61,7 +63,28 @@ const CubicBezier = bezier.CubicBezier;
 pub const GlyphMetrics = ttf.GlyphMetrics;
 /// Font-wide line metrics from the `hhea` table, in font units.
 pub const LineMetrics = ttf.LineMetrics;
-pub const VectorTransform2D = vec.Transform2D;
+pub const Transform2D = vec.Transform2D;
+
+/// A positioned glyph in a shaped run. Carries source-span metadata so callers
+/// can reason about ligatures, cells, selection, and painting.
+pub const GlyphPlacement = struct {
+    glyph_id: u16,
+    x_offset: f32, // pixel offset from run origin
+    y_offset: f32, // pixel offset from run origin
+    x_advance: f32, // pixel advance for this glyph
+    y_advance: f32, // pixel advance (0 for horizontal text)
+    source_start: u32, // byte offset in source text
+    source_end: u32, // byte offset in source text
+};
+
+/// A shaped text run: the output of shaping a UTF-8 string.
+/// The built-in shaper and HarfBuzz both produce this same type.
+pub const ShapedRun = struct {
+    glyphs: []const GlyphPlacement,
+    advance_x: f32, // total advance in pixels
+    advance_y: f32, // total advance in pixels
+};
+
 pub const PATH_PAINT_INFO_WIDTH: u32 = 4096;
 pub const PATH_PAINT_TEXELS_PER_RECORD: u32 = 6;
 pub const PATH_PAINT_TAG_SOLID: f32 = -1.0;
@@ -84,22 +107,29 @@ pub const PathPictureBoundsOverlayOptions = struct {
     origin_size: f32 = 6.0,
 };
 
-// Re-export vertex constants for buffer sizing
-pub const FLOATS_PER_VERTEX = vertex_mod.FLOATS_PER_VERTEX;
-pub const VERTICES_PER_GLYPH = vertex_mod.VERTICES_PER_GLYPH;
-pub const FLOATS_PER_GLYPH = FLOATS_PER_VERTEX * VERTICES_PER_GLYPH;
+// Text batch sizing constants
+pub const TEXT_FLOATS_PER_VERTEX = vertex_mod.FLOATS_PER_VERTEX;
+pub const TEXT_VERTICES_PER_GLYPH = vertex_mod.VERTICES_PER_GLYPH;
+pub const TEXT_FLOATS_PER_GLYPH = TEXT_FLOATS_PER_VERTEX * TEXT_VERTICES_PER_GLYPH;
+
+// Path batch sizing constants (same vertex format as text)
+pub const PATH_FLOATS_PER_VERTEX = vertex_mod.FLOATS_PER_VERTEX;
+pub const PATH_VERTICES_PER_SHAPE = vertex_mod.VERTICES_PER_GLYPH;
+pub const PATH_FLOATS_PER_SHAPE = PATH_FLOATS_PER_VERTEX * PATH_VERTICES_PER_SHAPE;
+
+// Sprite batch sizing constants
 pub const SPRITE_FLOATS_PER_VERTEX = sprite_vertex_mod.FLOATS_PER_VERTEX;
 pub const SPRITE_VERTICES_PER_SPRITE = sprite_vertex_mod.VERTICES_PER_SPRITE;
 pub const SPRITE_FLOATS_PER_SPRITE = sprite_vertex_mod.FLOATS_PER_SPRITE;
 
-pub const VectorRect = struct {
+pub const Rect = struct {
     x: f32,
     y: f32,
     w: f32,
     h: f32,
 };
 
-pub const PathPaintExtend = enum(u8) {
+pub const PaintExtend = enum(u8) {
     clamp = 0,
     repeat = 1,
     reflect = 2,
@@ -133,7 +163,7 @@ pub const Image = struct {
     }
 };
 
-pub const ImageView = struct {
+pub const ImageHandle = struct {
     image: *const Image,
     layer: u16 = 0,
     uv_scale: Vec2 = .{ .x = 1.0, .y = 1.0 },
@@ -157,76 +187,70 @@ pub const SpriteAnchor = struct {
     pub const bottom_right = SpriteAnchor{ .x = 1.0, .y = 1.0 };
 };
 
-pub const PathLinearGradient = struct {
+pub const LinearGradient = struct {
     start: Vec2,
     end: Vec2,
     start_color: [4]f32,
     end_color: [4]f32,
-    extend: PathPaintExtend = .clamp,
+    extend: PaintExtend = .clamp,
 };
 
-pub const PathRadialGradient = struct {
+pub const RadialGradient = struct {
     center: Vec2,
     radius: f32,
     inner_color: [4]f32,
     outer_color: [4]f32,
-    extend: PathPaintExtend = .clamp,
+    extend: PaintExtend = .clamp,
 };
 
-pub const PathImagePaint = struct {
+pub const ImagePaint = struct {
     image: *const Image,
-    uv_transform: VectorTransform2D = .identity,
+    uv_transform: Transform2D = .identity,
     tint: [4]f32 = .{ 1, 1, 1, 1 },
-    extend_x: PathPaintExtend = .clamp,
-    extend_y: PathPaintExtend = .clamp,
+    extend_x: PaintExtend = .clamp,
+    extend_y: PaintExtend = .clamp,
     filter: ImageFilter = .linear,
 };
 
-pub const PathPaint = union(enum) {
+pub const Paint = union(enum) {
     solid: [4]f32,
-    linear_gradient: PathLinearGradient,
-    radial_gradient: PathRadialGradient,
-    image: PathImagePaint,
+    linear_gradient: LinearGradient,
+    radial_gradient: RadialGradient,
+    image: ImagePaint,
 };
 
-pub const VectorFillStyle = struct {
+pub const FillStyle = struct {
     // Straight RGBA; the renderer premultiplies internally.
     color: [4]f32 = .{ 0, 0, 0, 1 },
-    paint: ?PathPaint = null,
+    paint: ?Paint = null,
 };
 
-pub const VectorStrokeStyle = struct {
-    // Straight RGBA; the renderer premultiplies internally.
-    color: [4]f32,
-    width: f32,
-};
-
-pub const PathStrokeCap = enum {
+pub const StrokeCap = enum {
     butt,
     square,
     round,
 };
 
-pub const PathStrokeJoin = enum {
+pub const StrokeJoin = enum {
     miter,
     bevel,
     round,
 };
 
-pub const PathStrokeAlign = enum {
+pub const StrokePlacement = enum {
     center,
     inside,
 };
 
-pub const PathStrokeStyle = struct {
+pub const StrokeStyle = struct {
     // Straight RGBA; the renderer premultiplies internally.
     color: [4]f32 = .{ 0, 0, 0, 1 },
-    paint: ?PathPaint = null,
+    paint: ?Paint = null,
     width: f32,
-    cap: PathStrokeCap = .butt,
-    join: PathStrokeJoin = .miter,
+    cap: StrokeCap = .butt,
+    join: StrokeJoin = .miter,
     miter_limit: f32 = 4.0,
-    placement: PathStrokeAlign = .center,
+    placement: StrokePlacement = .center,
 };
 
 /// A parsed TrueType font. Immutable after init.
@@ -283,7 +307,7 @@ fn isRenderableTextCodepoint(codepoint: u32) bool {
 }
 
 /// Pre-built GPU texture data for a set of glyphs.
-/// Create once, upload to Renderer, then use with Batch.
+/// Create once, upload to Renderer, then use with TextBatch.
 pub const AtlasPage = struct {
     allocator: std.mem.Allocator,
     ref_count: std.atomic.Value(u32) = std.atomic.Value(u32).init(1),
@@ -919,16 +943,148 @@ pub const Atlas = struct {
         return self.extendGlyphIds(glyph_ids);
     }
 
-    /// Convenience adapter for externally shaped glyph runs.
-    pub fn extendShapedGlyphs(self: *const Atlas, glyphs: []const Batch.ShapedGlyph) !?Atlas {
+    /// Convenience: extend the atlas with all glyph IDs referenced by a shaped run.
+    pub fn extendRun(self: *const Atlas, run: *const ShapedRun) !?Atlas {
         var requested = std.AutoHashMap(u16, void).init(self.allocator);
         defer requested.deinit();
-
-        for (glyphs) |glyph| {
-            if (glyph.glyph_id == 0) continue;
-            try requested.put(glyph.glyph_id, {});
+        for (run.glyphs) |g| {
+            if (g.glyph_id == 0) continue;
+            try requested.put(g.glyph_id, {});
         }
         return self.extendGlyphIdSet(&requested);
+    }
+
+    /// Write glyph IDs from `run` that are not yet in this atlas into `out`.
+    /// Returns the number of unique missing IDs written. Duplicates are suppressed.
+    pub fn collectMissingGlyphIds(self: *const Atlas, run: *const ShapedRun, out: []u16) usize {
+        var count: usize = 0;
+        for (run.glyphs) |g| {
+            if (g.glyph_id == 0) continue;
+            if (self.getGlyph(g.glyph_id) != null) continue;
+            if (self.colrLayerCount(g.glyph_id) > 0) continue;
+            var dup = false;
+            for (out[0..count]) |existing| {
+                if (existing == g.glyph_id) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (!dup and count < out.len) {
+                out[count] = g.glyph_id;
+                count += 1;
+            }
+        }
+        return count;
+    }
+
+    /// Shape a UTF-8 string into a run of glyph placements.
+    /// Uses the built-in limited shaper (GSUB ligatures + GPOS/kern kerning).
+    /// The caller must free `result.glyphs` with the same allocator.
+    pub fn shapeUtf8(self: *const Atlas, font: *const Font, text: []const u8, font_size: f32, allocator: std.mem.Allocator) !ShapedRun {
+        if (text.len == 0) return .{ .glyphs = &.{}, .advance_x = 0, .advance_y = 0 };
+
+        const scale = font_size / @as(f32, @floatFromInt(font.unitsPerEm()));
+
+        // Count codepoints
+        var cp_count: usize = 0;
+        {
+            const utf8_view = std.unicode.Utf8View.initUnchecked(text);
+            var it = utf8_view.iterator();
+            while (it.nextCodepoint()) |_| cp_count += 1;
+        }
+        if (cp_count == 0) return .{ .glyphs = &.{}, .advance_x = 0, .advance_y = 0 };
+
+        // Map codepoints to glyph IDs with source byte tracking
+        const gids = try allocator.alloc(u16, cp_count);
+        defer allocator.free(gids);
+        const src_starts = try allocator.alloc(u32, cp_count);
+        defer allocator.free(src_starts);
+        const src_ends = try allocator.alloc(u32, cp_count);
+        defer allocator.free(src_ends);
+
+        var idx: usize = 0;
+        {
+            const utf8_view = std.unicode.Utf8View.initUnchecked(text);
+            var it = utf8_view.iterator();
+            while (it.nextCodepointSlice()) |cp_slice| {
+                const byte_pos = @intFromPtr(cp_slice.ptr) - @intFromPtr(text.ptr);
+                const cp = std.unicode.utf8Decode(cp_slice) catch 0;
+                gids[idx] = font.glyphIndex(@intCast(cp)) catch 0;
+                src_starts[idx] = @intCast(byte_pos);
+                src_ends[idx] = @intCast(byte_pos + cp_slice.len);
+                idx += 1;
+            }
+        }
+
+        // Apply ligature substitution with source span tracking
+        var glyph_count = idx;
+        if (self.shaper) |shaper| {
+            glyph_count = shaper.applyLigaturesTracked(
+                gids[0..glyph_count],
+                src_starts[0..glyph_count],
+                src_ends[0..glyph_count],
+            ) catch glyph_count;
+        }
+
+        // Build positioned placements with kerning
+        const placements = try allocator.alloc(GlyphPlacement, glyph_count);
+        errdefer allocator.free(placements);
+
+        var cursor_x: f32 = 0;
+        var prev_gid: u16 = 0;
+        var i: usize = 0;
+        while (i < glyph_count) : (i += 1) {
+            const gid = gids[i];
+            if (gid == 0) {
+                const fallback_advance = scale * 500;
+                placements[i] = .{
+                    .glyph_id = 0,
+                    .x_offset = cursor_x,
+                    .y_offset = 0,
+                    .x_advance = fallback_advance,
+                    .y_advance = 0,
+                    .source_start = src_starts[i],
+                    .source_end = src_ends[i],
+                };
+                cursor_x += fallback_advance;
+                prev_gid = 0;
+                continue;
+            }
+
+            // Kerning: prefer GPOS, fall back to kern table
+            if (prev_gid != 0) {
+                var kern: i16 = 0;
+                if (self.shaper) |shaper| {
+                    kern = shaper.getKernAdjustment(prev_gid, gid) catch 0;
+                }
+                if (kern == 0) {
+                    kern = font.getKerning(prev_gid, gid) catch 0;
+                }
+                cursor_x += @as(f32, @floatFromInt(kern)) * scale;
+            }
+
+            const advance_units: i16 = font.advanceWidth(gid) catch 500;
+            const advance_px = @as(f32, @floatFromInt(advance_units)) * scale;
+
+            placements[i] = .{
+                .glyph_id = gid,
+                .x_offset = cursor_x,
+                .y_offset = 0,
+                .x_advance = advance_px,
+                .y_advance = 0,
+                .source_start = src_starts[i],
+                .source_end = src_ends[i],
+            };
+
+            cursor_x += advance_px;
+            prev_gid = gid;
+        }
+
+        return .{
+            .glyphs = placements,
+            .advance_x = cursor_x,
+            .advance_y = 0,
+        };
     }
 
     /// Return a compacted atlas snapshot. Handles are stable across extend, but
@@ -1009,18 +1165,18 @@ pub const Atlas = struct {
     }
 };
 
-pub const AtlasView = struct {
+pub const AtlasHandle = struct {
     atlas: *const Atlas,
     layer_base: u16 = 0,
     info_row_base: u16 = 0,
 
-    pub fn glyphLayer(self: *const AtlasView, page_index: u16) u8 {
+    pub fn glyphLayer(self: *const AtlasHandle, page_index: u16) u8 {
         const layer = self.layer_base + page_index;
         std.debug.assert(layer < 256);
         return @intCast(layer);
     }
 
-    pub fn layerInfoLoc(self: *const AtlasView, info_x: u16, info_y: u16) struct { x: u16, y: u16 } {
+    pub fn layerInfoLoc(self: *const AtlasHandle, info_x: u16, info_y: u16) struct { x: u16, y: u16 } {
         return .{
             .x = info_x,
             .y = self.info_row_base + info_y,
@@ -1028,12 +1184,12 @@ pub const AtlasView = struct {
     }
 };
 
-fn coerceAtlasView(atlas_like: anytype) AtlasView {
+fn coerceAtlasHandle(atlas_like: anytype) AtlasHandle {
     const T = @TypeOf(atlas_like);
     return switch (T) {
-        *const AtlasView, *AtlasView => atlas_like.*,
+        *const AtlasHandle, *AtlasHandle => atlas_like.*,
         *const Atlas, *Atlas => .{ .atlas = atlas_like, .layer_base = 0 },
-        else => @compileError("expected *Atlas or *AtlasView"),
+        else => @compileError("expected *Atlas or *AtlasHandle"),
     };
 }
 
@@ -1054,15 +1210,11 @@ pub fn replaceAtlas(current: *Atlas, next: ?Atlas) bool {
 
 /// Accumulates glyph vertices into a caller-provided buffer.
 /// Zero allocations. Can be pre-built for static text.
-pub const Batch = struct {
+pub const TextBatch = struct {
     buf: []f32,
     len: usize, // floats written
 
     const glyph_stack_capacity = 256;
-    const WrapBreak = struct {
-        break_pos: usize,
-        skip_len: usize,
-    };
 
     const PreparedGlyphs = struct {
         slice: []const u16,
@@ -1103,99 +1255,25 @@ pub const Batch = struct {
         };
     }
 
-    fn sliceOffset(base: []const u8, part: []const u8) usize {
-        return @intFromPtr(part.ptr) - @intFromPtr(base.ptr);
-    }
-
-    fn findForcedWrapBreak(
-        self: *const Batch,
-        atlas_like: anytype,
-        font: *const Font,
-        text: []const u8,
-        font_size: f32,
-        max_width: f32,
-    ) usize {
-        if (text.len == 0) return 0;
-
-        const utf8_view = std.unicode.Utf8View.initUnchecked(text);
-        var it = utf8_view.iterator();
-        var best_break: usize = 0;
-        var fallback_break: usize = text.len;
-
-        while (it.nextCodepointSlice()) |cp_slice| {
-            const end = sliceOffset(text, cp_slice) + cp_slice.len;
-            if (best_break == 0) fallback_break = end;
-            if (self.measureGlyphWidth(atlas_like, font, text[0..end], font_size) > max_width) break;
-            best_break = end;
-        }
-
-        return if (best_break > 0) best_break else fallback_break;
-    }
-
-    fn findWrapBreak(
-        self: *const Batch,
-        atlas_like: anytype,
-        font: *const Font,
-        text: []const u8,
-        font_size: f32,
-        max_width: f32,
-    ) WrapBreak {
-        if (text.len == 0) return .{ .break_pos = 0, .skip_len = 0 };
-
-        const utf8_view = std.unicode.Utf8View.initUnchecked(text);
-        var it = utf8_view.iterator();
-        var last_fit = WrapBreak{ .break_pos = 0, .skip_len = 0 };
-
-        while (it.nextCodepointSlice()) |cp_slice| {
-            const start = sliceOffset(text, cp_slice);
-            const codepoint = std.unicode.utf8Decode(cp_slice) catch unreachable;
-            if (codepoint != ' ' and codepoint != '\t') continue;
-            if (start == 0) continue;
-
-            if (self.measureGlyphWidth(atlas_like, font, text[0..start], font_size) > max_width) {
-                if (last_fit.break_pos > 0) return last_fit;
-                return .{
-                    .break_pos = self.findForcedWrapBreak(atlas_like, font, text[0..start], font_size, max_width),
-                    .skip_len = 0,
-                };
-            }
-
-            last_fit = .{
-                .break_pos = start,
-                .skip_len = cp_slice.len,
-            };
-        }
-
-        if (self.measureGlyphWidth(atlas_like, font, text, font_size) <= max_width) {
-            return .{ .break_pos = text.len, .skip_len = 0 };
-        }
-        if (last_fit.break_pos > 0) return last_fit;
-
-        return .{
-            .break_pos = self.findForcedWrapBreak(atlas_like, font, text, font_size, max_width),
-            .skip_len = 0,
-        };
-    }
-
-    pub fn init(buf: []f32) Batch {
+    pub fn init(buf: []f32) TextBatch {
         return .{ .buf = buf, .len = 0 };
     }
 
-    pub fn reset(self: *Batch) void {
+    pub fn reset(self: *TextBatch) void {
         self.len = 0;
     }
 
-    pub fn glyphCount(self: *const Batch) usize {
-        return self.len / FLOATS_PER_GLYPH;
+    pub fn glyphCount(self: *const TextBatch) usize {
+        return self.len / TEXT_FLOATS_PER_GLYPH;
     }
 
-    pub fn slice(self: *const Batch) []const f32 {
+    pub fn slice(self: *const TextBatch) []const f32 {
         return self.buf[0..self.len];
     }
 
     /// Append a single glyph quad. Returns false if buffer is full.
     pub fn addGlyph(
-        self: *Batch,
+        self: *TextBatch,
         x: f32,
         y: f32,
         font_size: f32,
@@ -1204,15 +1282,15 @@ pub const Batch = struct {
         color: [4]f32,
         atlas_layer: u8,
     ) bool {
-        if (self.len + FLOATS_PER_GLYPH > self.buf.len) return false;
+        if (self.len + TEXT_FLOATS_PER_GLYPH > self.buf.len) return false;
         vertex_mod.generateGlyphVertices(self.buf[self.len..], x, y, font_size, bbox, band_entry, color, atlas_layer);
-        self.len += FLOATS_PER_GLYPH;
+        self.len += TEXT_FLOATS_PER_GLYPH;
         return true;
     }
 
     /// Append a multi-layer COLR glyph quad. Returns false if buffer is full.
     pub fn addColrGlyph(
-        self: *Batch,
+        self: *TextBatch,
         x: f32,
         y: f32,
         font_size: f32,
@@ -1223,7 +1301,7 @@ pub const Batch = struct {
         color: [4]f32,
         atlas_layer: u8,
     ) bool {
-        if (self.len + FLOATS_PER_GLYPH > self.buf.len) return false;
+        if (self.len + TEXT_FLOATS_PER_GLYPH > self.buf.len) return false;
         vertex_mod.generateMultiLayerGlyphVertices(
             self.buf[self.len..],
             x,
@@ -1236,34 +1314,26 @@ pub const Batch = struct {
             color,
             atlas_layer,
         );
-        self.len += FLOATS_PER_GLYPH;
+        self.len += TEXT_FLOATS_PER_GLYPH;
         return true;
     }
 
-    /// A pre-shaped glyph with position. Produced by external shapers (HarfBuzz).
-    pub const ShapedGlyph = struct {
-        glyph_id: u16,
-        x_offset: f32, // pixel offset from string origin
-        y_offset: f32,
-    };
-
-    /// Append pre-shaped glyphs. Use this when text has been shaped externally
-    /// (e.g. by HarfBuzz). Each glyph's position is relative to (x, y).
+    /// Append a shaped run. Each glyph's position is relative to (x, y).
     /// Returns the number of glyphs successfully added.
-    pub fn addShaped(
-        self: *Batch,
+    pub fn addRun(
+        self: *TextBatch,
         atlas_like: anytype,
-        glyphs: []const ShapedGlyph,
+        run: *const ShapedRun,
         x: f32,
         y: f32,
         font_size: f32,
         color: [4]f32,
     ) usize {
-        const resolved_view = coerceAtlasView(atlas_like);
+        const resolved_view = coerceAtlasHandle(atlas_like);
         const view = &resolved_view;
         var count: usize = 0;
-        for (glyphs) |sg| {
-            switch (glyph_emit.emitGlyph(self, view, sg.glyph_id, x + sg.x_offset, y + sg.y_offset, font_size, color)) {
+        for (run.glyphs) |g| {
+            switch (glyph_emit.emitGlyph(self, view, g.glyph_id, x + g.x_offset, y + g.y_offset, font_size, color)) {
                 .emitted => count += 1,
                 .skipped => {},
                 .buffer_full => break,
@@ -1276,8 +1346,8 @@ pub const Batch = struct {
     /// available (-Dharfbuzz=true), otherwise applies built-in ligature
     /// substitution and GPOS/kern kerning.
     /// Returns advance width in pixels.
-    pub fn addString(
-        self: *Batch,
+    pub fn addText(
+        self: *TextBatch,
         atlas_like: anytype,
         font: *const Font,
         text: []const u8,
@@ -1286,7 +1356,7 @@ pub const Batch = struct {
         font_size: f32,
         color: [4]f32,
     ) f32 {
-        const resolved_view = coerceAtlasView(atlas_like);
+        const resolved_view = coerceAtlasHandle(atlas_like);
         const view = &resolved_view;
         const atlas = view.atlas;
         // Use HarfBuzz when available (zero-allocation path)
@@ -1337,112 +1407,6 @@ pub const Batch = struct {
         return cursor_x - x;
     }
 
-    /// Lay out a string with word wrapping at max_width pixels.
-    /// Returns the total height used (from y downward).
-    pub fn addStringWrapped(
-        self: *Batch,
-        atlas_like: anytype,
-        font: *const Font,
-        text: []const u8,
-        x: f32,
-        y: f32,
-        font_size: f32,
-        max_width: f32,
-        line_height: f32,
-        color: [4]f32,
-    ) f32 {
-        const resolved_view = coerceAtlasView(atlas_like);
-        const view = &resolved_view;
-        var line_y = y;
-        var remaining = text;
-
-        while (remaining.len > 0) {
-            const line_end = blk: {
-                const utf8_view = std.unicode.Utf8View.initUnchecked(remaining);
-                var it = utf8_view.iterator();
-                while (it.nextCodepointSlice()) |cp_slice| {
-                    const cp = std.unicode.utf8Decode(cp_slice) catch unreachable;
-                    if (cp == '\n') break :blk sliceOffset(remaining, cp_slice);
-                }
-                break :blk remaining.len;
-            };
-
-            if (line_end == 0 and remaining.len > 0) {
-                line_y -= line_height;
-                remaining = remaining[1..];
-                continue;
-            }
-
-            const break_info = self.findWrapBreak(view, font, remaining[0..line_end], font_size, max_width);
-            if (break_info.break_pos == 0) break;
-
-            _ = self.addString(view, font, remaining[0..break_info.break_pos], x, line_y, font_size, color);
-            line_y -= line_height;
-
-            const consumed = if (break_info.break_pos < line_end)
-                break_info.break_pos + break_info.skip_len
-            else if (line_end < remaining.len)
-                line_end + 1
-            else
-                line_end;
-
-            remaining = remaining[consumed..];
-        }
-
-        return y - line_y;
-    }
-
-    /// Measure the advance width of a string without emitting vertices.
-    fn measureGlyphWidth(
-        self: *const Batch,
-        atlas_like: anytype,
-        font: *const Font,
-        text: []const u8,
-        font_size: f32,
-    ) f32 {
-        _ = self;
-        const resolved_view = coerceAtlasView(atlas_like);
-        const view = &resolved_view;
-        const atlas = view.atlas;
-        // Use HarfBuzz for measurement when available
-        if (comptime build_options.enable_harfbuzz) {
-            if (atlas.hb_shaper) |hbs| {
-                return hbs.measureWidth(text, font_size);
-            }
-        }
-        const scale = font_size / @as(f32, @floatFromInt(font.unitsPerEm()));
-        var width: f32 = 0;
-        var prev_gid: u16 = 0;
-        var glyph_stack: [glyph_stack_capacity]u16 = undefined;
-        var prepared = prepareGlyphs(atlas, font, text, &glyph_stack) orelse return 0;
-        defer prepared.deinit(atlas.allocator);
-
-        for (prepared.slice) |gid| {
-            if (gid == 0) {
-                width += scale * 500;
-                prev_gid = 0;
-                continue;
-            }
-            if (prev_gid != 0) {
-                var kern: i16 = 0;
-                if (atlas.shaper) |shaper| {
-                    kern = shaper.getKernAdjustment(prev_gid, gid) catch 0;
-                }
-                if (kern == 0) {
-                    kern = font.getKerning(prev_gid, gid) catch 0;
-                }
-                width += @as(f32, @floatFromInt(kern)) * scale;
-            }
-            const advance = glyphAdvanceUnits(atlas, font, gid) orelse {
-                width += scale * 500;
-                prev_gid = gid;
-                continue;
-            };
-            width += @as(f32, @floatFromInt(advance)) * scale;
-            prev_gid = gid;
-        }
-        return width;
-    }
 };
 
 /// Accumulates vector primitives into a caller-provided buffer.
@@ -1499,12 +1463,12 @@ pub const SpriteBatch = struct {
         return SpritePicture.initClone(allocator, self.slice());
     }
 
-    fn coerceImageView(image_like: anytype) ImageView {
+    fn coerceImageHandle(image_like: anytype) ImageHandle {
         const T = @TypeOf(image_like);
         return switch (T) {
-            ImageView => image_like,
-            *const ImageView, *ImageView => image_like.*,
-            else => @compileError("expected ImageView or *ImageView"),
+            ImageHandle => image_like,
+            *const ImageHandle, *ImageHandle => image_like.*,
+            else => @compileError("expected ImageHandle or *ImageHandle"),
         };
     }
 
@@ -1522,7 +1486,7 @@ pub const SpriteBatch = struct {
             .{},
             .linear,
             .center,
-            VectorTransform2D.translate(position.x, position.y),
+            Transform2D.translate(position.x, position.y),
         );
     }
 
@@ -1537,9 +1501,9 @@ pub const SpriteBatch = struct {
         uv_rect: SpriteUvRect,
         filter: ImageFilter,
     ) bool {
-        const transform = VectorTransform2D.multiply(
-            VectorTransform2D.translate(position.x, position.y),
-            VectorTransform2D.rotate(rotation_rad),
+        const transform = Transform2D.multiply(
+            Transform2D.translate(position.x, position.y),
+            Transform2D.rotate(rotation_rad),
         );
         return self.addSpriteTransformed(image_like, size, tint, uv_rect, filter, anchor, transform);
     }
@@ -1547,7 +1511,7 @@ pub const SpriteBatch = struct {
     pub fn addSpriteRect(
         self: *SpriteBatch,
         image_like: anytype,
-        rect: VectorRect,
+        rect: Rect,
         tint: [4]f32,
         uv_rect: SpriteUvRect,
         filter: ImageFilter,
@@ -1559,7 +1523,7 @@ pub const SpriteBatch = struct {
             uv_rect,
             filter,
             .top_left,
-            VectorTransform2D.translate(rect.x, rect.y),
+            Transform2D.translate(rect.x, rect.y),
         );
     }
 
@@ -1571,10 +1535,10 @@ pub const SpriteBatch = struct {
         uv_rect: SpriteUvRect,
         filter: ImageFilter,
         anchor: SpriteAnchor,
-        transform: VectorTransform2D,
+        transform: Transform2D,
     ) bool {
         if (self.len + SPRITE_FLOATS_PER_SPRITE > self.buf.len) return false;
-        const view = coerceImageView(image_like);
+        const view = coerceImageHandle(image_like);
         sprite_vertex_mod.generateSpriteVertices(
             self.buf[self.len..],
             view,
@@ -1637,7 +1601,7 @@ fn makePathArcConic(center: Vec2, radii: Vec2, start_angle: f32, end_angle: f32)
 }
 
 fn appendAdaptiveArcCurve(
-    path: *VectorPath,
+    path: *Path,
     center: Vec2,
     radii: Vec2,
     start_angle: f32,
@@ -1656,7 +1620,7 @@ fn appendAdaptiveArcCurve(
 }
 
 fn appendAdaptiveArcConic(
-    path: *VectorPath,
+    path: *Path,
     center: Vec2,
     radii: Vec2,
     start_angle: f32,
@@ -1698,17 +1662,17 @@ fn lineIntersection(p0: Vec2, d0: Vec2, p1: Vec2, d1: Vec2) ?Vec2 {
     return Vec2.add(p0, Vec2.scale(d0, t));
 }
 
-fn appendLineIfNeeded(path: *VectorPath, point: Vec2) !void {
+fn appendLineIfNeeded(path: *Path, point: Vec2) !void {
     if (!pointsApproxEqual(path.requireContour().?.current_point, point)) {
         try path.lineTo(point);
     }
 }
 
-fn resolveFillPaint(style: VectorFillStyle) PathPaint {
+fn resolveFillPaint(style: FillStyle) Paint {
     return style.paint orelse .{ .solid = style.color };
 }
 
-fn resolveStrokePaint(style: PathStrokeStyle) PathPaint {
+fn resolveStrokePaint(style: StrokeStyle) Paint {
     return style.paint orelse .{ .solid = style.color };
 }
 
@@ -1726,7 +1690,7 @@ fn bboxCenter(bbox: BBox) Vec2 {
     };
 }
 
-fn translatePaint(paint: PathPaint, delta: Vec2) PathPaint {
+fn translatePaint(paint: Paint, delta: Vec2) Paint {
     return switch (paint) {
         .solid => paint,
         .linear_gradient => |gradient| .{ .linear_gradient = .{
@@ -1761,7 +1725,7 @@ fn translatePaint(paint: PathPaint, delta: Vec2) PathPaint {
     };
 }
 
-fn fillStyleForStroke(style: PathStrokeStyle) VectorFillStyle {
+fn fillStyleForStroke(style: StrokeStyle) FillStyle {
     return .{
         .color = style.color,
         .paint = style.paint,
@@ -1867,7 +1831,7 @@ fn curveQuadraticApproxError(curve: CurveSegment) f32 {
 }
 
 fn appendAdaptiveQuadraticApprox(
-    path: *VectorPath,
+    path: *Path,
     curve: CurveSegment,
     depth: u8,
 ) !void {
@@ -1898,7 +1862,7 @@ fn offsetCurveApproxError(curve: CurveSegment, offset: f32) f32 {
 }
 
 fn appendOffsetCurveApprox(
-    path: *VectorPath,
+    path: *Path,
     curve: CurveSegment,
     offset: f32,
     depth: u8,
@@ -1919,7 +1883,7 @@ fn appendOffsetCurveApprox(
     try appendOffsetCurveApprox(path, halves[1], offset, depth - 1);
 }
 
-pub const VectorPath = struct {
+pub const Path = struct {
     allocator: std.mem.Allocator,
     curves: std.ArrayList(CurveSegment) = .empty,
     contours: std.ArrayList(Contour) = .empty,
@@ -1934,32 +1898,32 @@ pub const VectorPath = struct {
         closed: bool,
     };
 
-    pub fn init(allocator: std.mem.Allocator) VectorPath {
+    pub fn init(allocator: std.mem.Allocator) Path {
         return .{ .allocator = allocator };
     }
 
-    pub fn deinit(self: *VectorPath) void {
+    pub fn deinit(self: *Path) void {
         self.curves.deinit(self.allocator);
         self.contours.deinit(self.allocator);
         self.* = undefined;
     }
 
-    pub fn reset(self: *VectorPath) void {
+    pub fn reset(self: *Path) void {
         self.curves.clearRetainingCapacity();
         self.contours.clearRetainingCapacity();
         self.bbox = null;
         self.band_curve_count = 0;
     }
 
-    pub fn bounds(self: *const VectorPath) ?BBox {
+    pub fn bounds(self: *const Path) ?BBox {
         return self.bbox;
     }
 
-    pub fn isEmpty(self: *const VectorPath) bool {
+    pub fn isEmpty(self: *const Path) bool {
         return self.curves.items.len == 0;
     }
 
-    pub fn moveTo(self: *VectorPath, point: Vec2) !void {
+    pub fn moveTo(self: *Path, point: Vec2) !void {
         if (self.contours.items.len > 0) {
             var contour = &self.contours.items[self.contours.items.len - 1];
             if (contour.curve_end == contour.curve_start and !contour.closed) {
@@ -1979,13 +1943,13 @@ pub const VectorPath = struct {
         self.expandPointBBox(point);
     }
 
-    pub fn lineTo(self: *VectorPath, point: Vec2) !void {
+    pub fn lineTo(self: *Path, point: Vec2) !void {
         const contour = self.requireContour() orelse return error.PathMissingMoveTo;
         self.band_curve_count += 1;
         try self.appendSegment(makePathLineSegment(contour.current_point, point));
     }
 
-    pub fn quadTo(self: *VectorPath, control: Vec2, point: Vec2) !void {
+    pub fn quadTo(self: *Path, control: Vec2, point: Vec2) !void {
         const contour = self.requireContour() orelse return error.PathMissingMoveTo;
         self.band_curve_count += 1;
         try self.appendSegment(CurveSegment.fromQuad(.{
@@ -1995,7 +1959,7 @@ pub const VectorPath = struct {
         }));
     }
 
-    pub fn cubicTo(self: *VectorPath, control1: Vec2, control2: Vec2, point: Vec2) !void {
+    pub fn cubicTo(self: *Path, control1: Vec2, control2: Vec2, point: Vec2) !void {
         const contour = self.requireContour() orelse return error.PathMissingMoveTo;
         self.band_curve_count += 1;
         try appendAdaptiveQuadraticApprox(self, CurveSegment.fromCubic(.{
@@ -2006,7 +1970,7 @@ pub const VectorPath = struct {
         }), kPathCurveApproxMaxDepth);
     }
 
-    pub fn close(self: *VectorPath) !void {
+    pub fn close(self: *Path) !void {
         if (self.requireContour()) |initial_contour| {
             var contour = initial_contour;
             if (contour.closed) return;
@@ -2020,7 +1984,7 @@ pub const VectorPath = struct {
         }
     }
 
-    pub fn addRect(self: *VectorPath, rect: VectorRect) !void {
+    pub fn addRect(self: *Path, rect: Rect) !void {
         const origin = Vec2.new(rect.x, rect.y);
         const size = Vec2.new(@max(rect.w, 0.0), @max(rect.h, 0.0));
         if (size.x <= 0.0 or size.y <= 0.0) return;
@@ -2031,7 +1995,7 @@ pub const VectorPath = struct {
         try self.close();
     }
 
-    pub fn addRectReversed(self: *VectorPath, rect: VectorRect) !void {
+    pub fn addRectReversed(self: *Path, rect: Rect) !void {
         const origin = Vec2.new(rect.x, rect.y);
         const size = Vec2.new(@max(rect.w, 0.0), @max(rect.h, 0.0));
         if (size.x <= 0.0 or size.y <= 0.0) return;
@@ -2042,7 +2006,7 @@ pub const VectorPath = struct {
         try self.close();
     }
 
-    pub fn addRoundedRect(self: *VectorPath, rect: VectorRect, corner_radius: f32) !void {
+    pub fn addRoundedRect(self: *Path, rect: Rect, corner_radius: f32) !void {
         const origin = Vec2.new(rect.x, rect.y);
         const size = Vec2.new(@max(rect.w, 0.0), @max(rect.h, 0.0));
         if (size.x <= 0.0 or size.y <= 0.0) return;
@@ -2069,7 +2033,7 @@ pub const VectorPath = struct {
         try self.close();
     }
 
-    pub fn addRoundedRectReversed(self: *VectorPath, rect: VectorRect, corner_radius: f32) !void {
+    pub fn addRoundedRectReversed(self: *Path, rect: Rect, corner_radius: f32) !void {
         const origin = Vec2.new(rect.x, rect.y);
         const size = Vec2.new(@max(rect.w, 0.0), @max(rect.h, 0.0));
         if (size.x <= 0.0 or size.y <= 0.0) return;
@@ -2096,7 +2060,7 @@ pub const VectorPath = struct {
         try self.close();
     }
 
-    pub fn addEllipse(self: *VectorPath, rect: VectorRect) !void {
+    pub fn addEllipse(self: *Path, rect: Rect) !void {
         const size = Vec2.new(@max(rect.w, 0.0), @max(rect.h, 0.0));
         if (size.x <= 0.0 or size.y <= 0.0) return;
         const center = Vec2.new(rect.x + size.x * 0.5, rect.y + size.y * 0.5);
@@ -2109,7 +2073,7 @@ pub const VectorPath = struct {
         try self.close();
     }
 
-    pub fn addEllipseReversed(self: *VectorPath, rect: VectorRect) !void {
+    pub fn addEllipseReversed(self: *Path, rect: Rect) !void {
         const size = Vec2.new(@max(rect.w, 0.0), @max(rect.h, 0.0));
         if (size.x <= 0.0 or size.y <= 0.0) return;
         const center = Vec2.new(rect.x + size.x * 0.5, rect.y + size.y * 0.5);
@@ -2122,12 +2086,12 @@ pub const VectorPath = struct {
         try self.close();
     }
 
-    fn requireContour(self: *VectorPath) ?*Contour {
+    fn requireContour(self: *Path) ?*Contour {
         if (self.contours.items.len == 0) return null;
         return &self.contours.items[self.contours.items.len - 1];
     }
 
-    fn appendSegment(self: *VectorPath, curve: CurveSegment) !void {
+    fn appendSegment(self: *Path, curve: CurveSegment) !void {
         var contour = self.requireContour() orelse return error.PathMissingMoveTo;
         try self.curves.append(self.allocator, curve);
         contour = self.requireContour().?;
@@ -2136,11 +2100,11 @@ pub const VectorPath = struct {
         self.expandCurveBBox(curve);
     }
 
-    fn appendArc(self: *VectorPath, center: Vec2, radii: Vec2, start_angle: f32, end_angle: f32) !void {
+    fn appendArc(self: *Path, center: Vec2, radii: Vec2, start_angle: f32, end_angle: f32) !void {
         try appendAdaptiveArcConic(self, center, radii, start_angle, end_angle);
     }
 
-    fn expandPointBBox(self: *VectorPath, point: Vec2) void {
+    fn expandPointBBox(self: *Path, point: Vec2) void {
         if (self.bbox) |bbox| {
             self.bbox = .{
                 .min = Vec2.new(@min(bbox.min.x, point.x), @min(bbox.min.y, point.y)),
@@ -2151,7 +2115,7 @@ pub const VectorPath = struct {
         }
     }
 
-    fn expandCurveBBox(self: *VectorPath, curve: CurveSegment) void {
+    fn expandCurveBBox(self: *Path, curve: CurveSegment) void {
         const cb = curve.boundingBox();
         if (self.bbox) |bbox| {
             self.bbox = bbox.merge(cb);
@@ -2160,7 +2124,7 @@ pub const VectorPath = struct {
         }
     }
 
-    fn cloneFilledCurves(self: *const VectorPath, allocator: std.mem.Allocator) ![]CurveSegment {
+    fn cloneFilledCurves(self: *const Path, allocator: std.mem.Allocator) ![]CurveSegment {
         var close_count: usize = 0;
         for (self.contours.items) |contour| {
             if (!contour.closed and contour.curve_end > contour.curve_start and !pointsApproxEqual(contour.current_point, contour.start_point)) {
@@ -2179,7 +2143,7 @@ pub const VectorPath = struct {
         return out;
     }
 
-    fn filledBandCurveCount(self: *const VectorPath) usize {
+    fn filledBandCurveCount(self: *const Path) usize {
         var close_count: usize = 0;
         for (self.contours.items) |contour| {
             if (!contour.closed and contour.curve_end > contour.curve_start and !pointsApproxEqual(contour.current_point, contour.start_point)) {
@@ -2190,13 +2154,13 @@ pub const VectorPath = struct {
     }
 
     fn cloneStrokedCurves(
-        self: *const VectorPath,
+        self: *const Path,
         allocator: std.mem.Allocator,
-        stroke: PathStrokeStyle,
+        stroke: StrokeStyle,
     ) !?struct { curves: []CurveSegment, bbox: BBox, logical_curve_count: usize } {
         if (stroke.width <= 1e-4 or self.contours.items.len == 0) return null;
 
-        var outline = VectorPath.init(allocator);
+        var outline = Path.init(allocator);
         defer outline.deinit();
 
         for (self.contours.items) |contour| {
@@ -2218,18 +2182,18 @@ pub const VectorPath = struct {
     }
 };
 
-fn appendArcSeries(path: *VectorPath, center: Vec2, radius: f32, start_angle: f32, end_angle: f32) !void {
+fn appendArcSeries(path: *Path, center: Vec2, radius: f32, start_angle: f32, end_angle: f32) !void {
     if (@abs(end_angle - start_angle) <= 1e-6) return;
     try appendAdaptiveArcCurve(path, center, Vec2.new(radius, radius), start_angle, end_angle, kPathArcSplitMaxDepth);
 }
 
-fn appendRoundJoin(path: *VectorPath, center: Vec2, prev_normal: Vec2, next_normal: Vec2, half_width: f32) !void {
+fn appendRoundJoin(path: *Path, center: Vec2, prev_normal: Vec2, next_normal: Vec2, half_width: f32) !void {
     const start_angle = std.math.atan2(prev_normal.y, prev_normal.x);
     const delta = signedAngleBetween(prev_normal, next_normal);
     try appendArcSeries(path, center, half_width, start_angle, start_angle + delta);
 }
 
-fn appendRoundCap(path: *VectorPath, center: Vec2, dir: Vec2, half_width: f32, start_cap: bool) !void {
+fn appendRoundCap(path: *Path, center: Vec2, dir: Vec2, half_width: f32, start_cap: bool) !void {
     const normal = perpLeft(dir);
     const start_angle = if (start_cap)
         std.math.atan2(-normal.y, -normal.x)
@@ -2239,13 +2203,13 @@ fn appendRoundCap(path: *VectorPath, center: Vec2, dir: Vec2, half_width: f32, s
 }
 
 fn appendStrokeJoinForSide(
-    path: *VectorPath,
+    path: *Path,
     center: Vec2,
     prev_dir: Vec2,
     next_dir: Vec2,
     half_width: f32,
     side: f32,
-    join: PathStrokeJoin,
+    join: StrokeJoin,
     miter_limit: f32,
 ) !void {
     const turn = cross2(prev_dir, next_dir);
@@ -2290,7 +2254,7 @@ fn appendStrokeJoinForSide(
 }
 
 fn appendOffsetBoundaryCurve(
-    boundary: *VectorPath,
+    boundary: *Path,
     curve: CurveSegment,
     side: f32,
     half_width: f32,
@@ -2303,12 +2267,12 @@ fn buildOffsetBoundary(
     curves: []const CurveSegment,
     closed: bool,
     side: f32,
-    stroke: PathStrokeStyle,
-) !?VectorPath {
+    stroke: StrokeStyle,
+) !?Path {
     if ((!closed and curves.len == 0) or stroke.width <= 1e-4) return null;
 
     const half_width = stroke.width * 0.5;
-    var boundary = VectorPath.init(allocator);
+    var boundary = Path.init(allocator);
     errdefer boundary.deinit();
 
     const first_curve = curves[0];
@@ -2350,7 +2314,7 @@ fn buildOffsetBoundary(
     return boundary;
 }
 
-fn appendBoundaryCurves(dst: *VectorPath, src: *const VectorPath, reverse: bool) !void {
+fn appendBoundaryCurves(dst: *Path, src: *const Path, reverse: bool) !void {
     if (!reverse) {
         for (src.curves.items) |curve| {
             dst.band_curve_count += 1;
@@ -2366,7 +2330,7 @@ fn appendBoundaryCurves(dst: *VectorPath, src: *const VectorPath, reverse: bool)
     }
 }
 
-fn buildOpenStrokeContour(path: *VectorPath, curves: []const CurveSegment, stroke: PathStrokeStyle) !void {
+fn buildOpenStrokeContour(path: *Path, curves: []const CurveSegment, stroke: StrokeStyle) !void {
     if (curves.len == 0 or stroke.width <= 1e-4) return;
 
     var left = (try buildOffsetBoundary(path.allocator, curves, false, 1.0, stroke)) orelse return;
@@ -2411,7 +2375,7 @@ fn buildOpenStrokeContour(path: *VectorPath, curves: []const CurveSegment, strok
     try path.close();
 }
 
-fn buildClosedStrokeContours(path: *VectorPath, curves: []const CurveSegment, stroke: PathStrokeStyle) !void {
+fn buildClosedStrokeContours(path: *Path, curves: []const CurveSegment, stroke: StrokeStyle) !void {
     if (curves.len == 0 or stroke.width <= 1e-4) return;
 
     var left = (try buildOffsetBoundary(path.allocator, curves, true, 1.0, stroke)) orelse return;
@@ -2436,7 +2400,7 @@ fn pointOnEllipse(center: Vec2, radii: Vec2, angle: f32) Vec2 {
 }
 
 fn buildCircularSectorPath(
-    path: *VectorPath,
+    path: *Path,
     center: Vec2,
     outer_radius: f32,
     inner_radius: f32,
@@ -2458,13 +2422,13 @@ fn buildCircularSectorPath(
     try path.close();
 }
 
-const kPathPaintInfoWidth: u32 = PATH_PAINT_INFO_WIDTH;
-const kPathPaintTexelsPerRecord: u32 = PATH_PAINT_TEXELS_PER_RECORD;
-const kPathPaintTagSolid: f32 = PATH_PAINT_TAG_SOLID;
-const kPathPaintTagLinearGradient: f32 = PATH_PAINT_TAG_LINEAR_GRADIENT;
-const kPathPaintTagRadialGradient: f32 = PATH_PAINT_TAG_RADIAL_GRADIENT;
-const kPathPaintTagImage: f32 = PATH_PAINT_TAG_IMAGE;
-const kPathPaintTagCompositeGroup: f32 = PATH_PAINT_TAG_COMPOSITE_GROUP;
+const kPaintInfoWidth: u32 = PATH_PAINT_INFO_WIDTH;
+const kPaintTexelsPerRecord: u32 = PATH_PAINT_TEXELS_PER_RECORD;
+const kPaintTagSolid: f32 = PATH_PAINT_TAG_SOLID;
+const kPaintTagLinearGradient: f32 = PATH_PAINT_TAG_LINEAR_GRADIENT;
+const kPaintTagRadialGradient: f32 = PATH_PAINT_TAG_RADIAL_GRADIENT;
+const kPaintTagImage: f32 = PATH_PAINT_TAG_IMAGE;
+const kPaintTagCompositeGroup: f32 = PATH_PAINT_TAG_COMPOSITE_GROUP;
 
 const PathCompositeMode = enum(u8) {
     source_over = 0,
@@ -2555,7 +2519,7 @@ pub const PathPicture = struct {
         info_x: u16,
         info_y: u16,
         layer_count: u16 = 1,
-        transform: VectorTransform2D,
+        transform: Transform2D,
     };
 
     pub fn deinit(self: *PathPicture) void {
@@ -2611,7 +2575,7 @@ pub const PathPicture = struct {
 
         const cross_thickness = @max(options.stroke_width, 1.0);
         for (self.instances) |instance| {
-            const rect = VectorRect{
+            const rect = Rect{
                 .x = instance.bbox.min.x,
                 .y = instance.bbox.min.y,
                 .w = instance.bbox.max.x - instance.bbox.min.x,
@@ -2650,13 +2614,13 @@ pub const PathPictureBuilder = struct {
         curves: []CurveSegment,
         bbox: BBox,
         logical_curve_count: usize,
-        paint: PathPaint,
+        paint: Paint,
         role: PathPicture.LayerRole,
     };
 
     const PathRecord = struct {
         bbox: BBox,
-        transform: VectorTransform2D,
+        transform: Transform2D,
         layer_count: u16,
         composite_mode: PathCompositeMode,
         layers: [2]PathLayerRecord,
@@ -2672,29 +2636,29 @@ pub const PathPictureBuilder = struct {
         data[base + 3] = value[3];
     }
 
-    fn pathPaintTag(paint: PathPaint) f32 {
+    fn pathPaintTag(paint: Paint) f32 {
         return switch (paint) {
-            .solid => kPathPaintTagSolid,
-            .linear_gradient => kPathPaintTagLinearGradient,
-            .radial_gradient => kPathPaintTagRadialGradient,
-            .image => kPathPaintTagImage,
+            .solid => kPaintTagSolid,
+            .linear_gradient => kPaintTagLinearGradient,
+            .radial_gradient => kPaintTagRadialGradient,
+            .image => kPaintTagImage,
         };
     }
 
-    fn writePathPaintRecord(
+    fn writePaintRecord(
         data: []f32,
         texel_offset: u32,
         band_entry: band_tex.GlyphBandEntry,
-        paint: PathPaint,
+        paint: Paint,
     ) void {
         const packed_bands: u32 = @as(u32, band_entry.h_band_count - 1) | (@as(u32, band_entry.v_band_count - 1) << 16);
-        setLayerInfoTexel(data, kPathPaintInfoWidth, texel_offset + 0, .{
+        setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 0, .{
             @floatFromInt(band_entry.glyph_x),
             @floatFromInt(band_entry.glyph_y),
             @bitCast(packed_bands),
             pathPaintTag(paint),
         });
-        setLayerInfoTexel(data, kPathPaintInfoWidth, texel_offset + 1, .{
+        setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 1, .{
             band_entry.band_scale_x,
             band_entry.band_scale_y,
             band_entry.band_offset_x,
@@ -2703,18 +2667,18 @@ pub const PathPictureBuilder = struct {
 
         switch (paint) {
             .solid => |color| {
-                setLayerInfoTexel(data, kPathPaintInfoWidth, texel_offset + 2, color);
+                setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 2, color);
             },
             .linear_gradient => |gradient| {
-                setLayerInfoTexel(data, kPathPaintInfoWidth, texel_offset + 2, .{
+                setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 2, .{
                     gradient.start.x,
                     gradient.start.y,
                     gradient.end.x,
                     gradient.end.y,
                 });
-                setLayerInfoTexel(data, kPathPaintInfoWidth, texel_offset + 3, gradient.start_color);
-                setLayerInfoTexel(data, kPathPaintInfoWidth, texel_offset + 4, gradient.end_color);
-                setLayerInfoTexel(data, kPathPaintInfoWidth, texel_offset + 5, .{
+                setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 3, gradient.start_color);
+                setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 4, gradient.end_color);
+                setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 5, .{
                     @floatFromInt(@intFromEnum(gradient.extend)),
                     0,
                     0,
@@ -2722,30 +2686,30 @@ pub const PathPictureBuilder = struct {
                 });
             },
             .radial_gradient => |gradient| {
-                setLayerInfoTexel(data, kPathPaintInfoWidth, texel_offset + 2, .{
+                setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 2, .{
                     gradient.center.x,
                     gradient.center.y,
                     gradient.radius,
                     @floatFromInt(@intFromEnum(gradient.extend)),
                 });
-                setLayerInfoTexel(data, kPathPaintInfoWidth, texel_offset + 3, gradient.inner_color);
-                setLayerInfoTexel(data, kPathPaintInfoWidth, texel_offset + 4, gradient.outer_color);
+                setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 3, gradient.inner_color);
+                setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 4, gradient.outer_color);
             },
             .image => |image| {
-                setLayerInfoTexel(data, kPathPaintInfoWidth, texel_offset + 2, .{
+                setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 2, .{
                     image.uv_transform.xx,
                     image.uv_transform.xy,
                     image.uv_transform.tx,
                     0,
                 });
-                setLayerInfoTexel(data, kPathPaintInfoWidth, texel_offset + 3, .{
+                setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 3, .{
                     image.uv_transform.yx,
                     image.uv_transform.yy,
                     image.uv_transform.ty,
                     @floatFromInt(@intFromEnum(image.filter)),
                 });
-                setLayerInfoTexel(data, kPathPaintInfoWidth, texel_offset + 4, image.tint);
-                setLayerInfoTexel(data, kPathPaintInfoWidth, texel_offset + 5, .{
+                setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 4, image.tint);
+                setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 5, .{
                     0,
                     0,
                     @floatFromInt(@intFromEnum(image.extend_x)),
@@ -2772,9 +2736,9 @@ pub const PathPictureBuilder = struct {
         curves: []CurveSegment,
         bbox: BBox,
         logical_curve_count: usize,
-        paint: PathPaint,
+        paint: Paint,
         role: PathPicture.LayerRole,
-        transform: VectorTransform2D,
+        transform: Transform2D,
     ) !void {
         try self.paths.append(self.allocator, .{
             .bbox = bbox,
@@ -2800,9 +2764,9 @@ pub const PathPictureBuilder = struct {
 
     fn addFilledRectTiles(
         self: *PathPictureBuilder,
-        rect: VectorRect,
-        fill: VectorFillStyle,
-        transform: VectorTransform2D,
+        rect: Rect,
+        fill: FillStyle,
+        transform: Transform2D,
     ) !void {
         const width = @max(rect.w, 0.0);
         const height = @max(rect.h, 0.0);
@@ -2837,11 +2801,11 @@ pub const PathPictureBuilder = struct {
         inner_radius: f32,
         start_angle: f32,
         end_angle: f32,
-        fill: VectorFillStyle,
-        transform: VectorTransform2D,
+        fill: FillStyle,
+        transform: Transform2D,
     ) !void {
         if (outer_radius <= 1e-4) return;
-        var path = VectorPath.init(self.allocator);
+        var path = Path.init(self.allocator);
         defer path.deinit();
         try buildCircularSectorPath(&path, center, outer_radius, inner_radius, start_angle, end_angle);
         try self.addFilledPath(&path, fill, transform);
@@ -2849,12 +2813,12 @@ pub const PathPictureBuilder = struct {
 
     fn addSimpleFilledRoundedRect(
         self: *PathPictureBuilder,
-        rect: VectorRect,
-        fill: VectorFillStyle,
+        rect: Rect,
+        fill: FillStyle,
         corner_radius: f32,
-        transform: VectorTransform2D,
+        transform: Transform2D,
     ) !void {
-        var path = VectorPath.init(self.allocator);
+        var path = Path.init(self.allocator);
         defer path.deinit();
         try path.addRoundedRect(rect, corner_radius);
         try self.addPath(&path, fill, null, transform);
@@ -2862,10 +2826,10 @@ pub const PathPictureBuilder = struct {
 
     fn addLargeFilledRoundedRect(
         self: *PathPictureBuilder,
-        rect: VectorRect,
-        fill: VectorFillStyle,
+        rect: Rect,
+        fill: FillStyle,
         corner_radius: f32,
-        transform: VectorTransform2D,
+        transform: Transform2D,
     ) !void {
         const size = Vec2.new(@max(rect.w, 0.0), @max(rect.h, 0.0));
         if (size.x <= 1e-4 or size.y <= 1e-4) return;
@@ -2935,11 +2899,11 @@ pub const PathPictureBuilder = struct {
 
     fn addLargeInsideStrokeRoundedRect(
         self: *PathPictureBuilder,
-        rect: VectorRect,
-        fill: ?VectorFillStyle,
-        stroke: PathStrokeStyle,
+        rect: Rect,
+        fill: ?FillStyle,
+        stroke: StrokeStyle,
         corner_radius: f32,
-        transform: VectorTransform2D,
+        transform: Transform2D,
     ) !void {
         const size = Vec2.new(@max(rect.w, 0.0), @max(rect.h, 0.0));
         if (size.x <= 1e-4 or size.y <= 1e-4) return;
@@ -2974,7 +2938,7 @@ pub const PathPictureBuilder = struct {
         }
 
         if (fill) |style| {
-            const inner_rect = VectorRect{
+            const inner_rect = Rect{
                 .x = rect.x + inset,
                 .y = rect.y + inset,
                 .w = size.x - inset * 2.0,
@@ -3046,11 +3010,11 @@ pub const PathPictureBuilder = struct {
 
     fn addLargeCenterStrokeRoundedRect(
         self: *PathPictureBuilder,
-        rect: VectorRect,
-        fill: ?VectorFillStyle,
-        stroke: PathStrokeStyle,
+        rect: Rect,
+        fill: ?FillStyle,
+        stroke: StrokeStyle,
         corner_radius: f32,
-        transform: VectorTransform2D,
+        transform: Transform2D,
     ) !void {
         const size = Vec2.new(@max(rect.w, 0.0), @max(rect.h, 0.0));
         if (size.x <= 1e-4 or size.y <= 1e-4) return;
@@ -3067,7 +3031,7 @@ pub const PathPictureBuilder = struct {
 
         var stroke_only = stroke;
         stroke_only.placement = .inside;
-        const expanded = VectorRect{
+        const expanded = Rect{
             .x = rect.x - half_width,
             .y = rect.y - half_width,
             .w = size.x + stroke.width,
@@ -3084,11 +3048,11 @@ pub const PathPictureBuilder = struct {
 
     fn addExplicitInsideStrokeRecord(
         self: *PathPictureBuilder,
-        fill_path: *const VectorPath,
-        fill: ?VectorFillStyle,
-        stroke_path: *const VectorPath,
-        stroke_paint: PathPaint,
-        transform: VectorTransform2D,
+        fill_path: *const Path,
+        fill: ?FillStyle,
+        stroke_path: *const Path,
+        stroke_paint: Paint,
+        transform: Transform2D,
     ) !void {
         const stroke_bbox = stroke_path.bounds() orelse return error.EmptyPath;
         const stroke_curves = try stroke_path.cloneFilledCurves(self.allocator);
@@ -3123,12 +3087,12 @@ pub const PathPictureBuilder = struct {
         fill_curves: []CurveSegment,
         fill_bbox: BBox,
         fill_logical_curve_count: usize,
-        fill_paint: PathPaint,
+        fill_paint: Paint,
         stroke_curves: []CurveSegment,
         stroke_bbox: BBox,
         stroke_logical_curve_count: usize,
-        stroke_paint: PathPaint,
-        transform: VectorTransform2D,
+        stroke_paint: Paint,
+        transform: Transform2D,
         composite_mode: PathCompositeMode,
     ) !void {
         try self.paths.append(self.allocator, .{
@@ -3160,10 +3124,10 @@ pub const PathPictureBuilder = struct {
 
     pub fn addPath(
         self: *PathPictureBuilder,
-        path: *const VectorPath,
-        fill: ?VectorFillStyle,
-        stroke: ?PathStrokeStyle,
-        transform: VectorTransform2D,
+        path: *const Path,
+        fill: ?FillStyle,
+        stroke: ?StrokeStyle,
+        transform: Transform2D,
     ) !void {
         if (fill == null and stroke == null) return error.EmptyStyle;
         if (path.isEmpty()) return error.EmptyPath;
@@ -3214,38 +3178,38 @@ pub const PathPictureBuilder = struct {
 
     pub fn addFilledPath(
         self: *PathPictureBuilder,
-        path: *const VectorPath,
-        fill: VectorFillStyle,
-        transform: VectorTransform2D,
+        path: *const Path,
+        fill: FillStyle,
+        transform: Transform2D,
     ) !void {
         try self.addPath(path, fill, null, transform);
     }
 
     pub fn addStrokedPath(
         self: *PathPictureBuilder,
-        path: *const VectorPath,
-        stroke: PathStrokeStyle,
-        transform: VectorTransform2D,
+        path: *const Path,
+        stroke: StrokeStyle,
+        transform: Transform2D,
     ) !void {
         try self.addPath(path, null, stroke, transform);
     }
 
     pub fn addRect(
         self: *PathPictureBuilder,
-        rect: VectorRect,
-        fill: ?VectorFillStyle,
-        stroke: ?PathStrokeStyle,
-        transform: VectorTransform2D,
+        rect: Rect,
+        fill: ?FillStyle,
+        stroke: ?StrokeStyle,
+        transform: Transform2D,
     ) !void {
         if (stroke) |stroke_style| {
             const size = Vec2.new(@max(rect.w, 0.0), @max(rect.h, 0.0));
             const inset = std.math.clamp(stroke_style.width, 0.0, @min(size.x, size.y) * 0.5);
             if (stroke_style.placement == .inside and inset > 1e-4) {
-                var fill_path = VectorPath.init(self.allocator);
+                var fill_path = Path.init(self.allocator);
                 defer fill_path.deinit();
                 try fill_path.addRect(rect);
 
-                var stroke_path = VectorPath.init(self.allocator);
+                var stroke_path = Path.init(self.allocator);
                 defer stroke_path.deinit();
                 try stroke_path.addRect(rect);
                 if (size.x - inset * 2.0 > 1e-4 and size.y - inset * 2.0 > 1e-4) {
@@ -3260,7 +3224,7 @@ pub const PathPictureBuilder = struct {
             }
         }
 
-        var path = VectorPath.init(self.allocator);
+        var path = Path.init(self.allocator);
         defer path.deinit();
         try path.addRect(rect);
         try self.addPath(&path, fill, stroke, transform);
@@ -3268,11 +3232,11 @@ pub const PathPictureBuilder = struct {
 
     pub fn addRoundedRect(
         self: *PathPictureBuilder,
-        rect: VectorRect,
-        fill: ?VectorFillStyle,
-        stroke: ?PathStrokeStyle,
+        rect: Rect,
+        fill: ?FillStyle,
+        stroke: ?StrokeStyle,
         corner_radius: f32,
-        transform: VectorTransform2D,
+        transform: Transform2D,
     ) !void {
         const size = Vec2.new(@max(rect.w, 0.0), @max(rect.h, 0.0));
 
@@ -3281,15 +3245,15 @@ pub const PathPictureBuilder = struct {
             const radius = std.math.clamp(corner_radius, 0.0, max_radius);
             const inset = std.math.clamp(stroke_style.width, 0.0, max_radius);
             if (stroke_style.placement == .inside and inset > 1e-4) {
-                var fill_path = VectorPath.init(self.allocator);
+                var fill_path = Path.init(self.allocator);
                 defer fill_path.deinit();
                 try fill_path.addRoundedRect(rect, radius);
 
-                var stroke_path = VectorPath.init(self.allocator);
+                var stroke_path = Path.init(self.allocator);
                 defer stroke_path.deinit();
                 try stroke_path.addRoundedRect(rect, radius);
                 if (size.x - inset * 2.0 > 1e-4 and size.y - inset * 2.0 > 1e-4) {
-                    const inner_rect = VectorRect{
+                    const inner_rect = Rect{
                         .x = rect.x + inset,
                         .y = rect.y + inset,
                         .w = size.x - inset * 2.0,
@@ -3302,7 +3266,7 @@ pub const PathPictureBuilder = struct {
             }
         }
 
-        var path = VectorPath.init(self.allocator);
+        var path = Path.init(self.allocator);
         defer path.deinit();
         try path.addRoundedRect(rect, corner_radius);
         try self.addPath(&path, fill, stroke, transform);
@@ -3310,20 +3274,20 @@ pub const PathPictureBuilder = struct {
 
     pub fn addEllipse(
         self: *PathPictureBuilder,
-        rect: VectorRect,
-        fill: ?VectorFillStyle,
-        stroke: ?PathStrokeStyle,
-        transform: VectorTransform2D,
+        rect: Rect,
+        fill: ?FillStyle,
+        stroke: ?StrokeStyle,
+        transform: Transform2D,
     ) !void {
         if (stroke) |stroke_style| {
             const size = Vec2.new(@max(rect.w, 0.0), @max(rect.h, 0.0));
             const inset = std.math.clamp(stroke_style.width, 0.0, @min(size.x, size.y) * 0.5);
             if (stroke_style.placement == .inside and inset > 1e-4) {
-                var fill_path = VectorPath.init(self.allocator);
+                var fill_path = Path.init(self.allocator);
                 defer fill_path.deinit();
                 try fill_path.addEllipse(rect);
 
-                var stroke_path = VectorPath.init(self.allocator);
+                var stroke_path = Path.init(self.allocator);
                 defer stroke_path.deinit();
                 try stroke_path.addEllipse(rect);
                 if (size.x - inset * 2.0 > 1e-4 and size.y - inset * 2.0 > 1e-4) {
@@ -3338,7 +3302,7 @@ pub const PathPictureBuilder = struct {
             }
         }
 
-        var path = VectorPath.init(self.allocator);
+        var path = Path.init(self.allocator);
         defer path.deinit();
         try path.addEllipse(rect);
         try self.addPath(&path, fill, stroke, transform);
@@ -3346,56 +3310,56 @@ pub const PathPictureBuilder = struct {
 
     pub fn addFilledRect(
         self: *PathPictureBuilder,
-        rect: VectorRect,
-        fill: VectorFillStyle,
-        transform: VectorTransform2D,
+        rect: Rect,
+        fill: FillStyle,
+        transform: Transform2D,
     ) !void {
         try self.addRect(rect, fill, null, transform);
     }
 
     pub fn addFilledRoundedRect(
         self: *PathPictureBuilder,
-        rect: VectorRect,
-        fill: VectorFillStyle,
+        rect: Rect,
+        fill: FillStyle,
         corner_radius: f32,
-        transform: VectorTransform2D,
+        transform: Transform2D,
     ) !void {
         try self.addRoundedRect(rect, fill, null, corner_radius, transform);
     }
 
     pub fn addFilledEllipse(
         self: *PathPictureBuilder,
-        rect: VectorRect,
-        fill: VectorFillStyle,
-        transform: VectorTransform2D,
+        rect: Rect,
+        fill: FillStyle,
+        transform: Transform2D,
     ) !void {
         try self.addEllipse(rect, fill, null, transform);
     }
 
     pub fn addStrokedRect(
         self: *PathPictureBuilder,
-        rect: VectorRect,
-        stroke: PathStrokeStyle,
-        transform: VectorTransform2D,
+        rect: Rect,
+        stroke: StrokeStyle,
+        transform: Transform2D,
     ) !void {
         try self.addRect(rect, null, stroke, transform);
     }
 
     pub fn addStrokedRoundedRect(
         self: *PathPictureBuilder,
-        rect: VectorRect,
-        stroke: PathStrokeStyle,
+        rect: Rect,
+        stroke: StrokeStyle,
         corner_radius: f32,
-        transform: VectorTransform2D,
+        transform: Transform2D,
     ) !void {
         try self.addRoundedRect(rect, null, stroke, corner_radius, transform);
     }
 
     pub fn addStrokedEllipse(
         self: *PathPictureBuilder,
-        rect: VectorRect,
-        stroke: PathStrokeStyle,
-        transform: VectorTransform2D,
+        rect: Rect,
+        stroke: StrokeStyle,
+        transform: Transform2D,
     ) !void {
         try self.addEllipse(rect, null, stroke, transform);
     }
@@ -3408,9 +3372,9 @@ pub const PathPictureBuilder = struct {
         for (self.paths.items) |path| {
             total_layer_count += path.layer_count;
             total_paint_texels += if (path.layer_count == 1)
-                kPathPaintTexelsPerRecord
+                kPaintTexelsPerRecord
             else
-                1 + @as(u32, path.layer_count) * kPathPaintTexelsPerRecord;
+                1 + @as(u32, path.layer_count) * kPaintTexelsPerRecord;
         }
 
         const glyph_curves = try allocator.alloc(curve_tex.GlyphCurves, total_layer_count);
@@ -3459,8 +3423,8 @@ pub const PathPictureBuilder = struct {
         var glyph_map = std.AutoHashMap(u16, Atlas.GlyphInfo).init(allocator);
         errdefer glyph_map.deinit();
 
-        const paint_height = @max(1, (total_paint_texels + kPathPaintInfoWidth - 1) / kPathPaintInfoWidth);
-        const layer_info_data = try allocator.alloc(f32, kPathPaintInfoWidth * paint_height * 4);
+        const paint_height = @max(1, (total_paint_texels + kPaintInfoWidth - 1) / kPaintInfoWidth);
+        const layer_info_data = try allocator.alloc(f32, kPaintInfoWidth * paint_height * 4);
         errdefer allocator.free(layer_info_data);
         @memset(layer_info_data, 0);
 
@@ -3481,11 +3445,11 @@ pub const PathPictureBuilder = struct {
         for (self.paths.items, 0..) |path, path_index| {
             const info_texel_offset = texel_cursor;
             if (path.layer_count > 1) {
-                setLayerInfoTexel(layer_info_data, kPathPaintInfoWidth, texel_cursor, .{
+                setLayerInfoTexel(layer_info_data, kPaintInfoWidth, texel_cursor, .{
                     @floatFromInt(path.layer_count),
                     @floatFromInt(@intFromEnum(path.composite_mode)),
                     0,
-                    kPathPaintTagCompositeGroup,
+                    kPaintTagCompositeGroup,
                 });
                 texel_cursor += 1;
             }
@@ -3505,7 +3469,7 @@ pub const PathPictureBuilder = struct {
                     .page_index = 0,
                 });
                 layer_roles[glyph_cursor] = layer.role;
-                writePathPaintRecord(layer_info_data, texel_cursor, bt.entries[glyph_cursor], local_paint);
+                writePaintRecord(layer_info_data, texel_cursor, bt.entries[glyph_cursor], local_paint);
                 switch (local_paint) {
                     .image => |image_paint| {
                         paint_image_records[glyph_cursor] = .{
@@ -3516,7 +3480,7 @@ pub const PathPictureBuilder = struct {
                     },
                     else => {},
                 }
-                texel_cursor += kPathPaintTexelsPerRecord;
+                texel_cursor += kPaintTexelsPerRecord;
                 glyph_cursor += 1;
             }
 
@@ -3524,10 +3488,10 @@ pub const PathPictureBuilder = struct {
                 .glyph_id = first_glyph_id,
                 .bbox = translateBBox(path.bbox, delta),
                 .page_index = 0,
-                .info_x = @intCast(info_texel_offset % kPathPaintInfoWidth),
-                .info_y = @intCast(info_texel_offset / kPathPaintInfoWidth),
+                .info_x = @intCast(info_texel_offset % kPaintInfoWidth),
+                .info_y = @intCast(info_texel_offset / kPaintInfoWidth),
                 .layer_count = path.layer_count,
-                .transform = VectorTransform2D.multiply(path.transform, VectorTransform2D.translate(origin.x, origin.y)),
+                .transform = Transform2D.multiply(path.transform, Transform2D.translate(origin.x, origin.y)),
             };
         }
 
@@ -3552,7 +3516,7 @@ pub const PathPictureBuilder = struct {
         var atlas = try Atlas.initFromParts(allocator, null, pages, glyph_map);
         errdefer atlas.deinit();
         atlas.layer_info_data = layer_info_data;
-        atlas.layer_info_width = kPathPaintInfoWidth;
+        atlas.layer_info_width = kPaintInfoWidth;
         atlas.layer_info_height = paint_height;
         if (has_image_paints) {
             atlas.paint_image_records = paint_image_records;
@@ -3582,7 +3546,7 @@ pub const PathBatch = struct {
     }
 
     pub fn shapeCount(self: *const PathBatch) usize {
-        return self.len / FLOATS_PER_GLYPH;
+        return self.len / PATH_FLOATS_PER_SHAPE;
     }
 
     pub fn slice(self: *const PathBatch) []const f32 {
@@ -3597,14 +3561,14 @@ pub const PathBatch = struct {
         self: *PathBatch,
         atlas_like: anytype,
         picture: *const PathPicture,
-        transform: VectorTransform2D,
+        transform: Transform2D,
     ) usize {
-        const resolved_view = coerceAtlasView(atlas_like);
+        const resolved_view = coerceAtlasHandle(atlas_like);
         const view = &resolved_view;
         var count: usize = 0;
         for (picture.instances) |instance| {
-            if (self.len + FLOATS_PER_GLYPH > self.buf.len) break;
-            const final_transform = VectorTransform2D.multiply(transform, instance.transform);
+            if (self.len + PATH_FLOATS_PER_SHAPE > self.buf.len) break;
+            const final_transform = Transform2D.multiply(transform, instance.transform);
             const info_loc = view.layerInfoLoc(instance.info_x, instance.info_y);
             if (!vertex_mod.generateMultiLayerGlyphVerticesTransformed(
                 self.buf[self.len..],
@@ -3616,7 +3580,7 @@ pub const PathBatch = struct {
                 view.glyphLayer(instance.page_index),
                 final_transform,
             )) continue;
-            self.len += FLOATS_PER_GLYPH;
+            self.len += PATH_FLOATS_PER_SHAPE;
             count += 1;
         }
         return count;
@@ -3662,7 +3626,7 @@ pub const Renderer = struct {
     /// return lightweight views that encode the texture-array base layer for
     /// each atlas. Existing glyph handles remain stable across extend because
     /// page-local indices do not change.
-    pub fn uploadAtlases(self: *Renderer, atlases: []const *const Atlas, out_views: []AtlasView) void {
+    pub fn uploadAtlases(self: *Renderer, atlases: []const *const Atlas, out_views: []AtlasHandle) void {
         std.debug.assert(atlases.len == out_views.len);
         switch (self.backend) {
             .gl => pipeline.buildTextureArrays(atlases, out_views),
@@ -3671,7 +3635,7 @@ pub const Renderer = struct {
     }
 
     /// Upload one or more images to the renderer's shared image array.
-    pub fn uploadImages(self: *Renderer, images: []const *const Image, out_views: []ImageView) void {
+    pub fn uploadImages(self: *Renderer, images: []const *const Image, out_views: []ImageHandle) void {
         std.debug.assert(images.len == out_views.len);
         switch (self.backend) {
             .gl => pipeline.buildImageArray(images, out_views),
@@ -3680,23 +3644,23 @@ pub const Renderer = struct {
     }
 
     /// Convenience: upload a single image and return its current view.
-    pub fn uploadImage(self: *Renderer, image: *const Image) ImageView {
+    pub fn uploadImage(self: *Renderer, image: *const Image) ImageHandle {
         const arr = [1]*const Image{image};
-        var views = [1]ImageView{undefined};
+        var views = [1]ImageHandle{undefined};
         self.uploadImages(&arr, &views);
         return views[0];
     }
 
     /// Convenience: upload a single atlas and return its view.
-    pub fn uploadAtlas(self: *Renderer, atlas: *const Atlas) AtlasView {
+    pub fn uploadAtlas(self: *Renderer, atlas: *const Atlas) AtlasHandle {
         const arr = [1]*const Atlas{atlas};
-        var views = [1]AtlasView{undefined};
+        var views = [1]AtlasHandle{undefined};
         self.uploadAtlases(&arr, &views);
         return views[0];
     }
 
     /// Convenience: upload the atlas embedded in a frozen path picture.
-    pub fn uploadPathPicture(self: *Renderer, picture: *const PathPicture) AtlasView {
+    pub fn uploadPathPicture(self: *Renderer, picture: *const PathPicture) AtlasHandle {
         return self.uploadAtlas(&picture.atlas);
     }
 
@@ -3712,8 +3676,8 @@ pub const Renderer = struct {
         }
     }
 
-    /// Draw a batch of glyph vertices.
-    pub fn draw(self: *Renderer, vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
+    /// Draw a batch of text glyph vertices.
+    pub fn drawText(self: *Renderer, vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
         switch (self.backend) {
             .gl => pipeline.drawText(vertices, mvp, viewport_w, viewport_h),
             .vulkan => vulkan_pipeline.drawText(vertices, mvp, viewport_w, viewport_h),
@@ -3862,7 +3826,7 @@ test {
 }
 
 test "vector path approximates cubic commands into quadratic segments and reports bounds" {
-    var path = VectorPath.init(std.testing.allocator);
+    var path = Path.init(std.testing.allocator);
     defer path.deinit();
 
     try path.moveTo(.{ .x = 0, .y = 0 });
@@ -3880,7 +3844,7 @@ test "vector path approximates cubic commands into quadratic segments and report
 }
 
 test "vector path band count tracks source cubic commands" {
-    var path = VectorPath.init(std.testing.allocator);
+    var path = Path.init(std.testing.allocator);
     defer path.deinit();
 
     try path.moveTo(.{ .x = 0, .y = 0 });
@@ -3895,7 +3859,7 @@ test "vector path band count tracks source cubic commands" {
 }
 
 test "path picture band heuristic uses source segment count for cubic fills" {
-    var path = VectorPath.init(std.testing.allocator);
+    var path = Path.init(std.testing.allocator);
     defer path.deinit();
 
     try path.moveTo(.{ .x = 0, .y = 0 });
@@ -3915,7 +3879,7 @@ test "path picture band heuristic uses source segment count for cubic fills" {
 }
 
 test "path picture layers use direct local curve encoding" {
-    var body = VectorPath.init(std.testing.allocator);
+    var body = Path.init(std.testing.allocator);
     defer body.deinit();
     try body.moveTo(.{ .x = 28.0, .y = 155.0 });
     try body.cubicTo(.{ .x = 62.0, .y = 132.0 }, .{ .x = 106.0, .y = 121.0 }, .{ .x = 142.0, .y = 127.0 });
@@ -3956,7 +3920,7 @@ test "path picture layers use direct local curve encoding" {
 }
 
 test "path picture freeze compiles atlas and transformed batch vertices" {
-    var path = VectorPath.init(std.testing.allocator);
+    var path = Path.init(std.testing.allocator);
     defer path.deinit();
     try path.moveTo(.{ .x = 0, .y = 0 });
     try path.lineTo(.{ .x = 16, .y = 0 });
@@ -3978,11 +3942,11 @@ test "path picture freeze compiles atlas and transformed batch vertices" {
     try std.testing.expectEqual(@as(usize, 1), picture.shapeCount());
     try std.testing.expectEqual(@as(usize, 1), picture.atlas.pageCount());
 
-    var vertex_buf: [FLOATS_PER_GLYPH]f32 = undefined;
+    var vertex_buf: [PATH_FLOATS_PER_SHAPE]f32 = undefined;
     var batch = PathBatch.init(&vertex_buf);
-    const view = AtlasView{ .atlas = &picture.atlas };
+    const view = AtlasHandle{ .atlas = &picture.atlas };
     try std.testing.expectEqual(@as(usize, 1), batch.addPicture(&view, &picture));
-    try std.testing.expectEqual(@as(usize, FLOATS_PER_GLYPH), batch.slice().len);
+    try std.testing.expectEqual(@as(usize, PATH_FLOATS_PER_SHAPE), batch.slice().len);
     try std.testing.expectApproxEqAbs(@as(f32, 20), batch.slice()[0], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 30), batch.slice()[1], 0.001);
     const packed_gw: u32 = @bitCast(batch.slice()[7]);
@@ -3991,7 +3955,7 @@ test "path picture freeze compiles atlas and transformed batch vertices" {
 }
 
 test "path batch offsets layer info rows through atlas views" {
-    var path = VectorPath.init(std.testing.allocator);
+    var path = Path.init(std.testing.allocator);
     defer path.deinit();
     try path.addRect(.{ .x = 0, .y = 0, .w = 20, .h = 10 });
 
@@ -4002,9 +3966,9 @@ test "path batch offsets layer info rows through atlas views" {
     var picture = try builder.freeze(std.testing.allocator);
     defer picture.deinit();
 
-    var vertex_buf: [FLOATS_PER_GLYPH]f32 = undefined;
+    var vertex_buf: [PATH_FLOATS_PER_SHAPE]f32 = undefined;
     var batch = PathBatch.init(&vertex_buf);
-    const offset_view = AtlasView{
+    const offset_view = AtlasHandle{
         .atlas = &picture.atlas,
         .layer_base = 3,
         .info_row_base = 17,
@@ -4017,7 +3981,7 @@ test "path batch offsets layer info rows through atlas views" {
 }
 
 test "styled path builder emits fill and stroke records" {
-    var path = VectorPath.init(std.testing.allocator);
+    var path = Path.init(std.testing.allocator);
     defer path.deinit();
     try path.addRect(.{ .x = 4, .y = 6, .w = 20, .h = 10 });
 
@@ -4045,15 +4009,15 @@ test "styled path builder emits fill and stroke records" {
     try std.testing.expect(stroke_info.bbox.max.y > fill_info.bbox.max.y);
 
     const lid = picture.atlas.layer_info_data orelse return error.TestExpectedEqual;
-    try std.testing.expectApproxEqAbs(kPathPaintTagCompositeGroup, lid[3], 0.001);
+    try std.testing.expectApproxEqAbs(kPaintTagCompositeGroup, lid[3], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 2), lid[0], 0.001);
-    try std.testing.expectApproxEqAbs(kPathPaintTagSolid, lid[7], 0.001);
+    try std.testing.expectApproxEqAbs(kPaintTagSolid, lid[7], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 0.2), lid[12], 0.001);
-    try std.testing.expectApproxEqAbs(kPathPaintTagSolid, lid[31], 0.001);
+    try std.testing.expectApproxEqAbs(kPaintTagSolid, lid[31], 0.001);
 }
 
 test "open stroked path expands for round caps" {
-    var path = VectorPath.init(std.testing.allocator);
+    var path = Path.init(std.testing.allocator);
     defer path.deinit();
     try path.moveTo(.{ .x = 0, .y = 0 });
     try path.lineTo(.{ .x = 12, .y = 0 });
@@ -4079,7 +4043,7 @@ test "open stroked path expands for round caps" {
 }
 
 test "square-capped stroked path extends beyond endpoints" {
-    var path = VectorPath.init(std.testing.allocator);
+    var path = Path.init(std.testing.allocator);
     defer path.deinit();
     try path.moveTo(.{ .x = 0, .y = 0 });
     try path.lineTo(.{ .x = 12, .y = 0 });
@@ -4098,7 +4062,7 @@ test "square-capped stroked path extends beyond endpoints" {
 }
 
 test "elliptical stroke outline stays curved without degenerate joins" {
-    var path = VectorPath.init(std.testing.allocator);
+    var path = Path.init(std.testing.allocator);
     defer path.deinit();
     try path.addEllipse(.{ .x = 0, .y = 0, .w = 100, .h = 60 });
 
@@ -4137,7 +4101,7 @@ test "quadratic stroked eye stalk contains its centerline midpoint" {
     };
 
     for (cases) |case| {
-        var path = VectorPath.init(std.testing.allocator);
+        var path = Path.init(std.testing.allocator);
         defer path.deinit();
         try path.moveTo(case.start);
         try path.quadTo(case.control, case.end);
@@ -4163,7 +4127,7 @@ test "quadratic stroked eye stalk contains its centerline midpoint" {
 }
 
 test "rounded rect corners use exact conic arc segments" {
-    var path = VectorPath.init(std.testing.allocator);
+    var path = Path.init(std.testing.allocator);
     defer path.deinit();
     try path.addRoundedRect(.{ .x = 0, .y = 0, .w = 200, .h = 200 }, 40);
 
@@ -4182,7 +4146,7 @@ test "rounded rect corners use exact conic arc segments" {
 }
 
 test "ellipse quarters use exact conic arc segments" {
-    var path = VectorPath.init(std.testing.allocator);
+    var path = Path.init(std.testing.allocator);
     defer path.deinit();
     try path.addEllipse(.{ .x = 0, .y = 0, .w = 100, .h = 60 });
 
@@ -4193,7 +4157,7 @@ test "ellipse quarters use exact conic arc segments" {
 }
 
 test "inside-aligned generic path stroke groups fill and stroke on one instance" {
-    var path = VectorPath.init(std.testing.allocator);
+    var path = Path.init(std.testing.allocator);
     defer path.deinit();
     try path.addRoundedRect(.{ .x = 10, .y = 20, .w = 40, .h = 18 }, 6.0);
 
@@ -4231,7 +4195,7 @@ test "inside-aligned generic path stroke groups fill and stroke on one instance"
     try std.testing.expectApproxEqAbs(@as(f32, 29), picture.instances[0].transform.ty, 0.05);
 
     const lid = picture.atlas.layer_info_data orelse return error.TestExpectedEqual;
-    try std.testing.expectApproxEqAbs(kPathPaintTagCompositeGroup, lid[3], 0.001);
+    try std.testing.expectApproxEqAbs(kPaintTagCompositeGroup, lid[3], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, @intFromEnum(PathCompositeMode.fill_stroke_inside)), lid[1], 0.001);
 }
 
@@ -4266,7 +4230,7 @@ test "inside-aligned rounded rect helper emits explicit ring geometry" {
     try std.testing.expectApproxEqAbs(@as(f32, 29), picture.instances[0].transform.ty, 0.05);
 
     const lid = picture.atlas.layer_info_data orelse return error.TestExpectedEqual;
-    try std.testing.expectApproxEqAbs(kPathPaintTagCompositeGroup, lid[3], 0.001);
+    try std.testing.expectApproxEqAbs(kPaintTagCompositeGroup, lid[3], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, @intFromEnum(PathCompositeMode.fill_stroke_inside)), lid[1], 0.001);
 }
 
@@ -4425,7 +4389,7 @@ test "large rounded rect center stroke uses generic curve packing without helper
 }
 
 test "path picture gradient paint records encode linear and radial paints" {
-    var path = VectorPath.init(std.testing.allocator);
+    var path = Path.init(std.testing.allocator);
     defer path.deinit();
     try path.addRect(.{ .x = 0, .y = 0, .w = 20, .h = 10 });
 
@@ -4453,13 +4417,13 @@ test "path picture gradient paint records encode linear and radial paints" {
     defer picture.deinit();
 
     const lid = picture.atlas.layer_info_data orelse return error.TestExpectedEqual;
-    try std.testing.expectApproxEqAbs(kPathPaintTagCompositeGroup, lid[3], 0.001);
-    try std.testing.expectApproxEqAbs(kPathPaintTagLinearGradient, lid[7], 0.001);
+    try std.testing.expectApproxEqAbs(kPaintTagCompositeGroup, lid[3], 0.001);
+    try std.testing.expectApproxEqAbs(kPaintTagLinearGradient, lid[7], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 10), lid[14], 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, @floatFromInt(@intFromEnum(PathPaintExtend.reflect))), lid[24], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, @floatFromInt(@intFromEnum(PaintExtend.reflect))), lid[24], 0.001);
 
-    const radial_base = @as(usize, (1 + kPathPaintTexelsPerRecord)) * 4;
-    try std.testing.expectApproxEqAbs(kPathPaintTagRadialGradient, lid[radial_base + 3], 0.001);
+    const radial_base = @as(usize, (1 + kPaintTexelsPerRecord)) * 4;
+    try std.testing.expectApproxEqAbs(kPaintTagRadialGradient, lid[radial_base + 3], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 0), lid[radial_base + 8], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 0), lid[radial_base + 9], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 12), lid[radial_base + 10], 0.001);
@@ -4474,7 +4438,7 @@ test "path picture image paint records keep image metadata" {
     });
     defer image.deinit();
 
-    var path = VectorPath.init(std.testing.allocator);
+    var path = Path.init(std.testing.allocator);
     defer path.deinit();
     try path.addRect(.{ .x = 0, .y = 0, .w = 12, .h = 8 });
 
@@ -4506,8 +4470,8 @@ test "path picture image paint records keep image metadata" {
     try std.testing.expectApproxEqAbs(@as(f32, 3.25), lid[10], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, @floatFromInt(@intFromEnum(ImageFilter.nearest))), lid[15], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 0.5), lid[16], 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, @floatFromInt(@intFromEnum(PathPaintExtend.repeat))), lid[22], 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, @floatFromInt(@intFromEnum(PathPaintExtend.reflect))), lid[23], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, @floatFromInt(@intFromEnum(PaintExtend.repeat))), lid[22], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, @floatFromInt(@intFromEnum(PaintExtend.reflect))), lid[23], 0.001);
 }
 
 test "sprite batch packs transformed image quads" {
@@ -4520,7 +4484,7 @@ test "sprite batch packs transformed image quads" {
     var buf: [SPRITE_FLOATS_PER_SPRITE]f32 = undefined;
     var batch = SpriteBatch.init(&buf);
     try std.testing.expect(batch.addSpriteRect(
-        ImageView{ .image = &image, .layer = 7, .uv_scale = .{ .x = 0.5, .y = 0.25 } },
+        ImageHandle{ .image = &image, .layer = 7, .uv_scale = .{ .x = 0.5, .y = 0.25 } },
         .{ .x = 10, .y = 20, .w = 16, .h = 12 },
         .{ 1, 0.5, 0.25, 1 },
         .{ .u0 = 0.25, .v0 = 0.0, .u1 = 0.75, .v1 = 1.0 },
@@ -4536,36 +4500,6 @@ test "sprite batch packs transformed image quads" {
     var picture = try batch.freeze(std.testing.allocator);
     defer picture.deinit();
     try std.testing.expectEqual(@as(usize, 1), picture.spriteCount());
-}
-
-test "addStringWrapped preserves blank lines" {
-    const assets = @import("assets");
-
-    var font = try Font.init(assets.noto_sans_regular);
-    var atlas = try Atlas.initAscii(std.testing.allocator, &font, &ASCII_PRINTABLE);
-    defer atlas.deinit();
-
-    var buf: [128 * FLOATS_PER_GLYPH]f32 = undefined;
-    var batch = Batch.init(&buf);
-    const height = batch.addStringWrapped(&atlas, &font, "A\n\nB", 0, 100, 16, 200, 10, .{ 1, 1, 1, 1 });
-
-    try std.testing.expectApproxEqAbs(@as(f32, 30), height, 0.001);
-    try std.testing.expectEqual(@as(usize, 2), batch.glyphCount());
-}
-
-test "addStringWrapped forces UTF-8 breaks on codepoint boundaries" {
-    const assets = @import("assets");
-
-    var font = try Font.init(assets.noto_sans_regular);
-    var atlas = try Atlas.init(std.testing.allocator, &font, &[_]u32{0x00E9});
-    defer atlas.deinit();
-
-    var buf: [128 * FLOATS_PER_GLYPH]f32 = undefined;
-    var batch = Batch.init(&buf);
-    const height = batch.addStringWrapped(&atlas, &font, "\xc3\xa9\xc3\xa9", 0, 40, 16, 0.01, 10, .{ 1, 1, 1, 1 });
-
-    try std.testing.expectApproxEqAbs(@as(f32, 20), height, 0.001);
-    try std.testing.expectEqual(@as(usize, 2), batch.glyphCount());
 }
 
 test "Font.lineMetrics forwards parser metrics" {

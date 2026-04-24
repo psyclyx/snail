@@ -95,14 +95,14 @@ fn benchSnail(allocator: std.mem.Allocator, font_data: []const u8) !SnailResults
     const tex_bytes = atlas.textureByteLen();
 
     // Layout benchmarks
-    var vbuf: [20000 * snail.FLOATS_PER_GLYPH]f32 = undefined;
+    var vbuf: [20000 * snail.TEXT_FLOATS_PER_GLYPH]f32 = undefined;
     const white = [4]f32{ 1, 1, 1, 1 };
 
     // Short string
     var t = nowNs();
     for (0..LAYOUT_ITERS) |_| {
-        var b = snail.Batch.init(&vbuf);
-        _ = b.addString(&atlas, &font_wrapped, SHORT, 0, 0, 24, white);
+        var b = snail.TextBatch.init(&vbuf);
+        _ = b.addText(&atlas, &font_wrapped, SHORT, 0, 0, 24, white);
         std.mem.doNotOptimizeAway(&b);
     }
     const layout_short_us = usFrom(t) / LAYOUT_ITERS;
@@ -110,8 +110,8 @@ fn benchSnail(allocator: std.mem.Allocator, font_data: []const u8) !SnailResults
     // Sentence at 48px
     t = nowNs();
     for (0..LAYOUT_ITERS) |_| {
-        var b = snail.Batch.init(&vbuf);
-        _ = b.addString(&atlas, &font_wrapped, SENTENCE, 0, 0, 48, white);
+        var b = snail.TextBatch.init(&vbuf);
+        _ = b.addText(&atlas, &font_wrapped, SENTENCE, 0, 0, 48, white);
         std.mem.doNotOptimizeAway(&b);
     }
     const layout_sentence_us = usFrom(t) / LAYOUT_ITERS;
@@ -119,8 +119,8 @@ fn benchSnail(allocator: std.mem.Allocator, font_data: []const u8) !SnailResults
     // Paragraph at 18px
     t = nowNs();
     for (0..LAYOUT_ITERS) |_| {
-        var b = snail.Batch.init(&vbuf);
-        _ = b.addString(&atlas, &font_wrapped, PARAGRAPH, 0, 0, 18, white);
+        var b = snail.TextBatch.init(&vbuf);
+        _ = b.addText(&atlas, &font_wrapped, PARAGRAPH, 0, 0, 18, white);
         std.mem.doNotOptimizeAway(&b);
     }
     const layout_paragraph_us = usFrom(t) / LAYOUT_ITERS;
@@ -128,11 +128,11 @@ fn benchSnail(allocator: std.mem.Allocator, font_data: []const u8) !SnailResults
     // Torture: paragraph at all 7 sizes
     t = nowNs();
     for (0..LAYOUT_ITERS) |_| {
-        var b = snail.Batch.init(&vbuf);
+        var b = snail.TextBatch.init(&vbuf);
         var y: f32 = 700;
         for (SIZES) |sz| {
             const fsz: f32 = @floatFromInt(sz);
-            _ = b.addString(&atlas, &font_wrapped, PARAGRAPH, 0, y, fsz, white);
+            _ = b.addText(&atlas, &font_wrapped, PARAGRAPH, 0, y, fsz, white);
             y -= fsz * 1.4;
         }
         std.mem.doNotOptimizeAway(&b);

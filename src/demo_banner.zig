@@ -117,39 +117,39 @@ pub const TextMetrics = struct {
 };
 
 pub const Layout = struct {
-    canvas: snail.VectorRect,
-    specimen_panel: snail.VectorRect,
-    frame: snail.VectorRect,
-    script_band: snail.VectorRect,
-    snail_stage: snail.VectorRect,
-    path_label_area: snail.VectorRect,
-    badge_pill: snail.VectorRect,
-    emoji_pill: snail.VectorRect,
-    script_rows: [4]snail.VectorRect,
-    stage_rows: [4]snail.VectorRect,
+    canvas: snail.Rect,
+    specimen_panel: snail.Rect,
+    frame: snail.Rect,
+    script_band: snail.Rect,
+    snail_stage: snail.Rect,
+    path_label_area: snail.Rect,
+    badge_pill: snail.Rect,
+    emoji_pill: snail.Rect,
+    script_rows: [4]snail.Rect,
+    stage_rows: [4]snail.Rect,
     script_text_x: f32,
 };
 
 pub const TextResources = struct {
     latin_font: *const snail.Font,
-    latin_view: *const snail.AtlasView,
+    latin_view: *const snail.AtlasHandle,
     arabic_font: *const ScriptFont,
-    arabic_view: *const snail.AtlasView,
+    arabic_view: *const snail.AtlasHandle,
     devanagari_font: *const ScriptFont,
-    devanagari_view: *const snail.AtlasView,
+    devanagari_view: *const snail.AtlasHandle,
     mongolian_font: *const ScriptFont,
-    mongolian_view: *const snail.AtlasView,
+    mongolian_view: *const snail.AtlasHandle,
     thai_font: *const ScriptFont,
-    thai_view: *const snail.AtlasView,
+    thai_view: *const snail.AtlasHandle,
     emoji_font: *const ScriptFont,
-    emoji_view: *const snail.AtlasView,
+    emoji_view: *const snail.AtlasHandle,
 };
 
 fn snapPx(value: f32) f32 {
     return @round(value);
 }
 
-fn snapRect(rect: snail.VectorRect) snail.VectorRect {
+fn snapRect(rect: snail.Rect) snail.Rect {
     return .{
         .x = snapPx(rect.x),
         .y = snapPx(rect.y),
@@ -173,7 +173,7 @@ fn addFilledQuadraticRibbon(
     end: snail.Vec2,
     half_width: f32,
     color: [4]f32,
-    transform: snail.VectorTransform2D,
+    transform: snail.Transform2D,
 ) !void {
     const start_tangent = snail.Vec2.normalize(snail.Vec2.sub(control, start));
     const end_tangent = snail.Vec2.normalize(snail.Vec2.sub(end, control));
@@ -188,7 +188,7 @@ fn addFilledQuadraticRibbon(
     const end_normal = snail.Vec2.scale(perpLeft(end_tangent), half_width);
     const tip_cap = snail.Vec2.scale(end_tangent, half_width * 0.9);
 
-    var ribbon = snail.VectorPath.init(builder.allocator);
+    var ribbon = snail.Path.init(builder.allocator);
     defer ribbon.deinit();
     try ribbon.moveTo(snail.Vec2.add(start, start_normal));
     try ribbon.quadTo(snail.Vec2.add(control, mid_normal), snail.Vec2.add(end, end_normal));
@@ -240,9 +240,9 @@ const LineExtents = struct {
 };
 
 fn measureText(atlas_like: anytype, font: *const snail.Font, text: []const u8, font_size: f32) MeasuredText {
-    var probe_buf: [128 * snail.FLOATS_PER_GLYPH]f32 = undefined;
-    var probe = snail.Batch.init(&probe_buf);
-    const advance = probe.addString(atlas_like, font, text, 0, 0, font_size, ink);
+    var probe_buf: [128 * snail.TEXT_FLOATS_PER_GLYPH]f32 = undefined;
+    var probe = snail.TextBatch.init(&probe_buf);
+    const advance = probe.addText(atlas_like, font, text, 0, 0, font_size, ink);
     if (probe.glyphCount() == 0) return .{
         .advance = advance,
         .bounds = TextBounds.empty(),
@@ -256,9 +256,9 @@ fn measureText(atlas_like: anytype, font: *const snail.Font, text: []const u8, f
     };
     const vertices = probe.slice();
     var glyph_start: usize = 0;
-    while (glyph_start < vertices.len) : (glyph_start += snail.FLOATS_PER_GLYPH) {
-        inline for (0..snail.VERTICES_PER_GLYPH) |vertex_index| {
-            const base = glyph_start + vertex_index * snail.FLOATS_PER_VERTEX;
+    while (glyph_start < vertices.len) : (glyph_start += snail.TEXT_FLOATS_PER_GLYPH) {
+        inline for (0..snail.TEXT_VERTICES_PER_GLYPH) |vertex_index| {
+            const base = glyph_start + vertex_index * snail.TEXT_FLOATS_PER_VERTEX;
             bounds.include(vertices[base], vertices[base + 1]);
         }
     }
@@ -288,7 +288,7 @@ fn boundsExtents(bounds: TextBounds) LineExtents {
     };
 }
 
-fn centeredBaselineTopFromExtents(extents: LineExtents, rect: snail.VectorRect) f32 {
+fn centeredBaselineTopFromExtents(extents: LineExtents, rect: snail.Rect) f32 {
     const content_h = extents.height();
     return rect.y + (rect.h - content_h) * 0.5 + extents.ascent;
 }
@@ -395,7 +395,7 @@ pub fn buildLayout(w: f32, h: f32, metrics: TextMetrics) Layout {
         if (i + 1 < metrics.script_row_heights.len) script_inner_h += script_row_gap;
     }
     const script_top = script_band.y + script_band_top_inset + (script_band.h - metrics.script_band_min_h) * 0.5;
-    var script_rows: [4]snail.VectorRect = undefined;
+    var script_rows: [4]snail.Rect = undefined;
     var row_y = script_top;
     for (&script_rows, metrics.script_row_heights) |*row, row_h| {
         row.* = snapRect(.{
@@ -419,7 +419,7 @@ pub fn buildLayout(w: f32, h: f32, metrics: TextMetrics) Layout {
         .w = std.math.clamp(frame.w * 0.18, 196.0, 260.0),
         .h = 176.0,
     });
-    var stage_rows: [4]snail.VectorRect = undefined;
+    var stage_rows: [4]snail.Rect = undefined;
     const stage_row_y = path_label_area.y + 84.0;
     for (&stage_rows, 0..) |*row, i| {
         row.* = snapRect(.{
@@ -453,7 +453,7 @@ pub fn buildLayout(w: f32, h: f32, metrics: TextMetrics) Layout {
     };
 }
 
-fn stageIconRect(row: snail.VectorRect) snail.VectorRect {
+fn stageIconRect(row: snail.Rect) snail.Rect {
     return snapRect(.{
         .x = row.x + 2.0,
         .y = row.y + 3.0,
@@ -492,7 +492,7 @@ fn addFinalScriptPills(builder: *snail.PathPictureBuilder, layout: Layout) !void
     }
 }
 
-pub fn drawText(batch: *snail.Batch, h: f32, layout: Layout, metrics: TextMetrics, resources: TextResources) void {
+pub fn drawText(batch: *snail.TextBatch, h: f32, layout: Layout, metrics: TextMetrics, resources: TextResources) void {
     const hero_x = layout.frame.x + 30.0;
     const title_size = std.math.clamp(layout.frame.w * 0.11, 88.0, 118.0);
     const subtitle_size = std.math.clamp(layout.frame.w * 0.019, 19.0, 26.0);
@@ -519,7 +519,7 @@ pub fn drawText(batch: *snail.Batch, h: f32, layout: Layout, metrics: TextMetric
     const badge_baseline_top = centeredBaselineTopFromExtents(badge_extents, layout.badge_pill);
     const emoji_label_baseline_top = centeredBaselineTopFromExtents(metrics.script_label_extents, layout.emoji_pill);
     const emoji_baseline_top = centeredBaselineTopFromExtents(metrics.emoji_extents, layout.emoji_pill);
-    const scripts_heading_gutter = snail.VectorRect{
+    const scripts_heading_gutter = snail.Rect{
         .x = layout.script_band.x,
         .y = layout.specimen_panel.y + layout.specimen_panel.h,
         .w = layout.script_band.w,
@@ -542,25 +542,25 @@ pub fn drawText(batch: *snail.Batch, h: f32, layout: Layout, metrics: TextMetric
     const stage_title_top = layout.path_label_area.y + 40.0 - stage_title_extents.ascent;
     const stage_caption_top = layout.path_label_area.y + 64.0 - stage_caption_extents.ascent;
 
-    _ = batch.addString(resources.latin_view, resources.latin_font, badge_text, layout.badge_pill.x + 16.0, textYFromTop(h, badge_baseline_top), badge_font_size, teal);
-    _ = batch.addString(resources.latin_view, resources.latin_font, title_text, hero_x, textYFromTop(h, baselineFromTop(hero_title_top, title_extents)), title_size, ink);
-    _ = batch.addString(resources.latin_view, resources.latin_font, subtitle_text, hero_x, textYFromTop(h, baselineFromTop(hero_subtitle_top, subtitle_extents)), subtitle_size, mist);
-    _ = batch.addString(resources.latin_view, resources.latin_font, hero_meta_text, hero_x, textYFromTop(h, baselineFromTop(hero_meta_top, hero_meta_extents)), 14.0, slate);
+    _ = batch.addText(resources.latin_view, resources.latin_font, badge_text, layout.badge_pill.x + 16.0, textYFromTop(h, badge_baseline_top), badge_font_size, teal);
+    _ = batch.addText(resources.latin_view, resources.latin_font, title_text, hero_x, textYFromTop(h, baselineFromTop(hero_title_top, title_extents)), title_size, ink);
+    _ = batch.addText(resources.latin_view, resources.latin_font, subtitle_text, hero_x, textYFromTop(h, baselineFromTop(hero_subtitle_top, subtitle_extents)), subtitle_size, mist);
+    _ = batch.addText(resources.latin_view, resources.latin_font, hero_meta_text, hero_x, textYFromTop(h, baselineFromTop(hero_meta_top, hero_meta_extents)), 14.0, slate);
 
     const specimen_x = layout.specimen_panel.x + 24.0;
-    _ = batch.addString(resources.latin_view, resources.latin_font, ligature_label_text, specimen_x, textYFromTop(h, baselineFromTop(specimen_label_top, specimen_label_extents)), 12.0, teal);
-    _ = batch.addString(resources.latin_view, resources.latin_font, ligature_text, specimen_x, textYFromTop(h, baselineFromTop(ligature_top, ligature_extents)), ligature_size, ink);
-    _ = batch.addString(resources.latin_view, resources.latin_font, ligature_caption_text, specimen_x, textYFromTop(h, baselineFromTop(ligature_caption_top, ligature_caption_extents)), 14.0, sand);
-    _ = batch.addString(resources.latin_view, resources.latin_font, pangram_a_text, specimen_x, textYFromTop(h, baselineFromTop(pangram_a_top, pangram_a_extents)), pangram_size, mist);
-    _ = batch.addString(resources.latin_view, resources.latin_font, pangram_b_text, specimen_x, textYFromTop(h, baselineFromTop(pangram_b_top, pangram_b_extents)), 16.0, ink);
-    _ = batch.addString(resources.latin_view, resources.latin_font, specimen_footer_text, specimen_x, textYFromTop(h, baselineFromTop(specimen_footer_top, specimen_footer_extents)), 12.0, slate);
+    _ = batch.addText(resources.latin_view, resources.latin_font, ligature_label_text, specimen_x, textYFromTop(h, baselineFromTop(specimen_label_top, specimen_label_extents)), 12.0, teal);
+    _ = batch.addText(resources.latin_view, resources.latin_font, ligature_text, specimen_x, textYFromTop(h, baselineFromTop(ligature_top, ligature_extents)), ligature_size, ink);
+    _ = batch.addText(resources.latin_view, resources.latin_font, ligature_caption_text, specimen_x, textYFromTop(h, baselineFromTop(ligature_caption_top, ligature_caption_extents)), 14.0, sand);
+    _ = batch.addText(resources.latin_view, resources.latin_font, pangram_a_text, specimen_x, textYFromTop(h, baselineFromTop(pangram_a_top, pangram_a_extents)), pangram_size, mist);
+    _ = batch.addText(resources.latin_view, resources.latin_font, pangram_b_text, specimen_x, textYFromTop(h, baselineFromTop(pangram_b_top, pangram_b_extents)), 16.0, ink);
+    _ = batch.addText(resources.latin_view, resources.latin_font, specimen_footer_text, specimen_x, textYFromTop(h, baselineFromTop(specimen_footer_top, specimen_footer_extents)), 12.0, slate);
 
-    _ = batch.addString(resources.latin_view, resources.latin_font, scripts_heading_text, layout.script_band.x + 12.0, textYFromTop(h, scripts_heading_baseline_top), scripts_heading_font_size, teal);
+    _ = batch.addText(resources.latin_view, resources.latin_font, scripts_heading_text, layout.script_band.x + 12.0, textYFromTop(h, scripts_heading_baseline_top), scripts_heading_font_size, teal);
 
     const script_items = [_]struct {
         spec: ScriptRowSpec,
         font: *const ScriptFont,
-        view: *const snail.AtlasView,
+        view: *const snail.AtlasHandle,
     }{
         .{ .spec = script_row_specs[0], .font = resources.arabic_font, .view = resources.arabic_view },
         .{ .spec = script_row_specs[1], .font = resources.devanagari_font, .view = resources.devanagari_view },
@@ -571,18 +571,18 @@ pub fn drawText(batch: *snail.Batch, h: f32, layout: Layout, metrics: TextMetric
         const label_baseline_top = centeredBaselineTopFromExtents(metrics.script_label_extents, row);
         const sample_baseline_top = centeredBaselineTopFromExtents(metrics.script_sample_extents[i], row);
         const sample_x = snapPx(layout.script_text_x + script_sample_inset_x + item.spec.sample_inset_x - metrics.script_sample_bounds[i].min_x);
-        _ = batch.addString(resources.latin_view, resources.latin_font, item.spec.label, row.x + script_label_inset_x, textYFromTop(h, label_baseline_top), script_label_font_size, slate);
-        _ = batch.addString(item.view, &item.font.font, item.spec.text, sample_x, textYFromTop(h, sample_baseline_top), item.spec.size, item.spec.color);
+        _ = batch.addText(resources.latin_view, resources.latin_font, item.spec.label, row.x + script_label_inset_x, textYFromTop(h, label_baseline_top), script_label_font_size, slate);
+        _ = batch.addText(item.view, &item.font.font, item.spec.text, sample_x, textYFromTop(h, sample_baseline_top), item.spec.size, item.spec.color);
     }
 
-    _ = batch.addString(resources.latin_view, resources.latin_font, emoji_label_text, layout.emoji_pill.x + script_label_inset_x, textYFromTop(h, emoji_label_baseline_top), script_label_font_size, slate);
-    _ = batch.addString(resources.emoji_view, &resources.emoji_font.font, emoji_text, snapPx(layout.script_text_x + script_sample_inset_x - metrics.emoji_bounds.min_x), textYFromTop(h, emoji_baseline_top), emoji_font_size, ink);
+    _ = batch.addText(resources.latin_view, resources.latin_font, emoji_label_text, layout.emoji_pill.x + script_label_inset_x, textYFromTop(h, emoji_label_baseline_top), script_label_font_size, slate);
+    _ = batch.addText(resources.emoji_view, &resources.emoji_font.font, emoji_text, snapPx(layout.script_text_x + script_sample_inset_x - metrics.emoji_bounds.min_x), textYFromTop(h, emoji_baseline_top), emoji_font_size, ink);
 
-    _ = batch.addString(resources.latin_view, resources.latin_font, stage_label_text, layout.path_label_area.x, textYFromTop(h, baselineFromTop(stage_label_top, stage_label_extents)), 12.0, teal);
-    _ = batch.addString(resources.latin_view, resources.latin_font, stage_title_text, layout.path_label_area.x, textYFromTop(h, baselineFromTop(stage_title_top, stage_title_extents)), 21.0, ink);
-    _ = batch.addString(resources.latin_view, resources.latin_font, stage_caption_text, layout.path_label_area.x, textYFromTop(h, baselineFromTop(stage_caption_top, stage_caption_extents)), 14.0, mist);
+    _ = batch.addText(resources.latin_view, resources.latin_font, stage_label_text, layout.path_label_area.x, textYFromTop(h, baselineFromTop(stage_label_top, stage_label_extents)), 12.0, teal);
+    _ = batch.addText(resources.latin_view, resources.latin_font, stage_title_text, layout.path_label_area.x, textYFromTop(h, baselineFromTop(stage_title_top, stage_title_extents)), 21.0, ink);
+    _ = batch.addText(resources.latin_view, resources.latin_font, stage_caption_text, layout.path_label_area.x, textYFromTop(h, baselineFromTop(stage_caption_top, stage_caption_extents)), 14.0, mist);
     for (layout.stage_rows, stage_shape_labels) |row, label| {
-        _ = batch.addString(resources.latin_view, resources.latin_font, label, row.x + 64.0, textYFromTop(h, centeredBaselineTopFromExtents(stage_row_extents, row)), 12.0, ink);
+        _ = batch.addText(resources.latin_view, resources.latin_font, label, row.x + 64.0, textYFromTop(h, centeredBaselineTopFromExtents(stage_row_extents, row)), 12.0, ink);
     }
 }
 
@@ -691,7 +691,7 @@ pub fn buildPathShowcase(builder: *snail.PathPictureBuilder, layout: Layout) !vo
     );
 
     const path_icon = stageIconRect(layout.stage_rows[3]);
-    var swash = snail.VectorPath.init(builder.allocator);
+    var swash = snail.Path.init(builder.allocator);
     defer swash.deinit();
     try swash.moveTo(.{ .x = path_icon.x + 3.0, .y = path_icon.y + path_icon.h * 0.72 });
     try swash.cubicTo(
@@ -720,15 +720,15 @@ pub fn buildPathShowcase(builder: *snail.PathPictureBuilder, layout: Layout) !vo
     try addVectorSnail(builder, layout.snail_stage);
 }
 
-fn addVectorSnail(builder: *snail.PathPictureBuilder, snail_stage: snail.VectorRect) !void {
+fn addVectorSnail(builder: *snail.PathPictureBuilder, snail_stage: snail.Rect) !void {
     const art_width = @min(snail_stage.w * 0.74, 440.0);
     const scale = art_width / 360.0;
     const art_height = 220.0 * scale;
     const art_x = snail_stage.x + snail_stage.w - art_width - 8.0;
     const art_y = snail_stage.y + snail_stage.h - art_height - 6.0;
-    const transform = snail.VectorTransform2D.multiply(
-        snail.VectorTransform2D.translate(art_x, art_y),
-        snail.VectorTransform2D.scale(scale, scale),
+    const transform = snail.Transform2D.multiply(
+        snail.Transform2D.translate(art_x, art_y),
+        snail.Transform2D.scale(scale, scale),
     );
 
     try builder.addFilledEllipse(.{
@@ -743,7 +743,7 @@ fn addVectorSnail(builder: *snail.PathPictureBuilder, snail_stage: snail.VectorR
         .outer_color = .{ 0.0, 0.0, 0.0, 0.0 },
     } } }, transform);
 
-    var body = snail.VectorPath.init(builder.allocator);
+    var body = snail.Path.init(builder.allocator);
     defer body.deinit();
     try body.moveTo(.{ .x = 28.0, .y = 155.0 });
     try body.cubicTo(.{ .x = 62.0, .y = 132.0 }, .{ .x = 106.0, .y = 121.0 }, .{ .x = 142.0, .y = 127.0 });
@@ -767,7 +767,7 @@ fn addVectorSnail(builder: *snail.PathPictureBuilder, snail_stage: snail.VectorR
         .join = .round,
     }, transform);
 
-    var belly = snail.VectorPath.init(builder.allocator);
+    var belly = snail.Path.init(builder.allocator);
     defer belly.deinit();
     try belly.moveTo(.{ .x = 92.0, .y = 140.0 });
     try belly.cubicTo(.{ .x = 138.0, .y = 132.0 }, .{ .x = 204.0, .y = 136.0 }, .{ .x = 274.0, .y = 142.0 });
@@ -794,7 +794,7 @@ fn addVectorSnail(builder: *snail.PathPictureBuilder, snail_stage: snail.VectorR
         .join = .round,
     }, transform);
 
-    var spiral = snail.VectorPath.init(builder.allocator);
+    var spiral = snail.Path.init(builder.allocator);
     defer spiral.deinit();
     try spiral.moveTo(.{ .x = 254.0, .y = 78.0 });
     try spiral.cubicTo(.{ .x = 248.0, .y = 44.0 }, .{ .x = 196.0, .y = 41.0 }, .{ .x = 178.0, .y = 72.0 });
@@ -838,7 +838,7 @@ fn addVectorSnail(builder: *snail.PathPictureBuilder, snail_stage: snail.VectorR
     try builder.addFilledEllipse(.{ .x = 333.0, .y = 57.0, .w = 3.0, .h = 3.0 }, .{ .color = .{ 0.08, 0.08, 0.10, 0.95 } }, transform);
     try builder.addFilledEllipse(.{ .x = 305.0, .y = 63.0, .w = 2.5, .h = 2.5 }, .{ .color = .{ 0.08, 0.08, 0.10, 0.90 } }, transform);
 
-    var smile = snail.VectorPath.init(builder.allocator);
+    var smile = snail.Path.init(builder.allocator);
     defer smile.deinit();
     try smile.moveTo(.{ .x = 314.0, .y = 119.0 });
     try smile.quadTo(.{ .x = 321.0, .y = 123.0 }, .{ .x = 329.0, .y = 119.0 });

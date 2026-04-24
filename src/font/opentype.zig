@@ -436,6 +436,37 @@ pub const Shaper = struct {
         return write;
     }
 
+    /// Apply ligature substitution while tracking source byte spans.
+    /// `source_starts` and `source_ends` are compacted in parallel with `glyphs`.
+    pub fn applyLigaturesTracked(
+        self: *const Shaper,
+        glyphs: []u16,
+        source_starts: []u32,
+        source_ends: []u32,
+    ) !usize {
+        if (self.gsub_offset == 0 or self.liga_lookups.len == 0) return glyphs.len;
+
+        var read: usize = 0;
+        var write: usize = 0;
+        while (read < glyphs.len) {
+            const result = try tryLigature(self.data, self.gsub_offset, self.liga_lookups, glyphs[0..glyphs.len], read);
+            if (result) |lig| {
+                glyphs[write] = lig.output_glyph;
+                source_starts[write] = source_starts[read];
+                source_ends[write] = source_ends[read + lig.consumed - 1];
+                write += 1;
+                read += lig.consumed;
+            } else {
+                glyphs[write] = glyphs[read];
+                source_starts[write] = source_starts[read];
+                source_ends[write] = source_ends[read];
+                write += 1;
+                read += 1;
+            }
+        }
+        return write;
+    }
+
     /// Get GPOS kern adjustment between two glyphs.
     pub fn getKernAdjustment(self: *const Shaper, first: u16, second: u16) !i16 {
         if (self.gpos_offset == 0 or self.kern_lookups.len == 0) return 0;

@@ -42,9 +42,9 @@ pub fn main() !void {
     defer renderer.deinit();
     renderer.setSubpixelOrder(.none);
 
-    const vbuf = try allocator.alloc(f32, 10000 * snail.FLOATS_PER_GLYPH);
+    const vbuf = try allocator.alloc(f32, 10000 * snail.TEXT_FLOATS_PER_GLYPH);
     defer allocator.free(vbuf);
-    const path_buf = try allocator.alloc(f32, 256 * snail.FLOATS_PER_GLYPH);
+    const path_buf = try allocator.alloc(f32, 256 * snail.TEXT_FLOATS_PER_GLYPH);
     defer allocator.free(path_buf);
 
     const w: f32 = @floatFromInt(SCREENSHOT_WIDTH);
@@ -56,7 +56,7 @@ pub fn main() !void {
     var path_picture = try demo_banner_scene.buildPathPicture(allocator, layout, .normal);
     defer path_picture.deinit();
 
-    var atlas_views: [7]snail.AtlasView = undefined;
+    var atlas_views: [7]snail.AtlasHandle = undefined;
     scene_assets.uploadAtlases(&renderer, &path_picture, &atlas_views);
 
     const clear = demo_banner.clearColor();
@@ -71,10 +71,10 @@ pub fn main() !void {
         renderer.drawPaths(paths.slice(), vector_projection, w, h);
     }
 
-    var batch = snail.Batch.init(vbuf);
+    var batch = snail.TextBatch.init(vbuf);
     demo_banner_scene.populateTextBatch(&batch, h, layout, &scene_assets, &atlas_views);
     if (batch.glyphCount() > 0) {
-        renderer.draw(batch.slice(), projection, w, h);
+        renderer.drawText(batch.slice(), projection, w, h);
     }
 
     if (screenshot.captureFramebuffer(allocator, SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT) catch null) |px| {

@@ -173,10 +173,10 @@ pub fn main() !void {
         );
         var picture = try builder.freeze(allocator);
         defer picture.deinit();
-        const view = snail.AtlasView{ .atlas = &picture.atlas, .layer_base = 0 };
+        const view = snail.AtlasHandle{ .atlas = &picture.atlas, .layer_base = 0 };
 
         const iters: u32 = 100_000 * BENCH_TIME_MULTIPLIER;
-        var buf: [snail.FLOATS_PER_GLYPH]f32 = undefined;
+        var buf: [snail.TEXT_FLOATS_PER_GLYPH]f32 = undefined;
         const t = nowNs();
         for (0..iters) |i| {
             var batch = snail.PathBatch.init(&buf);

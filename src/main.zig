@@ -40,17 +40,17 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
     var detected_order = platform.detectCurrentMonitorSubpixelOrder(sys_order);
     renderer.setSubpixelOrder(detected_order);
 
-    const vbuf = try allocator.alloc(f32, 10000 * snail.FLOATS_PER_GLYPH);
+    const vbuf = try allocator.alloc(f32, 10000 * snail.TEXT_FLOATS_PER_GLYPH);
     defer allocator.free(vbuf);
-    const path_buf = try allocator.alloc(f32, 512 * snail.FLOATS_PER_GLYPH);
+    const path_buf = try allocator.alloc(f32, 512 * snail.TEXT_FLOATS_PER_GLYPH);
     defer allocator.free(path_buf);
 
-    var atlas_views: [7]snail.AtlasView = undefined;
+    var atlas_views: [7]snail.AtlasHandle = undefined;
     var path_picture: ?snail.PathPicture = null;
     defer if (path_picture) |*picture| picture.deinit();
     var overlay_picture: ?snail.PathPicture = null;
     defer if (overlay_picture) |*picture| picture.deinit();
-    var overlay_view: ?snail.AtlasView = null;
+    var overlay_view: ?snail.AtlasHandle = null;
     var uploaded_size = [2]u32{ 0, 0 };
     var view_mode = demo_banner_scene.ViewMode.normal;
     var uploaded_view_mode = view_mode;
@@ -217,7 +217,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
             }
         }
 
-        var batch = snail.Batch.init(vbuf);
+        var batch = snail.TextBatch.init(vbuf);
         if (!view_mode.showText()) {
             // Debug vector views keep the text layer out of the way.
         } else if (stress_test) {
@@ -226,7 +226,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
             var si: usize = 0;
             while (sy > 0.0) {
                 const fs = stress_sizes[si % stress_sizes.len];
-                _ = batch.addString(atlas_view, &scene_assets.latin_font, "The quick brown fox jumps over the lazy dog 0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ", 10.0, sy, fs, white);
+                _ = batch.addText(atlas_view, &scene_assets.latin_font, "The quick brown fox jumps over the lazy dog 0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ", 10.0, sy, fs, white);
                 sy -= fs * 1.3;
                 si += 1;
             }
@@ -236,14 +236,14 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
 
         if (batch.glyphCount() > 0) {
             renderer.setSubpixelBackdrop(null);
-            renderer.draw(batch.slice(), mvp, w, h);
+            renderer.drawText(batch.slice(), mvp, w, h);
         }
         const total_glyphs = batch.glyphCount();
 
         {
             renderer.setSubpixelBackdrop(clear);
-            var hud = snail.Batch.init(vbuf[batch.len..]);
-            _ = hud.addString(atlas_view, &scene_assets.latin_font, "snail demo", 10.0, 30.0, 12.0, gray);
+            var hud = snail.TextBatch.init(vbuf[batch.len..]);
+            _ = hud.addText(atlas_view, &scene_assets.latin_font, "snail demo", 10.0, 30.0, 12.0, gray);
             const hb_str = if (build_options.enable_harfbuzz) " | HarfBuzz ON" else "";
             const sp_name = renderer.subpixelOrder().name();
             const sp_mode = renderer.subpixelMode().name();
@@ -253,9 +253,9 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
                 "";
             var hud_line2_buf: [160]u8 = undefined;
             const hud_line2 = std.fmt.bufPrint(&hud_line2_buf, "Arrows pan | Z/X zoom | R rotate | S stress | D view: {s} | L order: {s} | M mode: {s}{s}{s}", .{ view_mode.label(), sp_name, sp_mode, sp_suffix, hb_str }) catch "Arrows pan | Z/X zoom | R rotate | S stress | D debug view | L order | M mode";
-            _ = hud.addString(atlas_view, &scene_assets.latin_font, hud_line2, 10.0, 14.0, 12.0, gray);
+            _ = hud.addText(atlas_view, &scene_assets.latin_font, hud_line2, 10.0, 14.0, 12.0, gray);
             if (hud.glyphCount() > 0) {
-                renderer.draw(hud.slice(), projection, w, h);
+                renderer.drawText(hud.slice(), projection, w, h);
             }
         }
 

@@ -37,37 +37,37 @@ fn nowNs() u64 {
     return @intCast(@as(i128, ts.sec) * 1_000_000_000 + ts.nsec);
 }
 
-fn buildHud(batch: *snail.Batch, atlas: *const snail.Atlas, font: *const snail.Font) void {
-    _ = batch.addString(atlas, font, "Score: 12345  FPS: 60  Level 7", 10, HEIGHT - 20, 18, .{ 1, 1, 1, 1 });
-    _ = batch.addString(atlas, font, "Health: 100%  Ammo: 42/120", 10, HEIGHT - 44, 18, .{ 0.8, 0.2, 0.2, 1 });
+fn buildHud(batch: *snail.TextBatch, atlas: *const snail.Atlas, font: *const snail.Font) void {
+    _ = batch.addText(atlas, font, "Score: 12345  FPS: 60  Level 7", 10, HEIGHT - 20, 18, .{ 1, 1, 1, 1 });
+    _ = batch.addText(atlas, font, "Health: 100%  Ammo: 42/120", 10, HEIGHT - 44, 18, .{ 0.8, 0.2, 0.2, 1 });
 }
 
-fn buildMultiSize(batch: *snail.Batch, atlas: *const snail.Atlas, font: *const snail.Font) void {
+fn buildMultiSize(batch: *snail.TextBatch, atlas: *const snail.Atlas, font: *const snail.Font) void {
     const white = [4]f32{ 1, 1, 1, 1 };
     var y: f32 = HEIGHT - 30;
     for ([_]f32{ 12, 18, 24, 36, 48, 72 }) |sz| {
-        _ = batch.addString(atlas, font, SENTENCE, 10, y, sz, white);
+        _ = batch.addText(atlas, font, SENTENCE, 10, y, sz, white);
         y -= sz * 1.4;
     }
 }
 
-fn buildParagraph(batch: *snail.Batch, atlas: *const snail.Atlas, font: *const snail.Font) void {
+fn buildParagraph(batch: *snail.TextBatch, atlas: *const snail.Atlas, font: *const snail.Font) void {
     const gray = [4]f32{ 0.9, 0.9, 0.9, 1 };
     var y: f32 = HEIGHT - 30;
     for (0..6) |_| {
-        _ = batch.addString(atlas, font, PARAGRAPH, 10, y, 16, gray);
+        _ = batch.addText(atlas, font, PARAGRAPH, 10, y, 16, gray);
         y -= 22;
     }
 }
 
-fn buildTorture(batch: *snail.Batch, atlas: *const snail.Atlas, font: *const snail.Font) void {
+fn buildTorture(batch: *snail.TextBatch, atlas: *const snail.Atlas, font: *const snail.Font) void {
     const white = [4]f32{ 1, 1, 1, 1 };
     var y: f32 = HEIGHT - 10;
     var si: usize = 0;
     const sizes = [_]f32{ 10, 14, 18, 24, 32, 48 };
     while (y > 0) {
         const sz = sizes[si % sizes.len];
-        _ = batch.addString(atlas, font, PARAGRAPH, 5, y, sz, white);
+        _ = batch.addText(atlas, font, PARAGRAPH, 5, y, sz, white);
         y -= sz * 1.2;
         si += 1;
     }
@@ -77,28 +77,28 @@ fn buildTorture(batch: *snail.Batch, atlas: *const snail.Atlas, font: *const sna
 
 fn runScenario(
     name: []const u8,
-    buildFn: *const fn (*snail.Batch, *const snail.Atlas, *const snail.Font) void,
+    buildFn: *const fn (*snail.TextBatch, *const snail.Atlas, *const snail.Font) void,
     atlas: *const snail.Atlas,
     font: *const snail.Font,
     renderer: *snail.Renderer,
     vbuf: []f32,
     mvp: snail.Mat4,
 ) void {
-    var probe = snail.Batch.init(vbuf);
+    var probe = snail.TextBatch.init(vbuf);
     buildFn(&probe, atlas, font);
     const glyphs = probe.glyphCount();
 
     const static_slice = probe.slice();
     for (0..WARMUP) |_| {
         gl.glClear(gl.GL_COLOR_BUFFER_BIT);
-        renderer.draw(static_slice, mvp, WIDTH, HEIGHT);
+        renderer.drawText(static_slice, mvp, WIDTH, HEIGHT);
     }
     gl.glFinish();
 
     const t_static = nowNs();
     for (0..FRAMES) |_| {
         gl.glClear(gl.GL_COLOR_BUFFER_BIT);
-        renderer.draw(static_slice, mvp, WIDTH, HEIGHT);
+        renderer.drawText(static_slice, mvp, WIDTH, HEIGHT);
     }
     gl.glFinish();
     const static_ns = nowNs() - t_static;
@@ -106,19 +106,19 @@ fn runScenario(
     const static_us = @as(f64, @floatFromInt(static_ns)) / 1000.0 / FRAMES;
 
     for (0..WARMUP) |_| {
-        var b = snail.Batch.init(vbuf);
+        var b = snail.TextBatch.init(vbuf);
         buildFn(&b, atlas, font);
         gl.glClear(gl.GL_COLOR_BUFFER_BIT);
-        renderer.draw(b.slice(), mvp, WIDTH, HEIGHT);
+        renderer.drawText(b.slice(), mvp, WIDTH, HEIGHT);
     }
     gl.glFinish();
 
     const t_dynamic = nowNs();
     for (0..FRAMES) |_| {
-        var b = snail.Batch.init(vbuf);
+        var b = snail.TextBatch.init(vbuf);
         buildFn(&b, atlas, font);
         gl.glClear(gl.GL_COLOR_BUFFER_BIT);
-        renderer.draw(b.slice(), mvp, WIDTH, HEIGHT);
+        renderer.drawText(b.slice(), mvp, WIDTH, HEIGHT);
     }
     gl.glFinish();
     const dynamic_ns = nowNs() - t_dynamic;
@@ -148,16 +148,16 @@ fn runMultiFontScenario(
 
     var total_glyphs: usize = 0;
     for (font_sets) |fs| {
-        var b = snail.Batch.init(vbuf);
-        _ = b.addString(fs.atlas, fs.font, fs.text, 10, 400, fs.font_size, white);
+        var b = snail.TextBatch.init(vbuf);
+        _ = b.addText(fs.atlas, fs.font, fs.text, 10, 400, fs.font_size, white);
         total_glyphs += b.glyphCount();
     }
 
-    var probe = snail.Batch.init(vbuf);
+    var probe = snail.TextBatch.init(vbuf);
     {
         var y: f32 = HEIGHT - 30;
         for (font_sets) |fs| {
-            _ = probe.addString(fs.atlas, fs.font, fs.text, 10, y, fs.font_size, white);
+            _ = probe.addText(fs.atlas, fs.font, fs.text, 10, y, fs.font_size, white);
             y -= fs.font_size * 1.5;
         }
     }
@@ -165,13 +165,13 @@ fn runMultiFontScenario(
 
     for (0..WARMUP) |_| {
         gl.glClear(gl.GL_COLOR_BUFFER_BIT);
-        renderer.draw(static_slice, mvp, WIDTH, HEIGHT);
+        renderer.drawText(static_slice, mvp, WIDTH, HEIGHT);
     }
     gl.glFinish();
     const t_static = nowNs();
     for (0..FRAMES) |_| {
         gl.glClear(gl.GL_COLOR_BUFFER_BIT);
-        renderer.draw(static_slice, mvp, WIDTH, HEIGHT);
+        renderer.drawText(static_slice, mvp, WIDTH, HEIGHT);
     }
     gl.glFinish();
     const static_ns = nowNs() - t_static;
@@ -199,13 +199,13 @@ fn runMultiFontScenario(
 }
 
 fn drawSingleBatch(font_sets: []const FontEntry, renderer: *snail.Renderer, vbuf: []f32, mvp: snail.Mat4, color: [4]f32) void {
-    var batch = snail.Batch.init(vbuf);
+    var batch = snail.TextBatch.init(vbuf);
     var y: f32 = HEIGHT - 30;
     for (font_sets) |fs| {
-        _ = batch.addString(fs.atlas, fs.font, fs.text, 10, y, fs.font_size, color);
+        _ = batch.addText(fs.atlas, fs.font, fs.text, 10, y, fs.font_size, color);
         y -= fs.font_size * 1.5;
     }
-    if (batch.glyphCount() > 0) renderer.draw(batch.slice(), mvp, WIDTH, HEIGHT);
+    if (batch.glyphCount() > 0) renderer.drawText(batch.slice(), mvp, WIDTH, HEIGHT);
 }
 
 // ── Vulkan scenario runners (conditional on -Dvulkan=true) ──
@@ -215,14 +215,14 @@ const runMultiFontScenarioVulkan = if (build_options.enable_vulkan) runMultiFont
 
 fn runScenarioVulkanImpl(
     name: []const u8,
-    buildFn: *const fn (*snail.Batch, *const snail.Atlas, *const snail.Font) void,
+    buildFn: *const fn (*snail.TextBatch, *const snail.Atlas, *const snail.Font) void,
     atlas: *const snail.Atlas,
     font: *const snail.Font,
     renderer: *snail.Renderer,
     vbuf: []f32,
     mvp: snail.Mat4,
 ) void {
-    var probe = snail.Batch.init(vbuf);
+    var probe = snail.TextBatch.init(vbuf);
     buildFn(&probe, atlas, font);
     const glyphs = probe.glyphCount();
     const static_slice = probe.slice();
@@ -231,7 +231,7 @@ fn runScenarioVulkanImpl(
         {
             const cmd = vulkan_platform.beginFrameOffscreen();
             renderer.setCommandBuffer(cmd);
-            renderer.draw(static_slice, mvp, WIDTH, HEIGHT);
+            renderer.drawText(static_slice, mvp, WIDTH, HEIGHT);
             vulkan_platform.endFrameOffscreen();
         }
     }
@@ -242,7 +242,7 @@ fn runScenarioVulkanImpl(
         {
             const cmd = vulkan_platform.beginFrameOffscreen();
             renderer.setCommandBuffer(cmd);
-            renderer.draw(static_slice, mvp, WIDTH, HEIGHT);
+            renderer.drawText(static_slice, mvp, WIDTH, HEIGHT);
             vulkan_platform.endFrameOffscreen();
         }
     }
@@ -252,12 +252,12 @@ fn runScenarioVulkanImpl(
     const static_us = @as(f64, @floatFromInt(static_ns)) / 1000.0 / FRAMES;
 
     for (0..WARMUP) |_| {
-        var b = snail.Batch.init(vbuf);
+        var b = snail.TextBatch.init(vbuf);
         buildFn(&b, atlas, font);
         {
             const cmd = vulkan_platform.beginFrameOffscreen();
             renderer.setCommandBuffer(cmd);
-            renderer.draw(b.slice(), mvp, WIDTH, HEIGHT);
+            renderer.drawText(b.slice(), mvp, WIDTH, HEIGHT);
             vulkan_platform.endFrameOffscreen();
         }
     }
@@ -265,12 +265,12 @@ fn runScenarioVulkanImpl(
 
     const t_dynamic = nowNs();
     for (0..FRAMES) |_| {
-        var b = snail.Batch.init(vbuf);
+        var b = snail.TextBatch.init(vbuf);
         buildFn(&b, atlas, font);
         {
             const cmd = vulkan_platform.beginFrameOffscreen();
             renderer.setCommandBuffer(cmd);
-            renderer.draw(b.slice(), mvp, WIDTH, HEIGHT);
+            renderer.drawText(b.slice(), mvp, WIDTH, HEIGHT);
             vulkan_platform.endFrameOffscreen();
         }
     }
@@ -295,16 +295,16 @@ fn runMultiFontScenarioVulkanImpl(
 
     var total_glyphs: usize = 0;
     for (font_sets) |fs| {
-        var b = snail.Batch.init(vbuf);
-        _ = b.addString(fs.atlas, fs.font, fs.text, 10, 400, fs.font_size, white);
+        var b = snail.TextBatch.init(vbuf);
+        _ = b.addText(fs.atlas, fs.font, fs.text, 10, 400, fs.font_size, white);
         total_glyphs += b.glyphCount();
     }
 
-    var probe = snail.Batch.init(vbuf);
+    var probe = snail.TextBatch.init(vbuf);
     {
         var y: f32 = HEIGHT - 30;
         for (font_sets) |fs| {
-            _ = probe.addString(fs.atlas, fs.font, fs.text, 10, y, fs.font_size, white);
+            _ = probe.addText(fs.atlas, fs.font, fs.text, 10, y, fs.font_size, white);
             y -= fs.font_size * 1.5;
         }
     }
@@ -314,7 +314,7 @@ fn runMultiFontScenarioVulkanImpl(
         {
             const cmd = vulkan_platform.beginFrameOffscreen();
             renderer.setCommandBuffer(cmd);
-            renderer.draw(static_slice, mvp, WIDTH, HEIGHT);
+            renderer.drawText(static_slice, mvp, WIDTH, HEIGHT);
             vulkan_platform.endFrameOffscreen();
         }
     }
@@ -324,7 +324,7 @@ fn runMultiFontScenarioVulkanImpl(
         {
             const cmd = vulkan_platform.beginFrameOffscreen();
             renderer.setCommandBuffer(cmd);
-            renderer.draw(static_slice, mvp, WIDTH, HEIGHT);
+            renderer.drawText(static_slice, mvp, WIDTH, HEIGHT);
             vulkan_platform.endFrameOffscreen();
         }
     }
@@ -362,13 +362,13 @@ fn runMultiFontScenarioVulkanImpl(
 }
 
 fn drawSingleBatchVulkan(font_sets: []const FontEntry, renderer: *snail.Renderer, vbuf: []f32, mvp: snail.Mat4, color: [4]f32) void {
-    var batch = snail.Batch.init(vbuf);
+    var batch = snail.TextBatch.init(vbuf);
     var y: f32 = HEIGHT - 30;
     for (font_sets) |fs| {
-        _ = batch.addString(fs.atlas, fs.font, fs.text, 10, y, fs.font_size, color);
+        _ = batch.addText(fs.atlas, fs.font, fs.text, 10, y, fs.font_size, color);
         y -= fs.font_size * 1.5;
     }
-    if (batch.glyphCount() > 0) renderer.draw(batch.slice(), mvp, WIDTH, HEIGHT);
+    if (batch.glyphCount() > 0) renderer.drawText(batch.slice(), mvp, WIDTH, HEIGHT);
 }
 
 pub fn main() !void {
@@ -403,7 +403,7 @@ pub fn main() !void {
         var renderer = try snail.Renderer.init();
         defer renderer.deinit();
 
-        const vbuf = try allocator.alloc(f32, 30000 * snail.FLOATS_PER_GLYPH);
+        const vbuf = try allocator.alloc(f32, 30000 * snail.TEXT_FLOATS_PER_GLYPH);
         defer allocator.free(vbuf);
         const mvp = snail.Mat4.ortho(0, WIDTH, 0, HEIGHT, -1, 1);
 
@@ -470,7 +470,7 @@ pub fn main() !void {
             }
         }
 
-        var atlas_views: [4]snail.AtlasView = undefined;
+        var atlas_views: [4]snail.AtlasHandle = undefined;
         renderer.uploadAtlases(&[_]*const snail.Atlas{ &atlas, &arabic_atlas, &deva_atlas, &thai_atlas }, &atlas_views);
         const setup_us = @as(f64, @floatFromInt(nowNs() - t_setup)) / 1000.0;
 
@@ -497,19 +497,19 @@ pub fn main() !void {
         std.debug.print("\n  --- Multi-script ---\n", .{});
 
         const buildArabic = struct {
-            fn f(batch: *snail.Batch, a: *const snail.Atlas, fo: *const snail.Font) void {
+            fn f(batch: *snail.TextBatch, a: *const snail.Atlas, fo: *const snail.Font) void {
                 var y: f32 = HEIGHT - 30;
                 for (0..12) |_| {
-                    _ = batch.addString(a, fo, ARABIC_TEXT, 10, y, 24, .{ 1, 1, 1, 1 });
+                    _ = batch.addText(a, fo, ARABIC_TEXT, 10, y, 24, .{ 1, 1, 1, 1 });
                     y -= 32;
                 }
             }
         }.f;
         const buildDevanagari = struct {
-            fn f(batch: *snail.Batch, a: *const snail.Atlas, fo: *const snail.Font) void {
+            fn f(batch: *snail.TextBatch, a: *const snail.Atlas, fo: *const snail.Font) void {
                 var y: f32 = HEIGHT - 30;
                 for (0..12) |_| {
-                    _ = batch.addString(a, fo, DEVANAGARI_TEXT, 10, y, 24, .{ 1, 1, 1, 1 });
+                    _ = batch.addText(a, fo, DEVANAGARI_TEXT, 10, y, 24, .{ 1, 1, 1, 1 });
                     y -= 32;
                 }
             }
@@ -566,7 +566,7 @@ pub fn main() !void {
         var renderer = try snail.Renderer.initVulkan(vk_ctx);
         defer renderer.deinit();
 
-        const vbuf = try allocator.alloc(f32, 30000 * snail.FLOATS_PER_GLYPH);
+        const vbuf = try allocator.alloc(f32, 30000 * snail.TEXT_FLOATS_PER_GLYPH);
         defer allocator.free(vbuf);
         const mvp = snail.Mat4.ortho(0, WIDTH, 0, HEIGHT, -1, 1);
 
@@ -633,7 +633,7 @@ pub fn main() !void {
             }
         }
 
-        var atlas_views: [4]snail.AtlasView = undefined;
+        var atlas_views: [4]snail.AtlasHandle = undefined;
         renderer.uploadAtlases(&[_]*const snail.Atlas{ &atlas, &arabic_atlas, &deva_atlas, &thai_atlas }, &atlas_views);
         const setup_us = @as(f64, @floatFromInt(nowNs() - t_setup)) / 1000.0;
 
@@ -659,19 +659,19 @@ pub fn main() !void {
         std.debug.print("\n  --- Multi-script ---\n", .{});
 
         const buildArabic = struct {
-            fn f(batch: *snail.Batch, a: *const snail.Atlas, fo: *const snail.Font) void {
+            fn f(batch: *snail.TextBatch, a: *const snail.Atlas, fo: *const snail.Font) void {
                 var y: f32 = HEIGHT - 30;
                 for (0..12) |_| {
-                    _ = batch.addString(a, fo, ARABIC_TEXT, 10, y, 24, .{ 1, 1, 1, 1 });
+                    _ = batch.addText(a, fo, ARABIC_TEXT, 10, y, 24, .{ 1, 1, 1, 1 });
                     y -= 32;
                 }
             }
         }.f;
         const buildDevanagari = struct {
-            fn f(batch: *snail.Batch, a: *const snail.Atlas, fo: *const snail.Font) void {
+            fn f(batch: *snail.TextBatch, a: *const snail.Atlas, fo: *const snail.Font) void {
                 var y: f32 = HEIGHT - 30;
                 for (0..12) |_| {
-                    _ = batch.addString(a, fo, DEVANAGARI_TEXT, 10, y, 24, .{ 1, 1, 1, 1 });
+                    _ = batch.addText(a, fo, DEVANAGARI_TEXT, 10, y, 24, .{ 1, 1, 1, 1 });
                     y -= 32;
                 }
             }

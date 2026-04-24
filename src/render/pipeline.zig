@@ -238,7 +238,7 @@ fn destroyImageResources() void {
     for (&image_slots) |*slot| slot.* = .{};
 }
 
-pub fn buildTextureArrays(atlases: []const *const snail_mod.Atlas, out_views: []snail_mod.AtlasView) void {
+pub fn buildTextureArrays(atlases: []const *const snail_mod.Atlas, out_views: []snail_mod.AtlasHandle) void {
     std.debug.assert(atlases.len == out_views.len);
 
     if (atlases.len == 0) {
@@ -262,7 +262,7 @@ pub fn buildTextureArrays(atlases: []const *const snail_mod.Atlas, out_views: []
     }
 }
 
-pub fn buildImageArray(images: []const *const snail_mod.Image, out_views: []snail_mod.ImageView) void {
+pub fn buildImageArray(images: []const *const snail_mod.Image, out_views: []snail_mod.ImageHandle) void {
     std.debug.assert(images.len == out_views.len);
     ensureImagesRegistered(images);
     for (images, 0..) |image, i| {
@@ -276,9 +276,9 @@ pub fn imageTextureArray() gl.GLuint {
     return image_array;
 }
 
-fn currentImageView(image: *const snail_mod.Image) snail_mod.ImageView {
+fn currentImageView(image: *const snail_mod.Image) snail_mod.ImageHandle {
     return upload_common.currentImageView(
-        snail_mod.ImageView,
+        snail_mod.ImageHandle,
         image_slots[0..],
         image_slot_count,
         allocated_image_width,
@@ -439,7 +439,7 @@ fn uploadImageLayer(image: *const snail_mod.Image, layer: u32) void {
     }
 }
 
-fn rebuildTextureArrays(atlases: []const *const snail_mod.Atlas, out_views: []snail_mod.AtlasView) void {
+fn rebuildTextureArrays(atlases: []const *const snail_mod.Atlas, out_views: []snail_mod.AtlasHandle) void {
     destroyAtlasTextureResources();
     resetAtlasUploadState();
 
@@ -502,7 +502,7 @@ fn atlasSlotsCompatible(atlases: []const *const snail_mod.Atlas) bool {
     return upload_common.atlasSlotsCompatible(atlas_slots[0..], atlas_slot_count, atlases);
 }
 
-fn fillAtlasViews(atlases: []const *const snail_mod.Atlas, out_views: []snail_mod.AtlasView) void {
+fn fillAtlasViews(atlases: []const *const snail_mod.Atlas, out_views: []snail_mod.AtlasHandle) void {
     upload_common.fillAtlasViews(atlas_slots[0..], atlases, out_views);
 }
 
