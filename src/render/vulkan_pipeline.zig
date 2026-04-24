@@ -24,8 +24,8 @@ extern "c" fn rewind(stream: *std.c.FILE) void;
 
 const vert_spv = vk_shaders.vert_spv;
 const frag_spv = vk_shaders.frag_spv;
-const frag_subpixel_spv = vk_shaders.frag_subpixel_spv;
-const frag_subpixel_dual_spv = vk_shaders.frag_subpixel_dual_spv;
+const frag_text_subpixel_spv = vk_shaders.frag_text_subpixel_spv;
+const frag_text_subpixel_dual_spv = vk_shaders.frag_text_subpixel_dual_spv;
 const sprite_vert_spv = vk_shaders.sprite_vert_spv;
 const sprite_frag_spv = vk_shaders.sprite_frag_spv;
 
@@ -68,6 +68,7 @@ var pipeline_subpixel_dual: vk.VkPipeline = null;
 var pipeline_subpixel_resolve: vk.VkPipeline = null;
 var pipeline_sprite: vk.VkPipeline = null;
 var pipeline_cache: vk.VkPipelineCache = null;
+var pipeline_cache_dirty: bool = false;
 var pipeline_layout: vk.VkPipelineLayout = null;
 var desc_set_layout: vk.VkDescriptorSetLayout = null;
 var desc_pool: vk.VkDescriptorPool = null;
@@ -145,6 +146,7 @@ pub const FillRule = enum(c_int) {
 
 pub fn init(vk_ctx: VulkanContext) !void {
     ctx = vk_ctx;
+    pipeline_cache_dirty = false;
 
     // Sampler
     const sampler_info = std.mem.zeroInit(vk.VkSamplerCreateInfo, .{
@@ -244,8 +246,10 @@ pub fn init(vk_ctx: VulkanContext) !void {
 
     try createPersistentPipelineCache();
 
-    // Graphics pipelines
-    pipeline_normal = try createGraphicsPipeline(frag_spv, .premultiplied);
+    // Keep Vulkan startup on the lightweight plain-glyph LCD shaders.
+    // The heavier path/COLR shader remains only in the shared grayscale pipeline.
+    try warmGraphicsPipelines();
+    writePersistentPipelineCache();
 
     // Vertex ring buffer (persistent mapped)
     try createBuffer(
@@ -303,6 +307,14 @@ pub fn deinit() void {
     if (pipeline_cache != null) vk.vkDestroyPipelineCache(ctx.device, pipeline_cache, null);
     if (pipeline_layout != null) vk.vkDestroyPipelineLayout(ctx.device, pipeline_layout, null);
 
+    pipeline_sprite = null;
+    pipeline_subpixel_dual = null;
+    pipeline_subpixel_resolve = null;
+    pipeline_subpixel = null;
+    pipeline_normal = null;
+    pipeline_cache = null;
+    pipeline_cache_dirty = false;
+    pipeline_layout = null;
     persistent_map = null;
     initialized = false;
 }
@@ -875,6 +887,7 @@ fn createGraphicsPipeline(frag_code: []const u8, blend_mode: BlendMode) !vk.VkPi
 
     var pip: vk.VkPipeline = null;
     try check(vk.vkCreateGraphicsPipelines(ctx.device, pipeline_cache, 1, &ci, null, &pip));
+    pipeline_cache_dirty = true;
     return pip;
 }
 
@@ -994,7 +1007,18 @@ fn createSpriteGraphicsPipeline() !vk.VkPipeline {
 
     var pip: vk.VkPipeline = null;
     try check(vk.vkCreateGraphicsPipelines(ctx.device, pipeline_cache, 1, &ci, null, &pip));
+    pipeline_cache_dirty = true;
     return pip;
+}
+
+fn warmGraphicsPipelines() !void {
+    pipeline_normal = try createGraphicsPipeline(frag_spv, .premultiplied);
+    pipeline_subpixel = try createGraphicsPipeline(frag_text_subpixel_spv, .premultiplied);
+    pipeline_subpixel_resolve = try createGraphicsPipeline(frag_text_subpixel_spv, .disabled);
+    if (ctx.supports_dual_source_blend) {
+        pipeline_subpixel_dual = try createGraphicsPipeline(frag_text_subpixel_dual_spv, .dual_source);
+    }
+    pipeline_sprite = try createSpriteGraphicsPipeline();
 }
 
 fn ensureNormalPipeline() !vk.VkPipeline {
@@ -1006,21 +1030,21 @@ fn ensureNormalPipeline() !vk.VkPipeline {
 
 fn ensureSubpixelPipeline() !vk.VkPipeline {
     if (pipeline_subpixel == null) {
-        pipeline_subpixel = try createGraphicsPipeline(frag_subpixel_spv, .premultiplied);
+        pipeline_subpixel = try createGraphicsPipeline(frag_text_subpixel_spv, .premultiplied);
     }
     return pipeline_subpixel;
 }
 
 fn ensureSubpixelDualPipeline() !vk.VkPipeline {
     if (pipeline_subpixel_dual == null) {
-        pipeline_subpixel_dual = try createGraphicsPipeline(frag_subpixel_dual_spv, .dual_source);
+        pipeline_subpixel_dual = try createGraphicsPipeline(frag_text_subpixel_dual_spv, .dual_source);
     }
     return pipeline_subpixel_dual;
 }
 
 fn ensureSubpixelResolvePipeline() !vk.VkPipeline {
     if (pipeline_subpixel_resolve == null) {
-        pipeline_subpixel_resolve = try createGraphicsPipeline(frag_subpixel_spv, .disabled);
+        pipeline_subpixel_resolve = try createGraphicsPipeline(frag_text_subpixel_spv, .disabled);
     }
     return pipeline_subpixel_resolve;
 }
@@ -1101,7 +1125,7 @@ fn createPersistentPipelineCache() !void {
 }
 
 fn writePersistentPipelineCache() void {
-    if (pipeline_cache == null) return;
+    if (pipeline_cache == null or !pipeline_cache_dirty) return;
 
     var size: usize = 0;
     if (vk.vkGetPipelineCacheData(ctx.device, pipeline_cache, &size, null) != vk.VK_SUCCESS) return;
@@ -1122,7 +1146,9 @@ fn writePersistentPipelineCache() void {
     defer _ = std.c.fclose(file);
     if (std.c.fwrite(data.ptr, 1, size, file) != size) {
         std.debug.print("Vulkan: failed to write pipeline cache\n", .{});
+        return;
     }
+    pipeline_cache_dirty = false;
 }
 
 fn loadPersistentPipelineCacheData() ?[]u8 {
