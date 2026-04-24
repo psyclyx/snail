@@ -155,49 +155,42 @@ pub fn buildCurveTexture(
             .offset = texel_idx,
         };
         if (g.prefer_direct_encoding) {
-            if (g.origin.x == 0 and g.origin.y == 0) {
-                for (g.curves) |curve| {
-                    const base = texel_idx * 4;
-                    data[base + 0] = f32ToF16(curve.p0.x);
-                    data[base + 1] = f32ToF16(curve.p0.y);
-                    data[base + 2] = f32ToF16(curve.p1.x);
-                    data[base + 3] = f32ToF16(curve.p1.y);
-                    data[base + 4] = f32ToF16(curve.p2.x);
-                    data[base + 5] = f32ToF16(curve.p2.y);
-                    data[base + 6] = f32ToF16(curve.p3.x);
-                    data[base + 7] = f32ToF16(curve.p3.y);
-                    data[base + 8] = 0;
-                    data[base + 9] = 0;
-                    data[base + 10] = f32ToF16(DIRECT_ENCODING_KIND_BIAS + @as(f32, @floatFromInt(@intFromEnum(curve.kind))));
-                    data[base + 11] = f32ToF16(curve.weights[0]);
-                    data[base + 12] = f32ToF16(curve.weights[1]);
-                    data[base + 13] = f32ToF16(curve.weights[2]);
-                    texel_idx += SEGMENT_TEXELS;
-                }
-            } else {
-                const delta = Vec2.new(-g.origin.x, -g.origin.y);
-                for (g.curves) |curve| {
-                    const base = texel_idx * 4;
-                    const p0 = Vec2.add(curve.p0, delta);
-                    const p1 = Vec2.add(curve.p1, delta);
-                    const p2 = Vec2.add(curve.p2, delta);
-                    const p3 = if (curve.kind == .cubic) Vec2.add(curve.p3, delta) else curve.p3;
-                    data[base + 0] = f32ToF16(p0.x);
-                    data[base + 1] = f32ToF16(p0.y);
-                    data[base + 2] = f32ToF16(p1.x);
-                    data[base + 3] = f32ToF16(p1.y);
-                    data[base + 4] = f32ToF16(p2.x);
-                    data[base + 5] = f32ToF16(p2.y);
-                    data[base + 6] = f32ToF16(p3.x);
-                    data[base + 7] = f32ToF16(p3.y);
-                    data[base + 8] = 0;
-                    data[base + 9] = 0;
-                    data[base + 10] = f32ToF16(DIRECT_ENCODING_KIND_BIAS + @as(f32, @floatFromInt(@intFromEnum(curve.kind))));
-                    data[base + 11] = f32ToF16(curve.weights[0]);
-                    data[base + 12] = f32ToF16(curve.weights[1]);
-                    data[base + 13] = f32ToF16(curve.weights[2]);
-                    texel_idx += SEGMENT_TEXELS;
-                }
+            const delta = Vec2.new(-g.origin.x, -g.origin.y);
+            var prev_original_end: ?Vec2 = null;
+            var prev_quantized_end: ?Vec2 = null;
+
+            for (g.curves) |curve| {
+                const local_curve = CurveSegment{
+                    .kind = curve.kind,
+                    .p0 = Vec2.add(curve.p0, delta),
+                    .p1 = Vec2.add(curve.p1, delta),
+                    .p2 = Vec2.add(curve.p2, delta),
+                    .p3 = if (curve.kind == .cubic) Vec2.add(curve.p3, delta) else curve.p3,
+                    .weights = curve.weights,
+                };
+                const start_override = if (prev_original_end) |prev_end|
+                    if (pointsApproxEqual(local_curve.p0, prev_end)) prev_quantized_end else null
+                else
+                    null;
+                const quantized_curve = quantizedPreparedDirectLocalCurve(local_curve, start_override);
+                const base = texel_idx * 4;
+                data[base + 0] = f32ToF16(quantized_curve.p0.x);
+                data[base + 1] = f32ToF16(quantized_curve.p0.y);
+                data[base + 2] = f32ToF16(quantized_curve.p1.x);
+                data[base + 3] = f32ToF16(quantized_curve.p1.y);
+                data[base + 4] = f32ToF16(quantized_curve.p2.x);
+                data[base + 5] = f32ToF16(quantized_curve.p2.y);
+                data[base + 6] = f32ToF16(quantized_curve.p3.x);
+                data[base + 7] = f32ToF16(quantized_curve.p3.y);
+                data[base + 8] = 0;
+                data[base + 9] = 0;
+                data[base + 10] = f32ToF16(DIRECT_ENCODING_KIND_BIAS + @as(f32, @floatFromInt(@intFromEnum(quantized_curve.kind))));
+                data[base + 11] = f32ToF16(quantized_curve.weights[0]);
+                data[base + 12] = f32ToF16(quantized_curve.weights[1]);
+                data[base + 13] = f32ToF16(quantized_curve.weights[2]);
+                prev_original_end = local_curve.endPoint();
+                prev_quantized_end = quantized_curve.endPoint();
+                texel_idx += SEGMENT_TEXELS;
             }
         } else {
             const prepared_curves = try prepareGlyphCurvesForPacking(allocator, g.curves, g.origin);
@@ -645,6 +638,41 @@ test "buildCurveTexture supports direct encoding for font glyphs" {
     try std.testing.expectApproxEqAbs(f16BitsToF32(f32ToF16(1.0)), decoded.p1.y, 0.001);
     try std.testing.expectApproxEqAbs(f16BitsToF32(f32ToF16(1.0)), decoded.p2.x, 0.001);
     try std.testing.expectApproxEqAbs(f16BitsToF32(f32ToF16(0.25)), decoded.p2.y, 0.001);
+}
+
+test "buildCurveTexture direct encoding preserves adjacent joins" {
+    const curves = [_]CurveSegment{
+        .{
+            .kind = .quadratic,
+            .p0 = Vec2.new(1000.3, 2000.2),
+            .p1 = Vec2.new(1048.6, 2000.2),
+            .p2 = Vec2.new(1096.9, 2000.2),
+        },
+        .{
+            .kind = .quadratic,
+            .p0 = Vec2.new(1096.9, 2000.2),
+            .p1 = Vec2.new(1145.2, 2000.2),
+            .p2 = Vec2.new(1193.5, 2000.2),
+        },
+    };
+    const glyph = GlyphCurves{
+        .curves = &curves,
+        .bbox = .{
+            .min = Vec2.new(1000.3, 2000.2),
+            .max = Vec2.new(1193.5, 2000.2),
+        },
+        .origin = Vec2.new(1000.0, 2000.0),
+        .prefer_direct_encoding = true,
+    };
+
+    var result = try buildCurveTexture(std.testing.allocator, &.{glyph});
+    defer result.texture.deinit();
+    defer std.testing.allocator.free(result.entries);
+
+    const first = decodeStoredSegment(result.texture.data[0 .. SEGMENT_TEXELS * 4]);
+    const second = decodeStoredSegment(result.texture.data[SEGMENT_TEXELS * 4 .. SEGMENT_TEXELS * 8]);
+    try std.testing.expectApproxEqAbs(first.endPoint().x, second.p0.x, 0.0001);
+    try std.testing.expectApproxEqAbs(first.endPoint().y, second.p0.y, 0.0001);
 }
 
 test "splitCurvesForPacking bounds per-segment control deltas" {

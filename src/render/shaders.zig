@@ -1140,6 +1140,9 @@ pub const fragment_shader =
     \\        SegmentRoots roots = horizontal ? solveSegmentHorizontalRoots(seg, sampleRc.y) : solveSegmentVerticalRoots(seg, sampleRc.x);
     \\        for (int ri = 0; ri < roots.count; ri++) {
     \\            float t = roots.t[ri];
+    \\            // Treat segment intersections as half-open [0, 1) so shared joins
+    \\            // between adjacent segments are counted once instead of twice.
+    \\            if (t >= 1.0 - 1e-5) continue;
     \\            vec2 point = evalSegmentPoint(seg, t);
     \\            vec2 deriv = evalSegmentDerivative(seg, t);
     \\            float derivAxis = horizontal ? deriv.y : -deriv.x;
@@ -1681,6 +1684,9 @@ pub const fragment_shader_subpixel =
     \\        SegmentRoots roots = horizontal ? solveSegmentHorizontalRoots(seg, sampleRc.y) : solveSegmentVerticalRoots(seg, sampleRc.x);
     \\        for (int ri = 0; ri < roots.count; ri++) {
     \\            float t = roots.t[ri];
+    \\            // Treat segment intersections as half-open [0, 1) so shared joins
+    \\            // between adjacent segments are counted once instead of twice.
+    \\            if (t >= 1.0 - 1e-5) continue;
     \\            vec2 point = evalSegmentPoint(seg, t);
     \\            vec2 deriv = evalSegmentDerivative(seg, t);
     \\            float derivAxis = horizontal ? deriv.y : -deriv.x;

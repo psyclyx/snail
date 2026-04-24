@@ -3001,7 +3001,7 @@ pub const PathPictureBuilder = struct {
                 stroke_logical_curve_count,
                 stroke_paint,
                 transform,
-                .source_over,
+                .fill_stroke_inside,
             );
             return;
         }
@@ -4124,7 +4124,7 @@ test "inside-aligned rounded rect helper emits explicit ring geometry" {
 
     const lid = picture.atlas.layer_info_data orelse return error.TestExpectedEqual;
     try std.testing.expectApproxEqAbs(kPathPaintTagCompositeGroup, lid[3], 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, @intFromEnum(PathCompositeMode.source_over)), lid[1], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, @intFromEnum(PathCompositeMode.fill_stroke_inside)), lid[1], 0.001);
 }
 
 test "path picture freeze stores large coordinates as direct local curves" {

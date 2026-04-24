@@ -95,47 +95,26 @@ pub fn buildGlyphBandData(
     defer allocator.free(curve_sort_max_y);
     const geometry: BandGeometry = blk: {
         if (prefer_direct_encoding) {
-            if (origin.x == 0 and origin.y == 0) {
-                for (curves, 0..) |curve, ci| {
-                    const cb = curve.boundingBox();
-                    curve_bboxes[ci] = cb;
-                    curve_sort_max_x[ci] = curveControlMaxX(curve);
-                    curve_sort_max_y[ci] = curveControlMaxY(curve);
-                }
-                break :blk .{
-                    .bbox = bbox,
-                    .width = bbox.max.x - bbox.min.x,
-                    .height = bbox.max.y - bbox.min.y,
-                    .epsilon = 1.0 / 1024.0,
-                };
-            }
-
+            const prepared_curves = try curve_tex.prepareGlyphCurvesForDirectEncoding(allocator, curves, origin);
+            defer allocator.free(prepared_curves);
             const delta = Vec2.new(-origin.x, -origin.y);
-            for (curves, 0..) |curve, ci| {
-                const cb0 = curve.boundingBox();
-                const local_curve = CurveSegment{
-                    .kind = curve.kind,
-                    .p0 = Vec2.add(curve.p0, delta),
-                    .p1 = Vec2.add(curve.p1, delta),
-                    .p2 = Vec2.add(curve.p2, delta),
-                    .p3 = if (curve.kind == .cubic) Vec2.add(curve.p3, delta) else curve.p3,
-                    .weights = curve.weights,
-                };
-                curve_bboxes[ci] = .{
-                    .min = Vec2.add(cb0.min, delta),
-                    .max = Vec2.add(cb0.max, delta),
-                };
-                curve_sort_max_x[ci] = curveControlMaxX(local_curve);
-                curve_sort_max_y[ci] = curveControlMaxY(local_curve);
-            }
             const direct_bbox = BBox{
                 .min = Vec2.add(bbox.min, delta),
                 .max = Vec2.add(bbox.max, delta),
             };
+            var prepared_bbox = prepared_curves[0].boundingBox();
+            for (prepared_curves, 0..) |curve, ci| {
+                const cb = curve.boundingBox();
+                curve_bboxes[ci] = cb;
+                curve_sort_max_x[ci] = curveControlMaxX(curve);
+                curve_sort_max_y[ci] = curveControlMaxY(curve);
+                prepared_bbox = if (ci == 0) cb else prepared_bbox.merge(cb);
+            }
+            const geometry_bbox = direct_bbox.merge(prepared_bbox);
             break :blk .{
-                .bbox = direct_bbox,
-                .width = direct_bbox.max.x - direct_bbox.min.x,
-                .height = direct_bbox.max.y - direct_bbox.min.y,
+                .bbox = geometry_bbox,
+                .width = geometry_bbox.max.x - geometry_bbox.min.x,
+                .height = geometry_bbox.max.y - geometry_bbox.min.y,
                 .epsilon = 1.0 / 1024.0,
             };
         }
@@ -586,4 +565,45 @@ test "buildGlyphBandData sorts horizontal curves by shader max x" {
 
     try std.testing.expectEqual(@as(u16, 0), bd.data[4]);
     try std.testing.expectEqual(@as(u16, 4), bd.data[6]);
+}
+
+test "buildGlyphBandData direct encoding preserves local bbox semantics" {
+    const origin = Vec2.new(1000.0, 2000.0);
+    const curves = [_]CurveSegment{
+        .{
+            .kind = .quadratic,
+            .p0 = Vec2.new(1000.3, 2000.2),
+            .p1 = Vec2.new(1048.6, 2000.2),
+            .p2 = Vec2.new(1096.9, 2000.2),
+        },
+        .{
+            .kind = .quadratic,
+            .p0 = Vec2.new(1096.9, 2000.2),
+            .p1 = Vec2.new(1145.2, 2000.2),
+            .p2 = Vec2.new(1193.5, 2000.2),
+        },
+    };
+    const bbox = BBox{
+        .min = Vec2.new(1000.3, 2000.2),
+        .max = Vec2.new(1193.5, 2000.2),
+    };
+    const local_bbox = BBox{
+        .min = Vec2.new(0.3, 0.2),
+        .max = Vec2.new(193.5, 0.2),
+    };
+    const entry = curve_tex.GlyphCurveEntry{ .start_x = 0, .start_y = 0, .count = @intCast(curves.len), .offset = 0 };
+
+    var bd = try buildGlyphBandData(
+        std.testing.allocator,
+        &curves,
+        curves.len,
+        bbox,
+        entry,
+        origin,
+        true,
+    );
+    defer freeGlyphBandData(std.testing.allocator, &bd);
+
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0) / local_bbox.width(), bd.band_scale_x, 0.0001);
+    try std.testing.expectApproxEqAbs(-local_bbox.min.x * bd.band_scale_x, bd.band_offset_x, 0.0001);
 }
