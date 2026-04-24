@@ -1,350 +1,168 @@
 # snail
 
-GPU font rendering via direct Bézier curve evaluation. A Zig implementation of the [Slug algorithm](https://sluglibrary.com/).
+GPU text and vector rendering via direct Bezier curve evaluation.
 
-![snail demo scene rendered offscreen](assets/demo_screenshot.png)
+![snail demo scene](assets/demo_screenshot.png)
 
-Text is rendered by evaluating quadratic Bézier curves per-pixel in a fragment shader. No pre-rasterized glyph bitmaps, no signed distance fields. Glyphs are resolution-independent and render correctly at any size, rotation, or perspective transform. Curve geometry is packed into GPU textures at load time; coverage is computed analytically at runtime.
+snail renders text by evaluating quadratic Bezier curves per-pixel in a fragment shader. No bitmap atlases, no signed distance fields. Glyphs are resolution-independent and render correctly at any size, rotation, or perspective transform. The same curve evaluation pipeline also renders filled and stroked vector paths with solid, gradient, and image paints.
 
-## Based on
+This is alpha-quality software. The Zig API is settling but not yet stable. The C API tracks the Zig surface. Breaking changes are expected.
 
-This is an independent implementation of the algorithm described in:
+## Algorithm
+
+This is an implementation of the [Slug algorithm](https://sluglibrary.com/):
 
 - Eric Lengyel, ["GPU-Centered Font Rendering Directly from Glyph Outlines"](https://jcgt.org/published/0006/02/02/), JCGT 2017
 - Eric Lengyel, ["A Decade of Slug"](https://terathon.com/blog/decade-slug.html), 2026
 - [Reference HLSL shaders](https://github.com/EricLengyel/Slug) (MIT / Apache-2.0)
-- [Sluggish](https://github.com/mightycow/Sluggish) reference C implementation (Unlicense)
 
-The Slug patent (US 10,373,352) was [dedicated to the public domain](https://terathon.com/blog/decade-slug.html) on March 17, 2026 via terminal disclaimer filed with the USPTO. This implementation is original code, not derived from the Slug Library product. Licensed under MIT.
+The Slug patent (US 10,373,352) was [dedicated to the public domain](https://terathon.com/blog/decade-slug.html) in March 2026. This implementation is original code, not derived from the Slug Library product. Licensed under MIT.
+
+### How it works
+
+**Font loading.** snail parses TrueType fonts directly: `cmap` for codepoint-to-glyph mapping, `glyf`/`loca` for outlines, `hhea`/`hmtx` for metrics, `kern` for legacy kerning. Optional OpenType shaping applies GSUB ligature substitution (type 4) and GPOS pair positioning (type 2). HarfBuzz can be compiled in for full complex-script shaping.
+
+**Atlas preparation.** Each glyph's quadratic Bezier curves are packed into two GPU textures at load time:
+
+- *Curve texture* (RGBA16F): control points for every curve segment, stored as f16 in font-unit coordinates.
+- *Band texture* (RG16UI): spatial subdivision indices. The glyph bounding box is split into horizontal and vertical bands; each band records which curve segments intersect it.
+
+This preprocessing is CPU-only and runs once per glyph set. The textures are uploaded as 2D texture arrays, one layer per atlas page.
+
+**Fragment shader.** At draw time, each glyph is a screen-space quad. The fragment shader:
+
+1. Reads the band indices for this fragment's position.
+2. For each curve in the active bands, evaluates a quadratic Bezier root equation to count ray crossings.
+3. Applies the winding rule (non-zero or even-odd) to determine inside/outside.
+4. Outputs analytic coverage as alpha, optionally with per-channel LCD subpixel offsets for horizontal RGB/BGR or vertical VRGB/VBGR subpixel rendering.
+
+There is no rasterization, no texture sampling for glyph shapes, and no distance field approximation. Coverage is exact at every resolution.
+
+**Vector paths.** Filled and stroked `Path` geometry goes through the same pipeline. Paths are decomposed into quadratic curves (cubics are adaptively approximated), packed into the same curve/band texture format, and drawn with the same fragment shader. Strokes are expanded into offset curves with proper joins (miter, bevel, round) and caps (butt, square, round). The `PathPicture` type freezes a set of styled paths into an immutable atlas snapshot that can be instanced cheaply per frame.
+
+**Sprites.** Raster images use a separate vertex format and shader. `SpriteBatch` writes positioned, tinted, UV-mapped quads into a caller-owned buffer. Images are uploaded into a shared texture array. Supports nearest/linear filtering, UV sub-rects, rotation, anchors, and full affine transforms.
 
 ## Build
 
-```sh
-zig build test                      # unit tests
-zig build bench                     # CPU microbenchmarks (font prep, atlas build, math, vector packing)
-zig build bench-compare             # CPU prep/layout comparison vs FreeType (no GPU draw)
-zig build bench-headless            # offscreen OpenGL end-to-end frame timing
-zig build bench-headless -Dvulkan=true # offscreen OpenGL + Vulkan end-to-end frame timing
-zig build bench-suite               # combined layout + rendering suite (text + vectors)
-zig build bench-suite -Dvulkan=true # combined suite with additional Vulkan text/vector passes
-zig build demo                      # build the interactive demo (Wayland + EGL)
-zig build run                       # run the interactive demo (Wayland + EGL)
-zig build run -Dvulkan=true         # Vulkan demo backend (Wayland surface)
-zig build screenshot                # render the demo scene offscreen to zig-out/demo-screenshot.tga
-zig build run -Dharfbuzz=false      # disable HarfBuzz and use the built-in shaper only
-zig build install --release=fast    # install libsnail + header to zig-out/
-```
-
-Core library builds require [Zig 0.16](https://ziglang.org/download/), OpenGL, HarfBuzz, and pkg-config. The interactive demo is Linux/Wayland-only and adds Wayland + EGL for the OpenGL path. Headless OpenGL benchmarks use EGL offscreen contexts and do not require a window system. Vulkan loader + headers and shaderc are only needed with `-Dvulkan=true`.
-
-**Nix** — reproducible dev shell and build:
+Requires [Zig 0.16](https://ziglang.org/download/), OpenGL 3.3+, HarfBuzz, and pkg-config. The interactive demo requires Wayland + EGL. Vulkan support is optional.
 
 ```sh
-nix-shell               # dev shell with all deps
-nix-build -A lib        # build libsnail + header
-nix-build -A demo       # build snail-demo
+zig build test                       # unit tests
+zig build bench                      # CPU microbenchmarks
+zig build bench-compare              # layout comparison vs FreeType
+zig build bench-headless             # offscreen end-to-end frame timing
+zig build bench-suite                # combined layout + rendering suite
+zig build bench-suite -Dvulkan=true  # includes Vulkan passes
+zig build run                        # interactive demo (Wayland + EGL)
+zig build run -Dvulkan=true          # Vulkan demo backend
+zig build screenshot                 # render demo scene to zig-out/demo-screenshot.tga
+zig build install --release=fast     # install libsnail.a + snail.h to zig-out/
 ```
 
-**Arch Linux** — install as a system package:
+### Nix
 
 ```sh
-cd pkg/arch && makepkg -si
+nix-shell           # dev shell with all dependencies
+nix-build -A lib    # build libsnail + header
+nix-build -A demo   # build snail-demo
 ```
 
-Demo controls: arrow keys pan, `Z`/`X` zoom, `R` rotate, `S` stress test, `L` cycle subpixel order (none → RGB → BGR → VRGB → VBGR), `M` toggle subpixel mode (`safe` ↔ `legacy-unsafe`).
-
-## Usage
+## Example: Zig
 
 ```zig
 const snail = @import("snail");
 
-// Parse font (one-time)
+// Parse font (data slice must outlive the Font)
 var font = try snail.Font.init(ttf_bytes);
 defer font.deinit();
 
-const line_metrics = try font.lineMetrics();
-const cell_gid = try font.glyphIndex('M');
-const cell_advance = try font.advanceWidth(cell_gid);
-const cell_bbox = try font.bbox(cell_gid);
-_ = .{ line_metrics, cell_advance, cell_bbox };
-
-// Build an immutable atlas snapshot for the glyphs you want
-var atlas = try snail.Atlas.initAscii(allocator, &font, &snail.ASCII_PRINTABLE);
+// Build glyph atlas for the characters you need
+var atlas = try snail.Atlas.init(allocator, &font, &codepoints);
 defer atlas.deinit();
 
-// Create renderer and upload atlas pages (requires GL 3.3+ context)
+// Initialize renderer (requires active GL 3.3+ context)
 var renderer = try snail.Renderer.init();
 defer renderer.deinit();
-var atlas_handle = renderer.uploadAtlas(&atlas);
+const atlas_handle = renderer.uploadAtlas(&atlas);
 
-// Build a vertex batch (per-frame for dynamic text, or once for static)
-var buf: [5000 * snail.TEXT_FLOATS_PER_GLYPH]f32 = undefined;
+// Build text vertices (zero allocations, caller-owned buffer)
+var buf: [4096 * snail.TEXT_FLOATS_PER_GLYPH]f32 = undefined;
 var batch = snail.TextBatch.init(&buf);
-_ = batch.addText(atlas_handle, &font, "Hello, world!", x, y, 48.0, .{ 1, 1, 1, 1 });
+_ = batch.addText(atlas_handle, &font, "Hello, world!", 10, 400, 48, .{ 1, 1, 1, 1 });
 
-// Draw (call beginFrame() once per frame when sharing a GL context with other renderers)
+// Draw
 renderer.beginFrame();
 renderer.drawText(batch.slice(), mvp, viewport_w, viewport_h);
 ```
 
-`font.lineMetrics()` returns `hhea` ascent / descent / line gap in font units. Convert to pixels with the same `font_size / font.unitsPerEm()` scale you use for advances and glyph bounds.
+### Shaped-run API
 
-Atlas uploads now return lightweight `AtlasHandle` values. Existing glyph handles remain stable across `extendGlyphIds()`, `extendCodepoints()`, and `extendGlyphsForText()` because those operations return a new atlas snapshot that shares old pages. `compact()` returns a new snapshot too, but may repack handles.
-
-### Path pictures
-
-snail's production vector path is `PathPicture`: freeze vector art once into the same curve/band atlas format used by text, upload that atlas once, then instance it through `PathBatch` each frame. That means vector draws reuse the text pipeline and avoid a separate vector shader compile/pipeline at startup.
-
-`PathPictureBuilder` can add rectangles / rounded rectangles / ellipses directly, or ingest arbitrary `Path` outlines. `PathBatch` writes caller-owned draw vertices, so the per-frame cost is just instancing frozen assets into a reusable float buffer.
+For terminals, editors, and other callers that need per-glyph metadata:
 
 ```zig
-var picture_builder = snail.PathPictureBuilder.init(allocator);
-defer picture_builder.deinit();
+// Shape text into positioned glyphs with source-span metadata
+const run = try atlas.shapeUtf8(&font, text, 24.0, allocator);
+defer allocator.free(run.glyphs);
 
-try picture_builder.addRoundedRect(
-    .{ .x = 24, .y = 24, .w = 240, .h = 96 },
-    .{ .color = .{ 0.12, 0.16, 0.22, 0.92 } },
-    .{ .color = .{ 0.35, 0.55, 0.95, 1.0 }, .width = 2.0, .placement = .inside },
-    18.0,
+// Each glyph carries byte offsets into the source text,
+// so callers can reason about ligatures, cells, and selection
+for (run.glyphs) |g| {
+    // g.glyph_id, g.x_offset, g.y_offset
+    // g.x_advance, g.y_advance
+    // g.source_start, g.source_end  (byte range in input)
+}
+
+// Ensure atlas has all needed glyphs, then render
+var missing: [256]u16 = undefined;
+const n = atlas.collectMissingGlyphIds(&run, &missing);
+if (n > 0) {
+    if (try atlas.extendGlyphIds(missing[0..n])) |next| {
+        snail.replaceAtlas(&atlas, next);
+        atlas_handle = renderer.uploadAtlas(&atlas);
+    }
+}
+_ = batch.addRun(atlas_handle, &run, 0, 0, 24, color);
+```
+
+### Vector paths
+
+```zig
+var path = snail.Path.init(allocator);
+defer path.deinit();
+try path.addRoundedRect(.{ .x = 0, .y = 0, .w = 200, .h = 80 }, 12);
+
+var builder = snail.PathPictureBuilder.init(allocator);
+defer builder.deinit();
+try builder.addPath(&path,
+    .{ .color = .{ 0.1, 0.1, 0.2, 0.9 } },                 // fill
+    .{ .color = .{ 0.4, 0.6, 1, 1 }, .width = 2, .join = .round }, // stroke
     .identity,
 );
-try picture_builder.addEllipse(
-    .{ .x = 300, .y = 32, .w = 72, .h = 72 },
-    .{ .color = .{ 0.95, 0.72, 0.28, 0.2 } },
-    .{ .color = .{ 0.95, 0.72, 0.28, 0.9 }, .width = 1.5 },
-    .identity,
-);
 
-var picture = try picture_builder.freeze(allocator);
+var picture = try builder.freeze(allocator);
 defer picture.deinit();
+const pic_handle = renderer.uploadPathPicture(&picture);
 
-const picture_view = renderer.uploadPathPicture(&picture);
-
-var path_buf: [256 * snail.PATH_FLOATS_PER_SHAPE]f32 = undefined;
-var paths = snail.PathBatch.init(&path_buf);
-_ = paths.addPicture(&picture_view, &picture);
-
-renderer.beginFrame();
+var pbuf: [64 * snail.PATH_FLOATS_PER_SHAPE]f32 = undefined;
+var paths = snail.PathBatch.init(&pbuf);
+_ = paths.addPicture(&pic_handle, &picture);
 renderer.drawPaths(paths.slice(), mvp, viewport_w, viewport_h);
-renderer.drawText(text_batch.slice(), mvp, viewport_w, viewport_h);
 ```
 
-For non-trivial artwork, build a `Path` with `moveTo`, `lineTo`, `quadTo`, and `cubicTo`, then pass it to `PathPictureBuilder.addPath()`. The fill/stroke model is the same either way: fills can be solid colors, linear gradients, radial gradients, or image paints via `FillStyle.paint`, and `StrokeStyle` adds width, cap, join, miter limit, and inside/center placement.
-
-Open-path strokes generate proper caps instead of rectangular hacks, and the frozen picture can be instantiated again later with either `PathBatch.addPicture()` or `PathBatch.addPictureTransformed()`.
+### Sprites
 
 ```zig
-var logo = snail.Path.init(allocator);
-defer logo.deinit();
-
-try logo.moveTo(.{ .x = 0, .y = 0 });
-try logo.lineTo(.{ .x = 44, .y = 0 });
-try logo.cubicTo(.{ .x = 56, .y = 0 }, .{ .x = 56, .y = 28 }, .{ .x = 44, .y = 28 });
-try logo.lineTo(.{ .x = 0, .y = 28 });
-try logo.close();
-
-var picture_builder = snail.PathPictureBuilder.init(allocator);
-defer picture_builder.deinit();
-try picture_builder.addPath(
-    &logo,
-    .{
-        .paint = .{ .linear_gradient = .{
-            .start = .{ .x = 0, .y = 0 },
-            .end = .{ .x = 44, .y = 28 },
-            .start_color = .{ 0.98, 0.68, 0.29, 1.0 },
-            .end_color = .{ 0.86, 0.21, 0.14, 1.0 },
-        } },
-    },
-    .{
-        .paint = .{ .radial_gradient = .{
-            .center = .{ .x = 22, .y = 14 },
-            .radius = 22,
-            .inner_color = .{ 0.05, 0.07, 0.1, 1.0 },
-            .outer_color = .{ 0.12, 0.16, 0.22, 1.0 },
-        } },
-        .width = 3.0,
-        .join = .round,
-        .cap = .round,
-    },
-    snail.Transform2D.translate(40, 32),
-);
-
-var picture = try picture_builder.freeze(allocator);
-defer picture.deinit();
-
-const picture_view = renderer.uploadPathPicture(&picture);
-
-var path_buf: [64 * snail.PATH_FLOATS_PER_SHAPE]f32 = undefined;
-var path_batch = snail.PathBatch.init(&path_buf);
-_ = path_batch.addPicture(&picture_view, &picture);
-
-renderer.beginFrame();
-renderer.drawPaths(path_batch.slice(), mvp, viewport_w, viewport_h);
-```
-
-Convenience wrappers are available when you only want one side of the style:
-
-```zig
-try picture_builder.addFilledRoundedRect(rect, fill, 12.0, .identity);
-try picture_builder.addStrokedPath(&path, stroke, .identity);
-```
-
-`PathPicture` is immutable after freezing. Reuse it like a sprite sheet: upload its atlas once, rebuild the `PathBatch` only when transforms or instance placement change. GPU and CPU rendering both understand solid, linear-gradient, radial-gradient, and image path paints.
-
-### Images and sprites
-
-Raster images live in a separate renderer-owned image array. Upload them with `Renderer.uploadImage()` / `uploadImages()`, then build quads with `SpriteBatch` or freeze them into a `SpritePicture` for reuse:
-
-```zig
-var icon = try snail.Image.initRgba8(allocator, 32, 32, rgba_pixels);
+var icon = try snail.Image.initRgba8(allocator, 32, 32, pixels);
 defer icon.deinit();
+const img_handle = renderer.uploadImage(&icon);
 
-const icon_view = renderer.uploadImage(&icon);
-
-var sprite_buf: [16 * snail.SPRITE_FLOATS_PER_SPRITE]f32 = undefined;
-var sprites = snail.SpriteBatch.init(&sprite_buf);
-_ = sprites.addSpriteRect(
-    icon_view,
-    .{ .x = 12, .y = 18, .w = 24, .h = 24 },
-    .{ 1, 1, 1, 1 },
-    .{},
-    .linear,
-);
-_ = sprites.addSpriteAt(
-    icon_view,
-    .{ .x = 200, .y = 120 },
-    .{ .x = 32, .y = 32 },
-    std.math.pi / 8.0,
-    .center,
-    .{ 1, 1, 1, 0.85 },
-    .{},
-    .nearest,
-);
-
-renderer.beginFrame();
+var sbuf: [16 * snail.SPRITE_FLOATS_PER_SPRITE]f32 = undefined;
+var sprites = snail.SpriteBatch.init(&sbuf);
+_ = sprites.addSprite(img_handle, .{ .x = 10, .y = 10 }, .{ .x = 32, .y = 32 }, .{ 1, 1, 1, 1 });
 renderer.drawSprites(sprites.slice(), viewport_w, viewport_h);
 ```
 
-`SpriteBatch.addSpriteRect()` covers UI/icon quads. `addSpriteAt()` is the point-style convenience for games, and `addSpriteTransformed()` accepts a full affine `Transform2D` when you need direct control.
-
-When the renderer grows its internal image array to accommodate a newly uploaded larger image, previously returned `ImageHandle`s should be reacquired with `uploadImage()` / `uploadImages()` before building the next sprite batch.
-
-### CPU renderer
-
-For headless output or bootstrap frames, `src/extra/cpu_renderer.zig` exposes a software raster path that shares Snail's atlas data and frozen path-picture model:
-
-```zig
-const cpu_renderer = @import("extra/cpu_renderer.zig");
-
-var soft = cpu_renderer.CpuRenderer.init(pixel_buf.ptr, width, height, stride);
-soft.clear(0, 0, 0, 0);
-soft.drawGlyphId(&atlas, try font.glyphIndex('A'), 12, 28, 24, .{ 1, 1, 1, 1 });
-soft.drawPathPicture(&path_picture);
-```
-
-`drawPathPicture()` uses the same frozen `PathPicture` data as the GPU path, including gradients and image paints. `drawPathPictureTransformed()` applies an extra affine transform at draw time. Fill rule still matches the GPU renderer.
-
-### Performance model
-
-| Operation | Frequency | Cost |
-|-----------|-----------|------|
-| `Font.init` | Once per font | ~1.7 us |
-| `Atlas.init` | Once per glyph set | ~1.7 ms for 95 ASCII glyphs |
-| `Atlas.extendCodepoints` | On late glyph discovery | Allocates a new snapshot, preserving old handles |
-| `Renderer.uploadAtlas` | Once per atlas generation | GPU texture upload for atlas pages |
-| `Renderer.uploadPathPicture` | Once per frozen vector asset | Uploads the picture's atlas pages and returns an `AtlasHandle` |
-| `TextBatch.addText` | Per-frame (dynamic) or once (static) | ~1.2 us for 13 chars, ~13.8 us for 175 chars |
-| `PathBatch.addPicture` | Per-frame | ~13 ns per shape instanced from a frozen picture |
-| `PathPictureBuilder.freeze` | Static UI / icons | ~29 us per shape on the current bench; amortize by freezing once |
-| `Renderer.beginFrame` | Per-frame | Resets cached GL state (call before `drawText` when sharing a GL context) |
-| `Renderer.drawText` | Per-frame | Single draw call per text batch |
-| `Renderer.drawPaths` | Per-frame | Single draw call per path batch, grayscale AA |
-
-For static UI text, build the `TextBatch` once and call `Renderer.drawText` each frame with the same `batch.slice()`. The vertex buffer is caller-owned and zero-allocation.
-
-For dynamic text (input fields, counters, chat), rebuild the `TextBatch` each frame. On this machine, Latin layout is roughly `0.08 us/glyph`, so 1000 glyphs stays comfortably sub-millisecond.
-
-For static vector UI and icons, freeze `PathPicture`s ahead of first paint when possible, upload them once, and reuse the returned `AtlasHandle` plus `PathBatch` every frame. That keeps startup work on the shared text/path shaders instead of paying for a second vector-specific pipeline.
-
-### Dynamic glyph loading
-
-Add glyphs at runtime by creating a new snapshot, then swap the atlas pointer and re-upload the returned pages:
-
-```zig
-if (try atlas.extendText("مرحبا بالعالم")) |next| {
-    snail.replaceAtlas(&atlas, next);
-    atlas_handle = renderer.uploadAtlas(&atlas);
-}
-```
-
-`Atlas.extendText()` is the high-level entry point for UTF-8 strings. It uses HarfBuzz shaping when available, otherwise it falls back to codepoint discovery plus built-in ligature loading.
-
-Lower-level entry points are available when you already have codepoints or shaped glyph runs:
-
-```zig
-const new_codepoints = [_]u32{ 0x00E9, 0x00F1, 0x00FC }; // é, ñ, ü
-if (try atlas.extendCodepoints(&new_codepoints)) |next| {
-    snail.replaceAtlas(&atlas, next);
-    atlas_handle = renderer.uploadAtlas(&atlas);
-}
-
-const glyph_ids = [_]u16{ try font.glyphIndex('M'), try font.glyphIndex('W') };
-if (try atlas.extendGlyphIds(&glyph_ids)) |next| {
-    snail.replaceAtlas(&atlas, next);
-    atlas_handle = renderer.uploadAtlas(&atlas);
-}
-```
-
-All public color inputs are straight RGBA. snail premultiplies internally before blending on both GPU and CPU paths.
-
-### Fill rule
-
-Supports both non-zero winding (TrueType default) and even-odd fill rules:
-
-```zig
-renderer.setFillRule(.even_odd);
-```
-
-### Subpixel rendering
-
-`renderer.setSubpixelOrder(.rgb)` requests LCD subpixel antialiasing. In the default `.safe` mode, snail uses LCD AA for axis-aligned text when the backend supports safe per-channel blending; otherwise it can still resolve against a declared opaque solid backdrop, and falls back to grayscale AA when neither path is valid. `drawPaths()` always stays grayscale.
-
-`renderer.setSubpixelMode(.legacy_unsafe)` restores the old behavior if you explicitly want the extra sharpness and accept incorrect compositing on arbitrary backgrounds.
-
-All five orders are supported: `.none` (off), `.rgb`, `.bgr`, `.vrgb`, `.vbgr`. The demo auto-detects the system base order via fontconfig, and the `L` key cycles orders at runtime.
-
-```zig
-renderer.setSubpixelOrder(.rgb);   // horizontal RGB (most common)
-renderer.setSubpixelOrder(.vrgb);  // vertical RGB (rotated display)
-renderer.setSubpixelOrder(.none);  // disable (OLED/HiDPI)
-
-renderer.setSubpixelMode(.safe);   // default
-renderer.setSubpixelBackdrop(.{ 0.08, 0.09, 0.12, 1.0 }); // opaque solid background under the text
-
-// Escape hatch: preserves the old LCD path, including its compositing artifacts.
-renderer.setSubpixelMode(.legacy_unsafe);
-```
-
-### OpenType shaping
-
-Built-in ligature substitution (GSUB type 4) and kerning (GPOS type 2) with kern table fallback. Sufficient for Latin, Cyrillic, and Greek text.
-
-For complex scripts (Arabic, Devanagari, Thai, etc.), compile with `-Dharfbuzz=true`:
-
-```zig
-// HarfBuzz is used automatically by addText() when enabled
-if (try atlas.extendText("مرحبا بالعالم")) |next| {
-    snail.replaceAtlas(&atlas, next);
-    atlas_handle = renderer.uploadAtlas(&atlas);
-}
-_ = batch.addText(atlas_handle, &font, "مرحبا بالعالم", x, y, 32, color);
-```
-
-When HarfBuzz is not compiled in, `addText` uses the built-in shaper. The `addRun()` API is always available for callers who bring their own shaped `ShapedRun`.
-
-### C API
-
-`#include "snail.h"` — see [`include/snail.h`](include/snail.h) for the full interface.
+## Example: C
 
 ```c
 #include "snail.h"
@@ -352,182 +170,288 @@ When HarfBuzz is not compiled in, `addText` uses the built-in shaper. The `addRu
 SnailFont *font;
 snail_font_init(ttf_data, ttf_len, &font);
 
-SnailLineMetrics line_metrics;
-snail_font_line_metrics(font, &line_metrics);
-
-uint32_t codepoints[] = { 'A', 'B', 'C', /* ... */ };
 SnailAtlas *atlas;
-snail_atlas_init(NULL, font, codepoints, num_codepoints, &atlas);  // NULL = libc malloc
+snail_atlas_init_ascii(NULL, font, &atlas);
 
-// GL thread
 snail_renderer_init();
 snail_renderer_upload_atlas(atlas);
 
-float vertices[5000 * snail_floats_per_glyph()];
-size_t len = 0;
+// Render text
+float buf[4096 * 80]; // 80 = TEXT_FLOATS_PER_GLYPH
+size_t buf_len = 0;
 float color[] = {1, 1, 1, 1};
-snail_batch_add_string(vertices, sizeof(vertices)/sizeof(float), &len,
-                       atlas, font, "Hello", 5, x, y, 48.0f, color);
+snail_batch_add_text(buf, sizeof(buf)/sizeof(float), &buf_len,
+                     atlas, font, "Hello", 5, 10, 400, 48, color);
 
-snail_renderer_draw(vertices, len, mvp, viewport_w, viewport_h);
+float mvp[16]; // column-major 4x4
+snail_renderer_draw_text(buf, buf_len, mvp, 1280, 720);
+
+// Shape text with source-span metadata
+SnailShapedRun *run;
+snail_atlas_shape_utf8(atlas, font, "Hello", 5, 48.0, &run);
+size_t n = snail_shaped_run_glyph_count(run);
+SnailGlyphPlacement g;
+for (size_t i = 0; i < n; i++) {
+    snail_shaped_run_glyph(run, i, &g);
+    // g.glyph_id, g.x_offset, g.source_start, g.source_end ...
+}
+snail_shaped_run_deinit(run);
+
+// Vector path
+SnailPath *path;
+snail_path_init(NULL, &path);
+snail_path_add_rounded_rect(path, (SnailRect){0, 0, 200, 80}, 12);
+
+SnailPathPictureBuilder *builder;
+snail_path_picture_builder_init(NULL, &builder);
+SnailFillStyle fill = {.color = {0.1, 0.1, 0.2, 0.9}, .paint_kind = -1};
+snail_path_picture_builder_add_filled_path(builder, path, fill,
+                                           SNAIL_TRANSFORM2D_IDENTITY);
+
+SnailPathPicture *picture;
+snail_path_picture_builder_freeze(builder, NULL, &picture);
+snail_renderer_upload_path_picture(picture);
+
+float pbuf[64 * 80];
+size_t pbuf_len = 0;
+snail_path_batch_add_picture(pbuf, sizeof(pbuf)/sizeof(float), &pbuf_len, picture);
+snail_renderer_draw_paths(pbuf, pbuf_len, mvp, 1280, 720);
+
+// Cleanup
+snail_path_picture_deinit(picture);
+snail_path_picture_builder_deinit(builder);
+snail_path_deinit(path);
+snail_atlas_deinit(atlas);
+snail_font_deinit(font);
+snail_renderer_deinit();
 ```
 
-Pass a `SnailAllocator` to `snail_atlas_init` for custom allocation, or `NULL` for libc malloc/free. The C API is OpenGL-only and currently text-focused; frozen path-picture vectors are exposed through the Zig API. Vulkan also requires the Zig API.
+## API reference
 
-### Using as a Zig dependency
+### Types
 
-Add snail to your `build.zig.zon`:
-
-```zig
-.dependencies = .{
-    .snail = .{ .path = "../snail" },  // or .url for remote
-},
-```
-
-In your `build.zig`, the simplest path is to use snail's helper module. This links OpenGL and enables HarfBuzz by default, but does not pull in the demo's Wayland/EGL deps:
-
-```zig
-const snail_dep = b.dependency("snail", .{});
-const snail_mod = @import("snail").module(snail_dep.builder, target, optimize);
-root_module.addImport("snail", snail_mod);
-```
-
-If you need non-default build options, construct the module manually:
-
-```zig
-const snail_dep = b.dependency("snail", .{});
-
-const snail_opts = b.addOptions();
-snail_opts.addOption(bool, "enable_profiling", false);
-snail_opts.addOption(bool, "enable_harfbuzz", false);
-snail_opts.addOption(bool, "enable_vulkan", false);
-snail_opts.addOption(bool, "force_gl33", true);
-
-const vk_stub = b.createModule(.{
-    .root_source_file = b.addWriteFiles().add("vk_stub.zig", ""),
-});
-const snail_mod = b.createModule(.{
-    .root_source_file = snail_dep.path("src/snail.zig"),
-    .target = target,
-    .optimize = optimize,
-    .link_libc = true,
-});
-snail_mod.addOptions("build_options", snail_opts);
-snail_mod.linkSystemLibrary("OpenGL", .{});
-snail_mod.addImport("vulkan_shaders", vk_stub);
-root_module.addImport("snail", snail_mod);
-```
-
-The caller must have an active OpenGL 3.3+ context before calling `Renderer.init()`. snail manages its own GL state (shader programs, VAOs, textures, blend/depth) per draw call. If other renderers share the GL context, call `renderer.beginFrame()` once per frame before `draw()`, `drawPaths()`, or `drawSprites()` so snail re-binds its cached state.
-
-### Thread safety
-
-| Type | Thread model |
+| Type | Description |
 |------|-------------|
-| `Font` | Immutable after init. Safe for concurrent reads from any thread. |
-| `Atlas` | Immutable snapshot. `extend*()` returns a new snapshot that preserves existing handles; `compact()` returns a new snapshot and may repack them. Safe for concurrent reads. |
-| `TextBatch` | Operates on caller-owned buffers. Multiple batches reading the same `AtlasHandle` from different threads is safe. |
-| `PathPicture` | Immutable after creation. Safe for concurrent reads from any thread. |
-| `Renderer` | **Single-thread per context.** GL: all calls must be on the thread with the active GL context. Vulkan: all calls must be externally synchronized. |
+| `Font` | Parsed TrueType font. Immutable, thread-safe for reads. |
+| `Atlas` | Immutable GPU texture data for a set of glyphs. Extending returns a new snapshot sharing old pages. |
+| `AtlasHandle` | Lightweight token returned by `Renderer.uploadAtlas`, encoding texture-array base layer. |
+| `GlyphPlacement` | Positioned glyph with `glyph_id`, pixel offsets/advances, and source byte span. |
+| `ShapedRun` | Slice of `GlyphPlacement` plus total advance. Output of `Atlas.shapeUtf8`. |
+| `TextBatch` | Writes glyph vertices into a caller-owned `[]f32`. Zero allocations. |
+| `Image` | RGBA8 raster image. |
+| `ImageHandle` | Token returned by `Renderer.uploadImage`, encoding texture-array layer and UV scale. |
+| `SpriteBatch` | Writes sprite vertices into a caller-owned `[]f32`. |
+| `Path` | Mutable path builder: `moveTo`, `lineTo`, `quadTo`, `cubicTo`, `close`, plus shape helpers. |
+| `PathPictureBuilder` | Accumulates filled/stroked paths and shapes with paint styles. |
+| `PathPicture` | Immutable frozen vector art. Upload once, instance cheaply per frame. |
+| `PathBatch` | Writes path instance vertices into a caller-owned `[]f32`. |
+| `Renderer` | Owns GPU state (shaders, textures). One per GL/Vulkan context. |
+| `Rect` | `{ x, y, w, h }` rectangle. |
+| `Transform2D` | 2x3 affine matrix `{ xx, xy, tx, yx, yy, ty }`. |
+| `FillStyle` | Fill color with optional `Paint` (solid, linear gradient, radial gradient, image). |
+| `StrokeStyle` | Stroke width, color, optional paint, cap, join, miter limit, placement. |
+| `Paint` | Tagged union: `.solid`, `.linear_gradient`, `.radial_gradient`, `.image`. |
 
-Typical game pattern:
-1. **Load thread**: `Font.init` + `Atlas.init` (CPU-only, no GPU context needed)
-2. **Render thread**: `Renderer.uploadAtlas` (once), `Renderer.drawText` (per frame)
-3. **Any thread(s)**: `TextBatch.addText` into thread-local buffers, submit to render thread for drawing
+### Font
 
-Static text (HUD, menus): build the `TextBatch` once, reuse the vertex slice every frame. The draw call is a VBO upload + single `glDrawElements`.
+| Method | Description |
+|--------|-------------|
+| `Font.init(data) !Font` | Parse TTF from raw bytes. Data must outlive the font. |
+| `font.unitsPerEm() u16` | Font design units per em. |
+| `font.glyphIndex(codepoint) !u16` | Map Unicode codepoint to glyph ID. |
+| `font.getKerning(left, right) !i16` | Kern table pair adjustment in font units. |
+| `font.advanceWidth(glyph_id) !i16` | Horizontal advance in font units. |
+| `font.lineMetrics() !LineMetrics` | `hhea` ascent, descent, line gap in font units. |
+| `font.glyphMetrics(glyph_id) !GlyphMetrics` | Advance, LSB, bounding box. |
+
+### Atlas
+
+| Method | Description |
+|--------|-------------|
+| `Atlas.init(alloc, font, codepoints) !Atlas` | Build atlas for specific codepoints. |
+| `Atlas.initAscii(alloc, font, chars) !Atlas` | Build atlas for ASCII byte values. |
+| `atlas.extendGlyphIds(ids) !?Atlas` | New snapshot with additional glyphs. Returns `null` if all present. |
+| `atlas.extendCodepoints(cps) !?Atlas` | Extend by codepoints. |
+| `atlas.extendText(utf8) !?Atlas` | Extend by UTF-8 string (with ligature/shaping discovery). |
+| `atlas.extendRun(run) !?Atlas` | Extend by all glyph IDs in a `ShapedRun`. |
+| `atlas.shapeUtf8(font, text, font_size, alloc) !ShapedRun` | Shape text into positioned glyphs. Caller frees `run.glyphs`. |
+| `atlas.collectMissingGlyphIds(run, out) usize` | Write unique missing glyph IDs to `out`. Returns count. |
+| `atlas.compact() !Atlas` | Repack into minimal pages. May invalidate handles. |
+| `atlas.pageCount() usize` | Number of texture pages. |
+| `atlas.textureByteLen() usize` | Total GPU texture bytes. |
+| `replaceAtlas(current, next) bool` | Swap atlas in place (deinits old). |
+
+### TextBatch
+
+| Method | Description |
+|--------|-------------|
+| `TextBatch.init(buf) TextBatch` | Wrap a caller-owned `[]f32`. |
+| `batch.addText(atlas, font, text, x, y, size, color) f32` | Lay out + emit UTF-8. Returns advance. |
+| `batch.addRun(atlas, run, x, y, size, color) usize` | Emit a pre-shaped run. Returns glyph count. |
+| `batch.glyphCount() usize` | Glyphs written so far. |
+| `batch.slice() []const f32` | Vertex data for `Renderer.drawText`. |
+| `batch.reset()` | Clear without reallocating. |
+
+### Renderer
+
+| Method | Description |
+|--------|-------------|
+| `Renderer.init() !Renderer` | Initialize OpenGL backend. |
+| `Renderer.initVulkan(ctx) !Renderer` | Initialize Vulkan backend. |
+| `renderer.uploadAtlas(atlas) AtlasHandle` | Upload atlas textures. |
+| `renderer.uploadImage(image) ImageHandle` | Upload raster image. |
+| `renderer.uploadPathPicture(pic) AtlasHandle` | Upload path picture atlas. |
+| `renderer.beginFrame()` | Reset cached GPU state. Call once per frame. |
+| `renderer.drawText(verts, mvp, w, h)` | Draw text batch vertices. |
+| `renderer.drawPaths(verts, mvp, w, h)` | Draw path batch vertices (always grayscale AA). |
+| `renderer.drawSprites(verts, w, h)` | Draw sprite batch vertices. |
+| `renderer.setSubpixelOrder(order)` | `.none`, `.rgb`, `.bgr`, `.vrgb`, `.vbgr`. |
+| `renderer.setSubpixelMode(mode)` | `.safe` (default) or `.legacy_unsafe`. |
+| `renderer.setSubpixelBackdrop(color)` | Declare opaque backdrop for safe LCD fallback. |
+| `renderer.setFillRule(rule)` | `.non_zero` (default) or `.even_odd`. |
+
+### Path
+
+| Method | Description |
+|--------|-------------|
+| `Path.init(alloc) Path` | New empty path. |
+| `path.moveTo(point)` | Begin subpath. |
+| `path.lineTo(point)` | Line segment. |
+| `path.quadTo(control, point)` | Quadratic Bezier. |
+| `path.cubicTo(c1, c2, point)` | Cubic Bezier (adaptively approximated to quadratics). |
+| `path.close()` | Close current subpath. |
+| `path.addRect(rect)` | Append rectangle subpath. |
+| `path.addRoundedRect(rect, radius)` | Append rounded rectangle. |
+| `path.addEllipse(rect)` | Append ellipse inscribed in rect. |
+
+### PathPictureBuilder
+
+| Method | Description |
+|--------|-------------|
+| `PathPictureBuilder.init(alloc)` | New builder. |
+| `builder.addPath(path, fill, stroke, transform)` | Add path with optional fill and/or stroke. |
+| `builder.addFilledPath(path, fill, transform)` | Fill-only convenience. |
+| `builder.addStrokedPath(path, stroke, transform)` | Stroke-only convenience. |
+| `builder.addRect(rect, fill, stroke, transform)` | Direct rectangle. |
+| `builder.addRoundedRect(rect, fill, stroke, radius, transform)` | Direct rounded rectangle. |
+| `builder.addEllipse(rect, fill, stroke, transform)` | Direct ellipse. |
+| `builder.freeze(alloc) !PathPicture` | Compile to immutable atlas. |
+
+### SpriteBatch
+
+| Method | Description |
+|--------|-------------|
+| `SpriteBatch.init(buf) SpriteBatch` | Wrap a caller-owned `[]f32`. |
+| `sprites.addSprite(image, pos, size, tint) bool` | Simple positioned sprite. |
+| `sprites.addSpriteRect(image, rect, tint, uv, filter) bool` | UV-mapped rect sprite. |
+| `sprites.addSpriteTransformed(image, size, tint, uv, filter, anchor, transform) bool` | Full affine transform. |
+
+### Constants
+
+| Constant | Value | Use |
+|----------|-------|-----|
+| `TEXT_FLOATS_PER_GLYPH` | 80 | Buffer sizing for `TextBatch`. |
+| `PATH_FLOATS_PER_SHAPE` | 80 | Buffer sizing for `PathBatch`. |
+| `SPRITE_FLOATS_PER_SPRITE` | 64 | Buffer sizing for `SpriteBatch`. |
+
+## Benchmarks
+
+All numbers from a single machine (Ryzen 7 / RTX 3080, NotoSans-Regular, 1280x720 offscreen). Rerun locally with `zig build bench-suite` for your hardware.
+
+**Layout** — CPU text shaping and vertex generation, no GPU draw. Compared against FreeType.
+
+| Scenario | snail | FreeType | Speedup |
+|----------|-------|----------|---------|
+| Short string (13 chars) | 1.2 us | 109 us | 93x |
+| Sentence (53 chars) | 3.9 us | 540 us | 137x |
+| Paragraph (175 chars) | 13.8 us | 1920 us | 140x |
+| Torture (para x7 sizes) | 96 us | 13942 us | 145x |
+
+**Rendering (OpenGL)** — full frame: vertex build + GPU draw + sync. Static = pre-built buffer, draw only. Dynamic = rebuild vertices every frame.
+
+| Scenario | Glyphs | Static FPS | Dynamic FPS |
+|----------|--------|-----------|-------------|
+| Game HUD (2 lines) | 45 | 34,820 | 46,381 |
+| Body text (6 paragraphs) | 978 | 15,432 | 9,702 |
+| Torture (fill screen) | 4,075 | 4,935 | 2,501 |
+| Arabic (12 lines, HarfBuzz) | 264 | 44,127 | 20,829 |
+| Multi-font torture (4 fonts) | 522 | 24,595 | 10,953 |
+
+**Rendering (Vulkan)** — same scenarios, Vulkan offscreen backend.
+
+| Scenario | Glyphs | Static FPS | Dynamic FPS |
+|----------|--------|-----------|-------------|
+| Game HUD (2 lines) | 45 | 35,228 | 36,460 |
+| Body text (6 paragraphs) | 978 | 12,355 | 9,995 |
+| Torture (fill screen) | 4,075 | 3,910 | 2,497 |
+
+**Vectors (OpenGL)** — path fill + stroke rendering.
+
+| Scenario | Shapes | Static FPS | Dynamic FPS |
+|----------|--------|-----------|-------------|
+| Primitive showcase | 10 | 13,832 | 13,951 |
+| Primitive stress | 587 | 4,753 | 4,800 |
 
 ## Architecture
 
 ```
 src/
-  snail.zig              public API: Font, Atlas, Renderer, TextBatch
-  c_api.zig              C bindings (extern functions)
-  font/ttf.zig           TrueType parser (head, maxp, cmap, glyf, loca, hhea, hmtx, kern)
-  font/opentype.zig      OpenType shaper (GSUB ligatures, GPOS kerning)
-  font/harfbuzz.zig      HarfBuzz integration (optional, -Dharfbuzz=true)
-  font/snail_file.zig    .snail preprocessed format (zero-parse loading)
-  math/                  Vec2, Mat4, QuadBezier, quadratic root solver
+  snail.zig              public API: Font, Atlas, Renderer, TextBatch, Path, ...
+  c_api.zig              C bindings (91 exported functions)
+  glyph_emit.zig         glyph → vertex dispatch (plain, COLR, multi-layer)
+  font/
+    ttf.zig              TrueType parser (cmap, glyf, loca, hhea, hmtx, kern, COLR)
+    opentype.zig         OpenType shaper (GSUB ligatures, GPOS kerning)
+    harfbuzz.zig         HarfBuzz integration (optional)
+    snail_file.zig       .snail preprocessed format
+  math/
+    bezier.zig           quadratic/cubic Bezier curves, bounding boxes
+    vec.zig              Vec2, Mat4, Transform2D
+    roots.zig            quadratic equation solver
   render/
-    gl.zig               OpenGL cImport (shared by pipeline and library consumers)
-    platform.zig         demo OpenGL platform (Wayland + EGL)
-    wayland_window.zig   demo Wayland window/input glue
-    egl_offscreen.zig    offscreen EGL context helper for benchmarks
-    shaders.zig          GLSL 330 vertex + fragment shaders (Slug algorithm)
-    pipeline.zig         OpenGL state management (GL 3.3/4.4)
-    vulkan_pipeline.zig  Vulkan state management (optional, -Dvulkan=true)
-    vulkan_shaders.zig   SPIR-V shaders (compiled from GLSL at build time)
-    curve_texture.zig    RGBA16F curve control point texture
-    band_texture.zig     RG16UI spatial band subdivision texture
-    vertex.zig           glyph quad vertex generation (5x vec4 per vertex)
-  profile/timer.zig      comptime-gated CPU timers (zero overhead when disabled)
+    pipeline.zig         OpenGL state (GL 3.3 / 4.4 persistent mapped)
+    vulkan_pipeline.zig  Vulkan state (optional)
+    shaders.zig          GLSL 330 vertex + fragment shaders
+    curve_texture.zig    RGBA16F curve control point packing
+    band_texture.zig     RG16UI spatial band subdivision
+    vertex.zig           glyph quad vertex generation
+    sprite_pipeline.zig  sprite rendering pipeline
+    sprite_vertex.zig    sprite quad vertex generation
+  extra/
+    cpu_renderer.zig     software rasterizer (same atlas data, no GPU)
+  profile/
+    timer.zig            comptime-gated CPU timers
 include/
   snail.h                C header
 ```
 
-### How it works
+## Thread safety
 
-1. **TTF parsing**: extract glyph outlines as quadratic Bézier curves from TrueType font files.
+| Type | Rule |
+|------|------|
+| `Font` | Immutable after init. Safe for concurrent reads. |
+| `Atlas` | Immutable after creation. Safe for concurrent reads. |
+| `TextBatch`, `PathBatch`, `SpriteBatch` | Caller-owned buffers. Multiple batches reading the same atlas from different threads is safe. |
+| `PathPicture` | Immutable after freeze. Safe for concurrent reads. |
+| `Renderer` | Single-threaded. Must be called from the GL/Vulkan context thread. |
 
-2. **Curve texture**: pack all control points into an RGBA16F texture. Each curve occupies two texels: `(p1.x, p1.y, p2.x, p2.y)` and `(p3.x, p3.y, -, -)`.
+Typical pattern: load fonts and build atlases on any thread, upload and draw on the render thread, build batches on any thread(s) into thread-local buffers.
 
-3. **Band texture**: subdivide each glyph's bounding box into horizontal and vertical bands. Each band stores which curves intersect it. This reduces per-pixel work from O(all curves) to O(curves in band).
+## Status and roadmap
 
-4. **Vertex shader**: apply dynamic dilation (expand glyph quads by ~0.5px along normals using the inverse Jacobian of the MVP transform) to prevent dropped pixels at edges. Vector primitives keep the same one-quad envelope idea so edge coverage is not clipped.
+snail is used in development but is not yet stable. Current limitations:
 
-5. **Fragment shader**: for each pixel, determine its band, fetch the relevant curves, cast horizontal and vertical rays, solve the resulting quadratic equations, classify roots via control point sign patterns (the core Slug technique), accumulate a winding number, and convert to fractional coverage for antialiasing. Vector primitives follow the same coverage model, but generate their quadratic curves procedurally from the packed rect / rounded-rect / ellipse parameters instead of looking them up from the glyph atlas.
+- OpenType shaping is limited to GSUB type 4 (ligatures) and GPOS type 2 (pair positioning). Complex scripts require `-Dharfbuzz=true`.
+- No CFF/CFF2 support (TrueType outlines only).
+- No variable fonts.
+- Renderer owns global state per backend. Multiple independent renderers in one process are not yet supported.
+- C API is GL-only (no Vulkan bindings yet).
 
-Curves within each band are sorted by descending maximum coordinate, enabling early exit when no further curves can affect the pixel.
-
-## Benchmarks
-
-There are four benchmark entry points. They answer different questions.
-
-- `zig build bench`
-  CPU-only microbenchmarks for isolated code paths: font init, glyph parsing, atlas texture preparation, math kernels, and vector vertex packing. No renderer, no GPU draw, and no FreeType comparison.
-- `zig build bench-compare`
-  CPU-side prep and layout comparison against FreeType. This measures font load, glyph prep, and layout cost. GPU drawing is intentionally excluded.
-- `zig build bench-headless`
-  Fully offscreen end-to-end frame timing. This is the command to use when you want per-frame numbers for text rendering. It includes layout, batch generation, uploads, draw, and explicit GPU synchronization. OpenGL runs by default; `-Dvulkan=true` adds the Vulkan offscreen path.
-- `zig build bench-suite`
-  Combined regression suite. It includes the FreeType layout comparison plus text and vector rendering scenarios in one run. Use it when you want one broad pass instead of one focused benchmark. `-Dvulkan=true` adds Vulkan text and vector passes after the OpenGL pass.
-
-What to watch in the output:
-
-- `bench`: `Parse 62 glyphs` and `Band texture` are the main atlas/prep lines.
-- `bench-compare`: `Glyph prep (7 sizes)`, `Paragraph`, and `Torture` are the lines that usually move first.
-- `bench-headless`: `Body text`, `Torture`, and `Chat` are the most useful text-rendering lines. Compare `static` vs `dynamic`.
-- `bench-suite`: watch `Paragraph`, `Body text`, `Multi-font torture`, and `Primitive stress`. This is the best single regression pass.
-
-Current sampling defaults:
-
-- `bench`: hot-loop iteration counts are 10x higher than before, and prep timings are averaged across repeated runs where applicable.
-- `bench-compare`: 5,000 layout samples per scenario.
-- `bench-headless`: 1,000 warmup frames and 20,000 measured frames per scenario.
-- `bench-suite`: 5,000 layout samples plus 1,000 warmup and 20,000 measured frames per rendering scenario.
-
-For `bench-headless` and `bench-suite`:
-
-- `static` means the vertex buffer is built once and reused every frame.
-- `dynamic` means vertices are rebuilt every frame before drawing.
-
-`bench-headless` uses fully offscreen backends:
-
-- OpenGL: EGL pbuffer + FBO.
-- Vulkan: offscreen `VkImage`; no window, surface, or swapchain in the measured path.
-
-Benchmark results are machine-specific. Rerun the commands locally and compare the same lines when checking regressions.
-
-### Other GPU font renderers
-
-| Project | Language | GPU API | Notes |
-|---------|----------|---------|-------|
-| [Slug Library](https://sluglibrary.com/) | C++ | Vulkan/D3D/GL/Metal | Commercial. The reference implementation (10 years of optimization). |
-| [slug_wgpu](https://github.com/santiagosantos08/slug_wgpu) | Rust | wgpu | FOSS Slug implementation. |
-| [gpu-font-rendering](https://github.com/GreenLightning/gpu-font-rendering) | C++ | OpenGL | Dobbie/Lengyel technique. |
-| [Pathfinder](https://github.com/pcwalton/pathfinder) | Rust | GL/Metal | General vector graphics GPU rasterizer. |
-| **snail** | **Zig** | **OpenGL 3.3+ / Vulkan** | **This project. C API. MIT licensed.** |
+Planned:
+- Renderer instance isolation (no global state).
+- DynamicAtlas / AtlasCache for high-churn glyph sets.
+- Vulkan C API parity.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT
