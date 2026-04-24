@@ -95,6 +95,21 @@ pub fn buildGlyphBandData(
     defer allocator.free(curve_sort_max_y);
     const geometry: BandGeometry = blk: {
         if (prefer_direct_encoding) {
+            if (origin.x == 0 and origin.y == 0) {
+                for (curves, 0..) |curve, ci| {
+                    const cb = curve.boundingBox();
+                    curve_bboxes[ci] = cb;
+                    curve_sort_max_x[ci] = curveControlMaxX(curve);
+                    curve_sort_max_y[ci] = curveControlMaxY(curve);
+                }
+                break :blk .{
+                    .bbox = bbox,
+                    .width = bbox.max.x - bbox.min.x,
+                    .height = bbox.max.y - bbox.min.y,
+                    .epsilon = 1.0 / 1024.0,
+                };
+            }
+
             const delta = Vec2.new(-origin.x, -origin.y);
             for (curves, 0..) |curve, ci| {
                 const cb0 = curve.boundingBox();

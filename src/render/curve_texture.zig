@@ -155,28 +155,49 @@ pub fn buildCurveTexture(
             .offset = texel_idx,
         };
         if (g.prefer_direct_encoding) {
-            const delta = Vec2.new(-g.origin.x, -g.origin.y);
-            for (g.curves) |curve| {
-                const base = texel_idx * 4;
-                const p0 = Vec2.add(curve.p0, delta);
-                const p1 = Vec2.add(curve.p1, delta);
-                const p2 = Vec2.add(curve.p2, delta);
-                const p3 = if (curve.kind == .cubic) Vec2.add(curve.p3, delta) else curve.p3;
-                data[base + 0] = f32ToF16(p0.x);
-                data[base + 1] = f32ToF16(p0.y);
-                data[base + 2] = f32ToF16(p1.x);
-                data[base + 3] = f32ToF16(p1.y);
-                data[base + 4] = f32ToF16(p2.x);
-                data[base + 5] = f32ToF16(p2.y);
-                data[base + 6] = f32ToF16(p3.x);
-                data[base + 7] = f32ToF16(p3.y);
-                data[base + 8] = 0;
-                data[base + 9] = 0;
-                data[base + 10] = f32ToF16(DIRECT_ENCODING_KIND_BIAS + @as(f32, @floatFromInt(@intFromEnum(curve.kind))));
-                data[base + 11] = f32ToF16(curve.weights[0]);
-                data[base + 12] = f32ToF16(curve.weights[1]);
-                data[base + 13] = f32ToF16(curve.weights[2]);
-                texel_idx += SEGMENT_TEXELS;
+            if (g.origin.x == 0 and g.origin.y == 0) {
+                for (g.curves) |curve| {
+                    const base = texel_idx * 4;
+                    data[base + 0] = f32ToF16(curve.p0.x);
+                    data[base + 1] = f32ToF16(curve.p0.y);
+                    data[base + 2] = f32ToF16(curve.p1.x);
+                    data[base + 3] = f32ToF16(curve.p1.y);
+                    data[base + 4] = f32ToF16(curve.p2.x);
+                    data[base + 5] = f32ToF16(curve.p2.y);
+                    data[base + 6] = f32ToF16(curve.p3.x);
+                    data[base + 7] = f32ToF16(curve.p3.y);
+                    data[base + 8] = 0;
+                    data[base + 9] = 0;
+                    data[base + 10] = f32ToF16(DIRECT_ENCODING_KIND_BIAS + @as(f32, @floatFromInt(@intFromEnum(curve.kind))));
+                    data[base + 11] = f32ToF16(curve.weights[0]);
+                    data[base + 12] = f32ToF16(curve.weights[1]);
+                    data[base + 13] = f32ToF16(curve.weights[2]);
+                    texel_idx += SEGMENT_TEXELS;
+                }
+            } else {
+                const delta = Vec2.new(-g.origin.x, -g.origin.y);
+                for (g.curves) |curve| {
+                    const base = texel_idx * 4;
+                    const p0 = Vec2.add(curve.p0, delta);
+                    const p1 = Vec2.add(curve.p1, delta);
+                    const p2 = Vec2.add(curve.p2, delta);
+                    const p3 = if (curve.kind == .cubic) Vec2.add(curve.p3, delta) else curve.p3;
+                    data[base + 0] = f32ToF16(p0.x);
+                    data[base + 1] = f32ToF16(p0.y);
+                    data[base + 2] = f32ToF16(p1.x);
+                    data[base + 3] = f32ToF16(p1.y);
+                    data[base + 4] = f32ToF16(p2.x);
+                    data[base + 5] = f32ToF16(p2.y);
+                    data[base + 6] = f32ToF16(p3.x);
+                    data[base + 7] = f32ToF16(p3.y);
+                    data[base + 8] = 0;
+                    data[base + 9] = 0;
+                    data[base + 10] = f32ToF16(DIRECT_ENCODING_KIND_BIAS + @as(f32, @floatFromInt(@intFromEnum(curve.kind))));
+                    data[base + 11] = f32ToF16(curve.weights[0]);
+                    data[base + 12] = f32ToF16(curve.weights[1]);
+                    data[base + 13] = f32ToF16(curve.weights[2]);
+                    texel_idx += SEGMENT_TEXELS;
+                }
             }
         } else {
             const prepared_curves = try prepareGlyphCurvesForPacking(allocator, g.curves, g.origin);

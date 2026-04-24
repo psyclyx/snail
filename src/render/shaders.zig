@@ -73,7 +73,6 @@ pub const fragment_shader_text =
     \\out vec4 frag_color;
     \\
     \\#define kLogBandTextureWidth 12
-    \\#define kDirectEncodingKindBias 4.0
     \\uint calcRootCode(float y1, float y2, float y3) {
     \\    uint i1 = floatBitsToUint(y1) >> 31u;
     \\    uint i2 = floatBitsToUint(y2) >> 30u;
@@ -138,18 +137,8 @@ pub const fragment_shader_text =
     \\        ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec3(bLoc, layer), 0).xy);
     \\        vec4 tex0 = texelFetch(u_curve_tex, ivec3(cLoc, layer), 0);
     \\        vec4 tex1 = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(cLoc, 1), layer), 0);
-    \\        vec4 tex2 = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(cLoc, 2), layer), 0);
-    \\        bool direct = tex2.z >= kDirectEncodingKindBias - 0.5;
-    \\        vec4 p12;
-    \\        vec2 p3;
-    \\        if (direct) {
-    \\            p12 = vec4(tex0.xy, tex0.zw) - vec4(rc, rc);
-    \\            p3 = tex1.xy - rc;
-    \\        } else {
-    \\            vec2 anchor = tex0.xy * 256.0 + tex0.zw;
-    \\            p12 = vec4(anchor, anchor + tex1.xy) - vec4(rc, rc);
-    \\            p3 = anchor + tex1.zw - rc;
-    \\        }
+    \\        vec4 p12 = vec4(tex0.xy, tex0.zw) - vec4(rc, rc);
+    \\        vec2 p3 = tex1.xy - rc;
     \\        float maxCoord = horizontal ? max(max(p12.x, p12.z), p3.x) : max(max(p12.y, p12.w), p3.y);
     \\        if (maxCoord * ppe < -0.5) break;
     \\        uint code = horizontal ? calcRootCode(p12.y, p12.w, p3.y) : calcRootCode(p12.x, p12.z, p3.x);
@@ -219,7 +208,6 @@ pub const fragment_shader_text_subpixel =
     \\out vec4 frag_color;
     \\
     \\#define kLogBandTextureWidth 12
-    \\#define kDirectEncodingKindBias 4.0
     \\uint calcRootCode(float y1, float y2, float y3) {
     \\    uint i1 = floatBitsToUint(y1) >> 31u;
     \\    uint i2 = floatBitsToUint(y2) >> 30u;
@@ -284,18 +272,8 @@ pub const fragment_shader_text_subpixel =
     \\        ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec3(bLoc, layer), 0).xy);
     \\        vec4 tex0 = texelFetch(u_curve_tex, ivec3(cLoc, layer), 0);
     \\        vec4 tex1 = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(cLoc, 1), layer), 0);
-    \\        vec4 tex2 = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(cLoc, 2), layer), 0);
-    \\        bool direct = tex2.z >= kDirectEncodingKindBias - 0.5;
-    \\        vec4 p12;
-    \\        vec2 p3;
-    \\        if (direct) {
-    \\            p12 = vec4(tex0.xy, tex0.zw) - vec4(rc, rc);
-    \\            p3 = tex1.xy - rc;
-    \\        } else {
-    \\            vec2 anchor = tex0.xy * 256.0 + tex0.zw;
-    \\            p12 = vec4(anchor, anchor + tex1.xy) - vec4(rc, rc);
-    \\            p3 = anchor + tex1.zw - rc;
-    \\        }
+    \\        vec4 p12 = vec4(tex0.xy, tex0.zw) - vec4(rc, rc);
+    \\        vec2 p3 = tex1.xy - rc;
     \\        float maxCoord = horizontal ? max(max(p12.x, p12.z), p3.x) : max(max(p12.y, p12.w), p3.y);
     \\        if (maxCoord * ppe < -0.5) break;
     \\        uint code = horizontal ? calcRootCode(p12.y, p12.w, p3.y) : calcRootCode(p12.x, p12.z, p3.x);
