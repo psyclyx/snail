@@ -121,6 +121,13 @@ void snail_renderer_upload_atlas(const SnailAtlas *atlas);
 #define SNAIL_SUBPIXEL_VBGR 4
 /* Ordered LCD subpixel AA: see SNAIL_SUBPIXEL_* constants above. */
 void snail_renderer_set_subpixel_order(int order);
+/* LCD policy: safe = only axis-aligned text over an explicit opaque backdrop,
+ * legacy_unsafe = previous behavior with known compositing artifacts. */
+#define SNAIL_SUBPIXEL_MODE_SAFE 0
+#define SNAIL_SUBPIXEL_MODE_LEGACY_UNSAFE 1
+void snail_renderer_set_subpixel_mode(int mode);
+/* Opaque linear RGBA backdrop used by safe LCD mode. Pass NULL to clear. */
+void snail_renderer_set_subpixel_backdrop(const float *rgba_or_null);
 /* Legacy convenience wrapper: true = RGB, false = off. */
 void snail_renderer_set_subpixel(bool enabled);
 

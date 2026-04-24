@@ -203,6 +203,8 @@ pub const fragment_shader_text_subpixel =
     \\uniform usampler2DArray u_band_tex;
     \\uniform int u_fill_rule;
     \\uniform int u_subpixel_order; // 1=RGB, 2=BGR, 3=VRGB, 4=VBGR
+    \\uniform int u_subpixel_render_mode; // 0=legacy blend, 1=opaque backdrop resolve
+    \\uniform vec4 u_subpixel_backdrop;
     \\
     \\out vec4 frag_color;
     \\
@@ -326,6 +328,12 @@ pub const fragment_shader_text_subpixel =
     \\    return vec4(color.rgb * alpha, color.a * alpha_cov);
     \\}
     \\
+    \\vec4 resolveSubpixelOverOpaqueBackdrop(vec4 color, vec3 cov, vec4 backdrop) {
+    \\    vec3 src_alpha = vec3(color.a) * cov;
+    \\    vec3 resolved = color.rgb * src_alpha + backdrop.rgb * (vec3(1.0) - src_alpha);
+    \\    return vec4(resolved, 1.0);
+    \\}
+    \\
     \\void main() {
     \\    int layer = (v_glyph.w >> 8) & 0xFF;
     \\    if (layer == 0xFF) discard;
@@ -361,6 +369,10 @@ pub const fragment_shader_text_subpixel =
     \\    }
     \\    vec3 cov = cov_alpha.rgb;
     \\    if (max(max(cov.r, cov.g), cov.b) < 1.0 / 255.0) discard;
+    \\    if (u_subpixel_render_mode == 1 && u_subpixel_backdrop.a >= 1.0 - 1e-6) {
+    \\        frag_color = resolveSubpixelOverOpaqueBackdrop(v_color, cov, u_subpixel_backdrop);
+    \\        return;
+    \\    }
     \\    frag_color = premultiplyColorSubpixel(v_color, cov, cov_alpha.a);
     \\}
 ;

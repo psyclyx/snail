@@ -2,11 +2,13 @@ const std = @import("std");
 const gl = @import("gl.zig").gl;
 const gl_backend = @import("gl_backend.zig");
 const shaders = @import("shaders.zig");
+const subpixel_policy = @import("subpixel_policy.zig");
 const upload_common = @import("upload_common.zig");
 const vertex = @import("vertex.zig");
 const vec = @import("../math/vec.zig");
 const Mat4 = vec.Mat4;
 const snail_mod = @import("../snail.zig");
+const SubpixelMode = @import("subpixel_mode.zig").SubpixelMode;
 const SubpixelOrder = @import("subpixel_order.zig").SubpixelOrder;
 
 // ── Backend selection ──
@@ -32,6 +34,8 @@ const ProgramState = struct {
     image_tex_loc: gl.GLint = -1,
     fill_rule_loc: gl.GLint = -1,
     subpixel_order_loc: gl.GLint = -1,
+    subpixel_render_mode_loc: gl.GLint = -1,
+    subpixel_backdrop_loc: gl.GLint = -1,
     layer_tex_loc: gl.GLint = -1,
 };
 
@@ -41,6 +45,8 @@ var colr_program = ProgramState{};
 var path_program = ProgramState{};
 
 pub var subpixel_order: SubpixelOrder = .none;
+pub var subpixel_mode: SubpixelMode = .safe;
+pub var subpixel_backdrop: ?[4]f32 = null;
 pub var fill_rule: FillRule = .non_zero;
 
 pub const FillRule = enum(c_int) {
@@ -657,15 +663,23 @@ fn drawTextInternal(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_
     }
 
     gl.glDisable(gl.GL_DEPTH_TEST);
-    gl.glEnable(gl.GL_BLEND);
-    gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA);
-
     const floats_per_glyph = vertex.FLOATS_PER_VERTEX * vertex.VERTICES_PER_GLYPH;
     const total_glyphs = vertices.len / floats_per_glyph;
-    const allow_lcd = allow_subpixel and subpixel_order != .none;
+    const render_mode = subpixel_policy.chooseTextRenderMode(
+        vertices,
+        mvp,
+        allow_subpixel,
+        subpixel_order,
+        subpixel_mode,
+        subpixel_backdrop,
+    );
     if (!atlas_has_special_text_runs) {
-        const state = if (allow_lcd) &text_subpixel_program else &text_program;
-        bindProgramState(state, mvp, viewport_w, viewport_h, allow_lcd);
+        setTextBlendMode(false, render_mode);
+        const state = switch (render_mode) {
+            .grayscale => &text_program,
+            .subpixel_legacy, .subpixel_backdrop => &text_subpixel_program,
+        };
+        bindProgramState(state, mvp, viewport_w, viewport_h, render_mode);
         drawGlyphRange(vertices, 0, total_glyphs);
         return;
     }
@@ -678,13 +692,15 @@ fn drawTextInternal(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_
             run_end += 1;
         }
 
+        const run_mode: subpixel_policy.TextRenderMode = if (special) .grayscale else render_mode;
+        setTextBlendMode(special, run_mode);
         const state = if (special)
             ensureColrProgram()
-        else if (allow_lcd)
-            &text_subpixel_program
-        else
-            &text_program;
-        bindProgramState(state, mvp, viewport_w, viewport_h, allow_lcd and !special);
+        else switch (run_mode) {
+            .grayscale => &text_program,
+            .subpixel_legacy, .subpixel_backdrop => &text_subpixel_program,
+        };
+        bindProgramState(state, mvp, viewport_w, viewport_h, run_mode);
         drawGlyphRange(vertices, run_start, run_end - run_start);
         run_start = run_end;
     }
@@ -705,7 +721,7 @@ pub fn drawTextGrayscale(vertices: []const f32, mvp: Mat4, viewport_w: f32, view
     gl.glEnable(gl.GL_BLEND);
     gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA);
 
-    bindProgramState(state, mvp, viewport_w, viewport_h, false);
+    bindProgramState(state, mvp, viewport_w, viewport_h, .grayscale);
     drawGlyphRange(vertices, 0, vertices.len / (vertex.FLOATS_PER_VERTEX * vertex.VERTICES_PER_GLYPH));
 }
 
@@ -767,6 +783,8 @@ fn loadProgramState(cache_label: []const u8, vs_src: [*c]const u8, fs_src: [*c]c
         .image_tex_loc = gl.glGetUniformLocation(handle, "u_image_tex"),
         .fill_rule_loc = gl.glGetUniformLocation(handle, "u_fill_rule"),
         .subpixel_order_loc = gl.glGetUniformLocation(handle, "u_subpixel_order"),
+        .subpixel_render_mode_loc = gl.glGetUniformLocation(handle, "u_subpixel_render_mode"),
+        .subpixel_backdrop_loc = gl.glGetUniformLocation(handle, "u_subpixel_backdrop"),
         .layer_tex_loc = gl.glGetUniformLocation(handle, "u_layer_tex"),
     };
 }
@@ -790,7 +808,7 @@ fn ensurePathProgram() *const ProgramState {
     return &path_program;
 }
 
-fn bindProgramState(state: *const ProgramState, mvp: Mat4, viewport_w: f32, viewport_h: f32, using_subpixel: bool) void {
+fn bindProgramState(state: *const ProgramState, mvp: Mat4, viewport_w: f32, viewport_h: f32, render_mode: subpixel_policy.TextRenderMode) void {
     if (state.handle != active_program or !frame_begun) {
         gl.glUseProgram(state.handle);
         active_program = state.handle;
@@ -825,9 +843,25 @@ fn bindProgramState(state: *const ProgramState, mvp: Mat4, viewport_w: f32, view
     gl.glUniformMatrix4fv(state.mvp_loc, 1, gl.GL_FALSE, &mvp.data);
     gl.glUniform2f(state.viewport_loc, viewport_w, viewport_h);
     gl.glUniform1i(state.fill_rule_loc, @intFromEnum(fill_rule));
-    if (using_subpixel and state.subpixel_order_loc >= 0) {
+    if (render_mode != .grayscale and state.subpixel_order_loc >= 0) {
         gl.glUniform1i(state.subpixel_order_loc, @intFromEnum(subpixel_order));
     }
+    if (state.subpixel_render_mode_loc >= 0) {
+        gl.glUniform1i(state.subpixel_render_mode_loc, if (render_mode == .subpixel_backdrop) 1 else 0);
+    }
+    if (state.subpixel_backdrop_loc >= 0) {
+        const bg = subpixel_backdrop orelse .{ 0, 0, 0, 0 };
+        gl.glUniform4f(state.subpixel_backdrop_loc, bg[0], bg[1], bg[2], bg[3]);
+    }
+}
+
+fn setTextBlendMode(special: bool, render_mode: subpixel_policy.TextRenderMode) void {
+    if (!special and render_mode == .subpixel_backdrop) {
+        gl.glDisable(gl.GL_BLEND);
+        return;
+    }
+    gl.glEnable(gl.GL_BLEND);
+    gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA);
 }
 
 fn glyphRunIsSpecial(vertices: []const f32, glyph_index: usize) bool {

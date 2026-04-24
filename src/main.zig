@@ -74,7 +74,8 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         if (build_options.enable_harfbuzz) "ON" else "OFF",
     });
     std.debug.print("Subpixel order: {s}\n", .{renderer.subpixelOrder().name()});
-    std.debug.print("Keys: arrows pan, Z/X zoom, R rotate, S stress, D debug view, L subpixel order, Esc quit\n", .{});
+    std.debug.print("Subpixel mode: {s}\n", .{renderer.subpixelMode().name()});
+    std.debug.print("Keys: arrows pan, Z/X zoom, R rotate, S stress, D debug view, L subpixel order, M subpixel mode, Esc quit\n", .{});
 
     while (!platform.shouldClose()) {
         const now = platform.getTime();
@@ -92,6 +93,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         const KEY_S = platform.KEY_S;
         const KEY_D = platform.KEY_D;
         const KEY_L = platform.KEY_L;
+        const KEY_M = platform.KEY_M;
         const KEY_Z = platform.KEY_Z;
         const KEY_X = platform.KEY_X;
         const KEY_ESCAPE = platform.KEY_ESCAPE;
@@ -125,6 +127,14 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
             };
             renderer.setSubpixelOrder(next);
             std.debug.print("Subpixel: {s}\n", .{renderer.subpixelOrder().name()});
+        }
+        if (platform.isKeyPressed(KEY_M)) {
+            const next: snail.SubpixelMode = switch (renderer.subpixelMode()) {
+                .safe => .legacy_unsafe,
+                .legacy_unsafe => .safe,
+            };
+            renderer.setSubpixelMode(next);
+            std.debug.print("Subpixel mode: {s}\n", .{renderer.subpixelMode().name()});
         }
         if (rotate) angle += dt * 0.5;
         if (platform.isKeyDown(KEY_Z)) zoom *= 1.0 + dt * 2.0;
@@ -234,8 +244,13 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
             _ = hud.addString(atlas_view, &scene_assets.latin_font, "snail demo", 10.0, 30.0, 12.0, gray);
             const hb_str = if (build_options.enable_harfbuzz) " | HarfBuzz ON" else "";
             const sp_name = renderer.subpixelOrder().name();
+            const sp_mode = renderer.subpixelMode().name();
+            const sp_suffix = if (renderer.subpixelMode() == .safe and renderer.subpixelBackdrop() == null)
+                " (grayscale fallback)"
+            else
+                "";
             var hud_line2_buf: [160]u8 = undefined;
-            const hud_line2 = std.fmt.bufPrint(&hud_line2_buf, "Arrows pan | Z/X zoom | R rotate | S stress | D view: {s} | L subpixel: {s}{s}", .{ view_mode.label(), sp_name, hb_str }) catch "Arrows pan | Z/X zoom | R rotate | S stress | D debug view | L subpixel order";
+            const hud_line2 = std.fmt.bufPrint(&hud_line2_buf, "Arrows pan | Z/X zoom | R rotate | S stress | D view: {s} | L order: {s} | M mode: {s}{s}{s}", .{ view_mode.label(), sp_name, sp_mode, sp_suffix, hb_str }) catch "Arrows pan | Z/X zoom | R rotate | S stress | D debug view | L order | M mode";
             _ = hud.addString(atlas_view, &scene_assets.latin_font, hud_line2, 10.0, 14.0, 12.0, gray);
             if (hud.glyphCount() > 0) {
                 renderer.draw(hud.slice(), projection, w, h);

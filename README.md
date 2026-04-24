@@ -51,7 +51,7 @@ nix-build -A demo       # build snail-demo
 cd pkg/arch && makepkg -si
 ```
 
-Demo controls: arrow keys pan, `Z`/`X` zoom, `R` rotate, `S` stress test, `L` cycle subpixel order (none → RGB → BGR → VRGB → VBGR).
+Demo controls: arrow keys pan, `Z`/`X` zoom, `R` rotate, `S` stress test, `L` cycle subpixel order (none → RGB → BGR → VRGB → VBGR), `M` toggle subpixel mode (`safe` ↔ `legacy-unsafe`).
 
 ## Usage
 
@@ -242,7 +242,7 @@ soft.drawGlyphId(&atlas, try font.glyphIndex('A'), 12, 28, 24, .{ 1, 1, 1, 1 });
 soft.drawPathPicture(&path_picture);
 ```
 
-`drawPathPicture()` uses the same frozen `PathPicture` data as the GPU path, including gradients and image paints. `drawPathPictureTransformed()` applies an extra affine transform at draw time. Fill rule and subpixel order still match the GPU renderer.
+`drawPathPicture()` uses the same frozen `PathPicture` data as the GPU path, including gradients and image paints. `drawPathPictureTransformed()` applies an extra affine transform at draw time. Fill rule still matches the GPU renderer.
 
 ### Performance model
 
@@ -313,7 +313,9 @@ renderer.setFillRule(.even_odd);
 
 ### Subpixel rendering
 
-`renderer.setSubpixelOrder(.rgb)` enables LCD subpixel antialiasing. The fragment shader evaluates coverage at three sub-pixel offsets, tripling effective resolution in the subpixel axis. This applies to both glyphs and procedural vector primitives. Most visible on standard-DPI displays at small font sizes.
+`renderer.setSubpixelOrder(.rgb)` requests LCD subpixel antialiasing. In the default `.safe` mode, snail only uses LCD AA for axis-aligned text when you also declare the opaque solid backdrop it should resolve against; otherwise it falls back to grayscale AA. `drawPaths()` always stays grayscale.
+
+`renderer.setSubpixelMode(.legacy_unsafe)` restores the old behavior if you explicitly want the extra sharpness and accept incorrect compositing on arbitrary backgrounds.
 
 All five orders are supported: `.none` (off), `.rgb`, `.bgr`, `.vrgb`, `.vbgr`. The demo auto-detects the system base order via fontconfig, and the `L` key cycles orders at runtime.
 
@@ -321,6 +323,12 @@ All five orders are supported: `.none` (off), `.rgb`, `.bgr`, `.vrgb`, `.vbgr`. 
 renderer.setSubpixelOrder(.rgb);   // horizontal RGB (most common)
 renderer.setSubpixelOrder(.vrgb);  // vertical RGB (rotated display)
 renderer.setSubpixelOrder(.none);  // disable (OLED/HiDPI)
+
+renderer.setSubpixelMode(.safe);   // default
+renderer.setSubpixelBackdrop(.{ 0.08, 0.09, 0.12, 1.0 }); // opaque solid background under the text
+
+// Escape hatch: preserves the old LCD path, including its compositing artifacts.
+renderer.setSubpixelMode(.legacy_unsafe);
 ```
 
 ### OpenType shaping

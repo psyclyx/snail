@@ -15,6 +15,8 @@ layout(push_constant) uniform PushConstants {
     vec2 viewport;
     int fill_rule;
     int subpixel_order; // 1=RGB, 2=BGR, 3=VRGB, 4=VBGR
+    int subpixel_render_mode; // 0=legacy blend, 1=opaque backdrop resolve
+    vec4 subpixel_backdrop;
 };
 
 layout(location = 0) out vec4 frag_color;
@@ -526,6 +528,12 @@ vec4 premultiplyColorSubpixel(vec4 color, vec3 cov, float alpha_cov) {
     return vec4(color.rgb * alpha, color.a * alpha_cov);
 }
 
+vec4 resolveSubpixelOverOpaqueBackdrop(vec4 color, vec3 cov, vec4 backdrop) {
+    vec3 src_alpha = vec3(color.a) * cov;
+    vec3 resolved = color.rgb * src_alpha + backdrop.rgb * (vec3(1.0) - src_alpha);
+    return vec4(resolved, 1.0);
+}
+
 vec2 evalHorizCoverage(vec2 rc, float xOffset, vec2 ppe,
                        ivec2 gLoc, ivec2 hLoc, int hCount, int layer) {
     return evalAxisCoverage(rc + vec2(xOffset, 0.0), ppe.x, hLoc, hCount, layer, true);
@@ -756,5 +764,9 @@ void main() {
 
     vec3 cov = cov_alpha.rgb;
     if (max(max(cov.r, cov.g), cov.b) < 1.0/255.0) discard;
+    if (subpixel_render_mode == 1 && subpixel_backdrop.a >= 1.0 - 1e-6) {
+        frag_color = resolveSubpixelOverOpaqueBackdrop(v_color, cov, subpixel_backdrop);
+        return;
+    }
     frag_color = premultiplyColorSubpixel(v_color, cov, cov_alpha.a);
 }

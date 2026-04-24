@@ -44,6 +44,8 @@ const vulkan_pipeline = if (build_options.enable_vulkan) @import("render/vulkan_
         return "vulkan (disabled)";
     }
     pub var subpixel_order: @import("render/subpixel_order.zig").SubpixelOrder = .none;
+    pub var subpixel_mode: @import("render/subpixel_mode.zig").SubpixelMode = .safe;
+    pub var subpixel_backdrop: ?[4]f32 = null;
     pub var fill_rule: pipeline.FillRule = .non_zero;
 };
 pub const harfbuzz = if (build_options.enable_harfbuzz) @import("font/harfbuzz.zig") else struct {
@@ -3622,6 +3624,7 @@ pub const PathBatch = struct {
 };
 
 pub const FillRule = pipeline.FillRule;
+pub const SubpixelMode = @import("render/subpixel_mode.zig").SubpixelMode;
 pub const SubpixelOrder = @import("render/subpixel_order.zig").SubpixelOrder;
 pub const RenderBackend = enum { gl, vulkan };
 pub const VulkanContext = vulkan_pipeline.VulkanContext;
@@ -3767,6 +3770,39 @@ pub const Renderer = struct {
         return switch (self.backend) {
             .gl => pipeline.subpixel_order,
             .vulkan => vulkan_pipeline.subpixel_order,
+        };
+    }
+
+    /// Control how LCD subpixel rendering is applied.
+    /// `.safe` (default) only uses LCD for axis-aligned text over a declared opaque backdrop.
+    /// `.legacy_unsafe` restores the previous behavior for callers that accept the artifacts.
+    pub fn setSubpixelMode(self: *Renderer, mode: SubpixelMode) void {
+        switch (self.backend) {
+            .gl => pipeline.subpixel_mode = mode,
+            .vulkan => vulkan_pipeline.subpixel_mode = mode,
+        }
+    }
+
+    pub fn subpixelMode(self: *const Renderer) SubpixelMode {
+        return switch (self.backend) {
+            .gl => pipeline.subpixel_mode,
+            .vulkan => vulkan_pipeline.subpixel_mode,
+        };
+    }
+
+    /// Declare the opaque solid backdrop that LCD text will be resolved against in `.safe` mode.
+    /// Pass `null` to disable LCD backdrop resolution and force grayscale fallback.
+    pub fn setSubpixelBackdrop(self: *Renderer, color: ?[4]f32) void {
+        switch (self.backend) {
+            .gl => pipeline.subpixel_backdrop = color,
+            .vulkan => vulkan_pipeline.subpixel_backdrop = color,
+        }
+    }
+
+    pub fn subpixelBackdrop(self: *const Renderer) ?[4]f32 {
+        return switch (self.backend) {
+            .gl => pipeline.subpixel_backdrop,
+            .vulkan => vulkan_pipeline.subpixel_backdrop,
         };
     }
 

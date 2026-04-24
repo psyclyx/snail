@@ -262,6 +262,17 @@ export fn snail_renderer_set_subpixel_order(order: c_int) void {
     pipeline.subpixel_order = @enumFromInt(order);
 }
 
+export fn snail_renderer_set_subpixel_mode(mode: c_int) void {
+    pipeline.subpixel_mode = @enumFromInt(mode);
+}
+
+export fn snail_renderer_set_subpixel_backdrop(rgba_or_null: ?[*]const f32) void {
+    pipeline.subpixel_backdrop = if (rgba_or_null) |rgba|
+        .{ rgba[0], rgba[1], rgba[2], rgba[3] }
+    else
+        null;
+}
+
 export fn snail_renderer_set_subpixel(enabled: bool) void {
     snail_renderer_set_subpixel_order(if (enabled) @intFromEnum(snail.SubpixelOrder.rgb) else @intFromEnum(snail.SubpixelOrder.none));
 }

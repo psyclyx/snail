@@ -1,10 +1,12 @@
 const std = @import("std");
+const subpixel_policy = @import("subpixel_policy.zig");
 const upload_common = @import("upload_common.zig");
 const vertex = @import("vertex.zig");
 const sprite_vertex = @import("sprite_vertex.zig");
 const vec = @import("../math/vec.zig");
 const Mat4 = vec.Mat4;
 const snail_mod = @import("../snail.zig");
+const SubpixelMode = @import("subpixel_mode.zig").SubpixelMode;
 const SubpixelOrder = @import("subpixel_order.zig").SubpixelOrder;
 
 pub const vk = @cImport({
@@ -32,11 +34,14 @@ const PushConstants = extern struct {
     mvp: [16]f32, // mat4, column-major
     viewport: [2]f32,
     fill_rule: i32,
-    subpixel_order: i32 = 1, // 1=RGB, 2=BGR, 3=VRGB, 4=VBGR; replaces former padding
+    subpixel_order: i32 = 1, // 1=RGB, 2=BGR, 3=VRGB, 4=VBGR
+    subpixel_render_mode: i32 = 0, // 0=legacy blend, 1=opaque backdrop resolve
+    _pad0: [3]i32 = .{ 0, 0, 0 },
+    subpixel_backdrop: [4]f32 = .{ 0, 0, 0, 0 },
 };
 
 comptime {
-    if (@sizeOf(PushConstants) != 80) @compileError("PushConstants must be 80 bytes");
+    if (@sizeOf(PushConstants) != 112) @compileError("PushConstants must be 112 bytes");
 }
 
 // ── Initialization context (provided by caller) ──
@@ -57,6 +62,7 @@ var initialized: bool = false;
 
 var pipeline_normal: vk.VkPipeline = null;
 var pipeline_subpixel: vk.VkPipeline = null;
+var pipeline_subpixel_resolve: vk.VkPipeline = null;
 var pipeline_sprite: vk.VkPipeline = null;
 var pipeline_cache: vk.VkPipelineCache = null;
 var pipeline_layout: vk.VkPipelineLayout = null;
@@ -124,6 +130,8 @@ var transfer_cmd_pool: vk.VkCommandPool = null;
 // Per-frame state
 var active_cmd: vk.VkCommandBuffer = null;
 pub var subpixel_order: SubpixelOrder = .none;
+pub var subpixel_mode: SubpixelMode = .safe;
+pub var subpixel_backdrop: ?[4]f32 = null;
 pub var fill_rule: FillRule = .non_zero;
 
 pub const FillRule = enum(c_int) {
@@ -286,6 +294,7 @@ pub fn deinit() void {
     if (desc_pool != null) vk.vkDestroyDescriptorPool(ctx.device, desc_pool, null);
     if (desc_set_layout != null) vk.vkDestroyDescriptorSetLayout(ctx.device, desc_set_layout, null);
     if (pipeline_sprite != null) vk.vkDestroyPipeline(ctx.device, pipeline_sprite, null);
+    if (pipeline_subpixel_resolve != null) vk.vkDestroyPipeline(ctx.device, pipeline_subpixel_resolve, null);
     if (pipeline_subpixel != null) vk.vkDestroyPipeline(ctx.device, pipeline_subpixel, null);
     if (pipeline_normal != null) vk.vkDestroyPipeline(ctx.device, pipeline_normal, null);
     if (pipeline_cache != null) vk.vkDestroyPipelineCache(ctx.device, pipeline_cache, null);
@@ -606,49 +615,56 @@ fn drawTextInternal(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_
     const total_glyphs = vertices.len / floats_per_glyph;
     if (total_glyphs == 0) return;
 
-    // Bind pipeline + state (shared across all chunks)
-    const effective_order: SubpixelOrder = if (allow_subpixel) subpixel_order else .none;
-    const pip = if (effective_order != .none)
-        ensureSubpixelPipeline() catch {
-            std.debug.print("Vulkan: failed to create subpixel pipeline\n", .{});
-            return;
-        }
-    else
-        ensureNormalPipeline() catch {
-            std.debug.print("Vulkan: failed to create text pipeline\n", .{});
-            return;
-        };
-    vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pip);
     vk.vkCmdBindIndexBuffer(cmd, index_buffer, 0, vk.VK_INDEX_TYPE_UINT32);
     vk.vkCmdBindDescriptorSets(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, @ptrCast(&desc_set), 0, null);
-
-    const pc = PushConstants{
-        .mvp = mvp.data,
-        .viewport = .{ viewport_w, viewport_h },
-        .fill_rule = @intFromEnum(fill_rule),
-        .subpixel_order = @intFromEnum(effective_order),
-    };
-    vk.vkCmdPushConstants(cmd, pipeline_layout, vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(PushConstants), &pc);
     setViewportAndScissor(cmd, viewport_w, viewport_h);
 
-    // Draw in chunks that fit within a single ring segment
-    var glyphs_drawn: usize = 0;
-    while (glyphs_drawn < total_glyphs) {
-        const chunk: usize = @min(total_glyphs - glyphs_drawn, MAX_GLYPHS_PER_SEGMENT);
-        const float_offset = glyphs_drawn * floats_per_glyph;
-        const byte_size = chunk * BYTES_PER_GLYPH;
+    const render_mode = subpixel_policy.chooseTextRenderMode(
+        vertices,
+        mvp,
+        allow_subpixel,
+        subpixel_order,
+        subpixel_mode,
+        subpixel_backdrop,
+    );
+    const backdrop = subpixel_backdrop orelse .{ 0, 0, 0, 0 };
 
-        const ring_offset: vk.VkDeviceSize = @as(vk.VkDeviceSize, ring_segment) * RING_SEGMENT_BYTES;
-        const dst = persistent_map.?[ring_offset..][0..byte_size];
-        const src: [*]const u8 = @ptrCast(vertices[float_offset..].ptr);
-        @memcpy(dst, src[0..byte_size]);
+    var run_start: usize = 0;
+    while (run_start < total_glyphs) {
+        const special = glyphRunIsSpecial(vertices, run_start);
+        var run_end = run_start + 1;
+        while (run_end < total_glyphs and glyphRunIsSpecial(vertices, run_end) == special) {
+            run_end += 1;
+        }
 
-        const offsets = [1]vk.VkDeviceSize{ring_offset};
-        vk.vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer, &offsets);
-        vk.vkCmdDrawIndexed(cmd, @intCast(chunk * 6), 1, 0, 0, 0);
+        const run_mode: subpixel_policy.TextRenderMode = if (special) .grayscale else render_mode;
+        const pip = switch (run_mode) {
+            .grayscale => ensureNormalPipeline() catch {
+                std.debug.print("Vulkan: failed to create text pipeline\n", .{});
+                return;
+            },
+            .subpixel_legacy => ensureSubpixelPipeline() catch {
+                std.debug.print("Vulkan: failed to create subpixel pipeline\n", .{});
+                return;
+            },
+            .subpixel_backdrop => ensureSubpixelResolvePipeline() catch {
+                std.debug.print("Vulkan: failed to create subpixel resolve pipeline\n", .{});
+                return;
+            },
+        };
+        vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pip);
 
-        ring_segment = (ring_segment + 1) % RING_SEGMENTS;
-        glyphs_drawn += chunk;
+        const pc = PushConstants{
+            .mvp = mvp.data,
+            .viewport = .{ viewport_w, viewport_h },
+            .fill_rule = @intFromEnum(fill_rule),
+            .subpixel_order = @intFromEnum(if (run_mode == .grayscale) SubpixelOrder.none else subpixel_order),
+            .subpixel_render_mode = if (run_mode == .subpixel_backdrop) 1 else 0,
+            .subpixel_backdrop = backdrop,
+        };
+        vk.vkCmdPushConstants(cmd, pipeline_layout, vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(PushConstants), &pc);
+        drawGlyphRange(vertices, run_start, run_end - run_start);
+        run_start = run_end;
     }
 }
 
@@ -710,7 +726,7 @@ pub fn resetFrameState() void {
 
 // ── Internal helpers ──
 
-fn createGraphicsPipeline(frag_code: []const u8) !vk.VkPipeline {
+fn createGraphicsPipeline(frag_code: []const u8, blend_enabled: bool) !vk.VkPipeline {
     const vert_module = try createShaderModule(vert_spv);
     defer vk.vkDestroyShaderModule(ctx.device, vert_module, null);
     const frag_module = try createShaderModule(frag_code);
@@ -793,12 +809,12 @@ fn createGraphicsPipeline(frag_code: []const u8) !vk.VkPipeline {
     // Premultiplied alpha blending: shader outputs (color * coverage, alpha * coverage),
     // so src factor is ONE to avoid double-multiplying coverage.
     const blend_attach = std.mem.zeroInit(vk.VkPipelineColorBlendAttachmentState, .{
-        .blendEnable = vk.VK_TRUE,
-        .srcColorBlendFactor = vk.VK_BLEND_FACTOR_ONE,
-        .dstColorBlendFactor = vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+        .blendEnable = if (blend_enabled) vk.VK_TRUE else vk.VK_FALSE,
+        .srcColorBlendFactor = if (blend_enabled) vk.VK_BLEND_FACTOR_ONE else vk.VK_BLEND_FACTOR_ONE,
+        .dstColorBlendFactor = if (blend_enabled) vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA else vk.VK_BLEND_FACTOR_ZERO,
         .colorBlendOp = vk.VK_BLEND_OP_ADD,
-        .srcAlphaBlendFactor = vk.VK_BLEND_FACTOR_ONE,
-        .dstAlphaBlendFactor = vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+        .srcAlphaBlendFactor = if (blend_enabled) vk.VK_BLEND_FACTOR_ONE else vk.VK_BLEND_FACTOR_ONE,
+        .dstAlphaBlendFactor = if (blend_enabled) vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA else vk.VK_BLEND_FACTOR_ZERO,
         .alphaBlendOp = vk.VK_BLEND_OP_ADD,
         .colorWriteMask = vk.VK_COLOR_COMPONENT_R_BIT | vk.VK_COLOR_COMPONENT_G_BIT | vk.VK_COLOR_COMPONENT_B_BIT | vk.VK_COLOR_COMPONENT_A_BIT,
     });
@@ -956,16 +972,23 @@ fn createSpriteGraphicsPipeline() !vk.VkPipeline {
 
 fn ensureNormalPipeline() !vk.VkPipeline {
     if (pipeline_normal == null) {
-        pipeline_normal = try createGraphicsPipeline(frag_spv);
+        pipeline_normal = try createGraphicsPipeline(frag_spv, true);
     }
     return pipeline_normal;
 }
 
 fn ensureSubpixelPipeline() !vk.VkPipeline {
     if (pipeline_subpixel == null) {
-        pipeline_subpixel = try createGraphicsPipeline(frag_subpixel_spv);
+        pipeline_subpixel = try createGraphicsPipeline(frag_subpixel_spv, true);
     }
     return pipeline_subpixel;
+}
+
+fn ensureSubpixelResolvePipeline() !vk.VkPipeline {
+    if (pipeline_subpixel_resolve == null) {
+        pipeline_subpixel_resolve = try createGraphicsPipeline(frag_subpixel_spv, false);
+    }
+    return pipeline_subpixel_resolve;
 }
 
 fn ensureSpritePipeline() !vk.VkPipeline {
@@ -973,6 +996,34 @@ fn ensureSpritePipeline() !vk.VkPipeline {
         pipeline_sprite = try createSpriteGraphicsPipeline();
     }
     return pipeline_sprite;
+}
+
+fn glyphRunIsSpecial(vertices: []const f32, glyph_index: usize) bool {
+    const float_offset = glyph_index * vertex.FLOATS_PER_VERTEX * vertex.VERTICES_PER_GLYPH;
+    const gw_bits: u32 = @bitCast(vertices[float_offset + 7]);
+    return (gw_bits >> 24) == 0xFF;
+}
+
+fn drawGlyphRange(vertices: []const f32, glyph_offset: usize, glyph_count: usize) void {
+    const floats_per_glyph = vertex.FLOATS_PER_VERTEX * vertex.VERTICES_PER_GLYPH;
+    var glyphs_drawn: usize = 0;
+    while (glyphs_drawn < glyph_count) {
+        const chunk: usize = @min(glyph_count - glyphs_drawn, MAX_GLYPHS_PER_SEGMENT);
+        const float_offset = (glyph_offset + glyphs_drawn) * floats_per_glyph;
+        const byte_size = chunk * BYTES_PER_GLYPH;
+
+        const ring_offset: vk.VkDeviceSize = @as(vk.VkDeviceSize, ring_segment) * RING_SEGMENT_BYTES;
+        const dst = persistent_map.?[ring_offset..][0..byte_size];
+        const src: [*]const u8 = @ptrCast(vertices[float_offset..].ptr);
+        @memcpy(dst, src[0..byte_size]);
+
+        const offsets = [1]vk.VkDeviceSize{ring_offset};
+        vk.vkCmdBindVertexBuffers(active_cmd.?, 0, 1, &vertex_buffer, &offsets);
+        vk.vkCmdDrawIndexed(active_cmd.?, @intCast(chunk * 6), 1, 0, 0, 0);
+
+        ring_segment = (ring_segment + 1) % RING_SEGMENTS;
+        glyphs_drawn += chunk;
+    }
 }
 
 fn createPersistentPipelineCache() !void {
