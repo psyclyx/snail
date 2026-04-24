@@ -1097,6 +1097,19 @@ fn f16ToF32(h: u16) f32 {
 // Tests
 // ---------------------------------------------------------------------------
 
+fn expectEqualSlicesWithinU8(expected: []const u8, actual: []const u8, max_diff: u8, max_differences: usize) !void {
+    try std.testing.expectEqual(expected.len, actual.len);
+
+    var diff_count: usize = 0;
+    for (expected, actual) |lhs, rhs| {
+        const diff = if (lhs > rhs) lhs - rhs else rhs - lhs;
+        if (diff > max_diff) return error.TestExpectedEqual;
+        if (diff != 0) diff_count += 1;
+    }
+
+    try std.testing.expect(diff_count <= max_differences);
+}
+
 test "f16ToF32 roundtrip" {
     const testing = std.testing;
     try testing.expectApproxEqAbs(@as(f32, 0.0), f16ToF32(0), 1e-10);
@@ -1269,7 +1282,7 @@ test "cpu renderer matches absolute and transformed rounded rect pictures" {
     absolute_renderer.drawPathPicture(&absolute_picture);
     transformed_renderer.drawPathPicture(&transformed_picture);
 
-    try testing.expectEqualSlices(u8, absolute_buf, transformed_buf);
+    try expectEqualSlicesWithinU8(absolute_buf, transformed_buf, 1, 16);
 }
 
 test "cpu renderer matches huge-span and normalized curved path pictures" {

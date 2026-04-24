@@ -932,7 +932,7 @@ fn ensureColrProgram() *const ProgramState {
 
 fn ensurePathProgram() *const ProgramState {
     if (path_program.handle == 0) {
-        path_program = loadProgramState("path", shaders.vertex_shader, shaders.fragment_shader_path) catch @panic("failed to link path shader");
+        path_program = loadProgramState("path", shaders.vertex_shader, shaders.fragment_shader) catch @panic("failed to link path shader");
     }
     return &path_program;
 }

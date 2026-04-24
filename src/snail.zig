@@ -2252,7 +2252,7 @@ pub const VectorPath = struct {
         return .{
             .curves = curves,
             .bbox = outline.bounds() orelse return error.EmptyPath,
-            .logical_curve_count = outline.filledBandCurveCount(),
+            .logical_curve_count = self.filledBandCurveCount() * 2,
         };
     }
 };
@@ -3311,15 +3311,15 @@ pub const PathPictureBuilder = struct {
         }
         for (self.paths.items) |path| {
             const origin = bboxCenter(path.bbox);
-            const delta = Vec2.new(-origin.x, -origin.y);
             for (path.layers[0..path.layer_count]) |layer| {
-                const packed_curves = try curve_tex.splitCurvesForPacking(allocator, layer.curves);
-                packed_curve_slices[glyph_cursor] = packed_curves;
+                const stored_curves = try allocator.dupe(CurveSegment, layer.curves);
+                packed_curve_slices[glyph_cursor] = stored_curves;
                 glyph_curves[glyph_cursor] = .{
-                    .curves = packed_curves,
-                    .bbox = translateBBox(layer.bbox, delta),
+                    .curves = stored_curves,
+                    .bbox = layer.bbox,
                     .origin = origin,
                     .logical_curve_count = layer.logical_curve_count,
+                    .prefer_direct_encoding = true,
                 };
                 glyph_cursor += 1;
             }
@@ -3771,6 +3771,47 @@ test "path picture band heuristic uses source segment count for cubic fills" {
     try std.testing.expectEqual(@as(u16, 1), info.band_entry.v_band_count);
 }
 
+test "path picture layers use direct local curve encoding" {
+    var body = VectorPath.init(std.testing.allocator);
+    defer body.deinit();
+    try body.moveTo(.{ .x = 28.0, .y = 155.0 });
+    try body.cubicTo(.{ .x = 62.0, .y = 132.0 }, .{ .x = 106.0, .y = 121.0 }, .{ .x = 142.0, .y = 127.0 });
+    try body.cubicTo(.{ .x = 179.0, .y = 133.0 }, .{ .x = 210.0, .y = 151.0 }, .{ .x = 246.0, .y = 151.0 });
+    try body.cubicTo(.{ .x = 288.0, .y = 151.0 }, .{ .x = 317.0, .y = 145.0 }, .{ .x = 332.0, .y = 131.0 });
+    try body.cubicTo(.{ .x = 346.0, .y = 119.0 }, .{ .x = 345.0, .y = 104.0 }, .{ .x = 327.0, .y = 100.0 });
+    try body.cubicTo(.{ .x = 307.0, .y = 96.0 }, .{ .x = 286.0, .y = 105.0 }, .{ .x = 278.0, .y = 119.0 });
+    try body.cubicTo(.{ .x = 269.0, .y = 132.0 }, .{ .x = 252.0, .y = 136.0 }, .{ .x = 233.0, .y = 132.0 });
+    try body.cubicTo(.{ .x = 210.0, .y = 126.0 }, .{ .x = 189.0, .y = 105.0 }, .{ .x = 166.0, .y = 92.0 });
+    try body.cubicTo(.{ .x = 142.0, .y = 79.0 }, .{ .x = 106.0, .y = 84.0 }, .{ .x = 82.0, .y = 106.0 });
+    try body.cubicTo(.{ .x = 58.0, .y = 127.0 }, .{ .x = 42.0, .y = 149.0 }, .{ .x = 28.0, .y = 155.0 });
+    try body.close();
+
+    var builder = PathPictureBuilder.init(std.testing.allocator);
+    defer builder.deinit();
+    try builder.addPath(&body, .{ .paint = .{ .linear_gradient = .{
+        .start = .{ .x = 48.0, .y = 102.0 },
+        .end = .{ .x = 320.0, .y = 158.0 },
+        .start_color = .{ 0.90, 0.87, 0.78, 0.98 },
+        .end_color = .{ 0.58, 0.66, 0.57, 0.98 },
+    } } }, .{
+        .color = .{ 0.92, 0.92, 0.86, 0.42 },
+        .width = 2.0,
+        .join = .round,
+    }, .identity);
+
+    var picture = try builder.freeze(std.testing.allocator);
+    defer picture.deinit();
+
+    const fill_info = picture.atlas.getGlyph(picture.instances[0].glyph_id) orelse return error.TestExpectedEqual;
+    const stroke_info = picture.atlas.getGlyph(picture.instances[0].glyph_id + 1) orelse return error.TestExpectedEqual;
+    try std.testing.expect(fill_info.band_entry.h_band_count > 0);
+    try std.testing.expect(stroke_info.band_entry.h_band_count > 0);
+    try std.testing.expectEqual(
+        curve_tex.f32ToF16(curve_tex.DIRECT_ENCODING_KIND_BIAS),
+        picture.atlas.page(0).curve_data[10],
+    );
+}
+
 test "path picture freeze compiles atlas and transformed batch vertices" {
     var path = VectorPath.init(std.testing.allocator);
     defer path.deinit();
@@ -4086,7 +4127,7 @@ test "inside-aligned rounded rect helper emits explicit ring geometry" {
     try std.testing.expectApproxEqAbs(@as(f32, @intFromEnum(PathCompositeMode.source_over)), lid[1], 0.001);
 }
 
-test "path picture freeze rebases large coordinates before curve packing" {
+test "path picture freeze stores large coordinates as direct local curves" {
     var absolute_builder = PathPictureBuilder.init(std.testing.allocator);
     defer absolute_builder.deinit();
     try absolute_builder.addRoundedRect(
@@ -4117,22 +4158,13 @@ test "path picture freeze rebases large coordinates before curve packing" {
             return @as(f32, @floatCast(@as(f16, @bitCast(bits))));
         }
     }.decode;
-    const anchor = curve_tex.decodePackedAnchor(
-        .{
-            .x = f16ToF32(absolute_page.curve_data[0]),
-            .y = f16ToF32(absolute_page.curve_data[1]),
-        },
-        .{
-            .x = f16ToF32(absolute_page.curve_data[2]),
-            .y = f16ToF32(absolute_page.curve_data[3]),
-        },
-    );
-    try std.testing.expectApproxEqAbs(-11.0, anchor.x, 0.001);
-    try std.testing.expectApproxEqAbs(-9.0, anchor.y, 0.001);
+    try std.testing.expectApproxEqAbs(-11.0, f16ToF32(absolute_page.curve_data[0]), 0.001);
+    try std.testing.expectApproxEqAbs(-9.0, f16ToF32(absolute_page.curve_data[1]), 0.001);
+    try std.testing.expectApproxEqAbs(0.0, f16ToF32(absolute_page.curve_data[2]), 0.001);
+    try std.testing.expectApproxEqAbs(-9.0, f16ToF32(absolute_page.curve_data[3]), 0.001);
     try std.testing.expectApproxEqAbs(11.0, f16ToF32(absolute_page.curve_data[4]), 0.001);
-    try std.testing.expectApproxEqAbs(0.0, f16ToF32(absolute_page.curve_data[5]), 0.001);
-    try std.testing.expectApproxEqAbs(22.0, f16ToF32(absolute_page.curve_data[6]), 0.001);
-    try std.testing.expectApproxEqAbs(0.0, f16ToF32(absolute_page.curve_data[7]), 0.001);
+    try std.testing.expectApproxEqAbs(-9.0, f16ToF32(absolute_page.curve_data[5]), 0.001);
+    try std.testing.expectEqual(curve_tex.f32ToF16(curve_tex.DIRECT_ENCODING_KIND_BIAS), absolute_page.curve_data[10]);
 
     try std.testing.expectApproxEqAbs(transformed_picture.instances[0].bbox.min.x, absolute_picture.instances[0].bbox.min.x, 0.001);
     try std.testing.expectApproxEqAbs(transformed_picture.instances[0].bbox.min.y, absolute_picture.instances[0].bbox.min.y, 0.001);
