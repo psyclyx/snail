@@ -73,22 +73,21 @@ var desc_set_layout: vk.VkDescriptorSetLayout = null;
 var desc_pool: vk.VkDescriptorPool = null;
 var desc_set: vk.VkDescriptorSet = null;
 
-// Vertex ring buffer — must have enough segments so that in-flight frames
-// never share a segment. The demo can issue 3 draws per frame through this
-// buffer (vector chrome + scene text + HUD text), and we keep 2 frames in
-// flight, so reserve at least 6 segments. Use 8 for headroom.
-const RING_SEGMENTS = 8;
-const RING_TOTAL_BYTES = 16 * 1024 * 1024; // 16 MB
-const RING_SEGMENT_BYTES = RING_TOTAL_BYTES / RING_SEGMENTS;
+// Partition the persistently mapped upload buffer by frame slot so a frame can
+// suballocate monotonically without overwriting earlier draws before submit.
+const UPLOAD_SLOTS = 8;
+const UPLOAD_SLOT_BYTES = 8 * 1024 * 1024; // 8 MB per frame slot
+const RING_TOTAL_BYTES = UPLOAD_SLOTS * UPLOAD_SLOT_BYTES;
 const BYTES_PER_GLYPH = vertex.FLOATS_PER_VERTEX * vertex.VERTICES_PER_GLYPH * @sizeOf(f32);
-const MAX_GLYPHS_PER_SEGMENT = RING_SEGMENT_BYTES / BYTES_PER_GLYPH;
+const MAX_GLYPHS_PER_FRAME = UPLOAD_SLOT_BYTES / BYTES_PER_GLYPH;
 const BYTES_PER_SPRITE = sprite_vertex.FLOATS_PER_SPRITE * @sizeOf(f32);
-const MAX_SPRITES_PER_SEGMENT: usize = @min(RING_SEGMENT_BYTES / BYTES_PER_SPRITE, MAX_GLYPHS_PER_SEGMENT);
+const MAX_SPRITES_PER_FRAME: usize = @min(UPLOAD_SLOT_BYTES / BYTES_PER_SPRITE, MAX_GLYPHS_PER_FRAME);
 
 var vertex_buffer: vk.VkBuffer = null;
 var vertex_memory: vk.VkDeviceMemory = null;
 var persistent_map: ?[*]u8 = null;
-var ring_segment: u32 = 0;
+var active_upload_slot: u32 = 0;
+var upload_cursor: usize = 0;
 
 var index_buffer: vk.VkBuffer = null;
 var index_memory: vk.VkDeviceMemory = null;
@@ -316,6 +315,12 @@ pub fn getBackendName() []const u8 {
 
 pub fn setCommandBuffer(cmd: anytype) void {
     active_cmd = @ptrCast(cmd);
+}
+
+pub fn setFrameSlot(slot: u32) void {
+    std.debug.assert(slot < UPLOAD_SLOTS);
+    active_upload_slot = slot;
+    upload_cursor = 0;
 }
 
 // ── Texture array management ──
@@ -711,11 +716,14 @@ pub fn drawSprites(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h
 
     var sprites_drawn: usize = 0;
     while (sprites_drawn < total_sprites) {
-        const chunk: usize = @min(total_sprites - sprites_drawn, MAX_SPRITES_PER_SEGMENT);
+        const available_bytes = UPLOAD_SLOT_BYTES - upload_cursor;
+        const available_sprites = available_bytes / BYTES_PER_SPRITE;
+        if (available_sprites == 0) @panic("Vulkan upload slot exhausted while drawing sprites");
+        const chunk: usize = @min(total_sprites - sprites_drawn, available_sprites);
         const float_offset = sprites_drawn * sprite_vertex.FLOATS_PER_SPRITE;
         const byte_size = chunk * BYTES_PER_SPRITE;
 
-        const ring_offset: vk.VkDeviceSize = @as(vk.VkDeviceSize, ring_segment) * RING_SEGMENT_BYTES;
+        const ring_offset: vk.VkDeviceSize = @as(vk.VkDeviceSize, active_upload_slot) * UPLOAD_SLOT_BYTES + upload_cursor;
         const dst = persistent_map.?[ring_offset..][0..byte_size];
         const src: [*]const u8 = @ptrCast(vertices[float_offset..].ptr);
         @memcpy(dst, src[0..byte_size]);
@@ -724,7 +732,7 @@ pub fn drawSprites(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h
         vk.vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer, &offsets);
         vk.vkCmdDrawIndexed(cmd, @intCast(chunk * 6), 1, 0, 0, 0);
 
-        ring_segment = (ring_segment + 1) % RING_SEGMENTS;
+        upload_cursor += byte_size;
         sprites_drawn += chunk;
     }
 }
@@ -1034,11 +1042,14 @@ fn drawGlyphRange(vertices: []const f32, glyph_offset: usize, glyph_count: usize
     const floats_per_glyph = vertex.FLOATS_PER_VERTEX * vertex.VERTICES_PER_GLYPH;
     var glyphs_drawn: usize = 0;
     while (glyphs_drawn < glyph_count) {
-        const chunk: usize = @min(glyph_count - glyphs_drawn, MAX_GLYPHS_PER_SEGMENT);
+        const available_bytes = UPLOAD_SLOT_BYTES - upload_cursor;
+        const available_glyphs = available_bytes / BYTES_PER_GLYPH;
+        if (available_glyphs == 0) @panic("Vulkan upload slot exhausted while drawing glyphs");
+        const chunk: usize = @min(glyph_count - glyphs_drawn, available_glyphs);
         const float_offset = (glyph_offset + glyphs_drawn) * floats_per_glyph;
         const byte_size = chunk * BYTES_PER_GLYPH;
 
-        const ring_offset: vk.VkDeviceSize = @as(vk.VkDeviceSize, ring_segment) * RING_SEGMENT_BYTES;
+        const ring_offset: vk.VkDeviceSize = @as(vk.VkDeviceSize, active_upload_slot) * UPLOAD_SLOT_BYTES + upload_cursor;
         const dst = persistent_map.?[ring_offset..][0..byte_size];
         const src: [*]const u8 = @ptrCast(vertices[float_offset..].ptr);
         @memcpy(dst, src[0..byte_size]);
@@ -1047,7 +1058,7 @@ fn drawGlyphRange(vertices: []const f32, glyph_offset: usize, glyph_count: usize
         vk.vkCmdBindVertexBuffers(active_cmd.?, 0, 1, &vertex_buffer, &offsets);
         vk.vkCmdDrawIndexed(active_cmd.?, @intCast(chunk * 6), 1, 0, 0, 0);
 
-        ring_segment = (ring_segment + 1) % RING_SEGMENTS;
+        upload_cursor += byte_size;
         glyphs_drawn += chunk;
     }
 }
@@ -1445,7 +1456,7 @@ fn transitionImageLayout(cmd: vk.VkCommandBuffer, image: vk.VkImage, layer_count
 }
 
 fn initIndexBuffer() !void {
-    const index_count: u32 = MAX_GLYPHS_PER_SEGMENT * 6;
+    const index_count: u32 = MAX_GLYPHS_PER_FRAME * 6;
     const buf_size: vk.VkDeviceSize = @as(vk.VkDeviceSize, index_count) * @sizeOf(u32);
 
     try createBuffer(
@@ -1461,7 +1472,7 @@ fn initIndexBuffer() !void {
     try check(vk.vkMapMemory(ctx.device, index_memory, 0, buf_size, 0, &map_ptr));
     const indices: [*]u32 = @ptrCast(@alignCast(map_ptr));
 
-    for (0..MAX_GLYPHS_PER_SEGMENT) |i| {
+    for (0..MAX_GLYPHS_PER_FRAME) |i| {
         const base: u32 = @intCast(i * 4);
         const idx = i * 6;
         indices[idx + 0] = base + 0;

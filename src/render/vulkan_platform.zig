@@ -54,6 +54,7 @@ var command_buffers: [MAX_FRAMES_IN_FLIGHT]vk.VkCommandBuffer = .{null} ** MAX_F
 var image_available_sems: [MAX_FRAMES_IN_FLIGHT]vk.VkSemaphore = .{null} ** MAX_FRAMES_IN_FLIGHT;
 var render_finished_sems: [MAX_FRAMES_IN_FLIGHT]vk.VkSemaphore = .{null} ** MAX_FRAMES_IN_FLIGHT;
 var in_flight_fences: [MAX_FRAMES_IN_FLIGHT]vk.VkFence = .{null} ** MAX_FRAMES_IN_FLIGHT;
+var images_in_flight: [8]vk.VkFence = .{null} ** 8;
 
 var current_frame: u32 = 0;
 var current_image_index: u32 = 0;
@@ -183,6 +184,11 @@ pub fn beginFrame() ?vk.VkCommandBuffer {
         return null;
     }
 
+    if (images_in_flight[current_image_index] != null and images_in_flight[current_image_index] != in_flight_fences[current_frame]) {
+        _ = vk.vkWaitForFences(device, 1, &images_in_flight[current_image_index], vk.VK_TRUE, std.math.maxInt(u64));
+    }
+    images_in_flight[current_image_index] = in_flight_fences[current_frame];
+
     _ = vk.vkResetFences(device, 1, &in_flight_fences[current_frame]);
 
     const cmd = command_buffers[current_frame];
@@ -203,6 +209,7 @@ pub fn beginFrame() ?vk.VkCommandBuffer {
         .pClearValues = &clear_value,
     });
     vk.vkCmdBeginRenderPass(cmd, &rp_info, vk.VK_SUBPASS_CONTENTS_INLINE);
+    vkp.setFrameSlot(current_frame);
 
     cmd_ready_ns = nowNs();
     ft.add(&ft.rp_setup_us, @as(f64, @floatFromInt(cmd_ready_ns - t2)) / 1000.0);
@@ -367,6 +374,7 @@ pub fn deinitOffscreen() void {
     graphics_queue = null;
     physical_device = null;
     supports_dual_source_blend = false;
+    images_in_flight = .{null} ** 8;
 }
 
 /// Begin an offscreen frame. Returns the command buffer to record into.
@@ -397,6 +405,7 @@ pub fn beginFrameOffscreen() vk.VkCommandBuffer {
         .pClearValues = &clear_value,
     });
     vk.vkCmdBeginRenderPass(cmd, &rp_info, vk.VK_SUBPASS_CONTENTS_INLINE);
+    vkp.setFrameSlot(frame);
 
     offscreen_active_frame = frame;
     return cmd;
@@ -902,9 +911,11 @@ fn cleanupSwapchain() void {
         if (swapchain_views[i] != null) vk.vkDestroyImageView(device, swapchain_views[i], null);
         framebuffers[i] = null;
         swapchain_views[i] = null;
+        images_in_flight[i] = null;
     }
     if (swapchain != null) vk.vkDestroySwapchainKHR(device, swapchain, null);
     swapchain = null;
+    swapchain_count = 0;
 }
 
 fn recreateSwapchain() !void {
