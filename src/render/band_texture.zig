@@ -13,6 +13,18 @@ const BandGeometry = struct {
     epsilon: f32,
 };
 
+fn curveControlMaxX(curve: CurveSegment) f32 {
+    var result = @max(curve.p0.x, @max(curve.p1.x, curve.p2.x));
+    if (curve.kind == .cubic) result = @max(result, curve.p3.x);
+    return result;
+}
+
+fn curveControlMaxY(curve: CurveSegment) f32 {
+    var result = @max(curve.p0.y, @max(curve.p1.y, curve.p2.y));
+    if (curve.kind == .cubic) result = @max(result, curve.p3.y);
+    return result;
+}
+
 pub const TEX_WIDTH: u32 = curve_tex.TEX_WIDTH;
 
 /// Result of building band data for a single glyph.
@@ -77,15 +89,29 @@ pub fn buildGlyphBandData(
 
     var curve_bboxes = try allocator.alloc(BBox, curves.len);
     defer allocator.free(curve_bboxes);
+    var curve_sort_max_x = try allocator.alloc(f32, curves.len);
+    defer allocator.free(curve_sort_max_x);
+    var curve_sort_max_y = try allocator.alloc(f32, curves.len);
+    defer allocator.free(curve_sort_max_y);
     const geometry: BandGeometry = blk: {
         if (prefer_direct_encoding) {
             const delta = Vec2.new(-origin.x, -origin.y);
             for (curves, 0..) |curve, ci| {
                 const cb0 = curve.boundingBox();
+                const local_curve = CurveSegment{
+                    .kind = curve.kind,
+                    .p0 = Vec2.add(curve.p0, delta),
+                    .p1 = Vec2.add(curve.p1, delta),
+                    .p2 = Vec2.add(curve.p2, delta),
+                    .p3 = if (curve.kind == .cubic) Vec2.add(curve.p3, delta) else curve.p3,
+                    .weights = curve.weights,
+                };
                 curve_bboxes[ci] = .{
                     .min = Vec2.add(cb0.min, delta),
                     .max = Vec2.add(cb0.max, delta),
                 };
+                curve_sort_max_x[ci] = curveControlMaxX(local_curve);
+                curve_sort_max_y[ci] = curveControlMaxY(local_curve);
             }
             const direct_bbox = BBox{
                 .min = Vec2.add(bbox.min, delta),
@@ -106,6 +132,8 @@ pub fn buildGlyphBandData(
         for (prepared_curves, 0..) |curve, ci| {
             const cb = curve.boundingBox();
             curve_bboxes[ci] = cb;
+            curve_sort_max_x[ci] = curveControlMaxX(curve);
+            curve_sort_max_y[ci] = curveControlMaxY(curve);
             prepared_bbox = if (ci == 0) cb else prepared_bbox.merge(cb);
         }
         break :blk .{
@@ -187,10 +215,10 @@ pub fn buildGlyphBandData(
 
     // Sort curves within bands: horizontal bands by descending max x, vertical by descending max y
     for (h_lists[0..@as(usize, h_bands)]) |band| {
-        sortCurveIndicesDescendingX(band.items, curve_bboxes);
+        sortCurveIndicesDescending(band.items, curve_sort_max_x);
     }
     for (v_lists[0..@as(usize, v_bands)]) |band| {
-        sortCurveIndicesDescendingY(band.items, curve_bboxes);
+        sortCurveIndicesDescending(band.items, curve_sort_max_y);
     }
 
     // Pack into band texture format.
@@ -265,28 +293,14 @@ pub fn buildGlyphBandData(
     };
 }
 
-fn sortCurveIndicesDescendingX(indices: []u16, bboxes: []const BBox) void {
+fn sortCurveIndicesDescending(indices: []u16, sort_keys: []const f32) void {
     const Context = struct {
-        bboxes: []const BBox,
+        sort_keys: []const f32,
         pub fn lessThan(ctx: @This(), a: u16, b: u16) bool {
-            const ca = ctx.bboxes[a];
-            const cb = ctx.bboxes[b];
-            return ca.max.x > cb.max.x;
+            return ctx.sort_keys[a] > ctx.sort_keys[b];
         }
     };
-    std.mem.sort(u16, indices, Context{ .bboxes = bboxes }, Context.lessThan);
-}
-
-fn sortCurveIndicesDescendingY(indices: []u16, bboxes: []const BBox) void {
-    const Context = struct {
-        bboxes: []const BBox,
-        pub fn lessThan(ctx: @This(), a: u16, b: u16) bool {
-            const ca = ctx.bboxes[a];
-            const cb = ctx.bboxes[b];
-            return ca.max.y > cb.max.y;
-        }
-    };
-    std.mem.sort(u16, indices, Context{ .bboxes = bboxes }, Context.lessThan);
+    std.mem.sort(u16, indices, Context{ .sort_keys = sort_keys }, Context.lessThan);
 }
 
 /// Pack all glyph band data into a single band texture
@@ -525,4 +539,36 @@ test "buildGlyphBandData keeps direct encoded font bbox semantics" {
     try std.testing.expectApproxEqAbs(@as(f32, 1.0) / local_bbox.height(), bd.band_scale_y, 0.0001);
     try std.testing.expectApproxEqAbs(-local_bbox.min.x * bd.band_scale_x, bd.band_offset_x, 0.0001);
     try std.testing.expectApproxEqAbs(-local_bbox.min.y * bd.band_scale_y, bd.band_offset_y, 0.0001);
+}
+
+test "buildGlyphBandData sorts horizontal curves by shader max x" {
+    const curves = [_]CurveSegment{
+        .{
+            .kind = .quadratic,
+            .p0 = Vec2.new(0, 0),
+            .p1 = Vec2.new(100, 10),
+            .p2 = Vec2.new(0, 20),
+        },
+        .{
+            .kind = .quadratic,
+            .p0 = Vec2.new(0, 0),
+            .p1 = Vec2.new(40, 10),
+            .p2 = Vec2.new(80, 20),
+        },
+    };
+    const entry = curve_tex.GlyphCurveEntry{ .start_x = 0, .start_y = 0, .count = @intCast(curves.len), .offset = 0 };
+
+    var bd = try buildGlyphBandData(
+        std.testing.allocator,
+        &curves,
+        curves.len,
+        .{ .min = Vec2.new(0, 0), .max = Vec2.new(80, 20) },
+        entry,
+        .zero,
+        false,
+    );
+    defer freeGlyphBandData(std.testing.allocator, &bd);
+
+    try std.testing.expectEqual(@as(u16, 0), bd.data[4]);
+    try std.testing.expectEqual(@as(u16, 4), bd.data[6]);
 }
