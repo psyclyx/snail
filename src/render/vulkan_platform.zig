@@ -60,6 +60,8 @@ var current_frame: u32 = 0;
 var current_image_index: u32 = 0;
 var framebuffer_resized: bool = false;
 
+const DEMO_CLEAR_COLOR = [4]f32{ 0.04, 0.05, 0.07, 1.0 };
+
 // ── Frame timing ──
 fn nowNs() u64 {
     var ts: std.c.timespec = undefined;
@@ -199,7 +201,7 @@ pub fn beginFrame() ?vk.VkCommandBuffer {
     });
     _ = vk.vkBeginCommandBuffer(cmd, &begin_info);
 
-    const clear_value = vk.VkClearValue{ .color = .{ .float32 = .{ 0.12, 0.12, 0.14, 1.0 } } };
+    const clear_value = vk.VkClearValue{ .color = .{ .float32 = DEMO_CLEAR_COLOR } };
     const rp_info = std.mem.zeroInit(vk.VkRenderPassBeginInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
         .renderPass = render_pass,
@@ -311,7 +313,7 @@ pub fn queueWaitIdle() void {
 // No window, no surface, no swapchain, no present.
 // Equivalent to GL's offscreen EGL+pbuffer+FBO path. Used by benchmarks.
 
-const OFFSCREEN_FORMAT: vk.VkFormat = vk.VK_FORMAT_R8G8B8A8_UNORM;
+const OFFSCREEN_FORMAT: vk.VkFormat = vk.VK_FORMAT_R8G8B8A8_SRGB;
 const OFFSCREEN_FRAMES_IN_FLIGHT = 8;
 
 var offscreen_image: vk.VkImage = null;
@@ -747,12 +749,21 @@ fn createSwapchain(width: u32, height: u32) !void {
 
     swapchain_format = formats[0].format;
     var color_space = formats[0].colorSpace;
-    for (formats[0..fmt_actual]) |fmt| {
-        if (fmt.format == vk.VK_FORMAT_B8G8R8A8_SRGB and fmt.colorSpace == vk.VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+    var best_score = surfaceFormatPreferenceScore(formats[0]);
+    for (formats[1..fmt_actual]) |fmt| {
+        const score = surfaceFormatPreferenceScore(fmt);
+        if (score > best_score) {
             swapchain_format = fmt.format;
             color_space = fmt.colorSpace;
-            break;
+            best_score = score;
         }
+    }
+
+    if (!isSrgbColorFormat(swapchain_format)) {
+        std.debug.print(
+            "snail: Vulkan swapchain has no sRGB attachment format; text blending may show gamma artifacts on this surface\n",
+            .{},
+        );
     }
 
     // Prefer a throttled interactive present mode for the demo so it does not
@@ -811,6 +822,28 @@ fn createSwapchain(width: u32, height: u32) !void {
         });
         try checkVk(vk.vkCreateImageView(device, &iv_ci, null, &swapchain_views[i]));
     }
+}
+
+fn surfaceFormatPreferenceScore(fmt: vk.VkSurfaceFormatKHR) u32 {
+    if (fmt.colorSpace != vk.VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) return 0;
+    return switch (fmt.format) {
+        vk.VK_FORMAT_B8G8R8A8_SRGB => 5,
+        vk.VK_FORMAT_R8G8B8A8_SRGB => 4,
+        vk.VK_FORMAT_A8B8G8R8_SRGB_PACK32 => 3,
+        vk.VK_FORMAT_B8G8R8A8_UNORM => 2,
+        vk.VK_FORMAT_R8G8B8A8_UNORM => 1,
+        else => 0,
+    };
+}
+
+fn isSrgbColorFormat(format: vk.VkFormat) bool {
+    return switch (format) {
+        vk.VK_FORMAT_B8G8R8A8_SRGB,
+        vk.VK_FORMAT_R8G8B8A8_SRGB,
+        vk.VK_FORMAT_A8B8G8R8_SRGB_PACK32,
+        => true,
+        else => false,
+    };
 }
 
 fn createRenderPass() !void {

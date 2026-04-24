@@ -82,6 +82,9 @@ fn createWindowSurface(display: egl.EGLDisplay, config: egl.EGLConfig, native_wi
         };
         const surface = egl.eglCreateWindowSurface(display, config, native_window, &attrs);
         if (surface != egl.EGL_NO_SURFACE) return surface;
+        std.debug.print("snail: failed to create an sRGB EGL window surface; GL text blending may not be gamma-correct\n", .{});
+    } else {
+        std.debug.print("snail: EGL_KHR_gl_colorspace unavailable; GL default-framebuffer blending may not be gamma-correct\n", .{});
     }
     return egl.eglCreateWindowSurface(display, config, native_window, null);
 }

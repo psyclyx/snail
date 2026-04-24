@@ -13,6 +13,7 @@ const assets = @import("assets");
 
 const WIDTH = 1280;
 const HEIGHT = 720;
+const GL_SRGB8_ALPHA8: gl.GLenum = 0x8C43;
 const BENCH_TIME_MULTIPLIER = 10;
 const WARMUP = 100 * BENCH_TIME_MULTIPLIER;
 const FRAMES = 2000 * BENCH_TIME_MULTIPLIER;
@@ -387,7 +388,7 @@ pub fn main() !void {
         gl.glGenFramebuffers(1, &fbo);
         gl.glGenTextures(1, &fbo_tex);
         gl.glBindTexture(gl.GL_TEXTURE_2D, fbo_tex);
-        gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA8, WIDTH, HEIGHT, 0, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, null);
+        gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, GL_SRGB8_ALPHA8, WIDTH, HEIGHT, 0, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, null);
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, fbo);
         gl.glFramebufferTexture2D(gl.GL_FRAMEBUFFER, gl.GL_COLOR_ATTACHMENT0, gl.GL_TEXTURE_2D, fbo_tex, 0);
         gl.glViewport(0, 0, WIDTH, HEIGHT);
