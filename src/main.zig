@@ -176,12 +176,12 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
 
         const atlas_view = &atlas_views[0];
         const path_view = &atlas_views[6];
+        const clear = demo_banner.clearColor();
 
         if (use_vulkan) {
             const cmd = platform.beginFrame() orelse continue;
             renderer.setCommandBuffer(cmd);
         } else {
-            const clear = demo_banner.clearColor();
             gl.glViewport(0, 0, @intCast(size[0]), @intCast(size[1]));
             platform.clear(clear[0], clear[1], clear[2], clear[3]);
         }
@@ -235,18 +235,20 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         }
 
         if (batch.glyphCount() > 0) {
+            renderer.setSubpixelBackdrop(null);
             renderer.draw(batch.slice(), mvp, w, h);
         }
         const total_glyphs = batch.glyphCount();
 
         {
+            renderer.setSubpixelBackdrop(clear);
             var hud = snail.Batch.init(vbuf[batch.len..]);
             _ = hud.addString(atlas_view, &scene_assets.latin_font, "snail demo", 10.0, 30.0, 12.0, gray);
             const hb_str = if (build_options.enable_harfbuzz) " | HarfBuzz ON" else "";
             const sp_name = renderer.subpixelOrder().name();
             const sp_mode = renderer.subpixelMode().name();
-            const sp_suffix = if (renderer.subpixelMode() == .safe and renderer.subpixelBackdrop() == null)
-                " (grayscale fallback)"
+            const sp_suffix = if (renderer.subpixelMode() == .safe)
+                " | scene text: grayscale fallback | HUD: clear-bg LCD"
             else
                 "";
             var hud_line2_buf: [160]u8 = undefined;
