@@ -13,6 +13,10 @@ pub const vk = @cImport({
 const build_options = @import("build_options");
 const vk_shaders = @import("vulkan_shaders");
 
+extern "c" fn fseek(stream: *std.c.FILE, offset: c_long, whence: c_int) c_int;
+extern "c" fn ftell(stream: *std.c.FILE) c_long;
+extern "c" fn rewind(stream: *std.c.FILE) void;
+
 // ── SPIR-V shader bytecode ──
 
 const vert_spv = vk_shaders.vert_spv;
@@ -53,6 +57,7 @@ var initialized: bool = false;
 var pipeline_normal: vk.VkPipeline = null;
 var pipeline_subpixel: vk.VkPipeline = null;
 var pipeline_sprite: vk.VkPipeline = null;
+var pipeline_cache: vk.VkPipelineCache = null;
 var pipeline_layout: vk.VkPipelineLayout = null;
 var desc_set_layout: vk.VkDescriptorSetLayout = null;
 var desc_pool: vk.VkDescriptorPool = null;
@@ -236,10 +241,10 @@ pub fn init(vk_ctx: VulkanContext) !void {
     ds_info.pSetLayouts = @ptrCast(&desc_set_layout);
     try check(vk.vkAllocateDescriptorSets(ctx.device, &ds_info, &desc_set));
 
+    try createPersistentPipelineCache();
+
     // Graphics pipelines
     pipeline_normal = try createGraphicsPipeline(frag_spv);
-    pipeline_subpixel = try createGraphicsPipeline(frag_subpixel_spv);
-    pipeline_sprite = try createSpriteGraphicsPipeline();
 
     // Vertex ring buffer (persistent mapped)
     try createBuffer(
@@ -270,6 +275,7 @@ pub fn init(vk_ctx: VulkanContext) !void {
 pub fn deinit() void {
     if (!initialized) return;
     _ = vk.vkDeviceWaitIdle(ctx.device);
+    writePersistentPipelineCache();
 
     if (transfer_cmd_pool != null) vk.vkDestroyCommandPool(ctx.device, transfer_cmd_pool, null);
     destroyAtlasTextureResources();
@@ -291,6 +297,7 @@ pub fn deinit() void {
     if (pipeline_sprite != null) vk.vkDestroyPipeline(ctx.device, pipeline_sprite, null);
     if (pipeline_subpixel != null) vk.vkDestroyPipeline(ctx.device, pipeline_subpixel, null);
     if (pipeline_normal != null) vk.vkDestroyPipeline(ctx.device, pipeline_normal, null);
+    if (pipeline_cache != null) vk.vkDestroyPipelineCache(ctx.device, pipeline_cache, null);
     if (pipeline_layout != null) vk.vkDestroyPipelineLayout(ctx.device, pipeline_layout, null);
 
     persistent_map = null;
@@ -727,7 +734,16 @@ fn drawTextInternal(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_
 
     // Bind pipeline + state (shared across all chunks)
     const effective_order: SubpixelOrder = if (allow_subpixel) subpixel_order else .none;
-    const pip = if (effective_order != .none) pipeline_subpixel else pipeline_normal;
+    const pip = if (effective_order != .none)
+        ensureSubpixelPipeline() catch {
+            std.debug.print("Vulkan: failed to create subpixel pipeline\n", .{});
+            return;
+        }
+    else
+        ensureNormalPipeline() catch {
+            std.debug.print("Vulkan: failed to create text pipeline\n", .{});
+            return;
+        };
     vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pip);
     vk.vkCmdBindIndexBuffer(cmd, index_buffer, 0, vk.VK_INDEX_TYPE_UINT32);
     vk.vkCmdBindDescriptorSets(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, @ptrCast(&desc_set), 0, null);
@@ -777,7 +793,11 @@ pub fn drawSprites(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h
     const total_sprites = vertices.len / sprite_vertex.FLOATS_PER_SPRITE;
     if (total_sprites == 0) return;
 
-    vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_sprite);
+    const pip = ensureSpritePipeline() catch {
+        std.debug.print("Vulkan: failed to create sprite pipeline\n", .{});
+        return;
+    };
+    vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pip);
     vk.vkCmdBindIndexBuffer(cmd, index_buffer, 0, vk.VK_INDEX_TYPE_UINT32);
     vk.vkCmdBindDescriptorSets(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, @ptrCast(&desc_set), 0, null);
 
@@ -937,7 +957,7 @@ fn createGraphicsPipeline(frag_code: []const u8) !vk.VkPipeline {
     });
 
     var pip: vk.VkPipeline = null;
-    try check(vk.vkCreateGraphicsPipelines(ctx.device, null, 1, &ci, null, &pip));
+    try check(vk.vkCreateGraphicsPipelines(ctx.device, pipeline_cache, 1, &ci, null, &pip));
     return pip;
 }
 
@@ -1056,8 +1076,127 @@ fn createSpriteGraphicsPipeline() !vk.VkPipeline {
     });
 
     var pip: vk.VkPipeline = null;
-    try check(vk.vkCreateGraphicsPipelines(ctx.device, null, 1, &ci, null, &pip));
+    try check(vk.vkCreateGraphicsPipelines(ctx.device, pipeline_cache, 1, &ci, null, &pip));
     return pip;
+}
+
+fn ensureNormalPipeline() !vk.VkPipeline {
+    if (pipeline_normal == null) {
+        pipeline_normal = try createGraphicsPipeline(frag_spv);
+    }
+    return pipeline_normal;
+}
+
+fn ensureSubpixelPipeline() !vk.VkPipeline {
+    if (pipeline_subpixel == null) {
+        pipeline_subpixel = try createGraphicsPipeline(frag_subpixel_spv);
+    }
+    return pipeline_subpixel;
+}
+
+fn ensureSpritePipeline() !vk.VkPipeline {
+    if (pipeline_sprite == null) {
+        pipeline_sprite = try createSpriteGraphicsPipeline();
+    }
+    return pipeline_sprite;
+}
+
+fn createPersistentPipelineCache() !void {
+    const initial_data = loadPersistentPipelineCacheData();
+    defer if (initial_data) |data| std.heap.c_allocator.free(data);
+
+    var ci = std.mem.zeroInit(vk.VkPipelineCacheCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO,
+        .initialDataSize = if (initial_data) |data| data.len else 0,
+        .pInitialData = if (initial_data) |data| data.ptr else null,
+    });
+
+    var cache: vk.VkPipelineCache = null;
+    const result = vk.vkCreatePipelineCache(ctx.device, &ci, null, &cache);
+    if (result == vk.VK_SUCCESS) {
+        pipeline_cache = cache;
+        return;
+    }
+
+    if (initial_data != null and result == vk.VK_ERROR_INITIALIZATION_FAILED) {
+        std.debug.print("Vulkan: ignoring stale pipeline cache ({})\n", .{result});
+        ci.initialDataSize = 0;
+        ci.pInitialData = null;
+        try check(vk.vkCreatePipelineCache(ctx.device, &ci, null, &cache));
+        pipeline_cache = cache;
+        return;
+    }
+
+    try check(result);
+}
+
+fn writePersistentPipelineCache() void {
+    if (pipeline_cache == null) return;
+
+    var size: usize = 0;
+    if (vk.vkGetPipelineCacheData(ctx.device, pipeline_cache, &size, null) != vk.VK_SUCCESS) return;
+    if (size == 0 or size > 64 * 1024 * 1024) return;
+
+    const data = std.heap.c_allocator.alloc(u8, size) catch return;
+    defer std.heap.c_allocator.free(data);
+    if (vk.vkGetPipelineCacheData(ctx.device, pipeline_cache, &size, data.ptr) != vk.VK_SUCCESS) return;
+    if (size == 0) return;
+
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = pipelineCacheDirPath(&dir_buf) orelse return;
+    _ = std.c.mkdir(dir_path.ptr, 0o755);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = pipelineCacheFilePath(&path_buf) orelse return;
+    const file = std.c.fopen(path.ptr, "wb") orelse return;
+    defer _ = std.c.fclose(file);
+    if (std.c.fwrite(data.ptr, 1, size, file) != size) {
+        std.debug.print("Vulkan: failed to write pipeline cache\n", .{});
+    }
+}
+
+fn loadPersistentPipelineCacheData() ?[]u8 {
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = pipelineCacheFilePath(&path_buf) orelse return null;
+    const file = std.c.fopen(path.ptr, "rb") orelse return null;
+    defer _ = std.c.fclose(file);
+
+    if (fseek(file, 0, 2) != 0) return null;
+    const size_long = ftell(file);
+    if (size_long <= 0 or size_long > 64 * 1024 * 1024) return null;
+    rewind(file);
+
+    const size: usize = @intCast(size_long);
+    const data = std.heap.c_allocator.alloc(u8, size) catch return null;
+    if (std.c.fread(data.ptr, 1, size, file) != size) {
+        std.heap.c_allocator.free(data);
+        return null;
+    }
+    return data;
+}
+
+fn pipelineCacheDirPath(buf: []u8) ?[:0]const u8 {
+    if (std.c.getenv("XDG_CACHE_HOME")) |root| {
+        return std.fmt.bufPrintZ(buf, "{s}/snail", .{std.mem.span(root)}) catch null;
+    }
+    if (std.c.getenv("HOME")) |home| {
+        return std.fmt.bufPrintZ(buf, "{s}/.cache/snail", .{std.mem.span(home)}) catch null;
+    }
+    return null;
+}
+
+fn pipelineCacheFilePath(buf: []u8) ?[:0]const u8 {
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = pipelineCacheDirPath(&dir_buf) orelse return null;
+
+    var props: vk.VkPhysicalDeviceProperties = undefined;
+    vk.vkGetPhysicalDeviceProperties(ctx.physical_device, &props);
+
+    return std.fmt.bufPrintZ(
+        buf,
+        "{s}/vk-pipeline-cache-{d}-{d}-{d}.bin",
+        .{ dir_path, props.vendorID, props.deviceID, props.driverVersion },
+    ) catch null;
 }
 
 fn setViewportAndScissor(cmd: vk.VkCommandBuffer, viewport_w: f32, viewport_h: f32) void {

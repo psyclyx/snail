@@ -1410,3 +1410,69 @@ test "cpu renderer renders collapsed inside stroke" {
     try testing.expect(buf[center + 2] < 8);
     try testing.expect(buf[center + 3] > 200);
 }
+
+test "cpu renderer fills both demo eye stalks" {
+    const testing = std.testing;
+
+    const width: u32 = 360;
+    const height: u32 = 180;
+    const stride = width * 4;
+    const buf = try testing.allocator.alloc(u8, stride * height);
+    defer testing.allocator.free(buf);
+
+    var renderer = CpuRenderer.init(buf.ptr, width, height, stride);
+    renderer.clear(0, 0, 0, 0);
+
+    var stalk_a = snail.VectorPath.init(testing.allocator);
+    defer stalk_a.deinit();
+    try stalk_a.moveTo(.{ .x = 308.0, .y = 100.0 });
+    try stalk_a.quadTo(.{ .x = 316.0, .y = 76.0 }, .{ .x = 334.0, .y = 58.0 });
+
+    var stalk_b = snail.VectorPath.init(testing.allocator);
+    defer stalk_b.deinit();
+    try stalk_b.moveTo(.{ .x = 294.0, .y = 102.0 });
+    try stalk_b.quadTo(.{ .x = 298.0, .y = 80.0 }, .{ .x = 306.0, .y = 64.0 });
+
+    var builder = snail.PathPictureBuilder.init(testing.allocator);
+    defer builder.deinit();
+    try builder.addStrokedPath(&stalk_a, .{
+        .color = .{ 1, 1, 1, 1 },
+        .width = 4.0,
+        .cap = .round,
+        .join = .round,
+    }, .identity);
+    try builder.addStrokedPath(&stalk_b, .{
+        .color = .{ 1, 1, 1, 1 },
+        .width = 4.0,
+        .cap = .round,
+        .join = .round,
+    }, .identity);
+
+    var picture = try builder.freeze(testing.allocator);
+    defer picture.deinit();
+
+    renderer.drawPathPicture(&picture);
+
+    const samples = [_]snail.Vec2{
+        .{ .x = 318.5, .y = 77.5 },
+        .{ .x = 299.0, .y = 81.5 },
+    };
+
+    for (samples) |sample| {
+        const sx: i32 = @intFromFloat(@round(sample.x));
+        const sy: i32 = @intFromFloat(@round(sample.y));
+        var max_alpha: u8 = 0;
+        var dy: i32 = -1;
+        while (dy <= 1) : (dy += 1) {
+            var dx: i32 = -1;
+            while (dx <= 1) : (dx += 1) {
+                const x = sx + dx;
+                const y = sy + dy;
+                if (x < 0 or y < 0 or x >= width or y >= height) continue;
+                const off = @as(usize, @intCast(y)) * stride + @as(usize, @intCast(x)) * 4;
+                max_alpha = @max(max_alpha, buf[off + 3]);
+            }
+        }
+        try testing.expect(max_alpha > 180);
+    }
+}
