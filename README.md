@@ -75,27 +75,27 @@ defer atlas.deinit();
 // Create renderer and upload atlas pages (requires GL 3.3+ context)
 var renderer = try snail.Renderer.init();
 defer renderer.deinit();
-var atlas_view = renderer.uploadAtlas(&atlas);
+var atlas_handle = renderer.uploadAtlas(&atlas);
 
 // Build a vertex batch (per-frame for dynamic text, or once for static)
-var buf: [5000 * snail.FLOATS_PER_GLYPH]f32 = undefined;
-var batch = snail.Batch.init(&buf);
-_ = batch.addString(atlas_view, &font, "Hello, world!", x, y, 48.0, .{ 1, 1, 1, 1 });
+var buf: [5000 * snail.TEXT_FLOATS_PER_GLYPH]f32 = undefined;
+var batch = snail.TextBatch.init(&buf);
+_ = batch.addText(atlas_handle, &font, "Hello, world!", x, y, 48.0, .{ 1, 1, 1, 1 });
 
 // Draw (call beginFrame() once per frame when sharing a GL context with other renderers)
 renderer.beginFrame();
-renderer.draw(batch.slice(), mvp, viewport_w, viewport_h);
+renderer.drawText(batch.slice(), mvp, viewport_w, viewport_h);
 ```
 
 `font.lineMetrics()` returns `hhea` ascent / descent / line gap in font units. Convert to pixels with the same `font_size / font.unitsPerEm()` scale you use for advances and glyph bounds.
 
-Atlas uploads now return lightweight `AtlasView` values. Existing glyph handles remain stable across `extendGlyphIds()`, `extendCodepoints()`, and `extendGlyphsForText()` because those operations return a new atlas snapshot that shares old pages. `compact()` returns a new snapshot too, but may repack handles.
+Atlas uploads now return lightweight `AtlasHandle` values. Existing glyph handles remain stable across `extendGlyphIds()`, `extendCodepoints()`, and `extendGlyphsForText()` because those operations return a new atlas snapshot that shares old pages. `compact()` returns a new snapshot too, but may repack handles.
 
 ### Path pictures
 
 snail's production vector path is `PathPicture`: freeze vector art once into the same curve/band atlas format used by text, upload that atlas once, then instance it through `PathBatch` each frame. That means vector draws reuse the text pipeline and avoid a separate vector shader compile/pipeline at startup.
 
-`PathPictureBuilder` can add rectangles / rounded rectangles / ellipses directly, or ingest arbitrary `VectorPath` outlines. `PathBatch` writes caller-owned draw vertices, so the per-frame cost is just instancing frozen assets into a reusable float buffer.
+`PathPictureBuilder` can add rectangles / rounded rectangles / ellipses directly, or ingest arbitrary `Path` outlines. `PathBatch` writes caller-owned draw vertices, so the per-frame cost is just instancing frozen assets into a reusable float buffer.
 
 ```zig
 var picture_builder = snail.PathPictureBuilder.init(allocator);
@@ -120,21 +120,21 @@ defer picture.deinit();
 
 const picture_view = renderer.uploadPathPicture(&picture);
 
-var path_buf: [256 * snail.FLOATS_PER_GLYPH]f32 = undefined;
+var path_buf: [256 * snail.PATH_FLOATS_PER_SHAPE]f32 = undefined;
 var paths = snail.PathBatch.init(&path_buf);
 _ = paths.addPicture(&picture_view, &picture);
 
 renderer.beginFrame();
 renderer.drawPaths(paths.slice(), mvp, viewport_w, viewport_h);
-renderer.draw(text_batch.slice(), mvp, viewport_w, viewport_h);
+renderer.drawText(text_batch.slice(), mvp, viewport_w, viewport_h);
 ```
 
-For non-trivial artwork, build a `VectorPath` with `moveTo`, `lineTo`, `quadTo`, and `cubicTo`, then pass it to `PathPictureBuilder.addPath()`. The fill/stroke model is the same either way: fills can be solid colors, linear gradients, radial gradients, or image paints via `VectorFillStyle.paint`, and `PathStrokeStyle` adds width, cap, join, miter limit, and inside/center placement.
+For non-trivial artwork, build a `Path` with `moveTo`, `lineTo`, `quadTo`, and `cubicTo`, then pass it to `PathPictureBuilder.addPath()`. The fill/stroke model is the same either way: fills can be solid colors, linear gradients, radial gradients, or image paints via `FillStyle.paint`, and `StrokeStyle` adds width, cap, join, miter limit, and inside/center placement.
 
 Open-path strokes generate proper caps instead of rectangular hacks, and the frozen picture can be instantiated again later with either `PathBatch.addPicture()` or `PathBatch.addPictureTransformed()`.
 
 ```zig
-var logo = snail.VectorPath.init(allocator);
+var logo = snail.Path.init(allocator);
 defer logo.deinit();
 
 try logo.moveTo(.{ .x = 0, .y = 0 });
@@ -166,7 +166,7 @@ try picture_builder.addPath(
         .join = .round,
         .cap = .round,
     },
-    snail.VectorTransform2D.translate(40, 32),
+    snail.Transform2D.translate(40, 32),
 );
 
 var picture = try picture_builder.freeze(allocator);
@@ -174,12 +174,12 @@ defer picture.deinit();
 
 const picture_view = renderer.uploadPathPicture(&picture);
 
-var path_buf: [64 * snail.FLOATS_PER_GLYPH]f32 = undefined;
+var path_buf: [64 * snail.PATH_FLOATS_PER_SHAPE]f32 = undefined;
 var path_batch = snail.PathBatch.init(&path_buf);
 _ = path_batch.addPicture(&picture_view, &picture);
 
 renderer.beginFrame();
-renderer.draw(path_batch.slice(), mvp, viewport_w, viewport_h);
+renderer.drawPaths(path_batch.slice(), mvp, viewport_w, viewport_h);
 ```
 
 Convenience wrappers are available when you only want one side of the style:
@@ -225,9 +225,9 @@ renderer.beginFrame();
 renderer.drawSprites(sprites.slice(), viewport_w, viewport_h);
 ```
 
-`SpriteBatch.addSpriteRect()` covers UI/icon quads. `addSpriteAt()` is the point-style convenience for games, and `addSpriteTransformed()` accepts a full affine `VectorTransform2D` when you need direct control.
+`SpriteBatch.addSpriteRect()` covers UI/icon quads. `addSpriteAt()` is the point-style convenience for games, and `addSpriteTransformed()` accepts a full affine `Transform2D` when you need direct control.
 
-When the renderer grows its internal image array to accommodate a newly uploaded larger image, previously returned `ImageView`s should be reacquired with `uploadImage()` / `uploadImages()` before building the next sprite batch.
+When the renderer grows its internal image array to accommodate a newly uploaded larger image, previously returned `ImageHandle`s should be reacquired with `uploadImage()` / `uploadImages()` before building the next sprite batch.
 
 ### CPU renderer
 
@@ -248,23 +248,23 @@ soft.drawPathPicture(&path_picture);
 
 | Operation | Frequency | Cost |
 |-----------|-----------|------|
-| `Font.init` | Once per font | ~2.0 us |
+| `Font.init` | Once per font | ~1.7 us |
 | `Atlas.init` | Once per glyph set | ~1.7 ms for 95 ASCII glyphs |
 | `Atlas.extendCodepoints` | On late glyph discovery | Allocates a new snapshot, preserving old handles |
 | `Renderer.uploadAtlas` | Once per atlas generation | GPU texture upload for atlas pages |
-| `Renderer.uploadPathPicture` | Once per frozen vector asset | Uploads the picture's atlas pages and returns an `AtlasView` |
-| `Batch.addString` | Per-frame (dynamic) or once (static) | ~1.2 us for 13 chars, ~15.1 us for 175 chars |
-| `PathBatch.addPicture` | Per-frame | ~12 ns per shape instanced from a frozen picture |
-| `PathPictureBuilder.freeze` | Static UI / icons | ~49 us per shape on the current bench; amortize by freezing once |
-| `Renderer.beginFrame` | Per-frame | Resets cached GL state (call before `draw` when sharing a GL context) |
-| `Renderer.draw` | Per-frame | Single draw call per batch |
+| `Renderer.uploadPathPicture` | Once per frozen vector asset | Uploads the picture's atlas pages and returns an `AtlasHandle` |
+| `TextBatch.addText` | Per-frame (dynamic) or once (static) | ~1.2 us for 13 chars, ~13.8 us for 175 chars |
+| `PathBatch.addPicture` | Per-frame | ~13 ns per shape instanced from a frozen picture |
+| `PathPictureBuilder.freeze` | Static UI / icons | ~29 us per shape on the current bench; amortize by freezing once |
+| `Renderer.beginFrame` | Per-frame | Resets cached GL state (call before `drawText` when sharing a GL context) |
+| `Renderer.drawText` | Per-frame | Single draw call per text batch |
 | `Renderer.drawPaths` | Per-frame | Single draw call per path batch, grayscale AA |
 
-For static UI text, build the `Batch` once and call `Renderer.draw` each frame with the same `batch.slice()`. The vertex buffer is caller-owned and zero-allocation.
+For static UI text, build the `TextBatch` once and call `Renderer.drawText` each frame with the same `batch.slice()`. The vertex buffer is caller-owned and zero-allocation.
 
-For dynamic text (input fields, counters, chat), rebuild the `Batch` each frame. On this machine, Latin layout is roughly `0.08-0.09 us/glyph`, so 1000 glyphs stays comfortably sub-millisecond.
+For dynamic text (input fields, counters, chat), rebuild the `TextBatch` each frame. On this machine, Latin layout is roughly `0.08 us/glyph`, so 1000 glyphs stays comfortably sub-millisecond.
 
-For static vector UI and icons, freeze `PathPicture`s ahead of first paint when possible, upload them once, and reuse the returned `AtlasView` plus `PathBatch` every frame. That keeps startup work on the shared text/path shaders instead of paying for a second vector-specific pipeline.
+For static vector UI and icons, freeze `PathPicture`s ahead of first paint when possible, upload them once, and reuse the returned `AtlasHandle` plus `PathBatch` every frame. That keeps startup work on the shared text/path shaders instead of paying for a second vector-specific pipeline.
 
 ### Dynamic glyph loading
 
@@ -273,32 +273,26 @@ Add glyphs at runtime by creating a new snapshot, then swap the atlas pointer an
 ```zig
 if (try atlas.extendText("مرحبا بالعالم")) |next| {
     snail.replaceAtlas(&atlas, next);
-    atlas_view = renderer.uploadAtlas(&atlas);
+    atlas_handle = renderer.uploadAtlas(&atlas);
 }
 ```
 
 `Atlas.extendText()` is the high-level entry point for UTF-8 strings. It uses HarfBuzz shaping when available, otherwise it falls back to codepoint discovery plus built-in ligature loading.
 
-Lower-level entry points are still available when you already have codepoints or shaped glyph runs:
+Lower-level entry points are available when you already have codepoints or shaped glyph runs:
 
 ```zig
 const new_codepoints = [_]u32{ 0x00E9, 0x00F1, 0x00FC }; // é, ñ, ü
 if (try atlas.extendCodepoints(&new_codepoints)) |next| {
     snail.replaceAtlas(&atlas, next);
-    atlas_view = renderer.uploadAtlas(&atlas);
+    atlas_handle = renderer.uploadAtlas(&atlas);
 }
 
 const glyph_ids = [_]u16{ try font.glyphIndex('M'), try font.glyphIndex('W') };
 if (try atlas.extendGlyphIds(&glyph_ids)) |next| {
     snail.replaceAtlas(&atlas, next);
-    atlas_view = renderer.uploadAtlas(&atlas);
+    atlas_handle = renderer.uploadAtlas(&atlas);
 }
-```
-
-### Word wrapping
-
-```zig
-_ = batch.addStringWrapped(atlas_view, &font, paragraph, x, y, 14.0, max_width, 20.0, color);
 ```
 
 All public color inputs are straight RGBA. snail premultiplies internally before blending on both GPU and CPU paths.
@@ -338,15 +332,15 @@ Built-in ligature substitution (GSUB type 4) and kerning (GPOS type 2) with kern
 For complex scripts (Arabic, Devanagari, Thai, etc.), compile with `-Dharfbuzz=true`:
 
 ```zig
-// HarfBuzz is used automatically by addString() when enabled
+// HarfBuzz is used automatically by addText() when enabled
 if (try atlas.extendText("مرحبا بالعالم")) |next| {
     snail.replaceAtlas(&atlas, next);
-    atlas_view = renderer.uploadAtlas(&atlas);
+    atlas_handle = renderer.uploadAtlas(&atlas);
 }
-_ = batch.addString(atlas_view, &font, "مرحبا بالعالم", x, y, 32, color);
+_ = batch.addText(atlas_handle, &font, "مرحبا بالعالم", x, y, 32, color);
 ```
 
-When HarfBuzz is not compiled in, `addString` uses the built-in shaper. The `addShaped()` API is always available for callers who use an external shaper.
+When HarfBuzz is not compiled in, `addText` uses the built-in shaper. The `addRun()` API is always available for callers who bring their own shaped `ShapedRun`.
 
 ### C API
 
@@ -432,22 +426,22 @@ The caller must have an active OpenGL 3.3+ context before calling `Renderer.init
 |------|-------------|
 | `Font` | Immutable after init. Safe for concurrent reads from any thread. |
 | `Atlas` | Immutable snapshot. `extend*()` returns a new snapshot that preserves existing handles; `compact()` returns a new snapshot and may repack them. Safe for concurrent reads. |
-| `Batch` | Operates on caller-owned buffers. Multiple batches reading the same `AtlasView` from different threads is safe. |
+| `TextBatch` | Operates on caller-owned buffers. Multiple batches reading the same `AtlasHandle` from different threads is safe. |
 | `PathPicture` | Immutable after creation. Safe for concurrent reads from any thread. |
 | `Renderer` | **Single-thread per context.** GL: all calls must be on the thread with the active GL context. Vulkan: all calls must be externally synchronized. |
 
 Typical game pattern:
 1. **Load thread**: `Font.init` + `Atlas.init` (CPU-only, no GPU context needed)
-2. **Render thread**: `Renderer.uploadAtlas` (once), `Renderer.draw` (per frame)
-3. **Any thread(s)**: `Batch.addString` into thread-local buffers, submit to render thread for drawing
+2. **Render thread**: `Renderer.uploadAtlas` (once), `Renderer.drawText` (per frame)
+3. **Any thread(s)**: `TextBatch.addText` into thread-local buffers, submit to render thread for drawing
 
-Static text (HUD, menus): build the `Batch` once, reuse the vertex slice every frame. The draw call is a VBO upload + single `glDrawElements`.
+Static text (HUD, menus): build the `TextBatch` once, reuse the vertex slice every frame. The draw call is a VBO upload + single `glDrawElements`.
 
 ## Architecture
 
 ```
 src/
-  snail.zig              public API: Font, Atlas, Renderer, Batch
+  snail.zig              public API: Font, Atlas, Renderer, TextBatch
   c_api.zig              C bindings (extern functions)
   font/ttf.zig           TrueType parser (head, maxp, cmap, glyf, loca, hhea, hmtx, kern)
   font/opentype.zig      OpenType shaper (GSUB ligatures, GPOS kerning)
