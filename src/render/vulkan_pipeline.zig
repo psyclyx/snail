@@ -25,6 +25,7 @@ extern "c" fn rewind(stream: *std.c.FILE) void;
 const vert_spv = vk_shaders.vert_spv;
 const frag_spv = vk_shaders.frag_spv;
 const frag_subpixel_spv = vk_shaders.frag_subpixel_spv;
+const frag_subpixel_dual_spv = vk_shaders.frag_subpixel_dual_spv;
 const sprite_vert_spv = vk_shaders.sprite_vert_spv;
 const sprite_frag_spv = vk_shaders.sprite_frag_spv;
 
@@ -35,7 +36,7 @@ const PushConstants = extern struct {
     viewport: [2]f32,
     fill_rule: i32,
     subpixel_order: i32 = 1, // 1=RGB, 2=BGR, 3=VRGB, 4=VBGR
-    subpixel_render_mode: i32 = 0, // 0=legacy blend, 1=opaque backdrop resolve
+    subpixel_render_mode: i32 = 0, // 0=legacy blend, 1=opaque backdrop resolve, 2=dual-source safe
     _pad0: [3]i32 = .{ 0, 0, 0 },
     subpixel_backdrop: [4]f32 = .{ 0, 0, 0, 0 },
 };
@@ -53,6 +54,7 @@ pub const VulkanContext = struct {
     queue_family_index: u32,
     render_pass: vk.VkRenderPass,
     color_format: vk.VkFormat,
+    supports_dual_source_blend: bool = false,
 };
 
 // ── Module state ──
@@ -62,6 +64,7 @@ var initialized: bool = false;
 
 var pipeline_normal: vk.VkPipeline = null;
 var pipeline_subpixel: vk.VkPipeline = null;
+var pipeline_subpixel_dual: vk.VkPipeline = null;
 var pipeline_subpixel_resolve: vk.VkPipeline = null;
 var pipeline_sprite: vk.VkPipeline = null;
 var pipeline_cache: vk.VkPipelineCache = null;
@@ -243,7 +246,7 @@ pub fn init(vk_ctx: VulkanContext) !void {
     try createPersistentPipelineCache();
 
     // Graphics pipelines
-    pipeline_normal = try createGraphicsPipeline(frag_spv);
+    pipeline_normal = try createGraphicsPipeline(frag_spv, .premultiplied);
 
     // Vertex ring buffer (persistent mapped)
     try createBuffer(
@@ -294,6 +297,7 @@ pub fn deinit() void {
     if (desc_pool != null) vk.vkDestroyDescriptorPool(ctx.device, desc_pool, null);
     if (desc_set_layout != null) vk.vkDestroyDescriptorSetLayout(ctx.device, desc_set_layout, null);
     if (pipeline_sprite != null) vk.vkDestroyPipeline(ctx.device, pipeline_sprite, null);
+    if (pipeline_subpixel_dual != null) vk.vkDestroyPipeline(ctx.device, pipeline_subpixel_dual, null);
     if (pipeline_subpixel_resolve != null) vk.vkDestroyPipeline(ctx.device, pipeline_subpixel_resolve, null);
     if (pipeline_subpixel != null) vk.vkDestroyPipeline(ctx.device, pipeline_subpixel, null);
     if (pipeline_normal != null) vk.vkDestroyPipeline(ctx.device, pipeline_normal, null);
@@ -625,6 +629,7 @@ fn drawTextInternal(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_
         allow_subpixel,
         subpixel_order,
         subpixel_mode,
+        ctx.supports_dual_source_blend,
         subpixel_backdrop,
     );
     const backdrop = subpixel_backdrop orelse .{ 0, 0, 0, 0 };
@@ -647,6 +652,10 @@ fn drawTextInternal(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_
                 std.debug.print("Vulkan: failed to create subpixel pipeline\n", .{});
                 return;
             },
+            .subpixel_dual_source => ensureSubpixelDualPipeline() catch {
+                std.debug.print("Vulkan: failed to create dual-source subpixel pipeline\n", .{});
+                return;
+            },
             .subpixel_backdrop => ensureSubpixelResolvePipeline() catch {
                 std.debug.print("Vulkan: failed to create subpixel resolve pipeline\n", .{});
                 return;
@@ -659,7 +668,7 @@ fn drawTextInternal(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_
             .viewport = .{ viewport_w, viewport_h },
             .fill_rule = @intFromEnum(fill_rule),
             .subpixel_order = @intFromEnum(if (run_mode == .grayscale) SubpixelOrder.none else subpixel_order),
-            .subpixel_render_mode = if (run_mode == .subpixel_backdrop) 1 else 0,
+            .subpixel_render_mode = subpixelRenderModeConstant(run_mode),
             .subpixel_backdrop = backdrop,
         };
         vk.vkCmdPushConstants(cmd, pipeline_layout, vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(PushConstants), &pc);
@@ -726,7 +735,13 @@ pub fn resetFrameState() void {
 
 // ── Internal helpers ──
 
-fn createGraphicsPipeline(frag_code: []const u8, blend_enabled: bool) !vk.VkPipeline {
+const BlendMode = enum {
+    premultiplied,
+    dual_source,
+    disabled,
+};
+
+fn createGraphicsPipeline(frag_code: []const u8, blend_mode: BlendMode) !vk.VkPipeline {
     const vert_module = try createShaderModule(vert_spv);
     defer vk.vkDestroyShaderModule(ctx.device, vert_module, null);
     const frag_module = try createShaderModule(frag_code);
@@ -809,14 +824,18 @@ fn createGraphicsPipeline(frag_code: []const u8, blend_enabled: bool) !vk.VkPipe
     // Premultiplied alpha blending: shader outputs (color * coverage, alpha * coverage),
     // so src factor is ONE to avoid double-multiplying coverage.
     const blend_attach = std.mem.zeroInit(vk.VkPipelineColorBlendAttachmentState, .{
-        .blendEnable = if (blend_enabled) vk.VK_TRUE else vk.VK_FALSE,
-        .srcColorBlendFactor = if (blend_enabled) vk.VK_BLEND_FACTOR_ONE else vk.VK_BLEND_FACTOR_ONE,
-        .dstColorBlendFactor = if (blend_enabled) vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA else vk.VK_BLEND_FACTOR_ZERO,
-        .colorBlendOp = vk.VK_BLEND_OP_ADD,
-        .srcAlphaBlendFactor = if (blend_enabled) vk.VK_BLEND_FACTOR_ONE else vk.VK_BLEND_FACTOR_ONE,
-        .dstAlphaBlendFactor = if (blend_enabled) vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA else vk.VK_BLEND_FACTOR_ZERO,
-        .alphaBlendOp = vk.VK_BLEND_OP_ADD,
-        .colorWriteMask = vk.VK_COLOR_COMPONENT_R_BIT | vk.VK_COLOR_COMPONENT_G_BIT | vk.VK_COLOR_COMPONENT_B_BIT | vk.VK_COLOR_COMPONENT_A_BIT,
+        .blendEnable = if (blend_mode == .disabled) @as(vk.VkBool32, 0) else @as(vk.VkBool32, 1),
+        .srcColorBlendFactor = @as(vk.VkBlendFactor, @intCast(vk.VK_BLEND_FACTOR_ONE)),
+        .dstColorBlendFactor = @as(vk.VkBlendFactor, @intCast(switch (blend_mode) {
+            .premultiplied => vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+            .dual_source => vk.VK_BLEND_FACTOR_ONE_MINUS_SRC1_COLOR,
+            .disabled => vk.VK_BLEND_FACTOR_ZERO,
+        })),
+        .colorBlendOp = @as(vk.VkBlendOp, @intCast(vk.VK_BLEND_OP_ADD)),
+        .srcAlphaBlendFactor = @as(vk.VkBlendFactor, @intCast(vk.VK_BLEND_FACTOR_ONE)),
+        .dstAlphaBlendFactor = @as(vk.VkBlendFactor, @intCast(if (blend_mode == .disabled) vk.VK_BLEND_FACTOR_ZERO else vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA)),
+        .alphaBlendOp = @as(vk.VkBlendOp, @intCast(vk.VK_BLEND_OP_ADD)),
+        .colorWriteMask = @as(vk.VkColorComponentFlags, @intCast(vk.VK_COLOR_COMPONENT_R_BIT | vk.VK_COLOR_COMPONENT_G_BIT | vk.VK_COLOR_COMPONENT_B_BIT | vk.VK_COLOR_COMPONENT_A_BIT)),
     });
 
     const blend_info = std.mem.zeroInit(vk.VkPipelineColorBlendStateCreateInfo, .{
@@ -972,21 +991,28 @@ fn createSpriteGraphicsPipeline() !vk.VkPipeline {
 
 fn ensureNormalPipeline() !vk.VkPipeline {
     if (pipeline_normal == null) {
-        pipeline_normal = try createGraphicsPipeline(frag_spv, true);
+        pipeline_normal = try createGraphicsPipeline(frag_spv, .premultiplied);
     }
     return pipeline_normal;
 }
 
 fn ensureSubpixelPipeline() !vk.VkPipeline {
     if (pipeline_subpixel == null) {
-        pipeline_subpixel = try createGraphicsPipeline(frag_subpixel_spv, true);
+        pipeline_subpixel = try createGraphicsPipeline(frag_subpixel_spv, .premultiplied);
     }
     return pipeline_subpixel;
 }
 
+fn ensureSubpixelDualPipeline() !vk.VkPipeline {
+    if (pipeline_subpixel_dual == null) {
+        pipeline_subpixel_dual = try createGraphicsPipeline(frag_subpixel_dual_spv, .dual_source);
+    }
+    return pipeline_subpixel_dual;
+}
+
 fn ensureSubpixelResolvePipeline() !vk.VkPipeline {
     if (pipeline_subpixel_resolve == null) {
-        pipeline_subpixel_resolve = try createGraphicsPipeline(frag_subpixel_spv, false);
+        pipeline_subpixel_resolve = try createGraphicsPipeline(frag_subpixel_spv, .disabled);
     }
     return pipeline_subpixel_resolve;
 }
@@ -1024,6 +1050,14 @@ fn drawGlyphRange(vertices: []const f32, glyph_offset: usize, glyph_count: usize
         ring_segment = (ring_segment + 1) % RING_SEGMENTS;
         glyphs_drawn += chunk;
     }
+}
+
+fn subpixelRenderModeConstant(render_mode: subpixel_policy.TextRenderMode) i32 {
+    return switch (render_mode) {
+        .grayscale, .subpixel_legacy => 0,
+        .subpixel_backdrop => 1,
+        .subpixel_dual_source => 2,
+    };
 }
 
 fn createPersistentPipelineCache() !void {

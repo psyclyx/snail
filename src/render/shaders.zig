@@ -191,8 +191,7 @@ pub const fragment_shader_text =
     \\}
 ;
 
-pub const fragment_shader_text_subpixel =
-    \\#version 330 core
+const fragment_shader_text_subpixel_common =
     \\
     \\in vec4 v_color;
     \\in vec2 v_texcoord;
@@ -203,10 +202,13 @@ pub const fragment_shader_text_subpixel =
     \\uniform usampler2DArray u_band_tex;
     \\uniform int u_fill_rule;
     \\uniform int u_subpixel_order; // 1=RGB, 2=BGR, 3=VRGB, 4=VBGR
-    \\uniform int u_subpixel_render_mode; // 0=legacy blend, 1=opaque backdrop resolve
+    \\uniform int u_subpixel_render_mode; // 0=legacy blend, 1=opaque backdrop resolve, 2=dual-source safe
     \\uniform vec4 u_subpixel_backdrop;
     \\
     \\out vec4 frag_color;
+    \\#ifdef SNAIL_DUAL_SOURCE
+    \\out vec4 frag_blend;
+    \\#endif
     \\
     \\#define kLogBandTextureWidth 12
     \\uint calcRootCode(float y1, float y2, float y3) {
@@ -300,27 +302,36 @@ pub const fragment_shader_text_subpixel =
     \\    return vec2(cov, wgt);
     \\}
     \\
+    \\float blendSubpixelSample(vec2 cw_s, vec2 cw_o) {
+    \\    float wsum = cw_s.y + cw_o.y;
+    \\    float blended = cw_s.x * cw_s.y + cw_o.x * cw_o.y;
+    \\    return clamp(max(applyFillRule(blended / max(wsum, 1.0 / 65536.0)),
+    \\                     min(applyFillRule(cw_s.x), applyFillRule(cw_o.x))), 0.0, 1.0);
+    \\}
+    \\
     \\vec3 blendSubpixel(vec2 cw_r, vec2 cw_g, vec2 cw_b, vec2 cw_o) {
-    \\    float wsum_r = cw_r.y + cw_o.y; float blend_r = cw_r.x * cw_r.y + cw_o.x * cw_o.y;
-    \\    float wsum_g = cw_g.y + cw_o.y; float blend_g = cw_g.x * cw_g.y + cw_o.x * cw_o.y;
-    \\    float wsum_b = cw_b.y + cw_o.y; float blend_b = cw_b.x * cw_b.y + cw_o.x * cw_o.y;
     \\    return vec3(
-    \\        clamp(max(applyFillRule(blend_r / max(wsum_r, 1.0/65536.0)),
-    \\                  min(applyFillRule(cw_r.x), applyFillRule(cw_o.x))), 0.0, 1.0),
-    \\        clamp(max(applyFillRule(blend_g / max(wsum_g, 1.0/65536.0)),
-    \\                  min(applyFillRule(cw_g.x), applyFillRule(cw_o.x))), 0.0, 1.0),
-    \\        clamp(max(applyFillRule(blend_b / max(wsum_b, 1.0/65536.0)),
-    \\                  min(applyFillRule(cw_b.x), applyFillRule(cw_o.x))), 0.0, 1.0)
+    \\        blendSubpixelSample(cw_r, cw_o),
+    \\        blendSubpixelSample(cw_g, cw_o),
+    \\        blendSubpixelSample(cw_b, cw_o)
     \\    );
     \\}
     \\
     \\vec4 blendSubpixelWithAlpha(vec2 cw_r, vec2 cw_g, vec2 cw_b, vec2 cw_o) {
     \\    vec3 cov = blendSubpixel(cw_r, cw_g, cw_b, cw_o);
-    \\    float wsum = cw_g.y + cw_o.y;
-    \\    float blended = cw_g.x * cw_g.y + cw_o.x * cw_o.y;
-    \\    float alpha_cov = clamp(max(applyFillRule(blended / max(wsum, 1.0/65536.0)),
-    \\                                min(applyFillRule(cw_g.x), applyFillRule(cw_o.x))), 0.0, 1.0);
-    \\    return vec4(cov, alpha_cov);
+    \\    return vec4(cov, blendSubpixelSample(cw_g, cw_o));
+    \\}
+    \\
+    \\vec4 filterSubpixelCoverage(float s_m3, float s_m2, float s_m1, float s_0, float s_p1, float s_p2, float s_p3, bool reverse_order) {
+    \\    const float w0 = 8.0 / 256.0;
+    \\    const float w1 = 77.0 / 256.0;
+    \\    const float w2 = 86.0 / 256.0;
+    \\    float left = w0 * s_m3 + w1 * s_m2 + w2 * s_m1 + w1 * s_0 + w0 * s_p1;
+    \\    float center = w0 * s_m2 + w1 * s_m1 + w2 * s_0 + w1 * s_p1 + w0 * s_p2;
+    \\    float right = w0 * s_m1 + w1 * s_0 + w2 * s_p1 + w1 * s_p2 + w0 * s_p3;
+    \\    vec3 cov = reverse_order ? vec3(right, center, left) : vec3(left, center, right);
+    \\    cov = clamp(cov, 0.0, 1.0);
+    \\    return vec4(cov, clamp((cov.r + cov.g + cov.b) * (1.0 / 3.0), 0.0, 1.0));
     \\}
     \\
     \\vec4 premultiplyColorSubpixel(vec4 color, vec3 cov, float alpha_cov) {
@@ -334,7 +345,18 @@ pub const fragment_shader_text_subpixel =
     \\    return vec4(resolved, 1.0);
     \\}
     \\
+    \\void emitSubpixelColor(vec4 color, vec3 cov, float alpha_cov) {
+    \\    vec4 premul = premultiplyColorSubpixel(color, cov, alpha_cov);
+    \\    frag_color = premul;
+    \\#ifdef SNAIL_DUAL_SOURCE
+    \\    frag_blend = vec4(vec3(color.a) * cov, 0.0);
+    \\#endif
+    \\}
+    \\
     \\void main() {
+    \\#ifdef SNAIL_DUAL_SOURCE
+    \\    frag_blend = vec4(0.0);
+    \\#endif
     \\    int layer = (v_glyph.w >> 8) & 0xFF;
     \\    if (layer == 0xFF) discard;
     \\    vec2 rc = v_texcoord;
@@ -350,22 +372,45 @@ pub const fragment_shader_text_subpixel =
     \\    ivec2 vLoc = calcBandLoc(gLoc, vbd.y);
     \\    int vCount = int(vbd.x);
     \\    vec4 cov_alpha;
+    \\    bool safe_mode = u_subpixel_render_mode != 0;
     \\    if (u_subpixel_order <= 2) {
     \\        float sp = epp.x / 3.0;
-    \\        float s = (u_subpixel_order == 2) ? -1.0 : 1.0;
-    \\        vec2 cw_r = evalHorizCoverage(rc, -sp * s, ppe, hLoc, hCount, layer);
-    \\        vec2 cw_g = evalHorizCoverage(rc,  0.0,    ppe, hLoc, hCount, layer);
-    \\        vec2 cw_b = evalHorizCoverage(rc, +sp * s, ppe, hLoc, hCount, layer);
     \\        vec2 cw_v = evalVertCoverage(rc, 0.0, ppe, vLoc, vCount, layer);
-    \\        cov_alpha = blendSubpixelWithAlpha(cw_r, cw_g, cw_b, cw_v);
+    \\        if (!safe_mode) {
+    \\            float s = (u_subpixel_order == 2) ? -1.0 : 1.0;
+    \\            vec2 cw_r = evalHorizCoverage(rc, -sp * s, ppe, hLoc, hCount, layer);
+    \\            vec2 cw_g = evalHorizCoverage(rc,  0.0,    ppe, hLoc, hCount, layer);
+    \\            vec2 cw_b = evalHorizCoverage(rc, +sp * s, ppe, hLoc, hCount, layer);
+    \\            cov_alpha = blendSubpixelWithAlpha(cw_r, cw_g, cw_b, cw_v);
+    \\        } else {
+    \\            float s_m3 = blendSubpixelSample(evalHorizCoverage(rc, -3.0 * sp, ppe, hLoc, hCount, layer), cw_v);
+    \\            float s_m2 = blendSubpixelSample(evalHorizCoverage(rc, -2.0 * sp, ppe, hLoc, hCount, layer), cw_v);
+    \\            float s_m1 = blendSubpixelSample(evalHorizCoverage(rc, -1.0 * sp, ppe, hLoc, hCount, layer), cw_v);
+    \\            float s_0 = blendSubpixelSample(evalHorizCoverage(rc, 0.0, ppe, hLoc, hCount, layer), cw_v);
+    \\            float s_p1 = blendSubpixelSample(evalHorizCoverage(rc, 1.0 * sp, ppe, hLoc, hCount, layer), cw_v);
+    \\            float s_p2 = blendSubpixelSample(evalHorizCoverage(rc, 2.0 * sp, ppe, hLoc, hCount, layer), cw_v);
+    \\            float s_p3 = blendSubpixelSample(evalHorizCoverage(rc, 3.0 * sp, ppe, hLoc, hCount, layer), cw_v);
+    \\            cov_alpha = filterSubpixelCoverage(s_m3, s_m2, s_m1, s_0, s_p1, s_p2, s_p3, u_subpixel_order == 2);
+    \\        }
     \\    } else {
     \\        float sp = epp.y / 3.0;
-    \\        float s = (u_subpixel_order == 4) ? -1.0 : 1.0;
     \\        vec2 cw_h = evalHorizCoverage(rc, 0.0, ppe, hLoc, hCount, layer);
-    \\        vec2 cw_r = evalVertCoverage(rc, -sp * s, ppe, vLoc, vCount, layer);
-    \\        vec2 cw_g = evalVertCoverage(rc,  0.0,    ppe, vLoc, vCount, layer);
-    \\        vec2 cw_b = evalVertCoverage(rc, +sp * s, ppe, vLoc, vCount, layer);
-    \\        cov_alpha = blendSubpixelWithAlpha(cw_r, cw_g, cw_b, cw_h);
+    \\        if (!safe_mode) {
+    \\            float s = (u_subpixel_order == 4) ? -1.0 : 1.0;
+    \\            vec2 cw_r = evalVertCoverage(rc, -sp * s, ppe, vLoc, vCount, layer);
+    \\            vec2 cw_g = evalVertCoverage(rc,  0.0,    ppe, vLoc, vCount, layer);
+    \\            vec2 cw_b = evalVertCoverage(rc, +sp * s, ppe, vLoc, vCount, layer);
+    \\            cov_alpha = blendSubpixelWithAlpha(cw_r, cw_g, cw_b, cw_h);
+    \\        } else {
+    \\            float s_m3 = blendSubpixelSample(evalVertCoverage(rc, -3.0 * sp, ppe, vLoc, vCount, layer), cw_h);
+    \\            float s_m2 = blendSubpixelSample(evalVertCoverage(rc, -2.0 * sp, ppe, vLoc, vCount, layer), cw_h);
+    \\            float s_m1 = blendSubpixelSample(evalVertCoverage(rc, -1.0 * sp, ppe, vLoc, vCount, layer), cw_h);
+    \\            float s_0 = blendSubpixelSample(evalVertCoverage(rc, 0.0, ppe, vLoc, vCount, layer), cw_h);
+    \\            float s_p1 = blendSubpixelSample(evalVertCoverage(rc, 1.0 * sp, ppe, vLoc, vCount, layer), cw_h);
+    \\            float s_p2 = blendSubpixelSample(evalVertCoverage(rc, 2.0 * sp, ppe, vLoc, vCount, layer), cw_h);
+    \\            float s_p3 = blendSubpixelSample(evalVertCoverage(rc, 3.0 * sp, ppe, vLoc, vCount, layer), cw_h);
+    \\            cov_alpha = filterSubpixelCoverage(s_m3, s_m2, s_m1, s_0, s_p1, s_p2, s_p3, u_subpixel_order == 4);
+    \\        }
     \\    }
     \\    vec3 cov = cov_alpha.rgb;
     \\    if (max(max(cov.r, cov.g), cov.b) < 1.0 / 255.0) discard;
@@ -373,9 +418,20 @@ pub const fragment_shader_text_subpixel =
     \\        frag_color = resolveSubpixelOverOpaqueBackdrop(v_color, cov, u_subpixel_backdrop);
     \\        return;
     \\    }
-    \\    frag_color = premultiplyColorSubpixel(v_color, cov, cov_alpha.a);
+    \\    emitSubpixelColor(v_color, cov, cov_alpha.a);
     \\}
 ;
+
+pub const fragment_shader_text_subpixel =
+    \\#version 330 core
+    \\
+    ++ fragment_shader_text_subpixel_common;
+
+pub const fragment_shader_text_subpixel_dual =
+    \\#version 330 core
+    \\#define SNAIL_DUAL_SOURCE 1
+    \\
+    ++ fragment_shader_text_subpixel_common;
 
 pub const fragment_shader_colr =
     \\#version 330 core

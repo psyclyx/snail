@@ -15,11 +15,14 @@ layout(push_constant) uniform PushConstants {
     vec2 viewport;
     int fill_rule;
     int subpixel_order; // 1=RGB, 2=BGR, 3=VRGB, 4=VBGR
-    int subpixel_render_mode; // 0=legacy blend, 1=opaque backdrop resolve
+    int subpixel_render_mode; // 0=legacy blend, 1=opaque backdrop resolve, 2=dual-source safe
     vec4 subpixel_backdrop;
 };
 
 layout(location = 0) out vec4 frag_color;
+#ifdef SNAIL_DUAL_SOURCE
+layout(location = 0, index = 1) out vec4 frag_blend;
+#endif
 
 #define kLogBandTextureWidth 12
 #define kDirectEncodingKindBias 4.0
@@ -544,27 +547,44 @@ vec2 evalVertCoverage(vec2 rc, float yOffset, vec2 ppe,
     return evalAxisCoverage(rc + vec2(0.0, yOffset), ppe.y, vLoc, vCount, layer, false);
 }
 
+float blendSubpixelSample(vec2 cw_s, vec2 cw_o) {
+    float wsum = cw_s.y + cw_o.y;
+    float blended = cw_s.x * cw_s.y + cw_o.x * cw_o.y;
+    return clamp(max(applyFillRule(blended / max(wsum, 1.0 / 65536.0)),
+                     min(applyFillRule(cw_s.x), applyFillRule(cw_o.x))), 0.0, 1.0);
+}
+
 vec3 blendSubpixel(vec2 cw_r, vec2 cw_g, vec2 cw_b, vec2 cw_o) {
-    float wsum_r = cw_r.y + cw_o.y; float blend_r = cw_r.x * cw_r.y + cw_o.x * cw_o.y;
-    float wsum_g = cw_g.y + cw_o.y; float blend_g = cw_g.x * cw_g.y + cw_o.x * cw_o.y;
-    float wsum_b = cw_b.y + cw_o.y; float blend_b = cw_b.x * cw_b.y + cw_o.x * cw_o.y;
     return vec3(
-        clamp(max(applyFillRule(blend_r / max(wsum_r, 1.0/65536.0)),
-                  min(applyFillRule(cw_r.x), applyFillRule(cw_o.x))), 0.0, 1.0),
-        clamp(max(applyFillRule(blend_g / max(wsum_g, 1.0/65536.0)),
-                  min(applyFillRule(cw_g.x), applyFillRule(cw_o.x))), 0.0, 1.0),
-        clamp(max(applyFillRule(blend_b / max(wsum_b, 1.0/65536.0)),
-                  min(applyFillRule(cw_b.x), applyFillRule(cw_o.x))), 0.0, 1.0)
+        blendSubpixelSample(cw_r, cw_o),
+        blendSubpixelSample(cw_g, cw_o),
+        blendSubpixelSample(cw_b, cw_o)
     );
 }
 
 vec4 blendSubpixelWithAlpha(vec2 cw_r, vec2 cw_g, vec2 cw_b, vec2 cw_o) {
     vec3 cov = blendSubpixel(cw_r, cw_g, cw_b, cw_o);
-    float wsum = cw_g.y + cw_o.y;
-    float blended = cw_g.x * cw_g.y + cw_o.x * cw_o.y;
-    float alpha_cov = clamp(max(applyFillRule(blended / max(wsum, 1.0/65536.0)),
-                                min(applyFillRule(cw_g.x), applyFillRule(cw_o.x))), 0.0, 1.0);
-    return vec4(cov, alpha_cov);
+    return vec4(cov, blendSubpixelSample(cw_g, cw_o));
+}
+
+vec4 filterSubpixelCoverage(float s_m3, float s_m2, float s_m1, float s_0, float s_p1, float s_p2, float s_p3, bool reverse_order) {
+    const float w0 = 8.0 / 256.0;
+    const float w1 = 77.0 / 256.0;
+    const float w2 = 86.0 / 256.0;
+    float left = w0 * s_m3 + w1 * s_m2 + w2 * s_m1 + w1 * s_0 + w0 * s_p1;
+    float center = w0 * s_m2 + w1 * s_m1 + w2 * s_0 + w1 * s_p1 + w0 * s_p2;
+    float right = w0 * s_m1 + w1 * s_0 + w2 * s_p1 + w1 * s_p2 + w0 * s_p3;
+    vec3 cov = reverse_order ? vec3(right, center, left) : vec3(left, center, right);
+    cov = clamp(cov, 0.0, 1.0);
+    return vec4(cov, clamp((cov.r + cov.g + cov.b) * (1.0 / 3.0), 0.0, 1.0));
+}
+
+void emitSubpixelColor(vec4 color, vec3 cov, float alpha_cov) {
+    vec4 premul = premultiplyColorSubpixel(color, cov, alpha_cov);
+    frag_color = premul;
+#ifdef SNAIL_DUAL_SOURCE
+    frag_blend = vec4(vec3(color.a) * cov, 0.0);
+#endif
 }
 
 vec4 evalGlyphCoverageSubpixelLayer(vec2 rc, vec2 epp, vec2 ppe, ivec2 gLoc, ivec2 bandMax, int layer) {
@@ -578,23 +598,44 @@ vec4 evalGlyphCoverageSubpixelLayer(vec2 rc, vec2 epp, vec2 ppe, ivec2 gLoc, ive
     ivec2 vLoc = calcBandLoc(gLoc, vbd.y);
     int vCount = int(vbd.x);
 
+    bool safe_mode = subpixel_render_mode != 0;
     if (subpixel_order <= 2) {
-        float sp = epp.x / 3.0;
-        float s = (subpixel_order == 2) ? -1.0 : 1.0;
-        vec2 cw_r = evalHorizCoverage(rc, -sp * s, ppe, gLoc, hLoc, hCount, layer);
-        vec2 cw_g = evalHorizCoverage(rc,  0.0,    ppe, gLoc, hLoc, hCount, layer);
-        vec2 cw_b = evalHorizCoverage(rc, +sp * s, ppe, gLoc, hLoc, hCount, layer);
         vec2 cw_v = evalVertCoverage(rc, 0.0, ppe, vLoc, vCount, layer);
-        return blendSubpixelWithAlpha(cw_r, cw_g, cw_b, cw_v);
+        float sp = epp.x / 3.0;
+        if (!safe_mode) {
+            float s = (subpixel_order == 2) ? -1.0 : 1.0;
+            vec2 cw_r = evalHorizCoverage(rc, -sp * s, ppe, gLoc, hLoc, hCount, layer);
+            vec2 cw_g = evalHorizCoverage(rc,  0.0,    ppe, gLoc, hLoc, hCount, layer);
+            vec2 cw_b = evalHorizCoverage(rc, +sp * s, ppe, gLoc, hLoc, hCount, layer);
+            return blendSubpixelWithAlpha(cw_r, cw_g, cw_b, cw_v);
+        }
+        float s_m3 = blendSubpixelSample(evalHorizCoverage(rc, -3.0 * sp, ppe, gLoc, hLoc, hCount, layer), cw_v);
+        float s_m2 = blendSubpixelSample(evalHorizCoverage(rc, -2.0 * sp, ppe, gLoc, hLoc, hCount, layer), cw_v);
+        float s_m1 = blendSubpixelSample(evalHorizCoverage(rc, -1.0 * sp, ppe, gLoc, hLoc, hCount, layer), cw_v);
+        float s_0 = blendSubpixelSample(evalHorizCoverage(rc, 0.0, ppe, gLoc, hLoc, hCount, layer), cw_v);
+        float s_p1 = blendSubpixelSample(evalHorizCoverage(rc, 1.0 * sp, ppe, gLoc, hLoc, hCount, layer), cw_v);
+        float s_p2 = blendSubpixelSample(evalHorizCoverage(rc, 2.0 * sp, ppe, gLoc, hLoc, hCount, layer), cw_v);
+        float s_p3 = blendSubpixelSample(evalHorizCoverage(rc, 3.0 * sp, ppe, gLoc, hLoc, hCount, layer), cw_v);
+        return filterSubpixelCoverage(s_m3, s_m2, s_m1, s_0, s_p1, s_p2, s_p3, subpixel_order == 2);
     }
 
     float sp = epp.y / 3.0;
-    float s = (subpixel_order == 4) ? -1.0 : 1.0;
     vec2 cw_h = evalHorizCoverage(rc, 0.0, ppe, gLoc, hLoc, hCount, layer);
-    vec2 cw_r = evalVertCoverage(rc, -sp * s, ppe, vLoc, vCount, layer);
-    vec2 cw_g = evalVertCoverage(rc,  0.0,    ppe, vLoc, vCount, layer);
-    vec2 cw_b = evalVertCoverage(rc, +sp * s, ppe, vLoc, vCount, layer);
-    return blendSubpixelWithAlpha(cw_r, cw_g, cw_b, cw_h);
+    if (!safe_mode) {
+        float s = (subpixel_order == 4) ? -1.0 : 1.0;
+        vec2 cw_r = evalVertCoverage(rc, -sp * s, ppe, vLoc, vCount, layer);
+        vec2 cw_g = evalVertCoverage(rc,  0.0,    ppe, vLoc, vCount, layer);
+        vec2 cw_b = evalVertCoverage(rc, +sp * s, ppe, vLoc, vCount, layer);
+        return blendSubpixelWithAlpha(cw_r, cw_g, cw_b, cw_h);
+    }
+    float s_m3 = blendSubpixelSample(evalVertCoverage(rc, -3.0 * sp, ppe, vLoc, vCount, layer), cw_h);
+    float s_m2 = blendSubpixelSample(evalVertCoverage(rc, -2.0 * sp, ppe, vLoc, vCount, layer), cw_h);
+    float s_m1 = blendSubpixelSample(evalVertCoverage(rc, -1.0 * sp, ppe, vLoc, vCount, layer), cw_h);
+    float s_0 = blendSubpixelSample(evalVertCoverage(rc, 0.0, ppe, vLoc, vCount, layer), cw_h);
+    float s_p1 = blendSubpixelSample(evalVertCoverage(rc, 1.0 * sp, ppe, vLoc, vCount, layer), cw_h);
+    float s_p2 = blendSubpixelSample(evalVertCoverage(rc, 2.0 * sp, ppe, vLoc, vCount, layer), cw_h);
+    float s_p3 = blendSubpixelSample(evalVertCoverage(rc, 3.0 * sp, ppe, vLoc, vCount, layer), cw_h);
+    return filterSubpixelCoverage(s_m3, s_m2, s_m1, s_0, s_p1, s_p2, s_p3, subpixel_order == 4);
 }
 
 PathCompositeSample compositePathGroupSubpixel(vec2 rc, vec2 epp, vec2 ppe, ivec2 infoBase, vec4 header, int texLayer) {
@@ -647,6 +688,9 @@ PathCompositeSample compositePathGroupSubpixel(vec2 rc, vec2 epp, vec2 ppe, ivec
 }
 
 void main() {
+#ifdef SNAIL_DUAL_SOURCE
+    frag_blend = vec4(0.0);
+#endif
     vec2 rc = v_texcoord;
     vec2 epp = fwidth(rc);
     vec2 ppe = 1.0 / epp;
@@ -668,34 +712,7 @@ void main() {
             ivec2 bandMax = ivec2(floatBitsToInt(firstInfo.z) & 0xFFFF,
                                   (floatBitsToInt(firstInfo.z) >> 16) & 0xFFFF);
             int layer = int(v_banding.w);
-            ivec2 bandIdx = clamp(ivec2(rc * band.xy + band.zw), ivec2(0), bandMax);
-
-            uvec2 hbd = texelFetch(u_band_tex, ivec3(gLoc.x + bandIdx.y, gLoc.y, layer), 0).xy;
-            ivec2 hLoc = calcBandLoc(gLoc, hbd.y);
-            int hCount = int(hbd.x);
-
-            uvec2 vbd = texelFetch(u_band_tex, ivec3(gLoc.x + bandMax.y + 1 + bandIdx.x, gLoc.y, layer), 0).xy;
-            ivec2 vLoc = calcBandLoc(gLoc, vbd.y);
-            int vCount = int(vbd.x);
-
-            vec4 cov_alpha;
-            if (subpixel_order <= 2) {
-                float sp = epp.x / 3.0;
-                float s = (subpixel_order == 2) ? -1.0 : 1.0;
-                vec2 cw_r = evalHorizCoverage(rc, -sp * s, ppe, gLoc, hLoc, hCount, layer);
-                vec2 cw_g = evalHorizCoverage(rc,  0.0,    ppe, gLoc, hLoc, hCount, layer);
-                vec2 cw_b = evalHorizCoverage(rc, +sp * s, ppe, gLoc, hLoc, hCount, layer);
-                vec2 cw_v = evalVertCoverage(rc, 0.0, ppe, vLoc, vCount, layer);
-                cov_alpha = blendSubpixelWithAlpha(cw_r, cw_g, cw_b, cw_v);
-            } else {
-                float sp = epp.y / 3.0;
-                float s = (subpixel_order == 4) ? -1.0 : 1.0;
-                vec2 cw_h = evalHorizCoverage(rc, 0.0, ppe, gLoc, hLoc, hCount, layer);
-                vec2 cw_r = evalVertCoverage(rc, -sp * s, ppe, vLoc, vCount, layer);
-                vec2 cw_g = evalVertCoverage(rc,  0.0,    ppe, vLoc, vCount, layer);
-                vec2 cw_b = evalVertCoverage(rc, +sp * s, ppe, vLoc, vCount, layer);
-                cov_alpha = blendSubpixelWithAlpha(cw_r, cw_g, cw_b, cw_h);
-            }
+            vec4 cov_alpha = evalGlyphCoverageSubpixelLayer(rc, epp, ppe, gLoc, bandMax, layer);
 
             vec3 cov = cov_alpha.rgb;
             if (max(max(cov.r, cov.g), cov.b) < 1.0/255.0) discard;
@@ -731,36 +748,8 @@ void main() {
     // Single-layer subpixel path
     int layer = atlas_layer;
     ivec2 bandMax = ivec2(v_glyph.z, v_glyph.w & 0xFF);
-    ivec2 bandIdx = clamp(ivec2(rc * v_banding.xy + v_banding.zw), ivec2(0), bandMax);
     ivec2 gLoc = v_glyph.xy;
-
-    uvec2 hbd = texelFetch(u_band_tex, ivec3(gLoc.x + bandIdx.y, gLoc.y, layer), 0).xy;
-    ivec2 hLoc = calcBandLoc(gLoc, hbd.y);
-    int hCount = int(hbd.x);
-
-    uvec2 vbd = texelFetch(u_band_tex, ivec3(gLoc.x + bandMax.y + 1 + bandIdx.x, gLoc.y, layer), 0).xy;
-    ivec2 vLoc = calcBandLoc(gLoc, vbd.y);
-    int vCount = int(vbd.x);
-
-    vec4 cov_alpha;
-
-    if (subpixel_order <= 2) {
-        float sp = epp.x / 3.0;
-        float s = (subpixel_order == 2) ? -1.0 : 1.0;
-        vec2 cw_r = evalHorizCoverage(rc, -sp * s, ppe, gLoc, hLoc, hCount, layer);
-        vec2 cw_g = evalHorizCoverage(rc,  0.0,    ppe, gLoc, hLoc, hCount, layer);
-        vec2 cw_b = evalHorizCoverage(rc, +sp * s, ppe, gLoc, hLoc, hCount, layer);
-        vec2 cw_v = evalVertCoverage(rc, 0.0, ppe, vLoc, vCount, layer);
-        cov_alpha = blendSubpixelWithAlpha(cw_r, cw_g, cw_b, cw_v);
-    } else {
-        float sp = epp.y / 3.0;
-        float s = (subpixel_order == 4) ? -1.0 : 1.0;
-        vec2 cw_h = evalHorizCoverage(rc, 0.0, ppe, gLoc, hLoc, hCount, layer);
-        vec2 cw_r = evalVertCoverage(rc, -sp * s, ppe, vLoc, vCount, layer);
-        vec2 cw_g = evalVertCoverage(rc,  0.0,    ppe, vLoc, vCount, layer);
-        vec2 cw_b = evalVertCoverage(rc, +sp * s, ppe, vLoc, vCount, layer);
-        cov_alpha = blendSubpixelWithAlpha(cw_r, cw_g, cw_b, cw_h);
-    }
+    vec4 cov_alpha = evalGlyphCoverageSubpixelLayer(rc, epp, ppe, gLoc, bandMax, layer);
 
     vec3 cov = cov_alpha.rgb;
     if (max(max(cov.r, cov.g), cov.b) < 1.0/255.0) discard;
@@ -768,5 +757,5 @@ void main() {
         frag_color = resolveSubpixelOverOpaqueBackdrop(v_color, cov, subpixel_backdrop);
         return;
     }
-    frag_color = premultiplyColorSubpixel(v_color, cov, cov_alpha.a);
+    emitSubpixelColor(v_color, cov, cov_alpha.a);
 }

@@ -37,6 +37,7 @@ var device: vk.VkDevice = null;
 var graphics_queue: vk.VkQueue = null;
 var present_queue: vk.VkQueue = null;
 var queue_family_index: u32 = 0;
+var supports_dual_source_blend: bool = false;
 
 var swapchain: vk.VkSwapchainKHR = null;
 var swapchain_images: [8]vk.VkImage = .{null} ** 8;
@@ -131,6 +132,7 @@ pub fn init(width: u32, height: u32, title: [*:0]const u8) !vkp.VulkanContext {
         .queue_family_index = queue_family_index,
         .render_pass = @ptrCast(render_pass),
         .color_format = @intCast(swapchain_format),
+        .supports_dual_source_blend = supports_dual_source_blend,
     };
 }
 
@@ -333,6 +335,7 @@ pub fn initOffscreen(width: u32, height: u32) !vkp.VulkanContext {
         .queue_family_index = queue_family_index,
         .render_pass = @ptrCast(offscreen_render_pass),
         .color_format = @intCast(OFFSCREEN_FORMAT),
+        .supports_dual_source_blend = supports_dual_source_blend,
     };
 }
 
@@ -363,6 +366,7 @@ pub fn deinitOffscreen() void {
     instance = null;
     graphics_queue = null;
     physical_device = null;
+    supports_dual_source_blend = false;
 }
 
 /// Begin an offscreen frame. Returns the command buffer to record into.
@@ -466,10 +470,16 @@ fn createDeviceOffscreen() !void {
         .queueCount = 1,
         .pQueuePriorities = &priority,
     });
+    var supported_features: vk.VkPhysicalDeviceFeatures = undefined;
+    vk.vkGetPhysicalDeviceFeatures(physical_device, &supported_features);
+    supports_dual_source_blend = supported_features.dualSrcBlend == vk.VK_TRUE;
+    var enabled_features = std.mem.zeroes(vk.VkPhysicalDeviceFeatures);
+    if (supports_dual_source_blend) enabled_features.dualSrcBlend = vk.VK_TRUE;
     const dev_ci = std.mem.zeroInit(vk.VkDeviceCreateInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
         .queueCreateInfoCount = 1,
         .pQueueCreateInfos = &queue_ci,
+        .pEnabledFeatures = &enabled_features,
     });
     try checkVk(vk.vkCreateDevice(physical_device, &dev_ci, null, &device));
     vk.vkGetDeviceQueue(device, queue_family_index, 0, &graphics_queue);
@@ -696,12 +706,18 @@ fn createLogicalDevice() !void {
     });
 
     const ext_name: [*c]const u8 = vk.VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+    var supported_features: vk.VkPhysicalDeviceFeatures = undefined;
+    vk.vkGetPhysicalDeviceFeatures(physical_device, &supported_features);
+    supports_dual_source_blend = supported_features.dualSrcBlend == vk.VK_TRUE;
+    var enabled_features = std.mem.zeroes(vk.VkPhysicalDeviceFeatures);
+    if (supports_dual_source_blend) enabled_features.dualSrcBlend = vk.VK_TRUE;
     const dev_ci = std.mem.zeroInit(vk.VkDeviceCreateInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
         .queueCreateInfoCount = 1,
         .pQueueCreateInfos = &queue_ci,
         .enabledExtensionCount = 1,
         .ppEnabledExtensionNames = &ext_name,
+        .pEnabledFeatures = &enabled_features,
     });
     try checkVk(vk.vkCreateDevice(physical_device, &dev_ci, null, &device));
 

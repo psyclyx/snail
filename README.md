@@ -313,7 +313,7 @@ renderer.setFillRule(.even_odd);
 
 ### Subpixel rendering
 
-`renderer.setSubpixelOrder(.rgb)` requests LCD subpixel antialiasing. In the default `.safe` mode, snail only uses LCD AA for axis-aligned text when you also declare the opaque solid backdrop it should resolve against; otherwise it falls back to grayscale AA. `drawPaths()` always stays grayscale.
+`renderer.setSubpixelOrder(.rgb)` requests LCD subpixel antialiasing. In the default `.safe` mode, snail uses LCD AA for axis-aligned text when the backend supports safe per-channel blending; otherwise it can still resolve against a declared opaque solid backdrop, and falls back to grayscale AA when neither path is valid. `drawPaths()` always stays grayscale.
 
 `renderer.setSubpixelMode(.legacy_unsafe)` restores the old behavior if you explicitly want the extra sharpness and accept incorrect compositing on arbitrary backgrounds.
 

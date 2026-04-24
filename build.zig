@@ -87,19 +87,24 @@ pub fn build(b: *std.Build) void {
     // ── SPIR-V shader compilation (only when Vulkan enabled) ──
     const vk_shaders_mod: *std.Build.Module = if (enable_vulkan) blk: {
         const compile_vert = b.addSystemCommand(&.{ "glslc", "-fshader-stage=vert" });
-        compile_vert.addFileArg(b.path("shaders/slug.vert"));
+        compile_vert.addFileArg(b.path("shaders/snail.vert"));
         compile_vert.addArg("-o");
-        const vert_spv = compile_vert.addOutputFileArg("slug.vert.spv");
+        const vert_spv = compile_vert.addOutputFileArg("snail.vert.spv");
 
         const compile_frag = b.addSystemCommand(&.{ "glslc", "-fshader-stage=frag" });
-        compile_frag.addFileArg(b.path("shaders/slug.frag"));
+        compile_frag.addFileArg(b.path("shaders/snail.frag"));
         compile_frag.addArg("-o");
-        const frag_spv = compile_frag.addOutputFileArg("slug.frag.spv");
+        const frag_spv = compile_frag.addOutputFileArg("snail.frag.spv");
 
         const compile_frag_sp = b.addSystemCommand(&.{ "glslc", "-fshader-stage=frag" });
-        compile_frag_sp.addFileArg(b.path("shaders/slug_subpixel.frag"));
+        compile_frag_sp.addFileArg(b.path("shaders/snail_subpixel.frag"));
         compile_frag_sp.addArg("-o");
-        const frag_sp_spv = compile_frag_sp.addOutputFileArg("slug_subpixel.frag.spv");
+        const frag_sp_spv = compile_frag_sp.addOutputFileArg("snail_subpixel.frag.spv");
+
+        const compile_frag_sp_dual = b.addSystemCommand(&.{ "glslc", "-fshader-stage=frag", "-DSNAIL_DUAL_SOURCE=1" });
+        compile_frag_sp_dual.addFileArg(b.path("shaders/snail_subpixel.frag"));
+        compile_frag_sp_dual.addArg("-o");
+        const frag_sp_dual_spv = compile_frag_sp_dual.addOutputFileArg("snail_subpixel_dual.frag.spv");
 
         const compile_sprite_vert = b.addSystemCommand(&.{ "glslc", "-fshader-stage=vert" });
         compile_sprite_vert.addFileArg(b.path("shaders/sprite.vert"));
@@ -114,9 +119,10 @@ pub fn build(b: *std.Build) void {
         const mod = b.createModule(.{
             .root_source_file = b.path("src/render/vulkan_shaders.zig"),
         });
-        mod.addAnonymousImport("slug.vert.spv", .{ .root_source_file = vert_spv });
-        mod.addAnonymousImport("slug.frag.spv", .{ .root_source_file = frag_spv });
-        mod.addAnonymousImport("slug_subpixel.frag.spv", .{ .root_source_file = frag_sp_spv });
+        mod.addAnonymousImport("snail.vert.spv", .{ .root_source_file = vert_spv });
+        mod.addAnonymousImport("snail.frag.spv", .{ .root_source_file = frag_spv });
+        mod.addAnonymousImport("snail_subpixel.frag.spv", .{ .root_source_file = frag_sp_spv });
+        mod.addAnonymousImport("snail_subpixel_dual.frag.spv", .{ .root_source_file = frag_sp_dual_spv });
         mod.addAnonymousImport("sprite.vert.spv", .{ .root_source_file = sprite_vert_spv });
         mod.addAnonymousImport("sprite.frag.spv", .{ .root_source_file = sprite_frag_spv });
         break :blk mod;

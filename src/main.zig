@@ -248,7 +248,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
             const sp_name = renderer.subpixelOrder().name();
             const sp_mode = renderer.subpixelMode().name();
             const sp_suffix = if (renderer.subpixelMode() == .safe)
-                " | scene text: grayscale fallback | HUD: clear-bg LCD"
+                " | safe LCD when axis-aligned"
             else
                 "";
             var hud_line2_buf: [160]u8 = undefined;

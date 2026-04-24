@@ -41,6 +41,7 @@ const ProgramState = struct {
 
 var text_program = ProgramState{};
 var text_subpixel_program = ProgramState{};
+var text_subpixel_dual_program = ProgramState{};
 var colr_program = ProgramState{};
 var path_program = ProgramState{};
 
@@ -65,6 +66,7 @@ var image_array: gl.GLuint = 0;
 
 var active_program: gl.GLuint = 0;
 var frame_begun: bool = false;
+var supports_dual_source_blend: bool = false;
 
 // ── GL 4.4 persistent mapping state ──
 
@@ -100,12 +102,16 @@ var allocated_image_count: u32 = 0;
 // ── Init / Deinit ──
 
 pub fn init() !void {
+    backend = gl_backend.detect(gl);
+    supports_dual_source_blend = detectDualSourceBlendSupport();
+
     // Keep startup on the lightweight plain-glyph shaders. The heavier path/COLR
     // shader is linked lazily the first time sentinel runs are drawn.
-    text_program = try loadProgramState("text", shaders.vertex_shader, shaders.fragment_shader_text);
-    text_subpixel_program = try loadProgramState("text-subpixel", shaders.vertex_shader, shaders.fragment_shader_text_subpixel);
-
-    backend = gl_backend.detect(gl);
+    text_program = try loadProgramState("text", shaders.vertex_shader, shaders.fragment_shader_text, false);
+    text_subpixel_program = try loadProgramState("text-subpixel", shaders.vertex_shader, shaders.fragment_shader_text_subpixel, false);
+    if (supports_dual_source_blend) {
+        text_subpixel_dual_program = try loadProgramState("text-subpixel-dual", shaders.vertex_shader, shaders.fragment_shader_text_subpixel_dual, true);
+    }
 
     switch (backend) {
         .gl33 => initGl33(),
@@ -200,6 +206,7 @@ pub fn deinit() void {
 
     deleteProgramState(&text_program);
     deleteProgramState(&text_subpixel_program);
+    deleteProgramState(&text_subpixel_dual_program);
     deleteProgramState(&colr_program);
     deleteProgramState(&path_program);
     if (vao != 0) gl.glDeleteVertexArrays(1, &vao);
@@ -671,6 +678,7 @@ fn drawTextInternal(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_
         allow_subpixel,
         subpixel_order,
         subpixel_mode,
+        supports_dual_source_blend,
         subpixel_backdrop,
     );
     if (!atlas_has_special_text_runs) {
@@ -678,6 +686,7 @@ fn drawTextInternal(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_
         const state = switch (render_mode) {
             .grayscale => &text_program,
             .subpixel_legacy, .subpixel_backdrop => &text_subpixel_program,
+            .subpixel_dual_source => &text_subpixel_dual_program,
         };
         bindProgramState(state, mvp, viewport_w, viewport_h, render_mode);
         drawGlyphRange(vertices, 0, total_glyphs);
@@ -699,6 +708,7 @@ fn drawTextInternal(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_
         else switch (run_mode) {
             .grayscale => &text_program,
             .subpixel_legacy, .subpixel_backdrop => &text_subpixel_program,
+            .subpixel_dual_source => &text_subpixel_dual_program,
         };
         bindProgramState(state, mvp, viewport_w, viewport_h, run_mode);
         drawGlyphRange(vertices, run_start, run_end - run_start);
@@ -772,8 +782,8 @@ fn compileShader(shader_type: gl.GLenum, source: [*c]const u8) ?gl.GLuint {
     return shader;
 }
 
-fn loadProgramState(cache_label: []const u8, vs_src: [*c]const u8, fs_src: [*c]const u8) !ProgramState {
-    const handle = try linkProgram(cache_label, vs_src, fs_src);
+fn loadProgramState(cache_label: []const u8, vs_src: [*c]const u8, fs_src: [*c]const u8, dual_source: bool) !ProgramState {
+    const handle = try linkProgram(cache_label, vs_src, fs_src, dual_source);
     return .{
         .handle = handle,
         .mvp_loc = gl.glGetUniformLocation(handle, "u_mvp"),
@@ -796,14 +806,14 @@ fn deleteProgramState(state: *ProgramState) void {
 
 fn ensureColrProgram() *const ProgramState {
     if (colr_program.handle == 0) {
-        colr_program = loadProgramState("text-colr", shaders.vertex_shader, shaders.fragment_shader_colr) catch @panic("failed to link COLR text shader");
+        colr_program = loadProgramState("text-colr", shaders.vertex_shader, shaders.fragment_shader_colr, false) catch @panic("failed to link COLR text shader");
     }
     return &colr_program;
 }
 
 fn ensurePathProgram() *const ProgramState {
     if (path_program.handle == 0) {
-        path_program = loadProgramState("path", shaders.vertex_shader, shaders.fragment_shader) catch @panic("failed to link path shader");
+        path_program = loadProgramState("path", shaders.vertex_shader, shaders.fragment_shader, false) catch @panic("failed to link path shader");
     }
     return &path_program;
 }
@@ -847,7 +857,7 @@ fn bindProgramState(state: *const ProgramState, mvp: Mat4, viewport_w: f32, view
         gl.glUniform1i(state.subpixel_order_loc, @intFromEnum(subpixel_order));
     }
     if (state.subpixel_render_mode_loc >= 0) {
-        gl.glUniform1i(state.subpixel_render_mode_loc, if (render_mode == .subpixel_backdrop) 1 else 0);
+        gl.glUniform1i(state.subpixel_render_mode_loc, subpixelRenderModeUniform(render_mode));
     }
     if (state.subpixel_backdrop_loc >= 0) {
         const bg = subpixel_backdrop orelse .{ 0, 0, 0, 0 };
@@ -856,12 +866,22 @@ fn bindProgramState(state: *const ProgramState, mvp: Mat4, viewport_w: f32, view
 }
 
 fn setTextBlendMode(special: bool, render_mode: subpixel_policy.TextRenderMode) void {
-    if (!special and render_mode == .subpixel_backdrop) {
-        gl.glDisable(gl.GL_BLEND);
-        return;
+    if (!special) {
+        switch (render_mode) {
+            .subpixel_backdrop => {
+                gl.glDisable(gl.GL_BLEND);
+                return;
+            },
+            .subpixel_dual_source => {
+                gl.glEnable(gl.GL_BLEND);
+                gl.glBlendFuncSeparate(gl.GL_ONE, gl.GL_ONE_MINUS_SRC1_COLOR, gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA);
+                return;
+            },
+            else => {},
+        }
     }
     gl.glEnable(gl.GL_BLEND);
-    gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA);
+    gl.glBlendFuncSeparate(gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA, gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA);
 }
 
 fn glyphRunIsSpecial(vertices: []const f32, glyph_index: usize) bool {
@@ -915,7 +935,7 @@ fn drawGlyphRange(vertices: []const f32, glyph_offset: usize, glyph_count: usize
     }
 }
 
-fn linkProgram(_: []const u8, vs_src: [*c]const u8, fs_src: [*c]const u8) !gl.GLuint {
+fn linkProgram(_: []const u8, vs_src: [*c]const u8, fs_src: [*c]const u8, dual_source: bool) !gl.GLuint {
     const vs = compileShader(gl.GL_VERTEX_SHADER, vs_src) orelse return error.VertexShaderFailed;
     defer gl.glDeleteShader(vs);
     const fs = compileShader(gl.GL_FRAGMENT_SHADER, fs_src) orelse return error.FragmentShaderFailed;
@@ -924,6 +944,10 @@ fn linkProgram(_: []const u8, vs_src: [*c]const u8, fs_src: [*c]const u8) !gl.GL
     const prog = gl.glCreateProgram();
     gl.glAttachShader(prog, vs);
     gl.glAttachShader(prog, fs);
+    if (dual_source) {
+        gl.glBindFragDataLocationIndexed(prog, 0, 0, "frag_color");
+        gl.glBindFragDataLocationIndexed(prog, 0, 1, "frag_blend");
+    }
     gl.glLinkProgram(prog);
 
     var ok: gl.GLint = 0;
@@ -936,4 +960,18 @@ fn linkProgram(_: []const u8, vs_src: [*c]const u8, fs_src: [*c]const u8) !gl.GL
         return error.ShaderLinkFailed;
     }
     return prog;
+}
+
+fn detectDualSourceBlendSupport() bool {
+    var max_draw_buffers: gl.GLint = 0;
+    gl.glGetIntegerv(gl.GL_MAX_DUAL_SOURCE_DRAW_BUFFERS, &max_draw_buffers);
+    return max_draw_buffers >= 1;
+}
+
+fn subpixelRenderModeUniform(render_mode: subpixel_policy.TextRenderMode) gl.GLint {
+    return switch (render_mode) {
+        .grayscale, .subpixel_legacy => 0,
+        .subpixel_backdrop => 1,
+        .subpixel_dual_source => 2,
+    };
 }

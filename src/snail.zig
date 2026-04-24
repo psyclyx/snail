@@ -3774,7 +3774,8 @@ pub const Renderer = struct {
     }
 
     /// Control how LCD subpixel rendering is applied.
-    /// `.safe` (default) only uses LCD for axis-aligned text over a declared opaque backdrop.
+    /// `.safe` (default) uses LCD for axis-aligned text when the backend can blend per-channel coverage safely.
+    /// If that path is unavailable, it falls back to opaque-backdrop resolve when you declare one, otherwise grayscale.
     /// `.legacy_unsafe` restores the previous behavior for callers that accept the artifacts.
     pub fn setSubpixelMode(self: *Renderer, mode: SubpixelMode) void {
         switch (self.backend) {
@@ -3790,8 +3791,8 @@ pub const Renderer = struct {
         };
     }
 
-    /// Declare the opaque solid backdrop that LCD text will be resolved against in `.safe` mode.
-    /// Pass `null` to disable LCD backdrop resolution and force grayscale fallback.
+    /// Declare the opaque solid backdrop used as the `.safe` LCD fallback when per-channel blending is unavailable.
+    /// Pass `null` to disable backdrop resolve and let unsupported cases fall back to grayscale.
     pub fn setSubpixelBackdrop(self: *Renderer, color: ?[4]f32) void {
         switch (self.backend) {
             .gl => pipeline.subpixel_backdrop = color,
