@@ -24,6 +24,10 @@ fn linearToSrgb(v: f32) f32 {
     return 1.055 * std.math.pow(f32, v, 1.0 / 2.4) - 0.055;
 }
 
+fn fract(v: f32) f32 {
+    return v - @floor(v);
+}
+
 const kLogBandTextureWidth: u5 = 12;
 const BAND_TEX_WIDTH: u32 = 1 << kLogBandTextureWidth;
 const kLogCurveTextureWidth: u5 = 12;
@@ -146,7 +150,7 @@ pub const CpuRenderer = struct {
                             self.fill_rule,
                         );
                         if (cov < 1.0 / 255.0) continue;
-                        self.blendPremultipliedPixel(row, col, premultiplyCoverage(paint, cov));
+                        self.blendPremultipliedPixel(row, col, premultiplyCoverage(paint.color, cov), paint.apply_dither);
                     } else {
                         const cov = evalGlyphCoverageSubpixel(
                             page,
@@ -161,7 +165,7 @@ pub const CpuRenderer = struct {
                             self.subpixel_order,
                         );
                         if (max3(cov.rgb) < 1.0 / 255.0) continue;
-                        self.blendPremultipliedPixel(row, col, premultiplyCoverageSubpixel(paint, cov.rgb, cov.alpha));
+                        self.blendPremultipliedPixel(row, col, premultiplyCoverageSubpixel(paint.color, cov.rgb, cov.alpha), paint.apply_dither);
                     }
                 }
             }
@@ -282,7 +286,7 @@ pub const CpuRenderer = struct {
                         self.fill_rule,
                     );
                     if (cov < 1.0 / 255.0) continue;
-                    self.blendPremultipliedPixel(row, col, premultiplyCoverage(color, cov));
+                    self.blendPremultipliedPixel(row, col, premultiplyCoverage(color, cov), false);
                 } else {
                     const cov = evalGlyphCoverageSubpixel(
                         page,
@@ -297,13 +301,13 @@ pub const CpuRenderer = struct {
                         self.subpixel_order,
                     );
                     if (max3(cov.rgb) < 1.0 / 255.0) continue;
-                    self.blendPremultipliedPixel(row, col, premultiplyCoverageSubpixel(color, cov.rgb, cov.alpha));
+                    self.blendPremultipliedPixel(row, col, premultiplyCoverageSubpixel(color, cov.rgb, cov.alpha), false);
                 }
             }
         }
     }
 
-    fn blendPremultipliedPixel(self: *CpuRenderer, row: u32, col: u32, src: [4]f32) void {
+    fn blendPremultipliedPixel(self: *CpuRenderer, row: u32, col: u32, src: [4]f32, apply_dither: bool) void {
         const off = row * self.stride + col * 4;
         const dst_r = srgbToLinear(@as(f32, @floatFromInt(self.pixels[off + 0])) / 255.0);
         const dst_g = srgbToLinear(@as(f32, @floatFromInt(self.pixels[off + 1])) / 255.0);
@@ -316,9 +320,13 @@ pub const CpuRenderer = struct {
         const out_b = src[2] + dst_b * (1.0 - src_a);
         const out_a = src_a + dst_a * (1.0 - src_a);
 
-        self.pixels[off + 0] = @intFromFloat(@min(@max(linearToSrgb(out_r) * 255.0, 0.0), 255.0));
-        self.pixels[off + 1] = @intFromFloat(@min(@max(linearToSrgb(out_g) * 255.0, 0.0), 255.0));
-        self.pixels[off + 2] = @intFromFloat(@min(@max(linearToSrgb(out_b) * 255.0, 0.0), 255.0));
+        const dither = if (apply_dither)
+            (interleavedGradientNoise(row, col) - 0.5) * (clamp01(out_a) / 255.0)
+        else
+            0.0;
+        self.pixels[off + 0] = @intFromFloat(@min(@max((linearToSrgb(out_r) + dither) * 255.0, 0.0), 255.0));
+        self.pixels[off + 1] = @intFromFloat(@min(@max((linearToSrgb(out_g) + dither) * 255.0, 0.0), 255.0));
+        self.pixels[off + 2] = @intFromFloat(@min(@max((linearToSrgb(out_b) + dither) * 255.0, 0.0), 255.0));
         self.pixels[off + 3] = @intFromFloat(@min(@max(out_a * 255.0, 0.0), 255.0));
     }
 };
@@ -428,15 +436,20 @@ fn sampleImageLinear(image: *const snail.Image, uv: Vec2, filter: snail.ImageFil
     return lerpColor(top, bottom, ty);
 }
 
-fn samplePathPaint(atlas: *const snail.Atlas, instance: snail.PathPicture.Instance, local: Vec2) [4]f32 {
-    const data = atlas.layer_info_data orelse return .{ 1, 1, 1, 1 };
+const PathPaintSample = struct {
+    color: [4]f32,
+    apply_dither: bool = false,
+};
+
+fn samplePathPaint(atlas: *const snail.Atlas, instance: snail.PathPicture.Instance, local: Vec2) PathPaintSample {
+    const data = atlas.layer_info_data orelse return .{ .color = .{ 1, 1, 1, 1 } };
     const width = atlas.layer_info_width;
     const info = fetchLayerInfoTexel(data, width, instance.info_x, instance.info_y, 0);
     const tag: i32 = @intFromFloat(@round(-info[3]));
 
     const data0 = fetchLayerInfoTexel(data, width, instance.info_x, instance.info_y, 2);
     switch (tag) {
-        1 => return data0,
+        1 => return .{ .color = data0 },
         2 => {
             const color0 = fetchLayerInfoTexel(data, width, instance.info_x, instance.info_y, 3);
             const color1 = fetchLayerInfoTexel(data, width, instance.info_x, instance.info_y, 4);
@@ -447,7 +460,10 @@ fn samplePathPaint(atlas: *const snail.Atlas, instance: snail.PathPicture.Instan
             const len_sq = Vec2.dot(delta, delta);
             var t: f32 = 0.0;
             if (len_sq > 1e-10) t = Vec2.dot(Vec2.sub(local, start), delta) / len_sq;
-            return lerpColor(color0, color1, wrapPaintT(t, paintExtendFromFloat(extra[0])));
+            return .{
+                .color = lerpColor(color0, color1, wrapPaintT(t, paintExtendFromFloat(extra[0]))),
+                .apply_dither = true,
+            };
         },
         3 => {
             const color0 = fetchLayerInfoTexel(data, width, instance.info_x, instance.info_y, 3);
@@ -455,13 +471,16 @@ fn samplePathPaint(atlas: *const snail.Atlas, instance: snail.PathPicture.Instan
             const center = Vec2.new(data0[0], data0[1]);
             const radius = @max(@abs(data0[2]), 1.0 / 65536.0);
             const t = Vec2.length(Vec2.sub(local, center)) / radius;
-            return lerpColor(color0, color1, wrapPaintT(t, paintExtendFromFloat(data0[3])));
+            return .{
+                .color = lerpColor(color0, color1, wrapPaintT(t, paintExtendFromFloat(data0[3]))),
+                .apply_dither = true,
+            };
         },
         4 => {
-            const records = atlas.paint_image_records orelse return .{ 1, 0, 1, 1 };
+            const records = atlas.paint_image_records orelse return .{ .color = .{ 1, 0, 1, 1 } };
             const record_index = (@as(usize, instance.info_y) * @as(usize, width) + @as(usize, instance.info_x)) / snail.PATH_PAINT_TEXELS_PER_RECORD;
-            if (record_index >= records.len) return .{ 1, 0, 1, 1 };
-            const record = records[record_index] orelse return .{ 1, 0, 1, 1 };
+            if (record_index >= records.len) return .{ .color = .{ 1, 0, 1, 1 } };
+            const record = records[record_index] orelse return .{ .color = .{ 1, 0, 1, 1 } };
             const data1 = fetchLayerInfoTexel(data, width, instance.info_x, instance.info_y, 3);
             const tint = fetchLayerInfoTexel(data, width, instance.info_x, instance.info_y, 4);
             const extra = fetchLayerInfoTexel(data, width, instance.info_x, instance.info_y, 5);
@@ -477,15 +496,21 @@ fn samplePathPaint(atlas: *const snail.Atlas, instance: snail.PathPicture.Instan
             );
             const filter: snail.ImageFilter = if (@as(i32, @intFromFloat(@round(data1[3]))) == 1) .nearest else .linear;
             const sample = sampleImageLinear(record.image, uv, filter);
-            return .{
+            return .{ .color = .{
                 sample[0] * tint[0],
                 sample[1] * tint[1],
                 sample[2] * tint[2],
                 sample[3] * tint[3],
-            };
+            } };
         },
-        else => return .{ 1, 0, 1, 1 },
+        else => return .{ .color = .{ 1, 0, 1, 1 } },
     }
+}
+
+fn interleavedGradientNoise(row: u32, col: u32) f32 {
+    const pixel_x = @as(f32, @floatFromInt(col)) + 0.5;
+    const pixel_y = @as(f32, @floatFromInt(row)) + 0.5;
+    return fract(52.9829189 * fract(pixel_x * 0.06711056 + pixel_y * 0.00583715));
 }
 
 // ---------------------------------------------------------------------------
@@ -1487,6 +1512,63 @@ test "cpu renderer renders gradient path picture" {
     const right = ((11 * stride) + (26 * 4));
     try testing.expect(buf[right + 2] > buf[right + 0]);
     try testing.expect(buf[right + 3] > 200);
+}
+
+test "cpu renderer dithers shallow gradient path picture" {
+    const testing = std.testing;
+
+    const width: u32 = 512;
+    const height: u32 = 24;
+    const stride = width * 4;
+    const buf = try testing.allocator.alloc(u8, stride * height);
+    defer testing.allocator.free(buf);
+
+    var renderer = CpuRenderer.init(buf.ptr, width, height, stride);
+    renderer.clear(0, 0, 0, 0);
+
+    var path = snail.VectorPath.init(testing.allocator);
+    defer path.deinit();
+    try path.addRect(.{ .x = 0, .y = 0, .w = 480, .h = 12 });
+
+    var builder = snail.PathPictureBuilder.init(testing.allocator);
+    defer builder.deinit();
+    try builder.addFilledPath(&path, .{
+        .paint = .{ .linear_gradient = .{
+            .start = .{ .x = 0, .y = 0 },
+            .end = .{ .x = 480, .y = 0 },
+            .start_color = .{ 0.28, 0.28, 0.28, 1.0 },
+            .end_color = .{ 0.42, 0.42, 0.42, 1.0 },
+        } },
+    }, .{ .tx = 16, .ty = 6 });
+
+    var picture = try builder.freeze(testing.allocator);
+    defer picture.deinit();
+
+    renderer.drawPathPicture(&picture);
+
+    const row: usize = 12;
+    const start_col: usize = 20;
+    const end_col: usize = 492;
+    var prev = buf[row * stride + start_col * 4];
+    var run: usize = 1;
+    var max_run: usize = 1;
+    var transitions: usize = 0;
+
+    for ((start_col + 1)..end_col) |col| {
+        const value = buf[row * stride + col * 4];
+        if (value == prev) {
+            run += 1;
+            continue;
+        }
+        transitions += 1;
+        max_run = @max(max_run, run);
+        run = 1;
+        prev = value;
+    }
+    max_run = @max(max_run, run);
+
+    try testing.expect(transitions > 80);
+    try testing.expect(max_run < 12);
 }
 
 test "cpu renderer renders image-painted path picture" {
