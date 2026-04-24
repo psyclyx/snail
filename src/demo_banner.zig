@@ -39,6 +39,7 @@ const emoji_pill_vertical_pad: f32 = 10.0;
 const script_band_top_inset: f32 = 16.0;
 const script_band_bottom_inset: f32 = 14.0;
 const emoji_pill_gap: f32 = 10.0;
+const scripts_heading_gutter_pad: f32 = 10.0;
 const emoji_label_text = "Emoji";
 
 const ScriptRowSpec = struct {
@@ -94,6 +95,7 @@ pub const TextMetrics = struct {
     emoji_pill_h: f32,
     emoji_extents: LineExtents,
     script_band_min_h: f32,
+    scripts_heading_gutter_h: f32,
 };
 
 pub const Layout = struct {
@@ -261,9 +263,20 @@ fn lineExtents(font: *const snail.Font, font_size: f32) LineExtents {
     };
 }
 
+fn boundsExtents(bounds: TextBounds) LineExtents {
+    return .{
+        .ascent = @max(0.0, bounds.max_y),
+        .descent = @max(0.0, -bounds.min_y),
+    };
+}
+
 fn centeredBaselineTopFromExtents(extents: LineExtents, rect: snail.VectorRect) f32 {
     const content_h = extents.height();
     return rect.y + (rect.h - content_h) * 0.5 + extents.ascent;
+}
+
+fn baselineFromTop(top: f32, extents: LineExtents) f32 {
+    return top + extents.ascent;
 }
 
 pub fn measureMetrics(
@@ -277,6 +290,7 @@ pub fn measureMetrics(
     const emoji_sample = measureText(atlas_like, emoji_font, emoji_text, emoji_font_size);
     const label_extents = lineExtents(font, script_label_font_size);
     const emoji_extents = lineExtents(emoji_font, emoji_font_size);
+    const scripts_heading_extents = lineExtents(font, scripts_heading_font_size);
     var script_row_heights: [script_row_specs.len]f32 = undefined;
     var script_sample_extents: [script_row_specs.len]LineExtents = undefined;
     var max_label_advance: f32 = emoji_label.advance;
@@ -300,6 +314,7 @@ pub fn measureMetrics(
             emoji_pill_h +
             script_band_bottom_inset,
     );
+    const scripts_heading_gutter_h = snapPx(@max(22.0, scripts_heading_extents.height() + scripts_heading_gutter_pad * 2.0));
     return .{
         .badge_advance = badge.advance,
         .script_label_column_w = snapPx(max_label_advance + script_label_gap),
@@ -309,6 +324,7 @@ pub fn measureMetrics(
         .emoji_pill_h = emoji_pill_h,
         .emoji_extents = emoji_extents,
         .script_band_min_h = script_band_min_h,
+        .scripts_heading_gutter_h = scripts_heading_gutter_h,
     };
 }
 
@@ -337,7 +353,7 @@ pub fn buildLayout(w: f32, h: f32, metrics: TextMetrics) Layout {
     const specimen_h = std.math.clamp(frame.h * 0.265, 192.0, 214.0);
     const specimen_panel = snapRect(.{
         .x = frame.x + 28.0,
-        .y = script_band.y - specimen_h - 22.0,
+        .y = script_band.y - specimen_h - metrics.scripts_heading_gutter_h,
         .w = std.math.clamp(frame.w * 0.36, 420.0, 600.0),
         .h = specimen_h,
     });
@@ -409,25 +425,63 @@ pub fn drawText(batch: *snail.Batch, h: f32, layout: Layout, metrics: TextMetric
     const ligature_size = std.math.clamp(layout.specimen_panel.w * 0.072, 34.0, 48.0);
     const pangram_size = std.math.clamp(layout.specimen_panel.w * 0.034, 18.0, 22.0);
     const badge_extents = lineExtents(resources.latin_font, badge_font_size);
+    const title_measure = measureText(resources.latin_view, resources.latin_font, title_text, title_size);
+    const subtitle_measure = measureText(resources.latin_view, resources.latin_font, subtitle_text, subtitle_size);
+    const hero_meta_measure = measureText(resources.latin_view, resources.latin_font, hero_meta_text, 14.0);
+    const title_extents = boundsExtents(title_measure.bounds);
+    const subtitle_extents = boundsExtents(subtitle_measure.bounds);
+    const hero_meta_extents = boundsExtents(hero_meta_measure.bounds);
+    const specimen_label_extents = lineExtents(resources.latin_font, 12.0);
+    const ligature_extents = lineExtents(resources.latin_font, ligature_size);
+    const ligature_caption_extents = lineExtents(resources.latin_font, 14.0);
+    const pangram_a_extents = lineExtents(resources.latin_font, pangram_size);
+    const pangram_b_extents = lineExtents(resources.latin_font, 16.0);
+    const specimen_footer_extents = lineExtents(resources.latin_font, 12.0);
+    const scripts_heading_extents = lineExtents(resources.latin_font, scripts_heading_font_size);
+    const stage_label_extents = lineExtents(resources.latin_font, 12.0);
+    const stage_title_extents = lineExtents(resources.latin_font, 23.0);
+    const stage_caption_extents = lineExtents(resources.latin_font, 14.0);
     const stage_pill_extents = lineExtents(resources.latin_font, 12.0);
     const badge_baseline_top = centeredBaselineTopFromExtents(badge_extents, layout.badge_pill);
     const emoji_label_baseline_top = centeredBaselineTopFromExtents(metrics.script_label_extents, layout.emoji_pill);
     const emoji_baseline_top = centeredBaselineTopFromExtents(metrics.emoji_extents, layout.emoji_pill);
+    const scripts_heading_gutter = snail.VectorRect{
+        .x = layout.script_band.x,
+        .y = layout.specimen_panel.y + layout.specimen_panel.h,
+        .w = layout.script_band.w,
+        .h = layout.script_band.y - (layout.specimen_panel.y + layout.specimen_panel.h),
+    };
+    const hero_badge_gap = snapPx(@max(10.0, subtitle_extents.height() * 0.45));
+    const hero_subtitle_gap = snapPx(@max(8.0, hero_meta_extents.height() * 0.65));
+    const hero_meta_gap = snapPx(@max(8.0, hero_meta_extents.height() * 0.35));
+    const hero_title_top = layout.badge_pill.y + layout.badge_pill.h + hero_badge_gap;
+    const hero_subtitle_top = hero_title_top + title_extents.height() + hero_subtitle_gap;
+    const hero_meta_top = hero_subtitle_top + subtitle_extents.height() + hero_meta_gap;
+    const specimen_label_top = layout.specimen_panel.y + 26.0 - specimen_label_extents.ascent;
+    const ligature_top = layout.specimen_panel.y + 70.0 - ligature_extents.ascent;
+    const ligature_caption_top = layout.specimen_panel.y + 100.0 - ligature_caption_extents.ascent;
+    const pangram_a_top = layout.specimen_panel.y + 136.0 - pangram_a_extents.ascent;
+    const pangram_b_top = layout.specimen_panel.y + 162.0 - pangram_b_extents.ascent;
+    const specimen_footer_top = layout.specimen_panel.y + layout.specimen_panel.h - 20.0 - specimen_footer_extents.ascent;
+    const scripts_heading_baseline_top = centeredBaselineTopFromExtents(scripts_heading_extents, scripts_heading_gutter);
+    const stage_label_top = layout.path_label_area.y + 12.0 - stage_label_extents.ascent;
+    const stage_title_top = layout.path_label_area.y + 44.0 - stage_title_extents.ascent;
+    const stage_caption_top = layout.path_label_area.y + 70.0 - stage_caption_extents.ascent;
 
     _ = batch.addString(resources.latin_view, resources.latin_font, badge_text, layout.badge_pill.x + 16.0, textYFromTop(h, badge_baseline_top), badge_font_size, teal);
-    _ = batch.addString(resources.latin_view, resources.latin_font, title_text, hero_x, textYFromTop(h, layout.frame.y + 116.0), title_size, ink);
-    _ = batch.addString(resources.latin_view, resources.latin_font, subtitle_text, hero_x, textYFromTop(h, layout.frame.y + 158.0), subtitle_size, mist);
-    _ = batch.addString(resources.latin_view, resources.latin_font, hero_meta_text, hero_x, textYFromTop(h, layout.frame.y + 192.0), 14.0, slate);
+    _ = batch.addString(resources.latin_view, resources.latin_font, title_text, hero_x, textYFromTop(h, baselineFromTop(hero_title_top, title_extents)), title_size, ink);
+    _ = batch.addString(resources.latin_view, resources.latin_font, subtitle_text, hero_x, textYFromTop(h, baselineFromTop(hero_subtitle_top, subtitle_extents)), subtitle_size, mist);
+    _ = batch.addString(resources.latin_view, resources.latin_font, hero_meta_text, hero_x, textYFromTop(h, baselineFromTop(hero_meta_top, hero_meta_extents)), 14.0, slate);
 
     const specimen_x = layout.specimen_panel.x + 24.0;
-    _ = batch.addString(resources.latin_view, resources.latin_font, ligature_label_text, specimen_x, textYFromTop(h, layout.specimen_panel.y + 26.0), 12.0, teal);
-    _ = batch.addString(resources.latin_view, resources.latin_font, ligature_text, specimen_x, textYFromTop(h, layout.specimen_panel.y + 70.0), ligature_size, ink);
-    _ = batch.addString(resources.latin_view, resources.latin_font, ligature_caption_text, specimen_x, textYFromTop(h, layout.specimen_panel.y + 100.0), 14.0, sand);
-    _ = batch.addString(resources.latin_view, resources.latin_font, pangram_a_text, specimen_x, textYFromTop(h, layout.specimen_panel.y + 136.0), pangram_size, mist);
-    _ = batch.addString(resources.latin_view, resources.latin_font, pangram_b_text, specimen_x, textYFromTop(h, layout.specimen_panel.y + 162.0), 16.0, ink);
-    _ = batch.addString(resources.latin_view, resources.latin_font, specimen_footer_text, specimen_x, textYFromTop(h, layout.specimen_panel.y + layout.specimen_panel.h - 14.0), 12.0, slate);
+    _ = batch.addString(resources.latin_view, resources.latin_font, ligature_label_text, specimen_x, textYFromTop(h, baselineFromTop(specimen_label_top, specimen_label_extents)), 12.0, teal);
+    _ = batch.addString(resources.latin_view, resources.latin_font, ligature_text, specimen_x, textYFromTop(h, baselineFromTop(ligature_top, ligature_extents)), ligature_size, ink);
+    _ = batch.addString(resources.latin_view, resources.latin_font, ligature_caption_text, specimen_x, textYFromTop(h, baselineFromTop(ligature_caption_top, ligature_caption_extents)), 14.0, sand);
+    _ = batch.addString(resources.latin_view, resources.latin_font, pangram_a_text, specimen_x, textYFromTop(h, baselineFromTop(pangram_a_top, pangram_a_extents)), pangram_size, mist);
+    _ = batch.addString(resources.latin_view, resources.latin_font, pangram_b_text, specimen_x, textYFromTop(h, baselineFromTop(pangram_b_top, pangram_b_extents)), 16.0, ink);
+    _ = batch.addString(resources.latin_view, resources.latin_font, specimen_footer_text, specimen_x, textYFromTop(h, baselineFromTop(specimen_footer_top, specimen_footer_extents)), 12.0, slate);
 
-    _ = batch.addString(resources.latin_view, resources.latin_font, scripts_heading_text, layout.script_band.x + 12.0, textYFromTop(h, layout.script_band.y - 12.0), scripts_heading_font_size, teal);
+    _ = batch.addString(resources.latin_view, resources.latin_font, scripts_heading_text, layout.script_band.x + 12.0, textYFromTop(h, scripts_heading_baseline_top), scripts_heading_font_size, teal);
 
     const script_items = [_]struct {
         spec: ScriptRowSpec,
@@ -449,9 +503,9 @@ pub fn drawText(batch: *snail.Batch, h: f32, layout: Layout, metrics: TextMetric
     _ = batch.addString(resources.latin_view, resources.latin_font, emoji_label_text, layout.emoji_pill.x + script_label_inset_x, textYFromTop(h, emoji_label_baseline_top), script_label_font_size, slate);
     _ = batch.addString(resources.emoji_view, &resources.emoji_font.font, emoji_text, layout.script_text_x, textYFromTop(h, emoji_baseline_top), emoji_font_size, ink);
 
-    _ = batch.addString(resources.latin_view, resources.latin_font, stage_label_text, layout.path_label_area.x, textYFromTop(h, layout.path_label_area.y + 12.0), 12.0, teal);
-    _ = batch.addString(resources.latin_view, resources.latin_font, stage_title_text, layout.path_label_area.x, textYFromTop(h, layout.path_label_area.y + 44.0), 23.0, ink);
-    _ = batch.addString(resources.latin_view, resources.latin_font, stage_caption_text, layout.path_label_area.x, textYFromTop(h, layout.path_label_area.y + 70.0), 14.0, mist);
+    _ = batch.addString(resources.latin_view, resources.latin_font, stage_label_text, layout.path_label_area.x, textYFromTop(h, baselineFromTop(stage_label_top, stage_label_extents)), 12.0, teal);
+    _ = batch.addString(resources.latin_view, resources.latin_font, stage_title_text, layout.path_label_area.x, textYFromTop(h, baselineFromTop(stage_title_top, stage_title_extents)), 23.0, ink);
+    _ = batch.addString(resources.latin_view, resources.latin_font, stage_caption_text, layout.path_label_area.x, textYFromTop(h, baselineFromTop(stage_caption_top, stage_caption_extents)), 14.0, mist);
     for (layout.stage_pills, stage_pill_labels) |pill, label| {
         _ = batch.addString(resources.latin_view, resources.latin_font, label, pill.x + 16.0, textYFromTop(h, centeredBaselineTopFromExtents(stage_pill_extents, pill)), 12.0, ink);
     }
