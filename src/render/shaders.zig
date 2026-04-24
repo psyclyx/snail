@@ -677,18 +677,6 @@ pub const fragment_shader_path =
     \\    return texture(u_image_tex, vec3(uv, float(layer)));
     \\}
     \\
-    \\float gradientDitherNoise(vec2 fragCoord) {
-    \\    vec2 cell = floor(fragCoord);
-    \\    float a = fract(52.9829189 * fract(dot(cell, vec2(0.06711056, 0.00583715))));
-    \\    float b = fract(52.9829189 * fract(dot(cell + vec2(17.0, 43.0), vec2(0.06711056, 0.00583715))));
-    \\    return (a + b - 1.0) * (0.75 / 255.0);
-    \\}
-    \\
-    \\vec4 ditherGradientPaint(vec4 color) {
-    \\    float dither = gradientDitherNoise(gl_FragCoord.xy);
-    \\    return vec4(clamp(color.rgb + vec3(dither), vec3(0.0), vec3(1.0)), color.a);
-    \\}
-    \\
     \\vec4 samplePathPaint(vec2 rc, ivec2 infoBase, vec4 info) {
     \\    int paintKind = int(-info.w + 0.5);
     \\    vec4 data0 = texelFetch(u_layer_tex, offsetLayerLoc(infoBase, 2), 0);
@@ -701,12 +689,12 @@ pub const fragment_shader_path =
     \\        float t = 0.0;
     \\        if (lenSq > 1e-10) t = dot(rc - data0.xy, delta) / lenSq;
     \\        vec4 extra = texelFetch(u_layer_tex, offsetLayerLoc(infoBase, 5), 0);
-    \\        return ditherGradientPaint(mix(color0, color1, wrapPaintT(t, extra.x)));
+    \\        return mix(color0, color1, wrapPaintT(t, extra.x));
     \\    }
     \\    if (paintKind == 3) {
     \\        float radius = max(abs(data0.z), 1.0 / 65536.0);
     \\        float t = length(rc - data0.xy) / radius;
-    \\        return ditherGradientPaint(mix(color0, color1, wrapPaintT(t, data0.w)));
+    \\        return mix(color0, color1, wrapPaintT(t, data0.w));
     \\    }
     \\    if (paintKind == 4) {
     \\        vec4 data1 = texelFetch(u_layer_tex, offsetLayerLoc(infoBase, 3), 0);
@@ -1209,18 +1197,6 @@ pub const fragment_shader =
     \\    return texture(u_image_tex, vec3(uv, float(layer)));
     \\}
     \\
-    \\float gradientDitherNoise(vec2 fragCoord) {
-    \\    vec2 cell = floor(fragCoord);
-    \\    float a = fract(52.9829189 * fract(dot(cell, vec2(0.06711056, 0.00583715))));
-    \\    float b = fract(52.9829189 * fract(dot(cell + vec2(17.0, 43.0), vec2(0.06711056, 0.00583715))));
-    \\    return (a + b - 1.0) * (0.75 / 255.0);
-    \\}
-    \\
-    \\vec4 ditherGradientPaint(vec4 color) {
-    \\    float dither = gradientDitherNoise(gl_FragCoord.xy);
-    \\    return vec4(clamp(color.rgb + vec3(dither), vec3(0.0), vec3(1.0)), color.a);
-    \\}
-    \\
     \\vec4 samplePathPaint(vec2 rc, ivec2 infoBase, vec4 info) {
     \\    int paintKind = int(-info.w + 0.5);
     \\    vec4 data0 = texelFetch(u_layer_tex, offsetLayerLoc(infoBase, 2), 0);
@@ -1239,13 +1215,13 @@ pub const fragment_shader =
     \\            t = dot(rc - data0.xy, delta) / lenSq;
     \\        }
     \\        vec4 extra = texelFetch(u_layer_tex, offsetLayerLoc(infoBase, 5), 0);
-    \\        return ditherGradientPaint(mix(color0, color1, wrapPaintT(t, extra.x)));
+    \\        return mix(color0, color1, wrapPaintT(t, extra.x));
     \\    }
     \\
     \\    if (paintKind == 3) {
     \\        float radius = max(abs(data0.z), 1.0 / 65536.0);
     \\        float t = length(rc - data0.xy) / radius;
-    \\        return ditherGradientPaint(mix(color0, color1, wrapPaintT(t, data0.w)));
+    \\        return mix(color0, color1, wrapPaintT(t, data0.w));
     \\    }
     \\
     \\    if (paintKind == 4) {
@@ -1745,18 +1721,6 @@ pub const fragment_shader_subpixel =
     \\    return texture(u_image_tex, vec3(uv, float(layer)));
     \\}
     \\
-    \\float gradientDitherNoise(vec2 fragCoord) {
-    \\    vec2 cell = floor(fragCoord);
-    \\    float a = fract(52.9829189 * fract(dot(cell, vec2(0.06711056, 0.00583715))));
-    \\    float b = fract(52.9829189 * fract(dot(cell + vec2(17.0, 43.0), vec2(0.06711056, 0.00583715))));
-    \\    return (a + b - 1.0) * (0.75 / 255.0);
-    \\}
-    \\
-    \\vec4 ditherGradientPaint(vec4 color) {
-    \\    float dither = gradientDitherNoise(gl_FragCoord.xy);
-    \\    return vec4(clamp(color.rgb + vec3(dither), vec3(0.0), vec3(1.0)), color.a);
-    \\}
-    \\
     \\vec4 samplePathPaint(vec2 rc, ivec2 infoBase, vec4 info) {
     \\    int paintKind = int(-info.w + 0.5);
     \\    vec4 data0 = texelFetch(u_layer_tex, offsetLayerLoc(infoBase, 2), 0);
@@ -1775,13 +1739,13 @@ pub const fragment_shader_subpixel =
     \\            t = dot(rc - data0.xy, delta) / lenSq;
     \\        }
     \\        vec4 extra = texelFetch(u_layer_tex, offsetLayerLoc(infoBase, 5), 0);
-    \\        return ditherGradientPaint(mix(color0, color1, wrapPaintT(t, extra.x)));
+    \\        return mix(color0, color1, wrapPaintT(t, extra.x));
     \\    }
     \\
     \\    if (paintKind == 3) {
     \\        float radius = max(abs(data0.z), 1.0 / 65536.0);
     \\        float t = length(rc - data0.xy) / radius;
-    \\        return ditherGradientPaint(mix(color0, color1, wrapPaintT(t, data0.w)));
+    \\        return mix(color0, color1, wrapPaintT(t, data0.w));
     \\    }
     \\
     \\    if (paintKind == 4) {
