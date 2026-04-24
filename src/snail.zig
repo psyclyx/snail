@@ -26,6 +26,7 @@ const curve_tex = @import("render/curve_texture.zig");
 const band_tex = @import("render/band_texture.zig");
 const vertex_mod = @import("render/vertex.zig");
 const sprite_vertex_mod = @import("render/sprite_vertex.zig");
+const roots = @import("math/roots.zig");
 const pipeline = @import("render/pipeline.zig");
 const sprite_pipeline = @import("render/sprite_pipeline.zig");
 const vulkan_pipeline = if (build_options.enable_vulkan) @import("render/vulkan_pipeline.zig") else struct {
@@ -1636,6 +1637,7 @@ const kPathStrokeOffsetTolerance: f32 = 0.02;
 const kPathStrokeOffsetMaxDepth: u8 = 10;
 const kPathCurveApproxTolerance: f32 = 0.02;
 const kPathCurveApproxMaxDepth: u8 = 8;
+const kPathLargePrimitiveTileExtent: f32 = 512.0;
 
 fn makePathLineCurve(p0: Vec2, p1: Vec2) bezier.QuadBezier {
     return .{
@@ -1722,6 +1724,13 @@ fn translateBBox(bbox: BBox, delta: Vec2) BBox {
     return .{
         .min = Vec2.add(bbox.min, delta),
         .max = Vec2.add(bbox.max, delta),
+    };
+}
+
+fn bboxCenter(bbox: BBox) Vec2 {
+    return .{
+        .x = (bbox.min.x + bbox.max.x) * 0.5,
+        .y = (bbox.min.y + bbox.max.y) * 0.5,
     };
 }
 
@@ -2399,6 +2408,36 @@ fn buildClosedStrokeContours(path: *VectorPath, curves: []const CurveSegment, st
     try path.close();
 }
 
+fn pointOnEllipse(center: Vec2, radii: Vec2, angle: f32) Vec2 {
+    return center.add(.{
+        .x = @cos(angle) * radii.x,
+        .y = @sin(angle) * radii.y,
+    });
+}
+
+fn buildCircularSectorPath(
+    path: *VectorPath,
+    center: Vec2,
+    outer_radius: f32,
+    inner_radius: f32,
+    start_angle: f32,
+    end_angle: f32,
+) !void {
+    const outer_radii = Vec2.new(outer_radius, outer_radius);
+    const outer_start = pointOnEllipse(center, outer_radii, start_angle);
+    try path.moveTo(outer_start);
+    try appendAdaptiveArcCurve(path, center, outer_radii, start_angle, end_angle, kPathArcSplitMaxDepth);
+    if (inner_radius <= 1.0 / 65536.0) {
+        try path.lineTo(center);
+    } else {
+        const inner_radii = Vec2.new(inner_radius, inner_radius);
+        const inner_end = pointOnEllipse(center, inner_radii, end_angle);
+        try path.lineTo(inner_end);
+        try appendAdaptiveArcCurve(path, center, inner_radii, end_angle, start_angle, kPathArcSplitMaxDepth);
+    }
+    try path.close();
+}
+
 const kPathPaintInfoWidth: u32 = PATH_PAINT_INFO_WIDTH;
 const kPathPaintTexelsPerRecord: u32 = PATH_PAINT_TEXELS_PER_RECORD;
 const kPathPaintTagSolid: f32 = PATH_PAINT_TAG_SOLID;
@@ -2584,6 +2623,294 @@ pub const PathPictureBuilder = struct {
         });
     }
 
+    fn shouldTileRoundedRect(size: Vec2) bool {
+        return @max(size.x, size.y) > kPathLargePrimitiveTileExtent;
+    }
+
+    fn addFilledRectTiles(
+        self: *PathPictureBuilder,
+        rect: VectorRect,
+        fill: VectorFillStyle,
+        transform: VectorTransform2D,
+    ) !void {
+        const width = @max(rect.w, 0.0);
+        const height = @max(rect.h, 0.0);
+        if (width <= 1e-4 or height <= 1e-4) return;
+
+        var y = rect.y;
+        var remaining_h = height;
+        while (remaining_h > 1e-4) {
+            const tile_h = @min(remaining_h, kPathLargePrimitiveTileExtent);
+            var x = rect.x;
+            var remaining_w = width;
+            while (remaining_w > 1e-4) {
+                const tile_w = @min(remaining_w, kPathLargePrimitiveTileExtent);
+                try self.addFilledRect(.{
+                    .x = x,
+                    .y = y,
+                    .w = tile_w,
+                    .h = tile_h,
+                }, fill, transform);
+                x += tile_w;
+                remaining_w -= tile_w;
+            }
+            y += tile_h;
+            remaining_h -= tile_h;
+        }
+    }
+
+    fn addFilledCircularSector(
+        self: *PathPictureBuilder,
+        center: Vec2,
+        outer_radius: f32,
+        inner_radius: f32,
+        start_angle: f32,
+        end_angle: f32,
+        fill: VectorFillStyle,
+        transform: VectorTransform2D,
+    ) !void {
+        if (outer_radius <= 1e-4) return;
+        var path = VectorPath.init(self.allocator);
+        defer path.deinit();
+        try buildCircularSectorPath(&path, center, outer_radius, inner_radius, start_angle, end_angle);
+        try self.addFilledPath(&path, fill, transform);
+    }
+
+    fn addSimpleFilledRoundedRect(
+        self: *PathPictureBuilder,
+        rect: VectorRect,
+        fill: VectorFillStyle,
+        corner_radius: f32,
+        transform: VectorTransform2D,
+    ) !void {
+        var path = VectorPath.init(self.allocator);
+        defer path.deinit();
+        try path.addRoundedRect(rect, corner_radius);
+        try self.addPath(&path, fill, null, transform);
+    }
+
+    fn addLargeFilledRoundedRect(
+        self: *PathPictureBuilder,
+        rect: VectorRect,
+        fill: VectorFillStyle,
+        corner_radius: f32,
+        transform: VectorTransform2D,
+    ) !void {
+        const size = Vec2.new(@max(rect.w, 0.0), @max(rect.h, 0.0));
+        if (size.x <= 1e-4 or size.y <= 1e-4) return;
+
+        const max_radius = @min(size.x, size.y) * 0.5;
+        const radius = std.math.clamp(corner_radius, 0.0, max_radius);
+        if (radius <= 1.0 / 65536.0) return self.addFilledRect(rect, fill, transform);
+
+        const inner_w = size.x - radius * 2.0;
+        const inner_h = size.y - radius * 2.0;
+
+        if (inner_w > 1e-4 and inner_h > 1e-4) {
+            try self.addFilledRectTiles(.{
+                .x = rect.x + radius,
+                .y = rect.y + radius,
+                .w = inner_w,
+                .h = inner_h,
+            }, fill, transform);
+        }
+        if (inner_w > 1e-4) {
+            try self.addFilledRectTiles(.{
+                .x = rect.x + radius,
+                .y = rect.y,
+                .w = inner_w,
+                .h = radius,
+            }, fill, transform);
+            try self.addFilledRectTiles(.{
+                .x = rect.x + radius,
+                .y = rect.y + size.y - radius,
+                .w = inner_w,
+                .h = radius,
+            }, fill, transform);
+        }
+        if (inner_h > 1e-4) {
+            try self.addFilledRectTiles(.{
+                .x = rect.x,
+                .y = rect.y + radius,
+                .w = radius,
+                .h = inner_h,
+            }, fill, transform);
+            try self.addFilledRectTiles(.{
+                .x = rect.x + size.x - radius,
+                .y = rect.y + radius,
+                .w = radius,
+                .h = inner_h,
+            }, fill, transform);
+        }
+
+        const centers = [4]struct { center: Vec2, start_angle: f32, end_angle: f32 }{
+            .{ .center = .{ .x = rect.x + radius, .y = rect.y + radius }, .start_angle = std.math.pi, .end_angle = std.math.pi * 1.5 },
+            .{ .center = .{ .x = rect.x + size.x - radius, .y = rect.y + radius }, .start_angle = std.math.pi * 1.5, .end_angle = std.math.pi * 2.0 },
+            .{ .center = .{ .x = rect.x + size.x - radius, .y = rect.y + size.y - radius }, .start_angle = 0.0, .end_angle = std.math.pi * 0.5 },
+            .{ .center = .{ .x = rect.x + radius, .y = rect.y + size.y - radius }, .start_angle = std.math.pi * 0.5, .end_angle = std.math.pi },
+        };
+        for (centers) |corner| {
+            try self.addFilledCircularSector(
+                corner.center,
+                radius,
+                0.0,
+                corner.start_angle,
+                corner.end_angle,
+                fill,
+                transform,
+            );
+        }
+    }
+
+    fn addLargeInsideStrokeRoundedRect(
+        self: *PathPictureBuilder,
+        rect: VectorRect,
+        fill: ?VectorFillStyle,
+        stroke: PathStrokeStyle,
+        corner_radius: f32,
+        transform: VectorTransform2D,
+    ) !void {
+        const size = Vec2.new(@max(rect.w, 0.0), @max(rect.h, 0.0));
+        if (size.x <= 1e-4 or size.y <= 1e-4) return;
+
+        const max_radius = @min(size.x, size.y) * 0.5;
+        const radius = std.math.clamp(corner_radius, 0.0, max_radius);
+        const inset = std.math.clamp(stroke.width, 0.0, max_radius);
+        if (radius <= 1.0 / 65536.0) {
+            if (fill) |style| {
+                const inner_w = @max(size.x - inset * 2.0, 0.0);
+                const inner_h = @max(size.y - inset * 2.0, 0.0);
+                if (inner_w > 1e-4 and inner_h > 1e-4) {
+                    try self.addFilledRectTiles(.{
+                        .x = rect.x + inset,
+                        .y = rect.y + inset,
+                        .w = inner_w,
+                        .h = inner_h,
+                    }, style, transform);
+                }
+            }
+            const stroke_fill = fillStyleForStroke(stroke);
+            if (inset > 1e-4) {
+                try self.addFilledRectTiles(.{ .x = rect.x, .y = rect.y, .w = size.x, .h = inset }, stroke_fill, transform);
+                try self.addFilledRectTiles(.{ .x = rect.x, .y = rect.y + size.y - inset, .w = size.x, .h = inset }, stroke_fill, transform);
+                const middle_h = size.y - inset * 2.0;
+                if (middle_h > 1e-4) {
+                    try self.addFilledRectTiles(.{ .x = rect.x, .y = rect.y + inset, .w = inset, .h = middle_h }, stroke_fill, transform);
+                    try self.addFilledRectTiles(.{ .x = rect.x + size.x - inset, .y = rect.y + inset, .w = inset, .h = middle_h }, stroke_fill, transform);
+                }
+            }
+            return;
+        }
+
+        if (fill) |style| {
+            const inner_rect = VectorRect{
+                .x = rect.x + inset,
+                .y = rect.y + inset,
+                .w = size.x - inset * 2.0,
+                .h = size.y - inset * 2.0,
+            };
+            if (inner_rect.w > 1e-4 and inner_rect.h > 1e-4) {
+                const inner_radius = std.math.clamp(radius - inset, 0.0, @min(inner_rect.w, inner_rect.h) * 0.5);
+                if (shouldTileRoundedRect(Vec2.new(inner_rect.w, inner_rect.h))) {
+                    try self.addLargeFilledRoundedRect(inner_rect, style, inner_radius, transform);
+                } else {
+                    try self.addSimpleFilledRoundedRect(inner_rect, style, inner_radius, transform);
+                }
+            }
+        }
+
+        if (inset <= 1e-4) return;
+
+        const stroke_fill = fillStyleForStroke(stroke);
+        const straight_w = size.x - radius * 2.0;
+        const straight_h = size.y - radius * 2.0;
+        if (straight_w > 1e-4) {
+            try self.addFilledRectTiles(.{
+                .x = rect.x + radius,
+                .y = rect.y,
+                .w = straight_w,
+                .h = inset,
+            }, stroke_fill, transform);
+            try self.addFilledRectTiles(.{
+                .x = rect.x + radius,
+                .y = rect.y + size.y - inset,
+                .w = straight_w,
+                .h = inset,
+            }, stroke_fill, transform);
+        }
+        if (straight_h > 1e-4) {
+            try self.addFilledRectTiles(.{
+                .x = rect.x,
+                .y = rect.y + radius,
+                .w = inset,
+                .h = straight_h,
+            }, stroke_fill, transform);
+            try self.addFilledRectTiles(.{
+                .x = rect.x + size.x - inset,
+                .y = rect.y + radius,
+                .w = inset,
+                .h = straight_h,
+            }, stroke_fill, transform);
+        }
+
+        const inner_radius = @max(radius - inset, 0.0);
+        const centers = [4]struct { center: Vec2, start_angle: f32, end_angle: f32 }{
+            .{ .center = .{ .x = rect.x + radius, .y = rect.y + radius }, .start_angle = std.math.pi, .end_angle = std.math.pi * 1.5 },
+            .{ .center = .{ .x = rect.x + size.x - radius, .y = rect.y + radius }, .start_angle = std.math.pi * 1.5, .end_angle = std.math.pi * 2.0 },
+            .{ .center = .{ .x = rect.x + size.x - radius, .y = rect.y + size.y - radius }, .start_angle = 0.0, .end_angle = std.math.pi * 0.5 },
+            .{ .center = .{ .x = rect.x + radius, .y = rect.y + size.y - radius }, .start_angle = std.math.pi * 0.5, .end_angle = std.math.pi },
+        };
+        for (centers) |corner| {
+            try self.addFilledCircularSector(
+                corner.center,
+                radius,
+                inner_radius,
+                corner.start_angle,
+                corner.end_angle,
+                stroke_fill,
+                transform,
+            );
+        }
+    }
+
+    fn addLargeCenterStrokeRoundedRect(
+        self: *PathPictureBuilder,
+        rect: VectorRect,
+        fill: ?VectorFillStyle,
+        stroke: PathStrokeStyle,
+        corner_radius: f32,
+        transform: VectorTransform2D,
+    ) !void {
+        const size = Vec2.new(@max(rect.w, 0.0), @max(rect.h, 0.0));
+        if (size.x <= 1e-4 or size.y <= 1e-4) return;
+
+        const max_radius = @min(size.x, size.y) * 0.5;
+        const radius = std.math.clamp(corner_radius, 0.0, max_radius);
+        const half_width = @max(stroke.width * 0.5, 0.0);
+
+        if (fill) |style| {
+            try self.addLargeFilledRoundedRect(rect, style, radius, transform);
+        }
+
+        if (stroke.width <= 1e-4) return;
+
+        var stroke_only = stroke;
+        stroke_only.placement = .inside;
+        const expanded = VectorRect{
+            .x = rect.x - half_width,
+            .y = rect.y - half_width,
+            .w = size.x + stroke.width,
+            .h = size.y + stroke.width,
+        };
+        try self.addLargeInsideStrokeRoundedRect(
+            expanded,
+            null,
+            stroke_only,
+            radius + half_width,
+            transform,
+        );
+    }
+
     fn addExplicitInsideStrokeRecord(
         self: *PathPictureBuilder,
         fill_path: *const VectorPath,
@@ -2756,8 +3083,19 @@ pub const PathPictureBuilder = struct {
         corner_radius: f32,
         transform: VectorTransform2D,
     ) !void {
+        const size = Vec2.new(@max(rect.w, 0.0), @max(rect.h, 0.0));
+        if (shouldTileRoundedRect(size)) {
+            if (stroke) |stroke_style| {
+                if (stroke_style.placement == .inside) {
+                    return self.addLargeInsideStrokeRoundedRect(rect, fill, stroke_style, corner_radius, transform);
+                }
+                return self.addLargeCenterStrokeRoundedRect(rect, fill, stroke_style, corner_radius, transform);
+            } else if (fill) |style| {
+                return self.addLargeFilledRoundedRect(rect, style, corner_radius, transform);
+            }
+        }
+
         if (stroke) |stroke_style| {
-            const size = Vec2.new(@max(rect.w, 0.0), @max(rect.h, 0.0));
             const max_radius = @min(size.x, size.y) * 0.5;
             const radius = std.math.clamp(corner_radius, 0.0, max_radius);
             const inset = std.math.clamp(stroke_style.width, 0.0, max_radius);
@@ -2898,7 +3236,7 @@ pub const PathPictureBuilder = struct {
         defer allocator.free(glyph_curves);
         var glyph_cursor: usize = 0;
         for (self.paths.items) |path| {
-            const origin = path.bbox.min;
+            const origin = bboxCenter(path.bbox);
             const delta = Vec2.new(-origin.x, -origin.y);
             for (path.layers[0..path.layer_count]) |layer| {
                 glyph_curves[glyph_cursor] = .{
@@ -2961,7 +3299,7 @@ pub const PathPictureBuilder = struct {
             }
 
             var first_glyph_id: u16 = 0;
-            const origin = path.bbox.min;
+            const origin = bboxCenter(path.bbox);
             const delta = Vec2.new(-origin.x, -origin.y);
             for (path.layers[0..path.layer_count], 0..) |layer, layer_index| {
                 const glyph_id: u16 = @intCast(glyph_cursor + 1);
@@ -3436,12 +3774,12 @@ test "open stroked path expands for round caps" {
     var picture = try builder.freeze(std.testing.allocator);
     defer picture.deinit();
     const stroke_info = picture.atlas.getGlyph(picture.instances[0].glyph_id) orelse return error.TestExpectedEqual;
-    try std.testing.expectApproxEqAbs(@as(f32, 0), stroke_info.bbox.min.x, 0.05);
-    try std.testing.expectApproxEqAbs(@as(f32, 18), stroke_info.bbox.max.x, 0.05);
-    try std.testing.expectApproxEqAbs(@as(f32, 0), stroke_info.bbox.min.y, 0.05);
-    try std.testing.expectApproxEqAbs(@as(f32, 6), stroke_info.bbox.max.y, 0.05);
-    try std.testing.expectApproxEqAbs(@as(f32, -3), picture.instances[0].transform.tx, 0.05);
-    try std.testing.expectApproxEqAbs(@as(f32, -3), picture.instances[0].transform.ty, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, -9), stroke_info.bbox.min.x, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 9), stroke_info.bbox.max.x, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, -3), stroke_info.bbox.min.y, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 3), stroke_info.bbox.max.y, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 6), picture.instances[0].transform.tx, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), picture.instances[0].transform.ty, 0.05);
 }
 
 test "square-capped stroked path extends beyond endpoints" {
@@ -3484,6 +3822,50 @@ test "elliptical stroke outline stays curved without degenerate joins" {
     try std.testing.expect(curved_count >= 8);
 }
 
+test "quadratic stroked eye stalk contains its centerline midpoint" {
+    const cases = [_]struct {
+        start: Vec2,
+        control: Vec2,
+        end: Vec2,
+    }{
+        .{
+            .start = .{ .x = 308.0, .y = 100.0 },
+            .control = .{ .x = 316.0, .y = 76.0 },
+            .end = .{ .x = 334.0, .y = 58.0 },
+        },
+        .{
+            .start = .{ .x = 294.0, .y = 102.0 },
+            .control = .{ .x = 298.0, .y = 80.0 },
+            .end = .{ .x = 306.0, .y = 64.0 },
+        },
+    };
+
+    for (cases) |case| {
+        var path = VectorPath.init(std.testing.allocator);
+        defer path.deinit();
+        try path.moveTo(case.start);
+        try path.quadTo(case.control, case.end);
+
+        const stroke_geom = (try path.cloneStrokedCurves(std.testing.allocator, .{
+            .width = 4.0,
+            .cap = .round,
+            .join = .round,
+        })) orelse return error.TestExpectedEqual;
+        defer std.testing.allocator.free(stroke_geom.curves);
+
+        const quads = try std.testing.allocator.alloc(bezier.QuadBezier, stroke_geom.curves.len);
+        defer std.testing.allocator.free(quads);
+        for (stroke_geom.curves, 0..) |curve, i| quads[i] = curve.asQuad();
+
+        const midpoint = (bezier.QuadBezier{
+            .p0 = case.start,
+            .p1 = case.control,
+            .p2 = case.end,
+        }).evaluate(0.5);
+        try std.testing.expect(roots.isInside(quads, midpoint));
+    }
+}
+
 test "rounded rect corners are approximated with quadratic segments" {
     var path = VectorPath.init(std.testing.allocator);
     defer path.deinit();
@@ -3517,21 +3899,21 @@ test "inside-aligned generic path stroke groups fill and stroke on one instance"
     const fill_info = picture.atlas.getGlyph(picture.instances[0].glyph_id) orelse return error.TestExpectedEqual;
     const stroke_info = picture.atlas.getGlyph(picture.instances[0].glyph_id + 1) orelse return error.TestExpectedEqual;
 
-    try std.testing.expectApproxEqAbs(@as(f32, 0), fill_info.bbox.min.x, 0.05);
-    try std.testing.expectApproxEqAbs(@as(f32, 0), fill_info.bbox.min.y, 0.05);
-    try std.testing.expectApproxEqAbs(@as(f32, 40), fill_info.bbox.max.x, 0.05);
-    try std.testing.expectApproxEqAbs(@as(f32, 18), fill_info.bbox.max.y, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, -20), fill_info.bbox.min.x, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, -9), fill_info.bbox.min.y, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 20), fill_info.bbox.max.x, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 9), fill_info.bbox.max.y, 0.05);
     try std.testing.expect(stroke_info.bbox.min.x < fill_info.bbox.min.x);
     try std.testing.expect(stroke_info.bbox.max.x > fill_info.bbox.max.x);
     try std.testing.expect(stroke_info.bbox.min.y < fill_info.bbox.min.y);
     try std.testing.expect(stroke_info.bbox.max.y > fill_info.bbox.max.y);
 
-    try std.testing.expectApproxEqAbs(@as(f32, 0), picture.instances[0].bbox.min.x, 0.05);
-    try std.testing.expectApproxEqAbs(@as(f32, 0), picture.instances[0].bbox.min.y, 0.05);
-    try std.testing.expectApproxEqAbs(@as(f32, 40), picture.instances[0].bbox.max.x, 0.05);
-    try std.testing.expectApproxEqAbs(@as(f32, 18), picture.instances[0].bbox.max.y, 0.05);
-    try std.testing.expectApproxEqAbs(@as(f32, 10), picture.instances[0].transform.tx, 0.05);
-    try std.testing.expectApproxEqAbs(@as(f32, 20), picture.instances[0].transform.ty, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, -20), picture.instances[0].bbox.min.x, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, -9), picture.instances[0].bbox.min.y, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 20), picture.instances[0].bbox.max.x, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 9), picture.instances[0].bbox.max.y, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 30), picture.instances[0].transform.tx, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 29), picture.instances[0].transform.ty, 0.05);
 
     const lid = picture.atlas.layer_info_data orelse return error.TestExpectedEqual;
     try std.testing.expectApproxEqAbs(kPathPaintTagCompositeGroup, lid[3], 0.001);
@@ -3557,16 +3939,16 @@ test "inside-aligned rounded rect helper emits explicit ring geometry" {
     const fill_info = picture.atlas.getGlyph(picture.instances[0].glyph_id) orelse return error.TestExpectedEqual;
     const stroke_info = picture.atlas.getGlyph(picture.instances[0].glyph_id + 1) orelse return error.TestExpectedEqual;
 
-    try std.testing.expectApproxEqAbs(@as(f32, 0), fill_info.bbox.min.x, 0.05);
-    try std.testing.expectApproxEqAbs(@as(f32, 0), fill_info.bbox.min.y, 0.05);
-    try std.testing.expectApproxEqAbs(@as(f32, 40), fill_info.bbox.max.x, 0.05);
-    try std.testing.expectApproxEqAbs(@as(f32, 18), fill_info.bbox.max.y, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, -20), fill_info.bbox.min.x, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, -9), fill_info.bbox.min.y, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 20), fill_info.bbox.max.x, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 9), fill_info.bbox.max.y, 0.05);
     try std.testing.expectApproxEqAbs(fill_info.bbox.min.x, stroke_info.bbox.min.x, 0.05);
     try std.testing.expectApproxEqAbs(fill_info.bbox.min.y, stroke_info.bbox.min.y, 0.05);
     try std.testing.expectApproxEqAbs(fill_info.bbox.max.x, stroke_info.bbox.max.x, 0.05);
     try std.testing.expectApproxEqAbs(fill_info.bbox.max.y, stroke_info.bbox.max.y, 0.05);
-    try std.testing.expectApproxEqAbs(@as(f32, 10), picture.instances[0].transform.tx, 0.05);
-    try std.testing.expectApproxEqAbs(@as(f32, 20), picture.instances[0].transform.ty, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 30), picture.instances[0].transform.tx, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 29), picture.instances[0].transform.ty, 0.05);
 
     const lid = picture.atlas.layer_info_data orelse return error.TestExpectedEqual;
     try std.testing.expectApproxEqAbs(kPathPaintTagCompositeGroup, lid[3], 0.001);
@@ -3599,21 +3981,71 @@ test "path picture freeze rebases large coordinates before curve packing" {
     defer transformed_picture.deinit();
 
     const absolute_page = absolute_picture.atlas.page(0);
-    try std.testing.expectEqual(curve_tex.f32ToF16(9.0), absolute_page.curve_data[0]);
-    try std.testing.expectEqual(curve_tex.f32ToF16(0.0), absolute_page.curve_data[1]);
-    try std.testing.expectEqual(curve_tex.f32ToF16(20.0), absolute_page.curve_data[2]);
-    try std.testing.expectEqual(curve_tex.f32ToF16(0.0), absolute_page.curve_data[3]);
-    try std.testing.expectEqual(curve_tex.f32ToF16(31.0), absolute_page.curve_data[4]);
-    try std.testing.expectEqual(curve_tex.f32ToF16(0.0), absolute_page.curve_data[5]);
+    try std.testing.expectEqual(curve_tex.f32ToF16(-11.0), absolute_page.curve_data[0]);
+    try std.testing.expectEqual(curve_tex.f32ToF16(-9.0), absolute_page.curve_data[1]);
+    try std.testing.expectEqual(curve_tex.f32ToF16(0.0), absolute_page.curve_data[2]);
+    try std.testing.expectEqual(curve_tex.f32ToF16(-9.0), absolute_page.curve_data[3]);
+    try std.testing.expectEqual(curve_tex.f32ToF16(11.0), absolute_page.curve_data[4]);
+    try std.testing.expectEqual(curve_tex.f32ToF16(-9.0), absolute_page.curve_data[5]);
 
     try std.testing.expectApproxEqAbs(transformed_picture.instances[0].bbox.min.x, absolute_picture.instances[0].bbox.min.x, 0.001);
     try std.testing.expectApproxEqAbs(transformed_picture.instances[0].bbox.min.y, absolute_picture.instances[0].bbox.min.y, 0.001);
     try std.testing.expectApproxEqAbs(transformed_picture.instances[0].bbox.max.x, absolute_picture.instances[0].bbox.max.x, 0.001);
     try std.testing.expectApproxEqAbs(transformed_picture.instances[0].bbox.max.y, absolute_picture.instances[0].bbox.max.y, 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 640), absolute_picture.instances[0].transform.tx, 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 960), absolute_picture.instances[0].transform.ty, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 660), absolute_picture.instances[0].transform.tx, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 969), absolute_picture.instances[0].transform.ty, 0.001);
     try std.testing.expectApproxEqAbs(transformed_picture.instances[0].transform.tx, absolute_picture.instances[0].transform.tx, 0.001);
     try std.testing.expectApproxEqAbs(transformed_picture.instances[0].transform.ty, absolute_picture.instances[0].transform.ty, 0.001);
+}
+
+test "large rounded rect helper keeps per-shape local coordinates bounded" {
+    var builder = PathPictureBuilder.init(std.testing.allocator);
+    defer builder.deinit();
+    try builder.addRoundedRect(
+        .{ .x = 0, .y = 0, .w = 1600, .h = 48 },
+        .{ .color = .{ 1, 1, 1, 1 } },
+        .{ .color = .{ 0, 0, 0, 1 }, .width = 2.0, .join = .round, .placement = .inside },
+        24.0,
+        .identity,
+    );
+
+    var picture = try builder.freeze(std.testing.allocator);
+    defer picture.deinit();
+    try std.testing.expect(picture.shapeCount() > 4);
+
+    for (picture.instances) |instance| {
+        const info = picture.atlas.getGlyph(instance.glyph_id) orelse return error.TestExpectedEqual;
+        const max_abs = @max(
+            @max(@abs(info.bbox.min.x), @abs(info.bbox.max.x)),
+            @max(@abs(info.bbox.min.y), @abs(info.bbox.max.y)),
+        );
+        try std.testing.expect(max_abs <= kPathLargePrimitiveTileExtent * 0.5 + 0.1);
+    }
+}
+
+test "large rounded rect center stroke keeps per-shape local coordinates bounded" {
+    var builder = PathPictureBuilder.init(std.testing.allocator);
+    defer builder.deinit();
+    try builder.addRoundedRect(
+        .{ .x = 0, .y = 0, .w = 1600, .h = 48 },
+        .{ .color = .{ 1, 1, 1, 1 } },
+        .{ .color = .{ 0, 0, 0, 1 }, .width = 6.0, .join = .round },
+        24.0,
+        .identity,
+    );
+
+    var picture = try builder.freeze(std.testing.allocator);
+    defer picture.deinit();
+    try std.testing.expect(picture.shapeCount() > 5);
+
+    for (picture.instances) |instance| {
+        const info = picture.atlas.getGlyph(instance.glyph_id) orelse return error.TestExpectedEqual;
+        const max_abs = @max(
+            @max(@abs(info.bbox.min.x), @abs(info.bbox.max.x)),
+            @max(@abs(info.bbox.min.y), @abs(info.bbox.max.y)),
+        );
+        try std.testing.expect(max_abs <= kPathLargePrimitiveTileExtent * 0.5 + 6.1);
+    }
 }
 
 test "path picture gradient paint records encode linear and radial paints" {
@@ -3647,13 +4079,13 @@ test "path picture gradient paint records encode linear and radial paints" {
     const lid = picture.atlas.layer_info_data orelse return error.TestExpectedEqual;
     try std.testing.expectApproxEqAbs(kPathPaintTagCompositeGroup, lid[3], 0.001);
     try std.testing.expectApproxEqAbs(kPathPaintTagLinearGradient, lid[7], 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 21), lid[14], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 10), lid[14], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, @floatFromInt(@intFromEnum(PathPaintExtend.reflect))), lid[24], 0.001);
 
     const radial_base = @as(usize, (1 + kPathPaintTexelsPerRecord)) * 4;
     try std.testing.expectApproxEqAbs(kPathPaintTagRadialGradient, lid[radial_base + 3], 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 11), lid[radial_base + 8], 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 6), lid[radial_base + 9], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), lid[radial_base + 8], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), lid[radial_base + 9], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 12), lid[radial_base + 10], 0.001);
 }
 
@@ -3695,7 +4127,7 @@ test "path picture image paint records keep image metadata" {
     const lid = picture.atlas.layer_info_data orelse return error.TestExpectedEqual;
     try std.testing.expectApproxEqAbs(PATH_PAINT_TAG_IMAGE, lid[3], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 0.5), lid[8], 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 0.25), lid[10], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 3.25), lid[10], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, @floatFromInt(@intFromEnum(ImageFilter.nearest))), lid[15], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 0.5), lid[16], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, @floatFromInt(@intFromEnum(PathPaintExtend.repeat))), lid[22], 0.001);
