@@ -4,8 +4,6 @@
 const std = @import("std");
 const snail = @import("snail.zig");
 const ttf = @import("font/ttf.zig");
-const pipeline = @import("render/pipeline.zig");
-const sprite_pipeline = @import("render/sprite_pipeline.zig");
 
 // ── Allocator bridge ──
 
@@ -534,90 +532,86 @@ export fn snail_image_height(image: *const ImageImpl) u32 {
 
 // ── Renderer ──
 
+var c_renderer: ?snail.Renderer = null;
+
+fn getRenderer() *snail.Renderer {
+    return &(c_renderer orelse @panic("snail_renderer_init not called"));
+}
+
 export fn snail_renderer_init() c_int {
-    pipeline.init() catch return SNAIL_ERR_GL_FAILED;
-    sprite_pipeline.init() catch return SNAIL_ERR_GL_FAILED;
+    c_renderer = snail.Renderer.init() catch return SNAIL_ERR_GL_FAILED;
     return SNAIL_OK;
 }
 
 export fn snail_renderer_deinit() void {
-    sprite_pipeline.deinit();
-    pipeline.deinit();
+    if (c_renderer) |*r| r.deinit();
+    c_renderer = null;
 }
 
 export fn snail_renderer_upload_atlas(atlas: *AtlasImpl) void {
-    const arr = [1]*const snail.Atlas{&atlas.inner};
-    var views = [1]snail.AtlasHandle{undefined};
-    pipeline.buildTextureArrays(&arr, &views);
+    _ = getRenderer().uploadAtlas(&atlas.inner);
 }
 
 export fn snail_renderer_upload_image(image: *ImageImpl) void {
-    const arr = [1]*const snail.Image{&image.inner};
-    var views = [1]snail.ImageHandle{undefined};
-    pipeline.buildImageArray(&arr, &views);
+    _ = getRenderer().uploadImage(&image.inner);
 }
 
 export fn snail_renderer_upload_path_picture(picture: *PathPictureImpl) void {
-    const arr = [1]*const snail.Atlas{&picture.inner.atlas};
-    var views = [1]snail.AtlasHandle{undefined};
-    pipeline.buildTextureArrays(&arr, &views);
+    _ = getRenderer().uploadPathPicture(&picture.inner);
 }
 
 export fn snail_renderer_begin_frame() void {
-    pipeline.resetFrameState();
-    sprite_pipeline.resetFrameState();
+    getRenderer().beginFrame();
 }
 
 export fn snail_renderer_set_subpixel_order(order: c_int) void {
-    pipeline.subpixel_order = @enumFromInt(order);
+    getRenderer().setSubpixelOrder(@enumFromInt(order));
 }
 
 export fn snail_renderer_set_subpixel_mode(mode: c_int) void {
-    pipeline.subpixel_mode = @enumFromInt(mode);
+    getRenderer().setSubpixelMode(@enumFromInt(mode));
 }
 
 export fn snail_renderer_set_subpixel_backdrop(rgba_or_null: ?[*]const f32) void {
-    pipeline.subpixel_backdrop = if (rgba_or_null) |rgba| .{ rgba[0], rgba[1], rgba[2], rgba[3] } else null;
+    getRenderer().setSubpixelBackdrop(if (rgba_or_null) |rgba| .{ rgba[0], rgba[1], rgba[2], rgba[3] } else null);
 }
 
 export fn snail_renderer_set_subpixel(enabled: bool) void {
-    snail_renderer_set_subpixel_order(if (enabled) @intFromEnum(snail.SubpixelOrder.rgb) else @intFromEnum(snail.SubpixelOrder.none));
+    getRenderer().setSubpixel(enabled);
 }
 
 export fn snail_renderer_set_fill_rule(rule: c_int) void {
-    pipeline.fill_rule = @enumFromInt(rule);
+    getRenderer().setFillRule(@enumFromInt(rule));
 }
 
 export fn snail_renderer_subpixel_order() c_int {
-    return @intFromEnum(pipeline.subpixel_order);
+    return @intFromEnum(getRenderer().subpixelOrder());
 }
 
 export fn snail_renderer_subpixel_mode() c_int {
-    return @intFromEnum(pipeline.subpixel_mode);
+    return @intFromEnum(getRenderer().subpixelMode());
 }
 
 export fn snail_renderer_fill_rule() c_int {
-    return @intFromEnum(pipeline.fill_rule);
+    return @intFromEnum(getRenderer().fillRule());
 }
 
 export fn snail_renderer_backend_name() [*:0]const u8 {
-    return @ptrCast(pipeline.getBackendName().ptr);
+    return @ptrCast(getRenderer().backendName().ptr);
 }
 
 export fn snail_renderer_draw_text(vertices: [*]const f32, num_floats: usize, mvp: [*]const f32, viewport_w: f32, viewport_h: f32) void {
     const mat = snail.Mat4{ .data = mvp[0..16].* };
-    pipeline.drawText(vertices[0..num_floats], mat, viewport_w, viewport_h);
+    getRenderer().drawText(vertices[0..num_floats], mat, viewport_w, viewport_h);
 }
 
 export fn snail_renderer_draw_paths(vertices: [*]const f32, num_floats: usize, mvp: [*]const f32, viewport_w: f32, viewport_h: f32) void {
     const mat = snail.Mat4{ .data = mvp[0..16].* };
-    pipeline.drawTextGrayscale(vertices[0..num_floats], mat, viewport_w, viewport_h);
+    getRenderer().drawPaths(vertices[0..num_floats], mat, viewport_w, viewport_h);
 }
 
 export fn snail_renderer_draw_sprites(vertices: [*]const f32, num_floats: usize, viewport_w: f32, viewport_h: f32) void {
-    const mvp = snail.Mat4.ortho(0, viewport_w, viewport_h, 0, -1, 1);
-    sprite_pipeline.drawSprites(vertices[0..num_floats], mvp);
-    pipeline.resetFrameState();
+    getRenderer().drawSprites(vertices[0..num_floats], viewport_w, viewport_h);
 }
 
 // ── TextBatch ──

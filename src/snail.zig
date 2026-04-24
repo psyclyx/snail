@@ -3598,12 +3598,20 @@ pub const VulkanContext = vulkan_pipeline.VulkanContext;
 /// For Vulkan: requires a VulkanContext from the caller.
 pub const Renderer = struct {
     backend: RenderBackend = .gl,
+    gl_text: ?*pipeline.GlTextState = null,
+    gl_sprite: ?*sprite_pipeline.GlSpriteState = null,
 
     /// Initialize with the current OpenGL context.
     pub fn init() !Renderer {
-        try pipeline.init();
-        try sprite_pipeline.init();
-        return .{ .backend = .gl };
+        const text = try std.heap.smp_allocator.create(pipeline.GlTextState);
+        text.* = .{};
+        errdefer std.heap.smp_allocator.destroy(text);
+        try text.init();
+        const sprite = try std.heap.smp_allocator.create(sprite_pipeline.GlSpriteState);
+        sprite.* = .{};
+        errdefer std.heap.smp_allocator.destroy(sprite);
+        try sprite.init();
+        return .{ .backend = .gl, .gl_text = text, .gl_sprite = sprite };
     }
 
     /// Initialize with a Vulkan context (device, queue, render pass).
@@ -3615,21 +3623,26 @@ pub const Renderer = struct {
     pub fn deinit(self: *Renderer) void {
         switch (self.backend) {
             .gl => {
-                sprite_pipeline.deinit();
-                pipeline.deinit();
+                if (self.gl_sprite) |s| {
+                    s.deinit();
+                    std.heap.smp_allocator.destroy(s);
+                }
+                if (self.gl_text) |t| {
+                    t.deinit();
+                    std.heap.smp_allocator.destroy(t);
+                }
+                self.gl_text = null;
+                self.gl_sprite = null;
             },
             .vulkan => vulkan_pipeline.deinit(),
         }
     }
 
-    /// Upload one or more immutable atlas snapshots as a texture array and
-    /// return lightweight views that encode the texture-array base layer for
-    /// each atlas. Existing glyph handles remain stable across extend because
-    /// page-local indices do not change.
+    /// Upload one or more immutable atlas snapshots as a texture array.
     pub fn uploadAtlases(self: *Renderer, atlases: []const *const Atlas, out_views: []AtlasHandle) void {
         std.debug.assert(atlases.len == out_views.len);
         switch (self.backend) {
-            .gl => pipeline.buildTextureArrays(atlases, out_views),
+            .gl => self.gl_text.?.buildTextureArrays(atlases, out_views),
             .vulkan => vulkan_pipeline.buildTextureArrays(atlases, out_views),
         }
     }
@@ -3638,7 +3651,7 @@ pub const Renderer = struct {
     pub fn uploadImages(self: *Renderer, images: []const *const Image, out_views: []ImageHandle) void {
         std.debug.assert(images.len == out_views.len);
         switch (self.backend) {
-            .gl => pipeline.buildImageArray(images, out_views),
+            .gl => self.gl_text.?.buildImageArray(images, out_views),
             .vulkan => vulkan_pipeline.buildImageArray(images, out_views),
         }
     }
@@ -3669,8 +3682,8 @@ pub const Renderer = struct {
     pub fn beginFrame(self: *Renderer) void {
         switch (self.backend) {
             .gl => {
-                pipeline.resetFrameState();
-                sprite_pipeline.resetFrameState();
+                self.gl_text.?.resetFrameState();
+                self.gl_sprite.?.resetFrameState();
             },
             .vulkan => {},
         }
@@ -3679,15 +3692,15 @@ pub const Renderer = struct {
     /// Draw a batch of text glyph vertices.
     pub fn drawText(self: *Renderer, vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
         switch (self.backend) {
-            .gl => pipeline.drawText(vertices, mvp, viewport_w, viewport_h),
+            .gl => self.gl_text.?.drawText(vertices, mvp, viewport_w, viewport_h),
             .vulkan => vulkan_pipeline.drawText(vertices, mvp, viewport_w, viewport_h),
         }
     }
 
-    /// Draw analytic path/glyph vertices with grayscale AA, ignoring LCD subpixel mode.
+    /// Draw analytic path/glyph vertices with grayscale AA.
     pub fn drawPaths(self: *Renderer, vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
         switch (self.backend) {
-            .gl => pipeline.drawTextGrayscale(vertices, mvp, viewport_w, viewport_h),
+            .gl => self.gl_text.?.drawTextGrayscale(vertices, mvp, viewport_w, viewport_h),
             .vulkan => vulkan_pipeline.drawTextGrayscale(vertices, mvp, viewport_w, viewport_h),
         }
     }
@@ -3701,8 +3714,8 @@ pub const Renderer = struct {
     pub fn drawSpritesTransformed(self: *Renderer, vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
         switch (self.backend) {
             .gl => {
-                sprite_pipeline.drawSprites(vertices, mvp);
-                pipeline.resetFrameState();
+                self.gl_sprite.?.drawSprites(vertices, mvp, self.gl_text.?.image_array);
+                self.gl_text.?.resetFrameState();
             },
             .vulkan => vulkan_pipeline.drawSprites(vertices, mvp, viewport_w, viewport_h),
         }
@@ -3725,14 +3738,14 @@ pub const Renderer = struct {
     /// Set LCD subpixel rendering order. Use .none to disable subpixel rendering.
     pub fn setSubpixelOrder(self: *Renderer, order: SubpixelOrder) void {
         switch (self.backend) {
-            .gl => pipeline.subpixel_order = order,
+            .gl => self.gl_text.?.subpixel_order = order,
             .vulkan => vulkan_pipeline.subpixel_order = order,
         }
     }
 
     pub fn subpixelOrder(self: *const Renderer) SubpixelOrder {
         return switch (self.backend) {
-            .gl => pipeline.subpixel_order,
+            .gl => self.gl_text.?.subpixel_order,
             .vulkan => vulkan_pipeline.subpixel_order,
         };
     }
@@ -3743,30 +3756,28 @@ pub const Renderer = struct {
     /// `.legacy_unsafe` restores the previous behavior for callers that accept the artifacts.
     pub fn setSubpixelMode(self: *Renderer, mode: SubpixelMode) void {
         switch (self.backend) {
-            .gl => pipeline.subpixel_mode = mode,
+            .gl => self.gl_text.?.subpixel_mode = mode,
             .vulkan => vulkan_pipeline.subpixel_mode = mode,
         }
     }
 
     pub fn subpixelMode(self: *const Renderer) SubpixelMode {
         return switch (self.backend) {
-            .gl => pipeline.subpixel_mode,
+            .gl => self.gl_text.?.subpixel_mode,
             .vulkan => vulkan_pipeline.subpixel_mode,
         };
     }
 
-    /// Declare the opaque solid backdrop used as the `.safe` LCD fallback when per-channel blending is unavailable.
-    /// Pass `null` to disable backdrop resolve and let unsupported cases fall back to grayscale.
     pub fn setSubpixelBackdrop(self: *Renderer, color: ?[4]f32) void {
         switch (self.backend) {
-            .gl => pipeline.subpixel_backdrop = color,
+            .gl => self.gl_text.?.subpixel_backdrop = color,
             .vulkan => vulkan_pipeline.subpixel_backdrop = color,
         }
     }
 
     pub fn subpixelBackdrop(self: *const Renderer) ?[4]f32 {
         return switch (self.backend) {
-            .gl => pipeline.subpixel_backdrop,
+            .gl => self.gl_text.?.subpixel_backdrop,
             .vulkan => vulkan_pipeline.subpixel_backdrop,
         };
     }
@@ -3783,21 +3794,21 @@ pub const Renderer = struct {
     /// Set fill rule: non_zero (default, TrueType) or even_odd (PostScript/CFF).
     pub fn setFillRule(self: *Renderer, rule: FillRule) void {
         switch (self.backend) {
-            .gl => pipeline.fill_rule = rule,
+            .gl => self.gl_text.?.fill_rule = rule,
             .vulkan => vulkan_pipeline.fill_rule = @enumFromInt(@intFromEnum(rule)),
         }
     }
 
     pub fn fillRule(self: *const Renderer) FillRule {
         return switch (self.backend) {
-            .gl => pipeline.fill_rule,
+            .gl => self.gl_text.?.fill_rule,
             .vulkan => @enumFromInt(@intFromEnum(vulkan_pipeline.fill_rule)),
         };
     }
 
     pub fn backendName(self: *const Renderer) []const u8 {
         return switch (self.backend) {
-            .gl => pipeline.getBackendName(),
+            .gl => self.gl_text.?.getBackendName(),
             .vulkan => vulkan_pipeline.getBackendName(),
         };
     }
