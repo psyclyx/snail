@@ -27,7 +27,6 @@ pub const stage_shape_labels = [_][]const u8{
     "ellipse",
     "path",
     "image fill",
-    "sprites",
 };
 
 const badge_font_size: f32 = 13.0;
@@ -128,7 +127,7 @@ pub const Layout = struct {
     badge_pill: snail.Rect,
     emoji_pill: snail.Rect,
     script_rows: [4]snail.Rect,
-    stage_rows: [6]snail.Rect,
+    stage_rows: [5]snail.Rect,
     script_text_x: f32,
 };
 
@@ -421,7 +420,7 @@ pub fn buildLayout(w: f32, h: f32, metrics: TextMetrics) Layout {
         .w = std.math.clamp(frame.w * 0.18, 196.0, 260.0),
         .h = specimen_panel.h,
     });
-    var stage_rows: [6]snail.Rect = undefined;
+    var stage_rows: [5]snail.Rect = undefined;
     const stage_row_y = path_label_area.y + 94.0;
     const stage_row_spacing = @min(26.0, (path_label_area.h - 84.0 - 22.0) / 6.0);
     for (&stage_rows, 0..) |*row, i| {

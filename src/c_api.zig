@@ -167,18 +167,6 @@ pub const SnailStrokeStyle = extern struct {
     placement: c_int = SNAIL_STROKE_CENTER,
 };
 
-pub const SnailSpriteUvRect = extern struct {
-    u0: f32 = 0,
-    v0: f32 = 0,
-    u1: f32 = 1,
-    v1: f32 = 1,
-};
-
-pub const SnailSpriteAnchor = extern struct {
-    x: f32 = 0.5,
-    y: f32 = 0.5,
-};
-
 // ── Opaque types ──
 
 const FontImpl = struct { inner: ttf.Font };
@@ -610,11 +598,6 @@ export fn snail_renderer_draw_paths(vertices: [*]const f32, num_floats: usize, m
     getRenderer().drawPaths(vertices[0..num_floats], mat, viewport_w, viewport_h);
 }
 
-export fn snail_renderer_draw_sprites(vertices: [*]const f32, num_floats: usize, mvp: [*]const f32, viewport_w: f32, viewport_h: f32) void {
-    const mat = snail.Mat4{ .data = mvp[0..16].* };
-    getRenderer().drawSprites(vertices[0..num_floats], mat, viewport_w, viewport_h);
-}
-
 // ── TextBatch ──
 
 export fn snail_batch_add_text(
@@ -659,73 +642,6 @@ export fn snail_batch_add_run(
 
 export fn snail_batch_glyph_count(buf_len: usize) usize {
     return buf_len / snail.TEXT_FLOATS_PER_GLYPH;
-}
-
-// ── SpriteBatch ──
-
-export fn snail_sprite_batch_add_sprite(
-    buf: [*]f32,
-    buf_capacity: usize,
-    buf_len: *usize,
-    image: *const ImageImpl,
-    pos_x: f32,
-    pos_y: f32,
-    size_x: f32,
-    size_y: f32,
-    tint: [*]const f32,
-) bool {
-    var batch = snail.SpriteBatch.init(buf[buf_len.*..buf_capacity]);
-    const view = snail.ImageHandle{ .image = &image.inner };
-    const ok = batch.addSprite(view, .{ .x = pos_x, .y = pos_y }, .{ .x = size_x, .y = size_y }, tint[0..4].*);
-    buf_len.* += batch.len;
-    return ok;
-}
-
-export fn snail_sprite_batch_add_sprite_rect(
-    buf: [*]f32,
-    buf_capacity: usize,
-    buf_len: *usize,
-    image: *const ImageImpl,
-    rect: SnailRect,
-    tint: [*]const f32,
-    uv: SnailSpriteUvRect,
-    filter: c_int,
-) bool {
-    var batch = snail.SpriteBatch.init(buf[buf_len.*..buf_capacity]);
-    const view = snail.ImageHandle{ .image = &image.inner };
-    const ok = batch.addSpriteRect(view, toRect(rect), tint[0..4].*, .{
-        .u0 = uv.u0,
-        .v0 = uv.v0,
-        .u1 = uv.u1,
-        .v1 = uv.v1,
-    }, @enumFromInt(@as(u1, @intCast(filter))));
-    buf_len.* += batch.len;
-    return ok;
-}
-
-export fn snail_sprite_batch_add_sprite_transformed(
-    buf: [*]f32,
-    buf_capacity: usize,
-    buf_len: *usize,
-    image: *const ImageImpl,
-    size_x: f32,
-    size_y: f32,
-    tint: [*]const f32,
-    uv: SnailSpriteUvRect,
-    filter: c_int,
-    anchor: SnailSpriteAnchor,
-    transform: SnailTransform2D,
-) bool {
-    var batch = snail.SpriteBatch.init(buf[buf_len.*..buf_capacity]);
-    const view = snail.ImageHandle{ .image = &image.inner };
-    const ok = batch.addSpriteTransformed(view, .{ .x = size_x, .y = size_y }, tint[0..4].*, .{
-        .u0 = uv.u0,
-        .v0 = uv.v0,
-        .u1 = uv.u1,
-        .v1 = uv.v1,
-    }, @enumFromInt(@as(u1, @intCast(filter))), .{ .x = anchor.x, .y = anchor.y }, toTransform(transform));
-    buf_len.* += batch.len;
-    return ok;
 }
 
 // ── Path ──
@@ -958,9 +874,6 @@ export fn snail_text_vertices_per_glyph() usize {
 }
 export fn snail_path_floats_per_shape() usize {
     return snail.PATH_FLOATS_PER_SHAPE;
-}
-export fn snail_sprite_floats_per_sprite() usize {
-    return snail.SPRITE_FLOATS_PER_SPRITE;
 }
 // Keep old name as alias for backward compat
 export fn snail_floats_per_glyph() usize {
@@ -1197,7 +1110,6 @@ test "c_api: constants are consistent" {
     try testing.expectEqual(snail.TEXT_FLOATS_PER_VERTEX, snail_text_floats_per_vertex());
     try testing.expectEqual(snail.TEXT_VERTICES_PER_GLYPH, snail_text_vertices_per_glyph());
     try testing.expectEqual(snail.PATH_FLOATS_PER_SHAPE, snail_path_floats_per_shape());
-    try testing.expectEqual(snail.SPRITE_FLOATS_PER_SPRITE, snail_sprite_floats_per_sprite());
     try testing.expectEqual(snail_text_floats_per_glyph(), snail_floats_per_glyph());
 }
 

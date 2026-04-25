@@ -55,14 +55,10 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
     var view_mode = demo_banner_scene.ViewMode.normal;
     var uploaded_view_mode = view_mode;
 
-    // ── Tile image for image-paint fill and sprites ──
+    // ── Tile image for image-paint fill ──
     const assets = @import("assets");
     var tile_image = try snail.Image.initRgba8(allocator, 16, 16, assets.checkerboard_rgba);
     defer tile_image.deinit();
-    const tile_handle = renderer.uploadImage(&tile_image);
-
-    const sprite_buf = try allocator.alloc(f32, 64 * snail.SPRITE_FLOATS_PER_SPRITE);
-    defer allocator.free(sprite_buf);
 
     var angle: f32 = 0.0;
     var zoom: f32 = 1.0;
@@ -223,20 +219,6 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
             }
             if (paths.shapeCount() > 0) {
                 renderer.drawPaths(paths.slice(), vector_mvp, w, h);
-            }
-        }
-
-        // Sprites drawn as part of the scene (under the scene transform)
-        if (view_mode.showText()) {
-            const icon = demo_banner.stageIconRect(layout.stage_rows[5]);
-            const sz = icon.h;
-            const gap: f32 = 2.0;
-            var sprites = snail.SpriteBatch.init(sprite_buf);
-            _ = sprites.addSpriteRect(tile_handle, .{ .x = icon.x, .y = icon.y, .w = sz, .h = sz }, .{ 1, 1, 1, 1 }, .{}, .nearest);
-            _ = sprites.addSpriteRect(tile_handle, .{ .x = icon.x + sz + gap, .y = icon.y, .w = sz, .h = sz }, .{ 1, 0.6, 0.3, 0.9 }, .{}, .nearest);
-            _ = sprites.addSpriteRect(tile_handle, .{ .x = icon.x + (sz + gap) * 2, .y = icon.y, .w = sz, .h = sz }, .{ 0.4, 0.7, 1, 0.85 }, .{}, .nearest);
-            if (sprites.spriteCount() > 0) {
-                renderer.drawSprites(sprites.slice(), vector_mvp, w, h);
             }
         }
 

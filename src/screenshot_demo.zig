@@ -53,11 +53,10 @@ pub fn main() !void {
     const projection = snail.Mat4.ortho(0, w, 0, h, -1, 1);
     const vector_projection = snail.Mat4.ortho(0, w, h, 0, -1, 1);
 
-    // Tile image for image-paint fill and sprites
+    // Tile image for image-paint fill
     const assets = @import("assets");
     var tile_image = try snail.Image.initRgba8(allocator, 16, 16, assets.checkerboard_rgba);
     defer tile_image.deinit();
-    const tile_handle = renderer.uploadImage(&tile_image);
 
     var path_picture = try demo_banner_scene.buildPathPicture(allocator, layout, .normal, &tile_image);
     defer path_picture.deinit();
@@ -81,22 +80,6 @@ pub fn main() !void {
     demo_banner_scene.populateTextBatch(&batch, h, layout, &scene_assets, &atlas_views);
     if (batch.glyphCount() > 0) {
         renderer.drawText(batch.slice(), projection, w, h);
-    }
-
-    // Sprite demo: draw in the "sprites" row, under the scene transform
-    const sprite_buf = try allocator.alloc(f32, 16 * snail.SPRITE_FLOATS_PER_SPRITE);
-    defer allocator.free(sprite_buf);
-    {
-        const icon = demo_banner.stageIconRect(layout.stage_rows[5]);
-        const sz = icon.h;
-        const gap: f32 = 2.0;
-        var sprites = snail.SpriteBatch.init(sprite_buf);
-        _ = sprites.addSpriteRect(tile_handle, .{ .x = icon.x, .y = icon.y, .w = sz, .h = sz }, .{ 1, 1, 1, 1 }, .{}, .nearest);
-        _ = sprites.addSpriteRect(tile_handle, .{ .x = icon.x + sz + gap, .y = icon.y, .w = sz, .h = sz }, .{ 1, 0.6, 0.3, 0.9 }, .{}, .nearest);
-        _ = sprites.addSpriteRect(tile_handle, .{ .x = icon.x + (sz + gap) * 2, .y = icon.y, .w = sz, .h = sz }, .{ 0.4, 0.7, 1, 0.85 }, .{}, .nearest);
-        if (sprites.spriteCount() > 0) {
-            renderer.drawSprites(sprites.slice(), vector_projection, w, h);
-        }
     }
 
     if (screenshot.captureFramebuffer(allocator, SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT) catch null) |px| {

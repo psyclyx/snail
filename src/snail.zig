@@ -28,10 +28,8 @@ const vec = @import("math/vec.zig");
 pub const curve_tex = @import("render/curve_texture.zig");
 const band_tex = @import("render/band_texture.zig");
 const vertex_mod = @import("render/vertex.zig");
-const sprite_vertex_mod = @import("render/sprite_vertex.zig");
 const roots = @import("math/roots.zig");
 const pipeline = @import("render/pipeline.zig");
-const sprite_pipeline = @import("render/sprite_pipeline.zig");
 const vulkan_pipeline = if (build_options.enable_vulkan) @import("render/vulkan_pipeline.zig") else struct {
     pub const VulkanContext = void;
     pub fn init(_: anytype) !void {}
@@ -40,7 +38,6 @@ const vulkan_pipeline = if (build_options.enable_vulkan) @import("render/vulkan_
     pub fn buildImageArray(_: anytype, _: anytype) void {}
     pub fn drawText(_: anytype, _: anytype, _: anytype, _: anytype) void {}
     pub fn drawTextGrayscale(_: anytype, _: anytype, _: anytype, _: anytype) void {}
-    pub fn drawSprites(_: anytype, _: anytype, _: anytype, _: anytype) void {}
     pub fn setCommandBuffer(_: anytype) void {}
     pub fn getBackendName() []const u8 {
         return "vulkan (disabled)";
@@ -117,11 +114,6 @@ pub const PATH_FLOATS_PER_VERTEX = vertex_mod.FLOATS_PER_VERTEX;
 pub const PATH_VERTICES_PER_SHAPE = vertex_mod.VERTICES_PER_GLYPH;
 pub const PATH_FLOATS_PER_SHAPE = PATH_FLOATS_PER_VERTEX * PATH_VERTICES_PER_SHAPE;
 
-// Sprite batch sizing constants
-pub const SPRITE_FLOATS_PER_VERTEX = sprite_vertex_mod.FLOATS_PER_VERTEX;
-pub const SPRITE_VERTICES_PER_SPRITE = sprite_vertex_mod.VERTICES_PER_SPRITE;
-pub const SPRITE_FLOATS_PER_SPRITE = sprite_vertex_mod.FLOATS_PER_SPRITE;
-
 pub const Rect = struct {
     x: f32,
     y: f32,
@@ -167,24 +159,6 @@ pub const ImageHandle = struct {
     image: *const Image,
     layer: u16 = 0,
     uv_scale: Vec2 = .{ .x = 1.0, .y = 1.0 },
-};
-
-pub const SpriteUvRect = struct {
-    u0: f32 = 0.0,
-    v0: f32 = 0.0,
-    u1: f32 = 1.0,
-    v1: f32 = 1.0,
-};
-
-pub const SpriteAnchor = struct {
-    x: f32 = 0.5,
-    y: f32 = 0.5,
-
-    pub const center = SpriteAnchor{};
-    pub const top_left = SpriteAnchor{ .x = 0.0, .y = 0.0 };
-    pub const top_right = SpriteAnchor{ .x = 1.0, .y = 0.0 };
-    pub const bottom_left = SpriteAnchor{ .x = 0.0, .y = 1.0 };
-    pub const bottom_right = SpriteAnchor{ .x = 1.0, .y = 1.0 };
 };
 
 pub const LinearGradient = struct {
@@ -1407,151 +1381,6 @@ pub const TextBatch = struct {
         return cursor_x - x;
     }
 
-};
-
-/// Accumulates vector primitives into a caller-provided buffer.
-/// The public API is object-space and style-based; the packed buffer is the
-/// low-level immediate format consumed by the renderer.
-pub const SpritePicture = struct {
-    allocator: std.mem.Allocator,
-    vertices: []f32,
-
-    pub fn initClone(allocator: std.mem.Allocator, vertices: []const f32) !SpritePicture {
-        const owned = try allocator.alloc(f32, vertices.len);
-        @memcpy(owned, vertices);
-        return .{
-            .allocator = allocator,
-            .vertices = owned,
-        };
-    }
-
-    pub fn deinit(self: *SpritePicture) void {
-        self.allocator.free(self.vertices);
-        self.* = undefined;
-    }
-
-    pub fn slice(self: *const SpritePicture) []const f32 {
-        return self.vertices;
-    }
-
-    pub fn spriteCount(self: *const SpritePicture) usize {
-        return self.vertices.len / SPRITE_FLOATS_PER_SPRITE;
-    }
-};
-
-pub const SpriteBatch = struct {
-    buf: []f32,
-    len: usize = 0,
-
-    pub fn init(buf: []f32) SpriteBatch {
-        return .{ .buf = buf };
-    }
-
-    pub fn reset(self: *SpriteBatch) void {
-        self.len = 0;
-    }
-
-    pub fn spriteCount(self: *const SpriteBatch) usize {
-        return self.len / SPRITE_FLOATS_PER_SPRITE;
-    }
-
-    pub fn slice(self: *const SpriteBatch) []const f32 {
-        return self.buf[0..self.len];
-    }
-
-    pub fn freeze(self: *const SpriteBatch, allocator: std.mem.Allocator) !SpritePicture {
-        return SpritePicture.initClone(allocator, self.slice());
-    }
-
-    fn coerceImageHandle(image_like: anytype) ImageHandle {
-        const T = @TypeOf(image_like);
-        return switch (T) {
-            ImageHandle => image_like,
-            *const ImageHandle, *ImageHandle => image_like.*,
-            else => @compileError("expected ImageHandle or *ImageHandle"),
-        };
-    }
-
-    pub fn addSprite(
-        self: *SpriteBatch,
-        image_like: anytype,
-        position: Vec2,
-        size: Vec2,
-        tint: [4]f32,
-    ) bool {
-        return self.addSpriteTransformed(
-            image_like,
-            size,
-            tint,
-            .{},
-            .linear,
-            .center,
-            Transform2D.translate(position.x, position.y),
-        );
-    }
-
-    pub fn addSpriteAt(
-        self: *SpriteBatch,
-        image_like: anytype,
-        position: Vec2,
-        size: Vec2,
-        rotation_rad: f32,
-        anchor: SpriteAnchor,
-        tint: [4]f32,
-        uv_rect: SpriteUvRect,
-        filter: ImageFilter,
-    ) bool {
-        const transform = Transform2D.multiply(
-            Transform2D.translate(position.x, position.y),
-            Transform2D.rotate(rotation_rad),
-        );
-        return self.addSpriteTransformed(image_like, size, tint, uv_rect, filter, anchor, transform);
-    }
-
-    pub fn addSpriteRect(
-        self: *SpriteBatch,
-        image_like: anytype,
-        rect: Rect,
-        tint: [4]f32,
-        uv_rect: SpriteUvRect,
-        filter: ImageFilter,
-    ) bool {
-        return self.addSpriteTransformed(
-            image_like,
-            .{ .x = rect.w, .y = rect.h },
-            tint,
-            uv_rect,
-            filter,
-            .top_left,
-            Transform2D.translate(rect.x, rect.y),
-        );
-    }
-
-    pub fn addSpriteTransformed(
-        self: *SpriteBatch,
-        image_like: anytype,
-        size: Vec2,
-        tint: [4]f32,
-        uv_rect: SpriteUvRect,
-        filter: ImageFilter,
-        anchor: SpriteAnchor,
-        transform: Transform2D,
-    ) bool {
-        if (self.len + SPRITE_FLOATS_PER_SPRITE > self.buf.len) return false;
-        const view = coerceImageHandle(image_like);
-        sprite_vertex_mod.generateSpriteVertices(
-            self.buf[self.len..],
-            view,
-            size,
-            tint,
-            uv_rect,
-            filter,
-            anchor,
-            transform,
-        );
-        self.len += SPRITE_FLOATS_PER_SPRITE;
-        return true;
-    }
 };
 
 const kPathArcSplitMaxDepth: u8 = 8;
@@ -3599,7 +3428,6 @@ pub const VulkanContext = vulkan_pipeline.VulkanContext;
 pub const Renderer = struct {
     backend: RenderBackend = .gl,
     gl_text: ?*pipeline.GlTextState = null,
-    gl_sprite: ?*sprite_pipeline.GlSpriteState = null,
 
     /// Initialize with the current OpenGL context.
     pub fn init() !Renderer {
@@ -3607,11 +3435,7 @@ pub const Renderer = struct {
         text.* = .{};
         errdefer std.heap.smp_allocator.destroy(text);
         try text.init();
-        const sprite = try std.heap.smp_allocator.create(sprite_pipeline.GlSpriteState);
-        sprite.* = .{};
-        errdefer std.heap.smp_allocator.destroy(sprite);
-        try sprite.init();
-        return .{ .backend = .gl, .gl_text = text, .gl_sprite = sprite };
+        return .{ .backend = .gl, .gl_text = text };
     }
 
     /// Initialize with a Vulkan context (device, queue, render pass).
@@ -3623,16 +3447,11 @@ pub const Renderer = struct {
     pub fn deinit(self: *Renderer) void {
         switch (self.backend) {
             .gl => {
-                if (self.gl_sprite) |s| {
-                    s.deinit();
-                    std.heap.smp_allocator.destroy(s);
-                }
                 if (self.gl_text) |t| {
                     t.deinit();
                     std.heap.smp_allocator.destroy(t);
                 }
                 self.gl_text = null;
-                self.gl_sprite = null;
             },
             .vulkan => vulkan_pipeline.deinit(),
         }
@@ -3681,10 +3500,7 @@ pub const Renderer = struct {
     /// before draw() when other renderers share the GL context.
     pub fn beginFrame(self: *Renderer) void {
         switch (self.backend) {
-            .gl => {
-                self.gl_text.?.resetFrameState();
-                self.gl_sprite.?.resetFrameState();
-            },
+            .gl => self.gl_text.?.resetFrameState(),
             .vulkan => {},
         }
     }
@@ -3703,21 +3519,6 @@ pub const Renderer = struct {
             .gl => self.gl_text.?.drawTextGrayscale(vertices, mvp, viewport_w, viewport_h),
             .vulkan => vulkan_pipeline.drawTextGrayscale(vertices, mvp, viewport_w, viewport_h),
         }
-    }
-
-    /// Draw a batch of sprite vertices.
-    pub fn drawSprites(self: *Renderer, vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
-        switch (self.backend) {
-            .gl => {
-                self.gl_sprite.?.drawSprites(vertices, mvp, self.gl_text.?.image_array);
-                self.gl_text.?.resetFrameState();
-            },
-            .vulkan => vulkan_pipeline.drawSprites(vertices, mvp, viewport_w, viewport_h),
-        }
-    }
-
-    pub fn drawSpritePicture(self: *Renderer, picture: *const SpritePicture, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
-        self.drawSprites(picture.slice(), mvp, viewport_w, viewport_h);
     }
 
     /// Set the Vulkan command buffer for the current frame.
@@ -3823,7 +3624,6 @@ test {
     _ = @import("font/snail_file.zig");
     _ = @import("c_api.zig");
     _ = @import("render/vertex.zig");
-    _ = @import("render/sprite_vertex.zig");
     _ = @import("torture_test.zig");
 }
 
@@ -4474,34 +4274,6 @@ test "path picture image paint records keep image metadata" {
     try std.testing.expectApproxEqAbs(@as(f32, 0.5), lid[16], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, @floatFromInt(@intFromEnum(PaintExtend.repeat))), lid[22], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, @floatFromInt(@intFromEnum(PaintExtend.reflect))), lid[23], 0.001);
-}
-
-test "sprite batch packs transformed image quads" {
-    var image = try Image.initRgba8(std.testing.allocator, 4, 2, &.{
-        255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-        255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    });
-    defer image.deinit();
-
-    var buf: [SPRITE_FLOATS_PER_SPRITE]f32 = undefined;
-    var batch = SpriteBatch.init(&buf);
-    try std.testing.expect(batch.addSpriteRect(
-        ImageHandle{ .image = &image, .layer = 7, .uv_scale = .{ .x = 0.5, .y = 0.25 } },
-        .{ .x = 10, .y = 20, .w = 16, .h = 12 },
-        .{ 1, 0.5, 0.25, 1 },
-        .{ .u0 = 0.25, .v0 = 0.0, .u1 = 0.75, .v1 = 1.0 },
-        .nearest,
-    ));
-    try std.testing.expectEqual(@as(usize, 1), batch.spriteCount());
-    try std.testing.expectApproxEqAbs(@as(f32, 10), batch.slice()[0], 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 20), batch.slice()[1], 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 0.125), batch.slice()[2], 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 0.375), batch.slice()[14], 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 7), batch.slice()[8], 0.001);
-
-    var picture = try batch.freeze(std.testing.allocator);
-    defer picture.deinit();
-    try std.testing.expectEqual(@as(usize, 1), picture.spriteCount());
 }
 
 test "Font.lineMetrics forwards parser metrics" {

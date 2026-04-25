@@ -20,11 +20,6 @@ Initial release.
 - Even-odd and non-zero fill rules
 - Frozen path pictures for static scene reuse
 
-### Sprites
-- Batched sprite rendering with per-sprite tint, rotation, and anchor
-- Nearest and linear filtering
-- Shared image texture array with path image paints
-
 ### API
 - Zero-allocation batch API: caller owns vertex buffers, can pre-build static batches
 - Shaped-run API for terminal/editor use (caller owns runs, snail owns shaping)

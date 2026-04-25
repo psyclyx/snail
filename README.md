@@ -40,8 +40,6 @@ There is no rasterization, no texture sampling for glyph shapes, and no distance
 
 **Vector paths.** Filled and stroked `Path` geometry goes through the same pipeline. Paths are decomposed into quadratic curves (cubics are adaptively approximated), packed into the same curve/band texture format, and drawn with the same fragment shader. Strokes are expanded into offset curves with proper joins (miter, bevel, round) and caps (butt, square, round). The `PathPicture` type freezes a set of styled paths into an immutable atlas snapshot that can be instanced cheaply per frame.
 
-**Sprites.** Raster images use a separate vertex format and shader. `SpriteBatch` writes positioned, tinted, UV-mapped quads into a caller-owned buffer. Images are uploaded into a shared texture array. Supports nearest/linear filtering, UV sub-rects, rotation, anchors, and full affine transforms.
-
 ## Build
 
 Requires [Zig 0.16](https://ziglang.org/download/), OpenGL 3.3+, HarfBuzz, and pkg-config. The interactive demo requires Wayland + EGL. Vulkan support is optional.
@@ -169,19 +167,6 @@ _ = paths.addPicture(&pic_handle, &picture);
 renderer.drawPaths(paths.slice(), mvp, viewport_w, viewport_h);
 ```
 
-### Sprites
-
-```zig
-var icon = try snail.Image.initRgba8(allocator, 32, 32, pixels);
-defer icon.deinit();
-const img_handle = renderer.uploadImage(&icon);
-
-var sbuf: [16 * snail.SPRITE_FLOATS_PER_SPRITE]f32 = undefined;
-var sprites = snail.SpriteBatch.init(&sbuf);
-_ = sprites.addSprite(img_handle, .{ .x = 10, .y = 10 }, .{ .x = 32, .y = 32 }, .{ 1, 1, 1, 1 });
-renderer.drawSprites(sprites.slice(), mvp, viewport_w, viewport_h);
-```
-
 ## Example: C
 
 ```c
@@ -260,7 +245,6 @@ snail_renderer_deinit();
 | `TextBatch` | Writes glyph vertices into a caller-owned `[]f32`. Zero allocations. |
 | `Image` | RGBA8 raster image. |
 | `ImageHandle` | Token returned by `Renderer.uploadImage`, encoding texture-array layer and UV scale. |
-| `SpriteBatch` | Writes sprite vertices into a caller-owned `[]f32`. |
 | `Path` | Mutable path builder: `moveTo`, `lineTo`, `quadTo`, `cubicTo`, `close`, plus shape helpers. |
 | `PathPictureBuilder` | Accumulates filled/stroked paths and shapes with paint styles. |
 | `PathPicture` | Immutable frozen vector art. Upload once, instance cheaply per frame. |
@@ -324,7 +308,6 @@ snail_renderer_deinit();
 | `renderer.beginFrame()` | Reset cached GPU state. Call once per frame. |
 | `renderer.drawText(verts, mvp, w, h)` | Draw text batch vertices. |
 | `renderer.drawPaths(verts, mvp, w, h)` | Draw path batch vertices (always grayscale AA). |
-| `renderer.drawSprites(verts, mvp, w, h)` | Draw sprite batch vertices. |
 | `renderer.setSubpixelOrder(order)` | `.none`, `.rgb`, `.bgr`, `.vrgb`, `.vbgr`. |
 | `renderer.setSubpixelMode(mode)` | `.safe` (default) or `.legacy_unsafe`. |
 | `renderer.setSubpixelBackdrop(color)` | Declare opaque backdrop for safe LCD fallback. |
@@ -357,22 +340,12 @@ snail_renderer_deinit();
 | `builder.addEllipse(rect, fill, stroke, transform)` | Direct ellipse. |
 | `builder.freeze(alloc) !PathPicture` | Compile to immutable atlas. |
 
-### SpriteBatch
-
-| Method | Description |
-|--------|-------------|
-| `SpriteBatch.init(buf) SpriteBatch` | Wrap a caller-owned `[]f32`. |
-| `sprites.addSprite(image, pos, size, tint) bool` | Simple positioned sprite. |
-| `sprites.addSpriteRect(image, rect, tint, uv, filter) bool` | UV-mapped rect sprite. |
-| `sprites.addSpriteTransformed(image, size, tint, uv, filter, anchor, transform) bool` | Full affine transform. |
-
 ### Constants
 
 | Constant | Value | Use |
 |----------|-------|-----|
 | `TEXT_FLOATS_PER_GLYPH` | 80 | Buffer sizing for `TextBatch`. |
 | `PATH_FLOATS_PER_SHAPE` | 80 | Buffer sizing for `PathBatch`. |
-| `SPRITE_FLOATS_PER_SPRITE` | 64 | Buffer sizing for `SpriteBatch`. |
 
 ## Benchmarks
 
@@ -435,8 +408,6 @@ src/
     curve_texture.zig    RGBA16F curve control point packing
     band_texture.zig     RG16UI spatial band subdivision
     vertex.zig           glyph quad vertex generation
-    sprite_pipeline.zig  sprite rendering pipeline
-    sprite_vertex.zig    sprite quad vertex generation
   extra/
     cpu_renderer.zig     software rasterizer (same atlas data, no GPU)
   profile/
@@ -451,7 +422,7 @@ include/
 |------|------|
 | `Font` | Immutable after init. Safe for concurrent reads. |
 | `Atlas` | Immutable after creation. Safe for concurrent reads. |
-| `TextBatch`, `PathBatch`, `SpriteBatch` | Caller-owned buffers. Multiple batches reading the same atlas from different threads is safe. |
+| `TextBatch`, `PathBatch` | Caller-owned buffers. Multiple batches reading the same atlas from different threads is safe. |
 | `PathPicture` | Immutable after freeze. Safe for concurrent reads. |
 | `Renderer` | Single-threaded. Must be called from the GL/Vulkan context thread. |
 

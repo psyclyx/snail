@@ -136,9 +136,6 @@ typedef struct {
     int placement;
 } SnailStrokeStyle;
 
-typedef struct { float u0, v0, u1, v1; } SnailSpriteUvRect;
-typedef struct { float x, y; } SnailSpriteAnchor;
-
 /* ── Identity transform helper ── */
 #define SNAIL_TRANSFORM2D_IDENTITY ((SnailTransform2D){1,0,0, 0,1,0})
 
@@ -256,10 +253,6 @@ void snail_renderer_draw_text(const float *vertices, size_t num_floats,
 void snail_renderer_draw_paths(const float *vertices, size_t num_floats,
                                const float *mvp,
                                float viewport_w, float viewport_h);
-void snail_renderer_draw_sprites(const float *vertices, size_t num_floats,
-                                 const float *mvp,
-                                 float viewport_w, float viewport_h);
-
 /* ── TextBatch (any thread, caller-owned buffer) ── */
 
 float  snail_batch_add_text(float *buf, size_t buf_capacity, size_t *buf_len,
@@ -273,25 +266,6 @@ size_t snail_batch_add_run(float *buf, size_t buf_capacity, size_t *buf_len,
                            float x, float y, float font_size,
                            const float *color);
 size_t snail_batch_glyph_count(size_t buf_len);
-
-/* ── SpriteBatch (any thread, caller-owned buffer) ── */
-
-bool snail_sprite_batch_add_sprite(float *buf, size_t buf_capacity, size_t *buf_len,
-                                   const SnailImage *image,
-                                   float pos_x, float pos_y,
-                                   float size_x, float size_y,
-                                   const float *tint);
-bool snail_sprite_batch_add_sprite_rect(float *buf, size_t buf_capacity, size_t *buf_len,
-                                        const SnailImage *image,
-                                        SnailRect rect, const float *tint,
-                                        SnailSpriteUvRect uv, int filter);
-bool snail_sprite_batch_add_sprite_transformed(float *buf, size_t buf_capacity, size_t *buf_len,
-                                               const SnailImage *image,
-                                               float size_x, float size_y,
-                                               const float *tint,
-                                               SnailSpriteUvRect uv, int filter,
-                                               SnailSpriteAnchor anchor,
-                                               SnailTransform2D transform);
 
 /* ── Path (any thread) ── */
 
@@ -380,7 +354,6 @@ size_t snail_text_floats_per_glyph(void);
 size_t snail_text_floats_per_vertex(void);
 size_t snail_text_vertices_per_glyph(void);
 size_t snail_path_floats_per_shape(void);
-size_t snail_sprite_floats_per_sprite(void);
 size_t snail_floats_per_glyph(void); /* alias for snail_text_floats_per_glyph */
 
 #ifdef __cplusplus

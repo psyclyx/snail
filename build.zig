@@ -106,16 +106,6 @@ pub fn build(b: *std.Build) void {
         compile_frag_text_sp_dual.addArg("-o");
         const frag_text_sp_dual_spv = compile_frag_text_sp_dual.addOutputFileArg("snail_text_subpixel_dual.frag.spv");
 
-        const compile_sprite_vert = b.addSystemCommand(&.{ "glslc", "-fshader-stage=vert" });
-        compile_sprite_vert.addFileArg(b.path("shaders/sprite.vert"));
-        compile_sprite_vert.addArg("-o");
-        const sprite_vert_spv = compile_sprite_vert.addOutputFileArg("sprite.vert.spv");
-
-        const compile_sprite_frag = b.addSystemCommand(&.{ "glslc", "-fshader-stage=frag" });
-        compile_sprite_frag.addFileArg(b.path("shaders/sprite.frag"));
-        compile_sprite_frag.addArg("-o");
-        const sprite_frag_spv = compile_sprite_frag.addOutputFileArg("sprite.frag.spv");
-
         const mod = b.createModule(.{
             .root_source_file = b.path("src/render/vulkan_shaders.zig"),
         });
@@ -123,8 +113,6 @@ pub fn build(b: *std.Build) void {
         mod.addAnonymousImport("snail.frag.spv", .{ .root_source_file = frag_spv });
         mod.addAnonymousImport("snail_text_subpixel.frag.spv", .{ .root_source_file = frag_text_sp_spv });
         mod.addAnonymousImport("snail_text_subpixel_dual.frag.spv", .{ .root_source_file = frag_text_sp_dual_spv });
-        mod.addAnonymousImport("sprite.vert.spv", .{ .root_source_file = sprite_vert_spv });
-        mod.addAnonymousImport("sprite.frag.spv", .{ .root_source_file = sprite_frag_spv });
         break :blk mod;
     } else b.createModule(.{
         .root_source_file = b.addWriteFiles().add("vk_stub.zig", ""),
