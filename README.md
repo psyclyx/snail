@@ -179,7 +179,7 @@ const img_handle = renderer.uploadImage(&icon);
 var sbuf: [16 * snail.SPRITE_FLOATS_PER_SPRITE]f32 = undefined;
 var sprites = snail.SpriteBatch.init(&sbuf);
 _ = sprites.addSprite(img_handle, .{ .x = 10, .y = 10 }, .{ .x = 32, .y = 32 }, .{ 1, 1, 1, 1 });
-renderer.drawSprites(sprites.slice(), viewport_w, viewport_h);
+renderer.drawSprites(sprites.slice(), mvp, viewport_w, viewport_h);
 ```
 
 ## Example: C
@@ -324,7 +324,7 @@ snail_renderer_deinit();
 | `renderer.beginFrame()` | Reset cached GPU state. Call once per frame. |
 | `renderer.drawText(verts, mvp, w, h)` | Draw text batch vertices. |
 | `renderer.drawPaths(verts, mvp, w, h)` | Draw path batch vertices (always grayscale AA). |
-| `renderer.drawSprites(verts, w, h)` | Draw sprite batch vertices. |
+| `renderer.drawSprites(verts, mvp, w, h)` | Draw sprite batch vertices. |
 | `renderer.setSubpixelOrder(order)` | `.none`, `.rgb`, `.bgr`, `.vrgb`, `.vbgr`. |
 | `renderer.setSubpixelMode(mode)` | `.safe` (default) or `.legacy_unsafe`. |
 | `renderer.setSubpixelBackdrop(color)` | Declare opaque backdrop for safe LCD fallback. |

@@ -610,8 +610,9 @@ export fn snail_renderer_draw_paths(vertices: [*]const f32, num_floats: usize, m
     getRenderer().drawPaths(vertices[0..num_floats], mat, viewport_w, viewport_h);
 }
 
-export fn snail_renderer_draw_sprites(vertices: [*]const f32, num_floats: usize, viewport_w: f32, viewport_h: f32) void {
-    getRenderer().drawSprites(vertices[0..num_floats], viewport_w, viewport_h);
+export fn snail_renderer_draw_sprites(vertices: [*]const f32, num_floats: usize, mvp: [*]const f32, viewport_w: f32, viewport_h: f32) void {
+    const mat = snail.Mat4{ .data = mvp[0..16].* };
+    getRenderer().drawSprites(vertices[0..num_floats], mat, viewport_w, viewport_h);
 }
 
 // ── TextBatch ──

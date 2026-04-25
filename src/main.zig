@@ -228,17 +228,15 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
 
         // Sprites drawn as part of the scene (under the scene transform)
         if (view_mode.showText()) {
-            const sprite_row = demo_banner.stageIconRect(layout.stage_rows[5]);
-            const sz = sprite_row.h;
+            const icon = demo_banner.stageIconRect(layout.stage_rows[5]);
+            const sz = icon.h;
             const gap: f32 = 2.0;
-            const sx = sprite_row.x;
-            const sy = sprite_row.y;
             var sprites = snail.SpriteBatch.init(sprite_buf);
-            _ = sprites.addSprite(tile_handle, .{ .x = sx, .y = sy }, .{ .x = sz, .y = sz }, .{ 1, 1, 1, 1 });
-            _ = sprites.addSprite(tile_handle, .{ .x = sx + sz + gap, .y = sy }, .{ .x = sz, .y = sz }, .{ 1, 0.6, 0.3, 0.9 });
-            _ = sprites.addSprite(tile_handle, .{ .x = sx + (sz + gap) * 2, .y = sy }, .{ .x = sz, .y = sz }, .{ 0.4, 0.7, 1, 0.85 });
+            _ = sprites.addSpriteRect(tile_handle, .{ .x = icon.x, .y = icon.y, .w = sz, .h = sz }, .{ 1, 1, 1, 1 }, .{}, .nearest);
+            _ = sprites.addSpriteRect(tile_handle, .{ .x = icon.x + sz + gap, .y = icon.y, .w = sz, .h = sz }, .{ 1, 0.6, 0.3, 0.9 }, .{}, .nearest);
+            _ = sprites.addSpriteRect(tile_handle, .{ .x = icon.x + (sz + gap) * 2, .y = icon.y, .w = sz, .h = sz }, .{ 0.4, 0.7, 1, 0.85 }, .{}, .nearest);
             if (sprites.spriteCount() > 0) {
-                renderer.drawSpritesTransformed(sprites.slice(), vector_mvp, w, h);
+                renderer.drawSprites(sprites.slice(), vector_mvp, w, h);
             }
         }
 

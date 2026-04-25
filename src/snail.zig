@@ -3705,13 +3705,8 @@ pub const Renderer = struct {
         }
     }
 
-    /// Draw sprite vertices in pixel space with a top-left origin.
-    pub fn drawSprites(self: *Renderer, vertices: []const f32, viewport_w: f32, viewport_h: f32) void {
-        self.drawSpritesTransformed(vertices, Mat4.ortho(0, viewport_w, viewport_h, 0, -1, 1), viewport_w, viewport_h);
-    }
-
-    /// Draw sprite vertices with an explicit object-to-clip transform.
-    pub fn drawSpritesTransformed(self: *Renderer, vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
+    /// Draw a batch of sprite vertices.
+    pub fn drawSprites(self: *Renderer, vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
         switch (self.backend) {
             .gl => {
                 self.gl_sprite.?.drawSprites(vertices, mvp, self.gl_text.?.image_array);
@@ -3721,12 +3716,8 @@ pub const Renderer = struct {
         }
     }
 
-    pub fn drawSpritePicture(self: *Renderer, picture: *const SpritePicture, viewport_w: f32, viewport_h: f32) void {
-        self.drawSprites(picture.slice(), viewport_w, viewport_h);
-    }
-
-    pub fn drawSpritePictureTransformed(self: *Renderer, picture: *const SpritePicture, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
-        self.drawSpritesTransformed(picture.slice(), mvp, viewport_w, viewport_h);
+    pub fn drawSpritePicture(self: *Renderer, picture: *const SpritePicture, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
+        self.drawSprites(picture.slice(), mvp, viewport_w, viewport_h);
     }
 
     /// Set the Vulkan command buffer for the current frame.
