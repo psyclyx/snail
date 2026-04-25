@@ -41,7 +41,11 @@ fn configureDemoModule(
             mod.addIncludePath(b.path("src/render"));
             mod.addCSourceFile(.{ .file = b.path("src/render/xdg-shell-client-protocol.c") });
         },
-        .cpu => {},
+        .cpu => {
+            mod.linkSystemLibrary("wayland-client", .{});
+            mod.addIncludePath(b.path("src/render"));
+            mod.addCSourceFile(.{ .file = b.path("src/render/xdg-shell-client-protocol.c") });
+        },
     }
 }
 

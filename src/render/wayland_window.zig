@@ -32,6 +32,7 @@ pub const Window = struct {
     display: *c.wl_display,
     registry: *c.wl_registry,
     compositor: ?*c.wl_compositor = null,
+    shm: ?*c.wl_shm = null,
     wm_base: ?*c.xdg_wm_base = null,
     surface: *c.wl_surface,
     xdg_surface: *c.xdg_surface,
@@ -239,6 +240,8 @@ fn registryGlobal(
 
     if (std.mem.eql(u8, iface, "wl_compositor")) {
         self.compositor = @ptrCast(c.wl_registry_bind(reg, name, &c.wl_compositor_interface, @min(version, 4)));
+    } else if (std.mem.eql(u8, iface, "wl_shm")) {
+        self.shm = @ptrCast(c.wl_registry_bind(reg, name, &c.wl_shm_interface, 1));
     } else if (std.mem.eql(u8, iface, "xdg_wm_base")) {
         self.wm_base = @ptrCast(c.wl_registry_bind(reg, name, &c.xdg_wm_base_interface, 1));
     } else if (std.mem.eql(u8, iface, "wl_seat")) {

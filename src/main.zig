@@ -12,7 +12,7 @@ const use_gl = demo_renderer == .gl44 or demo_renderer == .gl33;
 const use_vulkan = demo_renderer == .vulkan;
 const use_cpu = demo_renderer == .cpu;
 
-const platform = if (use_vulkan) @import("render/vulkan_platform.zig") else if (use_gl) @import("render/platform.zig") else struct {};
+const platform = if (use_vulkan) @import("render/vulkan_platform.zig") else if (use_gl) @import("render/platform.zig") else @import("render/cpu_platform.zig");
 const gl = if (use_gl) @import("render/gl.zig").gl else struct {};
 
 pub fn main() !void {
@@ -24,94 +24,28 @@ pub fn main() !void {
         const vk_ctx = try platform.init(1280, 720, "snail");
         defer platform.deinit();
         return mainLoop(allocator, vk_ctx);
-    } else if (use_gl) {
+    } else {
         try platform.init(1280, 720, "snail");
         defer platform.deinit();
         return mainLoop(allocator, {});
-    } else {
-        return runCpuDemo(allocator);
     }
-}
-
-fn runCpuDemo(allocator: std.mem.Allocator) !void {
-    const WIDTH: u32 = 1680;
-    const HEIGHT: u32 = 874;
-
-    var scene_assets = try demo_banner_scene.Assets.init(allocator);
-    defer scene_assets.deinit();
-
-    const w: f32 = @floatFromInt(WIDTH);
-    const h: f32 = @floatFromInt(HEIGHT);
-    const layout = demo_banner.buildLayout(w, h, scene_assets.metrics);
-
-    const assets = @import("assets");
-    var tile_image = try snail.Image.initRgba8(allocator, 16, 16, assets.checkerboard_rgba);
-    defer tile_image.deinit();
-
-    var path_picture = try demo_banner_scene.buildPathPicture(allocator, layout, .normal, &tile_image);
-    defer path_picture.deinit();
-
-    const pixels = try allocator.alloc(u8, WIDTH * HEIGHT * 4);
-    defer allocator.free(pixels);
-    var cpu = CpuRenderer.init(pixels.ptr, WIDTH, HEIGHT, WIDTH * 4);
-
-    var renderer = snail.Renderer.initCpu(&cpu);
-    defer renderer.deinit();
-
-    var atlas_views: [7]snail.AtlasHandle = undefined;
-    scene_assets.uploadAtlases(&renderer, &path_picture, &atlas_views);
-
-    const clear = demo_banner.clearColor();
-    cpu.clear(
-        @intFromFloat(clear[0] * 255),
-        @intFromFloat(clear[1] * 255),
-        @intFromFloat(clear[2] * 255),
-        @intFromFloat(clear[3] * 255),
-    );
-
-    cpu.drawPathPicture(&path_picture);
-    demo_banner.drawTextCpu(&cpu, layout, scene_assets.metrics, .{
-        .latin_font = &scene_assets.latin_font,
-        .latin_atlas = &scene_assets.latin_atlas,
-        .arabic = &scene_assets.arabic,
-        .devanagari = &scene_assets.devanagari,
-        .mongolian = &scene_assets.mongolian,
-        .thai = &scene_assets.thai,
-        .emoji = &scene_assets.emoji,
-    });
-
-    const c_file = std.c.fopen("zig-out/demo-cpu.tga", "wb") orelse return error.FileOpenFailed;
-    defer _ = std.c.fclose(c_file);
-    var header: [18]u8 = .{0} ** 18;
-    header[2] = 2;
-    header[12] = @intCast(WIDTH & 0xFF);
-    header[13] = @intCast((WIDTH >> 8) & 0xFF);
-    header[14] = @intCast(HEIGHT & 0xFF);
-    header[15] = @intCast((HEIGHT >> 8) & 0xFF);
-    header[16] = 32;
-    header[17] = 0x28;
-    _ = std.c.fwrite(&header, 1, 18, c_file);
-    var row: u32 = 0;
-    while (row < HEIGHT) : (row += 1) {
-        const off = row * WIDTH * 4;
-        var col: u32 = 0;
-        while (col < WIDTH) : (col += 1) {
-            const i = off + col * 4;
-            const bgra = [4]u8{ pixels[i + 2], pixels[i + 1], pixels[i + 0], pixels[i + 3] };
-            _ = std.c.fwrite(&bgra, 1, 4, c_file);
-        }
-    }
-    std.debug.print("wrote zig-out/demo-cpu.tga\n", .{});
 }
 
 fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
     var scene_assets = try demo_banner_scene.Assets.init(allocator);
     defer scene_assets.deinit();
 
+    var cpu_state: CpuRenderer = undefined;
     var renderer = if (use_vulkan)
         try snail.Renderer.initVulkan(vk_ctx)
-    else
-        try snail.Renderer.init();
+    else if (use_gl)
+        try snail.Renderer.init()
+    else blk: {
+        const px = platform.getPixelBuffer() orelse return error.NoPixelBuffer;
+        const bsz = platform.getBufferSize();
+        cpu_state = CpuRenderer.init(px, bsz[0], bsz[1], bsz[0] * 4);
+        break :blk snail.Renderer.initCpu(&cpu_state);
+    };
     defer renderer.deinit();
 
     const sys_order = subpixel_detect.detect();
@@ -138,6 +72,8 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
     var tile_image = try snail.Image.initRgba8(allocator, 16, 16, assets.checkerboard_rgba);
     defer tile_image.deinit();
 
+    var buf_width: u32 = 0;
+    var buf_height: u32 = 0;
     var angle: f32 = 0.0;
     var zoom: f32 = 1.0;
     var pan_x: f32 = 0.0;
@@ -264,9 +200,28 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         if (use_vulkan) {
             const cmd = platform.beginFrame() orelse continue;
             renderer.setCommandBuffer(cmd);
-        } else {
+        } else if (use_gl) {
             gl.glViewport(0, 0, @intCast(size[0]), @intCast(size[1]));
             platform.clear(clear[0], clear[1], clear[2], clear[3]);
+        } else {
+            // CPU: update pixel buffer if window was resized
+            const bsz = platform.getBufferSize();
+            if (bsz[0] != buf_width or bsz[1] != buf_height) {
+                if (platform.getPixelBuffer()) |px| {
+                    buf_width = bsz[0];
+                    buf_height = bsz[1];
+                    cpu_state = CpuRenderer.init(px, bsz[0], bsz[1], bsz[0] * 4);
+                    renderer = snail.Renderer.initCpu(&cpu_state);
+                    // Force path picture rebuild
+                    uploaded_size = .{ 0, 0 };
+                }
+            }
+            cpu_state.clear(
+                @intFromFloat(clear[0] * 255),
+                @intFromFloat(clear[1] * 255),
+                @intFromFloat(clear[2] * 255),
+                @intFromFloat(clear[3] * 255),
+            );
         }
 
         const projection = snail.Mat4.ortho(0, w, h, 0, -1, 1);
@@ -286,19 +241,37 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         const gray = [4]f32{ 0.6, 0.6, 0.65, 1 };
 
         renderer.beginFrame();
-        if (path_picture) |*picture| {
-            var paths = snail.PathBatch.init(path_buf);
-            _ = paths.addPicture(path_view, picture);
-            if (overlay_picture) |*overlay| {
-                _ = paths.addPicture(&overlay_view.?, overlay);
+        if (use_cpu) {
+            // CPU renderer: draw paths and text directly
+            if (path_picture) |*picture| {
+                cpu_state.drawPathPicture(picture);
             }
-            if (paths.shapeCount() > 0) {
-                renderer.drawPaths(paths.slice(), mvp, w, h);
+            demo_banner.drawTextCpu(&cpu_state, layout, scene_assets.metrics, .{
+                .latin_font = &scene_assets.latin_font,
+                .latin_atlas = &scene_assets.latin_atlas,
+                .arabic = &scene_assets.arabic,
+                .devanagari = &scene_assets.devanagari,
+                .mongolian = &scene_assets.mongolian,
+                .thai = &scene_assets.thai,
+                .emoji = &scene_assets.emoji,
+            });
+        } else {
+            if (path_picture) |*picture| {
+                var paths = snail.PathBatch.init(path_buf);
+                _ = paths.addPicture(path_view, picture);
+                if (overlay_picture) |*overlay| {
+                    _ = paths.addPicture(&overlay_view.?, overlay);
+                }
+                if (paths.shapeCount() > 0) {
+                    renderer.drawPaths(paths.slice(), mvp, w, h);
+                }
             }
         }
 
         var batch = snail.TextBatch.init(vbuf);
-        if (!view_mode.showText()) {
+        if (use_cpu) {
+            // Text already drawn above
+        } else if (!view_mode.showText()) {
             // Debug vector views keep the text layer out of the way.
         } else if (stress_test) {
             const stress_sizes = [_]f32{ 10, 14, 18, 24, 32, 48 };
@@ -339,7 +312,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
             }
         }
 
-        if (use_gl and frame_count == 2) {
+        if (use_gl and !use_cpu and frame_count == 2) {
             const iw: u32 = @intFromFloat(w);
             const ih: u32 = @intFromFloat(h);
             if (screenshot.captureFramebuffer(allocator, iw, ih) catch null) |px| {
