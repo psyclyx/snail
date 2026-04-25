@@ -30,11 +30,11 @@ pub fn generateGlyphVertices(
     color: [4]f32,
     atlas_layer: u8,
 ) void {
-    // Object-space glyph quad corners (scaled to font_size)
+    // Object-space glyph quad corners (scaled to font_size, top-left origin)
     const x0 = x + bbox.min.x * font_size;
-    const y0 = y + bbox.min.y * font_size;
+    const y0 = y - bbox.max.y * font_size;
     const x1 = x + bbox.max.x * font_size;
-    const y1 = y + bbox.max.y * font_size;
+    const y1 = y - bbox.min.y * font_size;
 
     // Em-space corners
     const em_x0 = bbox.min.x;
@@ -53,15 +53,16 @@ pub fn generateGlyphVertices(
     const gw_f: f32 = @bitCast(gw);
 
     // Inverse Jacobian: maps object-space displacement to em-space
+    // Y is negated because screen Y-down is opposite to em-space Y-up
     const inv_scale = 1.0 / font_size;
 
-    // Write 4 corners: BL, BR, TR, TL
+    // Write 4 corners (y0 = top = ascender, y1 = bottom = descender)
     // Index buffer provides: 0,1,2, 0,2,3 (two triangles)
     const corners = [4]struct { px: f32, py: f32, nx: f32, ny: f32, ex: f32, ey: f32 }{
-        .{ .px = x0, .py = y0, .nx = -1, .ny = -1, .ex = em_x0, .ey = em_y0 },
-        .{ .px = x1, .py = y0, .nx = 1, .ny = -1, .ex = em_x1, .ey = em_y0 },
-        .{ .px = x1, .py = y1, .nx = 1, .ny = 1, .ex = em_x1, .ey = em_y1 },
-        .{ .px = x0, .py = y1, .nx = -1, .ny = 1, .ex = em_x0, .ey = em_y1 },
+        .{ .px = x0, .py = y0, .nx = -1, .ny = -1, .ex = em_x0, .ey = em_y1 },
+        .{ .px = x1, .py = y0, .nx = 1, .ny = -1, .ex = em_x1, .ey = em_y1 },
+        .{ .px = x1, .py = y1, .nx = 1, .ny = 1, .ex = em_x1, .ey = em_y0 },
+        .{ .px = x0, .py = y1, .nx = -1, .ny = 1, .ex = em_x0, .ey = em_y0 },
     };
 
     inline for (0..4) |vi| {
@@ -78,7 +79,7 @@ pub fn generateGlyphVertices(
         buf[base + 8] = inv_scale;
         buf[base + 9] = 0;
         buf[base + 10] = 0;
-        buf[base + 11] = inv_scale;
+        buf[base + 11] = -inv_scale;
         buf[base + 12] = band_entry.band_scale_x;
         buf[base + 13] = band_entry.band_scale_y;
         buf[base + 14] = band_entry.band_offset_x;
@@ -232,9 +233,9 @@ pub fn generateMultiLayerGlyphVertices(
     atlas_layer: u8,
 ) void {
     const x0 = x + union_bbox.min.x * font_size;
-    const y0 = y + union_bbox.min.y * font_size;
+    const y0 = y - union_bbox.max.y * font_size;
     const x1 = x + union_bbox.max.x * font_size;
-    const y1 = y + union_bbox.max.y * font_size;
+    const y1 = y - union_bbox.min.y * font_size;
 
     const em_x0 = union_bbox.min.x;
     const em_y0 = union_bbox.min.y;
@@ -251,10 +252,10 @@ pub fn generateMultiLayerGlyphVertices(
     const inv_scale = 1.0 / font_size;
 
     const corners = [4]struct { px: f32, py: f32, nx: f32, ny: f32, ex: f32, ey: f32 }{
-        .{ .px = x0, .py = y0, .nx = -1, .ny = -1, .ex = em_x0, .ey = em_y0 },
-        .{ .px = x1, .py = y0, .nx = 1, .ny = -1, .ex = em_x1, .ey = em_y0 },
-        .{ .px = x1, .py = y1, .nx = 1, .ny = 1, .ex = em_x1, .ey = em_y1 },
-        .{ .px = x0, .py = y1, .nx = -1, .ny = 1, .ex = em_x0, .ey = em_y1 },
+        .{ .px = x0, .py = y0, .nx = -1, .ny = -1, .ex = em_x0, .ey = em_y1 },
+        .{ .px = x1, .py = y0, .nx = 1, .ny = -1, .ex = em_x1, .ey = em_y1 },
+        .{ .px = x1, .py = y1, .nx = 1, .ny = 1, .ex = em_x1, .ey = em_y0 },
+        .{ .px = x0, .py = y1, .nx = -1, .ny = 1, .ex = em_x0, .ey = em_y0 },
     };
 
     inline for (0..4) |vi| {
@@ -271,7 +272,7 @@ pub fn generateMultiLayerGlyphVertices(
         buf[base + 8] = inv_scale;
         buf[base + 9] = 0;
         buf[base + 10] = 0;
-        buf[base + 11] = inv_scale;
+        buf[base + 11] = -inv_scale;
         // Band transform: xyz zeroed (per-layer banding from layer info texture),
         // w = atlas texture array layer (needed because layer info is built before
         // gl_layer is assigned by uploadAtlases).
@@ -313,19 +314,20 @@ test "vertex generation produces correct count and layout" {
     const expected_floats = FLOATS_PER_VERTEX * VERTICES_PER_GLYPH;
     try std.testing.expectEqual(@as(usize, 80), expected_floats);
 
-    // First vertex (corner 0 = bottom-left): position
+    // First vertex (corner 0 = top-left): position
+    // y0 = 200 - 0.8*24 = 180.8 (top of glyph)
     const v0_x = 100.0 + 0.0 * 24.0;
-    const v0_y = 200.0 + (-0.2) * 24.0;
+    const v0_y = 200.0 - 0.8 * 24.0;
     try std.testing.expectApproxEqAbs(v0_x, buf[0], 0.001);
     try std.testing.expectApproxEqAbs(v0_y, buf[1], 0.001);
 
-    // Normal for bottom-left: (-1, -1)
+    // Normal for top-left: (-1, -1)
     try std.testing.expectApproxEqAbs(@as(f32, -1.0), buf[2], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, -1.0), buf[3], 0.001);
 
-    // Em-space coords
+    // Em-space coords (top = ascender = em_y1)
     try std.testing.expectApproxEqAbs(@as(f32, 0.0), buf[4], 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, -0.2), buf[5], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.8), buf[5], 0.001);
 
     // Color (last 4 floats of vertex)
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), buf[16], 0.001);
@@ -333,9 +335,11 @@ test "vertex generation produces correct count and layout" {
     try std.testing.expectApproxEqAbs(@as(f32, 0.0), buf[18], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), buf[19], 0.001);
 
-    // Inverse Jacobian (1/font_size diagonal)
+    // Inverse Jacobian (j00=1/fs, j01=0, j10=0, j11=-1/fs)
     try std.testing.expectApproxEqAbs(1.0 / 24.0, buf[8], 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 0.0), buf[9], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), buf[10], 0.0001);
+    try std.testing.expectApproxEqAbs(-1.0 / 24.0, buf[11], 0.0001);
 }
 
 test "multi-layer glyph vertices preserve wide layer counts" {

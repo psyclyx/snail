@@ -159,10 +159,6 @@ fn snapRect(rect: snail.Rect) snail.Rect {
     };
 }
 
-fn textYFromTop(h: f32, top_y: f32) f32 {
-    return h - top_y;
-}
-
 fn perpLeft(v: snail.Vec2) snail.Vec2 {
     return .{ .x = -v.y, .y = v.x };
 }
@@ -284,8 +280,8 @@ fn lineExtents(font: *const snail.Font, font_size: f32) LineExtents {
 
 fn boundsExtents(bounds: TextBounds) LineExtents {
     return .{
-        .ascent = @max(0.0, bounds.max_y),
-        .descent = @max(0.0, -bounds.min_y),
+        .ascent = @max(0.0, -bounds.min_y),
+        .descent = @max(0.0, bounds.max_y),
     };
 }
 
@@ -494,7 +490,7 @@ fn addFinalScriptPills(builder: *snail.PathPictureBuilder, layout: Layout) !void
     }
 }
 
-pub fn drawText(batch: *snail.TextBatch, h: f32, layout: Layout, metrics: TextMetrics, resources: TextResources) void {
+pub fn drawText(batch: *snail.TextBatch, layout: Layout, metrics: TextMetrics, resources: TextResources) void {
     const hero_x = layout.frame.x + 30.0;
     const title_size = std.math.clamp(layout.frame.w * 0.11, 88.0, 118.0);
     const subtitle_size = std.math.clamp(layout.frame.w * 0.019, 19.0, 26.0);
@@ -544,20 +540,20 @@ pub fn drawText(batch: *snail.TextBatch, h: f32, layout: Layout, metrics: TextMe
     const stage_title_top = layout.path_label_area.y + 52.0 - stage_title_extents.ascent;
     const stage_caption_top = layout.path_label_area.y + 74.0 - stage_caption_extents.ascent;
 
-    _ = batch.addText(resources.latin_view, resources.latin_font, badge_text, layout.badge_pill.x + 16.0, textYFromTop(h, badge_baseline_top), badge_font_size, teal);
-    _ = batch.addText(resources.latin_view, resources.latin_font, title_text, hero_x, textYFromTop(h, baselineFromTop(hero_title_top, title_extents)), title_size, ink);
-    _ = batch.addText(resources.latin_view, resources.latin_font, subtitle_text, hero_x, textYFromTop(h, baselineFromTop(hero_subtitle_top, subtitle_extents)), subtitle_size, mist);
-    _ = batch.addText(resources.latin_view, resources.latin_font, hero_meta_text, hero_x, textYFromTop(h, baselineFromTop(hero_meta_top, hero_meta_extents)), 14.0, slate);
+    _ = batch.addText(resources.latin_view, resources.latin_font, badge_text, layout.badge_pill.x + 16.0, badge_baseline_top, badge_font_size, teal);
+    _ = batch.addText(resources.latin_view, resources.latin_font, title_text, hero_x, baselineFromTop(hero_title_top, title_extents), title_size, ink);
+    _ = batch.addText(resources.latin_view, resources.latin_font, subtitle_text, hero_x, baselineFromTop(hero_subtitle_top, subtitle_extents), subtitle_size, mist);
+    _ = batch.addText(resources.latin_view, resources.latin_font, hero_meta_text, hero_x, baselineFromTop(hero_meta_top, hero_meta_extents), 14.0, slate);
 
     const specimen_x = layout.specimen_panel.x + 24.0;
-    _ = batch.addText(resources.latin_view, resources.latin_font, ligature_label_text, specimen_x, textYFromTop(h, baselineFromTop(specimen_label_top, specimen_label_extents)), 12.0, teal);
-    _ = batch.addText(resources.latin_view, resources.latin_font, ligature_text, specimen_x, textYFromTop(h, baselineFromTop(ligature_top, ligature_extents)), ligature_size, ink);
-    _ = batch.addText(resources.latin_view, resources.latin_font, ligature_caption_text, specimen_x, textYFromTop(h, baselineFromTop(ligature_caption_top, ligature_caption_extents)), 14.0, sand);
-    _ = batch.addText(resources.latin_view, resources.latin_font, pangram_a_text, specimen_x, textYFromTop(h, baselineFromTop(pangram_a_top, pangram_a_extents)), pangram_size, mist);
-    _ = batch.addText(resources.latin_view, resources.latin_font, pangram_b_text, specimen_x, textYFromTop(h, baselineFromTop(pangram_b_top, pangram_b_extents)), 16.0, ink);
-    _ = batch.addText(resources.latin_view, resources.latin_font, specimen_footer_text, specimen_x, textYFromTop(h, baselineFromTop(specimen_footer_top, specimen_footer_extents)), 12.0, slate);
+    _ = batch.addText(resources.latin_view, resources.latin_font, ligature_label_text, specimen_x, baselineFromTop(specimen_label_top, specimen_label_extents), 12.0, teal);
+    _ = batch.addText(resources.latin_view, resources.latin_font, ligature_text, specimen_x, baselineFromTop(ligature_top, ligature_extents), ligature_size, ink);
+    _ = batch.addText(resources.latin_view, resources.latin_font, ligature_caption_text, specimen_x, baselineFromTop(ligature_caption_top, ligature_caption_extents), 14.0, sand);
+    _ = batch.addText(resources.latin_view, resources.latin_font, pangram_a_text, specimen_x, baselineFromTop(pangram_a_top, pangram_a_extents), pangram_size, mist);
+    _ = batch.addText(resources.latin_view, resources.latin_font, pangram_b_text, specimen_x, baselineFromTop(pangram_b_top, pangram_b_extents), 16.0, ink);
+    _ = batch.addText(resources.latin_view, resources.latin_font, specimen_footer_text, specimen_x, baselineFromTop(specimen_footer_top, specimen_footer_extents), 12.0, slate);
 
-    _ = batch.addText(resources.latin_view, resources.latin_font, scripts_heading_text, layout.script_band.x + 12.0, textYFromTop(h, scripts_heading_baseline_top), scripts_heading_font_size, teal);
+    _ = batch.addText(resources.latin_view, resources.latin_font, scripts_heading_text, layout.script_band.x + 12.0, scripts_heading_baseline_top, scripts_heading_font_size, teal);
 
     const script_items = [_]struct {
         spec: ScriptRowSpec,
@@ -573,19 +569,19 @@ pub fn drawText(batch: *snail.TextBatch, h: f32, layout: Layout, metrics: TextMe
         const label_baseline_top = centeredBaselineTopFromExtents(metrics.script_label_extents, row);
         const sample_baseline_top = centeredBaselineTopFromExtents(metrics.script_sample_extents[i], row);
         const sample_x = snapPx(layout.script_text_x + script_sample_inset_x + item.spec.sample_inset_x - metrics.script_sample_bounds[i].min_x);
-        _ = batch.addText(resources.latin_view, resources.latin_font, item.spec.label, row.x + script_label_inset_x, textYFromTop(h, label_baseline_top), script_label_font_size, slate);
-        _ = batch.addText(item.view, &item.font.font, item.spec.text, sample_x, textYFromTop(h, sample_baseline_top), item.spec.size, item.spec.color);
+        _ = batch.addText(resources.latin_view, resources.latin_font, item.spec.label, row.x + script_label_inset_x, label_baseline_top, script_label_font_size, slate);
+        _ = batch.addText(item.view, &item.font.font, item.spec.text, sample_x, sample_baseline_top, item.spec.size, item.spec.color);
     }
 
-    _ = batch.addText(resources.latin_view, resources.latin_font, emoji_label_text, layout.emoji_pill.x + script_label_inset_x, textYFromTop(h, emoji_label_baseline_top), script_label_font_size, slate);
-    _ = batch.addText(resources.emoji_view, &resources.emoji_font.font, emoji_text, snapPx(layout.script_text_x + script_sample_inset_x - metrics.emoji_bounds.min_x), textYFromTop(h, emoji_baseline_top), emoji_font_size, ink);
+    _ = batch.addText(resources.latin_view, resources.latin_font, emoji_label_text, layout.emoji_pill.x + script_label_inset_x, emoji_label_baseline_top, script_label_font_size, slate);
+    _ = batch.addText(resources.emoji_view, &resources.emoji_font.font, emoji_text, snapPx(layout.script_text_x + script_sample_inset_x - metrics.emoji_bounds.min_x), emoji_baseline_top, emoji_font_size, ink);
 
     const stage_x = layout.path_label_area.x + 24.0;
-    _ = batch.addText(resources.latin_view, resources.latin_font, stage_label_text, stage_x, textYFromTop(h, baselineFromTop(stage_label_top, stage_label_extents)), 12.0, teal);
-    _ = batch.addText(resources.latin_view, resources.latin_font, stage_title_text, stage_x, textYFromTop(h, baselineFromTop(stage_title_top, stage_title_extents)), 21.0, ink);
-    _ = batch.addText(resources.latin_view, resources.latin_font, stage_caption_text, stage_x, textYFromTop(h, baselineFromTop(stage_caption_top, stage_caption_extents)), 14.0, mist);
+    _ = batch.addText(resources.latin_view, resources.latin_font, stage_label_text, stage_x, baselineFromTop(stage_label_top, stage_label_extents), 12.0, teal);
+    _ = batch.addText(resources.latin_view, resources.latin_font, stage_title_text, stage_x, baselineFromTop(stage_title_top, stage_title_extents), 21.0, ink);
+    _ = batch.addText(resources.latin_view, resources.latin_font, stage_caption_text, stage_x, baselineFromTop(stage_caption_top, stage_caption_extents), 14.0, mist);
     for (layout.stage_rows, stage_shape_labels) |row, label| {
-        _ = batch.addText(resources.latin_view, resources.latin_font, label, row.x + 64.0, textYFromTop(h, centeredBaselineTopFromExtents(stage_row_extents, row)), 12.0, ink);
+        _ = batch.addText(resources.latin_view, resources.latin_font, label, row.x + 64.0, centeredBaselineTopFromExtents(stage_row_extents, row), 12.0, ink);
     }
 }
 

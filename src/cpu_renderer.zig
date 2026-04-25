@@ -4,7 +4,7 @@
 //! and bootstrap frames (before EGL/Vulkan is available).
 
 const std = @import("std");
-const snail = @import("snail");
+const snail = @import("snail.zig");
 const bezier = snail.bezier;
 const curve_tex = snail.curve_tex;
 const CurveSegment = bezier.CurveSegment;
@@ -213,6 +213,65 @@ pub const CpuRenderer = struct {
     ) void {
         if (info.band_entry.h_band_count == 0 or info.band_entry.v_band_count == 0) return;
         self.renderGlyphInternal(atlas, info, x, y, font_size, color);
+    }
+
+    /// Lay out and render a UTF-8 string. Uses the same shaping/kerning
+    /// logic as TextBatch.addText. Returns advance width in pixels.
+    /// Coordinates use top-left origin (y increases downward).
+    pub fn drawText(
+        self: *CpuRenderer,
+        atlas: *const snail.Atlas,
+        font: *const snail.Font,
+        text: []const u8,
+        x: f32,
+        y: f32,
+        font_size: f32,
+        color: [4]f32,
+    ) f32 {
+        const scale = font_size / @as(f32, @floatFromInt(font.unitsPerEm()));
+        var cursor_x = x;
+
+        var glyph_buf: [256]u16 = undefined;
+        var glyph_count: usize = 0;
+        const utf8_view = std.unicode.Utf8View.initUnchecked(text);
+        var it = utf8_view.iterator();
+        while (it.nextCodepoint()) |cp| {
+            if (glyph_count >= glyph_buf.len) break;
+            glyph_buf[glyph_count] = font.glyphIndex(cp) catch 0;
+            glyph_count += 1;
+        }
+
+        if (atlas.shaper) |shaper| {
+            glyph_count = shaper.applyLigatures(glyph_buf[0..glyph_count]) catch glyph_count;
+        }
+
+        var prev_gid: u16 = 0;
+        for (glyph_buf[0..glyph_count]) |gid| {
+            if (gid == 0) {
+                cursor_x += scale * 500;
+                prev_gid = 0;
+                continue;
+            }
+
+            if (prev_gid != 0) {
+                var kern: i16 = 0;
+                if (atlas.shaper) |shaper| {
+                    kern = shaper.getKernAdjustment(prev_gid, gid) catch 0;
+                }
+                if (kern == 0) {
+                    kern = font.getKerning(prev_gid, gid) catch 0;
+                }
+                cursor_x += @as(f32, @floatFromInt(kern)) * scale;
+            }
+
+            self.drawGlyphId(atlas, gid, cursor_x, y, font_size, color);
+
+            const advance: u16 = if (atlas.getGlyph(gid)) |info| info.advance_width else 500;
+            cursor_x += @as(f32, @floatFromInt(advance)) * scale;
+            prev_gid = gid;
+        }
+
+        return cursor_x - x;
     }
 
     fn renderGlyphInternal(

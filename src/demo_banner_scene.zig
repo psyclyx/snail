@@ -176,10 +176,9 @@ pub fn buildPathOverlayPicture(
 
 pub fn populateTextBatch(
     batch: *snail.TextBatch,
-    h: f32,
     layout: demo_banner.Layout,
     scene_assets: *const Assets,
     atlas_views: *const [7]snail.AtlasHandle,
 ) void {
-    demo_banner.drawText(batch, h, layout, scene_assets.metrics, scene_assets.textResources(atlas_views));
+    demo_banner.drawText(batch, layout, scene_assets.metrics, scene_assets.textResources(atlas_views));
 }

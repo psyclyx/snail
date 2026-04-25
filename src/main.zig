@@ -191,8 +191,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
             platform.clear(clear[0], clear[1], clear[2], clear[3]);
         }
 
-        const projection = snail.Mat4.ortho(0, w, 0, h, -1, 1);
-        const vector_projection = snail.Mat4.ortho(0, w, h, 0, -1, 1);
+        const projection = snail.Mat4.ortho(0, w, h, 0, -1, 1);
         const cx = w * 0.5;
         const cy = h * 0.5;
         const scene_core = snail.Mat4.multiply(
@@ -202,10 +201,8 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
                 snail.Mat4.translate(-cx, -cy, 0),
             )),
         );
-        const text_scene_transform = snail.Mat4.multiply(snail.Mat4.translate(pan_x, -pan_y, 0), scene_core);
-        const vector_scene_transform = snail.Mat4.multiply(snail.Mat4.translate(pan_x, pan_y, 0), scene_core);
-        const mvp = snail.Mat4.multiply(projection, text_scene_transform);
-        const vector_mvp = snail.Mat4.multiply(vector_projection, vector_scene_transform);
+        const scene_transform = snail.Mat4.multiply(snail.Mat4.translate(pan_x, pan_y, 0), scene_core);
+        const mvp = snail.Mat4.multiply(projection, scene_transform);
 
         const white = [4]f32{ 1, 1, 1, 1 };
         const gray = [4]f32{ 0.6, 0.6, 0.65, 1 };
@@ -218,7 +215,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
                 _ = paths.addPicture(&overlay_view.?, overlay);
             }
             if (paths.shapeCount() > 0) {
-                renderer.drawPaths(paths.slice(), vector_mvp, w, h);
+                renderer.drawPaths(paths.slice(), mvp, w, h);
             }
         }
 
@@ -227,16 +224,16 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
             // Debug vector views keep the text layer out of the way.
         } else if (stress_test) {
             const stress_sizes = [_]f32{ 10, 14, 18, 24, 32, 48 };
-            var sy: f32 = h - 20.0;
+            var sy: f32 = 20.0;
             var si: usize = 0;
-            while (sy > 0.0) {
+            while (sy < h) {
                 const fs = stress_sizes[si % stress_sizes.len];
                 _ = batch.addText(atlas_view, &scene_assets.latin_font, "The quick brown fox jumps over the lazy dog 0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ", 10.0, sy, fs, white);
-                sy -= fs * 1.3;
+                sy += fs * 1.3;
                 si += 1;
             }
         } else {
-            demo_banner_scene.populateTextBatch(&batch, h, layout, &scene_assets, &atlas_views);
+            demo_banner_scene.populateTextBatch(&batch, layout, &scene_assets, &atlas_views);
         }
 
         if (batch.glyphCount() > 0) {
@@ -248,7 +245,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         {
             renderer.setSubpixelBackdrop(clear);
             var hud = snail.TextBatch.init(vbuf[batch.len..]);
-            _ = hud.addText(atlas_view, &scene_assets.latin_font, "snail demo", 10.0, 30.0, 12.0, gray);
+            _ = hud.addText(atlas_view, &scene_assets.latin_font, "snail demo", 10.0, h - 30.0, 12.0, gray);
             const hb_str = if (build_options.enable_harfbuzz) " | HarfBuzz ON" else "";
             const sp_name = renderer.subpixelOrder().name();
             const sp_mode = renderer.subpixelMode().name();
@@ -258,7 +255,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
                 "";
             var hud_line2_buf: [160]u8 = undefined;
             const hud_line2 = std.fmt.bufPrint(&hud_line2_buf, "Arrows pan | Z/X zoom | R rotate | S stress | D view: {s} | L order: {s} | M mode: {s}{s}{s}", .{ view_mode.label(), sp_name, sp_mode, sp_suffix, hb_str }) catch "Arrows pan | Z/X zoom | R rotate | S stress | D debug view | L order | M mode";
-            _ = hud.addText(atlas_view, &scene_assets.latin_font, hud_line2, 10.0, 14.0, 12.0, gray);
+            _ = hud.addText(atlas_view, &scene_assets.latin_font, hud_line2, 10.0, h - 14.0, 12.0, gray);
             if (hud.glyphCount() > 0) {
                 renderer.drawText(hud.slice(), projection, w, h);
             }

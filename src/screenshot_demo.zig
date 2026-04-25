@@ -50,8 +50,7 @@ pub fn main() !void {
     const w: f32 = @floatFromInt(SCREENSHOT_WIDTH);
     const h: f32 = @floatFromInt(SCREENSHOT_HEIGHT);
     const layout = demo_banner.buildLayout(w, h, scene_assets.metrics);
-    const projection = snail.Mat4.ortho(0, w, 0, h, -1, 1);
-    const vector_projection = snail.Mat4.ortho(0, w, h, 0, -1, 1);
+    const projection = snail.Mat4.ortho(0, w, h, 0, -1, 1);
 
     // Tile image for image-paint fill
     const assets = @import("assets");
@@ -73,11 +72,11 @@ pub fn main() !void {
     var paths = snail.PathBatch.init(path_buf);
     _ = paths.addPicture(&atlas_views[6], &path_picture);
     if (paths.shapeCount() > 0) {
-        renderer.drawPaths(paths.slice(), vector_projection, w, h);
+        renderer.drawPaths(paths.slice(), projection, w, h);
     }
 
     var batch = snail.TextBatch.init(vbuf);
-    demo_banner_scene.populateTextBatch(&batch, h, layout, &scene_assets, &atlas_views);
+    demo_banner_scene.populateTextBatch(&batch, layout, &scene_assets, &atlas_views);
     if (batch.glyphCount() > 0) {
         renderer.drawText(batch.slice(), projection, w, h);
     }

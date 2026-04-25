@@ -94,33 +94,33 @@ fn addRoundedRect(
 }
 
 fn buildHud(batch: *snail.TextBatch, atlas: *const snail.Atlas, font: *const snail.Font) void {
-    _ = batch.addText(atlas, font, "Score: 12345  FPS: 60  Level 7", 10, HEIGHT - 20, 18, white);
-    _ = batch.addText(atlas, font, "Health: 100%  Ammo: 42/120", 10, HEIGHT - 44, 18, .{ 0.8, 0.2, 0.2, 1 });
+    _ = batch.addText(atlas, font, "Score: 12345  FPS: 60  Level 7", 10, 20, 18, white);
+    _ = batch.addText(atlas, font, "Health: 100%  Ammo: 42/120", 10, 44, 18, .{ 0.8, 0.2, 0.2, 1 });
 }
 
 fn buildMultiSize(batch: *snail.TextBatch, atlas: *const snail.Atlas, font: *const snail.Font) void {
-    var y: f32 = HEIGHT - 30;
+    var y: f32 = 30;
     for ([_]f32{ 12, 18, 24, 36, 48, 72 }) |sz| {
         _ = batch.addText(atlas, font, SENTENCE, 10, y, sz, white);
-        y -= sz * 1.4;
+        y += sz * 1.4;
     }
 }
 
 fn buildParagraph(batch: *snail.TextBatch, atlas: *const snail.Atlas, font: *const snail.Font) void {
-    var y: f32 = HEIGHT - 30;
+    var y: f32 = 30;
     for (0..6) |_| {
         _ = batch.addText(atlas, font, PARAGRAPH, 10, y, 16, white);
-        y -= 22;
+        y += 22;
     }
 }
 
 fn buildTorture(batch: *snail.TextBatch, atlas: *const snail.Atlas, font: *const snail.Font) void {
-    var y: f32 = HEIGHT - 10;
+    var y: f32 = 10;
     var si: usize = 0;
     const sizes = [_]f32{ 10, 14, 18, 24, 32, 48 };
-    while (y > 0) {
+    while (y < HEIGHT) {
         _ = batch.addText(atlas, font, PARAGRAPH, 5, y, sizes[si % sizes.len], white);
-        y -= sizes[si % sizes.len] * 1.2;
+        y += sizes[si % sizes.len] * 1.2;
         si += 1;
     }
 }
@@ -253,10 +253,10 @@ fn runMultiFontScenario(
     // Static
     var probe = snail.TextBatch.init(vbuf);
     {
-        var y: f32 = HEIGHT - 30;
+        var y: f32 = 30;
         for (font_sets) |fs| {
             _ = probe.addText(fs.atlas, fs.font, fs.text, 10, y, fs.font_size, white);
-            y -= fs.font_size * 1.5;
+            y += fs.font_size * 1.5;
         }
     }
     const static_slice = probe.slice();
@@ -277,10 +277,10 @@ fn runMultiFontScenario(
     for (0..WARMUP) |_| {
         gl.glClear(gl.GL_COLOR_BUFFER_BIT);
         var b = snail.TextBatch.init(vbuf);
-        var y: f32 = HEIGHT - 30;
+        var y: f32 = 30;
         for (font_sets) |fs| {
             _ = b.addText(fs.atlas, fs.font, fs.text, 10, y, fs.font_size, white);
-            y -= fs.font_size * 1.5;
+            y += fs.font_size * 1.5;
         }
         renderer.drawText(b.slice(), mvp, WIDTH, HEIGHT);
     }
@@ -289,10 +289,10 @@ fn runMultiFontScenario(
     for (0..FRAMES) |_| {
         gl.glClear(gl.GL_COLOR_BUFFER_BIT);
         var b = snail.TextBatch.init(vbuf);
-        var y: f32 = HEIGHT - 30;
+        var y: f32 = 30;
         for (font_sets) |fs| {
             _ = b.addText(fs.atlas, fs.font, fs.text, 10, y, fs.font_size, white);
-            y -= fs.font_size * 1.5;
+            y += fs.font_size * 1.5;
         }
         renderer.drawText(b.slice(), mvp, WIDTH, HEIGHT);
     }
@@ -378,8 +378,7 @@ fn runBannerScene(
 ) !void {
     const w: f32 = @floatFromInt(WIDTH);
     const h: f32 = @floatFromInt(HEIGHT);
-    const text_mvp = snail.Mat4.ortho(0, WIDTH, 0, HEIGHT, -1, 1);
-    const path_mvp = snail.Mat4.ortho(0, WIDTH, HEIGHT, 0, -1, 1);
+    const scene_mvp = snail.Mat4.ortho(0, WIDTH, HEIGHT, 0, -1, 1);
     const layout = demo_banner.buildLayout(w, h, scene_assets.metrics);
 
     var picture = try demo_banner_scene.buildPathPicture(allocator, layout, .normal, null);
@@ -394,7 +393,7 @@ fn runBannerScene(
     const shape_count = static_paths.shapeCount();
 
     var static_text = snail.TextBatch.init(text_buf);
-    demo_banner_scene.populateTextBatch(&static_text, h, layout, scene_assets, &atlas_views);
+    demo_banner_scene.populateTextBatch(&static_text, layout, scene_assets, &atlas_views);
     const static_text_slice = static_text.slice();
     const glyph_count = static_text.glyphCount();
 
@@ -404,16 +403,16 @@ fn runBannerScene(
     for (0..WARMUP) |_| {
         gl.glClear(gl.GL_COLOR_BUFFER_BIT);
         renderer.beginFrame();
-        if (shape_count > 0) renderer.drawPaths(static_path_slice, path_mvp, WIDTH, HEIGHT);
-        if (glyph_count > 0) renderer.drawText(static_text_slice, text_mvp, WIDTH, HEIGHT);
+        if (shape_count > 0) renderer.drawPaths(static_path_slice, scene_mvp, WIDTH, HEIGHT);
+        if (glyph_count > 0) renderer.drawText(static_text_slice, scene_mvp, WIDTH, HEIGHT);
     }
     gl.glFinish();
     const t_s = nowNs();
     for (0..FRAMES) |_| {
         gl.glClear(gl.GL_COLOR_BUFFER_BIT);
         renderer.beginFrame();
-        if (shape_count > 0) renderer.drawPaths(static_path_slice, path_mvp, WIDTH, HEIGHT);
-        if (glyph_count > 0) renderer.drawText(static_text_slice, text_mvp, WIDTH, HEIGHT);
+        if (shape_count > 0) renderer.drawPaths(static_path_slice, scene_mvp, WIDTH, HEIGHT);
+        if (glyph_count > 0) renderer.drawText(static_text_slice, scene_mvp, WIDTH, HEIGHT);
     }
     gl.glFinish();
     const s_ns = nowNs() - t_s;
@@ -424,11 +423,11 @@ fn runBannerScene(
 
         var paths = snail.PathBatch.init(path_buf);
         _ = paths.addPicture(&atlas_views[6], &picture);
-        if (paths.shapeCount() > 0) renderer.drawPaths(paths.slice(), path_mvp, WIDTH, HEIGHT);
+        if (paths.shapeCount() > 0) renderer.drawPaths(paths.slice(), scene_mvp, WIDTH, HEIGHT);
 
         var text = snail.TextBatch.init(text_buf);
-        demo_banner_scene.populateTextBatch(&text, h, layout, scene_assets, &atlas_views);
-        if (text.glyphCount() > 0) renderer.drawText(text.slice(), text_mvp, WIDTH, HEIGHT);
+        demo_banner_scene.populateTextBatch(&text, layout, scene_assets, &atlas_views);
+        if (text.glyphCount() > 0) renderer.drawText(text.slice(), scene_mvp, WIDTH, HEIGHT);
     }
     gl.glFinish();
     const t_d = nowNs();
@@ -438,11 +437,11 @@ fn runBannerScene(
 
         var paths = snail.PathBatch.init(path_buf);
         _ = paths.addPicture(&atlas_views[6], &picture);
-        if (paths.shapeCount() > 0) renderer.drawPaths(paths.slice(), path_mvp, WIDTH, HEIGHT);
+        if (paths.shapeCount() > 0) renderer.drawPaths(paths.slice(), scene_mvp, WIDTH, HEIGHT);
 
         var text = snail.TextBatch.init(text_buf);
-        demo_banner_scene.populateTextBatch(&text, h, layout, scene_assets, &atlas_views);
-        if (text.glyphCount() > 0) renderer.drawText(text.slice(), text_mvp, WIDTH, HEIGHT);
+        demo_banner_scene.populateTextBatch(&text, layout, scene_assets, &atlas_views);
+        if (text.glyphCount() > 0) renderer.drawText(text.slice(), scene_mvp, WIDTH, HEIGHT);
     }
     gl.glFinish();
     const d_ns = nowNs() - t_d;
@@ -541,10 +540,10 @@ fn runMultiFontScenarioVulkan(
 
     var probe = snail.TextBatch.init(vbuf);
     {
-        var y: f32 = HEIGHT - 30;
+        var y: f32 = 30;
         for (font_sets) |fs| {
             _ = probe.addText(fs.atlas, fs.font, fs.text, 10, y, fs.font_size, white);
-            y -= fs.font_size * 1.5;
+            y += fs.font_size * 1.5;
         }
     }
     const static_slice = probe.slice();
@@ -575,10 +574,10 @@ fn runMultiFontScenarioVulkan(
             const cmd = vulkan_platform.beginFrameOffscreen();
             renderer.setCommandBuffer(cmd);
             var b = snail.TextBatch.init(vbuf);
-            var y: f32 = HEIGHT - 30;
+            var y: f32 = 30;
             for (font_sets) |fs| {
                 _ = b.addText(fs.atlas, fs.font, fs.text, 10, y, fs.font_size, white);
-                y -= fs.font_size * 1.5;
+                y += fs.font_size * 1.5;
             }
             renderer.drawText(b.slice(), mvp, WIDTH, HEIGHT);
             vulkan_platform.endFrameOffscreen();
@@ -591,10 +590,10 @@ fn runMultiFontScenarioVulkan(
             const cmd = vulkan_platform.beginFrameOffscreen();
             renderer.setCommandBuffer(cmd);
             var b = snail.TextBatch.init(vbuf);
-            var y: f32 = HEIGHT - 30;
+            var y: f32 = 30;
             for (font_sets) |fs| {
                 _ = b.addText(fs.atlas, fs.font, fs.text, 10, y, fs.font_size, white);
-                y -= fs.font_size * 1.5;
+                y += fs.font_size * 1.5;
             }
             renderer.drawText(b.slice(), mvp, WIDTH, HEIGHT);
             vulkan_platform.endFrameOffscreen();
@@ -690,8 +689,7 @@ fn runBannerSceneVulkan(
 ) !void {
     const w: f32 = @floatFromInt(WIDTH);
     const h: f32 = @floatFromInt(HEIGHT);
-    const text_mvp = snail.Mat4.ortho(0, WIDTH, 0, HEIGHT, -1, 1);
-    const path_mvp = snail.Mat4.ortho(0, WIDTH, HEIGHT, 0, -1, 1);
+    const scene_mvp = snail.Mat4.ortho(0, WIDTH, HEIGHT, 0, -1, 1);
     const layout = demo_banner.buildLayout(w, h, scene_assets.metrics);
 
     var picture = try demo_banner_scene.buildPathPicture(allocator, layout, .normal, null);
@@ -706,7 +704,7 @@ fn runBannerSceneVulkan(
     const shape_count = static_paths.shapeCount();
 
     var static_text = snail.TextBatch.init(text_buf);
-    demo_banner_scene.populateTextBatch(&static_text, h, layout, scene_assets, &atlas_views);
+    demo_banner_scene.populateTextBatch(&static_text, layout, scene_assets, &atlas_views);
     const static_text_slice = static_text.slice();
     const glyph_count = static_text.glyphCount();
 
@@ -714,8 +712,8 @@ fn runBannerSceneVulkan(
         const cmd = vulkan_platform.beginFrameOffscreen();
         renderer.setCommandBuffer(cmd);
         renderer.beginFrame();
-        if (shape_count > 0) renderer.drawPaths(static_path_slice, path_mvp, WIDTH, HEIGHT);
-        if (glyph_count > 0) renderer.drawText(static_text_slice, text_mvp, WIDTH, HEIGHT);
+        if (shape_count > 0) renderer.drawPaths(static_path_slice, scene_mvp, WIDTH, HEIGHT);
+        if (glyph_count > 0) renderer.drawText(static_text_slice, scene_mvp, WIDTH, HEIGHT);
         vulkan_platform.endFrameOffscreen();
     }
     vulkan_platform.queueWaitIdle();
@@ -724,8 +722,8 @@ fn runBannerSceneVulkan(
         const cmd = vulkan_platform.beginFrameOffscreen();
         renderer.setCommandBuffer(cmd);
         renderer.beginFrame();
-        if (shape_count > 0) renderer.drawPaths(static_path_slice, path_mvp, WIDTH, HEIGHT);
-        if (glyph_count > 0) renderer.drawText(static_text_slice, text_mvp, WIDTH, HEIGHT);
+        if (shape_count > 0) renderer.drawPaths(static_path_slice, scene_mvp, WIDTH, HEIGHT);
+        if (glyph_count > 0) renderer.drawText(static_text_slice, scene_mvp, WIDTH, HEIGHT);
         vulkan_platform.endFrameOffscreen();
     }
     vulkan_platform.queueWaitIdle();
@@ -738,11 +736,11 @@ fn runBannerSceneVulkan(
 
         var paths = snail.PathBatch.init(path_buf);
         _ = paths.addPicture(&atlas_views[6], &picture);
-        if (paths.shapeCount() > 0) renderer.drawPaths(paths.slice(), path_mvp, WIDTH, HEIGHT);
+        if (paths.shapeCount() > 0) renderer.drawPaths(paths.slice(), scene_mvp, WIDTH, HEIGHT);
 
         var text = snail.TextBatch.init(text_buf);
-        demo_banner_scene.populateTextBatch(&text, h, layout, scene_assets, &atlas_views);
-        if (text.glyphCount() > 0) renderer.drawText(text.slice(), text_mvp, WIDTH, HEIGHT);
+        demo_banner_scene.populateTextBatch(&text, layout, scene_assets, &atlas_views);
+        if (text.glyphCount() > 0) renderer.drawText(text.slice(), scene_mvp, WIDTH, HEIGHT);
 
         vulkan_platform.endFrameOffscreen();
     }
@@ -755,11 +753,11 @@ fn runBannerSceneVulkan(
 
         var paths = snail.PathBatch.init(path_buf);
         _ = paths.addPicture(&atlas_views[6], &picture);
-        if (paths.shapeCount() > 0) renderer.drawPaths(paths.slice(), path_mvp, WIDTH, HEIGHT);
+        if (paths.shapeCount() > 0) renderer.drawPaths(paths.slice(), scene_mvp, WIDTH, HEIGHT);
 
         var text = snail.TextBatch.init(text_buf);
-        demo_banner_scene.populateTextBatch(&text, h, layout, scene_assets, &atlas_views);
-        if (text.glyphCount() > 0) renderer.drawText(text.slice(), text_mvp, WIDTH, HEIGHT);
+        demo_banner_scene.populateTextBatch(&text, layout, scene_assets, &atlas_views);
+        if (text.glyphCount() > 0) renderer.drawText(text.slice(), scene_mvp, WIDTH, HEIGHT);
 
         vulkan_platform.endFrameOffscreen();
     }
@@ -919,7 +917,7 @@ pub fn main() !void {
         defer allocator.free(vbuf);
         const vector_buf = try allocator.alloc(f32, 4096 * snail.TEXT_FLOATS_PER_GLYPH);
         defer allocator.free(vector_buf);
-        const mvp = snail.Mat4.ortho(0, WIDTH, 0, HEIGHT, -1, 1);
+        const mvp = snail.Mat4.ortho(0, WIDTH, HEIGHT, 0, -1, 1);
         var banner_assets = try demo_banner_scene.Assets.init(allocator);
         defer banner_assets.deinit();
 
@@ -964,10 +962,10 @@ pub fn main() !void {
         t = nowNs();
         for (0..LAYOUT_ITERS) |_| {
             var b = snail.TextBatch.init(&layout_vbuf);
-            var y: f32 = 700;
+            var y: f32 = 20;
             for (SIZES) |sz| {
                 _ = b.addText(&atlas, &font, PARAGRAPH, 0, y, @floatFromInt(sz), white);
-                y -= @as(f32, @floatFromInt(sz)) * 1.4;
+                y += @as(f32, @floatFromInt(sz)) * 1.4;
             }
             std.mem.doNotOptimizeAway(&b);
         }
@@ -1002,19 +1000,19 @@ pub fn main() !void {
 
         const buildArabic = struct {
             fn f(batch: *snail.TextBatch, a: *const snail.Atlas, fo: *const snail.Font) void {
-                var y: f32 = HEIGHT - 30;
+                var y: f32 = 30;
                 for (0..12) |_| {
                     _ = batch.addText(a, fo, ARABIC_TEXT, 10, y, 24, white);
-                    y -= 32;
+                    y += 32;
                 }
             }
         }.f;
         const buildDeva = struct {
             fn f(batch: *snail.TextBatch, a: *const snail.Atlas, fo: *const snail.Font) void {
-                var y: f32 = HEIGHT - 30;
+                var y: f32 = 30;
                 for (0..12) |_| {
                     _ = batch.addText(a, fo, DEVANAGARI_TEXT, 10, y, 24, white);
-                    y -= 32;
+                    y += 32;
                 }
             }
         }.f;
@@ -1133,7 +1131,7 @@ pub fn main() !void {
         defer allocator.free(vbuf);
         const vector_buf = try allocator.alloc(f32, 4096 * snail.TEXT_FLOATS_PER_GLYPH);
         defer allocator.free(vector_buf);
-        const mvp = snail.Mat4.ortho(0, WIDTH, 0, HEIGHT, -1, 1);
+        const mvp = snail.Mat4.ortho(0, WIDTH, HEIGHT, 0, -1, 1);
         var banner_assets = try demo_banner_scene.Assets.init(allocator);
         defer banner_assets.deinit();
 
@@ -1153,19 +1151,19 @@ pub fn main() !void {
 
         const buildArabic = struct {
             fn f(batch: *snail.TextBatch, a: *const snail.Atlas, fo: *const snail.Font) void {
-                var y: f32 = HEIGHT - 30;
+                var y: f32 = 30;
                 for (0..12) |_| {
                     _ = batch.addText(a, fo, ARABIC_TEXT, 10, y, 24, white);
-                    y -= 32;
+                    y += 32;
                 }
             }
         }.f;
         const buildDeva = struct {
             fn f(batch: *snail.TextBatch, a: *const snail.Atlas, fo: *const snail.Font) void {
-                var y: f32 = HEIGHT - 30;
+                var y: f32 = 30;
                 for (0..12) |_| {
                     _ = batch.addText(a, fo, DEVANAGARI_TEXT, 10, y, 24, white);
-                    y -= 32;
+                    y += 32;
                 }
             }
         }.f;

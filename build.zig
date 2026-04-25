@@ -183,15 +183,13 @@ pub fn build(b: *std.Build) void {
 
     // ── Extra module tests (cpu_renderer, etc.) ──
     const extra_test_module = b.createModule(.{
-        .root_source_file = b.path("src/extra/cpu_renderer.zig"),
+        .root_source_file = b.path("src/cpu_renderer.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
-        .imports = &.{
-            .{ .name = "assets", .module = assets_mod },
-            .{ .name = "snail", .module = snail_mod },
-        },
+        .imports = &.{.{ .name = "assets", .module = assets_mod }},
     });
+    configureCoreModule(extra_test_module, options, enable_harfbuzz, enable_vulkan, vk_shaders_mod);
     const extra_tests = b.addTest(.{ .root_module = extra_test_module });
     const run_extra_tests = b.addRunArtifact(extra_tests);
     test_step.dependOn(&run_extra_tests.step);
@@ -278,6 +276,21 @@ pub fn build(b: *std.Build) void {
     const run_screenshot = b.addRunArtifact(screenshot_exe);
     const screenshot_step = b.step("screenshot", "Render the demo scene offscreen and write zig-out/demo-screenshot.tga");
     screenshot_step.dependOn(&run_screenshot.step);
+
+    // ── CPU screenshot (no GPU required) ──
+    const screenshot_cpu_module = b.createModule(.{
+        .root_source_file = b.path("src/screenshot_cpu.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .link_libc = true,
+        .imports = &.{.{ .name = "assets", .module = assets_mod }},
+    });
+    configureCoreModule(screenshot_cpu_module, options, enable_harfbuzz, enable_vulkan, vk_shaders_mod);
+
+    const screenshot_cpu_exe = b.addExecutable(.{ .name = "snail-screenshot-cpu", .root_module = screenshot_cpu_module });
+    const run_screenshot_cpu = b.addRunArtifact(screenshot_cpu_exe);
+    const screenshot_cpu_step = b.step("screenshot-cpu", "Render the demo scene with CPU renderer (no GPU)");
+    screenshot_cpu_step.dependOn(&run_screenshot_cpu.step);
 
     // ── Valgrind ──
     const valgrind_step = b.step("valgrind", "Run tests under valgrind (memory checking)");

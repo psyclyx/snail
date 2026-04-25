@@ -38,37 +38,37 @@ fn nowNs() u64 {
 }
 
 fn buildHud(batch: *snail.TextBatch, atlas: *const snail.Atlas, font: *const snail.Font) void {
-    _ = batch.addText(atlas, font, "Score: 12345  FPS: 60  Level 7", 10, HEIGHT - 20, 18, .{ 1, 1, 1, 1 });
-    _ = batch.addText(atlas, font, "Health: 100%  Ammo: 42/120", 10, HEIGHT - 44, 18, .{ 0.8, 0.2, 0.2, 1 });
+    _ = batch.addText(atlas, font, "Score: 12345  FPS: 60  Level 7", 10, 20, 18, .{ 1, 1, 1, 1 });
+    _ = batch.addText(atlas, font, "Health: 100%  Ammo: 42/120", 10, 44, 18, .{ 0.8, 0.2, 0.2, 1 });
 }
 
 fn buildMultiSize(batch: *snail.TextBatch, atlas: *const snail.Atlas, font: *const snail.Font) void {
     const white = [4]f32{ 1, 1, 1, 1 };
-    var y: f32 = HEIGHT - 30;
+    var y: f32 = 30;
     for ([_]f32{ 12, 18, 24, 36, 48, 72 }) |sz| {
         _ = batch.addText(atlas, font, SENTENCE, 10, y, sz, white);
-        y -= sz * 1.4;
+        y += sz * 1.4;
     }
 }
 
 fn buildParagraph(batch: *snail.TextBatch, atlas: *const snail.Atlas, font: *const snail.Font) void {
     const gray = [4]f32{ 0.9, 0.9, 0.9, 1 };
-    var y: f32 = HEIGHT - 30;
+    var y: f32 = 30;
     for (0..6) |_| {
         _ = batch.addText(atlas, font, PARAGRAPH, 10, y, 16, gray);
-        y -= 22;
+        y += 22;
     }
 }
 
 fn buildTorture(batch: *snail.TextBatch, atlas: *const snail.Atlas, font: *const snail.Font) void {
     const white = [4]f32{ 1, 1, 1, 1 };
-    var y: f32 = HEIGHT - 10;
+    var y: f32 = 10;
     var si: usize = 0;
     const sizes = [_]f32{ 10, 14, 18, 24, 32, 48 };
-    while (y > 0) {
+    while (y < HEIGHT) {
         const sz = sizes[si % sizes.len];
         _ = batch.addText(atlas, font, PARAGRAPH, 5, y, sz, white);
-        y -= sz * 1.2;
+        y += sz * 1.2;
         si += 1;
     }
 }
@@ -155,10 +155,10 @@ fn runMultiFontScenario(
 
     var probe = snail.TextBatch.init(vbuf);
     {
-        var y: f32 = HEIGHT - 30;
+        var y: f32 = 30;
         for (font_sets) |fs| {
             _ = probe.addText(fs.atlas, fs.font, fs.text, 10, y, fs.font_size, white);
-            y -= fs.font_size * 1.5;
+            y += fs.font_size * 1.5;
         }
     }
     const static_slice = probe.slice();
@@ -200,10 +200,10 @@ fn runMultiFontScenario(
 
 fn drawSingleBatch(font_sets: []const FontEntry, renderer: *snail.Renderer, vbuf: []f32, mvp: snail.Mat4, color: [4]f32) void {
     var batch = snail.TextBatch.init(vbuf);
-    var y: f32 = HEIGHT - 30;
+    var y: f32 = 30;
     for (font_sets) |fs| {
         _ = batch.addText(fs.atlas, fs.font, fs.text, 10, y, fs.font_size, color);
-        y -= fs.font_size * 1.5;
+        y += fs.font_size * 1.5;
     }
     if (batch.glyphCount() > 0) renderer.drawText(batch.slice(), mvp, WIDTH, HEIGHT);
 }
@@ -302,10 +302,10 @@ fn runMultiFontScenarioVulkanImpl(
 
     var probe = snail.TextBatch.init(vbuf);
     {
-        var y: f32 = HEIGHT - 30;
+        var y: f32 = 30;
         for (font_sets) |fs| {
             _ = probe.addText(fs.atlas, fs.font, fs.text, 10, y, fs.font_size, white);
-            y -= fs.font_size * 1.5;
+            y += fs.font_size * 1.5;
         }
     }
     const static_slice = probe.slice();
@@ -363,10 +363,10 @@ fn runMultiFontScenarioVulkanImpl(
 
 fn drawSingleBatchVulkan(font_sets: []const FontEntry, renderer: *snail.Renderer, vbuf: []f32, mvp: snail.Mat4, color: [4]f32) void {
     var batch = snail.TextBatch.init(vbuf);
-    var y: f32 = HEIGHT - 30;
+    var y: f32 = 30;
     for (font_sets) |fs| {
         _ = batch.addText(fs.atlas, fs.font, fs.text, 10, y, fs.font_size, color);
-        y -= fs.font_size * 1.5;
+        y += fs.font_size * 1.5;
     }
     if (batch.glyphCount() > 0) renderer.drawText(batch.slice(), mvp, WIDTH, HEIGHT);
 }
@@ -405,7 +405,7 @@ pub fn main() !void {
 
         const vbuf = try allocator.alloc(f32, 30000 * snail.TEXT_FLOATS_PER_GLYPH);
         defer allocator.free(vbuf);
-        const mvp = snail.Mat4.ortho(0, WIDTH, 0, HEIGHT, -1, 1);
+        const mvp = snail.Mat4.ortho(0, WIDTH, HEIGHT, 0, -1, 1);
 
         var arabic_font = try snail.Font.init(assets.noto_sans_arabic);
         defer arabic_font.deinit();
@@ -498,19 +498,19 @@ pub fn main() !void {
 
         const buildArabic = struct {
             fn f(batch: *snail.TextBatch, a: *const snail.Atlas, fo: *const snail.Font) void {
-                var y: f32 = HEIGHT - 30;
+                var y: f32 = 30;
                 for (0..12) |_| {
                     _ = batch.addText(a, fo, ARABIC_TEXT, 10, y, 24, .{ 1, 1, 1, 1 });
-                    y -= 32;
+                    y += 32;
                 }
             }
         }.f;
         const buildDevanagari = struct {
             fn f(batch: *snail.TextBatch, a: *const snail.Atlas, fo: *const snail.Font) void {
-                var y: f32 = HEIGHT - 30;
+                var y: f32 = 30;
                 for (0..12) |_| {
                     _ = batch.addText(a, fo, DEVANAGARI_TEXT, 10, y, 24, .{ 1, 1, 1, 1 });
-                    y -= 32;
+                    y += 32;
                 }
             }
         }.f;
@@ -568,7 +568,7 @@ pub fn main() !void {
 
         const vbuf = try allocator.alloc(f32, 30000 * snail.TEXT_FLOATS_PER_GLYPH);
         defer allocator.free(vbuf);
-        const mvp = snail.Mat4.ortho(0, WIDTH, 0, HEIGHT, -1, 1);
+        const mvp = snail.Mat4.ortho(0, WIDTH, HEIGHT, 0, -1, 1);
 
         var arabic_font = try snail.Font.init(assets.noto_sans_arabic);
         defer arabic_font.deinit();
@@ -660,19 +660,19 @@ pub fn main() !void {
 
         const buildArabic = struct {
             fn f(batch: *snail.TextBatch, a: *const snail.Atlas, fo: *const snail.Font) void {
-                var y: f32 = HEIGHT - 30;
+                var y: f32 = 30;
                 for (0..12) |_| {
                     _ = batch.addText(a, fo, ARABIC_TEXT, 10, y, 24, .{ 1, 1, 1, 1 });
-                    y -= 32;
+                    y += 32;
                 }
             }
         }.f;
         const buildDevanagari = struct {
             fn f(batch: *snail.TextBatch, a: *const snail.Atlas, fo: *const snail.Font) void {
-                var y: f32 = HEIGHT - 30;
+                var y: f32 = 30;
                 for (0..12) |_| {
                     _ = batch.addText(a, fo, DEVANAGARI_TEXT, 10, y, 24, .{ 1, 1, 1, 1 });
-                    y -= 32;
+                    y += 32;
                 }
             }
         }.f;
