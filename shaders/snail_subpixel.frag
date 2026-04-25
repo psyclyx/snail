@@ -568,8 +568,8 @@ vec4 blendSubpixelWithAlpha(vec2 cw_r, vec2 cw_g, vec2 cw_b, vec2 cw_o) {
 }
 
 vec4 filterSubpixelCoverage(float s_m3, float s_m2, float s_m1, float s_0, float s_p1, float s_p2, float s_p3, bool reverse_order) {
-    const float w0 = 8.0 / 256.0;
-    const float w1 = 77.0 / 256.0;
+    const float w0 = 18.0 / 256.0;
+    const float w1 = 67.0 / 256.0;
     const float w2 = 86.0 / 256.0;
     float left = w0 * s_m3 + w1 * s_m2 + w2 * s_m1 + w1 * s_0 + w0 * s_p1;
     float center = w0 * s_m2 + w1 * s_m1 + w2 * s_0 + w1 * s_p1 + w0 * s_p2;
