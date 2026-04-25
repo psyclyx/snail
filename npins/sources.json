@@ -1,37 +1,10 @@
 {
   "pins": {
-    "flake-compat": {
-      "type": "Git",
-      "repository": {
-        "type": "Forgejo",
-        "server": "https://git.lix.systems/",
-        "owner": "lix-project",
-        "repo": "flake-compat"
-      },
-      "branch": "main",
-      "submodules": false,
-      "revision": "549f2762aebeff29a2e5ece7a7dc0f955281a1d1",
-      "url": "https://git.lix.systems/lix-project/flake-compat/archive/549f2762aebeff29a2e5ece7a7dc0f955281a1d1.tar.gz",
-      "hash": "sha256-NKw96t+BgHIYzHUjkTK95FqYRVKB8DHpVhefWSz/kTw="
-    },
     "nixpkgs": {
       "type": "Channel",
       "name": "nixpkgs-unstable",
-      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.05pre978638.13043924aaa7/nixexprs.tar.xz",
-      "hash": "sha256-qTVvODr6edFBLD2lncXPF8yTQeCafZUuKVtpV3Xb3yM="
-    },
-    "zig-overlay": {
-      "type": "Git",
-      "repository": {
-        "type": "GitHub",
-        "owner": "mitchellh",
-        "repo": "zig-overlay"
-      },
-      "branch": "main",
-      "submodules": false,
-      "revision": "3651bc659f83fc7ec4c3245faea62a7211ec835c",
-      "url": "https://github.com/mitchellh/zig-overlay/archive/3651bc659f83fc7ec4c3245faea62a7211ec835c.tar.gz",
-      "hash": "sha256-ak1JI5+pDOKt7rsn/TMd8iqSeftgKobUjjR14w8hiiI="
+      "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.05pre985930.01fbdeef22b7/nixexprs.tar.xz",
+      "hash": "sha256-Kq5uL1t/WUp+Z3CjXDpoE9seUiUNLqHN3FkiIjneWeA="
     }
   },
   "version": 7

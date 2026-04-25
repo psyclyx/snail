@@ -7,7 +7,7 @@ const egl_offscreen = @import("render/egl_offscreen.zig");
 const gl = @import("render/gl.zig").gl;
 
 const SCREENSHOT_WIDTH: u32 = 1680;
-const SCREENSHOT_HEIGHT: u32 = 760;
+const SCREENSHOT_HEIGHT: u32 = 874;
 const SCREENSHOT_PATH = "zig-out/demo-screenshot.tga";
 const GL_SRGB8_ALPHA8: gl.GLenum = 0x8C43;
 

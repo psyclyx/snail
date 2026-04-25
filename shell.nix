@@ -1,14 +1,10 @@
 let
   sources = import ./npins;
-  flake-compat = import sources.flake-compat;
-  zig-flake = (flake-compat { src = sources.zig-overlay; }).defaultNix;
-  pkgs = import sources.nixpkgs {
-    overlays = [ zig-flake.overlays.default ];
-  };
+  pkgs = import sources.nixpkgs {};
 in
 pkgs.mkShell {
   packages = with pkgs; [
-    zigpkgs.master
+    zig_0_16
     pkg-config
     libGL
     wayland
