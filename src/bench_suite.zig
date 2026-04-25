@@ -24,6 +24,8 @@ const GL_SRGB8_ALPHA8: gl.GLenum = 0x8C43;
 const BENCH_TIME_MULTIPLIER = 10;
 const WARMUP = 100 * BENCH_TIME_MULTIPLIER;
 const FRAMES = 2000 * BENCH_TIME_MULTIPLIER;
+const VK_WARMUP = 100;
+const VK_FRAMES = 2000;
 const LAYOUT_ITERS = 500 * BENCH_TIME_MULTIPLIER;
 
 const SHORT = "Hello, world!";
@@ -470,7 +472,7 @@ fn runScenarioVulkanImpl(
     const glyphs = probe.glyphCount();
     const static_slice = probe.slice();
 
-    for (0..WARMUP) |_| {
+    for (0..VK_WARMUP) |_| {
         {
             const cmd = vulkan_platform.beginFrameOffscreen();
             renderer.setCommandBuffer(cmd);
@@ -480,7 +482,7 @@ fn runScenarioVulkanImpl(
     }
     vulkan_platform.queueWaitIdle();
     const t_s = nowNs();
-    for (0..FRAMES) |_| {
+    for (0..VK_FRAMES) |_| {
         {
             const cmd = vulkan_platform.beginFrameOffscreen();
             renderer.setCommandBuffer(cmd);
@@ -491,7 +493,7 @@ fn runScenarioVulkanImpl(
     vulkan_platform.queueWaitIdle();
     const s_ns = nowNs() - t_s;
 
-    for (0..WARMUP) |_| {
+    for (0..VK_WARMUP) |_| {
         var b = snail.TextBatch.init(vbuf);
         buildFn(&b, atlas, font);
         {
@@ -503,7 +505,7 @@ fn runScenarioVulkanImpl(
     }
     vulkan_platform.queueWaitIdle();
     const t_d = nowNs();
-    for (0..FRAMES) |_| {
+    for (0..VK_FRAMES) |_| {
         var b = snail.TextBatch.init(vbuf);
         buildFn(&b, atlas, font);
         {
@@ -516,10 +518,10 @@ fn runScenarioVulkanImpl(
     vulkan_platform.queueWaitIdle();
     const d_ns = nowNs() - t_d;
 
-    const s_fps = @as(f64, FRAMES) / (@as(f64, @floatFromInt(s_ns)) / 1e9);
-    const s_us = @as(f64, @floatFromInt(s_ns)) / 1000.0 / FRAMES;
-    const d_fps = @as(f64, FRAMES) / (@as(f64, @floatFromInt(d_ns)) / 1e9);
-    const d_us = @as(f64, @floatFromInt(d_ns)) / 1000.0 / FRAMES;
+    const s_fps = @as(f64, VK_FRAMES) / (@as(f64, @floatFromInt(s_ns)) / 1e9);
+    const s_us = @as(f64, @floatFromInt(s_ns)) / 1000.0 / VK_FRAMES;
+    const d_fps = @as(f64, VK_FRAMES) / (@as(f64, @floatFromInt(d_ns)) / 1e9);
+    const d_us = @as(f64, @floatFromInt(d_ns)) / 1000.0 / VK_FRAMES;
     std.debug.print("  {s:<32} {d:>5}  {d:>8.0} ({d:>6.1})  {d:>8.0} ({d:>6.1})\n", .{ name, glyphs, s_fps, s_us, d_fps, d_us });
 }
 
@@ -547,7 +549,7 @@ fn runMultiFontScenarioVulkan(
     }
     const static_slice = probe.slice();
 
-    for (0..WARMUP) |_| {
+    for (0..VK_WARMUP) |_| {
         {
             const cmd = vulkan_platform.beginFrameOffscreen();
             renderer.setCommandBuffer(cmd);
@@ -557,7 +559,7 @@ fn runMultiFontScenarioVulkan(
     }
     vulkan_platform.queueWaitIdle();
     const t_s = nowNs();
-    for (0..FRAMES) |_| {
+    for (0..VK_FRAMES) |_| {
         {
             const cmd = vulkan_platform.beginFrameOffscreen();
             renderer.setCommandBuffer(cmd);
@@ -568,7 +570,7 @@ fn runMultiFontScenarioVulkan(
     vulkan_platform.queueWaitIdle();
     const s_ns = nowNs() - t_s;
 
-    for (0..WARMUP) |_| {
+    for (0..VK_WARMUP) |_| {
         {
             const cmd = vulkan_platform.beginFrameOffscreen();
             renderer.setCommandBuffer(cmd);
@@ -584,7 +586,7 @@ fn runMultiFontScenarioVulkan(
     }
     vulkan_platform.queueWaitIdle();
     const t_d = nowNs();
-    for (0..FRAMES) |_| {
+    for (0..VK_FRAMES) |_| {
         {
             const cmd = vulkan_platform.beginFrameOffscreen();
             renderer.setCommandBuffer(cmd);
@@ -601,10 +603,10 @@ fn runMultiFontScenarioVulkan(
     vulkan_platform.queueWaitIdle();
     const d_ns = nowNs() - t_d;
 
-    const s_fps = @as(f64, FRAMES) / (@as(f64, @floatFromInt(s_ns)) / 1e9);
-    const s_us = @as(f64, @floatFromInt(s_ns)) / 1000.0 / FRAMES;
-    const d_fps = @as(f64, FRAMES) / (@as(f64, @floatFromInt(d_ns)) / 1e9);
-    const d_us = @as(f64, @floatFromInt(d_ns)) / 1000.0 / FRAMES;
+    const s_fps = @as(f64, VK_FRAMES) / (@as(f64, @floatFromInt(s_ns)) / 1e9);
+    const s_us = @as(f64, @floatFromInt(s_ns)) / 1000.0 / VK_FRAMES;
+    const d_fps = @as(f64, VK_FRAMES) / (@as(f64, @floatFromInt(d_ns)) / 1e9);
+    const d_us = @as(f64, @floatFromInt(d_ns)) / 1000.0 / VK_FRAMES;
     std.debug.print("  {s:<32} {d:>5}  {d:>8.0} ({d:>6.1})  {d:>8.0} ({d:>6.1})\n", .{ name, total_glyphs, s_fps, s_us, d_fps, d_us });
 }
 
@@ -629,7 +631,7 @@ fn runVectorScenarioVulkan(
     _ = static_batch.addPicture(&picture_view, &picture);
     const static_slice = static_batch.slice();
 
-    for (0..WARMUP) |_| {
+    for (0..VK_WARMUP) |_| {
         const cmd = vulkan_platform.beginFrameOffscreen();
         renderer.setCommandBuffer(cmd);
         renderer.beginFrame();
@@ -638,7 +640,7 @@ fn runVectorScenarioVulkan(
     }
     vulkan_platform.queueWaitIdle();
     const t_s = nowNs();
-    for (0..FRAMES) |_| {
+    for (0..VK_FRAMES) |_| {
         const cmd = vulkan_platform.beginFrameOffscreen();
         renderer.setCommandBuffer(cmd);
         renderer.beginFrame();
@@ -648,7 +650,7 @@ fn runVectorScenarioVulkan(
     vulkan_platform.queueWaitIdle();
     const s_ns = nowNs() - t_s;
 
-    for (0..WARMUP) |_| {
+    for (0..VK_WARMUP) |_| {
         const cmd = vulkan_platform.beginFrameOffscreen();
         renderer.setCommandBuffer(cmd);
         renderer.beginFrame();
@@ -659,7 +661,7 @@ fn runVectorScenarioVulkan(
     }
     vulkan_platform.queueWaitIdle();
     const t_d = nowNs();
-    for (0..FRAMES) |_| {
+    for (0..VK_FRAMES) |_| {
         const cmd = vulkan_platform.beginFrameOffscreen();
         renderer.setCommandBuffer(cmd);
         renderer.beginFrame();
@@ -671,10 +673,10 @@ fn runVectorScenarioVulkan(
     vulkan_platform.queueWaitIdle();
     const d_ns = nowNs() - t_d;
 
-    const s_fps = @as(f64, FRAMES) / (@as(f64, @floatFromInt(s_ns)) / 1e9);
-    const s_us = @as(f64, @floatFromInt(s_ns)) / 1000.0 / FRAMES;
-    const d_fps = @as(f64, FRAMES) / (@as(f64, @floatFromInt(d_ns)) / 1e9);
-    const d_us = @as(f64, @floatFromInt(d_ns)) / 1000.0 / FRAMES;
+    const s_fps = @as(f64, VK_FRAMES) / (@as(f64, @floatFromInt(s_ns)) / 1e9);
+    const s_us = @as(f64, @floatFromInt(s_ns)) / 1000.0 / VK_FRAMES;
+    const d_fps = @as(f64, VK_FRAMES) / (@as(f64, @floatFromInt(d_ns)) / 1e9);
+    const d_us = @as(f64, @floatFromInt(d_ns)) / 1000.0 / VK_FRAMES;
     std.debug.print("  {s:<32} {d:>5}  {d:>8.0} ({d:>6.1})  {d:>8.0} ({d:>6.1})\n", .{ name, shapes, s_fps, s_us, d_fps, d_us });
 }
 
@@ -708,7 +710,7 @@ fn runBannerSceneVulkan(
     const static_text_slice = static_text.slice();
     const glyph_count = static_text.glyphCount();
 
-    for (0..WARMUP) |_| {
+    for (0..VK_WARMUP) |_| {
         const cmd = vulkan_platform.beginFrameOffscreen();
         renderer.setCommandBuffer(cmd);
         renderer.beginFrame();
@@ -718,7 +720,7 @@ fn runBannerSceneVulkan(
     }
     vulkan_platform.queueWaitIdle();
     const t_s = nowNs();
-    for (0..FRAMES) |_| {
+    for (0..VK_FRAMES) |_| {
         const cmd = vulkan_platform.beginFrameOffscreen();
         renderer.setCommandBuffer(cmd);
         renderer.beginFrame();
@@ -729,7 +731,7 @@ fn runBannerSceneVulkan(
     vulkan_platform.queueWaitIdle();
     const s_ns = nowNs() - t_s;
 
-    for (0..WARMUP) |_| {
+    for (0..VK_WARMUP) |_| {
         const cmd = vulkan_platform.beginFrameOffscreen();
         renderer.setCommandBuffer(cmd);
         renderer.beginFrame();
@@ -746,7 +748,7 @@ fn runBannerSceneVulkan(
     }
     vulkan_platform.queueWaitIdle();
     const t_d = nowNs();
-    for (0..FRAMES) |_| {
+    for (0..VK_FRAMES) |_| {
         const cmd = vulkan_platform.beginFrameOffscreen();
         renderer.setCommandBuffer(cmd);
         renderer.beginFrame();
@@ -764,10 +766,10 @@ fn runBannerSceneVulkan(
     vulkan_platform.queueWaitIdle();
     const d_ns = nowNs() - t_d;
 
-    const s_fps = @as(f64, FRAMES) / (@as(f64, @floatFromInt(s_ns)) / 1e9);
-    const s_us = @as(f64, @floatFromInt(s_ns)) / 1000.0 / FRAMES;
-    const d_fps = @as(f64, FRAMES) / (@as(f64, @floatFromInt(d_ns)) / 1e9);
-    const d_us = @as(f64, @floatFromInt(d_ns)) / 1000.0 / FRAMES;
+    const s_fps = @as(f64, VK_FRAMES) / (@as(f64, @floatFromInt(s_ns)) / 1e9);
+    const s_us = @as(f64, @floatFromInt(s_ns)) / 1000.0 / VK_FRAMES;
+    const d_fps = @as(f64, VK_FRAMES) / (@as(f64, @floatFromInt(d_ns)) / 1e9);
+    const d_us = @as(f64, @floatFromInt(d_ns)) / 1000.0 / VK_FRAMES;
     std.debug.print("  {s:<32} {d:>5}  {d:>5}  {d:>8.0} ({d:>6.1})  {d:>8.0} ({d:>6.1})\n", .{ name, glyph_count, shape_count, s_fps, s_us, d_fps, d_us });
 }
 
@@ -1142,7 +1144,7 @@ pub fn main() !void {
             \\  Setup (4 fonts + atlases + texture array): {d:.0} us
             \\  Scenario                          Glyphs  static FPS (us)   dynamic FPS (us)
             \\
-        , .{ hb_str, WIDTH, HEIGHT, WARMUP, FRAMES, setup_us });
+        , .{ hb_str, WIDTH, HEIGHT, VK_WARMUP, VK_FRAMES, setup_us });
 
         runScenarioVulkan("Game HUD (2 lines)", buildHud, &atlas, &font, &renderer, vbuf, mvp);
         runScenarioVulkan("Multi-size (6 sizes)", buildMultiSize, &atlas, &font, &renderer, vbuf, mvp);

@@ -258,6 +258,12 @@ pub fn build(b: *std.Build) void {
     const bench_suite_step = b.step("bench-suite", "Run consolidated benchmark suite");
     bench_suite_step.dependOn(&run_bench_suite.step);
 
+    // ── Run all benchmarks serially ──
+    const bench_all_step = b.step("bench-all", "Run all benchmarks serially");
+    run_bench_hl.step.dependOn(&run_bench_cmp.step);
+    run_bench_suite.step.dependOn(&run_bench_hl.step);
+    bench_all_step.dependOn(&run_bench_suite.step);
+
     // ── Headless demo screenshot ──
     const screenshot_module = b.createModule(.{
         .root_source_file = b.path("src/screenshot_demo.zig"),
