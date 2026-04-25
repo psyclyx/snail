@@ -31,6 +31,11 @@ pub fn main() !void {
     }
 }
 
+fn linearToSrgbU8(v: f32) u8 {
+    const s = if (v <= 0.0031308) v * 12.92 else 1.055 * std.math.pow(f32, v, 1.0 / 2.4) - 0.055;
+    return @intFromFloat(std.math.clamp(s, 0, 1) * 255);
+}
+
 fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
     var scene_assets = try demo_banner_scene.Assets.init(allocator);
     defer scene_assets.deinit();
@@ -217,9 +222,9 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
                 }
             }
             cpu_state.clear(
-                @intFromFloat(clear[0] * 255),
-                @intFromFloat(clear[1] * 255),
-                @intFromFloat(clear[2] * 255),
+                linearToSrgbU8(clear[0]),
+                linearToSrgbU8(clear[1]),
+                linearToSrgbU8(clear[2]),
                 @intFromFloat(clear[3] * 255),
             );
         }

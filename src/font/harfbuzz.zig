@@ -65,7 +65,7 @@ pub const HarfBuzzShaper = struct {
     }
 
     /// Shape text into the reusable buffer. Returns glyph count, infos, and positions.
-    fn shapeText(self: *const HarfBuzzShaper, text: []const u8) struct {
+    pub fn shapeText(self: *const HarfBuzzShaper, text: []const u8) struct {
         count: c_uint,
         infos: [*c]hb.hb_glyph_info_t,
         positions: [*c]hb.hb_glyph_position_t,

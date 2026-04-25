@@ -19,10 +19,11 @@ pub const KEY_DOWN = wayland.KEY_DOWN;
 var app: ?*wayland.Window = null;
 var shm_pool: ?*c.wl_shm_pool = null;
 var shm_fd: std.posix.fd_t = -1;
-var shm_map: ?[*]align(std.heap.page_size_min) u8 = null;
+var shm_map: ?[]align(std.heap.page_size_min) u8 = null;
 var shm_size: usize = 0;
 var wl_buffer: ?*c.wl_buffer = null;
 var pixel_ptr: ?[*]u8 = null;
+var render_buf: ?[]u8 = null; // separate RGBA buffer for CpuRenderer
 var buf_width: u32 = 0;
 var buf_height: u32 = 0;
 
@@ -71,20 +72,19 @@ pub fn getBufferSize() [2]u32 {
 pub fn swapBuffers() void {
     if (app) |window| {
         if (wl_buffer) |buf| {
-            // Convert RGBA → ARGB (Wayland expects ARGB8888 in native byte order)
-            const total = @as(usize, buf_width) * buf_height;
-            if (pixel_ptr) |px| {
-                var i: usize = 0;
-                while (i < total) : (i += 1) {
-                    const off = i * 4;
-                    const r = px[off + 0];
-                    const g = px[off + 1];
-                    const b = px[off + 2];
-                    const a = px[off + 3];
-                    px[off + 0] = b;
-                    px[off + 1] = g;
-                    px[off + 2] = r;
-                    px[off + 3] = a;
+            // Convert RGBA (CpuRenderer) → BGRA (ARGB8888 little-endian) into shm buffer
+            if (render_buf) |src| {
+                if (shm_map) |dst_slice| {
+                    const dst = dst_slice.ptr;
+                    const total = @as(usize, buf_width) * buf_height;
+                    var i: usize = 0;
+                    while (i < total) : (i += 1) {
+                        const off = i * 4;
+                        dst[off + 0] = src[off + 2]; // B
+                        dst[off + 1] = src[off + 1]; // G
+                        dst[off + 2] = src[off + 0]; // R
+                        dst[off + 3] = src[off + 3]; // A
+                    }
                 }
             }
             c.wl_surface_attach(window.surface, buf, 0, 0);
@@ -142,30 +142,31 @@ fn createShmBuffer(width: u32, height: u32) !void {
     const size = @as(usize, stride) * height;
 
     // Create anonymous shared memory
-    shm_fd = try std.posix.memfd_create("snail-cpu", .{});
+    shm_fd = try std.posix.memfd_create("snail-cpu", 0);
     errdefer {
-        std.posix.close(shm_fd);
+        _ = std.c.close(shm_fd);
         shm_fd = -1;
     }
-    try std.posix.ftruncate(shm_fd, @intCast(size));
+    if (std.c.ftruncate(shm_fd, @intCast(size)) != 0) return error.FtruncateFailed;
 
-    shm_map = try std.posix.mmap(null, size, .{ .read = true, .write = true }, .{ .TYPE = .SHARED }, shm_fd, 0);
+    shm_map = try std.posix.mmap(null, size, .{ .READ = true, .WRITE = true }, .{ .TYPE = .SHARED }, shm_fd, 0);
     shm_size = size;
 
     shm_pool = c.wl_shm_create_pool(wl_shm, shm_fd, @intCast(size)) orelse return error.ShmPoolFailed;
 
-    // ARGB8888 format (Wayland standard)
-    const WL_SHM_FORMAT_ARGB8888 = 0;
+    const WL_SHM_FORMAT_XRGB8888 = 1;
     wl_buffer = c.wl_shm_pool_create_buffer(
         shm_pool.?,
         0,
         @intCast(width),
         @intCast(height),
         @intCast(stride),
-        WL_SHM_FORMAT_ARGB8888,
+        WL_SHM_FORMAT_XRGB8888,
     ) orelse return error.BufferCreateFailed;
 
-    pixel_ptr = @ptrCast(shm_map.?);
+    // CpuRenderer writes RGBA; we convert to BGRA in swapBuffers
+    render_buf = try std.heap.c_allocator.alloc(u8, size);
+    pixel_ptr = render_buf.?.ptr;
     buf_width = width;
     buf_height = height;
 }
@@ -180,12 +181,16 @@ fn destroyShmBuffer() void {
         shm_pool = null;
     }
     if (shm_map) |map| {
-        std.posix.munmap(map[0..shm_size]);
+        std.posix.munmap(map);
         shm_map = null;
     }
     if (shm_fd >= 0) {
-        std.posix.close(shm_fd);
+        _ = std.c.close(shm_fd);
         shm_fd = -1;
+    }
+    if (render_buf) |rb| {
+        std.heap.c_allocator.free(rb);
+        render_buf = null;
     }
     pixel_ptr = null;
     buf_width = 0;

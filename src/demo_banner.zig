@@ -619,6 +619,7 @@ pub fn drawTextCpu(cpu: *@import("cpu_renderer.zig").CpuRenderer, layout: Layout
     const stage_row_extents = lineExtents(r.latin_font, 12.0);
     const badge_baseline_top = centeredBaselineTopFromExtents(badge_extents, layout.badge_pill);
     const emoji_label_baseline_top = centeredBaselineTopFromExtents(metrics.script_label_extents, layout.emoji_pill);
+    const emoji_baseline_top = centeredBaselineTopFromExtents(metrics.emoji_extents, layout.emoji_pill);
     const scripts_heading_gutter = snail.Rect{
         .x = layout.script_band.x,
         .y = layout.specimen_panel.y + layout.specimen_panel.h,
@@ -672,7 +673,7 @@ pub fn drawTextCpu(cpu: *@import("cpu_renderer.zig").CpuRenderer, layout: Layout
     }
 
     _ = cpu.drawText(&r.latin_atlas.*, r.latin_font, emoji_label_text, layout.emoji_pill.x + script_label_inset_x, emoji_label_baseline_top, script_label_font_size, slate);
-    // Emoji: CPU renderer can't render COLR glyphs, skip emoji text
+    _ = cpu.drawText(&r.emoji.atlas, &r.emoji.font, emoji_text, snapPx(layout.script_text_x + script_sample_inset_x - metrics.emoji_bounds.min_x), emoji_baseline_top, emoji_font_size, ink);
 
     const stage_x = layout.path_label_area.x + 24.0;
     _ = cpu.drawText(&r.latin_atlas.*, r.latin_font, stage_label_text, stage_x, baselineFromTop(stage_label_top, stage_label_extents), 12.0, teal);

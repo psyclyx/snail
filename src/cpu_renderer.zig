@@ -215,9 +215,9 @@ pub const CpuRenderer = struct {
         self.renderGlyphInternal(atlas, info, x, y, font_size, color);
     }
 
-    /// Lay out and render a UTF-8 string. Uses the same shaping/kerning
-    /// logic as TextBatch.addText. Returns advance width in pixels.
-    /// Coordinates use top-left origin (y increases downward).
+    /// Lay out and render a UTF-8 string. Uses HarfBuzz for shaping when
+    /// available, falling back to basic cmap + kerning. Returns advance
+    /// width in pixels. Coordinates use top-left origin (y down).
     pub fn drawText(
         self: *CpuRenderer,
         atlas: *const snail.Atlas,
@@ -228,6 +228,14 @@ pub const CpuRenderer = struct {
         font_size: f32,
         color: [4]f32,
     ) f32 {
+        // Use HarfBuzz for full complex-script shaping when available
+        if (comptime @import("build_options").enable_harfbuzz) {
+            if (atlas.hb_shaper) |hbs| {
+                return self.drawTextShaped(atlas, hbs, text, x, y, font_size, color);
+            }
+        }
+
+        // Fallback: simple cmap lookup + kerning
         const scale = font_size / @as(f32, @floatFromInt(font.unitsPerEm()));
         var cursor_x = x;
 
@@ -264,7 +272,7 @@ pub const CpuRenderer = struct {
                 cursor_x += @as(f32, @floatFromInt(kern)) * scale;
             }
 
-            self.drawGlyphId(atlas, gid, cursor_x, y, font_size, color);
+            self.emitGlyphCpu(atlas, gid, cursor_x, y, font_size, color);
 
             const advance: u16 = if (atlas.getGlyph(gid)) |info| info.advance_width else 500;
             cursor_x += @as(f32, @floatFromInt(advance)) * scale;
@@ -272,6 +280,78 @@ pub const CpuRenderer = struct {
         }
 
         return cursor_x - x;
+    }
+
+    fn drawTextShaped(
+        self: *CpuRenderer,
+        atlas: *const snail.Atlas,
+        hbs: anytype,
+        text: []const u8,
+        x: f32,
+        y: f32,
+        font_size: f32,
+        color: [4]f32,
+    ) f32 {
+        const shaped = hbs.shapeText(text);
+        if (shaped.count == 0 or shaped.infos == null or shaped.positions == null) return 0;
+
+        const scale = font_size / @as(f32, @floatFromInt(hbs.units_per_em));
+        var cursor_x: f32 = 0;
+        var cursor_y: f32 = 0;
+
+        for (0..shaped.count) |i| {
+            const gid: u16 = @intCast(shaped.infos[i].codepoint);
+            const pos = shaped.positions[i];
+            const glyph_x = x + (cursor_x + @as(f32, @floatFromInt(pos.x_offset))) * scale;
+            const glyph_y = y + (cursor_y + @as(f32, @floatFromInt(pos.y_offset))) * scale;
+
+            self.emitGlyphCpu(atlas, gid, glyph_x, glyph_y, font_size, color);
+
+            cursor_x += @as(f32, @floatFromInt(pos.x_advance));
+            cursor_y += @as(f32, @floatFromInt(pos.y_advance));
+        }
+
+        return cursor_x * scale;
+    }
+
+    /// Emit a glyph with COLR multi-layer support, mirroring glyph_emit.emitGlyph.
+    fn emitGlyphCpu(
+        self: *CpuRenderer,
+        atlas: *const snail.Atlas,
+        glyph_id: u16,
+        x: f32,
+        y: f32,
+        font_size: f32,
+        color: [4]f32,
+    ) void {
+        // COLR base glyph (multi-layer rendered as single quad on GPU, per-layer on CPU)
+        if (atlas.colr_base_map) |cbm| {
+            if (cbm.get(glyph_id)) |_| {
+                var layer_it = atlas.colrLayers(glyph_id);
+                while (layer_it.next()) |layer| {
+                    const linfo = atlas.getGlyph(layer.glyph_id) orelse continue;
+                    if (linfo.band_entry.h_band_count == 0 or linfo.band_entry.v_band_count == 0) continue;
+                    const lcolor: [4]f32 = if (layer.color[0] < 0) color else layer.color;
+                    self.drawGlyphInfo(atlas, linfo, x, y, font_size, lcolor);
+                }
+                return;
+            }
+        }
+
+        // COLR layer iteration (non-base)
+        var layer_it = atlas.colrLayers(glyph_id);
+        if (layer_it.count() > 0) {
+            while (layer_it.next()) |layer| {
+                const linfo = atlas.getGlyph(layer.glyph_id) orelse continue;
+                if (linfo.band_entry.h_band_count == 0 or linfo.band_entry.v_band_count == 0) continue;
+                const lcolor: [4]f32 = if (layer.color[0] < 0) color else layer.color;
+                self.drawGlyphInfo(atlas, linfo, x, y, font_size, lcolor);
+            }
+            return;
+        }
+
+        // Plain glyph
+        self.drawGlyphId(atlas, glyph_id, x, y, font_size, color);
     }
 
     fn renderGlyphInternal(
@@ -501,18 +581,22 @@ const PathPaintSample = struct {
 };
 
 fn samplePathPaint(atlas: *const snail.Atlas, instance: snail.PathPicture.Instance, local: Vec2) PathPaintSample {
+    return samplePathPaintAt(atlas, instance.info_x, instance.info_y, local);
+}
+
+fn samplePathPaintAt(atlas: *const snail.Atlas, info_x: u16, info_y: u16, local: Vec2) PathPaintSample {
     const data = atlas.layer_info_data orelse return .{ .color = .{ 1, 1, 1, 1 } };
     const width = atlas.layer_info_width;
-    const info = fetchLayerInfoTexel(data, width, instance.info_x, instance.info_y, 0);
+    const info = fetchLayerInfoTexel(data, width, info_x, info_y, 0);
     const tag: i32 = @intFromFloat(@round(-info[3]));
 
-    const data0 = fetchLayerInfoTexel(data, width, instance.info_x, instance.info_y, 2);
+    const data0 = fetchLayerInfoTexel(data, width, info_x, info_y, 2);
     switch (tag) {
         1 => return .{ .color = data0 },
         2 => {
-            const color0 = fetchLayerInfoTexel(data, width, instance.info_x, instance.info_y, 3);
-            const color1 = fetchLayerInfoTexel(data, width, instance.info_x, instance.info_y, 4);
-            const extra = fetchLayerInfoTexel(data, width, instance.info_x, instance.info_y, 5);
+            const color0 = fetchLayerInfoTexel(data, width, info_x, info_y, 3);
+            const color1 = fetchLayerInfoTexel(data, width, info_x, info_y, 4);
+            const extra = fetchLayerInfoTexel(data, width, info_x, info_y, 5);
             const start = Vec2.new(data0[0], data0[1]);
             const end = Vec2.new(data0[2], data0[3]);
             const delta = Vec2.sub(end, start);
@@ -525,8 +609,8 @@ fn samplePathPaint(atlas: *const snail.Atlas, instance: snail.PathPicture.Instan
             };
         },
         3 => {
-            const color0 = fetchLayerInfoTexel(data, width, instance.info_x, instance.info_y, 3);
-            const color1 = fetchLayerInfoTexel(data, width, instance.info_x, instance.info_y, 4);
+            const color0 = fetchLayerInfoTexel(data, width, info_x, info_y, 3);
+            const color1 = fetchLayerInfoTexel(data, width, info_x, info_y, 4);
             const center = Vec2.new(data0[0], data0[1]);
             const radius = @max(@abs(data0[2]), 1.0 / 65536.0);
             const t = Vec2.length(Vec2.sub(local, center)) / radius;
@@ -535,35 +619,85 @@ fn samplePathPaint(atlas: *const snail.Atlas, instance: snail.PathPicture.Instan
                 .apply_dither = true,
             };
         },
-        4 => {
-            const records = atlas.paint_image_records orelse return .{ .color = .{ 1, 0, 1, 1 } };
-            const record_index = (@as(usize, instance.info_y) * @as(usize, width) + @as(usize, instance.info_x)) / snail.PATH_PAINT_TEXELS_PER_RECORD;
-            if (record_index >= records.len) return .{ .color = .{ 1, 0, 1, 1 } };
-            const record = records[record_index] orelse return .{ .color = .{ 1, 0, 1, 1 } };
-            const data1 = fetchLayerInfoTexel(data, width, instance.info_x, instance.info_y, 3);
-            const tint = fetchLayerInfoTexel(data, width, instance.info_x, instance.info_y, 4);
-            const extra = fetchLayerInfoTexel(data, width, instance.info_x, instance.info_y, 5);
-            const raw_uv = Vec2.new(
-                data0[0] * local.x + data0[1] * local.y + data0[2],
-                data1[0] * local.x + data1[1] * local.y + data1[2],
-            );
-            const scale_x = if (@abs(extra[0]) > 1e-6) extra[0] else 1.0;
-            const scale_y = if (@abs(extra[1]) > 1e-6) extra[1] else 1.0;
-            const uv = Vec2.new(
-                wrapPaintT(raw_uv.x, paintExtendFromFloat(extra[2])) * scale_x,
-                wrapPaintT(raw_uv.y, paintExtendFromFloat(extra[3])) * scale_y,
-            );
-            const filter: snail.ImageFilter = if (@as(i32, @intFromFloat(@round(data1[3]))) == 1) .nearest else .linear;
-            const sample = sampleImageLinear(record.image, uv, filter);
-            return .{ .color = .{
-                sample[0] * tint[0],
-                sample[1] * tint[1],
-                sample[2] * tint[2],
-                sample[3] * tint[3],
-            } };
+        4 => return sampleImagePaint(atlas, data, width, info_x, info_y, 2, data0, local),
+        5 => {
+            // Composite group: 1-texel header, then 6-texel sub-records.
+            // Read the fill layer's paint tag at offset 1 from the group header.
+            const fill_info = fetchLayerInfoTexel(data, width, info_x, info_y, 1);
+            const fill_tag: i32 = @intFromFloat(@round(-fill_info[3]));
+            // Fill paint data starts at offset 3 (header=0, sub-record band info=1,2, paint data=3+)
+            const fill_data0 = fetchLayerInfoTexel(data, width, info_x, info_y, 3);
+            switch (fill_tag) {
+                1 => return .{ .color = fill_data0 },
+                2 => {
+                    const color0 = fetchLayerInfoTexel(data, width, info_x, info_y, 4);
+                    const color1 = fetchLayerInfoTexel(data, width, info_x, info_y, 5);
+                    const extra = fetchLayerInfoTexel(data, width, info_x, info_y, 6);
+                    const start = Vec2.new(fill_data0[0], fill_data0[1]);
+                    const end = Vec2.new(fill_data0[2], fill_data0[3]);
+                    const delta = Vec2.sub(end, start);
+                    const len_sq = Vec2.dot(delta, delta);
+                    var t: f32 = 0.0;
+                    if (len_sq > 1e-10) t = Vec2.dot(Vec2.sub(local, start), delta) / len_sq;
+                    return .{
+                        .color = lerpColor(color0, color1, wrapPaintT(t, paintExtendFromFloat(extra[0]))),
+                        .apply_dither = true,
+                    };
+                },
+                3 => {
+                    const color0 = fetchLayerInfoTexel(data, width, info_x, info_y, 4);
+                    const color1 = fetchLayerInfoTexel(data, width, info_x, info_y, 5);
+                    const center = Vec2.new(fill_data0[0], fill_data0[1]);
+                    const radius = @max(@abs(fill_data0[2]), 1.0 / 65536.0);
+                    const t = Vec2.length(Vec2.sub(local, center)) / radius;
+                    return .{
+                        .color = lerpColor(color0, color1, wrapPaintT(t, paintExtendFromFloat(fill_data0[3]))),
+                        .apply_dither = true,
+                    };
+                },
+                4 => return sampleImagePaint(atlas, data, width, info_x, info_y, 3, fill_data0, local),
+                else => return .{ .color = .{ 1, 0, 1, 1 } },
+            }
         },
         else => return .{ .color = .{ 1, 0, 1, 1 } },
     }
+}
+
+fn sampleImagePaint(
+    atlas: *const snail.Atlas,
+    data: []const f32,
+    width: u32,
+    info_x: u16,
+    info_y: u16,
+    data0_offset: u32,
+    data0: [4]f32,
+    local: Vec2,
+) PathPaintSample {
+    const records = atlas.paint_image_records orelse return .{ .color = .{ 1, 0, 1, 1 } };
+    const record_index = (@as(usize, info_y) * @as(usize, width) + @as(usize, info_x)) / snail.PATH_PAINT_TEXELS_PER_RECORD;
+    if (record_index >= records.len) return .{ .color = .{ 1, 0, 1, 1 } };
+    const record = records[record_index] orelse return .{ .color = .{ 1, 0, 1, 1 } };
+    const data1 = fetchLayerInfoTexel(data, width, info_x, info_y, data0_offset + 1);
+    const tint = fetchLayerInfoTexel(data, width, info_x, info_y, data0_offset + 2);
+    const extra = fetchLayerInfoTexel(data, width, info_x, info_y, data0_offset + 3);
+    const raw_uv = Vec2.new(
+        data0[0] * local.x + data0[1] * local.y + data0[2],
+        data1[0] * local.x + data1[1] * local.y + data1[2],
+    );
+    const scale_x = if (@abs(extra[0]) > 1e-6) extra[0] else 1.0;
+    const scale_y = if (@abs(extra[1]) > 1e-6) extra[1] else 1.0;
+    const uv = Vec2.new(
+        wrapPaintT(raw_uv.x, paintExtendFromFloat(extra[2])) * scale_x,
+        wrapPaintT(raw_uv.y, paintExtendFromFloat(extra[3])) * scale_y,
+    );
+    const filter: snail.ImageFilter = if (@as(i32, @intFromFloat(@round(data1[3]))) == 1) .nearest else .linear;
+    const sample = sampleImageLinear(record.image, uv, filter);
+    return .{ .color = .{
+        sample[0] * tint[0],
+        sample[1] * tint[1],
+        sample[2] * tint[2],
+        sample[3] * tint[3],
+    } };
 }
 
 fn interleavedGradientNoise(row: u32, col: u32) f32 {
