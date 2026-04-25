@@ -45,17 +45,19 @@ There is no rasterization, no texture sampling for glyph shapes, and no distance
 Requires [Zig 0.16](https://ziglang.org/download/), OpenGL 3.3+, HarfBuzz, and pkg-config. The interactive demo requires Wayland + EGL. Vulkan support is optional.
 
 ```sh
-zig build test                       # unit tests
-zig build bench                      # CPU microbenchmarks
-zig build bench-compare              # layout comparison vs FreeType
-zig build bench-headless             # offscreen end-to-end frame timing
-zig build bench-suite                # combined layout + rendering suite
-zig build bench-suite -Dvulkan=true  # includes Vulkan passes
-zig build run                        # interactive demo (Wayland + EGL)
-zig build run -Dvulkan=true          # Vulkan demo backend
-zig build screenshot                 # render demo scene to zig-out/demo-screenshot.tga
-zig build install --release=fast     # install libsnail.a + snail.h to zig-out/
+zig build test                                  # unit tests
+zig build run                                   # interactive demo (GL 4.4, Wayland)
+zig build run -Drenderer=gl33                   # force OpenGL 3.3
+zig build run -Drenderer=vulkan -Dvulkan=true   # Vulkan backend
+zig build run -Drenderer=cpu                    # CPU renderer (headless)
+zig build screenshot                            # GL screenshot → zig-out/demo-screenshot.tga
+zig build screenshot-cpu                        # CPU screenshot (no GPU)
+zig build bench-suite                           # layout + rendering benchmarks
+zig build bench-suite -Dvulkan=true             # includes Vulkan passes
+zig build install --release=fast                # install libsnail.a + snail.h
 ```
+
+Library backend flags: `-Dopengl=true` (default), `-Dvulkan=false`, `-Dcpu-renderer=true` (default).
 
 ### Nix
 

@@ -146,6 +146,16 @@ pub const TextResources = struct {
     emoji_view: *const snail.AtlasHandle,
 };
 
+pub const CpuTextResources = struct {
+    latin_font: *const snail.Font,
+    latin_atlas: *const snail.Atlas,
+    arabic: *const ScriptFont,
+    devanagari: *const ScriptFont,
+    mongolian: *const ScriptFont,
+    thai: *const ScriptFont,
+    emoji: *const ScriptFont,
+};
+
 fn snapPx(value: f32) f32 {
     return @round(value);
 }
@@ -582,6 +592,94 @@ pub fn drawText(batch: *snail.TextBatch, layout: Layout, metrics: TextMetrics, r
     _ = batch.addText(resources.latin_view, resources.latin_font, stage_caption_text, stage_x, baselineFromTop(stage_caption_top, stage_caption_extents), 14.0, mist);
     for (layout.stage_rows, stage_shape_labels) |row, label| {
         _ = batch.addText(resources.latin_view, resources.latin_font, label, row.x + 64.0, centeredBaselineTopFromExtents(stage_row_extents, row), 12.0, ink);
+    }
+}
+
+pub fn drawTextCpu(cpu: *@import("cpu_renderer.zig").CpuRenderer, layout: Layout, metrics: TextMetrics, resources: CpuTextResources) void {
+    const r = resources;
+    const hero_x = layout.frame.x + 30.0;
+    const title_size = std.math.clamp(layout.frame.w * 0.11, 88.0, 118.0);
+    const subtitle_size = std.math.clamp(layout.frame.w * 0.019, 19.0, 26.0);
+    const ligature_size = std.math.clamp(layout.specimen_panel.w * 0.072, 34.0, 48.0);
+    const pangram_size = std.math.clamp(layout.specimen_panel.w * 0.034, 18.0, 22.0);
+    const badge_extents = lineExtents(r.latin_font, badge_font_size);
+    const title_extents = lineExtents(r.latin_font, title_size);
+    const subtitle_extents = lineExtents(r.latin_font, subtitle_size);
+    const hero_meta_extents = lineExtents(r.latin_font, 14.0);
+    const specimen_label_extents = lineExtents(r.latin_font, 12.0);
+    const ligature_extents = lineExtents(r.latin_font, ligature_size);
+    const ligature_caption_extents = lineExtents(r.latin_font, 14.0);
+    const pangram_a_extents = lineExtents(r.latin_font, pangram_size);
+    const pangram_b_extents = lineExtents(r.latin_font, 16.0);
+    const specimen_footer_extents = lineExtents(r.latin_font, 12.0);
+    const scripts_heading_extents = lineExtents(r.latin_font, scripts_heading_font_size);
+    const stage_label_extents = lineExtents(r.latin_font, 12.0);
+    const stage_title_extents = lineExtents(r.latin_font, 21.0);
+    const stage_caption_extents = lineExtents(r.latin_font, 14.0);
+    const stage_row_extents = lineExtents(r.latin_font, 12.0);
+    const badge_baseline_top = centeredBaselineTopFromExtents(badge_extents, layout.badge_pill);
+    const emoji_label_baseline_top = centeredBaselineTopFromExtents(metrics.script_label_extents, layout.emoji_pill);
+    const scripts_heading_gutter = snail.Rect{
+        .x = layout.script_band.x,
+        .y = layout.specimen_panel.y + layout.specimen_panel.h,
+        .w = layout.script_band.w,
+        .h = layout.script_band.y - (layout.specimen_panel.y + layout.specimen_panel.h),
+    };
+    const hero_badge_gap = snapPx(@max(10.0, subtitle_extents.height() * 0.45));
+    const hero_subtitle_gap = snapPx(@max(8.0, hero_meta_extents.height() * 0.65));
+    const hero_meta_gap = snapPx(@max(8.0, hero_meta_extents.height() * 0.35));
+    const hero_title_top = layout.badge_pill.y + layout.badge_pill.h + hero_badge_gap;
+    const hero_subtitle_top = hero_title_top + title_extents.height() + hero_subtitle_gap;
+    const hero_meta_top = hero_subtitle_top + subtitle_extents.height() + hero_meta_gap;
+    const specimen_label_top = layout.specimen_panel.y + 26.0 - specimen_label_extents.ascent;
+    const ligature_top = layout.specimen_panel.y + 70.0 - ligature_extents.ascent;
+    const ligature_caption_top = layout.specimen_panel.y + 100.0 - ligature_caption_extents.ascent;
+    const pangram_a_top = layout.specimen_panel.y + 136.0 - pangram_a_extents.ascent;
+    const pangram_b_top = layout.specimen_panel.y + 162.0 - pangram_b_extents.ascent;
+    const specimen_footer_top = layout.specimen_panel.y + layout.specimen_panel.h - 20.0 - specimen_footer_extents.ascent;
+    const scripts_heading_baseline_top = centeredBaselineTopFromExtents(scripts_heading_extents, scripts_heading_gutter);
+    const stage_label_top = layout.path_label_area.y + 26.0 - stage_label_extents.ascent;
+    const stage_title_top = layout.path_label_area.y + 52.0 - stage_title_extents.ascent;
+    const stage_caption_top = layout.path_label_area.y + 74.0 - stage_caption_extents.ascent;
+
+    _ = cpu.drawText(&r.latin_atlas.*, r.latin_font, badge_text, layout.badge_pill.x + 16.0, badge_baseline_top, badge_font_size, teal);
+    _ = cpu.drawText(&r.latin_atlas.*, r.latin_font, title_text, hero_x, baselineFromTop(hero_title_top, title_extents), title_size, ink);
+    _ = cpu.drawText(&r.latin_atlas.*, r.latin_font, subtitle_text, hero_x, baselineFromTop(hero_subtitle_top, subtitle_extents), subtitle_size, mist);
+    _ = cpu.drawText(&r.latin_atlas.*, r.latin_font, hero_meta_text, hero_x, baselineFromTop(hero_meta_top, hero_meta_extents), 14.0, slate);
+
+    const specimen_x = layout.specimen_panel.x + 24.0;
+    _ = cpu.drawText(&r.latin_atlas.*, r.latin_font, ligature_label_text, specimen_x, baselineFromTop(specimen_label_top, specimen_label_extents), 12.0, teal);
+    _ = cpu.drawText(&r.latin_atlas.*, r.latin_font, ligature_text, specimen_x, baselineFromTop(ligature_top, ligature_extents), ligature_size, ink);
+    _ = cpu.drawText(&r.latin_atlas.*, r.latin_font, ligature_caption_text, specimen_x, baselineFromTop(ligature_caption_top, ligature_caption_extents), 14.0, sand);
+    _ = cpu.drawText(&r.latin_atlas.*, r.latin_font, pangram_a_text, specimen_x, baselineFromTop(pangram_a_top, pangram_a_extents), pangram_size, mist);
+    _ = cpu.drawText(&r.latin_atlas.*, r.latin_font, pangram_b_text, specimen_x, baselineFromTop(pangram_b_top, pangram_b_extents), 16.0, ink);
+    _ = cpu.drawText(&r.latin_atlas.*, r.latin_font, specimen_footer_text, specimen_x, baselineFromTop(specimen_footer_top, specimen_footer_extents), 12.0, slate);
+
+    _ = cpu.drawText(&r.latin_atlas.*, r.latin_font, scripts_heading_text, layout.script_band.x + 12.0, scripts_heading_baseline_top, scripts_heading_font_size, teal);
+
+    const cpu_script_items = [_]struct { spec: ScriptRowSpec, font: *const ScriptFont }{
+        .{ .spec = script_row_specs[0], .font = r.arabic },
+        .{ .spec = script_row_specs[1], .font = r.devanagari },
+        .{ .spec = script_row_specs[2], .font = r.thai },
+        .{ .spec = script_row_specs[3], .font = r.mongolian },
+    };
+    for (layout.script_rows, cpu_script_items, 0..) |row, item, i| {
+        const label_baseline_top = centeredBaselineTopFromExtents(metrics.script_label_extents, row);
+        const sample_baseline_top = centeredBaselineTopFromExtents(metrics.script_sample_extents[i], row);
+        const sample_x = snapPx(layout.script_text_x + script_sample_inset_x + item.spec.sample_inset_x - metrics.script_sample_bounds[i].min_x);
+        _ = cpu.drawText(&r.latin_atlas.*, r.latin_font, item.spec.label, row.x + script_label_inset_x, label_baseline_top, script_label_font_size, slate);
+        _ = cpu.drawText(&item.font.atlas, &item.font.font, item.spec.text, sample_x, sample_baseline_top, item.spec.size, item.spec.color);
+    }
+
+    _ = cpu.drawText(&r.latin_atlas.*, r.latin_font, emoji_label_text, layout.emoji_pill.x + script_label_inset_x, emoji_label_baseline_top, script_label_font_size, slate);
+    // Emoji: CPU renderer can't render COLR glyphs, skip emoji text
+
+    const stage_x = layout.path_label_area.x + 24.0;
+    _ = cpu.drawText(&r.latin_atlas.*, r.latin_font, stage_label_text, stage_x, baselineFromTop(stage_label_top, stage_label_extents), 12.0, teal);
+    _ = cpu.drawText(&r.latin_atlas.*, r.latin_font, stage_title_text, stage_x, baselineFromTop(stage_title_top, stage_title_extents), 21.0, ink);
+    _ = cpu.drawText(&r.latin_atlas.*, r.latin_font, stage_caption_text, stage_x, baselineFromTop(stage_caption_top, stage_caption_extents), 14.0, mist);
+    for (layout.stage_rows, stage_shape_labels) |row, label| {
+        _ = cpu.drawText(&r.latin_atlas.*, r.latin_font, label, row.x + 64.0, centeredBaselineTopFromExtents(stage_row_extents, row), 12.0, ink);
     }
 }
 

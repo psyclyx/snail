@@ -43,7 +43,7 @@ pub fn main() !void {
     cpu.drawPathPicture(&path_picture);
 
     // Text — same layout as the GPU demo, rendered with the CPU renderer
-    demo_banner.drawTextCpu(&cpu, h, layout, scene_assets.metrics, .{
+    demo_banner.drawTextCpu(&cpu, layout, scene_assets.metrics, .{
         .latin_font = &scene_assets.latin_font,
         .latin_atlas = &scene_assets.latin_atlas,
         .arabic = &scene_assets.arabic,

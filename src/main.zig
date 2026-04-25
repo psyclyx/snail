@@ -5,10 +5,15 @@ const demo_banner = @import("demo_banner.zig");
 const demo_banner_scene = @import("demo_banner_scene.zig");
 const screenshot = @import("render/screenshot.zig");
 const subpixel_detect = @import("render/subpixel_detect.zig");
+const CpuRenderer = @import("cpu_renderer.zig").CpuRenderer;
 
-const use_vulkan = build_options.enable_vulkan;
-const platform = if (use_vulkan) @import("render/vulkan_platform.zig") else @import("render/platform.zig");
-const gl = if (use_vulkan) struct {} else @import("render/gl.zig").gl;
+const demo_renderer = build_options.demo_renderer;
+const use_gl = demo_renderer == .gl44 or demo_renderer == .gl33;
+const use_vulkan = demo_renderer == .vulkan;
+const use_cpu = demo_renderer == .cpu;
+
+const platform = if (use_vulkan) @import("render/vulkan_platform.zig") else if (use_gl) @import("render/platform.zig") else struct {};
+const gl = if (use_gl) @import("render/gl.zig").gl else struct {};
 
 pub fn main() !void {
     var da: std.heap.DebugAllocator(.{}) = .init;
@@ -19,11 +24,84 @@ pub fn main() !void {
         const vk_ctx = try platform.init(1280, 720, "snail");
         defer platform.deinit();
         return mainLoop(allocator, vk_ctx);
-    } else {
+    } else if (use_gl) {
         try platform.init(1280, 720, "snail");
         defer platform.deinit();
         return mainLoop(allocator, {});
+    } else {
+        return runCpuDemo(allocator);
     }
+}
+
+fn runCpuDemo(allocator: std.mem.Allocator) !void {
+    const WIDTH: u32 = 1680;
+    const HEIGHT: u32 = 874;
+
+    var scene_assets = try demo_banner_scene.Assets.init(allocator);
+    defer scene_assets.deinit();
+
+    const w: f32 = @floatFromInt(WIDTH);
+    const h: f32 = @floatFromInt(HEIGHT);
+    const layout = demo_banner.buildLayout(w, h, scene_assets.metrics);
+
+    const assets = @import("assets");
+    var tile_image = try snail.Image.initRgba8(allocator, 16, 16, assets.checkerboard_rgba);
+    defer tile_image.deinit();
+
+    var path_picture = try demo_banner_scene.buildPathPicture(allocator, layout, .normal, &tile_image);
+    defer path_picture.deinit();
+
+    const pixels = try allocator.alloc(u8, WIDTH * HEIGHT * 4);
+    defer allocator.free(pixels);
+    var cpu = CpuRenderer.init(pixels.ptr, WIDTH, HEIGHT, WIDTH * 4);
+
+    var renderer = snail.Renderer.initCpu(&cpu);
+    defer renderer.deinit();
+
+    var atlas_views: [7]snail.AtlasHandle = undefined;
+    scene_assets.uploadAtlases(&renderer, &path_picture, &atlas_views);
+
+    const clear = demo_banner.clearColor();
+    cpu.clear(
+        @intFromFloat(clear[0] * 255),
+        @intFromFloat(clear[1] * 255),
+        @intFromFloat(clear[2] * 255),
+        @intFromFloat(clear[3] * 255),
+    );
+
+    cpu.drawPathPicture(&path_picture);
+    demo_banner.drawTextCpu(&cpu, layout, scene_assets.metrics, .{
+        .latin_font = &scene_assets.latin_font,
+        .latin_atlas = &scene_assets.latin_atlas,
+        .arabic = &scene_assets.arabic,
+        .devanagari = &scene_assets.devanagari,
+        .mongolian = &scene_assets.mongolian,
+        .thai = &scene_assets.thai,
+        .emoji = &scene_assets.emoji,
+    });
+
+    const c_file = std.c.fopen("zig-out/demo-cpu.tga", "wb") orelse return error.FileOpenFailed;
+    defer _ = std.c.fclose(c_file);
+    var header: [18]u8 = .{0} ** 18;
+    header[2] = 2;
+    header[12] = @intCast(WIDTH & 0xFF);
+    header[13] = @intCast((WIDTH >> 8) & 0xFF);
+    header[14] = @intCast(HEIGHT & 0xFF);
+    header[15] = @intCast((HEIGHT >> 8) & 0xFF);
+    header[16] = 32;
+    header[17] = 0x28;
+    _ = std.c.fwrite(&header, 1, 18, c_file);
+    var row: u32 = 0;
+    while (row < HEIGHT) : (row += 1) {
+        const off = row * WIDTH * 4;
+        var col: u32 = 0;
+        while (col < WIDTH) : (col += 1) {
+            const i = off + col * 4;
+            const bgra = [4]u8{ pixels[i + 2], pixels[i + 1], pixels[i + 0], pixels[i + 3] };
+            _ = std.c.fwrite(&bgra, 1, 4, c_file);
+        }
+    }
+    std.debug.print("wrote zig-out/demo-cpu.tga\n", .{});
 }
 
 fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
@@ -261,7 +339,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
             }
         }
 
-        if (!use_vulkan and frame_count == 2) {
+        if (use_gl and frame_count == 2) {
             const iw: u32 = @intFromFloat(w);
             const ih: u32 = @intFromFloat(h);
             if (screenshot.captureFramebuffer(allocator, iw, ih) catch null) |px| {
