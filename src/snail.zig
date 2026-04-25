@@ -20,7 +20,6 @@ const build_options = @import("build_options");
 const glyph_emit = @import("glyph_emit.zig");
 const ttf = @import("font/ttf.zig");
 const opentype = @import("font/opentype.zig");
-const snail_file = @import("font/snail_file.zig");
 // Internal modules — not part of the public API surface. Exposed for internal
 // tools (e.g. cpu_renderer) that need raw curve/texture data access.
 pub const bezier = @import("math/bezier.zig");
@@ -3651,7 +3650,6 @@ test {
     _ = @import("render/curve_texture.zig");
     _ = @import("render/band_texture.zig");
     _ = @import("font/opentype.zig");
-    _ = @import("font/snail_file.zig");
     _ = @import("c_api.zig");
     _ = @import("render/vertex.zig");
     _ = @import("torture_test.zig");

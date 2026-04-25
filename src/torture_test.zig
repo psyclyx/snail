@@ -1,11 +1,10 @@
 //! Torture test for valgrind: exercises the full CPU pipeline heavily.
 //! No GPU needed — tests font parsing, atlas building, dynamic loading,
-//! .snail roundtrip, batch generation, word wrapping, and ligatures.
+//! batch generation, word wrapping, and ligatures.
 
 const std = @import("std");
 const snail = @import("snail.zig");
 const opentype = @import("font/opentype.zig");
-const snail_file = @import("font/snail_file.zig");
 const assets = @import("assets");
 
 test "torture: full pipeline" {
@@ -42,14 +41,6 @@ test "torture: full pipeline" {
     // Adding same codepoints again should be a no-op
     const added2 = try atlas.extendCodepoints(&extended);
     try std.testing.expect(added2 == null);
-
-    // .snail roundtrip
-    const serialized = try snail_file.serialize(allocator, &atlas, font.unitsPerEm());
-    defer allocator.free(serialized);
-
-    var loaded = try snail_file.load(allocator, serialized);
-    defer loaded.deinit();
-    try std.testing.expectEqual(atlas.glyph_map.count(), loaded.glyph_map.count());
 
     const atlas_view = snail.AtlasHandle{ .atlas = &atlas, .layer_base = 0 };
 
