@@ -257,6 +257,7 @@ void snail_renderer_draw_paths(const float *vertices, size_t num_floats,
                                const float *mvp,
                                float viewport_w, float viewport_h);
 void snail_renderer_draw_sprites(const float *vertices, size_t num_floats,
+                                 const float *mvp,
                                  float viewport_w, float viewport_h);
 
 /* ── TextBatch (any thread, caller-owned buffer) ── */
