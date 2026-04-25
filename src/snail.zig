@@ -30,6 +30,9 @@ const band_tex = @import("render/band_texture.zig");
 const vertex_mod = @import("render/vertex.zig");
 const roots = @import("math/roots.zig");
 const pipeline = @import("render/pipeline.zig");
+const cpu_renderer_mod = if (build_options.enable_cpu) @import("cpu_renderer.zig") else struct {
+    pub const CpuRenderer = void;
+};
 const vulkan_pipeline = if (build_options.enable_vulkan) @import("render/vulkan_pipeline.zig") else struct {
     pub const VulkanContext = void;
     pub fn init(_: anytype) !void {}
@@ -45,7 +48,7 @@ const vulkan_pipeline = if (build_options.enable_vulkan) @import("render/vulkan_
     pub var subpixel_order: @import("render/subpixel_order.zig").SubpixelOrder = .none;
     pub var subpixel_mode: @import("render/subpixel_mode.zig").SubpixelMode = .safe;
     pub var subpixel_backdrop: ?[4]f32 = null;
-    pub var fill_rule: pipeline.FillRule = .non_zero;
+    pub var fill_rule: enum(c_int) { non_zero = 0, even_odd = 1 } = .non_zero;
 };
 const harfbuzz = if (build_options.enable_harfbuzz) @import("font/harfbuzz.zig") else struct {
     pub const HarfBuzzShaper = void;
@@ -3416,18 +3419,22 @@ pub const PathBatch = struct {
     }
 };
 
-pub const FillRule = pipeline.FillRule;
+pub const FillRule = enum(c_int) {
+    non_zero = 0,
+    even_odd = 1,
+};
 pub const SubpixelMode = @import("render/subpixel_mode.zig").SubpixelMode;
 pub const SubpixelOrder = @import("render/subpixel_order.zig").SubpixelOrder;
-pub const RenderBackend = enum { gl, vulkan };
+pub const RenderBackend = enum { gl, vulkan, cpu };
 pub const VulkanContext = vulkan_pipeline.VulkanContext;
+pub const CpuRenderer = cpu_renderer_mod.CpuRenderer;
 
-/// GPU renderer. Owns shader programs and texture handles.
-/// For OpenGL: requires an active GL 3.3+ context.
-/// For Vulkan: requires a VulkanContext from the caller.
+/// Renderer. Owns shader programs and texture handles (GPU backends),
+/// or a pixel buffer (CPU backend).
 pub const Renderer = struct {
     backend: RenderBackend = .gl,
     gl_text: ?*pipeline.GlTextState = null,
+    cpu: ?*CpuRenderer = null,
 
     /// Initialize with the current OpenGL context.
     pub fn init() !Renderer {
@@ -3444,6 +3451,11 @@ pub const Renderer = struct {
         return .{ .backend = .vulkan };
     }
 
+    /// Initialize the CPU renderer with a caller-owned pixel buffer.
+    pub fn initCpu(cpu: *CpuRenderer) Renderer {
+        return .{ .backend = .cpu, .cpu = cpu };
+    }
+
     pub fn deinit(self: *Renderer) void {
         switch (self.backend) {
             .gl => {
@@ -3454,6 +3466,7 @@ pub const Renderer = struct {
                 self.gl_text = null;
             },
             .vulkan => vulkan_pipeline.deinit(),
+            .cpu => {},
         }
     }
 
@@ -3463,6 +3476,9 @@ pub const Renderer = struct {
         switch (self.backend) {
             .gl => self.gl_text.?.buildTextureArrays(atlases, out_views),
             .vulkan => vulkan_pipeline.buildTextureArrays(atlases, out_views),
+            .cpu => for (out_views, atlases) |*v, a| {
+                v.* = .{ .atlas = a, .layer_base = 0 };
+            },
         }
     }
 
@@ -3472,6 +3488,9 @@ pub const Renderer = struct {
         switch (self.backend) {
             .gl => self.gl_text.?.buildImageArray(images, out_views),
             .vulkan => vulkan_pipeline.buildImageArray(images, out_views),
+            .cpu => for (out_views, images) |*v, img| {
+                v.* = .{ .image = img };
+            },
         }
     }
 
@@ -3501,7 +3520,7 @@ pub const Renderer = struct {
     pub fn beginFrame(self: *Renderer) void {
         switch (self.backend) {
             .gl => self.gl_text.?.resetFrameState(),
-            .vulkan => {},
+            .vulkan, .cpu => {},
         }
     }
 
@@ -3510,6 +3529,7 @@ pub const Renderer = struct {
         switch (self.backend) {
             .gl => self.gl_text.?.drawText(vertices, mvp, viewport_w, viewport_h),
             .vulkan => vulkan_pipeline.drawText(vertices, mvp, viewport_w, viewport_h),
+            .cpu => {}, // CPU text is drawn via CpuRenderer.drawText directly
         }
     }
 
@@ -3518,6 +3538,7 @@ pub const Renderer = struct {
         switch (self.backend) {
             .gl => self.gl_text.?.drawTextGrayscale(vertices, mvp, viewport_w, viewport_h),
             .vulkan => vulkan_pipeline.drawTextGrayscale(vertices, mvp, viewport_w, viewport_h),
+            .cpu => {}, // CPU paths are drawn via CpuRenderer.drawPathPicture directly
         }
     }
 
@@ -3532,6 +3553,7 @@ pub const Renderer = struct {
         switch (self.backend) {
             .gl => self.gl_text.?.subpixel_order = order,
             .vulkan => vulkan_pipeline.subpixel_order = order,
+            .cpu => if (self.cpu) |c| c.setSubpixelOrder(order),
         }
     }
 
@@ -3539,6 +3561,7 @@ pub const Renderer = struct {
         return switch (self.backend) {
             .gl => self.gl_text.?.subpixel_order,
             .vulkan => vulkan_pipeline.subpixel_order,
+            .cpu => if (self.cpu) |c| c.subpixelOrder() else .none,
         };
     }
 
@@ -3550,6 +3573,7 @@ pub const Renderer = struct {
         switch (self.backend) {
             .gl => self.gl_text.?.subpixel_mode = mode,
             .vulkan => vulkan_pipeline.subpixel_mode = mode,
+            .cpu => {},
         }
     }
 
@@ -3557,6 +3581,7 @@ pub const Renderer = struct {
         return switch (self.backend) {
             .gl => self.gl_text.?.subpixel_mode,
             .vulkan => vulkan_pipeline.subpixel_mode,
+            .cpu => .safe,
         };
     }
 
@@ -3564,6 +3589,7 @@ pub const Renderer = struct {
         switch (self.backend) {
             .gl => self.gl_text.?.subpixel_backdrop = color,
             .vulkan => vulkan_pipeline.subpixel_backdrop = color,
+            .cpu => {},
         }
     }
 
@@ -3571,6 +3597,7 @@ pub const Renderer = struct {
         return switch (self.backend) {
             .gl => self.gl_text.?.subpixel_backdrop,
             .vulkan => vulkan_pipeline.subpixel_backdrop,
+            .cpu => null,
         };
     }
 
@@ -3586,15 +3613,17 @@ pub const Renderer = struct {
     /// Set fill rule: non_zero (default, TrueType) or even_odd (PostScript/CFF).
     pub fn setFillRule(self: *Renderer, rule: FillRule) void {
         switch (self.backend) {
-            .gl => self.gl_text.?.fill_rule = rule,
+            .gl => self.gl_text.?.fill_rule = @enumFromInt(@intFromEnum(rule)),
             .vulkan => vulkan_pipeline.fill_rule = @enumFromInt(@intFromEnum(rule)),
+            .cpu => if (self.cpu) |c| c.setFillRule(rule),
         }
     }
 
     pub fn fillRule(self: *const Renderer) FillRule {
         return switch (self.backend) {
-            .gl => self.gl_text.?.fill_rule,
+            .gl => @enumFromInt(@intFromEnum(self.gl_text.?.fill_rule)),
             .vulkan => @enumFromInt(@intFromEnum(vulkan_pipeline.fill_rule)),
+            .cpu => if (self.cpu) |c| c.fillRule() else .non_zero,
         };
     }
 
@@ -3602,6 +3631,7 @@ pub const Renderer = struct {
         return switch (self.backend) {
             .gl => self.gl_text.?.getBackendName(),
             .vulkan => vulkan_pipeline.getBackendName(),
+            .cpu => "CPU",
         };
     }
 };
