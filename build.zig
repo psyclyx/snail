@@ -1,14 +1,17 @@
 const std = @import("std");
 
+pub const DemoRenderer = enum { gl44, gl33, vulkan, cpu };
+
 fn configureCoreModule(
     mod: *std.Build.Module,
     opts: *std.Build.Step.Options,
-    harfbuzz: bool,
+    opengl: bool,
     vulkan: bool,
+    harfbuzz: bool,
     vk_shaders: *std.Build.Module,
 ) void {
     mod.addOptions("build_options", opts);
-    mod.linkSystemLibrary("OpenGL", .{});
+    if (opengl) mod.linkSystemLibrary("OpenGL", .{});
     mod.addImport("vulkan_shaders", vk_shaders);
     if (vulkan) mod.linkSystemLibrary("vulkan", .{});
     if (harfbuzz) mod.linkSystemLibrary("harfbuzz", .{});
@@ -18,41 +21,54 @@ fn configureDemoModule(
     mod: *std.Build.Module,
     b: *std.Build,
     opts: *std.Build.Step.Options,
-    harfbuzz: bool,
+    opengl: bool,
     vulkan: bool,
+    harfbuzz: bool,
     vk_shaders: *std.Build.Module,
+    demo_renderer: DemoRenderer,
 ) void {
-    configureCoreModule(mod, opts, harfbuzz, vulkan, vk_shaders);
-    mod.linkSystemLibrary("wayland-client", .{});
-    if (!vulkan) {
-        mod.linkSystemLibrary("wayland-egl", .{});
-        mod.linkSystemLibrary("EGL", .{});
+    configureCoreModule(mod, opts, opengl, vulkan, harfbuzz, vk_shaders);
+    switch (demo_renderer) {
+        .gl44, .gl33 => {
+            mod.linkSystemLibrary("wayland-client", .{});
+            mod.linkSystemLibrary("wayland-egl", .{});
+            mod.linkSystemLibrary("EGL", .{});
+            mod.addIncludePath(b.path("src/render"));
+            mod.addCSourceFile(.{ .file = b.path("src/render/xdg-shell-client-protocol.c") });
+        },
+        .vulkan => {
+            mod.linkSystemLibrary("wayland-client", .{});
+            mod.addIncludePath(b.path("src/render"));
+            mod.addCSourceFile(.{ .file = b.path("src/render/xdg-shell-client-protocol.c") });
+        },
+        .cpu => {},
     }
-    mod.addIncludePath(b.path("src/render"));
-    mod.addCSourceFile(.{ .file = b.path("src/render/xdg-shell-client-protocol.c") });
 }
 
 fn configureEglOffscreenModule(
     mod: *std.Build.Module,
     opts: *std.Build.Step.Options,
-    harfbuzz: bool,
+    opengl: bool,
     vulkan: bool,
+    harfbuzz: bool,
     vk_shaders: *std.Build.Module,
 ) void {
-    configureCoreModule(mod, opts, harfbuzz, vulkan, vk_shaders);
+    configureCoreModule(mod, opts, opengl, vulkan, harfbuzz, vk_shaders);
     mod.linkSystemLibrary("EGL", .{});
 }
 
 /// For use as a dependency: returns a module with only the core snail library.
 /// No demo windowing, no Vulkan — the consumer must provide a GL 3.3+ context.
 pub fn module(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
-    const options = b.addOptions();
-    options.addOption(bool, "enable_profiling", false);
-    options.addOption(bool, "enable_harfbuzz", true);
-    options.addOption(bool, "enable_vulkan", false);
-    options.addOption(bool, "force_gl33", true);
+    const opts = b.addOptions();
+    opts.addOption(bool, "enable_profiling", false);
+    opts.addOption(bool, "enable_opengl", true);
+    opts.addOption(bool, "enable_vulkan", false);
+    opts.addOption(bool, "enable_cpu", false);
+    opts.addOption(bool, "enable_harfbuzz", true);
+    opts.addOption(bool, "force_gl33", false);
+    opts.addOption(DemoRenderer, "demo_renderer", .gl44);
 
-    // Stub vulkan_shaders module (never used when enable_vulkan=false)
     const vk_stub = b.createModule(.{
         .root_source_file = b.addWriteFiles().add("vk_stub.zig", ""),
     });
@@ -63,7 +79,7 @@ pub fn module(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bui
         .optimize = optimize,
         .link_libc = true,
     });
-    configureCoreModule(mod, options, true, false, vk_stub);
+    configureCoreModule(mod, opts, true, false, true, vk_stub);
     return mod;
 }
 
@@ -72,15 +88,20 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const enable_profiling = b.option(bool, "profile", "Enable profiling instrumentation") orelse false;
+    const enable_opengl = b.option(bool, "opengl", "Enable OpenGL backend") orelse true;
+    const enable_vulkan = b.option(bool, "vulkan", "Enable Vulkan backend") orelse false;
+    const enable_cpu = b.option(bool, "cpu-renderer", "Enable CPU renderer backend") orelse true;
     const enable_harfbuzz = b.option(bool, "harfbuzz", "Enable HarfBuzz text shaping") orelse true;
-    const enable_vulkan = b.option(bool, "vulkan", "Use Vulkan backend for the demo") orelse false;
-    const force_gl33 = b.option(bool, "gl33", "Force OpenGL 3.3 core profile (skip 4.4 attempt)") orelse false;
+    const demo_renderer = b.option(DemoRenderer, "renderer", "Demo rendering backend (default: gl44)") orelse .gl44;
 
     const options = b.addOptions();
     options.addOption(bool, "enable_profiling", enable_profiling);
-    options.addOption(bool, "enable_harfbuzz", enable_harfbuzz);
+    options.addOption(bool, "enable_opengl", enable_opengl);
     options.addOption(bool, "enable_vulkan", enable_vulkan);
-    options.addOption(bool, "force_gl33", force_gl33);
+    options.addOption(bool, "enable_cpu", enable_cpu);
+    options.addOption(bool, "enable_harfbuzz", enable_harfbuzz);
+    options.addOption(bool, "force_gl33", demo_renderer == .gl33);
+    options.addOption(DemoRenderer, "demo_renderer", demo_renderer);
 
     const assets_mod = b.createModule(.{ .root_source_file = b.path("assets/assets.zig") });
 
@@ -125,7 +146,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
-    configureCoreModule(lib_module, options, enable_harfbuzz, enable_vulkan, vk_shaders_mod);
+    configureCoreModule(lib_module, options, enable_opengl, enable_vulkan, enable_harfbuzz, vk_shaders_mod);
 
     const shared_lib = b.addLibrary(.{ .name = "snail", .root_module = lib_module, .linkage = .dynamic });
     b.installArtifact(shared_lib);
@@ -143,7 +164,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
-    configureCoreModule(snail_mod, options, enable_harfbuzz, enable_vulkan, vk_shaders_mod);
+    configureCoreModule(snail_mod, options, enable_opengl, enable_vulkan, enable_harfbuzz, vk_shaders_mod);
 
     // ── Demo executable ──
     const demo_module = b.createModule(.{
@@ -153,7 +174,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .imports = &.{.{ .name = "assets", .module = assets_mod }},
     });
-    configureDemoModule(demo_module, b, options, enable_harfbuzz, enable_vulkan, vk_shaders_mod);
+    configureDemoModule(demo_module, b, options, enable_opengl, enable_vulkan, enable_harfbuzz, vk_shaders_mod, demo_renderer);
 
     const exe = b.addExecutable(.{ .name = "snail-demo", .root_module = demo_module });
     const install_demo = b.addInstallArtifact(exe, .{});
@@ -174,7 +195,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .imports = &.{.{ .name = "assets", .module = assets_mod }},
     });
-    configureCoreModule(test_module, options, enable_harfbuzz, enable_vulkan, vk_shaders_mod);
+    configureCoreModule(test_module, options, enable_opengl, enable_vulkan, enable_harfbuzz, vk_shaders_mod);
 
     const unit_tests = b.addTest(.{ .root_module = test_module });
     const run_unit_tests = b.addRunArtifact(unit_tests);
@@ -189,7 +210,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .imports = &.{.{ .name = "assets", .module = assets_mod }},
     });
-    configureCoreModule(extra_test_module, options, enable_harfbuzz, enable_vulkan, vk_shaders_mod);
+    configureCoreModule(extra_test_module, options, enable_opengl, enable_vulkan, enable_harfbuzz, vk_shaders_mod);
     const extra_tests = b.addTest(.{ .root_module = extra_test_module });
     const run_extra_tests = b.addRunArtifact(extra_tests);
     test_step.dependOn(&run_extra_tests.step);
@@ -202,7 +223,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .imports = &.{.{ .name = "assets", .module = assets_mod }},
     });
-    configureCoreModule(bench_module, options, enable_harfbuzz, enable_vulkan, vk_shaders_mod);
+    configureCoreModule(bench_module, options, enable_opengl, enable_vulkan, enable_harfbuzz, vk_shaders_mod);
 
     // ── Comparative benchmark (vs FreeType) ──
     const bench_cmp_module = b.createModule(.{
@@ -212,7 +233,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .imports = &.{.{ .name = "assets", .module = assets_mod }},
     });
-    configureCoreModule(bench_cmp_module, options, enable_harfbuzz, enable_vulkan, vk_shaders_mod);
+    configureCoreModule(bench_cmp_module, options, enable_opengl, enable_vulkan, enable_harfbuzz, vk_shaders_mod);
     bench_cmp_module.linkSystemLibrary("freetype2", .{});
 
     const bench_cmp_exe = b.addExecutable(.{ .name = "snail-bench-compare", .root_module = bench_cmp_module });
@@ -228,7 +249,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .imports = &.{.{ .name = "assets", .module = assets_mod }},
     });
-    configureEglOffscreenModule(bench_hl_module, options, enable_harfbuzz, enable_vulkan, vk_shaders_mod);
+    configureEglOffscreenModule(bench_hl_module, options, enable_opengl, enable_vulkan, enable_harfbuzz, vk_shaders_mod);
 
     const bench_hl_exe = b.addExecutable(.{ .name = "snail-bench-headless", .root_module = bench_hl_module });
     const run_bench_hl = b.addRunArtifact(bench_hl_exe);
@@ -248,7 +269,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .imports = &.{.{ .name = "assets", .module = assets_mod }},
     });
-    configureEglOffscreenModule(bench_suite_module, options, enable_harfbuzz, enable_vulkan, vk_shaders_mod);
+    configureEglOffscreenModule(bench_suite_module, options, enable_opengl, enable_vulkan, enable_harfbuzz, vk_shaders_mod);
     bench_suite_module.linkSystemLibrary("freetype2", .{});
 
     const bench_suite_exe = b.addExecutable(.{ .name = "snail-bench-suite", .root_module = bench_suite_module });
@@ -270,7 +291,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .imports = &.{.{ .name = "assets", .module = assets_mod }},
     });
-    configureEglOffscreenModule(screenshot_module, options, enable_harfbuzz, enable_vulkan, vk_shaders_mod);
+    configureEglOffscreenModule(screenshot_module, options, enable_opengl, enable_vulkan, enable_harfbuzz, vk_shaders_mod);
 
     const screenshot_exe = b.addExecutable(.{ .name = "snail-screenshot", .root_module = screenshot_module });
     const run_screenshot = b.addRunArtifact(screenshot_exe);
@@ -285,7 +306,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .imports = &.{.{ .name = "assets", .module = assets_mod }},
     });
-    configureCoreModule(screenshot_cpu_module, options, enable_harfbuzz, enable_vulkan, vk_shaders_mod);
+    configureCoreModule(screenshot_cpu_module, options, enable_opengl, enable_vulkan, enable_harfbuzz, vk_shaders_mod);
 
     const screenshot_cpu_exe = b.addExecutable(.{ .name = "snail-screenshot-cpu", .root_module = screenshot_cpu_module });
     const run_screenshot_cpu = b.addRunArtifact(screenshot_cpu_exe);
