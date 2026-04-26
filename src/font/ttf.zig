@@ -630,21 +630,6 @@ pub const Font = struct {
         return rec.num_layers;
     }
 
-    /// Fill buf with the COLRv0 layers for base_glyph_id.
-    /// Returns the populated prefix of buf; empty if the glyph has no COLR data.
-    /// Binary-searches the (sorted) base glyph record table, then resolves colors
-    /// from CPAL palette 0.  All offsets in the COLR/CPAL tables are relative to
-    /// their respective table starts, as the spec requires.
-    pub fn getColrLayers(self: *const Font, base_glyph_id: u16, buf: []ColrLayer) []ColrLayer {
-        if (buf.len == 0) return buf[0..0];
-        var it = self.colrLayers(base_glyph_id);
-        var count: usize = 0;
-        while (count < buf.len) : (count += 1) {
-            buf[count] = it.next() orelse break;
-        }
-        return buf[0..count];
-    }
-
     pub fn getKerning(self: *const Font, left: u16, right: u16) !i16 {
         if (self.kern_offset == 0) return 0;
         const base = self.kern_offset;

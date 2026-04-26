@@ -392,26 +392,39 @@ All numbers from a single machine (Ryzen 7 / RTX 3080, NotoSans-Regular, 1280x72
 ```
 src/
   snail.zig              public API: Font, Atlas, Renderer, TextBatch, Path, ...
-  c_api.zig              C bindings (91 exported functions)
+  c_api.zig              C bindings (86 exported functions)
   glyph_emit.zig         glyph → vertex dispatch (plain, COLR, multi-layer)
+  cpu_renderer.zig       software rasterizer (same atlas data, no GPU)
   font/
     ttf.zig              TrueType parser (cmap, glyf, loca, hhea, hmtx, kern, COLR)
     opentype.zig         OpenType shaper (GSUB ligatures, GPOS kerning)
     harfbuzz.zig         HarfBuzz integration (optional)
-    snail_file.zig       .snail preprocessed format
   math/
     bezier.zig           quadratic/cubic Bezier curves, bounding boxes
     vec.zig              Vec2, Mat4, Transform2D
     roots.zig            quadratic equation solver
   render/
     pipeline.zig         OpenGL state (GL 3.3 / 4.4 persistent mapped)
-    vulkan_pipeline.zig  Vulkan state (optional)
+    gl.zig               OpenGL C function imports
+    gl_backend.zig       GL version detection and backend selection
     shaders.zig          GLSL 330 vertex + fragment shaders
+    vulkan_pipeline.zig  Vulkan state (optional)
+    vulkan_shaders.zig   SPIR-V / Vulkan shader modules
+    vulkan_platform.zig  Vulkan WSI platform integration
     curve_texture.zig    RGBA16F curve control point packing
     band_texture.zig     RG16UI spatial band subdivision
     vertex.zig           glyph quad vertex generation
-  extra/
-    cpu_renderer.zig     software rasterizer (same atlas data, no GPU)
+    upload_common.zig    shared texture upload logic
+    platform.zig         platform abstraction (GL/Vulkan/CPU)
+    cpu_platform.zig     CPU backend platform layer
+    egl_common.zig       shared EGL setup
+    egl_offscreen.zig    headless EGL context
+    wayland_window.zig   Wayland window + input handling
+    screenshot.zig       framebuffer capture + TGA writing
+    subpixel_order.zig   RGB/BGR/VRGB/VBGR enum
+    subpixel_mode.zig    safe vs legacy subpixel mode
+    subpixel_detect.zig  auto-detect display subpixel layout
+    subpixel_policy.zig  subpixel rendering policy logic
   profile/
     timer.zig            comptime-gated CPU timers
 include/

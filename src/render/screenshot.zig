@@ -41,14 +41,3 @@ pub fn captureFramebuffer(allocator: std.mem.Allocator, width: u32, height: u32)
     return pixels;
 }
 
-/// Count non-zero pixels in RGBA data
-pub fn countNonBlackPixels(pixels: []const u8) usize {
-    var count: usize = 0;
-    var i: usize = 0;
-    while (i + 3 < pixels.len) : (i += 4) {
-        if (pixels[i] > 0 or pixels[i + 1] > 0 or pixels[i + 2] > 0) {
-            count += 1;
-        }
-    }
-    return count;
-}

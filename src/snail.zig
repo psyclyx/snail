@@ -351,8 +351,8 @@ pub const Atlas = struct {
     hb_shaper: if (build_options.enable_harfbuzz) ?harfbuzz.HarfBuzzShaper else void = if (build_options.enable_harfbuzz) null else {},
 
     // COLRv0 lookup data — raw font bytes and table offsets, valid for program
-    // lifetime (font data is @embedFile). Stored separately so getColrLayers
-    // can be called at render time without going through the potentially-stale
+    // lifetime (font data is @embedFile). Stored separately so COLR layers
+    // can be resolved at render time without going through the potentially-stale
     // atlas.font pointer.
     colr_font_data: []const u8 = &.{},
     colr_offset: u32 = 0,
