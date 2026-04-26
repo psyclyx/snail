@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.0
+
+### CPU renderer
+- Software rasterizer backend — no GPU required (`-Drenderer=cpu`)
+- Interactive CPU demo via `wl_shm` Wayland buffers
+- HarfBuzz shaping, COLR emoji, and composite group support in CPU path
+- Image paint support in CPU renderer
+
+### Rendering
+- Tuned subpixel LCD filter weights to reduce color fringing
+- Unified coordinate system to Y-down top-left origin
+
+### Cleanup
+- Removed dead `.snail` file format module
+- Removed unused helpers and dead GPU timer module
+
 ## 0.1.0
 
 Initial release.
