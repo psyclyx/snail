@@ -133,7 +133,7 @@ pub const CpuRenderer = struct {
                 while (col < @as(u32, @intCast(px1))) : (col += 1) {
                     const world = Vec2.new(@as(f32, @floatFromInt(col)) + 0.5, @as(f32, @floatFromInt(row)) + 0.5);
                     const local = inverse.applyPoint(world);
-                    const paint = samplePathPaint(&picture.atlas, instance, local);
+                    const paint = samplePathPaint(&picture.atlas, instance, instance.glyph_id, local);
 
                     if (self.subpixel_order == .none) {
                         const cov = evalGlyphCoverage(
@@ -580,11 +580,11 @@ const PathPaintSample = struct {
     apply_dither: bool = false,
 };
 
-fn samplePathPaint(atlas: *const snail.Atlas, instance: snail.PathPicture.Instance, local: Vec2) PathPaintSample {
-    return samplePathPaintAt(atlas, instance.info_x, instance.info_y, local);
+fn samplePathPaint(atlas: *const snail.Atlas, instance: snail.PathPicture.Instance, glyph_id: u16, local: Vec2) PathPaintSample {
+    return samplePathPaintAt(atlas, instance.info_x, instance.info_y, glyph_id, local);
 }
 
-fn samplePathPaintAt(atlas: *const snail.Atlas, info_x: u16, info_y: u16, local: Vec2) PathPaintSample {
+fn samplePathPaintAt(atlas: *const snail.Atlas, info_x: u16, info_y: u16, glyph_id: u16, local: Vec2) PathPaintSample {
     const data = atlas.layer_info_data orelse return .{ .color = .{ 1, 1, 1, 1 } };
     const width = atlas.layer_info_width;
     const info = fetchLayerInfoTexel(data, width, info_x, info_y, 0);
@@ -619,7 +619,7 @@ fn samplePathPaintAt(atlas: *const snail.Atlas, info_x: u16, info_y: u16, local:
                 .apply_dither = true,
             };
         },
-        4 => return sampleImagePaint(atlas, data, width, info_x, info_y, 2, data0, local),
+        4 => return sampleImagePaint(atlas, glyph_id, data, width, info_x, info_y, 2, data0, local),
         5 => {
             // Composite group: 1-texel header, then 6-texel sub-records.
             // Read the fill layer's paint tag at offset 1 from the group header.
@@ -655,7 +655,7 @@ fn samplePathPaintAt(atlas: *const snail.Atlas, info_x: u16, info_y: u16, local:
                         .apply_dither = true,
                     };
                 },
-                4 => return sampleImagePaint(atlas, data, width, info_x, info_y, 3, fill_data0, local),
+                4 => return sampleImagePaint(atlas, glyph_id, data, width, info_x, info_y, 3, fill_data0, local),
                 else => return .{ .color = .{ 1, 0, 1, 1 } },
             }
         },
@@ -665,6 +665,7 @@ fn samplePathPaintAt(atlas: *const snail.Atlas, info_x: u16, info_y: u16, local:
 
 fn sampleImagePaint(
     atlas: *const snail.Atlas,
+    glyph_id: u16,
     data: []const f32,
     width: u32,
     info_x: u16,
@@ -674,7 +675,10 @@ fn sampleImagePaint(
     local: Vec2,
 ) PathPaintSample {
     const records = atlas.paint_image_records orelse return .{ .color = .{ 1, 0, 1, 1 } };
-    const record_index = (@as(usize, info_y) * @as(usize, width) + @as(usize, info_x)) / snail.PATH_PAINT_TEXELS_PER_RECORD;
+    // paint_image_records is indexed by glyph_cursor (= glyph_id - 1).
+    // The old texel-offset / 6 formula broke when composite group headers
+    // shifted the texel cursor out of alignment with the glyph cursor.
+    const record_index: usize = @as(usize, glyph_id) -| 1;
     if (record_index >= records.len) return .{ .color = .{ 1, 0, 1, 1 } };
     const record = records[record_index] orelse return .{ .color = .{ 1, 0, 1, 1 } };
     const data1 = fetchLayerInfoTexel(data, width, info_x, info_y, data0_offset + 1);
@@ -684,11 +688,12 @@ fn sampleImagePaint(
         data0[0] * local.x + data0[1] * local.y + data0[2],
         data1[0] * local.x + data1[1] * local.y + data1[2],
     );
-    const scale_x = if (@abs(extra[0]) > 1e-6) extra[0] else 1.0;
-    const scale_y = if (@abs(extra[1]) > 1e-6) extra[1] else 1.0;
+    // extra[0..1] are UV scale factors patched by the GPU upload path.
+    // The CPU samples images directly (not via a texture array), so
+    // unpatched zeros are correct to treat as 1.0 (full image range).
     const uv = Vec2.new(
-        wrapPaintT(raw_uv.x, paintExtendFromFloat(extra[2])) * scale_x,
-        wrapPaintT(raw_uv.y, paintExtendFromFloat(extra[3])) * scale_y,
+        wrapPaintT(raw_uv.x, paintExtendFromFloat(extra[2])),
+        wrapPaintT(raw_uv.y, paintExtendFromFloat(extra[3])),
     );
     const filter: snail.ImageFilter = if (@as(i32, @intFromFloat(@round(data1[3]))) == 1) .nearest else .linear;
     const sample = sampleImageLinear(record.image, uv, filter);
