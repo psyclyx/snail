@@ -5,7 +5,6 @@ const vertex = @import("vertex.zig");
 const vec = @import("../math/vec.zig");
 const Mat4 = vec.Mat4;
 const snail_mod = @import("../snail.zig");
-const SubpixelMode = @import("subpixel_mode.zig").SubpixelMode;
 const SubpixelOrder = @import("subpixel_order.zig").SubpixelOrder;
 
 pub const vk = @cImport({
@@ -23,7 +22,6 @@ extern "c" fn rewind(stream: *std.c.FILE) void;
 
 const vert_spv = vk_shaders.vert_spv;
 const frag_spv = vk_shaders.frag_spv;
-const frag_text_subpixel_spv = vk_shaders.frag_text_subpixel_spv;
 const frag_text_subpixel_dual_spv = vk_shaders.frag_text_subpixel_dual_spv;
 // ── Push constants layout (matches GLSL) ──
 
@@ -32,13 +30,10 @@ const PushConstants = extern struct {
     viewport: [2]f32,
     fill_rule: i32,
     subpixel_order: i32 = 1, // 1=RGB, 2=BGR, 3=VRGB, 4=VBGR
-    subpixel_render_mode: i32 = 0, // 0=legacy blend, 1=opaque backdrop resolve, 2=dual-source safe
-    _pad0: [3]i32 = .{ 0, 0, 0 },
-    subpixel_backdrop: [4]f32 = .{ 0, 0, 0, 0 },
 };
 
 comptime {
-    if (@sizeOf(PushConstants) != 112) @compileError("PushConstants must be 112 bytes");
+    if (@sizeOf(PushConstants) != 80) @compileError("PushConstants must be 80 bytes");
 }
 
 // ── Initialization context (provided by caller) ──
@@ -59,9 +54,7 @@ var ctx: VulkanContext = undefined;
 var initialized: bool = false;
 
 var pipeline_normal: vk.VkPipeline = null;
-var pipeline_subpixel: vk.VkPipeline = null;
 var pipeline_subpixel_dual: vk.VkPipeline = null;
-var pipeline_subpixel_resolve: vk.VkPipeline = null;
 var pipeline_cache: vk.VkPipelineCache = null;
 var pipeline_cache_dirty: bool = false;
 var pipeline_layout: vk.VkPipelineLayout = null;
@@ -125,8 +118,6 @@ var transfer_cmd_pool: vk.VkCommandPool = null;
 // Per-frame state
 var active_cmd: vk.VkCommandBuffer = null;
 pub var subpixel_order: SubpixelOrder = .none;
-pub var subpixel_mode: SubpixelMode = .safe;
-pub var subpixel_backdrop: ?[4]f32 = null;
 pub var fill_rule: FillRule = .non_zero;
 
 pub const FillRule = enum(c_int) {
@@ -292,15 +283,11 @@ pub fn deinit() void {
     if (desc_pool != null) vk.vkDestroyDescriptorPool(ctx.device, desc_pool, null);
     if (desc_set_layout != null) vk.vkDestroyDescriptorSetLayout(ctx.device, desc_set_layout, null);
     if (pipeline_subpixel_dual != null) vk.vkDestroyPipeline(ctx.device, pipeline_subpixel_dual, null);
-    if (pipeline_subpixel_resolve != null) vk.vkDestroyPipeline(ctx.device, pipeline_subpixel_resolve, null);
-    if (pipeline_subpixel != null) vk.vkDestroyPipeline(ctx.device, pipeline_subpixel, null);
     if (pipeline_normal != null) vk.vkDestroyPipeline(ctx.device, pipeline_normal, null);
     if (pipeline_cache != null) vk.vkDestroyPipelineCache(ctx.device, pipeline_cache, null);
     if (pipeline_layout != null) vk.vkDestroyPipelineLayout(ctx.device, pipeline_layout, null);
 
     pipeline_subpixel_dual = null;
-    pipeline_subpixel_resolve = null;
-    pipeline_subpixel = null;
     pipeline_normal = null;
     pipeline_cache = null;
     pipeline_cache_dirty = false;
@@ -635,11 +622,8 @@ fn drawTextInternal(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_
         mvp,
         allow_subpixel,
         subpixel_order,
-        subpixel_mode,
         ctx.supports_dual_source_blend,
-        subpixel_backdrop,
     );
-    const backdrop = subpixel_backdrop orelse .{ 0, 0, 0, 0 };
 
     var run_start: usize = 0;
     while (run_start < total_glyphs) {
@@ -655,16 +639,8 @@ fn drawTextInternal(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_
                 std.debug.print("Vulkan: failed to create text pipeline\n", .{});
                 return;
             },
-            .subpixel_legacy => ensureSubpixelPipeline() catch {
-                std.debug.print("Vulkan: failed to create subpixel pipeline\n", .{});
-                return;
-            },
             .subpixel_dual_source => ensureSubpixelDualPipeline() catch {
                 std.debug.print("Vulkan: failed to create dual-source subpixel pipeline\n", .{});
-                return;
-            },
-            .subpixel_backdrop => ensureSubpixelResolvePipeline() catch {
-                std.debug.print("Vulkan: failed to create subpixel resolve pipeline\n", .{});
                 return;
             },
         };
@@ -675,8 +651,6 @@ fn drawTextInternal(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_
             .viewport = .{ viewport_w, viewport_h },
             .fill_rule = @intFromEnum(fill_rule),
             .subpixel_order = @intFromEnum(if (run_mode == .grayscale) SubpixelOrder.none else subpixel_order),
-            .subpixel_render_mode = subpixelRenderModeConstant(run_mode),
-            .subpixel_backdrop = backdrop,
         };
         vk.vkCmdPushConstants(cmd, pipeline_layout, vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(PushConstants), &pc);
         drawGlyphRange(vertices, run_start, run_end - run_start);
@@ -701,7 +675,6 @@ pub fn resetFrameState() void {
 const BlendMode = enum {
     premultiplied,
     dual_source,
-    disabled,
 };
 
 fn createGraphicsPipeline(frag_code: []const u8, blend_mode: BlendMode) !vk.VkPipeline {
@@ -787,16 +760,15 @@ fn createGraphicsPipeline(frag_code: []const u8, blend_mode: BlendMode) !vk.VkPi
     // Premultiplied alpha blending: shader outputs (color * coverage, alpha * coverage),
     // so src factor is ONE to avoid double-multiplying coverage.
     const blend_attach = std.mem.zeroInit(vk.VkPipelineColorBlendAttachmentState, .{
-        .blendEnable = if (blend_mode == .disabled) @as(vk.VkBool32, 0) else @as(vk.VkBool32, 1),
+        .blendEnable = @as(vk.VkBool32, 1),
         .srcColorBlendFactor = @as(vk.VkBlendFactor, @intCast(vk.VK_BLEND_FACTOR_ONE)),
         .dstColorBlendFactor = @as(vk.VkBlendFactor, @intCast(switch (blend_mode) {
             .premultiplied => vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
             .dual_source => vk.VK_BLEND_FACTOR_ONE_MINUS_SRC1_COLOR,
-            .disabled => vk.VK_BLEND_FACTOR_ZERO,
         })),
         .colorBlendOp = @as(vk.VkBlendOp, @intCast(vk.VK_BLEND_OP_ADD)),
         .srcAlphaBlendFactor = @as(vk.VkBlendFactor, @intCast(vk.VK_BLEND_FACTOR_ONE)),
-        .dstAlphaBlendFactor = @as(vk.VkBlendFactor, @intCast(if (blend_mode == .disabled) vk.VK_BLEND_FACTOR_ZERO else vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA)),
+        .dstAlphaBlendFactor = @as(vk.VkBlendFactor, @intCast(vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA)),
         .alphaBlendOp = @as(vk.VkBlendOp, @intCast(vk.VK_BLEND_OP_ADD)),
         .colorWriteMask = @as(vk.VkColorComponentFlags, @intCast(vk.VK_COLOR_COMPONENT_R_BIT | vk.VK_COLOR_COMPONENT_G_BIT | vk.VK_COLOR_COMPONENT_B_BIT | vk.VK_COLOR_COMPONENT_A_BIT)),
     });
@@ -836,8 +808,6 @@ fn createGraphicsPipeline(frag_code: []const u8, blend_mode: BlendMode) !vk.VkPi
 
 fn warmGraphicsPipelines() !void {
     pipeline_normal = try createGraphicsPipeline(frag_spv, .premultiplied);
-    pipeline_subpixel = try createGraphicsPipeline(frag_text_subpixel_spv, .premultiplied);
-    pipeline_subpixel_resolve = try createGraphicsPipeline(frag_text_subpixel_spv, .disabled);
     if (ctx.supports_dual_source_blend) {
         pipeline_subpixel_dual = try createGraphicsPipeline(frag_text_subpixel_dual_spv, .dual_source);
     }
@@ -850,25 +820,11 @@ fn ensureNormalPipeline() !vk.VkPipeline {
     return pipeline_normal;
 }
 
-fn ensureSubpixelPipeline() !vk.VkPipeline {
-    if (pipeline_subpixel == null) {
-        pipeline_subpixel = try createGraphicsPipeline(frag_text_subpixel_spv, .premultiplied);
-    }
-    return pipeline_subpixel;
-}
-
 fn ensureSubpixelDualPipeline() !vk.VkPipeline {
     if (pipeline_subpixel_dual == null) {
         pipeline_subpixel_dual = try createGraphicsPipeline(frag_text_subpixel_dual_spv, .dual_source);
     }
     return pipeline_subpixel_dual;
-}
-
-fn ensureSubpixelResolvePipeline() !vk.VkPipeline {
-    if (pipeline_subpixel_resolve == null) {
-        pipeline_subpixel_resolve = try createGraphicsPipeline(frag_text_subpixel_spv, .disabled);
-    }
-    return pipeline_subpixel_resolve;
 }
 
 fn glyphRunIsSpecial(vertices: []const f32, glyph_index: usize) bool {
@@ -900,14 +856,6 @@ fn drawGlyphRange(vertices: []const f32, glyph_offset: usize, glyph_count: usize
         upload_cursor += byte_size;
         glyphs_drawn += chunk;
     }
-}
-
-fn subpixelRenderModeConstant(render_mode: subpixel_policy.TextRenderMode) i32 {
-    return switch (render_mode) {
-        .grayscale, .subpixel_legacy => 0,
-        .subpixel_backdrop => 1,
-        .subpixel_dual_source => 2,
-    };
 }
 
 fn createPersistentPipelineCache() !void {

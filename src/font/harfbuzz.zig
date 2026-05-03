@@ -106,7 +106,7 @@ pub const HarfBuzzShaper = struct {
             const pos = shaped.positions[i];
 
             const glyph_x = x + (cursor_x + @as(f32, @floatFromInt(pos.x_offset))) * scale;
-            const glyph_y = y + (cursor_y + @as(f32, @floatFromInt(pos.y_offset))) * scale;
+            const glyph_y = y - (cursor_y + @as(f32, @floatFromInt(pos.y_offset))) * scale;
             if (glyph_emit.emitGlyph(batch, view, gid, glyph_x, glyph_y, font_size, color) == .buffer_full) break;
 
             cursor_x += @as(f32, @floatFromInt(pos.x_advance));

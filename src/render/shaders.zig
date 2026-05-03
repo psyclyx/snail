@@ -172,6 +172,10 @@ pub const fragment_shader_text =
     \\    return clamp(cov, 0.0, 1.0);
     \\}
     \\
+    \\float srgbDecode(float c) {
+    \\    return (c <= 0.04045) ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);
+    \\}
+    \\
     \\vec4 premultiplyColor(vec4 color, float cov) {
     \\    float alpha = color.a * cov;
     \\    return vec4(color.rgb * alpha, alpha);
@@ -187,7 +191,8 @@ pub const fragment_shader_text =
     \\                                  ivec2(v_glyph.z, v_glyph.w & 0xFF),
     \\                                  v_banding, atlas_layer);
     \\    if (cov < 1.0 / 255.0) discard;
-    \\    frag_color = premultiplyColor(v_color, cov);
+    \\    vec4 linear_color = vec4(srgbDecode(v_color.r), srgbDecode(v_color.g), srgbDecode(v_color.b), v_color.a);
+    \\    frag_color = premultiplyColor(linear_color, cov);
     \\}
 ;
 
@@ -202,8 +207,6 @@ const fragment_shader_text_subpixel_common =
     \\uniform usampler2DArray u_band_tex;
     \\uniform int u_fill_rule;
     \\uniform int u_subpixel_order; // 1=RGB, 2=BGR, 3=VRGB, 4=VBGR
-    \\uniform int u_subpixel_render_mode; // 0=legacy blend, 1=opaque backdrop resolve, 2=dual-source safe
-    \\uniform vec4 u_subpixel_backdrop;
     \\
     \\out vec4 frag_color;
     \\#ifdef SNAIL_DUAL_SOURCE
@@ -309,19 +312,6 @@ const fragment_shader_text_subpixel_common =
     \\                     min(applyFillRule(cw_s.x), applyFillRule(cw_o.x))), 0.0, 1.0);
     \\}
     \\
-    \\vec3 blendSubpixel(vec2 cw_r, vec2 cw_g, vec2 cw_b, vec2 cw_o) {
-    \\    return vec3(
-    \\        blendSubpixelSample(cw_r, cw_o),
-    \\        blendSubpixelSample(cw_g, cw_o),
-    \\        blendSubpixelSample(cw_b, cw_o)
-    \\    );
-    \\}
-    \\
-    \\vec4 blendSubpixelWithAlpha(vec2 cw_r, vec2 cw_g, vec2 cw_b, vec2 cw_o) {
-    \\    vec3 cov = blendSubpixel(cw_r, cw_g, cw_b, cw_o);
-    \\    return vec4(cov, blendSubpixelSample(cw_g, cw_o));
-    \\}
-    \\
     \\vec4 filterSubpixelCoverage(float s_m3, float s_m2, float s_m1, float s_0, float s_p1, float s_p2, float s_p3, bool reverse_order) {
     \\    const float w0 = 18.0 / 256.0;
     \\    const float w1 = 67.0 / 256.0;
@@ -334,15 +324,13 @@ const fragment_shader_text_subpixel_common =
     \\    return vec4(cov, clamp((cov.r + cov.g + cov.b) * (1.0 / 3.0), 0.0, 1.0));
     \\}
     \\
+    \\float srgbDecode(float c) {
+    \\    return (c <= 0.04045) ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);
+    \\}
+    \\
     \\vec4 premultiplyColorSubpixel(vec4 color, vec3 cov, float alpha_cov) {
     \\    vec3 alpha = vec3(color.a) * cov;
     \\    return vec4(color.rgb * alpha, color.a * alpha_cov);
-    \\}
-    \\
-    \\vec4 resolveSubpixelOverOpaqueBackdrop(vec4 color, vec3 cov, vec4 backdrop) {
-    \\    vec3 src_alpha = vec3(color.a) * cov;
-    \\    vec3 resolved = color.rgb * src_alpha + backdrop.rgb * (vec3(1.0) - src_alpha);
-    \\    return vec4(resolved, 1.0);
     \\}
     \\
     \\void emitSubpixelColor(vec4 color, vec3 cov, float alpha_cov) {
@@ -372,60 +360,35 @@ const fragment_shader_text_subpixel_common =
     \\    ivec2 vLoc = calcBandLoc(gLoc, vbd.y);
     \\    int vCount = int(vbd.x);
     \\    vec4 cov_alpha;
-    \\    bool safe_mode = u_subpixel_render_mode != 0;
     \\    if (u_subpixel_order <= 2) {
     \\        float sp = epp.x / 3.0;
     \\        vec2 cw_v = evalVertCoverage(rc, 0.0, ppe, vLoc, vCount, layer);
-    \\        if (!safe_mode) {
-    \\            float s = (u_subpixel_order == 2) ? -1.0 : 1.0;
-    \\            vec2 cw_r = evalHorizCoverage(rc, -sp * s, ppe, hLoc, hCount, layer);
-    \\            vec2 cw_g = evalHorizCoverage(rc,  0.0,    ppe, hLoc, hCount, layer);
-    \\            vec2 cw_b = evalHorizCoverage(rc, +sp * s, ppe, hLoc, hCount, layer);
-    \\            cov_alpha = blendSubpixelWithAlpha(cw_r, cw_g, cw_b, cw_v);
-    \\        } else {
-    \\            float s_m3 = blendSubpixelSample(evalHorizCoverage(rc, -3.0 * sp, ppe, hLoc, hCount, layer), cw_v);
-    \\            float s_m2 = blendSubpixelSample(evalHorizCoverage(rc, -2.0 * sp, ppe, hLoc, hCount, layer), cw_v);
-    \\            float s_m1 = blendSubpixelSample(evalHorizCoverage(rc, -1.0 * sp, ppe, hLoc, hCount, layer), cw_v);
-    \\            float s_0 = blendSubpixelSample(evalHorizCoverage(rc, 0.0, ppe, hLoc, hCount, layer), cw_v);
-    \\            float s_p1 = blendSubpixelSample(evalHorizCoverage(rc, 1.0 * sp, ppe, hLoc, hCount, layer), cw_v);
-    \\            float s_p2 = blendSubpixelSample(evalHorizCoverage(rc, 2.0 * sp, ppe, hLoc, hCount, layer), cw_v);
-    \\            float s_p3 = blendSubpixelSample(evalHorizCoverage(rc, 3.0 * sp, ppe, hLoc, hCount, layer), cw_v);
-    \\            cov_alpha = filterSubpixelCoverage(s_m3, s_m2, s_m1, s_0, s_p1, s_p2, s_p3, u_subpixel_order == 2);
-    \\        }
+    \\        float s_m3 = blendSubpixelSample(evalHorizCoverage(rc, -3.0 * sp, ppe, hLoc, hCount, layer), cw_v);
+    \\        float s_m2 = blendSubpixelSample(evalHorizCoverage(rc, -2.0 * sp, ppe, hLoc, hCount, layer), cw_v);
+    \\        float s_m1 = blendSubpixelSample(evalHorizCoverage(rc, -1.0 * sp, ppe, hLoc, hCount, layer), cw_v);
+    \\        float s_0 = blendSubpixelSample(evalHorizCoverage(rc, 0.0, ppe, hLoc, hCount, layer), cw_v);
+    \\        float s_p1 = blendSubpixelSample(evalHorizCoverage(rc, 1.0 * sp, ppe, hLoc, hCount, layer), cw_v);
+    \\        float s_p2 = blendSubpixelSample(evalHorizCoverage(rc, 2.0 * sp, ppe, hLoc, hCount, layer), cw_v);
+    \\        float s_p3 = blendSubpixelSample(evalHorizCoverage(rc, 3.0 * sp, ppe, hLoc, hCount, layer), cw_v);
+    \\        cov_alpha = filterSubpixelCoverage(s_m3, s_m2, s_m1, s_0, s_p1, s_p2, s_p3, u_subpixel_order == 2);
     \\    } else {
     \\        float sp = epp.y / 3.0;
     \\        vec2 cw_h = evalHorizCoverage(rc, 0.0, ppe, hLoc, hCount, layer);
-    \\        if (!safe_mode) {
-    \\            float s = (u_subpixel_order == 4) ? -1.0 : 1.0;
-    \\            vec2 cw_r = evalVertCoverage(rc, -sp * s, ppe, vLoc, vCount, layer);
-    \\            vec2 cw_g = evalVertCoverage(rc,  0.0,    ppe, vLoc, vCount, layer);
-    \\            vec2 cw_b = evalVertCoverage(rc, +sp * s, ppe, vLoc, vCount, layer);
-    \\            cov_alpha = blendSubpixelWithAlpha(cw_r, cw_g, cw_b, cw_h);
-    \\        } else {
-    \\            float s_m3 = blendSubpixelSample(evalVertCoverage(rc, -3.0 * sp, ppe, vLoc, vCount, layer), cw_h);
-    \\            float s_m2 = blendSubpixelSample(evalVertCoverage(rc, -2.0 * sp, ppe, vLoc, vCount, layer), cw_h);
-    \\            float s_m1 = blendSubpixelSample(evalVertCoverage(rc, -1.0 * sp, ppe, vLoc, vCount, layer), cw_h);
-    \\            float s_0 = blendSubpixelSample(evalVertCoverage(rc, 0.0, ppe, vLoc, vCount, layer), cw_h);
-    \\            float s_p1 = blendSubpixelSample(evalVertCoverage(rc, 1.0 * sp, ppe, vLoc, vCount, layer), cw_h);
-    \\            float s_p2 = blendSubpixelSample(evalVertCoverage(rc, 2.0 * sp, ppe, vLoc, vCount, layer), cw_h);
-    \\            float s_p3 = blendSubpixelSample(evalVertCoverage(rc, 3.0 * sp, ppe, vLoc, vCount, layer), cw_h);
-    \\            cov_alpha = filterSubpixelCoverage(s_m3, s_m2, s_m1, s_0, s_p1, s_p2, s_p3, u_subpixel_order == 4);
-    \\        }
+    \\        float s_m3 = blendSubpixelSample(evalVertCoverage(rc, -3.0 * sp, ppe, vLoc, vCount, layer), cw_h);
+    \\        float s_m2 = blendSubpixelSample(evalVertCoverage(rc, -2.0 * sp, ppe, vLoc, vCount, layer), cw_h);
+    \\        float s_m1 = blendSubpixelSample(evalVertCoverage(rc, -1.0 * sp, ppe, vLoc, vCount, layer), cw_h);
+    \\        float s_0 = blendSubpixelSample(evalVertCoverage(rc, 0.0, ppe, vLoc, vCount, layer), cw_h);
+    \\        float s_p1 = blendSubpixelSample(evalVertCoverage(rc, 1.0 * sp, ppe, vLoc, vCount, layer), cw_h);
+    \\        float s_p2 = blendSubpixelSample(evalVertCoverage(rc, 2.0 * sp, ppe, vLoc, vCount, layer), cw_h);
+    \\        float s_p3 = blendSubpixelSample(evalVertCoverage(rc, 3.0 * sp, ppe, vLoc, vCount, layer), cw_h);
+    \\        cov_alpha = filterSubpixelCoverage(s_m3, s_m2, s_m1, s_0, s_p1, s_p2, s_p3, u_subpixel_order == 4);
     \\    }
     \\    vec3 cov = cov_alpha.rgb;
     \\    if (max(max(cov.r, cov.g), cov.b) < 1.0 / 255.0) discard;
-    \\    if (u_subpixel_render_mode == 1 && u_subpixel_backdrop.a >= 1.0 - 1e-6) {
-    \\        frag_color = resolveSubpixelOverOpaqueBackdrop(v_color, cov, u_subpixel_backdrop);
-    \\        return;
-    \\    }
-    \\    emitSubpixelColor(v_color, cov, cov_alpha.a);
+    \\    vec4 linear_color = vec4(srgbDecode(v_color.r), srgbDecode(v_color.g), srgbDecode(v_color.b), v_color.a);
+    \\    emitSubpixelColor(linear_color, cov, cov_alpha.a);
     \\}
 ;
-
-pub const fragment_shader_text_subpixel =
-    \\#version 330 core
-    \\
-    ++ fragment_shader_text_subpixel_common;
 
 pub const fragment_shader_text_subpixel_dual =
     \\#version 330 core
@@ -567,6 +530,10 @@ pub const fragment_shader_colr =
     \\    return clamp(cov, 0.0, 1.0);
     \\}
     \\
+    \\float srgbDecode(float c) {
+    \\    return (c <= 0.04045) ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);
+    \\}
+    \\
     \\vec4 premultiplyColor(vec4 color, float cov) {
     \\    float alpha = color.a * cov;
     \\    return vec4(color.rgb * alpha, alpha);
@@ -581,12 +548,14 @@ pub const fragment_shader_colr =
     \\    ivec2 infoBase = v_glyph.xy;
     \\    int layer_count = v_glyph.z;
     \\    vec4 result = vec4(0.0);
+    \\    vec4 linear_v_color = vec4(srgbDecode(v_color.r), srgbDecode(v_color.g), srgbDecode(v_color.b), v_color.a);
     \\    for (int l = 0; l < layer_count; l++) {
     \\        ivec2 loc = offsetLayerLoc(infoBase, l * 3);
     \\        vec4 info = texelFetch(u_layer_tex, loc, 0);
     \\        vec4 band = texelFetch(u_layer_tex, offsetLayerLoc(infoBase, l * 3 + 1), 0);
     \\        vec4 color = texelFetch(u_layer_tex, offsetLayerLoc(infoBase, l * 3 + 2), 0);
-    \\        if (color.r < 0.0) color = v_color;
+    \\        if (color.r < 0.0) color = linear_v_color;
+    \\        else color = vec4(srgbDecode(color.r), srgbDecode(color.g), srgbDecode(color.b), color.a);
     \\        ivec2 gLoc = ivec2(info.xy);
     \\        int bandMaxH = floatBitsToInt(info.z) & 0xFFFF;
     \\        int bandMaxV = (floatBitsToInt(info.z) >> 16) & 0xFFFF;
@@ -755,10 +724,23 @@ pub const fragment_shader_path =
     \\    return texture(u_image_tex, vec3(uv, float(layer)));
     \\}
     \\
+    \\float linearToSrgbF(float v) {
+    \\    return v <= 0.0031308 ? v * 12.92 : 1.055 * pow(v, 1.0/2.4) - 0.055;
+    \\}
+    \\float srgbToLinearF(float v) {
+    \\    return v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4);
+    \\}
+    \\vec4 mixGradient(vec4 c0, vec4 c1, float t) {
+    \\    vec4 s0 = vec4(linearToSrgbF(c0.r), linearToSrgbF(c0.g), linearToSrgbF(c0.b), c0.a);
+    \\    vec4 s1 = vec4(linearToSrgbF(c1.r), linearToSrgbF(c1.g), linearToSrgbF(c1.b), c1.a);
+    \\    vec4 m = mix(s0, s1, t);
+    \\    return vec4(srgbToLinearF(m.r), srgbToLinearF(m.g), srgbToLinearF(m.b), m.a);
+    \\}
+    \\
     \\vec4 samplePathPaint(vec2 rc, ivec2 infoBase, vec4 info) {
     \\    int paintKind = int(-info.w + 0.5);
     \\    vec4 data0 = texelFetch(u_layer_tex, offsetLayerLoc(infoBase, 2), 0);
-    \\    if (paintKind == 1) return data0;
+    \\    if (paintKind == 1) return vec4(srgbToLinearF(data0.r), srgbToLinearF(data0.g), srgbToLinearF(data0.b), data0.a);
     \\    vec4 color0 = texelFetch(u_layer_tex, offsetLayerLoc(infoBase, 3), 0);
     \\    vec4 color1 = texelFetch(u_layer_tex, offsetLayerLoc(infoBase, 4), 0);
     \\    if (paintKind == 2) {
@@ -767,12 +749,12 @@ pub const fragment_shader_path =
     \\        float t = 0.0;
     \\        if (lenSq > 1e-10) t = dot(rc - data0.xy, delta) / lenSq;
     \\        vec4 extra = texelFetch(u_layer_tex, offsetLayerLoc(infoBase, 5), 0);
-    \\        return mix(color0, color1, wrapPaintT(t, extra.x));
+    \\        return mixGradient(color0, color1, wrapPaintT(t, extra.x));
     \\    }
     \\    if (paintKind == 3) {
     \\        float radius = max(abs(data0.z), 1.0 / 65536.0);
     \\        float t = length(rc - data0.xy) / radius;
-    \\        return mix(color0, color1, wrapPaintT(t, data0.w));
+    \\        return mixGradient(color0, color1, wrapPaintT(t, data0.w));
     \\    }
     \\    if (paintKind == 4) {
     \\        vec4 data1 = texelFetch(u_layer_tex, offsetLayerLoc(infoBase, 3), 0);
@@ -1334,6 +1316,13 @@ pub const fragment_shader =
     \\    return vec4(srgbToLinear(srgb), color.a);
     \\}
     \\
+    \\vec4 mixGradient(vec4 c0, vec4 c1, float t) {
+    \\    vec4 s0 = vec4(linearToSrgb(c0.rgb), c0.a);
+    \\    vec4 s1 = vec4(linearToSrgb(c1.rgb), c1.a);
+    \\    vec4 m = mix(s0, s1, t);
+    \\    return vec4(srgbToLinear(m.rgb), m.a);
+    \\}
+    \\
     \\PathPaintSample samplePathPaint(vec2 rc, ivec2 infoBase, vec4 info) {
     \\    int paintKind = int(-info.w + 0.5);
     \\    vec4 data0 = texelFetch(u_layer_tex, offsetLayerLoc(infoBase, 2), 0);
@@ -1352,13 +1341,13 @@ pub const fragment_shader =
     \\            t = dot(rc - data0.xy, delta) / lenSq;
     \\        }
     \\        vec4 extra = texelFetch(u_layer_tex, offsetLayerLoc(infoBase, 5), 0);
-    \\        return PathPaintSample(mix(color0, color1, wrapPaintT(t, extra.x)), 1.0);
+    \\        return PathPaintSample(mixGradient(color0, color1, wrapPaintT(t, extra.x)), 1.0);
     \\    }
     \\
     \\    if (paintKind == 3) {
     \\        float radius = max(abs(data0.z), 1.0 / 65536.0);
     \\        float t = length(rc - data0.xy) / radius;
-    \\        return PathPaintSample(mix(color0, color1, wrapPaintT(t, data0.w)), 1.0);
+    \\        return PathPaintSample(mixGradient(color0, color1, wrapPaintT(t, data0.w)), 1.0);
     \\    }
     \\
     \\    if (paintKind == 4) {
@@ -1923,6 +1912,13 @@ pub const fragment_shader_subpixel =
     \\    return vec4(srgbToLinear(srgb), color.a);
     \\}
     \\
+    \\vec4 mixGradient(vec4 c0, vec4 c1, float t) {
+    \\    vec4 s0 = vec4(linearToSrgb(c0.rgb), c0.a);
+    \\    vec4 s1 = vec4(linearToSrgb(c1.rgb), c1.a);
+    \\    vec4 m = mix(s0, s1, t);
+    \\    return vec4(srgbToLinear(m.rgb), m.a);
+    \\}
+    \\
     \\PathPaintSample samplePathPaint(vec2 rc, ivec2 infoBase, vec4 info) {
     \\    int paintKind = int(-info.w + 0.5);
     \\    vec4 data0 = texelFetch(u_layer_tex, offsetLayerLoc(infoBase, 2), 0);
@@ -1941,13 +1937,13 @@ pub const fragment_shader_subpixel =
     \\            t = dot(rc - data0.xy, delta) / lenSq;
     \\        }
     \\        vec4 extra = texelFetch(u_layer_tex, offsetLayerLoc(infoBase, 5), 0);
-    \\        return PathPaintSample(mix(color0, color1, wrapPaintT(t, extra.x)), 1.0);
+    \\        return PathPaintSample(mixGradient(color0, color1, wrapPaintT(t, extra.x)), 1.0);
     \\    }
     \\
     \\    if (paintKind == 3) {
     \\        float radius = max(abs(data0.z), 1.0 / 65536.0);
     \\        float t = length(rc - data0.xy) / radius;
-    \\        return PathPaintSample(mix(color0, color1, wrapPaintT(t, data0.w)), 1.0);
+    \\        return PathPaintSample(mixGradient(color0, color1, wrapPaintT(t, data0.w)), 1.0);
     \\    }
     \\
     \\    if (paintKind == 4) {

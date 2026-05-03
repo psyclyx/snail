@@ -484,7 +484,7 @@ export fn snail_atlas_collect_missing_glyph_ids(
 
 // ── Image ──
 
-export fn snail_image_init_rgba8(
+export fn snail_image_init_srgba8(
     alloc_ptr: ?*const SnailAllocator,
     width: u32,
     height: u32,
@@ -492,7 +492,7 @@ export fn snail_image_init_rgba8(
     out: *?*ImageImpl,
 ) c_int {
     const allocator = resolveAllocator(alloc_ptr);
-    const img = snail.Image.initRgba8(allocator, width, height, pixels[0 .. width * height * 4]) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    const img = snail.Image.initSrgba8(allocator, width, height, pixels[0 .. width * height * 4]) catch return SNAIL_ERR_OUT_OF_MEMORY;
     const impl = std.heap.smp_allocator.create(ImageImpl) catch {
         var doomed = img;
         @constCast(&doomed).deinit();
@@ -556,14 +556,6 @@ export fn snail_renderer_set_subpixel_order(order: c_int) void {
     getRenderer().setSubpixelOrder(@enumFromInt(order));
 }
 
-export fn snail_renderer_set_subpixel_mode(mode: c_int) void {
-    getRenderer().setSubpixelMode(@enumFromInt(mode));
-}
-
-export fn snail_renderer_set_subpixel_backdrop(rgba_or_null: ?[*]const f32) void {
-    getRenderer().setSubpixelBackdrop(if (rgba_or_null) |rgba| .{ rgba[0], rgba[1], rgba[2], rgba[3] } else null);
-}
-
 export fn snail_renderer_set_subpixel(enabled: bool) void {
     getRenderer().setSubpixel(enabled);
 }
@@ -574,10 +566,6 @@ export fn snail_renderer_set_fill_rule(rule: c_int) void {
 
 export fn snail_renderer_subpixel_order() c_int {
     return @intFromEnum(getRenderer().subpixelOrder());
-}
-
-export fn snail_renderer_subpixel_mode() c_int {
-    return @intFromEnum(getRenderer().subpixelMode());
 }
 
 export fn snail_renderer_fill_rule() c_int {
@@ -1118,7 +1106,7 @@ test "c_api: image init and deinit" {
     @memset(&pixels, 0xFF);
 
     var image: ?*ImageImpl = null;
-    try testing.expectEqual(SNAIL_OK, snail_image_init_rgba8(null, 4, 4, &pixels, &image));
+    try testing.expectEqual(SNAIL_OK, snail_image_init_srgba8(null, 4, 4, &pixels, &image));
     try testing.expect(image != null);
     defer snail_image_deinit(image);
 

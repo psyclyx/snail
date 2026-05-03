@@ -21,7 +21,7 @@ pub fn main() !void {
     const layout = demo_banner.buildLayout(w, h, scene_assets.metrics);
 
     const assets = @import("assets");
-    var tile_image = try snail.Image.initRgba8(allocator, 16, 16, assets.checkerboard_rgba);
+    var tile_image = try snail.Image.initSrgba8(allocator, 16, 16, assets.checkerboard_rgba);
     defer tile_image.deinit();
 
     var path_picture = try demo_banner_scene.buildPathPicture(allocator, layout, .normal, &tile_image);

@@ -37,37 +37,37 @@ fn nowNs() u64 {
     return @intCast(@as(i128, ts.sec) * 1_000_000_000 + ts.nsec);
 }
 
-fn buildHud(batch: *snail.TextBatch, atlas: *const snail.Atlas, font: *const snail.Font) void {
-    _ = batch.addText(atlas, font, "Score: 12345  FPS: 60  Level 7", 10, 20, 18, .{ 1, 1, 1, 1 });
-    _ = batch.addText(atlas, font, "Health: 100%  Ammo: 42/120", 10, 44, 18, .{ 0.8, 0.2, 0.2, 1 });
+fn buildHud(batch: *snail.TextBatch, fonts: *snail.Fonts) void {
+    _ = fonts.addText(batch, .{}, "Score: 12345  FPS: 60  Level 7", 10, 20, 18, .{ 1, 1, 1, 1 }) catch {};
+    _ = fonts.addText(batch, .{}, "Health: 100%  Ammo: 42/120", 10, 44, 18, .{ 0.8, 0.2, 0.2, 1 }) catch {};
 }
 
-fn buildMultiSize(batch: *snail.TextBatch, atlas: *const snail.Atlas, font: *const snail.Font) void {
+fn buildMultiSize(batch: *snail.TextBatch, fonts: *snail.Fonts) void {
     const white = [4]f32{ 1, 1, 1, 1 };
     var y: f32 = 30;
     for ([_]f32{ 12, 18, 24, 36, 48, 72 }) |sz| {
-        _ = batch.addText(atlas, font, SENTENCE, 10, y, sz, white);
+        _ = fonts.addText(batch, .{}, SENTENCE, 10, y, sz, white) catch {};
         y += sz * 1.4;
     }
 }
 
-fn buildParagraph(batch: *snail.TextBatch, atlas: *const snail.Atlas, font: *const snail.Font) void {
+fn buildParagraph(batch: *snail.TextBatch, fonts: *snail.Fonts) void {
     const gray = [4]f32{ 0.9, 0.9, 0.9, 1 };
     var y: f32 = 30;
     for (0..6) |_| {
-        _ = batch.addText(atlas, font, PARAGRAPH, 10, y, 16, gray);
+        _ = fonts.addText(batch, .{}, PARAGRAPH, 10, y, 16, gray) catch {};
         y += 22;
     }
 }
 
-fn buildTorture(batch: *snail.TextBatch, atlas: *const snail.Atlas, font: *const snail.Font) void {
+fn buildTorture(batch: *snail.TextBatch, fonts: *snail.Fonts) void {
     const white = [4]f32{ 1, 1, 1, 1 };
     var y: f32 = 10;
     var si: usize = 0;
     const sizes = [_]f32{ 10, 14, 18, 24, 32, 48 };
     while (y < HEIGHT) {
         const sz = sizes[si % sizes.len];
-        _ = batch.addText(atlas, font, PARAGRAPH, 5, y, sz, white);
+        _ = fonts.addText(batch, .{}, PARAGRAPH, 5, y, sz, white) catch {};
         y += sz * 1.2;
         si += 1;
     }
@@ -77,15 +77,14 @@ fn buildTorture(batch: *snail.TextBatch, atlas: *const snail.Atlas, font: *const
 
 fn runScenario(
     name: []const u8,
-    buildFn: *const fn (*snail.TextBatch, *const snail.Atlas, *const snail.Font) void,
-    atlas: *const snail.Atlas,
-    font: *const snail.Font,
+    buildFn: *const fn (*snail.TextBatch, *snail.Fonts) void,
+    fonts: *snail.Fonts,
     renderer: *snail.Renderer,
     vbuf: []f32,
     mvp: snail.Mat4,
 ) void {
     var probe = snail.TextBatch.init(vbuf);
-    buildFn(&probe, atlas, font);
+    buildFn(&probe, fonts);
     const glyphs = probe.glyphCount();
 
     const static_slice = probe.slice();
@@ -107,7 +106,7 @@ fn runScenario(
 
     for (0..WARMUP) |_| {
         var b = snail.TextBatch.init(vbuf);
-        buildFn(&b, atlas, font);
+        buildFn(&b, fonts);
         gl.glClear(gl.GL_COLOR_BUFFER_BIT);
         renderer.drawText(b.slice(), mvp, WIDTH, HEIGHT);
     }
@@ -116,7 +115,7 @@ fn runScenario(
     const t_dynamic = nowNs();
     for (0..FRAMES) |_| {
         var b = snail.TextBatch.init(vbuf);
-        buildFn(&b, atlas, font);
+        buildFn(&b, fonts);
         gl.glClear(gl.GL_COLOR_BUFFER_BIT);
         renderer.drawText(b.slice(), mvp, WIDTH, HEIGHT);
     }
@@ -130,16 +129,15 @@ fn runScenario(
     });
 }
 
-const FontEntry = struct {
-    atlas: *const snail.Atlas,
-    font: *const snail.Font,
+const MultiFontEntry = struct {
+    fonts: *snail.Fonts,
     text: []const u8,
     font_size: f32,
 };
 
 fn runMultiFontScenario(
     name: []const u8,
-    font_sets: []const FontEntry,
+    font_sets: []const MultiFontEntry,
     renderer: *snail.Renderer,
     vbuf: []f32,
     mvp: snail.Mat4,
@@ -149,7 +147,7 @@ fn runMultiFontScenario(
     var total_glyphs: usize = 0;
     for (font_sets) |fs| {
         var b = snail.TextBatch.init(vbuf);
-        _ = b.addText(fs.atlas, fs.font, fs.text, 10, 400, fs.font_size, white);
+        _ = fs.fonts.addText(&b, .{}, fs.text, 10, 400, fs.font_size, white) catch {};
         total_glyphs += b.glyphCount();
     }
 
@@ -157,7 +155,7 @@ fn runMultiFontScenario(
     {
         var y: f32 = 30;
         for (font_sets) |fs| {
-            _ = probe.addText(fs.atlas, fs.font, fs.text, 10, y, fs.font_size, white);
+            _ = fs.fonts.addText(&probe, .{}, fs.text, 10, y, fs.font_size, white) catch {};
             y += fs.font_size * 1.5;
         }
     }
@@ -198,11 +196,11 @@ fn runMultiFontScenario(
     });
 }
 
-fn drawSingleBatch(font_sets: []const FontEntry, renderer: *snail.Renderer, vbuf: []f32, mvp: snail.Mat4, color: [4]f32) void {
+fn drawSingleBatch(font_sets: []const MultiFontEntry, renderer: *snail.Renderer, vbuf: []f32, mvp: snail.Mat4, color: [4]f32) void {
     var batch = snail.TextBatch.init(vbuf);
     var y: f32 = 30;
     for (font_sets) |fs| {
-        _ = batch.addText(fs.atlas, fs.font, fs.text, 10, y, fs.font_size, color);
+        _ = fs.fonts.addText(&batch, .{}, fs.text, 10, y, fs.font_size, color) catch {};
         y += fs.font_size * 1.5;
     }
     if (batch.glyphCount() > 0) renderer.drawText(batch.slice(), mvp, WIDTH, HEIGHT);
@@ -215,15 +213,14 @@ const runMultiFontScenarioVulkan = if (build_options.enable_vulkan) runMultiFont
 
 fn runScenarioVulkanImpl(
     name: []const u8,
-    buildFn: *const fn (*snail.TextBatch, *const snail.Atlas, *const snail.Font) void,
-    atlas: *const snail.Atlas,
-    font: *const snail.Font,
+    buildFn: *const fn (*snail.TextBatch, *snail.Fonts) void,
+    fonts: *snail.Fonts,
     renderer: *snail.Renderer,
     vbuf: []f32,
     mvp: snail.Mat4,
 ) void {
     var probe = snail.TextBatch.init(vbuf);
-    buildFn(&probe, atlas, font);
+    buildFn(&probe, fonts);
     const glyphs = probe.glyphCount();
     const static_slice = probe.slice();
 
@@ -253,7 +250,7 @@ fn runScenarioVulkanImpl(
 
     for (0..WARMUP) |_| {
         var b = snail.TextBatch.init(vbuf);
-        buildFn(&b, atlas, font);
+        buildFn(&b, fonts);
         {
             const cmd = vulkan_platform.beginFrameOffscreen();
             renderer.setCommandBuffer(cmd);
@@ -266,7 +263,7 @@ fn runScenarioVulkanImpl(
     const t_dynamic = nowNs();
     for (0..FRAMES) |_| {
         var b = snail.TextBatch.init(vbuf);
-        buildFn(&b, atlas, font);
+        buildFn(&b, fonts);
         {
             const cmd = vulkan_platform.beginFrameOffscreen();
             renderer.setCommandBuffer(cmd);
@@ -286,7 +283,7 @@ fn runScenarioVulkanImpl(
 
 fn runMultiFontScenarioVulkanImpl(
     name: []const u8,
-    font_sets: []const FontEntry,
+    font_sets: []const MultiFontEntry,
     renderer: *snail.Renderer,
     vbuf: []f32,
     mvp: snail.Mat4,
@@ -296,7 +293,7 @@ fn runMultiFontScenarioVulkanImpl(
     var total_glyphs: usize = 0;
     for (font_sets) |fs| {
         var b = snail.TextBatch.init(vbuf);
-        _ = b.addText(fs.atlas, fs.font, fs.text, 10, 400, fs.font_size, white);
+        _ = fs.fonts.addText(&b, .{}, fs.text, 10, 400, fs.font_size, white) catch {};
         total_glyphs += b.glyphCount();
     }
 
@@ -304,7 +301,7 @@ fn runMultiFontScenarioVulkanImpl(
     {
         var y: f32 = 30;
         for (font_sets) |fs| {
-            _ = probe.addText(fs.atlas, fs.font, fs.text, 10, y, fs.font_size, white);
+            _ = fs.fonts.addText(&probe, .{}, fs.text, 10, y, fs.font_size, white) catch {};
             y += fs.font_size * 1.5;
         }
     }
@@ -361,14 +358,27 @@ fn runMultiFontScenarioVulkanImpl(
     });
 }
 
-fn drawSingleBatchVulkan(font_sets: []const FontEntry, renderer: *snail.Renderer, vbuf: []f32, mvp: snail.Mat4, color: [4]f32) void {
+fn drawSingleBatchVulkan(font_sets: []const MultiFontEntry, renderer: *snail.Renderer, vbuf: []f32, mvp: snail.Mat4, color: [4]f32) void {
     var batch = snail.TextBatch.init(vbuf);
     var y: f32 = 30;
     for (font_sets) |fs| {
-        _ = batch.addText(fs.atlas, fs.font, fs.text, 10, y, fs.font_size, color);
+        _ = fs.fonts.addText(&batch, .{}, fs.text, 10, y, fs.font_size, color) catch {};
         y += fs.font_size * 1.5;
     }
     if (batch.glyphCount() > 0) renderer.drawText(batch.slice(), mvp, WIDTH, HEIGHT);
+}
+
+fn initFonts(allocator: std.mem.Allocator, specs: []const snail.Fonts.FaceSpec) !snail.Fonts {
+    return snail.Fonts.init(allocator, specs);
+}
+
+fn ensureAllText(fonts: *snail.Fonts, texts: []const []const u8) !void {
+    for (texts) |text| {
+        if (try fonts.ensureText(.{}, text)) |new_fonts| {
+            fonts.deinit();
+            fonts.* = new_fonts;
+        }
+    }
 }
 
 pub fn main() !void {
@@ -396,10 +406,12 @@ pub fn main() !void {
         defer gl.glDeleteTextures(1, &fbo_tex);
 
         const t_setup = nowNs();
-        var font = try snail.Font.init(assets.noto_sans_regular);
-        defer font.deinit();
-        var atlas = try snail.Atlas.initAscii(allocator, &font, &snail.ASCII_PRINTABLE);
-        defer atlas.deinit();
+        var fonts = try initFonts(allocator, &.{
+            .{ .data = assets.noto_sans_regular },
+        });
+        defer fonts.deinit();
+        try ensureAllText(&fonts, &.{ SENTENCE, PARAGRAPH });
+
         var renderer = try snail.Renderer.init();
         defer renderer.deinit();
 
@@ -407,71 +419,24 @@ pub fn main() !void {
         defer allocator.free(vbuf);
         const mvp = snail.Mat4.ortho(0, WIDTH, HEIGHT, 0, -1, 1);
 
-        var arabic_font = try snail.Font.init(assets.noto_sans_arabic);
-        defer arabic_font.deinit();
-        var arabic_atlas = try snail.Atlas.init(allocator, &arabic_font, &.{});
-        defer arabic_atlas.deinit();
-        {
-            if (comptime build_options.enable_harfbuzz) {
-                _ = snail.replaceAtlas(&arabic_atlas, try arabic_atlas.extendGlyphsForText(ARABIC_TEXT));
-            } else {
-                var cps: [256]u32 = undefined;
-                var n: usize = 0;
-                const view = std.unicode.Utf8View.initUnchecked(ARABIC_TEXT);
-                var it = view.iterator();
-                while (it.nextCodepoint()) |cp| {
-                    if (n >= cps.len) break;
-                    cps[n] = cp;
-                    n += 1;
-                }
-                _ = snail.replaceAtlas(&arabic_atlas, try arabic_atlas.extendCodepoints(cps[0..n]));
-            }
-        }
+        var arabic_fonts = try initFonts(allocator, &.{
+            .{ .data = assets.noto_sans_arabic },
+        });
+        defer arabic_fonts.deinit();
+        try ensureAllText(&arabic_fonts, &.{ARABIC_TEXT});
 
-        var deva_font = try snail.Font.init(assets.noto_sans_devanagari);
-        defer deva_font.deinit();
-        var deva_atlas = try snail.Atlas.init(allocator, &deva_font, &.{});
-        defer deva_atlas.deinit();
-        {
-            if (comptime build_options.enable_harfbuzz) {
-                _ = snail.replaceAtlas(&deva_atlas, try deva_atlas.extendGlyphsForText(DEVANAGARI_TEXT));
-            } else {
-                var cps: [256]u32 = undefined;
-                var n: usize = 0;
-                const view = std.unicode.Utf8View.initUnchecked(DEVANAGARI_TEXT);
-                var it = view.iterator();
-                while (it.nextCodepoint()) |cp| {
-                    if (n >= cps.len) break;
-                    cps[n] = cp;
-                    n += 1;
-                }
-                _ = snail.replaceAtlas(&deva_atlas, try deva_atlas.extendCodepoints(cps[0..n]));
-            }
-        }
+        var deva_fonts = try initFonts(allocator, &.{
+            .{ .data = assets.noto_sans_devanagari },
+        });
+        defer deva_fonts.deinit();
+        try ensureAllText(&deva_fonts, &.{DEVANAGARI_TEXT});
 
-        var thai_font = try snail.Font.init(assets.noto_sans_thai);
-        defer thai_font.deinit();
-        var thai_atlas = try snail.Atlas.init(allocator, &thai_font, &.{});
-        defer thai_atlas.deinit();
-        {
-            if (comptime build_options.enable_harfbuzz) {
-                _ = snail.replaceAtlas(&thai_atlas, try thai_atlas.extendGlyphsForText(THAI_TEXT));
-            } else {
-                var cps: [256]u32 = undefined;
-                var n: usize = 0;
-                const view = std.unicode.Utf8View.initUnchecked(THAI_TEXT);
-                var it = view.iterator();
-                while (it.nextCodepoint()) |cp| {
-                    if (n >= cps.len) break;
-                    cps[n] = cp;
-                    n += 1;
-                }
-                _ = snail.replaceAtlas(&thai_atlas, try thai_atlas.extendCodepoints(cps[0..n]));
-            }
-        }
+        var thai_fonts = try initFonts(allocator, &.{
+            .{ .data = assets.noto_sans_thai },
+        });
+        defer thai_fonts.deinit();
+        try ensureAllText(&thai_fonts, &.{THAI_TEXT});
 
-        var atlas_views: [4]snail.AtlasHandle = undefined;
-        renderer.uploadAtlases(&[_]*const snail.Atlas{ &atlas, &arabic_atlas, &deva_atlas, &thai_atlas }, &atlas_views);
         const setup_us = @as(f64, @floatFromInt(nowNs() - t_setup)) / 1000.0;
 
         const gl_pipeline = @import("render/pipeline.zig");
@@ -479,7 +444,7 @@ pub fn main() !void {
             \\
             \\=== snail end-to-end rendering ===
             \\  Backend: {s} | HarfBuzz: {s} | {d}x{d} | {d} warmup + {d} measured frames/test
-            \\  Setup (4 fonts + atlases + texture array): {d:.0} us
+            \\  Setup (4 fonts + atlases): {d:.0} us
             \\
             \\  "static" = pre-built vertex buffer, draw only (game HUD, menus)
             \\  "dynamic" = rebuild vertices + draw every frame (chat, editor, debug)
@@ -489,64 +454,64 @@ pub fn main() !void {
         std.debug.print("  --- Latin (built-in shaper{s}) ---\n", .{
             if (build_options.enable_harfbuzz) " + HarfBuzz" else "",
         });
-        runScenario("Game HUD (2 lines)", buildHud, &atlas, &font, &renderer, vbuf, mvp);
-        runScenario("Multi-size (6 sizes)", buildMultiSize, &atlas, &font, &renderer, vbuf, mvp);
-        runScenario("Body text (6 paragraphs)", buildParagraph, &atlas, &font, &renderer, vbuf, mvp);
-        runScenario("Torture (fill screen)", buildTorture, &atlas, &font, &renderer, vbuf, mvp);
+        runScenario("Game HUD (2 lines)", buildHud, &fonts, &renderer, vbuf, mvp);
+        runScenario("Multi-size (6 sizes)", buildMultiSize, &fonts, &renderer, vbuf, mvp);
+        runScenario("Body text (6 paragraphs)", buildParagraph, &fonts, &renderer, vbuf, mvp);
+        runScenario("Torture (fill screen)", buildTorture, &fonts, &renderer, vbuf, mvp);
 
         std.debug.print("\n  --- Multi-script ---\n", .{});
 
         const buildArabic = struct {
-            fn f(batch: *snail.TextBatch, a: *const snail.Atlas, fo: *const snail.Font) void {
+            fn f(batch: *snail.TextBatch, fo: *snail.Fonts) void {
                 var y: f32 = 30;
                 for (0..12) |_| {
-                    _ = batch.addText(a, fo, ARABIC_TEXT, 10, y, 24, .{ 1, 1, 1, 1 });
+                    _ = fo.addText(batch, .{}, ARABIC_TEXT, 10, y, 24, .{ 1, 1, 1, 1 }) catch {};
                     y += 32;
                 }
             }
         }.f;
         const buildDevanagari = struct {
-            fn f(batch: *snail.TextBatch, a: *const snail.Atlas, fo: *const snail.Font) void {
+            fn f(batch: *snail.TextBatch, fo: *snail.Fonts) void {
                 var y: f32 = 30;
                 for (0..12) |_| {
-                    _ = batch.addText(a, fo, DEVANAGARI_TEXT, 10, y, 24, .{ 1, 1, 1, 1 });
+                    _ = fo.addText(batch, .{}, DEVANAGARI_TEXT, 10, y, 24, .{ 1, 1, 1, 1 }) catch {};
                     y += 32;
                 }
             }
         }.f;
 
-        runScenario("Arabic (12 lines)", buildArabic, &arabic_atlas, &arabic_font, &renderer, vbuf, mvp);
-        runScenario("Devanagari (12 lines)", buildDevanagari, &deva_atlas, &deva_font, &renderer, vbuf, mvp);
+        runScenario("Arabic (12 lines)", buildArabic, &arabic_fonts, &renderer, vbuf, mvp);
+        runScenario("Devanagari (12 lines)", buildDevanagari, &deva_fonts, &renderer, vbuf, mvp);
 
         std.debug.print("\n  --- Multi-font (atlas switching) ---\n", .{});
 
-        const game_ui_fonts = [_]FontEntry{
-            .{ .atlas = &atlas, .font = &font, .text = "Score: 12345  Level 7", .font_size = 18 },
-            .{ .atlas = &arabic_atlas, .font = &arabic_font, .text = ARABIC_TEXT, .font_size = 24 },
-            .{ .atlas = &atlas, .font = &font, .text = "Health: 100%  Ammo: 42", .font_size = 16 },
+        const game_ui_fonts = [_]MultiFontEntry{
+            .{ .fonts = &fonts, .text = "Score: 12345  Level 7", .font_size = 18 },
+            .{ .fonts = &arabic_fonts, .text = ARABIC_TEXT, .font_size = 24 },
+            .{ .fonts = &fonts, .text = "Health: 100%  Ammo: 42", .font_size = 16 },
         };
         runMultiFontScenario("Game UI (3 fonts)", &game_ui_fonts, &renderer, vbuf, mvp);
 
-        const chat_fonts = [_]FontEntry{
-            .{ .atlas = &atlas, .font = &font, .text = "Alice: Hey, how's it going?", .font_size = 16 },
-            .{ .atlas = &arabic_atlas, .font = &arabic_font, .text = ARABIC_TEXT, .font_size = 16 },
-            .{ .atlas = &deva_atlas, .font = &deva_font, .text = DEVANAGARI_TEXT, .font_size = 16 },
-            .{ .atlas = &atlas, .font = &font, .text = "Charlie: Let's meet at the cafe", .font_size = 16 },
-            .{ .atlas = &thai_atlas, .font = &thai_font, .text = THAI_TEXT, .font_size = 16 },
-            .{ .atlas = &atlas, .font = &font, .text = "Eve: Sounds good!", .font_size = 16 },
+        const chat_fonts = [_]MultiFontEntry{
+            .{ .fonts = &fonts, .text = "Alice: Hey, how's it going?", .font_size = 16 },
+            .{ .fonts = &arabic_fonts, .text = ARABIC_TEXT, .font_size = 16 },
+            .{ .fonts = &deva_fonts, .text = DEVANAGARI_TEXT, .font_size = 16 },
+            .{ .fonts = &fonts, .text = "Charlie: Let's meet at the cafe", .font_size = 16 },
+            .{ .fonts = &thai_fonts, .text = THAI_TEXT, .font_size = 16 },
+            .{ .fonts = &fonts, .text = "Eve: Sounds good!", .font_size = 16 },
         };
         runMultiFontScenario("Chat (6 msgs, 4 fonts)", &chat_fonts, &renderer, vbuf, mvp);
 
-        var torture_fonts: [24]FontEntry = undefined;
-        const mixed_texts = [_]struct { atlas: *const snail.Atlas, font: *const snail.Font, text: []const u8 }{
-            .{ .atlas = &atlas, .font = &font, .text = SENTENCE },
-            .{ .atlas = &arabic_atlas, .font = &arabic_font, .text = ARABIC_TEXT },
-            .{ .atlas = &deva_atlas, .font = &deva_font, .text = DEVANAGARI_TEXT },
-            .{ .atlas = &thai_atlas, .font = &thai_font, .text = THAI_TEXT },
+        var torture_fonts: [24]MultiFontEntry = undefined;
+        const mixed_texts = [_]struct { fonts: *snail.Fonts, text: []const u8 }{
+            .{ .fonts = &fonts, .text = SENTENCE },
+            .{ .fonts = &arabic_fonts, .text = ARABIC_TEXT },
+            .{ .fonts = &deva_fonts, .text = DEVANAGARI_TEXT },
+            .{ .fonts = &thai_fonts, .text = THAI_TEXT },
         };
         for (&torture_fonts, 0..) |*tf, i| {
             const src = mixed_texts[i % mixed_texts.len];
-            tf.* = .{ .atlas = src.atlas, .font = src.font, .text = src.text, .font_size = 16 };
+            tf.* = .{ .fonts = src.fonts, .text = src.text, .font_size = 16 };
         }
         runMultiFontScenario("Torture (24 lines, 4 fonts)", &torture_fonts, &renderer, vbuf, mvp);
 
@@ -559,10 +524,12 @@ pub fn main() !void {
         defer vulkan_platform.deinitOffscreen();
 
         const t_setup = nowNs();
-        var font = try snail.Font.init(assets.noto_sans_regular);
-        defer font.deinit();
-        var atlas = try snail.Atlas.initAscii(allocator, &font, &snail.ASCII_PRINTABLE);
-        defer atlas.deinit();
+        var fonts = try initFonts(allocator, &.{
+            .{ .data = assets.noto_sans_regular },
+        });
+        defer fonts.deinit();
+        try ensureAllText(&fonts, &.{ SENTENCE, PARAGRAPH });
+
         var renderer = try snail.Renderer.initVulkan(vk_ctx);
         defer renderer.deinit();
 
@@ -570,78 +537,31 @@ pub fn main() !void {
         defer allocator.free(vbuf);
         const mvp = snail.Mat4.ortho(0, WIDTH, HEIGHT, 0, -1, 1);
 
-        var arabic_font = try snail.Font.init(assets.noto_sans_arabic);
-        defer arabic_font.deinit();
-        var arabic_atlas = try snail.Atlas.init(allocator, &arabic_font, &.{});
-        defer arabic_atlas.deinit();
-        {
-            if (comptime build_options.enable_harfbuzz) {
-                _ = snail.replaceAtlas(&arabic_atlas, try arabic_atlas.extendGlyphsForText(ARABIC_TEXT));
-            } else {
-                var cps: [256]u32 = undefined;
-                var n: usize = 0;
-                const view = std.unicode.Utf8View.initUnchecked(ARABIC_TEXT);
-                var it = view.iterator();
-                while (it.nextCodepoint()) |cp| {
-                    if (n >= cps.len) break;
-                    cps[n] = cp;
-                    n += 1;
-                }
-                _ = snail.replaceAtlas(&arabic_atlas, try arabic_atlas.extendCodepoints(cps[0..n]));
-            }
-        }
+        var arabic_fonts = try initFonts(allocator, &.{
+            .{ .data = assets.noto_sans_arabic },
+        });
+        defer arabic_fonts.deinit();
+        try ensureAllText(&arabic_fonts, &.{ARABIC_TEXT});
 
-        var deva_font = try snail.Font.init(assets.noto_sans_devanagari);
-        defer deva_font.deinit();
-        var deva_atlas = try snail.Atlas.init(allocator, &deva_font, &.{});
-        defer deva_atlas.deinit();
-        {
-            if (comptime build_options.enable_harfbuzz) {
-                _ = snail.replaceAtlas(&deva_atlas, try deva_atlas.extendGlyphsForText(DEVANAGARI_TEXT));
-            } else {
-                var cps: [256]u32 = undefined;
-                var n: usize = 0;
-                const view = std.unicode.Utf8View.initUnchecked(DEVANAGARI_TEXT);
-                var it = view.iterator();
-                while (it.nextCodepoint()) |cp| {
-                    if (n >= cps.len) break;
-                    cps[n] = cp;
-                    n += 1;
-                }
-                _ = snail.replaceAtlas(&deva_atlas, try deva_atlas.extendCodepoints(cps[0..n]));
-            }
-        }
+        var deva_fonts = try initFonts(allocator, &.{
+            .{ .data = assets.noto_sans_devanagari },
+        });
+        defer deva_fonts.deinit();
+        try ensureAllText(&deva_fonts, &.{DEVANAGARI_TEXT});
 
-        var thai_font = try snail.Font.init(assets.noto_sans_thai);
-        defer thai_font.deinit();
-        var thai_atlas = try snail.Atlas.init(allocator, &thai_font, &.{});
-        defer thai_atlas.deinit();
-        {
-            if (comptime build_options.enable_harfbuzz) {
-                _ = snail.replaceAtlas(&thai_atlas, try thai_atlas.extendGlyphsForText(THAI_TEXT));
-            } else {
-                var cps: [256]u32 = undefined;
-                var n: usize = 0;
-                const view = std.unicode.Utf8View.initUnchecked(THAI_TEXT);
-                var it = view.iterator();
-                while (it.nextCodepoint()) |cp| {
-                    if (n >= cps.len) break;
-                    cps[n] = cp;
-                    n += 1;
-                }
-                _ = snail.replaceAtlas(&thai_atlas, try thai_atlas.extendCodepoints(cps[0..n]));
-            }
-        }
+        var thai_fonts = try initFonts(allocator, &.{
+            .{ .data = assets.noto_sans_thai },
+        });
+        defer thai_fonts.deinit();
+        try ensureAllText(&thai_fonts, &.{THAI_TEXT});
 
-        var atlas_views: [4]snail.AtlasHandle = undefined;
-        renderer.uploadAtlases(&[_]*const snail.Atlas{ &atlas, &arabic_atlas, &deva_atlas, &thai_atlas }, &atlas_views);
         const setup_us = @as(f64, @floatFromInt(nowNs() - t_setup)) / 1000.0;
 
         std.debug.print(
             \\
             \\=== snail end-to-end rendering ===
             \\  Backend: Vulkan | HarfBuzz: {s} | {d}x{d} | {d} warmup + {d} measured frames/test
-            \\  Setup (4 fonts + atlases + texture array): {d:.0} us
+            \\  Setup (4 fonts + atlases): {d:.0} us
             \\
             \\  "static" = pre-built vertex buffer, draw only (game HUD, menus)
             \\  "dynamic" = rebuild vertices + draw every frame (chat, editor, debug)
@@ -651,64 +571,64 @@ pub fn main() !void {
         std.debug.print("  --- Latin (built-in shaper{s}) ---\n", .{
             if (build_options.enable_harfbuzz) " + HarfBuzz" else "",
         });
-        runScenarioVulkan("Game HUD (2 lines)", buildHud, &atlas, &font, &renderer, vbuf, mvp);
-        runScenarioVulkan("Multi-size (6 sizes)", buildMultiSize, &atlas, &font, &renderer, vbuf, mvp);
-        runScenarioVulkan("Body text (6 paragraphs)", buildParagraph, &atlas, &font, &renderer, vbuf, mvp);
-        runScenarioVulkan("Torture (fill screen)", buildTorture, &atlas, &font, &renderer, vbuf, mvp);
+        runScenarioVulkan("Game HUD (2 lines)", buildHud, &fonts, &renderer, vbuf, mvp);
+        runScenarioVulkan("Multi-size (6 sizes)", buildMultiSize, &fonts, &renderer, vbuf, mvp);
+        runScenarioVulkan("Body text (6 paragraphs)", buildParagraph, &fonts, &renderer, vbuf, mvp);
+        runScenarioVulkan("Torture (fill screen)", buildTorture, &fonts, &renderer, vbuf, mvp);
 
         std.debug.print("\n  --- Multi-script ---\n", .{});
 
         const buildArabic = struct {
-            fn f(batch: *snail.TextBatch, a: *const snail.Atlas, fo: *const snail.Font) void {
+            fn f(batch: *snail.TextBatch, fo: *snail.Fonts) void {
                 var y: f32 = 30;
                 for (0..12) |_| {
-                    _ = batch.addText(a, fo, ARABIC_TEXT, 10, y, 24, .{ 1, 1, 1, 1 });
+                    _ = fo.addText(batch, .{}, ARABIC_TEXT, 10, y, 24, .{ 1, 1, 1, 1 }) catch {};
                     y += 32;
                 }
             }
         }.f;
         const buildDevanagari = struct {
-            fn f(batch: *snail.TextBatch, a: *const snail.Atlas, fo: *const snail.Font) void {
+            fn f(batch: *snail.TextBatch, fo: *snail.Fonts) void {
                 var y: f32 = 30;
                 for (0..12) |_| {
-                    _ = batch.addText(a, fo, DEVANAGARI_TEXT, 10, y, 24, .{ 1, 1, 1, 1 });
+                    _ = fo.addText(batch, .{}, DEVANAGARI_TEXT, 10, y, 24, .{ 1, 1, 1, 1 }) catch {};
                     y += 32;
                 }
             }
         }.f;
 
-        runScenarioVulkan("Arabic (12 lines)", buildArabic, &arabic_atlas, &arabic_font, &renderer, vbuf, mvp);
-        runScenarioVulkan("Devanagari (12 lines)", buildDevanagari, &deva_atlas, &deva_font, &renderer, vbuf, mvp);
+        runScenarioVulkan("Arabic (12 lines)", buildArabic, &arabic_fonts, &renderer, vbuf, mvp);
+        runScenarioVulkan("Devanagari (12 lines)", buildDevanagari, &deva_fonts, &renderer, vbuf, mvp);
 
         std.debug.print("\n  --- Multi-font (atlas switching) ---\n", .{});
 
-        const game_ui_fonts = [_]FontEntry{
-            .{ .atlas = &atlas, .font = &font, .text = "Score: 12345  Level 7", .font_size = 18 },
-            .{ .atlas = &arabic_atlas, .font = &arabic_font, .text = ARABIC_TEXT, .font_size = 24 },
-            .{ .atlas = &atlas, .font = &font, .text = "Health: 100%  Ammo: 42", .font_size = 16 },
+        const game_ui_fonts = [_]MultiFontEntry{
+            .{ .fonts = &fonts, .text = "Score: 12345  Level 7", .font_size = 18 },
+            .{ .fonts = &arabic_fonts, .text = ARABIC_TEXT, .font_size = 24 },
+            .{ .fonts = &fonts, .text = "Health: 100%  Ammo: 42", .font_size = 16 },
         };
         runMultiFontScenarioVulkan("Game UI (3 fonts)", &game_ui_fonts, &renderer, vbuf, mvp);
 
-        const chat_fonts = [_]FontEntry{
-            .{ .atlas = &atlas, .font = &font, .text = "Alice: Hey, how's it going?", .font_size = 16 },
-            .{ .atlas = &arabic_atlas, .font = &arabic_font, .text = ARABIC_TEXT, .font_size = 16 },
-            .{ .atlas = &deva_atlas, .font = &deva_font, .text = DEVANAGARI_TEXT, .font_size = 16 },
-            .{ .atlas = &atlas, .font = &font, .text = "Charlie: Let's meet at the cafe", .font_size = 16 },
-            .{ .atlas = &thai_atlas, .font = &thai_font, .text = THAI_TEXT, .font_size = 16 },
-            .{ .atlas = &atlas, .font = &font, .text = "Eve: Sounds good!", .font_size = 16 },
+        const chat_fonts = [_]MultiFontEntry{
+            .{ .fonts = &fonts, .text = "Alice: Hey, how's it going?", .font_size = 16 },
+            .{ .fonts = &arabic_fonts, .text = ARABIC_TEXT, .font_size = 16 },
+            .{ .fonts = &deva_fonts, .text = DEVANAGARI_TEXT, .font_size = 16 },
+            .{ .fonts = &fonts, .text = "Charlie: Let's meet at the cafe", .font_size = 16 },
+            .{ .fonts = &thai_fonts, .text = THAI_TEXT, .font_size = 16 },
+            .{ .fonts = &fonts, .text = "Eve: Sounds good!", .font_size = 16 },
         };
         runMultiFontScenarioVulkan("Chat (6 msgs, 4 fonts)", &chat_fonts, &renderer, vbuf, mvp);
 
-        var torture_fonts: [24]FontEntry = undefined;
-        const mixed_texts = [_]struct { atlas: *const snail.Atlas, font: *const snail.Font, text: []const u8 }{
-            .{ .atlas = &atlas, .font = &font, .text = SENTENCE },
-            .{ .atlas = &arabic_atlas, .font = &arabic_font, .text = ARABIC_TEXT },
-            .{ .atlas = &deva_atlas, .font = &deva_font, .text = DEVANAGARI_TEXT },
-            .{ .atlas = &thai_atlas, .font = &thai_font, .text = THAI_TEXT },
+        var torture_fonts: [24]MultiFontEntry = undefined;
+        const mixed_texts = [_]struct { fonts: *snail.Fonts, text: []const u8 }{
+            .{ .fonts = &fonts, .text = SENTENCE },
+            .{ .fonts = &arabic_fonts, .text = ARABIC_TEXT },
+            .{ .fonts = &deva_fonts, .text = DEVANAGARI_TEXT },
+            .{ .fonts = &thai_fonts, .text = THAI_TEXT },
         };
         for (&torture_fonts, 0..) |*tf, i| {
             const src = mixed_texts[i % mixed_texts.len];
-            tf.* = .{ .atlas = src.atlas, .font = src.font, .text = src.text, .font_size = 16 };
+            tf.* = .{ .fonts = src.fonts, .text = src.text, .font_size = 16 };
         }
         runMultiFontScenarioVulkan("Torture (24 lines, 4 fonts)", &torture_fonts, &renderer, vbuf, mvp);
 

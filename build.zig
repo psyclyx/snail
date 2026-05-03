@@ -121,11 +121,6 @@ pub fn build(b: *std.Build) void {
         compile_frag.addArg("-o");
         const frag_spv = compile_frag.addOutputFileArg("snail.frag.spv");
 
-        const compile_frag_text_sp = b.addSystemCommand(&.{ "glslc", "-fshader-stage=frag" });
-        compile_frag_text_sp.addFileArg(b.path("shaders/snail_text_subpixel.frag"));
-        compile_frag_text_sp.addArg("-o");
-        const frag_text_sp_spv = compile_frag_text_sp.addOutputFileArg("snail_text_subpixel.frag.spv");
-
         const compile_frag_text_sp_dual = b.addSystemCommand(&.{ "glslc", "-fshader-stage=frag", "-DSNAIL_DUAL_SOURCE=1" });
         compile_frag_text_sp_dual.addFileArg(b.path("shaders/snail_text_subpixel.frag"));
         compile_frag_text_sp_dual.addArg("-o");
@@ -136,7 +131,6 @@ pub fn build(b: *std.Build) void {
         });
         mod.addAnonymousImport("snail.vert.spv", .{ .root_source_file = vert_spv });
         mod.addAnonymousImport("snail.frag.spv", .{ .root_source_file = frag_spv });
-        mod.addAnonymousImport("snail_text_subpixel.frag.spv", .{ .root_source_file = frag_text_sp_spv });
         mod.addAnonymousImport("snail_text_subpixel_dual.frag.spv", .{ .root_source_file = frag_text_sp_dual_spv });
         break :blk mod;
     } else b.createModule(.{

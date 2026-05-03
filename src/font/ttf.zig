@@ -17,6 +17,28 @@ pub const LineMetrics = struct {
     line_gap: i16,
 };
 
+/// Text decoration metrics from the OS/2 and post tables.
+/// All values are in font units — scale by (font_size / units_per_em).
+pub const DecorationMetrics = struct {
+    /// Top of underline stroke relative to baseline; negative = below (from post table).
+    underline_position: i16,
+    /// Underline stroke thickness (from post table).
+    underline_thickness: i16,
+    /// Strikethrough stroke position above baseline (from OS/2 table).
+    strikethrough_position: i16,
+    /// Strikethrough stroke thickness (from OS/2 table).
+    strikethrough_thickness: i16,
+};
+
+/// Superscript or subscript metrics from the OS/2 table.
+/// All values are in font units.
+pub const ScriptMetrics = struct {
+    x_size: i16,
+    y_size: i16,
+    x_offset: i16,
+    y_offset: i16,
+};
+
 pub const Contour = struct {
     curves: []const QuadBezier,
 };
@@ -69,6 +91,8 @@ pub const Font = struct {
     gpos_offset: u32 = 0,
     colr_offset: u32 = 0,
     cpal_offset: u32 = 0,
+    os2_offset: u32 = 0,
+    post_offset: u32 = 0,
     index_to_loc_format: i16 = 0,
     num_h_metrics: u16 = 0,
     cmap_subtable_offset: u32 = 0,
@@ -100,15 +124,40 @@ pub const Font = struct {
         return std.mem.readInt(u32, data[offset..][0..4], .big);
     }
 
+    fn tableFields(self: *Font) [14]struct { tag: *const [4]u8, dest: *u32 } {
+        return .{
+            .{ .tag = "head", .dest = &self.head_offset },
+            .{ .tag = "maxp", .dest = &self.maxp_offset },
+            .{ .tag = "cmap", .dest = &self.cmap_offset },
+            .{ .tag = "glyf", .dest = &self.glyf_offset },
+            .{ .tag = "loca", .dest = &self.loca_offset },
+            .{ .tag = "hhea", .dest = &self.hhea_offset },
+            .{ .tag = "hmtx", .dest = &self.hmtx_offset },
+            .{ .tag = "kern", .dest = &self.kern_offset },
+            .{ .tag = "GSUB", .dest = &self.gsub_offset },
+            .{ .tag = "GPOS", .dest = &self.gpos_offset },
+            .{ .tag = "COLR", .dest = &self.colr_offset },
+            .{ .tag = "CPAL", .dest = &self.cpal_offset },
+            .{ .tag = "OS/2", .dest = &self.os2_offset },
+            .{ .tag = "post", .dest = &self.post_offset },
+        };
+    }
+
     fn parseTableDirectory(self: *Font) !void {
         if (self.data.len < 12) return error.InvalidFont;
         const num_tables = try readU16(self.data, 4);
+        const fields = self.tableFields();
         var offset: usize = 12;
         for (0..num_tables) |_| {
             if (offset + 16 > self.data.len) return error.UnexpectedEof;
             const tag = self.data[offset .. offset + 4];
             const table_offset = try readU32(self.data, offset + 8);
-            if (std.mem.eql(u8, tag, "head")) self.head_offset = table_offset else if (std.mem.eql(u8, tag, "maxp")) self.maxp_offset = table_offset else if (std.mem.eql(u8, tag, "cmap")) self.cmap_offset = table_offset else if (std.mem.eql(u8, tag, "glyf")) self.glyf_offset = table_offset else if (std.mem.eql(u8, tag, "loca")) self.loca_offset = table_offset else if (std.mem.eql(u8, tag, "hhea")) self.hhea_offset = table_offset else if (std.mem.eql(u8, tag, "hmtx")) self.hmtx_offset = table_offset else if (std.mem.eql(u8, tag, "kern")) self.kern_offset = table_offset else if (std.mem.eql(u8, tag, "GSUB")) self.gsub_offset = table_offset else if (std.mem.eql(u8, tag, "GPOS")) self.gpos_offset = table_offset else if (std.mem.eql(u8, tag, "COLR")) self.colr_offset = table_offset else if (std.mem.eql(u8, tag, "CPAL")) self.cpal_offset = table_offset;
+            for (fields) |entry| {
+                if (std.mem.eql(u8, tag, entry.tag)) {
+                    entry.dest.* = table_offset;
+                    break;
+                }
+            }
             offset += 16;
         }
         if (self.head_offset == 0 or self.glyf_offset == 0 or self.loca_offset == 0)
@@ -320,6 +369,39 @@ pub const Font = struct {
             .ascent = try readI16(self.data, self.hhea_offset + 4),
             .descent = try readI16(self.data, self.hhea_offset + 6),
             .line_gap = try readI16(self.data, self.hhea_offset + 8),
+        };
+    }
+
+    /// Underline and strikethrough metrics from the post and OS/2 tables.
+    pub fn decorationMetrics(self: *const Font) ParseError!DecorationMetrics {
+        if (self.post_offset == 0 or self.os2_offset == 0) return error.MissingRequiredTable;
+        return .{
+            .underline_position = try readI16(self.data, self.post_offset + 8),
+            .underline_thickness = try readI16(self.data, self.post_offset + 10),
+            .strikethrough_position = try readI16(self.data, self.os2_offset + 28),
+            .strikethrough_thickness = try readI16(self.data, self.os2_offset + 26),
+        };
+    }
+
+    /// Superscript size and offset from the OS/2 table.
+    pub fn superscriptMetrics(self: *const Font) ParseError!ScriptMetrics {
+        if (self.os2_offset == 0) return error.MissingRequiredTable;
+        return .{
+            .x_size = try readI16(self.data, self.os2_offset + 18),
+            .y_size = try readI16(self.data, self.os2_offset + 20),
+            .x_offset = try readI16(self.data, self.os2_offset + 22),
+            .y_offset = try readI16(self.data, self.os2_offset + 24),
+        };
+    }
+
+    /// Subscript size and offset from the OS/2 table.
+    pub fn subscriptMetrics(self: *const Font) ParseError!ScriptMetrics {
+        if (self.os2_offset == 0) return error.MissingRequiredTable;
+        return .{
+            .x_size = try readI16(self.data, self.os2_offset + 10),
+            .y_size = try readI16(self.data, self.os2_offset + 12),
+            .x_offset = try readI16(self.data, self.os2_offset + 14),
+            .y_offset = try readI16(self.data, self.os2_offset + 16),
         };
     }
 
@@ -819,4 +901,39 @@ test "line metrics expose hhea ascent descent and gap" {
     try std.testing.expect(metrics.ascent > 0);
     try std.testing.expect(metrics.descent < 0);
     try std.testing.expect(metrics.line_gap >= 0);
+}
+
+test "decoration metrics from OS/2 and post tables" {
+    const font_data = @import("assets").noto_sans_regular;
+    const font = try Font.init(font_data);
+    const dm = try font.decorationMetrics();
+
+    // Underline position should be below baseline (negative in OpenType convention)
+    try std.testing.expect(dm.underline_position < 0);
+    try std.testing.expect(dm.underline_thickness > 0);
+    // Strikethrough position should be above baseline
+    try std.testing.expect(dm.strikethrough_position > 0);
+    try std.testing.expect(dm.strikethrough_thickness > 0);
+}
+
+test "superscript metrics from OS/2 table" {
+    const font_data = @import("assets").noto_sans_regular;
+    const font = try Font.init(font_data);
+    const sm = try font.superscriptMetrics();
+
+    // Superscript should have positive size and offset
+    try std.testing.expect(sm.x_size > 0);
+    try std.testing.expect(sm.y_size > 0);
+    try std.testing.expect(sm.y_offset > 0);
+}
+
+test "subscript metrics from OS/2 table" {
+    const font_data = @import("assets").noto_sans_regular;
+    const font = try Font.init(font_data);
+    const sm = try font.subscriptMetrics();
+
+    // Subscript should have positive size and offset
+    try std.testing.expect(sm.x_size > 0);
+    try std.testing.expect(sm.y_size > 0);
+    try std.testing.expect(sm.y_offset > 0);
 }

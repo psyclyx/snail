@@ -14,14 +14,42 @@ const Transform2D = snail.Transform2D;
 const FillRule = snail.FillRule;
 const SubpixelOrder = snail.SubpixelOrder;
 
-fn srgbToLinear(v: f32) f32 {
-    if (v <= 0.04045) return v / 12.92;
-    return std.math.pow(f32, (v + 0.055) / 1.055, 2.4);
+// sRGB ↔ linear conversion via comptime lookup tables.
+// srgbToLinear: exact 256-entry LUT (input is always a u8 texel).
+// linearToSrgb: 4096-entry LUT with linear interpolation.
+
+const srgb_to_linear_lut: [256]f32 = blk: {
+    @setEvalBranchQuota(100_000);
+    var table: [256]f32 = undefined;
+    for (0..256) |i| {
+        const v: f32 = @as(f32, @floatFromInt(i)) / 255.0;
+        table[i] = if (v <= 0.04045) v / 12.92 else std.math.pow(f32, (v + 0.055) / 1.055, 2.4);
+    }
+    break :blk table;
+};
+
+fn srgbToLinear(byte: u8) f32 {
+    return srgb_to_linear_lut[byte];
 }
 
+const LINEAR_TO_SRGB_LUT_SIZE = 4096;
+const linear_to_srgb_lut: [LINEAR_TO_SRGB_LUT_SIZE + 1]f32 = blk: {
+    @setEvalBranchQuota(2_000_000);
+    var table: [LINEAR_TO_SRGB_LUT_SIZE + 1]f32 = undefined;
+    for (0..LINEAR_TO_SRGB_LUT_SIZE + 1) |i| {
+        const v: f32 = @as(f32, @floatFromInt(i)) / @as(f32, LINEAR_TO_SRGB_LUT_SIZE);
+        table[i] = if (v <= 0.0031308) v * 12.92 else 1.055 * std.math.pow(f32, v, 1.0 / 2.4) - 0.055;
+    }
+    break :blk table;
+};
+
 fn linearToSrgb(v: f32) f32 {
-    if (v <= 0.0031308) return v * 12.92;
-    return 1.055 * std.math.pow(f32, v, 1.0 / 2.4) - 0.055;
+    const clamped = @max(v, 0.0);
+    if (clamped >= 1.0) return 1.0;
+    const scaled = clamped * LINEAR_TO_SRGB_LUT_SIZE;
+    const idx: u32 = @intFromFloat(scaled);
+    const frac = scaled - @as(f32, @floatFromInt(idx));
+    return linear_to_srgb_lut[idx] + (linear_to_srgb_lut[idx + 1] - linear_to_srgb_lut[idx]) * frac;
 }
 
 fn fract(v: f32) f32 {
@@ -165,7 +193,7 @@ pub const CpuRenderer = struct {
                             self.subpixel_order,
                         );
                         if (max3(cov.rgb) < 1.0 / 255.0) continue;
-                        self.blendPremultipliedPixel(row, col, premultiplyCoverageSubpixel(paint.color, cov.rgb, cov.alpha), paint.apply_dither);
+                        self.blendSubpixelPixel(row, col, paint.color, cov.rgb, cov.alpha);
                     }
                 }
             }
@@ -440,7 +468,7 @@ pub const CpuRenderer = struct {
                         self.subpixel_order,
                     );
                     if (max3(cov.rgb) < 1.0 / 255.0) continue;
-                    self.blendPremultipliedPixel(row, col, premultiplyCoverageSubpixel(color, cov.rgb, cov.alpha), false);
+                    self.blendSubpixelPixel(row, col, color, cov.rgb, cov.alpha);
                 }
             }
         }
@@ -448,9 +476,9 @@ pub const CpuRenderer = struct {
 
     fn blendPremultipliedPixel(self: *CpuRenderer, row: u32, col: u32, src: [4]f32, apply_dither: bool) void {
         const off = row * self.stride + col * 4;
-        const dst_r = srgbToLinear(@as(f32, @floatFromInt(self.pixels[off + 0])) / 255.0);
-        const dst_g = srgbToLinear(@as(f32, @floatFromInt(self.pixels[off + 1])) / 255.0);
-        const dst_b = srgbToLinear(@as(f32, @floatFromInt(self.pixels[off + 2])) / 255.0);
+        const dst_r = srgbToLinear(self.pixels[off + 0]);
+        const dst_g = srgbToLinear(self.pixels[off + 1]);
+        const dst_b = srgbToLinear(self.pixels[off + 2]);
         const dst_a = @as(f32, @floatFromInt(self.pixels[off + 3])) / 255.0;
 
         const src_a = clamp01(src[3]);
@@ -466,6 +494,32 @@ pub const CpuRenderer = struct {
         self.pixels[off + 0] = @intFromFloat(@min(@max((linearToSrgb(out_r) + dither) * 255.0, 0.0), 255.0));
         self.pixels[off + 1] = @intFromFloat(@min(@max((linearToSrgb(out_g) + dither) * 255.0, 0.0), 255.0));
         self.pixels[off + 2] = @intFromFloat(@min(@max((linearToSrgb(out_b) + dither) * 255.0, 0.0), 255.0));
+        self.pixels[off + 3] = @intFromFloat(@min(@max(out_a * 255.0, 0.0), 255.0));
+    }
+
+    /// Per-channel subpixel blend (equivalent to GPU dual-source blending).
+    /// Each RGB channel has its own coverage, so the destination attenuation
+    /// is per-channel: out.r = src.r * alpha_r + dst.r * (1 - alpha_r), etc.
+    fn blendSubpixelPixel(self: *CpuRenderer, row: u32, col: u32, color: [4]f32, cov: [3]f32, alpha_cov: f32) void {
+        const off = row * self.stride + col * 4;
+        const dst_r = srgbToLinear(self.pixels[off + 0]);
+        const dst_g = srgbToLinear(self.pixels[off + 1]);
+        const dst_b = srgbToLinear(self.pixels[off + 2]);
+        const dst_a = @as(f32, @floatFromInt(self.pixels[off + 3])) / 255.0;
+
+        const alpha_r = color[3] * cov[0];
+        const alpha_g = color[3] * cov[1];
+        const alpha_b = color[3] * cov[2];
+        const src_a = color[3] * clamp01(alpha_cov);
+
+        const out_r = color[0] * alpha_r + dst_r * (1.0 - alpha_r);
+        const out_g = color[1] * alpha_g + dst_g * (1.0 - alpha_g);
+        const out_b = color[2] * alpha_b + dst_b * (1.0 - alpha_b);
+        const out_a = src_a + dst_a * (1.0 - src_a);
+
+        self.pixels[off + 0] = @intFromFloat(@min(@max(linearToSrgb(out_r) * 255.0, 0.0), 255.0));
+        self.pixels[off + 1] = @intFromFloat(@min(@max(linearToSrgb(out_g) * 255.0, 0.0), 255.0));
+        self.pixels[off + 2] = @intFromFloat(@min(@max(linearToSrgb(out_b) * 255.0, 0.0), 255.0));
         self.pixels[off + 3] = @intFromFloat(@min(@max(out_a * 255.0, 0.0), 255.0));
     }
 };
@@ -542,9 +596,9 @@ fn paintExtendFromFloat(raw: f32) snail.PaintExtend {
 fn sampleImageTexelLinear(image: *const snail.Image, x: u32, y: u32) [4]f32 {
     const idx = (@as(usize, y) * @as(usize, image.width) + @as(usize, x)) * 4;
     return .{
-        srgbToLinear(@as(f32, @floatFromInt(image.pixels[idx + 0])) / 255.0),
-        srgbToLinear(@as(f32, @floatFromInt(image.pixels[idx + 1])) / 255.0),
-        srgbToLinear(@as(f32, @floatFromInt(image.pixels[idx + 2])) / 255.0),
+        srgbToLinear(image.pixels[idx + 0]),
+        srgbToLinear(image.pixels[idx + 1]),
+        srgbToLinear(image.pixels[idx + 2]),
         @as(f32, @floatFromInt(image.pixels[idx + 3])) / 255.0,
     };
 }
@@ -794,15 +848,6 @@ fn premultiplyCoverage(color: [4]f32, cov: f32) [4]f32 {
         color[1] * alpha,
         color[2] * alpha,
         alpha,
-    };
-}
-
-fn premultiplyCoverageSubpixel(color: [4]f32, cov: [3]f32, alpha_cov: f32) [4]f32 {
-    return .{
-        color[0] * color[3] * cov[0],
-        color[1] * color[3] * cov[1],
-        color[2] * color[3] * cov[2],
-        color[3] * clamp01(alpha_cov),
     };
 }
 
@@ -1781,7 +1826,7 @@ test "cpu renderer renders image-painted path picture" {
     var renderer = CpuRenderer.init(buf.ptr, width, height, stride);
     renderer.clear(0, 0, 0, 0);
 
-    var image = try snail.Image.initRgba8(testing.allocator, 2, 1, &.{
+    var image = try snail.Image.initSrgba8(testing.allocator, 2, 1, &.{
         255, 0, 0,   255,
         0,   0, 255, 255,
     });

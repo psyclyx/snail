@@ -11,8 +11,6 @@ layout(push_constant) uniform PushConstants {
     vec2 viewport;
     int fill_rule;
     int subpixel_order;
-    int subpixel_render_mode;
-    vec4 subpixel_backdrop;
 };
 
 layout(location = 0) out vec4 v_color;

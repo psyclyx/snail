@@ -15,8 +15,6 @@ layout(push_constant) uniform PushConstants {
     vec2 viewport;
     int fill_rule;
     int subpixel_order; // 1=RGB, 2=BGR, 3=VRGB, 4=VBGR
-    int subpixel_render_mode; // 0=legacy blend, 1=opaque backdrop resolve, 2=dual-source safe
-    vec4 subpixel_backdrop;
 };
 
 layout(location = 0) out vec4 frag_color;
@@ -531,12 +529,6 @@ vec4 premultiplyColorSubpixel(vec4 color, vec3 cov, float alpha_cov) {
     return vec4(color.rgb * alpha, color.a * alpha_cov);
 }
 
-vec4 resolveSubpixelOverOpaqueBackdrop(vec4 color, vec3 cov, vec4 backdrop) {
-    vec3 src_alpha = vec3(color.a) * cov;
-    vec3 resolved = color.rgb * src_alpha + backdrop.rgb * (vec3(1.0) - src_alpha);
-    return vec4(resolved, 1.0);
-}
-
 vec2 evalHorizCoverage(vec2 rc, float xOffset, vec2 ppe,
                        ivec2 gLoc, ivec2 hLoc, int hCount, int layer) {
     return evalAxisCoverage(rc + vec2(xOffset, 0.0), ppe.x, hLoc, hCount, layer, true);
@@ -552,19 +544,6 @@ float blendSubpixelSample(vec2 cw_s, vec2 cw_o) {
     float blended = cw_s.x * cw_s.y + cw_o.x * cw_o.y;
     return clamp(max(applyFillRule(blended / max(wsum, 1.0 / 65536.0)),
                      min(applyFillRule(cw_s.x), applyFillRule(cw_o.x))), 0.0, 1.0);
-}
-
-vec3 blendSubpixel(vec2 cw_r, vec2 cw_g, vec2 cw_b, vec2 cw_o) {
-    return vec3(
-        blendSubpixelSample(cw_r, cw_o),
-        blendSubpixelSample(cw_g, cw_o),
-        blendSubpixelSample(cw_b, cw_o)
-    );
-}
-
-vec4 blendSubpixelWithAlpha(vec2 cw_r, vec2 cw_g, vec2 cw_b, vec2 cw_o) {
-    vec3 cov = blendSubpixel(cw_r, cw_g, cw_b, cw_o);
-    return vec4(cov, blendSubpixelSample(cw_g, cw_o));
 }
 
 vec4 filterSubpixelCoverage(float s_m3, float s_m2, float s_m1, float s_0, float s_p1, float s_p2, float s_p3, bool reverse_order) {
@@ -598,17 +577,9 @@ vec4 evalGlyphCoverageSubpixelLayer(vec2 rc, vec2 epp, vec2 ppe, ivec2 gLoc, ive
     ivec2 vLoc = calcBandLoc(gLoc, vbd.y);
     int vCount = int(vbd.x);
 
-    bool safe_mode = subpixel_render_mode != 0;
     if (subpixel_order <= 2) {
         vec2 cw_v = evalVertCoverage(rc, 0.0, ppe, vLoc, vCount, layer);
         float sp = epp.x / 3.0;
-        if (!safe_mode) {
-            float s = (subpixel_order == 2) ? -1.0 : 1.0;
-            vec2 cw_r = evalHorizCoverage(rc, -sp * s, ppe, gLoc, hLoc, hCount, layer);
-            vec2 cw_g = evalHorizCoverage(rc,  0.0,    ppe, gLoc, hLoc, hCount, layer);
-            vec2 cw_b = evalHorizCoverage(rc, +sp * s, ppe, gLoc, hLoc, hCount, layer);
-            return blendSubpixelWithAlpha(cw_r, cw_g, cw_b, cw_v);
-        }
         float s_m3 = blendSubpixelSample(evalHorizCoverage(rc, -3.0 * sp, ppe, gLoc, hLoc, hCount, layer), cw_v);
         float s_m2 = blendSubpixelSample(evalHorizCoverage(rc, -2.0 * sp, ppe, gLoc, hLoc, hCount, layer), cw_v);
         float s_m1 = blendSubpixelSample(evalHorizCoverage(rc, -1.0 * sp, ppe, gLoc, hLoc, hCount, layer), cw_v);
@@ -621,13 +592,6 @@ vec4 evalGlyphCoverageSubpixelLayer(vec2 rc, vec2 epp, vec2 ppe, ivec2 gLoc, ive
 
     float sp = epp.y / 3.0;
     vec2 cw_h = evalHorizCoverage(rc, 0.0, ppe, gLoc, hLoc, hCount, layer);
-    if (!safe_mode) {
-        float s = (subpixel_order == 4) ? -1.0 : 1.0;
-        vec2 cw_r = evalVertCoverage(rc, -sp * s, ppe, vLoc, vCount, layer);
-        vec2 cw_g = evalVertCoverage(rc,  0.0,    ppe, vLoc, vCount, layer);
-        vec2 cw_b = evalVertCoverage(rc, +sp * s, ppe, vLoc, vCount, layer);
-        return blendSubpixelWithAlpha(cw_r, cw_g, cw_b, cw_h);
-    }
     float s_m3 = blendSubpixelSample(evalVertCoverage(rc, -3.0 * sp, ppe, vLoc, vCount, layer), cw_h);
     float s_m2 = blendSubpixelSample(evalVertCoverage(rc, -2.0 * sp, ppe, vLoc, vCount, layer), cw_h);
     float s_m1 = blendSubpixelSample(evalVertCoverage(rc, -1.0 * sp, ppe, vLoc, vCount, layer), cw_h);
@@ -753,9 +717,5 @@ void main() {
 
     vec3 cov = cov_alpha.rgb;
     if (max(max(cov.r, cov.g), cov.b) < 1.0/255.0) discard;
-    if (subpixel_render_mode == 1 && subpixel_backdrop.a >= 1.0 - 1e-6) {
-        frag_color = resolveSubpixelOverOpaqueBackdrop(v_color, cov, subpixel_backdrop);
-        return;
-    }
     emitSubpixelColor(v_color, cov, cov_alpha.a);
 }

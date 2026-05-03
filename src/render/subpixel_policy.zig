@@ -5,14 +5,11 @@ const Vec2 = @import("../math/vec.zig").Vec2;
 const vertex = @import("vertex.zig");
 const Mat4 = @import("../math/vec.zig").Mat4;
 const Transform2D = @import("../math/vec.zig").Transform2D;
-const SubpixelMode = @import("subpixel_mode.zig").SubpixelMode;
 const SubpixelOrder = @import("subpixel_order.zig").SubpixelOrder;
 
 pub const TextRenderMode = enum {
     grayscale,
-    subpixel_legacy,
     subpixel_dual_source,
-    subpixel_backdrop,
 };
 
 pub fn chooseTextRenderMode(
@@ -20,23 +17,13 @@ pub fn chooseTextRenderMode(
     mvp: Mat4,
     allow_subpixel: bool,
     order: SubpixelOrder,
-    mode: SubpixelMode,
     supports_dual_source: bool,
-    backdrop: ?[4]f32,
 ) TextRenderMode {
     if (!allow_subpixel or order == .none) return .grayscale;
-
-    return switch (mode) {
-        .legacy_unsafe => .subpixel_legacy,
-        .safe => blk: {
-            if (!mvpPreservesScreenSubpixelAxes(mvp)) break :blk .grayscale;
-            if (!verticesPreserveScreenSubpixelAxes(vertices)) break :blk .grayscale;
-            if (supports_dual_source) break :blk .subpixel_dual_source;
-            const bg = backdrop orelse break :blk .grayscale;
-            if (bg[3] < 1.0 - 1e-6) break :blk .grayscale;
-            break :blk .subpixel_backdrop;
-        },
-    };
+    if (!mvpPreservesScreenSubpixelAxes(mvp)) return .grayscale;
+    if (!verticesPreserveScreenSubpixelAxes(vertices)) return .grayscale;
+    if (supports_dual_source) return .subpixel_dual_source;
+    return .grayscale;
 }
 
 pub fn mvpPreservesScreenSubpixelAxes(mvp: Mat4) bool {
@@ -70,7 +57,7 @@ fn approxZero(v: f32) bool {
     return @abs(v) <= 1e-5;
 }
 
-test "safe LCD prefers dual-source and otherwise needs opaque backdrop" {
+test "LCD requires dual-source, otherwise grayscale" {
     var buf: [vertex.FLOATS_PER_VERTEX * vertex.VERTICES_PER_GLYPH]f32 = undefined;
     const bbox = BBox{
         .min = Vec2.new(0.0, -0.2),
@@ -91,23 +78,19 @@ test "safe LCD prefers dual-source and otherwise needs opaque backdrop" {
 
     try std.testing.expectEqual(
         TextRenderMode.grayscale,
-        chooseTextRenderMode(&buf, Mat4.identity, true, .rgb, .safe, false, null),
-    );
-    try std.testing.expectEqual(
-        TextRenderMode.subpixel_backdrop,
-        chooseTextRenderMode(&buf, Mat4.identity, true, .rgb, .safe, false, .{ 0, 0, 0, 1 }),
+        chooseTextRenderMode(&buf, Mat4.identity, true, .rgb, false),
     );
     try std.testing.expectEqual(
         TextRenderMode.subpixel_dual_source,
-        chooseTextRenderMode(&buf, Mat4.identity, true, .rgb, .safe, true, null),
+        chooseTextRenderMode(&buf, Mat4.identity, true, .rgb, true),
     );
     try std.testing.expectEqual(
         TextRenderMode.grayscale,
-        chooseTextRenderMode(&buf, Mat4.rotateZ(std.math.pi / 2.0), true, .rgb, .safe, true, .{ 0, 0, 0, 1 }),
+        chooseTextRenderMode(&buf, Mat4.rotateZ(std.math.pi / 2.0), true, .rgb, true),
     );
 }
 
-test "safe LCD rejects transformed glyph jacobians but legacy keeps LCD" {
+test "LCD rejects transformed glyph jacobians" {
     var buf: [vertex.FLOATS_PER_VERTEX * vertex.VERTICES_PER_GLYPH]f32 = undefined;
     const bbox = BBox{
         .min = Vec2.new(1.0, 2.0),
@@ -135,10 +118,6 @@ test "safe LCD rejects transformed glyph jacobians but legacy keeps LCD" {
     try std.testing.expect(vertex.generateGlyphVerticesTransformed(&buf, bbox, band_entry, .{ 1, 1, 1, 1 }, 0, transform));
     try std.testing.expectEqual(
         TextRenderMode.grayscale,
-        chooseTextRenderMode(&buf, Mat4.identity, true, .rgb, .safe, true, .{ 0, 0, 0, 1 }),
-    );
-    try std.testing.expectEqual(
-        TextRenderMode.subpixel_legacy,
-        chooseTextRenderMode(&buf, Mat4.identity, true, .rgb, .legacy_unsafe, false, null),
+        chooseTextRenderMode(&buf, Mat4.identity, true, .rgb, true),
     );
 }

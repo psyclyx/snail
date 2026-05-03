@@ -40,6 +40,16 @@ There is no rasterization, no texture sampling for glyph shapes, and no distance
 
 **Vector paths.** Filled and stroked `Path` geometry goes through the same pipeline. Paths are decomposed into quadratic curves (cubics are adaptively approximated), packed into the same curve/band texture format, and drawn with the same fragment shader. Strokes are expanded into offset curves with proper joins (miter, bevel, round) and caps (butt, square, round). The `PathPicture` type freezes a set of styled paths into an immutable atlas snapshot that can be instanced cheaply per frame.
 
+## Color convention
+
+All color parameters are **sRGB, straight (unpremultiplied) alpha**, as `[4]f32` in the range 0.0–1.0. This applies to `FillStyle.color`, `StrokeStyle.color`, gradient stops, `ImagePaint.tint`, and text color arguments. The renderer premultiplies alpha and linearizes for blending internally.
+
+**Images** (`Image.initSrgba8`) expect sRGB-encoded RGBA8 pixel data (4 bytes per pixel, 0–255). This is what most image decoders produce. Linear-space pixel buffers will appear too bright.
+
+**Gradients** interpolate in sRGB space by default, which gives perceptually smooth results for UI use. Set `color_space = .linear_rgb` on `LinearGradient` or `RadialGradient` for physically correct interpolation (avoids dark bands between complementary hues).
+
+**Blending** uses premultiplied alpha with gamma-correct (linear-space) compositing. On GPU, `GL_FRAMEBUFFER_SRGB` / Vulkan sRGB swapchain handles linearization automatically. The CPU renderer uses equivalent lookup tables.
+
 ## Build
 
 Requires [Zig 0.16](https://ziglang.org/download/), OpenGL 3.3+, HarfBuzz, and pkg-config. The interactive demo requires Wayland + EGL. Vulkan support is optional.
@@ -92,56 +102,54 @@ Your project needs OpenGL and HarfBuzz available via pkg-config. On NixOS/nix-sh
 ```zig
 const snail = @import("snail");
 
-// Parse font (data slice must outlive the Font)
-var font = try snail.Font.init(ttf_bytes);
-defer font.deinit();
+// Create fonts with fallback chain (data slices must outlive Fonts)
+var fonts = try snail.Fonts.init(allocator, &.{
+    .{ .data = noto_sans_regular },
+    .{ .data = noto_sans_bold, .weight = .bold },
+    .{ .data = noto_sans_regular, .italic = true, .synthetic = .{ .skew_x = 0.2 } },
+    .{ .data = noto_sans_arabic, .fallback = true },
+    .{ .data = twemoji, .fallback = true },
+});
+defer fonts.deinit();
 
-// Build glyph atlas for the characters you need
-var atlas = try snail.Atlas.init(allocator, &font, &codepoints);
-defer atlas.deinit();
+// Populate atlas — starts empty, ensureText returns a new snapshot
+fonts = (try fonts.ensureText(.{}, "Hello, world!")) orelse fonts;
 
 // Initialize renderer (requires active GL 3.3+ context)
 var renderer = try snail.Renderer.init();
 defer renderer.deinit();
-const atlas_handle = renderer.uploadAtlas(&atlas);
+
+// Upload font textures
+var font_atlas = fonts.uploadAtlas();
+defer fonts.deinitUploadAtlas(&font_atlas);
+renderer.uploadAtlases(&.{&font_atlas}, &.{});
 
 // Build text vertices (zero allocations, caller-owned buffer)
 var buf: [4096 * snail.TEXT_FLOATS_PER_GLYPH]f32 = undefined;
 var batch = snail.TextBatch.init(&buf);
-_ = batch.addText(atlas_handle, &font, "Hello, world!", 10, 400, 48, .{ 1, 1, 1, 1 });
+_ = try fonts.addText(&batch, .{}, "Hello, world!", 10, 400, 48, .{ 1, 1, 1, 1 });
 
 // Draw
 renderer.beginFrame();
 renderer.drawText(batch.slice(), mvp, viewport_w, viewport_h);
 ```
 
-### Shaped-run API
+### On-demand atlas extension
 
-For terminals, editors, and other callers that need per-glyph metadata:
+`ensureText` returns a new immutable snapshot; the old one remains valid for in-flight readers.
 
 ```zig
-// Shape text into positioned glyphs with source-span metadata
-const run = try atlas.shapeUtf8(&font, text, 24.0, allocator);
-defer allocator.free(run.glyphs);
+// Render — text is automatically itemized across fonts
+const result = try fonts.addText(&batch, .{}, text, 10, 400, 24, color);
 
-// Each glyph carries byte offsets into the source text,
-// so callers can reason about ligatures, cells, and selection
-for (run.glyphs) |g| {
-    // g.glyph_id, g.x_offset, g.y_offset
-    // g.x_advance, g.y_advance
-    // g.source_start, g.source_end  (byte range in input)
-}
-
-// Ensure atlas has all needed glyphs, then render
-var missing: [256]u16 = undefined;
-const n = atlas.collectMissingGlyphIds(&run, &missing);
-if (n > 0) {
-    if (try atlas.extendGlyphIds(missing[0..n])) |next| {
-        snail.replaceAtlas(&atlas, next);
-        atlas_handle = renderer.uploadAtlas(&atlas);
+// If glyphs were missing, extend and re-render next frame
+if (result.missing) {
+    if (try fonts.ensureText(.{}, text)) |new_fonts| {
+        fonts.deinit();  // safe: no other readers
+        fonts = new_fonts;
+        // re-upload and redraw
     }
 }
-_ = batch.addRun(atlas_handle, &run, 0, 0, 24, color);
 ```
 
 ### Vector paths
@@ -170,6 +178,8 @@ renderer.drawPaths(paths.slice(), mvp, viewport_w, viewport_h);
 ```
 
 ## Example: C
+
+> **Note:** The C API still uses the lower-level `Font`/`Atlas` types. A `snail_fonts_*` C API is planned.
 
 ```c
 #include "snail.h"
@@ -239,14 +249,14 @@ snail_renderer_deinit();
 
 | Type | Description |
 |------|-------------|
-| `Font` | Parsed TrueType font. Immutable, thread-safe for reads. |
-| `Atlas` | Immutable GPU texture data for a set of glyphs. Extending returns a new snapshot sharing old pages. |
-| `AtlasHandle` | Lightweight token returned by `Renderer.uploadAtlas`, encoding texture-array base layer. |
-| `GlyphPlacement` | Positioned glyph with `glyph_id`, pixel offsets/advances, and source byte span. |
-| `ShapedRun` | Slice of `GlyphPlacement` plus total advance. Output of `Atlas.shapeUtf8`. |
+| `Fonts` | Multi-font manager. Immutable snapshot with shared glyph atlas. `ensureText` returns a new snapshot; old stays valid. |
+| `FaceSpec` | `{ .data, .weight, .italic, .fallback, .synthetic }` — font face specification for `Fonts.init`. |
+| `FontStyle` | `{ .weight: FontWeight, .italic: bool }` — selects a face for rendering. |
+| `FontWeight` | `.regular`, `.bold`, `.semi_bold`, etc. |
+| `SyntheticStyle` | `{ .skew_x, .embolden }` — synthetic italic shear and bold offset. |
+| `AddTextResult` | `{ .advance: f32, .missing: bool }` — returned by `Fonts.addText`. |
 | `TextBatch` | Writes glyph vertices into a caller-owned `[]f32`. Zero allocations. |
-| `Image` | RGBA8 raster image. |
-| `ImageHandle` | Token returned by `Renderer.uploadImage`, encoding texture-array layer and UV scale. |
+| `Image` | sRGB RGBA8 raster image. Created with `initSrgba8`. |
 | `Path` | Mutable path builder: `moveTo`, `lineTo`, `quadTo`, `cubicTo`, `close`, plus shape helpers. |
 | `PathPictureBuilder` | Accumulates filled/stroked paths and shapes with paint styles. |
 | `PathPicture` | Immutable frozen vector art. Upload once, instance cheaply per frame. |
@@ -254,46 +264,32 @@ snail_renderer_deinit();
 | `Renderer` | Owns GPU state (shaders, textures). One per GL/Vulkan context. |
 | `Rect` | `{ x, y, w, h }` rectangle. |
 | `Transform2D` | 2x3 affine matrix `{ xx, xy, tx, yx, yy, ty }`. |
-| `FillStyle` | Fill color with optional `Paint` (solid, linear gradient, radial gradient, image). |
-| `StrokeStyle` | Stroke width, color, optional paint, cap, join, miter limit, placement. |
+| `FillStyle` | sRGB fill color (straight alpha) with optional `Paint`. |
+| `StrokeStyle` | sRGB stroke color (straight alpha), width, optional paint, cap, join, miter limit, placement. |
 | `Paint` | Tagged union: `.solid`, `.linear_gradient`, `.radial_gradient`, `.image`. |
+| `ColorSpace` | Gradient interpolation space: `.srgb` (default) or `.linear_rgb`. |
 
-### Font
-
-| Method | Description |
-|--------|-------------|
-| `Font.init(data) !Font` | Parse TTF from raw bytes. Data must outlive the font. |
-| `font.unitsPerEm() u16` | Font design units per em. |
-| `font.glyphIndex(codepoint) !u16` | Map Unicode codepoint to glyph ID. |
-| `font.getKerning(left, right) !i16` | Kern table pair adjustment in font units. |
-| `font.advanceWidth(glyph_id) !i16` | Horizontal advance in font units. |
-| `font.lineMetrics() !LineMetrics` | `hhea` ascent, descent, line gap in font units. |
-| `font.glyphMetrics(glyph_id) !GlyphMetrics` | Advance, LSB, bounding box. |
-
-### Atlas
+### Fonts
 
 | Method | Description |
 |--------|-------------|
-| `Atlas.init(alloc, font, codepoints) !Atlas` | Build atlas for specific codepoints. |
-| `Atlas.initAscii(alloc, font, chars) !Atlas` | Build atlas for ASCII byte values. |
-| `atlas.extendGlyphIds(ids) !?Atlas` | New snapshot with additional glyphs. Returns `null` if all present. |
-| `atlas.extendCodepoints(cps) !?Atlas` | Extend by codepoints. |
-| `atlas.extendText(utf8) !?Atlas` | Extend by UTF-8 string (with ligature/shaping discovery). |
-| `atlas.extendRun(run) !?Atlas` | Extend by all glyph IDs in a `ShapedRun`. |
-| `atlas.shapeUtf8(font, text, font_size, alloc) !ShapedRun` | Shape text into positioned glyphs. Caller frees `run.glyphs`. |
-| `atlas.collectMissingGlyphIds(run, out) usize` | Write unique missing glyph IDs to `out`. Returns count. |
-| `atlas.compact() !Atlas` | Repack into minimal pages. May invalidate handles. |
-| `atlas.pageCount() usize` | Number of texture pages. |
-| `atlas.textureByteLen() usize` | Total GPU texture bytes. |
-| `replaceAtlas(current, next) bool` | Swap atlas in place (deinits old). |
+| `Fonts.init(alloc, faces) !Fonts` | Parse font faces. Atlas starts empty. |
+| `fonts.deinit()` | Release resources. Shared pages remain valid for other snapshots. |
+| `fonts.ensureText(style, text) !?Fonts` | Return new snapshot with glyphs for `text`. Null if already present. |
+| `fonts.addText(batch, style, text, x, y, size, color) !AddTextResult` | Itemize + shape + emit. Returns advance and whether any glyphs were missing. |
+| `fonts.measureText(style, text, size) !f32` | Measure advance width without emitting vertices. |
+| `fonts.lineMetrics() !LineMetrics` | Primary face `hhea` ascent, descent, line gap in font units. |
+| `fonts.decorationRect(kind, x, y, advance, size) !Rect` | Compute underline or strikethrough rect from font metrics. |
+| `fonts.superscriptTransform(x, y, size) !ScriptTransform` | Adjusted position and size for superscript text. |
+| `fonts.subscriptTransform(x, y, size) !ScriptTransform` | Adjusted position and size for subscript text. |
+| `fonts.uploadAtlas() Atlas` | Temporary Atlas wrapper for GPU upload. Call `deinitUploadAtlas` after. |
+| `fonts.pageCount() usize` | Number of texture pages. |
 
 ### TextBatch
 
 | Method | Description |
 |--------|-------------|
 | `TextBatch.init(buf) TextBatch` | Wrap a caller-owned `[]f32`. |
-| `batch.addText(atlas, font, text, x, y, size, color) f32` | Lay out + emit UTF-8. Returns advance. |
-| `batch.addRun(atlas, run, x, y, size, color) usize` | Emit a pre-shaped run. Returns glyph count. |
 | `batch.glyphCount() usize` | Glyphs written so far. |
 | `batch.slice() []const f32` | Vertex data for `Renderer.drawText`. |
 | `batch.reset()` | Clear without reallocating. |
@@ -311,8 +307,6 @@ snail_renderer_deinit();
 | `renderer.drawText(verts, mvp, w, h)` | Draw text batch vertices. |
 | `renderer.drawPaths(verts, mvp, w, h)` | Draw path batch vertices (always grayscale AA). |
 | `renderer.setSubpixelOrder(order)` | `.none`, `.rgb`, `.bgr`, `.vrgb`, `.vbgr`. |
-| `renderer.setSubpixelMode(mode)` | `.safe` (default) or `.legacy_unsafe`. |
-| `renderer.setSubpixelBackdrop(color)` | Declare opaque backdrop for safe LCD fallback. |
 | `renderer.setFillRule(rule)` | `.non_zero` (default) or `.even_odd`. |
 
 ### Path
@@ -391,8 +385,9 @@ All numbers from a single machine (Ryzen 7 / RTX 3080, NotoSans-Regular, 1280x72
 
 ```
 src/
-  snail.zig              public API: Font, Atlas, Renderer, TextBatch, Path, ...
-  c_api.zig              C bindings (86 exported functions)
+  snail.zig              public API: Fonts, Renderer, TextBatch, Path, ...
+  fonts.zig              Fonts type: multi-font manager with immutable snapshot atlas
+  c_api.zig              C bindings
   glyph_emit.zig         glyph → vertex dispatch (plain, COLR, multi-layer)
   cpu_renderer.zig       software rasterizer (same atlas data, no GPU)
   font/
@@ -422,7 +417,6 @@ src/
     wayland_window.zig   Wayland window + input handling
     screenshot.zig       framebuffer capture + TGA writing
     subpixel_order.zig   RGB/BGR/VRGB/VBGR enum
-    subpixel_mode.zig    safe vs legacy subpixel mode
     subpixel_detect.zig  auto-detect display subpixel layout
     subpixel_policy.zig  subpixel rendering policy logic
   profile/
@@ -435,13 +429,12 @@ include/
 
 | Type | Rule |
 |------|------|
-| `Font` | Immutable after init. Safe for concurrent reads. |
-| `Atlas` | Immutable after creation. Safe for concurrent reads. |
-| `TextBatch`, `PathBatch` | Caller-owned buffers. Multiple batches reading the same atlas from different threads is safe. |
+| `Fonts` | Immutable snapshot. Safe for concurrent reads. `ensureText` returns a new snapshot; old remains valid. |
+| `TextBatch`, `PathBatch` | Caller-owned buffers. Thread-local — no sharing needed. |
 | `PathPicture` | Immutable after freeze. Safe for concurrent reads. |
 | `Renderer` | Single-threaded. Must be called from the GL/Vulkan context thread. |
 
-Typical pattern: load fonts and build atlases on any thread, upload and draw on the render thread, build batches on any thread(s) into thread-local buffers.
+Typical pattern: build `Fonts` and call `ensureText` on a loading thread, upload and draw on the render thread, fill batches on any thread(s) into thread-local buffers. When new text arrives, `ensureText` on any thread returns a new snapshot; swap it in on the render thread between frames.
 
 ## Status and roadmap
 
@@ -454,8 +447,8 @@ snail is used in development but is not yet stable. Current limitations:
 - C API is GL-only (no Vulkan bindings yet).
 
 Planned:
-- DynamicAtlas / AtlasCache for high-churn glyph sets.
 - Vulkan C API parity.
+- C API for `Fonts` type.
 
 ## License
 

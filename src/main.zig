@@ -62,20 +62,10 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
     const path_buf = try allocator.alloc(f32, 512 * snail.TEXT_FLOATS_PER_GLYPH);
     defer allocator.free(path_buf);
 
-    var atlas_views: [7]snail.AtlasHandle = undefined;
     var path_picture: ?snail.PathPicture = null;
     defer if (path_picture) |*picture| picture.deinit();
-    var overlay_picture: ?snail.PathPicture = null;
-    defer if (overlay_picture) |*picture| picture.deinit();
-    var overlay_view: ?snail.AtlasHandle = null;
+    var path_view: snail.AtlasHandle = .{ .atlas = undefined };
     var uploaded_size = [2]u32{ 0, 0 };
-    var view_mode = demo_banner_scene.ViewMode.normal;
-    var uploaded_view_mode = view_mode;
-
-    // ── Tile image for image-paint fill ──
-    const assets = @import("assets");
-    var tile_image = try snail.Image.initRgba8(allocator, 16, 16, assets.checkerboard_rgba);
-    defer tile_image.deinit();
 
     var buf_width: u32 = 0;
     var buf_height: u32 = 0;
@@ -84,22 +74,18 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
     var pan_x: f32 = 0.0;
     var pan_y: f32 = 0.0;
     var rotate = false;
-    var stress_test = false;
     var last_time = platform.getTime();
     var frame_count: u32 = 0;
     var fps_timer: f64 = 0.0;
     var fps_frames: u32 = 0;
     var fps_display: f32 = 0.0;
 
-    std.debug.print("snail - GPU Bezier font rendering\n", .{});
-    std.debug.print("{} glyphs (Latin), Backend: {s}, HarfBuzz: {s}\n", .{
-        scene_assets.latin_atlas.glyph_map.count(),
+    std.debug.print("snail - GPU text & vector rendering\n", .{});
+    std.debug.print("Backend: {s}, HarfBuzz: {s}\n", .{
         renderer.backendName(),
         if (build_options.enable_harfbuzz) "ON" else "OFF",
     });
-    std.debug.print("Subpixel order: {s}\n", .{renderer.subpixelOrder().name()});
-    std.debug.print("Subpixel mode: {s}\n", .{renderer.subpixelMode().name()});
-    std.debug.print("Keys: arrows pan, Z/X zoom, R rotate, S stress, D debug view, L subpixel order, M subpixel mode, Esc quit\n", .{});
+    std.debug.print("Keys: arrows pan, Z/X zoom, R rotate, L subpixel order, Esc quit\n", .{});
 
     while (!platform.shouldClose()) {
         const now = platform.getTime();
@@ -113,35 +99,16 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
             fps_frames = 0;
         }
 
-        const KEY_R = platform.KEY_R;
-        const KEY_S = platform.KEY_S;
-        const KEY_D = platform.KEY_D;
-        const KEY_L = platform.KEY_L;
-        const KEY_M = platform.KEY_M;
-        const KEY_Z = platform.KEY_Z;
-        const KEY_X = platform.KEY_X;
-        const KEY_ESCAPE = platform.KEY_ESCAPE;
-        const KEY_LEFT = platform.KEY_LEFT;
-        const KEY_RIGHT = platform.KEY_RIGHT;
-        const KEY_UP = platform.KEY_UP;
-        const KEY_DOWN = platform.KEY_DOWN;
-
         if (platform.consumeMonitorChanged()) {
             detected_order = platform.detectCurrentMonitorSubpixelOrder(sys_order);
             if (detected_order != renderer.subpixelOrder()) {
                 renderer.setSubpixelOrder(detected_order);
-                std.debug.print("Monitor change: subpixel order -> {s}\n", .{detected_order.name()});
             }
         }
 
-        if (platform.isKeyPressed(KEY_R)) rotate = !rotate;
-        if (platform.isKeyPressed(KEY_S)) stress_test = !stress_test;
-        if (platform.isKeyPressed(KEY_D)) {
-            view_mode = view_mode.next();
-            std.debug.print("View: {s}\n", .{view_mode.label()});
-        }
-        if (platform.isKeyPressed(KEY_ESCAPE)) break;
-        if (platform.isKeyPressed(KEY_L)) {
+        if (platform.isKeyPressed(platform.KEY_R)) rotate = !rotate;
+        if (platform.isKeyPressed(platform.KEY_ESCAPE)) break;
+        if (platform.isKeyPressed(platform.KEY_L)) {
             const next: snail.SubpixelOrder = switch (renderer.subpixelOrder()) {
                 .none => .rgb,
                 .rgb => .bgr,
@@ -150,56 +117,48 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
                 .vbgr => .none,
             };
             renderer.setSubpixelOrder(next);
-            std.debug.print("Subpixel: {s}\n", .{renderer.subpixelOrder().name()});
-        }
-        if (platform.isKeyPressed(KEY_M)) {
-            const next: snail.SubpixelMode = switch (renderer.subpixelMode()) {
-                .safe => .legacy_unsafe,
-                .legacy_unsafe => .safe,
-            };
-            renderer.setSubpixelMode(next);
-            std.debug.print("Subpixel mode: {s}\n", .{renderer.subpixelMode().name()});
         }
         if (rotate) angle += dt * 0.5;
-        if (platform.isKeyDown(KEY_Z)) zoom *= 1.0 + dt * 2.0;
-        if (platform.isKeyDown(KEY_X)) zoom *= 1.0 - dt * 2.0;
-        const pan_speed: f32 = 900.0;
-        const pan_step = pan_speed * dt;
-        if (platform.isKeyDown(KEY_LEFT)) pan_x += pan_step;
-        if (platform.isKeyDown(KEY_RIGHT)) pan_x -= pan_step;
-        if (platform.isKeyDown(KEY_UP)) pan_y += pan_step;
-        if (platform.isKeyDown(KEY_DOWN)) pan_y -= pan_step;
+        if (platform.isKeyDown(platform.KEY_Z)) zoom *= 1.0 + dt * 2.0;
+        if (platform.isKeyDown(platform.KEY_X)) zoom *= 1.0 - dt * 2.0;
+        const pan_step = 900.0 * dt;
+        if (platform.isKeyDown(platform.KEY_LEFT)) pan_x += pan_step;
+        if (platform.isKeyDown(platform.KEY_RIGHT)) pan_x -= pan_step;
+        if (platform.isKeyDown(platform.KEY_UP)) pan_y += pan_step;
+        if (platform.isKeyDown(platform.KEY_DOWN)) pan_y -= pan_step;
 
         const size = platform.getWindowSize();
         const w: f32 = @floatFromInt(size[0]);
         const h: f32 = @floatFromInt(size[1]);
         if (w < 1.0 or h < 1.0) continue;
 
-        const layout = demo_banner.buildLayout(w, h, scene_assets.metrics);
+        const layout = demo_banner.buildLayout(w, h);
         const size_key = [2]u32{ size[0], size[1] };
-        if (path_picture == null or size_key[0] != uploaded_size[0] or size_key[1] != uploaded_size[1] or view_mode != uploaded_view_mode) {
+
+        // On resize: lay out text to collect decoration rects, rebuild path picture,
+        // re-upload all atlases. Text batch is then re-populated with valid handles.
+        if (path_picture == null or size_key[0] != uploaded_size[0] or size_key[1] != uploaded_size[1]) {
+            // Measure decorations by populating a scratch text batch
+            var scratch = snail.TextBatch.init(vbuf);
+            var dec_rects: [8]snail.Rect = undefined;
+            var text_result = demo_banner_scene.populateTextBatch(&scratch, layout, &scene_assets, &dec_rects);
+
+            // If any glyphs were missing, drawText extended the atlases.
+            // Re-populate so the scratch pass has correct metrics.
+            if (text_result.missing) {
+                scratch = snail.TextBatch.init(vbuf);
+                text_result = demo_banner_scene.populateTextBatch(&scratch, layout, &scene_assets, &dec_rects);
+            }
+
             if (path_picture) |*picture| {
                 picture.deinit();
                 path_picture = null;
             }
-            if (overlay_picture) |*picture| {
-                picture.deinit();
-                overlay_picture = null;
-            }
-            path_picture = try demo_banner_scene.buildPathPicture(allocator, layout, view_mode, &tile_image);
+            path_picture = try demo_banner_scene.buildPathPicture(allocator, layout, &scene_assets, dec_rects[0..text_result.decoration_count]);
             uploaded_size = size_key;
-            uploaded_view_mode = view_mode;
-            scene_assets.uploadAtlases(&renderer, &path_picture.?, &atlas_views);
-            if (try demo_banner_scene.buildPathOverlayPicture(allocator, &path_picture.?, view_mode)) |picture| {
-                overlay_picture = picture;
-                overlay_view = renderer.uploadPathPicture(&overlay_picture.?);
-            } else {
-                overlay_view = null;
-            }
+            path_view = scene_assets.uploadAtlases(&renderer, &path_picture.?);
         }
 
-        const atlas_view = &atlas_views[0];
-        const path_view = &atlas_views[6];
         const clear = demo_banner.clearColor();
 
         if (use_vulkan) {
@@ -209,7 +168,6 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
             gl.glViewport(0, 0, @intCast(size[0]), @intCast(size[1]));
             platform.clear(clear[0], clear[1], clear[2], clear[3]);
         } else {
-            // CPU: update pixel buffer if window was resized
             const bsz = platform.getBufferSize();
             if (bsz[0] != buf_width or bsz[1] != buf_height) {
                 if (platform.getPixelBuffer()) |px| {
@@ -217,7 +175,6 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
                     buf_height = bsz[1];
                     cpu_state = CpuRenderer.init(px, bsz[0], bsz[1], bsz[0] * 4);
                     renderer = snail.Renderer.initCpu(&cpu_state);
-                    // Force path picture rebuild
                     uploaded_size = .{ 0, 0 };
                 }
             }
@@ -232,92 +189,45 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         const projection = snail.Mat4.ortho(0, w, h, 0, -1, 1);
         const cx = w * 0.5;
         const cy = h * 0.5;
-        const scene_core = snail.Mat4.multiply(
-            snail.Mat4.translate(cx, cy, 0),
-            snail.Mat4.multiply(snail.Mat4.scaleUniform(zoom), snail.Mat4.multiply(
-                snail.Mat4.rotateZ(angle),
-                snail.Mat4.translate(-cx, -cy, 0),
-            )),
+        const scene_transform = snail.Mat4.multiply(
+            snail.Mat4.translate(pan_x, pan_y, 0),
+            snail.Mat4.multiply(
+                snail.Mat4.translate(cx, cy, 0),
+                snail.Mat4.multiply(snail.Mat4.scaleUniform(zoom), snail.Mat4.multiply(
+                    snail.Mat4.rotateZ(angle),
+                    snail.Mat4.translate(-cx, -cy, 0),
+                )),
+            ),
         );
-        const scene_transform = snail.Mat4.multiply(snail.Mat4.translate(pan_x, pan_y, 0), scene_core);
         const mvp = snail.Mat4.multiply(projection, scene_transform);
 
-        const white = [4]f32{ 1, 1, 1, 1 };
-        const gray = [4]f32{ 0.6, 0.6, 0.65, 1 };
-
         renderer.beginFrame();
-        if (use_cpu) {
-            // CPU renderer: draw paths and text directly
-            if (path_picture) |*picture| {
-                cpu_state.drawPathPicture(picture);
-            }
-            demo_banner.drawTextCpu(&cpu_state, layout, scene_assets.metrics, .{
-                .latin_font = &scene_assets.latin_font,
-                .latin_atlas = &scene_assets.latin_atlas,
-                .arabic = &scene_assets.arabic,
-                .devanagari = &scene_assets.devanagari,
-                .mongolian = &scene_assets.mongolian,
-                .thai = &scene_assets.thai,
-                .emoji = &scene_assets.emoji,
-            });
-        } else {
+
+        if (!use_cpu) {
             if (path_picture) |*picture| {
                 var paths = snail.PathBatch.init(path_buf);
-                _ = paths.addPicture(path_view, picture);
-                if (overlay_picture) |*overlay| {
-                    _ = paths.addPicture(&overlay_view.?, overlay);
-                }
+                _ = paths.addPicture(&path_view, picture);
                 if (paths.shapeCount() > 0) {
                     renderer.drawPaths(paths.slice(), mvp, w, h);
                 }
             }
+        } else {
+            if (path_picture) |*picture| {
+                cpu_state.drawPathPicture(picture);
+            }
         }
 
         var batch = snail.TextBatch.init(vbuf);
-        if (use_cpu) {
-            // Text already drawn above
-        } else if (!view_mode.showText()) {
-            // Debug vector views keep the text layer out of the way.
-        } else if (stress_test) {
-            const stress_sizes = [_]f32{ 10, 14, 18, 24, 32, 48 };
-            var sy: f32 = 20.0;
-            var si: usize = 0;
-            while (sy < h) {
-                const fs = stress_sizes[si % stress_sizes.len];
-                _ = batch.addText(atlas_view, &scene_assets.latin_font, "The quick brown fox jumps over the lazy dog 0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ", 10.0, sy, fs, white);
-                sy += fs * 1.3;
-                si += 1;
-            }
-        } else {
-            demo_banner_scene.populateTextBatch(&batch, layout, &scene_assets, &atlas_views);
+        if (!use_cpu) {
+            var dec_ignore: [8]snail.Rect = undefined;
+            _ = demo_banner_scene.populateTextBatch(&batch, layout, &scene_assets, &dec_ignore);
         }
 
         if (batch.glyphCount() > 0) {
-            renderer.setSubpixelBackdrop(null);
             renderer.drawText(batch.slice(), mvp, w, h);
         }
-        const total_glyphs = batch.glyphCount();
 
-        {
-            renderer.setSubpixelBackdrop(clear);
-            var hud = snail.TextBatch.init(vbuf[batch.len..]);
-            _ = hud.addText(atlas_view, &scene_assets.latin_font, "snail demo", 10.0, h - 30.0, 12.0, gray);
-            const hb_str = if (build_options.enable_harfbuzz) " | HarfBuzz ON" else "";
-            const sp_name = renderer.subpixelOrder().name();
-            const sp_mode = renderer.subpixelMode().name();
-            const sp_suffix = if (renderer.subpixelMode() == .safe)
-                " | safe LCD when axis-aligned"
-            else
-                "";
-            var hud_line2_buf: [160]u8 = undefined;
-            const hud_line2 = std.fmt.bufPrint(&hud_line2_buf, "Arrows pan | Z/X zoom | R rotate | S stress | D view: {s} | L order: {s} | M mode: {s}{s}{s}", .{ view_mode.label(), sp_name, sp_mode, sp_suffix, hb_str }) catch "Arrows pan | Z/X zoom | R rotate | S stress | D debug view | L order | M mode";
-            _ = hud.addText(atlas_view, &scene_assets.latin_font, hud_line2, 10.0, h - 14.0, 12.0, gray);
-            if (hud.glyphCount() > 0) {
-                renderer.drawText(hud.slice(), projection, w, h);
-            }
-        }
-
-        if (use_gl and !use_cpu and frame_count == 2) {
+        if (use_gl and frame_count == 2) {
             const iw: u32 = @intFromFloat(w);
             const ih: u32 = @intFromFloat(h);
             if (screenshot.captureFramebuffer(allocator, iw, ih) catch null) |px| {
@@ -326,7 +236,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
             }
         }
         if (frame_count % 60 == 0 and fps_display > 0.0) {
-            std.debug.print("\rFPS: {d:.0}  Glyphs: {}   ", .{ fps_display, total_glyphs });
+            std.debug.print("\rFPS: {d:.0}  Glyphs: {}   ", .{ fps_display, batch.glyphCount() });
         }
         frame_count += 1;
 

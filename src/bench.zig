@@ -12,6 +12,12 @@ const vec_mod = @import("math/vec.zig");
 const BENCH_TIME_MULTIPLIER = 10;
 const PREP_RUNS = BENCH_TIME_MULTIPLIER;
 
+const PRINTABLE_ASCII = blk: {
+    var chars: [95]u8 = undefined;
+    for (0..95) |i| chars[i] = @intCast(32 + i);
+    break :blk chars;
+};
+
 fn nowNs() u64 {
     var ts: std.c.timespec = undefined;
     _ = std.c.clock_gettime(.MONOTONIC, &ts);
@@ -124,6 +130,84 @@ pub fn main() !void {
         allocator.free(bt.entries);
     }
     std.debug.print("  Band texture ({} glyphs): {d:.1} us\n", .{ band_glyph_count, band_total_us / PREP_RUNS });
+
+    // Fonts init + ensureText benchmark
+    std.debug.print("\nFonts API:\n", .{});
+    {
+        var fonts_total_us: f64 = 0;
+        for (0..PREP_RUNS) |_| {
+            const t = nowNs();
+            var tmp_fonts = try snail.Fonts.init(allocator, &.{
+                .{ .data = font_data },
+            });
+            if (try tmp_fonts.ensureText(.{}, &PRINTABLE_ASCII)) |new_fonts| {
+                tmp_fonts.deinit();
+                tmp_fonts = new_fonts;
+            }
+            fonts_total_us += elapsed(t);
+            tmp_fonts.deinit();
+        }
+        std.debug.print("  Fonts.init + ensureText (ASCII): {d:.1} us\n", .{fonts_total_us / PREP_RUNS});
+    }
+
+    // Layout benchmark via Fonts.addText
+    {
+        const SHORT = "Hello, world!";
+        const SENTENCE = "The quick brown fox jumps over the lazy dog 0123456789";
+        const PARAGRAPH = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. " ++
+            "Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. " ++
+            "Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris.";
+        const SIZES = [_]u32{ 12, 18, 24, 36, 48, 72, 96 };
+        const LAYOUT_ITERS = 500 * BENCH_TIME_MULTIPLIER;
+        const white = [4]f32{ 1, 1, 1, 1 };
+        var vbuf: [20000 * snail.TEXT_FLOATS_PER_GLYPH]f32 = undefined;
+
+        var fonts = try snail.Fonts.init(allocator, &.{
+            .{ .data = font_data },
+        });
+        defer fonts.deinit();
+        if (try fonts.ensureText(.{}, &PRINTABLE_ASCII)) |new_fonts| {
+            fonts.deinit();
+            fonts = new_fonts;
+        }
+
+        var t = nowNs();
+        for (0..LAYOUT_ITERS) |_| {
+            var b = snail.TextBatch.init(&vbuf);
+            _ = fonts.addText(&b, .{}, SHORT, 0, 0, 24, white) catch {};
+            std.mem.doNotOptimizeAway(&b);
+        }
+        std.debug.print("  Layout short (13 chars): {d:.1} us/iter\n", .{elapsed(t) / LAYOUT_ITERS});
+
+        t = nowNs();
+        for (0..LAYOUT_ITERS) |_| {
+            var b = snail.TextBatch.init(&vbuf);
+            _ = fonts.addText(&b, .{}, SENTENCE, 0, 0, 48, white) catch {};
+            std.mem.doNotOptimizeAway(&b);
+        }
+        std.debug.print("  Layout sentence (53 chars): {d:.1} us/iter\n", .{elapsed(t) / LAYOUT_ITERS});
+
+        t = nowNs();
+        for (0..LAYOUT_ITERS) |_| {
+            var b = snail.TextBatch.init(&vbuf);
+            _ = fonts.addText(&b, .{}, PARAGRAPH, 0, 0, 18, white) catch {};
+            std.mem.doNotOptimizeAway(&b);
+        }
+        std.debug.print("  Layout paragraph (175 chars): {d:.1} us/iter\n", .{elapsed(t) / LAYOUT_ITERS});
+
+        t = nowNs();
+        for (0..LAYOUT_ITERS) |_| {
+            var b = snail.TextBatch.init(&vbuf);
+            var y: f32 = 700;
+            for (SIZES) |sz| {
+                const fsz: f32 = @floatFromInt(sz);
+                _ = fonts.addText(&b, .{}, PARAGRAPH, 0, y, fsz, white) catch {};
+                y -= fsz * 1.4;
+            }
+            std.mem.doNotOptimizeAway(&b);
+        }
+        std.debug.print("  Layout torture (para x 7 sizes): {d:.1} us/iter\n", .{elapsed(t) / LAYOUT_ITERS});
+    }
 
     // Math benchmarks
     std.debug.print("\nMath:\n", .{});

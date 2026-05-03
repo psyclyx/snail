@@ -13,9 +13,6 @@
 const std = @import("std");
 const assets = @import("assets");
 const ttf = @import("font/ttf.zig");
-const curve_tex = @import("render/curve_texture.zig");
-const band_tex = @import("render/band_texture.zig");
-const bezier = @import("math/bezier.zig");
 const snail = @import("snail.zig");
 
 const c = @cImport({
@@ -77,22 +74,34 @@ fn benchSnail(allocator: std.mem.Allocator, font_data: []const u8) !SnailResults
         font_load_total_us += usFrom(t);
     }
     const font_load_us = font_load_total_us / PREP_RUNS;
-    const font_inner = try ttf.Font.init(font_data);
 
-    // Glyph prep: parse all ASCII + build curve/band textures
-    var font_wrapped = snail.Font{ .inner = font_inner };
+    // Glyph prep: create Fonts with ASCII text to build atlas
+    const ascii_text = &PRINTABLE_ASCII;
     var glyph_prep_total_us: f64 = 0;
+    var tex_bytes: usize = 0;
     for (0..PREP_RUNS) |_| {
         const t = nowNs();
-        var tmp_atlas = try snail.Atlas.initAscii(allocator, &font_wrapped, &PRINTABLE_ASCII);
+        var tmp_fonts = try snail.Fonts.init(allocator, &.{
+            .{ .data = font_data },
+        });
+        if (try tmp_fonts.ensureText(.{}, ascii_text)) |new_fonts| {
+            tmp_fonts.deinit();
+            tmp_fonts = new_fonts;
+        }
         glyph_prep_total_us += usFrom(t);
-        tmp_atlas.deinit();
+        tex_bytes = tmp_fonts.textureByteLen();
+        tmp_fonts.deinit();
     }
     const glyph_prep_us = glyph_prep_total_us / PREP_RUNS;
-    var atlas = try snail.Atlas.initAscii(allocator, &font_wrapped, &PRINTABLE_ASCII);
-    defer atlas.deinit();
 
-    const tex_bytes = atlas.textureByteLen();
+    var fonts = try snail.Fonts.init(allocator, &.{
+        .{ .data = font_data },
+    });
+    defer fonts.deinit();
+    if (try fonts.ensureText(.{}, ascii_text)) |new_fonts| {
+        fonts.deinit();
+        fonts = new_fonts;
+    }
 
     // Layout benchmarks
     var vbuf: [20000 * snail.TEXT_FLOATS_PER_GLYPH]f32 = undefined;
@@ -102,7 +111,7 @@ fn benchSnail(allocator: std.mem.Allocator, font_data: []const u8) !SnailResults
     var t = nowNs();
     for (0..LAYOUT_ITERS) |_| {
         var b = snail.TextBatch.init(&vbuf);
-        _ = b.addText(&atlas, &font_wrapped, SHORT, 0, 0, 24, white);
+        _ = fonts.addText(&b, .{}, SHORT, 0, 0, 24, white) catch {};
         std.mem.doNotOptimizeAway(&b);
     }
     const layout_short_us = usFrom(t) / LAYOUT_ITERS;
@@ -111,7 +120,7 @@ fn benchSnail(allocator: std.mem.Allocator, font_data: []const u8) !SnailResults
     t = nowNs();
     for (0..LAYOUT_ITERS) |_| {
         var b = snail.TextBatch.init(&vbuf);
-        _ = b.addText(&atlas, &font_wrapped, SENTENCE, 0, 0, 48, white);
+        _ = fonts.addText(&b, .{}, SENTENCE, 0, 0, 48, white) catch {};
         std.mem.doNotOptimizeAway(&b);
     }
     const layout_sentence_us = usFrom(t) / LAYOUT_ITERS;
@@ -120,7 +129,7 @@ fn benchSnail(allocator: std.mem.Allocator, font_data: []const u8) !SnailResults
     t = nowNs();
     for (0..LAYOUT_ITERS) |_| {
         var b = snail.TextBatch.init(&vbuf);
-        _ = b.addText(&atlas, &font_wrapped, PARAGRAPH, 0, 0, 18, white);
+        _ = fonts.addText(&b, .{}, PARAGRAPH, 0, 0, 18, white) catch {};
         std.mem.doNotOptimizeAway(&b);
     }
     const layout_paragraph_us = usFrom(t) / LAYOUT_ITERS;
@@ -132,7 +141,7 @@ fn benchSnail(allocator: std.mem.Allocator, font_data: []const u8) !SnailResults
         var y: f32 = 700;
         for (SIZES) |sz| {
             const fsz: f32 = @floatFromInt(sz);
-            _ = b.addText(&atlas, &font_wrapped, PARAGRAPH, 0, y, fsz, white);
+            _ = fonts.addText(&b, .{}, PARAGRAPH, 0, y, fsz, white) catch {};
             y -= fsz * 1.4;
         }
         std.mem.doNotOptimizeAway(&b);

@@ -1,6 +1,14 @@
 //! snail — GPU font rendering via direct Bézier curve evaluation (Slug algorithm).
 //!
-//! Usage:
+//! ## Color convention
+//!
+//! All colors are sRGB, straight (unpremultiplied) alpha, as `[4]f32` in 0.0–1.0.
+//! The renderer premultiplies alpha and handles linearization for blending internally.
+//! Image pixel data (`Image.initSrgba8`) is sRGB RGBA8 (4 bytes per pixel).
+//! Gradient interpolation is in sRGB space (perceptually uniform).
+//!
+//! ## Usage
+//!
 //!   const font = try snail.Font.init(ttf_bytes);
 //!   defer font.deinit();
 //!
@@ -12,12 +20,16 @@
 //!   renderer.uploadAtlas(&atlas);
 //!
 //!   var batch = snail.TextBatch.init(&vertex_buf);
-//!   batch.addText(&atlas, &font, "Hello", x, y, size, color);
+//!   var fonts = try snail.Fonts.init(allocator, &.{.{ .data = ttf_bytes }});
+//!   fonts = (try fonts.ensureText(.{}, "Hello")) orelse fonts;
+//!   _ = try fonts.addText(&batch, .{}, "Hello", x, y, size, color);
 //!   renderer.drawText(batch.slice(), mvp, viewport_w, viewport_h);
 
 const std = @import("std");
 const build_options = @import("build_options");
 const glyph_emit = @import("glyph_emit.zig");
+const font_collection_mod = @import("font_collection.zig");
+const fonts_mod = @import("fonts.zig");
 const ttf = @import("font/ttf.zig");
 const opentype = @import("font/opentype.zig");
 // Internal modules — not part of the public API surface. Exposed for internal
@@ -45,8 +57,6 @@ const vulkan_pipeline = if (build_options.enable_vulkan) @import("render/vulkan_
         return "vulkan (disabled)";
     }
     pub var subpixel_order: @import("render/subpixel_order.zig").SubpixelOrder = .none;
-    pub var subpixel_mode: @import("render/subpixel_mode.zig").SubpixelMode = .safe;
-    pub var subpixel_backdrop: ?[4]f32 = null;
     pub var fill_rule: enum(c_int) { non_zero = 0, even_odd = 1 } = .non_zero;
 };
 const harfbuzz = if (build_options.enable_harfbuzz) @import("font/harfbuzz.zig") else struct {
@@ -62,7 +72,13 @@ const CubicBezier = bezier.CubicBezier;
 pub const GlyphMetrics = ttf.GlyphMetrics;
 /// Font-wide line metrics from the `hhea` table, in font units.
 pub const LineMetrics = ttf.LineMetrics;
+/// Underline and strikethrough metrics from the post and OS/2 tables, in font units.
+pub const DecorationMetrics = ttf.DecorationMetrics;
+/// Superscript or subscript metrics from the OS/2 table, in font units.
+pub const ScriptMetrics = ttf.ScriptMetrics;
 pub const Transform2D = vec.Transform2D;
+pub const Fonts = fonts_mod.Fonts;
+pub const FaceSpec = fonts_mod.FaceSpec;
 
 /// A positioned glyph in a shaped run. Carries source-span metadata so callers
 /// can reason about ligatures, cells, selection, and painting.
@@ -134,13 +150,38 @@ pub const ImageFilter = enum(u8) {
     nearest = 1,
 };
 
+pub const FontWeight = enum(u4) {
+    thin = 1,
+    extra_light = 2,
+    light = 3,
+    regular = 4,
+    medium = 5,
+    semi_bold = 6,
+    bold = 7,
+    extra_bold = 8,
+    black = 9,
+};
+
+pub const FontStyle = struct {
+    weight: FontWeight = .regular,
+    italic: bool = false,
+};
+
+/// Synthetic style transforms applied at the vertex level during glyph emission.
+pub const SyntheticStyle = struct {
+    /// Extra stroke offset in pixels (scaled by font_size / units_per_em). 0 = none.
+    embolden: f32 = 0,
+    /// Horizontal shear factor. 0.2 ≈ 12° synthetic italic. 0 = upright.
+    skew_x: f32 = 0,
+};
+
 pub const Image = struct {
     allocator: std.mem.Allocator,
     width: u32,
     height: u32,
     pixels: []u8,
 
-    pub fn initRgba8(allocator: std.mem.Allocator, width: u32, height: u32, pixels: []const u8) !Image {
+    pub fn initSrgba8(allocator: std.mem.Allocator, width: u32, height: u32, pixels: []const u8) !Image {
         if (pixels.len != width * height * 4) return error.InvalidImageData;
         const owned = try allocator.dupe(u8, pixels);
         return .{
@@ -269,12 +310,27 @@ pub const Font = struct {
         return self.inner.advanceWidth(glyph_id);
     }
 
+    /// Underline and strikethrough metrics from the post and OS/2 tables, in font units.
+    pub fn decorationMetrics(self: *const Font) !DecorationMetrics {
+        return self.inner.decorationMetrics();
+    }
+
+    /// Superscript size and offset from the OS/2 table, in font units.
+    pub fn superscriptMetrics(self: *const Font) !ScriptMetrics {
+        return self.inner.superscriptMetrics();
+    }
+
+    /// Subscript size and offset from the OS/2 table, in font units.
+    pub fn subscriptMetrics(self: *const Font) !ScriptMetrics {
+        return self.inner.subscriptMetrics();
+    }
+
     pub fn bbox(self: *const Font, glyph_id: u16) !BBox {
         return self.inner.bbox(glyph_id);
     }
 };
 
-fn isRenderableTextCodepoint(codepoint: u32) bool {
+pub fn isRenderableTextCodepoint(codepoint: u32) bool {
     if (codepoint > std.math.maxInt(u21)) return false;
     if (!std.unicode.utf8ValidCodepoint(@intCast(codepoint))) return false;
     if (codepoint < 0x20) return false;
@@ -386,7 +442,7 @@ pub const Atlas = struct {
         texel_offset: u32,
     };
 
-    const BuildPageResult = struct {
+    pub const BuildPageResult = struct {
         page: *AtlasPage,
         glyph_map: std.AutoHashMap(u16, GlyphInfo),
     };
@@ -472,8 +528,12 @@ pub const Atlas = struct {
     /// already in the set. Must be called before buildTextureData so the layer
     /// glyphs get their own atlas entries (they are rendered independently with
     /// per-layer palette colors). No-op when the font has no COLR table.
-    fn expandColrLayers(font: *const Font, allocator: std.mem.Allocator, seen: *std.AutoHashMap(u16, void)) !void {
-        if (font.inner.colr_offset == 0) return;
+    pub fn expandColrLayers(font: *const Font, allocator: std.mem.Allocator, seen: *std.AutoHashMap(u16, void)) !void {
+        try expandColrLayersInner(&font.inner, allocator, seen);
+    }
+
+    pub fn expandColrLayersInner(font: *const ttf.Font, allocator: std.mem.Allocator, seen: *std.AutoHashMap(u16, void)) !void {
+        if (font.colr_offset == 0) return;
 
         var keys: std.ArrayList(u16) = .empty;
         defer keys.deinit(allocator);
@@ -481,7 +541,7 @@ pub const Atlas = struct {
         while (it.next()) |k| try keys.append(allocator, k.*);
 
         for (keys.items) |gid| {
-            var layer_it = font.inner.colrLayers(gid);
+            var layer_it = font.colrLayers(gid);
             while (layer_it.next()) |layer| try seen.put(layer.glyph_id, {});
         }
     }
@@ -604,9 +664,18 @@ pub const Atlas = struct {
     }
 
     /// Build a single immutable page and glyph map from a set of glyph IDs.
-    fn buildPageData(
+    pub fn buildPageData(
         allocator: std.mem.Allocator,
         font: *const Font,
+        glyph_id_set: *const std.AutoHashMap(u16, void),
+        page_index: u16,
+    ) !BuildPageResult {
+        return buildPageDataInner(allocator, &font.inner, glyph_id_set, page_index);
+    }
+
+    pub fn buildPageDataInner(
+        allocator: std.mem.Allocator,
+        font: *const ttf.Font,
         glyph_id_set: *const std.AutoHashMap(u16, void),
         page_index: u16,
     ) !BuildPageResult {
@@ -624,7 +693,7 @@ pub const Atlas = struct {
         var seen_it = glyph_id_set.keyIterator();
         while (seen_it.next()) |gid_ptr| {
             const gid = gid_ptr.*;
-            const glyph = font.inner.parseGlyph(allocator, &cache, gid) catch continue;
+            const glyph = font.parseGlyph(allocator, &cache, gid) catch continue;
 
             var all_curves: std.ArrayList(CurveSegment) = .empty;
             defer all_curves.deinit(allocator);
@@ -1158,6 +1227,20 @@ pub const AtlasHandle = struct {
             .y = self.info_row_base + info_y,
         };
     }
+
+    // View interface methods used by glyph_emit.
+    pub fn getGlyph(self: *const AtlasHandle, gid: u16) ?Atlas.GlyphInfo {
+        return self.atlas.getGlyph(gid);
+    }
+
+    pub fn getColrBase(self: *const AtlasHandle, gid: u16) ?Atlas.ColrBaseInfo {
+        if (self.atlas.colr_base_map) |cbm| return cbm.get(gid);
+        return null;
+    }
+
+    pub fn colrLayers(self: *const AtlasHandle, gid: u16) ttf.Font.ColrLayerIterator {
+        return self.atlas.colrLayers(gid);
+    }
 };
 
 fn coerceAtlasHandle(atlas_like: anytype) AtlasHandle {
@@ -1294,6 +1377,40 @@ pub const TextBatch = struct {
         return true;
     }
 
+    /// Append a single glyph quad with a 2D transform. Returns false if buffer is full.
+    pub fn addGlyphTransformed(
+        self: *TextBatch,
+        bbox: bezier.BBox,
+        band_entry: band_tex.GlyphBandEntry,
+        color: [4]f32,
+        atlas_layer: u8,
+        transform: Transform2D,
+    ) bool {
+        if (self.len + TEXT_FLOATS_PER_GLYPH > self.buf.len) return false;
+        if (!vertex_mod.generateGlyphVerticesTransformed(self.buf[self.len..], bbox, band_entry, color, atlas_layer, transform))
+            return false;
+        self.len += TEXT_FLOATS_PER_GLYPH;
+        return true;
+    }
+
+    /// Append a multi-layer COLR glyph quad with a 2D transform. Returns false if buffer is full.
+    pub fn addColrGlyphTransformed(
+        self: *TextBatch,
+        union_bbox: bezier.BBox,
+        info_x: u16,
+        info_y: u16,
+        layer_count: u16,
+        color: [4]f32,
+        atlas_layer: u8,
+        transform: Transform2D,
+    ) bool {
+        if (self.len + TEXT_FLOATS_PER_GLYPH > self.buf.len) return false;
+        if (!vertex_mod.generateMultiLayerGlyphVerticesTransformed(self.buf[self.len..], union_bbox, info_x, info_y, layer_count, color, atlas_layer, transform))
+            return false;
+        self.len += TEXT_FLOATS_PER_GLYPH;
+        return true;
+    }
+
     /// Append a shaped run. Each glyph's position is relative to (x, y).
     /// Returns the number of glyphs successfully added.
     pub fn addRun(
@@ -1310,6 +1427,32 @@ pub const TextBatch = struct {
         var count: usize = 0;
         for (run.glyphs) |g| {
             switch (glyph_emit.emitGlyph(self, view, g.glyph_id, x + g.x_offset, y + g.y_offset, font_size, color)) {
+                .emitted => count += 1,
+                .skipped => {},
+                .buffer_full => break,
+            }
+        }
+        return count;
+    }
+
+    /// Append a shaped run with synthetic style transforms (italic shear, bold offset).
+    /// Each glyph's position is relative to (x, y). Returns the number of glyphs
+    /// successfully added. When synthetic is identity (.{}), equivalent to addRun.
+    pub fn addStyledRun(
+        self: *TextBatch,
+        atlas_like: anytype,
+        run: *const ShapedRun,
+        x: f32,
+        y: f32,
+        font_size: f32,
+        color: [4]f32,
+        synthetic: SyntheticStyle,
+    ) usize {
+        const resolved_view = coerceAtlasHandle(atlas_like);
+        const view = &resolved_view;
+        var count: usize = 0;
+        for (run.glyphs) |g| {
+            switch (glyph_emit.emitStyledGlyph(self, view, g.glyph_id, x + g.x_offset, y + g.y_offset, font_size, color, synthetic)) {
                 .emitted => count += 1,
                 .skipped => {},
                 .buffer_full => break,
@@ -2457,6 +2600,15 @@ pub const PathPictureBuilder = struct {
         layers: [2]PathLayerRecord,
     };
 
+    fn srgbToLinear(v: f32) f32 {
+        if (v <= 0.04045) return v / 12.92;
+        return std.math.pow(f32, (v + 0.055) / 1.055, 2.4);
+    }
+
+    fn srgbToLinearColor(color: [4]f32) [4]f32 {
+        return .{ srgbToLinear(color[0]), srgbToLinear(color[1]), srgbToLinear(color[2]), color[3] };
+    }
+
     fn setLayerInfoTexel(data: []f32, texel_width: u32, texel_offset: u32, value: [4]f32) void {
         const texel_x = texel_offset % texel_width;
         const texel_y = texel_offset / texel_width;
@@ -2501,14 +2653,16 @@ pub const PathPictureBuilder = struct {
                 setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 2, color);
             },
             .linear_gradient => |gradient| {
+                // Colors stored in linear space; the shader does sRGB
+                // round-trip (linear→sRGB→mix→sRGB→linear) for interpolation.
                 setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 2, .{
                     gradient.start.x,
                     gradient.start.y,
                     gradient.end.x,
                     gradient.end.y,
                 });
-                setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 3, gradient.start_color);
-                setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 4, gradient.end_color);
+                setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 3, srgbToLinearColor(gradient.start_color));
+                setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 4, srgbToLinearColor(gradient.end_color));
                 setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 5, .{
                     @floatFromInt(@intFromEnum(gradient.extend)),
                     0,
@@ -2523,8 +2677,14 @@ pub const PathPictureBuilder = struct {
                     gradient.radius,
                     @floatFromInt(@intFromEnum(gradient.extend)),
                 });
-                setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 3, gradient.inner_color);
-                setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 4, gradient.outer_color);
+                setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 3, srgbToLinearColor(gradient.inner_color));
+                setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 4, srgbToLinearColor(gradient.outer_color));
+                setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 5, .{
+                    0,
+                    0,
+                    0,
+                    0,
+                });
             },
             .image => |image| {
                 setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 2, .{
@@ -2539,7 +2699,7 @@ pub const PathPictureBuilder = struct {
                     image.uv_transform.ty,
                     @floatFromInt(@intFromEnum(image.filter)),
                 });
-                setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 4, image.tint);
+                setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 4, srgbToLinearColor(image.tint));
                 setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 5, .{
                     0,
                     0,
@@ -3422,7 +3582,6 @@ pub const FillRule = enum(c_int) {
     non_zero = 0,
     even_odd = 1,
 };
-pub const SubpixelMode = @import("render/subpixel_mode.zig").SubpixelMode;
 pub const SubpixelOrder = @import("render/subpixel_order.zig").SubpixelOrder;
 pub const RenderBackend = enum { gl, vulkan, cpu };
 pub const VulkanContext = vulkan_pipeline.VulkanContext;
@@ -3564,42 +3723,6 @@ pub const Renderer = struct {
         };
     }
 
-    /// Control how LCD subpixel rendering is applied.
-    /// `.safe` (default) uses LCD for axis-aligned text when the backend can blend per-channel coverage safely.
-    /// If that path is unavailable, it falls back to opaque-backdrop resolve when you declare one, otherwise grayscale.
-    /// `.legacy_unsafe` restores the previous behavior for callers that accept the artifacts.
-    pub fn setSubpixelMode(self: *Renderer, mode: SubpixelMode) void {
-        switch (self.backend) {
-            .gl => self.gl_text.?.subpixel_mode = mode,
-            .vulkan => vulkan_pipeline.subpixel_mode = mode,
-            .cpu => {},
-        }
-    }
-
-    pub fn subpixelMode(self: *const Renderer) SubpixelMode {
-        return switch (self.backend) {
-            .gl => self.gl_text.?.subpixel_mode,
-            .vulkan => vulkan_pipeline.subpixel_mode,
-            .cpu => .safe,
-        };
-    }
-
-    pub fn setSubpixelBackdrop(self: *Renderer, color: ?[4]f32) void {
-        switch (self.backend) {
-            .gl => self.gl_text.?.subpixel_backdrop = color,
-            .vulkan => vulkan_pipeline.subpixel_backdrop = color,
-            .cpu => {},
-        }
-    }
-
-    pub fn subpixelBackdrop(self: *const Renderer) ?[4]f32 {
-        return switch (self.backend) {
-            .gl => self.gl_text.?.subpixel_backdrop,
-            .vulkan => vulkan_pipeline.subpixel_backdrop,
-            .cpu => null,
-        };
-    }
-
     /// Convenience: enable subpixel with RGB order, or disable. Prefer setSubpixelOrder.
     pub fn setSubpixel(self: *Renderer, enabled: bool) void {
         self.setSubpixelOrder(if (enabled) .rgb else .none);
@@ -3653,6 +3776,8 @@ test {
     _ = @import("c_api.zig");
     _ = @import("render/vertex.zig");
     _ = @import("torture_test.zig");
+    _ = @import("font_collection.zig");
+    _ = @import("fonts.zig");
 }
 
 test "vector path approximates cubic commands into quadratic segments and reports bounds" {
@@ -4260,7 +4385,7 @@ test "path picture gradient paint records encode linear and radial paints" {
 }
 
 test "path picture image paint records keep image metadata" {
-    var image = try Image.initRgba8(std.testing.allocator, 2, 2, &.{
+    var image = try Image.initSrgba8(std.testing.allocator, 2, 2, &.{
         255, 0,   0,   255,
         0,   255, 0,   255,
         0,   0,   255, 255,
@@ -4299,7 +4424,8 @@ test "path picture image paint records keep image metadata" {
     try std.testing.expectApproxEqAbs(@as(f32, 0.5), lid[8], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 3.25), lid[10], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, @floatFromInt(@intFromEnum(ImageFilter.nearest))), lid[15], 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 0.5), lid[16], 0.001);
+    // Tint RGB is linearized at pack time for correct image modulation.
+    try std.testing.expectApproxEqAbs(PathPictureBuilder.srgbToLinear(0.5), lid[16], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, @floatFromInt(@intFromEnum(PaintExtend.repeat))), lid[22], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, @floatFromInt(@intFromEnum(PaintExtend.reflect))), lid[23], 0.001);
 }

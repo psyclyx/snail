@@ -206,7 +206,7 @@ size_t snail_atlas_collect_missing_glyph_ids(const SnailAtlas *atlas,
 
 /* ── Image ── */
 
-int    snail_image_init_rgba8(const SnailAllocator *alloc,
+int    snail_image_init_srgba8(const SnailAllocator *alloc,
                               uint32_t width, uint32_t height,
                               const uint8_t *pixels,
                               SnailImage **out);

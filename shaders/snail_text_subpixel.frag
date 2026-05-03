@@ -13,8 +13,6 @@ layout(push_constant) uniform PushConstants {
     vec2 viewport;
     int fill_rule;
     int subpixel_order;
-    int subpixel_render_mode;
-    vec4 subpixel_backdrop;
 };
 
 layout(location = 0) out vec4 frag_color;
@@ -140,19 +138,6 @@ float blendSubpixelSample(vec2 cw_s, vec2 cw_o) {
                      min(applyFillRule(cw_s.x), applyFillRule(cw_o.x))), 0.0, 1.0);
 }
 
-vec3 blendSubpixel(vec2 cw_r, vec2 cw_g, vec2 cw_b, vec2 cw_o) {
-    return vec3(
-        blendSubpixelSample(cw_r, cw_o),
-        blendSubpixelSample(cw_g, cw_o),
-        blendSubpixelSample(cw_b, cw_o)
-    );
-}
-
-vec4 blendSubpixelWithAlpha(vec2 cw_r, vec2 cw_g, vec2 cw_b, vec2 cw_o) {
-    vec3 cov = blendSubpixel(cw_r, cw_g, cw_b, cw_o);
-    return vec4(cov, blendSubpixelSample(cw_g, cw_o));
-}
-
 vec4 filterSubpixelCoverage(float s_m3, float s_m2, float s_m1, float s_0, float s_p1, float s_p2, float s_p3, bool reverse_order) {
     const float w0 = 18.0 / 256.0;
     const float w1 = 67.0 / 256.0;
@@ -168,12 +153,6 @@ vec4 filterSubpixelCoverage(float s_m3, float s_m2, float s_m1, float s_0, float
 vec4 premultiplyColorSubpixel(vec4 color, vec3 cov, float alpha_cov) {
     vec3 alpha = vec3(color.a) * cov;
     return vec4(color.rgb * alpha, color.a * alpha_cov);
-}
-
-vec4 resolveSubpixelOverOpaqueBackdrop(vec4 color, vec3 cov, vec4 backdrop) {
-    vec3 src_alpha = vec3(color.a) * cov;
-    vec3 resolved = color.rgb * src_alpha + backdrop.rgb * (vec3(1.0) - src_alpha);
-    return vec4(resolved, 1.0);
 }
 
 void emitSubpixelColor(vec4 color, vec3 cov, float alpha_cov) {
@@ -207,52 +186,31 @@ void main() {
     int v_count = int(vbd.x);
 
     vec4 cov_alpha;
-    bool safe_mode = subpixel_render_mode != 0;
     if (subpixel_order <= 2) {
         float sp = epp.x / 3.0;
         vec2 cw_v = evalVertCoverage(rc, 0.0, ppe, v_loc, v_count, layer);
-        if (!safe_mode) {
-            float s = (subpixel_order == 2) ? -1.0 : 1.0;
-            vec2 cw_r = evalHorizCoverage(rc, -sp * s, ppe, h_loc, h_count, layer);
-            vec2 cw_g = evalHorizCoverage(rc,  0.0,    ppe, h_loc, h_count, layer);
-            vec2 cw_b = evalHorizCoverage(rc, +sp * s, ppe, h_loc, h_count, layer);
-            cov_alpha = blendSubpixelWithAlpha(cw_r, cw_g, cw_b, cw_v);
-        } else {
-            float s_m3 = blendSubpixelSample(evalHorizCoverage(rc, -3.0 * sp, ppe, h_loc, h_count, layer), cw_v);
-            float s_m2 = blendSubpixelSample(evalHorizCoverage(rc, -2.0 * sp, ppe, h_loc, h_count, layer), cw_v);
-            float s_m1 = blendSubpixelSample(evalHorizCoverage(rc, -1.0 * sp, ppe, h_loc, h_count, layer), cw_v);
-            float s_0 = blendSubpixelSample(evalHorizCoverage(rc, 0.0, ppe, h_loc, h_count, layer), cw_v);
-            float s_p1 = blendSubpixelSample(evalHorizCoverage(rc, 1.0 * sp, ppe, h_loc, h_count, layer), cw_v);
-            float s_p2 = blendSubpixelSample(evalHorizCoverage(rc, 2.0 * sp, ppe, h_loc, h_count, layer), cw_v);
-            float s_p3 = blendSubpixelSample(evalHorizCoverage(rc, 3.0 * sp, ppe, h_loc, h_count, layer), cw_v);
-            cov_alpha = filterSubpixelCoverage(s_m3, s_m2, s_m1, s_0, s_p1, s_p2, s_p3, subpixel_order == 2);
-        }
+        float s_m3 = blendSubpixelSample(evalHorizCoverage(rc, -3.0 * sp, ppe, h_loc, h_count, layer), cw_v);
+        float s_m2 = blendSubpixelSample(evalHorizCoverage(rc, -2.0 * sp, ppe, h_loc, h_count, layer), cw_v);
+        float s_m1 = blendSubpixelSample(evalHorizCoverage(rc, -1.0 * sp, ppe, h_loc, h_count, layer), cw_v);
+        float s_0 = blendSubpixelSample(evalHorizCoverage(rc, 0.0, ppe, h_loc, h_count, layer), cw_v);
+        float s_p1 = blendSubpixelSample(evalHorizCoverage(rc, 1.0 * sp, ppe, h_loc, h_count, layer), cw_v);
+        float s_p2 = blendSubpixelSample(evalHorizCoverage(rc, 2.0 * sp, ppe, h_loc, h_count, layer), cw_v);
+        float s_p3 = blendSubpixelSample(evalHorizCoverage(rc, 3.0 * sp, ppe, h_loc, h_count, layer), cw_v);
+        cov_alpha = filterSubpixelCoverage(s_m3, s_m2, s_m1, s_0, s_p1, s_p2, s_p3, subpixel_order == 2);
     } else {
         float sp = epp.y / 3.0;
         vec2 cw_h = evalHorizCoverage(rc, 0.0, ppe, h_loc, h_count, layer);
-        if (!safe_mode) {
-            float s = (subpixel_order == 4) ? -1.0 : 1.0;
-            vec2 cw_r = evalVertCoverage(rc, -sp * s, ppe, v_loc, v_count, layer);
-            vec2 cw_g = evalVertCoverage(rc,  0.0,    ppe, v_loc, v_count, layer);
-            vec2 cw_b = evalVertCoverage(rc, +sp * s, ppe, v_loc, v_count, layer);
-            cov_alpha = blendSubpixelWithAlpha(cw_r, cw_g, cw_b, cw_h);
-        } else {
-            float s_m3 = blendSubpixelSample(evalVertCoverage(rc, -3.0 * sp, ppe, v_loc, v_count, layer), cw_h);
-            float s_m2 = blendSubpixelSample(evalVertCoverage(rc, -2.0 * sp, ppe, v_loc, v_count, layer), cw_h);
-            float s_m1 = blendSubpixelSample(evalVertCoverage(rc, -1.0 * sp, ppe, v_loc, v_count, layer), cw_h);
-            float s_0 = blendSubpixelSample(evalVertCoverage(rc, 0.0, ppe, v_loc, v_count, layer), cw_h);
-            float s_p1 = blendSubpixelSample(evalVertCoverage(rc, 1.0 * sp, ppe, v_loc, v_count, layer), cw_h);
-            float s_p2 = blendSubpixelSample(evalVertCoverage(rc, 2.0 * sp, ppe, v_loc, v_count, layer), cw_h);
-            float s_p3 = blendSubpixelSample(evalVertCoverage(rc, 3.0 * sp, ppe, v_loc, v_count, layer), cw_h);
-            cov_alpha = filterSubpixelCoverage(s_m3, s_m2, s_m1, s_0, s_p1, s_p2, s_p3, subpixel_order == 4);
-        }
+        float s_m3 = blendSubpixelSample(evalVertCoverage(rc, -3.0 * sp, ppe, v_loc, v_count, layer), cw_h);
+        float s_m2 = blendSubpixelSample(evalVertCoverage(rc, -2.0 * sp, ppe, v_loc, v_count, layer), cw_h);
+        float s_m1 = blendSubpixelSample(evalVertCoverage(rc, -1.0 * sp, ppe, v_loc, v_count, layer), cw_h);
+        float s_0 = blendSubpixelSample(evalVertCoverage(rc, 0.0, ppe, v_loc, v_count, layer), cw_h);
+        float s_p1 = blendSubpixelSample(evalVertCoverage(rc, 1.0 * sp, ppe, v_loc, v_count, layer), cw_h);
+        float s_p2 = blendSubpixelSample(evalVertCoverage(rc, 2.0 * sp, ppe, v_loc, v_count, layer), cw_h);
+        float s_p3 = blendSubpixelSample(evalVertCoverage(rc, 3.0 * sp, ppe, v_loc, v_count, layer), cw_h);
+        cov_alpha = filterSubpixelCoverage(s_m3, s_m2, s_m1, s_0, s_p1, s_p2, s_p3, subpixel_order == 4);
     }
 
     vec3 cov = cov_alpha.rgb;
     if (max(max(cov.r, cov.g), cov.b) < 1.0 / 255.0) discard;
-    if (subpixel_render_mode == 1 && subpixel_backdrop.a >= 1.0 - 1e-6) {
-        frag_color = resolveSubpixelOverOpaqueBackdrop(v_color, cov, subpixel_backdrop);
-        return;
-    }
     emitSubpixelColor(v_color, cov, cov_alpha.a);
 }

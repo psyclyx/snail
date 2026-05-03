@@ -44,24 +44,34 @@ pub fn main() !void {
 
     const vbuf = try allocator.alloc(f32, 10000 * snail.TEXT_FLOATS_PER_GLYPH);
     defer allocator.free(vbuf);
-    const path_buf = try allocator.alloc(f32, 256 * snail.TEXT_FLOATS_PER_GLYPH);
+    const path_buf = try allocator.alloc(f32, 512 * snail.TEXT_FLOATS_PER_GLYPH);
     defer allocator.free(path_buf);
 
     const w: f32 = @floatFromInt(SCREENSHOT_WIDTH);
     const h: f32 = @floatFromInt(SCREENSHOT_HEIGHT);
-    const layout = demo_banner.buildLayout(w, h, scene_assets.metrics);
+    const layout = demo_banner.buildLayout(w, h);
     const projection = snail.Mat4.ortho(0, w, h, 0, -1, 1);
 
-    // Tile image for image-paint fill
-    const assets = @import("assets");
-    var tile_image = try snail.Image.initRgba8(allocator, 16, 16, assets.checkerboard_rgba);
-    defer tile_image.deinit();
+    // Scratch pass: lay out text to collect decoration rects (handles not yet set,
+    // so glyph vertices are wrong — we only care about the returned rects).
+    var scratch = snail.TextBatch.init(vbuf);
+    var dec_rects: [8]snail.Rect = undefined;
+    var text_result = demo_banner_scene.populateTextBatch(&scratch, layout, &scene_assets, &dec_rects);
 
-    var path_picture = try demo_banner_scene.buildPathPicture(allocator, layout, .normal, &tile_image);
+    if (text_result.missing) {
+        scratch = snail.TextBatch.init(vbuf);
+        text_result = demo_banner_scene.populateTextBatch(&scratch, layout, &scene_assets, &dec_rects);
+    }
+
+    // Build path picture with decoration rects + upload all atlases
+    var path_picture = try demo_banner_scene.buildPathPicture(allocator, layout, &scene_assets, dec_rects[0..text_result.decoration_count]);
     defer path_picture.deinit();
+    var path_view = scene_assets.uploadAtlases(&renderer, &path_picture);
 
-    var atlas_views: [7]snail.AtlasHandle = undefined;
-    scene_assets.uploadAtlases(&renderer, &path_picture, &atlas_views);
+    // Real text pass: now handles are valid
+    var batch = snail.TextBatch.init(vbuf);
+    var dec_ignore: [8]snail.Rect = undefined;
+    _ = demo_banner_scene.populateTextBatch(&batch, layout, &scene_assets, &dec_ignore);
 
     const clear = demo_banner.clearColor();
     gl.glClearColor(clear[0], clear[1], clear[2], clear[3]);
@@ -70,13 +80,11 @@ pub fn main() !void {
     renderer.beginFrame();
 
     var paths = snail.PathBatch.init(path_buf);
-    _ = paths.addPicture(&atlas_views[6], &path_picture);
+    _ = paths.addPicture(&path_view, &path_picture);
     if (paths.shapeCount() > 0) {
         renderer.drawPaths(paths.slice(), projection, w, h);
     }
 
-    var batch = snail.TextBatch.init(vbuf);
-    demo_banner_scene.populateTextBatch(&batch, layout, &scene_assets, &atlas_views);
     if (batch.glyphCount() > 0) {
         renderer.drawText(batch.slice(), projection, w, h);
     }

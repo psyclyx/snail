@@ -8,7 +8,6 @@ const vertex = @import("vertex.zig");
 const vec = @import("../math/vec.zig");
 const Mat4 = vec.Mat4;
 const snail_mod = @import("../snail.zig");
-const SubpixelMode = @import("subpixel_mode.zig").SubpixelMode;
 const SubpixelOrder = @import("subpixel_order.zig").SubpixelOrder;
 
 // ── Backend selection ──
@@ -26,8 +25,6 @@ const ProgramState = struct {
     image_tex_loc: gl.GLint = -1,
     fill_rule_loc: gl.GLint = -1,
     subpixel_order_loc: gl.GLint = -1,
-    subpixel_render_mode_loc: gl.GLint = -1,
-    subpixel_backdrop_loc: gl.GLint = -1,
     layer_tex_loc: gl.GLint = -1,
 };
 
@@ -56,13 +53,10 @@ const ImageSlot = upload_common.ImageSlot(snail_mod.Image);
 pub const GlTextState = struct {
     backend: Backend = .gl33,
     text_program: ProgramState = .{},
-    text_subpixel_program: ProgramState = .{},
     text_subpixel_dual_program: ProgramState = .{},
     colr_program: ProgramState = .{},
     path_program: ProgramState = .{},
     subpixel_order: SubpixelOrder = .none,
-    subpixel_mode: SubpixelMode = .safe,
-    subpixel_backdrop: ?[4]f32 = null,
     fill_rule: FillRule = .non_zero,
     vao: gl.GLuint = 0,
     vbo: gl.GLuint = 0,
@@ -98,7 +92,6 @@ pub const GlTextState = struct {
         // Keep startup on the lightweight plain-glyph shaders. The heavier path/COLR
         // shader is linked lazily the first time sentinel runs are drawn.
         self.text_program = try loadProgramState("text", shaders.vertex_shader, shaders.fragment_shader_text, false);
-        self.text_subpixel_program = try loadProgramState("text-subpixel", shaders.vertex_shader, shaders.fragment_shader_text_subpixel, false);
         if (self.supports_dual_source_blend) {
             self.text_subpixel_dual_program = try loadProgramState("text-subpixel-dual", shaders.vertex_shader, shaders.fragment_shader_text_subpixel_dual, true);
         }
@@ -114,8 +107,8 @@ pub const GlTextState = struct {
         gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA);
 
         // Enable sRGB framebuffer so GL handles gamma correction during blending.
-        // The fragment shaders output linear coverage; GL linearizes existing
-        // framebuffer values before blending and applies sRGB gamma on write.
+        // The fragment shaders output linear premultiplied color; GL linearizes
+        // existing framebuffer values before blending and applies sRGB gamma on write.
         gl.glEnable(gl.GL_FRAMEBUFFER_SRGB);
     }
 
@@ -187,7 +180,6 @@ pub const GlTextState = struct {
         }
 
         deleteProgramState(&self.text_program);
-        deleteProgramState(&self.text_subpixel_program);
         deleteProgramState(&self.text_subpixel_dual_program);
         deleteProgramState(&self.colr_program);
         deleteProgramState(&self.path_program);
@@ -627,15 +619,12 @@ pub const GlTextState = struct {
             mvp,
             allow_subpixel,
             self.subpixel_order,
-            self.subpixel_mode,
             self.supports_dual_source_blend,
-            self.subpixel_backdrop,
         );
         if (!self.atlas_has_special_text_runs) {
             setTextBlendMode(false, render_mode);
             const prog_state = switch (render_mode) {
                 .grayscale => &self.text_program,
-                .subpixel_legacy, .subpixel_backdrop => &self.text_subpixel_program,
                 .subpixel_dual_source => &self.text_subpixel_dual_program,
             };
             self.bindProgramState(prog_state, mvp, viewport_w, viewport_h, render_mode);
@@ -657,7 +646,6 @@ pub const GlTextState = struct {
                 self.ensureColrProgram()
             else switch (run_mode) {
                 .grayscale => &self.text_program,
-                .subpixel_legacy, .subpixel_backdrop => &self.text_subpixel_program,
                 .subpixel_dual_source => &self.text_subpixel_dual_program,
             };
             self.bindProgramState(prog_state, mvp, viewport_w, viewport_h, run_mode);
@@ -740,13 +728,6 @@ pub const GlTextState = struct {
         gl.glUniform1i(prog_state.fill_rule_loc, @intFromEnum(self.fill_rule));
         if (render_mode != .grayscale and prog_state.subpixel_order_loc >= 0) {
             gl.glUniform1i(prog_state.subpixel_order_loc, @intFromEnum(self.subpixel_order));
-        }
-        if (prog_state.subpixel_render_mode_loc >= 0) {
-            gl.glUniform1i(prog_state.subpixel_render_mode_loc, subpixelRenderModeUniform(render_mode));
-        }
-        if (prog_state.subpixel_backdrop_loc >= 0) {
-            const bg = self.subpixel_backdrop orelse .{ 0, 0, 0, 0 };
-            gl.glUniform4f(prog_state.subpixel_backdrop_loc, bg[0], bg[1], bg[2], bg[3]);
         }
     }
 
@@ -902,8 +883,6 @@ fn loadProgramState(cache_label: []const u8, vs_src: [*c]const u8, fs_src: [*c]c
         .image_tex_loc = gl.glGetUniformLocation(handle, "u_image_tex"),
         .fill_rule_loc = gl.glGetUniformLocation(handle, "u_fill_rule"),
         .subpixel_order_loc = gl.glGetUniformLocation(handle, "u_subpixel_order"),
-        .subpixel_render_mode_loc = gl.glGetUniformLocation(handle, "u_subpixel_render_mode"),
-        .subpixel_backdrop_loc = gl.glGetUniformLocation(handle, "u_subpixel_backdrop"),
         .layer_tex_loc = gl.glGetUniformLocation(handle, "u_layer_tex"),
     };
 }
@@ -969,19 +948,10 @@ fn setImageTexParamsDSA(tex: gl.GLuint) void {
 }
 
 fn setTextBlendMode(special: bool, render_mode: subpixel_policy.TextRenderMode) void {
-    if (!special) {
-        switch (render_mode) {
-            .subpixel_backdrop => {
-                gl.glDisable(gl.GL_BLEND);
-                return;
-            },
-            .subpixel_dual_source => {
-                gl.glEnable(gl.GL_BLEND);
-                gl.glBlendFuncSeparate(gl.GL_ONE, gl.GL_ONE_MINUS_SRC1_COLOR, gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA);
-                return;
-            },
-            else => {},
-        }
+    if (!special and render_mode == .subpixel_dual_source) {
+        gl.glEnable(gl.GL_BLEND);
+        gl.glBlendFuncSeparate(gl.GL_ONE, gl.GL_ONE_MINUS_SRC1_COLOR, gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA);
+        return;
     }
     gl.glEnable(gl.GL_BLEND);
     gl.glBlendFuncSeparate(gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA, gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA);
@@ -1006,10 +976,3 @@ fn detectDualSourceBlendSupport() bool {
     return max_draw_buffers >= 1;
 }
 
-fn subpixelRenderModeUniform(render_mode: subpixel_policy.TextRenderMode) gl.GLint {
-    return switch (render_mode) {
-        .grayscale, .subpixel_legacy => 0,
-        .subpixel_backdrop => 1,
-        .subpixel_dual_source => 2,
-    };
-}

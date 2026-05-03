@@ -1,184 +1,102 @@
 const std = @import("std");
 const snail = @import("snail.zig");
 const demo_banner = @import("demo_banner.zig");
-const assets = @import("assets");
+const assets_data = @import("assets");
+const Allocator = std.mem.Allocator;
 
-pub const ViewMode = enum(u8) {
+pub const ViewMode = enum {
     normal,
-    vectors_only,
-    vector_fill_mask,
-    vector_stroke_mask,
-    vector_layer_tint,
-    vector_bounds,
-
-    pub fn next(self: ViewMode) ViewMode {
-        return switch (self) {
-            .normal => .vectors_only,
-            .vectors_only => .vector_fill_mask,
-            .vector_fill_mask => .vector_stroke_mask,
-            .vector_stroke_mask => .vector_layer_tint,
-            .vector_layer_tint => .vector_bounds,
-            .vector_bounds => .normal,
-        };
-    }
-
-    pub fn label(self: ViewMode) []const u8 {
-        return switch (self) {
-            .normal => "scene",
-            .vectors_only => "vectors only",
-            .vector_fill_mask => "vector fill mask",
-            .vector_stroke_mask => "vector stroke mask",
-            .vector_layer_tint => "vector layer tint",
-            .vector_bounds => "vector bounds",
-        };
-    }
-
-    pub fn isDebug(self: ViewMode) bool {
-        return self != .normal;
-    }
-
-    pub fn showText(self: ViewMode) bool {
-        return self == .normal;
-    }
 
     pub fn pathDebugView(self: ViewMode) snail.PathPictureDebugView {
-        return switch (self) {
-            .normal, .vectors_only, .vector_bounds => .normal,
-            .vector_fill_mask => .fill_mask,
-            .vector_stroke_mask => .stroke_mask,
-            .vector_layer_tint => .layer_tint,
-        };
-    }
-
-    pub fn showBoundsOverlay(self: ViewMode) bool {
-        return self == .vector_bounds;
+        _ = self;
+        return .normal;
     }
 };
 
+/// Demo assets: unified Fonts and tile image.
 pub const Assets = struct {
-    latin_font: snail.Font,
-    latin_atlas: snail.Atlas,
-    arabic: demo_banner.ScriptFont,
-    devanagari: demo_banner.ScriptFont,
-    mongolian: demo_banner.ScriptFont,
-    thai: demo_banner.ScriptFont,
-    emoji: demo_banner.ScriptFont,
-    metrics: demo_banner.TextMetrics,
+    fonts: snail.Fonts,
+    tile_image: snail.Image,
 
-    pub fn init(allocator: std.mem.Allocator) !Assets {
-        var latin_font = try snail.Font.init(assets.noto_sans_regular);
-        errdefer latin_font.deinit();
+    pub fn init(allocator: Allocator) !Assets {
+        var fonts = try snail.Fonts.init(allocator, &.{
+            .{ .data = assets_data.noto_sans_regular },
+            .{ .data = assets_data.noto_sans_bold, .weight = .bold },
+            .{ .data = assets_data.noto_sans_regular, .italic = true, .synthetic = .{ .skew_x = 0.2 } },
+            .{ .data = assets_data.noto_sans_bold, .weight = .bold, .italic = true, .synthetic = .{ .skew_x = 0.2 } },
+            .{ .data = assets_data.noto_sans_regular, .weight = .semi_bold, .synthetic = .{ .embolden = 0.5 } },
+            .{ .data = assets_data.noto_sans_arabic, .fallback = true },
+            .{ .data = assets_data.noto_sans_devanagari, .fallback = true },
+            .{ .data = assets_data.noto_sans_symbols, .fallback = true },
+            .{ .data = assets_data.noto_sans_thai, .fallback = true },
+            .{ .data = assets_data.twemoji_mozilla, .fallback = true },
+        });
 
-        var latin_atlas = try snail.Atlas.initAscii(allocator, &latin_font, &snail.ASCII_PRINTABLE);
-        errdefer latin_atlas.deinit();
-
-        var arabic = try demo_banner.ScriptFont.init(allocator, assets.noto_sans_arabic, demo_banner.arabic_text);
-        errdefer arabic.deinit();
-        var devanagari = try demo_banner.ScriptFont.init(allocator, assets.noto_sans_devanagari, demo_banner.devanagari_text);
-        errdefer devanagari.deinit();
-        var mongolian = try demo_banner.ScriptFont.init(allocator, assets.noto_sans_mongolian, demo_banner.mongolian_text);
-        errdefer mongolian.deinit();
-        var thai = try demo_banner.ScriptFont.init(allocator, assets.noto_sans_thai, demo_banner.thai_text);
-        errdefer thai.deinit();
-        var emoji = try demo_banner.ScriptFont.init(allocator, assets.twemoji_mozilla, demo_banner.emoji_text);
-        errdefer emoji.deinit();
+        // Ensure glyphs for every style used in the demo.
+        const ascii = &snail.ASCII_PRINTABLE;
+        const styles = [_]snail.FontStyle{
+            .{},
+            .{ .weight = .bold },
+            .{ .italic = true },
+            .{ .weight = .bold, .italic = true },
+            .{ .weight = .semi_bold },
+        };
+        for (styles) |style| {
+            if (try fonts.ensureText(style, ascii)) |new_fonts| {
+                fonts.deinit();
+                fonts = new_fonts;
+            }
+        }
+        // Script/emoji fallback text + ligature contexts.
+        const extra = [_][]const u8{
+            "\xd9\x85\xd8\xb1\xd8\xad\xd8\xa8\xd8\xa7", // مرحبا
+            "\xe0\xa4\xa8\xe0\xa4\xae\xe0\xa4\xb8\xe0\xa5\x8d\xe0\xa4\xa4\xe0\xa5\x87", // नमस्ते
+            "\xe0\xb8\xaa\xe0\xb8\xa7\xe0\xb8\xb1\xe0\xb8\xaa\xe0\xb8\x94\xe0\xb8\xb5", // สวัสดี
+            "\xe2\x9c\xa8\xf0\x9f\x8c\x8d\xf0\x9f\x8e\xa8\xf0\x9f\x9a\x80\xf0\x9f\x90\x8c\xf0\x9f\x8c\x88", // ✨🌍🎨🚀🐌🌈
+            " \xe2\x86\x92 ", // →
+            "office ffi fl ffl", // ligature contexts
+        };
+        for (extra) |txt| {
+            if (try fonts.ensureText(.{}, txt)) |new_fonts| {
+                fonts.deinit();
+                fonts = new_fonts;
+            }
+        }
 
         return .{
-            .latin_font = latin_font,
-            .latin_atlas = latin_atlas,
-            .arabic = arabic,
-            .devanagari = devanagari,
-            .mongolian = mongolian,
-            .thai = thai,
-            .emoji = emoji,
-            .metrics = demo_banner.measureMetrics(
-                &latin_atlas,
-                &latin_font,
-                .{
-                    &arabic.font,
-                    &devanagari.font,
-                    &thai.font,
-                    &mongolian.font,
-                },
-                &emoji.font,
-            ),
+            .fonts = fonts,
+            .tile_image = try snail.Image.initSrgba8(allocator, 16, 16, assets_data.dots_rgba),
         };
     }
 
     pub fn deinit(self: *Assets) void {
-        self.emoji.deinit();
-        self.thai.deinit();
-        self.mongolian.deinit();
-        self.devanagari.deinit();
-        self.arabic.deinit();
-        self.latin_atlas.deinit();
-        self.latin_font.deinit();
+        self.fonts.deinit();
+        self.tile_image.deinit();
     }
 
-    pub fn uploadAtlases(
-        self: *const Assets,
-        renderer: *snail.Renderer,
-        picture: *const snail.PathPicture,
-        atlas_views: *[7]snail.AtlasHandle,
-    ) void {
-        renderer.uploadAtlases(&[_]*const snail.Atlas{
-            &self.latin_atlas,
-            &self.arabic.atlas,
-            &self.devanagari.atlas,
-            &self.mongolian.atlas,
-            &self.thai.atlas,
-            &self.emoji.atlas,
-            &picture.atlas,
-        }, atlas_views);
-    }
+    /// Upload Fonts pages + PathPicture atlas as a combined texture array.
+    pub fn uploadAtlases(self: *Assets, renderer: *snail.Renderer, path_picture: *const snail.PathPicture) snail.AtlasHandle {
+        // Create a temporary Atlas wrapping the Fonts pages for upload.
+        var font_wrapper = self.fonts.uploadAtlas();
+        defer self.fonts.deinitUploadAtlas(&font_wrapper);
 
-    pub fn textResources(self: *const Assets, atlas_views: *const [7]snail.AtlasHandle) demo_banner.TextResources {
-        return .{
-            .latin_font = &self.latin_font,
-            .latin_view = &atlas_views[0],
-            .arabic_font = &self.arabic,
-            .arabic_view = &atlas_views[1],
-            .devanagari_font = &self.devanagari,
-            .devanagari_view = &atlas_views[2],
-            .mongolian_font = &self.mongolian,
-            .mongolian_view = &atlas_views[3],
-            .thai_font = &self.thai,
-            .thai_view = &atlas_views[4],
-            .emoji_font = &self.emoji,
-            .emoji_view = &atlas_views[5],
-        };
+        var all_atlases = [2]*const snail.Atlas{ &font_wrapper, &path_picture.atlas };
+        var all_handles: [2]snail.AtlasHandle = undefined;
+        renderer.uploadAtlases(&all_atlases, &all_handles);
+
+        // Store layer_base so FaceView can compute correct texture layers.
+        self.fonts.layer_base = all_handles[0].layer_base;
+        self.fonts.info_row_base = all_handles[0].info_row_base;
+
+        return all_handles[1]; // PathPicture handle
     }
 };
 
-pub fn buildPathPicture(
-    allocator: std.mem.Allocator,
-    layout: demo_banner.Layout,
-    view_mode: ViewMode,
-    tile_image: ?*const snail.Image,
-) !snail.PathPicture {
-    var picture_builder = snail.PathPictureBuilder.init(allocator);
-    defer picture_builder.deinit();
-    try demo_banner.buildPathShowcase(&picture_builder, layout, tile_image);
-    var picture = try picture_builder.freeze(allocator);
-    errdefer picture.deinit();
-    picture.applyDebugView(view_mode.pathDebugView());
-    return picture;
+pub fn buildPathPicture(allocator: Allocator, layout: demo_banner.Layout, assets_ref: *const Assets, decoration_rects: []const snail.Rect) !snail.PathPicture {
+    return demo_banner.buildPathPicture(allocator, layout, &assets_ref.tile_image, decoration_rects);
 }
 
-pub fn buildPathOverlayPicture(
-    allocator: std.mem.Allocator,
-    picture: *const snail.PathPicture,
-    view_mode: ViewMode,
-) !?snail.PathPicture {
-    if (!view_mode.showBoundsOverlay()) return null;
-    return try picture.buildBoundsOverlay(allocator, .{});
-}
-
-pub fn populateTextBatch(
-    batch: *snail.TextBatch,
-    layout: demo_banner.Layout,
-    scene_assets: *const Assets,
-    atlas_views: *const [7]snail.AtlasHandle,
-) void {
-    demo_banner.drawText(batch, layout, scene_assets.metrics, scene_assets.textResources(atlas_views));
+/// Draw text and collect decoration rects.
+pub fn populateTextBatch(batch: *snail.TextBatch, layout: demo_banner.Layout, assets_ref: *const Assets, decoration_rects: []snail.Rect) demo_banner.DrawTextResult {
+    return demo_banner.drawText(batch, layout, &assets_ref.fonts, decoration_rects) catch .{ .decoration_count = 0, .missing = false };
 }
