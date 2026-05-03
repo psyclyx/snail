@@ -13,13 +13,13 @@ pub const ViewMode = enum {
     }
 };
 
-/// Demo assets: unified Fonts and tile image.
+/// Demo assets: shared text atlas snapshot and tile image.
 pub const Assets = struct {
-    fonts: snail.Fonts,
+    fonts: snail.TextAtlas,
     tile_image: snail.Image,
 
     pub fn init(allocator: Allocator) !Assets {
-        var fonts = try snail.Fonts.init(allocator, &.{
+        var fonts = try snail.TextAtlas.init(allocator, &.{
             .{ .data = assets_data.noto_sans_regular },
             .{ .data = assets_data.noto_sans_bold, .weight = .bold },
             .{ .data = assets_data.noto_sans_regular, .italic = true, .synthetic = .{ .skew_x = 0.2 } },
@@ -74,29 +74,13 @@ pub const Assets = struct {
         self.tile_image.deinit();
     }
 
-    /// Upload Fonts pages + PathPicture atlas as a combined texture array.
-    pub fn uploadAtlases(self: *Assets, renderer: *snail.Renderer, path_picture: *const snail.PathPicture) snail.AtlasHandle {
-        // Create a temporary Atlas wrapping the Fonts pages for upload.
-        var font_wrapper = self.fonts.uploadAtlas();
-        defer self.fonts.deinitUploadAtlas(&font_wrapper);
-
-        var all_atlases = [2]*const snail.Atlas{ &font_wrapper, &path_picture.atlas };
-        var all_handles: [2]snail.AtlasHandle = undefined;
-        renderer.uploadAtlases(&all_atlases, &all_handles);
-
-        // Store layer_base so FaceView can compute correct texture layers.
-        self.fonts.layer_base = all_handles[0].layer_base;
-        self.fonts.info_row_base = all_handles[0].info_row_base;
-
-        return all_handles[1]; // PathPicture handle
-    }
 };
 
 pub fn buildPathPicture(allocator: Allocator, layout: demo_banner.Layout, assets_ref: *const Assets, decoration_rects: []const snail.Rect) !snail.PathPicture {
     return demo_banner.buildPathPicture(allocator, layout, &assets_ref.tile_image, decoration_rects);
 }
 
-/// Draw text and collect decoration rects.
-pub fn populateTextBatch(batch: *snail.TextBatch, layout: demo_banner.Layout, assets_ref: *const Assets, decoration_rects: []snail.Rect) demo_banner.DrawTextResult {
-    return demo_banner.drawText(batch, layout, &assets_ref.fonts, decoration_rects) catch .{ .decoration_count = 0, .missing = false };
+/// Build the demo's prepared text blob and collect decoration rects.
+pub fn buildTextBlob(builder: *snail.TextBlobBuilder, layout: demo_banner.Layout, assets_ref: *const Assets, decoration_rects: []snail.Rect) demo_banner.TextBuildResult {
+    return demo_banner.buildTextBlob(builder, layout, &assets_ref.fonts, decoration_rects) catch .{ .decoration_count = 0, .missing = false };
 }

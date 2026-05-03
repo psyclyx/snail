@@ -38,56 +38,51 @@ pub fn main() !void {
     var scene_assets = try demo_banner_scene.Assets.init(allocator);
     defer scene_assets.deinit();
 
-    var renderer = try snail.Renderer.init();
-    defer renderer.deinit();
-    renderer.setSubpixelOrder(.none);
-
-    const vbuf = try allocator.alloc(f32, 10000 * snail.TEXT_FLOATS_PER_GLYPH);
-    defer allocator.free(vbuf);
-    const path_buf = try allocator.alloc(f32, 512 * snail.TEXT_FLOATS_PER_GLYPH);
-    defer allocator.free(path_buf);
+    var gl_renderer = try snail.GlRenderer.init(allocator);
+    defer gl_renderer.deinit();
+    var renderer = gl_renderer.asRenderer();
 
     const w: f32 = @floatFromInt(SCREENSHOT_WIDTH);
     const h: f32 = @floatFromInt(SCREENSHOT_HEIGHT);
     const layout = demo_banner.buildLayout(w, h);
     const projection = snail.Mat4.ortho(0, w, h, 0, -1, 1);
 
-    // Scratch pass: lay out text to collect decoration rects (handles not yet set,
-    // so glyph vertices are wrong — we only care about the returned rects).
-    var scratch = snail.TextBatch.init(vbuf);
+    var builder = snail.TextBlobBuilder.init(allocator, &scene_assets.fonts);
+    defer builder.deinit();
     var dec_rects: [8]snail.Rect = undefined;
-    var text_result = demo_banner_scene.populateTextBatch(&scratch, layout, &scene_assets, &dec_rects);
+    const text_result = demo_banner_scene.buildTextBlob(&builder, layout, &scene_assets, &dec_rects);
+    var text_blob = try builder.finish();
+    defer text_blob.deinit();
 
-    if (text_result.missing) {
-        scratch = snail.TextBatch.init(vbuf);
-        text_result = demo_banner_scene.populateTextBatch(&scratch, layout, &scene_assets, &dec_rects);
-    }
-
-    // Build path picture with decoration rects + upload all atlases
+    // Build immutable scene resources.
     var path_picture = try demo_banner_scene.buildPathPicture(allocator, layout, &scene_assets, dec_rects[0..text_result.decoration_count]);
     defer path_picture.deinit();
-    var path_view = scene_assets.uploadAtlases(&renderer, &path_picture);
+    var scene = snail.Scene.init(allocator);
+    defer scene.deinit();
+    try scene.addPathPicture(&path_picture);
+    try scene.addTextOptions(&text_blob, .{ .hinting = .outline });
 
-    // Real text pass: now handles are valid
-    var batch = snail.TextBatch.init(vbuf);
-    var dec_ignore: [8]snail.Rect = undefined;
-    _ = demo_banner_scene.populateTextBatch(&batch, layout, &scene_assets, &dec_ignore);
+    var resource_entries: [8]snail.ResourceSet.Entry = undefined;
+    var resources = snail.ResourceSet.init(&resource_entries);
+    try resources.addScene(&scene);
+    var prepared = try renderer.uploadResourcesBlocking(allocator, &resources);
+    defer prepared.deinit();
 
     const clear = demo_banner.clearColor();
     gl.glClearColor(clear[0], clear[1], clear[2], clear[3]);
     gl.glClear(gl.GL_COLOR_BUFFER_BIT);
 
-    renderer.beginFrame();
-
-    var paths = snail.PathBatch.init(path_buf);
-    _ = paths.addPicture(&path_view, &path_picture);
-    if (paths.shapeCount() > 0) {
-        renderer.drawPaths(paths.slice(), projection, w, h);
-    }
-
-    if (batch.glyphCount() > 0) {
-        renderer.drawText(batch.slice(), projection, w, h);
-    }
+    const draw_options = snail.DrawOptions{
+        .mvp = projection,
+        .target = .{
+            .pixel_width = @floatFromInt(SCREENSHOT_WIDTH),
+            .pixel_height = @floatFromInt(SCREENSHOT_HEIGHT),
+            .subpixel_order = .none,
+        },
+    };
+    var prepared_scene = try snail.PreparedScene.initOwned(allocator, &prepared, &scene, draw_options);
+    defer prepared_scene.deinit();
+    try renderer.drawPrepared(&prepared, &prepared_scene, draw_options);
 
     if (screenshot.captureFramebuffer(allocator, SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT) catch null) |px| {
         defer allocator.free(px);

@@ -4,6 +4,17 @@ pub const MAX_ATLASES = 64;
 pub const MAX_PAGES_PER_ATLAS = 256;
 pub const MAX_IMAGES = 256;
 
+pub fn BufferElement(comptime Buffer: type) type {
+    return switch (@typeInfo(Buffer)) {
+        .pointer => |ptr| switch (@typeInfo(ptr.child)) {
+            .array => |array| array.child,
+            else => ptr.child,
+        },
+        .array => |array| array.child,
+        else => @compileError("expected a slice, pointer, or array buffer"),
+    };
+}
+
 pub fn AtlasSlot(comptime Atlas: type, comptime AtlasPage: type, comptime max_pages: usize) type {
     return struct {
         atlas: ?*const Atlas = null,
@@ -27,6 +38,7 @@ pub fn atlasSlotsCompatible(atlas_slots: anytype, atlas_slot_count: usize, atlas
         const slot = &atlas_slots[i];
         const page_count: u32 = @intCast(atlas.pageCount());
         if (page_count < slot.uploaded_pages or page_count > slot.capacity_pages) return false;
+        if (slot.uploaded_pages > slot.page_ptrs.len) return false;
         for (0..slot.uploaded_pages) |page_index| {
             if (slot.page_ptrs[page_index] != atlas.page(@intCast(page_index))) return false;
         }
@@ -60,7 +72,7 @@ pub fn rebuildAtlasSlots(atlas_slots: anytype, atlases: anytype) struct {
         };
         for (0..page_count) |page_index| {
             const page = atlas.page(@intCast(page_index));
-            slot.page_ptrs[page_index] = page;
+            if (page_index < slot.page_ptrs.len) slot.page_ptrs[page_index] = page;
             if (page.curve_height > max_curve_h) max_curve_h = page.curve_height;
             if (page.band_height > max_band_h) max_band_h = page.band_height;
         }
@@ -83,7 +95,7 @@ pub fn refreshAtlasSlots(atlas_slots: anytype, atlases: anytype) void {
         const old_pages = slot.uploaded_pages;
         const new_pages: u32 = @intCast(atlas.pageCount());
         for (old_pages..new_pages) |page_index| {
-            slot.page_ptrs[page_index] = atlas.page(@intCast(page_index));
+            if (page_index < slot.page_ptrs.len) slot.page_ptrs[page_index] = atlas.page(@intCast(page_index));
         }
         slot.atlas = atlas;
         slot.uploaded_pages = new_pages;
@@ -97,8 +109,8 @@ pub fn fillAtlasViews(atlas_slots: anytype, atlases: anytype, out_views: anytype
     for (atlases, 0..) |atlas, i| {
         out_views[i] = .{
             .atlas = atlas,
-            .layer_base = @intCast(atlas_slots[i].base_layer),
-            .info_row_base = @intCast(atlas_slots[i].info_row_base),
+            .layer_base = atlas_slots[i].base_layer,
+            .info_row_base = atlas_slots[i].info_row_base,
         };
     }
 }

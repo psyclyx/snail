@@ -9,6 +9,12 @@ pub const c = @cImport({
 
 pub const KEY_R = c.KEY_R;
 pub const KEY_L = c.KEY_L;
+pub const KEY_W = c.KEY_W;
+pub const KEY_A = c.KEY_A;
+pub const KEY_S = c.KEY_S;
+pub const KEY_D = c.KEY_D;
+pub const KEY_Q = c.KEY_Q;
+pub const KEY_E = c.KEY_E;
 pub const KEY_Z = c.KEY_Z;
 pub const KEY_X = c.KEY_X;
 pub const KEY_ESCAPE = c.KEY_ESC;
@@ -24,6 +30,8 @@ pub const Window = struct {
         registry_name: u32 = 0,
         subpixel: SubpixelOrder = .none,
         has_subpixel_info: bool = false,
+        scale: u32 = 1,
+        entered: bool = false,
     };
 
     display: *c.wl_display,
@@ -39,6 +47,8 @@ pub const Window = struct {
 
     width: u32,
     height: u32,
+    buffer_scale: u32 = 1,
+    scale_changed: bool = false,
     outputs: [max_outputs]OutputInfo = [_]OutputInfo{.{}} ** max_outputs,
     active_output: ?*c.wl_output = null,
     monitor_changed: bool = false,
@@ -92,6 +102,8 @@ pub const Window = struct {
         c.wl_surface_commit(self.surface);
 
         if (c.wl_display_roundtrip(display) < 0) return error.WaylandRoundtripFailed;
+        self.refreshBufferScale();
+        self.scale_changed = false;
         return self;
     }
 
@@ -144,6 +156,7 @@ pub const Window = struct {
             _ = c.wl_display_cancel_read(self.display);
         }
         _ = c.wl_display_dispatch_pending(self.display);
+        self.refreshBufferScale();
     }
 
     pub fn shouldClose(self: *const Window) bool {
@@ -152,6 +165,14 @@ pub const Window = struct {
 
     pub fn getWindowSize(self: *const Window) [2]u32 {
         return .{ self.width, self.height };
+    }
+
+    pub fn getFramebufferSize(self: *const Window) [2]u32 {
+        const scale = @max(self.buffer_scale, 1);
+        return .{
+            std.math.mul(u32, self.width, scale) catch std.math.maxInt(u32),
+            std.math.mul(u32, self.height, scale) catch std.math.maxInt(u32),
+        };
     }
 
     pub fn consumeResized(self: *Window) bool {
@@ -166,6 +187,12 @@ pub const Window = struct {
         return changed;
     }
 
+    pub fn consumeScaleChanged(self: *Window) bool {
+        const changed = self.scale_changed;
+        self.scale_changed = false;
+        return changed;
+    }
+
     pub fn currentSubpixelOrder(self: *const Window, fallback: SubpixelOrder) SubpixelOrder {
         if (self.active_output) |active| {
             if (self.findOutputInfo(active)) |info| {
@@ -177,6 +204,27 @@ pub const Window = struct {
             if (info.wl_output != null and info.has_subpixel_info) return info.subpixel;
         }
         return fallback;
+    }
+
+    pub fn currentBufferScale(self: *const Window) u32 {
+        var scale: u32 = 1;
+        var have_entered = false;
+        for (self.outputs) |info| {
+            if (info.wl_output != null and info.entered) {
+                have_entered = true;
+                scale = @max(scale, info.scale);
+            }
+        }
+        if (have_entered) return scale;
+        if (self.active_output) |active| {
+            if (self.findOutputInfo(active)) |info| {
+                return @max(info.scale, 1);
+            }
+        }
+        for (self.outputs) |info| {
+            if (info.wl_output != null) scale = @max(scale, info.scale);
+        }
+        return scale;
     }
 
     pub fn isKeyDown(self: *const Window, key: u32) bool {
@@ -211,6 +259,14 @@ pub const Window = struct {
             if (info.wl_output == output) return info;
         }
         return null;
+    }
+
+    fn refreshBufferScale(self: *Window) void {
+        const next = self.currentBufferScale();
+        if (next == self.buffer_scale) return;
+        self.buffer_scale = next;
+        self.scale_changed = true;
+        c.wl_surface_set_buffer_scale(self.surface, @intCast(next));
     }
 };
 
@@ -253,6 +309,8 @@ fn registryGlobal(
             .registry_name = name,
             .subpixel = .none,
             .has_subpixel_info = false,
+            .scale = 1,
+            .entered = false,
         };
         if (slot.wl_output) |output| {
             _ = c.wl_output_add_listener(output, &output_listener, self);
@@ -440,7 +498,17 @@ fn outputGeometry(
 
 fn outputMode(_: ?*anyopaque, _: ?*c.wl_output, _: u32, _: i32, _: i32, _: i32) callconv(.c) void {}
 fn outputDone(_: ?*anyopaque, _: ?*c.wl_output) callconv(.c) void {}
-fn outputScale(_: ?*anyopaque, _: ?*c.wl_output, _: i32) callconv(.c) void {}
+fn outputScale(data: ?*anyopaque, output: ?*c.wl_output, scale: i32) callconv(.c) void {
+    const self = selfFrom(data);
+    const wl_output = output orelse return;
+    if (self.findOutputInfoMut(wl_output)) |info| {
+        const next_scale: u32 = if (scale > 0) @intCast(scale) else 1;
+        if (info.scale != next_scale) {
+            info.scale = next_scale;
+            if (info.entered or self.active_output == wl_output) self.monitor_changed = true;
+        }
+    }
+}
 
 const output_listener = c.wl_output_listener{
     .geometry = outputGeometry,
@@ -452,8 +520,13 @@ const output_listener = c.wl_output_listener{
 fn surfaceEnter(data: ?*anyopaque, _: ?*c.wl_surface, output: ?*c.wl_output) callconv(.c) void {
     const self = selfFrom(data);
     const wl_output = output orelse return;
+    if (self.findOutputInfoMut(wl_output)) |info| {
+        info.entered = true;
+    }
     if (self.active_output != wl_output) {
         self.active_output = wl_output;
+        self.monitor_changed = true;
+    } else {
         self.monitor_changed = true;
     }
 }
@@ -461,8 +534,13 @@ fn surfaceEnter(data: ?*anyopaque, _: ?*c.wl_surface, output: ?*c.wl_output) cal
 fn surfaceLeave(data: ?*anyopaque, _: ?*c.wl_surface, output: ?*c.wl_output) callconv(.c) void {
     const self = selfFrom(data);
     const wl_output = output orelse return;
+    if (self.findOutputInfoMut(wl_output)) |info| {
+        info.entered = false;
+    }
     if (self.active_output == wl_output) {
         self.active_output = null;
+        self.monitor_changed = true;
+    } else {
         self.monitor_changed = true;
     }
 }

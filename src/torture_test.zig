@@ -1,5 +1,5 @@
 //! Torture test for valgrind: exercises the full CPU pipeline heavily.
-//! No GPU needed — tests Fonts init, ensureText, addText,
+//! No GPU needed — tests TextAtlas init, ensureText, addText,
 //! batch generation, word wrapping, and shaped runs.
 
 const std = @import("std");
@@ -9,8 +9,8 @@ const assets = @import("assets");
 test "torture: full pipeline" {
     const allocator = std.testing.allocator;
 
-    // Create Fonts with Latin face
-    var fonts = try snail.Fonts.init(allocator, &.{
+    // Create TextAtlas with Latin face
+    var fonts = try snail.TextAtlas.init(allocator, &.{
         .{ .data = assets.noto_sans_regular },
     });
     defer fonts.deinit();
@@ -100,7 +100,7 @@ test "torture: full pipeline" {
     try std.testing.expect(batch.glyphCount() > 0);
 
     // Rebuild fonts from scratch (tests full deallocation + rebuild path)
-    var fonts2 = try snail.Fonts.init(allocator, &.{
+    var fonts2 = try snail.TextAtlas.init(allocator, &.{
         .{ .data = assets.noto_sans_regular },
     });
     defer fonts2.deinit();
@@ -121,7 +121,7 @@ test "torture: full pipeline" {
 test "ensureText is idempotent for already-loaded text" {
     const allocator = std.testing.allocator;
 
-    var fonts = try snail.Fonts.init(allocator, &.{
+    var fonts = try snail.TextAtlas.init(allocator, &.{
         .{ .data = assets.noto_sans_regular },
     });
     defer fonts.deinit();
@@ -148,7 +148,7 @@ test "ensureText is idempotent for already-loaded text" {
 test "ensureText discovers shaped glyphs for UTF-8 text" {
     const allocator = std.testing.allocator;
 
-    var fonts = try snail.Fonts.init(allocator, &.{
+    var fonts = try snail.TextAtlas.init(allocator, &.{
         .{ .data = assets.noto_sans_regular },
     });
     defer fonts.deinit();
@@ -171,7 +171,7 @@ test "addText reports missing glyphs" {
     const allocator = std.testing.allocator;
 
     // Create fonts without pre-loading any text
-    var fonts = try snail.Fonts.init(allocator, &.{
+    var fonts = try snail.TextAtlas.init(allocator, &.{
         .{ .data = assets.noto_sans_regular },
     });
     defer fonts.deinit();
@@ -187,7 +187,7 @@ test "multi-face fonts with fallback" {
     const allocator = std.testing.allocator;
 
     // Create fonts with Latin primary + Arabic fallback
-    var fonts = try snail.Fonts.init(allocator, &.{
+    var fonts = try snail.TextAtlas.init(allocator, &.{
         .{ .data = assets.noto_sans_regular },
         .{ .data = assets.noto_sans_arabic, .fallback = true },
     });

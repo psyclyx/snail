@@ -20,11 +20,20 @@ layout(push_constant) uniform PushConstants {
 };
 
 layout(location = 0) out vec4 frag_color;
-#ifdef SNAIL_DUAL_SOURCE
-layout(location = 0, index = 1) out vec4 frag_blend;
-#endif
 
 #define SNAIL_FILL_RULE fill_rule
-#define SNAIL_SUBPIXEL_ORDER subpixel_order
 
-#include "snail_text_subpixel_body.glsl"
+#include "snail_text_frag_body.glsl"
+
+void main() {
+    int atlas_layer = (v_glyph.w >> 8) & 0xFF;
+    if (atlas_layer == 0xFF) discard;
+    vec2 rc = hintedLocalCoord(v_texcoord);
+    vec2 ppe = 1.0 / max(fwidth(rc), vec2(1.0 / 65536.0));
+    float cov = evalGlyphCoverage(rc, ppe, v_glyph.xy,
+                                  ivec2(v_glyph.z, v_glyph.w & 0xFF),
+                                  v_banding, atlas_layer);
+    if (cov < 1.0 / 255.0) discard;
+    vec4 linear_color = vec4(srgbDecode(v_color.r), srgbDecode(v_color.g), srgbDecode(v_color.b), v_color.a);
+    frag_color = premultiplyColor(linear_color, cov);
+}

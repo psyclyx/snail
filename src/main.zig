@@ -36,37 +36,47 @@ fn linearToSrgbU8(v: f32) u8 {
     return @intFromFloat(std.math.clamp(s, 0, 1) * 255);
 }
 
+fn demoTextHinting(active_motion: bool) snail.TextHinting {
+    return if (active_motion) .none else .outline;
+}
+
 fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
     var scene_assets = try demo_banner_scene.Assets.init(allocator);
     defer scene_assets.deinit();
 
+    var gl_renderer: snail.GlRenderer = undefined;
+    var vk_renderer: snail.VulkanRenderer = undefined;
     var cpu_state: CpuRenderer = undefined;
-    var renderer = if (use_vulkan)
-        try snail.Renderer.initVulkan(vk_ctx)
-    else if (use_gl)
-        try snail.Renderer.init()
-    else blk: {
+    var renderer = if (use_vulkan) blk: {
+        vk_renderer = try snail.VulkanRenderer.init(vk_ctx);
+        break :blk vk_renderer.asRenderer();
+    } else if (use_gl) blk: {
+        gl_renderer = try snail.GlRenderer.init(allocator);
+        break :blk gl_renderer.asRenderer();
+    } else blk: {
         const px = platform.getPixelBuffer() orelse return error.NoPixelBuffer;
         const bsz = platform.getBufferSize();
         cpu_state = CpuRenderer.init(px, bsz[0], bsz[1], bsz[0] * 4);
         break :blk snail.Renderer.initCpu(&cpu_state);
     };
-    defer renderer.deinit();
-    if (use_vulkan) platform.setPipeline(renderer.vulkanPipeline().?);
+    defer if (use_vulkan) vk_renderer.deinit();
+    defer if (use_gl) gl_renderer.deinit();
 
     const sys_order = subpixel_detect.detect();
-    var detected_order = platform.detectCurrentMonitorSubpixelOrder(sys_order);
-    renderer.setSubpixelOrder(detected_order);
-
-    const vbuf = try allocator.alloc(f32, 10000 * snail.TEXT_FLOATS_PER_GLYPH);
-    defer allocator.free(vbuf);
-    const path_buf = try allocator.alloc(f32, 512 * snail.TEXT_FLOATS_PER_GLYPH);
-    defer allocator.free(path_buf);
+    var current_order = platform.detectCurrentMonitorSubpixelOrder(sys_order);
 
     var path_picture: ?snail.PathPicture = null;
     defer if (path_picture) |*picture| picture.deinit();
-    var path_view: snail.AtlasHandle = .{ .atlas = undefined };
+    var text_blob: ?snail.TextBlob = null;
+    defer if (text_blob) |*blob| blob.deinit();
+    var scene = snail.Scene.init(allocator);
+    defer scene.deinit();
+    var prepared: ?snail.PreparedResources = null;
+    defer if (prepared) |*resources| resources.deinit();
+    var draw_buf: []f32 = &.{};
+    defer if (draw_buf.len > 0) allocator.free(draw_buf);
     var uploaded_size = [2]u32{ 0, 0 };
+    var current_text_hinting: snail.TextHinting = .none;
 
     var buf_width: u32 = 0;
     var buf_height: u32 = 0;
@@ -86,7 +96,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         renderer.backendName(),
         if (build_options.enable_harfbuzz) "ON" else "OFF",
     });
-    std.debug.print("Keys: arrows pan, Z/X zoom, R rotate, L subpixel order, Esc quit\n", .{});
+    std.debug.print("Keys: arrows pan, Z/X zoom, R rotate, Esc quit\n", .{});
 
     while (!platform.shouldClose()) {
         const now = platform.getTime();
@@ -101,24 +111,11 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         }
 
         if (platform.consumeMonitorChanged()) {
-            detected_order = platform.detectCurrentMonitorSubpixelOrder(sys_order);
-            if (detected_order != renderer.subpixelOrder()) {
-                renderer.setSubpixelOrder(detected_order);
-            }
+            current_order = platform.detectCurrentMonitorSubpixelOrder(sys_order);
         }
 
         if (platform.isKeyPressed(platform.KEY_R)) rotate = !rotate;
         if (platform.isKeyPressed(platform.KEY_ESCAPE)) break;
-        if (platform.isKeyPressed(platform.KEY_L)) {
-            const next: snail.SubpixelOrder = switch (renderer.subpixelOrder()) {
-                .none => .rgb,
-                .rgb => .bgr,
-                .bgr => .vrgb,
-                .vrgb => .vbgr,
-                .vbgr => .none,
-            };
-            renderer.setSubpixelOrder(next);
-        }
         if (rotate) angle += dt * 0.5;
         if (platform.isKeyDown(platform.KEY_Z)) zoom *= 1.0 + dt * 2.0;
         if (platform.isKeyDown(platform.KEY_X)) zoom *= 1.0 - dt * 2.0;
@@ -127,46 +124,74 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         if (platform.isKeyDown(platform.KEY_RIGHT)) pan_x -= pan_step;
         if (platform.isKeyDown(platform.KEY_UP)) pan_y += pan_step;
         if (platform.isKeyDown(platform.KEY_DOWN)) pan_y -= pan_step;
+        const active_motion = rotate or
+            platform.isKeyDown(platform.KEY_Z) or
+            platform.isKeyDown(platform.KEY_X) or
+            platform.isKeyDown(platform.KEY_LEFT) or
+            platform.isKeyDown(platform.KEY_RIGHT) or
+            platform.isKeyDown(platform.KEY_UP) or
+            platform.isKeyDown(platform.KEY_DOWN);
+        const desired_text_hinting = demoTextHinting(active_motion);
 
         const size = platform.getWindowSize();
+        const fb_size = platform.getFramebufferSize();
         const w: f32 = @floatFromInt(size[0]);
         const h: f32 = @floatFromInt(size[1]);
-        if (w < 1.0 or h < 1.0) continue;
+        const viewport_w: f32 = @floatFromInt(fb_size[0]);
+        const viewport_h: f32 = @floatFromInt(fb_size[1]);
+        if (w < 1.0 or h < 1.0 or viewport_w < 1.0 or viewport_h < 1.0) continue;
 
         const layout = demo_banner.buildLayout(w, h);
         const size_key = [2]u32{ size[0], size[1] };
 
         // On resize: lay out text to collect decoration rects, rebuild path picture,
-        // re-upload all atlases. Text batch is then re-populated with valid handles.
-        if (path_picture == null or size_key[0] != uploaded_size[0] or size_key[1] != uploaded_size[1]) {
-            // Measure decorations by populating a scratch text batch
-            var scratch = snail.TextBatch.init(vbuf);
-            var dec_rects: [8]snail.Rect = undefined;
-            var text_result = demo_banner_scene.populateTextBatch(&scratch, layout, &scene_assets, &dec_rects);
-
-            // If any glyphs were missing, drawText extended the atlases.
-            // Re-populate so the scratch pass has correct metrics.
-            if (text_result.missing) {
-                scratch = snail.TextBatch.init(vbuf);
-                text_result = demo_banner_scene.populateTextBatch(&scratch, layout, &scene_assets, &dec_rects);
+        // and rebuild the immutable scene resources.
+        const needs_resource_rebuild = path_picture == null or text_blob == null or size_key[0] != uploaded_size[0] or size_key[1] != uploaded_size[1];
+        if (needs_resource_rebuild) {
+            if (prepared) |*resources| {
+                resources.retireNowOrWhenSafe(&renderer);
+                prepared = null;
             }
-
             if (path_picture) |*picture| {
                 picture.deinit();
                 path_picture = null;
             }
+            if (text_blob) |*blob| {
+                blob.deinit();
+                text_blob = null;
+            }
+
+            var builder = snail.TextBlobBuilder.init(allocator, &scene_assets.fonts);
+            defer builder.deinit();
+            var dec_rects: [8]snail.Rect = undefined;
+            const text_result = demo_banner_scene.buildTextBlob(&builder, layout, &scene_assets, &dec_rects);
+
+            text_blob = try builder.finish();
             path_picture = try demo_banner_scene.buildPathPicture(allocator, layout, &scene_assets, dec_rects[0..text_result.decoration_count]);
             uploaded_size = size_key;
-            path_view = scene_assets.uploadAtlases(&renderer, &path_picture.?);
+            current_text_hinting = desired_text_hinting;
+            scene.reset();
+            if (path_picture) |*picture| try scene.addPathPicture(picture);
+            if (text_blob) |*blob| try scene.addTextOptions(blob, .{ .hinting = current_text_hinting });
+
+            var resource_entries: [8]snail.ResourceSet.Entry = undefined;
+            var resources = snail.ResourceSet.init(&resource_entries);
+            try resources.addScene(&scene);
+            prepared = try renderer.uploadResourcesBlocking(allocator, &resources);
+        } else if (desired_text_hinting != current_text_hinting) {
+            current_text_hinting = desired_text_hinting;
+            scene.reset();
+            if (path_picture) |*picture| try scene.addPathPicture(picture);
+            if (text_blob) |*blob| try scene.addTextOptions(blob, .{ .hinting = current_text_hinting });
         }
 
         const clear = demo_banner.clearColor();
 
         if (use_vulkan) {
             const cmd = platform.beginFrame() orelse continue;
-            renderer.setCommandBuffer(cmd);
+            vk_renderer.beginFrame(.{ .cmd = cmd, .frame_index = platform.currentFrameIndex() });
         } else if (use_gl) {
-            gl.glViewport(0, 0, @intCast(size[0]), @intCast(size[1]));
+            gl.glViewport(0, 0, @intCast(fb_size[0]), @intCast(fb_size[1]));
             platform.clear(clear[0], clear[1], clear[2], clear[3]);
         } else {
             const bsz = platform.getBufferSize();
@@ -209,37 +234,37 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
             ),
         );
         const mvp = snail.Mat4.multiply(projection, scene_transform);
-
-        renderer.beginFrame();
-
-        if (path_picture) |*picture| {
-            var paths = snail.PathBatch.init(path_buf);
-            _ = paths.addPicture(&path_view, picture);
-            if (paths.shapeCount() > 0) {
-                renderer.drawPaths(paths.slice(), mvp, w, h);
-            }
+        const draw_options = snail.DrawOptions{
+            .mvp = mvp,
+            .target = .{
+                .pixel_width = viewport_w,
+                .pixel_height = viewport_h,
+                .subpixel_order = current_order,
+            },
+        };
+        const needed = snail.DrawList.estimate(&scene, draw_options);
+        const needed_segments = snail.DrawList.estimateSegments(&scene, draw_options);
+        if (draw_buf.len < needed) {
+            if (draw_buf.len > 0) allocator.free(draw_buf);
+            draw_buf = try allocator.alloc(f32, needed);
         }
-
-        var batch = snail.TextBatch.init(vbuf);
-        {
-            var dec_ignore: [8]snail.Rect = undefined;
-            _ = demo_banner_scene.populateTextBatch(&batch, layout, &scene_assets, &dec_ignore);
-        }
-
-        if (batch.glyphCount() > 0) {
-            renderer.drawText(batch.slice(), mvp, w, h);
-        }
+        const draw_segments = try allocator.alloc(snail.DrawSegment, needed_segments);
+        defer allocator.free(draw_segments);
+        var draw = snail.DrawList.init(draw_buf[0..needed], draw_segments);
+        try draw.addScene(&prepared.?, &scene, draw_options);
+        try renderer.draw(&prepared.?, draw.slice(), draw_options);
 
         if (use_gl and frame_count == 2) {
-            const iw: u32 = @intFromFloat(w);
-            const ih: u32 = @intFromFloat(h);
+            const iw = fb_size[0];
+            const ih = fb_size[1];
             if (screenshot.captureFramebuffer(allocator, iw, ih) catch null) |px| {
                 defer allocator.free(px);
                 screenshot.writeTga("zig-out/frame0.tga", px, iw, ih);
             }
         }
         if (frame_count % 60 == 0 and fps_display > 0.0) {
-            std.debug.print("\rFPS: {d:.0}  Glyphs: {}   ", .{ fps_display, batch.glyphCount() });
+            const glyphs = if (text_blob) |*blob| blob.glyphCount() else 0;
+            std.debug.print("\rFPS: {d:.0}  Glyphs: {}   ", .{ fps_display, glyphs });
         }
         frame_count += 1;
 

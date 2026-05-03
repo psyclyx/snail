@@ -105,6 +105,10 @@ pub fn getWindowSize() [2]u32 {
     return .{ 0, 0 };
 }
 
+pub fn getFramebufferSize() [2]u32 {
+    return getBufferSize();
+}
+
 pub fn getTime() f64 {
     return wayland.getTime();
 }

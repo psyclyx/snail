@@ -2,6 +2,22 @@ const std = @import("std");
 
 pub const DemoRenderer = enum { gl44, gl33, vulkan, cpu };
 
+fn assembledGlslSource(
+    allocator: std.mem.Allocator,
+    comptime wrapper_path: []const u8,
+    comptime include_directive: []const u8,
+    comptime body_path: []const u8,
+) []const u8 {
+    const wrapper = @embedFile(wrapper_path);
+    const body = @embedFile(body_path);
+    const include_idx = std.mem.indexOf(u8, wrapper, include_directive) orelse @panic("missing GLSL include directive");
+    return std.fmt.allocPrint(allocator, "{s}{s}{s}", .{
+        wrapper[0..include_idx],
+        body,
+        wrapper[include_idx + include_directive.len ..],
+    }) catch @panic("out of memory assembling GLSL source");
+}
+
 fn configureCoreModule(
     mod: *std.Build.Module,
     opts: *std.Build.Step.Options,
@@ -96,6 +112,7 @@ pub fn build(b: *std.Build) void {
     const enable_vulkan = b.option(bool, "vulkan", "Enable Vulkan backend") orelse false;
     const enable_cpu = b.option(bool, "cpu-renderer", "Enable CPU renderer backend") orelse true;
     const enable_harfbuzz = b.option(bool, "harfbuzz", "Enable HarfBuzz text shaping") orelse true;
+    const enable_c_api = b.option(bool, "c-api", "Build the legacy C API libraries") orelse false;
     const demo_renderer = b.option(DemoRenderer, "renderer", "Demo rendering backend (default: gl44)") orelse .gl44;
 
     const options = b.addOptions();
@@ -111,18 +128,82 @@ pub fn build(b: *std.Build) void {
 
     // ── SPIR-V shader compilation (only when Vulkan enabled) ──
     const vk_shaders_mod: *std.Build.Module = if (enable_vulkan) blk: {
+        const shader_dir = b.path("shaders");
+        const shared_shader_dir = b.path("src/render/glsl");
+        const generated_shaders = b.addWriteFiles();
+        const generated_vert = generated_shaders.add("vulkan-generated/snail.vert", assembledGlslSource(
+            b.allocator,
+            "shaders/snail.vert",
+            "#include \"snail_vert_body.glsl\"",
+            "src/render/glsl/snail_vert_body.glsl",
+        ));
+        const generated_frag_text = generated_shaders.add("vulkan-generated/snail_text.frag", assembledGlslSource(
+            b.allocator,
+            "shaders/snail_text.frag",
+            "#include \"snail_text_frag_body.glsl\"",
+            "src/render/glsl/snail_text_frag_body.glsl",
+        ));
+        const generated_frag_colr = generated_shaders.add("vulkan-generated/snail_colr.frag", assembledGlslSource(
+            b.allocator,
+            "shaders/snail_colr.frag",
+            "#include \"snail_colr_frag_body.glsl\"",
+            "src/render/glsl/snail_colr_frag_body.glsl",
+        ));
+        const generated_frag_path = generated_shaders.add("vulkan-generated/snail.frag", assembledGlslSource(
+            b.allocator,
+            "shaders/snail.frag",
+            "#include \"snail_path_frag_body.glsl\"",
+            "src/render/glsl/snail_path_frag_body.glsl",
+        ));
+        const generated_frag_text_sp_dual = generated_shaders.add("vulkan-generated/snail_text_subpixel.frag", assembledGlslSource(
+            b.allocator,
+            "shaders/snail_text_subpixel.frag",
+            "#include \"snail_text_subpixel_body.glsl\"",
+            "src/render/glsl/snail_text_subpixel_body.glsl",
+        ));
+
         const compile_vert = b.addSystemCommand(&.{ "glslc", "-fshader-stage=vert" });
-        compile_vert.addFileArg(b.path("shaders/snail.vert"));
+        compile_vert.addArg("-I");
+        compile_vert.addDirectoryArg(shader_dir);
+        compile_vert.addArg("-I");
+        compile_vert.addDirectoryArg(shared_shader_dir);
+        compile_vert.addFileArg(generated_vert);
         compile_vert.addArg("-o");
         const vert_spv = compile_vert.addOutputFileArg("snail.vert.spv");
 
-        const compile_frag = b.addSystemCommand(&.{ "glslc", "-fshader-stage=frag" });
-        compile_frag.addFileArg(b.path("shaders/snail.frag"));
-        compile_frag.addArg("-o");
-        const frag_spv = compile_frag.addOutputFileArg("snail.frag.spv");
+        const compile_frag_text = b.addSystemCommand(&.{ "glslc", "-fshader-stage=frag" });
+        compile_frag_text.addArg("-I");
+        compile_frag_text.addDirectoryArg(shader_dir);
+        compile_frag_text.addArg("-I");
+        compile_frag_text.addDirectoryArg(shared_shader_dir);
+        compile_frag_text.addFileArg(generated_frag_text);
+        compile_frag_text.addArg("-o");
+        const frag_text_spv = compile_frag_text.addOutputFileArg("snail_text.frag.spv");
+
+        const compile_frag_colr = b.addSystemCommand(&.{ "glslc", "-fshader-stage=frag" });
+        compile_frag_colr.addArg("-I");
+        compile_frag_colr.addDirectoryArg(shader_dir);
+        compile_frag_colr.addArg("-I");
+        compile_frag_colr.addDirectoryArg(shared_shader_dir);
+        compile_frag_colr.addFileArg(generated_frag_colr);
+        compile_frag_colr.addArg("-o");
+        const frag_colr_spv = compile_frag_colr.addOutputFileArg("snail_colr.frag.spv");
+
+        const compile_frag_path = b.addSystemCommand(&.{ "glslc", "-fshader-stage=frag" });
+        compile_frag_path.addArg("-I");
+        compile_frag_path.addDirectoryArg(shader_dir);
+        compile_frag_path.addArg("-I");
+        compile_frag_path.addDirectoryArg(shared_shader_dir);
+        compile_frag_path.addFileArg(generated_frag_path);
+        compile_frag_path.addArg("-o");
+        const frag_path_spv = compile_frag_path.addOutputFileArg("snail_path.frag.spv");
 
         const compile_frag_text_sp_dual = b.addSystemCommand(&.{ "glslc", "-fshader-stage=frag", "-DSNAIL_DUAL_SOURCE=1" });
-        compile_frag_text_sp_dual.addFileArg(b.path("shaders/snail_text_subpixel.frag"));
+        compile_frag_text_sp_dual.addArg("-I");
+        compile_frag_text_sp_dual.addDirectoryArg(shader_dir);
+        compile_frag_text_sp_dual.addArg("-I");
+        compile_frag_text_sp_dual.addDirectoryArg(shared_shader_dir);
+        compile_frag_text_sp_dual.addFileArg(generated_frag_text_sp_dual);
         compile_frag_text_sp_dual.addArg("-o");
         const frag_text_sp_dual_spv = compile_frag_text_sp_dual.addOutputFileArg("snail_text_subpixel_dual.frag.spv");
 
@@ -130,30 +211,33 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/render/vulkan_shaders.zig"),
         });
         mod.addAnonymousImport("snail.vert.spv", .{ .root_source_file = vert_spv });
-        mod.addAnonymousImport("snail.frag.spv", .{ .root_source_file = frag_spv });
+        mod.addAnonymousImport("snail_text.frag.spv", .{ .root_source_file = frag_text_spv });
+        mod.addAnonymousImport("snail_colr.frag.spv", .{ .root_source_file = frag_colr_spv });
+        mod.addAnonymousImport("snail_path.frag.spv", .{ .root_source_file = frag_path_spv });
         mod.addAnonymousImport("snail_text_subpixel_dual.frag.spv", .{ .root_source_file = frag_text_sp_dual_spv });
         break :blk mod;
     } else b.createModule(.{
         .root_source_file = b.addWriteFiles().add("vk_stub.zig", ""),
     });
 
-    // ── Shared library ──
-    const lib_module = b.createModule(.{
-        .root_source_file = b.path("src/c_api.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    configureCoreModule(lib_module, options, enable_opengl, enable_vulkan, enable_harfbuzz, vk_shaders_mod);
+    // ── Legacy C API libraries ──
+    if (enable_c_api) {
+        const lib_module = b.createModule(.{
+            .root_source_file = b.path("src/c_api.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        configureCoreModule(lib_module, options, enable_opengl, enable_vulkan, enable_harfbuzz, vk_shaders_mod);
 
-    const shared_lib = b.addLibrary(.{ .name = "snail", .root_module = lib_module, .linkage = .dynamic });
-    b.installArtifact(shared_lib);
+        const shared_lib = b.addLibrary(.{ .name = "snail", .root_module = lib_module, .linkage = .dynamic });
+        b.installArtifact(shared_lib);
 
-    const static_lib = b.addLibrary(.{ .name = "snail", .root_module = lib_module, .linkage = .static });
-    b.installArtifact(static_lib);
+        const static_lib = b.addLibrary(.{ .name = "snail", .root_module = lib_module, .linkage = .static });
+        b.installArtifact(static_lib);
 
-    // Install header
-    b.installFile("include/snail.h", "include/snail.h");
+        b.installFile("include/snail.h", "include/snail.h");
+    }
 
     // ── Zig module (for downstream zig package consumers) ──
     const snail_mod = b.addModule("snail", .{
@@ -184,6 +268,36 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| run_cmd.addArgs(args);
     const run_step = b.step("run", "Run the snail demo");
     run_step.dependOn(&run_cmd.step);
+
+    // ── Game-style OpenGL demo ──
+    const game_demo_options = b.addOptions();
+    game_demo_options.addOption(bool, "enable_profiling", enable_profiling);
+    game_demo_options.addOption(bool, "enable_opengl", true);
+    game_demo_options.addOption(bool, "enable_vulkan", false);
+    game_demo_options.addOption(bool, "enable_cpu", false);
+    game_demo_options.addOption(bool, "enable_harfbuzz", enable_harfbuzz);
+    game_demo_options.addOption(bool, "force_gl33", false);
+    game_demo_options.addOption(DemoRenderer, "demo_renderer", .gl44);
+
+    const game_demo_module = b.createModule(.{
+        .root_source_file = b.path("src/game_demo.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{.{ .name = "assets", .module = assets_mod }},
+    });
+    configureDemoModule(game_demo_module, b, game_demo_options, true, false, enable_harfbuzz, vk_shaders_mod, .gl44);
+
+    const game_demo_exe = b.addExecutable(.{ .name = "snail-game-demo", .root_module = game_demo_module });
+    const install_game_demo = b.addInstallArtifact(game_demo_exe, .{});
+
+    const game_demo_step = b.step("game-demo", "Build the OpenGL game-style demo");
+    game_demo_step.dependOn(&install_game_demo.step);
+
+    const run_game_demo = b.addRunArtifact(game_demo_exe);
+    if (b.args) |args| run_game_demo.addArgs(args);
+    const run_game_demo_step = b.step("run-game-demo", "Run the OpenGL game-style demo");
+    run_game_demo_step.dependOn(&run_game_demo.step);
 
     // ── Tests ──
     const test_module = b.createModule(.{

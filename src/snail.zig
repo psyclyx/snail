@@ -7,23 +7,59 @@
 //! Image pixel data (`Image.initSrgba8`) is sRGB RGBA8 (4 bytes per pixel).
 //! Gradient interpolation is in sRGB space (perceptually uniform).
 //!
+//! ## Public model
+//!
+//! CPU values are app-owned, immutable after construction where applicable, and
+//! shareable across renderers: `TextAtlas`, `ShapedText`, `TextBlob`, `Image`,
+//! `PathPicture`, and borrowed `Scene` command lists. `Path` is the mutable
+//! vector builder.
+//!
+//! Resource realization is explicit. `ResourceSet` is a caller-buffered borrowed
+//! manifest of CPU values. `PreparedResources` is the backend-specific
+//! realization for one renderer/context. `DrawList` is caller-buffered draw
+//! records, and `PreparedScene` is the optional owned cache of those records.
+//!
+//! Drawing consumes only `PreparedResources` plus draw records. It does not
+//! discover, upload, allocate, or invalidate resources.
+//!
 //! ## Usage
 //!
-//!   const font = try snail.Font.init(ttf_bytes);
-//!   defer font.deinit();
+//!   var text_atlas = try snail.TextAtlas.init(allocator, &.{.{ .data = ttf_bytes }});
+//!   defer text_atlas.deinit();
+//!   var shaped = try text_atlas.shapeText(allocator, .{}, "Hello");
+//!   defer shaped.deinit();
+//!   if (try text_atlas.ensureShaped(&shaped)) |next| {
+//!       text_atlas.deinit();
+//!       text_atlas = next;
+//!   }
 //!
-//!   var atlas = try snail.Atlas.init(allocator, &font, codepoints);
-//!   defer atlas.deinit();
+//!   var text_blob = try snail.TextBlob.fromShaped(allocator, &text_atlas, &shaped, .{
+//!       .x = 40, .y = 80, .size = 24, .color = .{ 0, 0, 0, 1 },
+//!   });
+//!   defer text_blob.deinit();
 //!
-//!   var renderer = try snail.Renderer.init();
-//!   defer renderer.deinit();
-//!   renderer.uploadAtlas(&atlas);
+//!   var scene = snail.Scene.init(allocator);
+//!   defer scene.deinit();
+//!   try scene.addText(&text_blob);
 //!
-//!   var batch = snail.TextBatch.init(&vertex_buf);
-//!   var fonts = try snail.Fonts.init(allocator, &.{.{ .data = ttf_bytes }});
-//!   fonts = (try fonts.ensureText(.{}, "Hello")) orelse fonts;
-//!   _ = try fonts.addText(&batch, .{}, "Hello", x, y, size, color);
-//!   renderer.drawText(batch.slice(), mvp, viewport_w, viewport_h);
+//!   var resource_entries: [8]snail.ResourceSet.Entry = undefined;
+//!   var resources = snail.ResourceSet.init(&resource_entries);
+//!   try resources.addScene(&scene);
+//!   var gl = try snail.GlRenderer.init(allocator);
+//!   defer gl.deinit();
+//!   var prepared = try gl.uploadResourcesBlocking(allocator, &resources);
+//!   defer prepared.deinit();
+//!
+//!   const options = snail.DrawOptions{ .mvp = snail.Mat4.identity, .target = .{
+//!       .pixel_width = 1280, .pixel_height = 720, .subpixel_order = .rgb,
+//!   } };
+//!   var buf = try allocator.alloc(f32, snail.DrawList.estimate(&scene, options));
+//!   var segments = try allocator.alloc(snail.DrawSegment, snail.DrawList.estimateSegments(&scene, options));
+//!   defer allocator.free(buf);
+//!   defer allocator.free(segments);
+//!   var draw = snail.DrawList.init(buf, segments);
+//!   try draw.addScene(&prepared, &scene, options);
+//!   try gl.draw(&prepared, draw.slice(), options);
 
 const std = @import("std");
 const build_options = @import("build_options");
@@ -31,6 +67,7 @@ const glyph_emit = @import("glyph_emit.zig");
 const fonts_mod = @import("fonts.zig");
 const ttf = @import("font/ttf.zig");
 const opentype = @import("font/opentype.zig");
+const text_hinting = @import("text_hinting.zig");
 // Internal modules — not part of the public API surface. Exposed for internal
 // tools (e.g. cpu_renderer) that need raw curve/texture data access.
 pub const bezier = @import("math/bezier.zig");
@@ -45,16 +82,12 @@ const cpu_renderer_mod = if (build_options.enable_cpu) @import("cpu_renderer.zig
 };
 const vulkan_pipeline = if (build_options.enable_vulkan) @import("render/vulkan_pipeline.zig") else struct {
     pub const VulkanContext = void;
+    pub const PreparedResources = void;
     pub const VulkanPipeline = struct {
         subpixel_order: @import("render/subpixel_order.zig").SubpixelOrder = .none,
         fill_rule: FillRule = .non_zero,
         pub fn init(_: *VulkanPipeline, _: anytype) !void {}
         pub fn deinit(_: *VulkanPipeline) void {}
-        pub fn uploadAtlases(_: *VulkanPipeline, _: anytype, _: anytype) void {}
-        pub fn uploadImages(_: *VulkanPipeline, _: anytype, _: anytype) void {}
-        pub fn drawText(_: *VulkanPipeline, _: anytype, _: anytype, _: anytype, _: anytype) void {}
-        pub fn drawPaths(_: *VulkanPipeline, _: anytype, _: anytype, _: anytype, _: anytype) void {}
-        pub fn setCommandBuffer(_: *VulkanPipeline, _: anytype) void {}
         pub fn beginFrame(_: *VulkanPipeline) void {}
         pub fn backendName(_: *const VulkanPipeline) []const u8 {
             return "vulkan (disabled)";
@@ -79,8 +112,184 @@ pub const DecorationMetrics = ttf.DecorationMetrics;
 /// Superscript or subscript metrics from the OS/2 table, in font units.
 pub const ScriptMetrics = ttf.ScriptMetrics;
 pub const Transform2D = vec.Transform2D;
-pub const Fonts = fonts_mod.Fonts;
+pub const TextAtlas = fonts_mod.TextAtlas;
+pub const ShapedText = fonts_mod.ShapedText;
+const PreparedTextAtlasView = struct {
+    layer_base: u32 = 0,
+    info_row_base: u32 = 0,
+};
+pub const TextBlob = fonts_mod.TextBlob;
+pub const TextBlobOptions = fonts_mod.TextBlobOptions;
+pub const TextBlobBuilder = fonts_mod.TextBlobBuilder;
 pub const FaceSpec = fonts_mod.FaceSpec;
+/// Uniform locations and texture units used when a caller evaluates Snail text
+/// coverage inside their own GL shader.
+pub const TextCoverageBindings = pipeline.TextCoverageBindings;
+
+/// GLSL 330 pieces for material shaders that consume Snail text coverage.
+///
+/// Include `glsl330_vertex_interface` in a vertex shader that draws prepared
+/// text coverage geometry, and `glsl330_fragment_interface` plus
+/// `glsl330_fragment_body` in the fragment shader. The fragment body exposes
+/// `snail_text_coverage()`, `snail_text_color_srgb()`, and
+/// `snail_text_color_linear()` for use as material inputs. Material shaders
+/// that evaluate coverage without Snail's text varyings can instead include
+/// `glsl330_resource_interface` and `glsl330_coverage_functions`.
+pub const TextCoverageShader = struct {
+    pub const glsl330_vertex_interface = pipeline.text_vertex_interface;
+    pub const glsl330_fragment_interface = pipeline.text_coverage_fragment_interface;
+    pub const glsl330_resource_interface =
+        \\uniform sampler2DArray u_curve_tex;
+        \\uniform usampler2DArray u_band_tex;
+        \\uniform int u_fill_rule;
+        \\
+        \\#define SNAIL_FILL_RULE u_fill_rule
+        \\
+        \\vec4 v_hint_src = vec4(1.0, 0.0, 1.0, 0.0);
+        \\vec4 v_hint_dst = vec4(1.0, 0.0, 1.0, 0.0);
+        \\vec2 v_hint_bounds = vec2(0.0, 1.0);
+        \\
+    ;
+    pub const glsl330_coverage_functions = pipeline.text_coverage_fragment_body;
+    pub const glsl330_fragment_body =
+        glsl330_coverage_functions ++
+        "\n" ++
+        \\float snail_text_coverage() {
+        \\    int atlas_layer = (v_glyph.w >> 8) & 0xFF;
+        \\    if (atlas_layer == 0xFF) return 0.0;
+        \\    vec2 rc = hintedLocalCoord(v_texcoord);
+        \\    vec2 ppe = 1.0 / max(fwidth(rc), vec2(1.0 / 65536.0));
+        \\    return evalGlyphCoverage(rc, ppe, v_glyph.xy,
+        \\                             ivec2(v_glyph.z, v_glyph.w & 0xFF),
+        \\                             v_banding, atlas_layer);
+        \\}
+        \\
+        \\vec4 snail_text_color_srgb() {
+        \\    return v_color;
+        \\}
+        \\
+        \\vec4 snail_text_color_linear() {
+        \\    return vec4(srgbDecode(v_color.r), srgbDecode(v_color.g), srgbDecode(v_color.b), v_color.a);
+        \\}
+        \\
+        ;
+};
+
+/// Resolve options used when preparing text coverage geometry for a custom
+/// material shader.
+pub const TextCoverageOptions = struct {
+    transform: Transform2D = .identity,
+    resolve: TextResolveOptions = .{},
+    target: ResolveTarget = .{
+        .pixel_width = 1.0,
+        .pixel_height = 1.0,
+        .subpixel_order = .none,
+        .is_final_composite = false,
+        .opaque_backdrop = false,
+    },
+    scene_to_screen: ?Transform2D = null,
+};
+
+/// Prepared glyph coverage records for use by a custom material shader.
+///
+/// This owns only the per-glyph draw data. Snail atlas textures come from
+/// PreparedResources.
+pub const TextCoverageRecords = struct {
+    allocator: std.mem.Allocator,
+    vertices: []f32 = &.{},
+    atlas: ?*const TextAtlas = null,
+    atlas_stamp: ResourceStamp = .{},
+
+    pub fn initOwned(allocator: std.mem.Allocator) TextCoverageRecords {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn deinit(self: *TextCoverageRecords) void {
+        if (self.vertices.len > 0) self.allocator.free(self.vertices);
+        self.* = undefined;
+    }
+
+    pub fn glyphCount(self: *const TextCoverageRecords) usize {
+        return self.vertices.len / TEXT_FLOATS_PER_GLYPH;
+    }
+
+    pub fn slice(self: *const TextCoverageRecords) []const f32 {
+        return self.vertices;
+    }
+
+    pub fn buildLocal(
+        self: *TextCoverageRecords,
+        prepared: *const PreparedResources,
+        blob: *const TextBlob,
+        options: TextCoverageOptions,
+    ) !void {
+        const atlas_view = try prepared.textAtlasView(blob.atlas);
+        const scratch = try self.allocator.alloc(f32, @max(blob.instance_count_hint, 1) * TEXT_FLOATS_PER_GLYPH);
+        defer self.allocator.free(scratch);
+
+        var batch = TextBatch.init(scratch);
+        _ = try blob.appendToBatch(
+            &batch,
+            atlas_view,
+            options.transform,
+            options.resolve,
+            options.target,
+            options.scene_to_screen,
+        );
+
+        if (self.vertices.len > 0) self.allocator.free(self.vertices);
+        self.vertices = try self.allocator.dupe(f32, batch.slice());
+        self.atlas = blob.atlas;
+        self.atlas_stamp = try prepared.textStamp(blob.atlas);
+    }
+
+    pub fn rebuildLocal(
+        self: *TextCoverageRecords,
+        prepared: *const PreparedResources,
+        blob: *const TextBlob,
+        options: TextCoverageOptions,
+    ) !void {
+        try self.buildLocal(prepared, blob, options);
+    }
+
+    pub fn validFor(self: *const TextCoverageRecords, prepared: *const PreparedResources) bool {
+        const atlas = self.atlas orelse return false;
+        const stamp = prepared.textStamp(atlas) catch return false;
+        return self.atlas_stamp.eql(stamp);
+    }
+};
+
+/// GL backend hook for evaluating Snail coverage inside caller-owned shaders.
+pub const TextCoverageBackend = struct {
+    gl: *pipeline.GlTextState,
+    gl_resources: *const pipeline.PreparedResources,
+    prepared: *const PreparedResources,
+
+    fn glState(self: TextCoverageBackend) *pipeline.GlTextState {
+        return self.gl;
+    }
+
+    pub fn bindResources(self: TextCoverageBackend, bindings: TextCoverageBindings) void {
+        self.gl_resources.bindTextCoverageResources(bindings);
+    }
+
+    pub fn drawCoverage(self: TextCoverageBackend, coverage: *const TextCoverageRecords) void {
+        std.debug.assert(coverage.validFor(self.prepared));
+        self.drawVertices(coverage.slice());
+    }
+
+    pub fn drawVertices(self: TextCoverageBackend, vertices: []const f32) void {
+        self.glState().drawPreparedText(self.gl_resources, vertices);
+    }
+
+    pub fn draw(self: TextCoverageBackend, vertices: []const f32) void {
+        self.drawVertices(vertices);
+    }
+
+    pub fn bind(self: TextCoverageBackend, bindings: TextCoverageBindings) void {
+        self.bindResources(bindings);
+    }
+};
 
 /// A positioned glyph in a shaped run. Carries source-span metadata so callers
 /// can reason about ligatures, cells, selection, and painting.
@@ -134,6 +343,22 @@ pub const PATH_FLOATS_PER_VERTEX = vertex_mod.FLOATS_PER_VERTEX;
 pub const PATH_VERTICES_PER_SHAPE = vertex_mod.VERTICES_PER_GLYPH;
 pub const PATH_FLOATS_PER_SHAPE = PATH_FLOATS_PER_VERTEX * PATH_VERTICES_PER_SHAPE;
 
+/// One byte in the hot instance format is reserved for the local texture-array
+/// layer. 0xff is still the special-instance sentinel, so draw records split
+/// layer bindings into 255-layer windows and carry the window base separately.
+pub const TEXTURE_LAYER_WINDOW_SIZE: u32 = 255;
+
+pub fn textureLayerWindowBase(layer: u32) u32 {
+    return (layer / TEXTURE_LAYER_WINDOW_SIZE) * TEXTURE_LAYER_WINDOW_SIZE;
+}
+
+pub fn textureLayerLocal(layer: u32) !u8 {
+    const base = textureLayerWindowBase(layer);
+    const local = layer - base;
+    if (local >= TEXTURE_LAYER_WINDOW_SIZE) return error.TextureLayerWindowOverflow;
+    return @intCast(local);
+}
+
 pub const Rect = struct {
     x: f32,
     y: f32,
@@ -181,10 +406,15 @@ pub const Image = struct {
     allocator: std.mem.Allocator,
     width: u32,
     height: u32,
-    pixels: []u8,
+    /// Immutable sRGBA8 pixels. Initialize with initSrgba8; mutation requires
+    /// constructing a new Image so content stamps remain meaningful.
+    pixels: []const u8,
 
     pub fn initSrgba8(allocator: std.mem.Allocator, width: u32, height: u32, pixels: []const u8) !Image {
-        if (pixels.len != width * height * 4) return error.InvalidImageData;
+        if (width == 0 or height == 0) return error.InvalidImageData;
+        const px_count = std.math.mul(usize, width, height) catch return error.InvalidImageData;
+        const byte_count = std.math.mul(usize, px_count, 4) catch return error.InvalidImageData;
+        if (pixels.len != byte_count) return error.InvalidImageData;
         const owned = try allocator.dupe(u8, pixels);
         return .{
             .allocator = allocator,
@@ -198,9 +428,13 @@ pub const Image = struct {
         self.allocator.free(self.pixels);
         self.* = undefined;
     }
+
+    pub fn pixelSlice(self: *const Image) []const u8 {
+        return self.pixels;
+    }
 };
 
-pub const ImageHandle = struct {
+const PreparedImageView = struct {
     image: *const Image,
     layer: u16 = 0,
     uv_scale: Vec2 = .{ .x = 1.0, .y = 1.0 },
@@ -340,8 +574,8 @@ pub fn isRenderableTextCodepoint(codepoint: u32) bool {
     return true;
 }
 
-/// Pre-built GPU texture data for a set of glyphs.
-/// Create once, upload to Renderer, then use with TextBatch.
+/// Pre-built curve-page texture data for glyphs and vector paths.
+/// This is the low-level storage format behind TextAtlas and PathPicture.
 pub const AtlasPage = struct {
     allocator: std.mem.Allocator,
     ref_count: std.atomic.Value(u32) = std.atomic.Value(u32).init(1),
@@ -392,7 +626,10 @@ pub const AtlasPage = struct {
     }
 };
 
-pub const Atlas = struct {
+/// Low-level immutable curve atlas snapshot. App text should normally use
+/// TextAtlas; CurveAtlas exists for backend/resource plumbing and advanced
+/// curve-page users.
+pub const CurveAtlas = struct {
     allocator: std.mem.Allocator,
     font: ?*const Font, // null for .snail-loaded atlases
     pages: []*AtlasPage,
@@ -428,6 +665,7 @@ pub const Atlas = struct {
         advance_width: u16,
         band_entry: band_tex.GlyphBandEntry,
         page_index: u16,
+        hint_source: text_hinting.GlyphHintSource = .{},
     };
 
     /// Pre-built multi-layer info for a COLRv0 base glyph.
@@ -688,7 +926,12 @@ pub const Atlas = struct {
         errdefer for (glyph_curves_list.items) |gc| allocator.free(gc.curves);
         defer glyph_curves_list.deinit(allocator);
 
-        const GlyphMeta = struct { gid: u16, advance: u16, bbox: bezier.BBox };
+        const GlyphMeta = struct {
+            gid: u16,
+            advance: u16,
+            bbox: bezier.BBox,
+            hint_source: text_hinting.GlyphHintSource,
+        };
         var glyph_infos: std.ArrayList(GlyphMeta) = .empty;
         defer glyph_infos.deinit(allocator);
 
@@ -699,11 +942,16 @@ pub const Atlas = struct {
 
             var all_curves: std.ArrayList(CurveSegment) = .empty;
             defer all_curves.deinit(allocator);
+            var quad_curves: std.ArrayList(bezier.QuadBezier) = .empty;
+            defer quad_curves.deinit(allocator);
             for (glyph.contours) |contour| {
                 for (contour.curves) |curve| {
                     try all_curves.append(allocator, CurveSegment.fromQuad(curve));
+                    try quad_curves.append(allocator, curve);
                 }
             }
+
+            const hint_source = text_hinting.analyzeQuadGlyph(quad_curves.items, glyph.metrics.bbox);
 
             const owned = try allocator.dupe(CurveSegment, all_curves.items);
             const render_bbox = blk: {
@@ -724,6 +972,7 @@ pub const Atlas = struct {
                 .gid = gid,
                 .advance = glyph.metrics.advance_width,
                 .bbox = render_bbox,
+                .hint_source = hint_source,
             });
         }
 
@@ -754,6 +1003,7 @@ pub const Atlas = struct {
                 .advance_width = info.advance,
                 .band_entry = bt.entries[i],
                 .page_index = page_index,
+                .hint_source = info.hint_source,
             });
         }
 
@@ -1210,45 +1460,50 @@ pub const Atlas = struct {
     }
 };
 
-pub const AtlasHandle = struct {
-    atlas: *const Atlas,
-    layer_base: u16 = 0,
-    info_row_base: u16 = 0,
+const Atlas = CurveAtlas;
 
-    pub fn glyphLayer(self: *const AtlasHandle, page_index: u16) u8 {
+const PreparedAtlasView = struct {
+    atlas: *const Atlas,
+    layer_base: u32 = 0,
+    info_row_base: u32 = 0,
+
+    pub fn glyphLayer(self: *const PreparedAtlasView, page_index: u16) u32 {
         const layer = self.layer_base + page_index;
-        std.debug.assert(layer < 256);
-        return @intCast(layer);
+        return layer;
     }
 
-    pub fn layerInfoLoc(self: *const AtlasHandle, info_x: u16, info_y: u16) struct { x: u16, y: u16 } {
+    pub fn glyphLayerWindowBase(self: *const PreparedAtlasView, page_index: u16) u32 {
+        return textureLayerWindowBase(self.glyphLayer(page_index));
+    }
+
+    pub fn layerInfoLoc(self: *const PreparedAtlasView, info_x: u16, info_y: u16) struct { x: u16, y: u16 } {
         return .{
             .x = info_x,
-            .y = self.info_row_base + info_y,
+            .y = @intCast(self.info_row_base + info_y),
         };
     }
 
     // View interface methods used by glyph_emit.
-    pub fn getGlyph(self: *const AtlasHandle, gid: u16) ?Atlas.GlyphInfo {
+    pub fn getGlyph(self: *const PreparedAtlasView, gid: u16) ?Atlas.GlyphInfo {
         return self.atlas.getGlyph(gid);
     }
 
-    pub fn getColrBase(self: *const AtlasHandle, gid: u16) ?Atlas.ColrBaseInfo {
+    pub fn getColrBase(self: *const PreparedAtlasView, gid: u16) ?Atlas.ColrBaseInfo {
         if (self.atlas.colr_base_map) |cbm| return cbm.get(gid);
         return null;
     }
 
-    pub fn colrLayers(self: *const AtlasHandle, gid: u16) ttf.Font.ColrLayerIterator {
+    pub fn colrLayers(self: *const PreparedAtlasView, gid: u16) ttf.Font.ColrLayerIterator {
         return self.atlas.colrLayers(gid);
     }
 };
 
-fn coerceAtlasHandle(atlas_like: anytype) AtlasHandle {
+fn coerceAtlasHandle(atlas_like: anytype) PreparedAtlasView {
     const T = @TypeOf(atlas_like);
     return switch (T) {
-        *const AtlasHandle, *AtlasHandle => atlas_like.*,
+        *const PreparedAtlasView, *PreparedAtlasView => atlas_like.*,
         *const Atlas, *Atlas => .{ .atlas = atlas_like, .layer_base = 0 },
-        else => @compileError("expected *Atlas or *AtlasHandle"),
+        else => @compileError("expected *CurveAtlas or prepared atlas view"),
     };
 }
 
@@ -1272,6 +1527,7 @@ pub fn replaceAtlas(current: *Atlas, next: ?Atlas) bool {
 pub const TextBatch = struct {
     buf: []f32,
     len: usize, // floats written
+    layer_window_base: ?u32 = null,
 
     const glyph_stack_capacity = 256;
 
@@ -1320,6 +1576,7 @@ pub const TextBatch = struct {
 
     pub fn reset(self: *TextBatch) void {
         self.len = 0;
+        self.layer_window_base = null;
     }
 
     pub fn glyphCount(self: *const TextBatch) usize {
@@ -1330,7 +1587,21 @@ pub const TextBatch = struct {
         return self.buf[0..self.len];
     }
 
-    /// Append a single glyph quad. Returns false if buffer is full.
+    pub fn currentLayerWindowBase(self: *const TextBatch) u32 {
+        return self.layer_window_base orelse 0;
+    }
+
+    fn localLayer(self: *TextBatch, atlas_layer: u32) !u8 {
+        const base = textureLayerWindowBase(atlas_layer);
+        if (self.layer_window_base) |expected| {
+            if (base != expected) return error.TextureLayerWindowChanged;
+        } else {
+            self.layer_window_base = base;
+        }
+        return textureLayerLocal(atlas_layer);
+    }
+
+    /// Append a single glyph quad.
     pub fn addGlyph(
         self: *TextBatch,
         x: f32,
@@ -1339,15 +1610,15 @@ pub const TextBatch = struct {
         bbox: bezier.BBox,
         band_entry: band_tex.GlyphBandEntry,
         color: [4]f32,
-        atlas_layer: u8,
-    ) bool {
-        if (self.len + TEXT_FLOATS_PER_GLYPH > self.buf.len) return false;
-        vertex_mod.generateGlyphVertices(self.buf[self.len..], x, y, font_size, bbox, band_entry, color, atlas_layer);
+        atlas_layer: u32,
+    ) !void {
+        if (self.len + TEXT_FLOATS_PER_GLYPH > self.buf.len) return error.DrawListFull;
+        const local_layer = try self.localLayer(atlas_layer);
+        vertex_mod.generateGlyphVertices(self.buf[self.len..], x, y, font_size, bbox, band_entry, color, local_layer, .{});
         self.len += TEXT_FLOATS_PER_GLYPH;
-        return true;
     }
 
-    /// Append a multi-layer COLR glyph quad. Returns false if buffer is full.
+    /// Append a multi-layer COLR glyph quad.
     pub fn addColrGlyph(
         self: *TextBatch,
         x: f32,
@@ -1358,9 +1629,10 @@ pub const TextBatch = struct {
         info_y: u16,
         layer_count: u16,
         color: [4]f32,
-        atlas_layer: u8,
-    ) bool {
-        if (self.len + TEXT_FLOATS_PER_GLYPH > self.buf.len) return false;
+        atlas_layer: u32,
+    ) !void {
+        if (self.len + TEXT_FLOATS_PER_GLYPH > self.buf.len) return error.DrawListFull;
+        const local_layer = try self.localLayer(atlas_layer);
         vertex_mod.generateMultiLayerGlyphVertices(
             self.buf[self.len..],
             x,
@@ -1371,29 +1643,29 @@ pub const TextBatch = struct {
             info_y,
             layer_count,
             color,
-            atlas_layer,
+            local_layer,
         );
         self.len += TEXT_FLOATS_PER_GLYPH;
-        return true;
     }
 
-    /// Append a single glyph quad with a 2D transform. Returns false if buffer is full.
+    /// Append a single glyph quad with a 2D transform.
     pub fn addGlyphTransformed(
         self: *TextBatch,
         bbox: bezier.BBox,
         band_entry: band_tex.GlyphBandEntry,
         color: [4]f32,
-        atlas_layer: u8,
+        atlas_layer: u32,
         transform: Transform2D,
-    ) bool {
-        if (self.len + TEXT_FLOATS_PER_GLYPH > self.buf.len) return false;
-        if (!vertex_mod.generateGlyphVerticesTransformed(self.buf[self.len..], bbox, band_entry, color, atlas_layer, transform))
-            return false;
+        hint: text_hinting.GlyphHintInstance,
+    ) !void {
+        if (self.len + TEXT_FLOATS_PER_GLYPH > self.buf.len) return error.DrawListFull;
+        const local_layer = try self.localLayer(atlas_layer);
+        if (!vertex_mod.generateGlyphVerticesTransformed(self.buf[self.len..], bbox, band_entry, color, local_layer, transform, hint))
+            return error.InvalidTransform;
         self.len += TEXT_FLOATS_PER_GLYPH;
-        return true;
     }
 
-    /// Append a multi-layer COLR glyph quad with a 2D transform. Returns false if buffer is full.
+    /// Append a multi-layer COLR glyph quad with a 2D transform.
     pub fn addColrGlyphTransformed(
         self: *TextBatch,
         union_bbox: bezier.BBox,
@@ -1401,14 +1673,14 @@ pub const TextBatch = struct {
         info_y: u16,
         layer_count: u16,
         color: [4]f32,
-        atlas_layer: u8,
+        atlas_layer: u32,
         transform: Transform2D,
-    ) bool {
-        if (self.len + TEXT_FLOATS_PER_GLYPH > self.buf.len) return false;
-        if (!vertex_mod.generateMultiLayerGlyphVerticesTransformed(self.buf[self.len..], union_bbox, info_x, info_y, layer_count, color, atlas_layer, transform))
-            return false;
+    ) !void {
+        if (self.len + TEXT_FLOATS_PER_GLYPH > self.buf.len) return error.DrawListFull;
+        const local_layer = try self.localLayer(atlas_layer);
+        if (!vertex_mod.generateMultiLayerGlyphVerticesTransformed(self.buf[self.len..], union_bbox, info_x, info_y, layer_count, color, local_layer, transform))
+            return error.InvalidTransform;
         self.len += TEXT_FLOATS_PER_GLYPH;
-        return true;
     }
 
     /// Append a shaped run. Each glyph's position is relative to (x, y).
@@ -1430,6 +1702,7 @@ pub const TextBatch = struct {
                 .emitted => count += 1,
                 .skipped => {},
                 .buffer_full => break,
+                .layer_window_changed, .invalid_transform => break,
             }
         }
         return count;
@@ -1456,6 +1729,7 @@ pub const TextBatch = struct {
                 .emitted => count += 1,
                 .skipped => {},
                 .buffer_full => break,
+                .layer_window_changed, .invalid_transform => break,
             }
         }
         return count;
@@ -1512,7 +1786,10 @@ pub const TextBatch = struct {
                 cursor_x += @as(f32, @floatFromInt(kern)) * scale;
             }
 
-            if (glyph_emit.emitGlyph(self, view, gid, cursor_x, y, font_size, color) == .buffer_full) break;
+            switch (glyph_emit.emitGlyph(self, view, gid, cursor_x, y, font_size, color)) {
+                .emitted, .skipped => {},
+                .buffer_full, .layer_window_changed, .invalid_transform => break,
+            }
 
             const advance = glyphAdvanceUnits(atlas, font, gid) orelse {
                 cursor_x += scale * 500;
@@ -1525,7 +1802,6 @@ pub const TextBatch = struct {
 
         return cursor_x - x;
     }
-
 };
 
 const kPathArcSplitMaxDepth: u8 = 8;
@@ -1997,13 +2273,13 @@ pub const Path = struct {
 
         try self.moveTo(origin.add(Vec2.new(radius, 0.0)));
         try self.lineTo(origin.add(Vec2.new(size.x - radius, 0.0)));
-        try appendAdaptiveArcConic(self,top_right, arc, -std.math.pi / 2.0, 0.0);
+        try appendAdaptiveArcConic(self, top_right, arc, -std.math.pi / 2.0, 0.0);
         try self.lineTo(origin.add(Vec2.new(size.x, size.y - radius)));
-        try appendAdaptiveArcConic(self,bottom_right, arc, 0.0, std.math.pi / 2.0);
+        try appendAdaptiveArcConic(self, bottom_right, arc, 0.0, std.math.pi / 2.0);
         try self.lineTo(origin.add(Vec2.new(radius, size.y)));
-        try appendAdaptiveArcConic(self,bottom_left, arc, std.math.pi / 2.0, std.math.pi);
+        try appendAdaptiveArcConic(self, bottom_left, arc, std.math.pi / 2.0, std.math.pi);
         try self.lineTo(origin.add(Vec2.new(0.0, radius)));
-        try appendAdaptiveArcConic(self,top_left, arc, std.math.pi, std.math.pi * 1.5);
+        try appendAdaptiveArcConic(self, top_left, arc, std.math.pi, std.math.pi * 1.5);
         try self.close();
     }
 
@@ -2024,13 +2300,13 @@ pub const Path = struct {
 
         try self.moveTo(origin.add(Vec2.new(0.0, radius)));
         try self.lineTo(origin.add(Vec2.new(0.0, size.y - radius)));
-        try appendAdaptiveArcConic(self,bottom_left, arc, std.math.pi, std.math.pi / 2.0);
+        try appendAdaptiveArcConic(self, bottom_left, arc, std.math.pi, std.math.pi / 2.0);
         try self.lineTo(origin.add(Vec2.new(size.x - radius, size.y)));
-        try appendAdaptiveArcConic(self,bottom_right, arc, std.math.pi / 2.0, 0.0);
+        try appendAdaptiveArcConic(self, bottom_right, arc, std.math.pi / 2.0, 0.0);
         try self.lineTo(origin.add(Vec2.new(size.x, radius)));
-        try appendAdaptiveArcConic(self,top_right, arc, 0.0, -std.math.pi / 2.0);
+        try appendAdaptiveArcConic(self, top_right, arc, 0.0, -std.math.pi / 2.0);
         try self.lineTo(origin.add(Vec2.new(radius, 0.0)));
-        try appendAdaptiveArcConic(self,top_left, arc, -std.math.pi / 2.0, -std.math.pi);
+        try appendAdaptiveArcConic(self, top_left, arc, -std.math.pi / 2.0, -std.math.pi);
         try self.close();
     }
 
@@ -2040,10 +2316,10 @@ pub const Path = struct {
         const center = Vec2.new(rect.x + size.x * 0.5, rect.y + size.y * 0.5);
         const radii = size.scale(0.5);
         try self.moveTo(center.add(Vec2.new(0.0, -radii.y)));
-        try appendAdaptiveArcConic(self,center, radii, -std.math.pi / 2.0, 0.0);
-        try appendAdaptiveArcConic(self,center, radii, 0.0, std.math.pi / 2.0);
-        try appendAdaptiveArcConic(self,center, radii, std.math.pi / 2.0, std.math.pi);
-        try appendAdaptiveArcConic(self,center, radii, std.math.pi, std.math.pi * 1.5);
+        try appendAdaptiveArcConic(self, center, radii, -std.math.pi / 2.0, 0.0);
+        try appendAdaptiveArcConic(self, center, radii, 0.0, std.math.pi / 2.0);
+        try appendAdaptiveArcConic(self, center, radii, std.math.pi / 2.0, std.math.pi);
+        try appendAdaptiveArcConic(self, center, radii, std.math.pi, std.math.pi * 1.5);
         try self.close();
     }
 
@@ -2053,10 +2329,10 @@ pub const Path = struct {
         const center = Vec2.new(rect.x + size.x * 0.5, rect.y + size.y * 0.5);
         const radii = size.scale(0.5);
         try self.moveTo(center.add(Vec2.new(0.0, -radii.y)));
-        try appendAdaptiveArcConic(self,center, radii, -std.math.pi / 2.0, -std.math.pi);
-        try appendAdaptiveArcConic(self,center, radii, -std.math.pi, -std.math.pi * 1.5);
-        try appendAdaptiveArcConic(self,center, radii, -std.math.pi * 1.5, -std.math.pi * 2.0);
-        try appendAdaptiveArcConic(self,center, radii, -std.math.pi * 2.0, -std.math.pi * 2.5);
+        try appendAdaptiveArcConic(self, center, radii, -std.math.pi / 2.0, -std.math.pi);
+        try appendAdaptiveArcConic(self, center, radii, -std.math.pi, -std.math.pi * 1.5);
+        try appendAdaptiveArcConic(self, center, radii, -std.math.pi * 1.5, -std.math.pi * 2.0);
+        try appendAdaptiveArcConic(self, center, radii, -std.math.pi * 2.0, -std.math.pi * 2.5);
         try self.close();
     }
 
@@ -2502,7 +2778,7 @@ pub const PathPicture = struct {
         return self.instances.len;
     }
 
-    pub fn applyDebugView(self: *PathPicture, view: PathPictureDebugView) void {
+    fn applyDebugViewInPlace(self: *PathPicture, view: PathPictureDebugView) void {
         if (view == .normal) return;
         const data = self.atlas.layer_info_data orelse return;
         const width = self.atlas.layer_info_width;
@@ -2530,6 +2806,47 @@ pub const PathPicture = struct {
                 writePathLayerInfoTexel(data, width, texel_offset + 2, debugPaintColor(view, self.layer_roles[role_index], instance_index));
             }
         }
+    }
+
+    pub fn withDebugView(
+        self: *const PathPicture,
+        allocator: std.mem.Allocator,
+        view: PathPictureDebugView,
+    ) !PathPicture {
+        var glyph_map = std.AutoHashMap(u16, Atlas.GlyphInfo).init(allocator);
+        errdefer glyph_map.deinit();
+        var it = self.atlas.glyph_map.iterator();
+        while (it.next()) |entry| try glyph_map.put(entry.key_ptr.*, entry.value_ptr.*);
+
+        const pages = try allocator.alloc(*AtlasPage, self.atlas.pages.len);
+        errdefer allocator.free(pages);
+        for (self.atlas.pages, 0..) |page, i| pages[i] = page.retain();
+
+        var atlas = try Atlas.initFromParts(allocator, null, pages, glyph_map);
+        errdefer atlas.deinit();
+
+        if (self.atlas.layer_info_data) |data| {
+            atlas.layer_info_data = try allocator.dupe(f32, data);
+            atlas.layer_info_width = self.atlas.layer_info_width;
+            atlas.layer_info_height = self.atlas.layer_info_height;
+        }
+        if (self.atlas.paint_image_records) |records| {
+            atlas.paint_image_records = try allocator.dupe(?Atlas.PaintImageRecord, records);
+        }
+
+        const instances = try allocator.dupe(Instance, self.instances);
+        errdefer allocator.free(instances);
+        const layer_roles = try allocator.dupe(LayerRole, self.layer_roles);
+        errdefer allocator.free(layer_roles);
+
+        var result = PathPicture{
+            .allocator = allocator,
+            .atlas = atlas,
+            .instances = instances,
+            .layer_roles = layer_roles,
+        };
+        result.applyDebugViewInPlace(view);
+        return result;
     }
 
     pub fn buildBoundsOverlay(
@@ -3124,7 +3441,9 @@ pub const PathPictureBuilder = struct {
             errdefer self.allocator.free(curves);
             const logical_curve_count = path.filledBandCurveCount();
             if (stroke) |stroke_style| {
-                if (try path.cloneStrokedCurves(self.allocator, stroke_style)) |stroke_geom| {
+                var stroke_geom_style = stroke_style;
+                if (stroke_style.placement == .inside) stroke_geom_style.width *= 2.0;
+                if (try path.cloneStrokedCurves(self.allocator, stroke_geom_style)) |stroke_geom| {
                     errdefer self.allocator.free(stroke_geom.curves);
                     const composite_mode: PathCompositeMode = if (stroke_style.placement == .inside)
                         .fill_stroke_inside
@@ -3148,8 +3467,28 @@ pub const PathPictureBuilder = struct {
             try self.addSingleRecord(curves, bbox, logical_curve_count, resolveFillPaint(style), .fill, transform);
         }
         if (stroke) |style| {
-            if (try path.cloneStrokedCurves(self.allocator, style)) |stroke_geom| {
+            var stroke_geom_style = style;
+            if (style.placement == .inside) stroke_geom_style.width *= 2.0;
+            if (try path.cloneStrokedCurves(self.allocator, stroke_geom_style)) |stroke_geom| {
                 errdefer self.allocator.free(stroke_geom.curves);
+                if (style.placement == .inside) {
+                    const fill_bbox = path.bounds() orelse return error.EmptyPath;
+                    const fill_curves = try path.cloneFilledCurves(self.allocator);
+                    errdefer self.allocator.free(fill_curves);
+                    try self.addCompositeRecord(
+                        fill_curves,
+                        fill_bbox,
+                        path.filledBandCurveCount(),
+                        .{ .solid = .{ 0, 0, 0, 0 } },
+                        stroke_geom.curves,
+                        stroke_geom.bbox,
+                        stroke_geom.logical_curve_count,
+                        resolveStrokePaint(style),
+                        transform,
+                        .fill_stroke_inside,
+                    );
+                    return;
+                }
                 try self.addSingleRecord(
                     stroke_geom.curves,
                     stroke_geom.bbox,
@@ -3453,6 +3792,7 @@ pub const PathPictureBuilder = struct {
                     .advance_width = 0,
                     .band_entry = bt.entries[glyph_cursor],
                     .page_index = 0,
+                    .hint_source = .{},
                 });
                 layer_roles[glyph_cursor] = layer.role;
                 writePaintRecord(layer_info_data, texel_cursor, bt.entries[glyph_cursor], local_paint);
@@ -3522,6 +3862,7 @@ pub const PathPictureBuilder = struct {
 pub const PathBatch = struct {
     buf: []f32,
     len: usize = 0,
+    layer_window_base: ?u32 = null,
 
     pub fn init(buf: []f32) PathBatch {
         return .{ .buf = buf };
@@ -3529,6 +3870,7 @@ pub const PathBatch = struct {
 
     pub fn reset(self: *PathBatch) void {
         self.len = 0;
+        self.layer_window_base = null;
     }
 
     pub fn shapeCount(self: *const PathBatch) usize {
@@ -3539,7 +3881,28 @@ pub const PathBatch = struct {
         return self.buf[0..self.len];
     }
 
-    pub fn addPicture(self: *PathBatch, atlas_like: anytype, picture: *const PathPicture) usize {
+    pub const AppendResult = struct {
+        emitted: usize,
+        next_instance: usize,
+        completed: bool,
+        layer_window_base: u32,
+    };
+
+    pub fn currentLayerWindowBase(self: *const PathBatch) u32 {
+        return self.layer_window_base orelse 0;
+    }
+
+    fn localLayer(self: *PathBatch, atlas_layer: u32) !u8 {
+        const base = textureLayerWindowBase(atlas_layer);
+        if (self.layer_window_base) |expected| {
+            if (base != expected) return error.TextureLayerWindowChanged;
+        } else {
+            self.layer_window_base = base;
+        }
+        return textureLayerLocal(atlas_layer);
+    }
+
+    pub fn addPicture(self: *PathBatch, atlas_like: anytype, picture: *const PathPicture) !usize {
         return self.addPictureTransformed(atlas_like, picture, .identity);
     }
 
@@ -3548,14 +3911,35 @@ pub const PathBatch = struct {
         atlas_like: anytype,
         picture: *const PathPicture,
         transform: Transform2D,
-    ) usize {
+    ) !usize {
+        const result = try self.addPictureTransformedFrom(atlas_like, picture, transform, 0);
+        if (!result.completed) return error.DrawListFull;
+        return result.emitted;
+    }
+
+    pub fn addPictureTransformedFrom(
+        self: *PathBatch,
+        atlas_like: anytype,
+        picture: *const PathPicture,
+        transform: Transform2D,
+        start_instance: usize,
+    ) !AppendResult {
         const resolved_view = coerceAtlasHandle(atlas_like);
         const view = &resolved_view;
         var count: usize = 0;
-        for (picture.instances) |instance| {
-            if (self.len + PATH_FLOATS_PER_SHAPE > self.buf.len) break;
+        var instance_index = start_instance;
+        while (instance_index < picture.instances.len) : (instance_index += 1) {
+            const instance = picture.instances[instance_index];
+            const layer_base = view.glyphLayerWindowBase(instance.page_index);
+            if (self.layer_window_base) |base| {
+                if (base != layer_base) break;
+            } else {
+                self.layer_window_base = layer_base;
+            }
+            if (self.len + PATH_FLOATS_PER_SHAPE > self.buf.len) return error.DrawListFull;
             const final_transform = Transform2D.multiply(transform, instance.transform);
             const info_loc = view.layerInfoLoc(instance.info_x, instance.info_y);
+            const local_layer = try self.localLayer(view.glyphLayer(instance.page_index));
             if (!vertex_mod.generateMultiLayerGlyphVerticesTransformed(
                 self.buf[self.len..],
                 instance.bbox,
@@ -3563,13 +3947,18 @@ pub const PathBatch = struct {
                 info_loc.y,
                 instance.layer_count,
                 .{ 1, 1, 1, 1 },
-                view.glyphLayer(instance.page_index),
+                local_layer,
                 final_transform,
-            )) continue;
+            )) return error.InvalidTransform;
             self.len += PATH_FLOATS_PER_SHAPE;
             count += 1;
         }
-        return count;
+        return .{
+            .emitted = count,
+            .next_instance = instance_index,
+            .completed = instance_index >= picture.instances.len,
+            .layer_window_base = self.currentLayerWindowBase(),
+        };
     }
 };
 
@@ -3581,25 +3970,1065 @@ pub const SubpixelOrder = @import("render/subpixel_order.zig").SubpixelOrder;
 pub const VulkanContext = vulkan_pipeline.VulkanContext;
 pub const CpuRenderer = cpu_renderer_mod.CpuRenderer;
 
-/// Renderer. Owns shader programs and texture handles (GPU backends),
-/// or a pixel buffer (CPU backend). Uses a vtable for backend dispatch.
+pub const ResolveTarget = struct {
+    pixel_width: f32,
+    pixel_height: f32,
+    subpixel_order: SubpixelOrder = .none,
+    fill_rule: FillRule = .non_zero,
+    is_final_composite: bool = true,
+    opaque_backdrop: bool = true,
+    will_resample: bool = false,
+};
+
+pub const TextHinting = enum(u8) {
+    none,
+    phase,
+    metrics,
+    outline,
+};
+
+/// Final-resolve text fitting.
+///
+/// This is intentionally a resolve-time control, not an atlas/layout control:
+/// fitting should happen against the final target pixel grid. Callers that
+/// animate, scroll, or otherwise preserve fractional motion should usually
+/// leave this at `.none` while in motion and opt in deliberately for static
+/// final text.
+pub const TextResolveOptions = struct {
+    hinting: TextHinting = .none,
+};
+
+fn sceneToScreenTransform(mvp: Mat4, viewport_w: f32, viewport_h: f32) ?Transform2D {
+    if (@abs(mvp.data[3]) > 1e-5 or @abs(mvp.data[7]) > 1e-5 or @abs(mvp.data[11]) > 1e-5) return null;
+    if (@abs(mvp.data[15] - 1.0) > 1e-5) return null;
+
+    return .{
+        .xx = mvp.data[0] * viewport_w * 0.5,
+        .xy = mvp.data[4] * viewport_w * 0.5,
+        .tx = (mvp.data[12] * 0.5 + 0.5) * viewport_w,
+        .yx = mvp.data[1] * viewport_h * 0.5,
+        .yy = mvp.data[5] * viewport_h * 0.5,
+        .ty = (mvp.data[13] * 0.5 + 0.5) * viewport_h,
+    };
+}
+
+fn effectiveSubpixelOrder(target: ResolveTarget) SubpixelOrder {
+    if (!target.is_final_composite) return .none;
+    if (!target.opaque_backdrop) return .none;
+    if (target.will_resample) return .none;
+    return target.subpixel_order;
+}
+
+pub const Scene = struct {
+    allocator: std.mem.Allocator,
+    /// Borrowed command list. Text commands borrow TextBlob; path commands
+    /// borrow PathPicture. The referenced values must outlive the Scene.
+    commands: std.ArrayListUnmanaged(Command) = .empty,
+
+    pub const Command = union(enum) {
+        text: TextCommand,
+        path: PathCommand,
+    };
+
+    pub const TextCommand = struct {
+        blob: *const TextBlob,
+        transform: Transform2D = .identity,
+        resolve: TextResolveOptions = .{},
+    };
+
+    pub const PathCommand = struct {
+        picture: *const PathPicture,
+        transform: Transform2D = .identity,
+    };
+
+    pub fn init(allocator: std.mem.Allocator) Scene {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn deinit(self: *Scene) void {
+        self.commands.deinit(self.allocator);
+        self.* = undefined;
+    }
+
+    pub fn reset(self: *Scene) void {
+        self.commands.clearRetainingCapacity();
+    }
+
+    pub fn commandCount(self: *const Scene) usize {
+        return self.commands.items.len;
+    }
+
+    pub fn addText(self: *Scene, blob: *const TextBlob) !void {
+        try self.addTextTransformedOptions(blob, .identity, .{});
+    }
+
+    pub fn addTextOptions(self: *Scene, blob: *const TextBlob, resolve: TextResolveOptions) !void {
+        try self.addTextTransformedOptions(blob, .identity, resolve);
+    }
+
+    pub fn addTextTransformed(self: *Scene, blob: *const TextBlob, transform: Transform2D) !void {
+        try self.addTextTransformedOptions(blob, transform, .{});
+    }
+
+    pub fn addTextTransformedOptions(
+        self: *Scene,
+        blob: *const TextBlob,
+        transform: Transform2D,
+        resolve: TextResolveOptions,
+    ) !void {
+        try self.commands.append(self.allocator, .{ .text = .{
+            .blob = blob,
+            .transform = transform,
+            .resolve = resolve,
+        } });
+    }
+
+    pub fn addPathPicture(self: *Scene, picture: *const PathPicture) !void {
+        try self.addPathPictureTransformed(picture, .identity);
+    }
+
+    pub fn addPathPictureTransformed(self: *Scene, picture: *const PathPicture, transform: Transform2D) !void {
+        try self.commands.append(self.allocator, .{ .path = .{
+            .picture = picture,
+            .transform = transform,
+        } });
+    }
+};
+
+pub const ResourceStamp = struct {
+    identity: u64 = 0,
+    layout: u64 = 0,
+    content: u64 = 0,
+
+    pub fn eql(a: ResourceStamp, b: ResourceStamp) bool {
+        return a.identity == b.identity and a.layout == b.layout and a.content == b.content;
+    }
+};
+
+pub const TargetStamp = struct {
+    pixel_size: [2]u32 = .{ 0, 0 },
+    subpixel_order: SubpixelOrder = .none,
+    hinting: TextHinting = .none,
+    mvp_class: MvpClass = .projective,
+    hint_transform_hash: u64 = 0,
+
+    pub const MvpClass = enum(u8) {
+        identity,
+        axis_aligned_2d,
+        affine_2d,
+        projective,
+    };
+
+    pub fn from(mvp: Mat4, target: ResolveTarget, hinting: TextHinting) TargetStamp {
+        return .{
+            .pixel_size = .{
+                @intFromFloat(@max(target.pixel_width, 0.0)),
+                @intFromFloat(@max(target.pixel_height, 0.0)),
+            },
+            .subpixel_order = effectiveSubpixelOrder(target),
+            .hinting = hinting,
+            .mvp_class = classifyMvp(mvp),
+            .hint_transform_hash = if (hinting == .none) 0 else hashHintTransform(mvp, target),
+        };
+    }
+
+    fn hashHintTransform(mvp: Mat4, target: ResolveTarget) u64 {
+        var h = std.hash.Wyhash.hash(0x534e41494c48544d, std.mem.asBytes(&mvp.data));
+        h = mix64(h, @as(u32, @bitCast(target.pixel_width)));
+        h = mix64(h, @as(u32, @bitCast(target.pixel_height)));
+        return h;
+    }
+
+    fn classifyMvp(mvp: Mat4) MvpClass {
+        if (std.meta.eql(mvp, Mat4.identity)) return .identity;
+        if (@abs(mvp.data[3]) > 1e-5 or @abs(mvp.data[7]) > 1e-5 or @abs(mvp.data[11]) > 1e-5) return .projective;
+        if (@abs(mvp.data[15] - 1.0) > 1e-5) return .projective;
+        if (@abs(mvp.data[1]) <= 1e-5 and @abs(mvp.data[4]) <= 1e-5) return .axis_aligned_2d;
+        return .affine_2d;
+    }
+};
+
+pub const ResourceKey = struct {
+    id: u64,
+    name: []const u8 = "",
+
+    pub fn named(comptime name: []const u8) ResourceKey {
+        return .{ .id = hashBytes(name), .name = name };
+    }
+
+    pub fn fromName(name: []const u8) ResourceKey {
+        return .{ .id = hashBytes(name), .name = name };
+    }
+
+    pub fn fromId(id: u64) ResourceKey {
+        return .{ .id = id };
+    }
+
+    pub fn eql(a: ResourceKey, b: ResourceKey) bool {
+        return a.id == b.id;
+    }
+};
+
+fn hashBytes(bytes: []const u8) u64 {
+    return std.hash.Wyhash.hash(0x534e41494c5f4b45, bytes);
+}
+
+fn mix64(h: u64, v: u64) u64 {
+    return h ^ (v +% 0x9e3779b97f4a7c15 +% (h << 6) +% (h >> 2));
+}
+
+fn resourceKey(key_value: anytype) ResourceKey {
+    const T = @TypeOf(key_value);
+    if (T == ResourceKey) return key_value;
+    return switch (@typeInfo(T)) {
+        .enum_literal => ResourceKey.fromName(@tagName(key_value)),
+        .@"enum" => ResourceKey.fromName(@tagName(key_value)),
+        .comptime_int, .int => ResourceKey.fromId(@intCast(key_value)),
+        .pointer => |ptr| blk: {
+            if (ptr.child == u8) break :blk ResourceKey.fromName(key_value);
+            switch (@typeInfo(ptr.child)) {
+                .array => |array| {
+                    if (array.child == u8) {
+                        const slice: []const u8 = key_value;
+                        break :blk ResourceKey.fromName(std.mem.trimRight(u8, slice, "\x00"));
+                    }
+                },
+                else => {},
+            }
+            break :blk ResourceKey.fromId(@intCast(@intFromPtr(key_value)));
+        },
+        else => @compileError("resource keys must be enum literals, enums, strings, integers, or pointers"),
+    };
+}
+
+fn pointerResourceKey(comptime prefix: []const u8, ptr: anytype) ResourceKey {
+    var h = hashBytes(prefix);
+    h = mix64(h, @intCast(@intFromPtr(ptr)));
+    return .{ .id = h, .name = prefix };
+}
+
+pub const ResourceSet = struct {
+    /// Caller-buffered CPU manifest. Entries point at app-owned
+    /// TextAtlas, PathPicture, and Image values; no upload happens here.
+    entries: []Entry = &.{},
+    len: usize = 0,
+
+    pub const Entry = union(enum) {
+        text_atlas: TextAtlasEntry,
+        path_picture: PathPictureEntry,
+        image: ImageEntry,
+    };
+
+    pub const TextAtlasEntry = struct {
+        key: ResourceKey,
+        atlas: *const TextAtlas,
+    };
+
+    pub const PathPictureEntry = struct {
+        key: ResourceKey,
+        picture: *const PathPicture,
+    };
+
+    pub const ImageEntry = struct {
+        key: ResourceKey,
+        image: *const Image,
+    };
+
+    pub fn init(entries: []Entry) ResourceSet {
+        return .{ .entries = entries };
+    }
+
+    pub fn capacity(self: *const ResourceSet) usize {
+        return self.entries.len;
+    }
+
+    pub fn reset(self: *ResourceSet) void {
+        self.len = 0;
+    }
+
+    pub fn putTextAtlas(self: *ResourceSet, key_value: anytype, atlas: *const TextAtlas) !void {
+        try self.put(.{ .text_atlas = .{ .key = resourceKey(key_value), .atlas = atlas } });
+    }
+
+    pub fn putPathPicture(self: *ResourceSet, key_value: anytype, picture: *const PathPicture) !void {
+        try self.put(.{ .path_picture = .{ .key = resourceKey(key_value), .picture = picture } });
+    }
+
+    pub fn putImage(self: *ResourceSet, key_value: anytype, image: *const Image) !void {
+        try self.put(.{ .image = .{ .key = resourceKey(key_value), .image = image } });
+    }
+
+    pub fn addScene(self: *ResourceSet, scene: *const Scene) !void {
+        for (scene.commands.items) |command| {
+            switch (command) {
+                .text => |text| try self.put(.{ .text_atlas = .{
+                    .key = pointerResourceKey("scene.text_atlas", text.blob.atlas),
+                    .atlas = text.blob.atlas,
+                } }),
+                .path => |path| try self.put(.{ .path_picture = .{
+                    .key = pointerResourceKey("scene.path_picture", path.picture),
+                    .picture = path.picture,
+                } }),
+            }
+        }
+    }
+
+    fn put(self: *ResourceSet, entry: Entry) !void {
+        const key = entryKey(entry);
+        for (self.entries[0..self.len], 0..) |existing, i| {
+            if (entryKey(existing).eql(key)) {
+                self.entries[i] = entry;
+                return;
+            }
+        }
+        if (self.len >= self.entries.len) return error.ResourceSetFull;
+        self.entries[self.len] = entry;
+        self.len += 1;
+    }
+
+    fn entryKey(entry: Entry) ResourceKey {
+        return switch (entry) {
+            .text_atlas => |text| text.key,
+            .path_picture => |path| path.key,
+            .image => |image| image.key,
+        };
+    }
+
+    pub fn slice(self: *const ResourceSet) []const Entry {
+        return self.entries[0..self.len];
+    }
+};
+
+pub const PreparedResources = struct {
+    allocator: std.mem.Allocator,
+    /// Backend-specific realization for one renderer/context. Entries may
+    /// borrow CPU values; those values must outlive this object unless a
+    /// backend explicitly copied them.
+    atlases: []PreparedAtlasResource = &.{},
+    images: []PreparedImageResource = &.{},
+    gl: ?pipeline.PreparedResources = null,
+    vulkan: if (build_options.enable_vulkan) ?vulkan_pipeline.PreparedResources else void = if (build_options.enable_vulkan) null else {},
+    cpu: if (build_options.enable_cpu) ?cpu_renderer_mod.PreparedResources else void = if (build_options.enable_cpu) null else {},
+
+    const PreparedAtlasKind = enum {
+        text,
+        path,
+    };
+
+    const PreparedAtlasResource = struct {
+        key: ResourceKey,
+        kind: PreparedAtlasKind,
+        text_atlas: ?*const TextAtlas = null,
+        picture: ?*const PathPicture = null,
+        atlas: *const Atlas,
+        wrapper: Atlas = undefined,
+        owns_wrapper: bool = false,
+        view: PreparedAtlasView = undefined,
+        stamp: ResourceStamp,
+    };
+
+    const PreparedImageResource = struct {
+        key: ResourceKey,
+        image: *const Image,
+        view: PreparedImageView = undefined,
+        stamp: ResourceStamp,
+    };
+
+    pub fn deinit(self: *PreparedResources) void {
+        if (self.gl) |*gl_resources| gl_resources.deinit();
+        if (comptime build_options.enable_vulkan) {
+            if (self.vulkan) |*vk_resources| vk_resources.deinit();
+        }
+        if (comptime build_options.enable_cpu) {
+            if (self.cpu) |*cpu_resources| cpu_resources.deinit();
+        }
+        for (self.atlases) |*entry| {
+            if (entry.owns_wrapper) entry.text_atlas.?.deinitUploadAtlas(&entry.wrapper);
+        }
+        if (self.atlases.len > 0) self.allocator.free(self.atlases);
+        if (self.images.len > 0) self.allocator.free(self.images);
+        self.* = undefined;
+    }
+
+    pub fn retireNowOrWhenSafe(self: *PreparedResources, renderer: *Renderer) void {
+        _ = renderer;
+        sweepRetiredPreparedResources();
+        self.deinit();
+    }
+
+    pub fn retireAfter(self: *PreparedResources, allocator: std.mem.Allocator, fence_or_frame: anytype) !void {
+        sweepRetiredPreparedResources();
+        if (comptime build_options.enable_vulkan) {
+            if (self.vulkan != null) {
+                const fence = preparedRetirementFence(self, fence_or_frame) orelse return;
+                try enqueueRetiredPreparedResources(allocator, self.*, fence);
+                self.* = undefined;
+                return;
+            }
+        }
+        self.deinit();
+    }
+
+    pub fn stampForKey(self: *const PreparedResources, key_value: anytype) ?ResourceStamp {
+        const key = resourceKey(key_value);
+        for (self.atlases) |entry| if (entry.key.eql(key)) return entry.stamp;
+        for (self.images) |entry| if (entry.key.eql(key)) return entry.stamp;
+        return null;
+    }
+
+    pub fn textCoverageBackend(self: *const PreparedResources, renderer: *Renderer) ?TextCoverageBackend {
+        if (renderer.vtable == &Renderer.gl_vtable or renderer.vtable == &Renderer.gl_borrowed_vtable) {
+            if (self.gl) |*gl_resources| {
+                return .{
+                    .gl = @ptrCast(@alignCast(renderer.ptr)),
+                    .gl_resources = gl_resources,
+                    .prepared = self,
+                };
+            }
+        }
+        return null;
+    }
+
+    fn textAtlasEntry(self: *const PreparedResources, atlas: *const TextAtlas) ?*const PreparedAtlasResource {
+        for (self.atlases) |*entry| {
+            if (entry.kind == .text and entry.text_atlas == atlas) return entry;
+        }
+        return null;
+    }
+
+    fn pathPictureEntry(self: *const PreparedResources, picture: *const PathPicture) ?*const PreparedAtlasResource {
+        for (self.atlases) |*entry| {
+            if (entry.kind == .path and entry.picture == picture) return entry;
+        }
+        return null;
+    }
+
+    fn textAtlasView(self: *const PreparedResources, atlas: *const TextAtlas) !PreparedTextAtlasView {
+        const entry = self.textAtlasEntry(atlas) orelse return error.MissingPreparedResource;
+        return .{
+            .layer_base = entry.view.layer_base,
+            .info_row_base = entry.view.info_row_base,
+        };
+    }
+
+    fn pathAtlasView(self: *const PreparedResources, picture: *const PathPicture) !PreparedAtlasView {
+        const entry = self.pathPictureEntry(picture) orelse return error.MissingPreparedResource;
+        return entry.view;
+    }
+
+    fn textStamp(self: *const PreparedResources, atlas: *const TextAtlas) !ResourceStamp {
+        return (self.textAtlasEntry(atlas) orelse return error.MissingPreparedResource).stamp;
+    }
+
+    fn pathStamp(self: *const PreparedResources, picture: *const PathPicture) !ResourceStamp {
+        return (self.pathPictureEntry(picture) orelse return error.MissingPreparedResource).stamp;
+    }
+};
+
+const VulkanRetirementFence = if (build_options.enable_vulkan) struct {
+    device: vulkan_pipeline.vk.VkDevice,
+    fence: vulkan_pipeline.vk.VkFence,
+} else void;
+
+const RetiredPreparedResources = struct {
+    allocator: std.mem.Allocator,
+    resources: PreparedResources,
+    vulkan_fence: if (build_options.enable_vulkan) ?VulkanRetirementFence else void = if (build_options.enable_vulkan) null else {},
+    next: ?*RetiredPreparedResources = null,
+};
+
+var retired_resources_head: ?*RetiredPreparedResources = null;
+
+// Deferred Vulkan retirements are swept opportunistically on public renderer
+// calls. CPU and GL resources retire synchronously through deinit().
+fn enqueueRetiredPreparedResources(allocator: std.mem.Allocator, resources: PreparedResources, fence: VulkanRetirementFence) !void {
+    const node = try allocator.create(RetiredPreparedResources);
+    node.* = .{
+        .allocator = allocator,
+        .resources = resources,
+        .vulkan_fence = if (build_options.enable_vulkan) fence else {},
+    };
+
+    node.next = retired_resources_head;
+    retired_resources_head = node;
+}
+
+fn sweepRetiredPreparedResources() void {
+    var link = &retired_resources_head;
+    while (link.*) |node| {
+        if (retiredPreparedResourcesReady(node)) {
+            link.* = node.next;
+            var resources = node.resources;
+            resources.deinit();
+            node.allocator.destroy(node);
+        } else {
+            link = &node.next;
+        }
+    }
+}
+
+fn retiredPreparedResourcesReady(node: *const RetiredPreparedResources) bool {
+    if (comptime build_options.enable_vulkan) {
+        if (node.vulkan_fence) |fence| {
+            const result = vulkan_pipeline.vk.vkGetFenceStatus(fence.device, fence.fence);
+            return result == vulkan_pipeline.vk.VK_SUCCESS or result == vulkan_pipeline.vk.VK_ERROR_DEVICE_LOST;
+        }
+    }
+    return true;
+}
+
+fn preparedRetirementFence(resources: *const PreparedResources, fence_or_frame: anytype) ?VulkanRetirementFence {
+    if (comptime !build_options.enable_vulkan) return null;
+    const vk_resources = resources.vulkan orelse return null;
+    const T = @TypeOf(fence_or_frame);
+    switch (@typeInfo(T)) {
+        .@"struct" => {
+            if (@hasField(T, "fence")) return makeVulkanRetirementFence(vk_resources.ctx.device, fence_or_frame.fence);
+            return null;
+        },
+        else => return makeVulkanRetirementFence(vk_resources.ctx.device, fence_or_frame),
+    }
+}
+
+fn makeVulkanRetirementFence(device: if (build_options.enable_vulkan) vulkan_pipeline.vk.VkDevice else void, fence: anytype) ?VulkanRetirementFence {
+    if (comptime !build_options.enable_vulkan) return null;
+    const T = @TypeOf(fence);
+    switch (@typeInfo(T)) {
+        .pointer, .optional => {
+            const vk_fence: vulkan_pipeline.vk.VkFence = @ptrCast(fence);
+            if (vk_fence == null) return null;
+            return .{ .device = device, .fence = vk_fence };
+        },
+        else => return null,
+    }
+}
+
+pub const ResourceUploadPlan = struct {
+    set: *const ResourceSet,
+    /// Bytes this backend path will upload or construct for the next prepared
+    /// resource set. Backend packing may make this larger than `changed_bytes`.
+    upload_bytes: usize = 0,
+    /// Bytes whose dependency stamp differs from `current`, keyed by stable
+    /// ResourceSet keys. Exposed so callers can see intent-preserving changes.
+    changed_bytes: usize = 0,
+    changed_keys: []ResourceKey = &.{},
+    changed_len: usize = 0,
+
+    pub fn changedKeys(self: *const ResourceUploadPlan) []const ResourceKey {
+        return self.changed_keys[0..self.changed_len];
+    }
+
+    fn addChanged(self: *ResourceUploadPlan, key: ResourceKey, bytes: usize) !void {
+        if (self.changed_len >= self.changed_keys.len) return error.ResourceUploadPlanFull;
+        self.changed_keys[self.changed_len] = key;
+        self.changed_len += 1;
+        self.changed_bytes += bytes;
+    }
+};
+
+pub const PendingResourceUpload = struct {
+    renderer: *Renderer,
+    allocator: std.mem.Allocator,
+    plan: ResourceUploadPlan,
+    prepared: ?PreparedResources = null,
+    external_completion_required: bool = false,
+    ready_to_publish: bool = false,
+
+    /// Record upload work for this plan. Vulkan records into a caller-owned
+    /// command buffer; CPU and GL complete during this call.
+    pub fn record(self: *PendingResourceUpload, cmd_or_context: anytype, options: struct { budget_bytes: usize = std.math.maxInt(usize) }) !void {
+        if (self.prepared != null) return;
+        if (self.plan.upload_bytes > options.budget_bytes) return error.ResourceUploadBudgetExceeded;
+
+        if (comptime build_options.enable_vulkan) {
+            if (self.renderer.vtable == &Renderer.vulkan_borrowed_vtable) {
+                const cmd = vulkanUploadCommand(cmd_or_context) orelse return error.MissingUploadCommand;
+                const vk_state: *vulkan_pipeline.VulkanPipeline = @ptrCast(@alignCast(self.renderer.ptr));
+                vk_state.beginResourceUploadRecording(cmd);
+                defer vk_state.endResourceUploadRecording();
+                self.prepared = try uploadPreparedResources(self.renderer, self.plan.set, self.allocator);
+                self.external_completion_required = true;
+                self.ready_to_publish = false;
+                return;
+            }
+        }
+
+        self.prepared = try self.renderer.uploadResourcesBlocking(self.allocator, self.plan.set);
+        self.external_completion_required = false;
+        self.ready_to_publish = true;
+    }
+
+    pub fn ready(self: *PendingResourceUpload, fence_or_frame: anytype) bool {
+        if (self.prepared == null) return false;
+        if (!self.external_completion_required) {
+            self.ready_to_publish = true;
+            return true;
+        }
+        if (self.externalCompletionReady(fence_or_frame)) {
+            self.ready_to_publish = true;
+            return true;
+        }
+        return false;
+    }
+
+    pub fn publish(self: *PendingResourceUpload) !PreparedResources {
+        if (self.external_completion_required and !self.ready_to_publish) return error.ResourceUploadNotReady;
+        if (self.prepared) |prepared| {
+            sweepRetiredPreparedResources();
+            self.prepared = null;
+            self.external_completion_required = false;
+            self.ready_to_publish = false;
+            return prepared;
+        }
+        return error.ResourceUploadNotReady;
+    }
+
+    pub fn deinit(self: *PendingResourceUpload) void {
+        if (self.prepared) |*prepared| prepared.deinit();
+        self.prepared = null;
+        self.external_completion_required = false;
+        self.ready_to_publish = false;
+    }
+
+    fn externalCompletionReady(self: *const PendingResourceUpload, fence_or_frame: anytype) bool {
+        const T = @TypeOf(fence_or_frame);
+        if (T == bool) return fence_or_frame;
+
+        switch (@typeInfo(T)) {
+            .@"struct" => {
+                if (@hasField(T, "ready")) return fence_or_frame.ready;
+                if (@hasField(T, "complete")) return fence_or_frame.complete;
+                if (@hasField(T, "signaled")) return fence_or_frame.signaled;
+                if (comptime build_options.enable_vulkan) {
+                    if (@hasField(T, "fence")) return self.vulkanFenceReady(fence_or_frame.fence);
+                }
+            },
+            else => {},
+        }
+
+        if (comptime build_options.enable_vulkan) {
+            return self.vulkanFenceReady(fence_or_frame);
+        }
+        return false;
+    }
+
+    fn vulkanFenceReady(self: *const PendingResourceUpload, fence: anytype) bool {
+        if (comptime !build_options.enable_vulkan) return false;
+        if (self.renderer.vtable != &Renderer.vulkan_borrowed_vtable) return false;
+        const T = @TypeOf(fence);
+        switch (@typeInfo(T)) {
+            .pointer, .optional => {
+                const vk_state: *vulkan_pipeline.VulkanPipeline = @ptrCast(@alignCast(self.renderer.ptr));
+                const vk_fence: vulkan_pipeline.vk.VkFence = @ptrCast(fence);
+                return vulkan_pipeline.vk.vkGetFenceStatus(vk_state.ctx.device, vk_fence) == vulkan_pipeline.vk.VK_SUCCESS;
+            },
+            else => return false,
+        }
+    }
+};
+
+fn vulkanUploadCommand(cmd_or_context: anytype) vulkan_pipeline.vk.VkCommandBuffer {
+    if (comptime !build_options.enable_vulkan) return null;
+    const T = @TypeOf(cmd_or_context);
+    switch (@typeInfo(T)) {
+        .@"struct" => {
+            if (@hasField(T, "cmd")) return cmd_or_context.cmd;
+            if (@hasField(T, "command_buffer")) return cmd_or_context.command_buffer;
+            return null;
+        },
+        .pointer, .optional => return @ptrCast(cmd_or_context),
+        else => return null,
+    }
+}
+
+pub const DrawOptions = struct {
+    mvp: Mat4,
+    target: ResolveTarget,
+};
+
+pub const DrawSegment = struct {
+    kind: enum { text, path },
+    offset: usize,
+    len: usize,
+    texture_layer_base: u32 = 0,
+    key: ResourceKey,
+    resource_stamp: ResourceStamp,
+    target_stamp: TargetStamp,
+};
+
+pub const DrawRecords = struct {
+    floats: []const f32,
+    segments: []const DrawSegment,
+};
+
+pub const DrawList = struct {
+    buf: []f32,
+    len: usize = 0,
+    segments_buf: []DrawSegment,
+    segment_len: usize = 0,
+
+    pub fn init(buf: []f32, segments_buf: []DrawSegment) DrawList {
+        return .{ .buf = buf, .segments_buf = segments_buf };
+    }
+
+    pub fn reset(self: *DrawList) void {
+        self.len = 0;
+        self.segment_len = 0;
+    }
+
+    pub fn slice(self: *const DrawList) DrawRecords {
+        return .{
+            .floats = self.buf[0..self.len],
+            .segments = self.segments_buf[0..self.segment_len],
+        };
+    }
+
+    pub fn estimate(scene: *const Scene, options: DrawOptions) usize {
+        _ = options;
+        var total: usize = 0;
+        for (scene.commands.items) |command| {
+            switch (command) {
+                .text => |text| total += @max(text.blob.instance_count_hint, 1) * TEXT_FLOATS_PER_GLYPH,
+                .path => |path| total += @max(path.picture.shapeCount(), 1) * PATH_FLOATS_PER_SHAPE,
+            }
+        }
+        return total;
+    }
+
+    pub fn estimateSegments(scene: *const Scene, options: DrawOptions) usize {
+        _ = options;
+        var total: usize = 0;
+        for (scene.commands.items) |command| {
+            switch (command) {
+                .text => |text| total += @max(text.blob.glyphCount(), 1),
+                .path => |path| total += @max(path.picture.instances.len, 1),
+            }
+        }
+        return total;
+    }
+
+    pub fn addScene(
+        self: *DrawList,
+        prepared: *const PreparedResources,
+        scene: *const Scene,
+        options: DrawOptions,
+    ) !void {
+        const hint_context = sceneToScreenTransform(options.mvp, options.target.pixel_width, options.target.pixel_height);
+        for (scene.commands.items) |command| {
+            switch (command) {
+                .text => |text| {
+                    const view = try prepared.textAtlasView(text.blob.atlas);
+                    var glyph_start: usize = 0;
+                    while (glyph_start < text.blob.glyphCount()) {
+                        const start = self.len;
+                        var batch = TextBatch.init(self.buf[self.len..]);
+                        const result = try text.blob.appendToBatchFrom(&batch, view, text.transform, text.resolve, options.target, hint_context, glyph_start);
+                        glyph_start = result.next_glyph;
+                        if (batch.glyphCount() == 0) {
+                            if (result.completed) break;
+                            continue;
+                        }
+                        self.len += batch.slice().len;
+                        try self.addSegment(.{
+                            .kind = .text,
+                            .offset = start,
+                            .len = batch.slice().len,
+                            .texture_layer_base = result.layer_window_base,
+                            .key = prepared.textAtlasEntry(text.blob.atlas).?.key,
+                            .resource_stamp = try prepared.textStamp(text.blob.atlas),
+                            .target_stamp = TargetStamp.from(options.mvp, options.target, text.resolve.hinting),
+                        });
+                        if (result.completed) break;
+                    }
+                },
+                .path => |path| {
+                    const view = try prepared.pathAtlasView(path.picture);
+                    var instance_start: usize = 0;
+                    while (instance_start < path.picture.instances.len) {
+                        const start = self.len;
+                        var batch = PathBatch.init(self.buf[self.len..]);
+                        const result = try batch.addPictureTransformedFrom(&view, path.picture, path.transform, instance_start);
+                        instance_start = result.next_instance;
+                        if (batch.shapeCount() == 0) {
+                            if (result.completed) break;
+                            continue;
+                        }
+                        self.len += batch.slice().len;
+                        try self.addSegment(.{
+                            .kind = .path,
+                            .offset = start,
+                            .len = batch.slice().len,
+                            .texture_layer_base = result.layer_window_base,
+                            .key = prepared.pathPictureEntry(path.picture).?.key,
+                            .resource_stamp = try prepared.pathStamp(path.picture),
+                            .target_stamp = TargetStamp.from(options.mvp, options.target, .none),
+                        });
+                        if (result.completed) break;
+                    }
+                },
+            }
+        }
+    }
+
+    fn addSegment(self: *DrawList, segment: DrawSegment) !void {
+        if (self.segment_len >= self.segments_buf.len) return error.DrawListFull;
+        self.segments_buf[self.segment_len] = segment;
+        self.segment_len += 1;
+    }
+};
+
+pub const PreparedScene = struct {
+    allocator: std.mem.Allocator,
+    floats: []f32 = &.{},
+    segments: []DrawSegment = &.{},
+
+    pub fn initOwned(
+        allocator: std.mem.Allocator,
+        prepared: *const PreparedResources,
+        scene: *const Scene,
+        options: DrawOptions,
+    ) !PreparedScene {
+        const needed = DrawList.estimate(scene, options);
+        const needed_segments = DrawList.estimateSegments(scene, options);
+        const floats = try allocator.alloc(f32, needed);
+        errdefer allocator.free(floats);
+        const segment_buf = try allocator.alloc(DrawSegment, needed_segments);
+        errdefer allocator.free(segment_buf);
+        var draw = DrawList.init(floats, segment_buf);
+        try draw.addScene(prepared, scene, options);
+        const segments = try allocator.dupe(DrawSegment, draw.slice().segments);
+        errdefer allocator.free(segments);
+        allocator.free(segment_buf);
+        return .{
+            .allocator = allocator,
+            .floats = floats[0..draw.len],
+            .segments = segments,
+        };
+    }
+
+    pub fn deinit(self: *PreparedScene) void {
+        if (self.floats.len > 0) self.allocator.free(self.floats);
+        if (self.segments.len > 0) self.allocator.free(self.segments);
+        self.* = undefined;
+    }
+
+    pub fn slice(self: *const PreparedScene) DrawRecords {
+        return .{
+            .floats = self.floats,
+            .segments = self.segments,
+        };
+    }
+};
+
+fn textAtlasStamp(atlas: *const TextAtlas) ResourceStamp {
+    var layout = mix64(@as(u64, @intCast(atlas.pageCount())), @as(u64, atlas.layer_info_width));
+    layout = mix64(layout, atlas.layer_info_height);
+    var content = atlas.snapshotIdentity();
+    for (atlas.pageSlice()) |page| {
+        content = mix64(content, @intCast(@intFromPtr(page)));
+        content = mix64(content, page.textureBytes());
+    }
+    return .{
+        .identity = atlas.snapshotIdentity(),
+        .layout = layout,
+        .content = content,
+    };
+}
+
+fn pathPictureStamp(picture: *const PathPicture) ResourceStamp {
+    var layout = mix64(@as(u64, @intCast(picture.shapeCount())), picture.atlas.pageCount());
+    layout = mix64(layout, picture.atlas.layer_info_width);
+    layout = mix64(layout, picture.atlas.layer_info_height);
+    var content = @as(u64, @intCast(@intFromPtr(picture)));
+    for (picture.atlas.pages) |page| {
+        content = mix64(content, @intCast(@intFromPtr(page)));
+        content = mix64(content, page.textureBytes());
+    }
+    if (picture.atlas.layer_info_data) |data| {
+        content = mix64(content, std.hash.Wyhash.hash(0x5041544850494354, std.mem.sliceAsBytes(data)));
+    }
+    return .{
+        .identity = @intCast(@intFromPtr(picture)),
+        .layout = layout,
+        .content = content,
+    };
+}
+
+fn imageStamp(image: *const Image) ResourceStamp {
+    const pixels = image.pixelSlice();
+    return .{
+        .identity = @intCast(@intFromPtr(image)),
+        .layout = mix64(@as(u64, image.width), image.height),
+        .content = std.hash.Wyhash.hash(0x494d414745535247, pixels),
+    };
+}
+
+fn curveAtlasUploadBytes(atlas: *const Atlas) usize {
+    var total: usize = 0;
+    for (0..atlas.pageCount()) |i| {
+        total += atlas.page(@intCast(i)).textureBytes();
+    }
+    if (atlas.layer_info_data) |data| total += data.len * @sizeOf(f32);
+    if (atlas.paint_image_records) |records| {
+        for (records) |record| {
+            const image = (record orelse continue).image;
+            total += image.pixelSlice().len;
+        }
+    }
+    return total;
+}
+
+fn textAtlasUploadBytes(atlas: *const TextAtlas) usize {
+    var total: usize = 0;
+    for (atlas.pageSlice()) |page| total += page.textureBytes();
+    if (atlas.layer_info_data) |data| total += data.len * @sizeOf(f32);
+    return total;
+}
+
+fn resourceEntryKey(entry: ResourceSet.Entry) ResourceKey {
+    return switch (entry) {
+        .text_atlas => |text| text.key,
+        .path_picture => |path| path.key,
+        .image => |image| image.key,
+    };
+}
+
+fn resourceEntryStamp(entry: ResourceSet.Entry) ResourceStamp {
+    return switch (entry) {
+        .text_atlas => |text| textAtlasStamp(text.atlas),
+        .path_picture => |path| pathPictureStamp(path.picture),
+        .image => |image| imageStamp(image.image),
+    };
+}
+
+fn resourceEntryUploadBytes(entry: ResourceSet.Entry) usize {
+    return switch (entry) {
+        .text_atlas => |text| textAtlasUploadBytes(text.atlas),
+        .path_picture => |path| curveAtlasUploadBytes(&path.picture.atlas),
+        .image => |image| image.image.pixelSlice().len,
+    };
+}
+
+fn uploadPreparedResources(renderer: *Renderer, set: *const ResourceSet, allocator: std.mem.Allocator) !PreparedResources {
+    var atlas_count: usize = 0;
+    var image_count: usize = 0;
+    for (set.slice()) |entry| switch (entry) {
+        .text_atlas, .path_picture => atlas_count += 1,
+        .image => image_count += 1,
+    };
+
+    var prepared = PreparedResources{
+        .allocator = allocator,
+        .atlases = try allocator.alloc(PreparedResources.PreparedAtlasResource, atlas_count),
+        .images = try allocator.alloc(PreparedResources.PreparedImageResource, image_count),
+    };
+    errdefer prepared.deinit();
+
+    const upload_atlases = try allocator.alloc(*const Atlas, atlas_count);
+    defer allocator.free(upload_atlases);
+    const atlas_views = try allocator.alloc(PreparedAtlasView, atlas_count);
+    defer allocator.free(atlas_views);
+
+    const upload_images = try allocator.alloc(*const Image, image_count);
+    defer allocator.free(upload_images);
+    const image_views = try allocator.alloc(PreparedImageView, image_count);
+    defer allocator.free(image_views);
+
+    var atlas_i: usize = 0;
+    var image_i: usize = 0;
+    for (set.slice()) |entry| {
+        switch (entry) {
+            .text_atlas => |text| {
+                prepared.atlases[atlas_i] = .{
+                    .key = text.key,
+                    .kind = .text,
+                    .text_atlas = text.atlas,
+                    .atlas = undefined,
+                    .owns_wrapper = true,
+                    .stamp = textAtlasStamp(text.atlas),
+                };
+                prepared.atlases[atlas_i].wrapper = text.atlas.uploadAtlas();
+                prepared.atlases[atlas_i].atlas = &prepared.atlases[atlas_i].wrapper;
+                upload_atlases[atlas_i] = prepared.atlases[atlas_i].atlas;
+                atlas_i += 1;
+            },
+            .path_picture => |path| {
+                prepared.atlases[atlas_i] = .{
+                    .key = path.key,
+                    .kind = .path,
+                    .picture = path.picture,
+                    .atlas = &path.picture.atlas,
+                    .stamp = pathPictureStamp(path.picture),
+                };
+                upload_atlases[atlas_i] = prepared.atlases[atlas_i].atlas;
+                atlas_i += 1;
+            },
+            .image => |image| {
+                prepared.images[image_i] = .{
+                    .key = image.key,
+                    .image = image.image,
+                    .stamp = imageStamp(image.image),
+                };
+                upload_images[image_i] = image.image;
+                image_i += 1;
+            },
+        }
+    }
+
+    const uploaded = blk: {
+        if (renderer.vtable == &Renderer.gl_vtable or renderer.vtable == &Renderer.gl_borrowed_vtable) {
+            const gl_state: *pipeline.GlTextState = @ptrCast(@alignCast(renderer.ptr));
+            var gl_prepared = pipeline.PreparedResources{ .allocator = allocator, .backend = gl_state.backend };
+            if (atlas_count > 0) try gl_prepared.uploadAtlases(upload_atlases, atlas_views);
+            if (image_count > 0) gl_prepared.uploadImages(upload_images, image_views);
+            prepared.gl = gl_prepared;
+            break :blk true;
+        }
+        if (comptime build_options.enable_vulkan) {
+            if (renderer.vtable == &Renderer.vulkan_borrowed_vtable) {
+                const vk_state: *vulkan_pipeline.VulkanPipeline = @ptrCast(@alignCast(renderer.ptr));
+                var vk_prepared = try vulkan_pipeline.PreparedResources.init(vk_state);
+                errdefer vk_prepared.deinit();
+                if (atlas_count > 0) vk_state.uploadPreparedAtlases(&vk_prepared, upload_atlases, atlas_views);
+                if (image_count > 0) vk_state.uploadPreparedImages(&vk_prepared, upload_images, image_views);
+                prepared.vulkan = vk_prepared;
+                break :blk true;
+            }
+        }
+        if (comptime build_options.enable_cpu) {
+            if (renderer.vtable == &Renderer.cpu_vtable) {
+                var cpu_prepared = try cpu_renderer_mod.PreparedResources.init(allocator, upload_atlases);
+                errdefer cpu_prepared.deinit();
+                if (atlas_count > 0) try cpu_prepared.uploadAtlases(upload_atlases, atlas_views);
+                if (image_count > 0) cpu_prepared.uploadImages(upload_images, image_views);
+                prepared.cpu = cpu_prepared;
+                break :blk true;
+            }
+        }
+        break :blk false;
+    };
+    if (!uploaded) return error.UnsupportedRenderer;
+
+    for (prepared.atlases, 0..) |*entry, i| entry.view = atlas_views[i];
+    for (prepared.images, 0..) |*entry, i| entry.view = image_views[i];
+    return prepared;
+}
+
+/// Renderer execution machinery. Backend resources live in PreparedResources.
 pub const Renderer = struct {
     ptr: *anyopaque,
     vtable: *const VTable,
 
     pub const VTable = struct {
         deinit: *const fn (*anyopaque) void,
-        uploadAtlases: *const fn (*anyopaque, []const *const Atlas, []AtlasHandle) void,
-        uploadImages: *const fn (*anyopaque, []const *const Image, []ImageHandle) void,
-        drawText: *const fn (*anyopaque, []const f32, Mat4, f32, f32) void,
-        drawPaths: *const fn (*anyopaque, []const f32, Mat4, f32, f32) void,
+        drawText: *const fn (*anyopaque, ?*const anyopaque, []const f32, Mat4, f32, f32, u32) void,
+        drawPaths: *const fn (*anyopaque, ?*const anyopaque, []const f32, Mat4, f32, f32, u32) void,
         beginFrame: *const fn (*anyopaque) void,
         setSubpixelOrder: *const fn (*anyopaque, SubpixelOrder) void,
         getSubpixelOrder: *const fn (*anyopaque) SubpixelOrder,
         setFillRule: *const fn (*anyopaque, FillRule) void,
         getFillRule: *const fn (*anyopaque) FillRule,
         backendName: *const fn (*anyopaque) []const u8,
-        setCommandBuffer: *const fn (*anyopaque, ?*anyopaque) void,
     };
 
     /// Generate a VTable that type-erases calls to methods on *T.
@@ -3617,17 +5046,45 @@ pub const Renderer = struct {
                 if (owned) std.heap.smp_allocator.destroy(self);
             }
             fn noopDeinit(_: *anyopaque) void {}
-            fn uploadAtlasesFn(ptr: *anyopaque, a: []const *const Atlas, v: []AtlasHandle) void {
-                cast(ptr).uploadAtlases(a, v);
+            fn drawTextFn(ptr: *anyopaque, prepared: ?*const anyopaque, verts: []const f32, mvp: Mat4, vw: f32, vh: f32, texture_layer_base: u32) void {
+                if (prepared) |backend_prepared| {
+                    if (comptime build_options.enable_cpu and T == CpuRenderer and @hasDecl(T, "drawTextPrepared")) {
+                        const typed: *const cpu_renderer_mod.PreparedResources = @ptrCast(@alignCast(backend_prepared));
+                        cast(ptr).drawTextPrepared(typed, verts, mvp, vw, vh, texture_layer_base);
+                        return;
+                    }
+                    if (comptime T == pipeline.GlTextState and @hasDecl(T, "drawTextPrepared")) {
+                        const typed: *const pipeline.PreparedResources = @ptrCast(@alignCast(backend_prepared));
+                        cast(ptr).drawTextPrepared(typed, verts, mvp, vw, vh, texture_layer_base);
+                        return;
+                    }
+                    if (comptime build_options.enable_vulkan and T == vulkan_pipeline.VulkanPipeline and @hasDecl(T, "drawTextPrepared")) {
+                        const typed: *const vulkan_pipeline.PreparedResources = @ptrCast(@alignCast(backend_prepared));
+                        cast(ptr).drawTextPrepared(typed, verts, mvp, vw, vh, texture_layer_base);
+                        return;
+                    }
+                }
+                std.debug.panic("drawText requires PreparedResources ({*}, {d}, {d}, {d}, {d})", .{ ptr, verts.len, mvp.data[0], vw, vh });
             }
-            fn uploadImagesFn(ptr: *anyopaque, a: []const *const Image, v: []ImageHandle) void {
-                cast(ptr).uploadImages(a, v);
-            }
-            fn drawTextFn(ptr: *anyopaque, verts: []const f32, mvp: Mat4, vw: f32, vh: f32) void {
-                cast(ptr).drawText(verts, mvp, vw, vh);
-            }
-            fn drawPathsFn(ptr: *anyopaque, verts: []const f32, mvp: Mat4, vw: f32, vh: f32) void {
-                cast(ptr).drawPaths(verts, mvp, vw, vh);
+            fn drawPathsFn(ptr: *anyopaque, prepared: ?*const anyopaque, verts: []const f32, mvp: Mat4, vw: f32, vh: f32, texture_layer_base: u32) void {
+                if (prepared) |backend_prepared| {
+                    if (comptime build_options.enable_cpu and T == CpuRenderer and @hasDecl(T, "drawPathsPrepared")) {
+                        const typed: *const cpu_renderer_mod.PreparedResources = @ptrCast(@alignCast(backend_prepared));
+                        cast(ptr).drawPathsPrepared(typed, verts, mvp, vw, vh, texture_layer_base);
+                        return;
+                    }
+                    if (comptime T == pipeline.GlTextState and @hasDecl(T, "drawPathsPrepared")) {
+                        const typed: *const pipeline.PreparedResources = @ptrCast(@alignCast(backend_prepared));
+                        cast(ptr).drawPathsPrepared(typed, verts, mvp, vw, vh, texture_layer_base);
+                        return;
+                    }
+                    if (comptime build_options.enable_vulkan and T == vulkan_pipeline.VulkanPipeline and @hasDecl(T, "drawPathsPrepared")) {
+                        const typed: *const vulkan_pipeline.PreparedResources = @ptrCast(@alignCast(backend_prepared));
+                        cast(ptr).drawPathsPrepared(typed, verts, mvp, vw, vh, texture_layer_base);
+                        return;
+                    }
+                }
+                std.debug.panic("drawPaths requires PreparedResources ({*}, {d}, {d}, {d}, {d})", .{ ptr, verts.len, mvp.data[0], vw, vh });
             }
             fn beginFrameFn(ptr: *anyopaque) void {
                 cast(ptr).beginFrame();
@@ -3647,14 +5104,9 @@ pub const Renderer = struct {
             fn backendNameFn(ptr: *anyopaque) []const u8 {
                 return constCast(ptr).backendName();
             }
-            fn setCommandBufferFn(ptr: *anyopaque, cmd: ?*anyopaque) void {
-                cast(ptr).setCommandBuffer(cmd);
-            }
         };
         return .{
             .deinit = if (owned) &S.deinitFn else &S.noopDeinit,
-            .uploadAtlases = &S.uploadAtlasesFn,
-            .uploadImages = &S.uploadImagesFn,
             .drawText = &S.drawTextFn,
             .drawPaths = &S.drawPathsFn,
             .beginFrame = &S.beginFrameFn,
@@ -3663,13 +5115,81 @@ pub const Renderer = struct {
             .setFillRule = &S.setFillRuleFn,
             .getFillRule = &S.getFillRuleFn,
             .backendName = &S.backendNameFn,
-            .setCommandBuffer = &S.setCommandBufferFn,
         };
     }
 
     const gl_vtable = ImplVTable(pipeline.GlTextState, true);
-    const vulkan_vtable = ImplVTable(vulkan_pipeline.VulkanPipeline, true);
+    const gl_borrowed_vtable = ImplVTable(pipeline.GlTextState, false);
+    const vulkan_borrowed_vtable = ImplVTable(vulkan_pipeline.VulkanPipeline, false);
     const cpu_vtable = ImplVTable(CpuRenderer, false);
+
+    /// Blocking upload for simple programs. GL requires the target context to
+    /// be current. CPU upload builds cheap views. Vulkan does not perform an
+    /// implicit device/queue idle here.
+    pub fn uploadResourcesBlocking(self: *Renderer, allocator: std.mem.Allocator, set: *const ResourceSet) !PreparedResources {
+        sweepRetiredPreparedResources();
+        return uploadPreparedResources(self, set, allocator);
+    }
+
+    pub fn planResourceUpload(self: *Renderer, current: ?*const PreparedResources, next_set: *const ResourceSet, changed_keys: []ResourceKey) !ResourceUploadPlan {
+        _ = self;
+        var plan = ResourceUploadPlan{ .set = next_set, .changed_keys = changed_keys };
+        for (next_set.slice()) |entry| {
+            const key = resourceEntryKey(entry);
+            const stamp = resourceEntryStamp(entry);
+            const bytes = resourceEntryUploadBytes(entry);
+            plan.upload_bytes += bytes;
+            const old_stamp = if (current) |prepared| prepared.stampForKey(key) else null;
+            const changed = if (old_stamp) |old| !old.eql(stamp) else true;
+            if (changed) {
+                try plan.addChanged(key, bytes);
+            }
+        }
+        return plan;
+    }
+
+    pub fn beginResourceUpload(self: *Renderer, allocator: std.mem.Allocator, plan: ResourceUploadPlan) !PendingResourceUpload {
+        sweepRetiredPreparedResources();
+        return .{ .renderer = self, .allocator = allocator, .plan = plan };
+    }
+
+    /// Execute prebuilt draw records. This never discovers, uploads, allocates,
+    /// or invalidates resources.
+    pub fn draw(self: *Renderer, prepared: *const PreparedResources, records: DrawRecords, options: DrawOptions) !void {
+        self.setSubpixelOrder(effectiveSubpixelOrder(options.target));
+        self.setFillRule(options.target.fill_rule);
+        self.beginFrame();
+        const backend_prepared: ?*const anyopaque = blk: {
+            if (self.vtable == &gl_vtable or self.vtable == &gl_borrowed_vtable) {
+                if (prepared.gl) |*gl_prepared| break :blk @ptrCast(gl_prepared);
+                return error.MissingPreparedResource;
+            }
+            if (comptime build_options.enable_vulkan) if (self.vtable == &vulkan_borrowed_vtable) {
+                if (prepared.vulkan) |*vk_prepared| break :blk @ptrCast(vk_prepared);
+                return error.MissingPreparedResource;
+            };
+            if (comptime build_options.enable_cpu) if (self.vtable == &cpu_vtable) {
+                if (prepared.cpu) |*cpu_prepared| break :blk @ptrCast(cpu_prepared);
+                return error.MissingPreparedResource;
+            };
+            break :blk null;
+        };
+        for (records.segments) |segment| {
+            const actual_stamp = prepared.stampForKey(segment.key) orelse return error.MissingPreparedResource;
+            if (!actual_stamp.eql(segment.resource_stamp)) return error.StaleDrawRecords;
+            const expected_target_stamp = TargetStamp.from(options.mvp, options.target, segment.target_stamp.hinting);
+            if (!std.meta.eql(expected_target_stamp, segment.target_stamp)) return error.StaleDrawRecords;
+            const vertices = records.floats[segment.offset..][0..segment.len];
+            switch (segment.kind) {
+                .text => if (vertices.len > 0) self.drawText(backend_prepared, vertices, options.mvp, options.target.pixel_width, options.target.pixel_height, segment.texture_layer_base),
+                .path => if (vertices.len > 0) self.drawPaths(backend_prepared, vertices, options.mvp, options.target.pixel_width, options.target.pixel_height, segment.texture_layer_base),
+            }
+        }
+    }
+
+    pub fn drawPrepared(self: *Renderer, prepared: *const PreparedResources, scene: *const PreparedScene, options: DrawOptions) !void {
+        try self.draw(prepared, scene.slice(), options);
+    }
 
     /// Initialize with the current OpenGL context.
     pub fn init() !Renderer {
@@ -3678,15 +5198,6 @@ pub const Renderer = struct {
         errdefer std.heap.smp_allocator.destroy(text);
         try text.init();
         return .{ .ptr = @ptrCast(text), .vtable = &gl_vtable };
-    }
-
-    /// Initialize with a Vulkan context (device, queue, render pass).
-    pub fn initVulkan(vk_ctx: VulkanContext) !Renderer {
-        const vkp = try std.heap.smp_allocator.create(vulkan_pipeline.VulkanPipeline);
-        vkp.* = .{};
-        errdefer std.heap.smp_allocator.destroy(vkp);
-        try vkp.init(vk_ctx);
-        return .{ .ptr = @ptrCast(vkp), .vtable = &vulkan_vtable };
     }
 
     /// Initialize the CPU renderer with a caller-owned pixel buffer.
@@ -3698,48 +5209,16 @@ pub const Renderer = struct {
         self.vtable.deinit(self.ptr);
     }
 
-    pub fn uploadAtlases(self: *Renderer, atlases: []const *const Atlas, out_views: []AtlasHandle) void {
-        std.debug.assert(atlases.len == out_views.len);
-        self.vtable.uploadAtlases(self.ptr, atlases, out_views);
-    }
-
-    pub fn uploadImages(self: *Renderer, images: []const *const Image, out_views: []ImageHandle) void {
-        std.debug.assert(images.len == out_views.len);
-        self.vtable.uploadImages(self.ptr, images, out_views);
-    }
-
-    pub fn uploadImage(self: *Renderer, image: *const Image) ImageHandle {
-        const arr = [1]*const Image{image};
-        var views = [1]ImageHandle{undefined};
-        self.uploadImages(&arr, &views);
-        return views[0];
-    }
-
-    pub fn uploadAtlas(self: *Renderer, atlas: *const Atlas) AtlasHandle {
-        const arr = [1]*const Atlas{atlas};
-        var views = [1]AtlasHandle{undefined};
-        self.uploadAtlases(&arr, &views);
-        return views[0];
-    }
-
-    pub fn uploadPathPicture(self: *Renderer, picture: *const PathPicture) AtlasHandle {
-        return self.uploadAtlas(&picture.atlas);
-    }
-
     pub fn beginFrame(self: *Renderer) void {
         self.vtable.beginFrame(self.ptr);
     }
 
-    pub fn drawText(self: *Renderer, vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
-        self.vtable.drawText(self.ptr, vertices, mvp, viewport_w, viewport_h);
+    fn drawText(self: *Renderer, backend_prepared: ?*const anyopaque, vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32) void {
+        self.vtable.drawText(self.ptr, backend_prepared, vertices, mvp, viewport_w, viewport_h, texture_layer_base);
     }
 
-    pub fn drawPaths(self: *Renderer, vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
-        self.vtable.drawPaths(self.ptr, vertices, mvp, viewport_w, viewport_h);
-    }
-
-    pub fn setCommandBuffer(self: *Renderer, cmd: anytype) void {
-        self.vtable.setCommandBuffer(self.ptr, @ptrCast(cmd));
+    fn drawPaths(self: *Renderer, backend_prepared: ?*const anyopaque, vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32) void {
+        self.vtable.drawPaths(self.ptr, backend_prepared, vertices, mvp, viewport_w, viewport_h, texture_layer_base);
     }
 
     pub fn setSubpixelOrder(self: *Renderer, order: SubpixelOrder) void {
@@ -3769,11 +5248,120 @@ pub const Renderer = struct {
     pub fn backendName(self: *const Renderer) []const u8 {
         return self.vtable.backendName(@constCast(self.ptr));
     }
+};
 
-    /// Access the underlying Vulkan pipeline (for platform-specific operations like setFrameSlot).
-    pub fn vulkanPipeline(self: *Renderer) ?*vulkan_pipeline.VulkanPipeline {
-        if (self.vtable == &vulkan_vtable) return @ptrCast(@alignCast(self.ptr));
+pub const GlRenderer = struct {
+    allocator: std.mem.Allocator,
+    state: *pipeline.GlTextState,
+
+    pub fn init(allocator: std.mem.Allocator) !GlRenderer {
+        const text = try allocator.create(pipeline.GlTextState);
+        text.* = .{};
+        errdefer allocator.destroy(text);
+        try text.init();
+        return .{ .allocator = allocator, .state = text };
+    }
+
+    pub fn deinit(self: *GlRenderer) void {
+        self.state.deinit();
+        self.allocator.destroy(self.state);
+        self.* = undefined;
+    }
+
+    pub fn asRenderer(self: *GlRenderer) Renderer {
+        return .{ .ptr = @ptrCast(self.state), .vtable = &Renderer.gl_borrowed_vtable };
+    }
+
+    pub fn uploadResourcesBlocking(self: *GlRenderer, allocator: std.mem.Allocator, set: *const ResourceSet) !PreparedResources {
+        var renderer = self.asRenderer();
+        return renderer.uploadResourcesBlocking(allocator, set);
+    }
+
+    pub fn planResourceUpload(self: *GlRenderer, current: ?*const PreparedResources, next_set: *const ResourceSet, changed_keys: []ResourceKey) !ResourceUploadPlan {
+        var renderer = self.asRenderer();
+        return renderer.planResourceUpload(current, next_set, changed_keys);
+    }
+
+    pub fn beginResourceUpload(self: *GlRenderer, allocator: std.mem.Allocator, plan: ResourceUploadPlan) !PendingResourceUpload {
+        var renderer = self.asRenderer();
+        return renderer.beginResourceUpload(allocator, plan);
+    }
+
+    pub fn draw(self: *GlRenderer, prepared: *const PreparedResources, records: DrawRecords, options: DrawOptions) !void {
+        var renderer = self.asRenderer();
+        try renderer.draw(prepared, records, options);
+    }
+
+    pub fn drawPrepared(self: *GlRenderer, prepared: *const PreparedResources, scene: *const PreparedScene, options: DrawOptions) !void {
+        var renderer = self.asRenderer();
+        try renderer.drawPrepared(prepared, scene, options);
+    }
+
+    pub fn textCoverageBackend(self: *GlRenderer, prepared: *const PreparedResources) ?TextCoverageBackend {
+        if (prepared.gl) |*gl_resources| {
+            return .{ .gl = self.state, .gl_resources = gl_resources, .prepared = prepared };
+        }
         return null;
+    }
+
+    pub fn backendName(self: *const GlRenderer) []const u8 {
+        return self.state.backendName();
+    }
+};
+
+pub const VulkanRenderer = struct {
+    state: *vulkan_pipeline.VulkanPipeline,
+
+    pub fn init(vk_ctx: VulkanContext) !VulkanRenderer {
+        const vkp = try std.heap.smp_allocator.create(vulkan_pipeline.VulkanPipeline);
+        vkp.* = .{};
+        errdefer std.heap.smp_allocator.destroy(vkp);
+        try vkp.init(vk_ctx);
+        return .{ .state = vkp };
+    }
+
+    pub fn deinit(self: *VulkanRenderer) void {
+        self.state.deinit();
+        std.heap.smp_allocator.destroy(self.state);
+        self.* = undefined;
+    }
+
+    pub fn asRenderer(self: *VulkanRenderer) Renderer {
+        return .{ .ptr = @ptrCast(self.state), .vtable = &Renderer.vulkan_borrowed_vtable };
+    }
+
+    pub fn beginFrame(self: *VulkanRenderer, frame: anytype) void {
+        self.state.setCommandBuffer(frame.cmd);
+        self.state.setFrameSlot(frame.frame_index);
+    }
+
+    pub fn uploadResourcesBlocking(self: *VulkanRenderer, allocator: std.mem.Allocator, set: *const ResourceSet) !PreparedResources {
+        var renderer = self.asRenderer();
+        return renderer.uploadResourcesBlocking(allocator, set);
+    }
+
+    pub fn planResourceUpload(self: *VulkanRenderer, current: ?*const PreparedResources, next_set: *const ResourceSet, changed_keys: []ResourceKey) !ResourceUploadPlan {
+        var renderer = self.asRenderer();
+        return renderer.planResourceUpload(current, next_set, changed_keys);
+    }
+
+    pub fn beginResourceUpload(self: *VulkanRenderer, allocator: std.mem.Allocator, plan: ResourceUploadPlan) !PendingResourceUpload {
+        var renderer = self.asRenderer();
+        return renderer.beginResourceUpload(allocator, plan);
+    }
+
+    pub fn draw(self: *VulkanRenderer, prepared: *const PreparedResources, records: DrawRecords, options: DrawOptions) !void {
+        var renderer = self.asRenderer();
+        try renderer.draw(prepared, records, options);
+    }
+
+    pub fn drawPrepared(self: *VulkanRenderer, prepared: *const PreparedResources, scene: *const PreparedScene, options: DrawOptions) !void {
+        var renderer = self.asRenderer();
+        try renderer.drawPrepared(prepared, scene, options);
+    }
+
+    pub fn backendName(self: *const VulkanRenderer) []const u8 {
+        return self.state.backendName();
     }
 };
 
@@ -3792,7 +5380,6 @@ test {
     _ = @import("render/curve_texture.zig");
     _ = @import("render/band_texture.zig");
     _ = @import("font/opentype.zig");
-    _ = @import("c_api.zig");
     _ = @import("render/vertex.zig");
     _ = @import("torture_test.zig");
     _ = @import("fonts.zig");
@@ -3814,6 +5401,462 @@ test "vector path approximates cubic commands into quadratic segments and report
     const bounds = path.bounds() orelse return error.TestExpectedEqual;
     try std.testing.expect(bounds.max.y > 0);
     try std.testing.expect(bounds.min.y < 0);
+}
+
+fn testRectPicture(allocator: std.mem.Allocator, x: f32) !PathPicture {
+    var path = Path.init(allocator);
+    defer path.deinit();
+    try path.addRect(.{ .x = x, .y = 0, .w = 20, .h = 10 });
+
+    var builder = PathPictureBuilder.init(allocator);
+    defer builder.deinit();
+    try builder.addFilledPath(&path, .{ .color = .{ 0.2, 0.4, 0.8, 1.0 } }, .identity);
+    return builder.freeze(allocator);
+}
+
+test "draw with missing prepared resources fails" {
+    const allocator = std.testing.allocator;
+    const width: u32 = 4;
+    const height: u32 = 4;
+    const stride: u32 = width * 4;
+    const pixels = try allocator.alloc(u8, stride * height);
+    defer allocator.free(pixels);
+
+    var cpu = CpuRenderer.init(pixels.ptr, width, height, stride);
+    var renderer = Renderer.initCpu(&cpu);
+    defer renderer.deinit();
+
+    var prepared = PreparedResources{ .allocator = allocator };
+    var floats: [TEXT_FLOATS_PER_GLYPH]f32 = undefined;
+    const segments = [_]DrawSegment{.{
+        .kind = .text,
+        .offset = 0,
+        .len = TEXT_FLOATS_PER_GLYPH,
+        .key = ResourceKey.named("missing"),
+        .resource_stamp = .{},
+        .target_stamp = .{},
+    }};
+    const records = DrawRecords{ .floats = &floats, .segments = &segments };
+    try std.testing.expectError(error.MissingPreparedResource, renderer.draw(&prepared, records, .{
+        .mvp = Mat4.identity,
+        .target = .{ .pixel_width = width, .pixel_height = height },
+    }));
+}
+
+test "draw dispatch uses only prepared stamps and caller records" {
+    const FakeState = struct {
+        begin_count: u32 = 0,
+        text_count: u32 = 0,
+        path_count: u32 = 0,
+        floats_seen: usize = 0,
+        viewport_seen: [2]f32 = .{ 0, 0 },
+        subpixel_order: SubpixelOrder = .none,
+        fill_rule: FillRule = .non_zero,
+        saw_backend_prepared: bool = true,
+    };
+    const Fake = struct {
+        fn state(ptr: *anyopaque) *FakeState {
+            return @ptrCast(@alignCast(ptr));
+        }
+        fn deinit(_: *anyopaque) void {}
+        fn drawText(ptr: *anyopaque, backend_prepared: ?*const anyopaque, vertices: []const f32, _: Mat4, viewport_w: f32, viewport_h: f32, _: u32) void {
+            const s = state(ptr);
+            s.text_count += 1;
+            s.floats_seen += vertices.len;
+            s.viewport_seen = .{ viewport_w, viewport_h };
+            s.saw_backend_prepared = backend_prepared != null;
+        }
+        fn drawPaths(ptr: *anyopaque, backend_prepared: ?*const anyopaque, vertices: []const f32, _: Mat4, viewport_w: f32, viewport_h: f32, _: u32) void {
+            const s = state(ptr);
+            s.path_count += 1;
+            s.floats_seen += vertices.len;
+            s.viewport_seen = .{ viewport_w, viewport_h };
+            s.saw_backend_prepared = backend_prepared != null;
+        }
+        fn beginFrame(ptr: *anyopaque) void {
+            state(ptr).begin_count += 1;
+        }
+        fn setSubpixelOrder(ptr: *anyopaque, order: SubpixelOrder) void {
+            state(ptr).subpixel_order = order;
+        }
+        fn getSubpixelOrder(ptr: *anyopaque) SubpixelOrder {
+            return state(ptr).subpixel_order;
+        }
+        fn setFillRule(ptr: *anyopaque, rule: FillRule) void {
+            state(ptr).fill_rule = rule;
+        }
+        fn getFillRule(ptr: *anyopaque) FillRule {
+            return state(ptr).fill_rule;
+        }
+        fn backendName(_: *anyopaque) []const u8 {
+            return "fake";
+        }
+    };
+    const fake_vtable = Renderer.VTable{
+        .deinit = Fake.deinit,
+        .drawText = Fake.drawText,
+        .drawPaths = Fake.drawPaths,
+        .beginFrame = Fake.beginFrame,
+        .setSubpixelOrder = Fake.setSubpixelOrder,
+        .getSubpixelOrder = Fake.getSubpixelOrder,
+        .setFillRule = Fake.setFillRule,
+        .getFillRule = Fake.getFillRule,
+        .backendName = Fake.backendName,
+    };
+
+    const key = ResourceKey.named("shape");
+    const stamp = ResourceStamp{ .identity = 1, .layout = 2, .content = 3 };
+    var image: Image = .{ .allocator = std.testing.allocator, .width = 1, .height = 1, .pixels = &.{ 255, 255, 255, 255 } };
+    var image_resources = [_]PreparedResources.PreparedImageResource{.{
+        .key = key,
+        .image = &image,
+        .stamp = stamp,
+    }};
+    var prepared = PreparedResources{
+        .allocator = std.testing.allocator,
+        .images = image_resources[0..],
+    };
+
+    const options = DrawOptions{
+        .mvp = Mat4.identity,
+        .target = .{
+            .pixel_width = 8,
+            .pixel_height = 8,
+            .subpixel_order = .rgb,
+            .fill_rule = .even_odd,
+        },
+    };
+    var floats = [_]f32{ 1, 2, 3, 4 };
+    const segments = [_]DrawSegment{.{
+        .kind = .text,
+        .offset = 0,
+        .len = floats.len,
+        .key = key,
+        .resource_stamp = stamp,
+        .target_stamp = TargetStamp.from(options.mvp, options.target, .none),
+    }};
+    const records = DrawRecords{ .floats = &floats, .segments = &segments };
+
+    var state: FakeState = .{};
+    var renderer = Renderer{ .ptr = @ptrCast(&state), .vtable = &fake_vtable };
+    try renderer.draw(&prepared, records, options);
+
+    try std.testing.expectEqual(@as(u32, 1), state.begin_count);
+    try std.testing.expectEqual(@as(u32, 1), state.text_count);
+    try std.testing.expectEqual(@as(u32, 0), state.path_count);
+    try std.testing.expectEqual(floats.len, state.floats_seen);
+    try std.testing.expectEqual(SubpixelOrder.rgb, state.subpixel_order);
+    try std.testing.expectEqual(FillRule.even_odd, state.fill_rule);
+    try std.testing.expectEqual(@as(f32, 8), state.viewport_seen[0]);
+    try std.testing.expectEqual(@as(f32, 8), state.viewport_seen[1]);
+    try std.testing.expect(!state.saw_backend_prepared);
+}
+
+test "Renderer.draw source stays free of upload allocation and retirement sweeps" {
+    const source = @embedFile("snail.zig");
+    const start = std.mem.indexOf(u8, source, "pub fn draw(self: *Renderer").?;
+    const end = start + std.mem.indexOf(u8, source[start..], "pub fn drawPrepared").?;
+    const draw_source = source[start..end];
+    try std.testing.expect(std.mem.indexOf(u8, draw_source, "uploadResources") == null);
+    try std.testing.expect(std.mem.indexOf(u8, draw_source, "sweepRetiredPreparedResources") == null);
+    try std.testing.expect(std.mem.indexOf(u8, draw_source, ".alloc(") == null);
+}
+
+test "Vulkan renderer path contains no device or queue idle" {
+    const source = @embedFile("render/vulkan_pipeline.zig");
+    try std.testing.expect(std.mem.indexOf(u8, source, "vkDeviceWaitIdle") == null);
+    try std.testing.expect(std.mem.indexOf(u8, source, "vkQueueWaitIdle") == null);
+}
+
+test "Vulkan scheduled upload path records without internal submit" {
+    const source = @embedFile("render/vulkan_pipeline.zig");
+    const start = std.mem.indexOf(u8, source, "fn finishTransferCommand").?;
+    const end = start + std.mem.indexOf(u8, source[start..], "fn submitTransferAndWait").?;
+    const scheduled_finish = source[start..end];
+    try std.testing.expect(std.mem.indexOf(u8, source, "beginResourceUploadRecording") != null);
+    try std.testing.expect(std.mem.indexOf(u8, scheduled_finish, "if (!transfer.owned) return;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, scheduled_finish, "vkQueueSubmit") == null);
+    try std.testing.expect(std.mem.indexOf(u8, scheduled_finish, "vkWaitForFences") == null);
+}
+
+test "Vulkan upload command helper accepts frame command fields" {
+    if (!build_options.enable_vulkan) return;
+    const cmd: vulkan_pipeline.vk.VkCommandBuffer = null;
+    try std.testing.expect(vulkanUploadCommand(.{ .cmd = cmd }) == null);
+    try std.testing.expect(vulkanUploadCommand(.{ .command_buffer = cmd }) == null);
+}
+
+test "TextBlob validation catches wrong atlas snapshot" {
+    const assets_data = @import("assets");
+    var atlas = try TextAtlas.init(std.testing.allocator, &.{
+        .{ .data = assets_data.noto_sans_regular },
+    });
+    defer atlas.deinit();
+
+    if (try atlas.ensureText(.{}, "A")) |next| {
+        atlas.deinit();
+        atlas = next;
+    }
+
+    var builder = TextBlobBuilder.init(std.testing.allocator, &atlas);
+    defer builder.deinit();
+    _ = try builder.addText(.{}, "A", 0, 20, 16, .{ 1, 1, 1, 1 });
+    var blob = try builder.finish();
+    defer blob.deinit();
+    try blob.validate();
+
+    if (try atlas.ensureText(.{}, "B")) |next| {
+        atlas.deinit();
+        atlas = next;
+    }
+    try std.testing.expectError(error.WrongTextAtlasSnapshot, blob.validate());
+}
+
+test "replacing path-picture key does not invalidate unrelated text coverage records" {
+    const assets_data = @import("assets");
+    const allocator = std.testing.allocator;
+
+    var atlas = try TextAtlas.init(allocator, &.{
+        .{ .data = assets_data.noto_sans_regular },
+    });
+    defer atlas.deinit();
+    if (try atlas.ensureText(.{}, "Hello")) |next| {
+        atlas.deinit();
+        atlas = next;
+    }
+
+    var builder = TextBlobBuilder.init(allocator, &atlas);
+    defer builder.deinit();
+    _ = try builder.addText(.{}, "Hello", 0, 24, 18, .{ 1, 1, 1, 1 });
+    var blob = try builder.finish();
+    defer blob.deinit();
+
+    var picture_a = try testRectPicture(allocator, 0);
+    defer picture_a.deinit();
+    var picture_b = try testRectPicture(allocator, 40);
+    defer picture_b.deinit();
+
+    const width: u32 = 16;
+    const height: u32 = 16;
+    const stride: u32 = width * 4;
+    const pixels = try allocator.alloc(u8, stride * height);
+    defer allocator.free(pixels);
+    var cpu = CpuRenderer.init(pixels.ptr, width, height, stride);
+    var renderer = Renderer.initCpu(&cpu);
+    defer renderer.deinit();
+
+    var set_a_entries: [4]ResourceSet.Entry = undefined;
+    var set_a = ResourceSet.init(&set_a_entries);
+    try set_a.putTextAtlas(.fonts, &atlas);
+    try set_a.putPathPicture(.hud_panel, &picture_a);
+    var prepared_a = try renderer.uploadResourcesBlocking(allocator, &set_a);
+    defer prepared_a.deinit();
+
+    var records = TextCoverageRecords.initOwned(allocator);
+    defer records.deinit();
+    try records.buildLocal(&prepared_a, &blob, .{});
+    try std.testing.expect(records.validFor(&prepared_a));
+
+    var set_b_entries: [4]ResourceSet.Entry = undefined;
+    var set_b = ResourceSet.init(&set_b_entries);
+    try set_b.putTextAtlas(.fonts, &atlas);
+    try set_b.putPathPicture(.hud_panel, &picture_b);
+    var prepared_b = try renderer.uploadResourcesBlocking(allocator, &set_b);
+    defer prepared_b.deinit();
+
+    try std.testing.expect(records.validFor(&prepared_b));
+}
+
+test "draw rejects stale records when a resource key is replaced" {
+    const allocator = std.testing.allocator;
+
+    var picture_a = try testRectPicture(allocator, 0);
+    defer picture_a.deinit();
+    var picture_b = try testRectPicture(allocator, 40);
+    defer picture_b.deinit();
+
+    const width: u32 = 32;
+    const height: u32 = 32;
+    const stride: u32 = width * 4;
+    const pixels = try allocator.alloc(u8, stride * height);
+    defer allocator.free(pixels);
+
+    var cpu = CpuRenderer.init(pixels.ptr, width, height, stride);
+    var renderer = Renderer.initCpu(&cpu);
+    defer renderer.deinit();
+
+    var scene = Scene.init(allocator);
+    defer scene.deinit();
+    try scene.addPathPicture(&picture_a);
+
+    var set_a_entries: [2]ResourceSet.Entry = undefined;
+    var set_a = ResourceSet.init(&set_a_entries);
+    try set_a.putPathPicture(.hud_panel, &picture_a);
+    var prepared_a = try renderer.uploadResourcesBlocking(allocator, &set_a);
+    defer prepared_a.deinit();
+
+    const draw_options = DrawOptions{
+        .mvp = Mat4.identity,
+        .target = .{ .pixel_width = width, .pixel_height = height },
+    };
+    const needed = DrawList.estimate(&scene, draw_options);
+    const needed_segments = DrawList.estimateSegments(&scene, draw_options);
+    const draw_buf = try allocator.alloc(f32, needed);
+    defer allocator.free(draw_buf);
+    const draw_segments = try allocator.alloc(DrawSegment, needed_segments);
+    defer allocator.free(draw_segments);
+    var draw = DrawList.init(draw_buf, draw_segments);
+    try draw.addScene(&prepared_a, &scene, draw_options);
+
+    var set_b_entries: [2]ResourceSet.Entry = undefined;
+    var set_b = ResourceSet.init(&set_b_entries);
+    try set_b.putPathPicture(.hud_panel, &picture_b);
+    var prepared_b = try renderer.uploadResourcesBlocking(allocator, &set_b);
+    defer prepared_b.deinit();
+
+    try std.testing.expectError(error.StaleDrawRecords, renderer.draw(&prepared_b, draw.slice(), draw_options));
+}
+
+test "resource upload plan reports changed keys and enforces budget" {
+    const allocator = std.testing.allocator;
+
+    var picture_a = try testRectPicture(allocator, 0);
+    defer picture_a.deinit();
+    var picture_b = try testRectPicture(allocator, 40);
+    defer picture_b.deinit();
+
+    const width: u32 = 16;
+    const height: u32 = 16;
+    const stride: u32 = width * 4;
+    const pixels = try allocator.alloc(u8, stride * height);
+    defer allocator.free(pixels);
+
+    var cpu = CpuRenderer.init(pixels.ptr, width, height, stride);
+    var renderer = Renderer.initCpu(&cpu);
+    defer renderer.deinit();
+
+    var set_a_entries: [2]ResourceSet.Entry = undefined;
+    var set_a = ResourceSet.init(&set_a_entries);
+    try set_a.putPathPicture(.hud_panel, &picture_a);
+    var prepared_a = try renderer.uploadResourcesBlocking(allocator, &set_a);
+    defer prepared_a.deinit();
+
+    var changed_same: [2]ResourceKey = undefined;
+    const plan_same = try renderer.planResourceUpload(&prepared_a, &set_a, &changed_same);
+    try std.testing.expect(plan_same.upload_bytes > 0);
+    try std.testing.expectEqual(@as(usize, 0), plan_same.changedKeys().len);
+    try std.testing.expectEqual(@as(usize, 0), plan_same.changed_bytes);
+
+    var set_b_entries: [2]ResourceSet.Entry = undefined;
+    var set_b = ResourceSet.init(&set_b_entries);
+    try set_b.putPathPicture(.hud_panel, &picture_b);
+    var changed_b: [2]ResourceKey = undefined;
+    const plan_b = try renderer.planResourceUpload(&prepared_a, &set_b, &changed_b);
+    try std.testing.expect(plan_b.upload_bytes > 0);
+    try std.testing.expect(plan_b.changed_bytes > 0);
+    try std.testing.expectEqual(@as(usize, 1), plan_b.changedKeys().len);
+    try std.testing.expect(plan_b.changedKeys()[0].eql(ResourceKey.named("hud_panel")));
+
+    var pending = try renderer.beginResourceUpload(allocator, plan_b);
+    defer pending.deinit();
+    try std.testing.expectError(error.ResourceUploadBudgetExceeded, pending.record(.{}, .{ .budget_bytes = 0 }));
+    try std.testing.expect(!pending.ready(.{}));
+
+    try pending.record(.{}, .{ .budget_bytes = plan_b.upload_bytes });
+    try std.testing.expect(pending.ready(.{}));
+    var prepared_b = try pending.publish();
+    defer prepared_b.deinit();
+    try std.testing.expect(prepared_b.stampForKey(.hud_panel) != null);
+}
+
+test "pending upload publish waits for external completion marker" {
+    const allocator = std.testing.allocator;
+
+    var picture = try testRectPicture(allocator, 0);
+    defer picture.deinit();
+
+    const width: u32 = 16;
+    const height: u32 = 16;
+    const stride: u32 = width * 4;
+    const pixels = try allocator.alloc(u8, stride * height);
+    defer allocator.free(pixels);
+
+    var cpu = CpuRenderer.init(pixels.ptr, width, height, stride);
+    var renderer = Renderer.initCpu(&cpu);
+    defer renderer.deinit();
+
+    var set_entries: [2]ResourceSet.Entry = undefined;
+    var set = ResourceSet.init(&set_entries);
+    try set.putPathPicture(.hud_panel, &picture);
+    var changed_keys: [2]ResourceKey = undefined;
+    const plan = try renderer.planResourceUpload(null, &set, &changed_keys);
+
+    var pending = PendingResourceUpload{
+        .renderer = &renderer,
+        .plan = plan,
+        .allocator = allocator,
+        .prepared = try renderer.uploadResourcesBlocking(allocator, &set),
+        .external_completion_required = true,
+    };
+    defer pending.deinit();
+
+    try std.testing.expect(!pending.ready(.{ .ready = false }));
+    try std.testing.expectError(error.ResourceUploadNotReady, pending.publish());
+    try std.testing.expect(pending.ready(.{ .ready = true }));
+    var prepared = try pending.publish();
+    defer prepared.deinit();
+    try std.testing.expect(prepared.stampForKey(.hud_panel) != null);
+}
+
+test "CPU draw uses prepared resource views" {
+    const allocator = std.testing.allocator;
+
+    var picture = try testRectPicture(allocator, 0);
+    defer picture.deinit();
+
+    const width: u32 = 32;
+    const height: u32 = 32;
+    const stride: u32 = width * 4;
+    const pixels = try allocator.alloc(u8, stride * height);
+    defer allocator.free(pixels);
+    @memset(pixels, 0);
+
+    var cpu = CpuRenderer.init(pixels.ptr, width, height, stride);
+    var renderer = Renderer.initCpu(&cpu);
+    defer renderer.deinit();
+
+    var scene = Scene.init(allocator);
+    defer scene.deinit();
+    try scene.addPathPicture(&picture);
+
+    var set_entries: [2]ResourceSet.Entry = undefined;
+    var set = ResourceSet.init(&set_entries);
+    try set.putPathPicture(.panel, &picture);
+    var prepared = try renderer.uploadResourcesBlocking(allocator, &set);
+    defer prepared.deinit();
+
+    const draw_options = DrawOptions{
+        .mvp = Mat4.identity,
+        .target = .{ .pixel_width = width, .pixel_height = height },
+    };
+    const needed = DrawList.estimate(&scene, draw_options);
+    const needed_segments = DrawList.estimateSegments(&scene, draw_options);
+    const draw_buf = try allocator.alloc(f32, needed);
+    defer allocator.free(draw_buf);
+    const draw_segments = try allocator.alloc(DrawSegment, needed_segments);
+    defer allocator.free(draw_segments);
+    var draw = DrawList.init(draw_buf, draw_segments);
+    try draw.addScene(&prepared, &scene, draw_options);
+    try renderer.draw(&prepared, draw.slice(), draw_options);
+
+    var changed = false;
+    for (pixels) |byte| {
+        if (byte != 0) {
+            changed = true;
+            break;
+        }
+    }
+    try std.testing.expect(changed);
 }
 
 test "vector path band count tracks source cubic commands" {
@@ -3917,7 +5960,7 @@ test "path picture freeze compiles atlas and transformed batch vertices" {
 
     var vertex_buf: [PATH_FLOATS_PER_SHAPE]f32 = undefined;
     var batch = PathBatch.init(&vertex_buf);
-    const view = AtlasHandle{ .atlas = &picture.atlas };
+    const view = PreparedAtlasView{ .atlas = &picture.atlas };
     try std.testing.expectEqual(@as(usize, 1), batch.addPicture(&view, &picture));
     try std.testing.expectEqual(@as(usize, PATH_FLOATS_PER_SHAPE), batch.slice().len);
     // Verify that the min corner world position equals the intended translation.
@@ -3947,17 +5990,17 @@ test "path batch offsets layer info rows through atlas views" {
 
     var vertex_buf: [PATH_FLOATS_PER_SHAPE]f32 = undefined;
     var batch = PathBatch.init(&vertex_buf);
-    const offset_view = AtlasHandle{
+    const offset_view = PreparedAtlasView{
         .atlas = &picture.atlas,
         .layer_base = 3,
         .info_row_base = 17,
     };
-    try std.testing.expectEqual(@as(usize, 1), batch.addPicture(&offset_view, &picture));
+    try std.testing.expectEqual(@as(usize, 1), try batch.addPicture(&offset_view, &picture));
     // gz at offset 10 (a_meta.z)
     const packed_gz: u32 = @bitCast(batch.slice()[10]);
     try std.testing.expectEqual(@as(u32, picture.instances[0].info_x), packed_gz & 0xFFFF);
     try std.testing.expectEqual(@as(u32, offset_view.info_row_base + picture.instances[0].info_y), packed_gz >> 16);
-    try std.testing.expectApproxEqAbs(@as(f32, offset_view.glyphLayer(0)), batch.slice()[15], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, @floatFromInt(try textureLayerLocal(offset_view.glyphLayer(0)))), batch.slice()[15], 0.001);
 }
 
 test "styled path builder emits fill and stroke records" {
@@ -4245,11 +6288,12 @@ test "path picture debug view remaps composite fill and stroke paints by role" {
 
     var picture = try builder.freeze(std.testing.allocator);
     defer picture.deinit();
-    picture.applyDebugView(.stroke_mask);
+    var debug_picture = try picture.withDebugView(std.testing.allocator, .stroke_mask);
+    defer debug_picture.deinit();
 
-    const width = picture.atlas.layer_info_width;
-    const lid = picture.atlas.layer_info_data orelse return error.TestExpectedEqual;
-    const base = pathLayerInfoTexelOffset(width, picture.instances[0].info_x, picture.instances[0].info_y);
+    const width = debug_picture.atlas.layer_info_width;
+    const lid = debug_picture.atlas.layer_info_data orelse return error.TestExpectedEqual;
+    const base = pathLayerInfoTexelOffset(width, debug_picture.instances[0].info_x, debug_picture.instances[0].info_y);
     const header = readPathLayerInfoTexel(lid, width, base);
     try std.testing.expectApproxEqAbs(PATH_PAINT_TAG_COMPOSITE_GROUP, header[3], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, @intFromEnum(PathCompositeMode.source_over)), header[1], 0.001);
@@ -4260,8 +6304,8 @@ test "path picture debug view remaps composite fill and stroke paints by role" {
     const stroke_color = readPathLayerInfoTexel(lid, width, base + 3 + PATH_PAINT_TEXELS_PER_RECORD);
     try std.testing.expectApproxEqAbs(PATH_PAINT_TAG_SOLID, fill_record[3], 0.001);
     try std.testing.expectApproxEqAbs(PATH_PAINT_TAG_SOLID, stroke_record[3], 0.001);
-    try std.testing.expectEqual(PathPicture.LayerRole.fill, picture.layer_roles[0]);
-    try std.testing.expectEqual(PathPicture.LayerRole.stroke, picture.layer_roles[1]);
+    try std.testing.expectEqual(PathPicture.LayerRole.fill, debug_picture.layer_roles[0]);
+    try std.testing.expectEqual(PathPicture.LayerRole.stroke, debug_picture.layer_roles[1]);
     try std.testing.expect(fill_color[3] < 0.001);
     try std.testing.expect(stroke_color[3] > 0.9);
 }

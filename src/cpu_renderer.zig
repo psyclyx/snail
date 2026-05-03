@@ -5,10 +5,12 @@
 
 const std = @import("std");
 const snail = @import("snail.zig");
+const vertex = @import("render/vertex.zig");
+const text_hinting = @import("text_hinting.zig");
 const bezier = snail.bezier;
 const curve_tex = snail.curve_tex;
 const CurveSegment = bezier.CurveSegment;
-const GlyphBandEntry = std.meta.fieldInfo(snail.Atlas.GlyphInfo, .band_entry).type;
+const GlyphBandEntry = std.meta.fieldInfo(snail.CurveAtlas.GlyphInfo, .band_entry).type;
 const Vec2 = snail.Vec2;
 const Transform2D = snail.Transform2D;
 const FillRule = snail.FillRule;
@@ -74,31 +76,92 @@ const BAND_TEX_WIDTH: u32 = 1 << kLogBandTextureWidth;
 const kLogCurveTextureWidth: u5 = 12;
 const CURVE_TEX_WIDTH: u32 = 1 << kLogCurveTextureWidth;
 
-pub const CpuRenderer = struct {
-    pixels: [*]u8, // RGBA8888 buffer, caller-owned
-    width: u32,
-    height: u32,
-    stride: u32, // bytes per row (usually width * 4)
-    fill_rule: FillRule,
-    subpixel_order: SubpixelOrder,
-    /// Flat array of atlas pages indexed by texture-array layer.
-    /// Populated during uploadAtlases so drawTextBatch can look up curve data.
-    atlas_pages: [256]?*const snail.AtlasPage = .{null} ** 256,
-    /// Layer info entries from uploaded atlases (combined, like the GPU texture).
-    layer_infos: [MAX_LAYER_INFOS]LayerInfoEntry = .{LayerInfoEntry{}} ** MAX_LAYER_INFOS,
-    layer_info_count: u32 = 0,
+const LayerInfoEntry = struct {
+    data: []const f32 = &.{},
+    width: u32 = 0,
+    height: u32 = 0,
+    row_base: u32 = 0,
+};
 
-    const MAX_LAYER_INFOS = 4;
-    const LayerInfoEntry = struct {
-        data: []const f32 = &.{},
-        width: u32 = 0,
-        height: u32 = 0,
-        row_base: u32 = 0,
-    };
+pub const PreparedResources = struct {
+    allocator: std.mem.Allocator,
+    /// Flat array of atlas pages indexed by texture-array layer.
+    atlas_pages: []?*const snail.AtlasPage = &.{},
+    /// Layer info entries from uploaded atlases (combined, like the GPU texture).
+    layer_infos: []LayerInfoEntry = &.{},
+    layer_info_count: usize = 0,
+
+    pub fn init(allocator: std.mem.Allocator, atlases: []const *const snail.CurveAtlas) !PreparedResources {
+        var layer_count: usize = 0;
+        var layer_info_count: usize = 0;
+        for (atlases) |atlas| {
+            layer_count += atlas.pageCount();
+            if (atlas.layer_info_data != null) layer_info_count += 1;
+        }
+        const atlas_pages = try allocator.alloc(?*const snail.AtlasPage, layer_count);
+        errdefer allocator.free(atlas_pages);
+        const layer_infos = try allocator.alloc(LayerInfoEntry, layer_info_count);
+        errdefer allocator.free(layer_infos);
+        var self = PreparedResources{
+            .allocator = allocator,
+            .atlas_pages = atlas_pages,
+            .layer_infos = layer_infos,
+        };
+        self.reset();
+        return self;
+    }
+
+    pub fn deinit(self: *PreparedResources) void {
+        if (self.atlas_pages.len > 0) self.allocator.free(self.atlas_pages);
+        if (self.layer_infos.len > 0) self.allocator.free(self.layer_infos);
+        self.* = undefined;
+    }
+
+    pub fn reset(self: *PreparedResources) void {
+        @memset(self.atlas_pages, null);
+        @memset(self.layer_infos, LayerInfoEntry{});
+        self.layer_info_count = 0;
+    }
+
+    pub fn uploadAtlases(self: *PreparedResources, atlases: []const *const snail.CurveAtlas, out_views: anytype) !void {
+        var layer_base: u32 = 0;
+        var info_row_base: u32 = 0;
+        self.reset();
+        for (out_views, atlases) |*v, a| {
+            v.* = .{ .atlas = a, .layer_base = layer_base, .info_row_base = info_row_base };
+            try self.storeAtlasPages(a, layer_base, info_row_base);
+            layer_base += @intCast(a.pageCount());
+            info_row_base += a.layer_info_height;
+        }
+    }
+
+    pub fn uploadImages(_: *PreparedResources, images: []const *const snail.Image, out_views: anytype) void {
+        for (out_views, images) |*v, img| {
+            v.* = .{ .image = img };
+        }
+    }
+
+    fn storeAtlasPages(self: *PreparedResources, atlas: *const snail.CurveAtlas, layer_base: u32, info_row_base: u32) !void {
+        for (0..atlas.pageCount()) |i| {
+            const layer = layer_base + @as(u32, @intCast(i));
+            if (layer >= self.atlas_pages.len) return error.PreparedResourceCapacityExceeded;
+            self.atlas_pages[layer] = atlas.page(@intCast(i));
+        }
+        if (atlas.layer_info_data) |lid| {
+            if (self.layer_info_count >= self.layer_infos.len) return error.PreparedResourceCapacityExceeded;
+            self.layer_infos[self.layer_info_count] = .{
+                .data = lid,
+                .width = atlas.layer_info_width,
+                .height = atlas.layer_info_height,
+                .row_base = info_row_base,
+            };
+            self.layer_info_count += 1;
+        }
+    }
 
     /// Resolve a global (info_x, info_y) into data pointer and width,
     /// adjusting info_y for the atlas's row_base.
-    fn resolveLayerInfo(self: *const CpuRenderer, info_y: u16) ?struct { data: []const f32, width: u32, local_y: u16 } {
+    fn resolveLayerInfo(self: *const PreparedResources, info_y: u16) ?struct { data: []const f32, width: u32, local_y: u16 } {
         for (self.layer_infos[0..self.layer_info_count]) |entry| {
             if (info_y >= entry.row_base and info_y < entry.row_base + entry.height) {
                 return .{
@@ -110,6 +173,15 @@ pub const CpuRenderer = struct {
         }
         return null;
     }
+};
+
+pub const CpuRenderer = struct {
+    pixels: [*]u8, // RGBA8888 buffer, caller-owned
+    width: u32,
+    height: u32,
+    stride: u32, // bytes per row (usually width * 4)
+    fill_rule: FillRule,
+    subpixel_order: SubpixelOrder,
 
     pub fn init(pixels: [*]u8, width: u32, height: u32, stride: u32) CpuRenderer {
         return .{
@@ -230,33 +302,14 @@ pub const CpuRenderer = struct {
         }
     }
 
-    /// Register atlas pages so drawTextBatch can look up curve data by layer index.
     // ── Unified renderer interface ──
 
-    pub fn uploadAtlases(self: *CpuRenderer, atlases: []const *const snail.Atlas, out_views: []snail.AtlasHandle) void {
-        var layer_base: u16 = 0;
-        var info_row_base: u32 = 0;
-        self.layer_info_count = 0;
-        for (out_views, atlases) |*v, a| {
-            v.* = .{ .atlas = a, .layer_base = layer_base, .info_row_base = @intCast(info_row_base) };
-            self.storeAtlasPages(a, layer_base, info_row_base);
-            layer_base += @intCast(a.pageCount());
-            info_row_base += a.layer_info_height;
-        }
+    pub fn drawTextPrepared(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const f32, _: snail.Mat4, _: f32, _: f32, texture_layer_base: u32) void {
+        self.drawTextBatchPrepared(prepared, vertices, texture_layer_base);
     }
 
-    pub fn uploadImages(_: *CpuRenderer, images: []const *const snail.Image, out_views: []snail.ImageHandle) void {
-        for (out_views, images) |*v, img| {
-            v.* = .{ .image = img };
-        }
-    }
-
-    pub fn drawText(self: *CpuRenderer, vertices: []const f32, _: snail.Mat4, _: f32, _: f32) void {
-        self.drawTextBatch(vertices);
-    }
-
-    pub fn drawPaths(self: *CpuRenderer, vertices: []const f32, _: snail.Mat4, _: f32, _: f32) void {
-        self.drawTextBatch(vertices);
+    pub fn drawPathsPrepared(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const f32, _: snail.Mat4, _: f32, _: f32, texture_layer_base: u32) void {
+        self.drawTextBatchPrepared(prepared, vertices, texture_layer_base);
     }
 
     pub fn beginFrame(_: *CpuRenderer) void {}
@@ -265,41 +318,37 @@ pub const CpuRenderer = struct {
         return "CPU";
     }
 
-    pub fn setCommandBuffer(_: *CpuRenderer, _: ?*anyopaque) void {}
+    pub fn asRenderer(self: *CpuRenderer) snail.Renderer {
+        return snail.Renderer.initCpu(self);
+    }
+
+    pub fn uploadResourcesBlocking(self: *CpuRenderer, allocator: std.mem.Allocator, set: *const snail.ResourceSet) !snail.PreparedResources {
+        var renderer = self.asRenderer();
+        return renderer.uploadResourcesBlocking(allocator, set);
+    }
+
+    pub fn draw(self: *CpuRenderer, prepared: *const snail.PreparedResources, records: snail.DrawRecords, options: snail.DrawOptions) !void {
+        var renderer = self.asRenderer();
+        try renderer.draw(prepared, records, options);
+    }
+
+    pub fn drawPrepared(self: *CpuRenderer, prepared: *const snail.PreparedResources, scene: *const snail.PreparedScene, options: snail.DrawOptions) !void {
+        var renderer = self.asRenderer();
+        try renderer.drawPrepared(prepared, scene, options);
+    }
 
     // ── Atlas page storage (internal) ──
 
-    pub fn storeAtlasPages(self: *CpuRenderer, atlas: *const snail.Atlas, layer_base: u16, info_row_base: u32) void {
-        for (0..atlas.pageCount()) |i| {
-            const layer = layer_base + @as(u16, @intCast(i));
-            if (layer < self.atlas_pages.len) {
-                self.atlas_pages[layer] = atlas.page(@intCast(i));
-            }
-        }
-        if (atlas.layer_info_data) |lid| {
-            if (self.layer_info_count < MAX_LAYER_INFOS) {
-                self.layer_infos[self.layer_info_count] = .{
-                    .data = lid,
-                    .width = atlas.layer_info_width,
-                    .height = atlas.layer_info_height,
-                    .row_base = info_row_base,
-                };
-                self.layer_info_count += 1;
-            }
-        }
-    }
-
-    /// Render a text batch from packed vertex/instance data (same format as GPU path).
-    pub fn drawTextBatch(self: *CpuRenderer, vertices: []const f32) void {
-        const FLOATS = 20; // FLOATS_PER_INSTANCE
+    pub fn drawTextBatchPrepared(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const f32, texture_layer_base: u32) void {
+        const FLOATS = vertex.FLOATS_PER_INSTANCE;
         var i: usize = 0;
         while (i + FLOATS <= vertices.len) : (i += FLOATS) {
             const inst = vertices[i..][0..FLOATS];
-            self.renderBatchInstance(inst);
+            self.renderBatchInstance(prepared, inst, texture_layer_base);
         }
     }
 
-    fn renderBatchInstance(self: *CpuRenderer, inst: *const [20]f32) void {
+    fn renderBatchInstance(self: *CpuRenderer, prepared: *const PreparedResources, inst: []const f32, texture_layer_base: u32) void {
         const bbox = snail.bezier.BBox{
             .min = .{ .x = inst[0], .y = inst[1] },
             .max = .{ .x = inst[2], .y = inst[3] },
@@ -315,6 +364,15 @@ pub const CpuRenderer = struct {
         const gz: u32 = @bitCast(inst[10]);
         const gw: u32 = @bitCast(inst[11]);
         const color = srgbColorToLinear(.{ inst[16], inst[17], inst[18], inst[19] });
+        const hint = text_hinting.GlyphHintInstance{
+            .source = .{ inst[20], inst[21], inst[22], inst[23] },
+            .display = .{ inst[24], inst[25], inst[26], inst[27] },
+            .stem_count = blk: {
+                const first = inst[20] < inst[21];
+                const second = inst[22] < inst[23];
+                break :blk if (second) 2 else if (first) 1 else 0;
+            },
+        };
 
         const atlas_layer_byte: u8 = @intCast(gw >> 24);
 
@@ -322,15 +380,15 @@ pub const CpuRenderer = struct {
             const layer_count: u16 = @intCast(gw & 0xFFFF);
             const info_x: u16 = @intCast(gz & 0xFFFF);
             const info_y: u16 = @intCast(gz >> 16);
-            const atlas_layer: u8 = @intFromFloat(inst[15]);
+            const atlas_layer = texture_layer_base + @as(u32, @intFromFloat(inst[15]));
 
             // Resolve the layer info for this info_y (handles multi-atlas row offsets).
-            const resolved = self.resolveLayerInfo(info_y) orelse return;
+            const resolved = prepared.resolveLayerInfo(info_y) orelse return;
             const first_tag = fetchLayerInfoTexel(resolved.data, resolved.width, info_x, resolved.local_y, 0)[3];
             if (first_tag < 0.0) {
-                self.renderPathBatchLayers(bbox, transform, info_x, resolved.local_y, atlas_layer, resolved.data, resolved.width);
+                self.renderPathBatchLayers(prepared, bbox, transform, info_x, resolved.local_y, atlas_layer, resolved.data, resolved.width);
             } else {
-                self.renderColrBatchLayers(bbox, transform, color, info_x, resolved.local_y, layer_count, resolved.data, resolved.width);
+                self.renderColrBatchLayers(prepared, bbox, transform, color, info_x, resolved.local_y, layer_count, atlas_layer, resolved.data, resolved.width);
             }
             return;
         }
@@ -352,21 +410,25 @@ pub const CpuRenderer = struct {
             .band_offset_y = inst[15],
         };
 
-        const page = self.atlas_pages[atlas_layer_byte] orelse return;
-        self.renderTransformedGlyph(page, bbox, be, transform, color, transformPreservesSubpixelAxes(transform));
+        const atlas_layer = texture_layer_base + @as(u32, atlas_layer_byte);
+        const page = (if (atlas_layer < prepared.atlas_pages.len) prepared.atlas_pages[atlas_layer] else null) orelse return;
+        self.renderTransformedGlyph(page, bbox, be, transform, hint, color, @abs(transform.xy) <= 1e-5 and @abs(transform.yx) <= 1e-5);
     }
 
     fn renderColrBatchLayers(
         self: *CpuRenderer,
+        prepared: *const PreparedResources,
         union_bbox: snail.bezier.BBox,
         transform: Transform2D,
         default_color: [4]f32,
         info_x: u16,
         info_y: u16,
         layer_count: u16,
+        atlas_layer: u32,
         data: []const f32,
         width: u32,
     ) void {
+        const page = (if (atlas_layer < prepared.atlas_pages.len) prepared.atlas_pages[atlas_layer] else null) orelse return;
         for (0..layer_count) |layer_idx| {
             const base = @as(u32, info_x) + @as(u32, @intCast(layer_idx)) * 3;
             const t0_x = base % width;
@@ -378,7 +440,6 @@ pub const CpuRenderer = struct {
             const glyph_x: u16 = @intFromFloat(data[t0 + 0]);
             const glyph_y: u16 = @intFromFloat(data[t0 + 1]);
             const band_packed: u32 = @bitCast(data[t0 + 2]);
-            const page_index: u16 = @intFromFloat(data[t0 + 3]);
             const h_band_count: u16 = @intCast((band_packed & 0xFFFF) + 1);
             const v_band_count: u16 = @intCast(((band_packed >> 16) & 0xFFFF) + 1);
 
@@ -413,24 +474,24 @@ pub const CpuRenderer = struct {
             };
 
             if (be.h_band_count == 0 or be.v_band_count == 0) continue;
-            const page = self.atlas_pages[page_index] orelse continue;
 
             // Use the union bbox for all layers (same as GPU path).
-            self.renderTransformedGlyph(page, union_bbox, be, transform, color, false);
+            self.renderTransformedGlyph(page, union_bbox, be, transform, .{}, color, false);
         }
     }
 
     fn renderPathBatchLayers(
         self: *CpuRenderer,
+        prepared: *const PreparedResources,
         union_bbox: snail.bezier.BBox,
         transform: Transform2D,
         info_x: u16,
         info_y: u16,
-        atlas_layer: u8,
+        atlas_layer: u32,
         data: []const f32,
         width: u32,
     ) void {
-        const page = self.atlas_pages[atlas_layer] orelse return;
+        const page = (if (atlas_layer < prepared.atlas_pages.len) prepared.atlas_pages[atlas_layer] else null) orelse return;
 
         const first_info = fetchLayerInfoTexel(data, width, info_x, info_y, 0);
         const tag: i32 = @intFromFloat(@round(-first_info[3]));
@@ -450,6 +511,9 @@ pub const CpuRenderer = struct {
 
             const epp = glyphEdgePixelsPerPixel(inverse);
             const ppe = Vec2.new(1.0 / epp.x, 1.0 / epp.y);
+            const sample_dx = Vec2.new(inverse.xx, inverse.yx);
+            const sample_dy = Vec2.new(inverse.xy, inverse.yy);
+            const use_subpixel = self.subpixel_order != .none;
 
             var row: u32 = @intCast(py0);
             while (row < @as(u32, @intCast(py1))) : (row += 1) {
@@ -459,10 +523,14 @@ pub const CpuRenderer = struct {
                     const local = inverse.applyPoint(world);
 
                     var result = [4]f32{ 0, 0, 0, 0 };
-                    var fill_cov: f32 = 0;
-                    var stroke_cov: f32 = 0;
+                    var result_blend = [3]f32{ 0, 0, 0 };
+                    var fill_cov: SubpixelCoverage = .{ .rgb = .{ 0, 0, 0 }, .alpha = 0 };
+                    var stroke_cov: SubpixelCoverage = .{ .rgb = .{ 0, 0, 0 }, .alpha = 0 };
                     var fill_paint = [4]f32{ 0, 0, 0, 0 };
                     var stroke_paint = [4]f32{ 0, 0, 0, 0 };
+                    var fill_apply_dither = false;
+                    var stroke_apply_dither = false;
+                    var has_gradient = false;
 
                     for (0..layer_count) |l| {
                         const layer_offset: u32 = 1 + @as(u32, @intCast(l)) * 6;
@@ -481,32 +549,105 @@ pub const CpuRenderer = struct {
                         };
                         const band_max_h: i32 = @as(i32, @intCast(be.h_band_count)) - 1;
                         const band_max_v: i32 = @as(i32, @intCast(be.v_band_count)) - 1;
-                        const cov = evalGlyphCoverage(page, local.x, local.y, ppe.x, ppe.y, be, band_max_h, band_max_v, self.fill_rule);
                         const paint = samplePathPaintFromLayerInfo(data, width, info_x, info_y, layer_offset, local);
 
-                        if (composite_mode == 1 and layer_count >= 2 and l < 2) {
-                            if (l == 0) {
-                                fill_cov = cov;
-                                fill_paint = paint.color;
-                            } else {
-                                stroke_cov = cov;
-                                stroke_paint = paint.color;
+                        if (use_subpixel) {
+                            const cov = evalGlyphCoverageSubpixel(
+                                page,
+                                local,
+                                ppe,
+                                sample_dx,
+                                sample_dy,
+                                union_bbox,
+                                .{},
+                                be,
+                                band_max_h,
+                                band_max_v,
+                                self.fill_rule,
+                                self.subpixel_order,
+                            );
+
+                            if (composite_mode == 1 and layer_count >= 2 and l < 2) {
+                                if (l == 0) {
+                                    fill_cov = cov;
+                                    fill_paint = paint.color;
+                                    fill_apply_dither = paint.apply_dither;
+                                } else {
+                                    stroke_cov = cov;
+                                    stroke_paint = paint.color;
+                                    stroke_apply_dither = paint.apply_dither;
+                                }
+                                continue;
                             }
-                            continue;
+
+                            if (paint.apply_dither and cov.alpha > 1e-6) has_gradient = true;
+                            compositeSubpixelOver(
+                                premultiplySubpixelCoverage(paint.color, cov.rgb, cov.alpha),
+                                subpixelBlendCoverage(paint.color, cov.rgb),
+                                &result,
+                                &result_blend,
+                            );
+                        } else {
+                            const cov = evalGlyphCoverage(page, local.x, local.y, ppe.x, ppe.y, be, band_max_h, band_max_v, self.fill_rule);
+
+                            if (composite_mode == 1 and layer_count >= 2 and l < 2) {
+                                if (l == 0) {
+                                    fill_cov = .{ .rgb = .{ cov, cov, cov }, .alpha = cov };
+                                    fill_paint = paint.color;
+                                } else {
+                                    stroke_cov = .{ .rgb = .{ cov, cov, cov }, .alpha = cov };
+                                    stroke_paint = paint.color;
+                                }
+                                continue;
+                            }
+                            const premul = premultiplyCoverage(paint.color, cov);
+                            result = compositeOver(premul, result);
                         }
-                        const premul = premultiplyCoverage(paint.color, cov);
-                        result = compositeOver(premul, result);
                     }
 
                     if (composite_mode == 1 and layer_count >= 2) {
-                        const border_cov = @min(fill_cov, stroke_cov);
-                        const interior_cov = @max(fill_cov - border_cov, 0.0);
-                        const combined = addColors(premultiplyCoverage(fill_paint, interior_cov), premultiplyCoverage(stroke_paint, border_cov));
-                        result = compositeOver(combined, result);
+                        if (use_subpixel) {
+                            const border_cov = [3]f32{
+                                @min(fill_cov.rgb[0], stroke_cov.rgb[0]),
+                                @min(fill_cov.rgb[1], stroke_cov.rgb[1]),
+                                @min(fill_cov.rgb[2], stroke_cov.rgb[2]),
+                            };
+                            const interior_cov = [3]f32{
+                                @max(fill_cov.rgb[0] - border_cov[0], 0.0),
+                                @max(fill_cov.rgb[1] - border_cov[1], 0.0),
+                                @max(fill_cov.rgb[2] - border_cov[2], 0.0),
+                            };
+                            const border_alpha = @min(fill_cov.alpha, stroke_cov.alpha);
+                            const interior_alpha = @max(fill_cov.alpha - border_alpha, 0.0);
+                            if (fill_apply_dither and interior_alpha > 1e-6) has_gradient = true;
+                            if (stroke_apply_dither and border_alpha > 1e-6) has_gradient = true;
+                            compositeSubpixelOver(
+                                addColors(
+                                    premultiplySubpixelCoverage(fill_paint, interior_cov, interior_alpha),
+                                    premultiplySubpixelCoverage(stroke_paint, border_cov, border_alpha),
+                                ),
+                                .{
+                                    subpixelBlendCoverage(fill_paint, interior_cov)[0] + subpixelBlendCoverage(stroke_paint, border_cov)[0],
+                                    subpixelBlendCoverage(fill_paint, interior_cov)[1] + subpixelBlendCoverage(stroke_paint, border_cov)[1],
+                                    subpixelBlendCoverage(fill_paint, interior_cov)[2] + subpixelBlendCoverage(stroke_paint, border_cov)[2],
+                                },
+                                &result,
+                                &result_blend,
+                            );
+                        } else {
+                            const border_cov = @min(fill_cov.alpha, stroke_cov.alpha);
+                            const interior_cov = @max(fill_cov.alpha - border_cov, 0.0);
+                            const combined = addColors(premultiplyCoverage(fill_paint, interior_cov), premultiplyCoverage(stroke_paint, border_cov));
+                            result = compositeOver(combined, result);
+                        }
                     }
 
                     if (result[3] < 1.0 / 255.0) continue;
-                    self.blendPremultipliedPixel(row, col, result, false);
+                    if (use_subpixel) {
+                        self.blendSubpixelPremultipliedPixel(row, col, result, result_blend, has_gradient);
+                    } else {
+                        self.blendPremultipliedPixel(row, col, result, false);
+                    }
                 }
             }
         } else {
@@ -533,6 +674,8 @@ pub const CpuRenderer = struct {
 
             const epp = glyphEdgePixelsPerPixel(inverse);
             const ppe = Vec2.new(1.0 / epp.x, 1.0 / epp.y);
+            const sample_dx = Vec2.new(inverse.xx, inverse.yx);
+            const sample_dy = Vec2.new(inverse.xy, inverse.yy);
             const band_max_h: i32 = @as(i32, @intCast(be.h_band_count)) - 1;
             const band_max_v: i32 = @as(i32, @intCast(be.v_band_count)) - 1;
 
@@ -542,10 +685,35 @@ pub const CpuRenderer = struct {
                 while (col < @as(u32, @intCast(px1))) : (col += 1) {
                     const world = Vec2.new(@as(f32, @floatFromInt(col)) + 0.5, @as(f32, @floatFromInt(row)) + 0.5);
                     const local = inverse.applyPoint(world);
-                    const cov = evalGlyphCoverage(page, local.x, local.y, ppe.x, ppe.y, be, band_max_h, band_max_v, self.fill_rule);
-                    if (cov < 1.0 / 255.0) continue;
                     const paint = samplePathPaintFromLayerInfo(data, width, info_x, info_y, 0, local);
-                    self.blendPremultipliedPixel(row, col, premultiplyCoverage(paint.color, cov), paint.apply_dither);
+                    if (self.subpixel_order == .none) {
+                        const cov = evalGlyphCoverage(page, local.x, local.y, ppe.x, ppe.y, be, band_max_h, band_max_v, self.fill_rule);
+                        if (cov < 1.0 / 255.0) continue;
+                        self.blendPremultipliedPixel(row, col, premultiplyCoverage(paint.color, cov), paint.apply_dither);
+                    } else {
+                        const cov = evalGlyphCoverageSubpixel(
+                            page,
+                            local,
+                            ppe,
+                            sample_dx,
+                            sample_dy,
+                            union_bbox,
+                            .{},
+                            be,
+                            band_max_h,
+                            band_max_v,
+                            self.fill_rule,
+                            self.subpixel_order,
+                        );
+                        if (max3(cov.rgb) < 1.0 / 255.0) continue;
+                        self.blendSubpixelPremultipliedPixel(
+                            row,
+                            col,
+                            premultiplySubpixelCoverage(paint.color, cov.rgb, cov.alpha),
+                            subpixelBlendCoverage(paint.color, cov.rgb),
+                            paint.apply_dither,
+                        );
+                    }
                 }
             }
         }
@@ -557,6 +725,7 @@ pub const CpuRenderer = struct {
         bbox: snail.bezier.BBox,
         be: GlyphBandEntry,
         transform: Transform2D,
+        hint: text_hinting.GlyphHintInstance,
         color: [4]f32,
         allow_subpixel: bool,
     ) void {
@@ -579,29 +748,21 @@ pub const CpuRenderer = struct {
             var col: u32 = @intCast(px0);
             while (col < @as(u32, @intCast(px1))) : (col += 1) {
                 const world = Vec2.new(@as(f32, @floatFromInt(col)) + 0.5, @as(f32, @floatFromInt(row)) + 0.5);
-                const local = inverse.applyPoint(world);
+                const display_local = inverse.applyPoint(world);
 
                 if (!allow_subpixel or self.subpixel_order == .none) {
-                    const cov = evalGlyphCoverage(
-                        page,
-                        local.x,
-                        local.y,
-                        ppe.x,
-                        ppe.y,
-                        be,
-                        band_max_h,
-                        band_max_v,
-                        self.fill_rule,
-                    );
+                    const cov = evalHintedGlyphCoverage(page, display_local, ppe, bbox, hint, be, band_max_h, band_max_v, self.fill_rule);
                     if (cov < 1.0 / 255.0) continue;
                     self.blendPremultipliedPixel(row, col, premultiplyCoverage(color, cov), false);
                 } else {
                     const cov = evalGlyphCoverageSubpixel(
                         page,
-                        local.x,
-                        local.y,
-                        epp,
+                        display_local,
                         ppe,
+                        Vec2.new(inverse.xx, inverse.yx),
+                        Vec2.new(inverse.xy, inverse.yy),
+                        bbox,
+                        hint,
                         be,
                         band_max_h,
                         band_max_v,
@@ -619,7 +780,7 @@ pub const CpuRenderer = struct {
     /// Same inputs as snail.Batch.addGlyph -- uses atlas curve/band data.
     fn drawGlyph(
         self: *CpuRenderer,
-        atlas: *const snail.Atlas,
+        atlas: *const snail.CurveAtlas,
         font: *const snail.Font,
         codepoint: u32,
         x: f32,
@@ -633,7 +794,7 @@ pub const CpuRenderer = struct {
 
     fn drawGlyphId(
         self: *CpuRenderer,
-        atlas: *const snail.Atlas,
+        atlas: *const snail.CurveAtlas,
         glyph_id: u16,
         x: f32,
         y: f32,
@@ -645,7 +806,7 @@ pub const CpuRenderer = struct {
 
     fn drawGlyphIdLinear(
         self: *CpuRenderer,
-        atlas: *const snail.Atlas,
+        atlas: *const snail.CurveAtlas,
         glyph_id: u16,
         x: f32,
         y: f32,
@@ -660,8 +821,8 @@ pub const CpuRenderer = struct {
 
     fn drawGlyphInfo(
         self: *CpuRenderer,
-        atlas: *const snail.Atlas,
-        info: snail.Atlas.GlyphInfo,
+        atlas: *const snail.CurveAtlas,
+        info: snail.CurveAtlas.GlyphInfo,
         x: f32,
         y: f32,
         font_size: f32,
@@ -672,8 +833,8 @@ pub const CpuRenderer = struct {
 
     fn drawGlyphInfoLinear(
         self: *CpuRenderer,
-        atlas: *const snail.Atlas,
-        info: snail.Atlas.GlyphInfo,
+        atlas: *const snail.CurveAtlas,
+        info: snail.CurveAtlas.GlyphInfo,
         x: f32,
         y: f32,
         font_size: f32,
@@ -689,7 +850,7 @@ pub const CpuRenderer = struct {
     /// width in pixels. Coordinates use top-left origin (y down).
     fn drawString(
         self: *CpuRenderer,
-        atlas: *const snail.Atlas,
+        atlas: *const snail.CurveAtlas,
         font: *const snail.Font,
         text: []const u8,
         x: f32,
@@ -753,7 +914,7 @@ pub const CpuRenderer = struct {
 
     fn drawTextShaped(
         self: *CpuRenderer,
-        atlas: *const snail.Atlas,
+        atlas: *const snail.CurveAtlas,
         hbs: anytype,
         text: []const u8,
         x: f32,
@@ -786,7 +947,7 @@ pub const CpuRenderer = struct {
     /// Emit a glyph with COLR multi-layer support, mirroring glyph_emit.emitGlyph.
     fn emitGlyphCpu(
         self: *CpuRenderer,
-        atlas: *const snail.Atlas,
+        atlas: *const snail.CurveAtlas,
         glyph_id: u16,
         x: f32,
         y: f32,
@@ -827,8 +988,8 @@ pub const CpuRenderer = struct {
 
     fn renderGlyphInternal(
         self: *CpuRenderer,
-        atlas: *const snail.Atlas,
-        info: snail.Atlas.GlyphInfo,
+        atlas: *const snail.CurveAtlas,
+        info: snail.CurveAtlas.GlyphInfo,
         x: f32,
         y: f32,
         font_size: f32,
@@ -899,10 +1060,12 @@ pub const CpuRenderer = struct {
                 } else {
                     const cov = evalGlyphCoverageSubpixel(
                         page,
-                        em_x,
-                        em_y,
-                        Vec2.new(epp_x, epp_y),
+                        Vec2.new(em_x, em_y),
                         Vec2.new(ppe_x, ppe_y),
+                        Vec2.new(epp_x, 0.0),
+                        Vec2.new(0.0, -epp_y),
+                        info.bbox,
+                        .{},
                         be,
                         band_max_h,
                         band_max_v,
@@ -939,30 +1102,35 @@ pub const CpuRenderer = struct {
         self.pixels[off + 3] = @intFromFloat(@min(@max(out_a * 255.0, 0.0), 255.0));
     }
 
-    /// Per-channel subpixel blend (equivalent to GPU dual-source blending).
-    /// Each RGB channel has its own coverage, so the destination attenuation
-    /// is per-channel: out.r = src.r * alpha_r + dst.r * (1 - alpha_r), etc.
-    fn blendSubpixelPixel(self: *CpuRenderer, row: u32, col: u32, color: [4]f32, cov: [3]f32, alpha_cov: f32) void {
+    fn blendSubpixelPremultipliedPixel(self: *CpuRenderer, row: u32, col: u32, src: [4]f32, src_blend: [3]f32, apply_dither: bool) void {
         const off = row * self.stride + col * 4;
         const dst_r = srgbToLinear(self.pixels[off + 0]);
         const dst_g = srgbToLinear(self.pixels[off + 1]);
         const dst_b = srgbToLinear(self.pixels[off + 2]);
         const dst_a = @as(f32, @floatFromInt(self.pixels[off + 3])) / 255.0;
 
-        const alpha_r = color[3] * cov[0];
-        const alpha_g = color[3] * cov[1];
-        const alpha_b = color[3] * cov[2];
-        const src_a = color[3] * clamp01(alpha_cov);
-
-        const out_r = color[0] * alpha_r + dst_r * (1.0 - alpha_r);
-        const out_g = color[1] * alpha_g + dst_g * (1.0 - alpha_g);
-        const out_b = color[2] * alpha_b + dst_b * (1.0 - alpha_b);
+        const out_r = src[0] + dst_r * (1.0 - clamp01(src_blend[0]));
+        const out_g = src[1] + dst_g * (1.0 - clamp01(src_blend[1]));
+        const out_b = src[2] + dst_b * (1.0 - clamp01(src_blend[2]));
+        const src_a = clamp01(src[3]);
         const out_a = src_a + dst_a * (1.0 - src_a);
 
-        self.pixels[off + 0] = @intFromFloat(@min(@max(linearToSrgb(out_r) * 255.0, 0.0), 255.0));
-        self.pixels[off + 1] = @intFromFloat(@min(@max(linearToSrgb(out_g) * 255.0, 0.0), 255.0));
-        self.pixels[off + 2] = @intFromFloat(@min(@max(linearToSrgb(out_b) * 255.0, 0.0), 255.0));
+        const dither = if (apply_dither)
+            (interleavedGradientNoise(row, col) - 0.5) * (clamp01(out_a) / 255.0)
+        else
+            0.0;
+        self.pixels[off + 0] = @intFromFloat(@min(@max((linearToSrgb(out_r) + dither) * 255.0, 0.0), 255.0));
+        self.pixels[off + 1] = @intFromFloat(@min(@max((linearToSrgb(out_g) + dither) * 255.0, 0.0), 255.0));
+        self.pixels[off + 2] = @intFromFloat(@min(@max((linearToSrgb(out_b) + dither) * 255.0, 0.0), 255.0));
         self.pixels[off + 3] = @intFromFloat(@min(@max(out_a * 255.0, 0.0), 255.0));
+    }
+
+    /// Per-channel subpixel blend (equivalent to GPU dual-source blending).
+    /// Each RGB channel has its own coverage, so the destination attenuation
+    /// is per-channel: out.r = src.r * alpha_r + dst.r * (1 - alpha_r), etc.
+    fn blendSubpixelPixel(self: *CpuRenderer, row: u32, col: u32, color: [4]f32, cov: [3]f32, alpha_cov: f32) void {
+        const src_blend = subpixelBlendCoverage(color, cov);
+        self.blendSubpixelPremultipliedPixel(row, col, premultiplySubpixelCoverage(color, cov, alpha_cov), src_blend, false);
     }
 };
 
@@ -999,13 +1167,6 @@ fn transformedGlyphBounds(bbox: snail.BBox, transform: Transform2D) struct { min
     return .{ .min = min, .max = max };
 }
 
-fn transformPreservesSubpixelAxes(transform: Transform2D) bool {
-    return @abs(transform.xy) <= 1e-5 and
-        @abs(transform.yx) <= 1e-5 and
-        @abs(transform.xx) > 1e-6 and
-        @abs(transform.yy) > 1e-6;
-}
-
 fn glyphEdgePixelsPerPixel(inverse: Transform2D) Vec2 {
     return .{
         .x = @max(@abs(inverse.xx) + @abs(inverse.xy), 1.0 / 65536.0),
@@ -1038,7 +1199,7 @@ fn samplePathPaintFromLayerInfo(data: []const f32, width: u32, info_x: u16, info
             var t: f32 = 0.0;
             if (len_sq > 1e-10) t = Vec2.dot(Vec2.sub(local, start), delta) / len_sq;
             return .{
-                .color = lerpColor(color0, color1, wrapPaintT(t, paintExtendFromFloat(extra[0]))),
+                .color = lerpGradientColor(color0, color1, wrapPaintT(t, paintExtendFromFloat(extra[0]))),
                 .apply_dither = true,
             };
         },
@@ -1049,7 +1210,7 @@ fn samplePathPaintFromLayerInfo(data: []const f32, width: u32, info_x: u16, info
             const radius = @max(@abs(data0[2]), 1.0 / 65536.0);
             const t = Vec2.length(Vec2.sub(local, center)) / radius;
             return .{
-                .color = lerpColor(color0, color1, wrapPaintT(t, paintExtendFromFloat(data0[3]))),
+                .color = lerpGradientColor(color0, color1, wrapPaintT(t, paintExtendFromFloat(data0[3]))),
                 .apply_dither = true,
             };
         },
@@ -1133,11 +1294,11 @@ const PathPaintSample = struct {
     apply_dither: bool = false,
 };
 
-fn samplePathPaint(atlas: *const snail.Atlas, instance: snail.PathPicture.Instance, glyph_id: u16, local: Vec2) PathPaintSample {
+fn samplePathPaint(atlas: *const snail.CurveAtlas, instance: snail.PathPicture.Instance, glyph_id: u16, local: Vec2) PathPaintSample {
     return samplePathPaintAt(atlas, instance.info_x, instance.info_y, glyph_id, local);
 }
 
-fn samplePathPaintAt(atlas: *const snail.Atlas, info_x: u16, info_y: u16, glyph_id: u16, local: Vec2) PathPaintSample {
+fn samplePathPaintAt(atlas: *const snail.CurveAtlas, info_x: u16, info_y: u16, glyph_id: u16, local: Vec2) PathPaintSample {
     const data = atlas.layer_info_data orelse return .{ .color = .{ 1, 1, 1, 1 } };
     const width = atlas.layer_info_width;
     const info = fetchLayerInfoTexel(data, width, info_x, info_y, 0);
@@ -1157,7 +1318,7 @@ fn samplePathPaintAt(atlas: *const snail.Atlas, info_x: u16, info_y: u16, glyph_
             var t: f32 = 0.0;
             if (len_sq > 1e-10) t = Vec2.dot(Vec2.sub(local, start), delta) / len_sq;
             return .{
-                .color = lerpColor(color0, color1, wrapPaintT(t, paintExtendFromFloat(extra[0]))),
+                .color = lerpGradientColor(color0, color1, wrapPaintT(t, paintExtendFromFloat(extra[0]))),
                 .apply_dither = true,
             };
         },
@@ -1168,7 +1329,7 @@ fn samplePathPaintAt(atlas: *const snail.Atlas, info_x: u16, info_y: u16, glyph_
             const radius = @max(@abs(data0[2]), 1.0 / 65536.0);
             const t = Vec2.length(Vec2.sub(local, center)) / radius;
             return .{
-                .color = lerpColor(color0, color1, wrapPaintT(t, paintExtendFromFloat(data0[3]))),
+                .color = lerpGradientColor(color0, color1, wrapPaintT(t, paintExtendFromFloat(data0[3]))),
                 .apply_dither = true,
             };
         },
@@ -1193,7 +1354,7 @@ fn samplePathPaintAt(atlas: *const snail.Atlas, info_x: u16, info_y: u16, glyph_
                     var t: f32 = 0.0;
                     if (len_sq > 1e-10) t = Vec2.dot(Vec2.sub(local, start), delta) / len_sq;
                     return .{
-                        .color = lerpColor(color0, color1, wrapPaintT(t, paintExtendFromFloat(extra[0]))),
+                        .color = lerpGradientColor(color0, color1, wrapPaintT(t, paintExtendFromFloat(extra[0]))),
                         .apply_dither = true,
                     };
                 },
@@ -1204,7 +1365,7 @@ fn samplePathPaintAt(atlas: *const snail.Atlas, info_x: u16, info_y: u16, glyph_
                     const radius = @max(@abs(fill_data0[2]), 1.0 / 65536.0);
                     const t = Vec2.length(Vec2.sub(local, center)) / radius;
                     return .{
-                        .color = lerpColor(color0, color1, wrapPaintT(t, paintExtendFromFloat(fill_data0[3]))),
+                        .color = lerpGradientColor(color0, color1, wrapPaintT(t, paintExtendFromFloat(fill_data0[3]))),
                         .apply_dither = true,
                     };
                 },
@@ -1217,7 +1378,7 @@ fn samplePathPaintAt(atlas: *const snail.Atlas, info_x: u16, info_y: u16, glyph_
 }
 
 fn sampleImagePaint(
-    atlas: *const snail.Atlas,
+    atlas: *const snail.CurveAtlas,
     glyph_id: u16,
     data: []const f32,
     width: u32,
@@ -1345,6 +1506,37 @@ fn premultiplyCoverage(color: [4]f32, cov: f32) [4]f32 {
     };
 }
 
+fn premultiplySubpixelCoverage(color: [4]f32, cov: [3]f32, alpha_cov: f32) [4]f32 {
+    return .{
+        color[0] * color[3] * cov[0],
+        color[1] * color[3] * cov[1],
+        color[2] * color[3] * cov[2],
+        color[3] * alpha_cov,
+    };
+}
+
+fn subpixelBlendCoverage(color: [4]f32, cov: [3]f32) [3]f32 {
+    return .{
+        color[3] * cov[0],
+        color[3] * cov[1],
+        color[3] * cov[2],
+    };
+}
+
+fn compositeSubpixelOver(src: [4]f32, src_blend: [3]f32, dst_color: *[4]f32, dst_blend: *[3]f32) void {
+    dst_color.* = .{
+        src[0] + dst_color.*[0] * (1.0 - src_blend[0]),
+        src[1] + dst_color.*[1] * (1.0 - src_blend[1]),
+        src[2] + dst_color.*[2] * (1.0 - src_blend[2]),
+        src[3] + dst_color.*[3] * (1.0 - src[3]),
+    };
+    dst_blend.* = .{
+        src_blend[0] + dst_blend.*[0] * (1.0 - src_blend[0]),
+        src_blend[1] + dst_blend.*[1] * (1.0 - src_blend[1]),
+        src_blend[2] + dst_blend.*[2] * (1.0 - src_blend[2]),
+    };
+}
+
 fn lerpColor(a: [4]f32, b: [4]f32, t: f32) [4]f32 {
     return .{
         a[0] + (b[0] - a[0]) * t,
@@ -1352,6 +1544,12 @@ fn lerpColor(a: [4]f32, b: [4]f32, t: f32) [4]f32 {
         a[2] + (b[2] - a[2]) * t,
         a[3] + (b[3] - a[3]) * t,
     };
+}
+
+fn lerpGradientColor(a_linear: [4]f32, b_linear: [4]f32, t: f32) [4]f32 {
+    const a_srgb = [4]f32{ linearToSrgb(a_linear[0]), linearToSrgb(a_linear[1]), linearToSrgb(a_linear[2]), a_linear[3] };
+    const b_srgb = [4]f32{ linearToSrgb(b_linear[0]), linearToSrgb(b_linear[1]), linearToSrgb(b_linear[2]), b_linear[3] };
+    return srgbColorToLinear(lerpColor(a_srgb, b_srgb, t));
 }
 
 fn max3(values: [3]f32) f32 {
@@ -1619,51 +1817,70 @@ fn evalGlyphCoverage(
     );
 }
 
+fn hintedPixelsPerEm(display_ppe: Vec2, hint: text_hinting.GlyphHintInstance, bbox: snail.BBox, display_x: f32) Vec2 {
+    const scale_x = @max(@abs(text_hinting.inverseWarpScaleX(hint, bbox, display_x)), 1.0 / 65536.0);
+    return .{
+        .x = display_ppe.x / scale_x,
+        .y = display_ppe.y,
+    };
+}
+
+fn evalHintedGlyphCoverage(
+    page: *const snail.AtlasPage,
+    display_rc: Vec2,
+    display_ppe: Vec2,
+    bbox: snail.BBox,
+    hint: text_hinting.GlyphHintInstance,
+    be: GlyphBandEntry,
+    band_max_h: i32,
+    band_max_v: i32,
+    fill_rule: FillRule,
+) f32 {
+    const source_ppe = hintedPixelsPerEm(display_ppe, hint, bbox, display_rc.x);
+    return evalGlyphCoverage(
+        page,
+        text_hinting.inverseWarpX(hint, bbox, display_rc.x),
+        display_rc.y,
+        source_ppe.x,
+        source_ppe.y,
+        be,
+        band_max_h,
+        band_max_v,
+        fill_rule,
+    );
+}
+
 fn evalGlyphCoverageSubpixel(
     page: *const snail.AtlasPage,
-    em_x: f32,
-    em_y: f32,
-    epp: Vec2,
-    ppe: Vec2,
+    rc: Vec2,
+    display_ppe: Vec2,
+    sample_dx: Vec2,
+    sample_dy: Vec2,
+    bbox: snail.bezier.BBox,
+    hint: text_hinting.GlyphHintInstance,
     be: GlyphBandEntry,
     band_max_h: i32,
     band_max_v: i32,
     fill_rule: FillRule,
     subpixel_order: SubpixelOrder,
 ) SubpixelCoverage {
-    const rc = Vec2.new(em_x, em_y);
-    const state = initGlyphBandState(page, em_x, em_y, be, band_max_h, band_max_v);
+    const step = Vec2.scale(switch (subpixel_order) {
+        .rgb, .bgr => sample_dx,
+        .vrgb, .vbgr => sample_dy,
+        .none => Vec2.new(0.0, 0.0),
+    }, 1.0 / 3.0);
+    const reverse_order = subpixel_order == .bgr or subpixel_order == .vbgr;
     return switch (subpixel_order) {
-        .rgb, .bgr => blk: {
-            const s: f32 = if (subpixel_order == .bgr) -1.0 else 1.0;
-            const sp = epp.x / 3.0;
-            const cw_v = evalGlyphVertCoverage(page, rc, 0.0, ppe.y, state);
-            break :blk filterSubpixelCoverage(
-                blendSubpixelSample(evalGlyphHorizCoverage(page, rc, -3.0 * sp * s, ppe.x, state), cw_v, fill_rule),
-                blendSubpixelSample(evalGlyphHorizCoverage(page, rc, -2.0 * sp * s, ppe.x, state), cw_v, fill_rule),
-                blendSubpixelSample(evalGlyphHorizCoverage(page, rc, -1.0 * sp * s, ppe.x, state), cw_v, fill_rule),
-                blendSubpixelSample(evalGlyphHorizCoverage(page, rc, 0.0, ppe.x, state), cw_v, fill_rule),
-                blendSubpixelSample(evalGlyphHorizCoverage(page, rc, 1.0 * sp * s, ppe.x, state), cw_v, fill_rule),
-                blendSubpixelSample(evalGlyphHorizCoverage(page, rc, 2.0 * sp * s, ppe.x, state), cw_v, fill_rule),
-                blendSubpixelSample(evalGlyphHorizCoverage(page, rc, 3.0 * sp * s, ppe.x, state), cw_v, fill_rule),
-                subpixel_order == .bgr,
-            );
-        },
-        .vrgb, .vbgr => blk: {
-            const s: f32 = if (subpixel_order == .vbgr) -1.0 else 1.0;
-            const sp = epp.y / 3.0;
-            const cw_h = evalGlyphHorizCoverage(page, rc, 0.0, ppe.x, state);
-            break :blk filterSubpixelCoverage(
-                blendSubpixelSample(evalGlyphVertCoverage(page, rc, -3.0 * sp * s, ppe.y, state), cw_h, fill_rule),
-                blendSubpixelSample(evalGlyphVertCoverage(page, rc, -2.0 * sp * s, ppe.y, state), cw_h, fill_rule),
-                blendSubpixelSample(evalGlyphVertCoverage(page, rc, -1.0 * sp * s, ppe.y, state), cw_h, fill_rule),
-                blendSubpixelSample(evalGlyphVertCoverage(page, rc, 0.0, ppe.y, state), cw_h, fill_rule),
-                blendSubpixelSample(evalGlyphVertCoverage(page, rc, 1.0 * sp * s, ppe.y, state), cw_h, fill_rule),
-                blendSubpixelSample(evalGlyphVertCoverage(page, rc, 2.0 * sp * s, ppe.y, state), cw_h, fill_rule),
-                blendSubpixelSample(evalGlyphVertCoverage(page, rc, 3.0 * sp * s, ppe.y, state), cw_h, fill_rule),
-                subpixel_order == .vbgr,
-            );
-        },
+        .rgb, .bgr, .vrgb, .vbgr => filterSubpixelCoverage(
+            evalHintedGlyphCoverage(page, Vec2.new(rc.x - step.x * 3.0, rc.y - step.y * 3.0), display_ppe, bbox, hint, be, band_max_h, band_max_v, fill_rule),
+            evalHintedGlyphCoverage(page, Vec2.new(rc.x - step.x * 2.0, rc.y - step.y * 2.0), display_ppe, bbox, hint, be, band_max_h, band_max_v, fill_rule),
+            evalHintedGlyphCoverage(page, Vec2.new(rc.x - step.x * 1.0, rc.y - step.y * 1.0), display_ppe, bbox, hint, be, band_max_h, band_max_v, fill_rule),
+            evalHintedGlyphCoverage(page, rc, display_ppe, bbox, hint, be, band_max_h, band_max_v, fill_rule),
+            evalHintedGlyphCoverage(page, Vec2.new(rc.x + step.x * 1.0, rc.y + step.y * 1.0), display_ppe, bbox, hint, be, band_max_h, band_max_v, fill_rule),
+            evalHintedGlyphCoverage(page, Vec2.new(rc.x + step.x * 2.0, rc.y + step.y * 2.0), display_ppe, bbox, hint, be, band_max_h, band_max_v, fill_rule),
+            evalHintedGlyphCoverage(page, Vec2.new(rc.x + step.x * 3.0, rc.y + step.y * 3.0), display_ppe, bbox, hint, be, band_max_h, band_max_v, fill_rule),
+            reverse_order,
+        ),
         .none => .{ .rgb = .{ 0.0, 0.0, 0.0 }, .alpha = 0.0 },
     };
 }
@@ -1912,7 +2129,7 @@ test "cpu renderer renders glyphs" {
     defer font.deinit();
 
     // Build atlas with ASCII
-    var atlas = try snail.Atlas.initAscii(testing.allocator, &font, &snail.ASCII_PRINTABLE);
+    var atlas = try snail.CurveAtlas.initAscii(testing.allocator, &font, &snail.ASCII_PRINTABLE);
     defer atlas.deinit();
 
     const width: u32 = 200;
@@ -2552,15 +2769,30 @@ test "cpu renderer drawPaths batch matches drawPathPicture" {
     batch_renderer.clear(0, 0, 0, 0);
     batch_renderer.setSubpixelOrder(.rgb);
 
-    const atlases = [1]*const snail.Atlas{&picture.atlas};
-    var views: [1]snail.AtlasHandle = undefined;
-    batch_renderer.uploadAtlases(&atlases, &views);
+    var renderer = batch_renderer.asRenderer();
+    var scene = snail.Scene.init(testing.allocator);
+    defer scene.deinit();
+    try scene.addPathPicture(&picture);
 
-    var path_vertex_buf: [snail.PATH_FLOATS_PER_SHAPE * 4]f32 = undefined;
-    var batch = snail.PathBatch.init(&path_vertex_buf);
-    _ = batch.addPicture(&views[0], &picture);
+    var resource_entries: [4]snail.ResourceSet.Entry = undefined;
+    var resources = snail.ResourceSet.init(&resource_entries);
+    try resources.addScene(&scene);
+    var prepared = try renderer.uploadResourcesBlocking(testing.allocator, &resources);
+    defer prepared.deinit();
 
-    batch_renderer.drawPaths(batch.slice(), snail.Mat4.identity, 0, 0);
+    const options = snail.DrawOptions{
+        .mvp = snail.Mat4.identity,
+        .target = .{ .pixel_width = width, .pixel_height = height },
+    };
+    const needed = snail.DrawList.estimate(&scene, options);
+    const needed_segments = snail.DrawList.estimateSegments(&scene, options);
+    const draw_buf = try testing.allocator.alloc(f32, needed);
+    defer testing.allocator.free(draw_buf);
+    const draw_segments = try testing.allocator.alloc(snail.DrawSegment, needed_segments);
+    defer testing.allocator.free(draw_segments);
+    var draw = snail.DrawList.init(draw_buf, draw_segments);
+    try draw.addScene(&prepared, &scene, options);
+    try renderer.draw(&prepared, draw.slice(), options);
 
     // Compare: the inside pixel should match
     const inside = ((12 * stride) + (16 * 4));

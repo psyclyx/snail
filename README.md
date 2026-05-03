@@ -6,7 +6,7 @@ GPU text and vector rendering via direct Bezier curve evaluation.
 
 snail renders text by evaluating quadratic Bezier curves per-pixel in a fragment shader. No bitmap atlases, no signed distance fields. Glyphs are resolution-independent and render correctly at any size, rotation, or perspective transform. The same curve evaluation pipeline also renders filled and stroked vector paths with solid, gradient, and image paints.
 
-This is alpha-quality software. The Zig API is settling but not yet stable. The C API tracks the Zig surface. Breaking changes are expected.
+This is alpha-quality software. The Zig API is settling but not yet stable. The C API is legacy and disabled by default while the Zig resource model is being migrated. Breaking changes are expected.
 
 ## Algorithm
 
@@ -61,10 +61,7 @@ zig build run -Drenderer=gl33                   # force OpenGL 3.3
 zig build run -Drenderer=vulkan -Dvulkan=true   # Vulkan backend
 zig build run -Drenderer=cpu                    # CPU renderer (headless)
 zig build screenshot                            # GL screenshot → zig-out/demo-screenshot.tga
-zig build screenshot-cpu                        # CPU screenshot (no GPU)
-zig build bench-suite                           # layout + rendering benchmarks
-zig build bench-suite -Dvulkan=true             # includes Vulkan passes
-zig build install --release=fast                # install libsnail.a + snail.h
+zig build install --release=fast                # install libsnail.a
 ```
 
 Library backend flags: `-Dopengl=true` (default), `-Dvulkan=false`, `-Dcpu-renderer=true` (default).
@@ -102,53 +99,61 @@ Your project needs OpenGL and HarfBuzz available via pkg-config. On NixOS/nix-sh
 ```zig
 const snail = @import("snail");
 
-// Create fonts with fallback chain (data slices must outlive Fonts)
-var fonts = try snail.Fonts.init(allocator, &.{
+// Create an immutable TextAtlas snapshot with a fallback chain.
+var atlas = try snail.TextAtlas.init(allocator, &.{
     .{ .data = noto_sans_regular },
     .{ .data = noto_sans_bold, .weight = .bold },
     .{ .data = noto_sans_regular, .italic = true, .synthetic = .{ .skew_x = 0.2 } },
     .{ .data = noto_sans_arabic, .fallback = true },
     .{ .data = twemoji, .fallback = true },
 });
-defer fonts.deinit();
+defer atlas.deinit();
 
-// Populate atlas — starts empty, ensureText returns a new snapshot
-fonts = (try fonts.ensureText(.{}, "Hello, world!")) orelse fonts;
+var shaped = try atlas.shapeText(allocator, .{}, "Hello, world!");
+defer shaped.deinit();
+if (try atlas.ensureShaped(&shaped)) |next| {
+    atlas.deinit();
+    atlas = next;
+}
 
-// Initialize renderer (requires active GL 3.3+ context)
-var renderer = try snail.Renderer.init();
-defer renderer.deinit();
+var blob = try snail.TextBlob.fromShaped(allocator, &atlas, &shaped, .{
+    .x = 10, .y = 400, .size = 48, .color = .{ 1, 1, 1, 1 },
+});
+defer blob.deinit();
 
-// Upload font textures
-var font_atlas = fonts.uploadAtlas();
-defer fonts.deinitUploadAtlas(&font_atlas);
-renderer.uploadAtlases(&.{&font_atlas}, &.{});
+var scene = snail.Scene.init(allocator);
+defer scene.deinit();
+try scene.addText(&blob);
 
-// Build text vertices (zero allocations, caller-owned buffer)
-var buf: [4096 * snail.TEXT_FLOATS_PER_GLYPH]f32 = undefined;
-var batch = snail.TextBatch.init(&buf);
-_ = try fonts.addText(&batch, .{}, "Hello, world!", 10, 400, 48, .{ 1, 1, 1, 1 });
+var resources: snail.ResourceSet = .{};
+try resources.addScene(&scene);
 
-// Draw
-renderer.beginFrame();
-renderer.drawText(batch.slice(), mvp, viewport_w, viewport_h);
+// Requires an active GL context. Vulkan uses snail.VulkanRenderer.init(ctx).
+var gl = try snail.GlRenderer.init();
+defer gl.deinit();
+var prepared = try gl.uploadResourcesBlocking(&resources);
+defer prepared.deinit();
+
+const options = snail.DrawOptions{
+    .mvp = mvp,
+    .target = .{ .pixel_width = viewport_w, .pixel_height = viewport_h },
+};
+const needed = snail.DrawList.estimate(&scene, options);
+const draw_buf = try allocator.alloc(f32, needed);
+defer allocator.free(draw_buf);
+var draw = snail.DrawList.init(draw_buf);
+try draw.addScene(&prepared, &scene, options);
+try gl.draw(&prepared, draw.slice(), options);
 ```
 
 ### On-demand atlas extension
 
-`ensureText` returns a new immutable snapshot; the old one remains valid for in-flight readers.
+`ensureText` and `ensureShaped` return a new immutable snapshot; the old one remains valid for in-flight readers.
 
 ```zig
-// Render — text is automatically itemized across fonts
-const result = try fonts.addText(&batch, .{}, text, 10, 400, 24, color);
-
-// If glyphs were missing, extend and re-render next frame
-if (result.missing) {
-    if (try fonts.ensureText(.{}, text)) |new_fonts| {
-        fonts.deinit();  // safe: no other readers
-        fonts = new_fonts;
-        // re-upload and redraw
-    }
+if (try atlas.ensureText(.{}, text)) |next| {
+    atlas.deinit();  // safe only after readers of the old snapshot are done
+    atlas = next;
 }
 ```
 
@@ -169,17 +174,14 @@ try builder.addPath(&path,
 
 var picture = try builder.freeze(allocator);
 defer picture.deinit();
-const pic_handle = renderer.uploadPathPicture(&picture);
 
-var pbuf: [64 * snail.PATH_FLOATS_PER_SHAPE]f32 = undefined;
-var paths = snail.PathBatch.init(&pbuf);
-_ = paths.addPicture(&pic_handle, &picture);
-renderer.drawPaths(paths.slice(), mvp, viewport_w, viewport_h);
+try scene.addPathPicture(&picture);
+try resources.addScene(&scene);
 ```
 
 ## Example: C
 
-> **Note:** The C API still uses the lower-level `Font`/`Atlas` types. A `snail_fonts_*` C API is planned.
+> **Note:** The C API is intentionally not part of the current migration. It still uses the older low-level surface and is built only with `-Dc-api=true`.
 
 ```c
 #include "snail.h"
@@ -249,19 +251,24 @@ snail_renderer_deinit();
 
 | Type | Description |
 |------|-------------|
-| `Fonts` | Multi-font manager. Immutable snapshot with shared glyph atlas. `ensureText` returns a new snapshot; old stays valid. |
-| `FaceSpec` | `{ .data, .weight, .italic, .fallback, .synthetic }` — font face specification for `Fonts.init`. |
+| `TextAtlas` | Immutable CPU font/glyph snapshot. `ensureText` and `ensureShaped` return a new snapshot; old stays valid. |
+| `ShapedText` | Shaped glyph placements for a string/run. |
+| `TextBlob` | Positioned text that borrows the exact `TextAtlas` snapshot used to build it. |
+| `FaceSpec` | `{ .data, .weight, .italic, .fallback, .synthetic }` — font face specification for `TextAtlas.init`. |
 | `FontStyle` | `{ .weight: FontWeight, .italic: bool }` — selects a face for rendering. |
 | `FontWeight` | `.regular`, `.bold`, `.semi_bold`, etc. |
 | `SyntheticStyle` | `{ .skew_x, .embolden }` — synthetic italic shear and bold offset. |
-| `AddTextResult` | `{ .advance: f32, .missing: bool }` — returned by `Fonts.addText`. |
-| `TextBatch` | Writes glyph vertices into a caller-owned `[]f32`. Zero allocations. |
-| `Image` | sRGB RGBA8 raster image. Created with `initSrgba8`. |
+| `Image` | Immutable sRGB RGBA8 raster image. Created with `initSrgba8`. |
 | `Path` | Mutable path builder: `moveTo`, `lineTo`, `quadTo`, `cubicTo`, `close`, plus shape helpers. |
 | `PathPictureBuilder` | Accumulates filled/stroked paths and shapes with paint styles. |
-| `PathPicture` | Immutable frozen vector art. Upload once, instance cheaply per frame. |
-| `PathBatch` | Writes path instance vertices into a caller-owned `[]f32`. |
-| `Renderer` | Owns GPU state (shaders, textures). One per GL/Vulkan context. |
+| `PathPicture` | Immutable frozen vector art. |
+| `Scene` | Borrowed command list of `TextBlob` and `PathPicture` draws. |
+| `ResourceSet` | Fixed-capacity borrowed manifest of CPU values. |
+| `PreparedResources` | Backend realization for one renderer/context. |
+| `DrawList` | Caller-buffered draw records. |
+| `PreparedScene` | Optional owned draw-record cache for static scenes. |
+| `GlRenderer`, `VulkanRenderer`, `CpuRenderer` | First-class backend renderers. |
+| `Renderer` | Type-erased convenience wrapper around a backend renderer. |
 | `Rect` | `{ x, y, w, h }` rectangle. |
 | `Transform2D` | 2x3 affine matrix `{ xx, xy, tx, yx, yy, ty }`. |
 | `FillStyle` | sRGB fill color (straight alpha) with optional `Paint`. |
@@ -269,45 +276,32 @@ snail_renderer_deinit();
 | `Paint` | Tagged union: `.solid`, `.linear_gradient`, `.radial_gradient`, `.image`. |
 | `ColorSpace` | Gradient interpolation space: `.srgb` (default) or `.linear_rgb`. |
 
-### Fonts
+### TextAtlas
 
 | Method | Description |
 |--------|-------------|
-| `Fonts.init(alloc, faces) !Fonts` | Parse font faces. Atlas starts empty. |
-| `fonts.deinit()` | Release resources. Shared pages remain valid for other snapshots. |
-| `fonts.ensureText(style, text) !?Fonts` | Return new snapshot with glyphs for `text`. Null if already present. |
-| `fonts.addText(batch, style, text, x, y, size, color) !AddTextResult` | Itemize + shape + emit. Returns advance and whether any glyphs were missing. |
-| `fonts.measureText(style, text, size) !f32` | Measure advance width without emitting vertices. |
-| `fonts.lineMetrics() !LineMetrics` | Primary face `hhea` ascent, descent, line gap in font units. |
-| `fonts.decorationRect(kind, x, y, advance, size) !Rect` | Compute underline or strikethrough rect from font metrics. |
-| `fonts.superscriptTransform(x, y, size) !ScriptTransform` | Adjusted position and size for superscript text. |
-| `fonts.subscriptTransform(x, y, size) !ScriptTransform` | Adjusted position and size for subscript text. |
-| `fonts.uploadAtlas() Atlas` | Temporary Atlas wrapper for GPU upload. Call `deinitUploadAtlas` after. |
-| `fonts.pageCount() usize` | Number of texture pages. |
-
-### TextBatch
-
-| Method | Description |
-|--------|-------------|
-| `TextBatch.init(buf) TextBatch` | Wrap a caller-owned `[]f32`. |
-| `batch.glyphCount() usize` | Glyphs written so far. |
-| `batch.slice() []const f32` | Vertex data for `Renderer.drawText`. |
-| `batch.reset()` | Clear without reallocating. |
+| `TextAtlas.init(alloc, faces) !TextAtlas` | Parse font faces. Atlas starts empty. |
+| `atlas.deinit()` | Release resources. Shared pages remain valid for other snapshots. |
+| `atlas.shapeText(alloc, style, text) !ShapedText` | Shape text without growing the atlas. |
+| `atlas.ensureShaped(shaped) !?TextAtlas` | Return a new snapshot with the shaped glyphs present. Null if already present. |
+| `atlas.ensureText(style, text) !?TextAtlas` | Shape-and-ensure helper. |
+| `TextBlob.fromShaped(alloc, atlas, shaped, options) !TextBlob` | Build positioned text from shaped glyphs. |
+| `TextBlobBuilder.addText(...)` | Convenience helper that shapes, ensures, and appends. |
 
 ### Renderer
 
 | Method | Description |
 |--------|-------------|
-| `Renderer.init() !Renderer` | Initialize OpenGL backend. |
-| `Renderer.initVulkan(ctx) !Renderer` | Initialize Vulkan backend. |
-| `renderer.uploadAtlas(atlas) AtlasHandle` | Upload atlas textures. |
-| `renderer.uploadImage(image) ImageHandle` | Upload raster image. |
-| `renderer.uploadPathPicture(pic) AtlasHandle` | Upload path picture atlas. |
-| `renderer.beginFrame()` | Reset cached GPU state. Call once per frame. |
-| `renderer.drawText(verts, mvp, w, h)` | Draw text batch vertices. |
-| `renderer.drawPaths(verts, mvp, w, h)` | Draw path batch vertices (always grayscale AA). |
-| `renderer.setSubpixelOrder(order)` | `.none`, `.rgb`, `.bgr`, `.vrgb`, `.vbgr`. |
-| `renderer.setFillRule(rule)` | `.non_zero` (default) or `.even_odd`. |
+| `GlRenderer.init() !GlRenderer` | Initialize OpenGL backend. Requires the GL context to be current. |
+| `VulkanRenderer.init(ctx) !VulkanRenderer` | Initialize Vulkan backend. |
+| `vk.beginFrame(.{ .cmd, .frame_index })` | Bind Vulkan frame ownership explicitly. |
+| `renderer.uploadResourcesBlocking(set) !PreparedResources` | Blocking upload/view construction for simple programs. |
+| `renderer.planResourceUpload(current, next_set)` | Build a scheduled upload plan. |
+| `renderer.beginResourceUpload(plan)` | Start a pending upload. |
+| `renderer.draw(prepared, records, options)` | Execute prebuilt draw records. No resource discovery or upload. |
+| `renderer.drawPrepared(prepared, prepared_scene, options)` | Draw an owned draw-record cache. |
+| `prepared.retireNowOrWhenSafe(renderer)` | Retire resources when they are no longer in use. |
+| `prepared.retireAfter(fence_or_frame)` | Mark resource retirement after an explicit backend fence/frame. |
 
 ### Path
 
@@ -345,49 +339,15 @@ snail_renderer_deinit();
 
 ## Benchmarks
 
-All numbers from a single machine (Ryzen 7 / RTX 3080, NotoSans-Regular, 1280x720 offscreen). Rerun locally with `zig build bench-suite` for your hardware.
-
-**Layout** — CPU text shaping and vertex generation, no GPU draw. Compared against FreeType.
-
-| Scenario | snail | FreeType | Speedup |
-|----------|-------|----------|---------|
-| Short string (13 chars) | 1.2 us | 109 us | 93x |
-| Sentence (53 chars) | 3.9 us | 540 us | 137x |
-| Paragraph (175 chars) | 13.8 us | 1920 us | 140x |
-| Torture (para x7 sizes) | 96 us | 13942 us | 145x |
-
-**Rendering (OpenGL)** — full frame: vertex build + GPU draw + sync. Static = pre-built buffer, draw only. Dynamic = rebuild vertices every frame.
-
-| Scenario | Glyphs | Static FPS | Dynamic FPS |
-|----------|--------|-----------|-------------|
-| Game HUD (2 lines) | 45 | 34,820 | 46,381 |
-| Body text (6 paragraphs) | 978 | 15,432 | 9,702 |
-| Torture (fill screen) | 4,075 | 4,935 | 2,501 |
-| Arabic (12 lines, HarfBuzz) | 264 | 44,127 | 20,829 |
-| Multi-font torture (4 fonts) | 522 | 24,595 | 10,953 |
-
-**Rendering (Vulkan)** — same scenarios, Vulkan offscreen backend.
-
-| Scenario | Glyphs | Static FPS | Dynamic FPS |
-|----------|--------|-----------|-------------|
-| Game HUD (2 lines) | 45 | 35,228 | 36,460 |
-| Body text (6 paragraphs) | 978 | 12,355 | 9,995 |
-| Torture (fill screen) | 4,075 | 3,910 | 2,497 |
-
-**Vectors (OpenGL)** — path fill + stroke rendering.
-
-| Scenario | Shapes | Static FPS | Dynamic FPS |
-|----------|--------|-----------|-------------|
-| Primitive showcase | 10 | 13,832 | 13,951 |
-| Primitive stress | 587 | 4,753 | 4,800 |
+Benchmarks are intentionally deferred while the explicit resource model lands. The old benchmark sources still exist for reference, but they use the previous low-level draw surface.
 
 ## Architecture
 
 ```
 src/
-  snail.zig              public API: Fonts, Renderer, TextBatch, Path, ...
-  fonts.zig              Fonts type: multi-font manager with immutable snapshot atlas
-  c_api.zig              C bindings
+  snail.zig              public API: TextAtlas, TextBlob, ResourceSet, DrawList, Renderer, Path, ...
+  fonts.zig              TextAtlas internals: multi-font manager with immutable snapshot atlas
+  c_api.zig              legacy C bindings, disabled by default
   glyph_emit.zig         glyph → vertex dispatch (plain, COLR, multi-layer)
   cpu_renderer.zig       software rasterizer (same atlas data, no GPU)
   font/
@@ -399,11 +359,11 @@ src/
     vec.zig              Vec2, Mat4, Transform2D
     roots.zig            quadratic equation solver
   render/
-    pipeline.zig         OpenGL state (GL 3.3 / 4.4 persistent mapped)
+    pipeline.zig         OpenGL renderer and prepared resource state
     gl.zig               OpenGL C function imports
     gl_backend.zig       GL version detection and backend selection
     shaders.zig          GLSL 330 vertex + fragment shaders (GL backend)
-    vulkan_pipeline.zig  Vulkan state (optional)
+    vulkan_pipeline.zig  Vulkan renderer and prepared resource state (optional)
     vulkan_shaders.zig   SPIR-V bytecode loader (Vulkan backend)
     vulkan_platform.zig  Vulkan WSI platform integration
     curve_texture.zig    RGBA16F curve control point packing
@@ -424,22 +384,23 @@ src/
 shaders/
   snail.vert             Vulkan vertex shader (GLSL 450, compiled to SPIR-V at build time)
   snail.frag             Vulkan fragment shader (text + paths, grayscale AA)
-  snail_subpixel.frag    Vulkan fragment shader (text + paths, subpixel AA)
   snail_text_subpixel.frag  Vulkan fragment shader (text-only, subpixel AA)
 include/
-  snail.h                C header
+  snail.h                legacy C header
 ```
 
 ## Thread safety
 
 | Type | Rule |
 |------|------|
-| `Fonts` | Immutable snapshot. Safe for concurrent reads. `ensureText` returns a new snapshot; old remains valid. |
-| `TextBatch`, `PathBatch` | Caller-owned buffers. Thread-local — no sharing needed. |
-| `PathPicture` | Immutable after freeze. Safe for concurrent reads. |
+| `TextAtlas` | Immutable snapshot. Safe for concurrent reads. `ensureText` returns a new snapshot; old remains valid. |
+| `TextBlob`, `PathPicture`, `Image` | Immutable after init/freeze. Safe for concurrent reads while borrowed values outlive users. |
+| `ResourceSet`, `Scene` | Borrowed manifests/lists. CPU values must outlive them. |
+| `PreparedResources` | Backend/context-specific. CPU values must outlive it unless a backend explicitly copies them. |
+| `DrawList` | Caller-owned buffer. Thread-local — no sharing needed. |
 | `Renderer` | Single-threaded. Must be called from the GL/Vulkan context thread. |
 
-Typical pattern: build `Fonts` and call `ensureText` on a loading thread, upload and draw on the render thread, fill batches on any thread(s) into thread-local buffers. When new text arrives, `ensureText` on any thread returns a new snapshot; swap it in on the render thread between frames.
+Typical pattern: build `TextAtlas` and call `ensureText`/`ensureShaped` on a loading thread, publish a new `ResourceSet` to the render thread, upload into `PreparedResources`, build `DrawList` records, then draw. The draw call does not allocate, upload, discover resources, or invalidate caches.
 
 ## Status and roadmap
 
@@ -448,12 +409,13 @@ snail is used in development but is not yet stable. Current limitations:
 - OpenType shaping is limited to GSUB type 4 (ligatures) and GPOS type 2 (pair positioning). Complex scripts require `-Dharfbuzz=true`.
 - No CFF/CFF2 support (TrueType outlines only).
 - No variable fonts.
-- One renderer per process (pipeline state is module-scoped, tied to the GL/Vulkan context).
-- C API is GL-only (no Vulkan bindings yet).
+- Vulkan scheduled upload and retirement are API-shaped but still mostly synchronous.
+- Benchmarks and C bindings still use the old low-level surface and are intentionally deferred.
 
 Planned:
-- Vulkan C API parity.
-- C API for `Fonts` type.
+- Flesh out nonblocking Vulkan scheduled upload and retirement.
+- Migrate the legacy C API onto the explicit resource model.
+- Rebuild benchmarks around the new named phases.
 
 ## License
 

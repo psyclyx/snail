@@ -5,14 +5,17 @@ const Mat4 = vec.Mat4;
 const BBox = @import("../math/bezier.zig").BBox;
 const band_tex = @import("band_texture.zig");
 const curve_tex = @import("curve_texture.zig");
+const text_hinting = @import("../text_hinting.zig");
 
-/// Per-instance data: 5 vec4s = 20 floats per glyph.
+/// Per-instance data: 7 vec4s = 28 floats per glyph.
 ///   rect:  (bbox.min.x, bbox.min.y, bbox.max.x, bbox.max.y)
 ///   xform: (xx, xy, yx, yy) — linear part of 2D transform
 ///   meta:  (tx, ty, gz, gw) — translation + packed glyph data
 ///   bnd:   (sx, sy, ox, oy) — band transform
 ///   col:   (r, g, b, a)     — vertex color
-pub const FLOATS_PER_INSTANCE: usize = 20;
+///   hsrc:  (x0, x1, x2, x3) — source stem anchors in em-space
+///   hdst:  (dx0, dx1, dx2, dx3) — resolved display anchors in em-space
+pub const FLOATS_PER_INSTANCE: usize = 28;
 
 /// One instance per glyph quad (instanced rendering).
 pub const INSTANCES_PER_GLYPH: usize = 1;
@@ -20,6 +23,17 @@ pub const INSTANCES_PER_GLYPH: usize = 1;
 // Legacy aliases used throughout the codebase.
 pub const FLOATS_PER_VERTEX = FLOATS_PER_INSTANCE;
 pub const VERTICES_PER_GLYPH = INSTANCES_PER_GLYPH;
+
+fn writeHintInstance(buf: []f32, hint: text_hinting.GlyphHintInstance) void {
+    buf[20] = hint.source[0];
+    buf[21] = hint.source[1];
+    buf[22] = hint.source[2];
+    buf[23] = hint.source[3];
+    buf[24] = hint.display[0];
+    buf[25] = hint.display[1];
+    buf[26] = hint.display[2];
+    buf[27] = hint.display[3];
+}
 
 /// Generate instance data for a glyph quad (non-transformed).
 pub fn generateGlyphVertices(
@@ -31,6 +45,7 @@ pub fn generateGlyphVertices(
     band_entry: band_tex.GlyphBandEntry,
     color: [4]f32,
     atlas_layer: u8,
+    hint: text_hinting.GlyphHintInstance,
 ) void {
     const gz: u32 = @as(u32, band_entry.glyph_x) | (@as(u32, band_entry.glyph_y) << 16);
     const gw: u32 = @as(u32, band_entry.h_band_count - 1) |
@@ -62,6 +77,7 @@ pub fn generateGlyphVertices(
     buf[17] = color[1];
     buf[18] = color[2];
     buf[19] = color[3];
+    writeHintInstance(buf, hint);
 }
 
 /// Generate instance data for a glyph quad under a full 2D affine transform.
@@ -72,6 +88,7 @@ pub fn generateGlyphVerticesTransformed(
     color: [4]f32,
     atlas_layer: u8,
     transform: vec.Transform2D,
+    hint: text_hinting.GlyphHintInstance,
 ) bool {
     const det = transform.xx * transform.yy - transform.xy * transform.yx;
     if (@abs(det) < 1e-10) return false;
@@ -101,6 +118,7 @@ pub fn generateGlyphVerticesTransformed(
     buf[17] = color[1];
     buf[18] = color[2];
     buf[19] = color[3];
+    writeHintInstance(buf, hint);
     return true;
 }
 
@@ -142,6 +160,7 @@ pub fn generateMultiLayerGlyphVertices(
     buf[17] = color[1];
     buf[18] = color[2];
     buf[19] = color[3];
+    writeHintInstance(buf, .{});
 }
 
 /// Generate instance data for a transformed multi-layer COLR glyph.
@@ -181,6 +200,7 @@ pub fn generateMultiLayerGlyphVerticesTransformed(
     buf[17] = color[1];
     buf[18] = color[2];
     buf[19] = color[3];
+    writeHintInstance(buf, .{});
     return true;
 }
 
@@ -204,7 +224,7 @@ test "instance data produces correct layout" {
     };
     const color = [4]f32{ 1.0, 0.5, 0.0, 1.0 };
 
-    generateGlyphVertices(&buf, 100.0, 200.0, 24.0, bbox, band_entry, color, 0);
+    generateGlyphVertices(&buf, 100.0, 200.0, 24.0, bbox, band_entry, color, 0, .{});
 
     // rect
     try std.testing.expectApproxEqAbs(@as(f32, 0.0), buf[0], 0.001);
@@ -268,7 +288,7 @@ test "transformed glyph instance stores affine transform" {
         .ty = -4.0,
     };
 
-    try std.testing.expect(generateGlyphVerticesTransformed(&buf, bbox, band_entry, .{ 1, 0.5, 0.25, 1 }, 0, transform));
+    try std.testing.expect(generateGlyphVerticesTransformed(&buf, bbox, band_entry, .{ 1, 0.5, 0.25, 1 }, 0, transform, .{}));
     // rect
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), buf[0], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 2.0), buf[1], 0.001);

@@ -2,11 +2,14 @@ const vec = @import("math/vec.zig");
 const Transform2D = vec.Transform2D;
 const snail = @import("snail.zig");
 const SyntheticStyle = snail.SyntheticStyle;
+const text_hinting = @import("text_hinting.zig");
 
 pub const EmitResult = enum {
     emitted,
     skipped,
     buffer_full,
+    layer_window_changed,
+    invalid_transform,
 };
 
 fn hasRenderableBands(info: anytype) bool {
@@ -24,7 +27,7 @@ pub fn emitGlyph(
 ) EmitResult {
     if (view.getColrBase(glyph_id)) |cbi| {
         const info_loc = view.layerInfoLoc(cbi.info_x, cbi.info_y);
-        if (!batch.addColrGlyph(
+        batch.addColrGlyph(
             x,
             y,
             font_size,
@@ -34,7 +37,7 @@ pub fn emitGlyph(
             cbi.layer_count,
             color,
             view.glyphLayer(cbi.page_index),
-        )) return .buffer_full;
+        ) catch |err| return emitError(err);
         return .emitted;
     }
 
@@ -45,9 +48,7 @@ pub fn emitGlyph(
             const linfo = view.getGlyph(layer.glyph_id) orelse continue;
             if (!hasRenderableBands(linfo)) continue;
             const lcolor: [4]f32 = if (layer.color[0] < 0) color else layer.color;
-            if (!batch.addGlyph(x, y, font_size, linfo.bbox, linfo.band_entry, lcolor, view.glyphLayer(linfo.page_index))) {
-                return .buffer_full;
-            }
+            batch.addGlyph(x, y, font_size, linfo.bbox, linfo.band_entry, lcolor, view.glyphLayer(linfo.page_index)) catch |err| return emitError(err);
             emitted = true;
         }
         return if (emitted) .emitted else .skipped;
@@ -55,9 +56,7 @@ pub fn emitGlyph(
 
     const info = view.getGlyph(glyph_id) orelse return .skipped;
     if (!hasRenderableBands(info)) return .skipped;
-    if (!batch.addGlyph(x, y, font_size, info.bbox, info.band_entry, color, view.glyphLayer(info.page_index))) {
-        return .buffer_full;
-    }
+    batch.addGlyph(x, y, font_size, info.bbox, info.band_entry, color, view.glyphLayer(info.page_index)) catch |err| return emitError(err);
     return .emitted;
 }
 
@@ -88,6 +87,56 @@ pub fn emitStyledGlyph(
     return .emitted;
 }
 
+pub fn emitGlyphWithTransform(
+    batch: anytype,
+    view: anytype,
+    glyph_id: u16,
+    color: [4]f32,
+    transform: Transform2D,
+    hint: text_hinting.GlyphHintInstance,
+) EmitResult {
+    if (view.getColrBase(glyph_id)) |cbi| {
+        const info_loc = view.layerInfoLoc(cbi.info_x, cbi.info_y);
+        batch.addColrGlyphTransformed(
+            cbi.union_bbox,
+            info_loc.x,
+            info_loc.y,
+            cbi.layer_count,
+            color,
+            view.glyphLayer(cbi.page_index),
+            transform,
+        ) catch |err| return emitError(err);
+        return .emitted;
+    }
+
+    var emitted = false;
+    var layer_it = view.colrLayers(glyph_id);
+    if (layer_it.count() > 0) {
+        while (layer_it.next()) |layer| {
+            const linfo = view.getGlyph(layer.glyph_id) orelse continue;
+            if (!hasRenderableBands(linfo)) continue;
+            const lcolor: [4]f32 = if (layer.color[0] < 0) color else layer.color;
+            batch.addGlyphTransformed(linfo.bbox, linfo.band_entry, lcolor, view.glyphLayer(linfo.page_index), transform, hint) catch |err| return emitError(err);
+            emitted = true;
+        }
+        return if (emitted) .emitted else .skipped;
+    }
+
+    const info = view.getGlyph(glyph_id) orelse return .skipped;
+    if (!hasRenderableBands(info)) return .skipped;
+    batch.addGlyphTransformed(info.bbox, info.band_entry, color, view.glyphLayer(info.page_index), transform, hint) catch |err| return emitError(err);
+    return .emitted;
+}
+
+fn emitError(err: anyerror) EmitResult {
+    return switch (err) {
+        error.DrawListFull => .buffer_full,
+        error.TextureLayerWindowChanged => .layer_window_changed,
+        error.InvalidTransform => .invalid_transform,
+        else => .buffer_full,
+    };
+}
+
 /// Emit a glyph using the transformed vertex path with an optional italic shear.
 /// The transform encodes font_size scaling, Y-flip, position, and shear into a
 /// single affine matrix so the Slug curve evaluator's inverse Jacobian stays correct.
@@ -115,40 +164,5 @@ fn emitWithTransform(
         .yy = -font_size,
         .ty = y,
     };
-
-    if (view.getColrBase(glyph_id)) |cbi| {
-        const info_loc = view.layerInfoLoc(cbi.info_x, cbi.info_y);
-        if (!batch.addColrGlyphTransformed(
-            cbi.union_bbox,
-            info_loc.x,
-            info_loc.y,
-            cbi.layer_count,
-            color,
-            view.glyphLayer(cbi.page_index),
-            transform,
-        )) return .buffer_full;
-        return .emitted;
-    }
-
-    var emitted = false;
-    var layer_it = view.colrLayers(glyph_id);
-    if (layer_it.count() > 0) {
-        while (layer_it.next()) |layer| {
-            const linfo = view.getGlyph(layer.glyph_id) orelse continue;
-            if (!hasRenderableBands(linfo)) continue;
-            const lcolor: [4]f32 = if (layer.color[0] < 0) color else layer.color;
-            if (!batch.addGlyphTransformed(linfo.bbox, linfo.band_entry, lcolor, view.glyphLayer(linfo.page_index), transform)) {
-                return .buffer_full;
-            }
-            emitted = true;
-        }
-        return if (emitted) .emitted else .skipped;
-    }
-
-    const info = view.getGlyph(glyph_id) orelse return .skipped;
-    if (!hasRenderableBands(info)) return .skipped;
-    if (!batch.addGlyphTransformed(info.bbox, info.band_entry, color, view.glyphLayer(info.page_index), transform)) {
-        return .buffer_full;
-    }
-    return .emitted;
+    return emitGlyphWithTransform(batch, view, glyph_id, color, transform, .{});
 }

@@ -21,4 +21,4 @@ layout(location = 0) out vec4 frag_color;
 
 #define SNAIL_FILL_RULE fill_rule
 
-#include "snail_path_frag_body.glsl"
+#include "snail_colr_frag_body.glsl"

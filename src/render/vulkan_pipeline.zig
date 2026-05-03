@@ -21,7 +21,9 @@ extern "c" fn rewind(stream: *std.c.FILE) void;
 // ── SPIR-V shader bytecode ──
 
 const vert_spv = vk_shaders.vert_spv;
-const frag_spv = vk_shaders.frag_spv;
+const frag_text_spv = vk_shaders.frag_text_spv;
+const frag_colr_spv = vk_shaders.frag_colr_spv;
+const frag_path_spv = vk_shaders.frag_path_spv;
 const frag_text_subpixel_dual_spv = vk_shaders.frag_text_subpixel_dual_spv;
 // ── Push constants layout (matches GLSL) ──
 
@@ -30,10 +32,11 @@ const PushConstants = extern struct {
     viewport: [2]f32,
     fill_rule: i32,
     subpixel_order: i32 = 1, // 1=RGB, 2=BGR, 3=VRGB, 4=VBGR
+    layer_base: i32 = 0,
 };
 
 comptime {
-    if (@sizeOf(PushConstants) != 80) @compileError("PushConstants must be 80 bytes");
+    if (@sizeOf(PushConstants) != 84) @compileError("PushConstants must be 84 bytes");
 }
 
 // ── Initialization context (provided by caller) ──
@@ -62,10 +65,21 @@ const MAX_ATLASES = upload_common.MAX_ATLASES;
 const MAX_PAGES_PER_ATLAS = upload_common.MAX_PAGES_PER_ATLAS;
 const MAX_IMAGES = upload_common.MAX_IMAGES;
 
-const AtlasSlot = upload_common.AtlasSlot(snail_mod.Atlas, snail_mod.AtlasPage, MAX_PAGES_PER_ATLAS);
+const AtlasSlot = upload_common.AtlasSlot(snail_mod.CurveAtlas, snail_mod.AtlasPage, MAX_PAGES_PER_ATLAS);
 const ImageSlot = upload_common.ImageSlot(snail_mod.Image);
 
 const FillRule = snail_mod.FillRule;
+const MAX_RESOURCE_UPLOAD_STAGING = MAX_ATLASES * 3 + MAX_IMAGES + 4;
+
+const UploadStagingBuffer = struct {
+    buffer: vk.VkBuffer = null,
+    memory: vk.VkDeviceMemory = null,
+};
+
+const TransferCommand = struct {
+    cmd: vk.VkCommandBuffer,
+    owned: bool,
+};
 
 // ── Internal helpers ──
 
@@ -74,29 +88,11 @@ const BlendMode = enum {
     dual_source,
 };
 
-pub const VulkanPipeline = struct {
-    ctx: VulkanContext = undefined,
-    initialized: bool = false,
-
-    pipeline_normal: vk.VkPipeline = null,
-    pipeline_subpixel_dual: vk.VkPipeline = null,
-    pipeline_cache: vk.VkPipelineCache = null,
-    pipeline_cache_dirty: bool = false,
-    pipeline_layout: vk.VkPipelineLayout = null,
-    desc_set_layout: vk.VkDescriptorSetLayout = null,
+pub const PreparedResources = struct {
+    ctx: VulkanContext,
     desc_pool: vk.VkDescriptorPool = null,
     desc_set: vk.VkDescriptorSet = null,
 
-    vertex_buffer: vk.VkBuffer = null,
-    vertex_memory: vk.VkDeviceMemory = null,
-    persistent_map: ?[*]u8 = null,
-    active_upload_slot: u32 = 0,
-    upload_cursor: usize = 0,
-
-    index_buffer: vk.VkBuffer = null,
-    index_memory: vk.VkDeviceMemory = null,
-
-    // Textures
     curve_image: vk.VkImage = null,
     curve_view: vk.VkImageView = null,
     curve_memory: vk.VkDeviceMemory = null,
@@ -109,22 +105,194 @@ pub const VulkanPipeline = struct {
     image_image: vk.VkImage = null,
     image_view: vk.VkImageView = null,
     image_memory: vk.VkDeviceMemory = null,
-    sampler_nearest: vk.VkSampler = null,
-    sampler_linear: vk.VkSampler = null,
 
     atlas_slots: [MAX_ATLASES]AtlasSlot = std.mem.zeroes([MAX_ATLASES]AtlasSlot),
     atlas_slot_count: usize = 0,
     allocated_curve_height: u32 = 0,
     allocated_band_height: u32 = 0,
     allocated_layer_count: u32 = 0,
+    atlas_has_special_text_runs: bool = false,
     image_slots: [MAX_IMAGES]ImageSlot = std.mem.zeroes([MAX_IMAGES]ImageSlot),
     image_slot_count: usize = 0,
     allocated_image_width: u32 = 0,
     allocated_image_height: u32 = 0,
     allocated_image_count: u32 = 0,
+    upload_staging: [MAX_RESOURCE_UPLOAD_STAGING]UploadStagingBuffer = std.mem.zeroes([MAX_RESOURCE_UPLOAD_STAGING]UploadStagingBuffer),
+    upload_staging_count: usize = 0,
+
+    pub fn init(renderer: *const VulkanPipeline) !PreparedResources {
+        var self = PreparedResources{ .ctx = renderer.ctx };
+        errdefer self.deinit();
+
+        const pool_size = [1]vk.VkDescriptorPoolSize{
+            .{ .type = vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 4 },
+        };
+        const dp_info = std.mem.zeroInit(vk.VkDescriptorPoolCreateInfo, .{
+            .sType = vk.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+            .maxSets = 1,
+            .poolSizeCount = 1,
+            .pPoolSizes = &pool_size,
+        });
+        try check(vk.vkCreateDescriptorPool(self.ctx.device, &dp_info, null, &self.desc_pool));
+
+        var ds_info: vk.VkDescriptorSetAllocateInfo = std.mem.zeroes(vk.VkDescriptorSetAllocateInfo);
+        ds_info.sType = vk.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        ds_info.descriptorPool = self.desc_pool;
+        ds_info.descriptorSetCount = 1;
+        ds_info.pSetLayouts = @ptrCast(&renderer.desc_set_layout);
+        try check(vk.vkAllocateDescriptorSets(self.ctx.device, &ds_info, &self.desc_set));
+
+        return self;
+    }
+
+    pub fn deinit(self: *PreparedResources) void {
+        self.destroyRetainedUploadStaging();
+        self.destroyAtlasTextureResources();
+        self.destroyImageResources();
+        self.resetAtlasUploadState();
+        if (self.desc_pool != null) vk.vkDestroyDescriptorPool(self.ctx.device, self.desc_pool, null);
+        self.desc_pool = null;
+        self.desc_set = null;
+    }
+
+    fn retainUploadStaging(self: *PreparedResources, buffer: vk.VkBuffer, memory: vk.VkDeviceMemory) !void {
+        if (self.upload_staging_count >= self.upload_staging.len) return error.TooManyUploadStagingBuffers;
+        self.upload_staging[self.upload_staging_count] = .{ .buffer = buffer, .memory = memory };
+        self.upload_staging_count += 1;
+    }
+
+    fn destroyRetainedUploadStaging(self: *PreparedResources) void {
+        for (self.upload_staging[0..self.upload_staging_count]) |staging| {
+            if (staging.buffer != null) vk.vkDestroyBuffer(self.ctx.device, staging.buffer, null);
+            if (staging.memory != null) vk.vkFreeMemory(self.ctx.device, staging.memory, null);
+        }
+        self.upload_staging_count = 0;
+    }
+
+    fn texturesReady(self: *const PreparedResources) bool {
+        return self.curve_image != null and self.band_image != null and self.atlas_slot_count > 0;
+    }
+
+    fn atlasSlotsCompatible(self: *const PreparedResources, atlases: []const *const snail_mod.CurveAtlas) bool {
+        return upload_common.atlasSlotsCompatible(self.atlas_slots[0..], self.atlas_slot_count, atlases);
+    }
+
+    fn fillAtlasViews(self: *const PreparedResources, atlases: []const *const snail_mod.CurveAtlas, out_views: anytype) void {
+        upload_common.fillAtlasViews(self.atlas_slots[0..], atlases, out_views);
+    }
+
+    fn currentImageView(self: *const PreparedResources, comptime ImageView: type, image: *const snail_mod.Image) ImageView {
+        return upload_common.currentImageView(
+            ImageView,
+            self.image_slots[0..],
+            self.image_slot_count,
+            self.allocated_image_width,
+            self.allocated_image_height,
+            image,
+        );
+    }
+
+    fn findImageSlot(self: *const PreparedResources, image: *const snail_mod.Image) ?usize {
+        return upload_common.findImageSlot(self.image_slots[0..], self.image_slot_count, image);
+    }
+
+    fn resetAtlasUploadState(self: *PreparedResources) void {
+        self.atlas_slot_count = 0;
+        self.allocated_curve_height = 0;
+        self.allocated_band_height = 0;
+        self.allocated_layer_count = 0;
+        self.atlas_has_special_text_runs = false;
+        for (&self.atlas_slots) |*slot| slot.* = .{};
+    }
+
+    fn destroyAtlasTextureResources(self: *PreparedResources) void {
+        if (self.curve_view != null) {
+            vk.vkDestroyImageView(self.ctx.device, self.curve_view, null);
+            self.curve_view = null;
+        }
+        if (self.curve_image != null) {
+            vk.vkDestroyImage(self.ctx.device, self.curve_image, null);
+            self.curve_image = null;
+        }
+        if (self.curve_memory != null) {
+            vk.vkFreeMemory(self.ctx.device, self.curve_memory, null);
+            self.curve_memory = null;
+        }
+        if (self.band_view != null) {
+            vk.vkDestroyImageView(self.ctx.device, self.band_view, null);
+            self.band_view = null;
+        }
+        if (self.band_image != null) {
+            vk.vkDestroyImage(self.ctx.device, self.band_image, null);
+            self.band_image = null;
+        }
+        if (self.band_memory != null) {
+            vk.vkFreeMemory(self.ctx.device, self.band_memory, null);
+            self.band_memory = null;
+        }
+        if (self.layer_view != null) {
+            vk.vkDestroyImageView(self.ctx.device, self.layer_view, null);
+            self.layer_view = null;
+        }
+        if (self.layer_image != null) {
+            vk.vkDestroyImage(self.ctx.device, self.layer_image, null);
+            self.layer_image = null;
+        }
+        if (self.layer_memory != null) {
+            vk.vkFreeMemory(self.ctx.device, self.layer_memory, null);
+            self.layer_memory = null;
+        }
+    }
+
+    fn destroyImageResources(self: *PreparedResources) void {
+        if (self.image_view != null) {
+            vk.vkDestroyImageView(self.ctx.device, self.image_view, null);
+            self.image_view = null;
+        }
+        if (self.image_image != null) {
+            vk.vkDestroyImage(self.ctx.device, self.image_image, null);
+            self.image_image = null;
+        }
+        if (self.image_memory != null) {
+            vk.vkFreeMemory(self.ctx.device, self.image_memory, null);
+            self.image_memory = null;
+        }
+        self.image_slot_count = 0;
+        self.allocated_image_width = 0;
+        self.allocated_image_height = 0;
+        self.allocated_image_count = 0;
+        for (&self.image_slots) |*slot| slot.* = .{};
+    }
+};
+
+pub const VulkanPipeline = struct {
+    ctx: VulkanContext = undefined,
+    initialized: bool = false,
+
+    pipeline_text: vk.VkPipeline = null,
+    pipeline_colr: vk.VkPipeline = null,
+    pipeline_path: vk.VkPipeline = null,
+    pipeline_text_subpixel_dual: vk.VkPipeline = null,
+    pipeline_cache: vk.VkPipelineCache = null,
+    pipeline_cache_dirty: bool = false,
+    pipeline_layout: vk.VkPipelineLayout = null,
+    desc_set_layout: vk.VkDescriptorSetLayout = null,
+
+    vertex_buffer: vk.VkBuffer = null,
+    vertex_memory: vk.VkDeviceMemory = null,
+    persistent_map: ?[*]u8 = null,
+    active_upload_slot: u32 = 0,
+    upload_cursor: usize = 0,
+
+    index_buffer: vk.VkBuffer = null,
+    index_memory: vk.VkDeviceMemory = null,
+
+    sampler_nearest: vk.VkSampler = null,
+    sampler_linear: vk.VkSampler = null,
 
     // Transfer command pool (one-shot uploads)
     transfer_cmd_pool: vk.VkCommandPool = null,
+    scheduled_resource_upload_cmd: vk.VkCommandBuffer = null,
 
     // Per-frame state
     active_cmd: vk.VkCommandBuffer = null,
@@ -216,29 +384,9 @@ pub const VulkanPipeline = struct {
         pl_info.pPushConstantRanges = &push_range;
         try check(vk.vkCreatePipelineLayout(self.ctx.device, &pl_info, null, &self.pipeline_layout));
 
-        // Descriptor pool + set
-        const pool_size = [1]vk.VkDescriptorPoolSize{
-            .{ .type = vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 4 },
-        };
-        const dp_info = std.mem.zeroInit(vk.VkDescriptorPoolCreateInfo, .{
-            .sType = vk.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-            .maxSets = 1,
-            .poolSizeCount = 1,
-            .pPoolSizes = &pool_size,
-        });
-        try check(vk.vkCreateDescriptorPool(self.ctx.device, &dp_info, null, &self.desc_pool));
-
-        var ds_info: vk.VkDescriptorSetAllocateInfo = std.mem.zeroes(vk.VkDescriptorSetAllocateInfo);
-        ds_info.sType = vk.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        ds_info.descriptorPool = self.desc_pool;
-        ds_info.descriptorSetCount = 1;
-        ds_info.pSetLayouts = @ptrCast(&self.desc_set_layout);
-        try check(vk.vkAllocateDescriptorSets(self.ctx.device, &ds_info, &self.desc_set));
-
         try self.createPersistentPipelineCache();
 
-        // Keep Vulkan startup on the lightweight plain-glyph LCD shaders.
-        // The heavier path/COLR shader remains only in the shared grayscale pipeline.
+        // Create draw pipelines during renderer init so draw never creates pipelines.
         try self.warmGraphicsPipelines();
         self.writePersistentPipelineCache();
 
@@ -270,13 +418,11 @@ pub const VulkanPipeline = struct {
 
     pub fn deinit(self: *VulkanPipeline) void {
         if (!self.initialized) return;
-        _ = vk.vkDeviceWaitIdle(self.ctx.device);
+        // Caller-owned frame synchronization must make renderer teardown safe.
+        // Keep deinit free of implicit device-wide waits.
         self.writePersistentPipelineCache();
 
         if (self.transfer_cmd_pool != null) vk.vkDestroyCommandPool(self.ctx.device, self.transfer_cmd_pool, null);
-        self.destroyAtlasTextureResources();
-        self.destroyImageResources();
-        self.resetAtlasUploadState();
         if (self.sampler_linear != null) vk.vkDestroySampler(self.ctx.device, self.sampler_linear, null);
         if (self.sampler_nearest != null) vk.vkDestroySampler(self.ctx.device, self.sampler_nearest, null);
         if (self.index_buffer != null) {
@@ -288,15 +434,18 @@ pub const VulkanPipeline = struct {
             vk.vkDestroyBuffer(self.ctx.device, self.vertex_buffer, null);
             vk.vkFreeMemory(self.ctx.device, self.vertex_memory, null);
         }
-        if (self.desc_pool != null) vk.vkDestroyDescriptorPool(self.ctx.device, self.desc_pool, null);
         if (self.desc_set_layout != null) vk.vkDestroyDescriptorSetLayout(self.ctx.device, self.desc_set_layout, null);
-        if (self.pipeline_subpixel_dual != null) vk.vkDestroyPipeline(self.ctx.device, self.pipeline_subpixel_dual, null);
-        if (self.pipeline_normal != null) vk.vkDestroyPipeline(self.ctx.device, self.pipeline_normal, null);
+        if (self.pipeline_text_subpixel_dual != null) vk.vkDestroyPipeline(self.ctx.device, self.pipeline_text_subpixel_dual, null);
+        if (self.pipeline_path != null) vk.vkDestroyPipeline(self.ctx.device, self.pipeline_path, null);
+        if (self.pipeline_colr != null) vk.vkDestroyPipeline(self.ctx.device, self.pipeline_colr, null);
+        if (self.pipeline_text != null) vk.vkDestroyPipeline(self.ctx.device, self.pipeline_text, null);
         if (self.pipeline_cache != null) vk.vkDestroyPipelineCache(self.ctx.device, self.pipeline_cache, null);
         if (self.pipeline_layout != null) vk.vkDestroyPipelineLayout(self.ctx.device, self.pipeline_layout, null);
 
-        self.pipeline_subpixel_dual = null;
-        self.pipeline_normal = null;
+        self.pipeline_text_subpixel_dual = null;
+        self.pipeline_path = null;
+        self.pipeline_colr = null;
+        self.pipeline_text = null;
         self.pipeline_cache = null;
         self.pipeline_cache_dirty = false;
         self.pipeline_layout = null;
@@ -337,88 +486,102 @@ pub const VulkanPipeline = struct {
         self.upload_cursor = 0;
     }
 
+    /// Use a caller-owned, already-recording command buffer for resource
+    /// uploads. The caller must submit it; PreparedResources retains staging
+    /// buffers until the prepared object is retired.
+    pub fn beginResourceUploadRecording(self: *VulkanPipeline, cmd: anytype) void {
+        std.debug.assert(self.scheduled_resource_upload_cmd == null);
+        self.scheduled_resource_upload_cmd = @ptrCast(cmd);
+    }
+
+    pub fn endResourceUploadRecording(self: *VulkanPipeline) void {
+        self.scheduled_resource_upload_cmd = null;
+    }
+
     // ── Texture array management ──
 
-    pub fn uploadAtlases(self: *VulkanPipeline, atlases: []const *const snail_mod.Atlas, out_views: []snail_mod.AtlasHandle) void {
+    pub fn uploadPreparedAtlases(self: *VulkanPipeline, prepared: *PreparedResources, atlases: []const *const snail_mod.CurveAtlas, out_views: anytype) void {
         std.debug.assert(atlases.len == out_views.len);
-        _ = vk.vkDeviceWaitIdle(self.ctx.device);
 
         if (atlases.len == 0) {
-            self.destroyAtlasTextureResources();
-            self.resetAtlasUploadState();
+            prepared.destroyAtlasTextureResources();
+            prepared.resetAtlasUploadState();
             return;
         }
 
-        const can_incremental = self.texturesReady() and self.atlasSlotsCompatible(atlases);
+        const can_incremental = prepared.texturesReady() and prepared.atlasSlotsCompatible(atlases);
         if (!can_incremental) {
-            self.rebuildTextureArrays(atlases, out_views);
-        } else if (!self.appendTexturePages(atlases)) {
-            self.rebuildTextureArrays(atlases, out_views);
+            self.rebuildTextureArrays(prepared, atlases, out_views);
+        } else if (!self.appendTexturePages(prepared, atlases)) {
+            self.rebuildTextureArrays(prepared, atlases, out_views);
         } else {
-            self.fillAtlasViews(atlases, out_views);
-            self.ensureAtlasImagesRegistered(atlases);
-            self.rebuildLayerInfoTexture(atlases);
-            self.updateDescriptorSet();
+            prepared.fillAtlasViews(atlases, out_views);
+            self.ensureAtlasImagesRegistered(prepared, atlases);
+            self.rebuildLayerInfoTexture(prepared, atlases);
+            prepared.atlas_has_special_text_runs = subpixel_policy.atlasesHaveSpecialTextRuns(atlases);
+            self.updateDescriptorSet(prepared);
         }
     }
 
-    pub fn uploadImages(self: *VulkanPipeline, images: []const *const snail_mod.Image, out_views: []snail_mod.ImageHandle) void {
+    pub fn uploadPreparedImages(self: *VulkanPipeline, prepared: *PreparedResources, images: []const *const snail_mod.Image, out_views: anytype) void {
         std.debug.assert(images.len == out_views.len);
-        _ = vk.vkDeviceWaitIdle(self.ctx.device);
-        self.ensureImagesRegistered(images);
+        self.ensureImagesRegistered(prepared, images);
+        const ImageView = upload_common.BufferElement(@TypeOf(out_views));
         for (images, 0..) |image, i| {
-            out_views[i] = self.currentImageView(image);
+            out_views[i] = prepared.currentImageView(ImageView, image);
         }
-        self.updateDescriptorSet();
+        self.updateDescriptorSet(prepared);
     }
 
-    fn rebuildTextureArrays(self: *VulkanPipeline, atlases: []const *const snail_mod.Atlas, out_views: []snail_mod.AtlasHandle) void {
-        self.destroyAtlasTextureResources();
-        self.resetAtlasUploadState();
+    fn rebuildTextureArrays(self: *VulkanPipeline, prepared: *PreparedResources, atlases: []const *const snail_mod.CurveAtlas, out_views: anytype) void {
+        prepared.destroyAtlasTextureResources();
+        prepared.resetAtlasUploadState();
 
-        const slot_info = upload_common.rebuildAtlasSlots(self.atlas_slots[0..], atlases);
-        self.atlas_slot_count = slot_info.atlas_slot_count;
-        self.allocated_curve_height = slot_info.allocated_curve_height;
-        self.allocated_band_height = slot_info.allocated_band_height;
-        self.allocated_layer_count = slot_info.allocated_layer_count;
+        const slot_info = upload_common.rebuildAtlasSlots(prepared.atlas_slots[0..], atlases);
+        prepared.atlas_slot_count = slot_info.atlas_slot_count;
+        prepared.allocated_curve_height = slot_info.allocated_curve_height;
+        prepared.allocated_band_height = slot_info.allocated_band_height;
+        prepared.allocated_layer_count = slot_info.allocated_layer_count;
 
         const first_page = atlases[0].page(0);
         const curve_w = first_page.curve_width;
         const band_w = first_page.band_width;
 
         // Create images
-        self.curve_image = self.createImage2DArray(curve_w, self.allocated_curve_height, self.allocated_layer_count, vk.VK_FORMAT_R16G16B16A16_SFLOAT) catch return;
-        self.curve_memory = self.allocateImageMemory(self.curve_image) catch return;
-        _ = vk.vkBindImageMemory(self.ctx.device, self.curve_image, self.curve_memory, 0);
+        prepared.curve_image = self.createImage2DArray(curve_w, prepared.allocated_curve_height, prepared.allocated_layer_count, vk.VK_FORMAT_R16G16B16A16_SFLOAT) catch return;
+        prepared.curve_memory = self.allocateImageMemory(prepared.curve_image) catch return;
+        _ = vk.vkBindImageMemory(self.ctx.device, prepared.curve_image, prepared.curve_memory, 0);
 
-        self.band_image = self.createImage2DArray(band_w, self.allocated_band_height, self.allocated_layer_count, vk.VK_FORMAT_R16G16_UINT) catch return;
-        self.band_memory = self.allocateImageMemory(self.band_image) catch return;
-        _ = vk.vkBindImageMemory(self.ctx.device, self.band_image, self.band_memory, 0);
+        prepared.band_image = self.createImage2DArray(band_w, prepared.allocated_band_height, prepared.allocated_layer_count, vk.VK_FORMAT_R16G16_UINT) catch return;
+        prepared.band_memory = self.allocateImageMemory(prepared.band_image) catch return;
+        _ = vk.vkBindImageMemory(self.ctx.device, prepared.band_image, prepared.band_memory, 0);
 
         // Upload via staging buffer
-        self.uploadTextureData(atlases, null, self.allocated_layer_count, vk.VK_IMAGE_LAYOUT_UNDEFINED) catch return;
+        self.uploadTextureData(prepared, atlases, null, prepared.allocated_layer_count, vk.VK_IMAGE_LAYOUT_UNDEFINED) catch return;
 
         // Create image views
-        self.curve_view = self.createImageView(self.curve_image, vk.VK_FORMAT_R16G16B16A16_SFLOAT, self.allocated_layer_count) catch return;
-        self.band_view = self.createImageView(self.band_image, vk.VK_FORMAT_R16G16_UINT, self.allocated_layer_count) catch return;
+        prepared.curve_view = self.createImageView(prepared.curve_image, vk.VK_FORMAT_R16G16B16A16_SFLOAT, prepared.allocated_layer_count) catch return;
+        prepared.band_view = self.createImageView(prepared.band_image, vk.VK_FORMAT_R16G16_UINT, prepared.allocated_layer_count) catch return;
 
-        self.ensureAtlasImagesRegistered(atlases);
-        self.rebuildLayerInfoTexture(atlases);
-        self.fillAtlasViews(atlases, out_views);
-        self.updateDescriptorSet();
+        self.ensureAtlasImagesRegistered(prepared, atlases);
+        self.rebuildLayerInfoTexture(prepared, atlases);
+        prepared.atlas_has_special_text_runs = subpixel_policy.atlasesHaveSpecialTextRuns(atlases);
+        prepared.fillAtlasViews(atlases, out_views);
+        self.updateDescriptorSet(prepared);
     }
 
-    fn appendTexturePages(self: *VulkanPipeline, atlases: []const *const snail_mod.Atlas) bool {
-        var max_curve_h: u32 = self.allocated_curve_height;
-        var max_band_h: u32 = self.allocated_band_height;
+    fn appendTexturePages(self: *VulkanPipeline, prepared: *PreparedResources, atlases: []const *const snail_mod.CurveAtlas) bool {
+        var max_curve_h: u32 = prepared.allocated_curve_height;
+        var max_band_h: u32 = prepared.allocated_band_height;
         var start_pages: [MAX_ATLASES]u32 = undefined;
 
         for (atlases, 0..) |atlas, i| {
-            if (i >= self.atlas_slot_count) return false;
-            const slot = &self.atlas_slots[i];
+            if (i >= prepared.atlas_slot_count) return false;
+            const slot = &prepared.atlas_slots[i];
             const page_count: u32 = @intCast(atlas.pageCount());
             if (page_count < slot.uploaded_pages or page_count > slot.capacity_pages) return false;
             start_pages[i] = slot.uploaded_pages;
+            if (slot.uploaded_pages > slot.page_ptrs.len) return false;
             for (0..slot.uploaded_pages) |page_index| {
                 if (slot.page_ptrs[page_index] != atlas.page(@intCast(page_index))) return false;
             }
@@ -429,109 +592,74 @@ pub const VulkanPipeline = struct {
             }
         }
 
-        if (atlases.len != self.atlas_slot_count) return false;
-        if (max_curve_h > self.allocated_curve_height or max_band_h > self.allocated_band_height) return false;
-        self.uploadTextureData(atlases, start_pages[0..atlases.len], self.allocated_layer_count, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) catch return false;
+        if (atlases.len != prepared.atlas_slot_count) return false;
+        if (max_curve_h > prepared.allocated_curve_height or max_band_h > prepared.allocated_band_height) return false;
+        self.uploadTextureData(prepared, atlases, start_pages[0..atlases.len], prepared.allocated_layer_count, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) catch return false;
 
-        upload_common.refreshAtlasSlots(self.atlas_slots[0..], atlases);
+        upload_common.refreshAtlasSlots(prepared.atlas_slots[0..], atlases);
         return true;
     }
 
-    fn texturesReady(self: *const VulkanPipeline) bool {
-        return self.curve_image != null and self.band_image != null and self.atlas_slot_count > 0;
-    }
-
-    fn atlasSlotsCompatible(self: *const VulkanPipeline, atlases: []const *const snail_mod.Atlas) bool {
-        return upload_common.atlasSlotsCompatible(self.atlas_slots[0..], self.atlas_slot_count, atlases);
-    }
-
-    fn fillAtlasViews(self: *VulkanPipeline, atlases: []const *const snail_mod.Atlas, out_views: []snail_mod.AtlasHandle) void {
-        upload_common.fillAtlasViews(self.atlas_slots[0..], atlases, out_views);
-    }
-
-    fn currentImageView(self: *const VulkanPipeline, image: *const snail_mod.Image) snail_mod.ImageHandle {
-        return upload_common.currentImageView(
-            snail_mod.ImageHandle,
-            self.image_slots[0..],
-            self.image_slot_count,
-            self.allocated_image_width,
-            self.allocated_image_height,
-            image,
-        );
-    }
-
-    fn findImageSlot(self: *const VulkanPipeline, image: *const snail_mod.Image) ?usize {
-        return upload_common.findImageSlot(self.image_slots[0..], self.image_slot_count, image);
-    }
-
-    fn ensureAtlasImagesRegistered(self: *VulkanPipeline, atlases: []const *const snail_mod.Atlas) void {
+    fn ensureAtlasImagesRegistered(self: *VulkanPipeline, prepared: *PreparedResources, atlases: []const *const snail_mod.CurveAtlas) void {
         var scratch: [MAX_IMAGES]*const snail_mod.Image = undefined;
-        const count = upload_common.collectAtlasImages(self.image_slots[0..], self.image_slot_count, atlases, scratch[0..]);
-        self.ensureImagesRegistered(scratch[0..count]);
+        const count = upload_common.collectAtlasImages(prepared.image_slots[0..], prepared.image_slot_count, atlases, scratch[0..]);
+        self.ensureImagesRegistered(prepared, scratch[0..count]);
     }
 
-    fn ensureImagesRegistered(self: *VulkanPipeline, images: []const *const snail_mod.Image) void {
+    fn ensureImagesRegistered(self: *VulkanPipeline, prepared: *PreparedResources, images: []const *const snail_mod.Image) void {
         if (images.len == 0) return;
 
         var new_images: [MAX_IMAGES]*const snail_mod.Image = undefined;
         var new_count: usize = 0;
-        var required_width = self.allocated_image_width;
-        var required_height = self.allocated_image_height;
+        var required_width = prepared.allocated_image_width;
+        var required_height = prepared.allocated_image_height;
         for (images) |image| {
             required_width = @max(required_width, image.width);
             required_height = @max(required_height, image.height);
-            if (self.findImageSlot(image) != null) continue;
-            if (self.image_slot_count + new_count >= MAX_IMAGES) break;
+            if (prepared.findImageSlot(image) != null) continue;
+            if (prepared.image_slot_count + new_count >= MAX_IMAGES) break;
             new_images[new_count] = image;
             new_count += 1;
         }
 
-        if (new_count == 0 and self.image_image != null) return;
+        if (new_count == 0 and prepared.image_image != null) return;
 
-        const required_count: u32 = @intCast(self.image_slot_count + new_count);
+        const required_count: u32 = @intCast(prepared.image_slot_count + new_count);
         const new_width = upload_common.heightCapacity(@max(required_width, 1));
         const new_height = upload_common.heightCapacity(@max(required_height, 1));
-        const needs_rebuild = self.image_image == null or
-            required_count > self.allocated_image_count or
-            new_width > self.allocated_image_width or
-            new_height > self.allocated_image_height;
+        const needs_rebuild = prepared.image_image == null or
+            required_count > prepared.allocated_image_count or
+            new_width > prepared.allocated_image_width or
+            new_height > prepared.allocated_image_height;
 
         if (needs_rebuild) {
             for (new_images[0..new_count], 0..) |image, i| {
-                self.image_slots[self.image_slot_count + i] = .{ .image = image };
+                prepared.image_slots[prepared.image_slot_count + i] = .{ .image = image };
             }
-            self.image_slot_count += new_count;
-            self.rebuildImageArray();
+            prepared.image_slot_count += new_count;
+            self.rebuildImageArray(prepared);
             return;
         }
 
         for (new_images[0..new_count], 0..) |image, i| {
-            self.image_slots[self.image_slot_count + i] = .{ .image = image };
+            prepared.image_slots[prepared.image_slot_count + i] = .{ .image = image };
         }
-        self.uploadImagesToArray(new_images[0..new_count], @intCast(self.image_slot_count), vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) catch return;
-        self.image_slot_count += new_count;
+        self.uploadImagesToArray(prepared, new_images[0..new_count], @intCast(prepared.image_slot_count), vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) catch return;
+        prepared.image_slot_count += new_count;
     }
 
-    fn resetAtlasUploadState(self: *VulkanPipeline) void {
-        self.atlas_slot_count = 0;
-        self.allocated_curve_height = 0;
-        self.allocated_band_height = 0;
-        self.allocated_layer_count = 0;
-        for (&self.atlas_slots) |*slot| slot.* = .{};
-    }
-
-    fn rebuildLayerInfoTexture(self: *VulkanPipeline, atlases: []const *const snail_mod.Atlas) void {
-        if (self.layer_view != null) {
-            vk.vkDestroyImageView(self.ctx.device, self.layer_view, null);
-            self.layer_view = null;
+    fn rebuildLayerInfoTexture(self: *VulkanPipeline, prepared: *PreparedResources, atlases: []const *const snail_mod.CurveAtlas) void {
+        if (prepared.layer_view != null) {
+            vk.vkDestroyImageView(self.ctx.device, prepared.layer_view, null);
+            prepared.layer_view = null;
         }
-        if (self.layer_image != null) {
-            vk.vkDestroyImage(self.ctx.device, self.layer_image, null);
-            self.layer_image = null;
+        if (prepared.layer_image != null) {
+            vk.vkDestroyImage(self.ctx.device, prepared.layer_image, null);
+            prepared.layer_image = null;
         }
-        if (self.layer_memory != null) {
-            vk.vkFreeMemory(self.ctx.device, self.layer_memory, null);
-            self.layer_memory = null;
+        if (prepared.layer_memory != null) {
+            vk.vkFreeMemory(self.ctx.device, prepared.layer_memory, null);
+            prepared.layer_memory = null;
         }
 
         var total_rows: u32 = 0;
@@ -544,9 +672,14 @@ pub const VulkanPipeline = struct {
         defer std.heap.page_allocator.free(data);
         @memset(data, 0);
 
+        const ImagePatchView = struct {
+            image: *const snail_mod.Image,
+            layer: u16 = 0,
+            uv_scale: snail_mod.Vec2 = .{ .x = 1.0, .y = 1.0 },
+        };
         for (atlases, 0..) |atlas, i| {
             const lid = atlas.layer_info_data orelse continue;
-            const row_base = self.atlas_slots[i].info_row_base;
+            const row_base = prepared.atlas_slots[i].info_row_base;
             const row_count = atlas.layer_info_height;
             const copy_len = @as(usize, atlas.layer_info_width) * @as(usize, row_count) * 4;
             const dst_base = @as(usize, row_base) * @as(usize, width) * 4;
@@ -554,30 +687,30 @@ pub const VulkanPipeline = struct {
 
             const records = atlas.paint_image_records orelse continue;
             for (records) |record| {
-                const image = (record orelse continue).image;
-                upload_common.patchImagePaintRecord(data, width, row_base, record.?.texel_offset, self.currentImageView(image));
+                const paint = record orelse continue;
+                upload_common.patchImagePaintRecord(data, width, row_base, paint.texel_offset, prepared.currentImageView(ImagePatchView, paint.image));
             }
         }
 
-        self.layer_image = self.createImage2D(width, total_rows, vk.VK_FORMAT_R32G32B32A32_SFLOAT) catch return;
-        self.layer_memory = self.allocateImageMemory(self.layer_image) catch return;
-        _ = vk.vkBindImageMemory(self.ctx.device, self.layer_image, self.layer_memory, 0);
-        self.uploadLayerInfoData(data, width, total_rows) catch return;
-        self.layer_view = self.createImageView2D(self.layer_image, vk.VK_FORMAT_R32G32B32A32_SFLOAT) catch return;
+        prepared.layer_image = self.createImage2D(width, total_rows, vk.VK_FORMAT_R32G32B32A32_SFLOAT) catch return;
+        prepared.layer_memory = self.allocateImageMemory(prepared.layer_image) catch return;
+        _ = vk.vkBindImageMemory(self.ctx.device, prepared.layer_image, prepared.layer_memory, 0);
+        self.uploadLayerInfoData(prepared, data, width, total_rows) catch return;
+        prepared.layer_view = self.createImageView2D(prepared.layer_image, vk.VK_FORMAT_R32G32B32A32_SFLOAT) catch return;
     }
 
-    fn updateDescriptorSet(self: *VulkanPipeline) void {
-        const effective_layer_view = if (self.layer_view != null) self.layer_view else self.curve_view;
-        const effective_image_view = if (self.image_view != null) self.image_view else self.curve_view;
+    fn updateDescriptorSet(self: *VulkanPipeline, prepared: *PreparedResources) void {
+        const effective_layer_view = if (prepared.layer_view != null) prepared.layer_view else prepared.curve_view;
+        const effective_image_view = if (prepared.image_view != null) prepared.image_view else prepared.curve_view;
         const image_infos = [4]vk.VkDescriptorImageInfo{
             .{
                 .sampler = self.sampler_nearest,
-                .imageView = self.curve_view,
+                .imageView = prepared.curve_view,
                 .imageLayout = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             },
             .{
                 .sampler = self.sampler_nearest,
-                .imageView = self.band_view,
+                .imageView = prepared.band_view,
                 .imageLayout = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             },
             .{
@@ -594,7 +727,7 @@ pub const VulkanPipeline = struct {
         const writes = [4]vk.VkWriteDescriptorSet{
             std.mem.zeroInit(vk.VkWriteDescriptorSet, .{
                 .sType = vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .dstSet = self.desc_set,
+                .dstSet = prepared.desc_set,
                 .dstBinding = 0,
                 .descriptorCount = 1,
                 .descriptorType = vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -602,7 +735,7 @@ pub const VulkanPipeline = struct {
             }),
             std.mem.zeroInit(vk.VkWriteDescriptorSet, .{
                 .sType = vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .dstSet = self.desc_set,
+                .dstSet = prepared.desc_set,
                 .dstBinding = 1,
                 .descriptorCount = 1,
                 .descriptorType = vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -610,7 +743,7 @@ pub const VulkanPipeline = struct {
             }),
             std.mem.zeroInit(vk.VkWriteDescriptorSet, .{
                 .sType = vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .dstSet = self.desc_set,
+                .dstSet = prepared.desc_set,
                 .dstBinding = 2,
                 .descriptorCount = 1,
                 .descriptorType = vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -618,7 +751,7 @@ pub const VulkanPipeline = struct {
             }),
             std.mem.zeroInit(vk.VkWriteDescriptorSet, .{
                 .sType = vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .dstSet = self.desc_set,
+                .dstSet = prepared.desc_set,
                 .dstBinding = 3,
                 .descriptorCount = 1,
                 .descriptorType = vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -630,7 +763,7 @@ pub const VulkanPipeline = struct {
 
     // ── Draw ──
 
-    fn drawTextInternal(self: *VulkanPipeline, vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32, allow_subpixel: bool) void {
+    fn drawTextInternal(self: *VulkanPipeline, prepared: *const PreparedResources, vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32, allow_subpixel: bool) void {
         const cmd = self.active_cmd orelse return;
         if (vertices.len == 0) return;
 
@@ -638,7 +771,7 @@ pub const VulkanPipeline = struct {
         if (total_glyphs == 0) return;
 
         vk.vkCmdBindIndexBuffer(cmd, self.index_buffer, 0, vk.VK_INDEX_TYPE_UINT32);
-        vk.vkCmdBindDescriptorSets(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, self.pipeline_layout, 0, 1, @ptrCast(&self.desc_set), 0, null);
+        vk.vkCmdBindDescriptorSets(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, self.pipeline_layout, 0, 1, @ptrCast(&prepared.desc_set), 0, null);
         setViewportAndScissor(cmd, viewport_w, viewport_h);
 
         const render_mode = subpixel_policy.chooseTextRenderMode(
@@ -649,21 +782,59 @@ pub const VulkanPipeline = struct {
             self.ctx.supports_dual_source_blend,
         );
 
-        var run_start: usize = 0;
-        while (run_start < total_glyphs) {
-            const special = glyphRunIsSpecial(vertices, run_start);
-            var run_end = run_start + 1;
-            while (run_end < total_glyphs and glyphRunIsSpecial(vertices, run_end) == special) {
-                run_end += 1;
-            }
-
-            const run_mode: subpixel_policy.TextRenderMode = if (special) .grayscale else render_mode;
-            const pip = switch (run_mode) {
-                .grayscale => self.ensureNormalPipeline() catch {
+        if (!prepared.atlas_has_special_text_runs) {
+            const pip = switch (render_mode) {
+                .grayscale => self.ensureTextPipeline() catch {
                     std.debug.print("Vulkan: failed to create text pipeline\n", .{});
                     return;
                 },
-                .subpixel_dual_source => self.ensureSubpixelDualPipeline() catch {
+                .subpixel_dual_source => self.ensureTextSubpixelDualPipeline() catch {
+                    std.debug.print("Vulkan: failed to create dual-source subpixel pipeline\n", .{});
+                    return;
+                },
+            };
+            vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pip);
+
+            const pc = PushConstants{
+                .mvp = mvp.data,
+                .viewport = .{ viewport_w, viewport_h },
+                .fill_rule = @intFromEnum(self.fill_rule),
+                .subpixel_order = @intFromEnum(if (render_mode == .grayscale) SubpixelOrder.none else self.subpixel_order),
+                .layer_base = @intCast(texture_layer_base),
+            };
+            vk.vkCmdPushConstants(cmd, self.pipeline_layout, vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(PushConstants), &pc);
+            self.drawGlyphRange(vertices, 0, total_glyphs);
+            return;
+        }
+
+        var run_start: usize = 0;
+        while (run_start < total_glyphs) {
+            const special = subpixel_policy.glyphRunIsSpecial(vertices, run_start);
+            const run_end = subpixel_policy.specialRunEnd(vertices, run_start, special);
+
+            const run_mode: subpixel_policy.TextRenderMode = if (special)
+                .grayscale
+            else
+                subpixel_policy.chooseTextRenderModeRange(
+                    vertices,
+                    run_start,
+                    run_end - run_start,
+                    mvp,
+                    allow_subpixel,
+                    self.subpixel_order,
+                    self.ctx.supports_dual_source_blend,
+                );
+            const pip = if (special)
+                self.ensureColrPipeline() catch {
+                    std.debug.print("Vulkan: failed to create COLR pipeline\n", .{});
+                    return;
+                }
+            else switch (run_mode) {
+                .grayscale => self.ensureTextPipeline() catch {
+                    std.debug.print("Vulkan: failed to create text pipeline\n", .{});
+                    return;
+                },
+                .subpixel_dual_source => self.ensureTextSubpixelDualPipeline() catch {
                     std.debug.print("Vulkan: failed to create dual-source subpixel pipeline\n", .{});
                     return;
                 },
@@ -675,6 +846,7 @@ pub const VulkanPipeline = struct {
                 .viewport = .{ viewport_w, viewport_h },
                 .fill_rule = @intFromEnum(self.fill_rule),
                 .subpixel_order = @intFromEnum(if (run_mode == .grayscale) SubpixelOrder.none else self.subpixel_order),
+                .layer_base = @intCast(texture_layer_base),
             };
             vk.vkCmdPushConstants(cmd, self.pipeline_layout, vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(PushConstants), &pc);
             self.drawGlyphRange(vertices, run_start, run_end - run_start);
@@ -682,12 +854,37 @@ pub const VulkanPipeline = struct {
         }
     }
 
-    pub fn drawText(self: *VulkanPipeline, vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
-        self.drawTextInternal(vertices, mvp, viewport_w, viewport_h, true);
+    pub fn drawTextPrepared(self: *VulkanPipeline, prepared: *const PreparedResources, vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32) void {
+        self.drawTextInternal(prepared, vertices, mvp, viewport_w, viewport_h, texture_layer_base, true);
     }
 
-    pub fn drawPaths(self: *VulkanPipeline, vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
-        self.drawTextInternal(vertices, mvp, viewport_w, viewport_h, false);
+    pub fn drawPathsPrepared(self: *VulkanPipeline, prepared: *const PreparedResources, vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32) void {
+        const cmd = self.active_cmd orelse return;
+        if (vertices.len == 0) return;
+
+        const total_glyphs = vertices.len / vertex.FLOATS_PER_INSTANCE;
+        if (total_glyphs == 0) return;
+
+        vk.vkCmdBindIndexBuffer(cmd, self.index_buffer, 0, vk.VK_INDEX_TYPE_UINT32);
+        vk.vkCmdBindDescriptorSets(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, self.pipeline_layout, 0, 1, @ptrCast(&prepared.desc_set), 0, null);
+        setViewportAndScissor(cmd, viewport_w, viewport_h);
+
+        const render_mode: subpixel_policy.TextRenderMode = .grayscale;
+        const pip = self.ensurePathPipeline() catch {
+            std.debug.print("Vulkan: missing path pipeline\n", .{});
+            return;
+        };
+        vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pip);
+
+        const pc = PushConstants{
+            .mvp = mvp.data,
+            .viewport = .{ viewport_w, viewport_h },
+            .fill_rule = @intFromEnum(self.fill_rule),
+            .subpixel_order = @intFromEnum(if (render_mode == .grayscale) SubpixelOrder.none else self.subpixel_order),
+            .layer_base = @intCast(texture_layer_base),
+        };
+        vk.vkCmdPushConstants(cmd, self.pipeline_layout, vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(PushConstants), &pc);
+        self.drawGlyphRange(vertices, 0, total_glyphs);
     }
 
     pub fn beginFrame(self: *VulkanPipeline) void {
@@ -718,7 +915,7 @@ pub const VulkanPipeline = struct {
             }),
         };
 
-        // Vertex input: 5 vec4 per-instance attributes, single binding
+        // Vertex input: 7 vec4 per-instance attributes, single binding
         const stride: u32 = vertex.FLOATS_PER_INSTANCE * @sizeOf(f32);
         const binding = vk.VkVertexInputBindingDescription{
             .binding = 0,
@@ -726,19 +923,21 @@ pub const VulkanPipeline = struct {
             .inputRate = vk.VK_VERTEX_INPUT_RATE_INSTANCE,
         };
 
-        const attrs = [5]vk.VkVertexInputAttributeDescription{
+        const attrs = [7]vk.VkVertexInputAttributeDescription{
             .{ .location = 0, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 0 },
             .{ .location = 1, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 16 },
             .{ .location = 2, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 32 },
             .{ .location = 3, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 48 },
             .{ .location = 4, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 64 },
+            .{ .location = 5, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 80 },
+            .{ .location = 6, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 96 },
         };
 
         const vi_info = std.mem.zeroInit(vk.VkPipelineVertexInputStateCreateInfo, .{
             .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
             .vertexBindingDescriptionCount = 1,
             .pVertexBindingDescriptions = &binding,
-            .vertexAttributeDescriptionCount = 5,
+            .vertexAttributeDescriptionCount = 7,
             .pVertexAttributeDescriptions = &attrs,
         });
 
@@ -827,24 +1026,28 @@ pub const VulkanPipeline = struct {
     }
 
     fn warmGraphicsPipelines(self: *VulkanPipeline) !void {
-        self.pipeline_normal = try self.createGraphicsPipeline(frag_spv, .premultiplied);
+        self.pipeline_text = try self.createGraphicsPipeline(frag_text_spv, .premultiplied);
+        self.pipeline_colr = try self.createGraphicsPipeline(frag_colr_spv, .premultiplied);
+        self.pipeline_path = try self.createGraphicsPipeline(frag_path_spv, .premultiplied);
         if (self.ctx.supports_dual_source_blend) {
-            self.pipeline_subpixel_dual = try self.createGraphicsPipeline(frag_text_subpixel_dual_spv, .dual_source);
+            self.pipeline_text_subpixel_dual = try self.createGraphicsPipeline(frag_text_subpixel_dual_spv, .dual_source);
         }
     }
 
-    fn ensureNormalPipeline(self: *VulkanPipeline) !vk.VkPipeline {
-        if (self.pipeline_normal == null) {
-            self.pipeline_normal = try self.createGraphicsPipeline(frag_spv, .premultiplied);
-        }
-        return self.pipeline_normal;
+    fn ensureTextPipeline(self: *VulkanPipeline) !vk.VkPipeline {
+        return self.pipeline_text orelse error.PipelineUnavailable;
     }
 
-    fn ensureSubpixelDualPipeline(self: *VulkanPipeline) !vk.VkPipeline {
-        if (self.pipeline_subpixel_dual == null) {
-            self.pipeline_subpixel_dual = try self.createGraphicsPipeline(frag_text_subpixel_dual_spv, .dual_source);
-        }
-        return self.pipeline_subpixel_dual;
+    fn ensureColrPipeline(self: *VulkanPipeline) !vk.VkPipeline {
+        return self.pipeline_colr orelse error.PipelineUnavailable;
+    }
+
+    fn ensurePathPipeline(self: *VulkanPipeline) !vk.VkPipeline {
+        return self.pipeline_path orelse error.PipelineUnavailable;
+    }
+
+    fn ensureTextSubpixelDualPipeline(self: *VulkanPipeline) !vk.VkPipeline {
+        return self.pipeline_text_subpixel_dual orelse error.PipelineUnavailable;
     }
 
     fn drawGlyphRange(self: *VulkanPipeline, vertices: []const f32, glyph_offset: usize, glyph_count: usize) void {
@@ -1058,9 +1261,60 @@ pub const VulkanPipeline = struct {
         return view;
     }
 
+    fn beginTransferCommand(self: *VulkanPipeline) !TransferCommand {
+        if (self.scheduled_resource_upload_cmd != null) {
+            return .{ .cmd = self.scheduled_resource_upload_cmd, .owned = false };
+        }
+
+        var cmd: vk.VkCommandBuffer = null;
+        const alloc_info = std.mem.zeroInit(vk.VkCommandBufferAllocateInfo, .{
+            .sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            .commandPool = self.transfer_cmd_pool,
+            .level = vk.VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            .commandBufferCount = 1,
+        });
+        try check(vk.vkAllocateCommandBuffers(self.ctx.device, &alloc_info, &cmd));
+
+        const begin_info = std.mem.zeroInit(vk.VkCommandBufferBeginInfo, .{
+            .sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            .flags = vk.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+        });
+        try check(vk.vkBeginCommandBuffer(cmd, &begin_info));
+        return .{ .cmd = cmd, .owned = true };
+    }
+
+    fn discardTransferCommand(self: *VulkanPipeline, transfer: TransferCommand) void {
+        if (transfer.owned and transfer.cmd != null) {
+            var cmd = transfer.cmd;
+            vk.vkFreeCommandBuffers(self.ctx.device, self.transfer_cmd_pool, 1, &cmd);
+        }
+    }
+
+    fn finishTransferCommand(self: *VulkanPipeline, transfer: TransferCommand) !void {
+        if (!transfer.owned) return;
+        try check(vk.vkEndCommandBuffer(transfer.cmd));
+        try self.submitTransferAndWait(transfer.cmd);
+        var cmd = transfer.cmd;
+        vk.vkFreeCommandBuffers(self.ctx.device, self.transfer_cmd_pool, 1, &cmd);
+    }
+
+    fn destroyStagingBuffer(self: *VulkanPipeline, buffer: vk.VkBuffer, memory: vk.VkDeviceMemory) void {
+        vk.vkDestroyBuffer(self.ctx.device, buffer, null);
+        vk.vkFreeMemory(self.ctx.device, memory, null);
+    }
+
+    fn finishUploadStaging(self: *VulkanPipeline, prepared: *PreparedResources, buffer: vk.VkBuffer, memory: vk.VkDeviceMemory) !void {
+        if (self.scheduled_resource_upload_cmd != null) {
+            try prepared.retainUploadStaging(buffer, memory);
+        } else {
+            self.destroyStagingBuffer(buffer, memory);
+        }
+    }
+
     fn uploadTextureData(
         self: *VulkanPipeline,
-        atlases: []const *const snail_mod.Atlas,
+        prepared: *PreparedResources,
+        atlases: []const *const snail_mod.CurveAtlas,
         start_pages: ?[]const u32,
         layer_count: u32,
         old_layout: vk.VkImageLayout,
@@ -1093,10 +1347,7 @@ pub const VulkanPipeline = struct {
             &staging_buf,
             &staging_mem,
         );
-        defer {
-            vk.vkDestroyBuffer(self.ctx.device, staging_buf, null);
-            vk.vkFreeMemory(self.ctx.device, staging_mem, null);
-        }
+        errdefer self.destroyStagingBuffer(staging_buf, staging_mem);
 
         // Map and copy data
         var map_ptr: ?*anyopaque = null;
@@ -1111,7 +1362,7 @@ pub const VulkanPipeline = struct {
         var region_index: usize = 0;
         for (atlases, 0..) |atlas, i| {
             const start_page = if (start_pages) |sp| sp[i] else 0;
-            const base_layer = self.atlas_slots[i].base_layer;
+            const base_layer = prepared.atlas_slots[i].base_layer;
             for (start_page..atlas.pageCount()) |page_index| {
                 const page = atlas.page(@intCast(page_index));
                 const layer = base_layer + @as(u32, @intCast(page_index));
@@ -1145,46 +1396,43 @@ pub const VulkanPipeline = struct {
 
         vk.vkUnmapMemory(self.ctx.device, staging_mem);
 
-        // Record transfer commands
-        var cmd: vk.VkCommandBuffer = null;
-        const alloc_info = std.mem.zeroInit(vk.VkCommandBufferAllocateInfo, .{
-            .sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-            .commandPool = self.transfer_cmd_pool,
-            .level = vk.VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-            .commandBufferCount = 1,
-        });
-        try check(vk.vkAllocateCommandBuffers(self.ctx.device, &alloc_info, &cmd));
-
-        const begin_info = std.mem.zeroInit(vk.VkCommandBufferBeginInfo, .{
-            .sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-            .flags = vk.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-        });
-        try check(vk.vkBeginCommandBuffer(cmd, &begin_info));
+        const transfer = try self.beginTransferCommand();
+        var transfer_finished = false;
+        errdefer if (!transfer_finished) self.discardTransferCommand(transfer);
+        const cmd = transfer.cmd;
 
         // Transition images into transfer dst for the upload.
-        transitionImageLayout(cmd, self.curve_image, layer_count, old_layout, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-        transitionImageLayout(cmd, self.band_image, layer_count, old_layout, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        transitionImageLayout(cmd, prepared.curve_image, layer_count, old_layout, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        transitionImageLayout(cmd, prepared.band_image, layer_count, old_layout, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
         // Copy buffer to images
-        vk.vkCmdCopyBufferToImage(cmd, staging_buf, self.curve_image, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region_count, &curve_regions);
-        vk.vkCmdCopyBufferToImage(cmd, staging_buf, self.band_image, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region_count, &band_regions);
+        vk.vkCmdCopyBufferToImage(cmd, staging_buf, prepared.curve_image, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region_count, &curve_regions);
+        vk.vkCmdCopyBufferToImage(cmd, staging_buf, prepared.band_image, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region_count, &band_regions);
 
         // Transition TRANSFER_DST -> SHADER_READ_ONLY
-        transitionImageLayout(cmd, self.curve_image, layer_count, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        transitionImageLayout(cmd, self.band_image, layer_count, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        transitionImageLayout(cmd, prepared.curve_image, layer_count, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        transitionImageLayout(cmd, prepared.band_image, layer_count, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-        try check(vk.vkEndCommandBuffer(cmd));
+        try self.finishTransferCommand(transfer);
+        transfer_finished = true;
+        try self.finishUploadStaging(prepared, staging_buf, staging_mem);
+    }
 
-        // Submit and wait
+    fn submitTransferAndWait(self: *VulkanPipeline, cmd: vk.VkCommandBuffer) !void {
+        var fence: vk.VkFence = null;
+        const fence_info = std.mem.zeroInit(vk.VkFenceCreateInfo, .{
+            .sType = vk.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+        });
+        try check(vk.vkCreateFence(self.ctx.device, &fence_info, null, &fence));
+        defer vk.vkDestroyFence(self.ctx.device, fence, null);
+
         const submit_info = std.mem.zeroInit(vk.VkSubmitInfo, .{
             .sType = vk.VK_STRUCTURE_TYPE_SUBMIT_INFO,
             .commandBufferCount = 1,
             .pCommandBuffers = &cmd,
         });
-        try check(vk.vkQueueSubmit(self.ctx.graphics_queue, 1, &submit_info, null));
-        _ = vk.vkQueueWaitIdle(self.ctx.graphics_queue);
-
-        vk.vkFreeCommandBuffers(self.ctx.device, self.transfer_cmd_pool, 1, &cmd);
+        try check(vk.vkQueueSubmit(self.ctx.graphics_queue, 1, &submit_info, fence));
+        try check(vk.vkWaitForFences(self.ctx.device, 1, &fence, vk.VK_TRUE, std.math.maxInt(u64)));
     }
 
     fn initIndexBuffer(self: *VulkanPipeline) !void {
@@ -1249,7 +1497,7 @@ pub const VulkanPipeline = struct {
         return view;
     }
 
-    fn uploadLayerInfoData(self: *VulkanPipeline, data: []f32, width: u32, height: u32) !void {
+    fn uploadLayerInfoData(self: *VulkanPipeline, prepared: *PreparedResources, data: []f32, width: u32, height: u32) !void {
         const px_bytes: usize = 4 * 4; // RGBA32F = 4 channels * 4 bytes
         const total_bytes: vk.VkDeviceSize = @intCast(@as(usize, width) * @as(usize, height) * px_bytes);
 
@@ -1257,10 +1505,7 @@ pub const VulkanPipeline = struct {
         var staging_buf: vk.VkBuffer = null;
         var staging_mem: vk.VkDeviceMemory = null;
         try self.createBuffer(total_bytes, vk.VK_BUFFER_USAGE_TRANSFER_SRC_BIT, vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &staging_buf, &staging_mem);
-        defer {
-            vk.vkDestroyBuffer(self.ctx.device, staging_buf, null);
-            vk.vkFreeMemory(self.ctx.device, staging_mem, null);
-        }
+        errdefer self.destroyStagingBuffer(staging_buf, staging_mem);
 
         // Map and copy
         var map_ptr: ?*anyopaque = null;
@@ -1270,23 +1515,12 @@ pub const VulkanPipeline = struct {
         @memcpy(dst[0..@intCast(total_bytes)], src[0..@intCast(total_bytes)]);
         vk.vkUnmapMemory(self.ctx.device, staging_mem);
 
-        // Record transfer commands
-        var cmd: vk.VkCommandBuffer = null;
-        const alloc_info = std.mem.zeroInit(vk.VkCommandBufferAllocateInfo, .{
-            .sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-            .commandPool = self.transfer_cmd_pool,
-            .level = vk.VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-            .commandBufferCount = 1,
-        });
-        try check(vk.vkAllocateCommandBuffers(self.ctx.device, &alloc_info, &cmd));
+        const transfer = try self.beginTransferCommand();
+        var transfer_finished = false;
+        errdefer if (!transfer_finished) self.discardTransferCommand(transfer);
+        const cmd = transfer.cmd;
 
-        const begin_info = std.mem.zeroInit(vk.VkCommandBufferBeginInfo, .{
-            .sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-            .flags = vk.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-        });
-        try check(vk.vkBeginCommandBuffer(cmd, &begin_info));
-
-        transitionImageLayout(cmd, self.layer_image, 1, vk.VK_IMAGE_LAYOUT_UNDEFINED, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        transitionImageLayout(cmd, prepared.layer_image, 1, vk.VK_IMAGE_LAYOUT_UNDEFINED, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
         const region = std.mem.zeroInit(vk.VkBufferImageCopy, .{
             .bufferOffset = 0,
@@ -1298,40 +1532,33 @@ pub const VulkanPipeline = struct {
             },
             .imageExtent = .{ .width = width, .height = height, .depth = 1 },
         });
-        vk.vkCmdCopyBufferToImage(cmd, staging_buf, self.layer_image, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+        vk.vkCmdCopyBufferToImage(cmd, staging_buf, prepared.layer_image, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
-        transitionImageLayout(cmd, self.layer_image, 1, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        transitionImageLayout(cmd, prepared.layer_image, 1, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-        try check(vk.vkEndCommandBuffer(cmd));
-
-        const submit_info = std.mem.zeroInit(vk.VkSubmitInfo, .{
-            .sType = vk.VK_STRUCTURE_TYPE_SUBMIT_INFO,
-            .commandBufferCount = 1,
-            .pCommandBuffers = &cmd,
-        });
-        try check(vk.vkQueueSubmit(self.ctx.graphics_queue, 1, &submit_info, null));
-        _ = vk.vkQueueWaitIdle(self.ctx.graphics_queue);
-        vk.vkFreeCommandBuffers(self.ctx.device, self.transfer_cmd_pool, 1, &cmd);
+        try self.finishTransferCommand(transfer);
+        transfer_finished = true;
+        try self.finishUploadStaging(prepared, staging_buf, staging_mem);
     }
 
-    fn rebuildImageArray(self: *VulkanPipeline) void {
-        if (self.image_view != null) {
-            vk.vkDestroyImageView(self.ctx.device, self.image_view, null);
-            self.image_view = null;
+    fn rebuildImageArray(self: *VulkanPipeline, prepared: *PreparedResources) void {
+        if (prepared.image_view != null) {
+            vk.vkDestroyImageView(self.ctx.device, prepared.image_view, null);
+            prepared.image_view = null;
         }
-        if (self.image_image != null) {
-            vk.vkDestroyImage(self.ctx.device, self.image_image, null);
-            self.image_image = null;
+        if (prepared.image_image != null) {
+            vk.vkDestroyImage(self.ctx.device, prepared.image_image, null);
+            prepared.image_image = null;
         }
-        if (self.image_memory != null) {
-            vk.vkFreeMemory(self.ctx.device, self.image_memory, null);
-            self.image_memory = null;
+        if (prepared.image_memory != null) {
+            vk.vkFreeMemory(self.ctx.device, prepared.image_memory, null);
+            prepared.image_memory = null;
         }
 
-        if (self.image_slot_count == 0) {
-            self.allocated_image_width = 0;
-            self.allocated_image_height = 0;
-            self.allocated_image_count = 0;
+        if (prepared.image_slot_count == 0) {
+            prepared.allocated_image_width = 0;
+            prepared.allocated_image_height = 0;
+            prepared.allocated_image_count = 0;
             return;
         }
 
@@ -1339,7 +1566,7 @@ pub const VulkanPipeline = struct {
         var max_height: u32 = 1;
         var all_images: [MAX_IMAGES]*const snail_mod.Image = undefined;
         var image_count: usize = 0;
-        for (self.image_slots[0..self.image_slot_count]) |slot| {
+        for (prepared.image_slots[0..prepared.image_slot_count]) |slot| {
             const image = slot.image orelse continue;
             all_images[image_count] = image;
             image_count += 1;
@@ -1347,19 +1574,19 @@ pub const VulkanPipeline = struct {
             max_height = @max(max_height, image.height);
         }
 
-        self.allocated_image_width = upload_common.heightCapacity(max_width);
-        self.allocated_image_height = upload_common.heightCapacity(max_height);
-        self.allocated_image_count = upload_common.atlasCapacity(@intCast(self.image_slot_count));
+        prepared.allocated_image_width = upload_common.heightCapacity(max_width);
+        prepared.allocated_image_height = upload_common.heightCapacity(max_height);
+        prepared.allocated_image_count = upload_common.atlasCapacity(@intCast(prepared.image_slot_count));
 
-        self.image_image = self.createImage2DArray(self.allocated_image_width, self.allocated_image_height, self.allocated_image_count, vk.VK_FORMAT_R8G8B8A8_SRGB) catch return;
-        self.image_memory = self.allocateImageMemory(self.image_image) catch return;
-        _ = vk.vkBindImageMemory(self.ctx.device, self.image_image, self.image_memory, 0);
-        self.uploadImagesToArray(all_images[0..image_count], 0, vk.VK_IMAGE_LAYOUT_UNDEFINED) catch return;
-        self.image_view = self.createImageView(self.image_image, vk.VK_FORMAT_R8G8B8A8_SRGB, self.allocated_image_count) catch return;
+        prepared.image_image = self.createImage2DArray(prepared.allocated_image_width, prepared.allocated_image_height, prepared.allocated_image_count, vk.VK_FORMAT_R8G8B8A8_SRGB) catch return;
+        prepared.image_memory = self.allocateImageMemory(prepared.image_image) catch return;
+        _ = vk.vkBindImageMemory(self.ctx.device, prepared.image_image, prepared.image_memory, 0);
+        self.uploadImagesToArray(prepared, all_images[0..image_count], 0, vk.VK_IMAGE_LAYOUT_UNDEFINED) catch return;
+        prepared.image_view = self.createImageView(prepared.image_image, vk.VK_FORMAT_R8G8B8A8_SRGB, prepared.allocated_image_count) catch return;
     }
 
-    fn uploadImagesToArray(self: *VulkanPipeline, images: []const *const snail_mod.Image, start_layer: u32, old_layout: vk.VkImageLayout) !void {
-        if (images.len == 0 or self.image_image == null) return;
+    fn uploadImagesToArray(self: *VulkanPipeline, prepared: *PreparedResources, images: []const *const snail_mod.Image, start_layer: u32, old_layout: vk.VkImageLayout) !void {
+        if (images.len == 0 or prepared.image_image == null) return;
 
         var total_staging: usize = 0;
         for (images) |image| total_staging += @as(usize, image.width) * @as(usize, image.height) * 4;
@@ -1373,10 +1600,7 @@ pub const VulkanPipeline = struct {
             &staging_buf,
             &staging_mem,
         );
-        defer {
-            vk.vkDestroyBuffer(self.ctx.device, staging_buf, null);
-            vk.vkFreeMemory(self.ctx.device, staging_mem, null);
-        }
+        errdefer self.destroyStagingBuffer(staging_buf, staging_mem);
 
         var map_ptr: ?*anyopaque = null;
         try check(vk.vkMapMemory(self.ctx.device, staging_mem, 0, @intCast(total_staging), 0, &map_ptr));
@@ -1401,94 +1625,18 @@ pub const VulkanPipeline = struct {
         }
         vk.vkUnmapMemory(self.ctx.device, staging_mem);
 
-        var cmd: vk.VkCommandBuffer = null;
-        const alloc_info = std.mem.zeroInit(vk.VkCommandBufferAllocateInfo, .{
-            .sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-            .commandPool = self.transfer_cmd_pool,
-            .level = vk.VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-            .commandBufferCount = 1,
-        });
-        try check(vk.vkAllocateCommandBuffers(self.ctx.device, &alloc_info, &cmd));
+        const transfer = try self.beginTransferCommand();
+        var transfer_finished = false;
+        errdefer if (!transfer_finished) self.discardTransferCommand(transfer);
+        const cmd = transfer.cmd;
 
-        const begin_info = std.mem.zeroInit(vk.VkCommandBufferBeginInfo, .{
-            .sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-            .flags = vk.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-        });
-        try check(vk.vkBeginCommandBuffer(cmd, &begin_info));
+        transitionImageLayout(cmd, prepared.image_image, prepared.allocated_image_count, old_layout, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        vk.vkCmdCopyBufferToImage(cmd, staging_buf, prepared.image_image, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, @intCast(images.len), &regions);
+        transitionImageLayout(cmd, prepared.image_image, prepared.allocated_image_count, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-        transitionImageLayout(cmd, self.image_image, self.allocated_image_count, old_layout, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-        vk.vkCmdCopyBufferToImage(cmd, staging_buf, self.image_image, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, @intCast(images.len), &regions);
-        transitionImageLayout(cmd, self.image_image, self.allocated_image_count, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-
-        try check(vk.vkEndCommandBuffer(cmd));
-
-        const submit_info = std.mem.zeroInit(vk.VkSubmitInfo, .{
-            .sType = vk.VK_STRUCTURE_TYPE_SUBMIT_INFO,
-            .commandBufferCount = 1,
-            .pCommandBuffers = &cmd,
-        });
-        try check(vk.vkQueueSubmit(self.ctx.graphics_queue, 1, &submit_info, null));
-        _ = vk.vkQueueWaitIdle(self.ctx.graphics_queue);
-        vk.vkFreeCommandBuffers(self.ctx.device, self.transfer_cmd_pool, 1, &cmd);
-    }
-
-    fn destroyAtlasTextureResources(self: *VulkanPipeline) void {
-        if (self.curve_view != null) {
-            vk.vkDestroyImageView(self.ctx.device, self.curve_view, null);
-            self.curve_view = null;
-        }
-        if (self.curve_image != null) {
-            vk.vkDestroyImage(self.ctx.device, self.curve_image, null);
-            self.curve_image = null;
-        }
-        if (self.curve_memory != null) {
-            vk.vkFreeMemory(self.ctx.device, self.curve_memory, null);
-            self.curve_memory = null;
-        }
-        if (self.band_view != null) {
-            vk.vkDestroyImageView(self.ctx.device, self.band_view, null);
-            self.band_view = null;
-        }
-        if (self.band_image != null) {
-            vk.vkDestroyImage(self.ctx.device, self.band_image, null);
-            self.band_image = null;
-        }
-        if (self.band_memory != null) {
-            vk.vkFreeMemory(self.ctx.device, self.band_memory, null);
-            self.band_memory = null;
-        }
-        if (self.layer_view != null) {
-            vk.vkDestroyImageView(self.ctx.device, self.layer_view, null);
-            self.layer_view = null;
-        }
-        if (self.layer_image != null) {
-            vk.vkDestroyImage(self.ctx.device, self.layer_image, null);
-            self.layer_image = null;
-        }
-        if (self.layer_memory != null) {
-            vk.vkFreeMemory(self.ctx.device, self.layer_memory, null);
-            self.layer_memory = null;
-        }
-    }
-
-    fn destroyImageResources(self: *VulkanPipeline) void {
-        if (self.image_view != null) {
-            vk.vkDestroyImageView(self.ctx.device, self.image_view, null);
-            self.image_view = null;
-        }
-        if (self.image_image != null) {
-            vk.vkDestroyImage(self.ctx.device, self.image_image, null);
-            self.image_image = null;
-        }
-        if (self.image_memory != null) {
-            vk.vkFreeMemory(self.ctx.device, self.image_memory, null);
-            self.image_memory = null;
-        }
-        self.image_slot_count = 0;
-        self.allocated_image_width = 0;
-        self.allocated_image_height = 0;
-        self.allocated_image_count = 0;
-        for (&self.image_slots) |*slot| slot.* = .{};
+        try self.finishTransferCommand(transfer);
+        transfer_finished = true;
+        try self.finishUploadStaging(prepared, staging_buf, staging_mem);
     }
 };
 
@@ -1502,13 +1650,6 @@ fn pipelineCacheDirPath(buf: []u8) ?[:0]const u8 {
         return std.fmt.bufPrintZ(buf, "{s}/.cache/snail", .{std.mem.span(home)}) catch null;
     }
     return null;
-}
-
-fn glyphRunIsSpecial(vertices: []const f32, glyph_index: usize) bool {
-    // gw is at offset 11 within each instance (a_meta.w)
-    const float_offset = glyph_index * vertex.FLOATS_PER_INSTANCE;
-    const gw_bits: u32 = @bitCast(vertices[float_offset + 11]);
-    return (gw_bits >> 24) == 0xFF;
 }
 
 fn setViewportAndScissor(cmd: vk.VkCommandBuffer, viewport_w: f32, viewport_h: f32) void {

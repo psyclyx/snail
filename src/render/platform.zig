@@ -13,6 +13,12 @@ const egl = @cImport({
 
 pub const KEY_R = wayland.KEY_R;
 pub const KEY_L = wayland.KEY_L;
+pub const KEY_W = wayland.KEY_W;
+pub const KEY_A = wayland.KEY_A;
+pub const KEY_S = wayland.KEY_S;
+pub const KEY_D = wayland.KEY_D;
+pub const KEY_Q = wayland.KEY_Q;
+pub const KEY_E = wayland.KEY_E;
 pub const KEY_Z = wayland.KEY_Z;
 pub const KEY_X = wayland.KEY_X;
 pub const KEY_ESCAPE = wayland.KEY_ESCAPE;
@@ -50,8 +56,8 @@ pub fn init(width: u32, height: u32, title: [*:0]const u8) !void {
         egl_context = egl.EGL_NO_CONTEXT;
     }
 
-    const size = app.?.getWindowSize();
-    egl_window = egl.wl_egl_window_create(@ptrCast(app.?.surface), @intCast(size[0]), @intCast(size[1])) orelse return error.EglSurfaceCreateFailed;
+    const fb_size = app.?.getFramebufferSize();
+    egl_window = egl.wl_egl_window_create(@ptrCast(app.?.surface), @intCast(fb_size[0]), @intCast(fb_size[1])) orelse return error.EglSurfaceCreateFailed;
     errdefer {
         egl.wl_egl_window_destroy(egl_window.?);
         egl_window = null;
@@ -128,8 +134,8 @@ pub fn deinit() void {
 pub fn shouldClose() bool {
     if (app) |window| {
         window.pumpEvents();
-        if (window.consumeResized()) {
-            const size = window.getWindowSize();
+        if (window.consumeResized() or window.consumeScaleChanged()) {
+            const size = window.getFramebufferSize();
             if (egl_window) |win| {
                 egl.wl_egl_window_resize(win, @intCast(size[0]), @intCast(size[1]), 0, 0);
             }
@@ -150,6 +156,11 @@ pub fn swapBuffers() void {
 
 pub fn getWindowSize() [2]u32 {
     if (app) |window| return window.getWindowSize();
+    return .{ 0, 0 };
+}
+
+pub fn getFramebufferSize() [2]u32 {
+    if (app) |window| return window.getFramebufferSize();
     return .{ 0, 0 };
 }
 

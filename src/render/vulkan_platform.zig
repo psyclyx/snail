@@ -3,13 +3,6 @@
 
 const std = @import("std");
 const vkp = @import("vulkan_pipeline.zig");
-
-var pipeline_ref: ?*vkp.VulkanPipeline = null;
-
-/// Store a reference to the VulkanPipeline so beginFrame can call setFrameSlot.
-pub fn setPipeline(p: *vkp.VulkanPipeline) void {
-    pipeline_ref = p;
-}
 const SubpixelOrder = @import("subpixel_order.zig").SubpixelOrder;
 const wayland = @import("wayland_window.zig");
 
@@ -126,7 +119,8 @@ pub fn init(width: u32, height: u32, title: [*:0]const u8) !vkp.VulkanContext {
     try createSurface();
     try pickPhysicalDevice();
     try createLogicalDevice();
-    try createSwapchain(width, height);
+    const fb_size = window.?.getFramebufferSize();
+    try createSwapchain(fb_size[0], fb_size[1]);
     try createRenderPass();
     try createFramebuffers();
     try createCommandResources();
@@ -215,12 +209,14 @@ pub fn beginFrame() ?vk.VkCommandBuffer {
         .pClearValues = &clear_value,
     });
     vk.vkCmdBeginRenderPass(cmd, &rp_info, vk.VK_SUBPASS_CONTENTS_INLINE);
-    if (pipeline_ref) |p| p.setFrameSlot(current_frame);
-
     cmd_ready_ns = nowNs();
     ft.add(&ft.rp_setup_us, @as(f64, @floatFromInt(cmd_ready_ns - t2)) / 1000.0);
 
     return cmd;
+}
+
+pub fn currentFrameIndex() u32 {
+    return current_frame;
 }
 
 /// End frame: close render pass, submit, present.
@@ -283,13 +279,18 @@ pub fn endFrame() void {
 pub fn shouldClose() bool {
     if (window) |w| {
         w.pumpEvents();
-        if (w.consumeResized()) framebuffer_resized = true;
+        if (w.consumeResized() or w.consumeScaleChanged()) framebuffer_resized = true;
         return w.shouldClose();
     }
     return true;
 }
 
 pub fn getWindowSize() [2]u32 {
+    if (window) |w| return w.getWindowSize();
+    return .{ 0, 0 };
+}
+
+pub fn getFramebufferSize() [2]u32 {
     return .{ swapchain_extent.width, swapchain_extent.height };
 }
 
@@ -411,10 +412,12 @@ pub fn beginFrameOffscreen() vk.VkCommandBuffer {
         .pClearValues = &clear_value,
     });
     vk.vkCmdBeginRenderPass(cmd, &rp_info, vk.VK_SUBPASS_CONTENTS_INLINE);
-    if (pipeline_ref) |p| p.setFrameSlot(frame);
-
     offscreen_active_frame = frame;
     return cmd;
+}
+
+pub fn currentOffscreenFrameIndex() u32 {
+    return offscreen_active_frame;
 }
 
 /// End the offscreen frame: close render pass and submit. Use queueWaitIdle() to sync.
@@ -957,10 +960,10 @@ fn cleanupSwapchain() void {
 
 fn recreateSwapchain() !void {
     const win = window orelse return error.WindowCreateFailed;
-    var size = win.getWindowSize();
+    var size = win.getFramebufferSize();
     while (size[0] == 0 or size[1] == 0) {
         win.pumpEvents();
-        size = win.getWindowSize();
+        size = win.getFramebufferSize();
     }
 
     _ = vk.vkDeviceWaitIdle(device);
