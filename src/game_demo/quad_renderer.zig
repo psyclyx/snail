@@ -1,6 +1,7 @@
 const std = @import("std");
 const snail = @import("../snail.zig");
 const gl = @import("../render/gl.zig").gl;
+const vertex = @import("../render/vertex.zig");
 const common = @import("common.zig");
 
 const Vec3 = common.Vec3;
@@ -494,7 +495,7 @@ const material_fragment_shader: [:0]const u8 =
     \\}
     \\
     \\vec4 textRecord(int glyph_index, int slot) {
-    \\    return texelFetch(u_text_records, glyph_index * 7 + slot);
+    \\    return texelFetch(u_text_records, glyph_index * 5 + slot);
     \\}
     \\
     \\vec2 textLocalCoord(vec2 scene_pos, vec4 xform, vec2 translate) {
@@ -693,10 +694,18 @@ const material_fragment_shader: [:0]const u8 =
     \\}
     ;
 
+// Layout the shader (`material_fragment_shader`) sees: 5 vec4s per glyph,
+// fed via samplerBuffer with internalFormat RGBA32F. Snail's packed
+// `vertex.Instance` (60 bytes, mixed f16/f32/u32/u8) isn't directly readable
+// at vec4 stride, so we widen each glyph at upload time.
+pub const TEXT_RECORD_VEC4S_PER_GLYPH: usize = 5;
+const TEXT_RECORD_FLOATS_PER_GLYPH: usize = TEXT_RECORD_VEC4S_PER_GLYPH * 4;
+
 pub const SurfaceTextDraw = struct {
     allocator: std.mem.Allocator,
     blob: *const snail.TextBlob,
     coverage: snail.TextCoverageRecords,
+    record_storage: []f32 = &.{},
     record_buffer: gl.GLuint = 0,
     record_texture: gl.GLuint = 0,
 
@@ -710,26 +719,38 @@ pub const SurfaceTextDraw = struct {
             .blob = blob,
             .coverage = coverage,
         };
-        self.uploadRecords();
+        errdefer if (self.record_storage.len > 0) self.allocator.free(self.record_storage);
+        try self.uploadRecords();
         return self;
     }
 
     pub fn deinit(self: *SurfaceTextDraw) void {
         if (self.record_texture != 0) gl.glDeleteTextures(1, &self.record_texture);
         if (self.record_buffer != 0) gl.glDeleteBuffers(1, &self.record_buffer);
+        if (self.record_storage.len > 0) self.allocator.free(self.record_storage);
         self.coverage.deinit();
         self.* = undefined;
     }
 
-    fn uploadRecords(self: *SurfaceTextDraw) void {
+    fn uploadRecords(self: *SurfaceTextDraw) !void {
+        const glyph_count = self.coverage.glyphCount();
+        if (self.record_storage.len != glyph_count * TEXT_RECORD_FLOATS_PER_GLYPH) {
+            if (self.record_storage.len > 0) self.allocator.free(self.record_storage);
+            self.record_storage = if (glyph_count == 0)
+                &.{}
+            else
+                try self.allocator.alloc(f32, glyph_count * TEXT_RECORD_FLOATS_PER_GLYPH);
+        }
+        widenInstanceRecords(self.coverage.slice(), self.record_storage);
+
         if (self.record_buffer == 0) gl.glGenBuffers(1, &self.record_buffer);
         if (self.record_texture == 0) gl.glGenTextures(1, &self.record_texture);
 
         gl.glBindBuffer(gl.GL_TEXTURE_BUFFER, self.record_buffer);
         gl.glBufferData(
             gl.GL_TEXTURE_BUFFER,
-            @intCast(self.coverage.slice().len * @sizeOf(f32)),
-            if (self.coverage.slice().len == 0) null else self.coverage.slice().ptr,
+            @intCast(self.record_storage.len * @sizeOf(f32)),
+            if (self.record_storage.len == 0) null else self.record_storage.ptr,
             gl.GL_STATIC_DRAW,
         );
         gl.glBindTexture(gl.GL_TEXTURE_BUFFER, self.record_texture);
@@ -738,6 +759,43 @@ pub const SurfaceTextDraw = struct {
         gl.glBindBuffer(gl.GL_TEXTURE_BUFFER, 0);
     }
 };
+
+fn widenInstanceRecords(packed_words: []const u32, out: []f32) void {
+    const words_per_glyph = snail.lowlevel.TEXT_WORDS_PER_GLYPH;
+    std.debug.assert(packed_words.len % words_per_glyph == 0);
+    const glyph_count = packed_words.len / words_per_glyph;
+    std.debug.assert(out.len == glyph_count * TEXT_RECORD_FLOATS_PER_GLYPH);
+    var glyph_index: usize = 0;
+    while (glyph_index < glyph_count) : (glyph_index += 1) {
+        const decoded = vertex.decodeInstance(packed_words[glyph_index * words_per_glyph ..][0..words_per_glyph]);
+        const base = glyph_index * TEXT_RECORD_FLOATS_PER_GLYPH;
+        // slot 0: rect (em-space bbox)
+        out[base + 0] = decoded.rect[0];
+        out[base + 1] = decoded.rect[1];
+        out[base + 2] = decoded.rect[2];
+        out[base + 3] = decoded.rect[3];
+        // slot 1: xform (xx, xy, yx, yy)
+        out[base + 4] = decoded.xform[0];
+        out[base + 5] = decoded.xform[1];
+        out[base + 6] = decoded.xform[2];
+        out[base + 7] = decoded.xform[3];
+        // slot 2: meta = (origin.x, origin.y, glyph.z_bits_as_float, glyph.w_bits_as_float)
+        out[base + 8] = decoded.origin[0];
+        out[base + 9] = decoded.origin[1];
+        out[base + 10] = @bitCast(decoded.glyph[0]);
+        out[base + 11] = @bitCast(decoded.glyph[1]);
+        // slot 3: banding
+        out[base + 12] = decoded.band[0];
+        out[base + 13] = decoded.band[1];
+        out[base + 14] = decoded.band[2];
+        out[base + 15] = decoded.band[3];
+        // slot 4: color (sRGB unorm decoded to floats)
+        out[base + 16] = decoded.color[0];
+        out[base + 17] = decoded.color[1];
+        out[base + 18] = decoded.color[2];
+        out[base + 19] = decoded.color[3];
+    }
+}
 
 const premult_texture_fragment_shader: [:0]const u8 =
     \\#version 330 core
