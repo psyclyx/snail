@@ -9,20 +9,17 @@ const assets = @import("assets");
 test "torture: full pipeline" {
     const allocator = std.testing.allocator;
 
-    // Create TextAtlas with Latin face
     var fonts = try snail.TextAtlas.init(allocator, &.{
         .{ .data = assets.noto_sans_regular },
     });
     defer fonts.deinit();
 
-    // Ensure ASCII glyphs are loaded
     const ascii_text = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 !\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~";
     if (try fonts.ensureText(.{}, ascii_text)) |new_fonts| {
         fonts.deinit();
         fonts = new_fonts;
     }
 
-    // Dynamic glyph loading: add extended Latin codepoints via ensureText
     const extended_text = "\u{00C0}\u{00C1}\u{00C2}\u{00C3}\u{00C4}\u{00C5}" ++ // À-Å
         "\u{00C6}\u{00C7}\u{00C8}\u{00C9}\u{00CA}\u{00CB}" ++ // Æ-Ë
         "\u{00E0}\u{00E1}\u{00E2}\u{00E3}\u{00E4}\u{00E5}" ++ // à-å
@@ -41,14 +38,12 @@ test "torture: full pipeline" {
     const added2 = try fonts.ensureText(.{}, extended_text);
     try std.testing.expect(added2 == null);
 
-    // Batch generation: large vertex buffer, many strings
     const buf_size = 10000 * snail.lowlevel.TEXT_WORDS_PER_GLYPH;
     const vbuf = try allocator.alloc(u32, buf_size);
     defer allocator.free(vbuf);
 
     var batch = snail.lowlevel.TextBatch.init(vbuf);
 
-    // Render many strings at various sizes
     const test_strings = [_][]const u8{
         "The quick brown fox jumps over the lazy dog",
         "ABCDEFGHIJKLMNOPQRSTUVWXYZ 0123456789",
@@ -126,13 +121,11 @@ test "ensureText is idempotent for already-loaded text" {
     });
     defer fonts.deinit();
 
-    // Load some text
     if (try fonts.ensureText(.{}, "ABC")) |new_fonts| {
         fonts.deinit();
         fonts = new_fonts;
     }
 
-    // Extending with new codepoints should return a new snapshot
     const extended = try fonts.ensureText(.{}, "\u{00E9}\u{00F1}\u{00FC}");
     try std.testing.expect(extended != null);
     if (extended) |new_fonts| {
@@ -140,7 +133,7 @@ test "ensureText is idempotent for already-loaded text" {
         fonts = new_fonts;
     }
 
-    // Re-extending with same text should be idempotent
+    // Re-extending with the same text should be idempotent.
     const again = try fonts.ensureText(.{}, "\u{00E9}\u{00F1}\u{00FC}");
     try std.testing.expect(again == null);
 }
@@ -153,13 +146,12 @@ test "ensureText discovers shaped glyphs for UTF-8 text" {
     });
     defer fonts.deinit();
 
-    // ensureText should handle ligature discovery (e.g., fi -> fi ligature)
+    // ensureText must discover ligature glyphs (fi -> fi ligature).
     if (try fonts.ensureText(.{}, "fi")) |new_fonts| {
         fonts.deinit();
         fonts = new_fonts;
     }
 
-    // After ensureText, addText should emit glyphs successfully.
     var vbuf: [100 * snail.lowlevel.TEXT_WORDS_PER_GLYPH]u32 = undefined;
     var batch = snail.lowlevel.TextBatch.init(&vbuf);
     const result = try fonts.addText(&batch, .{}, "fi", 0, 0, 24, .{ 1, 1, 1, 1 });
@@ -170,13 +162,11 @@ test "ensureText discovers shaped glyphs for UTF-8 text" {
 test "addText reports missing glyphs" {
     const allocator = std.testing.allocator;
 
-    // Create fonts without pre-loading any text
     var fonts = try snail.TextAtlas.init(allocator, &.{
         .{ .data = assets.noto_sans_regular },
     });
     defer fonts.deinit();
 
-    // addText without ensureText should report missing glyphs
     var vbuf: [100 * snail.lowlevel.TEXT_WORDS_PER_GLYPH]u32 = undefined;
     var batch = snail.lowlevel.TextBatch.init(&vbuf);
     const result = try fonts.addText(&batch, .{}, "Hello", 0, 0, 24, .{ 1, 1, 1, 1 });
@@ -186,14 +176,12 @@ test "addText reports missing glyphs" {
 test "multi-face fonts with fallback" {
     const allocator = std.testing.allocator;
 
-    // Create fonts with Latin primary + Arabic fallback
     var fonts = try snail.TextAtlas.init(allocator, &.{
         .{ .data = assets.noto_sans_regular },
         .{ .data = assets.noto_sans_arabic, .fallback = true },
     });
     defer fonts.deinit();
 
-    // Ensure both scripts are loaded
     const arabic_text = "\xd8\xa8\xd8\xb3\xd9\x85 \xd8\xa7\xd9\x84\xd9\x84\xd9\x87";
     if (try fonts.ensureText(.{}, "Hello")) |new_fonts| {
         fonts.deinit();
@@ -207,7 +195,6 @@ test "multi-face fonts with fallback" {
     var vbuf: [200 * snail.lowlevel.TEXT_WORDS_PER_GLYPH]u32 = undefined;
     var batch = snail.lowlevel.TextBatch.init(&vbuf);
 
-    // Both scripts should render successfully.
     const latin_result = try fonts.addText(&batch, .{}, "Hello", 0, 0, 24, .{ 1, 1, 1, 1 });
     try std.testing.expect(latin_result.advance > 0);
     try std.testing.expect(batch.glyphCount() > 0);

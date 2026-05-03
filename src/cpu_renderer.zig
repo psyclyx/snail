@@ -329,8 +329,6 @@ pub const CpuRenderer = struct {
         }
     }
 
-    // ── Unified renderer interface ──
-
     pub fn drawTextPrepared(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const u32, _: snail.Mat4, _: f32, _: f32, texture_layer_base: u32) void {
         self.drawTextBatchPrepared(prepared, vertices, texture_layer_base, true);
     }
@@ -363,8 +361,6 @@ pub const CpuRenderer = struct {
         var renderer = self.asRenderer();
         try renderer.drawPrepared(prepared, scene, options);
     }
-
-    // ── Atlas page storage (internal) ──
 
     pub fn drawTextBatchPrepared(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const u32, texture_layer_base: u32, allow_subpixel: bool) void {
         const WORDS = vertex.WORDS_PER_INSTANCE;
@@ -973,7 +969,7 @@ pub const CpuRenderer = struct {
     ) void {
         const default_color = srgbColorToLinear(color);
 
-        // COLR base glyph (multi-layer rendered as single quad on GPU, per-layer on CPU)
+        // COLR base glyph: multi-layer rendered as a single quad on GPU, per-layer on CPU.
         if (atlas.colr_base_map) |cbm| {
             if (cbm.get(glyph_id)) |_| {
                 var layer_it = atlas.colrLayers(glyph_id);
@@ -987,7 +983,6 @@ pub const CpuRenderer = struct {
             }
         }
 
-        // COLR layer iteration (non-base)
         var layer_it = atlas.colrLayers(glyph_id);
         if (layer_it.count() > 0) {
             while (layer_it.next()) |layer| {
@@ -999,7 +994,6 @@ pub const CpuRenderer = struct {
             return;
         }
 
-        // Plain glyph
         self.drawGlyphIdLinear(atlas, glyph_id, x, y, font_size, default_color, true);
     }
 
@@ -1017,16 +1011,13 @@ pub const CpuRenderer = struct {
         const bbox = info.bbox;
         const page = atlas.page(info.page_index);
 
-        // Scale from em-space to pixels
         const scale = font_size;
 
-        // Glyph pixel bounds (screen-space, y-down for CPU buffer)
-        // In em-space, bbox.min.y is the bottom. In screen y-down, that maps to higher y.
+        // y parameter is the baseline (y-down). Em-space y goes up, screen y goes down.
         const glyph_x0 = x + bbox.min.x * scale;
         const glyph_x1 = x + bbox.max.x * scale;
-        // y parameter is the baseline (y-down). Em-space y goes up, screen y goes down.
-        const glyph_y0 = y - bbox.max.y * scale; // top of glyph in screen coords
-        const glyph_y1 = y - bbox.min.y * scale; // bottom of glyph in screen coords
+        const glyph_y0 = y - bbox.max.y * scale;
+        const glyph_y1 = y - bbox.min.y * scale;
 
         var bounds = ScreenBounds{
             .min = Vec2.new(glyph_x0, glyph_y0),
@@ -1034,7 +1025,6 @@ pub const CpuRenderer = struct {
         };
         expandBoundsForSubpixel(&bounds, self.subpixel_order, allow_subpixel);
 
-        // Integer pixel bounds (clipped to buffer)
         const px0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.x))), 0);
         const px1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.x))), @as(i32, @intCast(self.width)));
         const py0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.y))), 0);
@@ -1042,10 +1032,8 @@ pub const CpuRenderer = struct {
 
         if (px0 >= px1 or py0 >= py1) return;
 
-        // em-space units per pixel
         const epp_x: f32 = 1.0 / scale;
         const epp_y: f32 = 1.0 / scale;
-        // pixels per em-unit
         const ppe_x: f32 = scale;
         const ppe_y: f32 = scale;
 
@@ -1056,13 +1044,9 @@ pub const CpuRenderer = struct {
         while (row < @as(u32, @intCast(py1))) : (row += 1) {
             var col: u32 = @intCast(px0);
             while (col < @as(u32, @intCast(px1))) : (col += 1) {
-                // Pixel center in em-space
                 const px_f = @as(f32, @floatFromInt(col)) + 0.5;
                 const py_f = @as(f32, @floatFromInt(row)) + 0.5;
 
-                // Convert screen coords to em-space
-                // screen_x = x + em_x * scale  =>  em_x = (screen_x - x) / scale
-                // screen_y = y - em_y * scale   =>  em_y = (y - screen_y) / scale
                 const em_x = (px_f - x) / scale;
                 const em_y = (y - py_f) / scale;
 
@@ -2185,11 +2169,8 @@ fn f16ToF32(h: u16) f32 {
     const mant: u32 = @as(u32, h & 0x3FF);
 
     if (exp_bits == 0) {
-        if (mant == 0) {
-            // Zero
-            return @bitCast(sign);
-        }
-        // Subnormal: normalize
+        if (mant == 0) return @bitCast(sign);
+        // Subnormal: normalize.
         var m = mant;
         var e: u32 = 1;
         while (m & 0x400 == 0) {
@@ -2200,7 +2181,7 @@ fn f16ToF32(h: u16) f32 {
         const mant32: u32 = (m & 0x3FF) << 13;
         return @bitCast(sign | exp32 | mant32);
     } else if (exp_bits == 0x1F) {
-        // Inf/NaN
+        // Inf/NaN.
         return @bitCast(sign | 0x7F800000 | (mant << 13));
     }
 
@@ -2242,7 +2223,6 @@ test "cpu renderer renders glyphs" {
     var font = try snail.lowlevel.Font.init(font_data);
     defer font.deinit();
 
-    // Build atlas with ASCII
     var atlas = try snail.lowlevel.CurveAtlas.initAscii(testing.allocator, &font, &snail.ASCII_PRINTABLE);
     defer atlas.deinit();
 
@@ -2255,7 +2235,6 @@ test "cpu renderer renders glyphs" {
     var renderer = CpuRenderer.init(buf.ptr, width, height, stride);
     renderer.clear(0, 0, 0, 0);
 
-    // Render "Hello" at a reasonable size
     const font_size: f32 = 24.0;
     const white = [4]f32{ 1.0, 1.0, 1.0, 1.0 };
     const text = "Hello";
@@ -2271,12 +2250,11 @@ test "cpu renderer renders glyphs" {
         cursor_x += @as(f32, @floatFromInt(advance)) * em_scale;
     }
 
-    // Verify non-zero pixels exist in the rendered area
     var non_zero_count: u32 = 0;
     for (buf) |byte| {
         if (byte != 0) non_zero_count += 1;
     }
-    try testing.expect(non_zero_count > 100); // Glyphs should produce significant output
+    try testing.expect(non_zero_count > 100);
 }
 
 test "cpu renderer renders path rect" {
@@ -2858,7 +2836,7 @@ test "cpu renderer drawPaths batch matches drawPathPicture" {
     const height: u32 = 32;
     const stride = width * 4;
 
-    // Render via drawPathPicture (reference)
+    // Reference: render via drawPathPicture.
     const ref_buf = try testing.allocator.alloc(u8, stride * height);
     defer testing.allocator.free(ref_buf);
     var ref_renderer = CpuRenderer.init(ref_buf.ptr, width, height, stride);
@@ -2876,7 +2854,7 @@ test "cpu renderer drawPaths batch matches drawPathPicture" {
 
     ref_renderer.drawPathPicture(&picture);
 
-    // Render via drawPaths batch (new path)
+    // Comparison: render via drawPaths batch.
     const batch_buf = try testing.allocator.alloc(u8, stride * height);
     defer testing.allocator.free(batch_buf);
     var batch_renderer = CpuRenderer.init(batch_buf.ptr, width, height, stride);
@@ -2908,10 +2886,9 @@ test "cpu renderer drawPaths batch matches drawPathPicture" {
     try draw.addScene(&prepared, &scene, options);
     try renderer.draw(&prepared, draw.slice(), options);
 
-    // Compare: the inside pixel should match
     const inside = ((12 * stride) + (16 * 4));
-    try testing.expect(ref_buf[inside + 0] > 200); // sanity: reference renders red
-    try testing.expect(batch_buf[inside + 0] > 200); // batch should also render red
+    try testing.expect(ref_buf[inside + 0] > 200);
+    try testing.expect(batch_buf[inside + 0] > 200);
     try testing.expect(batch_buf[inside + 3] > 200);
 
     const outside = ((2 * stride) + (2 * 4));

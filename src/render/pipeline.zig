@@ -590,20 +590,16 @@ pub const GlTextState = struct {
     }
 
     fn initGl44(self: *GlTextState) void {
-        // DSA: create VAO, VBO, EBO without binding
         gl.glCreateVertexArrays(1, &self.vao);
         gl.glCreateBuffers(1, &self.vbo);
         gl.glCreateBuffers(1, &self.ebo);
 
-        // Persistent mapped VBO
         const flags: gl.GLbitfield = gl.GL_MAP_WRITE_BIT | gl.GL_MAP_PERSISTENT_BIT | gl.GL_MAP_COHERENT_BIT;
         gl.glNamedBufferStorage(self.vbo, RING_TOTAL_BYTES, null, flags);
         self.persistent_map = @ptrCast(gl.glMapNamedBufferRange(self.vbo, 0, RING_TOTAL_BYTES, flags));
 
         if (self.persistent_map == null) {
-            // Fall back to GL 3.3 silently — the GL 3.3 path is the supported
-            // baseline; this just means persistent mapping isn't available on
-            // the current driver and we use BufferData updates instead.
+            // Persistent mapping unavailable — fall back to the GL 3.3 baseline path.
             gl.glDeleteVertexArrays(1, &self.vao);
             gl.glDeleteBuffers(1, &self.vbo);
             gl.glDeleteBuffers(1, &self.ebo);
@@ -612,7 +608,7 @@ pub const GlTextState = struct {
             return;
         }
 
-        // DSA vertex attribs — all per-instance (binding divisor = 1)
+        // All vertex attribs are per-instance (binding divisor = 1).
         const stride: gl.GLint = vertex.BYTES_PER_INSTANCE;
         gl.glVertexArrayVertexBuffer(self.vao, 0, self.vbo, 0, stride);
         gl.glVertexArrayElementBuffer(self.vao, self.ebo);
@@ -620,7 +616,6 @@ pub const GlTextState = struct {
 
         setupVertexArrayAttribs(self.vao);
 
-        // EBO (static data, not persistently mapped)
         gl.glBindVertexArray(self.vao);
         gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self.ebo);
         initEbo();
@@ -628,14 +623,12 @@ pub const GlTextState = struct {
 
     pub fn deinit(self: *GlTextState) void {
         if (self.backend == .gl44) {
-            // Delete fences
             for (&self.ring_fences) |*f| {
                 if (f.*) |fence| {
                     gl.glDeleteSync(fence);
                     f.* = null;
                 }
             }
-            // Unmap persistent buffer
             if (self.persistent_map != null) {
                 _ = gl.glUnmapNamedBuffer(self.vbo);
                 self.persistent_map = null;
@@ -661,7 +654,7 @@ pub const GlTextState = struct {
     // ── Draw ──
 
     fn drawTextInternal(self: *GlTextState, prepared: *const PreparedResources, vertices: []const u32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32, allow_subpixel: bool) void {
-        // Ensure correct VAO is bound (may have been unbound by other renderers)
+        // VAO may have been unbound by other renderers in the same context.
         gl.glBindVertexArray(self.vao);
         if (self.backend == .gl33) {
             gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vbo);

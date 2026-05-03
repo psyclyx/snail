@@ -505,11 +505,9 @@ pub const TextAtlas = struct {
     info_row_base: u16 = 0,
 
     pub fn init(allocator: Allocator, specs: []const FaceSpec) !TextAtlas {
-        // Build FontConfig.
         const config = try buildFontConfig(allocator, specs);
         errdefer config.release();
 
-        // Start with empty glyph data for each face.
         const face_glyphs = try allocator.alloc(FaceGlyphData, config.faces.len);
         for (face_glyphs) |*fg| {
             fg.* = .{ .glyph_map = std.AutoHashMap(u16, GlyphInfo).init(allocator) };
@@ -1484,18 +1482,15 @@ fn addTextForFace(
     font_size: f32,
     color: [4]f32,
 ) f32 {
-    // HarfBuzz fast path
     if (comptime build_options.enable_harfbuzz) {
         if (fc.hb_shaper) |hbs| {
             return hbs.shapeAndEmit(text, font_size, x, y, color, face_view, batch);
         }
     }
 
-    // Built-in shaping path
     const scale = font_size / @as(f32, @floatFromInt(fc.font.units_per_em));
     var cursor_x = x;
 
-    // Map codepoints to glyph IDs
     var glyph_buf: [256]u16 = undefined;
     var glyph_count: usize = 0;
     const utf8_view = std.unicode.Utf8View.initUnchecked(text);
@@ -1506,12 +1501,10 @@ fn addTextForFace(
         glyph_count += 1;
     }
 
-    // Apply ligatures
     if (fc.shaper) |shaper| {
         glyph_count = shaper.applyLigatures(glyph_buf[0..glyph_count]) catch glyph_count;
     }
 
-    // Layout and emit
     var prev_gid: u16 = 0;
     for (glyph_buf[0..glyph_count]) |gid| {
         if (gid == 0) {
@@ -1520,7 +1513,6 @@ fn addTextForFace(
             continue;
         }
 
-        // Kerning
         if (prev_gid != 0) {
             var kern: i16 = 0;
             if (fc.shaper) |shaper| {
@@ -1640,10 +1632,8 @@ test "TextAtlas.ensureText adds missing glyphs" {
     });
     defer fonts.deinit();
 
-    // Atlas starts empty.
     try testing.expectEqual(@as(usize, 0), fonts.pageCount());
 
-    // Ensure text creates a new snapshot with glyphs.
     if (try fonts.ensureText(.{}, "Hello")) |new_fonts| {
         fonts.deinit();
         fonts = new_fonts;
@@ -1668,15 +1658,12 @@ test "TextAtlas.ensureText snapshot immutability" {
     }
     const pages_before = fonts1.pageCount();
 
-    // Extend with more text → new snapshot.
     const maybe_fonts2 = try fonts1.ensureText(.{}, "CDEFGHIJKLMNOP");
     try testing.expect(maybe_fonts2 != null);
     var fonts2 = maybe_fonts2.?;
     defer fonts2.deinit();
 
-    // Old snapshot unchanged.
     try testing.expectEqual(pages_before, fonts1.pageCount());
-    // New snapshot has at least as many pages.
     try testing.expect(fonts2.pageCount() >= pages_before);
 }
 
@@ -1708,7 +1695,7 @@ test "TextAtlas.addText reports missing glyphs" {
     });
     defer fonts.deinit();
 
-    // Don't ensure — atlas is empty.
+    // Atlas is empty; addText should report missing glyphs.
     var buf: [64 * snail.lowlevel.TEXT_WORDS_PER_GLYPH]u32 = undefined;
     var batch = snail.lowlevel.TextBatch.init(&buf);
     const result = try fonts.addText(&batch, .{}, "Hello", 0, 100, 24, .{ 1, 1, 1, 1 });

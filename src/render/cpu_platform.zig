@@ -95,11 +95,11 @@ pub fn swapBuffers() void {
 }
 
 pub fn clear(r: f32, g: f32, b: f32, a: f32) void {
+    // CpuRenderer handles clearing internally; this is a no-op.
     _ = r;
     _ = g;
     _ = b;
     _ = a;
-    // CpuRenderer handles clearing
 }
 
 pub fn getWindowSize() [2]u32 {
@@ -144,7 +144,6 @@ fn createShmBuffer(width: u32, height: u32) !void {
     const stride = width * 4;
     const size = @as(usize, stride) * height;
 
-    // Create anonymous shared memory
     shm_fd = try std.posix.memfd_create("snail-cpu", 0);
     errdefer {
         _ = std.c.close(shm_fd);

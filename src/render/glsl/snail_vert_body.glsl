@@ -14,25 +14,21 @@ float snailVertexDilationScale() {
 void main() {
     vec2 t = kCorners[SNAIL_VERTEX_INDEX];
 
-    // Em-space coordinates from the source bbox.
     vec2 em = mix(a_rect.xy, a_rect.zw, t);
 
-    // Outward corner normal in local space
+    // Outward corner normal in local space (dilation direction).
     vec2 nd = t * 2.0 - 1.0;
 
-    // Transform em-space to world-space
     vec2 pos = vec2(
         a_xform.x * em.x + a_xform.y * em.y + a_origin.x,
         a_xform.z * em.x + a_xform.w * em.y + a_origin.y
     );
 
-    // Normal in world space (for dilation direction)
     vec2 wn = vec2(
         a_xform.x * nd.x + a_xform.y * nd.y,
         a_xform.z * nd.x + a_xform.w * nd.y
     );
 
-    // Inverse Jacobian from transform
     float det = a_xform.x * a_xform.w - a_xform.y * a_xform.z;
     float inv_det = 1.0 / det;
     vec4 jac = vec4(

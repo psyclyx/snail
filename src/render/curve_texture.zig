@@ -443,13 +443,9 @@ fn decodeStoredSegment(data: []const u16) CurveSegment {
 }
 
 test "f32ToF16 basic conversions" {
-    // Zero
     try std.testing.expectEqual(@as(u16, 0), f32ToF16(0.0));
-    // One
     try std.testing.expectEqual(@as(u16, 0x3C00), f32ToF16(1.0));
-    // Half
     try std.testing.expectEqual(@as(u16, 0x3800), f32ToF16(0.5));
-    // Negative
     try std.testing.expectEqual(@as(u16, 0xBC00), f32ToF16(-1.0));
 }
 

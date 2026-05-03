@@ -168,44 +168,31 @@ test "solveQuadratic linear fallback" {
 }
 
 test "winding number for square" {
-    // Square from (0,0) to (1,1) defined as 4 linear segments (degenerate quadratics)
+    // Square (0,0)-(1,1) as 4 linear segments (degenerate quadratics).
     const curves = [_]QuadBezier{
-        // Bottom: (0,0) → (1,0)
         .{ .p0 = Vec2.new(0, 0), .p1 = Vec2.new(0.5, 0), .p2 = Vec2.new(1, 0) },
-        // Right: (1,0) → (1,1)
         .{ .p0 = Vec2.new(1, 0), .p1 = Vec2.new(1, 0.5), .p2 = Vec2.new(1, 1) },
-        // Top: (1,1) → (0,1)
         .{ .p0 = Vec2.new(1, 1), .p1 = Vec2.new(0.5, 1), .p2 = Vec2.new(0, 1) },
-        // Left: (0,1) → (0,0)
         .{ .p0 = Vec2.new(0, 1), .p1 = Vec2.new(0, 0.5), .p2 = Vec2.new(0, 0) },
     };
 
-    // Center should be inside
     try std.testing.expect(isInside(&curves, Vec2.new(0.5, 0.5)));
-    // Outside should not be
     try std.testing.expect(!isInside(&curves, Vec2.new(2, 0.5)));
     try std.testing.expect(!isInside(&curves, Vec2.new(-1, 0.5)));
 }
 
 test "winding number for circle approximation" {
-    // Approximate circle with 4 quadratic arcs
     const r: f32 = 1.0;
     const k: f32 = 0.55228; // control point factor for circle approx
     const curves = [_]QuadBezier{
-        // Right to top
         .{ .p0 = Vec2.new(r, 0), .p1 = Vec2.new(r, k), .p2 = Vec2.new(k, r) },
-        // Top to left (via (0,r))
         .{ .p0 = Vec2.new(k, r), .p1 = Vec2.new(0, r), .p2 = Vec2.new(-k, r) },
         .{ .p0 = Vec2.new(-k, r), .p1 = Vec2.new(-r, k), .p2 = Vec2.new(-r, 0) },
-        // Left to bottom
         .{ .p0 = Vec2.new(-r, 0), .p1 = Vec2.new(-r, -k), .p2 = Vec2.new(-k, -r) },
         .{ .p0 = Vec2.new(-k, -r), .p1 = Vec2.new(0, -r), .p2 = Vec2.new(k, -r) },
-        // Bottom to right
         .{ .p0 = Vec2.new(k, -r), .p1 = Vec2.new(r, -k), .p2 = Vec2.new(r, 0) },
     };
 
-    // Center should be inside
     try std.testing.expect(isInside(&curves, Vec2.new(0, 0)));
-    // Far outside should not be
     try std.testing.expect(!isInside(&curves, Vec2.new(3, 0)));
 }

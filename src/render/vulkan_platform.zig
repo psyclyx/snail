@@ -263,7 +263,6 @@ pub fn endFrame() void {
     ft.add(&ft.total_us, @as(f64, @floatFromInt(ts2 - frame_start_ns)) / 1000.0);
     ft.count += 1;
 
-    // Print averages once per second
     if (ft.window_start_ns == 0) ft.window_start_ns = frame_start_ns;
     if (ts2 - ft.window_start_ns >= 1_000_000_000) {
         ft.report();
@@ -694,7 +693,6 @@ fn transitionOffscreenImageForCopy(cmd: vk.VkCommandBuffer, old_layout: vk.VkIma
 }
 
 fn createOffscreenResources(width: u32, height: u32) !void {
-    // Image
     const img_ci = std.mem.zeroInit(vk.VkImageCreateInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .imageType = vk.VK_IMAGE_TYPE_2D,
@@ -721,7 +719,6 @@ fn createOffscreenResources(width: u32, height: u32) !void {
     try checkVk(vk.vkAllocateMemory(device, &alloc_info, null, &offscreen_memory));
     try checkVk(vk.vkBindImageMemory(device, offscreen_image, offscreen_memory, 0));
 
-    // Image view
     const iv_ci = std.mem.zeroInit(vk.VkImageViewCreateInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
         .image = offscreen_image,
@@ -776,7 +773,6 @@ fn createOffscreenResources(width: u32, height: u32) !void {
     });
     try checkVk(vk.vkCreateRenderPass(device, &rp_ci, null, &offscreen_render_pass));
 
-    // Framebuffer
     const fb_ci = std.mem.zeroInit(vk.VkFramebufferCreateInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
         .renderPass = offscreen_render_pass,
@@ -834,7 +830,6 @@ fn pickPhysicalDevice() !void {
     var actual: u32 = @min(count, 16);
     _ = vk.vkEnumeratePhysicalDevices(instance, &actual, &devices);
 
-    // Pick first device with graphics queue and present support
     for (devices[0..actual]) |dev| {
         if (dev == null) continue;
         if (findQueueFamily(dev)) |qf| {
@@ -897,7 +892,6 @@ fn createSwapchain(width: u32, height: u32) !void {
     var capabilities: vk.VkSurfaceCapabilitiesKHR = undefined;
     _ = vk.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device, surface, &capabilities);
 
-    // Pick format
     var fmt_count: u32 = 0;
     _ = vk.vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, surface, &fmt_count, null);
     var formats: [32]vk.VkSurfaceFormatKHR = undefined;
@@ -927,7 +921,6 @@ fn createSwapchain(width: u32, height: u32) !void {
     // monopolize the GPU and make the desktop difficult to recover.
     const chosen_present_mode: vk.VkPresentModeKHR = vk.VK_PRESENT_MODE_FIFO_KHR;
 
-    // Extent
     if (capabilities.currentExtent.width != 0xFFFFFFFF) {
         swapchain_extent = capabilities.currentExtent;
     } else {
@@ -962,7 +955,6 @@ fn createSwapchain(width: u32, height: u32) !void {
     swapchain_count = image_count;
     _ = vk.vkGetSwapchainImagesKHR(device, swapchain, &swapchain_count, &swapchain_images);
 
-    // Create image views
     for (0..swapchain_count) |i| {
         const iv_ci = std.mem.zeroInit(vk.VkImageViewCreateInfo, .{
             .sType = vk.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,

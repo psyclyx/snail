@@ -28,7 +28,6 @@ pub const WORDS_PER_INSTANCE: usize = @divExact(BYTES_PER_INSTANCE, @sizeOf(u32)
 /// One instance per glyph quad (instanced rendering).
 pub const INSTANCES_PER_GLYPH: usize = 1;
 
-// The pipeline still treats each glyph as one instanced quad.
 pub const BYTES_PER_VERTEX = BYTES_PER_INSTANCE;
 pub const WORDS_PER_VERTEX = WORDS_PER_INSTANCE;
 pub const VERTICES_PER_GLYPH = INSTANCES_PER_GLYPH;

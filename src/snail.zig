@@ -609,15 +609,12 @@ const CurveAtlas = struct {
     font: ?*const Font, // null for .snail-loaded atlases
     pages: []*AtlasPage,
 
-    // Per-glyph lookup (dense array indexed by glyph ID for O(1) access)
     glyph_map: std.AutoHashMap(u16, GlyphInfo),
     glyph_lut: ?[]GlyphInfo = null, // dense lookup: glyph_lut[gid], h_band_count==0 means absent
     glyph_lut_len: u32 = 0,
 
-    // OpenType shaper (ligatures + GPOS kerning)
     shaper: ?opentype.Shaper,
 
-    // HarfBuzz shaper (full OpenType, compile-time optional)
     hb_shaper: if (build_options.enable_harfbuzz) ?harfbuzz.HarfBuzzShaper else void = if (build_options.enable_harfbuzz) null else {},
 
     // COLRv0 lookup data — raw font bytes and table offsets, valid for program
@@ -1309,7 +1306,6 @@ const PreparedAtlasView = struct {
         };
     }
 
-    // View interface methods used by glyph_emit.
     pub fn getGlyph(self: *const PreparedAtlasView, gid: u16) ?Atlas.GlyphInfo {
         return self.atlas.getGlyph(gid);
     }
@@ -1516,7 +1512,6 @@ const TextBatch = struct {
         const resolved_view = coerceAtlasHandle(atlas_like);
         const view = &resolved_view;
         const atlas = view.atlas;
-        // Use HarfBuzz when available (zero-allocation path)
         if (comptime build_options.enable_harfbuzz) {
             if (atlas.hb_shaper) |hbs| {
                 return hbs.shapeAndEmit(text, font_size, x, y, color, view, self);
@@ -1529,7 +1524,6 @@ const TextBatch = struct {
         var prepared = prepareGlyphs(atlas, font, text, &glyph_stack) orelse return 0;
         defer prepared.deinit(atlas.allocator);
 
-        // Layout
         var prev_gid: u16 = 0;
         for (prepared.slice) |gid| {
             if (gid == 0) {
@@ -1538,7 +1532,7 @@ const TextBatch = struct {
                 continue;
             }
 
-            // Kerning: prefer GPOS, fall back to kern table
+            // Kerning: prefer GPOS, fall back to kern table.
             if (prev_gid != 0) {
                 var kern: i16 = 0;
                 if (atlas.shaper) |shaper| {

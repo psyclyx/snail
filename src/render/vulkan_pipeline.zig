@@ -305,7 +305,6 @@ pub const VulkanPipeline = struct {
         self.ctx = vk_ctx;
         self.pipeline_cache_dirty = false;
 
-        // Sampler
         const sampler_info = std.mem.zeroInit(vk.VkSamplerCreateInfo, .{
             .sType = vk.VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
             .magFilter = vk.VK_FILTER_NEAREST,
@@ -368,14 +367,12 @@ pub const VulkanPipeline = struct {
         });
         try check(vk.vkCreateDescriptorSetLayout(self.ctx.device, &dsl_info, null, &self.desc_set_layout));
 
-        // Push constant range
         const push_range = std.mem.zeroInit(vk.VkPushConstantRange, .{
             .stageFlags = vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT,
             .offset = 0,
             .size = @sizeOf(PushConstants),
         });
 
-        // Pipeline layout
         var pl_info: vk.VkPipelineLayoutCreateInfo = std.mem.zeroes(vk.VkPipelineLayoutCreateInfo);
         pl_info.sType = vk.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         pl_info.setLayoutCount = 1;
@@ -390,7 +387,6 @@ pub const VulkanPipeline = struct {
         try self.warmGraphicsPipelines();
         self.writePersistentPipelineCache();
 
-        // Vertex ring buffer (persistent mapped)
         try self.createBuffer(
             RING_TOTAL_BYTES,
             vk.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
@@ -402,7 +398,6 @@ pub const VulkanPipeline = struct {
         try check(vk.vkMapMemory(self.ctx.device, self.vertex_memory, 0, RING_TOTAL_BYTES, 0, &map_ptr));
         self.persistent_map = @ptrCast(map_ptr);
 
-        // Transfer command pool
         const cp_info = std.mem.zeroInit(vk.VkCommandPoolCreateInfo, .{
             .sType = vk.VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
             .flags = vk.VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
@@ -410,7 +405,6 @@ pub const VulkanPipeline = struct {
         });
         try check(vk.vkCreateCommandPool(self.ctx.device, &cp_info, null, &self.transfer_cmd_pool));
 
-        // Index buffer: deterministic quad pattern, generated once for max segment capacity
         try self.initIndexBuffer();
 
         self.initialized = true;
@@ -547,7 +541,6 @@ pub const VulkanPipeline = struct {
         const curve_w = first_page.curve_width;
         const band_w = first_page.band_width;
 
-        // Create images
         prepared.curve_image = self.createImage2DArray(curve_w, prepared.allocated_curve_height, prepared.allocated_layer_count, vk.VK_FORMAT_R16G16B16A16_SFLOAT) catch return;
         prepared.curve_memory = self.allocateImageMemory(prepared.curve_image) catch return;
         _ = vk.vkBindImageMemory(self.ctx.device, prepared.curve_image, prepared.curve_memory, 0);
@@ -556,10 +549,8 @@ pub const VulkanPipeline = struct {
         prepared.band_memory = self.allocateImageMemory(prepared.band_image) catch return;
         _ = vk.vkBindImageMemory(self.ctx.device, prepared.band_image, prepared.band_memory, 0);
 
-        // Upload via staging buffer
         self.uploadTextureData(prepared, atlases, null, prepared.allocated_layer_count, vk.VK_IMAGE_LAYOUT_UNDEFINED) catch return;
 
-        // Create image views
         prepared.curve_view = self.createImageView(prepared.curve_image, vk.VK_FORMAT_R16G16B16A16_SFLOAT, prepared.allocated_layer_count) catch return;
         prepared.band_view = self.createImageView(prepared.band_image, vk.VK_FORMAT_R16G16_UINT, prepared.allocated_layer_count) catch return;
 
@@ -1318,7 +1309,6 @@ pub const VulkanPipeline = struct {
         layer_count: u32,
         old_layout: vk.VkImageLayout,
     ) !void {
-        // Calculate staging buffer sizes
         const curve_px_bytes: usize = 4 * 2; // RGBA16F = 4 channels * 2 bytes
         const band_px_bytes: usize = 2 * 2; // RG16UI = 2 channels * 2 bytes
 
@@ -1336,7 +1326,6 @@ pub const VulkanPipeline = struct {
         }
         if (region_count == 0) return;
 
-        // Create staging buffer
         var staging_buf: vk.VkBuffer = null;
         var staging_mem: vk.VkDeviceMemory = null;
         try self.createBuffer(
@@ -1348,7 +1337,6 @@ pub const VulkanPipeline = struct {
         );
         errdefer self.destroyStagingBuffer(staging_buf, staging_mem);
 
-        // Map and copy data
         var map_ptr: ?*anyopaque = null;
         try check(vk.vkMapMemory(self.ctx.device, staging_mem, 0, @intCast(total_staging), 0, &map_ptr));
         const staging_data: [*]u8 = @ptrCast(map_ptr orelse return error.VulkanMapMemoryReturnedNull);
@@ -1404,15 +1392,12 @@ pub const VulkanPipeline = struct {
         errdefer if (!transfer_finished) self.discardTransferCommand(transfer);
         const cmd = transfer.cmd;
 
-        // Transition images into transfer dst for the upload.
         transitionImageLayout(cmd, prepared.curve_image, layer_count, old_layout, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
         transitionImageLayout(cmd, prepared.band_image, layer_count, old_layout, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
-        // Copy buffer to images
         vk.vkCmdCopyBufferToImage(cmd, staging_buf, prepared.curve_image, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region_count, curve_regions.ptr);
         vk.vkCmdCopyBufferToImage(cmd, staging_buf, prepared.band_image, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region_count, band_regions.ptr);
 
-        // Transition TRANSFER_DST -> SHADER_READ_ONLY
         transitionImageLayout(cmd, prepared.curve_image, layer_count, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         transitionImageLayout(cmd, prepared.band_image, layer_count, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
@@ -1504,13 +1489,11 @@ pub const VulkanPipeline = struct {
         const px_bytes: usize = 4 * 4; // RGBA32F = 4 channels * 4 bytes
         const total_bytes: vk.VkDeviceSize = @intCast(@as(usize, width) * @as(usize, height) * px_bytes);
 
-        // Create staging buffer
         var staging_buf: vk.VkBuffer = null;
         var staging_mem: vk.VkDeviceMemory = null;
         try self.createBuffer(total_bytes, vk.VK_BUFFER_USAGE_TRANSFER_SRC_BIT, vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &staging_buf, &staging_mem);
         errdefer self.destroyStagingBuffer(staging_buf, staging_mem);
 
-        // Map and copy
         var map_ptr: ?*anyopaque = null;
         try check(vk.vkMapMemory(self.ctx.device, staging_mem, 0, total_bytes, 0, &map_ptr));
         const dst: [*]u8 = @ptrCast(map_ptr);
