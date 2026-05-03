@@ -117,7 +117,7 @@ pub fn classifyVerticalRoot(curve: QuadBezier, px: f32, t: f32) i2 {
 
 /// Compute winding number for a point relative to a set of curves.
 /// Uses horizontal ray casting: count signed crossings where x > px.
-pub fn windingNumber(curves: []const QuadBezier, point: Vec2) f32 {
+fn windingNumber(curves: []const QuadBezier, point: Vec2) f32 {
     var winding: f32 = 0;
 
     for (curves) |curve| {

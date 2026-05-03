@@ -150,6 +150,10 @@ vec4 filterSubpixelCoverage(float s_m3, float s_m2, float s_m1, float s_0, float
     return vec4(cov, clamp((cov.r + cov.g + cov.b) * (1.0 / 3.0), 0.0, 1.0));
 }
 
+float srgbDecode(float c) {
+    return (c <= 0.04045) ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);
+}
+
 vec4 premultiplyColorSubpixel(vec4 color, vec3 cov, float alpha_cov) {
     vec3 alpha = vec3(color.a) * cov;
     return vec4(color.rgb * alpha, color.a * alpha_cov);
@@ -212,5 +216,6 @@ void main() {
 
     vec3 cov = cov_alpha.rgb;
     if (max(max(cov.r, cov.g), cov.b) < 1.0 / 255.0) discard;
-    emitSubpixelColor(v_color, cov, cov_alpha.a);
+    vec4 linear_color = vec4(srgbDecode(v_color.r), srgbDecode(v_color.g), srgbDecode(v_color.b), v_color.a);
+    emitSubpixelColor(linear_color, cov, cov_alpha.a);
 }

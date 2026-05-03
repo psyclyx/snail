@@ -449,6 +449,13 @@ float interleavedGradientNoise(vec2 pixel) {
     return fract(52.9829189 * fract(dot(pixel, vec2(0.06711056, 0.00583715))));
 }
 
+vec4 mixGradient(vec4 c0, vec4 c1, float t) {
+    vec4 s0 = vec4(linearToSrgb(c0.rgb), c0.a);
+    vec4 s1 = vec4(linearToSrgb(c1.rgb), c1.a);
+    vec4 m = mix(s0, s1, t);
+    return vec4(srgbToLinear(m.rgb), m.a);
+}
+
 vec4 ditherPremultipliedColor(vec4 color) {
     if (color.a <= 0.0) return color;
     float dither = (interleavedGradientNoise(gl_FragCoord.xy) - 0.5) * (clamp(color.a, 0.0, 1.0) / 255.0);
@@ -460,7 +467,7 @@ PathPaintSample samplePathPaint(vec2 rc, ivec2 infoBase, vec4 info) {
     int paintKind = int(-info.w + 0.5);
     vec4 data0 = texelFetch(u_layer_tex, offsetLayerLoc(infoBase, 2), 0);
     if (paintKind == 1) {
-        return PathPaintSample(data0, 0.0);
+        return PathPaintSample(vec4(srgbDecode(data0.r), srgbDecode(data0.g), srgbDecode(data0.b), data0.a), 0.0);
     }
 
     vec4 color0 = texelFetch(u_layer_tex, offsetLayerLoc(infoBase, 3), 0);
@@ -474,13 +481,13 @@ PathPaintSample samplePathPaint(vec2 rc, ivec2 infoBase, vec4 info) {
             t = dot(rc - data0.xy, delta) / lenSq;
         }
         vec4 extra = texelFetch(u_layer_tex, offsetLayerLoc(infoBase, 5), 0);
-        return PathPaintSample(mix(color0, color1, wrapPaintT(t, extra.x)), 1.0);
+        return PathPaintSample(mixGradient(color0, color1, wrapPaintT(t, extra.x)), 1.0);
     }
 
     if (paintKind == 3) {
         float radius = max(abs(data0.z), 1.0 / 65536.0);
         float t = length(rc - data0.xy) / radius;
-        return PathPaintSample(mix(color0, color1, wrapPaintT(t, data0.w)), 1.0);
+        return PathPaintSample(mixGradient(color0, color1, wrapPaintT(t, data0.w)), 1.0);
     }
 
     if (paintKind == 4) {
@@ -689,12 +696,14 @@ void main() {
         // Multi-layer COLR: use non-subpixel evaluation
         int layer_count = v_glyph.z;
         vec4 result = vec4(0.0);
+        vec4 linear_v_color = vec4(srgbDecode(v_color.r), srgbDecode(v_color.g), srgbDecode(v_color.b), v_color.a);
         for (int l = 0; l < layer_count; l++) {
             ivec2 loc = offsetLayerLoc(infoBase, l * 3);
             vec4 info  = texelFetch(u_layer_tex, loc, 0);
             vec4 band  = texelFetch(u_layer_tex, offsetLayerLoc(infoBase, l * 3 + 1), 0);
             vec4 color = texelFetch(u_layer_tex, offsetLayerLoc(infoBase, l * 3 + 2), 0);
-            if (color.r < 0.0) color = v_color;
+            if (color.r < 0.0) color = linear_v_color;
+            else color = vec4(srgbDecode(color.r), srgbDecode(color.g), srgbDecode(color.b), color.a);
             ivec2 lGLoc = ivec2(info.xy);
             int bandMaxH = floatBitsToInt(info.z) & 0xFFFF;
             int bandMaxV = (floatBitsToInt(info.z) >> 16) & 0xFFFF;
@@ -717,5 +726,6 @@ void main() {
 
     vec3 cov = cov_alpha.rgb;
     if (max(max(cov.r, cov.g), cov.b) < 1.0/255.0) discard;
-    emitSubpixelColor(v_color, cov, cov_alpha.a);
+    vec4 linear_color = vec4(srgbDecode(v_color.r), srgbDecode(v_color.g), srgbDecode(v_color.b), v_color.a);
+    emitSubpixelColor(linear_color, cov, cov_alpha.a);
 }

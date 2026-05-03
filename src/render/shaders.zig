@@ -4,9 +4,10 @@
 pub const vertex_shader =
     \\#version 330 core
     \\
-    \\layout(location = 0) in vec4 a_pos;    // xy = position, zw = normal
-    \\layout(location = 1) in vec4 a_tex;    // xy = em-space coords, zw = packed glyph/band data
-    \\layout(location = 2) in vec4 a_jac;    // inverse Jacobian (j00, j01, j10, j11)
+    \\// Per-instance attributes (vertex attrib divisor = 1)
+    \\layout(location = 0) in vec4 a_rect;   // bbox: min_x, min_y, max_x, max_y (em-space)
+    \\layout(location = 1) in vec4 a_xform;  // linear transform: xx, xy, yx, yy
+    \\layout(location = 2) in vec4 a_meta;   // tx, ty, gz (packed), gw (packed)
     \\layout(location = 3) in vec4 a_bnd;    // band scale x, scale y, offset x, offset y
     \\layout(location = 4) in vec4 a_col;    // vertex color RGBA
     \\
@@ -18,25 +19,61 @@ pub const vertex_shader =
     \\flat out vec4 v_banding;
     \\flat out ivec4 v_glyph;
     \\
+    \\const vec2 kCorners[4] = vec2[4](
+    \\    vec2(0.0, 0.0),
+    \\    vec2(1.0, 0.0),
+    \\    vec2(1.0, 1.0),
+    \\    vec2(0.0, 1.0)
+    \\);
+    \\
     \\void main() {
-    \\    uint gz = floatBitsToUint(a_tex.z);
-    \\    uint gw = floatBitsToUint(a_tex.w);
+    \\    vec2 t = kCorners[gl_VertexID];
+    \\
+    \\    // Em-space coordinates from bbox
+    \\    vec2 em = mix(a_rect.xy, a_rect.zw, t);
+    \\
+    \\    // Outward corner normal in local space
+    \\    vec2 nd = t * 2.0 - 1.0;
+    \\
+    \\    // Transform em-space to world-space
+    \\    vec2 pos = vec2(
+    \\        a_xform.x * em.x + a_xform.y * em.y + a_meta.x,
+    \\        a_xform.z * em.x + a_xform.w * em.y + a_meta.y
+    \\    );
+    \\
+    \\    // Normal in world space (for dilation direction)
+    \\    vec2 wn = vec2(
+    \\        a_xform.x * nd.x + a_xform.y * nd.y,
+    \\        a_xform.z * nd.x + a_xform.w * nd.y
+    \\    );
+    \\
+    \\    // Inverse Jacobian from transform
+    \\    float det = a_xform.x * a_xform.w - a_xform.y * a_xform.z;
+    \\    float inv_det = 1.0 / det;
+    \\    vec4 jac = vec4(
+    \\        a_xform.w * inv_det,
+    \\        -a_xform.y * inv_det,
+    \\        -a_xform.z * inv_det,
+    \\        a_xform.x * inv_det
+    \\    );
+    \\
+    \\    uint gz = floatBitsToUint(a_meta.z);
+    \\    uint gw = floatBitsToUint(a_meta.w);
     \\    v_glyph = ivec4(gz & 0xFFFFu, gz >> 16u, gw & 0xFFFFu, gw >> 16u);
     \\    v_banding = a_bnd;
     \\    v_color = a_col;
     \\
     \\    // Slug dynamic dilation: expand quad by ~0.5px along normal.
-    \\    // Extract MVP rows (GLSL is column-major, so row i = vec4(col0[i], col1[i], col2[i], col3[i]))
     \\    vec4 m0 = vec4(u_mvp[0].x, u_mvp[1].x, u_mvp[2].x, u_mvp[3].x);
     \\    vec4 m1 = vec4(u_mvp[0].y, u_mvp[1].y, u_mvp[2].y, u_mvp[3].y);
     \\    vec4 m3 = vec4(u_mvp[0].w, u_mvp[1].w, u_mvp[2].w, u_mvp[3].w);
     \\
-    \\    vec2 n = normalize(a_pos.zw);
-    \\    float s = dot(m3.xy, a_pos.xy) + m3.w;
+    \\    vec2 n = normalize(wn);
+    \\    float s = dot(m3.xy, pos) + m3.w;
     \\    float t_val = dot(m3.xy, n);
     \\
-    \\    float u_val = (s * dot(m0.xy, n) - t_val * (dot(m0.xy, a_pos.xy) + m0.w)) * u_viewport.x;
-    \\    float v_val = (s * dot(m1.xy, n) - t_val * (dot(m1.xy, a_pos.xy) + m1.w)) * u_viewport.y;
+    \\    float u_val = (s * dot(m0.xy, n) - t_val * (dot(m0.xy, pos) + m0.w)) * u_viewport.x;
+    \\    float v_val = (s * dot(m1.xy, n) - t_val * (dot(m1.xy, pos) + m1.w)) * u_viewport.y;
     \\
     \\    float s2 = s * s;
     \\    float st = s * t_val;
@@ -45,14 +82,13 @@ pub const vertex_shader =
     \\
     \\    vec2 d;
     \\    if (abs(denom) > 1e-10) {
-    \\        d = a_pos.zw * (s2 * (st + sqrt(uv)) / denom);
+    \\        d = wn * (s2 * (st + sqrt(uv)) / denom);
     \\    } else {
-    \\        // Fallback: fixed dilation of 1px in screen space
     \\        d = n * 2.0 / u_viewport;
     \\    }
     \\
-    \\    vec2 p = a_pos.xy + d;
-    \\    v_texcoord = vec2(a_tex.x + dot(d, a_jac.xy), a_tex.y + dot(d, a_jac.zw));
+    \\    vec2 p = pos + d;
+    \\    v_texcoord = vec2(em.x + dot(d, jac.xy), em.y + dot(d, jac.zw));
     \\
     \\    gl_Position = u_mvp * vec4(p, 0.0, 1.0);
     \\}

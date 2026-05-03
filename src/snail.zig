@@ -28,7 +28,6 @@
 const std = @import("std");
 const build_options = @import("build_options");
 const glyph_emit = @import("glyph_emit.zig");
-const font_collection_mod = @import("font_collection.zig");
 const fonts_mod = @import("fonts.zig");
 const ttf = @import("font/ttf.zig");
 const opentype = @import("font/opentype.zig");
@@ -46,18 +45,21 @@ const cpu_renderer_mod = if (build_options.enable_cpu) @import("cpu_renderer.zig
 };
 const vulkan_pipeline = if (build_options.enable_vulkan) @import("render/vulkan_pipeline.zig") else struct {
     pub const VulkanContext = void;
-    pub fn init(_: anytype) !void {}
-    pub fn deinit() void {}
-    pub fn buildTextureArrays(_: anytype, _: anytype) void {}
-    pub fn buildImageArray(_: anytype, _: anytype) void {}
-    pub fn drawText(_: anytype, _: anytype, _: anytype, _: anytype) void {}
-    pub fn drawTextGrayscale(_: anytype, _: anytype, _: anytype, _: anytype) void {}
-    pub fn setCommandBuffer(_: anytype) void {}
-    pub fn getBackendName() []const u8 {
-        return "vulkan (disabled)";
-    }
-    pub var subpixel_order: @import("render/subpixel_order.zig").SubpixelOrder = .none;
-    pub var fill_rule: enum(c_int) { non_zero = 0, even_odd = 1 } = .non_zero;
+    pub const VulkanPipeline = struct {
+        subpixel_order: @import("render/subpixel_order.zig").SubpixelOrder = .none,
+        fill_rule: FillRule = .non_zero,
+        pub fn init(_: *VulkanPipeline, _: anytype) !void {}
+        pub fn deinit(_: *VulkanPipeline) void {}
+        pub fn uploadAtlases(_: *VulkanPipeline, _: anytype, _: anytype) void {}
+        pub fn uploadImages(_: *VulkanPipeline, _: anytype, _: anytype) void {}
+        pub fn drawText(_: *VulkanPipeline, _: anytype, _: anytype, _: anytype, _: anytype) void {}
+        pub fn drawPaths(_: *VulkanPipeline, _: anytype, _: anytype, _: anytype, _: anytype) void {}
+        pub fn setCommandBuffer(_: *VulkanPipeline, _: anytype) void {}
+        pub fn beginFrame(_: *VulkanPipeline) void {}
+        pub fn backendName(_: *const VulkanPipeline) []const u8 {
+            return "vulkan (disabled)";
+        }
+    };
 };
 const harfbuzz = if (build_options.enable_harfbuzz) @import("font/harfbuzz.zig") else struct {
     pub const HarfBuzzShaper = void;
@@ -779,17 +781,17 @@ pub const Atlas = struct {
         if (self.glyph_lut) |lut| self.allocator.free(lut);
 
         var max_gid: u32 = 0;
-        var it = self.glyph_map.keyIterator();
-        while (it.next()) |k| {
-            if (k.* > max_gid) max_gid = k.*;
+        var it = self.glyph_map.iterator();
+        while (it.next()) |entry| {
+            if (entry.key_ptr.* > max_gid) max_gid = entry.key_ptr.*;
         }
 
         const size = max_gid + 1;
         const lut = try self.allocator.alloc(GlyphInfo, size);
         @memset(lut, std.mem.zeroes(GlyphInfo));
 
-        var map_it = self.glyph_map.iterator();
-        while (map_it.next()) |entry| {
+        it = self.glyph_map.iterator();
+        while (it.next()) |entry| {
             lut[entry.key_ptr.*] = entry.value_ptr.*;
         }
 
@@ -1002,19 +1004,15 @@ pub const Atlas = struct {
     /// Write glyph IDs from `run` that are not yet in this atlas into `out`.
     /// Returns the number of unique missing IDs written. Duplicates are suppressed.
     pub fn collectMissingGlyphIds(self: *const Atlas, run: *const ShapedRun, out: []u16) usize {
+        var seen = std.StaticBitSet(65536).initEmpty();
         var count: usize = 0;
         for (run.glyphs) |g| {
             if (g.glyph_id == 0) continue;
+            if (seen.isSet(g.glyph_id)) continue;
             if (self.getGlyph(g.glyph_id) != null) continue;
             if (self.colrLayerCount(g.glyph_id) > 0) continue;
-            var dup = false;
-            for (out[0..count]) |existing| {
-                if (existing == g.glyph_id) {
-                    dup = true;
-                    break;
-                }
-            }
-            if (!dup and count < out.len) {
+            seen.set(g.glyph_id);
+            if (count < out.len) {
                 out[count] = g.glyph_id;
                 count += 1;
             }
@@ -1172,16 +1170,18 @@ pub const Atlas = struct {
     /// Return an iterator over the COLRv0 layers for a glyph.
     /// Uses colr_font_data/colr_offset/cpal_offset stored at init time —
     /// safe to call at render time even after the original Font pointer goes stale.
+    fn makeColrFont(self: *const Atlas) ttf.Font {
+        return .{ .data = self.colr_font_data, .colr_offset = self.colr_offset, .cpal_offset = self.cpal_offset };
+    }
+
     pub fn colrLayers(self: *const Atlas, glyph_id: u16) ttf.Font.ColrLayerIterator {
         if (self.colr_offset == 0) return .{ .data = self.colr_font_data };
-        const temp = ttf.Font{ .data = self.colr_font_data, .colr_offset = self.colr_offset, .cpal_offset = self.cpal_offset };
-        return temp.colrLayers(glyph_id);
+        return self.makeColrFont().colrLayers(glyph_id);
     }
 
     pub fn colrLayerCount(self: *const Atlas, glyph_id: u16) u16 {
         if (self.colr_offset == 0) return 0;
-        const temp = ttf.Font{ .data = self.colr_font_data, .colr_offset = self.colr_offset, .cpal_offset = self.cpal_offset };
-        return temp.colrLayerCount(glyph_id);
+        return self.makeColrFont().colrLayerCount(glyph_id);
     }
 
     pub fn getGlyph(self: *const Atlas, gid: u16) ?GlyphInfo {
@@ -1997,13 +1997,13 @@ pub const Path = struct {
 
         try self.moveTo(origin.add(Vec2.new(radius, 0.0)));
         try self.lineTo(origin.add(Vec2.new(size.x - radius, 0.0)));
-        try self.appendArc(top_right, arc, -std.math.pi / 2.0, 0.0);
+        try appendAdaptiveArcConic(self,top_right, arc, -std.math.pi / 2.0, 0.0);
         try self.lineTo(origin.add(Vec2.new(size.x, size.y - radius)));
-        try self.appendArc(bottom_right, arc, 0.0, std.math.pi / 2.0);
+        try appendAdaptiveArcConic(self,bottom_right, arc, 0.0, std.math.pi / 2.0);
         try self.lineTo(origin.add(Vec2.new(radius, size.y)));
-        try self.appendArc(bottom_left, arc, std.math.pi / 2.0, std.math.pi);
+        try appendAdaptiveArcConic(self,bottom_left, arc, std.math.pi / 2.0, std.math.pi);
         try self.lineTo(origin.add(Vec2.new(0.0, radius)));
-        try self.appendArc(top_left, arc, std.math.pi, std.math.pi * 1.5);
+        try appendAdaptiveArcConic(self,top_left, arc, std.math.pi, std.math.pi * 1.5);
         try self.close();
     }
 
@@ -2024,13 +2024,13 @@ pub const Path = struct {
 
         try self.moveTo(origin.add(Vec2.new(0.0, radius)));
         try self.lineTo(origin.add(Vec2.new(0.0, size.y - radius)));
-        try self.appendArc(bottom_left, arc, std.math.pi, std.math.pi / 2.0);
+        try appendAdaptiveArcConic(self,bottom_left, arc, std.math.pi, std.math.pi / 2.0);
         try self.lineTo(origin.add(Vec2.new(size.x - radius, size.y)));
-        try self.appendArc(bottom_right, arc, std.math.pi / 2.0, 0.0);
+        try appendAdaptiveArcConic(self,bottom_right, arc, std.math.pi / 2.0, 0.0);
         try self.lineTo(origin.add(Vec2.new(size.x, radius)));
-        try self.appendArc(top_right, arc, 0.0, -std.math.pi / 2.0);
+        try appendAdaptiveArcConic(self,top_right, arc, 0.0, -std.math.pi / 2.0);
         try self.lineTo(origin.add(Vec2.new(radius, 0.0)));
-        try self.appendArc(top_left, arc, -std.math.pi / 2.0, -std.math.pi);
+        try appendAdaptiveArcConic(self,top_left, arc, -std.math.pi / 2.0, -std.math.pi);
         try self.close();
     }
 
@@ -2040,10 +2040,10 @@ pub const Path = struct {
         const center = Vec2.new(rect.x + size.x * 0.5, rect.y + size.y * 0.5);
         const radii = size.scale(0.5);
         try self.moveTo(center.add(Vec2.new(0.0, -radii.y)));
-        try self.appendArc(center, radii, -std.math.pi / 2.0, 0.0);
-        try self.appendArc(center, radii, 0.0, std.math.pi / 2.0);
-        try self.appendArc(center, radii, std.math.pi / 2.0, std.math.pi);
-        try self.appendArc(center, radii, std.math.pi, std.math.pi * 1.5);
+        try appendAdaptiveArcConic(self,center, radii, -std.math.pi / 2.0, 0.0);
+        try appendAdaptiveArcConic(self,center, radii, 0.0, std.math.pi / 2.0);
+        try appendAdaptiveArcConic(self,center, radii, std.math.pi / 2.0, std.math.pi);
+        try appendAdaptiveArcConic(self,center, radii, std.math.pi, std.math.pi * 1.5);
         try self.close();
     }
 
@@ -2053,10 +2053,10 @@ pub const Path = struct {
         const center = Vec2.new(rect.x + size.x * 0.5, rect.y + size.y * 0.5);
         const radii = size.scale(0.5);
         try self.moveTo(center.add(Vec2.new(0.0, -radii.y)));
-        try self.appendArc(center, radii, -std.math.pi / 2.0, -std.math.pi);
-        try self.appendArc(center, radii, -std.math.pi, -std.math.pi * 1.5);
-        try self.appendArc(center, radii, -std.math.pi * 1.5, -std.math.pi * 2.0);
-        try self.appendArc(center, radii, -std.math.pi * 2.0, -std.math.pi * 2.5);
+        try appendAdaptiveArcConic(self,center, radii, -std.math.pi / 2.0, -std.math.pi);
+        try appendAdaptiveArcConic(self,center, radii, -std.math.pi, -std.math.pi * 1.5);
+        try appendAdaptiveArcConic(self,center, radii, -std.math.pi * 1.5, -std.math.pi * 2.0);
+        try appendAdaptiveArcConic(self,center, radii, -std.math.pi * 2.0, -std.math.pi * 2.5);
         try self.close();
     }
 
@@ -2072,10 +2072,6 @@ pub const Path = struct {
         contour.curve_end = self.curves.items.len;
         contour.current_point = curve.endPoint();
         self.expandCurveBBox(curve);
-    }
-
-    fn appendArc(self: *Path, center: Vec2, radii: Vec2, start_angle: f32, end_angle: f32) !void {
-        try appendAdaptiveArcConic(self, center, radii, start_angle, end_angle);
     }
 
     fn expandPointBBox(self: *Path, point: Vec2) void {
@@ -2098,13 +2094,18 @@ pub const Path = struct {
         }
     }
 
-    fn cloneFilledCurves(self: *const Path, allocator: std.mem.Allocator) ![]CurveSegment {
-        var close_count: usize = 0;
+    fn unclosedContourCount(self: *const Path) usize {
+        var count: usize = 0;
         for (self.contours.items) |contour| {
             if (!contour.closed and contour.curve_end > contour.curve_start and !pointsApproxEqual(contour.current_point, contour.start_point)) {
-                close_count += 1;
+                count += 1;
             }
         }
+        return count;
+    }
+
+    fn cloneFilledCurves(self: *const Path, allocator: std.mem.Allocator) ![]CurveSegment {
+        const close_count = self.unclosedContourCount();
         const out = try allocator.alloc(CurveSegment, self.curves.items.len + close_count);
         @memcpy(out[0..self.curves.items.len], self.curves.items);
         var write = self.curves.items.len;
@@ -2118,13 +2119,7 @@ pub const Path = struct {
     }
 
     fn filledBandCurveCount(self: *const Path) usize {
-        var close_count: usize = 0;
-        for (self.contours.items) |contour| {
-            if (!contour.closed and contour.curve_end > contour.curve_start and !pointsApproxEqual(contour.current_point, contour.start_point)) {
-                close_count += 1;
-            }
-        }
-        return self.band_curve_count + close_count;
+        return self.band_curve_count + self.unclosedContourCount();
     }
 
     fn cloneStrokedCurves(
@@ -3583,16 +3578,98 @@ pub const FillRule = enum(c_int) {
     even_odd = 1,
 };
 pub const SubpixelOrder = @import("render/subpixel_order.zig").SubpixelOrder;
-pub const RenderBackend = enum { gl, vulkan, cpu };
 pub const VulkanContext = vulkan_pipeline.VulkanContext;
 pub const CpuRenderer = cpu_renderer_mod.CpuRenderer;
 
 /// Renderer. Owns shader programs and texture handles (GPU backends),
-/// or a pixel buffer (CPU backend).
+/// or a pixel buffer (CPU backend). Uses a vtable for backend dispatch.
 pub const Renderer = struct {
-    backend: RenderBackend = .gl,
-    gl_text: ?*pipeline.GlTextState = null,
-    cpu: ?*CpuRenderer = null,
+    ptr: *anyopaque,
+    vtable: *const VTable,
+
+    pub const VTable = struct {
+        deinit: *const fn (*anyopaque) void,
+        uploadAtlases: *const fn (*anyopaque, []const *const Atlas, []AtlasHandle) void,
+        uploadImages: *const fn (*anyopaque, []const *const Image, []ImageHandle) void,
+        drawText: *const fn (*anyopaque, []const f32, Mat4, f32, f32) void,
+        drawPaths: *const fn (*anyopaque, []const f32, Mat4, f32, f32) void,
+        beginFrame: *const fn (*anyopaque) void,
+        setSubpixelOrder: *const fn (*anyopaque, SubpixelOrder) void,
+        getSubpixelOrder: *const fn (*anyopaque) SubpixelOrder,
+        setFillRule: *const fn (*anyopaque, FillRule) void,
+        getFillRule: *const fn (*anyopaque) FillRule,
+        backendName: *const fn (*anyopaque) []const u8,
+        setCommandBuffer: *const fn (*anyopaque, ?*anyopaque) void,
+    };
+
+    /// Generate a VTable that type-erases calls to methods on *T.
+    fn ImplVTable(comptime T: type, comptime owned: bool) VTable {
+        const S = struct {
+            fn cast(ptr: *anyopaque) *T {
+                return @ptrCast(@alignCast(ptr));
+            }
+            fn constCast(ptr: *anyopaque) *const T {
+                return @ptrCast(@alignCast(ptr));
+            }
+            fn deinitFn(ptr: *anyopaque) void {
+                const self = cast(ptr);
+                self.deinit();
+                if (owned) std.heap.smp_allocator.destroy(self);
+            }
+            fn noopDeinit(_: *anyopaque) void {}
+            fn uploadAtlasesFn(ptr: *anyopaque, a: []const *const Atlas, v: []AtlasHandle) void {
+                cast(ptr).uploadAtlases(a, v);
+            }
+            fn uploadImagesFn(ptr: *anyopaque, a: []const *const Image, v: []ImageHandle) void {
+                cast(ptr).uploadImages(a, v);
+            }
+            fn drawTextFn(ptr: *anyopaque, verts: []const f32, mvp: Mat4, vw: f32, vh: f32) void {
+                cast(ptr).drawText(verts, mvp, vw, vh);
+            }
+            fn drawPathsFn(ptr: *anyopaque, verts: []const f32, mvp: Mat4, vw: f32, vh: f32) void {
+                cast(ptr).drawPaths(verts, mvp, vw, vh);
+            }
+            fn beginFrameFn(ptr: *anyopaque) void {
+                cast(ptr).beginFrame();
+            }
+            fn setSubpixelOrderFn(ptr: *anyopaque, order: SubpixelOrder) void {
+                cast(ptr).setSubpixelOrder(order);
+            }
+            fn getSubpixelOrderFn(ptr: *anyopaque) SubpixelOrder {
+                return constCast(ptr).getSubpixelOrder();
+            }
+            fn setFillRuleFn(ptr: *anyopaque, rule: FillRule) void {
+                cast(ptr).setFillRule(rule);
+            }
+            fn getFillRuleFn(ptr: *anyopaque) FillRule {
+                return constCast(ptr).getFillRule();
+            }
+            fn backendNameFn(ptr: *anyopaque) []const u8 {
+                return constCast(ptr).backendName();
+            }
+            fn setCommandBufferFn(ptr: *anyopaque, cmd: ?*anyopaque) void {
+                cast(ptr).setCommandBuffer(cmd);
+            }
+        };
+        return .{
+            .deinit = if (owned) &S.deinitFn else &S.noopDeinit,
+            .uploadAtlases = &S.uploadAtlasesFn,
+            .uploadImages = &S.uploadImagesFn,
+            .drawText = &S.drawTextFn,
+            .drawPaths = &S.drawPathsFn,
+            .beginFrame = &S.beginFrameFn,
+            .setSubpixelOrder = &S.setSubpixelOrderFn,
+            .getSubpixelOrder = &S.getSubpixelOrderFn,
+            .setFillRule = &S.setFillRuleFn,
+            .getFillRule = &S.getFillRuleFn,
+            .backendName = &S.backendNameFn,
+            .setCommandBuffer = &S.setCommandBufferFn,
+        };
+    }
+
+    const gl_vtable = ImplVTable(pipeline.GlTextState, true);
+    const vulkan_vtable = ImplVTable(vulkan_pipeline.VulkanPipeline, true);
+    const cpu_vtable = ImplVTable(CpuRenderer, false);
 
     /// Initialize with the current OpenGL context.
     pub fn init() !Renderer {
@@ -3600,59 +3677,37 @@ pub const Renderer = struct {
         text.* = .{};
         errdefer std.heap.smp_allocator.destroy(text);
         try text.init();
-        return .{ .backend = .gl, .gl_text = text };
+        return .{ .ptr = @ptrCast(text), .vtable = &gl_vtable };
     }
 
     /// Initialize with a Vulkan context (device, queue, render pass).
     pub fn initVulkan(vk_ctx: VulkanContext) !Renderer {
-        try vulkan_pipeline.init(vk_ctx);
-        return .{ .backend = .vulkan };
+        const vkp = try std.heap.smp_allocator.create(vulkan_pipeline.VulkanPipeline);
+        vkp.* = .{};
+        errdefer std.heap.smp_allocator.destroy(vkp);
+        try vkp.init(vk_ctx);
+        return .{ .ptr = @ptrCast(vkp), .vtable = &vulkan_vtable };
     }
 
     /// Initialize the CPU renderer with a caller-owned pixel buffer.
     pub fn initCpu(cpu: *CpuRenderer) Renderer {
-        return .{ .backend = .cpu, .cpu = cpu };
+        return .{ .ptr = @ptrCast(cpu), .vtable = &cpu_vtable };
     }
 
     pub fn deinit(self: *Renderer) void {
-        switch (self.backend) {
-            .gl => {
-                if (self.gl_text) |t| {
-                    t.deinit();
-                    std.heap.smp_allocator.destroy(t);
-                }
-                self.gl_text = null;
-            },
-            .vulkan => vulkan_pipeline.deinit(),
-            .cpu => {},
-        }
+        self.vtable.deinit(self.ptr);
     }
 
-    /// Upload one or more immutable atlas snapshots as a texture array.
     pub fn uploadAtlases(self: *Renderer, atlases: []const *const Atlas, out_views: []AtlasHandle) void {
         std.debug.assert(atlases.len == out_views.len);
-        switch (self.backend) {
-            .gl => self.gl_text.?.buildTextureArrays(atlases, out_views),
-            .vulkan => vulkan_pipeline.buildTextureArrays(atlases, out_views),
-            .cpu => for (out_views, atlases) |*v, a| {
-                v.* = .{ .atlas = a, .layer_base = 0 };
-            },
-        }
+        self.vtable.uploadAtlases(self.ptr, atlases, out_views);
     }
 
-    /// Upload one or more images to the renderer's shared image array.
     pub fn uploadImages(self: *Renderer, images: []const *const Image, out_views: []ImageHandle) void {
         std.debug.assert(images.len == out_views.len);
-        switch (self.backend) {
-            .gl => self.gl_text.?.buildImageArray(images, out_views),
-            .vulkan => vulkan_pipeline.buildImageArray(images, out_views),
-            .cpu => for (out_views, images) |*v, img| {
-                v.* = .{ .image = img };
-            },
-        }
+        self.vtable.uploadImages(self.ptr, images, out_views);
     }
 
-    /// Convenience: upload a single image and return its current view.
     pub fn uploadImage(self: *Renderer, image: *const Image) ImageHandle {
         const arr = [1]*const Image{image};
         var views = [1]ImageHandle{undefined};
@@ -3660,7 +3715,6 @@ pub const Renderer = struct {
         return views[0];
     }
 
-    /// Convenience: upload a single atlas and return its view.
     pub fn uploadAtlas(self: *Renderer, atlas: *const Atlas) AtlasHandle {
         const arr = [1]*const Atlas{atlas};
         var views = [1]AtlasHandle{undefined};
@@ -3668,62 +3722,34 @@ pub const Renderer = struct {
         return views[0];
     }
 
-    /// Convenience: upload the atlas embedded in a frozen path picture.
     pub fn uploadPathPicture(self: *Renderer, picture: *const PathPicture) AtlasHandle {
         return self.uploadAtlas(&picture.atlas);
     }
 
-    /// Reset cached GL state (program, textures). Call once per frame
-    /// before draw() when other renderers share the GL context.
     pub fn beginFrame(self: *Renderer) void {
-        switch (self.backend) {
-            .gl => self.gl_text.?.resetFrameState(),
-            .vulkan, .cpu => {},
-        }
+        self.vtable.beginFrame(self.ptr);
     }
 
-    /// Draw a batch of text glyph vertices.
     pub fn drawText(self: *Renderer, vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
-        switch (self.backend) {
-            .gl => self.gl_text.?.drawText(vertices, mvp, viewport_w, viewport_h),
-            .vulkan => vulkan_pipeline.drawText(vertices, mvp, viewport_w, viewport_h),
-            .cpu => {}, // CPU text is drawn via CpuRenderer.drawText directly
-        }
+        self.vtable.drawText(self.ptr, vertices, mvp, viewport_w, viewport_h);
     }
 
-    /// Draw analytic path/glyph vertices with grayscale AA.
     pub fn drawPaths(self: *Renderer, vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
-        switch (self.backend) {
-            .gl => self.gl_text.?.drawTextGrayscale(vertices, mvp, viewport_w, viewport_h),
-            .vulkan => vulkan_pipeline.drawTextGrayscale(vertices, mvp, viewport_w, viewport_h),
-            .cpu => {}, // CPU paths are drawn via CpuRenderer.drawPathPicture directly
-        }
+        self.vtable.drawPaths(self.ptr, vertices, mvp, viewport_w, viewport_h);
     }
 
-    /// Set the Vulkan command buffer for the current frame.
-    /// Must be called before draw() when using Vulkan backend.
     pub fn setCommandBuffer(self: *Renderer, cmd: anytype) void {
-        if (self.backend == .vulkan) vulkan_pipeline.setCommandBuffer(cmd);
+        self.vtable.setCommandBuffer(self.ptr, @ptrCast(cmd));
     }
 
-    /// Set LCD subpixel rendering order. Use .none to disable subpixel rendering.
     pub fn setSubpixelOrder(self: *Renderer, order: SubpixelOrder) void {
-        switch (self.backend) {
-            .gl => self.gl_text.?.subpixel_order = order,
-            .vulkan => vulkan_pipeline.subpixel_order = order,
-            .cpu => if (self.cpu) |c| c.setSubpixelOrder(order),
-        }
+        self.vtable.setSubpixelOrder(self.ptr, order);
     }
 
     pub fn subpixelOrder(self: *const Renderer) SubpixelOrder {
-        return switch (self.backend) {
-            .gl => self.gl_text.?.subpixel_order,
-            .vulkan => vulkan_pipeline.subpixel_order,
-            .cpu => if (self.cpu) |c| c.subpixelOrder() else .none,
-        };
+        return self.vtable.getSubpixelOrder(@constCast(self.ptr));
     }
 
-    /// Convenience: enable subpixel with RGB order, or disable. Prefer setSubpixelOrder.
     pub fn setSubpixel(self: *Renderer, enabled: bool) void {
         self.setSubpixelOrder(if (enabled) .rgb else .none);
     }
@@ -3732,29 +3758,22 @@ pub const Renderer = struct {
         return self.subpixelOrder() != .none;
     }
 
-    /// Set fill rule: non_zero (default, TrueType) or even_odd (PostScript/CFF).
     pub fn setFillRule(self: *Renderer, rule: FillRule) void {
-        switch (self.backend) {
-            .gl => self.gl_text.?.fill_rule = @enumFromInt(@intFromEnum(rule)),
-            .vulkan => vulkan_pipeline.fill_rule = @enumFromInt(@intFromEnum(rule)),
-            .cpu => if (self.cpu) |c| c.setFillRule(rule),
-        }
+        self.vtable.setFillRule(self.ptr, rule);
     }
 
     pub fn fillRule(self: *const Renderer) FillRule {
-        return switch (self.backend) {
-            .gl => @enumFromInt(@intFromEnum(self.gl_text.?.fill_rule)),
-            .vulkan => @enumFromInt(@intFromEnum(vulkan_pipeline.fill_rule)),
-            .cpu => if (self.cpu) |c| c.fillRule() else .non_zero,
-        };
+        return self.vtable.getFillRule(@constCast(self.ptr));
     }
 
     pub fn backendName(self: *const Renderer) []const u8 {
-        return switch (self.backend) {
-            .gl => self.gl_text.?.getBackendName(),
-            .vulkan => vulkan_pipeline.getBackendName(),
-            .cpu => "CPU",
-        };
+        return self.vtable.backendName(@constCast(self.ptr));
+    }
+
+    /// Access the underlying Vulkan pipeline (for platform-specific operations like setFrameSlot).
+    pub fn vulkanPipeline(self: *Renderer) ?*vulkan_pipeline.VulkanPipeline {
+        if (self.vtable == &vulkan_vtable) return @ptrCast(@alignCast(self.ptr));
+        return null;
     }
 };
 
@@ -3776,7 +3795,6 @@ test {
     _ = @import("c_api.zig");
     _ = @import("render/vertex.zig");
     _ = @import("torture_test.zig");
-    _ = @import("font_collection.zig");
     _ = @import("fonts.zig");
 }
 
@@ -3902,9 +3920,15 @@ test "path picture freeze compiles atlas and transformed batch vertices" {
     const view = AtlasHandle{ .atlas = &picture.atlas };
     try std.testing.expectEqual(@as(usize, 1), batch.addPicture(&view, &picture));
     try std.testing.expectEqual(@as(usize, PATH_FLOATS_PER_SHAPE), batch.slice().len);
-    try std.testing.expectApproxEqAbs(@as(f32, 20), batch.slice()[0], 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 30), batch.slice()[1], 0.001);
-    const packed_gw: u32 = @bitCast(batch.slice()[7]);
+    // Verify that the min corner world position equals the intended translation.
+    // Instance layout: bbox.min at offsets 0,1; xform at 4-7; tx,ty at 8,9.
+    const s = batch.slice();
+    const world_x = s[4] * s[0] + s[5] * s[1] + s[8]; // xx*min.x + xy*min.y + tx
+    const world_y = s[6] * s[0] + s[7] * s[1] + s[9]; // yx*min.x + yy*min.y + ty
+    try std.testing.expectApproxEqAbs(@as(f32, 20), world_x, 0.5);
+    try std.testing.expectApproxEqAbs(@as(f32, 30), world_y, 0.5);
+    // gw at offset 11 (a_meta.w)
+    const packed_gw: u32 = @bitCast(s[11]);
     try std.testing.expectEqual(@as(u32, 0xFF), packed_gw >> 24);
     try std.testing.expectApproxEqAbs(@as(f32, 0), batch.slice()[15], 0.001);
 }
@@ -3929,7 +3953,8 @@ test "path batch offsets layer info rows through atlas views" {
         .info_row_base = 17,
     };
     try std.testing.expectEqual(@as(usize, 1), batch.addPicture(&offset_view, &picture));
-    const packed_gz: u32 = @bitCast(batch.slice()[6]);
+    // gz at offset 10 (a_meta.z)
+    const packed_gz: u32 = @bitCast(batch.slice()[10]);
     try std.testing.expectEqual(@as(u32, picture.instances[0].info_x), packed_gz & 0xFFFF);
     try std.testing.expectEqual(@as(u32, offset_view.info_row_base + picture.instances[0].info_y), packed_gz >> 16);
     try std.testing.expectApproxEqAbs(@as(f32, offset_view.glyphLayer(0)), batch.slice()[15], 0.001);

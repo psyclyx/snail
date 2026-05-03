@@ -28,17 +28,14 @@ const ProgramState = struct {
     layer_tex_loc: gl.GLint = -1,
 };
 
-pub const FillRule = enum(c_int) {
-    non_zero = 0,
-    even_odd = 1,
-};
+const FillRule = snail_mod.FillRule;
 
 // ── GL 4.4 persistent mapping constants ──
 
 const RING_SEGMENTS = 3;
 const RING_TOTAL_BYTES = 12 * 1024 * 1024; // 12 MB (4 MB per segment)
 const RING_SEGMENT_BYTES = RING_TOTAL_BYTES / RING_SEGMENTS;
-const BYTES_PER_GLYPH = vertex.FLOATS_PER_VERTEX * vertex.VERTICES_PER_GLYPH * @sizeOf(f32);
+const BYTES_PER_GLYPH = vertex.FLOATS_PER_INSTANCE * @sizeOf(f32);
 const MAX_GLYPHS_PER_SEGMENT = RING_SEGMENT_BYTES / BYTES_PER_GLYPH;
 
 const MAX_ATLASES = upload_common.MAX_ATLASES;
@@ -121,6 +118,7 @@ pub const GlTextState = struct {
         gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self.ebo);
         initEbo();
         setupVertexAttribs();
+        setupInstanceDivisors();
     }
 
     fn initGl44(self: *GlTextState) void {
@@ -145,10 +143,11 @@ pub const GlTextState = struct {
             return;
         }
 
-        // DSA vertex attribs
-        const stride: gl.GLint = vertex.FLOATS_PER_VERTEX * @sizeOf(f32);
+        // DSA vertex attribs — all per-instance (binding divisor = 1)
+        const stride: gl.GLint = vertex.FLOATS_PER_INSTANCE * @sizeOf(f32);
         gl.glVertexArrayVertexBuffer(self.vao, 0, self.vbo, 0, stride);
         gl.glVertexArrayElementBuffer(self.vao, self.ebo);
+        gl.glVertexArrayBindingDivisor(self.vao, 0, 1);
 
         inline for (0..5) |i| {
             const loc: u32 = @intCast(i);
@@ -191,7 +190,7 @@ pub const GlTextState = struct {
         self.resetAtlasUploadState();
     }
 
-    pub fn getBackendName(self: *const GlTextState) []const u8 {
+    pub fn backendName(self: *const GlTextState) []const u8 {
         return switch (self.backend) {
             .gl33 => "GL 3.3",
             .gl44 => "GL 4.4 (persistent mapped)",
@@ -219,7 +218,7 @@ pub const GlTextState = struct {
         for (&self.image_slots) |*slot| slot.* = .{};
     }
 
-    pub fn buildTextureArrays(self: *GlTextState, atlases: []const *const snail_mod.Atlas, out_views: []snail_mod.AtlasHandle) void {
+    pub fn uploadAtlases(self: *GlTextState, atlases: []const *const snail_mod.Atlas, out_views: []snail_mod.AtlasHandle) void {
         std.debug.assert(atlases.len == out_views.len);
 
         if (atlases.len == 0) {
@@ -243,7 +242,7 @@ pub const GlTextState = struct {
         }
     }
 
-    pub fn buildImageArray(self: *GlTextState, images: []const *const snail_mod.Image, out_views: []snail_mod.ImageHandle) void {
+    pub fn uploadImages(self: *GlTextState, images: []const *const snail_mod.Image, out_views: []snail_mod.ImageHandle) void {
         std.debug.assert(images.len == out_views.len);
         self.ensureImagesRegistered(images);
         for (images, 0..) |image, i| {
@@ -612,8 +611,7 @@ pub const GlTextState = struct {
         }
 
         gl.glDisable(gl.GL_DEPTH_TEST);
-        const floats_per_glyph = vertex.FLOATS_PER_VERTEX * vertex.VERTICES_PER_GLYPH;
-        const total_glyphs = vertices.len / floats_per_glyph;
+        const total_glyphs = vertices.len / vertex.FLOATS_PER_INSTANCE;
         const render_mode = subpixel_policy.chooseTextRenderMode(
             vertices,
             mvp,
@@ -658,7 +656,7 @@ pub const GlTextState = struct {
         self.drawTextInternal(vertices, mvp, viewport_w, viewport_h, true);
     }
 
-    pub fn drawTextGrayscale(self: *GlTextState, vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
+    pub fn drawPaths(self: *GlTextState, vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
         const prog_state = self.ensurePathProgram();
         gl.glBindVertexArray(self.vao);
         if (self.backend == .gl33) {
@@ -670,12 +668,30 @@ pub const GlTextState = struct {
         gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA);
 
         self.bindProgramState(prog_state, mvp, viewport_w, viewport_h, .grayscale);
-        self.drawGlyphRange(vertices, 0, vertices.len / (vertex.FLOATS_PER_VERTEX * vertex.VERTICES_PER_GLYPH));
+        self.drawGlyphRange(vertices, 0, vertices.len / vertex.FLOATS_PER_INSTANCE);
     }
 
-    pub fn resetFrameState(self: *GlTextState) void {
+    pub fn beginFrame(self: *GlTextState) void {
         self.frame_begun = false;
     }
+
+    pub fn setSubpixelOrder(self: *GlTextState, order: SubpixelOrder) void {
+        self.subpixel_order = order;
+    }
+
+    pub fn getSubpixelOrder(self: *const GlTextState) SubpixelOrder {
+        return self.subpixel_order;
+    }
+
+    pub fn setFillRule(self: *GlTextState, rule: FillRule) void {
+        self.fill_rule = rule;
+    }
+
+    pub fn getFillRule(self: *const GlTextState) FillRule {
+        return self.fill_rule;
+    }
+
+    pub fn setCommandBuffer(_: *GlTextState, _: ?*anyopaque) void {}
 
     fn ensureColrProgram(self: *GlTextState) *const ProgramState {
         if (self.colr_program.handle == 0) {
@@ -732,11 +748,10 @@ pub const GlTextState = struct {
     }
 
     fn drawGlyphRange(self: *GlTextState, vertices: []const f32, glyph_offset: usize, glyph_count: usize) void {
-        const floats_per_glyph = vertex.FLOATS_PER_VERTEX * vertex.VERTICES_PER_GLYPH;
         var glyphs_drawn: usize = 0;
         while (glyphs_drawn < glyph_count) {
             const chunk: usize = @min(glyph_count - glyphs_drawn, MAX_GLYPHS_PER_SEGMENT);
-            const float_offset = (glyph_offset + glyphs_drawn) * floats_per_glyph;
+            const float_offset = (glyph_offset + glyphs_drawn) * vertex.FLOATS_PER_INSTANCE;
             const byte_size = chunk * BYTES_PER_GLYPH;
 
             switch (self.backend) {
@@ -759,13 +774,12 @@ pub const GlTextState = struct {
                     const src: [*]const u8 = @ptrCast(vertices[float_offset..].ptr);
                     @memcpy(dst, src[0..byte_size]);
 
-                    const stride: gl.GLint = vertex.FLOATS_PER_VERTEX * @sizeOf(f32);
+                    const stride: gl.GLint = vertex.FLOATS_PER_INSTANCE * @sizeOf(f32);
                     gl.glVertexArrayVertexBuffer(self.vao, 0, self.vbo, @intCast(offset), stride);
                 },
             }
 
-            const index_count: gl.GLsizei = @intCast(chunk * 6);
-            gl.glDrawElements(gl.GL_TRIANGLES, index_count, gl.GL_UNSIGNED_INT, null);
+            gl.glDrawElementsInstanced(gl.GL_TRIANGLES, 6, gl.GL_UNSIGNED_INT, null, @intCast(chunk));
 
             if (self.backend == .gl44) {
                 self.ring_fences[self.ring_segment] = gl.glFenceSync(gl.GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
@@ -791,65 +805,54 @@ pub fn deinit() void {
     state.deinit();
 }
 
-pub fn buildTextureArrays(atlases: []const *const snail_mod.Atlas, out_views: []snail_mod.AtlasHandle) void {
-    state.buildTextureArrays(atlases, out_views);
+pub fn uploadAtlases(atlases: []const *const snail_mod.Atlas, out_views: []snail_mod.AtlasHandle) void {
+    state.uploadAtlases(atlases, out_views);
 }
 
-pub fn buildImageArray(images: []const *const snail_mod.Image, out_views: []snail_mod.ImageHandle) void {
-    state.buildImageArray(images, out_views);
+pub fn uploadImages(images: []const *const snail_mod.Image, out_views: []snail_mod.ImageHandle) void {
+    state.uploadImages(images, out_views);
 }
 
 pub fn drawText(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
     state.drawText(vertices, mvp, viewport_w, viewport_h);
 }
 
-pub fn drawTextGrayscale(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
-    state.drawTextGrayscale(vertices, mvp, viewport_w, viewport_h);
+pub fn drawPaths(vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32) void {
+    state.drawPaths(vertices, mvp, viewport_w, viewport_h);
 }
 
-pub fn resetFrameState() void {
-    state.resetFrameState();
+pub fn beginFrame() void {
+    state.beginFrame();
 }
 
 pub fn imageTextureArray() gl.GLuint {
     return state.image_array;
 }
 
-pub fn getBackendName() []const u8 {
-    return state.getBackendName();
+pub fn backendName() []const u8 {
+    return state.backendName();
 }
 
 // ── Pure utility functions (no mutable state access) ──
 
 fn setupVertexAttribs() void {
-    const stride: gl.GLsizei = vertex.FLOATS_PER_VERTEX * @sizeOf(f32);
+    const stride: gl.GLsizei = vertex.FLOATS_PER_INSTANCE * @sizeOf(f32);
     inline for (0..5) |i| {
         gl.glVertexAttribPointer(@intCast(i), 4, gl.GL_FLOAT, gl.GL_FALSE, stride, @ptrFromInt(i * 4 * @sizeOf(f32)));
         gl.glEnableVertexAttribArray(@intCast(i));
     }
 }
 
-fn initEbo() void {
-    const total_indices: usize = MAX_GLYPHS_PER_SEGMENT * 6;
-    const buf_size: gl.GLsizeiptr = @intCast(total_indices * @sizeOf(u32));
-    gl.glBufferData(gl.GL_ELEMENT_ARRAY_BUFFER, buf_size, null, gl.GL_STATIC_DRAW);
-
-    // Generate the deterministic quad index pattern directly into GPU memory
-    const ptr = gl.glMapBufferRange(gl.GL_ELEMENT_ARRAY_BUFFER, 0, buf_size, gl.GL_MAP_WRITE_BIT);
-    if (ptr) |raw| {
-        const indices: [*]u32 = @ptrCast(@alignCast(raw));
-        for (0..MAX_GLYPHS_PER_SEGMENT) |i| {
-            const base: u32 = @intCast(i * 4);
-            const idx = i * 6;
-            indices[idx + 0] = base + 0;
-            indices[idx + 1] = base + 1;
-            indices[idx + 2] = base + 2;
-            indices[idx + 3] = base + 0;
-            indices[idx + 4] = base + 2;
-            indices[idx + 5] = base + 3;
-        }
-        _ = gl.glUnmapBuffer(gl.GL_ELEMENT_ARRAY_BUFFER);
+fn setupInstanceDivisors() void {
+    inline for (0..5) |i| {
+        gl.glVertexAttribDivisor(@intCast(i), 1);
     }
+}
+
+fn initEbo() void {
+    // Single quad index pattern — instancing repeats it per glyph.
+    const indices = [6]u32{ 0, 1, 2, 0, 2, 3 };
+    gl.glBufferData(gl.GL_ELEMENT_ARRAY_BUFFER, @sizeOf(@TypeOf(indices)), &indices, gl.GL_STATIC_DRAW);
 }
 
 // ── Shader compilation ──
@@ -958,8 +961,9 @@ fn setTextBlendMode(special: bool, render_mode: subpixel_policy.TextRenderMode) 
 }
 
 fn glyphRunIsSpecial(vertices: []const f32, glyph_index: usize) bool {
-    const float_offset = glyph_index * vertex.FLOATS_PER_VERTEX * vertex.VERTICES_PER_GLYPH;
-    const gw_bits: u32 = @bitCast(vertices[float_offset + 7]);
+    // gw is at offset 11 within each instance (a_meta.w)
+    const float_offset = glyph_index * vertex.FLOATS_PER_INSTANCE;
+    const gw_bits: u32 = @bitCast(vertices[float_offset + 11]);
     return (gw_bits >> 24) == 0xFF;
 }
 

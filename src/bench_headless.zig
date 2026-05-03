@@ -449,7 +449,7 @@ pub fn main() !void {
             \\  "static" = pre-built vertex buffer, draw only (game HUD, menus)
             \\  "dynamic" = rebuild vertices + draw every frame (chat, editor, debug)
             \\
-        , .{ gl_pipeline.getBackendName(), hb_str, WIDTH, HEIGHT, WARMUP, FRAMES, setup_us });
+        , .{ gl_pipeline.backendName(), hb_str, WIDTH, HEIGHT, WARMUP, FRAMES, setup_us });
 
         std.debug.print("  --- Latin (built-in shaper{s}) ---\n", .{
             if (build_options.enable_harfbuzz) " + HarfBuzz" else "",
@@ -532,6 +532,7 @@ pub fn main() !void {
 
         var renderer = try snail.Renderer.initVulkan(vk_ctx);
         defer renderer.deinit();
+        vulkan_platform.setPipeline(renderer.vulkanPipeline().?);
 
         const vbuf = try allocator.alloc(f32, 30000 * snail.TEXT_FLOATS_PER_GLYPH);
         defer allocator.free(vbuf);

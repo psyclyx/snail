@@ -402,9 +402,9 @@ src/
     pipeline.zig         OpenGL state (GL 3.3 / 4.4 persistent mapped)
     gl.zig               OpenGL C function imports
     gl_backend.zig       GL version detection and backend selection
-    shaders.zig          GLSL 330 vertex + fragment shaders
+    shaders.zig          GLSL 330 vertex + fragment shaders (GL backend)
     vulkan_pipeline.zig  Vulkan state (optional)
-    vulkan_shaders.zig   SPIR-V / Vulkan shader modules
+    vulkan_shaders.zig   SPIR-V bytecode loader (Vulkan backend)
     vulkan_platform.zig  Vulkan WSI platform integration
     curve_texture.zig    RGBA16F curve control point packing
     band_texture.zig     RG16UI spatial band subdivision
@@ -421,6 +421,11 @@ src/
     subpixel_policy.zig  subpixel rendering policy logic
   profile/
     timer.zig            comptime-gated CPU timers
+shaders/
+  snail.vert             Vulkan vertex shader (GLSL 450, compiled to SPIR-V at build time)
+  snail.frag             Vulkan fragment shader (text + paths, grayscale AA)
+  snail_subpixel.frag    Vulkan fragment shader (text + paths, subpixel AA)
+  snail_text_subpixel.frag  Vulkan fragment shader (text-only, subpixel AA)
 include/
   snail.h                C header
 ```

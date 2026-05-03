@@ -917,7 +917,7 @@ pub fn main() !void {
             \\  Backend: {s} | HarfBuzz: {s} | {d}x{d} | {d} warmup + {d} measured frames/test
             \\  Setup (4 fonts + atlases): {d:.0} us
             \\
-        , .{ pipeline.getBackendName(), hb_str, WIDTH, HEIGHT, WARMUP, FRAMES, setup_us });
+        , .{ pipeline.backendName(), hb_str, WIDTH, HEIGHT, WARMUP, FRAMES, setup_us });
 
         // ── Layout: snail vs FreeType ──
         std.debug.print(
@@ -1071,6 +1071,7 @@ pub fn main() !void {
 
         var renderer = try snail.Renderer.initVulkan(vk_ctx);
         defer renderer.deinit();
+        vulkan_platform.setPipeline(renderer.vulkanPipeline().?);
         const setup_us = usFrom(t_setup);
 
         const vbuf = try allocator.alloc(f32, 30000 * snail.TEXT_FLOATS_PER_GLYPH);

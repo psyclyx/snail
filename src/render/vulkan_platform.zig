@@ -3,6 +3,13 @@
 
 const std = @import("std");
 const vkp = @import("vulkan_pipeline.zig");
+
+var pipeline_ref: ?*vkp.VulkanPipeline = null;
+
+/// Store a reference to the VulkanPipeline so beginFrame can call setFrameSlot.
+pub fn setPipeline(p: *vkp.VulkanPipeline) void {
+    pipeline_ref = p;
+}
 const SubpixelOrder = @import("subpixel_order.zig").SubpixelOrder;
 const wayland = @import("wayland_window.zig");
 
@@ -17,10 +24,7 @@ const MAX_FRAMES_IN_FLIGHT = 2;
 
 pub const KEY_ESCAPE = wayland.KEY_ESCAPE;
 pub const KEY_R = wayland.KEY_R;
-pub const KEY_S = wayland.KEY_S;
-pub const KEY_D = wayland.KEY_D;
 pub const KEY_L = wayland.KEY_L;
-pub const KEY_M = wayland.KEY_M;
 pub const KEY_Z = wayland.KEY_Z;
 pub const KEY_X = wayland.KEY_X;
 pub const KEY_LEFT = wayland.KEY_LEFT;
@@ -211,7 +215,7 @@ pub fn beginFrame() ?vk.VkCommandBuffer {
         .pClearValues = &clear_value,
     });
     vk.vkCmdBeginRenderPass(cmd, &rp_info, vk.VK_SUBPASS_CONTENTS_INLINE);
-    vkp.setFrameSlot(current_frame);
+    if (pipeline_ref) |p| p.setFrameSlot(current_frame);
 
     cmd_ready_ns = nowNs();
     ft.add(&ft.rp_setup_us, @as(f64, @floatFromInt(cmd_ready_ns - t2)) / 1000.0);
@@ -407,7 +411,7 @@ pub fn beginFrameOffscreen() vk.VkCommandBuffer {
         .pClearValues = &clear_value,
     });
     vk.vkCmdBeginRenderPass(cmd, &rp_info, vk.VK_SUBPASS_CONTENTS_INLINE);
-    vkp.setFrameSlot(frame);
+    if (pipeline_ref) |p| p.setFrameSlot(frame);
 
     offscreen_active_frame = frame;
     return cmd;

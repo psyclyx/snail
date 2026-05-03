@@ -38,17 +38,17 @@ pub fn mvpPreservesScreenSubpixelAxes(mvp: Mat4) bool {
 }
 
 pub fn verticesPreserveScreenSubpixelAxes(vertices: []const f32) bool {
-    const floats_per_glyph = vertex.FLOATS_PER_VERTEX * vertex.VERTICES_PER_GLYPH;
     if (vertices.len == 0) return true;
-    if (vertices.len % floats_per_glyph != 0) return false;
+    if (vertices.len % vertex.FLOATS_PER_INSTANCE != 0) return false;
 
     var glyph_index: usize = 0;
-    const glyph_count = vertices.len / floats_per_glyph;
+    const glyph_count = vertices.len / vertex.FLOATS_PER_INSTANCE;
     while (glyph_index < glyph_count) : (glyph_index += 1) {
-        const base = glyph_index * floats_per_glyph;
-        const j01 = vertices[base + 9];
-        const j10 = vertices[base + 10];
-        if (!approxZero(j01) or !approxZero(j10)) return false;
+        const base = glyph_index * vertex.FLOATS_PER_INSTANCE;
+        // xform xy (off-diagonal) at offset 5, yx at offset 6
+        const xy = vertices[base + 5];
+        const yx = vertices[base + 6];
+        if (!approxZero(xy) or !approxZero(yx)) return false;
     }
     return true;
 }
@@ -58,7 +58,7 @@ fn approxZero(v: f32) bool {
 }
 
 test "LCD requires dual-source, otherwise grayscale" {
-    var buf: [vertex.FLOATS_PER_VERTEX * vertex.VERTICES_PER_GLYPH]f32 = undefined;
+    var buf: [vertex.FLOATS_PER_INSTANCE]f32 = undefined;
     const bbox = BBox{
         .min = Vec2.new(0.0, -0.2),
         .max = Vec2.new(0.5, 0.8),
@@ -91,7 +91,7 @@ test "LCD requires dual-source, otherwise grayscale" {
 }
 
 test "LCD rejects transformed glyph jacobians" {
-    var buf: [vertex.FLOATS_PER_VERTEX * vertex.VERTICES_PER_GLYPH]f32 = undefined;
+    var buf: [vertex.FLOATS_PER_INSTANCE]f32 = undefined;
     const bbox = BBox{
         .min = Vec2.new(1.0, 2.0),
         .max = Vec2.new(5.0, 8.0),

@@ -163,17 +163,17 @@ pub const FaceGlyphData = struct {
         if (self.glyph_map.count() == 0) return;
 
         var max_gid: u32 = 0;
-        var kit = self.glyph_map.keyIterator();
-        while (kit.next()) |k| {
-            if (k.* > max_gid) max_gid = k.*;
+        var it = self.glyph_map.iterator();
+        while (it.next()) |entry| {
+            if (entry.key_ptr.* > max_gid) max_gid = entry.key_ptr.*;
         }
 
         const size = max_gid + 1;
         const lut = try allocator.alloc(GlyphInfo, size);
         @memset(lut, std.mem.zeroes(GlyphInfo));
 
-        var mit = self.glyph_map.iterator();
-        while (mit.next()) |entry| {
+        it = self.glyph_map.iterator();
+        while (it.next()) |entry| {
             lut[entry.key_ptr.*] = entry.value_ptr.*;
         }
 
@@ -545,10 +545,6 @@ pub const Fonts = struct {
                 new_face_glyphs[fi] = .{ .glyph_map = merged };
                 try new_face_glyphs[fi].buildGlyphLut(self.allocator);
 
-                // Build COLR base map for this face.
-                if (fc.font.colr_offset != 0) {
-                    try buildFaceColrBaseMap(&new_face_glyphs[fi], fc);
-                }
             } else {
                 new_face_glyphs[fi] = try self.face_glyphs[fi].clone(self.allocator);
             }
@@ -971,27 +967,6 @@ fn faceGlyphAdvance(fc: *const FaceConfig, fg: *const FaceGlyphData, gid: u16) ?
     if (fg.glyph_map.get(gid)) |info| return info.advance_width;
     if (fc.font.colr_offset != 0 and fc.font.colrLayerCount(gid) > 0) return fc.font.units_per_em;
     return null;
-}
-
-// ── COLR helpers ──
-
-fn buildFaceColrBaseMap(fg: *FaceGlyphData, fc: *const FaceConfig) !void {
-    if (fc.font.colr_offset == 0) return;
-
-    var base_glyphs: std.ArrayListUnmanaged(u16) = .empty;
-    defer base_glyphs.deinit(fg.glyph_map.allocator);
-
-    var kit = fg.glyph_map.keyIterator();
-    while (kit.next()) |gid_ptr| {
-        if (fc.font.colrLayerCount(gid_ptr.*) > 0)
-            try base_glyphs.append(fg.glyph_map.allocator, gid_ptr.*);
-    }
-
-    if (base_glyphs.items.len == 0) return;
-
-    // Build layer info texture and base map for this face.
-    // For now, use the per-layer fallback path (no base map optimization).
-    // TODO: build merged layer_info_data across faces for single-pass compositing.
 }
 
 // ── Tests ──

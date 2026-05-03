@@ -170,7 +170,7 @@ pub fn heightCapacity(height: u32) u32 {
     return roundUpPowerOfTwo(@max(height, 1));
 }
 
-pub fn layerInfoTexelBase(width: u32, x: u32, y: u32) usize {
+fn layerInfoTexelBase(width: u32, x: u32, y: u32) usize {
     return (y * width + x) * 4;
 }
 

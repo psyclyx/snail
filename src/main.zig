@@ -52,6 +52,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         break :blk snail.Renderer.initCpu(&cpu_state);
     };
     defer renderer.deinit();
+    if (use_vulkan) platform.setPipeline(renderer.vulkanPipeline().?);
 
     const sys_order = subpixel_detect.detect();
     var detected_order = platform.detectCurrentMonitorSubpixelOrder(sys_order);
@@ -173,17 +174,25 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
                 if (platform.getPixelBuffer()) |px| {
                     buf_width = bsz[0];
                     buf_height = bsz[1];
-                    cpu_state = CpuRenderer.init(px, bsz[0], bsz[1], bsz[0] * 4);
-                    renderer = snail.Renderer.initCpu(&cpu_state);
-                    uploaded_size = .{ 0, 0 };
+                    cpu_state.reinitBuffer(px, bsz[0], bsz[1], bsz[0] * 4);
                 }
             }
-            cpu_state.clear(
-                linearToSrgbU8(clear[0]),
-                linearToSrgbU8(clear[1]),
-                linearToSrgbU8(clear[2]),
-                @intFromFloat(clear[3] * 255),
-            );
+            if (platform.getPixelBuffer()) |px| {
+                const r = linearToSrgbU8(clear[0]);
+                const g = linearToSrgbU8(clear[1]);
+                const b = linearToSrgbU8(clear[2]);
+                const a: u8 = @intFromFloat(clear[3] * 255);
+                for (0..bsz[1]) |row| {
+                    const row_start = row * bsz[0] * 4;
+                    for (0..bsz[0]) |col| {
+                        const off = row_start + col * 4;
+                        px[off + 0] = r;
+                        px[off + 1] = g;
+                        px[off + 2] = b;
+                        px[off + 3] = a;
+                    }
+                }
+            }
         }
 
         const projection = snail.Mat4.ortho(0, w, h, 0, -1, 1);
@@ -203,22 +212,16 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
 
         renderer.beginFrame();
 
-        if (!use_cpu) {
-            if (path_picture) |*picture| {
-                var paths = snail.PathBatch.init(path_buf);
-                _ = paths.addPicture(&path_view, picture);
-                if (paths.shapeCount() > 0) {
-                    renderer.drawPaths(paths.slice(), mvp, w, h);
-                }
-            }
-        } else {
-            if (path_picture) |*picture| {
-                cpu_state.drawPathPicture(picture);
+        if (path_picture) |*picture| {
+            var paths = snail.PathBatch.init(path_buf);
+            _ = paths.addPicture(&path_view, picture);
+            if (paths.shapeCount() > 0) {
+                renderer.drawPaths(paths.slice(), mvp, w, h);
             }
         }
 
         var batch = snail.TextBatch.init(vbuf);
-        if (!use_cpu) {
+        {
             var dec_ignore: [8]snail.Rect = undefined;
             _ = demo_banner_scene.populateTextBatch(&batch, layout, &scene_assets, &dec_ignore);
         }

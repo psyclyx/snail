@@ -52,6 +52,19 @@ fn linearToSrgb(v: f32) f32 {
     return linear_to_srgb_lut[idx] + (linear_to_srgb_lut[idx + 1] - linear_to_srgb_lut[idx]) * frac;
 }
 
+fn srgbFloatToLinear(v: f32) f32 {
+    return if (v <= 0.04045) v / 12.92 else std.math.pow(f32, (v + 0.055) / 1.055, 2.4);
+}
+
+fn srgbColorToLinear(color: [4]f32) [4]f32 {
+    return .{
+        srgbFloatToLinear(color[0]),
+        srgbFloatToLinear(color[1]),
+        srgbFloatToLinear(color[2]),
+        color[3],
+    };
+}
+
 fn fract(v: f32) f32 {
     return v - @floor(v);
 }
@@ -68,6 +81,35 @@ pub const CpuRenderer = struct {
     stride: u32, // bytes per row (usually width * 4)
     fill_rule: FillRule,
     subpixel_order: SubpixelOrder,
+    /// Flat array of atlas pages indexed by texture-array layer.
+    /// Populated during uploadAtlases so drawTextBatch can look up curve data.
+    atlas_pages: [256]?*const snail.AtlasPage = .{null} ** 256,
+    /// Layer info entries from uploaded atlases (combined, like the GPU texture).
+    layer_infos: [MAX_LAYER_INFOS]LayerInfoEntry = .{LayerInfoEntry{}} ** MAX_LAYER_INFOS,
+    layer_info_count: u32 = 0,
+
+    const MAX_LAYER_INFOS = 4;
+    const LayerInfoEntry = struct {
+        data: []const f32 = &.{},
+        width: u32 = 0,
+        height: u32 = 0,
+        row_base: u32 = 0,
+    };
+
+    /// Resolve a global (info_x, info_y) into data pointer and width,
+    /// adjusting info_y for the atlas's row_base.
+    fn resolveLayerInfo(self: *const CpuRenderer, info_y: u16) ?struct { data: []const f32, width: u32, local_y: u16 } {
+        for (self.layer_infos[0..self.layer_info_count]) |entry| {
+            if (info_y >= entry.row_base and info_y < entry.row_base + entry.height) {
+                return .{
+                    .data = entry.data,
+                    .width = entry.width,
+                    .local_y = @intCast(info_y - entry.row_base),
+                };
+            }
+        }
+        return null;
+    }
 
     pub fn init(pixels: [*]u8, width: u32, height: u32, stride: u32) CpuRenderer {
         return .{
@@ -80,11 +122,19 @@ pub const CpuRenderer = struct {
         };
     }
 
+    /// Update the pixel buffer and dimensions without clearing atlas state.
+    pub fn reinitBuffer(self: *CpuRenderer, pixels: [*]u8, width: u32, height: u32, stride: u32) void {
+        self.pixels = pixels;
+        self.width = width;
+        self.height = height;
+        self.stride = stride;
+    }
+
     pub fn setFillRule(self: *CpuRenderer, rule: FillRule) void {
         self.fill_rule = rule;
     }
 
-    pub fn fillRule(self: *const CpuRenderer) FillRule {
+    pub fn getFillRule(self: *const CpuRenderer) FillRule {
         return self.fill_rule;
     }
 
@@ -92,15 +142,15 @@ pub const CpuRenderer = struct {
         self.subpixel_order = order;
     }
 
-    pub fn subpixelOrder(self: *const CpuRenderer) SubpixelOrder {
+    pub fn getSubpixelOrder(self: *const CpuRenderer) SubpixelOrder {
         return self.subpixel_order;
     }
 
-    pub fn setSubpixel(self: *CpuRenderer, enabled: bool) void {
+    fn setSubpixel(self: *CpuRenderer, enabled: bool) void {
         self.subpixel_order = if (enabled) .rgb else .none;
     }
 
-    pub fn clear(self: *CpuRenderer, r: u8, g: u8, b: u8, a: u8) void {
+    fn clear(self: *CpuRenderer, r: u8, g: u8, b: u8, a: u8) void {
         for (0..self.height) |row| {
             const row_start = row * self.stride;
             for (0..self.width) |col| {
@@ -113,7 +163,7 @@ pub const CpuRenderer = struct {
         }
     }
 
-    pub fn fillRect(self: *CpuRenderer, x: i32, y: i32, w: u32, h: u32, r: u8, g: u8, b: u8, a: u8) void {
+    fn fillRect(self: *CpuRenderer, x: i32, y: i32, w: u32, h: u32, r: u8, g: u8, b: u8, a: u8) void {
         const x0 = @max(x, 0);
         const y0 = @max(y, 0);
         const x1: i32 = @min(x + @as(i32, @intCast(w)), @as(i32, @intCast(self.width)));
@@ -133,15 +183,15 @@ pub const CpuRenderer = struct {
         }
     }
 
-    pub fn drawPathPicture(self: *CpuRenderer, picture: *const snail.PathPicture) void {
+    fn drawPathPicture(self: *CpuRenderer, picture: *const snail.PathPicture) void {
         self.drawPathPictureTransformed(picture, .identity);
     }
 
-    pub fn drawPathPictureTransformed(self: *CpuRenderer, picture: *const snail.PathPicture, transform: Transform2D) void {
+    fn drawPathPictureTransformed(self: *CpuRenderer, picture: *const snail.PathPicture, transform: Transform2D) void {
         for (picture.instances) |instance| {
             const info = picture.atlas.getGlyph(instance.glyph_id) orelse continue;
-            const inverse = inverseTransform(Transform2D.multiply(transform, instance.transform)) orelse continue;
             const final_transform = Transform2D.multiply(transform, instance.transform);
+            const inverse = inverseTransform(final_transform) orelse continue;
             const bounds = transformedGlyphBounds(info.bbox, final_transform);
             const px0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.x))), 0);
             const py0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.y))), 0);
@@ -162,39 +212,404 @@ pub const CpuRenderer = struct {
                     const world = Vec2.new(@as(f32, @floatFromInt(col)) + 0.5, @as(f32, @floatFromInt(row)) + 0.5);
                     const local = inverse.applyPoint(world);
                     const paint = samplePathPaint(&picture.atlas, instance, instance.glyph_id, local);
+                    const cov = evalGlyphCoverage(
+                        page,
+                        local.x,
+                        local.y,
+                        ppe.x,
+                        ppe.y,
+                        info.band_entry,
+                        band_max_h,
+                        band_max_v,
+                        self.fill_rule,
+                    );
+                    if (cov < 1.0 / 255.0) continue;
+                    self.blendPremultipliedPixel(row, col, premultiplyCoverage(paint.color, cov), paint.apply_dither);
+                }
+            }
+        }
+    }
 
-                    if (self.subpixel_order == .none) {
-                        const cov = evalGlyphCoverage(
-                            page,
-                            local.x,
-                            local.y,
-                            epp.x,
-                            epp.y,
-                            ppe.x,
-                            ppe.y,
-                            info.band_entry,
-                            band_max_h,
-                            band_max_v,
-                            self.fill_rule,
-                        );
-                        if (cov < 1.0 / 255.0) continue;
-                        self.blendPremultipliedPixel(row, col, premultiplyCoverage(paint.color, cov), paint.apply_dither);
-                    } else {
-                        const cov = evalGlyphCoverageSubpixel(
-                            page,
-                            local.x,
-                            local.y,
-                            epp,
-                            ppe,
-                            info.band_entry,
-                            band_max_h,
-                            band_max_v,
-                            self.fill_rule,
-                            self.subpixel_order,
-                        );
-                        if (max3(cov.rgb) < 1.0 / 255.0) continue;
-                        self.blendSubpixelPixel(row, col, paint.color, cov.rgb, cov.alpha);
+    /// Register atlas pages so drawTextBatch can look up curve data by layer index.
+    // ── Unified renderer interface ──
+
+    pub fn uploadAtlases(self: *CpuRenderer, atlases: []const *const snail.Atlas, out_views: []snail.AtlasHandle) void {
+        var layer_base: u16 = 0;
+        var info_row_base: u32 = 0;
+        self.layer_info_count = 0;
+        for (out_views, atlases) |*v, a| {
+            v.* = .{ .atlas = a, .layer_base = layer_base, .info_row_base = @intCast(info_row_base) };
+            self.storeAtlasPages(a, layer_base, info_row_base);
+            layer_base += @intCast(a.pageCount());
+            info_row_base += a.layer_info_height;
+        }
+    }
+
+    pub fn uploadImages(_: *CpuRenderer, images: []const *const snail.Image, out_views: []snail.ImageHandle) void {
+        for (out_views, images) |*v, img| {
+            v.* = .{ .image = img };
+        }
+    }
+
+    pub fn drawText(self: *CpuRenderer, vertices: []const f32, _: snail.Mat4, _: f32, _: f32) void {
+        self.drawTextBatch(vertices);
+    }
+
+    pub fn drawPaths(self: *CpuRenderer, vertices: []const f32, _: snail.Mat4, _: f32, _: f32) void {
+        self.drawTextBatch(vertices);
+    }
+
+    pub fn beginFrame(_: *CpuRenderer) void {}
+
+    pub fn backendName(_: *const CpuRenderer) []const u8 {
+        return "CPU";
+    }
+
+    pub fn setCommandBuffer(_: *CpuRenderer, _: ?*anyopaque) void {}
+
+    // ── Atlas page storage (internal) ──
+
+    pub fn storeAtlasPages(self: *CpuRenderer, atlas: *const snail.Atlas, layer_base: u16, info_row_base: u32) void {
+        for (0..atlas.pageCount()) |i| {
+            const layer = layer_base + @as(u16, @intCast(i));
+            if (layer < self.atlas_pages.len) {
+                self.atlas_pages[layer] = atlas.page(@intCast(i));
+            }
+        }
+        if (atlas.layer_info_data) |lid| {
+            if (self.layer_info_count < MAX_LAYER_INFOS) {
+                self.layer_infos[self.layer_info_count] = .{
+                    .data = lid,
+                    .width = atlas.layer_info_width,
+                    .height = atlas.layer_info_height,
+                    .row_base = info_row_base,
+                };
+                self.layer_info_count += 1;
+            }
+        }
+    }
+
+    /// Render a text batch from packed vertex/instance data (same format as GPU path).
+    pub fn drawTextBatch(self: *CpuRenderer, vertices: []const f32) void {
+        const FLOATS = 20; // FLOATS_PER_INSTANCE
+        var i: usize = 0;
+        while (i + FLOATS <= vertices.len) : (i += FLOATS) {
+            const inst = vertices[i..][0..FLOATS];
+            self.renderBatchInstance(inst);
+        }
+    }
+
+    fn renderBatchInstance(self: *CpuRenderer, inst: *const [20]f32) void {
+        const bbox = snail.bezier.BBox{
+            .min = .{ .x = inst[0], .y = inst[1] },
+            .max = .{ .x = inst[2], .y = inst[3] },
+        };
+        const transform = Transform2D{
+            .xx = inst[4],
+            .xy = inst[5],
+            .yx = inst[6],
+            .yy = inst[7],
+            .tx = inst[8],
+            .ty = inst[9],
+        };
+        const gz: u32 = @bitCast(inst[10]);
+        const gw: u32 = @bitCast(inst[11]);
+        const color = srgbColorToLinear(.{ inst[16], inst[17], inst[18], inst[19] });
+
+        const atlas_layer_byte: u8 = @intCast(gw >> 24);
+
+        if (atlas_layer_byte == 0xFF) {
+            const layer_count: u16 = @intCast(gw & 0xFFFF);
+            const info_x: u16 = @intCast(gz & 0xFFFF);
+            const info_y: u16 = @intCast(gz >> 16);
+            const atlas_layer: u8 = @intFromFloat(inst[15]);
+
+            // Resolve the layer info for this info_y (handles multi-atlas row offsets).
+            const resolved = self.resolveLayerInfo(info_y) orelse return;
+            const first_tag = fetchLayerInfoTexel(resolved.data, resolved.width, info_x, resolved.local_y, 0)[3];
+            if (first_tag < 0.0) {
+                self.renderPathBatchLayers(bbox, transform, info_x, resolved.local_y, atlas_layer, resolved.data, resolved.width);
+            } else {
+                self.renderColrBatchLayers(bbox, transform, color, info_x, resolved.local_y, layer_count, resolved.data, resolved.width);
+            }
+            return;
+        }
+
+        // Regular glyph: decode band entry from vertex data.
+        const glyph_x: u16 = @intCast(gz & 0xFFFF);
+        const glyph_y: u16 = @intCast(gz >> 16);
+        const h_band_count: u16 = @intCast((gw & 0xFFFF) + 1);
+        const v_band_count: u16 = @intCast(((gw >> 16) & 0xFF) + 1);
+
+        const be = GlyphBandEntry{
+            .glyph_x = glyph_x,
+            .glyph_y = glyph_y,
+            .h_band_count = h_band_count,
+            .v_band_count = v_band_count,
+            .band_scale_x = inst[12],
+            .band_scale_y = inst[13],
+            .band_offset_x = inst[14],
+            .band_offset_y = inst[15],
+        };
+
+        const page = self.atlas_pages[atlas_layer_byte] orelse return;
+        self.renderTransformedGlyph(page, bbox, be, transform, color, transformPreservesSubpixelAxes(transform));
+    }
+
+    fn renderColrBatchLayers(
+        self: *CpuRenderer,
+        union_bbox: snail.bezier.BBox,
+        transform: Transform2D,
+        default_color: [4]f32,
+        info_x: u16,
+        info_y: u16,
+        layer_count: u16,
+        data: []const f32,
+        width: u32,
+    ) void {
+        for (0..layer_count) |layer_idx| {
+            const base = @as(u32, info_x) + @as(u32, @intCast(layer_idx)) * 3;
+            const t0_x = base % width;
+            const t0_y = @as(u32, info_y) + base / width;
+
+            // texel 0: (glyph_x, glyph_y, packed_bands, page_index)
+            const t0 = (t0_y * width + t0_x) * 4;
+            if (t0 + 3 >= data.len) return;
+            const glyph_x: u16 = @intFromFloat(data[t0 + 0]);
+            const glyph_y: u16 = @intFromFloat(data[t0 + 1]);
+            const band_packed: u32 = @bitCast(data[t0 + 2]);
+            const page_index: u16 = @intFromFloat(data[t0 + 3]);
+            const h_band_count: u16 = @intCast((band_packed & 0xFFFF) + 1);
+            const v_band_count: u16 = @intCast(((band_packed >> 16) & 0xFFFF) + 1);
+
+            // texel 1: (band_scale_x, band_scale_y, band_offset_x, band_offset_y)
+            const t1_base = base + 1;
+            const t1_x = t1_base % width;
+            const t1_y = @as(u32, info_y) + t1_base / width;
+            const t1 = (t1_y * width + t1_x) * 4;
+            if (t1 + 3 >= data.len) return;
+
+            // texel 2: (r, g, b, a) layer color
+            const t2_base = base + 2;
+            const t2_x = t2_base % width;
+            const t2_y = @as(u32, info_y) + t2_base / width;
+            const t2 = (t2_y * width + t2_x) * 4;
+            if (t2 + 3 >= data.len) return;
+            const layer_color = [4]f32{
+                data[t2 + 0], data[t2 + 1], data[t2 + 2], data[t2 + 3],
+            };
+            // Negative sentinel means use default color.
+            const color: [4]f32 = if (layer_color[0] < 0) default_color else srgbColorToLinear(layer_color);
+
+            const be = GlyphBandEntry{
+                .glyph_x = glyph_x,
+                .glyph_y = glyph_y,
+                .h_band_count = h_band_count,
+                .v_band_count = v_band_count,
+                .band_scale_x = data[t1 + 0],
+                .band_scale_y = data[t1 + 1],
+                .band_offset_x = data[t1 + 2],
+                .band_offset_y = data[t1 + 3],
+            };
+
+            if (be.h_band_count == 0 or be.v_band_count == 0) continue;
+            const page = self.atlas_pages[page_index] orelse continue;
+
+            // Use the union bbox for all layers (same as GPU path).
+            self.renderTransformedGlyph(page, union_bbox, be, transform, color, false);
+        }
+    }
+
+    fn renderPathBatchLayers(
+        self: *CpuRenderer,
+        union_bbox: snail.bezier.BBox,
+        transform: Transform2D,
+        info_x: u16,
+        info_y: u16,
+        atlas_layer: u8,
+        data: []const f32,
+        width: u32,
+    ) void {
+        const page = self.atlas_pages[atlas_layer] orelse return;
+
+        const first_info = fetchLayerInfoTexel(data, width, info_x, info_y, 0);
+        const tag: i32 = @intFromFloat(@round(-first_info[3]));
+
+        if (tag == 5) {
+            // Composite group: header at offset 0, then 6 texels per layer starting at offset 1.
+            const layer_count: u32 = @intCast(@as(i32, @intFromFloat(@round(first_info[0]))));
+            const composite_mode: i32 = @intFromFloat(@round(first_info[1]));
+
+            const inverse = inverseTransform(transform) orelse return;
+            const bounds = transformedGlyphBounds(union_bbox, transform);
+            const px0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.x))), 0);
+            const px1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.x))), @as(i32, @intCast(self.width)));
+            const py0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.y))), 0);
+            const py1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.y))), @as(i32, @intCast(self.height)));
+            if (px0 >= px1 or py0 >= py1) return;
+
+            const epp = glyphEdgePixelsPerPixel(inverse);
+            const ppe = Vec2.new(1.0 / epp.x, 1.0 / epp.y);
+
+            var row: u32 = @intCast(py0);
+            while (row < @as(u32, @intCast(py1))) : (row += 1) {
+                var col: u32 = @intCast(px0);
+                while (col < @as(u32, @intCast(px1))) : (col += 1) {
+                    const world = Vec2.new(@as(f32, @floatFromInt(col)) + 0.5, @as(f32, @floatFromInt(row)) + 0.5);
+                    const local = inverse.applyPoint(world);
+
+                    var result = [4]f32{ 0, 0, 0, 0 };
+                    var fill_cov: f32 = 0;
+                    var stroke_cov: f32 = 0;
+                    var fill_paint = [4]f32{ 0, 0, 0, 0 };
+                    var stroke_paint = [4]f32{ 0, 0, 0, 0 };
+
+                    for (0..layer_count) |l| {
+                        const layer_offset: u32 = 1 + @as(u32, @intCast(l)) * 6;
+                        const info = fetchLayerInfoTexel(data, width, info_x, info_y, layer_offset);
+                        const band = fetchLayerInfoTexel(data, width, info_x, info_y, layer_offset + 1);
+                        const band_packed: u32 = @bitCast(info[2]);
+                        const be = GlyphBandEntry{
+                            .glyph_x = @intFromFloat(info[0]),
+                            .glyph_y = @intFromFloat(info[1]),
+                            .h_band_count = @intCast((band_packed & 0xFFFF) + 1),
+                            .v_band_count = @intCast(((band_packed >> 16) & 0xFFFF) + 1),
+                            .band_scale_x = band[0],
+                            .band_scale_y = band[1],
+                            .band_offset_x = band[2],
+                            .band_offset_y = band[3],
+                        };
+                        const band_max_h: i32 = @as(i32, @intCast(be.h_band_count)) - 1;
+                        const band_max_v: i32 = @as(i32, @intCast(be.v_band_count)) - 1;
+                        const cov = evalGlyphCoverage(page, local.x, local.y, ppe.x, ppe.y, be, band_max_h, band_max_v, self.fill_rule);
+                        const paint = samplePathPaintFromLayerInfo(data, width, info_x, info_y, layer_offset, local);
+
+                        if (composite_mode == 1 and layer_count >= 2 and l < 2) {
+                            if (l == 0) {
+                                fill_cov = cov;
+                                fill_paint = paint.color;
+                            } else {
+                                stroke_cov = cov;
+                                stroke_paint = paint.color;
+                            }
+                            continue;
+                        }
+                        const premul = premultiplyCoverage(paint.color, cov);
+                        result = compositeOver(premul, result);
                     }
+
+                    if (composite_mode == 1 and layer_count >= 2) {
+                        const border_cov = @min(fill_cov, stroke_cov);
+                        const interior_cov = @max(fill_cov - border_cov, 0.0);
+                        const combined = addColors(premultiplyCoverage(fill_paint, interior_cov), premultiplyCoverage(stroke_paint, border_cov));
+                        result = compositeOver(combined, result);
+                    }
+
+                    if (result[3] < 1.0 / 255.0) continue;
+                    self.blendPremultipliedPixel(row, col, result, false);
+                }
+            }
+        } else {
+            // Single-layer path paint.
+            const band_packed: u32 = @bitCast(first_info[2]);
+            const be = GlyphBandEntry{
+                .glyph_x = @intFromFloat(first_info[0]),
+                .glyph_y = @intFromFloat(first_info[1]),
+                .h_band_count = @intCast((band_packed & 0xFFFF) + 1),
+                .v_band_count = @intCast(((band_packed >> 16) & 0xFFFF) + 1),
+                .band_scale_x = fetchLayerInfoTexel(data, width, info_x, info_y, 1)[0],
+                .band_scale_y = fetchLayerInfoTexel(data, width, info_x, info_y, 1)[1],
+                .band_offset_x = fetchLayerInfoTexel(data, width, info_x, info_y, 1)[2],
+                .band_offset_y = fetchLayerInfoTexel(data, width, info_x, info_y, 1)[3],
+            };
+
+            const inverse = inverseTransform(transform) orelse return;
+            const bounds = transformedGlyphBounds(union_bbox, transform);
+            const px0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.x))), 0);
+            const px1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.x))), @as(i32, @intCast(self.width)));
+            const py0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.y))), 0);
+            const py1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.y))), @as(i32, @intCast(self.height)));
+            if (px0 >= px1 or py0 >= py1) return;
+
+            const epp = glyphEdgePixelsPerPixel(inverse);
+            const ppe = Vec2.new(1.0 / epp.x, 1.0 / epp.y);
+            const band_max_h: i32 = @as(i32, @intCast(be.h_band_count)) - 1;
+            const band_max_v: i32 = @as(i32, @intCast(be.v_band_count)) - 1;
+
+            var row: u32 = @intCast(py0);
+            while (row < @as(u32, @intCast(py1))) : (row += 1) {
+                var col: u32 = @intCast(px0);
+                while (col < @as(u32, @intCast(px1))) : (col += 1) {
+                    const world = Vec2.new(@as(f32, @floatFromInt(col)) + 0.5, @as(f32, @floatFromInt(row)) + 0.5);
+                    const local = inverse.applyPoint(world);
+                    const cov = evalGlyphCoverage(page, local.x, local.y, ppe.x, ppe.y, be, band_max_h, band_max_v, self.fill_rule);
+                    if (cov < 1.0 / 255.0) continue;
+                    const paint = samplePathPaintFromLayerInfo(data, width, info_x, info_y, 0, local);
+                    self.blendPremultipliedPixel(row, col, premultiplyCoverage(paint.color, cov), paint.apply_dither);
+                }
+            }
+        }
+    }
+
+    fn renderTransformedGlyph(
+        self: *CpuRenderer,
+        page: *const snail.AtlasPage,
+        bbox: snail.bezier.BBox,
+        be: GlyphBandEntry,
+        transform: Transform2D,
+        color: [4]f32,
+        allow_subpixel: bool,
+    ) void {
+        const inverse = inverseTransform(transform) orelse return;
+        const bounds = transformedGlyphBounds(bbox, transform);
+
+        const px0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.x))), 0);
+        const px1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.x))), @as(i32, @intCast(self.width)));
+        const py0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.y))), 0);
+        const py1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.y))), @as(i32, @intCast(self.height)));
+        if (px0 >= px1 or py0 >= py1) return;
+
+        const epp = glyphEdgePixelsPerPixel(inverse);
+        const ppe = Vec2.new(1.0 / epp.x, 1.0 / epp.y);
+        const band_max_h: i32 = @as(i32, @intCast(be.h_band_count)) - 1;
+        const band_max_v: i32 = @as(i32, @intCast(be.v_band_count)) - 1;
+
+        var row: u32 = @intCast(py0);
+        while (row < @as(u32, @intCast(py1))) : (row += 1) {
+            var col: u32 = @intCast(px0);
+            while (col < @as(u32, @intCast(px1))) : (col += 1) {
+                const world = Vec2.new(@as(f32, @floatFromInt(col)) + 0.5, @as(f32, @floatFromInt(row)) + 0.5);
+                const local = inverse.applyPoint(world);
+
+                if (!allow_subpixel or self.subpixel_order == .none) {
+                    const cov = evalGlyphCoverage(
+                        page,
+                        local.x,
+                        local.y,
+                        ppe.x,
+                        ppe.y,
+                        be,
+                        band_max_h,
+                        band_max_v,
+                        self.fill_rule,
+                    );
+                    if (cov < 1.0 / 255.0) continue;
+                    self.blendPremultipliedPixel(row, col, premultiplyCoverage(color, cov), false);
+                } else {
+                    const cov = evalGlyphCoverageSubpixel(
+                        page,
+                        local.x,
+                        local.y,
+                        epp,
+                        ppe,
+                        be,
+                        band_max_h,
+                        band_max_v,
+                        self.fill_rule,
+                        self.subpixel_order,
+                    );
+                    if (max3(cov.rgb) < 1.0 / 255.0) continue;
+                    self.blendSubpixelPixel(row, col, color, cov.rgb, cov.alpha);
                 }
             }
         }
@@ -202,7 +617,7 @@ pub const CpuRenderer = struct {
 
     /// Render a single glyph using the Slug algorithm (CPU evaluation).
     /// Same inputs as snail.Batch.addGlyph -- uses atlas curve/band data.
-    pub fn drawGlyph(
+    fn drawGlyph(
         self: *CpuRenderer,
         atlas: *const snail.Atlas,
         font: *const snail.Font,
@@ -216,7 +631,7 @@ pub const CpuRenderer = struct {
         self.drawGlyphId(atlas, gid, x, y, font_size, color);
     }
 
-    pub fn drawGlyphId(
+    fn drawGlyphId(
         self: *CpuRenderer,
         atlas: *const snail.Atlas,
         glyph_id: u16,
@@ -225,12 +640,25 @@ pub const CpuRenderer = struct {
         font_size: f32,
         color: [4]f32,
     ) void {
-        if (glyph_id == 0) return;
-        const info = atlas.getGlyph(glyph_id) orelse return;
-        self.drawGlyphInfo(atlas, info, x, y, font_size, color);
+        self.drawGlyphIdLinear(atlas, glyph_id, x, y, font_size, srgbColorToLinear(color), true);
     }
 
-    pub fn drawGlyphInfo(
+    fn drawGlyphIdLinear(
+        self: *CpuRenderer,
+        atlas: *const snail.Atlas,
+        glyph_id: u16,
+        x: f32,
+        y: f32,
+        font_size: f32,
+        color: [4]f32,
+        allow_subpixel: bool,
+    ) void {
+        if (glyph_id == 0) return;
+        const info = atlas.getGlyph(glyph_id) orelse return;
+        self.drawGlyphInfoLinear(atlas, info, x, y, font_size, color, allow_subpixel);
+    }
+
+    fn drawGlyphInfo(
         self: *CpuRenderer,
         atlas: *const snail.Atlas,
         info: snail.Atlas.GlyphInfo,
@@ -239,14 +667,27 @@ pub const CpuRenderer = struct {
         font_size: f32,
         color: [4]f32,
     ) void {
+        self.drawGlyphInfoLinear(atlas, info, x, y, font_size, srgbColorToLinear(color), true);
+    }
+
+    fn drawGlyphInfoLinear(
+        self: *CpuRenderer,
+        atlas: *const snail.Atlas,
+        info: snail.Atlas.GlyphInfo,
+        x: f32,
+        y: f32,
+        font_size: f32,
+        color: [4]f32,
+        allow_subpixel: bool,
+    ) void {
         if (info.band_entry.h_band_count == 0 or info.band_entry.v_band_count == 0) return;
-        self.renderGlyphInternal(atlas, info, x, y, font_size, color);
+        self.renderGlyphInternal(atlas, info, x, y, font_size, color, allow_subpixel);
     }
 
     /// Lay out and render a UTF-8 string. Uses HarfBuzz for shaping when
     /// available, falling back to basic cmap + kerning. Returns advance
     /// width in pixels. Coordinates use top-left origin (y down).
-    pub fn drawText(
+    fn drawString(
         self: *CpuRenderer,
         atlas: *const snail.Atlas,
         font: *const snail.Font,
@@ -352,6 +793,8 @@ pub const CpuRenderer = struct {
         font_size: f32,
         color: [4]f32,
     ) void {
+        const default_color = srgbColorToLinear(color);
+
         // COLR base glyph (multi-layer rendered as single quad on GPU, per-layer on CPU)
         if (atlas.colr_base_map) |cbm| {
             if (cbm.get(glyph_id)) |_| {
@@ -359,8 +802,8 @@ pub const CpuRenderer = struct {
                 while (layer_it.next()) |layer| {
                     const linfo = atlas.getGlyph(layer.glyph_id) orelse continue;
                     if (linfo.band_entry.h_band_count == 0 or linfo.band_entry.v_band_count == 0) continue;
-                    const lcolor: [4]f32 = if (layer.color[0] < 0) color else layer.color;
-                    self.drawGlyphInfo(atlas, linfo, x, y, font_size, lcolor);
+                    const lcolor: [4]f32 = if (layer.color[0] < 0) default_color else srgbColorToLinear(layer.color);
+                    self.drawGlyphInfoLinear(atlas, linfo, x, y, font_size, lcolor, false);
                 }
                 return;
             }
@@ -372,14 +815,14 @@ pub const CpuRenderer = struct {
             while (layer_it.next()) |layer| {
                 const linfo = atlas.getGlyph(layer.glyph_id) orelse continue;
                 if (linfo.band_entry.h_band_count == 0 or linfo.band_entry.v_band_count == 0) continue;
-                const lcolor: [4]f32 = if (layer.color[0] < 0) color else layer.color;
-                self.drawGlyphInfo(atlas, linfo, x, y, font_size, lcolor);
+                const lcolor: [4]f32 = if (layer.color[0] < 0) default_color else srgbColorToLinear(layer.color);
+                self.drawGlyphInfoLinear(atlas, linfo, x, y, font_size, lcolor, false);
             }
             return;
         }
 
         // Plain glyph
-        self.drawGlyphId(atlas, glyph_id, x, y, font_size, color);
+        self.drawGlyphIdLinear(atlas, glyph_id, x, y, font_size, default_color, true);
     }
 
     fn renderGlyphInternal(
@@ -390,6 +833,7 @@ pub const CpuRenderer = struct {
         y: f32,
         font_size: f32,
         color: [4]f32,
+        allow_subpixel: bool,
     ) void {
         const be = info.band_entry;
         const bbox = info.bbox;
@@ -438,13 +882,11 @@ pub const CpuRenderer = struct {
                 const em_x = (px_f - x) / scale;
                 const em_y = (y - py_f) / scale;
 
-                if (self.subpixel_order == .none) {
+                if (!allow_subpixel or self.subpixel_order == .none) {
                     const cov = evalGlyphCoverage(
                         page,
                         em_x,
                         em_y,
-                        epp_x,
-                        epp_y,
                         ppe_x,
                         ppe_y,
                         be,
@@ -557,6 +999,13 @@ fn transformedGlyphBounds(bbox: snail.BBox, transform: Transform2D) struct { min
     return .{ .min = min, .max = max };
 }
 
+fn transformPreservesSubpixelAxes(transform: Transform2D) bool {
+    return @abs(transform.xy) <= 1e-5 and
+        @abs(transform.yx) <= 1e-5 and
+        @abs(transform.xx) > 1e-6 and
+        @abs(transform.yy) > 1e-6;
+}
+
 fn glyphEdgePixelsPerPixel(inverse: Transform2D) Vec2 {
     return .{
         .x = @max(@abs(inverse.xx) + @abs(inverse.xy), 1.0 / 65536.0),
@@ -570,6 +1019,56 @@ fn fetchLayerInfoTexel(data: []const f32, width: u32, info_x: u16, info_y: u16, 
     const y = @as(u32, info_y) + texel / width;
     const base = (y * width + x) * 4;
     return .{ data[base + 0], data[base + 1], data[base + 2], data[base + 3] };
+}
+
+fn samplePathPaintFromLayerInfo(data: []const f32, width: u32, info_x: u16, info_y: u16, record_offset: u32, local: Vec2) PathPaintSample {
+    const info = fetchLayerInfoTexel(data, width, info_x, info_y, record_offset);
+    const tag: i32 = @intFromFloat(@round(-info[3]));
+    const data0 = fetchLayerInfoTexel(data, width, info_x, info_y, record_offset + 2);
+    switch (tag) {
+        1 => return .{ .color = srgbColorToLinear(data0) },
+        2 => {
+            const color0 = fetchLayerInfoTexel(data, width, info_x, info_y, record_offset + 3);
+            const color1 = fetchLayerInfoTexel(data, width, info_x, info_y, record_offset + 4);
+            const extra = fetchLayerInfoTexel(data, width, info_x, info_y, record_offset + 5);
+            const start = Vec2.new(data0[0], data0[1]);
+            const end = Vec2.new(data0[2], data0[3]);
+            const delta = Vec2.sub(end, start);
+            const len_sq = Vec2.dot(delta, delta);
+            var t: f32 = 0.0;
+            if (len_sq > 1e-10) t = Vec2.dot(Vec2.sub(local, start), delta) / len_sq;
+            return .{
+                .color = lerpColor(color0, color1, wrapPaintT(t, paintExtendFromFloat(extra[0]))),
+                .apply_dither = true,
+            };
+        },
+        3 => {
+            const color0 = fetchLayerInfoTexel(data, width, info_x, info_y, record_offset + 3);
+            const color1 = fetchLayerInfoTexel(data, width, info_x, info_y, record_offset + 4);
+            const center = Vec2.new(data0[0], data0[1]);
+            const radius = @max(@abs(data0[2]), 1.0 / 65536.0);
+            const t = Vec2.length(Vec2.sub(local, center)) / radius;
+            return .{
+                .color = lerpColor(color0, color1, wrapPaintT(t, paintExtendFromFloat(data0[3]))),
+                .apply_dither = true,
+            };
+        },
+        else => return .{ .color = .{ 1, 0, 1, 1 } },
+    }
+}
+
+fn compositeOver(src: [4]f32, dst: [4]f32) [4]f32 {
+    const inv_a = 1.0 - src[3];
+    return .{
+        src[0] + dst[0] * inv_a,
+        src[1] + dst[1] * inv_a,
+        src[2] + dst[2] * inv_a,
+        src[3] + dst[3] * inv_a,
+    };
+}
+
+fn addColors(a: [4]f32, b: [4]f32) [4]f32 {
+    return .{ a[0] + b[0], a[1] + b[1], a[2] + b[2], a[3] + b[3] };
 }
 
 fn wrapPaintT(t: f32, extend_mode: snail.PaintExtend) f32 {
@@ -646,7 +1145,7 @@ fn samplePathPaintAt(atlas: *const snail.Atlas, info_x: u16, info_y: u16, glyph_
 
     const data0 = fetchLayerInfoTexel(data, width, info_x, info_y, 2);
     switch (tag) {
-        1 => return .{ .color = data0 },
+        1 => return .{ .color = srgbColorToLinear(data0) },
         2 => {
             const color0 = fetchLayerInfoTexel(data, width, info_x, info_y, 3);
             const color1 = fetchLayerInfoTexel(data, width, info_x, info_y, 4);
@@ -682,7 +1181,7 @@ fn samplePathPaintAt(atlas: *const snail.Atlas, info_x: u16, info_y: u16, glyph_
             // Fill paint data starts at offset 3 (header=0, sub-record band info=1,2, paint data=3+)
             const fill_data0 = fetchLayerInfoTexel(data, width, info_x, info_y, 3);
             switch (fill_tag) {
-                1 => return .{ .color = fill_data0 },
+                1 => return .{ .color = srgbColorToLinear(fill_data0) },
                 2 => {
                     const color0 = fetchLayerInfoTexel(data, width, info_x, info_y, 4);
                     const color1 = fetchLayerInfoTexel(data, width, info_x, info_y, 5);
@@ -810,34 +1309,29 @@ fn resolveCoverage(horiz: CoveragePair, vert: CoveragePair, fill_rule: FillRule)
     return clamp01(cov);
 }
 
-fn blendSubpixel(cw_r: CoveragePair, cw_g: CoveragePair, cw_b: CoveragePair, cw_o: CoveragePair, fill_rule: FillRule) SubpixelCoverage {
-    const wsum_r = cw_r.wgt + cw_o.wgt;
-    const wsum_g = cw_g.wgt + cw_o.wgt;
-    const wsum_b = cw_b.wgt + cw_o.wgt;
-    const blend_r = cw_r.cov * cw_r.wgt + cw_o.cov * cw_o.wgt;
-    const blend_g = cw_g.cov * cw_g.wgt + cw_o.cov * cw_o.wgt;
-    const blend_b = cw_b.cov * cw_b.wgt + cw_o.cov * cw_o.wgt;
-    const alpha_wsum = cw_g.wgt + cw_o.wgt;
-    const alpha_blended = cw_g.cov * cw_g.wgt + cw_o.cov * cw_o.wgt;
+fn blendSubpixelSample(cw_s: CoveragePair, cw_o: CoveragePair, fill_rule: FillRule) f32 {
+    const wsum = cw_s.wgt + cw_o.wgt;
+    const blended = cw_s.cov * cw_s.wgt + cw_o.cov * cw_o.wgt;
+    return clamp01(@max(
+        applyFillRule(fill_rule, blended / @max(wsum, 1.0 / 65536.0)),
+        @min(applyFillRule(fill_rule, cw_s.cov), applyFillRule(fill_rule, cw_o.cov)),
+    ));
+}
+
+fn filterSubpixelCoverage(s_m3: f32, s_m2: f32, s_m1: f32, s_0: f32, s_p1: f32, s_p2: f32, s_p3: f32, reverse_order: bool) SubpixelCoverage {
+    const w0 = 18.0 / 256.0;
+    const w1 = 67.0 / 256.0;
+    const w2 = 86.0 / 256.0;
+    const left = w0 * s_m3 + w1 * s_m2 + w2 * s_m1 + w1 * s_0 + w0 * s_p1;
+    const center = w0 * s_m2 + w1 * s_m1 + w2 * s_0 + w1 * s_p1 + w0 * s_p2;
+    const right = w0 * s_m1 + w1 * s_0 + w2 * s_p1 + w1 * s_p2 + w0 * s_p3;
+    const rgb = if (reverse_order)
+        [3]f32{ clamp01(right), clamp01(center), clamp01(left) }
+    else
+        [3]f32{ clamp01(left), clamp01(center), clamp01(right) };
     return .{
-        .rgb = .{
-            clamp01(@max(
-                applyFillRule(fill_rule, blend_r / @max(wsum_r, 1.0 / 65536.0)),
-                @min(applyFillRule(fill_rule, cw_r.cov), applyFillRule(fill_rule, cw_o.cov)),
-            )),
-            clamp01(@max(
-                applyFillRule(fill_rule, blend_g / @max(wsum_g, 1.0 / 65536.0)),
-                @min(applyFillRule(fill_rule, cw_g.cov), applyFillRule(fill_rule, cw_o.cov)),
-            )),
-            clamp01(@max(
-                applyFillRule(fill_rule, blend_b / @max(wsum_b, 1.0 / 65536.0)),
-                @min(applyFillRule(fill_rule, cw_b.cov), applyFillRule(fill_rule, cw_o.cov)),
-            )),
-        },
-        .alpha = clamp01(@max(
-            applyFillRule(fill_rule, alpha_blended / @max(alpha_wsum, 1.0 / 65536.0)),
-            @min(applyFillRule(fill_rule, cw_g.cov), applyFillRule(fill_rule, cw_o.cov)),
-        )),
+        .rgb = rgb,
+        .alpha = clamp01((rgb[0] + rgb[1] + rgb[2]) * (1.0 / 3.0)),
     };
 }
 
@@ -1110,8 +1604,6 @@ fn evalGlyphCoverage(
     page: *const snail.AtlasPage,
     em_x: f32,
     em_y: f32,
-    epp_x: f32,
-    epp_y: f32,
     ppe_x: f32,
     ppe_y: f32,
     be: GlyphBandEntry,
@@ -1119,8 +1611,6 @@ fn evalGlyphCoverage(
     band_max_v: i32,
     fill_rule: FillRule,
 ) f32 {
-    _ = epp_x;
-    _ = epp_y;
     const state = initGlyphBandState(page, em_x, em_y, be, band_max_h, band_max_v);
     return resolveCoverage(
         evalGlyphHorizCoverage(page, Vec2.new(em_x, em_y), 0.0, ppe_x, state),
@@ -1147,23 +1637,31 @@ fn evalGlyphCoverageSubpixel(
         .rgb, .bgr => blk: {
             const s: f32 = if (subpixel_order == .bgr) -1.0 else 1.0;
             const sp = epp.x / 3.0;
-            break :blk blendSubpixel(
-                evalGlyphHorizCoverage(page, rc, -sp * s, ppe.x, state),
-                evalGlyphHorizCoverage(page, rc, 0.0, ppe.x, state),
-                evalGlyphHorizCoverage(page, rc, sp * s, ppe.x, state),
-                evalGlyphVertCoverage(page, rc, 0.0, ppe.y, state),
-                fill_rule,
+            const cw_v = evalGlyphVertCoverage(page, rc, 0.0, ppe.y, state);
+            break :blk filterSubpixelCoverage(
+                blendSubpixelSample(evalGlyphHorizCoverage(page, rc, -3.0 * sp * s, ppe.x, state), cw_v, fill_rule),
+                blendSubpixelSample(evalGlyphHorizCoverage(page, rc, -2.0 * sp * s, ppe.x, state), cw_v, fill_rule),
+                blendSubpixelSample(evalGlyphHorizCoverage(page, rc, -1.0 * sp * s, ppe.x, state), cw_v, fill_rule),
+                blendSubpixelSample(evalGlyphHorizCoverage(page, rc, 0.0, ppe.x, state), cw_v, fill_rule),
+                blendSubpixelSample(evalGlyphHorizCoverage(page, rc, 1.0 * sp * s, ppe.x, state), cw_v, fill_rule),
+                blendSubpixelSample(evalGlyphHorizCoverage(page, rc, 2.0 * sp * s, ppe.x, state), cw_v, fill_rule),
+                blendSubpixelSample(evalGlyphHorizCoverage(page, rc, 3.0 * sp * s, ppe.x, state), cw_v, fill_rule),
+                subpixel_order == .bgr,
             );
         },
         .vrgb, .vbgr => blk: {
             const s: f32 = if (subpixel_order == .vbgr) -1.0 else 1.0;
             const sp = epp.y / 3.0;
-            break :blk blendSubpixel(
-                evalGlyphVertCoverage(page, rc, -sp * s, ppe.y, state),
-                evalGlyphVertCoverage(page, rc, 0.0, ppe.y, state),
-                evalGlyphVertCoverage(page, rc, sp * s, ppe.y, state),
-                evalGlyphHorizCoverage(page, rc, 0.0, ppe.x, state),
-                fill_rule,
+            const cw_h = evalGlyphHorizCoverage(page, rc, 0.0, ppe.x, state);
+            break :blk filterSubpixelCoverage(
+                blendSubpixelSample(evalGlyphVertCoverage(page, rc, -3.0 * sp * s, ppe.y, state), cw_h, fill_rule),
+                blendSubpixelSample(evalGlyphVertCoverage(page, rc, -2.0 * sp * s, ppe.y, state), cw_h, fill_rule),
+                blendSubpixelSample(evalGlyphVertCoverage(page, rc, -1.0 * sp * s, ppe.y, state), cw_h, fill_rule),
+                blendSubpixelSample(evalGlyphVertCoverage(page, rc, 0.0, ppe.y, state), cw_h, fill_rule),
+                blendSubpixelSample(evalGlyphVertCoverage(page, rc, 1.0 * sp * s, ppe.y, state), cw_h, fill_rule),
+                blendSubpixelSample(evalGlyphVertCoverage(page, rc, 2.0 * sp * s, ppe.y, state), cw_h, fill_rule),
+                blendSubpixelSample(evalGlyphVertCoverage(page, rc, 3.0 * sp * s, ppe.y, state), cw_h, fill_rule),
+                subpixel_order == .vbgr,
             );
         },
         .none => .{ .rgb = .{ 0.0, 0.0, 0.0 }, .alpha = 0.0 },
@@ -1891,6 +2389,38 @@ test "cpu renderer premultiplies translucent path fill" {
     try testing.expect(buf[inside + 3] <= 128);
 }
 
+test "cpu renderer decodes translucent sRGB solid path colors before blending" {
+    const testing = std.testing;
+
+    const width: u32 = 40;
+    const height: u32 = 28;
+    const stride = width * 4;
+    const buf = try testing.allocator.alloc(u8, stride * height);
+    defer testing.allocator.free(buf);
+
+    var renderer = CpuRenderer.init(buf.ptr, width, height, stride);
+    renderer.clear(0, 0, 0, 0);
+
+    var builder = snail.PathPictureBuilder.init(testing.allocator);
+    defer builder.deinit();
+    try builder.addFilledRect(.{ .x = 8, .y = 6, .w = 16, .h = 10 }, .{
+        .color = .{ 0.5, 0.5, 0.5, 0.5 },
+    }, .identity);
+
+    var picture = try builder.freeze(testing.allocator);
+    defer picture.deinit();
+
+    renderer.drawPathPicture(&picture);
+
+    const inside = ((11 * stride) + (14 * 4));
+    try testing.expect(buf[inside + 0] >= 91);
+    try testing.expect(buf[inside + 0] <= 93);
+    try testing.expectEqual(buf[inside + 0], buf[inside + 1]);
+    try testing.expectEqual(buf[inside + 1], buf[inside + 2]);
+    try testing.expect(buf[inside + 3] >= 126);
+    try testing.expect(buf[inside + 3] <= 128);
+}
+
 test "cpu renderer renders collapsed inside stroke" {
     const testing = std.testing;
 
@@ -1988,4 +2518,57 @@ test "cpu renderer fills both demo eye stalks" {
         }
         try testing.expect(max_alpha > 180);
     }
+}
+
+test "cpu renderer drawPaths batch matches drawPathPicture" {
+    const testing = std.testing;
+
+    const width: u32 = 48;
+    const height: u32 = 32;
+    const stride = width * 4;
+
+    // Render via drawPathPicture (reference)
+    const ref_buf = try testing.allocator.alloc(u8, stride * height);
+    defer testing.allocator.free(ref_buf);
+    var ref_renderer = CpuRenderer.init(ref_buf.ptr, width, height, stride);
+    ref_renderer.clear(0, 0, 0, 0);
+    ref_renderer.setSubpixelOrder(.rgb);
+
+    var builder = snail.PathPictureBuilder.init(testing.allocator);
+    defer builder.deinit();
+    try builder.addFilledRect(.{ .x = 8, .y = 6, .w = 18, .h = 12 }, .{
+        .color = .{ 1, 0, 0, 1 },
+    }, .identity);
+
+    var picture = try builder.freeze(testing.allocator);
+    defer picture.deinit();
+
+    ref_renderer.drawPathPicture(&picture);
+
+    // Render via drawPaths batch (new path)
+    const batch_buf = try testing.allocator.alloc(u8, stride * height);
+    defer testing.allocator.free(batch_buf);
+    var batch_renderer = CpuRenderer.init(batch_buf.ptr, width, height, stride);
+    batch_renderer.clear(0, 0, 0, 0);
+    batch_renderer.setSubpixelOrder(.rgb);
+
+    const atlases = [1]*const snail.Atlas{&picture.atlas};
+    var views: [1]snail.AtlasHandle = undefined;
+    batch_renderer.uploadAtlases(&atlases, &views);
+
+    var path_vertex_buf: [snail.PATH_FLOATS_PER_SHAPE * 4]f32 = undefined;
+    var batch = snail.PathBatch.init(&path_vertex_buf);
+    _ = batch.addPicture(&views[0], &picture);
+
+    batch_renderer.drawPaths(batch.slice(), snail.Mat4.identity, 0, 0);
+
+    // Compare: the inside pixel should match
+    const inside = ((12 * stride) + (16 * 4));
+    try testing.expect(ref_buf[inside + 0] > 200); // sanity: reference renders red
+    try testing.expect(batch_buf[inside + 0] > 200); // batch should also render red
+    try testing.expect(batch_buf[inside + 3] > 200);
+
+    const outside = ((2 * stride) + (2 * 4));
+    try testing.expectEqual(@as(u8, 0), batch_buf[outside + 0]);
+    try testing.expectEqual(@as(u8, 0), batch_buf[outside + 3]);
 }
