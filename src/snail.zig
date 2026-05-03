@@ -26,16 +26,15 @@
 //!
 //!   var text_atlas = try snail.TextAtlas.init(allocator, &.{.{ .data = ttf_bytes }});
 //!   defer text_atlas.deinit();
-//!   var shaped = try text_atlas.shapeText(allocator, .{}, "Hello");
-//!   defer shaped.deinit();
-//!   if (try text_atlas.ensureShaped(&shaped)) |next| {
+//!   if (try text_atlas.ensureText(.{}, "Hello")) |next| {
 //!       text_atlas.deinit();
 //!       text_atlas = next;
 //!   }
 //!
-//!   var text_blob = try snail.TextBlob.fromShaped(allocator, &text_atlas, &shaped, .{
-//!       .x = 40, .y = 80, .size = 24, .color = .{ 0, 0, 0, 1 },
-//!   });
+//!   var builder = snail.TextBlobBuilder.init(allocator, &text_atlas);
+//!   defer builder.deinit();
+//!   _ = try builder.addText(.{}, "Hello", 40, 80, 24, .{ 0, 0, 0, 1 });
+//!   var text_blob = try builder.finish();
 //!   defer text_blob.deinit();
 //!
 //!   var scene = snail.Scene.init(allocator);
@@ -53,7 +52,7 @@
 //!   const options = snail.DrawOptions{ .mvp = snail.Mat4.identity, .target = .{
 //!       .pixel_width = 1280, .pixel_height = 720, .subpixel_order = .rgb,
 //!   } };
-//!   var buf = try allocator.alloc(f32, snail.DrawList.estimate(&scene, options));
+//!   var buf = try allocator.alloc(u32, snail.DrawList.estimate(&scene, options));
 //!   var segments = try allocator.alloc(snail.DrawSegment, snail.DrawList.estimateSegments(&scene, options));
 //!   defer allocator.free(buf);
 //!   defer allocator.free(segments);
@@ -67,7 +66,6 @@ const glyph_emit = @import("glyph_emit.zig");
 const fonts_mod = @import("fonts.zig");
 const ttf = @import("font/ttf.zig");
 const opentype = @import("font/opentype.zig");
-const text_hinting = @import("text_hinting.zig");
 // Internal modules — not part of the public API surface. Exposed for internal
 // tools (e.g. cpu_renderer) that need raw curve/texture data access.
 pub const bezier = @import("math/bezier.zig");
@@ -145,10 +143,6 @@ pub const TextCoverageShader = struct {
         \\
         \\#define SNAIL_FILL_RULE u_fill_rule
         \\
-        \\vec4 v_hint_src = vec4(1.0, 0.0, 1.0, 0.0);
-        \\vec4 v_hint_dst = vec4(1.0, 0.0, 1.0, 0.0);
-        \\vec2 v_hint_bounds = vec2(0.0, 1.0);
-        \\
     ;
     pub const glsl330_coverage_functions = pipeline.text_coverage_fragment_body;
     pub const glsl330_fragment_body =
@@ -157,8 +151,10 @@ pub const TextCoverageShader = struct {
         \\float snail_text_coverage() {
         \\    int atlas_layer = (v_glyph.w >> 8) & 0xFF;
         \\    if (atlas_layer == 0xFF) return 0.0;
-        \\    vec2 rc = hintedLocalCoord(v_texcoord);
-        \\    vec2 ppe = 1.0 / max(fwidth(rc), vec2(1.0 / 65536.0));
+        \\    vec2 rc = v_texcoord;
+        \\    vec2 dx = vec2(dFdx(rc.x), dFdy(rc.x));
+        \\    vec2 dy = vec2(dFdx(rc.y), dFdy(rc.y));
+        \\    vec2 ppe = vec2(1.0 / max(length(dx), 1.0 / 65536.0), 1.0 / max(length(dy), 1.0 / 65536.0));
         \\    return evalGlyphCoverage(rc, ppe, v_glyph.xy,
         \\                             ivec2(v_glyph.z, v_glyph.w & 0xFF),
         \\                             v_banding, atlas_layer);
@@ -196,7 +192,7 @@ pub const TextCoverageOptions = struct {
 /// PreparedResources.
 pub const TextCoverageRecords = struct {
     allocator: std.mem.Allocator,
-    vertices: []f32 = &.{},
+    vertices: []u32 = &.{},
     atlas: ?*const TextAtlas = null,
     atlas_stamp: ResourceStamp = .{},
 
@@ -210,10 +206,10 @@ pub const TextCoverageRecords = struct {
     }
 
     pub fn glyphCount(self: *const TextCoverageRecords) usize {
-        return self.vertices.len / TEXT_FLOATS_PER_GLYPH;
+        return self.vertices.len / TEXT_WORDS_PER_GLYPH;
     }
 
-    pub fn slice(self: *const TextCoverageRecords) []const f32 {
+    pub fn slice(self: *const TextCoverageRecords) []const u32 {
         return self.vertices;
     }
 
@@ -224,7 +220,7 @@ pub const TextCoverageRecords = struct {
         options: TextCoverageOptions,
     ) !void {
         const atlas_view = try prepared.textAtlasView(blob.atlas);
-        const scratch = try self.allocator.alloc(f32, @max(blob.instance_count_hint, 1) * TEXT_FLOATS_PER_GLYPH);
+        const scratch = try self.allocator.alloc(u32, @max(blob.instance_count_hint, 1) * TEXT_WORDS_PER_GLYPH);
         defer self.allocator.free(scratch);
 
         var batch = TextBatch.init(scratch);
@@ -238,7 +234,7 @@ pub const TextCoverageRecords = struct {
         );
 
         if (self.vertices.len > 0) self.allocator.free(self.vertices);
-        self.vertices = try self.allocator.dupe(f32, batch.slice());
+        self.vertices = try self.allocator.dupe(u32, batch.slice());
         self.atlas = blob.atlas;
         self.atlas_stamp = try prepared.textStamp(blob.atlas);
     }
@@ -278,11 +274,11 @@ pub const TextCoverageBackend = struct {
         self.drawVertices(coverage.slice());
     }
 
-    pub fn drawVertices(self: TextCoverageBackend, vertices: []const f32) void {
+    pub fn drawVertices(self: TextCoverageBackend, vertices: []const u32) void {
         self.glState().drawPreparedText(self.gl_resources, vertices);
     }
 
-    pub fn draw(self: TextCoverageBackend, vertices: []const f32) void {
+    pub fn draw(self: TextCoverageBackend, vertices: []const u32) void {
         self.drawVertices(vertices);
     }
 
@@ -334,14 +330,14 @@ pub const PathPictureBoundsOverlayOptions = struct {
 };
 
 // Text batch sizing constants
-pub const TEXT_FLOATS_PER_VERTEX = vertex_mod.FLOATS_PER_VERTEX;
+pub const TEXT_WORDS_PER_VERTEX = vertex_mod.WORDS_PER_VERTEX;
 pub const TEXT_VERTICES_PER_GLYPH = vertex_mod.VERTICES_PER_GLYPH;
-pub const TEXT_FLOATS_PER_GLYPH = TEXT_FLOATS_PER_VERTEX * TEXT_VERTICES_PER_GLYPH;
+pub const TEXT_WORDS_PER_GLYPH = TEXT_WORDS_PER_VERTEX * TEXT_VERTICES_PER_GLYPH;
 
 // Path batch sizing constants (same vertex format as text)
-pub const PATH_FLOATS_PER_VERTEX = vertex_mod.FLOATS_PER_VERTEX;
+pub const PATH_WORDS_PER_VERTEX = vertex_mod.WORDS_PER_VERTEX;
 pub const PATH_VERTICES_PER_SHAPE = vertex_mod.VERTICES_PER_GLYPH;
-pub const PATH_FLOATS_PER_SHAPE = PATH_FLOATS_PER_VERTEX * PATH_VERTICES_PER_SHAPE;
+pub const PATH_WORDS_PER_SHAPE = PATH_WORDS_PER_VERTEX * PATH_VERTICES_PER_SHAPE;
 
 /// One byte in the hot instance format is reserved for the local texture-array
 /// layer. 0xff is still the special-instance sentinel, so draw records split
@@ -665,7 +661,6 @@ pub const CurveAtlas = struct {
         advance_width: u16,
         band_entry: band_tex.GlyphBandEntry,
         page_index: u16,
-        hint_source: text_hinting.GlyphHintSource = .{},
     };
 
     /// Pre-built multi-layer info for a COLRv0 base glyph.
@@ -930,7 +925,6 @@ pub const CurveAtlas = struct {
             gid: u16,
             advance: u16,
             bbox: bezier.BBox,
-            hint_source: text_hinting.GlyphHintSource,
         };
         var glyph_infos: std.ArrayList(GlyphMeta) = .empty;
         defer glyph_infos.deinit(allocator);
@@ -942,16 +936,11 @@ pub const CurveAtlas = struct {
 
             var all_curves: std.ArrayList(CurveSegment) = .empty;
             defer all_curves.deinit(allocator);
-            var quad_curves: std.ArrayList(bezier.QuadBezier) = .empty;
-            defer quad_curves.deinit(allocator);
             for (glyph.contours) |contour| {
                 for (contour.curves) |curve| {
                     try all_curves.append(allocator, CurveSegment.fromQuad(curve));
-                    try quad_curves.append(allocator, curve);
                 }
             }
-
-            const hint_source = text_hinting.analyzeQuadGlyph(quad_curves.items, glyph.metrics.bbox);
 
             const owned = try allocator.dupe(CurveSegment, all_curves.items);
             const render_bbox = blk: {
@@ -972,7 +961,6 @@ pub const CurveAtlas = struct {
                 .gid = gid,
                 .advance = glyph.metrics.advance_width,
                 .bbox = render_bbox,
-                .hint_source = hint_source,
             });
         }
 
@@ -1003,7 +991,6 @@ pub const CurveAtlas = struct {
                 .advance_width = info.advance,
                 .band_entry = bt.entries[i],
                 .page_index = page_index,
-                .hint_source = info.hint_source,
             });
         }
 
@@ -1460,7 +1447,7 @@ pub const CurveAtlas = struct {
     }
 };
 
-const Atlas = CurveAtlas;
+pub const Atlas = CurveAtlas;
 
 const PreparedAtlasView = struct {
     atlas: *const Atlas,
@@ -1525,8 +1512,8 @@ pub fn replaceAtlas(current: *Atlas, next: ?Atlas) bool {
 /// Accumulates glyph vertices into a caller-provided buffer.
 /// Zero allocations. Can be pre-built for static text.
 pub const TextBatch = struct {
-    buf: []f32,
-    len: usize, // floats written
+    buf: []u32,
+    len: usize, // words written
     layer_window_base: ?u32 = null,
 
     const glyph_stack_capacity = 256;
@@ -1570,7 +1557,7 @@ pub const TextBatch = struct {
         };
     }
 
-    pub fn init(buf: []f32) TextBatch {
+    pub fn init(buf: []u32) TextBatch {
         return .{ .buf = buf, .len = 0 };
     }
 
@@ -1580,10 +1567,10 @@ pub const TextBatch = struct {
     }
 
     pub fn glyphCount(self: *const TextBatch) usize {
-        return self.len / TEXT_FLOATS_PER_GLYPH;
+        return self.len / TEXT_WORDS_PER_GLYPH;
     }
 
-    pub fn slice(self: *const TextBatch) []const f32 {
+    pub fn slice(self: *const TextBatch) []const u32 {
         return self.buf[0..self.len];
     }
 
@@ -1612,10 +1599,10 @@ pub const TextBatch = struct {
         color: [4]f32,
         atlas_layer: u32,
     ) !void {
-        if (self.len + TEXT_FLOATS_PER_GLYPH > self.buf.len) return error.DrawListFull;
+        if (self.len + TEXT_WORDS_PER_GLYPH > self.buf.len) return error.DrawListFull;
         const local_layer = try self.localLayer(atlas_layer);
-        vertex_mod.generateGlyphVertices(self.buf[self.len..], x, y, font_size, bbox, band_entry, color, local_layer, .{});
-        self.len += TEXT_FLOATS_PER_GLYPH;
+        vertex_mod.generateGlyphVertices(self.buf[self.len..], x, y, font_size, bbox, band_entry, color, local_layer);
+        self.len += TEXT_WORDS_PER_GLYPH;
     }
 
     /// Append a multi-layer COLR glyph quad.
@@ -1631,7 +1618,7 @@ pub const TextBatch = struct {
         color: [4]f32,
         atlas_layer: u32,
     ) !void {
-        if (self.len + TEXT_FLOATS_PER_GLYPH > self.buf.len) return error.DrawListFull;
+        if (self.len + TEXT_WORDS_PER_GLYPH > self.buf.len) return error.DrawListFull;
         const local_layer = try self.localLayer(atlas_layer);
         vertex_mod.generateMultiLayerGlyphVertices(
             self.buf[self.len..],
@@ -1645,7 +1632,7 @@ pub const TextBatch = struct {
             color,
             local_layer,
         );
-        self.len += TEXT_FLOATS_PER_GLYPH;
+        self.len += TEXT_WORDS_PER_GLYPH;
     }
 
     /// Append a single glyph quad with a 2D transform.
@@ -1656,13 +1643,12 @@ pub const TextBatch = struct {
         color: [4]f32,
         atlas_layer: u32,
         transform: Transform2D,
-        hint: text_hinting.GlyphHintInstance,
     ) !void {
-        if (self.len + TEXT_FLOATS_PER_GLYPH > self.buf.len) return error.DrawListFull;
+        if (self.len + TEXT_WORDS_PER_GLYPH > self.buf.len) return error.DrawListFull;
         const local_layer = try self.localLayer(atlas_layer);
-        if (!vertex_mod.generateGlyphVerticesTransformed(self.buf[self.len..], bbox, band_entry, color, local_layer, transform, hint))
+        if (!vertex_mod.generateGlyphVerticesTransformed(self.buf[self.len..], bbox, band_entry, color, local_layer, transform))
             return error.InvalidTransform;
-        self.len += TEXT_FLOATS_PER_GLYPH;
+        self.len += TEXT_WORDS_PER_GLYPH;
     }
 
     /// Append a multi-layer COLR glyph quad with a 2D transform.
@@ -1676,11 +1662,11 @@ pub const TextBatch = struct {
         atlas_layer: u32,
         transform: Transform2D,
     ) !void {
-        if (self.len + TEXT_FLOATS_PER_GLYPH > self.buf.len) return error.DrawListFull;
+        if (self.len + TEXT_WORDS_PER_GLYPH > self.buf.len) return error.DrawListFull;
         const local_layer = try self.localLayer(atlas_layer);
         if (!vertex_mod.generateMultiLayerGlyphVerticesTransformed(self.buf[self.len..], union_bbox, info_x, info_y, layer_count, color, local_layer, transform))
             return error.InvalidTransform;
-        self.len += TEXT_FLOATS_PER_GLYPH;
+        self.len += TEXT_WORDS_PER_GLYPH;
     }
 
     /// Append a shaped run. Each glyph's position is relative to (x, y).
@@ -3792,7 +3778,6 @@ pub const PathPictureBuilder = struct {
                     .advance_width = 0,
                     .band_entry = bt.entries[glyph_cursor],
                     .page_index = 0,
-                    .hint_source = .{},
                 });
                 layer_roles[glyph_cursor] = layer.role;
                 writePaintRecord(layer_info_data, texel_cursor, bt.entries[glyph_cursor], local_paint);
@@ -3860,11 +3845,11 @@ pub const PathPictureBuilder = struct {
 };
 
 pub const PathBatch = struct {
-    buf: []f32,
+    buf: []u32,
     len: usize = 0,
     layer_window_base: ?u32 = null,
 
-    pub fn init(buf: []f32) PathBatch {
+    pub fn init(buf: []u32) PathBatch {
         return .{ .buf = buf };
     }
 
@@ -3874,10 +3859,10 @@ pub const PathBatch = struct {
     }
 
     pub fn shapeCount(self: *const PathBatch) usize {
-        return self.len / PATH_FLOATS_PER_SHAPE;
+        return self.len / PATH_WORDS_PER_SHAPE;
     }
 
-    pub fn slice(self: *const PathBatch) []const f32 {
+    pub fn slice(self: *const PathBatch) []const u32 {
         return self.buf[0..self.len];
     }
 
@@ -3936,7 +3921,7 @@ pub const PathBatch = struct {
             } else {
                 self.layer_window_base = layer_base;
             }
-            if (self.len + PATH_FLOATS_PER_SHAPE > self.buf.len) return error.DrawListFull;
+            if (self.len + PATH_WORDS_PER_SHAPE > self.buf.len) return error.DrawListFull;
             const final_transform = Transform2D.multiply(transform, instance.transform);
             const info_loc = view.layerInfoLoc(instance.info_x, instance.info_y);
             const local_layer = try self.localLayer(view.glyphLayer(instance.page_index));
@@ -3950,7 +3935,7 @@ pub const PathBatch = struct {
                 local_layer,
                 final_transform,
             )) return error.InvalidTransform;
-            self.len += PATH_FLOATS_PER_SHAPE;
+            self.len += PATH_WORDS_PER_SHAPE;
             count += 1;
         }
         return .{
@@ -3984,7 +3969,6 @@ pub const TextHinting = enum(u8) {
     none,
     phase,
     metrics,
-    outline,
 };
 
 /// Final-resolve text fitting.
@@ -4657,17 +4641,17 @@ pub const DrawSegment = struct {
 };
 
 pub const DrawRecords = struct {
-    floats: []const f32,
+    words: []const u32,
     segments: []const DrawSegment,
 };
 
 pub const DrawList = struct {
-    buf: []f32,
+    buf: []u32,
     len: usize = 0,
     segments_buf: []DrawSegment,
     segment_len: usize = 0,
 
-    pub fn init(buf: []f32, segments_buf: []DrawSegment) DrawList {
+    pub fn init(buf: []u32, segments_buf: []DrawSegment) DrawList {
         return .{ .buf = buf, .segments_buf = segments_buf };
     }
 
@@ -4678,7 +4662,7 @@ pub const DrawList = struct {
 
     pub fn slice(self: *const DrawList) DrawRecords {
         return .{
-            .floats = self.buf[0..self.len],
+            .words = self.buf[0..self.len],
             .segments = self.segments_buf[0..self.segment_len],
         };
     }
@@ -4688,8 +4672,8 @@ pub const DrawList = struct {
         var total: usize = 0;
         for (scene.commands.items) |command| {
             switch (command) {
-                .text => |text| total += @max(text.blob.instance_count_hint, 1) * TEXT_FLOATS_PER_GLYPH,
-                .path => |path| total += @max(path.picture.shapeCount(), 1) * PATH_FLOATS_PER_SHAPE,
+                .text => |text| total += @max(text.blob.instance_count_hint, 1) * TEXT_WORDS_PER_GLYPH,
+                .path => |path| total += @max(path.picture.shapeCount(), 1) * PATH_WORDS_PER_SHAPE,
             }
         }
         return total;
@@ -4779,7 +4763,7 @@ pub const DrawList = struct {
 
 pub const PreparedScene = struct {
     allocator: std.mem.Allocator,
-    floats: []f32 = &.{},
+    words: []u32 = &.{},
     segments: []DrawSegment = &.{},
 
     pub fn initOwned(
@@ -4790,31 +4774,31 @@ pub const PreparedScene = struct {
     ) !PreparedScene {
         const needed = DrawList.estimate(scene, options);
         const needed_segments = DrawList.estimateSegments(scene, options);
-        const floats = try allocator.alloc(f32, needed);
-        errdefer allocator.free(floats);
+        const words = try allocator.alloc(u32, needed);
+        errdefer allocator.free(words);
         const segment_buf = try allocator.alloc(DrawSegment, needed_segments);
         errdefer allocator.free(segment_buf);
-        var draw = DrawList.init(floats, segment_buf);
+        var draw = DrawList.init(words, segment_buf);
         try draw.addScene(prepared, scene, options);
         const segments = try allocator.dupe(DrawSegment, draw.slice().segments);
         errdefer allocator.free(segments);
         allocator.free(segment_buf);
         return .{
             .allocator = allocator,
-            .floats = floats[0..draw.len],
+            .words = words[0..draw.len],
             .segments = segments,
         };
     }
 
     pub fn deinit(self: *PreparedScene) void {
-        if (self.floats.len > 0) self.allocator.free(self.floats);
+        if (self.words.len > 0) self.allocator.free(self.words);
         if (self.segments.len > 0) self.allocator.free(self.segments);
         self.* = undefined;
     }
 
     pub fn slice(self: *const PreparedScene) DrawRecords {
         return .{
-            .floats = self.floats,
+            .words = self.words,
             .segments = self.segments,
         };
     }
@@ -5021,8 +5005,8 @@ pub const Renderer = struct {
 
     pub const VTable = struct {
         deinit: *const fn (*anyopaque) void,
-        drawText: *const fn (*anyopaque, ?*const anyopaque, []const f32, Mat4, f32, f32, u32) void,
-        drawPaths: *const fn (*anyopaque, ?*const anyopaque, []const f32, Mat4, f32, f32, u32) void,
+        drawText: *const fn (*anyopaque, ?*const anyopaque, []const u32, Mat4, f32, f32, u32) void,
+        drawPaths: *const fn (*anyopaque, ?*const anyopaque, []const u32, Mat4, f32, f32, u32) void,
         beginFrame: *const fn (*anyopaque) void,
         setSubpixelOrder: *const fn (*anyopaque, SubpixelOrder) void,
         getSubpixelOrder: *const fn (*anyopaque) SubpixelOrder,
@@ -5046,7 +5030,7 @@ pub const Renderer = struct {
                 if (owned) std.heap.smp_allocator.destroy(self);
             }
             fn noopDeinit(_: *anyopaque) void {}
-            fn drawTextFn(ptr: *anyopaque, prepared: ?*const anyopaque, verts: []const f32, mvp: Mat4, vw: f32, vh: f32, texture_layer_base: u32) void {
+            fn drawTextFn(ptr: *anyopaque, prepared: ?*const anyopaque, verts: []const u32, mvp: Mat4, vw: f32, vh: f32, texture_layer_base: u32) void {
                 if (prepared) |backend_prepared| {
                     if (comptime build_options.enable_cpu and T == CpuRenderer and @hasDecl(T, "drawTextPrepared")) {
                         const typed: *const cpu_renderer_mod.PreparedResources = @ptrCast(@alignCast(backend_prepared));
@@ -5066,7 +5050,7 @@ pub const Renderer = struct {
                 }
                 std.debug.panic("drawText requires PreparedResources ({*}, {d}, {d}, {d}, {d})", .{ ptr, verts.len, mvp.data[0], vw, vh });
             }
-            fn drawPathsFn(ptr: *anyopaque, prepared: ?*const anyopaque, verts: []const f32, mvp: Mat4, vw: f32, vh: f32, texture_layer_base: u32) void {
+            fn drawPathsFn(ptr: *anyopaque, prepared: ?*const anyopaque, verts: []const u32, mvp: Mat4, vw: f32, vh: f32, texture_layer_base: u32) void {
                 if (prepared) |backend_prepared| {
                     if (comptime build_options.enable_cpu and T == CpuRenderer and @hasDecl(T, "drawPathsPrepared")) {
                         const typed: *const cpu_renderer_mod.PreparedResources = @ptrCast(@alignCast(backend_prepared));
@@ -5179,7 +5163,7 @@ pub const Renderer = struct {
             if (!actual_stamp.eql(segment.resource_stamp)) return error.StaleDrawRecords;
             const expected_target_stamp = TargetStamp.from(options.mvp, options.target, segment.target_stamp.hinting);
             if (!std.meta.eql(expected_target_stamp, segment.target_stamp)) return error.StaleDrawRecords;
-            const vertices = records.floats[segment.offset..][0..segment.len];
+            const vertices = records.words[segment.offset..][0..segment.len];
             switch (segment.kind) {
                 .text => if (vertices.len > 0) self.drawText(backend_prepared, vertices, options.mvp, options.target.pixel_width, options.target.pixel_height, segment.texture_layer_base),
                 .path => if (vertices.len > 0) self.drawPaths(backend_prepared, vertices, options.mvp, options.target.pixel_width, options.target.pixel_height, segment.texture_layer_base),
@@ -5213,11 +5197,11 @@ pub const Renderer = struct {
         self.vtable.beginFrame(self.ptr);
     }
 
-    fn drawText(self: *Renderer, backend_prepared: ?*const anyopaque, vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32) void {
+    fn drawText(self: *Renderer, backend_prepared: ?*const anyopaque, vertices: []const u32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32) void {
         self.vtable.drawText(self.ptr, backend_prepared, vertices, mvp, viewport_w, viewport_h, texture_layer_base);
     }
 
-    fn drawPaths(self: *Renderer, backend_prepared: ?*const anyopaque, vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32) void {
+    fn drawPaths(self: *Renderer, backend_prepared: ?*const anyopaque, vertices: []const u32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32) void {
         self.vtable.drawPaths(self.ptr, backend_prepared, vertices, mvp, viewport_w, viewport_h, texture_layer_base);
     }
 
@@ -5427,16 +5411,16 @@ test "draw with missing prepared resources fails" {
     defer renderer.deinit();
 
     var prepared = PreparedResources{ .allocator = allocator };
-    var floats: [TEXT_FLOATS_PER_GLYPH]f32 = undefined;
+    var words: [TEXT_WORDS_PER_GLYPH]u32 = undefined;
     const segments = [_]DrawSegment{.{
         .kind = .text,
         .offset = 0,
-        .len = TEXT_FLOATS_PER_GLYPH,
+        .len = TEXT_WORDS_PER_GLYPH,
         .key = ResourceKey.named("missing"),
         .resource_stamp = .{},
         .target_stamp = .{},
     }};
-    const records = DrawRecords{ .floats = &floats, .segments = &segments };
+    const records = DrawRecords{ .words = &words, .segments = &segments };
     try std.testing.expectError(error.MissingPreparedResource, renderer.draw(&prepared, records, .{
         .mvp = Mat4.identity,
         .target = .{ .pixel_width = width, .pixel_height = height },
@@ -5448,7 +5432,7 @@ test "draw dispatch uses only prepared stamps and caller records" {
         begin_count: u32 = 0,
         text_count: u32 = 0,
         path_count: u32 = 0,
-        floats_seen: usize = 0,
+        words_seen: usize = 0,
         viewport_seen: [2]f32 = .{ 0, 0 },
         subpixel_order: SubpixelOrder = .none,
         fill_rule: FillRule = .non_zero,
@@ -5459,17 +5443,17 @@ test "draw dispatch uses only prepared stamps and caller records" {
             return @ptrCast(@alignCast(ptr));
         }
         fn deinit(_: *anyopaque) void {}
-        fn drawText(ptr: *anyopaque, backend_prepared: ?*const anyopaque, vertices: []const f32, _: Mat4, viewport_w: f32, viewport_h: f32, _: u32) void {
+        fn drawText(ptr: *anyopaque, backend_prepared: ?*const anyopaque, vertices: []const u32, _: Mat4, viewport_w: f32, viewport_h: f32, _: u32) void {
             const s = state(ptr);
             s.text_count += 1;
-            s.floats_seen += vertices.len;
+            s.words_seen += vertices.len;
             s.viewport_seen = .{ viewport_w, viewport_h };
             s.saw_backend_prepared = backend_prepared != null;
         }
-        fn drawPaths(ptr: *anyopaque, backend_prepared: ?*const anyopaque, vertices: []const f32, _: Mat4, viewport_w: f32, viewport_h: f32, _: u32) void {
+        fn drawPaths(ptr: *anyopaque, backend_prepared: ?*const anyopaque, vertices: []const u32, _: Mat4, viewport_w: f32, viewport_h: f32, _: u32) void {
             const s = state(ptr);
             s.path_count += 1;
-            s.floats_seen += vertices.len;
+            s.words_seen += vertices.len;
             s.viewport_seen = .{ viewport_w, viewport_h };
             s.saw_backend_prepared = backend_prepared != null;
         }
@@ -5526,16 +5510,16 @@ test "draw dispatch uses only prepared stamps and caller records" {
             .fill_rule = .even_odd,
         },
     };
-    var floats = [_]f32{ 1, 2, 3, 4 };
+    var words = [_]u32{ 1, 2, 3, 4 };
     const segments = [_]DrawSegment{.{
         .kind = .text,
         .offset = 0,
-        .len = floats.len,
+        .len = words.len,
         .key = key,
         .resource_stamp = stamp,
         .target_stamp = TargetStamp.from(options.mvp, options.target, .none),
     }};
-    const records = DrawRecords{ .floats = &floats, .segments = &segments };
+    const records = DrawRecords{ .words = &words, .segments = &segments };
 
     var state: FakeState = .{};
     var renderer = Renderer{ .ptr = @ptrCast(&state), .vtable = &fake_vtable };
@@ -5544,7 +5528,7 @@ test "draw dispatch uses only prepared stamps and caller records" {
     try std.testing.expectEqual(@as(u32, 1), state.begin_count);
     try std.testing.expectEqual(@as(u32, 1), state.text_count);
     try std.testing.expectEqual(@as(u32, 0), state.path_count);
-    try std.testing.expectEqual(floats.len, state.floats_seen);
+    try std.testing.expectEqual(words.len, state.words_seen);
     try std.testing.expectEqual(SubpixelOrder.rgb, state.subpixel_order);
     try std.testing.expectEqual(FillRule.even_odd, state.fill_rule);
     try std.testing.expectEqual(@as(f32, 8), state.viewport_seen[0]);
@@ -5701,7 +5685,7 @@ test "draw rejects stale records when a resource key is replaced" {
     };
     const needed = DrawList.estimate(&scene, draw_options);
     const needed_segments = DrawList.estimateSegments(&scene, draw_options);
-    const draw_buf = try allocator.alloc(f32, needed);
+    const draw_buf = try allocator.alloc(u32, needed);
     defer allocator.free(draw_buf);
     const draw_segments = try allocator.alloc(DrawSegment, needed_segments);
     defer allocator.free(draw_segments);
@@ -5841,7 +5825,7 @@ test "CPU draw uses prepared resource views" {
     };
     const needed = DrawList.estimate(&scene, draw_options);
     const needed_segments = DrawList.estimateSegments(&scene, draw_options);
-    const draw_buf = try allocator.alloc(f32, needed);
+    const draw_buf = try allocator.alloc(u32, needed);
     defer allocator.free(draw_buf);
     const draw_segments = try allocator.alloc(DrawSegment, needed_segments);
     defer allocator.free(draw_segments);
@@ -5958,22 +5942,20 @@ test "path picture freeze compiles atlas and transformed batch vertices" {
     try std.testing.expectEqual(@as(usize, 1), picture.shapeCount());
     try std.testing.expectEqual(@as(usize, 1), picture.atlas.pageCount());
 
-    var vertex_buf: [PATH_FLOATS_PER_SHAPE]f32 = undefined;
+    var vertex_buf: [PATH_WORDS_PER_SHAPE]u32 = undefined;
     var batch = PathBatch.init(&vertex_buf);
     const view = PreparedAtlasView{ .atlas = &picture.atlas };
     try std.testing.expectEqual(@as(usize, 1), batch.addPicture(&view, &picture));
-    try std.testing.expectEqual(@as(usize, PATH_FLOATS_PER_SHAPE), batch.slice().len);
+    try std.testing.expectEqual(@as(usize, PATH_WORDS_PER_SHAPE), batch.slice().len);
     // Verify that the min corner world position equals the intended translation.
-    // Instance layout: bbox.min at offsets 0,1; xform at 4-7; tx,ty at 8,9.
-    const s = batch.slice();
-    const world_x = s[4] * s[0] + s[5] * s[1] + s[8]; // xx*min.x + xy*min.y + tx
-    const world_y = s[6] * s[0] + s[7] * s[1] + s[9]; // yx*min.x + yy*min.y + ty
+    const s = vertex_mod.decodeInstance(batch.slice());
+    const world_x = s.xform[0] * s.rect[0] + s.xform[1] * s.rect[1] + s.origin[0];
+    const world_y = s.xform[2] * s.rect[0] + s.xform[3] * s.rect[1] + s.origin[1];
     try std.testing.expectApproxEqAbs(@as(f32, 20), world_x, 0.5);
     try std.testing.expectApproxEqAbs(@as(f32, 30), world_y, 0.5);
-    // gw at offset 11 (a_meta.w)
-    const packed_gw: u32 = @bitCast(s[11]);
+    const packed_gw = s.glyph[1];
     try std.testing.expectEqual(@as(u32, 0xFF), packed_gw >> 24);
-    try std.testing.expectApproxEqAbs(@as(f32, 0), batch.slice()[15], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), s.band[3], 0.001);
 }
 
 test "path batch offsets layer info rows through atlas views" {
@@ -5988,7 +5970,7 @@ test "path batch offsets layer info rows through atlas views" {
     var picture = try builder.freeze(std.testing.allocator);
     defer picture.deinit();
 
-    var vertex_buf: [PATH_FLOATS_PER_SHAPE]f32 = undefined;
+    var vertex_buf: [PATH_WORDS_PER_SHAPE]u32 = undefined;
     var batch = PathBatch.init(&vertex_buf);
     const offset_view = PreparedAtlasView{
         .atlas = &picture.atlas,
@@ -5996,11 +5978,11 @@ test "path batch offsets layer info rows through atlas views" {
         .info_row_base = 17,
     };
     try std.testing.expectEqual(@as(usize, 1), try batch.addPicture(&offset_view, &picture));
-    // gz at offset 10 (a_meta.z)
-    const packed_gz: u32 = @bitCast(batch.slice()[10]);
+    const s = vertex_mod.decodeInstance(batch.slice());
+    const packed_gz = s.glyph[0];
     try std.testing.expectEqual(@as(u32, picture.instances[0].info_x), packed_gz & 0xFFFF);
     try std.testing.expectEqual(@as(u32, offset_view.info_row_base + picture.instances[0].info_y), packed_gz >> 16);
-    try std.testing.expectApproxEqAbs(@as(f32, @floatFromInt(try textureLayerLocal(offset_view.glyphLayer(0)))), batch.slice()[15], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, @floatFromInt(try textureLayerLocal(offset_view.glyphLayer(0)))), s.band[3], 0.001);
 }
 
 test "styled path builder emits fill and stroke records" {

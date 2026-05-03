@@ -6,6 +6,10 @@ const screenshot = @import("render/screenshot.zig");
 const egl_offscreen = @import("render/egl_offscreen.zig");
 const gl = @import("render/gl.zig").gl;
 
+fn srgbToLinear(v: f32) f32 {
+    return if (v <= 0.04045) v / 12.92 else std.math.pow(f32, (v + 0.055) / 1.055, 2.4);
+}
+
 const SCREENSHOT_WIDTH: u32 = 1680;
 const SCREENSHOT_HEIGHT: u32 = 874;
 const SCREENSHOT_PATH = "zig-out/demo-screenshot.tga";
@@ -60,7 +64,7 @@ pub fn main() !void {
     var scene = snail.Scene.init(allocator);
     defer scene.deinit();
     try scene.addPathPicture(&path_picture);
-    try scene.addTextOptions(&text_blob, .{ .hinting = .outline });
+    try scene.addTextOptions(&text_blob, .{ .hinting = .metrics });
 
     var resource_entries: [8]snail.ResourceSet.Entry = undefined;
     var resources = snail.ResourceSet.init(&resource_entries);
@@ -69,7 +73,7 @@ pub fn main() !void {
     defer prepared.deinit();
 
     const clear = demo_banner.clearColor();
-    gl.glClearColor(clear[0], clear[1], clear[2], clear[3]);
+    gl.glClearColor(srgbToLinear(clear[0]), srgbToLinear(clear[1]), srgbToLinear(clear[2]), clear[3]);
     gl.glClear(gl.GL_COLOR_BUFFER_BIT);
 
     const draw_options = snail.DrawOptions{

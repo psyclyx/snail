@@ -99,18 +99,23 @@ vec2 solveQuadraticHorizDistances(float p0x, float p0y, float p1x, float p1y, fl
     float ay = p0y - p1y * 2.0 + p2y;
     float bx = p0x - p1x;
     float by = p0y - p1y;
+    const float kEps = 1.0 / 65536.0;
 
-    float t1;
-    float t2;
-    if (abs(ay) < 1.0 / 65536.0) {
-        float rb = 0.5 / by;
-        t1 = p0y * rb;
+    float t1, t2;
+    if (abs(ay) < kEps) {
+        t1 = (abs(by) < kEps) ? 0.0 : p0y * 0.5 / by;
         t2 = t1;
     } else {
-        float ra = 1.0 / ay;
-        float d = sqrt(max(by * by - ay * p0y, 0.0));
-        t1 = (by - d) * ra;
-        t2 = (by + d) * ra;
+        float sq = sqrt(max(by * by - ay * p0y, 0.0));
+        if (by >= 0.0) {
+            float q = by + sq;
+            t2 = q / ay;
+            t1 = (abs(q) < kEps) ? 0.0 : p0y / q;
+        } else {
+            float q = by - sq;
+            t1 = q / ay;
+            t2 = (abs(q) < kEps) ? 0.0 : p0y / q;
+        }
     }
 
     float x1 = (ax * t1 - bx * 2.0) * t1 + p0x;
@@ -123,18 +128,23 @@ vec2 solveQuadraticVertDistances(float p0x, float p0y, float p1x, float p1y, flo
     float ay = p0y - p1y * 2.0 + p2y;
     float bx = p0x - p1x;
     float by = p0y - p1y;
+    const float kEps = 1.0 / 65536.0;
 
-    float t1;
-    float t2;
-    if (abs(ax) < 1.0 / 65536.0) {
-        float rb = 0.5 / bx;
-        t1 = p0x * rb;
+    float t1, t2;
+    if (abs(ax) < kEps) {
+        t1 = (abs(bx) < kEps) ? 0.0 : p0x * 0.5 / bx;
         t2 = t1;
     } else {
-        float ra = 1.0 / ax;
-        float d = sqrt(max(bx * bx - ax * p0x, 0.0));
-        t1 = (bx - d) * ra;
-        t2 = (bx + d) * ra;
+        float sq = sqrt(max(bx * bx - ax * p0x, 0.0));
+        if (bx >= 0.0) {
+            float q = bx + sq;
+            t2 = q / ax;
+            t1 = (abs(q) < kEps) ? 0.0 : p0x / q;
+        } else {
+            float q = bx - sq;
+            t1 = q / ax;
+            t2 = (abs(q) < kEps) ? 0.0 : p0x / q;
+        }
     }
 
     float y1 = (ay * t1 - by * 2.0) * t1 + p0y;
@@ -494,8 +504,10 @@ PathCompositeSample compositePathGroup(vec2 rc, vec2 epp, vec2 ppe, ivec2 infoBa
 
 void main() {
     vec2 rc = v_texcoord;
-    vec2 epp = fwidth(rc);
-    vec2 ppe = 1.0 / epp;
+    vec2 dx = vec2(dFdx(rc.x), dFdy(rc.x));
+    vec2 dy = vec2(dFdx(rc.y), dFdy(rc.y));
+    vec2 epp = vec2(length(dx), length(dy));
+    vec2 ppe = 1.0 / max(epp, vec2(1.0 / 65536.0));
 
     if (((v_glyph.w >> 8) & 0xFF) != 0xFF) discard;
     ivec2 infoBase = v_glyph.xy;

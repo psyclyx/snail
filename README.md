@@ -1,12 +1,12 @@
 # snail
 
-GPU text and vector rendering via direct Bezier curve evaluation.
+Text and vector rendering via direct Bezier curve evaluation.
 
 ![snail demo scene](assets/demo_screenshot.png)
 
-snail renders text by evaluating quadratic Bezier curves per-pixel in a fragment shader. No bitmap atlases, no signed distance fields. Glyphs are resolution-independent and render correctly at any size, rotation, or perspective transform. The same curve evaluation pipeline also renders filled and stroked vector paths with solid, gradient, and image paints.
+snail renders text and vector art by evaluating Bezier curves at draw time. No bitmap glyph atlases, no signed distance fields. Glyphs and paths are resolution-independent and render correctly at any size, rotation, or perspective transform. GPU backends run this in shaders; the CPU backend uses the same prepared atlas data in software.
 
-This is alpha-quality software. The Zig API is settling but not yet stable. The C API is legacy and disabled by default while the Zig resource model is being migrated. Breaking changes are expected.
+This is alpha-quality software. The Zig API and C API are settling but not yet stable, and breaking changes are expected.
 
 ## Algorithm
 
@@ -27,7 +27,7 @@ The Slug patent (US 10,373,352) was [dedicated to the public domain](https://ter
 - *Curve texture* (RGBA16F): control points for every curve segment, stored as f16 in font-unit coordinates.
 - *Band texture* (RG16UI): spatial subdivision indices. The glyph bounding box is split into horizontal and vertical bands; each band records which curve segments intersect it.
 
-This preprocessing is CPU-only and runs once per glyph set. The textures are uploaded as 2D texture arrays, one layer per atlas page.
+This preprocessing is CPU-only and runs once per glyph set. Backends upload the prepared data as 2D texture arrays, one layer per atlas page.
 
 **Fragment shader.** At draw time, each glyph is a screen-space quad. The fragment shader:
 
@@ -36,7 +36,7 @@ This preprocessing is CPU-only and runs once per glyph set. The textures are upl
 3. Applies the winding rule (non-zero or even-odd) to determine inside/outside.
 4. Outputs analytic coverage as alpha, optionally with per-channel LCD subpixel offsets for horizontal RGB/BGR or vertical VRGB/VBGR subpixel rendering.
 
-There is no rasterization, no texture sampling for glyph shapes, and no distance field approximation. Coverage is exact at every resolution.
+There is no rasterization, no texture sampling for glyph shapes, and no distance field approximation.
 
 **Vector paths.** Filled and stroked `Path` geometry goes through the same pipeline. Paths are decomposed into quadratic curves (cubics are adaptively approximated), packed into the same curve/band texture format, and drawn with the same fragment shader. Strokes are expanded into offset curves with proper joins (miter, bevel, round) and caps (butt, square, round). The `PathPicture` type freezes a set of styled paths into an immutable atlas snapshot that can be instanced cheaply per frame.
 
@@ -46,7 +46,7 @@ All color parameters are **sRGB, straight (unpremultiplied) alpha**, as `[4]f32`
 
 **Images** (`Image.initSrgba8`) expect sRGB-encoded RGBA8 pixel data (4 bytes per pixel, 0–255). This is what most image decoders produce. Linear-space pixel buffers will appear too bright.
 
-**Gradients** interpolate in sRGB space by default, which gives perceptually smooth results for UI use. Set `color_space = .linear_rgb` on `LinearGradient` or `RadialGradient` for physically correct interpolation (avoids dark bands between complementary hues).
+**Gradients** interpolate in sRGB space, which gives perceptually smooth results for UI use. `LinearGradient` and `RadialGradient` provide extend modes for clamp, repeat, and reflect behavior.
 
 **Blending** uses premultiplied alpha with gamma-correct (linear-space) compositing. On GPU, `GL_FRAMEBUFFER_SRGB` / Vulkan sRGB swapchain handles linearization automatically. The CPU renderer uses equivalent lookup tables.
 
@@ -61,10 +61,13 @@ zig build run -Drenderer=gl33                   # force OpenGL 3.3
 zig build run -Drenderer=vulkan -Dvulkan=true   # Vulkan backend
 zig build run -Drenderer=cpu                    # CPU renderer (headless)
 zig build screenshot                            # GL screenshot → zig-out/demo-screenshot.tga
-zig build install --release=fast                # install libsnail.a
+zig build backend-compare                       # CPU/GL pixel parity; add -Dvulkan=true for Vulkan
+zig build install --release=fast                # install libsnail + include/snail.h
 ```
 
-Library backend flags: `-Dopengl=true` (default), `-Dvulkan=false`, `-Dcpu-renderer=true` (default).
+Library backend flags: `-Dopengl=true` (default), `-Dvulkan=false`, `-Dcpu-renderer=true` (default). C ABI artifacts are built by default; pass `-Dc-api=false` for a Zig-module-only build.
+
+The checked-in screenshot at `assets/demo_screenshot.png` is regenerated from the `zig build screenshot` TGA output.
 
 ### Nix
 
@@ -92,7 +95,7 @@ const snail_dep = b.dependency("snail", .{
 exe.root_module.addImport("snail", snail_dep.module("snail"));
 ```
 
-Your project needs OpenGL and HarfBuzz available via pkg-config. On NixOS/nix-shell, these are provided automatically. On other systems, install the development packages for your distro.
+The dependency module links OpenGL and HarfBuzz by default. On NixOS/nix-shell, these are provided automatically; on other systems, install the development packages for your distro.
 
 ## Example: Zig
 
@@ -109,46 +112,47 @@ var atlas = try snail.TextAtlas.init(allocator, &.{
 });
 defer atlas.deinit();
 
-var shaped = try atlas.shapeText(allocator, .{}, "Hello, world!");
-defer shaped.deinit();
-if (try atlas.ensureShaped(&shaped)) |next| {
+if (try atlas.ensureText(.{}, "Hello, world!")) |next| {
     atlas.deinit();
     atlas = next;
 }
 
-var blob = try snail.TextBlob.fromShaped(allocator, &atlas, &shaped, .{
-    .x = 10, .y = 400, .size = 48, .color = .{ 1, 1, 1, 1 },
-});
+var blob_builder = snail.TextBlobBuilder.init(allocator, &atlas);
+defer blob_builder.deinit();
+_ = try blob_builder.addText(.{}, "Hello, world!", 10, 400, 48, .{ 1, 1, 1, 1 });
+
+var blob = try blob_builder.finish();
 defer blob.deinit();
 
 var scene = snail.Scene.init(allocator);
 defer scene.deinit();
 try scene.addText(&blob);
 
-var resources: snail.ResourceSet = .{};
+var resource_entries: [8]snail.ResourceSet.Entry = undefined;
+var resources = snail.ResourceSet.init(&resource_entries);
 try resources.addScene(&scene);
 
 // Requires an active GL context. Vulkan uses snail.VulkanRenderer.init(ctx).
-var gl = try snail.GlRenderer.init();
+var gl = try snail.GlRenderer.init(allocator);
 defer gl.deinit();
-var prepared = try gl.uploadResourcesBlocking(&resources);
+var prepared = try gl.uploadResourcesBlocking(allocator, &resources);
 defer prepared.deinit();
 
+const viewport_wf: f32 = @floatFromInt(viewport_w);
+const viewport_hf: f32 = @floatFromInt(viewport_h);
 const options = snail.DrawOptions{
-    .mvp = mvp,
-    .target = .{ .pixel_width = viewport_w, .pixel_height = viewport_h },
+    .mvp = snail.Mat4.ortho(0, viewport_wf, viewport_hf, 0, -1, 1),
+    .target = .{ .pixel_width = viewport_wf, .pixel_height = viewport_hf, .subpixel_order = .rgb },
 };
-const needed = snail.DrawList.estimate(&scene, options);
-const draw_buf = try allocator.alloc(f32, needed);
-defer allocator.free(draw_buf);
-var draw = snail.DrawList.init(draw_buf);
-try draw.addScene(&prepared, &scene, options);
-try gl.draw(&prepared, draw.slice(), options);
+
+var prepared_scene = try snail.PreparedScene.initOwned(allocator, &prepared, &scene, options);
+defer prepared_scene.deinit();
+try gl.drawPrepared(&prepared, &prepared_scene, options);
 ```
 
-### On-demand atlas extension
+### On-demand Atlas Extension
 
-`ensureText` and `ensureShaped` return a new immutable snapshot; the old one remains valid for in-flight readers.
+`ensureText` and `ensureShaped` return a new immutable snapshot; the old one remains valid for in-flight readers. `TextBlob` borrows the exact atlas snapshot used to build it, so rebuild blobs after publishing a new atlas snapshot.
 
 ```zig
 if (try atlas.ensureText(.{}, text)) |next| {
@@ -157,7 +161,7 @@ if (try atlas.ensureText(.{}, text)) |next| {
 }
 ```
 
-### Vector paths
+### Vector Paths
 
 ```zig
 var path = snail.Path.init(allocator);
@@ -181,68 +185,106 @@ try resources.addScene(&scene);
 
 ## Example: C
 
-> **Note:** The C API is intentionally not part of the current migration. It still uses the older low-level surface and is built only with `-Dc-api=true`.
+> **Note:** The C renderer entry point currently targets OpenGL and requires an active OpenGL context. Error checks are omitted here for brevity.
 
 ```c
 #include "snail.h"
 
-SnailFont *font;
-snail_font_init(ttf_data, ttf_len, &font);
+SnailFaceSpec faces[] = {{
+    .data = ttf_data,
+    .len = ttf_len,
+    .weight = SNAIL_FONT_WEIGHT_REGULAR,
+}};
 
-SnailAtlas *atlas;
-snail_atlas_init_ascii(NULL, font, &atlas);
+SnailTextAtlas *atlas = NULL;
+snail_text_atlas_init(NULL, faces, 1, &atlas);
 
-snail_renderer_init();
-snail_renderer_upload_atlas(atlas);
+SnailFontStyle style = {.weight = SNAIL_FONT_WEIGHT_REGULAR, .italic = false};
 
-// Render text
-float buf[4096 * 80]; // 80 = TEXT_FLOATS_PER_GLYPH
-size_t buf_len = 0;
-float color[] = {1, 1, 1, 1};
-snail_batch_add_text(buf, sizeof(buf)/sizeof(float), &buf_len,
-                     atlas, font, "Hello", 5, 10, 400, 48, color);
+SnailTextAtlas *next = NULL;
+snail_text_atlas_ensure_text(atlas, style, "Hello", 5, &next);
+if (next) {
+    snail_text_atlas_deinit(atlas);
+    atlas = next;
+}
 
-float mvp[16]; // column-major 4x4
-snail_renderer_draw_text(buf, buf_len, mvp, 1280, 720);
-
-// Shape text with source-span metadata
-SnailShapedRun *run;
-snail_atlas_shape_utf8(atlas, font, "Hello", 5, 48.0, &run);
-size_t n = snail_shaped_run_glyph_count(run);
-SnailGlyphPlacement g;
+// Shape text with source-span metadata.
+SnailShapedText *shaped = NULL;
+snail_text_atlas_shape_utf8(atlas, style, "Hello", 5, &shaped);
+size_t n = snail_shaped_text_glyph_count(shaped);
+SnailShapedGlyph g;
 for (size_t i = 0; i < n; i++) {
-    snail_shaped_run_glyph(run, i, &g);
+    snail_shaped_text_glyph(shaped, i, &g);
     // g.glyph_id, g.x_offset, g.source_start, g.source_end ...
 }
-snail_shaped_run_deinit(run);
+
+SnailTextBlob *blob = NULL;
+SnailTextBlobOptions text_options = {
+    .x = 10,
+    .y = 400,
+    .size = 48,
+    .color = {1, 1, 1, 1},
+};
+snail_text_blob_init_from_shaped(NULL, atlas, shaped, text_options, &blob);
+snail_shaped_text_deinit(shaped);
 
 // Vector path
-SnailPath *path;
+SnailPath *path = NULL;
 snail_path_init(NULL, &path);
 snail_path_add_rounded_rect(path, (SnailRect){0, 0, 200, 80}, 12);
 
-SnailPathPictureBuilder *builder;
+SnailPathPictureBuilder *builder = NULL;
 snail_path_picture_builder_init(NULL, &builder);
 SnailFillStyle fill = {.color = {0.1, 0.1, 0.2, 0.9}, .paint_kind = -1};
 snail_path_picture_builder_add_filled_path(builder, path, fill,
                                            SNAIL_TRANSFORM2D_IDENTITY);
 
-SnailPathPicture *picture;
+SnailPathPicture *picture = NULL;
 snail_path_picture_builder_freeze(builder, NULL, &picture);
-snail_renderer_upload_path_picture(picture);
 
-float pbuf[64 * 80];
-size_t pbuf_len = 0;
-snail_path_batch_add_picture(pbuf, sizeof(pbuf)/sizeof(float), &pbuf_len, picture);
-snail_renderer_draw_paths(pbuf, pbuf_len, mvp, 1280, 720);
+SnailScene *scene = NULL;
+snail_scene_init(NULL, &scene);
+snail_scene_add_text(scene, blob);
+snail_scene_add_path_picture(scene, picture);
+
+SnailResourceSet *resources = NULL;
+snail_resource_set_init(NULL, 8, &resources);
+snail_resource_set_add_scene(resources, scene);
+
+SnailRenderer *renderer = NULL;
+snail_renderer_init(&renderer);
+
+SnailDrawOptions draw_options = {
+    .mvp = snail_mat4_identity(), // replace with your pixel-to-clip projection
+    .target = {
+        .pixel_width = 1280,
+        .pixel_height = 720,
+        .subpixel_order = SNAIL_SUBPIXEL_RGB,
+        .fill_rule = SNAIL_FILL_NONZERO,
+        .is_final_composite = true,
+        .opaque_backdrop = true,
+        .will_resample = false,
+    },
+};
+
+SnailPreparedResources *prepared = NULL;
+snail_renderer_upload_resources_blocking(renderer, NULL, resources, &prepared);
+
+SnailPreparedScene *prepared_scene = NULL;
+snail_prepared_scene_init(NULL, prepared, scene, draw_options, &prepared_scene);
+snail_renderer_draw_prepared(renderer, prepared, prepared_scene, draw_options);
 
 // Cleanup
+snail_prepared_scene_deinit(prepared_scene);
+snail_prepared_resources_deinit(prepared);
+snail_renderer_deinit(renderer);
+snail_resource_set_deinit(resources);
+snail_scene_deinit(scene);
+snail_text_blob_deinit(blob);
 snail_path_picture_deinit(picture);
 snail_path_picture_builder_deinit(builder);
 snail_path_deinit(path);
-snail_atlas_deinit(atlas);
-snail_font_deinit(font);
-snail_renderer_deinit();
+snail_text_atlas_deinit(atlas);
 ```
 
 ## API reference
@@ -267,6 +309,8 @@ snail_renderer_deinit();
 | `PreparedResources` | Backend realization for one renderer/context. |
 | `DrawList` | Caller-buffered draw records. |
 | `PreparedScene` | Optional owned draw-record cache for static scenes. |
+| `ResolveTarget` | Final target metadata: pixel size, subpixel order, fill rule, and composite safety flags. |
+| `TextResolveOptions` | Per-text resolve controls, including screen-space hinting mode. |
 | `GlRenderer`, `VulkanRenderer`, `CpuRenderer` | First-class backend renderers. |
 | `Renderer` | Type-erased convenience wrapper around a backend renderer. |
 | `Rect` | `{ x, y, w, h }` rectangle. |
@@ -274,7 +318,6 @@ snail_renderer_deinit();
 | `FillStyle` | sRGB fill color (straight alpha) with optional `Paint`. |
 | `StrokeStyle` | sRGB stroke color (straight alpha), width, optional paint, cap, join, miter limit, placement. |
 | `Paint` | Tagged union: `.solid`, `.linear_gradient`, `.radial_gradient`, `.image`. |
-| `ColorSpace` | Gradient interpolation space: `.srgb` (default) or `.linear_rgb`. |
 
 ### TextAtlas
 
@@ -286,18 +329,20 @@ snail_renderer_deinit();
 | `atlas.ensureShaped(shaped) !?TextAtlas` | Return a new snapshot with the shaped glyphs present. Null if already present. |
 | `atlas.ensureText(style, text) !?TextAtlas` | Shape-and-ensure helper. |
 | `TextBlob.fromShaped(alloc, atlas, shaped, options) !TextBlob` | Build positioned text from shaped glyphs. |
-| `TextBlobBuilder.addText(...)` | Convenience helper that shapes, ensures, and appends. |
+| `TextBlobBuilder.addText(...)` | Convenience helper that shapes and appends; call `ensureText` or `ensureShaped` first when all glyphs must be renderable. |
 
 ### Renderer
 
 | Method | Description |
 |--------|-------------|
-| `GlRenderer.init() !GlRenderer` | Initialize OpenGL backend. Requires the GL context to be current. |
+| `GlRenderer.init(alloc) !GlRenderer` | Initialize OpenGL backend. Requires the GL context to be current. |
 | `VulkanRenderer.init(ctx) !VulkanRenderer` | Initialize Vulkan backend. |
 | `vk.beginFrame(.{ .cmd, .frame_index })` | Bind Vulkan frame ownership explicitly. |
-| `renderer.uploadResourcesBlocking(set) !PreparedResources` | Blocking upload/view construction for simple programs. |
+| `renderer.uploadResourcesBlocking(alloc, set) !PreparedResources` | Blocking upload/view construction for simple programs. |
 | `renderer.planResourceUpload(current, next_set)` | Build a scheduled upload plan. |
 | `renderer.beginResourceUpload(plan)` | Start a pending upload. |
+| `DrawList.init(words, segments)` | Create caller-buffered draw records for dynamic scenes. |
+| `PreparedScene.initOwned(alloc, prepared, scene, options)` | Build an owned draw-record cache for static scenes. |
 | `renderer.draw(prepared, records, options)` | Execute prebuilt draw records. No resource discovery or upload. |
 | `renderer.drawPrepared(prepared, prepared_scene, options)` | Draw an owned draw-record cache. |
 | `prepared.retireNowOrWhenSafe(renderer)` | Retire resources when they are no longer in use. |
@@ -334,12 +379,19 @@ snail_renderer_deinit();
 
 | Constant | Value | Use |
 |----------|-------|-----|
-| `TEXT_FLOATS_PER_GLYPH` | 80 | Buffer sizing for `TextBatch`. |
-| `PATH_FLOATS_PER_SHAPE` | 80 | Buffer sizing for `PathBatch`. |
+| `TEXT_WORDS_PER_GLYPH` | 23 | `u32` word budget for one low-level text glyph record. Prefer `DrawList.estimate`. |
+| `PATH_WORDS_PER_SHAPE` | 23 | `u32` word budget for one low-level path shape record. Prefer `DrawList.estimate`. |
 
 ## Benchmarks
 
-Benchmarks are intentionally deferred while the explicit resource model lands. The old benchmark sources still exist for reference, but they use the previous low-level draw surface.
+The benchmark program exercises the same explicit resource model as the public APIs and prints Markdown tables that can be pasted into docs:
+
+```sh
+zig build bench
+zig build bench -Dvulkan=true  # include Vulkan rows when a Vulkan device is available
+```
+
+Current phases cover Snail vs FreeType preparation/layout, vector `PathPicture` freezing, `TextBlob` creation, `PreparedScene` record generation, explicit resource upload, and prepared rendering on CPU, headless GL, and Vulkan when built with `-Dvulkan=true`.
 
 ## Architecture
 
@@ -347,7 +399,7 @@ Benchmarks are intentionally deferred while the explicit resource model lands. T
 src/
   snail.zig              public API: TextAtlas, TextBlob, ResourceSet, DrawList, Renderer, Path, ...
   fonts.zig              TextAtlas internals: multi-font manager with immutable snapshot atlas
-  c_api.zig              legacy C bindings, disabled by default
+  c_api.zig              C ABI over the explicit resource model
   glyph_emit.zig         glyph → vertex dispatch (plain, COLR, multi-layer)
   cpu_renderer.zig       software rasterizer (same atlas data, no GPU)
   font/
@@ -386,7 +438,7 @@ shaders/
   snail.frag             Vulkan fragment shader (text + paths, grayscale AA)
   snail_text_subpixel.frag  Vulkan fragment shader (text-only, subpixel AA)
 include/
-  snail.h                legacy C header
+  snail.h                public C header
 ```
 
 ## Thread safety
@@ -400,7 +452,7 @@ include/
 | `DrawList` | Caller-owned buffer. Thread-local — no sharing needed. |
 | `Renderer` | Single-threaded. Must be called from the GL/Vulkan context thread. |
 
-Typical pattern: build `TextAtlas` and call `ensureText`/`ensureShaped` on a loading thread, publish a new `ResourceSet` to the render thread, upload into `PreparedResources`, build `DrawList` records, then draw. The draw call does not allocate, upload, discover resources, or invalidate caches.
+Typical pattern: build `TextAtlas` and call `ensureText`/`ensureShaped` on a loading thread, publish a new `ResourceSet` to the render thread, upload into `PreparedResources`, build `DrawList` records or a `PreparedScene`, then draw. The draw call does not allocate, upload, discover resources, or invalidate caches.
 
 ## Status and roadmap
 
@@ -410,12 +462,11 @@ snail is used in development but is not yet stable. Current limitations:
 - No CFF/CFF2 support (TrueType outlines only).
 - No variable fonts.
 - Vulkan scheduled upload and retirement are API-shaped but still mostly synchronous.
-- Benchmarks and C bindings still use the old low-level surface and are intentionally deferred.
 
 Planned:
 - Flesh out nonblocking Vulkan scheduled upload and retirement.
-- Migrate the legacy C API onto the explicit resource model.
-- Rebuild benchmarks around the new named phases.
+- Broaden built-in shaping and font format support.
+- Extend C coverage for scheduled uploads and non-GL backends.
 
 ## License
 

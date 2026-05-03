@@ -29,94 +29,56 @@ ivec2 offsetCurveLoc(ivec2 base, int offset) {
     return loc;
 }
 
+// Solve a*t² - 2*b*t + p0 = 0 using the cancellation-free form
+// q = b + sign(b)*sqrt(disc); roots are q/a and p0/q (Vieta).
+// Preserves the original t1=(b-d)/a, t2=(b+d)/a ordering so downstream
+// `calcRootCode` bit interpretation stays correct.
 vec2 solveHorizPoly(vec4 p12, vec2 p3) {
     vec2 a = p12.xy - p12.zw * 2.0 + p3;
     vec2 b = p12.xy - p12.zw;
-    float ra = 1.0 / a.y;
-    float rb = 0.5 / b.y;
-    float d = sqrt(max(b.y * b.y - a.y * p12.y, 0.0));
-    float t1 = (b.y - d) * ra;
-    float t2 = (b.y + d) * ra;
-    if (abs(a.y) < 1.0 / 65536.0) { t1 = p12.y * rb; t2 = t1; }
+    const float kEps = 1.0 / 65536.0;
+    float t1, t2;
+    if (abs(a.y) < kEps) {
+        t1 = (abs(b.y) < kEps) ? 0.0 : p12.y * 0.5 / b.y;
+        t2 = t1;
+    } else {
+        float sq = sqrt(max(b.y * b.y - a.y * p12.y, 0.0));
+        if (b.y >= 0.0) {
+            float q = b.y + sq;
+            t2 = q / a.y;
+            t1 = (abs(q) < kEps) ? 0.0 : p12.y / q;
+        } else {
+            float q = b.y - sq;
+            t1 = q / a.y;
+            t2 = (abs(q) < kEps) ? 0.0 : p12.y / q;
+        }
+    }
     return vec2((a.x * t1 - b.x * 2.0) * t1 + p12.x,
-               (a.x * t2 - b.x * 2.0) * t2 + p12.x);
+                (a.x * t2 - b.x * 2.0) * t2 + p12.x);
 }
 
 vec2 solveVertPoly(vec4 p12, vec2 p3) {
     vec2 a = p12.xy - p12.zw * 2.0 + p3;
     vec2 b = p12.xy - p12.zw;
-    float ra = 1.0 / a.x;
-    float rb = 0.5 / b.x;
-    float d = sqrt(max(b.x * b.x - a.x * p12.x, 0.0));
-    float t1 = (b.x - d) * ra;
-    float t2 = (b.x + d) * ra;
-    if (abs(a.x) < 1.0 / 65536.0) { t1 = p12.x * rb; t2 = t1; }
+    const float kEps = 1.0 / 65536.0;
+    float t1, t2;
+    if (abs(a.x) < kEps) {
+        t1 = (abs(b.x) < kEps) ? 0.0 : p12.x * 0.5 / b.x;
+        t2 = t1;
+    } else {
+        float sq = sqrt(max(b.x * b.x - a.x * p12.x, 0.0));
+        if (b.x >= 0.0) {
+            float q = b.x + sq;
+            t2 = q / a.x;
+            t1 = (abs(q) < kEps) ? 0.0 : p12.x / q;
+        } else {
+            float q = b.x - sq;
+            t1 = q / a.x;
+            t2 = (abs(q) < kEps) ? 0.0 : p12.x / q;
+        }
+    }
     return vec2((a.y * t1 - b.y * 2.0) * t1 + p12.y,
-               (a.y * t2 - b.y * 2.0) * t2 + p12.y);
-}
-
-int hintStemCount() {
-    bool first = v_hint_src.x < v_hint_src.y;
-    bool second = v_hint_src.z < v_hint_src.w;
-    return second ? 2 : (first ? 1 : 0);
-}
-
-float mapHintSegment(float display_x, float display_a, float display_b, float source_a, float source_b) {
-    float span = display_b - display_a;
-    if (abs(span) <= 1.0 / 65536.0) return source_a;
-    return source_a + (display_x - display_a) * ((source_b - source_a) / span);
-}
-
-float hintSegmentScale(float display_a, float display_b, float source_a, float source_b) {
-    float span = display_b - display_a;
-    if (abs(span) <= 1.0 / 65536.0) return 1.0;
-    return (source_b - source_a) / span;
-}
-
-float inverseHintWarpX(float display_x) {
-    int stem_count = hintStemCount();
-    if (stem_count == 0) return display_x;
-
-    if (stem_count == 1) {
-        if (display_x <= v_hint_dst.x) return mapHintSegment(display_x, v_hint_bounds.x, v_hint_dst.x, v_hint_bounds.x, v_hint_src.x);
-        if (display_x <= v_hint_dst.y) return mapHintSegment(display_x, v_hint_dst.x, v_hint_dst.y, v_hint_src.x, v_hint_src.y);
-        return mapHintSegment(display_x, v_hint_dst.y, v_hint_bounds.y, v_hint_src.y, v_hint_bounds.y);
-    }
-
-    if (display_x <= v_hint_dst.x) return mapHintSegment(display_x, v_hint_bounds.x, v_hint_dst.x, v_hint_bounds.x, v_hint_src.x);
-    if (display_x <= v_hint_dst.y) return mapHintSegment(display_x, v_hint_dst.x, v_hint_dst.y, v_hint_src.x, v_hint_src.y);
-    if (display_x <= v_hint_dst.z) return mapHintSegment(display_x, v_hint_dst.y, v_hint_dst.z, v_hint_src.y, v_hint_src.z);
-    if (display_x <= v_hint_dst.w) return mapHintSegment(display_x, v_hint_dst.z, v_hint_dst.w, v_hint_src.z, v_hint_src.w);
-    return mapHintSegment(display_x, v_hint_dst.w, v_hint_bounds.y, v_hint_src.w, v_hint_bounds.y);
-}
-
-float inverseHintWarpScaleX(float display_x) {
-    int stem_count = hintStemCount();
-    if (stem_count == 0) return 1.0;
-
-    if (stem_count == 1) {
-        if (display_x <= v_hint_dst.x) return hintSegmentScale(v_hint_bounds.x, v_hint_dst.x, v_hint_bounds.x, v_hint_src.x);
-        if (display_x <= v_hint_dst.y) return hintSegmentScale(v_hint_dst.x, v_hint_dst.y, v_hint_src.x, v_hint_src.y);
-        return hintSegmentScale(v_hint_dst.y, v_hint_bounds.y, v_hint_src.y, v_hint_bounds.y);
-    }
-
-    if (display_x <= v_hint_dst.x) return hintSegmentScale(v_hint_bounds.x, v_hint_dst.x, v_hint_bounds.x, v_hint_src.x);
-    if (display_x <= v_hint_dst.y) return hintSegmentScale(v_hint_dst.x, v_hint_dst.y, v_hint_src.x, v_hint_src.y);
-    if (display_x <= v_hint_dst.z) return hintSegmentScale(v_hint_dst.y, v_hint_dst.z, v_hint_src.y, v_hint_src.z);
-    if (display_x <= v_hint_dst.w) return hintSegmentScale(v_hint_dst.z, v_hint_dst.w, v_hint_src.z, v_hint_src.w);
-    return hintSegmentScale(v_hint_dst.w, v_hint_bounds.y, v_hint_src.w, v_hint_bounds.y);
-}
-
-vec2 hintedLocalCoord(vec2 rc) {
-    return vec2(inverseHintWarpX(rc.x), rc.y);
-}
-
-vec2 hintedPixelsPerEm(vec2 display_epp, float display_x) {
-    float scale_x = max(abs(inverseHintWarpScaleX(display_x)), 1.0 / 65536.0);
-    return vec2(
-        1.0 / max(display_epp.x * scale_x, 1.0 / 65536.0),
-        1.0 / max(display_epp.y, 1.0 / 65536.0)
-    );
+                (a.y * t2 - b.y * 2.0) * t2 + p12.y);
 }
 
 float evalGlyphCoverage(vec2 rc, vec2 ppe, ivec2 gLoc, ivec2 bandMax, vec4 banding, int texLayer) {

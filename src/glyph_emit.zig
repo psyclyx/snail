@@ -2,7 +2,6 @@ const vec = @import("math/vec.zig");
 const Transform2D = vec.Transform2D;
 const snail = @import("snail.zig");
 const SyntheticStyle = snail.SyntheticStyle;
-const text_hinting = @import("text_hinting.zig");
 
 pub const EmitResult = enum {
     emitted,
@@ -93,7 +92,6 @@ pub fn emitGlyphWithTransform(
     glyph_id: u16,
     color: [4]f32,
     transform: Transform2D,
-    hint: text_hinting.GlyphHintInstance,
 ) EmitResult {
     if (view.getColrBase(glyph_id)) |cbi| {
         const info_loc = view.layerInfoLoc(cbi.info_x, cbi.info_y);
@@ -116,7 +114,7 @@ pub fn emitGlyphWithTransform(
             const linfo = view.getGlyph(layer.glyph_id) orelse continue;
             if (!hasRenderableBands(linfo)) continue;
             const lcolor: [4]f32 = if (layer.color[0] < 0) color else layer.color;
-            batch.addGlyphTransformed(linfo.bbox, linfo.band_entry, lcolor, view.glyphLayer(linfo.page_index), transform, hint) catch |err| return emitError(err);
+            batch.addGlyphTransformed(linfo.bbox, linfo.band_entry, lcolor, view.glyphLayer(linfo.page_index), transform) catch |err| return emitError(err);
             emitted = true;
         }
         return if (emitted) .emitted else .skipped;
@@ -124,7 +122,7 @@ pub fn emitGlyphWithTransform(
 
     const info = view.getGlyph(glyph_id) orelse return .skipped;
     if (!hasRenderableBands(info)) return .skipped;
-    batch.addGlyphTransformed(info.bbox, info.band_entry, color, view.glyphLayer(info.page_index), transform, hint) catch |err| return emitError(err);
+    batch.addGlyphTransformed(info.bbox, info.band_entry, color, view.glyphLayer(info.page_index), transform) catch |err| return emitError(err);
     return .emitted;
 }
 
@@ -164,5 +162,5 @@ fn emitWithTransform(
         .yy = -font_size,
         .ty = y,
     };
-    return emitGlyphWithTransform(batch, view, glyph_id, color, transform, .{});
+    return emitGlyphWithTransform(batch, view, glyph_id, color, transform);
 }

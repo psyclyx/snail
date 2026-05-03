@@ -2,9 +2,6 @@ in vec4 v_color;
 in vec2 v_texcoord;
 flat in vec4 v_banding;
 flat in ivec4 v_glyph;
-flat in vec4 v_hint_src;
-flat in vec4 v_hint_dst;
-flat in vec2 v_hint_bounds;
 
 uniform sampler2DArray u_curve_tex;
 uniform usampler2DArray u_band_tex;

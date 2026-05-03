@@ -20,6 +20,8 @@ pub const KEY_R = wayland.KEY_R;
 pub const KEY_L = wayland.KEY_L;
 pub const KEY_Z = wayland.KEY_Z;
 pub const KEY_X = wayland.KEY_X;
+pub const KEY_H = wayland.KEY_H;
+pub const KEY_B = wayland.KEY_B;
 pub const KEY_LEFT = wayland.KEY_LEFT;
 pub const KEY_RIGHT = wayland.KEY_RIGHT;
 pub const KEY_UP = wayland.KEY_UP;
@@ -388,6 +390,10 @@ pub fn deinitOffscreen() void {
 /// Waits only for the current ring slot, allowing the CPU to queue several
 /// frames ahead during headless benchmarks instead of idling every frame.
 pub fn beginFrameOffscreen() vk.VkCommandBuffer {
+    return beginFrameOffscreenWithClear(.{ 0.12, 0.12, 0.14, 1.0 });
+}
+
+pub fn beginFrameOffscreenWithClear(clear_color: [4]f32) vk.VkCommandBuffer {
     const frame = offscreen_frame;
     const fence = offscreen_fences[frame];
     _ = vk.vkWaitForFences(device, 1, &fence, vk.VK_TRUE, std.math.maxInt(u64));
@@ -402,7 +408,7 @@ pub fn beginFrameOffscreen() vk.VkCommandBuffer {
     });
     _ = vk.vkBeginCommandBuffer(cmd, &begin_info);
 
-    const clear_value = vk.VkClearValue{ .color = .{ .float32 = .{ 0.12, 0.12, 0.14, 1.0 } } };
+    const clear_value = vk.VkClearValue{ .color = .{ .float32 = clear_color } };
     const rp_info = std.mem.zeroInit(vk.VkRenderPassBeginInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
         .renderPass = offscreen_render_pass,
@@ -435,6 +441,46 @@ pub fn endFrameOffscreen() void {
     });
     _ = vk.vkQueueSubmit(graphics_queue, 1, &submit_info, fence);
     offscreen_frame = (frame + 1) % OFFSCREEN_FRAMES_IN_FLIGHT;
+}
+
+pub fn captureOffscreenRgba8(allocator: std.mem.Allocator) ![]u8 {
+    const byte_count = @as(usize, offscreen_extent.width) * offscreen_extent.height * 4;
+    const pixels = try allocator.alloc(u8, byte_count);
+    errdefer allocator.free(pixels);
+
+    var staging_buffer: vk.VkBuffer = null;
+    var staging_memory: vk.VkDeviceMemory = null;
+    try createReadbackBuffer(byte_count, &staging_buffer, &staging_memory);
+    defer {
+        if (staging_buffer != null) vk.vkDestroyBuffer(device, staging_buffer, null);
+        if (staging_memory != null) vk.vkFreeMemory(device, staging_memory, null);
+    }
+
+    const cmd = try beginOneShotCommand();
+    transitionOffscreenImageForCopy(cmd, vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    const region = std.mem.zeroInit(vk.VkBufferImageCopy, .{
+        .bufferOffset = 0,
+        .bufferRowLength = 0,
+        .bufferImageHeight = 0,
+        .imageSubresource = .{
+            .aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT,
+            .mipLevel = 0,
+            .baseArrayLayer = 0,
+            .layerCount = 1,
+        },
+        .imageOffset = .{ .x = 0, .y = 0, .z = 0 },
+        .imageExtent = .{ .width = offscreen_extent.width, .height = offscreen_extent.height, .depth = 1 },
+    });
+    vk.vkCmdCopyImageToBuffer(cmd, offscreen_image, vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, staging_buffer, 1, &region);
+    transitionOffscreenImageForCopy(cmd, vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    try endOneShotCommand(cmd);
+
+    var mapped: ?*anyopaque = null;
+    try checkVk(vk.vkMapMemory(device, staging_memory, 0, byte_count, 0, &mapped));
+    defer vk.vkUnmapMemory(device, staging_memory);
+    const src: [*]const u8 = @ptrCast(mapped.?);
+    @memcpy(pixels, src[0..byte_count]);
+    return pixels;
 }
 
 fn createInstanceOffscreen() !void {
@@ -543,6 +589,110 @@ fn findMemoryType(type_filter: u32, properties: vk.VkMemoryPropertyFlags) !u32 {
     return error.NoSuitableMemoryType;
 }
 
+fn createReadbackBuffer(size: usize, buffer: *vk.VkBuffer, memory: *vk.VkDeviceMemory) !void {
+    const buffer_ci = std.mem.zeroInit(vk.VkBufferCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = size,
+        .usage = vk.VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        .sharingMode = vk.VK_SHARING_MODE_EXCLUSIVE,
+    });
+    try checkVk(vk.vkCreateBuffer(device, &buffer_ci, null, buffer));
+    errdefer {
+        vk.vkDestroyBuffer(device, buffer.*, null);
+        buffer.* = null;
+    }
+
+    var mem_req: vk.VkMemoryRequirements = undefined;
+    vk.vkGetBufferMemoryRequirements(device, buffer.*, &mem_req);
+    const mem_type = try findMemoryType(
+        mem_req.memoryTypeBits,
+        vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+    );
+    const alloc_info = std.mem.zeroInit(vk.VkMemoryAllocateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = mem_req.size,
+        .memoryTypeIndex = mem_type,
+    });
+    try checkVk(vk.vkAllocateMemory(device, &alloc_info, null, memory));
+    errdefer {
+        vk.vkFreeMemory(device, memory.*, null);
+        memory.* = null;
+    }
+    try checkVk(vk.vkBindBufferMemory(device, buffer.*, memory.*, 0));
+}
+
+fn beginOneShotCommand() !vk.VkCommandBuffer {
+    var cmd: vk.VkCommandBuffer = null;
+    const alloc_info = std.mem.zeroInit(vk.VkCommandBufferAllocateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = command_pool,
+        .level = vk.VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    });
+    try checkVk(vk.vkAllocateCommandBuffers(device, &alloc_info, &cmd));
+    errdefer vk.vkFreeCommandBuffers(device, command_pool, 1, &cmd);
+
+    const begin_info = std.mem.zeroInit(vk.VkCommandBufferBeginInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = vk.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    });
+    try checkVk(vk.vkBeginCommandBuffer(cmd, &begin_info));
+    return cmd;
+}
+
+fn endOneShotCommand(cmd: vk.VkCommandBuffer) !void {
+    defer vk.vkFreeCommandBuffers(device, command_pool, 1, &cmd);
+    try checkVk(vk.vkEndCommandBuffer(cmd));
+    const submit_info = std.mem.zeroInit(vk.VkSubmitInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &cmd,
+    });
+    try checkVk(vk.vkQueueSubmit(graphics_queue, 1, &submit_info, null));
+    try checkVk(vk.vkQueueWaitIdle(graphics_queue));
+}
+
+fn transitionOffscreenImageForCopy(cmd: vk.VkCommandBuffer, old_layout: vk.VkImageLayout, new_layout: vk.VkImageLayout) void {
+    var src_access: vk.VkAccessFlags = 0;
+    var dst_access: vk.VkAccessFlags = 0;
+    var src_stage: vk.VkPipelineStageFlags = 0;
+    var dst_stage: vk.VkPipelineStageFlags = 0;
+
+    if (old_layout == vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL and new_layout == vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
+        src_access = vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        dst_access = vk.VK_ACCESS_TRANSFER_READ_BIT;
+        src_stage = vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dst_stage = vk.VK_PIPELINE_STAGE_TRANSFER_BIT;
+    } else if (old_layout == vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL and new_layout == vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
+        src_access = vk.VK_ACCESS_TRANSFER_READ_BIT;
+        dst_access = vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        src_stage = vk.VK_PIPELINE_STAGE_TRANSFER_BIT;
+        dst_stage = vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    } else {
+        src_stage = vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+        dst_stage = vk.VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+    }
+
+    const barrier = std.mem.zeroInit(vk.VkImageMemoryBarrier, .{
+        .sType = vk.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .oldLayout = old_layout,
+        .newLayout = new_layout,
+        .srcQueueFamilyIndex = vk.VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = vk.VK_QUEUE_FAMILY_IGNORED,
+        .image = offscreen_image,
+        .subresourceRange = .{
+            .aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT,
+            .baseMipLevel = 0,
+            .levelCount = 1,
+            .baseArrayLayer = 0,
+            .layerCount = 1,
+        },
+        .srcAccessMask = src_access,
+        .dstAccessMask = dst_access,
+    });
+    vk.vkCmdPipelineBarrier(cmd, src_stage, dst_stage, 0, 0, null, 0, null, 1, &barrier);
+}
+
 fn createOffscreenResources(width: u32, height: u32) !void {
     // Image
     const img_ci = std.mem.zeroInit(vk.VkImageCreateInfo, .{
@@ -554,7 +704,7 @@ fn createOffscreenResources(width: u32, height: u32) !void {
         .arrayLayers = 1,
         .samples = vk.VK_SAMPLE_COUNT_1_BIT,
         .tiling = vk.VK_IMAGE_TILING_OPTIMAL,
-        .usage = vk.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+        .usage = vk.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | vk.VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
         .sharingMode = vk.VK_SHARING_MODE_EXCLUSIVE,
         .initialLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED,
     });

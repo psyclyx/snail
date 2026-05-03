@@ -11,9 +11,6 @@ const gl330_text_coverage_interface =
     \\in vec2 v_texcoord;
     \\flat in vec4 v_banding;
     \\flat in ivec4 v_glyph;
-    \\flat in vec4 v_hint_src;
-    \\flat in vec4 v_hint_dst;
-    \\flat in vec2 v_hint_bounds;
     \\
     \\uniform sampler2DArray u_curve_tex;
     \\uniform usampler2DArray u_band_tex;
@@ -31,8 +28,10 @@ const shared_text_fragment_main =
     \\    int layer_byte = (v_glyph.w >> 8) & 0xFF;
     \\    if (layer_byte == 0xFF) discard;
     \\    int atlas_layer = u_layer_base + layer_byte;
-    \\    vec2 rc = hintedLocalCoord(v_texcoord);
-    \\    vec2 ppe = 1.0 / max(fwidth(rc), vec2(1.0 / 65536.0));
+    \\    vec2 rc = v_texcoord;
+    \\    vec2 dx = vec2(dFdx(rc.x), dFdy(rc.x));
+    \\    vec2 dy = vec2(dFdx(rc.y), dFdy(rc.y));
+    \\    vec2 ppe = vec2(1.0 / max(length(dx), 1.0 / 65536.0), 1.0 / max(length(dy), 1.0 / 65536.0));
     \\    float cov = evalGlyphCoverage(rc, ppe, v_glyph.xy,
     \\                                  ivec2(v_glyph.z, v_glyph.w & 0xFF),
     \\                                  v_banding, atlas_layer);

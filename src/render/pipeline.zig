@@ -58,7 +58,7 @@ const RING_SEGMENTS = 3;
 const RING_TOTAL_BYTES = 12 * 1024 * 1024; // 12 MB (4 MB per segment)
 const RING_SEGMENT_BYTES = RING_TOTAL_BYTES / RING_SEGMENTS;
 const GL33_STREAM_BYTES = RING_SEGMENT_BYTES;
-const BYTES_PER_GLYPH = vertex.FLOATS_PER_INSTANCE * @sizeOf(f32);
+const BYTES_PER_GLYPH = vertex.BYTES_PER_INSTANCE;
 const MAX_GLYPHS_PER_SEGMENT = RING_SEGMENT_BYTES / BYTES_PER_GLYPH;
 
 const MAX_ATLASES = upload_common.MAX_ATLASES;
@@ -612,17 +612,12 @@ pub const GlTextState = struct {
         }
 
         // DSA vertex attribs — all per-instance (binding divisor = 1)
-        const stride: gl.GLint = vertex.FLOATS_PER_INSTANCE * @sizeOf(f32);
+        const stride: gl.GLint = vertex.BYTES_PER_INSTANCE;
         gl.glVertexArrayVertexBuffer(self.vao, 0, self.vbo, 0, stride);
         gl.glVertexArrayElementBuffer(self.vao, self.ebo);
         gl.glVertexArrayBindingDivisor(self.vao, 0, 1);
 
-        inline for (0..5) |i| {
-            const loc: u32 = @intCast(i);
-            gl.glEnableVertexArrayAttrib(self.vao, loc);
-            gl.glVertexArrayAttribFormat(self.vao, loc, 4, gl.GL_FLOAT, gl.GL_FALSE, @intCast(i * 4 * @sizeOf(f32)));
-            gl.glVertexArrayAttribBinding(self.vao, loc, 0);
-        }
+        setupVertexArrayAttribs(self.vao);
 
         // EBO (static data, not persistently mapped)
         gl.glBindVertexArray(self.vao);
@@ -664,14 +659,14 @@ pub const GlTextState = struct {
 
     // ── Draw ──
 
-    fn drawTextInternal(self: *GlTextState, prepared: *const PreparedResources, vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32, allow_subpixel: bool) void {
+    fn drawTextInternal(self: *GlTextState, prepared: *const PreparedResources, vertices: []const u32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32, allow_subpixel: bool) void {
         // Ensure correct VAO is bound (may have been unbound by other renderers)
         gl.glBindVertexArray(self.vao);
         if (self.backend == .gl33) {
             gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vbo);
         }
 
-        const total_glyphs = vertices.len / vertex.FLOATS_PER_INSTANCE;
+        const total_glyphs = vertices.len / vertex.WORDS_PER_INSTANCE;
         const render_mode = subpixel_policy.chooseTextRenderMode(
             vertices,
             mvp,
@@ -720,21 +715,21 @@ pub const GlTextState = struct {
         }
     }
 
-    pub fn drawTextPrepared(self: *GlTextState, prepared: *const PreparedResources, vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32) void {
+    pub fn drawTextPrepared(self: *GlTextState, prepared: *const PreparedResources, vertices: []const u32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32) void {
         self.drawTextInternal(prepared, vertices, mvp, viewport_w, viewport_h, texture_layer_base, true);
     }
 
-    pub fn drawPreparedText(self: *GlTextState, prepared: *const PreparedResources, vertices: []const f32) void {
+    pub fn drawPreparedText(self: *GlTextState, prepared: *const PreparedResources, vertices: []const u32) void {
         _ = prepared;
         if (vertices.len == 0) return;
         gl.glBindVertexArray(self.vao);
         if (self.backend == .gl33) {
             gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vbo);
         }
-        self.drawGlyphRange(vertices, 0, vertices.len / vertex.FLOATS_PER_INSTANCE);
+        self.drawGlyphRange(vertices, 0, vertices.len / vertex.WORDS_PER_INSTANCE);
     }
 
-    pub fn drawPathsPrepared(self: *GlTextState, prepared: *const PreparedResources, vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32) void {
+    pub fn drawPathsPrepared(self: *GlTextState, prepared: *const PreparedResources, vertices: []const u32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32) void {
         const render_mode: subpixel_policy.TextRenderMode = .grayscale;
         const prog_state = self.ensurePathProgram();
         gl.glBindVertexArray(self.vao);
@@ -745,7 +740,7 @@ pub const GlTextState = struct {
         setTextBlendMode(false, render_mode);
 
         self.bindProgramState(prepared, prog_state, mvp, viewport_w, viewport_h, texture_layer_base, render_mode);
-        self.drawGlyphRange(vertices, 0, vertices.len / vertex.FLOATS_PER_INSTANCE);
+        self.drawGlyphRange(vertices, 0, vertices.len / vertex.WORDS_PER_INSTANCE);
     }
 
     pub fn beginFrame(self: *GlTextState) void {
@@ -814,21 +809,22 @@ pub const GlTextState = struct {
         gl.glUniform2f(prog_state.viewport_loc, viewport_w, viewport_h);
         if (prog_state.layer_base_loc >= 0) gl.glUniform1i(prog_state.layer_base_loc, @intCast(texture_layer_base));
         gl.glUniform1i(prog_state.fill_rule_loc, @intFromEnum(self.fill_rule));
-        if (render_mode != .grayscale and prog_state.subpixel_order_loc >= 0) {
-            gl.glUniform1i(prog_state.subpixel_order_loc, @intFromEnum(self.subpixel_order));
+        if (prog_state.subpixel_order_loc >= 0) {
+            const order = if (render_mode == .grayscale) SubpixelOrder.none else self.subpixel_order;
+            gl.glUniform1i(prog_state.subpixel_order_loc, @intFromEnum(order));
         }
     }
 
-    fn drawGlyphRange(self: *GlTextState, vertices: []const f32, glyph_offset: usize, glyph_count: usize) void {
+    fn drawGlyphRange(self: *GlTextState, vertices: []const u32, glyph_offset: usize, glyph_count: usize) void {
         var glyphs_drawn: usize = 0;
         while (glyphs_drawn < glyph_count) {
             const chunk: usize = @min(glyph_count - glyphs_drawn, MAX_GLYPHS_PER_SEGMENT);
-            const float_offset = (glyph_offset + glyphs_drawn) * vertex.FLOATS_PER_INSTANCE;
+            const word_offset = (glyph_offset + glyphs_drawn) * vertex.WORDS_PER_INSTANCE;
             const byte_size = chunk * BYTES_PER_GLYPH;
 
             switch (self.backend) {
                 .gl33 => {
-                    gl.glBufferSubData(gl.GL_ARRAY_BUFFER, 0, @intCast(byte_size), @ptrCast(vertices[float_offset..].ptr));
+                    gl.glBufferSubData(gl.GL_ARRAY_BUFFER, 0, @intCast(byte_size), @ptrCast(vertices[word_offset..].ptr));
                 },
                 .gl44 => {
                     const offset = @as(usize, self.ring_segment) * RING_SEGMENT_BYTES;
@@ -843,10 +839,10 @@ pub const GlTextState = struct {
                     }
 
                     const dst = self.persistent_map.?[offset..][0..byte_size];
-                    const src: [*]const u8 = @ptrCast(vertices[float_offset..].ptr);
+                    const src: [*]const u8 = @ptrCast(vertices[word_offset..].ptr);
                     @memcpy(dst, src[0..byte_size]);
 
-                    const stride: gl.GLint = vertex.FLOATS_PER_INSTANCE * @sizeOf(f32);
+                    const stride: gl.GLint = vertex.BYTES_PER_INSTANCE;
                     gl.glVertexArrayVertexBuffer(self.vao, 0, self.vbo, @intCast(offset), stride);
                 },
             }
@@ -886,11 +882,14 @@ pub fn backendName() []const u8 {
 // ── Pure utility functions (no mutable state access) ──
 
 fn setupVertexAttribs() void {
-    const stride: gl.GLsizei = vertex.FLOATS_PER_INSTANCE * @sizeOf(f32);
-    inline for (0..7) |i| {
-        gl.glVertexAttribPointer(@intCast(i), 4, gl.GL_FLOAT, gl.GL_FALSE, stride, @ptrFromInt(i * 4 * @sizeOf(f32)));
-        gl.glEnableVertexAttribArray(@intCast(i));
-    }
+    const stride: gl.GLsizei = vertex.BYTES_PER_INSTANCE;
+    setupVertexAttrib(0, 4, gl.GL_HALF_FLOAT, gl.GL_FALSE, stride, @offsetOf(vertex.Instance, "rect"));
+    setupVertexAttrib(1, 4, gl.GL_FLOAT, gl.GL_FALSE, stride, @offsetOf(vertex.Instance, "xform"));
+    setupVertexAttrib(2, 2, gl.GL_FLOAT, gl.GL_FALSE, stride, @offsetOf(vertex.Instance, "origin"));
+    gl.glVertexAttribIPointer(3, 2, gl.GL_UNSIGNED_INT, stride, @ptrFromInt(@offsetOf(vertex.Instance, "glyph")));
+    gl.glEnableVertexAttribArray(3);
+    setupVertexAttrib(4, 4, gl.GL_FLOAT, gl.GL_FALSE, stride, @offsetOf(vertex.Instance, "band"));
+    setupVertexAttrib(5, 4, gl.GL_UNSIGNED_BYTE, gl.GL_TRUE, stride, @offsetOf(vertex.Instance, "color"));
 }
 
 fn textureUnitEnum(unit: gl.GLint) gl.GLenum {
@@ -898,9 +897,31 @@ fn textureUnitEnum(unit: gl.GLint) gl.GLenum {
 }
 
 fn setupInstanceDivisors() void {
-    inline for (0..7) |i| {
+    inline for (0..6) |i| {
         gl.glVertexAttribDivisor(@intCast(i), 1);
     }
+}
+
+fn setupVertexAttrib(loc: u32, components: gl.GLint, ty: gl.GLenum, normalized: gl.GLboolean, stride: gl.GLsizei, offset: usize) void {
+    gl.glVertexAttribPointer(loc, components, ty, normalized, stride, @ptrFromInt(offset));
+    gl.glEnableVertexAttribArray(loc);
+}
+
+fn setupVertexArrayAttribs(vao: gl.GLuint) void {
+    setupVertexArrayAttrib(vao, 0, 4, gl.GL_HALF_FLOAT, gl.GL_FALSE, @offsetOf(vertex.Instance, "rect"));
+    setupVertexArrayAttrib(vao, 1, 4, gl.GL_FLOAT, gl.GL_FALSE, @offsetOf(vertex.Instance, "xform"));
+    setupVertexArrayAttrib(vao, 2, 2, gl.GL_FLOAT, gl.GL_FALSE, @offsetOf(vertex.Instance, "origin"));
+    gl.glEnableVertexArrayAttrib(vao, 3);
+    gl.glVertexArrayAttribIFormat(vao, 3, 2, gl.GL_UNSIGNED_INT, @intCast(@offsetOf(vertex.Instance, "glyph")));
+    gl.glVertexArrayAttribBinding(vao, 3, 0);
+    setupVertexArrayAttrib(vao, 4, 4, gl.GL_FLOAT, gl.GL_FALSE, @offsetOf(vertex.Instance, "band"));
+    setupVertexArrayAttrib(vao, 5, 4, gl.GL_UNSIGNED_BYTE, gl.GL_TRUE, @offsetOf(vertex.Instance, "color"));
+}
+
+fn setupVertexArrayAttrib(vao: gl.GLuint, loc: u32, components: gl.GLint, ty: gl.GLenum, normalized: gl.GLboolean, offset: usize) void {
+    gl.glEnableVertexArrayAttrib(vao, loc);
+    gl.glVertexArrayAttribFormat(vao, loc, components, ty, normalized, @intCast(offset));
+    gl.glVertexArrayAttribBinding(vao, loc, 0);
 }
 
 fn initEbo() void {

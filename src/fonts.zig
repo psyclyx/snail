@@ -12,7 +12,6 @@ const ttf = @import("font/ttf.zig");
 const opentype = @import("font/opentype.zig");
 const glyph_emit = @import("glyph_emit.zig");
 const build_options = @import("build_options");
-const text_hinting = @import("text_hinting.zig");
 const harfbuzz = if (build_options.enable_harfbuzz) @import("font/harfbuzz.zig") else struct {
     pub const HarfBuzzShaper = void;
 };
@@ -195,7 +194,7 @@ pub const TextBlob = struct {
             }
             const hinted = resolveTextHinting(&face_view, glyph.glyph_id, final_transform, resolve, target, scene_to_screen);
 
-            switch (glyph_emit.emitGlyphWithTransform(batch, &face_view, glyph.glyph_id, glyph.color, hinted.transform, hinted.hint)) {
+            switch (glyph_emit.emitGlyphWithTransform(batch, &face_view, glyph.glyph_id, glyph.color, hinted.transform)) {
                 .emitted => count += 1,
                 .skipped => {},
                 .buffer_full => return error.DrawListFull,
@@ -210,7 +209,7 @@ pub const TextBlob = struct {
                     bold_transform = snail.Transform2D.multiply(transform, bold_transform);
                 }
                 const bold_hinted = resolveTextHinting(&face_view, glyph.glyph_id, bold_transform, resolve, target, scene_to_screen);
-                switch (glyph_emit.emitGlyphWithTransform(batch, &face_view, glyph.glyph_id, glyph.color, bold_hinted.transform, bold_hinted.hint)) {
+                switch (glyph_emit.emitGlyphWithTransform(batch, &face_view, glyph.glyph_id, glyph.color, bold_hinted.transform)) {
                     .emitted, .skipped => {},
                     .buffer_full => return error.DrawListFull,
                     .layer_window_changed => return error.GlyphSpansTextureLayerWindows,
@@ -910,7 +909,6 @@ pub const TextAtlas = struct {
                 new_face_glyphs[fi] = .{ .glyph_map = merged };
                 new_face_glyphs_initialized[fi] = true;
                 try new_face_glyphs[fi].buildGlyphLut(self.allocator);
-
             } else {
                 new_face_glyphs[fi] = try self.face_glyphs[fi].clone(self.allocator);
                 new_face_glyphs_initialized[fi] = true;
@@ -1124,10 +1122,10 @@ fn itemizeText(allocator: Allocator, config: *const FontConfig, style: snail.Fon
 
         const face_idx = resolveInner(config, style, cp, 0) orelse
             if (config.primary_face) |pf| pf else {
-            i += cp_len;
-            byte_offset += @intCast(cp_len);
-            continue;
-        };
+                i += cp_len;
+                byte_offset += @intCast(cp_len);
+                continue;
+            };
 
         if (current_face == null) {
             current_face = face_idx;
@@ -1191,7 +1189,9 @@ fn snapToGrid(value: f32, step: f32) f32 {
     return @round(value / step) * step;
 }
 
-fn hintGrid(order: snail.SubpixelOrder) struct { x: f32, y: f32 } {
+const HintGrid = struct { x: f32, y: f32 };
+
+fn hintGrid(order: snail.SubpixelOrder) HintGrid {
     return switch (order) {
         .rgb, .bgr => .{ .x = 1.0 / 3.0, .y = 1.0 },
         .vrgb, .vbgr => .{ .x = 1.0, .y = 1.0 / 3.0 },
@@ -1216,7 +1216,6 @@ fn glyphAdvanceEm(face_view: *const FaceView, glyph_id: u16) f32 {
 const ResolvedTextHinting = struct {
     transform: snail.Transform2D,
     screen_transform: snail.Transform2D,
-    hint: text_hinting.GlyphHintInstance = .{},
 };
 
 fn resolveTextHinting(
@@ -1248,7 +1247,7 @@ fn resolveTextHinting(
     screen.tx = snapToGrid(screen.tx, grid.x);
     screen.ty = snapToGrid(screen.ty, grid.y);
 
-    if (resolve.hinting == .metrics or resolve.hinting == .outline) {
+    if (resolve.hinting == .metrics) {
         const advance_em = glyphAdvanceEm(face_view, glyph_id);
         if (@abs(advance_em) > 1e-5) {
             const start = screen.tx;
@@ -1269,12 +1268,6 @@ fn resolveTextHinting(
         .yy = screen.yy / map.yy,
         .ty = (screen.ty - map.ty) / map.yy,
     };
-
-    if (resolve.hinting == .outline) {
-        if (face_view.getGlyph(glyph_id)) |info| {
-            result.hint = text_hinting.resolveGlyphHint(info.hint_source, info.bbox, screen.tx, screen.xx, grid.x);
-        }
-    }
 
     return result;
 }
@@ -1699,7 +1692,7 @@ test "TextAtlas.addText renders and reports advance" {
         fonts = new_fonts;
     }
 
-    var buf: [64 * snail.TEXT_FLOATS_PER_GLYPH]f32 = undefined;
+    var buf: [64 * snail.TEXT_WORDS_PER_GLYPH]u32 = undefined;
     var batch = snail.TextBatch.init(&buf);
     const result = try fonts.addText(&batch, .{}, "Hello", 0, 100, 24, .{ 1, 1, 1, 1 });
 
@@ -1716,7 +1709,7 @@ test "TextAtlas.addText reports missing glyphs" {
     defer fonts.deinit();
 
     // Don't ensure — atlas is empty.
-    var buf: [64 * snail.TEXT_FLOATS_PER_GLYPH]f32 = undefined;
+    var buf: [64 * snail.TEXT_WORDS_PER_GLYPH]u32 = undefined;
     var batch = snail.TextBatch.init(&buf);
     const result = try fonts.addText(&batch, .{}, "Hello", 0, 100, 24, .{ 1, 1, 1, 1 });
 
@@ -1849,27 +1842,3 @@ test "hinting skips intermediate targets" {
     try testing.expectApproxEqAbs(transform.ty, hinted.ty, 0.0001);
 }
 
-test "outline hinting produces stem warp data for upright H" {
-    const assets_data = @import("assets");
-    var fonts = try TextAtlas.init(testing.allocator, &.{
-        .{ .data = assets_data.noto_sans_regular },
-    });
-    defer fonts.deinit();
-
-    if (try fonts.ensureText(.{}, "H")) |new_fonts| {
-        fonts.deinit();
-        fonts = new_fonts;
-    }
-
-    const gid = try fonts.config.faces[0].font.glyphIndex('H');
-    const view = fonts.faceView(0, .{});
-    const transform = glyphPlacementTransform(10.2, 20.49, 12.0, 0.0);
-    const hinted = resolveTextHinting(&view, gid, transform, .{ .hinting = .outline }, .{
-        .pixel_width = 800,
-        .pixel_height = 600,
-        .subpixel_order = .rgb,
-    }, .identity);
-
-    try testing.expect(hinted.hint.stem_count > 0);
-    try testing.expect(hinted.hint.source[0] < hinted.hint.source[1]);
-}

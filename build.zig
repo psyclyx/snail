@@ -112,7 +112,7 @@ pub fn build(b: *std.Build) void {
     const enable_vulkan = b.option(bool, "vulkan", "Enable Vulkan backend") orelse false;
     const enable_cpu = b.option(bool, "cpu-renderer", "Enable CPU renderer backend") orelse true;
     const enable_harfbuzz = b.option(bool, "harfbuzz", "Enable HarfBuzz text shaping") orelse true;
-    const enable_c_api = b.option(bool, "c-api", "Build the legacy C API libraries") orelse false;
+    const enable_c_api = b.option(bool, "c-api", "Build the C API libraries") orelse true;
     const demo_renderer = b.option(DemoRenderer, "renderer", "Demo rendering backend (default: gl44)") orelse .gl44;
 
     const options = b.addOptions();
@@ -220,7 +220,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.addWriteFiles().add("vk_stub.zig", ""),
     });
 
-    // ── Legacy C API libraries ──
+    // ── C API libraries ──
     if (enable_c_api) {
         const lib_module = b.createModule(.{
             .root_source_file = b.path("src/c_api.zig"),
@@ -314,6 +314,20 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
 
+    if (enable_c_api) {
+        const c_api_test_module = b.createModule(.{
+            .root_source_file = b.path("src/c_api.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{.{ .name = "assets", .module = assets_mod }},
+        });
+        configureCoreModule(c_api_test_module, options, enable_opengl, enable_vulkan, enable_harfbuzz, vk_shaders_mod);
+        const c_api_tests = b.addTest(.{ .root_module = c_api_test_module });
+        const run_c_api_tests = b.addRunArtifact(c_api_tests);
+        test_step.dependOn(&run_c_api_tests.step);
+    }
+
     // ── Extra module tests (cpu_renderer, etc.) ──
     const extra_test_module = b.createModule(.{
         .root_source_file = b.path("src/cpu_renderer.zig"),
@@ -335,65 +349,13 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .imports = &.{.{ .name = "assets", .module = assets_mod }},
     });
-    configureCoreModule(bench_module, options, enable_opengl, enable_vulkan, enable_harfbuzz, vk_shaders_mod);
-
-    // ── Comparative benchmark (vs FreeType) ──
-    const bench_cmp_module = b.createModule(.{
-        .root_source_file = b.path("src/bench_compare.zig"),
-        .target = target,
-        .optimize = .ReleaseFast,
-        .link_libc = true,
-        .imports = &.{.{ .name = "assets", .module = assets_mod }},
-    });
-    configureCoreModule(bench_cmp_module, options, enable_opengl, enable_vulkan, enable_harfbuzz, vk_shaders_mod);
-    bench_cmp_module.linkSystemLibrary("freetype2", .{});
-
-    const bench_cmp_exe = b.addExecutable(.{ .name = "snail-bench-compare", .root_module = bench_cmp_module });
-    const run_bench_cmp = b.addRunArtifact(bench_cmp_exe);
-    const bench_cmp_step = b.step("bench-compare", "Run comparative benchmark vs FreeType");
-    bench_cmp_step.dependOn(&run_bench_cmp.step);
-
-    // ── Headless benchmark (standardized cross-library comparison) ──
-    const bench_hl_module = b.createModule(.{
-        .root_source_file = b.path("src/bench_headless.zig"),
-        .target = target,
-        .optimize = .ReleaseFast,
-        .link_libc = true,
-        .imports = &.{.{ .name = "assets", .module = assets_mod }},
-    });
-    configureEglOffscreenModule(bench_hl_module, options, enable_opengl, enable_vulkan, enable_harfbuzz, vk_shaders_mod);
-
-    const bench_hl_exe = b.addExecutable(.{ .name = "snail-bench-headless", .root_module = bench_hl_module });
-    const run_bench_hl = b.addRunArtifact(bench_hl_exe);
-    const bench_hl_step = b.step("bench-headless", "Run headless rendering benchmark");
-    bench_hl_step.dependOn(&run_bench_hl.step);
+    configureEglOffscreenModule(bench_module, options, enable_opengl, enable_vulkan, enable_harfbuzz, vk_shaders_mod);
+    bench_module.linkSystemLibrary("freetype2", .{});
 
     const bench_exe = b.addExecutable(.{ .name = "snail-bench", .root_module = bench_module });
     const run_bench = b.addRunArtifact(bench_exe);
-    const bench_step = b.step("bench", "Run benchmarks");
+    const bench_step = b.step("bench", "Run consolidated benchmarks");
     bench_step.dependOn(&run_bench.step);
-
-    // ── Benchmark suite (consolidated) ──
-    const bench_suite_module = b.createModule(.{
-        .root_source_file = b.path("src/bench_suite.zig"),
-        .target = target,
-        .optimize = .ReleaseFast,
-        .link_libc = true,
-        .imports = &.{.{ .name = "assets", .module = assets_mod }},
-    });
-    configureEglOffscreenModule(bench_suite_module, options, enable_opengl, enable_vulkan, enable_harfbuzz, vk_shaders_mod);
-    bench_suite_module.linkSystemLibrary("freetype2", .{});
-
-    const bench_suite_exe = b.addExecutable(.{ .name = "snail-bench-suite", .root_module = bench_suite_module });
-    const run_bench_suite = b.addRunArtifact(bench_suite_exe);
-    const bench_suite_step = b.step("bench-suite", "Run consolidated benchmark suite");
-    bench_suite_step.dependOn(&run_bench_suite.step);
-
-    // ── Run all benchmarks serially ──
-    const bench_all_step = b.step("bench-all", "Run all benchmarks serially");
-    run_bench_hl.step.dependOn(&run_bench_cmp.step);
-    run_bench_suite.step.dependOn(&run_bench_hl.step);
-    bench_all_step.dependOn(&run_bench_suite.step);
 
     // ── Headless demo screenshot ──
     const screenshot_module = b.createModule(.{
@@ -409,6 +371,30 @@ pub fn build(b: *std.Build) void {
     const run_screenshot = b.addRunArtifact(screenshot_exe);
     const screenshot_step = b.step("screenshot", "Render the demo scene offscreen and write zig-out/demo-screenshot.tga");
     screenshot_step.dependOn(&run_screenshot.step);
+
+    // ── Backend pixel comparison ──
+    const compare_options = b.addOptions();
+    compare_options.addOption(bool, "enable_profiling", false);
+    compare_options.addOption(bool, "enable_opengl", true);
+    compare_options.addOption(bool, "enable_vulkan", enable_vulkan);
+    compare_options.addOption(bool, "enable_cpu", true);
+    compare_options.addOption(bool, "enable_harfbuzz", enable_harfbuzz);
+    compare_options.addOption(bool, "force_gl33", false);
+    compare_options.addOption(DemoRenderer, "demo_renderer", .gl44);
+
+    const backend_compare_module = b.createModule(.{
+        .root_source_file = b.path("src/backend_compare.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{.{ .name = "assets", .module = assets_mod }},
+    });
+    configureEglOffscreenModule(backend_compare_module, compare_options, true, enable_vulkan, enable_harfbuzz, vk_shaders_mod);
+
+    const backend_compare_exe = b.addExecutable(.{ .name = "snail-backend-compare", .root_module = backend_compare_module });
+    const run_backend_compare = b.addRunArtifact(backend_compare_exe);
+    const backend_compare_step = b.step("backend-compare", "Compare CPU/OpenGL/Vulkan backend pixels offscreen");
+    backend_compare_step.dependOn(&run_backend_compare.step);
 
     // ── Valgrind ──
     const valgrind_step = b.step("valgrind", "Run tests under valgrind (memory checking)");

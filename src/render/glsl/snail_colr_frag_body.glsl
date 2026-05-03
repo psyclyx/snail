@@ -40,27 +40,49 @@ ivec2 offsetLayerLoc(ivec2 base, int offset) {
 vec2 solveHorizPoly(vec4 p12, vec2 p3) {
     vec2 a = p12.xy - p12.zw * 2.0 + p3;
     vec2 b = p12.xy - p12.zw;
-    float ra = 1.0 / a.y;
-    float rb = 0.5 / b.y;
-    float d = sqrt(max(b.y * b.y - a.y * p12.y, 0.0));
-    float t1 = (b.y - d) * ra;
-    float t2 = (b.y + d) * ra;
-    if (abs(a.y) < 1.0 / 65536.0) { t1 = p12.y * rb; t2 = t1; }
+    const float kEps = 1.0 / 65536.0;
+    float t1, t2;
+    if (abs(a.y) < kEps) {
+        t1 = (abs(b.y) < kEps) ? 0.0 : p12.y * 0.5 / b.y;
+        t2 = t1;
+    } else {
+        float sq = sqrt(max(b.y * b.y - a.y * p12.y, 0.0));
+        if (b.y >= 0.0) {
+            float q = b.y + sq;
+            t2 = q / a.y;
+            t1 = (abs(q) < kEps) ? 0.0 : p12.y / q;
+        } else {
+            float q = b.y - sq;
+            t1 = q / a.y;
+            t2 = (abs(q) < kEps) ? 0.0 : p12.y / q;
+        }
+    }
     return vec2((a.x * t1 - b.x * 2.0) * t1 + p12.x,
-               (a.x * t2 - b.x * 2.0) * t2 + p12.x);
+                (a.x * t2 - b.x * 2.0) * t2 + p12.x);
 }
 
 vec2 solveVertPoly(vec4 p12, vec2 p3) {
     vec2 a = p12.xy - p12.zw * 2.0 + p3;
     vec2 b = p12.xy - p12.zw;
-    float ra = 1.0 / a.x;
-    float rb = 0.5 / b.x;
-    float d = sqrt(max(b.x * b.x - a.x * p12.x, 0.0));
-    float t1 = (b.x - d) * ra;
-    float t2 = (b.x + d) * ra;
-    if (abs(a.x) < 1.0 / 65536.0) { t1 = p12.x * rb; t2 = t1; }
+    const float kEps = 1.0 / 65536.0;
+    float t1, t2;
+    if (abs(a.x) < kEps) {
+        t1 = (abs(b.x) < kEps) ? 0.0 : p12.x * 0.5 / b.x;
+        t2 = t1;
+    } else {
+        float sq = sqrt(max(b.x * b.x - a.x * p12.x, 0.0));
+        if (b.x >= 0.0) {
+            float q = b.x + sq;
+            t2 = q / a.x;
+            t1 = (abs(q) < kEps) ? 0.0 : p12.x / q;
+        } else {
+            float q = b.x - sq;
+            t1 = q / a.x;
+            t2 = (abs(q) < kEps) ? 0.0 : p12.x / q;
+        }
+    }
     return vec2((a.y * t1 - b.y * 2.0) * t1 + p12.y,
-               (a.y * t2 - b.y * 2.0) * t2 + p12.y);
+                (a.y * t2 - b.y * 2.0) * t2 + p12.y);
 }
 
 vec2 evalAxisCoverage(vec2 rc, float ppe, ivec2 bandLoc, int count, int layer, bool horizontal) {
@@ -130,8 +152,10 @@ void main() {
     int atlas_layer = (v_glyph.w >> 8) & 0xFF;
     if (atlas_layer != 0xFF) discard;
     vec2 rc = v_texcoord;
-    vec2 epp = fwidth(rc);
-    vec2 ppe = 1.0 / epp;
+    vec2 dx = vec2(dFdx(rc.x), dFdy(rc.x));
+    vec2 dy = vec2(dFdx(rc.y), dFdy(rc.y));
+    vec2 epp = vec2(length(dx), length(dy));
+    vec2 ppe = 1.0 / max(epp, vec2(1.0 / 65536.0));
     ivec2 infoBase = v_glyph.xy;
     int layer_count = v_glyph.z;
     vec4 result = vec4(0.0);

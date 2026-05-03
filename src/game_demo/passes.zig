@@ -211,7 +211,7 @@ fn buildHudPlainPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas, wind
     const text = try builder.finish();
 
     _ = window_w;
-    return PreparedPass.init(allocator, text, null, .{ .hinting = .outline });
+    return PreparedPass.init(allocator, text, null, .{ .hinting = .metrics });
 }
 
 fn buildHudTranslucentPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas, window_w: u32) !PreparedPass {
@@ -268,7 +268,7 @@ fn buildHudTranslucentPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas
     _ = try builder.addText(.{}, note, tx, rect.y + pad_y + title_size + 54.0, note_size, .{ 0.73, 0.82, 0.90, 1.0 });
     const text = try builder.finish();
 
-    return PreparedPass.init(allocator, text, picture, .{ .hinting = .outline });
+    return PreparedPass.init(allocator, text, picture, .{ .hinting = .metrics });
 }
 
 fn buildHudSolidPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas, window_w: u32, _: u32) !PreparedPass {
@@ -326,7 +326,7 @@ fn buildHudSolidPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas, wind
     _ = try builder.addText(.{}, note, tx, rect.y + 124.0, note_size, .{ 0.78, 0.86, 0.92, 1.0 });
     const text = try builder.finish();
 
-    return PreparedPass.init(allocator, text, picture, .{ .hinting = .outline });
+    return PreparedPass.init(allocator, text, picture, .{ .hinting = .metrics });
 }
 
 fn buildRoughWallTextPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas) !PlanePass {
@@ -381,7 +381,7 @@ fn buildCenterPanelPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas) !
     const text = try builder.finish();
 
     return .{
-        .prepared = try PreparedPass.init(allocator, text, null, .{ .hinting = .outline }),
+        .prepared = try PreparedPass.init(allocator, text, null, .{ .hinting = .metrics }),
         .scene_width = scene_w,
         .scene_height = scene_h,
         .opaque_backdrop = true,

@@ -42,7 +42,7 @@ pub fn main() !void {
     defer hud_passes.deinit();
     var scene_resources = try uploadSceneResources(allocator, &snail_renderer, &world_passes, &hud_passes);
     defer scene_resources.deinit();
-    var draw_buf: []f32 = &.{};
+    var draw_buf: []u32 = &.{};
     defer if (draw_buf.len > 0) allocator.free(draw_buf);
 
     var rough_wall_text = try SurfaceTextDraw.init(allocator, &scene_resources, world_passes.rough_wall.prepared.text);
@@ -217,7 +217,7 @@ fn drawSnailScene(
     scene: *const snail.Scene,
     mvp: snail.Mat4,
     target: snail.ResolveTarget,
-    draw_buf: *[]f32,
+    draw_buf: *[]u32,
     allocator: std.mem.Allocator,
 ) !void {
     const options = snail.DrawOptions{ .mvp = mvp, .target = target };
@@ -225,7 +225,7 @@ fn drawSnailScene(
     const needed_segments = snail.DrawList.estimateSegments(scene, options);
     if (draw_buf.*.len < needed) {
         if (draw_buf.*.len > 0) allocator.free(draw_buf.*);
-        draw_buf.* = try allocator.alloc(f32, needed);
+        draw_buf.* = try allocator.alloc(u32, needed);
     }
     const draw_segments = try allocator.alloc(snail.DrawSegment, needed_segments);
     defer allocator.free(draw_segments);
@@ -259,7 +259,7 @@ fn updateCamera(camera: *Camera, dt: f32) void {
 fn renderPlanePass(
     renderer: *snail.Renderer,
     prepared: *const snail.PreparedResources,
-    draw_buf: *[]f32,
+    draw_buf: *[]u32,
     allocator: std.mem.Allocator,
     pass: *const PlanePass,
     view_proj: snail.Mat4,
@@ -283,7 +283,7 @@ fn renderWorld(
     rough_wall_text: *const SurfaceTextDraw,
     center_panel_text: *const SurfaceTextDraw,
     prepared: *const snail.PreparedResources,
-    draw_buf: *[]f32,
+    draw_buf: *[]u32,
     allocator: std.mem.Allocator,
     world_buffer: RenderTarget,
     view_proj: snail.Mat4,

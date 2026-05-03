@@ -15,10 +15,13 @@ layout(push_constant) uniform PushConstants {
     mat4 mvp;
     vec2 viewport;
     int fill_rule;
+    int subpixel_order;
+    int layer_base;
 };
 
 layout(location = 0) out vec4 frag_color;
 
 #define SNAIL_FILL_RULE fill_rule
+#define u_layer_base layer_base
 
 #include "snail_path_frag_body.glsl"

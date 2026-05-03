@@ -5,10 +5,16 @@ const vec2 kCorners[4] = vec2[4](
     vec2(0.0, 1.0)
 );
 
+float snailVertexDilationScale() {
+    const float kCornerAxisScale = 1.41421356237;
+    const float kLcdAxisSupportScale = 7.0 / 3.0;
+    return kCornerAxisScale * ((SNAIL_SUBPIXEL_ORDER == 0) ? 1.0 : kLcdAxisSupportScale);
+}
+
 void main() {
     vec2 t = kCorners[SNAIL_VERTEX_INDEX];
 
-    // Em-space coordinates from bbox
+    // Em-space coordinates from the source bbox.
     vec2 em = mix(a_rect.xy, a_rect.zw, t);
 
     // Outward corner normal in local space
@@ -16,8 +22,8 @@ void main() {
 
     // Transform em-space to world-space
     vec2 pos = vec2(
-        a_xform.x * em.x + a_xform.y * em.y + a_meta.x,
-        a_xform.z * em.x + a_xform.w * em.y + a_meta.y
+        a_xform.x * em.x + a_xform.y * em.y + a_origin.x,
+        a_xform.z * em.x + a_xform.w * em.y + a_origin.y
     );
 
     // Normal in world space (for dilation direction)
@@ -36,14 +42,11 @@ void main() {
         a_xform.x * inv_det
     );
 
-    uint gz = floatBitsToUint(a_meta.z);
-    uint gw = floatBitsToUint(a_meta.w);
+    uint gz = a_glyph.x;
+    uint gw = a_glyph.y;
     v_glyph = ivec4(gz & 0xFFFFu, gz >> 16u, gw & 0xFFFFu, gw >> 16u);
     v_banding = a_bnd;
     v_color = a_col;
-    v_hint_src = a_hint_src;
-    v_hint_dst = a_hint_dst;
-    v_hint_bounds = a_rect.xz;
 
     // Slug dynamic dilation
     vec4 m0 = vec4(SNAIL_MVP[0].x, SNAIL_MVP[1].x, SNAIL_MVP[2].x, SNAIL_MVP[3].x);
@@ -64,10 +67,11 @@ void main() {
 
     vec2 d;
     if (abs(denom) > 1e-10) {
-        d = wn * (s2 * (st + sqrt(uv)) / denom);
+        d = n * (s2 * (st + sqrt(uv)) / denom);
     } else {
         d = n * 2.0 / SNAIL_VIEWPORT;
     }
+    d *= snailVertexDilationScale();
 
     vec2 p = pos + d;
     v_texcoord = vec2(em.x + dot(d, jac.xy), em.y + dot(d, jac.zw));

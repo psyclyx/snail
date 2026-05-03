@@ -10,7 +10,8 @@ pub const Roots = struct {
 };
 
 /// Solve at^2 + bt + c = 0 for t in [0, 1].
-/// Uses discriminant clamping for numerical stability.
+/// Uses the cancellation-free form q = -0.5*(b + sign(b)*sqrt(disc)) so
+/// near-tangent curves (small discriminant) don't lose precision.
 pub fn solveQuadratic(a: f32, b: f32, c_val: f32) Roots {
     var result = Roots{};
 
@@ -27,19 +28,25 @@ pub fn solveQuadratic(a: f32, b: f32, c_val: f32) Roots {
 
     var disc = b * b - 4.0 * a * c_val;
     if (disc < 0.0) {
-        // Clamp small negative discriminants (numerical noise)
-        if (disc > -1e-6) {
-            disc = 0.0;
-        } else {
-            return result;
-        }
+        if (disc > -1e-6) disc = 0.0 else return result;
     }
 
-    const sqrt_disc = @sqrt(disc);
-    const inv_2a = 0.5 / a;
+    const sq = @sqrt(disc);
+    const q = -0.5 * (b + (if (b >= 0.0) sq else -sq));
 
-    const t0 = (-b - sqrt_disc) * inv_2a;
-    const t1 = (-b + sqrt_disc) * inv_2a;
+    var t0: f32 = 0;
+    var t1: f32 = 0;
+    if (@abs(q) < 1e-10) {
+        // Both roots ≈ 0 (b≈0 and disc≈0).
+        // Caller handles count; we just emit a single root.
+        if (0.0 >= 0.0 and 0.0 <= 1.0) {
+            result.t[0] = 0.0;
+            result.count = 1;
+        }
+        return result;
+    }
+    t0 = q / a;
+    t1 = c_val / q;
 
     if (t0 >= 0.0 and t0 <= 1.0) {
         result.t[result.count] = t0;

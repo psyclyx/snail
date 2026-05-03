@@ -36,8 +36,36 @@ fn linearToSrgbU8(v: f32) u8 {
     return @intFromFloat(std.math.clamp(s, 0, 1) * 255);
 }
 
-fn demoTextHinting(active_motion: bool) snail.TextHinting {
-    return if (active_motion) .none else .outline;
+fn srgbToLinear(v: f32) f32 {
+    return if (v <= 0.04045) v / 12.92 else std.math.pow(f32, (v + 0.055) / 1.055, 2.4);
+}
+
+fn cycleHinting(h: snail.TextHinting) snail.TextHinting {
+    return switch (h) {
+        .none => .phase,
+        .phase => .metrics,
+        .metrics => .none,
+    };
+}
+
+fn cycleSubpixelOrder(o: snail.SubpixelOrder) snail.SubpixelOrder {
+    return switch (o) {
+        .none => .rgb,
+        .rgb => .bgr,
+        .bgr => .vrgb,
+        .vrgb => .vbgr,
+        .vbgr => .none,
+    };
+}
+
+fn aaName(o: snail.SubpixelOrder) []const u8 {
+    return switch (o) {
+        .none => "grayscale",
+        .rgb => "subpixel-RGB",
+        .bgr => "subpixel-BGR",
+        .vrgb => "subpixel-VRGB",
+        .vbgr => "subpixel-VBGR",
+    };
 }
 
 fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
@@ -64,6 +92,8 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
 
     const sys_order = subpixel_detect.detect();
     var current_order = platform.detectCurrentMonitorSubpixelOrder(sys_order);
+    std.debug.print("snail: detected subpixel order: system={s} monitor={s}\n", .{ @tagName(sys_order), @tagName(current_order) });
+    var selected_hinting: snail.TextHinting = .metrics;
 
     var path_picture: ?snail.PathPicture = null;
     defer if (path_picture) |*picture| picture.deinit();
@@ -73,7 +103,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
     defer scene.deinit();
     var prepared: ?snail.PreparedResources = null;
     defer if (prepared) |*resources| resources.deinit();
-    var draw_buf: []f32 = &.{};
+    var draw_buf: []u32 = &.{};
     defer if (draw_buf.len > 0) allocator.free(draw_buf);
     var uploaded_size = [2]u32{ 0, 0 };
     var current_text_hinting: snail.TextHinting = .none;
@@ -96,7 +126,8 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         renderer.backendName(),
         if (build_options.enable_harfbuzz) "ON" else "OFF",
     });
-    std.debug.print("Keys: arrows pan, Z/X zoom, R rotate, Esc quit\n", .{});
+    std.debug.print("Keys: arrows pan, Z/X zoom, R rotate, H hinting, B AA mode, Esc quit\n", .{});
+    std.debug.print("hinting={s} aa={s}\n", .{ @tagName(selected_hinting), aaName(current_order) });
 
     while (!platform.shouldClose()) {
         const now = platform.getTime();
@@ -116,6 +147,14 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
 
         if (platform.isKeyPressed(platform.KEY_R)) rotate = !rotate;
         if (platform.isKeyPressed(platform.KEY_ESCAPE)) break;
+        if (platform.isKeyPressed(platform.KEY_H)) {
+            selected_hinting = cycleHinting(selected_hinting);
+            std.debug.print("\nhinting={s}\n", .{@tagName(selected_hinting)});
+        }
+        if (platform.isKeyPressed(platform.KEY_B)) {
+            current_order = cycleSubpixelOrder(current_order);
+            std.debug.print("\naa={s}\n", .{aaName(current_order)});
+        }
         if (rotate) angle += dt * 0.5;
         if (platform.isKeyDown(platform.KEY_Z)) zoom *= 1.0 + dt * 2.0;
         if (platform.isKeyDown(platform.KEY_X)) zoom *= 1.0 - dt * 2.0;
@@ -131,7 +170,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
             platform.isKeyDown(platform.KEY_RIGHT) or
             platform.isKeyDown(platform.KEY_UP) or
             platform.isKeyDown(platform.KEY_DOWN);
-        const desired_text_hinting = demoTextHinting(active_motion);
+        const desired_text_hinting: snail.TextHinting = if (active_motion) .none else selected_hinting;
 
         const size = platform.getWindowSize();
         const fb_size = platform.getFramebufferSize();
@@ -185,7 +224,11 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
             if (text_blob) |*blob| try scene.addTextOptions(blob, .{ .hinting = current_text_hinting });
         }
 
-        const clear = demo_banner.clearColor();
+        const clear_srgb = demo_banner.clearColor();
+        // GL_FRAMEBUFFER_SRGB encodes glClearColor's linear input on write, and
+        // the CPU path passes linear into linearToSrgbU8. Convert once here so
+        // both backends store the documented sRGB clear bytes.
+        const clear = [4]f32{ srgbToLinear(clear_srgb[0]), srgbToLinear(clear_srgb[1]), srgbToLinear(clear_srgb[2]), clear_srgb[3] };
 
         if (use_vulkan) {
             const cmd = platform.beginFrame() orelse continue;
@@ -246,7 +289,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         const needed_segments = snail.DrawList.estimateSegments(&scene, draw_options);
         if (draw_buf.len < needed) {
             if (draw_buf.len > 0) allocator.free(draw_buf);
-            draw_buf = try allocator.alloc(f32, needed);
+            draw_buf = try allocator.alloc(u32, needed);
         }
         const draw_segments = try allocator.alloc(snail.DrawSegment, needed_segments);
         defer allocator.free(draw_segments);

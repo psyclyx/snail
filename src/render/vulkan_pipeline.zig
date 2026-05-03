@@ -58,7 +58,7 @@ pub const VulkanContext = struct {
 const UPLOAD_SLOTS = 8;
 const UPLOAD_SLOT_BYTES = 8 * 1024 * 1024; // 8 MB per frame slot
 const RING_TOTAL_BYTES = UPLOAD_SLOTS * UPLOAD_SLOT_BYTES;
-const BYTES_PER_GLYPH = vertex.FLOATS_PER_INSTANCE * @sizeOf(f32);
+const BYTES_PER_GLYPH = vertex.BYTES_PER_INSTANCE;
 const MAX_GLYPHS_PER_FRAME = UPLOAD_SLOT_BYTES / BYTES_PER_GLYPH;
 
 const MAX_ATLASES = upload_common.MAX_ATLASES;
@@ -763,11 +763,11 @@ pub const VulkanPipeline = struct {
 
     // ── Draw ──
 
-    fn drawTextInternal(self: *VulkanPipeline, prepared: *const PreparedResources, vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32, allow_subpixel: bool) void {
+    fn drawTextInternal(self: *VulkanPipeline, prepared: *const PreparedResources, vertices: []const u32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32, allow_subpixel: bool) void {
         const cmd = self.active_cmd orelse return;
         if (vertices.len == 0) return;
 
-        const total_glyphs = vertices.len / vertex.FLOATS_PER_INSTANCE;
+        const total_glyphs = vertices.len / vertex.WORDS_PER_INSTANCE;
         if (total_glyphs == 0) return;
 
         vk.vkCmdBindIndexBuffer(cmd, self.index_buffer, 0, vk.VK_INDEX_TYPE_UINT32);
@@ -854,15 +854,15 @@ pub const VulkanPipeline = struct {
         }
     }
 
-    pub fn drawTextPrepared(self: *VulkanPipeline, prepared: *const PreparedResources, vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32) void {
+    pub fn drawTextPrepared(self: *VulkanPipeline, prepared: *const PreparedResources, vertices: []const u32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32) void {
         self.drawTextInternal(prepared, vertices, mvp, viewport_w, viewport_h, texture_layer_base, true);
     }
 
-    pub fn drawPathsPrepared(self: *VulkanPipeline, prepared: *const PreparedResources, vertices: []const f32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32) void {
+    pub fn drawPathsPrepared(self: *VulkanPipeline, prepared: *const PreparedResources, vertices: []const u32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32) void {
         const cmd = self.active_cmd orelse return;
         if (vertices.len == 0) return;
 
-        const total_glyphs = vertices.len / vertex.FLOATS_PER_INSTANCE;
+        const total_glyphs = vertices.len / vertex.WORDS_PER_INSTANCE;
         if (total_glyphs == 0) return;
 
         vk.vkCmdBindIndexBuffer(cmd, self.index_buffer, 0, vk.VK_INDEX_TYPE_UINT32);
@@ -915,29 +915,32 @@ pub const VulkanPipeline = struct {
             }),
         };
 
-        // Vertex input: 7 vec4 per-instance attributes, single binding
-        const stride: u32 = vertex.FLOATS_PER_INSTANCE * @sizeOf(f32);
+        // Vertex input: mixed-format per-instance attributes, single binding
+        const stride: u32 = vertex.BYTES_PER_INSTANCE;
         const binding = vk.VkVertexInputBindingDescription{
             .binding = 0,
             .stride = stride,
             .inputRate = vk.VK_VERTEX_INPUT_RATE_INSTANCE,
         };
 
-        const attrs = [7]vk.VkVertexInputAttributeDescription{
-            .{ .location = 0, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 0 },
-            .{ .location = 1, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 16 },
-            .{ .location = 2, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 32 },
-            .{ .location = 3, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 48 },
-            .{ .location = 4, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 64 },
-            .{ .location = 5, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 80 },
-            .{ .location = 6, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 96 },
+        const attrs = [10]vk.VkVertexInputAttributeDescription{
+            .{ .location = 0, .binding = 0, .format = vk.VK_FORMAT_R16G16B16A16_SFLOAT, .offset = @offsetOf(vertex.Instance, "rect") },
+            .{ .location = 1, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = @offsetOf(vertex.Instance, "xform") },
+            .{ .location = 2, .binding = 0, .format = vk.VK_FORMAT_R32G32_SFLOAT, .offset = @offsetOf(vertex.Instance, "origin") },
+            .{ .location = 3, .binding = 0, .format = vk.VK_FORMAT_R32G32_UINT, .offset = @offsetOf(vertex.Instance, "glyph") },
+            .{ .location = 4, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = @offsetOf(vertex.Instance, "band") },
+            .{ .location = 5, .binding = 0, .format = vk.VK_FORMAT_R8G8B8A8_UNORM, .offset = @offsetOf(vertex.Instance, "color") },
+            .{ .location = 6, .binding = 0, .format = vk.VK_FORMAT_R16G16B16A16_SFLOAT, .offset = @offsetOf(vertex.Instance, "hint_x_src") },
+            .{ .location = 7, .binding = 0, .format = vk.VK_FORMAT_R16G16B16A16_SFLOAT, .offset = @offsetOf(vertex.Instance, "hint_x_dst") },
+            .{ .location = 8, .binding = 0, .format = vk.VK_FORMAT_R16G16B16A16_SFLOAT, .offset = @offsetOf(vertex.Instance, "hint_y_src") },
+            .{ .location = 9, .binding = 0, .format = vk.VK_FORMAT_R16G16B16A16_SFLOAT, .offset = @offsetOf(vertex.Instance, "hint_y_dst") },
         };
 
         const vi_info = std.mem.zeroInit(vk.VkPipelineVertexInputStateCreateInfo, .{
             .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
             .vertexBindingDescriptionCount = 1,
             .pVertexBindingDescriptions = &binding,
-            .vertexAttributeDescriptionCount = 7,
+            .vertexAttributeDescriptionCount = attrs.len,
             .pVertexAttributeDescriptions = &attrs,
         });
 
@@ -1050,19 +1053,19 @@ pub const VulkanPipeline = struct {
         return self.pipeline_text_subpixel_dual orelse error.PipelineUnavailable;
     }
 
-    fn drawGlyphRange(self: *VulkanPipeline, vertices: []const f32, glyph_offset: usize, glyph_count: usize) void {
+    fn drawGlyphRange(self: *VulkanPipeline, vertices: []const u32, glyph_offset: usize, glyph_count: usize) void {
         var glyphs_drawn: usize = 0;
         while (glyphs_drawn < glyph_count) {
             const available_bytes = UPLOAD_SLOT_BYTES - self.upload_cursor;
             const available_glyphs = available_bytes / BYTES_PER_GLYPH;
             if (available_glyphs == 0) @panic("Vulkan upload slot exhausted while drawing glyphs");
             const chunk: usize = @min(glyph_count - glyphs_drawn, available_glyphs);
-            const float_offset = (glyph_offset + glyphs_drawn) * vertex.FLOATS_PER_INSTANCE;
+            const word_offset = (glyph_offset + glyphs_drawn) * vertex.WORDS_PER_INSTANCE;
             const byte_size = chunk * BYTES_PER_GLYPH;
 
             const ring_offset: vk.VkDeviceSize = @as(vk.VkDeviceSize, self.active_upload_slot) * UPLOAD_SLOT_BYTES + self.upload_cursor;
             const dst = self.persistent_map.?[ring_offset..][0..byte_size];
-            const src: [*]const u8 = @ptrCast(vertices[float_offset..].ptr);
+            const src: [*]const u8 = @ptrCast(vertices[word_offset..].ptr);
             @memcpy(dst, src[0..byte_size]);
 
             const offsets = [1]vk.VkDeviceSize{ring_offset};
