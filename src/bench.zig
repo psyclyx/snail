@@ -94,6 +94,39 @@ const SceneKind = enum {
 
 const scene_kinds = [_]SceneKind{ .text, .vector, .mixed, .multi_script };
 
+const RenderMode = struct {
+    aa: snail.SubpixelOrder,
+    hinting: snail.TextHinting,
+
+    fn aaName(self: RenderMode) []const u8 {
+        return switch (self.aa) {
+            .none => "grayscale",
+            .rgb => "subpixel rgb",
+            .bgr => "subpixel bgr",
+            .vrgb => "subpixel vrgb",
+            .vbgr => "subpixel vbgr",
+        };
+    }
+
+    fn hintName(self: RenderMode) []const u8 {
+        return switch (self.hinting) {
+            .none => "unhinted",
+            .phase => "phase",
+            .metrics => "metrics",
+        };
+    }
+};
+
+const render_modes = [_]RenderMode{
+    .{ .aa = .none, .hinting = .none },
+    .{ .aa = .none, .hinting = .metrics },
+    .{ .aa = .rgb, .hinting = .none },
+    .{ .aa = .rgb, .hinting = .phase },
+    .{ .aa = .rgb, .hinting = .metrics },
+};
+
+const mode_scene_kinds = [_]SceneKind{ .text, .multi_script };
+
 const scene_text_lines = [_]TextLine{
     .{ .text = "Score: 12345  FPS: 60  Level 7", .x = 18, .y = 30, .size = 18 },
     .{ .text = "Health: 100%  Ammo: 42/120", .x = 18, .y = 56, .size = 18, .color = .{ 0.9, 0.35, 0.3, 1 } },
@@ -169,6 +202,16 @@ const RecordRow = struct {
     scene: SceneKind,
     us: f64,
     commands: usize,
+    words: usize,
+    segments: usize,
+};
+
+const ModeRow = struct {
+    backend: []const u8,
+    scene: SceneKind,
+    mode: RenderMode,
+    record_us: f64,
+    draw_us: f64,
     words: usize,
     segments: usize,
 };
@@ -410,6 +453,15 @@ fn buildScene(
     atlas: *snail.TextAtlas,
     kind: SceneKind,
 ) !SceneBundle {
+    return buildSceneWithHinting(allocator, atlas, kind, null);
+}
+
+fn buildSceneWithHinting(
+    allocator: std.mem.Allocator,
+    atlas: *snail.TextAtlas,
+    kind: SceneKind,
+    hinting_override: ?snail.TextHinting,
+) !SceneBundle {
     var scene = snail.Scene.init(allocator);
     errdefer scene.deinit();
 
@@ -428,7 +480,8 @@ fn buildScene(
         blobs = try allocator.alloc(snail.TextBlob, lines.len);
         for (lines) |line| {
             blobs[blob_count] = try makeTextBlob(allocator, atlas, line);
-            try scene.addTextOptions(&blobs[blob_count], line.resolve);
+            const resolve: snail.TextResolveOptions = if (hinting_override) |h| .{ .hinting = h } else line.resolve;
+            try scene.addTextOptions(&blobs[blob_count], resolve);
             blob_count += 1;
         }
     }
@@ -638,6 +691,41 @@ fn timeRecordBuild(
     return usFrom(start) / RECORD_ITERS;
 }
 
+// Cross-product of (AA, hinting) timed against one backend for one scene kind.
+fn benchModes(
+    allocator: std.mem.Allocator,
+    backend_name: []const u8,
+    atlas: *snail.TextAtlas,
+    rows: *std.ArrayList(ModeRow),
+    timer: anytype,
+) !void {
+    for (mode_scene_kinds) |scene_kind| {
+        for (render_modes) |mode| {
+            var bundle = try buildSceneWithHinting(allocator, atlas, scene_kind, mode.hinting);
+            defer bundle.deinit();
+
+            const opts = drawOptions(WIDTH, HEIGHT, mode.aa);
+            var resources = try uploadSceneResources(allocator, timer.renderer(), &bundle.scene);
+            defer resources.deinit();
+            var prepared_scene = try snail.PreparedScene.initOwned(allocator, &resources, &bundle.scene, opts);
+            defer prepared_scene.deinit();
+
+            const record_us = try timeRecordBuild(&resources, &bundle.scene, opts);
+            const draw_us = try timer.timeDraw(&resources, &prepared_scene, opts);
+
+            try rows.append(allocator, .{
+                .backend = backend_name,
+                .scene = scene_kind,
+                .mode = mode,
+                .record_us = record_us,
+                .draw_us = draw_us,
+                .words = prepared_scene.words.len,
+                .segments = prepared_scene.segments.len,
+            });
+        }
+    }
+}
+
 fn initFramebuffer() struct { fbo: gl.GLuint, texture: gl.GLuint } {
     var fbo: gl.GLuint = 0;
     var tex: gl.GLuint = 0;
@@ -808,6 +896,36 @@ fn printRecordTable(rows: []const RecordRow) void {
     std.debug.print("\n", .{});
 }
 
+fn printModeTable(rows: []const ModeRow) void {
+    std.debug.print(
+        \\## Render Modes
+        \\
+        \\Per-mode timings for the text and multi-script scenes. AA controls
+        \\the fragment-shader path (grayscale vs LCD subpixel); hinting controls
+        \\PreparedScene-time stem snapping resolved against the target.
+        \\
+        \\| Backend | Scene | AA | Hinting | Words | Segments | PreparedScene | Draw |
+        \\|---|---|---|---|---:|---:|---:|---:|
+        \\
+    , .{});
+    for (rows) |row| {
+        std.debug.print(
+            \\| {s} | {s} | {s} | {s} | {d} | {d} | {d:.2} us | {d:.2} us |
+            \\
+        , .{
+            row.backend,
+            row.scene.name(),
+            row.mode.aaName(),
+            row.mode.hintName(),
+            row.words,
+            row.segments,
+            row.record_us,
+            row.draw_us,
+        });
+    }
+    std.debug.print("\n", .{});
+}
+
 fn printRenderTable(rows: []const RenderRow) void {
     std.debug.print(
         \\## Prepared Render
@@ -956,27 +1074,88 @@ pub fn main() !void {
         });
     }
 
+    var vk_state: if (build_options.enable_vulkan) ?snail.VulkanRenderer else void = if (build_options.enable_vulkan) null else {};
+    var vk_renderer: if (build_options.enable_vulkan) snail.Renderer else void = undefined;
     if (comptime build_options.enable_vulkan) {
         const vk_ctx = try vulkan_platform.initOffscreen(WIDTH, HEIGHT);
-        defer vulkan_platform.deinitOffscreen();
-        var vk_renderer_state = try snail.VulkanRenderer.init(vk_ctx);
-        defer vk_renderer_state.deinit();
-        var vk_renderer = vk_renderer_state.asRenderer();
+        errdefer vulkan_platform.deinitOffscreen();
+        vk_state = try snail.VulkanRenderer.init(vk_ctx);
+        errdefer if (vk_state) |*s| s.deinit();
+        vk_renderer = vk_state.?.asRenderer();
         for (scene_kinds, 0..) |kind, i| {
             var vk_resources = try uploadSceneResources(allocator, &vk_renderer, &bundles[i].scene);
             defer vk_resources.deinit();
             var vk_scene = try snail.PreparedScene.initOwned(allocator, &vk_resources, &bundles[i].scene, options);
             defer vk_scene.deinit();
             try render_rows.append(allocator, .{
-                .backend = vk_renderer_state.backendName(),
+                .backend = vk_state.?.backendName(),
                 .scene = kind,
                 .frames = GPU_FRAMES,
                 .commands = bundles[i].scene.commandCount(),
                 .words = vk_scene.words.len,
                 .segments = vk_scene.segments.len,
-                .us = try timeVulkanDraw(&vk_renderer_state, &vk_renderer, &vk_resources, &vk_scene, options),
+                .us = try timeVulkanDraw(&vk_state.?, &vk_renderer, &vk_resources, &vk_scene, options),
             });
         }
+    }
+    defer if (build_options.enable_vulkan) {
+        if (vk_state) |*s| s.deinit();
+        vulkan_platform.deinitOffscreen();
+    };
+
+    var mode_rows: std.ArrayList(ModeRow) = .empty;
+    defer mode_rows.deinit(allocator);
+
+    const CpuTimer = struct {
+        renderer_ptr: *snail.Renderer,
+        pixels_buf: []u8,
+        fn renderer(self: @This()) *snail.Renderer {
+            return self.renderer_ptr;
+        }
+        fn timeDraw(
+            self: @This(),
+            prepared: *const snail.PreparedResources,
+            scene: *const snail.PreparedScene,
+            opts: snail.DrawOptions,
+        ) !f64 {
+            return timeCpuDraw(self.renderer_ptr, prepared, scene, opts, self.pixels_buf);
+        }
+    };
+    try benchModes(allocator, "CPU", &atlas, &mode_rows, CpuTimer{ .renderer_ptr = &cpu_renderer, .pixels_buf = cpu_pixels });
+
+    const GlTimer = struct {
+        renderer_ptr: *snail.Renderer,
+        fn renderer(self: @This()) *snail.Renderer {
+            return self.renderer_ptr;
+        }
+        fn timeDraw(
+            self: @This(),
+            prepared: *const snail.PreparedResources,
+            scene: *const snail.PreparedScene,
+            opts: snail.DrawOptions,
+        ) !f64 {
+            return timeGlDraw(self.renderer_ptr, prepared, scene, opts);
+        }
+    };
+    try benchModes(allocator, gl_renderer_state.backendName(), &atlas, &mode_rows, GlTimer{ .renderer_ptr = &gl_renderer_state });
+
+    if (comptime build_options.enable_vulkan) {
+        const VkTimer = struct {
+            state: *snail.VulkanRenderer,
+            renderer_ptr: *snail.Renderer,
+            fn renderer(self: @This()) *snail.Renderer {
+                return self.renderer_ptr;
+            }
+            fn timeDraw(
+                self: @This(),
+                prepared: *const snail.PreparedResources,
+                scene: *const snail.PreparedScene,
+                opts: snail.DrawOptions,
+            ) !f64 {
+                return timeVulkanDraw(self.state, self.renderer_ptr, prepared, scene, opts);
+            }
+        };
+        try benchModes(allocator, vk_state.?.backendName(), &atlas, &mode_rows, VkTimer{ .state = &vk_state.?, .renderer_ptr = &vk_renderer });
     }
 
     std.debug.print(
@@ -992,4 +1171,5 @@ pub fn main() !void {
     printTextTable(&text_rows);
     printRecordTable(&record_rows);
     printRenderTable(render_rows.items);
+    printModeTable(mode_rows.items);
 }
