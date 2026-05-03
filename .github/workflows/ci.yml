@@ -17,10 +17,31 @@ jobs:
           version: "0.16.0"
 
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y libglvnd-dev libharfbuzz-dev
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libglvnd-dev libharfbuzz-dev libegl1-mesa-dev \
+            libvulkan-dev vulkan-validationlayers \
+            mesa-vulkan-drivers libgl1-mesa-dri \
+            glslc
 
-      - name: Build library
+      - name: Build library (HarfBuzz)
         run: zig build -Dharfbuzz=true --release=fast
 
-      - name: Run tests
+      - name: Build library (no HarfBuzz)
+        run: zig build -Dharfbuzz=false --release=fast
+
+      - name: Build with Vulkan enabled
+        run: zig build -Dvulkan=true -Dharfbuzz=true --release=fast
+
+      - name: Run unit tests
         run: zig build test -Dharfbuzz=true
+
+      - name: Run unit tests (no HarfBuzz)
+        run: zig build test -Dharfbuzz=false
+
+      - name: Backend pixel comparison (CPU vs GL via llvmpipe)
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          GALLIUM_DRIVER: llvmpipe
+        run: zig build backend-compare

@@ -128,6 +128,7 @@ pub const Window = struct {
         c.xdg_surface_destroy(self.xdg_surface);
         c.wl_surface_destroy(self.surface);
         if (self.wm_base) |wm_base| c.xdg_wm_base_destroy(wm_base);
+        if (self.shm) |shm| c.wl_shm_destroy(shm);
         if (self.compositor) |compositor| c.wl_compositor_destroy(compositor);
         c.wl_registry_destroy(self.registry);
         c.wl_display_disconnect(self.display);

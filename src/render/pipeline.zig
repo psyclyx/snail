@@ -65,7 +65,7 @@ const MAX_ATLASES = upload_common.MAX_ATLASES;
 const MAX_PAGES_PER_ATLAS = upload_common.MAX_PAGES_PER_ATLAS;
 const MAX_IMAGES = upload_common.MAX_IMAGES;
 
-const AtlasSlot = upload_common.AtlasSlot(snail_mod.CurveAtlas, snail_mod.AtlasPage, MAX_PAGES_PER_ATLAS);
+const AtlasSlot = upload_common.AtlasSlot(snail_mod.lowlevel.CurveAtlas, snail_mod.lowlevel.AtlasPage, MAX_PAGES_PER_ATLAS);
 const ImageSlot = upload_common.ImageSlot(snail_mod.Image);
 
 pub const PreparedResources = struct {
@@ -112,7 +112,7 @@ pub const PreparedResources = struct {
         for (&self.image_slots) |*slot| slot.* = .{};
     }
 
-    pub fn uploadAtlases(self: *PreparedResources, atlases: []const *const snail_mod.CurveAtlas, out_views: anytype) !void {
+    pub fn uploadAtlases(self: *PreparedResources, atlases: []const *const snail_mod.lowlevel.CurveAtlas, out_views: anytype) !void {
         std.debug.assert(atlases.len == out_views.len);
 
         if (atlases.len == 0) {
@@ -187,7 +187,7 @@ pub const PreparedResources = struct {
         return upload_common.findImageSlot(self.image_slots[0..], self.image_slot_count, image);
     }
 
-    fn ensureAtlasImagesRegistered(self: *PreparedResources, atlases: []const *const snail_mod.CurveAtlas) void {
+    fn ensureAtlasImagesRegistered(self: *PreparedResources, atlases: []const *const snail_mod.lowlevel.CurveAtlas) void {
         var scratch: [MAX_IMAGES]*const snail_mod.Image = undefined;
         const count = upload_common.collectAtlasImages(self.image_slots[0..], self.image_slot_count, atlases, scratch[0..]);
         self.ensureImagesRegistered(scratch[0..count]);
@@ -335,7 +335,7 @@ pub const PreparedResources = struct {
         }
     }
 
-    fn rebuildTextureArrays(self: *PreparedResources, atlases: []const *const snail_mod.CurveAtlas, out_views: anytype) !void {
+    fn rebuildTextureArrays(self: *PreparedResources, atlases: []const *const snail_mod.lowlevel.CurveAtlas, out_views: anytype) !void {
         self.destroyAtlasTextureResources();
         self.resetAtlasUploadState();
 
@@ -355,7 +355,7 @@ pub const PreparedResources = struct {
         self.fillAtlasViews(atlases, out_views);
     }
 
-    fn appendTexturePages(self: *PreparedResources, atlases: []const *const snail_mod.CurveAtlas) !bool {
+    fn appendTexturePages(self: *PreparedResources, atlases: []const *const snail_mod.lowlevel.CurveAtlas) !bool {
         var max_curve_h: u32 = self.allocated_curve_height;
         var max_band_h: u32 = self.allocated_band_height;
         var start_pages: [MAX_ATLASES]u32 = undefined;
@@ -393,11 +393,11 @@ pub const PreparedResources = struct {
         return self.curve_array != 0 and self.band_array != 0 and self.atlas_slot_count > 0;
     }
 
-    fn atlasSlotsCompatible(self: *const PreparedResources, atlases: []const *const snail_mod.CurveAtlas) bool {
+    fn atlasSlotsCompatible(self: *const PreparedResources, atlases: []const *const snail_mod.lowlevel.CurveAtlas) bool {
         return upload_common.atlasSlotsCompatible(self.atlas_slots[0..], self.atlas_slot_count, atlases);
     }
 
-    fn fillAtlasViews(self: *const PreparedResources, atlases: []const *const snail_mod.CurveAtlas, out_views: anytype) void {
+    fn fillAtlasViews(self: *const PreparedResources, atlases: []const *const snail_mod.lowlevel.CurveAtlas, out_views: anytype) void {
         upload_common.fillAtlasViews(self.atlas_slots[0..], atlases, out_views);
     }
 
@@ -410,7 +410,7 @@ pub const PreparedResources = struct {
         for (&self.atlas_slots) |*slot| slot.* = .{};
     }
 
-    fn createTextureArrays(self: *PreparedResources, first_atlas: *const snail_mod.CurveAtlas, layer_count: u32, max_curve_h: u32, max_band_h: u32) void {
+    fn createTextureArrays(self: *PreparedResources, first_atlas: *const snail_mod.lowlevel.CurveAtlas, layer_count: u32, max_curve_h: u32, max_band_h: u32) void {
         const first_page = first_atlas.page(0);
 
         switch (self.backend) {
@@ -441,14 +441,14 @@ pub const PreparedResources = struct {
         }
     }
 
-    fn uploadAllPages(self: *PreparedResources, atlases: []const *const snail_mod.CurveAtlas) void {
+    fn uploadAllPages(self: *PreparedResources, atlases: []const *const snail_mod.lowlevel.CurveAtlas) void {
         switch (self.backend) {
             .gl33 => self.uploadTexturePagesGl33WithStarts(atlases, null),
             .gl44 => self.uploadTexturePagesGl44WithStarts(atlases, null),
         }
     }
 
-    fn uploadTexturePagesGl33WithStarts(self: *const PreparedResources, atlases: []const *const snail_mod.CurveAtlas, start_pages: ?[]const u32) void {
+    fn uploadTexturePagesGl33WithStarts(self: *const PreparedResources, atlases: []const *const snail_mod.lowlevel.CurveAtlas, start_pages: ?[]const u32) void {
         for (atlases, 0..) |atlas, i| {
             const start_page = if (start_pages) |sp| sp[i] else 0;
             const base_layer = self.atlas_slots[i].base_layer;
@@ -466,7 +466,7 @@ pub const PreparedResources = struct {
         }
     }
 
-    fn uploadTexturePagesGl44WithStarts(self: *const PreparedResources, atlases: []const *const snail_mod.CurveAtlas, start_pages: ?[]const u32) void {
+    fn uploadTexturePagesGl44WithStarts(self: *const PreparedResources, atlases: []const *const snail_mod.lowlevel.CurveAtlas, start_pages: ?[]const u32) void {
         for (atlases, 0..) |atlas, i| {
             const start_page = if (start_pages) |sp| sp[i] else 0;
             const base_layer = self.atlas_slots[i].base_layer;
@@ -480,7 +480,7 @@ pub const PreparedResources = struct {
         }
     }
 
-    fn rebuildLayerInfoTexture(self: *PreparedResources, atlases: []const *const snail_mod.CurveAtlas) !void {
+    fn rebuildLayerInfoTexture(self: *PreparedResources, atlases: []const *const snail_mod.lowlevel.CurveAtlas) !void {
         if (self.layer_info_tex != 0) gl.glDeleteTextures(1, &self.layer_info_tex);
         self.layer_info_tex = 0;
 
@@ -488,7 +488,7 @@ pub const PreparedResources = struct {
         for (atlases) |atlas| total_rows += atlas.layer_info_height;
         if (total_rows == 0) return;
 
-        const width = snail_mod.PATH_PAINT_INFO_WIDTH;
+        const width = snail_mod.lowlevel.PATH_PAINT_INFO_WIDTH;
         const total_texels = @as(usize, width) * @as(usize, total_rows) * 4;
         var data = try self.allocator.alloc(f32, total_texels);
         defer self.allocator.free(data);
@@ -601,8 +601,9 @@ pub const GlTextState = struct {
         self.persistent_map = @ptrCast(gl.glMapNamedBufferRange(self.vbo, 0, RING_TOTAL_BYTES, flags));
 
         if (self.persistent_map == null) {
-            // Fallback to GL 3.3 if mapping fails
-            std.debug.print("snail: persistent mapping failed, falling back to GL 3.3\n", .{});
+            // Fall back to GL 3.3 silently — the GL 3.3 path is the supported
+            // baseline; this just means persistent mapping isn't available on
+            // the current driver and we use BufferData updates instead.
             gl.glDeleteVertexArrays(1, &self.vao);
             gl.glDeleteBuffers(1, &self.vbo);
             gl.glDeleteBuffers(1, &self.ebo);

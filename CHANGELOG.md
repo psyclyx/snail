@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.3.0
+
+### Public API
+- Trim public surface: low-level glyph batching, raw `Atlas`/`Font` wrappers,
+  vertex sizing constants, paint-tag enums, debug-overlay options and other
+  building blocks now live exclusively under `snail.lowlevel`. The top-level
+  re-exports were removed.
+- Removed dead helpers: `ShapedRun`, `GlyphPlacement`, `Atlas.extendRun`,
+  `Atlas.collectMissingGlyphIds`, `Atlas.shapeUtf8`, `TextBatch.addRun`,
+  `TextBatch.addStyledRun`, `replaceAtlas`.
+- The Slug Library shader-coverage hook (`TextCoverageShader` /
+  `TextCoverageRecords` / `TextCoverageBackend`) is unchanged for users who
+  embed snail glyph coverage in their own GL pipelines.
+
+### Backend parity
+- CPU vs GL/Vulkan output is byte-identical on virtually every pixel; remaining
+  drift is bounded to 1 sRGB LSB plus a handful of near-tangent conic outliers.
+- CPU sRGB encode now uses the exact IEC 61966-2-1 curve and round-to-nearest
+  output rounding instead of an interpolated 4096-entry LUT and truncation.
+- `zig build backend-compare -Dvulkan=true` now exercises Vulkan and
+  cross-compares Vulkan vs OpenGL alongside CPU.
+
+### Bug fixes
+- Vulkan vertex format dropped phantom `hint_*` attributes that referenced
+  removed fields and made the Vulkan backend fail to compile.
+- Vulkan upload no longer overflows fixed `[256]VkBufferImageCopy` arrays when
+  many atlas pages are uploaded at once.
+- Wayland `wl_shm` global is now released in `Window.deinit`.
+- Fragment shaders pass `(v_count - 1, h_count - 1)` to `evalGlyphCoverage`
+  so `band_max` semantics match the CPU and the existing `band_max.y + 1`
+  vertical-header offset.
+- Conic denominator clamp uses the same epsilon (1/65536) on CPU and GPU.
+
+### Cleanup
+- Removed unused `assets/checkerboard_16x16.rgba`.
+- `CLAUDE.md` is no longer tracked.
+- Library no longer prints to stderr from non-fatal GL/EGL fallback paths.
+
 ## 0.2.0
 
 ### CPU renderer

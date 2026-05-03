@@ -65,7 +65,7 @@ const MAX_ATLASES = upload_common.MAX_ATLASES;
 const MAX_PAGES_PER_ATLAS = upload_common.MAX_PAGES_PER_ATLAS;
 const MAX_IMAGES = upload_common.MAX_IMAGES;
 
-const AtlasSlot = upload_common.AtlasSlot(snail_mod.CurveAtlas, snail_mod.AtlasPage, MAX_PAGES_PER_ATLAS);
+const AtlasSlot = upload_common.AtlasSlot(snail_mod.lowlevel.CurveAtlas, snail_mod.lowlevel.AtlasPage, MAX_PAGES_PER_ATLAS);
 const ImageSlot = upload_common.ImageSlot(snail_mod.Image);
 
 const FillRule = snail_mod.FillRule;
@@ -173,11 +173,11 @@ pub const PreparedResources = struct {
         return self.curve_image != null and self.band_image != null and self.atlas_slot_count > 0;
     }
 
-    fn atlasSlotsCompatible(self: *const PreparedResources, atlases: []const *const snail_mod.CurveAtlas) bool {
+    fn atlasSlotsCompatible(self: *const PreparedResources, atlases: []const *const snail_mod.lowlevel.CurveAtlas) bool {
         return upload_common.atlasSlotsCompatible(self.atlas_slots[0..], self.atlas_slot_count, atlases);
     }
 
-    fn fillAtlasViews(self: *const PreparedResources, atlases: []const *const snail_mod.CurveAtlas, out_views: anytype) void {
+    fn fillAtlasViews(self: *const PreparedResources, atlases: []const *const snail_mod.lowlevel.CurveAtlas, out_views: anytype) void {
         upload_common.fillAtlasViews(self.atlas_slots[0..], atlases, out_views);
     }
 
@@ -500,7 +500,7 @@ pub const VulkanPipeline = struct {
 
     // ── Texture array management ──
 
-    pub fn uploadPreparedAtlases(self: *VulkanPipeline, prepared: *PreparedResources, atlases: []const *const snail_mod.CurveAtlas, out_views: anytype) void {
+    pub fn uploadPreparedAtlases(self: *VulkanPipeline, prepared: *PreparedResources, atlases: []const *const snail_mod.lowlevel.CurveAtlas, out_views: anytype) void {
         std.debug.assert(atlases.len == out_views.len);
 
         if (atlases.len == 0) {
@@ -533,7 +533,7 @@ pub const VulkanPipeline = struct {
         self.updateDescriptorSet(prepared);
     }
 
-    fn rebuildTextureArrays(self: *VulkanPipeline, prepared: *PreparedResources, atlases: []const *const snail_mod.CurveAtlas, out_views: anytype) void {
+    fn rebuildTextureArrays(self: *VulkanPipeline, prepared: *PreparedResources, atlases: []const *const snail_mod.lowlevel.CurveAtlas, out_views: anytype) void {
         prepared.destroyAtlasTextureResources();
         prepared.resetAtlasUploadState();
 
@@ -570,7 +570,7 @@ pub const VulkanPipeline = struct {
         self.updateDescriptorSet(prepared);
     }
 
-    fn appendTexturePages(self: *VulkanPipeline, prepared: *PreparedResources, atlases: []const *const snail_mod.CurveAtlas) bool {
+    fn appendTexturePages(self: *VulkanPipeline, prepared: *PreparedResources, atlases: []const *const snail_mod.lowlevel.CurveAtlas) bool {
         var max_curve_h: u32 = prepared.allocated_curve_height;
         var max_band_h: u32 = prepared.allocated_band_height;
         var start_pages: [MAX_ATLASES]u32 = undefined;
@@ -600,7 +600,7 @@ pub const VulkanPipeline = struct {
         return true;
     }
 
-    fn ensureAtlasImagesRegistered(self: *VulkanPipeline, prepared: *PreparedResources, atlases: []const *const snail_mod.CurveAtlas) void {
+    fn ensureAtlasImagesRegistered(self: *VulkanPipeline, prepared: *PreparedResources, atlases: []const *const snail_mod.lowlevel.CurveAtlas) void {
         var scratch: [MAX_IMAGES]*const snail_mod.Image = undefined;
         const count = upload_common.collectAtlasImages(prepared.image_slots[0..], prepared.image_slot_count, atlases, scratch[0..]);
         self.ensureImagesRegistered(prepared, scratch[0..count]);
@@ -648,7 +648,7 @@ pub const VulkanPipeline = struct {
         prepared.image_slot_count += new_count;
     }
 
-    fn rebuildLayerInfoTexture(self: *VulkanPipeline, prepared: *PreparedResources, atlases: []const *const snail_mod.CurveAtlas) void {
+    fn rebuildLayerInfoTexture(self: *VulkanPipeline, prepared: *PreparedResources, atlases: []const *const snail_mod.lowlevel.CurveAtlas) void {
         if (prepared.layer_view != null) {
             vk.vkDestroyImageView(self.ctx.device, prepared.layer_view, null);
             prepared.layer_view = null;
@@ -666,7 +666,7 @@ pub const VulkanPipeline = struct {
         for (atlases) |atlas| total_rows += atlas.layer_info_height;
         if (total_rows == 0) return;
 
-        const width = snail_mod.PATH_PAINT_INFO_WIDTH;
+        const width = snail_mod.lowlevel.PATH_PAINT_INFO_WIDTH;
         const total_texels = @as(usize, width) * @as(usize, total_rows) * 4;
         var data = std.heap.page_allocator.alloc(f32, total_texels) catch return;
         defer std.heap.page_allocator.free(data);
@@ -923,17 +923,13 @@ pub const VulkanPipeline = struct {
             .inputRate = vk.VK_VERTEX_INPUT_RATE_INSTANCE,
         };
 
-        const attrs = [10]vk.VkVertexInputAttributeDescription{
+        const attrs = [6]vk.VkVertexInputAttributeDescription{
             .{ .location = 0, .binding = 0, .format = vk.VK_FORMAT_R16G16B16A16_SFLOAT, .offset = @offsetOf(vertex.Instance, "rect") },
             .{ .location = 1, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = @offsetOf(vertex.Instance, "xform") },
             .{ .location = 2, .binding = 0, .format = vk.VK_FORMAT_R32G32_SFLOAT, .offset = @offsetOf(vertex.Instance, "origin") },
             .{ .location = 3, .binding = 0, .format = vk.VK_FORMAT_R32G32_UINT, .offset = @offsetOf(vertex.Instance, "glyph") },
             .{ .location = 4, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = @offsetOf(vertex.Instance, "band") },
             .{ .location = 5, .binding = 0, .format = vk.VK_FORMAT_R8G8B8A8_UNORM, .offset = @offsetOf(vertex.Instance, "color") },
-            .{ .location = 6, .binding = 0, .format = vk.VK_FORMAT_R16G16B16A16_SFLOAT, .offset = @offsetOf(vertex.Instance, "hint_x_src") },
-            .{ .location = 7, .binding = 0, .format = vk.VK_FORMAT_R16G16B16A16_SFLOAT, .offset = @offsetOf(vertex.Instance, "hint_x_dst") },
-            .{ .location = 8, .binding = 0, .format = vk.VK_FORMAT_R16G16B16A16_SFLOAT, .offset = @offsetOf(vertex.Instance, "hint_y_src") },
-            .{ .location = 9, .binding = 0, .format = vk.VK_FORMAT_R16G16B16A16_SFLOAT, .offset = @offsetOf(vertex.Instance, "hint_y_dst") },
         };
 
         const vi_info = std.mem.zeroInit(vk.VkPipelineVertexInputStateCreateInfo, .{
@@ -1317,7 +1313,7 @@ pub const VulkanPipeline = struct {
     fn uploadTextureData(
         self: *VulkanPipeline,
         prepared: *PreparedResources,
-        atlases: []const *const snail_mod.CurveAtlas,
+        atlases: []const *const snail_mod.lowlevel.CurveAtlas,
         start_pages: ?[]const u32,
         layer_count: u32,
         old_layout: vk.VkImageLayout,
@@ -1355,11 +1351,15 @@ pub const VulkanPipeline = struct {
         // Map and copy data
         var map_ptr: ?*anyopaque = null;
         try check(vk.vkMapMemory(self.ctx.device, staging_mem, 0, @intCast(total_staging), 0, &map_ptr));
-        const staging_data: [*]u8 = @ptrCast(map_ptr);
+        const staging_data: [*]u8 = @ptrCast(map_ptr orelse return error.VulkanMapMemoryReturnedNull);
 
-        // Record copy regions
-        var curve_regions: [256]vk.VkBufferImageCopy = undefined;
-        var band_regions: [256]vk.VkBufferImageCopy = undefined;
+        // Record one VkBufferImageCopy per (atlas page, image), sized to the
+        // total page count discovered above. Static arrays would silently
+        // overflow when many fonts/atlases are uploaded together.
+        const curve_regions = try std.heap.c_allocator.alloc(vk.VkBufferImageCopy, region_count);
+        defer std.heap.c_allocator.free(curve_regions);
+        const band_regions = try std.heap.c_allocator.alloc(vk.VkBufferImageCopy, region_count);
+        defer std.heap.c_allocator.free(band_regions);
         var staging_offset: usize = 0;
 
         var region_index: usize = 0;
@@ -1409,8 +1409,8 @@ pub const VulkanPipeline = struct {
         transitionImageLayout(cmd, prepared.band_image, layer_count, old_layout, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
         // Copy buffer to images
-        vk.vkCmdCopyBufferToImage(cmd, staging_buf, prepared.curve_image, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region_count, &curve_regions);
-        vk.vkCmdCopyBufferToImage(cmd, staging_buf, prepared.band_image, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region_count, &band_regions);
+        vk.vkCmdCopyBufferToImage(cmd, staging_buf, prepared.curve_image, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region_count, curve_regions.ptr);
+        vk.vkCmdCopyBufferToImage(cmd, staging_buf, prepared.band_image, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region_count, band_regions.ptr);
 
         // Transition TRANSFER_DST -> SHADER_READ_ONLY
         transitionImageLayout(cmd, prepared.curve_image, layer_count, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);

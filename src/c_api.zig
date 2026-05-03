@@ -1143,22 +1143,22 @@ export fn snail_harfbuzz_available() bool {
 }
 
 export fn snail_text_words_per_glyph() usize {
-    return snail.TEXT_WORDS_PER_GLYPH;
+    return snail.lowlevel.TEXT_WORDS_PER_GLYPH;
 }
 export fn snail_text_words_per_vertex() usize {
-    return snail.TEXT_WORDS_PER_VERTEX;
+    return snail.lowlevel.TEXT_WORDS_PER_VERTEX;
 }
 export fn snail_text_vertices_per_glyph() usize {
-    return snail.TEXT_VERTICES_PER_GLYPH;
+    return snail.lowlevel.TEXT_VERTICES_PER_GLYPH;
 }
 export fn snail_path_words_per_shape() usize {
-    return snail.PATH_WORDS_PER_SHAPE;
+    return snail.lowlevel.PATH_WORDS_PER_SHAPE;
 }
 export fn snail_path_words_per_vertex() usize {
-    return snail.PATH_WORDS_PER_VERTEX;
+    return snail.lowlevel.PATH_WORDS_PER_VERTEX;
 }
 export fn snail_path_vertices_per_shape() usize {
-    return snail.PATH_VERTICES_PER_SHAPE;
+    return snail.lowlevel.PATH_VERTICES_PER_SHAPE;
 }
 
 export fn snail_mat4_identity() SnailMat4 {
@@ -1290,10 +1290,10 @@ test "c_api: image paint init and constants" {
     try testing.expectEqual(@as(u32, 4), snail_image_width(image.?));
     try testing.expectEqual(@as(u32, 4), snail_image_height(image.?));
 
-    try testing.expectEqual(snail.TEXT_WORDS_PER_GLYPH, snail_text_words_per_glyph());
-    try testing.expectEqual(snail.TEXT_WORDS_PER_VERTEX, snail_text_words_per_vertex());
-    try testing.expectEqual(snail.TEXT_VERTICES_PER_GLYPH, snail_text_vertices_per_glyph());
-    try testing.expectEqual(snail.PATH_WORDS_PER_SHAPE, snail_path_words_per_shape());
-    try testing.expectEqual(snail.PATH_WORDS_PER_VERTEX, snail_path_words_per_vertex());
-    try testing.expectEqual(snail.PATH_VERTICES_PER_SHAPE, snail_path_vertices_per_shape());
+    try testing.expectEqual(snail.lowlevel.TEXT_WORDS_PER_GLYPH, snail_text_words_per_glyph());
+    try testing.expectEqual(snail.lowlevel.TEXT_WORDS_PER_VERTEX, snail_text_words_per_vertex());
+    try testing.expectEqual(snail.lowlevel.TEXT_VERTICES_PER_GLYPH, snail_text_vertices_per_glyph());
+    try testing.expectEqual(snail.lowlevel.PATH_WORDS_PER_SHAPE, snail_path_words_per_shape());
+    try testing.expectEqual(snail.lowlevel.PATH_WORDS_PER_VERTEX, snail_path_words_per_vertex());
+    try testing.expectEqual(snail.lowlevel.PATH_VERTICES_PER_SHAPE, snail_path_vertices_per_shape());
 }

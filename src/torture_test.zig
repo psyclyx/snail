@@ -42,11 +42,11 @@ test "torture: full pipeline" {
     try std.testing.expect(added2 == null);
 
     // Batch generation: large vertex buffer, many strings
-    const buf_size = 10000 * snail.TEXT_WORDS_PER_GLYPH;
+    const buf_size = 10000 * snail.lowlevel.TEXT_WORDS_PER_GLYPH;
     const vbuf = try allocator.alloc(u32, buf_size);
     defer allocator.free(vbuf);
 
-    var batch = snail.TextBatch.init(vbuf);
+    var batch = snail.lowlevel.TextBatch.init(vbuf);
 
     // Render many strings at various sizes
     const test_strings = [_][]const u8{
@@ -160,8 +160,8 @@ test "ensureText discovers shaped glyphs for UTF-8 text" {
     }
 
     // After ensureText, addText should emit glyphs successfully.
-    var vbuf: [100 * snail.TEXT_WORDS_PER_GLYPH]u32 = undefined;
-    var batch = snail.TextBatch.init(&vbuf);
+    var vbuf: [100 * snail.lowlevel.TEXT_WORDS_PER_GLYPH]u32 = undefined;
+    var batch = snail.lowlevel.TextBatch.init(&vbuf);
     const result = try fonts.addText(&batch, .{}, "fi", 0, 0, 24, .{ 1, 1, 1, 1 });
     try std.testing.expect(result.advance > 0);
     try std.testing.expect(batch.glyphCount() > 0);
@@ -177,8 +177,8 @@ test "addText reports missing glyphs" {
     defer fonts.deinit();
 
     // addText without ensureText should report missing glyphs
-    var vbuf: [100 * snail.TEXT_WORDS_PER_GLYPH]u32 = undefined;
-    var batch = snail.TextBatch.init(&vbuf);
+    var vbuf: [100 * snail.lowlevel.TEXT_WORDS_PER_GLYPH]u32 = undefined;
+    var batch = snail.lowlevel.TextBatch.init(&vbuf);
     const result = try fonts.addText(&batch, .{}, "Hello", 0, 0, 24, .{ 1, 1, 1, 1 });
     try std.testing.expect(result.missing);
 }
@@ -204,8 +204,8 @@ test "multi-face fonts with fallback" {
         fonts = new_fonts;
     }
 
-    var vbuf: [200 * snail.TEXT_WORDS_PER_GLYPH]u32 = undefined;
-    var batch = snail.TextBatch.init(&vbuf);
+    var vbuf: [200 * snail.lowlevel.TEXT_WORDS_PER_GLYPH]u32 = undefined;
+    var batch = snail.lowlevel.TextBatch.init(&vbuf);
 
     // Both scripts should render successfully.
     const latin_result = try fonts.addText(&batch, .{}, "Hello", 0, 0, 24, .{ 1, 1, 1, 1 });

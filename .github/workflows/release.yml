@@ -18,7 +18,11 @@ jobs:
           version: "0.16.0"
 
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y libglvnd-dev libharfbuzz-dev
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libglvnd-dev libharfbuzz-dev libegl1-mesa-dev \
+            libvulkan-dev mesa-vulkan-drivers libgl1-mesa-dri glslc
 
       - name: Build library
         run: zig build -Dharfbuzz=true --release=fast
@@ -26,19 +30,51 @@ jobs:
       - name: Run tests
         run: zig build test -Dharfbuzz=true
 
+      - name: Backend pixel comparison
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          GALLIUM_DRIVER: llvmpipe
+        run: zig build backend-compare
+
       - name: Package artifacts
         run: |
           mkdir -p snail-${GITHUB_REF_NAME}
           cp zig-out/lib/libsnail.a snail-${GITHUB_REF_NAME}/
           cp zig-out/lib/libsnail.so snail-${GITHUB_REF_NAME}/
           cp zig-out/include/snail.h snail-${GITHUB_REF_NAME}/
+          cp LICENSE CHANGELOG.md README.md snail-${GITHUB_REF_NAME}/
           tar czf snail-${GITHUB_REF_NAME}-linux-x86_64.tar.gz snail-${GITHUB_REF_NAME}/
+          sha256sum snail-${GITHUB_REF_NAME}-linux-x86_64.tar.gz > snail-${GITHUB_REF_NAME}-linux-x86_64.tar.gz.sha256
+
+      - name: Extract release notes for this tag
+        id: release_notes
+        run: |
+          # Pull the section for this version out of CHANGELOG.md.
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '
+            $0 ~ "^## " v "( |$)" { found=1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > release_notes.md
+          if [ ! -s release_notes.md ]; then
+            echo "No CHANGELOG entry for $version; falling back to auto-generated notes." >&2
+            echo "fallback=1" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Create release
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --title "$GITHUB_REF_NAME" \
-            --generate-notes \
-            snail-${GITHUB_REF_NAME}-linux-x86_64.tar.gz
+          if [ -s release_notes.md ]; then
+            gh release create "$GITHUB_REF_NAME" \
+              --title "$GITHUB_REF_NAME" \
+              --notes-file release_notes.md \
+              snail-${GITHUB_REF_NAME}-linux-x86_64.tar.gz \
+              snail-${GITHUB_REF_NAME}-linux-x86_64.tar.gz.sha256
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --title "$GITHUB_REF_NAME" \
+              --generate-notes \
+              snail-${GITHUB_REF_NAME}-linux-x86_64.tar.gz \
+              snail-${GITHUB_REF_NAME}-linux-x86_64.tar.gz.sha256
+          fi
         env:
           GH_TOKEN: ${{ github.token }}

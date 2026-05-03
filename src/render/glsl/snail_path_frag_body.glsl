@@ -471,7 +471,7 @@ PathCompositeSample compositePathGroup(vec2 rc, vec2 epp, vec2 ppe, ivec2 infoBa
         ivec2 gLoc = ivec2(info.xy);
         int bandMaxH = floatBitsToInt(info.z) & 0xFFFF;
         int bandMaxV = (floatBitsToInt(info.z) >> 16) & 0xFFFF;
-        float cov = evalGlyphCoverage(rc, epp, ppe, gLoc, ivec2(bandMaxH, bandMaxV), band, texLayer);
+        float cov = evalGlyphCoverage(rc, epp, ppe, gLoc, ivec2(bandMaxV, bandMaxH), band, texLayer);
         PathPaintSample paint = samplePathPaint(rc, loc, info);
 
         if (composite_mode == 1 && layer_count >= 2 && l < 2) {
@@ -526,7 +526,7 @@ void main() {
     ivec2 gLoc = ivec2(firstInfo.xy);
     int bandMaxH = floatBitsToInt(firstInfo.z) & 0xFFFF;
     int bandMaxV = (floatBitsToInt(firstInfo.z) >> 16) & 0xFFFF;
-    float cov = evalGlyphCoverage(rc, epp, ppe, gLoc, ivec2(bandMaxH, bandMaxV), band, texLayer);
+    float cov = evalGlyphCoverage(rc, epp, ppe, gLoc, ivec2(bandMaxV, bandMaxH), band, texLayer);
     if (cov < 1.0 / 255.0) discard;
     PathPaintSample paint = samplePathPaint(rc, infoBase, firstInfo);
     vec4 result = premultiplyColor(paint.color, cov);

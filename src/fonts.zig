@@ -17,10 +17,10 @@ const harfbuzz = if (build_options.enable_harfbuzz) @import("font/harfbuzz.zig")
 };
 
 const Allocator = std.mem.Allocator;
-const AtlasPage = snail.AtlasPage;
-const GlyphInfo = snail.CurveAtlas.GlyphInfo;
-const ColrBaseInfo = snail.CurveAtlas.ColrBaseInfo;
-const TextBatch = snail.TextBatch;
+const AtlasPage = snail.lowlevel.AtlasPage;
+const GlyphInfo = snail.lowlevel.CurveAtlas.GlyphInfo;
+const ColrBaseInfo = snail.lowlevel.CurveAtlas.ColrBaseInfo;
+const TextBatch = snail.lowlevel.TextBatch;
 const bezier = @import("math/bezier.zig");
 const band_tex = @import("render/band_texture.zig");
 
@@ -471,7 +471,7 @@ pub const FaceView = struct {
     }
 
     pub fn glyphLayerWindowBase(self: *const FaceView, page_index: u16) u32 {
-        return snail.textureLayerWindowBase(self.glyphLayer(page_index));
+        return snail.lowlevel.textureLayerWindowBase(self.glyphLayer(page_index));
     }
 
     pub fn layerInfoLoc(self: *const FaceView, info_x: u16, info_y: u16) struct { x: u16, y: u16 } {
@@ -875,7 +875,7 @@ pub const TextAtlas = struct {
         for (self.config.faces, 0..) |*fc, fi| {
             if (face_new_gids[fi]) |*new_gids| {
                 // Expand COLR layers.
-                try snail.CurveAtlas.expandColrLayersInner(&fc.font, self.allocator, new_gids);
+                try snail.lowlevel.CurveAtlas.expandColrLayersInner(&fc.font, self.allocator, new_gids);
 
                 // Filter out glyph IDs already in the atlas.
                 var filtered = std.AutoHashMap(u16, void).init(self.allocator);
@@ -894,7 +894,7 @@ pub const TextAtlas = struct {
 
                 // Build page for the new glyphs.
                 const page_index: u16 = @intCast(self.pages.len + new_pages_list.items.len);
-                const page_result = try snail.CurveAtlas.buildPageDataInner(self.allocator, &fc.font, &filtered, page_index);
+                const page_result = try snail.lowlevel.CurveAtlas.buildPageDataInner(self.allocator, &fc.font, &filtered, page_index);
                 try new_pages_list.append(self.allocator, page_result.page);
 
                 // Merge glyph maps.
@@ -946,7 +946,7 @@ pub const TextAtlas = struct {
     /// Create a temporary Atlas wrapper for GPU upload. The wrapper borrows
     /// pages from this TextAtlas snapshot — do NOT deinit it (use deinitUploadAtlas).
     /// Upload alongside PathPicture atlases via Renderer.uploadAtlases.
-    pub fn uploadAtlas(self: *const TextAtlas) snail.CurveAtlas {
+    pub fn uploadAtlas(self: *const TextAtlas) snail.lowlevel.CurveAtlas {
         return .{
             .allocator = self.allocator,
             .font = null,
@@ -961,7 +961,7 @@ pub const TextAtlas = struct {
 
     /// Clean up a wrapper Atlas from uploadAtlas(). Only frees the empty glyph_map,
     /// NOT the shared pages.
-    pub fn deinitUploadAtlas(_: *const TextAtlas, wrapper: *snail.CurveAtlas) void {
+    pub fn deinitUploadAtlas(_: *const TextAtlas, wrapper: *snail.lowlevel.CurveAtlas) void {
         wrapper.glyph_map.deinit();
         // Don't free pages — they belong to TextAtlas.
         wrapper.pages = &.{};
@@ -1692,8 +1692,8 @@ test "TextAtlas.addText renders and reports advance" {
         fonts = new_fonts;
     }
 
-    var buf: [64 * snail.TEXT_WORDS_PER_GLYPH]u32 = undefined;
-    var batch = snail.TextBatch.init(&buf);
+    var buf: [64 * snail.lowlevel.TEXT_WORDS_PER_GLYPH]u32 = undefined;
+    var batch = snail.lowlevel.TextBatch.init(&buf);
     const result = try fonts.addText(&batch, .{}, "Hello", 0, 100, 24, .{ 1, 1, 1, 1 });
 
     try testing.expect(result.advance > 0);
@@ -1709,8 +1709,8 @@ test "TextAtlas.addText reports missing glyphs" {
     defer fonts.deinit();
 
     // Don't ensure — atlas is empty.
-    var buf: [64 * snail.TEXT_WORDS_PER_GLYPH]u32 = undefined;
-    var batch = snail.TextBatch.init(&buf);
+    var buf: [64 * snail.lowlevel.TEXT_WORDS_PER_GLYPH]u32 = undefined;
+    var batch = snail.lowlevel.TextBatch.init(&buf);
     const result = try fonts.addText(&batch, .{}, "Hello", 0, 100, 24, .{ 1, 1, 1, 1 });
 
     try testing.expect(result.missing);

@@ -3,4 +3,4 @@ zig-out/
 result
 vgcore.*
 .direnv/
-.envrc
+CLAUDE.md

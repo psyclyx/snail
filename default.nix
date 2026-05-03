@@ -5,7 +5,7 @@ let
 
   lib = pkgs.stdenv.mkDerivation {
     pname = "snail";
-    version = "0.1.0";
+    version = "0.3.0";
     src = ./.;
     nativeBuildInputs = [ zig.hook pkgs.pkg-config ];
     buildInputs = with pkgs; [ libGL harfbuzz ];
@@ -19,7 +19,7 @@ let
 
   demo = pkgs.stdenv.mkDerivation {
     pname = "snail-demo";
-    version = "0.1.0";
+    version = "0.3.0";
     src = ./.;
     nativeBuildInputs = [ zig.hook pkgs.pkg-config ];
     buildInputs = with pkgs; [ libGL harfbuzz wayland ];

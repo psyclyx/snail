@@ -135,12 +135,16 @@ pub const ConicBezier = struct {
         };
     }
 
+    // Conic denom guard matches the GPU shader (1/65536) so degenerate
+    // evaluations agree across backends.
+    const kConicDenomEps: f32 = 1.0 / 65536.0;
+
     pub fn evaluate(self: ConicBezier, t: f32) Vec2 {
         const b = coeffs(t);
         const bw0 = b.b0 * self.w0;
         const bw1 = b.b1 * self.w1;
         const bw2 = b.b2 * self.w2;
-        const denom = @max(bw0 + bw1 + bw2, 1e-10);
+        const denom = @max(bw0 + bw1 + bw2, kConicDenomEps);
         return .{
             .x = (self.p0.x * bw0 + self.p1.x * bw1 + self.p2.x * bw2) / denom,
             .y = (self.p0.y * bw0 + self.p1.y * bw1 + self.p2.y * bw2) / denom,
@@ -161,7 +165,7 @@ pub const ConicBezier = struct {
         const dbw0 = db0 * self.w0;
         const dbw1 = db1 * self.w1;
         const dbw2 = db2 * self.w2;
-        const denom = @max(bw0 + bw1 + bw2, 1e-10);
+        const denom = @max(bw0 + bw1 + bw2, kConicDenomEps);
         const denom_prime = dbw0 + dbw1 + dbw2;
         const nx = self.p0.x * bw0 + self.p1.x * bw1 + self.p2.x * bw2;
         const ny = self.p0.y * bw0 + self.p1.y * bw1 + self.p2.y * bw2;

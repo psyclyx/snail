@@ -240,7 +240,7 @@ void main() {
     int layer = u_layer_base + layer_byte;
 
     vec2 rc = v_texcoord;
-    ivec2 band_max = ivec2(v_glyph.z, v_glyph.w & 0xFF);
+    ivec2 band_max = ivec2(v_glyph.w & 0xFF, v_glyph.z);
     ivec2 glyph_loc = v_glyph.xy;
     vec4 cov_alpha = evalGlyphCoverageSubpixel(rc, glyph_loc, band_max, v_banding, layer);
 

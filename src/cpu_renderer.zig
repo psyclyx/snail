@@ -2,22 +2,26 @@
 //! Evaluates the same Bezier curve/band data the GPU shaders use, but per-pixel
 //! into a caller-owned RGBA8888 memory buffer.  Intended for headless rendering
 //! and bootstrap frames (before EGL/Vulkan is available).
+//!
+//! Pixel parity vs GL/Vulkan: matches within 1 sRGB LSB on virtually every
+//! pixel; near-tangent conic edges may diverge by a few LSB due to differing
+//! float-op orderings between CPU code and the SPIR-V/GLSL pipeline.
 
 const std = @import("std");
 const snail = @import("snail.zig");
 const vertex = @import("render/vertex.zig");
-const bezier = snail.bezier;
-const curve_tex = snail.curve_tex;
+const bezier = snail.lowlevel.bezier;
+const curve_tex = snail.lowlevel.curve_tex;
 const CurveSegment = bezier.CurveSegment;
-const GlyphBandEntry = std.meta.fieldInfo(snail.CurveAtlas.GlyphInfo, .band_entry).type;
+const GlyphBandEntry = std.meta.fieldInfo(snail.lowlevel.CurveAtlas.GlyphInfo, .band_entry).type;
 const Vec2 = snail.Vec2;
 const Transform2D = snail.Transform2D;
 const FillRule = snail.FillRule;
 const SubpixelOrder = snail.SubpixelOrder;
 
-// sRGB ↔ linear conversion via comptime lookup tables.
-// srgbToLinear: exact 256-entry LUT (input is always a u8 texel).
-// linearToSrgb: 4096-entry LUT with linear interpolation.
+// sRGB ↔ linear conversion. The 256-entry decode LUT is exact for u8 texels.
+// Encode uses the IEC 61966-2-1 formula directly so per-pixel output rounds
+// to the same bytes as a GL_SRGB framebuffer (no LUT-interpolation drift).
 
 const srgb_to_linear_lut: [256]f32 = blk: {
     @setEvalBranchQuota(100_000);
@@ -33,28 +37,18 @@ fn srgbToLinear(byte: u8) f32 {
     return srgb_to_linear_lut[byte];
 }
 
-const LINEAR_TO_SRGB_LUT_SIZE = 4096;
-const linear_to_srgb_lut: [LINEAR_TO_SRGB_LUT_SIZE + 1]f32 = blk: {
-    @setEvalBranchQuota(2_000_000);
-    var table: [LINEAR_TO_SRGB_LUT_SIZE + 1]f32 = undefined;
-    for (0..LINEAR_TO_SRGB_LUT_SIZE + 1) |i| {
-        const v: f32 = @as(f32, @floatFromInt(i)) / @as(f32, LINEAR_TO_SRGB_LUT_SIZE);
-        table[i] = if (v <= 0.0031308) v * 12.92 else 1.055 * std.math.pow(f32, v, 1.0 / 2.4) - 0.055;
-    }
-    break :blk table;
-};
-
 fn linearToSrgb(v: f32) f32 {
     const clamped = @max(v, 0.0);
     if (clamped >= 1.0) return 1.0;
-    const scaled = clamped * LINEAR_TO_SRGB_LUT_SIZE;
-    const idx: u32 = @intFromFloat(scaled);
-    const frac = scaled - @as(f32, @floatFromInt(idx));
-    return linear_to_srgb_lut[idx] + (linear_to_srgb_lut[idx + 1] - linear_to_srgb_lut[idx]) * frac;
+    return if (clamped <= 0.0031308) clamped * 12.92 else 1.055 * std.math.pow(f32, clamped, 1.0 / 2.4) - 0.055;
 }
 
 fn srgbFloatToLinear(v: f32) f32 {
     return if (v <= 0.04045) v / 12.92 else std.math.pow(f32, (v + 0.055) / 1.055, 2.4);
+}
+
+fn srgbToByte(v: f32) u8 {
+    return @intFromFloat(@round(@min(@max(v * 255.0, 0.0), 255.0)));
 }
 
 fn srgbColorToLinear(color: [4]f32) [4]f32 {
@@ -83,7 +77,7 @@ const PreparedAtlasPage = struct {
     band_width: u32,
     band_height: u32,
 
-    fn init(allocator: std.mem.Allocator, page: *const snail.AtlasPage) !PreparedAtlasPage {
+    fn init(allocator: std.mem.Allocator, page: *const snail.lowlevel.AtlasPage) !PreparedAtlasPage {
         const curve_data = try allocator.alloc(f32, page.curve_data.len);
         errdefer allocator.free(curve_data);
         for (page.curve_data, 0..) |value, i| {
@@ -120,7 +114,7 @@ pub const PreparedResources = struct {
     layer_infos: []LayerInfoEntry = &.{},
     layer_info_count: usize = 0,
 
-    pub fn init(allocator: std.mem.Allocator, atlases: []const *const snail.CurveAtlas) !PreparedResources {
+    pub fn init(allocator: std.mem.Allocator, atlases: []const *const snail.lowlevel.CurveAtlas) !PreparedResources {
         var layer_count: usize = 0;
         var layer_info_count: usize = 0;
         for (atlases) |atlas| {
@@ -156,7 +150,7 @@ pub const PreparedResources = struct {
         self.layer_info_count = 0;
     }
 
-    pub fn uploadAtlases(self: *PreparedResources, atlases: []const *const snail.CurveAtlas, out_views: anytype) !void {
+    pub fn uploadAtlases(self: *PreparedResources, atlases: []const *const snail.lowlevel.CurveAtlas, out_views: anytype) !void {
         var layer_base: u32 = 0;
         var info_row_base: u32 = 0;
         self.reset();
@@ -174,7 +168,7 @@ pub const PreparedResources = struct {
         }
     }
 
-    fn storeAtlasPages(self: *PreparedResources, atlas: *const snail.CurveAtlas, layer_base: u32, info_row_base: u32) !void {
+    fn storeAtlasPages(self: *PreparedResources, atlas: *const snail.lowlevel.CurveAtlas, layer_base: u32, info_row_base: u32) !void {
         for (0..atlas.pageCount()) |i| {
             const layer = layer_base + @as(u32, @intCast(i));
             if (layer >= self.atlas_pages.len) return error.PreparedResourceCapacityExceeded;
@@ -383,7 +377,7 @@ pub const CpuRenderer = struct {
 
     fn renderBatchInstance(self: *CpuRenderer, prepared: *const PreparedResources, inst: []const u32, texture_layer_base: u32, allow_subpixel: bool) void {
         const decoded = vertex.decodeInstance(inst);
-        const bbox = snail.bezier.BBox{
+        const bbox = snail.lowlevel.bezier.BBox{
             .min = .{ .x = decoded.rect[0], .y = decoded.rect[1] },
             .max = .{ .x = decoded.rect[2], .y = decoded.rect[3] },
         };
@@ -443,7 +437,7 @@ pub const CpuRenderer = struct {
     fn renderColrBatchLayers(
         self: *CpuRenderer,
         prepared: *const PreparedResources,
-        union_bbox: snail.bezier.BBox,
+        union_bbox: snail.lowlevel.bezier.BBox,
         transform: Transform2D,
         default_color: [4]f32,
         info_x: u16,
@@ -508,7 +502,7 @@ pub const CpuRenderer = struct {
     fn renderPathBatchLayers(
         self: *CpuRenderer,
         prepared: *const PreparedResources,
-        union_bbox: snail.bezier.BBox,
+        union_bbox: snail.lowlevel.bezier.BBox,
         transform: Transform2D,
         info_x: u16,
         info_y: u16,
@@ -745,7 +739,7 @@ pub const CpuRenderer = struct {
     fn renderTransformedGlyph(
         self: *CpuRenderer,
         page: anytype,
-        bbox: snail.bezier.BBox,
+        bbox: snail.lowlevel.bezier.BBox,
         be: GlyphBandEntry,
         transform: Transform2D,
         color: [4]f32,
@@ -771,11 +765,11 @@ pub const CpuRenderer = struct {
         var row: u32 = @intCast(py0);
         while (row < @as(u32, @intCast(py1))) : (row += 1) {
             var col: u32 = @intCast(px0);
-            var display_local = inverse.applyPoint(.{
-                .x = @as(f32, @floatFromInt(col)) + 0.5,
-                .y = @as(f32, @floatFromInt(row)) + 0.5,
-            });
-            while (col < @as(u32, @intCast(px1))) : (advanceLocalPixel(&col, &display_local, sample_dx)) {
+            while (col < @as(u32, @intCast(px1))) : (col += 1) {
+                const display_local = inverse.applyPoint(.{
+                    .x = @as(f32, @floatFromInt(col)) + 0.5,
+                    .y = @as(f32, @floatFromInt(row)) + 0.5,
+                });
                 if (!allow_subpixel or self.subpixel_order == .none) {
                     const cov = evalGlyphCoverage(page, display_local.x, display_local.y, ppe.x, ppe.y, be, band_max_h, band_max_v, self.fill_rule);
                     if (cov < 1.0 / 255.0) continue;
@@ -803,8 +797,8 @@ pub const CpuRenderer = struct {
     /// Same inputs as snail.Batch.addGlyph -- uses atlas curve/band data.
     fn drawGlyph(
         self: *CpuRenderer,
-        atlas: *const snail.CurveAtlas,
-        font: *const snail.Font,
+        atlas: *const snail.lowlevel.CurveAtlas,
+        font: *const snail.lowlevel.Font,
         codepoint: u32,
         x: f32,
         y: f32,
@@ -817,7 +811,7 @@ pub const CpuRenderer = struct {
 
     fn drawGlyphId(
         self: *CpuRenderer,
-        atlas: *const snail.CurveAtlas,
+        atlas: *const snail.lowlevel.CurveAtlas,
         glyph_id: u16,
         x: f32,
         y: f32,
@@ -829,7 +823,7 @@ pub const CpuRenderer = struct {
 
     fn drawGlyphIdLinear(
         self: *CpuRenderer,
-        atlas: *const snail.CurveAtlas,
+        atlas: *const snail.lowlevel.CurveAtlas,
         glyph_id: u16,
         x: f32,
         y: f32,
@@ -844,8 +838,8 @@ pub const CpuRenderer = struct {
 
     fn drawGlyphInfo(
         self: *CpuRenderer,
-        atlas: *const snail.CurveAtlas,
-        info: snail.CurveAtlas.GlyphInfo,
+        atlas: *const snail.lowlevel.CurveAtlas,
+        info: snail.lowlevel.CurveAtlas.GlyphInfo,
         x: f32,
         y: f32,
         font_size: f32,
@@ -856,8 +850,8 @@ pub const CpuRenderer = struct {
 
     fn drawGlyphInfoLinear(
         self: *CpuRenderer,
-        atlas: *const snail.CurveAtlas,
-        info: snail.CurveAtlas.GlyphInfo,
+        atlas: *const snail.lowlevel.CurveAtlas,
+        info: snail.lowlevel.CurveAtlas.GlyphInfo,
         x: f32,
         y: f32,
         font_size: f32,
@@ -873,8 +867,8 @@ pub const CpuRenderer = struct {
     /// width in pixels. Coordinates use top-left origin (y down).
     fn drawString(
         self: *CpuRenderer,
-        atlas: *const snail.CurveAtlas,
-        font: *const snail.Font,
+        atlas: *const snail.lowlevel.CurveAtlas,
+        font: *const snail.lowlevel.Font,
         text: []const u8,
         x: f32,
         y: f32,
@@ -937,7 +931,7 @@ pub const CpuRenderer = struct {
 
     fn drawTextShaped(
         self: *CpuRenderer,
-        atlas: *const snail.CurveAtlas,
+        atlas: *const snail.lowlevel.CurveAtlas,
         hbs: anytype,
         text: []const u8,
         x: f32,
@@ -970,7 +964,7 @@ pub const CpuRenderer = struct {
     /// Emit a glyph with COLR multi-layer support, mirroring glyph_emit.emitGlyph.
     fn emitGlyphCpu(
         self: *CpuRenderer,
-        atlas: *const snail.CurveAtlas,
+        atlas: *const snail.lowlevel.CurveAtlas,
         glyph_id: u16,
         x: f32,
         y: f32,
@@ -1011,8 +1005,8 @@ pub const CpuRenderer = struct {
 
     fn renderGlyphInternal(
         self: *CpuRenderer,
-        atlas: *const snail.CurveAtlas,
-        info: snail.CurveAtlas.GlyphInfo,
+        atlas: *const snail.lowlevel.CurveAtlas,
+        info: snail.lowlevel.CurveAtlas.GlyphInfo,
         x: f32,
         y: f32,
         font_size: f32,
@@ -1122,10 +1116,10 @@ pub const CpuRenderer = struct {
             (interleavedGradientNoise(row, col) - 0.5) * (clamp01(out_a) / 255.0)
         else
             0.0;
-        self.pixels[off + 0] = @intFromFloat(@min(@max((linearToSrgb(out_r) + dither) * 255.0, 0.0), 255.0));
-        self.pixels[off + 1] = @intFromFloat(@min(@max((linearToSrgb(out_g) + dither) * 255.0, 0.0), 255.0));
-        self.pixels[off + 2] = @intFromFloat(@min(@max((linearToSrgb(out_b) + dither) * 255.0, 0.0), 255.0));
-        self.pixels[off + 3] = @intFromFloat(@min(@max(out_a * 255.0, 0.0), 255.0));
+        self.pixels[off + 0] = srgbToByte(linearToSrgb(out_r) + dither);
+        self.pixels[off + 1] = srgbToByte(linearToSrgb(out_g) + dither);
+        self.pixels[off + 2] = srgbToByte(linearToSrgb(out_b) + dither);
+        self.pixels[off + 3] = srgbToByte(out_a);
     }
 
     fn blendSubpixelPremultipliedPixel(self: *CpuRenderer, row: u32, col: u32, src: [4]f32, src_blend: [3]f32, apply_dither: bool) void {
@@ -1145,10 +1139,10 @@ pub const CpuRenderer = struct {
             (interleavedGradientNoise(row, col) - 0.5) * (clamp01(out_a) / 255.0)
         else
             0.0;
-        self.pixels[off + 0] = @intFromFloat(@min(@max((linearToSrgb(out_r) + dither) * 255.0, 0.0), 255.0));
-        self.pixels[off + 1] = @intFromFloat(@min(@max((linearToSrgb(out_g) + dither) * 255.0, 0.0), 255.0));
-        self.pixels[off + 2] = @intFromFloat(@min(@max((linearToSrgb(out_b) + dither) * 255.0, 0.0), 255.0));
-        self.pixels[off + 3] = @intFromFloat(@min(@max(out_a * 255.0, 0.0), 255.0));
+        self.pixels[off + 0] = srgbToByte(linearToSrgb(out_r) + dither);
+        self.pixels[off + 1] = srgbToByte(linearToSrgb(out_g) + dither);
+        self.pixels[off + 2] = srgbToByte(linearToSrgb(out_b) + dither);
+        self.pixels[off + 3] = srgbToByte(out_a);
     }
 
     /// Per-channel subpixel blend (equivalent to GPU dual-source blending).
@@ -1349,11 +1343,11 @@ const PathPaintSample = struct {
     apply_dither: bool = false,
 };
 
-fn samplePathPaint(atlas: *const snail.CurveAtlas, instance: snail.PathPicture.Instance, glyph_id: u16, local: Vec2) PathPaintSample {
+fn samplePathPaint(atlas: *const snail.lowlevel.CurveAtlas, instance: snail.PathPicture.Instance, glyph_id: u16, local: Vec2) PathPaintSample {
     return samplePathPaintAt(atlas, instance.info_x, instance.info_y, glyph_id, local);
 }
 
-fn samplePathPaintAt(atlas: *const snail.CurveAtlas, info_x: u16, info_y: u16, glyph_id: u16, local: Vec2) PathPaintSample {
+fn samplePathPaintAt(atlas: *const snail.lowlevel.CurveAtlas, info_x: u16, info_y: u16, glyph_id: u16, local: Vec2) PathPaintSample {
     const data = atlas.layer_info_data orelse return .{ .color = .{ 1, 1, 1, 1 } };
     const width = atlas.layer_info_width;
     const info = fetchLayerInfoTexel(data, width, info_x, info_y, 0);
@@ -1433,7 +1427,7 @@ fn samplePathPaintAt(atlas: *const snail.CurveAtlas, info_x: u16, info_y: u16, g
 }
 
 fn sampleImagePaint(
-    atlas: *const snail.CurveAtlas,
+    atlas: *const snail.lowlevel.CurveAtlas,
     glyph_id: u16,
     data: []const f32,
     width: u32,
@@ -2245,11 +2239,11 @@ test "cpu renderer renders glyphs" {
     const assets = @import("assets");
     const font_data = assets.noto_sans_regular;
 
-    var font = try snail.Font.init(font_data);
+    var font = try snail.lowlevel.Font.init(font_data);
     defer font.deinit();
 
     // Build atlas with ASCII
-    var atlas = try snail.CurveAtlas.initAscii(testing.allocator, &font, &snail.ASCII_PRINTABLE);
+    var atlas = try snail.lowlevel.CurveAtlas.initAscii(testing.allocator, &font, &snail.ASCII_PRINTABLE);
     defer atlas.deinit();
 
     const width: u32 = 200;

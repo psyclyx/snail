@@ -7,5 +7,4 @@ pub const noto_sans_symbols = @embedFile("NotoSansSymbols-Regular.ttf");
 pub const noto_sans_thai = @embedFile("NotoSansThai-Regular.ttf");
 pub const noto_emoji = @embedFile("NotoEmoji-Regular.ttf");
 pub const twemoji_mozilla = @embedFile("TwemojiMozilla.ttf");
-pub const checkerboard_rgba = @embedFile("checkerboard_16x16.rgba");
 pub const dots_rgba = @embedFile("dots_16x16.rgba");

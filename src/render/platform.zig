@@ -79,6 +79,10 @@ pub fn init(width: u32, height: u32, title: [*:0]const u8) !void {
     _ = egl.eglSwapInterval(egl_display, 1);
 }
 
+// Falls back silently when an sRGB EGL surface is unavailable. The renderer
+// still works; gamma-correct compositing degrades to whatever the default
+// framebuffer offers. Surface attribute loss is platform-specific and not
+// worth printing to stderr from a library entry point.
 fn createWindowSurface(display: egl.EGLDisplay, config: egl.EGLConfig, native_window: egl.EGLNativeWindowType) egl.EGLSurface {
     if (hasExtension(display, "EGL_KHR_gl_colorspace")) {
         const attrs = [_]egl.EGLint{
@@ -87,9 +91,6 @@ fn createWindowSurface(display: egl.EGLDisplay, config: egl.EGLConfig, native_wi
         };
         const surface = egl.eglCreateWindowSurface(display, config, native_window, &attrs);
         if (surface != egl.EGL_NO_SURFACE) return surface;
-        std.debug.print("snail: failed to create an sRGB EGL window surface; GL text blending may not be gamma-correct\n", .{});
-    } else {
-        std.debug.print("snail: EGL_KHR_gl_colorspace unavailable; GL default-framebuffer blending may not be gamma-correct\n", .{});
     }
     return egl.eglCreateWindowSurface(display, config, native_window, null);
 }

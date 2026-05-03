@@ -364,6 +364,10 @@ fn dumpFailure(
     try writeTgaAlloc(allocator, diff_name, diff);
 }
 
+// 1-LSB drift in sRGB rounding is unavoidable (different float op orderings
+// across hardware), so we tolerate it. A handful of larger outliers can occur
+// at near-tangent conic edges; allow a few but bound the worst delta and
+// average to catch real regressions.
 fn checkBackend(
     allocator: std.mem.Allocator,
     case_name: []const u8,
@@ -372,11 +376,15 @@ fn checkBackend(
     expected: []const u8,
     actual: []const u8,
 ) !void {
-    const tolerance: u8 = 4;
-    const outlier_budget = @max(@as(usize, 16), expected.len / (4 * 500));
-    const average_budget = 1.0;
+    const tolerance: u8 = 1;
+    const max_outlier: u8 = 32;
+    const outlier_budget: usize = 32;
+    const average_budget = 0.05;
     const stats = comparePixels(expected, actual, tolerance);
-    if (stats.mismatched_pixels <= outlier_budget and stats.averageChannelDelta() <= average_budget) {
+    const pass = stats.mismatched_pixels <= outlier_budget and
+        stats.averageChannelDelta() <= average_budget and
+        stats.max_channel_delta <= max_outlier;
+    if (pass) {
         std.debug.print(
             "{s}: {s} matches CPU ({d} outlier pixels, max delta {d}, avg channel delta {d:.3})\n",
             .{ case_name, backend_name, stats.mismatched_pixels, stats.max_channel_delta, stats.averageChannelDelta() },
@@ -439,15 +447,19 @@ pub fn main() !void {
         .{ .name = "subpixel-rgb", .subpixel_order = .rgb, .requires_dual_source = true },
     };
 
+    var any_failure = false;
     for (cases) |case| {
         const options = drawOptions(case.subpixel_order);
         const cpu_pixels = try renderCpu(allocator, &scene_bundle.scene, options);
         defer allocator.free(cpu_pixels);
 
+        var gl_pixels_opt: ?[]u8 = null;
+        defer if (gl_pixels_opt) |p| allocator.free(p);
         if (!case.requires_dual_source or gl_supports_lcd) {
-            const gl_pixels = try renderGl(allocator, &gl_renderer, framebuffer.fbo, &scene_bundle.scene, options);
-            defer allocator.free(gl_pixels);
-            try checkBackend(allocator, case.name, gl_renderer_state.backendName(), "gl", cpu_pixels, gl_pixels);
+            gl_pixels_opt = try renderGl(allocator, &gl_renderer, framebuffer.fbo, &scene_bundle.scene, options);
+            checkBackend(allocator, case.name, gl_renderer_state.backendName(), "gl", cpu_pixels, gl_pixels_opt.?) catch {
+                any_failure = true;
+            };
         } else {
             std.debug.print("{s}: skipping OpenGL LCD compare; dual-source blending unavailable\n", .{case.name});
         }
@@ -456,7 +468,14 @@ pub fn main() !void {
             if (!case.requires_dual_source or vk_supports_lcd) {
                 const vk_pixels = try renderVulkan(allocator, &vk_renderer_state, &vk_renderer, &scene_bundle.scene, options);
                 defer allocator.free(vk_pixels);
-                try checkBackend(allocator, case.name, vk_renderer_state.backendName(), "vulkan", cpu_pixels, vk_pixels);
+                checkBackend(allocator, case.name, vk_renderer_state.backendName(), "vulkan", cpu_pixels, vk_pixels) catch {
+                    any_failure = true;
+                };
+                if (gl_pixels_opt) |gl_pixels| {
+                    checkBackend(allocator, case.name, "Vulkan vs GL", "vk_vs_gl", gl_pixels, vk_pixels) catch {
+                        any_failure = true;
+                    };
+                }
             } else {
                 std.debug.print("{s}: skipping Vulkan LCD compare; dual-source blending unavailable\n", .{case.name});
             }
@@ -464,4 +483,5 @@ pub fn main() !void {
             std.debug.print("{s}: Vulkan not built (`zig build backend-compare -Dvulkan=true`)\n", .{case.name});
         }
     }
+    if (any_failure) return error.BackendPixelMismatch;
 }

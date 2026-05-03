@@ -541,7 +541,7 @@ PathCompositeSample compositePathGroup(vec2 rc, vec2 epp, vec2 ppe, ivec2 infoBa
         ivec2 gLoc = ivec2(info.xy);
         int bandMaxH = floatBitsToInt(info.z) & 0xFFFF;
         int bandMaxV = (floatBitsToInt(info.z) >> 16) & 0xFFFF;
-        float cov = evalGlyphCoverage(rc, epp, ppe, gLoc, ivec2(bandMaxH, bandMaxV), band, texLayer);
+        float cov = evalGlyphCoverage(rc, epp, ppe, gLoc, ivec2(bandMaxV, bandMaxH), band, texLayer);
         PathPaintSample paint = samplePathPaint(rc, loc, info);
 
         if (composite_mode == 1 && layer_count >= 2 && l < 2) {
@@ -597,7 +597,7 @@ void main() {
             int bandMaxV = (floatBitsToInt(firstInfo.z) >> 16) & 0xFFFF;
             int texLayer = u_layer_base + int(v_banding.w);
             float cov = evalGlyphCoverage(rc, epp, ppe, lGLoc,
-                                          ivec2(bandMaxH, bandMaxV), band, texLayer);
+                                          ivec2(bandMaxV, bandMaxH), band, texLayer);
             if (cov < 1.0/255.0) discard;
             PathPaintSample paint = samplePathPaint(rc, infoBase, firstInfo);
             vec4 result = premultiplyColor(paint.color, cov);
@@ -620,7 +620,7 @@ void main() {
             int bandMaxV = (floatBitsToInt(info.z) >> 16) & 0xFFFF;
             int texLayer = u_layer_base + int(v_banding.w);
             float cov = evalGlyphCoverage(rc, epp, ppe, lGLoc,
-                                          ivec2(bandMaxH, bandMaxV), band, texLayer);
+                                          ivec2(bandMaxV, bandMaxH), band, texLayer);
             vec4 premul = premultiplyColor(color, cov);
             result = premul + result * (1.0 - premul.a);
         }
@@ -628,7 +628,7 @@ void main() {
         frag_color = result;
     } else {
         float cov = evalGlyphCoverage(rc, epp, ppe, v_glyph.xy,
-                                      ivec2(v_glyph.z, v_glyph.w & 0xFF),
+                                      ivec2(v_glyph.w & 0xFF, v_glyph.z),
                                       v_banding, u_layer_base + layer_byte);
         if (cov < 1.0/255.0) discard;
         vec4 linear_color = vec4(srgbDecode(v_color.r), srgbDecode(v_color.g), srgbDecode(v_color.b), v_color.a);

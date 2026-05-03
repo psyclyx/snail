@@ -7,7 +7,7 @@ const Allocator = std.mem.Allocator;
 pub const ViewMode = enum {
     normal,
 
-    pub fn pathDebugView(self: ViewMode) snail.PathPictureDebugView {
+    pub fn pathDebugView(self: ViewMode) snail.lowlevel.PathPictureDebugView {
         _ = self;
         return .normal;
     }

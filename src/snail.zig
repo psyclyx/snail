@@ -66,11 +66,10 @@ const glyph_emit = @import("glyph_emit.zig");
 const fonts_mod = @import("fonts.zig");
 const ttf = @import("font/ttf.zig");
 const opentype = @import("font/opentype.zig");
-// Internal modules — not part of the public API surface. Exposed for internal
-// tools (e.g. cpu_renderer) that need raw curve/texture data access.
-pub const bezier = @import("math/bezier.zig");
+// Re-exported under `snail.lowlevel` at the bottom of the file.
+const bezier = @import("math/bezier.zig");
 const vec = @import("math/vec.zig");
-pub const curve_tex = @import("render/curve_texture.zig");
+const curve_tex = @import("render/curve_texture.zig");
 const band_tex = @import("render/band_texture.zig");
 const vertex_mod = @import("render/vertex.zig");
 const roots = @import("math/roots.zig");
@@ -156,7 +155,7 @@ pub const TextCoverageShader = struct {
         \\    vec2 dy = vec2(dFdx(rc.y), dFdy(rc.y));
         \\    vec2 ppe = vec2(1.0 / max(length(dx), 1.0 / 65536.0), 1.0 / max(length(dy), 1.0 / 65536.0));
         \\    return evalGlyphCoverage(rc, ppe, v_glyph.xy,
-        \\                             ivec2(v_glyph.z, v_glyph.w & 0xFF),
+        \\                             ivec2(v_glyph.w & 0xFF, v_glyph.z),
         \\                             v_banding, atlas_layer);
         \\}
         \\
@@ -287,42 +286,22 @@ pub const TextCoverageBackend = struct {
     }
 };
 
-/// A positioned glyph in a shaped run. Carries source-span metadata so callers
-/// can reason about ligatures, cells, selection, and painting.
-pub const GlyphPlacement = struct {
-    glyph_id: u16,
-    x_offset: f32, // pixel offset from run origin
-    y_offset: f32, // pixel offset from run origin
-    x_advance: f32, // pixel advance for this glyph
-    y_advance: f32, // pixel advance (0 for horizontal text)
-    source_start: u32, // byte offset in source text
-    source_end: u32, // byte offset in source text
-};
+const PATH_PAINT_INFO_WIDTH: u32 = 4096;
+const PATH_PAINT_TEXELS_PER_RECORD: u32 = 6;
+const PATH_PAINT_TAG_SOLID: f32 = -1.0;
+const PATH_PAINT_TAG_LINEAR_GRADIENT: f32 = -2.0;
+const PATH_PAINT_TAG_RADIAL_GRADIENT: f32 = -3.0;
+const PATH_PAINT_TAG_IMAGE: f32 = -4.0;
+const PATH_PAINT_TAG_COMPOSITE_GROUP: f32 = -5.0;
 
-/// A shaped text run: the output of shaping a UTF-8 string.
-/// The built-in shaper and HarfBuzz both produce this same type.
-pub const ShapedRun = struct {
-    glyphs: []const GlyphPlacement,
-    advance_x: f32, // total advance in pixels
-    advance_y: f32, // total advance in pixels
-};
-
-pub const PATH_PAINT_INFO_WIDTH: u32 = 4096;
-pub const PATH_PAINT_TEXELS_PER_RECORD: u32 = 6;
-pub const PATH_PAINT_TAG_SOLID: f32 = -1.0;
-pub const PATH_PAINT_TAG_LINEAR_GRADIENT: f32 = -2.0;
-pub const PATH_PAINT_TAG_RADIAL_GRADIENT: f32 = -3.0;
-pub const PATH_PAINT_TAG_IMAGE: f32 = -4.0;
-pub const PATH_PAINT_TAG_COMPOSITE_GROUP: f32 = -5.0;
-
-pub const PathPictureDebugView = enum(u8) {
+const PathPictureDebugView = enum(u8) {
     normal,
     fill_mask,
     stroke_mask,
     layer_tint,
 };
 
-pub const PathPictureBoundsOverlayOptions = struct {
+const PathPictureBoundsOverlayOptions = struct {
     stroke_color: [4]f32 = .{ 1.0, 0.36, 0.24, 0.95 },
     stroke_width: f32 = 1.0,
     origin_color: [4]f32 = .{ 1.0, 0.78, 0.22, 0.95 },
@@ -330,25 +309,25 @@ pub const PathPictureBoundsOverlayOptions = struct {
 };
 
 // Text batch sizing constants
-pub const TEXT_WORDS_PER_VERTEX = vertex_mod.WORDS_PER_VERTEX;
-pub const TEXT_VERTICES_PER_GLYPH = vertex_mod.VERTICES_PER_GLYPH;
-pub const TEXT_WORDS_PER_GLYPH = TEXT_WORDS_PER_VERTEX * TEXT_VERTICES_PER_GLYPH;
+const TEXT_WORDS_PER_VERTEX = vertex_mod.WORDS_PER_VERTEX;
+const TEXT_VERTICES_PER_GLYPH = vertex_mod.VERTICES_PER_GLYPH;
+const TEXT_WORDS_PER_GLYPH = TEXT_WORDS_PER_VERTEX * TEXT_VERTICES_PER_GLYPH;
 
 // Path batch sizing constants (same vertex format as text)
-pub const PATH_WORDS_PER_VERTEX = vertex_mod.WORDS_PER_VERTEX;
-pub const PATH_VERTICES_PER_SHAPE = vertex_mod.VERTICES_PER_GLYPH;
-pub const PATH_WORDS_PER_SHAPE = PATH_WORDS_PER_VERTEX * PATH_VERTICES_PER_SHAPE;
+const PATH_WORDS_PER_VERTEX = vertex_mod.WORDS_PER_VERTEX;
+const PATH_VERTICES_PER_SHAPE = vertex_mod.VERTICES_PER_GLYPH;
+const PATH_WORDS_PER_SHAPE = PATH_WORDS_PER_VERTEX * PATH_VERTICES_PER_SHAPE;
 
 /// One byte in the hot instance format is reserved for the local texture-array
 /// layer. 0xff is still the special-instance sentinel, so draw records split
 /// layer bindings into 255-layer windows and carry the window base separately.
-pub const TEXTURE_LAYER_WINDOW_SIZE: u32 = 255;
+const TEXTURE_LAYER_WINDOW_SIZE: u32 = 255;
 
-pub fn textureLayerWindowBase(layer: u32) u32 {
+fn textureLayerWindowBase(layer: u32) u32 {
     return (layer / TEXTURE_LAYER_WINDOW_SIZE) * TEXTURE_LAYER_WINDOW_SIZE;
 }
 
-pub fn textureLayerLocal(layer: u32) !u8 {
+fn textureLayerLocal(layer: u32) !u8 {
     const base = textureLayerWindowBase(layer);
     const local = layer - base;
     if (local >= TEXTURE_LAYER_WINDOW_SIZE) return error.TextureLayerWindowOverflow;
@@ -504,7 +483,7 @@ pub const StrokeStyle = struct {
 
 /// A parsed TrueType font. Immutable after init.
 /// Thread-safe for concurrent reads (glyphIndex, getKerning).
-pub const Font = struct {
+const Font = struct {
     inner: ttf.Font,
 
     /// Parse a TrueType font from raw file data.
@@ -572,7 +551,7 @@ pub fn isRenderableTextCodepoint(codepoint: u32) bool {
 
 /// Pre-built curve-page texture data for glyphs and vector paths.
 /// This is the low-level storage format behind TextAtlas and PathPicture.
-pub const AtlasPage = struct {
+const AtlasPage = struct {
     allocator: std.mem.Allocator,
     ref_count: std.atomic.Value(u32) = std.atomic.Value(u32).init(1),
     curve_data: []u16,
@@ -625,7 +604,7 @@ pub const AtlasPage = struct {
 /// Low-level immutable curve atlas snapshot. App text should normally use
 /// TextAtlas; CurveAtlas exists for backend/resource plumbing and advanced
 /// curve-page users.
-pub const CurveAtlas = struct {
+const CurveAtlas = struct {
     allocator: std.mem.Allocator,
     font: ?*const Font, // null for .snail-loaded atlases
     pages: []*AtlasPage,
@@ -1227,146 +1206,6 @@ pub const CurveAtlas = struct {
         return self.extendGlyphIds(glyph_ids);
     }
 
-    /// Convenience: extend the atlas with all glyph IDs referenced by a shaped run.
-    pub fn extendRun(self: *const Atlas, run: *const ShapedRun) !?Atlas {
-        var requested = std.AutoHashMap(u16, void).init(self.allocator);
-        defer requested.deinit();
-        for (run.glyphs) |g| {
-            if (g.glyph_id == 0) continue;
-            try requested.put(g.glyph_id, {});
-        }
-        return self.extendGlyphIdSet(&requested);
-    }
-
-    /// Write glyph IDs from `run` that are not yet in this atlas into `out`.
-    /// Returns the number of unique missing IDs written. Duplicates are suppressed.
-    pub fn collectMissingGlyphIds(self: *const Atlas, run: *const ShapedRun, out: []u16) usize {
-        var seen = std.StaticBitSet(65536).initEmpty();
-        var count: usize = 0;
-        for (run.glyphs) |g| {
-            if (g.glyph_id == 0) continue;
-            if (seen.isSet(g.glyph_id)) continue;
-            if (self.getGlyph(g.glyph_id) != null) continue;
-            if (self.colrLayerCount(g.glyph_id) > 0) continue;
-            seen.set(g.glyph_id);
-            if (count < out.len) {
-                out[count] = g.glyph_id;
-                count += 1;
-            }
-        }
-        return count;
-    }
-
-    /// Shape a UTF-8 string into a run of glyph placements.
-    /// Uses the built-in limited shaper (GSUB ligatures + GPOS/kern kerning).
-    /// The caller must free `result.glyphs` with the same allocator.
-    pub fn shapeUtf8(self: *const Atlas, font: *const Font, text: []const u8, font_size: f32, allocator: std.mem.Allocator) !ShapedRun {
-        if (text.len == 0) return .{ .glyphs = &.{}, .advance_x = 0, .advance_y = 0 };
-
-        const scale = font_size / @as(f32, @floatFromInt(font.unitsPerEm()));
-
-        // Count codepoints
-        var cp_count: usize = 0;
-        {
-            const utf8_view = std.unicode.Utf8View.initUnchecked(text);
-            var it = utf8_view.iterator();
-            while (it.nextCodepoint()) |_| cp_count += 1;
-        }
-        if (cp_count == 0) return .{ .glyphs = &.{}, .advance_x = 0, .advance_y = 0 };
-
-        // Map codepoints to glyph IDs with source byte tracking
-        const gids = try allocator.alloc(u16, cp_count);
-        defer allocator.free(gids);
-        const src_starts = try allocator.alloc(u32, cp_count);
-        defer allocator.free(src_starts);
-        const src_ends = try allocator.alloc(u32, cp_count);
-        defer allocator.free(src_ends);
-
-        var idx: usize = 0;
-        {
-            const utf8_view = std.unicode.Utf8View.initUnchecked(text);
-            var it = utf8_view.iterator();
-            while (it.nextCodepointSlice()) |cp_slice| {
-                const byte_pos = @intFromPtr(cp_slice.ptr) - @intFromPtr(text.ptr);
-                const cp = std.unicode.utf8Decode(cp_slice) catch 0;
-                gids[idx] = font.glyphIndex(@intCast(cp)) catch 0;
-                src_starts[idx] = @intCast(byte_pos);
-                src_ends[idx] = @intCast(byte_pos + cp_slice.len);
-                idx += 1;
-            }
-        }
-
-        // Apply ligature substitution with source span tracking
-        var glyph_count = idx;
-        if (self.shaper) |shaper| {
-            glyph_count = shaper.applyLigaturesTracked(
-                gids[0..glyph_count],
-                src_starts[0..glyph_count],
-                src_ends[0..glyph_count],
-            ) catch glyph_count;
-        }
-
-        // Build positioned placements with kerning
-        const placements = try allocator.alloc(GlyphPlacement, glyph_count);
-        errdefer allocator.free(placements);
-
-        var cursor_x: f32 = 0;
-        var prev_gid: u16 = 0;
-        var i: usize = 0;
-        while (i < glyph_count) : (i += 1) {
-            const gid = gids[i];
-            if (gid == 0) {
-                const fallback_advance = scale * 500;
-                placements[i] = .{
-                    .glyph_id = 0,
-                    .x_offset = cursor_x,
-                    .y_offset = 0,
-                    .x_advance = fallback_advance,
-                    .y_advance = 0,
-                    .source_start = src_starts[i],
-                    .source_end = src_ends[i],
-                };
-                cursor_x += fallback_advance;
-                prev_gid = 0;
-                continue;
-            }
-
-            // Kerning: prefer GPOS, fall back to kern table
-            if (prev_gid != 0) {
-                var kern: i16 = 0;
-                if (self.shaper) |shaper| {
-                    kern = shaper.getKernAdjustment(prev_gid, gid) catch 0;
-                }
-                if (kern == 0) {
-                    kern = font.getKerning(prev_gid, gid) catch 0;
-                }
-                cursor_x += @as(f32, @floatFromInt(kern)) * scale;
-            }
-
-            const advance_units: i16 = font.advanceWidth(gid) catch 500;
-            const advance_px = @as(f32, @floatFromInt(advance_units)) * scale;
-
-            placements[i] = .{
-                .glyph_id = gid,
-                .x_offset = cursor_x,
-                .y_offset = 0,
-                .x_advance = advance_px,
-                .y_advance = 0,
-                .source_start = src_starts[i],
-                .source_end = src_ends[i],
-            };
-
-            cursor_x += advance_px;
-            prev_gid = gid;
-        }
-
-        return .{
-            .glyphs = placements,
-            .advance_x = cursor_x,
-            .advance_y = 0,
-        };
-    }
-
     /// Return a compacted atlas snapshot. Handles are stable across extend, but
     /// not guaranteed to remain valid across compact.
     pub fn compact(self: *const Atlas) !Atlas {
@@ -1447,7 +1286,7 @@ pub const CurveAtlas = struct {
     }
 };
 
-pub const Atlas = CurveAtlas;
+const Atlas = CurveAtlas;
 
 const PreparedAtlasView = struct {
     atlas: *const Atlas,
@@ -1500,18 +1339,9 @@ fn glyphAdvanceUnits(atlas: *const Atlas, font: *const Font, gid: u16) ?u16 {
     return null;
 }
 
-pub fn replaceAtlas(current: *Atlas, next: ?Atlas) bool {
-    if (next) |replacement| {
-        current.deinit();
-        current.* = replacement;
-        return true;
-    }
-    return false;
-}
-
 /// Accumulates glyph vertices into a caller-provided buffer.
 /// Zero allocations. Can be pre-built for static text.
-pub const TextBatch = struct {
+const TextBatch = struct {
     buf: []u32,
     len: usize, // words written
     layer_window_base: ?u32 = null,
@@ -1667,58 +1497,6 @@ pub const TextBatch = struct {
         if (!vertex_mod.generateMultiLayerGlyphVerticesTransformed(self.buf[self.len..], union_bbox, info_x, info_y, layer_count, color, local_layer, transform))
             return error.InvalidTransform;
         self.len += TEXT_WORDS_PER_GLYPH;
-    }
-
-    /// Append a shaped run. Each glyph's position is relative to (x, y).
-    /// Returns the number of glyphs successfully added.
-    pub fn addRun(
-        self: *TextBatch,
-        atlas_like: anytype,
-        run: *const ShapedRun,
-        x: f32,
-        y: f32,
-        font_size: f32,
-        color: [4]f32,
-    ) usize {
-        const resolved_view = coerceAtlasHandle(atlas_like);
-        const view = &resolved_view;
-        var count: usize = 0;
-        for (run.glyphs) |g| {
-            switch (glyph_emit.emitGlyph(self, view, g.glyph_id, x + g.x_offset, y + g.y_offset, font_size, color)) {
-                .emitted => count += 1,
-                .skipped => {},
-                .buffer_full => break,
-                .layer_window_changed, .invalid_transform => break,
-            }
-        }
-        return count;
-    }
-
-    /// Append a shaped run with synthetic style transforms (italic shear, bold offset).
-    /// Each glyph's position is relative to (x, y). Returns the number of glyphs
-    /// successfully added. When synthetic is identity (.{}), equivalent to addRun.
-    pub fn addStyledRun(
-        self: *TextBatch,
-        atlas_like: anytype,
-        run: *const ShapedRun,
-        x: f32,
-        y: f32,
-        font_size: f32,
-        color: [4]f32,
-        synthetic: SyntheticStyle,
-    ) usize {
-        const resolved_view = coerceAtlasHandle(atlas_like);
-        const view = &resolved_view;
-        var count: usize = 0;
-        for (run.glyphs) |g| {
-            switch (glyph_emit.emitStyledGlyph(self, view, g.glyph_id, x + g.x_offset, y + g.y_offset, font_size, color, synthetic)) {
-                .emitted => count += 1,
-                .skipped => {},
-                .buffer_full => break,
-                .layer_window_changed, .invalid_transform => break,
-            }
-        }
-        return count;
     }
 
     /// Lay out and append a string. Uses HarfBuzz for shaping when
@@ -3844,7 +3622,7 @@ pub const PathPictureBuilder = struct {
     }
 };
 
-pub const PathBatch = struct {
+const PathBatch = struct {
     buf: []u32,
     len: usize = 0,
     layer_window_base: ?u32 = null,
@@ -5354,6 +5132,50 @@ pub const ASCII_PRINTABLE = blk: {
     var chars: [95]u8 = undefined;
     for (0..95) |i| chars[i] = @intCast(32 + i);
     break :blk chars;
+};
+
+/// Low-level building blocks. Most callers should prefer the canonical types
+/// at the top level (`TextAtlas`, `Path`, `PathPicture`, `Renderer`, ...).
+///
+/// `lowlevel` is for advanced users who need raw curve/band data, want to
+/// emit glyph vertices without the `Scene`/`DrawList` layer, or build their
+/// own pipeline around snail's rasterization primitives. The shapes and
+/// invariants here are not stable across minor releases.
+pub const lowlevel = struct {
+    pub const bezier = @import("math/bezier.zig");
+    pub const curve_tex = @import("render/curve_texture.zig");
+
+    const root = @import("snail.zig");
+
+    pub const Font = root.Font;
+    pub const CurveAtlas = root.CurveAtlas;
+    pub const Atlas = root.Atlas;
+    pub const AtlasPage = root.AtlasPage;
+
+    pub const TextBatch = root.TextBatch;
+    pub const PathBatch = root.PathBatch;
+
+    pub const TEXT_WORDS_PER_VERTEX = root.TEXT_WORDS_PER_VERTEX;
+    pub const TEXT_VERTICES_PER_GLYPH = root.TEXT_VERTICES_PER_GLYPH;
+    pub const TEXT_WORDS_PER_GLYPH = root.TEXT_WORDS_PER_GLYPH;
+    pub const PATH_WORDS_PER_VERTEX = root.PATH_WORDS_PER_VERTEX;
+    pub const PATH_VERTICES_PER_SHAPE = root.PATH_VERTICES_PER_SHAPE;
+    pub const PATH_WORDS_PER_SHAPE = root.PATH_WORDS_PER_SHAPE;
+
+    pub const TEXTURE_LAYER_WINDOW_SIZE = root.TEXTURE_LAYER_WINDOW_SIZE;
+    pub const textureLayerWindowBase = root.textureLayerWindowBase;
+    pub const textureLayerLocal = root.textureLayerLocal;
+
+    pub const PATH_PAINT_INFO_WIDTH = root.PATH_PAINT_INFO_WIDTH;
+    pub const PATH_PAINT_TEXELS_PER_RECORD = root.PATH_PAINT_TEXELS_PER_RECORD;
+    pub const PATH_PAINT_TAG_SOLID = root.PATH_PAINT_TAG_SOLID;
+    pub const PATH_PAINT_TAG_LINEAR_GRADIENT = root.PATH_PAINT_TAG_LINEAR_GRADIENT;
+    pub const PATH_PAINT_TAG_RADIAL_GRADIENT = root.PATH_PAINT_TAG_RADIAL_GRADIENT;
+    pub const PATH_PAINT_TAG_IMAGE = root.PATH_PAINT_TAG_IMAGE;
+    pub const PATH_PAINT_TAG_COMPOSITE_GROUP = root.PATH_PAINT_TAG_COMPOSITE_GROUP;
+
+    pub const PathPictureDebugView = root.PathPictureDebugView;
+    pub const PathPictureBoundsOverlayOptions = root.PathPictureBoundsOverlayOptions;
 };
 
 test {

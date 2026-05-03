@@ -171,7 +171,7 @@ void main() {
         int bandMaxH = floatBitsToInt(info.z) & 0xFFFF;
         int bandMaxV = (floatBitsToInt(info.z) >> 16) & 0xFFFF;
         int texLayer = u_layer_base + int(v_banding.w);
-        float cov = evalGlyphCoverage(rc, ppe, gLoc, ivec2(bandMaxH, bandMaxV), band, texLayer);
+        float cov = evalGlyphCoverage(rc, ppe, gLoc, ivec2(bandMaxV, bandMaxH), band, texLayer);
         vec4 premul = premultiplyColor(color, cov);
         result = premul + result * (1.0 - premul.a);
     }

@@ -375,12 +375,22 @@ snail_text_atlas_deinit(atlas);
 | `builder.addEllipse(rect, fill, stroke, transform)` | Direct ellipse. |
 | `builder.freeze(alloc) !PathPicture` | Compile to immutable atlas. |
 
-### Constants
+### `snail.lowlevel`
 
-| Constant | Value | Use |
-|----------|-------|-----|
-| `TEXT_WORDS_PER_GLYPH` | 23 | `u32` word budget for one low-level text glyph record. Prefer `DrawList.estimate`. |
-| `PATH_WORDS_PER_SHAPE` | 23 | `u32` word budget for one low-level path shape record. Prefer `DrawList.estimate`. |
+Building blocks for callers who need direct curve/band data, want to emit
+glyph vertices outside the `Scene`/`DrawList` pipeline, or build a custom
+backend on top of snail's rasterization. Most apps should not need this.
+
+| Symbol | Use |
+|--------|-----|
+| `lowlevel.bezier`, `lowlevel.curve_tex` | Geometry math and curve-page packing primitives. |
+| `lowlevel.Font`, `lowlevel.CurveAtlas`/`Atlas`, `lowlevel.AtlasPage` | Raw font + atlas storage exposed for backend authors. |
+| `lowlevel.TextBatch`, `lowlevel.PathBatch` | Caller-buffered glyph/shape vertex emission below the `DrawList` layer. |
+| `lowlevel.TEXT_WORDS_PER_GLYPH`, `lowlevel.PATH_WORDS_PER_SHAPE`, related sizing constants | `u32` word budget per record (prefer `DrawList.estimate` when possible). |
+| `lowlevel.PATH_PAINT_*` constants | Path-paint texel tags used by `PathPicture` records. |
+| `lowlevel.PathPictureDebugView`, `lowlevel.PathPictureBoundsOverlayOptions` | Debug overlays for vector authoring. |
+| `lowlevel.textureLayerWindowBase`, `lowlevel.textureLayerLocal`, `lowlevel.TEXTURE_LAYER_WINDOW_SIZE` | Texture-array layer windowing helpers. |
+
 
 ## Benchmarks
 
