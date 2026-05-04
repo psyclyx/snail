@@ -9,8 +9,8 @@ const assets_data = @import("assets");
 
 const Allocator = std.mem.Allocator;
 
-pub const WIDTH: u32 = 960;
-pub const HEIGHT: u32 = 320;
+pub const WIDTH: u32 = 480;
+pub const HEIGHT: u32 = 240;
 
 pub fn clearColor() [4]f32 {
     return .{ 0.96, 0.965, 0.975, 1.0 };
@@ -58,13 +58,13 @@ const tagline_color = [4]f32{ 0.42, 0.46, 0.52, 1.0 };
 const sample_color = [4]f32{ 0.15, 0.18, 0.24, 1.0 };
 const sep_color = [4]f32{ 0.65, 0.70, 0.78, 1.0 };
 
-const left_pad: f32 = 56.0;
-const wordmark_size: f32 = 96.0;
-const wordmark_baseline: f32 = 130.0;
-const tagline_size: f32 = 22.0;
-const tagline_baseline: f32 = wordmark_baseline + 36.0;
-const sample_size: f32 = 28.0;
-const sample_baseline: f32 = 256.0;
+const left_pad: f32 = 28.0;
+const wordmark_size: f32 = 56.0;
+const wordmark_baseline: f32 = 78.0;
+const tagline_size: f32 = 14.0;
+const tagline_baseline: f32 = wordmark_baseline + 22.0;
+const sample_size: f32 = 18.0;
+const sample_baseline: f32 = 196.0;
 
 pub fn buildTextBlob(builder: *snail.TextBlobBuilder) !void {
     var x = left_pad;
@@ -110,12 +110,13 @@ pub fn buildPathPicture(allocator: Allocator) !snail.PathPicture {
     var builder = snail.PathPictureBuilder.init(allocator);
     defer builder.deinit();
 
-    // The vector snail lives in the right ~280 px of the canvas.
+    // The vector snail lives in the top-right corner of the canvas above
+    // the multi-script sample row.
     const stage = snail.Rect{
-        .x = @as(f32, @floatFromInt(WIDTH)) - 320.0,
-        .y = 30.0,
-        .w = 300.0,
-        .h = 260.0,
+        .x = @as(f32, @floatFromInt(WIDTH)) - 180.0,
+        .y = 8.0,
+        .w = 168.0,
+        .h = 132.0,
     };
     try demo_banner.addVectorSnail(&builder, stage);
 
