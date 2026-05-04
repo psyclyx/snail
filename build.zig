@@ -27,11 +27,6 @@ fn configureCoreModule(
     vk_shaders: *std.Build.Module,
 ) void {
     mod.addOptions("build_options", opts);
-    // libc is required unconditionally: `CpuRenderer`'s thread pool uses
-    // `std.c.pthread_*` for mutex / condvar, and Zig 0.16 doesn't ship
-    // standalone blocking sync primitives outside `std.Io` (which would
-    // re-introduce per-task allocations on the draw path).
-    mod.link_libc = true;
     if (opengl) mod.linkSystemLibrary("OpenGL", .{});
     mod.addImport("vulkan_shaders", vk_shaders);
     if (vulkan) mod.linkSystemLibrary("vulkan", .{});

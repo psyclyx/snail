@@ -54,10 +54,12 @@
   to the single-threaded path; the draw call remains
   allocation-free (`backend-compare` still passes; a parity test in
   `cpu_renderer.zig` asserts byte-equality vs the serial path).
-- The core library now unconditionally links libc: the pool uses
-  `std.c.pthread_mutex_*` / `pthread_cond_*` for blocking sync, and
-  Zig 0.16 only ships standalone blocking primitives behind
-  `std.Io` (which would re-introduce per-task allocations).
+- The pool's mutex / condvar are built directly on Linux futex
+  (`std.os.linux.futex_4arg`); no libc dependency is added to snail's
+  core. Zig 0.16 ships standalone blocking sync primitives only behind
+  `std.Io`, which would re-introduce per-task allocations on the draw
+  path. Linux-only for now — porting to other OSes means adding
+  futex equivalents in `src/thread_pool.zig`.
 
 ### Docs
 
