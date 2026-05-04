@@ -1581,11 +1581,34 @@ fn makePathLineSegment(p0: Vec2, p1: Vec2) CurveSegment {
     return CurveSegment.fromLine(p0, p1);
 }
 
+// Snap near-axis trig results to exact 0/±1. Without this, rounded-rect
+// corner arcs (whose endpoints lie at angles that are multiples of π/2)
+// land an ULP off the adjacent line endpoints, leaving a visible seam in
+// the stroke at the line→arc transition.
+fn snapTrig(value: f32) f32 {
+    if (@abs(value) < 1e-6) return 0.0;
+    if (@abs(value - 1.0) < 1e-6) return 1.0;
+    if (@abs(value + 1.0) < 1e-6) return -1.0;
+    return value;
+}
+
+fn cosSnap(angle: f32) f32 {
+    return snapTrig(@cos(angle));
+}
+
+fn sinSnap(angle: f32) f32 {
+    return snapTrig(@sin(angle));
+}
+
 fn makePathArcCurve(center: Vec2, radii: Vec2, start_angle: f32, end_angle: f32) bezier.QuadBezier {
-    const p0 = center.add(Vec2.new(@cos(start_angle) * radii.x, @sin(start_angle) * radii.y));
-    const p2 = center.add(Vec2.new(@cos(end_angle) * radii.x, @sin(end_angle) * radii.y));
-    const t0 = Vec2.new(-@sin(start_angle) * radii.x, @cos(start_angle) * radii.y);
-    const t1 = Vec2.new(-@sin(end_angle) * radii.x, @cos(end_angle) * radii.y);
+    const cs = cosSnap(start_angle);
+    const ss = sinSnap(start_angle);
+    const ce = cosSnap(end_angle);
+    const se = sinSnap(end_angle);
+    const p0 = center.add(Vec2.new(cs * radii.x, ss * radii.y));
+    const p2 = center.add(Vec2.new(ce * radii.x, se * radii.y));
+    const t0 = Vec2.new(-ss * radii.x, cs * radii.y);
+    const t1 = Vec2.new(-se * radii.x, ce * radii.y);
     const control = lineIntersection(p0, t0, p2, t1) orelse Vec2.lerp(p0, p2, 0.5);
     return .{
         .p0 = p0,
@@ -1595,10 +1618,14 @@ fn makePathArcCurve(center: Vec2, radii: Vec2, start_angle: f32, end_angle: f32)
 }
 
 fn makePathArcConic(center: Vec2, radii: Vec2, start_angle: f32, end_angle: f32) CurveSegment {
-    const p0 = center.add(Vec2.new(@cos(start_angle) * radii.x, @sin(start_angle) * radii.y));
-    const p2 = center.add(Vec2.new(@cos(end_angle) * radii.x, @sin(end_angle) * radii.y));
-    const t0 = Vec2.new(-@sin(start_angle) * radii.x, @cos(start_angle) * radii.y);
-    const t1 = Vec2.new(-@sin(end_angle) * radii.x, @cos(end_angle) * radii.y);
+    const cs = cosSnap(start_angle);
+    const ss = sinSnap(start_angle);
+    const ce = cosSnap(end_angle);
+    const se = sinSnap(end_angle);
+    const p0 = center.add(Vec2.new(cs * radii.x, ss * radii.y));
+    const p2 = center.add(Vec2.new(ce * radii.x, se * radii.y));
+    const t0 = Vec2.new(-ss * radii.x, cs * radii.y);
+    const t1 = Vec2.new(-se * radii.x, ce * radii.y);
     const control = lineIntersection(p0, t0, p2, t1) orelse Vec2.lerp(p0, p2, 0.5);
     return CurveSegment.fromConic(.{
         .p0 = p0,
