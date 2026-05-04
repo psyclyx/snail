@@ -2,7 +2,7 @@
 
 Text and vector rendering via direct Bezier curve evaluation.
 
-<img src="assets/demo_screenshot.png" alt="snail demo scene" width="480">
+<img src="assets/demo_screenshot.png?raw=true" alt="snail demo scene">
 
 snail renders text and vector art by evaluating Bezier curves at draw time. No bitmap glyph atlases, no signed distance fields. Glyphs and paths are resolution-independent and render correctly at any size, rotation, or perspective transform. GPU backends run this in shaders; the CPU backend uses the same prepared atlas data in software.
 
@@ -135,7 +135,7 @@ defer blob.deinit();
 
 var scene = snail.Scene.init(allocator);
 defer scene.deinit();
-try scene.addText(&blob);
+try scene.addText(.{ .blob = &blob });
 
 var resource_entries: [8]snail.ResourceSet.Entry = undefined;
 var resources = snail.ResourceSet.init(&resource_entries);
@@ -188,7 +188,7 @@ try builder.addPath(&path,
 var picture = try builder.freeze(allocator);
 defer picture.deinit();
 
-try scene.addPathPicture(&picture);
+try scene.addPath(.{ .picture = &picture });
 try resources.addScene(&scene);
 ```
 
@@ -313,7 +313,10 @@ snail_text_atlas_deinit(atlas);
 | `Path` | Mutable path builder: `moveTo`, `lineTo`, `quadTo`, `cubicTo`, `close`, plus shape helpers. |
 | `PathPictureBuilder` | Accumulates filled/stroked paths and shapes with paint styles. |
 | `PathPicture` | Immutable frozen vector art. |
-| `Scene` | Borrowed command list of `TextBlob` and `PathPicture` draws. |
+| `Scene` | Borrowed command list of `TextDraw` and `PathDraw` submissions. |
+| `PathDraw`, `TextDraw` | Submission record: resource pointer, optional sub-range, and an `[]const Override` array (length = GPU instance count). |
+| `Override` | Per-instance composition: `transform` composed onto baked transform, `tint` multiplied onto baked color. |
+| `Range` | `{ start, count }` slice into a `PathPicture`'s shapes or a `TextBlob`'s glyphs. |
 | `ResourceSet` | Fixed-capacity borrowed manifest of CPU values. |
 | `PreparedResources` | Backend realization for one renderer/context. |
 | `DrawList` | Caller-buffered draw records. |
@@ -339,6 +342,36 @@ snail_text_atlas_deinit(atlas);
 | `atlas.ensureText(style, text) !?TextAtlas` | Shape-and-ensure helper. |
 | `TextBlob.fromShaped(alloc, atlas, shaped, options) !TextBlob` | Build positioned text from a `ShapedText`. The blob borrows `atlas`. |
 | `TextBlobBuilder.init(alloc, atlas)` / `builder.addText(style, text, x, y, size, color)` / `builder.finish() !TextBlob` | Convenience: shape + position in one pass. Call `atlas.ensureText`/`ensureShaped` first if all glyphs must be renderable. |
+
+### Scene
+
+A scene is a borrowed list of `PathDraw` / `TextDraw` submissions. Each submission selects a sub-range of an immutable resource and emits one GPU instance per `Override` (default: a single identity instance). `addPath` / `addText` copy the `instances` slice into a per-scene arena, so callers can pass stack-locals freely.
+
+| Method | Description |
+|--------|-------------|
+| `Scene.init(alloc) Scene` | New empty scene. |
+| `scene.addPath(PathDraw) !void` | Submit a path draw. |
+| `scene.addText(TextDraw) !void` | Submit a text draw. |
+| `scene.reset()` | Clear commands and reuse arena capacity. |
+| `scene.deinit()` | Free the command list and arena. |
+
+```zig
+// Trivial draw.
+try scene.addPath(.{ .picture = &picture });
+
+// One transform.
+const overrides = [_]snail.Override{.{ .transform = transform }};
+try scene.addPath(.{ .picture = &picture, .instances = &overrides });
+
+// Sub-range of shapes.
+try scene.addPath(.{
+    .picture = &picture,
+    .shapes = .{ .start = 4, .count = 12 },
+});
+
+// Many instances (tile / sprite / particle batch).
+try scene.addPath(.{ .picture = &sprite, .instances = entity_overrides });
+```
 
 ### Renderer
 
@@ -385,6 +418,7 @@ snail_text_atlas_deinit(atlas);
 | `builder.addRect(rect, fill, stroke, transform)` | Direct rectangle. |
 | `builder.addRoundedRect(rect, fill, stroke, radius, transform)` | Direct rounded rectangle. |
 | `builder.addEllipse(rect, fill, stroke, transform)` | Direct ellipse. |
+| `builder.shapeCount() usize` | Number of shapes added so far (matches indices used by `Range`). |
 | `builder.freeze(alloc) !PathPicture` | Compile to immutable atlas. |
 
 ### `snail.lowlevel`
@@ -454,10 +488,10 @@ The vector workload contains filled and stroked rounded rectangles, ellipses, an
 
 | Workload | Snail | FreeType | FreeType / Snail |
 |---|---:|---:|---:|
-| Font load | 1.51 us | 8.78 us | 5.80x |
-| Glyph prep, ASCII | 474.02 us | 978.13 us | 2.06x |
-| Glyph prep, 7 sizes | 474.02 us | 6929.27 us | 14.62x |
-| PathPicture freeze, 25 shapes | 187.74 us | n/a | n/a |
+| Font load | 1.39 us | 8.61 us | 6.18x |
+| Glyph prep, ASCII | 477.28 us | 1022.40 us | 2.14x |
+| Glyph prep, 7 sizes | 477.28 us | 7007.90 us | 14.68x |
+| PathPicture freeze, 25 shapes | 200.46 us | n/a | n/a |
 
 ### Prepared Resource Memory
 
@@ -472,19 +506,19 @@ The vector workload contains filled and stroked rounded rectangles, ellipses, an
 
 | Workload | Snail TextBlob | FreeType layout | FreeType / Snail |
 |---|---:|---:|---:|
-| Short string | 1.30 us | 76.57 us | 58.71x |
-| Sentence | 4.37 us | 376.36 us | 86.20x |
-| Paragraph | 15.07 us | 1315.64 us | 87.29x |
-| Paragraph x 7 sizes | 105.02 us | 9434.81 us | 89.84x |
+| Short string | 1.32 us | 79.99 us | 60.69x |
+| Sentence | 4.44 us | 392.53 us | 88.47x |
+| Paragraph | 15.21 us | 1407.64 us | 92.54x |
+| Paragraph x 7 sizes | 106.94 us | 10032.01 us | 93.81x |
 
 ### Draw Record Creation
 
 | Scene | Commands | Words | Segments | PreparedScene.initOwned |
 |---|---:|---:|---:|---:|
-| Text | 4 | 3795 | 4 | 7.40 us |
-| Vector paths | 1 | 375 | 1 | 0.24 us |
-| Mixed text + vector | 5 | 4170 | 5 | 7.59 us |
-| Multi-script text | 4 | 1395 | 4 | 2.62 us |
+| Text | 4 | 3795 | 4 | 7.73 us |
+| Vector paths | 1 | 375 | 1 | 0.22 us |
+| Mixed text + vector | 5 | 4170 | 5 | 7.98 us |
+| Multi-script text | 4 | 1395 | 4 | 2.69 us |
 
 ### Prepared Render
 
@@ -492,18 +526,18 @@ Target: 640x360. CPU uses 20 measured frames; GPU backends use 500 measured fram
 
 | Backend | Scene | Frames | Commands | Words | Segments | Draw prepared scene |
 |---|---|---:|---:|---:|---:|---:|
-| CPU | Text | 20 | 4 | 3795 | 4 | 16551.23 us |
-| CPU | Vector paths | 20 | 1 | 375 | 1 | 47233.01 us |
-| CPU | Mixed text + vector | 20 | 5 | 4170 | 5 | 64415.68 us |
-| CPU | Multi-script text | 20 | 4 | 1395 | 4 | 9905.33 us |
-| GL 4.4 (persistent mapped) | Text | 500 | 4 | 3795 | 4 | 288.17 us |
-| GL 4.4 (persistent mapped) | Vector paths | 500 | 1 | 375 | 1 | 74.29 us |
-| GL 4.4 (persistent mapped) | Mixed text + vector | 500 | 5 | 4170 | 5 | 335.77 us |
-| GL 4.4 (persistent mapped) | Multi-script text | 500 | 4 | 1395 | 4 | 276.25 us |
-| Vulkan | Text | 500 | 4 | 3795 | 4 | 77.54 us |
-| Vulkan | Vector paths | 500 | 1 | 375 | 1 | 79.82 us |
-| Vulkan | Mixed text + vector | 500 | 5 | 4170 | 5 | 103.55 us |
-| Vulkan | Multi-script text | 500 | 4 | 1395 | 4 | 77.63 us |
+| CPU | Text | 20 | 4 | 3795 | 4 | 16750.03 us |
+| CPU | Vector paths | 20 | 1 | 375 | 1 | 47811.75 us |
+| CPU | Mixed text + vector | 20 | 5 | 4170 | 5 | 64730.06 us |
+| CPU | Multi-script text | 20 | 4 | 1395 | 4 | 10084.56 us |
+| GL 4.4 (persistent mapped) | Text | 500 | 4 | 3795 | 4 | 320.55 us |
+| GL 4.4 (persistent mapped) | Vector paths | 500 | 1 | 375 | 1 | 75.29 us |
+| GL 4.4 (persistent mapped) | Mixed text + vector | 500 | 5 | 4170 | 5 | 359.72 us |
+| GL 4.4 (persistent mapped) | Multi-script text | 500 | 4 | 1395 | 4 | 295.84 us |
+| Vulkan | Text | 500 | 4 | 3795 | 4 | 77.35 us |
+| Vulkan | Vector paths | 500 | 1 | 375 | 1 | 84.07 us |
+| Vulkan | Mixed text + vector | 500 | 5 | 4170 | 5 | 106.56 us |
+| Vulkan | Multi-script text | 500 | 4 | 1395 | 4 | 84.54 us |
 
 ### Render Modes
 
@@ -513,36 +547,36 @@ PreparedScene-time stem snapping resolved against the target.
 
 | Backend | Scene | AA | Hinting | Words | Segments | PreparedScene | Draw |
 |---|---|---|---|---:|---:|---:|---:|
-| CPU | Text | grayscale | unhinted | 3795 | 4 | 7.21 us | 3299.85 us |
-| CPU | Text | grayscale | metrics | 3795 | 4 | 11.66 us | 3261.01 us |
-| CPU | Text | subpixel rgb | unhinted | 3795 | 4 | 7.39 us | 16671.97 us |
-| CPU | Text | subpixel rgb | phase | 3795 | 4 | 9.15 us | 16565.18 us |
-| CPU | Text | subpixel rgb | metrics | 3795 | 4 | 11.64 us | 16628.29 us |
-| CPU | Multi-script text | grayscale | unhinted | 1395 | 4 | 2.62 us | 1951.32 us |
-| CPU | Multi-script text | grayscale | metrics | 1395 | 4 | 4.11 us | 1957.31 us |
-| CPU | Multi-script text | subpixel rgb | unhinted | 1395 | 4 | 2.60 us | 9948.86 us |
-| CPU | Multi-script text | subpixel rgb | phase | 1395 | 4 | 3.18 us | 9941.60 us |
-| CPU | Multi-script text | subpixel rgb | metrics | 1395 | 4 | 4.13 us | 9978.85 us |
-| GL 4.4 (persistent mapped) | Text | grayscale | unhinted | 3795 | 4 | 7.19 us | 93.71 us |
-| GL 4.4 (persistent mapped) | Text | grayscale | metrics | 3795 | 4 | 11.42 us | 91.63 us |
-| GL 4.4 (persistent mapped) | Text | subpixel rgb | unhinted | 3795 | 4 | 7.38 us | 288.66 us |
-| GL 4.4 (persistent mapped) | Text | subpixel rgb | phase | 3795 | 4 | 8.81 us | 280.09 us |
-| GL 4.4 (persistent mapped) | Text | subpixel rgb | metrics | 3795 | 4 | 11.51 us | 279.99 us |
-| GL 4.4 (persistent mapped) | Multi-script text | grayscale | unhinted | 1395 | 4 | 2.55 us | 91.87 us |
-| GL 4.4 (persistent mapped) | Multi-script text | grayscale | metrics | 1395 | 4 | 4.08 us | 94.26 us |
-| GL 4.4 (persistent mapped) | Multi-script text | subpixel rgb | unhinted | 1395 | 4 | 2.67 us | 284.40 us |
-| GL 4.4 (persistent mapped) | Multi-script text | subpixel rgb | phase | 1395 | 4 | 3.19 us | 276.76 us |
-| GL 4.4 (persistent mapped) | Multi-script text | subpixel rgb | metrics | 1395 | 4 | 4.24 us | 277.28 us |
-| Vulkan | Text | grayscale | unhinted | 3795 | 4 | 7.48 us | 23.97 us |
-| Vulkan | Text | grayscale | metrics | 3795 | 4 | 11.93 us | 27.31 us |
-| Vulkan | Text | subpixel rgb | unhinted | 3795 | 4 | 7.45 us | 76.72 us |
-| Vulkan | Text | subpixel rgb | phase | 3795 | 4 | 9.19 us | 80.95 us |
-| Vulkan | Text | subpixel rgb | metrics | 3795 | 4 | 11.48 us | 79.88 us |
-| Vulkan | Multi-script text | grayscale | unhinted | 1395 | 4 | 2.51 us | 27.17 us |
-| Vulkan | Multi-script text | grayscale | metrics | 1395 | 4 | 3.97 us | 23.53 us |
-| Vulkan | Multi-script text | subpixel rgb | unhinted | 1395 | 4 | 2.55 us | 74.15 us |
-| Vulkan | Multi-script text | subpixel rgb | phase | 1395 | 4 | 3.10 us | 80.00 us |
-| Vulkan | Multi-script text | subpixel rgb | metrics | 1395 | 4 | 3.97 us | 77.79 us |
+| CPU | Text | grayscale | unhinted | 3795 | 4 | 7.72 us | 3403.49 us |
+| CPU | Text | grayscale | metrics | 3795 | 4 | 12.23 us | 3402.77 us |
+| CPU | Text | subpixel rgb | unhinted | 3795 | 4 | 7.75 us | 16760.62 us |
+| CPU | Text | subpixel rgb | phase | 3795 | 4 | 9.10 us | 16891.67 us |
+| CPU | Text | subpixel rgb | metrics | 3795 | 4 | 11.99 us | 16897.70 us |
+| CPU | Multi-script text | grayscale | unhinted | 1395 | 4 | 2.69 us | 1966.88 us |
+| CPU | Multi-script text | grayscale | metrics | 1395 | 4 | 4.20 us | 1976.87 us |
+| CPU | Multi-script text | subpixel rgb | unhinted | 1395 | 4 | 2.67 us | 10046.17 us |
+| CPU | Multi-script text | subpixel rgb | phase | 1395 | 4 | 3.28 us | 10042.81 us |
+| CPU | Multi-script text | subpixel rgb | metrics | 1395 | 4 | 4.22 us | 10035.13 us |
+| GL 4.4 (persistent mapped) | Text | grayscale | unhinted | 3795 | 4 | 7.58 us | 98.62 us |
+| GL 4.4 (persistent mapped) | Text | grayscale | metrics | 3795 | 4 | 11.72 us | 100.19 us |
+| GL 4.4 (persistent mapped) | Text | subpixel rgb | unhinted | 3795 | 4 | 7.62 us | 286.90 us |
+| GL 4.4 (persistent mapped) | Text | subpixel rgb | phase | 3795 | 4 | 9.13 us | 292.39 us |
+| GL 4.4 (persistent mapped) | Text | subpixel rgb | metrics | 3795 | 4 | 11.87 us | 303.26 us |
+| GL 4.4 (persistent mapped) | Multi-script text | grayscale | unhinted | 1395 | 4 | 2.59 us | 90.78 us |
+| GL 4.4 (persistent mapped) | Multi-script text | grayscale | metrics | 1395 | 4 | 4.20 us | 91.86 us |
+| GL 4.4 (persistent mapped) | Multi-script text | subpixel rgb | unhinted | 1395 | 4 | 2.66 us | 286.32 us |
+| GL 4.4 (persistent mapped) | Multi-script text | subpixel rgb | phase | 1395 | 4 | 3.32 us | 289.23 us |
+| GL 4.4 (persistent mapped) | Multi-script text | subpixel rgb | metrics | 1395 | 4 | 4.23 us | 298.23 us |
+| Vulkan | Text | grayscale | unhinted | 3795 | 4 | 7.49 us | 23.14 us |
+| Vulkan | Text | grayscale | metrics | 3795 | 4 | 11.80 us | 27.85 us |
+| Vulkan | Text | subpixel rgb | unhinted | 3795 | 4 | 7.41 us | 88.31 us |
+| Vulkan | Text | subpixel rgb | phase | 3795 | 4 | 9.12 us | 88.16 us |
+| Vulkan | Text | subpixel rgb | metrics | 3795 | 4 | 11.79 us | 84.13 us |
+| Vulkan | Multi-script text | grayscale | unhinted | 1395 | 4 | 2.66 us | 27.32 us |
+| Vulkan | Multi-script text | grayscale | metrics | 1395 | 4 | 4.14 us | 26.07 us |
+| Vulkan | Multi-script text | subpixel rgb | unhinted | 1395 | 4 | 2.69 us | 82.63 us |
+| Vulkan | Multi-script text | subpixel rgb | phase | 1395 | 4 | 3.11 us | 87.19 us |
+| Vulkan | Multi-script text | subpixel rgb | metrics | 1395 | 4 | 4.12 us | 80.64 us |
 
 ## Architecture
 

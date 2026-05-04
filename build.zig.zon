@@ -1,6 +1,6 @@
 .{
     .name = .snail,
-    .version = "0.3.0",
+    .version = "0.4.0",
     .fingerprint = 0x1a87b1b848f90ebf,
     .paths = .{""},
 }

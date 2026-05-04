@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.4.0
+
+### Unified draw-submission API
+
+- New `PathDraw` and `TextDraw` value types replace the family of
+  per-shape `Scene.add*` overloads. Each carries a resource pointer,
+  an optional `Range` sub-selection, and an `[]Override` slice of
+  per-instance composition (transform + tint).
+- `Scene.addText(*const TextBlob)` / `addTextOptions` /
+  `addTextTransformed` / `addTextTransformedOptions` collapse into
+  `Scene.addText(TextDraw)`.
+- `Scene.addPathPicture` / `addPathPictureTransformed` collapse into
+  `Scene.addPath(PathDraw)`.
+- New `Range { start, count }` selects a sub-range of a `PathPicture`'s
+  shapes or a `TextBlob`'s glyphs.
+- New `Override { transform, tint }` composes onto the baked transform
+  and multiplies the baked color per GPU instance. `tint` is a
+  first-class capability across both text and vector paths.
+- `Scene` now owns an `ArenaAllocator` so `addPath` / `addText` can
+  copy the caller's `instances` slice into per-scene storage; stack
+  arrays are safe.
+
+### Renames
+
+- `PathPicture.Instance` → `PathPicture.Shape`; field `.instances` →
+  `.shapes`. Reflects the new vocabulary where "instances" are
+  per-call GPU instances and "shapes" are entries in a frozen picture.
+- `PathBatch.addPicture` / `addPictureTransformed` /
+  `addPictureTransformedFrom` → `PathBatch.addDraw(view, PathDraw,
+  override_index, shape_start) !AppendResult`.
+- `PathBatch.AppendResult.next_instance` → `next_shape`.
+- `TextBlob.appendToBatch` / `appendToBatchFrom` →
+  `TextBlob.appendDrawFrom(batch, view, TextDraw, override_index,
+  target, scene_to_screen, start_glyph)`.
+- New `PathPictureBuilder.shapeCount()` for callers building `Range`
+  selections at picture-build time.
+
+### C API
+
+- `snail_scene_add_text_options` and
+  `snail_scene_add_path_picture_transformed` keep their export names
+  but route through the new draw structs internally; semantics are
+  preserved for existing callers.
+
+### Docs
+
+- README banner switches from a fixed `width` attribute to GitHub's
+  `?raw=true` query so the embedded image renders at native
+  resolution without HTML sizing.
+- Bench output regenerated against the new draw-submission API.
+
 ## 0.3.0
 
 ### Rendering API rewrite

@@ -4,7 +4,7 @@ includedir=${prefix}/include
 
 Name: snail
 Description: GPU font rendering via direct Bézier curve evaluation (Slug algorithm)
-Version: 0.3.0
+Version: 0.4.0
 Libs: -L${libdir} -lsnail
 Cflags: -I${includedir}
 Requires: gl harfbuzz
