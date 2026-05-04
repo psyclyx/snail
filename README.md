@@ -20,7 +20,7 @@ The Slug patent (US 10,373,352) was [dedicated to the public domain](https://ter
 
 ### How it works
 
-**Font loading.** snail parses TrueType fonts directly: `cmap` for codepoint-to-glyph mapping, `glyf`/`loca` for outlines, `hhea`/`hmtx` for metrics, `kern` for legacy kerning. Optional OpenType shaping applies GSUB ligature substitution (type 4) and GPOS pair positioning (type 2). HarfBuzz can be compiled in for full complex-script shaping.
+**Font loading.** snail parses TrueType fonts directly: `cmap` for codepoint-to-glyph mapping, `glyf`/`loca` for outlines, `hhea`/`hmtx` for metrics, `kern` for legacy kerning, and `OS/2` + `post` for underline/strikethrough/superscript/subscript metrics. `COLR` is parsed for color emoji. Optional OpenType shaping applies GSUB ligature substitution (type 4) and GPOS pair positioning (type 2). HarfBuzz can be compiled in for full complex-script shaping.
 
 **Atlas preparation.** Each glyph's quadratic Bezier curves are packed into two GPU textures at load time:
 
@@ -65,7 +65,7 @@ zig build backend-compare                       # CPU/GL pixel parity; add -Dvul
 zig build install --release=fast                # install libsnail + include/snail.h
 ```
 
-Library backend flags: `-Dopengl=true` (default), `-Dvulkan=false`, `-Dcpu-renderer=true` (default). C ABI artifacts are built by default; pass `-Dc-api=false` for a Zig-module-only build.
+Library backend flags: `-Dopengl=true` (default), `-Dvulkan=false`, `-Dcpu-renderer=true` (default), `-Dharfbuzz=true` (default; pass `=false` for a HarfBuzz-free build using the built-in GSUB/GPOS shaper), `-Dprofile=false` (default; enables comptime CPU timers). C ABI artifacts are built by default; pass `-Dc-api=false` for a Zig-module-only build.
 
 The checked-in screenshot at `assets/demo_screenshot.png` is regenerated from the `zig build screenshot` TGA output.
 
@@ -545,16 +545,20 @@ src/
     egl_common.zig       shared EGL setup
     egl_offscreen.zig    headless EGL context
     wayland_window.zig   Wayland window + input handling
+    xdg-shell-client-protocol.{c,h}  generated xdg-shell protocol bindings
     screenshot.zig       framebuffer capture + TGA writing
     subpixel_order.zig   RGB/BGR/VRGB/VBGR enum
     subpixel_detect.zig  auto-detect display subpixel layout
     subpixel_policy.zig  subpixel rendering policy logic
+    glsl/                shared GLSL bodies for GL and Vulkan backends
   profile/
     timer.zig            comptime-gated CPU timers
 shaders/
   snail.vert             Vulkan vertex shader (GLSL 450, compiled to SPIR-V at build time)
-  snail.frag             Vulkan fragment shader (text + paths, grayscale AA)
-  snail_text_subpixel.frag  Vulkan fragment shader (text-only, subpixel AA)
+  snail.frag             Vulkan fragment shader (vector paths, grayscale AA)
+  snail_text.frag        Vulkan fragment shader (text, grayscale AA)
+  snail_text_subpixel.frag  Vulkan fragment shader (text, dual-source LCD subpixel AA)
+  snail_colr.frag        Vulkan fragment shader (COLR multi-layer color emoji)
 include/
   snail.h                public C header
 ```
