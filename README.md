@@ -27,7 +27,7 @@ The Slug patent (US 10,373,352) was [dedicated to the public domain](https://ter
 - *Curve texture* (RGBA16F): control points for every curve segment, stored as f16 in font-unit coordinates.
 - *Band texture* (RG16UI): spatial subdivision indices. The glyph bounding box is split into horizontal and vertical bands; each band records which curve segments intersect it.
 
-This preprocessing is CPU-only and runs once per glyph set. Backends upload the prepared data as 2D texture arrays, one layer per atlas page.
+This preprocessing is CPU-only and runs once per glyph set. GPU backends upload the prepared data into 2D texture arrays (one layer per atlas page); the CPU backend reads the same arrays directly without uploading.
 
 **Fragment shader.** At draw time, each glyph is a screen-space quad. The fragment shader:
 
@@ -38,7 +38,7 @@ This preprocessing is CPU-only and runs once per glyph set. Backends upload the 
 
 There is no rasterization, no texture sampling for glyph shapes, and no distance field approximation.
 
-**Vector paths.** Filled and stroked `Path` geometry goes through the same pipeline. Paths are decomposed into quadratic curves (cubics are adaptively approximated), packed into the same curve/band texture format, and drawn with the same fragment shader. Strokes are expanded into offset curves with proper joins (miter, bevel, round) and caps (butt, square, round). The `PathPicture` type freezes a set of styled paths into an immutable atlas snapshot that can be instanced cheaply per frame.
+**Vector paths.** Filled and stroked `Path` geometry shares the curve/band texture format with text; only the fragment shader differs (the path shader handles per-glyph paint records and composite groups, while the text shader fast-paths plain coverage). Cubic Bezier inputs are adaptively approximated to quadratics. Strokes are expanded into offset curves with joins (miter, bevel, round) and caps (butt, square, round). The `PathPicture` type freezes a set of styled paths into an immutable atlas snapshot that can be instanced cheaply per frame.
 
 ## Color convention
 
@@ -48,24 +48,33 @@ All color parameters are **sRGB, straight (unpremultiplied) alpha**, as `[4]f32`
 
 **Gradients** interpolate in sRGB space, which gives perceptually smooth results for UI use. `LinearGradient` and `RadialGradient` provide extend modes for clamp, repeat, and reflect behavior.
 
-**Blending** uses premultiplied alpha with gamma-correct (linear-space) compositing. On GPU, `GL_FRAMEBUFFER_SRGB` / Vulkan sRGB swapchain handles linearization automatically. The CPU renderer uses equivalent lookup tables.
+**Blending** uses premultiplied alpha with gamma-correct (linear-space) compositing. On GPU the fragment shader explicitly `srgbDecode`s vertex / texture colors and writes premultiplied linear values; `GL_FRAMEBUFFER_SRGB` and the Vulkan sRGB swapchain image handle the final linear→sRGB store on framebuffer write. The CPU renderer uses an exact 256-entry sRGB→linear LUT for u8 texels and the IEC 61966-2-1 formula directly for the linear→sRGB output, with round-to-nearest output rounding.
 
 ## Build
 
-Requires [Zig 0.16](https://ziglang.org/download/), OpenGL 3.3+, HarfBuzz, and pkg-config. The interactive demo requires Wayland + EGL. Vulkan support is optional.
+Requires [Zig 0.16](https://ziglang.org/download/), OpenGL 3.3+, and pkg-config. HarfBuzz is enabled by default but can be disabled (see flags below). The interactive demo requires Wayland + EGL. Vulkan support is optional.
 
 ```sh
 zig build test                                  # unit tests
-zig build run                                   # interactive demo (GL 4.4, Wayland)
+zig build run                                   # interactive 2D demo (GL 4.4, Wayland)
 zig build run -Drenderer=gl33                   # force OpenGL 3.3
 zig build run -Drenderer=vulkan -Dvulkan=true   # Vulkan backend
-zig build run -Drenderer=cpu                    # CPU renderer (headless)
-zig build screenshot                            # GL screenshot → zig-out/demo-screenshot.tga
+zig build run -Drenderer=cpu                    # CPU renderer
+zig build run-game-demo                         # 3D scene with HUD + world-space text on walls
+zig build screenshot                            # 2D demo offscreen → zig-out/demo-screenshot.tga
 zig build backend-compare                       # CPU/GL pixel parity; add -Dvulkan=true for Vulkan
+zig build bench                                 # benchmarks; add -Dvulkan=true for Vulkan rows
 zig build install --release=fast                # install libsnail + include/snail.h
 ```
 
-Library backend flags: `-Dopengl=true` (default), `-Dvulkan=false`, `-Dcpu-renderer=true` (default), `-Dharfbuzz=true` (default; pass `=false` for a HarfBuzz-free build using the built-in GSUB/GPOS shaper), `-Dprofile=false` (default; enables comptime CPU timers). C ABI artifacts are built by default; pass `-Dc-api=false` for a Zig-module-only build.
+Library backend flags:
+
+- `-Dopengl=true` (default) — OpenGL backend (`GlRenderer` and the C API today require this).
+- `-Dvulkan=false` (default) — pass `=true` to enable the Vulkan backend; SPIR-V shaders are compiled at build time via `glslc`.
+- `-Dcpu-renderer=true` (default) — pass `=false` to drop `CpuRenderer`.
+- `-Dharfbuzz=true` (default) — pass `=false` for a HarfBuzz-free build using the built-in GSUB type 4 / GPOS type 2 shaper.
+- `-Dprofile=false` (default) — pass `=true` to enable the comptime CPU timers.
+- `-Dc-api=true` (default) — pass `=false` for a Zig-module-only build (skips `libsnail.{a,so}` and the header install).
 
 The checked-in screenshot at `assets/demo_screenshot.png` is regenerated from the `zig build screenshot` TGA output.
 
@@ -319,34 +328,37 @@ snail_text_atlas_deinit(atlas);
 | `StrokeStyle` | sRGB stroke color (straight alpha), width, optional paint, cap, join, miter limit, placement. |
 | `Paint` | Tagged union: `.solid`, `.linear_gradient`, `.radial_gradient`, `.image`. |
 
-### TextAtlas
+### Text
 
 | Method | Description |
 |--------|-------------|
 | `TextAtlas.init(alloc, faces) !TextAtlas` | Parse font faces. Atlas starts empty. |
-| `atlas.deinit()` | Release resources. Shared pages remain valid for other snapshots. |
-| `atlas.shapeText(alloc, style, text) !ShapedText` | Shape text without growing the atlas. |
+| `atlas.deinit()` | Release this snapshot. Pages shared with other snapshots stay alive. |
+| `atlas.shapeText(alloc, style, text) !ShapedText` | Shape text without growing the atlas. Caller frees `ShapedText`. |
 | `atlas.ensureShaped(shaped) !?TextAtlas` | Return a new snapshot with the shaped glyphs present. Null if already present. |
 | `atlas.ensureText(style, text) !?TextAtlas` | Shape-and-ensure helper. |
-| `TextBlob.fromShaped(alloc, atlas, shaped, options) !TextBlob` | Build positioned text from shaped glyphs. |
-| `TextBlobBuilder.addText(...)` | Convenience helper that shapes and appends; call `ensureText` or `ensureShaped` first when all glyphs must be renderable. |
+| `TextBlob.fromShaped(alloc, atlas, shaped, options) !TextBlob` | Build positioned text from a `ShapedText`. The blob borrows `atlas`. |
+| `TextBlobBuilder.init(alloc, atlas)` / `builder.addText(style, text, x, y, size, color)` / `builder.finish() !TextBlob` | Convenience: shape + position in one pass. Call `atlas.ensureText`/`ensureShaped` first if all glyphs must be renderable. |
 
 ### Renderer
 
+`GlRenderer`, `VulkanRenderer`, and `CpuRenderer` are first-class types; `Renderer` is a type-erased wrapper that exposes the same surface for backend-agnostic code. The methods below are present on each concrete renderer and on `Renderer`.
+
 | Method | Description |
 |--------|-------------|
-| `GlRenderer.init(alloc) !GlRenderer` | Initialize OpenGL backend. Requires the GL context to be current. |
-| `VulkanRenderer.init(ctx) !VulkanRenderer` | Initialize Vulkan backend. |
-| `vk.beginFrame(.{ .cmd, .frame_index })` | Bind Vulkan frame ownership explicitly. |
-| `renderer.uploadResourcesBlocking(alloc, set) !PreparedResources` | Blocking upload/view construction for simple programs. |
-| `renderer.planResourceUpload(current, next_set)` | Build a scheduled upload plan. |
-| `renderer.beginResourceUpload(plan)` | Start a pending upload. |
-| `DrawList.init(words, segments)` | Create caller-buffered draw records for dynamic scenes. |
-| `PreparedScene.initOwned(alloc, prepared, scene, options)` | Build an owned draw-record cache for static scenes. |
+| `GlRenderer.init(alloc) !GlRenderer` | Initialize the OpenGL backend. Requires the GL context to be current. |
+| `VulkanRenderer.init(ctx) !VulkanRenderer` | Initialize the Vulkan backend from a caller-owned `VulkanContext`. |
+| `CpuRenderer.init(pixels, w, h, stride) CpuRenderer` | Initialize the CPU backend over a caller-owned RGBA8 buffer. |
+| `vk.beginFrame(.{ .cmd, .frame_index })` | Bind a caller-recorded Vulkan command buffer + frame index for the current frame. |
+| `renderer.uploadResourcesBlocking(alloc, set) !PreparedResources` | Blocking upload + view construction. The simple path. |
+| `renderer.planResourceUpload(current, next_set, changed_keys) !ResourceUploadPlan` | Diff a new resource set against existing prepared resources. |
+| `renderer.beginResourceUpload(alloc, plan) !PendingResourceUpload` | Start a scheduled upload; record into a caller command buffer for Vulkan, then call `pending.publish()`. |
+| `DrawList.init(words, segments)` | Wrap a caller-buffered word + segment buffer for `addScene`. |
+| `PreparedScene.initOwned(alloc, prepared, scene, options) !PreparedScene` | Build an owned draw-record cache for a static scene. |
 | `renderer.draw(prepared, records, options)` | Execute prebuilt draw records. No resource discovery or upload. |
-| `renderer.drawPrepared(prepared, prepared_scene, options)` | Draw an owned draw-record cache. |
-| `prepared.retireNowOrWhenSafe(renderer)` | Retire resources when they are no longer in use. |
-| `prepared.retireAfter(fence_or_frame)` | Mark resource retirement after an explicit backend fence/frame. |
+| `renderer.drawPrepared(prepared, prepared_scene, options)` | Draw a `PreparedScene` cache. |
+| `prepared.retireNowOrWhenSafe(renderer)` | Retire backend resources once no in-flight frame still references them. |
+| `prepared.retireAfter(alloc, fence_or_frame)` | Retire after a caller-supplied backend fence / frame index has completed. |
 
 ### Path
 
@@ -391,6 +403,27 @@ backend on top of snail's rasterization. Most apps should not need this.
 | `lowlevel.PathPictureDebugView`, `lowlevel.PathPictureBoundsOverlayOptions` | Debug overlays for vector authoring. |
 | `lowlevel.textureLayerWindowBase`, `lowlevel.textureLayerLocal`, `lowlevel.TEXTURE_LAYER_WINDOW_SIZE` | Texture-array layer windowing helpers. |
 
+## Thread safety
+
+| Type | Rule |
+|------|------|
+| `TextAtlas` | Immutable snapshot. Safe for concurrent reads. `ensureText` returns a new snapshot; old remains valid for in-flight readers. |
+| `TextBlob`, `PathPicture`, `Image` | Immutable after init/freeze. Safe for concurrent reads while the borrowed atlas / pictures / pixels outlive the reader. |
+| `ResourceSet`, `Scene` | Borrowed manifests/lists. CPU values must outlive them. |
+| `PreparedResources` | Backend/context-specific. CPU values must outlive it unless a backend explicitly copies them. |
+| `DrawList` | Caller-owned buffer. Thread-local — no sharing needed. |
+| `Renderer` | Single-threaded. Must be called from the GL/Vulkan context thread. |
+
+Typical pattern: build `TextAtlas` and call `ensureText` / `ensureShaped` on a loading thread, publish a new `ResourceSet` to the render thread, upload into `PreparedResources`, build `DrawList` records or a `PreparedScene`, then draw. The draw call does not allocate, upload, discover resources, or invalidate caches.
+
+## Status
+
+snail is used in development but is not yet stable. The Zig API is settling and follows the explicit-resource model described above. Known gaps:
+
+- Built-in OpenType shaping covers GSUB type 4 (ligatures) and GPOS type 2 (pair positioning) only; complex scripts (Arabic, Devanagari, Thai, etc.) require building with `-Dharfbuzz=true`.
+- TrueType outlines only — no CFF/CFF2.
+- No variable fonts.
+- The C API exposes the unified `SnailRenderer` (currently OpenGL-backed) and the blocking `snail_renderer_upload_resources_blocking` upload path. Vulkan and the Zig-side scheduled upload (`planResourceUpload` / `beginResourceUpload` / `pending.publish`) are not yet exposed to C callers.
 
 ## Benchmarks
 
@@ -562,33 +595,6 @@ shaders/
 include/
   snail.h                public C header
 ```
-
-## Thread safety
-
-| Type | Rule |
-|------|------|
-| `TextAtlas` | Immutable snapshot. Safe for concurrent reads. `ensureText` returns a new snapshot; old remains valid. |
-| `TextBlob`, `PathPicture`, `Image` | Immutable after init/freeze. Safe for concurrent reads while borrowed values outlive users. |
-| `ResourceSet`, `Scene` | Borrowed manifests/lists. CPU values must outlive them. |
-| `PreparedResources` | Backend/context-specific. CPU values must outlive it unless a backend explicitly copies them. |
-| `DrawList` | Caller-owned buffer. Thread-local — no sharing needed. |
-| `Renderer` | Single-threaded. Must be called from the GL/Vulkan context thread. |
-
-Typical pattern: build `TextAtlas` and call `ensureText`/`ensureShaped` on a loading thread, publish a new `ResourceSet` to the render thread, upload into `PreparedResources`, build `DrawList` records or a `PreparedScene`, then draw. The draw call does not allocate, upload, discover resources, or invalidate caches.
-
-## Status and roadmap
-
-snail is used in development but is not yet stable. Current limitations:
-
-- OpenType shaping is limited to GSUB type 4 (ligatures) and GPOS type 2 (pair positioning). Complex scripts require `-Dharfbuzz=true`.
-- No CFF/CFF2 support (TrueType outlines only).
-- No variable fonts.
-- Vulkan scheduled upload and retirement are API-shaped but still mostly synchronous.
-
-Planned:
-- Flesh out nonblocking Vulkan scheduled upload and retirement.
-- Broaden built-in shaping and font format support.
-- Extend C coverage for scheduled uploads and non-GL backends.
 
 ## License
 
