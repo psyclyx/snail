@@ -150,35 +150,33 @@ pub const TextBlob = struct {
         layer_window_base: u32,
     };
 
-    pub fn appendToBatch(
+    /// Emit one slice of a `TextDraw` into `batch`: the glyphs from
+    /// `[start_glyph, draw.glyphs.end)` under the override at
+    /// `draw.instances[override_index]`. The caller advances across overrides
+    /// and re-opens batches when full or the texture layer window changes.
+    pub fn appendDrawFrom(
         self: *const TextBlob,
         batch: *TextBatch,
         view: anytype,
-        transform: snail.Transform2D,
-        resolve: snail.TextResolveOptions,
-        target: snail.ResolveTarget,
-        scene_to_screen: ?snail.Transform2D,
-    ) !usize {
-        const result = try self.appendToBatchFrom(batch, view, transform, resolve, target, scene_to_screen, 0);
-        if (!result.completed) return error.DrawListFull;
-        return result.emitted;
-    }
-
-    pub fn appendToBatchFrom(
-        self: *const TextBlob,
-        batch: *TextBatch,
-        view: anytype,
-        transform: snail.Transform2D,
-        resolve: snail.TextResolveOptions,
+        draw: snail.TextDraw,
+        override_index: usize,
         target: snail.ResolveTarget,
         scene_to_screen: ?snail.Transform2D,
         start_glyph: usize,
     ) !AppendResult {
         try self.validate();
+        const range = draw.glyphs.resolve(self.glyphs.len);
+        const start = @max(start_glyph, range.start);
+        if (start > range.end) return error.InvalidGlyphRange;
+        const overrides_slice = if (draw.instances.len == 0) snail.defaultOverrides() else draw.instances;
+        if (override_index >= overrides_slice.len) return error.InvalidOverrideIndex;
+        const override = overrides_slice[override_index];
+        const has_outer_transform = !isIdentityTransform(override.transform);
+        const has_tint = override.tint[0] != 1 or override.tint[1] != 1 or override.tint[2] != 1 or override.tint[3] != 1;
+
         var count: usize = 0;
-        const has_outer_transform = !isIdentityTransform(transform);
-        var glyph_index = start_glyph;
-        while (glyph_index < self.glyphs.len) : (glyph_index += 1) {
+        var glyph_index = start;
+        while (glyph_index < range.end) : (glyph_index += 1) {
             const glyph = self.glyphs[glyph_index];
             const face_view = self.atlas.faceView(glyph.face_index, view);
             const glyph_layer_base = try textBlobGlyphLayerWindowBase(&face_view, glyph.glyph_id) orelse continue;
@@ -190,11 +188,12 @@ pub const TextBlob = struct {
 
             var final_transform = glyph.transform;
             if (has_outer_transform) {
-                final_transform = snail.Transform2D.multiply(transform, final_transform);
+                final_transform = snail.Transform2D.multiply(override.transform, final_transform);
             }
-            const hinted = resolveTextHinting(&face_view, glyph.glyph_id, final_transform, resolve, target, scene_to_screen);
+            const final_color = if (has_tint) multiplyColor(glyph.color, override.tint) else glyph.color;
+            const hinted = resolveTextHinting(&face_view, glyph.glyph_id, final_transform, draw.resolve, target, scene_to_screen);
 
-            switch (glyph_emit.emitGlyphWithTransform(batch, &face_view, glyph.glyph_id, glyph.color, hinted.transform)) {
+            switch (glyph_emit.emitGlyphWithTransform(batch, &face_view, glyph.glyph_id, final_color, hinted.transform)) {
                 .emitted => count += 1,
                 .skipped => {},
                 .buffer_full => return error.DrawListFull,
@@ -206,10 +205,10 @@ pub const TextBlob = struct {
                 var bold_transform = glyph.transform;
                 bold_transform.tx += glyph.embolden;
                 if (has_outer_transform) {
-                    bold_transform = snail.Transform2D.multiply(transform, bold_transform);
+                    bold_transform = snail.Transform2D.multiply(override.transform, bold_transform);
                 }
-                const bold_hinted = resolveTextHinting(&face_view, glyph.glyph_id, bold_transform, resolve, target, scene_to_screen);
-                switch (glyph_emit.emitGlyphWithTransform(batch, &face_view, glyph.glyph_id, glyph.color, bold_hinted.transform)) {
+                const bold_hinted = resolveTextHinting(&face_view, glyph.glyph_id, bold_transform, draw.resolve, target, scene_to_screen);
+                switch (glyph_emit.emitGlyphWithTransform(batch, &face_view, glyph.glyph_id, final_color, bold_hinted.transform)) {
                     .emitted, .skipped => {},
                     .buffer_full => return error.DrawListFull,
                     .layer_window_changed => return error.GlyphSpansTextureLayerWindows,
@@ -220,11 +219,15 @@ pub const TextBlob = struct {
         return .{
             .emitted = count,
             .next_glyph = glyph_index,
-            .completed = glyph_index >= self.glyphs.len,
+            .completed = glyph_index >= range.end,
             .layer_window_base = batch.currentLayerWindowBase(),
         };
     }
 };
+
+fn multiplyColor(a: [4]f32, b: [4]f32) [4]f32 {
+    return .{ a[0] * b[0], a[1] * b[1], a[2] * b[2], a[3] * b[3] };
+}
 
 fn textBlobGlyphLayerWindowBase(view: *const FaceView, glyph_id: u16) !?u32 {
     if (view.getColrBase(glyph_id)) |cbi| {

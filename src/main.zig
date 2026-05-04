@@ -212,8 +212,8 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
             uploaded_size = size_key;
             current_text_hinting = desired_text_hinting;
             scene.reset();
-            if (path_picture) |*picture| try scene.addPathPicture(picture);
-            if (text_blob) |*blob| try scene.addTextOptions(blob, .{ .hinting = current_text_hinting });
+            if (path_picture) |*picture| try scene.addPath(.{ .picture = picture });
+            if (text_blob) |*blob| try scene.addText(.{ .blob = blob, .resolve = .{ .hinting = current_text_hinting } });
 
             var resource_entries: [8]snail.ResourceSet.Entry = undefined;
             var resources = snail.ResourceSet.init(&resource_entries);
@@ -222,8 +222,8 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         } else if (desired_text_hinting != current_text_hinting) {
             current_text_hinting = desired_text_hinting;
             scene.reset();
-            if (path_picture) |*picture| try scene.addPathPicture(picture);
-            if (text_blob) |*blob| try scene.addTextOptions(blob, .{ .hinting = current_text_hinting });
+            if (path_picture) |*picture| try scene.addPath(.{ .picture = picture });
+            if (text_blob) |*blob| try scene.addText(.{ .blob = blob, .resolve = .{ .hinting = current_text_hinting } });
         }
 
         const clear_srgb = demo_banner.clearColor();

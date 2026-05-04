@@ -287,9 +287,9 @@ pub const CpuRenderer = struct {
     }
 
     fn drawPathPictureTransformed(self: *CpuRenderer, picture: *const snail.PathPicture, transform: Transform2D) void {
-        for (picture.instances) |instance| {
-            const info = picture.atlas.getGlyph(instance.glyph_id) orelse continue;
-            const final_transform = Transform2D.multiply(transform, instance.transform);
+        for (picture.shapes) |shape| {
+            const info = picture.atlas.getGlyph(shape.glyph_id) orelse continue;
+            const final_transform = Transform2D.multiply(transform, shape.transform);
             const inverse = inverseTransform(final_transform) orelse continue;
             const bounds = transformedGlyphBounds(info.bbox, final_transform);
             const px0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.x))), 0);
@@ -310,7 +310,7 @@ pub const CpuRenderer = struct {
                 while (col < @as(u32, @intCast(px1))) : (col += 1) {
                     const world = Vec2.new(@as(f32, @floatFromInt(col)) + 0.5, @as(f32, @floatFromInt(row)) + 0.5);
                     const local = inverse.applyPoint(world);
-                    const paint = samplePathPaint(&picture.atlas, instance, instance.glyph_id, local);
+                    const paint = samplePathPaint(&picture.atlas, shape, shape.glyph_id, local);
                     const cov = evalGlyphCoverage(
                         page,
                         local.x,
@@ -1327,8 +1327,8 @@ const PathPaintSample = struct {
     apply_dither: bool = false,
 };
 
-fn samplePathPaint(atlas: *const snail.lowlevel.CurveAtlas, instance: snail.PathPicture.Instance, glyph_id: u16, local: Vec2) PathPaintSample {
-    return samplePathPaintAt(atlas, instance.info_x, instance.info_y, glyph_id, local);
+fn samplePathPaint(atlas: *const snail.lowlevel.CurveAtlas, shape: snail.PathPicture.Shape, glyph_id: u16, local: Vec2) PathPaintSample {
+    return samplePathPaintAt(atlas, shape.info_x, shape.info_y, glyph_id, local);
 }
 
 fn samplePathPaintAt(atlas: *const snail.lowlevel.CurveAtlas, info_x: u16, info_y: u16, glyph_id: u16, local: Vec2) PathPaintSample {
@@ -2864,7 +2864,7 @@ test "cpu renderer drawPaths batch matches drawPathPicture" {
     var renderer = batch_renderer.asRenderer();
     var scene = snail.Scene.init(testing.allocator);
     defer scene.deinit();
-    try scene.addPathPicture(&picture);
+    try scene.addPath(.{ .picture = &picture });
 
     var resource_entries: [4]snail.ResourceSet.Entry = undefined;
     var resources = snail.ResourceSet.init(&resource_entries);

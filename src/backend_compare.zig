@@ -169,9 +169,9 @@ fn buildScene(allocator: std.mem.Allocator) !SceneBundle {
 
     var scene = snail.Scene.init(allocator);
     errdefer scene.deinit();
-    try scene.addPathPicture(picture);
-    try scene.addTextOptions(latin_blob, .{ .hinting = .metrics });
-    try scene.addTextOptions(devanagari_blob, .{ .hinting = .metrics });
+    try scene.addPath(.{ .picture = picture });
+    try scene.addText(.{ .blob = latin_blob, .resolve = .{ .hinting = .metrics } });
+    try scene.addText(.{ .blob = devanagari_blob, .resolve = .{ .hinting = .metrics } });
 
     return .{
         .atlas = atlas,

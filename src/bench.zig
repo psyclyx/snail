@@ -536,7 +536,7 @@ fn buildSceneWithHinting(
         for (lines) |line| {
             blobs[blob_count] = try makeTextBlob(allocator, atlas, line);
             const resolve: snail.TextResolveOptions = if (hinting_override) |h| .{ .hinting = h } else line.resolve;
-            try scene.addTextOptions(&blobs[blob_count], resolve);
+            try scene.addText(.{ .blob = &blobs[blob_count], .resolve = resolve });
             blob_count += 1;
         }
     }
@@ -555,7 +555,7 @@ fn buildSceneWithHinting(
             return err;
         };
         picture = allocated_picture;
-        try scene.addPathPicture(allocated_picture);
+        try scene.addPath(.{ .picture = allocated_picture });
     }
 
     return .{

@@ -949,22 +949,28 @@ export fn snail_scene_command_count(scene: *const SceneImpl) usize {
 }
 
 export fn snail_scene_add_text(scene: *SceneImpl, blob: *const TextBlobImpl) c_int {
-    scene.inner.addText(&blob.inner) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    scene.inner.addText(.{ .blob = &blob.inner }) catch return SNAIL_ERR_OUT_OF_MEMORY;
     return SNAIL_OK;
 }
 
 export fn snail_scene_add_text_options(scene: *SceneImpl, blob: *const TextBlobImpl, transform: SnailTransform2D, resolve: SnailTextResolveOptions) c_int {
-    scene.inner.addTextTransformedOptions(&blob.inner, toTransform(transform), toTextResolveOptions(resolve) catch return SNAIL_ERR_INVALID_ARGUMENT) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    const overrides = [_]snail.Override{.{ .transform = toTransform(transform) }};
+    scene.inner.addText(.{
+        .blob = &blob.inner,
+        .instances = &overrides,
+        .resolve = toTextResolveOptions(resolve) catch return SNAIL_ERR_INVALID_ARGUMENT,
+    }) catch return SNAIL_ERR_OUT_OF_MEMORY;
     return SNAIL_OK;
 }
 
 export fn snail_scene_add_path_picture(scene: *SceneImpl, picture: *const PathPictureImpl) c_int {
-    scene.inner.addPathPicture(&picture.inner) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    scene.inner.addPath(.{ .picture = &picture.inner }) catch return SNAIL_ERR_OUT_OF_MEMORY;
     return SNAIL_OK;
 }
 
 export fn snail_scene_add_path_picture_transformed(scene: *SceneImpl, picture: *const PathPictureImpl, transform: SnailTransform2D) c_int {
-    scene.inner.addPathPictureTransformed(&picture.inner, toTransform(transform)) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    const overrides = [_]snail.Override{.{ .transform = toTransform(transform) }};
+    scene.inner.addPath(.{ .picture = &picture.inner, .instances = &overrides }) catch return SNAIL_ERR_OUT_OF_MEMORY;
     return SNAIL_OK;
 }
 

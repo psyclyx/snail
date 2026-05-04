@@ -45,8 +45,8 @@ pub const PreparedPass = struct {
             }
         }
 
-        if (pass.picture) |owned_picture_ptr| try pass.scene.addPathPicture(owned_picture_ptr);
-        try pass.scene.addTextOptions(pass.text, resolve);
+        if (pass.picture) |owned_picture_ptr| try pass.scene.addPath(.{ .picture = owned_picture_ptr });
+        try pass.scene.addText(.{ .blob = pass.text, .resolve = resolve });
         return pass;
     }
 

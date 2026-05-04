@@ -223,14 +223,10 @@ pub const TextCoverageRecords = struct {
         defer self.allocator.free(scratch);
 
         var batch = TextBatch.init(scratch);
-        _ = try blob.appendToBatch(
-            &batch,
-            atlas_view,
-            options.transform,
-            options.resolve,
-            options.target,
-            options.scene_to_screen,
-        );
+        const overrides = [_]Override{.{ .transform = options.transform }};
+        const draw = TextDraw{ .blob = blob, .instances = &overrides, .resolve = options.resolve };
+        const result = try blob.appendDrawFrom(&batch, atlas_view, draw, 0, options.target, options.scene_to_screen, 0);
+        if (!result.completed) return error.DrawListFull;
 
         if (self.vertices.len > 0) self.allocator.free(self.vertices);
         self.vertices = try self.allocator.dupe(u32, batch.slice());
@@ -2512,8 +2508,8 @@ fn blendColor(a: [4]f32, b: [4]f32, t: f32) [4]f32 {
     };
 }
 
-fn debugPaintColor(view: PathPictureDebugView, role: PathPicture.LayerRole, instance_index: usize) [4]f32 {
-    const base = paletteColor(instance_index);
+fn debugPaintColor(view: PathPictureDebugView, role: PathPicture.LayerRole, shape_index: usize) [4]f32 {
+    const base = paletteColor(shape_index);
     return switch (view) {
         .normal => .{ 0, 0, 0, 0 },
         .fill_mask => switch (role) {
@@ -2534,7 +2530,7 @@ fn debugPaintColor(view: PathPictureDebugView, role: PathPicture.LayerRole, inst
 pub const PathPicture = struct {
     allocator: std.mem.Allocator,
     atlas: Atlas,
-    instances: []Instance,
+    shapes: []Shape,
     layer_roles: []LayerRole,
 
     pub const LayerRole = enum(u8) {
@@ -2542,7 +2538,7 @@ pub const PathPicture = struct {
         stroke,
     };
 
-    pub const Instance = struct {
+    pub const Shape = struct {
         glyph_id: u16,
         bbox: BBox,
         page_index: u16,
@@ -2554,13 +2550,13 @@ pub const PathPicture = struct {
 
     pub fn deinit(self: *PathPicture) void {
         self.atlas.deinit();
-        self.allocator.free(self.instances);
+        self.allocator.free(self.shapes);
         self.allocator.free(self.layer_roles);
         self.* = undefined;
     }
 
     pub fn shapeCount(self: *const PathPicture) usize {
-        return self.instances.len;
+        return self.shapes.len;
     }
 
     fn applyDebugViewInPlace(self: *PathPicture, view: PathPictureDebugView) void {
@@ -2568,8 +2564,8 @@ pub const PathPicture = struct {
         const data = self.atlas.layer_info_data orelse return;
         const width = self.atlas.layer_info_width;
 
-        for (self.instances, 0..) |instance, instance_index| {
-            const info_offset = pathLayerInfoTexelOffset(width, instance.info_x, instance.info_y);
+        for (self.shapes, 0..) |shape, shape_index| {
+            const info_offset = pathLayerInfoTexelOffset(width, shape.info_x, shape.info_y);
             var header = readPathLayerInfoTexel(data, width, info_offset);
             var layer_count: usize = 1;
             var record_base = info_offset;
@@ -2582,13 +2578,13 @@ pub const PathPicture = struct {
             }
 
             for (0..layer_count) |layer_index| {
-                const role_index = @as(usize, instance.glyph_id - 1) + layer_index;
+                const role_index = @as(usize, shape.glyph_id - 1) + layer_index;
                 if (role_index >= self.layer_roles.len) break;
                 const texel_offset = record_base + @as(u32, @intCast(layer_index)) * PATH_PAINT_TEXELS_PER_RECORD;
                 var info = readPathLayerInfoTexel(data, width, texel_offset);
                 info[3] = PATH_PAINT_TAG_SOLID;
                 writePathLayerInfoTexel(data, width, texel_offset, info);
-                writePathLayerInfoTexel(data, width, texel_offset + 2, debugPaintColor(view, self.layer_roles[role_index], instance_index));
+                writePathLayerInfoTexel(data, width, texel_offset + 2, debugPaintColor(view, self.layer_roles[role_index], shape_index));
             }
         }
     }
@@ -2619,15 +2615,15 @@ pub const PathPicture = struct {
             atlas.paint_image_records = try allocator.dupe(?Atlas.PaintImageRecord, records);
         }
 
-        const instances = try allocator.dupe(Instance, self.instances);
-        errdefer allocator.free(instances);
+        const shapes = try allocator.dupe(Shape, self.shapes);
+        errdefer allocator.free(shapes);
         const layer_roles = try allocator.dupe(LayerRole, self.layer_roles);
         errdefer allocator.free(layer_roles);
 
         var result = PathPicture{
             .allocator = allocator,
             .atlas = atlas,
-            .instances = instances,
+            .shapes = shapes,
             .layer_roles = layer_roles,
         };
         result.applyDebugViewInPlace(view);
@@ -2639,23 +2635,23 @@ pub const PathPicture = struct {
         allocator: std.mem.Allocator,
         options: PathPictureBoundsOverlayOptions,
     ) !PathPicture {
-        if (self.instances.len == 0) return error.EmptyPicture;
+        if (self.shapes.len == 0) return error.EmptyPicture;
 
         var builder = PathPictureBuilder.init(allocator);
         defer builder.deinit();
 
         const cross_thickness = @max(options.stroke_width, 1.0);
-        for (self.instances) |instance| {
+        for (self.shapes) |shape| {
             const rect = Rect{
-                .x = instance.bbox.min.x,
-                .y = instance.bbox.min.y,
-                .w = instance.bbox.max.x - instance.bbox.min.x,
-                .h = instance.bbox.max.y - instance.bbox.min.y,
+                .x = shape.bbox.min.x,
+                .y = shape.bbox.min.y,
+                .w = shape.bbox.max.x - shape.bbox.min.x,
+                .h = shape.bbox.max.y - shape.bbox.min.y,
             };
             try builder.addStrokedRect(
                 rect,
                 .{ .color = options.stroke_color, .width = options.stroke_width, .join = .miter },
-                instance.transform,
+                shape.transform,
             );
             if (options.origin_size > 1e-4 and options.origin_color[3] > 1e-4) {
                 try builder.addFilledRect(.{
@@ -2663,13 +2659,13 @@ pub const PathPicture = struct {
                     .y = -cross_thickness * 0.5,
                     .w = options.origin_size * 2.0,
                     .h = cross_thickness,
-                }, .{ .color = options.origin_color }, instance.transform);
+                }, .{ .color = options.origin_color }, shape.transform);
                 try builder.addFilledRect(.{
                     .x = -cross_thickness * 0.5,
                     .y = -options.origin_size,
                     .w = cross_thickness,
                     .h = options.origin_size * 2.0,
-                }, .{ .color = options.origin_color }, instance.transform);
+                }, .{ .color = options.origin_color }, shape.transform);
             }
         }
 
@@ -2817,6 +2813,10 @@ pub const PathPictureBuilder = struct {
         }
         self.paths.deinit(self.allocator);
         self.* = undefined;
+    }
+
+    pub fn shapeCount(self: *const PathPictureBuilder) usize {
+        return self.paths.items.len;
     }
 
     fn addSingleRecord(
@@ -3538,8 +3538,8 @@ pub const PathPictureBuilder = struct {
         errdefer allocator.free(layer_info_data);
         @memset(layer_info_data, 0);
 
-        const instances = try allocator.alloc(PathPicture.Instance, self.paths.items.len);
-        errdefer allocator.free(instances);
+        const shapes = try allocator.alloc(PathPicture.Shape, self.paths.items.len);
+        errdefer allocator.free(shapes);
 
         const layer_roles = try allocator.alloc(PathPicture.LayerRole, total_layer_count);
         errdefer allocator.free(layer_roles);
@@ -3594,7 +3594,7 @@ pub const PathPictureBuilder = struct {
                 glyph_cursor += 1;
             }
 
-            instances[path_index] = .{
+            shapes[path_index] = .{
                 .glyph_id = first_glyph_id,
                 .bbox = translateBBox(path.bbox, delta),
                 .page_index = 0,
@@ -3637,7 +3637,7 @@ pub const PathPictureBuilder = struct {
         return .{
             .allocator = allocator,
             .atlas = atlas,
-            .instances = instances,
+            .shapes = shapes,
             .layer_roles = layer_roles,
         };
     }
@@ -3667,7 +3667,7 @@ const PathBatch = struct {
 
     pub const AppendResult = struct {
         emitted: usize,
-        next_instance: usize,
+        next_shape: usize,
         completed: bool,
         layer_window_base: u32,
     };
@@ -3686,51 +3686,47 @@ const PathBatch = struct {
         return textureLayerLocal(atlas_layer);
     }
 
-    pub fn addPicture(self: *PathBatch, atlas_like: anytype, picture: *const PathPicture) !usize {
-        return self.addPictureTransformed(atlas_like, picture, .identity);
-    }
-
-    pub fn addPictureTransformed(
+    /// Emit one slice of a `PathDraw` into this batch: the shapes from
+    /// `[shape_start, draw.shapes.end)` under the override at
+    /// `draw.instances[override_index]`. Returns where to resume; the caller
+    /// is responsible for advancing across overrides and re-opening batches
+    /// when full or when the texture layer window changes.
+    pub fn addDraw(
         self: *PathBatch,
         atlas_like: anytype,
-        picture: *const PathPicture,
-        transform: Transform2D,
-    ) !usize {
-        const result = try self.addPictureTransformedFrom(atlas_like, picture, transform, 0);
-        if (!result.completed) return error.DrawListFull;
-        return result.emitted;
-    }
-
-    pub fn addPictureTransformedFrom(
-        self: *PathBatch,
-        atlas_like: anytype,
-        picture: *const PathPicture,
-        transform: Transform2D,
-        start_instance: usize,
+        draw: PathDraw,
+        override_index: usize,
+        shape_start: usize,
     ) !AppendResult {
         const resolved_view = coerceAtlasHandle(atlas_like);
         const view = &resolved_view;
+        const range = draw.shapes.resolve(draw.picture.shapes.len);
+        const start = @max(shape_start, range.start);
+        if (start > range.end) return error.InvalidShapeRange;
+        const overrides = if (draw.instances.len == 0) default_overrides_storage[0..] else draw.instances;
+        if (override_index >= overrides.len) return error.InvalidOverrideIndex;
+        const override = overrides[override_index];
         var count: usize = 0;
-        var instance_index = start_instance;
-        while (instance_index < picture.instances.len) : (instance_index += 1) {
-            const instance = picture.instances[instance_index];
-            const layer_base = view.glyphLayerWindowBase(instance.page_index);
+        var idx = start;
+        while (idx < range.end) : (idx += 1) {
+            const shape = draw.picture.shapes[idx];
+            const layer_base = view.glyphLayerWindowBase(shape.page_index);
             if (self.layer_window_base) |base| {
                 if (base != layer_base) break;
             } else {
                 self.layer_window_base = layer_base;
             }
             if (self.len + PATH_WORDS_PER_SHAPE > self.buf.len) return error.DrawListFull;
-            const final_transform = Transform2D.multiply(transform, instance.transform);
-            const info_loc = view.layerInfoLoc(instance.info_x, instance.info_y);
-            const local_layer = try self.localLayer(view.glyphLayer(instance.page_index));
+            const final_transform = Transform2D.multiply(override.transform, shape.transform);
+            const info_loc = view.layerInfoLoc(shape.info_x, shape.info_y);
+            const local_layer = try self.localLayer(view.glyphLayer(shape.page_index));
             if (!vertex_mod.generateMultiLayerGlyphVerticesTransformed(
                 self.buf[self.len..],
-                instance.bbox,
+                shape.bbox,
                 info_loc.x,
                 info_loc.y,
-                instance.layer_count,
-                .{ 1, 1, 1, 1 },
+                shape.layer_count,
+                override.tint,
                 local_layer,
                 final_transform,
             )) return error.InvalidTransform;
@@ -3739,8 +3735,8 @@ const PathBatch = struct {
         }
         return .{
             .emitted = count,
-            .next_instance = instance_index,
-            .completed = instance_index >= picture.instances.len,
+            .next_shape = idx,
+            .completed = idx >= range.end,
             .layer_window_base = self.currentLayerWindowBase(),
         };
     }
@@ -3802,79 +3798,105 @@ fn effectiveSubpixelOrder(target: ResolveTarget) SubpixelOrder {
     return target.subpixel_order;
 }
 
+/// Selects a contiguous slice of an immutable resource (path shapes, text
+/// glyphs). `count = maxInt(u32)` means "all from `start`".
+pub const Range = struct {
+    start: u32 = 0,
+    count: u32 = std.math.maxInt(u32),
+
+    pub const Resolved = struct { start: usize, end: usize };
+
+    pub fn resolve(self: Range, total: usize) Resolved {
+        const start = @min(@as(usize, self.start), total);
+        const remaining = total - start;
+        const count = @min(@as(usize, self.count), remaining);
+        return .{ .start = start, .end = start + count };
+    }
+};
+
+/// Per-instance override applied at submission time. `transform` composes
+/// onto the resource's baked transform; `tint` multiplies onto its baked
+/// color.
+pub const Override = struct {
+    transform: Transform2D = .identity,
+    tint: [4]f32 = .{ 1, 1, 1, 1 },
+};
+
+const default_overrides_storage: [1]Override = .{.{}};
+
+/// Single identity override used as the default for `PathDraw.instances` and
+/// `TextDraw.instances` when the caller leaves the field unset (one trivial
+/// instance with no transform or tint).
+pub fn defaultOverrides() []const Override {
+    return default_overrides_storage[0..];
+}
+
+/// A draw of a `PathPicture`: which shapes (sub-range), and how many GPU
+/// instances to emit. Empty `instances` means one trivial instance (identity
+/// transform, white tint); a non-empty slice's length is the GPU instance
+/// count. `Scene.addPath` copies `instances` into its arena, so callers don't
+/// need to keep the slice alive after the call.
+pub const PathDraw = struct {
+    picture: *const PathPicture,
+    shapes: Range = .{},
+    instances: []const Override = &.{},
+};
+
+/// A draw of a `TextBlob`: see `PathDraw` for the instance/lifetime model.
+pub const TextDraw = struct {
+    blob: *const TextBlob,
+    glyphs: Range = .{},
+    instances: []const Override = &.{},
+    resolve: TextResolveOptions = .{},
+};
+
 pub const Scene = struct {
     allocator: std.mem.Allocator,
+    /// Per-frame storage for instance-override slices copied from `addPath` /
+    /// `addText`. Reset along with `commands` so capacity is reused.
+    arena: std.heap.ArenaAllocator,
     /// Borrowed command list. Text commands borrow TextBlob; path commands
     /// borrow PathPicture. The referenced values must outlive the Scene.
     commands: std.ArrayListUnmanaged(Command) = .empty,
 
     pub const Command = union(enum) {
-        text: TextCommand,
-        path: PathCommand,
-    };
-
-    pub const TextCommand = struct {
-        blob: *const TextBlob,
-        transform: Transform2D = .identity,
-        resolve: TextResolveOptions = .{},
-    };
-
-    pub const PathCommand = struct {
-        picture: *const PathPicture,
-        transform: Transform2D = .identity,
+        text: TextDraw,
+        path: PathDraw,
     };
 
     pub fn init(allocator: std.mem.Allocator) Scene {
-        return .{ .allocator = allocator };
+        return .{ .allocator = allocator, .arena = std.heap.ArenaAllocator.init(allocator) };
     }
 
     pub fn deinit(self: *Scene) void {
         self.commands.deinit(self.allocator);
+        self.arena.deinit();
         self.* = undefined;
     }
 
     pub fn reset(self: *Scene) void {
         self.commands.clearRetainingCapacity();
+        _ = self.arena.reset(.retain_capacity);
     }
 
     pub fn commandCount(self: *const Scene) usize {
         return self.commands.items.len;
     }
 
-    pub fn addText(self: *Scene, blob: *const TextBlob) !void {
-        try self.addTextTransformedOptions(blob, .identity, .{});
+    pub fn addPath(self: *Scene, draw: PathDraw) !void {
+        var owned = draw;
+        if (draw.instances.len > 0) {
+            owned.instances = try self.arena.allocator().dupe(Override, draw.instances);
+        }
+        try self.commands.append(self.allocator, .{ .path = owned });
     }
 
-    pub fn addTextOptions(self: *Scene, blob: *const TextBlob, resolve: TextResolveOptions) !void {
-        try self.addTextTransformedOptions(blob, .identity, resolve);
-    }
-
-    pub fn addTextTransformed(self: *Scene, blob: *const TextBlob, transform: Transform2D) !void {
-        try self.addTextTransformedOptions(blob, transform, .{});
-    }
-
-    pub fn addTextTransformedOptions(
-        self: *Scene,
-        blob: *const TextBlob,
-        transform: Transform2D,
-        resolve: TextResolveOptions,
-    ) !void {
-        try self.commands.append(self.allocator, .{ .text = .{
-            .blob = blob,
-            .transform = transform,
-            .resolve = resolve,
-        } });
-    }
-
-    pub fn addPathPicture(self: *Scene, picture: *const PathPicture) !void {
-        try self.addPathPictureTransformed(picture, .identity);
-    }
-
-    pub fn addPathPictureTransformed(self: *Scene, picture: *const PathPicture, transform: Transform2D) !void {
-        try self.commands.append(self.allocator, .{ .path = .{
-            .picture = picture,
-            .transform = transform,
-        } });
+    pub fn addText(self: *Scene, draw: TextDraw) !void {
+        var owned = draw;
+        if (draw.instances.len > 0) {
+            owned.instances = try self.arena.allocator().dupe(Override, draw.instances);
+        }
+        try self.commands.append(self.allocator, .{ .text = owned });
     }
 };
 
@@ -4471,8 +4493,17 @@ pub const DrawList = struct {
         var total: usize = 0;
         for (scene.commands.items) |command| {
             switch (command) {
-                .text => |text| total += @max(text.blob.instance_count_hint, 1) * TEXT_WORDS_PER_GLYPH,
-                .path => |path| total += @max(path.picture.shapeCount(), 1) * PATH_WORDS_PER_SHAPE,
+                .text => |draw| {
+                    const glyphs = draw.glyphs.resolve(draw.blob.glyphCount());
+                    const span = glyphs.end - glyphs.start;
+                    const span_hint = if (draw.blob.glyphCount() == 0) 1 else (draw.blob.instance_count_hint * @max(span, 1) + draw.blob.glyphCount() - 1) / draw.blob.glyphCount();
+                    total += @max(span_hint, 1) * @max(textDrawInstanceCount(draw), 1) * TEXT_WORDS_PER_GLYPH;
+                },
+                .path => |draw| {
+                    const range = draw.shapes.resolve(draw.picture.shapes.len);
+                    const span = range.end - range.start;
+                    total += @max(span, 1) * @max(pathDrawInstanceCount(draw), 1) * PATH_WORDS_PER_SHAPE;
+                },
             }
         }
         return total;
@@ -4483,8 +4514,16 @@ pub const DrawList = struct {
         var total: usize = 0;
         for (scene.commands.items) |command| {
             switch (command) {
-                .text => |text| total += @max(text.blob.glyphCount(), 1),
-                .path => |path| total += @max(path.picture.instances.len, 1),
+                .text => |draw| {
+                    const glyphs = draw.glyphs.resolve(draw.blob.glyphCount());
+                    const span = glyphs.end - glyphs.start;
+                    total += @max(span, 1) * @max(textDrawInstanceCount(draw), 1);
+                },
+                .path => |draw| {
+                    const range = draw.shapes.resolve(draw.picture.shapes.len);
+                    const span = range.end - range.start;
+                    total += @max(span, 1) * @max(pathDrawInstanceCount(draw), 1);
+                },
             }
         }
         return total;
@@ -4499,54 +4538,62 @@ pub const DrawList = struct {
         const hint_context = sceneToScreenTransform(options.mvp, options.target.pixel_width, options.target.pixel_height);
         for (scene.commands.items) |command| {
             switch (command) {
-                .text => |text| {
-                    const view = try prepared.textAtlasView(text.blob.atlas);
-                    var glyph_start: usize = 0;
-                    while (glyph_start < text.blob.glyphCount()) {
-                        const start = self.len;
-                        var batch = TextBatch.init(self.buf[self.len..]);
-                        const result = try text.blob.appendToBatchFrom(&batch, view, text.transform, text.resolve, options.target, hint_context, glyph_start);
-                        glyph_start = result.next_glyph;
-                        if (batch.glyphCount() == 0) {
+                .text => |draw| {
+                    const view = try prepared.textAtlasView(draw.blob.atlas);
+                    const overrides = if (draw.instances.len == 0) default_overrides_storage[0..] else draw.instances;
+                    const glyph_range = draw.glyphs.resolve(draw.blob.glyphCount());
+                    for (overrides, 0..) |_, override_index| {
+                        var glyph_start = glyph_range.start;
+                        while (glyph_start < glyph_range.end) {
+                            const start = self.len;
+                            var batch = TextBatch.init(self.buf[self.len..]);
+                            const result = try draw.blob.appendDrawFrom(&batch, view, draw, override_index, options.target, hint_context, glyph_start);
+                            glyph_start = result.next_glyph;
+                            if (batch.glyphCount() == 0) {
+                                if (result.completed) break;
+                                continue;
+                            }
+                            self.len += batch.slice().len;
+                            try self.addSegment(.{
+                                .kind = .text,
+                                .offset = start,
+                                .len = batch.slice().len,
+                                .texture_layer_base = result.layer_window_base,
+                                .key = prepared.textAtlasEntry(draw.blob.atlas).?.key,
+                                .resource_stamp = try prepared.textStamp(draw.blob.atlas),
+                                .target_stamp = TargetStamp.from(options.mvp, options.target, draw.resolve.hinting),
+                            });
                             if (result.completed) break;
-                            continue;
                         }
-                        self.len += batch.slice().len;
-                        try self.addSegment(.{
-                            .kind = .text,
-                            .offset = start,
-                            .len = batch.slice().len,
-                            .texture_layer_base = result.layer_window_base,
-                            .key = prepared.textAtlasEntry(text.blob.atlas).?.key,
-                            .resource_stamp = try prepared.textStamp(text.blob.atlas),
-                            .target_stamp = TargetStamp.from(options.mvp, options.target, text.resolve.hinting),
-                        });
-                        if (result.completed) break;
                     }
                 },
-                .path => |path| {
-                    const view = try prepared.pathAtlasView(path.picture);
-                    var instance_start: usize = 0;
-                    while (instance_start < path.picture.instances.len) {
-                        const start = self.len;
-                        var batch = PathBatch.init(self.buf[self.len..]);
-                        const result = try batch.addPictureTransformedFrom(&view, path.picture, path.transform, instance_start);
-                        instance_start = result.next_instance;
-                        if (batch.shapeCount() == 0) {
+                .path => |draw| {
+                    const view = try prepared.pathAtlasView(draw.picture);
+                    const overrides = if (draw.instances.len == 0) default_overrides_storage[0..] else draw.instances;
+                    const range = draw.shapes.resolve(draw.picture.shapes.len);
+                    for (overrides, 0..) |_, override_index| {
+                        var shape_start = range.start;
+                        while (shape_start < range.end) {
+                            const start = self.len;
+                            var batch = PathBatch.init(self.buf[self.len..]);
+                            const result = try batch.addDraw(&view, draw, override_index, shape_start);
+                            shape_start = result.next_shape;
+                            if (batch.shapeCount() == 0) {
+                                if (result.completed) break;
+                                continue;
+                            }
+                            self.len += batch.slice().len;
+                            try self.addSegment(.{
+                                .kind = .path,
+                                .offset = start,
+                                .len = batch.slice().len,
+                                .texture_layer_base = result.layer_window_base,
+                                .key = prepared.pathPictureEntry(draw.picture).?.key,
+                                .resource_stamp = try prepared.pathStamp(draw.picture),
+                                .target_stamp = TargetStamp.from(options.mvp, options.target, .none),
+                            });
                             if (result.completed) break;
-                            continue;
                         }
-                        self.len += batch.slice().len;
-                        try self.addSegment(.{
-                            .kind = .path,
-                            .offset = start,
-                            .len = batch.slice().len,
-                            .texture_layer_base = result.layer_window_base,
-                            .key = prepared.pathPictureEntry(path.picture).?.key,
-                            .resource_stamp = try prepared.pathStamp(path.picture),
-                            .target_stamp = TargetStamp.from(options.mvp, options.target, .none),
-                        });
-                        if (result.completed) break;
                     }
                 },
             }
@@ -4559,6 +4606,14 @@ pub const DrawList = struct {
         self.segment_len += 1;
     }
 };
+
+fn pathDrawInstanceCount(draw: PathDraw) usize {
+    return if (draw.instances.len == 0) 1 else draw.instances.len;
+}
+
+fn textDrawInstanceCount(draw: TextDraw) usize {
+    return if (draw.instances.len == 0) 1 else draw.instances.len;
+}
 
 pub const PreparedScene = struct {
     allocator: std.mem.Allocator,
@@ -5514,7 +5569,7 @@ test "draw rejects stale records when a resource key is replaced" {
 
     var scene = Scene.init(allocator);
     defer scene.deinit();
-    try scene.addPathPicture(&picture_a);
+    try scene.addPath(.{ .picture = &picture_a });
 
     var set_a_entries: [2]ResourceSet.Entry = undefined;
     var set_a = ResourceSet.init(&set_a_entries);
@@ -5654,7 +5709,7 @@ test "CPU draw uses prepared resource views" {
 
     var scene = Scene.init(allocator);
     defer scene.deinit();
-    try scene.addPathPicture(&picture);
+    try scene.addPath(.{ .picture = &picture });
 
     var set_entries: [2]ResourceSet.Entry = undefined;
     var set = ResourceSet.init(&set_entries);
@@ -5716,7 +5771,7 @@ test "path picture band heuristic uses source segment count for cubic fills" {
     var picture = try builder.freeze(std.testing.allocator);
     defer picture.deinit();
 
-    const info = picture.atlas.getGlyph(picture.instances[0].glyph_id) orelse return error.TestExpectedEqual;
+    const info = picture.atlas.getGlyph(picture.shapes[0].glyph_id) orelse return error.TestExpectedEqual;
     try std.testing.expectEqual(@as(u16, 1), info.band_entry.h_band_count);
     try std.testing.expectEqual(@as(u16, 1), info.band_entry.v_band_count);
 }
@@ -5752,8 +5807,8 @@ test "path picture layers use direct local curve encoding" {
     var picture = try builder.freeze(std.testing.allocator);
     defer picture.deinit();
 
-    const fill_info = picture.atlas.getGlyph(picture.instances[0].glyph_id) orelse return error.TestExpectedEqual;
-    const stroke_info = picture.atlas.getGlyph(picture.instances[0].glyph_id + 1) orelse return error.TestExpectedEqual;
+    const fill_info = picture.atlas.getGlyph(picture.shapes[0].glyph_id) orelse return error.TestExpectedEqual;
+    const stroke_info = picture.atlas.getGlyph(picture.shapes[0].glyph_id + 1) orelse return error.TestExpectedEqual;
     try std.testing.expect(fill_info.band_entry.h_band_count > 0);
     try std.testing.expect(stroke_info.band_entry.h_band_count > 0);
     try std.testing.expectEqual(
@@ -5788,7 +5843,9 @@ test "path picture freeze compiles atlas and transformed batch vertices" {
     var vertex_buf: [PATH_WORDS_PER_SHAPE]u32 = undefined;
     var batch = PathBatch.init(&vertex_buf);
     const view = PreparedAtlasView{ .atlas = &picture.atlas };
-    try std.testing.expectEqual(@as(usize, 1), batch.addPicture(&view, &picture));
+    const result = try batch.addDraw(&view, .{ .picture = &picture }, 0, 0);
+    try std.testing.expectEqual(@as(usize, 1), result.emitted);
+    try std.testing.expect(result.completed);
     try std.testing.expectEqual(@as(usize, PATH_WORDS_PER_SHAPE), batch.slice().len);
     // Verify that the min corner world position equals the intended translation.
     const s = vertex_mod.decodeInstance(batch.slice());
@@ -5799,6 +5856,35 @@ test "path picture freeze compiles atlas and transformed batch vertices" {
     const packed_gw = s.glyph[1];
     try std.testing.expectEqual(@as(u32, 0xFF), packed_gw >> 24);
     try std.testing.expectApproxEqAbs(@as(f32, 0), s.band[3], 0.001);
+}
+
+test "path picture ranges emit selected shapes" {
+    var builder = PathPictureBuilder.init(std.testing.allocator);
+    defer builder.deinit();
+    try builder.addFilledRect(.{ .x = 0, .y = 0, .w = 20, .h = 10 }, .{ .color = .{ 0.8, 0.2, 0.1, 1.0 } }, .identity);
+    try builder.addFilledRect(.{ .x = 40, .y = 0, .w = 20, .h = 10 }, .{ .color = .{ 0.1, 0.4, 0.8, 1.0 } }, .identity);
+    try std.testing.expectEqual(@as(usize, 2), builder.shapeCount());
+
+    var picture = try builder.freeze(std.testing.allocator);
+    defer picture.deinit();
+
+    var vertex_buf: [PATH_WORDS_PER_SHAPE]u32 = undefined;
+    var batch = PathBatch.init(&vertex_buf);
+    const view = PreparedAtlasView{ .atlas = &picture.atlas };
+    const result = try batch.addDraw(&view, .{
+        .picture = &picture,
+        .shapes = .{ .start = 1, .count = 1 },
+    }, 0, 0);
+    try std.testing.expectEqual(@as(usize, 1), result.emitted);
+    try std.testing.expect(result.completed);
+    try std.testing.expectEqual(@as(usize, PATH_WORDS_PER_SHAPE), batch.slice().len);
+
+    var scene = Scene.init(std.testing.allocator);
+    defer scene.deinit();
+    try scene.addPath(.{ .picture = &picture, .shapes = .{ .start = 1, .count = 1 } });
+    const options = DrawOptions{ .mvp = Mat4.identity, .target = .{ .pixel_width = 100, .pixel_height = 100 } };
+    try std.testing.expectEqual(@as(usize, PATH_WORDS_PER_SHAPE), DrawList.estimate(&scene, options));
+    try std.testing.expectEqual(@as(usize, 1), DrawList.estimateSegments(&scene, options));
 }
 
 test "path batch offsets layer info rows through atlas views" {
@@ -5820,11 +5906,14 @@ test "path batch offsets layer info rows through atlas views" {
         .layer_base = 3,
         .info_row_base = 17,
     };
-    try std.testing.expectEqual(@as(usize, 1), try batch.addPicture(&offset_view, &picture));
+    {
+        const r = try batch.addDraw(&offset_view, .{ .picture = &picture }, 0, 0);
+        try std.testing.expectEqual(@as(usize, 1), r.emitted);
+    }
     const s = vertex_mod.decodeInstance(batch.slice());
     const packed_gz = s.glyph[0];
-    try std.testing.expectEqual(@as(u32, picture.instances[0].info_x), packed_gz & 0xFFFF);
-    try std.testing.expectEqual(@as(u32, offset_view.info_row_base + picture.instances[0].info_y), packed_gz >> 16);
+    try std.testing.expectEqual(@as(u32, picture.shapes[0].info_x), packed_gz & 0xFFFF);
+    try std.testing.expectEqual(@as(u32, offset_view.info_row_base + picture.shapes[0].info_y), packed_gz >> 16);
     try std.testing.expectApproxEqAbs(@as(f32, @floatFromInt(try textureLayerLocal(offset_view.glyphLayer(0)))), s.band[3], 0.001);
 }
 
@@ -5845,12 +5934,12 @@ test "styled path builder emits fill and stroke records" {
     var picture = try builder.freeze(std.testing.allocator);
     defer picture.deinit();
     try std.testing.expectEqual(@as(usize, 1), picture.shapeCount());
-    try std.testing.expectEqual(@as(u16, 2), picture.instances[0].layer_count);
-    try std.testing.expectEqual(@as(u16, 0), picture.instances[0].info_x);
-    try std.testing.expectEqual(@as(u16, 0), picture.instances[0].info_y);
+    try std.testing.expectEqual(@as(u16, 2), picture.shapes[0].layer_count);
+    try std.testing.expectEqual(@as(u16, 0), picture.shapes[0].info_x);
+    try std.testing.expectEqual(@as(u16, 0), picture.shapes[0].info_y);
 
-    const fill_info = picture.atlas.getGlyph(picture.instances[0].glyph_id) orelse return error.TestExpectedEqual;
-    const stroke_info = picture.atlas.getGlyph(picture.instances[0].glyph_id + 1) orelse return error.TestExpectedEqual;
+    const fill_info = picture.atlas.getGlyph(picture.shapes[0].glyph_id) orelse return error.TestExpectedEqual;
+    const stroke_info = picture.atlas.getGlyph(picture.shapes[0].glyph_id + 1) orelse return error.TestExpectedEqual;
     try std.testing.expect(stroke_info.bbox.min.x < fill_info.bbox.min.x);
     try std.testing.expect(stroke_info.bbox.max.x > fill_info.bbox.max.x);
     try std.testing.expect(stroke_info.bbox.min.y < fill_info.bbox.min.y);
@@ -5881,13 +5970,13 @@ test "open stroked path expands for round caps" {
 
     var picture = try builder.freeze(std.testing.allocator);
     defer picture.deinit();
-    const stroke_info = picture.atlas.getGlyph(picture.instances[0].glyph_id) orelse return error.TestExpectedEqual;
+    const stroke_info = picture.atlas.getGlyph(picture.shapes[0].glyph_id) orelse return error.TestExpectedEqual;
     try std.testing.expectApproxEqAbs(@as(f32, -9), stroke_info.bbox.min.x, 0.05);
     try std.testing.expectApproxEqAbs(@as(f32, 9), stroke_info.bbox.max.x, 0.05);
     try std.testing.expectApproxEqAbs(@as(f32, -3), stroke_info.bbox.min.y, 0.05);
     try std.testing.expectApproxEqAbs(@as(f32, 3), stroke_info.bbox.max.y, 0.05);
-    try std.testing.expectApproxEqAbs(@as(f32, 6), picture.instances[0].transform.tx, 0.05);
-    try std.testing.expectApproxEqAbs(@as(f32, 0), picture.instances[0].transform.ty, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 6), picture.shapes[0].transform.tx, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), picture.shapes[0].transform.ty, 0.05);
 }
 
 test "square-capped stroked path extends beyond endpoints" {
@@ -6021,10 +6110,10 @@ test "inside-aligned generic path stroke groups fill and stroke on one instance"
     var picture = try builder.freeze(std.testing.allocator);
     defer picture.deinit();
     try std.testing.expectEqual(@as(usize, 1), picture.shapeCount());
-    try std.testing.expectEqual(@as(u16, 2), picture.instances[0].layer_count);
+    try std.testing.expectEqual(@as(u16, 2), picture.shapes[0].layer_count);
 
-    const fill_info = picture.atlas.getGlyph(picture.instances[0].glyph_id) orelse return error.TestExpectedEqual;
-    const stroke_info = picture.atlas.getGlyph(picture.instances[0].glyph_id + 1) orelse return error.TestExpectedEqual;
+    const fill_info = picture.atlas.getGlyph(picture.shapes[0].glyph_id) orelse return error.TestExpectedEqual;
+    const stroke_info = picture.atlas.getGlyph(picture.shapes[0].glyph_id + 1) orelse return error.TestExpectedEqual;
 
     try std.testing.expectApproxEqAbs(@as(f32, -20), fill_info.bbox.min.x, 0.05);
     try std.testing.expectApproxEqAbs(@as(f32, -9), fill_info.bbox.min.y, 0.05);
@@ -6035,12 +6124,12 @@ test "inside-aligned generic path stroke groups fill and stroke on one instance"
     try std.testing.expect(stroke_info.bbox.min.y < fill_info.bbox.min.y);
     try std.testing.expect(stroke_info.bbox.max.y > fill_info.bbox.max.y);
 
-    try std.testing.expectApproxEqAbs(@as(f32, -20), picture.instances[0].bbox.min.x, 0.05);
-    try std.testing.expectApproxEqAbs(@as(f32, -9), picture.instances[0].bbox.min.y, 0.05);
-    try std.testing.expectApproxEqAbs(@as(f32, 20), picture.instances[0].bbox.max.x, 0.05);
-    try std.testing.expectApproxEqAbs(@as(f32, 9), picture.instances[0].bbox.max.y, 0.05);
-    try std.testing.expectApproxEqAbs(@as(f32, 30), picture.instances[0].transform.tx, 0.05);
-    try std.testing.expectApproxEqAbs(@as(f32, 29), picture.instances[0].transform.ty, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, -20), picture.shapes[0].bbox.min.x, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, -9), picture.shapes[0].bbox.min.y, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 20), picture.shapes[0].bbox.max.x, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 9), picture.shapes[0].bbox.max.y, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 30), picture.shapes[0].transform.tx, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 29), picture.shapes[0].transform.ty, 0.05);
 
     const lid = picture.atlas.layer_info_data orelse return error.TestExpectedEqual;
     try std.testing.expectApproxEqAbs(kPaintTagCompositeGroup, lid[3], 0.001);
@@ -6061,10 +6150,10 @@ test "inside-aligned rounded rect helper emits explicit ring geometry" {
     var picture = try builder.freeze(std.testing.allocator);
     defer picture.deinit();
     try std.testing.expectEqual(@as(usize, 1), picture.shapeCount());
-    try std.testing.expectEqual(@as(u16, 2), picture.instances[0].layer_count);
+    try std.testing.expectEqual(@as(u16, 2), picture.shapes[0].layer_count);
 
-    const fill_info = picture.atlas.getGlyph(picture.instances[0].glyph_id) orelse return error.TestExpectedEqual;
-    const stroke_info = picture.atlas.getGlyph(picture.instances[0].glyph_id + 1) orelse return error.TestExpectedEqual;
+    const fill_info = picture.atlas.getGlyph(picture.shapes[0].glyph_id) orelse return error.TestExpectedEqual;
+    const stroke_info = picture.atlas.getGlyph(picture.shapes[0].glyph_id + 1) orelse return error.TestExpectedEqual;
 
     try std.testing.expectApproxEqAbs(@as(f32, -20), fill_info.bbox.min.x, 0.05);
     try std.testing.expectApproxEqAbs(@as(f32, -9), fill_info.bbox.min.y, 0.05);
@@ -6074,8 +6163,8 @@ test "inside-aligned rounded rect helper emits explicit ring geometry" {
     try std.testing.expectApproxEqAbs(fill_info.bbox.min.y, stroke_info.bbox.min.y, 0.05);
     try std.testing.expectApproxEqAbs(fill_info.bbox.max.x, stroke_info.bbox.max.x, 0.05);
     try std.testing.expectApproxEqAbs(fill_info.bbox.max.y, stroke_info.bbox.max.y, 0.05);
-    try std.testing.expectApproxEqAbs(@as(f32, 30), picture.instances[0].transform.tx, 0.05);
-    try std.testing.expectApproxEqAbs(@as(f32, 29), picture.instances[0].transform.ty, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 30), picture.shapes[0].transform.tx, 0.05);
+    try std.testing.expectApproxEqAbs(@as(f32, 29), picture.shapes[0].transform.ty, 0.05);
 
     const lid = picture.atlas.layer_info_data orelse return error.TestExpectedEqual;
     try std.testing.expectApproxEqAbs(kPaintTagCompositeGroup, lid[3], 0.001);
@@ -6118,7 +6207,7 @@ test "path picture debug view remaps composite fill and stroke paints by role" {
 
     const width = debug_picture.atlas.layer_info_width;
     const lid = debug_picture.atlas.layer_info_data orelse return error.TestExpectedEqual;
-    const base = pathLayerInfoTexelOffset(width, debug_picture.instances[0].info_x, debug_picture.instances[0].info_y);
+    const base = pathLayerInfoTexelOffset(width, debug_picture.shapes[0].info_x, debug_picture.shapes[0].info_y);
     const header = readPathLayerInfoTexel(lid, width, base);
     try std.testing.expectApproxEqAbs(PATH_PAINT_TAG_COMPOSITE_GROUP, header[3], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, @intFromEnum(PathCompositeMode.source_over)), header[1], 0.001);
@@ -6147,9 +6236,9 @@ test "path picture bounds overlay builds guides for each instance" {
     defer overlay.deinit();
 
     try std.testing.expectEqual(@as(usize, 3), overlay.shapeCount());
-    for (overlay.instances) |instance| {
-        try std.testing.expectApproxEqAbs(picture.instances[0].transform.tx, instance.transform.tx, 0.05);
-        try std.testing.expectApproxEqAbs(picture.instances[0].transform.ty, instance.transform.ty, 0.05);
+    for (overlay.shapes) |shape| {
+        try std.testing.expectApproxEqAbs(picture.shapes[0].transform.tx, shape.transform.tx, 0.05);
+        try std.testing.expectApproxEqAbs(picture.shapes[0].transform.ty, shape.transform.ty, 0.05);
     }
 }
 
@@ -6195,14 +6284,14 @@ test "path picture freeze stores large coordinates as direct local curves" {
         absolute_page.curve_data[10],
     );
 
-    try std.testing.expectApproxEqAbs(transformed_picture.instances[0].bbox.min.x, absolute_picture.instances[0].bbox.min.x, 0.001);
-    try std.testing.expectApproxEqAbs(transformed_picture.instances[0].bbox.min.y, absolute_picture.instances[0].bbox.min.y, 0.001);
-    try std.testing.expectApproxEqAbs(transformed_picture.instances[0].bbox.max.x, absolute_picture.instances[0].bbox.max.x, 0.001);
-    try std.testing.expectApproxEqAbs(transformed_picture.instances[0].bbox.max.y, absolute_picture.instances[0].bbox.max.y, 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 660), absolute_picture.instances[0].transform.tx, 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 969), absolute_picture.instances[0].transform.ty, 0.001);
-    try std.testing.expectApproxEqAbs(transformed_picture.instances[0].transform.tx, absolute_picture.instances[0].transform.tx, 0.001);
-    try std.testing.expectApproxEqAbs(transformed_picture.instances[0].transform.ty, absolute_picture.instances[0].transform.ty, 0.001);
+    try std.testing.expectApproxEqAbs(transformed_picture.shapes[0].bbox.min.x, absolute_picture.shapes[0].bbox.min.x, 0.001);
+    try std.testing.expectApproxEqAbs(transformed_picture.shapes[0].bbox.min.y, absolute_picture.shapes[0].bbox.min.y, 0.001);
+    try std.testing.expectApproxEqAbs(transformed_picture.shapes[0].bbox.max.x, absolute_picture.shapes[0].bbox.max.x, 0.001);
+    try std.testing.expectApproxEqAbs(transformed_picture.shapes[0].bbox.max.y, absolute_picture.shapes[0].bbox.max.y, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 660), absolute_picture.shapes[0].transform.tx, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 969), absolute_picture.shapes[0].transform.ty, 0.001);
+    try std.testing.expectApproxEqAbs(transformed_picture.shapes[0].transform.tx, absolute_picture.shapes[0].transform.tx, 0.001);
+    try std.testing.expectApproxEqAbs(transformed_picture.shapes[0].transform.ty, absolute_picture.shapes[0].transform.ty, 0.001);
 }
 
 test "large rounded rect uses generic curve packing without helper tiling" {
