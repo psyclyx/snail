@@ -412,7 +412,7 @@ fn buildGlassPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas) !PlaneP
     try path_builder.addRoundedRect(
         rect,
         .{
-            .color = .{ 0.38, 0.70, 1.0, 0.16 },
+            .color = .{ 0.38, 0.70, 1.0, 0.32 },
         },
         .{
             .color = .{ 0.72, 0.90, 1.0, 0.62 },
@@ -433,9 +433,9 @@ fn buildGlassPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas) !PlaneP
     var builder = snail.TextBlobBuilder.init(allocator, fonts);
     defer builder.deinit();
     const tx = rect.x + pad_x;
-    _ = try builder.addText(.{ .weight = .bold }, title, tx, rect.y + 72.0, 42.0, .{ 0.92, 0.98, 1.0, 1.0 });
-    _ = try builder.addText(.{}, body, tx, rect.y + 114.0, 21.0, .{ 0.84, 0.93, 0.98, 1.0 });
-    _ = try builder.addText(.{}, note, tx, rect.y + 144.0, 16.0, .{ 0.72, 0.84, 0.92, 1.0 });
+    _ = try builder.addText(.{ .weight = .bold }, title, tx, rect.y + 72.0, 42.0, .{ 0.92, 0.98, 1.0, 0.78 });
+    _ = try builder.addText(.{}, body, tx, rect.y + 114.0, 21.0, .{ 0.84, 0.93, 0.98, 0.74 });
+    _ = try builder.addText(.{}, note, tx, rect.y + 144.0, 16.0, .{ 0.72, 0.84, 0.92, 0.70 });
     const text = try builder.finish();
 
     return .{
