@@ -1,7 +1,6 @@
 const std = @import("std");
 const snail = @import("snail.zig");
-const demo_banner = @import("demo_banner.zig");
-const demo_banner_scene = @import("demo_banner_scene.zig");
+const banner_scene = @import("banner_scene.zig");
 const screenshot = @import("render/screenshot.zig");
 const egl_offscreen = @import("render/egl_offscreen.zig");
 const gl = @import("render/gl.zig").gl;
@@ -10,8 +9,8 @@ fn srgbToLinear(v: f32) f32 {
     return if (v <= 0.04045) v / 12.92 else std.math.pow(f32, (v + 0.055) / 1.055, 2.4);
 }
 
-const SCREENSHOT_WIDTH: u32 = 1680;
-const SCREENSHOT_HEIGHT: u32 = 874;
+const SCREENSHOT_WIDTH: u32 = banner_scene.WIDTH;
+const SCREENSHOT_HEIGHT: u32 = banner_scene.HEIGHT;
 const SCREENSHOT_PATH = "zig-out/demo-screenshot.tga";
 const GL_SRGB8_ALPHA8: gl.GLenum = 0x8C43;
 
@@ -39,7 +38,7 @@ pub fn main() !void {
     if (gl.glCheckFramebufferStatus(gl.GL_FRAMEBUFFER) != gl.GL_FRAMEBUFFER_COMPLETE) return error.FramebufferIncomplete;
     gl.glViewport(0, 0, SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT);
 
-    var scene_assets = try demo_banner_scene.Assets.init(allocator);
+    var scene_assets = try banner_scene.Assets.init(allocator);
     defer scene_assets.deinit();
 
     var gl_renderer = try snail.GlRenderer.init(allocator);
@@ -48,18 +47,15 @@ pub fn main() !void {
 
     const w: f32 = @floatFromInt(SCREENSHOT_WIDTH);
     const h: f32 = @floatFromInt(SCREENSHOT_HEIGHT);
-    const layout = demo_banner.buildLayout(w, h);
     const projection = snail.Mat4.ortho(0, w, h, 0, -1, 1);
 
     var builder = snail.TextBlobBuilder.init(allocator, &scene_assets.fonts);
     defer builder.deinit();
-    var dec_rects: [8]snail.Rect = undefined;
-    const text_result = demo_banner_scene.buildTextBlob(&builder, layout, &scene_assets, &dec_rects);
+    try banner_scene.buildTextBlob(&builder);
     var text_blob = try builder.finish();
     defer text_blob.deinit();
 
-    // Build immutable scene resources.
-    var path_picture = try demo_banner_scene.buildPathPicture(allocator, layout, &scene_assets, dec_rects[0..text_result.decoration_count]);
+    var path_picture = try banner_scene.buildPathPicture(allocator);
     defer path_picture.deinit();
     var scene = snail.Scene.init(allocator);
     defer scene.deinit();
@@ -72,15 +68,15 @@ pub fn main() !void {
     var prepared = try renderer.uploadResourcesBlocking(allocator, &resources);
     defer prepared.deinit();
 
-    const clear = demo_banner.clearColor();
+    const clear = banner_scene.clearColor();
     gl.glClearColor(srgbToLinear(clear[0]), srgbToLinear(clear[1]), srgbToLinear(clear[2]), clear[3]);
     gl.glClear(gl.GL_COLOR_BUFFER_BIT);
 
     const draw_options = snail.DrawOptions{
         .mvp = projection,
         .target = .{
-            .pixel_width = @floatFromInt(SCREENSHOT_WIDTH),
-            .pixel_height = @floatFromInt(SCREENSHOT_HEIGHT),
+            .pixel_width = w,
+            .pixel_height = h,
             .subpixel_order = .none,
         },
     };

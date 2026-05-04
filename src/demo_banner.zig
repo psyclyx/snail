@@ -564,7 +564,7 @@ fn addFilledQuadraticRibbon(
     try builder.addFilledPath(&ribbon, .{ .color = color }, transform);
 }
 
-fn addVectorSnail(builder: *snail.PathPictureBuilder, snail_stage: snail.Rect) !void {
+pub fn addVectorSnail(builder: *snail.PathPictureBuilder, snail_stage: snail.Rect) !void {
     const art_width = @min(snail_stage.w * 0.82, 440.0);
     const scale = art_width / 360.0;
     const art_height = 220.0 * scale;
