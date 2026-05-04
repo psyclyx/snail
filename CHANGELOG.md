@@ -44,6 +44,14 @@
   but route through the new draw structs internally; semantics are
   preserved for existing callers.
 
+### CPU renderer threading
+
+- `CpuRenderer.setIo(?std.Io)` opts the software backend into
+  scanline-tiled multithreading. The caller owns a `std.Io.Threaded`
+  (or any `std.Io`); snail fans tile work out via `std.Io.Group` and
+  joins before each draw returns. Output is byte-identical to the
+  single-threaded path; `backend-compare` still passes.
+
 ### Docs
 
 - README banner switches from a fixed `width` attribute to GitHub's

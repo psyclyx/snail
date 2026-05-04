@@ -1051,6 +1051,14 @@ pub fn main() !void {
     var cpu = snail.CpuRenderer.init(cpu_pixels.ptr, WIDTH, HEIGHT, WIDTH * 4);
     var cpu_renderer = snail.Renderer.initCpu(&cpu);
 
+    var cpu_threaded_io: std.Io.Threaded = .init(allocator, .{});
+    defer cpu_threaded_io.deinit();
+    const cpu_pixels_threaded = try allocator.alloc(u8, WIDTH * HEIGHT * 4);
+    defer allocator.free(cpu_pixels_threaded);
+    var cpu_threaded = snail.CpuRenderer.init(cpu_pixels_threaded.ptr, WIDTH, HEIGHT, WIDTH * 4);
+    cpu_threaded.setIo(cpu_threaded_io.io());
+    var cpu_threaded_renderer = snail.Renderer.initCpu(&cpu_threaded);
+
     var bundles: [scene_kinds.len]SceneBundle = undefined;
     var bundle_count: usize = 0;
     defer {
@@ -1098,6 +1106,18 @@ pub fn main() !void {
             .words = prepared_scenes[i].words.len,
             .segments = prepared_scenes[i].segments.len,
             .us = try timeCpuDraw(&cpu_renderer, &cpu_resources[i], &prepared_scenes[i], options, cpu_pixels),
+        });
+    }
+
+    for (scene_kinds, 0..) |kind, i| {
+        try render_rows.append(allocator, .{
+            .backend = "CPU (threaded)",
+            .scene = kind,
+            .frames = CPU_FRAMES,
+            .commands = bundles[i].scene.commandCount(),
+            .words = prepared_scenes[i].words.len,
+            .segments = prepared_scenes[i].segments.len,
+            .us = try timeCpuDraw(&cpu_threaded_renderer, &cpu_resources[i], &prepared_scenes[i], options, cpu_pixels_threaded),
         });
     }
 

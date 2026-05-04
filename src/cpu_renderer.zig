@@ -209,6 +209,14 @@ pub const CpuRenderer = struct {
     stride: u32, // bytes per row (usually width * 4)
     fill_rule: FillRule,
     subpixel_order: SubpixelOrder,
+    io: ?std.Io,
+    // Half-open row window [row_clip_min, row_clip_max). Pixel writes outside
+    // this range are skipped. Used by tile workers to claim disjoint scanline
+    // bands; defaults to the full image for single-threaded callers.
+    row_clip_min: u32,
+    row_clip_max: u32,
+
+    pub const TILE_ROWS: u32 = 32;
 
     pub fn init(pixels: [*]u8, width: u32, height: u32, stride: u32) CpuRenderer {
         return .{
@@ -218,6 +226,9 @@ pub const CpuRenderer = struct {
             .stride = stride,
             .fill_rule = .non_zero,
             .subpixel_order = .none,
+            .io = null,
+            .row_clip_min = 0,
+            .row_clip_max = height,
         };
     }
 
@@ -227,6 +238,17 @@ pub const CpuRenderer = struct {
         self.width = width;
         self.height = height;
         self.stride = stride;
+        self.row_clip_min = 0;
+        self.row_clip_max = height;
+    }
+
+    /// Attach a caller-owned `std.Io` (typically backed by `std.Io.Threaded`)
+    /// used to fan tile work out across scanline strips during draw. Pass
+    /// `null` to revert to single-threaded rendering. Output is byte-identical
+    /// to the single-threaded path. The backing implementation must outlive
+    /// the renderer.
+    pub fn setIo(self: *CpuRenderer, io: ?std.Io) void {
+        self.io = io;
     }
 
     pub fn setFillRule(self: *CpuRenderer, rule: FillRule) void {
@@ -363,6 +385,28 @@ pub const CpuRenderer = struct {
     }
 
     pub fn drawTextBatchPrepared(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const u32, texture_layer_base: u32, allow_subpixel: bool) void {
+        if (self.io) |io| {
+            // Tile by scanline strips. Each tile gets a renderer copy with its
+            // own row_clip; tiles cover disjoint rows so writes never collide.
+            // The full instance list is replayed per tile — pixels outside the
+            // tile are skipped at the row-loop bound, preserving byte-identity
+            // with the serial path.
+            const span = self.row_clip_max - self.row_clip_min;
+            if (span >= 2 * TILE_ROWS and vertices.len >= vertex.WORDS_PER_INSTANCE) {
+                const tile_count = (span + TILE_ROWS - 1) / TILE_ROWS;
+                var group: std.Io.Group = .init;
+                var tile: u32 = 0;
+                while (tile < tile_count) : (tile += 1) {
+                    var tile_renderer = self.*;
+                    tile_renderer.io = null;
+                    tile_renderer.row_clip_min = self.row_clip_min + tile * TILE_ROWS;
+                    tile_renderer.row_clip_max = @min(tile_renderer.row_clip_min + TILE_ROWS, self.row_clip_max);
+                    group.async(io, renderTile, .{ tile_renderer, prepared, vertices, texture_layer_base, allow_subpixel });
+                }
+                group.await(io) catch {};
+                return;
+            }
+        }
         const WORDS = vertex.WORDS_PER_INSTANCE;
         var i: usize = 0;
         while (i + WORDS <= vertices.len) : (i += WORDS) {
@@ -521,8 +565,8 @@ pub const CpuRenderer = struct {
             const bounds = transformedGlyphBounds(union_bbox, transform);
             const px0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.x))), 0);
             const px1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.x))), @as(i32, @intCast(self.width)));
-            const py0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.y))), 0);
-            const py1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.y))), @as(i32, @intCast(self.height)));
+            const py0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.y))), @as(i32, @intCast(self.row_clip_min)));
+            const py1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.y))), @as(i32, @intCast(self.row_clip_max)));
             if (px0 >= px1 or py0 >= py1) return;
 
             const epp = glyphEdgePixelsPerPixel(inverse);
@@ -682,8 +726,8 @@ pub const CpuRenderer = struct {
             const bounds = transformedGlyphBounds(union_bbox, transform);
             const px0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.x))), 0);
             const px1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.x))), @as(i32, @intCast(self.width)));
-            const py0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.y))), 0);
-            const py1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.y))), @as(i32, @intCast(self.height)));
+            const py0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.y))), @as(i32, @intCast(self.row_clip_min)));
+            const py1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.y))), @as(i32, @intCast(self.row_clip_max)));
             if (px0 >= px1 or py0 >= py1) return;
 
             const epp = glyphEdgePixelsPerPixel(inverse);
@@ -747,8 +791,8 @@ pub const CpuRenderer = struct {
 
         const px0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.x))), 0);
         const px1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.x))), @as(i32, @intCast(self.width)));
-        const py0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.y))), 0);
-        const py1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.y))), @as(i32, @intCast(self.height)));
+        const py0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.y))), @as(i32, @intCast(self.row_clip_min)));
+        const py1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.y))), @as(i32, @intCast(self.row_clip_max)));
         if (px0 >= px1 or py0 >= py1) return;
 
         const epp = glyphEdgePixelsPerPixel(inverse);
@@ -1137,6 +1181,22 @@ pub const CpuRenderer = struct {
         self.blendSubpixelPremultipliedPixel(row, col, premultiplySubpixelCoverage(color, cov, alpha_cov), src_blend, false);
     }
 };
+
+fn renderTile(
+    tile_renderer: CpuRenderer,
+    prepared: *const PreparedResources,
+    vertices: []const u32,
+    texture_layer_base: u32,
+    allow_subpixel: bool,
+) void {
+    var local = tile_renderer;
+    const WORDS = vertex.WORDS_PER_INSTANCE;
+    var i: usize = 0;
+    while (i + WORDS <= vertices.len) : (i += WORDS) {
+        const inst = vertices[i..][0..WORDS];
+        local.renderBatchInstance(prepared, inst, texture_layer_base, allow_subpixel);
+    }
+}
 
 fn inverseTransform(transform: Transform2D) ?Transform2D {
     const det = transform.xx * transform.yy - transform.xy * transform.yx;
@@ -2827,6 +2887,92 @@ test "cpu renderer fills both demo eye stalks" {
         }
         try testing.expect(max_alpha > 180);
     }
+}
+
+test "cpu renderer threaded draw matches single-threaded byte-for-byte" {
+    const testing = std.testing;
+
+    const width: u32 = 96;
+    const height: u32 = 96;
+    const stride = width * 4;
+
+    var atlas = try snail.TextAtlas.init(testing.allocator, &.{.{ .data = @import("assets").noto_sans_regular }});
+    defer atlas.deinit();
+    if (try atlas.ensureText(.{}, "Hello, world!")) |next| {
+        atlas.deinit();
+        atlas = next;
+    }
+
+    var blob_builder = snail.TextBlobBuilder.init(testing.allocator, &atlas);
+    defer blob_builder.deinit();
+    _ = try blob_builder.addText(.{}, "Hello, world!", 4, 32, 16, .{ 1, 1, 1, 1 });
+    _ = try blob_builder.addText(.{}, "Hello, world!", 4, 56, 16, .{ 1, 0.4, 0.4, 1 });
+    _ = try blob_builder.addText(.{}, "Hello, world!", 4, 80, 16, .{ 0.4, 1, 0.4, 1 });
+    var blob = try blob_builder.finish();
+    defer blob.deinit();
+
+    var builder = snail.PathPictureBuilder.init(testing.allocator);
+    defer builder.deinit();
+    try builder.addRoundedRect(.{ .x = 4, .y = 4, .w = width - 8, .h = 20 }, .{
+        .color = .{ 0.2, 0.4, 0.8, 0.9 },
+    }, .{ .color = .{ 1, 1, 1, 1 }, .width = 1.5 }, 4, .identity);
+    var picture = try builder.freeze(testing.allocator);
+    defer picture.deinit();
+
+    var scene = snail.Scene.init(testing.allocator);
+    defer scene.deinit();
+    try scene.addPath(.{ .picture = &picture });
+    try scene.addText(.{ .blob = &blob });
+
+    const options = snail.DrawOptions{
+        .mvp = snail.Mat4.ortho(0, @floatFromInt(width), @floatFromInt(height), 0, -1, 1),
+        .target = .{
+            .pixel_width = @floatFromInt(width),
+            .pixel_height = @floatFromInt(height),
+            .subpixel_order = .rgb,
+        },
+    };
+
+    const serial_buf = try testing.allocator.alloc(u8, stride * height);
+    defer testing.allocator.free(serial_buf);
+    @memset(serial_buf, 0);
+
+    var serial_cpu = CpuRenderer.init(serial_buf.ptr, width, height, stride);
+    serial_cpu.setSubpixelOrder(.rgb);
+    var serial_resources = try serial_cpu.uploadResourcesBlocking(testing.allocator, blk: {
+        var entries: [4]snail.ResourceSet.Entry = undefined;
+        var set = snail.ResourceSet.init(&entries);
+        try set.addScene(&scene);
+        break :blk &set;
+    });
+    defer serial_resources.deinit();
+    var serial_prepared = try snail.PreparedScene.initOwned(testing.allocator, &serial_resources, &scene, options);
+    defer serial_prepared.deinit();
+    try serial_cpu.drawPrepared(&serial_resources, &serial_prepared, options);
+
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    const threaded_buf = try testing.allocator.alloc(u8, stride * height);
+    defer testing.allocator.free(threaded_buf);
+    @memset(threaded_buf, 0);
+
+    var threaded_cpu = CpuRenderer.init(threaded_buf.ptr, width, height, stride);
+    threaded_cpu.setSubpixelOrder(.rgb);
+    threaded_cpu.setIo(io);
+    var threaded_resources = try threaded_cpu.uploadResourcesBlocking(testing.allocator, blk: {
+        var entries: [4]snail.ResourceSet.Entry = undefined;
+        var set = snail.ResourceSet.init(&entries);
+        try set.addScene(&scene);
+        break :blk &set;
+    });
+    defer threaded_resources.deinit();
+    var threaded_prepared = try snail.PreparedScene.initOwned(testing.allocator, &threaded_resources, &scene, options);
+    defer threaded_prepared.deinit();
+    try threaded_cpu.drawPrepared(&threaded_resources, &threaded_prepared, options);
+
+    try testing.expectEqualSlices(u8, serial_buf, threaded_buf);
 }
 
 test "cpu renderer drawPaths batch matches drawPathPicture" {
