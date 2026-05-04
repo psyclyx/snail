@@ -91,8 +91,10 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
     defer if (use_gl) gl_renderer.deinit();
 
     const sys_order = subpixel_detect.detect();
-    var current_order = platform.detectCurrentMonitorSubpixelOrder(sys_order);
-    std.debug.print("snail: detected subpixel order: system={s} monitor={s}\n", .{ @tagName(sys_order), @tagName(current_order) });
+    const detected_order = platform.detectCurrentMonitorSubpixelOrder(sys_order);
+    // Default to grayscale; press B to cycle into the detected subpixel mode.
+    var current_order: snail.SubpixelOrder = .none;
+    std.debug.print("snail: detected subpixel order: system={s} monitor={s} (starting in {s})\n", .{ @tagName(sys_order), @tagName(detected_order), @tagName(current_order) });
     var selected_hinting: snail.TextHinting = .metrics;
 
     var path_picture: ?snail.PathPicture = null;
@@ -141,9 +143,9 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
             fps_frames = 0;
         }
 
-        if (platform.consumeMonitorChanged()) {
-            current_order = platform.detectCurrentMonitorSubpixelOrder(sys_order);
-        }
+        // Drop monitor-change auto-reset; the user owns the AA mode and can
+        // cycle with B if they want to track the current display.
+        _ = platform.consumeMonitorChanged();
 
         if (platform.isKeyPressed(platform.KEY_R)) rotate = !rotate;
         if (platform.isKeyPressed(platform.KEY_ESCAPE)) break;
