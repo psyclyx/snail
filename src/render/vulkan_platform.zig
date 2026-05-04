@@ -354,6 +354,18 @@ pub fn initOffscreen(width: u32, height: u32) !vkp.VulkanContext {
     };
 }
 
+pub fn physicalDeviceName(buf: []u8) ?[]const u8 {
+    if (physical_device == null) return null;
+    var props: vk.VkPhysicalDeviceProperties = undefined;
+    vk.vkGetPhysicalDeviceProperties(physical_device, &props);
+    const max = @min(buf.len, props.deviceName.len);
+    var len: usize = 0;
+    while (len < max and props.deviceName[len] != 0) : (len += 1) {
+        buf[len] = @bitCast(props.deviceName[len]);
+    }
+    return buf[0..len];
+}
+
 pub fn deinitOffscreen() void {
     if (device != null) _ = vk.vkDeviceWaitIdle(device);
     if (offscreen_framebuffer != null) vk.vkDestroyFramebuffer(device, offscreen_framebuffer, null);

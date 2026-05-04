@@ -226,6 +226,61 @@ const RenderRow = struct {
     us: f64,
 };
 
+fn cpuModelName(buf: []u8) []const u8 {
+    const file = std.c.fopen("/proc/cpuinfo", "r") orelse return "unknown";
+    defer _ = std.c.fclose(file);
+    var read_buf: [4096]u8 = undefined;
+    const n = std.c.fread(&read_buf, 1, read_buf.len, file);
+    const text = read_buf[0..n];
+    const prefix = "model name";
+    var line_iter = std.mem.splitScalar(u8, text, '\n');
+    while (line_iter.next()) |line| {
+        if (!std.mem.startsWith(u8, line, prefix)) continue;
+        const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+        const value = std.mem.trim(u8, line[colon + 1 ..], " \t");
+        const out_len = @min(buf.len, value.len);
+        @memcpy(buf[0..out_len], value[0..out_len]);
+        return buf[0..out_len];
+    }
+    return "unknown";
+}
+
+fn glStringSafe(name: gl.GLenum) []const u8 {
+    const ptr = gl.glGetString(name) orelse return "unknown";
+    return std.mem.span(@as([*:0]const u8, @ptrCast(ptr)));
+}
+
+fn printHardwareTable(gl_initialized: bool, vulkan_initialized: bool) void {
+    var cpu_buf: [256]u8 = undefined;
+    const cpu = cpuModelName(&cpu_buf);
+    std.debug.print(
+        \\## Hardware
+        \\
+        \\| Component | Detected |
+        \\|---|---|
+        \\| CPU | {s} |
+        \\
+    , .{cpu});
+
+    if (gl_initialized) {
+        std.debug.print(
+            "| OpenGL renderer | {s} |\n| OpenGL version | {s} |\n",
+            .{ glStringSafe(gl.GL_RENDERER), glStringSafe(gl.GL_VERSION) },
+        );
+    }
+
+    if (comptime build_options.enable_vulkan) {
+        if (vulkan_initialized) {
+            var vk_buf: [256]u8 = undefined;
+            const name = vulkan_platform.physicalDeviceName(&vk_buf) orelse "unknown";
+            std.debug.print("| Vulkan device | {s} |\n", .{name});
+        }
+    } else {
+        std.debug.print("| Vulkan | not built (`zig build bench -Dvulkan=true`) |\n", .{});
+    }
+    std.debug.print("\n", .{});
+}
+
 fn nowNs() u64 {
     var ts: std.c.timespec = undefined;
     _ = std.c.clock_gettime(.MONOTONIC, &ts);
@@ -1167,6 +1222,7 @@ pub fn main() !void {
         \\
         \\
     , .{ PREP_RUNS, TEXT_ITERS, RECORD_ITERS });
+    printHardwareTable(true, build_options.enable_vulkan);
     printPreparationTables(snail_prep, vector_prep, ft);
     printTextTable(&text_rows);
     printRecordTable(&record_rows);
