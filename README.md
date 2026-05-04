@@ -382,7 +382,7 @@ try scene.addPath(.{ .picture = &sprite, .instances = entity_overrides });
 | `GlRenderer.init(alloc) !GlRenderer` | Initialize the OpenGL backend. Requires the GL context to be current. |
 | `VulkanRenderer.init(ctx) !VulkanRenderer` | Initialize the Vulkan backend from a caller-owned `VulkanContext`. |
 | `CpuRenderer.init(pixels, w, h, stride) CpuRenderer` | Initialize the CPU backend over a caller-owned RGBA8 buffer. |
-| `cpu.setIo(?std.Io)` | Opt into scanline-tiled multithreaded rendering using a caller-owned `std.Io` (typically backed by `std.Io.Threaded`). Byte-identical output to the single-threaded path. |
+| `cpu.setThreadPool(?*snail.ThreadPool)` | Opt into scanline-tiled multithreaded rendering using a caller-owned `snail.ThreadPool`. Byte-identical output to the single-threaded path; the draw call itself stays allocation-free. |
 | `vk.beginFrame(.{ .cmd, .frame_index })` | Bind a caller-recorded Vulkan command buffer + frame index for the current frame. |
 | `renderer.uploadResourcesBlocking(alloc, set) !PreparedResources` | Blocking upload + view construction. The simple path. |
 | `renderer.planResourceUpload(current, next_set, changed_keys) !ResourceUploadPlan` | Diff a new resource set against existing prepared resources. |
@@ -448,18 +448,19 @@ backend on top of snail's rasterization. Most apps should not need this.
 | `PreparedResources` | Backend/context-specific. CPU values must outlive it unless a backend explicitly copies them. |
 | `DrawList` | Caller-owned buffer. Thread-local — no sharing needed. |
 | `Renderer` | Single-threaded. Must be called from the GL/Vulkan context thread. |
-| `CpuRenderer` | Single-threaded by default. Pass a `std.Io` via `cpu.setIo` to enable internal scanline-tiled parallelism; the renderer fans tile work out and joins before each draw returns, so calls remain serial from the caller's perspective. |
+| `CpuRenderer` | Single-threaded by default. Pass a `*snail.ThreadPool` via `cpu.setThreadPool` to enable internal scanline-tiled parallelism; the renderer fans tile work out and joins before each draw returns, so calls remain serial from the caller's perspective. |
 
 Typical pattern: build `TextAtlas` and call `ensureText` / `ensureShaped` on a loading thread, publish a new `ResourceSet` to the render thread, upload into `PreparedResources`, build `DrawList` records or a `PreparedScene`, then draw. The draw call does not allocate, upload, discover resources, or invalidate caches.
 
-For CPU-backend speed, hand the renderer a `std.Io`:
+For CPU-backend speed, hand the renderer a `snail.ThreadPool`. The pool allocates once at `init` (a `[]std.Thread` slice); `dispatch` and the draw path itself are heap-free.
 
 ```zig
-var threaded: std.Io.Threaded = .init(allocator, .{});
-defer threaded.deinit();
+var pool: snail.ThreadPool = undefined;
+try pool.init(allocator, .{}); // defaults to ncpu - 1 worker threads
+defer pool.deinit();
 
 var cpu = snail.CpuRenderer.init(pixels.ptr, w, h, stride);
-cpu.setIo(threaded.io());
+cpu.setThreadPool(&pool);
 // draws now fan out across scanline tiles
 ```
 

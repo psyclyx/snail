@@ -46,11 +46,18 @@
 
 ### CPU renderer threading
 
-- `CpuRenderer.setIo(?std.Io)` opts the software backend into
-  scanline-tiled multithreading. The caller owns a `std.Io.Threaded`
-  (or any `std.Io`); snail fans tile work out via `std.Io.Group` and
-  joins before each draw returns. Output is byte-identical to the
-  single-threaded path; `backend-compare` still passes.
+- New `snail.ThreadPool`: a tiny caller-owned pool that allocates
+  exactly twice (one `[]std.Thread` slice at `init`, freed at
+  `deinit`). `dispatch` is heap-free.
+- `CpuRenderer.setThreadPool(?*snail.ThreadPool)` opts the software
+  backend into scanline-tiled multithreading. Output is byte-identical
+  to the single-threaded path; the draw call remains
+  allocation-free (`backend-compare` still passes; a parity test in
+  `cpu_renderer.zig` asserts byte-equality vs the serial path).
+- The core library now unconditionally links libc: the pool uses
+  `std.c.pthread_mutex_*` / `pthread_cond_*` for blocking sync, and
+  Zig 0.16 only ships standalone blocking primitives behind
+  `std.Io` (which would re-introduce per-task allocations).
 
 ### Docs
 

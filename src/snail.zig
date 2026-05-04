@@ -3749,6 +3749,7 @@ pub const FillRule = enum(c_int) {
 pub const SubpixelOrder = @import("render/subpixel_order.zig").SubpixelOrder;
 pub const VulkanContext = vulkan_pipeline.VulkanContext;
 pub const CpuRenderer = cpu_renderer_mod.CpuRenderer;
+pub const ThreadPool = @import("thread_pool.zig").ThreadPool;
 
 pub const ResolveTarget = struct {
     pixel_width: f32,

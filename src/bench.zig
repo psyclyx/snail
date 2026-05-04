@@ -1051,12 +1051,13 @@ pub fn main() !void {
     var cpu = snail.CpuRenderer.init(cpu_pixels.ptr, WIDTH, HEIGHT, WIDTH * 4);
     var cpu_renderer = snail.Renderer.initCpu(&cpu);
 
-    var cpu_threaded_io: std.Io.Threaded = .init(allocator, .{});
-    defer cpu_threaded_io.deinit();
+    var cpu_pool: snail.ThreadPool = undefined;
+    try cpu_pool.init(allocator, .{});
+    defer cpu_pool.deinit();
     const cpu_pixels_threaded = try allocator.alloc(u8, WIDTH * HEIGHT * 4);
     defer allocator.free(cpu_pixels_threaded);
     var cpu_threaded = snail.CpuRenderer.init(cpu_pixels_threaded.ptr, WIDTH, HEIGHT, WIDTH * 4);
-    cpu_threaded.setIo(cpu_threaded_io.io());
+    cpu_threaded.setThreadPool(&cpu_pool);
     var cpu_threaded_renderer = snail.Renderer.initCpu(&cpu_threaded);
 
     var bundles: [scene_kinds.len]SceneBundle = undefined;

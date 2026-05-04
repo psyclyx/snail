@@ -209,7 +209,7 @@ pub const CpuRenderer = struct {
     stride: u32, // bytes per row (usually width * 4)
     fill_rule: FillRule,
     subpixel_order: SubpixelOrder,
-    io: ?std.Io,
+    thread_pool: ?*snail.ThreadPool,
     // Half-open row window [row_clip_min, row_clip_max). Pixel writes outside
     // this range are skipped. Used by tile workers to claim disjoint scanline
     // bands; defaults to the full image for single-threaded callers.
@@ -226,7 +226,7 @@ pub const CpuRenderer = struct {
             .stride = stride,
             .fill_rule = .non_zero,
             .subpixel_order = .none,
-            .io = null,
+            .thread_pool = null,
             .row_clip_min = 0,
             .row_clip_max = height,
         };
@@ -242,13 +242,13 @@ pub const CpuRenderer = struct {
         self.row_clip_max = height;
     }
 
-    /// Attach a caller-owned `std.Io` (typically backed by `std.Io.Threaded`)
-    /// used to fan tile work out across scanline strips during draw. Pass
-    /// `null` to revert to single-threaded rendering. Output is byte-identical
-    /// to the single-threaded path. The backing implementation must outlive
-    /// the renderer.
-    pub fn setIo(self: *CpuRenderer, io: ?std.Io) void {
-        self.io = io;
+    /// Attach a caller-owned `snail.ThreadPool` to fan tile work out across
+    /// scanline strips during draw. Pass `null` to revert to single-threaded
+    /// rendering. Output is byte-identical to the single-threaded path; the
+    /// draw path remains allocation-free (the pool's task slot lives in
+    /// pre-allocated state). The pool must outlive the renderer.
+    pub fn setThreadPool(self: *CpuRenderer, pool: ?*snail.ThreadPool) void {
+        self.thread_pool = pool;
     }
 
     pub fn setFillRule(self: *CpuRenderer, rule: FillRule) void {
@@ -385,29 +385,28 @@ pub const CpuRenderer = struct {
     }
 
     pub fn drawTextBatchPrepared(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const u32, texture_layer_base: u32, allow_subpixel: bool) void {
-        if (self.io) |io| {
+        const WORDS = vertex.WORDS_PER_INSTANCE;
+        if (self.thread_pool) |pool| {
             // Tile by scanline strips. Each tile gets a renderer copy with its
             // own row_clip; tiles cover disjoint rows so writes never collide.
             // The full instance list is replayed per tile — pixels outside the
             // tile are skipped at the row-loop bound, preserving byte-identity
-            // with the serial path.
+            // with the serial path. No allocation: the pool's task slot is
+            // pre-allocated, and the dispatch context lives on this stack.
             const span = self.row_clip_max - self.row_clip_min;
-            if (span >= 2 * TILE_ROWS and vertices.len >= vertex.WORDS_PER_INSTANCE) {
+            if (span >= 2 * TILE_ROWS and vertices.len >= WORDS) {
                 const tile_count = (span + TILE_ROWS - 1) / TILE_ROWS;
-                var group: std.Io.Group = .init;
-                var tile: u32 = 0;
-                while (tile < tile_count) : (tile += 1) {
-                    var tile_renderer = self.*;
-                    tile_renderer.io = null;
-                    tile_renderer.row_clip_min = self.row_clip_min + tile * TILE_ROWS;
-                    tile_renderer.row_clip_max = @min(tile_renderer.row_clip_min + TILE_ROWS, self.row_clip_max);
-                    group.async(io, renderTile, .{ tile_renderer, prepared, vertices, texture_layer_base, allow_subpixel });
-                }
-                group.await(io) catch {};
+                var ctx = TileDispatchCtx{
+                    .self = self,
+                    .prepared = prepared,
+                    .vertices = vertices,
+                    .texture_layer_base = texture_layer_base,
+                    .allow_subpixel = allow_subpixel,
+                };
+                pool.dispatch(tile_count, &ctx, runTile);
                 return;
             }
         }
-        const WORDS = vertex.WORDS_PER_INSTANCE;
         var i: usize = 0;
         while (i + WORDS <= vertices.len) : (i += WORDS) {
             const inst = vertices[i..][0..WORDS];
@@ -1182,19 +1181,27 @@ pub const CpuRenderer = struct {
     }
 };
 
-fn renderTile(
-    tile_renderer: CpuRenderer,
+const TileDispatchCtx = struct {
+    self: *const CpuRenderer,
     prepared: *const PreparedResources,
     vertices: []const u32,
     texture_layer_base: u32,
     allow_subpixel: bool,
-) void {
-    var local = tile_renderer;
+};
+
+fn runTile(opaque_ctx: *anyopaque, tile_index: u32) void {
+    const ctx: *const TileDispatchCtx = @ptrCast(@alignCast(opaque_ctx));
+    var tile_renderer = ctx.self.*;
+    tile_renderer.thread_pool = null;
+    const tile_min = ctx.self.row_clip_min + tile_index * CpuRenderer.TILE_ROWS;
+    tile_renderer.row_clip_min = tile_min;
+    tile_renderer.row_clip_max = @min(tile_min + CpuRenderer.TILE_ROWS, ctx.self.row_clip_max);
+
     const WORDS = vertex.WORDS_PER_INSTANCE;
     var i: usize = 0;
-    while (i + WORDS <= vertices.len) : (i += WORDS) {
-        const inst = vertices[i..][0..WORDS];
-        local.renderBatchInstance(prepared, inst, texture_layer_base, allow_subpixel);
+    while (i + WORDS <= ctx.vertices.len) : (i += WORDS) {
+        const inst = ctx.vertices[i..][0..WORDS];
+        tile_renderer.renderBatchInstance(ctx.prepared, inst, ctx.texture_layer_base, ctx.allow_subpixel);
     }
 }
 
@@ -2950,9 +2957,9 @@ test "cpu renderer threaded draw matches single-threaded byte-for-byte" {
     defer serial_prepared.deinit();
     try serial_cpu.drawPrepared(&serial_resources, &serial_prepared, options);
 
-    var threaded: std.Io.Threaded = .init(testing.allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    var pool: snail.ThreadPool = undefined;
+    try pool.init(testing.allocator, .{ .threads = 3 });
+    defer pool.deinit();
 
     const threaded_buf = try testing.allocator.alloc(u8, stride * height);
     defer testing.allocator.free(threaded_buf);
@@ -2960,7 +2967,7 @@ test "cpu renderer threaded draw matches single-threaded byte-for-byte" {
 
     var threaded_cpu = CpuRenderer.init(threaded_buf.ptr, width, height, stride);
     threaded_cpu.setSubpixelOrder(.rgb);
-    threaded_cpu.setIo(io);
+    threaded_cpu.setThreadPool(&pool);
     var threaded_resources = try threaded_cpu.uploadResourcesBlocking(testing.allocator, blk: {
         var entries: [4]snail.ResourceSet.Entry = undefined;
         var set = snail.ResourceSet.init(&entries);
