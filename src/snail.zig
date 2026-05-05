@@ -4448,6 +4448,7 @@ pub const DrawList = struct {
         };
     }
 
+    /// Return an upper bound for the word buffer required by `addScene`.
     pub fn estimate(scene: *const Scene, options: DrawOptions) usize {
         _ = options;
         var total: usize = 0;
@@ -4455,10 +4456,11 @@ pub const DrawList = struct {
             switch (command) {
                 .text => |draw| {
                     const glyphs = draw.glyphs.resolve(draw.blob.glyphCount());
-                    const span = glyphs.end - glyphs.start;
-                    const total_glyphs = draw.blob.glyphCount();
-                    const span_budget = if (total_glyphs == 0) 0 else (draw.blob.gpu_instance_budget * span + total_glyphs - 1) / total_glyphs;
-                    total += span_budget * draw.instances.len * TEXT_WORDS_PER_GLYPH;
+                    const range_budget = if (glyphs.start == 0 and glyphs.end == draw.blob.glyphCount())
+                        draw.blob.gpu_instance_budget
+                    else
+                        fonts_mod.textBlobRangeGpuInstanceBudget(draw.blob, glyphs);
+                    total += range_budget * draw.instances.len * TEXT_WORDS_PER_GLYPH;
                 },
                 .path => |draw| {
                     const range = draw.shapes.resolve(draw.picture.shapes.len);
@@ -5506,6 +5508,93 @@ test "TextBlob validation catches wrong atlas snapshot" {
         atlas = next;
     }
     try std.testing.expectError(error.WrongTextAtlasSnapshot, blob.validate());
+}
+
+test "DrawList estimate upper-bounds ranged text draw output" {
+    const assets_data = @import("assets");
+    const allocator = std.testing.allocator;
+
+    var atlas = try TextAtlas.init(allocator, &.{
+        .{ .data = assets_data.noto_sans_regular },
+    });
+    defer atlas.deinit();
+
+    if (try atlas.ensureText(.{}, "A")) |next| {
+        atlas.deinit();
+        atlas = next;
+    }
+
+    var sample_builder = TextBlobBuilder.init(allocator, &atlas);
+    defer sample_builder.deinit();
+    _ = try sample_builder.addText(.{}, "A", 0, 20, 16, .{ 1, 1, 1, 1 });
+    var sample_blob = try sample_builder.finish();
+    defer sample_blob.deinit();
+    try std.testing.expectEqual(@as(usize, 1), sample_blob.glyphCount());
+    const sample_glyph = sample_blob.glyphs[0];
+    try std.testing.expect(sample_glyph.glyph_id != 0);
+
+    const glyph_count: usize = 64;
+    const selected_glyph_index: usize = 47;
+    const glyphs = try allocator.alloc(TextBlob.Glyph, glyph_count);
+    const empty_glyph = TextBlob.Glyph{
+        .face_index = sample_glyph.face_index,
+        .glyph_id = 0,
+        .transform = sample_glyph.transform,
+        .embolden = 0,
+        .color = sample_glyph.color,
+    };
+    for (glyphs) |*glyph| glyph.* = empty_glyph;
+    glyphs[selected_glyph_index] = sample_glyph;
+    glyphs[selected_glyph_index].embolden = 1.0;
+
+    var blob = TextBlob{
+        .allocator = allocator,
+        .atlas = &atlas,
+        .atlas_identity = atlas.snapshotIdentity(),
+        .glyphs = glyphs,
+        .gpu_instance_budget = 2,
+    };
+    defer blob.deinit();
+
+    var scene = Scene.init(allocator);
+    defer scene.deinit();
+    try scene.addText(.{
+        .blob = &blob,
+        .glyphs = .{ .start = selected_glyph_index, .count = 1 },
+    });
+
+    const width: u32 = 16;
+    const height: u32 = 16;
+    const stride: u32 = width * 4;
+    const pixels = try allocator.alloc(u8, stride * height);
+    defer allocator.free(pixels);
+    var cpu = CpuRenderer.init(pixels.ptr, width, height, stride);
+    var renderer = Renderer.initCpu(&cpu);
+    defer renderer.deinit();
+
+    var set_entries: [1]ResourceSet.Entry = undefined;
+    var set = ResourceSet.init(&set_entries);
+    try set.addScene(&scene);
+    var prepared = try renderer.uploadResourcesBlocking(allocator, &set);
+    defer prepared.deinit();
+
+    const options = DrawOptions{
+        .mvp = Mat4.identity,
+        .target = .{ .pixel_width = width, .pixel_height = height },
+    };
+    const needed = DrawList.estimate(&scene, options);
+    const needed_segments = DrawList.estimateSegments(&scene, options);
+    try std.testing.expectEqual(@as(usize, 2 * TEXT_WORDS_PER_GLYPH), needed);
+    try std.testing.expectEqual(@as(usize, 1), needed_segments);
+
+    const draw_buf = try allocator.alloc(u32, needed);
+    defer allocator.free(draw_buf);
+    const draw_segments = try allocator.alloc(DrawSegment, needed_segments);
+    defer allocator.free(draw_segments);
+    var draw = DrawList.init(draw_buf, draw_segments);
+    try draw.addScene(&prepared, &scene, options);
+    try std.testing.expectEqual(needed, draw.slice().words.len);
+    try std.testing.expectEqual(@as(usize, 1), draw.slice().segments.len);
 }
 
 test "replacing path-picture key does not invalidate unrelated text coverage records" {

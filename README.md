@@ -393,6 +393,8 @@ try scene.addPath(.{ .picture = &sprite, .instances = entity_overrides });
 | `renderer.planResourceUpload(current, next_set, changed_keys) !ResourceUploadPlan` | Diff a new resource set against existing prepared resources. |
 | `renderer.beginResourceUpload(alloc, plan) !PendingResourceUpload` | Start a scheduled upload; record into a caller command buffer for Vulkan, then call `pending.publish()`. |
 | `DrawList.init(words, segments)` | Wrap a caller-buffered word + segment buffer for `addScene`. |
+| `DrawList.estimate(scene, options)` | Upper bound for the word buffer required by `draw.addScene(prepared, scene, options)`. |
+| `DrawList.estimateSegments(scene, options)` | Upper bound for the segment buffer required by `draw.addScene(prepared, scene, options)`. |
 | `PreparedScene.initOwned(alloc, prepared, scene, options) !PreparedScene` | Build an owned draw-record cache for a static scene. |
 | `renderer.draw(prepared, records, options)` | Execute prebuilt draw records. No resource discovery or upload. |
 | `renderer.drawPrepared(prepared, prepared_scene, options)` | Draw a `PreparedScene` cache. |

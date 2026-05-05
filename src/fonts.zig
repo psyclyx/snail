@@ -1359,6 +1359,19 @@ fn glyphInstanceBudget(face_view: *const FaceView, glyph_id: u16) usize {
     return if (face_view.getGlyph(glyph_id) != null) 1 else 0;
 }
 
+pub fn textBlobRangeGpuInstanceBudget(blob: *const TextBlob, range: snail.Range.Resolved) usize {
+    var total: usize = 0;
+    for (blob.glyphs[range.start..range.end]) |glyph| {
+        const face_view = blob.atlas.faceView(glyph.face_index, .{});
+        const base_budget = glyphInstanceBudget(&face_view, glyph.glyph_id);
+        total += base_budget;
+        if (glyph.embolden != 0 and glyph.glyph_id != 0) {
+            total += base_budget;
+        }
+    }
+    return total;
+}
+
 fn appendBlobGlyph(
     builder: *TextBlobBuilder,
     face_index: FaceIndex,
@@ -1682,5 +1695,3 @@ test "TextAtlas deduplicates same font data" {
     // Both faces share the same parsed font (data pointer equality).
     try testing.expectEqual(fonts.config.faces[0].font.data.ptr, fonts.config.faces[1].font.data.ptr);
 }
-
-
