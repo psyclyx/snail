@@ -215,6 +215,12 @@ pub const CpuRenderer = struct {
     // bands; defaults to the full image for single-threaded callers.
     row_clip_min: u32,
     row_clip_max: u32,
+    // Scene-space affine derived from the draw call's MVP + viewport. The
+    // GPU backends apply MVP in the vertex shader; the CPU rasterizer has no
+    // such stage, so we compose `scene_to_pixel` onto each instance's baked
+    // transform before computing screen-space bounds and pixel coverage.
+    // Defaults to identity (e.g., for the bench scenes that don't pan/zoom).
+    scene_to_pixel: Transform2D,
 
     pub const TILE_ROWS: u32 = 32;
 
@@ -229,6 +235,7 @@ pub const CpuRenderer = struct {
             .thread_pool = null,
             .row_clip_min = 0,
             .row_clip_max = height,
+            .scene_to_pixel = .identity,
         };
     }
 
@@ -351,11 +358,13 @@ pub const CpuRenderer = struct {
         }
     }
 
-    pub fn drawTextPrepared(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const u32, _: snail.Mat4, _: f32, _: f32, texture_layer_base: u32) void {
+    pub fn drawTextPrepared(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const u32, mvp: snail.Mat4, vw: f32, vh: f32, texture_layer_base: u32) void {
+        self.scene_to_pixel = sceneFromMvp(mvp, vw, vh);
         self.drawTextBatchPrepared(prepared, vertices, texture_layer_base, true);
     }
 
-    pub fn drawPathsPrepared(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const u32, _: snail.Mat4, _: f32, _: f32, texture_layer_base: u32) void {
+    pub fn drawPathsPrepared(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const u32, mvp: snail.Mat4, vw: f32, vh: f32, texture_layer_base: u32) void {
+        self.scene_to_pixel = sceneFromMvp(mvp, vw, vh);
         self.drawTextBatchPrepared(prepared, vertices, texture_layer_base, false);
     }
 
@@ -426,7 +435,7 @@ pub const CpuRenderer = struct {
             .min = .{ .x = decoded.rect[0], .y = decoded.rect[1] },
             .max = .{ .x = decoded.rect[2], .y = decoded.rect[3] },
         };
-        const transform = Transform2D{
+        const instance_transform = Transform2D{
             .xx = decoded.xform[0],
             .xy = decoded.xform[1],
             .yx = decoded.xform[2],
@@ -434,6 +443,10 @@ pub const CpuRenderer = struct {
             .tx = decoded.origin[0],
             .ty = decoded.origin[1],
         };
+        // Compose the scene-to-pixel transform onto the baked instance
+        // transform; GPU backends do this in the vertex shader via the MVP
+        // uniform, the CPU rasterizer has to do it here.
+        const transform = Transform2D.multiply(self.scene_to_pixel, instance_transform);
         const gz = decoded.glyph[0];
         const gw = decoded.glyph[1];
         const color = srgbColorToLinear(decoded.color);
@@ -1209,6 +1222,25 @@ fn runFrameTile(opaque_ctx: *anyopaque, tile_index: u32) void {
     // before reaching this point.
     var renderer = tile_renderer.asRenderer();
     renderer.draw(ctx.prepared, ctx.records, ctx.options) catch unreachable;
+}
+
+/// Extract the 2D scene-to-pixel affine from an MVP + viewport. The MVP is
+/// `ortho(0, vw, vh, 0, ...) × scene_transform`; the viewport remap from NDC
+/// to pixel coords is the inverse of `ortho`, so `viewport_remap × mvp` is
+/// just the scene affine in pixel space. This holds for any `mvp` whose
+/// projection portion matches the viewport (true for snail's 2D renderer).
+fn sceneFromMvp(mvp: snail.Mat4, vw: f32, vh: f32) Transform2D {
+    const m = mvp.data;
+    const half_w = vw * 0.5;
+    const half_h = vh * 0.5;
+    return .{
+        .xx = m[0] * half_w,
+        .xy = m[4] * half_w,
+        .tx = (m[12] + 1.0) * half_w,
+        .yx = -m[1] * half_h,
+        .yy = -m[5] * half_h,
+        .ty = (1.0 - m[13]) * half_h,
+    };
 }
 
 fn inverseTransform(transform: Transform2D) ?Transform2D {
@@ -3031,9 +3063,11 @@ test "cpu renderer drawPaths batch matches drawPathPicture" {
     var prepared = try renderer.uploadResourcesBlocking(testing.allocator, &resources);
     defer prepared.deinit();
 
+    const wf: f32 = @floatFromInt(width);
+    const hf: f32 = @floatFromInt(height);
     const options = snail.DrawOptions{
-        .mvp = snail.Mat4.identity,
-        .target = .{ .pixel_width = width, .pixel_height = height, .subpixel_order = .rgb },
+        .mvp = snail.Mat4.ortho(0, wf, hf, 0, -1, 1),
+        .target = .{ .pixel_width = wf, .pixel_height = hf, .subpixel_order = .rgb },
     };
     const needed = snail.DrawList.estimate(&scene, options);
     const needed_segments = snail.DrawList.estimateSegments(&scene, options);
