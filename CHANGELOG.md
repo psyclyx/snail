@@ -108,6 +108,12 @@
   scenes (~4 segments × ~32 instances) effectively serial. With one
   fan-out per frame, text scales 2.4x and mixed scales 4.9x on the
   bench instead of 1.0x / 2.6x.
+- The CPU prepared-path renderer now resolves image paints against the
+  uploaded `Image` views and samples them as part of fill, replacing
+  the placeholder pink-square output and bringing parity with the GL
+  / Vulkan paths for image-fill `PathPicture` content. The MVP is
+  applied per shape (the previous shortcut assumed an orthographic
+  projection and broke under arbitrary affines).
 
 ### Docs
 

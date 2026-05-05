@@ -136,6 +136,7 @@ defer blob.deinit();
 var scene = snail.Scene.init(allocator);
 defer scene.deinit();
 try scene.addText(.{ .blob = &blob });
+// (See "Vector Paths" below for adding a PathPicture to the same scene.)
 
 var resource_entries: [8]snail.ResourceSet.Entry = undefined;
 var resources = snail.ResourceSet.init(&resource_entries);
@@ -172,6 +173,10 @@ if (try atlas.ensureText(.{}, text)) |next| {
 
 ### Vector Paths
 
+A `PathPicture` is built once and submitted to a `Scene` like a `TextBlob`. Add
+all draws to the scene **before** calling `resources.addScene` and uploading —
+`PreparedResources` is a snapshot of the scene's resource set at upload time.
+
 ```zig
 var path = snail.Path.init(allocator);
 defer path.deinit();
@@ -188,8 +193,8 @@ try builder.addPath(&path,
 var picture = try builder.freeze(allocator);
 defer picture.deinit();
 
+// Submit before uploading (see the Zig example above).
 try scene.addPath(.{ .picture = &picture });
-try resources.addScene(&scene);
 ```
 
 ## Example: C
@@ -340,7 +345,8 @@ snail_text_atlas_deinit(atlas);
 | `atlas.ensureShaped(shaped) !?TextAtlas` | Return a new snapshot with the shaped glyphs present. Null if already present. |
 | `atlas.ensureText(style, text) !?TextAtlas` | Shape-and-ensure helper. |
 | `TextBlob.fromShaped(alloc, atlas, shaped, options) !TextBlob` | Build positioned text from a `ShapedText`. The blob borrows `atlas`. |
-| `TextBlobBuilder.init(alloc, atlas)` / `builder.addText(style, text, x, y, size, color)` / `builder.finish() !TextBlob` | Convenience: shape + position in one pass. Call `atlas.ensureText`/`ensureShaped` first if all glyphs must be renderable. |
+| `TextBlobBuilder.init(alloc, atlas)` / `builder.addText(style, text, x, y, size, color) !AddTextResult` / `builder.finish() !TextBlob` | Convenience: shape + position in one pass. Call `atlas.ensureText`/`ensureShaped` first if all glyphs must be renderable. |
+| `AddTextResult` | `{ .advance: f32, .missing: bool }` — pen advance and whether any glyph fell back to `.notdef`. |
 
 ### Scene
 
@@ -393,19 +399,73 @@ try scene.addPath(.{ .picture = &sprite, .instances = entity_overrides });
 | `prepared.retireNowOrWhenSafe(renderer)` | Retire backend resources once no in-flight frame still references them. |
 | `prepared.retireAfter(alloc, fence_or_frame)` | Retire after a caller-supplied backend fence / frame index has completed. |
 
+### Scheduled resource upload
+
+`uploadResourcesBlocking` is the simple path; for engines that want to overlap
+upload with the main render queue (Vulkan in particular) there is an explicit
+plan / record / publish flow:
+
+1. **Plan.** `renderer.planResourceUpload(current, next_set, changed_keys_buf)`
+   diffs `next_set` against the existing `PreparedResources` (or `null` for a
+   first upload) and records which `ResourceKey` entries changed. The result
+   is a `ResourceUploadPlan` whose `upload_bytes` and `changedKeys()` are
+   informational. `changed_keys_buf` is caller-owned scratch — size it to the
+   number of distinct resources you might submit.
+2. **Begin + record.** `renderer.beginResourceUpload(allocator, plan)` returns
+   a `PendingResourceUpload`. Call `pending.record(ctx, .{ .budget_bytes = N })`
+   to do the work. For Vulkan, `ctx` carries the caller-recorded
+   `VkCommandBuffer` (e.g. `.{ .cmd = my_cmd }`); for GL and CPU, `record`
+   completes synchronously and `ctx` is ignored.
+3. **Wait + publish.** Call `pending.ready(fence_or_frame)` to poll for
+   external completion (Vulkan only — GL/CPU report ready immediately). Once
+   true, `pending.publish()` returns the new `PreparedResources`. Call
+   `pending.deinit()` if you need to abandon the upload before publishing.
+
+The new `PreparedResources` replaces the old one; retire the old one via
+`old.retireNowOrWhenSafe(renderer)` or `old.retireAfter(allocator, fence)` once
+no in-flight frame still references it.
+
+### Text coverage in custom shaders
+
+`TextCoverageShader`, `TextCoverageRecords`, and `TextCoverageBackend` let a
+material shader sample snail's exact glyph coverage without going through
+`Renderer.draw`. The typical use is layering text with custom lighting,
+masking, or compositing.
+
+- `TextCoverageShader` exposes GLSL 330 sources you can `@embedFile`-style
+  splice into your own program: `glsl330_vertex_interface`,
+  `glsl330_fragment_interface`, `glsl330_fragment_body` (gives you
+  `snail_text_coverage()`, `snail_text_color_srgb()`,
+  `snail_text_color_linear()`), plus `glsl330_resource_interface` and
+  `glsl330_coverage_functions` for materials that don't use snail's text
+  varyings.
+- `TextCoverageRecords` is the per-glyph vertex stream. Build it with
+  `records.buildLocal(prepared, blob, .{ .transform = ... })`; it allocates
+  internally. Call `records.validFor(prepared)` after a re-upload and
+  `rebuildLocal` if the atlas has moved.
+- `TextCoverageBackend` is the GL hook. Get one from
+  `prepared.textCoverageBackend(renderer)` (or `gl.textCoverageBackend(prepared)`
+  on the typed renderer). Call `bind(bindings)` to bind your material's
+  curve/band texture units, then `drawCoverage(&records)` (or `drawVertices`
+  with your own buffer). Currently GL-only.
+
 ### Path
 
 | Method | Description |
 |--------|-------------|
 | `Path.init(alloc) Path` | New empty path. |
+| `path.deinit()` | Free curves. |
+| `path.reset()` | Clear curves; capacity is retained. |
+| `path.isEmpty() bool` | True when no curves have been emitted. |
+| `path.bounds() ?BBox` | Tight bounding box of all curves, or null when empty. |
 | `path.moveTo(point)` | Begin subpath. |
 | `path.lineTo(point)` | Line segment. |
 | `path.quadTo(control, point)` | Quadratic Bezier. |
 | `path.cubicTo(c1, c2, point)` | Cubic Bezier (adaptively approximated to quadratics). |
 | `path.close()` | Close current subpath. |
-| `path.addRect(rect)` | Append rectangle subpath. |
-| `path.addRoundedRect(rect, radius)` | Append rounded rectangle. |
-| `path.addEllipse(rect)` | Append ellipse inscribed in rect. |
+| `path.addRect(rect)` / `path.addRectReversed(rect)` | Append rectangle subpath. The `Reversed` variant emits the opposite winding (use it to punch a hole through a fill of the same path under nonzero fill rule). |
+| `path.addRoundedRect(rect, radius)` / `path.addRoundedRectReversed(rect, radius)` | Append rounded rectangle (and reversed-winding form). |
+| `path.addEllipse(rect)` / `path.addEllipseReversed(rect)` | Append ellipse inscribed in rect (and reversed-winding form). |
 
 ### PathPictureBuilder
 

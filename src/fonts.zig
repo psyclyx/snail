@@ -937,9 +937,15 @@ pub const TextAtlas = struct {
         return self.pages;
     }
 
-    /// Create a temporary Atlas wrapper for GPU upload. The wrapper borrows
-    /// pages from this TextAtlas snapshot — do NOT deinit it (use deinitUploadAtlas).
-    /// Upload alongside PathPicture atlases via Renderer.uploadAtlases.
+    /// Low-level: create a temporary `CurveAtlas` wrapper that borrows this
+    /// snapshot's pages for GPU upload. Most callers should use
+    /// `Renderer.uploadResourcesBlocking` (or `planResourceUpload` /
+    /// `beginResourceUpload`) instead — this entry point is for code that
+    /// drives the upload helpers in `lowlevel` directly.
+    ///
+    /// The returned wrapper borrows `self.pages`. Free it via
+    /// `deinitUploadAtlas` (do NOT call `wrapper.deinit()`, which would
+    /// release the shared pages).
     pub fn uploadAtlas(self: *const TextAtlas) snail.lowlevel.CurveAtlas {
         return .{
             .allocator = self.allocator,

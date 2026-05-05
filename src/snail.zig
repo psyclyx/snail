@@ -39,7 +39,7 @@
 //!
 //!   var scene = snail.Scene.init(allocator);
 //!   defer scene.deinit();
-//!   try scene.addText(&text_blob);
+//!   try scene.addText(.{ .blob = &text_blob });
 //!
 //!   var resource_entries: [8]snail.ResourceSet.Entry = undefined;
 //!   var resources = snail.ResourceSet.init(&resource_entries);
@@ -5026,7 +5026,14 @@ pub const Renderer = struct {
         }
     }
 
-    /// Initialize with the current OpenGL context.
+    /// Initialize an owned GL renderer with the current OpenGL context.
+    ///
+    /// Most Zig callers should prefer `GlRenderer.init(allocator)` followed by
+    /// `asRenderer()` — that keeps the typed `GlRenderer` handle around for
+    /// backend-specific calls (e.g. `textCoverageBackend`) and lets you supply
+    /// your own allocator. This entry point allocates from
+    /// `std.heap.smp_allocator` and exists for the C API and benchmarks that
+    /// don't need a typed handle.
     pub fn init() !Renderer {
         const text = try std.heap.smp_allocator.create(pipeline.GlTextState);
         text.* = .{};
@@ -5064,14 +5071,6 @@ pub const Renderer = struct {
         return self.vtable.getSubpixelOrder(@constCast(self.ptr));
     }
 
-    pub fn setSubpixel(self: *Renderer, enabled: bool) void {
-        self.setSubpixelOrder(if (enabled) .rgb else .none);
-    }
-
-    pub fn subpixelEnabled(self: *const Renderer) bool {
-        return self.subpixelOrder() != .none;
-    }
-
     pub fn setFillRule(self: *Renderer, rule: FillRule) void {
         self.vtable.setFillRule(self.ptr, rule);
     }
@@ -5085,6 +5084,13 @@ pub const Renderer = struct {
     }
 };
 
+/// Typed handle for the GL backend.
+///
+/// `GlRenderer` owns the GL state; the `uploadResourcesBlocking`,
+/// `planResourceUpload`, `beginResourceUpload`, `draw`, and `drawPrepared`
+/// methods are thin shims over `Renderer` for callers that want to stay
+/// strongly typed. `textCoverageBackend` is the only method that requires the
+/// typed handle. Use `asRenderer()` to pass to backend-agnostic code.
 pub const GlRenderer = struct {
     allocator: std.mem.Allocator,
     state: *pipeline.GlTextState,
@@ -5144,6 +5150,12 @@ pub const GlRenderer = struct {
     }
 };
 
+/// Typed handle for the Vulkan backend.
+///
+/// As with `GlRenderer`, the upload / draw methods are shims over `Renderer`;
+/// the typed handle exists so `beginFrame(.{ .cmd, .frame_index })` (which
+/// takes a backend-specific argument) and other Vulkan-only future hooks have
+/// somewhere to live. Use `asRenderer()` for backend-agnostic code.
 pub const VulkanRenderer = struct {
     state: *vulkan_pipeline.VulkanPipeline,
 
