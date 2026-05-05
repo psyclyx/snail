@@ -345,15 +345,15 @@ snail_text_atlas_deinit(atlas);
 
 ### Scene
 
-A scene is a borrowed list of `PathDraw` / `TextDraw` submissions. Each submission selects a sub-range of an immutable resource and emits one GPU instance per `Override` (default: a single identity instance). `addPath` / `addText` copy the `instances` slice into a per-scene arena, so callers can pass stack-locals freely.
+A scene is a borrowed list of `PathDraw` / `TextDraw` submissions. Each submission selects a sub-range of an immutable resource and emits one GPU instance per `Override` (default: a single identity instance). The scene borrows the `picture` / `blob` pointer *and* the `instances` slice on each submission — all three must stay live until `scene.reset()` or `scene.deinit()`. `addPath` / `addText` perform no allocation beyond growing the command list.
 
 | Method | Description |
 |--------|-------------|
 | `Scene.init(alloc) Scene` | New empty scene. |
-| `scene.addPath(PathDraw) !void` | Submit a path draw. |
-| `scene.addText(TextDraw) !void` | Submit a text draw. |
-| `scene.reset()` | Clear commands and reuse arena capacity. |
-| `scene.deinit()` | Free the command list and arena. |
+| `scene.addPath(PathDraw) !void` | Submit a path draw. Borrows `picture` and `instances`. |
+| `scene.addText(TextDraw) !void` | Submit a text draw. Borrows `blob` and `instances`. |
+| `scene.reset()` | Clear commands; capacity is retained. |
+| `scene.deinit()` | Free the command list. |
 
 ```zig
 // Trivial draw.

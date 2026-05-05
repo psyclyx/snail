@@ -18,9 +18,14 @@
 - New `Override { transform, tint }` composes onto the baked transform
   and multiplies the baked color per GPU instance. `tint` is a
   first-class capability across both text and vector paths.
-- `Scene` now owns an `ArenaAllocator` so `addPath` / `addText` can
-  copy the caller's `instances` slice into per-scene storage; stack
-  arrays are safe.
+- `PathDraw.instances` / `TextDraw.instances` default to a single-
+  identity slice; the field's length is always the GPU instance count
+  (no empty-means-one sentinel).
+- `Scene` borrows the `instances` slice along with `picture` / `blob`;
+  all three must outlive the scene (or live until `scene.reset()`).
+  No hidden per-call allocation. The C-API binding keeps a small arena
+  inside `SceneImpl` to bridge stack lifetimes across the FFI boundary;
+  `snail_scene_reset` releases its capacity.
 
 ### Renames
 
@@ -36,6 +41,20 @@
   target, scene_to_screen, start_glyph)`.
 - New `PathPictureBuilder.shapeCount()` for callers building `Range`
   selections at picture-build time.
+- `Range.start` / `Range.count` are `usize` (was `u32`) to match the
+  resource lengths they index into.
+
+### Limits and error reporting
+
+- `TextAtlas.addText` no longer silently drops codepoints past 256 in
+  any single itemized run. The per-face glyph buffer falls back to the
+  heap (via the atlas allocator) for longer runs and surfaces
+  `error.OutOfMemory` if that allocation fails.
+- Atlas page allocation in `CurveAtlas.cloneWithAppendedGlyphs` and
+  `TextAtlas.ensureText` checks before narrowing to `u16` and returns
+  `error.AtlasPageLimitExceeded` instead of panicking. The 16-bit
+  width itself is dictated by the on-GPU vertex encoding (`Shape` /
+  `GlyphPlacement` carry `page_index: u16`).
 
 ### C API
 
