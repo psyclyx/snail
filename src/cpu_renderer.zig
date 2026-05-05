@@ -215,12 +215,6 @@ pub const CpuRenderer = struct {
     // bands; defaults to the full image for single-threaded callers.
     row_clip_min: u32,
     row_clip_max: u32,
-    // Scene-space affine derived from the draw call's MVP + viewport. The
-    // GPU backends apply MVP in the vertex shader; the CPU rasterizer has no
-    // such stage, so we compose `scene_to_pixel` onto each instance's baked
-    // transform before computing screen-space bounds and pixel coverage.
-    // Defaults to identity (e.g., for the bench scenes that don't pan/zoom).
-    scene_to_pixel: Transform2D,
 
     pub const TILE_ROWS: u32 = 32;
 
@@ -235,7 +229,6 @@ pub const CpuRenderer = struct {
             .thread_pool = null,
             .row_clip_min = 0,
             .row_clip_max = height,
-            .scene_to_pixel = .identity,
         };
     }
 
@@ -359,13 +352,13 @@ pub const CpuRenderer = struct {
     }
 
     pub fn drawTextPrepared(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const u32, mvp: snail.Mat4, vw: f32, vh: f32, texture_layer_base: u32) void {
-        self.scene_to_pixel = sceneFromMvp(mvp, vw, vh);
-        self.drawTextBatchPrepared(prepared, vertices, texture_layer_base, true);
+        const scene = sceneToPixelFromMvp(mvp, vw, vh);
+        self.drawTextBatchPrepared(prepared, vertices, scene, texture_layer_base, true);
     }
 
     pub fn drawPathsPrepared(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const u32, mvp: snail.Mat4, vw: f32, vh: f32, texture_layer_base: u32) void {
-        self.scene_to_pixel = sceneFromMvp(mvp, vw, vh);
-        self.drawTextBatchPrepared(prepared, vertices, texture_layer_base, false);
+        const scene = sceneToPixelFromMvp(mvp, vw, vh);
+        self.drawTextBatchPrepared(prepared, vertices, scene, texture_layer_base, false);
     }
 
     pub fn beginFrame(_: *CpuRenderer) void {}
@@ -417,7 +410,7 @@ pub const CpuRenderer = struct {
         pool.dispatch(tile_count, &ctx, runFrameTile);
     }
 
-    pub fn drawTextBatchPrepared(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const u32, texture_layer_base: u32, allow_subpixel: bool) void {
+    pub fn drawTextBatchPrepared(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const u32, scene_to_pixel: Transform2D, texture_layer_base: u32, allow_subpixel: bool) void {
         const WORDS = vertex.WORDS_PER_INSTANCE;
         // Always serial: parallelism is at the frame level via `drawPrepared`.
         // Per-instance bounds rejection inside the row loops handles tile
@@ -425,11 +418,11 @@ pub const CpuRenderer = struct {
         var i: usize = 0;
         while (i + WORDS <= vertices.len) : (i += WORDS) {
             const inst = vertices[i..][0..WORDS];
-            self.renderBatchInstance(prepared, inst, texture_layer_base, allow_subpixel);
+            self.renderBatchInstance(prepared, inst, scene_to_pixel, texture_layer_base, allow_subpixel);
         }
     }
 
-    fn renderBatchInstance(self: *CpuRenderer, prepared: *const PreparedResources, inst: []const u32, texture_layer_base: u32, allow_subpixel: bool) void {
+    fn renderBatchInstance(self: *CpuRenderer, prepared: *const PreparedResources, inst: []const u32, scene_to_pixel: Transform2D, texture_layer_base: u32, allow_subpixel: bool) void {
         const decoded = vertex.decodeInstance(inst);
         const bbox = snail.lowlevel.bezier.BBox{
             .min = .{ .x = decoded.rect[0], .y = decoded.rect[1] },
@@ -446,7 +439,7 @@ pub const CpuRenderer = struct {
         // Compose the scene-to-pixel transform onto the baked instance
         // transform; GPU backends do this in the vertex shader via the MVP
         // uniform, the CPU rasterizer has to do it here.
-        const transform = Transform2D.multiply(self.scene_to_pixel, instance_transform);
+        const transform = Transform2D.multiply(scene_to_pixel, instance_transform);
         const gz = decoded.glyph[0];
         const gw = decoded.glyph[1];
         const color = srgbColorToLinear(decoded.color);
@@ -1224,22 +1217,61 @@ fn runFrameTile(opaque_ctx: *anyopaque, tile_index: u32) void {
     renderer.draw(ctx.prepared, ctx.records, ctx.options) catch unreachable;
 }
 
-/// Extract the 2D scene-to-pixel affine from an MVP + viewport. The MVP is
-/// `ortho(0, vw, vh, 0, ...) × scene_transform`; the viewport remap from NDC
-/// to pixel coords is the inverse of `ortho`, so `viewport_remap × mvp` is
-/// just the scene affine in pixel space. This holds for any `mvp` whose
-/// projection portion matches the viewport (true for snail's 2D renderer).
-fn sceneFromMvp(mvp: snail.Mat4, vw: f32, vh: f32) Transform2D {
+/// Compute the 2D affine that maps glyph-local (z = 0) coords to pixel coords
+/// under the caller's MVP and viewport, by running the *full* GPU pipeline
+/// (mvp -> NDC -> viewport remap) on three reference points and recovering
+/// the affine from them. Makes no assumption about the MVP's shape.
+///
+/// For any MVP whose projection of the z = 0 plane is affine in screen space
+/// (every 2D snail use case: ortho or arbitrary 2D-affine in any combination)
+/// this is exact, not an approximation. A perspective MVP would make `w` vary
+/// across the plane and the recovered affine wouldn't agree with the GPU; we
+/// detect that and panic rather than silently producing different pixels than
+/// the GL/Vulkan backends.
+fn sceneToPixelFromMvp(mvp: snail.Mat4, vw: f32, vh: f32) Transform2D {
     const m = mvp.data;
+
+    // Apply mvp to (0, 0, 0, 1), (1, 0, 0, 1), (0, 1, 0, 1) — origin and
+    // basis vectors of the glyph-local z = 0 plane.
+    const o_clip = [3]f32{ m[12], m[13], m[15] };
+    const x_clip = [3]f32{ m[0] + m[12], m[1] + m[13], m[3] + m[15] };
+    const y_clip = [3]f32{ m[4] + m[12], m[5] + m[13], m[7] + m[15] };
+
+    // Affine projection of the plane requires constant w across reference
+    // points. A perspective MVP would violate this; the CPU rasterizer
+    // doesn't yet do per-pixel `1/w`, so refuse rather than produce output
+    // that disagrees with the GPU backends.
+    const eps_w: f32 = 1e-4;
+    if (@abs(o_clip[2] - x_clip[2]) > eps_w or @abs(o_clip[2] - y_clip[2]) > eps_w) {
+        std.debug.panic(
+            "CpuRenderer: MVP projects the z = 0 plane non-affinely (perspective). w(o)={d}, w(x)={d}, w(y)={d}",
+            .{ o_clip[2], x_clip[2], y_clip[2] },
+        );
+    }
+    if (@abs(o_clip[2]) < 1e-6) {
+        std.debug.panic("CpuRenderer: degenerate MVP — w == 0", .{});
+    }
+
+    const inv_w = 1.0 / o_clip[2];
     const half_w = vw * 0.5;
     const half_h = vh * 0.5;
+
+    // ndc = clip / w, then viewport remap (snail uses y-down screen space, so
+    // ndc_y is flipped).
+    const o_x = (o_clip[0] * inv_w + 1.0) * half_w;
+    const o_y = (1.0 - o_clip[1] * inv_w) * half_h;
+    const x_x = (x_clip[0] * inv_w + 1.0) * half_w;
+    const x_y = (1.0 - x_clip[1] * inv_w) * half_h;
+    const y_x = (y_clip[0] * inv_w + 1.0) * half_w;
+    const y_y = (1.0 - y_clip[1] * inv_w) * half_h;
+
     return .{
-        .xx = m[0] * half_w,
-        .xy = m[4] * half_w,
-        .tx = (m[12] + 1.0) * half_w,
-        .yx = -m[1] * half_h,
-        .yy = -m[5] * half_h,
-        .ty = (1.0 - m[13]) * half_h,
+        .xx = x_x - o_x,
+        .yx = x_y - o_y,
+        .xy = y_x - o_x,
+        .yy = y_y - o_y,
+        .tx = o_x,
+        .ty = o_y,
     };
 }
 
