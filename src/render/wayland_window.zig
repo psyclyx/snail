@@ -58,7 +58,12 @@ pub const Window = struct {
     resized: bool = false,
     close_requested: bool = false,
     key_down: [256]bool = .{false} ** 256,
-    prev_keys: [256]bool = .{false} ** 256,
+    // Latches set on each PRESSED event in the keyboard handler and cleared
+    // when `isKeyPressed` is read. Decoupling from `key_down`'s live state
+    // means a quick down/up pair that arrives between two `pumpEvents`
+    // calls (typical when frames are slow, e.g. CPU rendering) is still
+    // observable; the previous edge-detection on `key_down` would miss it.
+    key_pressed: [256]bool = .{false} ** 256,
 
     pub fn init(width: u32, height: u32, title: [*:0]const u8) !*Window {
         const display = c.wl_display_connect(null) orelse return error.WaylandConnectFailed;
@@ -236,11 +241,10 @@ pub const Window = struct {
     }
 
     pub fn isKeyPressed(self: *Window, key: u32) bool {
-        if (key >= self.key_down.len) return false;
-        const down = self.key_down[key];
-        const was_down = self.prev_keys[key];
-        self.prev_keys[key] = down;
-        return down and !was_down;
+        if (key >= self.key_pressed.len) return false;
+        const pressed = self.key_pressed[key];
+        self.key_pressed[key] = false;
+        return pressed;
     }
 
     fn allocOutputInfo(self: *Window) ?*OutputInfo {
@@ -445,7 +449,9 @@ fn keyboardKey(
 ) callconv(.c) void {
     const self = selfFrom(data);
     if (key < self.key_down.len) {
-        self.key_down[key] = state == c.WL_KEYBOARD_KEY_STATE_PRESSED;
+        const pressed = state == c.WL_KEYBOARD_KEY_STATE_PRESSED;
+        self.key_down[key] = pressed;
+        if (pressed) self.key_pressed[key] = true;
     }
 }
 
