@@ -3687,10 +3687,10 @@ const PathBatch = struct {
     }
 
     /// Emit one slice of a `PathDraw` into this batch: the shapes from
-    /// `[shape_start, draw.shapes.end)` under the override at
-    /// `draw.instances[override_index]`. Returns where to resume; the caller
-    /// is responsible for advancing across overrides and re-opening batches
-    /// when full or when the texture layer window changes.
+    /// `[shape_start, draw.shapes.end)` under `draw.instances[override_index]`.
+    /// Returns where to resume; the caller is responsible for advancing
+    /// across overrides and re-opening batches when full or when the
+    /// texture layer window changes.
     pub fn addDraw(
         self: *PathBatch,
         atlas_like: anytype,
@@ -3703,9 +3703,8 @@ const PathBatch = struct {
         const range = draw.shapes.resolve(draw.picture.shapes.len);
         const start = @max(shape_start, range.start);
         if (start > range.end) return error.InvalidShapeRange;
-        const overrides = if (draw.instances.len == 0) default_overrides_storage[0..] else draw.instances;
-        if (override_index >= overrides.len) return error.InvalidOverrideIndex;
-        const override = overrides[override_index];
+        if (override_index >= draw.instances.len) return error.InvalidOverrideIndex;
+        const override = draw.instances[override_index];
         var count: usize = 0;
         var idx = start;
         while (idx < range.end) : (idx += 1) {
@@ -3823,41 +3822,32 @@ pub const Override = struct {
     tint: [4]f32 = .{ 1, 1, 1, 1 },
 };
 
-const default_overrides_storage: [1]Override = .{.{}};
+const identity_overrides = [_]Override{.{}};
 
-/// Single identity override used as the default for `PathDraw.instances` and
-/// `TextDraw.instances` when the caller leaves the field unset (one trivial
-/// instance with no transform or tint).
-pub fn defaultOverrides() []const Override {
-    return default_overrides_storage[0..];
-}
-
-/// A draw of a `PathPicture`: which shapes (sub-range), and how many GPU
-/// instances to emit. Empty `instances` means one trivial instance (identity
-/// transform, white tint); a non-empty slice's length is the GPU instance
-/// count. `Scene.addPath` copies `instances` into its arena, so callers don't
-/// need to keep the slice alive after the call.
+/// A draw of a `PathPicture`: which shapes (sub-range) and one GPU instance
+/// per entry in `instances`. The default is a single identity instance.
+/// `Scene` borrows `instances`; the slice must outlive any scene that holds
+/// it (same lifetime contract as `picture`).
 pub const PathDraw = struct {
     picture: *const PathPicture,
     shapes: Range = .{},
-    instances: []const Override = &.{},
+    instances: []const Override = &identity_overrides,
 };
 
 /// A draw of a `TextBlob`: see `PathDraw` for the instance/lifetime model.
 pub const TextDraw = struct {
     blob: *const TextBlob,
     glyphs: Range = .{},
-    instances: []const Override = &.{},
+    instances: []const Override = &identity_overrides,
     resolve: TextResolveOptions = .{},
 };
 
 pub const Scene = struct {
     allocator: std.mem.Allocator,
-    /// Per-frame storage for instance-override slices copied from `addPath` /
-    /// `addText`. Reset along with `commands` so capacity is reused.
-    arena: std.heap.ArenaAllocator,
-    /// Borrowed command list. Text commands borrow TextBlob; path commands
-    /// borrow PathPicture. The referenced values must outlive the Scene.
+    /// Borrowed command list. Each command borrows its `TextBlob` /
+    /// `PathPicture` and the `instances` slice handed to `addText` /
+    /// `addPath`; all three must outlive the Scene (or at least live until
+    /// the next `reset`).
     commands: std.ArrayListUnmanaged(Command) = .empty,
 
     pub const Command = union(enum) {
@@ -3866,18 +3856,16 @@ pub const Scene = struct {
     };
 
     pub fn init(allocator: std.mem.Allocator) Scene {
-        return .{ .allocator = allocator, .arena = std.heap.ArenaAllocator.init(allocator) };
+        return .{ .allocator = allocator };
     }
 
     pub fn deinit(self: *Scene) void {
         self.commands.deinit(self.allocator);
-        self.arena.deinit();
         self.* = undefined;
     }
 
     pub fn reset(self: *Scene) void {
         self.commands.clearRetainingCapacity();
-        _ = self.arena.reset(.retain_capacity);
     }
 
     pub fn commandCount(self: *const Scene) usize {
@@ -3885,19 +3873,11 @@ pub const Scene = struct {
     }
 
     pub fn addPath(self: *Scene, draw: PathDraw) !void {
-        var owned = draw;
-        if (draw.instances.len > 0) {
-            owned.instances = try self.arena.allocator().dupe(Override, draw.instances);
-        }
-        try self.commands.append(self.allocator, .{ .path = owned });
+        try self.commands.append(self.allocator, .{ .path = draw });
     }
 
     pub fn addText(self: *Scene, draw: TextDraw) !void {
-        var owned = draw;
-        if (draw.instances.len > 0) {
-            owned.instances = try self.arena.allocator().dupe(Override, draw.instances);
-        }
-        try self.commands.append(self.allocator, .{ .text = owned });
+        try self.commands.append(self.allocator, .{ .text = draw });
     }
 };
 
@@ -4497,13 +4477,14 @@ pub const DrawList = struct {
                 .text => |draw| {
                     const glyphs = draw.glyphs.resolve(draw.blob.glyphCount());
                     const span = glyphs.end - glyphs.start;
-                    const span_hint = if (draw.blob.glyphCount() == 0) 1 else (draw.blob.instance_count_hint * @max(span, 1) + draw.blob.glyphCount() - 1) / draw.blob.glyphCount();
-                    total += @max(span_hint, 1) * @max(textDrawInstanceCount(draw), 1) * TEXT_WORDS_PER_GLYPH;
+                    const total_glyphs = draw.blob.glyphCount();
+                    const span_hint = if (total_glyphs == 0) 0 else (draw.blob.instance_count_hint * span + total_glyphs - 1) / total_glyphs;
+                    total += span_hint * draw.instances.len * TEXT_WORDS_PER_GLYPH;
                 },
                 .path => |draw| {
                     const range = draw.shapes.resolve(draw.picture.shapes.len);
                     const span = range.end - range.start;
-                    total += @max(span, 1) * @max(pathDrawInstanceCount(draw), 1) * PATH_WORDS_PER_SHAPE;
+                    total += span * draw.instances.len * PATH_WORDS_PER_SHAPE;
                 },
             }
         }
@@ -4518,12 +4499,12 @@ pub const DrawList = struct {
                 .text => |draw| {
                     const glyphs = draw.glyphs.resolve(draw.blob.glyphCount());
                     const span = glyphs.end - glyphs.start;
-                    total += @max(span, 1) * @max(textDrawInstanceCount(draw), 1);
+                    total += span * draw.instances.len;
                 },
                 .path => |draw| {
                     const range = draw.shapes.resolve(draw.picture.shapes.len);
                     const span = range.end - range.start;
-                    total += @max(span, 1) * @max(pathDrawInstanceCount(draw), 1);
+                    total += span * draw.instances.len;
                 },
             }
         }
@@ -4541,9 +4522,8 @@ pub const DrawList = struct {
             switch (command) {
                 .text => |draw| {
                     const view = try prepared.textAtlasView(draw.blob.atlas);
-                    const overrides = if (draw.instances.len == 0) default_overrides_storage[0..] else draw.instances;
                     const glyph_range = draw.glyphs.resolve(draw.blob.glyphCount());
-                    for (overrides, 0..) |_, override_index| {
+                    for (draw.instances, 0..) |_, override_index| {
                         var glyph_start = glyph_range.start;
                         while (glyph_start < glyph_range.end) {
                             const start = self.len;
@@ -4570,9 +4550,8 @@ pub const DrawList = struct {
                 },
                 .path => |draw| {
                     const view = try prepared.pathAtlasView(draw.picture);
-                    const overrides = if (draw.instances.len == 0) default_overrides_storage[0..] else draw.instances;
                     const range = draw.shapes.resolve(draw.picture.shapes.len);
-                    for (overrides, 0..) |_, override_index| {
+                    for (draw.instances, 0..) |_, override_index| {
                         var shape_start = range.start;
                         while (shape_start < range.end) {
                             const start = self.len;
@@ -4607,14 +4586,6 @@ pub const DrawList = struct {
         self.segment_len += 1;
     }
 };
-
-fn pathDrawInstanceCount(draw: PathDraw) usize {
-    return if (draw.instances.len == 0) 1 else draw.instances.len;
-}
-
-fn textDrawInstanceCount(draw: TextDraw) usize {
-    return if (draw.instances.len == 0) 1 else draw.instances.len;
-}
 
 pub const PreparedScene = struct {
     allocator: std.mem.Allocator,

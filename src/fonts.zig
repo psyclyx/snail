@@ -168,9 +168,8 @@ pub const TextBlob = struct {
         const range = draw.glyphs.resolve(self.glyphs.len);
         const start = @max(start_glyph, range.start);
         if (start > range.end) return error.InvalidGlyphRange;
-        const overrides_slice = if (draw.instances.len == 0) snail.defaultOverrides() else draw.instances;
-        if (override_index >= overrides_slice.len) return error.InvalidOverrideIndex;
-        const override = overrides_slice[override_index];
+        if (override_index >= draw.instances.len) return error.InvalidOverrideIndex;
+        const override = draw.instances[override_index];
         const has_outer_transform = !isIdentityTransform(override.transform);
         const has_tint = override.tint[0] != 1 or override.tint[1] != 1 or override.tint[2] != 1 or override.tint[3] != 1;
 

@@ -249,7 +249,14 @@ const ImageImpl = struct { inner: snail.Image };
 const PathImpl = struct { inner: snail.Path };
 const PathPictureBuilderImpl = struct { inner: snail.PathPictureBuilder };
 const PathPictureImpl = struct { inner: snail.PathPicture };
-const SceneImpl = struct { inner: snail.Scene };
+const SceneImpl = struct {
+    inner: snail.Scene,
+    // C callers can't keep an `[]Override` slice alive across the boundary,
+    // so the C entry points that take a transform stash a single-element
+    // override here and hand `inner` a slice into this arena. Reset alongside
+    // `inner` so capacity is reused frame-to-frame.
+    overrides_arena: std.heap.ArenaAllocator,
+};
 const ResourceSetImpl = struct {
     inner: snail.ResourceSet,
     entries: []snail.ResourceSet.Entry,
@@ -928,7 +935,10 @@ export fn snail_path_picture_shape_count(picture: *const PathPictureImpl) usize 
 export fn snail_scene_init(alloc_ptr: ?*const SnailAllocator, out: *?*SceneImpl) c_int {
     const allocator = resolveAllocator(alloc_ptr);
     const impl = handleAllocator().create(SceneImpl) catch return SNAIL_ERR_OUT_OF_MEMORY;
-    impl.* = .{ .inner = snail.Scene.init(allocator) };
+    impl.* = .{
+        .inner = snail.Scene.init(allocator),
+        .overrides_arena = std.heap.ArenaAllocator.init(allocator),
+    };
     out.* = impl;
     return SNAIL_OK;
 }
@@ -936,16 +946,24 @@ export fn snail_scene_init(alloc_ptr: ?*const SnailAllocator, out: *?*SceneImpl)
 export fn snail_scene_deinit(scene: ?*SceneImpl) void {
     if (scene) |s| {
         s.inner.deinit();
+        s.overrides_arena.deinit();
         destroyHandle(s);
     }
 }
 
 export fn snail_scene_reset(scene: *SceneImpl) void {
     scene.inner.reset();
+    _ = scene.overrides_arena.reset(.retain_capacity);
 }
 
 export fn snail_scene_command_count(scene: *const SceneImpl) usize {
     return scene.inner.commandCount();
+}
+
+fn stashOverride(scene: *SceneImpl, override: snail.Override) ![]const snail.Override {
+    const slot = try scene.overrides_arena.allocator().alloc(snail.Override, 1);
+    slot[0] = override;
+    return slot;
 }
 
 export fn snail_scene_add_text(scene: *SceneImpl, blob: *const TextBlobImpl) c_int {
@@ -954,11 +972,12 @@ export fn snail_scene_add_text(scene: *SceneImpl, blob: *const TextBlobImpl) c_i
 }
 
 export fn snail_scene_add_text_options(scene: *SceneImpl, blob: *const TextBlobImpl, transform: SnailTransform2D, resolve: SnailTextResolveOptions) c_int {
-    const overrides = [_]snail.Override{.{ .transform = toTransform(transform) }};
+    const resolved = toTextResolveOptions(resolve) catch return SNAIL_ERR_INVALID_ARGUMENT;
+    const instances = stashOverride(scene, .{ .transform = toTransform(transform) }) catch return SNAIL_ERR_OUT_OF_MEMORY;
     scene.inner.addText(.{
         .blob = &blob.inner,
-        .instances = &overrides,
-        .resolve = toTextResolveOptions(resolve) catch return SNAIL_ERR_INVALID_ARGUMENT,
+        .instances = instances,
+        .resolve = resolved,
     }) catch return SNAIL_ERR_OUT_OF_MEMORY;
     return SNAIL_OK;
 }
@@ -969,8 +988,8 @@ export fn snail_scene_add_path_picture(scene: *SceneImpl, picture: *const PathPi
 }
 
 export fn snail_scene_add_path_picture_transformed(scene: *SceneImpl, picture: *const PathPictureImpl, transform: SnailTransform2D) c_int {
-    const overrides = [_]snail.Override{.{ .transform = toTransform(transform) }};
-    scene.inner.addPath(.{ .picture = &picture.inner, .instances = &overrides }) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    const instances = stashOverride(scene, .{ .transform = toTransform(transform) }) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    scene.inner.addPath(.{ .picture = &picture.inner, .instances = instances }) catch return SNAIL_ERR_OUT_OF_MEMORY;
     return SNAIL_OK;
 }
 
