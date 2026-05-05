@@ -380,32 +380,32 @@ pub const CpuRenderer = struct {
     }
 
     pub fn drawPrepared(self: *CpuRenderer, prepared: *const snail.PreparedResources, scene: *const snail.PreparedScene, options: snail.DrawOptions) !void {
-        if (self.thread_pool) |pool| {
-            // Fan out at the frame level rather than per-segment. A scene
-            // typically has several text/path segments (e.g., 4 for the bench
-            // text scene); fanning out per segment paid the wake-and-join
-            // cost N times for tiny per-segment work, which made small-glyph
-            // text essentially serial. With one fanout per frame each tile
-            // walks every segment for its row strip, so the sync cost is
-            // amortized across the whole frame.
-            const span = self.row_clip_max - self.row_clip_min;
-            if (span >= 2 * TILE_ROWS) {
-                const tile_count = (span + TILE_ROWS - 1) / TILE_ROWS;
-                var ctx = TileFrameCtx{
-                    .self = self,
-                    .prepared = prepared,
-                    .scene = scene,
-                    .options = options,
-                };
-                pool.dispatch(tile_count, &ctx, runFrameTile);
-                return;
-            }
-        }
-        // Call `draw` (not `drawPrepared`) — `Renderer.drawPrepared` would
-        // dispatch right back to us via the cpu_vtable special case and
-        // recurse forever.
         var renderer = self.asRenderer();
-        try renderer.draw(prepared, scene.slice(), options);
+        try renderer.drawPrepared(prepared, scene, options);
+    }
+
+    /// Frame-level fan-out invoked by the CPU vtable's `draw` entry when a
+    /// thread pool is attached. Each tile worker re-enters `Renderer.draw`
+    /// with `thread_pool = null` on its renderer copy, so the vtable's serial
+    /// fallback handles segment iteration. Fanning out once per frame
+    /// (rather than per segment) amortizes the wake-and-join cost across
+    /// the whole scene.
+    pub fn dispatchTiledDraw(
+        self: *CpuRenderer,
+        pool: *snail.ThreadPool,
+        prepared: *const snail.PreparedResources,
+        records: snail.DrawRecords,
+        options: snail.DrawOptions,
+    ) !void {
+        const span = self.row_clip_max - self.row_clip_min;
+        const tile_count = (span + TILE_ROWS - 1) / TILE_ROWS;
+        var ctx = TileFrameCtx{
+            .self = self,
+            .prepared = prepared,
+            .records = records,
+            .options = options,
+        };
+        pool.dispatch(tile_count, &ctx, runFrameTile);
     }
 
     pub fn drawTextBatchPrepared(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const u32, texture_layer_base: u32, allow_subpixel: bool) void {
@@ -1190,7 +1190,7 @@ pub const CpuRenderer = struct {
 const TileFrameCtx = struct {
     self: *const CpuRenderer,
     prepared: *const snail.PreparedResources,
-    scene: *const snail.PreparedScene,
+    records: snail.DrawRecords,
     options: snail.DrawOptions,
 };
 
@@ -1202,13 +1202,13 @@ fn runFrameTile(opaque_ctx: *anyopaque, tile_index: u32) void {
     tile_renderer.row_clip_min = tile_min;
     tile_renderer.row_clip_max = @min(tile_min + CpuRenderer.TILE_ROWS, ctx.self.row_clip_max);
 
-    // Per-tile error handling: the only errors `Renderer.drawPrepared` can
-    // surface are stale or missing prepared resources, which are scene-wide
-    // configuration mistakes, not per-tile state. They would have failed the
-    // first tile to run; we leave that detection to the serial path and
-    // assume tiles never see those errors here.
+    // Per-tile error handling: the only errors `Renderer.draw` can surface
+    // are stale or missing prepared resources, which are scene-wide
+    // configuration mistakes, not per-tile state. The dispatcher's pool
+    // doesn't carry errors out, so we trust callers to surface bad records
+    // before reaching this point.
     var renderer = tile_renderer.asRenderer();
-    renderer.draw(ctx.prepared, ctx.scene.slice(), ctx.options) catch unreachable;
+    renderer.draw(ctx.prepared, ctx.records, ctx.options) catch unreachable;
 }
 
 fn inverseTransform(transform: Transform2D) ?Transform2D {

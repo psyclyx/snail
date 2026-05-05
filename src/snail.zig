@@ -4860,6 +4860,12 @@ pub const Renderer = struct {
 
     pub const VTable = struct {
         deinit: *const fn (*anyopaque) void,
+        // Frame-level draw: validate, set state, walk records. Each backend
+        // owns this so it can decide how to schedule the work (e.g., the CPU
+        // backend fans tile work out across a caller-owned thread pool here).
+        draw: *const fn (*Renderer, *const PreparedResources, DrawRecords, DrawOptions) anyerror!void,
+        // Segment-level dispatch, called from `iterateRecords`. Backends that
+        // delegate scheduling to the shared helper implement these only.
         drawText: *const fn (*anyopaque, ?*const anyopaque, []const u32, Mat4, f32, f32, u32) void,
         drawPaths: *const fn (*anyopaque, ?*const anyopaque, []const u32, Mat4, f32, f32, u32) void,
         beginFrame: *const fn (*anyopaque) void,
@@ -4943,9 +4949,42 @@ pub const Renderer = struct {
             fn backendNameFn(ptr: *anyopaque) []const u8 {
                 return constCast(ptr).backendName();
             }
+            // Resolve the backend's typed PreparedResources view from the
+            // unified PreparedResources, returning `null` if the field is
+            // missing. Backends that don't carry typed prepared state
+            // (currently none) can compile down to `null`.
+            fn resolveBackendPrepared(prepared: *const PreparedResources) ?*const anyopaque {
+                if (comptime T == pipeline.GlTextState) {
+                    if (prepared.gl) |*gl_prepared| return @ptrCast(gl_prepared);
+                    return null;
+                }
+                if (comptime build_options.enable_vulkan and T == vulkan_pipeline.VulkanPipeline) {
+                    if (prepared.vulkan) |*vk_prepared| return @ptrCast(vk_prepared);
+                    return null;
+                }
+                if (comptime build_options.enable_cpu and T == CpuRenderer) {
+                    if (prepared.cpu) |*cpu_prepared| return @ptrCast(cpu_prepared);
+                    return null;
+                }
+                return null;
+            }
+            fn drawFn(renderer: *Renderer, prepared: *const PreparedResources, records: DrawRecords, options: DrawOptions) anyerror!void {
+                const backend_prepared = resolveBackendPrepared(prepared) orelse return error.MissingPreparedResource;
+                if (comptime build_options.enable_cpu and T == CpuRenderer) {
+                    const cpu_self = cast(renderer.ptr);
+                    if (cpu_self.thread_pool) |pool| {
+                        const span = cpu_self.row_clip_max - cpu_self.row_clip_min;
+                        if (span >= 2 * CpuRenderer.TILE_ROWS) {
+                            return cpu_self.dispatchTiledDraw(pool, prepared, records, options);
+                        }
+                    }
+                }
+                try renderer.iterateRecords(prepared, records, options, backend_prepared);
+            }
         };
         return .{
             .deinit = if (owned) &S.deinitFn else &S.noopDeinit,
+            .draw = &S.drawFn,
             .drawText = &S.drawTextFn,
             .drawPaths = &S.drawPathsFn,
             .beginFrame = &S.beginFrameFn,
@@ -4993,26 +5032,24 @@ pub const Renderer = struct {
     }
 
     /// Execute prebuilt draw records. This never discovers, uploads, allocates,
-    /// or invalidates resources.
+    /// or invalidates resources. The backend's vtable entry decides whether
+    /// to walk records serially or fan them out across worker threads.
     pub fn draw(self: *Renderer, prepared: *const PreparedResources, records: DrawRecords, options: DrawOptions) !void {
+        return self.vtable.draw(self, prepared, records, options);
+    }
+
+    pub fn drawPrepared(self: *Renderer, prepared: *const PreparedResources, scene: *const PreparedScene, options: DrawOptions) !void {
+        return self.draw(prepared, scene.slice(), options);
+    }
+
+    /// Default frame-level draw: validate stamps, set state, walk records
+    /// serially dispatching each segment to the backend's `drawText` /
+    /// `drawPaths`. Used by the GL and Vulkan vtables directly, and by the
+    /// CPU vtable's serial fallback / tile workers.
+    pub fn iterateRecords(self: *Renderer, prepared: *const PreparedResources, records: DrawRecords, options: DrawOptions, backend_prepared: ?*const anyopaque) !void {
         self.setSubpixelOrder(effectiveSubpixelOrder(options.target));
         self.setFillRule(options.target.fill_rule);
         self.beginFrame();
-        const backend_prepared: ?*const anyopaque = blk: {
-            if (self.vtable == &gl_vtable or self.vtable == &gl_borrowed_vtable) {
-                if (prepared.gl) |*gl_prepared| break :blk @ptrCast(gl_prepared);
-                return error.MissingPreparedResource;
-            }
-            if (comptime build_options.enable_vulkan) if (self.vtable == &vulkan_borrowed_vtable) {
-                if (prepared.vulkan) |*vk_prepared| break :blk @ptrCast(vk_prepared);
-                return error.MissingPreparedResource;
-            };
-            if (comptime build_options.enable_cpu) if (self.vtable == &cpu_vtable) {
-                if (prepared.cpu) |*cpu_prepared| break :blk @ptrCast(cpu_prepared);
-                return error.MissingPreparedResource;
-            };
-            break :blk null;
-        };
         for (records.segments) |segment| {
             const actual_stamp = prepared.stampForKey(segment.key) orelse return error.MissingPreparedResource;
             if (!actual_stamp.eql(segment.resource_stamp)) return error.StaleDrawRecords;
@@ -5024,20 +5061,6 @@ pub const Renderer = struct {
                 .path => if (vertices.len > 0) self.drawPaths(backend_prepared, vertices, options.mvp, options.target.pixel_width, options.target.pixel_height, segment.texture_layer_base),
             }
         }
-    }
-
-    pub fn drawPrepared(self: *Renderer, prepared: *const PreparedResources, scene: *const PreparedScene, options: DrawOptions) !void {
-        // Dispatch to the CPU backend's frame-level drawPrepared so it can
-        // fan tile work out across the entire scene, not just within a
-        // single segment. GL / Vulkan backends are GPU-bound per draw and
-        // don't need the override; they fall through to per-segment.
-        if (comptime build_options.enable_cpu) {
-            if (self.vtable == &cpu_vtable) {
-                const cpu_self: *CpuRenderer = @ptrCast(@alignCast(self.ptr));
-                return cpu_self.drawPrepared(prepared, scene, options);
-            }
-        }
-        try self.draw(prepared, scene.slice(), options);
     }
 
     /// Initialize with the current OpenGL context.
@@ -5352,6 +5375,9 @@ test "draw dispatch uses only prepared stamps and caller records" {
             return @ptrCast(@alignCast(ptr));
         }
         fn deinit(_: *anyopaque) void {}
+        fn draw(renderer: *Renderer, prepared: *const PreparedResources, records: DrawRecords, options: DrawOptions) anyerror!void {
+            try renderer.iterateRecords(prepared, records, options, null);
+        }
         fn drawText(ptr: *anyopaque, backend_prepared: ?*const anyopaque, vertices: []const u32, _: Mat4, viewport_w: f32, viewport_h: f32, _: u32) void {
             const s = state(ptr);
             s.text_count += 1;
@@ -5387,6 +5413,7 @@ test "draw dispatch uses only prepared stamps and caller records" {
     };
     const fake_vtable = Renderer.VTable{
         .deinit = Fake.deinit,
+        .draw = Fake.draw,
         .drawText = Fake.drawText,
         .drawPaths = Fake.drawPaths,
         .beginFrame = Fake.beginFrame,
