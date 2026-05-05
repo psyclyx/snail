@@ -75,6 +75,8 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
     var gl_renderer: snail.GlRenderer = undefined;
     var vk_renderer: snail.VulkanRenderer = undefined;
     var cpu_state: CpuRenderer = undefined;
+    var cpu_pool: snail.ThreadPool = undefined;
+    var cpu_pool_initialized = false;
     var renderer = if (use_vulkan) blk: {
         vk_renderer = try snail.VulkanRenderer.init(vk_ctx);
         break :blk vk_renderer.asRenderer();
@@ -85,10 +87,14 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         const px = platform.getPixelBuffer() orelse return error.NoPixelBuffer;
         const bsz = platform.getBufferSize();
         cpu_state = CpuRenderer.init(px, bsz[0], bsz[1], bsz[0] * 4);
+        try cpu_pool.init(allocator, .{});
+        cpu_pool_initialized = true;
+        cpu_state.setThreadPool(&cpu_pool);
         break :blk snail.Renderer.initCpu(&cpu_state);
     };
     defer if (use_vulkan) vk_renderer.deinit();
     defer if (use_gl) gl_renderer.deinit();
+    defer if (cpu_pool_initialized) cpu_pool.deinit();
 
     const sys_order = subpixel_detect.detect();
     const detected_order = platform.detectCurrentMonitorSubpixelOrder(sys_order);
