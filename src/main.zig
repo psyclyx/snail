@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const snail = @import("snail.zig");
 const build_options = @import("build_options");
 const demo_banner = @import("demo_banner.zig");
@@ -134,6 +135,12 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         renderer.backendName(),
         if (build_options.enable_harfbuzz) "ON" else "OFF",
     });
+    if (use_cpu and builtin.mode == .Debug) {
+        std.debug.print(
+            "WARNING: Debug build. CPU rasterization is ~30x slower without `--release=fast`.\n",
+            .{},
+        );
+    }
     std.debug.print("Keys: arrows pan, Z/X zoom, R rotate, H hinting, B AA mode, Esc quit\n", .{});
     std.debug.print("hinting={s} aa={s}\n", .{ @tagName(selected_hinting), aaName(current_order) });
 
