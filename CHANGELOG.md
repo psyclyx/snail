@@ -60,6 +60,12 @@
   `std.Io`, which would re-introduce per-task allocations on the draw
   path. Linux-only for now — porting to other OSes means adding
   futex equivalents in `src/thread_pool.zig`.
+- Tile fan-out happens once per frame, not once per segment. The
+  earlier per-segment design paid the wake / join cost for every text
+  or path command in the prepared scene, which made small-glyph text
+  scenes (~4 segments × ~32 instances) effectively serial. With one
+  fan-out per frame, text scales 2.4x and mixed scales 4.9x on the
+  bench instead of 1.0x / 2.6x.
 
 ### Docs
 

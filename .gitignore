@@ -2,5 +2,7 @@
 zig-out/
 result
 vgcore.*
+perf.data
+perf.data.old
 .direnv/
 CLAUDE.md

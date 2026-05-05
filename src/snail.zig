@@ -5027,6 +5027,16 @@ pub const Renderer = struct {
     }
 
     pub fn drawPrepared(self: *Renderer, prepared: *const PreparedResources, scene: *const PreparedScene, options: DrawOptions) !void {
+        // Dispatch to the CPU backend's frame-level drawPrepared so it can
+        // fan tile work out across the entire scene, not just within a
+        // single segment. GL / Vulkan backends are GPU-bound per draw and
+        // don't need the override; they fall through to per-segment.
+        if (comptime build_options.enable_cpu) {
+            if (self.vtable == &cpu_vtable) {
+                const cpu_self: *CpuRenderer = @ptrCast(@alignCast(self.ptr));
+                return cpu_self.drawPrepared(prepared, scene, options);
+            }
+        }
         try self.draw(prepared, scene.slice(), options);
     }
 

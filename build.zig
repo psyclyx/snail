@@ -357,6 +357,21 @@ pub fn build(b: *std.Build) void {
     const bench_step = b.step("bench", "Run consolidated benchmarks");
     bench_step.dependOn(&run_bench.step);
 
+    // ── CPU text profile target (for use under perf record) ──
+    const profile_text_module = b.createModule(.{
+        .root_source_file = b.path("src/profile_cpu_text.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .omit_frame_pointer = false,
+        .link_libc = true, // HarfBuzz cImport needs libc headers
+        .imports = &.{.{ .name = "assets", .module = assets_mod }},
+    });
+    configureCoreModule(profile_text_module, options, enable_opengl, enable_vulkan, enable_harfbuzz, vk_shaders_mod);
+    const profile_text_exe = b.addExecutable(.{ .name = "snail-profile-cpu-text", .root_module = profile_text_module });
+    const install_profile_text = b.addInstallArtifact(profile_text_exe, .{});
+    const profile_text_step = b.step("profile-cpu-text", "Build CPU-text profile target (run zig-out/bin/snail-profile-cpu-text [iters] [serial|threaded])");
+    profile_text_step.dependOn(&install_profile_text.step);
+
     // ── Headless demo screenshot ──
     const screenshot_module = b.createModule(.{
         .root_source_file = b.path("src/screenshot_demo.zig"),

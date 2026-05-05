@@ -186,8 +186,15 @@ pub const ThreadPool = struct {
     }
 
     /// Run `run(ctx, i)` for every `i` in `[0, total)`, distributing across
-    /// workers and the calling thread. Blocks until all calls return.
-    /// Allocation-free.
+    /// workers. Blocks until all calls return. Allocation-free.
+    ///
+    /// If the pool has zero worker threads, all tasks run on the calling
+    /// thread. Otherwise the dispatcher just submits and waits — it does
+    /// not run tasks itself. Letting the dispatcher race workers for the
+    /// queue starves them: with task duration on the same order as the
+    /// `futex_wake` -> kernel-schedule latency, the dispatcher claims every
+    /// task before workers observe `job_next < job_total`, and the
+    /// "parallel" path runs serially.
     pub fn dispatch(
         self: *ThreadPool,
         total: u32,
@@ -195,6 +202,12 @@ pub const ThreadPool = struct {
         run: *const fn (*anyopaque, u32) void,
     ) void {
         if (total == 0) return;
+
+        if (self.threads.len == 0) {
+            var i: u32 = 0;
+            while (i < total) : (i += 1) run(ctx, i);
+            return;
+        }
 
         self.mutex.lock();
         self.job_ctx = ctx;
@@ -206,32 +219,14 @@ pub const ThreadPool = struct {
         self.mutex.unlock();
         self.work_ready.wake(wake_all);
 
-        // The dispatching thread also pulls tasks. Once the queue is empty it
-        // waits for in-flight workers to drain, then clears the job slot.
-        while (true) {
-            self.mutex.lock();
-            if (self.job_next >= total) {
-                while (self.job_active > 0) self.work_done.wait(&self.mutex);
-                self.job_run = null;
-                self.job_ctx = null;
-                self.job_total = 0;
-                self.mutex.unlock();
-                return;
-            }
-            const idx = self.job_next;
-            self.job_next += 1;
-            self.job_active += 1;
-            self.mutex.unlock();
-
-            run(ctx, idx);
-
-            self.mutex.lock();
-            self.job_active -= 1;
-            const last = self.job_active == 0 and self.job_next >= total;
-            if (last) self.work_done.prepareWake();
-            self.mutex.unlock();
-            if (last) self.work_done.wake(wake_all);
+        self.mutex.lock();
+        while (self.job_next < total or self.job_active > 0) {
+            self.work_done.wait(&self.mutex);
         }
+        self.job_run = null;
+        self.job_ctx = null;
+        self.job_total = 0;
+        self.mutex.unlock();
     }
 
     fn workerLoop(self: *ThreadPool) void {

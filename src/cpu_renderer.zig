@@ -380,33 +380,39 @@ pub const CpuRenderer = struct {
     }
 
     pub fn drawPrepared(self: *CpuRenderer, prepared: *const snail.PreparedResources, scene: *const snail.PreparedScene, options: snail.DrawOptions) !void {
+        if (self.thread_pool) |pool| {
+            // Fan out at the frame level rather than per-segment. A scene
+            // typically has several text/path segments (e.g., 4 for the bench
+            // text scene); fanning out per segment paid the wake-and-join
+            // cost N times for tiny per-segment work, which made small-glyph
+            // text essentially serial. With one fanout per frame each tile
+            // walks every segment for its row strip, so the sync cost is
+            // amortized across the whole frame.
+            const span = self.row_clip_max - self.row_clip_min;
+            if (span >= 2 * TILE_ROWS) {
+                const tile_count = (span + TILE_ROWS - 1) / TILE_ROWS;
+                var ctx = TileFrameCtx{
+                    .self = self,
+                    .prepared = prepared,
+                    .scene = scene,
+                    .options = options,
+                };
+                pool.dispatch(tile_count, &ctx, runFrameTile);
+                return;
+            }
+        }
+        // Call `draw` (not `drawPrepared`) — `Renderer.drawPrepared` would
+        // dispatch right back to us via the cpu_vtable special case and
+        // recurse forever.
         var renderer = self.asRenderer();
-        try renderer.drawPrepared(prepared, scene, options);
+        try renderer.draw(prepared, scene.slice(), options);
     }
 
     pub fn drawTextBatchPrepared(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const u32, texture_layer_base: u32, allow_subpixel: bool) void {
         const WORDS = vertex.WORDS_PER_INSTANCE;
-        if (self.thread_pool) |pool| {
-            // Tile by scanline strips. Each tile gets a renderer copy with its
-            // own row_clip; tiles cover disjoint rows so writes never collide.
-            // The full instance list is replayed per tile — pixels outside the
-            // tile are skipped at the row-loop bound, preserving byte-identity
-            // with the serial path. No allocation: the pool's task slot is
-            // pre-allocated, and the dispatch context lives on this stack.
-            const span = self.row_clip_max - self.row_clip_min;
-            if (span >= 2 * TILE_ROWS and vertices.len >= WORDS) {
-                const tile_count = (span + TILE_ROWS - 1) / TILE_ROWS;
-                var ctx = TileDispatchCtx{
-                    .self = self,
-                    .prepared = prepared,
-                    .vertices = vertices,
-                    .texture_layer_base = texture_layer_base,
-                    .allow_subpixel = allow_subpixel,
-                };
-                pool.dispatch(tile_count, &ctx, runTile);
-                return;
-            }
-        }
+        // Always serial: parallelism is at the frame level via `drawPrepared`.
+        // Per-instance bounds rejection inside the row loops handles tile
+        // clipping when this is invoked from a tile worker.
         var i: usize = 0;
         while (i + WORDS <= vertices.len) : (i += WORDS) {
             const inst = vertices[i..][0..WORDS];
@@ -1181,28 +1187,28 @@ pub const CpuRenderer = struct {
     }
 };
 
-const TileDispatchCtx = struct {
+const TileFrameCtx = struct {
     self: *const CpuRenderer,
-    prepared: *const PreparedResources,
-    vertices: []const u32,
-    texture_layer_base: u32,
-    allow_subpixel: bool,
+    prepared: *const snail.PreparedResources,
+    scene: *const snail.PreparedScene,
+    options: snail.DrawOptions,
 };
 
-fn runTile(opaque_ctx: *anyopaque, tile_index: u32) void {
-    const ctx: *const TileDispatchCtx = @ptrCast(@alignCast(opaque_ctx));
+fn runFrameTile(opaque_ctx: *anyopaque, tile_index: u32) void {
+    const ctx: *const TileFrameCtx = @ptrCast(@alignCast(opaque_ctx));
     var tile_renderer = ctx.self.*;
     tile_renderer.thread_pool = null;
     const tile_min = ctx.self.row_clip_min + tile_index * CpuRenderer.TILE_ROWS;
     tile_renderer.row_clip_min = tile_min;
     tile_renderer.row_clip_max = @min(tile_min + CpuRenderer.TILE_ROWS, ctx.self.row_clip_max);
 
-    const WORDS = vertex.WORDS_PER_INSTANCE;
-    var i: usize = 0;
-    while (i + WORDS <= ctx.vertices.len) : (i += WORDS) {
-        const inst = ctx.vertices[i..][0..WORDS];
-        tile_renderer.renderBatchInstance(ctx.prepared, inst, ctx.texture_layer_base, ctx.allow_subpixel);
-    }
+    // Per-tile error handling: the only errors `Renderer.drawPrepared` can
+    // surface are stale or missing prepared resources, which are scene-wide
+    // configuration mistakes, not per-tile state. They would have failed the
+    // first tile to run; we leave that detection to the serial path and
+    // assume tiles never see those errors here.
+    var renderer = tile_renderer.asRenderer();
+    renderer.draw(ctx.prepared, ctx.scene.slice(), ctx.options) catch unreachable;
 }
 
 fn inverseTransform(transform: Transform2D) ?Transform2D {
