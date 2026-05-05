@@ -104,6 +104,12 @@ const LayerInfoEntry = struct {
     width: u32 = 0,
     height: u32 = 0,
     row_base: u32 = 0,
+    /// Source atlas's image-paint records, borrowed. Used by the prepared
+    /// sampler to resolve tag-4 (image) paints — the atlas-side patching
+    /// done by the GPU upload (`pipeline.zig` / `vulkan_pipeline.zig`)
+    /// doesn't happen on the CPU, so we look up the `*const snail.Image`
+    /// via this slice instead.
+    paint_image_records: ?[]const ?snail.lowlevel.CurveAtlas.PaintImageRecord = null,
 };
 
 pub const PreparedResources = struct {
@@ -181,20 +187,28 @@ pub const PreparedResources = struct {
                 .width = atlas.layer_info_width,
                 .height = atlas.layer_info_height,
                 .row_base = info_row_base,
+                .paint_image_records = atlas.paint_image_records,
             };
             self.layer_info_count += 1;
         }
     }
 
-    /// Resolve a global (info_x, info_y) into data pointer and width,
-    /// adjusting info_y for the atlas's row_base.
-    fn resolveLayerInfo(self: *const PreparedResources, info_y: u16) ?struct { data: []const f32, width: u32, local_y: u16 } {
+    /// Resolve a global (info_x, info_y) into data pointer, width, and
+    /// the source atlas's image-paint records, adjusting info_y for the
+    /// atlas's row_base.
+    fn resolveLayerInfo(self: *const PreparedResources, info_y: u16) ?struct {
+        data: []const f32,
+        width: u32,
+        local_y: u16,
+        paint_image_records: ?[]const ?snail.lowlevel.CurveAtlas.PaintImageRecord,
+    } {
         for (self.layer_infos[0..self.layer_info_count]) |entry| {
             if (info_y >= entry.row_base and info_y < entry.row_base + entry.height) {
                 return .{
                     .data = entry.data,
                     .width = entry.width,
                     .local_y = @intCast(info_y - entry.row_base),
+                    .paint_image_records = entry.paint_image_records,
                 };
             }
         }
@@ -456,7 +470,7 @@ pub const CpuRenderer = struct {
             const resolved = prepared.resolveLayerInfo(info_y) orelse return;
             const first_tag = fetchLayerInfoTexel(resolved.data, resolved.width, info_x, resolved.local_y, 0)[3];
             if (first_tag < 0.0) {
-                self.renderPathBatchLayers(prepared, bbox, transform, info_x, resolved.local_y, atlas_layer, resolved.data, resolved.width, false);
+                self.renderPathBatchLayers(prepared, bbox, transform, info_x, resolved.local_y, atlas_layer, resolved.data, resolved.width, resolved.paint_image_records, false);
             } else {
                 self.renderColrBatchLayers(prepared, bbox, transform, color, info_x, resolved.local_y, layer_count, atlas_layer, resolved.data, resolved.width);
             }
@@ -560,6 +574,7 @@ pub const CpuRenderer = struct {
         atlas_layer: u32,
         data: []const f32,
         width: u32,
+        paint_image_records: ?[]const ?snail.lowlevel.CurveAtlas.PaintImageRecord,
         allow_subpixel: bool,
     ) void {
         const page = (if (atlas_layer < prepared.atlas_pages.len) prepared.atlas_pages[atlas_layer] else null) orelse return;
@@ -621,7 +636,7 @@ pub const CpuRenderer = struct {
                         };
                         const band_max_h: i32 = @as(i32, @intCast(be.h_band_count)) - 1;
                         const band_max_v: i32 = @as(i32, @intCast(be.v_band_count)) - 1;
-                        const paint = samplePathPaintFromLayerInfo(data, width, info_x, info_y, layer_offset, local);
+                        const paint = samplePathPaintFromLayerInfo(data, width, info_x, info_y, layer_offset, local, paint_image_records);
 
                         if (use_subpixel) {
                             const cov = evalGlyphCoverageSubpixel(
@@ -756,7 +771,7 @@ pub const CpuRenderer = struct {
                     .y = @as(f32, @floatFromInt(row)) + 0.5,
                 });
                 while (col < @as(u32, @intCast(px1))) : (advanceLocalPixel(&col, &local, sample_dx)) {
-                    const paint = samplePathPaintFromLayerInfo(data, width, info_x, info_y, 0, local);
+                    const paint = samplePathPaintFromLayerInfo(data, width, info_x, info_y, 0, local, paint_image_records);
                     if (!allow_subpixel or self.subpixel_order == .none) {
                         const cov = evalGlyphCoverage(page, local.x, local.y, ppe.x, ppe.y, be, band_max_h, band_max_v, self.fill_rule);
                         if (cov < 1.0 / 255.0) continue;
@@ -1352,7 +1367,15 @@ fn fetchLayerInfoTexel(data: []const f32, width: u32, info_x: u16, info_y: u16, 
     return .{ data[base + 0], data[base + 1], data[base + 2], data[base + 3] };
 }
 
-fn samplePathPaintFromLayerInfo(data: []const f32, width: u32, info_x: u16, info_y: u16, record_offset: u32, local: Vec2) PathPaintSample {
+fn samplePathPaintFromLayerInfo(
+    data: []const f32,
+    width: u32,
+    info_x: u16,
+    info_y: u16,
+    record_offset: u32,
+    local: Vec2,
+    paint_image_records: ?[]const ?snail.lowlevel.CurveAtlas.PaintImageRecord,
+) PathPaintSample {
     const info = fetchLayerInfoTexel(data, width, info_x, info_y, record_offset);
     const tag: i32 = @intFromFloat(@round(-info[3]));
     const data0 = fetchLayerInfoTexel(data, width, info_x, info_y, record_offset + 2);
@@ -1384,8 +1407,36 @@ fn samplePathPaintFromLayerInfo(data: []const f32, width: u32, info_x: u16, info
                 .apply_dither = true,
             };
         },
+        4 => {
+            // Image paint. The atlas-side `paint_image_records` stores each
+            // record's `texel_offset` as the flat layer-info texel address
+            // it was written at; match against the absolute texel for this
+            // layer to find the source image. (GPU backends instead patch
+            // the `extra` texel in place at upload time — see
+            // `pipeline.zig` `patchImagePaintRecord` — so the shader reads
+            // the image slot directly out of layer-info.)
+            const records = paint_image_records orelse return .{ .color = .{ 1, 0, 1, 1 } };
+            const linear_texel = @as(u32, info_x) + record_offset;
+            const abs_texel = (@as(u32, info_y) + linear_texel / width) * width + (linear_texel % width);
+            const record = findImageRecordByTexel(records, abs_texel) orelse return .{ .color = .{ 1, 0, 1, 1 } };
+            // `data0` is at `record_offset + 2`; sampleImageWithRecord wants
+            // that as its `data0_offset` so it can fetch +1/+2/+3 (data1,
+            // tint, extra) relative to it.
+            return sampleImageWithRecord(record, data, width, info_x, info_y, record_offset + 2, data0, local);
+        },
         else => return .{ .color = .{ 1, 0, 1, 1 } },
     }
+}
+
+fn findImageRecordByTexel(
+    records: []const ?snail.lowlevel.CurveAtlas.PaintImageRecord,
+    abs_texel: u32,
+) ?snail.lowlevel.CurveAtlas.PaintImageRecord {
+    for (records) |maybe_record| {
+        const record = maybe_record orelse continue;
+        if (record.texel_offset == abs_texel) return record;
+    }
+    return null;
 }
 
 fn compositeOver(src: [4]f32, dst: [4]f32) [4]f32 {
@@ -1565,6 +1616,19 @@ fn sampleImagePaint(
     const record_index: usize = @as(usize, glyph_id) -| 1;
     if (record_index >= records.len) return .{ .color = .{ 1, 0, 1, 1 } };
     const record = records[record_index] orelse return .{ .color = .{ 1, 0, 1, 1 } };
+    return sampleImageWithRecord(record, data, width, info_x, info_y, data0_offset, data0, local);
+}
+
+fn sampleImageWithRecord(
+    record: snail.lowlevel.CurveAtlas.PaintImageRecord,
+    data: []const f32,
+    width: u32,
+    info_x: u16,
+    info_y: u16,
+    data0_offset: u32,
+    data0: [4]f32,
+    local: Vec2,
+) PathPaintSample {
     const data1 = fetchLayerInfoTexel(data, width, info_x, info_y, data0_offset + 1);
     const tint = fetchLayerInfoTexel(data, width, info_x, info_y, data0_offset + 2);
     const extra = fetchLayerInfoTexel(data, width, info_x, info_y, data0_offset + 3);
@@ -2801,6 +2865,49 @@ test "cpu renderer renders image-painted path picture" {
     const right = ((11 * stride) + (22 * 4));
     try testing.expect(buf[right + 2] > buf[right + 0]);
     try testing.expect(buf[right + 3] > 200);
+
+    // Same picture through the prepared / Scene path. Regression: the
+    // prepared sampler used to return magenta for tag-4 (image) paints
+    // because `paint_image_records` wasn't threaded into the layer-info
+    // sampler.
+    const prepared_buf = try testing.allocator.alloc(u8, stride * height);
+    defer testing.allocator.free(prepared_buf);
+    var prepared_renderer = CpuRenderer.init(prepared_buf.ptr, width, height, stride);
+    prepared_renderer.clear(0, 0, 0, 0);
+
+    var renderer_iface = prepared_renderer.asRenderer();
+    var scene = snail.Scene.init(testing.allocator);
+    defer scene.deinit();
+    try scene.addPath(.{ .picture = &picture });
+
+    var resource_entries: [4]snail.ResourceSet.Entry = undefined;
+    var resources = snail.ResourceSet.init(&resource_entries);
+    try resources.addScene(&scene);
+    var prepared = try renderer_iface.uploadResourcesBlocking(testing.allocator, &resources);
+    defer prepared.deinit();
+
+    const wf: f32 = @floatFromInt(width);
+    const hf: f32 = @floatFromInt(height);
+    const options = snail.DrawOptions{
+        .mvp = snail.Mat4.ortho(0, wf, hf, 0, -1, 1),
+        .target = .{ .pixel_width = wf, .pixel_height = hf },
+    };
+    const needed = snail.DrawList.estimate(&scene, options);
+    const needed_segments = snail.DrawList.estimateSegments(&scene, options);
+    const draw_buf = try testing.allocator.alloc(u32, needed);
+    defer testing.allocator.free(draw_buf);
+    const draw_segments = try testing.allocator.alloc(snail.DrawSegment, needed_segments);
+    defer testing.allocator.free(draw_segments);
+    var draw = snail.DrawList.init(draw_buf, draw_segments);
+    try draw.addScene(&prepared, &scene, options);
+    try renderer_iface.draw(&prepared, draw.slice(), options);
+
+    try testing.expect(prepared_buf[left + 0] > prepared_buf[left + 2]);
+    try testing.expect(prepared_buf[left + 3] > 200);
+    try testing.expect(prepared_buf[right + 2] > prepared_buf[right + 0]);
+    try testing.expect(prepared_buf[right + 3] > 200);
+    // And specifically not magenta (the old missing-records placeholder).
+    try testing.expect(!(prepared_buf[left + 0] > 200 and prepared_buf[left + 1] < 50 and prepared_buf[left + 2] > 200));
 }
 
 test "cpu renderer premultiplies translucent path fill" {
