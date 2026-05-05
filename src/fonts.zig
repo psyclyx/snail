@@ -768,9 +768,9 @@ pub const TextAtlas = struct {
             const has_synthetic = fc.synthetic.skew_x != 0 or fc.synthetic.embolden != 0;
 
             if (!has_synthetic) {
-                cx += addTextForFace(batch, &face_view, fc, fg, segment, cx, y, font_size, color);
+                cx += try addTextForFace(self.allocator, batch, &face_view, fc, fg, segment, cx, y, font_size, color);
             } else {
-                cx += addTextForFaceSynthetic(self.allocator, batch, &face_view, fc, fg, segment, cx, y, font_size, color);
+                cx += try addTextForFaceSynthetic(self.allocator, batch, &face_view, fc, fg, segment, cx, y, font_size, color);
             }
         }
 
@@ -892,8 +892,11 @@ pub const TextAtlas = struct {
                     continue;
                 }
 
-                // Build page for the new glyphs.
-                const page_index: u16 = @intCast(self.pages.len + new_pages_list.items.len);
+                // Build page for the new glyphs. `page_index` is u16 because
+                // the GPU vertex encoding only has 16 bits for it.
+                const next_page = self.pages.len + new_pages_list.items.len;
+                if (next_page > std.math.maxInt(u16)) return error.AtlasPageLimitExceeded;
+                const page_index: u16 = @intCast(next_page);
                 const page_result = try snail.lowlevel.CurveAtlas.buildPageDataInner(self.allocator, &fc.font, &filtered, page_index);
                 try new_pages_list.append(self.allocator, page_result.page);
 
@@ -1473,7 +1476,53 @@ fn appendBlobGlyph(
 
 // ── Per-face text rendering ──
 
+const FaceGlyphStackCapacity: usize = 256;
+
+const PreparedFaceGlyphs = struct {
+    glyphs: []const u16,
+    owned: ?[]u16 = null,
+
+    fn deinit(self: PreparedFaceGlyphs, allocator: Allocator) void {
+        if (self.owned) |buf| allocator.free(buf);
+    }
+};
+
+/// Map UTF-8 to glyph IDs and apply legacy ligature rewriting if a shaper is
+/// attached. Uses `stack_buf` for runs short enough to fit; spills to the
+/// heap (via `allocator`) for longer runs. Returns `error.OutOfMemory` only
+/// when the heap fallback fails — never silently truncates.
+fn prepareFaceGlyphs(
+    allocator: Allocator,
+    fc: *const FaceConfig,
+    text: []const u8,
+    stack_buf: []u16,
+) Allocator.Error!PreparedFaceGlyphs {
+    // text.len bytes is an upper bound on codepoint count (one byte per
+    // codepoint at minimum). After ligature application the count only
+    // shrinks, so allocating once at this upper bound is sufficient.
+    var owned: ?[]u16 = null;
+    const buf = if (text.len <= stack_buf.len) stack_buf else blk: {
+        owned = try allocator.alloc(u16, text.len);
+        break :blk owned.?;
+    };
+
+    var glyph_count: usize = 0;
+    const utf8_view = std.unicode.Utf8View.initUnchecked(text);
+    var it = utf8_view.iterator();
+    while (it.nextCodepoint()) |cp| {
+        buf[glyph_count] = fc.font.glyphIndex(cp) catch 0;
+        glyph_count += 1;
+    }
+
+    if (fc.shaper) |shaper| {
+        glyph_count = shaper.applyLigatures(buf[0..glyph_count]) catch glyph_count;
+    }
+
+    return .{ .glyphs = buf[0..glyph_count], .owned = owned };
+}
+
 fn addTextForFace(
+    allocator: Allocator,
     batch: *TextBatch,
     face_view: *const FaceView,
     fc: *const FaceConfig,
@@ -1483,7 +1532,7 @@ fn addTextForFace(
     y: f32,
     font_size: f32,
     color: [4]f32,
-) f32 {
+) Allocator.Error!f32 {
     if (comptime build_options.enable_harfbuzz) {
         if (fc.hb_shaper) |hbs| {
             return hbs.shapeAndEmit(text, font_size, x, y, color, face_view, batch);
@@ -1493,22 +1542,12 @@ fn addTextForFace(
     const scale = font_size / @as(f32, @floatFromInt(fc.font.units_per_em));
     var cursor_x = x;
 
-    var glyph_buf: [256]u16 = undefined;
-    var glyph_count: usize = 0;
-    const utf8_view = std.unicode.Utf8View.initUnchecked(text);
-    var it = utf8_view.iterator();
-    while (it.nextCodepoint()) |cp| {
-        if (glyph_count >= glyph_buf.len) break;
-        glyph_buf[glyph_count] = fc.font.glyphIndex(cp) catch 0;
-        glyph_count += 1;
-    }
-
-    if (fc.shaper) |shaper| {
-        glyph_count = shaper.applyLigatures(glyph_buf[0..glyph_count]) catch glyph_count;
-    }
+    var stack_buf: [FaceGlyphStackCapacity]u16 = undefined;
+    const prepared = try prepareFaceGlyphs(allocator, fc, text, &stack_buf);
+    defer prepared.deinit(allocator);
 
     var prev_gid: u16 = 0;
-    for (glyph_buf[0..glyph_count]) |gid| {
+    for (prepared.glyphs) |gid| {
         if (gid == 0) {
             cursor_x += scale * 500;
             prev_gid = 0;
@@ -1551,29 +1590,17 @@ fn addTextForFaceSynthetic(
     y: f32,
     font_size: f32,
     color: [4]f32,
-) f32 {
+) Allocator.Error!f32 {
     // For synthetic styles, we need per-glyph positioning then emitStyledGlyph.
     const scale = font_size / @as(f32, @floatFromInt(fc.font.units_per_em));
     var cursor_x = x;
 
-    var glyph_buf: [256]u16 = undefined;
-    var glyph_count: usize = 0;
-    const utf8_view = std.unicode.Utf8View.initUnchecked(text);
-    var it = utf8_view.iterator();
-    while (it.nextCodepoint()) |cp| {
-        if (glyph_count >= glyph_buf.len) break;
-        glyph_buf[glyph_count] = fc.font.glyphIndex(cp) catch 0;
-        glyph_count += 1;
-    }
-
-    if (fc.shaper) |shaper| {
-        glyph_count = shaper.applyLigatures(glyph_buf[0..glyph_count]) catch glyph_count;
-    }
-
-    _ = allocator; // reserved for future heap shaping path
+    var stack_buf: [FaceGlyphStackCapacity]u16 = undefined;
+    const prepared = try prepareFaceGlyphs(allocator, fc, text, &stack_buf);
+    defer prepared.deinit(allocator);
 
     var prev_gid: u16 = 0;
-    for (glyph_buf[0..glyph_count]) |gid| {
+    for (prepared.glyphs) |gid| {
         if (gid == 0) {
             cursor_x += scale * 500;
             prev_gid = 0;

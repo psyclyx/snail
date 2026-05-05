@@ -678,6 +678,10 @@ const CurveAtlas = struct {
         const font = self.font orelse return error.NoFontAvailable;
         if (new_only.count() == 0) return null;
 
+        // `page_index` is u16 in the on-GPU vertex encoding (`Shape` /
+        // `GlyphPlacement`); reject growth past that rather than panic on
+        // narrowing.
+        if (self.pages.len >= std.math.maxInt(u16)) return error.AtlasPageLimitExceeded;
         const new_page_index: u16 = @intCast(self.pages.len);
         const page_result = try buildPageData(self.allocator, font, new_only, new_page_index);
         errdefer {
@@ -1558,6 +1562,10 @@ const TextBatch = struct {
     }
 };
 
+// Recursion-depth caps for path subdivision. These are quality / cost
+// budgets, not caller-facing limits: hitting the cap yields a slightly
+// lower-fidelity tessellation rather than an error or truncation. Bumping
+// them trades work for accuracy.
 const kPathArcSplitMaxDepth: u8 = 8;
 const kPathStrokeOffsetTolerance: f32 = 0.005;
 const kPathStrokeOffsetMaxDepth: u8 = 10;
@@ -3799,17 +3807,18 @@ fn effectiveSubpixelOrder(target: ResolveTarget) SubpixelOrder {
 }
 
 /// Selects a contiguous slice of an immutable resource (path shapes, text
-/// glyphs). `count = maxInt(u32)` means "all from `start`".
+/// glyphs). The default `count = maxInt(usize)` means "all from `start`";
+/// `resolve` clamps to the resource's actual length.
 pub const Range = struct {
-    start: u32 = 0,
-    count: u32 = std.math.maxInt(u32),
+    start: usize = 0,
+    count: usize = std.math.maxInt(usize),
 
     pub const Resolved = struct { start: usize, end: usize };
 
     pub fn resolve(self: Range, total: usize) Resolved {
-        const start = @min(@as(usize, self.start), total);
+        const start = @min(self.start, total);
         const remaining = total - start;
-        const count = @min(@as(usize, self.count), remaining);
+        const count = @min(self.count, remaining);
         return .{ .start = start, .end = start + count };
     }
 };

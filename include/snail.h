@@ -361,6 +361,15 @@ size_t snail_path_picture_shape_count(const SnailPathPicture *picture);
 
 /* Scene and resources */
 
+/*
+ * `snail_scene_add_text_options` and
+ * `snail_scene_add_path_picture_transformed` need to outlive the caller's
+ * stack, so the scene keeps a per-call override in an internal arena. That
+ * arena grows monotonically until `snail_scene_reset` releases its capacity
+ * for reuse — long-running streams of additions without a reset will grow
+ * memory unboundedly. Call `snail_scene_reset` between frames or before
+ * rebuilding a scene from scratch.
+ */
 int snail_scene_init(const SnailAllocator *alloc, SnailScene **out);
 void snail_scene_deinit(SnailScene *scene);
 void snail_scene_reset(SnailScene *scene);
