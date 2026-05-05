@@ -60,7 +60,7 @@ pub fn main() !void {
     var scene = snail.Scene.init(allocator);
     defer scene.deinit();
     try scene.addPath(.{ .picture = &path_picture });
-    try scene.addText(.{ .blob = &text_blob, .resolve = .{ .hinting = .metrics } });
+    try scene.addText(.{ .blob = &text_blob });
 
     var resource_entries: [8]snail.ResourceSet.Entry = undefined;
     var resources = snail.ResourceSet.init(&resource_entries);

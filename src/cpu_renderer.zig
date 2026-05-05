@@ -401,23 +401,22 @@ pub const CpuRenderer = struct {
     }
 
     /// Frame-level fan-out invoked by the CPU vtable's `draw` entry when a
-    /// thread pool is attached. Each tile worker re-enters `Renderer.draw`
-    /// with `thread_pool = null` on its renderer copy, so the vtable's serial
-    /// fallback handles segment iteration. Fanning out once per frame
-    /// (rather than per segment) amortizes the wake-and-join cost across
-    /// the whole scene.
+    /// thread pool is attached. Caller has already validated records, so
+    /// each tile worker can call the void-returning `iterateRecords` path
+    /// directly. Fanning out once per frame (rather than per segment)
+    /// amortizes the wake-and-join cost across the whole scene.
     pub fn dispatchTiledDraw(
         self: *CpuRenderer,
         pool: *snail.ThreadPool,
-        prepared: *const snail.PreparedResources,
+        backend_prepared: ?*const anyopaque,
         records: snail.DrawRecords,
         options: snail.DrawOptions,
-    ) !void {
+    ) void {
         const span = self.row_clip_max - self.row_clip_min;
         const tile_count = (span + TILE_ROWS - 1) / TILE_ROWS;
         var ctx = TileFrameCtx{
             .self = self,
-            .prepared = prepared,
+            .backend_prepared = backend_prepared,
             .records = records,
             .options = options,
         };
@@ -859,22 +858,6 @@ pub const CpuRenderer = struct {
         }
     }
 
-    /// Render a single glyph using the Slug algorithm (CPU evaluation).
-    /// Same inputs as snail.Batch.addGlyph -- uses atlas curve/band data.
-    fn drawGlyph(
-        self: *CpuRenderer,
-        atlas: *const snail.lowlevel.CurveAtlas,
-        font: *const snail.lowlevel.Font,
-        codepoint: u32,
-        x: f32,
-        y: f32,
-        font_size: f32,
-        color: [4]f32, // RGBA 0-1
-    ) void {
-        const gid = font.glyphIndex(codepoint) catch return;
-        self.drawGlyphId(atlas, gid, x, y, font_size, color);
-    }
-
     fn drawGlyphId(
         self: *CpuRenderer,
         atlas: *const snail.lowlevel.CurveAtlas,
@@ -902,18 +885,6 @@ pub const CpuRenderer = struct {
         self.drawGlyphInfoLinear(atlas, info, x, y, font_size, color, allow_subpixel);
     }
 
-    fn drawGlyphInfo(
-        self: *CpuRenderer,
-        atlas: *const snail.lowlevel.CurveAtlas,
-        info: snail.lowlevel.CurveAtlas.GlyphInfo,
-        x: f32,
-        y: f32,
-        font_size: f32,
-        color: [4]f32,
-    ) void {
-        self.drawGlyphInfoLinear(atlas, info, x, y, font_size, srgbColorToLinear(color), true);
-    }
-
     fn drawGlyphInfoLinear(
         self: *CpuRenderer,
         atlas: *const snail.lowlevel.CurveAtlas,
@@ -926,145 +897,6 @@ pub const CpuRenderer = struct {
     ) void {
         if (info.band_entry.h_band_count == 0 or info.band_entry.v_band_count == 0) return;
         self.renderGlyphInternal(atlas, info, x, y, font_size, color, allow_subpixel);
-    }
-
-    /// Lay out and render a UTF-8 string. Uses HarfBuzz for shaping when
-    /// available, falling back to basic cmap + kerning. Returns advance
-    /// width in pixels. Coordinates use top-left origin (y down).
-    fn drawString(
-        self: *CpuRenderer,
-        atlas: *const snail.lowlevel.CurveAtlas,
-        font: *const snail.lowlevel.Font,
-        text: []const u8,
-        x: f32,
-        y: f32,
-        font_size: f32,
-        color: [4]f32,
-    ) f32 {
-        // Use HarfBuzz for full complex-script shaping when available
-        if (comptime @import("build_options").enable_harfbuzz) {
-            if (atlas.hb_shaper) |hbs| {
-                return self.drawTextShaped(atlas, hbs, text, x, y, font_size, color);
-            }
-        }
-
-        // Fallback: simple cmap lookup + kerning
-        const scale = font_size / @as(f32, @floatFromInt(font.unitsPerEm()));
-        var cursor_x = x;
-
-        var glyph_buf: [256]u16 = undefined;
-        var glyph_count: usize = 0;
-        const utf8_view = std.unicode.Utf8View.initUnchecked(text);
-        var it = utf8_view.iterator();
-        while (it.nextCodepoint()) |cp| {
-            if (glyph_count >= glyph_buf.len) break;
-            glyph_buf[glyph_count] = font.glyphIndex(cp) catch 0;
-            glyph_count += 1;
-        }
-
-        if (atlas.shaper) |shaper| {
-            glyph_count = shaper.applyLigatures(glyph_buf[0..glyph_count]) catch glyph_count;
-        }
-
-        var prev_gid: u16 = 0;
-        for (glyph_buf[0..glyph_count]) |gid| {
-            if (gid == 0) {
-                cursor_x += scale * 500;
-                prev_gid = 0;
-                continue;
-            }
-
-            if (prev_gid != 0) {
-                var kern: i16 = 0;
-                if (atlas.shaper) |shaper| {
-                    kern = shaper.getKernAdjustment(prev_gid, gid) catch 0;
-                }
-                if (kern == 0) {
-                    kern = font.getKerning(prev_gid, gid) catch 0;
-                }
-                cursor_x += @as(f32, @floatFromInt(kern)) * scale;
-            }
-
-            self.emitGlyphCpu(atlas, gid, cursor_x, y, font_size, color);
-
-            const advance: u16 = if (atlas.getGlyph(gid)) |info| info.advance_width else 500;
-            cursor_x += @as(f32, @floatFromInt(advance)) * scale;
-            prev_gid = gid;
-        }
-
-        return cursor_x - x;
-    }
-
-    fn drawTextShaped(
-        self: *CpuRenderer,
-        atlas: *const snail.lowlevel.CurveAtlas,
-        hbs: anytype,
-        text: []const u8,
-        x: f32,
-        y: f32,
-        font_size: f32,
-        color: [4]f32,
-    ) f32 {
-        const shaped = hbs.shapeText(text);
-        if (shaped.count == 0 or shaped.infos == null or shaped.positions == null) return 0;
-
-        const scale = font_size / @as(f32, @floatFromInt(hbs.units_per_em));
-        var cursor_x: f32 = 0;
-        var cursor_y: f32 = 0;
-
-        for (0..shaped.count) |i| {
-            const gid: u16 = @intCast(shaped.infos[i].codepoint);
-            const pos = shaped.positions[i];
-            const glyph_x = x + (cursor_x + @as(f32, @floatFromInt(pos.x_offset))) * scale;
-            const glyph_y = y + (cursor_y + @as(f32, @floatFromInt(pos.y_offset))) * scale;
-
-            self.emitGlyphCpu(atlas, gid, glyph_x, glyph_y, font_size, color);
-
-            cursor_x += @as(f32, @floatFromInt(pos.x_advance));
-            cursor_y += @as(f32, @floatFromInt(pos.y_advance));
-        }
-
-        return cursor_x * scale;
-    }
-
-    /// Emit a glyph with COLR multi-layer support, mirroring glyph_emit.emitGlyph.
-    fn emitGlyphCpu(
-        self: *CpuRenderer,
-        atlas: *const snail.lowlevel.CurveAtlas,
-        glyph_id: u16,
-        x: f32,
-        y: f32,
-        font_size: f32,
-        color: [4]f32,
-    ) void {
-        const default_color = srgbColorToLinear(color);
-
-        // COLR base glyph: multi-layer rendered as a single quad on GPU, per-layer on CPU.
-        if (atlas.colr_base_map) |cbm| {
-            if (cbm.get(glyph_id)) |_| {
-                var layer_it = atlas.colrLayers(glyph_id);
-                while (layer_it.next()) |layer| {
-                    const linfo = atlas.getGlyph(layer.glyph_id) orelse continue;
-                    if (linfo.band_entry.h_band_count == 0 or linfo.band_entry.v_band_count == 0) continue;
-                    const lcolor: [4]f32 = if (layer.color[0] < 0) default_color else srgbColorToLinear(layer.color);
-                    self.drawGlyphInfoLinear(atlas, linfo, x, y, font_size, lcolor, false);
-                }
-                return;
-            }
-        }
-
-        var layer_it = atlas.colrLayers(glyph_id);
-        if (layer_it.count() > 0) {
-            while (layer_it.next()) |layer| {
-                const linfo = atlas.getGlyph(layer.glyph_id) orelse continue;
-                if (linfo.band_entry.h_band_count == 0 or linfo.band_entry.v_band_count == 0) continue;
-                const lcolor: [4]f32 = if (layer.color[0] < 0) default_color else srgbColorToLinear(layer.color);
-                self.drawGlyphInfoLinear(atlas, linfo, x, y, font_size, lcolor, false);
-            }
-            return;
-        }
-
-        self.drawGlyphIdLinear(atlas, glyph_id, x, y, font_size, default_color, true);
     }
 
     fn renderGlyphInternal(
@@ -1210,7 +1042,7 @@ pub const CpuRenderer = struct {
 
 const TileFrameCtx = struct {
     self: *const CpuRenderer,
-    prepared: *const snail.PreparedResources,
+    backend_prepared: ?*const anyopaque,
     records: snail.DrawRecords,
     options: snail.DrawOptions,
 };
@@ -1223,13 +1055,8 @@ fn runFrameTile(opaque_ctx: *anyopaque, tile_index: u32) void {
     tile_renderer.row_clip_min = tile_min;
     tile_renderer.row_clip_max = @min(tile_min + CpuRenderer.TILE_ROWS, ctx.self.row_clip_max);
 
-    // Per-tile error handling: the only errors `Renderer.draw` can surface
-    // are stale or missing prepared resources, which are scene-wide
-    // configuration mistakes, not per-tile state. The dispatcher's pool
-    // doesn't carry errors out, so we trust callers to surface bad records
-    // before reaching this point.
     var renderer = tile_renderer.asRenderer();
-    renderer.draw(ctx.prepared, ctx.records, ctx.options) catch unreachable;
+    renderer.iterateRecords(ctx.records, ctx.options, ctx.backend_prepared);
 }
 
 /// Compute the 2D affine that maps glyph-local (z = 0) coords to pixel coords
@@ -2038,6 +1865,19 @@ fn appendCoverageContribution(result: *CoveragePair, distance: f32, sign: f32) v
     result.wgt = @max(result.wgt, clamp01(1.0 - @abs(distance) * 2.0));
 }
 
+// TODO: precision sensitivity at exact-edge samples. When the sample em
+// coord lands on a contour y (e.g. a Latin baseline at integer screen y +
+// 0.5 with text origin at integer + 0.5), CPU and GL can disagree by ~0.5
+// coverage on a single row. The two backends compute the same mathematical
+// em coord via different float op orderings — CPU applies inverseTransform
+// directly, GL interpolates v_texcoord across the dilated quad — and one
+// rounds slightly negative while the other rounds slightly positive.
+// calcRootCode's bit-level sign trick (`@bitCast(y) < 0`) then either sees
+// "all positive, no crossing" or "all negative, two crossings", with no
+// in-between. Real fix is either matching float op orderings exactly or
+// replacing the sign-bit gate with a tolerance-aware check that includes
+// curves whose y-range overlaps the AA window in pixel space. The
+// backend-compare test scene avoids this by pinning baselines to integer y.
 fn evalGlyphCoverageAxis(page: anytype, sample_rc: Vec2, ppe: f32, loc: [2]u32, count: u32, horizontal: bool) CoveragePair {
     var result = CoveragePair{ .cov = 0.0, .wgt = 0.0 };
     var i: u32 = 0;

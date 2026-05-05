@@ -322,7 +322,6 @@ snail_text_atlas_deinit(atlas);
 | `DrawList` | Caller-buffered draw records. |
 | `PreparedScene` | Optional owned draw-record cache for static scenes. |
 | `ResolveTarget` | Final target metadata: pixel size, subpixel order, fill rule, and composite safety flags. |
-| `TextResolveOptions` | Per-text resolve controls, including screen-space hinting mode. |
 | `GlRenderer`, `VulkanRenderer`, `CpuRenderer` | First-class backend renderers. |
 | `Renderer` | Type-erased convenience wrapper around a backend renderer. |
 | `Rect` | `{ x, y, w, h }` rectangle. |
@@ -502,10 +501,10 @@ The vector workload contains filled and stroked rounded rectangles, ellipses, an
 
 | Workload | Snail | FreeType | FreeType / Snail |
 |---|---:|---:|---:|
-| Font load | 1.49 us | 8.60 us | 5.77x |
-| Glyph prep, ASCII | 502.76 us | 977.47 us | 1.94x |
-| Glyph prep, 7 sizes | 502.76 us | 6976.63 us | 13.88x |
-| PathPicture freeze, 25 shapes | 211.47 us | n/a | n/a |
+| Font load | 1.43 us | 8.69 us | 6.10x |
+| Glyph prep, ASCII | 469.88 us | 1040.38 us | 2.21x |
+| Glyph prep, 7 sizes | 469.88 us | 7248.15 us | 15.43x |
+| PathPicture freeze, 25 shapes | 206.08 us | n/a | n/a |
 
 ### Prepared Resource Memory
 
@@ -520,18 +519,18 @@ The vector workload contains filled and stroked rounded rectangles, ellipses, an
 
 | Workload | Snail TextBlob | FreeType layout | FreeType / Snail |
 |---|---:|---:|---:|
-| Short string | 1.32 us | 76.72 us | 58.18x |
-| Sentence | 4.41 us | 377.66 us | 85.55x |
-| Paragraph | 15.00 us | 1355.35 us | 90.36x |
-| Paragraph x 7 sizes | 105.23 us | 9734.36 us | 92.50x |
+| Short string | 1.33 us | 80.10 us | 60.06x |
+| Sentence | 4.40 us | 390.94 us | 88.77x |
+| Paragraph | 15.16 us | 1356.56 us | 89.48x |
+| Paragraph x 7 sizes | 106.03 us | 9925.10 us | 93.60x |
 
 ### Draw Record Creation
 
 | Scene | Commands | Words | Segments | PreparedScene.initOwned |
 |---|---:|---:|---:|---:|
-| Text | 4 | 3795 | 4 | 7.37 us |
-| Vector paths | 1 | 375 | 1 | 0.22 us |
-| Mixed text + vector | 5 | 4170 | 5 | 7.63 us |
+| Text | 4 | 3795 | 4 | 7.52 us |
+| Vector paths | 1 | 375 | 1 | 0.23 us |
+| Mixed text + vector | 5 | 4170 | 5 | 7.74 us |
 | Multi-script text | 4 | 1395 | 4 | 2.64 us |
 
 ### Prepared Render
@@ -540,61 +539,42 @@ Target: 640x360. CPU uses 20 measured frames; GPU backends use 500 measured fram
 
 | Backend | Scene | Frames | Commands | Words | Segments | Draw prepared scene |
 |---|---|---:|---:|---:|---:|---:|
-| CPU | Text | 20 | 4 | 3795 | 4 | 17109.26 us |
-| CPU | Vector paths | 20 | 1 | 375 | 1 | 48246.70 us |
-| CPU | Mixed text + vector | 20 | 5 | 4170 | 5 | 64963.70 us |
-| CPU | Multi-script text | 20 | 4 | 1395 | 4 | 10126.72 us |
-| CPU (threaded) | Text | 20 | 4 | 3795 | 4 | 7014.59 us |
-| CPU (threaded) | Vector paths | 20 | 1 | 375 | 1 | 8938.18 us |
-| CPU (threaded) | Mixed text + vector | 20 | 5 | 4170 | 5 | 14279.35 us |
-| CPU (threaded) | Multi-script text | 20 | 4 | 1395 | 4 | 4156.37 us |
-| GL 4.4 (persistent mapped) | Text | 500 | 4 | 3795 | 4 | 300.29 us |
-| GL 4.4 (persistent mapped) | Vector paths | 500 | 1 | 375 | 1 | 58.74 us |
-| GL 4.4 (persistent mapped) | Mixed text + vector | 500 | 5 | 4170 | 5 | 335.54 us |
-| GL 4.4 (persistent mapped) | Multi-script text | 500 | 4 | 1395 | 4 | 269.50 us |
-| Vulkan | Text | 500 | 4 | 3795 | 4 | 75.80 us |
-| Vulkan | Vector paths | 500 | 1 | 375 | 1 | 76.08 us |
-| Vulkan | Mixed text + vector | 500 | 5 | 4170 | 5 | 98.08 us |
-| Vulkan | Multi-script text | 500 | 4 | 1395 | 4 | 74.44 us |
+| CPU | Text | 20 | 4 | 3795 | 4 | 17442.20 us |
+| CPU | Vector paths | 20 | 1 | 375 | 1 | 49515.86 us |
+| CPU | Mixed text + vector | 20 | 5 | 4170 | 5 | 66732.57 us |
+| CPU | Multi-script text | 20 | 4 | 1395 | 4 | 10343.15 us |
+| CPU (threaded) | Text | 20 | 4 | 3795 | 4 | 6874.31 us |
+| CPU (threaded) | Vector paths | 20 | 1 | 375 | 1 | 9095.72 us |
+| CPU (threaded) | Mixed text + vector | 20 | 5 | 4170 | 5 | 13859.52 us |
+| CPU (threaded) | Multi-script text | 20 | 4 | 1395 | 4 | 4241.57 us |
+| GL 4.4 (persistent mapped) | Text | 500 | 4 | 3795 | 4 | 310.05 us |
+| GL 4.4 (persistent mapped) | Vector paths | 500 | 1 | 375 | 1 | 65.82 us |
+| GL 4.4 (persistent mapped) | Mixed text + vector | 500 | 5 | 4170 | 5 | 345.57 us |
+| GL 4.4 (persistent mapped) | Multi-script text | 500 | 4 | 1395 | 4 | 290.01 us |
+| Vulkan | Text | 500 | 4 | 3795 | 4 | 77.36 us |
+| Vulkan | Vector paths | 500 | 1 | 375 | 1 | 83.76 us |
+| Vulkan | Mixed text + vector | 500 | 5 | 4170 | 5 | 106.20 us |
+| Vulkan | Multi-script text | 500 | 4 | 1395 | 4 | 78.99 us |
 
 ### Render Modes
 
-Per-mode timings for the text and multi-script scenes. AA controls the
-fragment-shader path (grayscale vs LCD subpixel); hinting controls
-PreparedScene-time stem snapping resolved against the target.
+Per-AA timings for the text and multi-script scenes. AA controls the
+fragment-shader path (grayscale vs LCD subpixel).
 
-| Backend | Scene | AA | Hinting | Words | Segments | PreparedScene | Draw |
-|---|---|---|---|---:|---:|---:|---:|
-| CPU | Text | grayscale | unhinted | 3795 | 4 | 7.79 us | 3366.72 us |
-| CPU | Text | grayscale | metrics | 3795 | 4 | 11.43 us | 3315.25 us |
-| CPU | Text | subpixel rgb | unhinted | 3795 | 4 | 7.26 us | 16984.22 us |
-| CPU | Text | subpixel rgb | phase | 3795 | 4 | 8.92 us | 16975.88 us |
-| CPU | Text | subpixel rgb | metrics | 3795 | 4 | 11.34 us | 17239.82 us |
-| CPU | Multi-script text | grayscale | unhinted | 1395 | 4 | 3.20 us | 1965.38 us |
-| CPU | Multi-script text | grayscale | metrics | 1395 | 4 | 4.03 us | 1970.67 us |
-| CPU | Multi-script text | subpixel rgb | unhinted | 1395 | 4 | 2.59 us | 10143.53 us |
-| CPU | Multi-script text | subpixel rgb | phase | 1395 | 4 | 3.20 us | 10151.30 us |
-| CPU | Multi-script text | subpixel rgb | metrics | 1395 | 4 | 4.12 us | 10114.42 us |
-| GL 4.4 (persistent mapped) | Text | grayscale | unhinted | 3795 | 4 | 7.28 us | 92.23 us |
-| GL 4.4 (persistent mapped) | Text | grayscale | metrics | 3795 | 4 | 11.24 us | 94.11 us |
-| GL 4.4 (persistent mapped) | Text | subpixel rgb | unhinted | 3795 | 4 | 7.11 us | 268.33 us |
-| GL 4.4 (persistent mapped) | Text | subpixel rgb | phase | 3795 | 4 | 8.83 us | 272.16 us |
-| GL 4.4 (persistent mapped) | Text | subpixel rgb | metrics | 3795 | 4 | 11.24 us | 271.35 us |
-| GL 4.4 (persistent mapped) | Multi-script text | grayscale | unhinted | 1395 | 4 | 2.58 us | 95.11 us |
-| GL 4.4 (persistent mapped) | Multi-script text | grayscale | metrics | 1395 | 4 | 4.06 us | 89.71 us |
-| GL 4.4 (persistent mapped) | Multi-script text | subpixel rgb | unhinted | 1395 | 4 | 2.72 us | 273.07 us |
-| GL 4.4 (persistent mapped) | Multi-script text | subpixel rgb | phase | 1395 | 4 | 3.17 us | 267.84 us |
-| GL 4.4 (persistent mapped) | Multi-script text | subpixel rgb | metrics | 1395 | 4 | 3.99 us | 267.68 us |
-| Vulkan | Text | grayscale | unhinted | 3795 | 4 | 7.04 us | 22.60 us |
-| Vulkan | Text | grayscale | metrics | 3795 | 4 | 11.32 us | 26.05 us |
-| Vulkan | Text | subpixel rgb | unhinted | 3795 | 4 | 7.05 us | 77.37 us |
-| Vulkan | Text | subpixel rgb | phase | 3795 | 4 | 8.67 us | 81.82 us |
-| Vulkan | Text | subpixel rgb | metrics | 3795 | 4 | 11.56 us | 77.28 us |
-| Vulkan | Multi-script text | grayscale | unhinted | 1395 | 4 | 2.54 us | 25.71 us |
-| Vulkan | Multi-script text | grayscale | metrics | 1395 | 4 | 3.94 us | 22.29 us |
-| Vulkan | Multi-script text | subpixel rgb | unhinted | 1395 | 4 | 2.55 us | 73.46 us |
-| Vulkan | Multi-script text | subpixel rgb | phase | 1395 | 4 | 3.10 us | 78.00 us |
-| Vulkan | Multi-script text | subpixel rgb | metrics | 1395 | 4 | 4.18 us | 74.95 us |
+| Backend | Scene | AA | Words | Segments | PreparedScene | Draw |
+|---|---|---|---:|---:|---:|---:|
+| CPU | Text | grayscale | 3795 | 4 | 7.52 us | 3413.73 us |
+| CPU | Text | subpixel rgb | 3795 | 4 | 7.81 us | 17721.75 us |
+| CPU | Multi-script text | grayscale | 1395 | 4 | 2.60 us | 1990.67 us |
+| CPU | Multi-script text | subpixel rgb | 1395 | 4 | 2.66 us | 10506.53 us |
+| GL 4.4 (persistent mapped) | Text | grayscale | 3795 | 4 | 7.70 us | 90.37 us |
+| GL 4.4 (persistent mapped) | Text | subpixel rgb | 3795 | 4 | 8.10 us | 289.94 us |
+| GL 4.4 (persistent mapped) | Multi-script text | grayscale | 1395 | 4 | 2.73 us | 92.67 us |
+| GL 4.4 (persistent mapped) | Multi-script text | subpixel rgb | 1395 | 4 | 2.71 us | 288.37 us |
+| Vulkan | Text | grayscale | 3795 | 4 | 7.22 us | 23.70 us |
+| Vulkan | Text | subpixel rgb | 3795 | 4 | 7.55 us | 81.08 us |
+| Vulkan | Multi-script text | grayscale | 1395 | 4 | 2.65 us | 25.47 us |
+| Vulkan | Multi-script text | subpixel rgb | 1395 | 4 | 2.67 us | 82.70 us |
 
 ## Architecture
 

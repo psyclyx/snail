@@ -108,7 +108,10 @@ pub const TextBlob = struct {
     atlas: *const TextAtlas,
     atlas_identity: u64,
     glyphs: []Glyph,
-    instance_count_hint: usize,
+    /// Upper bound on GPU vertex-output instances this blob will emit
+    /// (counts COLR layer fan-out and synthetic-bold duplication). Used to
+    /// size scratch buffers in `DrawList.estimate`.
+    gpu_instance_budget: usize,
 
     pub const Glyph = struct {
         face_index: FaceIndex,
@@ -142,87 +145,75 @@ pub const TextBlob = struct {
         _ = try atlas.appendShapedTextBlob(&builder, shaped, options, false);
         return builder.finish();
     }
+};
 
-    pub const AppendResult = struct {
-        emitted: usize,
-        next_glyph: usize,
-        completed: bool,
-        layer_window_base: u32,
-    };
+/// Implementation of `TextBatch.addDraw`: emits one slice of a `TextDraw`
+/// into `batch`. Lives here because the per-glyph layer-window walk uses
+/// `FaceView` internals.
+pub fn appendTextDrawIntoBatch(
+    batch: *TextBatch,
+    view: anytype,
+    draw: snail.TextDraw,
+    override_index: usize,
+    start_glyph: usize,
+) !TextBatch.AppendResult {
+    const blob = draw.blob;
+    try blob.validate();
+    const range = draw.glyphs.resolve(blob.glyphs.len);
+    const start = @max(start_glyph, range.start);
+    if (start > range.end) return error.InvalidGlyphRange;
+    if (override_index >= draw.instances.len) return error.InvalidOverrideIndex;
+    const override = draw.instances[override_index];
+    const has_outer_transform = !isIdentityTransform(override.transform);
+    const has_tint = override.tint[0] != 1 or override.tint[1] != 1 or override.tint[2] != 1 or override.tint[3] != 1;
 
-    /// Emit one slice of a `TextDraw` into `batch`: the glyphs from
-    /// `[start_glyph, draw.glyphs.end)` under the override at
-    /// `draw.instances[override_index]`. The caller advances across overrides
-    /// and re-opens batches when full or the texture layer window changes.
-    pub fn appendDrawFrom(
-        self: *const TextBlob,
-        batch: *TextBatch,
-        view: anytype,
-        draw: snail.TextDraw,
-        override_index: usize,
-        target: snail.ResolveTarget,
-        scene_to_screen: ?snail.Transform2D,
-        start_glyph: usize,
-    ) !AppendResult {
-        try self.validate();
-        const range = draw.glyphs.resolve(self.glyphs.len);
-        const start = @max(start_glyph, range.start);
-        if (start > range.end) return error.InvalidGlyphRange;
-        if (override_index >= draw.instances.len) return error.InvalidOverrideIndex;
-        const override = draw.instances[override_index];
-        const has_outer_transform = !isIdentityTransform(override.transform);
-        const has_tint = override.tint[0] != 1 or override.tint[1] != 1 or override.tint[2] != 1 or override.tint[3] != 1;
+    var count: usize = 0;
+    var glyph_index = start;
+    while (glyph_index < range.end) : (glyph_index += 1) {
+        const glyph = blob.glyphs[glyph_index];
+        const face_view = blob.atlas.faceView(glyph.face_index, view);
+        const glyph_layer_base = try textBlobGlyphLayerWindowBase(&face_view, glyph.glyph_id) orelse continue;
+        if (batch.layer_window_base) |base| {
+            if (base != glyph_layer_base) break;
+        } else {
+            batch.layer_window_base = glyph_layer_base;
+        }
 
-        var count: usize = 0;
-        var glyph_index = start;
-        while (glyph_index < range.end) : (glyph_index += 1) {
-            const glyph = self.glyphs[glyph_index];
-            const face_view = self.atlas.faceView(glyph.face_index, view);
-            const glyph_layer_base = try textBlobGlyphLayerWindowBase(&face_view, glyph.glyph_id) orelse continue;
-            if (batch.layer_window_base) |base| {
-                if (base != glyph_layer_base) break;
-            } else {
-                batch.layer_window_base = glyph_layer_base;
-            }
+        var final_transform = glyph.transform;
+        if (has_outer_transform) {
+            final_transform = snail.Transform2D.multiply(override.transform, final_transform);
+        }
+        const final_color = if (has_tint) multiplyColor(glyph.color, override.tint) else glyph.color;
 
-            var final_transform = glyph.transform;
+        switch (glyph_emit.emitGlyphWithTransform(batch, &face_view, glyph.glyph_id, final_color, final_transform)) {
+            .emitted => count += 1,
+            .skipped => {},
+            .buffer_full => return error.DrawListFull,
+            .layer_window_changed => break,
+            .invalid_transform => return error.InvalidTransform,
+        }
+
+        if (glyph.embolden != 0) {
+            var bold_transform = glyph.transform;
+            bold_transform.tx += glyph.embolden;
             if (has_outer_transform) {
-                final_transform = snail.Transform2D.multiply(override.transform, final_transform);
+                bold_transform = snail.Transform2D.multiply(override.transform, bold_transform);
             }
-            const final_color = if (has_tint) multiplyColor(glyph.color, override.tint) else glyph.color;
-            const hinted = resolveTextHinting(&face_view, glyph.glyph_id, final_transform, draw.resolve, target, scene_to_screen);
-
-            switch (glyph_emit.emitGlyphWithTransform(batch, &face_view, glyph.glyph_id, final_color, hinted.transform)) {
-                .emitted => count += 1,
-                .skipped => {},
+            switch (glyph_emit.emitGlyphWithTransform(batch, &face_view, glyph.glyph_id, final_color, bold_transform)) {
+                .emitted, .skipped => {},
                 .buffer_full => return error.DrawListFull,
-                .layer_window_changed => break,
+                .layer_window_changed => return error.GlyphSpansTextureLayerWindows,
                 .invalid_transform => return error.InvalidTransform,
             }
-
-            if (glyph.embolden != 0) {
-                var bold_transform = glyph.transform;
-                bold_transform.tx += glyph.embolden;
-                if (has_outer_transform) {
-                    bold_transform = snail.Transform2D.multiply(override.transform, bold_transform);
-                }
-                const bold_hinted = resolveTextHinting(&face_view, glyph.glyph_id, bold_transform, draw.resolve, target, scene_to_screen);
-                switch (glyph_emit.emitGlyphWithTransform(batch, &face_view, glyph.glyph_id, final_color, bold_hinted.transform)) {
-                    .emitted, .skipped => {},
-                    .buffer_full => return error.DrawListFull,
-                    .layer_window_changed => return error.GlyphSpansTextureLayerWindows,
-                    .invalid_transform => return error.InvalidTransform,
-                }
-            }
         }
-        return .{
-            .emitted = count,
-            .next_glyph = glyph_index,
-            .completed = glyph_index >= range.end,
-            .layer_window_base = batch.currentLayerWindowBase(),
-        };
     }
-};
+    return .{
+        .emitted = count,
+        .next_glyph = glyph_index,
+        .completed = glyph_index >= range.end,
+        .layer_window_base = batch.currentLayerWindowBase(),
+    };
+}
 
 fn multiplyColor(a: [4]f32, b: [4]f32) [4]f32 {
     return .{ a[0] * b[0], a[1] * b[1], a[2] * b[2], a[3] * b[3] };
@@ -258,7 +249,7 @@ pub const TextBlobBuilder = struct {
     allocator: Allocator,
     atlas: *const TextAtlas,
     glyphs: std.ArrayListUnmanaged(TextBlob.Glyph) = .empty,
-    instance_count_hint: usize = 0,
+    gpu_instance_budget: usize = 0,
 
     pub fn init(allocator: Allocator, atlas: *const TextAtlas) TextBlobBuilder {
         return .{
@@ -274,7 +265,7 @@ pub const TextBlobBuilder = struct {
 
     pub fn reset(self: *TextBlobBuilder) void {
         self.glyphs.clearRetainingCapacity();
-        self.instance_count_hint = 0;
+        self.gpu_instance_budget = 0;
     }
 
     pub fn glyphCount(self: *const TextBlobBuilder) usize {
@@ -283,15 +274,15 @@ pub const TextBlobBuilder = struct {
 
     pub fn finish(self: *TextBlobBuilder) !TextBlob {
         const owned = try self.glyphs.toOwnedSlice(self.allocator);
-        const instance_count_hint = self.instance_count_hint;
+        const gpu_instance_budget = self.gpu_instance_budget;
         self.glyphs = .empty;
-        self.instance_count_hint = 0;
+        self.gpu_instance_budget = 0;
         return .{
             .allocator = self.allocator,
             .atlas = self.atlas,
             .atlas_identity = self.atlas.snapshotIdentity(),
             .glyphs = owned,
-            .instance_count_hint = instance_count_hint,
+            .gpu_instance_budget = gpu_instance_budget,
         };
     }
 
@@ -1187,94 +1178,6 @@ fn isIdentityTransform(transform: snail.Transform2D) bool {
     return transform.xx == 1 and transform.xy == 0 and transform.tx == 0 and transform.yx == 0 and transform.yy == 1 and transform.ty == 0;
 }
 
-fn snapToGrid(value: f32, step: f32) f32 {
-    if (step <= 0) return value;
-    return @round(value / step) * step;
-}
-
-const HintGrid = struct { x: f32, y: f32 };
-
-fn hintGrid(order: snail.SubpixelOrder) HintGrid {
-    return switch (order) {
-        .rgb, .bgr => .{ .x = 1.0 / 3.0, .y = 1.0 },
-        .vrgb, .vbgr => .{ .x = 1.0, .y = 1.0 / 3.0 },
-        .none => .{ .x = 1.0, .y = 1.0 },
-    };
-}
-
-fn effectiveHintOrder(target: snail.ResolveTarget) snail.SubpixelOrder {
-    if (!target.opaque_backdrop) return .none;
-    return target.subpixel_order;
-}
-
-fn glyphAdvanceEm(face_view: *const FaceView, glyph_id: u16) f32 {
-    if (glyph_id == 0) return 0;
-    const advance_units: f32 = if (face_view.getGlyph(glyph_id)) |info|
-        @floatFromInt(info.advance_width)
-    else
-        @floatFromInt(face_view.face_config.font.advanceWidth(glyph_id) catch 0);
-    return advance_units / @as(f32, @floatFromInt(face_view.face_config.font.units_per_em));
-}
-
-const ResolvedTextHinting = struct {
-    transform: snail.Transform2D,
-    screen_transform: snail.Transform2D,
-};
-
-fn resolveTextHinting(
-    face_view: *const FaceView,
-    glyph_id: u16,
-    scene_transform: snail.Transform2D,
-    resolve: snail.TextResolveOptions,
-    target: snail.ResolveTarget,
-    scene_to_screen: ?snail.Transform2D,
-) ResolvedTextHinting {
-    var result = ResolvedTextHinting{
-        .transform = scene_transform,
-        .screen_transform = scene_transform,
-    };
-    if (resolve.hinting == .none) return result;
-    if (!target.is_final_composite) return result;
-    if (target.will_resample) return result;
-    const map = scene_to_screen orelse return result;
-    if (@abs(map.xy) > 1e-5 or @abs(map.yx) > 1e-5) return result;
-    if (@abs(map.xx) <= 1e-5 or @abs(map.yy) <= 1e-5) return result;
-
-    var screen = snail.Transform2D.multiply(map, scene_transform);
-    if (@abs(screen.xy) > 1e-5 or @abs(screen.yx) > 1e-5) return result;
-
-    const ppem = @max(@abs(screen.xx), @abs(screen.yy));
-    if (ppem < 4.0 or ppem > 48.0) return result;
-
-    const grid = hintGrid(effectiveHintOrder(target));
-    screen.tx = snapToGrid(screen.tx, grid.x);
-    screen.ty = snapToGrid(screen.ty, grid.y);
-
-    if (resolve.hinting == .metrics) {
-        const advance_em = glyphAdvanceEm(face_view, glyph_id);
-        if (@abs(advance_em) > 1e-5) {
-            const start = screen.tx;
-            var end = snapToGrid(screen.tx + advance_em * screen.xx, grid.x);
-            if (@abs(end - start) < grid.x * 0.5) {
-                end = start + (if (screen.xx >= 0) grid.x else -grid.x);
-            }
-            screen.xx = (end - start) / advance_em;
-        }
-    }
-
-    result.screen_transform = screen;
-    result.transform = .{
-        .xx = screen.xx / map.xx,
-        .xy = screen.xy / map.xx,
-        .tx = (screen.tx - map.tx) / map.xx,
-        .yx = screen.yx / map.yy,
-        .yy = screen.yy / map.yy,
-        .ty = (screen.ty - map.ty) / map.yy,
-    };
-
-    return result;
-}
-
 fn glyphPlacementTransform(x: f32, y: f32, font_size: f32, skew_x: f32) snail.Transform2D {
     return .{
         .xx = font_size,
@@ -1468,9 +1371,9 @@ fn appendBlobGlyph(
         .embolden = synthetic.embolden,
         .color = color,
     });
-    builder.instance_count_hint += glyphInstanceBudget(face_view, glyph_id);
+    builder.gpu_instance_budget += glyphInstanceBudget(face_view, glyph_id);
     if (synthetic.embolden != 0 and glyph_id != 0) {
-        builder.instance_count_hint += glyphInstanceBudget(face_view, glyph_id);
+        builder.gpu_instance_budget += glyphInstanceBudget(face_view, glyph_id);
     }
 }
 
@@ -1774,87 +1677,4 @@ test "TextAtlas deduplicates same font data" {
     try testing.expectEqual(fonts.config.faces[0].font.data.ptr, fonts.config.faces[1].font.data.ptr);
 }
 
-test "phase hinting snaps final text origin without changing scale" {
-    const assets_data = @import("assets");
-    var fonts = try TextAtlas.init(testing.allocator, &.{
-        .{ .data = assets_data.noto_sans_regular },
-    });
-    defer fonts.deinit();
-
-    if (try fonts.ensureText(.{}, "H")) |new_fonts| {
-        fonts.deinit();
-        fonts = new_fonts;
-    }
-
-    const gid = try fonts.config.faces[0].font.glyphIndex('H');
-    const view = fonts.faceView(0, .{});
-    const transform = glyphPlacementTransform(10.2, 20.49, 12.0, 0.0);
-    const hinted = resolveTextHinting(&view, gid, transform, .{ .hinting = .phase }, .{
-        .pixel_width = 800,
-        .pixel_height = 600,
-        .subpixel_order = .rgb,
-    }, .identity).transform;
-
-    try testing.expectApproxEqAbs(@as(f32, 31.0 / 3.0), hinted.tx, 0.0001);
-    try testing.expectApproxEqAbs(@as(f32, 20.0), hinted.ty, 0.0001);
-    try testing.expectApproxEqAbs(transform.xx, hinted.xx, 0.0001);
-    try testing.expectApproxEqAbs(transform.yy, hinted.yy, 0.0001);
-}
-
-test "metrics hinting snaps final text advance span" {
-    const assets_data = @import("assets");
-    var fonts = try TextAtlas.init(testing.allocator, &.{
-        .{ .data = assets_data.noto_sans_regular },
-    });
-    defer fonts.deinit();
-
-    if (try fonts.ensureText(.{}, "H")) |new_fonts| {
-        fonts.deinit();
-        fonts = new_fonts;
-    }
-
-    const gid = try fonts.config.faces[0].font.glyphIndex('H');
-    const view = fonts.faceView(0, .{});
-    const transform = glyphPlacementTransform(10.2, 20.49, 12.0, 0.0);
-    const hinted = resolveTextHinting(&view, gid, transform, .{ .hinting = .metrics }, .{
-        .pixel_width = 800,
-        .pixel_height = 600,
-        .subpixel_order = .rgb,
-    }, .identity).transform;
-    const advance_em = glyphAdvanceEm(&view, gid);
-
-    try testing.expectApproxEqAbs(snapToGrid(hinted.tx, 1.0 / 3.0), hinted.tx, 0.0001);
-    try testing.expectApproxEqAbs(snapToGrid(hinted.tx + advance_em * hinted.xx, 1.0 / 3.0), hinted.tx + advance_em * hinted.xx, 0.0001);
-    try testing.expect(@abs(hinted.xx - transform.xx) > 0.0001);
-}
-
-test "hinting skips intermediate targets" {
-    const assets_data = @import("assets");
-    var fonts = try TextAtlas.init(testing.allocator, &.{
-        .{ .data = assets_data.noto_sans_regular },
-    });
-    defer fonts.deinit();
-
-    if (try fonts.ensureText(.{}, "H")) |new_fonts| {
-        fonts.deinit();
-        fonts = new_fonts;
-    }
-
-    const gid = try fonts.config.faces[0].font.glyphIndex('H');
-    const view = fonts.faceView(0, .{});
-    const transform = glyphPlacementTransform(10.2, 20.49, 12.0, 0.0);
-    const hinted = resolveTextHinting(&view, gid, transform, .{ .hinting = .metrics }, .{
-        .pixel_width = 800,
-        .pixel_height = 600,
-        .subpixel_order = .rgb,
-        .is_final_composite = false,
-    }, .identity).transform;
-
-    try testing.expectApproxEqAbs(transform.xx, hinted.xx, 0.0001);
-    try testing.expectApproxEqAbs(transform.xy, hinted.xy, 0.0001);
-    try testing.expectApproxEqAbs(transform.tx, hinted.tx, 0.0001);
-    try testing.expectApproxEqAbs(transform.yx, hinted.yx, 0.0001);
-    try testing.expectApproxEqAbs(transform.yy, hinted.yy, 0.0001);
-    try testing.expectApproxEqAbs(transform.ty, hinted.ty, 0.0001);
-}
 

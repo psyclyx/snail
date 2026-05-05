@@ -55,7 +55,6 @@ const TextLine = struct {
     size: f32,
     color: [4]f32 = .{ 1, 1, 1, 1 },
     style: snail.FontStyle = .{},
-    resolve: snail.TextResolveOptions = .{},
 };
 
 const TextWorkload = enum {
@@ -96,7 +95,6 @@ const scene_kinds = [_]SceneKind{ .text, .vector, .mixed, .multi_script };
 
 const RenderMode = struct {
     aa: snail.SubpixelOrder,
-    hinting: snail.TextHinting,
 
     fn aaName(self: RenderMode) []const u8 {
         return switch (self.aa) {
@@ -107,22 +105,11 @@ const RenderMode = struct {
             .vbgr => "subpixel vbgr",
         };
     }
-
-    fn hintName(self: RenderMode) []const u8 {
-        return switch (self.hinting) {
-            .none => "unhinted",
-            .phase => "phase",
-            .metrics => "metrics",
-        };
-    }
 };
 
 const render_modes = [_]RenderMode{
-    .{ .aa = .none, .hinting = .none },
-    .{ .aa = .none, .hinting = .metrics },
-    .{ .aa = .rgb, .hinting = .none },
-    .{ .aa = .rgb, .hinting = .phase },
-    .{ .aa = .rgb, .hinting = .metrics },
+    .{ .aa = .none },
+    .{ .aa = .rgb },
 };
 
 const mode_scene_kinds = [_]SceneKind{ .text, .multi_script };
@@ -508,15 +495,6 @@ fn buildScene(
     atlas: *snail.TextAtlas,
     kind: SceneKind,
 ) !SceneBundle {
-    return buildSceneWithHinting(allocator, atlas, kind, null);
-}
-
-fn buildSceneWithHinting(
-    allocator: std.mem.Allocator,
-    atlas: *snail.TextAtlas,
-    kind: SceneKind,
-    hinting_override: ?snail.TextHinting,
-) !SceneBundle {
     var scene = snail.Scene.init(allocator);
     errdefer scene.deinit();
 
@@ -535,8 +513,7 @@ fn buildSceneWithHinting(
         blobs = try allocator.alloc(snail.TextBlob, lines.len);
         for (lines) |line| {
             blobs[blob_count] = try makeTextBlob(allocator, atlas, line);
-            const resolve: snail.TextResolveOptions = if (hinting_override) |h| .{ .hinting = h } else line.resolve;
-            try scene.addText(.{ .blob = &blobs[blob_count], .resolve = resolve });
+            try scene.addText(.{ .blob = &blobs[blob_count] });
             blob_count += 1;
         }
     }
@@ -746,7 +723,7 @@ fn timeRecordBuild(
     return usFrom(start) / RECORD_ITERS;
 }
 
-// Cross-product of (AA, hinting) timed against one backend for one scene kind.
+// Per-AA timings against one backend for the text and multi-script scenes.
 fn benchModes(
     allocator: std.mem.Allocator,
     backend_name: []const u8,
@@ -756,7 +733,7 @@ fn benchModes(
 ) !void {
     for (mode_scene_kinds) |scene_kind| {
         for (render_modes) |mode| {
-            var bundle = try buildSceneWithHinting(allocator, atlas, scene_kind, mode.hinting);
+            var bundle = try buildScene(allocator, atlas, scene_kind);
             defer bundle.deinit();
 
             const opts = drawOptions(WIDTH, HEIGHT, mode.aa);
@@ -955,23 +932,21 @@ fn printModeTable(rows: []const ModeRow) void {
     std.debug.print(
         \\## Render Modes
         \\
-        \\Per-mode timings for the text and multi-script scenes. AA controls
-        \\the fragment-shader path (grayscale vs LCD subpixel); hinting controls
-        \\PreparedScene-time stem snapping resolved against the target.
+        \\Per-AA timings for the text and multi-script scenes. AA controls
+        \\the fragment-shader path (grayscale vs LCD subpixel).
         \\
-        \\| Backend | Scene | AA | Hinting | Words | Segments | PreparedScene | Draw |
-        \\|---|---|---|---|---:|---:|---:|---:|
+        \\| Backend | Scene | AA | Words | Segments | PreparedScene | Draw |
+        \\|---|---|---|---:|---:|---:|---:|
         \\
     , .{});
     for (rows) |row| {
         std.debug.print(
-            \\| {s} | {s} | {s} | {s} | {d} | {d} | {d:.2} us | {d:.2} us |
+            \\| {s} | {s} | {s} | {d} | {d} | {d:.2} us | {d:.2} us |
             \\
         , .{
             row.backend,
             row.scene.name(),
             row.mode.aaName(),
-            row.mode.hintName(),
             row.words,
             row.segments,
             row.record_us,

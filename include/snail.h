@@ -120,10 +120,6 @@ typedef struct {
 } SnailTextBlobOptions;
 
 typedef struct {
-    int hinting;
-} SnailTextResolveOptions;
-
-typedef struct {
     float pixel_width;
     float pixel_height;
     int subpixel_order;
@@ -183,11 +179,6 @@ typedef uint64_t SnailResourceKey;
 #define SNAIL_SUBPIXEL_BGR 2
 #define SNAIL_SUBPIXEL_VRGB 3
 #define SNAIL_SUBPIXEL_VBGR 4
-
-#define SNAIL_TEXT_HINT_NONE 0
-#define SNAIL_TEXT_HINT_PHASE 1
-#define SNAIL_TEXT_HINT_METRICS 2
-#define SNAIL_TEXT_HINT_OUTLINE 3
 
 /* Paint / style types */
 
@@ -362,7 +353,7 @@ size_t snail_path_picture_shape_count(const SnailPathPicture *picture);
 /* Scene and resources */
 
 /*
- * `snail_scene_add_text_options` and
+ * `snail_scene_add_text_transformed` and
  * `snail_scene_add_path_picture_transformed` need to outlive the caller's
  * stack, so the scene keeps a per-call override in an internal arena. That
  * arena grows monotonically until `snail_scene_reset` releases its capacity
@@ -375,10 +366,9 @@ void snail_scene_deinit(SnailScene *scene);
 void snail_scene_reset(SnailScene *scene);
 size_t snail_scene_command_count(const SnailScene *scene);
 int snail_scene_add_text(SnailScene *scene, const SnailTextBlob *blob);
-int snail_scene_add_text_options(SnailScene *scene,
-                                 const SnailTextBlob *blob,
-                                 SnailTransform2D transform,
-                                 SnailTextResolveOptions resolve);
+int snail_scene_add_text_transformed(SnailScene *scene,
+                                     const SnailTextBlob *blob,
+                                     SnailTransform2D transform);
 int snail_scene_add_path_picture(SnailScene *scene, const SnailPathPicture *picture);
 int snail_scene_add_path_picture_transformed(SnailScene *scene,
                                              const SnailPathPicture *picture,

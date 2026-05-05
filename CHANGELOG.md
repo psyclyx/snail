@@ -37,12 +37,32 @@
   override_index, shape_start) !AppendResult`.
 - `PathBatch.AppendResult.next_instance` → `next_shape`.
 - `TextBlob.appendToBatch` / `appendToBatchFrom` →
-  `TextBlob.appendDrawFrom(batch, view, TextDraw, override_index,
-  target, scene_to_screen, start_glyph)`.
+  `TextBatch.addDraw(view, TextDraw, override_index, start_glyph)`,
+  mirroring `PathBatch.addDraw`. The text submission helper now lives
+  on the batch (where you write into) rather than on the blob (what
+  you read from).
+- `TextBlob.instance_count_hint` → `TextBlob.gpu_instance_budget`.
+  Same value (upper bound on emitted GPU vertex-output instances per
+  blob), clearer name — disambiguates from `TextDraw.instances`,
+  which counts per-draw `Override` entries.
 - New `PathPictureBuilder.shapeCount()` for callers building `Range`
   selections at picture-build time.
 - `Range.start` / `Range.count` are `usize` (was `u32`) to match the
   resource lengths they index into.
+
+### Hinting removed
+
+- `TextHinting`, `TextResolveOptions`, `TextDraw.resolve`,
+  `TargetStamp.hinting`, the `H` key in the 2D demo, the bench
+  AA × hinting matrix, and the related `SNAIL_TEXT_HINT_*` constants
+  / `SnailTextResolveOptions` in the C API are gone. The 0.3.0
+  metrics/phase modes never matched their advertised behavior cleanly
+  — the underlying snap kept producing visible regressions on rotated
+  / animated text and across drivers — and 0.4.0 ships unhinted
+  rendering as the only mode rather than carrying a feature that
+  needed an asterisk on every recommendation. Callers that want
+  pixel-perfect static text should align baselines to integer
+  coordinates themselves.
 
 ### Limits and error reporting
 
@@ -58,10 +78,13 @@
 
 ### C API
 
-- `snail_scene_add_text_options` and
-  `snail_scene_add_path_picture_transformed` keep their export names
-  but route through the new draw structs internally; semantics are
-  preserved for existing callers.
+- `snail_scene_add_text_options` is gone. Its only purpose was the
+  `SnailTextResolveOptions` parameter (now removed); the transform
+  case it covered moves to `snail_scene_add_text_transformed`,
+  mirroring `snail_scene_add_path_picture_transformed`.
+- `snail_scene_add_path_picture_transformed` keeps its export name
+  but routes through the new `PathDraw` struct internally; semantics
+  are preserved.
 
 ### CPU renderer threading
 

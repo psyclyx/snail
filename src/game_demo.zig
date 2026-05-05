@@ -152,8 +152,7 @@ pub fn main() !void {
         // not have a guaranteed opaque backdrop, so LCD/subpixel stays off.
         gl.glDisable(gl.GL_DEPTH_TEST);
         try drawSnailScene(&snail_renderer, &scene_resources, &hud_passes.plain.scene, overlay_projection, demo_passes.hudTarget(window_size, fb_size, current_order, false), &draw_buf, allocator);
-        // A translucent vector panel is still not LCD-safe, but final-pixel
-        // outline hinting is valid because this pass is not resampled later.
+        // A translucent vector panel is still not LCD-safe.
         try drawSnailScene(&snail_renderer, &scene_resources, &hud_passes.translucent.scene, overlay_projection, demo_passes.hudTarget(window_size, fb_size, current_order, false), &draw_buf, allocator);
         // This panel is fully opaque and rendered directly to the swapchain, so
         // it is the reference case for LCD/subpixel HUD text.

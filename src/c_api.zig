@@ -160,10 +160,6 @@ pub const SnailTextBlobOptions = extern struct {
     color: [4]f32,
 };
 
-pub const SnailTextResolveOptions = extern struct {
-    hinting: c_int = 0,
-};
-
 pub const SnailResolveTarget = extern struct {
     pixel_width: f32,
     pixel_height: f32,
@@ -371,19 +367,6 @@ fn toFillRule(v: c_int) !snail.FillRule {
         1 => .even_odd,
         else => error.InvalidEnum,
     };
-}
-
-fn toTextHinting(v: c_int) !snail.TextHinting {
-    return switch (v) {
-        0 => .none,
-        1 => .phase,
-        2 => .metrics,
-        else => error.InvalidEnum,
-    };
-}
-
-fn toTextResolveOptions(options: SnailTextResolveOptions) !snail.TextResolveOptions {
-    return .{ .hinting = try toTextHinting(options.hinting) };
 }
 
 fn toResolveTarget(target: SnailResolveTarget) !snail.ResolveTarget {
@@ -971,13 +954,11 @@ export fn snail_scene_add_text(scene: *SceneImpl, blob: *const TextBlobImpl) c_i
     return SNAIL_OK;
 }
 
-export fn snail_scene_add_text_options(scene: *SceneImpl, blob: *const TextBlobImpl, transform: SnailTransform2D, resolve: SnailTextResolveOptions) c_int {
-    const resolved = toTextResolveOptions(resolve) catch return SNAIL_ERR_INVALID_ARGUMENT;
+export fn snail_scene_add_text_transformed(scene: *SceneImpl, blob: *const TextBlobImpl, transform: SnailTransform2D) c_int {
     const instances = stashOverride(scene, .{ .transform = toTransform(transform) }) catch return SNAIL_ERR_OUT_OF_MEMORY;
     scene.inner.addText(.{
         .blob = &blob.inner,
         .instances = instances,
-        .resolve = resolved,
     }) catch return SNAIL_ERR_OUT_OF_MEMORY;
     return SNAIL_OK;
 }

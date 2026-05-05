@@ -41,14 +41,6 @@ fn srgbToLinear(v: f32) f32 {
     return if (v <= 0.04045) v / 12.92 else std.math.pow(f32, (v + 0.055) / 1.055, 2.4);
 }
 
-fn cycleHinting(h: snail.TextHinting) snail.TextHinting {
-    return switch (h) {
-        .none => .phase,
-        .phase => .metrics,
-        .metrics => .none,
-    };
-}
-
 fn cycleSubpixelOrder(o: snail.SubpixelOrder) snail.SubpixelOrder {
     return switch (o) {
         .none => .rgb,
@@ -102,7 +94,6 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
     // Default to grayscale; press B to cycle into the detected subpixel mode.
     var current_order: snail.SubpixelOrder = .none;
     std.debug.print("snail: detected subpixel order: system={s} monitor={s} (starting in {s})\n", .{ @tagName(sys_order), @tagName(detected_order), @tagName(current_order) });
-    var selected_hinting: snail.TextHinting = .metrics;
 
     var path_picture: ?snail.PathPicture = null;
     defer if (path_picture) |*picture| picture.deinit();
@@ -115,7 +106,6 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
     var draw_buf: []u32 = &.{};
     defer if (draw_buf.len > 0) allocator.free(draw_buf);
     var uploaded_size = [2]u32{ 0, 0 };
-    var current_text_hinting: snail.TextHinting = .none;
 
     var buf_width: u32 = 0;
     var buf_height: u32 = 0;
@@ -141,8 +131,8 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
             .{},
         );
     }
-    std.debug.print("Keys: arrows pan, Z/X zoom, R rotate, H hinting, B AA mode, Esc quit\n", .{});
-    std.debug.print("hinting={s} aa={s}\n", .{ @tagName(selected_hinting), aaName(current_order) });
+    std.debug.print("Keys: arrows pan, Z/X zoom, R rotate, B AA mode, Esc quit\n", .{});
+    std.debug.print("aa={s}\n", .{aaName(current_order)});
 
     while (!platform.shouldClose()) {
         const now = platform.getTime();
@@ -162,10 +152,6 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
 
         if (platform.isKeyPressed(platform.KEY_R)) rotate = !rotate;
         if (platform.isKeyPressed(platform.KEY_ESCAPE)) break;
-        if (platform.isKeyPressed(platform.KEY_H)) {
-            selected_hinting = cycleHinting(selected_hinting);
-            std.debug.print("\nhinting={s}\n", .{@tagName(selected_hinting)});
-        }
         if (platform.isKeyPressed(platform.KEY_B)) {
             current_order = cycleSubpixelOrder(current_order);
             std.debug.print("\naa={s}\n", .{aaName(current_order)});
@@ -178,14 +164,6 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         if (platform.isKeyDown(platform.KEY_RIGHT)) pan_x -= pan_step;
         if (platform.isKeyDown(platform.KEY_UP)) pan_y += pan_step;
         if (platform.isKeyDown(platform.KEY_DOWN)) pan_y -= pan_step;
-        const active_motion = rotate or
-            platform.isKeyDown(platform.KEY_Z) or
-            platform.isKeyDown(platform.KEY_X) or
-            platform.isKeyDown(platform.KEY_LEFT) or
-            platform.isKeyDown(platform.KEY_RIGHT) or
-            platform.isKeyDown(platform.KEY_UP) or
-            platform.isKeyDown(platform.KEY_DOWN);
-        const desired_text_hinting: snail.TextHinting = if (active_motion) .none else selected_hinting;
 
         const size = platform.getWindowSize();
         const fb_size = platform.getFramebufferSize();
@@ -223,20 +201,14 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
             text_blob = try builder.finish();
             path_picture = try demo_banner_scene.buildPathPicture(allocator, layout, &scene_assets, dec_rects[0..text_result.decoration_count]);
             uploaded_size = size_key;
-            current_text_hinting = desired_text_hinting;
             scene.reset();
             if (path_picture) |*picture| try scene.addPath(.{ .picture = picture });
-            if (text_blob) |*blob| try scene.addText(.{ .blob = blob, .resolve = .{ .hinting = current_text_hinting } });
+            if (text_blob) |*blob| try scene.addText(.{ .blob = blob });
 
             var resource_entries: [8]snail.ResourceSet.Entry = undefined;
             var resources = snail.ResourceSet.init(&resource_entries);
             try resources.addScene(&scene);
             prepared = try renderer.uploadResourcesBlocking(allocator, &resources);
-        } else if (desired_text_hinting != current_text_hinting) {
-            current_text_hinting = desired_text_hinting;
-            scene.reset();
-            if (path_picture) |*picture| try scene.addPath(.{ .picture = picture });
-            if (text_blob) |*blob| try scene.addText(.{ .blob = blob, .resolve = .{ .hinting = current_text_hinting } });
         }
 
         const clear_srgb = demo_banner.clearColor();

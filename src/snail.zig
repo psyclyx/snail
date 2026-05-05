@@ -174,15 +174,6 @@ pub const TextCoverageShader = struct {
 /// material shader.
 pub const TextCoverageOptions = struct {
     transform: Transform2D = .identity,
-    resolve: TextResolveOptions = .{},
-    target: ResolveTarget = .{
-        .pixel_width = 1.0,
-        .pixel_height = 1.0,
-        .subpixel_order = .none,
-        .is_final_composite = false,
-        .opaque_backdrop = false,
-    },
-    scene_to_screen: ?Transform2D = null,
 };
 
 /// Prepared glyph coverage records for use by a custom material shader.
@@ -219,13 +210,13 @@ pub const TextCoverageRecords = struct {
         options: TextCoverageOptions,
     ) !void {
         const atlas_view = try prepared.textAtlasView(blob.atlas);
-        const scratch = try self.allocator.alloc(u32, @max(blob.instance_count_hint, 1) * TEXT_WORDS_PER_GLYPH);
+        const scratch = try self.allocator.alloc(u32, @max(blob.gpu_instance_budget, 1) * TEXT_WORDS_PER_GLYPH);
         defer self.allocator.free(scratch);
 
         var batch = TextBatch.init(scratch);
         const overrides = [_]Override{.{ .transform = options.transform }};
-        const draw = TextDraw{ .blob = blob, .instances = &overrides, .resolve = options.resolve };
-        const result = try blob.appendDrawFrom(&batch, atlas_view, draw, 0, options.target, options.scene_to_screen, 0);
+        const draw = TextDraw{ .blob = blob, .instances = &overrides };
+        const result = try batch.addDraw(atlas_view, draw, 0, 0);
         if (!result.completed) return error.DrawListFull;
 
         if (self.vertices.len > 0) self.allocator.free(self.vertices);
@@ -1402,6 +1393,28 @@ const TextBatch = struct {
 
     pub fn currentLayerWindowBase(self: *const TextBatch) u32 {
         return self.layer_window_base orelse 0;
+    }
+
+    pub const AppendResult = struct {
+        emitted: usize,
+        next_glyph: usize,
+        completed: bool,
+        layer_window_base: u32,
+    };
+
+    /// Emit one slice of a `TextDraw` into this batch: the glyphs from
+    /// `[start_glyph, draw.glyphs.end)` under `draw.instances[override_index]`.
+    /// Returns where to resume; the caller is responsible for advancing
+    /// across overrides and re-opening batches when full or when the
+    /// texture layer window changes.
+    pub fn addDraw(
+        self: *TextBatch,
+        view: anytype,
+        draw: TextDraw,
+        override_index: usize,
+        start_glyph: usize,
+    ) !AppendResult {
+        return fonts_mod.appendTextDrawIntoBatch(self, view, draw, override_index, start_glyph);
     }
 
     fn localLayer(self: *TextBatch, atlas_layer: u32) !u8 {
@@ -3768,37 +3781,6 @@ pub const ResolveTarget = struct {
     will_resample: bool = false,
 };
 
-pub const TextHinting = enum(u8) {
-    none,
-    phase,
-    metrics,
-};
-
-/// Final-resolve text fitting.
-///
-/// This is intentionally a resolve-time control, not an atlas/layout control:
-/// fitting should happen against the final target pixel grid. Callers that
-/// animate, scroll, or otherwise preserve fractional motion should usually
-/// leave this at `.none` while in motion and opt in deliberately for static
-/// final text.
-pub const TextResolveOptions = struct {
-    hinting: TextHinting = .none,
-};
-
-fn sceneToScreenTransform(mvp: Mat4, viewport_w: f32, viewport_h: f32) ?Transform2D {
-    if (@abs(mvp.data[3]) > 1e-5 or @abs(mvp.data[7]) > 1e-5 or @abs(mvp.data[11]) > 1e-5) return null;
-    if (@abs(mvp.data[15] - 1.0) > 1e-5) return null;
-
-    return .{
-        .xx = mvp.data[0] * viewport_w * 0.5,
-        .xy = mvp.data[4] * viewport_w * 0.5,
-        .tx = (mvp.data[12] * 0.5 + 0.5) * viewport_w,
-        .yx = mvp.data[1] * viewport_h * 0.5,
-        .yy = mvp.data[5] * viewport_h * 0.5,
-        .ty = (mvp.data[13] * 0.5 + 0.5) * viewport_h,
-    };
-}
-
 fn effectiveSubpixelOrder(target: ResolveTarget) SubpixelOrder {
     if (!target.is_final_composite) return .none;
     if (!target.opaque_backdrop) return .none;
@@ -3848,7 +3830,6 @@ pub const TextDraw = struct {
     blob: *const TextBlob,
     glyphs: Range = .{},
     instances: []const Override = &identity_overrides,
-    resolve: TextResolveOptions = .{},
 };
 
 pub const Scene = struct {
@@ -3903,9 +3884,7 @@ pub const ResourceStamp = struct {
 pub const TargetStamp = struct {
     pixel_size: [2]u32 = .{ 0, 0 },
     subpixel_order: SubpixelOrder = .none,
-    hinting: TextHinting = .none,
     mvp_class: MvpClass = .projective,
-    hint_transform_hash: u64 = 0,
 
     pub const MvpClass = enum(u8) {
         identity,
@@ -3914,24 +3893,15 @@ pub const TargetStamp = struct {
         projective,
     };
 
-    pub fn from(mvp: Mat4, target: ResolveTarget, hinting: TextHinting) TargetStamp {
+    pub fn from(mvp: Mat4, target: ResolveTarget) TargetStamp {
         return .{
             .pixel_size = .{
                 @intFromFloat(@max(target.pixel_width, 0.0)),
                 @intFromFloat(@max(target.pixel_height, 0.0)),
             },
             .subpixel_order = effectiveSubpixelOrder(target),
-            .hinting = hinting,
             .mvp_class = classifyMvp(mvp),
-            .hint_transform_hash = if (hinting == .none) 0 else hashHintTransform(mvp, target),
         };
-    }
-
-    fn hashHintTransform(mvp: Mat4, target: ResolveTarget) u64 {
-        var h = std.hash.Wyhash.hash(0x534e41494c48544d, std.mem.asBytes(&mvp.data));
-        h = mix64(h, @as(u32, @bitCast(target.pixel_width)));
-        h = mix64(h, @as(u32, @bitCast(target.pixel_height)));
-        return h;
     }
 
     fn classifyMvp(mvp: Mat4) MvpClass {
@@ -4487,8 +4457,8 @@ pub const DrawList = struct {
                     const glyphs = draw.glyphs.resolve(draw.blob.glyphCount());
                     const span = glyphs.end - glyphs.start;
                     const total_glyphs = draw.blob.glyphCount();
-                    const span_hint = if (total_glyphs == 0) 0 else (draw.blob.instance_count_hint * span + total_glyphs - 1) / total_glyphs;
-                    total += span_hint * draw.instances.len * TEXT_WORDS_PER_GLYPH;
+                    const span_budget = if (total_glyphs == 0) 0 else (draw.blob.gpu_instance_budget * span + total_glyphs - 1) / total_glyphs;
+                    total += span_budget * draw.instances.len * TEXT_WORDS_PER_GLYPH;
                 },
                 .path => |draw| {
                     const range = draw.shapes.resolve(draw.picture.shapes.len);
@@ -4526,7 +4496,7 @@ pub const DrawList = struct {
         scene: *const Scene,
         options: DrawOptions,
     ) !void {
-        const hint_context = sceneToScreenTransform(options.mvp, options.target.pixel_width, options.target.pixel_height);
+        const target_stamp = TargetStamp.from(options.mvp, options.target);
         for (scene.commands.items) |command| {
             switch (command) {
                 .text => |draw| {
@@ -4537,7 +4507,7 @@ pub const DrawList = struct {
                         while (glyph_start < glyph_range.end) {
                             const start = self.len;
                             var batch = TextBatch.init(self.buf[self.len..]);
-                            const result = try draw.blob.appendDrawFrom(&batch, view, draw, override_index, options.target, hint_context, glyph_start);
+                            const result = try batch.addDraw(view, draw, override_index, glyph_start);
                             glyph_start = result.next_glyph;
                             if (batch.glyphCount() == 0) {
                                 if (result.completed) break;
@@ -4551,7 +4521,7 @@ pub const DrawList = struct {
                                 .texture_layer_base = result.layer_window_base,
                                 .key = prepared.textAtlasEntry(draw.blob.atlas).?.key,
                                 .resource_stamp = try prepared.textStamp(draw.blob.atlas),
-                                .target_stamp = TargetStamp.from(options.mvp, options.target, draw.resolve.hinting),
+                                .target_stamp = target_stamp,
                             });
                             if (result.completed) break;
                         }
@@ -4579,7 +4549,7 @@ pub const DrawList = struct {
                                 .texture_layer_base = result.layer_window_base,
                                 .key = prepared.pathPictureEntry(draw.picture).?.key,
                                 .resource_stamp = try prepared.pathStamp(draw.picture),
-                                .target_stamp = TargetStamp.from(options.mvp, options.target, .none),
+                                .target_stamp = target_stamp,
                             });
                             if (result.completed) break;
                         }
@@ -4950,16 +4920,18 @@ pub const Renderer = struct {
             }
             fn drawFn(renderer: *Renderer, prepared: *const PreparedResources, records: DrawRecords, options: DrawOptions) anyerror!void {
                 const backend_prepared = resolveBackendPrepared(prepared) orelse return error.MissingPreparedResource;
+                try renderer.validateRecords(prepared, records, options);
                 if (comptime build_options.enable_cpu and T == CpuRenderer) {
                     const cpu_self = cast(renderer.ptr);
                     if (cpu_self.thread_pool) |pool| {
                         const span = cpu_self.row_clip_max - cpu_self.row_clip_min;
                         if (span >= 2 * CpuRenderer.TILE_ROWS) {
-                            return cpu_self.dispatchTiledDraw(pool, prepared, records, options);
+                            cpu_self.dispatchTiledDraw(pool, backend_prepared, records, options);
+                            return;
                         }
                     }
                 }
-                try renderer.iterateRecords(prepared, records, options, backend_prepared);
+                renderer.iterateRecords(records, options, backend_prepared);
             }
         };
         return .{
@@ -5022,19 +4994,30 @@ pub const Renderer = struct {
         return self.draw(prepared, scene.slice(), options);
     }
 
-    /// Default frame-level draw: validate stamps, set state, walk records
-    /// serially dispatching each segment to the backend's `drawText` /
-    /// `drawPaths`. Used by the GL and Vulkan vtables directly, and by the
-    /// CPU vtable's serial fallback / tile workers.
-    pub fn iterateRecords(self: *Renderer, prepared: *const PreparedResources, records: DrawRecords, options: DrawOptions, backend_prepared: ?*const anyopaque) !void {
+    /// Verify every segment's stamps still match the live prepared resources
+    /// and the requested draw target. Returns `error.StaleDrawRecords` if a
+    /// resource has been re-uploaded or the target/MVP has changed since the
+    /// records were built; `error.MissingPreparedResource` if a key is gone.
+    /// Vtables call this once per frame before fan-out so per-tile workers
+    /// don't have to re-validate (and don't need an error path).
+    pub fn validateRecords(_: *Renderer, prepared: *const PreparedResources, records: DrawRecords, options: DrawOptions) !void {
+        const expected_target_stamp = TargetStamp.from(options.mvp, options.target);
+        for (records.segments) |segment| {
+            const actual_stamp = prepared.stampForKey(segment.key) orelse return error.MissingPreparedResource;
+            if (!actual_stamp.eql(segment.resource_stamp)) return error.StaleDrawRecords;
+            if (!std.meta.eql(expected_target_stamp, segment.target_stamp)) return error.StaleDrawRecords;
+        }
+    }
+
+    /// Frame-level draw: set state, walk records serially dispatching each
+    /// segment to the backend's `drawText` / `drawPaths`. Used by the GL and
+    /// Vulkan vtables directly, and by the CPU vtable's serial fallback /
+    /// tile workers. Caller has already invoked `validateRecords`.
+    pub fn iterateRecords(self: *Renderer, records: DrawRecords, options: DrawOptions, backend_prepared: ?*const anyopaque) void {
         self.setSubpixelOrder(effectiveSubpixelOrder(options.target));
         self.setFillRule(options.target.fill_rule);
         self.beginFrame();
         for (records.segments) |segment| {
-            const actual_stamp = prepared.stampForKey(segment.key) orelse return error.MissingPreparedResource;
-            if (!actual_stamp.eql(segment.resource_stamp)) return error.StaleDrawRecords;
-            const expected_target_stamp = TargetStamp.from(options.mvp, options.target, segment.target_stamp.hinting);
-            if (!std.meta.eql(expected_target_stamp, segment.target_stamp)) return error.StaleDrawRecords;
             const vertices = records.words[segment.offset..][0..segment.len];
             switch (segment.kind) {
                 .text => if (vertices.len > 0) self.drawText(backend_prepared, vertices, options.mvp, options.target.pixel_width, options.target.pixel_height, segment.texture_layer_base),
@@ -5356,7 +5339,8 @@ test "draw dispatch uses only prepared stamps and caller records" {
         }
         fn deinit(_: *anyopaque) void {}
         fn draw(renderer: *Renderer, prepared: *const PreparedResources, records: DrawRecords, options: DrawOptions) anyerror!void {
-            try renderer.iterateRecords(prepared, records, options, null);
+            try renderer.validateRecords(prepared, records, options);
+            renderer.iterateRecords(records, options, null);
         }
         fn drawText(ptr: *anyopaque, backend_prepared: ?*const anyopaque, vertices: []const u32, _: Mat4, viewport_w: f32, viewport_h: f32, _: u32) void {
             const s = state(ptr);
@@ -5433,7 +5417,7 @@ test "draw dispatch uses only prepared stamps and caller records" {
         .len = words.len,
         .key = key,
         .resource_stamp = stamp,
-        .target_stamp = TargetStamp.from(options.mvp, options.target, .none),
+        .target_stamp = TargetStamp.from(options.mvp, options.target),
     }};
     const records = DrawRecords{ .words = &words, .segments = &segments };
 
