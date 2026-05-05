@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.1
+
+### Fixed
+
+- `DrawList.estimate` now computes text budgets over the exact resolved
+  `TextDraw.glyphs` range instead of prorating the whole blob budget, so
+  ranged text draws can use it as the word-buffer upper bound even when
+  high-fanout glyphs are concentrated in a small slice.
+
 ## 0.4.0
 
 ### Unified draw-submission API
@@ -66,10 +75,6 @@
 
 ### Limits and error reporting
 
-- `DrawList.estimate` now computes text budgets over the exact resolved
-  `TextDraw.glyphs` range instead of prorating the whole blob budget, so
-  ranged text draws can use it as the word-buffer upper bound even when
-  high-fanout glyphs are concentrated in a small slice.
 - `TextAtlas.addText` no longer silently drops codepoints past 256 in
   any single itemized run. The per-face glyph buffer falls back to the
   heap (via the atlas allocator) for longer runs and surfaces
