@@ -76,8 +76,8 @@ pub const SNAIL_ERR_DRAW_FAILED: c_int = -5;
 fn mapError(err: anyerror) c_int {
     return switch (err) {
         error.OutOfMemory => SNAIL_ERR_OUT_OF_MEMORY,
-        error.InvalidFont, error.NoFaces => SNAIL_ERR_INVALID_FONT,
-        error.InvalidEnum, error.InvalidArgument => SNAIL_ERR_INVALID_ARGUMENT,
+        error.InvalidFont, error.NoFaces, error.MissingCellMetricsGlyph => SNAIL_ERR_INVALID_FONT,
+        error.InvalidEnum, error.InvalidArgument, error.InvalidFaceIndex, error.WrongTextAtlasSnapshot => SNAIL_ERR_INVALID_ARGUMENT,
         else => SNAIL_ERR_DRAW_FAILED,
     };
 }
@@ -101,6 +101,11 @@ pub const SnailLineMetrics = extern struct {
     ascent: i16,
     descent: i16,
     line_gap: i16,
+};
+
+pub const SnailCellMetrics = extern struct {
+    cell_width: f32,
+    line_height: f32,
 };
 
 pub const SnailRect = extern struct {
@@ -562,6 +567,46 @@ export fn snail_text_atlas_line_metrics(atlas: *const TextAtlasImpl, out: *Snail
     return SNAIL_OK;
 }
 
+export fn snail_text_atlas_face_count(atlas: *const TextAtlasImpl) usize {
+    return atlas.inner.faceCount();
+}
+
+export fn snail_text_atlas_primary_face_index(atlas: *const TextAtlasImpl, out: *u16) c_int {
+    out.* = atlas.inner.primaryFaceIndex() catch |err| return mapError(err);
+    return SNAIL_OK;
+}
+
+export fn snail_text_atlas_face_units_per_em(atlas: *const TextAtlasImpl, face_index: usize, out: *u16) c_int {
+    out.* = atlas.inner.faceUnitsPerEm(face_index) catch |err| return mapError(err);
+    return SNAIL_OK;
+}
+
+export fn snail_text_atlas_face_line_metrics(atlas: *const TextAtlasImpl, face_index: usize, out: *SnailLineMetrics) c_int {
+    const m = atlas.inner.faceLineMetrics(face_index) catch |err| return mapError(err);
+    out.* = .{ .ascent = m.ascent, .descent = m.descent, .line_gap = m.line_gap };
+    return SNAIL_OK;
+}
+
+export fn snail_text_atlas_glyph_index(atlas: *const TextAtlasImpl, face_index: usize, codepoint: u32, out: *u16) c_int {
+    const cp = std.math.cast(u21, codepoint) orelse return SNAIL_ERR_INVALID_ARGUMENT;
+    out.* = (atlas.inner.glyphIndex(face_index, cp) catch |err| return mapError(err)) orelse 0;
+    return SNAIL_OK;
+}
+
+export fn snail_text_atlas_advance_width(atlas: *const TextAtlasImpl, face_index: usize, glyph_id: u16, out: *i16) c_int {
+    out.* = atlas.inner.advanceWidth(face_index, glyph_id) catch |err| return mapError(err);
+    return SNAIL_OK;
+}
+
+export fn snail_text_atlas_cell_metrics(atlas: *const TextAtlasImpl, style: SnailFontStyle, em: f32, out: *SnailCellMetrics) c_int {
+    const metrics = atlas.inner.cellMetrics(.{
+        .style = toFontStyle(style) catch return SNAIL_ERR_INVALID_ARGUMENT,
+        .em = em,
+    }) catch |err| return mapError(err);
+    out.* = .{ .cell_width = metrics.cell_width, .line_height = metrics.line_height };
+    return SNAIL_OK;
+}
+
 export fn snail_text_atlas_shape_utf8(
     atlas: *const TextAtlasImpl,
     style: SnailFontStyle,
@@ -604,6 +649,30 @@ export fn snail_text_atlas_ensure_text(
 
 export fn snail_text_atlas_ensure_shaped(atlas: *const TextAtlasImpl, shaped: *const ShapedTextImpl, out: *?*TextAtlasImpl) c_int {
     const next = atlas.inner.ensureShaped(&shaped.inner) catch |err| return mapError(err);
+    if (next) |new_atlas| {
+        const impl = handleAllocator().create(TextAtlasImpl) catch {
+            var doomed = new_atlas;
+            doomed.deinit();
+            return SNAIL_ERR_OUT_OF_MEMORY;
+        };
+        impl.* = .{ .inner = new_atlas, .allocator = atlas.allocator };
+        out.* = impl;
+    } else {
+        out.* = null;
+    }
+    return SNAIL_OK;
+}
+
+export fn snail_text_atlas_ensure_glyphs(
+    atlas: *const TextAtlasImpl,
+    face_index: usize,
+    glyph_ids: ?[*]const u16,
+    glyph_count: usize,
+    out: *?*TextAtlasImpl,
+) c_int {
+    if (glyph_count > 0 and glyph_ids == null) return SNAIL_ERR_INVALID_ARGUMENT;
+    const gids = if (glyph_count == 0) &.{} else glyph_ids.?[0..glyph_count];
+    const next = atlas.inner.ensureGlyphs(face_index, gids) catch |err| return mapError(err);
     if (next) |new_atlas| {
         const impl = handleAllocator().create(TextAtlasImpl) catch {
             var doomed = new_atlas;
@@ -718,6 +787,11 @@ export fn snail_text_blob_deinit(blob: ?*TextBlobImpl) void {
 
 export fn snail_text_blob_glyph_count(blob: *const TextBlobImpl) usize {
     return blob.inner.glyphCount();
+}
+
+export fn snail_text_blob_rebind(blob: *TextBlobImpl, atlas: *const TextAtlasImpl) c_int {
+    blob.inner.rebind(&atlas.inner) catch |err| return mapError(err);
+    return SNAIL_OK;
 }
 
 // Image
@@ -1210,6 +1284,48 @@ test "c_api: font metrics helper" {
     try testing.expect(metrics.advance_width > 0);
 }
 
+test "c_api: text atlas metrics and ensure glyphs" {
+    const atlas = try testTextAtlas();
+    defer snail_text_atlas_deinit(atlas);
+
+    try testing.expectEqual(@as(usize, 1), snail_text_atlas_face_count(atlas));
+
+    var primary_face: u16 = undefined;
+    try testing.expectEqual(SNAIL_OK, snail_text_atlas_primary_face_index(atlas, &primary_face));
+    try testing.expectEqual(@as(u16, 0), primary_face);
+
+    var upem: u16 = 0;
+    try testing.expectEqual(SNAIL_OK, snail_text_atlas_face_units_per_em(atlas, primary_face, &upem));
+    try testing.expect(upem > 0);
+
+    var line_metrics: SnailLineMetrics = undefined;
+    try testing.expectEqual(SNAIL_OK, snail_text_atlas_face_line_metrics(atlas, primary_face, &line_metrics));
+    try testing.expect(line_metrics.ascent > 0);
+    try testing.expect(line_metrics.descent < 0);
+
+    var gid: u16 = 0;
+    try testing.expectEqual(SNAIL_OK, snail_text_atlas_glyph_index(atlas, primary_face, 'A', &gid));
+    try testing.expect(gid > 0);
+
+    var advance: i16 = 0;
+    try testing.expectEqual(SNAIL_OK, snail_text_atlas_advance_width(atlas, primary_face, gid, &advance));
+    try testing.expect(advance > 0);
+
+    var cell_metrics: SnailCellMetrics = undefined;
+    try testing.expectEqual(SNAIL_OK, snail_text_atlas_cell_metrics(atlas, .{}, 16, &cell_metrics));
+    try testing.expect(cell_metrics.cell_width > 0);
+    try testing.expect(cell_metrics.line_height > cell_metrics.cell_width);
+
+    var next: ?*TextAtlasImpl = null;
+    try testing.expectEqual(SNAIL_OK, snail_text_atlas_ensure_glyphs(atlas, primary_face, @ptrCast(&gid), 1, &next));
+    try testing.expect(next != null);
+    defer snail_text_atlas_deinit(next);
+
+    var again: ?*TextAtlasImpl = null;
+    try testing.expectEqual(SNAIL_OK, snail_text_atlas_ensure_glyphs(next.?, primary_face, @ptrCast(&gid), 1, &again));
+    try testing.expectEqual(@as(?*TextAtlasImpl, null), again);
+}
+
 test "c_api: text atlas shape ensure and blob" {
     var atlas = try testTextAtlas();
     defer snail_text_atlas_deinit(atlas);
@@ -1237,6 +1353,29 @@ test "c_api: text atlas shape ensure and blob" {
     }, &blob));
     defer snail_text_blob_deinit(blob);
     try testing.expectEqual(@as(usize, 5), snail_text_blob_glyph_count(blob.?));
+}
+
+test "c_api: text blob rebinds to extended atlas" {
+    var atlas = try testTextAtlas();
+    defer snail_text_atlas_deinit(atlas);
+    try ensureForText(&atlas, "A");
+
+    var blob: ?*TextBlobImpl = null;
+    try testing.expectEqual(SNAIL_OK, snail_text_blob_init_text(null, atlas, .{}, "A", 1, .{
+        .x = 0,
+        .y = 24,
+        .size = 24,
+        .color = .{ 1, 1, 1, 1 },
+    }, &blob));
+    defer snail_text_blob_deinit(blob);
+
+    var next: ?*TextAtlasImpl = null;
+    try testing.expectEqual(SNAIL_OK, snail_text_atlas_ensure_text(atlas, .{}, "B", 1, &next));
+    try testing.expect(next != null);
+
+    try testing.expectEqual(SNAIL_OK, snail_text_blob_rebind(blob.?, next.?));
+    snail_text_atlas_deinit(atlas);
+    atlas = next.?;
 }
 
 test "c_api: scene and resource set follow public model" {

@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.4.2
+
+### Added
+
+- `TextAtlas` now exposes stable per-face layout metrics:
+  `faceCount`, `primaryFaceIndex`, `faceLineMetrics`, `faceUnitsPerEm`,
+  `glyphIndex(face_index, codepoint)`, `advanceWidth(face_index, glyph_id)`,
+  and `cellMetrics(.{ .style, .em })`.
+- `snail.Font` is public again for callers that manage raw font data directly;
+  `init`, `deinit`, `unitsPerEm`, `glyphIndex`, and `advanceWidth` are the
+  stable surface.
+- `TextAtlas.ensureGlyphs(face_index, glyph_ids)` extends a snapshot from
+  already resolved glyph IDs without reshaping text.
+- `TextBlob.rebind(new_atlas)` retargets cached blobs to a compatible superset
+  atlas snapshot, after verifying the new snapshot shares the font config,
+  retains old pages, and contains every referenced glyph.
+- The C API mirrors the new text-atlas metrics, `ensure_glyphs`, and text-blob
+  rebind helpers.
+
+### Changed
+
+- `TextCoverageRecords` is now caller-buffered. Use
+  `TextCoverageRecords.wordCapacityForBlob(blob)` to size the `[]u32`, then
+  initialize with `TextCoverageRecords.init(buffer)`. `buildLocal` and
+  `rebuildLocal` no longer allocate.
+- README benchmark tables were refreshed from a `zig build bench -Dvulkan=true`
+  run on the documented machine.
+
 ## 0.4.1
 
 ### Fixed

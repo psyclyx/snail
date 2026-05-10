@@ -162,7 +162,7 @@ try gl.drawPrepared(&prepared, &prepared_scene, options);
 
 ### On-demand Atlas Extension
 
-`ensureText`, `ensureShaped`, and `ensureGlyphs` return a new immutable snapshot; the old one remains valid for in-flight readers. `TextBlob` borrows the atlas snapshot used to build it. Rebind cached blobs to a compatible extended snapshot before releasing the old atlas to keep them alive without reshaping or reallocating them.
+`ensureText`, `ensureShaped`, and `ensureGlyphs` return a new immutable snapshot; the old one remains valid for in-flight readers. Existing `TextBlob`s keep working with the snapshot they were built against as long as that snapshot and its prepared backend resources stay alive.
 
 ```zig
 if (try atlas.ensureText(.{}, text)) |next| {
@@ -171,7 +171,9 @@ if (try atlas.ensureText(.{}, text)) |next| {
 }
 ```
 
-If you already have shaped glyph IDs, extend the atlas directly:
+`TextBlob.rebind` is optional. Use it when you cache blobs across atlas extension and want those blobs to borrow the new compatible superset snapshot, usually so the old snapshot can be released and old prepared resources retired without reshaping unchanged text rows.
+
+If you already have shaped glyph IDs, extend the atlas directly and rebind only the cached blobs you plan to keep:
 
 ```zig
 if (try atlas.ensureGlyphs(face_index, glyph_ids)) |next| {
@@ -319,7 +321,7 @@ snail_text_atlas_deinit(atlas);
 |------|-------------|
 | `TextAtlas` | Immutable CPU font/glyph snapshot. `ensureText`, `ensureShaped`, and `ensureGlyphs` return a new snapshot; old stays valid. |
 | `ShapedText` | Shaped glyph placements for a string/run. |
-| `TextBlob` | Positioned text that borrows a compatible `TextAtlas` snapshot. Use `rebind` after atlas extension. |
+| `TextBlob` | Positioned text that borrows a `TextAtlas` snapshot. It can be rebound to a compatible superset snapshot when cache lifetime needs it. |
 | `Font` | Stable parsed-font helper for `unitsPerEm`, `glyphIndex`, and `advanceWidth` when callers manage raw font data directly. |
 | `FaceSpec` | `{ .data, .weight, .italic, .fallback, .synthetic }` — font face specification for `TextAtlas.init`. |
 | `FontStyle` | `{ .weight: FontWeight, .italic: bool }` — selects a face for rendering. |
@@ -359,7 +361,7 @@ snail_text_atlas_deinit(atlas);
 | `atlas.faceUnitsPerEm(face_index) !u16` / `atlas.glyphIndex(face_index, cp) !?u16` / `atlas.advanceWidth(face_index, gid) !i16` | Stable per-face font metrics for layout code. |
 | `atlas.cellMetrics(.{ .style, .em }) !CellMetrics` | Resolve the styled primary face and return `{ .cell_width, .line_height }` in caller units. |
 | `TextBlob.fromShaped(alloc, atlas, shaped, options) !TextBlob` | Build positioned text from a `ShapedText`. The blob borrows `atlas`. |
-| `blob.rebind(new_atlas) !void` | Move a blob to a compatible atlas snapshot that retains old pages and contains all referenced glyphs. |
+| `blob.rebind(new_atlas) !void` | Optional cache/lifetime helper: move a blob to a compatible atlas snapshot that retains old pages and contains all referenced glyphs. |
 | `TextBlobBuilder.init(alloc, atlas)` / `builder.addText(style, text, x, y, size, color) !AddTextResult` / `builder.finish() !TextBlob` | Convenience: shape + position in one pass. Call `atlas.ensureText`/`ensureShaped`/`ensureGlyphs` first if all glyphs must be renderable. |
 | `AddTextResult` | `{ .advance: f32, .missing: bool }` — pen advance and whether any referenced glyph was absent from the current atlas snapshot. |
 
@@ -456,10 +458,13 @@ masking, or compositing.
   `snail_text_color_linear()`), plus `glsl330_resource_interface` and
   `glsl330_coverage_functions` for materials that don't use snail's text
   varyings.
-- `TextCoverageRecords` is the per-glyph vertex stream. Build it with
-  `records.buildLocal(prepared, blob, .{ .transform = ... })`; it allocates
-  internally. Call `records.validFor(prepared)` after a re-upload and
-  `rebuildLocal` if the atlas has moved.
+- `TextCoverageRecords` is the per-glyph vertex stream over a caller-owned
+  `[]u32`. Size it with `TextCoverageRecords.wordCapacityForBlob(blob)`,
+  initialize with `TextCoverageRecords.init(buffer)`, then call
+  `records.buildLocal(prepared, blob, .{ .transform = ... })`. `buildLocal`
+  does not allocate; it returns `error.DrawListFull` if the buffer is too
+  small. Call `records.validFor(prepared)` after a re-upload and `rebuildLocal`
+  if the atlas has moved.
 - `TextCoverageBackend` is the GL hook. Get one from
   `prepared.textCoverageBackend(renderer)` (or `gl.textCoverageBackend(prepared)`
   on the typed renderer). Call `bind(bindings)` to bind your material's

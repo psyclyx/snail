@@ -88,6 +88,10 @@ typedef struct {
 } SnailLineMetrics;
 
 typedef struct {
+    float cell_width, line_height;
+} SnailCellMetrics;
+
+typedef struct {
     float embolden;
     float skew_x;
 } SnailSyntheticStyle;
@@ -247,6 +251,26 @@ size_t snail_text_atlas_page_count(const SnailTextAtlas *atlas);
 size_t snail_text_atlas_texture_byte_len(const SnailTextAtlas *atlas);
 int snail_text_atlas_units_per_em(const SnailTextAtlas *atlas, uint16_t *out);
 int snail_text_atlas_line_metrics(const SnailTextAtlas *atlas, SnailLineMetrics *out);
+size_t snail_text_atlas_face_count(const SnailTextAtlas *atlas);
+int snail_text_atlas_primary_face_index(const SnailTextAtlas *atlas, uint16_t *out);
+int snail_text_atlas_face_units_per_em(const SnailTextAtlas *atlas,
+                                       size_t face_index,
+                                       uint16_t *out);
+int snail_text_atlas_face_line_metrics(const SnailTextAtlas *atlas,
+                                       size_t face_index,
+                                       SnailLineMetrics *out);
+int snail_text_atlas_glyph_index(const SnailTextAtlas *atlas,
+                                 size_t face_index,
+                                 uint32_t codepoint,
+                                 uint16_t *out);
+int snail_text_atlas_advance_width(const SnailTextAtlas *atlas,
+                                   size_t face_index,
+                                   uint16_t glyph_id,
+                                   int16_t *out);
+int snail_text_atlas_cell_metrics(const SnailTextAtlas *atlas,
+                                  SnailFontStyle style,
+                                  float em,
+                                  SnailCellMetrics *out);
 int snail_text_atlas_shape_utf8(const SnailTextAtlas *atlas,
                                 SnailFontStyle style,
                                 const char *text,
@@ -259,6 +283,11 @@ int snail_text_atlas_ensure_text(const SnailTextAtlas *atlas,
                                  SnailTextAtlas **out);
 int snail_text_atlas_ensure_shaped(const SnailTextAtlas *atlas,
                                    const SnailShapedText *shaped,
+                                   SnailTextAtlas **out);
+int snail_text_atlas_ensure_glyphs(const SnailTextAtlas *atlas,
+                                   size_t face_index,
+                                   const uint16_t *glyph_ids,
+                                   size_t glyph_count,
                                    SnailTextAtlas **out);
 
 void snail_shaped_text_deinit(SnailShapedText *shaped);
@@ -284,6 +313,7 @@ int snail_text_blob_init_text(const SnailAllocator *alloc,
                               SnailTextBlob **out);
 void snail_text_blob_deinit(SnailTextBlob *blob);
 size_t snail_text_blob_glyph_count(const SnailTextBlob *blob);
+int snail_text_blob_rebind(SnailTextBlob *blob, const SnailTextAtlas *atlas);
 
 /* Images */
 

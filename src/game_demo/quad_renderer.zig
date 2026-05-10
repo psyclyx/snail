@@ -704,19 +704,23 @@ const TEXT_RECORD_FLOATS_PER_GLYPH: usize = TEXT_RECORD_VEC4S_PER_GLYPH * 4;
 pub const SurfaceTextDraw = struct {
     allocator: std.mem.Allocator,
     blob: *const snail.TextBlob,
+    coverage_words: []u32 = &.{},
     coverage: snail.TextCoverageRecords,
     record_storage: []f32 = &.{},
     record_buffer: gl.GLuint = 0,
     record_texture: gl.GLuint = 0,
 
     pub fn init(allocator: std.mem.Allocator, prepared: *const snail.PreparedResources, blob: *const snail.TextBlob) !SurfaceTextDraw {
-        var coverage = snail.TextCoverageRecords.initOwned(allocator);
-        errdefer coverage.deinit();
+        const coverage_words = try allocator.alloc(u32, snail.TextCoverageRecords.wordCapacityForBlob(blob));
+        errdefer allocator.free(coverage_words);
+
+        var coverage = snail.TextCoverageRecords.init(coverage_words);
         try coverage.buildLocal(prepared, blob, .{});
 
         var self = SurfaceTextDraw{
             .allocator = allocator,
             .blob = blob,
+            .coverage_words = coverage_words,
             .coverage = coverage,
         };
         errdefer if (self.record_storage.len > 0) self.allocator.free(self.record_storage);
@@ -728,7 +732,7 @@ pub const SurfaceTextDraw = struct {
         if (self.record_texture != 0) gl.glDeleteTextures(1, &self.record_texture);
         if (self.record_buffer != 0) gl.glDeleteBuffers(1, &self.record_buffer);
         if (self.record_storage.len > 0) self.allocator.free(self.record_storage);
-        self.coverage.deinit();
+        if (self.coverage_words.len > 0) self.allocator.free(self.coverage_words);
         self.* = undefined;
     }
 

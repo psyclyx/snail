@@ -181,29 +181,34 @@ pub const TextCoverageOptions = struct {
 
 /// Prepared glyph coverage records for use by a custom material shader.
 ///
-/// This owns only the per-glyph draw data. Snail atlas textures come from
-/// PreparedResources.
+/// Wraps caller-owned per-glyph draw data. Snail atlas textures come from
+/// PreparedResources. Use `wordCapacityForBlob` to size `buffer`.
 pub const TextCoverageRecords = struct {
-    allocator: std.mem.Allocator,
-    vertices: []u32 = &.{},
+    buffer: []u32,
+    len: usize = 0,
     atlas: ?*const TextAtlas = null,
     atlas_stamp: ResourceStamp = .{},
 
-    pub fn initOwned(allocator: std.mem.Allocator) TextCoverageRecords {
-        return .{ .allocator = allocator };
+    pub fn wordCapacityForBlob(blob: *const TextBlob) usize {
+        return @max(blob.gpu_instance_budget, 1) * TEXT_WORDS_PER_GLYPH;
     }
 
-    pub fn deinit(self: *TextCoverageRecords) void {
-        if (self.vertices.len > 0) self.allocator.free(self.vertices);
-        self.* = undefined;
+    pub fn init(buffer: []u32) TextCoverageRecords {
+        return .{ .buffer = buffer };
+    }
+
+    pub fn reset(self: *TextCoverageRecords) void {
+        self.len = 0;
+        self.atlas = null;
+        self.atlas_stamp = .{};
     }
 
     pub fn glyphCount(self: *const TextCoverageRecords) usize {
-        return self.vertices.len / TEXT_WORDS_PER_GLYPH;
+        return self.len / TEXT_WORDS_PER_GLYPH;
     }
 
     pub fn slice(self: *const TextCoverageRecords) []const u32 {
-        return self.vertices;
+        return self.buffer[0..self.len];
     }
 
     pub fn buildLocal(
@@ -212,20 +217,22 @@ pub const TextCoverageRecords = struct {
         blob: *const TextBlob,
         options: TextCoverageOptions,
     ) !void {
+        self.reset();
         const atlas_view = try prepared.textAtlasView(blob.atlas);
-        const scratch = try self.allocator.alloc(u32, @max(blob.gpu_instance_budget, 1) * TEXT_WORDS_PER_GLYPH);
-        defer self.allocator.free(scratch);
 
-        var batch = TextBatch.init(scratch);
+        var batch = TextBatch.init(self.buffer);
         const overrides = [_]Override{.{ .transform = options.transform }};
         const draw = TextDraw{ .blob = blob, .instances = &overrides };
         const result = try batch.addDraw(atlas_view, draw, 0, 0);
-        if (!result.completed) return error.DrawListFull;
+        if (!result.completed) {
+            self.len = batch.slice().len;
+            return error.DrawListFull;
+        }
 
-        if (self.vertices.len > 0) self.allocator.free(self.vertices);
-        self.vertices = try self.allocator.dupe(u32, batch.slice());
+        const stamp = try prepared.textStamp(blob.atlas);
+        self.len = batch.slice().len;
         self.atlas = blob.atlas;
-        self.atlas_stamp = try prepared.textStamp(blob.atlas);
+        self.atlas_stamp = stamp;
     }
 
     pub fn rebuildLocal(
@@ -5642,8 +5649,9 @@ test "replacing path-picture key does not invalidate unrelated text coverage rec
     var prepared_a = try renderer.uploadResourcesBlocking(allocator, &set_a);
     defer prepared_a.deinit();
 
-    var records = TextCoverageRecords.initOwned(allocator);
-    defer records.deinit();
+    const coverage_words = try allocator.alloc(u32, TextCoverageRecords.wordCapacityForBlob(&blob));
+    defer allocator.free(coverage_words);
+    var records = TextCoverageRecords.init(coverage_words);
     try records.buildLocal(&prepared_a, &blob, .{});
     try std.testing.expect(records.validFor(&prepared_a));
 
