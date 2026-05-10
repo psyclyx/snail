@@ -40,7 +40,7 @@ jobs:
       - name: Run unit tests (no HarfBuzz)
         run: zig build test -Dharfbuzz=false
 
-      - name: Backend pixel comparison (CPU vs GL vs Vulkan via llvmpipe/lavapipe)
+      - name: Backend pixel comparison (CPU vs GL/llvmpipe vs Vulkan/lavapipe)
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
           GALLIUM_DRIVER: llvmpipe
