@@ -391,12 +391,18 @@ pub const FaceConfig = struct {
 pub const FaceGlyphData = struct {
     glyph_map: std.AutoHashMap(u16, GlyphInfo),
     glyph_lut: ?[]GlyphInfo = null,
+    /// Parallel presence bitset for `glyph_lut`: bit `gid` is set iff `glyph_map`
+    /// has an entry for `gid`. Required because a present-but-empty glyph (e.g.
+    /// space, with `h_band_count == 0`) is indistinguishable in the LUT from an
+    /// absent gid that landed in the zero-initialised slot.
+    glyph_lut_present: ?[]u64 = null,
     glyph_lut_len: u32 = 0,
     colr_base_map: ?std.AutoHashMap(u16, ColrBaseInfo) = null,
 
     fn deinit(self: *FaceGlyphData, allocator: Allocator) void {
         self.glyph_map.deinit();
         if (self.glyph_lut) |lut| allocator.free(lut);
+        if (self.glyph_lut_present) |bits| allocator.free(bits);
         if (self.colr_base_map) |*cbm| cbm.deinit();
     }
 
@@ -423,11 +429,12 @@ pub const FaceGlyphData = struct {
 
     pub fn getGlyph(self: *const FaceGlyphData, gid: u16) ?GlyphInfo {
         if (self.glyph_lut) |lut| {
-            if (gid < self.glyph_lut_len) {
-                const info = lut[gid];
-                if (info.band_entry.h_band_count > 0) return info;
+            if (gid >= self.glyph_lut_len) return null;
+            if (self.glyph_lut_present) |bits| {
+                const word = bits[gid >> 6];
+                if ((word >> @intCast(gid & 63)) & 1 == 0) return null;
             }
-            return null;
+            return lut[gid];
         }
         return self.glyph_map.get(gid);
     }
@@ -435,6 +442,9 @@ pub const FaceGlyphData = struct {
     fn buildGlyphLut(self: *FaceGlyphData, allocator: Allocator) !void {
         if (self.glyph_lut) |lut| allocator.free(lut);
         self.glyph_lut = null;
+        if (self.glyph_lut_present) |bits| allocator.free(bits);
+        self.glyph_lut_present = null;
+        self.glyph_lut_len = 0;
 
         if (self.glyph_map.count() == 0) return;
 
@@ -446,14 +456,22 @@ pub const FaceGlyphData = struct {
 
         const size = max_gid + 1;
         const lut = try allocator.alloc(GlyphInfo, size);
+        errdefer allocator.free(lut);
         @memset(lut, std.mem.zeroes(GlyphInfo));
+
+        const word_count = (size + 63) / 64;
+        const present = try allocator.alloc(u64, word_count);
+        @memset(present, 0);
 
         it = self.glyph_map.iterator();
         while (it.next()) |entry| {
-            lut[entry.key_ptr.*] = entry.value_ptr.*;
+            const gid = entry.key_ptr.*;
+            lut[gid] = entry.value_ptr.*;
+            present[gid >> 6] |= @as(u64, 1) << @intCast(gid & 63);
         }
 
         self.glyph_lut = lut;
+        self.glyph_lut_present = present;
         self.glyph_lut_len = @intCast(size);
     }
 };
@@ -1496,7 +1514,12 @@ fn glyphInstanceBudget(face_view: *const FaceView, glyph_id: u16) usize {
     const layer_count = layer_it.count();
     if (layer_count > 0) return layer_count;
 
-    return if (face_view.getGlyph(glyph_id) != null) 1 else 0;
+    // Match `glyph_emit.hasRenderableBands`: a present-but-empty glyph
+    // (e.g. space with `h_band_count == 0`) emits no instances, so it must
+    // not contribute to the budget — otherwise PreparedScene over-allocates.
+    const info = face_view.getGlyph(glyph_id) orelse return 0;
+    if (info.band_entry.h_band_count == 0 or info.band_entry.v_band_count == 0) return 0;
+    return 1;
 }
 
 fn textBlobGpuInstanceBudgetForAtlas(atlas: *const TextAtlas, glyphs: []const TextBlob.Glyph) usize {
@@ -1757,6 +1780,32 @@ test "TextAtlas.ensureText adds missing glyphs" {
     // Ensuring the same text again returns null (nothing new).
     const again = try fonts.ensureText(.{}, "Hello");
     try testing.expectEqual(@as(?TextAtlas, null), again);
+}
+
+test "TextAtlas.ensureText is stable for runs containing empty glyphs" {
+    // Regression: a glyph rasterised with `h_band_count == 0` (e.g. space)
+    // used to be reported as missing by `shapedGlyphAvailable` even after it
+    // was placed in the atlas, while `ensureGlyphMaps` filtered it out via
+    // `glyph_map.contains` — so each call published a new (functionally
+    // identical) snapshot, spinning any caller that rebound on snapshot
+    // identity changes.
+    const assets_data = @import("assets");
+    var fonts = try TextAtlas.init(testing.allocator, &.{
+        .{ .data = assets_data.noto_sans_regular },
+    });
+    defer fonts.deinit();
+
+    if (try fonts.ensureText(.{}, "a b")) |new_fonts| {
+        fonts.deinit();
+        fonts = new_fonts;
+    }
+    const pages_after_first = fonts.pageCount();
+
+    // Re-ensuring text whose only "missing" glyph is the empty space must be
+    // a no-op — no new snapshot, no new pages.
+    try testing.expectEqual(@as(?TextAtlas, null), try fonts.ensureText(.{}, "a b"));
+    try testing.expectEqual(@as(?TextAtlas, null), try fonts.ensureText(.{}, " "));
+    try testing.expectEqual(pages_after_first, fonts.pageCount());
 }
 
 test "TextAtlas.ensureText snapshot immutability" {

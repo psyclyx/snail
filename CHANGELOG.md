@@ -12,6 +12,18 @@
   draw paths could emit garbage. Missing glyphs are now skipped; the
   returned `advance` still spans the full shaped run so the caller's cursor
   lands in the right place for the next text segment.
+- `FaceGlyphData.getGlyph` no longer reports rasterised-but-empty glyphs
+  (e.g. space, with `h_band_count == 0`) as absent. The dense LUT used
+  `h_band_count > 0` as a presence sentinel, which collided with the
+  zero-initialised "absent" slots and disagreed with `glyph_map.contains`.
+  The two predicates now agree, so `shapedGlyphAvailable` and
+  `ensureGlyphMaps` can no longer take opposite sides on the same gid —
+  previously, calling `ensureText` on a run containing such a glyph
+  republished a functionally identical snapshot every time, spinning any
+  caller that rebound on snapshot identity. Presence is now tracked via
+  a separate bitset alongside the LUT. As part of the same fix,
+  `glyphInstanceBudget` checks `band_entry` renderability so present-
+  but-empty glyphs do not over-allocate the GPU instance buffer.
 
 ### Added
 
