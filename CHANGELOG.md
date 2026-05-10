@@ -40,6 +40,8 @@
 - `Override.tint` now affects prepared vector path draws on GL, Vulkan, and CPU
   backends. It also tints explicit COLR palette layers instead of only
   foreground-color text layers.
+- The game demo material-text shader now uses the widened text-record stride,
+  fixing missing glyphs on the world-space text panels.
 
 ## 0.4.1
 
