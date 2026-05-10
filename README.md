@@ -50,7 +50,11 @@ All color parameters are **sRGB, straight (unpremultiplied) alpha**, as `[4]f32`
 
 **Blending** uses premultiplied alpha with gamma-correct (linear-space) compositing. On GPU the fragment shader explicitly `srgbDecode`s vertex / texture colors and writes premultiplied linear values; `GL_FRAMEBUFFER_SRGB` and the Vulkan sRGB swapchain image handle the final linear→sRGB store on framebuffer write. The CPU renderer uses an exact 256-entry sRGB→linear LUT for u8 texels and the IEC 61966-2-1 formula directly for the linear→sRGB output, with round-to-nearest output rounding.
 
-**Linear-format targets.** If your destination isn't sRGB-format — e.g., an EGL `dma_buf` import that the driver refuses to tag as sRGB, or a Vulkan attachment in a `_UNORM` (not `_SRGB`) format — set `ResolveTarget.output_srgb = true`. The GL/Vulkan shaders then `srgbEncode` the premultiplied output before writing, and the CPU renderer writes sRGB-encoded bytes; blending still happens in linear space inside the shader. Leave it `false` (default) for the standard sRGB-format-target setup.
+**Output encoding.** `ResolveTarget.output_srgb` declares what the consumer expects in the final pixel bytes (`true` = sRGB-encoded, `false` = linear); it has no default, so every call site picks deliberately.
+
+For GL and Vulkan, declare your framebuffer/attachment format once via `setSrgbFormatTarget(bool)` (default `true`, matching an `_SRGB` framebuffer with `GL_FRAMEBUFFER_SRGB` or an `_SRGB` Vulkan attachment). The format does the encode for the standard case; for linear-format targets (e.g., an EGL `dma_buf` import that mesa won't tag as sRGB, or an `_UNORM` Vulkan attachment), set `setSrgbFormatTarget(false)` and the shader encodes when `output_srgb = true`. Linear blending always happens inside the shader.
+
+The CPU renderer has no format-level encoder: `output_srgb = true` writes sRGB-encoded bytes, `output_srgb = false` writes linear bytes — both first-class. CPU uses an exact 256-entry sRGB→linear LUT for u8 texels and the IEC 61966-2-1 formula directly for linear→sRGB output, with round-to-nearest rounding.
 
 ## Build
 
@@ -341,7 +345,7 @@ snail_text_atlas_deinit(atlas);
 | `PreparedResources` | Backend realization for one renderer/context. |
 | `DrawList` | Caller-buffered draw records. |
 | `PreparedScene` | Optional owned draw-record cache for static scenes. |
-| `ResolveTarget` | Final target metadata: pixel size, subpixel order, fill rule, composite safety flags, and `output_srgb` (encode in shader for linear-format targets). |
+| `ResolveTarget` | Final target metadata: pixel size, subpixel order, fill rule, composite safety flags, and `output_srgb` (sRGB vs linear bytes — see Output encoding above). |
 | `GlRenderer`, `VulkanRenderer`, `CpuRenderer` | First-class backend renderers. |
 | `Renderer` | Type-erased convenience wrapper around a backend renderer. |
 | `Rect` | `{ x, y, w, h }` rectangle. |

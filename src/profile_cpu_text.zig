@@ -107,6 +107,7 @@ pub fn main() !void {
             .subpixel_order = .rgb,
             .is_final_composite = true,
             .opaque_backdrop = true,
+            .output_srgb = true,
         },
     };
 

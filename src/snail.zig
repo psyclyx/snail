@@ -51,6 +51,7 @@
 //!
 //!   const options = snail.DrawOptions{ .mvp = snail.Mat4.identity, .target = .{
 //!       .pixel_width = 1280, .pixel_height = 720, .subpixel_order = .rgb,
+//!       .output_srgb = true,
 //!   } };
 //!   var buf = try allocator.alloc(u32, snail.DrawList.estimate(&scene, options));
 //!   var segments = try allocator.alloc(snail.DrawSegment, snail.DrawList.estimateSegments(&scene, options));
@@ -3849,21 +3850,31 @@ pub const ResolveTarget = struct {
     is_final_composite: bool = true,
     opaque_backdrop: bool = true,
     will_resample: bool = false,
-    /// Whether snail itself should sRGB-encode pixel values before writing.
+    /// What encoding the consumer expects in the final pixel bytes.
     ///
-    /// `false` (default): backends emit linear-space premultiplied color and
-    /// rely on the framebuffer to apply the linear→sRGB conversion (GL with
-    /// `GL_FRAMEBUFFER_SRGB` against an sRGB-format target, or Vulkan with
-    /// an `_SRGB` format attachment). The CPU backend writes linear bytes —
-    /// the caller is expected to convert before display.
+    /// `true`: bytes should be sRGB-encoded (usual case for display,
+    /// screenshots, dmabuf imports tagged as sRGB).
+    /// `false`: bytes should be linear (feeding into another linear
+    /// pipeline, etc.).
     ///
-    /// `true`: backends apply `srgbEncode` to RGB before writing. Use this
-    /// when the destination is a linear-format framebuffer or pixel buffer
-    /// that the consumer (compositor, file format, etc.) interprets as
-    /// already sRGB-encoded — for example, dmabuf imports that mesa won't
-    /// tag as sRGB-format. Blending happens in linear space inside the
-    /// shader; only the final color is gamma-encoded.
-    output_srgb: bool = false,
+    /// Per-backend:
+    /// - **GL/Vulkan**: combined with the backend's `srgb_format_target`
+    ///   flag (set once via `setSrgbFormatTarget`; default `true`,
+    ///   matching an `_SRGB` framebuffer/attachment with
+    ///   `GL_FRAMEBUFFER_SRGB`). When `srgb_format_target = true` the
+    ///   format does the encode and the shader emits linear; when
+    ///   `false` (linear-format target — e.g. Vulkan dmabuf import
+    ///   that mesa won't tag as sRGB) the shader encodes whenever
+    ///   `output_srgb` is `true`. Linear blending always happens
+    ///   inside the shader.
+    /// - **CPU**: the pixel buffer is the storage and there is no
+    ///   format-level encoder. `output_srgb = true` makes the renderer
+    ///   write sRGB-encoded bytes; `false` makes it write linear bytes.
+    ///   Both byte formats are first-class.
+    ///
+    /// No default — pick deliberately; the right answer differs per
+    /// destination.
+    output_srgb: bool,
 };
 
 fn effectiveSubpixelOrder(target: ResolveTarget) SubpixelOrder {
@@ -5438,7 +5449,7 @@ test "draw with missing prepared resources fails" {
     const records = DrawRecords{ .words = &words, .segments = &segments };
     try std.testing.expectError(error.MissingPreparedResource, renderer.draw(&prepared, records, .{
         .mvp = Mat4.identity,
-        .target = .{ .pixel_width = width, .pixel_height = height },
+        .target = .{ .pixel_width = width, .pixel_height = height, .output_srgb = true },
     }));
 }
 
@@ -5537,6 +5548,7 @@ test "draw dispatch uses only prepared stamps and caller records" {
             .pixel_height = 8,
             .subpixel_order = .rgb,
             .fill_rule = .even_odd,
+            .output_srgb = true,
         },
     };
     var words = [_]u32{ 1, 2, 3, 4 };
@@ -5695,7 +5707,7 @@ test "DrawList estimate upper-bounds ranged text draw output" {
 
     const options = DrawOptions{
         .mvp = Mat4.identity,
-        .target = .{ .pixel_width = width, .pixel_height = height },
+        .target = .{ .pixel_width = width, .pixel_height = height, .output_srgb = true },
     };
     const needed = DrawList.estimate(&scene, options);
     const needed_segments = DrawList.estimateSegments(&scene, options);
@@ -5798,7 +5810,7 @@ test "draw rejects stale records when a resource key is replaced" {
 
     const draw_options = DrawOptions{
         .mvp = Mat4.identity,
-        .target = .{ .pixel_width = width, .pixel_height = height },
+        .target = .{ .pixel_width = width, .pixel_height = height, .output_srgb = true },
     };
     const needed = DrawList.estimate(&scene, draw_options);
     const needed_segments = DrawList.estimateSegments(&scene, draw_options);
@@ -5938,7 +5950,7 @@ test "CPU draw uses prepared resource views" {
 
     const draw_options = DrawOptions{
         .mvp = Mat4.identity,
-        .target = .{ .pixel_width = width, .pixel_height = height },
+        .target = .{ .pixel_width = width, .pixel_height = height, .output_srgb = true },
     };
     const needed = DrawList.estimate(&scene, draw_options);
     const needed_segments = DrawList.estimateSegments(&scene, draw_options);
@@ -6101,7 +6113,7 @@ test "path picture ranges emit selected shapes" {
     var scene = Scene.init(std.testing.allocator);
     defer scene.deinit();
     try scene.addPath(.{ .picture = &picture, .shapes = .{ .start = 1, .count = 1 } });
-    const options = DrawOptions{ .mvp = Mat4.identity, .target = .{ .pixel_width = 100, .pixel_height = 100 } };
+    const options = DrawOptions{ .mvp = Mat4.identity, .target = .{ .pixel_width = 100, .pixel_height = 100, .output_srgb = true } };
     try std.testing.expectEqual(@as(usize, PATH_WORDS_PER_SHAPE), DrawList.estimate(&scene, options));
     try std.testing.expectEqual(@as(usize, 1), DrawList.estimateSegments(&scene, options));
 }

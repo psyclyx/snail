@@ -65,6 +65,7 @@ fn drawOptions(subpixel_order: snail.SubpixelOrder) snail.DrawOptions {
             .subpixel_order = subpixel_order,
             .is_final_composite = true,
             .opaque_backdrop = true,
+            .output_srgb = true,
         },
     };
 }

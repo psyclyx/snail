@@ -2778,7 +2778,7 @@ test "cpu renderer renders image-painted path picture" {
     const hf: f32 = @floatFromInt(height);
     const options = snail.DrawOptions{
         .mvp = snail.Mat4.ortho(0, wf, hf, 0, -1, 1),
-        .target = .{ .pixel_width = wf, .pixel_height = hf },
+        .target = .{ .pixel_width = wf, .pixel_height = hf, .output_srgb = true },
     };
     const needed = snail.DrawList.estimate(&scene, options);
     const needed_segments = snail.DrawList.estimateSegments(&scene, options);
@@ -3002,6 +3002,7 @@ test "cpu renderer threaded draw matches single-threaded byte-for-byte" {
             .pixel_width = @floatFromInt(width),
             .pixel_height = @floatFromInt(height),
             .subpixel_order = .rgb,
+            .output_srgb = true,
         },
     };
 
@@ -3094,7 +3095,7 @@ test "cpu renderer drawPaths batch matches drawPathPicture" {
     const hf: f32 = @floatFromInt(height);
     const options = snail.DrawOptions{
         .mvp = snail.Mat4.ortho(0, wf, hf, 0, -1, 1),
-        .target = .{ .pixel_width = wf, .pixel_height = hf, .subpixel_order = .rgb },
+        .target = .{ .pixel_width = wf, .pixel_height = hf, .subpixel_order = .rgb, .output_srgb = true },
     };
     const needed = snail.DrawList.estimate(&scene, options);
     const needed_segments = snail.DrawList.estimateSegments(&scene, options);

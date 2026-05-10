@@ -138,12 +138,16 @@ typedef struct {
     bool is_final_composite;
     bool opaque_backdrop;
     bool will_resample;
-    /* When true, the GL/Vulkan shaders sRGB-encode their output and the
-     * CPU renderer writes sRGB-encoded bytes. When false (default),
-     * shaders emit linear values (assumes sRGB-format target / GL_FRAMEBUFFER_SRGB)
-     * and the CPU renderer writes linear bytes. Standalone CpuRenderer
-     * users hitting drawPathPicture etc. directly keep the historical
-     * sRGB-byte default; this only affects unified-pipeline draws. */
+    /* What encoding the consumer expects in the final pixel bytes.
+     * true: sRGB-encoded bytes (display, screenshots, sRGB-tagged dmabuf).
+     * false: linear bytes (feeding into another linear pipeline).
+     *
+     * GL/Vulkan compose this with the backend's srgb_format_target flag
+     * (set via setSrgbFormatTarget; default true for an _SRGB framebuffer/
+     * attachment). Format auto-encodes when srgb_format_target=true; the
+     * shader encodes when srgb_format_target=false and output_srgb=true.
+     * CPU has no format-level encoder: output_srgb directly drives whether
+     * the renderer writes sRGB bytes (true) or linear bytes (false). */
     bool output_srgb;
 } SnailResolveTarget;
 

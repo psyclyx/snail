@@ -46,6 +46,11 @@ pub const TextCoverageBindings = struct {
     image_tex_unit: gl.GLint = 3,
     fill_rule: FillRule = .non_zero,
     subpixel_order: SubpixelOrder = .none,
+    /// Value to write to the shader's `u_output_srgb` uniform — i.e.,
+    /// whether the shader itself should sRGB-encode its output. External
+    /// callers driving the coverage shader directly are responsible for
+    /// composing this from their target intent and framebuffer format
+    /// (`user_wants_srgb && !framebuffer_is_srgb_format`).
     output_srgb: bool = false,
 };
 
@@ -541,6 +546,7 @@ pub const GlTextState = struct {
     subpixel_order: SubpixelOrder = .none,
     fill_rule: FillRule = .non_zero,
     output_srgb: bool = false,
+    srgb_format_target: bool = true,
     vao: gl.GLuint = 0,
     vbo: gl.GLuint = 0,
     ebo: gl.GLuint = 0,
@@ -770,6 +776,18 @@ pub const GlTextState = struct {
         return self.output_srgb;
     }
 
+    pub fn setSrgbFormatTarget(self: *GlTextState, enabled: bool) void {
+        self.srgb_format_target = enabled;
+    }
+
+    pub fn getSrgbFormatTarget(self: *const GlTextState) bool {
+        return self.srgb_format_target;
+    }
+
+    inline fn shaderEncodesSrgb(self: *const GlTextState) bool {
+        return self.output_srgb and !self.srgb_format_target;
+    }
+
     fn ensureColrProgram(self: *GlTextState) *const ProgramState {
         std.debug.assert(self.colr_program.handle != 0);
         return &self.colr_program;
@@ -821,7 +839,7 @@ pub const GlTextState = struct {
             gl.glUniform1i(prog_state.subpixel_order_loc, @intFromEnum(order));
         }
         if (prog_state.output_srgb_loc >= 0) {
-            gl.glUniform1i(prog_state.output_srgb_loc, @intFromBool(self.output_srgb));
+            gl.glUniform1i(prog_state.output_srgb_loc, @intFromBool(self.shaderEncodesSrgb()));
         }
     }
 

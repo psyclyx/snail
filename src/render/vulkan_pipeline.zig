@@ -300,6 +300,7 @@ pub const VulkanPipeline = struct {
     subpixel_order: SubpixelOrder = .none,
     fill_rule: FillRule = .non_zero,
     output_srgb: bool = false,
+    srgb_format_target: bool = true,
 
     // ── Init / Deinit ──
 
@@ -476,6 +477,18 @@ pub const VulkanPipeline = struct {
 
     pub fn getOutputSrgb(self: *const VulkanPipeline) bool {
         return self.output_srgb;
+    }
+
+    pub fn setSrgbFormatTarget(self: *VulkanPipeline, enabled: bool) void {
+        self.srgb_format_target = enabled;
+    }
+
+    pub fn getSrgbFormatTarget(self: *const VulkanPipeline) bool {
+        return self.srgb_format_target;
+    }
+
+    inline fn shaderEncodesSrgb(self: *const VulkanPipeline) bool {
+        return self.output_srgb and !self.srgb_format_target;
     }
 
     // ── Command buffer (set by caller per-frame) ──
@@ -801,7 +814,7 @@ pub const VulkanPipeline = struct {
                 .viewport = .{ viewport_w, viewport_h },
                 .fill_rule = @intFromEnum(self.fill_rule),
                 .subpixel_order = @intFromEnum(if (render_mode == .grayscale) SubpixelOrder.none else self.subpixel_order),
-                .output_srgb = if (self.output_srgb) 1 else 0,
+                .output_srgb = if (self.shaderEncodesSrgb()) 1 else 0,
                 .layer_base = @intCast(texture_layer_base),
             };
             vk.vkCmdPushConstants(cmd, self.pipeline_layout, vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(PushConstants), &pc);
@@ -848,7 +861,7 @@ pub const VulkanPipeline = struct {
                 .viewport = .{ viewport_w, viewport_h },
                 .fill_rule = @intFromEnum(self.fill_rule),
                 .subpixel_order = @intFromEnum(if (run_mode == .grayscale) SubpixelOrder.none else self.subpixel_order),
-                .output_srgb = if (self.output_srgb) 1 else 0,
+                .output_srgb = if (self.shaderEncodesSrgb()) 1 else 0,
                 .layer_base = @intCast(texture_layer_base),
             };
             vk.vkCmdPushConstants(cmd, self.pipeline_layout, vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(PushConstants), &pc);
