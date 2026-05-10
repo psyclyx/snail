@@ -78,6 +78,13 @@ typedef struct {
 #define SNAIL_TRANSFORM2D_IDENTITY ((SnailTransform2D){1, 0, 0, 0, 1, 0})
 
 typedef struct {
+    SnailTransform2D transform;
+    float tint[4];
+} SnailOverride;
+
+#define SNAIL_OVERRIDE_IDENTITY ((SnailOverride){SNAIL_TRANSFORM2D_IDENTITY, {1, 1, 1, 1}})
+
+typedef struct {
     uint16_t advance_width;
     int16_t lsb;
     SnailBBox bbox;
@@ -383,12 +390,11 @@ size_t snail_path_picture_shape_count(const SnailPathPicture *picture);
 /* Scene and resources */
 
 /*
- * `snail_scene_add_text_transformed` and
- * `snail_scene_add_path_picture_transformed` need to outlive the caller's
- * stack, so the scene keeps a per-call override in an internal arena. That
- * arena grows monotonically until `snail_scene_reset` releases its capacity
- * for reuse — long-running streams of additions without a reset will grow
- * memory unboundedly. Call `snail_scene_reset` between frames or before
+ * Transformed/override submission helpers need their per-call override to
+ * outlive the caller's stack, so the scene keeps it in an internal arena.
+ * That arena grows monotonically until `snail_scene_reset` releases its
+ * capacity for reuse — long-running streams of additions without a reset will
+ * grow memory unboundedly. Call `snail_scene_reset` between frames or before
  * rebuilding a scene from scratch.
  */
 int snail_scene_init(const SnailAllocator *alloc, SnailScene **out);
@@ -399,10 +405,16 @@ int snail_scene_add_text(SnailScene *scene, const SnailTextBlob *blob);
 int snail_scene_add_text_transformed(SnailScene *scene,
                                      const SnailTextBlob *blob,
                                      SnailTransform2D transform);
+int snail_scene_add_text_override(SnailScene *scene,
+                                  const SnailTextBlob *blob,
+                                  SnailOverride override_value);
 int snail_scene_add_path_picture(SnailScene *scene, const SnailPathPicture *picture);
 int snail_scene_add_path_picture_transformed(SnailScene *scene,
                                              const SnailPathPicture *picture,
                                              SnailTransform2D transform);
+int snail_scene_add_path_picture_override(SnailScene *scene,
+                                          const SnailPathPicture *picture,
+                                          SnailOverride override_value);
 
 int snail_resource_set_init(const SnailAllocator *alloc, size_t capacity, SnailResourceSet **out);
 void snail_resource_set_deinit(SnailResourceSet *set);

@@ -6,13 +6,14 @@ const BBox = @import("../math/bezier.zig").BBox;
 const band_tex = @import("band_texture.zig");
 const curve_tex = @import("curve_texture.zig");
 
-/// Per-instance data: 60 bytes = 15 u32 words per glyph.
+/// Per-instance data: 64 bytes = 16 u32 words per glyph.
 ///   rect:  4x f16 — bbox in em-space
 ///   xform: 4x f32 — linear part of 2D transform
 ///   org:   2x f32 — translation
 ///   glyph: 2x u32 — packed glyph data
 ///   bnd:   4x f32 — band transform
-///   col:   4x u8 normalized sRGBA
+///   col:   4x u8 normalized sRGBA base color
+///   tint:  4x u8 normalized sRGBA instance tint
 pub const Instance = extern struct {
     rect: [4]u16,
     xform: [4]f32,
@@ -20,6 +21,7 @@ pub const Instance = extern struct {
     glyph: [2]u32,
     band: [4]f32,
     color: [4]u8,
+    tint: [4]u8,
 };
 
 pub const BYTES_PER_INSTANCE: usize = @sizeOf(Instance);
@@ -33,14 +35,15 @@ pub const WORDS_PER_VERTEX = WORDS_PER_INSTANCE;
 pub const VERTICES_PER_GLYPH = INSTANCES_PER_GLYPH;
 
 comptime {
-    std.debug.assert(BYTES_PER_INSTANCE == 60);
-    std.debug.assert(WORDS_PER_INSTANCE == 15);
+    std.debug.assert(BYTES_PER_INSTANCE == 64);
+    std.debug.assert(WORDS_PER_INSTANCE == 16);
     std.debug.assert(@offsetOf(Instance, "rect") == 0);
     std.debug.assert(@offsetOf(Instance, "xform") == 8);
     std.debug.assert(@offsetOf(Instance, "origin") == 24);
     std.debug.assert(@offsetOf(Instance, "glyph") == 32);
     std.debug.assert(@offsetOf(Instance, "band") == 40);
     std.debug.assert(@offsetOf(Instance, "color") == 56);
+    std.debug.assert(@offsetOf(Instance, "tint") == 60);
 }
 
 pub const DecodedInstance = struct {
@@ -50,7 +53,10 @@ pub const DecodedInstance = struct {
     glyph: [2]u32,
     band: [4]f32,
     color: [4]f32,
+    tint: [4]f32,
 };
+
+const identity_tint = [4]f32{ 1, 1, 1, 1 };
 
 fn f16BitsToF32(bits: u16) f32 {
     return @floatCast(@as(f16, @bitCast(bits)));
@@ -138,6 +144,7 @@ pub fn decodeInstance(words: []const u32) DecodedInstance {
         .glyph = instance.glyph,
         .band = instance.band,
         .color = decodeColor4(instance.color),
+        .tint = decodeColor4(instance.tint),
     };
 }
 
@@ -152,6 +159,21 @@ pub fn generateGlyphVertices(
     color: [4]f32,
     atlas_layer: u8,
 ) void {
+    generateGlyphVerticesTinted(buf, x, y, font_size, bbox, band_entry, color, identity_tint, atlas_layer);
+}
+
+/// Generate instance data for a tinted glyph quad (non-transformed).
+pub fn generateGlyphVerticesTinted(
+    buf: []u32,
+    x: f32,
+    y: f32,
+    font_size: f32,
+    bbox: BBox,
+    band_entry: band_tex.GlyphBandEntry,
+    color: [4]f32,
+    tint: [4]f32,
+    atlas_layer: u8,
+) void {
     const gz: u32 = @as(u32, band_entry.glyph_x) | (@as(u32, band_entry.glyph_y) << 16);
     const gw: u32 = @as(u32, band_entry.h_band_count - 1) |
         (@as(u32, band_entry.v_band_count - 1) << 16) |
@@ -164,6 +186,7 @@ pub fn generateGlyphVertices(
         .glyph = .{ gz, gw },
         .band = .{ band_entry.band_scale_x, band_entry.band_scale_y, band_entry.band_offset_x, band_entry.band_offset_y },
         .color = color4(color),
+        .tint = color4(tint),
     });
 }
 
@@ -173,6 +196,19 @@ pub fn generateGlyphVerticesTransformed(
     bbox: BBox,
     band_entry: band_tex.GlyphBandEntry,
     color: [4]f32,
+    atlas_layer: u8,
+    transform: vec.Transform2D,
+) bool {
+    return generateGlyphVerticesTransformedTinted(buf, bbox, band_entry, color, identity_tint, atlas_layer, transform);
+}
+
+/// Generate instance data for a tinted glyph quad under a full 2D affine transform.
+pub fn generateGlyphVerticesTransformedTinted(
+    buf: []u32,
+    bbox: BBox,
+    band_entry: band_tex.GlyphBandEntry,
+    color: [4]f32,
+    tint: [4]f32,
     atlas_layer: u8,
     transform: vec.Transform2D,
 ) bool {
@@ -191,6 +227,7 @@ pub fn generateGlyphVerticesTransformed(
         .glyph = .{ gz, gw },
         .band = .{ band_entry.band_scale_x, band_entry.band_scale_y, band_entry.band_offset_x, band_entry.band_offset_y },
         .color = color4(color),
+        .tint = color4(tint),
     });
     return true;
 }
@@ -208,6 +245,23 @@ pub fn generateMultiLayerGlyphVertices(
     color: [4]f32,
     atlas_layer: u8,
 ) void {
+    generateMultiLayerGlyphVerticesTinted(buf, x, y, font_size, union_bbox, info_x, info_y, layer_count, color, identity_tint, atlas_layer);
+}
+
+/// Generate instance data for a tinted multi-layer COLR/path glyph.
+pub fn generateMultiLayerGlyphVerticesTinted(
+    buf: []u32,
+    x: f32,
+    y: f32,
+    font_size: f32,
+    union_bbox: BBox,
+    info_x: u16,
+    info_y: u16,
+    layer_count: u16,
+    color: [4]f32,
+    tint: [4]f32,
+    atlas_layer: u8,
+) void {
     const gz: u32 = @as(u32, info_x) | (@as(u32, info_y) << 16);
     const gw: u32 = @as(u32, layer_count) | (0xFF << 24);
 
@@ -218,6 +272,7 @@ pub fn generateMultiLayerGlyphVertices(
         .glyph = .{ gz, gw },
         .band = .{ 0, 0, 0, @floatFromInt(atlas_layer) },
         .color = color4(color),
+        .tint = color4(tint),
     });
 }
 
@@ -229,6 +284,21 @@ pub fn generateMultiLayerGlyphVerticesTransformed(
     info_y: u16,
     layer_count: u16,
     color: [4]f32,
+    atlas_layer: u8,
+    transform: vec.Transform2D,
+) bool {
+    return generateMultiLayerGlyphVerticesTransformedTinted(buf, bbox, info_x, info_y, layer_count, color, identity_tint, atlas_layer, transform);
+}
+
+/// Generate instance data for a tinted transformed multi-layer COLR/path glyph.
+pub fn generateMultiLayerGlyphVerticesTransformedTinted(
+    buf: []u32,
+    bbox: BBox,
+    info_x: u16,
+    info_y: u16,
+    layer_count: u16,
+    color: [4]f32,
+    tint: [4]f32,
     atlas_layer: u8,
     transform: vec.Transform2D,
 ) bool {
@@ -245,6 +315,7 @@ pub fn generateMultiLayerGlyphVerticesTransformed(
         .glyph = .{ gz, gw },
         .band = .{ 0, 0, 0, @floatFromInt(atlas_layer) },
         .color = color4(color),
+        .tint = color4(tint),
     });
     return true;
 }
@@ -286,6 +357,10 @@ test "instance data produces correct layout" {
     try std.testing.expectApproxEqAbs(@as(f32, 0.5), decoded.color[1], 1.0 / 255.0);
     try std.testing.expectApproxEqAbs(@as(f32, 0.0), decoded.color[2], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), decoded.color[3], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), decoded.tint[0], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), decoded.tint[1], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), decoded.tint[2], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), decoded.tint[3], 0.001);
 }
 
 test "multi-layer glyph instance preserves wide layer counts" {

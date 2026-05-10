@@ -516,6 +516,7 @@ const material_fragment_shader: [:0]const u8 =
     \\        vec4 meta = textRecord(i, 2);
     \\        vec4 banding = textRecord(i, 3);
     \\        vec4 color = textRecord(i, 4);
+    \\        vec4 tint = textRecord(i, 5);
     \\        float det = xform.x * xform.w - xform.y * xform.z;
     \\        if (abs(det) < 1e-10) continue;
     \\        vec2 rc = textLocalCoord(scene_pos, xform, meta.xy);
@@ -530,9 +531,10 @@ const material_fragment_shader: [:0]const u8 =
     \\        ivec2 band_max = ivec2(int(gw & 0xFFFFu), int((gw >> 16u) & 0xFFu));
     \\        vec2 ppe = 1.0 / max(fwidth(rc), vec2(1.0 / 65536.0));
     \\        float cov = evalGlyphCoverage(rc, ppe, glyph_loc, band_max, banding, atlas_layer);
-    \\        float alpha = clamp(cov * color.a, 0.0, 1.0);
+    \\        float alpha = clamp(cov * color.a * tint.a, 0.0, 1.0);
     \\        if (alpha <= 1.0 / 255.0) continue;
-    \\        vec3 linear_rgb = vec3(srgbDecode(color.r), srgbDecode(color.g), srgbDecode(color.b));
+    \\        vec3 linear_rgb = vec3(srgbDecode(color.r), srgbDecode(color.g), srgbDecode(color.b)) *
+    \\                          vec3(srgbDecode(tint.r), srgbDecode(tint.g), srgbDecode(tint.b));
     \\        paint.rgb = linear_rgb * alpha + paint.rgb * (1.0 - alpha);
     \\        paint.a = alpha + paint.a * (1.0 - alpha);
     \\    }
@@ -694,11 +696,11 @@ const material_fragment_shader: [:0]const u8 =
     \\}
     ;
 
-// Layout the shader (`material_fragment_shader`) sees: 5 vec4s per glyph,
+// Layout the shader (`material_fragment_shader`) sees: 6 vec4s per glyph,
 // fed via samplerBuffer with internalFormat RGBA32F. Snail's packed
-// `vertex.Instance` (60 bytes, mixed f16/f32/u32/u8) isn't directly readable
+// `vertex.Instance` (64 bytes, mixed f16/f32/u32/u8) isn't directly readable
 // at vec4 stride, so we widen each glyph at upload time.
-pub const TEXT_RECORD_VEC4S_PER_GLYPH: usize = 5;
+pub const TEXT_RECORD_VEC4S_PER_GLYPH: usize = 6;
 const TEXT_RECORD_FLOATS_PER_GLYPH: usize = TEXT_RECORD_VEC4S_PER_GLYPH * 4;
 
 pub const SurfaceTextDraw = struct {
@@ -798,6 +800,11 @@ fn widenInstanceRecords(packed_words: []const u32, out: []f32) void {
         out[base + 17] = decoded.color[1];
         out[base + 18] = decoded.color[2];
         out[base + 19] = decoded.color[3];
+        // slot 5: instance tint (sRGB unorm decoded to floats)
+        out[base + 20] = decoded.tint[0];
+        out[base + 21] = decoded.tint[1];
+        out[base + 22] = decoded.tint[2];
+        out[base + 23] = decoded.tint[3];
     }
 }
 

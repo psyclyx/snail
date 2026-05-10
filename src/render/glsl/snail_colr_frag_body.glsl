@@ -160,6 +160,7 @@ void main() {
     int layer_count = v_glyph.z;
     vec4 result = vec4(0.0);
     vec4 linear_v_color = vec4(srgbDecode(v_color.r), srgbDecode(v_color.g), srgbDecode(v_color.b), v_color.a);
+    vec4 linear_tint = vec4(srgbDecode(v_tint.r), srgbDecode(v_tint.g), srgbDecode(v_tint.b), v_tint.a);
     for (int l = 0; l < layer_count; l++) {
         ivec2 loc = offsetLayerLoc(infoBase, l * 3);
         vec4 info = texelFetch(u_layer_tex, loc, 0);
@@ -167,6 +168,7 @@ void main() {
         vec4 color = texelFetch(u_layer_tex, offsetLayerLoc(infoBase, l * 3 + 2), 0);
         if (color.r < 0.0) color = linear_v_color;
         else color = vec4(srgbDecode(color.r), srgbDecode(color.g), srgbDecode(color.b), color.a);
+        color *= linear_tint;
         ivec2 gLoc = ivec2(info.xy);
         int bandMaxH = floatBitsToInt(info.z) & 0xFFFF;
         int bandMaxV = (floatBitsToInt(info.z) >> 16) & 0xFFFF;

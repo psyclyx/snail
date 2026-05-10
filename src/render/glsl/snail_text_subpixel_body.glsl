@@ -247,5 +247,7 @@ void main() {
     vec3 cov = cov_alpha.rgb;
     if (max(max(cov.r, cov.g), cov.b) < 1.0 / 255.0) discard;
     vec4 linear_color = vec4(srgbDecode(v_color.r), srgbDecode(v_color.g), srgbDecode(v_color.b), v_color.a);
+    vec4 linear_tint = vec4(srgbDecode(v_tint.r), srgbDecode(v_tint.g), srgbDecode(v_tint.b), v_tint.a);
+    linear_color *= linear_tint;
     emitSubpixelColor(linear_color, cov, cov_alpha.a);
 }

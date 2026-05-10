@@ -43,6 +43,7 @@ void main() {
     v_glyph = ivec4(gz & 0xFFFFu, gz >> 16u, gw & 0xFFFFu, gw >> 16u);
     v_banding = a_bnd;
     v_color = a_col;
+    v_tint = a_tint;
 
     // Slug dynamic dilation
     vec4 m0 = vec4(SNAIL_MVP[0].x, SNAIL_MVP[1].x, SNAIL_MVP[2].x, SNAIL_MVP[3].x);

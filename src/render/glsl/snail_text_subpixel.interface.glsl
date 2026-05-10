@@ -1,4 +1,5 @@
 in vec4 v_color;
+in vec4 v_tint;
 in vec2 v_texcoord;
 flat in vec4 v_banding;
 flat in ivec4 v_glyph;

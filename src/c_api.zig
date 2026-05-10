@@ -128,6 +128,11 @@ pub const SnailTransform2D = extern struct {
     ty: f32 = 0,
 };
 
+pub const SnailOverride = extern struct {
+    transform: SnailTransform2D = .{},
+    tint: [4]f32 = .{ 1, 1, 1, 1 },
+};
+
 pub const SnailSyntheticStyle = extern struct {
     embolden: f32 = 0,
     skew_x: f32 = 0,
@@ -287,6 +292,10 @@ fn fromMat4(m: snail.Mat4) SnailMat4 {
 
 fn toTransform(t: SnailTransform2D) snail.Transform2D {
     return .{ .xx = t.xx, .xy = t.xy, .tx = t.tx, .yx = t.yx, .yy = t.yy, .ty = t.ty };
+}
+
+fn toOverride(override_value: SnailOverride) snail.Override {
+    return .{ .transform = toTransform(override_value.transform), .tint = override_value.tint };
 }
 
 fn toSyntheticStyle(s: SnailSyntheticStyle) snail.SyntheticStyle {
@@ -1029,7 +1038,11 @@ export fn snail_scene_add_text(scene: *SceneImpl, blob: *const TextBlobImpl) c_i
 }
 
 export fn snail_scene_add_text_transformed(scene: *SceneImpl, blob: *const TextBlobImpl, transform: SnailTransform2D) c_int {
-    const instances = stashOverride(scene, .{ .transform = toTransform(transform) }) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    return snail_scene_add_text_override(scene, blob, .{ .transform = transform });
+}
+
+export fn snail_scene_add_text_override(scene: *SceneImpl, blob: *const TextBlobImpl, override_value: SnailOverride) c_int {
+    const instances = stashOverride(scene, toOverride(override_value)) catch return SNAIL_ERR_OUT_OF_MEMORY;
     scene.inner.addText(.{
         .blob = &blob.inner,
         .instances = instances,
@@ -1043,7 +1056,11 @@ export fn snail_scene_add_path_picture(scene: *SceneImpl, picture: *const PathPi
 }
 
 export fn snail_scene_add_path_picture_transformed(scene: *SceneImpl, picture: *const PathPictureImpl, transform: SnailTransform2D) c_int {
-    const instances = stashOverride(scene, .{ .transform = toTransform(transform) }) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    return snail_scene_add_path_picture_override(scene, picture, .{ .transform = transform });
+}
+
+export fn snail_scene_add_path_picture_override(scene: *SceneImpl, picture: *const PathPictureImpl, override_value: SnailOverride) c_int {
+    const instances = stashOverride(scene, toOverride(override_value)) catch return SNAIL_ERR_OUT_OF_MEMORY;
     scene.inner.addPath(.{ .picture = &picture.inner, .instances = instances }) catch return SNAIL_ERR_OUT_OF_MEMORY;
     return SNAIL_OK;
 }
@@ -1396,7 +1413,10 @@ test "c_api: scene and resource set follow public model" {
     try testing.expectEqual(SNAIL_OK, snail_scene_init(null, &scene));
     defer snail_scene_deinit(scene);
     try testing.expectEqual(SNAIL_OK, snail_scene_add_text(scene.?, blob.?));
-    try testing.expectEqual(@as(usize, 1), snail_scene_command_count(scene.?));
+    try testing.expectEqual(SNAIL_OK, snail_scene_add_text_override(scene.?, blob.?, .{
+        .tint = .{ 0.5, 0.75, 1.0, 0.5 },
+    }));
+    try testing.expectEqual(@as(usize, 2), snail_scene_command_count(scene.?));
 
     var resources: ?*ResourceSetImpl = null;
     try testing.expectEqual(SNAIL_OK, snail_resource_set_init(null, 4, &resources));

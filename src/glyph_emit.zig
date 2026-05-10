@@ -11,6 +11,8 @@ pub const EmitResult = enum {
     invalid_transform,
 };
 
+const identity_tint = [4]f32{ 1, 1, 1, 1 };
+
 fn hasRenderableBands(info: anytype) bool {
     return info.band_entry.h_band_count > 0 and info.band_entry.v_band_count > 0;
 }
@@ -24,9 +26,22 @@ pub fn emitGlyph(
     font_size: f32,
     color: [4]f32,
 ) EmitResult {
+    return emitGlyphTinted(batch, view, glyph_id, x, y, font_size, color, identity_tint);
+}
+
+pub fn emitGlyphTinted(
+    batch: anytype,
+    view: anytype,
+    glyph_id: u16,
+    x: f32,
+    y: f32,
+    font_size: f32,
+    color: [4]f32,
+    tint: [4]f32,
+) EmitResult {
     if (view.getColrBase(glyph_id)) |cbi| {
         const info_loc = view.layerInfoLoc(cbi.info_x, cbi.info_y);
-        batch.addColrGlyph(
+        batch.addColrGlyphTinted(
             x,
             y,
             font_size,
@@ -35,6 +50,7 @@ pub fn emitGlyph(
             info_loc.y,
             cbi.layer_count,
             color,
+            tint,
             view.glyphLayer(cbi.page_index),
         ) catch |err| return emitError(err);
         return .emitted;
@@ -47,7 +63,7 @@ pub fn emitGlyph(
             const linfo = view.getGlyph(layer.glyph_id) orelse continue;
             if (!hasRenderableBands(linfo)) continue;
             const lcolor: [4]f32 = if (layer.color[0] < 0) color else layer.color;
-            batch.addGlyph(x, y, font_size, linfo.bbox, linfo.band_entry, lcolor, view.glyphLayer(linfo.page_index)) catch |err| return emitError(err);
+            batch.addGlyphTinted(x, y, font_size, linfo.bbox, linfo.band_entry, lcolor, tint, view.glyphLayer(linfo.page_index)) catch |err| return emitError(err);
             emitted = true;
         }
         return if (emitted) .emitted else .skipped;
@@ -55,7 +71,7 @@ pub fn emitGlyph(
 
     const info = view.getGlyph(glyph_id) orelse return .skipped;
     if (!hasRenderableBands(info)) return .skipped;
-    batch.addGlyph(x, y, font_size, info.bbox, info.band_entry, color, view.glyphLayer(info.page_index)) catch |err| return emitError(err);
+    batch.addGlyphTinted(x, y, font_size, info.bbox, info.band_entry, color, tint, view.glyphLayer(info.page_index)) catch |err| return emitError(err);
     return .emitted;
 }
 
@@ -71,16 +87,30 @@ pub fn emitStyledGlyph(
     color: [4]f32,
     synthetic: SyntheticStyle,
 ) EmitResult {
+    return emitStyledGlyphTinted(batch, view, glyph_id, x, y, font_size, color, identity_tint, synthetic);
+}
+
+pub fn emitStyledGlyphTinted(
+    batch: anytype,
+    view: anytype,
+    glyph_id: u16,
+    x: f32,
+    y: f32,
+    font_size: f32,
+    color: [4]f32,
+    tint: [4]f32,
+    synthetic: SyntheticStyle,
+) EmitResult {
     if (synthetic.skew_x == 0 and synthetic.embolden == 0) {
-        return emitGlyph(batch, view, glyph_id, x, y, font_size, color);
+        return emitGlyphTinted(batch, view, glyph_id, x, y, font_size, color, tint);
     }
 
-    const result = emitWithTransform(batch, view, glyph_id, x, y, font_size, color, synthetic.skew_x);
+    const result = emitWithTransform(batch, view, glyph_id, x, y, font_size, color, tint, synthetic.skew_x);
     if (result != .emitted) return result;
 
     // Synthetic bold: emit a second copy offset horizontally.
     if (synthetic.embolden != 0) {
-        _ = emitWithTransform(batch, view, glyph_id, x + synthetic.embolden, y, font_size, color, synthetic.skew_x);
+        _ = emitWithTransform(batch, view, glyph_id, x + synthetic.embolden, y, font_size, color, tint, synthetic.skew_x);
     }
 
     return .emitted;
@@ -93,14 +123,26 @@ pub fn emitGlyphWithTransform(
     color: [4]f32,
     transform: Transform2D,
 ) EmitResult {
+    return emitGlyphWithTransformTinted(batch, view, glyph_id, color, identity_tint, transform);
+}
+
+pub fn emitGlyphWithTransformTinted(
+    batch: anytype,
+    view: anytype,
+    glyph_id: u16,
+    color: [4]f32,
+    tint: [4]f32,
+    transform: Transform2D,
+) EmitResult {
     if (view.getColrBase(glyph_id)) |cbi| {
         const info_loc = view.layerInfoLoc(cbi.info_x, cbi.info_y);
-        batch.addColrGlyphTransformed(
+        batch.addColrGlyphTransformedTinted(
             cbi.union_bbox,
             info_loc.x,
             info_loc.y,
             cbi.layer_count,
             color,
+            tint,
             view.glyphLayer(cbi.page_index),
             transform,
         ) catch |err| return emitError(err);
@@ -114,7 +156,7 @@ pub fn emitGlyphWithTransform(
             const linfo = view.getGlyph(layer.glyph_id) orelse continue;
             if (!hasRenderableBands(linfo)) continue;
             const lcolor: [4]f32 = if (layer.color[0] < 0) color else layer.color;
-            batch.addGlyphTransformed(linfo.bbox, linfo.band_entry, lcolor, view.glyphLayer(linfo.page_index), transform) catch |err| return emitError(err);
+            batch.addGlyphTransformedTinted(linfo.bbox, linfo.band_entry, lcolor, tint, view.glyphLayer(linfo.page_index), transform) catch |err| return emitError(err);
             emitted = true;
         }
         return if (emitted) .emitted else .skipped;
@@ -122,7 +164,7 @@ pub fn emitGlyphWithTransform(
 
     const info = view.getGlyph(glyph_id) orelse return .skipped;
     if (!hasRenderableBands(info)) return .skipped;
-    batch.addGlyphTransformed(info.bbox, info.band_entry, color, view.glyphLayer(info.page_index), transform) catch |err| return emitError(err);
+    batch.addGlyphTransformedTinted(info.bbox, info.band_entry, color, tint, view.glyphLayer(info.page_index), transform) catch |err| return emitError(err);
     return .emitted;
 }
 
@@ -152,6 +194,7 @@ fn emitWithTransform(
     y: f32,
     font_size: f32,
     color: [4]f32,
+    tint: [4]f32,
     skew_x: f32,
 ) EmitResult {
     const transform = Transform2D{
@@ -162,5 +205,5 @@ fn emitWithTransform(
         .yy = -font_size,
         .ty = y,
     };
-    return emitGlyphWithTransform(batch, view, glyph_id, color, transform);
+    return emitGlyphWithTransformTinted(batch, view, glyph_id, color, tint, transform);
 }

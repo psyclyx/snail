@@ -18,6 +18,9 @@
   retains old pages, and contains every referenced glyph.
 - The C API mirrors the new text-atlas metrics, `ensure_glyphs`, and text-blob
   rebind helpers.
+- The C API now exposes `SnailOverride` plus
+  `snail_scene_add_text_override` / `snail_scene_add_path_picture_override`
+  for per-submission transform and tint.
 
 ### Changed
 
@@ -25,8 +28,18 @@
   `TextCoverageRecords.wordCapacityForBlob(blob)` to size the `[]u32`, then
   initialize with `TextCoverageRecords.init(buffer)`. `buildLocal` and
   `rebuildLocal` no longer allocate.
+- Draw records now store base color and instance tint separately so `Override.tint`
+  composes correctly with text foreground colors, COLR palette layers, and
+  vector paints. This changes `lowlevel.TEXT_WORDS_PER_GLYPH` /
+  `lowlevel.PATH_WORDS_PER_SHAPE`; prefer `DrawList.estimate`.
 - README benchmark tables were refreshed from a `zig build bench -Dvulkan=true`
   run on the documented machine.
+
+### Fixed
+
+- `Override.tint` now affects prepared vector path draws on GL, Vulkan, and CPU
+  backends. It also tints explicit COLR palette layers instead of only
+  foreground-color text layers.
 
 ## 0.4.1
 

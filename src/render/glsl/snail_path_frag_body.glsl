@@ -454,7 +454,7 @@ vec4 premultiplyColor(vec4 color, float cov) {
     return vec4(color.rgb * alpha, alpha);
 }
 
-PathCompositeSample compositePathGroup(vec2 rc, vec2 epp, vec2 ppe, ivec2 infoBase, vec4 header, int texLayer) {
+PathCompositeSample compositePathGroup(vec2 rc, vec2 epp, vec2 ppe, ivec2 infoBase, vec4 header, int texLayer, vec4 tint) {
     int layer_count = int(header.x + 0.5);
     int composite_mode = int(header.y + 0.5);
     vec4 result = vec4(0.0);
@@ -473,6 +473,7 @@ PathCompositeSample compositePathGroup(vec2 rc, vec2 epp, vec2 ppe, ivec2 infoBa
         int bandMaxV = (floatBitsToInt(info.z) >> 16) & 0xFFFF;
         float cov = evalGlyphCoverage(rc, epp, ppe, gLoc, ivec2(bandMaxV, bandMaxH), band, texLayer);
         PathPaintSample paint = samplePathPaint(rc, loc, info);
+        paint.color *= tint;
 
         if (composite_mode == 1 && layer_count >= 2 && l < 2) {
             if (l == 0) {
@@ -515,8 +516,9 @@ void main() {
     if (firstInfo.w >= 0.0) discard;
 
     int texLayer = u_layer_base + int(v_banding.w);
+    vec4 linear_tint = vec4(srgbDecode(v_tint.r), srgbDecode(v_tint.g), srgbDecode(v_tint.b), v_tint.a);
     if (int(-firstInfo.w + 0.5) == 5) {
-        PathCompositeSample result = compositePathGroup(rc, epp, ppe, infoBase, firstInfo, texLayer);
+        PathCompositeSample result = compositePathGroup(rc, epp, ppe, infoBase, firstInfo, texLayer, linear_tint);
         if (result.color.a < 1.0 / 255.0) discard;
         frag_color = (result.gradient > 0.5) ? ditherPremultipliedColor(result.color) : result.color;
         return;
@@ -529,6 +531,7 @@ void main() {
     float cov = evalGlyphCoverage(rc, epp, ppe, gLoc, ivec2(bandMaxV, bandMaxH), band, texLayer);
     if (cov < 1.0 / 255.0) discard;
     PathPaintSample paint = samplePathPaint(rc, infoBase, firstInfo);
+    paint.color *= linear_tint;
     vec4 result = premultiplyColor(paint.color, cov);
     frag_color = (paint.gradient > 0.5) ? ditherPremultipliedColor(result) : result;
 }

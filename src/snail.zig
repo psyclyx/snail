@@ -1450,9 +1450,23 @@ const TextBatch = struct {
         color: [4]f32,
         atlas_layer: u32,
     ) !void {
+        try self.addGlyphTinted(x, y, font_size, bbox, band_entry, color, .{ 1, 1, 1, 1 }, atlas_layer);
+    }
+
+    pub fn addGlyphTinted(
+        self: *TextBatch,
+        x: f32,
+        y: f32,
+        font_size: f32,
+        bbox: bezier.BBox,
+        band_entry: band_tex.GlyphBandEntry,
+        color: [4]f32,
+        tint: [4]f32,
+        atlas_layer: u32,
+    ) !void {
         if (self.len + TEXT_WORDS_PER_GLYPH > self.buf.len) return error.DrawListFull;
         const local_layer = try self.localLayer(atlas_layer);
-        vertex_mod.generateGlyphVertices(self.buf[self.len..], x, y, font_size, bbox, band_entry, color, local_layer);
+        vertex_mod.generateGlyphVerticesTinted(self.buf[self.len..], x, y, font_size, bbox, band_entry, color, tint, local_layer);
         self.len += TEXT_WORDS_PER_GLYPH;
     }
 
@@ -1469,9 +1483,25 @@ const TextBatch = struct {
         color: [4]f32,
         atlas_layer: u32,
     ) !void {
+        try self.addColrGlyphTinted(x, y, font_size, union_bbox, info_x, info_y, layer_count, color, .{ 1, 1, 1, 1 }, atlas_layer);
+    }
+
+    pub fn addColrGlyphTinted(
+        self: *TextBatch,
+        x: f32,
+        y: f32,
+        font_size: f32,
+        union_bbox: bezier.BBox,
+        info_x: u16,
+        info_y: u16,
+        layer_count: u16,
+        color: [4]f32,
+        tint: [4]f32,
+        atlas_layer: u32,
+    ) !void {
         if (self.len + TEXT_WORDS_PER_GLYPH > self.buf.len) return error.DrawListFull;
         const local_layer = try self.localLayer(atlas_layer);
-        vertex_mod.generateMultiLayerGlyphVertices(
+        vertex_mod.generateMultiLayerGlyphVerticesTinted(
             self.buf[self.len..],
             x,
             y,
@@ -1481,6 +1511,7 @@ const TextBatch = struct {
             info_y,
             layer_count,
             color,
+            tint,
             local_layer,
         );
         self.len += TEXT_WORDS_PER_GLYPH;
@@ -1495,9 +1526,21 @@ const TextBatch = struct {
         atlas_layer: u32,
         transform: Transform2D,
     ) !void {
+        try self.addGlyphTransformedTinted(bbox, band_entry, color, .{ 1, 1, 1, 1 }, atlas_layer, transform);
+    }
+
+    pub fn addGlyphTransformedTinted(
+        self: *TextBatch,
+        bbox: bezier.BBox,
+        band_entry: band_tex.GlyphBandEntry,
+        color: [4]f32,
+        tint: [4]f32,
+        atlas_layer: u32,
+        transform: Transform2D,
+    ) !void {
         if (self.len + TEXT_WORDS_PER_GLYPH > self.buf.len) return error.DrawListFull;
         const local_layer = try self.localLayer(atlas_layer);
-        if (!vertex_mod.generateGlyphVerticesTransformed(self.buf[self.len..], bbox, band_entry, color, local_layer, transform))
+        if (!vertex_mod.generateGlyphVerticesTransformedTinted(self.buf[self.len..], bbox, band_entry, color, tint, local_layer, transform))
             return error.InvalidTransform;
         self.len += TEXT_WORDS_PER_GLYPH;
     }
@@ -1513,9 +1556,23 @@ const TextBatch = struct {
         atlas_layer: u32,
         transform: Transform2D,
     ) !void {
+        try self.addColrGlyphTransformedTinted(union_bbox, info_x, info_y, layer_count, color, .{ 1, 1, 1, 1 }, atlas_layer, transform);
+    }
+
+    pub fn addColrGlyphTransformedTinted(
+        self: *TextBatch,
+        union_bbox: bezier.BBox,
+        info_x: u16,
+        info_y: u16,
+        layer_count: u16,
+        color: [4]f32,
+        tint: [4]f32,
+        atlas_layer: u32,
+        transform: Transform2D,
+    ) !void {
         if (self.len + TEXT_WORDS_PER_GLYPH > self.buf.len) return error.DrawListFull;
         const local_layer = try self.localLayer(atlas_layer);
-        if (!vertex_mod.generateMultiLayerGlyphVerticesTransformed(self.buf[self.len..], union_bbox, info_x, info_y, layer_count, color, local_layer, transform))
+        if (!vertex_mod.generateMultiLayerGlyphVerticesTransformedTinted(self.buf[self.len..], union_bbox, info_x, info_y, layer_count, color, tint, local_layer, transform))
             return error.InvalidTransform;
         self.len += TEXT_WORDS_PER_GLYPH;
     }
@@ -3752,12 +3809,13 @@ const PathBatch = struct {
             const final_transform = Transform2D.multiply(override.transform, shape.transform);
             const info_loc = view.layerInfoLoc(shape.info_x, shape.info_y);
             const local_layer = try self.localLayer(view.glyphLayer(shape.page_index));
-            if (!vertex_mod.generateMultiLayerGlyphVerticesTransformed(
+            if (!vertex_mod.generateMultiLayerGlyphVerticesTransformedTinted(
                 self.buf[self.len..],
                 shape.bbox,
                 info_loc.x,
                 info_loc.y,
                 shape.layer_count,
+                .{ 1, 1, 1, 1 },
                 override.tint,
                 local_layer,
                 final_transform,

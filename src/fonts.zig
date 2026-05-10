@@ -195,7 +195,6 @@ pub fn appendTextDrawIntoBatch(
     if (override_index >= draw.instances.len) return error.InvalidOverrideIndex;
     const override = draw.instances[override_index];
     const has_outer_transform = !isIdentityTransform(override.transform);
-    const has_tint = override.tint[0] != 1 or override.tint[1] != 1 or override.tint[2] != 1 or override.tint[3] != 1;
 
     var count: usize = 0;
     var glyph_index = start;
@@ -213,9 +212,7 @@ pub fn appendTextDrawIntoBatch(
         if (has_outer_transform) {
             final_transform = snail.Transform2D.multiply(override.transform, final_transform);
         }
-        const final_color = if (has_tint) multiplyColor(glyph.color, override.tint) else glyph.color;
-
-        switch (glyph_emit.emitGlyphWithTransform(batch, &face_view, glyph.glyph_id, final_color, final_transform)) {
+        switch (glyph_emit.emitGlyphWithTransformTinted(batch, &face_view, glyph.glyph_id, glyph.color, override.tint, final_transform)) {
             .emitted => count += 1,
             .skipped => {},
             .buffer_full => return error.DrawListFull,
@@ -229,7 +226,7 @@ pub fn appendTextDrawIntoBatch(
             if (has_outer_transform) {
                 bold_transform = snail.Transform2D.multiply(override.transform, bold_transform);
             }
-            switch (glyph_emit.emitGlyphWithTransform(batch, &face_view, glyph.glyph_id, final_color, bold_transform)) {
+            switch (glyph_emit.emitGlyphWithTransformTinted(batch, &face_view, glyph.glyph_id, glyph.color, override.tint, bold_transform)) {
                 .emitted, .skipped => {},
                 .buffer_full => return error.DrawListFull,
                 .layer_window_changed => return error.GlyphSpansTextureLayerWindows,
@@ -243,10 +240,6 @@ pub fn appendTextDrawIntoBatch(
         .completed = glyph_index >= range.end,
         .layer_window_base = batch.currentLayerWindowBase(),
     };
-}
-
-fn multiplyColor(a: [4]f32, b: [4]f32) [4]f32 {
-    return .{ a[0] * b[0], a[1] * b[1], a[2] * b[2], a[3] * b[3] };
 }
 
 fn textBlobGlyphLayerWindowBase(view: *const FaceView, glyph_id: u16) !?u32 {

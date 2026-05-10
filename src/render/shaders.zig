@@ -37,6 +37,8 @@ const shared_text_fragment_main =
     \\                                  v_banding, atlas_layer);
     \\    if (cov < 1.0 / 255.0) discard;
     \\    vec4 linear_color = vec4(srgbDecode(v_color.r), srgbDecode(v_color.g), srgbDecode(v_color.b), v_color.a);
+    \\    vec4 linear_tint = vec4(srgbDecode(v_tint.r), srgbDecode(v_tint.g), srgbDecode(v_tint.b), v_tint.a);
+    \\    linear_color *= linear_tint;
     \\    frag_color = premultiplyColor(linear_color, cov);
     \\}
     \\

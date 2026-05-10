@@ -884,6 +884,7 @@ fn setupVertexAttribs() void {
     gl.glEnableVertexAttribArray(3);
     setupVertexAttrib(4, 4, gl.GL_FLOAT, gl.GL_FALSE, stride, @offsetOf(vertex.Instance, "band"));
     setupVertexAttrib(5, 4, gl.GL_UNSIGNED_BYTE, gl.GL_TRUE, stride, @offsetOf(vertex.Instance, "color"));
+    setupVertexAttrib(6, 4, gl.GL_UNSIGNED_BYTE, gl.GL_TRUE, stride, @offsetOf(vertex.Instance, "tint"));
 }
 
 fn textureUnitEnum(unit: gl.GLint) gl.GLenum {
@@ -891,7 +892,7 @@ fn textureUnitEnum(unit: gl.GLint) gl.GLenum {
 }
 
 fn setupInstanceDivisors() void {
-    inline for (0..6) |i| {
+    inline for (0..7) |i| {
         gl.glVertexAttribDivisor(@intCast(i), 1);
     }
 }
@@ -910,6 +911,7 @@ fn setupVertexArrayAttribs(vao: gl.GLuint) void {
     gl.glVertexArrayAttribBinding(vao, 3, 0);
     setupVertexArrayAttrib(vao, 4, 4, gl.GL_FLOAT, gl.GL_FALSE, @offsetOf(vertex.Instance, "band"));
     setupVertexArrayAttrib(vao, 5, 4, gl.GL_UNSIGNED_BYTE, gl.GL_TRUE, @offsetOf(vertex.Instance, "color"));
+    setupVertexArrayAttrib(vao, 6, 4, gl.GL_UNSIGNED_BYTE, gl.GL_TRUE, @offsetOf(vertex.Instance, "tint"));
 }
 
 fn setupVertexArrayAttrib(vao: gl.GLuint, loc: u32, components: gl.GLint, ty: gl.GLenum, normalized: gl.GLboolean, offset: usize) void {

@@ -9,7 +9,7 @@ const assets_data = @import("assets");
 
 const Allocator = std.mem.Allocator;
 
-pub const WIDTH: u32 = 480;
+pub const WIDTH: u32 = 400;
 pub const HEIGHT: u32 = 240;
 
 pub fn clearColor() [4]f32 {
@@ -58,12 +58,12 @@ const tagline_color = [4]f32{ 0.42, 0.46, 0.52, 1.0 };
 const sample_color = [4]f32{ 0.15, 0.18, 0.24, 1.0 };
 const sep_color = [4]f32{ 0.65, 0.70, 0.78, 1.0 };
 
-const left_pad: f32 = 28.0;
-const wordmark_size: f32 = 56.0;
-const wordmark_baseline: f32 = 78.0;
-const tagline_size: f32 = 14.0;
+const left_pad: f32 = 24.0;
+const wordmark_size: f32 = 52.0;
+const wordmark_baseline: f32 = 76.0;
+const tagline_size: f32 = 13.0;
 const tagline_baseline: f32 = wordmark_baseline + 22.0;
-const sample_size: f32 = 18.0;
+const sample_size: f32 = 16.0;
 const sample_baseline: f32 = 196.0;
 
 pub fn buildTextBlob(builder: *snail.TextBlobBuilder) !void {
@@ -89,11 +89,11 @@ pub fn buildTextBlob(builder: *snail.TextBlobBuilder) !void {
 
     // Multi-script sample row, separated by middle-dots.
     const samples = [_][]const u8{
-        "Hello, world!",
+        "Hello",
         "\xd9\x85\xd8\xb1\xd8\xad\xd8\xa8\xd8\xa7", // مرحبا
         "\xe0\xa4\xa8\xe0\xa4\xae\xe0\xa4\xb8\xe0\xa5\x8d\xe0\xa4\xa4\xe0\xa5\x87", // नमस्ते
         "\xe0\xb8\xaa\xe0\xb8\xa7\xe0\xb8\xb1\xe0\xb8\xaa\xe0\xb8\x94\xe0\xb8\xb5", // สวัสดี
-        "\xe2\x9c\xa8\xf0\x9f\x8c\x8d\xf0\x9f\x90\x8c\xf0\x9f\x8c\x88", // ✨🌍🐌🌈
+        "\xe2\x9c\xa8\xf0\x9f\x8c\x8d", // ✨🌍
     };
     var sx = left_pad;
     for (samples, 0..) |sample, i| {
@@ -113,10 +113,10 @@ pub fn buildPathPicture(allocator: Allocator) !snail.PathPicture {
     // The vector snail lives in the top-right corner of the canvas above
     // the multi-script sample row.
     const stage = snail.Rect{
-        .x = @as(f32, @floatFromInt(WIDTH)) - 180.0,
-        .y = 8.0,
-        .w = 168.0,
-        .h = 132.0,
+        .x = @as(f32, @floatFromInt(WIDTH)) - 154.0,
+        .y = 12.0,
+        .w = 140.0,
+        .h = 122.0,
     };
     try demo_banner.addVectorSnail(&builder, stage);
 

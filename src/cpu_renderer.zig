@@ -60,6 +60,10 @@ fn srgbColorToLinear(color: [4]f32) [4]f32 {
     };
 }
 
+fn multiplyLinearColor(a: [4]f32, b: [4]f32) [4]f32 {
+    return .{ a[0] * b[0], a[1] * b[1], a[2] * b[2], a[3] * b[3] };
+}
+
 fn fract(v: f32) f32 {
     return v - @floor(v);
 }
@@ -456,6 +460,7 @@ pub const CpuRenderer = struct {
         const gz = decoded.glyph[0];
         const gw = decoded.glyph[1];
         const color = srgbColorToLinear(decoded.color);
+        const tint = srgbColorToLinear(decoded.tint);
 
         const atlas_layer_byte: u8 = @intCast(gw >> 24);
 
@@ -469,9 +474,9 @@ pub const CpuRenderer = struct {
             const resolved = prepared.resolveLayerInfo(info_y) orelse return;
             const first_tag = fetchLayerInfoTexel(resolved.data, resolved.width, info_x, resolved.local_y, 0)[3];
             if (first_tag < 0.0) {
-                self.renderPathBatchLayers(prepared, bbox, transform, info_x, resolved.local_y, atlas_layer, resolved.data, resolved.width, resolved.paint_image_records, false);
+                self.renderPathBatchLayers(prepared, bbox, transform, tint, info_x, resolved.local_y, atlas_layer, resolved.data, resolved.width, resolved.paint_image_records, false);
             } else {
-                self.renderColrBatchLayers(prepared, bbox, transform, color, info_x, resolved.local_y, layer_count, atlas_layer, resolved.data, resolved.width);
+                self.renderColrBatchLayers(prepared, bbox, transform, color, tint, info_x, resolved.local_y, layer_count, atlas_layer, resolved.data, resolved.width);
             }
             return;
         }
@@ -495,7 +500,7 @@ pub const CpuRenderer = struct {
 
         const atlas_layer = texture_layer_base + @as(u32, atlas_layer_byte);
         const page = (if (atlas_layer < prepared.atlas_pages.len) prepared.atlas_pages[atlas_layer] else null) orelse return;
-        self.renderTransformedGlyph(page, bbox, be, transform, color, allow_subpixel);
+        self.renderTransformedGlyph(page, bbox, be, transform, multiplyLinearColor(color, tint), allow_subpixel);
     }
 
     fn renderColrBatchLayers(
@@ -504,6 +509,7 @@ pub const CpuRenderer = struct {
         union_bbox: snail.lowlevel.bezier.BBox,
         transform: Transform2D,
         default_color: [4]f32,
+        tint: [4]f32,
         info_x: u16,
         info_y: u16,
         layer_count: u16,
@@ -543,7 +549,10 @@ pub const CpuRenderer = struct {
                 data[t2 + 0], data[t2 + 1], data[t2 + 2], data[t2 + 3],
             };
             // Negative sentinel means use default color.
-            const color: [4]f32 = if (layer_color[0] < 0) default_color else srgbColorToLinear(layer_color);
+            const color: [4]f32 = multiplyLinearColor(
+                if (layer_color[0] < 0) default_color else srgbColorToLinear(layer_color),
+                tint,
+            );
 
             const be = GlyphBandEntry{
                 .glyph_x = glyph_x,
@@ -568,6 +577,7 @@ pub const CpuRenderer = struct {
         prepared: *const PreparedResources,
         union_bbox: snail.lowlevel.bezier.BBox,
         transform: Transform2D,
+        tint: [4]f32,
         info_x: u16,
         info_y: u16,
         atlas_layer: u32,
@@ -635,7 +645,8 @@ pub const CpuRenderer = struct {
                         };
                         const band_max_h: i32 = @as(i32, @intCast(be.h_band_count)) - 1;
                         const band_max_v: i32 = @as(i32, @intCast(be.v_band_count)) - 1;
-                        const paint = samplePathPaintFromLayerInfo(data, width, info_x, info_y, layer_offset, local, paint_image_records);
+                        var paint = samplePathPaintFromLayerInfo(data, width, info_x, info_y, layer_offset, local, paint_image_records);
+                        paint.color = multiplyLinearColor(paint.color, tint);
 
                         if (use_subpixel) {
                             const cov = evalGlyphCoverageSubpixel(
@@ -770,7 +781,8 @@ pub const CpuRenderer = struct {
                     .y = @as(f32, @floatFromInt(row)) + 0.5,
                 });
                 while (col < @as(u32, @intCast(px1))) : (advanceLocalPixel(&col, &local, sample_dx)) {
-                    const paint = samplePathPaintFromLayerInfo(data, width, info_x, info_y, 0, local, paint_image_records);
+                    var paint = samplePathPaintFromLayerInfo(data, width, info_x, info_y, 0, local, paint_image_records);
+                    paint.color = multiplyLinearColor(paint.color, tint);
                     if (!allow_subpixel or self.subpixel_order == .none) {
                         const cov = evalGlyphCoverage(page, local.x, local.y, ppe.x, ppe.y, be, band_max_h, band_max_v, self.fill_rule);
                         if (cov < 1.0 / 255.0) continue;
@@ -3066,4 +3078,55 @@ test "cpu renderer drawPaths batch matches drawPathPicture" {
     const outside = ((2 * stride) + (2 * 4));
     try testing.expectEqual(@as(u8, 0), batch_buf[outside + 0]);
     try testing.expectEqual(@as(u8, 0), batch_buf[outside + 3]);
+}
+
+test "cpu renderer applies path draw tint in prepared batches" {
+    const testing = std.testing;
+
+    const width: u32 = 32;
+    const height: u32 = 24;
+    const stride = width * 4;
+    const buf = try testing.allocator.alloc(u8, stride * height);
+    defer testing.allocator.free(buf);
+
+    var cpu = CpuRenderer.init(buf.ptr, width, height, stride);
+    cpu.clear(0, 0, 0, 0);
+
+    var builder = snail.PathPictureBuilder.init(testing.allocator);
+    defer builder.deinit();
+    try builder.addFilledRect(.{ .x = 6, .y = 5, .w = 16, .h = 10 }, .{
+        .color = .{ 1, 1, 1, 1 },
+    }, .identity);
+
+    var picture = try builder.freeze(testing.allocator);
+    defer picture.deinit();
+
+    const overrides = [_]snail.Override{.{ .tint = .{ 1, 0, 0, 0.5 } }};
+    var scene = snail.Scene.init(testing.allocator);
+    defer scene.deinit();
+    try scene.addPath(.{ .picture = &picture, .instances = &overrides });
+
+    var renderer = cpu.asRenderer();
+    var resource_entries: [4]snail.ResourceSet.Entry = undefined;
+    var resources = snail.ResourceSet.init(&resource_entries);
+    try resources.addScene(&scene);
+    var prepared = try renderer.uploadResourcesBlocking(testing.allocator, &resources);
+    defer prepared.deinit();
+
+    const wf: f32 = @floatFromInt(width);
+    const hf: f32 = @floatFromInt(height);
+    const options = snail.DrawOptions{
+        .mvp = snail.Mat4.ortho(0, wf, hf, 0, -1, 1),
+        .target = .{ .pixel_width = wf, .pixel_height = hf, .subpixel_order = .none },
+    };
+    var prepared_scene = try snail.PreparedScene.initOwned(testing.allocator, &prepared, &scene, options);
+    defer prepared_scene.deinit();
+    try renderer.drawPrepared(&prepared, &prepared_scene, options);
+
+    const inside = ((10 * stride) + (12 * 4));
+    try testing.expect(buf[inside + 0] > 180);
+    try testing.expect(buf[inside + 1] < 8);
+    try testing.expect(buf[inside + 2] < 8);
+    try testing.expect(buf[inside + 3] >= 126);
+    try testing.expect(buf[inside + 3] <= 128);
 }
