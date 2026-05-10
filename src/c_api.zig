@@ -178,6 +178,7 @@ pub const SnailResolveTarget = extern struct {
     is_final_composite: bool = true,
     opaque_backdrop: bool = true,
     will_resample: bool = false,
+    output_srgb: bool = false,
 };
 
 pub const SnailDrawOptions = extern struct {
@@ -392,6 +393,7 @@ fn toResolveTarget(target: SnailResolveTarget) !snail.ResolveTarget {
         .is_final_composite = target.is_final_composite,
         .opaque_backdrop = target.opaque_backdrop,
         .will_resample = target.will_resample,
+        .output_srgb = target.output_srgb,
     };
 }
 

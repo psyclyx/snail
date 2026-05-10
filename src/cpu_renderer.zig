@@ -227,6 +227,14 @@ pub const CpuRenderer = struct {
     stride: u32, // bytes per row (usually width * 4)
     fill_rule: FillRule,
     subpixel_order: SubpixelOrder,
+    /// Whether the destination pixel buffer holds sRGB-encoded bytes.
+    /// When true (and matching `ResolveTarget.output_srgb = true`), the
+    /// renderer reads existing pixels with srgb→linear, blends in linear,
+    /// and writes back with linear→srgb. When false, it treats the buffer
+    /// as linear-domain bytes (`byte / 255.0`) on read and clamps the
+    /// blend result back to 0..255 directly on write — matching the
+    /// "shader emits linear" GL/Vulkan default.
+    output_srgb: bool,
     thread_pool: ?*snail.ThreadPool,
     // Half-open row window [row_clip_min, row_clip_max). Pixel writes outside
     // this range are skipped. Used by tile workers to claim disjoint scanline
@@ -244,6 +252,12 @@ pub const CpuRenderer = struct {
             .stride = stride,
             .fill_rule = .non_zero,
             .subpixel_order = .none,
+            // CPU's pixel-buffer contract is sRGB bytes (cf. the file-level
+            // doc), so the standalone renderer defaults to encoding on
+            // write. The unified `Renderer.draw` path overrides this from
+            // `ResolveTarget.output_srgb` per frame; only callers using the
+            // direct draw API (drawPathPicture etc.) see this default.
+            .output_srgb = true,
             .thread_pool = null,
             .row_clip_min = 0,
             .row_clip_max = height,
@@ -283,6 +297,14 @@ pub const CpuRenderer = struct {
 
     pub fn getSubpixelOrder(self: *const CpuRenderer) SubpixelOrder {
         return self.subpixel_order;
+    }
+
+    pub fn setOutputSrgb(self: *CpuRenderer, enabled: bool) void {
+        self.output_srgb = enabled;
+    }
+
+    pub fn getOutputSrgb(self: *const CpuRenderer) bool {
+        return self.output_srgb;
     }
 
     fn setSubpixel(self: *CpuRenderer, enabled: bool) void {
@@ -997,11 +1019,25 @@ pub const CpuRenderer = struct {
         }
     }
 
+    inline fn readDstChannel(self: *const CpuRenderer, byte: u8) f32 {
+        return if (self.output_srgb)
+            srgbToLinear(byte)
+        else
+            @as(f32, @floatFromInt(byte)) / 255.0;
+    }
+
+    inline fn writeChannel(self: *const CpuRenderer, linear_value: f32, dither: f32) u8 {
+        return if (self.output_srgb)
+            srgbToByte(linearToSrgb(linear_value) + dither)
+        else
+            srgbToByte(linear_value + dither);
+    }
+
     fn blendPremultipliedPixel(self: *CpuRenderer, row: u32, col: u32, src: [4]f32, apply_dither: bool) void {
         const off = row * self.stride + col * 4;
-        const dst_r = srgbToLinear(self.pixels[off + 0]);
-        const dst_g = srgbToLinear(self.pixels[off + 1]);
-        const dst_b = srgbToLinear(self.pixels[off + 2]);
+        const dst_r = self.readDstChannel(self.pixels[off + 0]);
+        const dst_g = self.readDstChannel(self.pixels[off + 1]);
+        const dst_b = self.readDstChannel(self.pixels[off + 2]);
         const dst_a = @as(f32, @floatFromInt(self.pixels[off + 3])) / 255.0;
 
         const src_a = clamp01(src[3]);
@@ -1014,17 +1050,17 @@ pub const CpuRenderer = struct {
             (interleavedGradientNoise(row, col) - 0.5) * (clamp01(out_a) / 255.0)
         else
             0.0;
-        self.pixels[off + 0] = srgbToByte(linearToSrgb(out_r) + dither);
-        self.pixels[off + 1] = srgbToByte(linearToSrgb(out_g) + dither);
-        self.pixels[off + 2] = srgbToByte(linearToSrgb(out_b) + dither);
+        self.pixels[off + 0] = self.writeChannel(out_r, dither);
+        self.pixels[off + 1] = self.writeChannel(out_g, dither);
+        self.pixels[off + 2] = self.writeChannel(out_b, dither);
         self.pixels[off + 3] = srgbToByte(out_a);
     }
 
     fn blendSubpixelPremultipliedPixel(self: *CpuRenderer, row: u32, col: u32, src: [4]f32, src_blend: [3]f32, apply_dither: bool) void {
         const off = row * self.stride + col * 4;
-        const dst_r = srgbToLinear(self.pixels[off + 0]);
-        const dst_g = srgbToLinear(self.pixels[off + 1]);
-        const dst_b = srgbToLinear(self.pixels[off + 2]);
+        const dst_r = self.readDstChannel(self.pixels[off + 0]);
+        const dst_g = self.readDstChannel(self.pixels[off + 1]);
+        const dst_b = self.readDstChannel(self.pixels[off + 2]);
         const dst_a = @as(f32, @floatFromInt(self.pixels[off + 3])) / 255.0;
 
         const out_r = src[0] + dst_r * (1.0 - clamp01(src_blend[0]));
@@ -1037,9 +1073,9 @@ pub const CpuRenderer = struct {
             (interleavedGradientNoise(row, col) - 0.5) * (clamp01(out_a) / 255.0)
         else
             0.0;
-        self.pixels[off + 0] = srgbToByte(linearToSrgb(out_r) + dither);
-        self.pixels[off + 1] = srgbToByte(linearToSrgb(out_g) + dither);
-        self.pixels[off + 2] = srgbToByte(linearToSrgb(out_b) + dither);
+        self.pixels[off + 0] = self.writeChannel(out_r, dither);
+        self.pixels[off + 1] = self.writeChannel(out_g, dither);
+        self.pixels[off + 2] = self.writeChannel(out_b, dither);
         self.pixels[off + 3] = srgbToByte(out_a);
     }
 
@@ -3117,7 +3153,7 @@ test "cpu renderer applies path draw tint in prepared batches" {
     const hf: f32 = @floatFromInt(height);
     const options = snail.DrawOptions{
         .mvp = snail.Mat4.ortho(0, wf, hf, 0, -1, 1),
-        .target = .{ .pixel_width = wf, .pixel_height = hf, .subpixel_order = .none },
+        .target = .{ .pixel_width = wf, .pixel_height = hf, .subpixel_order = .none, .output_srgb = true },
     };
     var prepared_scene = try snail.PreparedScene.initOwned(testing.allocator, &prepared, &scene, options);
     defer prepared_scene.deinit();

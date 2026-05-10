@@ -454,6 +454,12 @@ vec4 premultiplyColor(vec4 color, float cov) {
     return vec4(color.rgb * alpha, alpha);
 }
 
+vec4 srgbEncodePremultiplied(vec4 premul) {
+    if (premul.a <= 0.0) return vec4(0.0);
+    float inv_a = 1.0 / premul.a;
+    return vec4(linearToSrgb(premul.rgb * inv_a) * premul.a, premul.a);
+}
+
 PathCompositeSample compositePathGroup(vec2 rc, vec2 epp, vec2 ppe, ivec2 infoBase, vec4 header, int texLayer, vec4 tint) {
     int layer_count = int(header.x + 0.5);
     int composite_mode = int(header.y + 0.5);
@@ -520,7 +526,8 @@ void main() {
     if (int(-firstInfo.w + 0.5) == 5) {
         PathCompositeSample result = compositePathGroup(rc, epp, ppe, infoBase, firstInfo, texLayer, linear_tint);
         if (result.color.a < 1.0 / 255.0) discard;
-        frag_color = (result.gradient > 0.5) ? ditherPremultipliedColor(result.color) : result.color;
+        vec4 emit = (result.gradient > 0.5) ? ditherPremultipliedColor(result.color) : result.color;
+        frag_color = (SNAIL_OUTPUT_SRGB != 0) ? srgbEncodePremultiplied(emit) : emit;
         return;
     }
 
@@ -533,5 +540,6 @@ void main() {
     PathPaintSample paint = samplePathPaint(rc, infoBase, firstInfo);
     paint.color *= linear_tint;
     vec4 result = premultiplyColor(paint.color, cov);
-    frag_color = (paint.gradient > 0.5) ? ditherPremultipliedColor(result) : result;
+    vec4 emit = (paint.gradient > 0.5) ? ditherPremultipliedColor(result) : result;
+    frag_color = (SNAIL_OUTPUT_SRGB != 0) ? srgbEncodePremultiplied(emit) : emit;
 }

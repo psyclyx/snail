@@ -138,6 +138,13 @@ typedef struct {
     bool is_final_composite;
     bool opaque_backdrop;
     bool will_resample;
+    /* When true, the GL/Vulkan shaders sRGB-encode their output and the
+     * CPU renderer writes sRGB-encoded bytes. When false (default),
+     * shaders emit linear values (assumes sRGB-format target / GL_FRAMEBUFFER_SRGB)
+     * and the CPU renderer writes linear bytes. Standalone CpuRenderer
+     * users hitting drawPathPicture etc. directly keep the historical
+     * sRGB-byte default; this only affects unified-pipeline draws. */
+    bool output_srgb;
 } SnailResolveTarget;
 
 typedef struct {

@@ -15,12 +15,14 @@ layout(push_constant) uniform PushConstants {
     vec2 viewport;
     int fill_rule;
     int subpixel_order;
+    int output_srgb;
     int layer_base;
 };
 
 layout(location = 0) out vec4 frag_color;
 
 #define SNAIL_FILL_RULE fill_rule
+#define SNAIL_OUTPUT_SRGB output_srgb
 #define u_layer_base layer_base
 
 #include "snail_text_frag_body.glsl"
@@ -38,5 +40,6 @@ void main() {
     vec4 linear_color = vec4(srgbDecode(v_color.r), srgbDecode(v_color.g), srgbDecode(v_color.b), v_color.a);
     vec4 linear_tint = vec4(srgbDecode(v_tint.r), srgbDecode(v_tint.g), srgbDecode(v_tint.b), v_tint.a);
     linear_color *= linear_tint;
-    frag_color = premultiplyColor(linear_color, cov);
+    vec4 premul = premultiplyColor(linear_color, cov);
+    frag_color = (SNAIL_OUTPUT_SRGB != 0) ? srgbEncodePremultiplied(premul) : premul;
 }

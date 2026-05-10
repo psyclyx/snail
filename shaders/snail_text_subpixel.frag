@@ -15,6 +15,7 @@ layout(push_constant) uniform PushConstants {
     vec2 viewport;
     int fill_rule;
     int subpixel_order;
+    int output_srgb;
     int layer_base;
 };
 
@@ -25,6 +26,7 @@ layout(location = 0, index = 1) out vec4 frag_blend;
 
 #define SNAIL_FILL_RULE fill_rule
 #define SNAIL_SUBPIXEL_ORDER subpixel_order
+#define SNAIL_OUTPUT_SRGB output_srgb
 #define u_layer_base layer_base
 
 #include "snail_text_subpixel_body.glsl"

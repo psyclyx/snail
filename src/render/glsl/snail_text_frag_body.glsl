@@ -135,7 +135,27 @@ float srgbDecode(float c) {
     return (c <= 0.04045) ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);
 }
 
+float srgbEncode(float c) {
+    return (c <= 0.0031308) ? c * 12.92 : 1.055 * pow(c, 1.0 / 2.4) - 0.055;
+}
+
 vec4 premultiplyColor(vec4 color, float cov) {
     float alpha = color.a * cov;
     return vec4(color.rgb * alpha, alpha);
+}
+
+// Convert a linear-premultiplied color to sRGB-encoded-premultiplied. The
+// caller checks ResolveTarget.output_srgb and only invokes this when the
+// destination is linear-format storage that the consumer interprets as
+// sRGB-encoded; for sRGB-format targets the framebuffer does the encode
+// on write and this would double-encode.
+vec4 srgbEncodePremultiplied(vec4 premul) {
+    if (premul.a <= 0.0) return vec4(0.0);
+    float inv_a = 1.0 / premul.a;
+    return vec4(
+        srgbEncode(max(premul.r * inv_a, 0.0)) * premul.a,
+        srgbEncode(max(premul.g * inv_a, 0.0)) * premul.a,
+        srgbEncode(max(premul.b * inv_a, 0.0)) * premul.a,
+        premul.a
+    );
 }

@@ -3849,6 +3849,21 @@ pub const ResolveTarget = struct {
     is_final_composite: bool = true,
     opaque_backdrop: bool = true,
     will_resample: bool = false,
+    /// Whether snail itself should sRGB-encode pixel values before writing.
+    ///
+    /// `false` (default): backends emit linear-space premultiplied color and
+    /// rely on the framebuffer to apply the linear→sRGB conversion (GL with
+    /// `GL_FRAMEBUFFER_SRGB` against an sRGB-format target, or Vulkan with
+    /// an `_SRGB` format attachment). The CPU backend writes linear bytes —
+    /// the caller is expected to convert before display.
+    ///
+    /// `true`: backends apply `srgbEncode` to RGB before writing. Use this
+    /// when the destination is a linear-format framebuffer or pixel buffer
+    /// that the consumer (compositor, file format, etc.) interprets as
+    /// already sRGB-encoded — for example, dmabuf imports that mesa won't
+    /// tag as sRGB-format. Blending happens in linear space inside the
+    /// shader; only the final color is gamma-encoded.
+    output_srgb: bool = false,
 };
 
 fn effectiveSubpixelOrder(target: ResolveTarget) SubpixelOrder {
@@ -3954,6 +3969,7 @@ pub const ResourceStamp = struct {
 pub const TargetStamp = struct {
     pixel_size: [2]u32 = .{ 0, 0 },
     subpixel_order: SubpixelOrder = .none,
+    output_srgb: bool = false,
     mvp_class: MvpClass = .projective,
 
     pub const MvpClass = enum(u8) {
@@ -3970,6 +3986,7 @@ pub const TargetStamp = struct {
                 @intFromFloat(@max(target.pixel_height, 0.0)),
             },
             .subpixel_order = effectiveSubpixelOrder(target),
+            .output_srgb = target.output_srgb,
             .mvp_class = classifyMvp(mvp),
         };
     }
@@ -4895,6 +4912,8 @@ pub const Renderer = struct {
         getSubpixelOrder: *const fn (*anyopaque) SubpixelOrder,
         setFillRule: *const fn (*anyopaque, FillRule) void,
         getFillRule: *const fn (*anyopaque) FillRule,
+        setOutputSrgb: *const fn (*anyopaque, bool) void,
+        getOutputSrgb: *const fn (*anyopaque) bool,
         backendName: *const fn (*anyopaque) []const u8,
     };
 
@@ -4968,6 +4987,12 @@ pub const Renderer = struct {
             fn getFillRuleFn(ptr: *anyopaque) FillRule {
                 return constCast(ptr).getFillRule();
             }
+            fn setOutputSrgbFn(ptr: *anyopaque, enabled: bool) void {
+                cast(ptr).setOutputSrgb(enabled);
+            }
+            fn getOutputSrgbFn(ptr: *anyopaque) bool {
+                return constCast(ptr).getOutputSrgb();
+            }
             fn backendNameFn(ptr: *anyopaque) []const u8 {
                 return constCast(ptr).backendName();
             }
@@ -5016,6 +5041,8 @@ pub const Renderer = struct {
             .getSubpixelOrder = &S.getSubpixelOrderFn,
             .setFillRule = &S.setFillRuleFn,
             .getFillRule = &S.getFillRuleFn,
+            .setOutputSrgb = &S.setOutputSrgbFn,
+            .getOutputSrgb = &S.getOutputSrgbFn,
             .backendName = &S.backendNameFn,
         };
     }
@@ -5088,6 +5115,7 @@ pub const Renderer = struct {
     pub fn iterateRecords(self: *Renderer, records: DrawRecords, options: DrawOptions, backend_prepared: ?*const anyopaque) void {
         self.setSubpixelOrder(effectiveSubpixelOrder(options.target));
         self.setFillRule(options.target.fill_rule);
+        self.setOutputSrgb(options.target.output_srgb);
         self.beginFrame();
         for (records.segments) |segment| {
             const vertices = records.words[segment.offset..][0..segment.len];
@@ -5145,6 +5173,14 @@ pub const Renderer = struct {
 
     pub fn setFillRule(self: *Renderer, rule: FillRule) void {
         self.vtable.setFillRule(self.ptr, rule);
+    }
+
+    pub fn setOutputSrgb(self: *Renderer, enabled: bool) void {
+        self.vtable.setOutputSrgb(self.ptr, enabled);
+    }
+
+    pub fn outputSrgb(self: *const Renderer) bool {
+        return self.vtable.getOutputSrgb(@constCast(self.ptr));
     }
 
     pub fn fillRule(self: *const Renderer) FillRule {
@@ -5415,6 +5451,7 @@ test "draw dispatch uses only prepared stamps and caller records" {
         viewport_seen: [2]f32 = .{ 0, 0 },
         subpixel_order: SubpixelOrder = .none,
         fill_rule: FillRule = .non_zero,
+        output_srgb: bool = false,
         saw_backend_prepared: bool = true,
     };
     const Fake = struct {
@@ -5455,6 +5492,12 @@ test "draw dispatch uses only prepared stamps and caller records" {
         fn getFillRule(ptr: *anyopaque) FillRule {
             return state(ptr).fill_rule;
         }
+        fn setOutputSrgb(ptr: *anyopaque, enabled: bool) void {
+            state(ptr).output_srgb = enabled;
+        }
+        fn getOutputSrgb(ptr: *anyopaque) bool {
+            return state(ptr).output_srgb;
+        }
         fn backendName(_: *anyopaque) []const u8 {
             return "fake";
         }
@@ -5469,6 +5512,8 @@ test "draw dispatch uses only prepared stamps and caller records" {
         .getSubpixelOrder = Fake.getSubpixelOrder,
         .setFillRule = Fake.setFillRule,
         .getFillRule = Fake.getFillRule,
+        .setOutputSrgb = Fake.setOutputSrgb,
+        .getOutputSrgb = Fake.getOutputSrgb,
         .backendName = Fake.backendName,
     };
 

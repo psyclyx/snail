@@ -174,13 +174,28 @@ float srgbDecode(float c) {
     return (c <= 0.04045) ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);
 }
 
+float srgbEncode(float c) {
+    return (c <= 0.0031308) ? c * 12.92 : 1.055 * pow(c, 1.0 / 2.4) - 0.055;
+}
+
 vec4 premultiplyColorSubpixel(vec4 color, vec3 cov, float alpha_cov) {
     vec3 alpha = vec3(color.a) * cov;
     return vec4(color.rgb * alpha, color.a * alpha_cov);
 }
 
 void emitSubpixelColor(vec4 color, vec3 cov, float alpha_cov) {
-    vec4 premul = premultiplyColorSubpixel(color, cov, alpha_cov);
+    // For sRGB-output mode, encode the unpremultiplied color first; the
+    // per-channel coverage is then applied to the encoded values to keep
+    // the destination in sRGB-domain. (The premul-from-linear divide
+    // approach used by the non-subpixel paths doesn't apply cleanly here
+    // because rgb is premultiplied with per-channel alpha.)
+    vec4 effective = (SNAIL_OUTPUT_SRGB != 0)
+        ? vec4(srgbEncode(max(color.r, 0.0)),
+               srgbEncode(max(color.g, 0.0)),
+               srgbEncode(max(color.b, 0.0)),
+               color.a)
+        : color;
+    vec4 premul = premultiplyColorSubpixel(effective, cov, alpha_cov);
     frag_color = premul;
 #ifdef SNAIL_DUAL_SOURCE
     frag_blend = vec4(vec3(color.a) * cov, 0.0);

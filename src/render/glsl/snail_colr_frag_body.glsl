@@ -143,9 +143,24 @@ float srgbDecode(float c) {
     return (c <= 0.04045) ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);
 }
 
+float srgbEncode(float c) {
+    return (c <= 0.0031308) ? c * 12.92 : 1.055 * pow(c, 1.0 / 2.4) - 0.055;
+}
+
 vec4 premultiplyColor(vec4 color, float cov) {
     float alpha = color.a * cov;
     return vec4(color.rgb * alpha, alpha);
+}
+
+vec4 srgbEncodePremultiplied(vec4 premul) {
+    if (premul.a <= 0.0) return vec4(0.0);
+    float inv_a = 1.0 / premul.a;
+    return vec4(
+        srgbEncode(max(premul.r * inv_a, 0.0)) * premul.a,
+        srgbEncode(max(premul.g * inv_a, 0.0)) * premul.a,
+        srgbEncode(max(premul.b * inv_a, 0.0)) * premul.a,
+        premul.a
+    );
 }
 
 void main() {
@@ -178,5 +193,5 @@ void main() {
         result = premul + result * (1.0 - premul.a);
     }
     if (result.a < 1.0 / 255.0) discard;
-    frag_color = result;
+    frag_color = (SNAIL_OUTPUT_SRGB != 0) ? srgbEncodePremultiplied(result) : result;
 }

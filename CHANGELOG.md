@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.4.3
+
+### Added
+
+- `ResolveTarget.output_srgb` (default `false`). When set, the GL and
+  Vulkan text/path/COLR/subpixel shaders gamma-encode their premultiplied
+  output before writing, and the CPU renderer writes sRGB-encoded bytes;
+  blending still happens in linear space inside the shader. Use this when
+  the destination is a linear-format framebuffer or pixel buffer that the
+  consumer (compositor, image format, etc.) interprets as already
+  sRGB-encoded — for example, an EGL dmabuf import that the driver won't
+  tag as sRGB-format. The default keeps existing behavior: shaders emit
+  linear values and rely on a sRGB-format framebuffer (`GL_FRAMEBUFFER_SRGB`
+  or an `_SRGB` Vulkan attachment) to do the encode on write.
+- `Renderer.setOutputSrgb` / `Renderer.outputSrgb` for the unified
+  vtable-erased renderer, and matching `setOutputSrgb` / `getOutputSrgb`
+  on `GlRenderer`, `CpuRenderer`, and `VulkanPipeline`.
+- The C API mirrors this with `output_srgb` on `SnailResolveTarget`.
+
+### Changed
+
+- The Vulkan push-constant block grew by 4 bytes (84 → 88) to carry
+  `output_srgb`. Callers that hardcode the push-constant size against
+  the previous layout need updating.
+- `CpuRenderer.init` defaults `output_srgb = true` so direct-API callers
+  (`drawPathPicture`, etc.) keep their historical sRGB-byte output. The
+  unified pipeline (`Renderer.draw` / `iterateRecords`) overrides this
+  per-frame from `ResolveTarget.output_srgb`, so unified-pipeline CPU
+  callers using a default `ResolveTarget` will now see linear-byte output
+  unless they opt in to `output_srgb = true`.
+
 ## 0.4.2
 
 ### Added

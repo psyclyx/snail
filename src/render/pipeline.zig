@@ -25,6 +25,7 @@ const ProgramState = struct {
     image_tex_loc: gl.GLint = -1,
     fill_rule_loc: gl.GLint = -1,
     subpixel_order_loc: gl.GLint = -1,
+    output_srgb_loc: gl.GLint = -1,
     layer_tex_loc: gl.GLint = -1,
     layer_base_loc: gl.GLint = -1,
 };
@@ -38,12 +39,14 @@ pub const TextCoverageBindings = struct {
     image_tex_loc: gl.GLint = -1,
     fill_rule_loc: gl.GLint = -1,
     subpixel_order_loc: gl.GLint = -1,
+    output_srgb_loc: gl.GLint = -1,
     curve_tex_unit: gl.GLint = 0,
     band_tex_unit: gl.GLint = 1,
     layer_tex_unit: gl.GLint = 2,
     image_tex_unit: gl.GLint = 3,
     fill_rule: FillRule = .non_zero,
     subpixel_order: SubpixelOrder = .none,
+    output_srgb: bool = false,
 };
 
 pub const text_vertex_interface = shaders.text_vertex_interface;
@@ -170,6 +173,7 @@ pub const PreparedResources = struct {
         if (bindings.image_tex_loc >= 0) gl.glUniform1i(bindings.image_tex_loc, @intCast(bindings.image_tex_unit));
         if (bindings.fill_rule_loc >= 0) gl.glUniform1i(bindings.fill_rule_loc, @intFromEnum(bindings.fill_rule));
         if (bindings.subpixel_order_loc >= 0) gl.glUniform1i(bindings.subpixel_order_loc, @intFromEnum(bindings.subpixel_order));
+        if (bindings.output_srgb_loc >= 0) gl.glUniform1i(bindings.output_srgb_loc, @intFromBool(bindings.output_srgb));
     }
 
     fn currentImageView(self: *const PreparedResources, comptime ImageView: type, image: *const snail_mod.Image) ImageView {
@@ -536,6 +540,7 @@ pub const GlTextState = struct {
     path_program: ProgramState = .{},
     subpixel_order: SubpixelOrder = .none,
     fill_rule: FillRule = .non_zero,
+    output_srgb: bool = false,
     vao: gl.GLuint = 0,
     vbo: gl.GLuint = 0,
     ebo: gl.GLuint = 0,
@@ -757,6 +762,14 @@ pub const GlTextState = struct {
         return self.fill_rule;
     }
 
+    pub fn setOutputSrgb(self: *GlTextState, enabled: bool) void {
+        self.output_srgb = enabled;
+    }
+
+    pub fn getOutputSrgb(self: *const GlTextState) bool {
+        return self.output_srgb;
+    }
+
     fn ensureColrProgram(self: *GlTextState) *const ProgramState {
         std.debug.assert(self.colr_program.handle != 0);
         return &self.colr_program;
@@ -806,6 +819,9 @@ pub const GlTextState = struct {
         if (prog_state.subpixel_order_loc >= 0) {
             const order = if (render_mode == .grayscale) SubpixelOrder.none else self.subpixel_order;
             gl.glUniform1i(prog_state.subpixel_order_loc, @intFromEnum(order));
+        }
+        if (prog_state.output_srgb_loc >= 0) {
+            gl.glUniform1i(prog_state.output_srgb_loc, @intFromBool(self.output_srgb));
         }
     }
 
@@ -957,6 +973,7 @@ fn loadProgramState(cache_label: []const u8, vs_src: [*c]const u8, fs_src: [*c]c
         .image_tex_loc = gl.glGetUniformLocation(handle, "u_image_tex"),
         .fill_rule_loc = gl.glGetUniformLocation(handle, "u_fill_rule"),
         .subpixel_order_loc = gl.glGetUniformLocation(handle, "u_subpixel_order"),
+        .output_srgb_loc = gl.glGetUniformLocation(handle, "u_output_srgb"),
         .layer_tex_loc = gl.glGetUniformLocation(handle, "u_layer_tex"),
         .layer_base_loc = gl.glGetUniformLocation(handle, "u_layer_base"),
     };

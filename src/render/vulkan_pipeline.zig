@@ -32,11 +32,12 @@ const PushConstants = extern struct {
     viewport: [2]f32,
     fill_rule: i32,
     subpixel_order: i32 = 1, // 1=RGB, 2=BGR, 3=VRGB, 4=VBGR
+    output_srgb: i32 = 0, // 0 = emit linear, 1 = sRGB-encode before write
     layer_base: i32 = 0,
 };
 
 comptime {
-    if (@sizeOf(PushConstants) != 84) @compileError("PushConstants must be 84 bytes");
+    if (@sizeOf(PushConstants) != 88) @compileError("PushConstants must be 88 bytes");
 }
 
 // ── Initialization context (provided by caller) ──
@@ -298,6 +299,7 @@ pub const VulkanPipeline = struct {
     active_cmd: vk.VkCommandBuffer = null,
     subpixel_order: SubpixelOrder = .none,
     fill_rule: FillRule = .non_zero,
+    output_srgb: bool = false,
 
     // ── Init / Deinit ──
 
@@ -466,6 +468,14 @@ pub const VulkanPipeline = struct {
 
     pub fn getFillRule(self: *const VulkanPipeline) FillRule {
         return self.fill_rule;
+    }
+
+    pub fn setOutputSrgb(self: *VulkanPipeline, enabled: bool) void {
+        self.output_srgb = enabled;
+    }
+
+    pub fn getOutputSrgb(self: *const VulkanPipeline) bool {
+        return self.output_srgb;
     }
 
     // ── Command buffer (set by caller per-frame) ──
@@ -791,6 +801,7 @@ pub const VulkanPipeline = struct {
                 .viewport = .{ viewport_w, viewport_h },
                 .fill_rule = @intFromEnum(self.fill_rule),
                 .subpixel_order = @intFromEnum(if (render_mode == .grayscale) SubpixelOrder.none else self.subpixel_order),
+                .output_srgb = if (self.output_srgb) 1 else 0,
                 .layer_base = @intCast(texture_layer_base),
             };
             vk.vkCmdPushConstants(cmd, self.pipeline_layout, vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(PushConstants), &pc);
@@ -837,6 +848,7 @@ pub const VulkanPipeline = struct {
                 .viewport = .{ viewport_w, viewport_h },
                 .fill_rule = @intFromEnum(self.fill_rule),
                 .subpixel_order = @intFromEnum(if (run_mode == .grayscale) SubpixelOrder.none else self.subpixel_order),
+                .output_srgb = if (self.output_srgb) 1 else 0,
                 .layer_base = @intCast(texture_layer_base),
             };
             vk.vkCmdPushConstants(cmd, self.pipeline_layout, vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(PushConstants), &pc);
