@@ -34,7 +34,7 @@ jobs:
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
           GALLIUM_DRIVER: llvmpipe
-        run: zig build backend-compare
+        run: zig build backend-compare -Dvulkan=true -Dharfbuzz=true
 
       - name: Package artifacts
         run: |
