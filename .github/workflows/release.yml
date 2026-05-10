@@ -25,10 +25,10 @@ jobs:
             libvulkan-dev mesa-vulkan-drivers libgl1-mesa-dri glslc
 
       - name: Build library
-        run: zig build -Dharfbuzz=true --release=fast
+        run: zig build -Dvulkan=true -Dharfbuzz=true --release=fast
 
       - name: Run tests
-        run: zig build test -Dharfbuzz=true
+        run: zig build test -Dvulkan=true -Dharfbuzz=true
 
       - name: Backend pixel comparison
         env:
