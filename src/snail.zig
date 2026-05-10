@@ -190,7 +190,7 @@ pub const TextCoverageRecords = struct {
     atlas_stamp: ResourceStamp = .{},
 
     pub fn wordCapacityForBlob(blob: *const TextBlob) usize {
-        return @max(blob.gpu_instance_budget, 1) * TEXT_WORDS_PER_GLYPH;
+        return blob.gpu_instance_budget * TEXT_WORDS_PER_GLYPH;
     }
 
     pub fn init(buffer: []u32) TextCoverageRecords {

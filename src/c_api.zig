@@ -77,7 +77,7 @@ fn mapError(err: anyerror) c_int {
     return switch (err) {
         error.OutOfMemory => SNAIL_ERR_OUT_OF_MEMORY,
         error.InvalidFont, error.NoFaces, error.MissingCellMetricsGlyph => SNAIL_ERR_INVALID_FONT,
-        error.InvalidEnum, error.InvalidArgument, error.InvalidFaceIndex, error.WrongTextAtlasSnapshot => SNAIL_ERR_INVALID_ARGUMENT,
+        error.InvalidEnum, error.InvalidArgument, error.InvalidFaceIndex, error.WrongTextAtlasSnapshot, error.MissingPreparedGlyph => SNAIL_ERR_INVALID_ARGUMENT,
         else => SNAIL_ERR_DRAW_FAILED,
     };
 }
