@@ -41,6 +41,16 @@ pub const AddTextResult = struct {
     missing: bool,
 };
 
+pub const CellMetricsOptions = struct {
+    style: snail.FontStyle = .{},
+    em: f32,
+};
+
+pub const CellMetrics = struct {
+    cell_width: f32,
+    line_height: f32,
+};
+
 pub const ItemizedRun = struct {
     face_index: FaceIndex,
     text_start: u32,
@@ -103,8 +113,9 @@ pub const TextBlobOptions = struct {
 
 pub const TextBlob = struct {
     allocator: Allocator,
-    /// Borrowed exact TextAtlas snapshot used to build this blob. The pointer
-    /// and snapshot identity must remain valid until the blob is destroyed.
+    /// Borrowed TextAtlas snapshot used to build this blob. The pointer and
+    /// snapshot identity must remain valid until the blob is destroyed or
+    /// `rebind` moves the blob to a compatible atlas snapshot.
     atlas: *const TextAtlas,
     atlas_identity: u64,
     glyphs: []Glyph,
@@ -130,8 +141,27 @@ pub const TextBlob = struct {
         return self.glyphs.len;
     }
 
-    pub fn validate(self: *const TextBlob) !void {
+    pub fn validateExact(self: *const TextBlob) !void {
         if (self.atlas.snapshotIdentity() != self.atlas_identity) return error.WrongTextAtlasSnapshot;
+    }
+
+    pub fn validate(self: *const TextBlob) !void {
+        try self.validateExact();
+    }
+
+    /// Move this blob to a compatible atlas snapshot without rebuilding its
+    /// glyph list. The new atlas must share the same font config, retain the
+    /// old pages as a prefix, and contain every glyph referenced by the blob.
+    pub fn rebind(self: *TextBlob, new_atlas: *const TextAtlas) !void {
+        if (!new_atlas.canRebindFrom(self.atlas)) return error.WrongTextAtlasSnapshot;
+
+        for (self.glyphs) |glyph| {
+            if (!new_atlas.hasPreparedGlyph(glyph.face_index, glyph.glyph_id)) return error.MissingPreparedGlyph;
+        }
+
+        self.atlas = new_atlas;
+        self.atlas_identity = new_atlas.snapshotIdentity();
+        self.gpu_instance_budget = textBlobGpuInstanceBudgetForAtlas(new_atlas, self.glyphs);
     }
 
     pub fn fromShaped(
@@ -546,14 +576,59 @@ pub const TextAtlas = struct {
 
     // ── Metrics ──
 
+    pub fn faceCount(self: *const TextAtlas) usize {
+        return self.config.faces.len;
+    }
+
+    pub fn primaryFaceIndex(self: *const TextAtlas) !FaceIndex {
+        return self.config.primary_face orelse error.NoFaces;
+    }
+
     pub fn lineMetrics(self: *const TextAtlas) !snail.LineMetrics {
-        const pf = self.config.primary_face orelse return error.NoFaces;
-        return self.config.faces[pf].font.lineMetrics();
+        return self.faceLineMetrics(try self.primaryFaceIndex());
     }
 
     pub fn unitsPerEm(self: *const TextAtlas) !u16 {
-        const pf = self.config.primary_face orelse return error.NoFaces;
-        return self.config.faces[pf].font.units_per_em;
+        return self.faceUnitsPerEm(try self.primaryFaceIndex());
+    }
+
+    pub fn faceLineMetrics(self: *const TextAtlas, face_index: usize) !snail.LineMetrics {
+        const face = try self.faceConfig(face_index);
+        return face.font.lineMetrics();
+    }
+
+    pub fn faceUnitsPerEm(self: *const TextAtlas, face_index: usize) !u16 {
+        const face = try self.faceConfig(face_index);
+        return face.font.units_per_em;
+    }
+
+    /// Return the glyph ID for `codepoint` in `face_index`, or null when the
+    /// face's cmap resolves it to .notdef.
+    pub fn glyphIndex(self: *const TextAtlas, face_index: usize, codepoint: u21) !?u16 {
+        const face = try self.faceConfig(face_index);
+        const gid = try face.font.glyphIndex(codepoint);
+        return if (gid == 0) null else gid;
+    }
+
+    /// Return the horizontal advance for `glyph_id` in font units.
+    pub fn advanceWidth(self: *const TextAtlas, face_index: usize, glyph_id: u16) !i16 {
+        const face = try self.faceConfig(face_index);
+        return face.font.advanceWidth(glyph_id);
+    }
+
+    /// Resolve the styled primary face and return terminal-friendly dimensions
+    /// in the same units as `options.em`.
+    pub fn cellMetrics(self: *const TextAtlas, options: CellMetricsOptions) !CellMetrics {
+        const fi = self.resolve(options.style, 'M') orelse try self.primaryFaceIndex();
+        const fc = &self.config.faces[fi];
+        const gid = try glyphIndexForCellMetrics(fc);
+        const advance = try fc.font.advanceWidth(gid);
+        const lm = try fc.font.lineMetrics();
+        const scale = options.em / @as(f32, @floatFromInt(fc.font.units_per_em));
+        return .{
+            .cell_width = @as(f32, @floatFromInt(advance)) * scale,
+            .line_height = @as(f32, @floatFromInt(@as(i32, lm.ascent) - @as(i32, lm.descent) + @as(i32, lm.line_gap))) * scale,
+        };
     }
 
     pub fn decorationRect(self: *const TextAtlas, decoration: Decoration, x: f32, y: f32, advance: f32, font_size: f32) !snail.Rect {
@@ -615,6 +690,47 @@ pub const TextAtlas = struct {
             .layer_base = preparedViewLayerBase(atlas_view),
             .info_row_base = preparedViewInfoRowBase(atlas_view),
         };
+    }
+
+    fn checkedFaceIndex(self: *const TextAtlas, face_index: usize) !FaceIndex {
+        if (face_index >= self.config.faces.len) return error.InvalidFaceIndex;
+        if (face_index > std.math.maxInt(FaceIndex)) return error.InvalidFaceIndex;
+        return @intCast(face_index);
+    }
+
+    fn faceConfig(self: *const TextAtlas, face_index: usize) !*const FaceConfig {
+        const fi = try self.checkedFaceIndex(face_index);
+        return &self.config.faces[fi];
+    }
+
+    fn hasPreparedGlyph(self: *const TextAtlas, face_index: usize, glyph_id: u16) bool {
+        const fi = self.checkedFaceIndex(face_index) catch return false;
+        const face_view = self.faceView(fi, .{});
+        return shapedGlyphAvailable(&face_view, glyph_id);
+    }
+
+    fn addMissingGlyphToFaceMap(
+        self: *const TextAtlas,
+        face_new_gids: []?std.AutoHashMap(u16, void),
+        face_index: usize,
+        glyph_id: u16,
+    ) !void {
+        if (glyph_id == 0) return;
+        const fi = try self.checkedFaceIndex(face_index);
+        if (self.hasPreparedGlyph(fi, glyph_id)) return;
+        if (face_new_gids[fi] == null)
+            face_new_gids[fi] = std.AutoHashMap(u16, void).init(self.allocator);
+        try face_new_gids[fi].?.put(glyph_id, {});
+    }
+
+    fn canRebindFrom(self: *const TextAtlas, old_atlas: *const TextAtlas) bool {
+        if (self.config != old_atlas.config) return false;
+        if (self.face_glyphs.len != old_atlas.face_glyphs.len) return false;
+        if (self.pages.len < old_atlas.pages.len) return false;
+        for (old_atlas.pages, 0..) |page_ptr, i| {
+            if (self.pages[i] != page_ptr) return false;
+        }
+        return true;
     }
 
     // ── Rendering ──
@@ -825,8 +941,6 @@ pub const TextAtlas = struct {
     pub fn ensureShaped(self: *const TextAtlas, shaped: *const ShapedText) !?TextAtlas {
         if (shaped.config != self.config) return error.WrongTextAtlasSnapshot;
 
-        // Discover missing glyphs per face.
-        var any_missing = false;
         const face_new_gids = try self.allocator.alloc(?std.AutoHashMap(u16, void), self.config.faces.len);
         defer self.allocator.free(face_new_gids);
         @memset(face_new_gids, null);
@@ -835,17 +949,43 @@ pub const TextAtlas = struct {
         };
 
         for (shaped.glyphs) |glyph| {
-            if (glyph.glyph_id == 0) continue;
-            const fg = &self.face_glyphs[glyph.face_index];
-            if (fg.getGlyph(glyph.glyph_id) != null) continue;
-            const has_colr = if (fg.colr_base_map) |cbm| cbm.contains(glyph.glyph_id) else false;
-            if (has_colr) continue;
-            if (face_new_gids[glyph.face_index] == null)
-                face_new_gids[glyph.face_index] = std.AutoHashMap(u16, void).init(self.allocator);
-            try face_new_gids[glyph.face_index].?.put(glyph.glyph_id, {});
-            any_missing = true;
+            try self.addMissingGlyphToFaceMap(face_new_gids, glyph.face_index, glyph.glyph_id);
         }
 
+        return self.ensureGlyphMaps(face_new_gids);
+    }
+
+    /// Return a new TextAtlas snapshot with the given glyph IDs available for
+    /// one face. Returns null if the current snapshot already contains them.
+    pub fn ensureGlyphs(self: *const TextAtlas, face_index: usize, glyph_ids: []const u16) !?TextAtlas {
+        const fi = try self.checkedFaceIndex(face_index);
+
+        const face_new_gids = try self.allocator.alloc(?std.AutoHashMap(u16, void), self.config.faces.len);
+        defer self.allocator.free(face_new_gids);
+        @memset(face_new_gids, null);
+        defer for (face_new_gids) |*m| {
+            if (m.*) |*map| map.deinit();
+        };
+
+        for (glyph_ids) |gid| {
+            try self.addMissingGlyphToFaceMap(face_new_gids, fi, gid);
+        }
+
+        return self.ensureGlyphMaps(face_new_gids);
+    }
+
+    fn ensureGlyphMaps(self: *const TextAtlas, face_new_gids: []?std.AutoHashMap(u16, void)) !?TextAtlas {
+        std.debug.assert(face_new_gids.len == self.config.faces.len);
+
+        var any_missing = false;
+        for (face_new_gids) |maybe_map| {
+            if (maybe_map) |map| {
+                if (map.count() > 0) {
+                    any_missing = true;
+                    break;
+                }
+            }
+        }
         if (!any_missing) return null;
 
         // Build new pages for each face with missing glyphs.
@@ -1359,6 +1499,20 @@ fn glyphInstanceBudget(face_view: *const FaceView, glyph_id: u16) usize {
     return if (face_view.getGlyph(glyph_id) != null) 1 else 0;
 }
 
+fn textBlobGpuInstanceBudgetForAtlas(atlas: *const TextAtlas, glyphs: []const TextBlob.Glyph) usize {
+    var total: usize = 0;
+    for (glyphs) |glyph| {
+        const fi = atlas.checkedFaceIndex(glyph.face_index) catch continue;
+        const face_view = atlas.faceView(fi, .{});
+        const base_budget = glyphInstanceBudget(&face_view, glyph.glyph_id);
+        total += base_budget;
+        if (glyph.embolden != 0 and glyph.glyph_id != 0) {
+            total += base_budget;
+        }
+    }
+    return total;
+}
+
 pub fn textBlobRangeGpuInstanceBudget(blob: *const TextBlob, range: snail.Range.Resolved) usize {
     var total: usize = 0;
     for (blob.glyphs[range.start..range.end]) |glyph| {
@@ -1560,6 +1714,15 @@ fn faceGlyphAdvance(fc: *const FaceConfig, fg: *const FaceGlyphData, gid: u16) ?
     return null;
 }
 
+fn glyphIndexForCellMetrics(fc: *const FaceConfig) !u16 {
+    const candidates = [_]u21{ 'M', 'W', ' ', '0' };
+    for (candidates) |cp| {
+        const gid = try fc.font.glyphIndex(cp);
+        if (gid != 0) return gid;
+    }
+    return error.MissingCellMetricsGlyph;
+}
+
 // ── Tests ──
 
 const testing = std.testing;
@@ -1665,6 +1828,93 @@ test "TextAtlas.lineMetrics returns primary face metrics" {
     const lm = try fonts.lineMetrics();
     try testing.expect(lm.ascent > 0);
     try testing.expect(lm.descent < 0);
+}
+
+test "TextAtlas exposes per-face metrics and cell metrics" {
+    const assets_data = @import("assets");
+    var fonts = try TextAtlas.init(testing.allocator, &.{
+        .{ .data = assets_data.noto_sans_regular },
+        .{ .data = assets_data.noto_sans_bold, .weight = .bold },
+    });
+    defer fonts.deinit();
+
+    try testing.expectEqual(@as(usize, 2), fonts.faceCount());
+    try testing.expectEqual(@as(FaceIndex, 0), try fonts.primaryFaceIndex());
+
+    const upem = try fonts.faceUnitsPerEm(0);
+    try testing.expect(upem > 0);
+
+    const gid = (try fonts.glyphIndex(0, 'M')).?;
+    const advance = try fonts.advanceWidth(0, gid);
+    try testing.expect(advance > 0);
+
+    const metrics = try fonts.cellMetrics(.{ .style = .{}, .em = 16 });
+    try testing.expect(metrics.cell_width > 0);
+    try testing.expect(metrics.line_height > metrics.cell_width);
+}
+
+test "TextAtlas.ensureGlyphs extends by resolved glyph id" {
+    const assets_data = @import("assets");
+    var fonts = try TextAtlas.init(testing.allocator, &.{
+        .{ .data = assets_data.noto_sans_regular },
+    });
+    defer fonts.deinit();
+
+    const gid = (try fonts.glyphIndex(0, 'A')).?;
+    var next = (try fonts.ensureGlyphs(0, &.{gid})).?;
+    defer next.deinit();
+
+    try testing.expect(next.pageCount() > fonts.pageCount());
+    try testing.expectEqual(@as(?TextAtlas, null), try next.ensureGlyphs(0, &.{gid}));
+}
+
+test "TextBlob.rebind accepts atlas snapshots that retain referenced glyphs" {
+    const assets_data = @import("assets");
+    var fonts = try TextAtlas.init(testing.allocator, &.{
+        .{ .data = assets_data.noto_sans_regular },
+    });
+    defer fonts.deinit();
+
+    if (try fonts.ensureText(.{}, "A")) |new_fonts| {
+        fonts.deinit();
+        fonts = new_fonts;
+    }
+
+    var builder = TextBlobBuilder.init(testing.allocator, &fonts);
+    defer builder.deinit();
+    _ = try builder.addText(.{}, "A", 0, 20, 16, .{ 1, 1, 1, 1 });
+    var blob = try builder.finish();
+    defer blob.deinit();
+
+    var next = (try fonts.ensureText(.{}, "B")).?;
+    defer next.deinit();
+
+    try blob.rebind(&next);
+    try blob.validate();
+}
+
+test "TextBlob.rebind recomputes budget after ensureGlyphs" {
+    const assets_data = @import("assets");
+    var fonts = try TextAtlas.init(testing.allocator, &.{
+        .{ .data = assets_data.noto_sans_regular },
+    });
+    defer fonts.deinit();
+
+    var builder = TextBlobBuilder.init(testing.allocator, &fonts);
+    defer builder.deinit();
+    const result = try builder.addText(.{}, "A", 0, 20, 16, .{ 1, 1, 1, 1 });
+    try testing.expect(result.missing);
+
+    var blob = try builder.finish();
+    defer blob.deinit();
+    try testing.expectEqual(@as(usize, 0), blob.gpu_instance_budget);
+
+    const gid = blob.glyphs[0].glyph_id;
+    var next = (try fonts.ensureGlyphs(blob.glyphs[0].face_index, &.{gid})).?;
+    defer next.deinit();
+
+    try blob.rebind(&next);
+    try testing.expect(blob.gpu_instance_budget > 0);
 }
 
 test "TextAtlas with multiple faces and fallback" {

@@ -117,6 +117,9 @@ const PreparedTextAtlasView = struct {
 };
 pub const TextBlob = fonts_mod.TextBlob;
 pub const TextBlobOptions = fonts_mod.TextBlobOptions;
+pub const AddTextResult = fonts_mod.AddTextResult;
+pub const CellMetrics = fonts_mod.CellMetrics;
+pub const CellMetricsOptions = fonts_mod.CellMetricsOptions;
 pub const TextBlobBuilder = fonts_mod.TextBlobBuilder;
 pub const FaceSpec = fonts_mod.FaceSpec;
 /// Uniform locations and texture units used when a caller evaluates Snail text
@@ -470,7 +473,9 @@ pub const StrokeStyle = struct {
 
 /// A parsed TrueType font. Immutable after init.
 /// Thread-safe for concurrent reads (glyphIndex, getKerning).
-const Font = struct {
+/// The init/deinit, unitsPerEm, glyphIndex, and advanceWidth methods are part
+/// of Snail's stable public API; `lowlevel.Font` is an alias for this type.
+pub const Font = struct {
     inner: ttf.Font,
 
     /// Parse a TrueType font from raw file data.

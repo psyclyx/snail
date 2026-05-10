@@ -162,11 +162,21 @@ try gl.drawPrepared(&prepared, &prepared_scene, options);
 
 ### On-demand Atlas Extension
 
-`ensureText` and `ensureShaped` return a new immutable snapshot; the old one remains valid for in-flight readers. `TextBlob` borrows the exact atlas snapshot used to build it, so rebuild blobs after publishing a new atlas snapshot.
+`ensureText`, `ensureShaped`, and `ensureGlyphs` return a new immutable snapshot; the old one remains valid for in-flight readers. `TextBlob` borrows the atlas snapshot used to build it. Rebind cached blobs to a compatible extended snapshot before releasing the old atlas to keep them alive without reshaping or reallocating them.
 
 ```zig
 if (try atlas.ensureText(.{}, text)) |next| {
     atlas.deinit();  // safe only after readers of the old snapshot are done
+    atlas = next;
+}
+```
+
+If you already have shaped glyph IDs, extend the atlas directly:
+
+```zig
+if (try atlas.ensureGlyphs(face_index, glyph_ids)) |next| {
+    try blob.rebind(&next);
+    atlas.deinit();
     atlas = next;
 }
 ```
@@ -307,9 +317,10 @@ snail_text_atlas_deinit(atlas);
 
 | Type | Description |
 |------|-------------|
-| `TextAtlas` | Immutable CPU font/glyph snapshot. `ensureText` and `ensureShaped` return a new snapshot; old stays valid. |
+| `TextAtlas` | Immutable CPU font/glyph snapshot. `ensureText`, `ensureShaped`, and `ensureGlyphs` return a new snapshot; old stays valid. |
 | `ShapedText` | Shaped glyph placements for a string/run. |
-| `TextBlob` | Positioned text that borrows the exact `TextAtlas` snapshot used to build it. |
+| `TextBlob` | Positioned text that borrows a compatible `TextAtlas` snapshot. Use `rebind` after atlas extension. |
+| `Font` | Stable parsed-font helper for `unitsPerEm`, `glyphIndex`, and `advanceWidth` when callers manage raw font data directly. |
 | `FaceSpec` | `{ .data, .weight, .italic, .fallback, .synthetic }` — font face specification for `TextAtlas.init`. |
 | `FontStyle` | `{ .weight: FontWeight, .italic: bool }` — selects a face for rendering. |
 | `FontWeight` | `.regular`, `.bold`, `.semi_bold`, etc. |
@@ -344,9 +355,13 @@ snail_text_atlas_deinit(atlas);
 | `atlas.shapeText(alloc, style, text) !ShapedText` | Shape text without growing the atlas. Caller frees `ShapedText`. |
 | `atlas.ensureShaped(shaped) !?TextAtlas` | Return a new snapshot with the shaped glyphs present. Null if already present. |
 | `atlas.ensureText(style, text) !?TextAtlas` | Shape-and-ensure helper. |
+| `atlas.ensureGlyphs(face_index, glyph_ids) !?TextAtlas` | Extend one face by resolved glyph IDs without reshaping. |
+| `atlas.faceUnitsPerEm(face_index) !u16` / `atlas.glyphIndex(face_index, cp) !?u16` / `atlas.advanceWidth(face_index, gid) !i16` | Stable per-face font metrics for layout code. |
+| `atlas.cellMetrics(.{ .style, .em }) !CellMetrics` | Resolve the styled primary face and return `{ .cell_width, .line_height }` in caller units. |
 | `TextBlob.fromShaped(alloc, atlas, shaped, options) !TextBlob` | Build positioned text from a `ShapedText`. The blob borrows `atlas`. |
-| `TextBlobBuilder.init(alloc, atlas)` / `builder.addText(style, text, x, y, size, color) !AddTextResult` / `builder.finish() !TextBlob` | Convenience: shape + position in one pass. Call `atlas.ensureText`/`ensureShaped` first if all glyphs must be renderable. |
-| `AddTextResult` | `{ .advance: f32, .missing: bool }` — pen advance and whether any glyph fell back to `.notdef`. |
+| `blob.rebind(new_atlas) !void` | Move a blob to a compatible atlas snapshot that retains old pages and contains all referenced glyphs. |
+| `TextBlobBuilder.init(alloc, atlas)` / `builder.addText(style, text, x, y, size, color) !AddTextResult` / `builder.finish() !TextBlob` | Convenience: shape + position in one pass. Call `atlas.ensureText`/`ensureShaped`/`ensureGlyphs` first if all glyphs must be renderable. |
+| `AddTextResult` | `{ .advance: f32, .missing: bool }` — pen advance and whether any referenced glyph was absent from the current atlas snapshot. |
 
 ### Scene
 
@@ -492,7 +507,7 @@ backend on top of snail's rasterization. Most apps should not need this.
 | Symbol | Use |
 |--------|-----|
 | `lowlevel.bezier`, `lowlevel.curve_tex` | Geometry math and curve-page packing primitives. |
-| `lowlevel.Font`, `lowlevel.CurveAtlas`/`Atlas`, `lowlevel.AtlasPage` | Raw font + atlas storage exposed for backend authors. |
+| `lowlevel.CurveAtlas`/`Atlas`, `lowlevel.AtlasPage` | Raw atlas storage exposed for backend authors. |
 | `lowlevel.TextBatch`, `lowlevel.PathBatch` | Caller-buffered glyph/shape vertex emission below the `DrawList` layer. |
 | `lowlevel.TEXT_WORDS_PER_GLYPH`, `lowlevel.PATH_WORDS_PER_SHAPE`, related sizing constants | `u32` word budget per record (prefer `DrawList.estimate` when possible). |
 | `lowlevel.PATH_PAINT_*` constants | Path-paint texel tags used by `PathPicture` records. |
@@ -503,8 +518,8 @@ backend on top of snail's rasterization. Most apps should not need this.
 
 | Type | Rule |
 |------|------|
-| `TextAtlas` | Immutable snapshot. Safe for concurrent reads. `ensureText` returns a new snapshot; old remains valid for in-flight readers. |
-| `TextBlob`, `PathPicture`, `Image` | Immutable after init/freeze. Safe for concurrent reads while the borrowed atlas / pictures / pixels outlive the reader. |
+| `TextAtlas` | Immutable snapshot. Safe for concurrent reads. `ensureText`, `ensureShaped`, and `ensureGlyphs` return a new snapshot; old remains valid for in-flight readers. |
+| `TextBlob`, `PathPicture`, `Image` | Safe for concurrent reads while the borrowed atlas / pictures / pixels outlive the reader. `TextBlob.rebind` mutates the blob and must not race with readers. |
 | `ResourceSet`, `Scene` | Borrowed manifests/lists. CPU values must outlive them. |
 | `PreparedResources` | Backend/context-specific. CPU values must outlive it unless a backend explicitly copies them. |
 | `DrawList` | Caller-owned buffer. Thread-local — no sharing needed. |
@@ -556,17 +571,17 @@ The vector workload contains filled and stroked rounded rectangles, ellipses, an
 |---|---|
 | CPU | AMD Ryzen 9 5950X 16-Core Processor |
 | OpenGL renderer | NVIDIA GeForce RTX 3090/PCIe/SSE2 |
-| OpenGL version | 4.4.0 NVIDIA 595.58.03 |
+| OpenGL version | 4.4.0 NVIDIA 595.71.05 |
 | Vulkan device | NVIDIA GeForce RTX 3090 |
 
 ### Preparation
 
 | Workload | Snail | FreeType | FreeType / Snail |
 |---|---:|---:|---:|
-| Font load | 1.43 us | 8.69 us | 6.10x |
-| Glyph prep, ASCII | 469.88 us | 1040.38 us | 2.21x |
-| Glyph prep, 7 sizes | 469.88 us | 7248.15 us | 15.43x |
-| PathPicture freeze, 25 shapes | 206.08 us | n/a | n/a |
+| Font load | 1.50 us | 8.80 us | 5.87x |
+| Glyph prep, ASCII | 476.50 us | 1030.13 us | 2.16x |
+| Glyph prep, 7 sizes | 476.50 us | 7153.19 us | 15.01x |
+| PathPicture freeze, 25 shapes | 201.09 us | n/a | n/a |
 
 ### Prepared Resource Memory
 
@@ -581,19 +596,19 @@ The vector workload contains filled and stroked rounded rectangles, ellipses, an
 
 | Workload | Snail TextBlob | FreeType layout | FreeType / Snail |
 |---|---:|---:|---:|
-| Short string | 1.33 us | 80.10 us | 60.06x |
-| Sentence | 4.40 us | 390.94 us | 88.77x |
-| Paragraph | 15.16 us | 1356.56 us | 89.48x |
-| Paragraph x 7 sizes | 106.03 us | 9925.10 us | 93.60x |
+| Short string | 1.38 us | 77.96 us | 56.37x |
+| Sentence | 4.59 us | 390.89 us | 85.21x |
+| Paragraph | 15.75 us | 1409.31 us | 89.50x |
+| Paragraph x 7 sizes | 110.33 us | 10094.00 us | 91.49x |
 
 ### Draw Record Creation
 
 | Scene | Commands | Words | Segments | PreparedScene.initOwned |
 |---|---:|---:|---:|---:|
-| Text | 4 | 3795 | 4 | 7.52 us |
-| Vector paths | 1 | 375 | 1 | 0.23 us |
-| Mixed text + vector | 5 | 4170 | 5 | 7.74 us |
-| Multi-script text | 4 | 1395 | 4 | 2.64 us |
+| Text | 4 | 3795 | 4 | 7.64 us |
+| Vector paths | 1 | 375 | 1 | 0.21 us |
+| Mixed text + vector | 5 | 4170 | 5 | 7.85 us |
+| Multi-script text | 4 | 1395 | 4 | 2.71 us |
 
 ### Prepared Render
 
@@ -601,22 +616,22 @@ Target: 640x360. CPU uses 20 measured frames; GPU backends use 500 measured fram
 
 | Backend | Scene | Frames | Commands | Words | Segments | Draw prepared scene |
 |---|---|---:|---:|---:|---:|---:|
-| CPU | Text | 20 | 4 | 3795 | 4 | 17442.20 us |
-| CPU | Vector paths | 20 | 1 | 375 | 1 | 49515.86 us |
-| CPU | Mixed text + vector | 20 | 5 | 4170 | 5 | 66732.57 us |
-| CPU | Multi-script text | 20 | 4 | 1395 | 4 | 10343.15 us |
-| CPU (threaded) | Text | 20 | 4 | 3795 | 4 | 6874.31 us |
-| CPU (threaded) | Vector paths | 20 | 1 | 375 | 1 | 9095.72 us |
-| CPU (threaded) | Mixed text + vector | 20 | 5 | 4170 | 5 | 13859.52 us |
-| CPU (threaded) | Multi-script text | 20 | 4 | 1395 | 4 | 4241.57 us |
-| GL 4.4 (persistent mapped) | Text | 500 | 4 | 3795 | 4 | 310.05 us |
-| GL 4.4 (persistent mapped) | Vector paths | 500 | 1 | 375 | 1 | 65.82 us |
-| GL 4.4 (persistent mapped) | Mixed text + vector | 500 | 5 | 4170 | 5 | 345.57 us |
-| GL 4.4 (persistent mapped) | Multi-script text | 500 | 4 | 1395 | 4 | 290.01 us |
-| Vulkan | Text | 500 | 4 | 3795 | 4 | 77.36 us |
-| Vulkan | Vector paths | 500 | 1 | 375 | 1 | 83.76 us |
-| Vulkan | Mixed text + vector | 500 | 5 | 4170 | 5 | 106.20 us |
-| Vulkan | Multi-script text | 500 | 4 | 1395 | 4 | 78.99 us |
+| CPU | Text | 20 | 4 | 3795 | 4 | 17547.10 us |
+| CPU | Vector paths | 20 | 1 | 375 | 1 | 49447.29 us |
+| CPU | Mixed text + vector | 20 | 5 | 4170 | 5 | 66975.80 us |
+| CPU | Multi-script text | 20 | 4 | 1395 | 4 | 10604.66 us |
+| CPU (threaded) | Text | 20 | 4 | 3795 | 4 | 6977.39 us |
+| CPU (threaded) | Vector paths | 20 | 1 | 375 | 1 | 9337.95 us |
+| CPU (threaded) | Mixed text + vector | 20 | 5 | 4170 | 5 | 13591.12 us |
+| CPU (threaded) | Multi-script text | 20 | 4 | 1395 | 4 | 4292.68 us |
+| GL 4.4 (persistent mapped) | Text | 500 | 4 | 3795 | 4 | 570.85 us |
+| GL 4.4 (persistent mapped) | Vector paths | 500 | 1 | 375 | 1 | 135.58 us |
+| GL 4.4 (persistent mapped) | Mixed text + vector | 500 | 5 | 4170 | 5 | 715.17 us |
+| GL 4.4 (persistent mapped) | Multi-script text | 500 | 4 | 1395 | 4 | 560.21 us |
+| Vulkan | Text | 500 | 4 | 3795 | 4 | 159.27 us |
+| Vulkan | Vector paths | 500 | 1 | 375 | 1 | 161.22 us |
+| Vulkan | Mixed text + vector | 500 | 5 | 4170 | 5 | 216.97 us |
+| Vulkan | Multi-script text | 500 | 4 | 1395 | 4 | 146.95 us |
 
 ### Render Modes
 
@@ -625,18 +640,18 @@ fragment-shader path (grayscale vs LCD subpixel).
 
 | Backend | Scene | AA | Words | Segments | PreparedScene | Draw |
 |---|---|---|---:|---:|---:|---:|
-| CPU | Text | grayscale | 3795 | 4 | 7.52 us | 3413.73 us |
-| CPU | Text | subpixel rgb | 3795 | 4 | 7.81 us | 17721.75 us |
-| CPU | Multi-script text | grayscale | 1395 | 4 | 2.60 us | 1990.67 us |
-| CPU | Multi-script text | subpixel rgb | 1395 | 4 | 2.66 us | 10506.53 us |
-| GL 4.4 (persistent mapped) | Text | grayscale | 3795 | 4 | 7.70 us | 90.37 us |
-| GL 4.4 (persistent mapped) | Text | subpixel rgb | 3795 | 4 | 8.10 us | 289.94 us |
-| GL 4.4 (persistent mapped) | Multi-script text | grayscale | 1395 | 4 | 2.73 us | 92.67 us |
-| GL 4.4 (persistent mapped) | Multi-script text | subpixel rgb | 1395 | 4 | 2.71 us | 288.37 us |
-| Vulkan | Text | grayscale | 3795 | 4 | 7.22 us | 23.70 us |
-| Vulkan | Text | subpixel rgb | 3795 | 4 | 7.55 us | 81.08 us |
-| Vulkan | Multi-script text | grayscale | 1395 | 4 | 2.65 us | 25.47 us |
-| Vulkan | Multi-script text | subpixel rgb | 1395 | 4 | 2.67 us | 82.70 us |
+| CPU | Text | grayscale | 3795 | 4 | 7.91 us | 3536.14 us |
+| CPU | Text | subpixel rgb | 3795 | 4 | 7.55 us | 17852.25 us |
+| CPU | Multi-script text | grayscale | 1395 | 4 | 2.67 us | 1985.59 us |
+| CPU | Multi-script text | subpixel rgb | 1395 | 4 | 2.64 us | 10365.25 us |
+| GL 4.4 (persistent mapped) | Text | grayscale | 3795 | 4 | 7.54 us | 208.82 us |
+| GL 4.4 (persistent mapped) | Text | subpixel rgb | 3795 | 4 | 7.47 us | 597.98 us |
+| GL 4.4 (persistent mapped) | Multi-script text | grayscale | 1395 | 4 | 2.67 us | 178.85 us |
+| GL 4.4 (persistent mapped) | Multi-script text | subpixel rgb | 1395 | 4 | 2.68 us | 563.52 us |
+| Vulkan | Text | grayscale | 3795 | 4 | 7.40 us | 57.65 us |
+| Vulkan | Text | subpixel rgb | 3795 | 4 | 7.40 us | 167.24 us |
+| Vulkan | Multi-script text | grayscale | 1395 | 4 | 2.67 us | 53.59 us |
+| Vulkan | Multi-script text | subpixel rgb | 1395 | 4 | 3.37 us | 160.26 us |
 
 ## Architecture
 
