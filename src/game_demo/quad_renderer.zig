@@ -9,6 +9,8 @@ const MATERIAL_GRID: u32 = 72;
 const TEXT_RECORD_TEXTURE_UNIT: gl.GLint = 2;
 const TEXT_CURVE_TEXTURE_UNIT: gl.GLint = 3;
 const TEXT_BAND_TEXTURE_UNIT: gl.GLint = 4;
+pub const TEXT_RECORD_VEC4S_PER_GLYPH: usize = 6;
+const TEXT_RECORD_FLOATS_PER_GLYPH: usize = TEXT_RECORD_VEC4S_PER_GLYPH * 4;
 
 pub const MaterialTextInput = struct {
     text: *const SurfaceTextDraw,
@@ -495,7 +497,11 @@ const material_fragment_shader: [:0]const u8 =
     \\}
     \\
     \\vec4 textRecord(int glyph_index, int slot) {
-    \\    return texelFetch(u_text_records, glyph_index * 5 + slot);
+    ++ std.fmt.comptimePrint(
+        "    return texelFetch(u_text_records, glyph_index * {d} + slot);\n",
+        .{TEXT_RECORD_VEC4S_PER_GLYPH},
+    ) ++
+    \\
     \\}
     \\
     \\vec2 textLocalCoord(vec2 scene_pos, vec4 xform, vec2 translate) {
@@ -700,9 +706,6 @@ const material_fragment_shader: [:0]const u8 =
 // fed via samplerBuffer with internalFormat RGBA32F. Snail's packed
 // `vertex.Instance` (64 bytes, mixed f16/f32/u32/u8) isn't directly readable
 // at vec4 stride, so we widen each glyph at upload time.
-pub const TEXT_RECORD_VEC4S_PER_GLYPH: usize = 6;
-const TEXT_RECORD_FLOATS_PER_GLYPH: usize = TEXT_RECORD_VEC4S_PER_GLYPH * 4;
-
 pub const SurfaceTextDraw = struct {
     allocator: std.mem.Allocator,
     blob: *const snail.TextBlob,
@@ -806,6 +809,14 @@ fn widenInstanceRecords(packed_words: []const u32, out: []f32) void {
         out[base + 22] = decoded.tint[2];
         out[base + 23] = decoded.tint[3];
     }
+}
+
+test "material text shader uses widened record stride" {
+    const expected = std.fmt.comptimePrint(
+        "glyph_index * {d} + slot",
+        .{TEXT_RECORD_VEC4S_PER_GLYPH},
+    );
+    try std.testing.expect(std.mem.indexOf(u8, material_fragment_shader, expected) != null);
 }
 
 const premult_texture_fragment_shader: [:0]const u8 =
