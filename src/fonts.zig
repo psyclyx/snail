@@ -791,6 +791,13 @@ pub const TextAtlas = struct {
             if (!shapedGlyphAvailable(&face_view, glyph.glyph_id)) {
                 missing = true;
                 if (!allow_missing) return error.MissingPreparedGlyph;
+                // Skip missing glyphs entirely so the produced blob never
+                // references unrasterized GIDs — appending one would leave
+                // the blob in a state where validate/draw both fail. The
+                // returned advance still reflects the full shaped run so
+                // the caller's cursor lands in the right place for the
+                // next text segment.
+                continue;
             }
             const x = options.x + glyph.x_offset * options.size;
             const y = options.y + glyph.y_offset * options.size;
@@ -1811,6 +1818,34 @@ test "TextAtlas.addText reports missing glyphs" {
     try testing.expectEqual(@as(usize, 0), batch.glyphCount());
 }
 
+test "TextBlobBuilder.addText with partially-prepared atlas skips missing glyphs" {
+    const assets_data = @import("assets");
+    var fonts = try TextAtlas.init(testing.allocator, &.{
+        .{ .data = assets_data.noto_sans_regular },
+    });
+    defer fonts.deinit();
+
+    // Prepare only "Hi" — the rest of the run will be missing.
+    if (try fonts.ensureText(.{}, "Hi")) |next| {
+        fonts.deinit();
+        fonts = next;
+    }
+
+    var builder = TextBlobBuilder.init(testing.allocator, &fonts);
+    defer builder.deinit();
+
+    const result = try builder.addText(.{}, "Hi there", 0, 50, 16, .{ 1, 1, 1, 1 });
+    try testing.expect(result.missing);
+    try testing.expect(result.advance > 0); // advance still spans the full run
+
+    // Builder must only retain glyphs that are actually in the atlas; the
+    // resulting blob must validate cleanly against the same snapshot.
+    try testing.expect(builder.glyphCount() <= 2);
+    var blob = try builder.finish();
+    defer blob.deinit();
+    try blob.validate();
+}
+
 test "TextAtlas.lineMetrics returns primary face metrics" {
     const assets_data = @import("assets");
     var fonts = try TextAtlas.init(testing.allocator, &.{
@@ -1893,20 +1928,31 @@ test "TextBlob.rebind recomputes budget after ensureGlyphs" {
     });
     defer fonts.deinit();
 
+    // Prepare 'A' so the blob has a real entry to rebind. (Building a blob
+    // against an empty atlas leaves it empty — `addText` skips missing
+    // glyphs so the blob never references unrasterized GIDs.)
+    if (try fonts.ensureText(.{}, "A")) |next| {
+        fonts.deinit();
+        fonts = next;
+    }
+
     var builder = TextBlobBuilder.init(testing.allocator, &fonts);
     defer builder.deinit();
-    const result = try builder.addText(.{}, "A", 0, 20, 16, .{ 1, 1, 1, 1 });
-    try testing.expect(result.missing);
+    _ = try builder.addText(.{}, "A", 0, 20, 16, .{ 1, 1, 1, 1 });
 
     var blob = try builder.finish();
     defer blob.deinit();
-    try testing.expectEqual(@as(usize, 0), blob.gpu_instance_budget);
+    const original_budget = blob.gpu_instance_budget;
+    try testing.expect(original_budget > 0);
 
-    const gid = blob.glyphs[0].glyph_id;
-    var next = (try fonts.ensureGlyphs(blob.glyphs[0].face_index, &.{gid})).?;
+    // Extend the atlas with an unrelated glyph; rebind must still succeed
+    // and the recomputed budget must remain valid against the new snapshot.
+    const gid_b = (try fonts.glyphIndex(0, 'B')).?;
+    var next = (try fonts.ensureGlyphs(0, &.{gid_b})).?;
     defer next.deinit();
 
     try blob.rebind(&next);
+    try blob.validate();
     try testing.expect(blob.gpu_instance_budget > 0);
 }
 

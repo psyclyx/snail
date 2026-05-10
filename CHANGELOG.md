@@ -2,6 +2,17 @@
 
 ## 0.4.3
 
+### Fixed
+
+- `TextAtlas.appendShapedTextBlob` (and therefore `TextBlobBuilder.addText`)
+  no longer appends missing glyphs to the blob when `allow_missing` is true.
+  Previously the loop set `missing = true` and then fell through to
+  `appendBlobGlyph`, leaving the resulting blob with entries that referenced
+  unrasterized GIDs — `TextBlob.validate` would reject the blob and
+  draw paths could emit garbage. Missing glyphs are now skipped; the
+  returned `advance` still spans the full shaped run so the caller's cursor
+  lands in the right place for the next text segment.
+
 ### Added
 
 - `ResolveTarget.output_srgb` (default `false`). When set, the GL and
