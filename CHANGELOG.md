@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.1 - Unreleased
+
+### Fixed
+
+- GL and Vulkan atlas uploads now accept empty `TextAtlas` snapshots.
+  Uploading a resource set that contains zero-page atlases no longer reads
+  `page(0)` while creating texture arrays; all-empty uploads keep prepared
+  atlas views valid and otherwise no-op until glyph pages are added.
+
 ## 0.5.0
 
 ### Fixed

@@ -560,7 +560,11 @@ pub const VulkanPipeline = struct {
         prepared.allocated_band_height = slot_info.allocated_band_height;
         prepared.allocated_layer_count = slot_info.allocated_layer_count;
 
-        const first_page = atlases[0].page(0);
+        const first_atlas = upload_common.firstNonEmptyAtlas(atlases) orelse {
+            prepared.fillAtlasViews(atlases, out_views);
+            return;
+        };
+        const first_page = first_atlas.page(0);
         const curve_w = first_page.curve_width;
         const band_w = first_page.band_width;
 

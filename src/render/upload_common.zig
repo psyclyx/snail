@@ -32,6 +32,13 @@ pub fn ImageSlot(comptime Image: type) type {
     };
 }
 
+pub fn firstNonEmptyAtlas(atlases: anytype) ?BufferElement(@TypeOf(atlases)) {
+    for (atlases) |atlas| {
+        if (atlas.pageCount() > 0) return atlas;
+    }
+    return null;
+}
+
 pub fn atlasSlotsCompatible(atlas_slots: anytype, atlas_slot_count: usize, atlases: anytype) bool {
     if (atlases.len != atlas_slot_count) return false;
     for (atlases, 0..) |atlas, i| {
@@ -201,4 +208,46 @@ pub fn patchImagePaintRecord(data: []f32, width: u32, row_base: u32, texel_offse
     const extra_base = layerInfoTexelBaseOffset(width, x, y, 5);
     data[extra_base + 0] = view.uv_scale.x;
     data[extra_base + 1] = view.uv_scale.y;
+}
+
+test "zero-page atlases keep slots and views without requiring pages" {
+    const Page = struct {
+        curve_height: u32 = 1,
+        band_height: u32 = 1,
+    };
+    const Atlas = struct {
+        page_count: usize,
+        layer_info_height: u32 = 0,
+
+        fn pageCount(self: *const @This()) usize {
+            return self.page_count;
+        }
+
+        fn page(_: *const @This(), _: u16) *const Page {
+            unreachable;
+        }
+    };
+    const View = struct {
+        atlas: *const Atlas = undefined,
+        layer_base: u32 = 0,
+        info_row_base: u32 = 0,
+    };
+    const Slot = AtlasSlot(Atlas, Page, MAX_PAGES_PER_ATLAS);
+
+    const atlas_a = Atlas{ .page_count = 0 };
+    const atlas_b = Atlas{ .page_count = 0 };
+    const atlases = [_]*const Atlas{ &atlas_a, &atlas_b };
+
+    var slots: [MAX_ATLASES]Slot = std.mem.zeroes([MAX_ATLASES]Slot);
+    const info = rebuildAtlasSlots(slots[0..], atlases[0..]);
+    try std.testing.expectEqual(@as(usize, 2), info.atlas_slot_count);
+    try std.testing.expectEqual(@as(u32, 8), info.allocated_layer_count);
+    try std.testing.expect(firstNonEmptyAtlas(atlases[0..]) == null);
+
+    var views: [2]View = undefined;
+    fillAtlasViews(slots[0..], atlases[0..], views[0..]);
+    try std.testing.expect(views[0].atlas == &atlas_a);
+    try std.testing.expectEqual(@as(u32, 0), views[0].layer_base);
+    try std.testing.expect(views[1].atlas == &atlas_b);
+    try std.testing.expectEqual(@as(u32, 4), views[1].layer_base);
 }

@@ -354,9 +354,12 @@ pub const PreparedResources = struct {
         self.allocated_band_height = slot_info.allocated_band_height;
         self.allocated_layer_count = slot_info.allocated_layer_count;
 
-        if (atlases.len == 0) return;
+        const first_atlas = upload_common.firstNonEmptyAtlas(atlases) orelse {
+            self.fillAtlasViews(atlases, out_views);
+            return;
+        };
 
-        self.createTextureArrays(atlases[0], self.allocated_layer_count, self.allocated_curve_height, self.allocated_band_height);
+        self.createTextureArrays(first_atlas, self.allocated_layer_count, self.allocated_curve_height, self.allocated_band_height);
         self.uploadAllPages(atlases);
         self.ensureAtlasImagesRegistered(atlases);
         try self.rebuildLayerInfoTexture(atlases);
