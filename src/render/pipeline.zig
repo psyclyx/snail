@@ -285,7 +285,7 @@ pub const PreparedResources = struct {
 
         self.allocated_image_width = upload_common.heightCapacity(max_width);
         self.allocated_image_height = upload_common.heightCapacity(max_height);
-        self.allocated_image_count = upload_common.atlasCapacity(@intCast(self.image_slot_count));
+        self.allocated_image_count = upload_common.imageCapacity(@intCast(self.image_slot_count));
 
         switch (self.backend) {
             .gl33 => {

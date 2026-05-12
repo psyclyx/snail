@@ -261,6 +261,10 @@ pub fn atlasCapacityForMode(page_count: u32, mode: AtlasCapacityMode) u32 {
     };
 }
 
+pub fn imageCapacity(image_count: u32) u32 {
+    return image_count;
+}
+
 pub fn heightCapacity(height: u32) u32 {
     return roundUpPowerOfTwo(@max(height, 1));
 }
@@ -389,4 +393,10 @@ test "compact layer-info rows patch image records in upload texture coordinates"
     try std.testing.expectEqual(@as(f32, 0.5), dst[extra_base + 0]);
     try std.testing.expectEqual(@as(f32, 0.25), dst[extra_base + 1]);
     try std.testing.expectEqual(@as(f32, 2.0), dst[extra_base + 2]);
+}
+
+test "image capacity is exact for immutable image resources" {
+    try std.testing.expectEqual(@as(u32, 0), imageCapacity(0));
+    try std.testing.expectEqual(@as(u32, 1), imageCapacity(1));
+    try std.testing.expectEqual(@as(u32, 3), imageCapacity(3));
 }

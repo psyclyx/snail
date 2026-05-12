@@ -1620,7 +1620,7 @@ pub const VulkanPipeline = struct {
 
         prepared.allocated_image_width = upload_common.heightCapacity(max_width);
         prepared.allocated_image_height = upload_common.heightCapacity(max_height);
-        prepared.allocated_image_count = upload_common.atlasCapacity(@intCast(prepared.image_slot_count));
+        prepared.allocated_image_count = upload_common.imageCapacity(@intCast(prepared.image_slot_count));
 
         prepared.image_image = self.createImage2DArray(prepared.allocated_image_width, prepared.allocated_image_height, prepared.allocated_image_count, vk.VK_FORMAT_R8G8B8A8_SRGB) catch return;
         prepared.image_memory = self.allocateImageMemory(prepared.image_image) catch return;

@@ -16,6 +16,8 @@
   picture, and GL/Vulkan layer-info uploads allocate the max width required by
   the current resource set instead of forcing every tiny path picture to pay
   for a 4096-texel row.
+- GL and Vulkan image-array uploads now pack immutable `Image` resources
+  exactly instead of reserving a minimum 4-layer array for small image sets.
 
 ## 0.5.0
 
