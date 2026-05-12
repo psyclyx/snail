@@ -32,6 +32,31 @@ const CompareStats = struct {
     }
 };
 
+const ComparePolicy = struct {
+    tolerance: u8,
+    max_channel_delta: u8,
+    outlier_budget: usize,
+    average_budget: f64,
+};
+
+// CPU and GPU paths intentionally use different arithmetic, so CPU-vs-backend
+// comparison allows a tight budget of rare near-tangent conic outliers.
+const cpu_backend_policy = ComparePolicy{
+    .tolerance = 1,
+    .max_channel_delta = 64,
+    .outlier_budget = 32,
+    .average_budget = 0.05,
+};
+
+// GL and Vulkan should be the same shader algorithm. Allow only 2-LSB store
+// rounding drift, and no channel may exceed that.
+const gpu_consistency_policy = ComparePolicy{
+    .tolerance = 2,
+    .max_channel_delta = 2,
+    .outlier_budget = 0,
+    .average_budget = 1.0,
+};
+
 const SceneBundle = struct {
     atlas: *snail.TextAtlas,
     latin_blob: *snail.TextBlob,
@@ -357,15 +382,16 @@ fn writeTgaAlloc(allocator: std.mem.Allocator, name: []const u8, pixels: []const
 fn dumpFailure(
     allocator: std.mem.Allocator,
     case_name: []const u8,
-    backend_slug: []const u8,
+    expected_slug: []const u8,
+    actual_slug: []const u8,
     expected: []const u8,
     actual: []const u8,
 ) !void {
-    const expected_name = try std.fmt.allocPrint(allocator, "{s}-cpu", .{case_name});
+    const expected_name = try std.fmt.allocPrint(allocator, "{s}-{s}", .{ case_name, expected_slug });
     defer allocator.free(expected_name);
-    const actual_name = try std.fmt.allocPrint(allocator, "{s}-{s}", .{ case_name, backend_slug });
+    const actual_name = try std.fmt.allocPrint(allocator, "{s}-{s}", .{ case_name, actual_slug });
     defer allocator.free(actual_name);
-    const diff_name = try std.fmt.allocPrint(allocator, "{s}-{s}-diff", .{ case_name, backend_slug });
+    const diff_name = try std.fmt.allocPrint(allocator, "{s}-{s}-vs-{s}-diff", .{ case_name, expected_slug, actual_slug });
     defer allocator.free(diff_name);
 
     try writeTgaAlloc(allocator, expected_name, expected);
@@ -375,32 +401,25 @@ fn dumpFailure(
     try writeTgaAlloc(allocator, diff_name, diff);
 }
 
-// 1-LSB drift in sRGB rounding is unavoidable (different float op orderings
-// across hardware), so we tolerate it. A handful of larger outliers occur at
-// near-tangent conic edges; the exact magnitude varies by GL/Vulkan driver
-// (NVIDIA vs llvmpipe vs amdvlk all disagree by a few LSB on the worst
-// pixel), so cap the per-pixel outlier loosely while keeping the outlier
-// budget and average tight enough to catch real regressions.
-fn checkBackend(
+fn checkPixelMatch(
     allocator: std.mem.Allocator,
     case_name: []const u8,
-    backend_name: []const u8,
-    backend_slug: []const u8,
+    expected_name: []const u8,
+    expected_slug: []const u8,
+    actual_name: []const u8,
+    actual_slug: []const u8,
     expected: []const u8,
     actual: []const u8,
+    policy: ComparePolicy,
 ) !void {
-    const tolerance: u8 = 1;
-    const max_outlier: u8 = 64;
-    const outlier_budget: usize = 32;
-    const average_budget = 0.05;
-    const stats = comparePixels(expected, actual, tolerance);
-    const pass = stats.mismatched_pixels <= outlier_budget and
-        stats.averageChannelDelta() <= average_budget and
-        stats.max_channel_delta <= max_outlier;
+    const stats = comparePixels(expected, actual, policy.tolerance);
+    const pass = stats.mismatched_pixels <= policy.outlier_budget and
+        stats.averageChannelDelta() <= policy.average_budget and
+        stats.max_channel_delta <= policy.max_channel_delta;
     if (pass) {
         std.debug.print(
-            "{s}: {s} matches CPU ({d} outlier pixels, max delta {d}, avg channel delta {d:.3})\n",
-            .{ case_name, backend_name, stats.mismatched_pixels, stats.max_channel_delta, stats.averageChannelDelta() },
+            "{s}: {s} matches {s} ({d} pixels over {d} LSB, max delta {d}, avg channel delta {d:.3})\n",
+            .{ case_name, actual_name, expected_name, stats.mismatched_pixels, policy.tolerance, stats.max_channel_delta, stats.averageChannelDelta() },
         );
         return;
     }
@@ -409,11 +428,33 @@ fn checkBackend(
     const x = pixel % WIDTH;
     const y = pixel / WIDTH;
     std.debug.print(
-        "{s}: {s} differs from CPU: {d}/{d} pixels over tolerance, max channel delta {d} at ({d}, {d}), avg channel delta {d:.3}\n",
-        .{ case_name, backend_name, stats.mismatched_pixels, stats.pixel_count, stats.max_channel_delta, x, y, stats.averageChannelDelta() },
+        "{s}: {s} differs from {s}: {d}/{d} pixels over {d} LSB, max channel delta {d} at ({d}, {d}), avg channel delta {d:.3}\n",
+        .{ case_name, actual_name, expected_name, stats.mismatched_pixels, stats.pixel_count, policy.tolerance, stats.max_channel_delta, x, y, stats.averageChannelDelta() },
     );
-    try dumpFailure(allocator, case_name, backend_slug, expected, actual);
+    try dumpFailure(allocator, case_name, expected_slug, actual_slug, expected, actual);
     return error.BackendPixelMismatch;
+}
+
+fn checkBackendAgainstCpu(
+    allocator: std.mem.Allocator,
+    case_name: []const u8,
+    backend_name: []const u8,
+    backend_slug: []const u8,
+    cpu_pixels: []const u8,
+    backend_pixels: []const u8,
+) !void {
+    try checkPixelMatch(allocator, case_name, "CPU", "cpu", backend_name, backend_slug, cpu_pixels, backend_pixels, cpu_backend_policy);
+}
+
+fn checkGpuConsistency(
+    allocator: std.mem.Allocator,
+    case_name: []const u8,
+    gl_name: []const u8,
+    gl_pixels: []const u8,
+    vk_name: []const u8,
+    vk_pixels: []const u8,
+) !void {
+    try checkPixelMatch(allocator, case_name, gl_name, "gl", vk_name, "vulkan", gl_pixels, vk_pixels, gpu_consistency_policy);
 }
 
 pub fn main() !void {
@@ -470,7 +511,7 @@ pub fn main() !void {
         defer if (gl_pixels_opt) |p| allocator.free(p);
         if (!case.requires_dual_source or gl_supports_lcd) {
             gl_pixels_opt = try renderGl(allocator, &gl_renderer, framebuffer.fbo, &scene_bundle.scene, options);
-            checkBackend(allocator, case.name, gl_renderer_state.backendName(), "gl", cpu_pixels, gl_pixels_opt.?) catch {
+            checkBackendAgainstCpu(allocator, case.name, gl_renderer_state.backendName(), "gl", cpu_pixels, gl_pixels_opt.?) catch {
                 any_failure = true;
             };
         } else {
@@ -481,11 +522,11 @@ pub fn main() !void {
             if (!case.requires_dual_source or vk_supports_lcd) {
                 const vk_pixels = try renderVulkan(allocator, &vk_renderer_state, &vk_renderer, &scene_bundle.scene, options);
                 defer allocator.free(vk_pixels);
-                checkBackend(allocator, case.name, vk_renderer_state.backendName(), "vulkan", cpu_pixels, vk_pixels) catch {
+                checkBackendAgainstCpu(allocator, case.name, vk_renderer_state.backendName(), "vulkan", cpu_pixels, vk_pixels) catch {
                     any_failure = true;
                 };
                 if (gl_pixels_opt) |gl_pixels| {
-                    checkBackend(allocator, case.name, "Vulkan vs GL", "vk_vs_gl", gl_pixels, vk_pixels) catch {
+                    checkGpuConsistency(allocator, case.name, gl_renderer_state.backendName(), gl_pixels, vk_renderer_state.backendName(), vk_pixels) catch {
                         any_failure = true;
                     };
                 }

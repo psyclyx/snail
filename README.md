@@ -68,7 +68,7 @@ zig build run -Drenderer=vulkan -Dvulkan=true   # Vulkan backend
 zig build run -Drenderer=cpu                    # CPU renderer
 zig build run-game-demo                         # 3D scene with HUD + world-space text on walls
 zig build screenshot                            # 2D demo offscreen → zig-out/demo-screenshot.tga
-zig build backend-compare                       # CPU/GL pixel parity; add -Dvulkan=true for Vulkan
+zig build backend-compare                       # CPU/GL parity; add -Dvulkan=true for GL/Vulkan consistency
 zig build bench                                 # benchmarks; add -Dvulkan=true for Vulkan rows
 zig build install --release=fast                # install libsnail + include/snail.h
 ```

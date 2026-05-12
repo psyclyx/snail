@@ -63,6 +63,10 @@
   library, `src/snail/renderer/{gl,vulkan,cpu}.zig` contains the renderer
   backends, and demo/window/offscreen platform code lives under
   `src/demo/platform` as demo-private support code.
+- `backend-compare -Dvulkan=true` now applies a dedicated GL-vs-Vulkan
+  consistency check. GL and Vulkan may differ by at most 2 LSB per channel;
+  the looser near-tangent CPU-vs-GPU outlier budget no longer applies to that
+  pair.
 - `ResolveTarget` now takes an explicit `TargetEncoding` with separate
   framebuffer and stored-pixel encodings. This replaces the public
   `output_srgb` flag and the renderer-global sRGB-format target knobs; GL,
