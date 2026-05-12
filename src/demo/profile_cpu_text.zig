@@ -7,8 +7,10 @@ const std = @import("std");
 const assets = @import("assets");
 const snail = @import("snail");
 
-const WIDTH: u32 = 640;
-const HEIGHT: u32 = 360;
+const DEFAULT_WIDTH: u32 = 640;
+const DEFAULT_HEIGHT: u32 = 360;
+const DEFAULT_ITERS: usize = 2000;
+const DEFAULT_THREADED = true;
 
 const SHORT = "Hello, world!";
 const SENTENCE = "The quick brown fox jumps over the lazy dog 0123456789";
@@ -38,6 +40,23 @@ fn nowNs() u64 {
     return @intCast(@as(i128, ts.sec) * 1_000_000_000 + ts.nsec);
 }
 
+fn usage() void {
+    std.debug.print(
+        "usage: snail-profile-cpu-text [iters] [serial|threaded] [width] [height]\n",
+        .{},
+    );
+}
+
+fn parseUnsigned(comptime T: type, arg: []const u8) !T {
+    return std.fmt.parseUnsigned(T, arg, 10) catch error.InvalidArgument;
+}
+
+fn parseThreaded(arg: []const u8) !bool {
+    if (std.mem.eql(u8, arg, "threaded")) return true;
+    if (std.mem.eql(u8, arg, "serial")) return false;
+    return error.InvalidArgument;
+}
+
 fn ensureText(atlas: *snail.TextAtlas, style: snail.FontStyle, text: []const u8) !void {
     if (try atlas.ensureText(style, text)) |next| {
         atlas.deinit();
@@ -45,15 +64,26 @@ fn ensureText(atlas: *snail.TextAtlas, style: snail.FontStyle, text: []const u8)
     }
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init.Minimal) !void {
     var arena_state = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    // Compile-time knobs. Edit and rebuild for different runs; not worth
-    // pulling in std.Io for arg parsing in a profile target.
-    const iters: usize = 2000;
-    const threaded: bool = true;
+    var args = std.process.Args.Iterator.init(init.args);
+    _ = args.skip();
+    const iters_arg = args.next();
+    const threaded_arg = args.next();
+    const width_arg = args.next();
+    const height_arg = args.next();
+    if ((width_arg == null) != (height_arg == null) or args.next() != null) {
+        usage();
+        return error.InvalidArgument;
+    }
+
+    const iters = if (iters_arg) |arg| try parseUnsigned(usize, arg) else DEFAULT_ITERS;
+    const threaded = if (threaded_arg) |arg| try parseThreaded(arg) else DEFAULT_THREADED;
+    const width = if (width_arg) |arg| try parseUnsigned(u32, arg) else DEFAULT_WIDTH;
+    const height = if (height_arg) |arg| try parseUnsigned(u32, arg) else DEFAULT_HEIGHT;
 
     var atlas = try snail.TextAtlas.init(arena, &.{.{ .data = assets.noto_sans_regular }});
     defer atlas.deinit();
@@ -81,8 +111,9 @@ pub fn main() !void {
     defer scene.deinit();
     for (blobs) |*blob| try scene.addText(.{ .blob = blob });
 
-    const pixels = try arena.alloc(u8, WIDTH * HEIGHT * 4);
-    var cpu = snail.CpuRenderer.init(pixels.ptr, WIDTH, HEIGHT, WIDTH * 4);
+    const pixel_count = @as(usize, width) * @as(usize, height) * 4;
+    const pixels = try arena.alloc(u8, pixel_count);
+    var cpu = snail.CpuRenderer.init(pixels.ptr, width, height, width * 4);
 
     var pool: snail.ThreadPool = undefined;
     try pool.init(arena, .{});
@@ -97,8 +128,8 @@ pub fn main() !void {
     var resources = try cpu.uploadResourcesBlocking(arena, &set);
     defer resources.deinit();
 
-    const wf: f32 = @floatFromInt(WIDTH);
-    const hf: f32 = @floatFromInt(HEIGHT);
+    const wf: f32 = @floatFromInt(width);
+    const hf: f32 = @floatFromInt(height);
     const options = snail.DrawOptions{
         .mvp = snail.Mat4.ortho(0, wf, hf, 0, -1, 1),
         .target = .{
@@ -129,9 +160,11 @@ pub fn main() !void {
     const per_frame_us = @as(f64, @floatFromInt(elapsed_ns)) / @as(f64, @floatFromInt(iters)) / 1000.0;
 
     std.debug.print(
-        "{s}: {d} iters, {d:.2} us/frame, {d:.2} fps, threads={d}\n",
+        "{s}: {d}x{d}, {d} iters, {d:.2} us/frame, {d:.2} fps, threads={d}\n",
         .{
             if (threaded) "threaded" else "serial",
+            width,
+            height,
             iters,
             per_frame_us,
             1_000_000.0 / per_frame_us,
