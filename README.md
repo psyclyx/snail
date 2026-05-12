@@ -38,7 +38,7 @@ This preprocessing is CPU-only and runs once per glyph set. GPU backends upload 
 
 There is no rasterization, no texture sampling for glyph shapes, and no distance field approximation.
 
-**Vector paths.** Filled and stroked `Path` geometry shares the curve/band texture format with text; only the fragment shader differs (the path shader handles per-glyph paint records and composite groups, while the text shader fast-paths plain coverage). Cubic Bezier inputs are adaptively approximated to quadratics. Strokes are expanded into offset curves with joins (miter, bevel, round) and caps (butt, square, round). The `PathPicture` type freezes a set of styled paths into an immutable atlas snapshot that can be instanced cheaply per frame.
+**Vector paths.** Filled and stroked `Path` geometry shares the curve/band texture format with text; only the fragment shader differs (the path shader handles per-shape paint records and composite groups, while the text shader fast-paths plain coverage). Cubic Bezier inputs are adaptively approximated to quadratics. Strokes are expanded into offset curves with joins (miter, bevel, round) and caps (butt, square, round). The `PathPicture` type freezes a set of styled paths into an immutable atlas snapshot that can be instanced cheaply per frame.
 
 ## Color convention
 
@@ -48,13 +48,17 @@ All color parameters are **sRGB, straight (unpremultiplied) alpha**, as `[4]f32`
 
 **Gradients** interpolate in sRGB space, which gives perceptually smooth results for UI use. `LinearGradient` and `RadialGradient` provide extend modes for clamp, repeat, and reflect behavior.
 
-**Blending** uses premultiplied alpha with gamma-correct (linear-space) compositing. On GPU the fragment shader explicitly `srgbDecode`s vertex / texture colors and writes premultiplied linear values; `GL_FRAMEBUFFER_SRGB` and the Vulkan sRGB swapchain image handle the final linear→sRGB store on framebuffer write. The CPU renderer uses an exact 256-entry sRGB→linear LUT for u8 texels and the IEC 61966-2-1 formula directly for the linear→sRGB output, with round-to-nearest output rounding.
+**Blending** uses premultiplied alpha. Shaders decode sRGB inputs to linear before applying coverage. On GL/Vulkan sRGB framebuffers, fixed-function framebuffer encoding handles linear->sRGB storage and gamma-correct blending. On linear framebuffers or CPU buffers, `ResolveTarget.encoding` states what the framebuffer accepts and what final pixel bytes the consumer expects.
 
-**Output encoding.** `ResolveTarget.output_srgb` declares what the consumer expects in the final pixel bytes (`true` = sRGB-encoded, `false` = linear); it has no default, so every call site picks deliberately.
+**Output encoding.** `ResolveTarget.encoding` is required on every draw:
 
-For GL and Vulkan, declare your framebuffer/attachment format once via `setSrgbFormatTarget(bool)` (default `true`, matching an `_SRGB` framebuffer with `GL_FRAMEBUFFER_SRGB` or an `_SRGB` Vulkan attachment). The format does the encode for the standard case; for linear-format targets (e.g., an EGL `dma_buf` import that mesa won't tag as sRGB, or an `_UNORM` Vulkan attachment), set `setSrgbFormatTarget(false)` and the shader encodes when `output_srgb = true`. Linear blending always happens inside the shader.
+- `TargetEncoding.srgb`: normal GL/Vulkan `_SRGB` framebuffer or swapchain image; the framebuffer does the final encode.
+- `TargetEncoding.linear`: linear UNORM/float targets or CPU buffers whose bytes should stay linear.
+- `TargetEncoding.srgb_pixels_on_linear_framebuffer`: linear-format storage, including CPU byte buffers, whose consumer expects sRGB bytes. This is useful for targets that cannot be tagged as sRGB, but fixed-function blending then happens in storage space; use a linear intermediate plus a final encode pass when overlapping translucent draws need fully linear-correct composition.
 
-The CPU renderer has no format-level encoder: `output_srgb = true` writes sRGB-encoded bytes, `output_srgb = false` writes linear bytes — both first-class. CPU uses an exact 256-entry sRGB→linear LUT for u8 texels and the IEC 61966-2-1 formula directly for linear→sRGB output, with round-to-nearest rounding.
+The CPU renderer has no format-level encoder: it writes RGBA8 bytes according to `encoding.pixels`. It uses an exact 256-entry sRGB->linear LUT for u8 texels and the IEC 61966-2-1 formula directly for linear->sRGB output, with round-to-nearest rounding.
+
+**Coverage transfer.** `ResolveTarget.coverage_transfer` optionally remaps analytic coverage before blending. The default is identity; `CoverageTransfer.power(exponent)` exposes explicit display tuning when a target benefits from slightly stronger or lighter antialiasing.
 
 ## Build
 
@@ -64,7 +68,7 @@ Requires [Zig 0.16](https://ziglang.org/download/), OpenGL 3.3+, and pkg-config.
 zig build test                                  # unit tests
 zig build run                                   # interactive 2D demo (GL 4.4, Wayland)
 zig build run -Drenderer=gl33                   # force OpenGL 3.3
-zig build run -Drenderer=vulkan -Dvulkan=true   # Vulkan backend
+zig build run -Drenderer=vulkan                 # Vulkan backend
 zig build run -Drenderer=cpu                    # CPU renderer
 zig build run-game-demo                         # 3D scene with HUD + world-space text on walls
 zig build screenshot                            # 2D demo offscreen → zig-out/demo-screenshot.tga
@@ -76,7 +80,7 @@ zig build install --release=fast                # install libsnail + include/sna
 Library backend flags:
 
 - `-Dopengl=true` (default) — OpenGL backend (`GlRenderer` and the C API today require this).
-- `-Dvulkan=false` (default) — pass `=true` to enable the Vulkan backend; SPIR-V shaders are compiled at build time via `glslc`.
+- `-Dvulkan=false` (default) — pass `=true` to enable the Vulkan backend; selecting `-Drenderer=vulkan` enables it for the demo. SPIR-V shaders are compiled at build time via `glslc`.
 - `-Dcpu-renderer=true` (default) — pass `=false` to drop `CpuRenderer`.
 - `-Dharfbuzz=true` (default) — pass `=false` for a HarfBuzz-free build using the built-in GSUB type 4 / GPOS type 2 shaper.
 - `-Dprofile=false` (default) — pass `=true` to enable the comptime CPU timers.
@@ -158,7 +162,12 @@ const viewport_wf: f32 = @floatFromInt(viewport_w);
 const viewport_hf: f32 = @floatFromInt(viewport_h);
 const options = snail.DrawOptions{
     .mvp = snail.Mat4.ortho(0, viewport_wf, viewport_hf, 0, -1, 1),
-    .target = .{ .pixel_width = viewport_wf, .pixel_height = viewport_hf, .subpixel_order = .rgb },
+    .target = .{
+        .pixel_width = viewport_wf,
+        .pixel_height = viewport_hf,
+        .subpixel_order = .rgb,
+        .encoding = .srgb,
+    },
 };
 
 var prepared_scene = try snail.PreparedScene.initOwned(allocator, &prepared, &scene, options);
@@ -299,6 +308,9 @@ SnailDrawOptions draw_options = {
         .is_final_composite = true,
         .opaque_backdrop = true,
         .will_resample = false,
+        .framebuffer_encoding = SNAIL_COLOR_ENCODING_SRGB,
+        .pixel_encoding = SNAIL_COLOR_ENCODING_SRGB,
+        .coverage_exponent = 1.0f,
     },
 };
 
@@ -349,7 +361,9 @@ snail_text_atlas_deinit(atlas);
 | `PreparedResources` | Backend realization for one renderer/context. |
 | `DrawList` | Caller-buffered draw records. |
 | `PreparedScene` | Optional owned draw-record cache for static scenes. |
-| `ResolveTarget` | Final target metadata: pixel size, subpixel order, fill rule, composite safety flags, and `output_srgb` (sRGB vs linear bytes — see Output encoding above). |
+| `TargetEncoding` | Pair of color encodings for framebuffer interpretation and final stored pixels. Common presets are `.srgb`, `.linear`, and `.srgb_pixels_on_linear_framebuffer`. |
+| `CoverageTransfer` | Optional analytic coverage remap. `.identity` is the default; `.power(exponent)` is explicit display tuning. |
+| `ResolveTarget` | Final target metadata: pixel size, subpixel order, fill rule, composite safety flags, required `encoding`, and optional `coverage_transfer`. |
 | `GlRenderer`, `VulkanRenderer`, `CpuRenderer` | First-class backend renderers. |
 | `Renderer` | Type-erased convenience wrapper around a backend renderer. |
 | `Rect` | `{ x, y, w, h }` rectangle. |
@@ -406,6 +420,20 @@ try scene.addPath(.{
 try scene.addPath(.{ .picture = &sprite, .instances = entity_overrides });
 ```
 
+### ResourceSet
+
+`ResourceSet` is a caller-buffered manifest of CPU resources to prepare for a renderer. Entries borrow their source objects; keep those objects alive through the blocking upload or through `pending.record` for a scheduled upload.
+
+| Method | Description |
+|--------|-------------|
+| `ResourceSet.init(entries)` | Wrap a caller-owned `[]ResourceSet.Entry` buffer. |
+| `set.reset()` | Clear entries; capacity is retained. |
+| `set.putTextAtlas(key, atlas)` / `set.putTextAtlasOptions(key, atlas, options)` | Add a text atlas, optionally overriding atlas capacity mode. |
+| `set.putPathPicture(key, picture)` / `set.putPathPictureOptions(key, picture, options)` | Add a path picture, optionally overriding atlas capacity mode. |
+| `set.putImage(key, image)` | Add an image resource. |
+| `set.addScene(scene)` | Discover and add all resources referenced by a scene. |
+| `set.estimateUploadFootprint() !ResourceFootprint` | Allocation-free estimate for a resource set before upload. |
+
 ### Renderer
 
 `GlRenderer`, `VulkanRenderer`, and `CpuRenderer` are first-class types; `Renderer` is a type-erased wrapper that exposes the same surface for backend-agnostic code. The methods below are present on each concrete renderer and on `Renderer`.
@@ -417,7 +445,6 @@ try scene.addPath(.{ .picture = &sprite, .instances = entity_overrides });
 | `CpuRenderer.init(pixels, w, h, stride) CpuRenderer` | Initialize the CPU backend over a caller-owned RGBA8 buffer. |
 | `cpu.setThreadPool(?*snail.ThreadPool)` | Opt into scanline-tiled multithreaded rendering using a caller-owned `snail.ThreadPool`. Byte-identical output to the single-threaded path; the draw call itself stays allocation-free. |
 | `vk.beginFrame(.{ .cmd, .frame_index })` | Bind a caller-recorded Vulkan command buffer + frame index for the current frame. |
-| `set.estimateUploadFootprint() !ResourceFootprint` | Allocation-free estimate for a resource set before upload. |
 | `renderer.uploadResourcesBlocking(alloc, set) !PreparedResources` | Blocking upload + view construction. The simple path. |
 | `renderer.planResourceUpload(current, next_set, changed_keys) !ResourceUploadPlan` | Diff a new resource set against existing prepared resources. |
 | `renderer.beginResourceUpload(alloc, plan) !PendingResourceUpload` | Start a scheduled upload; record into a caller command buffer for Vulkan, then call `pending.publish()`. |
@@ -480,8 +507,8 @@ masking, or compositing.
   initialize with `TextCoverageRecords.init(buffer)`, then call
   `records.buildLocal(prepared, blob, .{ .transform = ... })`. `buildLocal`
   does not allocate; it returns `error.DrawListFull` if the buffer is too
-  small. Call `records.validFor(prepared)` after a re-upload and `rebuildLocal`
-  if the atlas has moved.
+  small. Call `records.validFor(prepared)` after a re-upload and
+  `records.rebuildLocal(prepared, blob, options)` if the atlas has moved.
 - `TextCoverageBackend` is the GL hook. Get one from
   `prepared.textCoverageBackend(renderer)` (or `gl.textCoverageBackend(prepared)`
   on the typed renderer). Call `bind(bindings)` to bind your material's
@@ -518,6 +545,9 @@ masking, or compositing.
 | `builder.addRoundedRect(rect, fill, stroke, radius, transform)` | Direct rounded rectangle. |
 | `builder.addEllipse(rect, fill, stroke, transform)` | Direct ellipse. |
 | `builder.shapeCount() usize` | Number of shapes added so far (matches indices used by `Range`). |
+| `builder.mark() ShapeMark` | Capture the current shape count for later range construction. |
+| `builder.rangeFrom(mark) !Range` | Build a shape range from a mark to the current end. |
+| `builder.rangeBetween(start, end) !Range` | Build a shape range between two marks. |
 | `builder.freeze(.{ .persistent_allocator, .scratch_allocator }) !PathPicture` | Compile to immutable atlas with explicit persistent and temporary allocation. |
 
 ### `snail.lowlevel`
