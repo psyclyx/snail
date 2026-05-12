@@ -77,7 +77,7 @@ fn mapError(err: anyerror) c_int {
     return switch (err) {
         error.OutOfMemory => SNAIL_ERR_OUT_OF_MEMORY,
         error.InvalidFont, error.NoFaces, error.MissingCellMetricsGlyph => SNAIL_ERR_INVALID_FONT,
-        error.InvalidEnum, error.InvalidArgument, error.InvalidFaceIndex, error.WrongTextAtlasSnapshot, error.MissingPreparedGlyph => SNAIL_ERR_INVALID_ARGUMENT,
+        error.InvalidEnum, error.InvalidArgument, error.InvalidFaceIndex, error.WrongTextAtlasSnapshot, error.MissingPreparedGlyph, error.InvalidShapeMark, error.InvalidShapeRange => SNAIL_ERR_INVALID_ARGUMENT,
         else => SNAIL_ERR_DRAW_FAILED,
     };
 }
@@ -131,6 +131,15 @@ pub const SnailTransform2D = extern struct {
 pub const SnailOverride = extern struct {
     transform: SnailTransform2D = .{},
     tint: [4]f32 = .{ 1, 1, 1, 1 },
+};
+
+pub const SnailRange = extern struct {
+    start: usize = 0,
+    count: usize = std.math.maxInt(usize),
+};
+
+pub const SnailShapeMark = extern struct {
+    shape_count: usize = 0,
 };
 
 pub const SnailSyntheticStyle = extern struct {
@@ -297,6 +306,22 @@ fn toTransform(t: SnailTransform2D) snail.Transform2D {
 
 fn toOverride(override_value: SnailOverride) snail.Override {
     return .{ .transform = toTransform(override_value.transform), .tint = override_value.tint };
+}
+
+fn toRange(range: SnailRange) snail.Range {
+    return .{ .start = range.start, .count = range.count };
+}
+
+fn fromRange(range: snail.Range) SnailRange {
+    return .{ .start = range.start, .count = range.count };
+}
+
+fn toShapeMark(mark: SnailShapeMark) snail.PathPictureBuilder.ShapeMark {
+    return .{ .shape_count = mark.shape_count };
+}
+
+fn fromShapeMark(mark: snail.PathPictureBuilder.ShapeMark) SnailShapeMark {
+    return .{ .shape_count = mark.shape_count };
 }
 
 fn toSyntheticStyle(s: SnailSyntheticStyle) snail.SyntheticStyle {
@@ -998,6 +1023,24 @@ export fn snail_path_picture_shape_count(picture: *const PathPictureImpl) usize 
     return picture.inner.shapeCount();
 }
 
+export fn snail_path_picture_builder_shape_count(builder: *const PathPictureBuilderImpl) usize {
+    return builder.inner.shapeCount();
+}
+
+export fn snail_path_picture_builder_mark(builder: *const PathPictureBuilderImpl) SnailShapeMark {
+    return fromShapeMark(builder.inner.mark());
+}
+
+export fn snail_path_picture_builder_range_from(builder: *const PathPictureBuilderImpl, mark: SnailShapeMark, out: *SnailRange) c_int {
+    out.* = fromRange(builder.inner.rangeFrom(toShapeMark(mark)) catch |err| return mapError(err));
+    return SNAIL_OK;
+}
+
+export fn snail_path_picture_builder_range_between(builder: *const PathPictureBuilderImpl, start: SnailShapeMark, end: SnailShapeMark, out: *SnailRange) c_int {
+    out.* = fromRange(builder.inner.rangeBetween(toShapeMark(start), toShapeMark(end)) catch |err| return mapError(err));
+    return SNAIL_OK;
+}
+
 // Scene and resources
 
 export fn snail_scene_init(alloc_ptr: ?*const SnailAllocator, out: *?*SceneImpl) c_int {
@@ -1057,13 +1100,35 @@ export fn snail_scene_add_path_picture(scene: *SceneImpl, picture: *const PathPi
     return SNAIL_OK;
 }
 
+export fn snail_scene_add_path_picture_range(scene: *SceneImpl, picture: *const PathPictureImpl, range: SnailRange) c_int {
+    scene.inner.addPath(.{
+        .picture = &picture.inner,
+        .shapes = toRange(range),
+    }) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    return SNAIL_OK;
+}
+
 export fn snail_scene_add_path_picture_transformed(scene: *SceneImpl, picture: *const PathPictureImpl, transform: SnailTransform2D) c_int {
     return snail_scene_add_path_picture_override(scene, picture, .{ .transform = transform });
+}
+
+export fn snail_scene_add_path_picture_range_transformed(scene: *SceneImpl, picture: *const PathPictureImpl, range: SnailRange, transform: SnailTransform2D) c_int {
+    return snail_scene_add_path_picture_range_override(scene, picture, range, .{ .transform = transform });
 }
 
 export fn snail_scene_add_path_picture_override(scene: *SceneImpl, picture: *const PathPictureImpl, override_value: SnailOverride) c_int {
     const instances = stashOverride(scene, toOverride(override_value)) catch return SNAIL_ERR_OUT_OF_MEMORY;
     scene.inner.addPath(.{ .picture = &picture.inner, .instances = instances }) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    return SNAIL_OK;
+}
+
+export fn snail_scene_add_path_picture_range_override(scene: *SceneImpl, picture: *const PathPictureImpl, range: SnailRange, override_value: SnailOverride) c_int {
+    const instances = stashOverride(scene, toOverride(override_value)) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    scene.inner.addPath(.{
+        .picture = &picture.inner,
+        .shapes = toRange(range),
+        .instances = instances,
+    }) catch return SNAIL_ERR_OUT_OF_MEMORY;
     return SNAIL_OK;
 }
 
@@ -1442,11 +1507,40 @@ test "c_api: path picture builder" {
         8,
         .{},
     ));
+    try testing.expectEqual(@as(usize, 1), snail_path_picture_builder_shape_count(builder.?));
+    const second_mark = snail_path_picture_builder_mark(builder.?);
+    try testing.expectEqual(SNAIL_OK, snail_path_picture_builder_add_rect(
+        builder.?,
+        .{ .x = 120, .y = 0, .w = 20, .h = 20 },
+        &fill,
+        null,
+        .{},
+    ));
+
+    var second_range: SnailRange = undefined;
+    try testing.expectEqual(SNAIL_OK, snail_path_picture_builder_range_from(builder.?, second_mark, &second_range));
+    try testing.expectEqual(@as(usize, 1), second_range.start);
+    try testing.expectEqual(@as(usize, 1), second_range.count);
+    try testing.expectEqual(SNAIL_ERR_INVALID_ARGUMENT, snail_path_picture_builder_range_between(
+        builder.?,
+        .{ .shape_count = 2 },
+        .{ .shape_count = 1 },
+        &second_range,
+    ));
 
     var picture: ?*PathPictureImpl = null;
     try testing.expectEqual(SNAIL_OK, snail_path_picture_builder_freeze(builder.?, null, &picture));
     defer snail_path_picture_deinit(picture);
-    try testing.expectEqual(@as(usize, 1), snail_path_picture_shape_count(picture.?));
+    try testing.expectEqual(@as(usize, 2), snail_path_picture_shape_count(picture.?));
+
+    var scene: ?*SceneImpl = null;
+    try testing.expectEqual(SNAIL_OK, snail_scene_init(null, &scene));
+    defer snail_scene_deinit(scene);
+    try testing.expectEqual(SNAIL_OK, snail_scene_add_path_picture_range(scene.?, picture.?, second_range));
+    try testing.expectEqual(SNAIL_OK, snail_scene_add_path_picture_range_override(scene.?, picture.?, second_range, .{
+        .tint = .{ 1, 0.5, 0.25, 1 },
+    }));
+    try testing.expectEqual(@as(usize, 2), snail_scene_command_count(scene.?));
 }
 
 test "c_api: image paint init and constants" {

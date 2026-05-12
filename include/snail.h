@@ -85,6 +85,17 @@ typedef struct {
 #define SNAIL_OVERRIDE_IDENTITY ((SnailOverride){SNAIL_TRANSFORM2D_IDENTITY, {1, 1, 1, 1}})
 
 typedef struct {
+    size_t start;
+    size_t count;
+} SnailRange;
+
+#define SNAIL_RANGE_ALL ((SnailRange){0, SIZE_MAX})
+
+typedef struct {
+    size_t shape_count;
+} SnailShapeMark;
+
+typedef struct {
     uint16_t advance_width;
     int16_t lsb;
     SnailBBox bbox;
@@ -363,6 +374,15 @@ int snail_path_add_ellipse(SnailPath *path, SnailRect rect);
 
 int snail_path_picture_builder_init(const SnailAllocator *alloc, SnailPathPictureBuilder **out);
 void snail_path_picture_builder_deinit(SnailPathPictureBuilder *builder);
+size_t snail_path_picture_builder_shape_count(const SnailPathPictureBuilder *builder);
+SnailShapeMark snail_path_picture_builder_mark(const SnailPathPictureBuilder *builder);
+int snail_path_picture_builder_range_from(const SnailPathPictureBuilder *builder,
+                                          SnailShapeMark mark,
+                                          SnailRange *out);
+int snail_path_picture_builder_range_between(const SnailPathPictureBuilder *builder,
+                                             SnailShapeMark start,
+                                             SnailShapeMark end,
+                                             SnailRange *out);
 int snail_path_picture_builder_add_path(SnailPathPictureBuilder *builder,
                                         const SnailPath *path,
                                         const SnailFillStyle *fill,
@@ -420,12 +440,23 @@ int snail_scene_add_text_override(SnailScene *scene,
                                   const SnailTextBlob *blob,
                                   SnailOverride override_value);
 int snail_scene_add_path_picture(SnailScene *scene, const SnailPathPicture *picture);
+int snail_scene_add_path_picture_range(SnailScene *scene,
+                                       const SnailPathPicture *picture,
+                                       SnailRange range);
 int snail_scene_add_path_picture_transformed(SnailScene *scene,
                                              const SnailPathPicture *picture,
                                              SnailTransform2D transform);
+int snail_scene_add_path_picture_range_transformed(SnailScene *scene,
+                                                   const SnailPathPicture *picture,
+                                                   SnailRange range,
+                                                   SnailTransform2D transform);
 int snail_scene_add_path_picture_override(SnailScene *scene,
                                           const SnailPathPicture *picture,
                                           SnailOverride override_value);
+int snail_scene_add_path_picture_range_override(SnailScene *scene,
+                                                const SnailPathPicture *picture,
+                                                SnailRange range,
+                                                SnailOverride override_value);
 
 int snail_resource_set_init(const SnailAllocator *alloc, size_t capacity, SnailResourceSet **out);
 void snail_resource_set_deinit(SnailResourceSet *set);

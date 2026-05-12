@@ -2835,6 +2835,10 @@ pub const PathPictureBuilder = struct {
     allocator: std.mem.Allocator,
     paths: std.ArrayList(PathRecord) = .empty,
 
+    pub const ShapeMark = struct {
+        shape_count: usize = 0,
+    };
+
     const PathLayerRecord = struct {
         curves: []CurveSegment,
         bbox: BBox,
@@ -2976,6 +2980,24 @@ pub const PathPictureBuilder = struct {
 
     pub fn shapeCount(self: *const PathPictureBuilder) usize {
         return self.paths.items.len;
+    }
+
+    pub fn mark(self: *const PathPictureBuilder) ShapeMark {
+        return .{ .shape_count = self.shapeCount() };
+    }
+
+    pub fn rangeFrom(self: *const PathPictureBuilder, mark_value: ShapeMark) !Range {
+        return self.rangeBetween(mark_value, self.mark());
+    }
+
+    pub fn rangeBetween(self: *const PathPictureBuilder, start: ShapeMark, end: ShapeMark) !Range {
+        const total = self.shapeCount();
+        if (start.shape_count > total or end.shape_count > total) return error.InvalidShapeMark;
+        if (start.shape_count > end.shape_count) return error.InvalidShapeRange;
+        return .{
+            .start = start.shape_count,
+            .count = end.shape_count - start.shape_count,
+        };
     }
 
     fn addSingleRecord(
@@ -6430,9 +6452,22 @@ test "resource upload footprints are allocation-free and policy-aware" {
 test "path picture ranges emit selected shapes" {
     var builder = PathPictureBuilder.init(std.testing.allocator);
     defer builder.deinit();
+    const first_mark = builder.mark();
     try builder.addFilledRect(.{ .x = 0, .y = 0, .w = 20, .h = 10 }, .{ .color = .{ 0.8, 0.2, 0.1, 1.0 } }, .identity);
+    const second_mark = builder.mark();
     try builder.addFilledRect(.{ .x = 40, .y = 0, .w = 20, .h = 10 }, .{ .color = .{ 0.1, 0.4, 0.8, 1.0 } }, .identity);
     try std.testing.expectEqual(@as(usize, 2), builder.shapeCount());
+    const first_range = try builder.rangeBetween(first_mark, second_mark);
+    try std.testing.expectEqual(@as(usize, 0), first_range.start);
+    try std.testing.expectEqual(@as(usize, 1), first_range.count);
+    const second_range = try builder.rangeFrom(second_mark);
+    try std.testing.expectEqual(@as(usize, 1), second_range.start);
+    try std.testing.expectEqual(@as(usize, 1), second_range.count);
+    const full_range = try builder.rangeFrom(first_mark);
+    try std.testing.expectEqual(@as(usize, 0), full_range.start);
+    try std.testing.expectEqual(@as(usize, 2), full_range.count);
+    try std.testing.expectError(error.InvalidShapeMark, builder.rangeFrom(.{ .shape_count = 3 }));
+    try std.testing.expectError(error.InvalidShapeRange, builder.rangeBetween(second_mark, first_mark));
 
     var picture = try builder.freeze(std.testing.allocator);
     defer picture.deinit();
@@ -6442,7 +6477,7 @@ test "path picture ranges emit selected shapes" {
     const view = PreparedAtlasView{ .atlas = &picture.atlas };
     const result = try batch.addDraw(&view, .{
         .picture = &picture,
-        .shapes = .{ .start = 1, .count = 1 },
+        .shapes = second_range,
     }, 0, 0);
     try std.testing.expectEqual(@as(usize, 1), result.emitted);
     try std.testing.expect(result.completed);
@@ -6450,7 +6485,7 @@ test "path picture ranges emit selected shapes" {
 
     var scene = Scene.init(std.testing.allocator);
     defer scene.deinit();
-    try scene.addPath(.{ .picture = &picture, .shapes = .{ .start = 1, .count = 1 } });
+    try scene.addPath(.{ .picture = &picture, .shapes = second_range });
     const options = DrawOptions{ .mvp = Mat4.identity, .target = .{ .pixel_width = 100, .pixel_height = 100, .output_srgb = true } };
     try std.testing.expectEqual(@as(usize, PATH_WORDS_PER_SHAPE), DrawList.estimate(&scene, options));
     try std.testing.expectEqual(@as(usize, 1), DrawList.estimateSegments(&scene, options));

@@ -28,6 +28,9 @@
 - `ResourceSet.putTextAtlasOptions` and `putPathPictureOptions` expose the
   atlas upload capacity policy (`.exact` or `.growable`) per entry while the
   existing `putTextAtlas` / `putPathPicture` calls keep their defaults.
+- `PathPictureBuilder` shape marks produce allocation-free `Range` values for
+  drawing subsets of a larger immutable path picture; the C API exposes the
+  same marks and path-picture range submission calls.
 
 ## 0.5.0
 
