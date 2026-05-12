@@ -10,6 +10,7 @@ const Mat4 = vec.Mat4;
 const snail_mod = @import("../snail.zig");
 const SubpixelOrder = @import("subpixel_order.zig").SubpixelOrder;
 const TargetEncoding = snail_mod.TargetEncoding;
+const CoverageTransfer = snail_mod.CoverageTransfer;
 
 // ── Backend selection ──
 
@@ -27,6 +28,7 @@ const ProgramState = struct {
     fill_rule_loc: gl.GLint = -1,
     subpixel_order_loc: gl.GLint = -1,
     output_srgb_loc: gl.GLint = -1,
+    coverage_exponent_loc: gl.GLint = -1,
     layer_tex_loc: gl.GLint = -1,
     layer_base_loc: gl.GLint = -1,
 };
@@ -41,6 +43,7 @@ pub const TextCoverageBindings = struct {
     fill_rule_loc: gl.GLint = -1,
     subpixel_order_loc: gl.GLint = -1,
     output_srgb_loc: gl.GLint = -1,
+    coverage_exponent_loc: gl.GLint = -1,
     curve_tex_unit: gl.GLint = 0,
     band_tex_unit: gl.GLint = 1,
     layer_tex_unit: gl.GLint = 2,
@@ -50,6 +53,7 @@ pub const TextCoverageBindings = struct {
     /// Value to write to the shader's `u_output_srgb` uniform — i.e.,
     /// whether the shader itself should sRGB-encode its output.
     output_srgb: bool = false,
+    coverage_transfer: CoverageTransfer = .identity,
 };
 
 pub const text_vertex_interface = shaders.text_vertex_interface;
@@ -196,6 +200,7 @@ pub const PreparedResources = struct {
         if (bindings.fill_rule_loc >= 0) gl.glUniform1i(bindings.fill_rule_loc, @intFromEnum(bindings.fill_rule));
         if (bindings.subpixel_order_loc >= 0) gl.glUniform1i(bindings.subpixel_order_loc, @intFromEnum(bindings.subpixel_order));
         if (bindings.output_srgb_loc >= 0) gl.glUniform1i(bindings.output_srgb_loc, @intFromBool(bindings.output_srgb));
+        if (bindings.coverage_exponent_loc >= 0) gl.glUniform1f(bindings.coverage_exponent_loc, bindings.coverage_transfer.shaderExponent());
     }
 
     fn currentImageView(self: *const PreparedResources, comptime ImageView: type, image: *const snail_mod.Image) ImageView {
@@ -572,6 +577,7 @@ pub const GlTextState = struct {
     subpixel_order: SubpixelOrder = .none,
     fill_rule: FillRule = .non_zero,
     target_encoding: TargetEncoding = .srgb,
+    coverage_transfer: CoverageTransfer = .identity,
     vao: gl.GLuint = 0,
     vbo: gl.GLuint = 0,
     ebo: gl.GLuint = 0,
@@ -801,6 +807,14 @@ pub const GlTextState = struct {
         return self.target_encoding;
     }
 
+    pub fn setCoverageTransfer(self: *GlTextState, transfer: CoverageTransfer) void {
+        self.coverage_transfer = transfer;
+    }
+
+    pub fn getCoverageTransfer(self: *const GlTextState) CoverageTransfer {
+        return self.coverage_transfer;
+    }
+
     inline fn shaderEncodesSrgb(self: *const GlTextState) bool {
         return self.target_encoding.shaderEncodesSrgb();
     }
@@ -857,6 +871,9 @@ pub const GlTextState = struct {
         }
         if (prog_state.output_srgb_loc >= 0) {
             gl.glUniform1i(prog_state.output_srgb_loc, @intFromBool(self.shaderEncodesSrgb()));
+        }
+        if (prog_state.coverage_exponent_loc >= 0) {
+            gl.glUniform1f(prog_state.coverage_exponent_loc, self.coverage_transfer.shaderExponent());
         }
     }
 
@@ -1009,6 +1026,7 @@ fn loadProgramState(cache_label: []const u8, vs_src: [*c]const u8, fs_src: [*c]c
         .fill_rule_loc = gl.glGetUniformLocation(handle, "u_fill_rule"),
         .subpixel_order_loc = gl.glGetUniformLocation(handle, "u_subpixel_order"),
         .output_srgb_loc = gl.glGetUniformLocation(handle, "u_output_srgb"),
+        .coverage_exponent_loc = gl.glGetUniformLocation(handle, "u_coverage_exponent"),
         .layer_tex_loc = gl.glGetUniformLocation(handle, "u_layer_tex"),
         .layer_base_loc = gl.glGetUniformLocation(handle, "u_layer_base"),
     };

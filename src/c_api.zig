@@ -189,6 +189,7 @@ pub const SnailResolveTarget = extern struct {
     will_resample: bool = false,
     framebuffer_encoding: c_int = 0,
     pixel_encoding: c_int = 0,
+    coverage_exponent: f32 = 1.0,
 };
 
 pub const SnailDrawOptions = extern struct {
@@ -480,6 +481,7 @@ fn toResolveTarget(target: SnailResolveTarget) !snail.ResolveTarget {
             .framebuffer = try toColorEncoding(target.framebuffer_encoding),
             .pixels = try toColorEncoding(target.pixel_encoding),
         },
+        .coverage_transfer = .{ .exponent = target.coverage_exponent },
     };
 }
 

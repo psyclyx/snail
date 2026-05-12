@@ -16,6 +16,24 @@ float applyFillRule(float winding) {
     return abs(winding);
 }
 
+#ifndef SNAIL_COVERAGE_EXPONENT
+#define SNAIL_COVERAGE_EXPONENT 1.0
+#endif
+
+float applyCoverageTransfer(float cov) {
+    float clamped = clamp(cov, 0.0, 1.0);
+    float exponent = max(float(SNAIL_COVERAGE_EXPONENT), 1.0 / 65536.0);
+    return (abs(exponent - 1.0) <= 1e-6) ? clamped : pow(clamped, exponent);
+}
+
+vec3 applyCoverageTransfer(vec3 cov) {
+    return vec3(
+        applyCoverageTransfer(cov.r),
+        applyCoverageTransfer(cov.g),
+        applyCoverageTransfer(cov.b)
+    );
+}
+
 ivec2 calcBandLoc(ivec2 glyphLoc, uint offset) {
     ivec2 loc = ivec2(glyphLoc.x + int(offset), glyphLoc.y);
     loc.y += loc.x >> kLogBandTextureWidth;
@@ -234,7 +252,7 @@ vec4 evalGlyphCoverageSubpixel(vec2 rc, ivec2 glyph_loc, ivec2 band_max, vec4 ba
     float s_p1 = evalGlyphSample(rc_p1, display_epp, glyph_loc, band_max, banding, layer);
     float s_p2 = evalGlyphSample(rc_p2, display_epp, glyph_loc, band_max, banding, layer);
     float s_p3 = evalGlyphSample(rc_p3, display_epp, glyph_loc, band_max, banding, layer);
-    return filterSubpixelCoverage(
+    vec4 coverage = filterSubpixelCoverage(
         s_m3,
         s_m2,
         s_m1,
@@ -244,6 +262,7 @@ vec4 evalGlyphCoverageSubpixel(vec2 rc, ivec2 glyph_loc, ivec2 band_max, vec4 ba
         s_p3,
         SNAIL_SUBPIXEL_ORDER == 2 || SNAIL_SUBPIXEL_ORDER == 4
     );
+    return vec4(applyCoverageTransfer(coverage.rgb), applyCoverageTransfer(coverage.a));
 }
 
 void main() {

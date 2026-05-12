@@ -7,6 +7,7 @@ const Mat4 = vec.Mat4;
 const snail_mod = @import("../snail.zig");
 const SubpixelOrder = @import("subpixel_order.zig").SubpixelOrder;
 const TargetEncoding = snail_mod.TargetEncoding;
+const CoverageTransfer = snail_mod.CoverageTransfer;
 
 pub const vk = @cImport({
     @cInclude("vulkan/vulkan.h");
@@ -31,10 +32,11 @@ const PushConstants = extern struct {
     subpixel_order: i32 = 1, // 1=RGB, 2=BGR, 3=VRGB, 4=VBGR
     output_srgb: i32 = 0, // 0 = emit linear, 1 = sRGB-encode before write
     layer_base: i32 = 0,
+    coverage_exponent: f32 = 1.0,
 };
 
 comptime {
-    if (@sizeOf(PushConstants) != 88) @compileError("PushConstants must be 88 bytes");
+    if (@sizeOf(PushConstants) != 92) @compileError("PushConstants must be 92 bytes");
 }
 
 // ── Initialization context (provided by caller) ──
@@ -297,6 +299,7 @@ pub const VulkanPipeline = struct {
     subpixel_order: SubpixelOrder = .none,
     fill_rule: FillRule = .non_zero,
     target_encoding: TargetEncoding = .srgb,
+    coverage_transfer: CoverageTransfer = .identity,
 
     // ── Init / Deinit ──
 
@@ -468,6 +471,14 @@ pub const VulkanPipeline = struct {
 
     pub fn getTargetEncoding(self: *const VulkanPipeline) TargetEncoding {
         return self.target_encoding;
+    }
+
+    pub fn setCoverageTransfer(self: *VulkanPipeline, transfer: CoverageTransfer) void {
+        self.coverage_transfer = transfer;
+    }
+
+    pub fn getCoverageTransfer(self: *const VulkanPipeline) CoverageTransfer {
+        return self.coverage_transfer;
     }
 
     inline fn shaderEncodesSrgb(self: *const VulkanPipeline) bool {
@@ -831,6 +842,7 @@ pub const VulkanPipeline = struct {
                 .subpixel_order = @intFromEnum(if (render_mode == .grayscale) SubpixelOrder.none else self.subpixel_order),
                 .output_srgb = if (self.shaderEncodesSrgb()) 1 else 0,
                 .layer_base = @intCast(texture_layer_base),
+                .coverage_exponent = self.coverage_transfer.shaderExponent(),
             };
             vk.vkCmdPushConstants(cmd, self.pipeline_layout, vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(PushConstants), &pc);
             self.drawGlyphRange(vertices, 0, total_glyphs);
@@ -878,6 +890,7 @@ pub const VulkanPipeline = struct {
                 .subpixel_order = @intFromEnum(if (run_mode == .grayscale) SubpixelOrder.none else self.subpixel_order),
                 .output_srgb = if (self.shaderEncodesSrgb()) 1 else 0,
                 .layer_base = @intCast(texture_layer_base),
+                .coverage_exponent = self.coverage_transfer.shaderExponent(),
             };
             vk.vkCmdPushConstants(cmd, self.pipeline_layout, vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(PushConstants), &pc);
             self.drawGlyphRange(vertices, run_start, run_end - run_start);
@@ -912,7 +925,9 @@ pub const VulkanPipeline = struct {
             .viewport = .{ viewport_w, viewport_h },
             .fill_rule = @intFromEnum(self.fill_rule),
             .subpixel_order = @intFromEnum(if (render_mode == .grayscale) SubpixelOrder.none else self.subpixel_order),
+            .output_srgb = if (self.shaderEncodesSrgb()) 1 else 0,
             .layer_base = @intCast(texture_layer_base),
+            .coverage_exponent = self.coverage_transfer.shaderExponent(),
         };
         vk.vkCmdPushConstants(cmd, self.pipeline_layout, vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(PushConstants), &pc);
         self.drawGlyphRange(vertices, 0, total_glyphs);

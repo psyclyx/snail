@@ -230,6 +230,7 @@ pub const CpuRenderer = struct {
     /// Encoding of the caller-owned pixel buffer. The unified `Renderer.draw`
     /// path sets this from `ResolveTarget.encoding` every frame.
     target_encoding: snail.TargetEncoding,
+    coverage_transfer: snail.CoverageTransfer,
     thread_pool: ?*snail.ThreadPool,
     // Half-open row window [row_clip_min, row_clip_max). Pixel writes outside
     // this range are skipped. Used by tile workers to claim disjoint scanline
@@ -251,6 +252,7 @@ pub const CpuRenderer = struct {
             // doc). The unified `Renderer.draw` path overrides this from
             // `ResolveTarget.encoding` per frame.
             .target_encoding = .srgb,
+            .coverage_transfer = .identity,
             .thread_pool = null,
             .row_clip_min = 0,
             .row_clip_max = height,
@@ -298,6 +300,29 @@ pub const CpuRenderer = struct {
 
     pub fn getTargetEncoding(self: *const CpuRenderer) snail.TargetEncoding {
         return self.target_encoding;
+    }
+
+    pub fn setCoverageTransfer(self: *CpuRenderer, transfer: snail.CoverageTransfer) void {
+        self.coverage_transfer = transfer;
+    }
+
+    pub fn getCoverageTransfer(self: *const CpuRenderer) snail.CoverageTransfer {
+        return self.coverage_transfer;
+    }
+
+    fn applyCoverageTransfer(self: *const CpuRenderer, cov: f32) f32 {
+        return self.coverage_transfer.apply(cov);
+    }
+
+    fn applySubpixelCoverageTransfer(self: *const CpuRenderer, cov: SubpixelCoverage) SubpixelCoverage {
+        return .{
+            .rgb = .{
+                self.applyCoverageTransfer(cov.rgb[0]),
+                self.applyCoverageTransfer(cov.rgb[1]),
+                self.applyCoverageTransfer(cov.rgb[2]),
+            },
+            .alpha = self.applyCoverageTransfer(cov.alpha),
+        };
     }
 
     fn setSubpixel(self: *CpuRenderer, enabled: bool) void {
@@ -366,7 +391,7 @@ pub const CpuRenderer = struct {
                     const world = Vec2.new(@as(f32, @floatFromInt(col)) + 0.5, @as(f32, @floatFromInt(row)) + 0.5);
                     const local = inverse.applyPoint(world);
                     const paint = samplePathPaint(&picture.atlas, shape, shape.glyph_id, local);
-                    const cov = evalGlyphCoverage(
+                    const cov = self.applyCoverageTransfer(evalGlyphCoverage(
                         page,
                         local.x,
                         local.y,
@@ -376,7 +401,7 @@ pub const CpuRenderer = struct {
                         band_max_h,
                         band_max_v,
                         self.fill_rule,
-                    );
+                    ));
                     if (cov < 1.0 / 255.0) continue;
                     self.blendPremultipliedPixel(row, col, premultiplyCoverage(paint.color, cov), paint.apply_dither);
                 }
@@ -664,7 +689,7 @@ pub const CpuRenderer = struct {
                         paint.color = multiplyLinearColor(paint.color, tint);
 
                         if (use_subpixel) {
-                            const cov = evalGlyphCoverageSubpixel(
+                            const cov = self.applySubpixelCoverageTransfer(evalGlyphCoverageSubpixel(
                                 page,
                                 local,
                                 sample_dx,
@@ -674,7 +699,7 @@ pub const CpuRenderer = struct {
                                 band_max_v,
                                 self.fill_rule,
                                 self.subpixel_order,
-                            );
+                            ));
 
                             if (composite_mode == 1 and layer_count >= 2 and l < 2) {
                                 if (l == 0) {
@@ -697,7 +722,7 @@ pub const CpuRenderer = struct {
                                 &result_blend,
                             );
                         } else {
-                            const cov = evalGlyphCoverage(page, local.x, local.y, ppe.x, ppe.y, be, band_max_h, band_max_v, self.fill_rule);
+                            const cov = self.applyCoverageTransfer(evalGlyphCoverage(page, local.x, local.y, ppe.x, ppe.y, be, band_max_h, band_max_v, self.fill_rule));
 
                             if (composite_mode == 1 and layer_count >= 2 and l < 2) {
                                 if (l == 0) {
@@ -799,11 +824,11 @@ pub const CpuRenderer = struct {
                     var paint = samplePathPaintFromLayerInfo(data, width, info_x, info_y, 0, local, paint_image_records);
                     paint.color = multiplyLinearColor(paint.color, tint);
                     if (!allow_subpixel or self.subpixel_order == .none) {
-                        const cov = evalGlyphCoverage(page, local.x, local.y, ppe.x, ppe.y, be, band_max_h, band_max_v, self.fill_rule);
+                        const cov = self.applyCoverageTransfer(evalGlyphCoverage(page, local.x, local.y, ppe.x, ppe.y, be, band_max_h, band_max_v, self.fill_rule));
                         if (cov < 1.0 / 255.0) continue;
                         self.blendPremultipliedPixel(row, col, premultiplyCoverage(paint.color, cov), paint.apply_dither);
                     } else {
-                        const cov = evalGlyphCoverageSubpixel(
+                        const cov = self.applySubpixelCoverageTransfer(evalGlyphCoverageSubpixel(
                             page,
                             local,
                             sample_dx,
@@ -813,7 +838,7 @@ pub const CpuRenderer = struct {
                             band_max_v,
                             self.fill_rule,
                             self.subpixel_order,
-                        );
+                        ));
                         if (max3(cov.rgb) < 1.0 / 255.0) continue;
                         self.blendSubpixelPremultipliedPixel(
                             row,
@@ -863,11 +888,11 @@ pub const CpuRenderer = struct {
                     .y = @as(f32, @floatFromInt(row)) + 0.5,
                 });
                 if (!allow_subpixel or self.subpixel_order == .none) {
-                    const cov = evalGlyphCoverage(page, display_local.x, display_local.y, ppe.x, ppe.y, be, band_max_h, band_max_v, self.fill_rule);
+                    const cov = self.applyCoverageTransfer(evalGlyphCoverage(page, display_local.x, display_local.y, ppe.x, ppe.y, be, band_max_h, band_max_v, self.fill_rule));
                     if (cov < 1.0 / 255.0) continue;
                     self.blendPremultipliedPixel(row, col, premultiplyCoverage(color, cov), false);
                 } else {
-                    const cov = evalGlyphCoverageSubpixel(
+                    const cov = self.applySubpixelCoverageTransfer(evalGlyphCoverageSubpixel(
                         page,
                         display_local,
                         sample_dx,
@@ -877,7 +902,7 @@ pub const CpuRenderer = struct {
                         band_max_v,
                         self.fill_rule,
                         self.subpixel_order,
-                    );
+                    ));
                     if (max3(cov.rgb) < 1.0 / 255.0) continue;
                     self.blendSubpixelPixel(row, col, color, cov.rgb, cov.alpha);
                 }
@@ -980,7 +1005,7 @@ pub const CpuRenderer = struct {
                 const em_y = (y - py_f) / scale;
 
                 if (!allow_subpixel or self.subpixel_order == .none) {
-                    const cov = evalGlyphCoverage(
+                    const cov = self.applyCoverageTransfer(evalGlyphCoverage(
                         page,
                         em_x,
                         em_y,
@@ -990,11 +1015,11 @@ pub const CpuRenderer = struct {
                         band_max_h,
                         band_max_v,
                         self.fill_rule,
-                    );
+                    ));
                     if (cov < 1.0 / 255.0) continue;
                     self.blendPremultipliedPixel(row, col, premultiplyCoverage(color, cov), false);
                 } else {
-                    const cov = evalGlyphCoverageSubpixel(
+                    const cov = self.applySubpixelCoverageTransfer(evalGlyphCoverageSubpixel(
                         page,
                         Vec2.new(em_x, em_y),
                         Vec2.new(epp_x, 0.0),
@@ -1004,7 +1029,7 @@ pub const CpuRenderer = struct {
                         band_max_v,
                         self.fill_rule,
                         self.subpixel_order,
-                    );
+                    ));
                     if (max3(cov.rgb) < 1.0 / 255.0) continue;
                     self.blendSubpixelPixel(row, col, color, cov.rgb, cov.alpha);
                 }

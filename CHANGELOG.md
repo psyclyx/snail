@@ -44,6 +44,12 @@
   options for text atlas and path picture resource-set entries.
 - `PreparedResourceRetirementQueue` is a caller-owned queue for explicit
   deferred retirement of prepared backend resources.
+- `PixelGrid` exposes allocation-free logical-to-backing-pixel snapping
+  primitives for callers that want text/layout origins or lengths aligned to
+  the actual framebuffer grid.
+- `CoverageTransfer` exposes an explicit per-target analytic coverage exponent
+  for GL, Vulkan, CPU, and custom GL text-coverage shaders; the C API mirrors it
+  with `SnailResolveTarget.coverage_exponent`.
 
 ### Changed
 
@@ -52,6 +58,8 @@
   `output_srgb` flag and the renderer-global sRGB-format target knobs; GL,
   Vulkan, and CPU draws now derive shader/CPU encoding behavior from the
   per-draw target.
+- The main demo now snaps text layout with `PixelGrid` and opts into a
+  per-target `CoverageTransfer` instead of relying on implicit renderer tuning.
 - `PathPictureBuilder.freeze` now requires explicit persistent and scratch
   allocators. Scratch memory is used only while compiling the immutable picture;
   `PathPicture` owns only the persistent allocations after `freeze` returns.

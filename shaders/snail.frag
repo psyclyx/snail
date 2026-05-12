@@ -19,12 +19,14 @@ layout(push_constant) uniform PushConstants {
     int subpixel_order;
     int output_srgb;
     int layer_base;
+    float coverage_exponent;
 };
 
 layout(location = 0) out vec4 frag_color;
 
 #define SNAIL_FILL_RULE fill_rule
 #define SNAIL_OUTPUT_SRGB output_srgb
+#define SNAIL_COVERAGE_EXPONENT coverage_exponent
 #define u_layer_base layer_base
 
 #include "snail_path_frag_body.glsl"

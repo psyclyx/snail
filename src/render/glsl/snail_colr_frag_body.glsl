@@ -16,6 +16,16 @@ float applyFillRule(float winding) {
     return abs(winding);
 }
 
+#ifndef SNAIL_COVERAGE_EXPONENT
+#define SNAIL_COVERAGE_EXPONENT 1.0
+#endif
+
+float applyCoverageTransfer(float cov) {
+    float clamped = clamp(cov, 0.0, 1.0);
+    float exponent = max(float(SNAIL_COVERAGE_EXPONENT), 1.0 / 65536.0);
+    return (abs(exponent - 1.0) <= 1e-6) ? clamped : pow(clamped, exponent);
+}
+
 ivec2 calcBandLoc(ivec2 glyphLoc, uint offset) {
     ivec2 loc = ivec2(glyphLoc.x + int(offset), glyphLoc.y);
     loc.y += loc.x >> kLogBandTextureWidth;
@@ -135,7 +145,7 @@ float evalGlyphCoverage(vec2 rc, vec2 ppe, ivec2 gLoc, ivec2 bandMax, vec4 bandi
     float blended = horiz.x * horiz.y + vert.x * vert.y;
     float cov = max(applyFillRule(blended / max(wsum, 1.0 / 65536.0)),
                     min(applyFillRule(horiz.x), applyFillRule(vert.x)));
-    return clamp(cov, 0.0, 1.0);
+    return applyCoverageTransfer(cov);
 }
 
 float srgbDecode(float c) {

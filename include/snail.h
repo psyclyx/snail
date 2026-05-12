@@ -179,6 +179,10 @@ typedef struct {
      * bytes. */
     int framebuffer_encoding;
     int pixel_encoding;
+    /* Exponent applied to analytic coverage after edge evaluation.
+     * 1.0 is identity; values below 1.0 strengthen antialiased edges and
+     * values above 1.0 lighten them. */
+    float coverage_exponent;
 } SnailResolveTarget;
 
 typedef struct {

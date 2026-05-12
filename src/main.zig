@@ -105,7 +105,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
     defer if (prepared) |*resources| resources.deinit();
     var draw_buf: []u32 = &.{};
     defer if (draw_buf.len > 0) allocator.free(draw_buf);
-    var uploaded_size = [2]u32{ 0, 0 };
+    var uploaded_size = [4]u32{ 0, 0, 0, 0 };
 
     var buf_width: u32 = 0;
     var buf_height: u32 = 0;
@@ -174,11 +174,12 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         if (w < 1.0 or h < 1.0 or viewport_w < 1.0 or viewport_h < 1.0) continue;
 
         const layout = demo_banner.buildLayout(w, h);
-        const size_key = [2]u32{ size[0], size[1] };
+        const grid = snail.PixelGrid.init(.{ w, h }, fb_size);
+        const size_key = [4]u32{ size[0], size[1], fb_size[0], fb_size[1] };
 
         // On resize: lay out text to collect decoration rects, rebuild path picture,
         // and rebuild the immutable scene resources.
-        const needs_resource_rebuild = path_picture == null or text_blob == null or size_key[0] != uploaded_size[0] or size_key[1] != uploaded_size[1];
+        const needs_resource_rebuild = path_picture == null or text_blob == null or !std.mem.eql(u32, size_key[0..], uploaded_size[0..]);
         if (needs_resource_rebuild) {
             if (prepared) |*resources| {
                 resources.retireNow();
@@ -196,7 +197,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
             var builder = snail.TextBlobBuilder.init(allocator, &scene_assets.fonts);
             defer builder.deinit();
             var dec_rects: [8]snail.Rect = undefined;
-            const text_result = demo_banner_scene.buildTextBlob(&builder, layout, &scene_assets, &dec_rects);
+            const text_result = demo_banner_scene.buildTextBlob(&builder, layout, grid, &scene_assets, &dec_rects);
 
             text_blob = try builder.finish();
             path_picture = try demo_banner_scene.buildPathPicture(allocator, layout, &scene_assets, dec_rects[0..text_result.decoration_count]);
@@ -271,6 +272,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
                 .pixel_height = viewport_h,
                 .subpixel_order = current_order,
                 .encoding = .srgb,
+                .coverage_transfer = snail.CoverageTransfer.power(0.9),
             },
         };
         const needed = snail.DrawList.estimate(&scene, draw_options);

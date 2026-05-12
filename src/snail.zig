@@ -3980,6 +3980,95 @@ pub const TargetEncoding = struct {
     }
 };
 
+pub const CoverageTransfer = struct {
+    /// Exponent applied to analytic coverage after edge evaluation. `1.0` is
+    /// identity; values below `1.0` increase edge coverage and values above
+    /// `1.0` reduce it.
+    exponent: f32 = 1.0,
+
+    pub const identity = CoverageTransfer{};
+
+    pub fn power(exponent: f32) CoverageTransfer {
+        return .{ .exponent = exponent };
+    }
+
+    pub fn shaderExponent(self: CoverageTransfer) f32 {
+        if (!std.math.isFinite(self.exponent)) return 1.0;
+        return @max(self.exponent, 1.0 / 65536.0);
+    }
+
+    pub fn apply(self: CoverageTransfer, coverage: f32) f32 {
+        const cov = std.math.clamp(coverage, 0.0, 1.0);
+        const exponent = self.shaderExponent();
+        if (@abs(exponent - 1.0) <= 1.0e-6) return cov;
+        return std.math.pow(f32, cov, exponent);
+    }
+};
+
+pub const PixelGrid = struct {
+    logical_size: [2]f32,
+    pixel_size: [2]u32,
+
+    pub fn init(logical_size: [2]f32, pixel_size: [2]u32) PixelGrid {
+        return .{ .logical_size = logical_size, .pixel_size = pixel_size };
+    }
+
+    pub fn fromTarget(logical_size: [2]f32, target: ResolveTarget) PixelGrid {
+        return .{
+            .logical_size = logical_size,
+            .pixel_size = .{
+                @intFromFloat(@max(target.pixel_width, 0.0)),
+                @intFromFloat(@max(target.pixel_height, 0.0)),
+            },
+        };
+    }
+
+    pub fn scale(self: PixelGrid) [2]f32 {
+        return .{ self.axisScale(0), self.axisScale(1) };
+    }
+
+    pub fn snapX(self: PixelGrid, x: f32) f32 {
+        return self.snapAxis(0, x);
+    }
+
+    pub fn snapY(self: PixelGrid, y: f32) f32 {
+        return self.snapAxis(1, y);
+    }
+
+    pub fn snapPoint(self: PixelGrid, point: Vec2) Vec2 {
+        return .{ .x = self.snapX(point.x), .y = self.snapY(point.y) };
+    }
+
+    pub fn snapRect(self: PixelGrid, rect: Rect) Rect {
+        const min = self.snapPoint(.{ .x = rect.x, .y = rect.y });
+        const max = self.snapPoint(.{ .x = rect.x + rect.w, .y = rect.y + rect.h });
+        return .{ .x = min.x, .y = min.y, .w = @max(max.x - min.x, 0.0), .h = @max(max.y - min.y, 0.0) };
+    }
+
+    pub fn snapLengthX(self: PixelGrid, value: f32) f32 {
+        return self.snapLengthAxis(0, value);
+    }
+
+    pub fn snapLengthY(self: PixelGrid, value: f32) f32 {
+        return self.snapLengthAxis(1, value);
+    }
+
+    fn axisScale(self: PixelGrid, axis: usize) f32 {
+        if (self.logical_size[axis] <= 0.0 or self.pixel_size[axis] == 0) return 1.0;
+        return @as(f32, @floatFromInt(self.pixel_size[axis])) / self.logical_size[axis];
+    }
+
+    fn snapAxis(self: PixelGrid, axis: usize, value: f32) f32 {
+        const s = self.axisScale(axis);
+        return @round(value * s) / s;
+    }
+
+    fn snapLengthAxis(self: PixelGrid, axis: usize, value: f32) f32 {
+        const s = self.axisScale(axis);
+        return @max(@round(value * s), 1.0) / s;
+    }
+};
+
 pub const ResolveTarget = struct {
     pixel_width: f32,
     pixel_height: f32,
@@ -3992,6 +4081,10 @@ pub const ResolveTarget = struct {
     /// state is consulted; each draw states the framebuffer encoding and the
     /// expected final pixel encoding.
     encoding: TargetEncoding,
+    /// Optional, explicit transfer from analytically evaluated coverage to the
+    /// coverage used for blending. This is a caller-controlled primitive for
+    /// display tuning; renderers do not infer or remember it globally.
+    coverage_transfer: CoverageTransfer = .identity,
 };
 
 fn effectiveSubpixelOrder(target: ResolveTarget) SubpixelOrder {
@@ -5281,6 +5374,8 @@ pub const Renderer = struct {
         getFillRule: *const fn (*anyopaque) FillRule,
         setTargetEncoding: *const fn (*anyopaque, TargetEncoding) void,
         getTargetEncoding: *const fn (*anyopaque) TargetEncoding,
+        setCoverageTransfer: *const fn (*anyopaque, CoverageTransfer) void,
+        getCoverageTransfer: *const fn (*anyopaque) CoverageTransfer,
         backendName: *const fn (*anyopaque) []const u8,
     };
 
@@ -5360,6 +5455,12 @@ pub const Renderer = struct {
             fn getTargetEncodingFn(ptr: *anyopaque) TargetEncoding {
                 return constCast(ptr).getTargetEncoding();
             }
+            fn setCoverageTransferFn(ptr: *anyopaque, transfer: CoverageTransfer) void {
+                cast(ptr).setCoverageTransfer(transfer);
+            }
+            fn getCoverageTransferFn(ptr: *anyopaque) CoverageTransfer {
+                return constCast(ptr).getCoverageTransfer();
+            }
             fn backendNameFn(ptr: *anyopaque) []const u8 {
                 return constCast(ptr).backendName();
             }
@@ -5410,6 +5511,8 @@ pub const Renderer = struct {
             .getFillRule = &S.getFillRuleFn,
             .setTargetEncoding = &S.setTargetEncodingFn,
             .getTargetEncoding = &S.getTargetEncodingFn,
+            .setCoverageTransfer = &S.setCoverageTransferFn,
+            .getCoverageTransfer = &S.getCoverageTransferFn,
             .backendName = &S.backendNameFn,
         };
     }
@@ -5482,6 +5585,7 @@ pub const Renderer = struct {
         self.setSubpixelOrder(effectiveSubpixelOrder(options.target));
         self.setFillRule(options.target.fill_rule);
         self.setTargetEncoding(options.target.encoding);
+        self.setCoverageTransfer(options.target.coverage_transfer);
         self.beginFrame();
         for (records.segments) |segment| {
             const vertices = records.words[segment.offset..][0..segment.len];
@@ -5547,6 +5651,14 @@ pub const Renderer = struct {
 
     pub fn targetEncoding(self: *const Renderer) TargetEncoding {
         return self.vtable.getTargetEncoding(@constCast(self.ptr));
+    }
+
+    pub fn setCoverageTransfer(self: *Renderer, transfer: CoverageTransfer) void {
+        self.vtable.setCoverageTransfer(self.ptr, transfer);
+    }
+
+    pub fn coverageTransfer(self: *const Renderer) CoverageTransfer {
+        return self.vtable.getCoverageTransfer(@constCast(self.ptr));
     }
 
     pub fn fillRule(self: *const Renderer) FillRule {
@@ -5819,6 +5931,7 @@ test "draw dispatch uses only prepared stamps and caller records" {
         subpixel_order: SubpixelOrder = .none,
         fill_rule: FillRule = .non_zero,
         target_encoding: TargetEncoding = .linear,
+        coverage_transfer: CoverageTransfer = .identity,
         saw_backend_prepared: bool = true,
     };
     const Fake = struct {
@@ -5865,6 +5978,12 @@ test "draw dispatch uses only prepared stamps and caller records" {
         fn getTargetEncoding(ptr: *anyopaque) TargetEncoding {
             return state(ptr).target_encoding;
         }
+        fn setCoverageTransfer(ptr: *anyopaque, transfer: CoverageTransfer) void {
+            state(ptr).coverage_transfer = transfer;
+        }
+        fn getCoverageTransfer(ptr: *anyopaque) CoverageTransfer {
+            return state(ptr).coverage_transfer;
+        }
         fn backendName(_: *anyopaque) []const u8 {
             return "fake";
         }
@@ -5881,6 +6000,8 @@ test "draw dispatch uses only prepared stamps and caller records" {
         .getFillRule = Fake.getFillRule,
         .setTargetEncoding = Fake.setTargetEncoding,
         .getTargetEncoding = Fake.getTargetEncoding,
+        .setCoverageTransfer = Fake.setCoverageTransfer,
+        .getCoverageTransfer = Fake.getCoverageTransfer,
         .backendName = Fake.backendName,
     };
 
@@ -5905,6 +6026,7 @@ test "draw dispatch uses only prepared stamps and caller records" {
             .subpixel_order = .rgb,
             .fill_rule = .even_odd,
             .encoding = .srgb,
+            .coverage_transfer = .{ .exponent = 0.875 },
         },
     };
     var words = [_]u32{ 1, 2, 3, 4 };
@@ -5929,9 +6051,25 @@ test "draw dispatch uses only prepared stamps and caller records" {
     try std.testing.expectEqual(SubpixelOrder.rgb, state.subpixel_order);
     try std.testing.expectEqual(FillRule.even_odd, state.fill_rule);
     try std.testing.expectEqual(TargetEncoding.srgb, state.target_encoding);
+    try std.testing.expectEqual(@as(f32, 0.875), state.coverage_transfer.exponent);
     try std.testing.expectEqual(@as(f32, 8), state.viewport_seen[0]);
     try std.testing.expectEqual(@as(f32, 8), state.viewport_seen[1]);
     try std.testing.expect(!state.saw_backend_prepared);
+}
+
+test "coverage transfer is explicit and clamps invalid exponents" {
+    try std.testing.expectEqual(@as(f32, 1.0), CoverageTransfer.identity.shaderExponent());
+    try std.testing.expectApproxEqAbs(@as(f32, 0.25), CoverageTransfer.identity.apply(0.25), 0.0001);
+    try std.testing.expect(CoverageTransfer.power(0.5).apply(0.25) > 0.25);
+    try std.testing.expect(CoverageTransfer.power(2.0).apply(0.25) < 0.25);
+    try std.testing.expectEqual(@as(f32, 1.0), CoverageTransfer.power(std.math.nan(f32)).shaderExponent());
+}
+
+test "pixel grid snaps logical coordinates to backing pixels" {
+    const grid = PixelGrid.init(.{ 100.0, 50.0 }, .{ 200, 150 });
+    try std.testing.expectApproxEqAbs(@as(f32, 10.5), grid.snapX(10.4), 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 10.333333), grid.snapY(10.4), 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 12.5), grid.snapLengthX(12.4), 0.0001);
 }
 
 test "Renderer.draw source stays free of upload allocation" {

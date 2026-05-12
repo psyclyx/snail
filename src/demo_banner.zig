@@ -280,15 +280,46 @@ pub const TextBuildResult = struct {
     missing: bool,
 };
 
+const TextPlacement = struct {
+    x: f32,
+    y: f32,
+    size: f32,
+};
+
+const TextPlacer = struct {
+    builder: *snail.TextBlobBuilder,
+    grid: snail.PixelGrid,
+
+    fn place(self: TextPlacer, x: f32, y: f32, size: f32) TextPlacement {
+        const point = self.grid.snapPoint(.{ .x = x, .y = y });
+        return .{ .x = point.x, .y = point.y, .size = self.grid.snapLengthY(size) };
+    }
+
+    fn addText(
+        self: TextPlacer,
+        style: snail.FontStyle,
+        string: []const u8,
+        x: f32,
+        y: f32,
+        size: f32,
+        color: [4]f32,
+    ) !snail.AddTextResult {
+        const p = self.place(x, y, size);
+        return self.builder.addText(style, string, p.x, p.y, p.size, color);
+    }
+};
+
 /// Build the demo's prepared text blob and collect decoration rects.
 pub fn buildTextBlob(
     builder: *snail.TextBlobBuilder,
     layout: Layout,
+    grid: snail.PixelGrid,
     fonts: *const snail.TextAtlas,
     decoration_rects_out: []snail.Rect,
 ) !TextBuildResult {
     var decoration_count: usize = 0;
     var had_missing = false;
+    const placer = TextPlacer{ .builder = builder, .grid = grid };
     const s = layout.scale;
     const pad = card_pad * s;
     const label_size = heading_size * s;
@@ -297,25 +328,25 @@ pub fn buildTextBlob(
     const line_h = body_line_h * s;
 
     // ── Title ──
-    _ = try builder.addText(.{ .weight = .bold }, "snail", layout.title.x, layout.title.y + 58 * s, 64 * s, text);
-    _ = try builder.addText(.{}, "GPU text & vector rendering", layout.title.x + 210 * s, layout.title.y + 50 * s, 20 * s, muted);
+    _ = try placer.addText(.{ .weight = .bold }, "snail", layout.title.x, layout.title.y + 58 * s, 64 * s, text);
+    _ = try placer.addText(.{}, "GPU text & vector rendering", layout.title.x + 210 * s, layout.title.y + 50 * s, 20 * s, muted);
 
     // ── Styles card ──
     {
         const x = layout.styles.x + pad;
         var y = layout.styles.y + pad;
-        _ = try builder.addText(.{ .weight = .bold }, "Styles", x, y + label_size, label_size, accent);
+        _ = try placer.addText(.{ .weight = .bold }, "Styles", x, y + label_size, label_size, accent);
         y += label_size + 14 * s;
 
-        _ = try builder.addText(.{}, "Regular", x, y + body_size, body_size, text);
+        _ = try placer.addText(.{}, "Regular", x, y + body_size, body_size, text);
         y += line_h;
-        _ = try builder.addText(.{ .weight = .bold }, "Bold", x, y + body_size, body_size, text);
+        _ = try placer.addText(.{ .weight = .bold }, "Bold", x, y + body_size, body_size, text);
         y += line_h;
-        _ = try builder.addText(.{ .italic = true }, "Italic", x, y + body_size, body_size, text);
+        _ = try placer.addText(.{ .italic = true }, "Italic", x, y + body_size, body_size, text);
         y += line_h;
-        _ = try builder.addText(.{ .weight = .bold, .italic = true }, "Bold Italic", x, y + body_size, body_size, text);
+        _ = try placer.addText(.{ .weight = .bold, .italic = true }, "Bold Italic", x, y + body_size, body_size, text);
         y += line_h;
-        _ = try builder.addText(.{ .weight = .semi_bold }, "Synthetic", x, y + body_size, body_size, text);
+        _ = try placer.addText(.{ .weight = .semi_bold }, "Synthetic", x, y + body_size, body_size, text);
         y += line_h + 8 * s;
 
         // Size ramp
@@ -323,7 +354,7 @@ pub fn buildTextBlob(
         var sx = x;
         for (sizes) |sz| {
             const fs = sz * s;
-            sx += (try builder.addText(.{}, "Aa", sx, y + 32 * s, fs, muted)).advance + 12 * s;
+            sx += (try placer.addText(.{}, "Aa", sx, y + 32 * s, fs, muted)).advance + 12 * s;
         }
     }
 
@@ -331,21 +362,23 @@ pub fn buildTextBlob(
     {
         const x = layout.decorations.x + pad;
         var y = layout.decorations.y + pad;
-        _ = try builder.addText(.{ .weight = .bold }, "Decorations", x, y + label_size, label_size, accent);
+        _ = try placer.addText(.{ .weight = .bold }, "Decorations", x, y + label_size, label_size, accent);
         y += label_size + 14 * s;
 
         // Underlined
-        const ul_advance = (try builder.addText(.{}, "Underlined", x, y + body_size, body_size, text)).advance;
+        const ul_place = placer.place(x, y + body_size, body_size);
+        const ul_advance = (try builder.addText(.{}, "Underlined", ul_place.x, ul_place.y, ul_place.size, text)).advance;
         if (decoration_count < decoration_rects_out.len) {
-            decoration_rects_out[decoration_count] = try fonts.decorationRect(.underline, x, y + body_size, ul_advance, body_size);
+            decoration_rects_out[decoration_count] = try fonts.decorationRect(.underline, ul_place.x, ul_place.y, ul_advance, ul_place.size);
             decoration_count += 1;
         }
         y += line_h;
 
         // Struck
-        const st_advance = (try builder.addText(.{}, "Struck", x, y + body_size, body_size, text)).advance;
+        const st_place = placer.place(x, y + body_size, body_size);
+        const st_advance = (try builder.addText(.{}, "Struck", st_place.x, st_place.y, st_place.size, text)).advance;
         if (decoration_count < decoration_rects_out.len) {
-            decoration_rects_out[decoration_count] = try fonts.decorationRect(.strikethrough, x, y + body_size, st_advance, body_size);
+            decoration_rects_out[decoration_count] = try fonts.decorationRect(.strikethrough, st_place.x, st_place.y, st_advance, st_place.size);
             decoration_count += 1;
         }
         y += line_h + 16 * s;
@@ -356,67 +389,67 @@ pub fn buildTextBlob(
         var cx = x;
 
         // CH₅⁺
-        cx += (try builder.addText(.{}, "CH", cx, sub_y, sub_size, text)).advance;
+        cx += (try placer.addText(.{}, "CH", cx, sub_y, sub_size, text)).advance;
         if (fonts.subscriptTransform(cx, sub_y, sub_size)) |sub| {
-            cx += (try builder.addText(.{}, "5", sub.x, sub.y, sub.font_size, text)).advance;
+            cx += (try placer.addText(.{}, "5", sub.x, sub.y, sub.font_size, text)).advance;
         } else |_| {
-            cx += (try builder.addText(.{}, "5", cx, sub_y, sub_size * 0.7, text)).advance;
+            cx += (try placer.addText(.{}, "5", cx, sub_y, sub_size * 0.7, text)).advance;
         }
         if (fonts.superscriptTransform(cx, sub_y, sub_size)) |sup| {
-            cx += (try builder.addText(.{}, "+", sup.x, sup.y, sup.font_size, text)).advance;
+            cx += (try placer.addText(.{}, "+", sup.x, sup.y, sup.font_size, text)).advance;
         } else |_| {
-            cx += (try builder.addText(.{}, "+", cx, sub_y - sub_size * 0.4, sub_size * 0.7, text)).advance;
+            cx += (try placer.addText(.{}, "+", cx, sub_y - sub_size * 0.4, sub_size * 0.7, text)).advance;
         }
 
-        cx += (try builder.addText(.{}, " + ", cx, sub_y, sub_size, text)).advance;
+        cx += (try placer.addText(.{}, " + ", cx, sub_y, sub_size, text)).advance;
 
         // C₂H₆
-        cx += (try builder.addText(.{}, "C", cx, sub_y, sub_size, text)).advance;
+        cx += (try placer.addText(.{}, "C", cx, sub_y, sub_size, text)).advance;
         if (fonts.subscriptTransform(cx, sub_y, sub_size)) |sub| {
-            cx += (try builder.addText(.{}, "2", sub.x, sub.y, sub.font_size, text)).advance;
+            cx += (try placer.addText(.{}, "2", sub.x, sub.y, sub.font_size, text)).advance;
         } else |_| {
-            cx += (try builder.addText(.{}, "2", cx, sub_y, sub_size * 0.7, text)).advance;
+            cx += (try placer.addText(.{}, "2", cx, sub_y, sub_size * 0.7, text)).advance;
         }
-        cx += (try builder.addText(.{}, "H", cx, sub_y, sub_size, text)).advance;
+        cx += (try placer.addText(.{}, "H", cx, sub_y, sub_size, text)).advance;
         if (fonts.subscriptTransform(cx, sub_y, sub_size)) |sub| {
-            cx += (try builder.addText(.{}, "6", sub.x, sub.y, sub.font_size, text)).advance;
+            cx += (try placer.addText(.{}, "6", sub.x, sub.y, sub.font_size, text)).advance;
         } else |_| {
-            cx += (try builder.addText(.{}, "6", cx, sub_y, sub_size * 0.7, text)).advance;
+            cx += (try placer.addText(.{}, "6", cx, sub_y, sub_size * 0.7, text)).advance;
         }
 
         {
-            const r = try builder.addText(.{}, " \u{2192} ", cx, sub_y, sub_size, text);
+            const r = try placer.addText(.{}, " \u{2192} ", cx, sub_y, sub_size, text);
             cx += r.advance;
             if (r.missing) had_missing = true;
         }
 
         // C₂H₇⁺
-        cx += (try builder.addText(.{}, "C", cx, sub_y, sub_size, text)).advance;
+        cx += (try placer.addText(.{}, "C", cx, sub_y, sub_size, text)).advance;
         if (fonts.subscriptTransform(cx, sub_y, sub_size)) |sub| {
-            cx += (try builder.addText(.{}, "2", sub.x, sub.y, sub.font_size, text)).advance;
+            cx += (try placer.addText(.{}, "2", sub.x, sub.y, sub.font_size, text)).advance;
         } else |_| {
-            cx += (try builder.addText(.{}, "2", cx, sub_y, sub_size * 0.7, text)).advance;
+            cx += (try placer.addText(.{}, "2", cx, sub_y, sub_size * 0.7, text)).advance;
         }
-        cx += (try builder.addText(.{}, "H", cx, sub_y, sub_size, text)).advance;
+        cx += (try placer.addText(.{}, "H", cx, sub_y, sub_size, text)).advance;
         if (fonts.subscriptTransform(cx, sub_y, sub_size)) |sub| {
-            cx += (try builder.addText(.{}, "7", sub.x, sub.y, sub.font_size, text)).advance;
+            cx += (try placer.addText(.{}, "7", sub.x, sub.y, sub.font_size, text)).advance;
         } else |_| {
-            cx += (try builder.addText(.{}, "7", cx, sub_y, sub_size * 0.7, text)).advance;
+            cx += (try placer.addText(.{}, "7", cx, sub_y, sub_size * 0.7, text)).advance;
         }
         if (fonts.superscriptTransform(cx, sub_y, sub_size)) |sup| {
-            cx += (try builder.addText(.{}, "+", sup.x, sup.y, sup.font_size, text)).advance;
+            cx += (try placer.addText(.{}, "+", sup.x, sup.y, sup.font_size, text)).advance;
         } else |_| {
-            cx += (try builder.addText(.{}, "+", cx, sub_y - sub_size * 0.4, sub_size * 0.7, text)).advance;
+            cx += (try placer.addText(.{}, "+", cx, sub_y - sub_size * 0.4, sub_size * 0.7, text)).advance;
         }
 
-        cx += (try builder.addText(.{}, " + ", cx, sub_y, sub_size, text)).advance;
+        cx += (try placer.addText(.{}, " + ", cx, sub_y, sub_size, text)).advance;
 
         // CH₄
-        cx += (try builder.addText(.{}, "CH", cx, sub_y, sub_size, text)).advance;
+        cx += (try placer.addText(.{}, "CH", cx, sub_y, sub_size, text)).advance;
         if (fonts.subscriptTransform(cx, sub_y, sub_size)) |sub| {
-            _ = try builder.addText(.{}, "4", sub.x, sub.y, sub.font_size, text);
+            _ = try placer.addText(.{}, "4", sub.x, sub.y, sub.font_size, text);
         } else |_| {
-            _ = try builder.addText(.{}, "4", cx, sub_y, sub_size * 0.7, text);
+            _ = try placer.addText(.{}, "4", cx, sub_y, sub_size * 0.7, text);
         }
     }
 
@@ -424,63 +457,63 @@ pub fn buildTextBlob(
     {
         const x = layout.shaping.x + pad;
         var y = layout.shaping.y + pad;
-        _ = try builder.addText(.{ .weight = .bold }, "Shaping", x, y + label_size, label_size, accent);
+        _ = try placer.addText(.{ .weight = .bold }, "Shaping", x, y + label_size, label_size, accent);
         y += label_size + 14 * s;
 
         // Ligatures
-        _ = try builder.addText(.{}, "Ligatures", x, y + sub_label_size, sub_label_size, muted);
+        _ = try placer.addText(.{}, "Ligatures", x, y + sub_label_size, sub_label_size, muted);
         y += sub_label_size + 6 * s;
-        _ = try builder.addText(.{}, "office ffi fl ffl", x, y + body_size, body_size, text);
+        _ = try placer.addText(.{}, "office ffi fl ffl", x, y + body_size, body_size, text);
         y += line_h + 16 * s;
 
         // Kerning
-        _ = try builder.addText(.{}, "Kerning", x, y + sub_label_size, sub_label_size, muted);
+        _ = try placer.addText(.{}, "Kerning", x, y + sub_label_size, sub_label_size, muted);
         y += sub_label_size + 6 * s;
-        _ = try builder.addText(.{}, "AV To VA Ty", x, y + body_size, body_size, text);
+        _ = try placer.addText(.{}, "AV To VA Ty", x, y + body_size, body_size, text);
         y += line_h + 16 * s;
 
         // Mixed sample
-        _ = try builder.addText(.{}, "Sphinx of black", x, y + 18 * s, 16 * s, muted);
+        _ = try placer.addText(.{}, "Sphinx of black", x, y + 18 * s, 16 * s, muted);
         y += 22 * s;
-        _ = try builder.addText(.{}, "quartz, judge", x, y + 18 * s, 16 * s, muted);
+        _ = try placer.addText(.{}, "quartz, judge", x, y + 18 * s, 16 * s, muted);
         y += 22 * s;
-        _ = try builder.addText(.{}, "my vow.", x, y + 18 * s, 16 * s, muted);
+        _ = try placer.addText(.{}, "my vow.", x, y + 18 * s, 16 * s, muted);
     }
 
     // ── Scripts card ──
     {
         const x = layout.scripts.x + pad;
         var y = layout.scripts.y + pad;
-        _ = try builder.addText(.{ .weight = .bold }, "Scripts", x, y + label_size, label_size, accent);
+        _ = try placer.addText(.{ .weight = .bold }, "Scripts", x, y + label_size, label_size, accent);
         y += label_size + 14 * s;
 
         const script_size = 18 * s;
         const script_line = 24 * s;
 
         // Each script on its own line (FontCollection handles fallback)
-        _ = try builder.addText(.{}, "Latin", x, y + sub_label_size, sub_label_size, muted);
+        _ = try placer.addText(.{}, "Latin", x, y + sub_label_size, sub_label_size, muted);
         y += sub_label_size + 6 * s;
-        _ = try builder.addText(.{}, "Hello, world!", x, y + script_size, script_size, text);
+        _ = try placer.addText(.{}, "Hello, world!", x, y + script_size, script_size, text);
         y += script_line + 4 * s;
 
-        _ = try builder.addText(.{}, "Arabic", x, y + sub_label_size, sub_label_size, muted);
+        _ = try placer.addText(.{}, "Arabic", x, y + sub_label_size, sub_label_size, muted);
         y += sub_label_size + 6 * s;
-        if ((try builder.addText(.{}, "\xd9\x85\xd8\xb1\xd8\xad\xd8\xa8\xd8\xa7", x, y + script_size, script_size, text)).missing) had_missing = true; // مرحبا
+        if ((try placer.addText(.{}, "\xd9\x85\xd8\xb1\xd8\xad\xd8\xa8\xd8\xa7", x, y + script_size, script_size, text)).missing) had_missing = true; // مرحبا
         y += script_line + 4 * s;
 
-        _ = try builder.addText(.{}, "Devanagari", x, y + sub_label_size, sub_label_size, muted);
+        _ = try placer.addText(.{}, "Devanagari", x, y + sub_label_size, sub_label_size, muted);
         y += sub_label_size + 6 * s;
-        if ((try builder.addText(.{}, "\xe0\xa4\xa8\xe0\xa4\xae\xe0\xa4\xb8\xe0\xa5\x8d\xe0\xa4\xa4\xe0\xa5\x87", x, y + script_size, script_size, text)).missing) had_missing = true; // नमस्ते
+        if ((try placer.addText(.{}, "\xe0\xa4\xa8\xe0\xa4\xae\xe0\xa4\xb8\xe0\xa5\x8d\xe0\xa4\xa4\xe0\xa5\x87", x, y + script_size, script_size, text)).missing) had_missing = true; // नमस्ते
         y += script_line + 4 * s;
 
-        _ = try builder.addText(.{}, "Thai", x, y + sub_label_size, sub_label_size, muted);
+        _ = try placer.addText(.{}, "Thai", x, y + sub_label_size, sub_label_size, muted);
         y += sub_label_size + 6 * s;
-        if ((try builder.addText(.{}, "\xe0\xb8\xaa\xe0\xb8\xa7\xe0\xb8\xb1\xe0\xb8\xaa\xe0\xb8\x94\xe0\xb8\xb5", x, y + script_size, script_size, text)).missing) had_missing = true; // สวัสดี
+        if ((try placer.addText(.{}, "\xe0\xb8\xaa\xe0\xb8\xa7\xe0\xb8\xb1\xe0\xb8\xaa\xe0\xb8\x94\xe0\xb8\xb5", x, y + script_size, script_size, text)).missing) had_missing = true; // สวัสดี
         y += script_line + 4 * s;
 
-        _ = try builder.addText(.{}, "Emoji", x, y + sub_label_size, sub_label_size, muted);
+        _ = try placer.addText(.{}, "Emoji", x, y + sub_label_size, sub_label_size, muted);
         y += sub_label_size + 6 * s;
-        if ((try builder.addText(.{}, "\xe2\x9c\xa8\xf0\x9f\x8c\x8d\xf0\x9f\x8e\xa8\xf0\x9f\x9a\x80\xf0\x9f\x90\x8c\xf0\x9f\x8c\x88", x, y + script_size, script_size, text)).missing) had_missing = true; // ✨🌍🎨🚀🐌🌈
+        if ((try placer.addText(.{}, "\xe2\x9c\xa8\xf0\x9f\x8c\x8d\xf0\x9f\x8e\xa8\xf0\x9f\x9a\x80\xf0\x9f\x90\x8c\xf0\x9f\x8c\x88", x, y + script_size, script_size, text)).missing) had_missing = true; // ✨🌍🎨🚀🐌🌈
     }
 
     // ── Vectors card labels ──
@@ -491,11 +524,11 @@ pub fn buildTextBlob(
         const gap = shape_gap * s;
         const item_label = 11 * s;
 
-        _ = try builder.addText(.{ .weight = .bold }, "Vectors", x, y + label_size, label_size, accent);
+        _ = try placer.addText(.{ .weight = .bold }, "Vectors", x, y + label_size, label_size, accent);
         y += label_size + 14 * s;
 
         // Row 1: "Shapes" sub-heading
-        _ = try builder.addText(.{}, "Shapes", x, y + sub_label_size, sub_label_size, muted);
+        _ = try placer.addText(.{}, "Shapes", x, y + sub_label_size, sub_label_size, muted);
         y += sub_label_size + 6 * s;
 
         // Shape labels below row 1
@@ -503,13 +536,13 @@ pub fn buildTextBlob(
         var lx = x;
         const shape_labels = [_][]const u8{ "rect", "round", "ellipse", "path", "stroke" };
         for (shape_labels) |lbl| {
-            _ = try builder.addText(.{}, lbl, lx, shape_label_y + item_label, item_label, muted);
+            _ = try placer.addText(.{}, lbl, lx, shape_label_y + item_label, item_label, muted);
             lx += sz + gap;
         }
 
         // Row 2: "Fills" sub-heading
         const fills_label_y = shape_label_y + item_label + 6 * s;
-        _ = try builder.addText(.{}, "Fills", x, fills_label_y + sub_label_size, sub_label_size, muted);
+        _ = try placer.addText(.{}, "Fills", x, fills_label_y + sub_label_size, sub_label_size, muted);
 
         // Fill labels below row 2
         const fill_shapes_y = fills_label_y + sub_label_size + 6 * s;
@@ -517,7 +550,7 @@ pub fn buildTextBlob(
         lx = x;
         const fill_labels = [_][]const u8{ "solid", "linear", "radial", "image" };
         for (fill_labels) |lbl| {
-            _ = try builder.addText(.{}, lbl, lx, fill_label_y + item_label, item_label, muted);
+            _ = try placer.addText(.{}, lbl, lx, fill_label_y + item_label, item_label, muted);
             lx += sz + gap;
         }
     }
