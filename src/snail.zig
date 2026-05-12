@@ -4154,16 +4154,26 @@ pub const ResourceSet = struct {
     pub const TextAtlasEntry = struct {
         key: ResourceKey,
         atlas: *const TextAtlas,
+        atlas_capacity: ResourceCapacityMode = .growable,
     };
 
     pub const PathPictureEntry = struct {
         key: ResourceKey,
         picture: *const PathPicture,
+        atlas_capacity: ResourceCapacityMode = .exact,
     };
 
     pub const ImageEntry = struct {
         key: ResourceKey,
         image: *const Image,
+    };
+
+    pub const TextAtlasOptions = struct {
+        atlas_capacity: ResourceCapacityMode = .growable,
+    };
+
+    pub const PathPictureOptions = struct {
+        atlas_capacity: ResourceCapacityMode = .exact,
     };
 
     pub fn init(entries: []Entry) ResourceSet {
@@ -4179,11 +4189,27 @@ pub const ResourceSet = struct {
     }
 
     pub fn putTextAtlas(self: *ResourceSet, key_value: anytype, atlas: *const TextAtlas) !void {
-        try self.put(.{ .text_atlas = .{ .key = resourceKey(key_value), .atlas = atlas } });
+        try self.putTextAtlasOptions(key_value, atlas, .{});
+    }
+
+    pub fn putTextAtlasOptions(self: *ResourceSet, key_value: anytype, atlas: *const TextAtlas, options: TextAtlasOptions) !void {
+        try self.put(.{ .text_atlas = .{
+            .key = resourceKey(key_value),
+            .atlas = atlas,
+            .atlas_capacity = options.atlas_capacity,
+        } });
     }
 
     pub fn putPathPicture(self: *ResourceSet, key_value: anytype, picture: *const PathPicture) !void {
-        try self.put(.{ .path_picture = .{ .key = resourceKey(key_value), .picture = picture } });
+        try self.putPathPictureOptions(key_value, picture, .{});
+    }
+
+    pub fn putPathPictureOptions(self: *ResourceSet, key_value: anytype, picture: *const PathPicture, options: PathPictureOptions) !void {
+        try self.put(.{ .path_picture = .{
+            .key = resourceKey(key_value),
+            .picture = picture,
+            .atlas_capacity = options.atlas_capacity,
+        } });
     }
 
     pub fn putImage(self: *ResourceSet, key_value: anytype, image: *const Image) !void {
@@ -4992,7 +5018,7 @@ fn resourceSetUploadFootprint(set: *const ResourceSet) !ResourceFootprint {
                 if (atlas_count >= upload_common.MAX_ATLASES) return error.TooManyAtlases;
                 atlas_count += 1;
                 const atlas = text.atlas;
-                total_layer_capacity += upload_common.atlasCapacityForMode(@intCast(atlas.pageCount()), .growable);
+                total_layer_capacity += upload_common.atlasCapacityForMode(@intCast(atlas.pageCount()), text.atlas_capacity);
                 for (atlas.pageSlice()) |page_ref| {
                     if (first_page == null) first_page = page_ref;
                     out.curve_bytes_used += page_ref.curveTextureBytes();
@@ -5010,7 +5036,7 @@ fn resourceSetUploadFootprint(set: *const ResourceSet) !ResourceFootprint {
                 if (atlas_count >= upload_common.MAX_ATLASES) return error.TooManyAtlases;
                 atlas_count += 1;
                 const atlas = &path.picture.atlas;
-                total_layer_capacity += upload_common.atlasCapacityForMode(@intCast(atlas.pageCount()), .exact);
+                total_layer_capacity += upload_common.atlasCapacityForMode(@intCast(atlas.pageCount()), path.atlas_capacity);
                 for (0..atlas.pageCount()) |i| {
                     const page_ref = atlas.page(@intCast(i));
                     if (first_page == null) first_page = page_ref;
@@ -5108,7 +5134,7 @@ fn uploadPreparedResources(renderer: *Renderer, set: *const ResourceSet, allocat
                 prepared.atlases[atlas_i].wrapper = text.atlas.uploadAtlas();
                 prepared.atlases[atlas_i].atlas = &prepared.atlases[atlas_i].wrapper;
                 upload_atlases[atlas_i] = prepared.atlases[atlas_i].atlas;
-                atlas_capacity_modes[atlas_i] = .growable;
+                atlas_capacity_modes[atlas_i] = text.atlas_capacity;
                 atlas_i += 1;
             },
             .path_picture => |path| {
@@ -5120,7 +5146,7 @@ fn uploadPreparedResources(renderer: *Renderer, set: *const ResourceSet, allocat
                     .stamp = pathPictureStamp(path.picture),
                 };
                 upload_atlases[atlas_i] = prepared.atlases[atlas_i].atlas;
-                atlas_capacity_modes[atlas_i] = .exact;
+                atlas_capacity_modes[atlas_i] = path.atlas_capacity;
                 atlas_i += 1;
             },
             .image => |image| {
@@ -6393,6 +6419,12 @@ test "resource upload footprints are allocation-free and policy-aware" {
     try std.testing.expectEqual(picture_fp.layer_info_bytes_used, set_fp.layer_info_bytes_used);
     try std.testing.expectEqual(@as(usize, 4), set_fp.image_bytes_used);
     try std.testing.expectEqual(@as(usize, 4), set_fp.image_bytes_allocated);
+
+    var growable_entries: [1]ResourceSet.Entry = undefined;
+    var growable_set = ResourceSet.init(&growable_entries);
+    try growable_set.putPathPictureOptions(.shape, &picture, .{ .atlas_capacity = .growable });
+    const growable_fp = try growable_set.estimateUploadFootprint();
+    try std.testing.expect(growable_fp.curve_bytes_allocated > set_fp.curve_bytes_allocated);
 }
 
 test "path picture ranges emit selected shapes" {

@@ -25,6 +25,9 @@
   `TextAtlas`, `PathPicture`, `Image`, `ResourceSet`, and low-level
   `CurveAtlas`. Footprints report used source bytes and allocated backend
   texture bytes by curve, band, layer-info, and image class.
+- `ResourceSet.putTextAtlasOptions` and `putPathPictureOptions` expose the
+  atlas upload capacity policy (`.exact` or `.growable`) per entry while the
+  existing `putTextAtlas` / `putPathPicture` calls keep their defaults.
 
 ## 0.5.0
 
