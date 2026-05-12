@@ -108,12 +108,12 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const enable_profiling = b.option(bool, "profile", "Enable profiling instrumentation") orelse false;
+    const demo_renderer = b.option(DemoRenderer, "renderer", "Demo rendering backend (default: gl44)") orelse .gl44;
     const enable_opengl = b.option(bool, "opengl", "Enable OpenGL backend") orelse true;
-    const enable_vulkan = b.option(bool, "vulkan", "Enable Vulkan backend") orelse false;
+    const enable_vulkan = b.option(bool, "vulkan", "Enable Vulkan backend") orelse (demo_renderer == .vulkan);
     const enable_cpu = b.option(bool, "cpu-renderer", "Enable CPU renderer backend") orelse true;
     const enable_harfbuzz = b.option(bool, "harfbuzz", "Enable HarfBuzz text shaping") orelse true;
     const enable_c_api = b.option(bool, "c-api", "Build the C API libraries") orelse true;
-    const demo_renderer = b.option(DemoRenderer, "renderer", "Demo rendering backend (default: gl44)") orelse .gl44;
 
     const options = b.addOptions();
     options.addOption(bool, "enable_profiling", enable_profiling);

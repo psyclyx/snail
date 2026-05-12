@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.5.1 - Unreleased
+## 0.6.0 - Unreleased
 
 ### Fixed
 
@@ -18,6 +18,9 @@
   for a 4096-texel row.
 - GL and Vulkan image-array uploads now pack immutable `Image` resources
   exactly instead of reserving a minimum 4-layer array for small image sets.
+- Selecting the Vulkan demo renderer now enables the Vulkan backend by default,
+  so `zig build demo -Drenderer=vulkan` builds without a separate
+  `-Dvulkan=true`.
 
 ### Added
 
