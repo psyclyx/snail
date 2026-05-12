@@ -1956,63 +1956,135 @@ fn appendCoverageContribution(result: *CoveragePair, distance: f32, sign: f32) v
 // replacing the sign-bit gate with a tolerance-aware check that includes
 // curves whose y-range overlaps the AA window in pixel space. The
 // backend-compare test scene avoids this by pinning baselines to integer y.
-fn evalGlyphCoverageAxis(page: anytype, sample_rc: Vec2, ppe: f32, loc: [2]u32, count: u32, horizontal: bool) CoveragePair {
+const CoverageScan = enum {
+    continue_scan,
+    stop_scan,
+};
+
+inline fn accumulateQuadraticCoverage(
+    result: *CoveragePair,
+    p0x: f32,
+    p0y: f32,
+    p1x: f32,
+    p1y: f32,
+    p2x: f32,
+    p2y: f32,
+    ppe: f32,
+    comptime horizontal: bool,
+) void {
+    const code = if (horizontal)
+        calcRootCode(p0y, p1y, p2y)
+    else
+        calcRootCode(p0x, p1x, p2x);
+    if (code == 0) return;
+
+    const roots = if (horizontal)
+        solveHorizPoly(p0x, p0y, p1x, p1y, p2x, p2y, ppe)
+    else
+        solveVertPoly(p0x, p0y, p1x, p1y, p2x, p2y, ppe);
+
+    if ((code & 1) != 0) {
+        appendCoverageContribution(result, roots[0], if (horizontal) 1.0 else -1.0);
+    }
+    if (code > 1) {
+        appendCoverageContribution(result, roots[1], if (horizontal) -1.0 else 1.0);
+    }
+}
+
+inline fn accumulateGlyphCoverageSegment(
+    result: *CoveragePair,
+    segment: CurveSegment,
+    sample_rc: Vec2,
+    ppe: f32,
+    comptime horizontal: bool,
+) CoverageScan {
+    const max_x = segmentMaxX(segment);
+    const max_y = segmentMaxY(segment);
+    const max_coord = if (horizontal) max_x - sample_rc.x else max_y - sample_rc.y;
+    if (max_coord * ppe < -0.5) return .stop_scan;
+
+    if (segment.kind == .quadratic) {
+        const p0x = segment.p0.x - sample_rc.x;
+        const p0y = segment.p0.y - sample_rc.y;
+        const p1x = segment.p1.x - sample_rc.x;
+        const p1y = segment.p1.y - sample_rc.y;
+        const p2x = segment.p2.x - sample_rc.x;
+        const p2y = segment.p2.y - sample_rc.y;
+        accumulateQuadraticCoverage(result, p0x, p0y, p1x, p1y, p2x, p2y, ppe, horizontal);
+        return .continue_scan;
+    }
+
+    const roots = if (horizontal)
+        solveSegmentHorizontalRoots(segment, sample_rc.y)
+    else
+        solveSegmentVerticalRoots(segment, sample_rc.x);
+
+    for (roots.t[0..roots.count]) |t| {
+        if (t >= 1.0 - 1e-5) continue;
+        const point = segment.evaluate(t);
+        const deriv = segment.derivative(t);
+        const derivative_axis = if (horizontal) deriv.y else -deriv.x;
+        if (@abs(derivative_axis) <= 1e-5) continue;
+        const distance = if (horizontal)
+            (point.x - sample_rc.x) * ppe
+        else
+            (point.y - sample_rc.y) * ppe;
+        appendCoverageContribution(result, distance, if (derivative_axis > 0.0) 1.0 else -1.0);
+    }
+    return .continue_scan;
+}
+
+fn evalGlyphCoverageAxis(page: anytype, sample_rc: Vec2, ppe: f32, loc: [2]u32, count: u32, comptime horizontal: bool) CoveragePair {
     var result = CoveragePair{ .cov = 0.0, .wgt = 0.0 };
     var i: u32 = 0;
     while (i < count) : (i += 1) {
         const b_loc = calcBandLoc(loc[0], loc[1], i);
         const curve_ref = readBandTexel(page, b_loc[0], b_loc[1]);
-        const segment = readCurveSegment(page, curve_ref[0], curve_ref[1]);
-        const max_coord = if (horizontal)
-            segmentMaxX(segment) - sample_rc.x
-        else
-            segmentMaxY(segment) - sample_rc.y;
-        if (max_coord * ppe < -0.5) break;
 
-        if (segment.kind == .quadratic) {
-            const p0x = segment.p0.x - sample_rc.x;
-            const p0y = segment.p0.y - sample_rc.y;
-            const p1x = segment.p1.x - sample_rc.x;
-            const p1y = segment.p1.y - sample_rc.y;
-            const p2x = segment.p2.x - sample_rc.x;
-            const p2y = segment.p2.y - sample_rc.y;
-            const code = if (horizontal)
-                calcRootCode(p0y, p1y, p2y)
+        const tex0 = readCurveTexelF32(page, curve_ref[0], curve_ref[1]);
+        const tex1 = readCurveTexelF32(page, curve_ref[0] + 1, curve_ref[1]);
+        const tex2 = readCurveTexelF32(page, curve_ref[0] + 2, curve_ref[1]);
+
+        const stored_kind = tex2[2];
+        const direct_quadratic = stored_kind >= curve_tex.DIRECT_ENCODING_KIND_BIAS - 0.5 and
+            stored_kind < curve_tex.DIRECT_ENCODING_KIND_BIAS + 0.5;
+        const packed_quadratic = stored_kind < 0.5;
+        if (packed_quadratic or direct_quadratic) {
+            const p0_abs = if (direct_quadratic)
+                Vec2.new(tex0[0], tex0[1])
             else
-                calcRootCode(p0x, p1x, p2x);
-            if (code == 0) continue;
-
-            const roots = if (horizontal)
-                solveHorizPoly(p0x, p0y, p1x, p1y, p2x, p2y, ppe)
+                Vec2.new(
+                    tex0[0] * curve_tex.PACKED_ANCHOR_CHUNK_EXTENT + tex0[2],
+                    tex0[1] * curve_tex.PACKED_ANCHOR_CHUNK_EXTENT + tex0[3],
+                );
+            const p1_abs = if (direct_quadratic)
+                Vec2.new(tex0[2], tex0[3])
             else
-                solveVertPoly(p0x, p0y, p1x, p1y, p2x, p2y, ppe);
+                Vec2.new(p0_abs.x + tex1[0], p0_abs.y + tex1[1]);
+            const p2_abs = if (direct_quadratic)
+                Vec2.new(tex1[0], tex1[1])
+            else
+                Vec2.new(p0_abs.x + tex1[2], p0_abs.y + tex1[3]);
 
-            if ((code & 1) != 0) {
-                appendCoverageContribution(&result, roots[0], if (horizontal) 1.0 else -1.0);
-            }
-            if (code > 1) {
-                appendCoverageContribution(&result, roots[1], if (horizontal) -1.0 else 1.0);
-            }
+            const p0x = p0_abs.x - sample_rc.x;
+            const p0y = p0_abs.y - sample_rc.y;
+            const p1x = p1_abs.x - sample_rc.x;
+            const p1y = p1_abs.y - sample_rc.y;
+            const p2x = p2_abs.x - sample_rc.x;
+            const p2y = p2_abs.y - sample_rc.y;
+            const max_coord = if (horizontal)
+                @max(@max(p0x, p1x), p2x)
+            else
+                @max(@max(p0y, p1y), p2y);
+            if (max_coord * ppe < -0.5) break;
+            accumulateQuadraticCoverage(&result, p0x, p0y, p1x, p1y, p2x, p2y, ppe, horizontal);
             continue;
         }
 
-        const roots = if (horizontal)
-            solveSegmentHorizontalRoots(segment, sample_rc.y)
-        else
-            solveSegmentVerticalRoots(segment, sample_rc.x);
-
-        for (roots.t[0..roots.count]) |t| {
-            if (t >= 1.0 - 1e-5) continue;
-            const point = segment.evaluate(t);
-            const deriv = segment.derivative(t);
-            const derivative_axis = if (horizontal) deriv.y else -deriv.x;
-            if (@abs(derivative_axis) <= 1e-5) continue;
-            const distance = if (horizontal)
-                (point.x - sample_rc.x) * ppe
-            else
-                (point.y - sample_rc.y) * ppe;
-            appendCoverageContribution(&result, distance, if (derivative_axis > 0.0) 1.0 else -1.0);
-        }
+        const loc3 = calcCurveLoc(curve_ref[0], curve_ref[1], 3);
+        const meta = readCurveTexelF32_meta(page, loc3[0], loc3[1]);
+        const segment = decodeCurveSegment(tex0, tex1, tex2, meta);
+        if (accumulateGlyphCoverageSegment(&result, segment, sample_rc, ppe, horizontal) == .stop_scan) break;
     }
     return result;
 }
@@ -2122,34 +2194,27 @@ fn readCurveTexelF32_meta(page: anytype, tx: u32, ty: u32) [4]f32 {
     return readCurveTexelF32(page, tx, ty);
 }
 
-fn calcCurveLoc(glyph_x: u32, glyph_y: u32, offset: u32) [2]u32 {
-    var loc_x = glyph_x + offset;
-    var loc_y = glyph_y;
-    loc_y += loc_x >> kLogCurveTextureWidth;
-    loc_x &= CURVE_TEX_WIDTH - 1;
-    return .{ loc_x, loc_y };
+fn isDirectEncodedCurveKind(stored_kind: f32) bool {
+    return stored_kind >= curve_tex.DIRECT_ENCODING_KIND_BIAS - 0.5;
 }
 
-fn readCurveSegment(page: anytype, tx: u32, ty: u32) CurveSegment {
-    const tex0 = readCurveTexelF32(page, tx, ty);
-    const loc1 = calcCurveLoc(tx, ty, 1);
-    const tex1 = readCurveTexelF32(page, loc1[0], loc1[1]);
-    const loc2 = calcCurveLoc(tx, ty, 2);
-    const tex2 = readCurveTexelF32(page, loc2[0], loc2[1]);
-    const loc3 = calcCurveLoc(tx, ty, 3);
-    const meta = readCurveTexelF32_meta(page, loc3[0], loc3[1]);
-    const stored_kind = tex2[2];
-    const kind_u16: u16 = @intCast(if (stored_kind >= curve_tex.DIRECT_ENCODING_KIND_BIAS - 0.5)
+fn curveKindFromStoredKind(stored_kind: f32) bezier.CurveKind {
+    const kind_u16: u16 = @intCast(if (isDirectEncodedCurveKind(stored_kind))
         @as(i32, @intFromFloat(@round(stored_kind - curve_tex.DIRECT_ENCODING_KIND_BIAS)))
     else
         @as(i32, @intFromFloat(@round(stored_kind))));
-    const kind: bezier.CurveKind = switch (kind_u16) {
+    return switch (kind_u16) {
         1 => .conic,
         2 => .cubic,
         3 => .line,
         else => .quadratic,
     };
-    if (stored_kind >= curve_tex.DIRECT_ENCODING_KIND_BIAS - 0.5) {
+}
+
+fn decodeCurveSegment(tex0: [4]f32, tex1: [4]f32, tex2: [4]f32, meta: [4]f32) CurveSegment {
+    const stored_kind = tex2[2];
+    const kind = curveKindFromStoredKind(stored_kind);
+    if (isDirectEncodedCurveKind(stored_kind)) {
         return .{
             .kind = kind,
             .p0 = .{ .x = tex0[0], .y = tex0[1] },
@@ -2172,6 +2237,14 @@ fn readCurveSegment(page: anytype, tx: u32, ty: u32) CurveSegment {
         .p3 = .{ .x = p0.x + tex2[0], .y = p0.y + tex2[1] },
         .weights = .{ tex2[3], meta[0], meta[1] },
     };
+}
+
+fn calcCurveLoc(glyph_x: u32, glyph_y: u32, offset: u32) [2]u32 {
+    var loc_x = glyph_x + offset;
+    var loc_y = glyph_y;
+    loc_y += loc_x >> kLogCurveTextureWidth;
+    loc_x &= CURVE_TEX_WIDTH - 1;
+    return .{ loc_x, loc_y };
 }
 
 /// Calculate band texture location with row wrapping.
