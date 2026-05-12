@@ -31,6 +31,9 @@
 - `PathPictureBuilder` shape marks produce allocation-free `Range` values for
   drawing subsets of a larger immutable path picture; the C API exposes the
   same marks and path-picture range submission calls.
+- `ResourceUploadPlan.upload_footprint` exposes the full planned backend
+  allocation footprint; `upload_bytes` is now the footprint's allocated total
+  for budget checks.
 
 ### Changed
 

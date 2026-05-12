@@ -437,9 +437,11 @@ plan / record / publish flow:
 1. **Plan.** `renderer.planResourceUpload(current, next_set, changed_keys_buf)`
    diffs `next_set` against the existing `PreparedResources` (or `null` for a
    first upload) and records which `ResourceKey` entries changed. The result
-   is a `ResourceUploadPlan` whose `upload_bytes` and `changedKeys()` are
-   informational. `changed_keys_buf` is caller-owned scratch — size it to the
-   number of distinct resources you might submit.
+   is a `ResourceUploadPlan` whose `upload_footprint`, `upload_bytes`, and
+   `changedKeys()` are informational. `upload_bytes` is
+   `upload_footprint.allocatedBytes()` for simple budget checks.
+   `changed_keys_buf` is caller-owned scratch — size it to the number of
+   distinct resources you might submit.
 2. **Begin + record.** `renderer.beginResourceUpload(allocator, plan)` returns
    a `PendingResourceUpload`. Call `pending.record(ctx, .{ .budget_bytes = N })`
    to do the work. For Vulkan, `ctx` carries the caller-recorded

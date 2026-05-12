@@ -4501,6 +4501,8 @@ fn makeVulkanRetirementFence(device: if (build_options.enable_vulkan) vulkan_pip
 
 pub const ResourceUploadPlan = struct {
     set: *const ResourceSet,
+    /// Backend allocation footprint for the next prepared resource set.
+    upload_footprint: ResourceFootprint = .{},
     /// Bytes this backend path will upload or construct for the next prepared
     /// resource set. Backend packing may make this larger than `changed_bytes`.
     upload_bytes: usize = 0,
@@ -5405,11 +5407,12 @@ pub const Renderer = struct {
     pub fn planResourceUpload(self: *Renderer, current: ?*const PreparedResources, next_set: *const ResourceSet, changed_keys: []ResourceKey) !ResourceUploadPlan {
         _ = self;
         var plan = ResourceUploadPlan{ .set = next_set, .changed_keys = changed_keys };
+        plan.upload_footprint = try next_set.estimateUploadFootprint();
+        plan.upload_bytes = plan.upload_footprint.allocatedBytes();
         for (next_set.slice()) |entry| {
             const key = resourceEntryKey(entry);
             const stamp = resourceEntryStamp(entry);
             const bytes = resourceEntryUploadBytes(entry);
-            plan.upload_bytes += bytes;
             const old_stamp = if (current) |prepared| prepared.stampForKey(key) else null;
             const changed = if (old_stamp) |old| !old.eql(stamp) else true;
             if (changed) {
@@ -6189,6 +6192,8 @@ test "resource upload plan reports changed keys and enforces budget" {
     var changed_same: [2]ResourceKey = undefined;
     const plan_same = try renderer.planResourceUpload(&prepared_a, &set_a, &changed_same);
     try std.testing.expect(plan_same.upload_bytes > 0);
+    try std.testing.expectEqual(plan_same.upload_footprint.allocatedBytes(), plan_same.upload_bytes);
+    try std.testing.expect(plan_same.upload_footprint.curve_bytes_allocated > 0);
     try std.testing.expectEqual(@as(usize, 0), plan_same.changedKeys().len);
     try std.testing.expectEqual(@as(usize, 0), plan_same.changed_bytes);
 
@@ -6198,6 +6203,8 @@ test "resource upload plan reports changed keys and enforces budget" {
     var changed_b: [2]ResourceKey = undefined;
     const plan_b = try renderer.planResourceUpload(&prepared_a, &set_b, &changed_b);
     try std.testing.expect(plan_b.upload_bytes > 0);
+    try std.testing.expectEqual(plan_b.upload_footprint.allocatedBytes(), plan_b.upload_bytes);
+    try std.testing.expect(plan_b.upload_footprint.curve_bytes_allocated > 0);
     try std.testing.expect(plan_b.changed_bytes > 0);
     try std.testing.expectEqual(@as(usize, 1), plan_b.changedKeys().len);
     try std.testing.expect(plan_b.changedKeys()[0].eql(ResourceKey.named("hud_panel")));
