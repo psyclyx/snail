@@ -32,12 +32,14 @@ var presentation_buffers = [_]PresentationBuffer{.{}} ** presentation_buffer_cou
 var next_presentation_buffer: usize = 0;
 var frame_callback: ?*c.wl_callback = null;
 var frame_pending: bool = false;
+var presentation_failed: bool = false;
 var pixel_ptr: ?[*]u8 = null;
 var render_buf: ?[]u8 = null; // separate RGBA buffer for CpuRenderer
 var buf_width: u32 = 0;
 var buf_height: u32 = 0;
 
 pub fn init(width: u32, height: u32, title: [*:0]const u8) !void {
+    presentation_failed = false;
     app = try wayland.Window.init(width, height, title);
     errdefer {
         var doomed = app.?;
@@ -58,13 +60,18 @@ pub fn deinit() void {
 }
 
 pub fn shouldClose() bool {
+    if (presentation_failed) return true;
     if (app) |window| {
         waitForFrameCallback(window);
         window.pumpEvents();
         if (window.consumeResized() or window.consumeScaleChanged()) {
             const size = window.getFramebufferSize();
             destroyShmBuffer();
-            createShmBuffer(size[0], size[1]) catch {};
+            createShmBuffer(size[0], size[1]) catch |err| {
+                std.debug.print("snail: CPU presentation resize failed: {s}\n", .{@errorName(err)});
+                presentation_failed = true;
+                return true;
+            };
         }
         return window.shouldClose();
     }
@@ -268,6 +275,7 @@ fn destroyShmBuffer() void {
     buf_width = 0;
     buf_height = 0;
     next_presentation_buffer = 0;
+    presentation_failed = false;
 }
 
 fn destroyPresentationBuffer(buffer: *PresentationBuffer) void {

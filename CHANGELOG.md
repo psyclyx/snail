@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.6.0 - Unreleased
+## 0.6.0 - 2026-05-12
 
 ### Fixed
 
@@ -99,10 +99,10 @@
   cache directories during renderer init/deinit; it keeps only an in-memory
   `VkPipelineCache`.
 - CPU prepared-resource upload now builds renderer-owned sidecars for path
-  layer records, paint records, and band-to-curve indices. CPU draws still
-  consume the same atlas/layer-info data model as GL/Vulkan, but avoid
-  per-pixel layer-info decoding and repeated texture-coordinate wrapping in
-  the coverage hot path.
+  layer records, paint records, and axis-local prepared curve records. CPU
+  draws still consume the same atlas/layer-info data model as GL/Vulkan, but
+  avoid per-pixel layer-info decoding, repeated texture-coordinate wrapping,
+  and curve-texel decoding in the coverage hot path.
 - CPU prepared text drawing now predecodes glyph-band curve references into
   axis-local hot records with separate cold conic/cubic coefficient storage,
   and transformed glyph spans advance local coordinates incrementally across
