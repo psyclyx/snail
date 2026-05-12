@@ -23,12 +23,41 @@ const SubpixelOrder = snail.SubpixelOrder;
 // Encode uses the IEC 61966-2-1 formula directly so per-pixel output rounds
 // to the same bytes as a GL_SRGB framebuffer (no LUT-interpolation drift).
 
+fn srgbFloatToLinearFormula(v: f32) f32 {
+    return if (v <= 0.04045) v / 12.92 else std.math.pow(f32, (v + 0.055) / 1.055, 2.4);
+}
+
 const srgb_to_linear_lut: [256]f32 = blk: {
     @setEvalBranchQuota(100_000);
     var table: [256]f32 = undefined;
     for (0..256) |i| {
         const v: f32 = @as(f32, @floatFromInt(i)) / 255.0;
-        table[i] = if (v <= 0.04045) v / 12.92 else std.math.pow(f32, (v + 0.055) / 1.055, 2.4);
+        table[i] = srgbFloatToLinearFormula(v);
+    }
+    break :blk table;
+};
+
+const linear_to_srgb_byte_thresholds: [255]f32 = blk: {
+    @setEvalBranchQuota(100_000);
+    var table: [255]f32 = undefined;
+    for (0..255) |i| {
+        const threshold_srgb = (@as(f32, @floatFromInt(i)) + 0.5) / 255.0;
+        table[i] = srgbFloatToLinearFormula(threshold_srgb);
+    }
+    break :blk table;
+};
+
+const linear_to_srgb_bucket_count = 4096;
+const linear_to_srgb_byte_buckets: [linear_to_srgb_bucket_count]u8 = blk: {
+    @setEvalBranchQuota(1_000_000);
+    var table: [linear_to_srgb_bucket_count]u8 = undefined;
+    for (0..linear_to_srgb_bucket_count) |bucket| {
+        const lower = @as(f32, @floatFromInt(bucket)) / @as(f32, @floatFromInt(linear_to_srgb_bucket_count));
+        var byte: u8 = 0;
+        while (byte < linear_to_srgb_byte_thresholds.len and lower >= linear_to_srgb_byte_thresholds[byte]) {
+            byte += 1;
+        }
+        table[bucket] = byte;
     }
     break :blk table;
 };
@@ -43,8 +72,22 @@ fn linearToSrgb(v: f32) f32 {
     return if (clamped <= 0.0031308) clamped * 12.92 else 1.055 * std.math.pow(f32, clamped, 1.0 / 2.4) - 0.055;
 }
 
+fn linearToSrgbByte(v: f32) u8 {
+    const clamped = @min(@max(v, 0.0), 1.0);
+    const bucket_float = clamped * @as(f32, @floatFromInt(linear_to_srgb_bucket_count));
+    const bucket = @min(@as(usize, @intFromFloat(bucket_float)), linear_to_srgb_bucket_count - 1);
+    var byte = linear_to_srgb_byte_buckets[bucket];
+    while (byte < linear_to_srgb_byte_thresholds.len and clamped >= linear_to_srgb_byte_thresholds[byte]) {
+        byte += 1;
+    }
+    while (byte > 0 and clamped < linear_to_srgb_byte_thresholds[byte - 1]) {
+        byte -= 1;
+    }
+    return byte;
+}
+
 fn srgbFloatToLinear(v: f32) f32 {
-    return if (v <= 0.04045) v / 12.92 else std.math.pow(f32, (v + 0.055) / 1.055, 2.4);
+    return srgbFloatToLinearFormula(v);
 }
 
 fn srgbToByte(v: f32) u8 {
@@ -60,6 +103,15 @@ fn srgbColorToLinear(color: [4]f32) [4]f32 {
     };
 }
 
+fn linearColorToSrgb(color: [4]f32) [4]f32 {
+    return .{
+        linearToSrgb(color[0]),
+        linearToSrgb(color[1]),
+        linearToSrgb(color[2]),
+        color[3],
+    };
+}
+
 fn multiplyLinearColor(a: [4]f32, b: [4]f32) [4]f32 {
     return .{ a[0] * b[0], a[1] * b[1], a[2] * b[2], a[3] * b[3] };
 }
@@ -68,16 +120,14 @@ fn fract(v: f32) f32 {
     return v - @floor(v);
 }
 
-const kLogBandTextureWidth: u5 = 12;
-const BAND_TEX_WIDTH: u32 = 1 << kLogBandTextureWidth;
-const kLogCurveTextureWidth: u5 = 12;
-const CURVE_TEX_WIDTH: u32 = 1 << kLogCurveTextureWidth;
+const invalid_curve_base = std.math.maxInt(u32);
 
 const PreparedAtlasPage = struct {
     curve_data_f32: []f32,
     curve_width: u32,
     curve_height: u32,
     band_data: []const u16,
+    band_curve_bases: []u32,
     band_width: u32,
     band_height: u32,
 
@@ -87,11 +137,24 @@ const PreparedAtlasPage = struct {
         for (page.curve_data, 0..) |value, i| {
             curve_data[i] = f16ToF32(value);
         }
+        const band_texel_count = page.band_data.len / 2;
+        const band_curve_bases = try allocator.alloc(u32, band_texel_count);
+        errdefer allocator.free(band_curve_bases);
+        for (band_curve_bases, 0..) |*base, i| {
+            const pair = i * 2;
+            const tx: u32 = page.band_data[pair];
+            const ty: u32 = page.band_data[pair + 1];
+            base.* = if (tx < page.curve_width and ty < page.curve_height)
+                @intCast((ty * page.curve_width + tx) * 4)
+            else
+                invalid_curve_base;
+        }
         return .{
             .curve_data_f32 = curve_data,
             .curve_width = page.curve_width,
             .curve_height = page.curve_height,
             .band_data = page.band_data,
+            .band_curve_bases = band_curve_bases,
             .band_width = page.band_width,
             .band_height = page.band_height,
         };
@@ -99,8 +162,24 @@ const PreparedAtlasPage = struct {
 
     fn deinit(self: *PreparedAtlasPage, allocator: std.mem.Allocator) void {
         allocator.free(self.curve_data_f32);
+        allocator.free(self.band_curve_bases);
         self.* = undefined;
     }
+};
+
+const PreparedPathLayer = struct {
+    band_entry: GlyphBandEntry,
+    band_max_h: i32,
+    band_max_v: i32,
+    paint: PreparedPathPaint,
+};
+
+const PreparedPathRecord = struct {
+    texel_offset: u32,
+    tag: i32,
+    composite_mode: i32 = 0,
+    layer_start: usize,
+    layer_count: usize,
 };
 
 const LayerInfoEntry = struct {
@@ -108,12 +187,43 @@ const LayerInfoEntry = struct {
     width: u32 = 0,
     height: u32 = 0,
     row_base: u32 = 0,
+    path_records: []PreparedPathRecord = &.{},
+    path_layers: []PreparedPathLayer = &.{},
     /// Source atlas's image-paint records, borrowed. Used by the prepared
     /// sampler to resolve tag-4 (image) paints — the atlas-side patching
     /// done by the GPU upload (`pipeline.zig` / `vulkan_pipeline.zig`)
     /// doesn't happen on the CPU, so we look up the `*const snail.Image`
     /// via this slice instead.
     paint_image_records: ?[]const ?snail.lowlevel.CurveAtlas.PaintImageRecord = null,
+
+    fn deinit(self: *LayerInfoEntry, allocator: std.mem.Allocator) void {
+        if (self.path_records.len > 0) allocator.free(self.path_records);
+        if (self.path_layers.len > 0) allocator.free(self.path_layers);
+        self.* = .{};
+    }
+
+    fn pathRecordAt(self: *const LayerInfoEntry, info_x: u16, info_y: u16) ?*const PreparedPathRecord {
+        const target = @as(u32, info_y) * self.width + @as(u32, info_x);
+        var lo: usize = 0;
+        var hi: usize = self.path_records.len;
+        while (lo < hi) {
+            const mid = lo + (hi - lo) / 2;
+            const offset = self.path_records[mid].texel_offset;
+            if (target < offset) {
+                hi = mid;
+            } else if (target > offset) {
+                lo = mid + 1;
+            } else {
+                return &self.path_records[mid];
+            }
+        }
+        return null;
+    }
+};
+
+const ResolvedLayerInfo = struct {
+    entry: *const LayerInfoEntry,
+    local_y: u16,
 };
 
 pub const PreparedResources = struct {
@@ -155,6 +265,7 @@ pub const PreparedResources = struct {
         for (self.atlas_pages) |*page| {
             if (page.*) |*prepared_page| prepared_page.deinit(self.allocator);
         }
+        for (self.layer_infos[0..self.layer_info_count]) |*entry| entry.deinit(self.allocator);
         @memset(self.atlas_pages, null);
         @memset(self.layer_infos, LayerInfoEntry{});
         self.layer_info_count = 0;
@@ -186,11 +297,14 @@ pub const PreparedResources = struct {
         }
         if (atlas.layer_info_data) |lid| {
             if (self.layer_info_count >= self.layer_infos.len) return error.PreparedResourceCapacityExceeded;
+            const prepared_layers = try preparePathLayerInfoRecords(self.allocator, lid, atlas.layer_info_width, atlas.layer_info_height, atlas.paint_image_records);
             self.layer_infos[self.layer_info_count] = .{
                 .data = lid,
                 .width = atlas.layer_info_width,
                 .height = atlas.layer_info_height,
                 .row_base = info_row_base,
+                .path_records = prepared_layers.records,
+                .path_layers = prepared_layers.layers,
                 .paint_image_records = atlas.paint_image_records,
             };
             self.layer_info_count += 1;
@@ -200,19 +314,12 @@ pub const PreparedResources = struct {
     /// Resolve a global (info_x, info_y) into data pointer, width, and
     /// the source atlas's image-paint records, adjusting info_y for the
     /// atlas's row_base.
-    fn resolveLayerInfo(self: *const PreparedResources, info_y: u16) ?struct {
-        data: []const f32,
-        width: u32,
-        local_y: u16,
-        paint_image_records: ?[]const ?snail.lowlevel.CurveAtlas.PaintImageRecord,
-    } {
-        for (self.layer_infos[0..self.layer_info_count]) |entry| {
+    fn resolveLayerInfo(self: *const PreparedResources, info_y: u16) ?ResolvedLayerInfo {
+        for (self.layer_infos[0..self.layer_info_count]) |*entry| {
             if (info_y >= entry.row_base and info_y < entry.row_base + entry.height) {
                 return .{
-                    .data = entry.data,
-                    .width = entry.width,
+                    .entry = entry,
                     .local_y = @intCast(info_y - entry.row_base),
-                    .paint_image_records = entry.paint_image_records,
                 };
             }
         }
@@ -512,11 +619,13 @@ pub const CpuRenderer = struct {
 
             // Resolve the layer info for this info_y (handles multi-atlas row offsets).
             const resolved = prepared.resolveLayerInfo(info_y) orelse return;
-            const first_tag = fetchLayerInfoTexel(resolved.data, resolved.width, info_x, resolved.local_y, 0)[3];
+            const entry = resolved.entry;
+            const first_tag = fetchLayerInfoTexel(entry.data, entry.width, info_x, resolved.local_y, 0)[3];
             if (first_tag < 0.0) {
-                self.renderPathBatchLayers(prepared, bbox, transform, tint, info_x, resolved.local_y, atlas_layer, resolved.data, resolved.width, resolved.paint_image_records, false);
+                const record = entry.pathRecordAt(info_x, resolved.local_y) orelse return;
+                self.renderPathBatchLayers(prepared, bbox, transform, tint, atlas_layer, entry, record, false);
             } else {
-                self.renderColrBatchLayers(prepared, bbox, transform, color, tint, info_x, resolved.local_y, layer_count, atlas_layer, resolved.data, resolved.width);
+                self.renderColrBatchLayers(prepared, bbox, transform, color, tint, info_x, resolved.local_y, layer_count, atlas_layer, entry.data, entry.width);
             }
             return;
         }
@@ -618,23 +727,18 @@ pub const CpuRenderer = struct {
         union_bbox: snail.lowlevel.bezier.BBox,
         transform: Transform2D,
         tint: [4]f32,
-        info_x: u16,
-        info_y: u16,
         atlas_layer: u32,
-        data: []const f32,
-        width: u32,
-        paint_image_records: ?[]const ?snail.lowlevel.CurveAtlas.PaintImageRecord,
+        entry: *const LayerInfoEntry,
+        record: *const PreparedPathRecord,
         allow_subpixel: bool,
     ) void {
         const page = (if (atlas_layer < prepared.atlas_pages.len) prepared.atlas_pages[atlas_layer] else null) orelse return;
 
-        const first_info = fetchLayerInfoTexel(data, width, info_x, info_y, 0);
-        const tag: i32 = @intFromFloat(@round(-first_info[3]));
-
-        if (tag == 5) {
+        if (record.tag == 5) {
             // Composite group: header at offset 0, then 6 texels per layer starting at offset 1.
-            const layer_count: u32 = @intCast(@as(i32, @intFromFloat(@round(first_info[0]))));
-            const composite_mode: i32 = @intFromFloat(@round(first_info[1]));
+            const layer_count = record.layer_count;
+            const composite_mode = record.composite_mode;
+            const layers = entry.path_layers[record.layer_start..][0..layer_count];
 
             const inverse = inverseTransform(transform) orelse return;
             const bounds = transformedGlyphBounds(union_bbox, transform);
@@ -649,6 +753,9 @@ pub const CpuRenderer = struct {
             const sample_dx = Vec2.new(inverse.xx, inverse.yx);
             const sample_dy = Vec2.new(inverse.xy, inverse.yy);
             const use_subpixel = allow_subpixel and self.subpixel_order != .none;
+            const outline_composite = composite_mode == 1 and layer_count >= 2;
+            const fill_paint_program: PreparedPathPaint = if (outline_composite) layers[0].paint else .{};
+            const stroke_paint_program: PreparedPathPaint = if (outline_composite) layers[1].paint else .{};
 
             var row: u32 = @intCast(py0);
             while (row < @as(u32, @intCast(py1))) : (row += 1) {
@@ -669,24 +776,10 @@ pub const CpuRenderer = struct {
                     var has_gradient = false;
 
                     for (0..layer_count) |l| {
-                        const layer_offset: u32 = 1 + @as(u32, @intCast(l)) * 6;
-                        const info = fetchLayerInfoTexel(data, width, info_x, info_y, layer_offset);
-                        const band = fetchLayerInfoTexel(data, width, info_x, info_y, layer_offset + 1);
-                        const band_packed: u32 = @bitCast(info[2]);
-                        const be = GlyphBandEntry{
-                            .glyph_x = @intFromFloat(info[0]),
-                            .glyph_y = @intFromFloat(info[1]),
-                            .h_band_count = @intCast((band_packed & 0xFFFF) + 1),
-                            .v_band_count = @intCast(((band_packed >> 16) & 0xFFFF) + 1),
-                            .band_scale_x = band[0],
-                            .band_scale_y = band[1],
-                            .band_offset_x = band[2],
-                            .band_offset_y = band[3],
-                        };
-                        const band_max_h: i32 = @as(i32, @intCast(be.h_band_count)) - 1;
-                        const band_max_v: i32 = @as(i32, @intCast(be.v_band_count)) - 1;
-                        var paint = samplePathPaintFromLayerInfo(data, width, info_x, info_y, layer_offset, local, paint_image_records);
-                        paint.color = multiplyLinearColor(paint.color, tint);
+                        const layer = layers[l];
+                        const be = layer.band_entry;
+                        const band_max_h = layer.band_max_h;
+                        const band_max_v = layer.band_max_v;
 
                         if (use_subpixel) {
                             const cov = self.applySubpixelCoverageTransfer(evalGlyphCoverageSubpixel(
@@ -701,19 +794,28 @@ pub const CpuRenderer = struct {
                                 self.subpixel_order,
                             ));
 
-                            if (composite_mode == 1 and layer_count >= 2 and l < 2) {
+                            if (outline_composite and l < 2) {
                                 if (l == 0) {
                                     fill_cov = cov;
-                                    fill_paint = paint.color;
-                                    fill_apply_dither = paint.apply_dither;
+                                    if (max3(cov.rgb) > 0.0 or cov.alpha > 0.0) {
+                                        const paint = fill_paint_program.sample(local);
+                                        fill_paint = multiplyLinearColor(paint.color, tint);
+                                        fill_apply_dither = paint.apply_dither;
+                                    }
                                 } else {
                                     stroke_cov = cov;
-                                    stroke_paint = paint.color;
-                                    stroke_apply_dither = paint.apply_dither;
+                                    if (max3(cov.rgb) > 0.0 or cov.alpha > 0.0) {
+                                        const paint = stroke_paint_program.sample(local);
+                                        stroke_paint = multiplyLinearColor(paint.color, tint);
+                                        stroke_apply_dither = paint.apply_dither;
+                                    }
                                 }
                                 continue;
                             }
 
+                            if (max3(cov.rgb) <= 0.0 and cov.alpha <= 0.0) continue;
+                            var paint = layer.paint.sample(local);
+                            paint.color = multiplyLinearColor(paint.color, tint);
                             if (paint.apply_dither and cov.alpha > 1e-6) has_gradient = true;
                             compositeSubpixelOver(
                                 premultiplySubpixelCoverage(paint.color, cov.rgb, cov.alpha),
@@ -724,22 +826,31 @@ pub const CpuRenderer = struct {
                         } else {
                             const cov = self.applyCoverageTransfer(evalGlyphCoverage(page, local.x, local.y, ppe.x, ppe.y, be, band_max_h, band_max_v, self.fill_rule));
 
-                            if (composite_mode == 1 and layer_count >= 2 and l < 2) {
+                            if (outline_composite and l < 2) {
                                 if (l == 0) {
                                     fill_cov = .{ .rgb = .{ cov, cov, cov }, .alpha = cov };
-                                    fill_paint = paint.color;
+                                    if (cov > 0.0) {
+                                        const paint = fill_paint_program.sample(local);
+                                        fill_paint = multiplyLinearColor(paint.color, tint);
+                                    }
                                 } else {
                                     stroke_cov = .{ .rgb = .{ cov, cov, cov }, .alpha = cov };
-                                    stroke_paint = paint.color;
+                                    if (cov > 0.0) {
+                                        const paint = stroke_paint_program.sample(local);
+                                        stroke_paint = multiplyLinearColor(paint.color, tint);
+                                    }
                                 }
                                 continue;
                             }
+                            if (cov <= 0.0) continue;
+                            var paint = layer.paint.sample(local);
+                            paint.color = multiplyLinearColor(paint.color, tint);
                             const premul = premultiplyCoverage(paint.color, cov);
                             result = compositeOver(premul, result);
                         }
                     }
 
-                    if (composite_mode == 1 and layer_count >= 2) {
+                    if (outline_composite) {
                         if (use_subpixel) {
                             const border_cov = [3]f32{
                                 @min(fill_cov.rgb[0], stroke_cov.rgb[0]),
@@ -786,17 +897,9 @@ pub const CpuRenderer = struct {
             }
         } else {
             // Single-layer path paint.
-            const band_packed: u32 = @bitCast(first_info[2]);
-            const be = GlyphBandEntry{
-                .glyph_x = @intFromFloat(first_info[0]),
-                .glyph_y = @intFromFloat(first_info[1]),
-                .h_band_count = @intCast((band_packed & 0xFFFF) + 1),
-                .v_band_count = @intCast(((band_packed >> 16) & 0xFFFF) + 1),
-                .band_scale_x = fetchLayerInfoTexel(data, width, info_x, info_y, 1)[0],
-                .band_scale_y = fetchLayerInfoTexel(data, width, info_x, info_y, 1)[1],
-                .band_offset_x = fetchLayerInfoTexel(data, width, info_x, info_y, 1)[2],
-                .band_offset_y = fetchLayerInfoTexel(data, width, info_x, info_y, 1)[3],
-            };
+            if (record.layer_count == 0) return;
+            const layer = entry.path_layers[record.layer_start];
+            const be = layer.band_entry;
 
             const inverse = inverseTransform(transform) orelse return;
             const bounds = transformedGlyphBounds(union_bbox, transform);
@@ -810,8 +913,9 @@ pub const CpuRenderer = struct {
             const ppe = Vec2.new(1.0 / epp.x, 1.0 / epp.y);
             const sample_dx = Vec2.new(inverse.xx, inverse.yx);
             const sample_dy = Vec2.new(inverse.xy, inverse.yy);
-            const band_max_h: i32 = @as(i32, @intCast(be.h_band_count)) - 1;
-            const band_max_v: i32 = @as(i32, @intCast(be.v_band_count)) - 1;
+            const band_max_h = layer.band_max_h;
+            const band_max_v = layer.band_max_v;
+            const paint_program = layer.paint;
 
             var row: u32 = @intCast(py0);
             while (row < @as(u32, @intCast(py1))) : (row += 1) {
@@ -821,11 +925,11 @@ pub const CpuRenderer = struct {
                     .y = @as(f32, @floatFromInt(row)) + 0.5,
                 });
                 while (col < @as(u32, @intCast(px1))) : (advanceLocalPixel(&col, &local, sample_dx)) {
-                    var paint = samplePathPaintFromLayerInfo(data, width, info_x, info_y, 0, local, paint_image_records);
-                    paint.color = multiplyLinearColor(paint.color, tint);
                     if (!allow_subpixel or self.subpixel_order == .none) {
                         const cov = self.applyCoverageTransfer(evalGlyphCoverage(page, local.x, local.y, ppe.x, ppe.y, be, band_max_h, band_max_v, self.fill_rule));
                         if (cov < 1.0 / 255.0) continue;
+                        var paint = paint_program.sample(local);
+                        paint.color = multiplyLinearColor(paint.color, tint);
                         self.blendPremultipliedPixel(row, col, premultiplyCoverage(paint.color, cov), paint.apply_dither);
                     } else {
                         const cov = self.applySubpixelCoverageTransfer(evalGlyphCoverageSubpixel(
@@ -840,6 +944,8 @@ pub const CpuRenderer = struct {
                             self.subpixel_order,
                         ));
                         if (max3(cov.rgb) < 1.0 / 255.0) continue;
+                        var paint = paint_program.sample(local);
+                        paint.color = multiplyLinearColor(paint.color, tint);
                         self.blendSubpixelPremultipliedPixel(
                             row,
                             col,
@@ -1045,10 +1151,11 @@ pub const CpuRenderer = struct {
     }
 
     inline fn writeChannel(self: *const CpuRenderer, linear_value: f32, dither: f32) u8 {
-        return if (self.target_encoding.cpuOutputSrgb())
-            srgbToByte(linearToSrgb(linear_value) + dither)
-        else
-            srgbToByte(linear_value + dither);
+        if (self.target_encoding.cpuOutputSrgb()) {
+            if (dither == 0.0) return linearToSrgbByte(linear_value);
+            return srgbToByte(linearToSrgb(linear_value) + dither);
+        }
+        return srgbToByte(linear_value + dither);
     }
 
     fn blendPremultipliedPixel(self: *CpuRenderer, row: u32, col: u32, src: [4]f32, apply_dither: bool) void {
@@ -1272,44 +1379,168 @@ fn fetchLayerInfoTexel(data: []const f32, width: u32, info_x: u16, info_y: u16, 
     return .{ data[base + 0], data[base + 1], data[base + 2], data[base + 3] };
 }
 
-fn samplePathPaintFromLayerInfo(
+fn fetchLayerInfoTexelOffset(data: []const f32, texel_offset: u32) [4]f32 {
+    const base = @as(usize, texel_offset) * 4;
+    return .{ data[base + 0], data[base + 1], data[base + 2], data[base + 3] };
+}
+
+fn pathInfoTag(info: [4]f32) i32 {
+    return @intFromFloat(@round(-info[3]));
+}
+
+const PreparedPathLayerInfo = struct {
+    records: []PreparedPathRecord,
+    layers: []PreparedPathLayer,
+};
+
+const PreparedPathLayerInfoCounts = struct {
+    records: usize = 0,
+    layers: usize = 0,
+};
+
+fn pathLayerInfoTexelCount(data: []const f32, width: u32, height: u32) u32 {
+    const declared = @as(usize, width) * @as(usize, height);
+    return @intCast(@min(declared, data.len / 4));
+}
+
+fn countPreparedPathLayerInfo(data: []const f32, width: u32, height: u32) PreparedPathLayerInfoCounts {
+    const texel_count = pathLayerInfoTexelCount(data, width, height);
+    var counts = PreparedPathLayerInfoCounts{};
+    var texel: u32 = 0;
+    while (texel < texel_count) {
+        const info = fetchLayerInfoTexelOffset(data, texel);
+        const tag = pathInfoTag(info);
+        switch (tag) {
+            1, 2, 3, 4 => {
+                counts.records += 1;
+                counts.layers += 1;
+                texel += 6;
+            },
+            5 => {
+                const layer_count: usize = @intCast(@max(@as(i32, @intFromFloat(@round(info[0]))), 0));
+                counts.records += 1;
+                counts.layers += layer_count;
+                texel += 1 + @as(u32, @intCast(layer_count)) * 6;
+            },
+            else => texel += 1,
+        }
+    }
+    return counts;
+}
+
+fn preparePathLayerInfoRecords(
+    allocator: std.mem.Allocator,
     data: []const f32,
     width: u32,
-    info_x: u16,
-    info_y: u16,
-    record_offset: u32,
-    local: Vec2,
+    height: u32,
     paint_image_records: ?[]const ?snail.lowlevel.CurveAtlas.PaintImageRecord,
-) PathPaintSample {
-    const info = fetchLayerInfoTexel(data, width, info_x, info_y, record_offset);
-    const tag: i32 = @intFromFloat(@round(-info[3]));
-    const data0 = fetchLayerInfoTexel(data, width, info_x, info_y, record_offset + 2);
+) !PreparedPathLayerInfo {
+    const counts = countPreparedPathLayerInfo(data, width, height);
+    const records = try allocator.alloc(PreparedPathRecord, counts.records);
+    errdefer allocator.free(records);
+    const layers = try allocator.alloc(PreparedPathLayer, counts.layers);
+    errdefer allocator.free(layers);
+
+    const texel_count = pathLayerInfoTexelCount(data, width, height);
+    var record_index: usize = 0;
+    var layer_index: usize = 0;
+    var texel: u32 = 0;
+    while (texel < texel_count) {
+        const info = fetchLayerInfoTexelOffset(data, texel);
+        const tag = pathInfoTag(info);
+        switch (tag) {
+            1, 2, 3, 4 => {
+                records[record_index] = .{
+                    .texel_offset = texel,
+                    .tag = tag,
+                    .layer_start = layer_index,
+                    .layer_count = 1,
+                };
+                layers[layer_index] = preparePathLayerFromLayerInfoOffset(data, texel, paint_image_records);
+                record_index += 1;
+                layer_index += 1;
+                texel += 6;
+            },
+            5 => {
+                const layer_count: usize = @intCast(@max(@as(i32, @intFromFloat(@round(info[0]))), 0));
+                records[record_index] = .{
+                    .texel_offset = texel,
+                    .tag = tag,
+                    .composite_mode = @intFromFloat(@round(info[1])),
+                    .layer_start = layer_index,
+                    .layer_count = layer_count,
+                };
+                for (0..layer_count) |i| {
+                    const layer_offset = texel + 1 + @as(u32, @intCast(i)) * 6;
+                    layers[layer_index + i] = preparePathLayerFromLayerInfoOffset(data, layer_offset, paint_image_records);
+                }
+                record_index += 1;
+                layer_index += layer_count;
+                texel += 1 + @as(u32, @intCast(layer_count)) * 6;
+            },
+            else => texel += 1,
+        }
+    }
+
+    return .{ .records = records, .layers = layers };
+}
+
+fn preparePathLayerFromLayerInfoOffset(
+    data: []const f32,
+    texel_offset: u32,
+    paint_image_records: ?[]const ?snail.lowlevel.CurveAtlas.PaintImageRecord,
+) PreparedPathLayer {
+    const info = fetchLayerInfoTexelOffset(data, texel_offset);
+    const band = fetchLayerInfoTexelOffset(data, texel_offset + 1);
+    const band_packed: u32 = @bitCast(info[2]);
+    const be = GlyphBandEntry{
+        .glyph_x = @intFromFloat(info[0]),
+        .glyph_y = @intFromFloat(info[1]),
+        .h_band_count = @intCast((band_packed & 0xFFFF) + 1),
+        .v_band_count = @intCast(((band_packed >> 16) & 0xFFFF) + 1),
+        .band_scale_x = band[0],
+        .band_scale_y = band[1],
+        .band_offset_x = band[2],
+        .band_offset_y = band[3],
+    };
+    return .{
+        .band_entry = be,
+        .band_max_h = @as(i32, @intCast(be.h_band_count)) - 1,
+        .band_max_v = @as(i32, @intCast(be.v_band_count)) - 1,
+        .paint = preparePathPaintFromLayerInfoOffset(data, texel_offset, paint_image_records),
+    };
+}
+
+fn preparePathPaintFromLayerInfoOffset(
+    data: []const f32,
+    texel_offset: u32,
+    paint_image_records: ?[]const ?snail.lowlevel.CurveAtlas.PaintImageRecord,
+) PreparedPathPaint {
+    const info = fetchLayerInfoTexelOffset(data, texel_offset);
+    const tag = pathInfoTag(info);
+    const data0 = fetchLayerInfoTexelOffset(data, texel_offset + 2);
     switch (tag) {
-        1 => return .{ .color = srgbColorToLinear(data0) },
+        1 => return .{ .kind = .solid, .color0 = srgbColorToLinear(data0) },
         2 => {
-            const color0 = fetchLayerInfoTexel(data, width, info_x, info_y, record_offset + 3);
-            const color1 = fetchLayerInfoTexel(data, width, info_x, info_y, record_offset + 4);
-            const extra = fetchLayerInfoTexel(data, width, info_x, info_y, record_offset + 5);
-            const start = Vec2.new(data0[0], data0[1]);
-            const end = Vec2.new(data0[2], data0[3]);
-            const delta = Vec2.sub(end, start);
-            const len_sq = Vec2.dot(delta, delta);
-            var t: f32 = 0.0;
-            if (len_sq > 1e-10) t = Vec2.dot(Vec2.sub(local, start), delta) / len_sq;
+            const color0 = fetchLayerInfoTexelOffset(data, texel_offset + 3);
+            const color1 = fetchLayerInfoTexelOffset(data, texel_offset + 4);
+            const extra = fetchLayerInfoTexelOffset(data, texel_offset + 5);
             return .{
-                .color = lerpGradientColor(color0, color1, wrapPaintT(t, paintExtendFromFloat(extra[0]))),
-                .apply_dither = true,
+                .kind = .linear_gradient,
+                .data0 = data0,
+                .color0 = linearColorToSrgb(color0),
+                .color1 = linearColorToSrgb(color1),
+                .extra = extra,
             };
         },
         3 => {
-            const color0 = fetchLayerInfoTexel(data, width, info_x, info_y, record_offset + 3);
-            const color1 = fetchLayerInfoTexel(data, width, info_x, info_y, record_offset + 4);
-            const center = Vec2.new(data0[0], data0[1]);
-            const radius = @max(@abs(data0[2]), 1.0 / 65536.0);
-            const t = Vec2.length(Vec2.sub(local, center)) / radius;
+            const color0 = fetchLayerInfoTexelOffset(data, texel_offset + 3);
+            const color1 = fetchLayerInfoTexelOffset(data, texel_offset + 4);
             return .{
-                .color = lerpGradientColor(color0, color1, wrapPaintT(t, paintExtendFromFloat(data0[3]))),
-                .apply_dither = true,
+                .kind = .radial_gradient,
+                .data0 = data0,
+                .color0 = linearColorToSrgb(color0),
+                .color1 = linearColorToSrgb(color1),
             };
         },
         4 => {
@@ -1320,16 +1551,20 @@ fn samplePathPaintFromLayerInfo(
             // the `extra` texel in place at upload time — see
             // `pipeline.zig` `patchImagePaintRecord` — so the shader reads
             // the image slot directly out of layer-info.)
-            const records = paint_image_records orelse return .{ .color = .{ 1, 0, 1, 1 } };
-            const linear_texel = @as(u32, info_x) + record_offset;
-            const abs_texel = (@as(u32, info_y) + linear_texel / width) * width + (linear_texel % width);
-            const record = findImageRecordByTexel(records, abs_texel) orelse return .{ .color = .{ 1, 0, 1, 1 } };
-            // `data0` is at `record_offset + 2`; sampleImageWithRecord wants
-            // that as its `data0_offset` so it can fetch +1/+2/+3 (data1,
-            // tint, extra) relative to it.
-            return sampleImageWithRecord(record, data, width, info_x, info_y, record_offset + 2, data0, local);
+            const records = paint_image_records orelse return .{};
+            const data1 = fetchLayerInfoTexelOffset(data, texel_offset + 3);
+            const tint = fetchLayerInfoTexelOffset(data, texel_offset + 4);
+            const extra = fetchLayerInfoTexelOffset(data, texel_offset + 5);
+            return .{
+                .kind = .image,
+                .data0 = data0,
+                .data1 = data1,
+                .color0 = tint,
+                .extra = extra,
+                .image_record = findImageRecordByTexel(records, texel_offset),
+            };
         },
-        else => return .{ .color = .{ 1, 0, 1, 1 } },
+        else => return .{},
     }
 }
 
@@ -1418,6 +1653,56 @@ fn sampleImageLinear(image: *const snail.Image, uv: Vec2, filter: snail.ImageFil
 const PathPaintSample = struct {
     color: [4]f32,
     apply_dither: bool = false,
+};
+
+const PreparedPathPaint = struct {
+    const Kind = enum {
+        invalid,
+        solid,
+        linear_gradient,
+        radial_gradient,
+        image,
+    };
+
+    kind: Kind = .invalid,
+    color0: [4]f32 = .{ 1, 0, 1, 1 },
+    color1: [4]f32 = .{ 1, 0, 1, 1 },
+    data0: [4]f32 = .{ 0, 0, 0, 0 },
+    data1: [4]f32 = .{ 0, 0, 0, 0 },
+    extra: [4]f32 = .{ 0, 0, 0, 0 },
+    image_record: ?snail.lowlevel.CurveAtlas.PaintImageRecord = null,
+
+    fn sample(self: *const PreparedPathPaint, local: Vec2) PathPaintSample {
+        return switch (self.kind) {
+            .solid => .{ .color = self.color0 },
+            .linear_gradient => blk: {
+                const start = Vec2.new(self.data0[0], self.data0[1]);
+                const end = Vec2.new(self.data0[2], self.data0[3]);
+                const delta = Vec2.sub(end, start);
+                const len_sq = Vec2.dot(delta, delta);
+                var t: f32 = 0.0;
+                if (len_sq > 1e-10) t = Vec2.dot(Vec2.sub(local, start), delta) / len_sq;
+                break :blk .{
+                    .color = lerpGradientColorFromSrgb(self.color0, self.color1, wrapPaintT(t, paintExtendFromFloat(self.extra[0]))),
+                    .apply_dither = true,
+                };
+            },
+            .radial_gradient => blk: {
+                const center = Vec2.new(self.data0[0], self.data0[1]);
+                const radius = @max(@abs(self.data0[2]), 1.0 / 65536.0);
+                const t = Vec2.length(Vec2.sub(local, center)) / radius;
+                break :blk .{
+                    .color = lerpGradientColorFromSrgb(self.color0, self.color1, wrapPaintT(t, paintExtendFromFloat(self.data0[3]))),
+                    .apply_dither = true,
+                };
+            },
+            .image => blk: {
+                const record = self.image_record orelse break :blk .{ .color = .{ 1, 0, 1, 1 } };
+                break :blk samplePreparedImageWithRecord(record, self.data0, self.data1, self.color0, self.extra, local);
+            },
+            .invalid => .{ .color = .{ 1, 0, 1, 1 } },
+        };
+    }
 };
 
 fn samplePathPaint(atlas: *const snail.lowlevel.CurveAtlas, shape: snail.PathPicture.Shape, glyph_id: u16, local: Vec2) PathPaintSample {
@@ -1558,6 +1843,32 @@ fn sampleImageWithRecord(
     } };
 }
 
+fn samplePreparedImageWithRecord(
+    record: snail.lowlevel.CurveAtlas.PaintImageRecord,
+    data0: [4]f32,
+    data1: [4]f32,
+    tint: [4]f32,
+    extra: [4]f32,
+    local: Vec2,
+) PathPaintSample {
+    const raw_uv = Vec2.new(
+        data0[0] * local.x + data0[1] * local.y + data0[2],
+        data1[0] * local.x + data1[1] * local.y + data1[2],
+    );
+    const uv = Vec2.new(
+        wrapPaintT(raw_uv.x, paintExtendFromFloat(extra[2])),
+        wrapPaintT(raw_uv.y, paintExtendFromFloat(extra[3])),
+    );
+    const filter: snail.ImageFilter = if (@as(i32, @intFromFloat(@round(data1[3]))) == 1) .nearest else .linear;
+    const sample = sampleImageLinear(record.image, uv, filter);
+    return .{ .color = .{
+        sample[0] * tint[0],
+        sample[1] * tint[1],
+        sample[2] * tint[2],
+        sample[3] * tint[3],
+    } };
+}
+
 fn interleavedGradientNoise(row: u32, col: u32) f32 {
     const pixel_x = @as(f32, @floatFromInt(col)) + 0.5;
     const pixel_y = @as(f32, @floatFromInt(row)) + 0.5;
@@ -1574,9 +1885,9 @@ const CoveragePair = struct {
 };
 
 const GlyphBandState = struct {
-    h_loc: [2]u32,
+    h_base: usize,
     h_count: u32,
-    v_loc: [2]u32,
+    v_base: usize,
     v_count: u32,
 };
 
@@ -1760,8 +2071,10 @@ fn lerpColor(a: [4]f32, b: [4]f32, t: f32) [4]f32 {
 }
 
 fn lerpGradientColor(a_linear: [4]f32, b_linear: [4]f32, t: f32) [4]f32 {
-    const a_srgb = [4]f32{ linearToSrgb(a_linear[0]), linearToSrgb(a_linear[1]), linearToSrgb(a_linear[2]), a_linear[3] };
-    const b_srgb = [4]f32{ linearToSrgb(b_linear[0]), linearToSrgb(b_linear[1]), linearToSrgb(b_linear[2]), b_linear[3] };
+    return lerpGradientColorFromSrgb(linearColorToSrgb(a_linear), linearColorToSrgb(b_linear), t);
+}
+
+fn lerpGradientColorFromSrgb(a_srgb: [4]f32, b_srgb: [4]f32, t: f32) [4]f32 {
     return srgbColorToLinear(lerpColor(a_srgb, b_srgb, t));
 }
 
@@ -1783,13 +2096,14 @@ fn initGlyphBandState(
     const band_idx_y = clampInt(@as(i32, @intFromFloat(@floor(band_idx_y_f))), 0, band_max_h);
     const glyph_x = @as(u32, be.glyph_x);
     const glyph_y = @as(u32, be.glyph_y);
+    const glyph_band_base = @as(usize, glyph_y) * @as(usize, page.band_width) + @as(usize, glyph_x);
 
-    const h_header = readBandTexel(page, glyph_x + @as(u32, @intCast(band_idx_y)), glyph_y);
-    const v_header = readBandTexel(page, glyph_x + @as(u32, @intCast(band_max_h)) + 1 + @as(u32, @intCast(band_idx_x)), glyph_y);
+    const h_header = readBandTexelLinear(page, glyph_band_base + @as(usize, @intCast(band_idx_y)));
+    const v_header = readBandTexelLinear(page, glyph_band_base + @as(usize, @intCast(band_max_h)) + 1 + @as(usize, @intCast(band_idx_x)));
     return .{
-        .h_loc = calcBandLoc(glyph_x, glyph_y, h_header[1]),
+        .h_base = glyph_band_base + h_header[1],
         .h_count = h_header[0],
-        .v_loc = calcBandLoc(glyph_x, glyph_y, v_header[1]),
+        .v_base = glyph_band_base + v_header[1],
         .v_count = v_header[0],
     };
 }
@@ -1991,6 +2305,35 @@ inline fn accumulateQuadraticCoverage(
     }
 }
 
+inline fn accumulateLineCoverage(
+    result: *CoveragePair,
+    p0x: f32,
+    p0y: f32,
+    p2x: f32,
+    p2y: f32,
+    ppe: f32,
+    comptime horizontal: bool,
+) void {
+    const root_axis0 = if (horizontal) p0y else p0x;
+    const root_axis2 = if (horizontal) p2y else p2x;
+    const denom = root_axis2 - root_axis0;
+    if (@abs(denom) < 1e-10) return;
+
+    const t_raw = -root_axis0 / denom;
+    if (t_raw < -1e-5 or t_raw > 1.0 + 1e-5) return;
+    const t = std.math.clamp(t_raw, 0.0, 1.0);
+    if (t >= 1.0 - 1e-5) return;
+
+    const derivative_axis = if (horizontal) p2y - p0y else p0x - p2x;
+    if (@abs(derivative_axis) <= 1e-5) return;
+
+    const distance = if (horizontal)
+        (p0x + (p2x - p0x) * t) * ppe
+    else
+        (p0y + (p2y - p0y) * t) * ppe;
+    appendCoverageContribution(result, distance, if (derivative_axis > 0.0) 1.0 else -1.0);
+}
+
 inline fn accumulateGlyphCoverageSegment(
     result: *CoveragePair,
     segment: CurveSegment,
@@ -2014,6 +2357,19 @@ inline fn accumulateGlyphCoverageSegment(
         return .continue_scan;
     }
 
+    if (segment.kind == .line) {
+        accumulateLineCoverage(
+            result,
+            segment.p0.x - sample_rc.x,
+            segment.p0.y - sample_rc.y,
+            segment.p2.x - sample_rc.x,
+            segment.p2.y - sample_rc.y,
+            ppe,
+            horizontal,
+        );
+        return .continue_scan;
+    }
+
     const roots = if (horizontal)
         solveSegmentHorizontalRoots(segment, sample_rc.y)
     else
@@ -2034,16 +2390,15 @@ inline fn accumulateGlyphCoverageSegment(
     return .continue_scan;
 }
 
-fn evalGlyphCoverageAxis(page: anytype, sample_rc: Vec2, ppe: f32, loc: [2]u32, count: u32, comptime horizontal: bool) CoveragePair {
+fn evalGlyphCoverageAxis(page: anytype, sample_rc: Vec2, ppe: f32, band_base: usize, count: u32, comptime horizontal: bool) CoveragePair {
     var result = CoveragePair{ .cov = 0.0, .wgt = 0.0 };
     var i: u32 = 0;
     while (i < count) : (i += 1) {
-        const b_loc = calcBandLoc(loc[0], loc[1], i);
-        const curve_ref = readBandTexel(page, b_loc[0], b_loc[1]);
+        const curve_base = readBandCurveBase(page, band_base + i) orelse continue;
 
-        const tex0 = readCurveTexelF32(page, curve_ref[0], curve_ref[1]);
-        const tex1 = readCurveTexelF32(page, curve_ref[0] + 1, curve_ref[1]);
-        const tex2 = readCurveTexelF32(page, curve_ref[0] + 2, curve_ref[1]);
+        const tex0 = readCurveTexelF32Base(page, curve_base);
+        const tex1 = readCurveTexelF32Base(page, curve_base + 4);
+        const tex2 = readCurveTexelF32Base(page, curve_base + 8);
 
         const stored_kind = tex2[2];
         const direct_quadratic = stored_kind >= curve_tex.DIRECT_ENCODING_KIND_BIAS - 0.5 and
@@ -2081,8 +2436,33 @@ fn evalGlyphCoverageAxis(page: anytype, sample_rc: Vec2, ppe: f32, loc: [2]u32, 
             continue;
         }
 
-        const loc3 = calcCurveLoc(curve_ref[0], curve_ref[1], 3);
-        const meta = readCurveTexelF32_meta(page, loc3[0], loc3[1]);
+        const direct_line = stored_kind >= curve_tex.DIRECT_ENCODING_KIND_BIAS + 2.5 and
+            stored_kind < curve_tex.DIRECT_ENCODING_KIND_BIAS + 3.5;
+        const packed_line = stored_kind >= 2.5 and stored_kind < 3.5;
+        if (packed_line or direct_line) {
+            const p0_abs = if (direct_line)
+                Vec2.new(tex0[0], tex0[1])
+            else
+                Vec2.new(
+                    tex0[0] * curve_tex.PACKED_ANCHOR_CHUNK_EXTENT + tex0[2],
+                    tex0[1] * curve_tex.PACKED_ANCHOR_CHUNK_EXTENT + tex0[3],
+                );
+            const p2_abs = if (direct_line)
+                Vec2.new(tex1[0], tex1[1])
+            else
+                Vec2.new(p0_abs.x + tex1[2], p0_abs.y + tex1[3]);
+
+            const p0x = p0_abs.x - sample_rc.x;
+            const p0y = p0_abs.y - sample_rc.y;
+            const p2x = p2_abs.x - sample_rc.x;
+            const p2y = p2_abs.y - sample_rc.y;
+            const max_coord = if (horizontal) @max(p0x, p2x) else @max(p0y, p2y);
+            if (max_coord * ppe < -0.5) break;
+            accumulateLineCoverage(&result, p0x, p0y, p2x, p2y, ppe, horizontal);
+            continue;
+        }
+
+        const meta = readCurveTexelF32Base(page, curve_base + 12);
         const segment = decodeCurveSegment(tex0, tex1, tex2, meta);
         if (accumulateGlyphCoverageSegment(&result, segment, sample_rc, ppe, horizontal) == .stop_scan) break;
     }
@@ -2090,11 +2470,11 @@ fn evalGlyphCoverageAxis(page: anytype, sample_rc: Vec2, ppe: f32, loc: [2]u32, 
 }
 
 fn evalGlyphHorizCoverage(page: anytype, rc: Vec2, x_offset: f32, ppe_x: f32, state: GlyphBandState) CoveragePair {
-    return evalGlyphCoverageAxis(page, Vec2.new(rc.x + x_offset, rc.y), ppe_x, state.h_loc, state.h_count, true);
+    return evalGlyphCoverageAxis(page, Vec2.new(rc.x + x_offset, rc.y), ppe_x, state.h_base, state.h_count, true);
 }
 
 fn evalGlyphVertCoverage(page: anytype, rc: Vec2, y_offset: f32, ppe_y: f32, state: GlyphBandState) CoveragePair {
-    return evalGlyphCoverageAxis(page, Vec2.new(rc.x, rc.y + y_offset), ppe_y, state.v_loc, state.v_count, false);
+    return evalGlyphCoverageAxis(page, Vec2.new(rc.x, rc.y + y_offset), ppe_y, state.v_base, state.v_count, false);
 }
 
 fn evalGlyphCoverage(
@@ -2153,10 +2533,8 @@ fn evalGlyphCoverageSubpixel(
 // Texture access helpers
 // ---------------------------------------------------------------------------
 
-/// Read a band texture texel (RG16UI) at the given texel coordinates.
-/// The band texture is laid out as a 1D array of u16 pairs, row-major.
-fn readBandTexel(page: anytype, tx: u32, ty: u32) [2]u32 {
-    const idx = (ty * page.band_width + tx) * 2;
+fn readBandTexelLinear(page: anytype, texel_idx: usize) [2]u32 {
+    const idx = texel_idx * 2;
     if (idx + 1 >= page.band_data.len) return .{ 0, 0 };
     return .{
         @as(u32, page.band_data[idx]),
@@ -2164,9 +2542,23 @@ fn readBandTexel(page: anytype, tx: u32, ty: u32) [2]u32 {
     };
 }
 
-/// Read one curve texture texel as f32 values.
-fn readCurveTexelF32(page: anytype, tx: u32, ty: u32) [4]f32 {
-    const idx = (ty * page.curve_width + tx) * 4;
+fn readBandCurveBase(page: anytype, texel_idx: usize) ?usize {
+    const Page = switch (@typeInfo(@TypeOf(page))) {
+        .pointer => |ptr| ptr.child,
+        else => @TypeOf(page),
+    };
+    if (comptime @hasField(Page, "band_curve_bases")) {
+        if (texel_idx >= page.band_curve_bases.len) return null;
+        const base = page.band_curve_bases[texel_idx];
+        return if (base == invalid_curve_base) null else @as(usize, base);
+    }
+
+    const ref = readBandTexelLinear(page, texel_idx);
+    if (ref[0] >= page.curve_width or ref[1] >= page.curve_height) return null;
+    return @as(usize, (ref[1] * page.curve_width + ref[0]) * 4);
+}
+
+fn readCurveTexelF32Base(page: anytype, idx: usize) [4]f32 {
     const Page = switch (@typeInfo(@TypeOf(page))) {
         .pointer => |ptr| ptr.child,
         else => @TypeOf(page),
@@ -2188,10 +2580,6 @@ fn readCurveTexelF32(page: anytype, tx: u32, ty: u32) [4]f32 {
             f16ToF32(page.curve_data[idx + 3]),
         };
     }
-}
-
-fn readCurveTexelF32_meta(page: anytype, tx: u32, ty: u32) [4]f32 {
-    return readCurveTexelF32(page, tx, ty);
 }
 
 fn isDirectEncodedCurveKind(stored_kind: f32) bool {
@@ -2237,23 +2625,6 @@ fn decodeCurveSegment(tex0: [4]f32, tex1: [4]f32, tex2: [4]f32, meta: [4]f32) Cu
         .p3 = .{ .x = p0.x + tex2[0], .y = p0.y + tex2[1] },
         .weights = .{ tex2[3], meta[0], meta[1] },
     };
-}
-
-fn calcCurveLoc(glyph_x: u32, glyph_y: u32, offset: u32) [2]u32 {
-    var loc_x = glyph_x + offset;
-    var loc_y = glyph_y;
-    loc_y += loc_x >> kLogCurveTextureWidth;
-    loc_x &= CURVE_TEX_WIDTH - 1;
-    return .{ loc_x, loc_y };
-}
-
-/// Calculate band texture location with row wrapping.
-fn calcBandLoc(glyph_x: u32, glyph_y: u32, offset: u32) [2]u32 {
-    var loc_x = glyph_x + offset;
-    var loc_y = glyph_y;
-    loc_y += loc_x >> kLogBandTextureWidth;
-    loc_x &= BAND_TEX_WIDTH - 1;
-    return .{ loc_x, loc_y };
 }
 
 // ---------------------------------------------------------------------------

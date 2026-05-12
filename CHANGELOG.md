@@ -93,6 +93,11 @@
 - Vulkan no longer reads or writes a persistent pipeline cache in process-global
   cache directories during renderer init/deinit; it keeps only an in-memory
   `VkPipelineCache`.
+- CPU prepared-resource upload now builds renderer-owned sidecars for path
+  layer records, paint records, and band-to-curve indices. CPU draws still
+  consume the same atlas/layer-info data model as GL/Vulkan, but avoid
+  per-pixel layer-info decoding and repeated texture-coordinate wrapping in
+  the coverage hot path.
 
 ## 0.5.0
 
