@@ -14,10 +14,6 @@ pub const vk = @cImport({
 const build_options = @import("build_options");
 const vk_shaders = @import("vulkan_shaders");
 
-extern "c" fn fseek(stream: *std.c.FILE, offset: c_long, whence: c_int) c_int;
-extern "c" fn ftell(stream: *std.c.FILE) c_long;
-extern "c" fn rewind(stream: *std.c.FILE) void;
-
 // ── SPIR-V shader bytecode ──
 
 const vert_spv = vk_shaders.vert_spv;
@@ -276,7 +272,6 @@ pub const VulkanPipeline = struct {
     pipeline_path: vk.VkPipeline = null,
     pipeline_text_subpixel_dual: vk.VkPipeline = null,
     pipeline_cache: vk.VkPipelineCache = null,
-    pipeline_cache_dirty: bool = false,
     pipeline_layout: vk.VkPipelineLayout = null,
     desc_set_layout: vk.VkDescriptorSetLayout = null,
 
@@ -307,7 +302,6 @@ pub const VulkanPipeline = struct {
 
     pub fn init(self: *VulkanPipeline, vk_ctx: VulkanContext) !void {
         self.ctx = vk_ctx;
-        self.pipeline_cache_dirty = false;
 
         const sampler_info = std.mem.zeroInit(vk.VkSamplerCreateInfo, .{
             .sType = vk.VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
@@ -385,11 +379,10 @@ pub const VulkanPipeline = struct {
         pl_info.pPushConstantRanges = &push_range;
         try check(vk.vkCreatePipelineLayout(self.ctx.device, &pl_info, null, &self.pipeline_layout));
 
-        try self.createPersistentPipelineCache();
+        try self.createPipelineCache();
 
         // Create draw pipelines during renderer init so draw never creates pipelines.
         try self.warmGraphicsPipelines();
-        self.writePersistentPipelineCache();
 
         try self.createBuffer(
             RING_TOTAL_BYTES,
@@ -418,8 +411,6 @@ pub const VulkanPipeline = struct {
         if (!self.initialized) return;
         // Caller-owned frame synchronization must make renderer teardown safe.
         // Keep deinit free of implicit device-wide waits.
-        self.writePersistentPipelineCache();
-
         if (self.transfer_cmd_pool != null) vk.vkDestroyCommandPool(self.ctx.device, self.transfer_cmd_pool, null);
         if (self.sampler_linear != null) vk.vkDestroySampler(self.ctx.device, self.sampler_linear, null);
         if (self.sampler_nearest != null) vk.vkDestroySampler(self.ctx.device, self.sampler_nearest, null);
@@ -445,7 +436,6 @@ pub const VulkanPipeline = struct {
         self.pipeline_colr = null;
         self.pipeline_text = null;
         self.pipeline_cache = null;
-        self.pipeline_cache_dirty = false;
         self.pipeline_layout = null;
         self.persistent_map = null;
         self.initialized = false;
@@ -1070,7 +1060,6 @@ pub const VulkanPipeline = struct {
 
         var pip: vk.VkPipeline = null;
         try check(vk.vkCreateGraphicsPipelines(self.ctx.device, self.pipeline_cache, 1, &ci, null, &pip));
-        self.pipeline_cache_dirty = true;
         return pip;
     }
 
@@ -1123,94 +1112,13 @@ pub const VulkanPipeline = struct {
         }
     }
 
-    fn createPersistentPipelineCache(self: *VulkanPipeline) !void {
-        const initial_data = self.loadPersistentPipelineCacheData();
-        defer if (initial_data) |data| std.heap.c_allocator.free(data);
-
-        var ci = std.mem.zeroInit(vk.VkPipelineCacheCreateInfo, .{
+    fn createPipelineCache(self: *VulkanPipeline) !void {
+        const ci = std.mem.zeroInit(vk.VkPipelineCacheCreateInfo, .{
             .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO,
-            .initialDataSize = if (initial_data) |data| data.len else 0,
-            .pInitialData = if (initial_data) |data| data.ptr else null,
         });
-
         var cache: vk.VkPipelineCache = null;
-        const result = vk.vkCreatePipelineCache(self.ctx.device, &ci, null, &cache);
-        if (result == vk.VK_SUCCESS) {
-            self.pipeline_cache = cache;
-            return;
-        }
-
-        if (initial_data != null and result == vk.VK_ERROR_INITIALIZATION_FAILED) {
-            std.debug.print("Vulkan: ignoring stale pipeline cache ({})\n", .{result});
-            ci.initialDataSize = 0;
-            ci.pInitialData = null;
-            try check(vk.vkCreatePipelineCache(self.ctx.device, &ci, null, &cache));
-            self.pipeline_cache = cache;
-            return;
-        }
-
-        try check(result);
-    }
-
-    fn writePersistentPipelineCache(self: *VulkanPipeline) void {
-        if (self.pipeline_cache == null or !self.pipeline_cache_dirty) return;
-
-        var size: usize = 0;
-        if (vk.vkGetPipelineCacheData(self.ctx.device, self.pipeline_cache, &size, null) != vk.VK_SUCCESS) return;
-        if (size == 0 or size > 64 * 1024 * 1024) return;
-
-        const data = std.heap.c_allocator.alloc(u8, size) catch return;
-        defer std.heap.c_allocator.free(data);
-        if (vk.vkGetPipelineCacheData(self.ctx.device, self.pipeline_cache, &size, data.ptr) != vk.VK_SUCCESS) return;
-        if (size == 0) return;
-
-        var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const dir_path = pipelineCacheDirPath(&dir_buf) orelse return;
-        _ = std.c.mkdir(dir_path.ptr, 0o755);
-
-        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const path = self.pipelineCacheFilePath(&path_buf) orelse return;
-        const file = std.c.fopen(path.ptr, "wb") orelse return;
-        defer _ = std.c.fclose(file);
-        if (std.c.fwrite(data.ptr, 1, size, file) != size) {
-            std.debug.print("Vulkan: failed to write pipeline cache\n", .{});
-            return;
-        }
-        self.pipeline_cache_dirty = false;
-    }
-
-    fn loadPersistentPipelineCacheData(self: *const VulkanPipeline) ?[]u8 {
-        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const path = self.pipelineCacheFilePath(&path_buf) orelse return null;
-        const file = std.c.fopen(path.ptr, "rb") orelse return null;
-        defer _ = std.c.fclose(file);
-
-        if (fseek(file, 0, 2) != 0) return null;
-        const size_long = ftell(file);
-        if (size_long <= 0 or size_long > 64 * 1024 * 1024) return null;
-        rewind(file);
-
-        const size: usize = @intCast(size_long);
-        const data = std.heap.c_allocator.alloc(u8, size) catch return null;
-        if (std.c.fread(data.ptr, 1, size, file) != size) {
-            std.heap.c_allocator.free(data);
-            return null;
-        }
-        return data;
-    }
-
-    fn pipelineCacheFilePath(self: *const VulkanPipeline, buf: []u8) ?[:0]const u8 {
-        var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const dir_path = pipelineCacheDirPath(&dir_buf) orelse return null;
-
-        var props: vk.VkPhysicalDeviceProperties = undefined;
-        vk.vkGetPhysicalDeviceProperties(self.ctx.physical_device, &props);
-
-        return std.fmt.bufPrintZ(
-            buf,
-            "{s}/vk-pipeline-cache-{d}-{d}-{d}.bin",
-            .{ dir_path, props.vendorID, props.deviceID, props.driverVersion },
-        ) catch null;
+        try check(vk.vkCreatePipelineCache(self.ctx.device, &ci, null, &cache));
+        self.pipeline_cache = cache;
     }
 
     fn createShaderModule(self: *const VulkanPipeline, code: []const u8) !vk.VkShaderModule {
@@ -1684,18 +1592,6 @@ pub const VulkanPipeline = struct {
         try self.finishUploadStaging(prepared, staging_buf, staging_mem);
     }
 };
-
-// ── Module-level helpers that don't access instance state ──
-
-fn pipelineCacheDirPath(buf: []u8) ?[:0]const u8 {
-    if (std.c.getenv("XDG_CACHE_HOME")) |root| {
-        return std.fmt.bufPrintZ(buf, "{s}/snail", .{std.mem.span(root)}) catch null;
-    }
-    if (std.c.getenv("HOME")) |home| {
-        return std.fmt.bufPrintZ(buf, "{s}/.cache/snail", .{std.mem.span(home)}) catch null;
-    }
-    return null;
-}
 
 fn setViewportAndScissor(cmd: vk.VkCommandBuffer, viewport_w: f32, viewport_h: f32) void {
     const vp = vk.VkViewport{

@@ -54,6 +54,9 @@
   `PreparedResourceRetirementQueue`.
 - Vulkan resource-upload staging metadata and layer-info scratch now use the
   caller-provided prepared-resource allocator instead of process allocators.
+- Vulkan no longer reads or writes a persistent pipeline cache in process-global
+  cache directories during renderer init/deinit; it keeps only an in-memory
+  `VkPipelineCache`.
 
 ## 0.5.0
 
