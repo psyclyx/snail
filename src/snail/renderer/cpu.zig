@@ -120,49 +120,180 @@ fn fract(v: f32) f32 {
     return v - @floor(v);
 }
 
-const invalid_curve_base = std.math.maxInt(u32);
+const invalid_prepared_cold = std.math.maxInt(u32);
+
+// Coefficients only touched after the hot record identifies a curve as conic or cubic.
+const PreparedAxisCurveCold = struct {
+    cubic_a_root: f32 = 0.0,
+    cubic_b_root: f32 = 0.0,
+    cubic_c_root: f32 = 0.0,
+    cubic_a_along: f32 = 0.0,
+    cubic_b_along: f32 = 0.0,
+    cubic_c_along: f32 = 0.0,
+    conic_num_a_root: f32 = 0.0,
+    conic_num_b_root: f32 = 0.0,
+    conic_num_c_root: f32 = 0.0,
+    conic_num_a_along: f32 = 0.0,
+    conic_num_b_along: f32 = 0.0,
+    conic_num_c_along: f32 = 0.0,
+    conic_den_a: f32 = 0.0,
+    conic_den_b: f32 = 0.0,
+    conic_den_c: f32 = 0.0,
+
+    fn fromSegment(segment: CurveSegment, comptime horizontal: bool) PreparedAxisCurveCold {
+        const p0_root = if (horizontal) segment.p0.y else segment.p0.x;
+        const p1_root = if (horizontal) segment.p1.y else segment.p1.x;
+        const p2_root = if (horizontal) segment.p2.y else segment.p2.x;
+        const p3_root = if (horizontal) segment.p3.y else segment.p3.x;
+        const p0_along = if (horizontal) segment.p0.x else segment.p0.y;
+        const p1_along = if (horizontal) segment.p1.x else segment.p1.y;
+        const p2_along = if (horizontal) segment.p2.x else segment.p2.y;
+        const p3_along = if (horizontal) segment.p3.x else segment.p3.y;
+
+        const w0 = segment.weights[0];
+        const w1 = segment.weights[1];
+        const w2 = segment.weights[2];
+        const p0_root_w = p0_root * w0;
+        const p1_root_w = p1_root * w1;
+        const p2_root_w = p2_root * w2;
+        const p0_along_w = p0_along * w0;
+        const p1_along_w = p1_along * w1;
+        const p2_along_w = p2_along * w2;
+
+        return .{
+            .cubic_a_root = -p0_root + 3.0 * p1_root - 3.0 * p2_root + p3_root,
+            .cubic_b_root = 3.0 * p0_root - 6.0 * p1_root + 3.0 * p2_root,
+            .cubic_c_root = -3.0 * p0_root + 3.0 * p1_root,
+            .cubic_a_along = -p0_along + 3.0 * p1_along - 3.0 * p2_along + p3_along,
+            .cubic_b_along = 3.0 * p0_along - 6.0 * p1_along + 3.0 * p2_along,
+            .cubic_c_along = -3.0 * p0_along + 3.0 * p1_along,
+            .conic_num_a_root = p0_root_w - 2.0 * p1_root_w + p2_root_w,
+            .conic_num_b_root = 2.0 * (p1_root_w - p0_root_w),
+            .conic_num_c_root = p0_root_w,
+            .conic_num_a_along = p0_along_w - 2.0 * p1_along_w + p2_along_w,
+            .conic_num_b_along = 2.0 * (p1_along_w - p0_along_w),
+            .conic_num_c_along = p0_along_w,
+            .conic_den_a = w0 - 2.0 * w1 + w2,
+            .conic_den_b = 2.0 * (w1 - w0),
+            .conic_den_c = w0,
+        };
+    }
+};
+
+// Hot per-axis eval record laid out for scanline walking. Quadratic and line
+// coverage use only this record; conic/cubic coefficients are indexed separately.
+const PreparedAxisCurve = struct {
+    valid: bool = false,
+    kind: bezier.CurveKind = .quadratic,
+    cold_index: u32 = invalid_prepared_cold,
+    max_axis: f32 = 0.0,
+    p0_root: f32 = 0.0,
+    p1_root: f32 = 0.0,
+    p2_root: f32 = 0.0,
+    p0_along: f32 = 0.0,
+    a_root: f32 = 0.0,
+    b_root: f32 = 0.0,
+    a_along: f32 = 0.0,
+    b_along: f32 = 0.0,
+
+    fn fromSegment(segment: CurveSegment, comptime horizontal: bool) PreparedAxisCurve {
+        const p0_root = if (horizontal) segment.p0.y else segment.p0.x;
+        const p1_root = if (horizontal) segment.p1.y else segment.p1.x;
+        const p2_root = if (horizontal) segment.p2.y else segment.p2.x;
+        const p0_along = if (horizontal) segment.p0.x else segment.p0.y;
+        const p1_along = if (horizontal) segment.p1.x else segment.p1.y;
+        const p2_along = if (horizontal) segment.p2.x else segment.p2.y;
+
+        return .{
+            .valid = true,
+            .kind = segment.kind,
+            .max_axis = if (horizontal) segmentMaxX(segment) else segmentMaxY(segment),
+            .p0_root = p0_root,
+            .p1_root = p1_root,
+            .p2_root = p2_root,
+            .p0_along = p0_along,
+            .a_root = if (segment.kind == .line) p2_root - p0_root else p0_root - 2.0 * p1_root + p2_root,
+            .b_root = p0_root - p1_root,
+            .a_along = if (segment.kind == .line) p2_along - p0_along else p0_along - 2.0 * p1_along + p2_along,
+            .b_along = p0_along - p1_along,
+        };
+    }
+};
+
+inline fn preparedAxisCurveNeedsCold(kind: bezier.CurveKind) bool {
+    return kind == .conic or kind == .cubic;
+}
+
+fn prepareAxisCurve(
+    allocator: std.mem.Allocator,
+    cold_records: *std.ArrayList(PreparedAxisCurveCold),
+    segment: CurveSegment,
+    comptime horizontal: bool,
+) !PreparedAxisCurve {
+    var curve = PreparedAxisCurve.fromSegment(segment, horizontal);
+    if (preparedAxisCurveNeedsCold(segment.kind)) {
+        curve.cold_index = @intCast(cold_records.items.len);
+        try cold_records.append(allocator, PreparedAxisCurveCold.fromSegment(segment, horizontal));
+    }
+    return curve;
+}
 
 const PreparedAtlasPage = struct {
-    curve_data_f32: []f32,
-    curve_width: u32,
-    curve_height: u32,
     band_data: []const u16,
-    band_curve_bases: []u32,
+    h_curves: []PreparedAxisCurve,
+    v_curves: []PreparedAxisCurve,
+    h_cold_curves: []PreparedAxisCurveCold,
+    v_cold_curves: []PreparedAxisCurveCold,
     band_width: u32,
     band_height: u32,
 
     fn init(allocator: std.mem.Allocator, page: *const snail.lowlevel.AtlasPage) !PreparedAtlasPage {
         const curve_data = try allocator.alloc(f32, page.curve_data.len);
-        errdefer allocator.free(curve_data);
+        defer allocator.free(curve_data);
         for (page.curve_data, 0..) |value, i| {
             curve_data[i] = f16ToF32(value);
         }
         const band_texel_count = page.band_data.len / 2;
-        const band_curve_bases = try allocator.alloc(u32, band_texel_count);
-        errdefer allocator.free(band_curve_bases);
-        for (band_curve_bases, 0..) |*base, i| {
-            const pair = i * 2;
-            const tx: u32 = page.band_data[pair];
-            const ty: u32 = page.band_data[pair + 1];
-            base.* = if (tx < page.curve_width and ty < page.curve_height)
-                @intCast((ty * page.curve_width + tx) * 4)
-            else
-                invalid_curve_base;
+        const h_curves = try allocator.alloc(PreparedAxisCurve, band_texel_count);
+        errdefer allocator.free(h_curves);
+        const v_curves = try allocator.alloc(PreparedAxisCurve, band_texel_count);
+        errdefer allocator.free(v_curves);
+        @memset(h_curves, .{});
+        @memset(v_curves, .{});
+        var h_cold_curves: std.ArrayList(PreparedAxisCurveCold) = .empty;
+        errdefer h_cold_curves.deinit(allocator);
+        var v_cold_curves: std.ArrayList(PreparedAxisCurveCold) = .empty;
+        errdefer v_cold_curves.deinit(allocator);
+
+        for (0..band_texel_count) |texel_idx| {
+            const curve_base = readBandCurveBase(page, texel_idx) orelse continue;
+            const segment = decodeCurveSegmentFromSlice(curve_data, @intCast(curve_base));
+
+            h_curves[texel_idx] = try prepareAxisCurve(allocator, &h_cold_curves, segment, true);
+            v_curves[texel_idx] = try prepareAxisCurve(allocator, &v_cold_curves, segment, false);
         }
+
+        const h_cold_curves_owned = try h_cold_curves.toOwnedSlice(allocator);
+        errdefer allocator.free(h_cold_curves_owned);
+        const v_cold_curves_owned = try v_cold_curves.toOwnedSlice(allocator);
+        errdefer allocator.free(v_cold_curves_owned);
+
         return .{
-            .curve_data_f32 = curve_data,
-            .curve_width = page.curve_width,
-            .curve_height = page.curve_height,
             .band_data = page.band_data,
-            .band_curve_bases = band_curve_bases,
+            .h_curves = h_curves,
+            .v_curves = v_curves,
+            .h_cold_curves = h_cold_curves_owned,
+            .v_cold_curves = v_cold_curves_owned,
             .band_width = page.band_width,
             .band_height = page.band_height,
         };
     }
 
     fn deinit(self: *PreparedAtlasPage, allocator: std.mem.Allocator) void {
-        allocator.free(self.curve_data_f32);
-        allocator.free(self.band_curve_bases);
+        allocator.free(self.h_curves);
+        allocator.free(self.v_curves);
+        allocator.free(self.h_cold_curves);
+        allocator.free(self.v_cold_curves);
         self.* = undefined;
     }
 };
@@ -988,11 +1119,11 @@ pub const CpuRenderer = struct {
         var row: u32 = @intCast(py0);
         while (row < @as(u32, @intCast(py1))) : (row += 1) {
             var col: u32 = @intCast(px0);
-            while (col < @as(u32, @intCast(px1))) : (col += 1) {
-                const display_local = inverse.applyPoint(.{
-                    .x = @as(f32, @floatFromInt(col)) + 0.5,
-                    .y = @as(f32, @floatFromInt(row)) + 0.5,
-                });
+            var display_local = inverse.applyPoint(.{
+                .x = @as(f32, @floatFromInt(col)) + 0.5,
+                .y = @as(f32, @floatFromInt(row)) + 0.5,
+            });
+            while (col < @as(u32, @intCast(px1))) : (advanceLocalPixel(&col, &display_local, sample_dx)) {
                 if (!allow_subpixel or self.subpixel_order == .none) {
                     const cov = self.applyCoverageTransfer(evalGlyphCoverage(page, display_local.x, display_local.y, ppe.x, ppe.y, be, band_max_h, band_max_v, self.fill_rule));
                     if (cov < 1.0 / 255.0) continue;
@@ -2390,7 +2521,213 @@ inline fn accumulateGlyphCoverageSegment(
     return .continue_scan;
 }
 
+inline fn solvePreparedAxisQuadratic(curve: *const PreparedAxisCurve, p0_along: f32, p0_root: f32, ppe: f32) [2]f32 {
+    const ax = curve.a_along;
+    const ay = curve.a_root;
+    const bx = curve.b_along;
+    const by = curve.b_root;
+    const eps: f32 = 1.0 / 65536.0;
+
+    var t1: f32 = undefined;
+    var t2: f32 = undefined;
+
+    if (@abs(ay) < eps) {
+        t1 = if (@abs(by) < eps) 0.0 else p0_root * 0.5 / by;
+        t2 = t1;
+    } else {
+        const sq = @sqrt(@max(by * by - ay * p0_root, 0.0));
+        if (by >= 0.0) {
+            const q = by + sq;
+            t2 = q / ay;
+            t1 = if (@abs(q) < eps) 0.0 else p0_root / q;
+        } else {
+            const q = by - sq;
+            t1 = q / ay;
+            t2 = if (@abs(q) < eps) 0.0 else p0_root / q;
+        }
+    }
+
+    const d1 = (ax * t1 - bx * 2.0) * t1 + p0_along;
+    const d2 = (ax * t2 - bx * 2.0) * t2 + p0_along;
+    return .{ d1 * ppe, d2 * ppe };
+}
+
+inline fn accumulatePreparedQuadraticCoverage(
+    result: *CoveragePair,
+    curve: *const PreparedAxisCurve,
+    sample_root: f32,
+    sample_along: f32,
+    ppe: f32,
+    comptime horizontal: bool,
+) void {
+    const p0_root = curve.p0_root - sample_root;
+    const p1_root = curve.p1_root - sample_root;
+    const p2_root = curve.p2_root - sample_root;
+    const code = calcRootCode(p0_root, p1_root, p2_root);
+    if (code == 0) return;
+
+    const roots = solvePreparedAxisQuadratic(curve, curve.p0_along - sample_along, p0_root, ppe);
+
+    if ((code & 1) != 0) {
+        appendCoverageContribution(result, roots[0], if (horizontal) 1.0 else -1.0);
+    }
+    if (code > 1) {
+        appendCoverageContribution(result, roots[1], if (horizontal) -1.0 else 1.0);
+    }
+}
+
+inline fn accumulatePreparedLineCoverage(
+    result: *CoveragePair,
+    curve: *const PreparedAxisCurve,
+    sample_root: f32,
+    sample_along: f32,
+    ppe: f32,
+    comptime horizontal: bool,
+) void {
+    const denom = curve.a_root;
+    if (@abs(denom) < 1e-10) return;
+
+    const t_raw = -(curve.p0_root - sample_root) / denom;
+    if (t_raw < -1e-5 or t_raw > 1.0 + 1e-5) return;
+    const t = std.math.clamp(t_raw, 0.0, 1.0);
+    if (t >= 1.0 - 1e-5) return;
+
+    const derivative_axis = if (horizontal) curve.a_root else -curve.a_root;
+    if (@abs(derivative_axis) <= 1e-5) return;
+
+    const distance = (curve.p0_along - sample_along + curve.a_along * t) * ppe;
+    appendCoverageContribution(result, distance, if (derivative_axis > 0.0) 1.0 else -1.0);
+}
+
+inline fn solvePreparedConicRoots(cold: *const PreparedAxisCurveCold, sample_root: f32) CurveRoots {
+    return solveQuadraticRoots(
+        cold.conic_num_a_root - sample_root * cold.conic_den_a,
+        cold.conic_num_b_root - sample_root * cold.conic_den_b,
+        cold.conic_num_c_root - sample_root * cold.conic_den_c,
+    );
+}
+
+inline fn solvePreparedCubicRoots(curve: *const PreparedAxisCurve, cold: *const PreparedAxisCurveCold, sample_root: f32) CurveRoots {
+    return solveCubicRoots(
+        cold.cubic_a_root,
+        cold.cubic_b_root,
+        cold.cubic_c_root,
+        curve.p0_root - sample_root,
+    );
+}
+
+inline fn evaluatePreparedConicAlong(cold: *const PreparedAxisCurveCold, t: f32) f32 {
+    const denom = @max((cold.conic_den_a * t + cold.conic_den_b) * t + cold.conic_den_c, 1.0 / 65536.0);
+    return ((cold.conic_num_a_along * t + cold.conic_num_b_along) * t + cold.conic_num_c_along) / denom;
+}
+
+inline fn derivativePreparedConicRoot(cold: *const PreparedAxisCurveCold, t: f32) f32 {
+    const denom = @max((cold.conic_den_a * t + cold.conic_den_b) * t + cold.conic_den_c, 1.0 / 65536.0);
+    const denom_prime = 2.0 * cold.conic_den_a * t + cold.conic_den_b;
+    const n = (cold.conic_num_a_root * t + cold.conic_num_b_root) * t + cold.conic_num_c_root;
+    const n_prime = 2.0 * cold.conic_num_a_root * t + cold.conic_num_b_root;
+    const inv = 1.0 / (denom * denom);
+    return (n_prime * denom - n * denom_prime) * inv;
+}
+
+inline fn evaluatePreparedCubicAlong(curve: *const PreparedAxisCurve, cold: *const PreparedAxisCurveCold, t: f32) f32 {
+    return ((cold.cubic_a_along * t + cold.cubic_b_along) * t + cold.cubic_c_along) * t + curve.p0_along;
+}
+
+inline fn derivativePreparedCubicRoot(cold: *const PreparedAxisCurveCold, t: f32) f32 {
+    return (3.0 * cold.cubic_a_root * t + 2.0 * cold.cubic_b_root) * t + cold.cubic_c_root;
+}
+
+fn preparedCurveCold(curve: *const PreparedAxisCurve, cold_curves: []const PreparedAxisCurveCold) *const PreparedAxisCurveCold {
+    if (curve.cold_index >= cold_curves.len) {
+        @panic("prepared conic/cubic curve is missing cold coefficient data");
+    }
+    return &cold_curves[curve.cold_index];
+}
+
+inline fn accumulatePreparedCurveCoverage(
+    result: *CoveragePair,
+    curve: *const PreparedAxisCurve,
+    cold_curves: []const PreparedAxisCurveCold,
+    sample_rc: Vec2,
+    ppe: f32,
+    comptime horizontal: bool,
+) CoverageScan {
+    const sample_root = if (horizontal) sample_rc.y else sample_rc.x;
+    const sample_along = if (horizontal) sample_rc.x else sample_rc.y;
+    const max_coord = curve.max_axis - sample_along;
+    if (max_coord * ppe < -0.5) return .stop_scan;
+
+    if (curve.kind == .quadratic) {
+        accumulatePreparedQuadraticCoverage(result, curve, sample_root, sample_along, ppe, horizontal);
+        return .continue_scan;
+    }
+
+    if (curve.kind == .line) {
+        accumulatePreparedLineCoverage(
+            result,
+            curve,
+            sample_root,
+            sample_along,
+            ppe,
+            horizontal,
+        );
+        return .continue_scan;
+    }
+
+    const cold = preparedCurveCold(curve, cold_curves);
+    const roots = switch (curve.kind) {
+        .conic => solvePreparedConicRoots(cold, sample_root),
+        .cubic => solvePreparedCubicRoots(curve, cold, sample_root),
+        .quadratic, .line => unreachable,
+    };
+
+    for (roots.t[0..roots.count]) |t| {
+        if (t >= 1.0 - 1e-5) continue;
+        const along = switch (curve.kind) {
+            .conic => evaluatePreparedConicAlong(cold, t),
+            .cubic => evaluatePreparedCubicAlong(curve, cold, t),
+            .quadratic, .line => unreachable,
+        };
+        const root_deriv = switch (curve.kind) {
+            .conic => derivativePreparedConicRoot(cold, t),
+            .cubic => derivativePreparedCubicRoot(cold, t),
+            .quadratic, .line => unreachable,
+        };
+        const derivative_axis = if (horizontal) root_deriv else -root_deriv;
+        if (@abs(derivative_axis) <= 1e-5) continue;
+        const distance = (along - sample_along) * ppe;
+        appendCoverageContribution(result, distance, if (derivative_axis > 0.0) 1.0 else -1.0);
+    }
+    return .continue_scan;
+}
+
+fn evalPreparedGlyphCoverageAxisFromBand(page: anytype, sample_rc: Vec2, ppe: f32, band_base: usize, count: u32, comptime horizontal: bool) CoveragePair {
+    var result = CoveragePair{ .cov = 0.0, .wgt = 0.0 };
+    const curves = if (horizontal) page.h_curves else page.v_curves;
+    const cold_curves = if (horizontal) page.h_cold_curves else page.v_cold_curves;
+    if (band_base >= curves.len) return result;
+    const band_count = @min(@as(usize, count), curves.len - band_base);
+    const band_curves = curves[band_base..][0..band_count];
+
+    var i: usize = 0;
+    while (i < band_count) : (i += 1) {
+        const curve = &band_curves[i];
+        if (!curve.valid) continue;
+        if (accumulatePreparedCurveCoverage(&result, curve, cold_curves, sample_rc, ppe, horizontal) == .stop_scan) break;
+    }
+    return result;
+}
+
 fn evalGlyphCoverageAxis(page: anytype, sample_rc: Vec2, ppe: f32, band_base: usize, count: u32, comptime horizontal: bool) CoveragePair {
+    const Page = switch (@typeInfo(@TypeOf(page))) {
+        .pointer => |ptr| ptr.child,
+        else => @TypeOf(page),
+    };
+    if (comptime @hasField(Page, "h_curves")) {
+        return evalPreparedGlyphCoverageAxisFromBand(page, sample_rc, ppe, band_base, count, horizontal);
+    }
+
     var result = CoveragePair{ .cov = 0.0, .wgt = 0.0 };
     var i: u32 = 0;
     while (i < count) : (i += 1) {
@@ -2543,16 +2880,6 @@ fn readBandTexelLinear(page: anytype, texel_idx: usize) [2]u32 {
 }
 
 fn readBandCurveBase(page: anytype, texel_idx: usize) ?usize {
-    const Page = switch (@typeInfo(@TypeOf(page))) {
-        .pointer => |ptr| ptr.child,
-        else => @TypeOf(page),
-    };
-    if (comptime @hasField(Page, "band_curve_bases")) {
-        if (texel_idx >= page.band_curve_bases.len) return null;
-        const base = page.band_curve_bases[texel_idx];
-        return if (base == invalid_curve_base) null else @as(usize, base);
-    }
-
     const ref = readBandTexelLinear(page, texel_idx);
     if (ref[0] >= page.curve_width or ref[1] >= page.curve_height) return null;
     return @as(usize, (ref[1] * page.curve_width + ref[0]) * 4);
@@ -2580,6 +2907,25 @@ fn readCurveTexelF32Base(page: anytype, idx: usize) [4]f32 {
             f16ToF32(page.curve_data[idx + 3]),
         };
     }
+}
+
+fn readCurveTexelF32Slice(data: []const f32, idx: usize) [4]f32 {
+    if (idx + 3 >= data.len) return .{ 0, 0, 0, 0 };
+    return .{
+        data[idx + 0],
+        data[idx + 1],
+        data[idx + 2],
+        data[idx + 3],
+    };
+}
+
+fn decodeCurveSegmentFromSlice(curve_data_f32: []const f32, curve_base: u32) CurveSegment {
+    const base: usize = @intCast(curve_base);
+    const tex0 = readCurveTexelF32Slice(curve_data_f32, base);
+    const tex1 = readCurveTexelF32Slice(curve_data_f32, base + 4);
+    const tex2 = readCurveTexelF32Slice(curve_data_f32, base + 8);
+    const meta = readCurveTexelF32Slice(curve_data_f32, base + 12);
+    return decodeCurveSegment(tex0, tex1, tex2, meta);
 }
 
 fn isDirectEncodedCurveKind(stored_kind: f32) bool {

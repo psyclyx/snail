@@ -18,11 +18,20 @@ pub const KEY_UP = wayland.KEY_UP;
 pub const KEY_DOWN = wayland.KEY_DOWN;
 
 var app: ?*wayland.Window = null;
-var shm_pool: ?*c.wl_shm_pool = null;
-var shm_fd: std.posix.fd_t = -1;
-var shm_map: ?[]align(std.heap.page_size_min) u8 = null;
-var shm_size: usize = 0;
-var wl_buffer: ?*c.wl_buffer = null;
+const presentation_buffer_count = 2;
+const PresentationBuffer = struct {
+    pool: ?*c.wl_shm_pool = null,
+    fd: std.posix.fd_t = -1,
+    map: ?[]align(std.heap.page_size_min) u8 = null,
+    size: usize = 0,
+    wl_buffer: ?*c.wl_buffer = null,
+    busy: bool = false,
+};
+
+var presentation_buffers = [_]PresentationBuffer{.{}} ** presentation_buffer_count;
+var next_presentation_buffer: usize = 0;
+var frame_callback: ?*c.wl_callback = null;
+var frame_pending: bool = false;
 var pixel_ptr: ?[*]u8 = null;
 var render_buf: ?[]u8 = null; // separate RGBA buffer for CpuRenderer
 var buf_width: u32 = 0;
@@ -50,6 +59,7 @@ pub fn deinit() void {
 
 pub fn shouldClose() bool {
     if (app) |window| {
+        waitForFrameCallback(window);
         window.pumpEvents();
         if (window.consumeResized() or window.consumeScaleChanged()) {
             const size = window.getFramebufferSize();
@@ -73,10 +83,10 @@ pub fn getBufferSize() [2]u32 {
 /// Commit the current pixel buffer to the Wayland surface.
 pub fn swapBuffers() void {
     if (app) |window| {
-        if (wl_buffer) |buf| {
+        if (acquirePresentationBuffer(window)) |present| {
             // Convert RGBA (CpuRenderer) → BGRA (ARGB8888 little-endian) into shm buffer
             if (render_buf) |src| {
-                if (shm_map) |dst_slice| {
+                if (present.map) |dst_slice| {
                     const dst = dst_slice.ptr;
                     const total = @as(usize, buf_width) * buf_height;
                     var i: usize = 0;
@@ -89,6 +99,15 @@ pub fn swapBuffers() void {
                     }
                 }
             }
+            const callback = c.wl_surface_frame(window.surface);
+            if (callback) |cb| {
+                if (frame_callback) |old| c.wl_callback_destroy(old);
+                frame_callback = cb;
+                frame_pending = true;
+                _ = c.wl_callback_add_listener(cb, &frame_listener, null);
+            }
+            const buf = present.wl_buffer orelse return;
+            present.busy = true;
             c.wl_surface_attach(window.surface, buf, 0, 0);
             c.wl_surface_damage_buffer(window.surface, 0, 0, @intCast(buf_width), @intCast(buf_height));
             c.wl_surface_commit(window.surface);
@@ -153,59 +172,94 @@ pub fn detectCurrentMonitorSubpixelOrder(base: SubpixelOrder) SubpixelOrder {
 
 // ── wl_shm buffer management ──
 
+fn waitForFrameCallback(window: *wayland.Window) void {
+    while (frame_pending and !window.shouldClose()) {
+        if (c.wl_display_dispatch(window.display) < 0) {
+            frame_pending = false;
+            break;
+        }
+    }
+}
+
+fn acquirePresentationBuffer(window: *wayland.Window) ?*PresentationBuffer {
+    while (!window.shouldClose()) {
+        for (0..presentation_buffer_count) |offset| {
+            const idx = (next_presentation_buffer + offset) % presentation_buffer_count;
+            if (presentation_buffers[idx].wl_buffer != null and !presentation_buffers[idx].busy) {
+                next_presentation_buffer = (idx + 1) % presentation_buffer_count;
+                return &presentation_buffers[idx];
+            }
+        }
+        if (c.wl_display_dispatch(window.display) < 0) return null;
+    }
+    return null;
+}
+
 fn createShmBuffer(width: u32, height: u32) !void {
     const window = app orelse return error.NoWindow;
-    const wl_shm = window.shm orelse return error.NoShm;
 
     const stride = width * 4;
     const size = @as(usize, stride) * height;
 
-    shm_fd = try std.posix.memfd_create("snail-cpu", 0);
+    // CpuRenderer writes RGBA; we convert to BGRA in swapBuffers
+    render_buf = try std.heap.c_allocator.alloc(u8, size);
     errdefer {
-        _ = std.c.close(shm_fd);
-        shm_fd = -1;
+        std.heap.c_allocator.free(render_buf.?);
+        render_buf = null;
     }
-    if (std.c.ftruncate(shm_fd, @intCast(size)) != 0) return error.FtruncateFailed;
+    errdefer for (&presentation_buffers) |*buffer| destroyPresentationBuffer(buffer);
+    for (&presentation_buffers) |*buffer| {
+        try createPresentationBuffer(window, buffer, width, height, stride, size);
+    }
+    pixel_ptr = render_buf.?.ptr;
+    buf_width = width;
+    buf_height = height;
+    next_presentation_buffer = 0;
+}
 
-    shm_map = try std.posix.mmap(null, size, .{ .READ = true, .WRITE = true }, .{ .TYPE = .SHARED }, shm_fd, 0);
-    shm_size = size;
+fn createPresentationBuffer(window: *wayland.Window, out: *PresentationBuffer, width: u32, height: u32, stride: u32, size: usize) !void {
+    const wl_shm = window.shm orelse return error.NoShm;
 
-    shm_pool = c.wl_shm_create_pool(wl_shm, shm_fd, @intCast(size)) orelse return error.ShmPoolFailed;
+    out.fd = try std.posix.memfd_create("snail-cpu", 0);
+    errdefer {
+        _ = std.c.close(out.fd);
+        out.fd = -1;
+    }
+    if (std.c.ftruncate(out.fd, @intCast(size)) != 0) return error.FtruncateFailed;
+
+    out.map = try std.posix.mmap(null, size, .{ .READ = true, .WRITE = true }, .{ .TYPE = .SHARED }, out.fd, 0);
+    errdefer {
+        std.posix.munmap(out.map.?);
+        out.map = null;
+    }
+    out.size = size;
+
+    out.pool = c.wl_shm_create_pool(wl_shm, out.fd, @intCast(size)) orelse return error.ShmPoolFailed;
+    errdefer {
+        c.wl_shm_pool_destroy(out.pool.?);
+        out.pool = null;
+    }
 
     const WL_SHM_FORMAT_XRGB8888 = 1;
-    wl_buffer = c.wl_shm_pool_create_buffer(
-        shm_pool.?,
+    out.wl_buffer = c.wl_shm_pool_create_buffer(
+        out.pool.?,
         0,
         @intCast(width),
         @intCast(height),
         @intCast(stride),
         WL_SHM_FORMAT_XRGB8888,
     ) orelse return error.BufferCreateFailed;
-
-    // CpuRenderer writes RGBA; we convert to BGRA in swapBuffers
-    render_buf = try std.heap.c_allocator.alloc(u8, size);
-    pixel_ptr = render_buf.?.ptr;
-    buf_width = width;
-    buf_height = height;
+    out.busy = false;
+    _ = c.wl_buffer_add_listener(out.wl_buffer.?, &buffer_listener, out);
 }
 
 fn destroyShmBuffer() void {
-    if (wl_buffer) |buf| {
-        c.wl_buffer_destroy(buf);
-        wl_buffer = null;
+    if (frame_callback) |cb| {
+        c.wl_callback_destroy(cb);
+        frame_callback = null;
+        frame_pending = false;
     }
-    if (shm_pool) |pool| {
-        c.wl_shm_pool_destroy(pool);
-        shm_pool = null;
-    }
-    if (shm_map) |map| {
-        std.posix.munmap(map);
-        shm_map = null;
-    }
-    if (shm_fd >= 0) {
-        _ = std.c.close(shm_fd);
-        shm_fd = -1;
-    }
+    for (&presentation_buffers) |*buffer| destroyPresentationBuffer(buffer);
     if (render_buf) |rb| {
         std.heap.c_allocator.free(rb);
         render_buf = null;
@@ -213,5 +267,32 @@ fn destroyShmBuffer() void {
     pixel_ptr = null;
     buf_width = 0;
     buf_height = 0;
-    shm_size = 0;
+    next_presentation_buffer = 0;
 }
+
+fn destroyPresentationBuffer(buffer: *PresentationBuffer) void {
+    if (buffer.wl_buffer) |buf| c.wl_buffer_destroy(buf);
+    if (buffer.pool) |pool| c.wl_shm_pool_destroy(pool);
+    if (buffer.map) |map| std.posix.munmap(map);
+    if (buffer.fd >= 0) _ = std.c.close(buffer.fd);
+    buffer.* = .{};
+}
+
+fn bufferRelease(data: ?*anyopaque, _: ?*c.wl_buffer) callconv(.c) void {
+    const buffer: *PresentationBuffer = @ptrCast(@alignCast(data.?));
+    buffer.busy = false;
+}
+
+const buffer_listener = c.wl_buffer_listener{
+    .release = bufferRelease,
+};
+
+fn frameDone(_: ?*anyopaque, callback: ?*c.wl_callback, _: u32) callconv(.c) void {
+    if (callback) |cb| c.wl_callback_destroy(cb);
+    if (frame_callback == callback) frame_callback = null;
+    frame_pending = false;
+}
+
+const frame_listener = c.wl_callback_listener{
+    .done = frameDone,
+};

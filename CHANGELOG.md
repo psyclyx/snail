@@ -77,6 +77,11 @@
 - The main and game demos now derive `ResolveTarget.encoding` from explicit
   presentation data. The CPU Wayland demo buffer now follows framebuffer size
   and buffer-scale changes instead of staying at logical window size.
+- The CPU Wayland demo now double-buffers wl_shm presentation buffers and
+  paces presentation with compositor frame callbacks, avoiding render-ahead
+  and busy-buffer reuse during interactive panning.
+- The main demo now reuses draw-list segment scratch instead of allocating it
+  every frame.
 - `PathPictureBuilder.freeze` now requires explicit persistent and scratch
   allocators. Scratch memory is used only while compiling the immutable picture;
   `PathPicture` owns only the persistent allocations after `freeze` returns.
@@ -98,6 +103,10 @@
   consume the same atlas/layer-info data model as GL/Vulkan, but avoid
   per-pixel layer-info decoding and repeated texture-coordinate wrapping in
   the coverage hot path.
+- CPU prepared text drawing now predecodes glyph-band curve references into
+  axis-local hot records with separate cold conic/cubic coefficient storage,
+  and transformed glyph spans advance local coordinates incrementally across
+  each scanline instead of recomputing the inverse transform per pixel.
 
 ## 0.5.0
 

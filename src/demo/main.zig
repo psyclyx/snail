@@ -150,6 +150,8 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
     defer if (prepared) |*resources| resources.deinit();
     var draw_buf: []u32 = &.{};
     defer if (draw_buf.len > 0) allocator.free(draw_buf);
+    var draw_segments_buf: []snail.DrawSegment = &.{};
+    defer if (draw_segments_buf.len > 0) allocator.free(draw_segments_buf);
     var uploaded_size = [4]u32{ 0, 0, 0, 0 };
 
     var buf_width: u32 = 0;
@@ -332,9 +334,11 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
             if (draw_buf.len > 0) allocator.free(draw_buf);
             draw_buf = try allocator.alloc(u32, needed);
         }
-        const draw_segments = try allocator.alloc(snail.DrawSegment, needed_segments);
-        defer allocator.free(draw_segments);
-        var draw = snail.DrawList.init(draw_buf[0..needed], draw_segments);
+        if (draw_segments_buf.len < needed_segments) {
+            if (draw_segments_buf.len > 0) allocator.free(draw_segments_buf);
+            draw_segments_buf = try allocator.alloc(snail.DrawSegment, needed_segments);
+        }
+        var draw = snail.DrawList.init(draw_buf[0..needed], draw_segments_buf[0..needed_segments]);
         try draw.addScene(&prepared.?, &scene, draw_options);
         try renderer.draw(&prepared.?, draw.slice(), draw_options);
 
