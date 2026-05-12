@@ -95,6 +95,23 @@ typedef struct {
     size_t shape_count;
 } SnailShapeMark;
 
+#define SNAIL_RESOURCE_CAPACITY_GROWABLE 0
+#define SNAIL_RESOURCE_CAPACITY_EXACT 1
+
+typedef struct {
+    size_t curve_bytes_used;
+    size_t curve_bytes_allocated;
+    size_t band_bytes_used;
+    size_t band_bytes_allocated;
+    size_t layer_info_bytes_used;
+    size_t layer_info_bytes_allocated;
+    size_t image_bytes_used;
+    size_t image_bytes_allocated;
+} SnailResourceFootprint;
+
+size_t snail_resource_footprint_used_bytes(SnailResourceFootprint footprint);
+size_t snail_resource_footprint_allocated_bytes(SnailResourceFootprint footprint);
+
 typedef struct {
     uint16_t advance_width;
     int16_t lsb;
@@ -277,6 +294,8 @@ int snail_text_atlas_init(const SnailAllocator *alloc,
                           SnailTextAtlas **out);
 void snail_text_atlas_deinit(SnailTextAtlas *atlas);
 size_t snail_text_atlas_page_count(const SnailTextAtlas *atlas);
+void snail_text_atlas_upload_footprint(const SnailTextAtlas *atlas,
+                                       SnailResourceFootprint *out);
 size_t snail_text_atlas_texture_byte_len(const SnailTextAtlas *atlas);
 int snail_text_atlas_units_per_em(const SnailTextAtlas *atlas, uint16_t *out);
 int snail_text_atlas_line_metrics(const SnailTextAtlas *atlas, SnailLineMetrics *out);
@@ -354,6 +373,8 @@ int snail_image_init_srgba8(const SnailAllocator *alloc,
 void snail_image_deinit(SnailImage *image);
 uint32_t snail_image_width(const SnailImage *image);
 uint32_t snail_image_height(const SnailImage *image);
+void snail_image_upload_footprint(const SnailImage *image,
+                                  SnailResourceFootprint *out);
 
 /* Paths and path pictures */
 
@@ -418,6 +439,8 @@ int snail_path_picture_builder_freeze(const SnailPathPictureBuilder *builder,
                                       SnailPathPicture **out);
 void snail_path_picture_deinit(SnailPathPicture *picture);
 size_t snail_path_picture_shape_count(const SnailPathPicture *picture);
+void snail_path_picture_upload_footprint(const SnailPathPicture *picture,
+                                         SnailResourceFootprint *out);
 
 /* Scene and resources */
 
@@ -467,12 +490,22 @@ size_t snail_resource_set_capacity(const SnailResourceSet *set);
 int snail_resource_set_put_text_atlas(SnailResourceSet *set,
                                       SnailResourceKey key,
                                       const SnailTextAtlas *atlas);
+int snail_resource_set_put_text_atlas_options(SnailResourceSet *set,
+                                              SnailResourceKey key,
+                                              const SnailTextAtlas *atlas,
+                                              int atlas_capacity);
 int snail_resource_set_put_path_picture(SnailResourceSet *set,
                                         SnailResourceKey key,
                                         const SnailPathPicture *picture);
+int snail_resource_set_put_path_picture_options(SnailResourceSet *set,
+                                                SnailResourceKey key,
+                                                const SnailPathPicture *picture,
+                                                int atlas_capacity);
 int snail_resource_set_put_image(SnailResourceSet *set,
                                  SnailResourceKey key,
                                  const SnailImage *image);
+int snail_resource_set_estimate_upload_footprint(const SnailResourceSet *set,
+                                                 SnailResourceFootprint *out);
 int snail_resource_set_add_scene(SnailResourceSet *set, const SnailScene *scene);
 
 void snail_prepared_resources_deinit(SnailPreparedResources *prepared);

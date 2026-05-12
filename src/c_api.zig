@@ -197,6 +197,20 @@ pub const SnailDrawOptions = extern struct {
 
 pub const SnailResourceKey = u64;
 
+pub const SNAIL_RESOURCE_CAPACITY_GROWABLE: c_int = 0;
+pub const SNAIL_RESOURCE_CAPACITY_EXACT: c_int = 1;
+
+pub const SnailResourceFootprint = extern struct {
+    curve_bytes_used: usize = 0,
+    curve_bytes_allocated: usize = 0,
+    band_bytes_used: usize = 0,
+    band_bytes_allocated: usize = 0,
+    layer_info_bytes_used: usize = 0,
+    layer_info_bytes_allocated: usize = 0,
+    image_bytes_used: usize = 0,
+    image_bytes_allocated: usize = 0,
+};
+
 // Paint / style types
 
 pub const SNAIL_PAINT_SOLID: c_int = 0;
@@ -306,6 +320,41 @@ fn toTransform(t: SnailTransform2D) snail.Transform2D {
 
 fn toOverride(override_value: SnailOverride) snail.Override {
     return .{ .transform = toTransform(override_value.transform), .tint = override_value.tint };
+}
+
+fn fromResourceFootprint(footprint: snail.ResourceFootprint) SnailResourceFootprint {
+    return .{
+        .curve_bytes_used = footprint.curve_bytes_used,
+        .curve_bytes_allocated = footprint.curve_bytes_allocated,
+        .band_bytes_used = footprint.band_bytes_used,
+        .band_bytes_allocated = footprint.band_bytes_allocated,
+        .layer_info_bytes_used = footprint.layer_info_bytes_used,
+        .layer_info_bytes_allocated = footprint.layer_info_bytes_allocated,
+        .image_bytes_used = footprint.image_bytes_used,
+        .image_bytes_allocated = footprint.image_bytes_allocated,
+    };
+}
+
+fn toResourceCapacityMode(value: c_int) !snail.ResourceCapacityMode {
+    return switch (value) {
+        SNAIL_RESOURCE_CAPACITY_GROWABLE => .growable,
+        SNAIL_RESOURCE_CAPACITY_EXACT => .exact,
+        else => error.InvalidEnum,
+    };
+}
+
+export fn snail_resource_footprint_used_bytes(footprint: SnailResourceFootprint) usize {
+    return footprint.curve_bytes_used +
+        footprint.band_bytes_used +
+        footprint.layer_info_bytes_used +
+        footprint.image_bytes_used;
+}
+
+export fn snail_resource_footprint_allocated_bytes(footprint: SnailResourceFootprint) usize {
+    return footprint.curve_bytes_allocated +
+        footprint.band_bytes_allocated +
+        footprint.layer_info_bytes_allocated +
+        footprint.image_bytes_allocated;
 }
 
 fn toRange(range: SnailRange) snail.Range {
@@ -583,6 +632,10 @@ export fn snail_text_atlas_deinit(atlas: ?*TextAtlasImpl) void {
 
 export fn snail_text_atlas_page_count(atlas: *const TextAtlasImpl) usize {
     return atlas.inner.pageCount();
+}
+
+export fn snail_text_atlas_upload_footprint(atlas: *const TextAtlasImpl, out: *SnailResourceFootprint) void {
+    out.* = fromResourceFootprint(atlas.inner.uploadFootprint());
 }
 
 export fn snail_text_atlas_texture_byte_len(atlas: *const TextAtlasImpl) usize {
@@ -866,6 +919,10 @@ export fn snail_image_height(image: *const ImageImpl) u32 {
     return image.inner.height;
 }
 
+export fn snail_image_upload_footprint(image: *const ImageImpl, out: *SnailResourceFootprint) void {
+    out.* = fromResourceFootprint(image.inner.uploadFootprint());
+}
+
 // Paths and path pictures
 
 export fn snail_path_init(alloc_ptr: ?*const SnailAllocator, out: *?*PathImpl) c_int {
@@ -1027,6 +1084,10 @@ export fn snail_path_picture_shape_count(picture: *const PathPictureImpl) usize 
     return picture.inner.shapeCount();
 }
 
+export fn snail_path_picture_upload_footprint(picture: *const PathPictureImpl, out: *SnailResourceFootprint) void {
+    out.* = fromResourceFootprint(picture.inner.uploadFootprint());
+}
+
 export fn snail_path_picture_builder_shape_count(builder: *const PathPictureBuilderImpl) usize {
     return builder.inner.shapeCount();
 }
@@ -1172,13 +1233,32 @@ export fn snail_resource_set_put_text_atlas(set: *ResourceSetImpl, key: SnailRes
     return SNAIL_OK;
 }
 
+export fn snail_resource_set_put_text_atlas_options(set: *ResourceSetImpl, key: SnailResourceKey, atlas: *const TextAtlasImpl, atlas_capacity: c_int) c_int {
+    set.inner.putTextAtlasOptions(snail.ResourceKey.fromId(key), &atlas.inner, .{
+        .atlas_capacity = toResourceCapacityMode(atlas_capacity) catch return SNAIL_ERR_INVALID_ARGUMENT,
+    }) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    return SNAIL_OK;
+}
+
 export fn snail_resource_set_put_path_picture(set: *ResourceSetImpl, key: SnailResourceKey, picture: *const PathPictureImpl) c_int {
     set.inner.putPathPicture(snail.ResourceKey.fromId(key), &picture.inner) catch return SNAIL_ERR_OUT_OF_MEMORY;
     return SNAIL_OK;
 }
 
+export fn snail_resource_set_put_path_picture_options(set: *ResourceSetImpl, key: SnailResourceKey, picture: *const PathPictureImpl, atlas_capacity: c_int) c_int {
+    set.inner.putPathPictureOptions(snail.ResourceKey.fromId(key), &picture.inner, .{
+        .atlas_capacity = toResourceCapacityMode(atlas_capacity) catch return SNAIL_ERR_INVALID_ARGUMENT,
+    }) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    return SNAIL_OK;
+}
+
 export fn snail_resource_set_put_image(set: *ResourceSetImpl, key: SnailResourceKey, image: *const ImageImpl) c_int {
     set.inner.putImage(snail.ResourceKey.fromId(key), &image.inner) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    return SNAIL_OK;
+}
+
+export fn snail_resource_set_estimate_upload_footprint(set: *const ResourceSetImpl, out: *SnailResourceFootprint) c_int {
+    out.* = fromResourceFootprint(set.inner.estimateUploadFootprint() catch |err| return mapError(err));
     return SNAIL_OK;
 }
 
@@ -1536,6 +1616,28 @@ test "c_api: path picture builder" {
     try testing.expectEqual(SNAIL_OK, snail_path_picture_builder_freeze(builder.?, null, null, &picture));
     defer snail_path_picture_deinit(picture);
     try testing.expectEqual(@as(usize, 2), snail_path_picture_shape_count(picture.?));
+    var picture_footprint: SnailResourceFootprint = .{};
+    snail_path_picture_upload_footprint(picture.?, &picture_footprint);
+    try testing.expect(snail_resource_footprint_allocated_bytes(picture_footprint) > 0);
+
+    var resources: ?*ResourceSetImpl = null;
+    try testing.expectEqual(SNAIL_OK, snail_resource_set_init(null, 2, &resources));
+    defer snail_resource_set_deinit(resources);
+    try testing.expectEqual(SNAIL_OK, snail_resource_set_put_path_picture_options(
+        resources.?,
+        7,
+        picture.?,
+        SNAIL_RESOURCE_CAPACITY_EXACT,
+    ));
+    try testing.expectEqual(SNAIL_ERR_INVALID_ARGUMENT, snail_resource_set_put_path_picture_options(
+        resources.?,
+        8,
+        picture.?,
+        99,
+    ));
+    var set_footprint: SnailResourceFootprint = .{};
+    try testing.expectEqual(SNAIL_OK, snail_resource_set_estimate_upload_footprint(resources.?, &set_footprint));
+    try testing.expect(snail_resource_footprint_allocated_bytes(set_footprint) >= snail_resource_footprint_allocated_bytes(picture_footprint));
 
     var scene: ?*SceneImpl = null;
     try testing.expectEqual(SNAIL_OK, snail_scene_init(null, &scene));
@@ -1554,6 +1656,10 @@ test "c_api: image paint init and constants" {
     defer snail_image_deinit(image);
     try testing.expectEqual(@as(u32, 4), snail_image_width(image.?));
     try testing.expectEqual(@as(u32, 4), snail_image_height(image.?));
+    var footprint: SnailResourceFootprint = .{};
+    snail_image_upload_footprint(image.?, &footprint);
+    try testing.expectEqual(@as(usize, 4 * 4 * 4), snail_resource_footprint_used_bytes(footprint));
+    try testing.expect(snail_resource_footprint_allocated_bytes(footprint) >= snail_resource_footprint_used_bytes(footprint));
 
     try testing.expectEqual(snail.lowlevel.TEXT_WORDS_PER_GLYPH, snail_text_words_per_glyph());
     try testing.expectEqual(snail.lowlevel.TEXT_WORDS_PER_VERTEX, snail_text_words_per_vertex());

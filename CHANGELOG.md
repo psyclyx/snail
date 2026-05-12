@@ -34,6 +34,8 @@
 - `ResourceUploadPlan.upload_footprint` exposes the full planned backend
   allocation footprint; `upload_bytes` is now the footprint's allocated total
   for budget checks.
+- The C API now exposes resource upload footprints plus explicit atlas capacity
+  options for text atlas and path picture resource-set entries.
 
 ### Changed
 
