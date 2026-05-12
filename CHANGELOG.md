@@ -21,6 +21,9 @@
 - Selecting the Vulkan demo renderer now enables the Vulkan backend by default,
   so `zig build demo -Drenderer=vulkan` builds without a separate
   `-Dvulkan=true`.
+- GL, Vulkan, CPU, and game-demo material grayscale text now use the same
+  derivative-length AA footprint, and the GL/material text paths now pass
+  glyph band maxima in the same order as the shared evaluator.
 
 ### Added
 
