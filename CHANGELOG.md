@@ -52,6 +52,8 @@
   sweeps on renderer calls. Use `PreparedResources.retireNow()` for immediate
   retirement or `retireAfter(&queue, fence)` with an explicit caller-owned
   `PreparedResourceRetirementQueue`.
+- Vulkan resource-upload staging metadata and layer-info scratch now use the
+  caller-provided prepared-resource allocator instead of process allocators.
 
 ## 0.5.0
 

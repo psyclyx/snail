@@ -90,6 +90,7 @@ const BlendMode = enum {
 };
 
 pub const PreparedResources = struct {
+    allocator: std.mem.Allocator,
     ctx: VulkanContext,
     desc_pool: vk.VkDescriptorPool = null,
     desc_set: vk.VkDescriptorSet = null,
@@ -121,8 +122,8 @@ pub const PreparedResources = struct {
     upload_staging: [MAX_RESOURCE_UPLOAD_STAGING]UploadStagingBuffer = std.mem.zeroes([MAX_RESOURCE_UPLOAD_STAGING]UploadStagingBuffer),
     upload_staging_count: usize = 0,
 
-    pub fn init(renderer: *const VulkanPipeline) !PreparedResources {
-        var self = PreparedResources{ .ctx = renderer.ctx };
+    pub fn init(renderer: *const VulkanPipeline, allocator: std.mem.Allocator) !PreparedResources {
+        var self = PreparedResources{ .allocator = allocator, .ctx = renderer.ctx };
         errdefer self.deinit();
 
         const pool_size = [1]vk.VkDescriptorPoolSize{
@@ -716,8 +717,8 @@ pub const VulkanPipeline = struct {
 
         const width = upload_common.maxLayerInfoWidth(atlases);
         const total_texels = @as(usize, width) * @as(usize, total_rows) * 4;
-        const data = std.heap.page_allocator.alloc(f32, total_texels) catch return;
-        defer std.heap.page_allocator.free(data);
+        const data = prepared.allocator.alloc(f32, total_texels) catch return;
+        defer prepared.allocator.free(data);
         @memset(data, 0);
 
         const ImagePatchView = struct {
@@ -1402,10 +1403,10 @@ pub const VulkanPipeline = struct {
         // Record one VkBufferImageCopy per (atlas page, image), sized to the
         // total page count discovered above. Static arrays would silently
         // overflow when many fonts/atlases are uploaded together.
-        const curve_regions = try std.heap.c_allocator.alloc(vk.VkBufferImageCopy, region_count);
-        defer std.heap.c_allocator.free(curve_regions);
-        const band_regions = try std.heap.c_allocator.alloc(vk.VkBufferImageCopy, region_count);
-        defer std.heap.c_allocator.free(band_regions);
+        const curve_regions = try prepared.allocator.alloc(vk.VkBufferImageCopy, region_count);
+        defer prepared.allocator.free(curve_regions);
+        const band_regions = try prepared.allocator.alloc(vk.VkBufferImageCopy, region_count);
+        defer prepared.allocator.free(band_regions);
         var staging_offset: usize = 0;
 
         var region_index: usize = 0;

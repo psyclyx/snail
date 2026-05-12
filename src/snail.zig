@@ -5218,7 +5218,7 @@ fn uploadPreparedResources(renderer: *Renderer, set: *const ResourceSet, allocat
         if (comptime build_options.enable_vulkan) {
             if (renderer.vtable == &Renderer.vulkan_borrowed_vtable) {
                 const vk_state: *vulkan_pipeline.VulkanPipeline = @ptrCast(@alignCast(renderer.ptr));
-                var vk_prepared = try vulkan_pipeline.PreparedResources.init(vk_state);
+                var vk_prepared = try vulkan_pipeline.PreparedResources.init(vk_state, allocator);
                 errdefer vk_prepared.deinit();
                 if (atlas_count > 0) vk_state.uploadPreparedAtlasesWithCapacityModes(&vk_prepared, upload_atlases, atlas_capacity_modes[0..atlas_count], atlas_views);
                 if (image_count > 0) vk_state.uploadPreparedImages(&vk_prepared, upload_images, image_views);
