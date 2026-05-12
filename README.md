@@ -679,50 +679,46 @@ fragment-shader path (grayscale vs LCD subpixel).
 
 ```
 src/
-  snail.zig              public API: TextAtlas, TextBlob, ResourceSet, DrawList, Renderer, Path, ...
-  fonts.zig              TextAtlas internals: multi-font manager with immutable snapshot atlas
-  c_api.zig              C ABI over the explicit resource model
-  glyph_emit.zig         glyph → vertex dispatch (plain, COLR, multi-layer)
-  cpu_renderer.zig       software rasterizer (same atlas data, no GPU)
-  font/
-    ttf.zig              TrueType parser (cmap, glyf, loca, hhea, hmtx, kern, COLR)
-    opentype.zig         OpenType shaper (GSUB ligatures, GPOS kerning)
-    harfbuzz.zig         HarfBuzz integration (optional)
-  math/
-    bezier.zig           quadratic/cubic Bezier curves, bounding boxes
-    vec.zig              Vec2, Mat4, Transform2D
-    roots.zig            quadratic equation solver
-  render/
-    pipeline.zig         OpenGL renderer and prepared resource state
-    gl.zig               OpenGL C function imports
-    gl_backend.zig       GL version detection and backend selection
-    shaders.zig          GLSL 330 vertex + fragment shaders (GL backend)
-    vulkan_pipeline.zig  Vulkan renderer and prepared resource state (optional)
-    vulkan_shaders.zig   SPIR-V bytecode loader (Vulkan backend)
-    vulkan_platform.zig  Vulkan WSI platform integration
-    curve_texture.zig    RGBA16F curve control point packing
-    band_texture.zig     RG16UI spatial band subdivision
-    vertex.zig           glyph quad vertex generation
-    upload_common.zig    shared texture upload logic
-    platform.zig         platform abstraction (GL/Vulkan/CPU)
-    cpu_platform.zig     CPU backend platform layer
-    egl_common.zig       shared EGL setup
-    egl_offscreen.zig    headless EGL context
-    wayland_window.zig   Wayland window + input handling
-    xdg-shell-client-protocol.{c,h}  generated xdg-shell protocol bindings
-    screenshot.zig       framebuffer capture + TGA writing
-    subpixel_order.zig   RGB/BGR/VRGB/VBGR enum
-    subpixel_detect.zig  auto-detect display subpixel layout
-    subpixel_policy.zig  subpixel rendering policy logic
-    glsl/                shared GLSL bodies for GL and Vulkan backends
-  profile/
-    timer.zig            comptime-gated CPU timers
-shaders/
-  snail.vert             Vulkan vertex shader (GLSL 450, compiled to SPIR-V at build time)
-  snail.frag             Vulkan fragment shader (vector paths, grayscale AA)
-  snail_text.frag        Vulkan fragment shader (text, grayscale AA)
-  snail_text_subpixel.frag  Vulkan fragment shader (text, dual-source LCD subpixel AA)
-  snail_colr.frag        Vulkan fragment shader (COLR multi-layer color emoji)
+  snail/
+    root.zig             public API: TextAtlas, TextBlob, ResourceSet, DrawList, Renderer, Path, ...
+    fonts.zig            TextAtlas internals: multi-font manager with immutable snapshot atlas
+    c_api.zig            C ABI over the explicit resource model
+    glyph_emit.zig       glyph -> vertex dispatch (plain, COLR, multi-layer)
+    font/                TrueType/OpenType/HarfBuzz text primitives
+    math/                Bezier, vector, matrix, and root-solving primitives
+    renderer/
+      gl.zig             OpenGL renderer and prepared resource state
+      vulkan.zig         Vulkan renderer and prepared resource state (optional)
+      cpu.zig            software rasterizer (same atlas data, no GPU)
+      gl_bindings.zig    OpenGL C imports
+      gl_backend.zig     GL version detection and backend selection
+      shaders.zig        GLSL 330 vertex + fragment shaders (GL backend)
+      vulkan_shaders.zig SPIR-V bytecode loader (Vulkan backend)
+      curve_texture.zig  RGBA16F curve control point packing
+      band_texture.zig   RG16UI spatial band subdivision
+      vertex.zig         glyph quad vertex generation
+      upload_common.zig  shared texture upload logic
+      subpixel_order.zig RGB/BGR/VRGB/VBGR enum
+      subpixel_policy.zig subpixel rendering policy logic
+      glsl/              shared GLSL bodies for GL and Vulkan backends
+      vulkan_glsl/       Vulkan shader wrappers (compiled to SPIR-V at build time)
+  demo/
+    main.zig             interactive renderer demo
+    game.zig             game-style OpenGL demo entry point
+    screenshot.zig       headless screenshot demo
+    bench.zig            benchmark tool
+    backend_compare.zig  CPU/GL/Vulkan pixel comparison tool
+    platform/            demo-only Wayland/EGL/Vulkan/offscreen support
+      gl.zig             Wayland + EGL platform for the GL demo
+      vulkan.zig         Wayland + Vulkan swapchain/offscreen setup
+      cpu.zig            Wayland shared-memory platform for the CPU demo
+      wayland.zig        Wayland window + input handling
+      egl.zig            shared EGL setup
+      offscreen_gl.zig   headless EGL context
+      subpixel.zig       display subpixel-layout detection
+      presentation.zig   demo presentation metadata
+    profile/
+      timer.zig          comptime-gated CPU timers
 include/
   snail.h                public C header
 ```

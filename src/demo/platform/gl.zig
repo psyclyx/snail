@@ -1,0 +1,245 @@
+const std = @import("std");
+const build_options = @import("build_options");
+const egl_common = @import("egl.zig");
+const snail = @import("snail");
+const SubpixelOrder = snail.SubpixelOrder;
+pub const presentation = @import("presentation.zig");
+const wayland = @import("wayland.zig");
+pub const gl = snail.lowlevel.gl;
+
+const egl = @cImport({
+    @cInclude("EGL/egl.h");
+    @cInclude("EGL/eglext.h");
+    @cInclude("wayland-egl.h");
+});
+
+pub const KEY_R = wayland.KEY_R;
+pub const KEY_L = wayland.KEY_L;
+pub const KEY_W = wayland.KEY_W;
+pub const KEY_A = wayland.KEY_A;
+pub const KEY_S = wayland.KEY_S;
+pub const KEY_D = wayland.KEY_D;
+pub const KEY_Q = wayland.KEY_Q;
+pub const KEY_E = wayland.KEY_E;
+pub const KEY_Z = wayland.KEY_Z;
+pub const KEY_X = wayland.KEY_X;
+pub const KEY_H = wayland.KEY_H;
+pub const KEY_B = wayland.KEY_B;
+pub const KEY_ESCAPE = wayland.KEY_ESCAPE;
+pub const KEY_LEFT = wayland.KEY_LEFT;
+pub const KEY_RIGHT = wayland.KEY_RIGHT;
+pub const KEY_UP = wayland.KEY_UP;
+pub const KEY_DOWN = wayland.KEY_DOWN;
+
+var app: ?*wayland.Window = null;
+var egl_display: egl.EGLDisplay = egl.EGL_NO_DISPLAY;
+var egl_context: egl.EGLContext = egl.EGL_NO_CONTEXT;
+var egl_surface: egl.EGLSurface = egl.EGL_NO_SURFACE;
+var egl_window: ?*egl.wl_egl_window = null;
+var window_surface_encoding: presentation.ColorEncoding = .linear;
+
+const CreatedSurface = struct {
+    surface: egl.EGLSurface,
+    encoding: presentation.ColorEncoding,
+};
+
+pub fn init(width: u32, height: u32, title: [*:0]const u8) !void {
+    app = try wayland.Window.init(width, height, title);
+    errdefer {
+        var doomed = app.?;
+        doomed.deinit();
+        app = null;
+    }
+
+    egl_display = try initEglDisplay();
+    errdefer {
+        _ = egl.eglTerminate(egl_display);
+        egl_display = egl.EGL_NO_DISPLAY;
+    }
+
+    var config: egl.EGLConfig = null;
+    try egl_common.chooseConfig(egl, egl_display, egl.EGL_WINDOW_BIT, &config);
+
+    egl_context = try egl_common.createOpenGlContext(egl, build_options.force_gl33, egl_display, config);
+    errdefer {
+        _ = egl.eglDestroyContext(egl_display, egl_context);
+        egl_context = egl.EGL_NO_CONTEXT;
+    }
+
+    const fb_size = app.?.getFramebufferSize();
+    egl_window = egl.wl_egl_window_create(@ptrCast(app.?.surface), @intCast(fb_size[0]), @intCast(fb_size[1])) orelse return error.EglSurfaceCreateFailed;
+    errdefer {
+        egl.wl_egl_window_destroy(egl_window.?);
+        egl_window = null;
+    }
+
+    const created_surface = createWindowSurface(egl_display, config, @as(egl.EGLNativeWindowType, @intCast(@intFromPtr(egl_window.?)))) orelse return error.EglSurfaceCreateFailed;
+    egl_surface = created_surface.surface;
+    window_surface_encoding = created_surface.encoding;
+    errdefer {
+        _ = egl.eglDestroySurface(egl_display, egl_surface);
+        egl_surface = egl.EGL_NO_SURFACE;
+        window_surface_encoding = .linear;
+    }
+
+    if (egl.eglMakeCurrent(egl_display, egl_surface, egl_surface, egl_context) == egl.EGL_FALSE) {
+        return error.EglMakeCurrentFailed;
+    }
+
+    _ = egl.eglSwapInterval(egl_display, 1);
+}
+
+// Falls back silently when an sRGB EGL surface is unavailable. The renderer
+// still works; gamma-correct compositing degrades to whatever the default
+// framebuffer offers. Surface attribute loss is platform-specific and not
+// worth printing to stderr from a library entry point.
+fn createWindowSurface(display: egl.EGLDisplay, config: egl.EGLConfig, native_window: egl.EGLNativeWindowType) ?CreatedSurface {
+    if (hasExtension(display, "EGL_KHR_gl_colorspace")) {
+        const attrs = [_]egl.EGLint{
+            egl.EGL_GL_COLORSPACE_KHR, egl.EGL_GL_COLORSPACE_SRGB_KHR,
+            egl.EGL_NONE,
+        };
+        const surface = egl.eglCreateWindowSurface(display, config, native_window, &attrs);
+        if (surface != egl.EGL_NO_SURFACE) return .{ .surface = surface, .encoding = .srgb };
+    }
+    const surface = egl.eglCreateWindowSurface(display, config, native_window, null);
+    if (surface == egl.EGL_NO_SURFACE) return null;
+    return .{ .surface = surface, .encoding = .linear };
+}
+
+fn hasExtension(display: egl.EGLDisplay, name: []const u8) bool {
+    const ext_ptr = egl.eglQueryString(display, egl.EGL_EXTENSIONS);
+    if (ext_ptr == null) return false;
+    const exts = std.mem.span(ext_ptr);
+
+    var it = std.mem.tokenizeScalar(u8, exts, ' ');
+    while (it.next()) |ext| {
+        if (std.mem.eql(u8, ext, name)) return true;
+    }
+    return false;
+}
+
+pub fn consumeMonitorChanged() bool {
+    if (app) |window| return window.consumeMonitorChanged();
+    return false;
+}
+
+pub fn detectCurrentMonitorSubpixelOrder(base: SubpixelOrder) SubpixelOrder {
+    _ = build_options;
+    if (app) |window| return window.currentSubpixelOrder(base);
+    return base;
+}
+
+pub fn deinit() void {
+    if (app) |window| {
+        _ = egl.eglMakeCurrent(egl_display, egl.EGL_NO_SURFACE, egl.EGL_NO_SURFACE, egl.EGL_NO_CONTEXT);
+        if (egl_surface != egl.EGL_NO_SURFACE) _ = egl.eglDestroySurface(egl_display, egl_surface);
+        if (egl_window) |win| egl.wl_egl_window_destroy(win);
+        if (egl_context != egl.EGL_NO_CONTEXT) _ = egl.eglDestroyContext(egl_display, egl_context);
+        if (egl_display != egl.EGL_NO_DISPLAY) _ = egl.eglTerminate(egl_display);
+        egl_surface = egl.EGL_NO_SURFACE;
+        egl_context = egl.EGL_NO_CONTEXT;
+        egl_display = egl.EGL_NO_DISPLAY;
+        egl_window = null;
+        window_surface_encoding = .linear;
+        window.deinit();
+        app = null;
+    }
+}
+
+pub fn shouldClose() bool {
+    if (app) |window| {
+        window.pumpEvents();
+        if (window.consumeResized() or window.consumeScaleChanged()) {
+            const size = window.getFramebufferSize();
+            if (egl_window) |win| {
+                egl.wl_egl_window_resize(win, @intCast(size[0]), @intCast(size[1]), 0, 0);
+            }
+        }
+        return window.shouldClose();
+    }
+    return true;
+}
+
+pub fn clear(r: f32, g: f32, b: f32, a: f32) void {
+    gl.glClearColor(r, g, b, a);
+    gl.glClear(gl.GL_COLOR_BUFFER_BIT);
+}
+
+pub fn swapBuffers() void {
+    _ = egl.eglSwapBuffers(egl_display, egl_surface);
+}
+
+pub fn getWindowSize() [2]u32 {
+    if (app) |window| return window.getWindowSize();
+    return .{ 0, 0 };
+}
+
+pub fn getFramebufferSize() [2]u32 {
+    if (app) |window| return window.getFramebufferSize();
+    return .{ 0, 0 };
+}
+
+pub fn presentationInfo() presentation.Info {
+    if (app) |window| {
+        return .{
+            .logical_size = window.getWindowSize(),
+            .framebuffer_size = window.getFramebufferSize(),
+            .buffer_scale = window.getBufferScale(),
+            .framebuffer_encoding = defaultFramebufferEncoding(),
+            .will_resample = false,
+        };
+    }
+    return .{ .framebuffer_encoding = defaultFramebufferEncoding() };
+}
+
+pub fn defaultFramebufferEncoding() presentation.ColorEncoding {
+    if (window_surface_encoding == .srgb) return .srgb;
+
+    var prev_draw_fb: gl.GLint = 0;
+    gl.glGetIntegerv(gl.GL_DRAW_FRAMEBUFFER_BINDING, &prev_draw_fb);
+    gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, 0);
+    defer gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, @intCast(prev_draw_fb));
+
+    while (gl.glGetError() != gl.GL_NO_ERROR) {}
+    var encoding: gl.GLint = 0;
+    gl.glGetFramebufferAttachmentParameteriv(gl.GL_DRAW_FRAMEBUFFER, gl.GL_BACK_LEFT, gl.GL_FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING, &encoding);
+    if (gl.glGetError() == gl.GL_NO_ERROR and encoding == gl.GL_SRGB) return .srgb;
+    return .linear;
+}
+
+pub fn getTime() f64 {
+    return wayland.getTime();
+}
+
+pub fn isKeyDown(key: u32) bool {
+    if (app) |window| return window.isKeyDown(key);
+    return false;
+}
+
+pub fn isKeyPressed(key: u32) bool {
+    if (app) |window| return window.isKeyPressed(key);
+    return false;
+}
+
+fn initEglDisplay() !egl.EGLDisplay {
+    const get_platform_display = @as(
+        ?*const fn (egl.EGLenum, ?*anyopaque, ?[*]const egl.EGLint) callconv(.c) egl.EGLDisplay,
+        @ptrCast(egl.eglGetProcAddress("eglGetPlatformDisplayEXT")),
+    );
+
+    var display: egl.EGLDisplay = egl.EGL_NO_DISPLAY;
+    if (get_platform_display) |func| {
+        display = func(egl.EGL_PLATFORM_WAYLAND_KHR, @ptrCast(app.?.display), null);
+    }
+    if (display == egl.EGL_NO_DISPLAY) {
+        display = egl.eglGetDisplay(@ptrCast(app.?.display));
+    }
+    if (display == egl.EGL_NO_DISPLAY) return error.EglDisplayFailed;
+
+    var major: egl.EGLint = 0;
+    var minor: egl.EGLint = 0;
+    if (egl.eglInitialize(display, &major, &minor) == egl.EGL_FALSE) return error.EglInitializeFailed;
+    if (egl.eglBindAPI(egl.EGL_OPENGL_API) == egl.EGL_FALSE) return error.EglBindApiFailed;
+    return display;
+}

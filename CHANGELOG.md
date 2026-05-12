@@ -59,6 +59,10 @@
 
 ### Changed
 
+- Source files are now split by ownership: `src/snail` contains only the
+  library, `src/snail/renderer/{gl,vulkan,cpu}.zig` contains the renderer
+  backends, and demo/window/offscreen platform code lives under
+  `src/demo/platform` as demo-private support code.
 - `ResolveTarget` now takes an explicit `TargetEncoding` with separate
   framebuffer and stored-pixel encodings. This replaces the public
   `output_srgb` flag and the renderer-global sRGB-format target knobs; GL,
