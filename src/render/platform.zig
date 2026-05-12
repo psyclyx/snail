@@ -35,6 +35,12 @@ var egl_display: egl.EGLDisplay = egl.EGL_NO_DISPLAY;
 var egl_context: egl.EGLContext = egl.EGL_NO_CONTEXT;
 var egl_surface: egl.EGLSurface = egl.EGL_NO_SURFACE;
 var egl_window: ?*egl.wl_egl_window = null;
+var window_surface_encoding: presentation.ColorEncoding = .linear;
+
+const CreatedSurface = struct {
+    surface: egl.EGLSurface,
+    encoding: presentation.ColorEncoding,
+};
 
 pub fn init(width: u32, height: u32, title: [*:0]const u8) !void {
     app = try wayland.Window.init(width, height, title);
@@ -66,11 +72,13 @@ pub fn init(width: u32, height: u32, title: [*:0]const u8) !void {
         egl_window = null;
     }
 
-    egl_surface = createWindowSurface(egl_display, config, @as(egl.EGLNativeWindowType, @intCast(@intFromPtr(egl_window.?))));
-    if (egl_surface == egl.EGL_NO_SURFACE) return error.EglSurfaceCreateFailed;
+    const created_surface = createWindowSurface(egl_display, config, @as(egl.EGLNativeWindowType, @intCast(@intFromPtr(egl_window.?)))) orelse return error.EglSurfaceCreateFailed;
+    egl_surface = created_surface.surface;
+    window_surface_encoding = created_surface.encoding;
     errdefer {
         _ = egl.eglDestroySurface(egl_display, egl_surface);
         egl_surface = egl.EGL_NO_SURFACE;
+        window_surface_encoding = .linear;
     }
 
     if (egl.eglMakeCurrent(egl_display, egl_surface, egl_surface, egl_context) == egl.EGL_FALSE) {
@@ -84,16 +92,18 @@ pub fn init(width: u32, height: u32, title: [*:0]const u8) !void {
 // still works; gamma-correct compositing degrades to whatever the default
 // framebuffer offers. Surface attribute loss is platform-specific and not
 // worth printing to stderr from a library entry point.
-fn createWindowSurface(display: egl.EGLDisplay, config: egl.EGLConfig, native_window: egl.EGLNativeWindowType) egl.EGLSurface {
+fn createWindowSurface(display: egl.EGLDisplay, config: egl.EGLConfig, native_window: egl.EGLNativeWindowType) ?CreatedSurface {
     if (hasExtension(display, "EGL_KHR_gl_colorspace")) {
         const attrs = [_]egl.EGLint{
             egl.EGL_GL_COLORSPACE_KHR, egl.EGL_GL_COLORSPACE_SRGB_KHR,
             egl.EGL_NONE,
         };
         const surface = egl.eglCreateWindowSurface(display, config, native_window, &attrs);
-        if (surface != egl.EGL_NO_SURFACE) return surface;
+        if (surface != egl.EGL_NO_SURFACE) return .{ .surface = surface, .encoding = .srgb };
     }
-    return egl.eglCreateWindowSurface(display, config, native_window, null);
+    const surface = egl.eglCreateWindowSurface(display, config, native_window, null);
+    if (surface == egl.EGL_NO_SURFACE) return null;
+    return .{ .surface = surface, .encoding = .linear };
 }
 
 fn hasExtension(display: egl.EGLDisplay, name: []const u8) bool {
@@ -130,6 +140,7 @@ pub fn deinit() void {
         egl_context = egl.EGL_NO_CONTEXT;
         egl_display = egl.EGL_NO_DISPLAY;
         egl_window = null;
+        window_surface_encoding = .linear;
         window.deinit();
         app = null;
     }
@@ -182,11 +193,14 @@ pub fn presentationInfo() presentation.Info {
 }
 
 pub fn defaultFramebufferEncoding() presentation.ColorEncoding {
+    if (window_surface_encoding == .srgb) return .srgb;
+
     var prev_draw_fb: gl.GLint = 0;
     gl.glGetIntegerv(gl.GL_DRAW_FRAMEBUFFER_BINDING, &prev_draw_fb);
     gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, 0);
     defer gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, @intCast(prev_draw_fb));
 
+    while (gl.glGetError() != gl.GL_NO_ERROR) {}
     var encoding: gl.GLint = 0;
     gl.glGetFramebufferAttachmentParameteriv(gl.GL_DRAW_FRAMEBUFFER, gl.GL_BACK_LEFT, gl.GL_FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING, &encoding);
     if (gl.glGetError() == gl.GL_NO_ERROR and encoding == gl.GL_SRGB) return .srgb;

@@ -24,6 +24,9 @@
 - GL, Vulkan, CPU, and game-demo material grayscale text now use the same
   derivative-length AA footprint, and the GL/material text paths now pass
   glyph band maxima in the same order as the shared evaluator.
+- The GL demo platform now preserves the EGL surface colorspace it requested
+  when reporting presentation encoding. This avoids treating an sRGB EGL
+  default framebuffer as linear and double-encoding shader output.
 
 ### Added
 
