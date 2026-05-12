@@ -145,10 +145,10 @@ vec4 premultiplyColor(vec4 color, float cov) {
 }
 
 // Convert a linear-premultiplied color to sRGB-encoded-premultiplied. The
-// caller checks ResolveTarget.output_srgb and only invokes this when the
-// destination is linear-format storage that the consumer interprets as
-// sRGB-encoded; for sRGB-format targets the framebuffer does the encode
-// on write and this would double-encode.
+// caller derives this from ResolveTarget.encoding and only invokes this when
+// the destination is linear-format storage that the consumer interprets as
+// sRGB-encoded; for sRGB-format targets the framebuffer does the encode on
+// write and this would double-encode.
 vec4 srgbEncodePremultiplied(vec4 premul) {
     if (premul.a <= 0.0) return vec4(0.0);
     float inv_a = 1.0 / premul.a;

@@ -78,7 +78,7 @@ pub fn main() !void {
             .pixel_width = w,
             .pixel_height = h,
             .subpixel_order = .none,
-            .output_srgb = true,
+            .encoding = .srgb,
         },
     };
     var prepared_scene = try snail.PreparedScene.initOwned(allocator, &prepared, &scene, draw_options);

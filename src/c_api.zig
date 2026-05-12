@@ -187,7 +187,8 @@ pub const SnailResolveTarget = extern struct {
     is_final_composite: bool = true,
     opaque_backdrop: bool = true,
     will_resample: bool = false,
-    output_srgb: bool = false,
+    framebuffer_encoding: c_int = 0,
+    pixel_encoding: c_int = 0,
 };
 
 pub const SnailDrawOptions = extern struct {
@@ -458,6 +459,14 @@ fn toFillRule(v: c_int) !snail.FillRule {
     };
 }
 
+fn toColorEncoding(v: c_int) !snail.ColorEncoding {
+    return switch (v) {
+        0 => .linear,
+        1 => .srgb,
+        else => error.InvalidEnum,
+    };
+}
+
 fn toResolveTarget(target: SnailResolveTarget) !snail.ResolveTarget {
     return .{
         .pixel_width = target.pixel_width,
@@ -467,7 +476,10 @@ fn toResolveTarget(target: SnailResolveTarget) !snail.ResolveTarget {
         .is_final_composite = target.is_final_composite,
         .opaque_backdrop = target.opaque_backdrop,
         .will_resample = target.will_resample,
-        .output_srgb = target.output_srgb,
+        .encoding = .{
+            .framebuffer = try toColorEncoding(target.framebuffer_encoding),
+            .pixels = try toColorEncoding(target.pixel_encoding),
+        },
     };
 }
 

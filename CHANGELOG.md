@@ -47,6 +47,11 @@
 
 ### Changed
 
+- `ResolveTarget` now takes an explicit `TargetEncoding` with separate
+  framebuffer and stored-pixel encodings. This replaces the public
+  `output_srgb` flag and the renderer-global sRGB-format target knobs; GL,
+  Vulkan, and CPU draws now derive shader/CPU encoding behavior from the
+  per-draw target.
 - `PathPictureBuilder.freeze` now requires explicit persistent and scratch
   allocators. Scratch memory is used only while compiling the immutable picture;
   `PathPicture` owns only the persistent allocations after `freeze` returns.

@@ -9,6 +9,7 @@ const vec = @import("../math/vec.zig");
 const Mat4 = vec.Mat4;
 const snail_mod = @import("../snail.zig");
 const SubpixelOrder = @import("subpixel_order.zig").SubpixelOrder;
+const TargetEncoding = snail_mod.TargetEncoding;
 
 // ── Backend selection ──
 
@@ -47,10 +48,7 @@ pub const TextCoverageBindings = struct {
     fill_rule: FillRule = .non_zero,
     subpixel_order: SubpixelOrder = .none,
     /// Value to write to the shader's `u_output_srgb` uniform — i.e.,
-    /// whether the shader itself should sRGB-encode its output. External
-    /// callers driving the coverage shader directly are responsible for
-    /// composing this from their target intent and framebuffer format
-    /// (`user_wants_srgb && !framebuffer_is_srgb_format`).
+    /// whether the shader itself should sRGB-encode its output.
     output_srgb: bool = false,
 };
 
@@ -573,8 +571,7 @@ pub const GlTextState = struct {
     path_program: ProgramState = .{},
     subpixel_order: SubpixelOrder = .none,
     fill_rule: FillRule = .non_zero,
-    output_srgb: bool = false,
-    srgb_format_target: bool = true,
+    target_encoding: TargetEncoding = .srgb,
     vao: gl.GLuint = 0,
     vbo: gl.GLuint = 0,
     ebo: gl.GLuint = 0,
@@ -796,24 +793,16 @@ pub const GlTextState = struct {
         return self.fill_rule;
     }
 
-    pub fn setOutputSrgb(self: *GlTextState, enabled: bool) void {
-        self.output_srgb = enabled;
+    pub fn setTargetEncoding(self: *GlTextState, encoding: TargetEncoding) void {
+        self.target_encoding = encoding;
     }
 
-    pub fn getOutputSrgb(self: *const GlTextState) bool {
-        return self.output_srgb;
-    }
-
-    pub fn setSrgbFormatTarget(self: *GlTextState, enabled: bool) void {
-        self.srgb_format_target = enabled;
-    }
-
-    pub fn getSrgbFormatTarget(self: *const GlTextState) bool {
-        return self.srgb_format_target;
+    pub fn getTargetEncoding(self: *const GlTextState) TargetEncoding {
+        return self.target_encoding;
     }
 
     inline fn shaderEncodesSrgb(self: *const GlTextState) bool {
-        return self.output_srgb and !self.srgb_format_target;
+        return self.target_encoding.shaderEncodesSrgb();
     }
 
     fn ensureColrProgram(self: *GlTextState) *const ProgramState {

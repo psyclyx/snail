@@ -454,7 +454,7 @@ pub fn hudTarget(window_size: [2]u32, fb_size: [2]u32, subpixel_order: snail.Sub
         .is_final_composite = true,
         .opaque_backdrop = opaque_backdrop,
         .will_resample = false,
-        .output_srgb = true,
+        .encoding = .srgb,
     };
 }
 
@@ -466,7 +466,7 @@ pub fn worldTarget(fb_size: [2]u32, subpixel_order: snail.SubpixelOrder, opaque_
         .is_final_composite = true,
         .opaque_backdrop = opaque_backdrop,
         .will_resample = false,
-        .output_srgb = true,
+        .encoding = .srgb,
     };
 }
 

@@ -166,17 +166,19 @@ typedef struct {
     bool is_final_composite;
     bool opaque_backdrop;
     bool will_resample;
-    /* What encoding the consumer expects in the final pixel bytes.
-     * true: sRGB-encoded bytes (display, screenshots, sRGB-tagged dmabuf).
-     * false: linear bytes (feeding into another linear pipeline).
+    /* Explicit color encoding for this target.
+     * framebuffer_encoding describes how the current framebuffer/attachment
+     * interprets fragment outputs. Use SNAIL_COLOR_ENCODING_SRGB for GL/Vulkan
+     * sRGB formats and SNAIL_COLOR_ENCODING_LINEAR for linear UNORM/float
+     * targets and CPU byte buffers.
      *
-     * GL/Vulkan compose this with the backend's srgb_format_target flag
-     * (set via setSrgbFormatTarget; default true for an _SRGB framebuffer/
-     * attachment). Format auto-encodes when srgb_format_target=true; the
-     * shader encodes when srgb_format_target=false and output_srgb=true.
-     * CPU has no format-level encoder: output_srgb directly drives whether
-     * the renderer writes sRGB bytes (true) or linear bytes (false). */
-    bool output_srgb;
+     * pixel_encoding describes the encoding expected in the final stored
+     * pixels. For normal sRGB displays, both fields are
+     * SNAIL_COLOR_ENCODING_SRGB. For CPU byte buffers, framebuffer_encoding is
+     * SNAIL_COLOR_ENCODING_LINEAR and pixel_encoding selects linear or sRGB
+     * bytes. */
+    int framebuffer_encoding;
+    int pixel_encoding;
 } SnailResolveTarget;
 
 typedef struct {
@@ -202,6 +204,9 @@ typedef uint64_t SnailResourceKey;
 #define SNAIL_PAINT_LINEAR 1
 #define SNAIL_PAINT_RADIAL 2
 #define SNAIL_PAINT_IMAGE 3
+
+#define SNAIL_COLOR_ENCODING_LINEAR 0
+#define SNAIL_COLOR_ENCODING_SRGB 1
 
 #define SNAIL_EXTEND_CLAMP 0
 #define SNAIL_EXTEND_REPEAT 1

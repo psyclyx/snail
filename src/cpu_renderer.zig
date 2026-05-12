@@ -227,14 +227,9 @@ pub const CpuRenderer = struct {
     stride: u32, // bytes per row (usually width * 4)
     fill_rule: FillRule,
     subpixel_order: SubpixelOrder,
-    /// Whether the destination pixel buffer holds sRGB-encoded bytes.
-    /// When true (and matching `ResolveTarget.output_srgb = true`), the
-    /// renderer reads existing pixels with srgb→linear, blends in linear,
-    /// and writes back with linear→srgb. When false, it treats the buffer
-    /// as linear-domain bytes (`byte / 255.0`) on read and clamps the
-    /// blend result back to 0..255 directly on write — matching the
-    /// "shader emits linear" GL/Vulkan default.
-    output_srgb: bool,
+    /// Encoding of the caller-owned pixel buffer. The unified `Renderer.draw`
+    /// path sets this from `ResolveTarget.encoding` every frame.
+    target_encoding: snail.TargetEncoding,
     thread_pool: ?*snail.ThreadPool,
     // Half-open row window [row_clip_min, row_clip_max). Pixel writes outside
     // this range are skipped. Used by tile workers to claim disjoint scanline
@@ -253,11 +248,9 @@ pub const CpuRenderer = struct {
             .fill_rule = .non_zero,
             .subpixel_order = .none,
             // CPU's pixel-buffer contract is sRGB bytes (cf. the file-level
-            // doc), so the standalone renderer defaults to encoding on
-            // write. The unified `Renderer.draw` path overrides this from
-            // `ResolveTarget.output_srgb` per frame; only callers using the
-            // direct draw API (drawPathPicture etc.) see this default.
-            .output_srgb = true,
+            // doc). The unified `Renderer.draw` path overrides this from
+            // `ResolveTarget.encoding` per frame.
+            .target_encoding = .srgb,
             .thread_pool = null,
             .row_clip_min = 0,
             .row_clip_max = height,
@@ -299,12 +292,12 @@ pub const CpuRenderer = struct {
         return self.subpixel_order;
     }
 
-    pub fn setOutputSrgb(self: *CpuRenderer, enabled: bool) void {
-        self.output_srgb = enabled;
+    pub fn setTargetEncoding(self: *CpuRenderer, encoding: snail.TargetEncoding) void {
+        self.target_encoding = encoding;
     }
 
-    pub fn getOutputSrgb(self: *const CpuRenderer) bool {
-        return self.output_srgb;
+    pub fn getTargetEncoding(self: *const CpuRenderer) snail.TargetEncoding {
+        return self.target_encoding;
     }
 
     fn setSubpixel(self: *CpuRenderer, enabled: bool) void {
@@ -1020,14 +1013,14 @@ pub const CpuRenderer = struct {
     }
 
     inline fn readDstChannel(self: *const CpuRenderer, byte: u8) f32 {
-        return if (self.output_srgb)
+        return if (self.target_encoding.cpuOutputSrgb())
             srgbToLinear(byte)
         else
             @as(f32, @floatFromInt(byte)) / 255.0;
     }
 
     inline fn writeChannel(self: *const CpuRenderer, linear_value: f32, dither: f32) u8 {
-        return if (self.output_srgb)
+        return if (self.target_encoding.cpuOutputSrgb())
             srgbToByte(linearToSrgb(linear_value) + dither)
         else
             srgbToByte(linear_value + dither);
@@ -2790,7 +2783,7 @@ test "cpu renderer renders image-painted path picture" {
     const hf: f32 = @floatFromInt(height);
     const options = snail.DrawOptions{
         .mvp = snail.Mat4.ortho(0, wf, hf, 0, -1, 1),
-        .target = .{ .pixel_width = wf, .pixel_height = hf, .output_srgb = true },
+        .target = .{ .pixel_width = wf, .pixel_height = hf, .encoding = .srgb },
     };
     const needed = snail.DrawList.estimate(&scene, options);
     const needed_segments = snail.DrawList.estimateSegments(&scene, options);
@@ -3014,7 +3007,7 @@ test "cpu renderer threaded draw matches single-threaded byte-for-byte" {
             .pixel_width = @floatFromInt(width),
             .pixel_height = @floatFromInt(height),
             .subpixel_order = .rgb,
-            .output_srgb = true,
+            .encoding = .srgb,
         },
     };
 
@@ -3107,7 +3100,7 @@ test "cpu renderer drawPaths batch matches drawPathPicture" {
     const hf: f32 = @floatFromInt(height);
     const options = snail.DrawOptions{
         .mvp = snail.Mat4.ortho(0, wf, hf, 0, -1, 1),
-        .target = .{ .pixel_width = wf, .pixel_height = hf, .subpixel_order = .rgb, .output_srgb = true },
+        .target = .{ .pixel_width = wf, .pixel_height = hf, .subpixel_order = .rgb, .encoding = .srgb },
     };
     const needed = snail.DrawList.estimate(&scene, options);
     const needed_segments = snail.DrawList.estimateSegments(&scene, options);
@@ -3166,7 +3159,7 @@ test "cpu renderer applies path draw tint in prepared batches" {
     const hf: f32 = @floatFromInt(height);
     const options = snail.DrawOptions{
         .mvp = snail.Mat4.ortho(0, wf, hf, 0, -1, 1),
-        .target = .{ .pixel_width = wf, .pixel_height = hf, .subpixel_order = .none, .output_srgb = true },
+        .target = .{ .pixel_width = wf, .pixel_height = hf, .subpixel_order = .none, .encoding = .srgb },
     };
     var prepared_scene = try snail.PreparedScene.initOwned(testing.allocator, &prepared, &scene, options);
     defer prepared_scene.deinit();

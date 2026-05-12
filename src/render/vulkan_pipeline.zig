@@ -6,6 +6,7 @@ const vec = @import("../math/vec.zig");
 const Mat4 = vec.Mat4;
 const snail_mod = @import("../snail.zig");
 const SubpixelOrder = @import("subpixel_order.zig").SubpixelOrder;
+const TargetEncoding = snail_mod.TargetEncoding;
 
 pub const vk = @cImport({
     @cInclude("vulkan/vulkan.h");
@@ -295,8 +296,7 @@ pub const VulkanPipeline = struct {
     active_cmd: vk.VkCommandBuffer = null,
     subpixel_order: SubpixelOrder = .none,
     fill_rule: FillRule = .non_zero,
-    output_srgb: bool = false,
-    srgb_format_target: bool = true,
+    target_encoding: TargetEncoding = .srgb,
 
     // ── Init / Deinit ──
 
@@ -462,24 +462,16 @@ pub const VulkanPipeline = struct {
         return self.fill_rule;
     }
 
-    pub fn setOutputSrgb(self: *VulkanPipeline, enabled: bool) void {
-        self.output_srgb = enabled;
+    pub fn setTargetEncoding(self: *VulkanPipeline, encoding: TargetEncoding) void {
+        self.target_encoding = encoding;
     }
 
-    pub fn getOutputSrgb(self: *const VulkanPipeline) bool {
-        return self.output_srgb;
-    }
-
-    pub fn setSrgbFormatTarget(self: *VulkanPipeline, enabled: bool) void {
-        self.srgb_format_target = enabled;
-    }
-
-    pub fn getSrgbFormatTarget(self: *const VulkanPipeline) bool {
-        return self.srgb_format_target;
+    pub fn getTargetEncoding(self: *const VulkanPipeline) TargetEncoding {
+        return self.target_encoding;
     }
 
     inline fn shaderEncodesSrgb(self: *const VulkanPipeline) bool {
-        return self.output_srgb and !self.srgb_format_target;
+        return self.target_encoding.shaderEncodesSrgb();
     }
 
     // ── Command buffer (set by caller per-frame) ──

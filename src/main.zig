@@ -270,7 +270,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
                 .pixel_width = viewport_w,
                 .pixel_height = viewport_h,
                 .subpixel_order = current_order,
-                .output_srgb = true,
+                .encoding = .srgb,
             },
         };
         const needed = snail.DrawList.estimate(&scene, draw_options);

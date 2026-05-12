@@ -51,7 +51,7 @@
 //!
 //!   const options = snail.DrawOptions{ .mvp = snail.Mat4.identity, .target = .{
 //!       .pixel_width = 1280, .pixel_height = 720, .subpixel_order = .rgb,
-//!       .output_srgb = true,
+//!       .encoding = .srgb,
 //!   } };
 //!   var buf = try allocator.alloc(u32, snail.DrawList.estimate(&scene, options));
 //!   var segments = try allocator.alloc(snail.DrawSegment, snail.DrawList.estimateSegments(&scene, options));
@@ -3945,6 +3945,41 @@ pub const VulkanContext = vulkan_pipeline.VulkanContext;
 pub const CpuRenderer = cpu_renderer_mod.CpuRenderer;
 pub const ThreadPool = @import("thread_pool.zig").ThreadPool;
 
+pub const ColorEncoding = enum(c_int) {
+    linear = 0,
+    srgb = 1,
+};
+
+pub const TargetEncoding = struct {
+    /// How the current framebuffer/attachment interprets color values written
+    /// by the fragment stage. Use `.srgb` for GL/Vulkan sRGB formats; `.linear`
+    /// for linear UNORM/float targets and CPU byte buffers.
+    framebuffer: ColorEncoding,
+    /// Encoding expected in the final stored pixels. On an sRGB framebuffer this
+    /// should also be `.srgb`; the format encoder converts linear shader output.
+    pixels: ColorEncoding,
+
+    pub const linear = TargetEncoding{ .framebuffer = .linear, .pixels = .linear };
+    pub const srgb = TargetEncoding{ .framebuffer = .srgb, .pixels = .srgb };
+    /// Single-pass compatibility for targets whose storage is linear but whose
+    /// consumer expects sRGB bytes. Fixed-function blending happens in storage
+    /// space; use an explicit linear intermediate plus final encode pass when
+    /// overlapping translucent draws need fully linear-correct composition.
+    pub const srgb_pixels_on_linear_framebuffer = TargetEncoding{ .framebuffer = .linear, .pixels = .srgb };
+
+    pub fn shaderOutputEncoding(self: TargetEncoding) ColorEncoding {
+        return if (self.framebuffer == .srgb) .linear else self.pixels;
+    }
+
+    pub fn shaderEncodesSrgb(self: TargetEncoding) bool {
+        return self.shaderOutputEncoding() == .srgb;
+    }
+
+    pub fn cpuOutputSrgb(self: TargetEncoding) bool {
+        return self.pixels == .srgb;
+    }
+};
+
 pub const ResolveTarget = struct {
     pixel_width: f32,
     pixel_height: f32,
@@ -3953,31 +3988,10 @@ pub const ResolveTarget = struct {
     is_final_composite: bool = true,
     opaque_backdrop: bool = true,
     will_resample: bool = false,
-    /// What encoding the consumer expects in the final pixel bytes.
-    ///
-    /// `true`: bytes should be sRGB-encoded (usual case for display,
-    /// screenshots, dmabuf imports tagged as sRGB).
-    /// `false`: bytes should be linear (feeding into another linear
-    /// pipeline, etc.).
-    ///
-    /// Per-backend:
-    /// - **GL/Vulkan**: combined with the backend's `srgb_format_target`
-    ///   flag (set once via `setSrgbFormatTarget`; default `true`,
-    ///   matching an `_SRGB` framebuffer/attachment with
-    ///   `GL_FRAMEBUFFER_SRGB`). When `srgb_format_target = true` the
-    ///   format does the encode and the shader emits linear; when
-    ///   `false` (linear-format target — e.g. Vulkan dmabuf import
-    ///   that mesa won't tag as sRGB) the shader encodes whenever
-    ///   `output_srgb` is `true`. Linear blending always happens
-    ///   inside the shader.
-    /// - **CPU**: the pixel buffer is the storage and there is no
-    ///   format-level encoder. `output_srgb = true` makes the renderer
-    ///   write sRGB-encoded bytes; `false` makes it write linear bytes.
-    ///   Both byte formats are first-class.
-    ///
-    /// No default — pick deliberately; the right answer differs per
-    /// destination.
-    output_srgb: bool,
+    /// Explicit color encoding for this target. No renderer-global format
+    /// state is consulted; each draw states the framebuffer encoding and the
+    /// expected final pixel encoding.
+    encoding: TargetEncoding,
 };
 
 fn effectiveSubpixelOrder(target: ResolveTarget) SubpixelOrder {
@@ -4083,7 +4097,7 @@ pub const ResourceStamp = struct {
 pub const TargetStamp = struct {
     pixel_size: [2]u32 = .{ 0, 0 },
     subpixel_order: SubpixelOrder = .none,
-    output_srgb: bool = false,
+    encoding: TargetEncoding = .linear,
     mvp_class: MvpClass = .projective,
 
     pub const MvpClass = enum(u8) {
@@ -4100,7 +4114,7 @@ pub const TargetStamp = struct {
                 @intFromFloat(@max(target.pixel_height, 0.0)),
             },
             .subpixel_order = effectiveSubpixelOrder(target),
-            .output_srgb = target.output_srgb,
+            .encoding = target.encoding,
             .mvp_class = classifyMvp(mvp),
         };
     }
@@ -5265,8 +5279,8 @@ pub const Renderer = struct {
         getSubpixelOrder: *const fn (*anyopaque) SubpixelOrder,
         setFillRule: *const fn (*anyopaque, FillRule) void,
         getFillRule: *const fn (*anyopaque) FillRule,
-        setOutputSrgb: *const fn (*anyopaque, bool) void,
-        getOutputSrgb: *const fn (*anyopaque) bool,
+        setTargetEncoding: *const fn (*anyopaque, TargetEncoding) void,
+        getTargetEncoding: *const fn (*anyopaque) TargetEncoding,
         backendName: *const fn (*anyopaque) []const u8,
     };
 
@@ -5340,11 +5354,11 @@ pub const Renderer = struct {
             fn getFillRuleFn(ptr: *anyopaque) FillRule {
                 return constCast(ptr).getFillRule();
             }
-            fn setOutputSrgbFn(ptr: *anyopaque, enabled: bool) void {
-                cast(ptr).setOutputSrgb(enabled);
+            fn setTargetEncodingFn(ptr: *anyopaque, encoding: TargetEncoding) void {
+                cast(ptr).setTargetEncoding(encoding);
             }
-            fn getOutputSrgbFn(ptr: *anyopaque) bool {
-                return constCast(ptr).getOutputSrgb();
+            fn getTargetEncodingFn(ptr: *anyopaque) TargetEncoding {
+                return constCast(ptr).getTargetEncoding();
             }
             fn backendNameFn(ptr: *anyopaque) []const u8 {
                 return constCast(ptr).backendName();
@@ -5394,8 +5408,8 @@ pub const Renderer = struct {
             .getSubpixelOrder = &S.getSubpixelOrderFn,
             .setFillRule = &S.setFillRuleFn,
             .getFillRule = &S.getFillRuleFn,
-            .setOutputSrgb = &S.setOutputSrgbFn,
-            .getOutputSrgb = &S.getOutputSrgbFn,
+            .setTargetEncoding = &S.setTargetEncodingFn,
+            .getTargetEncoding = &S.getTargetEncodingFn,
             .backendName = &S.backendNameFn,
         };
     }
@@ -5467,7 +5481,7 @@ pub const Renderer = struct {
     pub fn iterateRecords(self: *Renderer, records: DrawRecords, options: DrawOptions, backend_prepared: ?*const anyopaque) void {
         self.setSubpixelOrder(effectiveSubpixelOrder(options.target));
         self.setFillRule(options.target.fill_rule);
-        self.setOutputSrgb(options.target.output_srgb);
+        self.setTargetEncoding(options.target.encoding);
         self.beginFrame();
         for (records.segments) |segment| {
             const vertices = records.words[segment.offset..][0..segment.len];
@@ -5527,12 +5541,12 @@ pub const Renderer = struct {
         self.vtable.setFillRule(self.ptr, rule);
     }
 
-    pub fn setOutputSrgb(self: *Renderer, enabled: bool) void {
-        self.vtable.setOutputSrgb(self.ptr, enabled);
+    pub fn setTargetEncoding(self: *Renderer, encoding: TargetEncoding) void {
+        self.vtable.setTargetEncoding(self.ptr, encoding);
     }
 
-    pub fn outputSrgb(self: *const Renderer) bool {
-        return self.vtable.getOutputSrgb(@constCast(self.ptr));
+    pub fn targetEncoding(self: *const Renderer) TargetEncoding {
+        return self.vtable.getTargetEncoding(@constCast(self.ptr));
     }
 
     pub fn fillRule(self: *const Renderer) FillRule {
@@ -5791,7 +5805,7 @@ test "draw with missing prepared resources fails" {
     const records = DrawRecords{ .words = &words, .segments = &segments };
     try std.testing.expectError(error.MissingPreparedResource, renderer.draw(&prepared, records, .{
         .mvp = Mat4.identity,
-        .target = .{ .pixel_width = width, .pixel_height = height, .output_srgb = true },
+        .target = .{ .pixel_width = width, .pixel_height = height, .encoding = .srgb },
     }));
 }
 
@@ -5804,7 +5818,7 @@ test "draw dispatch uses only prepared stamps and caller records" {
         viewport_seen: [2]f32 = .{ 0, 0 },
         subpixel_order: SubpixelOrder = .none,
         fill_rule: FillRule = .non_zero,
-        output_srgb: bool = false,
+        target_encoding: TargetEncoding = .linear,
         saw_backend_prepared: bool = true,
     };
     const Fake = struct {
@@ -5845,11 +5859,11 @@ test "draw dispatch uses only prepared stamps and caller records" {
         fn getFillRule(ptr: *anyopaque) FillRule {
             return state(ptr).fill_rule;
         }
-        fn setOutputSrgb(ptr: *anyopaque, enabled: bool) void {
-            state(ptr).output_srgb = enabled;
+        fn setTargetEncoding(ptr: *anyopaque, encoding: TargetEncoding) void {
+            state(ptr).target_encoding = encoding;
         }
-        fn getOutputSrgb(ptr: *anyopaque) bool {
-            return state(ptr).output_srgb;
+        fn getTargetEncoding(ptr: *anyopaque) TargetEncoding {
+            return state(ptr).target_encoding;
         }
         fn backendName(_: *anyopaque) []const u8 {
             return "fake";
@@ -5865,8 +5879,8 @@ test "draw dispatch uses only prepared stamps and caller records" {
         .getSubpixelOrder = Fake.getSubpixelOrder,
         .setFillRule = Fake.setFillRule,
         .getFillRule = Fake.getFillRule,
-        .setOutputSrgb = Fake.setOutputSrgb,
-        .getOutputSrgb = Fake.getOutputSrgb,
+        .setTargetEncoding = Fake.setTargetEncoding,
+        .getTargetEncoding = Fake.getTargetEncoding,
         .backendName = Fake.backendName,
     };
 
@@ -5890,7 +5904,7 @@ test "draw dispatch uses only prepared stamps and caller records" {
             .pixel_height = 8,
             .subpixel_order = .rgb,
             .fill_rule = .even_odd,
-            .output_srgb = true,
+            .encoding = .srgb,
         },
     };
     var words = [_]u32{ 1, 2, 3, 4 };
@@ -5914,6 +5928,7 @@ test "draw dispatch uses only prepared stamps and caller records" {
     try std.testing.expectEqual(words.len, state.words_seen);
     try std.testing.expectEqual(SubpixelOrder.rgb, state.subpixel_order);
     try std.testing.expectEqual(FillRule.even_odd, state.fill_rule);
+    try std.testing.expectEqual(TargetEncoding.srgb, state.target_encoding);
     try std.testing.expectEqual(@as(f32, 8), state.viewport_seen[0]);
     try std.testing.expectEqual(@as(f32, 8), state.viewport_seen[1]);
     try std.testing.expect(!state.saw_backend_prepared);
@@ -6048,7 +6063,7 @@ test "DrawList estimate upper-bounds ranged text draw output" {
 
     const options = DrawOptions{
         .mvp = Mat4.identity,
-        .target = .{ .pixel_width = width, .pixel_height = height, .output_srgb = true },
+        .target = .{ .pixel_width = width, .pixel_height = height, .encoding = .srgb },
     };
     const needed = DrawList.estimate(&scene, options);
     const needed_segments = DrawList.estimateSegments(&scene, options);
@@ -6151,7 +6166,7 @@ test "draw rejects stale records when a resource key is replaced" {
 
     const draw_options = DrawOptions{
         .mvp = Mat4.identity,
-        .target = .{ .pixel_width = width, .pixel_height = height, .output_srgb = true },
+        .target = .{ .pixel_width = width, .pixel_height = height, .encoding = .srgb },
     };
     const needed = DrawList.estimate(&scene, draw_options);
     const needed_segments = DrawList.estimateSegments(&scene, draw_options);
@@ -6322,7 +6337,7 @@ test "CPU draw uses prepared resource views" {
 
     const draw_options = DrawOptions{
         .mvp = Mat4.identity,
-        .target = .{ .pixel_width = width, .pixel_height = height, .output_srgb = true },
+        .target = .{ .pixel_width = width, .pixel_height = height, .encoding = .srgb },
     };
     const needed = DrawList.estimate(&scene, draw_options);
     const needed_segments = DrawList.estimateSegments(&scene, draw_options);
@@ -6538,7 +6553,7 @@ test "path picture ranges emit selected shapes" {
     var scene = Scene.init(std.testing.allocator);
     defer scene.deinit();
     try scene.addPath(.{ .picture = &picture, .shapes = second_range });
-    const options = DrawOptions{ .mvp = Mat4.identity, .target = .{ .pixel_width = 100, .pixel_height = 100, .output_srgb = true } };
+    const options = DrawOptions{ .mvp = Mat4.identity, .target = .{ .pixel_width = 100, .pixel_height = 100, .encoding = .srgb } };
     try std.testing.expectEqual(@as(usize, PATH_WORDS_PER_SHAPE), DrawList.estimate(&scene, options));
     try std.testing.expectEqual(@as(usize, 1), DrawList.estimateSegments(&scene, options));
 }
