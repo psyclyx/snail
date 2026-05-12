@@ -1095,6 +1095,10 @@ pub const TextAtlas = struct {
         return self.pages;
     }
 
+    pub fn uploadFootprint(self: *const TextAtlas) snail.ResourceFootprint {
+        return snail.textAtlasUploadFootprint(self);
+    }
+
     /// Low-level: create a temporary `CurveAtlas` wrapper that borrows this
     /// snapshot's pages for GPU upload. Most callers should use
     /// `Renderer.uploadResourcesBlocking` (or `planResourceUpload` /

@@ -19,6 +19,13 @@
 - GL and Vulkan image-array uploads now pack immutable `Image` resources
   exactly instead of reserving a minimum 4-layer array for small image sets.
 
+### Added
+
+- `ResourceFootprint` plus allocation-free upload footprint queries on
+  `TextAtlas`, `PathPicture`, `Image`, `ResourceSet`, and low-level
+  `CurveAtlas`. Footprints report used source bytes and allocated backend
+  texture bytes by curve, band, layer-info, and image class.
+
 ## 0.5.0
 
 ### Fixed

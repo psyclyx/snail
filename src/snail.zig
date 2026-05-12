@@ -376,6 +376,48 @@ pub const SyntheticStyle = struct {
     skew_x: f32 = 0,
 };
 
+pub const ResourceCapacityMode = upload_common.AtlasCapacityMode;
+
+/// Allocation-free estimate of upload-source bytes and backend texture bytes.
+/// `*_used` is the payload bytes in the source resource data; `*_allocated`
+/// is the texture storage implied by Snail's packing policy, excluding driver
+/// alignment and API object overhead.
+pub const ResourceFootprint = struct {
+    curve_bytes_used: usize = 0,
+    curve_bytes_allocated: usize = 0,
+    band_bytes_used: usize = 0,
+    band_bytes_allocated: usize = 0,
+    layer_info_bytes_used: usize = 0,
+    layer_info_bytes_allocated: usize = 0,
+    image_bytes_used: usize = 0,
+    image_bytes_allocated: usize = 0,
+
+    pub fn usedBytes(self: ResourceFootprint) usize {
+        return self.curve_bytes_used +
+            self.band_bytes_used +
+            self.layer_info_bytes_used +
+            self.image_bytes_used;
+    }
+
+    pub fn allocatedBytes(self: ResourceFootprint) usize {
+        return self.curve_bytes_allocated +
+            self.band_bytes_allocated +
+            self.layer_info_bytes_allocated +
+            self.image_bytes_allocated;
+    }
+
+    pub fn add(self: *ResourceFootprint, other: ResourceFootprint) void {
+        self.curve_bytes_used += other.curve_bytes_used;
+        self.curve_bytes_allocated += other.curve_bytes_allocated;
+        self.band_bytes_used += other.band_bytes_used;
+        self.band_bytes_allocated += other.band_bytes_allocated;
+        self.layer_info_bytes_used += other.layer_info_bytes_used;
+        self.layer_info_bytes_allocated += other.layer_info_bytes_allocated;
+        self.image_bytes_used += other.image_bytes_used;
+        self.image_bytes_allocated += other.image_bytes_allocated;
+    }
+};
+
 pub const Image = struct {
     allocator: std.mem.Allocator,
     width: u32,
@@ -405,6 +447,14 @@ pub const Image = struct {
 
     pub fn pixelSlice(self: *const Image) []const u8 {
         return self.pixels;
+    }
+
+    pub fn uploadFootprint(self: *const Image) ResourceFootprint {
+        const bytes = imageTextureBytes(self);
+        return .{
+            .image_bytes_used = bytes,
+            .image_bytes_allocated = imageAllocatedBytes(self),
+        };
     }
 };
 
@@ -599,6 +649,14 @@ const AtlasPage = struct {
 
     pub fn textureBytes(self: *const AtlasPage) usize {
         return self.curve_data.len * @sizeOf(u16) + self.band_data.len * @sizeOf(u16);
+    }
+
+    fn curveTextureBytes(self: *const AtlasPage) usize {
+        return self.curve_data.len * @sizeOf(u16);
+    }
+
+    fn bandTextureBytes(self: *const AtlasPage) usize {
+        return self.band_data.len * @sizeOf(u16);
     }
 };
 
@@ -2655,6 +2713,10 @@ pub const PathPicture = struct {
         return self.shapes.len;
     }
 
+    pub fn uploadFootprint(self: *const PathPicture) ResourceFootprint {
+        return curveAtlasFootprint(&self.atlas, .exact);
+    }
+
     fn applyDebugViewInPlace(self: *PathPicture, view: PathPictureDebugView) void {
         if (view == .normal) return;
         const data = self.atlas.layer_info_data orelse return;
@@ -4167,6 +4229,10 @@ pub const ResourceSet = struct {
     pub fn slice(self: *const ResourceSet) []const Entry {
         return self.entries[0..self.len];
     }
+
+    pub fn estimateUploadFootprint(self: *const ResourceSet) !ResourceFootprint {
+        return resourceSetUploadFootprint(self);
+    }
 };
 
 pub const PreparedResources = struct {
@@ -4759,6 +4825,92 @@ fn imageStamp(image: *const Image) ResourceStamp {
     };
 }
 
+const CURVE_TEXEL_BYTES: usize = 8; // RGBA16F
+const BAND_TEXEL_BYTES: usize = 4; // RG16UI
+const LAYER_INFO_TEXEL_BYTES: usize = 16; // RGBA32F
+const IMAGE_TEXEL_BYTES: usize = 4; // SRGBA8
+
+fn imageTextureBytes(image: *const Image) usize {
+    return image.pixelSlice().len;
+}
+
+fn imageAllocatedBytes(image: *const Image) usize {
+    return @as(usize, upload_common.heightCapacity(image.width)) *
+        @as(usize, upload_common.heightCapacity(image.height)) *
+        @as(usize, upload_common.imageCapacity(1)) *
+        IMAGE_TEXEL_BYTES;
+}
+
+fn addLayerInfoFootprint(out: *ResourceFootprint, data: ?[]const f32, width: u32, height: u32) void {
+    if (data) |d| out.layer_info_bytes_used += d.len * @sizeOf(f32);
+    if (height > 0) {
+        out.layer_info_bytes_allocated += @as(usize, @max(width, 1)) *
+            @as(usize, height) *
+            LAYER_INFO_TEXEL_BYTES;
+    }
+}
+
+pub fn curveAtlasFootprint(atlas: *const Atlas, capacity_mode: ResourceCapacityMode) ResourceFootprint {
+    var out: ResourceFootprint = .{};
+    var max_curve_h: u32 = 1;
+    var max_band_h: u32 = 1;
+    var first_page: ?*const AtlasPage = null;
+
+    for (0..atlas.pageCount()) |i| {
+        const page_ref = atlas.page(@intCast(i));
+        if (first_page == null) first_page = page_ref;
+        out.curve_bytes_used += page_ref.curveTextureBytes();
+        out.band_bytes_used += page_ref.bandTextureBytes();
+        max_curve_h = @max(max_curve_h, page_ref.curve_height);
+        max_band_h = @max(max_band_h, page_ref.band_height);
+    }
+
+    if (first_page) |page_ref| {
+        const capacity = upload_common.atlasCapacityForMode(@intCast(atlas.pageCount()), capacity_mode);
+        out.curve_bytes_allocated = @as(usize, page_ref.curve_width) *
+            @as(usize, upload_common.heightCapacity(max_curve_h)) *
+            @as(usize, capacity) *
+            CURVE_TEXEL_BYTES;
+        out.band_bytes_allocated = @as(usize, page_ref.band_width) *
+            @as(usize, upload_common.heightCapacity(max_band_h)) *
+            @as(usize, capacity) *
+            BAND_TEXEL_BYTES;
+    }
+
+    addLayerInfoFootprint(&out, atlas.layer_info_data, atlas.layer_info_width, atlas.layer_info_height);
+    return out;
+}
+
+pub fn textAtlasUploadFootprint(atlas: *const TextAtlas) ResourceFootprint {
+    var out: ResourceFootprint = .{};
+    var max_curve_h: u32 = 1;
+    var max_band_h: u32 = 1;
+    var first_page: ?*const AtlasPage = null;
+
+    for (atlas.pageSlice()) |page_ref| {
+        if (first_page == null) first_page = page_ref;
+        out.curve_bytes_used += page_ref.curveTextureBytes();
+        out.band_bytes_used += page_ref.bandTextureBytes();
+        max_curve_h = @max(max_curve_h, page_ref.curve_height);
+        max_band_h = @max(max_band_h, page_ref.band_height);
+    }
+
+    if (first_page) |page_ref| {
+        const capacity = upload_common.atlasCapacityForMode(@intCast(atlas.pageCount()), .growable);
+        out.curve_bytes_allocated = @as(usize, page_ref.curve_width) *
+            @as(usize, upload_common.heightCapacity(max_curve_h)) *
+            @as(usize, capacity) *
+            CURVE_TEXEL_BYTES;
+        out.band_bytes_allocated = @as(usize, page_ref.band_width) *
+            @as(usize, upload_common.heightCapacity(max_band_h)) *
+            @as(usize, capacity) *
+            BAND_TEXEL_BYTES;
+    }
+
+    addLayerInfoFootprint(&out, atlas.layer_info_data, atlas.layer_info_width, atlas.layer_info_height);
+    return out;
+}
+
 fn curveAtlasUploadBytes(atlas: *const Atlas) usize {
     var total: usize = 0;
     for (0..atlas.pageCount()) |i| {
@@ -4803,6 +4955,113 @@ fn resourceEntryUploadBytes(entry: ResourceSet.Entry) usize {
         .path_picture => |path| curveAtlasUploadBytes(&path.picture.atlas),
         .image => |image| image.image.pixelSlice().len,
     };
+}
+
+fn addUniqueImage(images: *[upload_common.MAX_IMAGES]*const Image, image_count: *usize, image: *const Image) !void {
+    for (images[0..image_count.*]) |existing| {
+        if (existing == image) return;
+    }
+    if (image_count.* >= images.len) return error.TooManyImages;
+    images[image_count.*] = image;
+    image_count.* += 1;
+}
+
+fn addPathPaintImages(images: *[upload_common.MAX_IMAGES]*const Image, image_count: *usize, atlas: *const Atlas) !void {
+    const records = atlas.paint_image_records orelse return;
+    for (records) |record| {
+        try addUniqueImage(images, image_count, (record orelse continue).image);
+    }
+}
+
+fn resourceSetUploadFootprint(set: *const ResourceSet) !ResourceFootprint {
+    var out: ResourceFootprint = .{};
+    var atlas_count: usize = 0;
+    var total_layer_capacity: u32 = 0;
+    var first_page: ?*const AtlasPage = null;
+    var max_curve_h: u32 = 1;
+    var max_band_h: u32 = 1;
+    var total_layer_info_rows: u32 = 0;
+    var max_layer_info_width: u32 = 1;
+
+    var images: [upload_common.MAX_IMAGES]*const Image = undefined;
+    var image_count: usize = 0;
+
+    for (set.slice()) |entry| {
+        switch (entry) {
+            .text_atlas => |text| {
+                if (atlas_count >= upload_common.MAX_ATLASES) return error.TooManyAtlases;
+                atlas_count += 1;
+                const atlas = text.atlas;
+                total_layer_capacity += upload_common.atlasCapacityForMode(@intCast(atlas.pageCount()), .growable);
+                for (atlas.pageSlice()) |page_ref| {
+                    if (first_page == null) first_page = page_ref;
+                    out.curve_bytes_used += page_ref.curveTextureBytes();
+                    out.band_bytes_used += page_ref.bandTextureBytes();
+                    max_curve_h = @max(max_curve_h, page_ref.curve_height);
+                    max_band_h = @max(max_band_h, page_ref.band_height);
+                }
+                if (atlas.layer_info_data) |data| out.layer_info_bytes_used += data.len * @sizeOf(f32);
+                if (atlas.layer_info_height > 0) {
+                    total_layer_info_rows += atlas.layer_info_height;
+                    max_layer_info_width = @max(max_layer_info_width, atlas.layer_info_width);
+                }
+            },
+            .path_picture => |path| {
+                if (atlas_count >= upload_common.MAX_ATLASES) return error.TooManyAtlases;
+                atlas_count += 1;
+                const atlas = &path.picture.atlas;
+                total_layer_capacity += upload_common.atlasCapacityForMode(@intCast(atlas.pageCount()), .exact);
+                for (0..atlas.pageCount()) |i| {
+                    const page_ref = atlas.page(@intCast(i));
+                    if (first_page == null) first_page = page_ref;
+                    out.curve_bytes_used += page_ref.curveTextureBytes();
+                    out.band_bytes_used += page_ref.bandTextureBytes();
+                    max_curve_h = @max(max_curve_h, page_ref.curve_height);
+                    max_band_h = @max(max_band_h, page_ref.band_height);
+                }
+                if (atlas.layer_info_data) |data| out.layer_info_bytes_used += data.len * @sizeOf(f32);
+                if (atlas.layer_info_height > 0) {
+                    total_layer_info_rows += atlas.layer_info_height;
+                    max_layer_info_width = @max(max_layer_info_width, atlas.layer_info_width);
+                }
+                try addPathPaintImages(&images, &image_count, atlas);
+            },
+            .image => |image| try addUniqueImage(&images, &image_count, image.image),
+        }
+    }
+
+    if (first_page) |page_ref| {
+        out.curve_bytes_allocated = @as(usize, page_ref.curve_width) *
+            @as(usize, upload_common.heightCapacity(max_curve_h)) *
+            @as(usize, total_layer_capacity) *
+            CURVE_TEXEL_BYTES;
+        out.band_bytes_allocated = @as(usize, page_ref.band_width) *
+            @as(usize, upload_common.heightCapacity(max_band_h)) *
+            @as(usize, total_layer_capacity) *
+            BAND_TEXEL_BYTES;
+    }
+
+    if (total_layer_info_rows > 0) {
+        out.layer_info_bytes_allocated = @as(usize, max_layer_info_width) *
+            @as(usize, total_layer_info_rows) *
+            LAYER_INFO_TEXEL_BYTES;
+    }
+
+    var max_image_width: u32 = 1;
+    var max_image_height: u32 = 1;
+    for (images[0..image_count]) |image| {
+        out.image_bytes_used += imageTextureBytes(image);
+        max_image_width = @max(max_image_width, image.width);
+        max_image_height = @max(max_image_height, image.height);
+    }
+    if (image_count > 0) {
+        out.image_bytes_allocated = @as(usize, upload_common.heightCapacity(max_image_width)) *
+            @as(usize, upload_common.heightCapacity(max_image_height)) *
+            @as(usize, upload_common.imageCapacity(@intCast(image_count))) *
+            IMAGE_TEXEL_BYTES;
+    }
+
+    return out;
 }
 
 fn uploadPreparedResources(renderer: *Renderer, set: *const ResourceSet, allocator: std.mem.Allocator) !PreparedResources {
@@ -5367,6 +5626,7 @@ pub const lowlevel = struct {
     pub const CurveAtlas = root.CurveAtlas;
     pub const Atlas = root.Atlas;
     pub const AtlasPage = root.AtlasPage;
+    pub const curveAtlasFootprint = root.curveAtlasFootprint;
 
     pub const TextBatch = root.TextBatch;
     pub const PathBatch = root.PathBatch;
@@ -6102,6 +6362,37 @@ test "path picture freeze compiles atlas and transformed batch vertices" {
     const packed_gw = s.glyph[1];
     try std.testing.expectEqual(@as(u32, 0xFF), packed_gw >> 24);
     try std.testing.expectApproxEqAbs(@as(f32, 0), s.band[3], 0.001);
+}
+
+test "resource upload footprints are allocation-free and policy-aware" {
+    var builder = PathPictureBuilder.init(std.testing.allocator);
+    defer builder.deinit();
+    try builder.addFilledRect(.{ .x = 0, .y = 0, .w = 10, .h = 8 }, .{ .color = .{ 1, 0, 0, 1 } }, .identity);
+
+    var picture = try builder.freeze(std.testing.allocator);
+    defer picture.deinit();
+
+    const picture_fp = picture.uploadFootprint();
+    try std.testing.expectEqual(@as(usize, kPaintTexelsPerRecord * 4 * @sizeOf(f32)), picture_fp.layer_info_bytes_used);
+    try std.testing.expectEqual(picture_fp.layer_info_bytes_used, picture_fp.layer_info_bytes_allocated);
+    try std.testing.expect(picture_fp.curve_bytes_allocated >= picture_fp.curve_bytes_used);
+    try std.testing.expect(picture_fp.band_bytes_allocated >= picture_fp.band_bytes_used);
+
+    var pixels = [_]u8{ 255, 0, 0, 255 };
+    var image = try Image.initSrgba8(std.testing.allocator, 1, 1, &pixels);
+    defer image.deinit();
+    const image_fp = image.uploadFootprint();
+    try std.testing.expectEqual(@as(usize, 4), image_fp.image_bytes_used);
+    try std.testing.expectEqual(@as(usize, 4), image_fp.image_bytes_allocated);
+
+    var entries: [2]ResourceSet.Entry = undefined;
+    var set = ResourceSet.init(&entries);
+    try set.putPathPicture(.shape, &picture);
+    try set.putImage(.image, &image);
+    const set_fp = try set.estimateUploadFootprint();
+    try std.testing.expectEqual(picture_fp.layer_info_bytes_used, set_fp.layer_info_bytes_used);
+    try std.testing.expectEqual(@as(usize, 4), set_fp.image_bytes_used);
+    try std.testing.expectEqual(@as(usize, 4), set_fp.image_bytes_allocated);
 }
 
 test "path picture ranges emit selected shapes" {
