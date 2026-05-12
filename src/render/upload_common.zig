@@ -32,6 +32,18 @@ pub fn ImageSlot(comptime Image: type) type {
     };
 }
 
+pub const AtlasCapacityMode = enum {
+    growable,
+    exact,
+};
+
+pub const AtlasSlotBuildInfo = struct {
+    atlas_slot_count: usize,
+    allocated_curve_height: u32,
+    allocated_band_height: u32,
+    allocated_layer_count: u32,
+};
+
 pub fn firstNonEmptyAtlas(atlases: anytype) ?BufferElement(@TypeOf(atlases)) {
     for (atlases) |atlas| {
         if (atlas.pageCount() > 0) return atlas;
@@ -53,12 +65,7 @@ pub fn atlasSlotsCompatible(atlas_slots: anytype, atlas_slot_count: usize, atlas
     return true;
 }
 
-pub fn rebuildAtlasSlots(atlas_slots: anytype, atlases: anytype) struct {
-    atlas_slot_count: usize,
-    allocated_curve_height: u32,
-    allocated_band_height: u32,
-    allocated_layer_count: u32,
-} {
+pub fn rebuildAtlasSlots(atlas_slots: anytype, atlases: anytype) AtlasSlotBuildInfo {
     std.debug.assert(atlases.len <= MAX_ATLASES);
 
     var max_curve_h: u32 = 1;
@@ -69,6 +76,44 @@ pub fn rebuildAtlasSlots(atlas_slots: anytype, atlases: anytype) struct {
     for (atlases, 0..) |atlas, i| {
         const page_count = atlas.pageCount();
         const capacity = atlasCapacity(@intCast(page_count));
+        const slot = &atlas_slots[i];
+        slot.* = .{
+            .atlas = atlas,
+            .base_layer = total_layers,
+            .info_row_base = total_info_rows,
+            .capacity_pages = capacity,
+            .uploaded_pages = @intCast(page_count),
+        };
+        for (0..page_count) |page_index| {
+            const page = atlas.page(@intCast(page_index));
+            if (page_index < slot.page_ptrs.len) slot.page_ptrs[page_index] = page;
+            if (page.curve_height > max_curve_h) max_curve_h = page.curve_height;
+            if (page.band_height > max_band_h) max_band_h = page.band_height;
+        }
+        total_layers += capacity;
+        total_info_rows += atlas.layer_info_height;
+    }
+
+    return .{
+        .atlas_slot_count = atlases.len,
+        .allocated_curve_height = heightCapacity(max_curve_h),
+        .allocated_band_height = heightCapacity(max_band_h),
+        .allocated_layer_count = total_layers,
+    };
+}
+
+pub fn rebuildAtlasSlotsWithCapacityModes(atlas_slots: anytype, atlases: anytype, capacity_modes: []const AtlasCapacityMode) AtlasSlotBuildInfo {
+    std.debug.assert(atlases.len <= MAX_ATLASES);
+    std.debug.assert(atlases.len == capacity_modes.len);
+
+    var max_curve_h: u32 = 1;
+    var max_band_h: u32 = 1;
+    var total_layers: u32 = 0;
+    var total_info_rows: u32 = 0;
+
+    for (atlases, capacity_modes, 0..) |atlas, mode, i| {
+        const page_count = atlas.pageCount();
+        const capacity = atlasCapacityForMode(@intCast(page_count), mode);
         const slot = &atlas_slots[i];
         slot.* = .{
             .atlas = atlas,
@@ -170,6 +215,30 @@ pub fn collectAtlasImages(image_slots: anytype, image_slot_count: usize, atlases
     return count;
 }
 
+pub fn maxLayerInfoWidth(atlases: anytype) u32 {
+    var width: u32 = 1;
+    for (atlases) |atlas| {
+        if (atlas.layer_info_height > 0 and atlas.layer_info_width > width) width = atlas.layer_info_width;
+    }
+    return width;
+}
+
+pub fn copyLayerInfoRows(
+    dst: []f32,
+    dst_width: u32,
+    dst_row_base: u32,
+    src: []const f32,
+    src_width: u32,
+    row_count: u32,
+) void {
+    const row_floats = @as(usize, src_width) * 4;
+    for (0..row_count) |row| {
+        const src_base = row * row_floats;
+        const dst_base = (@as(usize, dst_row_base) + row) * @as(usize, dst_width) * 4;
+        @memcpy(dst[dst_base..][0..row_floats], src[src_base..][0..row_floats]);
+    }
+}
+
 pub fn roundUpPowerOfTwo(value: u32) u32 {
     if (value <= 1) return 1;
     var v = value - 1;
@@ -183,6 +252,13 @@ pub fn roundUpPowerOfTwo(value: u32) u32 {
 
 pub fn atlasCapacity(page_count: u32) u32 {
     return @max(4, roundUpPowerOfTwo(page_count + 1));
+}
+
+pub fn atlasCapacityForMode(page_count: u32, mode: AtlasCapacityMode) u32 {
+    return switch (mode) {
+        .growable => atlasCapacity(page_count),
+        .exact => page_count,
+    };
 }
 
 pub fn heightCapacity(height: u32) u32 {
@@ -200,12 +276,16 @@ pub fn layerInfoTexelBaseOffset(width: u32, x: u32, y: u32, texel_offset: u32) u
     return layerInfoTexelBase(width, texel_x, texel_y);
 }
 
-pub fn patchImagePaintRecord(data: []f32, width: u32, row_base: u32, texel_offset: u32, view: anytype) void {
-    const x = texel_offset % width;
-    const y = row_base + texel_offset / width;
-    const transform_base = layerInfoTexelBaseOffset(width, x, y, 2);
+fn layerInfoTexelBaseFromSourceOffset(dst_width: u32, src_width: u32, row_base: u32, texel_offset: u32) usize {
+    const texel_x = texel_offset % src_width;
+    const texel_y = row_base + texel_offset / src_width;
+    return layerInfoTexelBase(dst_width, texel_x, texel_y);
+}
+
+pub fn patchImagePaintRecord(data: []f32, dst_width: u32, src_width: u32, row_base: u32, texel_offset: u32, view: anytype) void {
+    const transform_base = layerInfoTexelBaseFromSourceOffset(dst_width, src_width, row_base, texel_offset + 2);
     data[transform_base + 3] = @floatFromInt(view.layer);
-    const extra_base = layerInfoTexelBaseOffset(width, x, y, 5);
+    const extra_base = layerInfoTexelBaseFromSourceOffset(dst_width, src_width, row_base, texel_offset + 5);
     data[extra_base + 0] = view.uv_scale.x;
     data[extra_base + 1] = view.uv_scale.y;
 }
@@ -250,4 +330,63 @@ test "zero-page atlases keep slots and views without requiring pages" {
     try std.testing.expectEqual(@as(u32, 0), views[0].layer_base);
     try std.testing.expect(views[1].atlas == &atlas_b);
     try std.testing.expectEqual(@as(u32, 4), views[1].layer_base);
+}
+
+test "exact atlas capacity packs immutable one-page atlases tightly" {
+    const Page = struct {
+        curve_height: u32 = 7,
+        band_height: u32 = 5,
+    };
+    const Atlas = struct {
+        page_ref: *const Page,
+        layer_info_height: u32 = 0,
+
+        fn pageCount(_: *const @This()) usize {
+            return 1;
+        }
+
+        fn page(self: *const @This(), _: u16) *const Page {
+            return self.page_ref;
+        }
+    };
+    const Slot = AtlasSlot(Atlas, Page, MAX_PAGES_PER_ATLAS);
+
+    const page_a = Page{};
+    const page_b = Page{};
+    const atlas_a = Atlas{ .page_ref = &page_a };
+    const atlas_b = Atlas{ .page_ref = &page_b };
+    const atlases = [_]*const Atlas{ &atlas_a, &atlas_b };
+    const modes = [_]AtlasCapacityMode{ .exact, .exact };
+
+    var slots: [MAX_ATLASES]Slot = std.mem.zeroes([MAX_ATLASES]Slot);
+    const info = rebuildAtlasSlotsWithCapacityModes(slots[0..], atlases[0..], modes[0..]);
+    try std.testing.expectEqual(@as(u32, 2), info.allocated_layer_count);
+    try std.testing.expectEqual(@as(u32, 1), slots[0].capacity_pages);
+    try std.testing.expectEqual(@as(u32, 0), slots[0].base_layer);
+    try std.testing.expectEqual(@as(u32, 1), slots[1].capacity_pages);
+    try std.testing.expectEqual(@as(u32, 1), slots[1].base_layer);
+    try std.testing.expectEqual(@as(u32, 8), info.allocated_curve_height);
+    try std.testing.expectEqual(@as(u32, 8), info.allocated_band_height);
+}
+
+test "compact layer-info rows patch image records in upload texture coordinates" {
+    var src = [_]f32{0} ** (6 * 4);
+    src[2 * 4 + 0] = 1.0;
+    src[5 * 4 + 2] = 2.0;
+
+    var dst = [_]f32{0} ** (12 * 2 * 4);
+    copyLayerInfoRows(dst[0..], 12, 1, src[0..], 6, 1);
+    patchImagePaintRecord(dst[0..], 12, 6, 1, 0, .{
+        .layer = @as(u16, 9),
+        .uv_scale = .{ .x = 0.5, .y = 0.25 },
+    });
+
+    const copied_base = (12 + 2) * 4;
+    try std.testing.expectEqual(@as(f32, 1.0), dst[copied_base + 0]);
+    try std.testing.expectEqual(@as(f32, 9.0), dst[copied_base + 3]);
+
+    const extra_base = (12 + 5) * 4;
+    try std.testing.expectEqual(@as(f32, 0.5), dst[extra_base + 0]);
+    try std.testing.expectEqual(@as(f32, 0.25), dst[extra_base + 1]);
+    try std.testing.expectEqual(@as(f32, 2.0), dst[extra_base + 2]);
 }

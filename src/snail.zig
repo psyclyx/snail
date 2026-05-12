@@ -73,6 +73,7 @@ const vec = @import("math/vec.zig");
 const curve_tex = @import("render/curve_texture.zig");
 const band_tex = @import("render/band_texture.zig");
 const vertex_mod = @import("render/vertex.zig");
+const upload_common = @import("render/upload_common.zig");
 const roots = @import("math/roots.zig");
 const pipeline = @import("render/pipeline.zig");
 const cpu_renderer_mod = if (build_options.enable_cpu) @import("cpu_renderer.zig") else struct {
@@ -2552,6 +2553,10 @@ const PathCompositeMode = enum(u8) {
     fill_stroke_inside = 1,
 };
 
+fn pathPaintInfoWidth(texel_count: u32) u32 {
+    return @min(@max(texel_count, 1), PATH_PAINT_INFO_WIDTH);
+}
+
 fn pathLayerInfoTexelOffset(texel_width: u32, info_x: u16, info_y: u16) u32 {
     return @as(u32, info_y) * texel_width + @as(u32, info_x);
 }
@@ -2814,18 +2819,19 @@ pub const PathPictureBuilder = struct {
 
     fn writePaintRecord(
         data: []f32,
+        texel_width: u32,
         texel_offset: u32,
         band_entry: band_tex.GlyphBandEntry,
         paint: Paint,
     ) void {
         const packed_bands: u32 = @as(u32, band_entry.h_band_count - 1) | (@as(u32, band_entry.v_band_count - 1) << 16);
-        setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 0, .{
+        setLayerInfoTexel(data, texel_width, texel_offset + 0, .{
             @floatFromInt(band_entry.glyph_x),
             @floatFromInt(band_entry.glyph_y),
             @bitCast(packed_bands),
             pathPaintTag(paint),
         });
-        setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 1, .{
+        setLayerInfoTexel(data, texel_width, texel_offset + 1, .{
             band_entry.band_scale_x,
             band_entry.band_scale_y,
             band_entry.band_offset_x,
@@ -2834,20 +2840,20 @@ pub const PathPictureBuilder = struct {
 
         switch (paint) {
             .solid => |color| {
-                setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 2, color);
+                setLayerInfoTexel(data, texel_width, texel_offset + 2, color);
             },
             .linear_gradient => |gradient| {
                 // Colors stored in linear space; the shader does sRGB
                 // round-trip (linear→sRGB→mix→sRGB→linear) for interpolation.
-                setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 2, .{
+                setLayerInfoTexel(data, texel_width, texel_offset + 2, .{
                     gradient.start.x,
                     gradient.start.y,
                     gradient.end.x,
                     gradient.end.y,
                 });
-                setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 3, srgbToLinearColor(gradient.start_color));
-                setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 4, srgbToLinearColor(gradient.end_color));
-                setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 5, .{
+                setLayerInfoTexel(data, texel_width, texel_offset + 3, srgbToLinearColor(gradient.start_color));
+                setLayerInfoTexel(data, texel_width, texel_offset + 4, srgbToLinearColor(gradient.end_color));
+                setLayerInfoTexel(data, texel_width, texel_offset + 5, .{
                     @floatFromInt(@intFromEnum(gradient.extend)),
                     0,
                     0,
@@ -2855,15 +2861,15 @@ pub const PathPictureBuilder = struct {
                 });
             },
             .radial_gradient => |gradient| {
-                setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 2, .{
+                setLayerInfoTexel(data, texel_width, texel_offset + 2, .{
                     gradient.center.x,
                     gradient.center.y,
                     gradient.radius,
                     @floatFromInt(@intFromEnum(gradient.extend)),
                 });
-                setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 3, srgbToLinearColor(gradient.inner_color));
-                setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 4, srgbToLinearColor(gradient.outer_color));
-                setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 5, .{
+                setLayerInfoTexel(data, texel_width, texel_offset + 3, srgbToLinearColor(gradient.inner_color));
+                setLayerInfoTexel(data, texel_width, texel_offset + 4, srgbToLinearColor(gradient.outer_color));
+                setLayerInfoTexel(data, texel_width, texel_offset + 5, .{
                     0,
                     0,
                     0,
@@ -2871,20 +2877,20 @@ pub const PathPictureBuilder = struct {
                 });
             },
             .image => |image| {
-                setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 2, .{
+                setLayerInfoTexel(data, texel_width, texel_offset + 2, .{
                     image.uv_transform.xx,
                     image.uv_transform.xy,
                     image.uv_transform.tx,
                     0,
                 });
-                setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 3, .{
+                setLayerInfoTexel(data, texel_width, texel_offset + 3, .{
                     image.uv_transform.yx,
                     image.uv_transform.yy,
                     image.uv_transform.ty,
                     @floatFromInt(@intFromEnum(image.filter)),
                 });
-                setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 4, srgbToLinearColor(image.tint));
-                setLayerInfoTexel(data, kPaintInfoWidth, texel_offset + 5, .{
+                setLayerInfoTexel(data, texel_width, texel_offset + 4, srgbToLinearColor(image.tint));
+                setLayerInfoTexel(data, texel_width, texel_offset + 5, .{
                     0,
                     0,
                     @floatFromInt(@intFromEnum(image.extend_x)),
@@ -3624,8 +3630,9 @@ pub const PathPictureBuilder = struct {
         var glyph_map = std.AutoHashMap(u16, Atlas.GlyphInfo).init(allocator);
         errdefer glyph_map.deinit();
 
-        const paint_height = @max(1, (total_paint_texels + kPaintInfoWidth - 1) / kPaintInfoWidth);
-        const layer_info_data = try allocator.alloc(f32, kPaintInfoWidth * paint_height * 4);
+        const paint_width = pathPaintInfoWidth(total_paint_texels);
+        const paint_height = @max(1, (total_paint_texels + paint_width - 1) / paint_width);
+        const layer_info_data = try allocator.alloc(f32, paint_width * paint_height * 4);
         errdefer allocator.free(layer_info_data);
         @memset(layer_info_data, 0);
 
@@ -3646,7 +3653,7 @@ pub const PathPictureBuilder = struct {
         for (self.paths.items, 0..) |path, path_index| {
             const info_texel_offset = texel_cursor;
             if (path.layer_count > 1) {
-                setLayerInfoTexel(layer_info_data, kPaintInfoWidth, texel_cursor, .{
+                setLayerInfoTexel(layer_info_data, paint_width, texel_cursor, .{
                     @floatFromInt(path.layer_count),
                     @floatFromInt(@intFromEnum(path.composite_mode)),
                     0,
@@ -3670,7 +3677,7 @@ pub const PathPictureBuilder = struct {
                     .page_index = 0,
                 });
                 layer_roles[glyph_cursor] = layer.role;
-                writePaintRecord(layer_info_data, texel_cursor, bt.entries[glyph_cursor], local_paint);
+                writePaintRecord(layer_info_data, paint_width, texel_cursor, bt.entries[glyph_cursor], local_paint);
                 switch (local_paint) {
                     .image => |image_paint| {
                         paint_image_records[glyph_cursor] = .{
@@ -3689,8 +3696,8 @@ pub const PathPictureBuilder = struct {
                 .glyph_id = first_glyph_id,
                 .bbox = translateBBox(path.bbox, delta),
                 .page_index = 0,
-                .info_x = @intCast(info_texel_offset % kPaintInfoWidth),
-                .info_y = @intCast(info_texel_offset / kPaintInfoWidth),
+                .info_x = @intCast(info_texel_offset % paint_width),
+                .info_y = @intCast(info_texel_offset / paint_width),
                 .layer_count = path.layer_count,
                 .transform = Transform2D.multiply(path.transform, Transform2D.translate(origin.x, origin.y)),
             };
@@ -3717,7 +3724,7 @@ pub const PathPictureBuilder = struct {
         var atlas = try Atlas.initFromParts(allocator, null, pages, glyph_map);
         errdefer atlas.deinit();
         atlas.layer_info_data = layer_info_data;
-        atlas.layer_info_width = kPaintInfoWidth;
+        atlas.layer_info_width = paint_width;
         atlas.layer_info_height = paint_height;
         if (has_image_paints) {
             atlas.paint_image_records = paint_image_records;
@@ -4813,8 +4820,11 @@ fn uploadPreparedResources(renderer: *Renderer, set: *const ResourceSet, allocat
     };
     errdefer prepared.deinit();
 
+    if (atlas_count > upload_common.MAX_ATLASES) return error.TooManyAtlases;
+
     const upload_atlases = try allocator.alloc(*const Atlas, atlas_count);
     defer allocator.free(upload_atlases);
+    var atlas_capacity_modes: [upload_common.MAX_ATLASES]upload_common.AtlasCapacityMode = undefined;
     const atlas_views = try allocator.alloc(PreparedAtlasView, atlas_count);
     defer allocator.free(atlas_views);
 
@@ -4839,6 +4849,7 @@ fn uploadPreparedResources(renderer: *Renderer, set: *const ResourceSet, allocat
                 prepared.atlases[atlas_i].wrapper = text.atlas.uploadAtlas();
                 prepared.atlases[atlas_i].atlas = &prepared.atlases[atlas_i].wrapper;
                 upload_atlases[atlas_i] = prepared.atlases[atlas_i].atlas;
+                atlas_capacity_modes[atlas_i] = .growable;
                 atlas_i += 1;
             },
             .path_picture => |path| {
@@ -4850,6 +4861,7 @@ fn uploadPreparedResources(renderer: *Renderer, set: *const ResourceSet, allocat
                     .stamp = pathPictureStamp(path.picture),
                 };
                 upload_atlases[atlas_i] = prepared.atlases[atlas_i].atlas;
+                atlas_capacity_modes[atlas_i] = .exact;
                 atlas_i += 1;
             },
             .image => |image| {
@@ -4868,7 +4880,7 @@ fn uploadPreparedResources(renderer: *Renderer, set: *const ResourceSet, allocat
         if (renderer.vtable == &Renderer.gl_vtable or renderer.vtable == &Renderer.gl_borrowed_vtable) {
             const gl_state: *pipeline.GlTextState = @ptrCast(@alignCast(renderer.ptr));
             var gl_prepared = pipeline.PreparedResources{ .allocator = allocator, .backend = gl_state.backend };
-            if (atlas_count > 0) try gl_prepared.uploadAtlases(upload_atlases, atlas_views);
+            if (atlas_count > 0) try gl_prepared.uploadAtlasesWithCapacityModes(upload_atlases, atlas_capacity_modes[0..atlas_count], atlas_views);
             if (image_count > 0) gl_prepared.uploadImages(upload_images, image_views);
             prepared.gl = gl_prepared;
             break :blk true;
@@ -4878,7 +4890,7 @@ fn uploadPreparedResources(renderer: *Renderer, set: *const ResourceSet, allocat
                 const vk_state: *vulkan_pipeline.VulkanPipeline = @ptrCast(@alignCast(renderer.ptr));
                 var vk_prepared = try vulkan_pipeline.PreparedResources.init(vk_state);
                 errdefer vk_prepared.deinit();
-                if (atlas_count > 0) vk_state.uploadPreparedAtlases(&vk_prepared, upload_atlases, atlas_views);
+                if (atlas_count > 0) vk_state.uploadPreparedAtlasesWithCapacityModes(&vk_prepared, upload_atlases, atlas_capacity_modes[0..atlas_count], atlas_views);
                 if (image_count > 0) vk_state.uploadPreparedImages(&vk_prepared, upload_images, image_views);
                 prepared.vulkan = vk_prepared;
                 break :blk true;
@@ -6070,6 +6082,9 @@ test "path picture freeze compiles atlas and transformed batch vertices" {
     defer picture.deinit();
     try std.testing.expectEqual(@as(usize, 1), picture.shapeCount());
     try std.testing.expectEqual(@as(usize, 1), picture.atlas.pageCount());
+    try std.testing.expectEqual(@as(u32, kPaintTexelsPerRecord), picture.atlas.layer_info_width);
+    try std.testing.expectEqual(@as(u32, 1), picture.atlas.layer_info_height);
+    try std.testing.expectEqual(@as(usize, kPaintTexelsPerRecord * 4), picture.atlas.layer_info_data.?.len);
 
     var vertex_buf: [PATH_WORDS_PER_SHAPE]u32 = undefined;
     var batch = PathBatch.init(&vertex_buf);

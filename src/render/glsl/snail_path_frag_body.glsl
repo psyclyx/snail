@@ -31,10 +31,9 @@ ivec2 offsetCurveLoc(ivec2 base, int offset) {
 }
 
 ivec2 offsetLayerLoc(ivec2 base, int offset) {
-    ivec2 loc = ivec2(base.x + offset, base.y);
-    loc.y += loc.x >> kLogBandTextureWidth;
-    loc.x &= (1 << kLogBandTextureWidth) - 1;
-    return loc;
+    int width = textureSize(u_layer_tex, 0).x;
+    int texel = base.y * width + base.x + offset;
+    return ivec2(texel % width, texel / width);
 }
 
 struct SegmentRoots {

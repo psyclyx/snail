@@ -121,7 +121,26 @@ pub const PreparedResources = struct {
     }
 
     pub fn uploadAtlases(self: *PreparedResources, atlases: []const *const snail_mod.lowlevel.CurveAtlas, out_views: anytype) !void {
+        return self.uploadAtlasesWithOptionalCapacityModes(atlases, null, out_views);
+    }
+
+    pub fn uploadAtlasesWithCapacityModes(
+        self: *PreparedResources,
+        atlases: []const *const snail_mod.lowlevel.CurveAtlas,
+        capacity_modes: []const upload_common.AtlasCapacityMode,
+        out_views: anytype,
+    ) !void {
+        return self.uploadAtlasesWithOptionalCapacityModes(atlases, capacity_modes, out_views);
+    }
+
+    fn uploadAtlasesWithOptionalCapacityModes(
+        self: *PreparedResources,
+        atlases: []const *const snail_mod.lowlevel.CurveAtlas,
+        capacity_modes: ?[]const upload_common.AtlasCapacityMode,
+        out_views: anytype,
+    ) !void {
         std.debug.assert(atlases.len == out_views.len);
+        if (capacity_modes) |modes| std.debug.assert(atlases.len == modes.len);
 
         if (atlases.len == 0) {
             self.destroyAtlasTextureResources();
@@ -131,9 +150,9 @@ pub const PreparedResources = struct {
 
         const can_incremental = self.texturesReady() and self.atlasSlotsCompatible(atlases);
         if (!can_incremental) {
-            try self.rebuildTextureArrays(atlases, out_views);
+            try self.rebuildTextureArrays(atlases, capacity_modes, out_views);
         } else if (!try self.appendTexturePages(atlases)) {
-            try self.rebuildTextureArrays(atlases, out_views);
+            try self.rebuildTextureArrays(atlases, capacity_modes, out_views);
         } else {
             self.fillAtlasViews(atlases, out_views);
             self.ensureAtlasImagesRegistered(atlases);
@@ -344,11 +363,19 @@ pub const PreparedResources = struct {
         }
     }
 
-    fn rebuildTextureArrays(self: *PreparedResources, atlases: []const *const snail_mod.lowlevel.CurveAtlas, out_views: anytype) !void {
+    fn rebuildTextureArrays(
+        self: *PreparedResources,
+        atlases: []const *const snail_mod.lowlevel.CurveAtlas,
+        capacity_modes: ?[]const upload_common.AtlasCapacityMode,
+        out_views: anytype,
+    ) !void {
         self.destroyAtlasTextureResources();
         self.resetAtlasUploadState();
 
-        const slot_info = upload_common.rebuildAtlasSlots(self.atlas_slots[0..], atlases);
+        const slot_info = if (capacity_modes) |modes|
+            upload_common.rebuildAtlasSlotsWithCapacityModes(self.atlas_slots[0..], atlases, modes)
+        else
+            upload_common.rebuildAtlasSlots(self.atlas_slots[0..], atlases);
         self.atlas_slot_count = slot_info.atlas_slot_count;
         self.allocated_curve_height = slot_info.allocated_curve_height;
         self.allocated_band_height = slot_info.allocated_band_height;
@@ -500,9 +527,9 @@ pub const PreparedResources = struct {
         for (atlases) |atlas| total_rows += atlas.layer_info_height;
         if (total_rows == 0) return;
 
-        const width = snail_mod.lowlevel.PATH_PAINT_INFO_WIDTH;
+        const width = upload_common.maxLayerInfoWidth(atlases);
         const total_texels = @as(usize, width) * @as(usize, total_rows) * 4;
-        var data = try self.allocator.alloc(f32, total_texels);
+        const data = try self.allocator.alloc(f32, total_texels);
         defer self.allocator.free(data);
         @memset(data, 0);
 
@@ -515,15 +542,13 @@ pub const PreparedResources = struct {
             const lid = atlas.layer_info_data orelse continue;
             const row_base = self.atlas_slots[i].info_row_base;
             const row_count = atlas.layer_info_height;
-            const copy_len = @as(usize, atlas.layer_info_width) * @as(usize, row_count) * 4;
-            const dst_base = @as(usize, row_base) * @as(usize, width) * 4;
-            @memcpy(data[dst_base .. dst_base + copy_len], lid[0..copy_len]);
+            upload_common.copyLayerInfoRows(data, width, row_base, lid, atlas.layer_info_width, row_count);
 
             const records = atlas.paint_image_records orelse continue;
             for (records) |record| {
                 const image = (record orelse continue).image;
                 const view = self.currentImageView(ImagePatchView, image);
-                upload_common.patchImagePaintRecord(data, width, row_base, record.?.texel_offset, view);
+                upload_common.patchImagePaintRecord(data, width, atlas.layer_info_width, row_base, record.?.texel_offset, view);
             }
         }
 

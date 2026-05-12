@@ -518,7 +518,28 @@ pub const VulkanPipeline = struct {
     // ── Texture array management ──
 
     pub fn uploadPreparedAtlases(self: *VulkanPipeline, prepared: *PreparedResources, atlases: []const *const snail_mod.lowlevel.CurveAtlas, out_views: anytype) void {
+        self.uploadPreparedAtlasesWithOptionalCapacityModes(prepared, atlases, null, out_views);
+    }
+
+    pub fn uploadPreparedAtlasesWithCapacityModes(
+        self: *VulkanPipeline,
+        prepared: *PreparedResources,
+        atlases: []const *const snail_mod.lowlevel.CurveAtlas,
+        capacity_modes: []const upload_common.AtlasCapacityMode,
+        out_views: anytype,
+    ) void {
+        self.uploadPreparedAtlasesWithOptionalCapacityModes(prepared, atlases, capacity_modes, out_views);
+    }
+
+    fn uploadPreparedAtlasesWithOptionalCapacityModes(
+        self: *VulkanPipeline,
+        prepared: *PreparedResources,
+        atlases: []const *const snail_mod.lowlevel.CurveAtlas,
+        capacity_modes: ?[]const upload_common.AtlasCapacityMode,
+        out_views: anytype,
+    ) void {
         std.debug.assert(atlases.len == out_views.len);
+        if (capacity_modes) |modes| std.debug.assert(atlases.len == modes.len);
 
         if (atlases.len == 0) {
             prepared.destroyAtlasTextureResources();
@@ -528,9 +549,9 @@ pub const VulkanPipeline = struct {
 
         const can_incremental = prepared.texturesReady() and prepared.atlasSlotsCompatible(atlases);
         if (!can_incremental) {
-            self.rebuildTextureArrays(prepared, atlases, out_views);
+            self.rebuildTextureArrays(prepared, atlases, capacity_modes, out_views);
         } else if (!self.appendTexturePages(prepared, atlases)) {
-            self.rebuildTextureArrays(prepared, atlases, out_views);
+            self.rebuildTextureArrays(prepared, atlases, capacity_modes, out_views);
         } else {
             prepared.fillAtlasViews(atlases, out_views);
             self.ensureAtlasImagesRegistered(prepared, atlases);
@@ -550,11 +571,20 @@ pub const VulkanPipeline = struct {
         self.updateDescriptorSet(prepared);
     }
 
-    fn rebuildTextureArrays(self: *VulkanPipeline, prepared: *PreparedResources, atlases: []const *const snail_mod.lowlevel.CurveAtlas, out_views: anytype) void {
+    fn rebuildTextureArrays(
+        self: *VulkanPipeline,
+        prepared: *PreparedResources,
+        atlases: []const *const snail_mod.lowlevel.CurveAtlas,
+        capacity_modes: ?[]const upload_common.AtlasCapacityMode,
+        out_views: anytype,
+    ) void {
         prepared.destroyAtlasTextureResources();
         prepared.resetAtlasUploadState();
 
-        const slot_info = upload_common.rebuildAtlasSlots(prepared.atlas_slots[0..], atlases);
+        const slot_info = if (capacity_modes) |modes|
+            upload_common.rebuildAtlasSlotsWithCapacityModes(prepared.atlas_slots[0..], atlases, modes)
+        else
+            upload_common.rebuildAtlasSlots(prepared.atlas_slots[0..], atlases);
         prepared.atlas_slot_count = slot_info.atlas_slot_count;
         prepared.allocated_curve_height = slot_info.allocated_curve_height;
         prepared.allocated_band_height = slot_info.allocated_band_height;
@@ -684,9 +714,9 @@ pub const VulkanPipeline = struct {
         for (atlases) |atlas| total_rows += atlas.layer_info_height;
         if (total_rows == 0) return;
 
-        const width = snail_mod.lowlevel.PATH_PAINT_INFO_WIDTH;
+        const width = upload_common.maxLayerInfoWidth(atlases);
         const total_texels = @as(usize, width) * @as(usize, total_rows) * 4;
-        var data = std.heap.page_allocator.alloc(f32, total_texels) catch return;
+        const data = std.heap.page_allocator.alloc(f32, total_texels) catch return;
         defer std.heap.page_allocator.free(data);
         @memset(data, 0);
 
@@ -699,14 +729,12 @@ pub const VulkanPipeline = struct {
             const lid = atlas.layer_info_data orelse continue;
             const row_base = prepared.atlas_slots[i].info_row_base;
             const row_count = atlas.layer_info_height;
-            const copy_len = @as(usize, atlas.layer_info_width) * @as(usize, row_count) * 4;
-            const dst_base = @as(usize, row_base) * @as(usize, width) * 4;
-            @memcpy(data[dst_base .. dst_base + copy_len], lid[0..copy_len]);
+            upload_common.copyLayerInfoRows(data, width, row_base, lid, atlas.layer_info_width, row_count);
 
             const records = atlas.paint_image_records orelse continue;
             for (records) |record| {
                 const paint = record orelse continue;
-                upload_common.patchImagePaintRecord(data, width, row_base, paint.texel_offset, prepared.currentImageView(ImagePatchView, paint.image));
+                upload_common.patchImagePaintRecord(data, width, atlas.layer_info_width, row_base, paint.texel_offset, prepared.currentImageView(ImagePatchView, paint.image));
             }
         }
 

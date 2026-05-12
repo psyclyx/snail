@@ -8,6 +8,14 @@
   Uploading a resource set that contains zero-page atlases no longer reads
   `page(0)` while creating texture arrays; all-empty uploads keep prepared
   atlas views valid and otherwise no-op until glyph pages are added.
+- GL and Vulkan uploads now pack immutable `PathPicture` atlases exactly
+  instead of reserving growable 4-layer texture-array capacity for every
+  one-page picture. `TextAtlas` uploads keep growable capacity for snapshot
+  extension.
+- `PathPicture` paint-info tables now use the narrowest width needed by the
+  picture, and GL/Vulkan layer-info uploads allocate the max width required by
+  the current resource set instead of forcing every tiny path picture to pay
+  for a 4096-texel row.
 
 ## 0.5.0
 
