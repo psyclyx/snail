@@ -84,7 +84,7 @@ pub fn main() !void {
             errdefer next_passes.deinit();
             var next_resources = try planSceneResources(allocator, &snail_renderer, &scene_resources, &world_passes, &next_passes);
             errdefer next_resources.deinit();
-            scene_resources.retireNowOrWhenSafe(&snail_renderer);
+            scene_resources.retireNow();
             hud_passes.deinit();
             hud_passes = next_passes;
             scene_resources = next_resources;

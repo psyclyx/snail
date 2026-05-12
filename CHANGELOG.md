@@ -36,6 +36,8 @@
   for budget checks.
 - The C API now exposes resource upload footprints plus explicit atlas capacity
   options for text atlas and path picture resource-set entries.
+- `PreparedResourceRetirementQueue` is a caller-owned queue for explicit
+  deferred retirement of prepared backend resources.
 
 ### Changed
 
@@ -46,6 +48,10 @@
   allocators, matching the same explicit memory model.
 - The C `snail_path_picture_builder_freeze` entry point now takes both
   `alloc` and `scratch_alloc`.
+- Prepared resource retirement no longer uses a process-global queue or hidden
+  sweeps on renderer calls. Use `PreparedResources.retireNow()` for immediate
+  retirement or `retireAfter(&queue, fence)` with an explicit caller-owned
+  `PreparedResourceRetirementQueue`.
 
 ## 0.5.0
 

@@ -181,7 +181,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         const needs_resource_rebuild = path_picture == null or text_blob == null or size_key[0] != uploaded_size[0] or size_key[1] != uploaded_size[1];
         if (needs_resource_rebuild) {
             if (prepared) |*resources| {
-                resources.retireNowOrWhenSafe(&renderer);
+                resources.retireNow();
                 prepared = null;
             }
             if (path_picture) |*picture| {

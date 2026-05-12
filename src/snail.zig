@@ -4346,23 +4346,12 @@ pub const PreparedResources = struct {
         self.* = undefined;
     }
 
-    pub fn retireNowOrWhenSafe(self: *PreparedResources, renderer: *Renderer) void {
-        _ = renderer;
-        sweepRetiredPreparedResources();
+    pub fn retireNow(self: *PreparedResources) void {
         self.deinit();
     }
 
-    pub fn retireAfter(self: *PreparedResources, allocator: std.mem.Allocator, fence_or_frame: anytype) !void {
-        sweepRetiredPreparedResources();
-        if (comptime build_options.enable_vulkan) {
-            if (self.vulkan != null) {
-                const fence = preparedRetirementFence(self, fence_or_frame) orelse return;
-                try enqueueRetiredPreparedResources(allocator, self.*, fence);
-                self.* = undefined;
-                return;
-            }
-        }
-        self.deinit();
+    pub fn retireAfter(self: *PreparedResources, queue: *PreparedResourceRetirementQueue, fence_or_frame: anytype) !void {
+        try queue.retireAfter(self, fence_or_frame);
     }
 
     pub fn stampForKey(self: *const PreparedResources, key_value: anytype) ?ResourceStamp {
@@ -4426,52 +4415,73 @@ const VulkanRetirementFence = if (build_options.enable_vulkan) struct {
     fence: vulkan_pipeline.vk.VkFence,
 } else void;
 
-const RetiredPreparedResources = struct {
+pub const PreparedResourceRetirementQueue = struct {
     allocator: std.mem.Allocator,
-    resources: PreparedResources,
-    vulkan_fence: if (build_options.enable_vulkan) ?VulkanRetirementFence else void = if (build_options.enable_vulkan) null else {},
-    next: ?*RetiredPreparedResources = null,
-};
+    head: ?*Node = null,
 
-var retired_resources_head: ?*RetiredPreparedResources = null;
-
-// Deferred Vulkan retirements are swept opportunistically on public renderer
-// calls. CPU and GL resources retire synchronously through deinit().
-fn enqueueRetiredPreparedResources(allocator: std.mem.Allocator, resources: PreparedResources, fence: VulkanRetirementFence) !void {
-    const node = try allocator.create(RetiredPreparedResources);
-    node.* = .{
-        .allocator = allocator,
-        .resources = resources,
-        .vulkan_fence = if (build_options.enable_vulkan) fence else {},
+    const Node = struct {
+        resources: PreparedResources,
+        vulkan_fence: if (build_options.enable_vulkan) ?VulkanRetirementFence else void = if (build_options.enable_vulkan) null else {},
+        next: ?*Node = null,
     };
 
-    node.next = retired_resources_head;
-    retired_resources_head = node;
-}
+    pub fn init(allocator: std.mem.Allocator) PreparedResourceRetirementQueue {
+        return .{ .allocator = allocator };
+    }
 
-fn sweepRetiredPreparedResources() void {
-    var link = &retired_resources_head;
-    while (link.*) |node| {
-        if (retiredPreparedResourcesReady(node)) {
-            link.* = node.next;
+    pub fn deinit(self: *PreparedResourceRetirementQueue) void {
+        while (self.head) |node| {
+            self.head = node.next;
             var resources = node.resources;
             resources.deinit();
-            node.allocator.destroy(node);
-        } else {
-            link = &node.next;
+            self.allocator.destroy(node);
         }
+        self.* = undefined;
     }
-}
 
-fn retiredPreparedResourcesReady(node: *const RetiredPreparedResources) bool {
-    if (comptime build_options.enable_vulkan) {
-        if (node.vulkan_fence) |fence| {
-            const result = vulkan_pipeline.vk.vkGetFenceStatus(fence.device, fence.fence);
-            return result == vulkan_pipeline.vk.VK_SUCCESS or result == vulkan_pipeline.vk.VK_ERROR_DEVICE_LOST;
+    pub fn sweep(self: *PreparedResourceRetirementQueue) void {
+        var link = &self.head;
+        while (link.*) |node| {
+            if (ready(node)) {
+                link.* = node.next;
+                var resources = node.resources;
+                resources.deinit();
+                self.allocator.destroy(node);
+            } else {
+                link = &node.next;
+            }
         }
     }
-    return true;
-}
+
+    pub fn retireAfter(self: *PreparedResourceRetirementQueue, resources: *PreparedResources, fence_or_frame: anytype) !void {
+        self.sweep();
+        if (comptime build_options.enable_vulkan) {
+            if (resources.vulkan != null) {
+                const fence = preparedRetirementFence(resources, fence_or_frame) orelse return error.InvalidRetirementFence;
+                const node = try self.allocator.create(Node);
+                node.* = .{
+                    .resources = resources.*,
+                    .vulkan_fence = fence,
+                    .next = self.head,
+                };
+                self.head = node;
+                resources.* = undefined;
+                return;
+            }
+        }
+        resources.deinit();
+    }
+
+    fn ready(node: *const Node) bool {
+        if (comptime build_options.enable_vulkan) {
+            if (node.vulkan_fence) |fence| {
+                const result = vulkan_pipeline.vk.vkGetFenceStatus(fence.device, fence.fence);
+                return result == vulkan_pipeline.vk.VK_SUCCESS or result == vulkan_pipeline.vk.VK_ERROR_DEVICE_LOST;
+            }
+        }
+        return true;
+    }
+};
 
 fn preparedRetirementFence(resources: *const PreparedResources, fence_or_frame: anytype) ?VulkanRetirementFence {
     if (comptime !build_options.enable_vulkan) return null;
@@ -4572,7 +4582,6 @@ pub const PendingResourceUpload = struct {
     pub fn publish(self: *PendingResourceUpload) !PreparedResources {
         if (self.external_completion_required and !self.ready_to_publish) return error.ResourceUploadNotReady;
         if (self.prepared) |prepared| {
-            sweepRetiredPreparedResources();
             self.prepared = null;
             self.external_completion_required = false;
             self.ready_to_publish = false;
@@ -5400,7 +5409,6 @@ pub const Renderer = struct {
     /// be current. CPU upload builds cheap views. Vulkan does not perform an
     /// implicit device/queue idle here.
     pub fn uploadResourcesBlocking(self: *Renderer, allocator: std.mem.Allocator, set: *const ResourceSet) !PreparedResources {
-        sweepRetiredPreparedResources();
         return uploadPreparedResources(self, set, allocator);
     }
 
@@ -5423,7 +5431,6 @@ pub const Renderer = struct {
     }
 
     pub fn beginResourceUpload(self: *Renderer, allocator: std.mem.Allocator, plan: ResourceUploadPlan) !PendingResourceUpload {
-        sweepRetiredPreparedResources();
         return .{ .renderer = self, .allocator = allocator, .plan = plan };
     }
 
@@ -5912,13 +5919,12 @@ test "draw dispatch uses only prepared stamps and caller records" {
     try std.testing.expect(!state.saw_backend_prepared);
 }
 
-test "Renderer.draw source stays free of upload allocation and retirement sweeps" {
+test "Renderer.draw source stays free of upload allocation" {
     const source = @embedFile("snail.zig");
     const start = std.mem.indexOf(u8, source, "pub fn draw(self: *Renderer").?;
     const end = start + std.mem.indexOf(u8, source[start..], "pub fn drawPrepared").?;
     const draw_source = source[start..end];
     try std.testing.expect(std.mem.indexOf(u8, draw_source, "uploadResources") == null);
-    try std.testing.expect(std.mem.indexOf(u8, draw_source, "sweepRetiredPreparedResources") == null);
     try std.testing.expect(std.mem.indexOf(u8, draw_source, ".alloc(") == null);
 }
 
@@ -6258,6 +6264,33 @@ test "pending upload publish waits for external completion marker" {
     var prepared = try pending.publish();
     defer prepared.deinit();
     try std.testing.expect(prepared.stampForKey(.hud_panel) != null);
+}
+
+test "prepared resource retirement queue is caller-owned" {
+    const allocator = std.testing.allocator;
+
+    var picture = try testRectPicture(allocator, 0);
+    defer picture.deinit();
+
+    const width: u32 = 16;
+    const height: u32 = 16;
+    const stride: u32 = width * 4;
+    const pixels = try allocator.alloc(u8, stride * height);
+    defer allocator.free(pixels);
+
+    var cpu = CpuRenderer.init(pixels.ptr, width, height, stride);
+    var renderer = Renderer.initCpu(&cpu);
+    defer renderer.deinit();
+
+    var set_entries: [2]ResourceSet.Entry = undefined;
+    var set = ResourceSet.init(&set_entries);
+    try set.putPathPicture(.hud_panel, &picture);
+
+    var prepared = try renderer.uploadResourcesBlocking(allocator, &set);
+    var queue = PreparedResourceRetirementQueue.init(allocator);
+    defer queue.deinit();
+    try prepared.retireAfter(&queue, .{});
+    queue.sweep();
 }
 
 test "CPU draw uses prepared resource views" {

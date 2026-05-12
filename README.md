@@ -427,8 +427,9 @@ try scene.addPath(.{ .picture = &sprite, .instances = entity_overrides });
 | `PreparedScene.initOwned(alloc, prepared, scene, options) !PreparedScene` | Build an owned draw-record cache for a static scene. |
 | `renderer.draw(prepared, records, options)` | Execute prebuilt draw records. No resource discovery or upload. |
 | `renderer.drawPrepared(prepared, prepared_scene, options)` | Draw a `PreparedScene` cache. |
-| `prepared.retireNowOrWhenSafe(renderer)` | Retire backend resources once no in-flight frame still references them. |
-| `prepared.retireAfter(alloc, fence_or_frame)` | Retire after a caller-supplied backend fence / frame index has completed. |
+| `prepared.retireNow()` | Retire backend resources immediately once no in-flight frame references them. |
+| `PreparedResourceRetirementQueue.init(alloc)` / `queue.sweep()` | Caller-owned queue for prepared resources that must retire after a fence completes. |
+| `prepared.retireAfter(&queue, fence_or_frame)` | Move prepared resources into the caller-owned retirement queue. |
 
 ### Scheduled resource upload
 
@@ -455,8 +456,10 @@ plan / record / publish flow:
    `pending.deinit()` if you need to abandon the upload before publishing.
 
 The new `PreparedResources` replaces the old one; retire the old one via
-`old.retireNowOrWhenSafe(renderer)` or `old.retireAfter(allocator, fence)` once
-no in-flight frame still references it.
+`old.retireNow()` once no in-flight frame still references it. For Vulkan
+resources that need fence retirement, keep a caller-owned
+`PreparedResourceRetirementQueue`, call `old.retireAfter(&queue, fence)`, and
+sweep the queue explicitly.
 
 ### Text coverage in custom shaders
 
