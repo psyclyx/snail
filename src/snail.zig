@@ -1003,9 +1003,10 @@ const CurveAtlas = struct {
             });
         }
 
-        var ct = try curve_tex.buildCurveTexture(allocator, glyph_curves_list.items);
-        errdefer ct.texture.deinit();
-        errdefer allocator.free(ct.entries);
+        var ct = try curve_tex.buildCurveTexture(allocator, allocator, glyph_curves_list.items);
+        var ct_texture_owned = true;
+        errdefer if (ct_texture_owned) ct.texture.deinit();
+        defer allocator.free(ct.entries);
 
         var glyph_band_data: std.ArrayList(band_tex.GlyphBandData) = .empty;
         defer {
@@ -1018,9 +1019,10 @@ const CurveAtlas = struct {
             _ = &bd;
         }
 
-        var bt = try band_tex.buildBandTexture(allocator, glyph_band_data.items);
-        errdefer bt.texture.deinit();
-        errdefer allocator.free(bt.entries);
+        var bt = try band_tex.buildBandTexture(allocator, allocator, glyph_band_data.items);
+        var bt_texture_owned = true;
+        errdefer if (bt_texture_owned) bt.texture.deinit();
+        defer allocator.free(bt.entries);
 
         var glyph_map = std.AutoHashMap(u16, GlyphInfo).init(allocator);
         errdefer glyph_map.deinit();
@@ -1033,8 +1035,6 @@ const CurveAtlas = struct {
             });
         }
 
-        allocator.free(ct.entries);
-        allocator.free(bt.entries);
         for (glyph_curves_list.items) |gc| allocator.free(gc.curves);
 
         const atlas_page = try AtlasPage.init(
@@ -1046,6 +1046,8 @@ const CurveAtlas = struct {
             bt.texture.width,
             bt.texture.height,
         );
+        ct_texture_owned = false;
+        bt_texture_owned = false;
 
         return .{
             .page = atlas_page,
@@ -2827,7 +2829,7 @@ pub const PathPicture = struct {
             }
         }
 
-        return builder.freeze(allocator);
+        return builder.freeze(.{ .persistent_allocator = allocator, .scratch_allocator = allocator });
     }
 };
 
@@ -2837,6 +2839,13 @@ pub const PathPictureBuilder = struct {
 
     pub const ShapeMark = struct {
         shape_count: usize = 0,
+    };
+
+    pub const FreezeOptions = struct {
+        /// Owns the returned `PathPicture`'s arrays and atlas page data.
+        persistent_allocator: std.mem.Allocator,
+        /// Used only while compiling path geometry into texture data.
+        scratch_allocator: std.mem.Allocator,
     };
 
     const PathLayerRecord = struct {
@@ -3655,8 +3664,10 @@ pub const PathPictureBuilder = struct {
         try self.addEllipse(rect, null, stroke, transform);
     }
 
-    pub fn freeze(self: *const PathPictureBuilder, allocator: std.mem.Allocator) !PathPicture {
+    pub fn freeze(self: *const PathPictureBuilder, options: FreezeOptions) !PathPicture {
         if (self.paths.items.len == 0) return error.EmptyPicture;
+        const allocator = options.persistent_allocator;
+        const scratch_allocator = options.scratch_allocator;
 
         var total_layer_count: usize = 0;
         var total_paint_texels: u32 = 0;
@@ -3668,18 +3679,18 @@ pub const PathPictureBuilder = struct {
                 1 + @as(u32, path.layer_count) * kPaintTexelsPerRecord;
         }
 
-        const glyph_curves = try allocator.alloc(curve_tex.GlyphCurves, total_layer_count);
-        defer allocator.free(glyph_curves);
-        const packed_curve_slices = try allocator.alloc([]CurveSegment, total_layer_count);
-        defer allocator.free(packed_curve_slices);
+        const glyph_curves = try scratch_allocator.alloc(curve_tex.GlyphCurves, total_layer_count);
+        defer scratch_allocator.free(glyph_curves);
+        const packed_curve_slices = try scratch_allocator.alloc([]CurveSegment, total_layer_count);
+        defer scratch_allocator.free(packed_curve_slices);
         var glyph_cursor: usize = 0;
         defer {
-            for (packed_curve_slices[0..glyph_cursor]) |curves| allocator.free(curves);
+            for (packed_curve_slices[0..glyph_cursor]) |curves| scratch_allocator.free(curves);
         }
         for (self.paths.items) |path| {
             const origin = bboxCenter(path.bbox);
             for (path.layers[0..path.layer_count]) |layer| {
-                const stored_curves = try allocator.dupe(CurveSegment, layer.curves);
+                const stored_curves = try scratch_allocator.dupe(CurveSegment, layer.curves);
                 packed_curve_slices[glyph_cursor] = stored_curves;
                 glyph_curves[glyph_cursor] = .{
                     .curves = stored_curves,
@@ -3692,24 +3703,26 @@ pub const PathPictureBuilder = struct {
             }
         }
 
-        var ct = try curve_tex.buildCurveTexture(allocator, glyph_curves);
-        errdefer ct.texture.deinit();
-        errdefer allocator.free(ct.entries);
+        var ct = try curve_tex.buildCurveTexture(allocator, scratch_allocator, glyph_curves);
+        var ct_texture_owned = true;
+        errdefer if (ct_texture_owned) ct.texture.deinit();
+        defer scratch_allocator.free(ct.entries);
 
         var glyph_band_data: std.ArrayList(band_tex.GlyphBandData) = .empty;
         defer {
-            for (glyph_band_data.items) |*bd| band_tex.freeGlyphBandData(allocator, bd);
-            glyph_band_data.deinit(allocator);
+            for (glyph_band_data.items) |*bd| band_tex.freeGlyphBandData(scratch_allocator, bd);
+            glyph_band_data.deinit(scratch_allocator);
         }
         for (glyph_curves, 0..) |gc, i| {
-            var bd = try band_tex.buildGlyphBandData(allocator, gc.curves, gc.logical_curve_count, gc.bbox, ct.entries[i], gc.origin, gc.prefer_direct_encoding);
-            try glyph_band_data.append(allocator, bd);
+            var bd = try band_tex.buildGlyphBandData(scratch_allocator, gc.curves, gc.logical_curve_count, gc.bbox, ct.entries[i], gc.origin, gc.prefer_direct_encoding);
+            try glyph_band_data.append(scratch_allocator, bd);
             _ = &bd;
         }
 
-        var bt = try band_tex.buildBandTexture(allocator, glyph_band_data.items);
-        errdefer bt.texture.deinit();
-        errdefer allocator.free(bt.entries);
+        var bt = try band_tex.buildBandTexture(allocator, scratch_allocator, glyph_band_data.items);
+        var bt_texture_owned = true;
+        errdefer if (bt_texture_owned) bt.texture.deinit();
+        defer scratch_allocator.free(bt.entries);
 
         var glyph_map = std.AutoHashMap(u16, Atlas.GlyphInfo).init(allocator);
         errdefer glyph_map.deinit();
@@ -3787,9 +3800,6 @@ pub const PathPictureBuilder = struct {
             };
         }
 
-        allocator.free(ct.entries);
-        allocator.free(bt.entries);
-
         const page = try AtlasPage.init(
             allocator,
             ct.texture.data,
@@ -3799,6 +3809,8 @@ pub const PathPictureBuilder = struct {
             bt.texture.width,
             bt.texture.height,
         );
+        ct_texture_owned = false;
+        bt_texture_owned = false;
         errdefer page.release();
 
         const pages = try allocator.alloc(*AtlasPage, 1);
@@ -5741,7 +5753,7 @@ fn testRectPicture(allocator: std.mem.Allocator, x: f32) !PathPicture {
     var builder = PathPictureBuilder.init(allocator);
     defer builder.deinit();
     try builder.addFilledPath(&path, .{ .color = .{ 0.2, 0.4, 0.8, 1.0 } }, .identity);
-    return builder.freeze(allocator);
+    return builder.freeze(.{ .persistent_allocator = allocator, .scratch_allocator = allocator });
 }
 
 test "draw with missing prepared resources fails" {
@@ -6319,7 +6331,7 @@ test "path picture band heuristic uses source segment count for cubic fills" {
     defer builder.deinit();
     try builder.addFilledPath(&path, .{ .color = .{ 0.8, 0.2, 0.1, 1.0 } }, .identity);
 
-    var picture = try builder.freeze(std.testing.allocator);
+    var picture = try builder.freeze(.{ .persistent_allocator = std.testing.allocator, .scratch_allocator = std.testing.allocator });
     defer picture.deinit();
 
     const info = picture.atlas.getGlyph(picture.shapes[0].glyph_id) orelse return error.TestExpectedEqual;
@@ -6355,7 +6367,7 @@ test "path picture layers use direct local curve encoding" {
         .join = .round,
     }, .identity);
 
-    var picture = try builder.freeze(std.testing.allocator);
+    var picture = try builder.freeze(.{ .persistent_allocator = std.testing.allocator, .scratch_allocator = std.testing.allocator });
     defer picture.deinit();
 
     const fill_info = picture.atlas.getGlyph(picture.shapes[0].glyph_id) orelse return error.TestExpectedEqual;
@@ -6386,7 +6398,7 @@ test "path picture freeze compiles atlas and transformed batch vertices" {
         .ty = 30,
     });
 
-    var picture = try builder.freeze(std.testing.allocator);
+    var picture = try builder.freeze(.{ .persistent_allocator = std.testing.allocator, .scratch_allocator = std.testing.allocator });
     defer picture.deinit();
     try std.testing.expectEqual(@as(usize, 1), picture.shapeCount());
     try std.testing.expectEqual(@as(usize, 1), picture.atlas.pageCount());
@@ -6417,7 +6429,7 @@ test "resource upload footprints are allocation-free and policy-aware" {
     defer builder.deinit();
     try builder.addFilledRect(.{ .x = 0, .y = 0, .w = 10, .h = 8 }, .{ .color = .{ 1, 0, 0, 1 } }, .identity);
 
-    var picture = try builder.freeze(std.testing.allocator);
+    var picture = try builder.freeze(.{ .persistent_allocator = std.testing.allocator, .scratch_allocator = std.testing.allocator });
     defer picture.deinit();
 
     const picture_fp = picture.uploadFootprint();
@@ -6469,7 +6481,7 @@ test "path picture ranges emit selected shapes" {
     try std.testing.expectError(error.InvalidShapeMark, builder.rangeFrom(.{ .shape_count = 3 }));
     try std.testing.expectError(error.InvalidShapeRange, builder.rangeBetween(second_mark, first_mark));
 
-    var picture = try builder.freeze(std.testing.allocator);
+    var picture = try builder.freeze(.{ .persistent_allocator = std.testing.allocator, .scratch_allocator = std.testing.allocator });
     defer picture.deinit();
 
     var vertex_buf: [PATH_WORDS_PER_SHAPE]u32 = undefined;
@@ -6491,6 +6503,31 @@ test "path picture ranges emit selected shapes" {
     try std.testing.expectEqual(@as(usize, 1), DrawList.estimateSegments(&scene, options));
 }
 
+test "path picture freeze separates persistent and scratch allocators" {
+    var builder = PathPictureBuilder.init(std.testing.allocator);
+    defer builder.deinit();
+    try builder.addFilledRect(.{ .x = 0, .y = 0, .w = 20, .h = 10 }, .{ .color = .{ 0.2, 0.6, 0.9, 1.0 } }, .identity);
+
+    var scratch_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    var picture = try builder.freeze(.{
+        .persistent_allocator = std.testing.allocator,
+        .scratch_allocator = scratch_arena.allocator(),
+    });
+    _ = scratch_arena.reset(.free_all);
+    scratch_arena.deinit();
+    defer picture.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), picture.shapeCount());
+    try std.testing.expect(picture.uploadFootprint().allocatedBytes() > 0);
+
+    var vertex_buf: [PATH_WORDS_PER_SHAPE]u32 = undefined;
+    var batch = PathBatch.init(&vertex_buf);
+    const view = PreparedAtlasView{ .atlas = &picture.atlas };
+    const result = try batch.addDraw(&view, .{ .picture = &picture }, 0, 0);
+    try std.testing.expectEqual(@as(usize, 1), result.emitted);
+    try std.testing.expect(result.completed);
+}
+
 test "path batch offsets layer info rows through atlas views" {
     var path = Path.init(std.testing.allocator);
     defer path.deinit();
@@ -6500,7 +6537,7 @@ test "path batch offsets layer info rows through atlas views" {
     defer builder.deinit();
     try builder.addFilledPath(&path, .{ .color = .{ 0.4, 0.7, 0.9, 1.0 } }, .identity);
 
-    var picture = try builder.freeze(std.testing.allocator);
+    var picture = try builder.freeze(.{ .persistent_allocator = std.testing.allocator, .scratch_allocator = std.testing.allocator });
     defer picture.deinit();
 
     var vertex_buf: [PATH_WORDS_PER_SHAPE]u32 = undefined;
@@ -6535,7 +6572,7 @@ test "styled path builder emits fill and stroke records" {
         .identity,
     );
 
-    var picture = try builder.freeze(std.testing.allocator);
+    var picture = try builder.freeze(.{ .persistent_allocator = std.testing.allocator, .scratch_allocator = std.testing.allocator });
     defer picture.deinit();
     try std.testing.expectEqual(@as(usize, 1), picture.shapeCount());
     try std.testing.expectEqual(@as(u16, 2), picture.shapes[0].layer_count);
@@ -6572,7 +6609,7 @@ test "open stroked path expands for round caps" {
         .join = .round,
     }, .identity);
 
-    var picture = try builder.freeze(std.testing.allocator);
+    var picture = try builder.freeze(.{ .persistent_allocator = std.testing.allocator, .scratch_allocator = std.testing.allocator });
     defer picture.deinit();
     const stroke_info = picture.atlas.getGlyph(picture.shapes[0].glyph_id) orelse return error.TestExpectedEqual;
     try std.testing.expectApproxEqAbs(@as(f32, -9), stroke_info.bbox.min.x, 0.05);
@@ -6711,7 +6748,7 @@ test "inside-aligned generic path stroke groups fill and stroke on one instance"
         .identity,
     );
 
-    var picture = try builder.freeze(std.testing.allocator);
+    var picture = try builder.freeze(.{ .persistent_allocator = std.testing.allocator, .scratch_allocator = std.testing.allocator });
     defer picture.deinit();
     try std.testing.expectEqual(@as(usize, 1), picture.shapeCount());
     try std.testing.expectEqual(@as(u16, 2), picture.shapes[0].layer_count);
@@ -6751,7 +6788,7 @@ test "inside-aligned rounded rect helper emits explicit ring geometry" {
         .identity,
     );
 
-    var picture = try builder.freeze(std.testing.allocator);
+    var picture = try builder.freeze(.{ .persistent_allocator = std.testing.allocator, .scratch_allocator = std.testing.allocator });
     defer picture.deinit();
     try std.testing.expectEqual(@as(usize, 1), picture.shapeCount());
     try std.testing.expectEqual(@as(u16, 2), picture.shapes[0].layer_count);
@@ -6785,7 +6822,7 @@ test "path picture records single-layer fill and stroke roles distinctly" {
         .identity,
     );
 
-    var picture = try builder.freeze(std.testing.allocator);
+    var picture = try builder.freeze(.{ .persistent_allocator = std.testing.allocator, .scratch_allocator = std.testing.allocator });
     defer picture.deinit();
 
     try std.testing.expectEqual(@as(usize, 2), picture.layer_roles.len);
@@ -6804,7 +6841,7 @@ test "path picture debug view remaps composite fill and stroke paints by role" {
         .identity,
     );
 
-    var picture = try builder.freeze(std.testing.allocator);
+    var picture = try builder.freeze(.{ .persistent_allocator = std.testing.allocator, .scratch_allocator = std.testing.allocator });
     defer picture.deinit();
     var debug_picture = try picture.withDebugView(std.testing.allocator, .stroke_mask);
     defer debug_picture.deinit();
@@ -6833,7 +6870,7 @@ test "path picture bounds overlay builds guides for each instance" {
     defer builder.deinit();
     try builder.addFilledRect(.{ .x = 0, .y = 0, .w = 20, .h = 10 }, .{ .color = .{ 1, 1, 1, 1 } }, .{ .tx = 30, .ty = 40 });
 
-    var picture = try builder.freeze(std.testing.allocator);
+    var picture = try builder.freeze(.{ .persistent_allocator = std.testing.allocator, .scratch_allocator = std.testing.allocator });
     defer picture.deinit();
 
     var overlay = try picture.buildBoundsOverlay(std.testing.allocator, .{ .stroke_width = 2.0, .origin_size = 4.0 });
@@ -6856,7 +6893,7 @@ test "path picture freeze stores large coordinates as direct local curves" {
         9.0,
         .identity,
     );
-    var absolute_picture = try absolute_builder.freeze(std.testing.allocator);
+    var absolute_picture = try absolute_builder.freeze(.{ .persistent_allocator = std.testing.allocator, .scratch_allocator = std.testing.allocator });
     defer absolute_picture.deinit();
 
     var transformed_builder = PathPictureBuilder.init(std.testing.allocator);
@@ -6868,7 +6905,7 @@ test "path picture freeze stores large coordinates as direct local curves" {
         9.0,
         .{ .tx = 640, .ty = 960 },
     );
-    var transformed_picture = try transformed_builder.freeze(std.testing.allocator);
+    var transformed_picture = try transformed_builder.freeze(.{ .persistent_allocator = std.testing.allocator, .scratch_allocator = std.testing.allocator });
     defer transformed_picture.deinit();
 
     const absolute_page = absolute_picture.atlas.page(0);
@@ -6909,7 +6946,7 @@ test "large rounded rect uses generic curve packing without helper tiling" {
         .identity,
     );
 
-    var picture = try builder.freeze(std.testing.allocator);
+    var picture = try builder.freeze(.{ .persistent_allocator = std.testing.allocator, .scratch_allocator = std.testing.allocator });
     defer picture.deinit();
     try std.testing.expectEqual(@as(usize, 1), picture.shapeCount());
 }
@@ -6925,7 +6962,7 @@ test "large rounded rect center stroke uses generic curve packing without helper
         .identity,
     );
 
-    var picture = try builder.freeze(std.testing.allocator);
+    var picture = try builder.freeze(.{ .persistent_allocator = std.testing.allocator, .scratch_allocator = std.testing.allocator });
     defer picture.deinit();
     try std.testing.expectEqual(@as(usize, 1), picture.shapeCount());
 }
@@ -6955,7 +6992,7 @@ test "path picture gradient paint records encode linear and radial paints" {
         .width = 2,
     }, .identity);
 
-    var picture = try builder.freeze(std.testing.allocator);
+    var picture = try builder.freeze(.{ .persistent_allocator = std.testing.allocator, .scratch_allocator = std.testing.allocator });
     defer picture.deinit();
 
     const lid = picture.atlas.layer_info_data orelse return error.TestExpectedEqual;
@@ -6997,7 +7034,7 @@ test "path picture image paint records keep image metadata" {
         } },
     }, .identity);
 
-    var picture = try builder.freeze(std.testing.allocator);
+    var picture = try builder.freeze(.{ .persistent_allocator = std.testing.allocator, .scratch_allocator = std.testing.allocator });
     defer picture.deinit();
 
     const records = picture.atlas.paint_image_records orelse return error.TestExpectedEqual;

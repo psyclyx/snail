@@ -32,6 +32,16 @@
   drawing subsets of a larger immutable path picture; the C API exposes the
   same marks and path-picture range submission calls.
 
+### Changed
+
+- `PathPictureBuilder.freeze` now requires explicit persistent and scratch
+  allocators. Scratch memory is used only while compiling the immutable picture;
+  `PathPicture` owns only the persistent allocations after `freeze` returns.
+- Low-level curve and band texture builders now take separate data and scratch
+  allocators, matching the same explicit memory model.
+- The C `snail_path_picture_builder_freeze` entry point now takes both
+  `alloc` and `scratch_alloc`.
+
 ## 0.5.0
 
 ### Fixed

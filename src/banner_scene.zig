@@ -120,5 +120,5 @@ pub fn buildPathPicture(allocator: Allocator) !snail.PathPicture {
     };
     try demo_banner.addVectorSnail(&builder, stage);
 
-    return builder.freeze(allocator);
+    return builder.freeze(.{ .persistent_allocator = allocator, .scratch_allocator = allocator });
 }

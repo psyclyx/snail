@@ -1000,9 +1000,13 @@ export fn snail_path_picture_builder_add_ellipse(builder: *PathPictureBuilderImp
     return SNAIL_OK;
 }
 
-export fn snail_path_picture_builder_freeze(builder: *const PathPictureBuilderImpl, alloc_ptr: ?*const SnailAllocator, out: *?*PathPictureImpl) c_int {
+export fn snail_path_picture_builder_freeze(builder: *const PathPictureBuilderImpl, alloc_ptr: ?*const SnailAllocator, scratch_alloc_ptr: ?*const SnailAllocator, out: *?*PathPictureImpl) c_int {
     const allocator = resolveAllocator(alloc_ptr);
-    var picture = builder.inner.freeze(allocator) catch |err| return mapError(err);
+    const scratch_allocator = resolveAllocator(scratch_alloc_ptr);
+    var picture = builder.inner.freeze(.{
+        .persistent_allocator = allocator,
+        .scratch_allocator = scratch_allocator,
+    }) catch |err| return mapError(err);
     const impl = handleAllocator().create(PathPictureImpl) catch {
         picture.deinit();
         return SNAIL_ERR_OUT_OF_MEMORY;
@@ -1529,7 +1533,7 @@ test "c_api: path picture builder" {
     ));
 
     var picture: ?*PathPictureImpl = null;
-    try testing.expectEqual(SNAIL_OK, snail_path_picture_builder_freeze(builder.?, null, &picture));
+    try testing.expectEqual(SNAIL_OK, snail_path_picture_builder_freeze(builder.?, null, null, &picture));
     defer snail_path_picture_deinit(picture);
     try testing.expectEqual(@as(usize, 2), snail_path_picture_shape_count(picture.?));
 

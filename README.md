@@ -208,7 +208,10 @@ try builder.addPath(&path,
     .identity,
 );
 
-var picture = try builder.freeze(allocator);
+var picture = try builder.freeze(.{
+    .persistent_allocator = allocator,
+    .scratch_allocator = allocator,
+});
 defer picture.deinit();
 
 // Submit before uploading (see the Zig example above).
@@ -272,7 +275,7 @@ snail_path_picture_builder_add_filled_path(builder, path, fill,
                                            SNAIL_TRANSFORM2D_IDENTITY);
 
 SnailPathPicture *picture = NULL;
-snail_path_picture_builder_freeze(builder, NULL, &picture);
+snail_path_picture_builder_freeze(builder, NULL, NULL, &picture);
 
 SnailScene *scene = NULL;
 snail_scene_init(NULL, &scene);
@@ -508,7 +511,7 @@ masking, or compositing.
 | `builder.addRoundedRect(rect, fill, stroke, radius, transform)` | Direct rounded rectangle. |
 | `builder.addEllipse(rect, fill, stroke, transform)` | Direct ellipse. |
 | `builder.shapeCount() usize` | Number of shapes added so far (matches indices used by `Range`). |
-| `builder.freeze(alloc) !PathPicture` | Compile to immutable atlas. |
+| `builder.freeze(.{ .persistent_allocator, .scratch_allocator }) !PathPicture` | Compile to immutable atlas with explicit persistent and temporary allocation. |
 
 ### `snail.lowlevel`
 

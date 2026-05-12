@@ -414,6 +414,7 @@ int snail_path_picture_builder_add_ellipse(SnailPathPictureBuilder *builder,
                                            SnailTransform2D transform);
 int snail_path_picture_builder_freeze(const SnailPathPictureBuilder *builder,
                                       const SnailAllocator *alloc,
+                                      const SnailAllocator *scratch_alloc,
                                       SnailPathPicture **out);
 void snail_path_picture_deinit(SnailPathPicture *picture);
 size_t snail_path_picture_shape_count(const SnailPathPicture *picture);

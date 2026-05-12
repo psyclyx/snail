@@ -124,7 +124,7 @@ pub fn buildPathPicture(
     // The snail illustration
     try addVectorSnail(&builder, layout.snail_stage);
 
-    return builder.freeze(allocator);
+    return builder.freeze(.{ .persistent_allocator = allocator, .scratch_allocator = allocator });
 }
 
 // Shared sizing constants (must match between drawText, addDecorationLines, addVectorShapes)
@@ -271,7 +271,6 @@ fn addVectorShapes(
         .cap = .round,
         .join = .round,
     }, .identity);
-
 }
 
 // ── Text drawing ──
@@ -577,7 +576,10 @@ pub fn addVectorSnail(builder: *snail.PathPictureBuilder, snail_stage: snail.Rec
 
     // Shadow
     try builder.addFilledEllipse(.{
-        .x = 62.0, .y = 168.0, .w = 240.0, .h = 28.0,
+        .x = 62.0,
+        .y = 168.0,
+        .w = 240.0,
+        .h = 28.0,
     }, .{ .paint = .{ .radial_gradient = .{
         .center = .{ .x = 182.0, .y = 182.0 },
         .radius = 125.0,
@@ -624,7 +626,10 @@ pub fn addVectorSnail(builder: *snail.PathPictureBuilder, snail_stage: snail.Rec
 
     // Shell — translucent teal radial falloff
     try builder.addEllipse(.{
-        .x = 156.0, .y = 24.0, .w = 114.0, .h = 114.0,
+        .x = 156.0,
+        .y = 24.0,
+        .w = 114.0,
+        .h = 114.0,
     }, .{ .paint = .{ .radial_gradient = .{
         .center = .{ .x = 208.0, .y = 68.0 },
         .radius = 72.0,

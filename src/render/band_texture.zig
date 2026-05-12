@@ -358,8 +358,12 @@ pub const GlyphBandEntry = struct {
     band_offset_y: f32,
 };
 
+/// Builds persistent band texture data plus scratch glyph entries.
+/// `texture.data` is owned by `data_allocator`; `entries` is owned by
+/// `scratch_allocator` and is only needed while building dependent metadata.
 pub fn buildBandTexture(
-    allocator: std.mem.Allocator,
+    data_allocator: std.mem.Allocator,
+    scratch_allocator: std.mem.Allocator,
     glyph_band_data: []const GlyphBandData,
 ) !struct { texture: BandTexture, entries: []GlyphBandEntry } {
     var total_texels: u32 = 0;
@@ -368,10 +372,12 @@ pub fn buildBandTexture(
     const height = @max(1, (total_texels + TEX_WIDTH - 1) / TEX_WIDTH);
     const padded = TEX_WIDTH * height;
 
-    var data = try allocator.alloc(u16, padded * 2);
+    var data = try data_allocator.alloc(u16, padded * 2);
+    errdefer data_allocator.free(data);
     @memset(data, 0);
 
-    var entries = try allocator.alloc(GlyphBandEntry, glyph_band_data.len);
+    var entries = try scratch_allocator.alloc(GlyphBandEntry, glyph_band_data.len);
+    errdefer scratch_allocator.free(entries);
     var texel_offset: u32 = 0;
 
     for (glyph_band_data, 0..) |g, gi| {
@@ -401,7 +407,7 @@ pub fn buildBandTexture(
             .data = data,
             .width = TEX_WIDTH,
             .height = height,
-            .allocator = allocator,
+            .allocator = data_allocator,
         },
         .entries = entries,
     };

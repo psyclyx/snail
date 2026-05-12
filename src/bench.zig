@@ -466,7 +466,7 @@ fn buildVectorPicture(allocator: std.mem.Allocator) !snail.PathPicture {
         .placement = .inside,
     }, 8, .identity);
 
-    return builder.freeze(allocator);
+    return builder.freeze(.{ .persistent_allocator = allocator, .scratch_allocator = allocator });
 }
 
 fn timeVectorFreeze() !VectorPrep {

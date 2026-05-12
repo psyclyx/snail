@@ -138,7 +138,7 @@ fn buildPathPicture(allocator: std.mem.Allocator) !snail.PathPicture {
         .identity,
     );
 
-    return builder.freeze(allocator);
+    return builder.freeze(.{ .persistent_allocator = allocator, .scratch_allocator = allocator });
 }
 
 fn buildScene(allocator: std.mem.Allocator) !SceneBundle {

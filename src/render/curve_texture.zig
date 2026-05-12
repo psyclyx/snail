@@ -129,8 +129,12 @@ pub const GlyphCurveEntry = struct {
     offset: u32,
 };
 
+/// Builds persistent curve texture data plus scratch glyph entries.
+/// `texture.data` is owned by `data_allocator`; `entries` is owned by
+/// `scratch_allocator` and is only needed while building dependent metadata.
 pub fn buildCurveTexture(
-    allocator: std.mem.Allocator,
+    data_allocator: std.mem.Allocator,
+    scratch_allocator: std.mem.Allocator,
     glyphs: []const GlyphCurves,
 ) !struct { texture: CurveTexture, entries: []GlyphCurveEntry } {
     var total_texels: u32 = 0;
@@ -139,10 +143,12 @@ pub fn buildCurveTexture(
     const height = @max(1, (total_texels + TEX_WIDTH - 1) / TEX_WIDTH);
     const total = TEX_WIDTH * height;
 
-    var data = try allocator.alloc(u16, total * 4);
+    var data = try data_allocator.alloc(u16, total * 4);
+    errdefer data_allocator.free(data);
     @memset(data, 0);
 
-    var entries = try allocator.alloc(GlyphCurveEntry, glyphs.len);
+    var entries = try scratch_allocator.alloc(GlyphCurveEntry, glyphs.len);
+    errdefer scratch_allocator.free(entries);
     var texel_idx: u32 = 0;
 
     for (glyphs, 0..) |g, gi| {
@@ -155,8 +161,8 @@ pub fn buildCurveTexture(
             .offset = texel_idx,
         };
         if (g.prefer_direct_encoding) {
-            const prepared_curves = try prepareGlyphCurvesForDirectEncoding(allocator, g.curves, g.origin);
-            defer allocator.free(prepared_curves);
+            const prepared_curves = try prepareGlyphCurvesForDirectEncoding(scratch_allocator, g.curves, g.origin);
+            defer scratch_allocator.free(prepared_curves);
 
             for (prepared_curves) |quantized_curve| {
                 const base = texel_idx * 4;
@@ -177,8 +183,8 @@ pub fn buildCurveTexture(
                 texel_idx += SEGMENT_TEXELS;
             }
         } else {
-            const prepared_curves = try prepareGlyphCurvesForPacking(allocator, g.curves, g.origin);
-            defer allocator.free(prepared_curves);
+            const prepared_curves = try prepareGlyphCurvesForPacking(scratch_allocator, g.curves, g.origin);
+            defer scratch_allocator.free(prepared_curves);
 
             for (prepared_curves) |curve| {
                 const base = texel_idx * 4;
@@ -214,7 +220,7 @@ pub fn buildCurveTexture(
             .data = data,
             .width = TEX_WIDTH,
             .height = height,
-            .allocator = allocator,
+            .allocator = data_allocator,
         },
         .entries = entries,
     };
@@ -464,7 +470,7 @@ test "buildCurveTexture packs FP16" {
     };
     const glyphs = [_]GlyphCurves{glyph};
 
-    var result = try buildCurveTexture(std.testing.allocator, &glyphs);
+    var result = try buildCurveTexture(std.testing.allocator, std.testing.allocator, &glyphs);
     defer result.texture.deinit();
     defer std.testing.allocator.free(result.entries);
 
@@ -500,7 +506,7 @@ test "buildCurveTexture rebases coordinates by glyph origin" {
     };
     const glyphs = [_]GlyphCurves{glyph};
 
-    var result = try buildCurveTexture(std.testing.allocator, &glyphs);
+    var result = try buildCurveTexture(std.testing.allocator, std.testing.allocator, &glyphs);
     defer result.texture.deinit();
     defer std.testing.allocator.free(result.entries);
 
@@ -528,7 +534,7 @@ test "buildCurveTexture reconstructs large anchors and local deltas" {
     };
     const glyphs = [_]GlyphCurves{glyph};
 
-    var result = try buildCurveTexture(std.testing.allocator, &glyphs);
+    var result = try buildCurveTexture(std.testing.allocator, std.testing.allocator, &glyphs);
     defer result.texture.deinit();
     defer std.testing.allocator.free(result.entries);
 
@@ -554,7 +560,7 @@ test "quantizedLocalCurve matches packed decode" {
     };
     const glyphs = [_]GlyphCurves{glyph};
 
-    var result = try buildCurveTexture(std.testing.allocator, &glyphs);
+    var result = try buildCurveTexture(std.testing.allocator, std.testing.allocator, &glyphs);
     defer result.texture.deinit();
     defer std.testing.allocator.free(result.entries);
 
@@ -676,7 +682,7 @@ test "buildCurveTexture supports direct encoding for font glyphs" {
     };
     const glyphs = [_]GlyphCurves{glyph};
 
-    var result = try buildCurveTexture(std.testing.allocator, &glyphs);
+    var result = try buildCurveTexture(std.testing.allocator, std.testing.allocator, &glyphs);
     defer result.texture.deinit();
     defer std.testing.allocator.free(result.entries);
 
@@ -716,7 +722,7 @@ test "buildCurveTexture direct encoding preserves adjacent joins" {
         .prefer_direct_encoding = true,
     };
 
-    var result = try buildCurveTexture(std.testing.allocator, &.{glyph});
+    var result = try buildCurveTexture(std.testing.allocator, std.testing.allocator, &.{glyph});
     defer result.texture.deinit();
     defer std.testing.allocator.free(result.entries);
 
@@ -751,7 +757,7 @@ test "buildCurveTexture preserves closed contour wrap" {
         .prefer_direct_encoding = true,
     };
 
-    var result = try buildCurveTexture(std.testing.allocator, &.{glyph});
+    var result = try buildCurveTexture(std.testing.allocator, std.testing.allocator, &.{glyph});
     defer result.texture.deinit();
     defer std.testing.allocator.free(result.entries);
 

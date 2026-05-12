@@ -256,7 +256,7 @@ fn buildHudTranslucentPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas
         .{ .color = .{ 0.56, 0.82, 1.0, 0.78 } },
         .identity,
     );
-    var picture = try path_builder.freeze(allocator);
+    var picture = try path_builder.freeze(.{ .persistent_allocator = allocator, .scratch_allocator = allocator });
     errdefer picture.deinit();
 
     var builder = snail.TextBlobBuilder.init(allocator, fonts);
@@ -313,7 +313,7 @@ fn buildHudSolidPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas, wind
         .{ .color = .{ 0.14, 0.20, 0.25, 1.0 } },
         .identity,
     );
-    var picture = try path_builder.freeze(allocator);
+    var picture = try path_builder.freeze(.{ .persistent_allocator = allocator, .scratch_allocator = allocator });
     errdefer picture.deinit();
 
     var builder = snail.TextBlobBuilder.init(allocator, fonts);
@@ -426,7 +426,7 @@ fn buildGlassPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas) !PlaneP
         .{ .color = .{ 0.85, 0.95, 1.0, 0.55 } },
         .identity,
     );
-    var picture = try path_builder.freeze(allocator);
+    var picture = try path_builder.freeze(.{ .persistent_allocator = allocator, .scratch_allocator = allocator });
     errdefer picture.deinit();
 
     var builder = snail.TextBlobBuilder.init(allocator, fonts);

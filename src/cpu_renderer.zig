@@ -2364,7 +2364,7 @@ test "cpu renderer renders path rect" {
         .color = .{ 1, 0, 0, 1 },
     }, .identity);
 
-    var picture = try builder.freeze(testing.allocator);
+    var picture = try builder.freeze(.{ .persistent_allocator = testing.allocator, .scratch_allocator = testing.allocator });
     defer picture.deinit();
 
     renderer.drawPathPicture(&picture);
@@ -2398,7 +2398,7 @@ test "cpu renderer renders transformed path picture" {
         .color = .{ 0, 1, 0, 1 },
     }, .identity);
 
-    var picture = try builder.freeze(testing.allocator);
+    var picture = try builder.freeze(.{ .persistent_allocator = testing.allocator, .scratch_allocator = testing.allocator });
     defer picture.deinit();
 
     renderer.drawPathPictureTransformed(&picture, .{ .tx = 20, .ty = 10 });
@@ -2442,7 +2442,7 @@ test "cpu renderer matches absolute and transformed rounded rect pictures" {
         9.0,
         .identity,
     );
-    var absolute_picture = try absolute_builder.freeze(testing.allocator);
+    var absolute_picture = try absolute_builder.freeze(.{ .persistent_allocator = testing.allocator, .scratch_allocator = testing.allocator });
     defer absolute_picture.deinit();
 
     var transformed_builder = snail.PathPictureBuilder.init(testing.allocator);
@@ -2459,7 +2459,7 @@ test "cpu renderer matches absolute and transformed rounded rect pictures" {
         9.0,
         .{ .tx = 64, .ty = 40 },
     );
-    var transformed_picture = try transformed_builder.freeze(testing.allocator);
+    var transformed_picture = try transformed_builder.freeze(.{ .persistent_allocator = testing.allocator, .scratch_allocator = testing.allocator });
     defer transformed_picture.deinit();
 
     absolute_renderer.drawPathPicture(&absolute_picture);
@@ -2489,7 +2489,7 @@ test "cpu renderer keeps rounded rect cap joins opaque" {
         8.0,
         .identity,
     );
-    var picture = try builder.freeze(testing.allocator);
+    var picture = try builder.freeze(.{ .persistent_allocator = testing.allocator, .scratch_allocator = testing.allocator });
     defer picture.deinit();
 
     renderer.drawPathPicture(&picture);
@@ -2537,7 +2537,7 @@ test "cpu renderer matches huge-span and normalized curved path pictures" {
             Transform2D.scale(1.0 / 64.0, 1.0 / 64.0),
         ),
     );
-    var large_picture = try large_builder.freeze(testing.allocator);
+    var large_picture = try large_builder.freeze(.{ .persistent_allocator = testing.allocator, .scratch_allocator = testing.allocator });
     defer large_picture.deinit();
 
     var normalized_path = snail.Path.init(testing.allocator);
@@ -2554,7 +2554,7 @@ test "cpu renderer matches huge-span and normalized curved path pictures" {
         .{ .color = .{ 0.95, 0.55, 0.15, 1.0 } },
         Transform2D.translate(24, 28),
     );
-    var normalized_picture = try normalized_builder.freeze(testing.allocator);
+    var normalized_picture = try normalized_builder.freeze(.{ .persistent_allocator = testing.allocator, .scratch_allocator = testing.allocator });
     defer normalized_picture.deinit();
 
     large_renderer.drawPathPicture(&large_picture);
@@ -2591,7 +2591,7 @@ test "cpu renderer matches huge-span and normalized rounded rect pictures" {
             Transform2D.scale(1.0 / 64.0, 1.0 / 64.0),
         ),
     );
-    var large_picture = try large_builder.freeze(testing.allocator);
+    var large_picture = try large_builder.freeze(.{ .persistent_allocator = testing.allocator, .scratch_allocator = testing.allocator });
     defer large_picture.deinit();
 
     var normalized_builder = snail.PathPictureBuilder.init(testing.allocator);
@@ -2603,7 +2603,7 @@ test "cpu renderer matches huge-span and normalized rounded rect pictures" {
         20.0,
         Transform2D.translate(20, 24),
     );
-    var normalized_picture = try normalized_builder.freeze(testing.allocator);
+    var normalized_picture = try normalized_builder.freeze(.{ .persistent_allocator = testing.allocator, .scratch_allocator = testing.allocator });
     defer normalized_picture.deinit();
 
     large_renderer.drawPathPicture(&large_picture);
@@ -2639,7 +2639,7 @@ test "cpu renderer renders gradient path picture" {
         } },
     }, .{ .tx = 10, .ty = 7 });
 
-    var picture = try builder.freeze(testing.allocator);
+    var picture = try builder.freeze(.{ .persistent_allocator = testing.allocator, .scratch_allocator = testing.allocator });
     defer picture.deinit();
 
     renderer.drawPathPicture(&picture);
@@ -2680,7 +2680,7 @@ test "cpu renderer dithers shallow gradient path picture" {
         } },
     }, .{ .tx = 16, .ty = 6 });
 
-    var picture = try builder.freeze(testing.allocator);
+    var picture = try builder.freeze(.{ .persistent_allocator = testing.allocator, .scratch_allocator = testing.allocator });
     defer picture.deinit();
 
     renderer.drawPathPicture(&picture);
@@ -2741,7 +2741,7 @@ test "cpu renderer renders image-painted path picture" {
         } },
     }, .{ .tx = 8, .ty = 6 });
 
-    var picture = try builder.freeze(testing.allocator);
+    var picture = try builder.freeze(.{ .persistent_allocator = testing.allocator, .scratch_allocator = testing.allocator });
     defer picture.deinit();
 
     renderer.drawPathPicture(&picture);
@@ -2816,7 +2816,7 @@ test "cpu renderer premultiplies translucent path fill" {
         .color = .{ 1, 0, 0, 0.5 },
     }, .identity);
 
-    var picture = try builder.freeze(testing.allocator);
+    var picture = try builder.freeze(.{ .persistent_allocator = testing.allocator, .scratch_allocator = testing.allocator });
     defer picture.deinit();
 
     renderer.drawPathPicture(&picture);
@@ -2848,7 +2848,7 @@ test "cpu renderer decodes translucent sRGB solid path colors before blending" {
         .color = .{ 0.5, 0.5, 0.5, 0.5 },
     }, .identity);
 
-    var picture = try builder.freeze(testing.allocator);
+    var picture = try builder.freeze(.{ .persistent_allocator = testing.allocator, .scratch_allocator = testing.allocator });
     defer picture.deinit();
 
     renderer.drawPathPicture(&picture);
@@ -2883,7 +2883,7 @@ test "cpu renderer renders collapsed inside stroke" {
         .identity,
     );
 
-    var picture = try builder.freeze(testing.allocator);
+    var picture = try builder.freeze(.{ .persistent_allocator = testing.allocator, .scratch_allocator = testing.allocator });
     defer picture.deinit();
 
     renderer.drawPathPicture(&picture);
@@ -2932,7 +2932,7 @@ test "cpu renderer fills both demo eye stalks" {
         .join = .round,
     }, .identity);
 
-    var picture = try builder.freeze(testing.allocator);
+    var picture = try builder.freeze(.{ .persistent_allocator = testing.allocator, .scratch_allocator = testing.allocator });
     defer picture.deinit();
 
     renderer.drawPathPicture(&picture);
@@ -2988,7 +2988,7 @@ test "cpu renderer threaded draw matches single-threaded byte-for-byte" {
     try builder.addRoundedRect(.{ .x = 4, .y = 4, .w = width - 8, .h = 20 }, .{
         .color = .{ 0.2, 0.4, 0.8, 0.9 },
     }, .{ .color = .{ 1, 1, 1, 1 }, .width = 1.5 }, 4, .identity);
-    var picture = try builder.freeze(testing.allocator);
+    var picture = try builder.freeze(.{ .persistent_allocator = testing.allocator, .scratch_allocator = testing.allocator });
     defer picture.deinit();
 
     var scene = snail.Scene.init(testing.allocator);
@@ -3068,7 +3068,7 @@ test "cpu renderer drawPaths batch matches drawPathPicture" {
         .color = .{ 1, 0, 0, 1 },
     }, .identity);
 
-    var picture = try builder.freeze(testing.allocator);
+    var picture = try builder.freeze(.{ .persistent_allocator = testing.allocator, .scratch_allocator = testing.allocator });
     defer picture.deinit();
 
     ref_renderer.drawPathPicture(&picture);
@@ -3135,7 +3135,7 @@ test "cpu renderer applies path draw tint in prepared batches" {
         .color = .{ 1, 1, 1, 1 },
     }, .identity);
 
-    var picture = try builder.freeze(testing.allocator);
+    var picture = try builder.freeze(.{ .persistent_allocator = testing.allocator, .scratch_allocator = testing.allocator });
     defer picture.deinit();
 
     const overrides = [_]snail.Override{.{ .tint = .{ 1, 0, 0, 0.5 } }};
