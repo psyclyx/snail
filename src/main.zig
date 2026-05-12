@@ -32,13 +32,40 @@ pub fn main() !void {
     }
 }
 
-fn linearToSrgbU8(v: f32) u8 {
-    const s = if (v <= 0.0031308) v * 12.92 else 1.055 * std.math.pow(f32, v, 1.0 / 2.4) - 0.055;
-    return @intFromFloat(std.math.clamp(s, 0, 1) * 255);
+fn unitToU8(v: f32) u8 {
+    return @intFromFloat(std.math.clamp(v, 0, 1) * 255);
 }
 
 fn srgbToLinear(v: f32) f32 {
     return if (v <= 0.04045) v / 12.92 else std.math.pow(f32, (v + 0.055) / 1.055, 2.4);
+}
+
+fn toSnailEncoding(encoding: platform.presentation.ColorEncoding) snail.ColorEncoding {
+    return switch (encoding) {
+        .linear => .linear,
+        .srgb => .srgb,
+    };
+}
+
+fn displayTargetEncoding(info: platform.presentation.Info) snail.TargetEncoding {
+    return .{
+        .framebuffer = toSnailEncoding(info.framebuffer_encoding),
+        .pixels = .srgb,
+    };
+}
+
+fn clearColorForTarget(color_srgb: [4]f32, encoding: snail.TargetEncoding) [4]f32 {
+    return switch (encoding.shaderOutputEncoding()) {
+        .linear => .{ srgbToLinear(color_srgb[0]), srgbToLinear(color_srgb[1]), srgbToLinear(color_srgb[2]), color_srgb[3] },
+        .srgb => color_srgb,
+    };
+}
+
+fn clearColorForStoredPixels(color_srgb: [4]f32, encoding: snail.TargetEncoding) [4]f32 {
+    return switch (encoding.pixels) {
+        .linear => .{ srgbToLinear(color_srgb[0]), srgbToLinear(color_srgb[1]), srgbToLinear(color_srgb[2]), color_srgb[3] },
+        .srgb => color_srgb,
+    };
 }
 
 fn cycleSubpixelOrder(o: snail.SubpixelOrder) snail.SubpixelOrder {
@@ -59,6 +86,24 @@ fn aaName(o: snail.SubpixelOrder) []const u8 {
         .vrgb => "subpixel-VRGB",
         .vbgr => "subpixel-VBGR",
     };
+}
+
+fn logPresentationInfo(info: platform.presentation.Info) void {
+    const scale = info.scale();
+    std.debug.print(
+        "presentation: logical={}x{} framebuffer={}x{} scale={d:.2}x{d:.2} buffer_scale={} framebuffer={s} resample={}\n",
+        .{
+            info.logical_size[0],
+            info.logical_size[1],
+            info.framebuffer_size[0],
+            info.framebuffer_size[1],
+            scale[0],
+            scale[1],
+            info.buffer_scale,
+            @tagName(info.framebuffer_encoding),
+            info.will_resample,
+        },
+    );
 }
 
 fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
@@ -119,6 +164,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
     var fps_timer: f64 = 0.0;
     var fps_frames: u32 = 0;
     var fps_display: f32 = 0.0;
+    var last_presentation: ?platform.presentation.Info = null;
 
     std.debug.print("snail - GPU text & vector rendering\n", .{});
     std.debug.print("Backend: {s}, HarfBuzz: {s}\n", .{
@@ -165,8 +211,14 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         if (platform.isKeyDown(platform.KEY_UP)) pan_y += pan_step;
         if (platform.isKeyDown(platform.KEY_DOWN)) pan_y -= pan_step;
 
-        const size = platform.getWindowSize();
-        const fb_size = platform.getFramebufferSize();
+        const present = platform.presentationInfo();
+        if (last_presentation == null or !std.meta.eql(last_presentation.?, present)) {
+            logPresentationInfo(present);
+            last_presentation = present;
+        }
+        const size = present.logical_size;
+        const fb_size = present.framebuffer_size;
+        const target_encoding = displayTargetEncoding(present);
         const w: f32 = @floatFromInt(size[0]);
         const h: f32 = @floatFromInt(size[1]);
         const viewport_w: f32 = @floatFromInt(fb_size[0]);
@@ -213,10 +265,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         }
 
         const clear_srgb = demo_banner.clearColor();
-        // GL_FRAMEBUFFER_SRGB encodes glClearColor's linear input on write, and
-        // the CPU path passes linear into linearToSrgbU8. Convert once here so
-        // both backends store the documented sRGB clear bytes.
-        const clear = [4]f32{ srgbToLinear(clear_srgb[0]), srgbToLinear(clear_srgb[1]), srgbToLinear(clear_srgb[2]), clear_srgb[3] };
+        const clear = clearColorForTarget(clear_srgb, target_encoding);
 
         if (use_vulkan) {
             const cmd = platform.beginFrame() orelse continue;
@@ -234,10 +283,11 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
                 }
             }
             if (platform.getPixelBuffer()) |px| {
-                const r = linearToSrgbU8(clear[0]);
-                const g = linearToSrgbU8(clear[1]);
-                const b = linearToSrgbU8(clear[2]);
-                const a: u8 = @intFromFloat(clear[3] * 255);
+                const clear_bytes = clearColorForStoredPixels(clear_srgb, target_encoding);
+                const r = unitToU8(clear_bytes[0]);
+                const g = unitToU8(clear_bytes[1]);
+                const b = unitToU8(clear_bytes[2]);
+                const a = unitToU8(clear_bytes[3]);
                 for (0..bsz[1]) |row| {
                     const row_start = row * bsz[0] * 4;
                     for (0..bsz[0]) |col| {
@@ -271,7 +321,8 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
                 .pixel_width = viewport_w,
                 .pixel_height = viewport_h,
                 .subpixel_order = current_order,
-                .encoding = .srgb,
+                .will_resample = present.will_resample,
+                .encoding = target_encoding,
                 .coverage_transfer = snail.CoverageTransfer.power(0.9),
             },
         };

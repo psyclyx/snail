@@ -1,5 +1,6 @@
 const std = @import("std");
 const SubpixelOrder = @import("subpixel_order.zig").SubpixelOrder;
+pub const presentation = @import("presentation.zig");
 const wayland = @import("wayland_window.zig");
 const c = wayland.c;
 
@@ -34,7 +35,8 @@ pub fn init(width: u32, height: u32, title: [*:0]const u8) !void {
         app = null;
     }
 
-    try createShmBuffer(width, height);
+    const fb_size = app.?.getFramebufferSize();
+    try createShmBuffer(fb_size[0], fb_size[1]);
 }
 
 pub fn deinit() void {
@@ -48,8 +50,8 @@ pub fn deinit() void {
 pub fn shouldClose() bool {
     if (app) |window| {
         window.pumpEvents();
-        if (window.consumeResized()) {
-            const size = window.getWindowSize();
+        if (window.consumeResized() or window.consumeScaleChanged()) {
+            const size = window.getFramebufferSize();
             destroyShmBuffer();
             createShmBuffer(size[0], size[1]) catch {};
         }
@@ -109,6 +111,19 @@ pub fn getWindowSize() [2]u32 {
 
 pub fn getFramebufferSize() [2]u32 {
     return getBufferSize();
+}
+
+pub fn presentationInfo() presentation.Info {
+    if (app) |window| {
+        return .{
+            .logical_size = window.getWindowSize(),
+            .framebuffer_size = window.getFramebufferSize(),
+            .buffer_scale = window.getBufferScale(),
+            .framebuffer_encoding = .linear,
+            .will_resample = false,
+        };
+    }
+    return .{ .framebuffer_encoding = .linear };
 }
 
 pub fn getTime() f64 {

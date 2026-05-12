@@ -17,6 +17,20 @@ const QuadRenderer = demo_quad.QuadRenderer;
 const RenderTarget = demo_quad.RenderTarget;
 const SurfaceTextDraw = demo_quad.SurfaceTextDraw;
 
+fn toSnailEncoding(encoding: platform.presentation.ColorEncoding) snail.ColorEncoding {
+    return switch (encoding) {
+        .linear => .linear,
+        .srgb => .srgb,
+    };
+}
+
+fn displayTargetEncoding(info: platform.presentation.Info) snail.TargetEncoding {
+    return .{
+        .framebuffer = toSnailEncoding(info.framebuffer_encoding),
+        .pixels = .srgb,
+    };
+}
+
 pub fn main() !void {
     var da: std.heap.DebugAllocator(.{}) = .init;
     defer _ = da.deinit();
@@ -37,7 +51,8 @@ pub fn main() !void {
 
     var world_passes = try demo_passes.buildWorldPasses(allocator, &fonts);
     defer world_passes.deinit();
-    const initial_window = platform.getWindowSize();
+    const initial_present = platform.presentationInfo();
+    const initial_window = initial_present.logical_size;
     var hud_passes = try HudPasses.init(allocator, &fonts, initial_window[0], initial_window[1]);
     defer hud_passes.deinit();
     var scene_resources = try uploadSceneResources(allocator, &snail_renderer, &world_passes, &hud_passes);
@@ -51,7 +66,7 @@ pub fn main() !void {
     defer center_panel_text.deinit();
     var hud_window_size = initial_window;
 
-    const initial_fb = platform.getFramebufferSize();
+    const initial_fb = initial_present.framebuffer_size;
     var world_buffer = try RenderTarget.init(initial_fb[0], initial_fb[1], true);
     defer world_buffer.deinit();
 
@@ -62,6 +77,20 @@ pub fn main() !void {
 
     std.debug.print("snail-game-demo - OpenGL room with HUD and world-space text\n", .{});
     std.debug.print("Controls: WASD move, QE rise, arrows look, R reset camera, Esc quit\n", .{});
+    const initial_scale = initial_present.scale();
+    std.debug.print(
+        "presentation: logical={}x{} framebuffer={}x{} scale={d:.2}x{d:.2} buffer_scale={} framebuffer={s}\n",
+        .{
+            initial_present.logical_size[0],
+            initial_present.logical_size[1],
+            initial_present.framebuffer_size[0],
+            initial_present.framebuffer_size[1],
+            initial_scale[0],
+            initial_scale[1],
+            initial_present.buffer_scale,
+            @tagName(initial_present.framebuffer_encoding),
+        },
+    );
 
     while (!platform.shouldClose()) {
         const now = platform.getTime();
@@ -72,13 +101,15 @@ pub fn main() !void {
             current_order = platform.detectCurrentMonitorSubpixelOrder(sys_order);
         }
 
-        const fb_size = platform.getFramebufferSize();
+        const present = platform.presentationInfo();
+        const fb_size = present.framebuffer_size;
+        const target_encoding = displayTargetEncoding(present);
         if (fb_size[0] == 0 or fb_size[1] == 0) continue;
         if (fb_size[0] != world_buffer.width or fb_size[1] != world_buffer.height) {
             try world_buffer.resize(fb_size[0], fb_size[1], true);
         }
 
-        const window_size = platform.getWindowSize();
+        const window_size = present.logical_size;
         if (window_size[0] != hud_window_size[0] or window_size[1] != hud_window_size[1]) {
             var next_passes = try HudPasses.init(allocator, &fonts, window_size[0], window_size[1]);
             errdefer next_passes.deinit();
@@ -151,12 +182,12 @@ pub fn main() !void {
         // Direct HUD text over the 3D scene lands on final pixels, but it does
         // not have a guaranteed opaque backdrop, so LCD/subpixel stays off.
         gl.glDisable(gl.GL_DEPTH_TEST);
-        try drawSnailScene(&snail_renderer, &scene_resources, &hud_passes.plain.scene, overlay_projection, demo_passes.hudTarget(window_size, fb_size, current_order, false), &draw_buf, allocator);
+        try drawSnailScene(&snail_renderer, &scene_resources, &hud_passes.plain.scene, overlay_projection, demo_passes.hudTarget(window_size, fb_size, current_order, false, target_encoding, present.will_resample), &draw_buf, allocator);
         // A translucent vector panel is still not LCD-safe.
-        try drawSnailScene(&snail_renderer, &scene_resources, &hud_passes.translucent.scene, overlay_projection, demo_passes.hudTarget(window_size, fb_size, current_order, false), &draw_buf, allocator);
+        try drawSnailScene(&snail_renderer, &scene_resources, &hud_passes.translucent.scene, overlay_projection, demo_passes.hudTarget(window_size, fb_size, current_order, false, target_encoding, present.will_resample), &draw_buf, allocator);
         // This panel is fully opaque and rendered directly to the swapchain, so
         // it is the reference case for LCD/subpixel HUD text.
-        try drawSnailScene(&snail_renderer, &scene_resources, &hud_passes.solid.scene, overlay_projection, demo_passes.hudTarget(window_size, fb_size, current_order, true), &draw_buf, allocator);
+        try drawSnailScene(&snail_renderer, &scene_resources, &hud_passes.solid.scene, overlay_projection, demo_passes.hudTarget(window_size, fb_size, current_order, true, target_encoding, present.will_resample), &draw_buf, allocator);
 
         platform.swapBuffers();
     }

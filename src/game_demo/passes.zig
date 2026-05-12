@@ -445,7 +445,14 @@ fn buildGlassPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas) !PlaneP
     };
 }
 
-pub fn hudTarget(window_size: [2]u32, fb_size: [2]u32, subpixel_order: snail.SubpixelOrder, opaque_backdrop: bool) snail.ResolveTarget {
+pub fn hudTarget(
+    window_size: [2]u32,
+    fb_size: [2]u32,
+    subpixel_order: snail.SubpixelOrder,
+    opaque_backdrop: bool,
+    encoding: snail.TargetEncoding,
+    will_resample: bool,
+) snail.ResolveTarget {
     _ = window_size;
     return .{
         .pixel_width = @floatFromInt(fb_size[0]),
@@ -453,8 +460,9 @@ pub fn hudTarget(window_size: [2]u32, fb_size: [2]u32, subpixel_order: snail.Sub
         .subpixel_order = subpixel_order,
         .is_final_composite = true,
         .opaque_backdrop = opaque_backdrop,
-        .will_resample = false,
-        .encoding = .srgb,
+        .will_resample = will_resample,
+        .encoding = encoding,
+        .coverage_transfer = snail.CoverageTransfer.power(0.9),
     };
 }
 

@@ -183,6 +183,10 @@ pub const Window = struct {
         };
     }
 
+    pub fn getBufferScale(self: *const Window) u32 {
+        return @max(self.buffer_scale, 1);
+    }
+
     pub fn consumeResized(self: *Window) bool {
         const changed = self.resized;
         self.resized = false;

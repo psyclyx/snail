@@ -2,6 +2,7 @@ const std = @import("std");
 const build_options = @import("build_options");
 const egl_common = @import("egl_common.zig");
 const SubpixelOrder = @import("subpixel_order.zig").SubpixelOrder;
+pub const presentation = @import("presentation.zig");
 const wayland = @import("wayland_window.zig");
 pub const gl = @import("gl.zig").gl;
 
@@ -165,6 +166,31 @@ pub fn getWindowSize() [2]u32 {
 pub fn getFramebufferSize() [2]u32 {
     if (app) |window| return window.getFramebufferSize();
     return .{ 0, 0 };
+}
+
+pub fn presentationInfo() presentation.Info {
+    if (app) |window| {
+        return .{
+            .logical_size = window.getWindowSize(),
+            .framebuffer_size = window.getFramebufferSize(),
+            .buffer_scale = window.getBufferScale(),
+            .framebuffer_encoding = defaultFramebufferEncoding(),
+            .will_resample = false,
+        };
+    }
+    return .{ .framebuffer_encoding = defaultFramebufferEncoding() };
+}
+
+pub fn defaultFramebufferEncoding() presentation.ColorEncoding {
+    var prev_draw_fb: gl.GLint = 0;
+    gl.glGetIntegerv(gl.GL_DRAW_FRAMEBUFFER_BINDING, &prev_draw_fb);
+    gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, 0);
+    defer gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, @intCast(prev_draw_fb));
+
+    var encoding: gl.GLint = 0;
+    gl.glGetFramebufferAttachmentParameteriv(gl.GL_DRAW_FRAMEBUFFER, gl.GL_BACK_LEFT, gl.GL_FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING, &encoding);
+    if (gl.glGetError() == gl.GL_NO_ERROR and encoding == gl.GL_SRGB) return .srgb;
+    return .linear;
 }
 
 pub fn getTime() f64 {

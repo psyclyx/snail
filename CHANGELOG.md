@@ -50,6 +50,9 @@
 - `CoverageTransfer` exposes an explicit per-target analytic coverage exponent
   for GL, Vulkan, CPU, and custom GL text-coverage shaders; the C API mirrors it
   with `SnailResolveTarget.coverage_exponent`.
+- Demo platform backends now expose `presentation.Info`, including logical
+  size, framebuffer size, integer Wayland buffer scale, framebuffer color
+  encoding, and resampling status.
 
 ### Changed
 
@@ -60,6 +63,9 @@
   per-draw target.
 - The main demo now snaps text layout with `PixelGrid` and opts into a
   per-target `CoverageTransfer` instead of relying on implicit renderer tuning.
+- The main and game demos now derive `ResolveTarget.encoding` from explicit
+  presentation data. The CPU Wayland demo buffer now follows framebuffer size
+  and buffer-scale changes instead of staying at logical window size.
 - `PathPictureBuilder.freeze` now requires explicit persistent and scratch
   allocators. Scratch memory is used only while compiling the immutable picture;
   `PathPicture` owns only the persistent allocations after `freeze` returns.

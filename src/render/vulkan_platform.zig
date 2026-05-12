@@ -4,6 +4,7 @@
 const std = @import("std");
 const vkp = @import("vulkan_pipeline.zig");
 const SubpixelOrder = @import("subpixel_order.zig").SubpixelOrder;
+pub const presentation = @import("presentation.zig");
 const wayland = @import("wayland_window.zig");
 
 const c = @cImport({
@@ -293,6 +294,23 @@ pub fn getWindowSize() [2]u32 {
 
 pub fn getFramebufferSize() [2]u32 {
     return .{ swapchain_extent.width, swapchain_extent.height };
+}
+
+pub fn presentationInfo() presentation.Info {
+    if (window) |w| {
+        return .{
+            .logical_size = w.getWindowSize(),
+            .framebuffer_size = getFramebufferSize(),
+            .buffer_scale = w.getBufferScale(),
+            .framebuffer_encoding = swapchainEncoding(),
+            .will_resample = false,
+        };
+    }
+    return .{ .framebuffer_encoding = swapchainEncoding() };
+}
+
+pub fn swapchainEncoding() presentation.ColorEncoding {
+    return if (isSrgbColorFormat(swapchain_format)) .srgb else .linear;
 }
 
 pub fn getTime() f64 {
