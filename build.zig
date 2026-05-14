@@ -77,6 +77,45 @@ fn configureEglOffscreenModule(
     mod.linkSystemLibrary("EGL", .{});
 }
 
+fn configureValgrindTest(test_exe: *std.Build.Step.Compile) void {
+    test_exe.setExecCmd(&.{
+        "valgrind",
+        "--quiet",
+        "--leak-check=full",
+        "--show-leak-kinds=definite,possible",
+        "--errors-for-leak-kinds=definite,possible",
+        "--track-origins=yes",
+        "--num-callers=32",
+        "--error-exitcode=99",
+        null,
+    });
+}
+
+fn createCoreTestModule(
+    b: *std.Build,
+    root_source_file: std.Build.LazyPath,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    assets_mod: *std.Build.Module,
+    build_options_mod: *std.Build.Module,
+    opengl: bool,
+    vulkan: bool,
+    harfbuzz: bool,
+    vk_shaders: *std.Build.Module,
+    strip: ?bool,
+) *std.Build.Module {
+    const mod = b.createModule(.{
+        .root_source_file = root_source_file,
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .strip = strip,
+        .imports = &.{.{ .name = "assets", .module = assets_mod }},
+    });
+    configureCoreModule(mod, build_options_mod, opengl, vulkan, harfbuzz, vk_shaders);
+    return mod;
+}
+
 fn createSnailModule(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
@@ -322,32 +361,79 @@ pub fn build(b: *std.Build) void {
     run_game_demo_step.dependOn(&run_game_demo.step);
 
     // ── Tests ──
-    const test_module = b.createModule(.{
-        .root_source_file = b.path("src/snail/root.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-        .imports = &.{.{ .name = "assets", .module = assets_mod }},
-    });
-    configureCoreModule(test_module, options_mod, enable_opengl, enable_vulkan, enable_harfbuzz, vk_shaders_mod);
+    const test_module = createCoreTestModule(
+        b,
+        b.path("src/snail/root.zig"),
+        target,
+        optimize,
+        assets_mod,
+        options_mod,
+        enable_opengl,
+        enable_vulkan,
+        enable_harfbuzz,
+        vk_shaders_mod,
+        null,
+    );
 
     const unit_tests = b.addTest(.{ .root_module = test_module });
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
 
+    const valgrind_test_step = b.step("valgrind-test", "Run unit tests under Valgrind");
+    const valgrind_test_module = createCoreTestModule(
+        b,
+        b.path("src/snail/root.zig"),
+        target,
+        optimize,
+        assets_mod,
+        options_mod,
+        enable_opengl,
+        enable_vulkan,
+        enable_harfbuzz,
+        vk_shaders_mod,
+        true,
+    );
+    const valgrind_unit_tests = b.addTest(.{ .root_module = valgrind_test_module });
+    configureValgrindTest(valgrind_unit_tests);
+    const run_valgrind_unit_tests = b.addRunArtifact(valgrind_unit_tests);
+    valgrind_test_step.dependOn(&run_valgrind_unit_tests.step);
+
     if (enable_c_api) {
-        const c_api_test_module = b.createModule(.{
-            .root_source_file = b.path("src/snail/c_api.zig"),
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-            .imports = &.{.{ .name = "assets", .module = assets_mod }},
-        });
-        configureCoreModule(c_api_test_module, options_mod, enable_opengl, enable_vulkan, enable_harfbuzz, vk_shaders_mod);
+        const c_api_test_module = createCoreTestModule(
+            b,
+            b.path("src/snail/c_api.zig"),
+            target,
+            optimize,
+            assets_mod,
+            options_mod,
+            enable_opengl,
+            enable_vulkan,
+            enable_harfbuzz,
+            vk_shaders_mod,
+            null,
+        );
         const c_api_tests = b.addTest(.{ .root_module = c_api_test_module });
         const run_c_api_tests = b.addRunArtifact(c_api_tests);
         test_step.dependOn(&run_c_api_tests.step);
+
+        const valgrind_c_api_test_module = createCoreTestModule(
+            b,
+            b.path("src/snail/c_api.zig"),
+            target,
+            optimize,
+            assets_mod,
+            options_mod,
+            enable_opengl,
+            enable_vulkan,
+            enable_harfbuzz,
+            vk_shaders_mod,
+            true,
+        );
+        const valgrind_c_api_tests = b.addTest(.{ .root_module = valgrind_c_api_test_module });
+        configureValgrindTest(valgrind_c_api_tests);
+        const run_valgrind_c_api_tests = b.addRunArtifact(valgrind_c_api_tests);
+        valgrind_test_step.dependOn(&run_valgrind_c_api_tests.step);
     }
 
     // ── Benchmarks ──
