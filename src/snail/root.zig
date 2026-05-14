@@ -75,6 +75,7 @@ const ttf = @import("font/ttf.zig");
 const opentype = @import("font/opentype.zig");
 const paint_mod = @import("paint.zig");
 const paint_records = @import("paint_records.zig");
+const resource_key_mod = @import("resource_key.zig");
 // Re-exported under `snail.lowlevel` at the bottom of the file.
 const bezier = @import("math/bezier.zig");
 const vec = @import("math/vec.zig");
@@ -3954,64 +3955,11 @@ pub const TargetStamp = struct {
     }
 };
 
-pub const ResourceKey = struct {
-    id: u64,
-    name: []const u8 = "",
-
-    pub fn named(comptime name: []const u8) ResourceKey {
-        return .{ .id = hashBytes(name), .name = name };
-    }
-
-    pub fn fromName(name: []const u8) ResourceKey {
-        return .{ .id = hashBytes(name), .name = name };
-    }
-
-    pub fn fromId(id: u64) ResourceKey {
-        return .{ .id = id };
-    }
-
-    pub fn eql(a: ResourceKey, b: ResourceKey) bool {
-        return a.id == b.id;
-    }
-};
-
-fn hashBytes(bytes: []const u8) u64 {
-    return std.hash.Wyhash.hash(0x534e41494c5f4b45, bytes);
-}
-
-fn mix64(h: u64, v: u64) u64 {
-    return h ^ (v +% 0x9e3779b97f4a7c15 +% (h << 6) +% (h >> 2));
-}
-
-fn resourceKey(key_value: anytype) ResourceKey {
-    const T = @TypeOf(key_value);
-    if (T == ResourceKey) return key_value;
-    return switch (@typeInfo(T)) {
-        .enum_literal => ResourceKey.fromName(@tagName(key_value)),
-        .@"enum" => ResourceKey.fromName(@tagName(key_value)),
-        .comptime_int, .int => ResourceKey.fromId(@intCast(key_value)),
-        .pointer => |ptr| blk: {
-            if (ptr.child == u8) break :blk ResourceKey.fromName(key_value);
-            switch (@typeInfo(ptr.child)) {
-                .array => |array| {
-                    if (array.child == u8) {
-                        const slice: []const u8 = key_value;
-                        break :blk ResourceKey.fromName(std.mem.trimRight(u8, slice, "\x00"));
-                    }
-                },
-                else => {},
-            }
-            break :blk ResourceKey.fromId(@intCast(@intFromPtr(key_value)));
-        },
-        else => @compileError("resource keys must be enum literals, enums, strings, integers, or pointers"),
-    };
-}
-
-fn pointerResourceKey(comptime prefix: []const u8, ptr: anytype) ResourceKey {
-    var h = hashBytes(prefix);
-    h = mix64(h, @intCast(@intFromPtr(ptr)));
-    return .{ .id = h, .name = prefix };
-}
+pub const ResourceKey = resource_key_mod.ResourceKey;
+const hashBytes = resource_key_mod.hashBytes;
+const mix64 = resource_key_mod.mix64;
+const resourceKey = resource_key_mod.resourceKey;
+const pointerResourceKey = resource_key_mod.pointerResourceKey;
 
 pub const ResourceSet = struct {
     /// Caller-buffered CPU manifest. Entries point at app-owned
