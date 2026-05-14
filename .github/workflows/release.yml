@@ -3,15 +3,27 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
+
+      - name: Require tag ref
+        if: github.ref_type != 'tag'
+        run: |
+          echo "Release workflow must run from a tag ref." >&2
+          exit 1
 
       - uses: mlugg/setup-zig@v2
         with:
@@ -20,28 +32,47 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            libglvnd-dev libharfbuzz-dev libegl1-mesa-dev \
-            libvulkan-dev mesa-vulkan-drivers libgl1-mesa-dri glslc
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            glslc \
+            libegl1-mesa-dev \
+            libfreetype-dev \
+            libgl1-mesa-dri \
+            libglvnd-dev \
+            libharfbuzz-dev \
+            libvulkan-dev \
+            libwayland-dev \
+            mesa-vulkan-drivers \
+            vulkan-validationlayers \
+            wayland-protocols
 
-      - name: Build library
-        run: zig build -Dvulkan=true -Dharfbuzz=true --release=fast
+      - name: Check generated C API
+        run: zig build check-c-api -Dcpu=baseline
 
       - name: Run tests
-        run: zig build test -Dvulkan=true -Dharfbuzz=true
+        run: zig build test -Dcpu=baseline
+
+      - name: Build library
+        run: zig build --release=fast -Dcpu=baseline -Dopengl=true -Dvulkan=true -Dcpu-renderer=true -Dharfbuzz=true
+
+      - name: Build demo
+        run: zig build demo --release=fast -Dcpu=baseline -Dopengl=true -Dvulkan=true -Dcpu-renderer=true -Dharfbuzz=true
 
       - name: Backend pixel comparison
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
           GALLIUM_DRIVER: llvmpipe
-        run: zig build backend-compare -Dvulkan=true -Dharfbuzz=true
+        run: zig build backend-compare -Dcpu=baseline -Dopengl=true -Dvulkan=true -Dcpu-renderer=true -Dharfbuzz=true
 
       - name: Package artifacts
         run: |
           mkdir -p snail-${GITHUB_REF_NAME}
-          cp zig-out/lib/libsnail.a snail-${GITHUB_REF_NAME}/
-          cp zig-out/lib/libsnail.so snail-${GITHUB_REF_NAME}/
-          cp zig-out/include/snail.h snail-${GITHUB_REF_NAME}/
+          mkdir -p snail-${GITHUB_REF_NAME}/include
+          mkdir -p snail-${GITHUB_REF_NAME}/lib/pkgconfig
+          cp zig-out/lib/libsnail.a snail-${GITHUB_REF_NAME}/lib/
+          cp zig-out/lib/libsnail.so snail-${GITHUB_REF_NAME}/lib/
+          cp zig-out/lib/pkgconfig/snail.pc snail-${GITHUB_REF_NAME}/lib/pkgconfig/
+          cp zig-out/include/snail*.h snail-${GITHUB_REF_NAME}/include/
           cp LICENSE CHANGELOG.md README.md snail-${GITHUB_REF_NAME}/
           tar czf snail-${GITHUB_REF_NAME}-linux-x86_64.tar.gz snail-${GITHUB_REF_NAME}/
           sha256sum snail-${GITHUB_REF_NAME}-linux-x86_64.tar.gz > snail-${GITHUB_REF_NAME}-linux-x86_64.tar.gz.sha256

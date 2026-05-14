@@ -1137,7 +1137,7 @@ pub fn main() !void {
     const cpu_pixels = try allocator.alloc(u8, WIDTH * HEIGHT * 4);
     defer allocator.free(cpu_pixels);
     var cpu = snail.CpuRenderer.init(cpu_pixels.ptr, WIDTH, HEIGHT, WIDTH * 4);
-    var cpu_renderer = snail.cpu.asRenderer();
+    var cpu_renderer = cpu.asRenderer();
 
     var cpu_pool: snail.ThreadPool = undefined;
     try cpu_pool.init(allocator, .{});

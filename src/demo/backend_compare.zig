@@ -273,7 +273,7 @@ fn renderCpu(
     clearPixels(pixels);
 
     var cpu = snail.CpuRenderer.init(pixels.ptr, WIDTH, HEIGHT, WIDTH * 4);
-    var renderer = snail.cpu.asRenderer();
+    var renderer = cpu.asRenderer();
     var prepared = try uploadSceneResources(allocator, &renderer, scene);
     defer prepared.deinit();
     var prepared_scene = try snail.PreparedScene.initOwned(allocator, &prepared, scene, options);
