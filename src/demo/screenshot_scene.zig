@@ -66,9 +66,28 @@ const tagline_baseline: f32 = wordmark_baseline + 22.0;
 const sample_size: f32 = 16.0;
 const sample_baseline: f32 = 196.0;
 
+fn appendText(
+    builder: *snail.TextBlobBuilder,
+    style: snail.FontStyle,
+    text: []const u8,
+    x: f32,
+    y: f32,
+    em: f32,
+    color: [4]f32,
+) !snail.TextAppendResult {
+    var shaped = try builder.atlas.shapeText(builder.allocator, style, text);
+    defer shaped.deinit();
+    return builder.append(.{
+        .shaped = &shaped,
+        .placement = .{ .baseline = .{ .x = x, .y = y }, .em = em },
+        .fill = .{ .solid = color },
+    });
+}
+
 pub fn buildTextBlob(builder: *snail.TextBlobBuilder) !void {
     var x = left_pad;
-    const advance = try builder.addText(
+    const advance = try appendText(
+        builder,
         .{ .weight = .bold },
         "snail",
         x,
@@ -76,9 +95,10 @@ pub fn buildTextBlob(builder: *snail.TextBlobBuilder) !void {
         wordmark_size,
         wordmark_color,
     );
-    x += advance.advance;
+    x += advance.advance.x;
 
-    _ = try builder.addText(
+    _ = try appendText(
+        builder,
         .{},
         "GPU text and vector rendering",
         left_pad,
@@ -98,11 +118,11 @@ pub fn buildTextBlob(builder: *snail.TextBlobBuilder) !void {
     var sx = left_pad;
     for (samples, 0..) |sample, i| {
         if (i != 0) {
-            const sep = try builder.addText(.{}, " · ", sx, sample_baseline, sample_size, sep_color);
-            sx += sep.advance;
+            const sep = try appendText(builder, .{}, " · ", sx, sample_baseline, sample_size, sep_color);
+            sx += sep.advance.x;
         }
-        const result = try builder.addText(.{}, sample, sx, sample_baseline, sample_size, sample_color);
-        sx += result.advance;
+        const result = try appendText(builder, .{}, sample, sx, sample_baseline, sample_size, sample_color);
+        sx += result.advance.x;
     }
 }
 

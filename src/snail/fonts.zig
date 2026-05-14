@@ -36,8 +36,19 @@ pub const FaceSpec = struct {
     synthetic: snail.SyntheticStyle = .{},
 };
 
-pub const AddTextResult = struct {
-    advance: f32,
+pub const TextPlacement = struct {
+    baseline: snail.Vec2,
+    em: f32,
+};
+
+pub const TextAppend = struct {
+    shaped: *const ShapedText,
+    placement: TextPlacement,
+    fill: snail.Paint,
+};
+
+pub const TextAppendResult = struct {
+    advance: snail.Vec2,
     missing: bool,
 };
 
@@ -104,13 +115,6 @@ pub const ShapedText = struct {
     }
 };
 
-pub const TextBlobOptions = struct {
-    x: f32,
-    y: f32,
-    size: f32,
-    color: [4]f32,
-};
-
 pub const TextBlob = struct {
     allocator: Allocator,
     /// Borrowed TextAtlas snapshot used to build this blob. The pointer and
@@ -164,15 +168,14 @@ pub const TextBlob = struct {
         self.gpu_instance_budget = textBlobGpuInstanceBudgetForAtlas(new_atlas, self.glyphs);
     }
 
-    pub fn fromShaped(
+    pub fn init(
         allocator: Allocator,
         atlas: *const TextAtlas,
-        shaped: *const ShapedText,
-        options: TextBlobOptions,
+        append: TextAppend,
     ) !TextBlob {
         var builder = TextBlobBuilder.init(allocator, atlas);
         errdefer builder.deinit();
-        _ = try atlas.appendShapedTextBlob(&builder, shaped, options, false);
+        _ = try atlas.appendShapedTextBlob(&builder, append, false);
         return builder.finish();
     }
 };
@@ -309,23 +312,8 @@ pub const TextBlobBuilder = struct {
         };
     }
 
-    pub fn addText(
-        self: *TextBlobBuilder,
-        style: snail.FontStyle,
-        text: []const u8,
-        x: f32,
-        y: f32,
-        font_size: f32,
-        color: [4]f32,
-    ) !AddTextResult {
-        var shaped = try self.atlas.shapeText(self.allocator, style, text);
-        defer shaped.deinit();
-        return self.atlas.appendShapedTextBlob(self, &shaped, .{
-            .x = x,
-            .y = y,
-            .size = font_size,
-            .color = color,
-        }, true);
+    pub fn append(self: *TextBlobBuilder, text_append: TextAppend) !TextAppendResult {
+        return self.atlas.appendShapedTextBlob(self, text_append, true);
     }
 };
 
@@ -792,15 +780,16 @@ pub const TextAtlas = struct {
         };
     }
 
-    pub fn appendShapedTextBlob(
+    fn appendShapedTextBlob(
         self: *const TextAtlas,
         builder: *TextBlobBuilder,
-        shaped: *const ShapedText,
-        options: TextBlobOptions,
+        append: TextAppend,
         allow_missing: bool,
-    ) !AddTextResult {
+    ) !TextAppendResult {
         std.debug.assert(builder.atlas == self);
+        const shaped = append.shaped;
         if (shaped.config != self.config) return error.WrongTextAtlasSnapshot;
+        const color = try textFillColor(append.fill);
 
         var missing = false;
         for (shaped.glyphs) |glyph| {
@@ -817,8 +806,8 @@ pub const TextAtlas = struct {
                 // next text segment.
                 continue;
             }
-            const x = options.x + glyph.x_offset * options.size;
-            const y = options.y + glyph.y_offset * options.size;
+            const x = append.placement.baseline.x + glyph.x_offset * append.placement.em;
+            const y = append.placement.baseline.y + glyph.y_offset * append.placement.em;
             try appendBlobGlyph(
                 builder,
                 glyph.face_index,
@@ -826,80 +815,57 @@ pub const TextAtlas = struct {
                 glyph.glyph_id,
                 x,
                 y,
-                options.size,
-                options.color,
+                append.placement.em,
+                color,
                 fc.synthetic,
             );
         }
 
         return .{
-            .advance = shaped.advance_x * options.size,
+            .advance = .{
+                .x = shaped.advance_x * append.placement.em,
+                .y = shaped.advance_y * append.placement.em,
+            },
             .missing = missing,
         };
     }
 
-    pub fn appendTextBlob(
-        self: *const TextAtlas,
-        builder: *TextBlobBuilder,
-        style: snail.FontStyle,
-        text: []const u8,
-        x: f32,
-        y: f32,
-        font_size: f32,
-        color: [4]f32,
-    ) !AddTextResult {
-        var shaped = try self.shapeText(self.allocator, style, text);
-        defer shaped.deinit();
-        return self.appendShapedTextBlob(builder, &shaped, .{
-            .x = x,
-            .y = y,
-            .size = font_size,
-            .color = color,
-        }, true);
-    }
-
-    /// Itemize, shape, and emit text into a low-level TextBatch. Returns advance
-    /// width and whether any glyphs were missing from the atlas.
-    pub fn addText(
+    /// Emit shaped text directly into a low-level TextBatch.
+    pub fn appendTextBatch(
         self: *const TextAtlas,
         batch: *TextBatch,
-        style: snail.FontStyle,
-        text: []const u8,
-        x: f32,
-        y: f32,
-        font_size: f32,
-        color: [4]f32,
-    ) !AddTextResult {
-        const runs = try itemizeText(self.allocator, self.config, style, text);
-        defer self.allocator.free(runs);
+        append: TextAppend,
+        allow_missing: bool,
+    ) !TextAppendResult {
+        const shaped = append.shaped;
+        if (shaped.config != self.config) return error.WrongTextAtlasSnapshot;
+        const color = try textFillColor(append.fill);
 
-        var cx = x;
         var missing = false;
-        for (runs) |run| {
-            const fc = &self.config.faces[run.face_index];
-            const fg = &self.face_glyphs[run.face_index];
-            const segment = text[run.text_start..run.text_end];
-
-            if (hasMissingGlyphs(fc, fg, segment))
-                missing = true;
-
-            const face_view = FaceView{
-                .face_glyphs = fg,
-                .face_config = fc,
+        for (shaped.glyphs) |glyph| {
+            const fc = &self.config.faces[glyph.face_index];
+            const face_view = self.faceView(glyph.face_index, .{
                 .layer_base = self.layer_base,
                 .info_row_base = self.info_row_base,
-            };
-
-            const has_synthetic = fc.synthetic.skew_x != 0 or fc.synthetic.embolden != 0;
-
-            if (!has_synthetic) {
-                cx += try addTextForFace(self.allocator, batch, &face_view, fc, fg, segment, cx, y, font_size, color);
-            } else {
-                cx += try addTextForFaceSynthetic(self.allocator, batch, &face_view, fc, fg, segment, cx, y, font_size, color);
+            });
+            if (!shapedGlyphAvailable(&face_view, glyph.glyph_id)) {
+                missing = true;
+                if (!allow_missing) return error.MissingPreparedGlyph;
+                continue;
             }
+
+            const x = append.placement.baseline.x + glyph.x_offset * append.placement.em;
+            const y = append.placement.baseline.y + glyph.y_offset * append.placement.em;
+            if (glyph_emit.emitStyledGlyph(batch, &face_view, glyph.glyph_id, x, y, append.placement.em, color, fc.synthetic) == .buffer_full) break;
         }
 
-        return .{ .advance = cx - x, .missing = missing };
+        return .{
+            .advance = .{
+                .x = shaped.advance_x * append.placement.em,
+                .y = shaped.advance_y * append.placement.em,
+            },
+            .missing = missing,
+        };
     }
 
     /// Measure advance width without emitting vertices.
@@ -1317,31 +1283,6 @@ fn itemizeText(allocator: Allocator, config: *const FontConfig, style: snail.Fon
     return try runs.toOwnedSlice(allocator);
 }
 
-// ── Missing glyph detection ──
-
-fn hasMissingGlyphs(fc: *const FaceConfig, fg: *const FaceGlyphData, segment: []const u8) bool {
-    var i: usize = 0;
-    while (i < segment.len) {
-        const cp_len = std.unicode.utf8ByteSequenceLength(segment[i]) catch {
-            i += 1;
-            continue;
-        };
-        if (i + cp_len > segment.len) break;
-        const cp: u21 = std.unicode.utf8Decode(segment[i..][0..cp_len]) catch {
-            i += cp_len;
-            continue;
-        };
-        i += cp_len;
-        if (!snail.isRenderableTextCodepoint(cp)) continue;
-        const gid = fc.font.glyphIndex(cp) catch continue;
-        if (gid == 0) continue;
-        if (fg.getGlyph(gid) != null) continue;
-        const has_colr = if (fg.colr_base_map) |cbm| cbm.contains(gid) else false;
-        if (!has_colr) return true;
-    }
-    return false;
-}
-
 fn isIdentityTransform(transform: snail.Transform2D) bool {
     return transform.xx == 1 and transform.xy == 0 and transform.tx == 0 and transform.yx == 0 and transform.yy == 1 and transform.ty == 0;
 }
@@ -1553,6 +1494,13 @@ pub fn textBlobRangeGpuInstanceBudget(blob: *const TextBlob, range: snail.Range.
     return total;
 }
 
+fn textFillColor(fill: snail.Paint) ![4]f32 {
+    return switch (fill) {
+        .solid => |color| color,
+        else => error.UnsupportedTextPaint,
+    };
+}
+
 fn appendBlobGlyph(
     builder: *TextBlobBuilder,
     face_index: FaceIndex,
@@ -1577,170 +1525,6 @@ fn appendBlobGlyph(
     }
 }
 
-// ── Per-face text rendering ──
-
-const FaceGlyphStackCapacity: usize = 256;
-
-const PreparedFaceGlyphs = struct {
-    glyphs: []const u16,
-    owned: ?[]u16 = null,
-
-    fn deinit(self: PreparedFaceGlyphs, allocator: Allocator) void {
-        if (self.owned) |buf| allocator.free(buf);
-    }
-};
-
-/// Map UTF-8 to glyph IDs and apply legacy ligature rewriting if a shaper is
-/// attached. Uses `stack_buf` for runs short enough to fit; spills to the
-/// heap (via `allocator`) for longer runs. Returns `error.OutOfMemory` only
-/// when the heap fallback fails — never silently truncates.
-fn prepareFaceGlyphs(
-    allocator: Allocator,
-    fc: *const FaceConfig,
-    text: []const u8,
-    stack_buf: []u16,
-) Allocator.Error!PreparedFaceGlyphs {
-    // text.len bytes is an upper bound on codepoint count (one byte per
-    // codepoint at minimum). After ligature application the count only
-    // shrinks, so allocating once at this upper bound is sufficient.
-    var owned: ?[]u16 = null;
-    const buf = if (text.len <= stack_buf.len) stack_buf else blk: {
-        owned = try allocator.alloc(u16, text.len);
-        break :blk owned.?;
-    };
-
-    var glyph_count: usize = 0;
-    const utf8_view = std.unicode.Utf8View.initUnchecked(text);
-    var it = utf8_view.iterator();
-    while (it.nextCodepoint()) |cp| {
-        buf[glyph_count] = fc.font.glyphIndex(cp) catch 0;
-        glyph_count += 1;
-    }
-
-    if (fc.shaper) |shaper| {
-        glyph_count = shaper.applyLigatures(buf[0..glyph_count]) catch glyph_count;
-    }
-
-    return .{ .glyphs = buf[0..glyph_count], .owned = owned };
-}
-
-fn addTextForFace(
-    allocator: Allocator,
-    batch: *TextBatch,
-    face_view: *const FaceView,
-    fc: *const FaceConfig,
-    fg: *const FaceGlyphData,
-    text: []const u8,
-    x: f32,
-    y: f32,
-    font_size: f32,
-    color: [4]f32,
-) Allocator.Error!f32 {
-    if (comptime build_options.enable_harfbuzz) {
-        if (fc.hb_shaper) |hbs| {
-            return hbs.shapeAndEmit(text, font_size, x, y, color, face_view, batch);
-        }
-    }
-
-    const scale = font_size / @as(f32, @floatFromInt(fc.font.units_per_em));
-    var cursor_x = x;
-
-    var stack_buf: [FaceGlyphStackCapacity]u16 = undefined;
-    const prepared = try prepareFaceGlyphs(allocator, fc, text, &stack_buf);
-    defer prepared.deinit(allocator);
-
-    var prev_gid: u16 = 0;
-    for (prepared.glyphs) |gid| {
-        if (gid == 0) {
-            cursor_x += scale * 500;
-            prev_gid = 0;
-            continue;
-        }
-
-        if (prev_gid != 0) {
-            var kern: i16 = 0;
-            if (fc.shaper) |shaper| {
-                kern = shaper.getKernAdjustment(prev_gid, gid) catch 0;
-            }
-            if (kern == 0) {
-                kern = fc.font.getKerning(prev_gid, gid) catch 0;
-            }
-            cursor_x += @as(f32, @floatFromInt(kern)) * scale;
-        }
-
-        if (glyph_emit.emitGlyph(batch, face_view, gid, cursor_x, y, font_size, color) == .buffer_full) break;
-
-        const advance = faceGlyphAdvance(fc, fg, gid) orelse {
-            cursor_x += scale * 500;
-            prev_gid = gid;
-            continue;
-        };
-        cursor_x += @as(f32, @floatFromInt(advance)) * scale;
-        prev_gid = gid;
-    }
-
-    return cursor_x - x;
-}
-
-fn addTextForFaceSynthetic(
-    allocator: Allocator,
-    batch: *TextBatch,
-    face_view: *const FaceView,
-    fc: *const FaceConfig,
-    fg: *const FaceGlyphData,
-    text: []const u8,
-    x: f32,
-    y: f32,
-    font_size: f32,
-    color: [4]f32,
-) Allocator.Error!f32 {
-    // For synthetic styles, we need per-glyph positioning then emitStyledGlyph.
-    const scale = font_size / @as(f32, @floatFromInt(fc.font.units_per_em));
-    var cursor_x = x;
-
-    var stack_buf: [FaceGlyphStackCapacity]u16 = undefined;
-    const prepared = try prepareFaceGlyphs(allocator, fc, text, &stack_buf);
-    defer prepared.deinit(allocator);
-
-    var prev_gid: u16 = 0;
-    for (prepared.glyphs) |gid| {
-        if (gid == 0) {
-            cursor_x += scale * 500;
-            prev_gid = 0;
-            continue;
-        }
-
-        if (prev_gid != 0) {
-            var kern: i16 = 0;
-            if (fc.shaper) |shaper| {
-                kern = shaper.getKernAdjustment(prev_gid, gid) catch 0;
-            }
-            if (kern == 0) {
-                kern = fc.font.getKerning(prev_gid, gid) catch 0;
-            }
-            cursor_x += @as(f32, @floatFromInt(kern)) * scale;
-        }
-
-        if (glyph_emit.emitStyledGlyph(batch, face_view, gid, cursor_x, y, font_size, color, fc.synthetic) == .buffer_full) break;
-
-        const advance = faceGlyphAdvance(fc, fg, gid) orelse {
-            cursor_x += scale * 500;
-            prev_gid = gid;
-            continue;
-        };
-        cursor_x += @as(f32, @floatFromInt(advance)) * scale;
-        prev_gid = gid;
-    }
-
-    return cursor_x - x;
-}
-
-fn faceGlyphAdvance(fc: *const FaceConfig, fg: *const FaceGlyphData, gid: u16) ?u16 {
-    if (fg.glyph_map.get(gid)) |info| return info.advance_width;
-    if (fc.font.colr_offset != 0 and fc.font.colrLayerCount(gid) > 0) return fc.font.units_per_em;
-    return null;
-}
-
 fn glyphIndexForCellMetrics(fc: *const FaceConfig) !u16 {
     const candidates = [_]u21{ 'M', 'W', ' ', '0' };
     for (candidates) |cp| {
@@ -1753,6 +1537,42 @@ fn glyphIndexForCellMetrics(fc: *const FaceConfig) !u16 {
 // ── Tests ──
 
 const testing = std.testing;
+
+fn appendTestText(
+    builder: *TextBlobBuilder,
+    style: snail.FontStyle,
+    text: []const u8,
+    baseline: snail.Vec2,
+    em: f32,
+    color: [4]f32,
+) !TextAppendResult {
+    var shaped = try builder.atlas.shapeText(builder.allocator, style, text);
+    defer shaped.deinit();
+    return builder.append(.{
+        .shaped = &shaped,
+        .placement = .{ .baseline = baseline, .em = em },
+        .fill = .{ .solid = color },
+    });
+}
+
+fn appendTestTextBatch(
+    atlas: *const TextAtlas,
+    batch: *TextBatch,
+    style: snail.FontStyle,
+    text: []const u8,
+    baseline: snail.Vec2,
+    em: f32,
+    color: [4]f32,
+    allow_missing: bool,
+) !TextAppendResult {
+    var shaped = try atlas.shapeText(testing.allocator, style, text);
+    defer shaped.deinit();
+    return atlas.appendTextBatch(batch, .{
+        .shaped = &shaped,
+        .placement = .{ .baseline = baseline, .em = em },
+        .fill = .{ .solid = color },
+    }, allow_missing);
+}
 
 test "TextAtlas.init with single face" {
     const assets_data = @import("assets");
@@ -1834,7 +1654,7 @@ test "TextAtlas.ensureText snapshot immutability" {
     try testing.expect(fonts2.pageCount() >= pages_before);
 }
 
-test "TextAtlas.addText renders and reports advance" {
+test "TextAtlas.appendTextBatch renders and reports advance" {
     const assets_data = @import("assets");
     var fonts = try TextAtlas.init(testing.allocator, &.{
         .{ .data = assets_data.noto_sans_regular },
@@ -1848,14 +1668,14 @@ test "TextAtlas.addText renders and reports advance" {
 
     var buf: [64 * snail.lowlevel.TEXT_WORDS_PER_GLYPH]u32 = undefined;
     var batch = snail.lowlevel.TextBatch.init(&buf);
-    const result = try fonts.addText(&batch, .{}, "Hello", 0, 100, 24, .{ 1, 1, 1, 1 });
+    const result = try appendTestTextBatch(&fonts, &batch, .{}, "Hello", .{ .x = 0, .y = 100 }, 24, .{ 1, 1, 1, 1 }, true);
 
-    try testing.expect(result.advance > 0);
+    try testing.expect(result.advance.x > 0);
     try testing.expect(batch.glyphCount() > 0);
     try testing.expect(!result.missing);
 }
 
-test "TextAtlas.addText reports missing glyphs" {
+test "TextAtlas.appendTextBatch reports missing glyphs" {
     const assets_data = @import("assets");
     var fonts = try TextAtlas.init(testing.allocator, &.{
         .{ .data = assets_data.noto_sans_regular },
@@ -1865,13 +1685,13 @@ test "TextAtlas.addText reports missing glyphs" {
     // Atlas is empty; addText should report missing glyphs.
     var buf: [64 * snail.lowlevel.TEXT_WORDS_PER_GLYPH]u32 = undefined;
     var batch = snail.lowlevel.TextBatch.init(&buf);
-    const result = try fonts.addText(&batch, .{}, "Hello", 0, 100, 24, .{ 1, 1, 1, 1 });
+    const result = try appendTestTextBatch(&fonts, &batch, .{}, "Hello", .{ .x = 0, .y = 100 }, 24, .{ 1, 1, 1, 1 }, true);
 
     try testing.expect(result.missing);
     try testing.expectEqual(@as(usize, 0), batch.glyphCount());
 }
 
-test "TextBlobBuilder.addText with partially-prepared atlas skips missing glyphs" {
+test "TextBlobBuilder.append with partially-prepared atlas skips missing glyphs" {
     const assets_data = @import("assets");
     var fonts = try TextAtlas.init(testing.allocator, &.{
         .{ .data = assets_data.noto_sans_regular },
@@ -1887,9 +1707,9 @@ test "TextBlobBuilder.addText with partially-prepared atlas skips missing glyphs
     var builder = TextBlobBuilder.init(testing.allocator, &fonts);
     defer builder.deinit();
 
-    const result = try builder.addText(.{}, "Hi there", 0, 50, 16, .{ 1, 1, 1, 1 });
+    const result = try appendTestText(&builder, .{}, "Hi there", .{ .x = 0, .y = 50 }, 16, .{ 1, 1, 1, 1 });
     try testing.expect(result.missing);
-    try testing.expect(result.advance > 0); // advance still spans the full run
+    try testing.expect(result.advance.x > 0); // advance still spans the full run
 
     // Builder must only retain glyphs that are actually in the atlas; the
     // resulting blob must validate cleanly against the same snapshot.
@@ -1897,6 +1717,82 @@ test "TextBlobBuilder.addText with partially-prepared atlas skips missing glyphs
     var blob = try builder.finish();
     defer blob.deinit();
     try blob.validate();
+}
+
+test "TextBlobBuilder.append separates shape from placement and fill" {
+    const assets_data = @import("assets");
+    var fonts = try TextAtlas.init(testing.allocator, &.{
+        .{ .data = assets_data.noto_sans_regular },
+    });
+    defer fonts.deinit();
+
+    if (try fonts.ensureText(.{}, "A")) |next| {
+        fonts.deinit();
+        fonts = next;
+    }
+
+    var shaped = try fonts.shapeText(testing.allocator, .{}, "A");
+    defer shaped.deinit();
+
+    var builder = TextBlobBuilder.init(testing.allocator, &fonts);
+    defer builder.deinit();
+
+    const first = try builder.append(.{
+        .shaped = &shaped,
+        .placement = .{ .baseline = .{ .x = 10, .y = 20 }, .em = 12 },
+        .fill = .{ .solid = .{ 1, 0, 0, 1 } },
+    });
+    const second = try builder.append(.{
+        .shaped = &shaped,
+        .placement = .{ .baseline = .{ .x = 30, .y = 40 }, .em = 20 },
+        .fill = .{ .solid = .{ 0, 1, 0, 1 } },
+    });
+
+    try testing.expectApproxEqAbs(shaped.advance_x * 12, first.advance.x, 0.001);
+    try testing.expectApproxEqAbs(shaped.advance_x * 20, second.advance.x, 0.001);
+    try testing.expectEqual(@as(usize, 2), builder.glyphCount());
+
+    var blob = try builder.finish();
+    defer blob.deinit();
+    try testing.expectApproxEqAbs(@as(f32, 10), blob.glyphs[0].transform.tx, 0.001);
+    try testing.expectApproxEqAbs(@as(f32, 20), blob.glyphs[0].transform.ty, 0.001);
+    try testing.expectApproxEqAbs(@as(f32, 12), blob.glyphs[0].transform.xx, 0.001);
+    try testing.expectEqual([4]f32{ 1, 0, 0, 1 }, blob.glyphs[0].color);
+    try testing.expectApproxEqAbs(@as(f32, 30), blob.glyphs[1].transform.tx, 0.001);
+    try testing.expectApproxEqAbs(@as(f32, 40), blob.glyphs[1].transform.ty, 0.001);
+    try testing.expectApproxEqAbs(@as(f32, 20), blob.glyphs[1].transform.xx, 0.001);
+    try testing.expectEqual([4]f32{ 0, 1, 0, 1 }, blob.glyphs[1].color);
+}
+
+test "TextBlobBuilder.append rejects non-solid text paint until text paint records exist" {
+    const assets_data = @import("assets");
+    var fonts = try TextAtlas.init(testing.allocator, &.{
+        .{ .data = assets_data.noto_sans_regular },
+    });
+    defer fonts.deinit();
+
+    if (try fonts.ensureText(.{}, "A")) |next| {
+        fonts.deinit();
+        fonts = next;
+    }
+
+    var shaped = try fonts.shapeText(testing.allocator, .{}, "A");
+    defer shaped.deinit();
+
+    var builder = TextBlobBuilder.init(testing.allocator, &fonts);
+    defer builder.deinit();
+
+    try testing.expectError(error.UnsupportedTextPaint, builder.append(.{
+        .shaped = &shaped,
+        .placement = .{ .baseline = .{ .x = 0, .y = 20 }, .em = 16 },
+        .fill = .{ .linear_gradient = .{
+            .start = .{ .x = 0, .y = 0 },
+            .end = .{ .x = 20, .y = 0 },
+            .start_color = .{ 1, 0, 0, 1 },
+            .end_color = .{ 0, 0, 1, 1 },
+        } },
+    }));
+    try testing.expectEqual(@as(usize, 0), builder.glyphCount());
 }
 
 test "TextAtlas.lineMetrics returns primary face metrics" {
@@ -1963,7 +1859,7 @@ test "TextBlob.rebind accepts atlas snapshots that retain referenced glyphs" {
 
     var builder = TextBlobBuilder.init(testing.allocator, &fonts);
     defer builder.deinit();
-    _ = try builder.addText(.{}, "A", 0, 20, 16, .{ 1, 1, 1, 1 });
+    _ = try appendTestText(&builder, .{}, "A", .{ .x = 0, .y = 20 }, 16, .{ 1, 1, 1, 1 });
     var blob = try builder.finish();
     defer blob.deinit();
 
@@ -1991,7 +1887,7 @@ test "TextBlob.rebind recomputes budget after ensureGlyphs" {
 
     var builder = TextBlobBuilder.init(testing.allocator, &fonts);
     defer builder.deinit();
-    _ = try builder.addText(.{}, "A", 0, 20, 16, .{ 1, 1, 1, 1 });
+    _ = try appendTestText(&builder, .{}, "A", .{ .x = 0, .y = 20 }, 16, .{ 1, 1, 1, 1 });
 
     var blob = try builder.finish();
     defer blob.deinit();

@@ -138,7 +138,13 @@ if (try atlas.ensureText(.{}, "Hello, world!")) |next| {
 
 var blob_builder = snail.TextBlobBuilder.init(allocator, &atlas);
 defer blob_builder.deinit();
-_ = try blob_builder.addText(.{}, "Hello, world!", 10, 400, 48, .{ 1, 1, 1, 1 });
+var shaped = try atlas.shapeText(allocator, .{}, "Hello, world!");
+defer shaped.deinit();
+_ = try blob_builder.append(.{
+    .shaped = &shaped,
+    .placement = .{ .baseline = .{ .x = 10, .y = 400 }, .em = 48 },
+    .fill = .{ .solid = .{ 1, 1, 1, 1 } },
+});
 
 var blob = try blob_builder.finish();
 defer blob.deinit();
@@ -263,11 +269,9 @@ for (size_t i = 0; i < n; i++) {
 }
 
 SnailTextBlob *blob = NULL;
-SnailTextBlobOptions text_options = {
-    .x = 10,
-    .y = 400,
-    .size = 48,
-    .color = {1, 1, 1, 1},
+SnailTextAppendOptions text_options = {
+    .placement = {.baseline_x = 10, .baseline_y = 400, .em = 48},
+    .fill = {.kind = SNAIL_PAINT_SOLID, .paint_solid = {1, 1, 1, 1}},
 };
 snail_text_blob_init_from_shaped(NULL, atlas, shaped, text_options, &blob);
 snail_shaped_text_deinit(shaped);
@@ -387,10 +391,11 @@ snail_text_atlas_deinit(atlas);
 | `atlas.faceCount() usize` / `atlas.primaryFaceIndex() !FaceIndex` | Inspect configured faces for layout code that caches face indices. |
 | `atlas.faceLineMetrics(face_index) !LineMetrics` / `atlas.faceUnitsPerEm(face_index) !u16` / `atlas.glyphIndex(face_index, cp) !?u16` / `atlas.advanceWidth(face_index, gid) !i16` | Stable per-face font metrics for layout code. |
 | `atlas.cellMetrics(.{ .style, .em }) !CellMetrics` | Resolve the styled primary face and return `{ .cell_width, .line_height }` in caller units. |
-| `TextBlob.fromShaped(alloc, atlas, shaped, options) !TextBlob` | Build positioned text from a `ShapedText`. The blob borrows `atlas`. |
+| `TextBlob.init(alloc, atlas, append) !TextBlob` | Build one positioned, painted `TextAppend` from a `ShapedText`. The blob borrows `atlas`. |
 | `blob.rebind(new_atlas) !void` | Optional cache/lifetime helper: move a blob to a compatible atlas snapshot that retains old pages and contains all referenced glyphs. |
-| `TextBlobBuilder.init(alloc, atlas)` / `builder.addText(style, text, x, y, size, color) !AddTextResult` / `builder.finish() !TextBlob` | Convenience: shape + position in one pass. Call `atlas.ensureText`/`ensureShaped`/`ensureGlyphs` first if all glyphs must be renderable. |
-| `AddTextResult` | `{ .advance: f32, .missing: bool }` — pen advance and whether any referenced glyph was absent from the current atlas snapshot. |
+| `TextBlobBuilder.init(alloc, atlas)` / `builder.append(TextAppend) !TextAppendResult` / `builder.finish() !TextBlob` | Append shaped runs with explicit placement and fill. Call `atlas.ensureText`/`ensureShaped`/`ensureGlyphs` first if all glyphs must be renderable. |
+| `TextAppend` | `{ .shaped, .placement = .{ .baseline, .em }, .fill }` — separates text content, position/scale, and paint. Text fill currently accepts solid paint. |
+| `TextAppendResult` | `{ .advance: Vec2, .missing: bool }` — pen advance and whether any referenced glyph was absent from the current atlas snapshot. |
 
 ### Scene
 

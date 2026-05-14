@@ -113,7 +113,13 @@ fn buildTextBlob(
 ) !snail.TextBlob {
     var builder = snail.TextBlobBuilder.init(allocator, atlas);
     defer builder.deinit();
-    _ = try builder.addText(.{}, text, x, y, size, color);
+    var shaped = try atlas.shapeText(allocator, .{}, text);
+    defer shaped.deinit();
+    _ = try builder.append(.{
+        .shaped = &shaped,
+        .placement = .{ .baseline = .{ .x = x, .y = y }, .em = size },
+        .fill = .{ .solid = color },
+    });
     return builder.finish();
 }
 

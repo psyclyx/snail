@@ -3797,9 +3797,23 @@ test "cpu renderer threaded draw matches single-threaded byte-for-byte" {
 
     var blob_builder = snail.TextBlobBuilder.init(testing.allocator, &atlas);
     defer blob_builder.deinit();
-    _ = try blob_builder.addText(.{}, "Hello, world!", 4, 32, 16, .{ 1, 1, 1, 1 });
-    _ = try blob_builder.addText(.{}, "Hello, world!", 4, 56, 16, .{ 1, 0.4, 0.4, 1 });
-    _ = try blob_builder.addText(.{}, "Hello, world!", 4, 80, 16, .{ 0.4, 1, 0.4, 1 });
+    var shaped = try atlas.shapeText(testing.allocator, .{}, "Hello, world!");
+    defer shaped.deinit();
+    _ = try blob_builder.append(.{
+        .shaped = &shaped,
+        .placement = .{ .baseline = .{ .x = 4, .y = 32 }, .em = 16 },
+        .fill = .{ .solid = .{ 1, 1, 1, 1 } },
+    });
+    _ = try blob_builder.append(.{
+        .shaped = &shaped,
+        .placement = .{ .baseline = .{ .x = 4, .y = 56 }, .em = 16 },
+        .fill = .{ .solid = .{ 1, 0.4, 0.4, 1 } },
+    });
+    _ = try blob_builder.append(.{
+        .shaped = &shaped,
+        .placement = .{ .baseline = .{ .x = 4, .y = 80 }, .em = 16 },
+        .fill = .{ .solid = .{ 0.4, 1, 0.4, 1 } },
+    });
     var blob = try blob_builder.finish();
     defer blob.deinit();
 

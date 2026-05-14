@@ -77,7 +77,7 @@ fn mapError(err: anyerror) c_int {
     return switch (err) {
         error.OutOfMemory => SNAIL_ERR_OUT_OF_MEMORY,
         error.InvalidFont, error.NoFaces, error.MissingCellMetricsGlyph => SNAIL_ERR_INVALID_FONT,
-        error.InvalidEnum, error.InvalidArgument, error.InvalidFaceIndex, error.WrongTextAtlasSnapshot, error.MissingPreparedGlyph, error.InvalidShapeMark, error.InvalidShapeRange => SNAIL_ERR_INVALID_ARGUMENT,
+        error.InvalidEnum, error.InvalidArgument, error.InvalidFaceIndex, error.WrongTextAtlasSnapshot, error.MissingPreparedGlyph, error.UnsupportedTextPaint, error.InvalidShapeMark, error.InvalidShapeRange => SNAIL_ERR_INVALID_ARGUMENT,
         else => SNAIL_ERR_DRAW_FAILED,
     };
 }
@@ -172,11 +172,15 @@ pub const SnailShapedGlyph = extern struct {
     source_end: u32,
 };
 
-pub const SnailTextBlobOptions = extern struct {
-    x: f32,
-    y: f32,
-    size: f32,
-    color: [4]f32,
+pub const SnailTextPlacement = extern struct {
+    baseline_x: f32,
+    baseline_y: f32,
+    em: f32,
+};
+
+pub const SnailTextAppendOptions = extern struct {
+    placement: SnailTextPlacement,
+    fill: SnailPaint = .{},
 };
 
 pub const SnailResolveTarget = extern struct {
@@ -485,6 +489,13 @@ fn toResolveTarget(target: SnailResolveTarget) !snail.ResolveTarget {
 
 fn toDrawOptions(options: SnailDrawOptions) !snail.DrawOptions {
     return .{ .mvp = toMat4(options.mvp), .target = try toResolveTarget(options.target) };
+}
+
+fn toTextPlacement(placement: SnailTextPlacement) snail.TextPlacement {
+    return .{
+        .baseline = .{ .x = placement.baseline_x, .y = placement.baseline_y },
+        .em = placement.em,
+    };
 }
 
 fn toPaint(paint: SnailPaint) !snail.Paint {
@@ -842,15 +853,14 @@ export fn snail_text_blob_init_from_shaped(
     alloc_ptr: ?*const SnailAllocator,
     atlas: *const TextAtlasImpl,
     shaped: *const ShapedTextImpl,
-    options: SnailTextBlobOptions,
+    options: SnailTextAppendOptions,
     out: *?*TextBlobImpl,
 ) c_int {
     const allocator = resolveAllocator(alloc_ptr);
-    const blob = snail.TextBlob.fromShaped(allocator, &atlas.inner, &shaped.inner, .{
-        .x = options.x,
-        .y = options.y,
-        .size = options.size,
-        .color = options.color,
+    const blob = snail.TextBlob.init(allocator, &atlas.inner, .{
+        .shaped = &shaped.inner,
+        .placement = toTextPlacement(options.placement),
+        .fill = toPaint(options.fill) catch return SNAIL_ERR_INVALID_ARGUMENT,
     }) catch |err| return mapError(err);
     const impl = handleAllocator().create(TextBlobImpl) catch {
         var doomed = blob;
@@ -868,7 +878,7 @@ export fn snail_text_blob_init_text(
     style: SnailFontStyle,
     text: [*]const u8,
     text_len: usize,
-    options: SnailTextBlobOptions,
+    options: SnailTextAppendOptions,
     out: *?*TextBlobImpl,
 ) c_int {
     const allocator = resolveAllocator(alloc_ptr);
@@ -1524,10 +1534,8 @@ test "c_api: text atlas shape ensure and blob" {
 
     var blob: ?*TextBlobImpl = null;
     try testing.expectEqual(SNAIL_OK, snail_text_blob_init_from_shaped(null, atlas, shaped.?, .{
-        .x = 10,
-        .y = 20,
-        .size = 24,
-        .color = .{ 1, 1, 1, 1 },
+        .placement = .{ .baseline_x = 10, .baseline_y = 20, .em = 24 },
+        .fill = .{ .kind = SNAIL_PAINT_SOLID, .paint_solid = .{ 1, 1, 1, 1 } },
     }, &blob));
     defer snail_text_blob_deinit(blob);
     try testing.expectEqual(@as(usize, 5), snail_text_blob_glyph_count(blob.?));
@@ -1540,10 +1548,8 @@ test "c_api: text blob rebinds to extended atlas" {
 
     var blob: ?*TextBlobImpl = null;
     try testing.expectEqual(SNAIL_OK, snail_text_blob_init_text(null, atlas, .{}, "A", 1, .{
-        .x = 0,
-        .y = 24,
-        .size = 24,
-        .color = .{ 1, 1, 1, 1 },
+        .placement = .{ .baseline_x = 0, .baseline_y = 24, .em = 24 },
+        .fill = .{ .kind = SNAIL_PAINT_SOLID, .paint_solid = .{ 1, 1, 1, 1 } },
     }, &blob));
     defer snail_text_blob_deinit(blob);
 
@@ -1563,10 +1569,8 @@ test "c_api: scene and resource set follow public model" {
 
     var blob: ?*TextBlobImpl = null;
     try testing.expectEqual(SNAIL_OK, snail_text_blob_init_text(null, atlas, .{}, "Hi", 2, .{
-        .x = 0,
-        .y = 24,
-        .size = 24,
-        .color = .{ 1, 1, 1, 1 },
+        .placement = .{ .baseline_x = 0, .baseline_y = 24, .em = 24 },
+        .fill = .{ .kind = SNAIL_PAINT_SOLID, .paint_solid = .{ 1, 1, 1, 1 } },
     }, &blob));
     defer snail_text_blob_deinit(blob);
 

@@ -1,10 +1,31 @@
 //! Torture test for valgrind: exercises the full CPU pipeline heavily.
-//! No GPU needed — tests TextAtlas init, ensureText, addText,
+//! No GPU needed — tests TextAtlas init, ensureText, shaped text batch append,
 //! batch generation, word wrapping, and shaped runs.
 
 const std = @import("std");
 const snail = @import("root.zig");
 const assets = @import("assets");
+
+fn appendBatchText(
+    allocator: std.mem.Allocator,
+    fonts: *const snail.TextAtlas,
+    batch: *snail.lowlevel.TextBatch,
+    style: snail.FontStyle,
+    text: []const u8,
+    x: f32,
+    y: f32,
+    em: f32,
+    color: [4]f32,
+    allow_missing: bool,
+) !snail.TextAppendResult {
+    var shaped = try fonts.shapeText(allocator, style, text);
+    defer shaped.deinit();
+    return fonts.appendTextBatch(batch, .{
+        .shaped = &shaped,
+        .placement = .{ .baseline = .{ .x = x, .y = y }, .em = em },
+        .fill = .{ .solid = color },
+    }, allow_missing);
+}
 
 test "torture: full pipeline" {
     const allocator = std.testing.allocator;
@@ -64,7 +85,7 @@ test "torture: full pipeline" {
     var y: f32 = 1000;
     for ([_]f32{ 10, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 64, 72, 96 }) |size| {
         for (test_strings) |s| {
-            _ = try fonts.addText(&batch, .{}, s, 0, y, size, .{ 1, 1, 1, 1 });
+            _ = try appendBatchText(allocator, &fonts, &batch, .{}, s, 0, y, size, .{ 1, 1, 1, 1 }, true);
             y -= size * 1.3;
         }
     }
@@ -85,12 +106,12 @@ test "torture: full pipeline" {
         fonts.deinit();
         fonts = new_fonts;
     }
-    _ = try fonts.addText(&batch, .{}, paragraph, 0, 800, 14, .{ 1, 1, 1, 1 });
+    _ = try appendBatchText(allocator, &fonts, &batch, .{}, paragraph, 0, 800, 14, .{ 1, 1, 1, 1 }, true);
     try std.testing.expect(batch.glyphCount() > 200);
 
     // Verify glyph coverage after ensureText.
     batch.reset();
-    const result2 = try fonts.addText(&batch, .{}, "fi", 0, 100, 24, .{ 1, 0, 0, 1 });
+    const result2 = try appendBatchText(allocator, &fonts, &batch, .{}, "fi", 0, 100, 24, .{ 1, 0, 0, 1 }, true);
     try std.testing.expect(!result2.missing);
     try std.testing.expect(batch.glyphCount() > 0);
 
@@ -154,12 +175,12 @@ test "ensureText discovers shaped glyphs for UTF-8 text" {
 
     var vbuf: [100 * snail.lowlevel.TEXT_WORDS_PER_GLYPH]u32 = undefined;
     var batch = snail.lowlevel.TextBatch.init(&vbuf);
-    const result = try fonts.addText(&batch, .{}, "fi", 0, 0, 24, .{ 1, 1, 1, 1 });
-    try std.testing.expect(result.advance > 0);
+    const result = try appendBatchText(allocator, &fonts, &batch, .{}, "fi", 0, 0, 24, .{ 1, 1, 1, 1 }, true);
+    try std.testing.expect(result.advance.x > 0);
     try std.testing.expect(batch.glyphCount() > 0);
 }
 
-test "addText reports missing glyphs" {
+test "appendTextBatch reports missing glyphs" {
     const allocator = std.testing.allocator;
 
     var fonts = try snail.TextAtlas.init(allocator, &.{
@@ -169,7 +190,7 @@ test "addText reports missing glyphs" {
 
     var vbuf: [100 * snail.lowlevel.TEXT_WORDS_PER_GLYPH]u32 = undefined;
     var batch = snail.lowlevel.TextBatch.init(&vbuf);
-    const result = try fonts.addText(&batch, .{}, "Hello", 0, 0, 24, .{ 1, 1, 1, 1 });
+    const result = try appendBatchText(allocator, &fonts, &batch, .{}, "Hello", 0, 0, 24, .{ 1, 1, 1, 1 }, true);
     try std.testing.expect(result.missing);
 }
 
@@ -195,12 +216,12 @@ test "multi-face fonts with fallback" {
     var vbuf: [200 * snail.lowlevel.TEXT_WORDS_PER_GLYPH]u32 = undefined;
     var batch = snail.lowlevel.TextBatch.init(&vbuf);
 
-    const latin_result = try fonts.addText(&batch, .{}, "Hello", 0, 0, 24, .{ 1, 1, 1, 1 });
-    try std.testing.expect(latin_result.advance > 0);
+    const latin_result = try appendBatchText(allocator, &fonts, &batch, .{}, "Hello", 0, 0, 24, .{ 1, 1, 1, 1 }, true);
+    try std.testing.expect(latin_result.advance.x > 0);
     try std.testing.expect(batch.glyphCount() > 0);
 
     const before = batch.glyphCount();
-    const arabic_result = try fonts.addText(&batch, .{}, arabic_text, 0, 30, 24, .{ 1, 1, 1, 1 });
-    try std.testing.expect(arabic_result.advance > 0);
+    const arabic_result = try appendBatchText(allocator, &fonts, &batch, .{}, arabic_text, 0, 30, 24, .{ 1, 1, 1, 1 }, true);
+    try std.testing.expect(arabic_result.advance.x > 0);
     try std.testing.expect(batch.glyphCount() > before);
 }

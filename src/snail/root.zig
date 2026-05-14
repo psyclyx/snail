@@ -33,7 +33,13 @@
 //!
 //!   var builder = snail.TextBlobBuilder.init(allocator, &text_atlas);
 //!   defer builder.deinit();
-//!   _ = try builder.addText(.{}, "Hello", 40, 80, 24, .{ 0, 0, 0, 1 });
+//!   var shaped = try text_atlas.shapeText(allocator, .{}, "Hello");
+//!   defer shaped.deinit();
+//!   _ = try builder.append(.{
+//!       .shaped = &shaped,
+//!       .placement = .{ .baseline = .{ .x = 40, .y = 80 }, .em = 24 },
+//!       .fill = .{ .solid = .{ 0, 0, 0, 1 } },
+//!   });
 //!   var text_blob = try builder.finish();
 //!   defer text_blob.deinit();
 //!
@@ -118,8 +124,9 @@ const PreparedTextAtlasView = struct {
     info_row_base: u32 = 0,
 };
 pub const TextBlob = fonts_mod.TextBlob;
-pub const TextBlobOptions = fonts_mod.TextBlobOptions;
-pub const AddTextResult = fonts_mod.AddTextResult;
+pub const TextPlacement = fonts_mod.TextPlacement;
+pub const TextAppend = fonts_mod.TextAppend;
+pub const TextAppendResult = fonts_mod.TextAppendResult;
 pub const CellMetrics = fonts_mod.CellMetrics;
 pub const CellMetricsOptions = fonts_mod.CellMetricsOptions;
 pub const TextBlobBuilder = fonts_mod.TextBlobBuilder;
@@ -6105,6 +6112,23 @@ test "Vulkan upload command helper accepts frame command fields" {
     try std.testing.expect(vulkanUploadCommand(.{ .command_buffer = cmd }) == null);
 }
 
+fn appendRootTestText(
+    builder: *TextBlobBuilder,
+    style: FontStyle,
+    text: []const u8,
+    baseline: Vec2,
+    em: f32,
+    color: [4]f32,
+) !TextAppendResult {
+    var shaped = try builder.atlas.shapeText(builder.allocator, style, text);
+    defer shaped.deinit();
+    return builder.append(.{
+        .shaped = &shaped,
+        .placement = .{ .baseline = baseline, .em = em },
+        .fill = .{ .solid = color },
+    });
+}
+
 test "TextBlob validation catches wrong atlas snapshot" {
     const assets_data = @import("assets");
     var atlas = try TextAtlas.init(std.testing.allocator, &.{
@@ -6119,7 +6143,7 @@ test "TextBlob validation catches wrong atlas snapshot" {
 
     var builder = TextBlobBuilder.init(std.testing.allocator, &atlas);
     defer builder.deinit();
-    _ = try builder.addText(.{}, "A", 0, 20, 16, .{ 1, 1, 1, 1 });
+    _ = try appendRootTestText(&builder, .{}, "A", .{ .x = 0, .y = 20 }, 16, .{ 1, 1, 1, 1 });
     var blob = try builder.finish();
     defer blob.deinit();
     try blob.validate();
@@ -6147,7 +6171,7 @@ test "DrawList estimate upper-bounds ranged text draw output" {
 
     var sample_builder = TextBlobBuilder.init(allocator, &atlas);
     defer sample_builder.deinit();
-    _ = try sample_builder.addText(.{}, "A", 0, 20, 16, .{ 1, 1, 1, 1 });
+    _ = try appendRootTestText(&sample_builder, .{}, "A", .{ .x = 0, .y = 20 }, 16, .{ 1, 1, 1, 1 });
     var sample_blob = try sample_builder.finish();
     defer sample_blob.deinit();
     try std.testing.expectEqual(@as(usize, 1), sample_blob.glyphCount());
@@ -6233,7 +6257,7 @@ test "replacing path-picture key does not invalidate unrelated text coverage rec
 
     var builder = TextBlobBuilder.init(allocator, &atlas);
     defer builder.deinit();
-    _ = try builder.addText(.{}, "Hello", 0, 24, 18, .{ 1, 1, 1, 1 });
+    _ = try appendRootTestText(&builder, .{}, "Hello", .{ .x = 0, .y = 24 }, 18, .{ 1, 1, 1, 1 });
     var blob = try builder.finish();
     defer blob.deinit();
 

@@ -98,12 +98,11 @@ pub fn main(init: std.process.Init.Minimal) !void {
         var shaped = try atlas.shapeText(arena, .{}, line.text);
         defer shaped.deinit();
         var local_builder = snail.TextBlobBuilder.init(arena, &atlas);
-        _ = try atlas.appendShapedTextBlob(&local_builder, &shaped, .{
-            .x = line.x,
-            .y = line.y,
-            .size = line.size,
-            .color = line.color,
-        }, true);
+        _ = try local_builder.append(.{
+            .shaped = &shaped,
+            .placement = .{ .baseline = .{ .x = line.x, .y = line.y }, .em = line.size },
+            .fill = .{ .solid = line.color },
+        });
         blobs[i] = try local_builder.finish();
     }
 

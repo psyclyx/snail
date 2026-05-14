@@ -349,12 +349,11 @@ fn makeTextBlob(
 
     var builder = snail.TextBlobBuilder.init(allocator, atlas);
     errdefer builder.deinit();
-    _ = try atlas.appendShapedTextBlob(&builder, &shaped, .{
-        .x = line.x,
-        .y = line.y,
-        .size = line.size,
-        .color = line.color,
-    }, true);
+    _ = try builder.append(.{
+        .shaped = &shaped,
+        .placement = .{ .baseline = .{ .x = line.x, .y = line.y }, .em = line.size },
+        .fill = .{ .solid = line.color },
+    });
     return builder.finish();
 }
 

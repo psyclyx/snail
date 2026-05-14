@@ -295,6 +295,22 @@ const TextPlacer = struct {
         return .{ .x = point.x, .y = point.y, .size = self.grid.snapLengthY(size) };
     }
 
+    fn appendPlaced(
+        self: TextPlacer,
+        style: snail.FontStyle,
+        string: []const u8,
+        p: TextPlacement,
+        color: [4]f32,
+    ) !snail.TextAppendResult {
+        var shaped = try self.builder.atlas.shapeText(self.builder.allocator, style, string);
+        defer shaped.deinit();
+        return self.builder.append(.{
+            .shaped = &shaped,
+            .placement = .{ .baseline = .{ .x = p.x, .y = p.y }, .em = p.size },
+            .fill = .{ .solid = color },
+        });
+    }
+
     fn addText(
         self: TextPlacer,
         style: snail.FontStyle,
@@ -303,9 +319,9 @@ const TextPlacer = struct {
         y: f32,
         size: f32,
         color: [4]f32,
-    ) !snail.AddTextResult {
+    ) !snail.TextAppendResult {
         const p = self.place(x, y, size);
-        return self.builder.addText(style, string, p.x, p.y, p.size, color);
+        return self.appendPlaced(style, string, p, color);
     }
 };
 
@@ -354,7 +370,7 @@ pub fn buildTextBlob(
         var sx = x;
         for (sizes) |sz| {
             const fs = sz * s;
-            sx += (try placer.addText(.{}, "Aa", sx, y + 32 * s, fs, muted)).advance + 12 * s;
+            sx += (try placer.addText(.{}, "Aa", sx, y + 32 * s, fs, muted)).advance.x + 12 * s;
         }
     }
 
@@ -367,7 +383,7 @@ pub fn buildTextBlob(
 
         // Underlined
         const ul_place = placer.place(x, y + body_size, body_size);
-        const ul_advance = (try builder.addText(.{}, "Underlined", ul_place.x, ul_place.y, ul_place.size, text)).advance;
+        const ul_advance = (try placer.appendPlaced(.{}, "Underlined", ul_place, text)).advance.x;
         if (decoration_count < decoration_rects_out.len) {
             decoration_rects_out[decoration_count] = try fonts.decorationRect(.underline, ul_place.x, ul_place.y, ul_advance, ul_place.size);
             decoration_count += 1;
@@ -376,7 +392,7 @@ pub fn buildTextBlob(
 
         // Struck
         const st_place = placer.place(x, y + body_size, body_size);
-        const st_advance = (try builder.addText(.{}, "Struck", st_place.x, st_place.y, st_place.size, text)).advance;
+        const st_advance = (try placer.appendPlaced(.{}, "Struck", st_place, text)).advance.x;
         if (decoration_count < decoration_rects_out.len) {
             decoration_rects_out[decoration_count] = try fonts.decorationRect(.strikethrough, st_place.x, st_place.y, st_advance, st_place.size);
             decoration_count += 1;
@@ -389,63 +405,63 @@ pub fn buildTextBlob(
         var cx = x;
 
         // CH₅⁺
-        cx += (try placer.addText(.{}, "CH", cx, sub_y, sub_size, text)).advance;
+        cx += (try placer.addText(.{}, "CH", cx, sub_y, sub_size, text)).advance.x;
         if (fonts.subscriptTransform(cx, sub_y, sub_size)) |sub| {
-            cx += (try placer.addText(.{}, "5", sub.x, sub.y, sub.font_size, text)).advance;
+            cx += (try placer.addText(.{}, "5", sub.x, sub.y, sub.font_size, text)).advance.x;
         } else |_| {
-            cx += (try placer.addText(.{}, "5", cx, sub_y, sub_size * 0.7, text)).advance;
+            cx += (try placer.addText(.{}, "5", cx, sub_y, sub_size * 0.7, text)).advance.x;
         }
         if (fonts.superscriptTransform(cx, sub_y, sub_size)) |sup| {
-            cx += (try placer.addText(.{}, "+", sup.x, sup.y, sup.font_size, text)).advance;
+            cx += (try placer.addText(.{}, "+", sup.x, sup.y, sup.font_size, text)).advance.x;
         } else |_| {
-            cx += (try placer.addText(.{}, "+", cx, sub_y - sub_size * 0.4, sub_size * 0.7, text)).advance;
+            cx += (try placer.addText(.{}, "+", cx, sub_y - sub_size * 0.4, sub_size * 0.7, text)).advance.x;
         }
 
-        cx += (try placer.addText(.{}, " + ", cx, sub_y, sub_size, text)).advance;
+        cx += (try placer.addText(.{}, " + ", cx, sub_y, sub_size, text)).advance.x;
 
         // C₂H₆
-        cx += (try placer.addText(.{}, "C", cx, sub_y, sub_size, text)).advance;
+        cx += (try placer.addText(.{}, "C", cx, sub_y, sub_size, text)).advance.x;
         if (fonts.subscriptTransform(cx, sub_y, sub_size)) |sub| {
-            cx += (try placer.addText(.{}, "2", sub.x, sub.y, sub.font_size, text)).advance;
+            cx += (try placer.addText(.{}, "2", sub.x, sub.y, sub.font_size, text)).advance.x;
         } else |_| {
-            cx += (try placer.addText(.{}, "2", cx, sub_y, sub_size * 0.7, text)).advance;
+            cx += (try placer.addText(.{}, "2", cx, sub_y, sub_size * 0.7, text)).advance.x;
         }
-        cx += (try placer.addText(.{}, "H", cx, sub_y, sub_size, text)).advance;
+        cx += (try placer.addText(.{}, "H", cx, sub_y, sub_size, text)).advance.x;
         if (fonts.subscriptTransform(cx, sub_y, sub_size)) |sub| {
-            cx += (try placer.addText(.{}, "6", sub.x, sub.y, sub.font_size, text)).advance;
+            cx += (try placer.addText(.{}, "6", sub.x, sub.y, sub.font_size, text)).advance.x;
         } else |_| {
-            cx += (try placer.addText(.{}, "6", cx, sub_y, sub_size * 0.7, text)).advance;
+            cx += (try placer.addText(.{}, "6", cx, sub_y, sub_size * 0.7, text)).advance.x;
         }
 
         {
             const r = try placer.addText(.{}, " \u{2192} ", cx, sub_y, sub_size, text);
-            cx += r.advance;
+            cx += r.advance.x;
             if (r.missing) had_missing = true;
         }
 
         // C₂H₇⁺
-        cx += (try placer.addText(.{}, "C", cx, sub_y, sub_size, text)).advance;
+        cx += (try placer.addText(.{}, "C", cx, sub_y, sub_size, text)).advance.x;
         if (fonts.subscriptTransform(cx, sub_y, sub_size)) |sub| {
-            cx += (try placer.addText(.{}, "2", sub.x, sub.y, sub.font_size, text)).advance;
+            cx += (try placer.addText(.{}, "2", sub.x, sub.y, sub.font_size, text)).advance.x;
         } else |_| {
-            cx += (try placer.addText(.{}, "2", cx, sub_y, sub_size * 0.7, text)).advance;
+            cx += (try placer.addText(.{}, "2", cx, sub_y, sub_size * 0.7, text)).advance.x;
         }
-        cx += (try placer.addText(.{}, "H", cx, sub_y, sub_size, text)).advance;
+        cx += (try placer.addText(.{}, "H", cx, sub_y, sub_size, text)).advance.x;
         if (fonts.subscriptTransform(cx, sub_y, sub_size)) |sub| {
-            cx += (try placer.addText(.{}, "7", sub.x, sub.y, sub.font_size, text)).advance;
+            cx += (try placer.addText(.{}, "7", sub.x, sub.y, sub.font_size, text)).advance.x;
         } else |_| {
-            cx += (try placer.addText(.{}, "7", cx, sub_y, sub_size * 0.7, text)).advance;
+            cx += (try placer.addText(.{}, "7", cx, sub_y, sub_size * 0.7, text)).advance.x;
         }
         if (fonts.superscriptTransform(cx, sub_y, sub_size)) |sup| {
-            cx += (try placer.addText(.{}, "+", sup.x, sup.y, sup.font_size, text)).advance;
+            cx += (try placer.addText(.{}, "+", sup.x, sup.y, sup.font_size, text)).advance.x;
         } else |_| {
-            cx += (try placer.addText(.{}, "+", cx, sub_y - sub_size * 0.4, sub_size * 0.7, text)).advance;
+            cx += (try placer.addText(.{}, "+", cx, sub_y - sub_size * 0.4, sub_size * 0.7, text)).advance.x;
         }
 
-        cx += (try placer.addText(.{}, " + ", cx, sub_y, sub_size, text)).advance;
+        cx += (try placer.addText(.{}, " + ", cx, sub_y, sub_size, text)).advance.x;
 
         // CH₄
-        cx += (try placer.addText(.{}, "CH", cx, sub_y, sub_size, text)).advance;
+        cx += (try placer.addText(.{}, "CH", cx, sub_y, sub_size, text)).advance.x;
         if (fonts.subscriptTransform(cx, sub_y, sub_size)) |sub| {
             _ = try placer.addText(.{}, "4", sub.x, sub.y, sub.font_size, text);
         } else |_| {

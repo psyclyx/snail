@@ -186,9 +186,26 @@ fn measureTextWidth(
     text: []const u8,
     font_size: f32,
 ) !f32 {
-    var probe = snail.TextBlobBuilder.init(allocator, fonts);
-    defer probe.deinit();
-    return (try probe.addText(style, text, 0.0, font_size, font_size, .{ 1, 1, 1, 1 })).advance;
+    _ = allocator;
+    return fonts.measureText(style, text, font_size);
+}
+
+fn appendText(
+    builder: *snail.TextBlobBuilder,
+    style: snail.FontStyle,
+    text: []const u8,
+    x: f32,
+    y: f32,
+    em: f32,
+    color: [4]f32,
+) !snail.TextAppendResult {
+    var shaped = try builder.atlas.shapeText(builder.allocator, style, text);
+    defer shaped.deinit();
+    return builder.append(.{
+        .shaped = &shaped,
+        .placement = .{ .baseline = .{ .x = x, .y = y }, .em = em },
+        .fill = .{ .solid = color },
+    });
 }
 
 fn max3(a: f32, b: f32, c: f32) f32 {
@@ -204,9 +221,9 @@ fn buildHudPlainPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas, wind
     defer builder.deinit();
 
     const x = 34.0;
-    _ = try builder.addText(.{ .weight = .bold }, "HUD text / no backing", x, 52.0, 22.0, .{ 1, 1, 1, 1 });
-    _ = try builder.addText(.{}, "WASD move  QE rise  Arrows look  R reset", x, 84.0, 17.0, .{ 0.86, 0.90, 0.96, 1.0 });
-    _ = try builder.addText(.{}, "Final pixels, but no opaque backdrop under the glyphs.", x, 108.0, 15.0, .{ 0.68, 0.75, 0.84, 1.0 });
+    _ = try appendText(&builder, .{ .weight = .bold }, "HUD text / no backing", x, 52.0, 22.0, .{ 1, 1, 1, 1 });
+    _ = try appendText(&builder, .{}, "WASD move  QE rise  Arrows look  R reset", x, 84.0, 17.0, .{ 0.86, 0.90, 0.96, 1.0 });
+    _ = try appendText(&builder, .{}, "Final pixels, but no opaque backdrop under the glyphs.", x, 108.0, 15.0, .{ 0.68, 0.75, 0.84, 1.0 });
     const text = try builder.finish();
 
     _ = window_w;
@@ -262,9 +279,9 @@ fn buildHudTranslucentPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas
     var builder = snail.TextBlobBuilder.init(allocator, fonts);
     defer builder.deinit();
     const tx = rect.x + pad_x;
-    _ = try builder.addText(.{ .weight = .bold }, title, tx, rect.y + pad_y + title_size, title_size, .{ 0.97, 0.99, 1.0, 1.0 });
-    _ = try builder.addText(.{}, body, tx, rect.y + pad_y + title_size + 30.0, body_size, .{ 0.88, 0.94, 0.98, 1.0 });
-    _ = try builder.addText(.{}, note, tx, rect.y + pad_y + title_size + 54.0, note_size, .{ 0.73, 0.82, 0.90, 1.0 });
+    _ = try appendText(&builder, .{ .weight = .bold }, title, tx, rect.y + pad_y + title_size, title_size, .{ 0.97, 0.99, 1.0, 1.0 });
+    _ = try appendText(&builder, .{}, body, tx, rect.y + pad_y + title_size + 30.0, body_size, .{ 0.88, 0.94, 0.98, 1.0 });
+    _ = try appendText(&builder, .{}, note, tx, rect.y + pad_y + title_size + 54.0, note_size, .{ 0.73, 0.82, 0.90, 1.0 });
     const text = try builder.finish();
 
     return PreparedPass.init(allocator, text, picture);
@@ -319,10 +336,10 @@ fn buildHudSolidPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas, wind
     var builder = snail.TextBlobBuilder.init(allocator, fonts);
     defer builder.deinit();
     const tx = rect.x + pad_x;
-    _ = try builder.addText(.{ .weight = .bold }, title, tx, rect.y + 42.0, title_size, .{ 1.0, 1.0, 1.0, 1.0 });
-    _ = try builder.addText(.{}, line_one, tx, rect.y + 74.0, body_size, .{ 0.92, 0.96, 0.98, 1.0 });
-    _ = try builder.addText(.{}, line_two, tx, rect.y + 98.0, body_size, .{ 0.92, 0.96, 0.98, 1.0 });
-    _ = try builder.addText(.{}, note, tx, rect.y + 124.0, note_size, .{ 0.78, 0.86, 0.92, 1.0 });
+    _ = try appendText(&builder, .{ .weight = .bold }, title, tx, rect.y + 42.0, title_size, .{ 1.0, 1.0, 1.0, 1.0 });
+    _ = try appendText(&builder, .{}, line_one, tx, rect.y + 74.0, body_size, .{ 0.92, 0.96, 0.98, 1.0 });
+    _ = try appendText(&builder, .{}, line_two, tx, rect.y + 98.0, body_size, .{ 0.92, 0.96, 0.98, 1.0 });
+    _ = try appendText(&builder, .{}, note, tx, rect.y + 124.0, note_size, .{ 0.78, 0.86, 0.92, 1.0 });
     const text = try builder.finish();
 
     return PreparedPass.init(allocator, text, picture);
@@ -333,9 +350,9 @@ fn buildRoughWallTextPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas)
     const scene_h = 300.0;
     var builder = snail.TextBlobBuilder.init(allocator, fonts);
     defer builder.deinit();
-    _ = try builder.addText(.{ .weight = .bold }, "AUTHORIZED ONLY", 46.0, 118.0, 56.0, .{ 0.06, 0.055, 0.05, 1.0 });
-    _ = try builder.addText(.{}, "Text tinted directly onto the normal-mapped wall material.", 46.0, 168.0, 22.0, .{ 0.08, 0.07, 0.06, 0.96 });
-    _ = try builder.addText(.{}, "The wall keeps its surface detail; the glyphs are not billboarded.", 46.0, 198.0, 18.0, .{ 0.08, 0.07, 0.06, 0.92 });
+    _ = try appendText(&builder, .{ .weight = .bold }, "AUTHORIZED ONLY", 46.0, 118.0, 56.0, .{ 0.06, 0.055, 0.05, 1.0 });
+    _ = try appendText(&builder, .{}, "Text tinted directly onto the normal-mapped wall material.", 46.0, 168.0, 22.0, .{ 0.08, 0.07, 0.06, 0.96 });
+    _ = try appendText(&builder, .{}, "The wall keeps its surface detail; the glyphs are not billboarded.", 46.0, 198.0, 18.0, .{ 0.08, 0.07, 0.06, 0.92 });
     const text = try builder.finish();
 
     return .{
@@ -373,10 +390,10 @@ fn buildCenterPanelPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas) !
     var builder = snail.TextBlobBuilder.init(allocator, fonts);
     defer builder.deinit();
     const tx = panel.x + pad_x;
-    _ = try builder.addText(.{ .weight = .bold }, kicker, panel.x + 42.0, panel.y + 76.0, kicker_size, .{ 0.10, 0.12, 0.14, 1.0 });
-    _ = try builder.addText(.{ .weight = .bold }, title, tx, panel.y + 154.0, title_size, .{ 0.93, 0.96, 0.96, 1.0 });
-    _ = try builder.addText(.{}, body, tx, panel.y + 204.0, body_size, .{ 0.82, 0.87, 0.88, 1.0 });
-    _ = try builder.addText(.{}, note, tx, panel.y + 236.0, note_size, .{ 0.66, 0.72, 0.75, 1.0 });
+    _ = try appendText(&builder, .{ .weight = .bold }, kicker, panel.x + 42.0, panel.y + 76.0, kicker_size, .{ 0.10, 0.12, 0.14, 1.0 });
+    _ = try appendText(&builder, .{ .weight = .bold }, title, tx, panel.y + 154.0, title_size, .{ 0.93, 0.96, 0.96, 1.0 });
+    _ = try appendText(&builder, .{}, body, tx, panel.y + 204.0, body_size, .{ 0.82, 0.87, 0.88, 1.0 });
+    _ = try appendText(&builder, .{}, note, tx, panel.y + 236.0, note_size, .{ 0.66, 0.72, 0.75, 1.0 });
     const text = try builder.finish();
 
     return .{
@@ -432,9 +449,9 @@ fn buildGlassPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas) !PlaneP
     var builder = snail.TextBlobBuilder.init(allocator, fonts);
     defer builder.deinit();
     const tx = rect.x + pad_x;
-    _ = try builder.addText(.{ .weight = .bold }, title, tx, rect.y + 72.0, 42.0, .{ 0.92, 0.98, 1.0, 0.78 });
-    _ = try builder.addText(.{}, body, tx, rect.y + 114.0, 21.0, .{ 0.84, 0.93, 0.98, 0.74 });
-    _ = try builder.addText(.{}, note, tx, rect.y + 144.0, 16.0, .{ 0.72, 0.84, 0.92, 0.70 });
+    _ = try appendText(&builder, .{ .weight = .bold }, title, tx, rect.y + 72.0, 42.0, .{ 0.92, 0.98, 1.0, 0.78 });
+    _ = try appendText(&builder, .{}, body, tx, rect.y + 114.0, 21.0, .{ 0.84, 0.93, 0.98, 0.74 });
+    _ = try appendText(&builder, .{}, note, tx, rect.y + 144.0, 16.0, .{ 0.72, 0.84, 0.92, 0.70 });
     const text = try builder.finish();
 
     return .{

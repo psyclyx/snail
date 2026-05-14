@@ -154,9 +154,9 @@ typedef struct {
 } SnailShapedGlyph;
 
 typedef struct {
-    float x, y, size;
-    float color[4];
-} SnailTextBlobOptions;
+    float baseline_x, baseline_y;
+    float em;
+} SnailTextPlacement;
 
 typedef struct {
     float pixel_width;
@@ -270,6 +270,11 @@ typedef struct {
 } SnailPaint;
 
 typedef struct {
+    SnailTextPlacement placement;
+    SnailPaint fill;
+} SnailTextAppendOptions;
+
+typedef struct {
     SnailPaint paint;
 } SnailFillStyle;
 
@@ -357,14 +362,14 @@ size_t snail_shaped_text_copy_glyphs(const SnailShapedText *shaped,
 int snail_text_blob_init_from_shaped(const SnailAllocator *alloc,
                                      const SnailTextAtlas *atlas,
                                      const SnailShapedText *shaped,
-                                     SnailTextBlobOptions options,
+                                     SnailTextAppendOptions options,
                                      SnailTextBlob **out);
 int snail_text_blob_init_text(const SnailAllocator *alloc,
                               const SnailTextAtlas *atlas,
                               SnailFontStyle style,
                               const char *text,
                               size_t text_len,
-                              SnailTextBlobOptions options,
+                              SnailTextAppendOptions options,
                               SnailTextBlob **out);
 void snail_text_blob_deinit(SnailTextBlob *blob);
 size_t snail_text_blob_glyph_count(const SnailTextBlob *blob);
