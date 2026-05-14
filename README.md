@@ -193,9 +193,16 @@ Per-AA timings for the text, rich text, and multi-script scenes. AA controls the
 
 ```sh
 nix-shell           # dev shell with all dependencies
-nix-build -A lib    # build libsnail + header
+nix-build -A lib    # build libsnail + enabled C headers
 nix-build -A demo   # build snail-demo
 ```
+
+The Nix package is defined in `nix/snail.nix` and wired through `callPackage`
+from `default.nix`. Its defaults mirror the Zig build defaults: OpenGL on,
+Vulkan off, CPU renderer on, HarfBuzz on, and the C API enabled with both
+shared and static libraries. Override `enableVulkan`, `enableOpenGL`,
+`enableCpu`, `enableHarfBuzz`, `enableCApi`, `cApiShared`, or `cApiStatic`
+when calling the package directly.
 
 ### Using as a Zig dependency
 

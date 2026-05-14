@@ -1,32 +1,30 @@
+{ pkgs ? import (import ./npins).nixpkgs { }
+, src ? ./.
+}:
+
 let
-  sources = import ./npins;
-  pkgs = import sources.nixpkgs {};
-  zig = pkgs.zig_0_16;
-
-  lib = pkgs.stdenv.mkDerivation {
-    pname = "snail";
-    version = "0.6.1";
-    src = ./.;
-    nativeBuildInputs = [ zig.hook pkgs.pkg-config ];
-    buildInputs = with pkgs; [ libGL harfbuzz ];
-    zigBuildFlags = [ "-Doptimize=ReleaseFast" "-Dharfbuzz=true" ];
-    dontUseZigCheck = true;
-    postInstall = ''
-      mkdir -p $out/lib/pkgconfig
-      sed "s|@PREFIX@|$out|g" snail.pc.in > $out/lib/pkgconfig/snail.pc
-    '';
+  snail = pkgs.callPackage ./nix/snail.nix {
+    inherit src;
   };
 
-  demo = pkgs.stdenv.mkDerivation {
+  demo = pkgs.callPackage ./nix/snail.nix {
+    inherit src;
     pname = "snail-demo";
-    version = "0.6.1";
-    src = ./.;
-    nativeBuildInputs = [ zig.hook pkgs.pkg-config ];
-    buildInputs = with pkgs; [ libGL harfbuzz wayland ];
-    zigBuildFlags = [ "demo" "-Doptimize=ReleaseFast" "-Dharfbuzz=true" ];
-    dontUseZigCheck = true;
+    buildDemo = true;
+    enableCApi = false;
   };
 
-  shell = import ./shell.nix;
+  shell = import ./shell.nix {
+    inherit pkgs;
+  };
+in
+{
+  inherit demo shell;
 
-in { inherit lib demo shell; default = lib; }
+  lib = snail;
+  default = snail;
+
+  packages = {
+    inherit snail demo;
+  };
+}

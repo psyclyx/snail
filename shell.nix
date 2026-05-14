@@ -1,7 +1,5 @@
-let
-  sources = import ./npins;
-  pkgs = import sources.nixpkgs {};
-in
+{ pkgs ? import (import ./npins).nixpkgs { } }:
+
 pkgs.mkShell {
   packages = with pkgs; [
     zig_0_16
