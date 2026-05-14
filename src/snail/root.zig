@@ -130,6 +130,7 @@ pub const TextBlob = fonts_mod.TextBlob;
 pub const TextPlacement = fonts_mod.TextPlacement;
 pub const TextAppend = fonts_mod.TextAppend;
 pub const TextAppendResult = fonts_mod.TextAppendResult;
+pub const TextBatchAppend = fonts_mod.TextBatchAppend;
 pub const CellMetrics = fonts_mod.CellMetrics;
 pub const CellMetricsOptions = fonts_mod.CellMetricsOptions;
 pub const TextBlobBuilder = fonts_mod.TextBlobBuilder;

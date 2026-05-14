@@ -54,6 +54,13 @@ pub const TextAppendResult = struct {
     missing: bool,
 };
 
+pub const TextBatchAppend = struct {
+    shaped: *const ShapedText,
+    glyphs: snail.Range = .{},
+    placement: TextPlacement,
+    color: [4]f32,
+};
+
 pub const CellMetricsOptions = struct {
     style: snail.FontStyle = .{},
     em: f32,
@@ -991,12 +998,11 @@ pub const TextAtlas = struct {
     pub fn appendTextBatch(
         self: *const TextAtlas,
         batch: *TextBatch,
-        append: TextAppend,
+        append: TextBatchAppend,
         allow_missing: bool,
     ) !TextAppendResult {
         const shaped = append.shaped;
         if (shaped.config != self.config) return error.WrongTextAtlasSnapshot;
-        const color = try textFillColor(append.fill);
         const range = append.glyphs.resolve(shaped.glyphs.len);
         const pen_origin = shapedPenAt(shaped, range.start);
 
@@ -1015,7 +1021,7 @@ pub const TextAtlas = struct {
 
             const x = append.placement.baseline.x + (glyph.x_offset - pen_origin.x) * append.placement.em;
             const y = append.placement.baseline.y + (glyph.y_offset - pen_origin.y) * append.placement.em;
-            if (glyph_emit.emitStyledGlyph(batch, &face_view, glyph.glyph_id, x, y, append.placement.em, color, fc.synthetic) == .buffer_full) break;
+            if (glyph_emit.emitStyledGlyph(batch, &face_view, glyph.glyph_id, x, y, append.placement.em, append.color, fc.synthetic) == .buffer_full) break;
         }
 
         return .{
@@ -1650,13 +1656,6 @@ pub fn textBlobRangeGpuInstanceBudget(blob: *const TextBlob, range: snail.Range.
     return total;
 }
 
-fn textFillColor(fill: snail.Paint) ![4]f32 {
-    return switch (fill) {
-        .solid => |color| color,
-        else => error.UnsupportedTextPaint,
-    };
-}
-
 fn shapedPenAt(shaped: *const ShapedText, glyph_index: usize) snail.Vec2 {
     var pen = snail.Vec2.zero;
     for (shaped.glyphs[0..@min(glyph_index, shaped.glyphs.len)]) |glyph| {
@@ -1781,7 +1780,7 @@ fn appendTestTextBatch(
     return atlas.appendTextBatch(batch, .{
         .shaped = &shaped,
         .placement = .{ .baseline = baseline, .em = em },
-        .fill = .{ .solid = color },
+        .color = color,
     }, allow_missing);
 }
 

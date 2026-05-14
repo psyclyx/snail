@@ -23,7 +23,7 @@ fn appendBatchText(
     return fonts.appendTextBatch(batch, .{
         .shaped = &shaped,
         .placement = .{ .baseline = .{ .x = x, .y = y }, .em = em },
-        .fill = .{ .solid = color },
+        .color = color,
     }, allow_missing);
 }
 
