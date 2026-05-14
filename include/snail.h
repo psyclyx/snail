@@ -508,8 +508,9 @@ size_t snail_prepared_scene_segment_count(const SnailPreparedScene *scene);
 
 /* Renderer
  *
- * Construct renderers through backend headers such as snail_gl.h and
- * snail_vulkan.h, then use this erased renderer handle for shared operations.
+ * Construct renderers through backend headers such as snail_cpu.h,
+ * snail_gl.h, and snail_vulkan.h, then use this erased renderer handle for
+ * shared operations.
  */
 
 void snail_renderer_deinit(SnailRenderer *renderer);

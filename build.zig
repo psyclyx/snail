@@ -422,6 +422,7 @@ pub fn build(b: *std.Build) void {
         b.installFile("include/snail_generated.h", "include/snail_generated.h");
         if (enable_opengl) b.installFile("include/snail_gl.h", "include/snail_gl.h");
         if (enable_vulkan) b.installFile("include/snail_vulkan.h", "include/snail_vulkan.h");
+        if (enable_cpu) b.installFile("include/snail_cpu.h", "include/snail_cpu.h");
     }
 
     // ── Zig module (for downstream zig package consumers) ──

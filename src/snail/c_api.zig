@@ -321,6 +321,7 @@ const RendererImpl = struct {
     backend: snail.BackendKind,
     gl: if (build_options.enable_opengl) ?snail.GlRenderer else void = if (build_options.enable_opengl) null else {},
     vulkan: if (build_options.enable_vulkan) ?snail.VulkanRenderer else void = if (build_options.enable_vulkan) null else {},
+    cpu: if (build_options.enable_cpu) ?snail.CpuRenderer else void = if (build_options.enable_cpu) null else {},
 
     fn asRenderer(self: *RendererImpl) snail.Renderer {
         return switch (self.backend) {
@@ -334,7 +335,11 @@ const RendererImpl = struct {
                 if (self.vulkan) |*vk_renderer| break :blk vk_renderer.asRenderer();
                 unreachable;
             },
-            .cpu => unreachable,
+            .cpu => blk: {
+                if (comptime !build_options.enable_cpu) unreachable;
+                if (self.cpu) |*cpu| break :blk cpu.asRenderer();
+                unreachable;
+            },
         };
     }
 
@@ -361,7 +366,10 @@ const RendererImpl = struct {
                 self.vulkan.?.backendName()
             else
                 "vulkan (disabled)",
-            .cpu => "CPU",
+            .cpu => if (comptime build_options.enable_cpu)
+                self.cpu.?.backendName()
+            else
+                "CPU (disabled)",
         };
     }
 };
@@ -1399,6 +1407,14 @@ export fn snail_prepared_scene_segment_count(scene: *const PreparedSceneImpl) us
 
 // Renderer
 
+fn cpuPixels(pixels: ?[*]u8, width: u32, height: u32, stride: u32) ?[*]u8 {
+    const ptr = pixels orelse return null;
+    if (width == 0 or height == 0) return null;
+    const min_stride = std.math.mul(u32, width, 4) catch return null;
+    if (stride < min_stride) return null;
+    return ptr;
+}
+
 export fn snail_gl_renderer_init(out: *?*RendererImpl) c_int {
     if (comptime build_options.enable_opengl) {
         const gl = snail.GlRenderer.init(handleAllocator()) catch return SNAIL_ERR_RENDERER_FAILED;
@@ -1413,6 +1429,34 @@ export fn snail_gl_renderer_init(out: *?*RendererImpl) c_int {
     } else {
         return SNAIL_ERR_RENDERER_FAILED;
     }
+}
+
+export fn snail_cpu_available() bool {
+    return build_options.enable_cpu;
+}
+
+export fn snail_cpu_renderer_init(pixels: ?[*]u8, width: u32, height: u32, stride: u32, out: *?*RendererImpl) c_int {
+    if (comptime build_options.enable_cpu) {
+        const pixel_ptr = cpuPixels(pixels, width, height, stride) orelse return SNAIL_ERR_INVALID_ARGUMENT;
+        const cpu = snail.CpuRenderer.init(pixel_ptr, width, height, stride);
+        const impl = handleAllocator().create(RendererImpl) catch return SNAIL_ERR_OUT_OF_MEMORY;
+        impl.* = .{ .backend = .cpu, .cpu = cpu };
+        out.* = impl;
+        return SNAIL_OK;
+    } else {
+        return SNAIL_ERR_RENDERER_FAILED;
+    }
+}
+
+export fn snail_cpu_renderer_reinit_buffer(renderer: *RendererImpl, pixels: ?[*]u8, width: u32, height: u32, stride: u32) c_int {
+    if (comptime !build_options.enable_cpu) return SNAIL_ERR_RENDERER_FAILED;
+    if (renderer.backend != .cpu) return SNAIL_ERR_INVALID_ARGUMENT;
+    const pixel_ptr = cpuPixels(pixels, width, height, stride) orelse return SNAIL_ERR_INVALID_ARGUMENT;
+    if (renderer.cpu) |*cpu| {
+        cpu.reinitBuffer(pixel_ptr, width, height, stride);
+        return SNAIL_OK;
+    }
+    return SNAIL_ERR_INVALID_ARGUMENT;
 }
 
 export fn snail_vulkan_available() bool {

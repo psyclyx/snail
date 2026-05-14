@@ -83,7 +83,7 @@ Library backend flags:
 
 - `-Dopengl=true` (default) — OpenGL backend (`GlRenderer`); installs `snail_gl.h` when the C API is enabled.
 - `-Dvulkan=true` (default) — Vulkan backend (`VulkanRenderer`); pass `=false` for a slimmer OpenGL/CPU-only build. SPIR-V shaders are compiled at build time via `glslc`; installs `snail_vulkan.h` when the C API is enabled. That extension header includes Vulkan headers.
-- `-Dcpu-renderer=true` (default) — pass `=false` to drop `CpuRenderer`.
+- `-Dcpu-renderer=true` (default) — CPU backend (`CpuRenderer`); pass `=false` to drop it. Installs `snail_cpu.h` when the C API is enabled.
 - `-Dharfbuzz=true` (default) — pass `=false` for a HarfBuzz-free build using the built-in GSUB type 4 / GPOS type 2 shaper.
 - `-Dprofile=false` (default) — pass `=true` to enable the comptime CPU timers.
 - `-Dc-api=true` (default) — pass `=false` for a Zig-module-only build (skips `libsnail.{a,so}` and the header install).
@@ -346,7 +346,7 @@ try scene.addPath(.{ .picture = &picture });
 
 ## Example: C
 
-> **Note:** This example uses the OpenGL C backend and requires an active OpenGL context. Vulkan callers include `snail_vulkan.h` and provide a `SnailVulkanContext`. Error checks are omitted here for brevity.
+> **Note:** This example uses the OpenGL C backend and requires an active OpenGL context. CPU callers include `snail_cpu.h` and provide a caller-owned RGBA8 buffer; Vulkan callers include `snail_vulkan.h` and provide a `SnailVulkanContext`. Error checks are omitted here for brevity.
 
 ```c
 #include "snail.h"
@@ -718,7 +718,7 @@ snail is used in development but is not yet stable. The Zig API is settling and 
 - Built-in OpenType shaping covers GSUB type 4 (ligatures) and GPOS type 2 (pair positioning) only; complex scripts (Arabic, Devanagari, Thai, etc.) require building with `-Dharfbuzz=true`.
 - TrueType outlines only — no CFF/CFF2.
 - No variable fonts.
-- The C API exposes backend constructors for OpenGL (`snail_gl.h`) and Vulkan (`snail_vulkan.h`) plus the unified `SnailRenderer` blocking upload/draw path. Zig-side scheduled upload (`planResourceUpload` / `beginResourceUpload` / `pending.publish`) is not yet exposed to C callers.
+- The C API exposes backend constructors for CPU (`snail_cpu.h`), OpenGL (`snail_gl.h`), and Vulkan (`snail_vulkan.h`) plus the unified `SnailRenderer` blocking upload/draw path. Zig-side scheduled upload (`planResourceUpload` / `beginResourceUpload` / `pending.publish`) is not yet exposed to C callers.
 
 ## Benchmarks
 
