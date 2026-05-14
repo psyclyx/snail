@@ -581,7 +581,7 @@ backend on top of snail's rasterization. Most apps should not need this.
 | `TextAtlas` | Immutable snapshot. Safe for concurrent reads. `ensureText`, `ensureShaped`, and `ensureGlyphs` return a new snapshot; old remains valid for in-flight readers. |
 | `TextBlob`, `PathPicture`, `Image` | Safe for concurrent reads while the borrowed atlas / pictures / pixels outlive the reader. `TextBlob.rebind` mutates the blob and must not race with readers. |
 | `ResourceSet`, `Scene` | Borrowed manifests/lists. Source values must outlive upload/record building; CPU prepared resources extend some source lifetimes as described below. |
-| `PreparedResources` | Backend/context-specific. GPU prepared resources own backend texture uploads. CPU prepared resources own prepared curve sidecars but still borrow atlas band/layer-info data and image pixels, so uploaded `TextAtlas`, `PathPicture`, and `Image` values must outlive them. |
+| `PreparedResources` | Backend/context-specific. GPU prepared resources own backend texture uploads. CPU prepared resources own prepared curve sidecars but still borrow atlas band/layer-info data, painted `TextBlob` layer-info data, and image pixels. |
 | `DrawList` | Caller-owned buffer. Thread-local — no sharing needed. |
 | `Renderer` | Single-threaded. Must be called from the GL/Vulkan context thread. |
 | `CpuRenderer` | Single-threaded by default. Pass a `*snail.ThreadPool` via `cpu.setThreadPool` to enable internal scanline-tiled parallelism; the renderer fans tile work out and joins before each draw returns, so calls remain serial from the caller's perspective. |
