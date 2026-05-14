@@ -91,104 +91,6 @@ Library backend flags:
 
 The checked-in screenshot at `assets/demo_screenshot.png` is regenerated from the `zig build screenshot` TGA output.
 
-## Benchmarks
-
-Last run: 2026-05-14, `zig build bench`, ReleaseFast benchmark build. Lower times are better. These numbers are one local machine/run, not a portability guarantee.
-
-NotoSans-Regular, 20 prep runs, 1000 text iterations, 1000 draw-record iterations. Render target: 640x360. CPU rows use 20 measured frames; GPU rows use 500 measured frames.
-
-| Component | Detected |
-|---|---|
-| CPU | AMD Ryzen 9 5950X 16-Core Processor |
-| OpenGL renderer | NVIDIA GeForce RTX 3090/PCIe/SSE2 |
-| OpenGL version | 4.4.0 NVIDIA 595.71.05 |
-| Vulkan device | NVIDIA GeForce RTX 3090 |
-
-### Preparation
-
-| Workload | Snail | FreeType | FreeType / Snail |
-|---|---:|---:|---:|
-| Font load | 1.53 us | 9.16 us | 5.98x |
-| Glyph prep, ASCII | 452.34 us | 987.80 us | 2.18x |
-| Glyph prep, 7 sizes | 452.34 us | 6844.43 us | 15.13x |
-| PathPicture freeze, 25 shapes | 146.15 us | n/a | n/a |
-
-| Resource | Bytes | KiB |
-|---|---:|---:|
-| Snail text curve/band textures | 98304 | 96.0 |
-| Snail vector curve/band textures | 54352 | 53.1 |
-| FreeType bitmaps, one size | 65001 | 63.5 |
-| FreeType bitmaps, seven sizes | 538020 | 525.4 |
-
-### Text Creation And Layout
-
-| Workload | Snail TextBlob | FreeType layout | FreeType / Snail |
-|---|---:|---:|---:|
-| Short string | 1.54 us | 83.74 us | 54.28x |
-| Sentence | 5.19 us | 385.30 us | 74.24x |
-| Paragraph | 17.74 us | 1315.41 us | 74.16x |
-| Paragraph x 7 sizes | 124.79 us | 9647.37 us | 77.31x |
-
-### Draw Record Creation
-
-| Scene | Commands | Words | Segments | PreparedScene.initOwned |
-|---|---:|---:|---:|---:|
-| Text | 4 | 4048 | 4 | 7.80 us |
-| Rich text | 1 | 1136 | 1 | 2.01 us |
-| Vector paths | 1 | 400 | 1 | 0.21 us |
-| Mixed text + vector | 5 | 4448 | 5 | 7.98 us |
-| Multi-script text | 4 | 1488 | 4 | 2.81 us |
-
-### Prepared Render
-
-| Backend | Scene | Commands | Words | Segments | Draw prepared scene |
-|---|---|---:|---:|---:|---:|
-| CPU | Text | 4 | 4048 | 4 | 7443.35 us |
-| CPU | Rich text | 1 | 1136 | 1 | 3978.32 us |
-| CPU | Vector paths | 1 | 400 | 1 | 15768.78 us |
-| CPU | Mixed text + vector | 5 | 4448 | 5 | 23285.69 us |
-| CPU | Multi-script text | 4 | 1488 | 4 | 4474.28 us |
-| CPU (threaded) | Text | 4 | 4048 | 4 | 3127.91 us |
-| CPU (threaded) | Rich text | 1 | 1136 | 1 | 1978.91 us |
-| CPU (threaded) | Vector paths | 1 | 400 | 1 | 3324.56 us |
-| CPU (threaded) | Mixed text + vector | 5 | 4448 | 5 | 5313.38 us |
-| CPU (threaded) | Multi-script text | 4 | 1488 | 4 | 2021.87 us |
-| GL 4.4 (persistent mapped) | Text | 4 | 4048 | 4 | 328.67 us |
-| GL 4.4 (persistent mapped) | Rich text | 1 | 1136 | 1 | 257.16 us |
-| GL 4.4 (persistent mapped) | Vector paths | 1 | 400 | 1 | 71.34 us |
-| GL 4.4 (persistent mapped) | Mixed text + vector | 5 | 4448 | 5 | 379.97 us |
-| GL 4.4 (persistent mapped) | Multi-script text | 4 | 1488 | 4 | 302.41 us |
-| Vulkan | Text | 4 | 4048 | 4 | 91.99 us |
-| Vulkan | Rich text | 1 | 1136 | 1 | 80.18 us |
-| Vulkan | Vector paths | 1 | 400 | 1 | 92.98 us |
-| Vulkan | Mixed text + vector | 5 | 4448 | 5 | 139.90 us |
-| Vulkan | Multi-script text | 4 | 1488 | 4 | 74.41 us |
-
-### Render Modes
-
-Per-AA timings for the text, rich text, and multi-script scenes. AA controls the fragment-shader path.
-
-| Backend | Scene | AA | Words | Segments | PreparedScene | Draw |
-|---|---|---|---:|---:|---:|---:|
-| CPU | Text | grayscale | 4048 | 4 | 7.80 us | 1548.87 us |
-| CPU | Text | subpixel rgb | 4048 | 4 | 7.66 us | 7449.23 us |
-| CPU | Rich text | grayscale | 1136 | 1 | 2.00 us | 1306.20 us |
-| CPU | Rich text | subpixel rgb | 1136 | 1 | 2.02 us | 3938.46 us |
-| CPU | Multi-script text | grayscale | 1488 | 4 | 2.88 us | 938.71 us |
-| CPU | Multi-script text | subpixel rgb | 1488 | 4 | 2.80 us | 4475.16 us |
-| GL 4.4 (persistent mapped) | Text | grayscale | 4048 | 4 | 7.78 us | 91.15 us |
-| GL 4.4 (persistent mapped) | Text | subpixel rgb | 4048 | 4 | 7.59 us | 298.32 us |
-| GL 4.4 (persistent mapped) | Rich text | grayscale | 1136 | 1 | 1.98 us | 115.52 us |
-| GL 4.4 (persistent mapped) | Rich text | subpixel rgb | 1136 | 1 | 1.96 us | 264.23 us |
-| GL 4.4 (persistent mapped) | Multi-script text | grayscale | 1488 | 4 | 2.74 us | 90.76 us |
-| GL 4.4 (persistent mapped) | Multi-script text | subpixel rgb | 1488 | 4 | 2.85 us | 296.68 us |
-| Vulkan | Text | grayscale | 4048 | 4 | 7.55 us | 26.41 us |
-| Vulkan | Text | subpixel rgb | 4048 | 4 | 7.55 us | 88.01 us |
-| Vulkan | Rich text | grayscale | 1136 | 1 | 2.07 us | 31.38 us |
-| Vulkan | Rich text | subpixel rgb | 1136 | 1 | 1.95 us | 74.33 us |
-| Vulkan | Multi-script text | grayscale | 1488 | 4 | 2.71 us | 36.54 us |
-| Vulkan | Multi-script text | subpixel rgb | 1488 | 4 | 2.72 us | 84.34 us |
-
 ### Nix
 
 ```sh
@@ -729,10 +631,9 @@ zig build bench
 zig build bench -Dvulkan=false  # skip Vulkan rows
 ```
 
-The bench prints Markdown tables that paste directly into docs. The
-output below was captured with `zig build bench` on the
-machine listed under Hardware; numbers will vary across hardware,
-driver, and load.
+Last run: 2026-05-14, `zig build bench`, ReleaseFast benchmark build. Lower
+times are better. These numbers are one local machine/run, not a portability
+guarantee.
 
 NotoSans-Regular, 20 prep runs, 1000 text iterations, 1000 draw-record iterations.
 
@@ -751,10 +652,10 @@ The vector workload contains filled and stroked rounded rectangles, ellipses, an
 
 | Workload | Snail | FreeType | FreeType / Snail |
 |---|---:|---:|---:|
-| Font load | 1.48 us | 9.62 us | 6.49x |
-| Glyph prep, ASCII | 482.58 us | 1007.21 us | 2.09x |
-| Glyph prep, 7 sizes | 482.58 us | 6873.60 us | 14.24x |
-| PathPicture freeze, 25 shapes | 155.54 us | n/a | n/a |
+| Font load | 1.88 us | 8.60 us | 4.58x |
+| Glyph prep, ASCII | 446.39 us | 988.29 us | 2.21x |
+| Glyph prep, 7 sizes | 446.39 us | 6866.71 us | 15.38x |
+| PathPicture freeze, 25 shapes | 138.07 us | n/a | n/a |
 
 ### Prepared Resource Memory
 
@@ -769,19 +670,20 @@ The vector workload contains filled and stroked rounded rectangles, ellipses, an
 
 | Workload | Snail TextBlob | FreeType layout | FreeType / Snail |
 |---|---:|---:|---:|
-| Short string | 1.43 us | 77.54 us | 54.32x |
-| Sentence | 4.82 us | 378.78 us | 78.54x |
-| Paragraph | 16.54 us | 1334.95 us | 80.73x |
-| Paragraph x 7 sizes | 116.78 us | 9713.88 us | 83.18x |
+| Short string | 1.52 us | 76.86 us | 50.54x |
+| Sentence | 5.19 us | 380.75 us | 73.40x |
+| Paragraph | 17.75 us | 1375.86 us | 77.52x |
+| Paragraph x 7 sizes | 124.67 us | 10091.24 us | 80.94x |
 
 ### Draw Record Creation
 
 | Scene | Commands | Words | Segments | PreparedScene.initOwned |
 |---|---:|---:|---:|---:|
-| Text | 4 | 4048 | 4 | 7.59 us |
+| Text | 4 | 4048 | 4 | 7.54 us |
+| Rich text | 1 | 1136 | 1 | 2.04 us |
 | Vector paths | 1 | 400 | 1 | 0.21 us |
-| Mixed text + vector | 5 | 4448 | 5 | 7.64 us |
-| Multi-script text | 4 | 1488 | 4 | 2.66 us |
+| Mixed text + vector | 5 | 4448 | 5 | 7.84 us |
+| Multi-script text | 4 | 1488 | 4 | 2.81 us |
 
 ### Prepared Render
 
@@ -789,22 +691,26 @@ Target: 640x360. CPU uses 20 measured frames; GPU backends use 500 measured fram
 
 | Backend | Scene | Frames | Commands | Words | Segments | Draw prepared scene |
 |---|---|---:|---:|---:|---:|---:|
-| CPU | Text | 20 | 4 | 4048 | 4 | 7364.47 us |
-| CPU | Vector paths | 20 | 1 | 400 | 1 | 15657.82 us |
-| CPU | Mixed text + vector | 20 | 5 | 4448 | 5 | 22887.67 us |
-| CPU | Multi-script text | 20 | 4 | 1488 | 4 | 4449.58 us |
-| CPU (threaded) | Text | 20 | 4 | 4048 | 4 | 3161.49 us |
-| CPU (threaded) | Vector paths | 20 | 1 | 400 | 1 | 3072.98 us |
-| CPU (threaded) | Mixed text + vector | 20 | 5 | 4448 | 5 | 5177.09 us |
-| CPU (threaded) | Multi-script text | 20 | 4 | 1488 | 4 | 2009.58 us |
-| GL 4.4 (persistent mapped) | Text | 500 | 4 | 4048 | 4 | 304.24 us |
-| GL 4.4 (persistent mapped) | Vector paths | 500 | 1 | 400 | 1 | 65.66 us |
-| GL 4.4 (persistent mapped) | Mixed text + vector | 500 | 5 | 4448 | 5 | 351.01 us |
-| GL 4.4 (persistent mapped) | Multi-script text | 500 | 4 | 1488 | 4 | 281.30 us |
-| Vulkan | Text | 500 | 4 | 4048 | 4 | 82.03 us |
-| Vulkan | Vector paths | 500 | 1 | 400 | 1 | 89.64 us |
-| Vulkan | Mixed text + vector | 500 | 5 | 4448 | 5 | 110.83 us |
-| Vulkan | Multi-script text | 500 | 4 | 1488 | 4 | 76.96 us |
+| CPU | Text | 20 | 4 | 4048 | 4 | 7487.94 us |
+| CPU | Rich text | 20 | 1 | 1136 | 1 | 3944.90 us |
+| CPU | Vector paths | 20 | 1 | 400 | 1 | 15656.01 us |
+| CPU | Mixed text + vector | 20 | 5 | 4448 | 5 | 23162.31 us |
+| CPU | Multi-script text | 20 | 4 | 1488 | 4 | 4525.96 us |
+| CPU (threaded) | Text | 20 | 4 | 4048 | 4 | 3241.19 us |
+| CPU (threaded) | Rich text | 20 | 1 | 1136 | 1 | 2003.87 us |
+| CPU (threaded) | Vector paths | 20 | 1 | 400 | 1 | 3135.56 us |
+| CPU (threaded) | Mixed text + vector | 20 | 5 | 4448 | 5 | 5169.83 us |
+| CPU (threaded) | Multi-script text | 20 | 4 | 1488 | 4 | 1991.90 us |
+| GL 4.4 (persistent mapped) | Text | 500 | 4 | 4048 | 4 | 313.72 us |
+| GL 4.4 (persistent mapped) | Rich text | 500 | 1 | 1136 | 1 | 261.37 us |
+| GL 4.4 (persistent mapped) | Vector paths | 500 | 1 | 400 | 1 | 79.21 us |
+| GL 4.4 (persistent mapped) | Mixed text + vector | 500 | 5 | 4448 | 5 | 366.23 us |
+| GL 4.4 (persistent mapped) | Multi-script text | 500 | 4 | 1488 | 4 | 283.30 us |
+| Vulkan | Text | 500 | 4 | 4048 | 4 | 79.93 us |
+| Vulkan | Rich text | 500 | 1 | 1136 | 1 | 86.06 us |
+| Vulkan | Vector paths | 500 | 1 | 400 | 1 | 80.35 us |
+| Vulkan | Mixed text + vector | 500 | 5 | 4448 | 5 | 116.68 us |
+| Vulkan | Multi-script text | 500 | 4 | 1488 | 4 | 74.02 us |
 
 ### Render Modes
 
@@ -813,28 +719,39 @@ the fragment-shader path (grayscale vs LCD subpixel).
 
 | Backend | Scene | AA | Words | Segments | PreparedScene | Draw |
 |---|---|---|---:|---:|---:|---:|
-| CPU | Text | grayscale | 4048 | 4 | 7.18 us | 1475.35 us |
-| CPU | Text | subpixel rgb | 4048 | 4 | 7.28 us | 7343.78 us |
-| CPU | Multi-script text | grayscale | 1488 | 4 | 2.62 us | 923.96 us |
-| CPU | Multi-script text | subpixel rgb | 1488 | 4 | 2.62 us | 4431.04 us |
-| GL 4.4 (persistent mapped) | Text | grayscale | 4048 | 4 | 7.34 us | 94.60 us |
-| GL 4.4 (persistent mapped) | Text | subpixel rgb | 4048 | 4 | 7.21 us | 280.46 us |
-| GL 4.4 (persistent mapped) | Multi-script text | grayscale | 1488 | 4 | 2.71 us | 89.65 us |
-| GL 4.4 (persistent mapped) | Multi-script text | subpixel rgb | 1488 | 4 | 2.69 us | 275.66 us |
-| Vulkan | Text | grayscale | 4048 | 4 | 7.20 us | 24.02 us |
-| Vulkan | Text | subpixel rgb | 4048 | 4 | 7.17 us | 84.87 us |
-| Vulkan | Multi-script text | grayscale | 1488 | 4 | 2.56 us | 23.81 us |
-| Vulkan | Multi-script text | subpixel rgb | 1488 | 4 | 2.57 us | 79.98 us |
+| CPU | Text | grayscale | 4048 | 4 | 7.82 us | 1491.94 us |
+| CPU | Text | subpixel rgb | 4048 | 4 | 7.52 us | 7513.28 us |
+| CPU | Rich text | grayscale | 1136 | 1 | 2.01 us | 1298.80 us |
+| CPU | Rich text | subpixel rgb | 1136 | 1 | 1.98 us | 3927.44 us |
+| CPU | Multi-script text | grayscale | 1488 | 4 | 2.76 us | 933.67 us |
+| CPU | Multi-script text | subpixel rgb | 1488 | 4 | 2.83 us | 4510.95 us |
+| GL 4.4 (persistent mapped) | Text | grayscale | 4048 | 4 | 7.57 us | 90.15 us |
+| GL 4.4 (persistent mapped) | Text | subpixel rgb | 4048 | 4 | 7.51 us | 306.24 us |
+| GL 4.4 (persistent mapped) | Rich text | grayscale | 1136 | 1 | 1.96 us | 114.61 us |
+| GL 4.4 (persistent mapped) | Rich text | subpixel rgb | 1136 | 1 | 1.97 us | 251.82 us |
+| GL 4.4 (persistent mapped) | Multi-script text | grayscale | 1488 | 4 | 2.72 us | 91.19 us |
+| GL 4.4 (persistent mapped) | Multi-script text | subpixel rgb | 1488 | 4 | 2.75 us | 311.02 us |
+| Vulkan | Text | grayscale | 4048 | 4 | 7.51 us | 27.81 us |
+| Vulkan | Text | subpixel rgb | 4048 | 4 | 7.50 us | 87.86 us |
+| Vulkan | Rich text | grayscale | 1136 | 1 | 1.93 us | 30.71 us |
+| Vulkan | Rich text | subpixel rgb | 1136 | 1 | 1.94 us | 72.84 us |
+| Vulkan | Multi-script text | grayscale | 1488 | 4 | 2.74 us | 27.80 us |
+| Vulkan | Multi-script text | subpixel rgb | 1488 | 4 | 2.69 us | 74.01 us |
 
 ## Architecture
 
 ```
 src/
   snail/
-    root.zig             public API: TextAtlas, TextBlob, ResourceSet, DrawList, Renderer, Path, ...
+    root.zig             public API facade and domain-module exports
+    core.zig             shared public model and implementation glue
+    text.zig             text-domain public aliases
+    paint.zig            paint, gradient, image-paint public types
     fonts.zig            TextAtlas internals: multi-font manager with immutable snapshot atlas
     c_api.zig            C ABI over the explicit resource model
-    glyph_emit.zig       glyph -> vertex dispatch (plain, COLR, multi-layer)
+    glyph_emit.zig       glyph -> vertex dispatch (plain, COLR, painted, multi-layer)
+    paint_records.zig    shared paint-record encoding for text and vector draws
+    resource_key.zig     stable resource-key helpers
     font/                TrueType/OpenType/HarfBuzz text primitives
     math/                Bezier, vector, matrix, and root-solving primitives
     renderer/
@@ -871,7 +788,10 @@ src/
     profile/
       timer.zig          comptime-gated CPU timers
 include/
-  snail.h                public C header
+  snail.h                shared C API
+  snail_cpu.h            CPU backend C constructor
+  snail_gl.h             OpenGL backend C constructor
+  snail_vulkan.h         Vulkan backend C constructor and context type
 ```
 
 ## License

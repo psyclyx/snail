@@ -1,5 +1,65 @@
 # Changelog
 
+## 0.7.0 - 2026-05-14
+
+### Added
+
+- Text blobs can now use the full `Paint` union, including linear/radial
+  gradients and image paints, with the same paint-record path used by vector
+  draws.
+- The demo and benchmark suite now include a rich-text scene that exercises
+  mixed styles and painted text runs.
+- C callers now construct renderers through backend-specific headers:
+  `snail_cpu.h`, `snail_gl.h`, and `snail_vulkan.h`. The C API exposes CPU
+  renderer construction/rebuffering, explicit GL/Vulkan constructors, and
+  generated backend constants/handles.
+- Nix packaging is split into `nix/snail.nix` for the library and
+  `nix/snail-demo.nix` for the interactive demo, both wired through
+  `callPackage` and sharing backend option handling.
+- The interactive demo can cycle the enabled CPU/OpenGL/Vulkan renderers at
+  runtime while sharing one Wayland window.
+
+### Changed
+
+- The Zig public surface is now organized as a small facade in `root.zig` with
+  domain modules (`text`, `paint`, `scene`, `resources`, `render`, `coverage`,
+  etc.) and top-level aliases retained for existing callers.
+- Backend build options were cleaned up. OpenGL, Vulkan, CPU rendering,
+  HarfBuzz, and the C API are enabled by default; backend-disabled
+  combinations are covered by CI.
+- Renderer handles now carry an explicit backend kind and borrowed backend
+  state. Scheduled uploads use explicit completion tokens instead of implicit
+  backend synchronization.
+- Text coverage hooks are backend-neutral through `CoverageShader`,
+  `CoverageBackend`, and typed GL/Vulkan coverage programs; legacy text
+  coverage aliases still point at the new names.
+- Resource upload staging now separates persistent and scratch allocation more
+  consistently, and fixed upload slot limits were removed.
+- The legacy generic C renderer constructor was removed; include the desired
+  backend header and call that backend's constructor instead.
+
+### Fixed
+
+- Gradient and image paint coordinates for text draws now map correctly, and
+  text paint records route through the backend paint path instead of the solid
+  text-only shader path.
+- `TextBlob.rebound` now keeps rebound storage persistent across atlas
+  extension.
+- The demo no longer unmaps the shared Wayland window when switching to the CPU
+  renderer.
+- Backend staging lists now use caller-provided upload scratch storage instead
+  of longer-lived allocation.
+
+### Docs and tooling
+
+- README benchmarks were deduplicated and refreshed from `zig build bench` on
+  the documented machine.
+- README API and architecture docs were refreshed for the facade/domain-module
+  split and backend-specific C constructors.
+- CI now checks generated C API sync, default/no-HarfBuzz/backend-disabled
+  builds, demo builds, backend pixel comparison, and Nix library/demo
+  derivations.
+
 ## 0.6.1 - 2026-05-13
 
 ### Fixed

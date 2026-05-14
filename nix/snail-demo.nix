@@ -11,7 +11,7 @@
 , wayland-protocols
 , src ? ../.
 , pname ? "snail-demo"
-, version ? "0.6.1"
+, version ? "0.7.0"
 , enableOpenGL ? true
 , enableVulkan ? true
 , enableCpu ? true
