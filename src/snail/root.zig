@@ -4642,7 +4642,7 @@ pub const ResourceUploadPlan = struct {
 };
 
 pub const PendingResourceUpload = struct {
-    renderer: *Renderer,
+    renderer: Renderer,
     allocator: std.mem.Allocator,
     plan: ResourceUploadPlan,
     prepared: ?PreparedResources = null,
@@ -4661,7 +4661,7 @@ pub const PendingResourceUpload = struct {
                 const vk_state: *vulkan_pipeline.VulkanPipeline = @ptrCast(@alignCast(self.renderer.ptr));
                 vk_state.beginResourceUploadRecording(cmd);
                 defer vk_state.endResourceUploadRecording();
-                self.prepared = try uploadPreparedResources(self.renderer, self.plan.set, self.allocator);
+                self.prepared = try uploadPreparedResources(&self.renderer, self.plan.set, self.allocator);
                 self.external_completion_required = true;
                 self.ready_to_publish = false;
                 return;
@@ -5548,7 +5548,7 @@ pub const Renderer = struct {
     }
 
     pub fn beginResourceUpload(self: *Renderer, allocator: std.mem.Allocator, plan: ResourceUploadPlan) !PendingResourceUpload {
-        return .{ .renderer = self, .allocator = allocator, .plan = plan };
+        return .{ .renderer = self.*, .allocator = allocator, .plan = plan };
     }
 
     /// Execute prebuilt draw records. This never discovers, uploads, allocates,
@@ -6407,7 +6407,7 @@ test "pending upload publish waits for external completion marker" {
     const plan = try renderer.planResourceUpload(null, &set, &changed_keys);
 
     var pending = PendingResourceUpload{
-        .renderer = &renderer,
+        .renderer = renderer,
         .plan = plan,
         .allocator = allocator,
         .prepared = try renderer.uploadResourcesBlocking(allocator, &set),
@@ -6421,6 +6421,10 @@ test "pending upload publish waits for external completion marker" {
     var prepared = try pending.publish();
     defer prepared.deinit();
     try std.testing.expect(prepared.stampForKey(.hud_panel) != null);
+}
+
+test "pending upload stores renderer handle by value" {
+    try std.testing.expectEqual(Renderer, @TypeOf(@as(PendingResourceUpload, undefined).renderer));
 }
 
 test "prepared resource retirement queue is caller-owned" {

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.1 - 2026-05-13
+
+### Fixed
+
+- `PendingResourceUpload` now stores the erased renderer handle by value
+  instead of keeping a pointer to a temporary wrapper. Typed GL and Vulkan
+  `beginResourceUpload` callers no longer risk stale vtable reads that could
+  make resource uploads fail with `error.UnsupportedRenderer`.
+
 ## 0.6.0 - 2026-05-12
 
 ### Fixed
