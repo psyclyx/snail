@@ -485,7 +485,7 @@ pub const Image = struct {
 
 const PreparedImageView = struct {
     image: *const Image,
-    layer: u16 = 0,
+    layer: u32 = 0,
     uv_scale: Vec2 = .{ .x = 1.0, .y = 1.0 },
 };
 
@@ -4950,33 +4950,60 @@ fn resourceEntryUploadBytes(entry: ResourceSet.Entry) usize {
     };
 }
 
-fn addUniqueImage(images: *[upload_common.MAX_IMAGES]*const Image, image_count: *usize, image: *const Image) !void {
-    for (images[0..image_count.*]) |existing| {
-        if (existing == image) return;
+fn entryPaintImageRecords(entry: ResourceSet.Entry) ?[]const ?Atlas.PaintImageRecord {
+    return switch (entry) {
+        .text_paint => |text| text.blob.paint_image_records,
+        .path_picture => |path| path.picture.atlas.paint_image_records,
+        else => null,
+    };
+}
+
+fn entryReferencesImage(entry: ResourceSet.Entry, image: *const Image) bool {
+    switch (entry) {
+        .image => |entry_image| if (entry_image.image == image) return true,
+        else => {},
     }
-    if (image_count.* >= images.len) return error.TooManyImages;
-    images[image_count.*] = image;
-    image_count.* += 1;
-}
-
-fn addPathPaintImages(images: *[upload_common.MAX_IMAGES]*const Image, image_count: *usize, atlas: *const Atlas) !void {
-    const records = atlas.paint_image_records orelse return;
-    try addPaintRecordImages(images, image_count, records);
-}
-
-fn addTextPaintImages(images: *[upload_common.MAX_IMAGES]*const Image, image_count: *usize, blob: *const TextBlob) !void {
-    const records = blob.paint_image_records orelse return;
-    try addPaintRecordImages(images, image_count, records);
-}
-
-fn addPaintRecordImages(
-    images: *[upload_common.MAX_IMAGES]*const Image,
-    image_count: *usize,
-    records: []const ?Atlas.PaintImageRecord,
-) !void {
+    const records = entryPaintImageRecords(entry) orelse return false;
     for (records) |record| {
-        try addUniqueImage(images, image_count, (record orelse continue).image);
+        if ((record orelse continue).image == image) return true;
     }
+    return false;
+}
+
+fn entryReferencesImageBeforeRecord(entry: ResourceSet.Entry, image: *const Image, record_limit: usize) bool {
+    const records = entryPaintImageRecords(entry) orelse return false;
+    for (records[0..@min(record_limit, records.len)]) |record| {
+        if ((record orelse continue).image == image) return true;
+    }
+    return false;
+}
+
+fn resourceSetSawImageBefore(set: *const ResourceSet, entry_index: usize, record_index: ?usize, image: *const Image) bool {
+    const entries = set.slice();
+    for (entries[0..entry_index]) |entry| {
+        if (entryReferencesImage(entry, image)) return true;
+    }
+    if (record_index) |limit| {
+        return entryReferencesImageBeforeRecord(entries[entry_index], image, limit);
+    }
+    return false;
+}
+
+fn addImageFootprintIfFirst(
+    out: *ResourceFootprint,
+    set: *const ResourceSet,
+    entry_index: usize,
+    record_index: ?usize,
+    image: *const Image,
+    image_count: *usize,
+    max_image_width: *u32,
+    max_image_height: *u32,
+) void {
+    if (resourceSetSawImageBefore(set, entry_index, record_index, image)) return;
+    out.image_bytes_used += imageTextureBytes(image);
+    max_image_width.* = @max(max_image_width.*, image.width);
+    max_image_height.* = @max(max_image_height.*, image.height);
+    image_count.* += 1;
 }
 
 fn resourceSetUploadFootprint(set: *const ResourceSet) !ResourceFootprint {
@@ -4989,16 +5016,17 @@ fn resourceSetUploadFootprint(set: *const ResourceSet) !ResourceFootprint {
     var total_layer_info_rows: u32 = 0;
     var max_layer_info_width: u32 = 1;
 
-    var images: [upload_common.MAX_IMAGES]*const Image = undefined;
     var image_count: usize = 0;
+    var max_image_width: u32 = 1;
+    var max_image_height: u32 = 1;
 
-    for (set.slice()) |entry| {
+    for (set.slice(), 0..) |entry, entry_index| {
         switch (entry) {
             .text_atlas => |text| {
-                if (atlas_count >= upload_common.MAX_ATLASES) return error.TooManyAtlases;
                 atlas_count += 1;
                 const atlas = text.atlas;
-                total_layer_capacity += upload_common.atlasCapacityForMode(@intCast(atlas.pageCount()), text.atlas_capacity);
+                if (atlas.pageCount() > std.math.maxInt(u16)) return error.AtlasPageCountOverflow;
+                total_layer_capacity = try std.math.add(u32, total_layer_capacity, upload_common.atlasCapacityForMode(@intCast(atlas.pageCount()), text.atlas_capacity));
                 for (atlas.pageSlice()) |page_ref| {
                     if (first_page == null) first_page = page_ref;
                     out.curve_bytes_used += page_ref.curveTextureBytes();
@@ -5013,7 +5041,6 @@ fn resourceSetUploadFootprint(set: *const ResourceSet) !ResourceFootprint {
                 }
             },
             .text_paint => |text| {
-                if (atlas_count >= upload_common.MAX_ATLASES) return error.TooManyAtlases;
                 atlas_count += 1;
                 const blob = text.blob;
                 if (blob.paint_layer_info_data) |data| out.layer_info_bytes_used += data.len * @sizeOf(f32);
@@ -5021,13 +5048,17 @@ fn resourceSetUploadFootprint(set: *const ResourceSet) !ResourceFootprint {
                     total_layer_info_rows += blob.paint_layer_info_height;
                     max_layer_info_width = @max(max_layer_info_width, blob.paint_layer_info_width);
                 }
-                try addTextPaintImages(&images, &image_count, blob);
+                if (blob.paint_image_records) |records| {
+                    for (records, 0..) |record, record_index| {
+                        addImageFootprintIfFirst(&out, set, entry_index, record_index, (record orelse continue).image, &image_count, &max_image_width, &max_image_height);
+                    }
+                }
             },
             .path_picture => |path| {
-                if (atlas_count >= upload_common.MAX_ATLASES) return error.TooManyAtlases;
                 atlas_count += 1;
                 const atlas = &path.picture.atlas;
-                total_layer_capacity += upload_common.atlasCapacityForMode(@intCast(atlas.pageCount()), path.atlas_capacity);
+                if (atlas.pageCount() > std.math.maxInt(u16)) return error.AtlasPageCountOverflow;
+                total_layer_capacity = try std.math.add(u32, total_layer_capacity, upload_common.atlasCapacityForMode(@intCast(atlas.pageCount()), path.atlas_capacity));
                 for (0..atlas.pageCount()) |i| {
                     const page_ref = atlas.page(@intCast(i));
                     if (first_page == null) first_page = page_ref;
@@ -5041,9 +5072,13 @@ fn resourceSetUploadFootprint(set: *const ResourceSet) !ResourceFootprint {
                     total_layer_info_rows += atlas.layer_info_height;
                     max_layer_info_width = @max(max_layer_info_width, atlas.layer_info_width);
                 }
-                try addPathPaintImages(&images, &image_count, atlas);
+                if (atlas.paint_image_records) |records| {
+                    for (records, 0..) |record, record_index| {
+                        addImageFootprintIfFirst(&out, set, entry_index, record_index, (record orelse continue).image, &image_count, &max_image_width, &max_image_height);
+                    }
+                }
             },
-            .image => |image| try addUniqueImage(&images, &image_count, image.image),
+            .image => |image| addImageFootprintIfFirst(&out, set, entry_index, null, image.image, &image_count, &max_image_width, &max_image_height),
         }
     }
 
@@ -5064,14 +5099,8 @@ fn resourceSetUploadFootprint(set: *const ResourceSet) !ResourceFootprint {
             LAYER_INFO_TEXEL_BYTES;
     }
 
-    var max_image_width: u32 = 1;
-    var max_image_height: u32 = 1;
-    for (images[0..image_count]) |image| {
-        out.image_bytes_used += imageTextureBytes(image);
-        max_image_width = @max(max_image_width, image.width);
-        max_image_height = @max(max_image_height, image.height);
-    }
     if (image_count > 0) {
+        if (image_count > std.math.maxInt(u32)) return error.ImageLayerCountOverflow;
         out.image_bytes_allocated = @as(usize, upload_common.heightCapacity(max_image_width)) *
             @as(usize, upload_common.heightCapacity(max_image_height)) *
             @as(usize, upload_common.imageCapacity(@intCast(image_count))) *
@@ -5098,11 +5127,10 @@ fn uploadPreparedResources(renderer: *Renderer, set: *const ResourceSet, allocat
     };
     errdefer prepared.deinit();
 
-    if (atlas_count > upload_common.MAX_ATLASES) return error.TooManyAtlases;
-
     const upload_atlases = try scratch.alloc(*const Atlas, atlas_count);
     defer scratch.free(upload_atlases);
-    var atlas_capacity_modes: [upload_common.MAX_ATLASES]upload_common.AtlasCapacityMode = undefined;
+    const atlas_capacity_modes = try scratch.alloc(upload_common.AtlasCapacityMode, atlas_count);
+    defer scratch.free(atlas_capacity_modes);
     const atlas_views = try scratch.alloc(PreparedAtlasView, atlas_count);
     defer scratch.free(atlas_views);
 
@@ -5174,7 +5202,7 @@ fn uploadPreparedResources(renderer: *Renderer, set: *const ResourceSet, allocat
             const gl_state: *pipeline.GlTextState = @ptrCast(@alignCast(renderer.ptr));
             var gl_prepared = pipeline.PreparedResources{ .allocator = persistent, .backend = gl_state.backend };
             if (atlas_count > 0) try gl_prepared.uploadAtlasesWithCapacityModes(upload_atlases, atlas_capacity_modes[0..atlas_count], atlas_views);
-            if (image_count > 0) gl_prepared.uploadImages(upload_images, image_views);
+            if (image_count > 0) try gl_prepared.uploadImages(upload_images, image_views);
             prepared.gl = gl_prepared;
             break :blk true;
         }
@@ -5183,8 +5211,8 @@ fn uploadPreparedResources(renderer: *Renderer, set: *const ResourceSet, allocat
                 const vk_state: *vulkan_pipeline.VulkanPipeline = @ptrCast(@alignCast(renderer.ptr));
                 var vk_prepared = try vulkan_pipeline.PreparedResources.init(vk_state, persistent);
                 errdefer vk_prepared.deinit();
-                if (atlas_count > 0) vk_state.uploadPreparedAtlasesWithCapacityModes(&vk_prepared, upload_atlases, atlas_capacity_modes[0..atlas_count], atlas_views);
-                if (image_count > 0) vk_state.uploadPreparedImages(&vk_prepared, upload_images, image_views);
+                if (atlas_count > 0) try vk_state.uploadPreparedAtlasesWithCapacityModes(&vk_prepared, upload_atlases, atlas_capacity_modes[0..atlas_count], atlas_views);
+                if (image_count > 0) try vk_state.uploadPreparedImages(&vk_prepared, upload_images, image_views);
                 prepared.vulkan = vk_prepared;
                 break :blk true;
             }
@@ -6120,6 +6148,30 @@ test "ResourceSet footprint counts text image paint payloads" {
     const footprint = try set.estimateUploadFootprint();
     try std.testing.expectEqual(image.pixelSlice().len, footprint.image_bytes_used);
     try std.testing.expect(footprint.image_bytes_allocated >= footprint.image_bytes_used);
+}
+
+test "ResourceSet footprint image accounting has no fixed slot cap" {
+    const allocator = std.testing.allocator;
+    const image_count = 300;
+
+    var images: [image_count]Image = undefined;
+    var initialized: usize = 0;
+    defer {
+        for (images[0..initialized]) |*image| image.deinit();
+    }
+
+    var entries: [image_count]ResourceSet.Entry = undefined;
+    var set = ResourceSet.init(entries[0..]);
+    for (0..image_count) |i| {
+        const px = [_]u8{ @intCast(i % 251), 64, 32, 255 };
+        images[i] = try Image.initSrgba8(allocator, 1, 1, px[0..]);
+        initialized += 1;
+        try set.putImage(ResourceKey.fromId(@intCast(i + 1)), &images[i]);
+    }
+
+    const footprint = try set.estimateUploadFootprint();
+    try std.testing.expectEqual(@as(usize, image_count * 4), footprint.image_bytes_used);
+    try std.testing.expectEqual(@as(usize, image_count * 4), footprint.image_bytes_allocated);
 }
 
 test "DrawList estimate upper-bounds ranged text draw output" {
