@@ -936,7 +936,9 @@ export fn snail_text_blob_glyph_count(blob: *const TextBlobImpl) usize {
 }
 
 export fn snail_text_blob_rebind(blob: *TextBlobImpl, atlas: *const TextAtlasImpl) c_int {
-    blob.inner.rebind(&atlas.inner) catch |err| return mapError(err);
+    const rebound = blob.inner.rebound(blob.inner.allocator, &atlas.inner) catch |err| return mapError(err);
+    blob.inner.deinit();
+    blob.inner = rebound;
     return SNAIL_OK;
 }
 

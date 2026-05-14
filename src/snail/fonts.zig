@@ -190,19 +190,47 @@ pub const TextBlob = struct {
         };
     }
 
-    /// Move this blob to a compatible atlas snapshot without rebuilding its
-    /// glyph list. The new atlas must share the same font config, retain the
-    /// old pages as a prefix, and contain every glyph referenced by the blob.
-    pub fn rebind(self: *TextBlob, new_atlas: *const TextAtlas) !void {
+    fn validateRebindAtlas(self: *const TextBlob, new_atlas: *const TextAtlas) !void {
         if (!new_atlas.canRebindFrom(self.atlas)) return error.WrongTextAtlasSnapshot;
 
         for (self.glyphs) |glyph| {
             if (!new_atlas.hasPreparedGlyph(glyph.face_index, glyph.glyph_id)) return error.MissingPreparedGlyph;
         }
+    }
 
-        self.atlas = new_atlas;
-        self.atlas_identity = new_atlas.snapshotIdentity();
-        self.gpu_instance_budget = textBlobGpuInstanceBudgetForAtlas(new_atlas, self.glyphs);
+    /// Return a new blob bound to a compatible atlas snapshot without
+    /// rebuilding its glyph list. The new atlas must share the same font
+    /// config, retain the old pages as a prefix, and contain every glyph
+    /// referenced by the blob.
+    pub fn rebound(self: *const TextBlob, allocator: Allocator, new_atlas: *const TextAtlas) !TextBlob {
+        try self.validateRebindAtlas(new_atlas);
+
+        const glyphs = try allocator.dupe(Glyph, self.glyphs);
+        errdefer allocator.free(glyphs);
+
+        const paint_layer_info_data = if (self.paint_layer_info_data) |data|
+            try allocator.dupe(f32, data)
+        else
+            null;
+        errdefer if (paint_layer_info_data) |data| allocator.free(data);
+
+        const paint_image_records = if (self.paint_image_records) |records|
+            try allocator.dupe(?snail.lowlevel.CurveAtlas.PaintImageRecord, records)
+        else
+            null;
+        errdefer if (paint_image_records) |records| allocator.free(records);
+
+        return .{
+            .allocator = allocator,
+            .atlas = new_atlas,
+            .atlas_identity = new_atlas.snapshotIdentity(),
+            .glyphs = glyphs,
+            .paint_layer_info_data = paint_layer_info_data,
+            .paint_layer_info_width = self.paint_layer_info_width,
+            .paint_layer_info_height = self.paint_layer_info_height,
+            .paint_image_records = paint_image_records,
+            .gpu_instance_budget = textBlobGpuInstanceBudgetForAtlas(new_atlas, glyphs),
+        };
     }
 
     pub fn init(
@@ -662,10 +690,6 @@ pub const TextAtlas = struct {
     layer_info_width: u32 = 0,
     layer_info_height: u32 = 0,
 
-    // GPU handle state (set after upload).
-    layer_base: u16 = 0,
-    info_row_base: u16 = 0,
-
     pub fn init(allocator: Allocator, specs: []const FaceSpec) !TextAtlas {
         const config = try buildFontConfig(allocator, specs);
         errdefer config.release();
@@ -985,10 +1009,7 @@ pub const TextAtlas = struct {
         var missing = false;
         for (shaped.glyphs[range.start..range.end]) |glyph| {
             const fc = &self.config.faces[glyph.face_index];
-            const face_view = self.faceView(glyph.face_index, .{
-                .layer_base = self.layer_base,
-                .info_row_base = self.info_row_base,
-            });
+            const face_view = self.faceView(glyph.face_index, .{});
             if (!shapedGlyphAvailable(&face_view, glyph.glyph_id)) {
                 missing = true;
                 if (!allow_missing) return error.MissingPreparedGlyph;
@@ -2140,7 +2161,7 @@ test "TextAtlas.ensureGlyphs extends by resolved glyph id" {
     try testing.expectEqual(@as(?TextAtlas, null), try next.ensureGlyphs(0, &.{gid}));
 }
 
-test "TextBlob.rebind accepts atlas snapshots that retain referenced glyphs" {
+test "TextBlob.rebound accepts atlas snapshots that retain referenced glyphs" {
     const assets_data = @import("assets");
     var fonts = try TextAtlas.init(testing.allocator, &.{
         .{ .data = assets_data.noto_sans_regular },
@@ -2161,11 +2182,12 @@ test "TextBlob.rebind accepts atlas snapshots that retain referenced glyphs" {
     var next = (try fonts.ensureText(.{}, "B")).?;
     defer next.deinit();
 
-    try blob.rebind(&next);
-    try blob.validate();
+    var rebound = try blob.rebound(testing.allocator, &next);
+    defer rebound.deinit();
+    try rebound.validate();
 }
 
-test "TextBlob.rebind recomputes budget after ensureGlyphs" {
+test "TextBlob.rebound recomputes budget after ensureGlyphs" {
     const assets_data = @import("assets");
     var fonts = try TextAtlas.init(testing.allocator, &.{
         .{ .data = assets_data.noto_sans_regular },
@@ -2195,9 +2217,10 @@ test "TextBlob.rebind recomputes budget after ensureGlyphs" {
     var next = (try fonts.ensureGlyphs(0, &.{gid_b})).?;
     defer next.deinit();
 
-    try blob.rebind(&next);
-    try blob.validate();
-    try testing.expect(blob.gpu_instance_budget > 0);
+    var rebound = try blob.rebound(testing.allocator, &next);
+    defer rebound.deinit();
+    try rebound.validate();
+    try testing.expect(rebound.gpu_instance_budget > 0);
 }
 
 test "TextAtlas with multiple faces and fallback" {
