@@ -74,17 +74,20 @@ zig build run-game-demo                         # 3D scene with HUD + world-spac
 zig build screenshot                            # 2D demo offscreen → zig-out/demo-screenshot.tga
 zig build backend-compare                       # CPU/GL parity; add -Dvulkan=true for GL/Vulkan consistency
 zig build bench                                 # benchmarks; add -Dvulkan=true for Vulkan rows
-zig build install --release=fast                # install libsnail + include/snail.h
+zig build install --release=fast                # install libsnail + enabled C headers
+zig build check-c-api                           # verify checked-in generated C API files
+zig build gen-c-api                             # regenerate checked-in generated C API files
 ```
 
 Library backend flags:
 
-- `-Dopengl=true` (default) — OpenGL backend (`GlRenderer` and the C API today require this).
-- `-Dvulkan=false` (default) — pass `=true` to enable the Vulkan backend; selecting `-Drenderer=vulkan` enables it for the demo. SPIR-V shaders are compiled at build time via `glslc`.
+- `-Dopengl=true` (default) — OpenGL backend (`GlRenderer`); installs `snail_gl.h` when the C API is enabled.
+- `-Dvulkan=false` (default) — pass `=true` to enable the Vulkan backend; selecting `-Drenderer=vulkan` enables it for the demo. SPIR-V shaders are compiled at build time via `glslc`; installs `snail_vulkan.h` when the C API is enabled. That extension header includes Vulkan headers.
 - `-Dcpu-renderer=true` (default) — pass `=false` to drop `CpuRenderer`.
 - `-Dharfbuzz=true` (default) — pass `=false` for a HarfBuzz-free build using the built-in GSUB type 4 / GPOS type 2 shaper.
 - `-Dprofile=false` (default) — pass `=true` to enable the comptime CPU timers.
 - `-Dc-api=true` (default) — pass `=false` for a Zig-module-only build (skips `libsnail.{a,so}` and the header install).
+- `-Dc-api-shared=true` / `-Dc-api-static=true` (default to `-Dc-api`) — pass either `=false` to install only the library form you need.
 
 The checked-in screenshot at `assets/demo_screenshot.png` is regenerated from the `zig build screenshot` TGA output.
 
@@ -212,7 +215,7 @@ const snail_dep = b.dependency("snail", .{
 exe.root_module.addImport("snail", snail_dep.module("snail"));
 ```
 
-The dependency module links OpenGL and HarfBuzz by default. On NixOS/nix-shell, these are provided automatically; on other systems, install the development packages for your distro.
+The default dependency module links OpenGL and HarfBuzz. Workspace builds that import `snail/build.zig` directly can call `moduleWithOptions` to enable/disable OpenGL, Vulkan, CPU rendering, and HarfBuzz explicitly. On NixOS/nix-shell, system libraries are provided automatically; on other systems, install the development packages for your distro.
 
 ## Example: Zig
 
@@ -335,7 +338,7 @@ try scene.addPath(.{ .picture = &picture });
 
 ## Example: C
 
-> **Note:** The C renderer entry point currently targets OpenGL and requires an active OpenGL context. Error checks are omitted here for brevity.
+> **Note:** This example uses the OpenGL C backend and requires an active OpenGL context. Vulkan callers include `snail_vulkan.h` and provide a `SnailVulkanContext`. Error checks are omitted here for brevity.
 
 ```c
 #include "snail.h"
@@ -707,7 +710,7 @@ snail is used in development but is not yet stable. The Zig API is settling and 
 - Built-in OpenType shaping covers GSUB type 4 (ligatures) and GPOS type 2 (pair positioning) only; complex scripts (Arabic, Devanagari, Thai, etc.) require building with `-Dharfbuzz=true`.
 - TrueType outlines only — no CFF/CFF2.
 - No variable fonts.
-- The C API exposes the unified `SnailRenderer` (currently OpenGL-backed) and the blocking `snail_renderer_upload_resources_blocking` upload path. Vulkan and the Zig-side scheduled upload (`planResourceUpload` / `beginResourceUpload` / `pending.publish`) are not yet exposed to C callers.
+- The C API exposes backend constructors for OpenGL (`snail_gl.h`) and Vulkan (`snail_vulkan.h`) plus the unified `SnailRenderer` blocking upload/draw path. Zig-side scheduled upload (`planResourceUpload` / `beginResourceUpload` / `pending.publish`) is not yet exposed to C callers.
 
 ## Benchmarks
 

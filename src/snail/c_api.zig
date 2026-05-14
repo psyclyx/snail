@@ -319,12 +319,13 @@ const PreparedResourcesImpl = struct { inner: snail.PreparedResources };
 const PreparedSceneImpl = struct { inner: snail.PreparedScene };
 const RendererImpl = struct {
     backend: snail.BackendKind,
-    gl: ?snail.GlRenderer = null,
+    gl: if (build_options.enable_opengl) ?snail.GlRenderer else void = if (build_options.enable_opengl) null else {},
     vulkan: if (build_options.enable_vulkan) ?snail.VulkanRenderer else void = if (build_options.enable_vulkan) null else {},
 
     fn asRenderer(self: *RendererImpl) snail.Renderer {
         return switch (self.backend) {
             .gl => blk: {
+                if (comptime !build_options.enable_opengl) unreachable;
                 if (self.gl) |*gl| break :blk gl.asRenderer();
                 unreachable;
             },
@@ -339,7 +340,9 @@ const RendererImpl = struct {
 
     fn deinit(self: *RendererImpl) void {
         switch (self.backend) {
-            .gl => if (self.gl) |*gl| gl.deinit(),
+            .gl => if (comptime build_options.enable_opengl) {
+                if (self.gl) |*gl| gl.deinit();
+            },
             .vulkan => if (comptime build_options.enable_vulkan) {
                 if (self.vulkan) |*vk_renderer| vk_renderer.deinit();
             },
@@ -350,7 +353,10 @@ const RendererImpl = struct {
 
     fn backendName(self: *const RendererImpl) []const u8 {
         return switch (self.backend) {
-            .gl => self.gl.?.backendName(),
+            .gl => if (comptime build_options.enable_opengl)
+                self.gl.?.backendName()
+            else
+                "OpenGL (disabled)",
             .vulkan => if (comptime build_options.enable_vulkan)
                 self.vulkan.?.backendName()
             else
@@ -1394,15 +1400,19 @@ export fn snail_prepared_scene_segment_count(scene: *const PreparedSceneImpl) us
 // Renderer
 
 export fn snail_gl_renderer_init(out: *?*RendererImpl) c_int {
-    const gl = snail.GlRenderer.init(handleAllocator()) catch return SNAIL_ERR_RENDERER_FAILED;
-    const impl = handleAllocator().create(RendererImpl) catch {
-        var doomed = gl;
-        doomed.deinit();
-        return SNAIL_ERR_OUT_OF_MEMORY;
-    };
-    impl.* = .{ .backend = .gl, .gl = gl };
-    out.* = impl;
-    return SNAIL_OK;
+    if (comptime build_options.enable_opengl) {
+        const gl = snail.GlRenderer.init(handleAllocator()) catch return SNAIL_ERR_RENDERER_FAILED;
+        const impl = handleAllocator().create(RendererImpl) catch {
+            var doomed = gl;
+            doomed.deinit();
+            return SNAIL_ERR_OUT_OF_MEMORY;
+        };
+        impl.* = .{ .backend = .gl, .gl = gl };
+        out.* = impl;
+        return SNAIL_OK;
+    } else {
+        return SNAIL_ERR_RENDERER_FAILED;
+    }
 }
 
 export fn snail_vulkan_available() bool {

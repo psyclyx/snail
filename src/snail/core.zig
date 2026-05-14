@@ -18,7 +18,14 @@ const band_tex = @import("renderer/band_texture.zig");
 const vertex_mod = @import("renderer/vertex.zig");
 const upload_common = @import("renderer/upload_common.zig");
 const roots = @import("math/roots.zig");
-const pipeline = @import("renderer/gl.zig");
+const pipeline = if (build_options.enable_opengl) @import("renderer/gl.zig") else struct {
+    pub const TextCoverageBindings = struct {};
+    pub const GlTextState = void;
+    pub const PreparedResources = void;
+    pub const text_vertex_interface = "";
+    pub const text_coverage_fragment_interface = "";
+    pub const text_coverage_fragment_body = "";
+};
 const cpu_renderer_mod = if (build_options.enable_cpu) @import("renderer/cpu.zig") else struct {
     pub const CpuRenderer = void;
 };
@@ -70,7 +77,7 @@ pub const CellMetrics = fonts_mod.CellMetrics;
 pub const CellMetricsOptions = fonts_mod.CellMetricsOptions;
 pub const TextBlobBuilder = fonts_mod.TextBlobBuilder;
 pub const FaceSpec = fonts_mod.FaceSpec;
-pub const GlCoverageBindings = pipeline.TextCoverageBindings;
+pub const GlCoverageBindings = if (build_options.enable_opengl) pipeline.TextCoverageBindings else struct {};
 pub const VulkanCoverageBindings = if (build_options.enable_vulkan) vulkan_pipeline.TextCoverageBindings else struct {};
 
 pub const CoverageBindings = union(BackendKind) {
@@ -269,7 +276,7 @@ pub const TextCoverageRecords = struct {
     }
 };
 
-pub const GlCoverageBackend = struct {
+pub const GlCoverageBackend = if (build_options.enable_opengl) struct {
     gl: *pipeline.GlTextState,
     gl_resources: *const pipeline.PreparedResources,
     prepared: *const PreparedResources,
@@ -298,7 +305,7 @@ pub const GlCoverageBackend = struct {
     pub fn bind(self: GlCoverageBackend, bindings: GlCoverageBindings) void {
         self.bindResources(bindings);
     }
-};
+} else struct {};
 
 pub const VulkanCoverageBackend = if (build_options.enable_vulkan) struct {
     vk: *vulkan_pipeline.VulkanPipeline,
@@ -343,7 +350,7 @@ pub const CoverageBackend = union(BackendKind) {
 
     pub fn bindResources(self: CoverageBackend, bindings: CoverageBindings) void {
         switch (self) {
-            .gl => |backend| backend.bindResources(bindings.gl),
+            .gl => |backend| if (comptime build_options.enable_opengl) backend.bindResources(bindings.gl),
             .vulkan => |backend| if (comptime build_options.enable_vulkan) {
                 backend.bindResources(bindings.vulkan);
             },
@@ -353,7 +360,7 @@ pub const CoverageBackend = union(BackendKind) {
 
     pub fn drawCoverage(self: CoverageBackend, coverage: *const TextCoverageRecords) void {
         switch (self) {
-            .gl => |backend| backend.drawCoverage(coverage),
+            .gl => |backend| if (comptime build_options.enable_opengl) backend.drawCoverage(coverage),
             .vulkan => |backend| if (comptime build_options.enable_vulkan) backend.drawCoverage(coverage),
             .cpu => {},
         }
@@ -361,7 +368,7 @@ pub const CoverageBackend = union(BackendKind) {
 
     pub fn drawVertices(self: CoverageBackend, vertices: []const u32) void {
         switch (self) {
-            .gl => |backend| backend.drawVertices(vertices),
+            .gl => |backend| if (comptime build_options.enable_opengl) backend.drawVertices(vertices),
             .vulkan => |backend| if (comptime build_options.enable_vulkan) backend.drawVertices(vertices),
             .cpu => {},
         }
@@ -4165,7 +4172,7 @@ pub const PreparedResources = struct {
     atlases: []PreparedAtlasResource = &.{},
     layer_infos: []PreparedLayerInfoResource = &.{},
     images: []PreparedImageResource = &.{},
-    gl: ?pipeline.PreparedResources = null,
+    gl: if (build_options.enable_opengl) ?pipeline.PreparedResources else void = if (build_options.enable_opengl) null else {},
     vulkan: if (build_options.enable_vulkan) ?vulkan_pipeline.PreparedResources else void = if (build_options.enable_vulkan) null else {},
     cpu: if (build_options.enable_cpu) ?cpu_renderer_mod.PreparedResources else void = if (build_options.enable_cpu) null else {},
 
@@ -4201,7 +4208,9 @@ pub const PreparedResources = struct {
     };
 
     pub fn deinit(self: *PreparedResources) void {
-        if (self.gl) |*gl_resources| gl_resources.deinit();
+        if (comptime build_options.enable_opengl) {
+            if (self.gl) |*gl_resources| gl_resources.deinit();
+        }
         if (comptime build_options.enable_vulkan) {
             if (self.vulkan) |*vk_resources| vk_resources.deinit();
         }
@@ -4238,12 +4247,14 @@ pub const PreparedResources = struct {
 
     pub fn textCoverageBackend(self: *const PreparedResources, renderer: *Renderer) ?TextCoverageBackend {
         switch (renderer.backend()) {
-            .gl => if (self.gl) |*gl_resources| {
-                return .{ .gl = .{
-                    .gl = @ptrCast(@alignCast(renderer.ptr)),
-                    .gl_resources = gl_resources,
-                    .prepared = self,
-                } };
+            .gl => if (comptime build_options.enable_opengl) {
+                if (self.gl) |*gl_resources| {
+                    return .{ .gl = .{
+                        .gl = @ptrCast(@alignCast(renderer.ptr)),
+                        .gl_resources = gl_resources,
+                        .prepared = self,
+                    } };
+                }
             },
             .vulkan => if (comptime build_options.enable_vulkan) {
                 if (self.vulkan) |*vk_resources| {
@@ -5227,13 +5238,15 @@ fn uploadPreparedResources(renderer: *Renderer, set: *const ResourceSet, allocat
     }
 
     const uploaded = blk: {
-        if (renderer.backend() == .gl) {
-            const gl_state: *pipeline.GlTextState = @ptrCast(@alignCast(renderer.ptr));
-            var gl_prepared = pipeline.PreparedResources{ .allocator = persistent, .backend = gl_state.backend };
-            if (atlas_count > 0 or layer_info_count > 0) try gl_prepared.uploadAtlasesAndLayerInfoWithCapacityModes(scratch, upload_atlases, atlas_capacity_modes[0..atlas_count], atlas_views, upload_layer_infos, layer_info_views);
-            if (image_count > 0) try gl_prepared.uploadImages(scratch, upload_images, image_views);
-            prepared.gl = gl_prepared;
-            break :blk true;
+        if (comptime build_options.enable_opengl) {
+            if (renderer.backend() == .gl) {
+                const gl_state: *pipeline.GlTextState = @ptrCast(@alignCast(renderer.ptr));
+                var gl_prepared = pipeline.PreparedResources{ .allocator = persistent, .backend = gl_state.backend };
+                if (atlas_count > 0 or layer_info_count > 0) try gl_prepared.uploadAtlasesAndLayerInfoWithCapacityModes(scratch, upload_atlases, atlas_capacity_modes[0..atlas_count], atlas_views, upload_layer_infos, layer_info_views);
+                if (image_count > 0) try gl_prepared.uploadImages(scratch, upload_images, image_views);
+                prepared.gl = gl_prepared;
+                break :blk true;
+            }
         }
         if (comptime build_options.enable_vulkan) {
             if (renderer.backend() == .vulkan) {
@@ -5317,7 +5330,7 @@ pub const Renderer = struct {
                         cast(ptr).drawTextPrepared(typed, verts, mvp, vw, vh, texture_layer_base);
                         return;
                     }
-                    if (comptime T == pipeline.GlTextState and @hasDecl(T, "drawTextPrepared")) {
+                    if (comptime build_options.enable_opengl and T == pipeline.GlTextState and @hasDecl(T, "drawTextPrepared")) {
                         const typed: *const pipeline.PreparedResources = @ptrCast(@alignCast(backend_prepared));
                         cast(ptr).drawTextPrepared(typed, verts, mvp, vw, vh, texture_layer_base);
                         return;
@@ -5337,7 +5350,7 @@ pub const Renderer = struct {
                         cast(ptr).drawPathsPrepared(typed, verts, mvp, vw, vh, texture_layer_base);
                         return;
                     }
-                    if (comptime T == pipeline.GlTextState and @hasDecl(T, "drawPathsPrepared")) {
+                    if (comptime build_options.enable_opengl and T == pipeline.GlTextState and @hasDecl(T, "drawPathsPrepared")) {
                         const typed: *const pipeline.PreparedResources = @ptrCast(@alignCast(backend_prepared));
                         cast(ptr).drawPathsPrepared(typed, verts, mvp, vw, vh, texture_layer_base);
                         return;
@@ -5385,7 +5398,7 @@ pub const Renderer = struct {
             // missing. Backends that don't carry typed prepared state
             // (currently none) can compile down to `null`.
             fn resolveBackendPrepared(prepared: *const PreparedResources) ?*const anyopaque {
-                if (comptime T == pipeline.GlTextState) {
+                if (comptime build_options.enable_opengl and T == pipeline.GlTextState) {
                     if (prepared.gl) |*gl_prepared| return @ptrCast(gl_prepared);
                     return null;
                 }
@@ -5434,9 +5447,61 @@ pub const Renderer = struct {
         };
     }
 
-    const gl_borrowed_vtable = ImplVTable(pipeline.GlTextState, false, .gl);
-    const vulkan_borrowed_vtable = ImplVTable(vulkan_pipeline.VulkanPipeline, false, .vulkan);
-    const cpu_vtable = ImplVTable(CpuRenderer, false, .cpu);
+    fn DisabledVTable(comptime backend_kind: BackendKind) VTable {
+        const S = struct {
+            fn deinitFn(_: *anyopaque) void {}
+            fn drawFn(_: *Renderer, _: *const PreparedResources, _: DrawRecords, _: DrawOptions) anyerror!void {
+                return error.UnsupportedRenderer;
+            }
+            fn drawTextFn(_: *anyopaque, _: ?*const anyopaque, _: []const u32, _: Mat4, _: f32, _: f32, _: u32) void {}
+            fn drawPathsFn(_: *anyopaque, _: ?*const anyopaque, _: []const u32, _: Mat4, _: f32, _: f32, _: u32) void {}
+            fn beginFrameFn(_: *anyopaque) void {}
+            fn setSubpixelOrderFn(_: *anyopaque, _: SubpixelOrder) void {}
+            fn getSubpixelOrderFn(_: *anyopaque) SubpixelOrder {
+                return .none;
+            }
+            fn setFillRuleFn(_: *anyopaque, _: FillRule) void {}
+            fn getFillRuleFn(_: *anyopaque) FillRule {
+                return .non_zero;
+            }
+            fn setTargetEncodingFn(_: *anyopaque, _: TargetEncoding) void {}
+            fn getTargetEncodingFn(_: *anyopaque) TargetEncoding {
+                return .srgb;
+            }
+            fn setCoverageTransferFn(_: *anyopaque, _: CoverageTransfer) void {}
+            fn getCoverageTransferFn(_: *anyopaque) CoverageTransfer {
+                return .identity;
+            }
+            fn backendNameFn(_: *anyopaque) []const u8 {
+                return switch (backend_kind) {
+                    .gl => "OpenGL (disabled)",
+                    .vulkan => "Vulkan (disabled)",
+                    .cpu => "CPU (disabled)",
+                };
+            }
+        };
+        return .{
+            .backend = backend_kind,
+            .deinit = &S.deinitFn,
+            .draw = &S.drawFn,
+            .drawText = &S.drawTextFn,
+            .drawPaths = &S.drawPathsFn,
+            .beginFrame = &S.beginFrameFn,
+            .setSubpixelOrder = &S.setSubpixelOrderFn,
+            .getSubpixelOrder = &S.getSubpixelOrderFn,
+            .setFillRule = &S.setFillRuleFn,
+            .getFillRule = &S.getFillRuleFn,
+            .setTargetEncoding = &S.setTargetEncodingFn,
+            .getTargetEncoding = &S.getTargetEncodingFn,
+            .setCoverageTransfer = &S.setCoverageTransferFn,
+            .getCoverageTransfer = &S.getCoverageTransferFn,
+            .backendName = &S.backendNameFn,
+        };
+    }
+
+    const gl_borrowed_vtable = if (build_options.enable_opengl) ImplVTable(pipeline.GlTextState, false, .gl) else DisabledVTable(.gl);
+    const vulkan_borrowed_vtable = if (build_options.enable_vulkan) ImplVTable(vulkan_pipeline.VulkanPipeline, false, .vulkan) else DisabledVTable(.vulkan);
+    const cpu_vtable = if (build_options.enable_cpu) ImplVTable(CpuRenderer, false, .cpu) else DisabledVTable(.cpu);
 
     /// Blocking upload for simple programs. GL requires the target context to
     /// be current. CPU upload builds cheap views. Vulkan does not perform an
@@ -5582,11 +5647,13 @@ pub const Renderer = struct {
 /// methods are thin shims over `Renderer` for callers that want to stay
 /// strongly typed. `textCoverageBackend` is the only method that requires the
 /// typed handle. Use `asRenderer()` to pass to backend-agnostic code.
-pub const GlRenderer = struct {
+pub const GlRenderer = if (build_options.enable_opengl) struct {
+    const Self = @This();
+
     allocator: std.mem.Allocator,
     state: *pipeline.GlTextState,
 
-    pub fn init(allocator: std.mem.Allocator) !GlRenderer {
+    pub fn init(allocator: std.mem.Allocator) !Self {
         const text = try allocator.create(pipeline.GlTextState);
         text.* = .{};
         errdefer allocator.destroy(text);
@@ -5594,52 +5661,52 @@ pub const GlRenderer = struct {
         return .{ .allocator = allocator, .state = text };
     }
 
-    pub fn deinit(self: *GlRenderer) void {
+    pub fn deinit(self: *Self) void {
         self.state.deinit();
         self.allocator.destroy(self.state);
         self.* = undefined;
     }
 
-    pub fn asRenderer(self: *GlRenderer) Renderer {
+    pub fn asRenderer(self: *Self) Renderer {
         return .{ .ptr = @ptrCast(self.state), .vtable = &Renderer.gl_borrowed_vtable };
     }
 
-    pub fn uploadResourcesBlocking(self: *GlRenderer, allocators: UploadAllocators, set: *const ResourceSet) !PreparedResources {
+    pub fn uploadResourcesBlocking(self: *Self, allocators: UploadAllocators, set: *const ResourceSet) !PreparedResources {
         var renderer = self.asRenderer();
         return renderer.uploadResourcesBlocking(allocators, set);
     }
 
-    pub fn planResourceUpload(self: *GlRenderer, current: ?*const PreparedResources, next_set: *const ResourceSet, changed_keys: []ResourceKey) !ResourceUploadPlan {
+    pub fn planResourceUpload(self: *Self, current: ?*const PreparedResources, next_set: *const ResourceSet, changed_keys: []ResourceKey) !ResourceUploadPlan {
         var renderer = self.asRenderer();
         return renderer.planResourceUpload(current, next_set, changed_keys);
     }
 
-    pub fn beginResourceUpload(self: *GlRenderer, allocators: UploadAllocators, plan: ResourceUploadPlan) !PendingResourceUpload {
+    pub fn beginResourceUpload(self: *Self, allocators: UploadAllocators, plan: ResourceUploadPlan) !PendingResourceUpload {
         var renderer = self.asRenderer();
         return renderer.beginResourceUpload(allocators, plan);
     }
 
-    pub fn draw(self: *GlRenderer, prepared: *const PreparedResources, records: DrawRecords, options: DrawOptions) !void {
+    pub fn draw(self: *Self, prepared: *const PreparedResources, records: DrawRecords, options: DrawOptions) !void {
         var renderer = self.asRenderer();
         try renderer.draw(prepared, records, options);
     }
 
-    pub fn drawPrepared(self: *GlRenderer, prepared: *const PreparedResources, scene: *const PreparedScene, options: DrawOptions) !void {
+    pub fn drawPrepared(self: *Self, prepared: *const PreparedResources, scene: *const PreparedScene, options: DrawOptions) !void {
         var renderer = self.asRenderer();
         try renderer.drawPrepared(prepared, scene, options);
     }
 
-    pub fn textCoverageBackend(self: *GlRenderer, prepared: *const PreparedResources) ?TextCoverageBackend {
+    pub fn textCoverageBackend(self: *Self, prepared: *const PreparedResources) ?TextCoverageBackend {
         if (prepared.gl) |*gl_resources| {
             return .{ .gl = .{ .gl = self.state, .gl_resources = gl_resources, .prepared = prepared } };
         }
         return null;
     }
 
-    pub fn backendName(self: *const GlRenderer) []const u8 {
+    pub fn backendName(self: *const Self) []const u8 {
         return self.state.backendName();
     }
-};
+} else void;
 
 /// Typed handle for the Vulkan backend.
 ///
@@ -5727,7 +5794,7 @@ pub const ASCII_PRINTABLE = blk: {
 /// invariants here are not stable across minor releases.
 pub const lowlevel = struct {
     pub const bezier = @import("math/bezier.zig");
-    pub const gl = @import("renderer/gl_bindings.zig").gl;
+    pub const gl = if (build_options.enable_opengl) @import("renderer/gl_bindings.zig").gl else struct {};
     pub const curve_tex = @import("renderer/curve_texture.zig");
     pub const ttf = @import("font/ttf.zig");
     pub const vertex = @import("renderer/vertex.zig");
@@ -5810,6 +5877,8 @@ fn testRectPicture(allocator: std.mem.Allocator, x: f32) !PathPicture {
 }
 
 test "draw with missing prepared resources fails" {
+    if (comptime !build_options.enable_cpu) return error.SkipZigTest;
+
     const allocator = std.testing.allocator;
     const width: u32 = 4;
     const height: u32 = 4;
@@ -6071,6 +6140,8 @@ test "TextBlob validation catches wrong atlas snapshot" {
 }
 
 test "ResourceSet discovers and draws text paint resources" {
+    if (comptime !build_options.enable_cpu) return error.SkipZigTest;
+
     const assets_data = @import("assets");
     const allocator = std.testing.allocator;
 
@@ -6201,6 +6272,8 @@ test "ResourceSet footprint image accounting has no fixed slot cap" {
 }
 
 test "DrawList estimate upper-bounds ranged text draw output" {
+    if (comptime !build_options.enable_cpu) return error.SkipZigTest;
+
     const assets_data = @import("assets");
     const allocator = std.testing.allocator;
 
@@ -6288,6 +6361,8 @@ test "DrawList estimate upper-bounds ranged text draw output" {
 }
 
 test "replacing path-picture key does not invalidate unrelated text coverage records" {
+    if (comptime !build_options.enable_cpu) return error.SkipZigTest;
+
     const assets_data = @import("assets");
     const allocator = std.testing.allocator;
 
@@ -6344,6 +6419,8 @@ test "replacing path-picture key does not invalidate unrelated text coverage rec
 }
 
 test "draw rejects stale records when a resource key is replaced" {
+    if (comptime !build_options.enable_cpu) return error.SkipZigTest;
+
     const allocator = std.testing.allocator;
 
     var picture_a = try testRectPicture(allocator, 0);
@@ -6394,6 +6471,8 @@ test "draw rejects stale records when a resource key is replaced" {
 }
 
 test "resource upload plan reports changed keys and enforces budget" {
+    if (comptime !build_options.enable_cpu) return error.SkipZigTest;
+
     const allocator = std.testing.allocator;
 
     var picture_a = try testRectPicture(allocator, 0);
@@ -6450,6 +6529,8 @@ test "resource upload plan reports changed keys and enforces budget" {
 }
 
 test "pending upload publish waits for external completion marker" {
+    if (comptime !build_options.enable_cpu) return error.SkipZigTest;
+
     const allocator = std.testing.allocator;
 
     var picture = try testRectPicture(allocator, 0);
@@ -6493,6 +6574,8 @@ test "pending upload stores renderer handle by value" {
 }
 
 test "prepared resource retirement queue is caller-owned" {
+    if (comptime !build_options.enable_cpu) return error.SkipZigTest;
+
     const allocator = std.testing.allocator;
 
     var picture = try testRectPicture(allocator, 0);
@@ -6520,6 +6603,8 @@ test "prepared resource retirement queue is caller-owned" {
 }
 
 test "CPU draw uses prepared resource views" {
+    if (comptime !build_options.enable_cpu) return error.SkipZigTest;
+
     const allocator = std.testing.allocator;
 
     var picture = try testRectPicture(allocator, 0);
