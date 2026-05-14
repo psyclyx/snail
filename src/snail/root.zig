@@ -116,4 +116,5 @@ pub const lowlevel = core.lowlevel;
 
 test {
     _ = core;
+    _ = @import("core_path_tests.zig");
 }
