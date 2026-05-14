@@ -11,6 +11,7 @@ const snail = @import("root.zig");
 const ttf = @import("font/ttf.zig");
 const opentype = @import("font/opentype.zig");
 const glyph_emit = @import("glyph_emit.zig");
+const paint_records = @import("paint_records.zig");
 const build_options = @import("build_options");
 const harfbuzz = if (build_options.enable_harfbuzz) @import("font/harfbuzz.zig") else struct {
     pub const HarfBuzzShaper = void;
@@ -91,6 +92,14 @@ fn preparedViewInfoRowBase(view: anytype) u32 {
     };
 }
 
+fn preparedViewPaintInfoRowBase(view: anytype) u32 {
+    const T = @TypeOf(view);
+    return switch (@typeInfo(T)) {
+        .@"struct" => if (@hasField(T, "paint_info_row_base")) view.paint_info_row_base else 0,
+        else => 0,
+    };
+}
+
 pub const ShapedText = struct {
     allocator: Allocator,
     atlas_identity: u64,
@@ -124,6 +133,10 @@ pub const TextBlob = struct {
     atlas: *const TextAtlas,
     atlas_identity: u64,
     glyphs: []Glyph,
+    paint_layer_info_data: ?[]f32 = null,
+    paint_layer_info_width: u32 = 0,
+    paint_layer_info_height: u32 = 0,
+    paint_image_records: ?[]?snail.lowlevel.CurveAtlas.PaintImageRecord = null,
     /// Upper bound on GPU vertex-output instances this blob will emit
     /// (counts COLR layer fan-out and synthetic-bold duplication). Used to
     /// size scratch buffers in `DrawList.estimate`.
@@ -135,10 +148,13 @@ pub const TextBlob = struct {
         transform: snail.Transform2D,
         embolden: f32,
         color: [4]f32,
+        paint_record_index: ?u32 = null,
     };
 
     pub fn deinit(self: *TextBlob) void {
         self.allocator.free(self.glyphs);
+        if (self.paint_layer_info_data) |data| self.allocator.free(data);
+        if (self.paint_image_records) |records| self.allocator.free(records);
         self.* = undefined;
     }
 
@@ -152,6 +168,43 @@ pub const TextBlob = struct {
 
     pub fn validate(self: *const TextBlob) !void {
         try self.validateExact();
+    }
+
+    pub fn hasPaintRecords(self: *const TextBlob) bool {
+        return self.paint_layer_info_data != null;
+    }
+
+    fn paintRecordLoc(self: *const TextBlob, record_index: u32) struct { x: u16, y: u16 } {
+        const texel_offset = record_index * paint_records.texels_per_record;
+        return .{
+            .x = @intCast(texel_offset % self.paint_layer_info_width),
+            .y = @intCast(texel_offset / self.paint_layer_info_width),
+        };
+    }
+
+    /// Low-level: create a temporary `CurveAtlas` wrapper for paint records
+    /// attached to this text blob. Most callers should let `ResourceSet.addScene`
+    /// discover and upload this through the renderer resource path.
+    pub fn uploadPaintAtlas(self: *const TextBlob) snail.lowlevel.CurveAtlas {
+        return .{
+            .allocator = self.allocator,
+            .font = null,
+            .pages = &.{},
+            .glyph_map = .init(self.allocator),
+            .shaper = null,
+            .layer_info_data = self.paint_layer_info_data,
+            .layer_info_width = self.paint_layer_info_width,
+            .layer_info_height = self.paint_layer_info_height,
+            .paint_image_records = self.paint_image_records,
+        };
+    }
+
+    /// Clean up a wrapper Atlas from `uploadPaintAtlas()`.
+    pub fn deinitUploadPaintAtlas(_: *const TextBlob, wrapper: *snail.lowlevel.CurveAtlas) void {
+        wrapper.glyph_map.deinit();
+        wrapper.pages = &.{};
+        wrapper.layer_info_data = null;
+        wrapper.paint_image_records = null;
     }
 
     /// Move this blob to a compatible atlas snapshot without rebuilding its
@@ -199,6 +252,7 @@ pub fn appendTextDrawIntoBatch(
     if (override_index >= draw.instances.len) return error.InvalidOverrideIndex;
     const override = draw.instances[override_index];
     const has_outer_transform = !isIdentityTransform(override.transform);
+    const paint_info_row_base = preparedViewPaintInfoRowBase(view);
 
     var count: usize = 0;
     var glyph_index = start;
@@ -216,12 +270,17 @@ pub fn appendTextDrawIntoBatch(
         if (has_outer_transform) {
             final_transform = snail.Transform2D.multiply(override.transform, final_transform);
         }
-        switch (glyph_emit.emitGlyphWithTransformTinted(batch, &face_view, glyph.glyph_id, glyph.color, override.tint, final_transform)) {
-            .emitted => count += 1,
-            .skipped => {},
-            .buffer_full => return error.DrawListFull,
-            .layer_window_changed => break,
-            .invalid_transform => return error.InvalidTransform,
+        if (glyph.paint_record_index) |record_index| {
+            try emitPaintedBlobGlyph(batch, blob, &face_view, glyph.glyph_id, record_index, paint_info_row_base, override.tint, final_transform);
+            count += 1;
+        } else {
+            switch (glyph_emit.emitGlyphWithTransformTinted(batch, &face_view, glyph.glyph_id, glyph.color, override.tint, final_transform)) {
+                .emitted => count += 1,
+                .skipped => {},
+                .buffer_full => return error.DrawListFull,
+                .layer_window_changed => break,
+                .invalid_transform => return error.InvalidTransform,
+            }
         }
 
         if (glyph.embolden != 0) {
@@ -230,11 +289,15 @@ pub fn appendTextDrawIntoBatch(
             if (has_outer_transform) {
                 bold_transform = snail.Transform2D.multiply(override.transform, bold_transform);
             }
-            switch (glyph_emit.emitGlyphWithTransformTinted(batch, &face_view, glyph.glyph_id, glyph.color, override.tint, bold_transform)) {
-                .emitted, .skipped => {},
-                .buffer_full => return error.DrawListFull,
-                .layer_window_changed => return error.GlyphSpansTextureLayerWindows,
-                .invalid_transform => return error.InvalidTransform,
+            if (glyph.paint_record_index) |record_index| {
+                try emitPaintedBlobGlyph(batch, blob, &face_view, glyph.glyph_id, record_index, paint_info_row_base, override.tint, bold_transform);
+            } else {
+                switch (glyph_emit.emitGlyphWithTransformTinted(batch, &face_view, glyph.glyph_id, glyph.color, override.tint, bold_transform)) {
+                    .emitted, .skipped => {},
+                    .buffer_full => return error.DrawListFull,
+                    .layer_window_changed => return error.GlyphSpansTextureLayerWindows,
+                    .invalid_transform => return error.InvalidTransform,
+                }
             }
         }
     }
@@ -244,6 +307,33 @@ pub fn appendTextDrawIntoBatch(
         .completed = glyph_index >= range.end,
         .layer_window_base = batch.currentLayerWindowBase(),
     };
+}
+
+fn emitPaintedBlobGlyph(
+    batch: *TextBatch,
+    blob: *const TextBlob,
+    face_view: *const FaceView,
+    glyph_id: u16,
+    record_index: u32,
+    paint_info_row_base: u32,
+    tint: [4]f32,
+    transform: snail.Transform2D,
+) !void {
+    const info = face_view.getGlyph(glyph_id) orelse return;
+    if (info.band_entry.h_band_count == 0 or info.band_entry.v_band_count == 0) return;
+    const loc = blob.paintRecordLoc(record_index);
+    const info_y = paint_info_row_base + loc.y;
+    if (info_y > std.math.maxInt(u16)) return error.LayerInfoLimitExceeded;
+    try batch.addColrGlyphTransformedTinted(
+        info.bbox,
+        loc.x,
+        @intCast(info_y),
+        1,
+        .{ 1, 1, 1, 1 },
+        tint,
+        face_view.glyphLayer(info.page_index),
+        transform,
+    );
 }
 
 fn textBlobGlyphLayerWindowBase(view: *const FaceView, glyph_id: u16) !?u32 {
@@ -276,7 +366,13 @@ pub const TextBlobBuilder = struct {
     allocator: Allocator,
     atlas: *const TextAtlas,
     glyphs: std.ArrayListUnmanaged(TextBlob.Glyph) = .empty,
+    paint_records: std.ArrayListUnmanaged(PendingPaintRecord) = .empty,
     gpu_instance_budget: usize = 0,
+
+    const PendingPaintRecord = struct {
+        band_entry: band_tex.GlyphBandEntry,
+        paint: snail.Paint,
+    };
 
     pub fn init(allocator: Allocator, atlas: *const TextAtlas) TextBlobBuilder {
         return .{
@@ -287,11 +383,13 @@ pub const TextBlobBuilder = struct {
 
     pub fn deinit(self: *TextBlobBuilder) void {
         self.glyphs.deinit(self.allocator);
+        self.paint_records.deinit(self.allocator);
         self.* = undefined;
     }
 
     pub fn reset(self: *TextBlobBuilder) void {
         self.glyphs.clearRetainingCapacity();
+        self.paint_records.clearRetainingCapacity();
         self.gpu_instance_budget = 0;
     }
 
@@ -301,6 +399,10 @@ pub const TextBlobBuilder = struct {
 
     pub fn finish(self: *TextBlobBuilder) !TextBlob {
         const owned = try self.glyphs.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(owned);
+        const paint_info = try self.finishPaintRecords();
+        errdefer if (paint_info.data) |data| self.allocator.free(data);
+        errdefer if (paint_info.image_records) |records| self.allocator.free(records);
         const gpu_instance_budget = self.gpu_instance_budget;
         self.glyphs = .empty;
         self.gpu_instance_budget = 0;
@@ -309,12 +411,66 @@ pub const TextBlobBuilder = struct {
             .atlas = self.atlas,
             .atlas_identity = self.atlas.snapshotIdentity(),
             .glyphs = owned,
+            .paint_layer_info_data = paint_info.data,
+            .paint_layer_info_width = paint_info.width,
+            .paint_layer_info_height = paint_info.height,
+            .paint_image_records = paint_info.image_records,
             .gpu_instance_budget = gpu_instance_budget,
         };
     }
 
     pub fn append(self: *TextBlobBuilder, text_append: TextAppend) !TextAppendResult {
         return self.atlas.appendShapedTextBlob(self, text_append, true);
+    }
+
+    const FinishedPaintRecords = struct {
+        data: ?[]f32 = null,
+        width: u32 = 0,
+        height: u32 = 0,
+        image_records: ?[]?snail.lowlevel.CurveAtlas.PaintImageRecord = null,
+    };
+
+    fn finishPaintRecords(self: *TextBlobBuilder) !FinishedPaintRecords {
+        const count = self.paint_records.items.len;
+        if (count == 0) return .{};
+
+        const texel_count: u32 = @intCast(count * paint_records.texels_per_record);
+        const width = paint_records.infoWidth(texel_count);
+        const height = @max(@as(u32, 1), (texel_count + width - 1) / width);
+        const data = try self.allocator.alloc(f32, @as(usize, width) * @as(usize, height) * 4);
+        errdefer self.allocator.free(data);
+        @memset(data, 0);
+
+        const image_records = try self.allocator.alloc(?snail.lowlevel.CurveAtlas.PaintImageRecord, count);
+        errdefer self.allocator.free(image_records);
+        @memset(image_records, null);
+        var has_image_paints = false;
+
+        for (self.paint_records.items, 0..) |record, i| {
+            const texel_offset: u32 = @intCast(i * paint_records.texels_per_record);
+            paint_records.write(data, width, texel_offset, record.band_entry, record.paint);
+            switch (record.paint) {
+                .image => |image_paint| {
+                    image_records[i] = .{
+                        .image = image_paint.image,
+                        .texel_offset = texel_offset,
+                    };
+                    has_image_paints = true;
+                },
+                else => {},
+            }
+        }
+        self.paint_records.clearRetainingCapacity();
+
+        return .{
+            .data = data,
+            .width = width,
+            .height = height,
+            .image_records = if (has_image_paints) image_records else blk: {
+                self.allocator.free(image_records);
+                break :blk null;
+            },
+        };
     }
 };
 
@@ -790,7 +946,6 @@ pub const TextAtlas = struct {
         std.debug.assert(builder.atlas == self);
         const shaped = append.shaped;
         if (shaped.config != self.config) return error.WrongTextAtlasSnapshot;
-        const color = try textFillColor(append.fill);
         const range = append.glyphs.resolve(shaped.glyphs.len);
         const pen_origin = shapedPenAt(shaped, range.start);
 
@@ -811,6 +966,7 @@ pub const TextAtlas = struct {
             }
             const x = append.placement.baseline.x + (glyph.x_offset - pen_origin.x) * append.placement.em;
             const y = append.placement.baseline.y + (glyph.y_offset - pen_origin.y) * append.placement.em;
+            const paint = try appendBlobGlyphPaint(builder, &face_view, glyph.glyph_id, append.fill);
             try appendBlobGlyph(
                 builder,
                 glyph.face_index,
@@ -819,7 +975,8 @@ pub const TextAtlas = struct {
                 x,
                 y,
                 append.placement.em,
-                color,
+                paint.color,
+                paint.record_index,
                 fc.synthetic,
             );
         }
@@ -1522,6 +1679,37 @@ fn scaleAdvance(advance: snail.Vec2, em: f32) snail.Vec2 {
     return .{ .x = advance.x * em, .y = advance.y * em };
 }
 
+const BlobGlyphPaint = struct {
+    color: [4]f32,
+    record_index: ?u32 = null,
+};
+
+fn appendBlobGlyphPaint(
+    builder: *TextBlobBuilder,
+    face_view: *const FaceView,
+    glyph_id: u16,
+    fill: snail.Paint,
+) !BlobGlyphPaint {
+    return switch (fill) {
+        .solid => |color| .{ .color = color },
+        else => blk: {
+            const info = face_view.getGlyph(glyph_id) orelse {
+                if (glyph_id == 0) break :blk .{ .color = .{ 1, 1, 1, 1 } };
+                return error.UnsupportedTextPaint;
+            };
+            if (info.band_entry.h_band_count == 0 or info.band_entry.v_band_count == 0) {
+                break :blk .{ .color = .{ 1, 1, 1, 1 } };
+            }
+            const index: u32 = @intCast(builder.paint_records.items.len);
+            try builder.paint_records.append(builder.allocator, .{
+                .band_entry = info.band_entry,
+                .paint = fill,
+            });
+            break :blk .{ .color = .{ 1, 1, 1, 1 }, .record_index = index };
+        },
+    };
+}
+
 fn appendBlobGlyph(
     builder: *TextBlobBuilder,
     face_index: FaceIndex,
@@ -1531,6 +1719,7 @@ fn appendBlobGlyph(
     y: f32,
     font_size: f32,
     color: [4]f32,
+    paint_record_index: ?u32,
     synthetic: snail.SyntheticStyle,
 ) !void {
     try builder.glyphs.append(builder.allocator, .{
@@ -1539,6 +1728,7 @@ fn appendBlobGlyph(
         .transform = glyphPlacementTransform(x, y, font_size, synthetic.skew_x),
         .embolden = synthetic.embolden,
         .color = color,
+        .paint_record_index = paint_record_index,
     });
     builder.gpu_instance_budget += glyphInstanceBudget(face_view, glyph_id);
     if (synthetic.embolden != 0 and glyph_id != 0) {
@@ -1828,7 +2018,7 @@ test "TextBlobBuilder.append can style shaped glyph ranges independently" {
     try testing.expectApproxEqAbs(10 + first.advance.x, blob.glyphs[1].transform.tx, 0.001);
 }
 
-test "TextBlobBuilder.append rejects non-solid text paint until text paint records exist" {
+test "TextBlobBuilder.append stores gradient paint records" {
     const assets_data = @import("assets");
     var fonts = try TextAtlas.init(testing.allocator, &.{
         .{ .data = assets_data.noto_sans_regular },
@@ -1846,7 +2036,7 @@ test "TextBlobBuilder.append rejects non-solid text paint until text paint recor
     var builder = TextBlobBuilder.init(testing.allocator, &fonts);
     defer builder.deinit();
 
-    try testing.expectError(error.UnsupportedTextPaint, builder.append(.{
+    _ = try builder.append(.{
         .shaped = &shaped,
         .placement = .{ .baseline = .{ .x = 0, .y = 20 }, .em = 16 },
         .fill = .{ .linear_gradient = .{
@@ -1855,8 +2045,60 @@ test "TextBlobBuilder.append rejects non-solid text paint until text paint recor
             .start_color = .{ 1, 0, 0, 1 },
             .end_color = .{ 0, 0, 1, 1 },
         } },
-    }));
-    try testing.expectEqual(@as(usize, 0), builder.glyphCount());
+    });
+    try testing.expectEqual(@as(usize, 1), builder.glyphCount());
+
+    var blob = try builder.finish();
+    defer blob.deinit();
+    try testing.expect(blob.hasPaintRecords());
+    try testing.expectEqual(@as(?u32, 0), blob.glyphs[0].paint_record_index);
+    try testing.expectEqual([4]f32{ 1, 1, 1, 1 }, blob.glyphs[0].color);
+    try testing.expectEqual(@as(u32, paint_records.texels_per_record), blob.paint_layer_info_width);
+    try testing.expectEqual(@as(u32, 1), blob.paint_layer_info_height);
+
+    const loc = blob.paintRecordLoc(0);
+    try testing.expectEqual(@as(u16, 0), loc.x);
+    try testing.expectEqual(@as(u16, 0), loc.y);
+    const tag = paint_records.readTexel(blob.paint_layer_info_data.?, blob.paint_layer_info_width, 0)[3];
+    try testing.expectApproxEqAbs(paint_records.tag_linear_gradient, tag, 0.001);
+    try testing.expect(blob.paint_image_records == null);
+}
+
+test "TextBlobBuilder.append stores image paint records" {
+    const assets_data = @import("assets");
+    var image = try snail.Image.initSrgba8(testing.allocator, 1, 1, &.{ 255, 64, 32, 255 });
+    defer image.deinit();
+    var fonts = try TextAtlas.init(testing.allocator, &.{
+        .{ .data = assets_data.noto_sans_regular },
+    });
+    defer fonts.deinit();
+
+    if (try fonts.ensureText(.{}, "A")) |next| {
+        fonts.deinit();
+        fonts = next;
+    }
+
+    var shaped = try fonts.shapeText(testing.allocator, .{}, "A");
+    defer shaped.deinit();
+
+    var builder = TextBlobBuilder.init(testing.allocator, &fonts);
+    defer builder.deinit();
+
+    _ = try builder.append(.{
+        .shaped = &shaped,
+        .placement = .{ .baseline = .{ .x = 0, .y = 20 }, .em = 16 },
+        .fill = .{ .image = .{ .image = &image } },
+    });
+
+    var blob = try builder.finish();
+    defer blob.deinit();
+    try testing.expect(blob.hasPaintRecords());
+    const records = blob.paint_image_records orelse return error.TestExpectedEqual;
+    try testing.expectEqual(@as(usize, 1), records.len);
+    try testing.expect(records[0].?.image == &image);
+    try testing.expectEqual(@as(u32, 0), records[0].?.texel_offset);
+    const tag = paint_records.readTexel(blob.paint_layer_info_data.?, blob.paint_layer_info_width, 0)[3];
+    try testing.expectApproxEqAbs(paint_records.tag_image, tag, 0.001);
 }
 
 test "TextAtlas.lineMetrics returns primary face metrics" {

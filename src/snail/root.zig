@@ -124,6 +124,7 @@ pub const ShapedText = fonts_mod.ShapedText;
 const PreparedTextAtlasView = struct {
     layer_base: u32 = 0,
     info_row_base: u32 = 0,
+    paint_info_row_base: u32 = 0,
 };
 pub const TextBlob = fonts_mod.TextBlob;
 pub const TextPlacement = fonts_mod.TextPlacement;
@@ -199,6 +200,8 @@ pub const TextCoverageRecords = struct {
     len: usize = 0,
     atlas: ?*const TextAtlas = null,
     atlas_stamp: ResourceStamp = .{},
+    paint_blob: ?*const TextBlob = null,
+    paint_stamp: ResourceStamp = .{},
 
     pub fn wordCapacityForBlob(blob: *const TextBlob) usize {
         return blob.gpu_instance_budget * TEXT_WORDS_PER_GLYPH;
@@ -212,6 +215,8 @@ pub const TextCoverageRecords = struct {
         self.len = 0;
         self.atlas = null;
         self.atlas_stamp = .{};
+        self.paint_blob = null;
+        self.paint_stamp = .{};
     }
 
     pub fn glyphCount(self: *const TextCoverageRecords) usize {
@@ -229,7 +234,11 @@ pub const TextCoverageRecords = struct {
         options: TextCoverageOptions,
     ) !void {
         self.reset();
-        const atlas_view = try prepared.textAtlasView(blob.atlas);
+        var atlas_view = try prepared.textAtlasView(blob.atlas);
+        if (blob.hasPaintRecords()) {
+            const paint_view = try prepared.textPaintView(blob);
+            atlas_view.paint_info_row_base = paint_view.info_row_base;
+        }
 
         var batch = TextBatch.init(self.buffer);
         const overrides = [_]Override{.{ .transform = options.transform }};
@@ -244,6 +253,10 @@ pub const TextCoverageRecords = struct {
         self.len = batch.slice().len;
         self.atlas = blob.atlas;
         self.atlas_stamp = stamp;
+        if (blob.hasPaintRecords()) {
+            self.paint_blob = blob;
+            self.paint_stamp = try prepared.textPaintStamp(blob);
+        }
     }
 
     pub fn rebuildLocal(
@@ -258,7 +271,12 @@ pub const TextCoverageRecords = struct {
     pub fn validFor(self: *const TextCoverageRecords, prepared: *const PreparedResources) bool {
         const atlas = self.atlas orelse return false;
         const stamp = prepared.textStamp(atlas) catch return false;
-        return self.atlas_stamp.eql(stamp);
+        if (!self.atlas_stamp.eql(stamp)) return false;
+        if (self.paint_blob) |blob| {
+            const paint_stamp = prepared.textPaintStamp(blob) catch return false;
+            if (!self.paint_stamp.eql(paint_stamp)) return false;
+        }
+        return true;
     }
 };
 
@@ -3986,6 +4004,7 @@ pub const ResourceSet = struct {
 
     pub const Entry = union(enum) {
         text_atlas: TextAtlasEntry,
+        text_paint: TextPaintEntry,
         path_picture: PathPictureEntry,
         image: ImageEntry,
     };
@@ -4000,6 +4019,11 @@ pub const ResourceSet = struct {
         key: ResourceKey,
         picture: *const PathPicture,
         atlas_capacity: ResourceCapacityMode = .exact,
+    };
+
+    pub const TextPaintEntry = struct {
+        key: ResourceKey,
+        blob: *const TextBlob,
     };
 
     pub const ImageEntry = struct {
@@ -4058,10 +4082,18 @@ pub const ResourceSet = struct {
     pub fn addScene(self: *ResourceSet, scene: *const Scene) !void {
         for (scene.commands.items) |command| {
             switch (command) {
-                .text => |text| try self.put(.{ .text_atlas = .{
-                    .key = pointerResourceKey("scene.text_atlas", text.blob.atlas),
-                    .atlas = text.blob.atlas,
-                } }),
+                .text => |text| {
+                    try self.put(.{ .text_atlas = .{
+                        .key = pointerResourceKey("scene.text_atlas", text.blob.atlas),
+                        .atlas = text.blob.atlas,
+                    } });
+                    if (text.blob.hasPaintRecords()) {
+                        try self.put(.{ .text_paint = .{
+                            .key = pointerResourceKey("scene.text_paint", text.blob),
+                            .blob = text.blob,
+                        } });
+                    }
+                },
                 .path => |path| try self.put(.{ .path_picture = .{
                     .key = pointerResourceKey("scene.path_picture", path.picture),
                     .picture = path.picture,
@@ -4086,6 +4118,7 @@ pub const ResourceSet = struct {
     fn entryKey(entry: Entry) ResourceKey {
         return switch (entry) {
             .text_atlas => |text| text.key,
+            .text_paint => |text| text.key,
             .path_picture => |path| path.key,
             .image => |image| image.key,
         };
@@ -4115,6 +4148,7 @@ pub const PreparedResources = struct {
 
     const PreparedAtlasKind = enum {
         text,
+        text_paint,
         path,
     };
 
@@ -4122,6 +4156,7 @@ pub const PreparedResources = struct {
         key: ResourceKey,
         kind: PreparedAtlasKind,
         text_atlas: ?*const TextAtlas = null,
+        text_blob: ?*const TextBlob = null,
         picture: ?*const PathPicture = null,
         atlas: *const Atlas,
         wrapper: Atlas = undefined,
@@ -4146,7 +4181,11 @@ pub const PreparedResources = struct {
             if (self.cpu) |*cpu_resources| cpu_resources.deinit();
         }
         for (self.atlases) |*entry| {
-            if (entry.owns_wrapper) entry.text_atlas.?.deinitUploadAtlas(&entry.wrapper);
+            if (entry.owns_wrapper) switch (entry.kind) {
+                .text => entry.text_atlas.?.deinitUploadAtlas(&entry.wrapper),
+                .text_paint => entry.text_blob.?.deinitUploadPaintAtlas(&entry.wrapper),
+                .path => {},
+            };
         }
         if (self.atlases.len > 0) self.allocator.free(self.atlases);
         if (self.images.len > 0) self.allocator.free(self.images);
@@ -4188,6 +4227,13 @@ pub const PreparedResources = struct {
         return null;
     }
 
+    fn textPaintEntry(self: *const PreparedResources, blob: *const TextBlob) ?*const PreparedAtlasResource {
+        for (self.atlases) |*entry| {
+            if (entry.kind == .text_paint and entry.text_blob == blob) return entry;
+        }
+        return null;
+    }
+
     fn pathPictureEntry(self: *const PreparedResources, picture: *const PathPicture) ?*const PreparedAtlasResource {
         for (self.atlases) |*entry| {
             if (entry.kind == .path and entry.picture == picture) return entry;
@@ -4203,6 +4249,11 @@ pub const PreparedResources = struct {
         };
     }
 
+    fn textPaintView(self: *const PreparedResources, blob: *const TextBlob) !PreparedAtlasView {
+        const entry = self.textPaintEntry(blob) orelse return error.MissingPreparedResource;
+        return entry.view;
+    }
+
     fn pathAtlasView(self: *const PreparedResources, picture: *const PathPicture) !PreparedAtlasView {
         const entry = self.pathPictureEntry(picture) orelse return error.MissingPreparedResource;
         return entry.view;
@@ -4210,6 +4261,10 @@ pub const PreparedResources = struct {
 
     fn textStamp(self: *const PreparedResources, atlas: *const TextAtlas) !ResourceStamp {
         return (self.textAtlasEntry(atlas) orelse return error.MissingPreparedResource).stamp;
+    }
+
+    fn textPaintStamp(self: *const PreparedResources, blob: *const TextBlob) !ResourceStamp {
+        return (self.textPaintEntry(blob) orelse return error.MissingPreparedResource).stamp;
     }
 
     fn pathStamp(self: *const PreparedResources, picture: *const PathPicture) !ResourceStamp {
@@ -4558,7 +4613,15 @@ pub const DrawList = struct {
         for (scene.commands.items) |command| {
             switch (command) {
                 .text => |draw| {
-                    const view = try prepared.textAtlasView(draw.blob.atlas);
+                    var view = try prepared.textAtlasView(draw.blob.atlas);
+                    const segment_key, const segment_stamp = if (draw.blob.hasPaintRecords()) blk: {
+                        const paint_entry = prepared.textPaintEntry(draw.blob) orelse return error.MissingPreparedResource;
+                        view.paint_info_row_base = paint_entry.view.info_row_base;
+                        break :blk .{ paint_entry.key, try prepared.textPaintStamp(draw.blob) };
+                    } else blk: {
+                        const atlas_entry = prepared.textAtlasEntry(draw.blob.atlas) orelse return error.MissingPreparedResource;
+                        break :blk .{ atlas_entry.key, try prepared.textStamp(draw.blob.atlas) };
+                    };
                     const glyph_range = draw.glyphs.resolve(draw.blob.glyphCount());
                     for (draw.instances, 0..) |_, override_index| {
                         var glyph_start = glyph_range.start;
@@ -4577,8 +4640,8 @@ pub const DrawList = struct {
                                 .offset = start,
                                 .len = batch.slice().len,
                                 .texture_layer_base = result.layer_window_base,
-                                .key = prepared.textAtlasEntry(draw.blob.atlas).?.key,
-                                .resource_stamp = try prepared.textStamp(draw.blob.atlas),
+                                .key = segment_key,
+                                .resource_stamp = segment_stamp,
                                 .target_stamp = target_stamp,
                             });
                             if (result.completed) break;
@@ -4677,6 +4740,30 @@ fn textAtlasStamp(atlas: *const TextAtlas) ResourceStamp {
     }
     return .{
         .identity = atlas.snapshotIdentity(),
+        .layout = layout,
+        .content = content,
+    };
+}
+
+fn textPaintStamp(blob: *const TextBlob) ResourceStamp {
+    const atlas_stamp = textAtlasStamp(blob.atlas);
+    var layout = mix64(atlas_stamp.layout, blob.paint_layer_info_width);
+    layout = mix64(layout, blob.paint_layer_info_height);
+    var content = atlas_stamp.content;
+    if (blob.paint_layer_info_data) |data| {
+        content = mix64(content, std.hash.Wyhash.hash(0x544558545041494e, std.mem.sliceAsBytes(data)));
+    }
+    if (blob.paint_image_records) |records| {
+        for (records) |record| {
+            const image = (record orelse continue).image;
+            const stamp = imageStamp(image);
+            content = mix64(content, stamp.identity);
+            content = mix64(content, stamp.layout);
+            content = mix64(content, stamp.content);
+        }
+    }
+    return .{
+        .identity = mix64(@intCast(@intFromPtr(blob)), atlas_stamp.identity),
         .layout = layout,
         .content = content,
     };
@@ -4818,9 +4905,22 @@ fn textAtlasUploadBytes(atlas: *const TextAtlas) usize {
     return total;
 }
 
+fn textPaintUploadBytes(blob: *const TextBlob) usize {
+    var total: usize = 0;
+    if (blob.paint_layer_info_data) |data| total += data.len * @sizeOf(f32);
+    if (blob.paint_image_records) |records| {
+        for (records) |record| {
+            const image = (record orelse continue).image;
+            total += image.pixelSlice().len;
+        }
+    }
+    return total;
+}
+
 fn resourceEntryKey(entry: ResourceSet.Entry) ResourceKey {
     return switch (entry) {
         .text_atlas => |text| text.key,
+        .text_paint => |text| text.key,
         .path_picture => |path| path.key,
         .image => |image| image.key,
     };
@@ -4829,6 +4929,7 @@ fn resourceEntryKey(entry: ResourceSet.Entry) ResourceKey {
 fn resourceEntryStamp(entry: ResourceSet.Entry) ResourceStamp {
     return switch (entry) {
         .text_atlas => |text| textAtlasStamp(text.atlas),
+        .text_paint => |text| textPaintStamp(text.blob),
         .path_picture => |path| pathPictureStamp(path.picture),
         .image => |image| imageStamp(image.image),
     };
@@ -4837,6 +4938,7 @@ fn resourceEntryStamp(entry: ResourceSet.Entry) ResourceStamp {
 fn resourceEntryUploadBytes(entry: ResourceSet.Entry) usize {
     return switch (entry) {
         .text_atlas => |text| textAtlasUploadBytes(text.atlas),
+        .text_paint => |text| textPaintUploadBytes(text.blob),
         .path_picture => |path| curveAtlasUploadBytes(&path.picture.atlas),
         .image => |image| image.image.pixelSlice().len,
     };
@@ -4853,6 +4955,19 @@ fn addUniqueImage(images: *[upload_common.MAX_IMAGES]*const Image, image_count: 
 
 fn addPathPaintImages(images: *[upload_common.MAX_IMAGES]*const Image, image_count: *usize, atlas: *const Atlas) !void {
     const records = atlas.paint_image_records orelse return;
+    try addPaintRecordImages(images, image_count, records);
+}
+
+fn addTextPaintImages(images: *[upload_common.MAX_IMAGES]*const Image, image_count: *usize, blob: *const TextBlob) !void {
+    const records = blob.paint_image_records orelse return;
+    try addPaintRecordImages(images, image_count, records);
+}
+
+fn addPaintRecordImages(
+    images: *[upload_common.MAX_IMAGES]*const Image,
+    image_count: *usize,
+    records: []const ?Atlas.PaintImageRecord,
+) !void {
     for (records) |record| {
         try addUniqueImage(images, image_count, (record orelse continue).image);
     }
@@ -4890,6 +5005,17 @@ fn resourceSetUploadFootprint(set: *const ResourceSet) !ResourceFootprint {
                     total_layer_info_rows += atlas.layer_info_height;
                     max_layer_info_width = @max(max_layer_info_width, atlas.layer_info_width);
                 }
+            },
+            .text_paint => |text| {
+                if (atlas_count >= upload_common.MAX_ATLASES) return error.TooManyAtlases;
+                atlas_count += 1;
+                const blob = text.blob;
+                if (blob.paint_layer_info_data) |data| out.layer_info_bytes_used += data.len * @sizeOf(f32);
+                if (blob.paint_layer_info_height > 0) {
+                    total_layer_info_rows += blob.paint_layer_info_height;
+                    max_layer_info_width = @max(max_layer_info_width, blob.paint_layer_info_width);
+                }
+                try addTextPaintImages(&images, &image_count, blob);
             },
             .path_picture => |path| {
                 if (atlas_count >= upload_common.MAX_ATLASES) return error.TooManyAtlases;
@@ -4953,7 +5079,7 @@ fn uploadPreparedResources(renderer: *Renderer, set: *const ResourceSet, allocat
     var atlas_count: usize = 0;
     var image_count: usize = 0;
     for (set.slice()) |entry| switch (entry) {
-        .text_atlas, .path_picture => atlas_count += 1,
+        .text_atlas, .text_paint, .path_picture => atlas_count += 1,
         .image => image_count += 1,
     };
 
@@ -4994,6 +5120,21 @@ fn uploadPreparedResources(renderer: *Renderer, set: *const ResourceSet, allocat
                 prepared.atlases[atlas_i].atlas = &prepared.atlases[atlas_i].wrapper;
                 upload_atlases[atlas_i] = prepared.atlases[atlas_i].atlas;
                 atlas_capacity_modes[atlas_i] = text.atlas_capacity;
+                atlas_i += 1;
+            },
+            .text_paint => |text| {
+                prepared.atlases[atlas_i] = .{
+                    .key = text.key,
+                    .kind = .text_paint,
+                    .text_blob = text.blob,
+                    .atlas = undefined,
+                    .owns_wrapper = true,
+                    .stamp = textPaintStamp(text.blob),
+                };
+                prepared.atlases[atlas_i].wrapper = text.blob.uploadPaintAtlas();
+                prepared.atlases[atlas_i].atlas = &prepared.atlases[atlas_i].wrapper;
+                upload_atlases[atlas_i] = prepared.atlases[atlas_i].atlas;
+                atlas_capacity_modes[atlas_i] = .exact;
                 atlas_i += 1;
             },
             .path_picture => |path| {
@@ -5824,12 +5965,23 @@ fn appendRootTestText(
     em: f32,
     color: [4]f32,
 ) !TextAppendResult {
+    return appendRootTestTextPaint(builder, style, text, baseline, em, .{ .solid = color });
+}
+
+fn appendRootTestTextPaint(
+    builder: *TextBlobBuilder,
+    style: FontStyle,
+    text: []const u8,
+    baseline: Vec2,
+    em: f32,
+    paint: Paint,
+) !TextAppendResult {
     var shaped = try builder.atlas.shapeText(builder.allocator, style, text);
     defer shaped.deinit();
     return builder.append(.{
         .shaped = &shaped,
         .placement = .{ .baseline = baseline, .em = em },
-        .fill = .{ .solid = color },
+        .fill = paint,
     });
 }
 
@@ -5857,6 +6009,109 @@ test "TextBlob validation catches wrong atlas snapshot" {
         atlas = next;
     }
     try std.testing.expectError(error.WrongTextAtlasSnapshot, blob.validate());
+}
+
+test "ResourceSet discovers and draws text paint resources" {
+    const assets_data = @import("assets");
+    const allocator = std.testing.allocator;
+
+    var atlas = try TextAtlas.init(allocator, &.{
+        .{ .data = assets_data.noto_sans_regular },
+    });
+    defer atlas.deinit();
+
+    if (try atlas.ensureText(.{}, "A")) |next| {
+        atlas.deinit();
+        atlas = next;
+    }
+
+    var builder = TextBlobBuilder.init(allocator, &atlas);
+    defer builder.deinit();
+    _ = try appendRootTestTextPaint(&builder, .{}, "A", .{ .x = 0, .y = 20 }, 16, .{ .linear_gradient = .{
+        .start = .{ .x = 0, .y = 0 },
+        .end = .{ .x = 20, .y = 0 },
+        .start_color = .{ 1, 0, 0, 1 },
+        .end_color = .{ 0, 0, 1, 1 },
+    } });
+    var blob = try builder.finish();
+    defer blob.deinit();
+    try std.testing.expect(blob.hasPaintRecords());
+
+    var scene = Scene.init(allocator);
+    defer scene.deinit();
+    try scene.addText(.{ .blob = &blob });
+
+    var set_entries: [2]ResourceSet.Entry = undefined;
+    var set = ResourceSet.init(&set_entries);
+    try set.addScene(&scene);
+    try std.testing.expectEqual(@as(usize, 2), set.slice().len);
+    try std.testing.expect(std.meta.activeTag(set.slice()[0]) == .text_atlas);
+    try std.testing.expect(std.meta.activeTag(set.slice()[1]) == .text_paint);
+
+    const footprint = try set.estimateUploadFootprint();
+    try std.testing.expectEqual(blob.paint_layer_info_data.?.len * @sizeOf(f32), footprint.layer_info_bytes_used);
+
+    const width: u32 = 32;
+    const height: u32 = 32;
+    const stride: u32 = width * 4;
+    const pixels = try allocator.alloc(u8, stride * height);
+    defer allocator.free(pixels);
+    var cpu = CpuRenderer.init(pixels.ptr, width, height, stride);
+    var renderer = Renderer.initCpu(&cpu);
+    defer renderer.deinit();
+
+    var prepared = try renderer.uploadResourcesBlocking(allocator, &set);
+    defer prepared.deinit();
+
+    const options = DrawOptions{
+        .mvp = Mat4.identity,
+        .target = .{ .pixel_width = width, .pixel_height = height, .encoding = .srgb },
+    };
+    const words = try allocator.alloc(u32, DrawList.estimate(&scene, options));
+    defer allocator.free(words);
+    const segments = try allocator.alloc(DrawSegment, DrawList.estimateSegments(&scene, options));
+    defer allocator.free(segments);
+    var draw = DrawList.init(words, segments);
+    try draw.addScene(&prepared, &scene, options);
+
+    try std.testing.expectEqual(@as(usize, 1), draw.slice().segments.len);
+    try std.testing.expect(draw.slice().segments[0].key.eql(pointerResourceKey("scene.text_paint", &blob)));
+    const decoded = vertex_mod.decodeInstance(draw.slice().words);
+    try std.testing.expectEqual(@as(u32, 0xFF), decoded.glyph[1] >> 24);
+}
+
+test "ResourceSet footprint counts text image paint payloads" {
+    const assets_data = @import("assets");
+    const allocator = std.testing.allocator;
+    var image = try Image.initSrgba8(allocator, 1, 1, &.{ 255, 64, 32, 255 });
+    defer image.deinit();
+
+    var atlas = try TextAtlas.init(allocator, &.{
+        .{ .data = assets_data.noto_sans_regular },
+    });
+    defer atlas.deinit();
+
+    if (try atlas.ensureText(.{}, "A")) |next| {
+        atlas.deinit();
+        atlas = next;
+    }
+
+    var builder = TextBlobBuilder.init(allocator, &atlas);
+    defer builder.deinit();
+    _ = try appendRootTestTextPaint(&builder, .{}, "A", .{ .x = 0, .y = 20 }, 16, .{ .image = .{ .image = &image } });
+    var blob = try builder.finish();
+    defer blob.deinit();
+
+    var scene = Scene.init(allocator);
+    defer scene.deinit();
+    try scene.addText(.{ .blob = &blob });
+
+    var set_entries: [2]ResourceSet.Entry = undefined;
+    var set = ResourceSet.init(&set_entries);
+    try set.addScene(&scene);
+    const footprint = try set.estimateUploadFootprint();
+    try std.testing.expectEqual(image.pixelSlice().len, footprint.image_bytes_used);
+    try std.testing.expect(footprint.image_bytes_allocated >= footprint.image_bytes_used);
 }
 
 test "DrawList estimate upper-bounds ranged text draw output" {

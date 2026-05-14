@@ -75,25 +75,42 @@ fn appendText(
     em: f32,
     color: [4]f32,
 ) !snail.TextAppendResult {
+    return appendPaintedText(builder, style, text, x, y, em, .{ .solid = color });
+}
+
+fn appendPaintedText(
+    builder: *snail.TextBlobBuilder,
+    style: snail.FontStyle,
+    text: []const u8,
+    x: f32,
+    y: f32,
+    em: f32,
+    paint: snail.Paint,
+) !snail.TextAppendResult {
     var shaped = try builder.atlas.shapeText(builder.allocator, style, text);
     defer shaped.deinit();
     return builder.append(.{
         .shaped = &shaped,
         .placement = .{ .baseline = .{ .x = x, .y = y }, .em = em },
-        .fill = .{ .solid = color },
+        .fill = paint,
     });
 }
 
 pub fn buildTextBlob(builder: *snail.TextBlobBuilder) !void {
     var x = left_pad;
-    const advance = try appendText(
+    const advance = try appendPaintedText(
         builder,
         .{ .weight = .bold },
         "snail",
         x,
         wordmark_baseline,
         wordmark_size,
-        wordmark_color,
+        .{ .linear_gradient = .{
+            .start = .{ .x = x, .y = wordmark_baseline - wordmark_size },
+            .end = .{ .x = x + 135, .y = wordmark_baseline },
+            .start_color = .{ 0.08, 0.30, 0.72, 1.0 },
+            .end_color = wordmark_color,
+        } },
     );
     x += advance.advance.x;
 

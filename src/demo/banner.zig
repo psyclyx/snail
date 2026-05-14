@@ -302,12 +302,22 @@ const TextPlacer = struct {
         p: TextPlacement,
         color: [4]f32,
     ) !snail.TextAppendResult {
+        return self.appendPlacedPaint(style, string, p, .{ .solid = color });
+    }
+
+    fn appendPlacedPaint(
+        self: TextPlacer,
+        style: snail.FontStyle,
+        string: []const u8,
+        p: TextPlacement,
+        paint: snail.Paint,
+    ) !snail.TextAppendResult {
         var shaped = try self.builder.atlas.shapeText(self.builder.allocator, style, string);
         defer shaped.deinit();
         return self.builder.append(.{
             .shaped = &shaped,
             .placement = .{ .baseline = .{ .x = p.x, .y = p.y }, .em = p.size },
-            .fill = .{ .solid = color },
+            .fill = paint,
         });
     }
 
@@ -322,6 +332,19 @@ const TextPlacer = struct {
     ) !snail.TextAppendResult {
         const p = self.place(x, y, size);
         return self.appendPlaced(style, string, p, color);
+    }
+
+    fn addPaintedText(
+        self: TextPlacer,
+        style: snail.FontStyle,
+        string: []const u8,
+        x: f32,
+        y: f32,
+        size: f32,
+        paint: snail.Paint,
+    ) !snail.TextAppendResult {
+        const p = self.place(x, y, size);
+        return self.appendPlacedPaint(style, string, p, paint);
     }
 };
 
@@ -344,7 +367,12 @@ pub fn buildTextBlob(
     const line_h = body_line_h * s;
 
     // ── Title ──
-    _ = try placer.addText(.{ .weight = .bold }, "snail", layout.title.x, layout.title.y + 58 * s, 64 * s, text);
+    _ = try placer.addPaintedText(.{ .weight = .bold }, "snail", layout.title.x, layout.title.y + 58 * s, 64 * s, .{ .linear_gradient = .{
+        .start = .{ .x = layout.title.x, .y = layout.title.y },
+        .end = .{ .x = layout.title.x + 190 * s, .y = layout.title.y + 72 * s },
+        .start_color = accent,
+        .end_color = text,
+    } });
     _ = try placer.addText(.{}, "GPU text & vector rendering", layout.title.x + 210 * s, layout.title.y + 50 * s, 20 * s, muted);
 
     // ── Styles card ──

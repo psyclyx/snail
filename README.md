@@ -394,7 +394,7 @@ snail_text_atlas_deinit(atlas);
 | `TextBlob.init(alloc, atlas, append) !TextBlob` | Build one positioned, painted `TextAppend` from a `ShapedText`. The blob borrows `atlas`. |
 | `blob.rebind(new_atlas) !void` | Optional cache/lifetime helper: move a blob to a compatible atlas snapshot that retains old pages and contains all referenced glyphs. |
 | `TextBlobBuilder.init(alloc, atlas)` / `builder.append(TextAppend) !TextAppendResult` / `builder.finish() !TextBlob` | Append shaped runs with explicit placement and fill. Call `atlas.ensureText`/`ensureShaped`/`ensureGlyphs` first if all glyphs must be renderable. |
-| `TextAppend` | `{ .shaped, .glyphs, .placement = .{ .baseline, .em }, .fill }` — appends a whole shaped run or glyph subrange with independent position/scale and paint. Text fill currently accepts solid paint. |
+| `TextAppend` | `{ .shaped, .glyphs, .placement = .{ .baseline, .em }, .fill }` — appends a whole shaped run or glyph subrange with independent position/scale and paint. Fill accepts the same `Paint` union used by paths. |
 | `TextAppendResult` | `{ .advance: Vec2, .missing: bool }` — pen advance and whether any referenced glyph was absent from the current atlas snapshot. |
 
 ### Scene
@@ -429,7 +429,7 @@ try scene.addPath(.{ .picture = &sprite, .instances = entity_overrides });
 
 ### ResourceSet
 
-`ResourceSet` is a caller-buffered manifest of CPU resources to prepare for a renderer. Entries borrow their source objects; keep those objects alive through the blocking upload or through `pending.record` for a scheduled upload. GPU backends copy texture payload during upload. CPU-backed `PreparedResources` still borrow uploaded atlas band/layer-info data and image pixels, so keep uploaded `TextAtlas`, `PathPicture`, and `Image` values alive until those CPU prepared resources are retired.
+`ResourceSet` is a caller-buffered manifest of CPU resources to prepare for a renderer. Entries borrow their source objects; keep those objects alive through the blocking upload or through `pending.record` for a scheduled upload. GPU backends copy texture payload during upload. CPU-backed `PreparedResources` still borrow uploaded atlas band/layer-info data and image pixels, so keep uploaded `TextAtlas`, painted `TextBlob`, `PathPicture`, and `Image` values alive until those CPU prepared resources are retired.
 
 | Method | Description |
 |--------|-------------|

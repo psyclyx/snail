@@ -68,7 +68,7 @@ pub fn specialRunEnd(vertices: []const u32, glyph_start: usize, special: bool) u
 
 pub fn atlasesHaveSpecialTextRuns(atlases: anytype) bool {
     for (atlases) |atlas| {
-        if (atlas.colr_base_map != null) return true;
+        if (atlas.colr_base_map != null or atlas.layer_info_data != null) return true;
     }
     return false;
 }
