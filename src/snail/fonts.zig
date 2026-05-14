@@ -306,7 +306,7 @@ fn emitPaintedBlobGlyph(
     const loc = blob.paintRecordLoc(record_index);
     const info_y = paint_info_row_base + loc.y;
     if (info_y > std.math.maxInt(u16)) return error.LayerInfoLimitExceeded;
-    try batch.addColrGlyphTransformedTinted(
+    try batch.addPathRecordTransformedTinted(
         info.bbox,
         loc.x,
         @intCast(info_y),

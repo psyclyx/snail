@@ -525,7 +525,8 @@ void main() {
     vec2 epp = vec2(length(dx), length(dy));
     vec2 ppe = 1.0 / max(epp, vec2(1.0 / 65536.0));
 
-    if (((v_glyph.w >> 8) & 0xFF) != 0xFF) discard;
+    int special_kind = v_glyph.w & 0xFF;
+    if (((v_glyph.w >> 8) & 0xFF) != 0xFF || special_kind != 1) discard;
     ivec2 infoBase = v_glyph.xy;
     vec4 firstInfo = texelFetch(u_layer_tex, infoBase, 0);
     if (firstInfo.w >= 0.0) discard;

@@ -174,7 +174,8 @@ vec4 srgbEncodePremultiplied(vec4 premul) {
 
 void main() {
     int atlas_layer = (v_glyph.w >> 8) & 0xFF;
-    if (atlas_layer != 0xFF) discard;
+    int special_kind = v_glyph.w & 0xFF;
+    if (atlas_layer != 0xFF || special_kind != 0) discard;
     vec2 rc = v_texcoord;
     vec2 dx = vec2(dFdx(rc.x), dFdy(rc.x));
     vec2 dy = vec2(dFdx(rc.y), dFdy(rc.y));

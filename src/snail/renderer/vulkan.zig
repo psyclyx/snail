@@ -615,7 +615,7 @@ pub const VulkanPipeline = struct {
             try self.ensureAtlasImagesRegistered(prepared, scratch, atlases);
             try self.ensureLayerInfoImagesRegistered(prepared, scratch, layer_infos);
             try self.rebuildLayerInfoTexture(prepared, scratch, atlases, layer_infos, out_layer_info_views);
-            prepared.atlas_has_special_text_runs = subpixel_policy.atlasesHaveSpecialTextRuns(atlases);
+            prepared.atlas_has_special_text_runs = subpixel_policy.resourcesHaveSpecialTextRuns(atlases, layer_infos);
             self.updateDescriptorSet(prepared);
         }
     }
@@ -681,7 +681,7 @@ pub const VulkanPipeline = struct {
         try self.ensureAtlasImagesRegistered(prepared, scratch, atlases);
         try self.ensureLayerInfoImagesRegistered(prepared, scratch, layer_infos);
         try self.rebuildLayerInfoTexture(prepared, scratch, atlases, layer_infos, out_layer_info_views);
-        prepared.atlas_has_special_text_runs = subpixel_policy.atlasesHaveSpecialTextRuns(atlases);
+        prepared.atlas_has_special_text_runs = subpixel_policy.resourcesHaveSpecialTextRuns(atlases, layer_infos);
         prepared.fillAtlasViews(atlases, out_views);
         self.updateDescriptorSet(prepared);
     }
@@ -979,10 +979,10 @@ pub const VulkanPipeline = struct {
 
         var run_start: usize = 0;
         while (run_start < total_glyphs) {
-            const special = subpixel_policy.glyphRunIsSpecial(vertices, run_start);
-            const run_end = subpixel_policy.specialRunEnd(vertices, run_start, special);
+            const run_kind = subpixel_policy.glyphRunKind(vertices, run_start);
+            const run_end = subpixel_policy.glyphRunEnd(vertices, run_start, run_kind);
 
-            const run_mode: subpixel_policy.TextRenderMode = if (special)
+            const run_mode: subpixel_policy.TextRenderMode = if (run_kind != .regular)
                 .grayscale
             else
                 subpixel_policy.chooseTextRenderModeRange(
@@ -994,18 +994,23 @@ pub const VulkanPipeline = struct {
                     self.subpixel_order,
                     self.ctx.supports_dual_source_blend,
                 );
-            const pip = if (special)
-                self.ensureColrPipeline() catch {
+            const pip = switch (run_kind) {
+                .regular => switch (run_mode) {
+                    .grayscale => self.ensureTextPipeline() catch {
+                        std.debug.print("Vulkan: failed to create text pipeline\n", .{});
+                        return;
+                    },
+                    .subpixel_dual_source => self.ensureTextSubpixelDualPipeline() catch {
+                        std.debug.print("Vulkan: failed to create dual-source subpixel pipeline\n", .{});
+                        return;
+                    },
+                },
+                .colr => self.ensureColrPipeline() catch {
                     std.debug.print("Vulkan: failed to create COLR pipeline\n", .{});
                     return;
-                }
-            else switch (run_mode) {
-                .grayscale => self.ensureTextPipeline() catch {
-                    std.debug.print("Vulkan: failed to create text pipeline\n", .{});
-                    return;
                 },
-                .subpixel_dual_source => self.ensureTextSubpixelDualPipeline() catch {
-                    std.debug.print("Vulkan: failed to create dual-source subpixel pipeline\n", .{});
+                .path => self.ensurePathPipeline() catch {
+                    std.debug.print("Vulkan: failed to create path pipeline\n", .{});
                     return;
                 },
             };

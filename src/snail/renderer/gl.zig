@@ -199,7 +199,7 @@ pub const PreparedResources = struct {
             try self.ensureAtlasImagesRegistered(scratch, atlases);
             try self.ensureLayerInfoImagesRegistered(scratch, layer_infos);
             try self.rebuildLayerInfoTexture(scratch, atlases, layer_infos, out_layer_info_views);
-            self.atlas_has_special_text_runs = subpixel_policy.atlasesHaveSpecialTextRuns(atlases);
+            self.atlas_has_special_text_runs = subpixel_policy.resourcesHaveSpecialTextRuns(atlases, layer_infos);
         }
     }
 
@@ -479,7 +479,7 @@ pub const PreparedResources = struct {
         try self.ensureAtlasImagesRegistered(scratch, atlases);
         try self.ensureLayerInfoImagesRegistered(scratch, layer_infos);
         try self.rebuildLayerInfoTexture(scratch, atlases, layer_infos, out_layer_info_views);
-        self.atlas_has_special_text_runs = subpixel_policy.atlasesHaveSpecialTextRuns(atlases);
+        self.atlas_has_special_text_runs = subpixel_policy.resourcesHaveSpecialTextRuns(atlases, layer_infos);
         self.fillAtlasViews(atlases, out_views);
     }
 
@@ -853,10 +853,10 @@ pub const GlTextState = struct {
 
         var run_start: usize = 0;
         while (run_start < total_glyphs) {
-            const special = subpixel_policy.glyphRunIsSpecial(vertices, run_start);
-            const run_end = subpixel_policy.specialRunEnd(vertices, run_start, special);
+            const run_kind = subpixel_policy.glyphRunKind(vertices, run_start);
+            const run_end = subpixel_policy.glyphRunEnd(vertices, run_start, run_kind);
 
-            const run_mode: subpixel_policy.TextRenderMode = if (special)
+            const run_mode: subpixel_policy.TextRenderMode = if (run_kind != .regular)
                 .grayscale
             else
                 subpixel_policy.chooseTextRenderModeRange(
@@ -868,12 +868,14 @@ pub const GlTextState = struct {
                     self.subpixel_order,
                     self.supports_dual_source_blend,
                 );
-            setTextBlendMode(special, run_mode);
-            const prog_state = if (special)
-                self.ensureColrProgram()
-            else switch (run_mode) {
-                .grayscale => &self.text_program,
-                .subpixel_dual_source => &self.text_subpixel_dual_program,
+            setTextBlendMode(run_kind != .regular, run_mode);
+            const prog_state = switch (run_kind) {
+                .regular => switch (run_mode) {
+                    .grayscale => &self.text_program,
+                    .subpixel_dual_source => &self.text_subpixel_dual_program,
+                },
+                .colr => self.ensureColrProgram(),
+                .path => self.ensurePathProgram(),
             };
             self.bindProgramState(prepared, prog_state, mvp, viewport_w, viewport_h, texture_layer_base, run_mode);
             self.drawGlyphRange(vertices, run_start, run_end - run_start);

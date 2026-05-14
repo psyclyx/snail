@@ -347,8 +347,9 @@ const PATH_VERTICES_PER_SHAPE = vertex_mod.VERTICES_PER_GLYPH;
 const PATH_WORDS_PER_SHAPE = PATH_WORDS_PER_VERTEX * PATH_VERTICES_PER_SHAPE;
 
 /// One byte in the hot instance format is reserved for the local texture-array
-/// layer. 0xff is still the special-instance sentinel, so draw records split
-/// layer bindings into 255-layer windows and carry the window base separately.
+/// layer. 0xff in that byte is the special-instance sentinel; special instances
+/// use the adjacent byte for their kind, so draw records split layer bindings
+/// into 255-layer windows and carry the window base separately.
 const TEXTURE_LAYER_WINDOW_SIZE: u32 = 255;
 
 fn textureLayerWindowBase(layer: u32) u32 {
@@ -1569,6 +1570,24 @@ const TextBatch = struct {
         if (self.len + TEXT_WORDS_PER_GLYPH > self.buf.len) return error.DrawListFull;
         const local_layer = try self.localLayer(atlas_layer);
         if (!vertex_mod.generateMultiLayerGlyphVerticesTransformedTinted(self.buf[self.len..], union_bbox, info_x, info_y, layer_count, color, tint, local_layer, transform))
+            return error.InvalidTransform;
+        self.len += TEXT_WORDS_PER_GLYPH;
+    }
+
+    pub fn addPathRecordTransformedTinted(
+        self: *TextBatch,
+        union_bbox: bezier.BBox,
+        info_x: u16,
+        info_y: u16,
+        layer_count: u16,
+        color: [4]f32,
+        tint: [4]f32,
+        atlas_layer: u32,
+        transform: Transform2D,
+    ) !void {
+        if (self.len + TEXT_WORDS_PER_GLYPH > self.buf.len) return error.DrawListFull;
+        const local_layer = try self.localLayer(atlas_layer);
+        if (!vertex_mod.generatePathRecordVerticesTransformedTinted(self.buf[self.len..], union_bbox, info_x, info_y, layer_count, color, tint, local_layer, transform))
             return error.InvalidTransform;
         self.len += TEXT_WORDS_PER_GLYPH;
     }
@@ -3647,7 +3666,7 @@ const PathBatch = struct {
             const final_transform = Transform2D.multiply(override.transform, shape.transform);
             const info_loc = view.layerInfoLoc(shape.info_x, shape.info_y);
             const local_layer = try self.localLayer(view.glyphLayer(shape.page_index));
-            if (!vertex_mod.generateMultiLayerGlyphVerticesTransformedTinted(
+            if (!vertex_mod.generatePathRecordVerticesTransformedTinted(
                 self.buf[self.len..],
                 shape.bbox,
                 info_loc.x,
@@ -6096,6 +6115,7 @@ test "ResourceSet discovers and draws text paint resources" {
     try std.testing.expect(draw.slice().segments[0].key.eql(pointerResourceKey("scene.text_paint", &blob)));
     const decoded = vertex_mod.decodeInstance(draw.slice().words);
     try std.testing.expectEqual(@as(u32, 0xFF), decoded.glyph[1] >> 24);
+    try std.testing.expectEqual(@as(u32, @intFromEnum(vertex_mod.SpecialGlyphKind.path)), (decoded.glyph[1] >> 16) & 0xFF);
 }
 
 test "ResourceSet footprint counts text image paint payloads" {
@@ -6643,6 +6663,7 @@ test "path picture freeze compiles atlas and transformed batch vertices" {
     try std.testing.expectApproxEqAbs(@as(f32, 30), world_y, 0.5);
     const packed_gw = s.glyph[1];
     try std.testing.expectEqual(@as(u32, 0xFF), packed_gw >> 24);
+    try std.testing.expectEqual(@as(u32, @intFromEnum(vertex_mod.SpecialGlyphKind.path)), (packed_gw >> 16) & 0xFF);
     try std.testing.expectApproxEqAbs(@as(f32, 0), s.band[3], 0.001);
 }
 

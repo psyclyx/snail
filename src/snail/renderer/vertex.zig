@@ -34,6 +34,11 @@ pub const BYTES_PER_VERTEX = BYTES_PER_INSTANCE;
 pub const WORDS_PER_VERTEX = WORDS_PER_INSTANCE;
 pub const VERTICES_PER_GLYPH = INSTANCES_PER_GLYPH;
 
+pub const SpecialGlyphKind = enum(u8) {
+    colr = 0,
+    path = 1,
+};
+
 comptime {
     std.debug.assert(BYTES_PER_INSTANCE == 64);
     std.debug.assert(WORDS_PER_INSTANCE == 16);
@@ -105,6 +110,12 @@ fn decodeColor4(color: [4]u8) [4]f32 {
         @as(f32, @floatFromInt(color[2])) / 255.0,
         @as(f32, @floatFromInt(color[3])) / 255.0,
     };
+}
+
+fn specialGlyphWord(layer_count: u16, kind: SpecialGlyphKind) u32 {
+    return @as(u32, layer_count) |
+        (@as(u32, @intFromEnum(kind)) << 16) |
+        (@as(u32, 0xFF) << 24);
 }
 
 fn instancePtr(words: []u32) *Instance {
@@ -248,7 +259,7 @@ pub fn generateMultiLayerGlyphVertices(
     generateMultiLayerGlyphVerticesTinted(buf, x, y, font_size, union_bbox, info_x, info_y, layer_count, color, identity_tint, atlas_layer);
 }
 
-/// Generate instance data for a tinted multi-layer COLR/path glyph.
+/// Generate instance data for a tinted multi-layer COLR glyph.
 pub fn generateMultiLayerGlyphVerticesTinted(
     buf: []u32,
     x: f32,
@@ -262,8 +273,42 @@ pub fn generateMultiLayerGlyphVerticesTinted(
     tint: [4]f32,
     atlas_layer: u8,
 ) void {
+    generateSpecialLayerVerticesTinted(buf, x, y, font_size, union_bbox, info_x, info_y, layer_count, color, tint, atlas_layer, .colr);
+}
+
+/// Generate instance data for a tinted path layer-info record.
+pub fn generatePathRecordVerticesTinted(
+    buf: []u32,
+    x: f32,
+    y: f32,
+    font_size: f32,
+    union_bbox: BBox,
+    info_x: u16,
+    info_y: u16,
+    layer_count: u16,
+    color: [4]f32,
+    tint: [4]f32,
+    atlas_layer: u8,
+) void {
+    generateSpecialLayerVerticesTinted(buf, x, y, font_size, union_bbox, info_x, info_y, layer_count, color, tint, atlas_layer, .path);
+}
+
+fn generateSpecialLayerVerticesTinted(
+    buf: []u32,
+    x: f32,
+    y: f32,
+    font_size: f32,
+    union_bbox: BBox,
+    info_x: u16,
+    info_y: u16,
+    layer_count: u16,
+    color: [4]f32,
+    tint: [4]f32,
+    atlas_layer: u8,
+    kind: SpecialGlyphKind,
+) void {
     const gz: u32 = @as(u32, info_x) | (@as(u32, info_y) << 16);
-    const gw: u32 = @as(u32, layer_count) | (0xFF << 24);
+    const gw = specialGlyphWord(layer_count, kind);
 
     writeInstance(buf, .{
         .rect = half4(.{ union_bbox.min.x, union_bbox.min.y, union_bbox.max.x, union_bbox.max.y }),
@@ -302,11 +347,41 @@ pub fn generateMultiLayerGlyphVerticesTransformedTinted(
     atlas_layer: u8,
     transform: vec.Transform2D,
 ) bool {
+    return generateSpecialLayerVerticesTransformedTinted(buf, bbox, info_x, info_y, layer_count, color, tint, atlas_layer, transform, .colr);
+}
+
+/// Generate instance data for a tinted transformed path layer-info record.
+pub fn generatePathRecordVerticesTransformedTinted(
+    buf: []u32,
+    bbox: BBox,
+    info_x: u16,
+    info_y: u16,
+    layer_count: u16,
+    color: [4]f32,
+    tint: [4]f32,
+    atlas_layer: u8,
+    transform: vec.Transform2D,
+) bool {
+    return generateSpecialLayerVerticesTransformedTinted(buf, bbox, info_x, info_y, layer_count, color, tint, atlas_layer, transform, .path);
+}
+
+fn generateSpecialLayerVerticesTransformedTinted(
+    buf: []u32,
+    bbox: BBox,
+    info_x: u16,
+    info_y: u16,
+    layer_count: u16,
+    color: [4]f32,
+    tint: [4]f32,
+    atlas_layer: u8,
+    transform: vec.Transform2D,
+    kind: SpecialGlyphKind,
+) bool {
     const det = transform.xx * transform.yy - transform.xy * transform.yx;
     if (@abs(det) < 1e-10) return false;
 
     const gz: u32 = @as(u32, info_x) | (@as(u32, info_y) << 16);
-    const gw: u32 = @as(u32, layer_count) | (0xFF << 24);
+    const gw = specialGlyphWord(layer_count, kind);
 
     writeInstance(buf, .{
         .rect = half4(.{ bbox.min.x, bbox.min.y, bbox.max.x, bbox.max.y }),
@@ -377,6 +452,22 @@ test "multi-layer glyph instance preserves wide layer counts" {
 
     const packed_gw = decodeInstance(&buf).glyph[1];
     try std.testing.expectEqual(@as(u32, 300), packed_gw & 0xFFFF);
+    try std.testing.expectEqual(@as(u32, @intFromEnum(SpecialGlyphKind.colr)), (packed_gw >> 16) & 0xFF);
+    try std.testing.expectEqual(@as(u32, 0xFF), packed_gw >> 24);
+}
+
+test "path record instance uses path special kind" {
+    var buf: [WORDS_PER_INSTANCE]u32 = undefined;
+    const bbox = BBox{
+        .min = Vec2.new(0.0, -0.2),
+        .max = Vec2.new(0.5, 0.8),
+    };
+
+    generatePathRecordVerticesTinted(&buf, 10.0, 20.0, 24.0, bbox, 12, 34, 1, .{ 1, 1, 1, 1 }, .{ 1, 1, 1, 1 }, 7);
+
+    const packed_gw = decodeInstance(&buf).glyph[1];
+    try std.testing.expectEqual(@as(u32, 1), packed_gw & 0xFFFF);
+    try std.testing.expectEqual(@as(u32, @intFromEnum(SpecialGlyphKind.path)), (packed_gw >> 16) & 0xFF);
     try std.testing.expectEqual(@as(u32, 0xFF), packed_gw >> 24);
 }
 
@@ -444,6 +535,7 @@ test "transformed multi-layer glyph instance preserves info pointer and atlas se
     try std.testing.expectEqual(@as(u32, 12), packed_gz & 0xFFFF);
     try std.testing.expectEqual(@as(u32, 34), packed_gz >> 16);
     try std.testing.expectEqual(@as(u32, 1), packed_gw & 0xFFFF);
+    try std.testing.expectEqual(@as(u32, @intFromEnum(SpecialGlyphKind.colr)), (packed_gw >> 16) & 0xFF);
     try std.testing.expectEqual(@as(u32, 0xFF), packed_gw >> 24);
     try std.testing.expectApproxEqAbs(@as(f32, 9), decoded.band[3], 0.001);
 }

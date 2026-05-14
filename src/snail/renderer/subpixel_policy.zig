@@ -12,6 +12,12 @@ pub const TextRenderMode = enum {
     subpixel_dual_source,
 };
 
+pub const GlyphRunKind = enum {
+    regular,
+    colr,
+    path,
+};
+
 pub fn chooseBaseTextRenderMode(
     mvp: Mat4,
     allow_subpixel: bool,
@@ -52,8 +58,28 @@ pub fn chooseTextRenderModeRange(
 }
 
 pub fn glyphRunIsSpecial(vertices: []const u32, glyph_index: usize) bool {
+    return glyphRunKind(vertices, glyph_index) != .regular;
+}
+
+pub fn glyphRunKind(vertices: []const u32, glyph_index: usize) GlyphRunKind {
     std.debug.assert(vertices.len % vertex.WORDS_PER_INSTANCE == 0);
-    return (vertex.instanceAt(vertices, glyph_index).glyph[1] >> 24) == 0xFF;
+    const packed_word = vertex.instanceAt(vertices, glyph_index).glyph[1];
+    if ((packed_word >> 24) != 0xFF) return .regular;
+    const kind = @as(u8, @intCast((packed_word >> 16) & 0xFF));
+    return switch (kind) {
+        @intFromEnum(vertex.SpecialGlyphKind.path) => .path,
+        else => .colr,
+    };
+}
+
+pub fn glyphRunEnd(vertices: []const u32, glyph_start: usize, kind: GlyphRunKind) usize {
+    std.debug.assert(vertices.len % vertex.WORDS_PER_INSTANCE == 0);
+    const total_glyphs = vertices.len / vertex.WORDS_PER_INSTANCE;
+    std.debug.assert(glyph_start < total_glyphs);
+
+    var run_end = glyph_start + 1;
+    while (run_end < total_glyphs and glyphRunKind(vertices, run_end) == kind) : (run_end += 1) {}
+    return run_end;
 }
 
 pub fn specialRunEnd(vertices: []const u32, glyph_start: usize, special: bool) usize {
@@ -71,6 +97,17 @@ pub fn atlasesHaveSpecialTextRuns(atlases: anytype) bool {
         if (atlas.colr_base_map != null or atlas.layer_info_data != null) return true;
     }
     return false;
+}
+
+pub fn layerInfoBlocksHaveSpecialTextRuns(layer_infos: anytype) bool {
+    for (layer_infos) |info| {
+        if (info.data != null) return true;
+    }
+    return false;
+}
+
+pub fn resourcesHaveSpecialTextRuns(atlases: anytype, layer_infos: anytype) bool {
+    return atlasesHaveSpecialTextRuns(atlases) or layerInfoBlocksHaveSpecialTextRuns(layer_infos);
 }
 
 test "LCD requires an order and dual-source, not axis-aligned transforms" {
@@ -233,14 +270,32 @@ test "LCD range mode accepts transformed glyphs" {
 }
 
 test "special text run helpers split sentinel runs" {
-    var buf = [_]u32{0} ** (vertex.WORDS_PER_INSTANCE * 3);
+    var buf = [_]u32{0} ** (vertex.WORDS_PER_INSTANCE * 4);
 
     vertex.instanceAtMut(&buf, 1).glyph[1] = 0xFF00_0000;
     vertex.instanceAtMut(&buf, 2).glyph[1] = 0xFF00_0000;
+    vertex.instanceAtMut(&buf, 3).glyph[1] = 0xFF01_0000;
 
     try std.testing.expect(!glyphRunIsSpecial(&buf, 0));
     try std.testing.expect(glyphRunIsSpecial(&buf, 1));
     try std.testing.expect(glyphRunIsSpecial(&buf, 2));
+    try std.testing.expect(glyphRunIsSpecial(&buf, 3));
+    try std.testing.expectEqual(GlyphRunKind.regular, glyphRunKind(&buf, 0));
+    try std.testing.expectEqual(GlyphRunKind.colr, glyphRunKind(&buf, 1));
+    try std.testing.expectEqual(GlyphRunKind.path, glyphRunKind(&buf, 3));
     try std.testing.expectEqual(@as(usize, 1), specialRunEnd(&buf, 0, false));
-    try std.testing.expectEqual(@as(usize, 3), specialRunEnd(&buf, 1, true));
+    try std.testing.expectEqual(@as(usize, 4), specialRunEnd(&buf, 1, true));
+    try std.testing.expectEqual(@as(usize, 3), glyphRunEnd(&buf, 1, .colr));
+    try std.testing.expectEqual(@as(usize, 4), glyphRunEnd(&buf, 3, .path));
+}
+
+test "layer info upload blocks mark prepared resources as special text" {
+    const LayerInfoBlock = struct {
+        data: ?[]const f32 = null,
+    };
+    const empty: [0]LayerInfoBlock = .{};
+    const non_empty = [_]LayerInfoBlock{.{ .data = &[_]f32{1.0} }};
+
+    try std.testing.expect(!layerInfoBlocksHaveSpecialTextRuns(empty[0..]));
+    try std.testing.expect(layerInfoBlocksHaveSpecialTextRuns(non_empty[0..]));
 }

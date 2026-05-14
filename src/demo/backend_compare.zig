@@ -111,6 +111,18 @@ fn buildTextBlob(
     size: f32,
     color: [4]f32,
 ) !snail.TextBlob {
+    return buildPaintedTextBlob(allocator, atlas, text, x, y, size, .{ .solid = color });
+}
+
+fn buildPaintedTextBlob(
+    allocator: std.mem.Allocator,
+    atlas: *const snail.TextAtlas,
+    text: []const u8,
+    x: f32,
+    y: f32,
+    size: f32,
+    paint: snail.Paint,
+) !snail.TextBlob {
     var builder = snail.TextBlobBuilder.init(allocator, atlas);
     defer builder.deinit();
     var shaped = try atlas.shapeText(allocator, .{}, text);
@@ -118,7 +130,7 @@ fn buildTextBlob(
     _ = try builder.append(.{
         .shaped = &shaped,
         .placement = .{ .baseline = .{ .x = x, .y = y }, .em = size },
-        .fill = .{ .solid = color },
+        .fill = paint,
     });
     return builder.finish();
 }
@@ -196,7 +208,12 @@ fn buildScene(allocator: std.mem.Allocator) !SceneBundle {
     // whether contour curves at em y=0 cross the sample ray, producing a
     // ~0.5 coverage gap on the affected row. Pinning to integer y avoids
     // tripping this; see TODO comment in evalGlyphCoverageAxis.
-    latin_blob.* = try buildTextBlob(allocator, atlas, "CH5+ Hello, world!", 18.25, 40.0, 24.0, .{ 0.93, 0.95, 0.98, 1.0 });
+    latin_blob.* = try buildPaintedTextBlob(allocator, atlas, "CH5+ Hello, world!", 18.25, 40.0, 24.0, .{ .linear_gradient = .{
+        .start = .{ .x = 18.25, .y = 16.0 },
+        .end = .{ .x = 205.0, .y = 48.0 },
+        .start_color = .{ 0.36, 0.68, 1.0, 1.0 },
+        .end_color = .{ 0.98, 0.99, 1.0, 1.0 },
+    } });
     errdefer latin_blob.deinit();
 
     const devanagari_blob = try allocator.create(snail.TextBlob);
