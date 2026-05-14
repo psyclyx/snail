@@ -4,6 +4,7 @@
 const std = @import("std");
 const snail = @import("root.zig");
 const ttf = @import("font/ttf.zig");
+const generated = @import("c_api/generated.zig");
 
 const build_options = @import("build_options");
 const vk = if (build_options.enable_vulkan) @import("renderer/vulkan.zig").vk else struct {
@@ -84,12 +85,12 @@ fn handleAllocator() std.mem.Allocator {
 
 // Error codes
 
-pub const SNAIL_OK: c_int = 0;
-pub const SNAIL_ERR_INVALID_FONT: c_int = -1;
-pub const SNAIL_ERR_OUT_OF_MEMORY: c_int = -2;
-pub const SNAIL_ERR_RENDERER_FAILED: c_int = -3;
-pub const SNAIL_ERR_INVALID_ARGUMENT: c_int = -4;
-pub const SNAIL_ERR_DRAW_FAILED: c_int = -5;
+pub const SNAIL_OK = generated.SNAIL_OK;
+pub const SNAIL_ERR_INVALID_FONT = generated.SNAIL_ERR_INVALID_FONT;
+pub const SNAIL_ERR_OUT_OF_MEMORY = generated.SNAIL_ERR_OUT_OF_MEMORY;
+pub const SNAIL_ERR_RENDERER_FAILED = generated.SNAIL_ERR_RENDERER_FAILED;
+pub const SNAIL_ERR_INVALID_ARGUMENT = generated.SNAIL_ERR_INVALID_ARGUMENT;
+pub const SNAIL_ERR_DRAW_FAILED = generated.SNAIL_ERR_DRAW_FAILED;
 
 fn mapError(err: anyerror) c_int {
     return switch (err) {

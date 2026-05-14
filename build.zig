@@ -290,6 +290,7 @@ pub fn build(b: *std.Build) void {
         b.installArtifact(static_lib);
 
         b.installFile("include/snail.h", "include/snail.h");
+        b.installFile("include/snail_generated.h", "include/snail_generated.h");
         b.installFile("include/snail_gl.h", "include/snail_gl.h");
         b.installFile("include/snail_vulkan.h", "include/snail_vulkan.h");
     }
