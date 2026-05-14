@@ -7,11 +7,8 @@ let
     inherit src;
   };
 
-  demo = pkgs.callPackage ./nix/snail.nix {
+  demo = pkgs.callPackage ./nix/snail-demo.nix {
     inherit src;
-    pname = "snail-demo";
-    buildDemo = true;
-    enableCApi = false;
   };
 
   shell = import ./shell.nix {

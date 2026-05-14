@@ -197,12 +197,13 @@ nix-build -A lib    # build libsnail + enabled C headers
 nix-build -A demo   # build snail-demo
 ```
 
-The Nix package is defined in `nix/snail.nix` and wired through `callPackage`
-from `default.nix`. Its defaults mirror the Zig build defaults: OpenGL on,
-Vulkan on, CPU renderer on, HarfBuzz on, and the C API enabled with both
-shared and static libraries. Override `enableVulkan`, `enableOpenGL`,
-`enableCpu`, `enableHarfBuzz`, `enableCApi`, `cApiShared`, or `cApiStatic`
-when calling the package directly.
+The Nix library package is defined in `nix/snail.nix`; the demo executable is
+defined separately in `nix/snail-demo.nix`. Both are wired through
+`callPackage` from `default.nix`. The library defaults mirror the Zig build
+defaults: OpenGL on, Vulkan on, CPU renderer on, HarfBuzz on, and the C API
+enabled with both shared and static libraries. Override `enableVulkan`,
+`enableOpenGL`, `enableCpu`, `enableHarfBuzz`, `enableCApi`, `cApiShared`, or
+`cApiStatic` when calling the library package directly.
 
 ### Using as a Zig dependency
 

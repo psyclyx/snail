@@ -7,16 +7,20 @@
 , vulkan-loader
 , vulkan-headers
 , shaderc
+, wayland
+, wayland-protocols
 , src ? ../.
-, pname ? "snail"
+, pname ? "snail-demo"
 , version ? "0.6.1"
 , enableOpenGL ? true
 , enableVulkan ? true
 , enableCpu ? true
 , enableHarfBuzz ? true
-, enableCApi ? true
-, cApiShared ? enableCApi
-, cApiStatic ? enableCApi
+, renderer ? (
+    if enableVulkan then "vulkan"
+    else if enableOpenGL then "gl44"
+    else "cpu"
+  )
 , optimize ? "fast"
 , cpu ? "baseline"
 }:
@@ -29,13 +33,18 @@ let
       enableVulkan
       enableCpu
       enableHarfBuzz
-      enableCApi
-      cApiShared
-      cApiStatic
       optimize
-      cpu;
+      cpu
+      ;
+    enableCApi = false;
+    cApiShared = false;
+    cApiStatic = false;
   };
 in
+assert lib.elem renderer [ "gl44" "gl33" "vulkan" "cpu" ];
+assert renderer != "vulkan" || enableVulkan;
+assert !(lib.elem renderer [ "gl44" "gl33" ]) || enableOpenGL;
+assert renderer != "cpu" || enableCpu;
 stdenv.mkDerivation {
   inherit pname version src;
 
@@ -56,22 +65,27 @@ stdenv.mkDerivation {
     ++ lib.optionals enableVulkan [
       vulkan-loader
       vulkan-headers
+    ]
+    ++ [
+      wayland
+      wayland-protocols
     ];
 
-  zigBuildFlags = backendOptions.zigBuildFlags;
+  zigBuildFlags = [
+    "demo"
+  ] ++ backendOptions.zigBuildFlags ++ [
+    "-Drenderer=${renderer}"
+  ];
 
   dontUseZigCheck = true;
   dontSetZigDefaultFlags = true;
 
-  postInstall = lib.optionalString enableCApi ''
-    mkdir -p $out/lib/pkgconfig
-    substitute snail.pc.in $out/lib/pkgconfig/snail.pc \
-      --replace-fail @PREFIX@ $out \
-      --replace-fail @REQUIRES@ "${backendOptions.cApiRequires}"
-  '';
+  hardeningDisable = [
+    "fortify"
+  ];
 
   meta = {
-    description = "GPU font and vector rendering via direct Bezier curve evaluation";
+    description = "Interactive demo for snail";
     license = lib.licenses.mit;
     platforms = lib.platforms.linux;
   };
