@@ -199,12 +199,24 @@ fn appendText(
     em: f32,
     color: [4]f32,
 ) !snail.TextAppendResult {
+    return appendPaintedText(builder, style, text, x, y, em, .{ .solid = color });
+}
+
+fn appendPaintedText(
+    builder: *snail.TextBlobBuilder,
+    style: snail.FontStyle,
+    text: []const u8,
+    x: f32,
+    y: f32,
+    em: f32,
+    paint: snail.Paint,
+) !snail.TextAppendResult {
     var shaped = try builder.atlas.shapeText(builder.allocator, style, text);
     defer shaped.deinit();
     return builder.append(.{
         .shaped = &shaped,
         .placement = .{ .baseline = .{ .x = x, .y = y }, .em = em },
-        .fill = .{ .solid = color },
+        .fill = paint,
     });
 }
 
@@ -289,8 +301,8 @@ fn buildHudTranslucentPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas
 
 fn buildHudSolidPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas, window_w: u32, _: u32) !PreparedPass {
     const title = "Status Panel";
-    const line_one = "HEALTH  83";
-    const line_two = "AMMO    42";
+    const line_one = "HEALTH 83   AMMO 42";
+    const line_two = "LINK SYNCED / TEMP NOMINAL";
     const note = "Opaque vector backing: LCD-safe HUD text.";
     const pad_x = 20.0;
     const title_size = 24.0;
@@ -337,8 +349,23 @@ fn buildHudSolidPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas, wind
     defer builder.deinit();
     const tx = rect.x + pad_x;
     _ = try appendText(&builder, .{ .weight = .bold }, title, tx, rect.y + 42.0, title_size, .{ 1.0, 1.0, 1.0, 1.0 });
-    _ = try appendText(&builder, .{}, line_one, tx, rect.y + 74.0, body_size, .{ 0.92, 0.96, 0.98, 1.0 });
-    _ = try appendText(&builder, .{}, line_two, tx, rect.y + 98.0, body_size, .{ 0.92, 0.96, 0.98, 1.0 });
+    var cx = tx;
+    const status_y = rect.y + 74.0;
+    cx += (try appendText(&builder, .{}, "HEALTH ", cx, status_y, body_size, .{ 0.78, 0.86, 0.92, 1.0 })).advance.x;
+    cx += (try appendText(&builder, .{ .weight = .bold }, "83", cx, status_y, body_size + 3.0, .{ 0.28, 0.92, 0.50, 1.0 })).advance.x;
+    cx += (try appendText(&builder, .{}, "   AMMO ", cx, status_y, body_size, .{ 0.78, 0.86, 0.92, 1.0 })).advance.x;
+    _ = try appendText(&builder, .{ .weight = .bold }, "42", cx, status_y, body_size + 3.0, .{ 0.98, 0.76, 0.28, 1.0 });
+
+    cx = tx;
+    const link_y = rect.y + 98.0;
+    cx += (try appendText(&builder, .{}, "LINK ", cx, link_y, body_size, .{ 0.78, 0.86, 0.92, 1.0 })).advance.x;
+    cx += (try appendPaintedText(&builder, .{ .weight = .bold }, "SYNCED", cx, link_y, body_size, .{ .linear_gradient = .{
+        .start = .{ .x = cx, .y = link_y - body_size },
+        .end = .{ .x = cx + 74.0, .y = link_y },
+        .start_color = .{ 0.22, 0.70, 1.0, 1.0 },
+        .end_color = .{ 0.42, 0.94, 0.60, 1.0 },
+    } })).advance.x;
+    _ = try appendText(&builder, .{}, " / TEMP NOMINAL", cx, link_y, body_size, .{ 0.78, 0.86, 0.92, 1.0 });
     _ = try appendText(&builder, .{}, note, tx, rect.y + 124.0, note_size, .{ 0.78, 0.86, 0.92, 1.0 });
     const text = try builder.finish();
 

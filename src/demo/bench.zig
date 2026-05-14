@@ -77,6 +77,7 @@ const text_workloads = [_]TextWorkload{ .short, .sentence, .paragraph, .paragrap
 
 const SceneKind = enum {
     text,
+    rich_text,
     vector,
     mixed,
     multi_script,
@@ -84,6 +85,7 @@ const SceneKind = enum {
     fn name(self: SceneKind) []const u8 {
         return switch (self) {
             .text => "Text",
+            .rich_text => "Rich text",
             .vector => "Vector paths",
             .mixed => "Mixed text + vector",
             .multi_script => "Multi-script text",
@@ -91,7 +93,7 @@ const SceneKind = enum {
     }
 };
 
-const scene_kinds = [_]SceneKind{ .text, .vector, .mixed, .multi_script };
+const scene_kinds = [_]SceneKind{ .text, .rich_text, .vector, .mixed, .multi_script };
 
 const RenderMode = struct {
     aa: snail.SubpixelOrder,
@@ -112,7 +114,7 @@ const render_modes = [_]RenderMode{
     .{ .aa = .rgb },
 };
 
-const mode_scene_kinds = [_]SceneKind{ .text, .multi_script };
+const mode_scene_kinds = [_]SceneKind{ .text, .rich_text, .multi_script };
 
 const scene_text_lines = [_]TextLine{
     .{ .text = "Score: 12345  FPS: 60  Level 7", .x = 18, .y = 30, .size = 18 },
@@ -126,6 +128,23 @@ const scene_multi_script_lines = [_]TextLine{
     .{ .text = ARABIC_TEXT, .x = 18, .y = 72, .size = 22 },
     .{ .text = DEVANAGARI_TEXT, .x = 18, .y = 112, .size = 22 },
     .{ .text = THAI_TEXT, .x = 18, .y = 152, .size = 22 },
+};
+
+const rich_text_strings = [_][]const u8{
+    "RICH",
+    "gradient",
+    "runs",
+    "status",
+    "HP",
+    "83",
+    "shield",
+    "online",
+    "per-letter",
+    "snail",
+    "alerts",
+    "OK",
+    "WARN",
+    "CRIT",
 };
 
 const SceneBundle = struct {
@@ -335,8 +354,13 @@ fn initTextAtlas(
 }
 
 fn prepareSceneText(atlas: *snail.TextAtlas) !void {
+    try ensureText(atlas, .{ .weight = .bold }, &PRINTABLE_ASCII);
     for (&scene_text_lines) |line| try ensureText(atlas, line.style, line.text);
     for (&scene_multi_script_lines) |line| try ensureText(atlas, line.style, line.text);
+    for (&rich_text_strings) |text| {
+        try ensureText(atlas, .{}, text);
+        try ensureText(atlas, .{ .weight = .bold }, text);
+    }
 }
 
 fn makeTextBlob(
@@ -354,6 +378,89 @@ fn makeTextBlob(
         .placement = .{ .baseline = .{ .x = line.x, .y = line.y }, .em = line.size },
         .fill = .{ .solid = line.color },
     });
+    return builder.finish();
+}
+
+fn appendPaintedRun(
+    builder: *snail.TextBlobBuilder,
+    style: snail.FontStyle,
+    text: []const u8,
+    x: f32,
+    y: f32,
+    em: f32,
+    paint: snail.Paint,
+) !snail.TextAppendResult {
+    var shaped = try builder.atlas.shapeText(builder.allocator, style, text);
+    defer shaped.deinit();
+    return builder.append(.{
+        .shaped = &shaped,
+        .placement = .{ .baseline = .{ .x = x, .y = y }, .em = em },
+        .fill = paint,
+    });
+}
+
+fn appendSolidRun(
+    builder: *snail.TextBlobBuilder,
+    style: snail.FontStyle,
+    text: []const u8,
+    x: f32,
+    y: f32,
+    em: f32,
+    color: [4]f32,
+) !snail.TextAppendResult {
+    return appendPaintedRun(builder, style, text, x, y, em, .{ .solid = color });
+}
+
+fn makeRichTextBlob(allocator: std.mem.Allocator, atlas: *snail.TextAtlas) !snail.TextBlob {
+    var builder = snail.TextBlobBuilder.init(allocator, atlas);
+    errdefer builder.deinit();
+
+    var x: f32 = 18.0;
+    var y: f32 = 46.0;
+    x += (try appendSolidRun(&builder, .{ .weight = .bold }, "RICH ", x, y, 30.0, .{ 0.95, 0.97, 1.0, 1.0 })).advance.x;
+    x += (try appendPaintedRun(&builder, .{ .weight = .bold }, "gradient", x, y, 30.0, .{ .linear_gradient = .{
+        .start = .{ .x = x, .y = y - 30.0 },
+        .end = .{ .x = x + 150.0, .y = y },
+        .start_color = .{ 0.30, 0.65, 1.0, 1.0 },
+        .end_color = .{ 1.0, 0.35, 0.58, 1.0 },
+    } })).advance.x;
+    _ = try appendSolidRun(&builder, .{}, " runs", x, y, 22.0, .{ 0.72, 0.78, 0.86, 1.0 });
+
+    x = 18.0;
+    y = 94.0;
+    x += (try appendSolidRun(&builder, .{}, "status  ", x, y, 18.0, .{ 0.60, 0.68, 0.76, 1.0 })).advance.x;
+    x += (try appendSolidRun(&builder, .{ .weight = .bold }, "HP ", x, y, 24.0, .{ 0.80, 0.92, 0.86, 1.0 })).advance.x;
+    x += (try appendSolidRun(&builder, .{ .weight = .bold }, "83", x, y, 28.0, .{ 0.25, 0.92, 0.50, 1.0 })).advance.x;
+    x += (try appendSolidRun(&builder, .{}, "   shield ", x, y, 18.0, .{ 0.62, 0.72, 0.82, 1.0 })).advance.x;
+    _ = try appendPaintedRun(&builder, .{ .weight = .bold }, "online", x, y, 22.0, .{ .linear_gradient = .{
+        .start = .{ .x = x, .y = y - 22.0 },
+        .end = .{ .x = x + 76.0, .y = y },
+        .start_color = .{ 0.20, 0.82, 0.92, 1.0 },
+        .end_color = .{ 0.85, 0.96, 0.45, 1.0 },
+    } });
+
+    x = 18.0;
+    y = 142.0;
+    x += (try appendSolidRun(&builder, .{}, "per-letter  ", x, y, 17.0, .{ 0.56, 0.64, 0.74, 1.0 })).advance.x;
+    const letters = "snail";
+    const colors = [_][4]f32{
+        .{ 0.28, 0.55, 0.96, 1.0 },
+        .{ 0.92, 0.36, 0.56, 1.0 },
+        .{ 0.98, 0.78, 0.26, 1.0 },
+        .{ 0.32, 0.82, 0.56, 1.0 },
+        .{ 0.76, 0.56, 0.98, 1.0 },
+    };
+    for (letters, 0..) |letter, i| {
+        const one = [_]u8{letter};
+        x += (try appendSolidRun(&builder, .{ .weight = .bold }, &one, x, y, 24.0 + @as(f32, @floatFromInt(i % 3)) * 3.0, colors[i])).advance.x;
+    }
+    x += (try appendSolidRun(&builder, .{}, "  alerts ", x, y, 17.0, .{ 0.56, 0.64, 0.74, 1.0 })).advance.x;
+    x += (try appendSolidRun(&builder, .{ .weight = .bold }, "OK", x, y, 20.0, .{ 0.36, 0.92, 0.52, 1.0 })).advance.x;
+    x += (try appendSolidRun(&builder, .{}, " / ", x, y, 17.0, .{ 0.56, 0.64, 0.74, 1.0 })).advance.x;
+    x += (try appendSolidRun(&builder, .{ .weight = .bold }, "WARN", x, y, 20.0, .{ 0.98, 0.72, 0.32, 1.0 })).advance.x;
+    x += (try appendSolidRun(&builder, .{}, " / ", x, y, 17.0, .{ 0.56, 0.64, 0.74, 1.0 })).advance.x;
+    _ = try appendSolidRun(&builder, .{ .weight = .bold }, "CRIT", x, y, 20.0, .{ 1.0, 0.40, 0.44, 1.0 });
+
     return builder.finish();
 }
 
@@ -508,7 +615,12 @@ fn buildScene(
         if (blobs.len > 0) allocator.free(blobs);
     }
 
-    if (needs_text) {
+    if (kind == .rich_text) {
+        blobs = try allocator.alloc(snail.TextBlob, 1);
+        blobs[blob_count] = try makeRichTextBlob(allocator, atlas);
+        try scene.addText(.{ .blob = &blobs[blob_count] });
+        blob_count += 1;
+    } else if (needs_text) {
         const lines: []const TextLine = if (kind == .multi_script) scene_multi_script_lines[0..] else scene_text_lines[0..];
         blobs = try allocator.alloc(snail.TextBlob, lines.len);
         for (lines) |line| {
@@ -548,7 +660,7 @@ fn uploadSceneResources(
     renderer: *snail.Renderer,
     scene: *const snail.Scene,
 ) !snail.PreparedResources {
-    const entries = try allocator.alloc(snail.ResourceSet.Entry, @max(scene.commandCount(), 1));
+    const entries = try allocator.alloc(snail.ResourceSet.Entry, @max(scene.commandCount() * 2, 1));
     defer allocator.free(entries);
 
     var set = snail.ResourceSet.init(entries);
@@ -1014,6 +1126,7 @@ pub fn main() !void {
 
     var atlas = try initTextAtlas(allocator, &.{
         .{ .data = assets.noto_sans_regular },
+        .{ .data = assets.noto_sans_bold, .weight = .bold },
         .{ .data = assets.noto_sans_arabic, .fallback = true },
         .{ .data = assets.noto_sans_devanagari, .fallback = true },
         .{ .data = assets.noto_sans_thai, .fallback = true },

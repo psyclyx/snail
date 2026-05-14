@@ -193,9 +193,8 @@ pub fn main() !void {
     }
 }
 
-fn addPassResources(set: *snail.ResourceSet, key: anytype, pass: *const PreparedPass) !void {
-    try set.putTextAtlas(.fonts, pass.text.atlas);
-    if (pass.picture) |picture| try set.putPathPicture(key, picture);
+fn addPassResources(set: *snail.ResourceSet, pass: *const PreparedPass) !void {
+    try set.addScene(&pass.scene);
 }
 
 fn buildSceneResourceSet(
@@ -204,12 +203,12 @@ fn buildSceneResourceSet(
     entries: []snail.ResourceSet.Entry,
 ) !snail.ResourceSet {
     var set = snail.ResourceSet.init(entries);
-    try addPassResources(&set, .world_rough_wall, &world_passes.rough_wall.prepared);
-    try addPassResources(&set, .world_center_panel, &world_passes.center_panel.prepared);
-    try addPassResources(&set, .world_glass, &world_passes.glass.prepared);
-    try addPassResources(&set, .hud_plain, &hud_passes.plain);
-    try addPassResources(&set, .hud_translucent_panel, &hud_passes.translucent);
-    try addPassResources(&set, .hud_solid_panel, &hud_passes.solid);
+    try addPassResources(&set, &world_passes.rough_wall.prepared);
+    try addPassResources(&set, &world_passes.center_panel.prepared);
+    try addPassResources(&set, &world_passes.glass.prepared);
+    try addPassResources(&set, &hud_passes.plain);
+    try addPassResources(&set, &hud_passes.translucent);
+    try addPassResources(&set, &hud_passes.solid);
     return set;
 }
 
