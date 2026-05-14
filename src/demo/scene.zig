@@ -17,6 +17,7 @@ pub const ViewMode = enum {
 pub const Assets = struct {
     fonts: snail.TextAtlas,
     tile_image: snail.Image,
+    text_paint_image: snail.Image,
 
     pub fn init(allocator: Allocator) !Assets {
         var fonts = try snail.TextAtlas.init(allocator, &.{
@@ -31,6 +32,7 @@ pub const Assets = struct {
             .{ .data = assets_data.noto_sans_thai, .fallback = true },
             .{ .data = assets_data.twemoji_mozilla, .fallback = true },
         });
+        errdefer fonts.deinit();
 
         // Ensure glyphs for every style used in the demo.
         const ascii = &snail.ASCII_PRINTABLE;
@@ -63,17 +65,46 @@ pub const Assets = struct {
             }
         }
 
+        var tile_image = try snail.Image.initSrgba8(allocator, 16, 16, assets_data.dots_rgba);
+        errdefer tile_image.deinit();
+        const text_paint_image = try initTextPaintImage(allocator);
+
         return .{
             .fonts = fonts,
-            .tile_image = try snail.Image.initSrgba8(allocator, 16, 16, assets_data.dots_rgba),
+            .tile_image = tile_image,
+            .text_paint_image = text_paint_image,
         };
     }
 
     pub fn deinit(self: *Assets) void {
         self.fonts.deinit();
         self.tile_image.deinit();
+        self.text_paint_image.deinit();
     }
 };
+
+fn initTextPaintImage(allocator: Allocator) !snail.Image {
+    var pixels: [16 * 16 * 4]u8 = undefined;
+    const colors = [_][4]u8{
+        .{ 36, 92, 220, 255 },
+        .{ 242, 88, 142, 255 },
+        .{ 255, 210, 80, 255 },
+        .{ 40, 176, 132, 255 },
+    };
+    for (0..16) |py| {
+        for (0..16) |px| {
+            const diagonal = ((px + py) / 4) % 2;
+            const quadrant = @as(usize, @intFromBool(px >= 8)) + @as(usize, @intFromBool(py >= 8)) * 2;
+            const color = colors[(quadrant + diagonal) % colors.len];
+            const i = (py * 16 + px) * 4;
+            pixels[i + 0] = color[0];
+            pixels[i + 1] = color[1];
+            pixels[i + 2] = color[2];
+            pixels[i + 3] = color[3];
+        }
+    }
+    return snail.Image.initSrgba8(allocator, 16, 16, &pixels);
+}
 
 pub fn buildPathPicture(allocator: Allocator, layout: demo_banner.Layout, assets_ref: *const Assets, decoration_rects: []const snail.Rect) !snail.PathPicture {
     return demo_banner.buildPathPicture(allocator, layout, &assets_ref.tile_image, decoration_rects);
@@ -81,5 +112,5 @@ pub fn buildPathPicture(allocator: Allocator, layout: demo_banner.Layout, assets
 
 /// Build the demo's prepared text blob and collect decoration rects.
 pub fn buildTextBlob(builder: *snail.TextBlobBuilder, layout: demo_banner.Layout, grid: snail.PixelGrid, assets_ref: *const Assets, decoration_rects: []snail.Rect) demo_banner.TextBuildResult {
-    return demo_banner.buildTextBlob(builder, layout, grid, &assets_ref.fonts, &assets_ref.tile_image, decoration_rects) catch .{ .decoration_count = 0, .missing = false };
+    return demo_banner.buildTextBlob(builder, layout, grid, &assets_ref.fonts, &assets_ref.text_paint_image, decoration_rects) catch .{ .decoration_count = 0, .missing = false };
 }

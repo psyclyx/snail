@@ -354,7 +354,7 @@ pub fn buildTextBlob(
     layout: Layout,
     grid: snail.PixelGrid,
     fonts: *const snail.TextAtlas,
-    tile_image: *const snail.Image,
+    text_paint_image: *const snail.Image,
     decoration_rects_out: []snail.Rect,
 ) !TextBuildResult {
     var decoration_count: usize = 0;
@@ -517,32 +517,12 @@ pub fn buildTextBlob(
         _ = try placer.addText(.{}, "AV To VA Ty", x, y + body_size, body_size, text);
         y += line_h + 16 * s;
 
-        // Paint
-        _ = try placer.addText(.{}, "Paint", x, y + sub_label_size, sub_label_size, muted);
-        y += sub_label_size + 6 * s;
-        const gradient_baseline = y + body_size;
-        _ = try placer.addPaintedText(.{ .weight = .bold }, "gradient", x, gradient_baseline, body_size, .{ .linear_gradient = .{
-            .start = .{ .x = x, .y = gradient_baseline - body_size },
-            .end = .{ .x = x + 120 * s, .y = gradient_baseline },
-            .start_color = .{ 0.18, 0.50, 0.88, 1.0 },
-            .end_color = .{ 0.88, 0.30, 0.56, 1.0 },
-        } });
-        y += line_h;
-        const image_baseline = y + body_size;
-        const image_period = 12 * s;
-        _ = try placer.addPaintedText(.{ .weight = .bold }, "image", x, image_baseline, body_size, .{ .image = .{
-            .image = tile_image,
-            .uv_transform = .{
-                .xx = 1.0 / image_period,
-                .yy = 1.0 / image_period,
-                .tx = -x / image_period,
-                .ty = -(image_baseline - body_size) / image_period,
-            },
-            .tint = .{ 0.16, 0.34, 0.86, 1.0 },
-            .extend_x = .repeat,
-            .extend_y = .repeat,
-            .filter = .nearest,
-        } });
+        // Mixed sample
+        _ = try placer.addText(.{}, "Sphinx of black", x, y + 18 * s, 16 * s, muted);
+        y += 22 * s;
+        _ = try placer.addText(.{}, "quartz, judge", x, y + 18 * s, 16 * s, muted);
+        y += 22 * s;
+        _ = try placer.addText(.{}, "my vow.", x, y + 18 * s, 16 * s, muted);
     }
 
     // ── Scripts card ──
@@ -589,7 +569,7 @@ pub fn buildTextBlob(
         const gap = shape_gap * s;
         const item_label = 11 * s;
 
-        _ = try placer.addText(.{ .weight = .bold }, "Vectors", x, y + label_size, label_size, accent);
+        _ = try placer.addText(.{ .weight = .bold }, "Primitives", x, y + label_size, label_size, accent);
         y += label_size + 14 * s;
 
         // Row 1: "Shapes" sub-heading
@@ -618,6 +598,34 @@ pub fn buildTextBlob(
             _ = try placer.addText(.{}, lbl, lx, fill_label_y + item_label, item_label, muted);
             lx += sz + gap;
         }
+
+        // Row 3: text using the same Paint primitives.
+        const text_paint_label_y = fill_label_y + item_label + 14 * s;
+        _ = try placer.addText(.{}, "Text paint", x, text_paint_label_y + sub_label_size, sub_label_size, muted);
+        const paint_text_size = 26 * s;
+        const paint_text_y = text_paint_label_y + sub_label_size + 8 * s;
+        const gradient_baseline = paint_text_y + paint_text_size;
+        const gradient_advance = (try placer.addPaintedText(.{ .weight = .bold }, "gradient", x, gradient_baseline, paint_text_size, .{ .linear_gradient = .{
+            .start = .{ .x = x, .y = gradient_baseline - paint_text_size },
+            .end = .{ .x = x + 132 * s, .y = gradient_baseline },
+            .start_color = .{ 0.18, 0.50, 0.88, 1.0 },
+            .end_color = .{ 0.88, 0.30, 0.56, 1.0 },
+        } })).advance.x;
+
+        const image_x = x + gradient_advance + 34 * s;
+        const image_period = 30 * s;
+        _ = try placer.addPaintedText(.{ .weight = .bold }, "image", image_x, gradient_baseline, paint_text_size, .{ .image = .{
+            .image = text_paint_image,
+            .uv_transform = .{
+                .xx = 1.0 / image_period,
+                .yy = 1.0 / image_period,
+                .tx = -image_x / image_period,
+                .ty = -(gradient_baseline - paint_text_size) / image_period,
+            },
+            .extend_x = .repeat,
+            .extend_y = .repeat,
+            .filter = .nearest,
+        } });
     }
 
     return .{ .decoration_count = decoration_count, .missing = had_missing };
