@@ -1405,10 +1405,6 @@ export fn snail_gl_renderer_init(out: *?*RendererImpl) c_int {
     return SNAIL_OK;
 }
 
-export fn snail_renderer_init(out: *?*RendererImpl) c_int {
-    return snail_gl_renderer_init(out);
-}
-
 export fn snail_vulkan_available() bool {
     return build_options.enable_vulkan;
 }

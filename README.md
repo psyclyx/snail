@@ -339,6 +339,7 @@ try scene.addPath(.{ .picture = &picture });
 
 ```c
 #include "snail.h"
+#include "snail_gl.h"
 
 SnailFaceSpec faces[] = {{
     .data = ttf_data,
@@ -402,7 +403,7 @@ snail_resource_set_init(NULL, 8, &resources);
 snail_resource_set_add_scene(resources, scene);
 
 SnailRenderer *renderer = NULL;
-snail_renderer_init(&renderer);
+snail_gl_renderer_init(&renderer);
 
 SnailDrawOptions draw_options = {
     .mvp = snail_mat4_identity(), // replace with your pixel-to-clip projection
@@ -678,7 +679,7 @@ backend on top of snail's rasterization. Most apps should not need this.
 | Type | Rule |
 |------|------|
 | `TextAtlas` | Immutable snapshot. Safe for concurrent reads. `ensureText`, `ensureShaped`, and `ensureGlyphs` return a new snapshot; old remains valid for in-flight readers. |
-| `TextBlob`, `PathPicture`, `Image` | Safe for concurrent reads while the borrowed atlas / pictures / pixels outlive the reader. `TextBlob.rebind` mutates the blob and must not race with readers. |
+| `TextBlob`, `PathPicture`, `Image` | Safe for concurrent reads while the borrowed atlas / pictures / pixels outlive the reader. `TextBlob.rebound` returns a new blob instead of mutating the existing one. |
 | `ResourceSet`, `Scene` | Borrowed manifests/lists. Source values must outlive upload/record building; CPU prepared resources extend some source lifetimes as described below. |
 | `PreparedResources` | Backend/context-specific. GPU prepared resources own backend texture uploads. CPU prepared resources own prepared curve sidecars but still borrow atlas band/layer-info data, painted `TextBlob` layer-info data, and image pixels. |
 | `DrawList` | Caller-owned buffer. Thread-local — no sharing needed. |
