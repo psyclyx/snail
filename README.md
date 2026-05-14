@@ -42,7 +42,7 @@ There is no rasterization, no texture sampling for glyph shapes, and no distance
 
 ## Color convention
 
-All color parameters are **sRGB, straight (unpremultiplied) alpha**, as `[4]f32` in the range 0.0–1.0. This applies to `FillStyle.color`, `StrokeStyle.color`, gradient stops, `ImagePaint.tint`, and text color arguments. The renderer premultiplies alpha and linearizes for blending internally.
+All color parameters are **sRGB, straight (unpremultiplied) alpha**, as `[4]f32` in the range 0.0–1.0. This applies to `Paint.solid`, gradient stops, `ImagePaint.tint`, and text color arguments. The renderer premultiplies alpha and linearizes for blending internally.
 
 **Images** (`Image.initSrgba8`) expect sRGB-encoded RGBA8 pixel data (4 bytes per pixel, 0–255). This is what most image decoders produce. Linear-space pixel buffers will appear too bright.
 
@@ -212,8 +212,8 @@ try path.addRoundedRect(.{ .x = 0, .y = 0, .w = 200, .h = 80 }, 12);
 var builder = snail.PathPictureBuilder.init(allocator);
 defer builder.deinit();
 try builder.addPath(&path,
-    .{ .color = .{ 0.1, 0.1, 0.2, 0.9 } },                 // fill
-    .{ .color = .{ 0.4, 0.6, 1, 1 }, .width = 2, .join = .round }, // stroke
+    .{ .paint = .{ .solid = .{ 0.1, 0.1, 0.2, 0.9 } } },    // fill
+    .{ .paint = .{ .solid = .{ 0.4, 0.6, 1, 1 } }, .width = 2, .join = .round }, // stroke
     .identity,
 );
 
@@ -279,7 +279,9 @@ snail_path_add_rounded_rect(path, (SnailRect){0, 0, 200, 80}, 12);
 
 SnailPathPictureBuilder *builder = NULL;
 snail_path_picture_builder_init(NULL, &builder);
-SnailFillStyle fill = {.color = {0.1, 0.1, 0.2, 0.9}, .paint_kind = -1};
+SnailFillStyle fill = {
+    .paint = {.kind = SNAIL_PAINT_SOLID, .paint_solid = {0.1, 0.1, 0.2, 0.9}},
+};
 snail_path_picture_builder_add_filled_path(builder, path, fill,
                                            SNAIL_TRANSFORM2D_IDENTITY);
 
@@ -368,8 +370,8 @@ snail_text_atlas_deinit(atlas);
 | `Renderer` | Type-erased convenience wrapper around a backend renderer. |
 | `Rect` | `{ x, y, w, h }` rectangle. |
 | `Transform2D` | 2x3 affine matrix `{ xx, xy, tx, yx, yy, ty }`. |
-| `FillStyle` | sRGB fill color (straight alpha) with optional `Paint`. |
-| `StrokeStyle` | sRGB stroke color (straight alpha), width, optional paint, cap, join, miter limit, placement. |
+| `FillStyle` | Fill `Paint`. |
+| `StrokeStyle` | Stroke `Paint`, width, cap, join, miter limit, placement. |
 | `Paint` | Tagged union: `.solid`, `.linear_gradient`, `.radial_gradient`, `.image`. |
 
 ### Text

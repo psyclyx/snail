@@ -497,9 +497,7 @@ pub const Paint = union(enum) {
 };
 
 pub const FillStyle = struct {
-    // Straight RGBA; the renderer premultiplies internally.
-    color: [4]f32 = .{ 0, 0, 0, 1 },
-    paint: ?Paint = null,
+    paint: Paint,
 };
 
 pub const StrokeCap = enum {
@@ -520,9 +518,7 @@ pub const StrokePlacement = enum {
 };
 
 pub const StrokeStyle = struct {
-    // Straight RGBA; the renderer premultiplies internally.
-    color: [4]f32 = .{ 0, 0, 0, 1 },
-    paint: ?Paint = null,
+    paint: Paint,
     width: f32,
     cap: StrokeCap = .butt,
     join: StrokeJoin = .miter,
@@ -1851,14 +1847,6 @@ fn appendLineIfNeeded(path: *Path, point: Vec2) !void {
     }
 }
 
-fn resolveFillPaint(style: FillStyle) Paint {
-    return style.paint orelse .{ .solid = style.color };
-}
-
-fn resolveStrokePaint(style: StrokeStyle) Paint {
-    return style.paint orelse .{ .solid = style.color };
-}
-
 fn translateBBox(bbox: BBox, delta: Vec2) BBox {
     return .{
         .min = Vec2.add(bbox.min, delta),
@@ -1910,7 +1898,6 @@ fn translatePaint(paint: Paint, delta: Vec2) Paint {
 
 fn fillStyleForStroke(style: StrokeStyle) FillStyle {
     return .{
-        .color = style.color,
         .paint = style.paint,
     };
 }
@@ -2810,7 +2797,7 @@ pub const PathPicture = struct {
             };
             try builder.addStrokedRect(
                 rect,
-                .{ .color = options.stroke_color, .width = options.stroke_width, .join = .miter },
+                .{ .paint = .{ .solid = options.stroke_color }, .width = options.stroke_width, .join = .miter },
                 shape.transform,
             );
             if (options.origin_size > 1e-4 and options.origin_color[3] > 1e-4) {
@@ -2819,13 +2806,13 @@ pub const PathPicture = struct {
                     .y = -cross_thickness * 0.5,
                     .w = options.origin_size * 2.0,
                     .h = cross_thickness,
-                }, .{ .color = options.origin_color }, shape.transform);
+                }, .{ .paint = .{ .solid = options.origin_color } }, shape.transform);
                 try builder.addFilledRect(.{
                     .x = -cross_thickness * 0.5,
                     .y = -options.origin_size,
                     .w = cross_thickness,
                     .h = options.origin_size * 2.0,
-                }, .{ .color = options.origin_color }, shape.transform);
+                }, .{ .paint = .{ .solid = options.origin_color } }, shape.transform);
             }
         }
 
@@ -3346,7 +3333,7 @@ pub const PathPictureBuilder = struct {
                 fill_curves,
                 fill_bbox,
                 fill_logical_curve_count,
-                resolveFillPaint(style),
+                style.paint,
                 stroke_curves,
                 stroke_bbox,
                 stroke_logical_curve_count,
@@ -3428,18 +3415,18 @@ pub const PathPictureBuilder = struct {
                         curves,
                         bbox,
                         logical_curve_count,
-                        resolveFillPaint(style),
+                        style.paint,
                         stroke_geom.curves,
                         stroke_geom.bbox,
                         stroke_geom.logical_curve_count,
-                        resolveStrokePaint(stroke_style),
+                        stroke_style.paint,
                         transform,
                         composite_mode,
                     );
                     return;
                 }
             }
-            try self.addSingleRecord(curves, bbox, logical_curve_count, resolveFillPaint(style), .fill, transform);
+            try self.addSingleRecord(curves, bbox, logical_curve_count, style.paint, .fill, transform);
         }
         if (stroke) |style| {
             var stroke_geom_style = style;
@@ -3458,7 +3445,7 @@ pub const PathPictureBuilder = struct {
                         stroke_geom.curves,
                         stroke_geom.bbox,
                         stroke_geom.logical_curve_count,
-                        resolveStrokePaint(style),
+                        style.paint,
                         transform,
                         .fill_stroke_inside,
                     );
@@ -3468,7 +3455,7 @@ pub const PathPictureBuilder = struct {
                     stroke_geom.curves,
                     stroke_geom.bbox,
                     stroke_geom.logical_curve_count,
-                    resolveStrokePaint(style),
+                    style.paint,
                     .stroke,
                     transform,
                 );
@@ -3520,7 +3507,7 @@ pub const PathPictureBuilder = struct {
                         .h = size.y - inset * 2.0,
                     });
                 }
-                return self.addExplicitInsideStrokeRecord(&fill_path, fill, &stroke_path, resolveStrokePaint(stroke_style), transform);
+                return self.addExplicitInsideStrokeRecord(&fill_path, fill, &stroke_path, stroke_style.paint, transform);
             }
         }
 
@@ -3562,7 +3549,7 @@ pub const PathPictureBuilder = struct {
                     const inner_radius = std.math.clamp(radius - inset, 0.0, @min(inner_rect.w, inner_rect.h) * 0.5);
                     try stroke_path.addRoundedRectReversed(inner_rect, inner_radius);
                 }
-                return self.addExplicitInsideStrokeRecord(&fill_path, fill, &stroke_path, resolveStrokePaint(stroke_style), transform);
+                return self.addExplicitInsideStrokeRecord(&fill_path, fill, &stroke_path, stroke_style.paint, transform);
             }
         }
 
@@ -3598,7 +3585,7 @@ pub const PathPictureBuilder = struct {
                         .h = size.y - inset * 2.0,
                     });
                 }
-                return self.addExplicitInsideStrokeRecord(&fill_path, fill, &stroke_path, resolveStrokePaint(stroke_style), transform);
+                return self.addExplicitInsideStrokeRecord(&fill_path, fill, &stroke_path, stroke_style.paint, transform);
             }
         }
 
@@ -5901,7 +5888,7 @@ fn testRectPicture(allocator: std.mem.Allocator, x: f32) !PathPicture {
 
     var builder = PathPictureBuilder.init(allocator);
     defer builder.deinit();
-    try builder.addFilledPath(&path, .{ .color = .{ 0.2, 0.4, 0.8, 1.0 } }, .identity);
+    try builder.addFilledPath(&path, .{ .paint = .{ .solid = .{ 0.2, 0.4, 0.8, 1.0 } } }, .identity);
     return builder.freeze(.{ .persistent_allocator = allocator, .scratch_allocator = allocator });
 }
 
@@ -6539,7 +6526,7 @@ test "path picture band heuristic uses source segment count for cubic fills" {
 
     var builder = PathPictureBuilder.init(std.testing.allocator);
     defer builder.deinit();
-    try builder.addFilledPath(&path, .{ .color = .{ 0.8, 0.2, 0.1, 1.0 } }, .identity);
+    try builder.addFilledPath(&path, .{ .paint = .{ .solid = .{ 0.8, 0.2, 0.1, 1.0 } } }, .identity);
 
     var picture = try builder.freeze(.{ .persistent_allocator = std.testing.allocator, .scratch_allocator = std.testing.allocator });
     defer picture.deinit();
@@ -6572,7 +6559,7 @@ test "path picture layers use direct local curve encoding" {
         .start_color = .{ 0.90, 0.87, 0.78, 0.98 },
         .end_color = .{ 0.58, 0.66, 0.57, 0.98 },
     } } }, .{
-        .color = .{ 0.92, 0.92, 0.86, 0.42 },
+        .paint = .{ .solid = .{ 0.92, 0.92, 0.86, 0.42 } },
         .width = 2.0,
         .join = .round,
     }, .identity);
@@ -6599,7 +6586,7 @@ test "path picture freeze compiles atlas and transformed batch vertices" {
 
     var builder = PathPictureBuilder.init(std.testing.allocator);
     defer builder.deinit();
-    try builder.addFilledPath(&path, .{ .color = .{ 0.8, 0.2, 0.1, 1.0 } }, .{
+    try builder.addFilledPath(&path, .{ .paint = .{ .solid = .{ 0.8, 0.2, 0.1, 1.0 } } }, .{
         .xx = 1,
         .xy = 0,
         .tx = 20,
@@ -6637,7 +6624,7 @@ test "path picture freeze compiles atlas and transformed batch vertices" {
 test "resource upload footprints are allocation-free and policy-aware" {
     var builder = PathPictureBuilder.init(std.testing.allocator);
     defer builder.deinit();
-    try builder.addFilledRect(.{ .x = 0, .y = 0, .w = 10, .h = 8 }, .{ .color = .{ 1, 0, 0, 1 } }, .identity);
+    try builder.addFilledRect(.{ .x = 0, .y = 0, .w = 10, .h = 8 }, .{ .paint = .{ .solid = .{ 1, 0, 0, 1 } } }, .identity);
 
     var picture = try builder.freeze(.{ .persistent_allocator = std.testing.allocator, .scratch_allocator = std.testing.allocator });
     defer picture.deinit();
@@ -6675,9 +6662,9 @@ test "path picture ranges emit selected shapes" {
     var builder = PathPictureBuilder.init(std.testing.allocator);
     defer builder.deinit();
     const first_mark = builder.mark();
-    try builder.addFilledRect(.{ .x = 0, .y = 0, .w = 20, .h = 10 }, .{ .color = .{ 0.8, 0.2, 0.1, 1.0 } }, .identity);
+    try builder.addFilledRect(.{ .x = 0, .y = 0, .w = 20, .h = 10 }, .{ .paint = .{ .solid = .{ 0.8, 0.2, 0.1, 1.0 } } }, .identity);
     const second_mark = builder.mark();
-    try builder.addFilledRect(.{ .x = 40, .y = 0, .w = 20, .h = 10 }, .{ .color = .{ 0.1, 0.4, 0.8, 1.0 } }, .identity);
+    try builder.addFilledRect(.{ .x = 40, .y = 0, .w = 20, .h = 10 }, .{ .paint = .{ .solid = .{ 0.1, 0.4, 0.8, 1.0 } } }, .identity);
     try std.testing.expectEqual(@as(usize, 2), builder.shapeCount());
     const first_range = try builder.rangeBetween(first_mark, second_mark);
     try std.testing.expectEqual(@as(usize, 0), first_range.start);
@@ -6716,7 +6703,7 @@ test "path picture ranges emit selected shapes" {
 test "path picture freeze separates persistent and scratch allocators" {
     var builder = PathPictureBuilder.init(std.testing.allocator);
     defer builder.deinit();
-    try builder.addFilledRect(.{ .x = 0, .y = 0, .w = 20, .h = 10 }, .{ .color = .{ 0.2, 0.6, 0.9, 1.0 } }, .identity);
+    try builder.addFilledRect(.{ .x = 0, .y = 0, .w = 20, .h = 10 }, .{ .paint = .{ .solid = .{ 0.2, 0.6, 0.9, 1.0 } } }, .identity);
 
     var scratch_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     var picture = try builder.freeze(.{
@@ -6745,7 +6732,7 @@ test "path batch offsets layer info rows through atlas views" {
 
     var builder = PathPictureBuilder.init(std.testing.allocator);
     defer builder.deinit();
-    try builder.addFilledPath(&path, .{ .color = .{ 0.4, 0.7, 0.9, 1.0 } }, .identity);
+    try builder.addFilledPath(&path, .{ .paint = .{ .solid = .{ 0.4, 0.7, 0.9, 1.0 } } }, .identity);
 
     var picture = try builder.freeze(.{ .persistent_allocator = std.testing.allocator, .scratch_allocator = std.testing.allocator });
     defer picture.deinit();
@@ -6777,8 +6764,8 @@ test "styled path builder emits fill and stroke records" {
     defer builder.deinit();
     try builder.addPath(
         &path,
-        .{ .color = .{ 0.2, 0.4, 0.8, 1.0 } },
-        .{ .color = .{ 0.9, 0.8, 0.2, 1.0 }, .width = 4.0, .join = .round },
+        .{ .paint = .{ .solid = .{ 0.2, 0.4, 0.8, 1.0 } } },
+        .{ .paint = .{ .solid = .{ 0.9, 0.8, 0.2, 1.0 } }, .width = 4.0, .join = .round },
         .identity,
     );
 
@@ -6813,7 +6800,7 @@ test "open stroked path expands for round caps" {
     var builder = PathPictureBuilder.init(std.testing.allocator);
     defer builder.deinit();
     try builder.addStrokedPath(&path, .{
-        .color = .{ 1.0, 1.0, 1.0, 1.0 },
+        .paint = .{ .solid = .{ 1.0, 1.0, 1.0, 1.0 } },
         .width = 6.0,
         .cap = .round,
         .join = .round,
@@ -6837,6 +6824,7 @@ test "square-capped stroked path extends beyond endpoints" {
     try path.lineTo(.{ .x = 12, .y = 0 });
 
     const stroke_geom = (try path.cloneStrokedCurves(std.testing.allocator, .{
+        .paint = .{ .solid = .{ 1, 1, 1, 1 } },
         .width = 6.0,
         .cap = .square,
         .join = .miter,
@@ -6855,6 +6843,7 @@ test "elliptical stroke outline stays curved without degenerate joins" {
     try path.addEllipse(.{ .x = 0, .y = 0, .w = 100, .h = 60 });
 
     const stroke_geom = (try path.cloneStrokedCurves(std.testing.allocator, .{
+        .paint = .{ .solid = .{ 1, 1, 1, 1 } },
         .width = 8.0,
         .join = .round,
     })) orelse return error.TestExpectedEqual;
@@ -6895,6 +6884,7 @@ test "quadratic stroked eye stalk contains its centerline midpoint" {
         try path.quadTo(case.control, case.end);
 
         const stroke_geom = (try path.cloneStrokedCurves(std.testing.allocator, .{
+            .paint = .{ .solid = .{ 1, 1, 1, 1 } },
             .width = 4.0,
             .cap = .round,
             .join = .round,
@@ -6953,8 +6943,8 @@ test "inside-aligned generic path stroke groups fill and stroke on one instance"
     defer builder.deinit();
     try builder.addPath(
         &path,
-        .{ .color = .{ 0.1, 0.2, 0.3, 0.4 } },
-        .{ .color = .{ 0.8, 0.7, 0.6, 1.0 }, .width = 2.0, .join = .round, .placement = .inside },
+        .{ .paint = .{ .solid = .{ 0.1, 0.2, 0.3, 0.4 } } },
+        .{ .paint = .{ .solid = .{ 0.8, 0.7, 0.6, 1.0 } }, .width = 2.0, .join = .round, .placement = .inside },
         .identity,
     );
 
@@ -6992,8 +6982,8 @@ test "inside-aligned rounded rect helper emits explicit ring geometry" {
     defer builder.deinit();
     try builder.addRoundedRect(
         .{ .x = 10, .y = 20, .w = 40, .h = 18 },
-        .{ .color = .{ 0.1, 0.2, 0.3, 0.4 } },
-        .{ .color = .{ 0.8, 0.7, 0.6, 1.0 }, .width = 2.0, .join = .round, .placement = .inside },
+        .{ .paint = .{ .solid = .{ 0.1, 0.2, 0.3, 0.4 } } },
+        .{ .paint = .{ .solid = .{ 0.8, 0.7, 0.6, 1.0 } }, .width = 2.0, .join = .round, .placement = .inside },
         6.0,
         .identity,
     );
@@ -7025,10 +7015,10 @@ test "inside-aligned rounded rect helper emits explicit ring geometry" {
 test "path picture records single-layer fill and stroke roles distinctly" {
     var builder = PathPictureBuilder.init(std.testing.allocator);
     defer builder.deinit();
-    try builder.addFilledRect(.{ .x = 0, .y = 0, .w = 20, .h = 10 }, .{ .color = .{ 1, 1, 1, 1 } }, .identity);
+    try builder.addFilledRect(.{ .x = 0, .y = 0, .w = 20, .h = 10 }, .{ .paint = .{ .solid = .{ 1, 1, 1, 1 } } }, .identity);
     try builder.addStrokedRect(
         .{ .x = 30, .y = 0, .w = 20, .h = 10 },
-        .{ .color = .{ 1, 0, 0, 1 }, .width = 2.0, .join = .miter },
+        .{ .paint = .{ .solid = .{ 1, 0, 0, 1 } }, .width = 2.0, .join = .miter },
         .identity,
     );
 
@@ -7045,8 +7035,8 @@ test "path picture debug view remaps composite fill and stroke paints by role" {
     defer builder.deinit();
     try builder.addRoundedRect(
         .{ .x = 10, .y = 20, .w = 40, .h = 18 },
-        .{ .color = .{ 0.1, 0.2, 0.3, 0.4 } },
-        .{ .color = .{ 0.8, 0.7, 0.6, 1.0 }, .width = 2.0, .join = .round, .placement = .inside },
+        .{ .paint = .{ .solid = .{ 0.1, 0.2, 0.3, 0.4 } } },
+        .{ .paint = .{ .solid = .{ 0.8, 0.7, 0.6, 1.0 } }, .width = 2.0, .join = .round, .placement = .inside },
         6.0,
         .identity,
     );
@@ -7078,7 +7068,7 @@ test "path picture debug view remaps composite fill and stroke paints by role" {
 test "path picture bounds overlay builds guides for each instance" {
     var builder = PathPictureBuilder.init(std.testing.allocator);
     defer builder.deinit();
-    try builder.addFilledRect(.{ .x = 0, .y = 0, .w = 20, .h = 10 }, .{ .color = .{ 1, 1, 1, 1 } }, .{ .tx = 30, .ty = 40 });
+    try builder.addFilledRect(.{ .x = 0, .y = 0, .w = 20, .h = 10 }, .{ .paint = .{ .solid = .{ 1, 1, 1, 1 } } }, .{ .tx = 30, .ty = 40 });
 
     var picture = try builder.freeze(.{ .persistent_allocator = std.testing.allocator, .scratch_allocator = std.testing.allocator });
     defer picture.deinit();
@@ -7098,7 +7088,7 @@ test "path picture freeze stores large coordinates as direct local curves" {
     defer absolute_builder.deinit();
     try absolute_builder.addRoundedRect(
         .{ .x = 640, .y = 960, .w = 40, .h = 18 },
-        .{ .color = .{ 1, 1, 1, 1 } },
+        .{ .paint = .{ .solid = .{ 1, 1, 1, 1 } } },
         null,
         9.0,
         .identity,
@@ -7110,7 +7100,7 @@ test "path picture freeze stores large coordinates as direct local curves" {
     defer transformed_builder.deinit();
     try transformed_builder.addRoundedRect(
         .{ .x = 0, .y = 0, .w = 40, .h = 18 },
-        .{ .color = .{ 1, 1, 1, 1 } },
+        .{ .paint = .{ .solid = .{ 1, 1, 1, 1 } } },
         null,
         9.0,
         .{ .tx = 640, .ty = 960 },
@@ -7150,8 +7140,8 @@ test "large rounded rect uses generic curve packing without helper tiling" {
     defer builder.deinit();
     try builder.addRoundedRect(
         .{ .x = 0, .y = 0, .w = 1600, .h = 48 },
-        .{ .color = .{ 1, 1, 1, 1 } },
-        .{ .color = .{ 0, 0, 0, 1 }, .width = 2.0, .join = .round, .placement = .inside },
+        .{ .paint = .{ .solid = .{ 1, 1, 1, 1 } } },
+        .{ .paint = .{ .solid = .{ 0, 0, 0, 1 } }, .width = 2.0, .join = .round, .placement = .inside },
         24.0,
         .identity,
     );
@@ -7166,8 +7156,8 @@ test "large rounded rect center stroke uses generic curve packing without helper
     defer builder.deinit();
     try builder.addRoundedRect(
         .{ .x = 0, .y = 0, .w = 1600, .h = 48 },
-        .{ .color = .{ 1, 1, 1, 1 } },
-        .{ .color = .{ 0, 0, 0, 1 }, .width = 6.0, .join = .round },
+        .{ .paint = .{ .solid = .{ 1, 1, 1, 1 } } },
+        .{ .paint = .{ .solid = .{ 0, 0, 0, 1 } }, .width = 6.0, .join = .round },
         24.0,
         .identity,
     );

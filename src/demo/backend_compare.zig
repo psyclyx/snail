@@ -123,9 +123,9 @@ fn buildPathPicture(allocator: std.mem.Allocator) !snail.PathPicture {
 
     try builder.addRoundedRect(
         .{ .x = 8.5, .y = 8.5, .w = 203.0, .h = 94.0 },
-        .{ .color = .{ 0.07, 0.09, 0.12, 1.0 } },
+        .{ .paint = .{ .solid = .{ 0.07, 0.09, 0.12, 1.0 } } },
         .{
-            .color = .{ 0.30, 0.38, 0.50, 1.0 },
+            .paint = .{ .solid = .{ 0.30, 0.38, 0.50, 1.0 } },
             .width = 1.5,
             .join = .round,
             .placement = .inside,
@@ -135,9 +135,9 @@ fn buildPathPicture(allocator: std.mem.Allocator) !snail.PathPicture {
     );
     try builder.addEllipse(
         .{ .x = 146.25, .y = 23.75, .w = 48.5, .h = 35.5 },
-        .{ .color = .{ 0.18, 0.50, 0.80, 0.72 } },
+        .{ .paint = .{ .solid = .{ 0.18, 0.50, 0.80, 0.72 } } },
         .{
-            .color = .{ 0.90, 0.94, 0.98, 0.82 },
+            .paint = .{ .solid = .{ 0.90, 0.94, 0.98, 0.82 } },
             .width = 1.25,
             .join = .round,
             .placement = .inside,
@@ -153,9 +153,9 @@ fn buildPathPicture(allocator: std.mem.Allocator) !snail.PathPicture {
     try path.close();
     try builder.addPath(
         &path,
-        .{ .color = .{ 0.78, 0.33, 0.22, 0.78 } },
+        .{ .paint = .{ .solid = .{ 0.78, 0.33, 0.22, 0.78 } } },
         .{
-            .color = .{ 0.96, 0.77, 0.42, 0.86 },
+            .paint = .{ .solid = .{ 0.96, 0.77, 0.42, 0.86 } },
             .width = 1.25,
             .join = .round,
             .placement = .inside,

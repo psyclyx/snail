@@ -416,8 +416,8 @@ fn addCustomVectorPath(builder: *snail.PathPictureBuilder, x: f32, y: f32, scale
     );
     try path.quadTo(.{ .x = x + 32 * scale, .y = y + 62 * scale }, .{ .x = x + 0 * scale, .y = y + 32 * scale });
     try path.close();
-    try builder.addPath(&path, .{ .color = color }, .{
-        .color = .{ 0.08, 0.09, 0.11, 1 },
+    try builder.addPath(&path, .{ .paint = .{ .solid = color } }, .{
+        .paint = .{ .solid = .{ 0.08, 0.09, 0.11, 1 } },
         .width = 1.25,
         .join = .round,
         .placement = .inside,
@@ -440,9 +440,9 @@ fn buildVectorPicture(allocator: std.mem.Allocator) !snail.PathPicture {
             const x = 24 + @as(f32, @floatFromInt(col)) * 96;
             const y = 24 + @as(f32, @floatFromInt(row)) * 70;
             const idx = (row * 6 + col) % colors.len;
-            const fill = snail.FillStyle{ .color = colors[idx] };
+            const fill = snail.FillStyle{ .paint = .{ .solid = colors[idx] } };
             const stroke = snail.StrokeStyle{
-                .color = .{ 0.95, 0.96, 0.98, 0.95 },
+                .paint = .{ .solid = .{ 0.95, 0.96, 0.98, 0.95 } },
                 .width = 1.5 + @as(f32, @floatFromInt((row + col) % 3)),
                 .join = .round,
                 .placement = .inside,
@@ -458,9 +458,9 @@ fn buildVectorPicture(allocator: std.mem.Allocator) !snail.PathPicture {
     }
 
     try builder.addRoundedRect(.{ .x = 18, .y = 314, .w = 580, .h = 28 }, .{
-        .color = .{ 0.08, 0.10, 0.13, 0.82 },
+        .paint = .{ .solid = .{ 0.08, 0.10, 0.13, 0.82 } },
     }, .{
-        .color = .{ 0.55, 0.68, 0.85, 1 },
+        .paint = .{ .solid = .{ 0.55, 0.68, 0.85, 1 } },
         .width = 2,
         .join = .round,
         .placement = .inside,

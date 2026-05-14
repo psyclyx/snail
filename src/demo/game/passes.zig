@@ -241,10 +241,10 @@ fn buildHudTranslucentPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas
     try path_builder.addRoundedRect(
         rect,
         .{
-            .color = .{ 0.18, 0.32, 0.44, 0.34 },
+            .paint = .{ .solid = .{ 0.18, 0.32, 0.44, 0.34 } },
         },
         .{
-            .color = .{ 0.56, 0.82, 1.0, 0.52 },
+            .paint = .{ .solid = .{ 0.56, 0.82, 1.0, 0.52 } },
             .width = 2.0,
             .placement = .inside,
         },
@@ -253,7 +253,7 @@ fn buildHudTranslucentPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas
     );
     try path_builder.addFilledRect(
         .{ .x = rect.x + 22.0, .y = rect.y + 18.0, .w = 90.0, .h = 6.0 },
-        .{ .color = .{ 0.56, 0.82, 1.0, 0.78 } },
+        .{ .paint = .{ .solid = .{ 0.56, 0.82, 1.0, 0.78 } } },
         .identity,
     );
     var picture = try path_builder.freeze(.{ .persistent_allocator = allocator, .scratch_allocator = allocator });
@@ -298,10 +298,10 @@ fn buildHudSolidPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas, wind
     try path_builder.addRoundedRect(
         rect,
         .{
-            .color = .{ 0.08, 0.11, 0.14, 1.0 },
+            .paint = .{ .solid = .{ 0.08, 0.11, 0.14, 1.0 } },
         },
         .{
-            .color = .{ 0.24, 0.36, 0.44, 1.0 },
+            .paint = .{ .solid = .{ 0.24, 0.36, 0.44, 1.0 } },
             .width = 2.0,
             .placement = .inside,
         },
@@ -310,7 +310,7 @@ fn buildHudSolidPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas, wind
     );
     try path_builder.addFilledRect(
         .{ .x = rect.x, .y = rect.y + rect.h - 26.0, .w = rect.w, .h = 26.0 },
-        .{ .color = .{ 0.14, 0.20, 0.25, 1.0 } },
+        .{ .paint = .{ .solid = .{ 0.14, 0.20, 0.25, 1.0 } } },
         .identity,
     );
     var picture = try path_builder.freeze(.{ .persistent_allocator = allocator, .scratch_allocator = allocator });
@@ -411,10 +411,10 @@ fn buildGlassPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas) !PlaneP
     try path_builder.addRoundedRect(
         rect,
         .{
-            .color = .{ 0.38, 0.70, 1.0, 0.32 },
+            .paint = .{ .solid = .{ 0.38, 0.70, 1.0, 0.32 } },
         },
         .{
-            .color = .{ 0.72, 0.90, 1.0, 0.62 },
+            .paint = .{ .solid = .{ 0.72, 0.90, 1.0, 0.62 } },
             .width = 2.0,
             .placement = .inside,
         },
@@ -423,7 +423,7 @@ fn buildGlassPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas) !PlaneP
     );
     try path_builder.addFilledRect(
         .{ .x = rect.x + 24.0, .y = rect.y + 24.0, .w = rect.w - 48.0, .h = 1.5 },
-        .{ .color = .{ 0.85, 0.95, 1.0, 0.55 } },
+        .{ .paint = .{ .solid = .{ 0.85, 0.95, 1.0, 0.55 } } },
         .identity,
     );
     var picture = try path_builder.freeze(.{ .persistent_allocator = allocator, .scratch_allocator = allocator });

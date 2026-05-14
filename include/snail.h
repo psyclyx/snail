@@ -262,21 +262,19 @@ typedef struct {
 } SnailImagePaint;
 
 typedef struct {
-    float color[4];
-    int paint_kind; /* -1 uses color; otherwise SNAIL_PAINT_* */
+    int kind;
     float paint_solid[4];
     SnailLinearGradient paint_linear;
     SnailRadialGradient paint_radial;
     SnailImagePaint paint_image;
+} SnailPaint;
+
+typedef struct {
+    SnailPaint paint;
 } SnailFillStyle;
 
 typedef struct {
-    float color[4];
-    int paint_kind;
-    float paint_solid[4];
-    SnailLinearGradient paint_linear;
-    SnailRadialGradient paint_radial;
-    SnailImagePaint paint_image;
+    SnailPaint paint;
     float width;
     int cap, join;
     float miter_limit;

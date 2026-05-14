@@ -3181,7 +3181,7 @@ test "cpu renderer renders path rect" {
     var builder = snail.PathPictureBuilder.init(testing.allocator);
     defer builder.deinit();
     try builder.addFilledRect(.{ .x = 8, .y = 6, .w = 18, .h = 12 }, .{
-        .color = .{ 1, 0, 0, 1 },
+        .paint = .{ .solid = .{ 1, 0, 0, 1 } },
     }, .identity);
 
     var picture = try builder.freeze(.{ .persistent_allocator = testing.allocator, .scratch_allocator = testing.allocator });
@@ -3215,7 +3215,7 @@ test "cpu renderer renders transformed path picture" {
     var builder = snail.PathPictureBuilder.init(testing.allocator);
     defer builder.deinit();
     try builder.addFilledRect(.{ .x = 0, .y = 0, .w = 10, .h = 8 }, .{
-        .color = .{ 0, 1, 0, 1 },
+        .paint = .{ .solid = .{ 0, 1, 0, 1 } },
     }, .identity);
 
     var picture = try builder.freeze(.{ .persistent_allocator = testing.allocator, .scratch_allocator = testing.allocator });
@@ -3258,7 +3258,7 @@ test "cpu renderer matches absolute and transformed rounded rect pictures" {
             .start_color = .{ 0.2, 0.8, 1.0, 1.0 },
             .end_color = .{ 0.9, 0.7, 0.3, 1.0 },
         } } },
-        .{ .color = .{ 1, 1, 1, 0.5 }, .width = 2.0, .join = .round, .placement = .inside },
+        .{ .paint = .{ .solid = .{ 1, 1, 1, 0.5 } }, .width = 2.0, .join = .round, .placement = .inside },
         9.0,
         .identity,
     );
@@ -3275,7 +3275,7 @@ test "cpu renderer matches absolute and transformed rounded rect pictures" {
             .start_color = .{ 0.2, 0.8, 1.0, 1.0 },
             .end_color = .{ 0.9, 0.7, 0.3, 1.0 },
         } } },
-        .{ .color = .{ 1, 1, 1, 0.5 }, .width = 2.0, .join = .round, .placement = .inside },
+        .{ .paint = .{ .solid = .{ 1, 1, 1, 0.5 } }, .width = 2.0, .join = .round, .placement = .inside },
         9.0,
         .{ .tx = 64, .ty = 40 },
     );
@@ -3304,7 +3304,7 @@ test "cpu renderer keeps rounded rect cap joins opaque" {
     defer builder.deinit();
     try builder.addRoundedRect(
         .{ .x = 16.5, .y = 12.5, .w = 48.0, .h = 16.0 },
-        .{ .color = .{ 0.2, 0.7, 0.9, 1.0 } },
+        .{ .paint = .{ .solid = .{ 0.2, 0.7, 0.9, 1.0 } } },
         null,
         8.0,
         .identity,
@@ -3351,7 +3351,7 @@ test "cpu renderer matches huge-span and normalized curved path pictures" {
     defer large_builder.deinit();
     try large_builder.addFilledPath(
         &large_path,
-        .{ .color = .{ 0.95, 0.55, 0.15, 1.0 } },
+        .{ .paint = .{ .solid = .{ 0.95, 0.55, 0.15, 1.0 } } },
         Transform2D.multiply(
             Transform2D.translate(24, 28),
             Transform2D.scale(1.0 / 64.0, 1.0 / 64.0),
@@ -3371,7 +3371,7 @@ test "cpu renderer matches huge-span and normalized curved path pictures" {
     defer normalized_builder.deinit();
     try normalized_builder.addFilledPath(
         &normalized_path,
-        .{ .color = .{ 0.95, 0.55, 0.15, 1.0 } },
+        .{ .paint = .{ .solid = .{ 0.95, 0.55, 0.15, 1.0 } } },
         Transform2D.translate(24, 28),
     );
     var normalized_picture = try normalized_builder.freeze(.{ .persistent_allocator = testing.allocator, .scratch_allocator = testing.allocator });
@@ -3403,8 +3403,8 @@ test "cpu renderer matches huge-span and normalized rounded rect pictures" {
     defer large_builder.deinit();
     try large_builder.addRoundedRect(
         .{ .x = 0, .y = 0, .w = 180 * 64, .h = 40 * 64 },
-        .{ .color = .{ 0.33, 0.39, 0.36, 0.92 } },
-        .{ .color = .{ 0.79, 0.86, 0.78, 1.0 }, .width = 2.0 * 64.0, .join = .round, .placement = .inside },
+        .{ .paint = .{ .solid = .{ 0.33, 0.39, 0.36, 0.92 } } },
+        .{ .paint = .{ .solid = .{ 0.79, 0.86, 0.78, 1.0 } }, .width = 2.0 * 64.0, .join = .round, .placement = .inside },
         20.0 * 64.0,
         Transform2D.multiply(
             Transform2D.translate(20, 24),
@@ -3418,8 +3418,8 @@ test "cpu renderer matches huge-span and normalized rounded rect pictures" {
     defer normalized_builder.deinit();
     try normalized_builder.addRoundedRect(
         .{ .x = 0, .y = 0, .w = 180, .h = 40 },
-        .{ .color = .{ 0.33, 0.39, 0.36, 0.92 } },
-        .{ .color = .{ 0.79, 0.86, 0.78, 1.0 }, .width = 2.0, .join = .round, .placement = .inside },
+        .{ .paint = .{ .solid = .{ 0.33, 0.39, 0.36, 0.92 } } },
+        .{ .paint = .{ .solid = .{ 0.79, 0.86, 0.78, 1.0 } }, .width = 2.0, .join = .round, .placement = .inside },
         20.0,
         Transform2D.translate(20, 24),
     );
@@ -3633,7 +3633,7 @@ test "cpu renderer premultiplies translucent path fill" {
     var builder = snail.PathPictureBuilder.init(testing.allocator);
     defer builder.deinit();
     try builder.addFilledRect(.{ .x = 8, .y = 6, .w = 16, .h = 10 }, .{
-        .color = .{ 1, 0, 0, 0.5 },
+        .paint = .{ .solid = .{ 1, 0, 0, 0.5 } },
     }, .identity);
 
     var picture = try builder.freeze(.{ .persistent_allocator = testing.allocator, .scratch_allocator = testing.allocator });
@@ -3665,7 +3665,7 @@ test "cpu renderer decodes translucent sRGB solid path colors before blending" {
     var builder = snail.PathPictureBuilder.init(testing.allocator);
     defer builder.deinit();
     try builder.addFilledRect(.{ .x = 8, .y = 6, .w = 16, .h = 10 }, .{
-        .color = .{ 0.5, 0.5, 0.5, 0.5 },
+        .paint = .{ .solid = .{ 0.5, 0.5, 0.5, 0.5 } },
     }, .identity);
 
     var picture = try builder.freeze(.{ .persistent_allocator = testing.allocator, .scratch_allocator = testing.allocator });
@@ -3699,7 +3699,7 @@ test "cpu renderer renders collapsed inside stroke" {
     try builder.addRect(
         .{ .x = 8, .y = 8, .w = 8, .h = 8 },
         null,
-        .{ .color = .{ 0, 1, 0, 1 }, .width = 8, .placement = .inside },
+        .{ .paint = .{ .solid = .{ 0, 1, 0, 1 } }, .width = 8, .placement = .inside },
         .identity,
     );
 
@@ -3740,13 +3740,13 @@ test "cpu renderer fills both demo eye stalks" {
     var builder = snail.PathPictureBuilder.init(testing.allocator);
     defer builder.deinit();
     try builder.addStrokedPath(&stalk_a, .{
-        .color = .{ 1, 1, 1, 1 },
+        .paint = .{ .solid = .{ 1, 1, 1, 1 } },
         .width = 4.0,
         .cap = .round,
         .join = .round,
     }, .identity);
     try builder.addStrokedPath(&stalk_b, .{
-        .color = .{ 1, 1, 1, 1 },
+        .paint = .{ .solid = .{ 1, 1, 1, 1 } },
         .width = 4.0,
         .cap = .round,
         .join = .round,
@@ -3806,8 +3806,8 @@ test "cpu renderer threaded draw matches single-threaded byte-for-byte" {
     var builder = snail.PathPictureBuilder.init(testing.allocator);
     defer builder.deinit();
     try builder.addRoundedRect(.{ .x = 4, .y = 4, .w = width - 8, .h = 20 }, .{
-        .color = .{ 0.2, 0.4, 0.8, 0.9 },
-    }, .{ .color = .{ 1, 1, 1, 1 }, .width = 1.5 }, 4, .identity);
+        .paint = .{ .solid = .{ 0.2, 0.4, 0.8, 0.9 } },
+    }, .{ .paint = .{ .solid = .{ 1, 1, 1, 1 } }, .width = 1.5 }, 4, .identity);
     var picture = try builder.freeze(.{ .persistent_allocator = testing.allocator, .scratch_allocator = testing.allocator });
     defer picture.deinit();
 
@@ -3885,7 +3885,7 @@ test "cpu renderer drawPaths batch matches drawPathPicture" {
     var builder = snail.PathPictureBuilder.init(testing.allocator);
     defer builder.deinit();
     try builder.addFilledRect(.{ .x = 8, .y = 6, .w = 18, .h = 12 }, .{
-        .color = .{ 1, 0, 0, 1 },
+        .paint = .{ .solid = .{ 1, 0, 0, 1 } },
     }, .identity);
 
     var picture = try builder.freeze(.{ .persistent_allocator = testing.allocator, .scratch_allocator = testing.allocator });
@@ -3952,7 +3952,7 @@ test "cpu renderer applies path draw tint in prepared batches" {
     var builder = snail.PathPictureBuilder.init(testing.allocator);
     defer builder.deinit();
     try builder.addFilledRect(.{ .x = 6, .y = 5, .w = 16, .h = 10 }, .{
-        .color = .{ 1, 1, 1, 1 },
+        .paint = .{ .solid = .{ 1, 1, 1, 1 } },
     }, .identity);
 
     var picture = try builder.freeze(.{ .persistent_allocator = testing.allocator, .scratch_allocator = testing.allocator });

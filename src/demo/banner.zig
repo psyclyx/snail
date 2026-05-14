@@ -99,11 +99,11 @@ pub fn buildPathPicture(
     const s = layout.scale;
     const r = 10 * s;
     const stroke_w = 1.0 * s;
-    const card_stroke = snail.StrokeStyle{ .color = border, .width = stroke_w, .join = .round, .placement = .inside };
-    const card_fill = snail.FillStyle{ .color = surface };
+    const card_stroke = snail.StrokeStyle{ .paint = .{ .solid = border }, .width = stroke_w, .join = .round, .placement = .inside };
+    const card_fill = snail.FillStyle{ .paint = .{ .solid = surface } };
 
     // Background
-    try builder.addFilledRect(layout.canvas, .{ .color = bg }, .identity);
+    try builder.addFilledRect(layout.canvas, .{ .paint = .{ .solid = bg } }, .identity);
 
     // Card backgrounds
     try builder.addRoundedRect(layout.styles, card_fill, card_stroke, r, .identity);
@@ -115,7 +115,7 @@ pub fn buildPathPicture(
 
     // Decoration lines (underline/strikethrough rects collected from drawText)
     for (decoration_rects) |rect| {
-        try builder.addFilledRect(rect, .{ .color = text }, .identity);
+        try builder.addFilledRect(rect, .{ .paint = .{ .solid = text } }, .identity);
     }
 
     // Vector shape demos
@@ -156,9 +156,9 @@ fn addVectorShapes(
 
     // Rect
     try builder.addRect(.{ .x = x0, .y = shapes_y, .w = sz, .h = sz }, .{
-        .color = .{ 0.22, 0.50, 0.88, 1.0 },
+        .paint = .{ .solid = .{ 0.22, 0.50, 0.88, 1.0 } },
     }, .{
-        .color = .{ 0.15, 0.38, 0.72, 1.0 },
+        .paint = .{ .solid = .{ 0.15, 0.38, 0.72, 1.0 } },
         .width = stroke_w,
         .join = .miter,
         .placement = .inside,
@@ -167,9 +167,9 @@ fn addVectorShapes(
     // Rounded rect
     const rrx = x0 + sz + gap;
     try builder.addRoundedRect(.{ .x = rrx, .y = shapes_y, .w = sz, .h = sz }, .{
-        .color = .{ 0.92, 0.82, 0.48, 1.0 },
+        .paint = .{ .solid = .{ 0.92, 0.82, 0.48, 1.0 } },
     }, .{
-        .color = .{ 0.78, 0.62, 0.22, 1.0 },
+        .paint = .{ .solid = .{ 0.78, 0.62, 0.22, 1.0 } },
         .width = stroke_w,
         .join = .round,
         .placement = .inside,
@@ -178,9 +178,9 @@ fn addVectorShapes(
     // Ellipse
     const elx = x0 + (sz + gap) * 2;
     try builder.addEllipse(.{ .x = elx, .y = shapes_y, .w = sz, .h = sz }, .{
-        .color = .{ 0.85, 0.52, 0.35, 1.0 },
+        .paint = .{ .solid = .{ 0.85, 0.52, 0.35, 1.0 } },
     }, .{
-        .color = .{ 0.72, 0.38, 0.22, 1.0 },
+        .paint = .{ .solid = .{ 0.72, 0.38, 0.22, 1.0 } },
         .width = stroke_w,
         .join = .round,
         .placement = .inside,
@@ -203,9 +203,9 @@ fn addVectorShapes(
     );
     try path.close();
     try builder.addPath(&path, .{
-        .color = .{ 0.58, 0.48, 0.82, 1.0 },
+        .paint = .{ .solid = .{ 0.58, 0.48, 0.82, 1.0 } },
     }, .{
-        .color = .{ 0.42, 0.32, 0.68, 1.0 },
+        .paint = .{ .solid = .{ 0.42, 0.32, 0.68, 1.0 } },
         .width = stroke_w,
         .join = .round,
     }, .identity);
@@ -216,7 +216,7 @@ fn addVectorShapes(
 
     // Solid fill
     try builder.addRoundedRect(.{ .x = x0, .y = fills_y, .w = sz, .h = sz }, .{
-        .color = .{ 0.35, 0.72, 0.55, 1.0 },
+        .paint = .{ .solid = .{ 0.35, 0.72, 0.55, 1.0 } },
     }, null, 6 * s, .identity);
 
     // Linear gradient
@@ -266,7 +266,7 @@ fn addVectorShapes(
         .{ .x = stx + sz - 4 * s, .y = shapes_y + sz * 0.3 },
     );
     try builder.addStrokedPath(&stroke_path, .{
-        .color = .{ 0.22, 0.55, 0.80, 1.0 },
+        .paint = .{ .solid = .{ 0.22, 0.55, 0.80, 1.0 } },
         .width = 4 * s,
         .cap = .round,
         .join = .round,
@@ -593,7 +593,7 @@ fn addFilledQuadraticRibbon(
     try ribbon.quadTo(snail.Vec2.add(end, tip_cap), snail.Vec2.sub(end, end_normal));
     try ribbon.quadTo(snail.Vec2.sub(control, mid_normal), snail.Vec2.sub(start, start_normal));
     try ribbon.close();
-    try builder.addFilledPath(&ribbon, .{ .color = color }, transform);
+    try builder.addFilledPath(&ribbon, .{ .paint = .{ .solid = color } }, transform);
 }
 
 pub fn addVectorSnail(builder: *snail.PathPictureBuilder, snail_stage: snail.Rect) !void {
@@ -640,7 +640,7 @@ pub fn addVectorSnail(builder: *snail.PathPictureBuilder, snail_stage: snail.Rec
         .start_color = .{ 0.38, 0.48, 0.38, 0.95 },
         .end_color = .{ 0.68, 0.65, 0.52, 0.95 },
     } } }, .{
-        .color = .{ 0.45, 0.50, 0.38, 0.50 },
+        .paint = .{ .solid = .{ 0.45, 0.50, 0.38, 0.50 } },
         .width = 2.0,
         .join = .round,
     }, transform);
@@ -651,7 +651,7 @@ pub fn addVectorSnail(builder: *snail.PathPictureBuilder, snail_stage: snail.Rec
     try belly.moveTo(.{ .x = 92.0, .y = 140.0 });
     try belly.cubicTo(.{ .x = 138.0, .y = 132.0 }, .{ .x = 204.0, .y = 136.0 }, .{ .x = 274.0, .y = 142.0 });
     try builder.addStrokedPath(&belly, .{
-        .color = .{ 1.0, 1.0, 0.95, 0.35 },
+        .paint = .{ .solid = .{ 1.0, 1.0, 0.95, 0.35 } },
         .width = 4.0,
         .cap = .round,
         .join = .round,
@@ -669,7 +669,7 @@ pub fn addVectorSnail(builder: *snail.PathPictureBuilder, snail_stage: snail.Rec
         .inner_color = .{ 0.62, 0.82, 0.92, 0.55 },
         .outer_color = .{ 0.25, 0.45, 0.62, 0.88 },
     } } }, .{
-        .color = .{ 0.35, 0.60, 0.78, 0.65 },
+        .paint = .{ .solid = .{ 0.35, 0.60, 0.78, 0.65 } },
         .width = 2.4,
         .join = .round,
     }, transform);
@@ -700,15 +700,15 @@ pub fn addVectorSnail(builder: *snail.PathPictureBuilder, snail_stage: snail.Rec
     try addFilledQuadraticRibbon(builder, .{ .x = 294.0, .y = 102.0 }, .{ .x = 298.0, .y = 80.0 }, .{ .x = 306.0, .y = 64.0 }, 2.0, .{ 0.58, 0.58, 0.52, 0.90 }, transform);
 
     // Eyes — outlined sclera, dark iris, specular highlight
-    const eye_stroke = snail.StrokeStyle{ .color = .{ 0.30, 0.32, 0.28, 0.80 }, .width = 1.2, .join = .round };
+    const eye_stroke = snail.StrokeStyle{ .paint = .{ .solid = .{ 0.30, 0.32, 0.28, 0.80 } }, .width = 1.2, .join = .round };
     // Outer eye
-    try builder.addEllipse(.{ .x = 330.0, .y = 54.0, .w = 9.0, .h = 9.0 }, .{ .color = .{ 0.98, 0.97, 0.94, 1.0 } }, eye_stroke, transform);
-    try builder.addFilledEllipse(.{ .x = 332.0, .y = 56.0, .w = 5.0, .h = 5.0 }, .{ .color = .{ 0.18, 0.20, 0.22, 1.0 } }, transform);
-    try builder.addFilledEllipse(.{ .x = 333.0, .y = 56.5, .w = 1.5, .h = 1.5 }, .{ .color = .{ 1.0, 1.0, 1.0, 0.90 } }, transform);
+    try builder.addEllipse(.{ .x = 330.0, .y = 54.0, .w = 9.0, .h = 9.0 }, .{ .paint = .{ .solid = .{ 0.98, 0.97, 0.94, 1.0 } } }, eye_stroke, transform);
+    try builder.addFilledEllipse(.{ .x = 332.0, .y = 56.0, .w = 5.0, .h = 5.0 }, .{ .paint = .{ .solid = .{ 0.18, 0.20, 0.22, 1.0 } } }, transform);
+    try builder.addFilledEllipse(.{ .x = 333.0, .y = 56.5, .w = 1.5, .h = 1.5 }, .{ .paint = .{ .solid = .{ 1.0, 1.0, 1.0, 0.90 } } }, transform);
     // Inner eye
-    try builder.addEllipse(.{ .x = 303.0, .y = 61.0, .w = 7.0, .h = 7.0 }, .{ .color = .{ 0.98, 0.97, 0.94, 1.0 } }, eye_stroke, transform);
-    try builder.addFilledEllipse(.{ .x = 304.5, .y = 62.5, .w = 4.0, .h = 4.0 }, .{ .color = .{ 0.18, 0.20, 0.22, 1.0 } }, transform);
-    try builder.addFilledEllipse(.{ .x = 305.2, .y = 63.0, .w = 1.2, .h = 1.2 }, .{ .color = .{ 1.0, 1.0, 1.0, 0.90 } }, transform);
+    try builder.addEllipse(.{ .x = 303.0, .y = 61.0, .w = 7.0, .h = 7.0 }, .{ .paint = .{ .solid = .{ 0.98, 0.97, 0.94, 1.0 } } }, eye_stroke, transform);
+    try builder.addFilledEllipse(.{ .x = 304.5, .y = 62.5, .w = 4.0, .h = 4.0 }, .{ .paint = .{ .solid = .{ 0.18, 0.20, 0.22, 1.0 } } }, transform);
+    try builder.addFilledEllipse(.{ .x = 305.2, .y = 63.0, .w = 1.2, .h = 1.2 }, .{ .paint = .{ .solid = .{ 1.0, 1.0, 1.0, 0.90 } } }, transform);
 
     // Smile
     var smile = snail.Path.init(builder.allocator);
@@ -716,7 +716,7 @@ pub fn addVectorSnail(builder: *snail.PathPictureBuilder, snail_stage: snail.Rec
     try smile.moveTo(.{ .x = 314.0, .y = 119.0 });
     try smile.quadTo(.{ .x = 321.0, .y = 123.0 }, .{ .x = 329.0, .y = 119.0 });
     try builder.addStrokedPath(&smile, .{
-        .color = .{ 0.25, 0.28, 0.22, 0.70 },
+        .paint = .{ .solid = .{ 0.25, 0.28, 0.22, 0.70 } },
         .width = 2.0,
         .cap = .round,
         .join = .round,

@@ -248,22 +248,20 @@ pub const SnailImagePaint = extern struct {
     filter: c_int = 0,
 };
 
-pub const SnailFillStyle = extern struct {
-    color: [4]f32 = .{ 0, 0, 0, 1 },
-    paint_kind: c_int = -1,
+pub const SnailPaint = extern struct {
+    kind: c_int = SNAIL_PAINT_SOLID,
     paint_solid: [4]f32 = .{ 0, 0, 0, 0 },
     paint_linear: SnailLinearGradient = std.mem.zeroes(SnailLinearGradient),
     paint_radial: SnailRadialGradient = std.mem.zeroes(SnailRadialGradient),
     paint_image: SnailImagePaint = .{},
 };
 
+pub const SnailFillStyle = extern struct {
+    paint: SnailPaint = .{},
+};
+
 pub const SnailStrokeStyle = extern struct {
-    color: [4]f32 = .{ 0, 0, 0, 1 },
-    paint_kind: c_int = -1,
-    paint_solid: [4]f32 = .{ 0, 0, 0, 0 },
-    paint_linear: SnailLinearGradient = std.mem.zeroes(SnailLinearGradient),
-    paint_radial: SnailRadialGradient = std.mem.zeroes(SnailRadialGradient),
-    paint_image: SnailImagePaint = .{},
+    paint: SnailPaint = .{},
     width: f32 = 1,
     cap: c_int = 0,
     join: c_int = 0,
@@ -489,25 +487,25 @@ fn toDrawOptions(options: SnailDrawOptions) !snail.DrawOptions {
     return .{ .mvp = toMat4(options.mvp), .target = try toResolveTarget(options.target) };
 }
 
-fn toPaint(kind: c_int, solid: [4]f32, linear: SnailLinearGradient, radial: SnailRadialGradient, image: SnailImagePaint) !?snail.Paint {
-    return switch (kind) {
-        -1 => null,
-        SNAIL_PAINT_SOLID => .{ .solid = solid },
+fn toPaint(paint: SnailPaint) !snail.Paint {
+    return switch (paint.kind) {
+        SNAIL_PAINT_SOLID => .{ .solid = paint.paint_solid },
         SNAIL_PAINT_LINEAR => .{ .linear_gradient = .{
-            .start = .{ .x = linear.start_x, .y = linear.start_y },
-            .end = .{ .x = linear.end_x, .y = linear.end_y },
-            .start_color = linear.start_color,
-            .end_color = linear.end_color,
-            .extend = try toPaintExtend(linear.extend),
+            .start = .{ .x = paint.paint_linear.start_x, .y = paint.paint_linear.start_y },
+            .end = .{ .x = paint.paint_linear.end_x, .y = paint.paint_linear.end_y },
+            .start_color = paint.paint_linear.start_color,
+            .end_color = paint.paint_linear.end_color,
+            .extend = try toPaintExtend(paint.paint_linear.extend),
         } },
         SNAIL_PAINT_RADIAL => .{ .radial_gradient = .{
-            .center = .{ .x = radial.center_x, .y = radial.center_y },
-            .radius = radial.radius,
-            .inner_color = radial.inner_color,
-            .outer_color = radial.outer_color,
-            .extend = try toPaintExtend(radial.extend),
+            .center = .{ .x = paint.paint_radial.center_x, .y = paint.paint_radial.center_y },
+            .radius = paint.paint_radial.radius,
+            .inner_color = paint.paint_radial.inner_color,
+            .outer_color = paint.paint_radial.outer_color,
+            .extend = try toPaintExtend(paint.paint_radial.extend),
         } },
         SNAIL_PAINT_IMAGE => blk: {
+            const image = paint.paint_image;
             const img = image.image orelse return error.InvalidArgument;
             break :blk .{ .image = .{
                 .image = &img.inner,
@@ -524,15 +522,13 @@ fn toPaint(kind: c_int, solid: [4]f32, linear: SnailLinearGradient, radial: Snai
 
 fn toFillStyle(s: SnailFillStyle) !snail.FillStyle {
     return .{
-        .color = s.color,
-        .paint = try toPaint(s.paint_kind, s.paint_solid, s.paint_linear, s.paint_radial, s.paint_image),
+        .paint = try toPaint(s.paint),
     };
 }
 
 fn toStrokeStyle(s: SnailStrokeStyle) !snail.StrokeStyle {
     return .{
-        .color = s.color,
-        .paint = try toPaint(s.paint_kind, s.paint_solid, s.paint_linear, s.paint_radial, s.paint_image),
+        .paint = try toPaint(s.paint),
         .width = s.width,
         .cap = try toStrokeCap(s.cap),
         .join = try toStrokeJoin(s.join),
@@ -1595,8 +1591,8 @@ test "c_api: path picture builder" {
     try testing.expectEqual(SNAIL_OK, snail_path_picture_builder_init(null, &builder));
     defer snail_path_picture_builder_deinit(builder);
 
-    const fill = SnailFillStyle{ .color = .{ 0.1, 0.2, 0.3, 1 } };
-    const stroke = SnailStrokeStyle{ .color = .{ 1, 1, 1, 1 }, .width = 2, .placement = 1 };
+    const fill = SnailFillStyle{ .paint = .{ .kind = SNAIL_PAINT_SOLID, .paint_solid = .{ 0.1, 0.2, 0.3, 1 } } };
+    const stroke = SnailStrokeStyle{ .paint = .{ .kind = SNAIL_PAINT_SOLID, .paint_solid = .{ 1, 1, 1, 1 } }, .width = 2, .placement = 1 };
     try testing.expectEqual(SNAIL_OK, snail_path_picture_builder_add_rounded_rect(
         builder.?,
         .{ .x = 0, .y = 0, .w = 100, .h = 40 },
