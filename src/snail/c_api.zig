@@ -298,7 +298,44 @@ const ResourceSetImpl = struct {
 };
 const PreparedResourcesImpl = struct { inner: snail.PreparedResources };
 const PreparedSceneImpl = struct { inner: snail.PreparedScene };
-const RendererImpl = struct { inner: snail.Renderer };
+const RendererImpl = struct {
+    backend: snail.BackendKind,
+    gl: ?snail.GlRenderer = null,
+    vulkan: if (build_options.enable_vulkan) ?snail.VulkanRenderer else void = if (build_options.enable_vulkan) null else {},
+
+    fn asRenderer(self: *RendererImpl) snail.Renderer {
+        return switch (self.backend) {
+            .gl => self.gl.?.asRenderer(),
+            .vulkan => if (comptime build_options.enable_vulkan)
+                self.vulkan.?.asRenderer()
+            else
+                unreachable,
+            .cpu => unreachable,
+        };
+    }
+
+    fn deinit(self: *RendererImpl) void {
+        switch (self.backend) {
+            .gl => if (self.gl) |*gl| gl.deinit(),
+            .vulkan => if (comptime build_options.enable_vulkan) {
+                if (self.vulkan) |*vk| vk.deinit();
+            },
+            .cpu => {},
+        }
+        self.* = undefined;
+    }
+
+    fn backendName(self: *const RendererImpl) []const u8 {
+        return switch (self.backend) {
+            .gl => self.gl.?.backendName(),
+            .vulkan => if (comptime build_options.enable_vulkan)
+                self.vulkan.?.backendName()
+            else
+                "vulkan (disabled)",
+            .cpu => "CPU",
+        };
+    }
+};
 
 // Conversion helpers
 
@@ -1331,49 +1368,58 @@ export fn snail_prepared_scene_segment_count(scene: *const PreparedSceneImpl) us
 
 // Renderer
 
-export fn snail_renderer_init(out: *?*RendererImpl) c_int {
-    const renderer = snail.Renderer.init() catch return SNAIL_ERR_RENDERER_FAILED;
+export fn snail_gl_renderer_init(out: *?*RendererImpl) c_int {
+    const gl = snail.GlRenderer.init(handleAllocator()) catch return SNAIL_ERR_RENDERER_FAILED;
     const impl = handleAllocator().create(RendererImpl) catch {
-        var doomed = renderer;
+        var doomed = gl;
         doomed.deinit();
         return SNAIL_ERR_OUT_OF_MEMORY;
     };
-    impl.* = .{ .inner = renderer };
+    impl.* = .{ .backend = .gl, .gl = gl };
     out.* = impl;
     return SNAIL_OK;
 }
 
+export fn snail_renderer_init(out: *?*RendererImpl) c_int {
+    return snail_gl_renderer_init(out);
+}
+
 export fn snail_renderer_deinit(renderer: ?*RendererImpl) void {
     if (renderer) |r| {
-        r.inner.deinit();
+        r.deinit();
         destroyHandle(r);
     }
 }
 
 export fn snail_renderer_begin_frame(renderer: *RendererImpl) void {
-    renderer.inner.beginFrame();
+    var erased = renderer.asRenderer();
+    erased.beginFrame();
 }
 
 export fn snail_renderer_set_subpixel_order(renderer: *RendererImpl, order: c_int) c_int {
-    renderer.inner.setSubpixelOrder(toSubpixelOrder(order) catch return SNAIL_ERR_INVALID_ARGUMENT);
+    var erased = renderer.asRenderer();
+    erased.setSubpixelOrder(toSubpixelOrder(order) catch return SNAIL_ERR_INVALID_ARGUMENT);
     return SNAIL_OK;
 }
 
-export fn snail_renderer_subpixel_order(renderer: *const RendererImpl) c_int {
-    return @intFromEnum(renderer.inner.subpixelOrder());
+export fn snail_renderer_subpixel_order(renderer: *RendererImpl) c_int {
+    var erased = renderer.asRenderer();
+    return @intFromEnum(erased.subpixelOrder());
 }
 
 export fn snail_renderer_set_fill_rule(renderer: *RendererImpl, rule: c_int) c_int {
-    renderer.inner.setFillRule(toFillRule(rule) catch return SNAIL_ERR_INVALID_ARGUMENT);
+    var erased = renderer.asRenderer();
+    erased.setFillRule(toFillRule(rule) catch return SNAIL_ERR_INVALID_ARGUMENT);
     return SNAIL_OK;
 }
 
-export fn snail_renderer_fill_rule(renderer: *const RendererImpl) c_int {
-    return @intFromEnum(renderer.inner.fillRule());
+export fn snail_renderer_fill_rule(renderer: *RendererImpl) c_int {
+    var erased = renderer.asRenderer();
+    return @intFromEnum(erased.fillRule());
 }
 
 export fn snail_renderer_backend_name(renderer: *const RendererImpl) [*:0]const u8 {
-    return @ptrCast(renderer.inner.backendName().ptr);
+    return @ptrCast(renderer.backendName().ptr);
 }
 
 export fn snail_renderer_upload_resources_blocking(
@@ -1383,7 +1429,8 @@ export fn snail_renderer_upload_resources_blocking(
     out: *?*PreparedResourcesImpl,
 ) c_int {
     const allocator = resolveAllocator(alloc_ptr);
-    const prepared = renderer.inner.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set.inner) catch |err| return mapError(err);
+    var erased = renderer.asRenderer();
+    const prepared = erased.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set.inner) catch |err| return mapError(err);
     const impl = handleAllocator().create(PreparedResourcesImpl) catch {
         var doomed = prepared;
         doomed.deinit();
@@ -1400,7 +1447,8 @@ export fn snail_renderer_draw_prepared(
     scene: *const PreparedSceneImpl,
     options: SnailDrawOptions,
 ) c_int {
-    renderer.inner.drawPrepared(&prepared.inner, &scene.inner, toDrawOptions(options) catch return SNAIL_ERR_INVALID_ARGUMENT) catch |err| return mapError(err);
+    var erased = renderer.asRenderer();
+    erased.drawPrepared(&prepared.inner, &scene.inner, toDrawOptions(options) catch return SNAIL_ERR_INVALID_ARGUMENT) catch |err| return mapError(err);
     return SNAIL_OK;
 }
 

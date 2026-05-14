@@ -5377,7 +5377,6 @@ pub const Renderer = struct {
         };
     }
 
-    const gl_vtable = ImplVTable(pipeline.GlTextState, true, .gl);
     const gl_borrowed_vtable = ImplVTable(pipeline.GlTextState, false, .gl);
     const vulkan_borrowed_vtable = ImplVTable(vulkan_pipeline.VulkanPipeline, false, .vulkan);
     const cpu_vtable = ImplVTable(CpuRenderer, false, .cpu);
@@ -5460,24 +5459,9 @@ pub const Renderer = struct {
         }
     }
 
-    /// Initialize an owned GL renderer with the current OpenGL context.
-    ///
-    /// Most Zig callers should prefer `GlRenderer.init(allocator)` followed by
-    /// `asRenderer()` — that keeps the typed `GlRenderer` handle around for
-    /// backend-specific calls (e.g. `textCoverageBackend`) and lets you supply
-    /// your own allocator. This entry point allocates from
-    /// `std.heap.smp_allocator` and exists for the C API and benchmarks that
-    /// don't need a typed handle.
-    pub fn init() !Renderer {
-        const text = try std.heap.smp_allocator.create(pipeline.GlTextState);
-        text.* = .{};
-        errdefer std.heap.smp_allocator.destroy(text);
-        try text.init();
-        return .{ .ptr = @ptrCast(text), .vtable = &gl_vtable };
-    }
-
-    /// Initialize the CPU renderer with a caller-owned pixel buffer.
-    pub fn initCpu(cpu: *CpuRenderer) Renderer {
+    /// Borrow a caller-owned CPU backend through the erased renderer interface.
+    /// Prefer `CpuRenderer.asRenderer()` at call sites.
+    pub fn borrowCpu(cpu: *CpuRenderer) Renderer {
         return .{ .ptr = @ptrCast(cpu), .vtable = &cpu_vtable };
     }
 
@@ -5769,7 +5753,7 @@ test "draw with missing prepared resources fails" {
     defer allocator.free(pixels);
 
     var cpu = CpuRenderer.init(pixels.ptr, width, height, stride);
-    var renderer = Renderer.initCpu(&cpu);
+    var renderer = cpu.asRenderer();
     defer renderer.deinit();
 
     var prepared = PreparedResources{ .allocator = allocator };
@@ -6074,7 +6058,7 @@ test "ResourceSet discovers and draws text paint resources" {
     const pixels = try allocator.alloc(u8, stride * height);
     defer allocator.free(pixels);
     var cpu = CpuRenderer.init(pixels.ptr, width, height, stride);
-    var renderer = Renderer.initCpu(&cpu);
+    var renderer = cpu.asRenderer();
     defer renderer.deinit();
 
     var prepared = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set);
@@ -6217,7 +6201,7 @@ test "DrawList estimate upper-bounds ranged text draw output" {
     const pixels = try allocator.alloc(u8, stride * height);
     defer allocator.free(pixels);
     var cpu = CpuRenderer.init(pixels.ptr, width, height, stride);
-    var renderer = Renderer.initCpu(&cpu);
+    var renderer = cpu.asRenderer();
     defer renderer.deinit();
 
     var set_entries: [1]ResourceSet.Entry = undefined;
@@ -6275,7 +6259,7 @@ test "replacing path-picture key does not invalidate unrelated text coverage rec
     const pixels = try allocator.alloc(u8, stride * height);
     defer allocator.free(pixels);
     var cpu = CpuRenderer.init(pixels.ptr, width, height, stride);
-    var renderer = Renderer.initCpu(&cpu);
+    var renderer = cpu.asRenderer();
     defer renderer.deinit();
 
     var set_a_entries: [4]ResourceSet.Entry = undefined;
@@ -6316,7 +6300,7 @@ test "draw rejects stale records when a resource key is replaced" {
     defer allocator.free(pixels);
 
     var cpu = CpuRenderer.init(pixels.ptr, width, height, stride);
-    var renderer = Renderer.initCpu(&cpu);
+    var renderer = cpu.asRenderer();
     defer renderer.deinit();
 
     var scene = Scene.init(allocator);
@@ -6366,7 +6350,7 @@ test "resource upload plan reports changed keys and enforces budget" {
     defer allocator.free(pixels);
 
     var cpu = CpuRenderer.init(pixels.ptr, width, height, stride);
-    var renderer = Renderer.initCpu(&cpu);
+    var renderer = cpu.asRenderer();
     defer renderer.deinit();
 
     var set_a_entries: [2]ResourceSet.Entry = undefined;
@@ -6420,7 +6404,7 @@ test "pending upload publish waits for external completion marker" {
     defer allocator.free(pixels);
 
     var cpu = CpuRenderer.init(pixels.ptr, width, height, stride);
-    var renderer = Renderer.initCpu(&cpu);
+    var renderer = cpu.asRenderer();
     defer renderer.deinit();
 
     var set_entries: [2]ResourceSet.Entry = undefined;
@@ -6463,7 +6447,7 @@ test "prepared resource retirement queue is caller-owned" {
     defer allocator.free(pixels);
 
     var cpu = CpuRenderer.init(pixels.ptr, width, height, stride);
-    var renderer = Renderer.initCpu(&cpu);
+    var renderer = cpu.asRenderer();
     defer renderer.deinit();
 
     var set_entries: [2]ResourceSet.Entry = undefined;
@@ -6491,7 +6475,7 @@ test "CPU draw uses prepared resource views" {
     @memset(pixels, 0);
 
     var cpu = CpuRenderer.init(pixels.ptr, width, height, stride);
-    var renderer = Renderer.initCpu(&cpu);
+    var renderer = cpu.asRenderer();
     defer renderer.deinit();
 
     var scene = Scene.init(allocator);

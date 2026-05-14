@@ -128,7 +128,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         try cpu_pool.init(allocator, .{});
         cpu_pool_initialized = true;
         cpu_state.setThreadPool(&cpu_pool);
-        break :blk snail.Renderer.initCpu(&cpu_state);
+        break :blk cpu_state.asRenderer();
     };
     defer if (use_vulkan) vk_renderer.deinit();
     defer if (use_gl) gl_renderer.deinit();

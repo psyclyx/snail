@@ -1137,7 +1137,7 @@ pub fn main() !void {
     const cpu_pixels = try allocator.alloc(u8, WIDTH * HEIGHT * 4);
     defer allocator.free(cpu_pixels);
     var cpu = snail.CpuRenderer.init(cpu_pixels.ptr, WIDTH, HEIGHT, WIDTH * 4);
-    var cpu_renderer = snail.Renderer.initCpu(&cpu);
+    var cpu_renderer = snail.cpu.asRenderer();
 
     var cpu_pool: snail.ThreadPool = undefined;
     try cpu_pool.init(allocator, .{});
@@ -1146,7 +1146,7 @@ pub fn main() !void {
     defer allocator.free(cpu_pixels_threaded);
     var cpu_threaded = snail.CpuRenderer.init(cpu_pixels_threaded.ptr, WIDTH, HEIGHT, WIDTH * 4);
     cpu_threaded.setThreadPool(&cpu_pool);
-    var cpu_threaded_renderer = snail.Renderer.initCpu(&cpu_threaded);
+    var cpu_threaded_renderer = cpu_threaded.asRenderer();
 
     var bundles: [scene_kinds.len]SceneBundle = undefined;
     var bundle_count: usize = 0;
@@ -1220,10 +1220,11 @@ pub fn main() !void {
         gl.glDeleteTextures(1, &tex);
     }
 
-    var gl_renderer_state = try snail.Renderer.init();
+    var gl_renderer_state = try snail.GlRenderer.init(allocator);
     defer gl_renderer_state.deinit();
+    var gl_renderer = gl_renderer_state.asRenderer();
     for (scene_kinds, 0..) |kind, i| {
-        var gl_resources = try uploadSceneResources(allocator, &gl_renderer_state, &bundles[i].scene);
+        var gl_resources = try uploadSceneResources(allocator, &gl_renderer, &bundles[i].scene);
         defer gl_resources.deinit();
         var gl_scene = try snail.PreparedScene.initOwned(allocator, &gl_resources, &bundles[i].scene, options);
         defer gl_scene.deinit();
@@ -1234,7 +1235,7 @@ pub fn main() !void {
             .commands = bundles[i].scene.commandCount(),
             .words = gl_scene.words.len,
             .segments = gl_scene.segments.len,
-            .us = try timeGlDraw(&gl_renderer_state, &gl_resources, &gl_scene, options),
+            .us = try timeGlDraw(&gl_renderer, &gl_resources, &gl_scene, options),
         });
     }
 
@@ -1301,7 +1302,7 @@ pub fn main() !void {
             return timeGlDraw(self.renderer_ptr, prepared, scene, opts);
         }
     };
-    try benchModes(allocator, gl_renderer_state.backendName(), &atlas, &mode_rows, GlTimer{ .renderer_ptr = &gl_renderer_state });
+    try benchModes(allocator, gl_renderer_state.backendName(), &atlas, &mode_rows, GlTimer{ .renderer_ptr = &gl_renderer });
 
     if (comptime build_options.enable_vulkan) {
         const VkTimer = struct {

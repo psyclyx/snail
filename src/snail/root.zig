@@ -4,7 +4,7 @@
 //! aliases are re-exported from `core.zig` while larger implementation details
 //! live behind domain modules.
 
-pub const core = @import("core.zig");
+const core = @import("core.zig");
 
 pub const math = @import("math.zig");
 pub const text = @import("text.zig");
