@@ -67,6 +67,7 @@ pub const Path = core.Path;
 pub const PathPicture = core.PathPicture;
 pub const PathPictureBuilder = core.PathPictureBuilder;
 pub const FillRule = core.FillRule;
+pub const BackendKind = core.BackendKind;
 pub const SubpixelOrder = core.SubpixelOrder;
 pub const VulkanContext = core.VulkanContext;
 pub const CpuRenderer = core.CpuRenderer;

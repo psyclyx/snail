@@ -1,6 +1,7 @@
 const core = @import("core.zig");
 
 pub const Renderer = core.Renderer;
+pub const BackendKind = core.BackendKind;
 pub const GlRenderer = core.GlRenderer;
 pub const VulkanRenderer = core.VulkanRenderer;
 pub const CpuRenderer = core.CpuRenderer;

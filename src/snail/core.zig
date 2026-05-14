@@ -3663,6 +3663,11 @@ pub const FillRule = enum(c_int) {
     non_zero = 0,
     even_odd = 1,
 };
+pub const BackendKind = enum(c_int) {
+    gl = 0,
+    vulkan = 1,
+    cpu = 2,
+};
 pub const SubpixelOrder = @import("renderer/subpixel_order.zig").SubpixelOrder;
 pub const VulkanContext = vulkan_pipeline.VulkanContext;
 pub const CpuRenderer = cpu_renderer_mod.CpuRenderer;
@@ -4169,7 +4174,7 @@ pub const PreparedResources = struct {
     }
 
     pub fn textCoverageBackend(self: *const PreparedResources, renderer: *Renderer) ?TextCoverageBackend {
-        if (renderer.vtable == &Renderer.gl_vtable or renderer.vtable == &Renderer.gl_borrowed_vtable) {
+        if (renderer.backend() == .gl) {
             if (self.gl) |*gl_resources| {
                 return .{
                     .gl = @ptrCast(@alignCast(renderer.ptr)),
@@ -4379,7 +4384,7 @@ pub const PendingResourceUpload = struct {
         if (self.plan.upload_bytes > options.budget_bytes) return error.ResourceUploadBudgetExceeded;
 
         if (comptime build_options.enable_vulkan) {
-            if (self.renderer.vtable == &Renderer.vulkan_borrowed_vtable) {
+            if (self.renderer.backend() == .vulkan) {
                 const cmd = vulkanUploadCommand(cmd_or_context) orelse return error.MissingUploadCommand;
                 const vk_state: *vulkan_pipeline.VulkanPipeline = @ptrCast(@alignCast(self.renderer.ptr));
                 vk_state.beginResourceUploadRecording(cmd);
@@ -4451,7 +4456,7 @@ pub const PendingResourceUpload = struct {
 
     fn vulkanFenceReady(self: *const PendingResourceUpload, fence: anytype) bool {
         if (comptime !build_options.enable_vulkan) return false;
-        if (self.renderer.vtable != &Renderer.vulkan_borrowed_vtable) return false;
+        if (self.renderer.backend() != .vulkan) return false;
         const T = @TypeOf(fence);
         switch (@typeInfo(T)) {
             .pointer, .optional => {
@@ -5165,7 +5170,7 @@ fn uploadPreparedResources(renderer: *Renderer, set: *const ResourceSet, allocat
     }
 
     const uploaded = blk: {
-        if (renderer.vtable == &Renderer.gl_vtable or renderer.vtable == &Renderer.gl_borrowed_vtable) {
+        if (renderer.backend() == .gl) {
             const gl_state: *pipeline.GlTextState = @ptrCast(@alignCast(renderer.ptr));
             var gl_prepared = pipeline.PreparedResources{ .allocator = persistent, .backend = gl_state.backend };
             if (atlas_count > 0 or layer_info_count > 0) try gl_prepared.uploadAtlasesAndLayerInfoWithCapacityModes(scratch, upload_atlases, atlas_capacity_modes[0..atlas_count], atlas_views, upload_layer_infos, layer_info_views);
@@ -5174,7 +5179,7 @@ fn uploadPreparedResources(renderer: *Renderer, set: *const ResourceSet, allocat
             break :blk true;
         }
         if (comptime build_options.enable_vulkan) {
-            if (renderer.vtable == &Renderer.vulkan_borrowed_vtable) {
+            if (renderer.backend() == .vulkan) {
                 const vk_state: *vulkan_pipeline.VulkanPipeline = @ptrCast(@alignCast(renderer.ptr));
                 var vk_prepared = try vulkan_pipeline.PreparedResources.init(vk_state, persistent);
                 errdefer vk_prepared.deinit();
@@ -5185,7 +5190,7 @@ fn uploadPreparedResources(renderer: *Renderer, set: *const ResourceSet, allocat
             }
         }
         if (comptime build_options.enable_cpu) {
-            if (renderer.vtable == &Renderer.cpu_vtable) {
+            if (renderer.backend() == .cpu) {
                 var cpu_prepared = try cpu_renderer_mod.PreparedResources.init(persistent, upload_atlases, upload_layer_infos);
                 errdefer cpu_prepared.deinit();
                 if (atlas_count > 0) try cpu_prepared.uploadAtlases(upload_atlases, atlas_views);
@@ -5211,6 +5216,7 @@ pub const Renderer = struct {
     vtable: *const VTable,
 
     pub const VTable = struct {
+        backend: BackendKind,
         deinit: *const fn (*anyopaque) void,
         // Frame-level draw: validate, set state, walk records. Each backend
         // owns this so it can decide how to schedule the work (e.g., the CPU
@@ -5233,7 +5239,7 @@ pub const Renderer = struct {
     };
 
     /// Generate a VTable that type-erases calls to methods on *T.
-    fn ImplVTable(comptime T: type, comptime owned: bool) VTable {
+    fn ImplVTable(comptime T: type, comptime owned: bool, comptime backend_kind: BackendKind) VTable {
         const S = struct {
             fn cast(ptr: *anyopaque) *T {
                 return @ptrCast(@alignCast(ptr));
@@ -5353,6 +5359,7 @@ pub const Renderer = struct {
             }
         };
         return .{
+            .backend = backend_kind,
             .deinit = if (owned) &S.deinitFn else &S.noopDeinit,
             .draw = &S.drawFn,
             .drawText = &S.drawTextFn,
@@ -5370,10 +5377,10 @@ pub const Renderer = struct {
         };
     }
 
-    const gl_vtable = ImplVTable(pipeline.GlTextState, true);
-    const gl_borrowed_vtable = ImplVTable(pipeline.GlTextState, false);
-    const vulkan_borrowed_vtable = ImplVTable(vulkan_pipeline.VulkanPipeline, false);
-    const cpu_vtable = ImplVTable(CpuRenderer, false);
+    const gl_vtable = ImplVTable(pipeline.GlTextState, true, .gl);
+    const gl_borrowed_vtable = ImplVTable(pipeline.GlTextState, false, .gl);
+    const vulkan_borrowed_vtable = ImplVTable(vulkan_pipeline.VulkanPipeline, false, .vulkan);
+    const cpu_vtable = ImplVTable(CpuRenderer, false, .cpu);
 
     /// Blocking upload for simple programs. GL requires the target context to
     /// be current. CPU upload builds cheap views. Vulkan does not perform an
@@ -5402,6 +5409,10 @@ pub const Renderer = struct {
 
     pub fn beginResourceUpload(self: *Renderer, allocators: UploadAllocators, plan: ResourceUploadPlan) !PendingResourceUpload {
         return .{ .renderer = self.*, .allocators = allocators, .plan = plan };
+    }
+
+    pub fn backend(self: *const Renderer) BackendKind {
+        return self.vtable.backend;
     }
 
     /// Execute prebuilt draw records. This never discovers, uploads, allocates,
@@ -5846,6 +5857,7 @@ test "draw dispatch uses only prepared stamps and caller records" {
         }
     };
     const fake_vtable = Renderer.VTable{
+        .backend = .cpu,
         .deinit = Fake.deinit,
         .draw = Fake.draw,
         .drawText = Fake.drawText,

@@ -1,5 +1,7 @@
 const core = @import("core.zig");
 
+pub const Kind = core.BackendKind;
+
 pub const gl = struct {
     pub const Renderer = core.GlRenderer;
 };
