@@ -74,6 +74,7 @@ const fonts_mod = @import("fonts.zig");
 const ttf = @import("font/ttf.zig");
 const opentype = @import("font/opentype.zig");
 const paint_mod = @import("paint.zig");
+const paint_records = @import("paint_records.zig");
 // Re-exported under `snail.lowlevel` at the bottom of the file.
 const bezier = @import("math/bezier.zig");
 const vec = @import("math/vec.zig");
@@ -293,13 +294,13 @@ pub const TextCoverageBackend = struct {
     }
 };
 
-const PATH_PAINT_INFO_WIDTH: u32 = 4096;
-const PATH_PAINT_TEXELS_PER_RECORD: u32 = 6;
-const PATH_PAINT_TAG_SOLID: f32 = -1.0;
-const PATH_PAINT_TAG_LINEAR_GRADIENT: f32 = -2.0;
-const PATH_PAINT_TAG_RADIAL_GRADIENT: f32 = -3.0;
-const PATH_PAINT_TAG_IMAGE: f32 = -4.0;
-const PATH_PAINT_TAG_COMPOSITE_GROUP: f32 = -5.0;
+const PATH_PAINT_INFO_WIDTH: u32 = paint_records.info_width;
+const PATH_PAINT_TEXELS_PER_RECORD: u32 = paint_records.texels_per_record;
+const PATH_PAINT_TAG_SOLID: f32 = paint_records.tag_solid;
+const PATH_PAINT_TAG_LINEAR_GRADIENT: f32 = paint_records.tag_linear_gradient;
+const PATH_PAINT_TAG_RADIAL_GRADIENT: f32 = paint_records.tag_radial_gradient;
+const PATH_PAINT_TAG_IMAGE: f32 = paint_records.tag_image;
+const PATH_PAINT_TAG_COMPOSITE_GROUP: f32 = paint_records.tag_composite_group;
 
 const PathPictureDebugView = enum(u8) {
     normal,
@@ -2436,7 +2437,7 @@ const PathCompositeMode = enum(u8) {
 };
 
 fn pathPaintInfoWidth(texel_count: u32) u32 {
-    return @min(@max(texel_count, 1), PATH_PAINT_INFO_WIDTH);
+    return paint_records.infoWidth(texel_count);
 }
 
 fn pathLayerInfoTexelOffset(texel_width: u32, info_x: u16, info_y: u16) u32 {
@@ -2444,25 +2445,11 @@ fn pathLayerInfoTexelOffset(texel_width: u32, info_x: u16, info_y: u16) u32 {
 }
 
 fn readPathLayerInfoTexel(data: []const f32, texel_width: u32, texel_offset: u32) [4]f32 {
-    const texel_x = texel_offset % texel_width;
-    const texel_y = texel_offset / texel_width;
-    const base = (texel_y * texel_width + texel_x) * 4;
-    return .{
-        data[base + 0],
-        data[base + 1],
-        data[base + 2],
-        data[base + 3],
-    };
+    return paint_records.readTexel(data, texel_width, texel_offset);
 }
 
 fn writePathLayerInfoTexel(data: []f32, texel_width: u32, texel_offset: u32, value: [4]f32) void {
-    const texel_x = texel_offset % texel_width;
-    const texel_y = texel_offset / texel_width;
-    const base = (texel_y * texel_width + texel_x) * 4;
-    data[base + 0] = value[0];
-    data[base + 1] = value[1];
-    data[base + 2] = value[2];
-    data[base + 3] = value[3];
+    paint_records.setTexel(data, texel_width, texel_offset, value);
 }
 
 fn paletteColor(index: usize) [4]f32 {
@@ -2685,117 +2672,6 @@ pub const PathPictureBuilder = struct {
         composite_mode: PathCompositeMode,
         layers: [2]PathLayerRecord,
     };
-
-    fn srgbToLinear(v: f32) f32 {
-        if (v <= 0.04045) return v / 12.92;
-        return std.math.pow(f32, (v + 0.055) / 1.055, 2.4);
-    }
-
-    fn srgbToLinearColor(color: [4]f32) [4]f32 {
-        return .{ srgbToLinear(color[0]), srgbToLinear(color[1]), srgbToLinear(color[2]), color[3] };
-    }
-
-    fn setLayerInfoTexel(data: []f32, texel_width: u32, texel_offset: u32, value: [4]f32) void {
-        const texel_x = texel_offset % texel_width;
-        const texel_y = texel_offset / texel_width;
-        const base = (texel_y * texel_width + texel_x) * 4;
-        data[base + 0] = value[0];
-        data[base + 1] = value[1];
-        data[base + 2] = value[2];
-        data[base + 3] = value[3];
-    }
-
-    fn pathPaintTag(paint: Paint) f32 {
-        return switch (paint) {
-            .solid => kPaintTagSolid,
-            .linear_gradient => kPaintTagLinearGradient,
-            .radial_gradient => kPaintTagRadialGradient,
-            .image => kPaintTagImage,
-        };
-    }
-
-    fn writePaintRecord(
-        data: []f32,
-        texel_width: u32,
-        texel_offset: u32,
-        band_entry: band_tex.GlyphBandEntry,
-        paint: Paint,
-    ) void {
-        const packed_bands: u32 = @as(u32, band_entry.h_band_count - 1) | (@as(u32, band_entry.v_band_count - 1) << 16);
-        setLayerInfoTexel(data, texel_width, texel_offset + 0, .{
-            @floatFromInt(band_entry.glyph_x),
-            @floatFromInt(band_entry.glyph_y),
-            @bitCast(packed_bands),
-            pathPaintTag(paint),
-        });
-        setLayerInfoTexel(data, texel_width, texel_offset + 1, .{
-            band_entry.band_scale_x,
-            band_entry.band_scale_y,
-            band_entry.band_offset_x,
-            band_entry.band_offset_y,
-        });
-
-        switch (paint) {
-            .solid => |color| {
-                setLayerInfoTexel(data, texel_width, texel_offset + 2, color);
-            },
-            .linear_gradient => |gradient| {
-                // Colors stored in linear space; the shader does sRGB
-                // round-trip (linear→sRGB→mix→sRGB→linear) for interpolation.
-                setLayerInfoTexel(data, texel_width, texel_offset + 2, .{
-                    gradient.start.x,
-                    gradient.start.y,
-                    gradient.end.x,
-                    gradient.end.y,
-                });
-                setLayerInfoTexel(data, texel_width, texel_offset + 3, srgbToLinearColor(gradient.start_color));
-                setLayerInfoTexel(data, texel_width, texel_offset + 4, srgbToLinearColor(gradient.end_color));
-                setLayerInfoTexel(data, texel_width, texel_offset + 5, .{
-                    @floatFromInt(@intFromEnum(gradient.extend)),
-                    0,
-                    0,
-                    0,
-                });
-            },
-            .radial_gradient => |gradient| {
-                setLayerInfoTexel(data, texel_width, texel_offset + 2, .{
-                    gradient.center.x,
-                    gradient.center.y,
-                    gradient.radius,
-                    @floatFromInt(@intFromEnum(gradient.extend)),
-                });
-                setLayerInfoTexel(data, texel_width, texel_offset + 3, srgbToLinearColor(gradient.inner_color));
-                setLayerInfoTexel(data, texel_width, texel_offset + 4, srgbToLinearColor(gradient.outer_color));
-                setLayerInfoTexel(data, texel_width, texel_offset + 5, .{
-                    0,
-                    0,
-                    0,
-                    0,
-                });
-            },
-            .image => |image| {
-                setLayerInfoTexel(data, texel_width, texel_offset + 2, .{
-                    image.uv_transform.xx,
-                    image.uv_transform.xy,
-                    image.uv_transform.tx,
-                    0,
-                });
-                setLayerInfoTexel(data, texel_width, texel_offset + 3, .{
-                    image.uv_transform.yx,
-                    image.uv_transform.yy,
-                    image.uv_transform.ty,
-                    @floatFromInt(@intFromEnum(image.filter)),
-                });
-                setLayerInfoTexel(data, texel_width, texel_offset + 4, srgbToLinearColor(image.tint));
-                setLayerInfoTexel(data, texel_width, texel_offset + 5, .{
-                    0,
-                    0,
-                    @floatFromInt(@intFromEnum(image.extend_x)),
-                    @floatFromInt(@intFromEnum(image.extend_y)),
-                });
-            },
-        }
-    }
 
     pub fn init(allocator: std.mem.Allocator) PathPictureBuilder {
         return .{ .allocator = allocator };
@@ -3572,7 +3448,7 @@ pub const PathPictureBuilder = struct {
         for (self.paths.items, 0..) |path, path_index| {
             const info_texel_offset = texel_cursor;
             if (path.layer_count > 1) {
-                setLayerInfoTexel(layer_info_data, paint_width, texel_cursor, .{
+                paint_records.setTexel(layer_info_data, paint_width, texel_cursor, .{
                     @floatFromInt(path.layer_count),
                     @floatFromInt(@intFromEnum(path.composite_mode)),
                     0,
@@ -3596,7 +3472,7 @@ pub const PathPictureBuilder = struct {
                     .page_index = 0,
                 });
                 layer_roles[glyph_cursor] = layer.role;
-                writePaintRecord(layer_info_data, paint_width, texel_cursor, bt.entries[glyph_cursor], local_paint);
+                paint_records.write(layer_info_data, paint_width, texel_cursor, bt.entries[glyph_cursor], local_paint);
                 switch (local_paint) {
                     .image => |image_paint| {
                         paint_image_records[glyph_cursor] = .{
@@ -7101,7 +6977,7 @@ test "path picture image paint records keep image metadata" {
     try std.testing.expectApproxEqAbs(@as(f32, 3.25), lid[10], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, @floatFromInt(@intFromEnum(ImageFilter.nearest))), lid[15], 0.001);
     // Tint RGB is linearized at pack time for correct image modulation.
-    try std.testing.expectApproxEqAbs(PathPictureBuilder.srgbToLinear(0.5), lid[16], 0.001);
+    try std.testing.expectApproxEqAbs(paint_records.srgbToLinear(0.5), lid[16], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, @floatFromInt(@intFromEnum(PaintExtend.repeat))), lid[22], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, @floatFromInt(@intFromEnum(PaintExtend.reflect))), lid[23], 0.001);
 }
