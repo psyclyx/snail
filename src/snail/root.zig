@@ -5231,8 +5231,8 @@ fn uploadPreparedResources(renderer: *Renderer, set: *const ResourceSet, allocat
         if (renderer.vtable == &Renderer.gl_vtable or renderer.vtable == &Renderer.gl_borrowed_vtable) {
             const gl_state: *pipeline.GlTextState = @ptrCast(@alignCast(renderer.ptr));
             var gl_prepared = pipeline.PreparedResources{ .allocator = persistent, .backend = gl_state.backend };
-            if (atlas_count > 0 or layer_info_count > 0) try gl_prepared.uploadAtlasesAndLayerInfoWithCapacityModes(upload_atlases, atlas_capacity_modes[0..atlas_count], atlas_views, upload_layer_infos, layer_info_views);
-            if (image_count > 0) try gl_prepared.uploadImages(upload_images, image_views);
+            if (atlas_count > 0 or layer_info_count > 0) try gl_prepared.uploadAtlasesAndLayerInfoWithCapacityModes(scratch, upload_atlases, atlas_capacity_modes[0..atlas_count], atlas_views, upload_layer_infos, layer_info_views);
+            if (image_count > 0) try gl_prepared.uploadImages(scratch, upload_images, image_views);
             prepared.gl = gl_prepared;
             break :blk true;
         }
@@ -5241,8 +5241,8 @@ fn uploadPreparedResources(renderer: *Renderer, set: *const ResourceSet, allocat
                 const vk_state: *vulkan_pipeline.VulkanPipeline = @ptrCast(@alignCast(renderer.ptr));
                 var vk_prepared = try vulkan_pipeline.PreparedResources.init(vk_state, persistent);
                 errdefer vk_prepared.deinit();
-                if (atlas_count > 0 or layer_info_count > 0) try vk_state.uploadPreparedAtlasesAndLayerInfoWithCapacityModes(&vk_prepared, upload_atlases, atlas_capacity_modes[0..atlas_count], atlas_views, upload_layer_infos, layer_info_views);
-                if (image_count > 0) try vk_state.uploadPreparedImages(&vk_prepared, upload_images, image_views);
+                if (atlas_count > 0 or layer_info_count > 0) try vk_state.uploadPreparedAtlasesAndLayerInfoWithCapacityModes(&vk_prepared, scratch, upload_atlases, atlas_capacity_modes[0..atlas_count], atlas_views, upload_layer_infos, layer_info_views);
+                if (image_count > 0) try vk_state.uploadPreparedImages(&vk_prepared, scratch, upload_images, image_views);
                 prepared.vulkan = vk_prepared;
                 break :blk true;
             }

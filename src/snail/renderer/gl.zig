@@ -120,7 +120,7 @@ pub const PreparedResources = struct {
     }
 
     pub fn uploadAtlases(self: *PreparedResources, atlases: []const *const snail_mod.lowlevel.CurveAtlas, out_views: anytype) !void {
-        return self.uploadAtlasesWithOptionalCapacityModes(atlases, null, out_views);
+        return self.uploadAtlasesWithOptionalCapacityModes(self.allocator, atlases, null, out_views);
     }
 
     pub fn uploadAtlasesWithCapacityModes(
@@ -131,29 +131,31 @@ pub const PreparedResources = struct {
     ) !void {
         var layer_infos: [0]EmptyLayerInfoUpload = .{};
         var layer_info_views: [0]EmptyLayerInfoView = .{};
-        return self.uploadAtlasesAndLayerInfoWithOptionalCapacityModes(atlases, capacity_modes, out_views, layer_infos[0..], layer_info_views[0..]);
+        return self.uploadAtlasesAndLayerInfoWithOptionalCapacityModes(self.allocator, atlases, capacity_modes, out_views, layer_infos[0..], layer_info_views[0..]);
     }
 
     pub fn uploadAtlasesAndLayerInfoWithCapacityModes(
         self: *PreparedResources,
+        scratch: std.mem.Allocator,
         atlases: []const *const snail_mod.lowlevel.CurveAtlas,
         capacity_modes: []const upload_common.AtlasCapacityMode,
         out_views: anytype,
         layer_infos: anytype,
         out_layer_info_views: anytype,
     ) !void {
-        return self.uploadAtlasesAndLayerInfoWithOptionalCapacityModes(atlases, capacity_modes, out_views, layer_infos, out_layer_info_views);
+        return self.uploadAtlasesAndLayerInfoWithOptionalCapacityModes(scratch, atlases, capacity_modes, out_views, layer_infos, out_layer_info_views);
     }
 
     fn uploadAtlasesWithOptionalCapacityModes(
         self: *PreparedResources,
+        scratch: std.mem.Allocator,
         atlases: []const *const snail_mod.lowlevel.CurveAtlas,
         capacity_modes: ?[]const upload_common.AtlasCapacityMode,
         out_views: anytype,
     ) !void {
         var layer_infos: [0]EmptyLayerInfoUpload = .{};
         var layer_info_views: [0]EmptyLayerInfoView = .{};
-        return self.uploadAtlasesAndLayerInfoWithOptionalCapacityModes(atlases, capacity_modes, out_views, layer_infos[0..], layer_info_views[0..]);
+        return self.uploadAtlasesAndLayerInfoWithOptionalCapacityModes(scratch, atlases, capacity_modes, out_views, layer_infos[0..], layer_info_views[0..]);
     }
 
     const EmptyLayerInfoUpload = struct {
@@ -169,6 +171,7 @@ pub const PreparedResources = struct {
 
     fn uploadAtlasesAndLayerInfoWithOptionalCapacityModes(
         self: *PreparedResources,
+        scratch: std.mem.Allocator,
         atlases: []const *const snail_mod.lowlevel.CurveAtlas,
         capacity_modes: ?[]const upload_common.AtlasCapacityMode,
         out_views: anytype,
@@ -187,22 +190,22 @@ pub const PreparedResources = struct {
 
         const can_incremental = layer_infos.len == 0 and self.texturesReady() and self.atlasSlotsCompatible(atlases);
         if (!can_incremental) {
-            try self.rebuildTextureArrays(atlases, capacity_modes, out_views, layer_infos, out_layer_info_views);
-        } else if (!try self.appendTexturePages(atlases)) {
-            try self.rebuildTextureArrays(atlases, capacity_modes, out_views, layer_infos, out_layer_info_views);
+            try self.rebuildTextureArrays(scratch, atlases, capacity_modes, out_views, layer_infos, out_layer_info_views);
+        } else if (!try self.appendTexturePages(scratch, atlases)) {
+            try self.rebuildTextureArrays(scratch, atlases, capacity_modes, out_views, layer_infos, out_layer_info_views);
         } else {
             self.fillAtlasViews(atlases, out_views);
             self.fillLayerInfoViews(self.atlasLayerInfoRows(), layer_infos, out_layer_info_views);
-            try self.ensureAtlasImagesRegistered(atlases);
-            try self.ensureLayerInfoImagesRegistered(layer_infos);
-            try self.rebuildLayerInfoTexture(atlases, layer_infos, out_layer_info_views);
+            try self.ensureAtlasImagesRegistered(scratch, atlases);
+            try self.ensureLayerInfoImagesRegistered(scratch, layer_infos);
+            try self.rebuildLayerInfoTexture(scratch, atlases, layer_infos, out_layer_info_views);
             self.atlas_has_special_text_runs = subpixel_policy.atlasesHaveSpecialTextRuns(atlases);
         }
     }
 
-    pub fn uploadImages(self: *PreparedResources, images: []const *const snail_mod.Image, out_views: anytype) !void {
+    pub fn uploadImages(self: *PreparedResources, scratch: std.mem.Allocator, images: []const *const snail_mod.Image, out_views: anytype) !void {
         std.debug.assert(images.len == out_views.len);
-        try self.ensureImagesRegistered(images);
+        try self.ensureImagesRegistered(scratch, images);
         const ImageView = upload_common.BufferElement(@TypeOf(out_views));
         for (images, 0..) |image, i| {
             out_views[i] = self.currentImageView(ImageView, image);
@@ -255,16 +258,16 @@ pub const PreparedResources = struct {
         return upload_common.findImageSlot(self.image_slots[0..], self.image_slot_count, image);
     }
 
-    fn ensureAtlasImagesRegistered(self: *PreparedResources, atlases: []const *const snail_mod.lowlevel.CurveAtlas) !void {
+    fn ensureAtlasImagesRegistered(self: *PreparedResources, scratch: std.mem.Allocator, atlases: []const *const snail_mod.lowlevel.CurveAtlas) !void {
         var images = std.ArrayListUnmanaged(*const snail_mod.Image).empty;
-        defer images.deinit(self.allocator);
-        try upload_common.collectAtlasImages(self.allocator, self.image_slots, self.image_slot_count, atlases, &images);
-        try self.ensureImagesRegistered(images.items);
+        defer images.deinit(scratch);
+        try upload_common.collectAtlasImages(scratch, self.image_slots, self.image_slot_count, atlases, &images);
+        try self.ensureImagesRegistered(scratch, images.items);
     }
 
-    fn ensureLayerInfoImagesRegistered(self: *PreparedResources, layer_infos: anytype) !void {
+    fn ensureLayerInfoImagesRegistered(self: *PreparedResources, scratch: std.mem.Allocator, layer_infos: anytype) !void {
         var images = std.ArrayListUnmanaged(*const snail_mod.Image).empty;
-        defer images.deinit(self.allocator);
+        defer images.deinit(scratch);
         for (layer_infos) |info| {
             const records = info.paint_image_records orelse continue;
             for (records) |record| {
@@ -277,10 +280,10 @@ pub const PreparedResources = struct {
                         break;
                     }
                 }
-                if (!already_queued) try images.append(self.allocator, image);
+                if (!already_queued) try images.append(scratch, image);
             }
         }
-        try self.ensureImagesRegistered(images.items);
+        try self.ensureImagesRegistered(scratch, images.items);
     }
 
     fn ensureImageSlotCapacity(self: *PreparedResources, capacity: usize) !void {
@@ -292,11 +295,11 @@ pub const PreparedResources = struct {
         self.image_slots = next;
     }
 
-    fn ensureImagesRegistered(self: *PreparedResources, images: []const *const snail_mod.Image) !void {
+    fn ensureImagesRegistered(self: *PreparedResources, scratch: std.mem.Allocator, images: []const *const snail_mod.Image) !void {
         if (images.len == 0) return;
 
         var new_images = std.ArrayListUnmanaged(*const snail_mod.Image).empty;
-        defer new_images.deinit(self.allocator);
+        defer new_images.deinit(scratch);
         var required_width = self.allocated_image_width;
         var required_height = self.allocated_image_height;
         for (images) |image| {
@@ -310,7 +313,7 @@ pub const PreparedResources = struct {
                     break;
                 }
             }
-            if (!already_queued) try new_images.append(self.allocator, image);
+            if (!already_queued) try new_images.append(scratch, image);
         }
 
         if (new_images.items.len == 0 and self.image_array != 0) return;
@@ -443,6 +446,7 @@ pub const PreparedResources = struct {
 
     fn rebuildTextureArrays(
         self: *PreparedResources,
+        scratch: std.mem.Allocator,
         atlases: []const *const snail_mod.lowlevel.CurveAtlas,
         capacity_modes: ?[]const upload_common.AtlasCapacityMode,
         out_views: anytype,
@@ -465,25 +469,25 @@ pub const PreparedResources = struct {
 
         const first_atlas = upload_common.firstNonEmptyAtlas(atlases) orelse {
             self.fillAtlasViews(atlases, out_views);
-            try self.ensureLayerInfoImagesRegistered(layer_infos);
-            try self.rebuildLayerInfoTexture(atlases, layer_infos, out_layer_info_views);
+            try self.ensureLayerInfoImagesRegistered(scratch, layer_infos);
+            try self.rebuildLayerInfoTexture(scratch, atlases, layer_infos, out_layer_info_views);
             return;
         };
 
         self.createTextureArrays(first_atlas, self.allocated_layer_count, self.allocated_curve_height, self.allocated_band_height);
         self.uploadAllPages(atlases);
-        try self.ensureAtlasImagesRegistered(atlases);
-        try self.ensureLayerInfoImagesRegistered(layer_infos);
-        try self.rebuildLayerInfoTexture(atlases, layer_infos, out_layer_info_views);
+        try self.ensureAtlasImagesRegistered(scratch, atlases);
+        try self.ensureLayerInfoImagesRegistered(scratch, layer_infos);
+        try self.rebuildLayerInfoTexture(scratch, atlases, layer_infos, out_layer_info_views);
         self.atlas_has_special_text_runs = subpixel_policy.atlasesHaveSpecialTextRuns(atlases);
         self.fillAtlasViews(atlases, out_views);
     }
 
-    fn appendTexturePages(self: *PreparedResources, atlases: []const *const snail_mod.lowlevel.CurveAtlas) !bool {
+    fn appendTexturePages(self: *PreparedResources, scratch: std.mem.Allocator, atlases: []const *const snail_mod.lowlevel.CurveAtlas) !bool {
         var max_curve_h: u32 = self.allocated_curve_height;
         var max_band_h: u32 = self.allocated_band_height;
-        const start_pages = try self.allocator.alloc(u32, atlases.len);
-        defer self.allocator.free(start_pages);
+        const start_pages = try scratch.alloc(u32, atlases.len);
+        defer scratch.free(start_pages);
 
         for (atlases, 0..) |atlas, i| {
             if (i >= self.atlas_slot_count) return false;
@@ -632,7 +636,7 @@ pub const PreparedResources = struct {
         }
     }
 
-    fn rebuildLayerInfoTexture(self: *PreparedResources, atlases: []const *const snail_mod.lowlevel.CurveAtlas, layer_infos: anytype, layer_info_views: anytype) !void {
+    fn rebuildLayerInfoTexture(self: *PreparedResources, scratch: std.mem.Allocator, atlases: []const *const snail_mod.lowlevel.CurveAtlas, layer_infos: anytype, layer_info_views: anytype) !void {
         if (self.layer_info_tex != 0) gl.glDeleteTextures(1, &self.layer_info_tex);
         self.layer_info_tex = 0;
 
@@ -646,8 +650,8 @@ pub const PreparedResources = struct {
             if (info.height > 0 and info.width > width) width = info.width;
         }
         const total_texels = @as(usize, width) * @as(usize, total_rows) * 4;
-        const data = try self.allocator.alloc(f32, total_texels);
-        defer self.allocator.free(data);
+        const data = try scratch.alloc(f32, total_texels);
+        defer scratch.free(data);
         @memset(data, 0);
 
         const ImagePatchView = struct {
