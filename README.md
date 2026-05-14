@@ -436,7 +436,7 @@ try scene.addPath(.{ .picture = &sprite, .instances = entity_overrides });
 
 ### Renderer
 
-`GlRenderer`, `VulkanRenderer`, and `CpuRenderer` are first-class types; `Renderer` is a type-erased wrapper that exposes the same surface for backend-agnostic code. The methods below are present on each concrete renderer and on `Renderer`.
+`GlRenderer`, `VulkanRenderer`, and `CpuRenderer` are first-class types; `Renderer` is a type-erased wrapper for backend-agnostic code. Blocking upload and draw methods are present on each concrete renderer and on `Renderer`; scheduled upload is exposed on `Renderer`, `GlRenderer`, and `VulkanRenderer`.
 
 | Method | Description |
 |--------|-------------|
@@ -462,7 +462,8 @@ try scene.addPath(.{ .picture = &sprite, .instances = entity_overrides });
 
 `uploadResourcesBlocking` is the simple path; for engines that want to overlap
 upload with the main render queue (Vulkan in particular) there is an explicit
-plan / record / publish flow:
+plan / record / publish flow. Use a type-erased `Renderer` for backend-agnostic
+scheduled uploads, including CPU-backed uploads.
 
 1. **Plan.** `renderer.planResourceUpload(current, next_set, changed_keys_buf)`
    diffs `next_set` against the existing `PreparedResources` (or `null` for a

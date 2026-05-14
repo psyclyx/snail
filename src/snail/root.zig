@@ -4641,6 +4641,13 @@ pub const ResourceUploadPlan = struct {
     }
 };
 
+/// In-flight scheduled upload returned by `Renderer.beginResourceUpload` and
+/// the typed GL/Vulkan wrappers.
+///
+/// Callers should construct this through `beginResourceUpload`, then call
+/// `record`, `ready`, `publish`, and `deinit` as needed.
+/// The erased renderer handle is copied; the underlying backend state still
+/// must outlive the pending upload.
 pub const PendingResourceUpload = struct {
     renderer: Renderer,
     allocator: std.mem.Allocator,
