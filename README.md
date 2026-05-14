@@ -290,13 +290,15 @@ if (try atlas.ensureText(.{}, text)) |next| {
 }
 ```
 
-`TextBlob.rebind` is optional. Use it when you cache blobs across atlas extension and want those blobs to borrow the new compatible superset snapshot, usually so the old snapshot can be released and old prepared resources retired without reshaping unchanged text rows.
+`TextBlob.rebound` is optional. Use it when you cache blobs across atlas extension and want a new blob that borrows the compatible superset snapshot, usually so the old snapshot can be released and old prepared resources retired without reshaping unchanged text rows.
 
 If you already have shaped glyph IDs, extend the atlas directly and rebind only the cached blobs you plan to keep:
 
 ```zig
 if (try atlas.ensureGlyphs(face_index, glyph_ids)) |next| {
-    try blob.rebind(&next);
+    var next_blob = try blob.rebound(allocator, &next);
+    blob.deinit();
+    blob = next_blob;
     atlas.deinit();
     atlas = next;
 }
@@ -490,7 +492,7 @@ snail_text_atlas_deinit(atlas);
 | `atlas.faceLineMetrics(face_index) !LineMetrics` / `atlas.faceUnitsPerEm(face_index) !u16` / `atlas.glyphIndex(face_index, cp) !?u16` / `atlas.advanceWidth(face_index, gid) !i16` | Stable per-face font metrics for layout code. |
 | `atlas.cellMetrics(.{ .style, .em }) !CellMetrics` | Resolve the styled primary face and return `{ .cell_width, .line_height }` in caller units. |
 | `TextBlob.init(alloc, atlas, append) !TextBlob` | Build one positioned, painted `TextAppend` from a `ShapedText`. The blob borrows `atlas`. |
-| `blob.rebind(new_atlas) !void` | Optional cache/lifetime helper: move a blob to a compatible atlas snapshot that retains old pages and contains all referenced glyphs. |
+| `blob.rebound(alloc, new_atlas) !TextBlob` | Optional cache/lifetime helper: return a blob bound to a compatible atlas snapshot that retains old pages and contains all referenced glyphs. |
 | `TextBlobBuilder.init(alloc, atlas)` / `builder.append(TextAppend) !TextAppendResult` / `builder.finish() !TextBlob` | Append shaped runs with explicit placement and fill. Call `atlas.ensureText`/`ensureShaped`/`ensureGlyphs` first if all glyphs must be renderable. |
 | `TextAppend` | `{ .shaped, .glyphs, .placement = .{ .baseline, .em }, .fill }` — appends a whole shaped run or glyph subrange with independent position/scale and paint. Fill accepts the same `Paint` union used by paths, in the same coordinate space as `placement`. |
 | `TextAppendResult` | `{ .advance: Vec2, .missing: bool }` — pen advance and whether any referenced glyph was absent from the current atlas snapshot. |
@@ -579,13 +581,12 @@ scheduled uploads, including CPU-backed uploads.
    `changed_keys_buf` is caller-owned scratch — size it to the number of
    distinct resources you might submit.
 2. **Begin + record.** `renderer.beginResourceUpload(.{ .persistent = allocator, .scratch = allocator }, plan)` returns
-   a `PendingResourceUpload`. Call `pending.record(ctx, .{ .budget_bytes = N })`
-   to do the work. For Vulkan, `ctx` carries the caller-recorded
-   `VkCommandBuffer` (e.g. `.{ .cmd = my_cmd }`); for GL and CPU, `record`
-   completes synchronously and `ctx` is ignored.
-3. **Wait + publish.** Call `pending.ready(fence_or_frame)` to poll for
-   external completion (Vulkan only — GL/CPU report ready immediately). Once
-   true, `pending.publish()` returns the new `PreparedResources`. Call
+   a `PendingResourceUpload`. Call `pending.record(.no_command, .{ .budget_bytes = N })`
+   for GL/CPU. For Vulkan, pass `.{ .vulkan = command_buffer }` while recording
+   the caller-owned command buffer.
+3. **Wait + publish.** Call `pending.ready(.complete)`, `.pending`, or
+   `.{ .vulkan_fence = fence }` to report external completion. GL/CPU report
+   ready immediately after record. Once true, `pending.publish()` returns the new `PreparedResources`. Call
    `pending.deinit()` if you need to abandon the upload before publishing.
 
 The new `PreparedResources` replaces the old one; retire the old one via
@@ -596,18 +597,18 @@ sweep the queue explicitly.
 
 ### Text coverage in custom shaders
 
-`TextCoverageShader`, `TextCoverageRecords`, and `TextCoverageBackend` let a
+`CoverageShader`, `TextCoverageRecords`, and `CoverageBackend` let a
 material shader sample snail's exact glyph coverage without going through
 `Renderer.draw`. The typical use is layering text with custom lighting,
 masking, or compositing.
 
-- `TextCoverageShader` exposes GLSL 330 sources you can `@embedFile`-style
-  splice into your own program: `glsl330_vertex_interface`,
-  `glsl330_fragment_interface`, `glsl330_fragment_body` (gives you
-  `snail_text_coverage()`, `snail_text_color_srgb()`,
-  `snail_text_color_linear()`), plus `glsl330_resource_interface` and
-  `glsl330_coverage_functions` for materials that don't use snail's text
-  varyings.
+- `CoverageShader.gl` exposes GLSL 330 sources you can `@embedFile`-style
+  splice into your own program: `vertex_interface`,
+  `fragment_interface`, and `fragment_body`. The legacy aliases
+  `TextCoverageShader.glsl330_*` point at the same GL sources.
+- `CoverageShader.vulkan` exposes the Vulkan shader sources and descriptor
+  binding numbers. The Vulkan coverage backend binds Snail's descriptor set
+  into a caller-owned compatible pipeline layout.
 - `TextCoverageRecords` is the per-glyph vertex stream over a caller-owned
   `[]u32`. Size it with `TextCoverageRecords.wordCapacityForBlob(blob)`,
   initialize with `TextCoverageRecords.init(buffer)`, then call
@@ -615,11 +616,11 @@ masking, or compositing.
   does not allocate; it returns `error.DrawListFull` if the buffer is too
   small. Call `records.validFor(prepared)` after a re-upload and
   `records.rebuildLocal(prepared, blob, options)` if the atlas has moved.
-- `TextCoverageBackend` is the GL hook. Get one from
+- `CoverageBackend` is the backend hook. Get one from
   `prepared.textCoverageBackend(renderer)` (or `gl.textCoverageBackend(prepared)`
-  on the typed renderer). Call `bind(bindings)` to bind your material's
-  curve/band texture units, then `drawCoverage(&records)` (or `drawVertices`
-  with your own buffer). Currently GL-only.
+  / `vk.textCoverageBackend(prepared)` on typed renderers). Call
+  `bind(.{ .gl = bindings })` or `bind(.{ .vulkan = bindings })`, then
+  `drawCoverage(&records)` or `drawVertices` with your own buffer.
 
 ### Path
 
