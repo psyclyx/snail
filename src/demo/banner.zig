@@ -396,18 +396,18 @@ pub fn buildTextBlob(
         _ = try placer.addText(.{ .weight = .semi_bold }, "Synthetic", x, y + body_size, body_size, text);
         y += line_h + 8 * s;
 
-        _ = try placer.addText(.{}, "Rich runs", x, y + sub_label_size, sub_label_size, muted);
+        _ = try placer.addText(.{}, "Mixed styles", x, y + sub_label_size, sub_label_size, muted);
         y += sub_label_size + 6 * s;
         var rx = x;
-        const rich_baseline = y + body_size;
-        rx += (try placer.addText(.{ .weight = .bold }, "Rich ", rx, rich_baseline, body_size, text)).advance.x;
-        rx += (try placer.addPaintedText(.{ .weight = .bold }, "runs", rx, rich_baseline, body_size, .{ .linear_gradient = .{
-            .start = .{ .x = rx, .y = rich_baseline - body_size },
-            .end = .{ .x = rx + 64 * s, .y = rich_baseline },
+        const mixed_baseline = y + body_size;
+        rx += (try placer.addText(.{ .weight = .bold }, "Bold ", rx, mixed_baseline, body_size, text)).advance.x;
+        rx += (try placer.addPaintedText(.{ .weight = .bold }, "gradient", rx, mixed_baseline, body_size, .{ .linear_gradient = .{
+            .start = .{ .x = rx, .y = mixed_baseline - body_size },
+            .end = .{ .x = rx + 92 * s, .y = mixed_baseline },
             .start_color = .{ 0.18, 0.50, 0.88, 1.0 },
             .end_color = .{ 0.88, 0.30, 0.56, 1.0 },
         } })).advance.x;
-        _ = try placer.addText(.{}, " / per span", rx, rich_baseline, 14 * s, muted);
+        _ = try placer.addText(.{}, " / small", rx, mixed_baseline, 14 * s, muted);
         y += line_h + 4 * s;
 
         // Size ramp
