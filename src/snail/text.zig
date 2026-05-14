@@ -1,0 +1,22 @@
+const core = @import("core.zig");
+
+pub const Font = core.Font;
+pub const FontWeight = core.FontWeight;
+pub const FontStyle = core.FontStyle;
+pub const SyntheticStyle = core.SyntheticStyle;
+pub const FaceSpec = core.FaceSpec;
+pub const GlyphMetrics = core.GlyphMetrics;
+pub const LineMetrics = core.LineMetrics;
+pub const DecorationMetrics = core.DecorationMetrics;
+pub const ScriptMetrics = core.ScriptMetrics;
+pub const TextAtlas = core.TextAtlas;
+pub const ShapedText = core.ShapedText;
+pub const TextBlob = core.TextBlob;
+pub const TextPlacement = core.TextPlacement;
+pub const TextAppend = core.TextAppend;
+pub const TextAppendResult = core.TextAppendResult;
+pub const TextBatchAppend = core.TextBatchAppend;
+pub const TextBlobBuilder = core.TextBlobBuilder;
+pub const CellMetrics = core.CellMetrics;
+pub const CellMetricsOptions = core.CellMetricsOptions;
+pub const isRenderableTextCodepoint = core.isRenderableTextCodepoint;
