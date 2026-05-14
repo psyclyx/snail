@@ -137,9 +137,18 @@ pub const CellMetrics = fonts_mod.CellMetrics;
 pub const CellMetricsOptions = fonts_mod.CellMetricsOptions;
 pub const TextBlobBuilder = fonts_mod.TextBlobBuilder;
 pub const FaceSpec = fonts_mod.FaceSpec;
-/// Uniform locations and texture units used when a caller evaluates Snail text
-/// coverage inside their own GL shader.
-pub const TextCoverageBindings = pipeline.TextCoverageBindings;
+pub const GlCoverageBindings = pipeline.TextCoverageBindings;
+pub const VulkanCoverageBindings = if (build_options.enable_vulkan) vulkan_pipeline.TextCoverageBindings else struct {};
+
+pub const CoverageBindings = union(BackendKind) {
+    gl: GlCoverageBindings,
+    vulkan: VulkanCoverageBindings,
+    cpu: void,
+};
+
+/// Uniform locations / descriptor bindings used when a caller evaluates Snail
+/// text coverage inside a custom material shader.
+pub const TextCoverageBindings = GlCoverageBindings;
 
 /// GLSL 330 pieces for material shaders that consume Snail text coverage.
 ///
@@ -150,43 +159,87 @@ pub const TextCoverageBindings = pipeline.TextCoverageBindings;
 /// `snail_text_color_linear()` for use as material inputs. Material shaders
 /// that evaluate coverage without Snail's text varyings can instead include
 /// `glsl330_resource_interface` and `glsl330_coverage_functions`.
-pub const TextCoverageShader = struct {
-    pub const glsl330_vertex_interface = pipeline.text_vertex_interface;
-    pub const glsl330_fragment_interface = pipeline.text_coverage_fragment_interface;
-    pub const glsl330_resource_interface =
-        \\uniform sampler2DArray u_curve_tex;
-        \\uniform usampler2DArray u_band_tex;
-        \\uniform int u_fill_rule;
-        \\
-        \\#define SNAIL_FILL_RULE u_fill_rule
-        \\
-    ;
-    pub const glsl330_coverage_functions = pipeline.text_coverage_fragment_body;
-    pub const glsl330_fragment_body =
-        glsl330_coverage_functions ++
-        "\n" ++
-        \\float snail_text_coverage() {
-        \\    int atlas_layer = (v_glyph.w >> 8) & 0xFF;
-        \\    if (atlas_layer == 0xFF) return 0.0;
-        \\    vec2 rc = v_texcoord;
-        \\    vec2 dx = vec2(dFdx(rc.x), dFdy(rc.x));
-        \\    vec2 dy = vec2(dFdx(rc.y), dFdy(rc.y));
-        \\    vec2 ppe = vec2(1.0 / max(length(dx), 1.0 / 65536.0), 1.0 / max(length(dy), 1.0 / 65536.0));
-        \\    return evalGlyphCoverage(rc, ppe, v_glyph.xy,
-        \\                             ivec2(v_glyph.w & 0xFF, v_glyph.z),
-        \\                             v_banding, atlas_layer);
-        \\}
-        \\
-        \\vec4 snail_text_color_srgb() {
-        \\    return v_color;
-        \\}
-        \\
-        \\vec4 snail_text_color_linear() {
-        \\    return vec4(srgbDecode(v_color.r), srgbDecode(v_color.g), srgbDecode(v_color.b), v_color.a);
-        \\}
-        \\
+pub const CoverageShader = struct {
+    pub const gl = struct {
+        pub const vertex_interface = pipeline.text_vertex_interface;
+        pub const fragment_interface = pipeline.text_coverage_fragment_interface;
+        pub const resource_interface =
+            \\uniform sampler2DArray u_curve_tex;
+            \\uniform usampler2DArray u_band_tex;
+            \\uniform int u_fill_rule;
+            \\
+            \\#define SNAIL_FILL_RULE u_fill_rule
+            \\
         ;
+        pub const coverage_functions = pipeline.text_coverage_fragment_body;
+        pub const fragment_body =
+            coverage_functions ++
+            "\n" ++
+            \\float snail_text_coverage() {
+            \\    int atlas_layer = (v_glyph.w >> 8) & 0xFF;
+            \\    if (atlas_layer == 0xFF) return 0.0;
+            \\    vec2 rc = v_texcoord;
+            \\    vec2 dx = vec2(dFdx(rc.x), dFdy(rc.x));
+            \\    vec2 dy = vec2(dFdx(rc.y), dFdy(rc.y));
+            \\    vec2 ppe = vec2(1.0 / max(length(dx), 1.0 / 65536.0), 1.0 / max(length(dy), 1.0 / 65536.0));
+            \\    return evalGlyphCoverage(rc, ppe, v_glyph.xy,
+            \\                             ivec2(v_glyph.w & 0xFF, v_glyph.z),
+            \\                             v_banding, atlas_layer);
+            \\}
+            \\
+            \\vec4 snail_text_color_srgb() {
+            \\    return v_color;
+            \\}
+            \\
+            \\vec4 snail_text_color_linear() {
+            \\    return vec4(srgbDecode(v_color.r), srgbDecode(v_color.g), srgbDecode(v_color.b), v_color.a);
+            \\}
+            \\
+            ;
+
+        pub const glsl330_vertex_interface = vertex_interface;
+        pub const glsl330_fragment_interface = fragment_interface;
+        pub const glsl330_resource_interface = resource_interface;
+        pub const glsl330_coverage_functions = coverage_functions;
+        pub const glsl330_fragment_body = fragment_body;
+    };
+
+    pub const vulkan = struct {
+        pub const vertex_shader = @embedFile("renderer/vulkan_glsl/snail.vert");
+        pub const text_fragment_shader = @embedFile("renderer/vulkan_glsl/snail_text.frag");
+        pub const coverage_functions = @embedFile("renderer/glsl/snail_text_frag_body.glsl");
+        pub const descriptor_set_index: u32 = 0;
+        pub const curve_texture_binding: u32 = 0;
+        pub const band_texture_binding: u32 = 1;
+    };
+
+    pub const glsl330_vertex_interface = gl.glsl330_vertex_interface;
+    pub const glsl330_fragment_interface = gl.glsl330_fragment_interface;
+    pub const glsl330_resource_interface = gl.glsl330_resource_interface;
+    pub const glsl330_coverage_functions = gl.glsl330_coverage_functions;
+    pub const glsl330_fragment_body = gl.glsl330_fragment_body;
 };
+
+pub const TextCoverageShader = CoverageShader;
+
+pub const GlCoverageProgram = struct {
+    bindings: GlCoverageBindings = .{},
+};
+
+pub const VulkanCoverageProgram = if (build_options.enable_vulkan) struct {
+    pipeline_layout: vulkan_pipeline.vk.VkPipelineLayout = null,
+    descriptor_set_index: u32 = 0,
+} else struct {};
+
+pub const CpuCoverageProgram = struct {};
+
+pub const CoverageProgram = union(BackendKind) {
+    gl: GlCoverageProgram,
+    vulkan: VulkanCoverageProgram,
+    cpu: CpuCoverageProgram,
+};
+
+pub const TextCoverageProgram = CoverageProgram;
 
 /// Resolve options used when preparing text coverage geometry for a custom
 /// material shader.
@@ -283,37 +336,114 @@ pub const TextCoverageRecords = struct {
     }
 };
 
-/// GL backend hook for evaluating Snail coverage inside caller-owned shaders.
-pub const TextCoverageBackend = struct {
+pub const GlCoverageBackend = struct {
     gl: *pipeline.GlTextState,
     gl_resources: *const pipeline.PreparedResources,
     prepared: *const PreparedResources,
 
-    fn glState(self: TextCoverageBackend) *pipeline.GlTextState {
+    fn glState(self: GlCoverageBackend) *pipeline.GlTextState {
         return self.gl;
     }
 
-    pub fn bindResources(self: TextCoverageBackend, bindings: TextCoverageBindings) void {
+    pub fn bindResources(self: GlCoverageBackend, bindings: GlCoverageBindings) void {
         self.gl_resources.bindTextCoverageResources(bindings);
     }
 
-    pub fn drawCoverage(self: TextCoverageBackend, coverage: *const TextCoverageRecords) void {
+    pub fn drawCoverage(self: GlCoverageBackend, coverage: *const TextCoverageRecords) void {
         std.debug.assert(coverage.validFor(self.prepared));
         self.drawVertices(coverage.slice());
     }
 
-    pub fn drawVertices(self: TextCoverageBackend, vertices: []const u32) void {
+    pub fn drawVertices(self: GlCoverageBackend, vertices: []const u32) void {
         self.glState().drawPreparedText(self.gl_resources, vertices);
     }
 
-    pub fn draw(self: TextCoverageBackend, vertices: []const u32) void {
+    pub fn draw(self: GlCoverageBackend, vertices: []const u32) void {
         self.drawVertices(vertices);
     }
 
-    pub fn bind(self: TextCoverageBackend, bindings: TextCoverageBindings) void {
+    pub fn bind(self: GlCoverageBackend, bindings: GlCoverageBindings) void {
         self.bindResources(bindings);
     }
 };
+
+pub const VulkanCoverageBackend = if (build_options.enable_vulkan) struct {
+    vk: *vulkan_pipeline.VulkanPipeline,
+    vk_resources: *const vulkan_pipeline.PreparedResources,
+    prepared: *const PreparedResources,
+
+    pub fn descriptorSetLayout(self: VulkanCoverageBackend) vulkan_pipeline.vk.VkDescriptorSetLayout {
+        return self.vk.textCoverageDescriptorSetLayout();
+    }
+
+    pub fn pipelineLayout(self: VulkanCoverageBackend) vulkan_pipeline.vk.VkPipelineLayout {
+        return self.vk.textCoveragePipelineLayout();
+    }
+
+    pub fn bindResources(self: VulkanCoverageBackend, bindings: VulkanCoverageBindings) void {
+        self.vk.bindTextCoverageResources(self.vk_resources, bindings);
+    }
+
+    pub fn drawCoverage(self: VulkanCoverageBackend, coverage: *const TextCoverageRecords) void {
+        std.debug.assert(coverage.validFor(self.prepared));
+        self.drawVertices(coverage.slice());
+    }
+
+    pub fn drawVertices(self: VulkanCoverageBackend, vertices: []const u32) void {
+        self.vk.drawPreparedTextCoverage(vertices);
+    }
+
+    pub fn draw(self: VulkanCoverageBackend, vertices: []const u32) void {
+        self.drawVertices(vertices);
+    }
+
+    pub fn bind(self: VulkanCoverageBackend, bindings: VulkanCoverageBindings) void {
+        self.bindResources(bindings);
+    }
+} else struct {};
+
+/// Backend hook for evaluating Snail text coverage inside caller-owned shaders.
+pub const CoverageBackend = union(BackendKind) {
+    gl: GlCoverageBackend,
+    vulkan: VulkanCoverageBackend,
+    cpu: void,
+
+    pub fn bindResources(self: CoverageBackend, bindings: CoverageBindings) void {
+        switch (self) {
+            .gl => |backend| backend.bindResources(bindings.gl),
+            .vulkan => |backend| if (comptime build_options.enable_vulkan) {
+                backend.bindResources(bindings.vulkan);
+            },
+            .cpu => {},
+        }
+    }
+
+    pub fn drawCoverage(self: CoverageBackend, coverage: *const TextCoverageRecords) void {
+        switch (self) {
+            .gl => |backend| backend.drawCoverage(coverage),
+            .vulkan => |backend| if (comptime build_options.enable_vulkan) backend.drawCoverage(coverage),
+            .cpu => {},
+        }
+    }
+
+    pub fn drawVertices(self: CoverageBackend, vertices: []const u32) void {
+        switch (self) {
+            .gl => |backend| backend.drawVertices(vertices),
+            .vulkan => |backend| if (comptime build_options.enable_vulkan) backend.drawVertices(vertices),
+            .cpu => {},
+        }
+    }
+
+    pub fn draw(self: CoverageBackend, vertices: []const u32) void {
+        self.drawVertices(vertices);
+    }
+
+    pub fn bind(self: CoverageBackend, bindings: CoverageBindings) void {
+        self.bindResources(bindings);
+    }
+};
+
+pub const TextCoverageBackend = CoverageBackend;
 
 const PATH_PAINT_INFO_WIDTH: u32 = paint_records.info_width;
 const PATH_PAINT_TEXELS_PER_RECORD: u32 = paint_records.texels_per_record;
@@ -4174,14 +4304,24 @@ pub const PreparedResources = struct {
     }
 
     pub fn textCoverageBackend(self: *const PreparedResources, renderer: *Renderer) ?TextCoverageBackend {
-        if (renderer.backend() == .gl) {
-            if (self.gl) |*gl_resources| {
-                return .{
+        switch (renderer.backend()) {
+            .gl => if (self.gl) |*gl_resources| {
+                return .{ .gl = .{
                     .gl = @ptrCast(@alignCast(renderer.ptr)),
                     .gl_resources = gl_resources,
                     .prepared = self,
-                };
-            }
+                } };
+            },
+            .vulkan => if (comptime build_options.enable_vulkan) {
+                if (self.vulkan) |*vk_resources| {
+                    return .{ .vulkan = .{
+                        .vk = @ptrCast(@alignCast(renderer.ptr)),
+                        .vk_resources = vk_resources,
+                        .prepared = self,
+                    } };
+                }
+            },
+            .cpu => {},
         }
         return null;
     }
@@ -5574,7 +5714,7 @@ pub const GlRenderer = struct {
 
     pub fn textCoverageBackend(self: *GlRenderer, prepared: *const PreparedResources) ?TextCoverageBackend {
         if (prepared.gl) |*gl_resources| {
-            return .{ .gl = self.state, .gl_resources = gl_resources, .prepared = prepared };
+            return .{ .gl = .{ .gl = self.state, .gl_resources = gl_resources, .prepared = prepared } };
         }
         return null;
     }
@@ -5639,6 +5779,14 @@ pub const VulkanRenderer = struct {
     pub fn drawPrepared(self: *VulkanRenderer, prepared: *const PreparedResources, scene: *const PreparedScene, options: DrawOptions) !void {
         var renderer = self.asRenderer();
         try renderer.drawPrepared(prepared, scene, options);
+    }
+
+    pub fn textCoverageBackend(self: *VulkanRenderer, prepared: *const PreparedResources) ?TextCoverageBackend {
+        if (comptime !build_options.enable_vulkan) return null;
+        if (prepared.vulkan) |*vk_resources| {
+            return .{ .vulkan = .{ .vk = self.state, .vk_resources = vk_resources, .prepared = prepared } };
+        }
+        return null;
     }
 
     pub fn backendName(self: *const VulkanRenderer) []const u8 {

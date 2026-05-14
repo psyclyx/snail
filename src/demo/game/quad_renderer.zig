@@ -371,7 +371,7 @@ pub const QuadRenderer = struct {
             gl.glUniform1i(self.material.text_glyph_count_loc, @intCast(input.text.coverage.glyphCount()));
             gl.glUniform2f(self.material.text_scene_size_loc, input.scene_size[0], input.scene_size[1]);
             gl.glUniform1f(self.material.text_relief_strength_loc, input.relief_strength);
-            backend.bindResources(.{
+            backend.bindResources(.{ .gl = .{
                 .curve_tex_loc = self.material.text_curve_tex_loc,
                 .band_tex_loc = self.material.text_band_tex_loc,
                 .fill_rule_loc = self.material.text_fill_rule_loc,
@@ -381,7 +381,7 @@ pub const QuadRenderer = struct {
                 .fill_rule = .non_zero,
                 .subpixel_order = .none,
                 .coverage_transfer = .identity,
-            });
+            } });
         } else {
             gl.glActiveTexture(textureUnitEnum(TEXT_RECORD_TEXTURE_UNIT));
             gl.glBindTexture(gl.GL_TEXTURE_BUFFER, 0);

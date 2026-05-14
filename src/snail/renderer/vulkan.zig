@@ -51,6 +51,14 @@ pub const VulkanContext = struct {
     supports_dual_source_blend: bool = false,
 };
 
+pub const TextCoverageBindings = struct {
+    /// Pipeline layout for the caller-owned graphics pipeline. Defaults to
+    /// Snail's built-in layout, useful when the caller's layout is compatible
+    /// with Snail's descriptor set and push-constant ranges.
+    pipeline_layout: vk.VkPipelineLayout = null,
+    descriptor_set_index: u32 = 0,
+};
+
 // ── Constants ──
 
 // Partition the persistently mapped upload buffer by frame slot so a frame can
@@ -515,6 +523,14 @@ pub const VulkanPipeline = struct {
         std.debug.assert(slot < UPLOAD_SLOTS);
         self.active_upload_slot = slot;
         self.upload_cursor = 0;
+    }
+
+    pub fn textCoverageDescriptorSetLayout(self: *const VulkanPipeline) vk.VkDescriptorSetLayout {
+        return self.desc_set_layout;
+    }
+
+    pub fn textCoveragePipelineLayout(self: *const VulkanPipeline) vk.VkPipelineLayout {
+        return self.pipeline_layout;
     }
 
     /// Use a caller-owned, already-recording command buffer for resource
@@ -1033,6 +1049,30 @@ pub const VulkanPipeline = struct {
 
     pub fn drawTextPrepared(self: *VulkanPipeline, prepared: *const PreparedResources, vertices: []const u32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32) void {
         self.drawTextInternal(prepared, vertices, mvp, viewport_w, viewport_h, texture_layer_base, true);
+    }
+
+    pub fn bindTextCoverageResources(self: *VulkanPipeline, prepared: *const PreparedResources, bindings: TextCoverageBindings) void {
+        const cmd = self.active_cmd orelse return;
+        const layout = if (bindings.pipeline_layout != null) bindings.pipeline_layout else self.pipeline_layout;
+        vk.vkCmdBindDescriptorSets(
+            cmd,
+            vk.VK_PIPELINE_BIND_POINT_GRAPHICS,
+            layout,
+            bindings.descriptor_set_index,
+            1,
+            @ptrCast(&prepared.desc_set),
+            0,
+            null,
+        );
+    }
+
+    pub fn drawPreparedTextCoverage(self: *VulkanPipeline, vertices: []const u32) void {
+        const cmd = self.active_cmd orelse return;
+        if (vertices.len == 0) return;
+        const total_glyphs = vertices.len / vertex.WORDS_PER_INSTANCE;
+        if (total_glyphs == 0) return;
+        vk.vkCmdBindIndexBuffer(cmd, self.index_buffer, 0, vk.VK_INDEX_TYPE_UINT32);
+        self.drawGlyphRange(vertices, 0, total_glyphs);
     }
 
     pub fn drawPathsPrepared(self: *VulkanPipeline, prepared: *const PreparedResources, vertices: []const u32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32) void {
