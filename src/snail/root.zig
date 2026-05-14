@@ -73,6 +73,7 @@ const glyph_emit = @import("glyph_emit.zig");
 const fonts_mod = @import("fonts.zig");
 const ttf = @import("font/ttf.zig");
 const opentype = @import("font/opentype.zig");
+const paint_mod = @import("paint.zig");
 // Re-exported under `snail.lowlevel` at the bottom of the file.
 const bezier = @import("math/bezier.zig");
 const vec = @import("math/vec.zig");
@@ -347,16 +348,8 @@ pub const Rect = struct {
     h: f32,
 };
 
-pub const PaintExtend = enum(u8) {
-    clamp = 0,
-    repeat = 1,
-    reflect = 2,
-};
-
-pub const ImageFilter = enum(u8) {
-    linear = 0,
-    nearest = 1,
-};
+pub const PaintExtend = paint_mod.Extend;
+pub const ImageFilter = paint_mod.ImageFilter;
 
 pub const FontWeight = enum(u4) {
     thin = 1,
@@ -471,67 +464,15 @@ const PreparedImageView = struct {
     uv_scale: Vec2 = .{ .x = 1.0, .y = 1.0 },
 };
 
-pub const LinearGradient = struct {
-    start: Vec2,
-    end: Vec2,
-    start_color: [4]f32,
-    end_color: [4]f32,
-    extend: PaintExtend = .clamp,
-};
-
-pub const RadialGradient = struct {
-    center: Vec2,
-    radius: f32,
-    inner_color: [4]f32,
-    outer_color: [4]f32,
-    extend: PaintExtend = .clamp,
-};
-
-pub const ImagePaint = struct {
-    image: *const Image,
-    uv_transform: Transform2D = .identity,
-    tint: [4]f32 = .{ 1, 1, 1, 1 },
-    extend_x: PaintExtend = .clamp,
-    extend_y: PaintExtend = .clamp,
-    filter: ImageFilter = .linear,
-};
-
-pub const Paint = union(enum) {
-    solid: [4]f32,
-    linear_gradient: LinearGradient,
-    radial_gradient: RadialGradient,
-    image: ImagePaint,
-};
-
-pub const FillStyle = struct {
-    paint: Paint,
-};
-
-pub const StrokeCap = enum {
-    butt,
-    square,
-    round,
-};
-
-pub const StrokeJoin = enum {
-    miter,
-    bevel,
-    round,
-};
-
-pub const StrokePlacement = enum {
-    center,
-    inside,
-};
-
-pub const StrokeStyle = struct {
-    paint: Paint,
-    width: f32,
-    cap: StrokeCap = .butt,
-    join: StrokeJoin = .miter,
-    miter_limit: f32 = 4.0,
-    placement: StrokePlacement = .center,
-};
+pub const LinearGradient = paint_mod.LinearGradient;
+pub const RadialGradient = paint_mod.RadialGradient;
+pub const ImagePaint = paint_mod.ImagePaint;
+pub const Paint = paint_mod.Paint;
+pub const FillStyle = paint_mod.FillStyle;
+pub const StrokeCap = paint_mod.StrokeCap;
+pub const StrokeJoin = paint_mod.StrokeJoin;
+pub const StrokePlacement = paint_mod.StrokePlacement;
+pub const StrokeStyle = paint_mod.StrokeStyle;
 
 /// A parsed TrueType font. Immutable after init.
 /// Thread-safe for concurrent reads (glyphIndex, getKerning).
@@ -1397,59 +1338,12 @@ fn coerceAtlasHandle(atlas_like: anytype) PreparedAtlasView {
     };
 }
 
-fn glyphAdvanceUnits(atlas: *const Atlas, font: *const Font, gid: u16) ?u16 {
-    if (atlas.glyph_map.get(gid)) |info| return info.advance_width;
-    if (atlas.colrLayerCount(gid) > 0) return font.inner.units_per_em;
-    return null;
-}
-
 /// Accumulates glyph vertices into a caller-provided buffer.
 /// Zero allocations. Can be pre-built for static text.
 const TextBatch = struct {
     buf: []u32,
     len: usize, // words written
     layer_window_base: ?u32 = null,
-
-    const glyph_stack_capacity = 256;
-
-    const PreparedGlyphs = struct {
-        slice: []const u16,
-        owned: ?[]u16 = null,
-
-        fn deinit(self: *const PreparedGlyphs, allocator: std.mem.Allocator) void {
-            if (self.owned) |buf| allocator.free(buf);
-        }
-    };
-
-    fn prepareGlyphs(atlas: *const Atlas, font: *const Font, text: []const u8, stack_buf: []u16) ?PreparedGlyphs {
-        if (text.len == 0) return .{ .slice = &.{} };
-
-        var owned: ?[]u16 = null;
-        const capacity = @max(text.len, 1);
-        const buf = if (capacity <= stack_buf.len)
-            stack_buf[0..capacity]
-        else blk: {
-            owned = atlas.allocator.alloc(u16, capacity) catch return null;
-            break :blk owned.?;
-        };
-
-        var glyph_count: usize = 0;
-        const utf8_view = std.unicode.Utf8View.initUnchecked(text);
-        var it = utf8_view.iterator();
-        while (it.nextCodepoint()) |cp| {
-            buf[glyph_count] = font.glyphIndex(cp) catch 0;
-            glyph_count += 1;
-        }
-
-        if (atlas.shaper) |shaper| {
-            glyph_count = shaper.applyLigatures(buf[0..glyph_count]) catch glyph_count;
-        }
-
-        return .{
-            .slice = buf[0..glyph_count],
-            .owned = owned,
-        };
-    }
 
     pub fn init(buf: []u32) TextBatch {
         return .{ .buf = buf, .len = 0 };
@@ -1640,72 +1534,6 @@ const TextBatch = struct {
         if (!vertex_mod.generateMultiLayerGlyphVerticesTransformedTinted(self.buf[self.len..], union_bbox, info_x, info_y, layer_count, color, tint, local_layer, transform))
             return error.InvalidTransform;
         self.len += TEXT_WORDS_PER_GLYPH;
-    }
-
-    /// Lay out and append a string. Uses HarfBuzz for shaping when
-    /// available (-Dharfbuzz=true), otherwise applies built-in ligature
-    /// substitution and GPOS/kern kerning.
-    /// Returns advance width in pixels.
-    pub fn addText(
-        self: *TextBatch,
-        atlas_like: anytype,
-        font: *const Font,
-        text: []const u8,
-        x: f32,
-        y: f32,
-        font_size: f32,
-        color: [4]f32,
-    ) f32 {
-        const resolved_view = coerceAtlasHandle(atlas_like);
-        const view = &resolved_view;
-        const atlas = view.atlas;
-        if (comptime build_options.enable_harfbuzz) {
-            if (atlas.hb_shaper) |hbs| {
-                return hbs.shapeAndEmit(text, font_size, x, y, color, view, self);
-            }
-        }
-
-        const scale = font_size / @as(f32, @floatFromInt(font.unitsPerEm()));
-        var cursor_x = x;
-        var glyph_stack: [glyph_stack_capacity]u16 = undefined;
-        var prepared = prepareGlyphs(atlas, font, text, &glyph_stack) orelse return 0;
-        defer prepared.deinit(atlas.allocator);
-
-        var prev_gid: u16 = 0;
-        for (prepared.slice) |gid| {
-            if (gid == 0) {
-                cursor_x += scale * 500;
-                prev_gid = 0;
-                continue;
-            }
-
-            // Kerning: prefer GPOS, fall back to kern table.
-            if (prev_gid != 0) {
-                var kern: i16 = 0;
-                if (atlas.shaper) |shaper| {
-                    kern = shaper.getKernAdjustment(prev_gid, gid) catch 0;
-                }
-                if (kern == 0) {
-                    kern = font.getKerning(prev_gid, gid) catch 0;
-                }
-                cursor_x += @as(f32, @floatFromInt(kern)) * scale;
-            }
-
-            switch (glyph_emit.emitGlyph(self, view, gid, cursor_x, y, font_size, color)) {
-                .emitted, .skipped => {},
-                .buffer_full, .layer_window_changed, .invalid_transform => break,
-            }
-
-            const advance = glyphAdvanceUnits(atlas, font, gid) orelse {
-                cursor_x += scale * 500;
-                prev_gid = gid;
-                continue;
-            };
-            cursor_x += @as(f32, @floatFromInt(advance)) * scale;
-            prev_gid = gid;
-        }
-
-        return cursor_x - x;
     }
 };
 
