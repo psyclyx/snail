@@ -4435,6 +4435,22 @@ pub const ResourceUploadPlan = struct {
     }
 };
 
+pub const ResourceUploadCommand = union(enum) {
+    none,
+    vulkan: if (build_options.enable_vulkan) vulkan_pipeline.vk.VkCommandBuffer else void,
+
+    pub const no_command = ResourceUploadCommand{ .none = {} };
+};
+
+pub const ResourceUploadCompletion = union(enum) {
+    immediate,
+    ready: bool,
+    vulkan_fence: if (build_options.enable_vulkan) vulkan_pipeline.vk.VkFence else void,
+
+    pub const complete = ResourceUploadCompletion{ .ready = true };
+    pub const pending = ResourceUploadCompletion{ .ready = false };
+};
+
 /// In-flight scheduled upload returned by `Renderer.beginResourceUpload` and
 /// the typed GL/Vulkan wrappers.
 ///
@@ -4452,13 +4468,16 @@ pub const PendingResourceUpload = struct {
 
     /// Record upload work for this plan. Vulkan records into a caller-owned
     /// command buffer; CPU and GL complete during this call.
-    pub fn record(self: *PendingResourceUpload, cmd_or_context: anytype, options: struct { budget_bytes: usize = std.math.maxInt(usize) }) !void {
+    pub fn record(self: *PendingResourceUpload, command: ResourceUploadCommand, options: struct { budget_bytes: usize = std.math.maxInt(usize) }) !void {
         if (self.prepared != null) return;
         if (self.plan.upload_bytes > options.budget_bytes) return error.ResourceUploadBudgetExceeded;
 
         if (comptime build_options.enable_vulkan) {
             if (self.renderer.backend() == .vulkan) {
-                const cmd = vulkanUploadCommand(cmd_or_context) orelse return error.MissingUploadCommand;
+                const cmd = switch (command) {
+                    .vulkan => |vk_cmd| vk_cmd,
+                    else => return error.MissingUploadCommand,
+                };
                 const vk_state: *vulkan_pipeline.VulkanPipeline = @ptrCast(@alignCast(self.renderer.ptr));
                 vk_state.beginResourceUploadRecording(cmd);
                 defer vk_state.endResourceUploadRecording();
@@ -4474,13 +4493,13 @@ pub const PendingResourceUpload = struct {
         self.ready_to_publish = true;
     }
 
-    pub fn ready(self: *PendingResourceUpload, fence_or_frame: anytype) bool {
+    pub fn ready(self: *PendingResourceUpload, completion: ResourceUploadCompletion) bool {
         if (self.prepared == null) return false;
         if (!self.external_completion_required) {
             self.ready_to_publish = true;
             return true;
         }
-        if (self.externalCompletionReady(fence_or_frame)) {
+        if (self.externalCompletionReady(completion)) {
             self.ready_to_publish = true;
             return true;
         }
@@ -4505,56 +4524,21 @@ pub const PendingResourceUpload = struct {
         self.ready_to_publish = false;
     }
 
-    fn externalCompletionReady(self: *const PendingResourceUpload, fence_or_frame: anytype) bool {
-        const T = @TypeOf(fence_or_frame);
-        if (T == bool) return fence_or_frame;
-
-        switch (@typeInfo(T)) {
-            .@"struct" => {
-                if (@hasField(T, "ready")) return fence_or_frame.ready;
-                if (@hasField(T, "complete")) return fence_or_frame.complete;
-                if (@hasField(T, "signaled")) return fence_or_frame.signaled;
-                if (comptime build_options.enable_vulkan) {
-                    if (@hasField(T, "fence")) return self.vulkanFenceReady(fence_or_frame.fence);
-                }
-            },
-            else => {},
-        }
-
-        if (comptime build_options.enable_vulkan) {
-            return self.vulkanFenceReady(fence_or_frame);
-        }
-        return false;
+    fn externalCompletionReady(self: *const PendingResourceUpload, completion: ResourceUploadCompletion) bool {
+        return switch (completion) {
+            .immediate => true,
+            .ready => |is_ready| is_ready,
+            .vulkan_fence => |fence| if (comptime build_options.enable_vulkan) self.vulkanFenceReady(fence) else false,
+        };
     }
 
-    fn vulkanFenceReady(self: *const PendingResourceUpload, fence: anytype) bool {
+    fn vulkanFenceReady(self: *const PendingResourceUpload, fence: if (build_options.enable_vulkan) vulkan_pipeline.vk.VkFence else void) bool {
         if (comptime !build_options.enable_vulkan) return false;
         if (self.renderer.backend() != .vulkan) return false;
-        const T = @TypeOf(fence);
-        switch (@typeInfo(T)) {
-            .pointer, .optional => {
-                const vk_state: *vulkan_pipeline.VulkanPipeline = @ptrCast(@alignCast(self.renderer.ptr));
-                const vk_fence: vulkan_pipeline.vk.VkFence = @ptrCast(fence);
-                return vulkan_pipeline.vk.vkGetFenceStatus(vk_state.ctx.device, vk_fence) == vulkan_pipeline.vk.VK_SUCCESS;
-            },
-            else => return false,
-        }
+        const vk_state: *vulkan_pipeline.VulkanPipeline = @ptrCast(@alignCast(self.renderer.ptr));
+        return vulkan_pipeline.vk.vkGetFenceStatus(vk_state.ctx.device, fence) == vulkan_pipeline.vk.VK_SUCCESS;
     }
 };
-
-fn vulkanUploadCommand(cmd_or_context: anytype) vulkan_pipeline.vk.VkCommandBuffer {
-    if (comptime !build_options.enable_vulkan) return null;
-    const T = @TypeOf(cmd_or_context);
-    switch (@typeInfo(T)) {
-        .@"struct" => {
-            if (@hasField(T, "cmd")) return cmd_or_context.cmd;
-            if (@hasField(T, "command_buffer")) return cmd_or_context.command_buffer;
-            return null;
-        },
-        .pointer, .optional => return @ptrCast(cmd_or_context),
-        else => return null,
-    }
-}
 
 pub const DrawOptions = struct {
     mvp: Mat4,
@@ -6032,13 +6016,6 @@ test "Vulkan scheduled upload path records without internal submit" {
     try std.testing.expect(std.mem.indexOf(u8, scheduled_finish, "vkWaitForFences") == null);
 }
 
-test "Vulkan upload command helper accepts frame command fields" {
-    if (!build_options.enable_vulkan) return;
-    const cmd: vulkan_pipeline.vk.VkCommandBuffer = null;
-    try std.testing.expect(vulkanUploadCommand(.{ .cmd = cmd }) == null);
-    try std.testing.expect(vulkanUploadCommand(.{ .command_buffer = cmd }) == null);
-}
-
 fn appendRootTestText(
     builder: *TextBlobBuilder,
     style: FontStyle,
@@ -6462,11 +6439,11 @@ test "resource upload plan reports changed keys and enforces budget" {
 
     var pending = try renderer.beginResourceUpload(.{ .persistent = allocator, .scratch = allocator }, plan_b);
     defer pending.deinit();
-    try std.testing.expectError(error.ResourceUploadBudgetExceeded, pending.record(.{}, .{ .budget_bytes = 0 }));
-    try std.testing.expect(!pending.ready(.{}));
+    try std.testing.expectError(error.ResourceUploadBudgetExceeded, pending.record(.no_command, .{ .budget_bytes = 0 }));
+    try std.testing.expect(!pending.ready(.pending));
 
-    try pending.record(.{}, .{ .budget_bytes = plan_b.upload_bytes });
-    try std.testing.expect(pending.ready(.{}));
+    try pending.record(.no_command, .{ .budget_bytes = plan_b.upload_bytes });
+    try std.testing.expect(pending.ready(.immediate));
     var prepared_b = try pending.publish();
     defer prepared_b.deinit();
     try std.testing.expect(prepared_b.stampForKey(.hud_panel) != null);
@@ -6503,9 +6480,9 @@ test "pending upload publish waits for external completion marker" {
     };
     defer pending.deinit();
 
-    try std.testing.expect(!pending.ready(.{ .ready = false }));
+    try std.testing.expect(!pending.ready(.pending));
     try std.testing.expectError(error.ResourceUploadNotReady, pending.publish());
-    try std.testing.expect(pending.ready(.{ .ready = true }));
+    try std.testing.expect(pending.ready(.complete));
     var prepared = try pending.publish();
     defer prepared.deinit();
     try std.testing.expect(prepared.stampForKey(.hud_panel) != null);
