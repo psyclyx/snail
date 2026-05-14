@@ -422,7 +422,7 @@ try scene.addPath(.{ .picture = &sprite, .instances = entity_overrides });
 
 ### ResourceSet
 
-`ResourceSet` is a caller-buffered manifest of CPU resources to prepare for a renderer. Entries borrow their source objects; keep those objects alive through the blocking upload or through `pending.record` for a scheduled upload.
+`ResourceSet` is a caller-buffered manifest of CPU resources to prepare for a renderer. Entries borrow their source objects; keep those objects alive through the blocking upload or through `pending.record` for a scheduled upload. GPU backends copy texture payload during upload. CPU-backed `PreparedResources` still borrow uploaded atlas band/layer-info data and image pixels, so keep uploaded `TextAtlas`, `PathPicture`, and `Image` values alive until those CPU prepared resources are retired.
 
 | Method | Description |
 |--------|-------------|
@@ -573,8 +573,8 @@ backend on top of snail's rasterization. Most apps should not need this.
 |------|------|
 | `TextAtlas` | Immutable snapshot. Safe for concurrent reads. `ensureText`, `ensureShaped`, and `ensureGlyphs` return a new snapshot; old remains valid for in-flight readers. |
 | `TextBlob`, `PathPicture`, `Image` | Safe for concurrent reads while the borrowed atlas / pictures / pixels outlive the reader. `TextBlob.rebind` mutates the blob and must not race with readers. |
-| `ResourceSet`, `Scene` | Borrowed manifests/lists. CPU values must outlive them. |
-| `PreparedResources` | Backend/context-specific. CPU values must outlive it unless a backend explicitly copies them. |
+| `ResourceSet`, `Scene` | Borrowed manifests/lists. Source values must outlive upload/record building; CPU prepared resources extend some source lifetimes as described below. |
+| `PreparedResources` | Backend/context-specific. GPU prepared resources own backend texture uploads. CPU prepared resources own prepared curve sidecars but still borrow atlas band/layer-info data and image pixels, so uploaded `TextAtlas`, `PathPicture`, and `Image` values must outlive them. |
 | `DrawList` | Caller-owned buffer. Thread-local — no sharing needed. |
 | `Renderer` | Single-threaded. Must be called from the GL/Vulkan context thread. |
 | `CpuRenderer` | Single-threaded by default. Pass a `*snail.ThreadPool` via `cpu.setThreadPool` to enable internal scanline-tiled parallelism; the renderer fans tile work out and joins before each draw returns, so calls remain serial from the caller's perspective. |

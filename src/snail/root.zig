@@ -4404,9 +4404,11 @@ pub const ResourceSet = struct {
 
 pub const PreparedResources = struct {
     allocator: std.mem.Allocator,
-    /// Backend-specific realization for one renderer/context. Entries may
-    /// borrow CPU values; those values must outlive this object unless a
-    /// backend explicitly copied them.
+    /// Backend-specific realization for one renderer/context. GPU backends
+    /// copy texture payload during upload. The CPU backend owns prepared curve
+    /// sidecars but still borrows atlas band/layer-info data and image pixels,
+    /// so uploaded `TextAtlas`, `PathPicture`, and `Image` values must outlive
+    /// CPU prepared resources.
     atlases: []PreparedAtlasResource = &.{},
     images: []PreparedImageResource = &.{},
     gl: ?pipeline.PreparedResources = null,
