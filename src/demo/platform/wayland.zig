@@ -207,12 +207,6 @@ pub const Window = struct {
         return changed;
     }
 
-    pub fn detachBuffer(self: *Window) void {
-        c.wl_surface_attach(self.surface, null, 0, 0);
-        c.wl_surface_commit(self.surface);
-        _ = c.wl_display_flush(self.display);
-    }
-
     pub fn currentSubpixelOrder(self: *const Window, fallback: SubpixelOrder) SubpixelOrder {
         if (self.active_output) |active| {
             if (self.findOutputInfo(active)) |info| {

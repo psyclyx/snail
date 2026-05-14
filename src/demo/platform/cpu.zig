@@ -74,7 +74,8 @@ fn initForCurrentWindow() !void {
 pub fn deinit() void {
     if (app) |window| {
         const owned = owns_window;
-        window.detachBuffer();
+        // Do not attach null here: that unmaps the xdg_toplevel, and the
+        // next backend would need a fresh configure before attaching pixels.
         destroyShmBuffer();
         if (owned) window.deinit();
         app = null;
