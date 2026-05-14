@@ -6,6 +6,14 @@ const snail = @import("root.zig");
 const ttf = @import("font/ttf.zig");
 
 const build_options = @import("build_options");
+const vk = if (build_options.enable_vulkan) @import("renderer/vulkan.zig").vk else struct {
+    pub const VkPhysicalDevice = ?*anyopaque;
+    pub const VkDevice = ?*anyopaque;
+    pub const VkQueue = ?*anyopaque;
+    pub const VkRenderPass = usize;
+    pub const VkFormat = c_int;
+    pub const VkCommandBuffer = ?*anyopaque;
+};
 
 // Allocator bridge
 
@@ -16,6 +24,16 @@ pub const SnailAllocator = extern struct {
     alloc_fn: SnailAllocFn,
     free_fn: SnailFreeFn,
     ctx: ?*anyopaque,
+};
+
+pub const SnailVulkanContext = extern struct {
+    physical_device: vk.VkPhysicalDevice,
+    device: vk.VkDevice,
+    graphics_queue: vk.VkQueue,
+    queue_family_index: u32,
+    render_pass: vk.VkRenderPass,
+    color_format: vk.VkFormat,
+    supports_dual_source_blend: bool = false,
 };
 
 fn toZigAllocator(ca: *const SnailAllocator) std.mem.Allocator {
@@ -305,11 +323,15 @@ const RendererImpl = struct {
 
     fn asRenderer(self: *RendererImpl) snail.Renderer {
         return switch (self.backend) {
-            .gl => self.gl.?.asRenderer(),
-            .vulkan => if (comptime build_options.enable_vulkan)
-                self.vulkan.?.asRenderer()
-            else
-                unreachable,
+            .gl => blk: {
+                if (self.gl) |*gl| break :blk gl.asRenderer();
+                unreachable;
+            },
+            .vulkan => blk: {
+                if (comptime !build_options.enable_vulkan) unreachable;
+                if (self.vulkan) |*vk_renderer| break :blk vk_renderer.asRenderer();
+                unreachable;
+            },
             .cpu => unreachable,
         };
     }
@@ -318,7 +340,7 @@ const RendererImpl = struct {
         switch (self.backend) {
             .gl => if (self.gl) |*gl| gl.deinit(),
             .vulkan => if (comptime build_options.enable_vulkan) {
-                if (self.vulkan) |*vk| vk.deinit();
+                if (self.vulkan) |*vk_renderer| vk_renderer.deinit();
             },
             .cpu => {},
         }
@@ -1386,6 +1408,45 @@ export fn snail_renderer_init(out: *?*RendererImpl) c_int {
     return snail_gl_renderer_init(out);
 }
 
+export fn snail_vulkan_available() bool {
+    return build_options.enable_vulkan;
+}
+
+export fn snail_vulkan_renderer_init(ctx: *const SnailVulkanContext, out: *?*RendererImpl) c_int {
+    if (comptime build_options.enable_vulkan) {
+        const vk_ctx = snail.VulkanContext{
+            .physical_device = ctx.physical_device,
+            .device = ctx.device,
+            .graphics_queue = ctx.graphics_queue,
+            .queue_family_index = ctx.queue_family_index,
+            .render_pass = ctx.render_pass,
+            .color_format = ctx.color_format,
+            .supports_dual_source_blend = ctx.supports_dual_source_blend,
+        };
+        const vk_renderer = snail.VulkanRenderer.init(vk_ctx) catch return SNAIL_ERR_RENDERER_FAILED;
+        const impl = handleAllocator().create(RendererImpl) catch {
+            var doomed = vk_renderer;
+            doomed.deinit();
+            return SNAIL_ERR_OUT_OF_MEMORY;
+        };
+        impl.* = .{ .backend = .vulkan, .vulkan = vk_renderer };
+        out.* = impl;
+        return SNAIL_OK;
+    } else {
+        return SNAIL_ERR_RENDERER_FAILED;
+    }
+}
+
+export fn snail_vulkan_renderer_begin_frame(renderer: *RendererImpl, command_buffer: vk.VkCommandBuffer, frame_slot: u32) c_int {
+    if (comptime !build_options.enable_vulkan) return SNAIL_ERR_RENDERER_FAILED;
+    if (renderer.backend != .vulkan) return SNAIL_ERR_INVALID_ARGUMENT;
+    if (renderer.vulkan) |*vk_renderer| {
+        vk_renderer.beginFrame(.{ .cmd = command_buffer, .frame_index = frame_slot });
+        return SNAIL_OK;
+    }
+    return SNAIL_ERR_INVALID_ARGUMENT;
+}
+
 export fn snail_renderer_deinit(renderer: ?*RendererImpl) void {
     if (renderer) |r| {
         r.deinit();
@@ -1404,8 +1465,8 @@ export fn snail_renderer_set_subpixel_order(renderer: *RendererImpl, order: c_in
     return SNAIL_OK;
 }
 
-export fn snail_renderer_subpixel_order(renderer: *RendererImpl) c_int {
-    var erased = renderer.asRenderer();
+export fn snail_renderer_subpixel_order(renderer: *const RendererImpl) c_int {
+    var erased = @constCast(renderer).asRenderer();
     return @intFromEnum(erased.subpixelOrder());
 }
 
@@ -1415,8 +1476,8 @@ export fn snail_renderer_set_fill_rule(renderer: *RendererImpl, rule: c_int) c_i
     return SNAIL_OK;
 }
 
-export fn snail_renderer_fill_rule(renderer: *RendererImpl) c_int {
-    var erased = renderer.asRenderer();
+export fn snail_renderer_fill_rule(renderer: *const RendererImpl) c_int {
+    var erased = @constCast(renderer).asRenderer();
     return @intFromEnum(erased.fillRule());
 }
 

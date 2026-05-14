@@ -530,9 +530,12 @@ void snail_prepared_scene_deinit(SnailPreparedScene *scene);
 size_t snail_prepared_scene_word_count(const SnailPreparedScene *scene);
 size_t snail_prepared_scene_segment_count(const SnailPreparedScene *scene);
 
-/* Renderer */
+/* Renderer
+ *
+ * Construct renderers through backend headers such as snail_gl.h and
+ * snail_vulkan.h, then use this erased renderer handle for shared operations.
+ */
 
-int snail_renderer_init(SnailRenderer **out);
 void snail_renderer_deinit(SnailRenderer *renderer);
 void snail_renderer_begin_frame(SnailRenderer *renderer);
 int snail_renderer_set_subpixel_order(SnailRenderer *renderer, int order);
