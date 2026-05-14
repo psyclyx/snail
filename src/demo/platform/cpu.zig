@@ -18,6 +18,7 @@ pub const KEY_UP = wayland.KEY_UP;
 pub const KEY_DOWN = wayland.KEY_DOWN;
 
 var app: ?*wayland.Window = null;
+var owns_window: bool = false;
 const presentation_buffer_count = 2;
 const PresentationBuffer = struct {
     pool: ?*c.wl_shm_pool = null,
@@ -39,13 +40,32 @@ var buf_width: u32 = 0;
 var buf_height: u32 = 0;
 
 pub fn init(width: u32, height: u32, title: [*:0]const u8) !void {
-    presentation_failed = false;
-    app = try wayland.Window.init(width, height, title);
+    const window = try wayland.Window.init(width, height, title);
+    errdefer window.deinit();
+
+    app = window;
+    owns_window = true;
     errdefer {
-        var doomed = app.?;
-        doomed.deinit();
         app = null;
+        owns_window = false;
     }
+
+    try initForCurrentWindow();
+}
+
+pub fn initForWindow(window: *wayland.Window) !void {
+    app = window;
+    owns_window = false;
+    errdefer {
+        app = null;
+        owns_window = false;
+    }
+
+    try initForCurrentWindow();
+}
+
+fn initForCurrentWindow() !void {
+    presentation_failed = false;
 
     const fb_size = app.?.getFramebufferSize();
     try createShmBuffer(fb_size[0], fb_size[1]);
@@ -53,9 +73,12 @@ pub fn init(width: u32, height: u32, title: [*:0]const u8) !void {
 
 pub fn deinit() void {
     if (app) |window| {
+        const owned = owns_window;
+        window.detachBuffer();
         destroyShmBuffer();
-        window.deinit();
+        if (owned) window.deinit();
         app = null;
+        owns_window = false;
     }
 }
 

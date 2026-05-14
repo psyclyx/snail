@@ -29,6 +29,7 @@ pub const KEY_UP = wayland.KEY_UP;
 pub const KEY_DOWN = wayland.KEY_DOWN;
 
 var window: ?*wayland.Window = null;
+var owns_window: bool = false;
 
 var instance: vk.VkInstance = null;
 var surface: vk.VkSurfaceKHR = null;
@@ -112,11 +113,32 @@ pub fn init(width: u32, height: u32, title: [*:0]const u8) !snail.VulkanContext 
     // Note: this demo platform and the library Vulkan renderer have separate @cImport blocks
     // for Vulkan, creating incompatible opaque pointer types. We use @ptrCast at the
     // boundary to convert between them.
-    window = try wayland.Window.init(width, height, title);
+    const created_window = try wayland.Window.init(width, height, title);
+    errdefer created_window.deinit();
+
+    window = created_window;
+    owns_window = true;
     errdefer {
-        window.?.deinit();
         window = null;
+        owns_window = false;
     }
+
+    return initForCurrentWindow();
+}
+
+pub fn initForWindow(shared_window: *wayland.Window) !snail.VulkanContext {
+    window = shared_window;
+    owns_window = false;
+    errdefer {
+        window = null;
+        owns_window = false;
+    }
+
+    return initForCurrentWindow();
+}
+
+fn initForCurrentWindow() !snail.VulkanContext {
+    errdefer destroyVulkanResources();
 
     try createInstance();
     try createSurface();
@@ -152,6 +174,17 @@ pub fn detectCurrentMonitorSubpixelOrder(base: SubpixelOrder) SubpixelOrder {
 }
 
 pub fn deinit() void {
+    const owned = owns_window;
+    const old_window = window;
+    destroyVulkanResources();
+    if (owned) {
+        if (old_window) |w| w.deinit();
+    }
+    window = null;
+    owns_window = false;
+}
+
+fn destroyVulkanResources() void {
     if (device != null) _ = vk.vkDeviceWaitIdle(device);
 
     for (0..MAX_FRAMES_IN_FLIGHT) |i| {
@@ -165,8 +198,33 @@ pub fn deinit() void {
     if (device != null) vk.vkDestroyDevice(device, null);
     if (surface != null) vk.vkDestroySurfaceKHR(instance, surface, null);
     if (instance != null) vk.vkDestroyInstance(instance, null);
-    if (window) |w| w.deinit();
-    window = null;
+    render_finished_sems = .{null} ** MAX_FRAMES_IN_FLIGHT;
+    image_available_sems = .{null} ** MAX_FRAMES_IN_FLIGHT;
+    in_flight_fences = .{null} ** MAX_FRAMES_IN_FLIGHT;
+    command_buffers = .{null} ** MAX_FRAMES_IN_FLIGHT;
+    command_pool = null;
+    render_pass = null;
+    swapchain = null;
+    swapchain_images = .{null} ** 8;
+    swapchain_views = .{null} ** 8;
+    framebuffers = .{null} ** 8;
+    images_in_flight = .{null} ** 8;
+    swapchain_count = 0;
+    swapchain_extent = .{ .width = 0, .height = 0 };
+    surface = null;
+    device = null;
+    instance = null;
+    physical_device = null;
+    graphics_queue = null;
+    present_queue = null;
+    queue_family_index = 0;
+    supports_dual_source_blend = false;
+    current_frame = 0;
+    current_image_index = 0;
+    framebuffer_resized = false;
+    ft = .{};
+    frame_start_ns = 0;
+    cmd_ready_ns = 0;
 }
 
 /// Begin a new frame. Returns the command buffer to record into.

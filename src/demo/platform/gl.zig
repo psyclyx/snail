@@ -32,6 +32,7 @@ pub const KEY_UP = wayland.KEY_UP;
 pub const KEY_DOWN = wayland.KEY_DOWN;
 
 var app: ?*wayland.Window = null;
+var owns_window: bool = false;
 var egl_display: egl.EGLDisplay = egl.EGL_NO_DISPLAY;
 var egl_context: egl.EGLContext = egl.EGL_NO_CONTEXT;
 var egl_surface: egl.EGLSurface = egl.EGL_NO_SURFACE;
@@ -44,13 +45,31 @@ const CreatedSurface = struct {
 };
 
 pub fn init(width: u32, height: u32, title: [*:0]const u8) !void {
-    app = try wayland.Window.init(width, height, title);
+    const window = try wayland.Window.init(width, height, title);
+    errdefer window.deinit();
+
+    app = window;
+    owns_window = true;
     errdefer {
-        var doomed = app.?;
-        doomed.deinit();
         app = null;
+        owns_window = false;
     }
 
+    try initForCurrentWindow();
+}
+
+pub fn initForWindow(window: *wayland.Window) !void {
+    app = window;
+    owns_window = false;
+    errdefer {
+        app = null;
+        owns_window = false;
+    }
+
+    try initForCurrentWindow();
+}
+
+fn initForCurrentWindow() !void {
     egl_display = try initEglDisplay();
     errdefer {
         _ = egl.eglTerminate(egl_display);
@@ -132,6 +151,7 @@ pub fn detectCurrentMonitorSubpixelOrder(base: SubpixelOrder) SubpixelOrder {
 
 pub fn deinit() void {
     if (app) |window| {
+        const owned = owns_window;
         _ = egl.eglMakeCurrent(egl_display, egl.EGL_NO_SURFACE, egl.EGL_NO_SURFACE, egl.EGL_NO_CONTEXT);
         if (egl_surface != egl.EGL_NO_SURFACE) _ = egl.eglDestroySurface(egl_display, egl_surface);
         if (egl_window) |win| egl.wl_egl_window_destroy(win);
@@ -142,8 +162,9 @@ pub fn deinit() void {
         egl_display = egl.EGL_NO_DISPLAY;
         egl_window = null;
         window_surface_encoding = .linear;
-        window.deinit();
+        if (owned) window.deinit();
         app = null;
+        owns_window = false;
     }
 }
 
