@@ -90,7 +90,7 @@ pub fn clearColor() [4]f32 {
 pub fn buildPathPicture(
     allocator: Allocator,
     layout: Layout,
-    tile_image: *const snail.Image,
+    paint_image: *const snail.Image,
     decoration_rects: []const snail.Rect,
 ) !snail.PathPicture {
     var builder = snail.PathPictureBuilder.init(allocator);
@@ -119,7 +119,7 @@ pub fn buildPathPicture(
     }
 
     // Vector shape demos
-    try addVectorShapes(&builder, layout, tile_image);
+    try addVectorShapes(&builder, layout, paint_image);
 
     // The snail illustration
     try addVectorSnail(&builder, layout.snail_stage);
@@ -139,7 +139,7 @@ const shape_gap = 14;
 fn addVectorShapes(
     builder: *snail.PathPictureBuilder,
     layout: Layout,
-    tile_image: *const snail.Image,
+    paint_image: *const snail.Image,
 ) !void {
     const s = layout.scale;
     const pad = card_pad * s;
@@ -243,15 +243,17 @@ fn addVectorShapes(
 
     // Image fill
     const imx = x0 + (sz + gap) * 3;
+    const image_period = sz;
     try builder.addRoundedRect(.{ .x = imx, .y = fills_y, .w = sz, .h = sz }, .{
         .paint = .{ .image = .{
-            .image = tile_image,
-            .uv_transform = snail.Transform2D.multiply(
-                snail.Transform2D.translate(-imx, -fills_y),
-                snail.Transform2D.scale(1.0 / (4.0 * s), 1.0 / (4.0 * s)),
-            ),
-            .extend_x = .repeat,
-            .extend_y = .repeat,
+            .image = paint_image,
+            .uv_transform = .{
+                .xx = 1.0 / image_period,
+                .yy = 1.0 / image_period,
+                .tx = -imx / image_period,
+                .ty = -fills_y / image_period,
+            },
+            .filter = .nearest,
         } },
     }, null, 6 * s, .identity);
 
@@ -354,7 +356,7 @@ pub fn buildTextBlob(
     layout: Layout,
     grid: snail.PixelGrid,
     fonts: *const snail.TextAtlas,
-    text_paint_image: *const snail.Image,
+    paint_image: *const snail.Image,
     decoration_rects_out: []snail.Rect,
 ) !TextBuildResult {
     var decoration_count: usize = 0;
@@ -615,7 +617,7 @@ pub fn buildTextBlob(
         const image_x = x + gradient_advance + 34 * s;
         const image_period = 30 * s;
         _ = try placer.addPaintedText(.{ .weight = .bold }, "image", image_x, gradient_baseline, paint_text_size, .{ .image = .{
-            .image = text_paint_image,
+            .image = paint_image,
             .uv_transform = .{
                 .xx = 1.0 / image_period,
                 .yy = 1.0 / image_period,

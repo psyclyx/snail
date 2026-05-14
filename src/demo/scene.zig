@@ -13,11 +13,10 @@ pub const ViewMode = enum {
     }
 };
 
-/// Demo assets: shared text atlas snapshot and tile image.
+/// Demo assets: shared text atlas snapshot and image paint texture.
 pub const Assets = struct {
     fonts: snail.TextAtlas,
-    tile_image: snail.Image,
-    text_paint_image: snail.Image,
+    paint_image: snail.Image,
 
     pub fn init(allocator: Allocator) !Assets {
         var fonts = try snail.TextAtlas.init(allocator, &.{
@@ -65,25 +64,21 @@ pub const Assets = struct {
             }
         }
 
-        var tile_image = try snail.Image.initSrgba8(allocator, 16, 16, assets_data.dots_rgba);
-        errdefer tile_image.deinit();
-        const text_paint_image = try initTextPaintImage(allocator);
+        const paint_image = try initPaintImage(allocator);
 
         return .{
             .fonts = fonts,
-            .tile_image = tile_image,
-            .text_paint_image = text_paint_image,
+            .paint_image = paint_image,
         };
     }
 
     pub fn deinit(self: *Assets) void {
         self.fonts.deinit();
-        self.tile_image.deinit();
-        self.text_paint_image.deinit();
+        self.paint_image.deinit();
     }
 };
 
-fn initTextPaintImage(allocator: Allocator) !snail.Image {
+fn initPaintImage(allocator: Allocator) !snail.Image {
     var pixels: [16 * 16 * 4]u8 = undefined;
     const colors = [_][4]u8{
         .{ 36, 92, 220, 255 },
@@ -107,10 +102,10 @@ fn initTextPaintImage(allocator: Allocator) !snail.Image {
 }
 
 pub fn buildPathPicture(allocator: Allocator, layout: demo_banner.Layout, assets_ref: *const Assets, decoration_rects: []const snail.Rect) !snail.PathPicture {
-    return demo_banner.buildPathPicture(allocator, layout, &assets_ref.tile_image, decoration_rects);
+    return demo_banner.buildPathPicture(allocator, layout, &assets_ref.paint_image, decoration_rects);
 }
 
 /// Build the demo's prepared text blob and collect decoration rects.
 pub fn buildTextBlob(builder: *snail.TextBlobBuilder, layout: demo_banner.Layout, grid: snail.PixelGrid, assets_ref: *const Assets, decoration_rects: []snail.Rect) demo_banner.TextBuildResult {
-    return demo_banner.buildTextBlob(builder, layout, grid, &assets_ref.fonts, &assets_ref.text_paint_image, decoration_rects) catch .{ .decoration_count = 0, .missing = false };
+    return demo_banner.buildTextBlob(builder, layout, grid, &assets_ref.fonts, &assets_ref.paint_image, decoration_rects) catch .{ .decoration_count = 0, .missing = false };
 }
