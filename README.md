@@ -394,7 +394,7 @@ snail_text_atlas_deinit(atlas);
 | `TextBlob.init(alloc, atlas, append) !TextBlob` | Build one positioned, painted `TextAppend` from a `ShapedText`. The blob borrows `atlas`. |
 | `blob.rebind(new_atlas) !void` | Optional cache/lifetime helper: move a blob to a compatible atlas snapshot that retains old pages and contains all referenced glyphs. |
 | `TextBlobBuilder.init(alloc, atlas)` / `builder.append(TextAppend) !TextAppendResult` / `builder.finish() !TextBlob` | Append shaped runs with explicit placement and fill. Call `atlas.ensureText`/`ensureShaped`/`ensureGlyphs` first if all glyphs must be renderable. |
-| `TextAppend` | `{ .shaped, .placement = .{ .baseline, .em }, .fill }` — separates text content, position/scale, and paint. Text fill currently accepts solid paint. |
+| `TextAppend` | `{ .shaped, .glyphs, .placement = .{ .baseline, .em }, .fill }` — appends a whole shaped run or glyph subrange with independent position/scale and paint. Text fill currently accepts solid paint. |
 | `TextAppendResult` | `{ .advance: Vec2, .missing: bool }` — pen advance and whether any referenced glyph was absent from the current atlas snapshot. |
 
 ### Scene

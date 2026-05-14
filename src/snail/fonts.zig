@@ -43,6 +43,7 @@ pub const TextPlacement = struct {
 
 pub const TextAppend = struct {
     shaped: *const ShapedText,
+    glyphs: snail.Range = .{},
     placement: TextPlacement,
     fill: snail.Paint,
 };
@@ -790,9 +791,11 @@ pub const TextAtlas = struct {
         const shaped = append.shaped;
         if (shaped.config != self.config) return error.WrongTextAtlasSnapshot;
         const color = try textFillColor(append.fill);
+        const range = append.glyphs.resolve(shaped.glyphs.len);
+        const pen_origin = shapedPenAt(shaped, range.start);
 
         var missing = false;
-        for (shaped.glyphs) |glyph| {
+        for (shaped.glyphs[range.start..range.end]) |glyph| {
             const fc = &self.config.faces[glyph.face_index];
             const face_view = self.faceView(glyph.face_index, .{});
             if (!shapedGlyphAvailable(&face_view, glyph.glyph_id)) {
@@ -806,8 +809,8 @@ pub const TextAtlas = struct {
                 // next text segment.
                 continue;
             }
-            const x = append.placement.baseline.x + glyph.x_offset * append.placement.em;
-            const y = append.placement.baseline.y + glyph.y_offset * append.placement.em;
+            const x = append.placement.baseline.x + (glyph.x_offset - pen_origin.x) * append.placement.em;
+            const y = append.placement.baseline.y + (glyph.y_offset - pen_origin.y) * append.placement.em;
             try appendBlobGlyph(
                 builder,
                 glyph.face_index,
@@ -822,10 +825,7 @@ pub const TextAtlas = struct {
         }
 
         return .{
-            .advance = .{
-                .x = shaped.advance_x * append.placement.em,
-                .y = shaped.advance_y * append.placement.em,
-            },
+            .advance = scaleAdvance(shapedAdvanceForRange(shaped, range), append.placement.em),
             .missing = missing,
         };
     }
@@ -840,9 +840,11 @@ pub const TextAtlas = struct {
         const shaped = append.shaped;
         if (shaped.config != self.config) return error.WrongTextAtlasSnapshot;
         const color = try textFillColor(append.fill);
+        const range = append.glyphs.resolve(shaped.glyphs.len);
+        const pen_origin = shapedPenAt(shaped, range.start);
 
         var missing = false;
-        for (shaped.glyphs) |glyph| {
+        for (shaped.glyphs[range.start..range.end]) |glyph| {
             const fc = &self.config.faces[glyph.face_index];
             const face_view = self.faceView(glyph.face_index, .{
                 .layer_base = self.layer_base,
@@ -854,16 +856,13 @@ pub const TextAtlas = struct {
                 continue;
             }
 
-            const x = append.placement.baseline.x + glyph.x_offset * append.placement.em;
-            const y = append.placement.baseline.y + glyph.y_offset * append.placement.em;
+            const x = append.placement.baseline.x + (glyph.x_offset - pen_origin.x) * append.placement.em;
+            const y = append.placement.baseline.y + (glyph.y_offset - pen_origin.y) * append.placement.em;
             if (glyph_emit.emitStyledGlyph(batch, &face_view, glyph.glyph_id, x, y, append.placement.em, color, fc.synthetic) == .buffer_full) break;
         }
 
         return .{
-            .advance = .{
-                .x = shaped.advance_x * append.placement.em,
-                .y = shaped.advance_y * append.placement.em,
-            },
+            .advance = scaleAdvance(shapedAdvanceForRange(shaped, range), append.placement.em),
             .missing = missing,
         };
     }
@@ -1501,6 +1500,28 @@ fn textFillColor(fill: snail.Paint) ![4]f32 {
     };
 }
 
+fn shapedPenAt(shaped: *const ShapedText, glyph_index: usize) snail.Vec2 {
+    var pen = snail.Vec2.zero;
+    for (shaped.glyphs[0..@min(glyph_index, shaped.glyphs.len)]) |glyph| {
+        pen.x += glyph.x_advance;
+        pen.y += glyph.y_advance;
+    }
+    return pen;
+}
+
+fn shapedAdvanceForRange(shaped: *const ShapedText, range: snail.Range.Resolved) snail.Vec2 {
+    var advance = snail.Vec2.zero;
+    for (shaped.glyphs[range.start..range.end]) |glyph| {
+        advance.x += glyph.x_advance;
+        advance.y += glyph.y_advance;
+    }
+    return advance;
+}
+
+fn scaleAdvance(advance: snail.Vec2, em: f32) snail.Vec2 {
+    return .{ .x = advance.x * em, .y = advance.y * em };
+}
+
 fn appendBlobGlyph(
     builder: *TextBlobBuilder,
     face_index: FaceIndex,
@@ -1762,6 +1783,49 @@ test "TextBlobBuilder.append separates shape from placement and fill" {
     try testing.expectApproxEqAbs(@as(f32, 40), blob.glyphs[1].transform.ty, 0.001);
     try testing.expectApproxEqAbs(@as(f32, 20), blob.glyphs[1].transform.xx, 0.001);
     try testing.expectEqual([4]f32{ 0, 1, 0, 1 }, blob.glyphs[1].color);
+}
+
+test "TextBlobBuilder.append can style shaped glyph ranges independently" {
+    const assets_data = @import("assets");
+    var fonts = try TextAtlas.init(testing.allocator, &.{
+        .{ .data = assets_data.noto_sans_regular },
+    });
+    defer fonts.deinit();
+
+    if (try fonts.ensureText(.{}, "AB")) |next| {
+        fonts.deinit();
+        fonts = next;
+    }
+
+    var shaped = try fonts.shapeText(testing.allocator, .{}, "AB");
+    defer shaped.deinit();
+    try testing.expect(shaped.glyphs.len >= 2);
+
+    var builder = TextBlobBuilder.init(testing.allocator, &fonts);
+    defer builder.deinit();
+
+    const first = try builder.append(.{
+        .shaped = &shaped,
+        .glyphs = .{ .start = 0, .count = 1 },
+        .placement = .{ .baseline = .{ .x = 10, .y = 20 }, .em = 18 },
+        .fill = .{ .solid = .{ 1, 0, 0, 1 } },
+    });
+    const second = try builder.append(.{
+        .shaped = &shaped,
+        .glyphs = .{ .start = 1, .count = 1 },
+        .placement = .{ .baseline = .{ .x = 10 + first.advance.x, .y = 20 }, .em = 18 },
+        .fill = .{ .solid = .{ 0, 0, 1, 1 } },
+    });
+
+    try testing.expect(first.advance.x > 0);
+    try testing.expect(second.advance.x > 0);
+    try testing.expectEqual(@as(usize, 2), builder.glyphCount());
+
+    var blob = try builder.finish();
+    defer blob.deinit();
+    try testing.expectEqual([4]f32{ 1, 0, 0, 1 }, blob.glyphs[0].color);
+    try testing.expectEqual([4]f32{ 0, 0, 1, 1 }, blob.glyphs[1].color);
+    try testing.expectApproxEqAbs(10 + first.advance.x, blob.glyphs[1].transform.tx, 0.001);
 }
 
 test "TextBlobBuilder.append rejects non-solid text paint until text paint records exist" {
