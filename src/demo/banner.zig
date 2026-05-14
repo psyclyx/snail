@@ -354,6 +354,7 @@ pub fn buildTextBlob(
     layout: Layout,
     grid: snail.PixelGrid,
     fonts: *const snail.TextAtlas,
+    tile_image: *const snail.Image,
     decoration_rects_out: []snail.Rect,
 ) !TextBuildResult {
     var decoration_count: usize = 0;
@@ -516,12 +517,32 @@ pub fn buildTextBlob(
         _ = try placer.addText(.{}, "AV To VA Ty", x, y + body_size, body_size, text);
         y += line_h + 16 * s;
 
-        // Mixed sample
-        _ = try placer.addText(.{}, "Sphinx of black", x, y + 18 * s, 16 * s, muted);
-        y += 22 * s;
-        _ = try placer.addText(.{}, "quartz, judge", x, y + 18 * s, 16 * s, muted);
-        y += 22 * s;
-        _ = try placer.addText(.{}, "my vow.", x, y + 18 * s, 16 * s, muted);
+        // Paint
+        _ = try placer.addText(.{}, "Paint", x, y + sub_label_size, sub_label_size, muted);
+        y += sub_label_size + 6 * s;
+        const gradient_baseline = y + body_size;
+        _ = try placer.addPaintedText(.{ .weight = .bold }, "gradient", x, gradient_baseline, body_size, .{ .linear_gradient = .{
+            .start = .{ .x = x, .y = gradient_baseline - body_size },
+            .end = .{ .x = x + 120 * s, .y = gradient_baseline },
+            .start_color = .{ 0.18, 0.50, 0.88, 1.0 },
+            .end_color = .{ 0.88, 0.30, 0.56, 1.0 },
+        } });
+        y += line_h;
+        const image_baseline = y + body_size;
+        const image_period = 12 * s;
+        _ = try placer.addPaintedText(.{ .weight = .bold }, "image", x, image_baseline, body_size, .{ .image = .{
+            .image = tile_image,
+            .uv_transform = .{
+                .xx = 1.0 / image_period,
+                .yy = 1.0 / image_period,
+                .tx = -x / image_period,
+                .ty = -(image_baseline - body_size) / image_period,
+            },
+            .tint = .{ 0.16, 0.34, 0.86, 1.0 },
+            .extend_x = .repeat,
+            .extend_y = .repeat,
+            .filter = .nearest,
+        } });
     }
 
     // ── Scripts card ──

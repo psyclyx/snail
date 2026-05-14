@@ -11,6 +11,7 @@ const snail = @import("root.zig");
 const ttf = @import("font/ttf.zig");
 const opentype = @import("font/opentype.zig");
 const glyph_emit = @import("glyph_emit.zig");
+const paint_mod = @import("paint.zig");
 const paint_records = @import("paint_records.zig");
 const build_options = @import("build_options");
 const harfbuzz = if (build_options.enable_harfbuzz) @import("font/harfbuzz.zig") else struct {
@@ -948,15 +949,15 @@ pub const TextAtlas = struct {
             }
             const x = append.placement.baseline.x + (glyph.x_offset - pen_origin.x) * append.placement.em;
             const y = append.placement.baseline.y + (glyph.y_offset - pen_origin.y) * append.placement.em;
-            const paint = try appendBlobGlyphPaint(builder, &face_view, glyph.glyph_id, append.fill);
+            const transform = glyphPlacementTransform(x, y, append.placement.em, fc.synthetic.skew_x);
+            const local_fill = paint_mod.mapToLocal(append.fill, transform) orelse return error.InvalidTransform;
+            const paint = try appendBlobGlyphPaint(builder, &face_view, glyph.glyph_id, local_fill);
             try appendBlobGlyph(
                 builder,
                 glyph.face_index,
                 &face_view,
                 glyph.glyph_id,
-                x,
-                y,
-                append.placement.em,
+                transform,
                 paint.color,
                 paint.record_index,
                 fc.synthetic,
@@ -1689,9 +1690,7 @@ fn appendBlobGlyph(
     face_index: FaceIndex,
     face_view: *const FaceView,
     glyph_id: u16,
-    x: f32,
-    y: f32,
-    font_size: f32,
+    transform: snail.Transform2D,
     color: [4]f32,
     paint_record_index: ?u32,
     synthetic: snail.SyntheticStyle,
@@ -1699,7 +1698,7 @@ fn appendBlobGlyph(
     try builder.glyphs.append(builder.allocator, .{
         .face_index = face_index,
         .glyph_id = glyph_id,
-        .transform = glyphPlacementTransform(x, y, font_size, synthetic.skew_x),
+        .transform = transform,
         .embolden = synthetic.embolden,
         .color = color,
         .paint_record_index = paint_record_index,
@@ -2012,10 +2011,10 @@ test "TextBlobBuilder.append stores gradient paint records" {
 
     _ = try builder.append(.{
         .shaped = &shaped,
-        .placement = .{ .baseline = .{ .x = 0, .y = 20 }, .em = 16 },
+        .placement = .{ .baseline = .{ .x = 10, .y = 20 }, .em = 10 },
         .fill = .{ .linear_gradient = .{
-            .start = .{ .x = 0, .y = 0 },
-            .end = .{ .x = 20, .y = 0 },
+            .start = .{ .x = 10, .y = 20 },
+            .end = .{ .x = 30, .y = 20 },
             .start_color = .{ 1, 0, 0, 1 },
             .end_color = .{ 0, 0, 1, 1 },
         } },
@@ -2035,6 +2034,11 @@ test "TextBlobBuilder.append stores gradient paint records" {
     try testing.expectEqual(@as(u16, 0), loc.y);
     const tag = paint_records.readTexel(blob.paint_layer_info_data.?, blob.paint_layer_info_width, 0)[3];
     try testing.expectApproxEqAbs(paint_records.tag_linear_gradient, tag, 0.001);
+    const coords = paint_records.readTexel(blob.paint_layer_info_data.?, blob.paint_layer_info_width, 2);
+    try testing.expectApproxEqAbs(@as(f32, 0), coords[0], 0.001);
+    try testing.expectApproxEqAbs(@as(f32, 0), coords[1], 0.001);
+    try testing.expectApproxEqAbs(@as(f32, 2), coords[2], 0.001);
+    try testing.expectApproxEqAbs(@as(f32, 0), coords[3], 0.001);
     try testing.expect(blob.paint_image_records == null);
 }
 
@@ -2060,8 +2064,11 @@ test "TextBlobBuilder.append stores image paint records" {
 
     _ = try builder.append(.{
         .shaped = &shaped,
-        .placement = .{ .baseline = .{ .x = 0, .y = 20 }, .em = 16 },
-        .fill = .{ .image = .{ .image = &image } },
+        .placement = .{ .baseline = .{ .x = 4, .y = 8 }, .em = 2 },
+        .fill = .{ .image = .{
+            .image = &image,
+            .uv_transform = snail.Transform2D.scale(0.25, 0.5),
+        } },
     });
 
     var blob = try builder.finish();
@@ -2073,6 +2080,14 @@ test "TextBlobBuilder.append stores image paint records" {
     try testing.expectEqual(@as(u32, 0), records[0].?.texel_offset);
     const tag = paint_records.readTexel(blob.paint_layer_info_data.?, blob.paint_layer_info_width, 0)[3];
     try testing.expectApproxEqAbs(paint_records.tag_image, tag, 0.001);
+    const data0 = paint_records.readTexel(blob.paint_layer_info_data.?, blob.paint_layer_info_width, 2);
+    const data1 = paint_records.readTexel(blob.paint_layer_info_data.?, blob.paint_layer_info_width, 3);
+    try testing.expectApproxEqAbs(@as(f32, 0.5), data0[0], 0.001);
+    try testing.expectApproxEqAbs(@as(f32, 0), data0[1], 0.001);
+    try testing.expectApproxEqAbs(@as(f32, 1), data0[2], 0.001);
+    try testing.expectApproxEqAbs(@as(f32, 0), data1[0], 0.001);
+    try testing.expectApproxEqAbs(@as(f32, -1), data1[1], 0.001);
+    try testing.expectApproxEqAbs(@as(f32, 4), data1[2], 0.001);
 }
 
 test "TextAtlas.lineMetrics returns primary face metrics" {

@@ -95,6 +95,24 @@ pub const Transform2D = struct {
         };
     }
 
+    pub fn inverse(self: Transform2D) ?Transform2D {
+        const det = self.xx * self.yy - self.xy * self.yx;
+        if (@abs(det) <= 1e-12) return null;
+        const inv_det = 1.0 / det;
+        const xx = self.yy * inv_det;
+        const xy = -self.xy * inv_det;
+        const yx = -self.yx * inv_det;
+        const yy = self.xx * inv_det;
+        return .{
+            .xx = xx,
+            .xy = xy,
+            .tx = -(xx * self.tx + xy * self.ty),
+            .yx = yx,
+            .yy = yy,
+            .ty = -(yx * self.tx + yy * self.ty),
+        };
+    }
+
     pub fn applyPoint(self: Transform2D, p: Vec2) Vec2 {
         return .{
             .x = self.xx * p.x + self.xy * p.y + self.tx,
@@ -211,4 +229,17 @@ test "Transform2D multiply composes affine transforms" {
     const p = combined.applyPoint(.{ .x = 2, .y = 0 });
     try std.testing.expectApproxEqAbs(p.x, 12.0, 1e-6);
     try std.testing.expectApproxEqAbs(p.y, -2.0, 1e-6);
+}
+
+test "Transform2D inverse reverses affine transforms" {
+    const t = Transform2D.multiply(
+        Transform2D.translate(12, -4),
+        Transform2D.multiply(Transform2D.rotate(0.25), Transform2D.scale(3, -2)),
+    );
+    const inv = t.inverse() orelse return error.TestExpectedEqual;
+    const p = Vec2.new(5, -7);
+    const round_trip = inv.applyPoint(t.applyPoint(p));
+    try std.testing.expectApproxEqAbs(p.x, round_trip.x, 1e-5);
+    try std.testing.expectApproxEqAbs(p.y, round_trip.y, 1e-5);
+    try std.testing.expect(Transform2D.scale(0, 1).inverse() == null);
 }

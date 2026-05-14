@@ -1753,38 +1753,7 @@ fn bboxCenter(bbox: BBox) Vec2 {
 }
 
 fn translatePaint(paint: Paint, delta: Vec2) Paint {
-    return switch (paint) {
-        .solid => paint,
-        .linear_gradient => |gradient| .{ .linear_gradient = .{
-            .start = Vec2.add(gradient.start, delta),
-            .end = Vec2.add(gradient.end, delta),
-            .start_color = gradient.start_color,
-            .end_color = gradient.end_color,
-            .extend = gradient.extend,
-        } },
-        .radial_gradient => |gradient| .{ .radial_gradient = .{
-            .center = Vec2.add(gradient.center, delta),
-            .radius = gradient.radius,
-            .inner_color = gradient.inner_color,
-            .outer_color = gradient.outer_color,
-            .extend = gradient.extend,
-        } },
-        .image => |image_paint| .{ .image = .{
-            .image = image_paint.image,
-            .uv_transform = .{
-                .xx = image_paint.uv_transform.xx,
-                .xy = image_paint.uv_transform.xy,
-                .tx = image_paint.uv_transform.tx - image_paint.uv_transform.xx * delta.x - image_paint.uv_transform.xy * delta.y,
-                .yx = image_paint.uv_transform.yx,
-                .yy = image_paint.uv_transform.yy,
-                .ty = image_paint.uv_transform.ty - image_paint.uv_transform.yx * delta.x - image_paint.uv_transform.yy * delta.y,
-            },
-            .tint = image_paint.tint,
-            .extend_x = image_paint.extend_x,
-            .extend_y = image_paint.extend_y,
-            .filter = image_paint.filter,
-        } },
-    };
+    return paint_mod.mapToLocal(paint, Transform2D.translate(-delta.x, -delta.y)).?;
 }
 
 fn fillStyleForStroke(style: StrokeStyle) FillStyle {
