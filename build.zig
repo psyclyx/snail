@@ -1,7 +1,5 @@
 const std = @import("std");
 
-pub const DemoRenderer = enum { gl44, gl33, vulkan, cpu };
-
 pub const ModuleOptions = struct {
     enable_profiling: bool = false,
     enable_opengl: bool = true,
@@ -146,26 +144,6 @@ fn createVulkanShadersModule(b: *std.Build, enable_vulkan: bool) *std.Build.Modu
     return mod;
 }
 
-fn validateDemoRendererOptions(
-    demo_renderer: DemoRenderer,
-    enable_opengl: bool,
-    enable_vulkan: bool,
-    enable_cpu: bool,
-) void {
-    switch (demo_renderer) {
-        .gl44 => if (!enable_opengl) @panic("-Drenderer=gl44 requires -Dopengl=true"),
-        .gl33 => if (!enable_opengl) @panic("-Drenderer=gl33 requires -Dopengl=true"),
-        .vulkan => if (!enable_vulkan) @panic("-Drenderer=vulkan requires -Dvulkan=true"),
-        .cpu => if (!enable_cpu) @panic("-Drenderer=cpu requires -Dcpu-renderer=true"),
-    }
-}
-
-fn defaultDemoRenderer(enable_vulkan: bool, enable_opengl: bool) DemoRenderer {
-    if (enable_vulkan) return .vulkan;
-    if (enable_opengl) return .gl44;
-    return .cpu;
-}
-
 fn configureCoreModule(
     mod: *std.Build.Module,
     build_options_mod: *std.Build.Module,
@@ -189,28 +167,15 @@ fn configureDemoModule(
     vulkan: bool,
     harfbuzz: bool,
     vk_shaders: *std.Build.Module,
-    demo_renderer: DemoRenderer,
 ) void {
     configureCoreModule(mod, build_options_mod, opengl, vulkan, harfbuzz, vk_shaders);
-    switch (demo_renderer) {
-        .gl44, .gl33 => {
-            mod.linkSystemLibrary("wayland-client", .{});
-            mod.linkSystemLibrary("wayland-egl", .{});
-            mod.linkSystemLibrary("EGL", .{});
-            mod.addIncludePath(b.path("src/demo/platform"));
-            mod.addCSourceFile(.{ .file = b.path("src/demo/platform/xdg-shell-client-protocol.c") });
-        },
-        .vulkan => {
-            mod.linkSystemLibrary("wayland-client", .{});
-            mod.addIncludePath(b.path("src/demo/platform"));
-            mod.addCSourceFile(.{ .file = b.path("src/demo/platform/xdg-shell-client-protocol.c") });
-        },
-        .cpu => {
-            mod.linkSystemLibrary("wayland-client", .{});
-            mod.addIncludePath(b.path("src/demo/platform"));
-            mod.addCSourceFile(.{ .file = b.path("src/demo/platform/xdg-shell-client-protocol.c") });
-        },
+    mod.linkSystemLibrary("wayland-client", .{});
+    if (opengl) {
+        mod.linkSystemLibrary("wayland-egl", .{});
+        mod.linkSystemLibrary("EGL", .{});
     }
+    mod.addIncludePath(b.path("src/demo/platform"));
+    mod.addCSourceFile(.{ .file = b.path("src/demo/platform/xdg-shell-client-protocol.c") });
 }
 
 fn configureEglOffscreenModule(
@@ -306,9 +271,7 @@ pub fn moduleWithOptions(
     opts.addOption(bool, "enable_vulkan", module_options.enable_vulkan);
     opts.addOption(bool, "enable_cpu", module_options.enable_cpu);
     opts.addOption(bool, "enable_harfbuzz", module_options.enable_harfbuzz);
-    const demo_renderer: DemoRenderer = if (module_options.force_gl33) .gl33 else defaultDemoRenderer(module_options.enable_vulkan, module_options.enable_opengl);
     opts.addOption(bool, "force_gl33", module_options.force_gl33);
-    opts.addOption(DemoRenderer, "demo_renderer", demo_renderer);
 
     return createSnailModule(
         b,
@@ -330,15 +293,19 @@ pub fn build(b: *std.Build) void {
     const enable_opengl = b.option(bool, "opengl", "Enable OpenGL backend") orelse true;
     const enable_cpu = b.option(bool, "cpu-renderer", "Enable CPU renderer backend") orelse true;
     const enable_vulkan = b.option(bool, "vulkan", "Enable Vulkan backend") orelse true;
-    const demo_renderer_option = b.option(DemoRenderer, "renderer", "Demo rendering backend (default: vulkan when available, otherwise gl44/cpu)");
-    const demo_renderer = demo_renderer_option orelse defaultDemoRenderer(enable_vulkan, enable_opengl);
+    const force_gl33 = b.option(bool, "gl33", "Force OpenGL 3.3 context where OpenGL is used") orelse false;
     const enable_harfbuzz = b.option(bool, "harfbuzz", "Enable HarfBuzz text shaping") orelse true;
     const enable_c_api = b.option(bool, "c-api", "Build the C API libraries") orelse true;
     const c_api_shared_option = b.option(bool, "c-api-shared", "Build the C API shared library");
     const c_api_static_option = b.option(bool, "c-api-static", "Build the C API static library");
     const enable_c_api_shared = c_api_shared_option orelse enable_c_api;
     const enable_c_api_static = c_api_static_option orelse enable_c_api;
-    validateDemoRendererOptions(demo_renderer, enable_opengl, enable_vulkan, enable_cpu);
+    if (!enable_opengl and !enable_vulkan and !enable_cpu) {
+        @panic("at least one renderer backend must be enabled");
+    }
+    if (force_gl33 and !enable_opengl) {
+        @panic("-Dgl33=true requires -Dopengl=true");
+    }
     if (!enable_c_api and ((c_api_shared_option orelse false) or (c_api_static_option orelse false))) {
         @panic("-Dc-api=false conflicts with -Dc-api-shared=true or -Dc-api-static=true");
     }
@@ -352,8 +319,7 @@ pub fn build(b: *std.Build) void {
     options.addOption(bool, "enable_vulkan", enable_vulkan);
     options.addOption(bool, "enable_cpu", enable_cpu);
     options.addOption(bool, "enable_harfbuzz", enable_harfbuzz);
-    options.addOption(bool, "force_gl33", demo_renderer == .gl33);
-    options.addOption(DemoRenderer, "demo_renderer", demo_renderer);
+    options.addOption(bool, "force_gl33", force_gl33);
     const options_mod = options.createModule();
 
     const assets_mod = b.createModule(.{ .root_source_file = b.path("assets/assets.zig") });
@@ -445,7 +411,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "snail", .module = snail_mod },
         },
     });
-    configureDemoModule(demo_module, b, options_mod, enable_opengl, enable_vulkan, enable_harfbuzz, vk_shaders_mod, demo_renderer);
+    configureDemoModule(demo_module, b, options_mod, enable_opengl, enable_vulkan, enable_harfbuzz, vk_shaders_mod);
 
     const exe = b.addExecutable(.{ .name = "snail-demo", .root_module = demo_module });
     const install_demo = b.addInstallArtifact(exe, .{});
@@ -466,7 +432,6 @@ pub fn build(b: *std.Build) void {
     game_demo_options.addOption(bool, "enable_cpu", false);
     game_demo_options.addOption(bool, "enable_harfbuzz", enable_harfbuzz);
     game_demo_options.addOption(bool, "force_gl33", false);
-    game_demo_options.addOption(DemoRenderer, "demo_renderer", .gl44);
     const game_demo_options_mod = game_demo_options.createModule();
     const game_snail_mod = createSnailModule(b, target, optimize, game_demo_options_mod, true, false, enable_harfbuzz, vk_shaders_mod);
 
@@ -480,7 +445,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "snail", .module = game_snail_mod },
         },
     });
-    configureDemoModule(game_demo_module, b, game_demo_options_mod, true, false, enable_harfbuzz, vk_shaders_mod, .gl44);
+    configureDemoModule(game_demo_module, b, game_demo_options_mod, true, false, enable_harfbuzz, vk_shaders_mod);
 
     const game_demo_exe = b.addExecutable(.{ .name = "snail-game-demo", .root_module = game_demo_module });
     const install_game_demo = b.addInstallArtifact(game_demo_exe, .{});
@@ -634,7 +599,6 @@ pub fn build(b: *std.Build) void {
     compare_options.addOption(bool, "enable_cpu", true);
     compare_options.addOption(bool, "enable_harfbuzz", enable_harfbuzz);
     compare_options.addOption(bool, "force_gl33", false);
-    compare_options.addOption(DemoRenderer, "demo_renderer", .gl44);
     const compare_options_mod = compare_options.createModule();
     const backend_compare_snail_mod = createSnailModule(b, target, optimize, compare_options_mod, true, enable_vulkan, enable_harfbuzz, vk_shaders_mod);
 

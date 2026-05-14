@@ -66,10 +66,10 @@ Requires [Zig 0.16](https://ziglang.org/download/), OpenGL 3.3+, Vulkan headers/
 
 ```sh
 zig build test                                  # unit tests
-zig build run                                   # interactive 2D demo (Vulkan, Wayland)
-zig build run -Drenderer=gl33                   # force OpenGL 3.3
-zig build run -Drenderer=gl44                   # force OpenGL 4.4
-zig build run -Drenderer=cpu                    # CPU renderer
+zig build run                                   # interactive 2D demo; press C to cycle enabled backends
+zig build run -Dvulkan=false                    # demo without Vulkan
+zig build run -Dopengl=false                    # demo without OpenGL
+zig build run -Dcpu-renderer=false              # demo without CPU rendering
 zig build run-game-demo                         # 3D scene with HUD + world-space text on walls
 zig build screenshot                            # 2D demo offscreen → zig-out/demo-screenshot.tga
 zig build backend-compare                       # CPU/GL/Vulkan parity
@@ -204,6 +204,8 @@ defaults: OpenGL on, Vulkan on, CPU renderer on, HarfBuzz on, and the C API
 enabled with both shared and static libraries. Override `enableVulkan`,
 `enableOpenGL`, `enableCpu`, `enableHarfBuzz`, `enableCApi`, `cApiShared`, or
 `cApiStatic` when calling the library package directly.
+The demo package also enables all three renderers by default and cycles between
+the enabled set at runtime.
 
 ### Using as a Zig dependency
 

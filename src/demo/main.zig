@@ -6,30 +6,61 @@ const demo_banner = @import("banner.zig");
 const demo_banner_scene = @import("scene.zig");
 const screenshot = @import("platform/screenshot.zig");
 const subpixel_detect = @import("platform/subpixel.zig");
-const CpuRenderer = @import("snail").CpuRenderer;
+const wayland = @import("platform/wayland.zig");
+const presentation = @import("platform/presentation.zig");
 
-const demo_renderer = build_options.demo_renderer;
-const use_gl = demo_renderer == .gl44 or demo_renderer == .gl33;
-const use_vulkan = demo_renderer == .vulkan;
-const use_cpu = demo_renderer == .cpu;
+const gl_platform = if (build_options.enable_opengl) @import("platform/gl.zig") else struct {};
+const vulkan_platform = if (build_options.enable_vulkan) @import("platform/vulkan.zig") else struct {};
+const cpu_platform = if (build_options.enable_cpu) @import("platform/cpu.zig") else struct {};
+const gl = if (build_options.enable_opengl) snail.lowlevel.gl else struct {};
+const CpuRenderer = snail.CpuRenderer;
 
-const platform = if (use_vulkan) @import("platform/vulkan.zig") else if (use_gl) @import("platform/gl.zig") else @import("platform/cpu.zig");
-const gl = if (use_gl) snail.lowlevel.gl else struct {};
+const Backend = enum {
+    vulkan,
+    gl,
+    cpu,
+};
+
+const KEY_R = wayland.KEY_R;
+const KEY_Z = wayland.KEY_Z;
+const KEY_X = wayland.KEY_X;
+const KEY_B = wayland.KEY_B;
+const KEY_C = wayland.KEY_C;
+const KEY_ESCAPE = wayland.KEY_ESCAPE;
+const KEY_LEFT = wayland.KEY_LEFT;
+const KEY_RIGHT = wayland.KEY_RIGHT;
+const KEY_UP = wayland.KEY_UP;
+const KEY_DOWN = wayland.KEY_DOWN;
 
 pub fn main() !void {
     var da: std.heap.DebugAllocator(.{}) = .init;
     defer _ = da.deinit();
     const allocator = da.allocator();
 
-    if (use_vulkan) {
-        const vk_ctx = try platform.init(1280, 720, "snail");
-        defer platform.deinit();
-        return mainLoop(allocator, vk_ctx);
-    } else {
-        try platform.init(1280, 720, "snail");
-        defer platform.deinit();
-        return mainLoop(allocator, {});
-    }
+    return mainLoop(allocator);
+}
+
+fn defaultBackend() Backend {
+    if (comptime build_options.enable_vulkan) return .vulkan;
+    if (comptime build_options.enable_opengl) return .gl;
+    if (comptime build_options.enable_cpu) return .cpu;
+    @compileError("at least one demo backend must be enabled");
+}
+
+fn nextBackend(current: Backend) Backend {
+    return switch (current) {
+        .vulkan => if (build_options.enable_opengl) .gl else if (build_options.enable_cpu) .cpu else .vulkan,
+        .gl => if (build_options.enable_cpu) .cpu else if (build_options.enable_vulkan) .vulkan else .gl,
+        .cpu => if (build_options.enable_vulkan) .vulkan else if (build_options.enable_opengl) .gl else .cpu,
+    };
+}
+
+fn backendLabel(backend: Backend) []const u8 {
+    return switch (backend) {
+        .vulkan => "Vulkan",
+        .gl => "OpenGL",
+        .cpu => "CPU",
+    };
 }
 
 fn unitToU8(v: f32) u8 {
@@ -40,14 +71,14 @@ fn srgbToLinear(v: f32) f32 {
     return if (v <= 0.04045) v / 12.92 else std.math.pow(f32, (v + 0.055) / 1.055, 2.4);
 }
 
-fn toSnailEncoding(encoding: platform.presentation.ColorEncoding) snail.ColorEncoding {
+fn toSnailEncoding(encoding: presentation.ColorEncoding) snail.ColorEncoding {
     return switch (encoding) {
         .linear => .linear,
         .srgb => .srgb,
     };
 }
 
-fn displayTargetEncoding(info: platform.presentation.Info) snail.TargetEncoding {
+fn displayTargetEncoding(info: presentation.Info) snail.TargetEncoding {
     return .{
         .framebuffer = toSnailEncoding(info.framebuffer_encoding),
         .pixels = .srgb,
@@ -88,7 +119,7 @@ fn aaName(o: snail.SubpixelOrder) []const u8 {
     };
 }
 
-fn logPresentationInfo(info: platform.presentation.Info) void {
+fn logPresentationInfo(info: presentation.Info) void {
     const scale = info.scale();
     std.debug.print(
         "presentation: logical={}x{} framebuffer={}x{} scale={d:.2}x{d:.2} buffer_scale={} framebuffer={s} resample={}\n",
@@ -106,36 +137,244 @@ fn logPresentationInfo(info: platform.presentation.Info) void {
     );
 }
 
-fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
+const ActiveBackend = struct {
+    allocator: std.mem.Allocator,
+    backend: Backend,
+    initialized: bool = false,
+    renderer: snail.Renderer = undefined,
+    gl_renderer: if (build_options.enable_opengl) snail.GlRenderer else void = undefined,
+    vk_renderer: if (build_options.enable_vulkan) snail.VulkanRenderer else void = undefined,
+    cpu_state: if (build_options.enable_cpu) CpuRenderer else void = undefined,
+    cpu_pool: if (build_options.enable_cpu) snail.ThreadPool else void = undefined,
+    cpu_pool_initialized: bool = false,
+    buf_width: u32 = 0,
+    buf_height: u32 = 0,
+
+    fn init(allocator: std.mem.Allocator, backend: Backend) !ActiveBackend {
+        var self = ActiveBackend{ .allocator = allocator, .backend = backend };
+        try self.initBackend(backend);
+        return self;
+    }
+
+    fn switchTo(self: *ActiveBackend, backend: Backend) !void {
+        if (backend == self.backend) return;
+        self.deinitBackend();
+        try self.initBackend(backend);
+    }
+
+    fn deinit(self: *ActiveBackend) void {
+        self.deinitBackend();
+    }
+
+    fn initBackend(self: *ActiveBackend, backend: Backend) !void {
+        self.backend = backend;
+        self.initialized = false;
+        self.buf_width = 0;
+        self.buf_height = 0;
+        switch (backend) {
+            .vulkan => if (comptime build_options.enable_vulkan) {
+                const vk_ctx = try vulkan_platform.init(1280, 720, "snail");
+                errdefer vulkan_platform.deinit();
+                self.vk_renderer = try snail.VulkanRenderer.init(vk_ctx);
+                self.renderer = self.vk_renderer.asRenderer();
+            } else unreachable,
+            .gl => if (comptime build_options.enable_opengl) {
+                try gl_platform.init(1280, 720, "snail");
+                errdefer gl_platform.deinit();
+                self.gl_renderer = try snail.GlRenderer.init(self.allocator);
+                self.renderer = self.gl_renderer.asRenderer();
+            } else unreachable,
+            .cpu => if (comptime build_options.enable_cpu) {
+                try cpu_platform.init(1280, 720, "snail");
+                errdefer cpu_platform.deinit();
+                const px = cpu_platform.getPixelBuffer() orelse return error.NoPixelBuffer;
+                const bsz = cpu_platform.getBufferSize();
+                self.cpu_state = CpuRenderer.init(px, bsz[0], bsz[1], bsz[0] * 4);
+                try self.cpu_pool.init(self.allocator, .{});
+                self.cpu_pool_initialized = true;
+                self.cpu_state.setThreadPool(&self.cpu_pool);
+                self.renderer = self.cpu_state.asRenderer();
+                self.buf_width = bsz[0];
+                self.buf_height = bsz[1];
+            } else unreachable,
+        }
+        self.initialized = true;
+    }
+
+    fn deinitBackend(self: *ActiveBackend) void {
+        if (!self.initialized) return;
+        switch (self.backend) {
+            .vulkan => if (comptime build_options.enable_vulkan) {
+                self.vk_renderer.deinit();
+                vulkan_platform.deinit();
+            },
+            .gl => if (comptime build_options.enable_opengl) {
+                self.gl_renderer.deinit();
+                gl_platform.deinit();
+            },
+            .cpu => if (comptime build_options.enable_cpu) {
+                if (self.cpu_pool_initialized) {
+                    self.cpu_state.setThreadPool(null);
+                    self.cpu_pool.deinit();
+                    self.cpu_pool_initialized = false;
+                }
+                cpu_platform.deinit();
+            },
+        }
+        self.initialized = false;
+    }
+
+    fn shouldClose(self: *ActiveBackend) bool {
+        if (!self.initialized) return true;
+        return switch (self.backend) {
+            .vulkan => if (comptime build_options.enable_vulkan) vulkan_platform.shouldClose() else true,
+            .gl => if (comptime build_options.enable_opengl) gl_platform.shouldClose() else true,
+            .cpu => if (comptime build_options.enable_cpu) cpu_platform.shouldClose() else true,
+        };
+    }
+
+    fn getTime(self: *ActiveBackend) f64 {
+        return switch (self.backend) {
+            .vulkan => if (comptime build_options.enable_vulkan) vulkan_platform.getTime() else 0,
+            .gl => if (comptime build_options.enable_opengl) gl_platform.getTime() else 0,
+            .cpu => if (comptime build_options.enable_cpu) cpu_platform.getTime() else 0,
+        };
+    }
+
+    fn isKeyDown(self: *ActiveBackend, key: u32) bool {
+        return switch (self.backend) {
+            .vulkan => if (comptime build_options.enable_vulkan) vulkan_platform.isKeyDown(key) else false,
+            .gl => if (comptime build_options.enable_opengl) gl_platform.isKeyDown(key) else false,
+            .cpu => if (comptime build_options.enable_cpu) cpu_platform.isKeyDown(key) else false,
+        };
+    }
+
+    fn isKeyPressed(self: *ActiveBackend, key: u32) bool {
+        return switch (self.backend) {
+            .vulkan => if (comptime build_options.enable_vulkan) vulkan_platform.isKeyPressed(key) else false,
+            .gl => if (comptime build_options.enable_opengl) gl_platform.isKeyPressed(key) else false,
+            .cpu => if (comptime build_options.enable_cpu) cpu_platform.isKeyPressed(key) else false,
+        };
+    }
+
+    fn consumeMonitorChanged(self: *ActiveBackend) bool {
+        return switch (self.backend) {
+            .vulkan => if (comptime build_options.enable_vulkan) vulkan_platform.consumeMonitorChanged() else false,
+            .gl => if (comptime build_options.enable_opengl) gl_platform.consumeMonitorChanged() else false,
+            .cpu => if (comptime build_options.enable_cpu) cpu_platform.consumeMonitorChanged() else false,
+        };
+    }
+
+    fn detectCurrentMonitorSubpixelOrder(self: *ActiveBackend, base: snail.SubpixelOrder) snail.SubpixelOrder {
+        return switch (self.backend) {
+            .vulkan => if (comptime build_options.enable_vulkan) vulkan_platform.detectCurrentMonitorSubpixelOrder(base) else base,
+            .gl => if (comptime build_options.enable_opengl) gl_platform.detectCurrentMonitorSubpixelOrder(base) else base,
+            .cpu => if (comptime build_options.enable_cpu) cpu_platform.detectCurrentMonitorSubpixelOrder(base) else base,
+        };
+    }
+
+    fn presentationInfo(self: *ActiveBackend) presentation.Info {
+        return switch (self.backend) {
+            .vulkan => if (comptime build_options.enable_vulkan) vulkan_platform.presentationInfo() else .{},
+            .gl => if (comptime build_options.enable_opengl) gl_platform.presentationInfo() else .{},
+            .cpu => if (comptime build_options.enable_cpu) cpu_platform.presentationInfo() else .{},
+        };
+    }
+
+    fn beginFrame(self: *ActiveBackend, fb_size: [2]u32, clear_srgb: [4]f32, target_encoding: snail.TargetEncoding) bool {
+        switch (self.backend) {
+            .vulkan => if (comptime build_options.enable_vulkan) {
+                const cmd = vulkan_platform.beginFrame() orelse return false;
+                self.vk_renderer.beginFrame(.{ .cmd = cmd, .frame_index = vulkan_platform.currentFrameIndex() });
+                return true;
+            } else return false,
+            .gl => if (comptime build_options.enable_opengl) {
+                const clear = clearColorForTarget(clear_srgb, target_encoding);
+                gl.glViewport(0, 0, @intCast(fb_size[0]), @intCast(fb_size[1]));
+                gl_platform.clear(clear[0], clear[1], clear[2], clear[3]);
+                return true;
+            } else return false,
+            .cpu => if (comptime build_options.enable_cpu) {
+                self.prepareCpuFrame(clear_srgb, target_encoding);
+                return true;
+            } else return false,
+        }
+    }
+
+    fn endFrame(self: *ActiveBackend) void {
+        switch (self.backend) {
+            .vulkan => if (comptime build_options.enable_vulkan) vulkan_platform.endFrame(),
+            .gl => if (comptime build_options.enable_opengl) gl_platform.swapBuffers(),
+            .cpu => if (comptime build_options.enable_cpu) cpu_platform.swapBuffers(),
+        }
+    }
+
+    fn captureDebugFrame(self: *ActiveBackend, allocator: std.mem.Allocator, fb_size: [2]u32) void {
+        if (self.backend != .gl or !build_options.enable_opengl) return;
+        const iw = fb_size[0];
+        const ih = fb_size[1];
+        if (screenshot.captureFramebuffer(allocator, iw, ih) catch null) |px| {
+            defer allocator.free(px);
+            screenshot.writeTga("zig-out/frame0.tga", px, iw, ih);
+        }
+    }
+
+    fn prepareCpuFrame(self: *ActiveBackend, clear_srgb: [4]f32, target_encoding: snail.TargetEncoding) void {
+        if (comptime !build_options.enable_cpu) return;
+        const bsz = cpu_platform.getBufferSize();
+        if (bsz[0] != self.buf_width or bsz[1] != self.buf_height) {
+            if (cpu_platform.getPixelBuffer()) |px| {
+                self.buf_width = bsz[0];
+                self.buf_height = bsz[1];
+                self.cpu_state.reinitBuffer(px, bsz[0], bsz[1], bsz[0] * 4);
+                self.renderer = self.cpu_state.asRenderer();
+            }
+        }
+        if (cpu_platform.getPixelBuffer()) |px| {
+            const clear_bytes = clearColorForStoredPixels(clear_srgb, target_encoding);
+            const r = unitToU8(clear_bytes[0]);
+            const g = unitToU8(clear_bytes[1]);
+            const b = unitToU8(clear_bytes[2]);
+            const a = unitToU8(clear_bytes[3]);
+            for (0..bsz[1]) |row| {
+                const row_start = row * bsz[0] * 4;
+                for (0..bsz[0]) |col| {
+                    const off = row_start + col * 4;
+                    px[off + 0] = r;
+                    px[off + 1] = g;
+                    px[off + 2] = b;
+                    px[off + 3] = a;
+                }
+            }
+        }
+    }
+};
+
+fn releasePrepared(prepared: *?snail.PreparedResources) void {
+    if (prepared.*) |*resources| {
+        resources.retireNow();
+        prepared.* = null;
+    }
+}
+
+fn warnIfDebugCpu(backend: Backend) void {
+    if (backend == .cpu and builtin.mode == .Debug) {
+        std.debug.print(
+            "WARNING: Debug build. CPU rasterization is ~30x slower without `--release=fast`.\n",
+            .{},
+        );
+    }
+}
+
+fn mainLoop(allocator: std.mem.Allocator) !void {
     var scene_assets = try demo_banner_scene.Assets.init(allocator);
     defer scene_assets.deinit();
 
-    var gl_renderer: snail.GlRenderer = undefined;
-    var vk_renderer: snail.VulkanRenderer = undefined;
-    var cpu_state: CpuRenderer = undefined;
-    var cpu_pool: snail.ThreadPool = undefined;
-    var cpu_pool_initialized = false;
-    var renderer = if (use_vulkan) blk: {
-        vk_renderer = try snail.VulkanRenderer.init(vk_ctx);
-        break :blk vk_renderer.asRenderer();
-    } else if (use_gl) blk: {
-        gl_renderer = try snail.GlRenderer.init(allocator);
-        break :blk gl_renderer.asRenderer();
-    } else blk: {
-        const px = platform.getPixelBuffer() orelse return error.NoPixelBuffer;
-        const bsz = platform.getBufferSize();
-        cpu_state = CpuRenderer.init(px, bsz[0], bsz[1], bsz[0] * 4);
-        try cpu_pool.init(allocator, .{});
-        cpu_pool_initialized = true;
-        cpu_state.setThreadPool(&cpu_pool);
-        break :blk cpu_state.asRenderer();
-    };
-    defer if (use_vulkan) vk_renderer.deinit();
-    defer if (use_gl) gl_renderer.deinit();
-    defer if (cpu_pool_initialized) cpu_pool.deinit();
+    var active = try ActiveBackend.init(allocator, defaultBackend());
+    defer active.deinit();
 
     const sys_order = subpixel_detect.detect();
-    const detected_order = platform.detectCurrentMonitorSubpixelOrder(sys_order);
+    const detected_order = active.detectCurrentMonitorSubpixelOrder(sys_order);
     // Default to grayscale; press B to cycle into the detected subpixel mode.
     var current_order: snail.SubpixelOrder = .none;
     std.debug.print("snail: detected subpixel order: system={s} monitor={s} (starting in {s})\n", .{ @tagName(sys_order), @tagName(detected_order), @tagName(current_order) });
@@ -147,43 +386,36 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
     var scene = snail.Scene.init(allocator);
     defer scene.deinit();
     var prepared: ?snail.PreparedResources = null;
-    defer if (prepared) |*resources| resources.deinit();
+    defer releasePrepared(&prepared);
     var draw_buf: []u32 = &.{};
     defer if (draw_buf.len > 0) allocator.free(draw_buf);
     var draw_segments_buf: []snail.DrawSegment = &.{};
     defer if (draw_segments_buf.len > 0) allocator.free(draw_segments_buf);
     var uploaded_size = [4]u32{ 0, 0, 0, 0 };
 
-    var buf_width: u32 = 0;
-    var buf_height: u32 = 0;
     var angle: f32 = 0.0;
     var zoom: f32 = 1.0;
     var pan_x: f32 = 0.0;
     var pan_y: f32 = 0.0;
     var rotate = false;
-    var last_time = platform.getTime();
+    var last_time = active.getTime();
     var frame_count: u32 = 0;
     var fps_timer: f64 = 0.0;
     var fps_frames: u32 = 0;
     var fps_display: f32 = 0.0;
-    var last_presentation: ?platform.presentation.Info = null;
+    var last_presentation: ?presentation.Info = null;
 
     std.debug.print("snail - GPU text & vector rendering\n", .{});
     std.debug.print("Backend: {s}, HarfBuzz: {s}\n", .{
-        renderer.backendName(),
+        active.renderer.backendName(),
         if (build_options.enable_harfbuzz) "ON" else "OFF",
     });
-    if (use_cpu and builtin.mode == .Debug) {
-        std.debug.print(
-            "WARNING: Debug build. CPU rasterization is ~30x slower without `--release=fast`.\n",
-            .{},
-        );
-    }
-    std.debug.print("Keys: arrows pan, Z/X zoom, R rotate, B AA mode, Esc quit\n", .{});
+    warnIfDebugCpu(active.backend);
+    std.debug.print("Keys: arrows pan, Z/X zoom, R rotate, B AA mode, C backend, Esc quit\n", .{});
     std.debug.print("aa={s}\n", .{aaName(current_order)});
 
-    while (!platform.shouldClose()) {
-        const now = platform.getTime();
+    while (!active.shouldClose()) {
+        const now = active.getTime();
         const dt: f32 = @floatCast(now - last_time);
         last_time = now;
         fps_timer += dt;
@@ -196,24 +428,38 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
 
         // Drop monitor-change auto-reset; the user owns the AA mode and can
         // cycle with B if they want to track the current display.
-        _ = platform.consumeMonitorChanged();
+        _ = active.consumeMonitorChanged();
 
-        if (platform.isKeyPressed(platform.KEY_R)) rotate = !rotate;
-        if (platform.isKeyPressed(platform.KEY_ESCAPE)) break;
-        if (platform.isKeyPressed(platform.KEY_B)) {
+        if (active.isKeyPressed(KEY_R)) rotate = !rotate;
+        if (active.isKeyPressed(KEY_ESCAPE)) break;
+        if (active.isKeyPressed(KEY_B)) {
             current_order = cycleSubpixelOrder(current_order);
             std.debug.print("\naa={s}\n", .{aaName(current_order)});
         }
+        if (active.isKeyPressed(KEY_C)) {
+            const next = nextBackend(active.backend);
+            if (next != active.backend) {
+                releasePrepared(&prepared);
+                try active.switchTo(next);
+                uploaded_size = .{ 0, 0, 0, 0 };
+                last_presentation = null;
+                last_time = active.getTime();
+                frame_count = 0;
+                std.debug.print("\nBackend: {s}\n", .{backendLabel(active.backend)});
+                warnIfDebugCpu(active.backend);
+                continue;
+            }
+        }
         if (rotate) angle += dt * 0.5;
-        if (platform.isKeyDown(platform.KEY_Z)) zoom *= 1.0 + dt * 2.0;
-        if (platform.isKeyDown(platform.KEY_X)) zoom *= 1.0 - dt * 2.0;
+        if (active.isKeyDown(KEY_Z)) zoom *= 1.0 + dt * 2.0;
+        if (active.isKeyDown(KEY_X)) zoom *= 1.0 - dt * 2.0;
         const pan_step = 900.0 * dt;
-        if (platform.isKeyDown(platform.KEY_LEFT)) pan_x += pan_step;
-        if (platform.isKeyDown(platform.KEY_RIGHT)) pan_x -= pan_step;
-        if (platform.isKeyDown(platform.KEY_UP)) pan_y += pan_step;
-        if (platform.isKeyDown(platform.KEY_DOWN)) pan_y -= pan_step;
+        if (active.isKeyDown(KEY_LEFT)) pan_x += pan_step;
+        if (active.isKeyDown(KEY_RIGHT)) pan_x -= pan_step;
+        if (active.isKeyDown(KEY_UP)) pan_y += pan_step;
+        if (active.isKeyDown(KEY_DOWN)) pan_y -= pan_step;
 
-        const present = platform.presentationInfo();
+        const present = active.presentationInfo();
         if (last_presentation == null or !std.meta.eql(last_presentation.?, present)) {
             logPresentationInfo(present);
             last_presentation = present;
@@ -231,14 +477,11 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         const grid = snail.PixelGrid.init(.{ w, h }, fb_size);
         const size_key = [4]u32{ size[0], size[1], fb_size[0], fb_size[1] };
 
-        // On resize: lay out text to collect decoration rects, rebuild path picture,
-        // and rebuild the immutable scene resources.
-        const needs_resource_rebuild = path_picture == null or text_blob == null or !std.mem.eql(u32, size_key[0..], uploaded_size[0..]);
+        // On resize/backend switch: lay out text to collect decoration rects,
+        // rebuild path picture, and rebuild immutable scene resources.
+        const needs_resource_rebuild = prepared == null or path_picture == null or text_blob == null or !std.mem.eql(u32, size_key[0..], uploaded_size[0..]);
         if (needs_resource_rebuild) {
-            if (prepared) |*resources| {
-                resources.retireNow();
-                prepared = null;
-            }
+            releasePrepared(&prepared);
             if (path_picture) |*picture| {
                 picture.deinit();
                 path_picture = null;
@@ -263,45 +506,11 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
             var resource_entries: [8]snail.ResourceSet.Entry = undefined;
             var resources = snail.ResourceSet.init(&resource_entries);
             try resources.addScene(&scene);
-            prepared = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &resources);
+            prepared = try active.renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &resources);
         }
 
         const clear_srgb = demo_banner.clearColor();
-        const clear = clearColorForTarget(clear_srgb, target_encoding);
-
-        if (use_vulkan) {
-            const cmd = platform.beginFrame() orelse continue;
-            vk_renderer.beginFrame(.{ .cmd = cmd, .frame_index = platform.currentFrameIndex() });
-        } else if (use_gl) {
-            gl.glViewport(0, 0, @intCast(fb_size[0]), @intCast(fb_size[1]));
-            platform.clear(clear[0], clear[1], clear[2], clear[3]);
-        } else {
-            const bsz = platform.getBufferSize();
-            if (bsz[0] != buf_width or bsz[1] != buf_height) {
-                if (platform.getPixelBuffer()) |px| {
-                    buf_width = bsz[0];
-                    buf_height = bsz[1];
-                    cpu_state.reinitBuffer(px, bsz[0], bsz[1], bsz[0] * 4);
-                }
-            }
-            if (platform.getPixelBuffer()) |px| {
-                const clear_bytes = clearColorForStoredPixels(clear_srgb, target_encoding);
-                const r = unitToU8(clear_bytes[0]);
-                const g = unitToU8(clear_bytes[1]);
-                const b = unitToU8(clear_bytes[2]);
-                const a = unitToU8(clear_bytes[3]);
-                for (0..bsz[1]) |row| {
-                    const row_start = row * bsz[0] * 4;
-                    for (0..bsz[0]) |col| {
-                        const off = row_start + col * 4;
-                        px[off + 0] = r;
-                        px[off + 1] = g;
-                        px[off + 2] = b;
-                        px[off + 3] = a;
-                    }
-                }
-            }
-        }
+        if (!active.beginFrame(fb_size, clear_srgb, target_encoding)) continue;
 
         const projection = snail.Mat4.ortho(0, w, h, 0, -1, 1);
         const cx = w * 0.5;
@@ -340,27 +549,18 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
         }
         var draw = snail.DrawList.init(draw_buf[0..needed], draw_segments_buf[0..needed_segments]);
         try draw.addScene(&prepared.?, &scene, draw_options);
-        try renderer.draw(&prepared.?, draw.slice(), draw_options);
+        try active.renderer.draw(&prepared.?, draw.slice(), draw_options);
 
-        if (use_gl and frame_count == 2) {
-            const iw = fb_size[0];
-            const ih = fb_size[1];
-            if (screenshot.captureFramebuffer(allocator, iw, ih) catch null) |px| {
-                defer allocator.free(px);
-                screenshot.writeTga("zig-out/frame0.tga", px, iw, ih);
-            }
+        if (frame_count == 2) {
+            active.captureDebugFrame(allocator, fb_size);
         }
         if (frame_count % 60 == 0 and fps_display > 0.0) {
             const glyphs = if (text_blob) |*blob| blob.glyphCount() else 0;
-            std.debug.print("\rFPS: {d:.0}  Glyphs: {}   ", .{ fps_display, glyphs });
+            std.debug.print("\rFPS: {d:.0}  Backend: {s}  Glyphs: {}   ", .{ fps_display, active.renderer.backendName(), glyphs });
         }
         frame_count += 1;
 
-        if (use_vulkan) {
-            platform.endFrame();
-        } else {
-            platform.swapBuffers();
-        }
+        active.endFrame();
     }
 }
 

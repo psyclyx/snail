@@ -16,11 +16,6 @@
 , enableVulkan ? true
 , enableCpu ? true
 , enableHarfBuzz ? true
-, renderer ? (
-    if enableVulkan then "vulkan"
-    else if enableOpenGL then "gl44"
-    else "cpu"
-  )
 , optimize ? "fast"
 , cpu ? "baseline"
 }:
@@ -34,17 +29,13 @@ let
       enableCpu
       enableHarfBuzz
       optimize
-      cpu
-      ;
+      cpu;
     enableCApi = false;
     cApiShared = false;
     cApiStatic = false;
   };
 in
-assert lib.elem renderer [ "gl44" "gl33" "vulkan" "cpu" ];
-assert renderer != "vulkan" || enableVulkan;
-assert !(lib.elem renderer [ "gl44" "gl33" ]) || enableOpenGL;
-assert renderer != "cpu" || enableCpu;
+assert enableOpenGL || enableVulkan || enableCpu;
 stdenv.mkDerivation {
   inherit pname version src;
 
@@ -73,9 +64,7 @@ stdenv.mkDerivation {
 
   zigBuildFlags = [
     "demo"
-  ] ++ backendOptions.zigBuildFlags ++ [
-    "-Drenderer=${renderer}"
-  ];
+  ] ++ backendOptions.zigBuildFlags;
 
   dontUseZigCheck = true;
   dontSetZigDefaultFlags = true;

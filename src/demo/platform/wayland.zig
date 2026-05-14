@@ -20,6 +20,7 @@ pub const KEY_Z = c.KEY_Z;
 pub const KEY_X = c.KEY_X;
 pub const KEY_H = c.KEY_H;
 pub const KEY_B = c.KEY_B;
+pub const KEY_C = c.KEY_C;
 pub const KEY_ESCAPE = c.KEY_ESC;
 pub const KEY_LEFT = c.KEY_LEFT;
 pub const KEY_RIGHT = c.KEY_RIGHT;
