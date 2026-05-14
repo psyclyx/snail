@@ -365,12 +365,15 @@ pub const PreparedResources = struct {
     layer_infos: []LayerInfoEntry = &.{},
     layer_info_count: usize = 0,
 
-    pub fn init(allocator: std.mem.Allocator, atlases: []const *const snail.lowlevel.CurveAtlas) !PreparedResources {
+    pub fn init(allocator: std.mem.Allocator, atlases: []const *const snail.lowlevel.CurveAtlas, layer_info_blocks: anytype) !PreparedResources {
         var layer_count: usize = 0;
         var layer_info_count: usize = 0;
         for (atlases) |atlas| {
             layer_count += atlas.pageCount();
             if (atlas.layer_info_data != null) layer_info_count += 1;
+        }
+        for (layer_info_blocks) |block| {
+            if (block.data != null) layer_info_count += 1;
         }
         const atlas_pages = try allocator.alloc(?PreparedAtlasPage, layer_count);
         errdefer allocator.free(atlas_pages);
@@ -414,10 +417,40 @@ pub const PreparedResources = struct {
         }
     }
 
+    pub fn uploadLayerInfoBlocks(self: *PreparedResources, layer_info_blocks: anytype, out_views: anytype) !void {
+        var row_base = self.nextLayerInfoRowBase();
+        for (layer_info_blocks, 0..) |block, i| {
+            out_views[i] = .{ .info_row_base = row_base };
+            if (block.data) |data| {
+                if (self.layer_info_count >= self.layer_infos.len) return error.PreparedResourceCapacityExceeded;
+                const prepared_layers = try preparePathLayerInfoRecords(self.allocator, data, block.width, block.height, block.paint_image_records);
+                self.layer_infos[self.layer_info_count] = .{
+                    .data = data,
+                    .width = block.width,
+                    .height = block.height,
+                    .row_base = row_base,
+                    .path_records = prepared_layers.records,
+                    .path_layers = prepared_layers.layers,
+                    .paint_image_records = block.paint_image_records,
+                };
+                self.layer_info_count += 1;
+            }
+            row_base += block.height;
+        }
+    }
+
     pub fn uploadImages(_: *PreparedResources, images: []const *const snail.Image, out_views: anytype) void {
         for (out_views, images) |*v, img| {
             v.* = .{ .image = img };
         }
+    }
+
+    fn nextLayerInfoRowBase(self: *const PreparedResources) u32 {
+        var row_base: u32 = 0;
+        for (self.layer_infos[0..self.layer_info_count]) |entry| {
+            row_base = @max(row_base, entry.row_base + entry.height);
+        }
+        return row_base;
     }
 
     fn storeAtlasPages(self: *PreparedResources, atlas: *const snail.lowlevel.CurveAtlas, layer_base: u32, info_row_base: u32) !void {

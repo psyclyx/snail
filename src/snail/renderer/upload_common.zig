@@ -70,6 +70,7 @@ pub const AtlasSlotBuildInfo = struct {
     allocated_curve_height: u32,
     allocated_band_height: u32,
     allocated_layer_count: u32,
+    layer_info_rows: u32,
 };
 
 pub fn firstNonEmptyAtlas(atlases: anytype) ?BufferElement(@TypeOf(atlases)) {
@@ -121,6 +122,7 @@ pub fn rebuildAtlasSlots(allocator: std.mem.Allocator, atlas_slots: anytype, atl
         .allocated_curve_height = heightCapacity(max_curve_h),
         .allocated_band_height = heightCapacity(max_band_h),
         .allocated_layer_count = total_layers,
+        .layer_info_rows = total_info_rows,
     };
 }
 
@@ -153,6 +155,7 @@ pub fn rebuildAtlasSlotsWithCapacityModes(allocator: std.mem.Allocator, atlas_sl
         .allocated_curve_height = heightCapacity(max_curve_h),
         .allocated_band_height = heightCapacity(max_band_h),
         .allocated_layer_count = total_layers,
+        .layer_info_rows = total_info_rows,
     };
 }
 

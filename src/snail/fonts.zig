@@ -189,31 +189,6 @@ pub const TextBlob = struct {
         };
     }
 
-    /// Low-level: create a temporary `CurveAtlas` wrapper for paint records
-    /// attached to this text blob. Most callers should let `ResourceSet.addScene`
-    /// discover and upload this through the renderer resource path.
-    pub fn uploadPaintAtlas(self: *const TextBlob) snail.lowlevel.CurveAtlas {
-        return .{
-            .allocator = self.allocator,
-            .font = null,
-            .pages = &.{},
-            .glyph_map = .init(self.allocator),
-            .shaper = null,
-            .layer_info_data = self.paint_layer_info_data,
-            .layer_info_width = self.paint_layer_info_width,
-            .layer_info_height = self.paint_layer_info_height,
-            .paint_image_records = self.paint_image_records,
-        };
-    }
-
-    /// Clean up a wrapper Atlas from `uploadPaintAtlas()`.
-    pub fn deinitUploadPaintAtlas(_: *const TextBlob, wrapper: *snail.lowlevel.CurveAtlas) void {
-        wrapper.glyph_map.deinit();
-        wrapper.pages = &.{};
-        wrapper.layer_info_data = null;
-        wrapper.paint_image_records = null;
-    }
-
     /// Move this blob to a compatible atlas snapshot without rebuilding its
     /// glyph list. The new atlas must share the same font config, retain the
     /// old pages as a prefix, and contain every glyph referenced by the blob.

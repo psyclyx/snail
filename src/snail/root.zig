@@ -1354,6 +1354,17 @@ const PreparedAtlasView = struct {
     }
 };
 
+const PreparedLayerInfoUpload = struct {
+    data: ?[]const f32 = null,
+    width: u32 = 0,
+    height: u32 = 0,
+    paint_image_records: ?[]const ?Atlas.PaintImageRecord = null,
+};
+
+const PreparedLayerInfoView = struct {
+    info_row_base: u32 = 0,
+};
+
 fn coerceAtlasHandle(atlas_like: anytype) PreparedAtlasView {
     const T = @TypeOf(atlas_like);
     return switch (T) {
@@ -4147,6 +4158,7 @@ pub const PreparedResources = struct {
     /// so uploaded `TextAtlas`, `PathPicture`, and `Image` values must outlive
     /// CPU prepared resources.
     atlases: []PreparedAtlasResource = &.{},
+    layer_infos: []PreparedLayerInfoResource = &.{},
     images: []PreparedImageResource = &.{},
     gl: ?pipeline.PreparedResources = null,
     vulkan: if (build_options.enable_vulkan) ?vulkan_pipeline.PreparedResources else void = if (build_options.enable_vulkan) null else {},
@@ -4154,7 +4166,6 @@ pub const PreparedResources = struct {
 
     const PreparedAtlasKind = enum {
         text,
-        text_paint,
         path,
     };
 
@@ -4162,12 +4173,18 @@ pub const PreparedResources = struct {
         key: ResourceKey,
         kind: PreparedAtlasKind,
         text_atlas: ?*const TextAtlas = null,
-        text_blob: ?*const TextBlob = null,
         picture: ?*const PathPicture = null,
         atlas: *const Atlas,
         wrapper: Atlas = undefined,
         owns_wrapper: bool = false,
         view: PreparedAtlasView = undefined,
+        stamp: ResourceStamp,
+    };
+
+    const PreparedLayerInfoResource = struct {
+        key: ResourceKey,
+        text_blob: *const TextBlob,
+        view: PreparedLayerInfoView = undefined,
         stamp: ResourceStamp,
     };
 
@@ -4189,11 +4206,11 @@ pub const PreparedResources = struct {
         for (self.atlases) |*entry| {
             if (entry.owns_wrapper) switch (entry.kind) {
                 .text => entry.text_atlas.?.deinitUploadAtlas(&entry.wrapper),
-                .text_paint => entry.text_blob.?.deinitUploadPaintAtlas(&entry.wrapper),
                 .path => {},
             };
         }
         if (self.atlases.len > 0) self.allocator.free(self.atlases);
+        if (self.layer_infos.len > 0) self.allocator.free(self.layer_infos);
         if (self.images.len > 0) self.allocator.free(self.images);
         self.* = undefined;
     }
@@ -4209,6 +4226,7 @@ pub const PreparedResources = struct {
     pub fn stampForKey(self: *const PreparedResources, key_value: anytype) ?ResourceStamp {
         const key = resourceKey(key_value);
         for (self.atlases) |entry| if (entry.key.eql(key)) return entry.stamp;
+        for (self.layer_infos) |entry| if (entry.key.eql(key)) return entry.stamp;
         for (self.images) |entry| if (entry.key.eql(key)) return entry.stamp;
         return null;
     }
@@ -4233,9 +4251,9 @@ pub const PreparedResources = struct {
         return null;
     }
 
-    fn textPaintEntry(self: *const PreparedResources, blob: *const TextBlob) ?*const PreparedAtlasResource {
-        for (self.atlases) |*entry| {
-            if (entry.kind == .text_paint and entry.text_blob == blob) return entry;
+    fn textPaintEntry(self: *const PreparedResources, blob: *const TextBlob) ?*const PreparedLayerInfoResource {
+        for (self.layer_infos) |*entry| {
+            if (entry.text_blob == blob) return entry;
         }
         return null;
     }
@@ -4255,7 +4273,7 @@ pub const PreparedResources = struct {
         };
     }
 
-    fn textPaintView(self: *const PreparedResources, blob: *const TextBlob) !PreparedAtlasView {
+    fn textPaintView(self: *const PreparedResources, blob: *const TextBlob) !PreparedLayerInfoView {
         const entry = self.textPaintEntry(blob) orelse return error.MissingPreparedResource;
         return entry.view;
     }
@@ -4923,6 +4941,15 @@ fn textPaintUploadBytes(blob: *const TextBlob) usize {
     return total;
 }
 
+fn textPaintLayerInfoUpload(blob: *const TextBlob) PreparedLayerInfoUpload {
+    return .{
+        .data = blob.paint_layer_info_data,
+        .width = blob.paint_layer_info_width,
+        .height = blob.paint_layer_info_height,
+        .paint_image_records = blob.paint_image_records,
+    };
+}
+
 fn resourceEntryKey(entry: ResourceSet.Entry) ResourceKey {
     return switch (entry) {
         .text_atlas => |text| text.key,
@@ -5114,15 +5141,18 @@ fn uploadPreparedResources(renderer: *Renderer, set: *const ResourceSet, allocat
     const persistent = allocators.persistent;
     const scratch = allocators.scratch;
     var atlas_count: usize = 0;
+    var layer_info_count: usize = 0;
     var image_count: usize = 0;
     for (set.slice()) |entry| switch (entry) {
-        .text_atlas, .text_paint, .path_picture => atlas_count += 1,
+        .text_atlas, .path_picture => atlas_count += 1,
+        .text_paint => layer_info_count += 1,
         .image => image_count += 1,
     };
 
     var prepared = PreparedResources{
         .allocator = persistent,
         .atlases = try persistent.alloc(PreparedResources.PreparedAtlasResource, atlas_count),
+        .layer_infos = try persistent.alloc(PreparedResources.PreparedLayerInfoResource, layer_info_count),
         .images = try persistent.alloc(PreparedResources.PreparedImageResource, image_count),
     };
     errdefer prepared.deinit();
@@ -5134,12 +5164,18 @@ fn uploadPreparedResources(renderer: *Renderer, set: *const ResourceSet, allocat
     const atlas_views = try scratch.alloc(PreparedAtlasView, atlas_count);
     defer scratch.free(atlas_views);
 
+    const upload_layer_infos = try scratch.alloc(PreparedLayerInfoUpload, layer_info_count);
+    defer scratch.free(upload_layer_infos);
+    const layer_info_views = try scratch.alloc(PreparedLayerInfoView, layer_info_count);
+    defer scratch.free(layer_info_views);
+
     const upload_images = try scratch.alloc(*const Image, image_count);
     defer scratch.free(upload_images);
     const image_views = try scratch.alloc(PreparedImageView, image_count);
     defer scratch.free(image_views);
 
     var atlas_i: usize = 0;
+    var layer_info_i: usize = 0;
     var image_i: usize = 0;
     for (set.slice()) |entry| {
         switch (entry) {
@@ -5159,19 +5195,13 @@ fn uploadPreparedResources(renderer: *Renderer, set: *const ResourceSet, allocat
                 atlas_i += 1;
             },
             .text_paint => |text| {
-                prepared.atlases[atlas_i] = .{
+                prepared.layer_infos[layer_info_i] = .{
                     .key = text.key,
-                    .kind = .text_paint,
                     .text_blob = text.blob,
-                    .atlas = undefined,
-                    .owns_wrapper = true,
                     .stamp = textPaintStamp(text.blob),
                 };
-                prepared.atlases[atlas_i].wrapper = text.blob.uploadPaintAtlas();
-                prepared.atlases[atlas_i].atlas = &prepared.atlases[atlas_i].wrapper;
-                upload_atlases[atlas_i] = prepared.atlases[atlas_i].atlas;
-                atlas_capacity_modes[atlas_i] = .exact;
-                atlas_i += 1;
+                upload_layer_infos[layer_info_i] = textPaintLayerInfoUpload(text.blob);
+                layer_info_i += 1;
             },
             .path_picture => |path| {
                 prepared.atlases[atlas_i] = .{
@@ -5201,7 +5231,7 @@ fn uploadPreparedResources(renderer: *Renderer, set: *const ResourceSet, allocat
         if (renderer.vtable == &Renderer.gl_vtable or renderer.vtable == &Renderer.gl_borrowed_vtable) {
             const gl_state: *pipeline.GlTextState = @ptrCast(@alignCast(renderer.ptr));
             var gl_prepared = pipeline.PreparedResources{ .allocator = persistent, .backend = gl_state.backend };
-            if (atlas_count > 0) try gl_prepared.uploadAtlasesWithCapacityModes(upload_atlases, atlas_capacity_modes[0..atlas_count], atlas_views);
+            if (atlas_count > 0 or layer_info_count > 0) try gl_prepared.uploadAtlasesAndLayerInfoWithCapacityModes(upload_atlases, atlas_capacity_modes[0..atlas_count], atlas_views, upload_layer_infos, layer_info_views);
             if (image_count > 0) try gl_prepared.uploadImages(upload_images, image_views);
             prepared.gl = gl_prepared;
             break :blk true;
@@ -5211,7 +5241,7 @@ fn uploadPreparedResources(renderer: *Renderer, set: *const ResourceSet, allocat
                 const vk_state: *vulkan_pipeline.VulkanPipeline = @ptrCast(@alignCast(renderer.ptr));
                 var vk_prepared = try vulkan_pipeline.PreparedResources.init(vk_state, persistent);
                 errdefer vk_prepared.deinit();
-                if (atlas_count > 0) try vk_state.uploadPreparedAtlasesWithCapacityModes(&vk_prepared, upload_atlases, atlas_capacity_modes[0..atlas_count], atlas_views);
+                if (atlas_count > 0 or layer_info_count > 0) try vk_state.uploadPreparedAtlasesAndLayerInfoWithCapacityModes(&vk_prepared, upload_atlases, atlas_capacity_modes[0..atlas_count], atlas_views, upload_layer_infos, layer_info_views);
                 if (image_count > 0) try vk_state.uploadPreparedImages(&vk_prepared, upload_images, image_views);
                 prepared.vulkan = vk_prepared;
                 break :blk true;
@@ -5219,9 +5249,10 @@ fn uploadPreparedResources(renderer: *Renderer, set: *const ResourceSet, allocat
         }
         if (comptime build_options.enable_cpu) {
             if (renderer.vtable == &Renderer.cpu_vtable) {
-                var cpu_prepared = try cpu_renderer_mod.PreparedResources.init(persistent, upload_atlases);
+                var cpu_prepared = try cpu_renderer_mod.PreparedResources.init(persistent, upload_atlases, upload_layer_infos);
                 errdefer cpu_prepared.deinit();
                 if (atlas_count > 0) try cpu_prepared.uploadAtlases(upload_atlases, atlas_views);
+                if (layer_info_count > 0) try cpu_prepared.uploadLayerInfoBlocks(upload_layer_infos, layer_info_views);
                 if (image_count > 0) cpu_prepared.uploadImages(upload_images, image_views);
                 prepared.cpu = cpu_prepared;
                 break :blk true;
@@ -5232,6 +5263,7 @@ fn uploadPreparedResources(renderer: *Renderer, set: *const ResourceSet, allocat
     if (!uploaded) return error.UnsupportedRenderer;
 
     for (prepared.atlases, 0..) |*entry, i| entry.view = atlas_views[i];
+    for (prepared.layer_infos, 0..) |*entry, i| entry.view = layer_info_views[i];
     for (prepared.images, 0..) |*entry, i| entry.view = image_views[i];
     return prepared;
 }
@@ -6098,6 +6130,8 @@ test "ResourceSet discovers and draws text paint resources" {
 
     var prepared = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set);
     defer prepared.deinit();
+    try std.testing.expectEqual(@as(usize, 1), prepared.atlases.len);
+    try std.testing.expectEqual(@as(usize, 1), prepared.layer_infos.len);
 
     const options = DrawOptions{
         .mvp = Mat4.identity,
