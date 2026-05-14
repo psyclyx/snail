@@ -233,7 +233,7 @@ fn uploadSceneResources(
     var entries: [8]snail.ResourceSet.Entry = undefined;
     var set = snail.ResourceSet.init(&entries);
     try set.addScene(scene);
-    return renderer.uploadResourcesBlocking(allocator, &set);
+    return renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set);
 }
 
 fn clearPixels(pixels: []u8) void {

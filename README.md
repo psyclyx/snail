@@ -161,7 +161,7 @@ try resources.addScene(&scene);
 // Requires an active GL context. Vulkan uses snail.VulkanRenderer.init(ctx).
 var gl = try snail.GlRenderer.init(allocator);
 defer gl.deinit();
-var prepared = try gl.uploadResourcesBlocking(allocator, &resources);
+var prepared = try gl.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &resources);
 defer prepared.deinit();
 
 const viewport_wf: f32 = @floatFromInt(viewport_w);
@@ -452,9 +452,9 @@ try scene.addPath(.{ .picture = &sprite, .instances = entity_overrides });
 | `CpuRenderer.init(pixels, w, h, stride) CpuRenderer` | Initialize the CPU backend over a caller-owned RGBA8 buffer. |
 | `cpu.setThreadPool(?*snail.ThreadPool)` | Opt into scanline-tiled multithreaded rendering using a caller-owned `snail.ThreadPool`. Byte-identical output to the single-threaded path; the draw call itself stays allocation-free. |
 | `vk.beginFrame(.{ .cmd, .frame_index })` | Bind a caller-recorded Vulkan command buffer + frame index for the current frame. |
-| `renderer.uploadResourcesBlocking(alloc, set) !PreparedResources` | Blocking upload + view construction. The simple path. |
+| `renderer.uploadResourcesBlocking(.{ .persistent, .scratch }, set) !PreparedResources` | Blocking upload + view construction. Persistent allocations live with `PreparedResources`; scratch allocations end when upload returns. |
 | `renderer.planResourceUpload(current, next_set, changed_keys) !ResourceUploadPlan` | Diff a new resource set against existing prepared resources. |
-| `renderer.beginResourceUpload(alloc, plan) !PendingResourceUpload` | Start a scheduled upload; record into a caller command buffer for Vulkan, then call `pending.publish()`. |
+| `renderer.beginResourceUpload(.{ .persistent, .scratch }, plan) !PendingResourceUpload` | Start a scheduled upload; record into a caller command buffer for Vulkan, then call `pending.publish()`. |
 | `DrawList.init(words, segments)` | Wrap a caller-buffered word + segment buffer for `addScene`. |
 | `DrawList.estimate(scene, options)` | Upper bound for the word buffer required by `draw.addScene(prepared, scene, options)`. |
 | `DrawList.estimateSegments(scene, options)` | Upper bound for the segment buffer required by `draw.addScene(prepared, scene, options)`. |
@@ -480,7 +480,7 @@ scheduled uploads, including CPU-backed uploads.
    `upload_footprint.allocatedBytes()` for simple budget checks.
    `changed_keys_buf` is caller-owned scratch — size it to the number of
    distinct resources you might submit.
-2. **Begin + record.** `renderer.beginResourceUpload(allocator, plan)` returns
+2. **Begin + record.** `renderer.beginResourceUpload(.{ .persistent = allocator, .scratch = allocator }, plan)` returns
    a `PendingResourceUpload`. Call `pending.record(ctx, .{ .budget_bytes = N })`
    to do the work. For Vulkan, `ctx` carries the caller-recorded
    `VkCommandBuffer` (e.g. `.{ .cmd = my_cmd }`); for GL and CPU, `record`

@@ -221,7 +221,7 @@ fn uploadSceneResources(
 ) !snail.PreparedResources {
     var resource_entries: [16]snail.ResourceSet.Entry = undefined;
     var set = try buildSceneResourceSet(world_passes, hud_passes, &resource_entries);
-    return renderer.uploadResourcesBlocking(allocator, &set);
+    return renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set);
 }
 
 fn planSceneResources(
@@ -235,7 +235,7 @@ fn planSceneResources(
     var changed_keys: [16]snail.ResourceKey = undefined;
     var set = try buildSceneResourceSet(world_passes, hud_passes, &resource_entries);
     const plan = try renderer.planResourceUpload(current, &set, &changed_keys);
-    var pending = try renderer.beginResourceUpload(allocator, plan);
+    var pending = try renderer.beginResourceUpload(.{ .persistent = allocator, .scratch = allocator }, plan);
     defer pending.deinit();
     try pending.record(.{}, .{});
     return pending.publish();

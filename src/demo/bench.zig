@@ -553,7 +553,7 @@ fn uploadSceneResources(
 
     var set = snail.ResourceSet.init(entries);
     try set.addScene(scene);
-    return renderer.uploadResourcesBlocking(allocator, &set);
+    return renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set);
 }
 
 fn benchSnailPrep(allocator: std.mem.Allocator, font_data: []const u8) !SnailPrep {

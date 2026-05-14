@@ -52,7 +52,7 @@
 //!   try resources.addScene(&scene);
 //!   var gl = try snail.GlRenderer.init(allocator);
 //!   defer gl.deinit();
-//!   var prepared = try gl.uploadResourcesBlocking(allocator, &resources);
+//!   var prepared = try gl.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &resources);
 //!   defer prepared.deinit();
 //!
 //!   const options = snail.DrawOptions{ .mvp = snail.Mat4.identity, .target = .{
@@ -436,6 +436,11 @@ pub const ResourceFootprint = struct {
         self.image_bytes_used += other.image_bytes_used;
         self.image_bytes_allocated += other.image_bytes_allocated;
     }
+};
+
+pub const UploadAllocators = struct {
+    persistent: std.mem.Allocator,
+    scratch: std.mem.Allocator,
 };
 
 pub const Image = struct {
@@ -4406,7 +4411,7 @@ pub const ResourceUploadPlan = struct {
 /// must outlive the pending upload.
 pub const PendingResourceUpload = struct {
     renderer: Renderer,
-    allocator: std.mem.Allocator,
+    allocators: UploadAllocators,
     plan: ResourceUploadPlan,
     prepared: ?PreparedResources = null,
     external_completion_required: bool = false,
@@ -4424,14 +4429,14 @@ pub const PendingResourceUpload = struct {
                 const vk_state: *vulkan_pipeline.VulkanPipeline = @ptrCast(@alignCast(self.renderer.ptr));
                 vk_state.beginResourceUploadRecording(cmd);
                 defer vk_state.endResourceUploadRecording();
-                self.prepared = try uploadPreparedResources(&self.renderer, self.plan.set, self.allocator);
+                self.prepared = try uploadPreparedResources(&self.renderer, self.plan.set, self.allocators);
                 self.external_completion_required = true;
                 self.ready_to_publish = false;
                 return;
             }
         }
 
-        self.prepared = try self.renderer.uploadResourcesBlocking(self.allocator, self.plan.set);
+        self.prepared = try self.renderer.uploadResourcesBlocking(self.allocators, self.plan.set);
         self.external_completion_required = false;
         self.ready_to_publish = true;
     }
@@ -5076,7 +5081,9 @@ fn resourceSetUploadFootprint(set: *const ResourceSet) !ResourceFootprint {
     return out;
 }
 
-fn uploadPreparedResources(renderer: *Renderer, set: *const ResourceSet, allocator: std.mem.Allocator) !PreparedResources {
+fn uploadPreparedResources(renderer: *Renderer, set: *const ResourceSet, allocators: UploadAllocators) !PreparedResources {
+    const persistent = allocators.persistent;
+    const scratch = allocators.scratch;
     var atlas_count: usize = 0;
     var image_count: usize = 0;
     for (set.slice()) |entry| switch (entry) {
@@ -5085,24 +5092,24 @@ fn uploadPreparedResources(renderer: *Renderer, set: *const ResourceSet, allocat
     };
 
     var prepared = PreparedResources{
-        .allocator = allocator,
-        .atlases = try allocator.alloc(PreparedResources.PreparedAtlasResource, atlas_count),
-        .images = try allocator.alloc(PreparedResources.PreparedImageResource, image_count),
+        .allocator = persistent,
+        .atlases = try persistent.alloc(PreparedResources.PreparedAtlasResource, atlas_count),
+        .images = try persistent.alloc(PreparedResources.PreparedImageResource, image_count),
     };
     errdefer prepared.deinit();
 
     if (atlas_count > upload_common.MAX_ATLASES) return error.TooManyAtlases;
 
-    const upload_atlases = try allocator.alloc(*const Atlas, atlas_count);
-    defer allocator.free(upload_atlases);
+    const upload_atlases = try scratch.alloc(*const Atlas, atlas_count);
+    defer scratch.free(upload_atlases);
     var atlas_capacity_modes: [upload_common.MAX_ATLASES]upload_common.AtlasCapacityMode = undefined;
-    const atlas_views = try allocator.alloc(PreparedAtlasView, atlas_count);
-    defer allocator.free(atlas_views);
+    const atlas_views = try scratch.alloc(PreparedAtlasView, atlas_count);
+    defer scratch.free(atlas_views);
 
-    const upload_images = try allocator.alloc(*const Image, image_count);
-    defer allocator.free(upload_images);
-    const image_views = try allocator.alloc(PreparedImageView, image_count);
-    defer allocator.free(image_views);
+    const upload_images = try scratch.alloc(*const Image, image_count);
+    defer scratch.free(upload_images);
+    const image_views = try scratch.alloc(PreparedImageView, image_count);
+    defer scratch.free(image_views);
 
     var atlas_i: usize = 0;
     var image_i: usize = 0;
@@ -5165,7 +5172,7 @@ fn uploadPreparedResources(renderer: *Renderer, set: *const ResourceSet, allocat
     const uploaded = blk: {
         if (renderer.vtable == &Renderer.gl_vtable or renderer.vtable == &Renderer.gl_borrowed_vtable) {
             const gl_state: *pipeline.GlTextState = @ptrCast(@alignCast(renderer.ptr));
-            var gl_prepared = pipeline.PreparedResources{ .allocator = allocator, .backend = gl_state.backend };
+            var gl_prepared = pipeline.PreparedResources{ .allocator = persistent, .backend = gl_state.backend };
             if (atlas_count > 0) try gl_prepared.uploadAtlasesWithCapacityModes(upload_atlases, atlas_capacity_modes[0..atlas_count], atlas_views);
             if (image_count > 0) gl_prepared.uploadImages(upload_images, image_views);
             prepared.gl = gl_prepared;
@@ -5174,7 +5181,7 @@ fn uploadPreparedResources(renderer: *Renderer, set: *const ResourceSet, allocat
         if (comptime build_options.enable_vulkan) {
             if (renderer.vtable == &Renderer.vulkan_borrowed_vtable) {
                 const vk_state: *vulkan_pipeline.VulkanPipeline = @ptrCast(@alignCast(renderer.ptr));
-                var vk_prepared = try vulkan_pipeline.PreparedResources.init(vk_state, allocator);
+                var vk_prepared = try vulkan_pipeline.PreparedResources.init(vk_state, persistent);
                 errdefer vk_prepared.deinit();
                 if (atlas_count > 0) vk_state.uploadPreparedAtlasesWithCapacityModes(&vk_prepared, upload_atlases, atlas_capacity_modes[0..atlas_count], atlas_views);
                 if (image_count > 0) vk_state.uploadPreparedImages(&vk_prepared, upload_images, image_views);
@@ -5184,7 +5191,7 @@ fn uploadPreparedResources(renderer: *Renderer, set: *const ResourceSet, allocat
         }
         if (comptime build_options.enable_cpu) {
             if (renderer.vtable == &Renderer.cpu_vtable) {
-                var cpu_prepared = try cpu_renderer_mod.PreparedResources.init(allocator, upload_atlases);
+                var cpu_prepared = try cpu_renderer_mod.PreparedResources.init(persistent, upload_atlases);
                 errdefer cpu_prepared.deinit();
                 if (atlas_count > 0) try cpu_prepared.uploadAtlases(upload_atlases, atlas_views);
                 if (image_count > 0) cpu_prepared.uploadImages(upload_images, image_views);
@@ -5374,8 +5381,8 @@ pub const Renderer = struct {
     /// Blocking upload for simple programs. GL requires the target context to
     /// be current. CPU upload builds cheap views. Vulkan does not perform an
     /// implicit device/queue idle here.
-    pub fn uploadResourcesBlocking(self: *Renderer, allocator: std.mem.Allocator, set: *const ResourceSet) !PreparedResources {
-        return uploadPreparedResources(self, set, allocator);
+    pub fn uploadResourcesBlocking(self: *Renderer, allocators: UploadAllocators, set: *const ResourceSet) !PreparedResources {
+        return uploadPreparedResources(self, set, allocators);
     }
 
     pub fn planResourceUpload(self: *Renderer, current: ?*const PreparedResources, next_set: *const ResourceSet, changed_keys: []ResourceKey) !ResourceUploadPlan {
@@ -5396,8 +5403,8 @@ pub const Renderer = struct {
         return plan;
     }
 
-    pub fn beginResourceUpload(self: *Renderer, allocator: std.mem.Allocator, plan: ResourceUploadPlan) !PendingResourceUpload {
-        return .{ .renderer = self.*, .allocator = allocator, .plan = plan };
+    pub fn beginResourceUpload(self: *Renderer, allocators: UploadAllocators, plan: ResourceUploadPlan) !PendingResourceUpload {
+        return .{ .renderer = self.*, .allocators = allocators, .plan = plan };
     }
 
     /// Execute prebuilt draw records. This never discovers, uploads, allocates,
@@ -5548,9 +5555,9 @@ pub const GlRenderer = struct {
         return .{ .ptr = @ptrCast(self.state), .vtable = &Renderer.gl_borrowed_vtable };
     }
 
-    pub fn uploadResourcesBlocking(self: *GlRenderer, allocator: std.mem.Allocator, set: *const ResourceSet) !PreparedResources {
+    pub fn uploadResourcesBlocking(self: *GlRenderer, allocators: UploadAllocators, set: *const ResourceSet) !PreparedResources {
         var renderer = self.asRenderer();
-        return renderer.uploadResourcesBlocking(allocator, set);
+        return renderer.uploadResourcesBlocking(allocators, set);
     }
 
     pub fn planResourceUpload(self: *GlRenderer, current: ?*const PreparedResources, next_set: *const ResourceSet, changed_keys: []ResourceKey) !ResourceUploadPlan {
@@ -5558,9 +5565,9 @@ pub const GlRenderer = struct {
         return renderer.planResourceUpload(current, next_set, changed_keys);
     }
 
-    pub fn beginResourceUpload(self: *GlRenderer, allocator: std.mem.Allocator, plan: ResourceUploadPlan) !PendingResourceUpload {
+    pub fn beginResourceUpload(self: *GlRenderer, allocators: UploadAllocators, plan: ResourceUploadPlan) !PendingResourceUpload {
         var renderer = self.asRenderer();
-        return renderer.beginResourceUpload(allocator, plan);
+        return renderer.beginResourceUpload(allocators, plan);
     }
 
     pub fn draw(self: *GlRenderer, prepared: *const PreparedResources, records: DrawRecords, options: DrawOptions) !void {
@@ -5617,9 +5624,9 @@ pub const VulkanRenderer = struct {
         self.state.setFrameSlot(frame.frame_index);
     }
 
-    pub fn uploadResourcesBlocking(self: *VulkanRenderer, allocator: std.mem.Allocator, set: *const ResourceSet) !PreparedResources {
+    pub fn uploadResourcesBlocking(self: *VulkanRenderer, allocators: UploadAllocators, set: *const ResourceSet) !PreparedResources {
         var renderer = self.asRenderer();
-        return renderer.uploadResourcesBlocking(allocator, set);
+        return renderer.uploadResourcesBlocking(allocators, set);
     }
 
     pub fn planResourceUpload(self: *VulkanRenderer, current: ?*const PreparedResources, next_set: *const ResourceSet, changed_keys: []ResourceKey) !ResourceUploadPlan {
@@ -5627,9 +5634,9 @@ pub const VulkanRenderer = struct {
         return renderer.planResourceUpload(current, next_set, changed_keys);
     }
 
-    pub fn beginResourceUpload(self: *VulkanRenderer, allocator: std.mem.Allocator, plan: ResourceUploadPlan) !PendingResourceUpload {
+    pub fn beginResourceUpload(self: *VulkanRenderer, allocators: UploadAllocators, plan: ResourceUploadPlan) !PendingResourceUpload {
         var renderer = self.asRenderer();
-        return renderer.beginResourceUpload(allocator, plan);
+        return renderer.beginResourceUpload(allocators, plan);
     }
 
     pub fn draw(self: *VulkanRenderer, prepared: *const PreparedResources, records: DrawRecords, options: DrawOptions) !void {
@@ -6061,7 +6068,7 @@ test "ResourceSet discovers and draws text paint resources" {
     var renderer = Renderer.initCpu(&cpu);
     defer renderer.deinit();
 
-    var prepared = try renderer.uploadResourcesBlocking(allocator, &set);
+    var prepared = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set);
     defer prepared.deinit();
 
     const options = DrawOptions{
@@ -6180,7 +6187,7 @@ test "DrawList estimate upper-bounds ranged text draw output" {
     var set_entries: [1]ResourceSet.Entry = undefined;
     var set = ResourceSet.init(&set_entries);
     try set.addScene(&scene);
-    var prepared = try renderer.uploadResourcesBlocking(allocator, &set);
+    var prepared = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set);
     defer prepared.deinit();
 
     const options = DrawOptions{
@@ -6239,7 +6246,7 @@ test "replacing path-picture key does not invalidate unrelated text coverage rec
     var set_a = ResourceSet.init(&set_a_entries);
     try set_a.putTextAtlas(.fonts, &atlas);
     try set_a.putPathPicture(.hud_panel, &picture_a);
-    var prepared_a = try renderer.uploadResourcesBlocking(allocator, &set_a);
+    var prepared_a = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set_a);
     defer prepared_a.deinit();
 
     const coverage_words = try allocator.alloc(u32, TextCoverageRecords.wordCapacityForBlob(&blob));
@@ -6252,7 +6259,7 @@ test "replacing path-picture key does not invalidate unrelated text coverage rec
     var set_b = ResourceSet.init(&set_b_entries);
     try set_b.putTextAtlas(.fonts, &atlas);
     try set_b.putPathPicture(.hud_panel, &picture_b);
-    var prepared_b = try renderer.uploadResourcesBlocking(allocator, &set_b);
+    var prepared_b = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set_b);
     defer prepared_b.deinit();
 
     try std.testing.expect(records.validFor(&prepared_b));
@@ -6283,7 +6290,7 @@ test "draw rejects stale records when a resource key is replaced" {
     var set_a_entries: [2]ResourceSet.Entry = undefined;
     var set_a = ResourceSet.init(&set_a_entries);
     try set_a.putPathPicture(.hud_panel, &picture_a);
-    var prepared_a = try renderer.uploadResourcesBlocking(allocator, &set_a);
+    var prepared_a = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set_a);
     defer prepared_a.deinit();
 
     const draw_options = DrawOptions{
@@ -6302,7 +6309,7 @@ test "draw rejects stale records when a resource key is replaced" {
     var set_b_entries: [2]ResourceSet.Entry = undefined;
     var set_b = ResourceSet.init(&set_b_entries);
     try set_b.putPathPicture(.hud_panel, &picture_b);
-    var prepared_b = try renderer.uploadResourcesBlocking(allocator, &set_b);
+    var prepared_b = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set_b);
     defer prepared_b.deinit();
 
     try std.testing.expectError(error.StaleDrawRecords, renderer.draw(&prepared_b, draw.slice(), draw_options));
@@ -6329,7 +6336,7 @@ test "resource upload plan reports changed keys and enforces budget" {
     var set_a_entries: [2]ResourceSet.Entry = undefined;
     var set_a = ResourceSet.init(&set_a_entries);
     try set_a.putPathPicture(.hud_panel, &picture_a);
-    var prepared_a = try renderer.uploadResourcesBlocking(allocator, &set_a);
+    var prepared_a = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set_a);
     defer prepared_a.deinit();
 
     var changed_same: [2]ResourceKey = undefined;
@@ -6352,7 +6359,7 @@ test "resource upload plan reports changed keys and enforces budget" {
     try std.testing.expectEqual(@as(usize, 1), plan_b.changedKeys().len);
     try std.testing.expect(plan_b.changedKeys()[0].eql(ResourceKey.named("hud_panel")));
 
-    var pending = try renderer.beginResourceUpload(allocator, plan_b);
+    var pending = try renderer.beginResourceUpload(.{ .persistent = allocator, .scratch = allocator }, plan_b);
     defer pending.deinit();
     try std.testing.expectError(error.ResourceUploadBudgetExceeded, pending.record(.{}, .{ .budget_bytes = 0 }));
     try std.testing.expect(!pending.ready(.{}));
@@ -6389,8 +6396,8 @@ test "pending upload publish waits for external completion marker" {
     var pending = PendingResourceUpload{
         .renderer = renderer,
         .plan = plan,
-        .allocator = allocator,
-        .prepared = try renderer.uploadResourcesBlocking(allocator, &set),
+        .allocators = .{ .persistent = allocator, .scratch = allocator },
+        .prepared = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set),
         .external_completion_required = true,
     };
     defer pending.deinit();
@@ -6427,7 +6434,7 @@ test "prepared resource retirement queue is caller-owned" {
     var set = ResourceSet.init(&set_entries);
     try set.putPathPicture(.hud_panel, &picture);
 
-    var prepared = try renderer.uploadResourcesBlocking(allocator, &set);
+    var prepared = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set);
     var queue = PreparedResourceRetirementQueue.init(allocator);
     defer queue.deinit();
     try prepared.retireAfter(&queue, .{});
@@ -6458,7 +6465,7 @@ test "CPU draw uses prepared resource views" {
     var set_entries: [2]ResourceSet.Entry = undefined;
     var set = ResourceSet.init(&set_entries);
     try set.putPathPicture(.panel, &picture);
-    var prepared = try renderer.uploadResourcesBlocking(allocator, &set);
+    var prepared = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set);
     defer prepared.deinit();
 
     const draw_options = DrawOptions{

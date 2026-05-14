@@ -263,7 +263,7 @@ fn mainLoop(allocator: std.mem.Allocator, vk_ctx: anytype) !void {
             var resource_entries: [8]snail.ResourceSet.Entry = undefined;
             var resources = snail.ResourceSet.init(&resource_entries);
             try resources.addScene(&scene);
-            prepared = try renderer.uploadResourcesBlocking(allocator, &resources);
+            prepared = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &resources);
         }
 
         const clear_srgb = demo_banner.clearColor();

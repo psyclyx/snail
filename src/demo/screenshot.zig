@@ -65,7 +65,7 @@ pub fn main() !void {
     var resource_entries: [8]snail.ResourceSet.Entry = undefined;
     var resources = snail.ResourceSet.init(&resource_entries);
     try resources.addScene(&scene);
-    var prepared = try renderer.uploadResourcesBlocking(allocator, &resources);
+    var prepared = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &resources);
     defer prepared.deinit();
 
     const clear = banner_scene.clearColor();

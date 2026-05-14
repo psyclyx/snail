@@ -1383,7 +1383,7 @@ export fn snail_renderer_upload_resources_blocking(
     out: *?*PreparedResourcesImpl,
 ) c_int {
     const allocator = resolveAllocator(alloc_ptr);
-    const prepared = renderer.inner.uploadResourcesBlocking(allocator, &set.inner) catch |err| return mapError(err);
+    const prepared = renderer.inner.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set.inner) catch |err| return mapError(err);
     const impl = handleAllocator().create(PreparedResourcesImpl) catch {
         var doomed = prepared;
         doomed.deinit();

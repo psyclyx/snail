@@ -667,9 +667,9 @@ pub const CpuRenderer = struct {
         return snail.Renderer.initCpu(self);
     }
 
-    pub fn uploadResourcesBlocking(self: *CpuRenderer, allocator: std.mem.Allocator, set: *const snail.ResourceSet) !snail.PreparedResources {
+    pub fn uploadResourcesBlocking(self: *CpuRenderer, allocators: snail.UploadAllocators, set: *const snail.ResourceSet) !snail.PreparedResources {
         var renderer = self.asRenderer();
-        return renderer.uploadResourcesBlocking(allocator, set);
+        return renderer.uploadResourcesBlocking(allocators, set);
     }
 
     pub fn draw(self: *CpuRenderer, prepared: *const snail.PreparedResources, records: snail.DrawRecords, options: snail.DrawOptions) !void {
@@ -3591,7 +3591,7 @@ test "cpu renderer renders image-painted path picture" {
     var resource_entries: [4]snail.ResourceSet.Entry = undefined;
     var resources = snail.ResourceSet.init(&resource_entries);
     try resources.addScene(&scene);
-    var prepared = try renderer_iface.uploadResourcesBlocking(testing.allocator, &resources);
+    var prepared = try renderer_iface.uploadResourcesBlocking(.{ .persistent = testing.allocator, .scratch = testing.allocator }, &resources);
     defer prepared.deinit();
 
     const wf: f32 = @floatFromInt(width);
@@ -3846,7 +3846,7 @@ test "cpu renderer threaded draw matches single-threaded byte-for-byte" {
 
     var serial_cpu = CpuRenderer.init(serial_buf.ptr, width, height, stride);
     serial_cpu.setSubpixelOrder(.rgb);
-    var serial_resources = try serial_cpu.uploadResourcesBlocking(testing.allocator, blk: {
+    var serial_resources = try serial_cpu.uploadResourcesBlocking(.{ .persistent = testing.allocator, .scratch = testing.allocator }, blk: {
         var entries: [4]snail.ResourceSet.Entry = undefined;
         var set = snail.ResourceSet.init(&entries);
         try set.addScene(&scene);
@@ -3868,7 +3868,7 @@ test "cpu renderer threaded draw matches single-threaded byte-for-byte" {
     var threaded_cpu = CpuRenderer.init(threaded_buf.ptr, width, height, stride);
     threaded_cpu.setSubpixelOrder(.rgb);
     threaded_cpu.setThreadPool(&pool);
-    var threaded_resources = try threaded_cpu.uploadResourcesBlocking(testing.allocator, blk: {
+    var threaded_resources = try threaded_cpu.uploadResourcesBlocking(.{ .persistent = testing.allocator, .scratch = testing.allocator }, blk: {
         var entries: [4]snail.ResourceSet.Entry = undefined;
         var set = snail.ResourceSet.init(&entries);
         try set.addScene(&scene);
@@ -3922,7 +3922,7 @@ test "cpu renderer drawPaths batch matches drawPathPicture" {
     var resource_entries: [4]snail.ResourceSet.Entry = undefined;
     var resources = snail.ResourceSet.init(&resource_entries);
     try resources.addScene(&scene);
-    var prepared = try renderer.uploadResourcesBlocking(testing.allocator, &resources);
+    var prepared = try renderer.uploadResourcesBlocking(.{ .persistent = testing.allocator, .scratch = testing.allocator }, &resources);
     defer prepared.deinit();
 
     const wf: f32 = @floatFromInt(width);
@@ -3981,7 +3981,7 @@ test "cpu renderer applies path draw tint in prepared batches" {
     var resource_entries: [4]snail.ResourceSet.Entry = undefined;
     var resources = snail.ResourceSet.init(&resource_entries);
     try resources.addScene(&scene);
-    var prepared = try renderer.uploadResourcesBlocking(testing.allocator, &resources);
+    var prepared = try renderer.uploadResourcesBlocking(.{ .persistent = testing.allocator, .scratch = testing.allocator }, &resources);
     defer prepared.deinit();
 
     const wf: f32 = @floatFromInt(width);

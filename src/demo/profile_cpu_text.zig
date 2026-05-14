@@ -124,7 +124,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var set = snail.ResourceSet.init(&entries);
     try set.addScene(&scene);
 
-    var resources = try cpu.uploadResourcesBlocking(arena, &set);
+    var resources = try cpu.uploadResourcesBlocking(.{ .persistent = arena, .scratch = arena }, &set);
     defer resources.deinit();
 
     const wf: f32 = @floatFromInt(width);
