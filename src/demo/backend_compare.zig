@@ -557,7 +557,7 @@ pub fn main() !void {
                 std.debug.print("{s}: skipping Vulkan LCD compare; dual-source blending unavailable\n", .{case.name});
             }
         } else if (!case.requires_dual_source) {
-            std.debug.print("{s}: Vulkan not built (`zig build backend-compare -Dvulkan=true`)\n", .{case.name});
+            std.debug.print("{s}: Vulkan disabled (`zig build backend-compare -Dvulkan=false`)\n", .{case.name});
         }
     }
     if (any_failure) return error.BackendPixelMismatch;

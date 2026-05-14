@@ -282,7 +282,7 @@ fn printHardwareTable(gl_initialized: bool, vulkan_initialized: bool) void {
             std.debug.print("| Vulkan device | {s} |\n", .{name});
         }
     } else {
-        std.debug.print("| Vulkan | not built (`zig build bench -Dvulkan=true`) |\n", .{});
+        std.debug.print("| Vulkan | disabled (`zig build bench -Dvulkan=false`) |\n", .{});
     }
     std.debug.print("\n", .{});
 }
@@ -1093,7 +1093,7 @@ fn printRenderTable(rows: []const RenderRow) void {
         });
     }
     if (!build_options.enable_vulkan) {
-        std.debug.print("| Vulkan | not built (`zig build bench -Dvulkan=true`) | - | - | - | - | - |\n", .{});
+        std.debug.print("| Vulkan | disabled (`zig build bench -Dvulkan=false`) | - | - | - | - | - |\n", .{});
     }
     std.debug.print("\n", .{});
 }
@@ -1328,7 +1328,7 @@ pub fn main() !void {
         \\
         \\NotoSans-Regular, {d} prep runs, {d} text iterations, {d} draw-record iterations.
         \\
-        \\The vector workload contains filled and stroked rounded rectangles, ellipses, and custom cubic/quadratic paths. Vulkan rows are emitted only when built with `-Dvulkan=true`.
+        \\The vector workload contains filled and stroked rounded rectangles, ellipses, and custom cubic/quadratic paths. Vulkan rows are emitted unless the build is configured with `-Dvulkan=false`.
         \\
         \\
     , .{ PREP_RUNS, TEXT_ITERS, RECORD_ITERS });

@@ -5,8 +5,8 @@ pub const DemoRenderer = enum { gl44, gl33, vulkan, cpu };
 pub const ModuleOptions = struct {
     enable_profiling: bool = false,
     enable_opengl: bool = true,
-    enable_vulkan: bool = false,
-    enable_cpu: bool = false,
+    enable_vulkan: bool = true,
+    enable_cpu: bool = true,
     enable_harfbuzz: bool = true,
     force_gl33: bool = false,
 };
@@ -160,6 +160,12 @@ fn validateDemoRendererOptions(
     }
 }
 
+fn defaultDemoRenderer(enable_vulkan: bool, enable_opengl: bool) DemoRenderer {
+    if (enable_vulkan) return .vulkan;
+    if (enable_opengl) return .gl44;
+    return .cpu;
+}
+
 fn configureCoreModule(
     mod: *std.Build.Module,
     build_options_mod: *std.Build.Module,
@@ -279,7 +285,7 @@ fn createSnailModule(
 }
 
 /// For use as a dependency: returns a module with only the core snail library.
-/// Defaults to OpenGL + HarfBuzz; use moduleWithOptions to enable CPU or Vulkan.
+/// Defaults to OpenGL + Vulkan + CPU + HarfBuzz; use moduleWithOptions to trim backend support.
 pub fn module(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
     return moduleWithOptions(b, target, optimize, .{});
 }
@@ -300,8 +306,9 @@ pub fn moduleWithOptions(
     opts.addOption(bool, "enable_vulkan", module_options.enable_vulkan);
     opts.addOption(bool, "enable_cpu", module_options.enable_cpu);
     opts.addOption(bool, "enable_harfbuzz", module_options.enable_harfbuzz);
+    const demo_renderer: DemoRenderer = if (module_options.force_gl33) .gl33 else defaultDemoRenderer(module_options.enable_vulkan, module_options.enable_opengl);
     opts.addOption(bool, "force_gl33", module_options.force_gl33);
-    opts.addOption(DemoRenderer, "demo_renderer", if (module_options.force_gl33) .gl33 else .gl44);
+    opts.addOption(DemoRenderer, "demo_renderer", demo_renderer);
 
     return createSnailModule(
         b,
@@ -320,10 +327,11 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const enable_profiling = b.option(bool, "profile", "Enable profiling instrumentation") orelse false;
-    const demo_renderer = b.option(DemoRenderer, "renderer", "Demo rendering backend (default: gl44)") orelse .gl44;
     const enable_opengl = b.option(bool, "opengl", "Enable OpenGL backend") orelse true;
-    const enable_vulkan = b.option(bool, "vulkan", "Enable Vulkan backend") orelse (demo_renderer == .vulkan);
     const enable_cpu = b.option(bool, "cpu-renderer", "Enable CPU renderer backend") orelse true;
+    const enable_vulkan = b.option(bool, "vulkan", "Enable Vulkan backend") orelse true;
+    const demo_renderer_option = b.option(DemoRenderer, "renderer", "Demo rendering backend (default: vulkan when available, otherwise gl44/cpu)");
+    const demo_renderer = demo_renderer_option orelse defaultDemoRenderer(enable_vulkan, enable_opengl);
     const enable_harfbuzz = b.option(bool, "harfbuzz", "Enable HarfBuzz text shaping") orelse true;
     const enable_c_api = b.option(bool, "c-api", "Build the C API libraries") orelse true;
     const c_api_shared_option = b.option(bool, "c-api-shared", "Build the C API shared library");

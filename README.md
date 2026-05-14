@@ -62,18 +62,18 @@ The CPU renderer has no format-level encoder: it writes RGBA8 bytes according to
 
 ## Build
 
-Requires [Zig 0.16](https://ziglang.org/download/), OpenGL 3.3+, and pkg-config. HarfBuzz is enabled by default but can be disabled (see flags below). The interactive demo requires Wayland + EGL. Vulkan support is optional.
+Requires [Zig 0.16](https://ziglang.org/download/), OpenGL 3.3+, Vulkan headers/loader, `glslc`, and pkg-config. Vulkan and HarfBuzz are enabled by default but can be disabled (see flags below). The interactive demo requires Wayland, plus EGL for OpenGL mode.
 
 ```sh
 zig build test                                  # unit tests
-zig build run                                   # interactive 2D demo (GL 4.4, Wayland)
+zig build run                                   # interactive 2D demo (Vulkan, Wayland)
 zig build run -Drenderer=gl33                   # force OpenGL 3.3
-zig build run -Drenderer=vulkan                 # Vulkan backend
+zig build run -Drenderer=gl44                   # force OpenGL 4.4
 zig build run -Drenderer=cpu                    # CPU renderer
 zig build run-game-demo                         # 3D scene with HUD + world-space text on walls
 zig build screenshot                            # 2D demo offscreen → zig-out/demo-screenshot.tga
-zig build backend-compare                       # CPU/GL parity; add -Dvulkan=true for GL/Vulkan consistency
-zig build bench                                 # benchmarks; add -Dvulkan=true for Vulkan rows
+zig build backend-compare                       # CPU/GL/Vulkan parity
+zig build bench                                 # benchmarks, including Vulkan rows when a Vulkan device is available
 zig build install --release=fast                # install libsnail + enabled C headers
 zig build check-c-api                           # verify checked-in generated C API files
 zig build gen-c-api                             # regenerate checked-in generated C API files
@@ -82,7 +82,7 @@ zig build gen-c-api                             # regenerate checked-in generate
 Library backend flags:
 
 - `-Dopengl=true` (default) — OpenGL backend (`GlRenderer`); installs `snail_gl.h` when the C API is enabled.
-- `-Dvulkan=false` (default) — pass `=true` to enable the Vulkan backend; selecting `-Drenderer=vulkan` enables it for the demo. SPIR-V shaders are compiled at build time via `glslc`; installs `snail_vulkan.h` when the C API is enabled. That extension header includes Vulkan headers.
+- `-Dvulkan=true` (default) — Vulkan backend (`VulkanRenderer`); pass `=false` for a slimmer OpenGL/CPU-only build. SPIR-V shaders are compiled at build time via `glslc`; installs `snail_vulkan.h` when the C API is enabled. That extension header includes Vulkan headers.
 - `-Dcpu-renderer=true` (default) — pass `=false` to drop `CpuRenderer`.
 - `-Dharfbuzz=true` (default) — pass `=false` for a HarfBuzz-free build using the built-in GSUB type 4 / GPOS type 2 shaper.
 - `-Dprofile=false` (default) — pass `=true` to enable the comptime CPU timers.
@@ -93,7 +93,7 @@ The checked-in screenshot at `assets/demo_screenshot.png` is regenerated from th
 
 ## Benchmarks
 
-Last run: 2026-05-14, `zig build bench -Dvulkan=true`, ReleaseFast benchmark build. Lower times are better. These numbers are one local machine/run, not a portability guarantee.
+Last run: 2026-05-14, `zig build bench`, ReleaseFast benchmark build. Lower times are better. These numbers are one local machine/run, not a portability guarantee.
 
 NotoSans-Regular, 20 prep runs, 1000 text iterations, 1000 draw-record iterations. Render target: 640x360. CPU rows use 20 measured frames; GPU rows use 500 measured frames.
 
@@ -199,7 +199,7 @@ nix-build -A demo   # build snail-demo
 
 The Nix package is defined in `nix/snail.nix` and wired through `callPackage`
 from `default.nix`. Its defaults mirror the Zig build defaults: OpenGL on,
-Vulkan off, CPU renderer on, HarfBuzz on, and the C API enabled with both
+Vulkan on, CPU renderer on, HarfBuzz on, and the C API enabled with both
 shared and static libraries. Override `enableVulkan`, `enableOpenGL`,
 `enableCpu`, `enableHarfBuzz`, `enableCApi`, `cApiShared`, or `cApiStatic`
 when calling the package directly.
@@ -222,7 +222,7 @@ const snail_dep = b.dependency("snail", .{
 exe.root_module.addImport("snail", snail_dep.module("snail"));
 ```
 
-The default dependency module links OpenGL and HarfBuzz. Workspace builds that import `snail/build.zig` directly can call `moduleWithOptions` to enable/disable OpenGL, Vulkan, CPU rendering, and HarfBuzz explicitly. On NixOS/nix-shell, system libraries are provided automatically; on other systems, install the development packages for your distro.
+The default dependency module enables OpenGL, Vulkan, CPU rendering, and HarfBuzz. Workspace builds that import `snail/build.zig` directly can call `moduleWithOptions` to trim backend support explicitly. On NixOS/nix-shell, system libraries are provided automatically; on other systems, install the development packages for your distro.
 
 ## Example: Zig
 
@@ -723,17 +723,17 @@ snail is used in development but is not yet stable. The Zig API is settling and 
 
 ```sh
 zig build bench
-zig build bench -Dvulkan=true  # include Vulkan rows when a Vulkan device is available
+zig build bench -Dvulkan=false  # skip Vulkan rows
 ```
 
 The bench prints Markdown tables that paste directly into docs. The
-output below was captured with `zig build bench -Dvulkan=true` on the
+output below was captured with `zig build bench` on the
 machine listed under Hardware; numbers will vary across hardware,
 driver, and load.
 
 NotoSans-Regular, 20 prep runs, 1000 text iterations, 1000 draw-record iterations.
 
-The vector workload contains filled and stroked rounded rectangles, ellipses, and custom cubic/quadratic paths. Vulkan rows are emitted only when built with `-Dvulkan=true`.
+The vector workload contains filled and stroked rounded rectangles, ellipses, and custom cubic/quadratic paths. Vulkan rows are emitted unless the build is configured with `-Dvulkan=false`.
 
 ### Hardware
 
