@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `ResolveTarget.resolve_strategy` / `ResolveStrategy` selects direct rendering
+  or a linear intermediate resolve. The GL backend now supports
+  `.linear_intermediate` for `TargetEncoding.srgb_pixels_on_linear_framebuffer`,
+  rendering Snail content into a linear RGBA16F target before encoding sRGB
+  pixels into the caller's linear-format framebuffer. The CPU backend uses its
+  existing linear decode/blend/encode path for the same strategy; Vulkan reports
+  `error.UnsupportedResolveStrategy` until its caller-owned render-pass contract
+  grows an intermediate-resolve seam.
+- The C API mirrors the resolve strategy with
+  `SnailResolveTarget.resolve_strategy` and `SNAIL_RESOLVE_*` constants.
+
+### Changed
+
+- CPU direct rendering to `TargetEncoding.srgb_pixels_on_linear_framebuffer`
+  now matches GL/Vulkan semantics: it reads destination bytes as storage values,
+  encodes the premultiplied source into sRGB storage space, blends there, and
+  writes the storage value directly. Use `.linear_intermediate` when CPU output
+  should stay gamma-correct for overlapping Snail draws.
+
 ## 0.7.0 - 2026-05-14
 
 ### Added

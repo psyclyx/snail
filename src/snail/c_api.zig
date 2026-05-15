@@ -212,6 +212,7 @@ pub const SnailResolveTarget = extern struct {
     will_resample: bool = false,
     framebuffer_encoding: c_int = 0,
     pixel_encoding: c_int = 0,
+    resolve_strategy: c_int = 0,
     coverage_exponent: f32 = 1.0,
 };
 
@@ -544,6 +545,14 @@ fn toColorEncoding(v: c_int) !snail.ColorEncoding {
     };
 }
 
+fn toResolveStrategy(v: c_int) !snail.ResolveStrategy {
+    return switch (v) {
+        0 => .direct,
+        1 => .linear_intermediate,
+        else => error.InvalidEnum,
+    };
+}
+
 fn toResolveTarget(target: SnailResolveTarget) !snail.ResolveTarget {
     return .{
         .pixel_width = target.pixel_width,
@@ -557,6 +566,7 @@ fn toResolveTarget(target: SnailResolveTarget) !snail.ResolveTarget {
             .framebuffer = try toColorEncoding(target.framebuffer_encoding),
             .pixels = try toColorEncoding(target.pixel_encoding),
         },
+        .resolve_strategy = try toResolveStrategy(target.resolve_strategy),
         .coverage_transfer = .{ .exponent = target.coverage_exponent },
     };
 }

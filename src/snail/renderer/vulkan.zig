@@ -7,6 +7,7 @@ const Mat4 = vec.Mat4;
 const snail_mod = @import("../root.zig");
 const SubpixelOrder = @import("subpixel_order.zig").SubpixelOrder;
 const TargetEncoding = snail_mod.TargetEncoding;
+const ResolveStrategy = snail_mod.ResolveStrategy;
 const CoverageTransfer = snail_mod.CoverageTransfer;
 
 pub const vk = @cImport({
@@ -327,6 +328,7 @@ pub const VulkanPipeline = struct {
     subpixel_order: SubpixelOrder = .none,
     fill_rule: FillRule = .non_zero,
     target_encoding: TargetEncoding = .srgb,
+    resolve_strategy: ResolveStrategy = .direct,
     coverage_transfer: CoverageTransfer = .identity,
 
     // ── Init / Deinit ──
@@ -499,6 +501,14 @@ pub const VulkanPipeline = struct {
 
     pub fn getTargetEncoding(self: *const VulkanPipeline) TargetEncoding {
         return self.target_encoding;
+    }
+
+    pub fn setResolveStrategy(self: *VulkanPipeline, strategy: ResolveStrategy) void {
+        self.resolve_strategy = strategy;
+    }
+
+    pub fn getResolveStrategy(self: *const VulkanPipeline) ResolveStrategy {
+        return self.resolve_strategy;
     }
 
     pub fn setCoverageTransfer(self: *VulkanPipeline, transfer: CoverageTransfer) void {

@@ -6,6 +6,7 @@ pub const DrawRecords = core.DrawRecords;
 pub const DrawList = core.DrawList;
 pub const ResolveTarget = core.ResolveTarget;
 pub const TargetEncoding = core.TargetEncoding;
+pub const ResolveStrategy = core.ResolveStrategy;
 pub const ColorEncoding = core.ColorEncoding;
 pub const CoverageTransfer = core.CoverageTransfer;
 pub const SubpixelOrder = core.SubpixelOrder;

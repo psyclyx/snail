@@ -85,6 +85,7 @@ pub const CpuRenderer = core.CpuRenderer;
 pub const ThreadPool = core.ThreadPool;
 pub const ColorEncoding = core.ColorEncoding;
 pub const TargetEncoding = core.TargetEncoding;
+pub const ResolveStrategy = core.ResolveStrategy;
 pub const CoverageTransfer = core.CoverageTransfer;
 pub const PixelGrid = core.PixelGrid;
 pub const ResolveTarget = core.ResolveTarget;

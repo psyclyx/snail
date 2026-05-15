@@ -155,6 +155,11 @@ typedef struct {
      * bytes. */
     int framebuffer_encoding;
     int pixel_encoding;
+    /* Resolve strategy for this target. SNAIL_RESOLVE_LINEAR_INTERMEDIATE is
+     * valid for linear framebuffers whose stored pixels are interpreted as
+     * sRGB; Snail blends its own draws in a linear intermediate, then encodes
+     * into the target. */
+    int resolve_strategy;
     /* Exponent applied to analytic coverage after edge evaluation.
      * 1.0 is identity; values below 1.0 strengthen antialiased edges and
      * values above 1.0 lighten them. */
@@ -187,6 +192,9 @@ typedef uint64_t SnailResourceKey;
 
 #define SNAIL_COLOR_ENCODING_LINEAR 0
 #define SNAIL_COLOR_ENCODING_SRGB 1
+
+#define SNAIL_RESOLVE_DIRECT 0
+#define SNAIL_RESOLVE_LINEAR_INTERMEDIATE 1
 
 #define SNAIL_EXTEND_CLAMP 0
 #define SNAIL_EXTEND_REPEAT 1

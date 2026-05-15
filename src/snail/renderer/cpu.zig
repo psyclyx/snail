@@ -501,6 +501,7 @@ pub const CpuRenderer = struct {
     /// Encoding of the caller-owned pixel buffer. The unified `Renderer.draw`
     /// path sets this from `ResolveTarget.encoding` every frame.
     target_encoding: snail.TargetEncoding,
+    target_resolve_strategy: snail.ResolveStrategy,
     coverage_transfer: snail.CoverageTransfer,
     thread_pool: ?*snail.ThreadPool,
     // Half-open row window [row_clip_min, row_clip_max). Pixel writes outside
@@ -523,6 +524,7 @@ pub const CpuRenderer = struct {
             // doc). The unified `Renderer.draw` path overrides this from
             // `ResolveTarget.encoding` per frame.
             .target_encoding = .srgb,
+            .target_resolve_strategy = .direct,
             .coverage_transfer = .identity,
             .thread_pool = null,
             .row_clip_min = 0,
@@ -571,6 +573,14 @@ pub const CpuRenderer = struct {
 
     pub fn getTargetEncoding(self: *const CpuRenderer) snail.TargetEncoding {
         return self.target_encoding;
+    }
+
+    pub fn setResolveStrategy(self: *CpuRenderer, strategy: snail.ResolveStrategy) void {
+        self.target_resolve_strategy = strategy;
+    }
+
+    pub fn getResolveStrategy(self: *const CpuRenderer) snail.ResolveStrategy {
+        return self.target_resolve_strategy;
     }
 
     pub fn setCoverageTransfer(self: *CpuRenderer, transfer: snail.CoverageTransfer) void {
@@ -1308,18 +1318,47 @@ pub const CpuRenderer = struct {
     }
 
     inline fn readDstChannel(self: *const CpuRenderer, byte: u8) f32 {
+        if (self.storageSpaceSrgbBlend()) {
+            return @as(f32, @floatFromInt(byte)) / 255.0;
+        }
         return if (self.target_encoding.cpuOutputSrgb())
             srgbToLinear(byte)
         else
             @as(f32, @floatFromInt(byte)) / 255.0;
     }
 
-    inline fn writeChannel(self: *const CpuRenderer, linear_value: f32, dither: f32) u8 {
-        if (self.target_encoding.cpuOutputSrgb()) {
-            if (dither == 0.0) return linearToSrgbByte(linear_value);
-            return srgbToByte(linearToSrgb(linear_value) + dither);
+    inline fn writeChannel(self: *const CpuRenderer, value: f32, dither: f32) u8 {
+        if (self.storageSpaceSrgbBlend()) {
+            return srgbToByte(value + dither);
         }
-        return srgbToByte(linear_value + dither);
+        if (self.target_encoding.cpuOutputSrgb()) {
+            if (dither == 0.0) return linearToSrgbByte(value);
+            return srgbToByte(linearToSrgb(value) + dither);
+        }
+        return srgbToByte(value + dither);
+    }
+
+    inline fn storageSpaceSrgbBlend(self: *const CpuRenderer) bool {
+        return self.target_resolve_strategy == .direct and
+            self.target_encoding.framebuffer == .linear and
+            self.target_encoding.pixels == .srgb;
+    }
+
+    inline fn srcPremultipliedForTarget(self: *const CpuRenderer, src: [4]f32) [4]f32 {
+        if (!self.storageSpaceSrgbBlend()) return src;
+        if (src[3] <= 0.0) return .{ 0, 0, 0, 0 };
+        const inv_a = 1.0 / src[3];
+        return .{
+            linearToSrgb(@max(src[0] * inv_a, 0.0)) * src[3],
+            linearToSrgb(@max(src[1] * inv_a, 0.0)) * src[3],
+            linearToSrgb(@max(src[2] * inv_a, 0.0)) * src[3],
+            src[3],
+        };
+    }
+
+    inline fn srcColorForSubpixelTarget(self: *const CpuRenderer, color: [4]f32) [4]f32 {
+        if (!self.storageSpaceSrgbBlend()) return color;
+        return linearColorToSrgb(color);
     }
 
     fn blendPremultipliedPixel(self: *CpuRenderer, row: u32, col: u32, src: [4]f32, apply_dither: bool) void {
@@ -1329,10 +1368,11 @@ pub const CpuRenderer = struct {
         const dst_b = self.readDstChannel(self.pixels[off + 2]);
         const dst_a = @as(f32, @floatFromInt(self.pixels[off + 3])) / 255.0;
 
-        const src_a = clamp01(src[3]);
-        const out_r = src[0] + dst_r * (1.0 - src_a);
-        const out_g = src[1] + dst_g * (1.0 - src_a);
-        const out_b = src[2] + dst_b * (1.0 - src_a);
+        const target_src = self.srcPremultipliedForTarget(src);
+        const src_a = clamp01(target_src[3]);
+        const out_r = target_src[0] + dst_r * (1.0 - src_a);
+        const out_g = target_src[1] + dst_g * (1.0 - src_a);
+        const out_b = target_src[2] + dst_b * (1.0 - src_a);
         const out_a = src_a + dst_a * (1.0 - src_a);
 
         const dither = if (apply_dither)
@@ -1372,8 +1412,9 @@ pub const CpuRenderer = struct {
     /// Each RGB channel has its own coverage, so the destination attenuation
     /// is per-channel: out.r = src.r * alpha_r + dst.r * (1 - alpha_r), etc.
     fn blendSubpixelPixel(self: *CpuRenderer, row: u32, col: u32, color: [4]f32, cov: [3]f32, alpha_cov: f32) void {
+        const target_color = self.srcColorForSubpixelTarget(color);
         const src_blend = subpixelBlendCoverage(color, cov);
-        self.blendSubpixelPremultipliedPixel(row, col, premultiplySubpixelCoverage(color, cov, alpha_cov), src_blend, false);
+        self.blendSubpixelPremultipliedPixel(row, col, premultiplySubpixelCoverage(target_color, cov, alpha_cov), src_blend, false);
     }
 };
 
@@ -3713,6 +3754,35 @@ test "cpu renderer decodes translucent sRGB solid path colors before blending" {
     try testing.expectEqual(buf[inside + 1], buf[inside + 2]);
     try testing.expect(buf[inside + 3] >= 126);
     try testing.expect(buf[inside + 3] <= 128);
+}
+
+test "cpu direct sRGB pixels on linear framebuffer blends in storage space" {
+    var buf = [_]u8{ 0, 0, 0, 255 };
+    var renderer = CpuRenderer.init(buf[0..].ptr, 1, 1, 4);
+    renderer.setTargetEncoding(.srgb_pixels_on_linear_framebuffer);
+    renderer.setResolveStrategy(.direct);
+
+    renderer.blendPremultipliedPixel(0, 0, .{ 0.5, 0.5, 0.5, 0.5 }, false);
+
+    try std.testing.expectEqual(@as(u8, 128), buf[0]);
+    try std.testing.expectEqual(@as(u8, 128), buf[1]);
+    try std.testing.expectEqual(@as(u8, 128), buf[2]);
+    try std.testing.expectEqual(@as(u8, 255), buf[3]);
+}
+
+test "cpu linear-intermediate sRGB pixels on linear framebuffer blends in linear space" {
+    var buf = [_]u8{ 0, 0, 0, 255 };
+    var renderer = CpuRenderer.init(buf[0..].ptr, 1, 1, 4);
+    renderer.setTargetEncoding(.srgb_pixels_on_linear_framebuffer);
+    renderer.setResolveStrategy(.linear_intermediate);
+
+    renderer.blendPremultipliedPixel(0, 0, .{ 0.5, 0.5, 0.5, 0.5 }, false);
+
+    const expected = linearToSrgbByte(0.5);
+    try std.testing.expectEqual(expected, buf[0]);
+    try std.testing.expectEqual(expected, buf[1]);
+    try std.testing.expectEqual(expected, buf[2]);
+    try std.testing.expectEqual(@as(u8, 255), buf[3]);
 }
 
 test "cpu renderer renders collapsed inside stroke" {
