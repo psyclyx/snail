@@ -498,6 +498,10 @@ pub fn hudTarget(
     will_resample: bool,
 ) snail.ResolveTarget {
     _ = window_size;
+    const resolve_strategy: snail.ResolveStrategy = if (encoding.framebuffer == .linear and encoding.pixels == .srgb)
+        .linear_intermediate
+    else
+        .direct;
     return .{
         .pixel_width = @floatFromInt(fb_size[0]),
         .pixel_height = @floatFromInt(fb_size[1]),
@@ -506,6 +510,7 @@ pub fn hudTarget(
         .opaque_backdrop = opaque_backdrop,
         .will_resample = will_resample,
         .encoding = encoding,
+        .resolve_strategy = resolve_strategy,
         .coverage_transfer = snail.CoverageTransfer.power(0.9),
     };
 }

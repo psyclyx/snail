@@ -22,6 +22,9 @@
   encodes the premultiplied source into sRGB storage space, blends there, and
   writes the storage value directly. Use `.linear_intermediate` when CPU output
   should stay gamma-correct for overlapping Snail draws.
+- The demos now request `.linear_intermediate` when presenting sRGB pixels on a
+  linear framebuffer for backends that support it, keeping the CPU demo aligned
+  with GL/Vulkan output.
 
 ## 0.7.0 - 2026-05-14
 
