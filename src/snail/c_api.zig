@@ -2768,7 +2768,10 @@ test "c_api: scheduled upload draw list coverage records and retirement" {
     plan = null;
     defer snail_pending_resource_upload_deinit(pending);
 
-    try testing.expectEqual(SNAIL_OK, snail_pending_resource_upload_record(pending.?, std.math.maxInt(usize)));
+    pending.?.inner.plan.atlas_cache_rebuilds = 1;
+    try testing.expectEqual(SNAIL_ERR_INVALID_ARGUMENT, snail_pending_resource_upload_record_checked(pending.?, std.math.maxInt(usize), false));
+    pending.?.inner.plan.atlas_cache_rebuilds = 0;
+    try testing.expectEqual(SNAIL_OK, snail_pending_resource_upload_record_checked(pending.?, std.math.maxInt(usize), false));
     try testing.expect(snail_pending_resource_upload_ready_now(pending.?));
 
     var prepared: ?*PreparedResourcesImpl = null;
