@@ -5,7 +5,7 @@ const snail = @import("root.zig");
 const bezier = @import("math/bezier.zig");
 const resource_key = @import("resource_key.zig");
 const upload_plan = @import("render/upload_plan.zig");
-const vertex_mod = @import("renderer/vertex.zig");
+const vertex_mod = @import("render/backend/vertex.zig");
 
 const Mat4 = snail.Mat4;
 const Vec2 = snail.Vec2;
@@ -49,11 +49,11 @@ test {
     _ = @import("math/bezier.zig");
     _ = @import("math/roots.zig");
     _ = @import("font/ttf.zig");
-    _ = @import("renderer/curve_texture.zig");
-    _ = @import("renderer/band_texture.zig");
+    _ = @import("render/backend/curve_texture.zig");
+    _ = @import("render/backend/band_texture.zig");
     _ = @import("font/opentype.zig");
-    _ = @import("renderer/vertex.zig");
-    if (build_options.enable_cpu) _ = @import("renderer/cpu.zig");
+    _ = @import("render/backend/vertex.zig");
+    if (build_options.enable_cpu) _ = @import("render/backend/cpu.zig");
     _ = @import("torture_test.zig");
     _ = @import("text.zig");
 }
@@ -321,13 +321,13 @@ test "Renderer.draw source stays free of upload allocation" {
 }
 
 test "Vulkan renderer path contains no device or queue idle" {
-    const source = @embedFile("renderer/vulkan.zig");
+    const source = @embedFile("render/backend/vulkan.zig");
     try std.testing.expect(std.mem.indexOf(u8, source, "vkDeviceWaitIdle") == null);
     try std.testing.expect(std.mem.indexOf(u8, source, "vkQueueWaitIdle") == null);
 }
 
 test "Vulkan scheduled upload path records without internal submit" {
-    const source = @embedFile("renderer/vulkan.zig");
+    const source = @embedFile("render/backend/vulkan.zig");
     const start = std.mem.indexOf(u8, source, "fn finishTransferCommand").?;
     const end = start + std.mem.indexOf(u8, source[start..], "fn submitTransferAndWait").?;
     const scheduled_finish = source[start..end];

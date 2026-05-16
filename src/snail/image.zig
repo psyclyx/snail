@@ -1,6 +1,6 @@
 const std = @import("std");
 const paint_mod = @import("paint.zig");
-const upload_common = @import("renderer/upload_common.zig");
+const upload_common = @import("render/backend/upload_common.zig");
 const upload_mod = @import("upload.zig");
 
 pub const ImageFilter = paint_mod.ImageFilter;

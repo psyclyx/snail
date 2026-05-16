@@ -7,7 +7,7 @@ const interface = @import("../interface.zig");
 const prepared_mod = @import("../../resources/prepared.zig");
 const resource_upload_mod = @import("../../resources/upload.zig");
 
-const pipeline = if (build_options.enable_cpu) @import("../../renderer/cpu.zig") else struct {
+const pipeline = if (build_options.enable_cpu) @import("../../render/backend/cpu.zig") else struct {
     pub const CpuRenderer = void;
     pub const PreparedResources = void;
 };

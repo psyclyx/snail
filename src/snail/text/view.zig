@@ -1,6 +1,6 @@
 const snail = @import("../root.zig");
-const atlas_curve_mod = @import("../renderer/atlas/curve.zig");
-const texture_layers = @import("../renderer/texture_layers.zig");
+const atlas_curve_mod = @import("../render/backend/atlas/curve.zig");
+const texture_layers = @import("../render/backend/texture_layers.zig");
 const ttf = @import("../font/ttf.zig");
 const config_mod = @import("config.zig");
 

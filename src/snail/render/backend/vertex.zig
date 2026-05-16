@@ -1,8 +1,8 @@
 const std = @import("std");
-const vec = @import("../math/vec.zig");
+const vec = @import("../../math/vec.zig");
 const Vec2 = vec.Vec2;
 const Mat4 = vec.Mat4;
-const BBox = @import("../math/bezier.zig").BBox;
+const BBox = @import("../../math/bezier.zig").BBox;
 const band_tex = @import("band_texture.zig");
 const curve_tex = @import("curve_texture.zig");
 
@@ -396,7 +396,7 @@ fn generateSpecialLayerVerticesTransformedTinted(
 }
 
 test "instance data produces correct layout" {
-    const bezier_mod = @import("../math/bezier.zig");
+    const bezier_mod = @import("../../math/bezier.zig");
     var buf: [WORDS_PER_INSTANCE]u32 = undefined;
 
     const bbox = bezier_mod.BBox{
@@ -439,7 +439,7 @@ test "instance data produces correct layout" {
 }
 
 test "multi-layer glyph instance preserves wide layer counts" {
-    const bezier_mod = @import("../math/bezier.zig");
+    const bezier_mod = @import("../../math/bezier.zig");
     var buf: [WORDS_PER_INSTANCE]u32 = undefined;
 
     const bbox = bezier_mod.BBox{

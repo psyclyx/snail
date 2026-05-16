@@ -1,7 +1,7 @@
-const texture_layers = @import("../renderer/texture_layers.zig");
+const texture_layers = @import("../render/backend/texture_layers.zig");
 const resources_view = @import("../resources/view.zig");
 const scene_mod = @import("../scene.zig");
-const vertex_mod = @import("../renderer/vertex.zig");
+const vertex_mod = @import("../render/backend/vertex.zig");
 const vec = @import("../math/vec.zig");
 
 const PathDraw = scene_mod.PathDraw;

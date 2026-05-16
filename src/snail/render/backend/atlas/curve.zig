@@ -1,14 +1,14 @@
 const std = @import("std");
 
 const band_tex = @import("../band_texture.zig");
-const bezier = @import("../../math/bezier.zig");
+const bezier = @import("../../../math/bezier.zig");
 const build_options = @import("build_options");
-const image_mod = @import("../../image.zig");
-const opentype = @import("../../font/opentype.zig");
+const image_mod = @import("../../../image.zig");
+const opentype = @import("../../../font/opentype.zig");
 const page_mod = @import("page.zig");
-const text_mod = @import("../../text.zig");
-const ttf = @import("../../font/ttf.zig");
-const harfbuzz = if (build_options.enable_harfbuzz) @import("../../font/harfbuzz.zig") else struct {
+const text_mod = @import("../../../text.zig");
+const ttf = @import("../../../font/ttf.zig");
+const harfbuzz = if (build_options.enable_harfbuzz) @import("../../../font/harfbuzz.zig") else struct {
     pub const HarfBuzzShaper = void;
 };
 

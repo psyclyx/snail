@@ -8,8 +8,8 @@
 //! float-op orderings between CPU code and the SPIR-V/GLSL pipeline.
 
 const std = @import("std");
-const snail = @import("../root.zig");
-const bezier = @import("../math/bezier.zig");
+const snail = @import("../../root.zig");
+const bezier = @import("../../math/bezier.zig");
 const curve_tex = @import("curve_texture.zig");
 const atlas_curve_mod = @import("atlas/curve.zig");
 const atlas_page_mod = @import("atlas/page.zig");

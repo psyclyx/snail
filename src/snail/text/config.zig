@@ -1,7 +1,7 @@
 const std = @import("std");
 
 const snail = @import("../root.zig");
-const atlas_curve_mod = @import("../renderer/atlas/curve.zig");
+const atlas_curve_mod = @import("../render/backend/atlas/curve.zig");
 const ttf = @import("../font/ttf.zig");
 const opentype = @import("../font/opentype.zig");
 const build_options = @import("build_options");

@@ -5,9 +5,9 @@
 
 const backend_kind = @import("backend_kind.zig");
 const resource_key = @import("resource_key.zig");
-const atlas_curve_mod = @import("renderer/atlas/curve.zig");
-const atlas_page_mod = @import("renderer/atlas/page.zig");
-const upload_common = @import("renderer/upload_common.zig");
+const atlas_curve_mod = @import("render/backend/atlas/curve.zig");
+const atlas_page_mod = @import("render/backend/atlas/page.zig");
+const upload_common = @import("render/backend/upload_common.zig");
 
 pub const math = @import("math.zig");
 pub const text = @import("text.zig");

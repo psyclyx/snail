@@ -7,7 +7,7 @@ const atlas_curve_mod = @import("../atlas/curve.zig");
 const atlas_page_mod = @import("../atlas/page.zig");
 const texture_layers = @import("../texture_layers.zig");
 const upload_common = @import("../upload_common.zig");
-const snail_mod = @import("../../root.zig");
+const snail_mod = @import("../../../root.zig");
 const SubpixelOrder = @import("../subpixel_order.zig").SubpixelOrder;
 
 pub const Backend = gl_backend.Backend;

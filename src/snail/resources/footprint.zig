@@ -1,11 +1,11 @@
 const std = @import("std");
 
 const image_mod = @import("../image.zig");
-const atlas_curve_mod = @import("../renderer/atlas/curve.zig");
-const atlas_page_mod = @import("../renderer/atlas/page.zig");
+const atlas_curve_mod = @import("../render/backend/atlas/curve.zig");
+const atlas_page_mod = @import("../render/backend/atlas/page.zig");
 const set_mod = @import("set.zig");
 const text_mod = @import("../text.zig");
-const upload_common = @import("../renderer/upload_common.zig");
+const upload_common = @import("../render/backend/upload_common.zig");
 const upload_mod = @import("../upload.zig");
 
 const Atlas = atlas_curve_mod.Atlas;

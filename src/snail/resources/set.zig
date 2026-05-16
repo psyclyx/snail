@@ -3,7 +3,7 @@ const path_mod = @import("../path.zig");
 const resource_key_mod = @import("../resource_key.zig");
 const scene_mod = @import("../scene.zig");
 const text_mod = @import("../text.zig");
-const upload_common = @import("../renderer/upload_common.zig");
+const upload_common = @import("../render/backend/upload_common.zig");
 const upload_mod = @import("../upload.zig");
 
 const Image = image_mod.Image;

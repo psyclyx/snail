@@ -2,7 +2,7 @@ const std = @import("std");
 const snail = @import("root.zig");
 const assets = @import("assets");
 const bezier = @import("math/bezier.zig");
-const curve_tex = @import("renderer/curve_texture.zig");
+const curve_tex = @import("render/backend/curve_texture.zig");
 const paint_records = @import("paint_records.zig");
 
 fn layerInfoOffset(width: u32, x: u16, y: u16) usize {

@@ -2,8 +2,8 @@ const std = @import("std");
 
 const snail = @import("../root.zig");
 const glyph_emit = @import("../glyph_emit.zig");
-const atlas_curve_mod = @import("../renderer/atlas/curve.zig");
-const atlas_page_mod = @import("../renderer/atlas/page.zig");
+const atlas_curve_mod = @import("../render/backend/atlas/curve.zig");
+const atlas_page_mod = @import("../render/backend/atlas/page.zig");
 const config_mod = @import("config.zig");
 const glyph_atlas_mod = @import("glyph_atlas.zig");
 const shape_mod = @import("shape.zig");

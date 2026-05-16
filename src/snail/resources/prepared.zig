@@ -5,11 +5,11 @@ const coverage_mod = @import("../coverage.zig");
 const image_mod = @import("../image.zig");
 const path_mod = @import("../path.zig");
 const resource_key_mod = @import("../resource_key.zig");
-const atlas_curve_mod = @import("../renderer/atlas/curve.zig");
+const atlas_curve_mod = @import("../render/backend/atlas/curve.zig");
 const text_mod = @import("../text.zig");
 const view_mod = @import("view.zig");
 
-const pipeline = if (build_options.enable_opengl) @import("../renderer/gl.zig") else struct {
+const pipeline = if (build_options.enable_opengl) @import("../render/backend/gl.zig") else struct {
     pub const TextCoverageBindings = struct {};
     pub const GlTextState = void;
     pub const PreparedResources = void;
@@ -17,10 +17,10 @@ const pipeline = if (build_options.enable_opengl) @import("../renderer/gl.zig") 
     pub const text_coverage_fragment_interface = "";
     pub const text_coverage_fragment_body = "";
 };
-const cpu_renderer_mod = if (build_options.enable_cpu) @import("../renderer/cpu.zig") else struct {
+const cpu_renderer_mod = if (build_options.enable_cpu) @import("../render/backend/cpu.zig") else struct {
     pub const PreparedResources = void;
 };
-const vulkan_pipeline = if (build_options.enable_vulkan) @import("../renderer/vulkan.zig") else struct {
+const vulkan_pipeline = if (build_options.enable_vulkan) @import("../render/backend/vulkan.zig") else struct {
     pub const PreparedResources = void;
     pub const VulkanPipeline = void;
 };
@@ -41,7 +41,7 @@ const resourceKey = resource_key_mod.resourceKey;
 
 pub const PreparedResources = struct {
     allocator: std.mem.Allocator,
-    /// Validated bindings for one renderer/context. GPU backends point at
+    /// Validated bindings for one render/backend/context. GPU backends point at
     /// renderer-owned resident caches; CPU prepared resources still own their
     /// prepared curve sidecars and borrow immutable source data.
     atlases: []PreparedAtlasResource = &.{},

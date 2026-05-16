@@ -1,13 +1,13 @@
 const std = @import("std");
 
-const band_tex = @import("../renderer/band_texture.zig");
+const band_tex = @import("../render/backend/band_texture.zig");
 const bezier = @import("../math/bezier.zig");
 const blob_mod = @import("blob.zig");
 const glyph_emit = @import("../glyph_emit.zig");
 const scene_mod = @import("../scene.zig");
 const shape_mod = @import("shape.zig");
-const texture_layers = @import("../renderer/texture_layers.zig");
-const vertex_mod = @import("../renderer/vertex.zig");
+const texture_layers = @import("../render/backend/texture_layers.zig");
+const vertex_mod = @import("../render/backend/vertex.zig");
 const vec = @import("../math/vec.zig");
 const view_mod = @import("view.zig");
 

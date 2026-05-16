@@ -4,7 +4,7 @@ const atlas_curve_mod = @import("../atlas/curve.zig");
 const atlas_page_mod = @import("../atlas/page.zig");
 const texture_layers = @import("../texture_layers.zig");
 const upload_common = @import("../upload_common.zig");
-const snail_mod = @import("../../root.zig");
+const snail_mod = @import("../../../root.zig");
 
 pub const vk = vulkan_types.vk;
 pub const VulkanContext = vulkan_types.VulkanContext;

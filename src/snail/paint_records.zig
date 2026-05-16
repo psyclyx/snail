@@ -1,5 +1,5 @@
 const std = @import("std");
-const band_tex = @import("renderer/band_texture.zig");
+const band_tex = @import("render/backend/band_texture.zig");
 
 pub const info_width: u32 = 4096;
 pub const texels_per_record: u32 = 6;

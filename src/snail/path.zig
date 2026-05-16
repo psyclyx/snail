@@ -1,14 +1,14 @@
 const std = @import("std");
 
 const bezier = @import("math/bezier.zig");
-const curve_tex = @import("renderer/curve_texture.zig");
+const curve_tex = @import("render/backend/curve_texture.zig");
 const draw_mod = @import("draw.zig");
 const image_mod = @import("image.zig");
 const resources_view = @import("resources/view.zig");
 const resource_set_mod = @import("resources/set.zig");
 const roots = @import("math/roots.zig");
 const scene_mod = @import("scene.zig");
-const vertex_mod = @import("renderer/vertex.zig");
+const vertex_mod = @import("render/backend/vertex.zig");
 const vec = @import("math/vec.zig");
 
 pub const core = @import("path/core.zig");
@@ -42,7 +42,7 @@ const ResourceSet = resource_set_mod.ResourceSet;
 const Scene = scene_mod.Scene;
 const Vec2 = vec.Vec2;
 const kPaintTexelsPerRecord = PATH_PAINT_TEXELS_PER_RECORD;
-const textureLayerLocal = @import("renderer/texture_layers.zig").local;
+const textureLayerLocal = @import("render/backend/texture_layers.zig").local;
 const PreparedAtlasView = resources_view.PreparedAtlasView;
 
 test "vector path band count tracks source cubic commands" {

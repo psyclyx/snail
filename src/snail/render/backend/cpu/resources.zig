@@ -1,5 +1,5 @@
 const std = @import("std");
-const snail = @import("../../root.zig");
+const snail = @import("../../../root.zig");
 const atlas_curve_mod = @import("../atlas/curve.zig");
 const atlas_page_mod = @import("../atlas/page.zig");
 const coverage = @import("coverage.zig");

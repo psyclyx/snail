@@ -9,7 +9,7 @@ pub const FillRule = enum(c_int) {
     even_odd = 1,
 };
 
-pub const SubpixelOrder = @import("renderer/subpixel_order.zig").SubpixelOrder;
+pub const SubpixelOrder = @import("render/backend/subpixel_order.zig").SubpixelOrder;
 
 pub const ColorEncoding = enum(c_int) {
     linear = 0,
