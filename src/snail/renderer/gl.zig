@@ -1,6 +1,8 @@
 const std = @import("std");
 const gl = @import("gl_bindings.zig").gl;
 const gl_backend = @import("gl_backend.zig");
+const gl_programs = @import("gl/programs.zig");
+const gl_texture_params = @import("gl/texture_params.zig");
 const shaders = @import("shaders.zig");
 const subpixel_policy = @import("subpixel_policy.zig");
 const atlas_curve_mod = @import("atlas/curve.zig");
@@ -25,22 +27,15 @@ pub const Backend = gl_backend.Backend;
 
 // ── Shared types ──
 
-const ProgramState = struct {
-    handle: gl.GLuint = 0,
-    mvp_loc: gl.GLint = -1,
-    viewport_loc: gl.GLint = -1,
-    curve_tex_loc: gl.GLint = -1,
-    band_tex_loc: gl.GLint = -1,
-    image_tex_loc: gl.GLint = -1,
-    fill_rule_loc: gl.GLint = -1,
-    subpixel_order_loc: gl.GLint = -1,
-    output_srgb_loc: gl.GLint = -1,
-    coverage_exponent_loc: gl.GLint = -1,
-    layer_tex_loc: gl.GLint = -1,
-    layer_base_loc: gl.GLint = -1,
-};
-
 const FillRule = snail_mod.FillRule;
+const ProgramState = gl_programs.ProgramState;
+const deleteProgramState = gl_programs.deleteProgramState;
+const linkProgram = gl_programs.linkProgram;
+const loadProgramState = gl_programs.loadProgramState;
+const setImageTexParams = gl_texture_params.setImageTexParams;
+const setImageTexParamsDSA = gl_texture_params.setImageTexParamsDSA;
+const setTexParams = gl_texture_params.setTexParams;
+const setTexParamsDSA = gl_texture_params.setTexParamsDSA;
 
 pub const TextCoverageBindings = struct {
     curve_tex_loc: gl.GLint = -1,
@@ -1844,102 +1839,6 @@ const linear_resolve_fragment_shader: [:0]const u8 =
     \\    }
     \\}
 ;
-
-fn compileShader(shader_type: gl.GLenum, source: [*c]const u8) ?gl.GLuint {
-    const shader = gl.glCreateShader(shader_type);
-    gl.glShaderSource(shader, 1, &source, null);
-    gl.glCompileShader(shader);
-
-    var ok: gl.GLint = 0;
-    gl.glGetShaderiv(shader, gl.GL_COMPILE_STATUS, &ok);
-    if (ok == 0) {
-        var buf: [4096]u8 = undefined;
-        var len: gl.GLsizei = 0;
-        gl.glGetShaderInfoLog(shader, 4096, &len, &buf);
-        if (len > 0) std.debug.print("Shader compile error:\n{s}\n", .{buf[0..@intCast(len)]});
-        gl.glDeleteShader(shader);
-        return null;
-    }
-    return shader;
-}
-
-fn loadProgramState(cache_label: []const u8, vs_src: [*c]const u8, fs_src: [*c]const u8, dual_source: bool) !ProgramState {
-    const handle = try linkProgram(cache_label, vs_src, fs_src, dual_source);
-    return .{
-        .handle = handle,
-        .mvp_loc = gl.glGetUniformLocation(handle, "u_mvp"),
-        .viewport_loc = gl.glGetUniformLocation(handle, "u_viewport"),
-        .curve_tex_loc = gl.glGetUniformLocation(handle, "u_curve_tex"),
-        .band_tex_loc = gl.glGetUniformLocation(handle, "u_band_tex"),
-        .image_tex_loc = gl.glGetUniformLocation(handle, "u_image_tex"),
-        .fill_rule_loc = gl.glGetUniformLocation(handle, "u_fill_rule"),
-        .subpixel_order_loc = gl.glGetUniformLocation(handle, "u_subpixel_order"),
-        .output_srgb_loc = gl.glGetUniformLocation(handle, "u_output_srgb"),
-        .coverage_exponent_loc = gl.glGetUniformLocation(handle, "u_coverage_exponent"),
-        .layer_tex_loc = gl.glGetUniformLocation(handle, "u_layer_tex"),
-        .layer_base_loc = gl.glGetUniformLocation(handle, "u_layer_base"),
-    };
-}
-
-fn deleteProgramState(prog_state: *ProgramState) void {
-    if (prog_state.handle != 0) gl.glDeleteProgram(prog_state.handle);
-    prog_state.* = .{};
-}
-
-fn linkProgram(_: []const u8, vs_src: [*c]const u8, fs_src: [*c]const u8, dual_source: bool) !gl.GLuint {
-    const vs = compileShader(gl.GL_VERTEX_SHADER, vs_src) orelse return error.VertexShaderFailed;
-    defer gl.glDeleteShader(vs);
-    const fs = compileShader(gl.GL_FRAGMENT_SHADER, fs_src) orelse return error.FragmentShaderFailed;
-    defer gl.glDeleteShader(fs);
-
-    const prog = gl.glCreateProgram();
-    gl.glAttachShader(prog, vs);
-    gl.glAttachShader(prog, fs);
-    if (dual_source) {
-        gl.glBindFragDataLocationIndexed(prog, 0, 0, "frag_color");
-        gl.glBindFragDataLocationIndexed(prog, 0, 1, "frag_blend");
-    }
-    gl.glLinkProgram(prog);
-
-    var ok: gl.GLint = 0;
-    gl.glGetProgramiv(prog, gl.GL_LINK_STATUS, &ok);
-    if (ok == 0) {
-        var buf: [4096]u8 = undefined;
-        var len: gl.GLsizei = 0;
-        gl.glGetProgramInfoLog(prog, 4096, &len, &buf);
-        if (len > 0) std.debug.print("Shader link error:\n{s}\n", .{buf[0..@intCast(len)]});
-        return error.ShaderLinkFailed;
-    }
-    return prog;
-}
-
-fn setTexParams(target: gl.GLenum) void {
-    gl.glTexParameteri(target, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST);
-    gl.glTexParameteri(target, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST);
-    gl.glTexParameteri(target, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE);
-    gl.glTexParameteri(target, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE);
-}
-
-fn setTexParamsDSA(tex: gl.GLuint) void {
-    gl.glTextureParameteri(tex, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST);
-    gl.glTextureParameteri(tex, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST);
-    gl.glTextureParameteri(tex, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE);
-    gl.glTextureParameteri(tex, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE);
-}
-
-fn setImageTexParams(target: gl.GLenum) void {
-    gl.glTexParameteri(target, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR);
-    gl.glTexParameteri(target, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR);
-    gl.glTexParameteri(target, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE);
-    gl.glTexParameteri(target, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE);
-}
-
-fn setImageTexParamsDSA(tex: gl.GLuint) void {
-    gl.glTextureParameteri(tex, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR);
-    gl.glTextureParameteri(tex, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR);
-    gl.glTextureParameteri(tex, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE);
-    gl.glTextureParameteri(tex, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE);
-}
 
 fn setTextBlendMode(special: bool, render_mode: subpixel_policy.TextRenderMode) void {
     if (!special and render_mode == .subpixel_dual_source) {
