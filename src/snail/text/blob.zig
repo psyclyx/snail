@@ -1,7 +1,6 @@
 const std = @import("std");
 
 const snail = @import("../root.zig");
-const glyph_emit = @import("../glyph_emit.zig");
 const paint_mod = @import("../paint.zig");
 const paint_records = @import("../paint_records.zig");
 const band_tex = @import("../renderer/band_texture.zig");
@@ -18,11 +17,8 @@ const ShapedText = types_mod.ShapedText;
 const TextAppend = types_mod.TextAppend;
 const TextAppendResult = types_mod.TextAppendResult;
 const TextAtlas = atlas_mod.TextAtlas;
-const TextBatch = snail.lowlevel.TextBatch;
 const glyphInstanceBudget = shape_mod.glyphInstanceBudget;
 const glyphPlacementTransform = shape_mod.glyphPlacementTransform;
-const isIdentityTransform = shape_mod.isIdentityTransform;
-const preparedViewPaintInfoRowBase = view_mod.preparedViewPaintInfoRowBase;
 const scaleAdvance = shape_mod.scaleAdvance;
 const shapedAdvanceForRange = shape_mod.shapedAdvanceForRange;
 const shapedGlyphAvailable = shape_mod.shapedGlyphAvailable;
@@ -139,134 +135,6 @@ pub const TextBlob = struct {
         return builder.finish();
     }
 };
-
-/// Implementation of `TextBatch.addDraw`: emits one slice of a `TextDraw`
-/// into `batch`. Lives here because the per-glyph layer-window walk uses
-/// `FaceView` internals.
-pub fn appendTextDrawIntoBatch(
-    batch: *TextBatch,
-    view: anytype,
-    draw: snail.TextDraw,
-    override_index: usize,
-    start_glyph: usize,
-) !TextBatch.AppendResult {
-    const blob = draw.blob;
-    try blob.validate();
-    const range = draw.glyphs.resolve(blob.glyphs.len);
-    const start = @max(start_glyph, range.start);
-    if (start > range.end) return error.InvalidGlyphRange;
-    if (override_index >= draw.instances.len) return error.InvalidOverrideIndex;
-    const override = draw.instances[override_index];
-    const has_outer_transform = !isIdentityTransform(override.transform);
-    const paint_info_row_base = preparedViewPaintInfoRowBase(view);
-
-    var count: usize = 0;
-    var glyph_index = start;
-    while (glyph_index < range.end) : (glyph_index += 1) {
-        const glyph = blob.glyphs[glyph_index];
-        const face_view = blob.atlas.faceView(glyph.face_index, view);
-        const glyph_layer_base = try textBlobGlyphLayerWindowBase(&face_view, glyph.glyph_id) orelse continue;
-        if (batch.layer_window_base) |base| {
-            if (base != glyph_layer_base) break;
-        } else {
-            batch.layer_window_base = glyph_layer_base;
-        }
-
-        var final_transform = glyph.transform;
-        if (has_outer_transform) {
-            final_transform = snail.Transform2D.multiply(override.transform, final_transform);
-        }
-        if (glyph.paint_record_index) |record_index| {
-            try emitPaintedBlobGlyph(batch, blob, &face_view, glyph.glyph_id, record_index, paint_info_row_base, override.tint, final_transform);
-            count += 1;
-        } else {
-            switch (glyph_emit.emitGlyphWithTransformTinted(batch, &face_view, glyph.glyph_id, glyph.color, override.tint, final_transform)) {
-                .emitted => count += 1,
-                .skipped => {},
-                .buffer_full => return error.DrawListFull,
-                .layer_window_changed => break,
-                .invalid_transform => return error.InvalidTransform,
-            }
-        }
-
-        if (glyph.embolden != 0) {
-            var bold_transform = glyph.transform;
-            bold_transform.tx += glyph.embolden;
-            if (has_outer_transform) {
-                bold_transform = snail.Transform2D.multiply(override.transform, bold_transform);
-            }
-            if (glyph.paint_record_index) |record_index| {
-                try emitPaintedBlobGlyph(batch, blob, &face_view, glyph.glyph_id, record_index, paint_info_row_base, override.tint, bold_transform);
-            } else {
-                switch (glyph_emit.emitGlyphWithTransformTinted(batch, &face_view, glyph.glyph_id, glyph.color, override.tint, bold_transform)) {
-                    .emitted, .skipped => {},
-                    .buffer_full => return error.DrawListFull,
-                    .layer_window_changed => return error.GlyphSpansTextureLayerWindows,
-                    .invalid_transform => return error.InvalidTransform,
-                }
-            }
-        }
-    }
-    return .{
-        .emitted = count,
-        .next_glyph = glyph_index,
-        .completed = glyph_index >= range.end,
-        .layer_window_base = batch.currentLayerWindowBase(),
-    };
-}
-
-fn emitPaintedBlobGlyph(
-    batch: *TextBatch,
-    blob: *const TextBlob,
-    face_view: *const FaceView,
-    glyph_id: u16,
-    record_index: u32,
-    paint_info_row_base: u32,
-    tint: [4]f32,
-    transform: snail.Transform2D,
-) !void {
-    const info = face_view.getGlyph(glyph_id) orelse return;
-    if (info.band_entry.h_band_count == 0 or info.band_entry.v_band_count == 0) return;
-    const loc = blob.paintRecordLoc(record_index);
-    const info_y = paint_info_row_base + loc.y;
-    if (info_y > std.math.maxInt(u16)) return error.LayerInfoLimitExceeded;
-    try batch.addPathRecordTransformedTinted(
-        info.bbox,
-        loc.x,
-        @intCast(info_y),
-        1,
-        .{ 1, 1, 1, 1 },
-        tint,
-        face_view.glyphLayer(info.page_index),
-        transform,
-    );
-}
-
-fn textBlobGlyphLayerWindowBase(view: *const FaceView, glyph_id: u16) !?u32 {
-    if (view.getColrBase(glyph_id)) |cbi| {
-        return view.glyphLayerWindowBase(cbi.page_index);
-    }
-
-    var layer_it = view.colrLayers(glyph_id);
-    var base: ?u32 = null;
-    if (layer_it.count() > 0) {
-        while (layer_it.next()) |layer| {
-            const linfo = view.getGlyph(layer.glyph_id) orelse continue;
-            if (linfo.band_entry.h_band_count == 0 or linfo.band_entry.v_band_count == 0) continue;
-            const layer_base = view.glyphLayerWindowBase(linfo.page_index);
-            if (base) |existing| {
-                if (existing != layer_base) return error.GlyphSpansTextureLayerWindows;
-            } else {
-                base = layer_base;
-            }
-        }
-        return base;
-    }
-
-    const info = view.getGlyph(glyph_id) orelse return null;
-    if (info.band_entry.h_band_count == 0 or info.band_entry.v_band_count == 0) return null;
-    return view.glyphLayerWindowBase(info.page_index);
-}
 
 pub const TextBlobBuilder = struct {
     allocator: Allocator,

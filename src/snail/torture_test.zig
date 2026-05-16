@@ -9,7 +9,7 @@ const assets = @import("assets");
 fn appendBatchText(
     allocator: std.mem.Allocator,
     fonts: *const snail.TextAtlas,
-    batch: *snail.lowlevel.TextBatch,
+    batch: *snail.TextBatch,
     style: snail.FontStyle,
     text: []const u8,
     x: f32,
@@ -59,11 +59,11 @@ test "torture: full pipeline" {
     const added2 = try fonts.ensureText(.{}, extended_text);
     try std.testing.expect(added2 == null);
 
-    const buf_size = 10000 * snail.lowlevel.TEXT_WORDS_PER_GLYPH;
+    const buf_size = 10000 * snail.TEXT_WORDS_PER_GLYPH;
     const vbuf = try allocator.alloc(u32, buf_size);
     defer allocator.free(vbuf);
 
-    var batch = snail.lowlevel.TextBatch.init(vbuf);
+    var batch = snail.TextBatch.init(vbuf);
 
     const test_strings = [_][]const u8{
         "The quick brown fox jumps over the lazy dog",
@@ -173,8 +173,8 @@ test "ensureText discovers shaped glyphs for UTF-8 text" {
         fonts = new_fonts;
     }
 
-    var vbuf: [100 * snail.lowlevel.TEXT_WORDS_PER_GLYPH]u32 = undefined;
-    var batch = snail.lowlevel.TextBatch.init(&vbuf);
+    var vbuf: [100 * snail.TEXT_WORDS_PER_GLYPH]u32 = undefined;
+    var batch = snail.TextBatch.init(&vbuf);
     const result = try appendBatchText(allocator, &fonts, &batch, .{}, "fi", 0, 0, 24, .{ 1, 1, 1, 1 }, true);
     try std.testing.expect(result.advance.x > 0);
     try std.testing.expect(batch.glyphCount() > 0);
@@ -188,8 +188,8 @@ test "appendTextBatch reports missing glyphs" {
     });
     defer fonts.deinit();
 
-    var vbuf: [100 * snail.lowlevel.TEXT_WORDS_PER_GLYPH]u32 = undefined;
-    var batch = snail.lowlevel.TextBatch.init(&vbuf);
+    var vbuf: [100 * snail.TEXT_WORDS_PER_GLYPH]u32 = undefined;
+    var batch = snail.TextBatch.init(&vbuf);
     const result = try appendBatchText(allocator, &fonts, &batch, .{}, "Hello", 0, 0, 24, .{ 1, 1, 1, 1 }, true);
     try std.testing.expect(result.missing);
 }
@@ -213,8 +213,8 @@ test "multi-face fonts with fallback" {
         fonts = new_fonts;
     }
 
-    var vbuf: [200 * snail.lowlevel.TEXT_WORDS_PER_GLYPH]u32 = undefined;
-    var batch = snail.lowlevel.TextBatch.init(&vbuf);
+    var vbuf: [200 * snail.TEXT_WORDS_PER_GLYPH]u32 = undefined;
+    var batch = snail.TextBatch.init(&vbuf);
 
     const latin_result = try appendBatchText(allocator, &fonts, &batch, .{}, "Hello", 0, 0, 24, .{ 1, 1, 1, 1 }, true);
     try std.testing.expect(latin_result.advance.x > 0);

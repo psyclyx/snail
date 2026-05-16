@@ -1,5 +1,6 @@
 const std = @import("std");
 const atlas_mod = @import("text/atlas.zig");
+const batch_mod = @import("text/batch.zig");
 const bezier = @import("math/bezier.zig");
 const blob_mod = @import("text/blob.zig");
 const config_mod = @import("text/config.zig");
@@ -116,6 +117,7 @@ pub const FaceGlyphData = config_mod.FaceGlyphData;
 pub const FaceView = view_mod.FaceView;
 
 pub const TextAtlas = atlas_mod.TextAtlas;
+pub const TextBatch = batch_mod.TextBatch;
 pub const ShapedText = types_mod.ShapedText;
 pub const TextBlob = blob_mod.TextBlob;
 pub const TextPlacement = types_mod.TextPlacement;
@@ -128,7 +130,11 @@ pub const CellMetricsOptions = types_mod.CellMetricsOptions;
 pub const Decoration = types_mod.Decoration;
 pub const ScriptTransform = types_mod.ScriptTransform;
 
-pub const appendTextDrawIntoBatch = blob_mod.appendTextDrawIntoBatch;
+pub const TEXT_WORDS_PER_VERTEX = batch_mod.WORDS_PER_VERTEX;
+pub const TEXT_VERTICES_PER_GLYPH = batch_mod.VERTICES_PER_GLYPH;
+pub const TEXT_WORDS_PER_GLYPH = batch_mod.WORDS_PER_GLYPH;
+
+pub const appendTextDrawIntoBatch = batch_mod.appendTextDrawIntoBatch;
 pub const textBlobRangeGpuInstanceBudget = blob_mod.textBlobRangeGpuInstanceBudget;
 
 test {

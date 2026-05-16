@@ -50,6 +50,10 @@ pub const FontWeight = text.FontWeight;
 pub const FontStyle = text.FontStyle;
 pub const SyntheticStyle = text.SyntheticStyle;
 pub const Font = text.Font;
+pub const TextBatch = text.TextBatch;
+pub const TEXT_WORDS_PER_VERTEX = text.TEXT_WORDS_PER_VERTEX;
+pub const TEXT_VERTICES_PER_GLYPH = text.TEXT_VERTICES_PER_GLYPH;
+pub const TEXT_WORDS_PER_GLYPH = text.TEXT_WORDS_PER_GLYPH;
 pub const isRenderableTextCodepoint = text.isRenderableTextCodepoint;
 
 pub const PaintExtend = paint.Extend;
@@ -68,6 +72,12 @@ pub const Image = image.Image;
 pub const Path = path.Path;
 pub const PathPicture = path.PathPicture;
 pub const PathPictureBuilder = path.PathPictureBuilder;
+pub const PathBatch = path.PathBatch;
+pub const PATH_WORDS_PER_VERTEX = path.PATH_WORDS_PER_VERTEX;
+pub const PATH_VERTICES_PER_SHAPE = path.PATH_VERTICES_PER_SHAPE;
+pub const PATH_WORDS_PER_SHAPE = path.PATH_WORDS_PER_SHAPE;
+pub const PathPictureDebugView = path.PathPictureDebugView;
+pub const PathPictureBoundsOverlayOptions = path.PathPictureBoundsOverlayOptions;
 
 pub const FillRule = target.FillRule;
 pub const SubpixelOrder = target.SubpixelOrder;

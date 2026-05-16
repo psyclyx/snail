@@ -1,6 +1,5 @@
 const std = @import("std");
 
-const lowlevel_mod = @import("lowlevel.zig");
 const path_mod = @import("path.zig");
 const prepared_mod = @import("resources/prepared.zig");
 const resource_key_mod = @import("resource_key.zig");
@@ -31,8 +30,8 @@ const ResourceKey = resource_key_mod.ResourceKey;
 const ResourceStamp = resource_key_mod.ResourceStamp;
 const Scene = scene_mod.Scene;
 const TargetStamp = target_mod.TargetStamp;
-const TextBatch = lowlevel_mod.TextBatch;
-const TEXT_WORDS_PER_GLYPH = lowlevel_mod.TEXT_WORDS_PER_GLYPH;
+const TextBatch = text_mod.TextBatch;
+const TEXT_WORDS_PER_GLYPH = text_mod.TEXT_WORDS_PER_GLYPH;
 
 pub const DrawOptions = struct {
     mvp: Mat4,

@@ -1,13 +1,11 @@
 const std = @import("std");
 const build_options = @import("build_options");
 const backend_kind_mod = @import("backend_kind.zig");
-const lowlevel_mod = @import("lowlevel.zig");
 const resource_key_mod = @import("resource_key.zig");
 const prepared_mod = @import("resources/prepared.zig");
 const scene_mod = @import("scene.zig");
 const text_mod = @import("text.zig");
 const vec = @import("math/vec.zig");
-const vertex_mod = @import("renderer/vertex.zig");
 const pipeline = if (build_options.enable_opengl) @import("renderer/gl.zig") else struct {
     pub const TextCoverageBindings = struct {};
     pub const GlTextState = void;
@@ -31,9 +29,9 @@ const ResourceStamp = resource_key_mod.ResourceStamp;
 const PreparedResources = prepared_mod.PreparedResources;
 const Override = scene_mod.Override;
 const TextDraw = scene_mod.TextDraw;
-const TextBatch = lowlevel_mod.TextBatch;
+const TextBatch = text_mod.TextBatch;
 
-const TEXT_WORDS_PER_GLYPH = vertex_mod.WORDS_PER_VERTEX * vertex_mod.VERTICES_PER_GLYPH;
+const TEXT_WORDS_PER_GLYPH = text_mod.TEXT_WORDS_PER_GLYPH;
 
 pub const GlBindings = if (build_options.enable_opengl) pipeline.TextCoverageBindings else struct {};
 pub const VulkanBindings = if (build_options.enable_vulkan) vulkan_pipeline.TextCoverageBindings else struct {};

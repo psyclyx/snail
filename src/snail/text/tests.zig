@@ -6,7 +6,7 @@ const snail = @import("../root.zig");
 const FaceIndex = snail.FaceIndex;
 const TextAppendResult = snail.TextAppendResult;
 const TextAtlas = snail.TextAtlas;
-const TextBatch = snail.lowlevel.TextBatch;
+const TextBatch = snail.TextBatch;
 const TextBlobBuilder = snail.TextBlobBuilder;
 
 const testing = std.testing;
@@ -139,8 +139,8 @@ test "TextAtlas.appendTextBatch renders and reports advance" {
         fonts = new_fonts;
     }
 
-    var buf: [64 * snail.lowlevel.TEXT_WORDS_PER_GLYPH]u32 = undefined;
-    var batch = snail.lowlevel.TextBatch.init(&buf);
+    var buf: [64 * snail.TEXT_WORDS_PER_GLYPH]u32 = undefined;
+    var batch = snail.TextBatch.init(&buf);
     const result = try appendTestTextBatch(&fonts, &batch, .{}, "Hello", .{ .x = 0, .y = 100 }, 24, .{ 1, 1, 1, 1 }, true);
 
     try testing.expect(result.advance.x > 0);
@@ -156,8 +156,8 @@ test "TextAtlas.appendTextBatch reports missing glyphs" {
     defer fonts.deinit();
 
     // Atlas is empty; addText should report missing glyphs.
-    var buf: [64 * snail.lowlevel.TEXT_WORDS_PER_GLYPH]u32 = undefined;
-    var batch = snail.lowlevel.TextBatch.init(&buf);
+    var buf: [64 * snail.TEXT_WORDS_PER_GLYPH]u32 = undefined;
+    var batch = snail.TextBatch.init(&buf);
     const result = try appendTestTextBatch(&fonts, &batch, .{}, "Hello", .{ .x = 0, .y = 100 }, 24, .{ 1, 1, 1, 1 }, true);
 
     try testing.expect(result.missing);

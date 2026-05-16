@@ -4,13 +4,11 @@ const band_tex = @import("renderer/band_texture.zig");
 const bezier = @import("math/bezier.zig");
 const build_options = @import("build_options");
 const curve_tex = @import("renderer/curve_texture.zig");
-const glyph_emit = @import("glyph_emit.zig");
 const image_mod = @import("image.zig");
 const opentype = @import("font/opentype.zig");
-const scene_mod = @import("scene.zig");
 const text_mod = @import("text.zig");
+const texture_layers = @import("renderer/texture_layers.zig");
 const ttf = @import("font/ttf.zig");
-const vertex_mod = @import("renderer/vertex.zig");
 const vec = @import("math/vec.zig");
 const harfbuzz = if (build_options.enable_harfbuzz) @import("font/harfbuzz.zig") else struct {
     pub const HarfBuzzShaper = void;
@@ -19,41 +17,19 @@ const harfbuzz = if (build_options.enable_harfbuzz) @import("font/harfbuzz.zig")
 const CurveSegment = bezier.CurveSegment;
 const Font = text_mod.Font;
 const Image = image_mod.Image;
-const TextDraw = scene_mod.TextDraw;
-const Transform2D = vec.Transform2D;
 const isRenderableTextCodepoint = text_mod.isRenderableTextCodepoint;
 
-pub const TEXT_WORDS_PER_VERTEX = vertex_mod.WORDS_PER_VERTEX;
-pub const TEXT_VERTICES_PER_GLYPH = vertex_mod.VERTICES_PER_GLYPH;
-pub const TEXT_WORDS_PER_GLYPH = TEXT_WORDS_PER_VERTEX * TEXT_VERTICES_PER_GLYPH;
+pub const TEXT_WORDS_PER_VERTEX = text_mod.TEXT_WORDS_PER_VERTEX;
+pub const TEXT_VERTICES_PER_GLYPH = text_mod.TEXT_VERTICES_PER_GLYPH;
+pub const TEXT_WORDS_PER_GLYPH = text_mod.TEXT_WORDS_PER_GLYPH;
 
-pub const TEXTURE_LAYER_WINDOW_SIZE: u32 = 255;
-pub const TEXTURE_LAYER_BANK_STRIDE: u32 = TEXTURE_LAYER_WINDOW_SIZE * 65536;
-
-pub fn textureLayerBank(layer: u32) u32 {
-    return layer / TEXTURE_LAYER_BANK_STRIDE;
-}
-
-pub fn textureLayerBankLocal(layer: u32) u32 {
-    return layer % TEXTURE_LAYER_BANK_STRIDE;
-}
-
-pub fn textureLayerInBank(bank: u32, layer: u32) u32 {
-    return bank * TEXTURE_LAYER_BANK_STRIDE + layer;
-}
-
-pub fn textureLayerWindowBase(layer: u32) u32 {
-    const bank_base = layer - textureLayerBankLocal(layer);
-    const local = textureLayerBankLocal(layer);
-    return bank_base + (local / TEXTURE_LAYER_WINDOW_SIZE) * TEXTURE_LAYER_WINDOW_SIZE;
-}
-
-pub fn textureLayerLocal(layer: u32) !u8 {
-    const base = textureLayerWindowBase(layer);
-    const local = layer - base;
-    if (local >= TEXTURE_LAYER_WINDOW_SIZE) return error.TextureLayerWindowOverflow;
-    return @intCast(local);
-}
+pub const TEXTURE_LAYER_WINDOW_SIZE = texture_layers.WINDOW_SIZE;
+pub const TEXTURE_LAYER_BANK_STRIDE = texture_layers.BANK_STRIDE;
+pub const textureLayerBank = texture_layers.bank;
+pub const textureLayerBankLocal = texture_layers.bankLocal;
+pub const textureLayerInBank = texture_layers.inBank;
+pub const textureLayerWindowBase = texture_layers.windowBase;
+pub const textureLayerLocal = texture_layers.local;
 
 fn freeGlyphCurveScratch(allocator: std.mem.Allocator, glyphs: []const curve_tex.GlyphCurves) void {
     for (glyphs) |gc| {
@@ -889,219 +865,4 @@ pub fn coerceAtlasHandle(atlas_like: anytype) PreparedAtlasView {
     };
 }
 
-/// Accumulates glyph vertices into a caller-provided buffer.
-/// Zero allocations. Can be pre-built for static text.
-pub const TextBatch = struct {
-    buf: []u32,
-    len: usize, // words written
-    layer_window_base: ?u32 = null,
-
-    pub fn init(buf: []u32) TextBatch {
-        return .{ .buf = buf, .len = 0 };
-    }
-
-    pub fn reset(self: *TextBatch) void {
-        self.len = 0;
-        self.layer_window_base = null;
-    }
-
-    pub fn glyphCount(self: *const TextBatch) usize {
-        return self.len / TEXT_WORDS_PER_GLYPH;
-    }
-
-    pub fn slice(self: *const TextBatch) []const u32 {
-        return self.buf[0..self.len];
-    }
-
-    pub fn currentLayerWindowBase(self: *const TextBatch) u32 {
-        return self.layer_window_base orelse 0;
-    }
-
-    pub const AppendResult = struct {
-        emitted: usize,
-        next_glyph: usize,
-        completed: bool,
-        layer_window_base: u32,
-    };
-
-    /// Emit one slice of a `TextDraw` into this batch: the glyphs from
-    /// `[start_glyph, draw.glyphs.end)` under `draw.instances[override_index]`.
-    /// Returns where to resume; the caller is responsible for advancing
-    /// across overrides and re-opening batches when full or when the
-    /// texture layer window changes.
-    pub fn addDraw(
-        self: *TextBatch,
-        view: anytype,
-        draw: TextDraw,
-        override_index: usize,
-        start_glyph: usize,
-    ) !AppendResult {
-        return text_mod.appendTextDrawIntoBatch(self, view, draw, override_index, start_glyph);
-    }
-
-    fn localLayer(self: *TextBatch, atlas_layer: u32) !u8 {
-        const base = textureLayerWindowBase(atlas_layer);
-        if (self.layer_window_base) |expected| {
-            if (base != expected) return error.TextureLayerWindowChanged;
-        } else {
-            self.layer_window_base = base;
-        }
-        return textureLayerLocal(atlas_layer);
-    }
-
-    /// Append a single glyph quad.
-    pub fn addGlyph(
-        self: *TextBatch,
-        x: f32,
-        y: f32,
-        font_size: f32,
-        bbox: bezier.BBox,
-        band_entry: band_tex.GlyphBandEntry,
-        color: [4]f32,
-        atlas_layer: u32,
-    ) !void {
-        try self.addGlyphTinted(x, y, font_size, bbox, band_entry, color, .{ 1, 1, 1, 1 }, atlas_layer);
-    }
-
-    pub fn addGlyphTinted(
-        self: *TextBatch,
-        x: f32,
-        y: f32,
-        font_size: f32,
-        bbox: bezier.BBox,
-        band_entry: band_tex.GlyphBandEntry,
-        color: [4]f32,
-        tint: [4]f32,
-        atlas_layer: u32,
-    ) !void {
-        if (self.len + TEXT_WORDS_PER_GLYPH > self.buf.len) return error.DrawListFull;
-        const local_layer = try self.localLayer(atlas_layer);
-        vertex_mod.generateGlyphVerticesTinted(self.buf[self.len..], x, y, font_size, bbox, band_entry, color, tint, local_layer);
-        self.len += TEXT_WORDS_PER_GLYPH;
-    }
-
-    /// Append a multi-layer COLR glyph quad.
-    pub fn addColrGlyph(
-        self: *TextBatch,
-        x: f32,
-        y: f32,
-        font_size: f32,
-        union_bbox: bezier.BBox,
-        info_x: u16,
-        info_y: u16,
-        layer_count: u16,
-        color: [4]f32,
-        atlas_layer: u32,
-    ) !void {
-        try self.addColrGlyphTinted(x, y, font_size, union_bbox, info_x, info_y, layer_count, color, .{ 1, 1, 1, 1 }, atlas_layer);
-    }
-
-    pub fn addColrGlyphTinted(
-        self: *TextBatch,
-        x: f32,
-        y: f32,
-        font_size: f32,
-        union_bbox: bezier.BBox,
-        info_x: u16,
-        info_y: u16,
-        layer_count: u16,
-        color: [4]f32,
-        tint: [4]f32,
-        atlas_layer: u32,
-    ) !void {
-        if (self.len + TEXT_WORDS_PER_GLYPH > self.buf.len) return error.DrawListFull;
-        const local_layer = try self.localLayer(atlas_layer);
-        vertex_mod.generateMultiLayerGlyphVerticesTinted(
-            self.buf[self.len..],
-            x,
-            y,
-            font_size,
-            union_bbox,
-            info_x,
-            info_y,
-            layer_count,
-            color,
-            tint,
-            local_layer,
-        );
-        self.len += TEXT_WORDS_PER_GLYPH;
-    }
-
-    /// Append a single glyph quad with a 2D transform.
-    pub fn addGlyphTransformed(
-        self: *TextBatch,
-        bbox: bezier.BBox,
-        band_entry: band_tex.GlyphBandEntry,
-        color: [4]f32,
-        atlas_layer: u32,
-        transform: Transform2D,
-    ) !void {
-        try self.addGlyphTransformedTinted(bbox, band_entry, color, .{ 1, 1, 1, 1 }, atlas_layer, transform);
-    }
-
-    pub fn addGlyphTransformedTinted(
-        self: *TextBatch,
-        bbox: bezier.BBox,
-        band_entry: band_tex.GlyphBandEntry,
-        color: [4]f32,
-        tint: [4]f32,
-        atlas_layer: u32,
-        transform: Transform2D,
-    ) !void {
-        if (self.len + TEXT_WORDS_PER_GLYPH > self.buf.len) return error.DrawListFull;
-        const local_layer = try self.localLayer(atlas_layer);
-        if (!vertex_mod.generateGlyphVerticesTransformedTinted(self.buf[self.len..], bbox, band_entry, color, tint, local_layer, transform))
-            return error.InvalidTransform;
-        self.len += TEXT_WORDS_PER_GLYPH;
-    }
-
-    /// Append a multi-layer COLR glyph quad with a 2D transform.
-    pub fn addColrGlyphTransformed(
-        self: *TextBatch,
-        union_bbox: bezier.BBox,
-        info_x: u16,
-        info_y: u16,
-        layer_count: u16,
-        color: [4]f32,
-        atlas_layer: u32,
-        transform: Transform2D,
-    ) !void {
-        try self.addColrGlyphTransformedTinted(union_bbox, info_x, info_y, layer_count, color, .{ 1, 1, 1, 1 }, atlas_layer, transform);
-    }
-
-    pub fn addColrGlyphTransformedTinted(
-        self: *TextBatch,
-        union_bbox: bezier.BBox,
-        info_x: u16,
-        info_y: u16,
-        layer_count: u16,
-        color: [4]f32,
-        tint: [4]f32,
-        atlas_layer: u32,
-        transform: Transform2D,
-    ) !void {
-        if (self.len + TEXT_WORDS_PER_GLYPH > self.buf.len) return error.DrawListFull;
-        const local_layer = try self.localLayer(atlas_layer);
-        if (!vertex_mod.generateMultiLayerGlyphVerticesTransformedTinted(self.buf[self.len..], union_bbox, info_x, info_y, layer_count, color, tint, local_layer, transform))
-            return error.InvalidTransform;
-        self.len += TEXT_WORDS_PER_GLYPH;
-    }
-
-    pub fn addPathRecordTransformedTinted(
-        self: *TextBatch,
-        union_bbox: bezier.BBox,
-        info_x: u16,
-        info_y: u16,
-        layer_count: u16,
-        color: [4]f32,
-        tint: [4]f32,
-        atlas_layer: u32,
-        transform: Transform2D,
-    ) !void {
-        if (self.len + TEXT_WORDS_PER_GLYPH > self.buf.len) return error.DrawListFull;
-        const local_layer = try self.localLayer(atlas_layer);
-        if (!vertex_mod.generatePathRecordVerticesTransformedTinted(self.buf[self.len..], union_bbox, info_x, info_y, layer_count, color, tint, local_layer, transform))
-            return error.InvalidTransform;
-        self.len += TEXT_WORDS_PER_GLYPH;
-    }
-};
+pub const TextBatch = text_mod.TextBatch;

@@ -41,7 +41,7 @@ const TargetEncoding = snail.TargetEncoding;
 const Resolve = snail.Resolve;
 const TargetStamp = snail.TargetStamp;
 const TextCoverageRecords = snail.coverage.TextCoverageRecords;
-const TEXT_WORDS_PER_GLYPH = snail.lowlevel.TEXT_WORDS_PER_GLYPH;
+const TEXT_WORDS_PER_GLYPH = snail.TEXT_WORDS_PER_GLYPH;
 const pointerResourceKey = resource_key.pointerResourceKey;
 
 test {
