@@ -21,6 +21,16 @@ pub const ResourceKey = struct {
     }
 };
 
+pub const ResourceStamp = struct {
+    identity: u64 = 0,
+    layout: u64 = 0,
+    content: u64 = 0,
+
+    pub fn eql(a: ResourceStamp, b: ResourceStamp) bool {
+        return a.identity == b.identity and a.layout == b.layout and a.content == b.content;
+    }
+};
+
 pub fn hashBytes(bytes: []const u8) u64 {
     return std.hash.Wyhash.hash(0x534e41494c5f4b45, bytes);
 }

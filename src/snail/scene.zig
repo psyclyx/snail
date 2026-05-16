@@ -1,8 +1,94 @@
-const core = @import("core.zig");
+const std = @import("std");
+const draw_mod = @import("draw.zig");
+const path_mod = @import("path.zig");
+const text_mod = @import("text.zig");
+const vec = @import("math/vec.zig");
 
-pub const Scene = core.Scene;
-pub const PathDraw = core.PathDraw;
-pub const TextDraw = core.TextDraw;
-pub const Override = core.Override;
-pub const Range = core.Range;
-pub const PreparedScene = core.PreparedScene;
+const Transform2D = vec.Transform2D;
+const PathPicture = path_mod.PathPicture;
+const TextBlob = text_mod.TextBlob;
+
+/// Selects a contiguous slice of an immutable resource (path shapes, text
+/// glyphs). The default `count = maxInt(usize)` means "all from `start`";
+/// `resolve` clamps to the resource's actual length.
+pub const Range = struct {
+    start: usize = 0,
+    count: usize = std.math.maxInt(usize),
+
+    pub const Resolved = struct { start: usize, end: usize };
+
+    pub fn resolve(self: Range, total: usize) Resolved {
+        const start = @min(self.start, total);
+        const remaining = total - start;
+        const count = @min(self.count, remaining);
+        return .{ .start = start, .end = start + count };
+    }
+};
+
+/// Per-instance override applied at submission time. `transform` composes
+/// onto the resource's baked transform; `tint` multiplies onto its baked
+/// color.
+pub const Override = struct {
+    transform: Transform2D = .identity,
+    tint: [4]f32 = .{ 1, 1, 1, 1 },
+};
+
+const identity_overrides = [_]Override{.{}};
+
+/// A draw of a `PathPicture`: which shapes (sub-range) and one GPU instance
+/// per entry in `instances`. The default is a single identity instance.
+/// `Scene` borrows `instances`; the slice must outlive any scene that holds
+/// it (same lifetime contract as `picture`).
+pub const PathDraw = struct {
+    picture: *const PathPicture,
+    shapes: Range = .{},
+    instances: []const Override = &identity_overrides,
+};
+
+/// A draw of a `TextBlob`: see `PathDraw` for the instance/lifetime model.
+pub const TextDraw = struct {
+    blob: *const TextBlob,
+    glyphs: Range = .{},
+    instances: []const Override = &identity_overrides,
+};
+
+pub const Scene = struct {
+    allocator: std.mem.Allocator,
+    /// Borrowed command list. Each command borrows its `TextBlob` /
+    /// `PathPicture` and the `instances` slice handed to `addText` /
+    /// `addPath`; all three must outlive the Scene (or at least live until
+    /// the next `reset`).
+    commands: std.ArrayListUnmanaged(Command) = .empty,
+
+    pub const Command = union(enum) {
+        text: TextDraw,
+        path: PathDraw,
+    };
+
+    pub fn init(allocator: std.mem.Allocator) Scene {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn deinit(self: *Scene) void {
+        self.commands.deinit(self.allocator);
+        self.* = undefined;
+    }
+
+    pub fn reset(self: *Scene) void {
+        self.commands.clearRetainingCapacity();
+    }
+
+    pub fn commandCount(self: *const Scene) usize {
+        return self.commands.items.len;
+    }
+
+    pub fn addPath(self: *Scene, draw: PathDraw) !void {
+        try self.commands.append(self.allocator, .{ .path = draw });
+    }
+
+    pub fn addText(self: *Scene, draw: TextDraw) !void {
+        try self.commands.append(self.allocator, .{ .text = draw });
+    }
+};
+
+pub const PreparedScene = draw_mod.PreparedScene;
