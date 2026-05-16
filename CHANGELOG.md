@@ -346,8 +346,8 @@
   `rebuildLocal` no longer allocate.
 - Draw records now store base color and instance tint separately so `Override.tint`
   composes correctly with text foreground colors, COLR palette layers, and
-  vector paints. This changes `lowlevel.TEXT_WORDS_PER_GLYPH` /
-  `lowlevel.PATH_WORDS_PER_SHAPE`; prefer `DrawList.estimate`.
+  vector paints. This changes `TEXT_WORDS_PER_GLYPH` /
+  `PATH_WORDS_PER_SHAPE`; prefer `DrawList.estimate`.
 - README benchmark tables were refreshed from a `zig build bench -Dvulkan=true`
   run on the documented machine.
 
@@ -518,11 +518,10 @@
 - New first-class backends: `GlRenderer`, `VulkanRenderer`,
   `CpuRenderer`. The previous unified `Renderer` is now a type-erased
   convenience wrapper over them.
-- New `snail.lowlevel` namespace for advanced building blocks
-  (`Font`, `CurveAtlas` / `Atlas`, `AtlasPage`, `TextBatch`,
-  `PathBatch`, vertex sizing constants, paint-tag enums, debug
-  overlays, layer-window helpers, the `bezier` and `curve_tex`
-  modules). Top-level re-exports of these are gone.
+- Advanced building blocks are available from their owning domains and
+  selected top-level aliases (`Font`, `CurveAtlas` / `Atlas`, `AtlasPage`,
+  `TextBatch`, `PathBatch`, vertex sizing constants, paint-tag enums, and
+  debug overlays).
 - New `TextCoverageShader` / `TextCoverageRecords` /
   `TextCoverageBackend` hook for embedding snail glyph coverage in a
   caller-owned GL material shader.

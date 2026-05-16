@@ -1,7 +1,7 @@
 const snail = @import("../../root.zig");
 
-const bezier = snail.lowlevel.bezier;
-const curve_tex = snail.lowlevel.curve_tex;
+const bezier = @import("../../math/bezier.zig");
+const curve_tex = @import("../curve_texture.zig");
 const CurveSegment = bezier.CurveSegment;
 const Vec2 = snail.Vec2;
 

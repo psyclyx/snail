@@ -624,26 +624,25 @@ Vulkan descriptor layout helpers live in `snail_vulkan.h`.
 | `builder.rangeBetween(start, end) !Range` | Build a shape range between two marks. |
 | `builder.freeze(.{ .persistent_allocator, .scratch_allocator }) !PathPicture` | Compile to immutable atlas with explicit persistent and temporary allocation. |
 
-### `snail.lowlevel`
+### Advanced Building Blocks
 
-Building blocks for callers who need direct curve/band data, want to emit
-glyph vertices outside the `Scene`/`DrawList` pipeline, or build a custom
-backend on top of snail's rasterization. Most apps should not need this.
+Building blocks for callers who need direct atlas data, want to emit glyph or
+path vertices outside the `Scene`/`DrawList` pipeline, or build a custom
+backend on top of snail's rasterization. Most apps should not need these.
 
 Raw platform/rendering imports such as OpenGL bindings, TrueType parser
-internals, and vertex-layout internals are not re-exported here; repo demos
-and tools keep those needs in local shims or build-only internal modules.
+internals, texture-layer windowing, and vertex-layout internals are not part of
+the public API; repo demos and tools keep those needs in local shims or
+build-only internal modules.
 
 | Symbol | Use |
 |--------|-----|
-| `lowlevel.bezier`, `lowlevel.curve_tex` | Geometry math and curve-page packing primitives. |
-| `lowlevel.CurveAtlas`/`Atlas`, `lowlevel.AtlasPage` | Raw atlas storage exposed for backend authors. |
-| `lowlevel.curveAtlasFootprint` | Raw atlas upload-footprint helper for custom backend/resource code. |
-| `lowlevel.TextBatch`, `TextAtlas.appendTextBatch`, `lowlevel.PathBatch` | Caller-buffered glyph/shape vertex emission below the `DrawList` layer. |
-| `lowlevel.TEXT_WORDS_PER_GLYPH`, `lowlevel.PATH_WORDS_PER_SHAPE`, related sizing constants | `u32` word budget per record (prefer `DrawList.estimate` when possible). |
-| `lowlevel.PATH_PAINT_*` constants | Path-paint texel tags used by `PathPicture` records. |
-| `lowlevel.PathPictureDebugView`, `lowlevel.PathPictureBoundsOverlayOptions` | Debug overlays for vector authoring. |
-| `lowlevel.textureLayerWindowBase`, `lowlevel.textureLayerLocal`, `lowlevel.TEXTURE_LAYER_WINDOW_SIZE` | Texture-array layer windowing helpers. |
+| `CurveAtlas` / `Atlas`, `AtlasPage` | Raw atlas storage exposed for backend authors. |
+| `curveAtlasFootprint` | Raw atlas upload-footprint helper for custom backend/resource code. |
+| `TextBatch`, `TextAtlas.appendTextBatch`, `PathBatch` | Caller-buffered glyph/shape vertex emission below the `DrawList` layer. |
+| `TEXT_WORDS_PER_GLYPH`, `PATH_WORDS_PER_SHAPE`, related sizing constants | `u32` word budget per record (prefer `DrawList.estimate` when possible). |
+| `PATH_PAINT_*` constants | Path-paint texel tags used by `PathPicture` records. |
+| `PathPictureDebugView`, `PathPictureBoundsOverlayOptions` | Debug overlays for vector authoring. |
 
 ## Thread safety
 

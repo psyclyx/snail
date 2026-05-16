@@ -9,11 +9,15 @@
 
 const std = @import("std");
 const snail = @import("../root.zig");
+const bezier = @import("../math/bezier.zig");
+const curve_tex = @import("curve_texture.zig");
+const atlas_curve_mod = @import("atlas/curve.zig");
+const atlas_page_mod = @import("atlas/page.zig");
 const vertex = @import("vertex.zig");
-const bezier = snail.lowlevel.bezier;
-const curve_tex = snail.lowlevel.curve_tex;
 const CurveSegment = bezier.CurveSegment;
-const GlyphBandEntry = std.meta.fieldInfo(snail.lowlevel.CurveAtlas.GlyphInfo, .band_entry).type;
+const CurveAtlas = atlas_curve_mod.CurveAtlas;
+const AtlasPage = atlas_page_mod.AtlasPage;
+const GlyphBandEntry = std.meta.fieldInfo(CurveAtlas.GlyphInfo, .band_entry).type;
 const Vec2 = snail.Vec2;
 const Transform2D = snail.Transform2D;
 const FillRule = snail.FillRule;
@@ -75,7 +79,7 @@ const PreparedAtlasPage = struct {
     band_width: u32,
     band_height: u32,
 
-    fn init(allocator: std.mem.Allocator, page: *const snail.lowlevel.AtlasPage) !PreparedAtlasPage {
+    fn init(allocator: std.mem.Allocator, page: *const AtlasPage) !PreparedAtlasPage {
         const curve_data = try allocator.alloc(f32, page.curve_data.len);
         defer allocator.free(curve_data);
         for (page.curve_data, 0..) |value, i| {
@@ -134,7 +138,7 @@ pub const PreparedResources = struct {
     layer_infos: []LayerInfoEntry = &.{},
     layer_info_count: usize = 0,
 
-    pub fn init(allocator: std.mem.Allocator, atlases: []const *const snail.lowlevel.CurveAtlas, layer_info_blocks: anytype) !PreparedResources {
+    pub fn init(allocator: std.mem.Allocator, atlases: []const *const CurveAtlas, layer_info_blocks: anytype) !PreparedResources {
         var layer_count: usize = 0;
         var layer_info_count: usize = 0;
         for (atlases) |atlas| {
@@ -174,7 +178,7 @@ pub const PreparedResources = struct {
         self.layer_info_count = 0;
     }
 
-    pub fn uploadAtlases(self: *PreparedResources, atlases: []const *const snail.lowlevel.CurveAtlas, out_views: anytype) !void {
+    pub fn uploadAtlases(self: *PreparedResources, atlases: []const *const CurveAtlas, out_views: anytype) !void {
         var layer_base: u32 = 0;
         var info_row_base: u32 = 0;
         self.reset();
@@ -222,7 +226,7 @@ pub const PreparedResources = struct {
         return row_base;
     }
 
-    fn storeAtlasPages(self: *PreparedResources, atlas: *const snail.lowlevel.CurveAtlas, layer_base: u32, info_row_base: u32) !void {
+    fn storeAtlasPages(self: *PreparedResources, atlas: *const CurveAtlas, layer_base: u32, info_row_base: u32) !void {
         for (0..atlas.pageCount()) |i| {
             const layer = layer_base + @as(u32, @intCast(i));
             if (layer >= self.atlas_pages.len) return error.PreparedResourceCapacityExceeded;
@@ -626,7 +630,7 @@ pub const CpuRenderer = struct {
 
     fn renderBatchInstance(self: *CpuRenderer, prepared: *const PreparedResources, inst: []const u32, scene_to_pixel: Transform2D, texture_layer_base: u32, allow_subpixel: bool) void {
         const encoded = vertex.instanceAt(inst, 0);
-        const bbox = snail.lowlevel.bezier.BBox{
+        const bbox = bezier.BBox{
             .min = .{ .x = f16ToF32(encoded.rect[0]), .y = f16ToF32(encoded.rect[1]) },
             .max = .{ .x = f16ToF32(encoded.rect[2]), .y = f16ToF32(encoded.rect[3]) },
         };
@@ -693,7 +697,7 @@ pub const CpuRenderer = struct {
     fn renderColrBatchLayers(
         self: *CpuRenderer,
         prepared: *const PreparedResources,
-        union_bbox: snail.lowlevel.bezier.BBox,
+        union_bbox: bezier.BBox,
         transform: Transform2D,
         default_color: [4]f32,
         tint: [4]f32,
@@ -762,7 +766,7 @@ pub const CpuRenderer = struct {
     fn renderPathBatchLayers(
         self: *CpuRenderer,
         prepared: *const PreparedResources,
-        union_bbox: snail.lowlevel.bezier.BBox,
+        union_bbox: bezier.BBox,
         transform: Transform2D,
         tint: [4]f32,
         atlas_layer: u32,
@@ -998,7 +1002,7 @@ pub const CpuRenderer = struct {
     fn renderTransformedGlyph(
         self: *CpuRenderer,
         page: anytype,
-        bbox: snail.lowlevel.bezier.BBox,
+        bbox: bezier.BBox,
         be: GlyphBandEntry,
         transform: Transform2D,
         color: [4]f32,
@@ -1053,7 +1057,7 @@ pub const CpuRenderer = struct {
 
     fn drawGlyphId(
         self: *CpuRenderer,
-        atlas: *const snail.lowlevel.CurveAtlas,
+        atlas: *const CurveAtlas,
         glyph_id: u16,
         x: f32,
         y: f32,
@@ -1065,7 +1069,7 @@ pub const CpuRenderer = struct {
 
     fn drawGlyphIdLinear(
         self: *CpuRenderer,
-        atlas: *const snail.lowlevel.CurveAtlas,
+        atlas: *const CurveAtlas,
         glyph_id: u16,
         x: f32,
         y: f32,
@@ -1080,8 +1084,8 @@ pub const CpuRenderer = struct {
 
     fn drawGlyphInfoLinear(
         self: *CpuRenderer,
-        atlas: *const snail.lowlevel.CurveAtlas,
-        info: snail.lowlevel.CurveAtlas.GlyphInfo,
+        atlas: *const CurveAtlas,
+        info: CurveAtlas.GlyphInfo,
         x: f32,
         y: f32,
         font_size: f32,
@@ -1094,8 +1098,8 @@ pub const CpuRenderer = struct {
 
     fn renderGlyphInternal(
         self: *CpuRenderer,
-        atlas: *const snail.lowlevel.CurveAtlas,
-        info: snail.lowlevel.CurveAtlas.GlyphInfo,
+        atlas: *const CurveAtlas,
+        info: CurveAtlas.GlyphInfo,
         x: f32,
         y: f32,
         font_size: f32,

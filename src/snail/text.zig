@@ -42,7 +42,7 @@ pub const SyntheticStyle = struct {
 /// A parsed TrueType font. Immutable after init.
 /// Thread-safe for concurrent reads (glyphIndex, getKerning).
 /// The init/deinit, unitsPerEm, glyphIndex, and advanceWidth methods are part
-/// of Snail's stable public API; `lowlevel.Font` is an alias for this type.
+/// of Snail's stable public API.
 pub const Font = struct {
     inner: ttf.Font,
 

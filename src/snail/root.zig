@@ -5,6 +5,8 @@
 
 const backend_kind = @import("backend_kind.zig");
 const resource_key = @import("resource_key.zig");
+const atlas_curve_mod = @import("renderer/atlas/curve.zig");
+const atlas_page_mod = @import("renderer/atlas/page.zig");
 const upload_common = @import("renderer/upload_common.zig");
 
 pub const math = @import("math.zig");
@@ -19,8 +21,6 @@ pub const render = @import("render.zig");
 pub const coverage = @import("coverage.zig");
 pub const target = @import("target.zig");
 pub const paint = @import("paint.zig");
-
-const lowlevel_impl = @import("lowlevel.zig");
 
 pub const Mat4 = math.Mat4;
 pub const Vec2 = math.Vec2;
@@ -76,6 +76,13 @@ pub const PathBatch = path.PathBatch;
 pub const PATH_WORDS_PER_VERTEX = path.PATH_WORDS_PER_VERTEX;
 pub const PATH_VERTICES_PER_SHAPE = path.PATH_VERTICES_PER_SHAPE;
 pub const PATH_WORDS_PER_SHAPE = path.PATH_WORDS_PER_SHAPE;
+pub const PATH_PAINT_INFO_WIDTH = path.PATH_PAINT_INFO_WIDTH;
+pub const PATH_PAINT_TEXELS_PER_RECORD = path.PATH_PAINT_TEXELS_PER_RECORD;
+pub const PATH_PAINT_TAG_SOLID = path.PATH_PAINT_TAG_SOLID;
+pub const PATH_PAINT_TAG_LINEAR_GRADIENT = path.PATH_PAINT_TAG_LINEAR_GRADIENT;
+pub const PATH_PAINT_TAG_RADIAL_GRADIENT = path.PATH_PAINT_TAG_RADIAL_GRADIENT;
+pub const PATH_PAINT_TAG_IMAGE = path.PATH_PAINT_TAG_IMAGE;
+pub const PATH_PAINT_TAG_COMPOSITE_GROUP = path.PATH_PAINT_TAG_COMPOSITE_GROUP;
 pub const PathPictureDebugView = path.PathPictureDebugView;
 pub const PathPictureBoundsOverlayOptions = path.PathPictureBoundsOverlayOptions;
 
@@ -114,6 +121,14 @@ pub const ResourceKey = resource_key.ResourceKey;
 pub const ResourceSet = resources.ResourceSet;
 pub const PreparedResources = resources.PreparedResources;
 pub const PreparedResourceRetirementQueue = resources.PreparedResourceRetirementQueue;
+pub const CurveAtlas = atlas_curve_mod.CurveAtlas;
+pub const Atlas = atlas_curve_mod.Atlas;
+pub const AtlasPage = atlas_page_mod.AtlasPage;
+pub const PreparedAtlasView = resources.PreparedAtlasView;
+pub const PreparedTextAtlasView = resources.PreparedTextAtlasView;
+pub const PreparedImageView = resources.PreparedImageView;
+pub const PreparedLayerInfoUpload = resources.PreparedLayerInfoUpload;
+pub const PreparedLayerInfoView = resources.PreparedLayerInfoView;
 pub const ResourceCapacityMode = upload_common.AtlasCapacityMode;
 pub const ResourceFootprint = upload.ResourceFootprint;
 pub const ResourceCacheStats = upload.ResourceCacheStats;
@@ -123,6 +138,7 @@ pub const ResourceUploadCommand = upload.ResourceUploadCommand;
 pub const ResourceUploadCompletion = upload.ResourceUploadCompletion;
 pub const PendingResourceUpload = upload.PendingResourceUpload;
 pub const textAtlasUploadFootprint = resources.textAtlasUploadFootprint;
+pub const curveAtlasFootprint = resources.curveAtlasFootprint;
 
 pub const DrawOptions = draw.DrawOptions;
 pub const DrawSegment = draw.DrawSegment;
@@ -135,48 +151,6 @@ pub const ASCII_PRINTABLE = blk: {
     var chars: [95]u8 = undefined;
     for (0..95) |i| chars[i] = @intCast(32 + i);
     break :blk chars;
-};
-
-/// Low-level building blocks. Most callers should prefer the canonical types
-/// at the top level (`TextAtlas`, `Path`, `PathPicture`, `Renderer`, ...).
-pub const lowlevel = struct {
-    pub const bezier = @import("math/bezier.zig");
-    pub const curve_tex = @import("renderer/curve_texture.zig");
-
-    pub const Font = text.Font;
-    pub const CurveAtlas = lowlevel_impl.CurveAtlas;
-    pub const Atlas = lowlevel_impl.Atlas;
-    pub const AtlasPage = lowlevel_impl.AtlasPage;
-    pub const curveAtlasFootprint = resources.curveAtlasFootprint;
-
-    pub const TextBatch = lowlevel_impl.TextBatch;
-    pub const PathBatch = path.PathBatch;
-
-    pub const TEXT_WORDS_PER_VERTEX = lowlevel_impl.TEXT_WORDS_PER_VERTEX;
-    pub const TEXT_VERTICES_PER_GLYPH = lowlevel_impl.TEXT_VERTICES_PER_GLYPH;
-    pub const TEXT_WORDS_PER_GLYPH = lowlevel_impl.TEXT_WORDS_PER_GLYPH;
-    pub const PATH_WORDS_PER_VERTEX = path.PATH_WORDS_PER_VERTEX;
-    pub const PATH_VERTICES_PER_SHAPE = path.PATH_VERTICES_PER_SHAPE;
-    pub const PATH_WORDS_PER_SHAPE = path.PATH_WORDS_PER_SHAPE;
-
-    pub const TEXTURE_LAYER_WINDOW_SIZE = lowlevel_impl.TEXTURE_LAYER_WINDOW_SIZE;
-    pub const TEXTURE_LAYER_BANK_STRIDE = lowlevel_impl.TEXTURE_LAYER_BANK_STRIDE;
-    pub const textureLayerBank = lowlevel_impl.textureLayerBank;
-    pub const textureLayerBankLocal = lowlevel_impl.textureLayerBankLocal;
-    pub const textureLayerInBank = lowlevel_impl.textureLayerInBank;
-    pub const textureLayerWindowBase = lowlevel_impl.textureLayerWindowBase;
-    pub const textureLayerLocal = lowlevel_impl.textureLayerLocal;
-
-    pub const PATH_PAINT_INFO_WIDTH = path.PATH_PAINT_INFO_WIDTH;
-    pub const PATH_PAINT_TEXELS_PER_RECORD = path.PATH_PAINT_TEXELS_PER_RECORD;
-    pub const PATH_PAINT_TAG_SOLID = path.PATH_PAINT_TAG_SOLID;
-    pub const PATH_PAINT_TAG_LINEAR_GRADIENT = path.PATH_PAINT_TAG_LINEAR_GRADIENT;
-    pub const PATH_PAINT_TAG_RADIAL_GRADIENT = path.PATH_PAINT_TAG_RADIAL_GRADIENT;
-    pub const PATH_PAINT_TAG_IMAGE = path.PATH_PAINT_TAG_IMAGE;
-    pub const PATH_PAINT_TAG_COMPOSITE_GROUP = path.PATH_PAINT_TAG_COMPOSITE_GROUP;
-
-    pub const PathPictureDebugView = path.PathPictureDebugView;
-    pub const PathPictureBoundsOverlayOptions = path.PathPictureBoundsOverlayOptions;
 };
 
 test {

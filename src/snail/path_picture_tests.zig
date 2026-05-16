@@ -1,8 +1,8 @@
 const std = @import("std");
 const snail = @import("root.zig");
 const assets = @import("assets");
-const bezier = snail.lowlevel.bezier;
-const curve_tex = snail.lowlevel.curve_tex;
+const bezier = @import("math/bezier.zig");
+const curve_tex = @import("renderer/curve_texture.zig");
 const paint_records = @import("paint_records.zig");
 
 fn layerInfoOffset(width: u32, x: u16, y: u16) usize {
@@ -38,7 +38,7 @@ test "inside-aligned path stroke groups fill and stroke on one instance" {
     try std.testing.expect(stroke_info.bbox.max.x > fill_info.bbox.max.x);
 
     const lid = picture.atlas.layer_info_data orelse return error.TestExpectedEqual;
-    try std.testing.expectApproxEqAbs(snail.lowlevel.PATH_PAINT_TAG_COMPOSITE_GROUP, lid[3], 0.001);
+    try std.testing.expectApproxEqAbs(snail.PATH_PAINT_TAG_COMPOSITE_GROUP, lid[3], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 1), lid[1], 0.001);
 }
 
@@ -61,8 +61,8 @@ test "styled path builder emits fill and stroke records" {
     try std.testing.expectEqual(@as(usize, 1), picture.shapeCount());
     try std.testing.expectEqual(@as(u16, 2), picture.shapes[0].layer_count);
     const lid = picture.atlas.layer_info_data orelse return error.TestExpectedEqual;
-    try std.testing.expectApproxEqAbs(snail.lowlevel.PATH_PAINT_TAG_COMPOSITE_GROUP, lid[3], 0.001);
-    try std.testing.expectApproxEqAbs(snail.lowlevel.PATH_PAINT_TAG_SOLID, lid[7], 0.001);
+    try std.testing.expectApproxEqAbs(snail.PATH_PAINT_TAG_COMPOSITE_GROUP, lid[3], 0.001);
+    try std.testing.expectApproxEqAbs(snail.PATH_PAINT_TAG_SOLID, lid[7], 0.001);
 }
 
 test "round caps and primitive arcs keep expected geometry" {
@@ -202,9 +202,9 @@ test "path picture gradient and image paint records encode metadata" {
 
     const lid = picture.atlas.layer_info_data orelse return error.TestExpectedEqual;
     const base = layerInfoOffset(picture.atlas.layer_info_width, picture.shapes[0].info_x, picture.shapes[0].info_y);
-    try std.testing.expectApproxEqAbs(snail.lowlevel.PATH_PAINT_TAG_COMPOSITE_GROUP, lid[base * 4 + 3], 0.001);
-    try std.testing.expectApproxEqAbs(snail.lowlevel.PATH_PAINT_TAG_LINEAR_GRADIENT, lid[(base + 1) * 4 + 3], 0.001);
-    try std.testing.expectApproxEqAbs(snail.lowlevel.PATH_PAINT_TAG_IMAGE, lid[(base + 1 + snail.lowlevel.PATH_PAINT_TEXELS_PER_RECORD) * 4 + 3], 0.001);
+    try std.testing.expectApproxEqAbs(snail.PATH_PAINT_TAG_COMPOSITE_GROUP, lid[base * 4 + 3], 0.001);
+    try std.testing.expectApproxEqAbs(snail.PATH_PAINT_TAG_LINEAR_GRADIENT, lid[(base + 1) * 4 + 3], 0.001);
+    try std.testing.expectApproxEqAbs(snail.PATH_PAINT_TAG_IMAGE, lid[(base + 1 + snail.PATH_PAINT_TEXELS_PER_RECORD) * 4 + 3], 0.001);
 
     const records = picture.atlas.paint_image_records orelse return error.TestExpectedEqual;
     try std.testing.expect(records[1] != null);

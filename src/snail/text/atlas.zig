@@ -520,7 +520,7 @@ pub const TextAtlas = struct {
     /// snapshot's pages for GPU upload. Most callers should use
     /// `Renderer.uploadResourcesBlocking` (or `planResourceUpload` /
     /// `beginResourceUpload`) instead — this entry point is for code that
-    /// drives the upload helpers in `lowlevel` directly.
+    /// drives the upload helpers directly.
     ///
     /// The returned wrapper borrows `self.pages`. Free it via
     /// `deinitUploadAtlas` (do NOT call `wrapper.deinit()`, which would

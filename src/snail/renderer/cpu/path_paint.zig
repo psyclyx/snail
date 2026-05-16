@@ -1,8 +1,11 @@
 const std = @import("std");
 const snail = @import("../../root.zig");
 const color = @import("color.zig");
+const atlas_curve_mod = @import("../atlas/curve.zig");
 
-const GlyphBandEntry = std.meta.fieldInfo(snail.lowlevel.CurveAtlas.GlyphInfo, .band_entry).type;
+const CurveAtlas = atlas_curve_mod.CurveAtlas;
+const PaintImageRecord = CurveAtlas.PaintImageRecord;
+const GlyphBandEntry = std.meta.fieldInfo(CurveAtlas.GlyphInfo, .band_entry).type;
 const Vec2 = snail.Vec2;
 const clamp01 = color.clamp01;
 const linearColorToSrgb = color.linearColorToSrgb;
@@ -36,7 +39,7 @@ pub const LayerInfoEntry = struct {
     /// done by the GPU upload (`pipeline.zig` / `vulkan_pipeline.zig`)
     /// doesn't happen on the CPU, so we look up the `*const snail.Image`
     /// via this slice instead.
-    paint_image_records: ?[]const ?snail.lowlevel.CurveAtlas.PaintImageRecord = null,
+    paint_image_records: ?[]const ?PaintImageRecord = null,
 
     pub fn deinit(self: *LayerInfoEntry, allocator: std.mem.Allocator) void {
         if (self.path_records.len > 0) allocator.free(self.path_records);
@@ -130,7 +133,7 @@ pub fn preparePathLayerInfoRecords(
     data: []const f32,
     width: u32,
     height: u32,
-    paint_image_records: ?[]const ?snail.lowlevel.CurveAtlas.PaintImageRecord,
+    paint_image_records: ?[]const ?PaintImageRecord,
 ) !PreparedPathLayerInfo {
     const counts = countPreparedPathLayerInfo(data, width, height);
     const records = try allocator.alloc(PreparedPathRecord, counts.records);
@@ -185,7 +188,7 @@ pub fn preparePathLayerInfoRecords(
 fn preparePathLayerFromLayerInfoOffset(
     data: []const f32,
     texel_offset: u32,
-    paint_image_records: ?[]const ?snail.lowlevel.CurveAtlas.PaintImageRecord,
+    paint_image_records: ?[]const ?PaintImageRecord,
 ) PreparedPathLayer {
     const info = fetchLayerInfoTexelOffset(data, texel_offset);
     const band = fetchLayerInfoTexelOffset(data, texel_offset + 1);
@@ -211,7 +214,7 @@ fn preparePathLayerFromLayerInfoOffset(
 fn preparePathPaintFromLayerInfoOffset(
     data: []const f32,
     texel_offset: u32,
-    paint_image_records: ?[]const ?snail.lowlevel.CurveAtlas.PaintImageRecord,
+    paint_image_records: ?[]const ?PaintImageRecord,
 ) PreparedPathPaint {
     const info = fetchLayerInfoTexelOffset(data, texel_offset);
     const tag = pathInfoTag(info);
@@ -266,9 +269,9 @@ fn preparePathPaintFromLayerInfoOffset(
 }
 
 fn findImageRecordByTexel(
-    records: []const ?snail.lowlevel.CurveAtlas.PaintImageRecord,
+    records: []const ?PaintImageRecord,
     abs_texel: u32,
-) ?snail.lowlevel.CurveAtlas.PaintImageRecord {
+) ?PaintImageRecord {
     for (records) |maybe_record| {
         const record = maybe_record orelse continue;
         if (record.texel_offset == abs_texel) return record;
@@ -384,7 +387,7 @@ pub const PreparedPathPaint = struct {
     data0: [4]f32 = .{ 0, 0, 0, 0 },
     data1: [4]f32 = .{ 0, 0, 0, 0 },
     extra: [4]f32 = .{ 0, 0, 0, 0 },
-    image_record: ?snail.lowlevel.CurveAtlas.PaintImageRecord = null,
+    image_record: ?PaintImageRecord = null,
 
     pub fn sample(self: *const PreparedPathPaint, local: Vec2) PathPaintSample {
         return switch (self.kind) {
@@ -419,11 +422,11 @@ pub const PreparedPathPaint = struct {
     }
 };
 
-pub fn samplePathPaint(atlas: *const snail.lowlevel.CurveAtlas, shape: snail.PathPicture.Shape, glyph_id: u16, local: Vec2) PathPaintSample {
+pub fn samplePathPaint(atlas: *const CurveAtlas, shape: snail.PathPicture.Shape, glyph_id: u16, local: Vec2) PathPaintSample {
     return samplePathPaintAt(atlas, shape.info_x, shape.info_y, glyph_id, local);
 }
 
-pub fn samplePathPaintAt(atlas: *const snail.lowlevel.CurveAtlas, info_x: u16, info_y: u16, glyph_id: u16, local: Vec2) PathPaintSample {
+pub fn samplePathPaintAt(atlas: *const CurveAtlas, info_x: u16, info_y: u16, glyph_id: u16, local: Vec2) PathPaintSample {
     const data = atlas.layer_info_data orelse return .{ .color = .{ 1, 1, 1, 1 } };
     const width = atlas.layer_info_width;
     const info = fetchLayerInfoTexel(data, width, info_x, info_y, 0);
@@ -503,7 +506,7 @@ pub fn samplePathPaintAt(atlas: *const snail.lowlevel.CurveAtlas, info_x: u16, i
 }
 
 pub fn sampleImagePaint(
-    atlas: *const snail.lowlevel.CurveAtlas,
+    atlas: *const CurveAtlas,
     glyph_id: u16,
     data: []const f32,
     width: u32,
@@ -524,7 +527,7 @@ pub fn sampleImagePaint(
 }
 
 pub fn sampleImageWithRecord(
-    record: snail.lowlevel.CurveAtlas.PaintImageRecord,
+    record: PaintImageRecord,
     data: []const f32,
     width: u32,
     info_x: u16,
@@ -558,7 +561,7 @@ pub fn sampleImageWithRecord(
 }
 
 pub fn samplePreparedImageWithRecord(
-    record: snail.lowlevel.CurveAtlas.PaintImageRecord,
+    record: PaintImageRecord,
     data0: [4]f32,
     data1: [4]f32,
     tint: [4]f32,

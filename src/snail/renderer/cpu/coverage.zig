@@ -2,12 +2,13 @@ const std = @import("std");
 const snail = @import("../../root.zig");
 const color_mod = @import("color.zig");
 const texture = @import("texture.zig");
+const atlas_curve_mod = @import("../atlas/curve.zig");
 
-const bezier = snail.lowlevel.bezier;
-const curve_tex = snail.lowlevel.curve_tex;
+const bezier = @import("../../math/bezier.zig");
+const curve_tex = @import("../curve_texture.zig");
 const CurveSegment = bezier.CurveSegment;
 const FillRule = snail.FillRule;
-const GlyphBandEntry = std.meta.fieldInfo(snail.lowlevel.CurveAtlas.GlyphInfo, .band_entry).type;
+const GlyphBandEntry = std.meta.fieldInfo(atlas_curve_mod.CurveAtlas.GlyphInfo, .band_entry).type;
 const SubpixelOrder = snail.SubpixelOrder;
 const Vec2 = snail.Vec2;
 const clamp01 = color_mod.clamp01;
