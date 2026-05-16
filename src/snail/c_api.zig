@@ -5,7 +5,8 @@ const std = @import("std");
 const snail = @import("root.zig");
 const resource_key = @import("resource_key.zig");
 const ttf = @import("font/ttf.zig");
-const generated = @import("c_api_generated");
+const c_handles = @import("c_api/handles.zig");
+const c_runtime = @import("c_api/runtime.zig");
 
 const build_options = @import("build_options");
 const vk = if (build_options.enable_vulkan) @import("renderer/vulkan.zig").vk else struct {
@@ -20,16 +21,19 @@ const vk = if (build_options.enable_vulkan) @import("renderer/vulkan.zig").vk el
     pub const VkPipelineLayout = ?*anyopaque;
 };
 
-// Allocator bridge
+pub const SnailAllocFn = c_runtime.SnailAllocFn;
+pub const SnailFreeFn = c_runtime.SnailFreeFn;
+pub const SnailAllocator = c_runtime.SnailAllocator;
+pub const SNAIL_OK = c_runtime.SNAIL_OK;
+pub const SNAIL_ERR_INVALID_FONT = c_runtime.SNAIL_ERR_INVALID_FONT;
+pub const SNAIL_ERR_OUT_OF_MEMORY = c_runtime.SNAIL_ERR_OUT_OF_MEMORY;
+pub const SNAIL_ERR_RENDERER_FAILED = c_runtime.SNAIL_ERR_RENDERER_FAILED;
+pub const SNAIL_ERR_INVALID_ARGUMENT = c_runtime.SNAIL_ERR_INVALID_ARGUMENT;
+pub const SNAIL_ERR_DRAW_FAILED = c_runtime.SNAIL_ERR_DRAW_FAILED;
 
-pub const SnailAllocFn = *const fn (ctx: ?*anyopaque, size: usize, alignment: usize) callconv(.c) ?[*]u8;
-pub const SnailFreeFn = *const fn (ctx: ?*anyopaque, ptr: ?[*]u8, size: usize) callconv(.c) void;
-
-pub const SnailAllocator = extern struct {
-    alloc_fn: SnailAllocFn,
-    free_fn: SnailFreeFn,
-    ctx: ?*anyopaque,
-};
+const resolveAllocator = c_runtime.resolveAllocator;
+const handleAllocator = c_runtime.handleAllocator;
+const mapError = c_runtime.mapError;
 
 pub const SnailVulkanContext = extern struct {
     physical_device: vk.VkPhysicalDevice,
@@ -40,100 +44,6 @@ pub const SnailVulkanContext = extern struct {
     color_format: vk.VkFormat,
     supports_dual_source_blend: bool = false,
 };
-
-fn toZigAllocator(ca: *const SnailAllocator) std.mem.Allocator {
-    const S = struct {
-        fn alloc(ctx_ptr: *anyopaque, len: usize, alignment: std.mem.Alignment, _: usize) ?[*]u8 {
-            const ca_inner: *const SnailAllocator = @ptrCast(@alignCast(ctx_ptr));
-            return ca_inner.alloc_fn(ca_inner.ctx, len, alignment.toByteUnits());
-        }
-        fn free(ctx_ptr: *anyopaque, buf: []u8, _: std.mem.Alignment, _: usize) void {
-            const ca_inner: *const SnailAllocator = @ptrCast(@alignCast(ctx_ptr));
-            ca_inner.free_fn(ca_inner.ctx, buf.ptr, buf.len);
-        }
-        fn resize(_: *anyopaque, _: []u8, _: std.mem.Alignment, _: usize, _: usize) bool {
-            return false;
-        }
-        fn remap(_: *anyopaque, _: []u8, _: std.mem.Alignment, _: usize, _: usize) ?[*]u8 {
-            return null;
-        }
-    };
-    return .{
-        .ptr = @ptrCast(@constCast(ca)),
-        .vtable = &.{ .alloc = S.alloc, .resize = S.resize, .remap = S.remap, .free = S.free },
-    };
-}
-
-fn libcAlloc(_: ?*anyopaque, size: usize, _: usize) callconv(.c) ?[*]u8 {
-    return @ptrCast(std.c.malloc(size) orelse return null);
-}
-
-fn libcFree(_: ?*anyopaque, ptr: ?[*]u8, _: usize) callconv(.c) void {
-    if (ptr) |p| std.c.free(p);
-}
-
-const default_c_allocator = SnailAllocator{
-    .alloc_fn = &libcAlloc,
-    .free_fn = &libcFree,
-    .ctx = null,
-};
-
-fn resolveAllocator(ca: ?*const SnailAllocator) std.mem.Allocator {
-    if (ca) |a| return toZigAllocator(a);
-    return toZigAllocator(&default_c_allocator);
-}
-
-fn handleAllocator() std.mem.Allocator {
-    return std.heap.smp_allocator;
-}
-
-// Error codes
-
-pub const SNAIL_OK = generated.SNAIL_OK;
-pub const SNAIL_ERR_INVALID_FONT = generated.SNAIL_ERR_INVALID_FONT;
-pub const SNAIL_ERR_OUT_OF_MEMORY = generated.SNAIL_ERR_OUT_OF_MEMORY;
-pub const SNAIL_ERR_RENDERER_FAILED = generated.SNAIL_ERR_RENDERER_FAILED;
-pub const SNAIL_ERR_INVALID_ARGUMENT = generated.SNAIL_ERR_INVALID_ARGUMENT;
-pub const SNAIL_ERR_DRAW_FAILED = generated.SNAIL_ERR_DRAW_FAILED;
-
-fn mapError(err: anyerror) c_int {
-    return switch (err) {
-        error.OutOfMemory => SNAIL_ERR_OUT_OF_MEMORY,
-        error.InvalidFont, error.NoFaces, error.MissingCellMetricsGlyph => SNAIL_ERR_INVALID_FONT,
-        error.UnsupportedRenderer => SNAIL_ERR_RENDERER_FAILED,
-        error.InvalidEnum,
-        error.InvalidArgument,
-        error.InvalidFaceIndex,
-        error.WrongTextAtlasSnapshot,
-        error.MissingPreparedGlyph,
-        error.UnsupportedTextPaint,
-        error.InvalidShapeMark,
-        error.InvalidShapeRange,
-        error.InvalidGlyphRange,
-        error.InvalidOverrideIndex,
-        error.InvalidTransform,
-        error.InvalidImageData,
-        error.PathMissingMoveTo,
-        error.EmptyPath,
-        error.EmptyStyle,
-        error.ResourceSetFull,
-        error.DrawListFull,
-        error.ResourceUploadPlanFull,
-        error.ResourceUploadBudgetExceeded,
-        error.ResourceCacheRebuildRequired,
-        error.ResourceUploadNotReady,
-        error.MissingUploadCommand,
-        error.InvalidRetirementFence,
-        => SNAIL_ERR_INVALID_ARGUMENT,
-        error.MissingPreparedResource,
-        error.StaleDrawRecords,
-        error.StalePreparedResources,
-        error.InvalidResolve,
-        error.UnsupportedResolve,
-        => SNAIL_ERR_DRAW_FAILED,
-        else => SNAIL_ERR_DRAW_FAILED,
-    };
-}
 
 // C-compatible value types
 
@@ -404,114 +314,26 @@ pub const SnailStrokeStyle = extern struct {
 
 // Opaque handle implementations
 
-const FontImpl = struct { inner: ttf.Font };
-const TextAtlasImpl = struct { inner: snail.TextAtlas, allocator: std.mem.Allocator };
-const ShapedTextImpl = struct { inner: snail.ShapedText };
-const TextBlobImpl = struct { inner: snail.TextBlob };
-const ImageImpl = struct { inner: snail.Image };
-const PathImpl = struct { inner: snail.Path };
-const PathPictureBuilderImpl = struct { inner: snail.PathPictureBuilder };
-const PathPictureImpl = struct { inner: snail.PathPicture };
-const SceneImpl = struct {
-    inner: snail.Scene,
-    // C callers can't keep an `[]Override` slice alive across the boundary,
-    // so the C entry points that take a transform stash a single-element
-    // override here and hand `inner` a slice into this arena. Reset alongside
-    // `inner` so capacity is reused frame-to-frame.
-    overrides_arena: std.heap.ArenaAllocator,
-};
-const ResourceSetImpl = struct {
-    inner: snail.ResourceSet,
-    entries: []snail.ResourceSet.Entry,
-    allocator: std.mem.Allocator,
-};
-const PreparedResourcesImpl = struct { inner: snail.PreparedResources };
-const PreparedSceneImpl = struct { inner: snail.PreparedScene };
-const PreparedResourceRetirementQueueImpl = struct {
-    inner: snail.PreparedResourceRetirementQueue,
-    allocator: std.mem.Allocator,
-};
-const ResourceUploadPlanImpl = struct {
-    inner: snail.ResourceUploadPlan,
-    allocator: std.mem.Allocator,
-    changed_keys: []snail.ResourceKey,
-};
-const PendingResourceUploadImpl = struct {
-    inner: snail.PendingResourceUpload,
-    allocator: std.mem.Allocator,
-    changed_keys: []snail.ResourceKey,
-};
-const DrawListImpl = struct {
-    inner: snail.DrawList,
-    allocator: std.mem.Allocator,
-    words: []u32,
-    segments: []snail.DrawSegment,
-};
-const TextCoverageRecordsImpl = struct {
-    inner: snail.coverage.TextCoverageRecords,
-    allocator: std.mem.Allocator,
-    words: []u32,
-};
-const CoverageBackendImpl = struct {
-    inner: snail.coverage.Backend,
-};
-const ThreadPoolImpl = struct { inner: snail.ThreadPool };
-const RendererImpl = struct {
-    backend: snail.BackendKind,
-    gl: if (build_options.enable_opengl) ?snail.GlRenderer else void = if (build_options.enable_opengl) null else {},
-    vulkan: if (build_options.enable_vulkan) ?snail.VulkanRenderer else void = if (build_options.enable_vulkan) null else {},
-    cpu: if (build_options.enable_cpu) ?snail.CpuRenderer else void = if (build_options.enable_cpu) null else {},
-
-    fn asRenderer(self: *RendererImpl) snail.Renderer {
-        return switch (self.backend) {
-            .gl => blk: {
-                if (comptime !build_options.enable_opengl) unreachable;
-                if (self.gl) |*gl| break :blk gl.asRenderer();
-                unreachable;
-            },
-            .vulkan => blk: {
-                if (comptime !build_options.enable_vulkan) unreachable;
-                if (self.vulkan) |*vk_renderer| break :blk vk_renderer.asRenderer();
-                unreachable;
-            },
-            .cpu => blk: {
-                if (comptime !build_options.enable_cpu) unreachable;
-                if (self.cpu) |*cpu| break :blk cpu.asRenderer();
-                unreachable;
-            },
-        };
-    }
-
-    fn deinit(self: *RendererImpl) void {
-        switch (self.backend) {
-            .gl => if (comptime build_options.enable_opengl) {
-                if (self.gl) |*gl| gl.deinit();
-            },
-            .vulkan => if (comptime build_options.enable_vulkan) {
-                if (self.vulkan) |*vk_renderer| vk_renderer.deinit();
-            },
-            .cpu => {},
-        }
-        self.* = undefined;
-    }
-
-    fn backendName(self: *const RendererImpl) []const u8 {
-        return switch (self.backend) {
-            .gl => if (comptime build_options.enable_opengl)
-                self.gl.?.backendName()
-            else
-                "OpenGL (disabled)",
-            .vulkan => if (comptime build_options.enable_vulkan)
-                self.vulkan.?.backendName()
-            else
-                "vulkan (disabled)",
-            .cpu => if (comptime build_options.enable_cpu)
-                self.cpu.?.backendName()
-            else
-                "CPU (disabled)",
-        };
-    }
-};
+const FontImpl = c_handles.FontImpl;
+const TextAtlasImpl = c_handles.TextAtlasImpl;
+const ShapedTextImpl = c_handles.ShapedTextImpl;
+const TextBlobImpl = c_handles.TextBlobImpl;
+const ImageImpl = c_handles.ImageImpl;
+const PathImpl = c_handles.PathImpl;
+const PathPictureBuilderImpl = c_handles.PathPictureBuilderImpl;
+const PathPictureImpl = c_handles.PathPictureImpl;
+const SceneImpl = c_handles.SceneImpl;
+const ResourceSetImpl = c_handles.ResourceSetImpl;
+const PreparedResourcesImpl = c_handles.PreparedResourcesImpl;
+const PreparedSceneImpl = c_handles.PreparedSceneImpl;
+const PreparedResourceRetirementQueueImpl = c_handles.PreparedResourceRetirementQueueImpl;
+const ResourceUploadPlanImpl = c_handles.ResourceUploadPlanImpl;
+const PendingResourceUploadImpl = c_handles.PendingResourceUploadImpl;
+const DrawListImpl = c_handles.DrawListImpl;
+const TextCoverageRecordsImpl = c_handles.TextCoverageRecordsImpl;
+const CoverageBackendImpl = c_handles.CoverageBackendImpl;
+const ThreadPoolImpl = c_handles.ThreadPoolImpl;
+const RendererImpl = c_handles.RendererImpl;
 
 // Conversion helpers
 
