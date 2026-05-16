@@ -54,6 +54,32 @@ pub const DrawRecords = struct {
     segments: []const DrawSegment,
 };
 
+const SegmentSink = union(enum) {
+    fixed: Fixed,
+    dynamic: Dynamic,
+
+    const Fixed = struct {
+        buf: []DrawSegment,
+        len: *usize,
+    };
+
+    const Dynamic = struct {
+        allocator: std.mem.Allocator,
+        segments: *std.ArrayList(DrawSegment),
+    };
+
+    fn add(self: *SegmentSink, segment: DrawSegment) !void {
+        switch (self.*) {
+            .fixed => |fixed| {
+                if (fixed.len.* >= fixed.buf.len) return error.DrawListFull;
+                fixed.buf[fixed.len.*] = segment;
+                fixed.len.* += 1;
+            },
+            .dynamic => |dynamic| try dynamic.segments.append(dynamic.allocator, segment),
+        }
+    }
+};
+
 pub const DrawList = struct {
     buf: []u32,
     len: usize = 0,
@@ -79,6 +105,10 @@ pub const DrawList = struct {
     /// Return an upper bound for the word buffer required by `addScene`.
     pub fn estimate(scene: *const Scene, options: DrawOptions) usize {
         _ = options;
+        return estimateWords(scene);
+    }
+
+    fn estimateWords(scene: *const Scene) usize {
         var total: usize = 0;
         for (scene.commands.items) |command| {
             switch (command) {
@@ -102,6 +132,10 @@ pub const DrawList = struct {
 
     pub fn estimateSegments(scene: *const Scene, options: DrawOptions) usize {
         _ = options;
+        return estimateSegmentUpperBound(scene);
+    }
+
+    fn estimateSegmentUpperBound(scene: *const Scene) usize {
         var total: usize = 0;
         for (scene.commands.items) |command| {
             switch (command) {
@@ -126,82 +160,88 @@ pub const DrawList = struct {
         scene: *const Scene,
         options: DrawOptions,
     ) !void {
-        const target_stamp = TargetStamp.from(options.mvp, options.target);
-        for (scene.commands.items) |command| {
-            switch (command) {
-                .text => |draw| {
-                    var view = try prepared.textAtlasView(draw.blob.atlas);
-                    const segment_key, const segment_stamp = if (draw.blob.hasPaintRecords()) blk: {
-                        const paint_view = try prepared.textPaintView(draw.blob);
-                        view.paint_info_row_base = paint_view.info_row_base;
-                        break :blk .{ try prepared.textPaintKey(draw.blob), try prepared.textPaintStamp(draw.blob) };
-                    } else blk: {
-                        break :blk .{ try prepared.textAtlasKey(draw.blob.atlas), try prepared.textStamp(draw.blob.atlas) };
-                    };
-                    const glyph_range = draw.glyphs.resolve(draw.blob.glyphCount());
-                    for (draw.instances, 0..) |_, override_index| {
-                        var glyph_start = glyph_range.start;
-                        while (glyph_start < glyph_range.end) {
-                            const start = self.len;
-                            var batch = TextBatch.init(self.buf[self.len..]);
-                            const result = try batch.addDraw(view, draw, override_index, glyph_start);
-                            glyph_start = result.next_glyph;
-                            if (batch.glyphCount() == 0) {
-                                if (result.completed) break;
-                                continue;
-                            }
-                            self.len += batch.slice().len;
-                            try self.addSegment(.{
-                                .kind = .text,
-                                .offset = start,
-                                .len = batch.slice().len,
-                                .texture_layer_base = result.layer_window_base,
-                                .key = segment_key,
-                                .resource_stamp = segment_stamp,
-                                .target_stamp = target_stamp,
-                            });
-                            if (result.completed) break;
-                        }
-                    }
-                },
-                .path => |draw| {
-                    const view = try prepared.pathAtlasView(draw.picture);
-                    const range = draw.shapes.resolve(draw.picture.shapes.len);
-                    for (draw.instances, 0..) |_, override_index| {
-                        var shape_start = range.start;
-                        while (shape_start < range.end) {
-                            const start = self.len;
-                            var batch = PathBatch.init(self.buf[self.len..]);
-                            const result = try batch.addDraw(&view, draw, override_index, shape_start);
-                            shape_start = result.next_shape;
-                            if (batch.shapeCount() == 0) {
-                                if (result.completed) break;
-                                continue;
-                            }
-                            self.len += batch.slice().len;
-                            try self.addSegment(.{
-                                .kind = .path,
-                                .offset = start,
-                                .len = batch.slice().len,
-                                .texture_layer_base = result.layer_window_base,
-                                .key = try prepared.pathPictureKey(draw.picture),
-                                .resource_stamp = try prepared.pathStamp(draw.picture),
-                                .target_stamp = target_stamp,
-                            });
-                            if (result.completed) break;
-                        }
-                    }
-                },
-            }
-        }
-    }
-
-    fn addSegment(self: *DrawList, segment: DrawSegment) !void {
-        if (self.segment_len >= self.segments_buf.len) return error.DrawListFull;
-        self.segments_buf[self.segment_len] = segment;
-        self.segment_len += 1;
+        const target_stamp = TargetStamp.fromRef(&options.mvp, &options.target);
+        var segments = SegmentSink{ .fixed = .{ .buf = self.segments_buf, .len = &self.segment_len } };
+        try addSceneToBuffers(self.buf, &self.len, &segments, prepared, scene, target_stamp);
     }
 };
+
+fn addSceneToBuffers(
+    words: []u32,
+    word_len: *usize,
+    segments: *SegmentSink,
+    prepared: *const PreparedResources,
+    scene: *const Scene,
+    target_stamp: TargetStamp,
+) !void {
+    for (scene.commands.items) |command| {
+        switch (command) {
+            .text => |draw| {
+                var view = try prepared.textAtlasView(draw.blob.atlas);
+                const segment_key, const segment_stamp = if (draw.blob.hasPaintRecords()) blk: {
+                    const paint_view = try prepared.textPaintView(draw.blob);
+                    view.paint_info_row_base = paint_view.info_row_base;
+                    break :blk .{ try prepared.textPaintKey(draw.blob), try prepared.textPaintStamp(draw.blob) };
+                } else blk: {
+                    break :blk .{ try prepared.textAtlasKey(draw.blob.atlas), try prepared.textStamp(draw.blob.atlas) };
+                };
+                const glyph_range = draw.glyphs.resolve(draw.blob.glyphCount());
+                for (draw.instances, 0..) |_, override_index| {
+                    var glyph_start = glyph_range.start;
+                    while (glyph_start < glyph_range.end) {
+                        const start = word_len.*;
+                        var batch = TextBatch.init(words[word_len.*..]);
+                        const result = try batch.addDraw(view, draw, override_index, glyph_start);
+                        glyph_start = result.next_glyph;
+                        if (batch.glyphCount() == 0) {
+                            if (result.completed) break;
+                            continue;
+                        }
+                        word_len.* += batch.slice().len;
+                        try segments.add(.{
+                            .kind = .text,
+                            .offset = start,
+                            .len = batch.slice().len,
+                            .texture_layer_base = result.layer_window_base,
+                            .key = segment_key,
+                            .resource_stamp = segment_stamp,
+                            .target_stamp = target_stamp,
+                        });
+                        if (result.completed) break;
+                    }
+                }
+            },
+            .path => |draw| {
+                const view = try prepared.pathAtlasView(draw.picture);
+                const range = draw.shapes.resolve(draw.picture.shapes.len);
+                for (draw.instances, 0..) |_, override_index| {
+                    var shape_start = range.start;
+                    while (shape_start < range.end) {
+                        const start = word_len.*;
+                        var batch = PathBatch.init(words[word_len.*..]);
+                        const result = try batch.addDraw(&view, draw, override_index, shape_start);
+                        shape_start = result.next_shape;
+                        if (batch.shapeCount() == 0) {
+                            if (result.completed) break;
+                            continue;
+                        }
+                        word_len.* += batch.slice().len;
+                        try segments.add(.{
+                            .kind = .path,
+                            .offset = start,
+                            .len = batch.slice().len,
+                            .texture_layer_base = result.layer_window_base,
+                            .key = try prepared.pathPictureKey(draw.picture),
+                            .resource_stamp = try prepared.pathStamp(draw.picture),
+                            .target_stamp = target_stamp,
+                        });
+                        if (result.completed) break;
+                    }
+                }
+            },
+        }
+    }
+}
 
 pub const PreparedScene = struct {
     allocator: std.mem.Allocator,
@@ -214,21 +254,21 @@ pub const PreparedScene = struct {
         scene: *const Scene,
         options: DrawOptions,
     ) !PreparedScene {
-        const needed = DrawList.estimate(scene, options);
-        const needed_segments = DrawList.estimateSegments(scene, options);
+        const needed = DrawList.estimateWords(scene);
         const words = try allocator.alloc(u32, needed);
         errdefer allocator.free(words);
-        const segment_buf = try allocator.alloc(DrawSegment, needed_segments);
-        errdefer allocator.free(segment_buf);
-        var draw = DrawList.init(words, segment_buf);
-        try draw.addScene(prepared, scene, options);
-        const segments = try allocator.dupe(DrawSegment, draw.slice().segments);
-        errdefer allocator.free(segments);
-        allocator.free(segment_buf);
+        var segment_list: std.ArrayList(DrawSegment) = .empty;
+        errdefer segment_list.deinit(allocator);
+        try segment_list.ensureTotalCapacity(allocator, scene.commands.items.len);
+        var word_len: usize = 0;
+        var segment_sink = SegmentSink{ .dynamic = .{ .allocator = allocator, .segments = &segment_list } };
+        try addSceneToBuffers(words, &word_len, &segment_sink, prepared, scene, TargetStamp.fromRef(&options.mvp, &options.target));
+        const owned_segments = try segment_list.toOwnedSlice(allocator);
+        errdefer allocator.free(owned_segments);
         return .{
             .allocator = allocator,
-            .words = words[0..draw.len],
-            .segments = segments,
+            .words = words[0..word_len],
+            .segments = owned_segments,
         };
     }
 

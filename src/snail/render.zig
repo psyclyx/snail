@@ -58,7 +58,7 @@ const TargetStamp = target_mod.TargetStamp;
 const TargetEncoding = target_mod.TargetEncoding;
 const CoverageBackend = coverage_mod.Backend;
 const UploadAllocators = upload_mod.UploadAllocators;
-const effectiveSubpixelOrder = target_mod.effectiveSubpixelOrder;
+const effectiveSubpixelOrderRef = target_mod.effectiveSubpixelOrderRef;
 const resourceEntryKey = resources_mod.resourceEntryKey;
 const resourceEntryStamp = resources_mod.resourceEntryStamp;
 const resourceEntryUploadBytes = resources_mod.resourceEntryUploadBytes;
@@ -391,7 +391,7 @@ pub const Renderer = struct {
     /// Vtables call this once per frame before fan-out so per-tile workers
     /// don't have to re-validate (and don't need an error path).
     pub fn validateRecords(_: *Renderer, prepared: *const PreparedResources, records: DrawRecords, options: DrawOptions) !void {
-        const expected_target_stamp = TargetStamp.from(options.mvp, options.target);
+        const expected_target_stamp = TargetStamp.fromRef(&options.mvp, &options.target);
         for (records.segments) |segment| {
             const actual_stamp = prepared.stampForKey(segment.key) orelse return error.MissingPreparedResource;
             if (!actual_stamp.eql(segment.resource_stamp)) return error.StaleDrawRecords;
@@ -404,7 +404,7 @@ pub const Renderer = struct {
     /// Vulkan vtables directly, and by the CPU vtable's serial fallback /
     /// tile workers. Caller has already invoked `validateRecords`.
     pub fn iterateRecords(self: *Renderer, records: DrawRecords, options: DrawOptions, backend_prepared: ?*const anyopaque) void {
-        self.setSubpixelOrder(effectiveSubpixelOrder(options.target));
+        self.setSubpixelOrder(effectiveSubpixelOrderRef(&options.target));
         self.setFillRule(options.target.fill_rule);
         self.setTargetEncoding(options.target.encoding);
         self.setResolve(options.target.resolve);
