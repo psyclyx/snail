@@ -2,8 +2,18 @@
 #define SNAIL_COVERAGE_COMMON_GLSL
 
 #define kLogBandTextureWidth 12
+#define kRootCodeEps (1.0 / 65536.0)
+
+// Treat exact-edge float drift as the mathematical contour sample. The
+// half-open segment convention still comes from the root ordering below.
+float rootCodeCoord(float v) {
+    return (abs(v) <= kRootCodeEps) ? 0.0 : v;
+}
 
 uint calcRootCode(float y1, float y2, float y3) {
+    y1 = rootCodeCoord(y1);
+    y2 = rootCodeCoord(y2);
+    y3 = rootCodeCoord(y3);
     uint i1 = floatBitsToUint(y1) >> 31u;
     uint i2 = floatBitsToUint(y2) >> 30u;
     uint i3 = floatBitsToUint(y3) >> 29u;

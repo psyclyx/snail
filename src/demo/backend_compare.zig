@@ -207,16 +207,8 @@ fn buildScene(allocator: std.mem.Allocator) !SceneBundle {
 
     const latin_blob = try allocator.create(snail.TextBlob);
     errdefer allocator.destroy(latin_blob);
-    // Baselines pinned to integer y. CPU and GL compute the same mathematical
-    // sample point at every pixel, but via different float op orderings: CPU
-    // applies inverseTransform directly, GL interpolates v_texcoord across the
-    // dilated quad. When a baseline lands at a half-pixel y, the sample em
-    // coord at the baseline pixel is mathematically zero — and CPU's
-    // computation rounds to a tiny negative (~−7e-7) while GL's lands on a
-    // tiny positive. calcRootCode's bit-level sign trick then disagrees about
-    // whether contour curves at em y=0 cross the sample ray, producing a
-    // ~0.5 coverage gap on the affected row. Pinning to integer y avoids
-    // tripping this; see TODO comment in evalGlyphCoverageAxis.
+    // Keep baselines off exact half-pixel samples for the LCD compare; CPU and
+    // GPU subpixel paths still have tiny interpolation-order differences there.
     latin_blob.* = try buildPaintedTextBlob(allocator, atlas, "CH5+ Hello, world!", 18.25, 40.0, 24.0, .{ .linear_gradient = .{
         .start = .{ .x = 18.25, .y = 16.0 },
         .end = .{ .x = 205.0, .y = 48.0 },

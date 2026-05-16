@@ -2548,19 +2548,14 @@ fn appendCoverageContribution(result: *CoveragePair, distance: f32, sign: f32) v
     result.wgt = @max(result.wgt, clamp01(1.0 - @abs(distance) * 2.0));
 }
 
-// TODO: precision sensitivity at exact-edge samples. When the sample em
-// coord lands on a contour y (e.g. a Latin baseline at integer screen y +
-// 0.5 with text origin at integer + 0.5), CPU and GL can disagree by ~0.5
-// coverage on a single row. The two backends compute the same mathematical
-// em coord via different float op orderings — CPU applies inverseTransform
-// directly, GL interpolates v_texcoord across the dilated quad — and one
-// rounds slightly negative while the other rounds slightly positive.
-// calcRootCode's bit-level sign trick (`@bitCast(y) < 0`) then either sees
-// "all positive, no crossing" or "all negative, two crossings", with no
-// in-between. Real fix is either matching float op orderings exactly or
-// replacing the sign-bit gate with a tolerance-aware check that includes
-// curves whose y-range overlaps the AA window in pixel space. The
-// backend-compare test scene avoids this by pinning baselines to integer y.
+const root_code_eps: f32 = 1.0 / 65536.0;
+
+// Treat exact-edge float drift as the mathematical contour sample. The
+// half-open segment convention still comes from the root ordering below.
+inline fn rootCodeCoord(v: f32) f32 {
+    return if (@abs(v) <= root_code_eps) 0.0 else v;
+}
+
 const CoverageScan = enum {
     continue_scan,
     stop_scan,
@@ -3141,9 +3136,9 @@ fn decodeCurveSegment(tex0: [4]f32, tex1: [4]f32, tex2: [4]f32, meta: [4]f32) Cu
 /// Encodes whether 0, 1, or 2 roots contribute to coverage.
 /// Returns: 0 = no roots, 1 = first root only, 0x0100 = second root only, 0x0101 = both.
 fn calcRootCode(y1: f32, y2: f32, y3: f32) u16 {
-    const s1: u32 = @as(u32, @bitCast(y1)) >> 31;
-    const s2: u32 = @as(u32, @bitCast(y2)) >> 30;
-    const s3: u32 = @as(u32, @bitCast(y3)) >> 29;
+    const s1: u32 = @as(u32, @bitCast(rootCodeCoord(y1))) >> 31;
+    const s2: u32 = @as(u32, @bitCast(rootCodeCoord(y2))) >> 30;
+    const s3: u32 = @as(u32, @bitCast(rootCodeCoord(y3))) >> 29;
 
     // Replicate the GLSL bit manipulation
     const shift_a: u32 = (s2 & 2) | (s1 & ~@as(u32, 2));
@@ -3282,6 +3277,11 @@ test "f16ToF32 roundtrip" {
     try testing.expectApproxEqAbs(@as(f32, 1.0), f16ToF32(0x3C00), 1e-4);
     try testing.expectApproxEqAbs(@as(f32, 0.5), f16ToF32(0x3800), 1e-4);
     try testing.expectApproxEqAbs(@as(f32, -1.0), f16ToF32(0xBC00), 1e-4);
+}
+
+test "root code treats tiny exact-edge drift as zero" {
+    try std.testing.expectEqual(calcRootCode(0.0, -0.25, -0.5), calcRootCode(-root_code_eps * 0.5, -0.25, -0.5));
+    try std.testing.expectEqual(@as(u16, 0), calcRootCode(-root_code_eps * 2.0, -0.25, -0.5));
 }
 
 test "cpu renderer renders glyphs" {
