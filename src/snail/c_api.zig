@@ -645,6 +645,10 @@ fn toResourceCapacityMode(value: c_int) !snail.ResourceCapacityMode {
     };
 }
 
+fn reservedResourceCapacityMode(reserved_pages: u32) snail.ResourceCapacityMode {
+    return .{ .reserve_pages = reserved_pages };
+}
+
 export fn snail_resource_footprint_used_bytes(footprint: SnailResourceFootprint) usize {
     return footprint.curve_bytes_used +
         footprint.band_bytes_used +
@@ -1702,6 +1706,13 @@ export fn snail_resource_set_put_text_atlas_options(set: *ResourceSetImpl, key: 
     return SNAIL_OK;
 }
 
+export fn snail_resource_set_put_text_atlas_reserved(set: *ResourceSetImpl, key: SnailResourceKey, atlas: *const TextAtlasImpl, reserved_pages: u32) c_int {
+    set.inner.putTextAtlasOptions(snail.ResourceKey.fromId(key), &atlas.inner, .{
+        .atlas_capacity = reservedResourceCapacityMode(reserved_pages),
+    }) catch |err| return mapError(err);
+    return SNAIL_OK;
+}
+
 export fn snail_resource_set_put_path_picture(set: *ResourceSetImpl, key: SnailResourceKey, picture: *const PathPictureImpl) c_int {
     set.inner.putPathPicture(snail.ResourceKey.fromId(key), &picture.inner) catch |err| return mapError(err);
     return SNAIL_OK;
@@ -1710,6 +1721,13 @@ export fn snail_resource_set_put_path_picture(set: *ResourceSetImpl, key: SnailR
 export fn snail_resource_set_put_path_picture_options(set: *ResourceSetImpl, key: SnailResourceKey, picture: *const PathPictureImpl, atlas_capacity: c_int) c_int {
     set.inner.putPathPictureOptions(snail.ResourceKey.fromId(key), &picture.inner, .{
         .atlas_capacity = toResourceCapacityMode(atlas_capacity) catch return SNAIL_ERR_INVALID_ARGUMENT,
+    }) catch |err| return mapError(err);
+    return SNAIL_OK;
+}
+
+export fn snail_resource_set_put_path_picture_reserved(set: *ResourceSetImpl, key: SnailResourceKey, picture: *const PathPictureImpl, reserved_pages: u32) c_int {
+    set.inner.putPathPictureOptions(snail.ResourceKey.fromId(key), &picture.inner, .{
+        .atlas_capacity = reservedResourceCapacityMode(reserved_pages),
     }) catch |err| return mapError(err);
     return SNAIL_OK;
 }

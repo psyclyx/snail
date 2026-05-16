@@ -60,9 +60,10 @@ pub fn ImageSlot(comptime Image: type) type {
     };
 }
 
-pub const AtlasCapacityMode = enum {
+pub const AtlasCapacityMode = union(enum) {
     growable,
     exact,
+    reserve_pages: u32,
 };
 
 pub const AtlasSlotBuildInfo = struct {
@@ -274,6 +275,7 @@ pub fn atlasCapacityForMode(page_count: u32, mode: AtlasCapacityMode) u32 {
     return switch (mode) {
         .growable => atlasCapacity(page_count),
         .exact => page_count,
+        .reserve_pages => |reserved| @max(page_count, reserved),
     };
 }
 
@@ -397,6 +399,11 @@ test "exact atlas capacity packs immutable one-page atlases tightly" {
     try std.testing.expectEqual(@as(u32, 1), slots[1].base_layer);
     try std.testing.expectEqual(@as(u32, 8), info.allocated_curve_height);
     try std.testing.expectEqual(@as(u32, 8), info.allocated_band_height);
+}
+
+test "atlas capacity mode can reserve explicit page headroom" {
+    try std.testing.expectEqual(@as(u32, 8), atlasCapacityForMode(2, .{ .reserve_pages = 8 }));
+    try std.testing.expectEqual(@as(u32, 9), atlasCapacityForMode(9, .{ .reserve_pages = 8 }));
 }
 
 test "atlas slot metadata is sized from the submitted atlas set" {

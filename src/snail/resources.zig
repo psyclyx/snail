@@ -87,10 +87,15 @@ pub const ResourceSet = struct {
     };
 
     pub const TextAtlasOptions = struct {
+        /// `.growable` gives Snail one heuristic growth window. Use
+        /// `.reserve_pages` when the caller knows the intended atlas headroom.
         atlas_capacity: ResourceCapacityMode = .growable,
     };
 
     pub const PathPictureOptions = struct {
+        /// Path pictures are immutable by default; callers can opt into
+        /// growable or reserved capacity when reusing a stable resource key for
+        /// related snapshots.
         atlas_capacity: ResourceCapacityMode = .exact,
     };
 
