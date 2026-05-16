@@ -743,6 +743,8 @@ pub const GlTextState = struct {
     persistent_map: ?[*]u8 = null,
     ring_fences: [RING_SEGMENTS]gl.GLsync = .{null} ** RING_SEGMENTS,
     ring_segment: u32 = 0,
+    ring_offset: usize = 0,
+    ring_segment_dirty: [RING_SEGMENTS]bool = .{false} ** RING_SEGMENTS,
 
     // ── Init / Deinit ──
 
@@ -1167,6 +1169,11 @@ pub const GlTextState = struct {
 
     pub fn beginFrame(self: *GlTextState) void {
         self.frame_begun = false;
+        if (self.backend == .gl44 and self.ring_segment_dirty[self.ring_segment]) {
+            self.fenceRingSegment(self.ring_segment);
+            self.ring_segment = (self.ring_segment + 1) % RING_SEGMENTS;
+            self.ring_offset = 0;
+        }
     }
 
     pub fn setSubpixelOrder(self: *GlTextState, order: SubpixelOrder) void {
@@ -1271,11 +1278,44 @@ pub const GlTextState = struct {
         }
     }
 
+    fn waitRingSegment(self: *GlTextState, segment: u32) void {
+        if (self.ring_fences[segment]) |fence| {
+            const status = gl.glClientWaitSync(fence, 0, 0);
+            if (status != gl.GL_ALREADY_SIGNALED and status != gl.GL_CONDITION_SATISFIED) {
+                _ = gl.glClientWaitSync(fence, gl.GL_SYNC_FLUSH_COMMANDS_BIT, 1_000_000_000);
+            }
+            gl.glDeleteSync(fence);
+            self.ring_fences[segment] = null;
+        }
+    }
+
+    fn fenceRingSegment(self: *GlTextState, segment: u32) void {
+        if (!self.ring_segment_dirty[segment]) return;
+        self.ring_fences[segment] = gl.glFenceSync(gl.GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        self.ring_segment_dirty[segment] = false;
+    }
+
+    fn advanceRingSegment(self: *GlTextState) void {
+        self.fenceRingSegment(self.ring_segment);
+        self.ring_segment = (self.ring_segment + 1) % RING_SEGMENTS;
+        self.ring_offset = 0;
+        self.waitRingSegment(self.ring_segment);
+    }
+
     fn drawGlyphRange(self: *GlTextState, vertices: []const u32, glyph_offset: usize, glyph_count: usize) void {
         var glyphs_drawn: usize = 0;
         while (glyphs_drawn < glyph_count) {
-            const chunk: usize = @min(glyph_count - glyphs_drawn, MAX_GLYPHS_PER_SEGMENT);
             const word_offset = (glyph_offset + glyphs_drawn) * vertex.WORDS_PER_INSTANCE;
+            var chunk: usize = @min(glyph_count - glyphs_drawn, MAX_GLYPHS_PER_SEGMENT);
+            if (self.backend == .gl44) {
+                if (RING_SEGMENT_BYTES - self.ring_offset < BYTES_PER_GLYPH) {
+                    self.advanceRingSegment();
+                } else {
+                    self.waitRingSegment(self.ring_segment);
+                }
+                const segment_capacity = (RING_SEGMENT_BYTES - self.ring_offset) / BYTES_PER_GLYPH;
+                chunk = @min(chunk, segment_capacity);
+            }
             const byte_size = chunk * BYTES_PER_GLYPH;
 
             switch (self.backend) {
@@ -1283,17 +1323,7 @@ pub const GlTextState = struct {
                     gl.glBufferSubData(gl.GL_ARRAY_BUFFER, 0, @intCast(byte_size), @ptrCast(vertices[word_offset..].ptr));
                 },
                 .gl44 => {
-                    const offset = @as(usize, self.ring_segment) * RING_SEGMENT_BYTES;
-
-                    if (self.ring_fences[self.ring_segment]) |fence| {
-                        const status = gl.glClientWaitSync(fence, 0, 0);
-                        if (status != gl.GL_ALREADY_SIGNALED and status != gl.GL_CONDITION_SATISFIED) {
-                            _ = gl.glClientWaitSync(fence, gl.GL_SYNC_FLUSH_COMMANDS_BIT, 1_000_000_000);
-                        }
-                        gl.glDeleteSync(fence);
-                        self.ring_fences[self.ring_segment] = null;
-                    }
-
+                    const offset = @as(usize, self.ring_segment) * RING_SEGMENT_BYTES + self.ring_offset;
                     const dst = self.persistent_map.?[offset..][0..byte_size];
                     const src: [*]const u8 = @ptrCast(vertices[word_offset..].ptr);
                     @memcpy(dst, src[0..byte_size]);
@@ -1306,8 +1336,8 @@ pub const GlTextState = struct {
             gl.glDrawElementsInstanced(gl.GL_TRIANGLES, 6, gl.GL_UNSIGNED_INT, null, @intCast(chunk));
 
             if (self.backend == .gl44) {
-                self.ring_fences[self.ring_segment] = gl.glFenceSync(gl.GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-                self.ring_segment = (self.ring_segment + 1) % RING_SEGMENTS;
+                self.ring_offset += byte_size;
+                self.ring_segment_dirty[self.ring_segment] = true;
             }
 
             glyphs_drawn += chunk;

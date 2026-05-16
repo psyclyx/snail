@@ -96,6 +96,47 @@ fn bandCount(num_curves: usize) u16 {
     return 12;
 }
 
+fn emptyGlyphBandData() GlyphBandData {
+    return .{
+        .data = &.{},
+        .texel_count = 0,
+        .h_band_count = 0,
+        .v_band_count = 0,
+        .band_scale_x = 0,
+        .band_scale_y = 0,
+        .band_offset_x = 0,
+        .band_offset_y = 0,
+    };
+}
+
+pub fn buildGlyphBandDataForGlyph(
+    allocator: std.mem.Allocator,
+    glyph: curve_tex.GlyphCurves,
+    curve_entry: curve_tex.GlyphCurveEntry,
+) !GlyphBandData {
+    if (glyph.prepared_curves) |prepared_curves| {
+        return buildGlyphBandDataWithPreparedCurves(
+            allocator,
+            glyph.curves,
+            glyph.logical_curve_count,
+            glyph.bbox,
+            curve_entry,
+            glyph.origin,
+            glyph.prefer_direct_encoding,
+            prepared_curves,
+        );
+    }
+    return buildGlyphBandData(
+        allocator,
+        glyph.curves,
+        glyph.logical_curve_count,
+        glyph.bbox,
+        curve_entry,
+        glyph.origin,
+        glyph.prefer_direct_encoding,
+    );
+}
+
 /// Build band data for a single glyph, referencing the curve texture.
 pub fn buildGlyphBandData(
     allocator: std.mem.Allocator,
@@ -106,18 +147,41 @@ pub fn buildGlyphBandData(
     origin: Vec2,
     prefer_direct_encoding: bool,
 ) !GlyphBandData {
+    if (curves.len == 0) return emptyGlyphBandData();
+
+    const prepared_curves = if (prefer_direct_encoding)
+        try curve_tex.prepareGlyphCurvesForDirectEncoding(allocator, curves, origin)
+    else
+        try curve_tex.prepareGlyphCurvesForPacking(allocator, curves, origin);
+    defer allocator.free(prepared_curves);
+
+    return buildGlyphBandDataWithPreparedCurves(
+        allocator,
+        curves,
+        logical_curve_count,
+        bbox,
+        curve_entry,
+        origin,
+        prefer_direct_encoding,
+        prepared_curves,
+    );
+}
+
+pub fn buildGlyphBandDataWithPreparedCurves(
+    allocator: std.mem.Allocator,
+    curves: []const CurveSegment,
+    logical_curve_count: usize,
+    bbox: BBox,
+    curve_entry: curve_tex.GlyphCurveEntry,
+    origin: Vec2,
+    prefer_direct_encoding: bool,
+    prepared_curves: []const CurveSegment,
+) !GlyphBandData {
     if (curves.len == 0) {
-        return .{
-            .data = &.{},
-            .texel_count = 0,
-            .h_band_count = 0,
-            .v_band_count = 0,
-            .band_scale_x = 0,
-            .band_scale_y = 0,
-            .band_offset_x = 0,
-            .band_offset_y = 0,
-        };
+        std.debug.assert(prepared_curves.len == 0);
+        return emptyGlyphBandData();
     }
+    std.debug.assert(prepared_curves.len == curves.len);
 
     const band_curve_count = if (logical_curve_count == 0) curves.len else logical_curve_count;
     const h_bands = bandCount(band_curve_count);
@@ -125,16 +189,14 @@ pub fn buildGlyphBandData(
     const max_band_count = 12;
     std.debug.assert(h_bands <= max_band_count and v_bands <= max_band_count);
 
-    var curve_bboxes = try allocator.alloc(BBox, curves.len);
+    var curve_bboxes = try allocator.alloc(BBox, prepared_curves.len);
     defer allocator.free(curve_bboxes);
-    var curve_sort_max_x = try allocator.alloc(f32, curves.len);
+    var curve_sort_max_x = try allocator.alloc(f32, prepared_curves.len);
     defer allocator.free(curve_sort_max_x);
-    var curve_sort_max_y = try allocator.alloc(f32, curves.len);
+    var curve_sort_max_y = try allocator.alloc(f32, prepared_curves.len);
     defer allocator.free(curve_sort_max_y);
     const geometry: BandGeometry = blk: {
         if (prefer_direct_encoding) {
-            const prepared_curves = try curve_tex.prepareGlyphCurvesForDirectEncoding(allocator, curves, origin);
-            defer allocator.free(prepared_curves);
             const delta = Vec2.new(-origin.x, -origin.y);
             const direct_bbox = BBox{
                 .min = Vec2.add(bbox.min, delta),
@@ -156,9 +218,6 @@ pub fn buildGlyphBandData(
                 .epsilon = directEncodingBandOverlap(curves, prepared_curves, origin),
             };
         }
-
-        const prepared_curves = try curve_tex.prepareGlyphCurvesForPacking(allocator, curves, origin);
-        defer allocator.free(prepared_curves);
 
         var prepared_bbox = prepared_curves[0].boundingBox();
         for (prepared_curves, 0..) |curve, ci| {
@@ -200,7 +259,7 @@ pub fn buildGlyphBandData(
         const t1 = @as(f32, @floatFromInt(bi + 1)) / @as(f32, @floatFromInt(h_bands));
         h_band_min[bi] = geometry.bbox.min.y + geometry.height * t0 - geometry.epsilon;
         h_band_max[bi] = geometry.bbox.min.y + geometry.height * t1 + geometry.epsilon;
-        h_lists[bi] = try std.ArrayList(u16).initCapacity(allocator, curves.len);
+        h_lists[bi] = try std.ArrayList(u16).initCapacity(allocator, prepared_curves.len);
         h_inited += 1;
     }
     for (0..v_bands) |bi| {
@@ -208,7 +267,7 @@ pub fn buildGlyphBandData(
         const t1 = @as(f32, @floatFromInt(bi + 1)) / @as(f32, @floatFromInt(v_bands));
         v_band_min[bi] = geometry.bbox.min.x + geometry.width * t0 - geometry.epsilon;
         v_band_max[bi] = geometry.bbox.min.x + geometry.width * t1 + geometry.epsilon;
-        v_lists[bi] = try std.ArrayList(u16).initCapacity(allocator, curves.len);
+        v_lists[bi] = try std.ArrayList(u16).initCapacity(allocator, prepared_curves.len);
         v_inited += 1;
     }
 

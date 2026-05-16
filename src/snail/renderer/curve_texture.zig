@@ -138,7 +138,10 @@ pub fn buildCurveTexture(
     glyphs: []const GlyphCurves,
 ) !struct { texture: CurveTexture, entries: []GlyphCurveEntry } {
     var total_texels: u32 = 0;
-    for (glyphs) |g| total_texels += @as(u32, @intCast(g.curves.len)) * SEGMENT_TEXELS;
+    for (glyphs) |g| {
+        const curve_count = if (g.prepared_curves) |prepared| prepared.len else g.curves.len;
+        total_texels += @as(u32, @intCast(curve_count)) * SEGMENT_TEXELS;
+    }
 
     const height = @max(1, (total_texels + TEX_WIDTH - 1) / TEX_WIDTH);
     const total = TEX_WIDTH * height;
@@ -157,12 +160,17 @@ pub fn buildCurveTexture(
         entries[gi] = .{
             .start_x = @intCast(tx),
             .start_y = @intCast(ty),
-            .count = @intCast(g.curves.len),
+            .count = @intCast(if (g.prepared_curves) |prepared| prepared.len else g.curves.len),
             .offset = texel_idx,
         };
         if (g.prefer_direct_encoding) {
-            const prepared_curves = try prepareGlyphCurvesForDirectEncoding(scratch_allocator, g.curves, g.origin);
-            defer scratch_allocator.free(prepared_curves);
+            var owned_prepared_curves: ?[]CurveSegment = null;
+            const prepared_curves = if (g.prepared_curves) |prepared| prepared else blk: {
+                const prepared = try prepareGlyphCurvesForDirectEncoding(scratch_allocator, g.curves, g.origin);
+                owned_prepared_curves = prepared;
+                break :blk prepared;
+            };
+            defer if (owned_prepared_curves) |prepared| scratch_allocator.free(prepared);
 
             for (prepared_curves) |quantized_curve| {
                 const base = texel_idx * 4;
@@ -183,8 +191,13 @@ pub fn buildCurveTexture(
                 texel_idx += SEGMENT_TEXELS;
             }
         } else {
-            const prepared_curves = try prepareGlyphCurvesForPacking(scratch_allocator, g.curves, g.origin);
-            defer scratch_allocator.free(prepared_curves);
+            var owned_prepared_curves: ?[]CurveSegment = null;
+            const prepared_curves = if (g.prepared_curves) |prepared| prepared else blk: {
+                const prepared = try prepareGlyphCurvesForPacking(scratch_allocator, g.curves, g.origin);
+                owned_prepared_curves = prepared;
+                break :blk prepared;
+            };
+            defer if (owned_prepared_curves) |prepared| scratch_allocator.free(prepared);
 
             for (prepared_curves) |curve| {
                 const base = texel_idx * 4;
@@ -232,6 +245,9 @@ pub const GlyphCurves = struct {
     origin: Vec2 = .zero,
     logical_curve_count: usize = 0,
     prefer_direct_encoding: bool = false,
+    /// Optional caller-owned curves already localized and quantized for the
+    /// selected encoding mode. Builders only read this slice.
+    prepared_curves: ?[]const CurveSegment = null,
 };
 
 fn f16BitsToF32(val: u16) f32 {

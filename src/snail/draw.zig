@@ -68,14 +68,29 @@ const SegmentSink = union(enum) {
         segments: *std.ArrayList(DrawSegment),
     };
 
+    fn mergeIfAdjacent(prev: *DrawSegment, segment: DrawSegment) bool {
+        if (prev.kind != segment.kind) return false;
+        if (prev.offset + prev.len != segment.offset) return false;
+        if (prev.texture_layer_base != segment.texture_layer_base) return false;
+        if (!prev.key.eql(segment.key)) return false;
+        if (!prev.resource_stamp.eql(segment.resource_stamp)) return false;
+        if (!std.meta.eql(prev.target_stamp, segment.target_stamp)) return false;
+        prev.len += segment.len;
+        return true;
+    }
+
     fn add(self: *SegmentSink, segment: DrawSegment) !void {
         switch (self.*) {
             .fixed => |fixed| {
+                if (fixed.len.* > 0 and mergeIfAdjacent(&fixed.buf[fixed.len.* - 1], segment)) return;
                 if (fixed.len.* >= fixed.buf.len) return error.DrawListFull;
                 fixed.buf[fixed.len.*] = segment;
                 fixed.len.* += 1;
             },
-            .dynamic => |dynamic| try dynamic.segments.append(dynamic.allocator, segment),
+            .dynamic => |dynamic| {
+                if (dynamic.segments.items.len > 0 and mergeIfAdjacent(&dynamic.segments.items[dynamic.segments.items.len - 1], segment)) return;
+                try dynamic.segments.append(dynamic.allocator, segment);
+            },
         }
     }
 };

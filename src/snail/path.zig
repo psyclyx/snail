@@ -1880,21 +1880,32 @@ pub const PathPictureBuilder = struct {
         defer scratch_allocator.free(glyph_curves);
         const packed_curve_slices = try scratch_allocator.alloc([]CurveSegment, total_layer_count);
         defer scratch_allocator.free(packed_curve_slices);
+        const prepared_curve_slices = try scratch_allocator.alloc([]CurveSegment, total_layer_count);
+        defer scratch_allocator.free(prepared_curve_slices);
         var glyph_cursor: usize = 0;
         defer {
-            for (packed_curve_slices[0..glyph_cursor]) |curves| scratch_allocator.free(curves);
+            for (packed_curve_slices[0..glyph_cursor], prepared_curve_slices[0..glyph_cursor]) |curves, prepared_curves| {
+                scratch_allocator.free(curves);
+                scratch_allocator.free(prepared_curves);
+            }
         }
         for (self.paths.items) |path| {
             const origin = bboxCenter(path.bbox);
             for (path.layers[0..path.layer_count]) |layer| {
                 const stored_curves = try scratch_allocator.dupe(CurveSegment, layer.curves);
+                const prepared_curves = curve_tex.prepareGlyphCurvesForDirectEncoding(scratch_allocator, stored_curves, origin) catch |err| {
+                    scratch_allocator.free(stored_curves);
+                    return err;
+                };
                 packed_curve_slices[glyph_cursor] = stored_curves;
+                prepared_curve_slices[glyph_cursor] = prepared_curves;
                 glyph_curves[glyph_cursor] = .{
                     .curves = stored_curves,
                     .bbox = layer.bbox,
                     .origin = origin,
                     .logical_curve_count = layer.logical_curve_count,
                     .prefer_direct_encoding = true,
+                    .prepared_curves = prepared_curves,
                 };
                 glyph_cursor += 1;
             }
@@ -1911,7 +1922,7 @@ pub const PathPictureBuilder = struct {
             glyph_band_data.deinit(scratch_allocator);
         }
         for (glyph_curves, 0..) |gc, i| {
-            var bd = try band_tex.buildGlyphBandData(scratch_allocator, gc.curves, gc.logical_curve_count, gc.bbox, ct.entries[i], gc.origin, gc.prefer_direct_encoding);
+            var bd = try band_tex.buildGlyphBandDataForGlyph(scratch_allocator, gc, ct.entries[i]);
             try glyph_band_data.append(scratch_allocator, bd);
             _ = &bd;
         }

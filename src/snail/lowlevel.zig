@@ -41,6 +41,13 @@ pub fn textureLayerLocal(layer: u32) !u8 {
     return @intCast(local);
 }
 
+fn freeGlyphCurveScratch(allocator: std.mem.Allocator, glyphs: []const curve_tex.GlyphCurves) void {
+    for (glyphs) |gc| {
+        allocator.free(gc.curves);
+        if (gc.prepared_curves) |prepared_curves| allocator.free(@constCast(prepared_curves));
+    }
+}
+
 pub const PreparedTextAtlasView = struct {
     layer_base: u32 = 0,
     info_row_base: u32 = 0,
@@ -408,7 +415,8 @@ pub const CurveAtlas = struct {
         defer cache.deinit();
 
         var glyph_curves_list: std.ArrayList(curve_tex.GlyphCurves) = .empty;
-        errdefer for (glyph_curves_list.items) |gc| allocator.free(gc.curves);
+        var glyph_curves_owned = true;
+        errdefer if (glyph_curves_owned) freeGlyphCurveScratch(allocator, glyph_curves_list.items);
         defer glyph_curves_list.deinit(allocator);
 
         const GlyphMeta = struct {
@@ -433,20 +441,27 @@ pub const CurveAtlas = struct {
             }
 
             const owned = try allocator.dupe(CurveSegment, all_curves.items);
+            const prepared = curve_tex.prepareGlyphCurvesForDirectEncoding(allocator, owned, .zero) catch |err| {
+                allocator.free(owned);
+                return err;
+            };
             const render_bbox = blk: {
-                const prepared = try curve_tex.prepareGlyphCurvesForDirectEncoding(allocator, owned, .zero);
-                defer allocator.free(prepared);
                 if (prepared.len == 0) break :blk glyph.metrics.bbox;
                 var prepared_bbox = prepared[0].boundingBox();
                 for (prepared[1..]) |curve| prepared_bbox = prepared_bbox.merge(curve.boundingBox());
                 break :blk glyph.metrics.bbox.merge(prepared_bbox);
             };
-            try glyph_curves_list.append(allocator, .{
+            glyph_curves_list.append(allocator, .{
                 .curves = owned,
                 .bbox = render_bbox,
                 .logical_curve_count = owned.len,
                 .prefer_direct_encoding = true,
-            });
+                .prepared_curves = prepared,
+            }) catch |err| {
+                allocator.free(owned);
+                allocator.free(prepared);
+                return err;
+            };
             try glyph_infos.append(allocator, .{
                 .gid = gid,
                 .advance = glyph.metrics.advance_width,
@@ -465,7 +480,7 @@ pub const CurveAtlas = struct {
             glyph_band_data.deinit(allocator);
         }
         for (glyph_curves_list.items, 0..) |gc, i| {
-            var bd = try band_tex.buildGlyphBandData(allocator, gc.curves, gc.logical_curve_count, gc.bbox, ct.entries[i], gc.origin, gc.prefer_direct_encoding);
+            var bd = try band_tex.buildGlyphBandDataForGlyph(allocator, gc, ct.entries[i]);
             try glyph_band_data.append(allocator, bd);
             _ = &bd;
         }
@@ -486,7 +501,8 @@ pub const CurveAtlas = struct {
             });
         }
 
-        for (glyph_curves_list.items) |gc| allocator.free(gc.curves);
+        freeGlyphCurveScratch(allocator, glyph_curves_list.items);
+        glyph_curves_owned = false;
 
         const atlas_page = try AtlasPage.init(
             allocator,

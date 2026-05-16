@@ -536,6 +536,14 @@ pub const CpuRenderer = struct {
         };
     }
 
+    /// Convenience initializer for callers that already own a thread pool.
+    /// Does not allocate and does not take ownership of `pool`.
+    pub fn initWithThreadPool(pixels: [*]u8, width: u32, height: u32, stride: u32, pool: ?*snail.ThreadPool) CpuRenderer {
+        var renderer = init(pixels, width, height, stride);
+        renderer.setThreadPool(pool);
+        return renderer;
+    }
+
     /// Update the pixel buffer and dimensions without clearing atlas state.
     pub fn reinitBuffer(self: *CpuRenderer, pixels: [*]u8, width: u32, height: u32, stride: u32) void {
         self.pixels = pixels;
@@ -1012,6 +1020,7 @@ pub const CpuRenderer = struct {
             const sample_dx = Vec2.new(inverse.xx, inverse.yx);
             const sample_dy = Vec2.new(inverse.xy, inverse.yy);
             const use_subpixel = allow_subpixel and self.subpixel_order != .none;
+            const subpixel_plan = SubpixelCoveragePlan.init(sample_dx, sample_dy, self.subpixel_order);
             const outline_composite = composite_mode == 1 and layer_count >= 2;
             const fill_paint_program: PreparedPathPaint = if (outline_composite) layers[0].paint else .{};
             const stroke_paint_program: PreparedPathPaint = if (outline_composite) layers[1].paint else .{};
@@ -1044,13 +1053,11 @@ pub const CpuRenderer = struct {
                             const cov = self.applySubpixelCoverageTransfer(evalGlyphCoverageSubpixel(
                                 page,
                                 local,
-                                sample_dx,
-                                sample_dy,
+                                subpixel_plan,
                                 be,
                                 band_max_h,
                                 band_max_v,
                                 self.fill_rule,
-                                self.subpixel_order,
                             ));
 
                             if (outline_composite and l < 2) {
@@ -1172,6 +1179,7 @@ pub const CpuRenderer = struct {
             const ppe = Vec2.new(1.0 / epp.x, 1.0 / epp.y);
             const sample_dx = Vec2.new(inverse.xx, inverse.yx);
             const sample_dy = Vec2.new(inverse.xy, inverse.yy);
+            const subpixel_plan = SubpixelCoveragePlan.init(sample_dx, sample_dy, self.subpixel_order);
             const band_max_h = layer.band_max_h;
             const band_max_v = layer.band_max_v;
             const paint_program = layer.paint;
@@ -1194,13 +1202,11 @@ pub const CpuRenderer = struct {
                         const cov = self.applySubpixelCoverageTransfer(evalGlyphCoverageSubpixel(
                             page,
                             local,
-                            sample_dx,
-                            sample_dy,
+                            subpixel_plan,
                             be,
                             band_max_h,
                             band_max_v,
                             self.fill_rule,
-                            self.subpixel_order,
                         ));
                         if (max3(cov.rgb) < 1.0 / 255.0) continue;
                         var paint = paint_program.sample(local);
@@ -1243,6 +1249,7 @@ pub const CpuRenderer = struct {
         const band_max_v: i32 = @as(i32, @intCast(be.v_band_count)) - 1;
         const sample_dx = Vec2.new(inverse.xx, inverse.yx);
         const sample_dy = Vec2.new(inverse.xy, inverse.yy);
+        const subpixel_plan = SubpixelCoveragePlan.init(sample_dx, sample_dy, self.subpixel_order);
 
         var row: u32 = @intCast(py0);
         while (row < @as(u32, @intCast(py1))) : (row += 1) {
@@ -1260,13 +1267,11 @@ pub const CpuRenderer = struct {
                     const cov = self.applySubpixelCoverageTransfer(evalGlyphCoverageSubpixel(
                         page,
                         display_local,
-                        sample_dx,
-                        sample_dy,
+                        subpixel_plan,
                         be,
                         band_max_h,
                         band_max_v,
                         self.fill_rule,
-                        self.subpixel_order,
                     ));
                     if (max3(cov.rgb) < 1.0 / 255.0) continue;
                     self.blendSubpixelPixel(row, col, color, cov.rgb, cov.alpha);
@@ -1358,6 +1363,7 @@ pub const CpuRenderer = struct {
 
         const band_max_h: i32 = @as(i32, @intCast(be.h_band_count)) - 1;
         const band_max_v: i32 = @as(i32, @intCast(be.v_band_count)) - 1;
+        const subpixel_plan = SubpixelCoveragePlan.init(Vec2.new(epp_x, 0.0), Vec2.new(0.0, -epp_y), self.subpixel_order);
 
         var row: u32 = @intCast(py0);
         while (row < @as(u32, @intCast(py1))) : (row += 1) {
@@ -1387,13 +1393,11 @@ pub const CpuRenderer = struct {
                     const cov = self.applySubpixelCoverageTransfer(evalGlyphCoverageSubpixel(
                         page,
                         Vec2.new(em_x, em_y),
-                        Vec2.new(epp_x, 0.0),
-                        Vec2.new(0.0, -epp_y),
+                        subpixel_plan,
                         be,
                         band_max_h,
                         band_max_v,
                         self.fill_rule,
-                        self.subpixel_order,
                     ));
                     if (max3(cov.rgb) < 1.0 / 255.0) continue;
                     self.blendSubpixelPixel(row, col, color, cov.rgb, cov.alpha);
@@ -2255,6 +2259,26 @@ fn subpixelCoveragePixelsPerEm(sample_dx: Vec2, sample_dy: Vec2, subpixel_order:
     return edgePixelsToPixelsPerEm(edge_pixels);
 }
 
+const SubpixelCoveragePlan = struct {
+    order: SubpixelOrder,
+    ppe: Vec2,
+    step: Vec2,
+    reverse_order: bool,
+
+    fn init(sample_dx: Vec2, sample_dy: Vec2, order: SubpixelOrder) SubpixelCoveragePlan {
+        return .{
+            .order = order,
+            .ppe = subpixelCoveragePixelsPerEm(sample_dx, sample_dy, order),
+            .step = Vec2.scale(switch (order) {
+                .rgb, .bgr => sample_dx,
+                .vrgb, .vbgr => sample_dy,
+                .none => Vec2.zero,
+            }, 1.0 / 3.0),
+            .reverse_order = order == .bgr or order == .vbgr,
+        };
+    }
+};
+
 test "subpixel coverage narrows the analytic footprint on the subpixel axis" {
     const sample_dx = Vec2.new(1.0 / 20.0, 0.0);
     const sample_dy = Vec2.new(0.0, 1.0 / 24.0);
@@ -2991,31 +3015,22 @@ fn evalGlyphCoverage(
 fn evalGlyphCoverageSubpixel(
     page: anytype,
     rc: Vec2,
-    sample_dx: Vec2,
-    sample_dy: Vec2,
+    plan: SubpixelCoveragePlan,
     be: GlyphBandEntry,
     band_max_h: i32,
     band_max_v: i32,
     fill_rule: FillRule,
-    subpixel_order: SubpixelOrder,
 ) SubpixelCoverage {
-    const subpixel_ppe = subpixelCoveragePixelsPerEm(sample_dx, sample_dy, subpixel_order);
-    const step = Vec2.scale(switch (subpixel_order) {
-        .rgb, .bgr => sample_dx,
-        .vrgb, .vbgr => sample_dy,
-        .none => Vec2.new(0.0, 0.0),
-    }, 1.0 / 3.0);
-    const reverse_order = subpixel_order == .bgr or subpixel_order == .vbgr;
-    return switch (subpixel_order) {
+    return switch (plan.order) {
         .rgb, .bgr, .vrgb, .vbgr => filterSubpixelCoverage(
-            evalGlyphCoverage(page, rc.x - step.x * 3.0, rc.y - step.y * 3.0, subpixel_ppe.x, subpixel_ppe.y, be, band_max_h, band_max_v, fill_rule),
-            evalGlyphCoverage(page, rc.x - step.x * 2.0, rc.y - step.y * 2.0, subpixel_ppe.x, subpixel_ppe.y, be, band_max_h, band_max_v, fill_rule),
-            evalGlyphCoverage(page, rc.x - step.x * 1.0, rc.y - step.y * 1.0, subpixel_ppe.x, subpixel_ppe.y, be, band_max_h, band_max_v, fill_rule),
-            evalGlyphCoverage(page, rc.x, rc.y, subpixel_ppe.x, subpixel_ppe.y, be, band_max_h, band_max_v, fill_rule),
-            evalGlyphCoverage(page, rc.x + step.x * 1.0, rc.y + step.y * 1.0, subpixel_ppe.x, subpixel_ppe.y, be, band_max_h, band_max_v, fill_rule),
-            evalGlyphCoverage(page, rc.x + step.x * 2.0, rc.y + step.y * 2.0, subpixel_ppe.x, subpixel_ppe.y, be, band_max_h, band_max_v, fill_rule),
-            evalGlyphCoverage(page, rc.x + step.x * 3.0, rc.y + step.y * 3.0, subpixel_ppe.x, subpixel_ppe.y, be, band_max_h, band_max_v, fill_rule),
-            reverse_order,
+            evalGlyphCoverage(page, rc.x - plan.step.x * 3.0, rc.y - plan.step.y * 3.0, plan.ppe.x, plan.ppe.y, be, band_max_h, band_max_v, fill_rule),
+            evalGlyphCoverage(page, rc.x - plan.step.x * 2.0, rc.y - plan.step.y * 2.0, plan.ppe.x, plan.ppe.y, be, band_max_h, band_max_v, fill_rule),
+            evalGlyphCoverage(page, rc.x - plan.step.x * 1.0, rc.y - plan.step.y * 1.0, plan.ppe.x, plan.ppe.y, be, band_max_h, band_max_v, fill_rule),
+            evalGlyphCoverage(page, rc.x, rc.y, plan.ppe.x, plan.ppe.y, be, band_max_h, band_max_v, fill_rule),
+            evalGlyphCoverage(page, rc.x + plan.step.x * 1.0, rc.y + plan.step.y * 1.0, plan.ppe.x, plan.ppe.y, be, band_max_h, band_max_v, fill_rule),
+            evalGlyphCoverage(page, rc.x + plan.step.x * 2.0, rc.y + plan.step.y * 2.0, plan.ppe.x, plan.ppe.y, be, band_max_h, band_max_v, fill_rule),
+            evalGlyphCoverage(page, rc.x + plan.step.x * 3.0, rc.y + plan.step.y * 3.0, plan.ppe.x, plan.ppe.y, be, band_max_h, band_max_v, fill_rule),
+            plan.reverse_order,
         ),
         .none => .{ .rgb = .{ 0.0, 0.0, 0.0 }, .alpha = 0.0 },
     };
