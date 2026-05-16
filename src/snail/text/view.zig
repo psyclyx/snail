@@ -1,9 +1,11 @@
 const snail = @import("../root.zig");
+const atlas_curve_mod = @import("../renderer/atlas/curve.zig");
+const texture_layers = @import("../renderer/texture_layers.zig");
 const ttf = @import("../font/ttf.zig");
 const config_mod = @import("config.zig");
 
-const GlyphInfo = snail.lowlevel.CurveAtlas.GlyphInfo;
-const ColrBaseInfo = snail.lowlevel.CurveAtlas.ColrBaseInfo;
+const GlyphInfo = atlas_curve_mod.CurveAtlas.GlyphInfo;
+const ColrBaseInfo = atlas_curve_mod.CurveAtlas.ColrBaseInfo;
 const FaceConfig = config_mod.FaceConfig;
 const FaceGlyphData = config_mod.FaceGlyphData;
 
@@ -70,7 +72,7 @@ pub const FaceView = struct {
     }
 
     pub fn glyphLayerWindowBase(self: *const FaceView, page_index: u16) u32 {
-        return snail.lowlevel.textureLayerWindowBase(self.glyphLayer(page_index));
+        return texture_layers.windowBase(self.glyphLayer(page_index));
     }
 
     pub fn layerInfoLoc(self: *const FaceView, info_x: u16, info_y: u16) struct { x: u16, y: u16 } {

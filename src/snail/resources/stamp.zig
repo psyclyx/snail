@@ -1,16 +1,17 @@
 const std = @import("std");
 
 const image_mod = @import("../image.zig");
-const lowlevel_mod = @import("../lowlevel.zig");
 const path_mod = @import("../path.zig");
 const resource_key_mod = @import("../resource_key.zig");
+const atlas_curve_mod = @import("../renderer/atlas/curve.zig");
 const set_mod = @import("set.zig");
 const text_mod = @import("../text.zig");
+const view_mod = @import("view.zig");
 
-const Atlas = lowlevel_mod.Atlas;
+const Atlas = atlas_curve_mod.Atlas;
 const Image = image_mod.Image;
 const PathPicture = path_mod.PathPicture;
-const PreparedLayerInfoUpload = lowlevel_mod.PreparedLayerInfoUpload;
+const PreparedLayerInfoUpload = view_mod.PreparedLayerInfoUpload;
 const ResourceKey = resource_key_mod.ResourceKey;
 const ResourceSet = set_mod.ResourceSet;
 const ResourceStamp = resource_key_mod.ResourceStamp;

@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const snail = @import("../root.zig");
+const atlas_curve_mod = @import("../renderer/atlas/curve.zig");
 const ttf = @import("../font/ttf.zig");
 const opentype = @import("../font/opentype.zig");
 const build_options = @import("build_options");
@@ -9,8 +10,8 @@ const harfbuzz = if (build_options.enable_harfbuzz) @import("../font/harfbuzz.zi
 };
 
 const Allocator = std.mem.Allocator;
-const GlyphInfo = snail.lowlevel.CurveAtlas.GlyphInfo;
-const ColrBaseInfo = snail.lowlevel.CurveAtlas.ColrBaseInfo;
+const GlyphInfo = atlas_curve_mod.CurveAtlas.GlyphInfo;
+const ColrBaseInfo = atlas_curve_mod.CurveAtlas.ColrBaseInfo;
 
 pub const FaceIndex = u16;
 

@@ -1,12 +1,11 @@
-const lowlevel_mod = @import("../lowlevel.zig");
+const texture_layers = @import("../renderer/texture_layers.zig");
+const resources_view = @import("../resources/view.zig");
 const scene_mod = @import("../scene.zig");
 const vertex_mod = @import("../renderer/vertex.zig");
 const vec = @import("../math/vec.zig");
 
 const PathDraw = scene_mod.PathDraw;
 const Transform2D = vec.Transform2D;
-const textureLayerLocal = lowlevel_mod.textureLayerLocal;
-const textureLayerWindowBase = lowlevel_mod.textureLayerWindowBase;
 
 pub const PATH_WORDS_PER_VERTEX = vertex_mod.WORDS_PER_VERTEX;
 pub const PATH_VERTICES_PER_SHAPE = vertex_mod.VERTICES_PER_GLYPH;
@@ -46,13 +45,13 @@ pub const PathBatch = struct {
     }
 
     fn localLayer(self: *PathBatch, atlas_layer: u32) !u8 {
-        const base = textureLayerWindowBase(atlas_layer);
+        const base = texture_layers.windowBase(atlas_layer);
         if (self.layer_window_base) |expected| {
             if (base != expected) return error.TextureLayerWindowChanged;
         } else {
             self.layer_window_base = base;
         }
-        return textureLayerLocal(atlas_layer);
+        return texture_layers.local(atlas_layer);
     }
 
     /// Emit one slice of a `PathDraw` into this batch: the shapes from
@@ -67,7 +66,7 @@ pub const PathBatch = struct {
         override_index: usize,
         shape_start: usize,
     ) !AppendResult {
-        const resolved_view = lowlevel_mod.coerceAtlasHandle(atlas_like);
+        const resolved_view = resources_view.coerceAtlasHandle(atlas_like);
         const view = &resolved_view;
         const range = draw.shapes.resolve(draw.picture.shapes.len);
         const start = @max(shape_start, range.start);

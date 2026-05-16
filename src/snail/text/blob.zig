@@ -3,6 +3,7 @@ const std = @import("std");
 const snail = @import("../root.zig");
 const paint_mod = @import("../paint.zig");
 const paint_records = @import("../paint_records.zig");
+const atlas_curve_mod = @import("../renderer/atlas/curve.zig");
 const band_tex = @import("../renderer/band_texture.zig");
 const atlas_mod = @import("atlas.zig");
 const config_mod = @import("config.zig");
@@ -13,6 +14,7 @@ const view_mod = @import("view.zig");
 const Allocator = std.mem.Allocator;
 const FaceIndex = config_mod.FaceIndex;
 const FaceView = view_mod.FaceView;
+const PaintImageRecord = atlas_curve_mod.CurveAtlas.PaintImageRecord;
 const ShapedText = types_mod.ShapedText;
 const TextAppend = types_mod.TextAppend;
 const TextAppendResult = types_mod.TextAppendResult;
@@ -35,7 +37,7 @@ pub const TextBlob = struct {
     paint_layer_info_data: ?[]f32 = null,
     paint_layer_info_width: u32 = 0,
     paint_layer_info_height: u32 = 0,
-    paint_image_records: ?[]?snail.lowlevel.CurveAtlas.PaintImageRecord = null,
+    paint_image_records: ?[]?PaintImageRecord = null,
     /// Upper bound on GPU vertex-output instances this blob will emit
     /// (counts COLR layer fan-out and synthetic-bold duplication). Used to
     /// size scratch buffers in `DrawList.estimate`.
@@ -106,7 +108,7 @@ pub const TextBlob = struct {
         errdefer if (paint_layer_info_data) |data| allocator.free(data);
 
         const paint_image_records = if (self.paint_image_records) |records|
-            try allocator.dupe(?snail.lowlevel.CurveAtlas.PaintImageRecord, records)
+            try allocator.dupe(?PaintImageRecord, records)
         else
             null;
         errdefer if (paint_image_records) |records| allocator.free(records);
@@ -201,7 +203,7 @@ pub const TextBlobBuilder = struct {
         data: ?[]f32 = null,
         width: u32 = 0,
         height: u32 = 0,
-        image_records: ?[]?snail.lowlevel.CurveAtlas.PaintImageRecord = null,
+        image_records: ?[]?PaintImageRecord = null,
     };
 
     fn finishPaintRecords(self: *TextBlobBuilder) !FinishedPaintRecords {
@@ -215,7 +217,7 @@ pub const TextBlobBuilder = struct {
         errdefer self.allocator.free(data);
         @memset(data, 0);
 
-        const image_records = try self.allocator.alloc(?snail.lowlevel.CurveAtlas.PaintImageRecord, count);
+        const image_records = try self.allocator.alloc(?PaintImageRecord, count);
         errdefer self.allocator.free(image_records);
         @memset(image_records, null);
         var has_image_paints = false;

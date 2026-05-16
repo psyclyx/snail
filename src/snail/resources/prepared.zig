@@ -3,10 +3,11 @@ const std = @import("std");
 const build_options = @import("build_options");
 const coverage_mod = @import("../coverage.zig");
 const image_mod = @import("../image.zig");
-const lowlevel_mod = @import("../lowlevel.zig");
 const path_mod = @import("../path.zig");
 const resource_key_mod = @import("../resource_key.zig");
+const atlas_curve_mod = @import("../renderer/atlas/curve.zig");
 const text_mod = @import("../text.zig");
+const view_mod = @import("view.zig");
 
 const pipeline = if (build_options.enable_opengl) @import("../renderer/gl.zig") else struct {
     pub const TextCoverageBindings = struct {};
@@ -24,14 +25,14 @@ const vulkan_pipeline = if (build_options.enable_vulkan) @import("../renderer/vu
     pub const VulkanPipeline = void;
 };
 
-const Atlas = lowlevel_mod.Atlas;
+const Atlas = atlas_curve_mod.Atlas;
 const CoverageBackend = coverage_mod.Backend;
 const Image = image_mod.Image;
 const PathPicture = path_mod.PathPicture;
-const PreparedAtlasView = lowlevel_mod.PreparedAtlasView;
-const PreparedImageView = lowlevel_mod.PreparedImageView;
-const PreparedLayerInfoView = lowlevel_mod.PreparedLayerInfoView;
-const PreparedTextAtlasView = lowlevel_mod.PreparedTextAtlasView;
+const PreparedAtlasView = view_mod.PreparedAtlasView;
+const PreparedImageView = view_mod.PreparedImageView;
+const PreparedLayerInfoView = view_mod.PreparedLayerInfoView;
+const PreparedTextAtlasView = view_mod.PreparedTextAtlasView;
 const ResourceKey = resource_key_mod.ResourceKey;
 const ResourceStamp = resource_key_mod.ResourceStamp;
 const TextAtlas = text_mod.TextAtlas;

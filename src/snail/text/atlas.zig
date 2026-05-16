@@ -2,14 +2,17 @@ const std = @import("std");
 
 const snail = @import("../root.zig");
 const glyph_emit = @import("../glyph_emit.zig");
+const atlas_curve_mod = @import("../renderer/atlas/curve.zig");
+const atlas_page_mod = @import("../renderer/atlas/page.zig");
 const config_mod = @import("config.zig");
 const shape_mod = @import("shape.zig");
 const types_mod = @import("types.zig");
 const view_mod = @import("view.zig");
 
 const Allocator = std.mem.Allocator;
-const AtlasPage = snail.lowlevel.AtlasPage;
-const GlyphInfo = snail.lowlevel.CurveAtlas.GlyphInfo;
+const CurveAtlas = atlas_curve_mod.CurveAtlas;
+const AtlasPage = atlas_page_mod.AtlasPage;
+const GlyphInfo = CurveAtlas.GlyphInfo;
 const TextBatch = snail.TextBatch;
 const CellMetrics = types_mod.CellMetrics;
 const CellMetricsOptions = types_mod.CellMetricsOptions;
@@ -437,7 +440,7 @@ pub const TextAtlas = struct {
         for (self.config.faces, 0..) |*fc, fi| {
             if (face_new_gids[fi]) |*new_gids| {
                 // Expand COLR layers.
-                try snail.lowlevel.CurveAtlas.expandColrLayersInner(&fc.font, self.allocator, new_gids);
+                try CurveAtlas.expandColrLayersInner(&fc.font, self.allocator, new_gids);
 
                 // Filter out glyph IDs already in the atlas.
                 var filtered = std.AutoHashMap(u16, void).init(self.allocator);
@@ -459,7 +462,7 @@ pub const TextAtlas = struct {
                 const next_page = self.pages.len + new_pages_list.items.len;
                 if (next_page > std.math.maxInt(u16)) return error.AtlasPageLimitExceeded;
                 const page_index: u16 = @intCast(next_page);
-                const page_result = try snail.lowlevel.CurveAtlas.buildPageDataInner(self.allocator, &fc.font, &filtered, page_index);
+                const page_result = try CurveAtlas.buildPageDataInner(self.allocator, &fc.font, &filtered, page_index);
                 try new_pages_list.append(self.allocator, page_result.page);
 
                 // Merge glyph maps.
@@ -521,7 +524,7 @@ pub const TextAtlas = struct {
     /// The returned wrapper borrows `self.pages`. Free it via
     /// `deinitUploadAtlas` (do NOT call `wrapper.deinit()`, which would
     /// release the shared pages).
-    pub fn uploadAtlas(self: *const TextAtlas) snail.lowlevel.CurveAtlas {
+    pub fn uploadAtlas(self: *const TextAtlas) CurveAtlas {
         return .{
             .allocator = self.allocator,
             .font = null,
@@ -536,7 +539,7 @@ pub const TextAtlas = struct {
 
     /// Clean up a wrapper Atlas from uploadAtlas(). Only frees the empty glyph_map,
     /// NOT the shared pages.
-    pub fn deinitUploadAtlas(_: *const TextAtlas, wrapper: *snail.lowlevel.CurveAtlas) void {
+    pub fn deinitUploadAtlas(_: *const TextAtlas, wrapper: *CurveAtlas) void {
         wrapper.glyph_map.deinit();
         // Don't free pages — they belong to TextAtlas.
         wrapper.pages = &.{};

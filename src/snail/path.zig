@@ -4,7 +4,7 @@ const bezier = @import("math/bezier.zig");
 const curve_tex = @import("renderer/curve_texture.zig");
 const draw_mod = @import("draw.zig");
 const image_mod = @import("image.zig");
-const lowlevel_mod = @import("lowlevel.zig");
+const resources_view = @import("resources/view.zig");
 const resource_set_mod = @import("resources/set.zig");
 const roots = @import("math/roots.zig");
 const scene_mod = @import("scene.zig");
@@ -38,12 +38,12 @@ const DrawList = draw_mod.DrawList;
 const DrawOptions = draw_mod.DrawOptions;
 const Image = image_mod.Image;
 const Mat4 = vec.Mat4;
-const PreparedAtlasView = lowlevel_mod.PreparedAtlasView;
 const ResourceSet = resource_set_mod.ResourceSet;
 const Scene = scene_mod.Scene;
 const Vec2 = vec.Vec2;
 const kPaintTexelsPerRecord = PATH_PAINT_TEXELS_PER_RECORD;
-const textureLayerLocal = lowlevel_mod.textureLayerLocal;
+const textureLayerLocal = @import("renderer/texture_layers.zig").local;
+const PreparedAtlasView = resources_view.PreparedAtlasView;
 
 test "vector path band count tracks source cubic commands" {
     var path = Path.init(std.testing.allocator);

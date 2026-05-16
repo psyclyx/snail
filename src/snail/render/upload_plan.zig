@@ -1,13 +1,13 @@
 const std = @import("std");
 
-const lowlevel_mod = @import("../lowlevel.zig");
+const atlas_page_mod = @import("../renderer/atlas/page.zig");
 const prepared_mod = @import("../resources/prepared.zig");
 const resource_key_mod = @import("../resource_key.zig");
 const set_mod = @import("../resources/set.zig");
 const stamp_mod = @import("../resources/stamp.zig");
 const upload_mod = @import("../upload.zig");
 
-const AtlasPage = lowlevel_mod.AtlasPage;
+const AtlasPage = atlas_page_mod.AtlasPage;
 const PreparedResources = prepared_mod.PreparedResources;
 const ResourceKey = resource_key_mod.ResourceKey;
 const ResourceSet = set_mod.ResourceSet;
