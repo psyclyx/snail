@@ -31,4 +31,6 @@ layout(location = 0, index = 1) out vec4 frag_blend;
 #define SNAIL_COVERAGE_EXPONENT coverage_exponent
 #define u_layer_base layer_base
 
+#include "snail_coverage_common.glsl"
+#include "snail_color_common.glsl"
 #include "snail_text_subpixel_body.glsl"

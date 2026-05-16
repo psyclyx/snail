@@ -29,4 +29,6 @@ layout(location = 0) out vec4 frag_color;
 #define SNAIL_COVERAGE_EXPONENT coverage_exponent
 #define u_layer_base layer_base
 
+#include "snail_coverage_common.glsl"
+#include "snail_color_common.glsl"
 #include "snail_path_frag_body.glsl"

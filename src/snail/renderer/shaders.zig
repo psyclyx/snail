@@ -6,50 +6,37 @@ const glsl_330_dual_source = "#define SNAIL_DUAL_SOURCE 1\n\n";
 const gl330_vert_interface = @embedFile("glsl/snail_vert.interface.glsl");
 const gl330_frag_interface = @embedFile("glsl/snail_frag.interface.glsl");
 const gl330_text_subpixel_interface = @embedFile("glsl/snail_text_subpixel.interface.glsl");
-const gl330_text_coverage_interface =
-    \\in vec4 v_color;
-    \\in vec2 v_texcoord;
-    \\flat in vec4 v_banding;
-    \\flat in ivec4 v_glyph;
-    \\
-    \\uniform sampler2DArray u_curve_tex;
-    \\uniform usampler2DArray u_band_tex;
-    \\uniform int u_fill_rule;
-    \\uniform float u_coverage_exponent;
-    \\uniform int u_layer_base;
-    \\
-    \\#define SNAIL_FILL_RULE u_fill_rule
-    \\#define SNAIL_COVERAGE_EXPONENT u_coverage_exponent
-    \\
-;
+const gl330_text_coverage_interface = @embedFile("glsl/snail_text_coverage.interface.glsl");
 
 const shared_vertex_body = @embedFile("glsl/snail_vert_body.glsl");
-const shared_text_coverage_fragment_body = @embedFile("glsl/snail_text_frag_body.glsl");
-const shared_text_fragment_main =
-    \\void main() {
-    \\    int layer_byte = (v_glyph.w >> 8) & 0xFF;
-    \\    if (layer_byte == 0xFF) discard;
-    \\    int atlas_layer = u_layer_base + layer_byte;
-    \\    vec2 rc = v_texcoord;
-    \\    vec2 dx = vec2(dFdx(rc.x), dFdy(rc.x));
-    \\    vec2 dy = vec2(dFdx(rc.y), dFdy(rc.y));
-    \\    vec2 ppe = vec2(1.0 / max(length(dx), 1.0 / 65536.0), 1.0 / max(length(dy), 1.0 / 65536.0));
-    \\    float cov = evalGlyphCoverage(rc, ppe, v_glyph.xy,
-    \\                                  ivec2(v_glyph.w & 0xFF, v_glyph.z),
-    \\                                  v_banding, atlas_layer);
-    \\    if (cov < 1.0 / 255.0) discard;
-    \\    vec4 linear_color = vec4(srgbDecode(v_color.r), srgbDecode(v_color.g), srgbDecode(v_color.b), v_color.a);
-    \\    vec4 linear_tint = vec4(srgbDecode(v_tint.r), srgbDecode(v_tint.g), srgbDecode(v_tint.b), v_tint.a);
-    \\    linear_color *= linear_tint;
-    \\    vec4 premul = premultiplyColor(linear_color, cov);
-    \\    frag_color = (SNAIL_OUTPUT_SRGB != 0) ? srgbEncodePremultiplied(premul) : premul;
-    \\}
-    \\
-;
+const shared_coverage_common = @embedFile("glsl/snail_coverage_common.glsl");
+const shared_color_common = @embedFile("glsl/snail_color_common.glsl");
+const shared_text_coverage_fragment_body =
+    shared_coverage_common ++
+    "\n" ++
+    shared_color_common ++
+    "\n" ++
+    @embedFile("glsl/snail_text_frag_body.glsl");
+const shared_text_fragment_main = @embedFile("glsl/snail_text_main.glsl");
 const shared_text_fragment_body = shared_text_coverage_fragment_body ++ "\n" ++ shared_text_fragment_main;
-const shared_colr_fragment_body = @embedFile("glsl/snail_colr_frag_body.glsl");
-const shared_path_fragment_body = @embedFile("glsl/snail_path_frag_body.glsl");
-const shared_text_subpixel_body = @embedFile("glsl/snail_text_subpixel_body.glsl");
+const shared_colr_fragment_body =
+    shared_coverage_common ++
+    "\n" ++
+    shared_color_common ++
+    "\n" ++
+    @embedFile("glsl/snail_colr_frag_body.glsl");
+const shared_path_fragment_body =
+    shared_coverage_common ++
+    "\n" ++
+    shared_color_common ++
+    "\n" ++
+    @embedFile("glsl/snail_path_frag_body.glsl");
+const shared_text_subpixel_body =
+    shared_coverage_common ++
+    "\n" ++
+    shared_color_common ++
+    "\n" ++
+    @embedFile("glsl/snail_text_subpixel_body.glsl");
 
 pub const text_vertex_interface = gl330_vert_interface;
 pub const text_fragment_interface = gl330_text_subpixel_interface;

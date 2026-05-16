@@ -1,44 +1,4 @@
-#define kLogBandTextureWidth 12
 #define kDirectEncodingKindBias 4.0
-uint calcRootCode(float y1, float y2, float y3) {
-    uint i1 = floatBitsToUint(y1) >> 31u;
-    uint i2 = floatBitsToUint(y2) >> 30u;
-    uint i3 = floatBitsToUint(y3) >> 29u;
-    uint shift = (i2 & 2u) | (i1 & ~2u);
-    shift = (i3 & 4u) | (shift & ~4u);
-    return ((0x2E74u >> shift) & 0x0101u);
-}
-
-float applyFillRule(float winding) {
-    if (SNAIL_FILL_RULE == 1) {
-        return 1.0 - abs(fract(winding * 0.5) * 2.0 - 1.0);
-    }
-    return abs(winding);
-}
-
-#ifndef SNAIL_COVERAGE_EXPONENT
-#define SNAIL_COVERAGE_EXPONENT 1.0
-#endif
-
-float applyCoverageTransfer(float cov) {
-    float clamped = clamp(cov, 0.0, 1.0);
-    float exponent = max(float(SNAIL_COVERAGE_EXPONENT), 1.0 / 65536.0);
-    return (abs(exponent - 1.0) <= 1e-6) ? clamped : pow(clamped, exponent);
-}
-
-ivec2 calcBandLoc(ivec2 glyphLoc, uint offset) {
-    ivec2 loc = ivec2(glyphLoc.x + int(offset), glyphLoc.y);
-    loc.y += loc.x >> kLogBandTextureWidth;
-    loc.x &= (1 << kLogBandTextureWidth) - 1;
-    return loc;
-}
-
-ivec2 offsetCurveLoc(ivec2 base, int offset) {
-    ivec2 loc = ivec2(base.x + offset, base.y);
-    loc.y += loc.x >> kLogBandTextureWidth;
-    loc.x &= (1 << kLogBandTextureWidth) - 1;
-    return loc;
-}
 
 ivec2 offsetLayerLoc(ivec2 base, int offset) {
     int width = textureSize(u_layer_tex, 0).x;
@@ -371,30 +331,6 @@ struct PathCompositeSample {
     float gradient;
 };
 
-float srgbEncode(float c) {
-    return (c <= 0.0031308) ? c * 12.92 : 1.055 * pow(c, 1.0 / 2.4) - 0.055;
-}
-
-float srgbDecode(float c) {
-    return (c <= 0.04045) ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);
-}
-
-vec3 linearToSrgb(vec3 color) {
-    return vec3(
-        srgbEncode(max(color.r, 0.0)),
-        srgbEncode(max(color.g, 0.0)),
-        srgbEncode(max(color.b, 0.0))
-    );
-}
-
-vec3 srgbToLinear(vec3 color) {
-    return vec3(
-        srgbDecode(color.r),
-        srgbDecode(color.g),
-        srgbDecode(color.b)
-    );
-}
-
 float interleavedGradientNoise(vec2 pixel) {
     return fract(52.9829189 * fract(dot(pixel, vec2(0.06711056, 0.00583715))));
 }
@@ -456,17 +392,6 @@ PathPaintSample samplePathPaint(vec2 rc, ivec2 infoBase, vec4 info) {
     }
 
     return PathPaintSample(vec4(1.0, 0.0, 1.0, 1.0), 0.0);
-}
-
-vec4 premultiplyColor(vec4 color, float cov) {
-    float alpha = color.a * cov;
-    return vec4(color.rgb * alpha, alpha);
-}
-
-vec4 srgbEncodePremultiplied(vec4 premul) {
-    if (premul.a <= 0.0) return vec4(0.0);
-    float inv_a = 1.0 / premul.a;
-    return vec4(linearToSrgb(premul.rgb * inv_a) * premul.a, premul.a);
 }
 
 PathCompositeSample compositePathGroup(vec2 rc, vec2 epp, vec2 ppe, ivec2 infoBase, vec4 header, int texLayer, vec4 tint) {

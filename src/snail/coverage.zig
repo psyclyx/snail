@@ -94,7 +94,12 @@ pub const Shader = struct {
     pub const vulkan = struct {
         pub const vertex_shader = @embedFile("renderer/vulkan_glsl/snail.vert");
         pub const text_fragment_shader = @embedFile("renderer/vulkan_glsl/snail_text.frag");
-        pub const coverage_functions = @embedFile("renderer/glsl/snail_text_frag_body.glsl");
+        pub const coverage_functions =
+            @embedFile("renderer/glsl/snail_coverage_common.glsl") ++
+            "\n" ++
+            @embedFile("renderer/glsl/snail_color_common.glsl") ++
+            "\n" ++
+            @embedFile("renderer/glsl/snail_text_frag_body.glsl");
         pub const descriptor_set_index: u32 = 0;
         pub const curve_texture_binding: u32 = 0;
         pub const band_texture_binding: u32 = 1;
