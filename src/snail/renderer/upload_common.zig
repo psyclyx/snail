@@ -21,9 +21,11 @@ pub fn AtlasSlot(comptime Atlas: type, comptime AtlasPage: type) type {
         capacity_pages: u32 = 0,
         uploaded_pages: u32 = 0,
         page_ptrs: []?*const AtlasPage = &.{},
+        page_layers: []u32 = &.{},
 
         pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
             if (self.page_ptrs.len > 0) allocator.free(self.page_ptrs);
+            if (self.page_layers.len > 0) allocator.free(self.page_layers);
             self.* = .{};
         }
 
@@ -38,13 +40,19 @@ pub fn AtlasSlot(comptime Atlas: type, comptime AtlasPage: type) type {
         ) !void {
             if (self.page_ptrs.len != capacity_pages) {
                 var next: []?*const AtlasPage = &.{};
+                var next_layers: []u32 = &.{};
                 if (capacity_pages != 0) {
                     next = try allocator.alloc(?*const AtlasPage, @intCast(capacity_pages));
+                    errdefer allocator.free(next);
+                    next_layers = try allocator.alloc(u32, @intCast(capacity_pages));
                 }
                 if (self.page_ptrs.len > 0) allocator.free(self.page_ptrs);
+                if (self.page_layers.len > 0) allocator.free(self.page_layers);
                 self.page_ptrs = next;
+                self.page_layers = next_layers;
             }
             @memset(self.page_ptrs, null);
+            @memset(self.page_layers, 0);
             self.atlas = atlas;
             self.base_layer = base_layer;
             self.info_row_base = info_row_base;
@@ -111,6 +119,7 @@ pub fn rebuildAtlasSlots(allocator: std.mem.Allocator, atlas_slots: anytype, atl
         for (0..page_count) |page_index| {
             const page = atlas.page(@intCast(page_index));
             slot.page_ptrs[page_index] = page;
+            slot.page_layers[page_index] = slot.base_layer + @as(u32, @intCast(page_index));
             if (page.curve_height > max_curve_h) max_curve_h = page.curve_height;
             if (page.band_height > max_band_h) max_band_h = page.band_height;
         }
@@ -144,6 +153,7 @@ pub fn rebuildAtlasSlotsWithCapacityModes(allocator: std.mem.Allocator, atlas_sl
         for (0..page_count) |page_index| {
             const page = atlas.page(@intCast(page_index));
             slot.page_ptrs[page_index] = page;
+            slot.page_layers[page_index] = slot.base_layer + @as(u32, @intCast(page_index));
             if (page.curve_height > max_curve_h) max_curve_h = page.curve_height;
             if (page.band_height > max_band_h) max_band_h = page.band_height;
         }
@@ -170,6 +180,7 @@ pub fn refreshAtlasSlots(atlas_slots: anytype, atlases: anytype) !void {
         if (new_pages > slot.page_ptrs.len) return error.AtlasSlotCapacityExceeded;
         for (old_pages..new_pages) |page_index| {
             slot.page_ptrs[page_index] = atlas.page(@intCast(page_index));
+            slot.page_layers[page_index] = slot.base_layer + @as(u32, @intCast(page_index));
         }
         slot.atlas = atlas;
         slot.uploaded_pages = new_pages;
@@ -181,11 +192,15 @@ pub fn refreshAtlasSlots(atlas_slots: anytype, atlases: anytype) !void {
 pub fn fillAtlasViews(atlas_slots: anytype, atlases: anytype, out_views: anytype) void {
     std.debug.assert(atlases.len == out_views.len);
     for (atlases, 0..) |atlas, i| {
+        const View = BufferElement(@TypeOf(out_views));
         out_views[i] = .{
             .atlas = atlas,
             .layer_base = atlas_slots[i].base_layer,
             .info_row_base = atlas_slots[i].info_row_base,
         };
+        if (@hasField(View, "page_layers")) {
+            out_views[i].page_layers = atlas_slots[i].page_layers[0..atlas.pageCount()];
+        }
     }
 }
 

@@ -92,6 +92,14 @@ fn preparedViewLayerBase(view: anytype) u32 {
     };
 }
 
+fn preparedViewPageLayers(view: anytype) []const u32 {
+    const T = @TypeOf(view);
+    return switch (@typeInfo(T)) {
+        .@"struct" => if (@hasField(T, "page_layers")) view.page_layers else &.{},
+        else => &.{},
+    };
+}
+
 fn preparedViewInfoRowBase(view: anytype) u32 {
     const T = @TypeOf(view);
     return switch (@typeInfo(T)) {
@@ -638,6 +646,7 @@ pub const FaceView = struct {
     face_glyphs: *const FaceGlyphData,
     face_config: *const FaceConfig,
     layer_base: u32,
+    page_layers: []const u32 = &.{},
     info_row_base: u32,
 
     pub fn getGlyph(self: *const FaceView, gid: u16) ?GlyphInfo {
@@ -656,6 +665,7 @@ pub const FaceView = struct {
     }
 
     pub fn glyphLayer(self: *const FaceView, page_index: u16) u32 {
+        if (page_index < self.page_layers.len) return self.page_layers[page_index];
         const layer = self.layer_base + page_index;
         return layer;
     }
@@ -851,6 +861,7 @@ pub const TextAtlas = struct {
             .face_glyphs = &self.face_glyphs[face_index],
             .face_config = &self.config.faces[face_index],
             .layer_base = preparedViewLayerBase(atlas_view),
+            .page_layers = preparedViewPageLayers(atlas_view),
             .info_row_base = preparedViewInfoRowBase(atlas_view),
         };
     }

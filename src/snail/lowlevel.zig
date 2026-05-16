@@ -29,9 +29,24 @@ pub const TEXT_VERTICES_PER_GLYPH = vertex_mod.VERTICES_PER_GLYPH;
 pub const TEXT_WORDS_PER_GLYPH = TEXT_WORDS_PER_VERTEX * TEXT_VERTICES_PER_GLYPH;
 
 pub const TEXTURE_LAYER_WINDOW_SIZE: u32 = 255;
+pub const TEXTURE_LAYER_BANK_STRIDE: u32 = TEXTURE_LAYER_WINDOW_SIZE * 65536;
+
+pub fn textureLayerBank(layer: u32) u32 {
+    return layer / TEXTURE_LAYER_BANK_STRIDE;
+}
+
+pub fn textureLayerBankLocal(layer: u32) u32 {
+    return layer % TEXTURE_LAYER_BANK_STRIDE;
+}
+
+pub fn textureLayerInBank(bank: u32, layer: u32) u32 {
+    return bank * TEXTURE_LAYER_BANK_STRIDE + layer;
+}
 
 pub fn textureLayerWindowBase(layer: u32) u32 {
-    return (layer / TEXTURE_LAYER_WINDOW_SIZE) * TEXTURE_LAYER_WINDOW_SIZE;
+    const bank_base = layer - textureLayerBankLocal(layer);
+    const local = textureLayerBankLocal(layer);
+    return bank_base + (local / TEXTURE_LAYER_WINDOW_SIZE) * TEXTURE_LAYER_WINDOW_SIZE;
 }
 
 pub fn textureLayerLocal(layer: u32) !u8 {
@@ -50,6 +65,7 @@ fn freeGlyphCurveScratch(allocator: std.mem.Allocator, glyphs: []const curve_tex
 
 pub const PreparedTextAtlasView = struct {
     layer_base: u32 = 0,
+    page_layers: []const u32 = &.{},
     info_row_base: u32 = 0,
     paint_info_row_base: u32 = 0,
 };
@@ -820,9 +836,11 @@ pub const Atlas = CurveAtlas;
 pub const PreparedAtlasView = struct {
     atlas: *const Atlas,
     layer_base: u32 = 0,
+    page_layers: []const u32 = &.{},
     info_row_base: u32 = 0,
 
     pub fn glyphLayer(self: *const PreparedAtlasView, page_index: u16) u32 {
+        if (page_index < self.page_layers.len) return self.page_layers[page_index];
         const layer = self.layer_base + page_index;
         return layer;
     }

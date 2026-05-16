@@ -265,17 +265,23 @@ fn uploadSceneResources(
     return renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set);
 }
 
-fn uploadTextAtlasResource(
+fn uploadTextAtlasResourceWithCapacity(
     allocator: std.mem.Allocator,
     renderer: *snail.Renderer,
     key: snail.ResourceKey,
     atlas: *const snail.TextAtlas,
+    capacity: snail.ResourceCapacityMode,
 ) !snail.PreparedResources {
     var entries: [1]snail.ResourceSet.Entry = undefined;
     var set = snail.ResourceSet.init(&entries);
-    try set.putTextAtlas(key, atlas);
+    try set.putTextAtlasOptions(key, atlas, .{ .atlas_capacity = capacity });
     return renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set);
 }
+
+const AppendPlanExpectation = struct {
+    new_atlas_banks: u32 = 0,
+    atlas_cache_rebuilds: u32 = 0,
+};
 
 fn checkAppendPlanForTextAtlas(
     renderer: *snail.Renderer,
@@ -283,19 +289,21 @@ fn checkAppendPlanForTextAtlas(
     key: snail.ResourceKey,
     atlas: *const snail.TextAtlas,
     changed_keys: []snail.ResourceKey,
+    capacity: snail.ResourceCapacityMode,
+    expected: AppendPlanExpectation,
 ) !void {
     var entries: [1]snail.ResourceSet.Entry = undefined;
     var set = snail.ResourceSet.init(&entries);
-    try set.putTextAtlas(key, atlas);
+    try set.putTextAtlasOptions(key, atlas, .{ .atlas_capacity = capacity });
     const plan = try renderer.planResourceUpload(current, &set, changed_keys);
-    try expectAppendPlan(plan, current.atlases[0].atlas.pageCount(), atlas.pageCount());
+    try expectAppendPlan(plan, current.atlases[0].atlas.pageCount(), atlas.pageCount(), expected);
 }
 
-fn expectAppendPlan(plan: snail.ResourceUploadPlan, old_pages: usize, new_pages: usize) !void {
+fn expectAppendPlan(plan: snail.ResourceUploadPlan, old_pages: usize, new_pages: usize, expected: AppendPlanExpectation) !void {
     if (plan.reused_atlas_pages != old_pages) return error.AppendPlanDidNotReusePages;
     if (plan.missing_atlas_pages != new_pages - old_pages) return error.AppendPlanMissingPageMismatch;
-    if (plan.new_atlas_banks != 0) return error.AppendPlanAllocatedUnexpectedBank;
-    if (plan.atlas_cache_rebuilds != 0) return error.AppendPlanUnexpectedRebuild;
+    if (plan.new_atlas_banks != expected.new_atlas_banks) return error.AppendPlanBankMismatch;
+    if (plan.atlas_cache_rebuilds != expected.atlas_cache_rebuilds) return error.AppendPlanRebuildMismatch;
 }
 
 fn clearPixelsTo(pixels: []u8, color: [4]u8) void {
@@ -650,10 +658,31 @@ fn uploadAppendedAtlas(
     renderer: *snail.Renderer,
     current: *const snail.PreparedResources,
     grown: *const snail.TextAtlas,
+    capacity: snail.ResourceCapacityMode,
+    expected: AppendPlanExpectation,
 ) !snail.PreparedResources {
     var changed_keys: [1]snail.ResourceKey = undefined;
-    try checkAppendPlanForTextAtlas(renderer, current, APPEND_RESOURCE_KEY, grown, &changed_keys);
-    return uploadTextAtlasResource(allocator, renderer, APPEND_RESOURCE_KEY, grown);
+    try checkAppendPlanForTextAtlas(renderer, current, APPEND_RESOURCE_KEY, grown, &changed_keys, capacity, expected);
+    return uploadTextAtlasResourceWithCapacity(allocator, renderer, APPEND_RESOURCE_KEY, grown, capacity);
+}
+
+fn buildAppendedPagePreparedScene(
+    allocator: std.mem.Allocator,
+    prepared: *const snail.PreparedResources,
+    atlas: *const snail.TextAtlas,
+    options: snail.DrawOptions,
+) !struct { blob: *snail.TextBlob, scene: snail.Scene, prepared_scene: snail.PreparedScene } {
+    const blob = try allocator.create(snail.TextBlob);
+    errdefer allocator.destroy(blob);
+    blob.* = try buildTextBlob(allocator, atlas, APPEND_EXTRA_TEXT, 18.0, 62.0, 32.0, .{ 0.95, 0.7, 0.2, 1.0 });
+    errdefer blob.deinit();
+
+    var scene = snail.Scene.init(allocator);
+    errdefer scene.deinit();
+    try scene.addText(.{ .blob = blob });
+
+    const prepared_scene = try snail.PreparedScene.initOwned(allocator, prepared, &scene, options);
+    return .{ .blob = blob, .scene = scene, .prepared_scene = prepared_scene };
 }
 
 fn runGlAppendSnapshotRegression(
@@ -668,7 +697,7 @@ fn runGlAppendSnapshotRegression(
     var bundle = try buildAppendScene(allocator);
     defer bundle.deinit();
 
-    var prepared = try uploadTextAtlasResource(allocator, renderer, APPEND_RESOURCE_KEY, bundle.atlas);
+    var prepared = try uploadTextAtlasResourceWithCapacity(allocator, renderer, APPEND_RESOURCE_KEY, bundle.atlas, .exact);
     defer prepared.deinit();
     const options = drawOptions(.none);
     var prepared_scene = try snail.PreparedScene.initOwned(allocator, &prepared, &bundle.scene, options);
@@ -679,13 +708,26 @@ fn runGlAppendSnapshotRegression(
 
     var grown = try growAppendAtlas(bundle.atlas);
     defer grown.deinit();
-    var appended = try uploadAppendedAtlas(allocator, renderer, &prepared, &grown);
+    var appended = try uploadAppendedAtlas(allocator, renderer, &prepared, &grown, .exact, .{ .new_atlas_banks = 1 });
     defer appended.deinit();
 
     const after = try drawPreparedGlToPixels(allocator, renderer, fbo, &prepared, &prepared_scene, options, .{ 0, 0, 0, 255 });
     defer allocator.free(after);
 
     try checkPixelMatch(allocator, "append-snapshot", backend_name, "gl-before", backend_name, "gl-after", before, after, exact_policy);
+
+    var appended_draw = try buildAppendedPagePreparedScene(allocator, &appended, &grown, options);
+    defer {
+        appended_draw.blob.deinit();
+        allocator.destroy(appended_draw.blob);
+    }
+    defer appended_draw.scene.deinit();
+    defer appended_draw.prepared_scene.deinit();
+    const bank_cpu = try renderCpu(allocator, &appended_draw.scene, options);
+    defer allocator.free(bank_cpu);
+    const bank_gl = try drawPreparedGlToPixels(allocator, renderer, fbo, &appended, &appended_draw.prepared_scene, options, .{ 0, 0, 0, 255 });
+    defer allocator.free(bank_gl);
+    try checkBackendAgainstCpu(allocator, "append-bank", backend_name, "gl", bank_cpu, bank_gl);
 }
 
 fn runVulkanAppendSnapshotRegression(
@@ -702,7 +744,7 @@ fn runVulkanAppendSnapshotRegression(
     var bundle = try buildAppendScene(allocator);
     defer bundle.deinit();
 
-    var prepared = try uploadTextAtlasResource(allocator, renderer, APPEND_RESOURCE_KEY, bundle.atlas);
+    var prepared = try uploadTextAtlasResourceWithCapacity(allocator, renderer, APPEND_RESOURCE_KEY, bundle.atlas, .exact);
     defer prepared.deinit();
     const options = drawOptions(.none);
     var prepared_scene = try snail.PreparedScene.initOwned(allocator, &prepared, &bundle.scene, options);
@@ -713,13 +755,26 @@ fn runVulkanAppendSnapshotRegression(
 
     var grown = try growAppendAtlas(bundle.atlas);
     defer grown.deinit();
-    var appended = try uploadAppendedAtlas(allocator, renderer, &prepared, &grown);
+    var appended = try uploadAppendedAtlas(allocator, renderer, &prepared, &grown, .exact, .{ .new_atlas_banks = 1 });
     defer appended.deinit();
 
     const after = try drawPreparedVulkanToPixels(allocator, vk_renderer, renderer, &prepared, &prepared_scene, options);
     defer allocator.free(after);
 
     try checkPixelMatch(allocator, "append-snapshot", backend_name, "vulkan-before", backend_name, "vulkan-after", before, after, exact_policy);
+
+    var appended_draw = try buildAppendedPagePreparedScene(allocator, &appended, &grown, options);
+    defer {
+        appended_draw.blob.deinit();
+        allocator.destroy(appended_draw.blob);
+    }
+    defer appended_draw.scene.deinit();
+    defer appended_draw.prepared_scene.deinit();
+    const bank_cpu = try renderCpu(allocator, &appended_draw.scene, options);
+    defer allocator.free(bank_cpu);
+    const bank_vk = try drawPreparedVulkanToPixels(allocator, vk_renderer, renderer, &appended, &appended_draw.prepared_scene, options);
+    defer allocator.free(bank_vk);
+    try checkBackendAgainstCpu(allocator, "append-bank", backend_name, "vulkan", bank_cpu, bank_vk);
 }
 
 pub fn main() !void {

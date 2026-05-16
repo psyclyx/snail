@@ -150,6 +150,10 @@ pub const lowlevel = struct {
     pub const PATH_WORDS_PER_SHAPE = path.PATH_WORDS_PER_SHAPE;
 
     pub const TEXTURE_LAYER_WINDOW_SIZE = lowlevel_impl.TEXTURE_LAYER_WINDOW_SIZE;
+    pub const TEXTURE_LAYER_BANK_STRIDE = lowlevel_impl.TEXTURE_LAYER_BANK_STRIDE;
+    pub const textureLayerBank = lowlevel_impl.textureLayerBank;
+    pub const textureLayerBankLocal = lowlevel_impl.textureLayerBankLocal;
+    pub const textureLayerInBank = lowlevel_impl.textureLayerInBank;
     pub const textureLayerWindowBase = lowlevel_impl.textureLayerWindowBase;
     pub const textureLayerLocal = lowlevel_impl.textureLayerLocal;
 

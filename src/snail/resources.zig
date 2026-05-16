@@ -220,6 +220,7 @@ pub const PreparedResources = struct {
         wrapper: Atlas = undefined,
         owns_wrapper: bool = false,
         view: PreparedAtlasView = undefined,
+        owns_page_layers: bool = false,
         stamp: ResourceStamp,
     };
 
@@ -246,6 +247,7 @@ pub const PreparedResources = struct {
                 .text => entry.text_atlas.?.deinitUploadAtlas(&entry.wrapper),
                 .path => {},
             };
+            if (entry.owns_page_layers and entry.view.page_layers.len > 0) self.allocator.free(entry.view.page_layers);
         }
         if (self.atlases.len > 0) self.allocator.free(self.atlases);
         if (self.layer_infos.len > 0) self.allocator.free(self.layer_infos);
@@ -319,6 +321,7 @@ pub const PreparedResources = struct {
         const entry = self.textAtlasEntry(atlas) orelse return error.MissingPreparedResource;
         return .{
             .layer_base = entry.view.layer_base,
+            .page_layers = entry.view.page_layers,
             .info_row_base = entry.view.info_row_base,
         };
     }
@@ -965,7 +968,14 @@ pub fn uploadPreparedResources(renderer: *Renderer, set: *const ResourceSet, all
     };
     if (!uploaded) return error.UnsupportedRenderer;
 
-    for (prepared.atlases, 0..) |*entry, i| entry.view = atlas_views[i];
+    for (prepared.atlases, 0..) |*entry, i| {
+        entry.view = atlas_views[i];
+        if (atlas_views[i].page_layers.len > 0) {
+            const page_layers = try persistent.dupe(u32, atlas_views[i].page_layers);
+            entry.view.page_layers = page_layers;
+            entry.owns_page_layers = true;
+        }
+    }
     for (prepared.layer_infos, 0..) |*entry, i| entry.view = layer_info_views[i];
     for (prepared.images, 0..) |*entry, i| entry.view = image_views[i];
     return prepared;

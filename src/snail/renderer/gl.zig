@@ -80,9 +80,18 @@ const MAX_GLYPHS_PER_SEGMENT = RING_SEGMENT_BYTES / BYTES_PER_GLYPH;
 const AtlasSlot = upload_common.AtlasSlot(snail_mod.lowlevel.CurveAtlas, snail_mod.lowlevel.AtlasPage);
 const ImageSlot = upload_common.ImageSlot(snail_mod.Image);
 
-fn uploadedAtlasPages(slots: []const AtlasSlot) u32 {
+fn atlasPagesInBank(slots: []const AtlasSlot, bank_id: u32) u32 {
     var total: u32 = 0;
-    for (slots) |slot| total += slot.uploaded_pages;
+    for (slots) |slot| {
+        const layer_count = @min(slot.uploaded_pages, slot.page_layers.len);
+        if (layer_count == 0 and bank_id == 0) {
+            total += slot.uploaded_pages;
+            continue;
+        }
+        for (slot.page_layers[0..layer_count]) |layer| {
+            if (snail_mod.lowlevel.textureLayerBank(layer) == bank_id) total += 1;
+        }
+    }
     return total;
 }
 
@@ -94,13 +103,44 @@ fn releasePage(page: *const snail_mod.lowlevel.AtlasPage) void {
     @constCast(page).release();
 }
 
-pub const PreparedResources = struct {
-    allocator: std.mem.Allocator,
-    backend: Backend,
+const AtlasTextureBank = struct {
+    id: u32 = 0,
     curve_array: gl.GLuint = 0,
     band_array: gl.GLuint = 0,
     layer_info_tex: gl.GLuint = 0,
     image_array: gl.GLuint = 0,
+    allocated_layer_count: u32 = 0,
+    allocated_image_count: u32 = 0,
+    resident_atlas_pages: u32 = 0,
+    resident_image_layers: u32 = 0,
+
+    fn hasAny(self: *const AtlasTextureBank) bool {
+        return self.curve_array != 0 or
+            self.band_array != 0 or
+            self.layer_info_tex != 0 or
+            self.image_array != 0;
+    }
+
+    fn deinit(self: *AtlasTextureBank) void {
+        if (self.curve_array != 0) gl.glDeleteTextures(1, &self.curve_array);
+        if (self.band_array != 0) gl.glDeleteTextures(1, &self.band_array);
+        if (self.layer_info_tex != 0) gl.glDeleteTextures(1, &self.layer_info_tex);
+        if (self.image_array != 0) gl.glDeleteTextures(1, &self.image_array);
+        self.* = .{};
+    }
+};
+
+pub const PreparedResources = struct {
+    allocator: std.mem.Allocator,
+    backend: Backend,
+    active_atlas_bank_id: u32 = 0,
+    next_atlas_bank_id: u32 = 1,
+    curve_array: gl.GLuint = 0,
+    band_array: gl.GLuint = 0,
+    layer_info_tex: gl.GLuint = 0,
+    image_array: gl.GLuint = 0,
+    atlas_banks: []AtlasTextureBank = &.{},
+    atlas_bank_count: usize = 0,
     atlas_slots: []AtlasSlot = &.{},
     atlas_slot_count: usize = 0,
     allocated_curve_height: u32 = 0,
@@ -118,6 +158,7 @@ pub const PreparedResources = struct {
         self.destroyAtlasTextureResources();
         self.destroyImageResources();
         self.resetAtlasUploadState();
+        self.destroyRetainedBanks();
     }
 
     fn destroyAtlasTextureResources(self: *PreparedResources) void {
@@ -135,13 +176,85 @@ pub const PreparedResources = struct {
         const had_resources = self.image_array != 0;
         if (self.image_array != 0) gl.glDeleteTextures(1, &self.image_array);
         self.image_array = 0;
+        self.resetImageUploadState();
+        if (had_resources) self.generation +%= 1;
+    }
+
+    fn resetImageUploadState(self: *PreparedResources) void {
         self.image_slot_count = 0;
         self.allocated_image_width = 0;
         self.allocated_image_height = 0;
         self.allocated_image_count = 0;
         if (self.image_slots.len > 0) self.allocator.free(self.image_slots);
         self.image_slots = &.{};
-        if (had_resources) self.generation +%= 1;
+    }
+
+    fn destroyRetainedBanks(self: *PreparedResources) void {
+        for (self.atlas_banks[0..self.atlas_bank_count]) |*bank| bank.deinit();
+        if (self.atlas_banks.len > 0) self.allocator.free(self.atlas_banks);
+        self.atlas_banks = &.{};
+        self.atlas_bank_count = 0;
+    }
+
+    fn ensureRetainedBankCapacity(self: *PreparedResources, capacity: usize) !void {
+        if (capacity <= self.atlas_banks.len) return;
+        const next_len = @max(capacity, @max(self.atlas_banks.len * 2, 4));
+        const next = try self.allocator.alloc(AtlasTextureBank, next_len);
+        @memset(next, AtlasTextureBank{});
+        if (self.atlas_bank_count > 0) @memcpy(next[0..self.atlas_bank_count], self.atlas_banks[0..self.atlas_bank_count]);
+        if (self.atlas_banks.len > 0) self.allocator.free(self.atlas_banks);
+        self.atlas_banks = next;
+    }
+
+    fn activeBankHasAnyResources(self: *const PreparedResources) bool {
+        return self.curve_array != 0 or
+            self.band_array != 0 or
+            self.layer_info_tex != 0 or
+            self.image_array != 0;
+    }
+
+    fn retainActiveBank(self: *PreparedResources) !void {
+        if (!self.activeBankHasAnyResources()) return;
+        try self.ensureRetainedBankCapacity(self.atlas_bank_count + 1);
+        self.atlas_banks[self.atlas_bank_count] = .{
+            .id = self.active_atlas_bank_id,
+            .curve_array = self.curve_array,
+            .band_array = self.band_array,
+            .layer_info_tex = self.layer_info_tex,
+            .image_array = self.image_array,
+            .allocated_layer_count = self.allocated_layer_count,
+            .allocated_image_count = self.allocated_image_count,
+            .resident_atlas_pages = atlasPagesInBank(self.atlas_slots[0..self.atlas_slot_count], self.active_atlas_bank_id),
+            .resident_image_layers = @intCast(self.image_slot_count),
+        };
+        self.atlas_bank_count += 1;
+        self.curve_array = 0;
+        self.band_array = 0;
+        self.layer_info_tex = 0;
+        self.image_array = 0;
+        self.resetImageUploadState();
+        self.active_atlas_bank_id = self.next_atlas_bank_id;
+        self.next_atlas_bank_id +%= 1;
+    }
+
+    fn bankForId(self: *const PreparedResources, bank_id: u32) ?AtlasTextureBank {
+        if (bank_id == self.active_atlas_bank_id) {
+            return .{
+                .id = self.active_atlas_bank_id,
+                .curve_array = self.curve_array,
+                .band_array = self.band_array,
+                .layer_info_tex = self.layer_info_tex,
+                .image_array = self.image_array,
+                .allocated_layer_count = self.allocated_layer_count,
+                .allocated_image_count = self.allocated_image_count,
+                .resident_atlas_pages = atlasPagesInBank(self.atlas_slots[0..self.atlas_slot_count], self.active_atlas_bank_id),
+                .resident_image_layers = @intCast(self.image_slot_count),
+            };
+        }
+        for (self.atlas_banks[0..self.atlas_bank_count]) |bank| {
+            if (bank.id == bank_id) return bank;
+        }
+        return null;
     }
 
     pub fn uploadAtlases(self: *PreparedResources, atlases: []const *const snail_mod.lowlevel.CurveAtlas, out_views: anytype) !void {
@@ -213,8 +326,22 @@ pub const PreparedResources = struct {
             return;
         }
 
-        const can_incremental = layer_infos.len == 0 and self.texturesReady() and self.atlasSlotsCompatible(atlases);
-        if (!can_incremental) {
+        const simple_atlases = atlasesHaveNoLayerInfoOrImages(atlases);
+        const no_active_layer_info = self.layer_info_tex == 0;
+        const can_overflow_bank = layer_infos.len == 0 and simple_atlases and no_active_layer_info and self.texturesReady() and self.atlasPrefixesCompatibleForOverflow(atlases);
+        const can_incremental = layer_infos.len == 0 and simple_atlases and no_active_layer_info and self.texturesReady() and self.atlasSlotsCompatible(atlases);
+        if (!can_incremental and can_overflow_bank) {
+            if (!try self.appendTexturePagesIntoNewBank(scratch, atlases)) {
+                try self.rebuildTextureArrays(scratch, atlases, capacity_modes, out_views, layer_infos, out_layer_info_views);
+            } else {
+                self.fillAtlasViews(atlases, out_views);
+                self.fillLayerInfoViews(self.atlasLayerInfoRows(atlases), layer_infos, out_layer_info_views);
+                try self.ensureAtlasImagesRegistered(scratch, atlases);
+                try self.ensureLayerInfoImagesRegistered(scratch, layer_infos);
+                try self.rebuildLayerInfoTexture(scratch, atlases, layer_infos, out_layer_info_views);
+                self.atlas_has_special_text_runs = subpixel_policy.resourcesHaveSpecialTextRuns(atlases, layer_infos);
+            }
+        } else if (!can_incremental) {
             try self.rebuildTextureArrays(scratch, atlases, capacity_modes, out_views, layer_infos, out_layer_info_views);
         } else if (!try self.appendTexturePages(scratch, atlases)) {
             try self.rebuildTextureArrays(scratch, atlases, capacity_modes, out_views, layer_infos, out_layer_info_views);
@@ -323,6 +450,8 @@ pub const PreparedResources = struct {
     fn ensureImagesRegistered(self: *PreparedResources, scratch: std.mem.Allocator, images: []const *const snail_mod.Image) !void {
         if (images.len == 0) return;
 
+        var target_images = std.ArrayListUnmanaged(*const snail_mod.Image).empty;
+        defer target_images.deinit(scratch);
         var new_images = std.ArrayListUnmanaged(*const snail_mod.Image).empty;
         defer new_images.deinit(scratch);
         var required_width = self.allocated_image_width;
@@ -330,6 +459,14 @@ pub const PreparedResources = struct {
         for (images) |image| {
             required_width = @max(required_width, image.width);
             required_height = @max(required_height, image.height);
+            var target_seen = false;
+            for (target_images.items) |queued| {
+                if (queued == image) {
+                    target_seen = true;
+                    break;
+                }
+            }
+            if (!target_seen) try target_images.append(scratch, image);
             if (self.findImageSlot(image) != null) continue;
             var already_queued = false;
             for (new_images.items) |queued| {
@@ -354,10 +491,12 @@ pub const PreparedResources = struct {
             new_height > self.allocated_image_height;
 
         if (needs_rebuild) {
-            for (new_images.items, 0..) |image, i| {
-                self.image_slots[self.image_slot_count + i] = .{ .image = image };
+            if (self.image_array != 0) try self.retainActiveBank();
+            try self.ensureImageSlotCapacity(target_images.items.len);
+            for (target_images.items, 0..) |image, i| {
+                self.image_slots[i] = .{ .image = image };
             }
-            self.image_slot_count += new_images.items.len;
+            self.image_slot_count = target_images.items.len;
             self.rebuildImageArray();
             return;
         }
@@ -480,7 +619,7 @@ pub const PreparedResources = struct {
         layer_infos: anytype,
         out_layer_info_views: anytype,
     ) !void {
-        self.destroyAtlasTextureResources();
+        try self.retainActiveBank();
         self.resetAtlasUploadState();
 
         try self.ensureAtlasSlotCount(atlases.len);
@@ -492,6 +631,7 @@ pub const PreparedResources = struct {
         self.allocated_curve_height = slot_info.allocated_curve_height;
         self.allocated_band_height = slot_info.allocated_band_height;
         self.allocated_layer_count = slot_info.allocated_layer_count;
+        self.encodeSlotPageLayers();
         self.retainAtlasPageRefs();
         self.fillLayerInfoViews(slot_info.layer_info_rows, layer_infos, out_layer_info_views);
 
@@ -543,7 +683,117 @@ pub const PreparedResources = struct {
         }
 
         try upload_common.refreshAtlasSlots(self.atlas_slots, atlases);
+        self.encodeSlotPageLayersFromStarts(start_pages[0..atlases.len]);
         self.retainAtlasPageRefsFromStarts(start_pages[0..atlases.len]);
+        return true;
+    }
+
+    fn ensureSlotPageCapacity(self: *PreparedResources, slot: *AtlasSlot, capacity: u32) !void {
+        if (capacity <= slot.page_ptrs.len and capacity <= slot.page_layers.len) return;
+        const next_ptrs = try self.allocator.alloc(?*const snail_mod.lowlevel.AtlasPage, capacity);
+        errdefer self.allocator.free(next_ptrs);
+        const next_layers = try self.allocator.alloc(u32, capacity);
+        @memset(next_ptrs, null);
+        @memset(next_layers, 0);
+        if (slot.uploaded_pages > 0) {
+            @memcpy(next_ptrs[0..slot.uploaded_pages], slot.page_ptrs[0..slot.uploaded_pages]);
+            @memcpy(next_layers[0..slot.uploaded_pages], slot.page_layers[0..slot.uploaded_pages]);
+        }
+        if (slot.page_ptrs.len > 0) self.allocator.free(slot.page_ptrs);
+        if (slot.page_layers.len > 0) self.allocator.free(slot.page_layers);
+        slot.page_ptrs = next_ptrs;
+        slot.page_layers = next_layers;
+        slot.capacity_pages = capacity;
+    }
+
+    fn appendTexturePagesIntoNewBank(self: *PreparedResources, scratch: std.mem.Allocator, atlases: []const *const snail_mod.lowlevel.CurveAtlas) !bool {
+        var page_count_total: usize = 0;
+        var max_curve_h: u32 = 1;
+        var max_band_h: u32 = 1;
+        var first_page: ?*const snail_mod.lowlevel.AtlasPage = null;
+        for (atlases, 0..) |atlas, i| {
+            const slot = &self.atlas_slots[i];
+            for (slot.uploaded_pages..atlas.pageCount()) |page_index| {
+                const page = atlas.page(@intCast(page_index));
+                first_page = first_page orelse page;
+                max_curve_h = @max(max_curve_h, page.curve_height);
+                max_band_h = @max(max_band_h, page.band_height);
+                page_count_total += 1;
+            }
+        }
+        const first = first_page orelse return true;
+        if (page_count_total > std.math.maxInt(u32)) return error.PreparedResourceCapacityExceeded;
+
+        var bank = AtlasTextureBank{
+            .id = self.next_atlas_bank_id,
+            .allocated_layer_count = @intCast(page_count_total),
+            .resident_atlas_pages = @intCast(page_count_total),
+        };
+        self.next_atlas_bank_id +%= 1;
+        const curve_h = upload_common.heightCapacity(max_curve_h);
+        const band_h = upload_common.heightCapacity(max_band_h);
+
+        switch (self.backend) {
+            .gl33 => {
+                gl.glGenTextures(1, &bank.curve_array);
+                gl.glActiveTexture(gl.GL_TEXTURE0);
+                gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, bank.curve_array);
+                gl.glTexImage3D(gl.GL_TEXTURE_2D_ARRAY, 0, gl.GL_RGBA16F, @intCast(first.curve_width), @intCast(curve_h), @intCast(bank.allocated_layer_count), 0, gl.GL_RGBA, gl.GL_HALF_FLOAT, null);
+                setTexParams(gl.GL_TEXTURE_2D_ARRAY);
+
+                gl.glGenTextures(1, &bank.band_array);
+                gl.glActiveTexture(gl.GL_TEXTURE1);
+                gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, bank.band_array);
+                gl.glTexImage3D(gl.GL_TEXTURE_2D_ARRAY, 0, gl.GL_RG16UI, @intCast(first.band_width), @intCast(band_h), @intCast(bank.allocated_layer_count), 0, gl.GL_RG_INTEGER, gl.GL_UNSIGNED_SHORT, null);
+                setTexParams(gl.GL_TEXTURE_2D_ARRAY);
+            },
+            .gl44 => {
+                gl.glCreateTextures(gl.GL_TEXTURE_2D_ARRAY, 1, &bank.curve_array);
+                gl.glTextureStorage3D(bank.curve_array, 1, gl.GL_RGBA16F, @intCast(first.curve_width), @intCast(curve_h), @intCast(bank.allocated_layer_count));
+                setTexParamsDSA(bank.curve_array);
+
+                gl.glCreateTextures(gl.GL_TEXTURE_2D_ARRAY, 1, &bank.band_array);
+                gl.glTextureStorage3D(bank.band_array, 1, gl.GL_RG16UI, @intCast(first.band_width), @intCast(band_h), @intCast(bank.allocated_layer_count));
+                setTexParamsDSA(bank.band_array);
+            },
+        }
+        errdefer bank.deinit();
+
+        try self.ensureRetainedBankCapacity(self.atlas_bank_count + 1);
+        var layer: u32 = 0;
+        for (atlases, 0..) |atlas, i| {
+            const slot = &self.atlas_slots[i];
+            const old_pages = slot.uploaded_pages;
+            const new_pages: u32 = @intCast(atlas.pageCount());
+            try self.ensureSlotPageCapacity(slot, @max(new_pages, slot.capacity_pages));
+            for (old_pages..new_pages) |page_index| {
+                const page = atlas.page(@intCast(page_index));
+                const layer_z: gl.GLint = @intCast(layer);
+                switch (self.backend) {
+                    .gl33 => {
+                        gl.glActiveTexture(gl.GL_TEXTURE0);
+                        gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, bank.curve_array);
+                        gl.glTexSubImage3D(gl.GL_TEXTURE_2D_ARRAY, 0, 0, 0, layer_z, @intCast(page.curve_width), @intCast(page.curve_height), 1, gl.GL_RGBA, gl.GL_HALF_FLOAT, page.curve_data.ptr);
+                        gl.glActiveTexture(gl.GL_TEXTURE1);
+                        gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, bank.band_array);
+                        gl.glTexSubImage3D(gl.GL_TEXTURE_2D_ARRAY, 0, 0, 0, layer_z, @intCast(page.band_width), @intCast(page.band_height), 1, gl.GL_RG_INTEGER, gl.GL_UNSIGNED_SHORT, page.band_data.ptr);
+                    },
+                    .gl44 => {
+                        gl.glTextureSubImage3D(bank.curve_array, 0, 0, 0, layer_z, @intCast(page.curve_width), @intCast(page.curve_height), 1, gl.GL_RGBA, gl.GL_HALF_FLOAT, page.curve_data.ptr);
+                        gl.glTextureSubImage3D(bank.band_array, 0, 0, 0, layer_z, @intCast(page.band_width), @intCast(page.band_height), 1, gl.GL_RG_INTEGER, gl.GL_UNSIGNED_SHORT, page.band_data.ptr);
+                    },
+                }
+                slot.page_ptrs[page_index] = page;
+                slot.page_layers[page_index] = snail_mod.lowlevel.textureLayerInBank(bank.id, layer);
+                retainPage(page);
+                layer += 1;
+            }
+            slot.atlas = atlas;
+            slot.uploaded_pages = new_pages;
+        }
+        self.atlas_banks[self.atlas_bank_count] = bank;
+        self.atlas_bank_count += 1;
+        _ = scratch;
         return true;
     }
 
@@ -553,6 +803,50 @@ pub const PreparedResources = struct {
 
     fn atlasSlotsCompatible(self: *const PreparedResources, atlases: []const *const snail_mod.lowlevel.CurveAtlas) bool {
         return upload_common.atlasSlotsCompatible(self.atlas_slots[0..], self.atlas_slot_count, atlases);
+    }
+
+    fn atlasesHaveNoLayerInfoOrImages(atlases: []const *const snail_mod.lowlevel.CurveAtlas) bool {
+        for (atlases) |atlas| {
+            if (atlas.layer_info_height != 0 or atlas.paint_image_records != null) return false;
+        }
+        return true;
+    }
+
+    fn atlasPrefixesCompatibleForOverflow(self: *const PreparedResources, atlases: []const *const snail_mod.lowlevel.CurveAtlas) bool {
+        if (atlases.len != self.atlas_slot_count) return false;
+        for (atlases, 0..) |atlas, i| {
+            const slot = &self.atlas_slots[i];
+            const page_count: u32 = @intCast(atlas.pageCount());
+            if (page_count < slot.uploaded_pages) return false;
+            if (slot.uploaded_pages > slot.page_ptrs.len) return false;
+            for (0..slot.uploaded_pages) |page_index| {
+                if (slot.page_ptrs[page_index] != atlas.page(@intCast(page_index))) return false;
+            }
+        }
+        return true;
+    }
+
+    fn encodeSlotPageLayers(self: *PreparedResources) void {
+        for (self.atlas_slots[0..self.atlas_slot_count]) |*slot| {
+            for (0..@min(slot.uploaded_pages, slot.page_layers.len)) |page_index| {
+                slot.page_layers[page_index] = snail_mod.lowlevel.textureLayerInBank(
+                    self.active_atlas_bank_id,
+                    slot.base_layer + @as(u32, @intCast(page_index)),
+                );
+            }
+        }
+    }
+
+    fn encodeSlotPageLayersFromStarts(self: *PreparedResources, start_pages: []const u32) void {
+        for (self.atlas_slots[0..self.atlas_slot_count], 0..) |*slot, i| {
+            const start = if (i < start_pages.len) start_pages[i] else slot.uploaded_pages;
+            for (start..@min(slot.uploaded_pages, slot.page_layers.len)) |page_index| {
+                slot.page_layers[page_index] = snail_mod.lowlevel.textureLayerInBank(
+                    self.active_atlas_bank_id,
+                    slot.base_layer + @as(u32, @intCast(page_index)),
+                );
+            }
+        }
     }
 
     fn fillAtlasViews(self: *const PreparedResources, atlases: []const *const snail_mod.lowlevel.CurveAtlas, out_views: anytype) void {
@@ -791,6 +1085,7 @@ pub const GlTextState = struct {
     vbo: gl.GLuint = 0,
     ebo: gl.GLuint = 0,
     active_program: gl.GLuint = 0,
+    active_resource_bank_id: u32 = std.math.maxInt(u32),
     frame_begun: bool = false,
     supports_dual_source_blend: bool = false,
     persistent_map: ?[*]u8 = null,
@@ -941,12 +1236,28 @@ pub const GlTextState = struct {
 
     pub fn resourceCacheStats(self: *const GlTextState) snail_mod.ResourceCacheStats {
         if (self.resource_cache) |*cache| {
+            const active_atlas_pages = atlasPagesInBank(cache.atlas_slots[0..cache.atlas_slot_count], cache.active_atlas_bank_id);
+            const active_image_layers: u32 = @intCast(cache.image_slot_count);
+            var atlas_pages = active_atlas_pages;
+            var atlas_layers = cache.allocated_layer_count;
+            var image_layers_resident = active_image_layers;
+            var image_layers = cache.allocated_image_count;
+            for (cache.atlas_banks[0..cache.atlas_bank_count]) |bank| {
+                atlas_pages += bank.resident_atlas_pages;
+                atlas_layers += bank.allocated_layer_count;
+                image_layers_resident += bank.resident_image_layers;
+                image_layers += bank.allocated_image_count;
+            }
             return .{
                 .generation = cache.generation,
-                .atlas_pages_resident = uploadedAtlasPages(cache.atlas_slots[0..cache.atlas_slot_count]),
-                .atlas_layers_allocated = cache.allocated_layer_count,
-                .image_layers_resident = @intCast(cache.image_slot_count),
-                .image_layers_allocated = cache.allocated_image_count,
+                .active_atlas_pages_resident = active_atlas_pages,
+                .active_atlas_layers_allocated = cache.allocated_layer_count,
+                .atlas_pages_resident = atlas_pages,
+                .atlas_layers_allocated = atlas_layers,
+                .active_image_layers_resident = active_image_layers,
+                .active_image_layers_allocated = cache.allocated_image_count,
+                .image_layers_resident = image_layers_resident,
+                .image_layers_allocated = image_layers,
             };
         }
         return .{};
@@ -1329,27 +1640,30 @@ pub const GlTextState = struct {
     }
 
     fn bindProgramState(self: *GlTextState, prepared: *const PreparedResources, prog_state: *const ProgramState, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32, render_mode: subpixel_policy.TextRenderMode) void {
-        if (prog_state.handle != self.active_program or !self.frame_begun) {
+        const bank_id = snail_mod.lowlevel.textureLayerBank(texture_layer_base);
+        const bank = prepared.bankForId(bank_id) orelse return;
+        if (prog_state.handle != self.active_program or !self.frame_begun or bank_id != self.active_resource_bank_id) {
             gl.glUseProgram(prog_state.handle);
             self.active_program = prog_state.handle;
+            self.active_resource_bank_id = bank_id;
 
             if (self.backend == .gl44) {
-                gl.glBindTextureUnit(0, prepared.curve_array);
-                gl.glBindTextureUnit(1, prepared.band_array);
-                if (prog_state.layer_tex_loc >= 0 and prepared.layer_info_tex != 0) gl.glBindTextureUnit(2, prepared.layer_info_tex);
-                if (prog_state.image_tex_loc >= 0 and prepared.image_array != 0) gl.glBindTextureUnit(3, prepared.image_array);
+                gl.glBindTextureUnit(0, bank.curve_array);
+                gl.glBindTextureUnit(1, bank.band_array);
+                if (prog_state.layer_tex_loc >= 0 and bank.layer_info_tex != 0) gl.glBindTextureUnit(2, bank.layer_info_tex);
+                if (prog_state.image_tex_loc >= 0 and bank.image_array != 0) gl.glBindTextureUnit(3, bank.image_array);
             } else {
                 gl.glActiveTexture(gl.GL_TEXTURE0);
-                gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, prepared.curve_array);
+                gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, bank.curve_array);
                 gl.glActiveTexture(gl.GL_TEXTURE1);
-                gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, prepared.band_array);
-                if (prog_state.layer_tex_loc >= 0 and prepared.layer_info_tex != 0) {
+                gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, bank.band_array);
+                if (prog_state.layer_tex_loc >= 0 and bank.layer_info_tex != 0) {
                     gl.glActiveTexture(gl.GL_TEXTURE2);
-                    gl.glBindTexture(gl.GL_TEXTURE_2D, prepared.layer_info_tex);
+                    gl.glBindTexture(gl.GL_TEXTURE_2D, bank.layer_info_tex);
                 }
-                if (prog_state.image_tex_loc >= 0 and prepared.image_array != 0) {
+                if (prog_state.image_tex_loc >= 0 and bank.image_array != 0) {
                     gl.glActiveTexture(gl.GL_TEXTURE3);
-                    gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, prepared.image_array);
+                    gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, bank.image_array);
                 }
             }
 
@@ -1362,7 +1676,7 @@ pub const GlTextState = struct {
 
         gl.glUniformMatrix4fv(prog_state.mvp_loc, 1, gl.GL_FALSE, &mvp.data);
         gl.glUniform2f(prog_state.viewport_loc, viewport_w, viewport_h);
-        if (prog_state.layer_base_loc >= 0) gl.glUniform1i(prog_state.layer_base_loc, @intCast(texture_layer_base));
+        if (prog_state.layer_base_loc >= 0) gl.glUniform1i(prog_state.layer_base_loc, @intCast(snail_mod.lowlevel.textureLayerBankLocal(texture_layer_base)));
         gl.glUniform1i(prog_state.fill_rule_loc, @intFromEnum(self.fill_rule));
         if (prog_state.subpixel_order_loc >= 0) {
             const order = if (render_mode == .grayscale) SubpixelOrder.none else self.subpixel_order;

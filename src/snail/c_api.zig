@@ -313,8 +313,12 @@ pub const SnailResourceFootprint = extern struct {
 
 pub const SnailResourceCacheStats = extern struct {
     generation: u64 = 0,
+    active_atlas_pages_resident: u32 = 0,
+    active_atlas_layers_allocated: u32 = 0,
     atlas_pages_resident: u32 = 0,
     atlas_layers_allocated: u32 = 0,
+    active_image_layers_resident: u32 = 0,
+    active_image_layers_allocated: u32 = 0,
     image_layers_resident: u32 = 0,
     image_layers_allocated: u32 = 0,
 };
@@ -630,8 +634,12 @@ fn fromResourceFootprint(footprint: snail.ResourceFootprint) SnailResourceFootpr
 fn fromResourceCacheStats(stats: snail.ResourceCacheStats) SnailResourceCacheStats {
     return .{
         .generation = stats.generation,
+        .active_atlas_pages_resident = stats.active_atlas_pages_resident,
+        .active_atlas_layers_allocated = stats.active_atlas_layers_allocated,
         .atlas_pages_resident = stats.atlas_pages_resident,
         .atlas_layers_allocated = stats.atlas_layers_allocated,
+        .active_image_layers_resident = stats.active_image_layers_resident,
+        .active_image_layers_allocated = stats.active_image_layers_allocated,
         .image_layers_resident = stats.image_layers_resident,
         .image_layers_allocated = stats.image_layers_allocated,
     };

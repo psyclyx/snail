@@ -156,6 +156,61 @@ fn atlasSlotWouldRebuild(slot: anytype, allocated_curve_height: u32, allocated_b
     return false;
 }
 
+fn atlasHasLayerInfoOrImages(atlas: anytype) bool {
+    const Atlas = switch (@typeInfo(@TypeOf(atlas))) {
+        .pointer => |ptr| ptr.child,
+        else => @TypeOf(atlas),
+    };
+    const has_layer_info = if (@hasField(Atlas, "layer_info_height")) atlas.layer_info_height != 0 else false;
+    const has_paint_images = if (@hasField(Atlas, "paint_image_records")) atlas.paint_image_records != null else false;
+    return has_layer_info or has_paint_images;
+}
+
+fn atlasSlotCanOverflowIntoBank(slot: anytype, atlas: anytype) bool {
+    if (atlas.pageCount() > std.math.maxInt(u16)) return false;
+    const page_count: u32 = @intCast(atlas.pageCount());
+    if (page_count < slot.uploaded_pages) return false;
+    if (slot.uploaded_pages > slot.page_ptrs.len) return false;
+    for (0..slot.uploaded_pages) |page_index| {
+        if (slot.page_ptrs[page_index] != atlas.page(@intCast(page_index))) return false;
+    }
+    return true;
+}
+
+fn atlasSlotNeedsOverflowBank(slot: anytype, allocated_curve_height: u32, allocated_band_height: u32, atlas: anytype) bool {
+    return atlasSlotCanOverflowIntoBank(slot, atlas) and
+        atlasSlotWouldRebuild(slot, allocated_curve_height, allocated_band_height, atlas);
+}
+
+fn currentAtlasNeedsOverflowBank(self: *const Renderer, current: ?*const PreparedResources, key: ResourceKey, atlas: anytype) bool {
+    const prepared = current orelse return false;
+    const lookup = preparedAtlasForKeyWithIndex(prepared, key) orelse return false;
+    if (atlasHasLayerInfoOrImages(atlas)) return false;
+    return switch (self.backend()) {
+        .gl => if (comptime build_options.enable_opengl) blk: {
+            const cache = prepared.gl orelse break :blk false;
+            if (cache.layer_info_tex != 0 or lookup.index >= cache.atlas_slot_count) break :blk false;
+            break :blk atlasSlotNeedsOverflowBank(
+                cache.atlas_slots[lookup.index],
+                cache.allocated_curve_height,
+                cache.allocated_band_height,
+                atlas,
+            );
+        } else false,
+        .vulkan => if (comptime build_options.enable_vulkan) blk: {
+            const cache = prepared.vulkan orelse break :blk false;
+            if (cache.layer_image != null or lookup.index >= cache.atlas_slot_count) break :blk false;
+            break :blk atlasSlotNeedsOverflowBank(
+                cache.atlas_slots[lookup.index],
+                cache.allocated_curve_height,
+                cache.allocated_band_height,
+                atlas,
+            );
+        } else false,
+        .cpu => false,
+    };
+}
+
 fn currentAtlasWouldRebuild(self: *const Renderer, current: ?*const PreparedResources, key: ResourceKey, atlas: anytype) bool {
     const prepared = current orelse return false;
     const lookup = preparedAtlasForKeyWithIndex(prepared, key) orelse return false;
@@ -163,6 +218,12 @@ fn currentAtlasWouldRebuild(self: *const Renderer, current: ?*const PreparedReso
         .gl => if (comptime build_options.enable_opengl) {
             const cache = prepared.gl orelse return false;
             if (lookup.index >= cache.atlas_slot_count) return true;
+            if (!atlasHasLayerInfoOrImages(atlas) and
+                cache.layer_info_tex == 0 and
+                atlasSlotCanOverflowIntoBank(cache.atlas_slots[lookup.index], atlas))
+            {
+                return false;
+            }
             return atlasSlotWouldRebuild(
                 cache.atlas_slots[lookup.index],
                 cache.allocated_curve_height,
@@ -173,6 +234,12 @@ fn currentAtlasWouldRebuild(self: *const Renderer, current: ?*const PreparedReso
         .vulkan => if (comptime build_options.enable_vulkan) {
             const cache = prepared.vulkan orelse return false;
             if (lookup.index >= cache.atlas_slot_count) return true;
+            if (!atlasHasLayerInfoOrImages(atlas) and
+                cache.layer_image == null and
+                atlasSlotCanOverflowIntoBank(cache.atlas_slots[lookup.index], atlas))
+            {
+                return false;
+            }
             return atlasSlotWouldRebuild(
                 cache.atlas_slots[lookup.index],
                 cache.allocated_curve_height,
@@ -183,6 +250,64 @@ fn currentAtlasWouldRebuild(self: *const Renderer, current: ?*const PreparedReso
         .cpu => {},
     }
     return false;
+}
+
+fn resourceSetCanUseAtlasOverflowBanks(self: *const Renderer, current: ?*const PreparedResources, next_set: *const ResourceSet, counts: ResourceSetCounts) bool {
+    const prepared = current orelse return false;
+    if (counts.layer_infos != 0 or counts.atlases != prepared.atlases.len) return false;
+    return switch (self.backend()) {
+        .gl => if (comptime build_options.enable_opengl) blk: {
+            const cache = prepared.gl orelse break :blk false;
+            if (cache.layer_info_tex != 0 or cache.atlas_slot_count != counts.atlases) break :blk false;
+            var atlas_index: usize = 0;
+            for (next_set.slice()) |entry| switch (entry) {
+                .text_atlas => |text| {
+                    const lookup = preparedAtlasForKeyWithIndex(prepared, text.key) orelse break :blk false;
+                    defer atlas_index += 1;
+                    if (lookup.index != atlas_index) break :blk false;
+                    if (lookup.index >= cache.atlas_slot_count) break :blk false;
+                    if (atlasHasLayerInfoOrImages(text.atlas)) break :blk false;
+                    if (!atlasSlotCanOverflowIntoBank(cache.atlas_slots[lookup.index], text.atlas)) break :blk false;
+                },
+                .path_picture => |path| {
+                    const lookup = preparedAtlasForKeyWithIndex(prepared, path.key) orelse break :blk false;
+                    defer atlas_index += 1;
+                    if (lookup.index != atlas_index) break :blk false;
+                    if (lookup.index >= cache.atlas_slot_count) break :blk false;
+                    if (atlasHasLayerInfoOrImages(&path.picture.atlas)) break :blk false;
+                    if (!atlasSlotCanOverflowIntoBank(cache.atlas_slots[lookup.index], &path.picture.atlas)) break :blk false;
+                },
+                .text_paint, .image => {},
+            };
+            break :blk true;
+        } else false,
+        .vulkan => if (comptime build_options.enable_vulkan) blk: {
+            const cache = prepared.vulkan orelse break :blk false;
+            if (cache.layer_image != null or cache.atlas_slot_count != counts.atlases) break :blk false;
+            var atlas_index: usize = 0;
+            for (next_set.slice()) |entry| switch (entry) {
+                .text_atlas => |text| {
+                    const lookup = preparedAtlasForKeyWithIndex(prepared, text.key) orelse break :blk false;
+                    defer atlas_index += 1;
+                    if (lookup.index != atlas_index) break :blk false;
+                    if (lookup.index >= cache.atlas_slot_count) break :blk false;
+                    if (atlasHasLayerInfoOrImages(text.atlas)) break :blk false;
+                    if (!atlasSlotCanOverflowIntoBank(cache.atlas_slots[lookup.index], text.atlas)) break :blk false;
+                },
+                .path_picture => |path| {
+                    const lookup = preparedAtlasForKeyWithIndex(prepared, path.key) orelse break :blk false;
+                    defer atlas_index += 1;
+                    if (lookup.index != atlas_index) break :blk false;
+                    if (lookup.index >= cache.atlas_slot_count) break :blk false;
+                    if (atlasHasLayerInfoOrImages(&path.picture.atlas)) break :blk false;
+                    if (!atlasSlotCanOverflowIntoBank(cache.atlas_slots[lookup.index], &path.picture.atlas)) break :blk false;
+                },
+                .text_paint, .image => {},
+            };
+            break :blk true;
+        } else false,
+        .cpu => false,
+    };
 }
 
 /// Renderer execution machinery. GPU resource residency lives in renderer-owned
@@ -474,6 +599,8 @@ pub const Renderer = struct {
         var plan = ResourceUploadPlan{ .set = next_set, .changed_keys = changed_keys };
         plan.upload_footprint = try next_set.estimateUploadFootprint();
         plan.gpu_bytes_allocated = plan.upload_footprint.allocatedBytes();
+        var needs_atlas_overflow_bank = false;
+        var next_atlas_index: usize = 0;
         for (next_set.slice()) |entry| {
             const key = resourceEntryKey(entry);
             const stamp = resourceEntryStamp(entry);
@@ -485,19 +612,35 @@ pub const Renderer = struct {
             }
             switch (entry) {
                 .text_atlas => |text| {
+                    const atlas_index = next_atlas_index;
+                    next_atlas_index += 1;
                     const delta = atlasUploadDelta(current, key, text.atlas);
                     plan.reused_atlas_pages += delta.reused_pages;
                     plan.missing_atlas_pages += delta.missing_pages;
                     plan.curve_bytes_upload += delta.curve_bytes;
                     plan.band_bytes_upload += delta.band_bytes;
+                    if (current) |prepared| {
+                        if (preparedAtlasForKeyWithIndex(prepared, key)) |lookup| {
+                            if (lookup.index != atlas_index and self.backend() != .cpu) plan.atlas_cache_rebuilds = 1;
+                        }
+                    }
+                    if (currentAtlasNeedsOverflowBank(self, current, key, text.atlas)) needs_atlas_overflow_bank = true;
                     if (currentAtlasWouldRebuild(self, current, key, text.atlas)) plan.atlas_cache_rebuilds = 1;
                 },
                 .path_picture => |path| {
+                    const atlas_index = next_atlas_index;
+                    next_atlas_index += 1;
                     const delta = atlasUploadDelta(current, key, &path.picture.atlas);
                     plan.reused_atlas_pages += delta.reused_pages;
                     plan.missing_atlas_pages += delta.missing_pages;
                     plan.curve_bytes_upload += delta.curve_bytes;
                     plan.band_bytes_upload += delta.band_bytes;
+                    if (current) |prepared| {
+                        if (preparedAtlasForKeyWithIndex(prepared, key)) |lookup| {
+                            if (lookup.index != atlas_index and self.backend() != .cpu) plan.atlas_cache_rebuilds = 1;
+                        }
+                    }
+                    if (currentAtlasNeedsOverflowBank(self, current, key, &path.picture.atlas)) needs_atlas_overflow_bank = true;
                     if (currentAtlasWouldRebuild(self, current, key, &path.picture.atlas)) plan.atlas_cache_rebuilds = 1;
                 },
                 .text_paint => {
@@ -521,13 +664,22 @@ pub const Renderer = struct {
             }
         }
         const stats = self.resourceCacheStats();
-        const free_atlas_layers = stats.atlas_layers_allocated -| stats.atlas_pages_resident;
-        const free_image_layers = stats.image_layers_allocated -| stats.image_layers_resident;
-        plan.new_atlas_banks = if (plan.missing_atlas_pages > free_atlas_layers) 1 else 0;
+        const free_atlas_layers = stats.active_atlas_layers_allocated -| stats.active_atlas_pages_resident;
+        const free_image_layers = stats.active_image_layers_allocated -| stats.active_image_layers_resident;
+        plan.new_atlas_banks = if (needs_atlas_overflow_bank or plan.missing_atlas_pages > free_atlas_layers) 1 else 0;
         plan.new_image_banks = if (plan.missing_images > free_image_layers) 1 else 0;
         if (counts.layer_infos > 0 and current != null and self.backend() != .cpu) plan.atlas_cache_rebuilds = 1;
-        if (plan.new_atlas_banks > 0 and stats.atlas_layers_allocated > 0 and self.backend() != .cpu) plan.atlas_cache_rebuilds = 1;
-        if (plan.new_image_banks > 0 and stats.image_layers_allocated > 0 and self.backend() != .cpu) plan.image_cache_rebuilds = 1;
+        if (current) |prepared| {
+            if (counts.atlases != prepared.atlases.len and self.backend() != .cpu) plan.atlas_cache_rebuilds = 1;
+        }
+        if (plan.new_atlas_banks > 0 and
+            stats.active_atlas_layers_allocated > 0 and
+            self.backend() != .cpu and
+            !resourceSetCanUseAtlasOverflowBanks(self, current, next_set, counts))
+        {
+            plan.atlas_cache_rebuilds = 1;
+        }
+        if (plan.new_image_banks > 0 and stats.active_image_layers_allocated > 0 and self.backend() != .cpu) plan.image_cache_rebuilds = 1;
         if (plan.atlas_cache_rebuilds > 0) {
             plan.curve_bytes_upload = plan.upload_footprint.curve_bytes_used;
             plan.band_bytes_upload = plan.upload_footprint.band_bytes_used;

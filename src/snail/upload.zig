@@ -58,8 +58,12 @@ pub const ResourceFootprint = struct {
 
 pub const ResourceCacheStats = struct {
     generation: u64 = 0,
+    active_atlas_pages_resident: u32 = 0,
+    active_atlas_layers_allocated: u32 = 0,
     atlas_pages_resident: u32 = 0,
     atlas_layers_allocated: u32 = 0,
+    active_image_layers_resident: u32 = 0,
+    active_image_layers_allocated: u32 = 0,
     image_layers_resident: u32 = 0,
     image_layers_allocated: u32 = 0,
 };
