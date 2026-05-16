@@ -310,6 +310,14 @@ pub const SnailResourceFootprint = extern struct {
     image_bytes_allocated: usize = 0,
 };
 
+pub const SnailResourceCacheStats = extern struct {
+    generation: u64 = 0,
+    atlas_pages_resident: u32 = 0,
+    atlas_layers_allocated: u32 = 0,
+    image_layers_resident: u32 = 0,
+    image_layers_allocated: u32 = 0,
+};
+
 pub const SnailGlTextCoverageBindings = extern struct {
     curve_tex_loc: c_int = -1,
     band_tex_loc: c_int = -1,
@@ -615,6 +623,16 @@ fn fromResourceFootprint(footprint: snail.ResourceFootprint) SnailResourceFootpr
         .layer_info_bytes_allocated = footprint.layer_info_bytes_allocated,
         .image_bytes_used = footprint.image_bytes_used,
         .image_bytes_allocated = footprint.image_bytes_allocated,
+    };
+}
+
+fn fromResourceCacheStats(stats: snail.ResourceCacheStats) SnailResourceCacheStats {
+    return .{
+        .generation = stats.generation,
+        .atlas_pages_resident = stats.atlas_pages_resident,
+        .atlas_layers_allocated = stats.atlas_layers_allocated,
+        .image_layers_resident = stats.image_layers_resident,
+        .image_layers_allocated = stats.image_layers_allocated,
     };
 }
 
@@ -2227,6 +2245,16 @@ export fn snail_renderer_deinit(renderer: ?*RendererImpl) void {
 
 export fn snail_renderer_backend_name(renderer: *const RendererImpl) [*:0]const u8 {
     return @ptrCast(renderer.backendName().ptr);
+}
+
+export fn snail_renderer_resource_cache_stats(renderer: *RendererImpl, out: *SnailResourceCacheStats) void {
+    var erased = renderer.asRenderer();
+    out.* = fromResourceCacheStats(erased.resourceCacheStats());
+}
+
+export fn snail_renderer_reset_resource_cache(renderer: *RendererImpl) void {
+    var erased = renderer.asRenderer();
+    erased.resetResourceCache();
 }
 
 export fn snail_renderer_upload_resources_blocking(
