@@ -80,6 +80,20 @@ const MAX_GLYPHS_PER_SEGMENT = RING_SEGMENT_BYTES / BYTES_PER_GLYPH;
 const AtlasSlot = upload_common.AtlasSlot(snail_mod.lowlevel.CurveAtlas, snail_mod.lowlevel.AtlasPage);
 const ImageSlot = upload_common.ImageSlot(snail_mod.Image);
 
+fn uploadedAtlasPages(slots: []const AtlasSlot) u32 {
+    var total: u32 = 0;
+    for (slots) |slot| total += slot.uploaded_pages;
+    return total;
+}
+
+fn retainPage(page: *const snail_mod.lowlevel.AtlasPage) void {
+    _ = @constCast(page).retain();
+}
+
+fn releasePage(page: *const snail_mod.lowlevel.AtlasPage) void {
+    @constCast(page).release();
+}
+
 pub const PreparedResources = struct {
     allocator: std.mem.Allocator,
     backend: Backend,
@@ -98,6 +112,7 @@ pub const PreparedResources = struct {
     allocated_image_width: u32 = 0,
     allocated_image_height: u32 = 0,
     allocated_image_count: u32 = 0,
+    generation: u64 = 0,
 
     pub fn deinit(self: *PreparedResources) void {
         self.destroyAtlasTextureResources();
@@ -106,15 +121,18 @@ pub const PreparedResources = struct {
     }
 
     fn destroyAtlasTextureResources(self: *PreparedResources) void {
+        const had_resources = self.curve_array != 0 or self.band_array != 0 or self.layer_info_tex != 0;
         if (self.curve_array != 0) gl.glDeleteTextures(1, &self.curve_array);
         if (self.band_array != 0) gl.glDeleteTextures(1, &self.band_array);
         if (self.layer_info_tex != 0) gl.glDeleteTextures(1, &self.layer_info_tex);
         self.curve_array = 0;
         self.band_array = 0;
         self.layer_info_tex = 0;
+        if (had_resources) self.generation +%= 1;
     }
 
     fn destroyImageResources(self: *PreparedResources) void {
+        const had_resources = self.image_array != 0;
         if (self.image_array != 0) gl.glDeleteTextures(1, &self.image_array);
         self.image_array = 0;
         self.image_slot_count = 0;
@@ -123,6 +141,7 @@ pub const PreparedResources = struct {
         self.allocated_image_count = 0;
         if (self.image_slots.len > 0) self.allocator.free(self.image_slots);
         self.image_slots = &.{};
+        if (had_resources) self.generation +%= 1;
     }
 
     pub fn uploadAtlases(self: *PreparedResources, atlases: []const *const snail_mod.lowlevel.CurveAtlas, out_views: anytype) !void {
@@ -201,7 +220,7 @@ pub const PreparedResources = struct {
             try self.rebuildTextureArrays(scratch, atlases, capacity_modes, out_views, layer_infos, out_layer_info_views);
         } else {
             self.fillAtlasViews(atlases, out_views);
-            self.fillLayerInfoViews(self.atlasLayerInfoRows(), layer_infos, out_layer_info_views);
+            self.fillLayerInfoViews(self.atlasLayerInfoRows(atlases), layer_infos, out_layer_info_views);
             try self.ensureAtlasImagesRegistered(scratch, atlases);
             try self.ensureLayerInfoImagesRegistered(scratch, layer_infos);
             try self.rebuildLayerInfoTexture(scratch, atlases, layer_infos, out_layer_info_views);
@@ -327,8 +346,8 @@ pub const PreparedResources = struct {
         try self.ensureImageSlotCapacity(self.image_slot_count + new_images.items.len);
 
         const required_count: u32 = @intCast(self.image_slot_count + new_images.items.len);
-        const new_width = upload_common.heightCapacity(@max(required_width, 1));
-        const new_height = upload_common.heightCapacity(@max(required_height, 1));
+        const new_width = upload_common.imageExtentCapacity(required_width);
+        const new_height = upload_common.imageExtentCapacity(required_height);
         const needs_rebuild = self.image_array == 0 or
             required_count > self.allocated_image_count or
             new_width > self.allocated_image_width or
@@ -352,8 +371,10 @@ pub const PreparedResources = struct {
     }
 
     fn rebuildImageArray(self: *PreparedResources) void {
+        const had_array = self.image_array != 0;
         if (self.image_array != 0) gl.glDeleteTextures(1, &self.image_array);
         self.image_array = 0;
+        if (had_array) self.generation +%= 1;
 
         if (self.image_slot_count == 0) {
             self.allocated_image_width = 0;
@@ -370,8 +391,8 @@ pub const PreparedResources = struct {
             max_height = @max(max_height, image.height);
         }
 
-        self.allocated_image_width = upload_common.heightCapacity(max_width);
-        self.allocated_image_height = upload_common.heightCapacity(max_height);
+        self.allocated_image_width = upload_common.imageExtentCapacity(max_width);
+        self.allocated_image_height = upload_common.imageExtentCapacity(max_height);
         self.allocated_image_count = upload_common.imageCapacity(@intCast(self.image_slot_count));
 
         switch (self.backend) {
@@ -471,6 +492,7 @@ pub const PreparedResources = struct {
         self.allocated_curve_height = slot_info.allocated_curve_height;
         self.allocated_band_height = slot_info.allocated_band_height;
         self.allocated_layer_count = slot_info.allocated_layer_count;
+        self.retainAtlasPageRefs();
         self.fillLayerInfoViews(slot_info.layer_info_rows, layer_infos, out_layer_info_views);
 
         const first_atlas = upload_common.firstNonEmptyAtlas(atlases) orelse {
@@ -521,6 +543,7 @@ pub const PreparedResources = struct {
         }
 
         try upload_common.refreshAtlasSlots(self.atlas_slots, atlases);
+        self.retainAtlasPageRefsFromStarts(start_pages[0..atlases.len]);
         return true;
     }
 
@@ -536,10 +559,9 @@ pub const PreparedResources = struct {
         upload_common.fillAtlasViews(self.atlas_slots, atlases, out_views);
     }
 
-    fn atlasLayerInfoRows(self: *const PreparedResources) u32 {
+    fn atlasLayerInfoRows(_: *const PreparedResources, atlases: []const *const snail_mod.lowlevel.CurveAtlas) u32 {
         var rows: u32 = 0;
-        for (self.atlas_slots[0..self.atlas_slot_count]) |slot| {
-            const atlas = slot.atlas orelse continue;
+        for (atlases) |atlas| {
             rows += atlas.layer_info_height;
         }
         return rows;
@@ -562,6 +584,7 @@ pub const PreparedResources = struct {
     }
 
     fn resetAtlasUploadState(self: *PreparedResources) void {
+        self.releaseAtlasPageRefs();
         for (self.atlas_slots) |*slot| slot.deinit(self.allocator);
         if (self.atlas_slots.len > 0) self.allocator.free(self.atlas_slots);
         self.atlas_slots = &.{};
@@ -570,6 +593,32 @@ pub const PreparedResources = struct {
         self.allocated_band_height = 0;
         self.allocated_layer_count = 0;
         self.atlas_has_special_text_runs = false;
+    }
+
+    fn retainAtlasPageRefs(self: *PreparedResources) void {
+        for (self.atlas_slots[0..self.atlas_slot_count]) |slot| {
+            for (slot.page_ptrs[0..@min(slot.uploaded_pages, slot.page_ptrs.len)]) |maybe_page| {
+                if (maybe_page) |page| retainPage(page);
+            }
+        }
+    }
+
+    fn retainAtlasPageRefsFromStarts(self: *PreparedResources, start_pages: []const u32) void {
+        for (self.atlas_slots[0..self.atlas_slot_count], 0..) |slot, i| {
+            const start = if (i < start_pages.len) start_pages[i] else slot.uploaded_pages;
+            if (start >= slot.uploaded_pages) continue;
+            for (slot.page_ptrs[start..@min(slot.uploaded_pages, slot.page_ptrs.len)]) |maybe_page| {
+                if (maybe_page) |page| retainPage(page);
+            }
+        }
+    }
+
+    fn releaseAtlasPageRefs(self: *PreparedResources) void {
+        for (self.atlas_slots[0..self.atlas_slot_count]) |slot| {
+            for (slot.page_ptrs[0..@min(slot.uploaded_pages, slot.page_ptrs.len)]) |maybe_page| {
+                if (maybe_page) |page| releasePage(page);
+            }
+        }
     }
 
     fn createTextureArrays(self: *PreparedResources, first_atlas: *const snail_mod.lowlevel.CurveAtlas, layer_count: u32, max_curve_h: u32, max_band_h: u32) void {
@@ -643,8 +692,10 @@ pub const PreparedResources = struct {
     }
 
     fn rebuildLayerInfoTexture(self: *PreparedResources, scratch: std.mem.Allocator, atlases: []const *const snail_mod.lowlevel.CurveAtlas, layer_infos: anytype, layer_info_views: anytype) !void {
+        const had_layer_info = self.layer_info_tex != 0;
         if (self.layer_info_tex != 0) gl.glDeleteTextures(1, &self.layer_info_tex);
         self.layer_info_tex = 0;
+        if (had_layer_info) self.generation +%= 1;
 
         var total_rows: u32 = 0;
         for (atlases) |atlas| total_rows += atlas.layer_info_height;
@@ -747,6 +798,7 @@ pub const GlTextState = struct {
     ring_segment: u32 = 0,
     ring_offset: usize = 0,
     ring_segment_dirty: [RING_SEGMENTS]bool = .{false} ** RING_SEGMENTS,
+    resource_cache: ?PreparedResources = null,
 
     // ── Init / Deinit ──
 
@@ -829,6 +881,10 @@ pub const GlTextState = struct {
     }
 
     pub fn deinit(self: *GlTextState) void {
+        if (self.resource_cache) |*cache| {
+            cache.deinit();
+            self.resource_cache = null;
+        }
         if (self.backend == .gl44) {
             for (&self.ring_fences) |*f| {
                 if (f.*) |fence| {
@@ -854,6 +910,46 @@ pub const GlTextState = struct {
         if (self.vao != 0) gl.glDeleteVertexArrays(1, &self.vao);
         if (self.vbo != 0) gl.glDeleteBuffers(1, &self.vbo);
         if (self.ebo != 0) gl.glDeleteBuffers(1, &self.ebo);
+    }
+
+    pub fn resourceCache(self: *GlTextState, allocator: std.mem.Allocator) *PreparedResources {
+        if (self.resource_cache == null) {
+            self.resource_cache = PreparedResources{
+                .allocator = allocator,
+                .backend = self.backend,
+            };
+        }
+        if (self.resource_cache) |*cache| {
+            cache.backend = self.backend;
+            return cache;
+        }
+        unreachable;
+    }
+
+    pub fn resetResourceCache(self: *GlTextState) void {
+        if (self.resource_cache) |*cache| {
+            const allocator = cache.allocator;
+            const generation = cache.generation +% 1;
+            cache.deinit();
+            cache.* = .{
+                .allocator = allocator,
+                .backend = self.backend,
+                .generation = generation,
+            };
+        }
+    }
+
+    pub fn resourceCacheStats(self: *const GlTextState) snail_mod.ResourceCacheStats {
+        if (self.resource_cache) |*cache| {
+            return .{
+                .generation = cache.generation,
+                .atlas_pages_resident = uploadedAtlasPages(cache.atlas_slots[0..cache.atlas_slot_count]),
+                .atlas_layers_allocated = cache.allocated_layer_count,
+                .image_layers_resident = @intCast(cache.image_slot_count),
+                .image_layers_allocated = cache.allocated_image_count,
+            };
+        }
+        return .{};
     }
 
     pub fn backendName(self: *const GlTextState) []const u8 {

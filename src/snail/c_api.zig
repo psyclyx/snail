@@ -127,6 +127,7 @@ fn mapError(err: anyerror) c_int {
         => SNAIL_ERR_INVALID_ARGUMENT,
         error.MissingPreparedResource,
         error.StaleDrawRecords,
+        error.StalePreparedResources,
         error.InvalidResolve,
         error.UnsupportedResolve,
         => SNAIL_ERR_DRAW_FAILED,
@@ -2291,6 +2292,38 @@ export fn snail_resource_upload_plan_footprint(plan: *const ResourceUploadPlanIm
 
 export fn snail_resource_upload_plan_upload_bytes(plan: *const ResourceUploadPlanImpl) usize {
     return plan.inner.upload_bytes;
+}
+
+export fn snail_resource_upload_plan_reused_atlas_pages(plan: *const ResourceUploadPlanImpl) u32 {
+    return plan.inner.reused_atlas_pages;
+}
+
+export fn snail_resource_upload_plan_missing_atlas_pages(plan: *const ResourceUploadPlanImpl) u32 {
+    return plan.inner.missing_atlas_pages;
+}
+
+export fn snail_resource_upload_plan_reused_images(plan: *const ResourceUploadPlanImpl) u32 {
+    return plan.inner.reused_images;
+}
+
+export fn snail_resource_upload_plan_missing_images(plan: *const ResourceUploadPlanImpl) u32 {
+    return plan.inner.missing_images;
+}
+
+export fn snail_resource_upload_plan_curve_bytes(plan: *const ResourceUploadPlanImpl) usize {
+    return plan.inner.curve_bytes_upload;
+}
+
+export fn snail_resource_upload_plan_band_bytes(plan: *const ResourceUploadPlanImpl) usize {
+    return plan.inner.band_bytes_upload;
+}
+
+export fn snail_resource_upload_plan_layer_info_bytes(plan: *const ResourceUploadPlanImpl) usize {
+    return plan.inner.layer_info_bytes_upload;
+}
+
+export fn snail_resource_upload_plan_image_bytes(plan: *const ResourceUploadPlanImpl) usize {
+    return plan.inner.image_bytes_upload;
 }
 
 export fn snail_resource_upload_plan_changed_bytes(plan: *const ResourceUploadPlanImpl) usize {

@@ -56,6 +56,14 @@ pub const ResourceFootprint = struct {
     }
 };
 
+pub const ResourceCacheStats = struct {
+    generation: u64 = 0,
+    atlas_pages_resident: u32 = 0,
+    atlas_layers_allocated: u32 = 0,
+    image_layers_resident: u32 = 0,
+    image_layers_allocated: u32 = 0,
+};
+
 pub const UploadAllocators = struct {
     persistent: std.mem.Allocator,
     scratch: std.mem.Allocator,
@@ -73,6 +81,18 @@ pub const ResourceUploadPlan = struct {
     changed_bytes: usize = 0,
     changed_keys: []ResourceKey = &.{},
     changed_len: usize = 0,
+    reused_atlas_pages: u32 = 0,
+    missing_atlas_pages: u32 = 0,
+    duplicated_atlas_pages: u32 = 0,
+    new_atlas_banks: u32 = 0,
+    reused_images: u32 = 0,
+    missing_images: u32 = 0,
+    new_image_banks: u32 = 0,
+    curve_bytes_upload: usize = 0,
+    band_bytes_upload: usize = 0,
+    layer_info_bytes_upload: usize = 0,
+    image_bytes_upload: usize = 0,
+    gpu_bytes_allocated: usize = 0,
 
     pub fn changedKeys(self: *const ResourceUploadPlan) []const ResourceKey {
         return self.changed_keys[0..self.changed_len];

@@ -190,17 +190,16 @@ pub const ResourceSet = struct {
 
 pub const PreparedResources = struct {
     allocator: std.mem.Allocator,
-    /// Backend-specific realization for one renderer/context. GPU backends
-    /// copy texture payload during upload. The CPU backend owns prepared curve
-    /// sidecars but still borrows atlas band/layer-info data and image pixels,
-    /// so uploaded `TextAtlas`, `PathPicture`, and `Image` values must outlive
-    /// CPU prepared resources.
+    /// Validated bindings for one renderer/context. GPU backends point at
+    /// renderer-owned resident caches; CPU prepared resources still own their
+    /// prepared curve sidecars and borrow immutable source data.
     atlases: []PreparedAtlasResource = &.{},
     layer_infos: []PreparedLayerInfoResource = &.{},
     images: []PreparedImageResource = &.{},
-    gl: if (build_options.enable_opengl) ?pipeline.PreparedResources else void = if (build_options.enable_opengl) null else {},
-    vulkan: if (build_options.enable_vulkan) ?vulkan_pipeline.PreparedResources else void = if (build_options.enable_vulkan) null else {},
+    gl: if (build_options.enable_opengl) ?*pipeline.PreparedResources else void = if (build_options.enable_opengl) null else {},
+    vulkan: if (build_options.enable_vulkan) ?*vulkan_pipeline.PreparedResources else void = if (build_options.enable_vulkan) null else {},
     cpu: if (build_options.enable_cpu) ?cpu_renderer_mod.PreparedResources else void = if (build_options.enable_cpu) null else {},
+    backend_generation: u64 = 0,
 
     pub const PreparedAtlasKind = enum {
         text,
@@ -234,12 +233,6 @@ pub const PreparedResources = struct {
     };
 
     pub fn deinit(self: *PreparedResources) void {
-        if (comptime build_options.enable_opengl) {
-            if (self.gl) |*gl_resources| gl_resources.deinit();
-        }
-        if (comptime build_options.enable_vulkan) {
-            if (self.vulkan) |*vk_resources| vk_resources.deinit();
-        }
         if (comptime build_options.enable_cpu) {
             if (self.cpu) |*cpu_resources| cpu_resources.deinit();
         }
@@ -274,7 +267,7 @@ pub const PreparedResources = struct {
     pub fn coverageBackend(self: *const PreparedResources, renderer: *Renderer) ?CoverageBackend {
         switch (renderer.backend()) {
             .gl => if (comptime build_options.enable_opengl) {
-                if (self.gl) |*gl_resources| {
+                if (self.gl) |gl_resources| {
                     return .{ .gl = .{
                         .gl = @ptrCast(@alignCast(renderer.ptr)),
                         .gl_resources = gl_resources,
@@ -283,7 +276,7 @@ pub const PreparedResources = struct {
                 }
             },
             .vulkan => if (comptime build_options.enable_vulkan) {
-                if (self.vulkan) |*vk_resources| {
+                if (self.vulkan) |vk_resources| {
                     return .{ .vulkan = .{
                         .vk = @ptrCast(@alignCast(renderer.ptr)),
                         .vk_resources = vk_resources,
@@ -830,8 +823,8 @@ fn resourceSetUploadFootprint(set: *const ResourceSet) !ResourceFootprint {
 
     if (image_count > 0) {
         if (image_count > std.math.maxInt(u32)) return error.ImageLayerCountOverflow;
-        out.image_bytes_allocated = @as(usize, upload_common.heightCapacity(max_image_width)) *
-            @as(usize, upload_common.heightCapacity(max_image_height)) *
+        out.image_bytes_allocated = @as(usize, upload_common.imageExtentCapacity(max_image_width)) *
+            @as(usize, upload_common.imageExtentCapacity(max_image_height)) *
             @as(usize, upload_common.imageCapacity(@intCast(image_count))) *
             IMAGE_TEXEL_BYTES;
     }
@@ -933,21 +926,22 @@ pub fn uploadPreparedResources(renderer: *Renderer, set: *const ResourceSet, all
         if (comptime build_options.enable_opengl) {
             if (renderer.backend() == .gl) {
                 const gl_state: *pipeline.GlTextState = @ptrCast(@alignCast(renderer.ptr));
-                var gl_prepared = pipeline.PreparedResources{ .allocator = persistent, .backend = gl_state.backend };
+                const gl_prepared = gl_state.resourceCache(persistent);
                 if (atlas_count > 0 or layer_info_count > 0) try gl_prepared.uploadAtlasesAndLayerInfoWithCapacityModes(scratch, upload_atlases, atlas_capacity_modes[0..atlas_count], atlas_views, upload_layer_infos, layer_info_views);
                 if (image_count > 0) try gl_prepared.uploadImages(scratch, upload_images, image_views);
                 prepared.gl = gl_prepared;
+                prepared.backend_generation = gl_prepared.generation;
                 break :blk true;
             }
         }
         if (comptime build_options.enable_vulkan) {
             if (renderer.backend() == .vulkan) {
                 const vk_state: *vulkan_pipeline.VulkanPipeline = @ptrCast(@alignCast(renderer.ptr));
-                var vk_prepared = try vulkan_pipeline.PreparedResources.init(vk_state, persistent);
-                errdefer vk_prepared.deinit();
-                if (atlas_count > 0 or layer_info_count > 0) try vk_state.uploadPreparedAtlasesAndLayerInfoWithCapacityModes(&vk_prepared, scratch, upload_atlases, atlas_capacity_modes[0..atlas_count], atlas_views, upload_layer_infos, layer_info_views);
-                if (image_count > 0) try vk_state.uploadPreparedImages(&vk_prepared, scratch, upload_images, image_views);
+                const vk_prepared = try vk_state.resourceCache(persistent);
+                if (atlas_count > 0 or layer_info_count > 0) try vk_state.uploadPreparedAtlasesAndLayerInfoWithCapacityModes(vk_prepared, scratch, upload_atlases, atlas_capacity_modes[0..atlas_count], atlas_views, upload_layer_infos, layer_info_views);
+                if (image_count > 0) try vk_state.uploadPreparedImages(vk_prepared, scratch, upload_images, image_views);
                 prepared.vulkan = vk_prepared;
+                prepared.backend_generation = vk_prepared.generation;
                 break :blk true;
             }
         }

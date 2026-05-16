@@ -167,13 +167,13 @@ const SceneBundle = struct {
 const SnailPrep = struct {
     font_load_us: f64,
     ascii_prep_us: f64,
-    texture_bytes: usize,
+    footprint: snail.ResourceFootprint,
 };
 
 const VectorPrep = struct {
     freeze_us: f64,
     shapes: usize,
-    texture_bytes: usize,
+    footprint: snail.ResourceFootprint,
 };
 
 const FreetypeResults = struct {
@@ -228,6 +228,7 @@ const RenderRow = struct {
     commands: usize,
     words: usize,
     segments: usize,
+    instance_bytes: usize,
     us: f64,
 };
 
@@ -318,20 +319,6 @@ fn drawOptions(width: u32, height: u32, subpixel_order: snail.SubpixelOrder) sna
             .encoding = .srgb,
         },
     };
-}
-
-fn textAtlasTextureBytes(atlas: *const snail.TextAtlas) usize {
-    var total: usize = 0;
-    for (atlas.pageSlice()) |page| total += page.textureBytes();
-    if (atlas.layer_info_data) |data| total += data.len * @sizeOf(f32);
-    return total;
-}
-
-fn pathPictureTextureBytes(picture: *const snail.PathPicture) usize {
-    var total: usize = 0;
-    for (picture.atlas.pages) |page| total += page.textureBytes();
-    if (picture.atlas.layer_info_data) |data| total += data.len * @sizeOf(f32);
-    return total;
 }
 
 fn ensureText(atlas: *snail.TextAtlas, style: snail.FontStyle, text: []const u8) !void {
@@ -578,21 +565,21 @@ fn timeVectorFreeze() !VectorPrep {
     const allocator = std.heap.smp_allocator;
     var total_us: f64 = 0;
     var shapes: usize = 0;
-    var texture_bytes: usize = 0;
+    var footprint: snail.ResourceFootprint = .{};
 
     for (0..PREP_RUNS) |_| {
         const start = nowNs();
         var picture = try buildVectorPicture(allocator);
         total_us += usFrom(start);
         shapes = picture.shapeCount();
-        texture_bytes = pathPictureTextureBytes(&picture);
+        footprint = picture.uploadFootprint();
         picture.deinit();
     }
 
     return .{
         .freeze_us = total_us / PREP_RUNS,
         .shapes = shapes,
-        .texture_bytes = texture_bytes,
+        .footprint = footprint,
     };
 }
 
@@ -676,20 +663,20 @@ fn benchSnailPrep(allocator: std.mem.Allocator, font_data: []const u8) !SnailPre
     }
 
     var prep_total_us: f64 = 0;
-    var texture_bytes: usize = 0;
+    var footprint: snail.ResourceFootprint = .{};
     for (0..PREP_RUNS) |_| {
         const start = nowNs();
         var atlas = try snail.TextAtlas.init(allocator, &.{.{ .data = font_data }});
         try ensureText(&atlas, .{}, &PRINTABLE_ASCII);
         prep_total_us += usFrom(start);
-        texture_bytes = textAtlasTextureBytes(&atlas);
+        footprint = atlas.uploadFootprint();
         atlas.deinit();
     }
 
     return .{
         .font_load_us = font_load_total_us / PREP_RUNS,
         .ascii_prep_us = prep_total_us / PREP_RUNS,
-        .texture_bytes = texture_bytes,
+        .footprint = footprint,
     };
 }
 
@@ -969,12 +956,12 @@ fn printPreparationTables(snail_prep: SnailPrep, vector_prep: VectorPrep, ft: Fr
         \\
         \\## Prepared Resource Memory
         \\
-        \\| Resource | Bytes | KiB |
-        \\|---|---:|---:|
-        \\| Snail text curve/band textures | {d} | {d:.1} |
-        \\| Snail vector curve/band textures | {d} | {d:.1} |
-        \\| FreeType bitmaps, one size | {d} | {d:.1} |
-        \\| FreeType bitmaps, seven sizes | {d} | {d:.1} |
+        \\| Resource | Used bytes | Allocated GPU bytes | Used KiB | Allocated KiB |
+        \\|---|---:|---:|---:|---:|
+        \\| Snail text textures | {d} | {d} | {d:.1} | {d:.1} |
+        \\| Snail vector textures | {d} | {d} | {d:.1} | {d:.1} |
+        \\| FreeType bitmaps, one size | {d} | {d} | {d:.1} | {d:.1} |
+        \\| FreeType bitmaps, seven sizes | {d} | {d} | {d:.1} | {d:.1} |
         \\
     , .{
         snail_prep.font_load_us,
@@ -988,13 +975,21 @@ fn printPreparationTables(snail_prep: SnailPrep, vector_prep: VectorPrep, ft: Fr
         ratio(ft.glyph_prep_all_sizes_us, snail_prep.ascii_prep_us),
         vector_prep.shapes,
         vector_prep.freeze_us,
-        snail_prep.texture_bytes,
-        kib(snail_prep.texture_bytes),
-        vector_prep.texture_bytes,
-        kib(vector_prep.texture_bytes),
+        snail_prep.footprint.usedBytes(),
+        snail_prep.footprint.allocatedBytes(),
+        kib(snail_prep.footprint.usedBytes()),
+        kib(snail_prep.footprint.allocatedBytes()),
+        vector_prep.footprint.usedBytes(),
+        vector_prep.footprint.allocatedBytes(),
+        kib(vector_prep.footprint.usedBytes()),
+        kib(vector_prep.footprint.allocatedBytes()),
+        ft.bitmap_bytes_single,
         ft.bitmap_bytes_single,
         kib(ft.bitmap_bytes_single),
+        kib(ft.bitmap_bytes_single),
         ft.bitmap_bytes_all,
+        ft.bitmap_bytes_all,
+        kib(ft.bitmap_bytes_all),
         kib(ft.bitmap_bytes_all),
     });
     std.debug.print("\n", .{});
@@ -1073,13 +1068,13 @@ fn printRenderTable(rows: []const RenderRow) void {
         \\
         \\Target: {d}x{d}. CPU uses {d} measured frames; GPU backends use {d} measured frames.
         \\
-        \\| Backend | Scene | Frames | Commands | Words | Segments | Draw prepared scene |
-        \\|---|---|---:|---:|---:|---:|---:|
+        \\| Backend | Scene | Frames | Commands | Words | Segments | Instance bytes/frame | Draw prepared scene |
+        \\|---|---|---:|---:|---:|---:|---:|---:|
         \\
     , .{ WIDTH, HEIGHT, CPU_FRAMES, GPU_FRAMES });
     for (rows) |row| {
         std.debug.print(
-            \\| {s} | {s} | {d} | {d} | {d} | {d} | {d:.2} us |
+            \\| {s} | {s} | {d} | {d} | {d} | {d} | {d} | {d:.2} us |
             \\
         , .{
             row.backend,
@@ -1088,11 +1083,12 @@ fn printRenderTable(rows: []const RenderRow) void {
             row.commands,
             row.words,
             row.segments,
+            row.instance_bytes,
             row.us,
         });
     }
     if (!build_options.enable_vulkan) {
-        std.debug.print("| Vulkan | disabled (`zig build bench -Dvulkan=false`) | - | - | - | - | - |\n", .{});
+        std.debug.print("| Vulkan | disabled (`zig build bench -Dvulkan=false`) | - | - | - | - | - | - |\n", .{});
     }
     std.debug.print("\n", .{});
 }
@@ -1193,6 +1189,7 @@ pub fn main() !void {
             .commands = bundles[i].scene.commandCount(),
             .words = prepared_scenes[i].words.len,
             .segments = prepared_scenes[i].segments.len,
+            .instance_bytes = prepared_scenes[i].words.len * @sizeOf(u32),
             .us = try timeCpuDraw(&cpu_renderer, &cpu_resources[i], &prepared_scenes[i], options, cpu_pixels),
         });
     }
@@ -1205,6 +1202,7 @@ pub fn main() !void {
             .commands = bundles[i].scene.commandCount(),
             .words = prepared_scenes[i].words.len,
             .segments = prepared_scenes[i].segments.len,
+            .instance_bytes = prepared_scenes[i].words.len * @sizeOf(u32),
             .us = try timeCpuDraw(&cpu_threaded_renderer, &cpu_resources[i], &prepared_scenes[i], options, cpu_pixels_threaded),
         });
     }
@@ -1234,6 +1232,7 @@ pub fn main() !void {
             .commands = bundles[i].scene.commandCount(),
             .words = gl_scene.words.len,
             .segments = gl_scene.segments.len,
+            .instance_bytes = gl_scene.words.len * @sizeOf(u32),
             .us = try timeGlDraw(&gl_renderer, &gl_resources, &gl_scene, options),
         });
     }
@@ -1258,6 +1257,7 @@ pub fn main() !void {
                 .commands = bundles[i].scene.commandCount(),
                 .words = vk_scene.words.len,
                 .segments = vk_scene.segments.len,
+                .instance_bytes = vk_scene.words.len * @sizeOf(u32),
                 .us = try timeVulkanDraw(&vk_state.?, &vk_renderer, &vk_resources, &vk_scene, options),
             });
         }

@@ -51,8 +51,8 @@ pub fn textureBytes(image: *const Image) usize {
 }
 
 pub fn allocatedBytes(image: *const Image) usize {
-    return @as(usize, upload_common.heightCapacity(image.width)) *
-        @as(usize, upload_common.heightCapacity(image.height)) *
+    return @as(usize, upload_common.imageExtentCapacity(image.width)) *
+        @as(usize, upload_common.imageExtentCapacity(image.height)) *
         @as(usize, upload_common.imageCapacity(1)) *
         4;
 }

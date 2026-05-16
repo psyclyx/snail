@@ -50,6 +50,7 @@ const PendingResourceUpload = upload_mod.PendingResourceUpload;
 const PreparedResources = resources_mod.PreparedResources;
 const PreparedScene = draw_mod.PreparedScene;
 const Resolve = target_mod.Resolve;
+const ResourceCacheStats = upload_mod.ResourceCacheStats;
 const ResourceKey = resource_key_mod.ResourceKey;
 const ResourceSet = resources_mod.ResourceSet;
 const ResourceUploadPlan = upload_mod.ResourceUploadPlan;
@@ -64,7 +65,55 @@ const resourceEntryStamp = resources_mod.resourceEntryStamp;
 const resourceEntryUploadBytes = resources_mod.resourceEntryUploadBytes;
 const uploadPreparedResources = resources_mod.uploadPreparedResources;
 
-/// Renderer execution machinery. Backend resources live in PreparedResources.
+const PreparedAtlasResource = PreparedResources.PreparedAtlasResource;
+const PreparedImageResource = PreparedResources.PreparedImageResource;
+const PreparedLayerInfoResource = PreparedResources.PreparedLayerInfoResource;
+
+const AtlasUploadDelta = struct {
+    reused_pages: u32 = 0,
+    missing_pages: u32 = 0,
+    curve_bytes: usize = 0,
+    band_bytes: usize = 0,
+};
+
+fn preparedAtlasForKey(prepared: *const PreparedResources, key: ResourceKey) ?*const PreparedAtlasResource {
+    for (prepared.atlases) |*entry| if (entry.key.eql(key)) return entry;
+    return null;
+}
+
+fn preparedLayerInfoForKey(prepared: *const PreparedResources, key: ResourceKey) ?*const PreparedLayerInfoResource {
+    for (prepared.layer_infos) |*entry| if (entry.key.eql(key)) return entry;
+    return null;
+}
+
+fn preparedImageForKey(prepared: *const PreparedResources, key: ResourceKey) ?*const PreparedImageResource {
+    for (prepared.images) |*entry| if (entry.key.eql(key)) return entry;
+    return null;
+}
+
+fn atlasUploadDelta(current: ?*const PreparedResources, key: ResourceKey, atlas: anytype) AtlasUploadDelta {
+    var out: AtlasUploadDelta = .{};
+    const old = if (current) |prepared| preparedAtlasForKey(prepared, key) else null;
+    const old_atlas = if (old) |entry| entry.atlas else null;
+    for (0..atlas.pageCount()) |page_index| {
+        const page = atlas.page(@intCast(page_index));
+        const reused = if (old_atlas) |prev|
+            page_index < prev.pageCount() and prev.page(@intCast(page_index)) == page
+        else
+            false;
+        if (reused) {
+            out.reused_pages += 1;
+        } else {
+            out.missing_pages += 1;
+            out.curve_bytes += page.curveTextureBytes();
+            out.band_bytes += page.bandTextureBytes();
+        }
+    }
+    return out;
+}
+
+/// Renderer execution machinery. GPU resource residency lives in renderer-owned
+/// caches; PreparedResources records validated bindings into those caches.
 pub const Renderer = struct {
     ptr: *anyopaque,
     vtable: *const VTable,
@@ -191,11 +240,11 @@ pub const Renderer = struct {
             // (currently none) can compile down to `null`.
             fn resolveBackendPrepared(prepared: *const PreparedResources) ?*const anyopaque {
                 if (comptime build_options.enable_opengl and T == pipeline.GlTextState) {
-                    if (prepared.gl) |*gl_prepared| return @ptrCast(gl_prepared);
+                    if (prepared.gl) |gl_prepared| return @ptrCast(gl_prepared);
                     return null;
                 }
                 if (comptime build_options.enable_vulkan and T == vulkan_pipeline.VulkanPipeline) {
-                    if (prepared.vulkan) |*vk_prepared| return @ptrCast(vk_prepared);
+                    if (prepared.vulkan) |vk_prepared| return @ptrCast(vk_prepared);
                     return null;
                 }
                 if (comptime build_options.enable_cpu and T == CpuRenderer) {
@@ -348,10 +397,9 @@ pub const Renderer = struct {
     }
 
     pub fn planResourceUpload(self: *Renderer, current: ?*const PreparedResources, next_set: *const ResourceSet, changed_keys: []ResourceKey) !ResourceUploadPlan {
-        _ = self;
         var plan = ResourceUploadPlan{ .set = next_set, .changed_keys = changed_keys };
         plan.upload_footprint = try next_set.estimateUploadFootprint();
-        plan.upload_bytes = plan.upload_footprint.allocatedBytes();
+        plan.gpu_bytes_allocated = plan.upload_footprint.allocatedBytes();
         for (next_set.slice()) |entry| {
             const key = resourceEntryKey(entry);
             const stamp = resourceEntryStamp(entry);
@@ -361,12 +409,89 @@ pub const Renderer = struct {
             if (changed) {
                 try plan.addChanged(key, bytes);
             }
+            switch (entry) {
+                .text_atlas => |text| {
+                    const delta = atlasUploadDelta(current, key, text.atlas);
+                    plan.reused_atlas_pages += delta.reused_pages;
+                    plan.missing_atlas_pages += delta.missing_pages;
+                    plan.curve_bytes_upload += delta.curve_bytes;
+                    plan.band_bytes_upload += delta.band_bytes;
+                },
+                .path_picture => |path| {
+                    const delta = atlasUploadDelta(current, key, &path.picture.atlas);
+                    plan.reused_atlas_pages += delta.reused_pages;
+                    plan.missing_atlas_pages += delta.missing_pages;
+                    plan.curve_bytes_upload += delta.curve_bytes;
+                    plan.band_bytes_upload += delta.band_bytes;
+                },
+                .text_paint => {
+                    const old_layer = if (current) |prepared| preparedLayerInfoForKey(prepared, key) else null;
+                    if (old_layer == null or changed) plan.layer_info_bytes_upload += bytes;
+                },
+                .image => |image| {
+                    const old_image = if (current) |prepared| preparedImageForKey(prepared, key) else null;
+                    if (old_image) |prev| {
+                        if (prev.stamp.eql(stamp)) {
+                            plan.reused_images += 1;
+                        } else {
+                            plan.missing_images += 1;
+                            plan.image_bytes_upload += image.image.pixelSlice().len;
+                        }
+                    } else {
+                        plan.missing_images += 1;
+                        plan.image_bytes_upload += image.image.pixelSlice().len;
+                    }
+                },
+            }
         }
+        plan.upload_bytes = switch (self.backend()) {
+            .cpu => plan.upload_footprint.allocatedBytes(),
+            .gl, .vulkan => plan.curve_bytes_upload +
+                plan.band_bytes_upload +
+                plan.layer_info_bytes_upload +
+                plan.image_bytes_upload,
+        };
+        const stats = self.resourceCacheStats();
+        const free_atlas_layers = stats.atlas_layers_allocated -| stats.atlas_pages_resident;
+        const free_image_layers = stats.image_layers_allocated -| stats.image_layers_resident;
+        plan.new_atlas_banks = if (plan.missing_atlas_pages > free_atlas_layers) 1 else 0;
+        plan.new_image_banks = if (plan.missing_images > free_image_layers) 1 else 0;
         return plan;
     }
 
     pub fn beginResourceUpload(self: *Renderer, allocators: UploadAllocators, plan: ResourceUploadPlan) !PendingResourceUpload {
         return .{ .renderer = self.*, .allocators = allocators, .plan = plan };
+    }
+
+    pub fn resourceCacheStats(self: *const Renderer) ResourceCacheStats {
+        switch (self.backend()) {
+            .gl => if (comptime build_options.enable_opengl) {
+                const gl_state: *const pipeline.GlTextState = @ptrCast(@alignCast(self.ptr));
+                return gl_state.resourceCacheStats();
+            },
+            .vulkan => if (comptime build_options.enable_vulkan) {
+                const vk_state: *const vulkan_pipeline.VulkanPipeline = @ptrCast(@alignCast(self.ptr));
+                return vk_state.resourceCacheStats();
+            },
+            .cpu => if (comptime build_options.enable_cpu) {
+                return .{};
+            },
+        }
+        return .{};
+    }
+
+    pub fn resetResourceCache(self: *Renderer) void {
+        switch (self.backend()) {
+            .gl => if (comptime build_options.enable_opengl) {
+                const gl_state: *pipeline.GlTextState = @ptrCast(@alignCast(self.ptr));
+                gl_state.resetResourceCache();
+            },
+            .vulkan => if (comptime build_options.enable_vulkan) {
+                const vk_state: *vulkan_pipeline.VulkanPipeline = @ptrCast(@alignCast(self.ptr));
+                vk_state.resetResourceCache();
+            },
+            .cpu => {},
+        }
     }
 
     pub fn backend(self: *const Renderer) BackendKind {
@@ -390,7 +515,22 @@ pub const Renderer = struct {
     /// records were built; `error.MissingPreparedResource` if a key is gone.
     /// Vtables call this once per frame before fan-out so per-tile workers
     /// don't have to re-validate (and don't need an error path).
-    pub fn validateRecords(_: *Renderer, prepared: *const PreparedResources, records: DrawRecords, options: DrawOptions) !void {
+    fn validateBackendGeneration(self: *Renderer, prepared: *const PreparedResources) !void {
+        switch (self.backend()) {
+            .gl => if (comptime build_options.enable_opengl) {
+                const cache = prepared.gl orelse return error.MissingPreparedResource;
+                if (cache.generation != prepared.backend_generation) return error.StalePreparedResources;
+            },
+            .vulkan => if (comptime build_options.enable_vulkan) {
+                const cache = prepared.vulkan orelse return error.MissingPreparedResource;
+                if (cache.generation != prepared.backend_generation) return error.StalePreparedResources;
+            },
+            .cpu => {},
+        }
+    }
+
+    pub fn validateRecords(self: *Renderer, prepared: *const PreparedResources, records: DrawRecords, options: DrawOptions) !void {
+        try self.validateBackendGeneration(prepared);
         const expected_target_stamp = TargetStamp.fromRef(&options.mvp, &options.target);
         for (records.segments) |segment| {
             const actual_stamp = prepared.stampForKey(segment.key) orelse return error.MissingPreparedResource;
@@ -523,7 +663,7 @@ pub const GlRenderer = if (build_options.enable_opengl) struct {
     }
 
     pub fn coverageBackend(self: *Self, prepared: *const PreparedResources) ?CoverageBackend {
-        if (prepared.gl) |*gl_resources| {
+        if (prepared.gl) |gl_resources| {
             return .{ .gl = .{ .gl = self.state, .gl_resources = gl_resources, .prepared = prepared } };
         }
         return null;
@@ -531,6 +671,14 @@ pub const GlRenderer = if (build_options.enable_opengl) struct {
 
     pub fn backendName(self: *const Self) []const u8 {
         return self.state.backendName();
+    }
+
+    pub fn resourceCacheStats(self: *const Self) ResourceCacheStats {
+        return self.state.resourceCacheStats();
+    }
+
+    pub fn resetResourceCache(self: *Self) void {
+        self.state.resetResourceCache();
     }
 } else void;
 
@@ -594,7 +742,7 @@ pub const VulkanRenderer = if (build_options.enable_vulkan) struct {
 
     pub fn coverageBackend(self: *VulkanRenderer, prepared: *const PreparedResources) ?CoverageBackend {
         if (comptime !build_options.enable_vulkan) return null;
-        if (prepared.vulkan) |*vk_resources| {
+        if (prepared.vulkan) |vk_resources| {
             return .{ .vulkan = .{ .vk = self.state, .vk_resources = vk_resources, .prepared = prepared } };
         }
         return null;
@@ -602,5 +750,13 @@ pub const VulkanRenderer = if (build_options.enable_vulkan) struct {
 
     pub fn backendName(self: *const VulkanRenderer) []const u8 {
         return self.state.backendName();
+    }
+
+    pub fn resourceCacheStats(self: *const VulkanRenderer) ResourceCacheStats {
+        return self.state.resourceCacheStats();
+    }
+
+    pub fn resetResourceCache(self: *VulkanRenderer) void {
+        self.state.resetResourceCache();
     }
 } else void;

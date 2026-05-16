@@ -103,6 +103,15 @@ fn srgbColorToLinear(color: [4]f32) [4]f32 {
     };
 }
 
+fn srgbBytesToLinearColor(color: [4]u8) [4]f32 {
+    return .{
+        srgbToLinear(color[0]),
+        srgbToLinear(color[1]),
+        srgbToLinear(color[2]),
+        @as(f32, @floatFromInt(color[3])) / 255.0,
+    };
+}
+
 fn linearColorToSrgb(color: [4]f32) [4]f32 {
     return .{
         linearToSrgb(color[0]),
@@ -684,8 +693,10 @@ pub const CpuRenderer = struct {
         }
     }
 
-    fn applyCoverageTransfer(self: *const CpuRenderer, cov: f32) f32 {
-        return self.coverage_transfer.apply(cov);
+    inline fn applyCoverageTransfer(self: *const CpuRenderer, cov: f32) f32 {
+        const exponent = self.coverage_transfer.exponent;
+        if (@abs(exponent - 1.0) <= 1.0e-6 or !std.math.isFinite(exponent)) return cov;
+        return std.math.pow(f32, std.math.clamp(cov, 0.0, 1.0), @max(exponent, 1.0 / 65536.0));
     }
 
     fn applySubpixelCoverageTransfer(self: *const CpuRenderer, cov: SubpixelCoverage) SubpixelCoverage {
@@ -854,27 +865,27 @@ pub const CpuRenderer = struct {
     }
 
     fn renderBatchInstance(self: *CpuRenderer, prepared: *const PreparedResources, inst: []const u32, scene_to_pixel: Transform2D, texture_layer_base: u32, allow_subpixel: bool) void {
-        const decoded = vertex.decodeInstance(inst);
+        const encoded = vertex.instanceAt(inst, 0);
         const bbox = snail.lowlevel.bezier.BBox{
-            .min = .{ .x = decoded.rect[0], .y = decoded.rect[1] },
-            .max = .{ .x = decoded.rect[2], .y = decoded.rect[3] },
+            .min = .{ .x = f16ToF32(encoded.rect[0]), .y = f16ToF32(encoded.rect[1]) },
+            .max = .{ .x = f16ToF32(encoded.rect[2]), .y = f16ToF32(encoded.rect[3]) },
         };
         const instance_transform = Transform2D{
-            .xx = decoded.xform[0],
-            .xy = decoded.xform[1],
-            .yx = decoded.xform[2],
-            .yy = decoded.xform[3],
-            .tx = decoded.origin[0],
-            .ty = decoded.origin[1],
+            .xx = encoded.xform[0],
+            .xy = encoded.xform[1],
+            .yx = encoded.xform[2],
+            .yy = encoded.xform[3],
+            .tx = encoded.origin[0],
+            .ty = encoded.origin[1],
         };
         // Compose the scene-to-pixel transform onto the baked instance
         // transform; GPU backends do this in the vertex shader via the MVP
         // uniform, the CPU rasterizer has to do it here.
         const transform = Transform2D.multiply(scene_to_pixel, instance_transform);
-        const gz = decoded.glyph[0];
-        const gw = decoded.glyph[1];
-        const color = srgbColorToLinear(decoded.color);
-        const tint = srgbColorToLinear(decoded.tint);
+        const gz = encoded.glyph[0];
+        const gw = encoded.glyph[1];
+        const color = srgbBytesToLinearColor(encoded.color);
+        const tint = srgbBytesToLinearColor(encoded.tint);
 
         const atlas_layer_byte: u8 = @intCast(gw >> 24);
 
@@ -882,7 +893,7 @@ pub const CpuRenderer = struct {
             const layer_count: u16 = @intCast(gw & 0xFFFF);
             const info_x: u16 = @intCast(gz & 0xFFFF);
             const info_y: u16 = @intCast(gz >> 16);
-            const atlas_layer = texture_layer_base + @as(u32, @intFromFloat(decoded.band[3]));
+            const atlas_layer = texture_layer_base + @as(u32, @intFromFloat(encoded.band[3]));
 
             // Resolve the layer info for this info_y (handles multi-atlas row offsets).
             const resolved = prepared.resolveLayerInfo(info_y) orelse return;
@@ -908,10 +919,10 @@ pub const CpuRenderer = struct {
             .glyph_y = glyph_y,
             .h_band_count = h_band_count,
             .v_band_count = v_band_count,
-            .band_scale_x = decoded.band[0],
-            .band_scale_y = decoded.band[1],
-            .band_offset_x = decoded.band[2],
-            .band_offset_y = decoded.band[3],
+            .band_scale_x = encoded.band[0],
+            .band_scale_y = encoded.band[1],
+            .band_offset_x = encoded.band[2],
+            .band_offset_y = encoded.band[3],
         };
 
         const atlas_layer = texture_layer_base + @as(u32, atlas_layer_byte);
@@ -3243,30 +3254,7 @@ fn clampInt(v: i32, lo: i32, hi: i32) i32 {
 
 /// Convert IEEE 754 binary16 (half-float) to f32.
 fn f16ToF32(h: u16) f32 {
-    const sign: u32 = @as(u32, h & 0x8000) << 16;
-    const exp_bits: u32 = (h >> 10) & 0x1F;
-    const mant: u32 = @as(u32, h & 0x3FF);
-
-    if (exp_bits == 0) {
-        if (mant == 0) return @bitCast(sign);
-        // Subnormal: normalize.
-        var m = mant;
-        var e: u32 = 1;
-        while (m & 0x400 == 0) {
-            m <<= 1;
-            e += 1;
-        }
-        const exp32: u32 = (127 - 15 + 1 - e) << 23;
-        const mant32: u32 = (m & 0x3FF) << 13;
-        return @bitCast(sign | exp32 | mant32);
-    } else if (exp_bits == 0x1F) {
-        // Inf/NaN.
-        return @bitCast(sign | 0x7F800000 | (mant << 13));
-    }
-
-    const exp32: u32 = (exp_bits + 127 - 15) << 23;
-    const mant32: u32 = mant << 13;
-    return @bitCast(sign | exp32 | mant32);
+    return @floatCast(@as(f16, @bitCast(h)));
 }
 
 // ---------------------------------------------------------------------------

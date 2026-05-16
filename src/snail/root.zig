@@ -106,6 +106,7 @@ pub const PreparedResources = resources.PreparedResources;
 pub const PreparedResourceRetirementQueue = resources.PreparedResourceRetirementQueue;
 pub const ResourceCapacityMode = upload_common.AtlasCapacityMode;
 pub const ResourceFootprint = upload.ResourceFootprint;
+pub const ResourceCacheStats = upload.ResourceCacheStats;
 pub const UploadAllocators = upload.UploadAllocators;
 pub const ResourceUploadPlan = upload.ResourceUploadPlan;
 pub const ResourceUploadCommand = upload.ResourceUploadCommand;

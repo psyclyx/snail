@@ -267,7 +267,7 @@ pub fn roundUpPowerOfTwo(value: u32) u32 {
 }
 
 pub fn atlasCapacity(page_count: u32) u32 {
-    return @max(4, roundUpPowerOfTwo(page_count + 1));
+    return @max(2, roundUpPowerOfTwo(page_count + 1));
 }
 
 pub fn atlasCapacityForMode(page_count: u32, mode: AtlasCapacityMode) u32 {
@@ -279,6 +279,10 @@ pub fn atlasCapacityForMode(page_count: u32, mode: AtlasCapacityMode) u32 {
 
 pub fn imageCapacity(image_count: u32) u32 {
     return image_count;
+}
+
+pub fn imageExtentCapacity(extent: u32) u32 {
+    return @max(extent, 1);
 }
 
 pub fn heightCapacity(height: u32) u32 {
@@ -344,7 +348,7 @@ test "zero-page atlases keep slots and views without requiring pages" {
     }
     const info = try rebuildAtlasSlots(std.testing.allocator, slots[0..], atlases[0..]);
     try std.testing.expectEqual(@as(usize, 2), info.atlas_slot_count);
-    try std.testing.expectEqual(@as(u32, 8), info.allocated_layer_count);
+    try std.testing.expectEqual(@as(u32, 4), info.allocated_layer_count);
     try std.testing.expect(firstNonEmptyAtlas(atlases[0..]) == null);
 
     var views: [2]View = undefined;
@@ -352,7 +356,7 @@ test "zero-page atlases keep slots and views without requiring pages" {
     try std.testing.expect(views[0].atlas == &atlas_a);
     try std.testing.expectEqual(@as(u32, 0), views[0].layer_base);
     try std.testing.expect(views[1].atlas == &atlas_b);
-    try std.testing.expectEqual(@as(u32, 4), views[1].layer_base);
+    try std.testing.expectEqual(@as(u32, 2), views[1].layer_base);
 }
 
 test "exact atlas capacity packs immutable one-page atlases tightly" {
@@ -455,4 +459,5 @@ test "image capacity is exact for immutable image resources" {
     try std.testing.expectEqual(@as(u32, 0), imageCapacity(0));
     try std.testing.expectEqual(@as(u32, 1), imageCapacity(1));
     try std.testing.expectEqual(@as(u32, 3), imageCapacity(3));
+    try std.testing.expectEqual(@as(u32, 3), imageExtentCapacity(3));
 }

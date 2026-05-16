@@ -747,6 +747,54 @@ test "resource upload plan reports changed keys and enforces budget" {
     try std.testing.expect(prepared_b.stampForKey(.hud_panel) != null);
 }
 
+test "resource upload plan reports appended atlas pages" {
+    if (comptime !build_options.enable_cpu) return error.SkipZigTest;
+
+    const assets_data = @import("assets");
+    const allocator = std.testing.allocator;
+
+    var atlas_a = try TextAtlas.init(allocator, &.{
+        .{ .data = assets_data.noto_sans_regular },
+    });
+    defer atlas_a.deinit();
+    if (try atlas_a.ensureText(.{}, "Hello")) |next| {
+        atlas_a.deinit();
+        atlas_a = next;
+    }
+
+    var atlas_b = (try atlas_a.ensureText(.{}, "HelloZ")) orelse return error.TestExpectedOptional;
+    defer atlas_b.deinit();
+
+    const width: u32 = 16;
+    const height: u32 = 16;
+    const stride: u32 = width * 4;
+    const pixels = try allocator.alloc(u8, stride * height);
+    defer allocator.free(pixels);
+
+    var cpu = CpuRenderer.init(pixels.ptr, width, height, stride);
+    var renderer = cpu.asRenderer();
+    defer renderer.deinit();
+
+    var set_a_entries: [1]ResourceSet.Entry = undefined;
+    var set_a = ResourceSet.init(&set_a_entries);
+    try set_a.putTextAtlas(.fonts, &atlas_a);
+    var prepared_a = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set_a);
+    defer prepared_a.deinit();
+
+    var set_b_entries: [1]ResourceSet.Entry = undefined;
+    var set_b = ResourceSet.init(&set_b_entries);
+    try set_b.putTextAtlas(.fonts, &atlas_b);
+    var changed: [1]ResourceKey = undefined;
+    const plan = try renderer.planResourceUpload(&prepared_a, &set_b, &changed);
+
+    try std.testing.expectEqual(@as(u32, @intCast(atlas_a.pageCount())), plan.reused_atlas_pages);
+    try std.testing.expectEqual(@as(u32, @intCast(atlas_b.pageCount() - atlas_a.pageCount())), plan.missing_atlas_pages);
+    try std.testing.expect(plan.curve_bytes_upload > 0);
+    try std.testing.expect(plan.band_bytes_upload > 0);
+    try std.testing.expectEqual(@as(usize, 1), plan.changedKeys().len);
+    try std.testing.expect(plan.changedKeys()[0].eql(ResourceKey.named("fonts")));
+}
+
 test "pending upload publish waits for external completion marker" {
     if (comptime !build_options.enable_cpu) return error.SkipZigTest;
 
