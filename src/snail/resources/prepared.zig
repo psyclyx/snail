@@ -5,7 +5,7 @@ const coverage_mod = @import("../coverage.zig");
 const image_mod = @import("../image.zig");
 const path_mod = @import("../path.zig");
 const resource_key_mod = @import("../resource_key.zig");
-const atlas_curve_mod = @import("../render/backend/atlas/curve.zig");
+const atlas_curve_mod = @import("../render/format/atlas/curve.zig");
 const text_mod = @import("../text.zig");
 const view_mod = @import("view.zig");
 
@@ -47,10 +47,14 @@ pub const PreparedResources = struct {
     atlases: []PreparedAtlasResource = &.{},
     layer_infos: []PreparedLayerInfoResource = &.{},
     images: []PreparedImageResource = &.{},
-    gl: if (build_options.enable_opengl) ?*pipeline.PreparedResources else void = if (build_options.enable_opengl) null else {},
-    vulkan: if (build_options.enable_vulkan) ?*vulkan_pipeline.PreparedResources else void = if (build_options.enable_vulkan) null else {},
-    cpu: if (build_options.enable_cpu) ?cpu_renderer_mod.PreparedResources else void = if (build_options.enable_cpu) null else {},
-    backend_generation: u64 = 0,
+    backend: BackendResources = .{},
+
+    pub const BackendResources = struct {
+        gl: if (build_options.enable_opengl) ?*pipeline.PreparedResources else void = if (build_options.enable_opengl) null else {},
+        vulkan: if (build_options.enable_vulkan) ?*vulkan_pipeline.PreparedResources else void = if (build_options.enable_vulkan) null else {},
+        cpu: if (build_options.enable_cpu) ?cpu_renderer_mod.PreparedResources else void = if (build_options.enable_cpu) null else {},
+        generation: u64 = 0,
+    };
 
     pub const PreparedAtlasKind = enum {
         text,
@@ -86,7 +90,7 @@ pub const PreparedResources = struct {
 
     pub fn deinit(self: *PreparedResources) void {
         if (comptime build_options.enable_cpu) {
-            if (self.cpu) |*cpu_resources| cpu_resources.deinit();
+            if (self.backend.cpu) |*cpu_resources| cpu_resources.deinit();
         }
         for (self.atlases) |*entry| {
             if (entry.owns_wrapper) switch (entry.kind) {
@@ -232,7 +236,7 @@ pub const PreparedResourceRetirementQueue = struct {
     pub fn retireAfter(self: *PreparedResourceRetirementQueue, resources: *PreparedResources, fence_or_frame: anytype) !void {
         self.sweep();
         if (comptime build_options.enable_vulkan) {
-            if (resources.vulkan != null) {
+            if (resources.backend.vulkan != null) {
                 const fence = preparedRetirementFence(resources, fence_or_frame) orelse return error.InvalidRetirementFence;
                 const node = try self.allocator.create(Node);
                 node.* = .{
@@ -261,7 +265,7 @@ pub const PreparedResourceRetirementQueue = struct {
 
 fn preparedRetirementFence(resources: *const PreparedResources, fence_or_frame: anytype) ?VulkanRetirementFence {
     if (comptime !build_options.enable_vulkan) return null;
-    const vk_resources = resources.vulkan orelse return null;
+    const vk_resources = resources.backend.vulkan orelse return null;
     const T = @TypeOf(fence_or_frame);
     switch (@typeInfo(T)) {
         .@"struct" => {

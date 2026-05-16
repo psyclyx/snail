@@ -1,12 +1,15 @@
 const std = @import("std");
 
-const snail = @import("../root.zig");
 const glyph_emit = @import("../glyph_emit.zig");
-const atlas_curve_mod = @import("../render/backend/atlas/curve.zig");
-const atlas_page_mod = @import("../render/backend/atlas/page.zig");
+const atlas_curve_mod = @import("../render/format/atlas/curve.zig");
+const atlas_page_mod = @import("../render/format/atlas/page.zig");
 const config_mod = @import("config.zig");
 const glyph_atlas_mod = @import("glyph_atlas.zig");
+const footprint_types = @import("../resources/footprint_types.zig");
+const resource_footprint_mod = @import("../resources/footprint.zig");
 const shape_mod = @import("shape.zig");
+const target_mod = @import("../target.zig");
+const ttf = @import("../font/ttf.zig");
 const types_mod = @import("types.zig");
 const view_mod = @import("view.zig");
 
@@ -14,7 +17,6 @@ const Allocator = std.mem.Allocator;
 const CurveAtlas = atlas_curve_mod.CurveAtlas;
 const AtlasPage = atlas_page_mod.AtlasPage;
 const GlyphInfo = CurveAtlas.GlyphInfo;
-const TextBatch = snail.TextBatch;
 const CellMetrics = types_mod.CellMetrics;
 const CellMetricsOptions = types_mod.CellMetricsOptions;
 const Decoration = types_mod.Decoration;
@@ -23,8 +25,12 @@ const FaceGlyphData = config_mod.FaceGlyphData;
 const FaceIndex = config_mod.FaceIndex;
 const FaceSpec = config_mod.FaceSpec;
 const FaceView = view_mod.FaceView;
+const FontStyle = config_mod.FontStyle;
 const FontConfig = config_mod.FontConfig;
 const ItemizedRun = config_mod.ItemizedRun;
+const LineMetrics = ttf.LineMetrics;
+const Rect = target_mod.Rect;
+const ResourceFootprint = footprint_types.ResourceFootprint;
 const ScriptTransform = types_mod.ScriptTransform;
 const ShapedText = types_mod.ShapedText;
 const TextAppendResult = types_mod.TextAppendResult;
@@ -104,7 +110,7 @@ pub const TextAtlas = struct {
 
     // ── Resolution ──
 
-    pub fn resolve(self: *const TextAtlas, style: snail.FontStyle, codepoint: u21) ?FaceIndex {
+    pub fn resolve(self: *const TextAtlas, style: FontStyle, codepoint: u21) ?FaceIndex {
         return resolveInner(self.config, style, codepoint, 0);
     }
 
@@ -118,7 +124,7 @@ pub const TextAtlas = struct {
         return self.config.primary_face orelse error.NoFaces;
     }
 
-    pub fn lineMetrics(self: *const TextAtlas) !snail.LineMetrics {
+    pub fn lineMetrics(self: *const TextAtlas) !LineMetrics {
         return self.faceLineMetrics(try self.primaryFaceIndex());
     }
 
@@ -126,7 +132,7 @@ pub const TextAtlas = struct {
         return self.faceUnitsPerEm(try self.primaryFaceIndex());
     }
 
-    pub fn faceLineMetrics(self: *const TextAtlas, face_index: usize) !snail.LineMetrics {
+    pub fn faceLineMetrics(self: *const TextAtlas, face_index: usize) !LineMetrics {
         const face = try self.faceConfig(face_index);
         return face.font.lineMetrics();
     }
@@ -165,7 +171,7 @@ pub const TextAtlas = struct {
         };
     }
 
-    pub fn decorationRect(self: *const TextAtlas, decoration: Decoration, x: f32, y: f32, advance: f32, font_size: f32) !snail.Rect {
+    pub fn decorationRect(self: *const TextAtlas, decoration: Decoration, x: f32, y: f32, advance: f32, font_size: f32) !Rect {
         const pf = self.config.primary_face orelse return error.NoFaces;
         const fc = &self.config.faces[pf];
         const dm = try fc.font.decorationMetrics();
@@ -213,7 +219,7 @@ pub const TextAtlas = struct {
     // ── Itemization ──
 
     /// Split text into runs where each run maps to one face.
-    pub fn itemize(self: *const TextAtlas, allocator: Allocator, style: snail.FontStyle, text: []const u8) ![]ItemizedRun {
+    pub fn itemize(self: *const TextAtlas, allocator: Allocator, style: FontStyle, text: []const u8) ![]ItemizedRun {
         return itemizeText(allocator, self.config, style, text);
     }
 
@@ -273,7 +279,7 @@ pub const TextAtlas = struct {
     pub fn shapeText(
         self: *const TextAtlas,
         allocator: Allocator,
-        style: snail.FontStyle,
+        style: FontStyle,
         text: []const u8,
     ) !ShapedText {
         const runs = try itemizeText(allocator, self.config, style, text);
@@ -319,7 +325,7 @@ pub const TextAtlas = struct {
     /// Emit shaped text directly into a low-level TextBatch.
     pub fn appendTextBatch(
         self: *const TextAtlas,
-        batch: *TextBatch,
+        batch: anytype,
         append: TextBatchAppend,
         allow_missing: bool,
     ) !TextAppendResult {
@@ -352,7 +358,7 @@ pub const TextAtlas = struct {
     /// Measure advance width without emitting vertices.
     pub fn measureText(
         self: *const TextAtlas,
-        style: snail.FontStyle,
+        style: FontStyle,
         text: []const u8,
         font_size: f32,
     ) !f32 {
@@ -365,7 +371,7 @@ pub const TextAtlas = struct {
 
     /// Return a new TextAtlas snapshot with atlas extended for the given text.
     /// Returns null if all glyphs are already present. The old snapshot stays valid.
-    pub fn ensureText(self: *const TextAtlas, style: snail.FontStyle, text: []const u8) !?TextAtlas {
+    pub fn ensureText(self: *const TextAtlas, style: FontStyle, text: []const u8) !?TextAtlas {
         var shaped = try self.shapeText(self.allocator, style, text);
         defer shaped.deinit();
         return self.ensureShaped(&shaped);
@@ -512,8 +518,8 @@ pub const TextAtlas = struct {
         return self.pages;
     }
 
-    pub fn uploadFootprint(self: *const TextAtlas) snail.ResourceFootprint {
-        return snail.textAtlasUploadFootprint(self);
+    pub fn uploadFootprint(self: *const TextAtlas) ResourceFootprint {
+        return resource_footprint_mod.textAtlasUploadFootprint(self);
     }
 
     /// Low-level: create a temporary `CurveAtlas` wrapper that borrows this

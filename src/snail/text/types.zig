@@ -1,38 +1,44 @@
 const std = @import("std");
 
-const snail = @import("../root.zig");
 const config_mod = @import("config.zig");
+const paint_mod = @import("../paint.zig");
+const range_mod = @import("../range.zig");
+const vec = @import("../math/vec.zig");
 
 const Allocator = std.mem.Allocator;
 const FaceIndex = config_mod.FaceIndex;
+const FontStyle = config_mod.FontStyle;
 const FontConfig = config_mod.FontConfig;
+const Paint = paint_mod.Paint;
+const Range = range_mod.Range;
+const Vec2 = vec.Vec2;
 
 pub const TextPlacement = struct {
-    baseline: snail.Vec2,
+    baseline: Vec2,
     em: f32,
 };
 
 pub const TextAppend = struct {
     shaped: *const ShapedText,
-    glyphs: snail.Range = .{},
+    glyphs: Range = .{},
     placement: TextPlacement,
-    fill: snail.Paint,
+    fill: Paint,
 };
 
 pub const TextAppendResult = struct {
-    advance: snail.Vec2,
+    advance: Vec2,
     missing: bool,
 };
 
 pub const TextBatchAppend = struct {
     shaped: *const ShapedText,
-    glyphs: snail.Range = .{},
+    glyphs: Range = .{},
     placement: TextPlacement,
     color: [4]f32,
 };
 
 pub const CellMetricsOptions = struct {
-    style: snail.FontStyle = .{},
+    style: FontStyle = .{},
     em: f32,
 };
 

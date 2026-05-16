@@ -5,312 +5,102 @@ const std = @import("std");
 const snail = @import("root.zig");
 const resource_key = @import("resource_key.zig");
 const ttf = @import("font/ttf.zig");
+const build_options = @import("build_options");
+const c_convert = @import("c_api/convert.zig");
 const c_handles = @import("c_api/handles.zig");
 const c_runtime = @import("c_api/runtime.zig");
+const c_types = @import("c_api/types.zig");
 
-const build_options = @import("build_options");
-const vk = if (build_options.enable_vulkan) @import("render/backend/vulkan.zig").vk else struct {
-    pub const VkPhysicalDevice = ?*anyopaque;
-    pub const VkDevice = ?*anyopaque;
-    pub const VkQueue = ?*anyopaque;
-    pub const VkRenderPass = usize;
-    pub const VkFormat = c_int;
-    pub const VkCommandBuffer = ?*anyopaque;
-    pub const VkFence = ?*anyopaque;
-    pub const VkDescriptorSetLayout = ?*anyopaque;
-    pub const VkPipelineLayout = ?*anyopaque;
-};
-
-pub const SnailAllocFn = c_runtime.SnailAllocFn;
-pub const SnailFreeFn = c_runtime.SnailFreeFn;
-pub const SnailAllocator = c_runtime.SnailAllocator;
-pub const SNAIL_OK = c_runtime.SNAIL_OK;
-pub const SNAIL_ERR_INVALID_FONT = c_runtime.SNAIL_ERR_INVALID_FONT;
-pub const SNAIL_ERR_OUT_OF_MEMORY = c_runtime.SNAIL_ERR_OUT_OF_MEMORY;
-pub const SNAIL_ERR_RENDERER_FAILED = c_runtime.SNAIL_ERR_RENDERER_FAILED;
-pub const SNAIL_ERR_INVALID_ARGUMENT = c_runtime.SNAIL_ERR_INVALID_ARGUMENT;
-pub const SNAIL_ERR_DRAW_FAILED = c_runtime.SNAIL_ERR_DRAW_FAILED;
+const vk = c_types.vk;
 
 const resolveAllocator = c_runtime.resolveAllocator;
 const handleAllocator = c_runtime.handleAllocator;
 const mapError = c_runtime.mapError;
 
-pub const SnailVulkanContext = extern struct {
-    physical_device: vk.VkPhysicalDevice,
-    device: vk.VkDevice,
-    graphics_queue: vk.VkQueue,
-    queue_family_index: u32,
-    render_pass: vk.VkRenderPass,
-    color_format: vk.VkFormat,
-    supports_dual_source_blend: bool = false,
-};
+pub const SnailAllocFn = c_types.SnailAllocFn;
+pub const SnailFreeFn = c_types.SnailFreeFn;
+pub const SnailAllocator = c_types.SnailAllocator;
+pub const SNAIL_OK = c_types.SNAIL_OK;
+pub const SNAIL_ERR_INVALID_FONT = c_types.SNAIL_ERR_INVALID_FONT;
+pub const SNAIL_ERR_OUT_OF_MEMORY = c_types.SNAIL_ERR_OUT_OF_MEMORY;
+pub const SNAIL_ERR_RENDERER_FAILED = c_types.SNAIL_ERR_RENDERER_FAILED;
+pub const SNAIL_ERR_INVALID_ARGUMENT = c_types.SNAIL_ERR_INVALID_ARGUMENT;
+pub const SNAIL_ERR_DRAW_FAILED = c_types.SNAIL_ERR_DRAW_FAILED;
 
-// C-compatible value types
+pub const SnailVulkanContext = c_types.SnailVulkanContext;
+pub const SnailBBox = c_types.SnailBBox;
+pub const SnailGlyphMetrics = c_types.SnailGlyphMetrics;
+pub const SnailLineMetrics = c_types.SnailLineMetrics;
+pub const SnailDecorationMetrics = c_types.SnailDecorationMetrics;
+pub const SnailScriptMetrics = c_types.SnailScriptMetrics;
+pub const SnailScriptTransform = c_types.SnailScriptTransform;
+pub const SnailCellMetrics = c_types.SnailCellMetrics;
+pub const SnailRect = c_types.SnailRect;
+pub const SnailMat4 = c_types.SnailMat4;
+pub const SnailString = c_types.SnailString;
+pub const SnailTransform2D = c_types.SnailTransform2D;
+pub const SnailOverride = c_types.SnailOverride;
+pub const SnailRange = c_types.SnailRange;
+pub const SnailShapeMark = c_types.SnailShapeMark;
+pub const SnailSyntheticStyle = c_types.SnailSyntheticStyle;
+pub const SnailFaceSpec = c_types.SnailFaceSpec;
+pub const SnailFontStyle = c_types.SnailFontStyle;
+pub const SnailShapedGlyph = c_types.SnailShapedGlyph;
+pub const SnailTextPlacement = c_types.SnailTextPlacement;
+pub const SnailTextAppendOptions = c_types.SnailTextAppendOptions;
+pub const SnailResolveTarget = c_types.SnailResolveTarget;
+pub const SnailDrawOptions = c_types.SnailDrawOptions;
+pub const SnailResourceKey = c_types.SnailResourceKey;
+pub const SnailResourceStamp = c_types.SnailResourceStamp;
+pub const SNAIL_RESOURCE_CAPACITY_GROWABLE = c_types.SNAIL_RESOURCE_CAPACITY_GROWABLE;
+pub const SNAIL_RESOURCE_CAPACITY_EXACT = c_types.SNAIL_RESOURCE_CAPACITY_EXACT;
+pub const SnailResourceFootprint = c_types.SnailResourceFootprint;
+pub const SnailResourceCacheStats = c_types.SnailResourceCacheStats;
+pub const SnailGlTextCoverageBindings = c_types.SnailGlTextCoverageBindings;
+pub const SnailVulkanTextCoverageBindings = c_types.SnailVulkanTextCoverageBindings;
+pub const SNAIL_PAINT_SOLID = c_types.SNAIL_PAINT_SOLID;
+pub const SNAIL_PAINT_LINEAR = c_types.SNAIL_PAINT_LINEAR;
+pub const SNAIL_PAINT_RADIAL = c_types.SNAIL_PAINT_RADIAL;
+pub const SNAIL_PAINT_IMAGE = c_types.SNAIL_PAINT_IMAGE;
+pub const SnailLinearGradient = c_types.SnailLinearGradient;
+pub const SnailRadialGradient = c_types.SnailRadialGradient;
+pub const SnailImagePaint = c_types.SnailImagePaint;
+pub const SnailPaint = c_types.SnailPaint;
+pub const SnailFillStyle = c_types.SnailFillStyle;
+pub const SnailStrokeStyle = c_types.SnailStrokeStyle;
 
-pub const SnailBBox = extern struct {
-    min_x: f32,
-    min_y: f32,
-    max_x: f32,
-    max_y: f32,
-};
-
-pub const SnailGlyphMetrics = extern struct {
-    advance_width: u16,
-    lsb: i16,
-    bbox: SnailBBox,
-};
-
-pub const SnailLineMetrics = extern struct {
-    ascent: i16,
-    descent: i16,
-    line_gap: i16,
-};
-
-pub const SnailDecorationMetrics = extern struct {
-    underline_position: i16,
-    underline_thickness: i16,
-    strikethrough_position: i16,
-    strikethrough_thickness: i16,
-};
-
-pub const SnailScriptMetrics = extern struct {
-    x_size: i16,
-    y_size: i16,
-    x_offset: i16,
-    y_offset: i16,
-};
-
-pub const SnailScriptTransform = extern struct {
-    x: f32,
-    y: f32,
-    font_size: f32,
-};
-
-pub const SnailCellMetrics = extern struct {
-    cell_width: f32,
-    line_height: f32,
-};
-
-pub const SnailRect = extern struct {
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
-};
-
-pub const SnailMat4 = extern struct {
-    data: [16]f32,
-};
-
-pub const SnailString = extern struct {
-    data: [*]const u8,
-    len: usize,
-};
-
-pub const SnailTransform2D = extern struct {
-    xx: f32 = 1,
-    xy: f32 = 0,
-    tx: f32 = 0,
-    yx: f32 = 0,
-    yy: f32 = 1,
-    ty: f32 = 0,
-};
-
-pub const SnailOverride = extern struct {
-    transform: SnailTransform2D = .{},
-    tint: [4]f32 = .{ 1, 1, 1, 1 },
-};
-
-pub const SnailRange = extern struct {
-    start: usize = 0,
-    count: usize = std.math.maxInt(usize),
-};
-
-pub const SnailShapeMark = extern struct {
-    shape_count: usize = 0,
-};
-
-pub const SnailSyntheticStyle = extern struct {
-    embolden: f32 = 0,
-    skew_x: f32 = 0,
-};
-
-pub const SnailFaceSpec = extern struct {
-    data: [*]const u8,
-    len: usize,
-    weight: c_int = 4,
-    italic: bool = false,
-    fallback: bool = false,
-    synthetic: SnailSyntheticStyle = .{},
-};
-
-pub const SnailFontStyle = extern struct {
-    weight: c_int = 4,
-    italic: bool = false,
-};
-
-pub const SnailShapedGlyph = extern struct {
-    face_index: u16,
-    glyph_id: u16,
-    x_offset: f32,
-    y_offset: f32,
-    x_advance: f32,
-    y_advance: f32,
-    source_start: u32,
-    source_end: u32,
-};
-
-pub const SnailTextPlacement = extern struct {
-    baseline_x: f32,
-    baseline_y: f32,
-    em: f32,
-};
-
-pub const SnailTextAppendOptions = extern struct {
-    placement: SnailTextPlacement,
-    fill: SnailPaint = .{},
-};
-
-pub const SnailResolveTarget = extern struct {
-    pixel_width: f32,
-    pixel_height: f32,
-    subpixel_order: c_int = 0,
-    fill_rule: c_int = 0,
-    is_final_composite: bool = true,
-    opaque_backdrop: bool = true,
-    will_resample: bool = false,
-    attachment_encoding: c_int = 0,
-    stored_pixel_encoding: c_int = 0,
-    resolve_kind: c_int = 0,
-    resolve_backdrop: c_int = 0,
-    resolve_clear_color: [4]f32 = .{ 0, 0, 0, 0 },
-    resolve_region: c_int = 0,
-    resolve_region_x: i32 = 0,
-    resolve_region_y: i32 = 0,
-    resolve_region_w: u32 = 0,
-    resolve_region_h: u32 = 0,
-    resolve_intermediate_format: c_int = 0,
-    coverage_exponent: f32 = 1.0,
-};
-
-pub const SnailDrawOptions = extern struct {
-    mvp: SnailMat4,
-    target: SnailResolveTarget,
-};
-
-pub const SnailResourceKey = u64;
-
-pub const SnailResourceStamp = extern struct {
-    identity: u64 = 0,
-    layout: u64 = 0,
-    content: u64 = 0,
-};
-
-pub const SNAIL_RESOURCE_CAPACITY_GROWABLE: c_int = 0;
-pub const SNAIL_RESOURCE_CAPACITY_EXACT: c_int = 1;
-
-pub const SnailResourceFootprint = extern struct {
-    curve_bytes_used: usize = 0,
-    curve_bytes_allocated: usize = 0,
-    band_bytes_used: usize = 0,
-    band_bytes_allocated: usize = 0,
-    layer_info_bytes_used: usize = 0,
-    layer_info_bytes_allocated: usize = 0,
-    image_bytes_used: usize = 0,
-    image_bytes_allocated: usize = 0,
-};
-
-pub const SnailResourceCacheStats = extern struct {
-    generation: u64 = 0,
-    active_atlas_pages_resident: u32 = 0,
-    active_atlas_layers_allocated: u32 = 0,
-    atlas_pages_resident: u32 = 0,
-    atlas_layers_allocated: u32 = 0,
-    active_image_layers_resident: u32 = 0,
-    active_image_layers_allocated: u32 = 0,
-    image_layers_resident: u32 = 0,
-    image_layers_allocated: u32 = 0,
-};
-
-pub const SnailGlTextCoverageBindings = extern struct {
-    curve_tex_loc: c_int = -1,
-    band_tex_loc: c_int = -1,
-    layer_tex_loc: c_int = -1,
-    image_tex_loc: c_int = -1,
-    fill_rule_loc: c_int = -1,
-    subpixel_order_loc: c_int = -1,
-    output_srgb_loc: c_int = -1,
-    coverage_exponent_loc: c_int = -1,
-    curve_tex_unit: c_int = 0,
-    band_tex_unit: c_int = 1,
-    layer_tex_unit: c_int = 2,
-    image_tex_unit: c_int = 3,
-    fill_rule: c_int = 0,
-    subpixel_order: c_int = 0,
-    output_srgb: bool = false,
-    coverage_exponent: f32 = 1.0,
-};
-
-pub const SnailVulkanTextCoverageBindings = extern struct {
-    pipeline_layout: vk.VkPipelineLayout = null,
-    descriptor_set_index: u32 = 0,
-};
-
-// Paint / style types
-
-pub const SNAIL_PAINT_SOLID: c_int = 0;
-pub const SNAIL_PAINT_LINEAR: c_int = 1;
-pub const SNAIL_PAINT_RADIAL: c_int = 2;
-pub const SNAIL_PAINT_IMAGE: c_int = 3;
-
-pub const SnailLinearGradient = extern struct {
-    start_x: f32,
-    start_y: f32,
-    end_x: f32,
-    end_y: f32,
-    start_color: [4]f32,
-    end_color: [4]f32,
-    extend: c_int = 0,
-};
-
-pub const SnailRadialGradient = extern struct {
-    center_x: f32,
-    center_y: f32,
-    radius: f32,
-    inner_color: [4]f32,
-    outer_color: [4]f32,
-    extend: c_int = 0,
-};
-
-pub const SnailImagePaint = extern struct {
-    image: ?*const ImageImpl = null,
-    uv_transform: SnailTransform2D = .{},
-    tint: [4]f32 = .{ 1, 1, 1, 1 },
-    extend_x: c_int = 0,
-    extend_y: c_int = 0,
-    filter: c_int = 0,
-};
-
-pub const SnailPaint = extern struct {
-    kind: c_int = SNAIL_PAINT_SOLID,
-    paint_solid: [4]f32 = .{ 0, 0, 0, 0 },
-    paint_linear: SnailLinearGradient = std.mem.zeroes(SnailLinearGradient),
-    paint_radial: SnailRadialGradient = std.mem.zeroes(SnailRadialGradient),
-    paint_image: SnailImagePaint = .{},
-};
-
-pub const SnailFillStyle = extern struct {
-    paint: SnailPaint = .{},
-};
-
-pub const SnailStrokeStyle = extern struct {
-    paint: SnailPaint = .{},
-    width: f32 = 1,
-    cap: c_int = 0,
-    join: c_int = 0,
-    miter_limit: f32 = 4,
-    placement: c_int = 0,
-};
+const wrapBBox = c_convert.wrapBBox;
+const wrapString = c_convert.wrapString;
+const wrapDecorationMetrics = c_convert.wrapDecorationMetrics;
+const wrapScriptMetrics = c_convert.wrapScriptMetrics;
+const wrapScriptTransform = c_convert.wrapScriptTransform;
+const wrapResourceStamp = c_convert.wrapResourceStamp;
+const toRect = c_convert.toRect;
+const toSnailRect = c_convert.toSnailRect;
+const fromMat4 = c_convert.fromMat4;
+const toTransform = c_convert.toTransform;
+const toOverride = c_convert.toOverride;
+const toGlCoverageBindings = c_convert.toGlCoverageBindings;
+const toVulkanCoverageBindings = c_convert.toVulkanCoverageBindings;
+const fromResourceFootprint = c_convert.fromResourceFootprint;
+const fromResourceCacheStats = c_convert.fromResourceCacheStats;
+const toResourceCapacityMode = c_convert.toResourceCapacityMode;
+const reservedResourceCapacityMode = c_convert.reservedResourceCapacityMode;
+const toRange = c_convert.toRange;
+const fromRange = c_convert.fromRange;
+const toShapeMark = c_convert.toShapeMark;
+const fromShapeMark = c_convert.fromShapeMark;
+const toSyntheticStyle = c_convert.toSyntheticStyle;
+const toFontWeight = c_convert.toFontWeight;
+const toFontStyle = c_convert.toFontStyle;
+const toDecoration = c_convert.toDecoration;
+const toTextPlacement = c_convert.toTextPlacement;
+const toDrawOptions = c_convert.toDrawOptions;
+const toPaint = c_convert.toPaint;
+const toFillStyle = c_convert.toFillStyle;
+const toStrokeStyle = c_convert.toStrokeStyle;
+const toOptFill = c_convert.toOptFill;
+const toOptStroke = c_convert.toOptStroke;
 
 // Opaque handle implementations
 
@@ -335,149 +125,6 @@ const CoverageBackendImpl = c_handles.CoverageBackendImpl;
 const ThreadPoolImpl = c_handles.ThreadPoolImpl;
 const RendererImpl = c_handles.RendererImpl;
 
-// Conversion helpers
-
-fn wrapBBox(bbox: snail.BBox) SnailBBox {
-    return .{ .min_x = bbox.min.x, .min_y = bbox.min.y, .max_x = bbox.max.x, .max_y = bbox.max.y };
-}
-
-fn wrapString(s: []const u8) SnailString {
-    return .{ .data = s.ptr, .len = s.len };
-}
-
-fn wrapDecorationMetrics(metrics: snail.DecorationMetrics) SnailDecorationMetrics {
-    return .{
-        .underline_position = metrics.underline_position,
-        .underline_thickness = metrics.underline_thickness,
-        .strikethrough_position = metrics.strikethrough_position,
-        .strikethrough_thickness = metrics.strikethrough_thickness,
-    };
-}
-
-fn wrapScriptMetrics(metrics: snail.ScriptMetrics) SnailScriptMetrics {
-    return .{
-        .x_size = metrics.x_size,
-        .y_size = metrics.y_size,
-        .x_offset = metrics.x_offset,
-        .y_offset = metrics.y_offset,
-    };
-}
-
-fn wrapScriptTransform(transform: snail.ScriptTransform) SnailScriptTransform {
-    return .{
-        .x = transform.x,
-        .y = transform.y,
-        .font_size = transform.font_size,
-    };
-}
-
-fn wrapResourceStamp(stamp: snail.ResourceStamp) SnailResourceStamp {
-    return .{
-        .identity = stamp.identity,
-        .layout = stamp.layout,
-        .content = stamp.content,
-    };
-}
-
-fn toRect(r: SnailRect) snail.Rect {
-    return .{ .x = r.x, .y = r.y, .w = r.w, .h = r.h };
-}
-
-fn toSnailRect(r: snail.Rect) SnailRect {
-    return .{ .x = r.x, .y = r.y, .w = r.w, .h = r.h };
-}
-
-fn toMat4(m: SnailMat4) snail.Mat4 {
-    return .{ .data = m.data };
-}
-
-fn fromMat4(m: snail.Mat4) SnailMat4 {
-    return .{ .data = m.data };
-}
-
-fn toTransform(t: SnailTransform2D) snail.Transform2D {
-    return .{ .xx = t.xx, .xy = t.xy, .tx = t.tx, .yx = t.yx, .yy = t.yy, .ty = t.ty };
-}
-
-fn toOverride(override_value: SnailOverride) snail.Override {
-    return .{ .transform = toTransform(override_value.transform), .tint = override_value.tint };
-}
-
-fn toGlCoverageBindings(bindings: SnailGlTextCoverageBindings) !snail.coverage.GlBindings {
-    if (comptime build_options.enable_opengl) {
-        return .{
-            .curve_tex_loc = bindings.curve_tex_loc,
-            .band_tex_loc = bindings.band_tex_loc,
-            .layer_tex_loc = bindings.layer_tex_loc,
-            .image_tex_loc = bindings.image_tex_loc,
-            .fill_rule_loc = bindings.fill_rule_loc,
-            .subpixel_order_loc = bindings.subpixel_order_loc,
-            .output_srgb_loc = bindings.output_srgb_loc,
-            .coverage_exponent_loc = bindings.coverage_exponent_loc,
-            .curve_tex_unit = bindings.curve_tex_unit,
-            .band_tex_unit = bindings.band_tex_unit,
-            .layer_tex_unit = bindings.layer_tex_unit,
-            .image_tex_unit = bindings.image_tex_unit,
-            .fill_rule = try toFillRule(bindings.fill_rule),
-            .subpixel_order = try toSubpixelOrder(bindings.subpixel_order),
-            .output_srgb = bindings.output_srgb,
-            .coverage_transfer = .{ .exponent = bindings.coverage_exponent },
-        };
-    } else {
-        return .{};
-    }
-}
-
-fn toVulkanCoverageBindings(bindings: SnailVulkanTextCoverageBindings) snail.coverage.VulkanBindings {
-    if (comptime build_options.enable_vulkan) {
-        return .{
-            .pipeline_layout = bindings.pipeline_layout,
-            .descriptor_set_index = bindings.descriptor_set_index,
-        };
-    } else {
-        return .{};
-    }
-}
-
-fn fromResourceFootprint(footprint: snail.ResourceFootprint) SnailResourceFootprint {
-    return .{
-        .curve_bytes_used = footprint.curve_bytes_used,
-        .curve_bytes_allocated = footprint.curve_bytes_allocated,
-        .band_bytes_used = footprint.band_bytes_used,
-        .band_bytes_allocated = footprint.band_bytes_allocated,
-        .layer_info_bytes_used = footprint.layer_info_bytes_used,
-        .layer_info_bytes_allocated = footprint.layer_info_bytes_allocated,
-        .image_bytes_used = footprint.image_bytes_used,
-        .image_bytes_allocated = footprint.image_bytes_allocated,
-    };
-}
-
-fn fromResourceCacheStats(stats: snail.ResourceCacheStats) SnailResourceCacheStats {
-    return .{
-        .generation = stats.generation,
-        .active_atlas_pages_resident = stats.active_atlas_pages_resident,
-        .active_atlas_layers_allocated = stats.active_atlas_layers_allocated,
-        .atlas_pages_resident = stats.atlas_pages_resident,
-        .atlas_layers_allocated = stats.atlas_layers_allocated,
-        .active_image_layers_resident = stats.active_image_layers_resident,
-        .active_image_layers_allocated = stats.active_image_layers_allocated,
-        .image_layers_resident = stats.image_layers_resident,
-        .image_layers_allocated = stats.image_layers_allocated,
-    };
-}
-
-fn toResourceCapacityMode(value: c_int) !snail.ResourceCapacityMode {
-    return switch (value) {
-        SNAIL_RESOURCE_CAPACITY_GROWABLE => .growable,
-        SNAIL_RESOURCE_CAPACITY_EXACT => .exact,
-        else => error.InvalidEnum,
-    };
-}
-
-fn reservedResourceCapacityMode(reserved_pages: u32) snail.ResourceCapacityMode {
-    return .{ .reserve_pages = reserved_pages };
-}
-
 export fn snail_resource_footprint_used_bytes(footprint: SnailResourceFootprint) usize {
     return footprint.curve_bytes_used +
         footprint.band_bytes_used +
@@ -498,256 +145,6 @@ export fn snail_resource_key_from_bytes(data: [*]const u8, len: usize) SnailReso
 
 export fn snail_resource_key_from_cstr(data: [*:0]const u8) SnailResourceKey {
     return resource_key.hashBytes(std.mem.span(data));
-}
-
-fn toRange(range: SnailRange) snail.Range {
-    return .{ .start = range.start, .count = range.count };
-}
-
-fn fromRange(range: snail.Range) SnailRange {
-    return .{ .start = range.start, .count = range.count };
-}
-
-fn toShapeMark(mark: SnailShapeMark) snail.PathPictureBuilder.ShapeMark {
-    return .{ .shape_count = mark.shape_count };
-}
-
-fn fromShapeMark(mark: snail.PathPictureBuilder.ShapeMark) SnailShapeMark {
-    return .{ .shape_count = mark.shape_count };
-}
-
-fn toSyntheticStyle(s: SnailSyntheticStyle) snail.SyntheticStyle {
-    return .{ .embolden = s.embolden, .skew_x = s.skew_x };
-}
-
-fn toFontWeight(v: c_int) !snail.FontWeight {
-    return switch (v) {
-        1 => .thin,
-        2 => .extra_light,
-        3 => .light,
-        4 => .regular,
-        5 => .medium,
-        6 => .semi_bold,
-        7 => .bold,
-        8 => .extra_bold,
-        9 => .black,
-        else => error.InvalidEnum,
-    };
-}
-
-fn toFontStyle(style: SnailFontStyle) !snail.FontStyle {
-    return .{ .weight = try toFontWeight(style.weight), .italic = style.italic };
-}
-
-fn toPaintExtend(v: c_int) !snail.PaintExtend {
-    return switch (v) {
-        0 => .clamp,
-        1 => .repeat,
-        2 => .reflect,
-        else => error.InvalidEnum,
-    };
-}
-
-fn toImageFilter(v: c_int) !snail.ImageFilter {
-    return switch (v) {
-        0 => .linear,
-        1 => .nearest,
-        else => error.InvalidEnum,
-    };
-}
-
-fn toStrokeCap(v: c_int) !snail.StrokeCap {
-    return switch (v) {
-        0 => .butt,
-        1 => .square,
-        2 => .round,
-        else => error.InvalidEnum,
-    };
-}
-
-fn toStrokeJoin(v: c_int) !snail.StrokeJoin {
-    return switch (v) {
-        0 => .miter,
-        1 => .bevel,
-        2 => .round,
-        else => error.InvalidEnum,
-    };
-}
-
-fn toStrokePlacement(v: c_int) !snail.StrokePlacement {
-    return switch (v) {
-        0 => .center,
-        1 => .inside,
-        else => error.InvalidEnum,
-    };
-}
-
-fn toSubpixelOrder(v: c_int) !snail.SubpixelOrder {
-    return switch (v) {
-        0 => .none,
-        1 => .rgb,
-        2 => .bgr,
-        3 => .vrgb,
-        4 => .vbgr,
-        else => error.InvalidEnum,
-    };
-}
-
-fn toFillRule(v: c_int) !snail.FillRule {
-    return switch (v) {
-        0 => .non_zero,
-        1 => .even_odd,
-        else => error.InvalidEnum,
-    };
-}
-
-fn toDecoration(v: c_int) !snail.Decoration {
-    return switch (v) {
-        0 => .underline,
-        1 => .strikethrough,
-        else => error.InvalidEnum,
-    };
-}
-
-fn toColorEncoding(v: c_int) !snail.ColorEncoding {
-    return switch (v) {
-        0 => .linear,
-        1 => .srgb,
-        else => error.InvalidEnum,
-    };
-}
-
-fn toResolveBackdrop(kind: c_int, clear_color: [4]f32) !snail.ResolveBackdrop {
-    return switch (kind) {
-        0 => .target,
-        1 => .{ .clear = clear_color },
-        2 => .transparent,
-        3 => .dont_care,
-        else => error.InvalidEnum,
-    };
-}
-
-fn toResolveRegion(target: SnailResolveTarget) !snail.ResolveRegion {
-    return switch (target.resolve_region) {
-        0 => .full_target,
-        1 => .{ .pixel_rect = .{
-            .x = target.resolve_region_x,
-            .y = target.resolve_region_y,
-            .w = target.resolve_region_w,
-            .h = target.resolve_region_h,
-        } },
-        else => error.InvalidEnum,
-    };
-}
-
-fn toIntermediateFormat(v: c_int) !snail.IntermediateFormat {
-    return switch (v) {
-        0 => .rgba16f,
-        1 => .rgba32f,
-        else => error.InvalidEnum,
-    };
-}
-
-fn toResolve(target: SnailResolveTarget) !snail.Resolve {
-    const linear = snail.LinearResolve{
-        .backdrop = try toResolveBackdrop(target.resolve_backdrop, target.resolve_clear_color),
-        .region = try toResolveRegion(target),
-        .intermediate_format = try toIntermediateFormat(target.resolve_intermediate_format),
-    };
-    return switch (target.resolve_kind) {
-        0 => .{ .direct = .{} },
-        1 => .{ .linear = linear },
-        else => error.InvalidEnum,
-    };
-}
-
-fn toResolveTarget(target: SnailResolveTarget) !snail.ResolveTarget {
-    return .{
-        .pixel_width = target.pixel_width,
-        .pixel_height = target.pixel_height,
-        .subpixel_order = try toSubpixelOrder(target.subpixel_order),
-        .fill_rule = try toFillRule(target.fill_rule),
-        .is_final_composite = target.is_final_composite,
-        .opaque_backdrop = target.opaque_backdrop,
-        .will_resample = target.will_resample,
-        .encoding = .{
-            .attachment = try toColorEncoding(target.attachment_encoding),
-            .stored_pixels = try toColorEncoding(target.stored_pixel_encoding),
-        },
-        .resolve = try toResolve(target),
-        .coverage_transfer = .{ .exponent = target.coverage_exponent },
-    };
-}
-
-fn toDrawOptions(options: SnailDrawOptions) !snail.DrawOptions {
-    return .{ .mvp = toMat4(options.mvp), .target = try toResolveTarget(options.target) };
-}
-
-fn toTextPlacement(placement: SnailTextPlacement) snail.TextPlacement {
-    return .{
-        .baseline = .{ .x = placement.baseline_x, .y = placement.baseline_y },
-        .em = placement.em,
-    };
-}
-
-fn toPaint(paint: SnailPaint) !snail.Paint {
-    return switch (paint.kind) {
-        SNAIL_PAINT_SOLID => .{ .solid = paint.paint_solid },
-        SNAIL_PAINT_LINEAR => .{ .linear_gradient = .{
-            .start = .{ .x = paint.paint_linear.start_x, .y = paint.paint_linear.start_y },
-            .end = .{ .x = paint.paint_linear.end_x, .y = paint.paint_linear.end_y },
-            .start_color = paint.paint_linear.start_color,
-            .end_color = paint.paint_linear.end_color,
-            .extend = try toPaintExtend(paint.paint_linear.extend),
-        } },
-        SNAIL_PAINT_RADIAL => .{ .radial_gradient = .{
-            .center = .{ .x = paint.paint_radial.center_x, .y = paint.paint_radial.center_y },
-            .radius = paint.paint_radial.radius,
-            .inner_color = paint.paint_radial.inner_color,
-            .outer_color = paint.paint_radial.outer_color,
-            .extend = try toPaintExtend(paint.paint_radial.extend),
-        } },
-        SNAIL_PAINT_IMAGE => blk: {
-            const image = paint.paint_image;
-            const img = image.image orelse return error.InvalidArgument;
-            break :blk .{ .image = .{
-                .image = &img.inner,
-                .uv_transform = toTransform(image.uv_transform),
-                .tint = image.tint,
-                .extend_x = try toPaintExtend(image.extend_x),
-                .extend_y = try toPaintExtend(image.extend_y),
-                .filter = try toImageFilter(image.filter),
-            } };
-        },
-        else => error.InvalidEnum,
-    };
-}
-
-fn toFillStyle(s: SnailFillStyle) !snail.FillStyle {
-    return .{
-        .paint = try toPaint(s.paint),
-    };
-}
-
-fn toStrokeStyle(s: SnailStrokeStyle) !snail.StrokeStyle {
-    return .{
-        .paint = try toPaint(s.paint),
-        .width = s.width,
-        .cap = try toStrokeCap(s.cap),
-        .join = try toStrokeJoin(s.join),
-        .miter_limit = s.miter_limit,
-        .placement = try toStrokePlacement(s.placement),
-    };
-}
-
-fn toOptFill(ptr: ?*const SnailFillStyle) !?snail.FillStyle {
-    if (ptr) |s| return try toFillStyle(s.*);
-    return null;
-}
-
-fn toOptStroke(ptr: ?*const SnailStrokeStyle) !?snail.StrokeStyle {
-    if (ptr) |s| return try toStrokeStyle(s.*);
-    return null;
 }
 
 fn destroyHandle(ptr: anytype) void {

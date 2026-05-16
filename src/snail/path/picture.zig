@@ -1,18 +1,18 @@
 const std = @import("std");
 
-const band_tex = @import("../render/backend/band_texture.zig");
+const band_tex = @import("../render/format/band_texture.zig");
 const bezier = @import("../math/bezier.zig");
 const core = @import("core.zig");
-const curve_tex = @import("../render/backend/curve_texture.zig");
-const atlas_curve_mod = @import("../render/backend/atlas/curve.zig");
-const atlas_page_mod = @import("../render/backend/atlas/page.zig");
+const curve_tex = @import("../render/format/curve_texture.zig");
+const atlas_curve_mod = @import("../render/format/atlas/curve.zig");
+const atlas_page_mod = @import("../render/format/atlas/page.zig");
 const paint_api = @import("../paint.zig");
 const paint_records = @import("../paint_records.zig");
 const picture_compile = @import("picture_compile.zig");
+const footprint_types = @import("../resources/footprint_types.zig");
 const resource_footprint_mod = @import("../resources/footprint.zig");
 const scene_mod = @import("../scene.zig");
 const target_mod = @import("../target.zig");
-const upload_mod = @import("../upload.zig");
 const vec = @import("../math/vec.zig");
 
 const Atlas = atlas_curve_mod.Atlas;
@@ -24,7 +24,7 @@ const Paint = paint_api.Paint;
 const Path = core.Path;
 const Range = scene_mod.Range;
 const Rect = target_mod.Rect;
-const ResourceFootprint = upload_mod.ResourceFootprint;
+const ResourceFootprint = footprint_types.ResourceFootprint;
 const StrokeStyle = paint_api.StrokeStyle;
 const Transform2D = vec.Transform2D;
 const Vec2 = vec.Vec2;

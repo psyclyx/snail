@@ -1,22 +1,26 @@
 const std = @import("std");
 
-const snail = @import("../root.zig");
 const build_options = @import("build_options");
 const config_mod = @import("config.zig");
+const range_mod = @import("../range.zig");
 const types_mod = @import("types.zig");
+const vec = @import("../math/vec.zig");
 const view_mod = @import("view.zig");
 
 const Allocator = std.mem.Allocator;
 const FaceConfig = config_mod.FaceConfig;
 const FaceIndex = config_mod.FaceIndex;
 const FaceView = view_mod.FaceView;
+const Range = range_mod.Range;
 const ShapedText = types_mod.ShapedText;
+const Transform2D = vec.Transform2D;
+const Vec2 = vec.Vec2;
 
-pub fn isIdentityTransform(transform: snail.Transform2D) bool {
+pub fn isIdentityTransform(transform: Transform2D) bool {
     return transform.xx == 1 and transform.xy == 0 and transform.tx == 0 and transform.yx == 0 and transform.yy == 1 and transform.ty == 0;
 }
 
-pub fn glyphPlacementTransform(x: f32, y: f32, font_size: f32, skew_x: f32) snail.Transform2D {
+pub fn glyphPlacementTransform(x: f32, y: f32, font_size: f32, skew_x: f32) Transform2D {
     return .{
         .xx = font_size,
         .xy = skew_x * font_size,
@@ -196,8 +200,8 @@ pub fn glyphInstanceBudget(face_view: *const FaceView, glyph_id: u16) usize {
     return 1;
 }
 
-pub fn shapedPenAt(shaped: *const ShapedText, glyph_index: usize) snail.Vec2 {
-    var pen = snail.Vec2.zero;
+pub fn shapedPenAt(shaped: *const ShapedText, glyph_index: usize) Vec2 {
+    var pen = Vec2.zero;
     for (shaped.glyphs[0..@min(glyph_index, shaped.glyphs.len)]) |glyph| {
         pen.x += glyph.x_advance;
         pen.y += glyph.y_advance;
@@ -205,8 +209,8 @@ pub fn shapedPenAt(shaped: *const ShapedText, glyph_index: usize) snail.Vec2 {
     return pen;
 }
 
-pub fn shapedAdvanceForRange(shaped: *const ShapedText, range: snail.Range.Resolved) snail.Vec2 {
-    var advance = snail.Vec2.zero;
+pub fn shapedAdvanceForRange(shaped: *const ShapedText, range: Range.Resolved) Vec2 {
+    var advance = Vec2.zero;
     for (shaped.glyphs[range.start..range.end]) |glyph| {
         advance.x += glyph.x_advance;
         advance.y += glyph.y_advance;
@@ -214,6 +218,6 @@ pub fn shapedAdvanceForRange(shaped: *const ShapedText, range: snail.Range.Resol
     return advance;
 }
 
-pub fn scaleAdvance(advance: snail.Vec2, em: f32) snail.Vec2 {
+pub fn scaleAdvance(advance: Vec2, em: f32) Vec2 {
     return .{ .x = advance.x * em, .y = advance.y * em };
 }

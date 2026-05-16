@@ -1,24 +1,29 @@
 const std = @import("std");
 
-const snail = @import("../root.zig");
 const paint_mod = @import("../paint.zig");
 const paint_records = @import("../paint_records.zig");
-const atlas_curve_mod = @import("../render/backend/atlas/curve.zig");
-const band_tex = @import("../render/backend/band_texture.zig");
+const atlas_curve_mod = @import("../render/format/atlas/curve.zig");
+const band_tex = @import("../render/format/band_texture.zig");
 const atlas_mod = @import("atlas.zig");
 const config_mod = @import("config.zig");
+const range_mod = @import("../range.zig");
 const shape_mod = @import("shape.zig");
 const types_mod = @import("types.zig");
+const vec = @import("../math/vec.zig");
 const view_mod = @import("view.zig");
 
 const Allocator = std.mem.Allocator;
 const FaceIndex = config_mod.FaceIndex;
 const FaceView = view_mod.FaceView;
+const Paint = paint_mod.Paint;
 const PaintImageRecord = atlas_curve_mod.CurveAtlas.PaintImageRecord;
+const Range = range_mod.Range;
 const ShapedText = types_mod.ShapedText;
+const SyntheticStyle = config_mod.SyntheticStyle;
 const TextAppend = types_mod.TextAppend;
 const TextAppendResult = types_mod.TextAppendResult;
 const TextAtlas = atlas_mod.TextAtlas;
+const Transform2D = vec.Transform2D;
 const glyphInstanceBudget = shape_mod.glyphInstanceBudget;
 const glyphPlacementTransform = shape_mod.glyphPlacementTransform;
 const scaleAdvance = shape_mod.scaleAdvance;
@@ -46,7 +51,7 @@ pub const TextBlob = struct {
     pub const Glyph = struct {
         face_index: FaceIndex,
         glyph_id: u16,
-        transform: snail.Transform2D,
+        transform: Transform2D,
         embolden: f32,
         color: [4]f32,
         paint_record_index: ?u32 = null,
@@ -147,7 +152,7 @@ pub const TextBlobBuilder = struct {
 
     const PendingPaintRecord = struct {
         band_entry: band_tex.GlyphBandEntry,
-        paint: snail.Paint,
+        paint: Paint,
     };
 
     pub fn init(allocator: Allocator, atlas: *const TextAtlas) TextBlobBuilder {
@@ -314,7 +319,7 @@ fn textBlobGpuInstanceBudgetForAtlas(atlas: *const TextAtlas, glyphs: []const Te
     return total;
 }
 
-pub fn textBlobRangeGpuInstanceBudget(blob: *const TextBlob, range: snail.Range.Resolved) usize {
+pub fn textBlobRangeGpuInstanceBudget(blob: *const TextBlob, range: Range.Resolved) usize {
     var total: usize = 0;
     for (blob.glyphs[range.start..range.end]) |glyph| {
         const face_view = blob.atlas.faceView(glyph.face_index, .{});
@@ -336,7 +341,7 @@ fn appendBlobGlyphPaint(
     builder: *TextBlobBuilder,
     face_view: *const FaceView,
     glyph_id: u16,
-    fill: snail.Paint,
+    fill: Paint,
 ) !BlobGlyphPaint {
     return switch (fill) {
         .solid => |color| .{ .color = color },
@@ -363,10 +368,10 @@ fn appendBlobGlyph(
     face_index: FaceIndex,
     face_view: *const FaceView,
     glyph_id: u16,
-    transform: snail.Transform2D,
+    transform: Transform2D,
     color: [4]f32,
     paint_record_index: ?u32,
-    synthetic: snail.SyntheticStyle,
+    synthetic: SyntheticStyle,
 ) !void {
     try builder.glyphs.append(builder.allocator, .{
         .face_index = face_index,

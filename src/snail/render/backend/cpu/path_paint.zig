@@ -1,7 +1,7 @@
 const std = @import("std");
 const snail = @import("../../../root.zig");
 const color = @import("color.zig");
-const atlas_curve_mod = @import("../atlas/curve.zig");
+const atlas_curve_mod = @import("../../format/atlas/curve.zig");
 
 const CurveAtlas = atlas_curve_mod.CurveAtlas;
 const PaintImageRecord = CurveAtlas.PaintImageRecord;

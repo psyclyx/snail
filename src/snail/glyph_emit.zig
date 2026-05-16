@@ -1,7 +1,6 @@
 const vec = @import("math/vec.zig");
 const Transform2D = vec.Transform2D;
-const snail = @import("root.zig");
-const SyntheticStyle = snail.SyntheticStyle;
+const SyntheticStyle = @import("text/config.zig").SyntheticStyle;
 
 pub const EmitResult = enum {
     emitted,

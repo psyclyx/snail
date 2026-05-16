@@ -1,4 +1,9 @@
-const snail = @import("root.zig");
+const image_mod = @import("image.zig");
+const vec = @import("math/vec.zig");
+
+const Image = image_mod.Image;
+const Transform2D = vec.Transform2D;
+const Vec2 = vec.Vec2;
 
 pub const Extend = enum(u8) {
     clamp = 0,
@@ -12,15 +17,15 @@ pub const ImageFilter = enum(u8) {
 };
 
 pub const LinearGradient = struct {
-    start: snail.Vec2,
-    end: snail.Vec2,
+    start: Vec2,
+    end: Vec2,
     start_color: [4]f32,
     end_color: [4]f32,
     extend: Extend = .clamp,
 };
 
 pub const RadialGradient = struct {
-    center: snail.Vec2,
+    center: Vec2,
     radius: f32,
     inner_color: [4]f32,
     outer_color: [4]f32,
@@ -28,8 +33,8 @@ pub const RadialGradient = struct {
 };
 
 pub const ImagePaint = struct {
-    image: *const snail.Image,
-    uv_transform: snail.Transform2D = .identity,
+    image: *const Image,
+    uv_transform: Transform2D = .identity,
     tint: [4]f32 = .{ 1, 1, 1, 1 },
     extend_x: Extend = .clamp,
     extend_y: Extend = .clamp,
@@ -43,7 +48,7 @@ pub const Paint = union(enum) {
     image: ImagePaint,
 };
 
-fn averageScale(transform: snail.Transform2D) f32 {
+fn averageScale(transform: Transform2D) f32 {
     const sx = @sqrt(transform.xx * transform.xx + transform.yx * transform.yx);
     const sy = @sqrt(transform.xy * transform.xy + transform.yy * transform.yy);
     return @max((sx + sy) * 0.5, 1.0 / 65536.0);
@@ -51,7 +56,7 @@ fn averageScale(transform: snail.Transform2D) f32 {
 
 /// Re-express a paint so it can be sampled in a local coordinate space.
 /// `local_to_paint` maps local sample points into the paint's authored space.
-pub fn mapToLocal(paint: Paint, local_to_paint: snail.Transform2D) ?Paint {
+pub fn mapToLocal(paint: Paint, local_to_paint: Transform2D) ?Paint {
     return switch (paint) {
         .solid => paint,
         .linear_gradient => |gradient| blk: {
@@ -76,7 +81,7 @@ pub fn mapToLocal(paint: Paint, local_to_paint: snail.Transform2D) ?Paint {
         },
         .image => |image_paint| .{ .image = .{
             .image = image_paint.image,
-            .uv_transform = snail.Transform2D.multiply(image_paint.uv_transform, local_to_paint),
+            .uv_transform = Transform2D.multiply(image_paint.uv_transform, local_to_paint),
             .tint = image_paint.tint,
             .extend_x = image_paint.extend_x,
             .extend_y = image_paint.extend_y,

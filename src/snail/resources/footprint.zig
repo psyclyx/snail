@@ -1,18 +1,18 @@
 const std = @import("std");
 
 const image_mod = @import("../image.zig");
-const atlas_curve_mod = @import("../render/backend/atlas/curve.zig");
-const atlas_page_mod = @import("../render/backend/atlas/page.zig");
+const atlas_curve_mod = @import("../render/format/atlas/curve.zig");
+const atlas_page_mod = @import("../render/format/atlas/page.zig");
+const footprint_types = @import("footprint_types.zig");
 const set_mod = @import("set.zig");
 const text_mod = @import("../text.zig");
-const upload_common = @import("../render/backend/upload_common.zig");
-const upload_mod = @import("../upload.zig");
+const upload_common = @import("../render/format/upload_common.zig");
 
 const Atlas = atlas_curve_mod.Atlas;
 const AtlasPage = atlas_page_mod.AtlasPage;
 const Image = image_mod.Image;
 const ResourceCapacityMode = upload_common.AtlasCapacityMode;
-const ResourceFootprint = upload_mod.ResourceFootprint;
+const ResourceFootprint = footprint_types.ResourceFootprint;
 const ResourceSet = set_mod.ResourceSet;
 const TextAtlas = text_mod.TextAtlas;
 

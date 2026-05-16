@@ -1,6 +1,7 @@
 const std = @import("std");
 const draw_mod = @import("draw.zig");
 const path_mod = @import("path.zig");
+const range_mod = @import("range.zig");
 const text_mod = @import("text.zig");
 const vec = @import("math/vec.zig");
 
@@ -8,22 +9,7 @@ const Transform2D = vec.Transform2D;
 const PathPicture = path_mod.PathPicture;
 const TextBlob = text_mod.TextBlob;
 
-/// Selects a contiguous slice of an immutable resource (path shapes, text
-/// glyphs). The default `count = maxInt(usize)` means "all from `start`";
-/// `resolve` clamps to the resource's actual length.
-pub const Range = struct {
-    start: usize = 0,
-    count: usize = std.math.maxInt(usize),
-
-    pub const Resolved = struct { start: usize, end: usize };
-
-    pub fn resolve(self: Range, total: usize) Resolved {
-        const start = @min(self.start, total);
-        const remaining = total - start;
-        const count = @min(self.count, remaining);
-        return .{ .start = start, .end = start + count };
-    }
-};
+pub const Range = range_mod.Range;
 
 /// Per-instance override applied at submission time. `transform` composes
 /// onto the resource's baked transform; `tint` multiplies onto its baked

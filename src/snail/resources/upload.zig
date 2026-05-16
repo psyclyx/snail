@@ -1,9 +1,9 @@
 const image_mod = @import("../image.zig");
 const prepared_mod = @import("prepared.zig");
-const atlas_curve_mod = @import("../render/backend/atlas/curve.zig");
+const atlas_curve_mod = @import("../render/format/atlas/curve.zig");
 const set_mod = @import("set.zig");
 const stamp_mod = @import("stamp.zig");
-const upload_common = @import("../render/backend/upload_common.zig");
+const upload_common = @import("../render/format/upload_common.zig");
 const upload_mod = @import("../upload.zig");
 const view_mod = @import("view.zig");
 

@@ -108,7 +108,7 @@ pub fn vtable(comptime Config: type) interface.Renderer.VTable {
         fn validateBackendGenerationFn(prepared_resources: *const PreparedResources) anyerror!void {
             if (comptime !Config.uses_resource_cache) return;
             const cache = Config.prepared(prepared_resources) orelse return error.MissingPreparedResource;
-            if (cache.generation != prepared_resources.backend_generation) return error.StalePreparedResources;
+            if (cache.generation != prepared_resources.backend.generation) return error.StalePreparedResources;
         }
         fn atlasSlotCanOverflowIntoBankFn(prepared_resources: *const PreparedResources, index: usize, atlas: upload_plan.AtlasRef) bool {
             if (comptime !Config.uses_resource_cache) return false;
@@ -160,7 +160,6 @@ pub fn vtable(comptime Config: type) interface.Renderer.VTable {
     };
     return .{
         .backend = Config.backend_kind,
-        .uses_resource_cache = Config.uses_resource_cache,
         .deinit = &S.deinitFn,
         .uploadResources = &S.uploadResourcesFn,
         .coverageBackend = &S.coverageBackendFn,
@@ -178,13 +177,16 @@ pub fn vtable(comptime Config: type) interface.Renderer.VTable {
         .getResolve = &S.getResolveFn,
         .setCoverageTransfer = &S.setCoverageTransferFn,
         .getCoverageTransfer = &S.getCoverageTransferFn,
-        .resourceCacheStats = &S.resourceCacheStatsFn,
-        .resetResourceCache = &S.resetResourceCacheFn,
-        .validateBackendGeneration = &S.validateBackendGenerationFn,
-        .atlasSlotCanOverflowIntoBank = &S.atlasSlotCanOverflowIntoBankFn,
-        .atlasNeedsOverflowBank = &S.atlasNeedsOverflowBankFn,
-        .atlasWouldRebuild = &S.atlasWouldRebuildFn,
-        .canUseAtlasOverflowBanks = &S.canUseAtlasOverflowBanksFn,
+        .resource_cache = .{
+            .uses_resource_cache = Config.uses_resource_cache,
+            .stats = &S.resourceCacheStatsFn,
+            .reset = &S.resetResourceCacheFn,
+            .validateBackendGeneration = &S.validateBackendGenerationFn,
+            .atlasSlotCanOverflowIntoBank = &S.atlasSlotCanOverflowIntoBankFn,
+            .atlasNeedsOverflowBank = &S.atlasNeedsOverflowBankFn,
+            .atlasWouldRebuild = &S.atlasWouldRebuildFn,
+            .canUseAtlasOverflowBanks = &S.canUseAtlasOverflowBanksFn,
+        },
         .backendName = &S.backendNameFn,
     };
 }

@@ -3,10 +3,10 @@ const snail = @import("../../../root.zig");
 const color_mod = @import("color.zig");
 const subpixel = @import("coverage/subpixel.zig");
 const texture = @import("texture.zig");
-const atlas_curve_mod = @import("../atlas/curve.zig");
+const atlas_curve_mod = @import("../../format/atlas/curve.zig");
 
 const bezier = @import("../../../math/bezier.zig");
-const curve_tex = @import("../curve_texture.zig");
+const curve_tex = @import("../../format/curve_texture.zig");
 const CurveSegment = bezier.CurveSegment;
 const FillRule = snail.FillRule;
 const GlyphBandEntry = std.meta.fieldInfo(atlas_curve_mod.CurveAtlas.GlyphInfo, .band_entry).type;

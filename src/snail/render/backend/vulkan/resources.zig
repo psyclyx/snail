@@ -1,9 +1,9 @@
 const std = @import("std");
 const vulkan_types = @import("types.zig");
-const atlas_curve_mod = @import("../atlas/curve.zig");
-const atlas_page_mod = @import("../atlas/page.zig");
-const texture_layers = @import("../texture_layers.zig");
-const upload_common = @import("../upload_common.zig");
+const atlas_curve_mod = @import("../../format/atlas/curve.zig");
+const atlas_page_mod = @import("../../format/atlas/page.zig");
+const texture_layers = @import("../../format/texture_layers.zig");
+const upload_common = @import("../../format/upload_common.zig");
 const snail_mod = @import("../../../root.zig");
 
 pub const vk = vulkan_types.vk;

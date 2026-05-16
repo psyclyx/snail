@@ -1,7 +1,6 @@
 const std = @import("std");
 
-const snail = @import("../root.zig");
-const atlas_curve_mod = @import("../render/backend/atlas/curve.zig");
+const atlas_curve_mod = @import("../render/format/atlas/curve.zig");
 const ttf = @import("../font/ttf.zig");
 const opentype = @import("../font/opentype.zig");
 const build_options = @import("build_options");
@@ -15,12 +14,37 @@ const ColrBaseInfo = atlas_curve_mod.CurveAtlas.ColrBaseInfo;
 
 pub const FaceIndex = u16;
 
+pub const FontWeight = enum(u4) {
+    thin = 1,
+    extra_light = 2,
+    light = 3,
+    regular = 4,
+    medium = 5,
+    semi_bold = 6,
+    bold = 7,
+    extra_bold = 8,
+    black = 9,
+};
+
+pub const FontStyle = struct {
+    weight: FontWeight = .regular,
+    italic: bool = false,
+};
+
+/// Synthetic style transforms applied at the vertex level during glyph emission.
+pub const SyntheticStyle = struct {
+    /// Extra stroke offset in pixels (scaled by font_size / units_per_em). 0 = none.
+    embolden: f32 = 0,
+    /// Horizontal shear factor. 0.2 ~= 12 degrees synthetic italic. 0 = upright.
+    skew_x: f32 = 0,
+};
+
 pub const FaceSpec = struct {
     data: []const u8,
-    weight: snail.FontWeight = .regular,
+    weight: FontWeight = .regular,
     italic: bool = false,
     fallback: bool = false,
-    synthetic: snail.SyntheticStyle = .{},
+    synthetic: SyntheticStyle = .{},
 };
 
 pub const ItemizedRun = struct {
@@ -66,9 +90,9 @@ pub const FontConfig = struct {
 pub const FaceConfig = struct {
     font: ttf.Font,
     font_data: []const u8,
-    weight: snail.FontWeight,
+    weight: FontWeight,
     italic: bool,
-    synthetic: snail.SyntheticStyle,
+    synthetic: SyntheticStyle,
     shaper: ?opentype.Shaper,
     hb_shaper: if (build_options.enable_harfbuzz) ?harfbuzz.HarfBuzzShaper else void,
     owns_shapers: bool, // false when sharing with another face (dedup)
@@ -266,7 +290,7 @@ pub fn buildFontConfig(allocator: Allocator, specs: []const FaceSpec) !*FontConf
 
 // ── Resolution helpers ──
 
-pub fn resolveInner(config: *const FontConfig, style: snail.FontStyle, codepoint: u21, depth: u8) ?FaceIndex {
+pub fn resolveInner(config: *const FontConfig, style: FontStyle, codepoint: u21, depth: u8) ?FaceIndex {
     if (depth > 3) return null;
 
     // 1. Style-specific chain
@@ -301,13 +325,13 @@ fn faceHasGlyph(config: *const FontConfig, fi: FaceIndex, codepoint: u21) bool {
     return gid != 0;
 }
 
-fn packStyle(style: snail.FontStyle) u8 {
+fn packStyle(style: FontStyle) u8 {
     return @as(u8, @intFromEnum(style.weight)) | (@as(u8, @intFromBool(style.italic)) << 4);
 }
 
 // ── Itemization ──
 
-pub fn itemizeText(allocator: Allocator, config: *const FontConfig, style: snail.FontStyle, text: []const u8) ![]ItemizedRun {
+pub fn itemizeText(allocator: Allocator, config: *const FontConfig, style: FontStyle, text: []const u8) ![]ItemizedRun {
     _ = std.unicode.Utf8View.init(text) catch return error.InvalidUtf8;
     var runs = std.ArrayListUnmanaged(ItemizedRun).empty;
     errdefer runs.deinit(allocator);

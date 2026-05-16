@@ -29,7 +29,7 @@ const Config = if (build_options.enable_cpu) struct {
     pub const uses_resource_cache = false;
 
     pub fn prepared(prepared_resources: *const UnifiedPreparedResources) ?*const Prepared {
-        if (prepared_resources.cpu) |*cpu_prepared| return cpu_prepared;
+        if (prepared_resources.backend.cpu) |*cpu_prepared| return cpu_prepared;
         return null;
     }
 
@@ -39,7 +39,7 @@ const Config = if (build_options.enable_cpu) struct {
         if (batch.atlases.len > 0) try cpu_prepared.uploadAtlases(batch.atlases, batch.atlas_views);
         if (batch.layer_infos.len > 0) try cpu_prepared.uploadLayerInfoBlocks(batch.layer_infos, batch.layer_info_views);
         if (batch.images.len > 0) cpu_prepared.uploadImages(batch.images, batch.image_views);
-        prepared_resources.cpu = cpu_prepared;
+        prepared_resources.backend.cpu = cpu_prepared;
     }
 
     pub fn coverageBackend(_: *Backend, _: *const UnifiedPreparedResources) ?CoverageBackend {

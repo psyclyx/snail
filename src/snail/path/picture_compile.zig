@@ -1,11 +1,11 @@
 const std = @import("std");
 
-const band_tex = @import("../render/backend/band_texture.zig");
+const band_tex = @import("../render/format/band_texture.zig");
 const bezier = @import("../math/bezier.zig");
 const core = @import("core.zig");
-const curve_tex = @import("../render/backend/curve_texture.zig");
-const atlas_curve_mod = @import("../render/backend/atlas/curve.zig");
-const atlas_page_mod = @import("../render/backend/atlas/page.zig");
+const curve_tex = @import("../render/format/curve_texture.zig");
+const atlas_curve_mod = @import("../render/format/atlas/curve.zig");
+const atlas_page_mod = @import("../render/format/atlas/page.zig");
 const paint_records = @import("../paint_records.zig");
 const vec = @import("../math/vec.zig");
 

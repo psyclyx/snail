@@ -40,7 +40,7 @@ const Config = if (build_options.enable_vulkan) struct {
     pub const uses_resource_cache = true;
 
     pub fn prepared(prepared_resources: *const PreparedResources) ?*const Prepared {
-        return prepared_resources.vulkan orelse null;
+        return prepared_resources.backend.vulkan orelse null;
     }
 
     pub fn uploadResources(self: *Backend, allocators: UploadAllocators, prepared_resources: *PreparedResources, batch: ResourceUploadBatch) !void {
@@ -55,12 +55,12 @@ const Config = if (build_options.enable_vulkan) struct {
             batch.layer_info_views,
         );
         if (batch.images.len > 0) try self.uploadPreparedImages(vk_prepared, allocators.scratch, batch.images, batch.image_views);
-        prepared_resources.vulkan = vk_prepared;
-        prepared_resources.backend_generation = vk_prepared.generation;
+        prepared_resources.backend.vulkan = vk_prepared;
+        prepared_resources.backend.generation = vk_prepared.generation;
     }
 
     pub fn coverageBackend(self: *Backend, prepared_resources: *const PreparedResources) ?CoverageBackend {
-        if (prepared_resources.vulkan) |vk_resources| {
+        if (prepared_resources.backend.vulkan) |vk_resources| {
             return .{ .vulkan = .{ .vk = self, .vk_resources = vk_resources, .prepared = prepared_resources } };
         }
         return null;
@@ -141,7 +141,7 @@ pub const Renderer = if (build_options.enable_vulkan) struct {
     }
 
     pub fn coverageBackend(self: *Self, prepared_resources: *const PreparedResources) ?CoverageBackend {
-        if (prepared_resources.vulkan) |vk_resources| {
+        if (prepared_resources.backend.vulkan) |vk_resources| {
             return .{ .vulkan = .{ .vk = self.state, .vk_resources = vk_resources, .prepared = prepared_resources } };
         }
         return null;

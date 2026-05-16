@@ -1,10 +1,6 @@
 const std = @import("std");
-const paint_mod = @import("paint.zig");
-const upload_common = @import("render/backend/upload_common.zig");
-const upload_mod = @import("upload.zig");
-
-pub const ImageFilter = paint_mod.ImageFilter;
-pub const ImagePaint = paint_mod.ImagePaint;
+const footprint_types = @import("resources/footprint_types.zig");
+const upload_common = @import("render/format/upload_common.zig");
 
 pub const Image = struct {
     allocator: std.mem.Allocator,
@@ -37,7 +33,7 @@ pub const Image = struct {
         return self.pixels;
     }
 
-    pub fn uploadFootprint(self: *const Image) upload_mod.ResourceFootprint {
+    pub fn uploadFootprint(self: *const Image) footprint_types.ResourceFootprint {
         const bytes = textureBytes(self);
         return .{
             .image_bytes_used = bytes,

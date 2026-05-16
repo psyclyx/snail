@@ -5,9 +5,9 @@
 
 const backend_kind = @import("backend_kind.zig");
 const resource_key = @import("resource_key.zig");
-const atlas_curve_mod = @import("render/backend/atlas/curve.zig");
-const atlas_page_mod = @import("render/backend/atlas/page.zig");
-const upload_common = @import("render/backend/upload_common.zig");
+const atlas_curve_mod = @import("render/format/atlas/curve.zig");
+const atlas_page_mod = @import("render/format/atlas/page.zig");
+const upload_common = @import("render/format/upload_common.zig");
 
 pub const math = @import("math.zig");
 pub const text = @import("text.zig");
@@ -130,7 +130,7 @@ pub const PreparedImageView = resources.PreparedImageView;
 pub const PreparedLayerInfoUpload = resources.PreparedLayerInfoUpload;
 pub const PreparedLayerInfoView = resources.PreparedLayerInfoView;
 pub const ResourceCapacityMode = upload_common.AtlasCapacityMode;
-pub const ResourceFootprint = upload.ResourceFootprint;
+pub const ResourceFootprint = resources.ResourceFootprint;
 pub const ResourceCacheStats = upload.ResourceCacheStats;
 pub const UploadAllocators = upload.UploadAllocators;
 pub const ResourceUploadPlan = upload.ResourceUploadPlan;

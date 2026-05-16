@@ -42,9 +42,19 @@ pub const Renderer = struct {
     ptr: *anyopaque,
     vtable: *const VTable,
 
+    pub const ResourceCacheVTable = struct {
+        uses_resource_cache: bool,
+        stats: *const fn (*const anyopaque) ResourceCacheStats,
+        reset: *const fn (*anyopaque) void,
+        validateBackendGeneration: *const fn (*const PreparedResources) anyerror!void,
+        atlasSlotCanOverflowIntoBank: *const fn (*const PreparedResources, usize, upload_plan.AtlasRef) bool,
+        atlasNeedsOverflowBank: *const fn (*const PreparedResources, usize, upload_plan.AtlasRef) bool,
+        atlasWouldRebuild: *const fn (*const PreparedResources, usize, upload_plan.AtlasRef) bool,
+        canUseAtlasOverflowBanks: *const fn (*const PreparedResources, usize) bool,
+    };
+
     pub const VTable = struct {
         backend: BackendKind,
-        uses_resource_cache: bool,
         deinit: *const fn (*anyopaque) void,
         uploadResources: *const fn (*anyopaque, UploadAllocators, *PreparedResources, ResourceUploadBatch) anyerror!void,
         coverageBackend: *const fn (*anyopaque, *const PreparedResources) ?CoverageBackend,
@@ -65,13 +75,7 @@ pub const Renderer = struct {
         getResolve: *const fn (*anyopaque) Resolve,
         setCoverageTransfer: *const fn (*anyopaque, CoverageTransfer) void,
         getCoverageTransfer: *const fn (*anyopaque) CoverageTransfer,
-        resourceCacheStats: *const fn (*const anyopaque) ResourceCacheStats,
-        resetResourceCache: *const fn (*anyopaque) void,
-        validateBackendGeneration: *const fn (*const PreparedResources) anyerror!void,
-        atlasSlotCanOverflowIntoBank: *const fn (*const PreparedResources, usize, upload_plan.AtlasRef) bool,
-        atlasNeedsOverflowBank: *const fn (*const PreparedResources, usize, upload_plan.AtlasRef) bool,
-        atlasWouldRebuild: *const fn (*const PreparedResources, usize, upload_plan.AtlasRef) bool,
-        canUseAtlasOverflowBanks: *const fn (*const PreparedResources, usize) bool,
+        resource_cache: ResourceCacheVTable,
         backendName: *const fn (*anyopaque) []const u8,
     };
 
@@ -99,11 +103,11 @@ pub const Renderer = struct {
     }
 
     pub fn resourceCacheStats(self: *const Renderer) ResourceCacheStats {
-        return self.vtable.resourceCacheStats(self.ptr);
+        return self.vtable.resource_cache.stats(self.ptr);
     }
 
     pub fn resetResourceCache(self: *Renderer) void {
-        self.vtable.resetResourceCache(self.ptr);
+        self.vtable.resource_cache.reset(self.ptr);
     }
 
     pub fn backend(self: *const Renderer) BackendKind {
@@ -111,23 +115,23 @@ pub const Renderer = struct {
     }
 
     pub fn usesResourceCache(self: *const Renderer) bool {
-        return self.vtable.uses_resource_cache;
+        return self.vtable.resource_cache.uses_resource_cache;
     }
 
     pub fn atlasSlotCanOverflowIntoBank(self: *const Renderer, prepared: *const PreparedResources, atlas_index: usize, atlas: upload_plan.AtlasRef) bool {
-        return self.vtable.atlasSlotCanOverflowIntoBank(prepared, atlas_index, atlas);
+        return self.vtable.resource_cache.atlasSlotCanOverflowIntoBank(prepared, atlas_index, atlas);
     }
 
     pub fn atlasNeedsOverflowBank(self: *const Renderer, prepared: *const PreparedResources, atlas_index: usize, atlas: upload_plan.AtlasRef) bool {
-        return self.vtable.atlasNeedsOverflowBank(prepared, atlas_index, atlas);
+        return self.vtable.resource_cache.atlasNeedsOverflowBank(prepared, atlas_index, atlas);
     }
 
     pub fn atlasWouldRebuild(self: *const Renderer, prepared: *const PreparedResources, atlas_index: usize, atlas: upload_plan.AtlasRef) bool {
-        return self.vtable.atlasWouldRebuild(prepared, atlas_index, atlas);
+        return self.vtable.resource_cache.atlasWouldRebuild(prepared, atlas_index, atlas);
     }
 
     pub fn canUseAtlasOverflowBanks(self: *const Renderer, prepared: *const PreparedResources, atlas_count: usize) bool {
-        return self.vtable.canUseAtlasOverflowBanks(prepared, atlas_count);
+        return self.vtable.resource_cache.canUseAtlasOverflowBanks(prepared, atlas_count);
     }
 
     /// Execute prebuilt draw records. This never discovers, uploads, allocates,
@@ -148,7 +152,7 @@ pub const Renderer = struct {
     /// Vtables call this once per frame before fan-out so per-tile workers
     /// don't have to re-validate (and don't need an error path).
     fn validateBackendGeneration(self: *Renderer, prepared: *const PreparedResources) !void {
-        try self.vtable.validateBackendGeneration(prepared);
+        try self.vtable.resource_cache.validateBackendGeneration(prepared);
     }
 
     pub fn validateRecords(self: *Renderer, prepared: *const PreparedResources, records: DrawRecords, options: DrawOptions) !void {
@@ -286,7 +290,6 @@ pub fn disabledVTable(comptime backend_kind: BackendKind) Renderer.VTable {
     };
     return .{
         .backend = backend_kind,
-        .uses_resource_cache = false,
         .deinit = &S.deinitFn,
         .uploadResources = &S.uploadResourcesFn,
         .coverageBackend = &S.coverageBackendFn,
@@ -304,13 +307,16 @@ pub fn disabledVTable(comptime backend_kind: BackendKind) Renderer.VTable {
         .getResolve = &S.getResolveFn,
         .setCoverageTransfer = &S.setCoverageTransferFn,
         .getCoverageTransfer = &S.getCoverageTransferFn,
-        .resourceCacheStats = &S.resourceCacheStatsFn,
-        .resetResourceCache = &S.resetResourceCacheFn,
-        .validateBackendGeneration = &S.validateBackendGenerationFn,
-        .atlasSlotCanOverflowIntoBank = &S.atlasSlotCanOverflowIntoBankFn,
-        .atlasNeedsOverflowBank = &S.atlasNeedsOverflowBankFn,
-        .atlasWouldRebuild = &S.atlasWouldRebuildFn,
-        .canUseAtlasOverflowBanks = &S.canUseAtlasOverflowBanksFn,
+        .resource_cache = .{
+            .uses_resource_cache = false,
+            .stats = &S.resourceCacheStatsFn,
+            .reset = &S.resetResourceCacheFn,
+            .validateBackendGeneration = &S.validateBackendGenerationFn,
+            .atlasSlotCanOverflowIntoBank = &S.atlasSlotCanOverflowIntoBankFn,
+            .atlasNeedsOverflowBank = &S.atlasNeedsOverflowBankFn,
+            .atlasWouldRebuild = &S.atlasWouldRebuildFn,
+            .canUseAtlasOverflowBanks = &S.canUseAtlasOverflowBanksFn,
+        },
         .backendName = &S.backendNameFn,
     };
 }

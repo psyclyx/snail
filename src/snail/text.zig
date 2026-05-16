@@ -14,31 +14,6 @@ pub const LineMetrics = ttf.LineMetrics;
 pub const DecorationMetrics = ttf.DecorationMetrics;
 pub const ScriptMetrics = ttf.ScriptMetrics;
 
-pub const FontWeight = enum(u4) {
-    thin = 1,
-    extra_light = 2,
-    light = 3,
-    regular = 4,
-    medium = 5,
-    semi_bold = 6,
-    bold = 7,
-    extra_bold = 8,
-    black = 9,
-};
-
-pub const FontStyle = struct {
-    weight: FontWeight = .regular,
-    italic: bool = false,
-};
-
-/// Synthetic style transforms applied at the vertex level during glyph emission.
-pub const SyntheticStyle = struct {
-    /// Extra stroke offset in pixels (scaled by font_size / units_per_em). 0 = none.
-    embolden: f32 = 0,
-    /// Horizontal shear factor. 0.2 ~= 12 degrees synthetic italic. 0 = upright.
-    skew_x: f32 = 0,
-};
-
 /// A parsed TrueType font. Immutable after init.
 /// Thread-safe for concurrent reads (glyphIndex, getKerning).
 /// The init/deinit, unitsPerEm, glyphIndex, and advanceWidth methods are part
@@ -112,6 +87,9 @@ pub fn isRenderableTextCodepoint(codepoint: u32) bool {
 pub const FaceSpec = config_mod.FaceSpec;
 pub const FaceIndex = config_mod.FaceIndex;
 pub const ItemizedRun = config_mod.ItemizedRun;
+pub const FontWeight = config_mod.FontWeight;
+pub const FontStyle = config_mod.FontStyle;
+pub const SyntheticStyle = config_mod.SyntheticStyle;
 pub const FontConfig = config_mod.FontConfig;
 pub const FaceConfig = config_mod.FaceConfig;
 pub const FaceGlyphData = config_mod.FaceGlyphData;

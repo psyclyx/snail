@@ -5,7 +5,7 @@ const snail = @import("root.zig");
 const bezier = @import("math/bezier.zig");
 const resource_key = @import("resource_key.zig");
 const upload_plan = @import("render/upload_plan.zig");
-const vertex_mod = @import("render/backend/vertex.zig");
+const vertex_mod = @import("render/format/vertex.zig");
 
 const Mat4 = snail.Mat4;
 const Vec2 = snail.Vec2;
@@ -49,10 +49,10 @@ test {
     _ = @import("math/bezier.zig");
     _ = @import("math/roots.zig");
     _ = @import("font/ttf.zig");
-    _ = @import("render/backend/curve_texture.zig");
-    _ = @import("render/backend/band_texture.zig");
+    _ = @import("render/format/curve_texture.zig");
+    _ = @import("render/format/band_texture.zig");
     _ = @import("font/opentype.zig");
-    _ = @import("render/backend/vertex.zig");
+    _ = @import("render/format/vertex.zig");
     if (build_options.enable_cpu) _ = @import("render/backend/cpu.zig");
     _ = @import("torture_test.zig");
     _ = @import("text.zig");
@@ -215,7 +215,6 @@ test "draw dispatch uses only prepared stamps and caller records" {
     };
     const fake_vtable = Renderer.VTable{
         .backend = .cpu,
-        .uses_resource_cache = false,
         .deinit = Fake.deinit,
         .uploadResources = Fake.uploadResources,
         .coverageBackend = Fake.coverageBackend,
@@ -233,13 +232,16 @@ test "draw dispatch uses only prepared stamps and caller records" {
         .getResolve = Fake.getResolve,
         .setCoverageTransfer = Fake.setCoverageTransfer,
         .getCoverageTransfer = Fake.getCoverageTransfer,
-        .resourceCacheStats = Fake.resourceCacheStats,
-        .resetResourceCache = Fake.resetResourceCache,
-        .validateBackendGeneration = Fake.validateBackendGeneration,
-        .atlasSlotCanOverflowIntoBank = Fake.atlasSlotCanOverflowIntoBank,
-        .atlasNeedsOverflowBank = Fake.atlasNeedsOverflowBank,
-        .atlasWouldRebuild = Fake.atlasWouldRebuild,
-        .canUseAtlasOverflowBanks = Fake.canUseAtlasOverflowBanks,
+        .resource_cache = .{
+            .uses_resource_cache = false,
+            .stats = Fake.resourceCacheStats,
+            .reset = Fake.resetResourceCache,
+            .validateBackendGeneration = Fake.validateBackendGeneration,
+            .atlasSlotCanOverflowIntoBank = Fake.atlasSlotCanOverflowIntoBank,
+            .atlasNeedsOverflowBank = Fake.atlasNeedsOverflowBank,
+            .atlasWouldRebuild = Fake.atlasWouldRebuild,
+            .canUseAtlasOverflowBanks = Fake.canUseAtlasOverflowBanks,
+        },
         .backendName = Fake.backendName,
     };
 
