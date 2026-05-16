@@ -158,11 +158,11 @@ fn ensureGameDemoText(fonts: *snail.TextAtlas) !void {
         "HEALTH  83",
         "AMMO    42",
         "Opaque vector backing: LCD-safe HUD text.",
-        "Surface markings remain aligned with the wall plane.",
-        "Inspection route A-17 stays clear through 22:00.",
+        "Text tinted directly onto the normal-mapped wall material.",
+        "The wall keeps its surface detail; the glyphs are not billboarded.",
         "Opaque vector paint applied directly to the wall.",
-        "Perimeter feed stable across all cameras.",
-        "Maintenance window: 03:40 local.",
+        "Analytic vector text sampled in the material shader.",
+        "Lit by the room; never flattened into a texture.",
         "Translucent glass overlay in front of the wall.",
         "Still direct-rendered, but LCD remains off on translucent backing.",
     };
@@ -378,8 +378,8 @@ fn buildRoughWallTextPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas)
     var builder = snail.TextBlobBuilder.init(allocator, fonts);
     defer builder.deinit();
     _ = try appendText(&builder, .{ .weight = .bold }, "AUTHORIZED ONLY", 46.0, 118.0, 56.0, .{ 0.06, 0.055, 0.05, 1.0 });
-    _ = try appendText(&builder, .{}, "Surface markings remain aligned with the wall plane.", 46.0, 168.0, 22.0, .{ 0.08, 0.07, 0.06, 0.96 });
-    _ = try appendText(&builder, .{}, "Inspection route A-17 stays clear through 22:00.", 46.0, 198.0, 18.0, .{ 0.08, 0.07, 0.06, 0.92 });
+    _ = try appendText(&builder, .{}, "Text tinted directly onto the normal-mapped wall material.", 46.0, 168.0, 22.0, .{ 0.08, 0.07, 0.06, 0.96 });
+    _ = try appendText(&builder, .{}, "The wall keeps its surface detail; the glyphs are not billboarded.", 46.0, 198.0, 18.0, .{ 0.08, 0.07, 0.06, 0.92 });
     const text = try builder.finish();
 
     return .{
@@ -395,8 +395,8 @@ fn buildCenterPanelPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas) !
     const scene_h = 360.0;
     const title = "SECTOR A";
     const kicker = "OBSERVATION";
-    const body = "Perimeter feed stable across all cameras.";
-    const note = "Maintenance window: 03:40 local.";
+    const body = "Analytic vector text sampled in the material shader.";
+    const note = "Lit by the room; never flattened into a texture.";
     const pad_x = 42.0;
     const title_size = 58.0;
     const kicker_size = 22.0;

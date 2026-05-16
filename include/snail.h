@@ -100,6 +100,16 @@ typedef struct {
     size_t image_bytes_allocated;
 } SnailResourceFootprint;
 
+typedef struct {
+    float rect[4];
+    float xform[4];
+    float origin[2];
+    uint32_t glyph[2];
+    float band[4];
+    float color[4];
+    float tint[4];
+} SnailTextCoverageGlyph;
+
 size_t snail_resource_footprint_used_bytes(SnailResourceFootprint footprint);
 size_t snail_resource_footprint_allocated_bytes(SnailResourceFootprint footprint);
 SnailResourceKey snail_resource_key_from_bytes(const char *data, size_t len);
@@ -646,6 +656,9 @@ void snail_text_coverage_records_deinit(SnailTextCoverageRecords *records);
 void snail_text_coverage_records_reset(SnailTextCoverageRecords *records);
 size_t snail_text_coverage_records_word_count(const SnailTextCoverageRecords *records);
 size_t snail_text_coverage_records_glyph_count(const SnailTextCoverageRecords *records);
+int snail_text_coverage_records_glyph(const SnailTextCoverageRecords *records,
+                                      size_t glyph_index,
+                                      SnailTextCoverageGlyph *out);
 const uint32_t *snail_text_coverage_records_words(const SnailTextCoverageRecords *records);
 int snail_text_coverage_records_build_local(SnailTextCoverageRecords *records,
                                             const SnailPreparedResources *prepared,

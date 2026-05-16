@@ -128,6 +128,21 @@ pub const TextCoverageOptions = struct {
     transform: Transform2D = .identity,
 };
 
+/// Public, decoded view of one text coverage glyph record.
+///
+/// `TextCoverageRecords` stores renderer-native packed words so backends can
+/// draw them directly. Use this decoded view when a material shader needs to
+/// upload glyph metadata in its own random-access format.
+pub const TextCoverageGlyph = struct {
+    rect: [4]f32,
+    xform: [4]f32,
+    origin: [2]f32,
+    glyph: [2]u32,
+    band: [4]f32,
+    color: [4]f32,
+    tint: [4]f32,
+};
+
 /// Prepared glyph coverage records for use by a custom material shader.
 ///
 /// Wraps caller-owned per-glyph draw data. Snail atlas textures come from
@@ -162,6 +177,25 @@ pub const TextCoverageRecords = struct {
 
     pub fn slice(self: *const TextCoverageRecords) []const u32 {
         return self.buffer[0..self.len];
+    }
+
+    pub fn glyph(self: *const TextCoverageRecords, glyph_index: usize) TextCoverageGlyph {
+        std.debug.assert(glyph_index < self.glyphCount());
+        return decodeGlyph(self.slice()[glyph_index * TEXT_WORDS_PER_GLYPH ..][0..TEXT_WORDS_PER_GLYPH]);
+    }
+
+    pub fn decodeGlyph(words: []const u32) TextCoverageGlyph {
+        std.debug.assert(words.len >= TEXT_WORDS_PER_GLYPH);
+        const decoded = vertex_mod.decodeInstance(words[0..TEXT_WORDS_PER_GLYPH]);
+        return .{
+            .rect = decoded.rect,
+            .xform = decoded.xform,
+            .origin = decoded.origin,
+            .glyph = decoded.glyph,
+            .band = decoded.band,
+            .color = decoded.color,
+            .tint = decoded.tint,
+        };
     }
 
     pub fn buildLocal(

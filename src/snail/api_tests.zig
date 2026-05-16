@@ -626,6 +626,10 @@ test "replacing path-picture key does not invalidate unrelated text coverage rec
     var records = TextCoverageRecords.init(coverage_words);
     try records.buildLocal(&prepared_a, &blob, .{});
     try std.testing.expect(records.validFor(&prepared_a));
+    try std.testing.expect(records.glyphCount() > 0);
+    const glyph = records.glyph(0);
+    try std.testing.expect(glyph.color[3] > 0.0);
+    try std.testing.expect(glyph.tint[3] > 0.0);
 
     var set_b_entries: [4]ResourceSet.Entry = undefined;
     var set_b = ResourceSet.init(&set_b_entries);
