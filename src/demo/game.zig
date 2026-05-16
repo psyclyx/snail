@@ -26,8 +26,8 @@ fn toSnailEncoding(encoding: platform.presentation.ColorEncoding) snail.ColorEnc
 
 fn displayTargetEncoding(info: platform.presentation.Info) snail.TargetEncoding {
     return .{
-        .framebuffer = toSnailEncoding(info.framebuffer_encoding),
-        .pixels = .srgb,
+        .attachment = toSnailEncoding(info.framebuffer_encoding),
+        .stored_pixels = .srgb,
     };
 }
 

@@ -501,7 +501,7 @@ pub const CpuRenderer = struct {
     /// Encoding of the caller-owned pixel buffer. The unified `Renderer.draw`
     /// path sets this from `ResolveTarget.encoding` every frame.
     target_encoding: snail.TargetEncoding,
-    target_resolve_strategy: snail.ResolveStrategy,
+    target_resolve: snail.Resolve,
     coverage_transfer: snail.CoverageTransfer,
     thread_pool: ?*snail.ThreadPool,
     // Half-open row window [row_clip_min, row_clip_max). Pixel writes outside
@@ -509,6 +509,8 @@ pub const CpuRenderer = struct {
     // bands; defaults to the full image for single-threaded callers.
     row_clip_min: u32,
     row_clip_max: u32,
+    col_clip_min: u32,
+    col_clip_max: u32,
 
     pub const TILE_ROWS: u32 = 32;
 
@@ -524,11 +526,13 @@ pub const CpuRenderer = struct {
             // doc). The unified `Renderer.draw` path overrides this from
             // `ResolveTarget.encoding` per frame.
             .target_encoding = .srgb,
-            .target_resolve_strategy = .direct,
+            .target_resolve = .{ .direct = .{} },
             .coverage_transfer = .identity,
             .thread_pool = null,
             .row_clip_min = 0,
             .row_clip_max = height,
+            .col_clip_min = 0,
+            .col_clip_max = width,
         };
     }
 
@@ -540,6 +544,8 @@ pub const CpuRenderer = struct {
         self.stride = stride;
         self.row_clip_min = 0;
         self.row_clip_max = height;
+        self.col_clip_min = 0;
+        self.col_clip_max = width;
     }
 
     /// Attach a caller-owned `snail.ThreadPool` to fan tile work out across
@@ -575,12 +581,12 @@ pub const CpuRenderer = struct {
         return self.target_encoding;
     }
 
-    pub fn setResolveStrategy(self: *CpuRenderer, strategy: snail.ResolveStrategy) void {
-        self.target_resolve_strategy = strategy;
+    pub fn setResolve(self: *CpuRenderer, resolve: snail.Resolve) void {
+        self.target_resolve = resolve;
     }
 
-    pub fn getResolveStrategy(self: *const CpuRenderer) snail.ResolveStrategy {
-        return self.target_resolve_strategy;
+    pub fn getResolve(self: *const CpuRenderer) snail.Resolve {
+        return self.target_resolve;
     }
 
     pub fn setCoverageTransfer(self: *CpuRenderer, transfer: snail.CoverageTransfer) void {
@@ -589,6 +595,85 @@ pub const CpuRenderer = struct {
 
     pub fn getCoverageTransfer(self: *const CpuRenderer) snail.CoverageTransfer {
         return self.coverage_transfer;
+    }
+
+    pub const LinearResolveRestore = struct {
+        row_clip_min: u32,
+        row_clip_max: u32,
+        col_clip_min: u32,
+        col_clip_max: u32,
+    };
+
+    pub fn beginLinearResolve(self: *CpuRenderer, target: snail.ResolveTarget, resolve: snail.LinearResolve) LinearResolveRestore {
+        const restore = LinearResolveRestore{
+            .row_clip_min = self.row_clip_min,
+            .row_clip_max = self.row_clip_max,
+            .col_clip_min = self.col_clip_min,
+            .col_clip_max = self.col_clip_max,
+        };
+        const rect = target.resolveRect();
+        self.col_clip_min = @intCast(rect.x);
+        self.row_clip_min = @intCast(rect.y);
+        self.col_clip_max = self.col_clip_min + rect.w;
+        self.row_clip_max = self.row_clip_min + rect.h;
+        self.seedLinearResolveBackdrop(target.encoding, rect, resolve.backdrop);
+        return restore;
+    }
+
+    pub fn endLinearResolve(self: *CpuRenderer, restore: LinearResolveRestore) void {
+        self.row_clip_min = restore.row_clip_min;
+        self.row_clip_max = restore.row_clip_max;
+        self.col_clip_min = restore.col_clip_min;
+        self.col_clip_max = restore.col_clip_max;
+    }
+
+    fn seedLinearResolveBackdrop(self: *CpuRenderer, encoding: snail.TargetEncoding, rect: snail.PixelRect, backdrop: snail.ResolveBackdrop) void {
+        switch (backdrop) {
+            .target, .dont_care => return,
+            .transparent => self.fillResolveRect(rect, .{ 0, 0, 0, 0 }),
+            .clear => |color| self.fillResolveRect(rect, colorBytesForEncoding(encoding, color)),
+        }
+    }
+
+    fn colorBytesForEncoding(encoding: snail.TargetEncoding, color_srgb: [4]f32) [4]u8 {
+        const alpha = clamp01(color_srgb[3]);
+        const linear = srgbColorToLinear(color_srgb);
+        const premul = [3]f32{
+            linear[0] * alpha,
+            linear[1] * alpha,
+            linear[2] * alpha,
+        };
+        return switch (encoding.stored_pixels) {
+            .srgb => .{
+                linearToSrgbByte(premul[0]),
+                linearToSrgbByte(premul[1]),
+                linearToSrgbByte(premul[2]),
+                srgbToByte(alpha),
+            },
+            .linear => .{
+                srgbToByte(premul[0]),
+                srgbToByte(premul[1]),
+                srgbToByte(premul[2]),
+                srgbToByte(alpha),
+            },
+        };
+    }
+
+    fn fillResolveRect(self: *CpuRenderer, rect: snail.PixelRect, color: [4]u8) void {
+        if (rect.w == 0 or rect.h == 0) return;
+        var row: u32 = @intCast(rect.y);
+        const y1 = row + rect.h;
+        while (row < y1) : (row += 1) {
+            var col: u32 = @intCast(rect.x);
+            const x1 = col + rect.w;
+            while (col < x1) : (col += 1) {
+                const off = row * self.stride + col * 4;
+                self.pixels[off + 0] = color[0];
+                self.pixels[off + 1] = color[1];
+                self.pixels[off + 2] = color[2];
+                self.pixels[off + 3] = color[3];
+            }
+        }
     }
 
     fn applyCoverageTransfer(self: *const CpuRenderer, cov: f32) f32 {
@@ -653,10 +738,10 @@ pub const CpuRenderer = struct {
             const final_transform = Transform2D.multiply(transform, shape.transform);
             const inverse = inverseTransform(final_transform) orelse continue;
             const bounds = transformedGlyphBounds(info.bbox, final_transform);
-            const px0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.x))), 0);
-            const py0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.y))), 0);
-            const px1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.x))), @as(i32, @intCast(self.width)));
-            const py1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.y))), @as(i32, @intCast(self.height)));
+            const px0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.x))), @as(i32, @intCast(self.col_clip_min)));
+            const py0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.y))), @as(i32, @intCast(self.row_clip_min)));
+            const px1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.x))), @as(i32, @intCast(self.col_clip_max)));
+            const py1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.y))), @as(i32, @intCast(self.row_clip_max)));
             if (px0 >= px1 or py0 >= py1) continue;
 
             const epp = glyphEdgePixelsPerPixel(inverse);
@@ -916,8 +1001,8 @@ pub const CpuRenderer = struct {
 
             const inverse = inverseTransform(transform) orelse return;
             const bounds = transformedGlyphBounds(union_bbox, transform);
-            const px0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.x))), 0);
-            const px1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.x))), @as(i32, @intCast(self.width)));
+            const px0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.x))), @as(i32, @intCast(self.col_clip_min)));
+            const px1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.x))), @as(i32, @intCast(self.col_clip_max)));
             const py0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.y))), @as(i32, @intCast(self.row_clip_min)));
             const py1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.y))), @as(i32, @intCast(self.row_clip_max)));
             if (px0 >= px1 or py0 >= py1) return;
@@ -1077,8 +1162,8 @@ pub const CpuRenderer = struct {
 
             const inverse = inverseTransform(transform) orelse return;
             const bounds = transformedGlyphBounds(union_bbox, transform);
-            const px0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.x))), 0);
-            const px1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.x))), @as(i32, @intCast(self.width)));
+            const px0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.x))), @as(i32, @intCast(self.col_clip_min)));
+            const px1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.x))), @as(i32, @intCast(self.col_clip_max)));
             const py0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.y))), @as(i32, @intCast(self.row_clip_min)));
             const py1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.y))), @as(i32, @intCast(self.row_clip_max)));
             if (px0 >= px1 or py0 >= py1) return;
@@ -1146,8 +1231,8 @@ pub const CpuRenderer = struct {
         var bounds = transformedGlyphBounds(bbox, transform);
         expandBoundsForSubpixel(&bounds, self.subpixel_order, allow_subpixel);
 
-        const px0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.x))), 0);
-        const px1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.x))), @as(i32, @intCast(self.width)));
+        const px0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.x))), @as(i32, @intCast(self.col_clip_min)));
+        const px1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.x))), @as(i32, @intCast(self.col_clip_max)));
         const py0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.y))), @as(i32, @intCast(self.row_clip_min)));
         const py1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.y))), @as(i32, @intCast(self.row_clip_max)));
         if (px0 >= px1 or py0 >= py1) return;
@@ -1259,10 +1344,10 @@ pub const CpuRenderer = struct {
         };
         expandBoundsForSubpixel(&bounds, self.subpixel_order, allow_subpixel);
 
-        const px0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.x))), 0);
-        const px1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.x))), @as(i32, @intCast(self.width)));
-        const py0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.y))), 0);
-        const py1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.y))), @as(i32, @intCast(self.height)));
+        const px0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.x))), @as(i32, @intCast(self.col_clip_min)));
+        const px1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.x))), @as(i32, @intCast(self.col_clip_max)));
+        const py0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.y))), @as(i32, @intCast(self.row_clip_min)));
+        const py1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.y))), @as(i32, @intCast(self.row_clip_max)));
 
         if (px0 >= px1 or py0 >= py1) return;
 
@@ -1339,9 +1424,10 @@ pub const CpuRenderer = struct {
     }
 
     inline fn storageSpaceSrgbBlend(self: *const CpuRenderer) bool {
-        return self.target_resolve_strategy == .direct and
-            self.target_encoding.framebuffer == .linear and
-            self.target_encoding.pixels == .srgb;
+        return switch (self.target_resolve) {
+            .direct => self.target_encoding.attachment == .linear and self.target_encoding.stored_pixels == .srgb,
+            .linear => false,
+        };
     }
 
     inline fn srcPremultipliedForTarget(self: *const CpuRenderer, src: [4]f32) [4]f32 {
@@ -3756,11 +3842,11 @@ test "cpu renderer decodes translucent sRGB solid path colors before blending" {
     try testing.expect(buf[inside + 3] <= 128);
 }
 
-test "cpu direct sRGB pixels on linear framebuffer blends in storage space" {
+test "cpu direct sRGB pixels on linear attachment blends in storage space" {
     var buf = [_]u8{ 0, 0, 0, 255 };
     var renderer = CpuRenderer.init(buf[0..].ptr, 1, 1, 4);
-    renderer.setTargetEncoding(.srgb_pixels_on_linear_framebuffer);
-    renderer.setResolveStrategy(.direct);
+    renderer.setTargetEncoding(.srgb_pixels_on_linear_attachment);
+    renderer.setResolve(.{ .direct = .{} });
 
     renderer.blendPremultipliedPixel(0, 0, .{ 0.5, 0.5, 0.5, 0.5 }, false);
 
@@ -3770,11 +3856,11 @@ test "cpu direct sRGB pixels on linear framebuffer blends in storage space" {
     try std.testing.expectEqual(@as(u8, 255), buf[3]);
 }
 
-test "cpu linear-intermediate sRGB pixels on linear framebuffer blends in linear space" {
+test "cpu linear resolve sRGB pixels on linear attachment blends in linear space" {
     var buf = [_]u8{ 0, 0, 0, 255 };
     var renderer = CpuRenderer.init(buf[0..].ptr, 1, 1, 4);
-    renderer.setTargetEncoding(.srgb_pixels_on_linear_framebuffer);
-    renderer.setResolveStrategy(.linear_intermediate);
+    renderer.setTargetEncoding(.srgb_pixels_on_linear_attachment);
+    renderer.setResolve(.{ .linear = .{} });
 
     renderer.blendPremultipliedPixel(0, 0, .{ 0.5, 0.5, 0.5, 0.5 }, false);
 
@@ -3783,6 +3869,48 @@ test "cpu linear-intermediate sRGB pixels on linear framebuffer blends in linear
     try std.testing.expectEqual(expected, buf[1]);
     try std.testing.expectEqual(expected, buf[2]);
     try std.testing.expectEqual(@as(u8, 255), buf[3]);
+}
+
+test "cpu linear resolve clear backdrop seeds only resolve region" {
+    const width: u32 = 4;
+    const height: u32 = 3;
+    const stride: u32 = width * 4;
+    const width_usize: usize = @intCast(width);
+    const height_usize: usize = @intCast(height);
+    const stride_usize: usize = @intCast(stride);
+    var buf = [_]u8{9} ** (4 * 3 * 4);
+    var renderer = CpuRenderer.init(buf[0..].ptr, width, height, stride);
+
+    const linear = snail.LinearResolve{
+        .backdrop = .{ .clear = .{ 1, 0, 0, 1 } },
+        .region = .{ .pixel_rect = .{ .x = 1, .y = 1, .w = 2, .h = 1 } },
+    };
+    const target = snail.ResolveTarget{
+        .pixel_width = @floatFromInt(width),
+        .pixel_height = @floatFromInt(height),
+        .encoding = .srgb_pixels_on_linear_attachment,
+        .resolve = .{ .linear = linear },
+    };
+
+    const restore = renderer.beginLinearResolve(target, linear);
+    renderer.endLinearResolve(restore);
+
+    for (0..height_usize) |row| {
+        for (0..width_usize) |col| {
+            const off = row * stride_usize + col * 4;
+            if (row == 1 and (col == 1 or col == 2)) {
+                try std.testing.expectEqual(@as(u8, 255), buf[off + 0]);
+                try std.testing.expectEqual(@as(u8, 0), buf[off + 1]);
+                try std.testing.expectEqual(@as(u8, 0), buf[off + 2]);
+                try std.testing.expectEqual(@as(u8, 255), buf[off + 3]);
+            } else {
+                try std.testing.expectEqual(@as(u8, 9), buf[off + 0]);
+                try std.testing.expectEqual(@as(u8, 9), buf[off + 1]);
+                try std.testing.expectEqual(@as(u8, 9), buf[off + 2]);
+                try std.testing.expectEqual(@as(u8, 9), buf[off + 3]);
+            }
+        }
+    }
 }
 
 test "cpu renderer renders collapsed inside stroke" {

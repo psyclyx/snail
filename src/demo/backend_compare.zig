@@ -9,9 +9,11 @@ const vulkan_platform = if (build_options.enable_vulkan) @import("platform/vulka
 
 const WIDTH: u32 = 220;
 const HEIGHT: u32 = 112;
+const GL_RGBA8: gl.GLenum = 0x8058;
 const GL_SRGB8_ALPHA8: gl.GLenum = 0x8C43;
 const DUMP_DIR = "zig-out/backend-compare";
 const DEVANAGARI_TEXT = "\xe0\xa4\xa8\xe0\xa4\xae\xe0\xa4\xb8\xe0\xa5\x8d\xe0\xa4\xa4\xe0\xa5\x87";
+const LINEAR_RESOLVE_SEED = [4]u8{ 34, 45, 59, 255 };
 
 const CompareCase = struct {
     name: []const u8,
@@ -93,6 +95,13 @@ fn drawOptions(subpixel_order: snail.SubpixelOrder) snail.DrawOptions {
             .encoding = .srgb,
         },
     };
+}
+
+fn linearResolveDrawOptions(subpixel_order: snail.SubpixelOrder) snail.DrawOptions {
+    var options = drawOptions(subpixel_order);
+    options.target.encoding = .srgb_pixels_on_linear_attachment;
+    options.target.resolve = .{ .linear = .{} };
+    return options;
 }
 
 fn ensureText(atlas: *snail.TextAtlas, style: snail.FontStyle, text: []const u8) !void {
@@ -253,13 +262,13 @@ fn uploadSceneResources(
     return renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set);
 }
 
-fn clearPixels(pixels: []u8) void {
+fn clearPixelsTo(pixels: []u8, color: [4]u8) void {
     var i: usize = 0;
     while (i < pixels.len) : (i += 4) {
-        pixels[i + 0] = 0;
-        pixels[i + 1] = 0;
-        pixels[i + 2] = 0;
-        pixels[i + 3] = 255;
+        pixels[i + 0] = color[0];
+        pixels[i + 1] = color[1];
+        pixels[i + 2] = color[2];
+        pixels[i + 3] = color[3];
     }
 }
 
@@ -268,9 +277,18 @@ fn renderCpu(
     scene: *const snail.Scene,
     options: snail.DrawOptions,
 ) ![]u8 {
+    return renderCpuSeeded(allocator, scene, options, .{ 0, 0, 0, 255 });
+}
+
+fn renderCpuSeeded(
+    allocator: std.mem.Allocator,
+    scene: *const snail.Scene,
+    options: snail.DrawOptions,
+    seed: [4]u8,
+) ![]u8 {
     const pixels = try allocator.alloc(u8, WIDTH * HEIGHT * 4);
     errdefer allocator.free(pixels);
-    clearPixels(pixels);
+    clearPixelsTo(pixels, seed);
 
     var cpu = snail.CpuRenderer.init(pixels.ptr, WIDTH, HEIGHT, WIDTH * 4);
     var renderer = cpu.asRenderer();
@@ -282,13 +300,13 @@ fn renderCpu(
     return pixels;
 }
 
-fn initFramebuffer() !struct { fbo: gl.GLuint, texture: gl.GLuint } {
+fn initFramebuffer(internal_format: gl.GLenum) !struct { fbo: gl.GLuint, texture: gl.GLuint } {
     var fbo: gl.GLuint = 0;
     var tex: gl.GLuint = 0;
     gl.glGenFramebuffers(1, &fbo);
     gl.glGenTextures(1, &tex);
     gl.glBindTexture(gl.GL_TEXTURE_2D, tex);
-    gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, GL_SRGB8_ALPHA8, WIDTH, HEIGHT, 0, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, null);
+    gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, @intCast(internal_format), WIDTH, HEIGHT, 0, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, null);
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR);
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR);
     gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, fbo);
@@ -297,6 +315,16 @@ fn initFramebuffer() !struct { fbo: gl.GLuint, texture: gl.GLuint } {
     gl.glViewport(0, 0, WIDTH, HEIGHT);
     gl.glDisable(gl.GL_DITHER);
     return .{ .fbo = fbo, .texture = tex };
+}
+
+fn clearGlTo(color: [4]u8) void {
+    gl.glClearColor(
+        @as(f32, @floatFromInt(color[0])) / 255.0,
+        @as(f32, @floatFromInt(color[1])) / 255.0,
+        @as(f32, @floatFromInt(color[2])) / 255.0,
+        @as(f32, @floatFromInt(color[3])) / 255.0,
+    );
+    gl.glClear(gl.GL_COLOR_BUFFER_BIT);
 }
 
 fn flipRowsInPlace(pixels: []u8) void {
@@ -318,10 +346,20 @@ fn renderGl(
     scene: *const snail.Scene,
     options: snail.DrawOptions,
 ) ![]u8 {
+    return renderGlSeeded(allocator, renderer, fbo, scene, options, .{ 0, 0, 0, 255 });
+}
+
+fn renderGlSeeded(
+    allocator: std.mem.Allocator,
+    renderer: *snail.Renderer,
+    fbo: gl.GLuint,
+    scene: *const snail.Scene,
+    options: snail.DrawOptions,
+    seed: [4]u8,
+) ![]u8 {
     gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, fbo);
     gl.glViewport(0, 0, WIDTH, HEIGHT);
-    gl.glClearColor(0.0, 0.0, 0.0, 1.0);
-    gl.glClear(gl.GL_COLOR_BUFFER_BIT);
+    clearGlTo(seed);
 
     var prepared = try uploadSceneResources(allocator, renderer, scene);
     defer prepared.deinit();
@@ -490,10 +528,17 @@ pub fn main() !void {
 
     var gl_ctx = try egl_offscreen.Context.init(WIDTH, HEIGHT);
     defer gl_ctx.deinit();
-    const framebuffer = try initFramebuffer();
+    const framebuffer = try initFramebuffer(GL_SRGB8_ALPHA8);
     defer {
         var fbo = framebuffer.fbo;
         var texture = framebuffer.texture;
+        gl.glDeleteFramebuffers(1, &fbo);
+        gl.glDeleteTextures(1, &texture);
+    }
+    const linear_framebuffer = try initFramebuffer(GL_RGBA8);
+    defer {
+        var fbo = linear_framebuffer.fbo;
+        var texture = linear_framebuffer.texture;
         gl.glDeleteFramebuffers(1, &fbo);
         gl.glDeleteTextures(1, &texture);
     }
@@ -558,6 +603,19 @@ pub fn main() !void {
             }
         } else if (!case.requires_dual_source) {
             std.debug.print("{s}: Vulkan disabled (`zig build backend-compare -Dvulkan=false`)\n", .{case.name});
+        }
+
+        if (!case.requires_dual_source or gl_supports_lcd) {
+            const linear_case_name = try std.fmt.allocPrint(allocator, "{s}-linear-resolve", .{case.name});
+            defer allocator.free(linear_case_name);
+            const linear_options = linearResolveDrawOptions(case.subpixel_order);
+            const cpu_linear_pixels = try renderCpuSeeded(allocator, &scene_bundle.scene, linear_options, LINEAR_RESOLVE_SEED);
+            defer allocator.free(cpu_linear_pixels);
+            const gl_linear_pixels = try renderGlSeeded(allocator, &gl_renderer, linear_framebuffer.fbo, &scene_bundle.scene, linear_options, LINEAR_RESOLVE_SEED);
+            defer allocator.free(gl_linear_pixels);
+            checkBackendAgainstCpu(allocator, linear_case_name, gl_renderer_state.backendName(), "gl", cpu_linear_pixels, gl_linear_pixels) catch {
+                any_failure = true;
+            };
         }
     }
     if (any_failure) return error.BackendPixelMismatch;

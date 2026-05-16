@@ -48,22 +48,20 @@ All color parameters are **sRGB, straight (unpremultiplied) alpha**, as `[4]f32`
 
 **Gradients** interpolate in sRGB space, which gives perceptually smooth results for UI use. `LinearGradient` and `RadialGradient` provide extend modes for clamp, repeat, and reflect behavior.
 
-**Blending** uses premultiplied alpha. Shaders decode sRGB inputs to linear before applying coverage. On GL/Vulkan sRGB framebuffers, fixed-function framebuffer encoding handles linear->sRGB storage and gamma-correct blending. On linear framebuffers or CPU buffers, `ResolveTarget.encoding` states what the framebuffer accepts and what final pixel bytes the consumer expects.
+**Blending** uses premultiplied alpha. Shaders decode sRGB inputs to linear before applying coverage. On GL/Vulkan sRGB attachments, fixed-function attachment encoding handles linear->sRGB storage and gamma-correct blending. On linear attachments or CPU buffers, `ResolveTarget.encoding` states what the attachment accepts and what final pixel bytes the consumer expects.
 
 **Output encoding.** `ResolveTarget.encoding` is required on every draw:
 
-- `TargetEncoding.srgb`: normal GL/Vulkan `_SRGB` framebuffer or swapchain image; the framebuffer does the final encode.
+- `TargetEncoding.srgb`: normal GL/Vulkan `_SRGB` attachment or swapchain image; the attachment does the final encode.
 - `TargetEncoding.linear`: linear UNORM/float targets or CPU buffers whose bytes should stay linear.
-- `TargetEncoding.srgb_pixels_on_linear_framebuffer`: linear-format storage, including CPU byte buffers, whose consumer expects sRGB bytes. With the default direct resolve strategy, fixed-function blending happens in storage space; this is a compatibility path for targets that cannot be tagged as sRGB, not a gamma-correct composition path.
+- `TargetEncoding.srgb_pixels_on_linear_attachment`: linear-format storage, including CPU byte buffers, whose consumer expects sRGB bytes. With the default direct resolve, fixed-function blending happens in storage space; this is a compatibility path for targets that cannot be tagged as sRGB, not a gamma-correct composition path.
 
-`ResolveTarget.resolve_strategy` selects how Snail resolves into the target:
+`ResolveTarget.resolve` selects how Snail resolves into the target:
 
-- `ResolveStrategy.direct`: draw straight into the target. This is the default.
-- `ResolveStrategy.linear_intermediate`: valid with `TargetEncoding.srgb_pixels_on_linear_framebuffer`. Snail renders its own content into a linear intermediate, then encodes that result into the linear-format target as sRGB pixels. This keeps overlapping Snail draws linear-correct on GL and CPU. Vulkan currently reports `error.UnsupportedResolveStrategy` for this mode because its renderer records inside a caller-owned render pass.
+- `.direct`: draw straight into the target. This is the default.
+- `.linear`: valid with `TargetEncoding.srgb_pixels_on_linear_attachment`. Snail resolves through a linear intermediate, then encodes the result into the linear-format target as sRGB pixels. `LinearResolve.backdrop` chooses whether to seed from the target, a clear color, transparent black, or unspecified contents; `LinearResolve.region` can restrict the resolve to a pixel rectangle; `LinearResolve.intermediate_format` selects RGBA16F or RGBA32F. GL supports the full contract, CPU uses the equivalent linear decode/blend/encode path, and Vulkan currently reports `error.UnsupportedResolve` because its renderer records inside a caller-owned render pass.
 
-When `linear_intermediate` composites over pre-existing sRGB bytes in a linear-format target, only the Snail-internal composition is guaranteed linear-correct unless the caller first seeds the intermediate from the destination or includes the backdrop in the Snail draw.
-
-The CPU renderer has no format-level encoder: it writes RGBA8 bytes according to `encoding.pixels`. It uses an exact 256-entry sRGB->linear LUT for u8 texels and the IEC 61966-2-1 formula directly for linear->sRGB output, with round-to-nearest rounding.
+The CPU renderer has no format-level encoder: it writes RGBA8 bytes according to `encoding.stored_pixels`. It uses an exact 256-entry sRGB->linear LUT for u8 texels and the IEC 61966-2-1 formula directly for linear->sRGB output, with round-to-nearest rounding.
 
 **Coverage transfer.** `ResolveTarget.coverage_transfer` optionally remaps analytic coverage before blending. The default is identity; `CoverageTransfer.power(exponent)` exposes explicit display tuning when a target benefits from slightly stronger or lighter antialiasing.
 
@@ -337,9 +335,12 @@ SnailDrawOptions draw_options = {
         .is_final_composite = true,
         .opaque_backdrop = true,
         .will_resample = false,
-        .framebuffer_encoding = SNAIL_COLOR_ENCODING_SRGB,
-        .pixel_encoding = SNAIL_COLOR_ENCODING_SRGB,
-        .resolve_strategy = SNAIL_RESOLVE_DIRECT,
+        .attachment_encoding = SNAIL_COLOR_ENCODING_SRGB,
+        .stored_pixel_encoding = SNAIL_COLOR_ENCODING_SRGB,
+        .resolve_kind = SNAIL_RESOLVE_DIRECT,
+        .resolve_backdrop = SNAIL_RESOLVE_BACKDROP_TARGET,
+        .resolve_region = SNAIL_RESOLVE_REGION_FULL_TARGET,
+        .resolve_intermediate_format = SNAIL_INTERMEDIATE_FORMAT_RGBA16F,
         .coverage_exponent = 1.0f,
     },
 };
@@ -391,10 +392,15 @@ snail_text_atlas_deinit(atlas);
 | `PreparedResources` | Backend realization for one renderer/context. |
 | `DrawList` | Caller-buffered draw records. |
 | `PreparedScene` | Optional owned draw-record cache for static scenes. |
-| `TargetEncoding` | Pair of color encodings for framebuffer interpretation and final stored pixels. Common presets are `.srgb`, `.linear`, and `.srgb_pixels_on_linear_framebuffer`. |
-| `ResolveStrategy` | Per-target resolve path: `.direct` or `.linear_intermediate` for gamma-correct Snail composition into sRGB pixels on a linear framebuffer. |
+| `TargetEncoding` | Pair of color encodings for attachment interpretation and final stored pixels. Common presets are `.srgb`, `.linear`, and `.srgb_pixels_on_linear_attachment`. |
+| `Resolve` | Per-target resolve path: `.direct` or `.linear` for gamma-correct Snail composition into sRGB pixels on a linear attachment. |
+| `LinearResolve` | Options for `.linear`: `backdrop`, `region`, and `intermediate_format`. |
+| `ResolveBackdrop` | Backdrop contract for a linear resolve: `.target`, `.clear`, `.transparent`, or `.dont_care`. |
+| `ResolveRegion` | Full-target or pixel-rectangle bounds for a resolve. |
+| `PixelRect` | Integer pixel rectangle `{ .x, .y, .w, .h }` used by `ResolveRegion.pixel_rect`. |
+| `IntermediateFormat` | GL linear intermediate precision: `.rgba16f` or `.rgba32f`. |
 | `CoverageTransfer` | Optional analytic coverage remap. `.identity` is the default; `.power(exponent)` is explicit display tuning. |
-| `ResolveTarget` | Final target metadata: pixel size, subpixel order, fill rule, composite safety flags, required `encoding`, optional `resolve_strategy`, and optional `coverage_transfer`. |
+| `ResolveTarget` | Final target metadata: pixel size, subpixel order, fill rule, composite safety flags, required `encoding`, explicit `resolve`, and optional `coverage_transfer`. |
 | `GlRenderer`, `VulkanRenderer`, `CpuRenderer` | First-class backend renderers. |
 | `Renderer` | Type-erased convenience wrapper around a backend renderer. |
 | `Rect` | `{ x, y, w, h }` rectangle. |

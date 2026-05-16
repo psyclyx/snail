@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Replaced the resolve-strategy enum with an explicit `Resolve` contract on
+  `ResolveTarget`: `.direct` draws into the attachment, while `.linear` carries
+  `LinearResolve.backdrop`, `LinearResolve.region`, and
+  `LinearResolve.intermediate_format`.
+- Renamed `TargetEncoding.framebuffer` / `pixels` to `attachment` /
+  `stored_pixels`, and renamed the compatibility preset to
+  `TargetEncoding.srgb_pixels_on_linear_attachment`.
+- The C API now mirrors the resolve contract with `resolve_kind`,
+  `resolve_backdrop`, `resolve_region`, `resolve_intermediate_format`, and
+  `attachment_encoding` / `stored_pixel_encoding` fields.
+
+### Fixed
+
+- GL `.linear` resolves can now seed their linear intermediate from the caller's
+  existing sRGB pixels before drawing Snail content, then overwrite the target
+  with one final sRGB encode pass. This keeps Snail composition gamma-correct
+  over pre-existing contents in linear-format attachments rather than blending
+  encoded edge pixels in storage space.
+- GL and CPU linear resolves now support explicit target, clear, transparent,
+  and don't-care backdrops plus full-target or pixel-rect resolve regions. GL
+  can use RGBA16F or RGBA32F intermediates; CPU follows the same contract in its
+  RGBA8 buffer. Vulkan still reports `error.UnsupportedResolve` for `.linear`.
+
 ## 0.8.0 - 2026-05-15
 
 ### Added

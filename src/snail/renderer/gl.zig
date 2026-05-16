@@ -10,7 +10,10 @@ const Mat4 = vec.Mat4;
 const snail_mod = @import("../root.zig");
 const SubpixelOrder = @import("subpixel_order.zig").SubpixelOrder;
 const TargetEncoding = snail_mod.TargetEncoding;
-const ResolveStrategy = snail_mod.ResolveStrategy;
+const Resolve = snail_mod.Resolve;
+const LinearResolve = snail_mod.LinearResolve;
+const PixelRect = snail_mod.PixelRect;
+const IntermediateFormat = snail_mod.IntermediateFormat;
 const CoverageTransfer = snail_mod.CoverageTransfer;
 
 // ── Backend selection ──
@@ -699,12 +702,14 @@ pub const PreparedResources = struct {
 
 // ── GlTextState ──
 
-pub const LinearIntermediateRestore = struct {
+pub const LinearResolveRestore = struct {
     draw_fbo: gl.GLint = 0,
     read_fbo: gl.GLint = 0,
     viewport: [4]gl.GLint = .{ 0, 0, 0, 0 },
+    resolve_rect: PixelRect = .{},
     depth_test: bool = false,
     scissor_test: bool = false,
+    blend: bool = false,
 };
 
 pub const GlTextState = struct {
@@ -716,15 +721,19 @@ pub const GlTextState = struct {
     subpixel_order: SubpixelOrder = .none,
     fill_rule: FillRule = .non_zero,
     target_encoding: TargetEncoding = .srgb,
-    resolve_strategy: ResolveStrategy = .direct,
+    resolve: Resolve = .{ .direct = .{} },
     coverage_transfer: CoverageTransfer = .identity,
     linear_resolve_program: gl.GLuint = 0,
     linear_resolve_tex_loc: gl.GLint = -1,
+    linear_resolve_dst_tex_loc: gl.GLint = -1,
+    linear_resolve_mode_loc: gl.GLint = -1,
     linear_resolve_vao: gl.GLuint = 0,
     linear_resolve_fbo: gl.GLuint = 0,
     linear_resolve_tex: gl.GLuint = 0,
+    linear_resolve_dst_tex: gl.GLuint = 0,
     linear_resolve_width: u32 = 0,
     linear_resolve_height: u32 = 0,
+    linear_resolve_format: IntermediateFormat = .rgba16f,
     vao: gl.GLuint = 0,
     vbo: gl.GLuint = 0,
     ebo: gl.GLuint = 0,
@@ -750,6 +759,8 @@ pub const GlTextState = struct {
         }
         self.linear_resolve_program = try linkProgram("linear-resolve", linear_resolve_vertex_shader, linear_resolve_fragment_shader, false);
         self.linear_resolve_tex_loc = gl.glGetUniformLocation(self.linear_resolve_program, "u_linear_tex");
+        self.linear_resolve_dst_tex_loc = gl.glGetUniformLocation(self.linear_resolve_program, "u_dst_tex");
+        self.linear_resolve_mode_loc = gl.glGetUniformLocation(self.linear_resolve_program, "u_mode");
         gl.glGenVertexArrays(1, &self.linear_resolve_vao);
 
         switch (self.backend) {
@@ -835,6 +846,7 @@ pub const GlTextState = struct {
         if (self.linear_resolve_vao != 0) gl.glDeleteVertexArrays(1, &self.linear_resolve_vao);
         if (self.linear_resolve_fbo != 0) gl.glDeleteFramebuffers(1, &self.linear_resolve_fbo);
         if (self.linear_resolve_tex != 0) gl.glDeleteTextures(1, &self.linear_resolve_tex);
+        if (self.linear_resolve_dst_tex != 0) gl.glDeleteTextures(1, &self.linear_resolve_dst_tex);
         if (self.vao != 0) gl.glDeleteVertexArrays(1, &self.vao);
         if (self.vbo != 0) gl.glDeleteBuffers(1, &self.vbo);
         if (self.ebo != 0) gl.glDeleteBuffers(1, &self.ebo);
@@ -847,41 +859,57 @@ pub const GlTextState = struct {
         };
     }
 
-    pub fn beginLinearIntermediate(self: *GlTextState, width: u32, height: u32) !LinearIntermediateRestore {
+    pub fn beginLinearResolve(self: *GlTextState, width: u32, height: u32, resolve: LinearResolve) !LinearResolveRestore {
         if (width == 0 or height == 0) return error.InvalidResolveTarget;
-        try self.ensureLinearIntermediate(width, height);
+        try self.ensureLinearResolve(width, height, resolve.intermediate_format);
 
-        var restore: LinearIntermediateRestore = .{};
+        var restore: LinearResolveRestore = .{};
         gl.glGetIntegerv(gl.GL_DRAW_FRAMEBUFFER_BINDING, &restore.draw_fbo);
         gl.glGetIntegerv(gl.GL_READ_FRAMEBUFFER_BINDING, &restore.read_fbo);
         gl.glGetIntegerv(gl.GL_VIEWPORT, &restore.viewport);
+        restore.resolve_rect = resolve.region.rect(width, height);
         restore.depth_test = gl.glIsEnabled(gl.GL_DEPTH_TEST) == gl.GL_TRUE;
         restore.scissor_test = gl.glIsEnabled(gl.GL_SCISSOR_TEST) == gl.GL_TRUE;
+        restore.blend = gl.glIsEnabled(gl.GL_BLEND) == gl.GL_TRUE;
 
         gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, self.linear_resolve_fbo);
         gl.glViewport(0, 0, @intCast(width), @intCast(height));
         gl.glDisable(gl.GL_DEPTH_TEST);
-        gl.glDisable(gl.GL_SCISSOR_TEST);
-        const zero = [4]f32{ 0, 0, 0, 0 };
-        gl.glClearBufferfv(gl.GL_COLOR, 0, &zero);
+        self.setResolveScissor(restore.resolve_rect, 0, height);
+        gl.glDisable(gl.GL_BLEND);
+        switch (resolve.backdrop) {
+            .target => {
+                self.snapshotResolveDestination(restore, width, height);
+                self.drawLinearResolveTriangle(.seed_intermediate);
+            },
+            .clear => |color| {
+                const linear = linearPremultipliedBackdropColor(color);
+                gl.glClearBufferfv(gl.GL_COLOR, 0, &linear);
+            },
+            .transparent => {
+                const zero = [4]f32{ 0, 0, 0, 0 };
+                gl.glClearBufferfv(gl.GL_COLOR, 0, &zero);
+            },
+            .dont_care => {},
+        }
         return restore;
     }
 
-    pub fn endLinearIntermediate(self: *GlTextState, restore: LinearIntermediateRestore) void {
+    pub fn endLinearResolve(self: *GlTextState, restore: LinearResolveRestore) void {
         gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, @intCast(restore.draw_fbo));
         gl.glViewport(restore.viewport[0], restore.viewport[1], restore.viewport[2], restore.viewport[3]);
         gl.glDisable(gl.GL_DEPTH_TEST);
-        gl.glDisable(gl.GL_SCISSOR_TEST);
+        self.setResolveScissor(restore.resolve_rect, restore.viewport[1], @intCast(restore.viewport[3]));
 
-        gl.glEnable(gl.GL_BLEND);
+        gl.glDisable(gl.GL_BLEND);
+        self.drawLinearResolveTriangle(.encode_to_target);
+
+        if (restore.blend) {
+            gl.glEnable(gl.GL_BLEND);
+        } else {
+            gl.glDisable(gl.GL_BLEND);
+        }
         gl.glBlendFuncSeparate(gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA, gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA);
-        gl.glUseProgram(self.linear_resolve_program);
-        gl.glBindVertexArray(self.linear_resolve_vao);
-        gl.glActiveTexture(gl.GL_TEXTURE0);
-        gl.glBindTexture(gl.GL_TEXTURE_2D, self.linear_resolve_tex);
-        if (self.linear_resolve_tex_loc >= 0) gl.glUniform1i(self.linear_resolve_tex_loc, 0);
-        gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3);
-
         if (restore.depth_test) {
             gl.glEnable(gl.GL_DEPTH_TEST);
         } else {
@@ -896,21 +924,91 @@ pub const GlTextState = struct {
         self.frame_begun = false;
     }
 
-    fn ensureLinearIntermediate(self: *GlTextState, width: u32, height: u32) !void {
+    const LinearResolvePass = enum(gl.GLint) {
+        seed_intermediate = 0,
+        encode_to_target = 1,
+    };
+
+    fn snapshotResolveDestination(self: *GlTextState, restore: LinearResolveRestore, width: u32, height: u32) void {
+        var prev_tex: gl.GLint = 0;
+        gl.glGetIntegerv(gl.GL_TEXTURE_BINDING_2D, &prev_tex);
+        defer gl.glBindTexture(gl.GL_TEXTURE_2D, @intCast(prev_tex));
+
+        const rect = restore.resolve_rect;
+        if (rect.w == 0 or rect.h == 0) return;
+        const y = glRectY(rect, height);
+        gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, @intCast(restore.draw_fbo));
+        gl.glBindTexture(gl.GL_TEXTURE_2D, self.linear_resolve_dst_tex);
+        gl.glCopyTexSubImage2D(
+            gl.GL_TEXTURE_2D,
+            0,
+            rect.x,
+            y,
+            restore.viewport[0] + rect.x,
+            restore.viewport[1] + y,
+            @intCast(@min(rect.w, width)),
+            @intCast(@min(rect.h, height)),
+        );
+    }
+
+    fn drawLinearResolveTriangle(self: *GlTextState, pass: LinearResolvePass) void {
+        gl.glUseProgram(self.linear_resolve_program);
+        gl.glBindVertexArray(self.linear_resolve_vao);
+        gl.glActiveTexture(gl.GL_TEXTURE0);
+        gl.glBindTexture(gl.GL_TEXTURE_2D, if (pass == .seed_intermediate) 0 else self.linear_resolve_tex);
+        gl.glActiveTexture(gl.GL_TEXTURE1);
+        gl.glBindTexture(gl.GL_TEXTURE_2D, self.linear_resolve_dst_tex);
+        if (self.linear_resolve_tex_loc >= 0) gl.glUniform1i(self.linear_resolve_tex_loc, 0);
+        if (self.linear_resolve_dst_tex_loc >= 0) gl.glUniform1i(self.linear_resolve_dst_tex_loc, 1);
+        if (self.linear_resolve_mode_loc >= 0) gl.glUniform1i(self.linear_resolve_mode_loc, @intFromEnum(pass));
+        gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3);
+    }
+
+    fn setResolveScissor(_: *GlTextState, rect: PixelRect, viewport_y: gl.GLint, viewport_height: u32) void {
+        const y = viewport_y + glRectY(rect, viewport_height);
+        gl.glEnable(gl.GL_SCISSOR_TEST);
+        gl.glScissor(rect.x, y, @intCast(rect.w), @intCast(rect.h));
+    }
+
+    fn glRectY(rect: PixelRect, height: u32) gl.GLint {
+        return @intCast(@as(i32, @intCast(height)) - rect.y - @as(i32, @intCast(rect.h)));
+    }
+
+    fn srgbFloatToLinear(v: f32) f32 {
+        const c = std.math.clamp(v, 0.0, 1.0);
+        return if (c <= 0.04045) c / 12.92 else std.math.pow(f32, (c + 0.055) / 1.055, 2.4);
+    }
+
+    fn linearPremultipliedBackdropColor(color_srgb: [4]f32) [4]f32 {
+        const alpha = std.math.clamp(color_srgb[3], 0.0, 1.0);
+        return .{
+            srgbFloatToLinear(color_srgb[0]) * alpha,
+            srgbFloatToLinear(color_srgb[1]) * alpha,
+            srgbFloatToLinear(color_srgb[2]) * alpha,
+            alpha,
+        };
+    }
+
+    fn ensureLinearResolve(self: *GlTextState, width: u32, height: u32, format: IntermediateFormat) !void {
         if (self.linear_resolve_fbo != 0 and
             self.linear_resolve_tex != 0 and
+            self.linear_resolve_dst_tex != 0 and
             self.linear_resolve_width == width and
-            self.linear_resolve_height == height)
+            self.linear_resolve_height == height and
+            self.linear_resolve_format == format)
         {
             return;
         }
 
         if (self.linear_resolve_fbo != 0) gl.glDeleteFramebuffers(1, &self.linear_resolve_fbo);
         if (self.linear_resolve_tex != 0) gl.glDeleteTextures(1, &self.linear_resolve_tex);
+        if (self.linear_resolve_dst_tex != 0) gl.glDeleteTextures(1, &self.linear_resolve_dst_tex);
         self.linear_resolve_fbo = 0;
         self.linear_resolve_tex = 0;
+        self.linear_resolve_dst_tex = 0;
         self.linear_resolve_width = 0;
         self.linear_resolve_height = 0;
+        self.linear_resolve_format = format;
 
         var prev_draw: gl.GLint = 0;
         var prev_read: gl.GLint = 0;
@@ -926,16 +1024,42 @@ pub const GlTextState = struct {
 
         gl.glGenFramebuffers(1, &self.linear_resolve_fbo);
         gl.glGenTextures(1, &self.linear_resolve_tex);
+        gl.glGenTextures(1, &self.linear_resolve_dst_tex);
         gl.glBindTexture(gl.GL_TEXTURE_2D, self.linear_resolve_tex);
+        const internal_format: gl.GLint = switch (format) {
+            .rgba16f => gl.GL_RGBA16F,
+            .rgba32f => gl.GL_RGBA32F,
+        };
+        const pixel_type: gl.GLenum = switch (format) {
+            .rgba16f => gl.GL_HALF_FLOAT,
+            .rgba32f => gl.GL_FLOAT,
+        };
         gl.glTexImage2D(
             gl.GL_TEXTURE_2D,
             0,
-            gl.GL_RGBA16F,
+            internal_format,
             @intCast(width),
             @intCast(height),
             0,
             gl.GL_RGBA,
-            gl.GL_HALF_FLOAT,
+            pixel_type,
+            null,
+        );
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST);
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST);
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE);
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE);
+
+        gl.glBindTexture(gl.GL_TEXTURE_2D, self.linear_resolve_dst_tex);
+        gl.glTexImage2D(
+            gl.GL_TEXTURE_2D,
+            0,
+            internal_format,
+            @intCast(width),
+            @intCast(height),
+            0,
+            gl.GL_RGBA,
+            pixel_type,
             null,
         );
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST);
@@ -1069,12 +1193,12 @@ pub const GlTextState = struct {
         return self.target_encoding;
     }
 
-    pub fn setResolveStrategy(self: *GlTextState, strategy: ResolveStrategy) void {
-        self.resolve_strategy = strategy;
+    pub fn setResolve(self: *GlTextState, resolve: Resolve) void {
+        self.resolve = resolve;
     }
 
-    pub fn getResolveStrategy(self: *const GlTextState) ResolveStrategy {
-        return self.resolve_strategy;
+    pub fn getResolve(self: *const GlTextState) Resolve {
+        return self.resolve;
     }
 
     pub fn setCoverageTransfer(self: *GlTextState, transfer: CoverageTransfer) void {
@@ -1281,10 +1405,27 @@ const linear_resolve_fragment_shader: [:0]const u8 =
     \\#version 330 core
     \\in vec2 v_uv;
     \\uniform sampler2D u_linear_tex;
+    \\uniform sampler2D u_dst_tex;
+    \\uniform int u_mode;
     \\out vec4 frag_color;
+    \\
+    \\float srgbDecode(float c) {
+    \\    return (c <= 0.04045) ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);
+    \\}
     \\
     \\float srgbEncode(float c) {
     \\    return (c <= 0.0031308) ? c * 12.92 : 1.055 * pow(c, 1.0 / 2.4) - 0.055;
+    \\}
+    \\
+    \\vec4 srgbDecodePremultiplied(vec4 premul) {
+    \\    if (premul.a <= 0.0) return vec4(0.0);
+    \\    float inv_a = 1.0 / premul.a;
+    \\    return vec4(
+    \\        srgbDecode(clamp(premul.r * inv_a, 0.0, 1.0)) * premul.a,
+    \\        srgbDecode(clamp(premul.g * inv_a, 0.0, 1.0)) * premul.a,
+    \\        srgbDecode(clamp(premul.b * inv_a, 0.0, 1.0)) * premul.a,
+    \\        premul.a
+    \\    );
     \\}
     \\
     \\vec4 srgbEncodePremultiplied(vec4 premul) {
@@ -1299,7 +1440,11 @@ const linear_resolve_fragment_shader: [:0]const u8 =
     \\}
     \\
     \\void main() {
-    \\    frag_color = srgbEncodePremultiplied(texture(u_linear_tex, v_uv));
+    \\    if (u_mode == 0) {
+    \\        frag_color = srgbDecodePremultiplied(texture(u_dst_tex, v_uv));
+    \\    } else {
+    \\        frag_color = srgbEncodePremultiplied(texture(u_linear_tex, v_uv));
+    \\    }
     \\}
 ;
 

@@ -36,16 +36,16 @@ fn toSnailEncoding(encoding: presentation.ColorEncoding) snail.ColorEncoding {
 
 fn displayTargetEncoding(info: presentation.Info) snail.TargetEncoding {
     return .{
-        .framebuffer = toSnailEncoding(info.framebuffer_encoding),
-        .pixels = .srgb,
+        .attachment = toSnailEncoding(info.framebuffer_encoding),
+        .stored_pixels = .srgb,
     };
 }
 
-fn displayResolveStrategy(kind: renderer_driver.Kind, encoding: snail.TargetEncoding) snail.ResolveStrategy {
-    if (encoding.framebuffer == .linear and encoding.pixels == .srgb and kind != .vulkan) {
-        return .linear_intermediate;
+fn displayResolve(kind: renderer_driver.Kind, encoding: snail.TargetEncoding) snail.Resolve {
+    if (encoding.attachment == .linear and encoding.stored_pixels == .srgb and kind != .vulkan) {
+        return .{ .linear = .{} };
     }
-    return .direct;
+    return .{ .direct = .{} };
 }
 
 fn cycleSubpixelOrder(o: snail.SubpixelOrder) snail.SubpixelOrder {
@@ -201,7 +201,7 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
         const size = present.logical_size;
         const fb_size = present.framebuffer_size;
         const target_encoding = displayTargetEncoding(present);
-        const resolve_strategy = displayResolveStrategy(active.kind(), target_encoding);
+        const resolve = displayResolve(active.kind(), target_encoding);
         const w: f32 = @floatFromInt(size[0]);
         const h: f32 = @floatFromInt(size[1]);
         const viewport_w: f32 = @floatFromInt(fb_size[0]);
@@ -270,7 +270,7 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
                 .subpixel_order = current_order,
                 .will_resample = present.will_resample,
                 .encoding = target_encoding,
-                .resolve_strategy = resolve_strategy,
+                .resolve = resolve,
                 .coverage_transfer = snail.CoverageTransfer.power(0.9),
             },
         };

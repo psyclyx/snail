@@ -290,7 +290,7 @@ fn clearColorForTarget(color_srgb: [4]f32, encoding: snail.TargetEncoding) [4]f3
 }
 
 fn clearColorForStoredPixels(color_srgb: [4]f32, encoding: snail.TargetEncoding) [4]f32 {
-    return switch (encoding.pixels) {
+    return switch (encoding.stored_pixels) {
         .linear => .{ srgbToLinear(color_srgb[0]), srgbToLinear(color_srgb[1]), srgbToLinear(color_srgb[2]), color_srgb[3] },
         .srgb => color_srgb,
     };

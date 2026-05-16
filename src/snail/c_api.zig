@@ -210,9 +210,17 @@ pub const SnailResolveTarget = extern struct {
     is_final_composite: bool = true,
     opaque_backdrop: bool = true,
     will_resample: bool = false,
-    framebuffer_encoding: c_int = 0,
-    pixel_encoding: c_int = 0,
-    resolve_strategy: c_int = 0,
+    attachment_encoding: c_int = 0,
+    stored_pixel_encoding: c_int = 0,
+    resolve_kind: c_int = 0,
+    resolve_backdrop: c_int = 0,
+    resolve_clear_color: [4]f32 = .{ 0, 0, 0, 0 },
+    resolve_region: c_int = 0,
+    resolve_region_x: i32 = 0,
+    resolve_region_y: i32 = 0,
+    resolve_region_w: u32 = 0,
+    resolve_region_h: u32 = 0,
+    resolve_intermediate_format: c_int = 0,
     coverage_exponent: f32 = 1.0,
 };
 
@@ -545,10 +553,46 @@ fn toColorEncoding(v: c_int) !snail.ColorEncoding {
     };
 }
 
-fn toResolveStrategy(v: c_int) !snail.ResolveStrategy {
+fn toResolveBackdrop(kind: c_int, clear_color: [4]f32) !snail.ResolveBackdrop {
+    return switch (kind) {
+        0 => .target,
+        1 => .{ .clear = clear_color },
+        2 => .transparent,
+        3 => .dont_care,
+        else => error.InvalidEnum,
+    };
+}
+
+fn toResolveRegion(target: SnailResolveTarget) !snail.ResolveRegion {
+    return switch (target.resolve_region) {
+        0 => .full_target,
+        1 => .{ .pixel_rect = .{
+            .x = target.resolve_region_x,
+            .y = target.resolve_region_y,
+            .w = target.resolve_region_w,
+            .h = target.resolve_region_h,
+        } },
+        else => error.InvalidEnum,
+    };
+}
+
+fn toIntermediateFormat(v: c_int) !snail.IntermediateFormat {
     return switch (v) {
-        0 => .direct,
-        1 => .linear_intermediate,
+        0 => .rgba16f,
+        1 => .rgba32f,
+        else => error.InvalidEnum,
+    };
+}
+
+fn toResolve(target: SnailResolveTarget) !snail.Resolve {
+    const linear = snail.LinearResolve{
+        .backdrop = try toResolveBackdrop(target.resolve_backdrop, target.resolve_clear_color),
+        .region = try toResolveRegion(target),
+        .intermediate_format = try toIntermediateFormat(target.resolve_intermediate_format),
+    };
+    return switch (target.resolve_kind) {
+        0 => .{ .direct = .{} },
+        1 => .{ .linear = linear },
         else => error.InvalidEnum,
     };
 }
@@ -563,10 +607,10 @@ fn toResolveTarget(target: SnailResolveTarget) !snail.ResolveTarget {
         .opaque_backdrop = target.opaque_backdrop,
         .will_resample = target.will_resample,
         .encoding = .{
-            .framebuffer = try toColorEncoding(target.framebuffer_encoding),
-            .pixels = try toColorEncoding(target.pixel_encoding),
+            .attachment = try toColorEncoding(target.attachment_encoding),
+            .stored_pixels = try toColorEncoding(target.stored_pixel_encoding),
         },
-        .resolve_strategy = try toResolveStrategy(target.resolve_strategy),
+        .resolve = try toResolve(target),
         .coverage_transfer = .{ .exponent = target.coverage_exponent },
     };
 }

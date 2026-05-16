@@ -143,23 +143,26 @@ typedef struct {
     bool opaque_backdrop;
     bool will_resample;
     /* Explicit color encoding for this target.
-     * framebuffer_encoding describes how the current framebuffer/attachment
-     * interprets fragment outputs. Use SNAIL_COLOR_ENCODING_SRGB for GL/Vulkan
-     * sRGB formats and SNAIL_COLOR_ENCODING_LINEAR for linear UNORM/float
-     * targets and CPU byte buffers.
+     * attachment_encoding describes how the current attachment interprets
+     * fragment outputs.
      *
-     * pixel_encoding describes the encoding expected in the final stored
+     * stored_pixel_encoding describes the encoding expected in the final stored
      * pixels. For normal sRGB displays, both fields are
-     * SNAIL_COLOR_ENCODING_SRGB. For CPU byte buffers, framebuffer_encoding is
-     * SNAIL_COLOR_ENCODING_LINEAR and pixel_encoding selects linear or sRGB
-     * bytes. */
-    int framebuffer_encoding;
-    int pixel_encoding;
-    /* Resolve strategy for this target. SNAIL_RESOLVE_LINEAR_INTERMEDIATE is
-     * valid for linear framebuffers whose stored pixels are interpreted as
-     * sRGB; Snail blends its own draws in a linear intermediate, then encodes
-     * into the target. */
-    int resolve_strategy;
+     * SNAIL_COLOR_ENCODING_SRGB. */
+    int attachment_encoding;
+    int stored_pixel_encoding;
+    /* Explicit resolve contract. SNAIL_RESOLVE_LINEAR resolves through a
+     * linear intermediate using the selected backdrop, region, and intermediate
+     * format. */
+    int resolve_kind;
+    int resolve_backdrop;
+    float resolve_clear_color[4];
+    int resolve_region;
+    int resolve_region_x;
+    int resolve_region_y;
+    uint32_t resolve_region_w;
+    uint32_t resolve_region_h;
+    int resolve_intermediate_format;
     /* Exponent applied to analytic coverage after edge evaluation.
      * 1.0 is identity; values below 1.0 strengthen antialiased edges and
      * values above 1.0 lighten them. */
@@ -194,7 +197,18 @@ typedef uint64_t SnailResourceKey;
 #define SNAIL_COLOR_ENCODING_SRGB 1
 
 #define SNAIL_RESOLVE_DIRECT 0
-#define SNAIL_RESOLVE_LINEAR_INTERMEDIATE 1
+#define SNAIL_RESOLVE_LINEAR 1
+
+#define SNAIL_RESOLVE_BACKDROP_TARGET 0
+#define SNAIL_RESOLVE_BACKDROP_CLEAR 1
+#define SNAIL_RESOLVE_BACKDROP_TRANSPARENT 2
+#define SNAIL_RESOLVE_BACKDROP_DONT_CARE 3
+
+#define SNAIL_RESOLVE_REGION_FULL_TARGET 0
+#define SNAIL_RESOLVE_REGION_PIXEL_RECT 1
+
+#define SNAIL_INTERMEDIATE_FORMAT_RGBA16F 0
+#define SNAIL_INTERMEDIATE_FORMAT_RGBA32F 1
 
 #define SNAIL_EXTEND_CLAMP 0
 #define SNAIL_EXTEND_REPEAT 1

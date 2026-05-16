@@ -3748,34 +3748,100 @@ pub const ColorEncoding = enum(c_int) {
     srgb = 1,
 };
 
-pub const ResolveStrategy = enum(c_int) {
-    /// Draw directly into the caller's target using `TargetEncoding` to decide
-    /// shader/CPU output encoding.
-    direct = 0,
-    /// Draw Snail content into a linear intermediate, then encode the
-    /// intermediate to sRGB pixels in the caller's linear-format target.
-    linear_intermediate = 1,
+pub const PixelRect = struct {
+    x: i32 = 0,
+    y: i32 = 0,
+    w: u32 = 0,
+    h: u32 = 0,
+
+    pub fn full(width: u32, height: u32) PixelRect {
+        return .{ .x = 0, .y = 0, .w = width, .h = height };
+    }
+
+    pub fn clipped(self: PixelRect, width: u32, height: u32) PixelRect {
+        const x0 = @max(@as(i64, self.x), 0);
+        const y0 = @max(@as(i64, self.y), 0);
+        const x1 = @min(@as(i64, self.x) + @as(i64, self.w), @as(i64, width));
+        const y1 = @min(@as(i64, self.y) + @as(i64, self.h), @as(i64, height));
+        if (x0 >= x1 or y0 >= y1) return .{};
+        return .{
+            .x = @intCast(x0),
+            .y = @intCast(y0),
+            .w = @intCast(x1 - x0),
+            .h = @intCast(y1 - y0),
+        };
+    }
+};
+
+pub const ResolveRegion = union(enum) {
+    full_target,
+    pixel_rect: PixelRect,
+
+    pub fn rect(self: ResolveRegion, width: u32, height: u32) PixelRect {
+        return switch (self) {
+            .full_target => PixelRect.full(width, height),
+            .pixel_rect => |r| r.clipped(width, height),
+        };
+    }
+};
+
+pub const ResolveBackdrop = union(enum) {
+    /// Decode the current target contents into the linear intermediate before
+    /// drawing Snail content. This is the fully general, most expensive path.
+    target,
+    /// Seed the intermediate with an sRGB straight-alpha color.
+    clear: [4]f32,
+    /// Seed the intermediate with transparent black.
+    transparent,
+    /// Leave the intermediate contents unspecified. The caller promises Snail
+    /// fully covers the resolve region.
+    dont_care,
+};
+
+pub const IntermediateFormat = enum(c_int) {
+    rgba16f = 0,
+    rgba32f = 1,
+};
+
+pub const DirectResolve = struct {};
+
+pub const LinearResolve = struct {
+    backdrop: ResolveBackdrop = .target,
+    region: ResolveRegion = .full_target,
+    intermediate_format: IntermediateFormat = .rgba16f,
+};
+
+pub const Resolve = union(enum) {
+    direct: DirectResolve,
+    linear: LinearResolve,
+
+    pub fn isLinear(self: Resolve) bool {
+        return switch (self) {
+            .direct => false,
+            .linear => true,
+        };
+    }
 };
 
 pub const TargetEncoding = struct {
-    /// How the current framebuffer/attachment interprets color values written
-    /// by the fragment stage. Use `.srgb` for GL/Vulkan sRGB formats; `.linear`
-    /// for linear UNORM/float targets and CPU byte buffers.
-    framebuffer: ColorEncoding,
-    /// Encoding expected in the final stored pixels. On an sRGB framebuffer this
+    /// How the current attachment interprets color values written by the
+    /// fragment stage. Use `.srgb` for GL/Vulkan sRGB formats and `.linear` for
+    /// linear UNORM/float targets and CPU byte buffers.
+    attachment: ColorEncoding,
+    /// Encoding expected in the final stored pixels. On an sRGB attachment this
     /// should also be `.srgb`; the format encoder converts linear shader output.
-    pixels: ColorEncoding,
+    stored_pixels: ColorEncoding,
 
-    pub const linear = TargetEncoding{ .framebuffer = .linear, .pixels = .linear };
-    pub const srgb = TargetEncoding{ .framebuffer = .srgb, .pixels = .srgb };
+    pub const linear = TargetEncoding{ .attachment = .linear, .stored_pixels = .linear };
+    pub const srgb = TargetEncoding{ .attachment = .srgb, .stored_pixels = .srgb };
     /// Single-pass compatibility for targets whose storage is linear but whose
     /// consumer expects sRGB bytes. Fixed-function blending happens in storage
     /// space; use an explicit linear intermediate plus final encode pass when
     /// overlapping translucent draws need fully linear-correct composition.
-    pub const srgb_pixels_on_linear_framebuffer = TargetEncoding{ .framebuffer = .linear, .pixels = .srgb };
+    pub const srgb_pixels_on_linear_attachment = TargetEncoding{ .attachment = .linear, .stored_pixels = .srgb };
 
     pub fn shaderOutputEncoding(self: TargetEncoding) ColorEncoding {
-        return if (self.framebuffer == .srgb) .linear else self.pixels;
+        return if (self.attachment == .srgb) .linear else self.stored_pixels;
     }
 
     pub fn shaderEncodesSrgb(self: TargetEncoding) bool {
@@ -3783,7 +3849,7 @@ pub const TargetEncoding = struct {
     }
 
     pub fn cpuOutputSrgb(self: TargetEncoding) bool {
-        return self.pixels == .srgb;
+        return self.stored_pixels == .srgb;
     }
 };
 
@@ -3885,25 +3951,33 @@ pub const ResolveTarget = struct {
     opaque_backdrop: bool = true,
     will_resample: bool = false,
     /// Explicit color encoding for this target. No renderer-global format
-    /// state is consulted; each draw states the framebuffer encoding and the
+    /// state is consulted; each draw states the attachment encoding and the
     /// expected final pixel encoding.
     encoding: TargetEncoding,
-    /// How Snail resolves into this target. `direct` is the normal path.
-    /// `linear_intermediate` is valid for linear-format framebuffers whose
-    /// stored pixels are interpreted as sRGB; it keeps Snail-vs-Snail blending
-    /// linear-correct before the final encode.
-    resolve_strategy: ResolveStrategy = .direct,
+    /// How Snail resolves into this target. `.direct` draws straight into the
+    /// attachment. `.linear` resolves through a linear intermediate using an
+    /// explicit backdrop and region contract.
+    resolve: Resolve = .{ .direct = .{} },
     /// Optional, explicit transfer from analytically evaluated coverage to the
     /// coverage used for blending. This is a caller-controlled primitive for
     /// display tuning; renderers do not infer or remember it globally.
     coverage_transfer: CoverageTransfer = .identity,
 
-    pub fn usesLinearIntermediate(self: ResolveTarget) bool {
-        return self.resolve_strategy == .linear_intermediate;
+    pub fn usesLinearResolve(self: ResolveTarget) bool {
+        return self.resolve.isLinear();
     }
 
-    pub fn supportsLinearIntermediate(self: ResolveTarget) bool {
-        return self.encoding.framebuffer == .linear and self.encoding.pixels == .srgb;
+    pub fn supportsLinearResolve(self: ResolveTarget) bool {
+        return self.encoding.attachment == .linear and self.encoding.stored_pixels == .srgb;
+    }
+
+    pub fn resolveRect(self: ResolveTarget) PixelRect {
+        const width: u32 = @intFromFloat(@max(self.pixel_width, 0.0));
+        const height: u32 = @intFromFloat(@max(self.pixel_height, 0.0));
+        return switch (self.resolve) {
+            .direct => PixelRect.full(width, height),
+            .linear => |linear| linear.region.rect(width, height),
+        };
     }
 };
 
@@ -4007,11 +4081,16 @@ pub const ResourceStamp = struct {
     }
 };
 
+test "pixel rect clips to target bounds" {
+    try std.testing.expectEqual(PixelRect{ .x = 2, .y = 0, .w = 3, .h = 4 }, (PixelRect{ .x = 2, .y = -3, .w = 8, .h = 7 }).clipped(5, 4));
+    try std.testing.expectEqual(PixelRect{}, (PixelRect{ .x = 9, .y = 1, .w = 2, .h = 2 }).clipped(5, 4));
+}
+
 pub const TargetStamp = struct {
     pixel_size: [2]u32 = .{ 0, 0 },
     subpixel_order: SubpixelOrder = .none,
     encoding: TargetEncoding = .linear,
-    resolve_strategy: ResolveStrategy = .direct,
+    resolve: Resolve = .{ .direct = .{} },
     mvp_class: MvpClass = .projective,
 
     pub const MvpClass = enum(u8) {
@@ -4029,7 +4108,7 @@ pub const TargetStamp = struct {
             },
             .subpixel_order = effectiveSubpixelOrder(target),
             .encoding = target.encoding,
-            .resolve_strategy = target.resolve_strategy,
+            .resolve = target.resolve,
             .mvp_class = classifyMvp(mvp),
         };
     }
@@ -5327,8 +5406,8 @@ pub const Renderer = struct {
         getFillRule: *const fn (*anyopaque) FillRule,
         setTargetEncoding: *const fn (*anyopaque, TargetEncoding) void,
         getTargetEncoding: *const fn (*anyopaque) TargetEncoding,
-        setResolveStrategy: *const fn (*anyopaque, ResolveStrategy) void,
-        getResolveStrategy: *const fn (*anyopaque) ResolveStrategy,
+        setResolve: *const fn (*anyopaque, Resolve) void,
+        getResolve: *const fn (*anyopaque) Resolve,
         setCoverageTransfer: *const fn (*anyopaque, CoverageTransfer) void,
         getCoverageTransfer: *const fn (*anyopaque) CoverageTransfer,
         backendName: *const fn (*anyopaque) []const u8,
@@ -5410,11 +5489,11 @@ pub const Renderer = struct {
             fn getTargetEncodingFn(ptr: *anyopaque) TargetEncoding {
                 return constCast(ptr).getTargetEncoding();
             }
-            fn setResolveStrategyFn(ptr: *anyopaque, strategy: ResolveStrategy) void {
-                cast(ptr).setResolveStrategy(strategy);
+            fn setResolveFn(ptr: *anyopaque, next_resolve: Resolve) void {
+                cast(ptr).setResolve(next_resolve);
             }
-            fn getResolveStrategyFn(ptr: *anyopaque) ResolveStrategy {
-                return constCast(ptr).getResolveStrategy();
+            fn getResolveFn(ptr: *anyopaque) Resolve {
+                return constCast(ptr).getResolve();
             }
             fn setCoverageTransferFn(ptr: *anyopaque, transfer: CoverageTransfer) void {
                 cast(ptr).setCoverageTransfer(transfer);
@@ -5447,25 +5526,42 @@ pub const Renderer = struct {
             fn drawFn(renderer: *Renderer, prepared: *const PreparedResources, records: DrawRecords, options: DrawOptions) anyerror!void {
                 const backend_prepared = resolveBackendPrepared(prepared) orelse return error.MissingPreparedResource;
                 try renderer.validateRecords(prepared, records, options);
-                if (options.target.usesLinearIntermediate()) {
-                    if (!options.target.supportsLinearIntermediate()) return error.InvalidResolveStrategy;
-                    if (comptime build_options.enable_opengl and T == pipeline.GlTextState) {
-                        const width: u32 = @intFromFloat(@max(options.target.pixel_width, 0.0));
-                        const height: u32 = @intFromFloat(@max(options.target.pixel_height, 0.0));
-                        const gl_self = cast(renderer.ptr);
-                        const restore = try gl_self.beginLinearIntermediate(width, height);
-                        var inner_options = options;
-                        inner_options.target.encoding = .linear;
-                        inner_options.target.resolve_strategy = .direct;
-                        renderer.iterateRecords(records, inner_options, backend_prepared);
-                        gl_self.endLinearIntermediate(restore);
-                        renderer.setTargetEncoding(options.target.encoding);
-                        renderer.setResolveStrategy(options.target.resolve_strategy);
-                        return;
-                    }
-                    if (comptime build_options.enable_vulkan and T == vulkan_pipeline.VulkanPipeline) {
-                        return error.UnsupportedResolveStrategy;
-                    }
+                switch (options.target.resolve) {
+                    .direct => {},
+                    .linear => |linear| {
+                        if (!options.target.supportsLinearResolve()) return error.InvalidResolve;
+                        if (comptime build_options.enable_opengl and T == pipeline.GlTextState) {
+                            const width: u32 = @intFromFloat(@max(options.target.pixel_width, 0.0));
+                            const height: u32 = @intFromFloat(@max(options.target.pixel_height, 0.0));
+                            const gl_self = cast(renderer.ptr);
+                            const restore = try gl_self.beginLinearResolve(width, height, linear);
+                            var inner_options = options;
+                            inner_options.target.encoding = .linear;
+                            inner_options.target.resolve = .{ .direct = .{} };
+                            renderer.iterateRecords(records, inner_options, backend_prepared);
+                            gl_self.endLinearResolve(restore);
+                            renderer.setTargetEncoding(options.target.encoding);
+                            renderer.setResolve(options.target.resolve);
+                            return;
+                        }
+                        if (comptime build_options.enable_vulkan and T == vulkan_pipeline.VulkanPipeline) {
+                            return error.UnsupportedResolve;
+                        }
+                        if (comptime build_options.enable_cpu and T == CpuRenderer) {
+                            const cpu_self = cast(renderer.ptr);
+                            const restore = cpu_self.beginLinearResolve(options.target, linear);
+                            defer cpu_self.endLinearResolve(restore);
+                            if (cpu_self.thread_pool) |pool| {
+                                const span = cpu_self.row_clip_max - cpu_self.row_clip_min;
+                                if (span >= 2 * CpuRenderer.TILE_ROWS) {
+                                    cpu_self.dispatchTiledDraw(pool, backend_prepared, records, options);
+                                    return;
+                                }
+                            }
+                            renderer.iterateRecords(records, options, backend_prepared);
+                            return;
+                        }
+                    },
                 }
                 if (comptime build_options.enable_cpu and T == CpuRenderer) {
                     const cpu_self = cast(renderer.ptr);
@@ -5493,8 +5589,8 @@ pub const Renderer = struct {
             .getFillRule = &S.getFillRuleFn,
             .setTargetEncoding = &S.setTargetEncodingFn,
             .getTargetEncoding = &S.getTargetEncodingFn,
-            .setResolveStrategy = &S.setResolveStrategyFn,
-            .getResolveStrategy = &S.getResolveStrategyFn,
+            .setResolve = &S.setResolveFn,
+            .getResolve = &S.getResolveFn,
             .setCoverageTransfer = &S.setCoverageTransferFn,
             .getCoverageTransfer = &S.getCoverageTransferFn,
             .backendName = &S.backendNameFn,
@@ -5522,9 +5618,9 @@ pub const Renderer = struct {
             fn getTargetEncodingFn(_: *anyopaque) TargetEncoding {
                 return .srgb;
             }
-            fn setResolveStrategyFn(_: *anyopaque, _: ResolveStrategy) void {}
-            fn getResolveStrategyFn(_: *anyopaque) ResolveStrategy {
-                return .direct;
+            fn setResolveFn(_: *anyopaque, _: Resolve) void {}
+            fn getResolveFn(_: *anyopaque) Resolve {
+                return .{ .direct = .{} };
             }
             fn setCoverageTransferFn(_: *anyopaque, _: CoverageTransfer) void {}
             fn getCoverageTransferFn(_: *anyopaque) CoverageTransfer {
@@ -5551,8 +5647,8 @@ pub const Renderer = struct {
             .getFillRule = &S.getFillRuleFn,
             .setTargetEncoding = &S.setTargetEncodingFn,
             .getTargetEncoding = &S.getTargetEncodingFn,
-            .setResolveStrategy = &S.setResolveStrategyFn,
-            .getResolveStrategy = &S.getResolveStrategyFn,
+            .setResolve = &S.setResolveFn,
+            .getResolve = &S.getResolveFn,
             .setCoverageTransfer = &S.setCoverageTransferFn,
             .getCoverageTransfer = &S.getCoverageTransferFn,
             .backendName = &S.backendNameFn,
@@ -5630,7 +5726,7 @@ pub const Renderer = struct {
         self.setSubpixelOrder(effectiveSubpixelOrder(options.target));
         self.setFillRule(options.target.fill_rule);
         self.setTargetEncoding(options.target.encoding);
-        self.setResolveStrategy(options.target.resolve_strategy);
+        self.setResolve(options.target.resolve);
         self.setCoverageTransfer(options.target.coverage_transfer);
         self.beginFrame();
         for (records.segments) |segment| {
@@ -5684,12 +5780,12 @@ pub const Renderer = struct {
         return self.vtable.getTargetEncoding(@constCast(self.ptr));
     }
 
-    pub fn setResolveStrategy(self: *Renderer, strategy: ResolveStrategy) void {
-        self.vtable.setResolveStrategy(self.ptr, strategy);
+    pub fn setResolve(self: *Renderer, next_resolve: Resolve) void {
+        self.vtable.setResolve(self.ptr, next_resolve);
     }
 
-    pub fn resolveStrategy(self: *const Renderer) ResolveStrategy {
-        return self.vtable.getResolveStrategy(@constCast(self.ptr));
+    pub fn resolve(self: *const Renderer) Resolve {
+        return self.vtable.getResolve(@constCast(self.ptr));
     }
 
     pub fn setCoverageTransfer(self: *Renderer, transfer: CoverageTransfer) void {
@@ -5986,7 +6082,7 @@ test "draw dispatch uses only prepared stamps and caller records" {
         subpixel_order: SubpixelOrder = .none,
         fill_rule: FillRule = .non_zero,
         target_encoding: TargetEncoding = .linear,
-        resolve_strategy: ResolveStrategy = .direct,
+        resolve: Resolve = .{ .direct = .{} },
         coverage_transfer: CoverageTransfer = .identity,
         saw_backend_prepared: bool = true,
     };
@@ -6034,11 +6130,11 @@ test "draw dispatch uses only prepared stamps and caller records" {
         fn getTargetEncoding(ptr: *anyopaque) TargetEncoding {
             return state(ptr).target_encoding;
         }
-        fn setResolveStrategy(ptr: *anyopaque, strategy: ResolveStrategy) void {
-            state(ptr).resolve_strategy = strategy;
+        fn setResolve(ptr: *anyopaque, resolve: Resolve) void {
+            state(ptr).resolve = resolve;
         }
-        fn getResolveStrategy(ptr: *anyopaque) ResolveStrategy {
-            return state(ptr).resolve_strategy;
+        fn getResolve(ptr: *anyopaque) Resolve {
+            return state(ptr).resolve;
         }
         fn setCoverageTransfer(ptr: *anyopaque, transfer: CoverageTransfer) void {
             state(ptr).coverage_transfer = transfer;
@@ -6063,8 +6159,8 @@ test "draw dispatch uses only prepared stamps and caller records" {
         .getFillRule = Fake.getFillRule,
         .setTargetEncoding = Fake.setTargetEncoding,
         .getTargetEncoding = Fake.getTargetEncoding,
-        .setResolveStrategy = Fake.setResolveStrategy,
-        .getResolveStrategy = Fake.getResolveStrategy,
+        .setResolve = Fake.setResolve,
+        .getResolve = Fake.getResolve,
         .setCoverageTransfer = Fake.setCoverageTransfer,
         .getCoverageTransfer = Fake.getCoverageTransfer,
         .backendName = Fake.backendName,
@@ -6116,7 +6212,7 @@ test "draw dispatch uses only prepared stamps and caller records" {
     try std.testing.expectEqual(SubpixelOrder.rgb, state.subpixel_order);
     try std.testing.expectEqual(FillRule.even_odd, state.fill_rule);
     try std.testing.expectEqual(TargetEncoding.srgb, state.target_encoding);
-    try std.testing.expectEqual(ResolveStrategy.direct, state.resolve_strategy);
+    try std.testing.expect(std.meta.eql(Resolve{ .direct = .{} }, state.resolve));
     try std.testing.expectEqual(@as(f32, 0.875), state.coverage_transfer.exponent);
     try std.testing.expectEqual(@as(f32, 8), state.viewport_seen[0]);
     try std.testing.expectEqual(@as(f32, 8), state.viewport_seen[1]);
