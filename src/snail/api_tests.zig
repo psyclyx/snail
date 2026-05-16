@@ -740,6 +740,16 @@ test "resource upload plan reports changed keys and enforces budget" {
     try std.testing.expectError(error.ResourceUploadBudgetExceeded, pending.record(.no_command, .{ .budget_bytes = 0 }));
     try std.testing.expect(!pending.ready(.pending));
 
+    var rebuild_plan = plan_b;
+    rebuild_plan.atlas_cache_rebuilds = 1;
+    try std.testing.expect(rebuild_plan.requiresCacheRebuild());
+    var rebuild_pending = try renderer.beginResourceUpload(.{ .persistent = allocator, .scratch = allocator }, rebuild_plan);
+    defer rebuild_pending.deinit();
+    try std.testing.expectError(error.ResourceCacheRebuildRequired, rebuild_pending.record(.no_command, .{
+        .budget_bytes = plan_b.upload_bytes,
+        .allow_cache_rebuilds = false,
+    }));
+
     try pending.record(.no_command, .{ .budget_bytes = plan_b.upload_bytes });
     try std.testing.expect(pending.ready(.immediate));
     var prepared_b = try pending.publish();

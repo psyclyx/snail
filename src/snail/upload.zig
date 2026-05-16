@@ -100,6 +100,14 @@ pub const ResourceUploadPlan = struct {
         return self.changed_keys[0..self.changed_len];
     }
 
+    pub fn cacheRebuilds(self: *const ResourceUploadPlan) u32 {
+        return self.atlas_cache_rebuilds + self.image_cache_rebuilds;
+    }
+
+    pub fn requiresCacheRebuild(self: *const ResourceUploadPlan) bool {
+        return self.cacheRebuilds() != 0;
+    }
+
     pub fn addChanged(self: *ResourceUploadPlan, key: ResourceKey, bytes: usize) !void {
         if (self.changed_len >= self.changed_keys.len) return error.ResourceUploadPlanFull;
         self.changed_keys[self.changed_len] = key;
@@ -139,10 +147,16 @@ pub const PendingResourceUpload = struct {
     external_completion_required: bool = false,
     ready_to_publish: bool = false,
 
+    pub const RecordOptions = struct {
+        budget_bytes: usize = std.math.maxInt(usize),
+        allow_cache_rebuilds: bool = true,
+    };
+
     /// Record upload work for this plan. Vulkan records into a caller-owned
     /// command buffer; CPU and GL complete during this call.
-    pub fn record(self: *PendingResourceUpload, command: ResourceUploadCommand, options: struct { budget_bytes: usize = std.math.maxInt(usize) }) !void {
+    pub fn record(self: *PendingResourceUpload, command: ResourceUploadCommand, options: RecordOptions) !void {
         if (self.prepared != null) return;
+        if (!options.allow_cache_rebuilds and self.plan.requiresCacheRebuild()) return error.ResourceCacheRebuildRequired;
         if (self.plan.upload_bytes > options.budget_bytes) return error.ResourceUploadBudgetExceeded;
 
         if (comptime build_options.enable_vulkan) {

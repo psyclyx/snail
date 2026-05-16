@@ -121,6 +121,7 @@ fn mapError(err: anyerror) c_int {
         error.DrawListFull,
         error.ResourceUploadPlanFull,
         error.ResourceUploadBudgetExceeded,
+        error.ResourceCacheRebuildRequired,
         error.ResourceUploadNotReady,
         error.MissingUploadCommand,
         error.InvalidRetirementFence,
@@ -2121,6 +2122,15 @@ export fn snail_vulkan_pending_resource_upload_record(pending: *PendingResourceU
     return SNAIL_OK;
 }
 
+export fn snail_vulkan_pending_resource_upload_record_checked(pending: *PendingResourceUploadImpl, command_buffer: vk.VkCommandBuffer, budget_bytes: usize, allow_cache_rebuilds: bool) c_int {
+    if (comptime !build_options.enable_vulkan) return SNAIL_ERR_RENDERER_FAILED;
+    pending.inner.record(.{ .vulkan = command_buffer }, .{
+        .budget_bytes = budget_bytes,
+        .allow_cache_rebuilds = allow_cache_rebuilds,
+    }) catch |err| return mapError(err);
+    return SNAIL_OK;
+}
+
 export fn snail_vulkan_pending_resource_upload_ready_fence(pending: *PendingResourceUploadImpl, fence: vk.VkFence) bool {
     if (comptime !build_options.enable_vulkan) return false;
     return pending.inner.ready(.{ .vulkan_fence = fence });
@@ -2419,6 +2429,14 @@ export fn snail_pending_resource_upload_deinit(pending: ?*PendingResourceUploadI
 
 export fn snail_pending_resource_upload_record(pending: *PendingResourceUploadImpl, budget_bytes: usize) c_int {
     pending.inner.record(.no_command, .{ .budget_bytes = budget_bytes }) catch |err| return mapError(err);
+    return SNAIL_OK;
+}
+
+export fn snail_pending_resource_upload_record_checked(pending: *PendingResourceUploadImpl, budget_bytes: usize, allow_cache_rebuilds: bool) c_int {
+    pending.inner.record(.no_command, .{
+        .budget_bytes = budget_bytes,
+        .allow_cache_rebuilds = allow_cache_rebuilds,
+    }) catch |err| return mapError(err);
     return SNAIL_OK;
 }
 
