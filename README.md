@@ -535,8 +535,8 @@ masking, or compositing.
 
 - `CoverageShader.gl` exposes GLSL 330 sources you can `@embedFile`-style
   splice into your own program: `vertex_interface`,
-  `fragment_interface`, and `fragment_body`. The legacy aliases
-  `TextCoverageShader.glsl330_*` point at the same GL sources.
+  `fragment_interface`, `resource_interface`, `coverage_functions`, and
+  `fragment_body`.
 - `CoverageShader.vulkan` exposes the Vulkan shader sources and descriptor
   binding numbers. The Vulkan coverage backend binds Snail's descriptor set
   into a caller-owned compatible pipeline layout.
@@ -546,11 +546,11 @@ masking, or compositing.
   `records.buildLocal(prepared, blob, .{ .transform = ... })`. `buildLocal`
   does not allocate; it returns `error.DrawListFull` if the buffer is too
   small. Call `records.validFor(prepared)` after a re-upload and
-  `records.rebuildLocal(prepared, blob, options)` if the atlas has moved.
+  `records.buildLocal(prepared, blob, options)` if the atlas has moved.
 - `CoverageBackend` is the backend hook. Get one from
-  `prepared.textCoverageBackend(renderer)` (or `gl.textCoverageBackend(prepared)`
-  / `vk.textCoverageBackend(prepared)` on typed renderers). Call
-  `bind(.{ .gl = bindings })` or `bind(.{ .vulkan = bindings })`, then
+  `prepared.coverageBackend(renderer)` (or `gl.coverageBackend(prepared)`
+  / `vk.coverageBackend(prepared)` on typed renderers). Call
+  `bindResources(.{ .gl = bindings })` or `bindResources(.{ .vulkan = bindings })`, then
   `drawCoverage(&records)` or `drawVertices` with your own buffer.
 
 ### Path

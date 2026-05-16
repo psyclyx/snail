@@ -68,15 +68,6 @@ pub const PATH_WORDS_PER_VERTEX = vertex_mod.WORDS_PER_VERTEX;
 pub const PATH_VERTICES_PER_SHAPE = vertex_mod.VERTICES_PER_GLYPH;
 pub const PATH_WORDS_PER_SHAPE = PATH_WORDS_PER_VERTEX * PATH_VERTICES_PER_SHAPE;
 
-fn coerceAtlasHandle(atlas_like: anytype) PreparedAtlasView {
-    const T = @TypeOf(atlas_like);
-    return switch (T) {
-        *const PreparedAtlasView, *PreparedAtlasView => atlas_like.*,
-        *const Atlas, *Atlas => .{ .atlas = atlas_like, .layer_base = 0 },
-        else => @compileError("expected *CurveAtlas or prepared atlas view"),
-    };
-}
-
 // Recursion-depth caps for path subdivision. These are quality / cost
 // budgets, not caller-facing limits: hitting the cap yields a slightly
 // lower-fidelity tessellation rather than an error or truncation. Bumping
@@ -2098,7 +2089,7 @@ pub const PathBatch = struct {
         override_index: usize,
         shape_start: usize,
     ) !AppendResult {
-        const resolved_view = coerceAtlasHandle(atlas_like);
+        const resolved_view = lowlevel_mod.coerceAtlasHandle(atlas_like);
         const view = &resolved_view;
         const range = draw.shapes.resolve(draw.picture.shapes.len);
         const start = @max(shape_start, range.start);

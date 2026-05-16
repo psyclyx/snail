@@ -4,6 +4,7 @@
 //! re-export the same canonical declarations from those domain modules.
 
 const build_options = @import("build_options");
+const backend_kind = @import("backend_kind.zig");
 const resource_key = @import("resource_key.zig");
 const upload_common = @import("renderer/upload_common.zig");
 
@@ -17,7 +18,6 @@ pub const upload = @import("upload.zig");
 pub const draw = @import("draw.zig");
 pub const render = @import("render.zig");
 pub const coverage = @import("coverage.zig");
-pub const backend = @import("backend.zig");
 pub const target = @import("target.zig");
 pub const paint = @import("paint.zig");
 
@@ -61,11 +61,8 @@ pub const CoverageProgram = coverage.Program;
 pub const GlCoverageBackend = coverage.GlBackend;
 pub const VulkanCoverageBackend = coverage.VulkanBackend;
 pub const CoverageBackend = coverage.Backend;
-pub const TextCoverageBindings = coverage.TextCoverageBindings;
-pub const TextCoverageShader = coverage.TextCoverageShader;
 pub const TextCoverageOptions = coverage.TextCoverageOptions;
 pub const TextCoverageRecords = coverage.TextCoverageRecords;
-pub const TextCoverageBackend = coverage.TextCoverageBackend;
 
 pub const PaintExtend = paint.Extend;
 pub const ImageFilter = paint.ImageFilter;
@@ -100,7 +97,7 @@ pub const PixelGrid = target.PixelGrid;
 pub const ResolveTarget = target.ResolveTarget;
 pub const TargetStamp = target.TargetStamp;
 
-pub const BackendKind = backend.Kind;
+pub const BackendKind = backend_kind.BackendKind;
 pub const VulkanContext = render.VulkanContext;
 pub const CpuRenderer = render.CpuRenderer;
 pub const ThreadPool = render.ThreadPool;
@@ -199,7 +196,6 @@ test {
     _ = draw;
     _ = render;
     _ = coverage;
-    _ = backend;
     _ = target;
     _ = paint;
     _ = @import("api_tests.zig");

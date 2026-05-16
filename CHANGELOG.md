@@ -14,6 +14,11 @@
 - The C API now mirrors the resolve contract with `resolve_kind`,
   `resolve_backdrop`, `resolve_region`, `resolve_intermediate_format`, and
   `attachment_encoding` / `stored_pixel_encoding` fields.
+- Removed legacy Zig compatibility aliases from the coverage API. Use
+  `CoverageShader`, `CoverageBackend`, `coverageBackend`, `bindResources`,
+  `drawCoverage`, `drawVertices`, and `TextCoverageRecords.buildLocal`.
+- Removed the unused `snail.backend.*` namespace. Use `BackendKind` and the
+  direct `GlRenderer`, `VulkanRenderer`, and `CpuRenderer` types.
 
 ### Fixed
 

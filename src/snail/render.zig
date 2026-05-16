@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const backend_mod = @import("backend.zig");
+const backend_kind_mod = @import("backend_kind.zig");
 const build_options = @import("build_options");
 const coverage_mod = @import("coverage.zig");
 const draw_mod = @import("draw.zig");
@@ -36,7 +36,7 @@ const vulkan_pipeline = if (build_options.enable_vulkan) @import("renderer/vulka
     };
 };
 
-pub const BackendKind = backend_mod.Kind;
+pub const BackendKind = backend_kind_mod.BackendKind;
 pub const CpuRenderer = cpu_renderer_mod.CpuRenderer;
 pub const ThreadPool = @import("thread_pool.zig").ThreadPool;
 pub const VulkanContext = vulkan_pipeline.VulkanContext;
@@ -56,7 +56,7 @@ const ResourceUploadPlan = upload_mod.ResourceUploadPlan;
 const SubpixelOrder = target_mod.SubpixelOrder;
 const TargetStamp = target_mod.TargetStamp;
 const TargetEncoding = target_mod.TargetEncoding;
-const TextCoverageBackend = coverage_mod.TextCoverageBackend;
+const CoverageBackend = coverage_mod.Backend;
 const UploadAllocators = upload_mod.UploadAllocators;
 const effectiveSubpixelOrder = target_mod.effectiveSubpixelOrder;
 const resourceEntryKey = resources_mod.resourceEntryKey;
@@ -491,7 +491,7 @@ pub const Renderer = struct {
 /// `GlRenderer` owns the GL state; the `uploadResourcesBlocking`,
 /// `planResourceUpload`, `beginResourceUpload`, `draw`, and `drawPrepared`
 /// methods are thin shims over `Renderer` for callers that want to stay
-/// strongly typed. `textCoverageBackend` is the only method that requires the
+/// strongly typed. `coverageBackend` is the only method that requires the
 /// typed handle. Use `asRenderer()` to pass to backend-agnostic code.
 pub const GlRenderer = if (build_options.enable_opengl) struct {
     const Self = @This();
@@ -542,7 +542,7 @@ pub const GlRenderer = if (build_options.enable_opengl) struct {
         try renderer.drawPrepared(prepared, scene, options);
     }
 
-    pub fn textCoverageBackend(self: *Self, prepared: *const PreparedResources) ?TextCoverageBackend {
+    pub fn coverageBackend(self: *Self, prepared: *const PreparedResources) ?CoverageBackend {
         if (prepared.gl) |*gl_resources| {
             return .{ .gl = .{ .gl = self.state, .gl_resources = gl_resources, .prepared = prepared } };
         }
@@ -611,7 +611,7 @@ pub const VulkanRenderer = struct {
         try renderer.drawPrepared(prepared, scene, options);
     }
 
-    pub fn textCoverageBackend(self: *VulkanRenderer, prepared: *const PreparedResources) ?TextCoverageBackend {
+    pub fn coverageBackend(self: *VulkanRenderer, prepared: *const PreparedResources) ?CoverageBackend {
         if (comptime !build_options.enable_vulkan) return null;
         if (prepared.vulkan) |*vk_resources| {
             return .{ .vulkan = .{ .vk = self.state, .vk_resources = vk_resources, .prepared = prepared } };

@@ -1,6 +1,6 @@
 const std = @import("std");
 const build_options = @import("build_options");
-const backend_mod = @import("backend.zig");
+const backend_kind_mod = @import("backend_kind.zig");
 const lowlevel_mod = @import("lowlevel.zig");
 const resource_key_mod = @import("resource_key.zig");
 const resources_mod = @import("resources.zig");
@@ -21,7 +21,7 @@ const vulkan_pipeline = if (build_options.enable_vulkan) @import("renderer/vulka
     pub const VulkanPipeline = void;
 };
 
-const BackendKind = backend_mod.Kind;
+const BackendKind = backend_kind_mod.BackendKind;
 const Transform2D = vec.Transform2D;
 const TextAtlas = text_mod.TextAtlas;
 const TextBlob = text_mod.TextBlob;
@@ -42,19 +42,15 @@ pub const Bindings = union(BackendKind) {
     cpu: void,
 };
 
-/// Uniform locations / descriptor bindings used when a caller evaluates Snail
-/// text coverage inside a custom material shader.
-pub const TextCoverageBindings = GlBindings;
-
 /// GLSL 330 pieces for material shaders that consume Snail text coverage.
 ///
-/// Include `glsl330_vertex_interface` in a vertex shader that draws prepared
-/// text coverage geometry, and `glsl330_fragment_interface` plus
-/// `glsl330_fragment_body` in the fragment shader. The fragment body exposes
+/// Include `CoverageShader.gl.vertex_interface` in a vertex shader that draws
+/// prepared text coverage geometry, and `CoverageShader.gl.fragment_interface`
+/// plus `CoverageShader.gl.fragment_body` in the fragment shader. The fragment body exposes
 /// `snail_text_coverage()`, `snail_text_color_srgb()`, and
 /// `snail_text_color_linear()` for use as material inputs. Material shaders
 /// that evaluate coverage without Snail's text varyings can instead include
-/// `glsl330_resource_interface` and `glsl330_coverage_functions`.
+/// `CoverageShader.gl.resource_interface` and `CoverageShader.gl.coverage_functions`.
 pub const Shader = struct {
     pub const gl = struct {
         pub const vertex_interface = pipeline.text_vertex_interface;
@@ -93,11 +89,6 @@ pub const Shader = struct {
             \\
             ;
 
-        pub const glsl330_vertex_interface = vertex_interface;
-        pub const glsl330_fragment_interface = fragment_interface;
-        pub const glsl330_resource_interface = resource_interface;
-        pub const glsl330_coverage_functions = coverage_functions;
-        pub const glsl330_fragment_body = fragment_body;
     };
 
     pub const vulkan = struct {
@@ -109,14 +100,7 @@ pub const Shader = struct {
         pub const band_texture_binding: u32 = 1;
     };
 
-    pub const glsl330_vertex_interface = gl.glsl330_vertex_interface;
-    pub const glsl330_fragment_interface = gl.glsl330_fragment_interface;
-    pub const glsl330_resource_interface = gl.glsl330_resource_interface;
-    pub const glsl330_coverage_functions = gl.glsl330_coverage_functions;
-    pub const glsl330_fragment_body = gl.glsl330_fragment_body;
 };
-
-pub const TextCoverageShader = Shader;
 
 pub const GlProgram = struct {
     bindings: GlBindings = .{},
@@ -134,8 +118,6 @@ pub const Program = union(BackendKind) {
     vulkan: VulkanProgram,
     cpu: CpuProgram,
 };
-
-pub const TextCoverageProgram = Program;
 
 /// Resolve options used when preparing text coverage geometry for a custom
 /// material shader.
@@ -211,15 +193,6 @@ pub const TextCoverageRecords = struct {
         }
     }
 
-    pub fn rebuildLocal(
-        self: *TextCoverageRecords,
-        prepared: *const PreparedResources,
-        blob: *const TextBlob,
-        options: TextCoverageOptions,
-    ) !void {
-        try self.buildLocal(prepared, blob, options);
-    }
-
     pub fn validFor(self: *const TextCoverageRecords, prepared: *const PreparedResources) bool {
         const atlas = self.atlas orelse return false;
         const stamp = prepared.textStamp(atlas) catch return false;
@@ -254,13 +227,6 @@ pub const GlBackend = if (build_options.enable_opengl) struct {
         self.glState().drawPreparedText(self.gl_resources, vertices);
     }
 
-    pub fn draw(self: GlBackend, vertices: []const u32) void {
-        self.drawVertices(vertices);
-    }
-
-    pub fn bind(self: GlBackend, bindings: GlBindings) void {
-        self.bindResources(bindings);
-    }
 } else struct {};
 
 pub const VulkanBackend = if (build_options.enable_vulkan) struct {
@@ -289,13 +255,6 @@ pub const VulkanBackend = if (build_options.enable_vulkan) struct {
         self.vk.drawPreparedTextCoverage(vertices);
     }
 
-    pub fn draw(self: VulkanBackend, vertices: []const u32) void {
-        self.drawVertices(vertices);
-    }
-
-    pub fn bind(self: VulkanBackend, bindings: VulkanBindings) void {
-        self.bindResources(bindings);
-    }
 } else struct {};
 
 /// Backend hook for evaluating Snail text coverage inside caller-owned shaders.
@@ -330,13 +289,4 @@ pub const Backend = union(BackendKind) {
         }
     }
 
-    pub fn draw(self: Backend, vertices: []const u32) void {
-        self.drawVertices(vertices);
-    }
-
-    pub fn bind(self: Backend, bindings: Bindings) void {
-        self.bindResources(bindings);
-    }
 };
-
-pub const TextCoverageBackend = Backend;

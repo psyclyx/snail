@@ -364,7 +364,7 @@ pub const QuadRenderer = struct {
         gl.glUniform1i(self.material.normal_tex_loc, 1);
 
         if (text_input) |input| {
-            const backend = (prepared orelse unreachable).textCoverageBackend(renderer orelse unreachable) orelse unreachable;
+            const backend = (prepared orelse unreachable).coverageBackend(renderer orelse unreachable) orelse unreachable;
             gl.glActiveTexture(textureUnitEnum(TEXT_RECORD_TEXTURE_UNIT));
             gl.glBindTexture(gl.GL_TEXTURE_BUFFER, input.text.record_texture);
             gl.glUniform1i(self.material.text_records_loc, TEXT_RECORD_TEXTURE_UNIT);
@@ -461,9 +461,9 @@ const material_vertex_shader: [:0]const u8 =
 
 const material_fragment_shader: [:0]const u8 =
     "#version 330 core\n\n" ++
-    snail.TextCoverageShader.glsl330_resource_interface ++
+    snail.CoverageShader.gl.resource_interface ++
     "\n" ++
-    snail.TextCoverageShader.glsl330_coverage_functions ++
+    snail.CoverageShader.gl.coverage_functions ++
     "\n" ++
     \\in vec2 v_uv;
     \\in vec3 v_world_pos;

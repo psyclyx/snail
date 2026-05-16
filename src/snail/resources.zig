@@ -45,7 +45,7 @@ const ResourceStamp = resource_key_mod.ResourceStamp;
 const Scene = scene_mod.Scene;
 const TextAtlas = text_mod.TextAtlas;
 const TextBlob = text_mod.TextBlob;
-const TextCoverageBackend = coverage_mod.TextCoverageBackend;
+const CoverageBackend = coverage_mod.Backend;
 const UploadAllocators = upload_mod.UploadAllocators;
 const mix64 = resource_key_mod.mix64;
 const pointerResourceKey = resource_key_mod.pointerResourceKey;
@@ -271,7 +271,7 @@ pub const PreparedResources = struct {
         return null;
     }
 
-    pub fn textCoverageBackend(self: *const PreparedResources, renderer: *Renderer) ?TextCoverageBackend {
+    pub fn coverageBackend(self: *const PreparedResources, renderer: *Renderer) ?CoverageBackend {
         switch (renderer.backend()) {
             .gl => if (comptime build_options.enable_opengl) {
                 if (self.gl) |*gl_resources| {
