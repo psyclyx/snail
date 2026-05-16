@@ -1244,7 +1244,7 @@ pub fn main() !void {
     if (comptime build_options.enable_vulkan) {
         const vk_ctx = try vulkan_platform.initOffscreen(WIDTH, HEIGHT);
         errdefer vulkan_platform.deinitOffscreen();
-        vk_state = try snail.VulkanRenderer.init(vk_ctx);
+        vk_state = try snail.VulkanRenderer.init(allocator, vk_ctx);
         errdefer if (vk_state) |*s| s.deinit();
         vk_renderer = vk_state.?.asRenderer();
         for (scene_kinds, 0..) |kind, i| {

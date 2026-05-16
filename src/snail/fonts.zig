@@ -136,8 +136,8 @@ pub const ShapedText = struct {
 pub const TextBlob = struct {
     allocator: Allocator,
     /// Borrowed TextAtlas snapshot used to build this blob. The pointer and
-    /// snapshot identity must remain valid until the blob is destroyed or
-    /// `rebind` moves the blob to a compatible atlas snapshot.
+    /// snapshot identity must remain valid until the blob is destroyed or a
+    /// rebound copy moves the blob data to a compatible atlas snapshot.
     atlas: *const TextAtlas,
     atlas_identity: u64,
     glyphs: []Glyph,
@@ -842,8 +842,8 @@ pub const TextAtlas = struct {
     // ── Itemization ──
 
     /// Split text into runs where each run maps to one face.
-    pub fn itemize(self: *const TextAtlas, style: snail.FontStyle, text: []const u8) ![]ItemizedRun {
-        return itemizeText(self.allocator, self.config, style, text);
+    pub fn itemize(self: *const TextAtlas, allocator: Allocator, style: snail.FontStyle, text: []const u8) ![]ItemizedRun {
+        return itemizeText(allocator, self.config, style, text);
     }
 
     pub fn faceView(self: *const TextAtlas, face_index: FaceIndex, atlas_view: anytype) FaceView {
@@ -1034,39 +1034,9 @@ pub const TextAtlas = struct {
         text: []const u8,
         font_size: f32,
     ) !f32 {
-        const runs = try itemizeText(self.allocator, self.config, style, text);
-        defer self.allocator.free(runs);
-
-        var width: f32 = 0;
-        for (runs) |run| {
-            const fc = &self.config.faces[run.face_index];
-            const fg = &self.face_glyphs[run.face_index];
-            const segment = text[run.text_start..run.text_end];
-
-            if (comptime build_options.enable_harfbuzz) {
-                if (fc.hb_shaper) |hbs| {
-                    width += hbs.measureWidth(segment, font_size);
-                    continue;
-                }
-            }
-
-            const scale = font_size / @as(f32, @floatFromInt(fc.font.units_per_em));
-            const utf8_view = std.unicode.Utf8View.initUnchecked(segment);
-            var it = utf8_view.iterator();
-            while (it.nextCodepoint()) |cp| {
-                const gid = fc.font.glyphIndex(cp) catch 0;
-                if (gid == 0) {
-                    width += scale * 500;
-                    continue;
-                }
-                if (fg.getGlyph(gid)) |info| {
-                    width += @as(f32, @floatFromInt(info.advance_width)) * scale;
-                } else {
-                    width += @as(f32, @floatFromInt(fc.font.advanceWidth(gid) catch 500)) * scale;
-                }
-            }
-        }
-        return width;
+        var shaped = try self.shapeText(self.allocator, style, text);
+        defer shaped.deinit();
+        return shaped.advance_x * font_size;
     }
 
     // ── Atlas extension ──
@@ -2194,7 +2164,7 @@ test "TextBlob.rebound recomputes budget after ensureGlyphs" {
     });
     defer fonts.deinit();
 
-    // Prepare 'A' so the blob has a real entry to rebind. (Building a blob
+    // Prepare 'A' so the blob has a real entry to rebound. (Building a blob
     // against an empty atlas leaves it empty — `addText` skips missing
     // glyphs so the blob never references unrasterized GIDs.)
     if (try fonts.ensureText(.{}, "A")) |next| {
@@ -2211,7 +2181,7 @@ test "TextBlob.rebound recomputes budget after ensureGlyphs" {
     const original_budget = blob.gpu_instance_budget;
     try testing.expect(original_budget > 0);
 
-    // Extend the atlas with an unrelated glyph; rebind must still succeed
+    // Extend the atlas with an unrelated glyph; rebound must still succeed
     // and the recomputed budget must remain valid against the new snapshot.
     const gid_b = (try fonts.glyphIndex(0, 'B')).?;
     var next = (try fonts.ensureGlyphs(0, &.{gid_b})).?;

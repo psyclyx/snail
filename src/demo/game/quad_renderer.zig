@@ -461,9 +461,9 @@ const material_vertex_shader: [:0]const u8 =
 
 const material_fragment_shader: [:0]const u8 =
     "#version 330 core\n\n" ++
-    snail.CoverageShader.gl.resource_interface ++
+    snail.coverage.Shader.gl.resource_interface ++
     "\n" ++
-    snail.CoverageShader.gl.coverage_functions ++
+    snail.coverage.Shader.gl.coverage_functions ++
     "\n" ++
     \\in vec2 v_uv;
     \\in vec3 v_world_pos;
@@ -716,16 +716,16 @@ pub const SurfaceTextDraw = struct {
     allocator: std.mem.Allocator,
     blob: *const snail.TextBlob,
     coverage_words: []u32 = &.{},
-    coverage: snail.TextCoverageRecords,
+    coverage: snail.coverage.TextCoverageRecords,
     record_storage: []f32 = &.{},
     record_buffer: gl.GLuint = 0,
     record_texture: gl.GLuint = 0,
 
     pub fn init(allocator: std.mem.Allocator, prepared: *const snail.PreparedResources, blob: *const snail.TextBlob) !SurfaceTextDraw {
-        const coverage_words = try allocator.alloc(u32, snail.TextCoverageRecords.wordCapacityForBlob(blob));
+        const coverage_words = try allocator.alloc(u32, snail.coverage.TextCoverageRecords.wordCapacityForBlob(blob));
         errdefer allocator.free(coverage_words);
 
-        var coverage = snail.TextCoverageRecords.init(coverage_words);
+        var coverage = snail.coverage.TextCoverageRecords.init(coverage_words);
         try coverage.buildLocal(prepared, blob, .{});
 
         var self = SurfaceTextDraw{

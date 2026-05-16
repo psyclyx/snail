@@ -223,7 +223,7 @@ const VulkanDriver = if (build_options.enable_vulkan) struct {
     fn init(window: *wayland.Window) !VulkanDriver {
         const ctx = try vulkan_platform.initForWindow(window);
         errdefer vulkan_platform.deinit();
-        var renderer_state = try snail.VulkanRenderer.init(ctx);
+        var renderer_state = try snail.VulkanRenderer.init(allocator, ctx);
         errdefer renderer_state.deinit();
         return .{ .renderer_state = renderer_state };
     }

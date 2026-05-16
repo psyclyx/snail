@@ -546,7 +546,7 @@ pub fn main() !void {
     if (comptime build_options.enable_vulkan) {
         const vk_ctx = try vulkan_platform.initOffscreen(WIDTH, HEIGHT);
         errdefer vulkan_platform.deinitOffscreen();
-        vk_renderer_state = try snail.VulkanRenderer.init(vk_ctx);
+        vk_renderer_state = try snail.VulkanRenderer.init(allocator, vk_ctx);
         errdefer vk_renderer_state.deinit();
         vk_renderer = vk_renderer_state.asRenderer();
         vk_supports_lcd = vk_renderer_state.state.ctx.supports_dual_source_blend;

@@ -221,8 +221,8 @@ pub const Renderer = struct {
                             inner_options.target.resolve = .{ .direct = .{} };
                             renderer.iterateRecords(records, inner_options, backend_prepared);
                             gl_self.endLinearResolve(restore);
-                            renderer.setTargetEncoding(options.target.encoding);
-                            renderer.setResolve(options.target.resolve);
+                            renderer.applyTargetEncoding(options.target.encoding);
+                            renderer.applyResolve(options.target.resolve);
                             return;
                         }
                         if (comptime build_options.enable_vulkan and T == vulkan_pipeline.VulkanPipeline) {
@@ -404,12 +404,12 @@ pub const Renderer = struct {
     /// Vulkan vtables directly, and by the CPU vtable's serial fallback /
     /// tile workers. Caller has already invoked `validateRecords`.
     pub fn iterateRecords(self: *Renderer, records: DrawRecords, options: DrawOptions, backend_prepared: ?*const anyopaque) void {
-        self.setSubpixelOrder(effectiveSubpixelOrderRef(&options.target));
-        self.setFillRule(options.target.fill_rule);
-        self.setTargetEncoding(options.target.encoding);
-        self.setResolve(options.target.resolve);
-        self.setCoverageTransfer(options.target.coverage_transfer);
-        self.beginFrame();
+        self.applySubpixelOrder(effectiveSubpixelOrderRef(&options.target));
+        self.applyFillRule(options.target.fill_rule);
+        self.applyTargetEncoding(options.target.encoding);
+        self.applyResolve(options.target.resolve);
+        self.applyCoverageTransfer(options.target.coverage_transfer);
+        self.beginBackendFrame();
         for (records.segments) |segment| {
             const vertices = records.words[segment.offset..][0..segment.len];
             switch (segment.kind) {
@@ -429,7 +429,7 @@ pub const Renderer = struct {
         self.vtable.deinit(self.ptr);
     }
 
-    pub fn beginFrame(self: *Renderer) void {
+    fn beginBackendFrame(self: *Renderer) void {
         self.vtable.beginFrame(self.ptr);
     }
 
@@ -441,44 +441,24 @@ pub const Renderer = struct {
         self.vtable.drawPaths(self.ptr, backend_prepared, vertices, mvp, viewport_w, viewport_h, texture_layer_base);
     }
 
-    pub fn setSubpixelOrder(self: *Renderer, order: SubpixelOrder) void {
+    fn applySubpixelOrder(self: *Renderer, order: SubpixelOrder) void {
         self.vtable.setSubpixelOrder(self.ptr, order);
     }
 
-    pub fn subpixelOrder(self: *const Renderer) SubpixelOrder {
-        return self.vtable.getSubpixelOrder(@constCast(self.ptr));
-    }
-
-    pub fn setFillRule(self: *Renderer, rule: FillRule) void {
+    fn applyFillRule(self: *Renderer, rule: FillRule) void {
         self.vtable.setFillRule(self.ptr, rule);
     }
 
-    pub fn setTargetEncoding(self: *Renderer, encoding: TargetEncoding) void {
+    fn applyTargetEncoding(self: *Renderer, encoding: TargetEncoding) void {
         self.vtable.setTargetEncoding(self.ptr, encoding);
     }
 
-    pub fn targetEncoding(self: *const Renderer) TargetEncoding {
-        return self.vtable.getTargetEncoding(@constCast(self.ptr));
-    }
-
-    pub fn setResolve(self: *Renderer, next_resolve: Resolve) void {
+    fn applyResolve(self: *Renderer, next_resolve: Resolve) void {
         self.vtable.setResolve(self.ptr, next_resolve);
     }
 
-    pub fn resolve(self: *const Renderer) Resolve {
-        return self.vtable.getResolve(@constCast(self.ptr));
-    }
-
-    pub fn setCoverageTransfer(self: *Renderer, transfer: CoverageTransfer) void {
+    fn applyCoverageTransfer(self: *Renderer, transfer: CoverageTransfer) void {
         self.vtable.setCoverageTransfer(self.ptr, transfer);
-    }
-
-    pub fn coverageTransfer(self: *const Renderer) CoverageTransfer {
-        return self.vtable.getCoverageTransfer(@constCast(self.ptr));
-    }
-
-    pub fn fillRule(self: *const Renderer) FillRule {
-        return self.vtable.getFillRule(@constCast(self.ptr));
     }
 
     pub fn backendName(self: *const Renderer) []const u8 {
@@ -560,20 +540,21 @@ pub const GlRenderer = if (build_options.enable_opengl) struct {
 /// the typed handle exists so `beginFrame(.{ .cmd, .frame_index })` (which
 /// takes a backend-specific argument) and other Vulkan-only future hooks have
 /// somewhere to live. Use `asRenderer()` for backend-agnostic code.
-pub const VulkanRenderer = struct {
+pub const VulkanRenderer = if (build_options.enable_vulkan) struct {
+    allocator: std.mem.Allocator,
     state: *vulkan_pipeline.VulkanPipeline,
 
-    pub fn init(vk_ctx: VulkanContext) !VulkanRenderer {
-        const vkp = try std.heap.smp_allocator.create(vulkan_pipeline.VulkanPipeline);
+    pub fn init(allocator: std.mem.Allocator, vk_ctx: VulkanContext) !VulkanRenderer {
+        const vkp = try allocator.create(vulkan_pipeline.VulkanPipeline);
         vkp.* = .{};
-        errdefer std.heap.smp_allocator.destroy(vkp);
+        errdefer allocator.destroy(vkp);
         try vkp.init(vk_ctx);
-        return .{ .state = vkp };
+        return .{ .allocator = allocator, .state = vkp };
     }
 
     pub fn deinit(self: *VulkanRenderer) void {
         self.state.deinit();
-        std.heap.smp_allocator.destroy(self.state);
+        self.allocator.destroy(self.state);
         self.* = undefined;
     }
 
@@ -622,4 +603,4 @@ pub const VulkanRenderer = struct {
     pub fn backendName(self: *const VulkanRenderer) []const u8 {
         return self.state.backendName();
     }
-};
+} else void;

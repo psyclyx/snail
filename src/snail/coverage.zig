@@ -44,13 +44,13 @@ pub const Bindings = union(BackendKind) {
 
 /// GLSL 330 pieces for material shaders that consume Snail text coverage.
 ///
-/// Include `CoverageShader.gl.vertex_interface` in a vertex shader that draws
-/// prepared text coverage geometry, and `CoverageShader.gl.fragment_interface`
-/// plus `CoverageShader.gl.fragment_body` in the fragment shader. The fragment body exposes
+/// Include `snail.coverage.Shader.gl.vertex_interface` in a vertex shader that draws
+/// prepared text coverage geometry, and `snail.coverage.Shader.gl.fragment_interface`
+/// plus `snail.coverage.Shader.gl.fragment_body` in the fragment shader. The fragment body exposes
 /// `snail_text_coverage()`, `snail_text_color_srgb()`, and
 /// `snail_text_color_linear()` for use as material inputs. Material shaders
 /// that evaluate coverage without Snail's text varyings can instead include
-/// `CoverageShader.gl.resource_interface` and `CoverageShader.gl.coverage_functions`.
+/// `snail.coverage.Shader.gl.resource_interface` and `snail.coverage.Shader.gl.coverage_functions`.
 pub const Shader = struct {
     pub const gl = struct {
         pub const vertex_interface = pipeline.text_vertex_interface;
@@ -88,7 +88,6 @@ pub const Shader = struct {
             \\}
             \\
             ;
-
     };
 
     pub const vulkan = struct {
@@ -104,7 +103,6 @@ pub const Shader = struct {
         pub const curve_texture_binding: u32 = 0;
         pub const band_texture_binding: u32 = 1;
     };
-
 };
 
 pub const GlProgram = struct {
@@ -231,7 +229,6 @@ pub const GlBackend = if (build_options.enable_opengl) struct {
     pub fn drawVertices(self: GlBackend, vertices: []const u32) void {
         self.glState().drawPreparedText(self.gl_resources, vertices);
     }
-
 } else struct {};
 
 pub const VulkanBackend = if (build_options.enable_vulkan) struct {
@@ -259,7 +256,6 @@ pub const VulkanBackend = if (build_options.enable_vulkan) struct {
     pub fn drawVertices(self: VulkanBackend, vertices: []const u32) void {
         self.vk.drawPreparedTextCoverage(vertices);
     }
-
 } else struct {};
 
 /// Backend hook for evaluating Snail text coverage inside caller-owned shaders.
@@ -293,5 +289,4 @@ pub const Backend = union(BackendKind) {
             .cpu => {},
         }
     }
-
 };
