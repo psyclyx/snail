@@ -79,19 +79,26 @@ zig build run-game-demo                         # 3D scene with HUD + world-spac
 zig build screenshot                            # 2D demo offscreen → zig-out/demo-screenshot.tga
 zig build backend-compare                       # CPU/GL/Vulkan parity
 zig build bench                                 # benchmarks, including Vulkan rows when a Vulkan device is available
-zig build install --release=fast                # install libsnail + enabled C headers
-zig build check-c-api                           # run the C API generator used by build/install
+zig build install --release=fast                # install libsnail, enabled C headers, and snail.pc
+zig build gen-c-api                             # emit generated C API artifacts into the Zig cache
 ```
 
 Library backend flags:
 
 - `-Dopengl=true` (default) — OpenGL backend (`GlRenderer`); installs `snail_gl.h` when the C API is enabled.
+- `-Dgl33=false` (default) — pass `=true` to force an OpenGL 3.3 context/backend path where OpenGL is used.
 - `-Dvulkan=true` (default) — Vulkan backend (`VulkanRenderer`); pass `=false` for a slimmer OpenGL/CPU-only build. SPIR-V shaders are compiled at build time via `glslc`; installs `snail_vulkan.h` when the C API is enabled. That extension header includes Vulkan headers.
 - `-Dcpu-renderer=true` (default) — CPU backend (`CpuRenderer`); pass `=false` to drop it. Installs `snail_cpu.h` when the C API is enabled.
 - `-Dharfbuzz=true` (default) — pass `=false` for a HarfBuzz-free build using the built-in GSUB type 4 / GPOS type 2 shaper.
 - `-Dprofile=false` (default) — pass `=true` to enable the comptime CPU timers.
 - `-Dc-api=true` (default) — pass `=false` for a Zig-module-only build (skips `libsnail.{a,so}` and the header install).
 - `-Dc-api-shared=true` / `-Dc-api-static=true` (default to `-Dc-api`) — pass either `=false` to install only the library form you need.
+
+The generated API files (`snail_generated.h` and `c_api_generated.zig`) are
+build artifacts. They are emitted into the Zig cache and installed into the
+prefix when the C API is enabled; they are intentionally not checked in. C
+consumers should use the installed headers rather than the source-tree
+`include/` directory by itself.
 
 The checked-in screenshot at `assets/demo_screenshot.png` is regenerated from the `zig build screenshot` TGA output.
 
@@ -364,6 +371,11 @@ snail_path_deinit(path);
 snail_text_atlas_deinit(atlas);
 ```
 
+The C scene API includes C-only helper variants for common cases such as a
+single transform, a sub-range, or an owned override copy. Those helpers exist
+to make FFI lifetime management explicit; the core model is still the same
+borrowed `Scene` + `PathDraw` / `TextDraw` primitive used by Zig.
+
 ## API reference
 
 ### Types
@@ -375,9 +387,12 @@ snail_text_atlas_deinit(atlas);
 | `TextBlob` | Positioned text that borrows a `TextAtlas` snapshot. It can be rebound to a compatible superset snapshot when cache lifetime needs it. |
 | `Font` | Stable parsed-font helper for `unitsPerEm`, `glyphIndex`, and `advanceWidth` when callers manage raw font data directly. |
 | `FaceSpec` | `{ .data, .weight, .italic, .fallback, .synthetic }` — font face specification for `TextAtlas.init`. |
+| `FaceIndex` | `u16` face handle returned by atlas resolution/itemization and accepted by per-face metric helpers. |
 | `FontStyle` | `{ .weight: FontWeight, .italic: bool }` — selects a face for rendering. |
 | `FontWeight` | `.regular`, `.bold`, `.semi_bold`, etc. |
 | `SyntheticStyle` | `{ .skew_x, .embolden }` — synthetic italic shear and bold offset. |
+| `ItemizedRun` | `{ .face_index, .text_start, .text_end }` run returned by `atlas.itemize`. |
+| `Decoration`, `ScriptTransform`, `CellMetrics` | Text-layout helper types for decorations, superscript/subscript placement, and monospace-style cell sizing. |
 | `Image` | Immutable sRGB RGBA8 raster image. Created with `initSrgba8`. |
 | `Path` | Mutable path builder: `moveTo`, `lineTo`, `quadTo`, `cubicTo`, `close`, plus shape helpers. |
 | `PathPictureBuilder` | Accumulates filled/stroked paths and shapes with paint styles. |
@@ -418,9 +433,14 @@ snail_text_atlas_deinit(atlas);
 | `atlas.ensureShaped(shaped) !?TextAtlas` | Return a new snapshot with the shaped glyphs present. Null if already present. |
 | `atlas.ensureText(style, text) !?TextAtlas` | Shape-and-ensure helper. |
 | `atlas.ensureGlyphs(face_index, glyph_ids) !?TextAtlas` | Extend one face by resolved glyph IDs without reshaping. |
+| `atlas.resolve(style, codepoint) ?FaceIndex` / `atlas.itemize(alloc, style, text) ![]ItemizedRun` | Choose fallback faces for layout code that wants explicit run control. |
 | `atlas.faceCount() usize` / `atlas.primaryFaceIndex() !FaceIndex` | Inspect configured faces for layout code that caches face indices. |
+| `atlas.lineMetrics() !LineMetrics` / `atlas.unitsPerEm() !u16` | Primary-face metrics. |
 | `atlas.faceLineMetrics(face_index) !LineMetrics` / `atlas.faceUnitsPerEm(face_index) !u16` / `atlas.glyphIndex(face_index, cp) !?u16` / `atlas.advanceWidth(face_index, gid) !i16` | Stable per-face font metrics for layout code. |
 | `atlas.cellMetrics(.{ .style, .em }) !CellMetrics` | Resolve the styled primary face and return `{ .cell_width, .line_height }` in caller units. |
+| `atlas.decorationRect(decoration, x, y, advance, em) !Rect` | Underline/strikethrough rectangle using primary-face font metrics. |
+| `atlas.superscriptTransform(x, y, em) !ScriptTransform` / `atlas.subscriptTransform(x, y, em) !ScriptTransform` | Script placement and em-size from primary-face OS/2 metrics. |
+| `atlas.measureText(style, text, em) !f32` | Shape text and return horizontal advance in caller units. |
 | `TextBlob.init(alloc, atlas, append) !TextBlob` | Build one positioned, painted `TextAppend` from a `ShapedText`. The blob borrows `atlas`. |
 | `blob.rebound(alloc, new_atlas) !TextBlob` | Optional cache/lifetime helper: return a blob bound to a compatible atlas snapshot that retains old pages and contains all referenced glyphs. |
 | `TextBlobBuilder.init(alloc, atlas)` / `builder.append(TextAppend) !TextAppendResult` / `builder.finish() !TextBlob` | Append shaped runs with explicit placement and fill. Call `atlas.ensureText`/`ensureShaped`/`ensureGlyphs` first if all glyphs must be renderable. |
@@ -592,6 +612,8 @@ Vulkan descriptor layout helpers live in `snail_vulkan.h`.
 | `builder.addRect(rect, fill, stroke, transform)` | Direct rectangle. |
 | `builder.addRoundedRect(rect, fill, stroke, radius, transform)` | Direct rounded rectangle. |
 | `builder.addEllipse(rect, fill, stroke, transform)` | Direct ellipse. |
+| `builder.addFilledRect` / `addFilledRoundedRect` / `addFilledEllipse` | Fill-only shape conveniences. |
+| `builder.addStrokedRect` / `addStrokedRoundedRect` / `addStrokedEllipse` | Stroke-only shape conveniences. |
 | `builder.shapeCount() usize` | Number of shapes added so far (matches indices used by `Range`). |
 | `builder.mark() ShapeMark` | Capture the current shape count for later range construction. |
 | `builder.rangeFrom(mark) !Range` | Build a shape range from a mark to the current end. |
@@ -604,11 +626,16 @@ Building blocks for callers who need direct curve/band data, want to emit
 glyph vertices outside the `Scene`/`DrawList` pipeline, or build a custom
 backend on top of snail's rasterization. Most apps should not need this.
 
+Raw platform/rendering imports such as OpenGL bindings, TrueType parser
+internals, and vertex-layout internals are not re-exported here; repo demos
+and tools keep those needs in local shims or build-only internal modules.
+
 | Symbol | Use |
 |--------|-----|
 | `lowlevel.bezier`, `lowlevel.curve_tex` | Geometry math and curve-page packing primitives. |
 | `lowlevel.CurveAtlas`/`Atlas`, `lowlevel.AtlasPage` | Raw atlas storage exposed for backend authors. |
-| `lowlevel.TextBatch`, `lowlevel.PathBatch` | Caller-buffered glyph/shape vertex emission below the `DrawList` layer. |
+| `lowlevel.curveAtlasFootprint` | Raw atlas upload-footprint helper for custom backend/resource code. |
+| `lowlevel.TextBatch`, `TextAtlas.appendTextBatch`, `lowlevel.PathBatch` | Caller-buffered glyph/shape vertex emission below the `DrawList` layer. |
 | `lowlevel.TEXT_WORDS_PER_GLYPH`, `lowlevel.PATH_WORDS_PER_SHAPE`, related sizing constants | `u32` word budget per record (prefer `DrawList.estimate` when possible). |
 | `lowlevel.PATH_PAINT_*` constants | Path-paint texel tags used by `PathPicture` records. |
 | `lowlevel.PathPictureDebugView`, `lowlevel.PathPictureBoundsOverlayOptions` | Debug overlays for vector authoring. |
@@ -664,7 +691,7 @@ zig build bench
 zig build bench -Dvulkan=false  # skip Vulkan rows
 ```
 
-Last run: 2026-05-14, `zig build bench`, ReleaseFast benchmark build. Lower
+Last run: 2026-05-16, `zig build bench`, ReleaseFast benchmark build. Lower
 times are better. These numbers are one local machine/run, not a portability
 guarantee.
 
@@ -685,10 +712,10 @@ The vector workload contains filled and stroked rounded rectangles, ellipses, an
 
 | Workload | Snail | FreeType | FreeType / Snail |
 |---|---:|---:|---:|
-| Font load | 1.88 us | 8.60 us | 4.58x |
-| Glyph prep, ASCII | 446.39 us | 988.29 us | 2.21x |
-| Glyph prep, 7 sizes | 446.39 us | 6866.71 us | 15.38x |
-| PathPicture freeze, 25 shapes | 138.07 us | n/a | n/a |
+| Font load | 1.79 us | 8.68 us | 4.85x |
+| Glyph prep, ASCII | 423.87 us | 1054.34 us | 2.49x |
+| Glyph prep, 7 sizes | 423.87 us | 6965.33 us | 16.43x |
+| PathPicture freeze, 25 shapes | 133.57 us | n/a | n/a |
 
 ### Prepared Resource Memory
 
@@ -703,20 +730,20 @@ The vector workload contains filled and stroked rounded rectangles, ellipses, an
 
 | Workload | Snail TextBlob | FreeType layout | FreeType / Snail |
 |---|---:|---:|---:|
-| Short string | 1.52 us | 76.86 us | 50.54x |
-| Sentence | 5.19 us | 380.75 us | 73.40x |
-| Paragraph | 17.75 us | 1375.86 us | 77.52x |
-| Paragraph x 7 sizes | 124.67 us | 10091.24 us | 80.94x |
+| Short string | 1.71 us | 77.39 us | 45.33x |
+| Sentence | 5.77 us | 377.71 us | 65.49x |
+| Paragraph | 19.77 us | 1386.03 us | 70.09x |
+| Paragraph x 7 sizes | 140.73 us | 10047.97 us | 71.40x |
 
 ### Draw Record Creation
 
 | Scene | Commands | Words | Segments | PreparedScene.initOwned |
 |---|---:|---:|---:|---:|
-| Text | 4 | 4048 | 4 | 7.54 us |
-| Rich text | 1 | 1136 | 1 | 2.04 us |
-| Vector paths | 1 | 400 | 1 | 0.21 us |
-| Mixed text + vector | 5 | 4448 | 5 | 7.84 us |
-| Multi-script text | 4 | 1488 | 4 | 2.81 us |
+| Text | 4 | 4048 | 1 | 8.06 us |
+| Rich text | 1 | 1136 | 1 | 2.14 us |
+| Vector paths | 1 | 400 | 1 | 0.23 us |
+| Mixed text + vector | 5 | 4448 | 2 | 7.94 us |
+| Multi-script text | 4 | 1488 | 1 | 2.82 us |
 
 ### Prepared Render
 
@@ -724,26 +751,26 @@ Target: 640x360. CPU uses 20 measured frames; GPU backends use 500 measured fram
 
 | Backend | Scene | Frames | Commands | Words | Segments | Draw prepared scene |
 |---|---|---:|---:|---:|---:|---:|
-| CPU | Text | 20 | 4 | 4048 | 4 | 7487.94 us |
-| CPU | Rich text | 20 | 1 | 1136 | 1 | 3944.90 us |
-| CPU | Vector paths | 20 | 1 | 400 | 1 | 15656.01 us |
-| CPU | Mixed text + vector | 20 | 5 | 4448 | 5 | 23162.31 us |
-| CPU | Multi-script text | 20 | 4 | 1488 | 4 | 4525.96 us |
-| CPU (threaded) | Text | 20 | 4 | 4048 | 4 | 3241.19 us |
-| CPU (threaded) | Rich text | 20 | 1 | 1136 | 1 | 2003.87 us |
-| CPU (threaded) | Vector paths | 20 | 1 | 400 | 1 | 3135.56 us |
-| CPU (threaded) | Mixed text + vector | 20 | 5 | 4448 | 5 | 5169.83 us |
-| CPU (threaded) | Multi-script text | 20 | 4 | 1488 | 4 | 1991.90 us |
-| GL 4.4 (persistent mapped) | Text | 500 | 4 | 4048 | 4 | 313.72 us |
-| GL 4.4 (persistent mapped) | Rich text | 500 | 1 | 1136 | 1 | 261.37 us |
-| GL 4.4 (persistent mapped) | Vector paths | 500 | 1 | 400 | 1 | 79.21 us |
-| GL 4.4 (persistent mapped) | Mixed text + vector | 500 | 5 | 4448 | 5 | 366.23 us |
-| GL 4.4 (persistent mapped) | Multi-script text | 500 | 4 | 1488 | 4 | 283.30 us |
-| Vulkan | Text | 500 | 4 | 4048 | 4 | 79.93 us |
-| Vulkan | Rich text | 500 | 1 | 1136 | 1 | 86.06 us |
-| Vulkan | Vector paths | 500 | 1 | 400 | 1 | 80.35 us |
-| Vulkan | Mixed text + vector | 500 | 5 | 4448 | 5 | 116.68 us |
-| Vulkan | Multi-script text | 500 | 4 | 1488 | 4 | 74.02 us |
+| CPU | Text | 20 | 4 | 4048 | 1 | 8043.31 us |
+| CPU | Rich text | 20 | 1 | 1136 | 1 | 4203.87 us |
+| CPU | Vector paths | 20 | 1 | 400 | 1 | 16398.11 us |
+| CPU | Mixed text + vector | 20 | 5 | 4448 | 2 | 24645.27 us |
+| CPU | Multi-script text | 20 | 4 | 1488 | 1 | 4886.27 us |
+| CPU (threaded) | Text | 20 | 4 | 4048 | 1 | 3314.75 us |
+| CPU (threaded) | Rich text | 20 | 1 | 1136 | 1 | 2146.50 us |
+| CPU (threaded) | Vector paths | 20 | 1 | 400 | 1 | 3382.64 us |
+| CPU (threaded) | Mixed text + vector | 20 | 5 | 4448 | 2 | 5594.72 us |
+| CPU (threaded) | Multi-script text | 20 | 4 | 1488 | 1 | 2108.47 us |
+| GL 4.4 (persistent mapped) | Text | 500 | 4 | 4048 | 1 | 101.68 us |
+| GL 4.4 (persistent mapped) | Rich text | 500 | 1 | 1136 | 1 | 85.84 us |
+| GL 4.4 (persistent mapped) | Vector paths | 500 | 1 | 400 | 1 | 100.10 us |
+| GL 4.4 (persistent mapped) | Mixed text + vector | 500 | 5 | 4448 | 2 | 167.02 us |
+| GL 4.4 (persistent mapped) | Multi-script text | 500 | 4 | 1488 | 1 | 84.30 us |
+| Vulkan | Text | 500 | 4 | 4048 | 1 | 82.50 us |
+| Vulkan | Rich text | 500 | 1 | 1136 | 1 | 97.17 us |
+| Vulkan | Vector paths | 500 | 1 | 400 | 1 | 81.73 us |
+| Vulkan | Mixed text + vector | 500 | 5 | 4448 | 2 | 137.60 us |
+| Vulkan | Multi-script text | 500 | 4 | 1488 | 1 | 89.78 us |
 
 ### Render Modes
 
@@ -752,24 +779,24 @@ the fragment-shader path (grayscale vs LCD subpixel).
 
 | Backend | Scene | AA | Words | Segments | PreparedScene | Draw |
 |---|---|---|---:|---:|---:|---:|
-| CPU | Text | grayscale | 4048 | 4 | 7.82 us | 1491.94 us |
-| CPU | Text | subpixel rgb | 4048 | 4 | 7.52 us | 7513.28 us |
-| CPU | Rich text | grayscale | 1136 | 1 | 2.01 us | 1298.80 us |
-| CPU | Rich text | subpixel rgb | 1136 | 1 | 1.98 us | 3927.44 us |
-| CPU | Multi-script text | grayscale | 1488 | 4 | 2.76 us | 933.67 us |
-| CPU | Multi-script text | subpixel rgb | 1488 | 4 | 2.83 us | 4510.95 us |
-| GL 4.4 (persistent mapped) | Text | grayscale | 4048 | 4 | 7.57 us | 90.15 us |
-| GL 4.4 (persistent mapped) | Text | subpixel rgb | 4048 | 4 | 7.51 us | 306.24 us |
-| GL 4.4 (persistent mapped) | Rich text | grayscale | 1136 | 1 | 1.96 us | 114.61 us |
-| GL 4.4 (persistent mapped) | Rich text | subpixel rgb | 1136 | 1 | 1.97 us | 251.82 us |
-| GL 4.4 (persistent mapped) | Multi-script text | grayscale | 1488 | 4 | 2.72 us | 91.19 us |
-| GL 4.4 (persistent mapped) | Multi-script text | subpixel rgb | 1488 | 4 | 2.75 us | 311.02 us |
-| Vulkan | Text | grayscale | 4048 | 4 | 7.51 us | 27.81 us |
-| Vulkan | Text | subpixel rgb | 4048 | 4 | 7.50 us | 87.86 us |
-| Vulkan | Rich text | grayscale | 1136 | 1 | 1.93 us | 30.71 us |
-| Vulkan | Rich text | subpixel rgb | 1136 | 1 | 1.94 us | 72.84 us |
-| Vulkan | Multi-script text | grayscale | 1488 | 4 | 2.74 us | 27.80 us |
-| Vulkan | Multi-script text | subpixel rgb | 1488 | 4 | 2.69 us | 74.01 us |
+| CPU | Text | grayscale | 4048 | 1 | 7.92 us | 1671.07 us |
+| CPU | Text | subpixel rgb | 4048 | 1 | 7.63 us | 8138.35 us |
+| CPU | Rich text | grayscale | 1136 | 1 | 2.11 us | 1392.81 us |
+| CPU | Rich text | subpixel rgb | 1136 | 1 | 2.11 us | 4230.81 us |
+| CPU | Multi-script text | grayscale | 1488 | 1 | 2.73 us | 1002.55 us |
+| CPU | Multi-script text | subpixel rgb | 1488 | 1 | 2.76 us | 4863.81 us |
+| GL 4.4 (persistent mapped) | Text | grayscale | 4048 | 1 | 7.64 us | 34.34 us |
+| GL 4.4 (persistent mapped) | Text | subpixel rgb | 4048 | 1 | 7.52 us | 80.20 us |
+| GL 4.4 (persistent mapped) | Rich text | grayscale | 1136 | 1 | 2.09 us | 29.40 us |
+| GL 4.4 (persistent mapped) | Rich text | subpixel rgb | 1136 | 1 | 2.09 us | 91.82 us |
+| GL 4.4 (persistent mapped) | Multi-script text | grayscale | 1488 | 1 | 2.72 us | 28.35 us |
+| GL 4.4 (persistent mapped) | Multi-script text | subpixel rgb | 1488 | 1 | 2.73 us | 91.96 us |
+| Vulkan | Text | grayscale | 4048 | 1 | 7.72 us | 28.40 us |
+| Vulkan | Text | subpixel rgb | 4048 | 1 | 7.49 us | 85.93 us |
+| Vulkan | Rich text | grayscale | 1136 | 1 | 2.15 us | 33.59 us |
+| Vulkan | Rich text | subpixel rgb | 1136 | 1 | 2.18 us | 89.25 us |
+| Vulkan | Multi-script text | grayscale | 1488 | 1 | 3.01 us | 33.11 us |
+| Vulkan | Multi-script text | subpixel rgb | 1488 | 1 | 2.78 us | 79.38 us |
 
 ## Architecture
 
@@ -806,8 +833,7 @@ src/
     main.zig             interactive renderer demo
     game.zig             game-style OpenGL demo entry point
     screenshot.zig       headless screenshot demo
-    bench.zig            benchmark tool
-    backend_compare.zig  CPU/GL/Vulkan pixel comparison tool
+    internal_gl.zig      demo-local OpenGL C imports; not part of Snail API
     platform/            demo-only Wayland/EGL/Vulkan/offscreen support
       gl.zig             Wayland + EGL platform for the GL demo
       vulkan.zig         Wayland + Vulkan swapchain/offscreen setup
@@ -819,8 +845,15 @@ src/
       presentation.zig   demo presentation metadata
     profile/
       timer.zig          comptime-gated CPU timers
+  tools/
+    bench.zig            benchmark tool used to refresh README tables
+    backend_compare.zig  CPU/GL/Vulkan pixel comparison check
+    profile_cpu_text.zig CPU text-rendering profile target
+    internal_gl.zig      tool-local OpenGL C imports
+    screenshot.zig       tool-local framebuffer capture/TGA writer
 include/
   snail.h                shared C API: resources, upload, draw records, coverage records
+  snail_generated.h      generated by build/install; not checked in
   snail_cpu.h            CPU backend C constructor and thread-pool hook
   snail_gl.h             OpenGL backend C constructor and coverage bindings
   snail_vulkan.h         Vulkan backend C constructor, upload, and coverage hooks
