@@ -1,20 +1,22 @@
 const std = @import("std");
 
 const build_options = @import("build_options");
+const prepared_mod = @import("resources/prepared.zig");
 const render_mod = @import("render.zig");
 const resource_key_mod = @import("resource_key.zig");
-const resources_mod = @import("resources.zig");
+const resource_upload_mod = @import("resources/upload.zig");
+const set_mod = @import("resources/set.zig");
 const vulkan_pipeline = if (build_options.enable_vulkan) @import("renderer/vulkan.zig") else struct {
     pub const VkCommandBuffer = void;
     pub const VkFence = void;
     pub const VulkanPipeline = void;
 };
 
-const PreparedResources = resources_mod.PreparedResources;
+const PreparedResources = prepared_mod.PreparedResources;
 const Renderer = render_mod.Renderer;
 const ResourceKey = resource_key_mod.ResourceKey;
-const ResourceSet = resources_mod.ResourceSet;
-const uploadPreparedResources = resources_mod.uploadPreparedResources;
+const ResourceSet = set_mod.ResourceSet;
+const uploadPreparedResources = resource_upload_mod.uploadPreparedResources;
 
 /// Allocation-free estimate of upload-source bytes and backend texture bytes.
 /// `*_used` is the payload bytes in the source resource data; `*_allocated`

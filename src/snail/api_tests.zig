@@ -4,6 +4,7 @@ const build_options = @import("build_options");
 const snail = @import("root.zig");
 const bezier = @import("math/bezier.zig");
 const resource_key = @import("resource_key.zig");
+const upload_plan = @import("render/upload_plan.zig");
 const vertex_mod = @import("renderer/vertex.zig");
 
 const Mat4 = snail.Mat4;
@@ -21,6 +22,7 @@ const Image = snail.Image;
 const ResourceKey = snail.ResourceKey;
 const ResourceStamp = snail.ResourceStamp;
 const ResourceSet = snail.ResourceSet;
+const ResourceCacheStats = snail.ResourceCacheStats;
 const PreparedResources = snail.PreparedResources;
 const PreparedResourceRetirementQueue = snail.PreparedResourceRetirementQueue;
 const PendingResourceUpload = snail.PendingResourceUpload;
@@ -189,10 +191,34 @@ test "draw dispatch uses only prepared stamps and caller records" {
         fn backendName(_: *anyopaque) []const u8 {
             return "fake";
         }
+        fn uploadResources(_: *anyopaque, _: snail.UploadAllocators, _: *PreparedResources, _: snail.resources.ResourceUploadBatch) anyerror!void {}
+        fn coverageBackend(_: *anyopaque, _: *const PreparedResources) ?snail.coverage.Backend {
+            return null;
+        }
+        fn resourceCacheStats(_: *const anyopaque) ResourceCacheStats {
+            return .{};
+        }
+        fn resetResourceCache(_: *anyopaque) void {}
+        fn validateBackendGeneration(_: *const PreparedResources) anyerror!void {}
+        fn atlasSlotCanOverflowIntoBank(_: *const PreparedResources, _: usize, _: upload_plan.AtlasRef) bool {
+            return false;
+        }
+        fn atlasNeedsOverflowBank(_: *const PreparedResources, _: usize, _: upload_plan.AtlasRef) bool {
+            return false;
+        }
+        fn atlasWouldRebuild(_: *const PreparedResources, _: usize, _: upload_plan.AtlasRef) bool {
+            return false;
+        }
+        fn canUseAtlasOverflowBanks(_: *const PreparedResources, _: usize) bool {
+            return false;
+        }
     };
     const fake_vtable = Renderer.VTable{
         .backend = .cpu,
+        .uses_resource_cache = false,
         .deinit = Fake.deinit,
+        .uploadResources = Fake.uploadResources,
+        .coverageBackend = Fake.coverageBackend,
         .draw = Fake.draw,
         .drawText = Fake.drawText,
         .drawPaths = Fake.drawPaths,
@@ -207,6 +233,13 @@ test "draw dispatch uses only prepared stamps and caller records" {
         .getResolve = Fake.getResolve,
         .setCoverageTransfer = Fake.setCoverageTransfer,
         .getCoverageTransfer = Fake.getCoverageTransfer,
+        .resourceCacheStats = Fake.resourceCacheStats,
+        .resetResourceCache = Fake.resetResourceCache,
+        .validateBackendGeneration = Fake.validateBackendGeneration,
+        .atlasSlotCanOverflowIntoBank = Fake.atlasSlotCanOverflowIntoBank,
+        .atlasNeedsOverflowBank = Fake.atlasNeedsOverflowBank,
+        .atlasWouldRebuild = Fake.atlasWouldRebuild,
+        .canUseAtlasOverflowBanks = Fake.canUseAtlasOverflowBanks,
         .backendName = Fake.backendName,
     };
 
@@ -279,7 +312,7 @@ test "pixel grid snaps logical coordinates to backing pixels" {
 }
 
 test "Renderer.draw source stays free of upload allocation" {
-    const source = @embedFile("render.zig");
+    const source = @embedFile("render/interface.zig");
     const start = std.mem.indexOf(u8, source, "pub fn draw(self: *Renderer").?;
     const end = start + std.mem.indexOf(u8, source[start..], "pub fn drawPrepared").?;
     const draw_source = source[start..end];

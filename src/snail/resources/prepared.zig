@@ -1,0 +1,285 @@
+const std = @import("std");
+
+const build_options = @import("build_options");
+const coverage_mod = @import("../coverage.zig");
+const image_mod = @import("../image.zig");
+const lowlevel_mod = @import("../lowlevel.zig");
+const path_mod = @import("../path.zig");
+const resource_key_mod = @import("../resource_key.zig");
+const text_mod = @import("../text.zig");
+
+const pipeline = if (build_options.enable_opengl) @import("../renderer/gl.zig") else struct {
+    pub const TextCoverageBindings = struct {};
+    pub const GlTextState = void;
+    pub const PreparedResources = void;
+    pub const text_vertex_interface = "";
+    pub const text_coverage_fragment_interface = "";
+    pub const text_coverage_fragment_body = "";
+};
+const cpu_renderer_mod = if (build_options.enable_cpu) @import("../renderer/cpu.zig") else struct {
+    pub const PreparedResources = void;
+};
+const vulkan_pipeline = if (build_options.enable_vulkan) @import("../renderer/vulkan.zig") else struct {
+    pub const PreparedResources = void;
+    pub const VulkanPipeline = void;
+};
+
+const Atlas = lowlevel_mod.Atlas;
+const CoverageBackend = coverage_mod.Backend;
+const Image = image_mod.Image;
+const PathPicture = path_mod.PathPicture;
+const PreparedAtlasView = lowlevel_mod.PreparedAtlasView;
+const PreparedImageView = lowlevel_mod.PreparedImageView;
+const PreparedLayerInfoView = lowlevel_mod.PreparedLayerInfoView;
+const PreparedTextAtlasView = lowlevel_mod.PreparedTextAtlasView;
+const ResourceKey = resource_key_mod.ResourceKey;
+const ResourceStamp = resource_key_mod.ResourceStamp;
+const TextAtlas = text_mod.TextAtlas;
+const TextBlob = text_mod.TextBlob;
+const resourceKey = resource_key_mod.resourceKey;
+
+pub const PreparedResources = struct {
+    allocator: std.mem.Allocator,
+    /// Validated bindings for one renderer/context. GPU backends point at
+    /// renderer-owned resident caches; CPU prepared resources still own their
+    /// prepared curve sidecars and borrow immutable source data.
+    atlases: []PreparedAtlasResource = &.{},
+    layer_infos: []PreparedLayerInfoResource = &.{},
+    images: []PreparedImageResource = &.{},
+    gl: if (build_options.enable_opengl) ?*pipeline.PreparedResources else void = if (build_options.enable_opengl) null else {},
+    vulkan: if (build_options.enable_vulkan) ?*vulkan_pipeline.PreparedResources else void = if (build_options.enable_vulkan) null else {},
+    cpu: if (build_options.enable_cpu) ?cpu_renderer_mod.PreparedResources else void = if (build_options.enable_cpu) null else {},
+    backend_generation: u64 = 0,
+
+    pub const PreparedAtlasKind = enum {
+        text,
+        path,
+    };
+
+    pub const PreparedAtlasResource = struct {
+        key: ResourceKey,
+        kind: PreparedAtlasKind,
+        text_atlas: ?*const TextAtlas = null,
+        picture: ?*const PathPicture = null,
+        atlas: *const Atlas,
+        wrapper: Atlas = undefined,
+        owns_wrapper: bool = false,
+        view: PreparedAtlasView = undefined,
+        owns_page_layers: bool = false,
+        stamp: ResourceStamp,
+    };
+
+    pub const PreparedLayerInfoResource = struct {
+        key: ResourceKey,
+        text_blob: *const TextBlob,
+        view: PreparedLayerInfoView = undefined,
+        stamp: ResourceStamp,
+    };
+
+    pub const PreparedImageResource = struct {
+        key: ResourceKey,
+        image: *const Image,
+        view: PreparedImageView = undefined,
+        stamp: ResourceStamp,
+    };
+
+    pub fn deinit(self: *PreparedResources) void {
+        if (comptime build_options.enable_cpu) {
+            if (self.cpu) |*cpu_resources| cpu_resources.deinit();
+        }
+        for (self.atlases) |*entry| {
+            if (entry.owns_wrapper) switch (entry.kind) {
+                .text => entry.text_atlas.?.deinitUploadAtlas(&entry.wrapper),
+                .path => {},
+            };
+            if (entry.owns_page_layers and entry.view.page_layers.len > 0) self.allocator.free(entry.view.page_layers);
+        }
+        if (self.atlases.len > 0) self.allocator.free(self.atlases);
+        if (self.layer_infos.len > 0) self.allocator.free(self.layer_infos);
+        if (self.images.len > 0) self.allocator.free(self.images);
+        self.* = undefined;
+    }
+
+    pub fn retireNow(self: *PreparedResources) void {
+        self.deinit();
+    }
+
+    pub fn retireAfter(self: *PreparedResources, queue: *PreparedResourceRetirementQueue, fence_or_frame: anytype) !void {
+        try queue.retireAfter(self, fence_or_frame);
+    }
+
+    pub fn stampForKey(self: *const PreparedResources, key_value: anytype) ?ResourceStamp {
+        const key = resourceKey(key_value);
+        for (self.atlases) |entry| if (entry.key.eql(key)) return entry.stamp;
+        for (self.layer_infos) |entry| if (entry.key.eql(key)) return entry.stamp;
+        for (self.images) |entry| if (entry.key.eql(key)) return entry.stamp;
+        return null;
+    }
+
+    pub fn coverageBackend(self: *const PreparedResources, renderer: anytype) ?CoverageBackend {
+        return renderer.coverageBackend(self);
+    }
+
+    fn textAtlasEntry(self: *const PreparedResources, atlas: *const TextAtlas) ?*const PreparedAtlasResource {
+        for (self.atlases) |*entry| {
+            if (entry.kind == .text and entry.text_atlas == atlas) return entry;
+        }
+        return null;
+    }
+
+    fn textPaintEntry(self: *const PreparedResources, blob: *const TextBlob) ?*const PreparedLayerInfoResource {
+        for (self.layer_infos) |*entry| {
+            if (entry.text_blob == blob) return entry;
+        }
+        return null;
+    }
+
+    fn pathPictureEntry(self: *const PreparedResources, picture: *const PathPicture) ?*const PreparedAtlasResource {
+        for (self.atlases) |*entry| {
+            if (entry.kind == .path and entry.picture == picture) return entry;
+        }
+        return null;
+    }
+
+    pub fn textAtlasView(self: *const PreparedResources, atlas: *const TextAtlas) !PreparedTextAtlasView {
+        const entry = self.textAtlasEntry(atlas) orelse return error.MissingPreparedResource;
+        return .{
+            .layer_base = entry.view.layer_base,
+            .page_layers = entry.view.page_layers,
+            .info_row_base = entry.view.info_row_base,
+        };
+    }
+
+    pub fn textAtlasKey(self: *const PreparedResources, atlas: *const TextAtlas) !ResourceKey {
+        return (self.textAtlasEntry(atlas) orelse return error.MissingPreparedResource).key;
+    }
+
+    pub fn textPaintView(self: *const PreparedResources, blob: *const TextBlob) !PreparedLayerInfoView {
+        const entry = self.textPaintEntry(blob) orelse return error.MissingPreparedResource;
+        return entry.view;
+    }
+
+    pub fn textPaintKey(self: *const PreparedResources, blob: *const TextBlob) !ResourceKey {
+        return (self.textPaintEntry(blob) orelse return error.MissingPreparedResource).key;
+    }
+
+    pub fn pathAtlasView(self: *const PreparedResources, picture: *const PathPicture) !PreparedAtlasView {
+        const entry = self.pathPictureEntry(picture) orelse return error.MissingPreparedResource;
+        return entry.view;
+    }
+
+    pub fn pathPictureKey(self: *const PreparedResources, picture: *const PathPicture) !ResourceKey {
+        return (self.pathPictureEntry(picture) orelse return error.MissingPreparedResource).key;
+    }
+
+    pub fn textStamp(self: *const PreparedResources, atlas: *const TextAtlas) !ResourceStamp {
+        return (self.textAtlasEntry(atlas) orelse return error.MissingPreparedResource).stamp;
+    }
+
+    pub fn textPaintStamp(self: *const PreparedResources, blob: *const TextBlob) !ResourceStamp {
+        return (self.textPaintEntry(blob) orelse return error.MissingPreparedResource).stamp;
+    }
+
+    pub fn pathStamp(self: *const PreparedResources, picture: *const PathPicture) !ResourceStamp {
+        return (self.pathPictureEntry(picture) orelse return error.MissingPreparedResource).stamp;
+    }
+};
+
+const VulkanRetirementFence = if (build_options.enable_vulkan) struct {
+    device: vulkan_pipeline.vk.VkDevice,
+    fence: vulkan_pipeline.vk.VkFence,
+} else void;
+
+pub const PreparedResourceRetirementQueue = struct {
+    allocator: std.mem.Allocator,
+    head: ?*Node = null,
+
+    const Node = struct {
+        resources: PreparedResources,
+        vulkan_fence: if (build_options.enable_vulkan) ?VulkanRetirementFence else void = if (build_options.enable_vulkan) null else {},
+        next: ?*Node = null,
+    };
+
+    pub fn init(allocator: std.mem.Allocator) PreparedResourceRetirementQueue {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn deinit(self: *PreparedResourceRetirementQueue) void {
+        while (self.head) |node| {
+            self.head = node.next;
+            var resources = node.resources;
+            resources.deinit();
+            self.allocator.destroy(node);
+        }
+        self.* = undefined;
+    }
+
+    pub fn sweep(self: *PreparedResourceRetirementQueue) void {
+        var link = &self.head;
+        while (link.*) |node| {
+            if (ready(node)) {
+                link.* = node.next;
+                var resources = node.resources;
+                resources.deinit();
+                self.allocator.destroy(node);
+            } else {
+                link = &node.next;
+            }
+        }
+    }
+
+    pub fn retireAfter(self: *PreparedResourceRetirementQueue, resources: *PreparedResources, fence_or_frame: anytype) !void {
+        self.sweep();
+        if (comptime build_options.enable_vulkan) {
+            if (resources.vulkan != null) {
+                const fence = preparedRetirementFence(resources, fence_or_frame) orelse return error.InvalidRetirementFence;
+                const node = try self.allocator.create(Node);
+                node.* = .{
+                    .resources = resources.*,
+                    .vulkan_fence = fence,
+                    .next = self.head,
+                };
+                self.head = node;
+                resources.* = undefined;
+                return;
+            }
+        }
+        resources.deinit();
+    }
+
+    fn ready(node: *const Node) bool {
+        if (comptime build_options.enable_vulkan) {
+            if (node.vulkan_fence) |fence| {
+                const result = vulkan_pipeline.vk.vkGetFenceStatus(fence.device, fence.fence);
+                return result == vulkan_pipeline.vk.VK_SUCCESS or result == vulkan_pipeline.vk.VK_ERROR_DEVICE_LOST;
+            }
+        }
+        return true;
+    }
+};
+
+fn preparedRetirementFence(resources: *const PreparedResources, fence_or_frame: anytype) ?VulkanRetirementFence {
+    if (comptime !build_options.enable_vulkan) return null;
+    const vk_resources = resources.vulkan orelse return null;
+    const T = @TypeOf(fence_or_frame);
+    switch (@typeInfo(T)) {
+        .@"struct" => {
+            if (@hasField(T, "fence")) return makeVulkanRetirementFence(vk_resources.ctx.device, fence_or_frame.fence);
+            return null;
+        },
+        else => return makeVulkanRetirementFence(vk_resources.ctx.device, fence_or_frame),
+    }
+}
+
+fn makeVulkanRetirementFence(device: if (build_options.enable_vulkan) vulkan_pipeline.vk.VkDevice else void, fence: anytype) ?VulkanRetirementFence {
+    if (comptime !build_options.enable_vulkan) return null;
+    const T = @TypeOf(fence);
+    switch (@typeInfo(T)) {
+        .pointer, .optional => {
+            const vk_fence: vulkan_pipeline.vk.VkFence = @ptrCast(fence);
+            if (vk_fence == null) return null;
+            return .{ .device = device, .fence = vk_fence };
+        },
+        else => return null,
+    }
+}
