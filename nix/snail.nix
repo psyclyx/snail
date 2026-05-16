@@ -63,13 +63,6 @@ stdenv.mkDerivation {
   dontUseZigCheck = true;
   dontSetZigDefaultFlags = true;
 
-  postInstall = lib.optionalString enableCApi ''
-    mkdir -p $out/lib/pkgconfig
-    substitute snail.pc.in $out/lib/pkgconfig/snail.pc \
-      --replace-fail @PREFIX@ $out \
-      --replace-fail @REQUIRES@ "${backendOptions.cApiRequires}"
-  '';
-
   meta = {
     description = "GPU font and vector rendering via direct Bezier curve evaluation";
     license = lib.licenses.mit;

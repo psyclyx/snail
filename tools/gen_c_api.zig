@@ -13,12 +13,6 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
-    if (std.mem.eql(u8, args[1], "--check")) {
-        if (args.len != 4) return usage();
-        try check(init.io, init.gpa, args[2], args[3]);
-        return;
-    }
-
     return usage();
 }
 
@@ -26,7 +20,6 @@ fn usage() error{InvalidArgument} {
     std.debug.print(
         \\usage:
         \\  gen-c-api --emit <header-path> <zig-path>
-        \\  gen-c-api --check <header-path> <zig-path>
         \\
     , .{});
     return error.InvalidArgument;
@@ -40,26 +33,6 @@ fn emit(io: std.Io, allocator: std.mem.Allocator, header_path: []const u8, zig_p
 
     try writeFile(io, header_path, header);
     try writeFile(io, zig_path, zig);
-}
-
-fn check(io: std.Io, allocator: std.mem.Allocator, header_path: []const u8, zig_path: []const u8) !void {
-    const expected_header = try renderHeader(allocator);
-    defer allocator.free(expected_header);
-    const expected_zig = try renderZig(allocator);
-    defer allocator.free(expected_zig);
-
-    try checkFile(io, allocator, header_path, expected_header);
-    try checkFile(io, allocator, zig_path, expected_zig);
-}
-
-fn checkFile(io: std.Io, allocator: std.mem.Allocator, path: []const u8, expected: []const u8) !void {
-    const actual = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(1024 * 1024));
-    defer allocator.free(actual);
-
-    if (!std.mem.eql(u8, actual, expected)) {
-        std.debug.print("{s} differs from generated C API output\n", .{path});
-        return error.GeneratedCapiOutOfDate;
-    }
 }
 
 fn writeFile(io: std.Io, path: []const u8, contents: []const u8) !void {

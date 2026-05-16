@@ -8,10 +8,9 @@ const std = @import("std");
 const build_options = @import("build_options");
 const assets = @import("assets");
 const snail = @import("snail");
-const ttf = snail.lowlevel.ttf;
-const egl_offscreen = @import("platform/offscreen_gl.zig");
-const gl = snail.lowlevel.gl;
-const vulkan_platform = if (build_options.enable_vulkan) @import("platform/vulkan.zig") else struct {};
+const egl_offscreen = @import("demo_platform_offscreen_gl");
+const gl = @import("internal_gl.zig").gl;
+const vulkan_platform = if (build_options.enable_vulkan) @import("demo_platform_vulkan") else struct {};
 
 const c = @cImport({
     @cInclude("ft2build.h");
@@ -672,7 +671,7 @@ fn benchSnailPrep(allocator: std.mem.Allocator, font_data: []const u8) !SnailPre
     var font_load_total_us: f64 = 0;
     for (0..PREP_RUNS) |_| {
         const start = nowNs();
-        _ = try ttf.Font.init(font_data);
+        _ = try snail.Font.init(font_data);
         font_load_total_us += usFrom(start);
     }
 

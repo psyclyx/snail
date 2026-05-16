@@ -2,10 +2,10 @@ const std = @import("std");
 const build_options = @import("build_options");
 const assets = @import("assets");
 const snail = @import("snail");
-const screenshot = @import("platform/screenshot.zig");
-const egl_offscreen = @import("platform/offscreen_gl.zig");
-const gl = snail.lowlevel.gl;
-const vulkan_platform = if (build_options.enable_vulkan) @import("platform/vulkan.zig") else struct {};
+const screenshot = @import("screenshot.zig");
+const egl_offscreen = @import("demo_platform_offscreen_gl");
+const gl = @import("internal_gl.zig").gl;
+const vulkan_platform = if (build_options.enable_vulkan) @import("demo_platform_vulkan") else struct {};
 
 const WIDTH: u32 = 220;
 const HEIGHT: u32 = 112;

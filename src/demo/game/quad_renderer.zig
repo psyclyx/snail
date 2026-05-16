@@ -1,7 +1,6 @@
 const std = @import("std");
 const snail = @import("snail");
-const gl = snail.lowlevel.gl;
-const vertex = snail.lowlevel.vertex;
+const gl = @import("../internal_gl.zig").gl;
 const common = @import("common.zig");
 
 const Vec3 = common.Vec3;
@@ -709,9 +708,9 @@ const material_fragment_shader: [:0]const u8 =
     ;
 
 // Layout the shader (`material_fragment_shader`) sees: 6 vec4s per glyph,
-// fed via samplerBuffer with internalFormat RGBA32F. Snail's packed
-// `vertex.Instance` (64 bytes, mixed f16/f32/u32/u8) isn't directly readable
-// at vec4 stride, so we widen each glyph at upload time.
+// fed via samplerBuffer with internalFormat RGBA32F. Snail's packed text
+// instances are 64 bytes of mixed f16/f32/u32/u8 fields, so this demo widens
+// each glyph to a vec4-aligned record at upload time.
 pub const SurfaceTextDraw = struct {
     allocator: std.mem.Allocator,
     blob: *const snail.TextBlob,
@@ -775,6 +774,66 @@ pub const SurfaceTextDraw = struct {
     }
 };
 
+const PackedTextInstance = extern struct {
+    rect: [4]u16,
+    xform: [4]f32,
+    origin: [2]f32,
+    glyph: [2]u32,
+    band: [4]f32,
+    color: [4]u8,
+    tint: [4]u8,
+};
+
+const DecodedTextInstance = struct {
+    rect: [4]f32,
+    xform: [4]f32,
+    origin: [2]f32,
+    glyph: [2]u32,
+    band: [4]f32,
+    color: [4]f32,
+    tint: [4]f32,
+};
+
+fn f16BitsToF32(bits: u16) f32 {
+    return @floatCast(@as(f16, @bitCast(bits)));
+}
+
+fn decodeHalf4(values: [4]u16) [4]f32 {
+    return .{
+        f16BitsToF32(values[0]),
+        f16BitsToF32(values[1]),
+        f16BitsToF32(values[2]),
+        f16BitsToF32(values[3]),
+    };
+}
+
+fn decodeColor4(color: [4]u8) [4]f32 {
+    return .{
+        @as(f32, @floatFromInt(color[0])) / 255.0,
+        @as(f32, @floatFromInt(color[1])) / 255.0,
+        @as(f32, @floatFromInt(color[2])) / 255.0,
+        @as(f32, @floatFromInt(color[3])) / 255.0,
+    };
+}
+
+fn packedTextInstance(words: []const u32) *const PackedTextInstance {
+    std.debug.assert(words.len >= snail.lowlevel.TEXT_WORDS_PER_GLYPH);
+    return @ptrCast(@alignCast(words.ptr));
+}
+
+fn decodeTextInstance(words: []const u32) DecodedTextInstance {
+    const instance = packedTextInstance(words);
+    return .{
+        .rect = decodeHalf4(instance.rect),
+        .xform = instance.xform,
+        .origin = instance.origin,
+        .glyph = instance.glyph,
+        .band = instance.band,
+        .color = decodeColor4(instance.color),
+        .tint = decodeColor4(instance.tint),
+    };
+}
+
 fn widenInstanceRecords(packed_words: []const u32, out: []f32) void {
     const words_per_glyph = snail.lowlevel.TEXT_WORDS_PER_GLYPH;
     std.debug.assert(packed_words.len % words_per_glyph == 0);
@@ -782,7 +841,7 @@ fn widenInstanceRecords(packed_words: []const u32, out: []f32) void {
     std.debug.assert(out.len == glyph_count * TEXT_RECORD_FLOATS_PER_GLYPH);
     var glyph_index: usize = 0;
     while (glyph_index < glyph_count) : (glyph_index += 1) {
-        const decoded = vertex.decodeInstance(packed_words[glyph_index * words_per_glyph ..][0..words_per_glyph]);
+        const decoded = decodeTextInstance(packed_words[glyph_index * words_per_glyph ..][0..words_per_glyph]);
         const base = glyph_index * TEXT_RECORD_FLOATS_PER_GLYPH;
         // slot 0: rect (em-space bbox)
         out[base + 0] = decoded.rect[0];

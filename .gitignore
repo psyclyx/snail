@@ -1,5 +1,7 @@
 .zig-cache/
 zig-out/
+/include/snail_generated.h
+/src/snail/c_api_generated.zig
 result
 vgcore.*
 perf.data

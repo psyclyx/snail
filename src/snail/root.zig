@@ -3,7 +3,6 @@
 //! The public surface is organized into explicit domains. Top-level aliases
 //! re-export the same canonical declarations from those domain modules.
 
-const build_options = @import("build_options");
 const backend_kind = @import("backend_kind.zig");
 const resource_key = @import("resource_key.zig");
 const upload_common = @import("renderer/upload_common.zig");
@@ -33,6 +32,7 @@ pub const GlyphMetrics = text.GlyphMetrics;
 pub const LineMetrics = text.LineMetrics;
 pub const DecorationMetrics = text.DecorationMetrics;
 pub const ScriptMetrics = text.ScriptMetrics;
+pub const FaceIndex = text.FaceIndex;
 pub const TextAtlas = text.TextAtlas;
 pub const ShapedText = text.ShapedText;
 pub const TextBlob = text.TextBlob;
@@ -41,6 +41,9 @@ pub const TextAppend = text.TextAppend;
 pub const TextAppendResult = text.TextAppendResult;
 pub const CellMetrics = text.CellMetrics;
 pub const CellMetricsOptions = text.CellMetricsOptions;
+pub const Decoration = text.Decoration;
+pub const ScriptTransform = text.ScriptTransform;
+pub const ItemizedRun = text.ItemizedRun;
 pub const TextBlobBuilder = text.TextBlobBuilder;
 pub const FaceSpec = text.FaceSpec;
 pub const FontWeight = text.FontWeight;
@@ -108,7 +111,6 @@ pub const ResourceUploadPlan = upload.ResourceUploadPlan;
 pub const ResourceUploadCommand = upload.ResourceUploadCommand;
 pub const ResourceUploadCompletion = upload.ResourceUploadCompletion;
 pub const PendingResourceUpload = upload.PendingResourceUpload;
-pub const curveAtlasFootprint = resources.curveAtlasFootprint;
 pub const textAtlasUploadFootprint = resources.textAtlasUploadFootprint;
 
 pub const DrawOptions = draw.DrawOptions;
@@ -128,20 +130,12 @@ pub const ASCII_PRINTABLE = blk: {
 /// at the top level (`TextAtlas`, `Path`, `PathPicture`, `Renderer`, ...).
 pub const lowlevel = struct {
     pub const bezier = @import("math/bezier.zig");
-    pub const gl = if (build_options.enable_opengl) @import("renderer/gl_bindings.zig").gl else struct {};
     pub const curve_tex = @import("renderer/curve_texture.zig");
-    pub const ttf = @import("font/ttf.zig");
-    pub const vertex = @import("renderer/vertex.zig");
 
     pub const Font = text.Font;
     pub const CurveAtlas = lowlevel_impl.CurveAtlas;
     pub const Atlas = lowlevel_impl.Atlas;
     pub const AtlasPage = lowlevel_impl.AtlasPage;
-    pub const PreparedAtlasView = lowlevel_impl.PreparedAtlasView;
-    pub const PreparedTextAtlasView = lowlevel_impl.PreparedTextAtlasView;
-    pub const PreparedLayerInfoUpload = lowlevel_impl.PreparedLayerInfoUpload;
-    pub const PreparedLayerInfoView = lowlevel_impl.PreparedLayerInfoView;
-    pub const PreparedImageView = lowlevel_impl.PreparedImageView;
     pub const curveAtlasFootprint = resources.curveAtlasFootprint;
 
     pub const TextBatch = lowlevel_impl.TextBatch;

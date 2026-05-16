@@ -9,7 +9,7 @@ const wayland = @import("platform/wayland.zig");
 const gl_platform = if (build_options.enable_opengl) @import("platform/gl.zig") else struct {};
 const vulkan_platform = if (build_options.enable_vulkan) @import("platform/vulkan.zig") else struct {};
 const cpu_platform = if (build_options.enable_cpu) @import("platform/cpu.zig") else struct {};
-const gl = if (build_options.enable_opengl) snail.lowlevel.gl else struct {};
+const gl = if (build_options.enable_opengl) @import("internal_gl.zig").gl else struct {};
 
 pub const Kind = enum {
     vulkan,
@@ -98,7 +98,7 @@ pub const Driver = union(Kind) {
     pub fn init(allocator: std.mem.Allocator, window: *wayland.Window, selected: Kind) !Driver {
         return switch (selected) {
             .vulkan => if (comptime build_options.enable_vulkan)
-                .{ .vulkan = try VulkanDriver.init(window) }
+                .{ .vulkan = try VulkanDriver.init(allocator, window) }
             else
                 unreachable,
             .gl => if (comptime build_options.enable_opengl)
@@ -220,7 +220,7 @@ pub const Driver = union(Kind) {
 const VulkanDriver = if (build_options.enable_vulkan) struct {
     renderer_state: snail.VulkanRenderer,
 
-    fn init(window: *wayland.Window) !VulkanDriver {
+    fn init(allocator: std.mem.Allocator, window: *wayland.Window) !VulkanDriver {
         const ctx = try vulkan_platform.initForWindow(window);
         errdefer vulkan_platform.deinit();
         var renderer_state = try snail.VulkanRenderer.init(allocator, ctx);

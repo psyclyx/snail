@@ -26,10 +26,4 @@ in
     (boolFlag "c-api-shared" cApiShared)
     (boolFlag "c-api-static" cApiStatic)
   ];
-
-  cApiRequires = lib.concatStringsSep " " (
-    lib.optionals enableOpenGL [ "gl" ]
-    ++ lib.optionals enableHarfBuzz [ "harfbuzz" ]
-    ++ lib.optionals enableVulkan [ "vulkan" ]
-  );
 }

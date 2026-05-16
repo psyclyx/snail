@@ -846,7 +846,7 @@ pub const TextAtlas = struct {
         return itemizeText(allocator, self.config, style, text);
     }
 
-    pub fn faceView(self: *const TextAtlas, face_index: FaceIndex, atlas_view: anytype) FaceView {
+    fn faceView(self: *const TextAtlas, face_index: FaceIndex, atlas_view: anytype) FaceView {
         return .{
             .face_glyphs = &self.face_glyphs[face_index],
             .face_config = &self.config.faces[face_index],

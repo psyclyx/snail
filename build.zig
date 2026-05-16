@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const version = "0.9.0";
+
 pub const ModuleOptions = struct {
     enable_profiling: bool = false,
     enable_opengl: bool = true,
@@ -12,6 +14,40 @@ pub const ModuleOptions = struct {
 fn appendBytes(dest: []u8, offset: *usize, bytes: []const u8) void {
     @memcpy(dest[offset.*..][0..bytes.len], bytes);
     offset.* += bytes.len;
+}
+
+fn pkgConfigRequires(opengl: bool, vulkan: bool, harfbuzz: bool) []const u8 {
+    if (opengl) {
+        if (harfbuzz) {
+            return if (vulkan) "gl harfbuzz vulkan" else "gl harfbuzz";
+        }
+        return if (vulkan) "gl vulkan" else "gl";
+    }
+    if (harfbuzz) {
+        return if (vulkan) "harfbuzz vulkan" else "harfbuzz";
+    }
+    return if (vulkan) "vulkan" else "";
+}
+
+fn renderPkgConfig(
+    b: *std.Build,
+    opengl: bool,
+    vulkan: bool,
+    harfbuzz: bool,
+) []const u8 {
+    return b.fmt(
+        \\prefix=${{pcfiledir}}/../..
+        \\libdir=${{prefix}}/lib
+        \\includedir=${{prefix}}/include
+        \\
+        \\Name: snail
+        \\Description: GPU font rendering via direct Bezier curve evaluation (Slug algorithm)
+        \\Version: {s}
+        \\Libs: -L${{libdir}} -lsnail
+        \\Cflags: -I${{includedir}}
+        \\Requires: {s}
+        \\
+    , .{ version, pkgConfigRequires(opengl, vulkan, harfbuzz) });
 }
 
 fn assembledGlslSource(
@@ -251,6 +287,45 @@ fn configureValgrindTest(test_exe: *std.Build.Step.Compile) void {
     });
 }
 
+fn createDemoOffscreenGlModule(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    build_options_mod: *std.Build.Module,
+) *std.Build.Module {
+    const mod = b.createModule(.{
+        .root_source_file = b.path("src/demo/platform/offscreen_gl.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{.{ .name = "build_options", .module = build_options_mod }},
+    });
+    mod.linkSystemLibrary("EGL", .{});
+    return mod;
+}
+
+fn createDemoVulkanPlatformModule(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    build_options_mod: *std.Build.Module,
+    snail_mod: *std.Build.Module,
+) *std.Build.Module {
+    const mod = b.createModule(.{
+        .root_source_file = b.path("src/demo/platform/vulkan.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "build_options", .module = build_options_mod },
+            .{ .name = "snail", .module = snail_mod },
+        },
+    });
+    mod.linkSystemLibrary("vulkan", .{});
+    mod.linkSystemLibrary("wayland-client", .{});
+    return mod;
+}
+
 fn createCoreTestModule(
     b: *std.Build,
     root_source_file: std.Build.LazyPath,
@@ -397,15 +472,15 @@ pub fn build(b: *std.Build) void {
         .root_source_file = generated_c_api_zig,
     });
 
-    const gen_c_api_step = b.step("gen-c-api", "Generate C API generated files");
+    const gen_c_api_step = b.step("gen-c-api", "Generate C API build artifacts into the Zig cache");
     gen_c_api_step.dependOn(&gen_c_api_run.step);
 
-    const check_c_api_step = b.step("check-c-api", "Generate C API generated files");
+    const check_c_api_step = b.step("check-c-api", "Validate the C API generator by emitting cache artifacts");
     check_c_api_step.dependOn(&gen_c_api_run.step);
 
     // ── C API libraries ──
     if (enable_c_api) {
-        b.getInstallStep().dependOn(check_c_api_step);
+        b.getInstallStep().dependOn(gen_c_api_step);
 
         const lib_module = b.createModule(.{
             .root_source_file = b.path("src/snail/c_api.zig"),
@@ -431,6 +506,12 @@ pub fn build(b: *std.Build) void {
         if (enable_opengl) b.installFile("include/snail_gl.h", "include/snail_gl.h");
         if (enable_vulkan) b.installFile("include/snail_vulkan.h", "include/snail_vulkan.h");
         if (enable_cpu) b.installFile("include/snail_cpu.h", "include/snail_cpu.h");
+
+        const generated_pkg_config = b.addWriteFiles().add(
+            "snail.pc",
+            renderPkgConfig(b, enable_opengl, enable_vulkan, enable_harfbuzz),
+        );
+        b.getInstallStep().dependOn(&b.addInstallFile(generated_pkg_config, "lib/pkgconfig/snail.pc").step);
     }
 
     // ── Zig module (for downstream zig package consumers) ──
@@ -518,7 +599,7 @@ pub fn build(b: *std.Build) void {
     const unit_tests = b.addTest(.{ .root_module = test_module });
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(check_c_api_step);
+    test_step.dependOn(gen_c_api_step);
     test_step.dependOn(&run_unit_tests.step);
 
     const valgrind_test_step = b.step("valgrind-test", "Run unit tests under Valgrind");
@@ -581,14 +662,18 @@ pub fn build(b: *std.Build) void {
 
     // ── Benchmarks ──
     const release_snail_mod = createSnailModule(b, target, .ReleaseFast, options_mod, enable_opengl, enable_vulkan, enable_harfbuzz, vk_shaders_mod);
+    const release_offscreen_gl_mod = createDemoOffscreenGlModule(b, target, .ReleaseFast, options_mod);
+    const release_vulkan_platform_mod = if (enable_vulkan) createDemoVulkanPlatformModule(b, target, .ReleaseFast, options_mod, release_snail_mod) else null;
     const bench_module = b.createModule(.{
-        .root_source_file = b.path("src/demo/bench.zig"),
+        .root_source_file = b.path("src/tools/bench.zig"),
         .target = target,
         .optimize = .ReleaseFast,
         .link_libc = true,
         .imports = &.{
             .{ .name = "assets", .module = assets_mod },
             .{ .name = "snail", .module = release_snail_mod },
+            .{ .name = "demo_platform_offscreen_gl", .module = release_offscreen_gl_mod },
+            .{ .name = "demo_platform_vulkan", .module = release_vulkan_platform_mod orelse release_offscreen_gl_mod },
         },
     });
     configureEglOffscreenModule(bench_module, options_mod, enable_opengl, enable_vulkan, enable_harfbuzz, vk_shaders_mod);
@@ -601,7 +686,7 @@ pub fn build(b: *std.Build) void {
 
     // ── CPU text profile target (for use under perf record) ──
     const profile_text_module = b.createModule(.{
-        .root_source_file = b.path("src/demo/profile_cpu_text.zig"),
+        .root_source_file = b.path("src/tools/profile_cpu_text.zig"),
         .target = target,
         .optimize = .ReleaseFast,
         .omit_frame_pointer = false,
@@ -645,15 +730,19 @@ pub fn build(b: *std.Build) void {
     compare_options.addOption(bool, "force_gl33", false);
     const compare_options_mod = compare_options.createModule();
     const backend_compare_snail_mod = createSnailModule(b, target, optimize, compare_options_mod, true, enable_vulkan, enable_harfbuzz, vk_shaders_mod);
+    const compare_offscreen_gl_mod = createDemoOffscreenGlModule(b, target, optimize, compare_options_mod);
+    const compare_vulkan_platform_mod = if (enable_vulkan) createDemoVulkanPlatformModule(b, target, optimize, compare_options_mod, backend_compare_snail_mod) else null;
 
     const backend_compare_module = b.createModule(.{
-        .root_source_file = b.path("src/demo/backend_compare.zig"),
+        .root_source_file = b.path("src/tools/backend_compare.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
         .imports = &.{
             .{ .name = "assets", .module = assets_mod },
             .{ .name = "snail", .module = backend_compare_snail_mod },
+            .{ .name = "demo_platform_offscreen_gl", .module = compare_offscreen_gl_mod },
+            .{ .name = "demo_platform_vulkan", .module = compare_vulkan_platform_mod orelse compare_offscreen_gl_mod },
         },
     });
     configureEglOffscreenModule(backend_compare_module, compare_options_mod, true, enable_vulkan, enable_harfbuzz, vk_shaders_mod);

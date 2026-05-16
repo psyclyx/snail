@@ -104,6 +104,7 @@ pub fn isRenderableTextCodepoint(codepoint: u32) bool {
 }
 
 pub const FaceSpec = fonts_mod.FaceSpec;
+pub const FaceIndex = fonts_mod.FaceIndex;
 pub const TextAtlas = fonts_mod.TextAtlas;
 pub const ShapedText = fonts_mod.ShapedText;
 pub const TextBlob = fonts_mod.TextBlob;
@@ -114,3 +115,6 @@ pub const TextBatchAppend = fonts_mod.TextBatchAppend;
 pub const TextBlobBuilder = fonts_mod.TextBlobBuilder;
 pub const CellMetrics = fonts_mod.CellMetrics;
 pub const CellMetricsOptions = fonts_mod.CellMetricsOptions;
+pub const Decoration = fonts_mod.Decoration;
+pub const ScriptTransform = fonts_mod.ScriptTransform;
+pub const ItemizedRun = fonts_mod.ItemizedRun;

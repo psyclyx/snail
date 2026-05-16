@@ -3,7 +3,7 @@ const snail = @import("snail");
 const banner_scene = @import("screenshot_scene.zig");
 const screenshot = @import("platform/screenshot.zig");
 const egl_offscreen = @import("platform/offscreen_gl.zig");
-const gl = snail.lowlevel.gl;
+const gl = @import("internal_gl.zig").gl;
 
 fn srgbToLinear(v: f32) f32 {
     return if (v <= 0.04045) v / 12.92 else std.math.pow(f32, (v + 0.055) / 1.055, 2.4);
