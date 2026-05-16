@@ -694,21 +694,7 @@ pub const PreparedResources = struct {
     }
 
     fn ensureSlotPageCapacity(self: *PreparedResources, slot: *AtlasSlot, capacity: u32) !void {
-        if (capacity <= slot.page_ptrs.len and capacity <= slot.page_layers.len) return;
-        const next_ptrs = try self.allocator.alloc(?*const AtlasPage, capacity);
-        errdefer self.allocator.free(next_ptrs);
-        const next_layers = try self.allocator.alloc(u32, capacity);
-        @memset(next_ptrs, null);
-        @memset(next_layers, 0);
-        if (slot.uploaded_pages > 0) {
-            @memcpy(next_ptrs[0..slot.uploaded_pages], slot.page_ptrs[0..slot.uploaded_pages]);
-            @memcpy(next_layers[0..slot.uploaded_pages], slot.page_layers[0..slot.uploaded_pages]);
-        }
-        if (slot.page_ptrs.len > 0) self.allocator.free(slot.page_ptrs);
-        if (slot.page_layers.len > 0) self.allocator.free(slot.page_layers);
-        slot.page_ptrs = next_ptrs;
-        slot.page_layers = next_layers;
-        slot.capacity_pages = capacity;
+        return upload_common.ensureSlotPageCapacity(self.allocator, slot, capacity);
     }
 
     fn appendTexturePagesIntoNewBank(self: *PreparedResources, scratch: std.mem.Allocator, atlases: []const *const CurveAtlas) !bool {
@@ -811,47 +797,19 @@ pub const PreparedResources = struct {
     }
 
     fn atlasesHaveNoLayerInfoOrImages(atlases: []const *const CurveAtlas) bool {
-        for (atlases) |atlas| {
-            if (atlas.layer_info_height != 0 or atlas.paint_image_records != null) return false;
-        }
-        return true;
+        return upload_common.atlasesHaveNoLayerInfoOrImages(atlases);
     }
 
     fn atlasPrefixesCompatibleForOverflow(self: *const PreparedResources, atlases: []const *const CurveAtlas) bool {
-        if (atlases.len != self.atlas_slot_count) return false;
-        for (atlases, 0..) |atlas, i| {
-            const slot = &self.atlas_slots[i];
-            const page_count: u32 = @intCast(atlas.pageCount());
-            if (page_count < slot.uploaded_pages) return false;
-            if (slot.uploaded_pages > slot.page_ptrs.len) return false;
-            for (0..slot.uploaded_pages) |page_index| {
-                if (slot.page_ptrs[page_index] != atlas.page(@intCast(page_index))) return false;
-            }
-        }
-        return true;
+        return upload_common.atlasPrefixesCompatibleForOverflow(self.atlas_slots, self.atlas_slot_count, atlases);
     }
 
     fn encodeSlotPageLayers(self: *PreparedResources) void {
-        for (self.atlas_slots[0..self.atlas_slot_count]) |*slot| {
-            for (0..@min(slot.uploaded_pages, slot.page_layers.len)) |page_index| {
-                slot.page_layers[page_index] = texture_layers.inBank(
-                    self.active_atlas_bank_id,
-                    slot.base_layer + @as(u32, @intCast(page_index)),
-                );
-            }
-        }
+        upload_common.encodeSlotPageLayers(self.atlas_slots, self.atlas_slot_count, self.active_atlas_bank_id);
     }
 
     fn encodeSlotPageLayersFromStarts(self: *PreparedResources, start_pages: []const u32) void {
-        for (self.atlas_slots[0..self.atlas_slot_count], 0..) |*slot, i| {
-            const start = if (i < start_pages.len) start_pages[i] else slot.uploaded_pages;
-            for (start..@min(slot.uploaded_pages, slot.page_layers.len)) |page_index| {
-                slot.page_layers[page_index] = texture_layers.inBank(
-                    self.active_atlas_bank_id,
-                    slot.base_layer + @as(u32, @intCast(page_index)),
-                );
-            }
-        }
+        upload_common.encodeSlotPageLayersFromStarts(self.atlas_slots, self.atlas_slot_count, self.active_atlas_bank_id, start_pages);
     }
 
     fn fillAtlasViews(self: *const PreparedResources, atlases: []const *const CurveAtlas, out_views: anytype) void {
@@ -859,19 +817,11 @@ pub const PreparedResources = struct {
     }
 
     fn atlasLayerInfoRows(_: *const PreparedResources, atlases: []const *const CurveAtlas) u32 {
-        var rows: u32 = 0;
-        for (atlases) |atlas| {
-            rows += atlas.layer_info_height;
-        }
-        return rows;
+        return upload_common.atlasLayerInfoRows(atlases);
     }
 
     fn fillLayerInfoViews(_: *const PreparedResources, row_base_start: u32, layer_infos: anytype, out_views: anytype) void {
-        var row_base = row_base_start;
-        for (layer_infos, 0..) |info, i| {
-            out_views[i] = .{ .info_row_base = row_base };
-            row_base += info.height;
-        }
+        upload_common.fillLayerInfoViews(row_base_start, layer_infos, out_views);
     }
 
     fn ensureAtlasSlotCount(self: *PreparedResources, count: usize) !void {

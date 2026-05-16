@@ -1,4 +1,5 @@
 const std = @import("std");
+const texture_layers = @import("texture_layers.zig");
 
 pub fn BufferElement(comptime Buffer: type) type {
     return switch (@typeInfo(Buffer)) {
@@ -102,6 +103,85 @@ pub fn atlasSlotsCompatible(atlas_slots: anytype, atlas_slot_count: usize, atlas
         }
     }
     return true;
+}
+
+pub fn atlasesHaveNoLayerInfoOrImages(atlases: anytype) bool {
+    for (atlases) |atlas| {
+        if (atlas.layer_info_height != 0 or atlas.paint_image_records != null) return false;
+    }
+    return true;
+}
+
+pub fn atlasPrefixesCompatibleForOverflow(atlas_slots: anytype, atlas_slot_count: usize, atlases: anytype) bool {
+    if (atlases.len != atlas_slot_count) return false;
+    for (atlases, 0..) |atlas, i| {
+        const slot = &atlas_slots[i];
+        if (atlas.pageCount() > std.math.maxInt(u32)) return false;
+        const page_count: u32 = @intCast(atlas.pageCount());
+        if (page_count < slot.uploaded_pages) return false;
+        if (slot.uploaded_pages > slot.page_ptrs.len) return false;
+        for (0..slot.uploaded_pages) |page_index| {
+            if (slot.page_ptrs[page_index] != atlas.page(@intCast(page_index))) return false;
+        }
+    }
+    return true;
+}
+
+pub fn encodeSlotPageLayers(atlas_slots: anytype, atlas_slot_count: usize, active_atlas_bank_id: u32) void {
+    for (atlas_slots[0..atlas_slot_count]) |*slot| {
+        for (0..@min(slot.uploaded_pages, slot.page_layers.len)) |page_index| {
+            slot.page_layers[page_index] = texture_layers.inBank(
+                active_atlas_bank_id,
+                slot.base_layer + @as(u32, @intCast(page_index)),
+            );
+        }
+    }
+}
+
+pub fn encodeSlotPageLayersFromStarts(atlas_slots: anytype, atlas_slot_count: usize, active_atlas_bank_id: u32, start_pages: []const u32) void {
+    for (atlas_slots[0..atlas_slot_count], 0..) |*slot, i| {
+        const start = if (i < start_pages.len) start_pages[i] else slot.uploaded_pages;
+        for (start..@min(slot.uploaded_pages, slot.page_layers.len)) |page_index| {
+            slot.page_layers[page_index] = texture_layers.inBank(
+                active_atlas_bank_id,
+                slot.base_layer + @as(u32, @intCast(page_index)),
+            );
+        }
+    }
+}
+
+pub fn atlasLayerInfoRows(atlases: anytype) u32 {
+    var rows: u32 = 0;
+    for (atlases) |atlas| {
+        rows += atlas.layer_info_height;
+    }
+    return rows;
+}
+
+pub fn fillLayerInfoViews(row_base_start: u32, layer_infos: anytype, out_views: anytype) void {
+    var row_base = row_base_start;
+    for (layer_infos, 0..) |info, i| {
+        out_views[i] = .{ .info_row_base = row_base };
+        row_base += info.height;
+    }
+}
+
+pub fn ensureSlotPageCapacity(allocator: std.mem.Allocator, slot: anytype, capacity: u32) !void {
+    if (capacity <= slot.page_ptrs.len and capacity <= slot.page_layers.len) return;
+    const next_ptrs = try allocator.alloc(BufferElement(@TypeOf(slot.page_ptrs)), capacity);
+    errdefer allocator.free(next_ptrs);
+    const next_layers = try allocator.alloc(u32, capacity);
+    @memset(next_ptrs, null);
+    @memset(next_layers, 0);
+    if (slot.uploaded_pages > 0) {
+        @memcpy(next_ptrs[0..slot.uploaded_pages], slot.page_ptrs[0..slot.uploaded_pages]);
+        @memcpy(next_layers[0..slot.uploaded_pages], slot.page_layers[0..slot.uploaded_pages]);
+    }
+    if (slot.page_ptrs.len > 0) allocator.free(slot.page_ptrs);
+    if (slot.page_layers.len > 0) allocator.free(slot.page_layers);
+    slot.page_ptrs = next_ptrs;
+    slot.page_layers = next_layers;
+    slot.capacity_pages = capacity;
 }
 
 pub fn rebuildAtlasSlots(allocator: std.mem.Allocator, atlas_slots: anytype, atlases: anytype) !AtlasSlotBuildInfo {
