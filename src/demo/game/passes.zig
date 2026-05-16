@@ -511,7 +511,6 @@ pub fn hudTarget(
         .will_resample = will_resample,
         .encoding = encoding,
         .resolve = resolve,
-        .coverage_transfer = snail.CoverageTransfer.power(0.9),
     };
 }
 

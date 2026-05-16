@@ -22,6 +22,9 @@
 
 ### Fixed
 
+- Demo grayscale AA now uses the identity coverage transfer instead of the
+  stronger 0.9 exponent, avoiding fuzzy antialiased text edges across GL,
+  Vulkan, and CPU backends.
 - GL `.linear` resolves can now seed their linear intermediate from the caller's
   existing sRGB pixels before drawing Snail content, then overwrite the target
   with one final sRGB encode pass. This keeps Snail composition gamma-correct

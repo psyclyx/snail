@@ -79,7 +79,6 @@ pub fn main() !void {
             .pixel_height = h,
             .subpixel_order = .none,
             .encoding = .srgb,
-            .coverage_transfer = snail.CoverageTransfer.power(0.9),
         },
     };
     var prepared_scene = try snail.PreparedScene.initOwned(allocator, &prepared, &scene, draw_options);

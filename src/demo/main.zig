@@ -271,7 +271,6 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
                 .will_resample = present.will_resample,
                 .encoding = target_encoding,
                 .resolve = resolve,
-                .coverage_transfer = snail.CoverageTransfer.power(0.9),
             },
         };
         const needed = snail.DrawList.estimate(&scene, draw_options);
