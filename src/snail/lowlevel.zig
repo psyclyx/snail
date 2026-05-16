@@ -5,7 +5,6 @@ const bezier = @import("math/bezier.zig");
 const build_options = @import("build_options");
 const curve_tex = @import("renderer/curve_texture.zig");
 const glyph_emit = @import("glyph_emit.zig");
-const fonts_mod = @import("fonts.zig");
 const image_mod = @import("image.zig");
 const opentype = @import("font/opentype.zig");
 const scene_mod = @import("scene.zig");
@@ -937,7 +936,7 @@ pub const TextBatch = struct {
         override_index: usize,
         start_glyph: usize,
     ) !AppendResult {
-        return fonts_mod.appendTextDrawIntoBatch(self, view, draw, override_index, start_glyph);
+        return text_mod.appendTextDrawIntoBatch(self, view, draw, override_index, start_glyph);
     }
 
     fn localLayer(self: *TextBatch, atlas_layer: u32) !u8 {

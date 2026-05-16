@@ -55,7 +55,7 @@ test {
     _ = @import("renderer/vertex.zig");
     if (build_options.enable_cpu) _ = @import("renderer/cpu.zig");
     _ = @import("torture_test.zig");
-    _ = @import("fonts.zig");
+    _ = @import("text.zig");
 }
 
 test "vector path approximates cubic commands into quadratic segments and reports bounds" {

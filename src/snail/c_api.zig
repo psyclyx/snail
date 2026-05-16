@@ -3,7 +3,6 @@
 
 const std = @import("std");
 const snail = @import("root.zig");
-const fonts = @import("fonts.zig");
 const resource_key = @import("resource_key.zig");
 const ttf = @import("font/ttf.zig");
 const generated = @import("c_api_generated");
@@ -542,7 +541,7 @@ fn wrapScriptMetrics(metrics: snail.ScriptMetrics) SnailScriptMetrics {
     };
 }
 
-fn wrapScriptTransform(transform: fonts.ScriptTransform) SnailScriptTransform {
+fn wrapScriptTransform(transform: snail.ScriptTransform) SnailScriptTransform {
     return .{
         .x = transform.x,
         .y = transform.y,
@@ -780,7 +779,7 @@ fn toFillRule(v: c_int) !snail.FillRule {
     };
 }
 
-fn toDecoration(v: c_int) !fonts.Decoration {
+fn toDecoration(v: c_int) !snail.Decoration {
     return switch (v) {
         0 => .underline,
         1 => .strikethrough,

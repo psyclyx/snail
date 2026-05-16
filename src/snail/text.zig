@@ -1,6 +1,10 @@
 const std = @import("std");
+const atlas_mod = @import("text/atlas.zig");
 const bezier = @import("math/bezier.zig");
-const fonts_mod = @import("fonts.zig");
+const blob_mod = @import("text/blob.zig");
+const config_mod = @import("text/config.zig");
+const types_mod = @import("text/types.zig");
+const view_mod = @import("text/view.zig");
 const ttf = @import("font/ttf.zig");
 
 pub const GlyphMetrics = ttf.GlyphMetrics;
@@ -103,18 +107,30 @@ pub fn isRenderableTextCodepoint(codepoint: u32) bool {
     return true;
 }
 
-pub const FaceSpec = fonts_mod.FaceSpec;
-pub const FaceIndex = fonts_mod.FaceIndex;
-pub const TextAtlas = fonts_mod.TextAtlas;
-pub const ShapedText = fonts_mod.ShapedText;
-pub const TextBlob = fonts_mod.TextBlob;
-pub const TextPlacement = fonts_mod.TextPlacement;
-pub const TextAppend = fonts_mod.TextAppend;
-pub const TextAppendResult = fonts_mod.TextAppendResult;
-pub const TextBatchAppend = fonts_mod.TextBatchAppend;
-pub const TextBlobBuilder = fonts_mod.TextBlobBuilder;
-pub const CellMetrics = fonts_mod.CellMetrics;
-pub const CellMetricsOptions = fonts_mod.CellMetricsOptions;
-pub const Decoration = fonts_mod.Decoration;
-pub const ScriptTransform = fonts_mod.ScriptTransform;
-pub const ItemizedRun = fonts_mod.ItemizedRun;
+pub const FaceSpec = config_mod.FaceSpec;
+pub const FaceIndex = config_mod.FaceIndex;
+pub const ItemizedRun = config_mod.ItemizedRun;
+pub const FontConfig = config_mod.FontConfig;
+pub const FaceConfig = config_mod.FaceConfig;
+pub const FaceGlyphData = config_mod.FaceGlyphData;
+pub const FaceView = view_mod.FaceView;
+
+pub const TextAtlas = atlas_mod.TextAtlas;
+pub const ShapedText = types_mod.ShapedText;
+pub const TextBlob = blob_mod.TextBlob;
+pub const TextPlacement = types_mod.TextPlacement;
+pub const TextAppend = types_mod.TextAppend;
+pub const TextAppendResult = types_mod.TextAppendResult;
+pub const TextBatchAppend = types_mod.TextBatchAppend;
+pub const TextBlobBuilder = blob_mod.TextBlobBuilder;
+pub const CellMetrics = types_mod.CellMetrics;
+pub const CellMetricsOptions = types_mod.CellMetricsOptions;
+pub const Decoration = types_mod.Decoration;
+pub const ScriptTransform = types_mod.ScriptTransform;
+
+pub const appendTextDrawIntoBatch = blob_mod.appendTextDrawIntoBatch;
+pub const textBlobRangeGpuInstanceBudget = blob_mod.textBlobRangeGpuInstanceBudget;
+
+test {
+    _ = @import("text/tests.zig");
+}

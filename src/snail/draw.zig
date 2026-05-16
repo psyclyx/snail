@@ -1,12 +1,12 @@
 const std = @import("std");
 
-const fonts_mod = @import("fonts.zig");
 const lowlevel_mod = @import("lowlevel.zig");
 const path_mod = @import("path.zig");
 const prepared_mod = @import("resources/prepared.zig");
 const resource_key_mod = @import("resource_key.zig");
 const scene_mod = @import("scene.zig");
 const target_mod = @import("target.zig");
+const text_mod = @import("text.zig");
 const vec = @import("math/vec.zig");
 
 pub const ResolveTarget = target_mod.ResolveTarget;
@@ -132,7 +132,7 @@ pub const DrawList = struct {
                     const range_budget = if (glyphs.start == 0 and glyphs.end == draw.blob.glyphCount())
                         draw.blob.gpu_instance_budget
                     else
-                        fonts_mod.textBlobRangeGpuInstanceBudget(draw.blob, glyphs);
+                        text_mod.textBlobRangeGpuInstanceBudget(draw.blob, glyphs);
                     total += range_budget * draw.instances.len * TEXT_WORDS_PER_GLYPH;
                 },
                 .path => |draw| {
