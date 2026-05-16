@@ -15,7 +15,6 @@ const PlanePass = demo_passes.PlanePass;
 const WorldPasses = demo_passes.WorldPasses;
 const QuadRenderer = demo_quad.QuadRenderer;
 const RenderTarget = demo_quad.RenderTarget;
-const SurfaceTextDraw = demo_quad.SurfaceTextDraw;
 
 fn toSnailEncoding(encoding: platform.presentation.ColorEncoding) snail.ColorEncoding {
     return switch (encoding) {
@@ -60,10 +59,6 @@ pub fn main() !void {
     var draw_buf: []u32 = &.{};
     defer if (draw_buf.len > 0) allocator.free(draw_buf);
 
-    var rough_wall_text = try SurfaceTextDraw.init(allocator, &scene_resources, world_passes.rough_wall.prepared.text);
-    defer rough_wall_text.deinit();
-    var center_panel_text = try SurfaceTextDraw.init(allocator, &scene_resources, world_passes.center_panel.prepared.text);
-    defer center_panel_text.deinit();
     var hud_window_size = initial_window;
 
     const initial_fb = initial_present.framebuffer_size;
@@ -139,8 +134,6 @@ pub fn main() !void {
             &quad_renderer,
             &snail_renderer,
             &world_passes,
-            &rough_wall_text,
-            &center_panel_text,
             &scene_resources,
             &draw_buf,
             allocator,
@@ -309,8 +302,6 @@ fn renderWorld(
     quad_renderer: *const QuadRenderer,
     renderer: *snail.Renderer,
     world_passes: *const WorldPasses,
-    rough_wall_text: *const SurfaceTextDraw,
-    center_panel_text: *const SurfaceTextDraw,
     prepared: *const snail.PreparedResources,
     draw_buf: *[]u32,
     allocator: std.mem.Allocator,
@@ -344,9 +335,6 @@ fn renderWorld(
         0.22,
         false,
         false,
-        null,
-        null,
-        null,
         camera.pos,
         light_pos,
         light_color,
@@ -364,9 +352,6 @@ fn renderWorld(
         0.10,
         false,
         false,
-        null,
-        null,
-        null,
         camera.pos,
         light_pos,
         light_color,
@@ -384,9 +369,6 @@ fn renderWorld(
         0.18,
         false,
         false,
-        null,
-        null,
-        null,
         camera.pos,
         light_pos,
         light_color,
@@ -404,13 +386,6 @@ fn renderWorld(
         0.46,
         false,
         false,
-        .{
-            .text = rough_wall_text,
-            .scene_size = .{ world_passes.rough_wall.scene_width, world_passes.rough_wall.scene_height },
-            .relief_strength = 0.18,
-        },
-        prepared,
-        renderer,
         camera.pos,
         light_pos,
         light_color,
@@ -428,12 +403,6 @@ fn renderWorld(
         0.06,
         true,
         false,
-        .{
-            .text = center_panel_text,
-            .scene_size = .{ world_passes.center_panel.scene_width, world_passes.center_panel.scene_height },
-        },
-        prepared,
-        renderer,
         camera.pos,
         light_pos,
         light_color,
@@ -443,6 +412,38 @@ fn renderWorld(
     gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA);
     gl.glDepthMask(gl.GL_FALSE);
 
+    try renderPlanePass(
+        renderer,
+        prepared,
+        draw_buf,
+        allocator,
+        &world_passes.rough_wall,
+        view_proj,
+        fb_size,
+        subpixel_order,
+        .{ .x = -4.2, .y = 1.55, .z = -5.75 },
+        0.0,
+        0.24,
+        3.8,
+        2.55,
+        0.010,
+    );
+    try renderPlanePass(
+        renderer,
+        prepared,
+        draw_buf,
+        allocator,
+        &world_passes.center_panel,
+        view_proj,
+        fb_size,
+        subpixel_order,
+        .{ .x = 0.0, .y = 1.65, .z = -7.4 },
+        0.0,
+        0.0,
+        2.65,
+        1.45,
+        0.010,
+    );
     try renderPlanePass(
         renderer,
         prepared,
