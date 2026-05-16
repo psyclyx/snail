@@ -76,8 +76,36 @@ const AtlasUploadDelta = struct {
     band_bytes: usize = 0,
 };
 
+const ResourceSetCounts = struct {
+    atlases: usize = 0,
+    layer_infos: usize = 0,
+    images: usize = 0,
+};
+
+const PreparedAtlasLookup = struct {
+    entry: *const PreparedAtlasResource,
+    index: usize,
+};
+
+fn countResourceSetEntries(set: *const ResourceSet) ResourceSetCounts {
+    var counts: ResourceSetCounts = .{};
+    for (set.slice()) |entry| switch (entry) {
+        .text_atlas, .path_picture => counts.atlases += 1,
+        .text_paint => counts.layer_infos += 1,
+        .image => counts.images += 1,
+    };
+    return counts;
+}
+
 fn preparedAtlasForKey(prepared: *const PreparedResources, key: ResourceKey) ?*const PreparedAtlasResource {
     for (prepared.atlases) |*entry| if (entry.key.eql(key)) return entry;
+    return null;
+}
+
+fn preparedAtlasForKeyWithIndex(prepared: *const PreparedResources, key: ResourceKey) ?PreparedAtlasLookup {
+    for (prepared.atlases, 0..) |*entry, i| {
+        if (entry.key.eql(key)) return .{ .entry = entry, .index = i };
+    }
     return null;
 }
 
@@ -110,6 +138,51 @@ fn atlasUploadDelta(current: ?*const PreparedResources, key: ResourceKey, atlas:
         }
     }
     return out;
+}
+
+fn atlasSlotWouldRebuild(slot: anytype, allocated_curve_height: u32, allocated_band_height: u32, atlas: anytype) bool {
+    if (atlas.pageCount() > std.math.maxInt(u16)) return true;
+    const page_count: u32 = @intCast(atlas.pageCount());
+    if (page_count < slot.uploaded_pages or page_count > slot.capacity_pages) return true;
+    if (slot.uploaded_pages > slot.page_ptrs.len) return true;
+    for (0..slot.uploaded_pages) |page_index| {
+        if (slot.page_ptrs[page_index] != atlas.page(@intCast(page_index))) return true;
+    }
+    for (0..page_count) |page_index| {
+        const page = atlas.page(@intCast(page_index));
+        if (page.curve_height > allocated_curve_height) return true;
+        if (page.band_height > allocated_band_height) return true;
+    }
+    return false;
+}
+
+fn currentAtlasWouldRebuild(self: *const Renderer, current: ?*const PreparedResources, key: ResourceKey, atlas: anytype) bool {
+    const prepared = current orelse return false;
+    const lookup = preparedAtlasForKeyWithIndex(prepared, key) orelse return false;
+    switch (self.backend()) {
+        .gl => if (comptime build_options.enable_opengl) {
+            const cache = prepared.gl orelse return false;
+            if (lookup.index >= cache.atlas_slot_count) return true;
+            return atlasSlotWouldRebuild(
+                cache.atlas_slots[lookup.index],
+                cache.allocated_curve_height,
+                cache.allocated_band_height,
+                atlas,
+            );
+        },
+        .vulkan => if (comptime build_options.enable_vulkan) {
+            const cache = prepared.vulkan orelse return false;
+            if (lookup.index >= cache.atlas_slot_count) return true;
+            return atlasSlotWouldRebuild(
+                cache.atlas_slots[lookup.index],
+                cache.allocated_curve_height,
+                cache.allocated_band_height,
+                atlas,
+            );
+        },
+        .cpu => {},
+    }
+    return false;
 }
 
 /// Renderer execution machinery. GPU resource residency lives in renderer-owned
@@ -397,6 +470,7 @@ pub const Renderer = struct {
     }
 
     pub fn planResourceUpload(self: *Renderer, current: ?*const PreparedResources, next_set: *const ResourceSet, changed_keys: []ResourceKey) !ResourceUploadPlan {
+        const counts = countResourceSetEntries(next_set);
         var plan = ResourceUploadPlan{ .set = next_set, .changed_keys = changed_keys };
         plan.upload_footprint = try next_set.estimateUploadFootprint();
         plan.gpu_bytes_allocated = plan.upload_footprint.allocatedBytes();
@@ -416,6 +490,7 @@ pub const Renderer = struct {
                     plan.missing_atlas_pages += delta.missing_pages;
                     plan.curve_bytes_upload += delta.curve_bytes;
                     plan.band_bytes_upload += delta.band_bytes;
+                    if (currentAtlasWouldRebuild(self, current, key, text.atlas)) plan.atlas_cache_rebuilds = 1;
                 },
                 .path_picture => |path| {
                     const delta = atlasUploadDelta(current, key, &path.picture.atlas);
@@ -423,6 +498,7 @@ pub const Renderer = struct {
                     plan.missing_atlas_pages += delta.missing_pages;
                     plan.curve_bytes_upload += delta.curve_bytes;
                     plan.band_bytes_upload += delta.band_bytes;
+                    if (currentAtlasWouldRebuild(self, current, key, &path.picture.atlas)) plan.atlas_cache_rebuilds = 1;
                 },
                 .text_paint => {
                     const old_layer = if (current) |prepared| preparedLayerInfoForKey(prepared, key) else null;
@@ -456,6 +532,9 @@ pub const Renderer = struct {
         const free_image_layers = stats.image_layers_allocated -| stats.image_layers_resident;
         plan.new_atlas_banks = if (plan.missing_atlas_pages > free_atlas_layers) 1 else 0;
         plan.new_image_banks = if (plan.missing_images > free_image_layers) 1 else 0;
+        if (counts.layer_infos > 0 and current != null and self.backend() != .cpu) plan.atlas_cache_rebuilds = 1;
+        if (plan.new_atlas_banks > 0 and stats.atlas_layers_allocated > 0 and self.backend() != .cpu) plan.atlas_cache_rebuilds = 1;
+        if (plan.new_image_banks > 0 and stats.image_layers_allocated > 0 and self.backend() != .cpu) plan.image_cache_rebuilds = 1;
         return plan;
     }
 

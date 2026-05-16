@@ -2310,6 +2310,14 @@ export fn snail_resource_upload_plan_missing_images(plan: *const ResourceUploadP
     return plan.inner.missing_images;
 }
 
+export fn snail_resource_upload_plan_atlas_cache_rebuilds(plan: *const ResourceUploadPlanImpl) u32 {
+    return plan.inner.atlas_cache_rebuilds;
+}
+
+export fn snail_resource_upload_plan_image_cache_rebuilds(plan: *const ResourceUploadPlanImpl) u32 {
+    return plan.inner.image_cache_rebuilds;
+}
+
 export fn snail_resource_upload_plan_curve_bytes(plan: *const ResourceUploadPlanImpl) usize {
     return plan.inner.curve_bytes_upload;
 }
