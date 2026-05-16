@@ -30,5 +30,11 @@ pub const handles = [_]Handle{
     .{ .name = "SnailResourceSet" },
     .{ .name = "SnailPreparedResources" },
     .{ .name = "SnailPreparedScene" },
+    .{ .name = "SnailPreparedResourceRetirementQueue" },
+    .{ .name = "SnailResourceUploadPlan" },
+    .{ .name = "SnailPendingResourceUpload" },
+    .{ .name = "SnailDrawList" },
+    .{ .name = "SnailTextCoverageRecords" },
+    .{ .name = "SnailCoverageBackend" },
     .{ .name = "SnailRenderer" },
 };

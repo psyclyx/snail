@@ -374,7 +374,7 @@ pub fn build(b: *std.Build) void {
     // ── SPIR-V shader compilation (only when Vulkan enabled) ──
     const vk_shaders_mod = createVulkanShadersModule(b, enable_vulkan);
 
-    // ── C API generated source/header sync ──
+    // ── C API generated source/header ──
     const c_api_manifest_mod = b.createModule(.{
         .root_source_file = b.path("src/snail/c_api/manifest.zig"),
     });
@@ -393,21 +393,15 @@ pub fn build(b: *std.Build) void {
     gen_c_api_run.addArg("--emit");
     const generated_c_api_header = gen_c_api_run.addOutputFileArg("snail_generated.h");
     const generated_c_api_zig = gen_c_api_run.addOutputFileArg("c_api_generated.zig");
+    const c_api_generated_mod = b.createModule(.{
+        .root_source_file = generated_c_api_zig,
+    });
 
-    const update_c_api_sources = b.addUpdateSourceFiles();
-    update_c_api_sources.addCopyFileToSource(generated_c_api_header, "include/snail_generated.h");
-    update_c_api_sources.addCopyFileToSource(generated_c_api_zig, "src/snail/c_api/generated.zig");
+    const gen_c_api_step = b.step("gen-c-api", "Generate C API generated files");
+    gen_c_api_step.dependOn(&gen_c_api_run.step);
 
-    const gen_c_api_step = b.step("gen-c-api", "Regenerate checked-in C API generated files");
-    gen_c_api_step.dependOn(&update_c_api_sources.step);
-
-    const check_c_api_run = b.addRunArtifact(c_api_generator);
-    check_c_api_run.addArg("--check");
-    check_c_api_run.addFileArg(b.path("include/snail_generated.h"));
-    check_c_api_run.addFileArg(b.path("src/snail/c_api/generated.zig"));
-
-    const check_c_api_step = b.step("check-c-api", "Check checked-in C API generated files");
-    check_c_api_step.dependOn(&check_c_api_run.step);
+    const check_c_api_step = b.step("check-c-api", "Generate C API generated files");
+    check_c_api_step.dependOn(&gen_c_api_run.step);
 
     // ── C API libraries ──
     if (enable_c_api) {
@@ -420,6 +414,7 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         });
         configureCoreModule(lib_module, options_mod, enable_opengl, enable_vulkan, enable_harfbuzz, vk_shaders_mod);
+        lib_module.addImport("c_api_generated", c_api_generated_mod);
 
         if (enable_c_api_shared) {
             const shared_lib = b.addLibrary(.{ .name = "snail", .root_module = lib_module, .linkage = .dynamic });
@@ -432,7 +427,7 @@ pub fn build(b: *std.Build) void {
         }
 
         b.installFile("include/snail.h", "include/snail.h");
-        b.installFile("include/snail_generated.h", "include/snail_generated.h");
+        b.getInstallStep().dependOn(&b.addInstallFile(generated_c_api_header, "include/snail_generated.h").step);
         if (enable_opengl) b.installFile("include/snail_gl.h", "include/snail_gl.h");
         if (enable_vulkan) b.installFile("include/snail_vulkan.h", "include/snail_vulkan.h");
         if (enable_cpu) b.installFile("include/snail_cpu.h", "include/snail_cpu.h");
@@ -559,6 +554,7 @@ pub fn build(b: *std.Build) void {
             vk_shaders_mod,
             null,
         );
+        c_api_test_module.addImport("c_api_generated", c_api_generated_mod);
         const c_api_tests = b.addTest(.{ .root_module = c_api_test_module });
         const run_c_api_tests = b.addRunArtifact(c_api_tests);
         test_step.dependOn(&run_c_api_tests.step);
@@ -576,6 +572,7 @@ pub fn build(b: *std.Build) void {
             vk_shaders_mod,
             true,
         );
+        valgrind_c_api_test_module.addImport("c_api_generated", c_api_generated_mod);
         const valgrind_c_api_tests = b.addTest(.{ .root_module = valgrind_c_api_test_module });
         configureValgrindTest(valgrind_c_api_tests);
         const run_valgrind_c_api_tests = b.addRunArtifact(valgrind_c_api_tests);

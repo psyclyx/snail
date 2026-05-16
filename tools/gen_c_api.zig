@@ -5,10 +5,7 @@ pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const args = try init.minimal.args.toSlice(arena);
 
-    if (args.len == 1) {
-        try emit(init.io, init.gpa, "include/snail_generated.h", "src/snail/c_api/generated.zig");
-        return;
-    }
+    if (args.len == 1) return usage();
 
     if (std.mem.eql(u8, args[1], "--emit")) {
         if (args.len != 4) return usage();
@@ -17,10 +14,8 @@ pub fn main(init: std.process.Init) !void {
     }
 
     if (std.mem.eql(u8, args[1], "--check")) {
-        if (args.len != 2 and args.len != 4) return usage();
-        const header_path = if (args.len == 4) args[2] else "include/snail_generated.h";
-        const zig_path = if (args.len == 4) args[3] else "src/snail/c_api/generated.zig";
-        try check(init.io, init.gpa, header_path, zig_path);
+        if (args.len != 4) return usage();
+        try check(init.io, init.gpa, args[2], args[3]);
         return;
     }
 
@@ -30,9 +25,8 @@ pub fn main(init: std.process.Init) !void {
 fn usage() error{InvalidArgument} {
     std.debug.print(
         \\usage:
-        \\  gen-c-api
         \\  gen-c-api --emit <header-path> <zig-path>
-        \\  gen-c-api --check [<header-path> <zig-path>]
+        \\  gen-c-api --check <header-path> <zig-path>
         \\
     , .{});
     return error.InvalidArgument;
@@ -63,7 +57,7 @@ fn checkFile(io: std.Io, allocator: std.mem.Allocator, path: []const u8, expecte
     defer allocator.free(actual);
 
     if (!std.mem.eql(u8, actual, expected)) {
-        std.debug.print("{s} is stale; run `zig build gen-c-api`\n", .{path});
+        std.debug.print("{s} differs from generated C API output\n", .{path});
         return error.GeneratedCapiOutOfDate;
     }
 }

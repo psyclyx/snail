@@ -3,8 +3,10 @@
 
 const std = @import("std");
 const snail = @import("root.zig");
+const fonts = @import("fonts.zig");
+const resource_key = @import("resource_key.zig");
 const ttf = @import("font/ttf.zig");
-const generated = @import("c_api/generated.zig");
+const generated = @import("c_api_generated");
 
 const build_options = @import("build_options");
 const vk = if (build_options.enable_vulkan) @import("renderer/vulkan.zig").vk else struct {
@@ -14,6 +16,9 @@ const vk = if (build_options.enable_vulkan) @import("renderer/vulkan.zig").vk el
     pub const VkRenderPass = usize;
     pub const VkFormat = c_int;
     pub const VkCommandBuffer = ?*anyopaque;
+    pub const VkFence = ?*anyopaque;
+    pub const VkDescriptorSetLayout = ?*anyopaque;
+    pub const VkPipelineLayout = ?*anyopaque;
 };
 
 // Allocator bridge
@@ -96,7 +101,35 @@ fn mapError(err: anyerror) c_int {
     return switch (err) {
         error.OutOfMemory => SNAIL_ERR_OUT_OF_MEMORY,
         error.InvalidFont, error.NoFaces, error.MissingCellMetricsGlyph => SNAIL_ERR_INVALID_FONT,
-        error.InvalidEnum, error.InvalidArgument, error.InvalidFaceIndex, error.WrongTextAtlasSnapshot, error.MissingPreparedGlyph, error.UnsupportedTextPaint, error.InvalidShapeMark, error.InvalidShapeRange => SNAIL_ERR_INVALID_ARGUMENT,
+        error.UnsupportedRenderer => SNAIL_ERR_RENDERER_FAILED,
+        error.InvalidEnum,
+        error.InvalidArgument,
+        error.InvalidFaceIndex,
+        error.WrongTextAtlasSnapshot,
+        error.MissingPreparedGlyph,
+        error.UnsupportedTextPaint,
+        error.InvalidShapeMark,
+        error.InvalidShapeRange,
+        error.InvalidGlyphRange,
+        error.InvalidOverrideIndex,
+        error.InvalidTransform,
+        error.InvalidImageData,
+        error.PathMissingMoveTo,
+        error.EmptyPath,
+        error.EmptyStyle,
+        error.ResourceSetFull,
+        error.DrawListFull,
+        error.ResourceUploadPlanFull,
+        error.ResourceUploadBudgetExceeded,
+        error.ResourceUploadNotReady,
+        error.MissingUploadCommand,
+        error.InvalidRetirementFence,
+        => SNAIL_ERR_INVALID_ARGUMENT,
+        error.MissingPreparedResource,
+        error.StaleDrawRecords,
+        error.InvalidResolve,
+        error.UnsupportedResolve,
+        => SNAIL_ERR_DRAW_FAILED,
         else => SNAIL_ERR_DRAW_FAILED,
     };
 }
@@ -122,6 +155,26 @@ pub const SnailLineMetrics = extern struct {
     line_gap: i16,
 };
 
+pub const SnailDecorationMetrics = extern struct {
+    underline_position: i16,
+    underline_thickness: i16,
+    strikethrough_position: i16,
+    strikethrough_thickness: i16,
+};
+
+pub const SnailScriptMetrics = extern struct {
+    x_size: i16,
+    y_size: i16,
+    x_offset: i16,
+    y_offset: i16,
+};
+
+pub const SnailScriptTransform = extern struct {
+    x: f32,
+    y: f32,
+    font_size: f32,
+};
+
 pub const SnailCellMetrics = extern struct {
     cell_width: f32,
     line_height: f32,
@@ -136,6 +189,11 @@ pub const SnailRect = extern struct {
 
 pub const SnailMat4 = extern struct {
     data: [16]f32,
+};
+
+pub const SnailString = extern struct {
+    data: [*]const u8,
+    len: usize,
 };
 
 pub const SnailTransform2D = extern struct {
@@ -231,6 +289,12 @@ pub const SnailDrawOptions = extern struct {
 
 pub const SnailResourceKey = u64;
 
+pub const SnailResourceStamp = extern struct {
+    identity: u64 = 0,
+    layout: u64 = 0,
+    content: u64 = 0,
+};
+
 pub const SNAIL_RESOURCE_CAPACITY_GROWABLE: c_int = 0;
 pub const SNAIL_RESOURCE_CAPACITY_EXACT: c_int = 1;
 
@@ -243,6 +307,30 @@ pub const SnailResourceFootprint = extern struct {
     layer_info_bytes_allocated: usize = 0,
     image_bytes_used: usize = 0,
     image_bytes_allocated: usize = 0,
+};
+
+pub const SnailGlTextCoverageBindings = extern struct {
+    curve_tex_loc: c_int = -1,
+    band_tex_loc: c_int = -1,
+    layer_tex_loc: c_int = -1,
+    image_tex_loc: c_int = -1,
+    fill_rule_loc: c_int = -1,
+    subpixel_order_loc: c_int = -1,
+    output_srgb_loc: c_int = -1,
+    coverage_exponent_loc: c_int = -1,
+    curve_tex_unit: c_int = 0,
+    band_tex_unit: c_int = 1,
+    layer_tex_unit: c_int = 2,
+    image_tex_unit: c_int = 3,
+    fill_rule: c_int = 0,
+    subpixel_order: c_int = 0,
+    output_srgb: bool = false,
+    coverage_exponent: f32 = 1.0,
+};
+
+pub const SnailVulkanTextCoverageBindings = extern struct {
+    pipeline_layout: vk.VkPipelineLayout = null,
+    descriptor_set_index: u32 = 0,
 };
 
 // Paint / style types
@@ -326,6 +414,35 @@ const ResourceSetImpl = struct {
 };
 const PreparedResourcesImpl = struct { inner: snail.PreparedResources };
 const PreparedSceneImpl = struct { inner: snail.PreparedScene };
+const PreparedResourceRetirementQueueImpl = struct {
+    inner: snail.PreparedResourceRetirementQueue,
+    allocator: std.mem.Allocator,
+};
+const ResourceUploadPlanImpl = struct {
+    inner: snail.ResourceUploadPlan,
+    allocator: std.mem.Allocator,
+    changed_keys: []snail.ResourceKey,
+};
+const PendingResourceUploadImpl = struct {
+    inner: snail.PendingResourceUpload,
+    allocator: std.mem.Allocator,
+    changed_keys: []snail.ResourceKey,
+};
+const DrawListImpl = struct {
+    inner: snail.DrawList,
+    allocator: std.mem.Allocator,
+    words: []u32,
+    segments: []snail.DrawSegment,
+};
+const TextCoverageRecordsImpl = struct {
+    inner: snail.coverage.TextCoverageRecords,
+    allocator: std.mem.Allocator,
+    words: []u32,
+};
+const CoverageBackendImpl = struct {
+    inner: snail.coverage.Backend,
+};
+const ThreadPoolImpl = struct { inner: snail.ThreadPool };
 const RendererImpl = struct {
     backend: snail.BackendKind,
     gl: if (build_options.enable_opengl) ?snail.GlRenderer else void = if (build_options.enable_opengl) null else {},
@@ -389,7 +506,49 @@ fn wrapBBox(bbox: snail.BBox) SnailBBox {
     return .{ .min_x = bbox.min.x, .min_y = bbox.min.y, .max_x = bbox.max.x, .max_y = bbox.max.y };
 }
 
+fn wrapString(s: []const u8) SnailString {
+    return .{ .data = s.ptr, .len = s.len };
+}
+
+fn wrapDecorationMetrics(metrics: snail.DecorationMetrics) SnailDecorationMetrics {
+    return .{
+        .underline_position = metrics.underline_position,
+        .underline_thickness = metrics.underline_thickness,
+        .strikethrough_position = metrics.strikethrough_position,
+        .strikethrough_thickness = metrics.strikethrough_thickness,
+    };
+}
+
+fn wrapScriptMetrics(metrics: snail.ScriptMetrics) SnailScriptMetrics {
+    return .{
+        .x_size = metrics.x_size,
+        .y_size = metrics.y_size,
+        .x_offset = metrics.x_offset,
+        .y_offset = metrics.y_offset,
+    };
+}
+
+fn wrapScriptTransform(transform: fonts.ScriptTransform) SnailScriptTransform {
+    return .{
+        .x = transform.x,
+        .y = transform.y,
+        .font_size = transform.font_size,
+    };
+}
+
+fn wrapResourceStamp(stamp: snail.ResourceStamp) SnailResourceStamp {
+    return .{
+        .identity = stamp.identity,
+        .layout = stamp.layout,
+        .content = stamp.content,
+    };
+}
+
 fn toRect(r: SnailRect) snail.Rect {
+    return .{ .x = r.x, .y = r.y, .w = r.w, .h = r.h };
+}
+
+fn toSnailRect(r: snail.Rect) SnailRect {
     return .{ .x = r.x, .y = r.y, .w = r.w, .h = r.h };
 }
 
@@ -407,6 +566,42 @@ fn toTransform(t: SnailTransform2D) snail.Transform2D {
 
 fn toOverride(override_value: SnailOverride) snail.Override {
     return .{ .transform = toTransform(override_value.transform), .tint = override_value.tint };
+}
+
+fn toGlCoverageBindings(bindings: SnailGlTextCoverageBindings) !snail.coverage.GlBindings {
+    if (comptime build_options.enable_opengl) {
+        return .{
+            .curve_tex_loc = bindings.curve_tex_loc,
+            .band_tex_loc = bindings.band_tex_loc,
+            .layer_tex_loc = bindings.layer_tex_loc,
+            .image_tex_loc = bindings.image_tex_loc,
+            .fill_rule_loc = bindings.fill_rule_loc,
+            .subpixel_order_loc = bindings.subpixel_order_loc,
+            .output_srgb_loc = bindings.output_srgb_loc,
+            .coverage_exponent_loc = bindings.coverage_exponent_loc,
+            .curve_tex_unit = bindings.curve_tex_unit,
+            .band_tex_unit = bindings.band_tex_unit,
+            .layer_tex_unit = bindings.layer_tex_unit,
+            .image_tex_unit = bindings.image_tex_unit,
+            .fill_rule = try toFillRule(bindings.fill_rule),
+            .subpixel_order = try toSubpixelOrder(bindings.subpixel_order),
+            .output_srgb = bindings.output_srgb,
+            .coverage_transfer = .{ .exponent = bindings.coverage_exponent },
+        };
+    } else {
+        return .{};
+    }
+}
+
+fn toVulkanCoverageBindings(bindings: SnailVulkanTextCoverageBindings) snail.coverage.VulkanBindings {
+    if (comptime build_options.enable_vulkan) {
+        return .{
+            .pipeline_layout = bindings.pipeline_layout,
+            .descriptor_set_index = bindings.descriptor_set_index,
+        };
+    } else {
+        return .{};
+    }
 }
 
 fn fromResourceFootprint(footprint: snail.ResourceFootprint) SnailResourceFootprint {
@@ -442,6 +637,14 @@ export fn snail_resource_footprint_allocated_bytes(footprint: SnailResourceFootp
         footprint.band_bytes_allocated +
         footprint.layer_info_bytes_allocated +
         footprint.image_bytes_allocated;
+}
+
+export fn snail_resource_key_from_bytes(data: [*]const u8, len: usize) SnailResourceKey {
+    return resource_key.hashBytes(data[0..len]);
+}
+
+export fn snail_resource_key_from_cstr(data: [*:0]const u8) SnailResourceKey {
+    return resource_key.hashBytes(std.mem.span(data));
 }
 
 fn toRange(range: SnailRange) snail.Range {
@@ -541,6 +744,14 @@ fn toFillRule(v: c_int) !snail.FillRule {
     return switch (v) {
         0 => .non_zero,
         1 => .even_odd,
+        else => error.InvalidEnum,
+    };
+}
+
+fn toDecoration(v: c_int) !fonts.Decoration {
+    return switch (v) {
+        0 => .underline,
+        1 => .strikethrough,
         else => error.InvalidEnum,
     };
 }
@@ -728,6 +939,21 @@ export fn snail_font_line_metrics(font: *const FontImpl, out: *SnailLineMetrics)
     return SNAIL_OK;
 }
 
+export fn snail_font_decoration_metrics(font: *const FontImpl, out: *SnailDecorationMetrics) c_int {
+    out.* = wrapDecorationMetrics(font.inner.decorationMetrics() catch return SNAIL_ERR_INVALID_FONT);
+    return SNAIL_OK;
+}
+
+export fn snail_font_superscript_metrics(font: *const FontImpl, out: *SnailScriptMetrics) c_int {
+    out.* = wrapScriptMetrics(font.inner.superscriptMetrics() catch return SNAIL_ERR_INVALID_FONT);
+    return SNAIL_OK;
+}
+
+export fn snail_font_subscript_metrics(font: *const FontImpl, out: *SnailScriptMetrics) c_int {
+    out.* = wrapScriptMetrics(font.inner.subscriptMetrics() catch return SNAIL_ERR_INVALID_FONT);
+    return SNAIL_OK;
+}
+
 export fn snail_font_advance_width(font: *const FontImpl, glyph_id: u16, out: *i16) c_int {
     out.* = font.inner.advanceWidth(glyph_id) catch return SNAIL_ERR_INVALID_FONT;
     return SNAIL_OK;
@@ -842,6 +1068,41 @@ export fn snail_text_atlas_cell_metrics(atlas: *const TextAtlasImpl, style: Snai
         .em = em,
     }) catch |err| return mapError(err);
     out.* = .{ .cell_width = metrics.cell_width, .line_height = metrics.line_height };
+    return SNAIL_OK;
+}
+
+export fn snail_text_atlas_measure_text(
+    atlas: *const TextAtlasImpl,
+    style: SnailFontStyle,
+    text: [*]const u8,
+    text_len: usize,
+    font_size: f32,
+    out: *f32,
+) c_int {
+    out.* = atlas.inner.measureText(toFontStyle(style) catch return SNAIL_ERR_INVALID_ARGUMENT, text[0..text_len], font_size) catch |err| return mapError(err);
+    return SNAIL_OK;
+}
+
+export fn snail_text_atlas_decoration_rect(
+    atlas: *const TextAtlasImpl,
+    decoration: c_int,
+    x: f32,
+    y: f32,
+    advance: f32,
+    font_size: f32,
+    out: *SnailRect,
+) c_int {
+    out.* = toSnailRect(atlas.inner.decorationRect(toDecoration(decoration) catch return SNAIL_ERR_INVALID_ARGUMENT, x, y, advance, font_size) catch |err| return mapError(err));
+    return SNAIL_OK;
+}
+
+export fn snail_text_atlas_superscript_transform(atlas: *const TextAtlasImpl, x: f32, y: f32, font_size: f32, out: *SnailScriptTransform) c_int {
+    out.* = wrapScriptTransform(atlas.inner.superscriptTransform(x, y, font_size) catch |err| return mapError(err));
+    return SNAIL_OK;
+}
+
+export fn snail_text_atlas_subscript_transform(atlas: *const TextAtlasImpl, x: f32, y: f32, font_size: f32, out: *SnailScriptTransform) c_int {
+    out.* = wrapScriptTransform(atlas.inner.subscriptTransform(x, y, font_size) catch |err| return mapError(err));
     return SNAIL_OK;
 }
 
@@ -1026,10 +1287,21 @@ export fn snail_text_blob_glyph_count(blob: *const TextBlobImpl) usize {
     return blob.inner.glyphCount();
 }
 
-export fn snail_text_blob_rebind(blob: *TextBlobImpl, atlas: *const TextAtlasImpl) c_int {
-    const rebound = blob.inner.rebound(blob.inner.allocator, &atlas.inner) catch |err| return mapError(err);
-    blob.inner.deinit();
-    blob.inner = rebound;
+export fn snail_text_blob_rebound(
+    alloc_ptr: ?*const SnailAllocator,
+    blob: *const TextBlobImpl,
+    atlas: *const TextAtlasImpl,
+    out: *?*TextBlobImpl,
+) c_int {
+    const allocator = resolveAllocator(alloc_ptr);
+    const rebound = blob.inner.rebound(allocator, &atlas.inner) catch |err| return mapError(err);
+    const impl = handleAllocator().create(TextBlobImpl) catch {
+        var doomed = rebound;
+        doomed.deinit();
+        return SNAIL_ERR_OUT_OF_MEMORY;
+    };
+    impl.* = .{ .inner = rebound };
+    out.* = impl;
     return SNAIL_OK;
 }
 
@@ -1039,11 +1311,16 @@ export fn snail_image_init_srgba8(
     alloc_ptr: ?*const SnailAllocator,
     width: u32,
     height: u32,
-    pixels: [*]const u8,
+    pixels: ?[*]const u8,
+    pixel_len: usize,
     out: *?*ImageImpl,
 ) c_int {
     const allocator = resolveAllocator(alloc_ptr);
-    const img = snail.Image.initSrgba8(allocator, width, height, pixels[0 .. width * height * 4]) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    const px_count = std.math.mul(usize, width, height) catch return SNAIL_ERR_INVALID_ARGUMENT;
+    const byte_count = std.math.mul(usize, px_count, 4) catch return SNAIL_ERR_INVALID_ARGUMENT;
+    if (pixel_len != byte_count) return SNAIL_ERR_INVALID_ARGUMENT;
+    const pixel_ptr = pixels orelse return SNAIL_ERR_INVALID_ARGUMENT;
+    const img = snail.Image.initSrgba8(allocator, width, height, pixel_ptr[0..pixel_len]) catch |err| return mapError(err);
     const impl = handleAllocator().create(ImageImpl) catch {
         var doomed = img;
         doomed.deinit();
@@ -1107,42 +1384,57 @@ export fn snail_path_bounds(path: *const PathImpl, out: *SnailBBox) bool {
 }
 
 export fn snail_path_move_to(path: *PathImpl, x: f32, y: f32) c_int {
-    path.inner.moveTo(.{ .x = x, .y = y }) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    path.inner.moveTo(.{ .x = x, .y = y }) catch |err| return mapError(err);
     return SNAIL_OK;
 }
 
 export fn snail_path_line_to(path: *PathImpl, x: f32, y: f32) c_int {
-    path.inner.lineTo(.{ .x = x, .y = y }) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    path.inner.lineTo(.{ .x = x, .y = y }) catch |err| return mapError(err);
     return SNAIL_OK;
 }
 
 export fn snail_path_quad_to(path: *PathImpl, cx: f32, cy: f32, x: f32, y: f32) c_int {
-    path.inner.quadTo(.{ .x = cx, .y = cy }, .{ .x = x, .y = y }) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    path.inner.quadTo(.{ .x = cx, .y = cy }, .{ .x = x, .y = y }) catch |err| return mapError(err);
     return SNAIL_OK;
 }
 
 export fn snail_path_cubic_to(path: *PathImpl, c1x: f32, c1y: f32, c2x: f32, c2y: f32, x: f32, y: f32) c_int {
-    path.inner.cubicTo(.{ .x = c1x, .y = c1y }, .{ .x = c2x, .y = c2y }, .{ .x = x, .y = y }) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    path.inner.cubicTo(.{ .x = c1x, .y = c1y }, .{ .x = c2x, .y = c2y }, .{ .x = x, .y = y }) catch |err| return mapError(err);
     return SNAIL_OK;
 }
 
 export fn snail_path_close(path: *PathImpl) c_int {
-    path.inner.close() catch return SNAIL_ERR_OUT_OF_MEMORY;
+    path.inner.close() catch |err| return mapError(err);
     return SNAIL_OK;
 }
 
 export fn snail_path_add_rect(path: *PathImpl, rect: SnailRect) c_int {
-    path.inner.addRect(toRect(rect)) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    path.inner.addRect(toRect(rect)) catch |err| return mapError(err);
+    return SNAIL_OK;
+}
+
+export fn snail_path_add_rect_reversed(path: *PathImpl, rect: SnailRect) c_int {
+    path.inner.addRectReversed(toRect(rect)) catch |err| return mapError(err);
     return SNAIL_OK;
 }
 
 export fn snail_path_add_rounded_rect(path: *PathImpl, rect: SnailRect, corner_radius: f32) c_int {
-    path.inner.addRoundedRect(toRect(rect), corner_radius) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    path.inner.addRoundedRect(toRect(rect), corner_radius) catch |err| return mapError(err);
+    return SNAIL_OK;
+}
+
+export fn snail_path_add_rounded_rect_reversed(path: *PathImpl, rect: SnailRect, corner_radius: f32) c_int {
+    path.inner.addRoundedRectReversed(toRect(rect), corner_radius) catch |err| return mapError(err);
     return SNAIL_OK;
 }
 
 export fn snail_path_add_ellipse(path: *PathImpl, rect: SnailRect) c_int {
-    path.inner.addEllipse(toRect(rect)) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    path.inner.addEllipse(toRect(rect)) catch |err| return mapError(err);
+    return SNAIL_OK;
+}
+
+export fn snail_path_add_ellipse_reversed(path: *PathImpl, rect: SnailRect) c_int {
+    path.inner.addEllipseReversed(toRect(rect)) catch |err| return mapError(err);
     return SNAIL_OK;
 }
 
@@ -1293,7 +1585,7 @@ fn stashOverride(scene: *SceneImpl, override: snail.Override) ![]const snail.Ove
 }
 
 export fn snail_scene_add_text(scene: *SceneImpl, blob: *const TextBlobImpl) c_int {
-    scene.inner.addText(.{ .blob = &blob.inner }) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    scene.inner.addText(.{ .blob = &blob.inner }) catch |err| return mapError(err);
     return SNAIL_OK;
 }
 
@@ -1306,12 +1598,12 @@ export fn snail_scene_add_text_override(scene: *SceneImpl, blob: *const TextBlob
     scene.inner.addText(.{
         .blob = &blob.inner,
         .instances = instances,
-    }) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    }) catch |err| return mapError(err);
     return SNAIL_OK;
 }
 
 export fn snail_scene_add_path_picture(scene: *SceneImpl, picture: *const PathPictureImpl) c_int {
-    scene.inner.addPath(.{ .picture = &picture.inner }) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    scene.inner.addPath(.{ .picture = &picture.inner }) catch |err| return mapError(err);
     return SNAIL_OK;
 }
 
@@ -1319,7 +1611,7 @@ export fn snail_scene_add_path_picture_range(scene: *SceneImpl, picture: *const 
     scene.inner.addPath(.{
         .picture = &picture.inner,
         .shapes = toRange(range),
-    }) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    }) catch |err| return mapError(err);
     return SNAIL_OK;
 }
 
@@ -1333,7 +1625,7 @@ export fn snail_scene_add_path_picture_range_transformed(scene: *SceneImpl, pict
 
 export fn snail_scene_add_path_picture_override(scene: *SceneImpl, picture: *const PathPictureImpl, override_value: SnailOverride) c_int {
     const instances = stashOverride(scene, toOverride(override_value)) catch return SNAIL_ERR_OUT_OF_MEMORY;
-    scene.inner.addPath(.{ .picture = &picture.inner, .instances = instances }) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    scene.inner.addPath(.{ .picture = &picture.inner, .instances = instances }) catch |err| return mapError(err);
     return SNAIL_OK;
 }
 
@@ -1343,7 +1635,7 @@ export fn snail_scene_add_path_picture_range_override(scene: *SceneImpl, picture
         .picture = &picture.inner,
         .shapes = toRange(range),
         .instances = instances,
-    }) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    }) catch |err| return mapError(err);
     return SNAIL_OK;
 }
 
@@ -1379,31 +1671,31 @@ export fn snail_resource_set_capacity(set: *const ResourceSetImpl) usize {
 }
 
 export fn snail_resource_set_put_text_atlas(set: *ResourceSetImpl, key: SnailResourceKey, atlas: *const TextAtlasImpl) c_int {
-    set.inner.putTextAtlas(snail.ResourceKey.fromId(key), &atlas.inner) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    set.inner.putTextAtlas(snail.ResourceKey.fromId(key), &atlas.inner) catch |err| return mapError(err);
     return SNAIL_OK;
 }
 
 export fn snail_resource_set_put_text_atlas_options(set: *ResourceSetImpl, key: SnailResourceKey, atlas: *const TextAtlasImpl, atlas_capacity: c_int) c_int {
     set.inner.putTextAtlasOptions(snail.ResourceKey.fromId(key), &atlas.inner, .{
         .atlas_capacity = toResourceCapacityMode(atlas_capacity) catch return SNAIL_ERR_INVALID_ARGUMENT,
-    }) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    }) catch |err| return mapError(err);
     return SNAIL_OK;
 }
 
 export fn snail_resource_set_put_path_picture(set: *ResourceSetImpl, key: SnailResourceKey, picture: *const PathPictureImpl) c_int {
-    set.inner.putPathPicture(snail.ResourceKey.fromId(key), &picture.inner) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    set.inner.putPathPicture(snail.ResourceKey.fromId(key), &picture.inner) catch |err| return mapError(err);
     return SNAIL_OK;
 }
 
 export fn snail_resource_set_put_path_picture_options(set: *ResourceSetImpl, key: SnailResourceKey, picture: *const PathPictureImpl, atlas_capacity: c_int) c_int {
     set.inner.putPathPictureOptions(snail.ResourceKey.fromId(key), &picture.inner, .{
         .atlas_capacity = toResourceCapacityMode(atlas_capacity) catch return SNAIL_ERR_INVALID_ARGUMENT,
-    }) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    }) catch |err| return mapError(err);
     return SNAIL_OK;
 }
 
 export fn snail_resource_set_put_image(set: *ResourceSetImpl, key: SnailResourceKey, image: *const ImageImpl) c_int {
-    set.inner.putImage(snail.ResourceKey.fromId(key), &image.inner) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    set.inner.putImage(snail.ResourceKey.fromId(key), &image.inner) catch |err| return mapError(err);
     return SNAIL_OK;
 }
 
@@ -1413,7 +1705,7 @@ export fn snail_resource_set_estimate_upload_footprint(set: *const ResourceSetIm
 }
 
 export fn snail_resource_set_add_scene(set: *ResourceSetImpl, scene: *const SceneImpl) c_int {
-    set.inner.addScene(&scene.inner) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    set.inner.addScene(&scene.inner) catch |err| return mapError(err);
     return SNAIL_OK;
 }
 
@@ -1422,6 +1714,14 @@ export fn snail_prepared_resources_deinit(prepared: ?*PreparedResourcesImpl) voi
         p.inner.deinit();
         destroyHandle(p);
     }
+}
+
+export fn snail_prepared_resources_stamp_for_key(prepared: *const PreparedResourcesImpl, key: SnailResourceKey, out: *SnailResourceStamp) bool {
+    if (prepared.inner.stampForKey(snail.ResourceKey.fromId(key))) |stamp| {
+        out.* = wrapResourceStamp(stamp);
+        return true;
+    }
+    return false;
 }
 
 export fn snail_prepared_scene_init(
@@ -1459,6 +1759,191 @@ export fn snail_prepared_scene_segment_count(scene: *const PreparedSceneImpl) us
     return scene.inner.segments.len;
 }
 
+export fn snail_prepared_resource_retirement_queue_init(alloc_ptr: ?*const SnailAllocator, out: *?*PreparedResourceRetirementQueueImpl) c_int {
+    const allocator = resolveAllocator(alloc_ptr);
+    const impl = handleAllocator().create(PreparedResourceRetirementQueueImpl) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    impl.* = .{ .inner = snail.PreparedResourceRetirementQueue.init(allocator), .allocator = allocator };
+    out.* = impl;
+    return SNAIL_OK;
+}
+
+export fn snail_prepared_resource_retirement_queue_deinit(queue: ?*PreparedResourceRetirementQueueImpl) void {
+    if (queue) |q| {
+        q.inner.deinit();
+        destroyHandle(q);
+    }
+}
+
+export fn snail_prepared_resource_retirement_queue_sweep(queue: *PreparedResourceRetirementQueueImpl) void {
+    queue.inner.sweep();
+}
+
+export fn snail_prepared_resource_retirement_queue_retire(queue: *PreparedResourceRetirementQueueImpl, prepared: *PreparedResourcesImpl) c_int {
+    queue.inner.retireAfter(&prepared.inner, {}) catch |err| return mapError(err);
+    destroyHandle(prepared);
+    return SNAIL_OK;
+}
+
+export fn snail_draw_list_estimate_word_count(scene: *const SceneImpl, options: SnailDrawOptions) usize {
+    return snail.DrawList.estimate(&scene.inner, toDrawOptions(options) catch return 0);
+}
+
+export fn snail_draw_list_estimate_segment_count(scene: *const SceneImpl, options: SnailDrawOptions) usize {
+    return snail.DrawList.estimateSegments(&scene.inner, toDrawOptions(options) catch return 0);
+}
+
+export fn snail_draw_list_init(alloc_ptr: ?*const SnailAllocator, word_capacity: usize, segment_capacity: usize, out: *?*DrawListImpl) c_int {
+    const allocator = resolveAllocator(alloc_ptr);
+    const words = allocator.alloc(u32, word_capacity) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    const segments = allocator.alloc(snail.DrawSegment, segment_capacity) catch {
+        allocator.free(words);
+        return SNAIL_ERR_OUT_OF_MEMORY;
+    };
+    const impl = handleAllocator().create(DrawListImpl) catch {
+        allocator.free(segments);
+        allocator.free(words);
+        return SNAIL_ERR_OUT_OF_MEMORY;
+    };
+    impl.* = .{
+        .inner = snail.DrawList.init(words, segments),
+        .allocator = allocator,
+        .words = words,
+        .segments = segments,
+    };
+    out.* = impl;
+    return SNAIL_OK;
+}
+
+export fn snail_draw_list_deinit(list: ?*DrawListImpl) void {
+    if (list) |l| {
+        l.allocator.free(l.words);
+        l.allocator.free(l.segments);
+        destroyHandle(l);
+    }
+}
+
+export fn snail_draw_list_reset(list: *DrawListImpl) void {
+    list.inner.reset();
+}
+
+export fn snail_draw_list_word_count(list: *const DrawListImpl) usize {
+    return list.inner.len;
+}
+
+export fn snail_draw_list_word_capacity(list: *const DrawListImpl) usize {
+    return list.words.len;
+}
+
+export fn snail_draw_list_segment_count(list: *const DrawListImpl) usize {
+    return list.inner.segment_len;
+}
+
+export fn snail_draw_list_segment_capacity(list: *const DrawListImpl) usize {
+    return list.segments.len;
+}
+
+export fn snail_draw_list_words(list: *const DrawListImpl) ?[*]const u32 {
+    if (list.inner.len == 0) return null;
+    return list.words.ptr;
+}
+
+export fn snail_draw_list_add_scene(list: *DrawListImpl, prepared: *const PreparedResourcesImpl, scene: *const SceneImpl, options: SnailDrawOptions) c_int {
+    list.inner.addScene(&prepared.inner, &scene.inner, toDrawOptions(options) catch return SNAIL_ERR_INVALID_ARGUMENT) catch |err| return mapError(err);
+    return SNAIL_OK;
+}
+
+export fn snail_text_coverage_records_word_capacity_for_blob(blob: *const TextBlobImpl) usize {
+    return snail.coverage.TextCoverageRecords.wordCapacityForBlob(&blob.inner);
+}
+
+export fn snail_text_coverage_records_init(alloc_ptr: ?*const SnailAllocator, word_capacity: usize, out: *?*TextCoverageRecordsImpl) c_int {
+    const allocator = resolveAllocator(alloc_ptr);
+    const words = allocator.alloc(u32, word_capacity) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    const impl = handleAllocator().create(TextCoverageRecordsImpl) catch {
+        allocator.free(words);
+        return SNAIL_ERR_OUT_OF_MEMORY;
+    };
+    impl.* = .{
+        .inner = snail.coverage.TextCoverageRecords.init(words),
+        .allocator = allocator,
+        .words = words,
+    };
+    out.* = impl;
+    return SNAIL_OK;
+}
+
+export fn snail_text_coverage_records_deinit(records: ?*TextCoverageRecordsImpl) void {
+    if (records) |r| {
+        r.allocator.free(r.words);
+        destroyHandle(r);
+    }
+}
+
+export fn snail_text_coverage_records_reset(records: *TextCoverageRecordsImpl) void {
+    records.inner.reset();
+}
+
+export fn snail_text_coverage_records_word_count(records: *const TextCoverageRecordsImpl) usize {
+    return records.inner.slice().len;
+}
+
+export fn snail_text_coverage_records_glyph_count(records: *const TextCoverageRecordsImpl) usize {
+    return records.inner.glyphCount();
+}
+
+export fn snail_text_coverage_records_words(records: *const TextCoverageRecordsImpl) ?[*]const u32 {
+    if (records.inner.len == 0) return null;
+    return records.words.ptr;
+}
+
+export fn snail_text_coverage_records_build_local(records: *TextCoverageRecordsImpl, prepared: *const PreparedResourcesImpl, blob: *const TextBlobImpl, transform: SnailTransform2D) c_int {
+    records.inner.buildLocal(&prepared.inner, &blob.inner, .{ .transform = toTransform(transform) }) catch |err| return mapError(err);
+    return SNAIL_OK;
+}
+
+export fn snail_text_coverage_records_valid_for(records: *const TextCoverageRecordsImpl, prepared: *const PreparedResourcesImpl) bool {
+    return records.inner.validFor(&prepared.inner);
+}
+
+fn coverageBackendPrepared(backend: *const CoverageBackendImpl) ?*const snail.PreparedResources {
+    return switch (backend.inner) {
+        .gl => |gl_backend| if (comptime build_options.enable_opengl) gl_backend.prepared else null,
+        .vulkan => |vk_backend| if (comptime build_options.enable_vulkan) vk_backend.prepared else null,
+        .cpu => null,
+    };
+}
+
+export fn snail_coverage_backend_init(renderer: *RendererImpl, prepared: *const PreparedResourcesImpl, out: *?*CoverageBackendImpl) c_int {
+    var erased = renderer.asRenderer();
+    const backend = prepared.inner.coverageBackend(&erased) orelse return SNAIL_ERR_INVALID_ARGUMENT;
+    const impl = handleAllocator().create(CoverageBackendImpl) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    impl.* = .{ .inner = backend };
+    out.* = impl;
+    return SNAIL_OK;
+}
+
+export fn snail_coverage_backend_deinit(backend: ?*CoverageBackendImpl) void {
+    if (backend) |b| destroyHandle(b);
+}
+
+export fn snail_coverage_backend_draw_coverage(backend: *CoverageBackendImpl, records: *const TextCoverageRecordsImpl) c_int {
+    const prepared = coverageBackendPrepared(backend) orelse return SNAIL_ERR_INVALID_ARGUMENT;
+    if (!records.inner.validFor(prepared)) return SNAIL_ERR_DRAW_FAILED;
+    backend.inner.drawCoverage(&records.inner);
+    return SNAIL_OK;
+}
+
+export fn snail_coverage_backend_draw_words(backend: *CoverageBackendImpl, words: ?[*]const u32, word_count: usize) c_int {
+    if (coverageBackendPrepared(backend) == null) return SNAIL_ERR_INVALID_ARGUMENT;
+    if (word_count == 0) {
+        backend.inner.drawVertices(&.{});
+        return SNAIL_OK;
+    }
+    const word_ptr = words orelse return SNAIL_ERR_INVALID_ARGUMENT;
+    backend.inner.drawVertices(word_ptr[0..word_count]);
+    return SNAIL_OK;
+}
+
 // Renderer
 
 fn cpuPixels(pixels: ?[*]u8, width: u32, height: u32, stride: u32) ?[*]u8 {
@@ -1489,6 +1974,55 @@ export fn snail_cpu_available() bool {
     return build_options.enable_cpu;
 }
 
+fn mapThreadPoolInitError(err: anyerror) c_int {
+    return switch (err) {
+        error.OutOfMemory => SNAIL_ERR_OUT_OF_MEMORY,
+        else => SNAIL_ERR_RENDERER_FAILED,
+    };
+}
+
+fn initThreadPool(
+    alloc_ptr: ?*const SnailAllocator,
+    worker_count: ?usize,
+    out: *?*ThreadPoolImpl,
+) c_int {
+    if (comptime !build_options.enable_cpu) return SNAIL_ERR_RENDERER_FAILED;
+    const allocator = resolveAllocator(alloc_ptr);
+    const impl = handleAllocator().create(ThreadPoolImpl) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    impl.inner.init(allocator, .{ .threads = worker_count }) catch |err| {
+        handleAllocator().destroy(impl);
+        return mapThreadPoolInitError(err);
+    };
+    out.* = impl;
+    return SNAIL_OK;
+}
+
+export fn snail_thread_pool_init(
+    alloc_ptr: ?*const SnailAllocator,
+    out: *?*ThreadPoolImpl,
+) c_int {
+    return initThreadPool(alloc_ptr, null, out);
+}
+
+export fn snail_thread_pool_init_with_threads(
+    alloc_ptr: ?*const SnailAllocator,
+    worker_count: usize,
+    out: *?*ThreadPoolImpl,
+) c_int {
+    return initThreadPool(alloc_ptr, worker_count, out);
+}
+
+export fn snail_thread_pool_deinit(pool: ?*ThreadPoolImpl) void {
+    if (pool) |p| {
+        p.inner.deinit();
+        destroyHandle(p);
+    }
+}
+
+export fn snail_thread_pool_thread_count(pool: *const ThreadPoolImpl) usize {
+    return pool.inner.threadCount();
+}
+
 export fn snail_cpu_renderer_init(pixels: ?[*]u8, width: u32, height: u32, stride: u32, out: *?*RendererImpl) c_int {
     if (comptime build_options.enable_cpu) {
         const pixel_ptr = cpuPixels(pixels, width, height, stride) orelse return SNAIL_ERR_INVALID_ARGUMENT;
@@ -1513,6 +2047,16 @@ export fn snail_cpu_renderer_reinit_buffer(renderer: *RendererImpl, pixels: ?[*]
     return SNAIL_ERR_INVALID_ARGUMENT;
 }
 
+export fn snail_cpu_renderer_set_thread_pool(renderer: *RendererImpl, pool: ?*ThreadPoolImpl) c_int {
+    if (comptime !build_options.enable_cpu) return SNAIL_ERR_RENDERER_FAILED;
+    if (renderer.backend != .cpu) return SNAIL_ERR_INVALID_ARGUMENT;
+    if (renderer.cpu) |*cpu| {
+        cpu.setThreadPool(if (pool) |p| &p.inner else null);
+        return SNAIL_OK;
+    }
+    return SNAIL_ERR_INVALID_ARGUMENT;
+}
+
 export fn snail_vulkan_available() bool {
     return build_options.enable_vulkan;
 }
@@ -1528,7 +2072,7 @@ export fn snail_vulkan_renderer_init(ctx: *const SnailVulkanContext, out: *?*Ren
             .color_format = ctx.color_format,
             .supports_dual_source_blend = ctx.supports_dual_source_blend,
         };
-        const vk_renderer = snail.VulkanRenderer.init(vk_ctx) catch return SNAIL_ERR_RENDERER_FAILED;
+        const vk_renderer = snail.VulkanRenderer.init(handleAllocator(), vk_ctx) catch return SNAIL_ERR_RENDERER_FAILED;
         const impl = handleAllocator().create(RendererImpl) catch {
             var doomed = vk_renderer;
             doomed.deinit();
@@ -1552,38 +2096,122 @@ export fn snail_vulkan_renderer_begin_frame(renderer: *RendererImpl, command_buf
     return SNAIL_ERR_INVALID_ARGUMENT;
 }
 
+export fn snail_vulkan_pending_resource_upload_record(pending: *PendingResourceUploadImpl, command_buffer: vk.VkCommandBuffer, budget_bytes: usize) c_int {
+    if (comptime !build_options.enable_vulkan) return SNAIL_ERR_RENDERER_FAILED;
+    pending.inner.record(.{ .vulkan = command_buffer }, .{ .budget_bytes = budget_bytes }) catch |err| return mapError(err);
+    return SNAIL_OK;
+}
+
+export fn snail_vulkan_pending_resource_upload_ready_fence(pending: *PendingResourceUploadImpl, fence: vk.VkFence) bool {
+    if (comptime !build_options.enable_vulkan) return false;
+    return pending.inner.ready(.{ .vulkan_fence = fence });
+}
+
+export fn snail_vulkan_prepared_resource_retirement_queue_retire_after(queue: *PreparedResourceRetirementQueueImpl, prepared: *PreparedResourcesImpl, fence: vk.VkFence) c_int {
+    if (comptime !build_options.enable_vulkan) return SNAIL_ERR_RENDERER_FAILED;
+    queue.inner.retireAfter(&prepared.inner, fence) catch |err| return mapError(err);
+    destroyHandle(prepared);
+    return SNAIL_OK;
+}
+
+export fn snail_gl_coverage_shader_vertex_interface() SnailString {
+    if (comptime !build_options.enable_opengl) return wrapString("");
+    return wrapString(snail.coverage.Shader.gl.vertex_interface);
+}
+
+export fn snail_gl_coverage_shader_fragment_interface() SnailString {
+    if (comptime !build_options.enable_opengl) return wrapString("");
+    return wrapString(snail.coverage.Shader.gl.fragment_interface);
+}
+
+export fn snail_gl_coverage_shader_resource_interface() SnailString {
+    if (comptime !build_options.enable_opengl) return wrapString("");
+    return wrapString(snail.coverage.Shader.gl.resource_interface);
+}
+
+export fn snail_gl_coverage_shader_coverage_functions() SnailString {
+    if (comptime !build_options.enable_opengl) return wrapString("");
+    return wrapString(snail.coverage.Shader.gl.coverage_functions);
+}
+
+export fn snail_gl_coverage_shader_fragment_body() SnailString {
+    if (comptime !build_options.enable_opengl) return wrapString("");
+    return wrapString(snail.coverage.Shader.gl.fragment_body);
+}
+
+export fn snail_gl_coverage_backend_bind_resources(backend: *CoverageBackendImpl, bindings: SnailGlTextCoverageBindings) c_int {
+    if (comptime !build_options.enable_opengl) return SNAIL_ERR_RENDERER_FAILED;
+    switch (backend.inner) {
+        .gl => |gl_backend| {
+            gl_backend.bindResources(toGlCoverageBindings(bindings) catch return SNAIL_ERR_INVALID_ARGUMENT);
+            return SNAIL_OK;
+        },
+        else => return SNAIL_ERR_INVALID_ARGUMENT,
+    }
+}
+
+export fn snail_vulkan_coverage_shader_vertex_shader() SnailString {
+    if (comptime !build_options.enable_vulkan) return wrapString("");
+    return wrapString(snail.coverage.Shader.vulkan.vertex_shader);
+}
+
+export fn snail_vulkan_coverage_shader_text_fragment_shader() SnailString {
+    if (comptime !build_options.enable_vulkan) return wrapString("");
+    return wrapString(snail.coverage.Shader.vulkan.text_fragment_shader);
+}
+
+export fn snail_vulkan_coverage_shader_coverage_functions() SnailString {
+    if (comptime !build_options.enable_vulkan) return wrapString("");
+    return wrapString(snail.coverage.Shader.vulkan.coverage_functions);
+}
+
+export fn snail_vulkan_coverage_shader_descriptor_set_index() u32 {
+    if (comptime !build_options.enable_vulkan) return 0;
+    return snail.coverage.Shader.vulkan.descriptor_set_index;
+}
+
+export fn snail_vulkan_coverage_shader_curve_texture_binding() u32 {
+    if (comptime !build_options.enable_vulkan) return 0;
+    return snail.coverage.Shader.vulkan.curve_texture_binding;
+}
+
+export fn snail_vulkan_coverage_shader_band_texture_binding() u32 {
+    if (comptime !build_options.enable_vulkan) return 0;
+    return snail.coverage.Shader.vulkan.band_texture_binding;
+}
+
+export fn snail_vulkan_coverage_backend_descriptor_set_layout(backend: *CoverageBackendImpl) vk.VkDescriptorSetLayout {
+    if (comptime !build_options.enable_vulkan) return null;
+    return switch (backend.inner) {
+        .vulkan => |vk_backend| vk_backend.descriptorSetLayout(),
+        else => null,
+    };
+}
+
+export fn snail_vulkan_coverage_backend_pipeline_layout(backend: *CoverageBackendImpl) vk.VkPipelineLayout {
+    if (comptime !build_options.enable_vulkan) return null;
+    return switch (backend.inner) {
+        .vulkan => |vk_backend| vk_backend.pipelineLayout(),
+        else => null,
+    };
+}
+
+export fn snail_vulkan_coverage_backend_bind_resources(backend: *CoverageBackendImpl, bindings: SnailVulkanTextCoverageBindings) c_int {
+    if (comptime !build_options.enable_vulkan) return SNAIL_ERR_RENDERER_FAILED;
+    switch (backend.inner) {
+        .vulkan => |vk_backend| {
+            vk_backend.bindResources(toVulkanCoverageBindings(bindings));
+            return SNAIL_OK;
+        },
+        else => return SNAIL_ERR_INVALID_ARGUMENT,
+    }
+}
+
 export fn snail_renderer_deinit(renderer: ?*RendererImpl) void {
     if (renderer) |r| {
         r.deinit();
         destroyHandle(r);
     }
-}
-
-export fn snail_renderer_begin_frame(renderer: *RendererImpl) void {
-    var erased = renderer.asRenderer();
-    erased.beginFrame();
-}
-
-export fn snail_renderer_set_subpixel_order(renderer: *RendererImpl, order: c_int) c_int {
-    var erased = renderer.asRenderer();
-    erased.setSubpixelOrder(toSubpixelOrder(order) catch return SNAIL_ERR_INVALID_ARGUMENT);
-    return SNAIL_OK;
-}
-
-export fn snail_renderer_subpixel_order(renderer: *const RendererImpl) c_int {
-    var erased = @constCast(renderer).asRenderer();
-    return @intFromEnum(erased.subpixelOrder());
-}
-
-export fn snail_renderer_set_fill_rule(renderer: *RendererImpl, rule: c_int) c_int {
-    var erased = renderer.asRenderer();
-    erased.setFillRule(toFillRule(rule) catch return SNAIL_ERR_INVALID_ARGUMENT);
-    return SNAIL_OK;
-}
-
-export fn snail_renderer_fill_rule(renderer: *const RendererImpl) c_int {
-    var erased = @constCast(renderer).asRenderer();
-    return @intFromEnum(erased.fillRule());
 }
 
 export fn snail_renderer_backend_name(renderer: *const RendererImpl) [*:0]const u8 {
@@ -1606,6 +2234,143 @@ export fn snail_renderer_upload_resources_blocking(
     };
     impl.* = .{ .inner = prepared };
     out.* = impl;
+    return SNAIL_OK;
+}
+
+export fn snail_renderer_plan_resource_upload(
+    renderer: *RendererImpl,
+    alloc_ptr: ?*const SnailAllocator,
+    current: ?*const PreparedResourcesImpl,
+    next_set: *const ResourceSetImpl,
+    out: *?*ResourceUploadPlanImpl,
+) c_int {
+    const allocator = resolveAllocator(alloc_ptr);
+    const changed_keys = allocator.alloc(snail.ResourceKey, next_set.inner.slice().len) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    var erased = renderer.asRenderer();
+    const plan = erased.planResourceUpload(
+        if (current) |prepared| &prepared.inner else null,
+        &next_set.inner,
+        changed_keys,
+    ) catch |err| {
+        allocator.free(changed_keys);
+        return mapError(err);
+    };
+    const impl = handleAllocator().create(ResourceUploadPlanImpl) catch {
+        allocator.free(changed_keys);
+        return SNAIL_ERR_OUT_OF_MEMORY;
+    };
+    impl.* = .{
+        .inner = plan,
+        .allocator = allocator,
+        .changed_keys = changed_keys,
+    };
+    out.* = impl;
+    return SNAIL_OK;
+}
+
+export fn snail_resource_upload_plan_deinit(plan: ?*ResourceUploadPlanImpl) void {
+    if (plan) |p| {
+        p.allocator.free(p.changed_keys);
+        destroyHandle(p);
+    }
+}
+
+export fn snail_resource_upload_plan_footprint(plan: *const ResourceUploadPlanImpl) SnailResourceFootprint {
+    return fromResourceFootprint(plan.inner.upload_footprint);
+}
+
+export fn snail_resource_upload_plan_upload_bytes(plan: *const ResourceUploadPlanImpl) usize {
+    return plan.inner.upload_bytes;
+}
+
+export fn snail_resource_upload_plan_changed_bytes(plan: *const ResourceUploadPlanImpl) usize {
+    return plan.inner.changed_bytes;
+}
+
+export fn snail_resource_upload_plan_changed_key_count(plan: *const ResourceUploadPlanImpl) usize {
+    return plan.inner.changed_len;
+}
+
+export fn snail_resource_upload_plan_changed_key(plan: *const ResourceUploadPlanImpl, index: usize, out: *SnailResourceKey) bool {
+    if (index >= plan.inner.changed_len) return false;
+    out.* = plan.inner.changed_keys[index].id;
+    return true;
+}
+
+export fn snail_renderer_begin_resource_upload(
+    renderer: *RendererImpl,
+    alloc_ptr: ?*const SnailAllocator,
+    plan: *const ResourceUploadPlanImpl,
+    out: *?*PendingResourceUploadImpl,
+) c_int {
+    const allocator = resolveAllocator(alloc_ptr);
+    const changed = plan.inner.changedKeys();
+    const changed_keys = allocator.alloc(snail.ResourceKey, changed.len) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    @memcpy(changed_keys, changed);
+    var plan_copy = plan.inner;
+    plan_copy.changed_keys = changed_keys;
+    plan_copy.changed_len = changed.len;
+    var erased = renderer.asRenderer();
+    const pending = erased.beginResourceUpload(.{ .persistent = allocator, .scratch = allocator }, plan_copy) catch |err| {
+        allocator.free(changed_keys);
+        return mapError(err);
+    };
+    const impl = handleAllocator().create(PendingResourceUploadImpl) catch {
+        var doomed = pending;
+        doomed.deinit();
+        allocator.free(changed_keys);
+        return SNAIL_ERR_OUT_OF_MEMORY;
+    };
+    impl.* = .{
+        .inner = pending,
+        .allocator = allocator,
+        .changed_keys = changed_keys,
+    };
+    out.* = impl;
+    return SNAIL_OK;
+}
+
+export fn snail_pending_resource_upload_deinit(pending: ?*PendingResourceUploadImpl) void {
+    if (pending) |p| {
+        p.inner.deinit();
+        p.allocator.free(p.changed_keys);
+        destroyHandle(p);
+    }
+}
+
+export fn snail_pending_resource_upload_record(pending: *PendingResourceUploadImpl, budget_bytes: usize) c_int {
+    pending.inner.record(.no_command, .{ .budget_bytes = budget_bytes }) catch |err| return mapError(err);
+    return SNAIL_OK;
+}
+
+export fn snail_pending_resource_upload_ready(pending: *PendingResourceUploadImpl, ready: bool) bool {
+    return pending.inner.ready(.{ .ready = ready });
+}
+
+export fn snail_pending_resource_upload_ready_now(pending: *PendingResourceUploadImpl) bool {
+    return pending.inner.ready(.immediate);
+}
+
+export fn snail_pending_resource_upload_publish(pending: *PendingResourceUploadImpl, out: *?*PreparedResourcesImpl) c_int {
+    const prepared = pending.inner.publish() catch |err| return mapError(err);
+    const impl = handleAllocator().create(PreparedResourcesImpl) catch {
+        var doomed = prepared;
+        doomed.deinit();
+        return SNAIL_ERR_OUT_OF_MEMORY;
+    };
+    impl.* = .{ .inner = prepared };
+    out.* = impl;
+    return SNAIL_OK;
+}
+
+export fn snail_renderer_draw(
+    renderer: *RendererImpl,
+    prepared: *const PreparedResourcesImpl,
+    list: *const DrawListImpl,
+    options: SnailDrawOptions,
+) c_int {
+    var erased = renderer.asRenderer();
+    erased.draw(&prepared.inner, list.inner.slice(), toDrawOptions(options) catch return SNAIL_ERR_INVALID_ARGUMENT) catch |err| return mapError(err);
     return SNAIL_OK;
 }
 
@@ -1673,6 +2438,18 @@ fn ensureForText(atlas_ptr: **TextAtlasImpl, text: []const u8) !void {
     }
 }
 
+fn testDrawOptions(width: f32, height: f32) SnailDrawOptions {
+    return .{
+        .mvp = snail_mat4_identity(),
+        .target = .{
+            .pixel_width = width,
+            .pixel_height = height,
+            .attachment_encoding = 1,
+            .stored_pixel_encoding = 1,
+        },
+    };
+}
+
 test "c_api: font metrics helper" {
     const assets = @import("assets");
     var font: ?*FontImpl = null;
@@ -1686,6 +2463,16 @@ test "c_api: font metrics helper" {
     var metrics: SnailGlyphMetrics = undefined;
     try testing.expectEqual(SNAIL_OK, snail_font_glyph_metrics(font.?, gid, &metrics));
     try testing.expect(metrics.advance_width > 0);
+
+    var decoration: SnailDecorationMetrics = undefined;
+    try testing.expectEqual(SNAIL_OK, snail_font_decoration_metrics(font.?, &decoration));
+    try testing.expect(decoration.underline_thickness > 0);
+
+    var script: SnailScriptMetrics = undefined;
+    try testing.expectEqual(SNAIL_OK, snail_font_superscript_metrics(font.?, &script));
+    try testing.expect(script.y_size > 0);
+    try testing.expectEqual(SNAIL_OK, snail_font_subscript_metrics(font.?, &script));
+    try testing.expect(script.y_size > 0);
 }
 
 test "c_api: text atlas metrics and ensure glyphs" {
@@ -1719,6 +2506,21 @@ test "c_api: text atlas metrics and ensure glyphs" {
     try testing.expectEqual(SNAIL_OK, snail_text_atlas_cell_metrics(atlas, .{}, 16, &cell_metrics));
     try testing.expect(cell_metrics.cell_width > 0);
     try testing.expect(cell_metrics.line_height > cell_metrics.cell_width);
+
+    var measured: f32 = 0;
+    try testing.expectEqual(SNAIL_OK, snail_text_atlas_measure_text(atlas, .{}, "Hello", 5, 16, &measured));
+    try testing.expect(measured > 0);
+
+    var decoration_rect: SnailRect = undefined;
+    try testing.expectEqual(SNAIL_OK, snail_text_atlas_decoration_rect(atlas, 0, 0, 16, measured, 16, &decoration_rect));
+    try testing.expect(decoration_rect.w == measured);
+    try testing.expect(decoration_rect.h >= 1);
+
+    var script_transform: SnailScriptTransform = undefined;
+    try testing.expectEqual(SNAIL_OK, snail_text_atlas_superscript_transform(atlas, 0, 16, 16, &script_transform));
+    try testing.expect(script_transform.font_size > 0);
+    try testing.expectEqual(SNAIL_OK, snail_text_atlas_subscript_transform(atlas, 0, 16, 16, &script_transform));
+    try testing.expect(script_transform.font_size > 0);
 
     var next: ?*TextAtlasImpl = null;
     try testing.expectEqual(SNAIL_OK, snail_text_atlas_ensure_glyphs(atlas, primary_face, @ptrCast(&gid), 1, &next));
@@ -1757,7 +2559,7 @@ test "c_api: text atlas shape ensure and blob" {
     try testing.expectEqual(@as(usize, 5), snail_text_blob_glyph_count(blob.?));
 }
 
-test "c_api: text blob rebinds to extended atlas" {
+test "c_api: text blob rebound returns a new handle" {
     var atlas = try testTextAtlas();
     defer snail_text_atlas_deinit(atlas);
     try ensureForText(&atlas, "A");
@@ -1773,9 +2575,143 @@ test "c_api: text blob rebinds to extended atlas" {
     try testing.expectEqual(SNAIL_OK, snail_text_atlas_ensure_text(atlas, .{}, "B", 1, &next));
     try testing.expect(next != null);
 
-    try testing.expectEqual(SNAIL_OK, snail_text_blob_rebind(blob.?, next.?));
+    var rebound: ?*TextBlobImpl = null;
+    try testing.expectEqual(SNAIL_OK, snail_text_blob_rebound(null, blob.?, next.?, &rebound));
+    defer snail_text_blob_deinit(rebound);
+    try testing.expectEqual(snail_text_blob_glyph_count(blob.?), snail_text_blob_glyph_count(rebound.?));
     snail_text_atlas_deinit(atlas);
     atlas = next.?;
+}
+
+test "c_api: invalid caller input maps to invalid argument" {
+    var path: ?*PathImpl = null;
+    try testing.expectEqual(SNAIL_OK, snail_path_init(null, &path));
+    defer snail_path_deinit(path);
+    try testing.expectEqual(SNAIL_ERR_INVALID_ARGUMENT, snail_path_line_to(path.?, 1, 1));
+
+    const atlas = try testTextAtlas();
+    defer snail_text_atlas_deinit(atlas);
+    var resources: ?*ResourceSetImpl = null;
+    try testing.expectEqual(SNAIL_OK, snail_resource_set_init(null, 0, &resources));
+    defer snail_resource_set_deinit(resources);
+    try testing.expectEqual(SNAIL_ERR_INVALID_ARGUMENT, snail_resource_set_put_text_atlas(resources.?, 1, atlas));
+
+    const pixels = [_]u8{ 255, 255, 255, 255 };
+    var image: ?*ImageImpl = null;
+    try testing.expectEqual(SNAIL_ERR_INVALID_ARGUMENT, snail_image_init_srgba8(null, 1, 1, &pixels, pixels.len - 1, &image));
+    try testing.expectEqual(@as(?*ImageImpl, null), image);
+}
+
+test "c_api: cpu renderer and thread pool" {
+    if (!build_options.enable_cpu) {
+        try testing.expect(!snail_cpu_available());
+        return;
+    }
+
+    try testing.expect(snail_cpu_available());
+
+    var pixels = [_]u8{0} ** (4 * 4 * 4);
+    var renderer: ?*RendererImpl = null;
+    try testing.expectEqual(SNAIL_ERR_INVALID_ARGUMENT, snail_cpu_renderer_init(&pixels, 4, 4, 15, &renderer));
+    try testing.expectEqual(@as(?*RendererImpl, null), renderer);
+    try testing.expectEqual(SNAIL_OK, snail_cpu_renderer_init(&pixels, 4, 4, 16, &renderer));
+    defer snail_renderer_deinit(renderer);
+    try testing.expectEqualStrings("CPU", std.mem.span(snail_renderer_backend_name(renderer.?)));
+
+    var pool: ?*ThreadPoolImpl = null;
+    try testing.expectEqual(SNAIL_OK, snail_thread_pool_init_with_threads(null, 0, &pool));
+    defer snail_thread_pool_deinit(pool);
+    try testing.expectEqual(@as(usize, 0), snail_thread_pool_thread_count(pool.?));
+    try testing.expectEqual(SNAIL_OK, snail_cpu_renderer_set_thread_pool(renderer.?, pool));
+    try testing.expectEqual(SNAIL_OK, snail_cpu_renderer_set_thread_pool(renderer.?, null));
+
+    var next_pixels = [_]u8{0} ** (2 * 2 * 4);
+    try testing.expectEqual(SNAIL_OK, snail_cpu_renderer_reinit_buffer(renderer.?, &next_pixels, 2, 2, 8));
+}
+
+test "c_api: scheduled upload draw list coverage records and retirement" {
+    if (!build_options.enable_cpu) return;
+
+    var atlas = try testTextAtlas();
+    defer snail_text_atlas_deinit(atlas);
+    try ensureForText(&atlas, "Hi");
+
+    var blob: ?*TextBlobImpl = null;
+    try testing.expectEqual(SNAIL_OK, snail_text_blob_init_text(null, atlas, .{}, "Hi", 2, .{
+        .placement = .{ .baseline_x = 0, .baseline_y = 24, .em = 24 },
+        .fill = .{ .kind = SNAIL_PAINT_SOLID, .paint_solid = .{ 1, 1, 1, 1 } },
+    }, &blob));
+    defer snail_text_blob_deinit(blob);
+
+    var scene: ?*SceneImpl = null;
+    try testing.expectEqual(SNAIL_OK, snail_scene_init(null, &scene));
+    defer snail_scene_deinit(scene);
+    try testing.expectEqual(SNAIL_OK, snail_scene_add_text(scene.?, blob.?));
+
+    var resources: ?*ResourceSetImpl = null;
+    try testing.expectEqual(SNAIL_OK, snail_resource_set_init(null, 4, &resources));
+    defer snail_resource_set_deinit(resources);
+    try testing.expectEqual(SNAIL_OK, snail_resource_set_add_scene(resources.?, scene.?));
+
+    var pixels = [_]u8{0} ** (64 * 64 * 4);
+    var renderer: ?*RendererImpl = null;
+    try testing.expectEqual(SNAIL_OK, snail_cpu_renderer_init(&pixels, 64, 64, 64 * 4, &renderer));
+    defer snail_renderer_deinit(renderer);
+
+    var plan: ?*ResourceUploadPlanImpl = null;
+    try testing.expectEqual(SNAIL_OK, snail_renderer_plan_resource_upload(renderer.?, null, null, resources.?, &plan));
+    try testing.expect(snail_resource_upload_plan_upload_bytes(plan.?) > 0);
+    try testing.expect(snail_resource_upload_plan_changed_key_count(plan.?) > 0);
+    var changed_key: SnailResourceKey = 0;
+    try testing.expect(snail_resource_upload_plan_changed_key(plan.?, 0, &changed_key));
+
+    var pending: ?*PendingResourceUploadImpl = null;
+    try testing.expectEqual(SNAIL_OK, snail_renderer_begin_resource_upload(renderer.?, null, plan.?, &pending));
+    snail_resource_upload_plan_deinit(plan);
+    plan = null;
+    defer snail_pending_resource_upload_deinit(pending);
+
+    try testing.expectEqual(SNAIL_OK, snail_pending_resource_upload_record(pending.?, std.math.maxInt(usize)));
+    try testing.expect(snail_pending_resource_upload_ready_now(pending.?));
+
+    var prepared: ?*PreparedResourcesImpl = null;
+    try testing.expectEqual(SNAIL_OK, snail_pending_resource_upload_publish(pending.?, &prepared));
+
+    var stamp: SnailResourceStamp = .{};
+    try testing.expect(snail_prepared_resources_stamp_for_key(prepared.?, changed_key, &stamp));
+    try testing.expect(stamp.identity != 0 or stamp.layout != 0 or stamp.content != 0);
+
+    var coverage: ?*TextCoverageRecordsImpl = null;
+    try testing.expectEqual(SNAIL_OK, snail_text_coverage_records_init(null, snail_text_coverage_records_word_capacity_for_blob(blob.?), &coverage));
+    defer snail_text_coverage_records_deinit(coverage);
+    try testing.expectEqual(SNAIL_OK, snail_text_coverage_records_build_local(coverage.?, prepared.?, blob.?, .{}));
+    try testing.expect(snail_text_coverage_records_valid_for(coverage.?, prepared.?));
+    try testing.expect(snail_text_coverage_records_word_count(coverage.?) > 0);
+
+    var coverage_backend: ?*CoverageBackendImpl = null;
+    try testing.expectEqual(SNAIL_ERR_INVALID_ARGUMENT, snail_coverage_backend_init(renderer.?, prepared.?, &coverage_backend));
+    try testing.expectEqual(@as(?*CoverageBackendImpl, null), coverage_backend);
+
+    const options = testDrawOptions(64, 64);
+    const word_capacity = snail_draw_list_estimate_word_count(scene.?, options);
+    const segment_capacity = snail_draw_list_estimate_segment_count(scene.?, options);
+    try testing.expect(word_capacity > 0);
+    try testing.expect(segment_capacity > 0);
+
+    var list: ?*DrawListImpl = null;
+    try testing.expectEqual(SNAIL_OK, snail_draw_list_init(null, word_capacity, segment_capacity, &list));
+    defer snail_draw_list_deinit(list);
+    try testing.expectEqual(SNAIL_OK, snail_draw_list_add_scene(list.?, prepared.?, scene.?, options));
+    try testing.expect(snail_draw_list_word_count(list.?) > 0);
+    try testing.expect(snail_draw_list_segment_count(list.?) > 0);
+    try testing.expect(snail_draw_list_words(list.?) != null);
+    try testing.expectEqual(SNAIL_OK, snail_renderer_draw(renderer.?, prepared.?, list.?, options));
+
+    var queue: ?*PreparedResourceRetirementQueueImpl = null;
+    try testing.expectEqual(SNAIL_OK, snail_prepared_resource_retirement_queue_init(null, &queue));
+    defer snail_prepared_resource_retirement_queue_deinit(queue);
+    try testing.expectEqual(SNAIL_OK, snail_prepared_resource_retirement_queue_retire(queue.?, prepared.?));
+    prepared = null;
 }
 
 test "c_api: scene and resource set follow public model" {
@@ -1882,7 +2818,7 @@ test "c_api: path picture builder" {
 test "c_api: image paint init and constants" {
     var pixels = [_]u8{255} ** (4 * 4 * 4);
     var image: ?*ImageImpl = null;
-    try testing.expectEqual(SNAIL_OK, snail_image_init_srgba8(null, 4, 4, &pixels, &image));
+    try testing.expectEqual(SNAIL_OK, snail_image_init_srgba8(null, 4, 4, &pixels, pixels.len, &image));
     defer snail_image_deinit(image);
     try testing.expectEqual(@as(u32, 4), snail_image_width(image.?));
     try testing.expectEqual(@as(u32, 4), snail_image_height(image.?));
