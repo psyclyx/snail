@@ -1,9 +1,25 @@
 # Changelog
 
-## Unreleased
+## 0.9.0 - 2026-05-16
 
 ### Changed
 
+- The C `snail_text_blob_rebind` entry point was replaced with
+  `snail_text_blob_rebound`, which returns a new blob handle instead of
+  mutating the existing one.
+- The C `snail_image_init_srgba8` entry point now takes an explicit
+  `pixel_len`, so invalid image buffers can be rejected before slicing.
+- The C CPU backend now exposes `SnailThreadPool` and
+  `snail_cpu_renderer_set_thread_pool` for caller-owned threaded rasterization.
+- The C API now exposes scheduled resource upload, prepared-resource retirement
+  queues, caller-owned draw lists, text coverage records/backend hooks, shader
+  source snippets for custom coverage shaders, resource-key hashing, and the
+  remaining text/path metrics helpers.
+- Removed renderer-global state setters from the erased C renderer API; draw
+  state is carried by `SnailDrawOptions.target`.
+- `VulkanRenderer.init` now takes an allocator, matching `GlRenderer.init`.
+- Custom text coverage shader hooks now live under `snail.coverage` instead of
+  duplicate top-level Zig aliases.
 - Replaced the resolve-strategy enum with an explicit `Resolve` contract on
   `ResolveTarget`: `.direct` draws into the attachment, while `.linear` carries
   `LinearResolve.backdrop`, `LinearResolve.region`, and
@@ -22,6 +38,9 @@
 
 ### Fixed
 
+- C path, resource-set, and image APIs now return `SNAIL_ERR_INVALID_ARGUMENT`
+  for invalid caller input instead of reporting those cases as allocation
+  failures.
 - Demo grayscale AA now uses the identity coverage transfer instead of the
   stronger 0.9 exponent, avoiding fuzzy antialiased text edges across GL,
   Vulkan, and CPU backends.

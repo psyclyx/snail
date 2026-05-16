@@ -80,8 +80,7 @@ zig build screenshot                            # 2D demo offscreen → zig-out/
 zig build backend-compare                       # CPU/GL/Vulkan parity
 zig build bench                                 # benchmarks, including Vulkan rows when a Vulkan device is available
 zig build install --release=fast                # install libsnail + enabled C headers
-zig build check-c-api                           # verify checked-in generated C API files
-zig build gen-c-api                             # regenerate checked-in generated C API files
+zig build check-c-api                           # run the C API generator used by build/install
 ```
 
 Library backend flags:
@@ -176,7 +175,7 @@ var resource_entries: [8]snail.ResourceSet.Entry = undefined;
 var resources = snail.ResourceSet.init(&resource_entries);
 try resources.addScene(&scene);
 
-// Requires an active GL context. Vulkan uses snail.VulkanRenderer.init(ctx).
+// Requires an active GL context. Vulkan uses snail.VulkanRenderer.init(allocator, ctx).
 var gl = try snail.GlRenderer.init(allocator);
 defer gl.deinit();
 var prepared = try gl.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &resources);
@@ -212,7 +211,7 @@ if (try atlas.ensureText(.{}, text)) |next| {
 
 `TextBlob.rebound` is optional. Use it when you cache blobs across atlas extension and want a new blob that borrows the compatible superset snapshot, usually so the old snapshot can be released and old prepared resources retired without reshaping unchanged text rows.
 
-If you already have shaped glyph IDs, extend the atlas directly and rebind only the cached blobs you plan to keep:
+If you already have shaped glyph IDs, extend the atlas directly and create rebound copies only for the cached blobs you plan to keep:
 
 ```zig
 if (try atlas.ensureGlyphs(face_index, glyph_ids)) |next| {
@@ -255,7 +254,7 @@ try scene.addPath(.{ .picture = &picture });
 
 ## Example: C
 
-> **Note:** This example uses the OpenGL C backend and requires an active OpenGL context. CPU callers include `snail_cpu.h` and provide a caller-owned RGBA8 buffer; Vulkan callers include `snail_vulkan.h` and provide a `SnailVulkanContext`. Error checks are omitted here for brevity.
+> **Note:** This example uses the OpenGL C backend and requires an active OpenGL context. CPU callers include `snail_cpu.h`, provide a caller-owned RGBA8 buffer, and may attach a caller-owned `SnailThreadPool`; Vulkan callers include `snail_vulkan.h` and provide a `SnailVulkanContext`. Error checks are omitted here for brevity.
 
 ```c
 #include "snail.h"
@@ -479,7 +478,7 @@ try scene.addPath(.{ .picture = &sprite, .instances = entity_overrides });
 | Method | Description |
 |--------|-------------|
 | `GlRenderer.init(alloc) !GlRenderer` | Initialize the OpenGL backend. Requires the GL context to be current. |
-| `VulkanRenderer.init(ctx) !VulkanRenderer` | Initialize the Vulkan backend from a caller-owned `VulkanContext`. |
+| `VulkanRenderer.init(alloc, ctx) !VulkanRenderer` | Initialize the Vulkan backend from a caller-owned `VulkanContext`. |
 | `CpuRenderer.init(pixels, w, h, stride) CpuRenderer` | Initialize the CPU backend over a caller-owned RGBA8 buffer. |
 | `cpu.setThreadPool(?*snail.ThreadPool)` | Opt into scanline-tiled multithreaded rendering using a caller-owned `snail.ThreadPool`. Byte-identical output to the single-threaded path; the draw call itself stays allocation-free. |
 | `vk.beginFrame(.{ .cmd, .frame_index })` | Bind a caller-recorded Vulkan command buffer + frame index for the current frame. |
@@ -526,32 +525,43 @@ resources that need fence retirement, keep a caller-owned
 `PreparedResourceRetirementQueue`, call `old.retireAfter(&queue, fence)`, and
 sweep the queue explicitly.
 
+C callers use the same flow through `SnailResourceUploadPlan` and
+`SnailPendingResourceUpload`. `snail_pending_resource_upload_record` covers
+CPU/GL; Vulkan callers use
+`snail_vulkan_pending_resource_upload_record(command_buffer, budget_bytes)` and
+`snail_vulkan_pending_resource_upload_ready_fence`.
+
 ### Text coverage in custom shaders
 
-`CoverageShader`, `TextCoverageRecords`, and `CoverageBackend` let a
+`snail.coverage.Shader`, `snail.coverage.TextCoverageRecords`, and
+`snail.coverage.Backend` let a
 material shader sample snail's exact glyph coverage without going through
 `Renderer.draw`. The typical use is layering text with custom lighting,
 masking, or compositing.
 
-- `CoverageShader.gl` exposes GLSL 330 sources you can `@embedFile`-style
+- `snail.coverage.Shader.gl` exposes GLSL 330 sources you can `@embedFile`-style
   splice into your own program: `vertex_interface`,
   `fragment_interface`, `resource_interface`, `coverage_functions`, and
   `fragment_body`.
-- `CoverageShader.vulkan` exposes the Vulkan shader sources and descriptor
+- `snail.coverage.Shader.vulkan` exposes the Vulkan shader sources and descriptor
   binding numbers. The Vulkan coverage backend binds Snail's descriptor set
   into a caller-owned compatible pipeline layout.
-- `TextCoverageRecords` is the per-glyph vertex stream over a caller-owned
-  `[]u32`. Size it with `TextCoverageRecords.wordCapacityForBlob(blob)`,
-  initialize with `TextCoverageRecords.init(buffer)`, then call
+- `snail.coverage.TextCoverageRecords` is the per-glyph vertex stream over a caller-owned
+  `[]u32`. Size it with `snail.coverage.TextCoverageRecords.wordCapacityForBlob(blob)`,
+  initialize with `snail.coverage.TextCoverageRecords.init(buffer)`, then call
   `records.buildLocal(prepared, blob, .{ .transform = ... })`. `buildLocal`
   does not allocate; it returns `error.DrawListFull` if the buffer is too
   small. Call `records.validFor(prepared)` after a re-upload and
   `records.buildLocal(prepared, blob, options)` if the atlas has moved.
-- `CoverageBackend` is the backend hook. Get one from
+- `snail.coverage.Backend` is the backend hook. Get one from
   `prepared.coverageBackend(renderer)` (or `gl.coverageBackend(prepared)`
   / `vk.coverageBackend(prepared)` on typed renderers). Call
   `bindResources(.{ .gl = bindings })` or `bindResources(.{ .vulkan = bindings })`, then
   `drawCoverage(&records)` or `drawVertices` with your own buffer.
+
+C callers use `SnailTextCoverageRecords` and `SnailCoverageBackend` from
+`snail.h`; GL binding uniforms and shader snippets live in `snail_gl.h`, and
+Vulkan descriptor layout helpers live in `snail_vulkan.h`.
 
 ### Path
 
@@ -630,6 +640,11 @@ cpu.setThreadPool(&pool);
 // draws now fan out across scanline tiles
 ```
 
+C callers use the same ownership model through `snail_cpu.h`: initialize a
+`SnailThreadPool`, attach it with `snail_cpu_renderer_set_thread_pool(renderer,
+pool)`, and either detach it with `NULL` or destroy the renderer before
+destroying the pool.
+
 ## Status
 
 snail is used in development but is not yet stable. The Zig API is settling and follows the explicit-resource model described above. Known gaps:
@@ -637,7 +652,10 @@ snail is used in development but is not yet stable. The Zig API is settling and 
 - Built-in OpenType shaping covers GSUB type 4 (ligatures) and GPOS type 2 (pair positioning) only; complex scripts (Arabic, Devanagari, Thai, etc.) require building with `-Dharfbuzz=true`.
 - TrueType outlines only — no CFF/CFF2.
 - No variable fonts.
-- The C API exposes backend constructors for CPU (`snail_cpu.h`), OpenGL (`snail_gl.h`), and Vulkan (`snail_vulkan.h`) plus the unified `SnailRenderer` blocking upload/draw path. Zig-side scheduled upload (`planResourceUpload` / `beginResourceUpload` / `pending.publish`) is not yet exposed to C callers.
+- The C API exposes the same main workflow as Zig: CPU/OpenGL/Vulkan backend
+  constructors, blocking and scheduled upload, prepared-resource retirement,
+  owned draw-list records, prepared-scene drawing, CPU thread pools, and
+  GL/Vulkan text coverage hooks for custom shaders.
 
 ## Benchmarks
 
@@ -759,7 +777,6 @@ the fragment-shader path (grayscale vs LCD subpixel).
 src/
   snail/
     root.zig             public API facade and domain-module exports
-    core.zig             shared public model and implementation glue
     text.zig             text-domain public aliases
     paint.zig            paint, gradient, image-paint public types
     fonts.zig            TextAtlas internals: multi-font manager with immutable snapshot atlas
@@ -803,10 +820,10 @@ src/
     profile/
       timer.zig          comptime-gated CPU timers
 include/
-  snail.h                shared C API
-  snail_cpu.h            CPU backend C constructor
-  snail_gl.h             OpenGL backend C constructor
-  snail_vulkan.h         Vulkan backend C constructor and context type
+  snail.h                shared C API: resources, upload, draw records, coverage records
+  snail_cpu.h            CPU backend C constructor and thread-pool hook
+  snail_gl.h             OpenGL backend C constructor and coverage bindings
+  snail_vulkan.h         Vulkan backend C constructor, upload, and coverage hooks
 ```
 
 ## License
