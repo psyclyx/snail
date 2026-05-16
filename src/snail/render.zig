@@ -520,13 +520,6 @@ pub const Renderer = struct {
                 },
             }
         }
-        plan.upload_bytes = switch (self.backend()) {
-            .cpu => plan.upload_footprint.allocatedBytes(),
-            .gl, .vulkan => plan.curve_bytes_upload +
-                plan.band_bytes_upload +
-                plan.layer_info_bytes_upload +
-                plan.image_bytes_upload,
-        };
         const stats = self.resourceCacheStats();
         const free_atlas_layers = stats.atlas_layers_allocated -| stats.atlas_pages_resident;
         const free_image_layers = stats.image_layers_allocated -| stats.image_layers_resident;
@@ -535,6 +528,20 @@ pub const Renderer = struct {
         if (counts.layer_infos > 0 and current != null and self.backend() != .cpu) plan.atlas_cache_rebuilds = 1;
         if (plan.new_atlas_banks > 0 and stats.atlas_layers_allocated > 0 and self.backend() != .cpu) plan.atlas_cache_rebuilds = 1;
         if (plan.new_image_banks > 0 and stats.image_layers_allocated > 0 and self.backend() != .cpu) plan.image_cache_rebuilds = 1;
+        if (plan.atlas_cache_rebuilds > 0) {
+            plan.curve_bytes_upload = plan.upload_footprint.curve_bytes_used;
+            plan.band_bytes_upload = plan.upload_footprint.band_bytes_used;
+        }
+        if (plan.image_cache_rebuilds > 0) {
+            plan.image_bytes_upload = plan.upload_footprint.image_bytes_used;
+        }
+        plan.upload_bytes = switch (self.backend()) {
+            .cpu => plan.upload_footprint.allocatedBytes(),
+            .gl, .vulkan => plan.curve_bytes_upload +
+                plan.band_bytes_upload +
+                plan.layer_info_bytes_upload +
+                plan.image_bytes_upload,
+        };
         return plan;
     }
 
