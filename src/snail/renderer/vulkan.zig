@@ -12,10 +12,9 @@ const SubpixelOrder = @import("subpixel_order.zig").SubpixelOrder;
 const TargetEncoding = snail_mod.TargetEncoding;
 const Resolve = snail_mod.Resolve;
 const CoverageTransfer = snail_mod.CoverageTransfer;
+const vulkan_types = @import("vulkan/types.zig");
 
-pub const vk = @cImport({
-    @cInclude("vulkan/vulkan.h");
-});
+pub const vk = vulkan_types.vk;
 
 const build_options = @import("build_options");
 const vk_shaders = @import("vulkan_shaders");
@@ -43,25 +42,8 @@ comptime {
     if (@sizeOf(PushConstants) != 92) @compileError("PushConstants must be 92 bytes");
 }
 
-// ── Initialization context (provided by caller) ──
-
-pub const VulkanContext = struct {
-    physical_device: vk.VkPhysicalDevice,
-    device: vk.VkDevice,
-    graphics_queue: vk.VkQueue,
-    queue_family_index: u32,
-    render_pass: vk.VkRenderPass,
-    color_format: vk.VkFormat,
-    supports_dual_source_blend: bool = false,
-};
-
-pub const TextCoverageBindings = struct {
-    /// Pipeline layout for the caller-owned graphics pipeline. Defaults to
-    /// Snail's built-in layout, useful when the caller's layout is compatible
-    /// with Snail's descriptor set and push-constant ranges.
-    pipeline_layout: vk.VkPipelineLayout = null,
-    descriptor_set_index: u32 = 0,
-};
+pub const VulkanContext = vulkan_types.VulkanContext;
+pub const TextCoverageBindings = vulkan_types.TextCoverageBindings;
 
 // ── Constants ──
 
