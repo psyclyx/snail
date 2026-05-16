@@ -4,6 +4,7 @@ const batch_mod = @import("text/batch.zig");
 const bezier = @import("math/bezier.zig");
 const blob_mod = @import("text/blob.zig");
 const config_mod = @import("text/config.zig");
+const glyph_atlas_mod = @import("text/glyph_atlas.zig");
 const types_mod = @import("text/types.zig");
 const view_mod = @import("text/view.zig");
 const ttf = @import("font/ttf.zig");
@@ -115,6 +116,7 @@ pub const FontConfig = config_mod.FontConfig;
 pub const FaceConfig = config_mod.FaceConfig;
 pub const FaceGlyphData = config_mod.FaceGlyphData;
 pub const FaceView = view_mod.FaceView;
+pub const glyph_atlas = glyph_atlas_mod;
 
 pub const TextAtlas = atlas_mod.TextAtlas;
 pub const TextBatch = batch_mod.TextBatch;

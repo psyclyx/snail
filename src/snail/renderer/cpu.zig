@@ -1328,10 +1328,10 @@ test "cpu renderer renders glyphs" {
     const assets = @import("assets");
     const font_data = assets.noto_sans_regular;
 
-    var font = try snail.lowlevel.Font.init(font_data);
+    var font = try snail.Font.init(font_data);
     defer font.deinit();
 
-    var atlas = try snail.lowlevel.CurveAtlas.initAscii(testing.allocator, &font, &snail.ASCII_PRINTABLE);
+    var atlas = try snail.text.glyph_atlas.initAscii(testing.allocator, &font, &snail.ASCII_PRINTABLE);
     defer atlas.deinit();
 
     const width: u32 = 200;

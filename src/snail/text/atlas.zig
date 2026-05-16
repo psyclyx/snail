@@ -5,6 +5,7 @@ const glyph_emit = @import("../glyph_emit.zig");
 const atlas_curve_mod = @import("../renderer/atlas/curve.zig");
 const atlas_page_mod = @import("../renderer/atlas/page.zig");
 const config_mod = @import("config.zig");
+const glyph_atlas_mod = @import("glyph_atlas.zig");
 const shape_mod = @import("shape.zig");
 const types_mod = @import("types.zig");
 const view_mod = @import("view.zig");
@@ -440,7 +441,7 @@ pub const TextAtlas = struct {
         for (self.config.faces, 0..) |*fc, fi| {
             if (face_new_gids[fi]) |*new_gids| {
                 // Expand COLR layers.
-                try CurveAtlas.expandColrLayersInner(&fc.font, self.allocator, new_gids);
+                try glyph_atlas_mod.expandColrLayersInner(&fc.font, self.allocator, new_gids);
 
                 // Filter out glyph IDs already in the atlas.
                 var filtered = std.AutoHashMap(u16, void).init(self.allocator);
@@ -462,7 +463,7 @@ pub const TextAtlas = struct {
                 const next_page = self.pages.len + new_pages_list.items.len;
                 if (next_page > std.math.maxInt(u16)) return error.AtlasPageLimitExceeded;
                 const page_index: u16 = @intCast(next_page);
-                const page_result = try CurveAtlas.buildPageDataInner(self.allocator, &fc.font, &filtered, page_index);
+                const page_result = try glyph_atlas_mod.buildPageDataInner(self.allocator, &fc.font, &filtered, page_index);
                 try new_pages_list.append(self.allocator, page_result.page);
 
                 // Merge glyph maps.
