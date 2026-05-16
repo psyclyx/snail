@@ -142,7 +142,7 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
         if (build_options.enable_harfbuzz) "ON" else "OFF",
     });
     renderer_driver.warnIfDebugCpu(active.kind());
-    std.debug.print("Keys: arrows pan, Z/X zoom, R rotate, B AA mode, C backend, Esc quit\n", .{});
+    std.debug.print("Keys: arrows pan, Z/X zoom, R rotate, B AA mode, C backend/threading, Esc quit\n", .{});
     std.debug.print("aa={s}\n", .{aaName(current_order)});
 
     while (!active.shouldClose()) {
@@ -179,7 +179,7 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
                 last_presentation = null;
                 last_time = wayland.getTime();
                 frame_count = 0;
-                std.debug.print("\nBackend: {s}\n", .{renderer_driver.label(active.kind())});
+                std.debug.print("\nBackend: {s}\n", .{active.backendName()});
                 renderer_driver.warnIfDebugCpu(active.kind());
                 continue;
             }
