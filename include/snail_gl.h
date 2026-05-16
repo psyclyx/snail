@@ -31,6 +31,8 @@ SnailString snail_gl_coverage_shader_vertex_interface(void);
 SnailString snail_gl_coverage_shader_fragment_interface(void);
 SnailString snail_gl_coverage_shader_resource_interface(void);
 SnailString snail_gl_coverage_shader_coverage_functions(void);
+SnailString snail_gl_coverage_shader_sample_interface(void);
+SnailString snail_gl_coverage_shader_sample_functions(void);
 SnailString snail_gl_coverage_shader_fragment_body(void);
 int snail_gl_coverage_backend_bind_resources(SnailCoverageBackend *backend,
                                              SnailGlTextCoverageBindings bindings);

@@ -7,6 +7,7 @@ const gl330_vert_interface = @embedFile("glsl/snail_vert.interface.glsl");
 const gl330_frag_interface = @embedFile("glsl/snail_frag.interface.glsl");
 const gl330_text_subpixel_interface = @embedFile("glsl/snail_text_subpixel.interface.glsl");
 const gl330_text_coverage_interface = @embedFile("glsl/snail_text_coverage.interface.glsl");
+const gl330_text_sample_interface = @embedFile("glsl/snail_text_sample.interface.glsl");
 
 const shared_vertex_body = @embedFile("glsl/snail_vert_body.glsl");
 const shared_coverage_common = @embedFile("glsl/snail_coverage_common.glsl");
@@ -37,13 +38,16 @@ const shared_text_subpixel_body =
     shared_color_common ++
     "\n" ++
     @embedFile("glsl/snail_text_subpixel_body.glsl");
+const shared_text_sample_body = @embedFile("glsl/snail_text_sample_body.glsl");
 
 pub const text_vertex_interface = gl330_vert_interface;
 pub const text_fragment_interface = gl330_text_subpixel_interface;
 pub const text_coverage_fragment_interface = gl330_text_coverage_interface;
+pub const text_sample_interface = gl330_text_sample_interface;
 pub const text_vertex_body = shared_vertex_body;
 pub const text_fragment_body = shared_text_fragment_body;
 pub const text_coverage_fragment_body = shared_text_coverage_fragment_body;
+pub const text_sample_body = shared_text_sample_body;
 
 pub const vertex_shader =
     glsl_330_version ++

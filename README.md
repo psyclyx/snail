@@ -562,7 +562,11 @@ masking, or compositing.
 - `snail.coverage.Shader.gl` exposes GLSL 330 sources you can `@embedFile`-style
   splice into your own program: `vertex_interface`,
   `fragment_interface`, `resource_interface`, `coverage_functions`, and
-  `fragment_body`.
+  `fragment_body`. For material shaders that sample text coverage from their
+  own geometry, include `resource_interface`, `coverage_functions`,
+  `sample_interface`, and `sample_functions`; upload `records.slice()` as a
+  `GL_R32UI` texture buffer and call
+  `snail_text_sample_premul_linear(scene_pos)`.
 - `snail.coverage.Shader.vulkan` exposes the Vulkan shader sources and descriptor
   binding numbers. The Vulkan coverage backend binds Snail's descriptor set
   into a caller-owned compatible pipeline layout.
@@ -572,19 +576,16 @@ masking, or compositing.
   `records.buildLocal(prepared, blob, .{ .transform = ... })`. `buildLocal`
   does not allocate; it returns `error.DrawListFull` if the buffer is too
   small. Call `records.validFor(prepared)` after a re-upload and
-  `records.buildLocal(prepared, blob, options)` if the atlas has moved. Use
-  `records.glyph(i)` when a shader needs a decoded, random-access metadata
-  buffer instead of Snail's native vertex stream.
+  `records.buildLocal(prepared, blob, options)` if the atlas has moved.
 - `snail.coverage.Backend` is the backend hook. Get one from
   `prepared.coverageBackend(renderer)` (or `gl.coverageBackend(prepared)`
   / `vk.coverageBackend(prepared)` on typed renderers). Call
   `bindResources(.{ .gl = bindings })` or `bindResources(.{ .vulkan = bindings })`, then
   `drawCoverage(&records)` or `drawVertices` with your own buffer.
 
-C callers use `SnailTextCoverageRecords`, `snail_text_coverage_records_glyph`,
-and `SnailCoverageBackend` from `snail.h`; GL binding uniforms and shader
-snippets live in `snail_gl.h`, and Vulkan descriptor layout helpers live in
-`snail_vulkan.h`.
+C callers use `SnailTextCoverageRecords` and `SnailCoverageBackend` from
+`snail.h`; GL binding uniforms and shader snippets live in `snail_gl.h`, and
+Vulkan descriptor layout helpers live in `snail_vulkan.h`.
 
 ### Path
 

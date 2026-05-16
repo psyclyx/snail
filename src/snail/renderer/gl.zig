@@ -63,8 +63,10 @@ pub const TextCoverageBindings = struct {
 pub const text_vertex_interface = shaders.text_vertex_interface;
 pub const text_fragment_interface = shaders.text_fragment_interface;
 pub const text_coverage_fragment_interface = shaders.text_coverage_fragment_interface;
+pub const text_sample_interface = shaders.text_sample_interface;
 pub const text_fragment_body = shaders.text_fragment_body;
 pub const text_coverage_fragment_body = shaders.text_coverage_fragment_body;
+pub const text_sample_body = shaders.text_sample_body;
 
 // ── GL 4.4 persistent mapping constants ──
 

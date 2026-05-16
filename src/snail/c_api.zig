@@ -309,16 +309,6 @@ pub const SnailResourceFootprint = extern struct {
     image_bytes_allocated: usize = 0,
 };
 
-pub const SnailTextCoverageGlyph = extern struct {
-    rect: [4]f32,
-    xform: [4]f32,
-    origin: [2]f32,
-    glyph: [2]u32,
-    band: [4]f32,
-    color: [4]f32,
-    tint: [4]f32,
-};
-
 pub const SnailGlTextCoverageBindings = extern struct {
     curve_tex_loc: c_int = -1,
     band_tex_loc: c_int = -1,
@@ -1901,24 +1891,6 @@ export fn snail_text_coverage_records_glyph_count(records: *const TextCoverageRe
     return records.inner.glyphCount();
 }
 
-fn toSnailTextCoverageGlyph(glyph: snail.coverage.TextCoverageGlyph) SnailTextCoverageGlyph {
-    return .{
-        .rect = glyph.rect,
-        .xform = glyph.xform,
-        .origin = glyph.origin,
-        .glyph = glyph.glyph,
-        .band = glyph.band,
-        .color = glyph.color,
-        .tint = glyph.tint,
-    };
-}
-
-export fn snail_text_coverage_records_glyph(records: *const TextCoverageRecordsImpl, glyph_index: usize, out: *SnailTextCoverageGlyph) c_int {
-    if (glyph_index >= records.inner.glyphCount()) return SNAIL_ERR_INVALID_ARGUMENT;
-    out.* = toSnailTextCoverageGlyph(records.inner.glyph(glyph_index));
-    return SNAIL_OK;
-}
-
 export fn snail_text_coverage_records_words(records: *const TextCoverageRecordsImpl) ?[*]const u32 {
     if (records.inner.len == 0) return null;
     return records.words.ptr;
@@ -2160,6 +2132,16 @@ export fn snail_gl_coverage_shader_resource_interface() SnailString {
 export fn snail_gl_coverage_shader_coverage_functions() SnailString {
     if (comptime !build_options.enable_opengl) return wrapString("");
     return wrapString(snail.coverage.Shader.gl.coverage_functions);
+}
+
+export fn snail_gl_coverage_shader_sample_interface() SnailString {
+    if (comptime !build_options.enable_opengl) return wrapString("");
+    return wrapString(snail.coverage.Shader.gl.sample_interface);
+}
+
+export fn snail_gl_coverage_shader_sample_functions() SnailString {
+    if (comptime !build_options.enable_opengl) return wrapString("");
+    return wrapString(snail.coverage.Shader.gl.sample_functions);
 }
 
 export fn snail_gl_coverage_shader_fragment_body() SnailString {
@@ -2715,9 +2697,6 @@ test "c_api: scheduled upload draw list coverage records and retirement" {
     try testing.expectEqual(SNAIL_OK, snail_text_coverage_records_build_local(coverage.?, prepared.?, blob.?, .{}));
     try testing.expect(snail_text_coverage_records_valid_for(coverage.?, prepared.?));
     try testing.expect(snail_text_coverage_records_word_count(coverage.?) > 0);
-    var coverage_glyph: SnailTextCoverageGlyph = undefined;
-    try testing.expectEqual(SNAIL_OK, snail_text_coverage_records_glyph(coverage.?, 0, &coverage_glyph));
-    try testing.expect(coverage_glyph.color[3] > 0.0);
 
     var coverage_backend: ?*CoverageBackendImpl = null;
     try testing.expectEqual(SNAIL_ERR_INVALID_ARGUMENT, snail_coverage_backend_init(renderer.?, prepared.?, &coverage_backend));

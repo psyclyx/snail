@@ -8,8 +8,6 @@ const MATERIAL_GRID: u32 = 72;
 const TEXT_RECORD_TEXTURE_UNIT: gl.GLint = 2;
 const TEXT_CURVE_TEXTURE_UNIT: gl.GLint = 3;
 const TEXT_BAND_TEXTURE_UNIT: gl.GLint = 4;
-pub const TEXT_RECORD_VEC4S_PER_GLYPH: usize = 6;
-const TEXT_RECORD_FLOATS_PER_GLYPH: usize = TEXT_RECORD_VEC4S_PER_GLYPH * 4;
 
 pub const MaterialTextInput = struct {
     text: *const SurfaceTextDraw,
@@ -139,8 +137,8 @@ const MaterialProgram = struct {
             .shadow_strength_loc = gl.glGetUniformLocation(handle, "u_shadow_strength"),
             .sign_style_loc = gl.glGetUniformLocation(handle, "u_sign_style"),
             .overlay_material_paint_loc = gl.glGetUniformLocation(handle, "u_overlay_material_paint"),
-            .text_records_loc = gl.glGetUniformLocation(handle, "u_text_records"),
-            .text_glyph_count_loc = gl.glGetUniformLocation(handle, "u_text_glyph_count"),
+            .text_records_loc = gl.glGetUniformLocation(handle, "u_snail_text_records"),
+            .text_glyph_count_loc = gl.glGetUniformLocation(handle, "u_snail_text_glyph_count"),
             .text_scene_size_loc = gl.glGetUniformLocation(handle, "u_text_scene_size"),
             .text_relief_strength_loc = gl.glGetUniformLocation(handle, "u_text_relief_strength"),
             .use_text_paint_loc = gl.glGetUniformLocation(handle, "u_use_text_paint"),
@@ -464,6 +462,10 @@ const material_fragment_shader: [:0]const u8 =
     "\n" ++
     snail.coverage.Shader.gl.coverage_functions ++
     "\n" ++
+    snail.coverage.Shader.gl.sample_interface ++
+    "\n" ++
+    snail.coverage.Shader.gl.sample_functions ++
+    "\n" ++
     \\in vec2 v_uv;
     \\in vec3 v_world_pos;
     \\in vec3 v_world_normal;
@@ -484,9 +486,7 @@ const material_fragment_shader: [:0]const u8 =
     \\uniform int u_use_normal_map;
     \\uniform int u_sign_style;
     \\uniform int u_overlay_material_paint;
-    \\uniform samplerBuffer u_text_records;
     \\uniform vec2 u_text_scene_size;
-    \\uniform int u_text_glyph_count;
     \\uniform float u_text_relief_strength;
     \\uniform int u_use_text_paint;
     \\
@@ -499,57 +499,9 @@ const material_fragment_shader: [:0]const u8 =
     \\    return lo.x * lo.y * hi.x * hi.y;
     \\}
     \\
-    \\vec4 textRecord(int glyph_index, int slot) {
-    ++ std.fmt.comptimePrint(
-        "    return texelFetch(u_text_records, glyph_index * {d} + slot);\n",
-        .{TEXT_RECORD_VEC4S_PER_GLYPH},
-    ) ++
-    \\
-    \\}
-    \\
-    \\vec2 textLocalCoord(vec2 scene_pos, vec4 xform, vec2 translate) {
-    \\    float det = xform.x * xform.w - xform.y * xform.z;
-    \\    vec2 delta = scene_pos - translate;
-    \\    return vec2(
-    \\        (xform.w * delta.x - xform.y * delta.y) / det,
-    \\        (-xform.z * delta.x + xform.x * delta.y) / det
-    \\    );
-    \\}
-    \\
     \\vec4 evalTextPaint(vec2 uv) {
     \\    vec2 scene_pos = vec2(uv.x * u_text_scene_size.x, (1.0 - uv.y) * u_text_scene_size.y);
-    \\    vec4 paint = vec4(0.0);
-    \\    for (int i = 0; i < u_text_glyph_count; i++) {
-    \\        vec4 rect = textRecord(i, 0);
-    \\        vec4 xform = textRecord(i, 1);
-    \\        vec4 meta = textRecord(i, 2);
-    \\        vec4 banding = textRecord(i, 3);
-    \\        vec4 color = textRecord(i, 4);
-    \\        vec4 tint = textRecord(i, 5);
-    \\        float det = xform.x * xform.w - xform.y * xform.z;
-    \\        if (abs(det) < 1e-10) continue;
-    \\        vec2 rc = textLocalCoord(scene_pos, xform, meta.xy);
-    \\        vec2 em_aa = max(fwidth(rc) * 2.0, vec2(0.001));
-    \\        if (rc.x < rect.x - em_aa.x || rc.x > rect.z + em_aa.x || rc.y < rect.y - em_aa.y || rc.y > rect.w + em_aa.y) continue;
-    \\
-    \\        uint gz = floatBitsToUint(meta.z);
-    \\        uint gw = floatBitsToUint(meta.w);
-    \\        int atlas_layer = int((gw >> 24u) & 0xFFu);
-    \\        if (atlas_layer == 0xFF) continue;
-    \\        ivec2 glyph_loc = ivec2(int(gz & 0xFFFFu), int(gz >> 16u));
-    \\        ivec2 band_max = ivec2(int((gw >> 16u) & 0xFFu), int(gw & 0xFFFFu));
-    \\        vec2 dx = vec2(dFdx(rc.x), dFdy(rc.x));
-    \\        vec2 dy = vec2(dFdx(rc.y), dFdy(rc.y));
-    \\        vec2 ppe = vec2(1.0 / max(length(dx), 1.0 / 65536.0), 1.0 / max(length(dy), 1.0 / 65536.0));
-    \\        float cov = evalGlyphCoverage(rc, ppe, glyph_loc, band_max, banding, atlas_layer);
-    \\        float alpha = clamp(cov * color.a * tint.a, 0.0, 1.0);
-    \\        if (alpha <= 1.0 / 255.0) continue;
-    \\        vec3 linear_rgb = vec3(srgbDecode(color.r), srgbDecode(color.g), srgbDecode(color.b)) *
-    \\                          vec3(srgbDecode(tint.r), srgbDecode(tint.g), srgbDecode(tint.b));
-    \\        paint.rgb = linear_rgb * alpha + paint.rgb * (1.0 - alpha);
-    \\        paint.a = alpha + paint.a * (1.0 - alpha);
-    \\    }
-    \\    return paint;
+    \\    return snail_text_sample_premul_linear(scene_pos);
     \\}
     \\
     \\float materialSelfShadow(vec2 uv, vec3 light_dir_ts, float height, float strength) {
@@ -707,16 +659,11 @@ const material_fragment_shader: [:0]const u8 =
     \\}
     ;
 
-// Layout the shader (`material_fragment_shader`) sees: 6 vec4s per glyph,
-// fed via samplerBuffer with internalFormat RGBA32F. The public coverage API
-// gives the demo a decoded view; the demo chooses this GPU layout for random
-// access from its material shader.
 pub const SurfaceTextDraw = struct {
     allocator: std.mem.Allocator,
     blob: *const snail.TextBlob,
     coverage_words: []u32 = &.{},
     coverage: snail.coverage.TextCoverageRecords,
-    record_storage: []f32 = &.{},
     record_buffer: gl.GLuint = 0,
     record_texture: gl.GLuint = 0,
 
@@ -733,94 +680,35 @@ pub const SurfaceTextDraw = struct {
             .coverage_words = coverage_words,
             .coverage = coverage,
         };
-        errdefer if (self.record_storage.len > 0) self.allocator.free(self.record_storage);
-        try self.uploadRecords();
+        self.uploadRecords();
         return self;
     }
 
     pub fn deinit(self: *SurfaceTextDraw) void {
         if (self.record_texture != 0) gl.glDeleteTextures(1, &self.record_texture);
         if (self.record_buffer != 0) gl.glDeleteBuffers(1, &self.record_buffer);
-        if (self.record_storage.len > 0) self.allocator.free(self.record_storage);
         if (self.coverage_words.len > 0) self.allocator.free(self.coverage_words);
         self.* = undefined;
     }
 
-    fn uploadRecords(self: *SurfaceTextDraw) !void {
-        const glyph_count = self.coverage.glyphCount();
-        if (self.record_storage.len != glyph_count * TEXT_RECORD_FLOATS_PER_GLYPH) {
-            if (self.record_storage.len > 0) self.allocator.free(self.record_storage);
-            self.record_storage = if (glyph_count == 0)
-                &.{}
-            else
-                try self.allocator.alloc(f32, glyph_count * TEXT_RECORD_FLOATS_PER_GLYPH);
-        }
-        widenInstanceRecords(&self.coverage, self.record_storage);
-
+    fn uploadRecords(self: *SurfaceTextDraw) void {
+        const records = self.coverage.slice();
         if (self.record_buffer == 0) gl.glGenBuffers(1, &self.record_buffer);
         if (self.record_texture == 0) gl.glGenTextures(1, &self.record_texture);
 
         gl.glBindBuffer(gl.GL_TEXTURE_BUFFER, self.record_buffer);
         gl.glBufferData(
             gl.GL_TEXTURE_BUFFER,
-            @intCast(self.record_storage.len * @sizeOf(f32)),
-            if (self.record_storage.len == 0) null else self.record_storage.ptr,
+            @intCast(records.len * @sizeOf(u32)),
+            if (records.len == 0) null else records.ptr,
             gl.GL_STATIC_DRAW,
         );
         gl.glBindTexture(gl.GL_TEXTURE_BUFFER, self.record_texture);
-        gl.glTexBuffer(gl.GL_TEXTURE_BUFFER, gl.GL_RGBA32F, self.record_buffer);
+        gl.glTexBuffer(gl.GL_TEXTURE_BUFFER, gl.GL_R32UI, self.record_buffer);
         gl.glBindTexture(gl.GL_TEXTURE_BUFFER, 0);
         gl.glBindBuffer(gl.GL_TEXTURE_BUFFER, 0);
     }
 };
-
-fn widenInstanceRecords(coverage: *const snail.coverage.TextCoverageRecords, out: []f32) void {
-    const glyph_count = coverage.glyphCount();
-    std.debug.assert(out.len == glyph_count * TEXT_RECORD_FLOATS_PER_GLYPH);
-    var glyph_index: usize = 0;
-    while (glyph_index < glyph_count) : (glyph_index += 1) {
-        const decoded = coverage.glyph(glyph_index);
-        const base = glyph_index * TEXT_RECORD_FLOATS_PER_GLYPH;
-        // slot 0: rect (em-space bbox)
-        out[base + 0] = decoded.rect[0];
-        out[base + 1] = decoded.rect[1];
-        out[base + 2] = decoded.rect[2];
-        out[base + 3] = decoded.rect[3];
-        // slot 1: xform (xx, xy, yx, yy)
-        out[base + 4] = decoded.xform[0];
-        out[base + 5] = decoded.xform[1];
-        out[base + 6] = decoded.xform[2];
-        out[base + 7] = decoded.xform[3];
-        // slot 2: meta = (origin.x, origin.y, glyph.z_bits_as_float, glyph.w_bits_as_float)
-        out[base + 8] = decoded.origin[0];
-        out[base + 9] = decoded.origin[1];
-        out[base + 10] = @bitCast(decoded.glyph[0]);
-        out[base + 11] = @bitCast(decoded.glyph[1]);
-        // slot 3: banding
-        out[base + 12] = decoded.band[0];
-        out[base + 13] = decoded.band[1];
-        out[base + 14] = decoded.band[2];
-        out[base + 15] = decoded.band[3];
-        // slot 4: color (sRGB unorm decoded to floats)
-        out[base + 16] = decoded.color[0];
-        out[base + 17] = decoded.color[1];
-        out[base + 18] = decoded.color[2];
-        out[base + 19] = decoded.color[3];
-        // slot 5: instance tint (sRGB unorm decoded to floats)
-        out[base + 20] = decoded.tint[0];
-        out[base + 21] = decoded.tint[1];
-        out[base + 22] = decoded.tint[2];
-        out[base + 23] = decoded.tint[3];
-    }
-}
-
-test "material text shader uses widened record stride" {
-    const expected = std.fmt.comptimePrint(
-        "glyph_index * {d} + slot",
-        .{TEXT_RECORD_VEC4S_PER_GLYPH},
-    );
-    try std.testing.expect(std.mem.indexOf(u8, material_fragment_shader, expected) != null);
-}
 
 const premult_texture_fragment_shader: [:0]const u8 =
     \\#version 330 core
