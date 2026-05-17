@@ -7,7 +7,6 @@ const draw_mod = @import("../../draw.zig");
 const interface = @import("../interface.zig");
 const prepared_mod = @import("../../resources/prepared.zig");
 const resource_key_mod = @import("../../resource_key.zig");
-const resource_upload_mod = @import("../../resources/upload.zig");
 const set_mod = @import("../../resources/set.zig");
 const upload_mod = @import("../../upload.zig");
 
@@ -27,7 +26,7 @@ const ResourceKey = resource_key_mod.ResourceKey;
 const ResourceCacheStats = upload_mod.ResourceCacheStats;
 const ResourceSet = set_mod.ResourceSet;
 const ResourceUploadPlan = upload_mod.ResourceUploadPlan;
-const ResourceUploadBatch = resource_upload_mod.ResourceUploadBatch;
+const ResourceUploadBatch = upload_mod.ResourceUploadBatch;
 const UploadAllocators = upload_mod.UploadAllocators;
 
 const Config = if (build_options.enable_opengl) struct {

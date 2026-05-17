@@ -5,7 +5,7 @@ const coverage_mod = @import("../../coverage.zig");
 const draw_mod = @import("../../draw.zig");
 const interface = @import("../interface.zig");
 const prepared_mod = @import("../../resources/prepared.zig");
-const resource_upload_mod = @import("../../resources/upload.zig");
+const upload_mod = @import("../../upload.zig");
 
 const pipeline = if (build_options.enable_cpu) @import("../backend/cpu/renderer.zig") else struct {
     pub const CpuRenderer = void;
@@ -18,8 +18,8 @@ const CoverageBackend = coverage_mod.Backend;
 const DrawOptions = draw_mod.DrawOptions;
 const DrawRecords = draw_mod.DrawRecords;
 const ErasedRenderer = interface.Renderer;
-const ResourceUploadBatch = resource_upload_mod.ResourceUploadBatch;
-const UploadAllocators = @import("../../upload.zig").UploadAllocators;
+const ResourceUploadBatch = upload_mod.ResourceUploadBatch;
+const UploadAllocators = upload_mod.UploadAllocators;
 const UnifiedPreparedResources = prepared_mod.PreparedResources;
 
 const Config = if (build_options.enable_cpu) struct {

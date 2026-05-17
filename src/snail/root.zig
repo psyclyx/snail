@@ -134,6 +134,7 @@ pub const ResourceCapacityMode = upload_common.AtlasCapacityMode;
 pub const ResourceFootprint = resources.ResourceFootprint;
 pub const ResourceCacheStats = upload.ResourceCacheStats;
 pub const UploadAllocators = upload.UploadAllocators;
+pub const ResourceUploadBatch = upload.ResourceUploadBatch;
 pub const ResourceUploadPlan = upload.ResourceUploadPlan;
 pub const ResourceUploadCommand = upload.ResourceUploadCommand;
 pub const ResourceUploadCompletion = upload.ResourceUploadCompletion;

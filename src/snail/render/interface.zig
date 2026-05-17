@@ -5,7 +5,6 @@ const coverage_mod = @import("../coverage.zig");
 const draw_mod = @import("../draw.zig");
 const prepared_mod = @import("../resources/prepared.zig");
 const resource_key_mod = @import("../resource_key.zig");
-const resource_upload_mod = @import("../resources/upload.zig");
 const set_mod = @import("../resources/set.zig");
 const target_mod = @import("../target.zig");
 const upload_mod = @import("../upload.zig");
@@ -25,7 +24,7 @@ const PreparedResources = prepared_mod.PreparedResources;
 const PreparedScene = draw_mod.PreparedScene;
 const Resolve = target_mod.Resolve;
 const ResourceCacheStats = upload_mod.ResourceCacheStats;
-const ResourceUploadBatch = resource_upload_mod.ResourceUploadBatch;
+const ResourceUploadBatch = upload_mod.ResourceUploadBatch;
 const ResourceKey = resource_key_mod.ResourceKey;
 const ResourceSet = set_mod.ResourceSet;
 const ResourceUploadPlan = upload_mod.ResourceUploadPlan;
@@ -34,7 +33,7 @@ const TargetEncoding = target_mod.TargetEncoding;
 const TargetStamp = target_mod.TargetStamp;
 const UploadAllocators = upload_mod.UploadAllocators;
 const effectiveSubpixelOrderRef = target_mod.effectiveSubpixelOrderRef;
-const uploadPreparedResources = resource_upload_mod.uploadPreparedResources;
+const uploadPreparedResources = upload_mod.uploadPreparedResources;
 
 /// Renderer execution machinery. GPU resource residency lives in renderer-owned
 /// caches; PreparedResources records validated bindings into those caches.
