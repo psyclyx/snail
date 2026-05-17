@@ -782,24 +782,30 @@ the fragment-shader path (grayscale vs LCD subpixel).
 
 | Backend | Scene | AA | Words | Segments | PreparedScene | Draw |
 |---|---|---|---:|---:|---:|---:|
-| CPU | Text | grayscale | 4048 | 1 | 7.92 us | 1671.07 us |
-| CPU | Text | subpixel rgb | 4048 | 1 | 7.63 us | 8138.35 us |
-| CPU | Rich text | grayscale | 1136 | 1 | 2.11 us | 1392.81 us |
-| CPU | Rich text | subpixel rgb | 1136 | 1 | 2.11 us | 4230.81 us |
-| CPU | Multi-script text | grayscale | 1488 | 1 | 2.73 us | 1002.55 us |
-| CPU | Multi-script text | subpixel rgb | 1488 | 1 | 2.76 us | 4863.81 us |
-| GL 4.4 (persistent mapped) | Text | grayscale | 4048 | 1 | 7.64 us | 34.34 us |
-| GL 4.4 (persistent mapped) | Text | subpixel rgb | 4048 | 1 | 7.52 us | 80.20 us |
-| GL 4.4 (persistent mapped) | Rich text | grayscale | 1136 | 1 | 2.09 us | 29.40 us |
-| GL 4.4 (persistent mapped) | Rich text | subpixel rgb | 1136 | 1 | 2.09 us | 91.82 us |
-| GL 4.4 (persistent mapped) | Multi-script text | grayscale | 1488 | 1 | 2.72 us | 28.35 us |
-| GL 4.4 (persistent mapped) | Multi-script text | subpixel rgb | 1488 | 1 | 2.73 us | 91.96 us |
-| Vulkan | Text | grayscale | 4048 | 1 | 7.72 us | 28.40 us |
-| Vulkan | Text | subpixel rgb | 4048 | 1 | 7.49 us | 85.93 us |
-| Vulkan | Rich text | grayscale | 1136 | 1 | 2.15 us | 33.59 us |
-| Vulkan | Rich text | subpixel rgb | 1136 | 1 | 2.18 us | 89.25 us |
-| Vulkan | Multi-script text | grayscale | 1488 | 1 | 3.01 us | 33.11 us |
-| Vulkan | Multi-script text | subpixel rgb | 1488 | 1 | 2.78 us | 79.38 us |
+| CPU | Text | grayscale | 4048 | 1 | 8.46 us | 1560.23 us |
+| CPU | Text | subpixel rgb | 4048 | 1 | 8.94 us | 8038.56 us |
+| CPU | Rich text | grayscale | 1136 | 1 | 2.07 us | 1376.51 us |
+| CPU | Rich text | subpixel rgb | 1136 | 1 | 2.10 us | 4180.93 us |
+| CPU | Multi-script text | grayscale | 1488 | 1 | 2.90 us | 991.40 us |
+| CPU | Multi-script text | subpixel rgb | 1488 | 1 | 2.89 us | 4838.58 us |
+| CPU (threaded) | Text | grayscale | 4048 | 1 | 8.00 us | 828.06 us |
+| CPU (threaded) | Text | subpixel rgb | 4048 | 1 | 7.91 us | 3290.64 us |
+| CPU (threaded) | Rich text | grayscale | 1136 | 1 | 2.46 us | 669.83 us |
+| CPU (threaded) | Rich text | subpixel rgb | 1136 | 1 | 2.28 us | 2055.01 us |
+| CPU (threaded) | Multi-script text | grayscale | 1488 | 1 | 2.86 us | 492.11 us |
+| CPU (threaded) | Multi-script text | subpixel rgb | 1488 | 1 | 2.91 us | 2098.07 us |
+| GL 4.4 (persistent mapped) | Text | grayscale | 4048 | 1 | 8.29 us | 27.61 us |
+| GL 4.4 (persistent mapped) | Text | subpixel rgb | 4048 | 1 | 8.12 us | 100.51 us |
+| GL 4.4 (persistent mapped) | Rich text | grayscale | 1136 | 1 | 2.09 us | 30.48 us |
+| GL 4.4 (persistent mapped) | Rich text | subpixel rgb | 1136 | 1 | 2.15 us | 71.17 us |
+| GL 4.4 (persistent mapped) | Multi-script text | grayscale | 1488 | 1 | 2.99 us | 34.73 us |
+| GL 4.4 (persistent mapped) | Multi-script text | subpixel rgb | 1488 | 1 | 3.11 us | 87.94 us |
+| Vulkan | Text | grayscale | 4048 | 1 | 7.99 us | 33.78 us |
+| Vulkan | Text | subpixel rgb | 4048 | 1 | 8.13 us | 87.06 us |
+| Vulkan | Rich text | grayscale | 1136 | 1 | 2.13 us | 32.28 us |
+| Vulkan | Rich text | subpixel rgb | 1136 | 1 | 2.07 us | 96.52 us |
+| Vulkan | Multi-script text | grayscale | 1488 | 1 | 2.85 us | 28.51 us |
+| Vulkan | Multi-script text | subpixel rgb | 1488 | 1 | 3.00 us | 88.21 us |
 
 ## Architecture
 

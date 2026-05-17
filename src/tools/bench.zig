@@ -844,6 +844,7 @@ pub fn main() !void {
         }
     };
     try benchModes(allocator, "CPU", &atlas, &mode_rows, CpuTimer{ .renderer_ptr = &cpu_renderer, .pixels_buf = cpu_pixels });
+    try benchModes(allocator, "CPU (threaded)", &atlas, &mode_rows, CpuTimer{ .renderer_ptr = &cpu_threaded_renderer, .pixels_buf = cpu_pixels_threaded });
 
     const GlTimer = struct {
         renderer_ptr: *snail.Renderer,
