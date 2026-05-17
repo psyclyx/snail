@@ -1,19 +1,19 @@
 const std = @import("std");
-const subpixel_policy = @import("subpixel_policy.zig");
-const atlas_curve_mod = @import("../format/atlas/curve.zig");
-const atlas_page_mod = @import("../format/atlas/page.zig");
-const texture_layers = @import("../format/texture_layers.zig");
-const upload_common = @import("../format/upload_common.zig");
-const vertex = @import("../format/vertex.zig");
-const vec = @import("../../math/vec.zig");
+const subpixel_policy = @import("../subpixel_policy.zig");
+const atlas_curve_mod = @import("../../format/atlas/curve.zig");
+const atlas_page_mod = @import("../../format/atlas/page.zig");
+const texture_layers = @import("../../format/texture_layers.zig");
+const upload_common = @import("../../format/upload_common.zig");
+const vertex = @import("../../format/vertex.zig");
+const vec = @import("../../../math/vec.zig");
 const Mat4 = vec.Mat4;
-const snail_mod = @import("../../root.zig");
-const SubpixelOrder = @import("../format/subpixel_order.zig").SubpixelOrder;
+const snail_mod = @import("../../../root.zig");
+const SubpixelOrder = @import("../../format/subpixel_order.zig").SubpixelOrder;
 const TargetEncoding = snail_mod.TargetEncoding;
 const Resolve = snail_mod.Resolve;
 const CoverageTransfer = snail_mod.CoverageTransfer;
-const vulkan_types = @import("vulkan/types.zig");
-const vulkan_resources = @import("vulkan/resources.zig");
+const vulkan_types = @import("types.zig");
+const vulkan_resources = @import("resources.zig");
 
 pub const vk = vulkan_types.vk;
 

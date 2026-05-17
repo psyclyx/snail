@@ -816,22 +816,17 @@ src/
     resource_key.zig     stable resource-key helpers
     font/                TrueType/OpenType/HarfBuzz text primitives
     math/                Bezier, vector, matrix, and root-solving primitives
-    renderer/
-      gl.zig             OpenGL renderer and prepared resource state
-      vulkan.zig         Vulkan renderer and prepared resource state (optional)
-      cpu.zig            software rasterizer (same atlas data, no GPU)
-      gl_bindings.zig    OpenGL C imports
-      gl_backend.zig     GL version detection and backend selection
-      shaders.zig        GLSL 330 vertex + fragment shaders (GL backend)
-      vulkan_shaders.zig SPIR-V bytecode loader (Vulkan backend)
-      curve_texture.zig  RGBA16F curve control point packing
-      band_texture.zig   RG16UI spatial band subdivision
-      vertex.zig         glyph quad vertex generation
-      upload_common.zig  shared texture upload logic
-      subpixel_order.zig RGB/BGR/VRGB/VBGR enum
-      subpixel_policy.zig subpixel rendering policy logic
-      glsl/              shared GLSL bodies for GL and Vulkan backends
-      vulkan_glsl/       Vulkan shader wrappers (compiled to SPIR-V at build time)
+    render/
+      interface.zig      renderer interface and draw entry points
+      adapter/           public CPU/GL/Vulkan renderer adapters
+      format/            shared packed atlas, vertex, and upload formats
+      backend/
+        cpu/             software rasterizer implementation and resources
+        gl/              OpenGL state, resources, bindings, programs, shaders
+        vulkan/          Vulkan pipeline, resources, types, SPIR-V loader
+        subpixel_policy.zig subpixel rendering policy logic
+        glsl/            shared GLSL bodies for GL and Vulkan backends
+        vulkan_glsl/     Vulkan shader wrappers (compiled to SPIR-V at build time)
   demo/
     main.zig             interactive renderer demo
     game.zig             game-style OpenGL demo entry point

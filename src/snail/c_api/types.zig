@@ -4,7 +4,7 @@ const build_options = @import("build_options");
 const c_handles = @import("handles.zig");
 const c_runtime = @import("runtime.zig");
 
-pub const vk = if (build_options.enable_vulkan) @import("../render/backend/vulkan.zig").vk else struct {
+pub const vk = if (build_options.enable_vulkan) @import("../render/backend/vulkan/pipeline.zig").vk else struct {
     pub const VkPhysicalDevice = ?*anyopaque;
     pub const VkDevice = ?*anyopaque;
     pub const VkQueue = ?*anyopaque;

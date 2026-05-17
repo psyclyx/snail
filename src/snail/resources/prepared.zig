@@ -9,7 +9,7 @@ const atlas_curve_mod = @import("../render/format/atlas/curve.zig");
 const text_mod = @import("../text.zig");
 const view_mod = @import("view.zig");
 
-const pipeline = if (build_options.enable_opengl) @import("../render/backend/gl.zig") else struct {
+const pipeline = if (build_options.enable_opengl) @import("../render/backend/gl/state.zig") else struct {
     pub const TextCoverageBindings = struct {};
     pub const GlTextState = void;
     pub const PreparedResources = void;
@@ -17,10 +17,10 @@ const pipeline = if (build_options.enable_opengl) @import("../render/backend/gl.
     pub const text_coverage_fragment_interface = "";
     pub const text_coverage_fragment_body = "";
 };
-const cpu_renderer_mod = if (build_options.enable_cpu) @import("../render/backend/cpu.zig") else struct {
+const cpu_renderer_mod = if (build_options.enable_cpu) @import("../render/backend/cpu/renderer.zig") else struct {
     pub const PreparedResources = void;
 };
-const vulkan_pipeline = if (build_options.enable_vulkan) @import("../render/backend/vulkan.zig") else struct {
+const vulkan_pipeline = if (build_options.enable_vulkan) @import("../render/backend/vulkan/pipeline.zig") else struct {
     pub const PreparedResources = void;
     pub const VulkanPipeline = void;
 };

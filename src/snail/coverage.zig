@@ -6,7 +6,7 @@ const prepared_mod = @import("resources/prepared.zig");
 const scene_mod = @import("scene.zig");
 const text_mod = @import("text.zig");
 const vec = @import("math/vec.zig");
-const pipeline = if (build_options.enable_opengl) @import("render/backend/gl.zig") else struct {
+const pipeline = if (build_options.enable_opengl) @import("render/backend/gl/state.zig") else struct {
     pub const TextCoverageBindings = struct {};
     pub const GlTextState = void;
     pub const PreparedResources = void;
@@ -16,7 +16,7 @@ const pipeline = if (build_options.enable_opengl) @import("render/backend/gl.zig
     pub const text_sample_interface = "";
     pub const text_sample_body = "";
 };
-const vulkan_pipeline = if (build_options.enable_vulkan) @import("render/backend/vulkan.zig") else struct {
+const vulkan_pipeline = if (build_options.enable_vulkan) @import("render/backend/vulkan/pipeline.zig") else struct {
     pub const PreparedResources = void;
     pub const VulkanPipeline = void;
 };

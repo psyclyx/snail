@@ -1,4 +1,4 @@
-const gl = @import("../gl_bindings.zig").gl;
+const gl = @import("bindings.zig").gl;
 
 pub fn setTexParams(target: gl.GLenum) void {
     gl.glTexParameteri(target, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST);

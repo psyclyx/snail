@@ -53,7 +53,7 @@ test {
     _ = @import("render/format/band_texture.zig");
     _ = @import("font/opentype.zig");
     _ = @import("render/format/vertex.zig");
-    if (build_options.enable_cpu) _ = @import("render/backend/cpu.zig");
+    if (build_options.enable_cpu) _ = @import("render/backend/cpu/renderer.zig");
     _ = @import("torture_test.zig");
     _ = @import("text.zig");
 }
@@ -323,13 +323,13 @@ test "Renderer.draw source stays free of upload allocation" {
 }
 
 test "Vulkan renderer path contains no device or queue idle" {
-    const source = @embedFile("render/backend/vulkan.zig");
+    const source = @embedFile("render/backend/vulkan/pipeline.zig");
     try std.testing.expect(std.mem.indexOf(u8, source, "vkDeviceWaitIdle") == null);
     try std.testing.expect(std.mem.indexOf(u8, source, "vkQueueWaitIdle") == null);
 }
 
 test "Vulkan scheduled upload path records without internal submit" {
-    const source = @embedFile("render/backend/vulkan.zig");
+    const source = @embedFile("render/backend/vulkan/pipeline.zig");
     const start = std.mem.indexOf(u8, source, "fn finishTransferCommand").?;
     const end = start + std.mem.indexOf(u8, source[start..], "fn submitTransferAndWait").?;
     const scheduled_finish = source[start..end];

@@ -11,7 +11,7 @@ const resource_upload_mod = @import("../../resources/upload.zig");
 const set_mod = @import("../../resources/set.zig");
 const upload_mod = @import("../../upload.zig");
 
-const pipeline = if (build_options.enable_vulkan) @import("../../render/backend/vulkan.zig") else struct {
+const pipeline = if (build_options.enable_vulkan) @import("../backend/vulkan/pipeline.zig") else struct {
     pub const PreparedResources = void;
     pub const VulkanContext = void;
     pub const VulkanPipeline = void;

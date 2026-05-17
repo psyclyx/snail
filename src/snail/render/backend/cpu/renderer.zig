@@ -8,12 +8,12 @@
 //! float-op orderings between CPU code and the SPIR-V/GLSL pipeline.
 
 const std = @import("std");
-const snail = @import("../../root.zig");
-const bezier = @import("../../math/bezier.zig");
-const curve_tex = @import("../format/curve_texture.zig");
-const atlas_curve_mod = @import("../format/atlas/curve.zig");
-const atlas_page_mod = @import("../format/atlas/page.zig");
-const vertex = @import("../format/vertex.zig");
+const snail = @import("../../../root.zig");
+const bezier = @import("../../../math/bezier.zig");
+const curve_tex = @import("../../format/curve_texture.zig");
+const atlas_curve_mod = @import("../../format/atlas/curve.zig");
+const atlas_page_mod = @import("../../format/atlas/page.zig");
+const vertex = @import("../../format/vertex.zig");
 const CurveSegment = bezier.CurveSegment;
 const CurveAtlas = atlas_curve_mod.CurveAtlas;
 const AtlasPage = atlas_page_mod.AtlasPage;
@@ -22,13 +22,13 @@ const Vec2 = snail.Vec2;
 const Transform2D = snail.Transform2D;
 const FillRule = snail.FillRule;
 const SubpixelOrder = snail.SubpixelOrder;
-const cpu_blend = @import("cpu/blend.zig");
-const cpu_color = @import("cpu/color.zig");
-const cpu_coverage = @import("cpu/coverage.zig");
-const cpu_geometry = @import("cpu/geometry.zig");
-const cpu_path_paint = @import("cpu/path_paint.zig");
-const cpu_resources = @import("cpu/resources.zig");
-const cpu_texture = @import("cpu/texture.zig");
+const cpu_blend = @import("blend.zig");
+const cpu_color = @import("color.zig");
+const cpu_coverage = @import("coverage.zig");
+const cpu_geometry = @import("geometry.zig");
+const cpu_path_paint = @import("path_paint.zig");
+const cpu_resources = @import("resources.zig");
+const cpu_texture = @import("texture.zig");
 
 const SubpixelCoverage = cpu_coverage.SubpixelCoverage;
 const SubpixelCoveragePlan = cpu_coverage.SubpixelCoveragePlan;

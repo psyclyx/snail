@@ -174,7 +174,7 @@ pub fn createModule(b: *std.Build, enable_vulkan: bool) *std.Build.Module {
     }
 
     const mod = b.createModule(.{
-        .root_source_file = b.path("src/snail/render/backend/vulkan_shaders.zig"),
+        .root_source_file = b.path("src/snail/render/backend/vulkan/shaders.zig"),
     });
     inline for (shader_specs, 0..) |spec, i| {
         mod.addAnonymousImport(spec.import_name, .{ .root_source_file = spv_outputs[i] });

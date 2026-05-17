@@ -11,7 +11,7 @@ const resource_upload_mod = @import("../../resources/upload.zig");
 const set_mod = @import("../../resources/set.zig");
 const upload_mod = @import("../../upload.zig");
 
-const pipeline = if (build_options.enable_opengl) @import("../../render/backend/gl.zig") else struct {
+const pipeline = if (build_options.enable_opengl) @import("../backend/gl/state.zig") else struct {
     pub const GlTextState = void;
     pub const PreparedResources = void;
 };
