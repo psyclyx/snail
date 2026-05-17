@@ -53,7 +53,10 @@ test {
     _ = @import("render/format/band_texture.zig");
     _ = @import("font/opentype.zig");
     _ = @import("render/format/vertex.zig");
-    if (build_options.enable_cpu) _ = @import("render/backend/cpu/renderer.zig");
+    if (build_options.enable_cpu) {
+        _ = @import("render/backend/cpu/renderer.zig");
+        _ = @import("render/backend/cpu/renderer_tests.zig");
+    }
     _ = @import("torture_test.zig");
     _ = @import("text.zig");
 }
