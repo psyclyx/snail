@@ -1,0 +1,297 @@
+const common = @import("common.zig");
+const std = common.std;
+const builtin = common.builtin;
+const snail = common.snail;
+const resource_key = common.resource_key;
+const ttf = common.ttf;
+const build_options = common.build_options;
+const c_convert = common.c_convert;
+const c_handles = common.c_handles;
+const c_runtime = common.c_runtime;
+const c_types = common.c_types;
+const vk = common.vk;
+const resolveAllocator = common.resolveAllocator;
+const handleAllocator = common.handleAllocator;
+const mapError = common.mapError;
+const SnailAllocFn = common.SnailAllocFn;
+const SnailFreeFn = common.SnailFreeFn;
+const SnailAllocator = common.SnailAllocator;
+const SNAIL_OK = common.SNAIL_OK;
+const SNAIL_ERR_INVALID_FONT = common.SNAIL_ERR_INVALID_FONT;
+const SNAIL_ERR_OUT_OF_MEMORY = common.SNAIL_ERR_OUT_OF_MEMORY;
+const SNAIL_ERR_RENDERER_FAILED = common.SNAIL_ERR_RENDERER_FAILED;
+const SNAIL_ERR_INVALID_ARGUMENT = common.SNAIL_ERR_INVALID_ARGUMENT;
+const SNAIL_ERR_DRAW_FAILED = common.SNAIL_ERR_DRAW_FAILED;
+const SnailVulkanContext = common.SnailVulkanContext;
+const SnailBBox = common.SnailBBox;
+const SnailGlyphMetrics = common.SnailGlyphMetrics;
+const SnailLineMetrics = common.SnailLineMetrics;
+const SnailDecorationMetrics = common.SnailDecorationMetrics;
+const SnailScriptMetrics = common.SnailScriptMetrics;
+const SnailScriptTransform = common.SnailScriptTransform;
+const SnailCellMetrics = common.SnailCellMetrics;
+const SnailRect = common.SnailRect;
+const SnailMat4 = common.SnailMat4;
+const SnailString = common.SnailString;
+const SnailTransform2D = common.SnailTransform2D;
+const SnailOverride = common.SnailOverride;
+const SnailRange = common.SnailRange;
+const SnailShapeMark = common.SnailShapeMark;
+const SnailSyntheticStyle = common.SnailSyntheticStyle;
+const SnailFaceSpec = common.SnailFaceSpec;
+const SnailFontStyle = common.SnailFontStyle;
+const SnailShapedGlyph = common.SnailShapedGlyph;
+const SnailTextPlacement = common.SnailTextPlacement;
+const SnailTextAppendOptions = common.SnailTextAppendOptions;
+const SnailResolveTarget = common.SnailResolveTarget;
+const SnailDrawOptions = common.SnailDrawOptions;
+const SnailResourceKey = common.SnailResourceKey;
+const SnailResourceStamp = common.SnailResourceStamp;
+const SNAIL_RESOURCE_CAPACITY_GROWABLE = common.SNAIL_RESOURCE_CAPACITY_GROWABLE;
+const SNAIL_RESOURCE_CAPACITY_EXACT = common.SNAIL_RESOURCE_CAPACITY_EXACT;
+const SnailResourceFootprint = common.SnailResourceFootprint;
+const SnailResourceCacheStats = common.SnailResourceCacheStats;
+const SnailGlTextCoverageBindings = common.SnailGlTextCoverageBindings;
+const SnailVulkanTextCoverageBindings = common.SnailVulkanTextCoverageBindings;
+const SNAIL_PAINT_SOLID = common.SNAIL_PAINT_SOLID;
+const SNAIL_PAINT_LINEAR = common.SNAIL_PAINT_LINEAR;
+const SNAIL_PAINT_RADIAL = common.SNAIL_PAINT_RADIAL;
+const SNAIL_PAINT_IMAGE = common.SNAIL_PAINT_IMAGE;
+const SnailLinearGradient = common.SnailLinearGradient;
+const SnailRadialGradient = common.SnailRadialGradient;
+const SnailImagePaint = common.SnailImagePaint;
+const SnailPaint = common.SnailPaint;
+const SnailFillStyle = common.SnailFillStyle;
+const SnailStrokeStyle = common.SnailStrokeStyle;
+const wrapBBox = common.wrapBBox;
+const wrapString = common.wrapString;
+const wrapDecorationMetrics = common.wrapDecorationMetrics;
+const wrapScriptMetrics = common.wrapScriptMetrics;
+const wrapScriptTransform = common.wrapScriptTransform;
+const wrapResourceStamp = common.wrapResourceStamp;
+const toRect = common.toRect;
+const toSnailRect = common.toSnailRect;
+const fromMat4 = common.fromMat4;
+const toTransform = common.toTransform;
+const toOverride = common.toOverride;
+const toGlCoverageBindings = common.toGlCoverageBindings;
+const toVulkanCoverageBindings = common.toVulkanCoverageBindings;
+const fromResourceFootprint = common.fromResourceFootprint;
+const fromResourceCacheStats = common.fromResourceCacheStats;
+const toResourceCapacityMode = common.toResourceCapacityMode;
+const reservedResourceCapacityMode = common.reservedResourceCapacityMode;
+const toRange = common.toRange;
+const fromRange = common.fromRange;
+const toShapeMark = common.toShapeMark;
+const fromShapeMark = common.fromShapeMark;
+const toSyntheticStyle = common.toSyntheticStyle;
+const toFontWeight = common.toFontWeight;
+const toFontStyle = common.toFontStyle;
+const toDecoration = common.toDecoration;
+const toTextPlacement = common.toTextPlacement;
+const toDrawOptions = common.toDrawOptions;
+const toPaint = common.toPaint;
+const toFillStyle = common.toFillStyle;
+const toStrokeStyle = common.toStrokeStyle;
+const toOptFill = common.toOptFill;
+const toOptStroke = common.toOptStroke;
+const FontImpl = common.FontImpl;
+const TextAtlasImpl = common.TextAtlasImpl;
+const ShapedTextImpl = common.ShapedTextImpl;
+const TextBlobImpl = common.TextBlobImpl;
+const ImageImpl = common.ImageImpl;
+const PathImpl = common.PathImpl;
+const PathPictureBuilderImpl = common.PathPictureBuilderImpl;
+const PathPictureImpl = common.PathPictureImpl;
+const SceneImpl = common.SceneImpl;
+const ResourceSetImpl = common.ResourceSetImpl;
+const PreparedResourcesImpl = common.PreparedResourcesImpl;
+const PreparedSceneImpl = common.PreparedSceneImpl;
+const PreparedResourceRetirementQueueImpl = common.PreparedResourceRetirementQueueImpl;
+const ResourceUploadPlanImpl = common.ResourceUploadPlanImpl;
+const PendingResourceUploadImpl = common.PendingResourceUploadImpl;
+const DrawListImpl = common.DrawListImpl;
+const TextCoverageRecordsImpl = common.TextCoverageRecordsImpl;
+const CoverageBackendImpl = common.CoverageBackendImpl;
+const ThreadPoolImpl = common.ThreadPoolImpl;
+const RendererImpl = common.RendererImpl;
+const destroyHandle = common.destroyHandle;
+
+// Renderer
+
+fn cpuPixels(pixels: ?[*]u8, width: u32, height: u32, stride: u32) ?[*]u8 {
+    const ptr = pixels orelse return null;
+    if (width == 0 or height == 0) return null;
+    const min_stride = std.math.mul(u32, width, 4) catch return null;
+    if (stride < min_stride) return null;
+    return ptr;
+}
+
+pub export fn snail_gl_renderer_init(out: *?*RendererImpl) c_int {
+    if (comptime build_options.enable_opengl) {
+        const gl = snail.GlRenderer.init(handleAllocator()) catch return SNAIL_ERR_RENDERER_FAILED;
+        const impl = handleAllocator().create(RendererImpl) catch {
+            var doomed = gl;
+            doomed.deinit();
+            return SNAIL_ERR_OUT_OF_MEMORY;
+        };
+        impl.* = .{ .backend = .gl, .gl = gl };
+        out.* = impl;
+        return SNAIL_OK;
+    } else {
+        return SNAIL_ERR_RENDERER_FAILED;
+    }
+}
+
+pub export fn snail_cpu_available() bool {
+    return build_options.enable_cpu;
+}
+
+fn mapThreadPoolInitError(err: anyerror) c_int {
+    return switch (err) {
+        error.OutOfMemory => SNAIL_ERR_OUT_OF_MEMORY,
+        else => SNAIL_ERR_RENDERER_FAILED,
+    };
+}
+
+fn initThreadPool(
+    alloc_ptr: ?*const SnailAllocator,
+    worker_count: ?usize,
+    out: *?*ThreadPoolImpl,
+) c_int {
+    if (comptime !build_options.enable_cpu) return SNAIL_ERR_RENDERER_FAILED;
+    const allocator = resolveAllocator(alloc_ptr);
+    const impl = handleAllocator().create(ThreadPoolImpl) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    impl.inner.init(allocator, .{ .threads = worker_count }) catch |err| {
+        handleAllocator().destroy(impl);
+        return mapThreadPoolInitError(err);
+    };
+    out.* = impl;
+    return SNAIL_OK;
+}
+
+pub export fn snail_thread_pool_init(
+    alloc_ptr: ?*const SnailAllocator,
+    out: *?*ThreadPoolImpl,
+) c_int {
+    return initThreadPool(alloc_ptr, null, out);
+}
+
+pub export fn snail_thread_pool_init_with_threads(
+    alloc_ptr: ?*const SnailAllocator,
+    worker_count: usize,
+    out: *?*ThreadPoolImpl,
+) c_int {
+    return initThreadPool(alloc_ptr, worker_count, out);
+}
+
+pub export fn snail_thread_pool_deinit(pool: ?*ThreadPoolImpl) void {
+    if (pool) |p| {
+        p.inner.deinit();
+        destroyHandle(p);
+    }
+}
+
+pub export fn snail_thread_pool_thread_count(pool: *const ThreadPoolImpl) usize {
+    return pool.inner.threadCount();
+}
+
+pub export fn snail_cpu_renderer_init(pixels: ?[*]u8, width: u32, height: u32, stride: u32, out: *?*RendererImpl) c_int {
+    if (comptime build_options.enable_cpu) {
+        const pixel_ptr = cpuPixels(pixels, width, height, stride) orelse return SNAIL_ERR_INVALID_ARGUMENT;
+        const cpu = snail.CpuRenderer.init(pixel_ptr, width, height, stride);
+        const impl = handleAllocator().create(RendererImpl) catch return SNAIL_ERR_OUT_OF_MEMORY;
+        impl.* = .{ .backend = .cpu, .cpu = cpu };
+        out.* = impl;
+        return SNAIL_OK;
+    } else {
+        return SNAIL_ERR_RENDERER_FAILED;
+    }
+}
+
+pub export fn snail_cpu_renderer_reinit_buffer(renderer: *RendererImpl, pixels: ?[*]u8, width: u32, height: u32, stride: u32) c_int {
+    if (comptime !build_options.enable_cpu) return SNAIL_ERR_RENDERER_FAILED;
+    if (renderer.backend != .cpu) return SNAIL_ERR_INVALID_ARGUMENT;
+    const pixel_ptr = cpuPixels(pixels, width, height, stride) orelse return SNAIL_ERR_INVALID_ARGUMENT;
+    if (renderer.cpu) |*cpu| {
+        cpu.reinitBuffer(pixel_ptr, width, height, stride);
+        return SNAIL_OK;
+    }
+    return SNAIL_ERR_INVALID_ARGUMENT;
+}
+
+pub export fn snail_cpu_renderer_set_thread_pool(renderer: *RendererImpl, pool: ?*ThreadPoolImpl) c_int {
+    if (comptime !build_options.enable_cpu) return SNAIL_ERR_RENDERER_FAILED;
+    if (renderer.backend != .cpu) return SNAIL_ERR_INVALID_ARGUMENT;
+    if (renderer.cpu) |*cpu| {
+        cpu.setThreadPool(if (pool) |p| &p.inner else null);
+        return SNAIL_OK;
+    }
+    return SNAIL_ERR_INVALID_ARGUMENT;
+}
+
+pub export fn snail_vulkan_available() bool {
+    return build_options.enable_vulkan;
+}
+
+pub export fn snail_vulkan_renderer_init(ctx: *const SnailVulkanContext, out: *?*RendererImpl) c_int {
+    if (comptime build_options.enable_vulkan) {
+        const vk_ctx = snail.VulkanContext{
+            .physical_device = ctx.physical_device,
+            .device = ctx.device,
+            .graphics_queue = ctx.graphics_queue,
+            .queue_family_index = ctx.queue_family_index,
+            .render_pass = ctx.render_pass,
+            .color_format = ctx.color_format,
+            .supports_dual_source_blend = ctx.supports_dual_source_blend,
+        };
+        const vk_renderer = snail.VulkanRenderer.init(handleAllocator(), vk_ctx) catch return SNAIL_ERR_RENDERER_FAILED;
+        const impl = handleAllocator().create(RendererImpl) catch {
+            var doomed = vk_renderer;
+            doomed.deinit();
+            return SNAIL_ERR_OUT_OF_MEMORY;
+        };
+        impl.* = .{ .backend = .vulkan, .vulkan = vk_renderer };
+        out.* = impl;
+        return SNAIL_OK;
+    } else {
+        return SNAIL_ERR_RENDERER_FAILED;
+    }
+}
+
+pub export fn snail_vulkan_renderer_begin_frame(renderer: *RendererImpl, command_buffer: vk.VkCommandBuffer, frame_slot: u32) c_int {
+    if (comptime !build_options.enable_vulkan) return SNAIL_ERR_RENDERER_FAILED;
+    if (renderer.backend != .vulkan) return SNAIL_ERR_INVALID_ARGUMENT;
+    if (renderer.vulkan) |*vk_renderer| {
+        vk_renderer.beginFrame(.{ .cmd = command_buffer, .frame_index = frame_slot });
+        return SNAIL_OK;
+    }
+    return SNAIL_ERR_INVALID_ARGUMENT;
+}
+
+pub export fn snail_vulkan_pending_resource_upload_record(pending: *PendingResourceUploadImpl, command_buffer: vk.VkCommandBuffer, budget_bytes: usize) c_int {
+    if (comptime !build_options.enable_vulkan) return SNAIL_ERR_RENDERER_FAILED;
+    pending.inner.record(.{ .vulkan = command_buffer }, .{ .budget_bytes = budget_bytes }) catch |err| return mapError(err);
+    return SNAIL_OK;
+}
+
+pub export fn snail_vulkan_pending_resource_upload_record_checked(pending: *PendingResourceUploadImpl, command_buffer: vk.VkCommandBuffer, budget_bytes: usize, allow_cache_rebuilds: bool) c_int {
+    if (comptime !build_options.enable_vulkan) return SNAIL_ERR_RENDERER_FAILED;
+    pending.inner.record(.{ .vulkan = command_buffer }, .{
+        .budget_bytes = budget_bytes,
+        .allow_cache_rebuilds = allow_cache_rebuilds,
+    }) catch |err| return mapError(err);
+    return SNAIL_OK;
+}
+
+pub export fn snail_vulkan_pending_resource_upload_ready_fence(pending: *PendingResourceUploadImpl, fence: vk.VkFence) bool {
+    if (comptime !build_options.enable_vulkan) return false;
+    return pending.inner.ready(.{ .vulkan_fence = fence });
+}
+
+pub export fn snail_vulkan_prepared_resource_retirement_queue_retire_after(queue: *PreparedResourceRetirementQueueImpl, prepared: *PreparedResourcesImpl, fence: vk.VkFence) c_int {
+    if (comptime !build_options.enable_vulkan) return SNAIL_ERR_RENDERER_FAILED;
+    queue.inner.retireAfter(&prepared.inner, fence) catch |err| return mapError(err);
+    destroyHandle(prepared);
+    return SNAIL_OK;
+}
