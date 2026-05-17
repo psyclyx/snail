@@ -9,13 +9,10 @@ const build_options = @import("build_options");
 const assets = @import("assets");
 const snail = @import("snail");
 const egl_offscreen = @import("demo_platform_offscreen_gl");
-const gl = @import("internal_gl.zig").gl;
 const vulkan_platform = if (build_options.enable_vulkan) @import("demo_platform_vulkan") else struct {};
-
-const c = @cImport({
-    @cInclude("ft2build.h");
-    @cInclude("freetype/freetype.h");
-});
+const freetype = @import("bench/freetype.zig");
+const render_timing = @import("bench/render_timing.zig");
+const report = @import("bench/report.zig");
 
 const PREP_RUNS = 20;
 const TEXT_WARMUP = 50;
@@ -28,7 +25,6 @@ const CPU_WARMUP = 5;
 const CPU_FRAMES = 20;
 const WIDTH: u32 = 640;
 const HEIGHT: u32 = 360;
-const GL_SRGB8_ALPHA8: gl.GLenum = 0x8C43;
 
 const PRINTABLE_ASCII = blk: {
     var chars: [95]u8 = undefined;
@@ -62,7 +58,7 @@ const TextWorkload = enum {
     paragraph,
     paragraph_sizes,
 
-    fn name(self: TextWorkload) []const u8 {
+    pub fn name(self: TextWorkload) []const u8 {
         return switch (self) {
             .short => "Short string",
             .sentence => "Sentence",
@@ -81,7 +77,7 @@ const SceneKind = enum {
     mixed,
     multi_script,
 
-    fn name(self: SceneKind) []const u8 {
+    pub fn name(self: SceneKind) []const u8 {
         return switch (self) {
             .text => "Text",
             .rich_text => "Rich text",
@@ -97,7 +93,7 @@ const scene_kinds = [_]SceneKind{ .text, .rich_text, .vector, .mixed, .multi_scr
 const RenderMode = struct {
     aa: snail.SubpixelOrder,
 
-    fn aaName(self: RenderMode) []const u8 {
+    pub fn aaName(self: RenderMode) []const u8 {
         return switch (self.aa) {
             .none => "grayscale",
             .rgb => "subpixel rgb",
@@ -176,27 +172,6 @@ const VectorPrep = struct {
     footprint: snail.ResourceFootprint,
 };
 
-const FreetypeResults = struct {
-    font_load_us: f64,
-    glyph_prep_us: f64,
-    glyph_prep_all_sizes_us: f64,
-    bitmap_bytes_single: usize,
-    bitmap_bytes_all: usize,
-    layout_short_us: f64,
-    layout_sentence_us: f64,
-    layout_paragraph_us: f64,
-    layout_torture_us: f64,
-
-    fn layout(self: FreetypeResults, workload: TextWorkload) f64 {
-        return switch (workload) {
-            .short => self.layout_short_us,
-            .sentence => self.layout_sentence_us,
-            .paragraph => self.layout_paragraph_us,
-            .paragraph_sizes => self.layout_torture_us,
-        };
-    }
-};
-
 const TextRow = struct {
     workload: TextWorkload,
     snail_us: f64,
@@ -232,61 +207,6 @@ const RenderRow = struct {
     us: f64,
 };
 
-fn cpuModelName(buf: []u8) []const u8 {
-    const file = std.c.fopen("/proc/cpuinfo", "r") orelse return "unknown";
-    defer _ = std.c.fclose(file);
-    var read_buf: [4096]u8 = undefined;
-    const n = std.c.fread(&read_buf, 1, read_buf.len, file);
-    const text = read_buf[0..n];
-    const prefix = "model name";
-    var line_iter = std.mem.splitScalar(u8, text, '\n');
-    while (line_iter.next()) |line| {
-        if (!std.mem.startsWith(u8, line, prefix)) continue;
-        const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
-        const value = std.mem.trim(u8, line[colon + 1 ..], " \t");
-        const out_len = @min(buf.len, value.len);
-        @memcpy(buf[0..out_len], value[0..out_len]);
-        return buf[0..out_len];
-    }
-    return "unknown";
-}
-
-fn glStringSafe(name: gl.GLenum) []const u8 {
-    const ptr = gl.glGetString(name) orelse return "unknown";
-    return std.mem.span(@as([*:0]const u8, @ptrCast(ptr)));
-}
-
-fn printHardwareTable(gl_initialized: bool, vulkan_initialized: bool) void {
-    var cpu_buf: [256]u8 = undefined;
-    const cpu = cpuModelName(&cpu_buf);
-    std.debug.print(
-        \\## Hardware
-        \\
-        \\| Component | Detected |
-        \\|---|---|
-        \\| CPU | {s} |
-        \\
-    , .{cpu});
-
-    if (gl_initialized) {
-        std.debug.print(
-            "| OpenGL renderer | {s} |\n| OpenGL version | {s} |\n",
-            .{ glStringSafe(gl.GL_RENDERER), glStringSafe(gl.GL_VERSION) },
-        );
-    }
-
-    if (comptime build_options.enable_vulkan) {
-        if (vulkan_initialized) {
-            var vk_buf: [256]u8 = undefined;
-            const name = vulkan_platform.physicalDeviceName(&vk_buf) orelse "unknown";
-            std.debug.print("| Vulkan device | {s} |\n", .{name});
-        }
-    } else {
-        std.debug.print("| Vulkan | disabled (`zig build bench -Dvulkan=false`) |\n", .{});
-    }
-    std.debug.print("\n", .{});
-}
-
 fn nowNs() u64 {
     var ts: std.c.timespec = undefined;
     _ = std.c.clock_gettime(.MONOTONIC, &ts);
@@ -295,14 +215,6 @@ fn nowNs() u64 {
 
 fn usFrom(start: u64) f64 {
     return @as(f64, @floatFromInt(nowNs() - start)) / 1000.0;
-}
-
-fn ratio(numerator: f64, denominator: f64) f64 {
-    return numerator / @max(denominator, 0.001);
-}
-
-fn kib(bytes: usize) f64 {
-    return @as(f64, @floatFromInt(bytes)) / 1024.0;
 }
 
 fn drawOptions(width: u32, height: u32, subpixel_order: snail.SubpixelOrder) snail.DrawOptions {
@@ -680,126 +592,6 @@ fn benchSnailPrep(allocator: std.mem.Allocator, font_data: []const u8) !SnailPre
     };
 }
 
-fn benchFreetype(font_data: []const u8) !FreetypeResults {
-    var font_load_total_us: f64 = 0;
-    for (0..PREP_RUNS) |_| {
-        var load_library: c.FT_Library = null;
-        const start = nowNs();
-        if (c.FT_Init_FreeType(&load_library) != 0) return error.FTInitFailed;
-        var load_face: c.FT_Face = null;
-        if (c.FT_New_Memory_Face(load_library, font_data.ptr, @intCast(font_data.len), 0, &load_face) != 0) {
-            _ = c.FT_Done_FreeType(load_library);
-            return error.FTFaceFailed;
-        }
-        font_load_total_us += usFrom(start);
-        _ = c.FT_Done_Face(load_face);
-        _ = c.FT_Done_FreeType(load_library);
-    }
-
-    var library: c.FT_Library = null;
-    if (c.FT_Init_FreeType(&library) != 0) return error.FTInitFailed;
-    defer _ = c.FT_Done_FreeType(library);
-
-    var face: c.FT_Face = null;
-    if (c.FT_New_Memory_Face(library, font_data.ptr, @intCast(font_data.len), 0, &face) != 0) return error.FTFaceFailed;
-    defer _ = c.FT_Done_Face(face);
-
-    var bitmap_bytes_single: usize = 0;
-    var glyph_prep_total_us: f64 = 0;
-    for (0..PREP_RUNS) |run| {
-        _ = c.FT_Set_Pixel_Sizes(face, 0, 48);
-        var run_bytes: usize = 0;
-        const start = nowNs();
-        for (&PRINTABLE_ASCII) |ch| {
-            const gi = c.FT_Get_Char_Index(face, ch);
-            if (gi == 0) continue;
-            if (c.FT_Load_Glyph(face, gi, c.FT_LOAD_DEFAULT) != 0) continue;
-            if (c.FT_Render_Glyph(face.*.glyph, c.FT_RENDER_MODE_NORMAL) != 0) continue;
-            run_bytes += @as(usize, face.*.glyph.*.bitmap.width) * @as(usize, face.*.glyph.*.bitmap.rows);
-        }
-        glyph_prep_total_us += usFrom(start);
-        if (run == 0) bitmap_bytes_single = run_bytes;
-    }
-
-    var bitmap_bytes_all: usize = 0;
-    var glyph_prep_all_total_us: f64 = 0;
-    for (0..PREP_RUNS) |run| {
-        var run_bytes: usize = 0;
-        const start = nowNs();
-        for (SIZES) |sz| {
-            _ = c.FT_Set_Pixel_Sizes(face, 0, sz);
-            for (&PRINTABLE_ASCII) |ch| {
-                const gi = c.FT_Get_Char_Index(face, ch);
-                if (gi == 0) continue;
-                if (c.FT_Load_Glyph(face, gi, c.FT_LOAD_DEFAULT) != 0) continue;
-                if (c.FT_Render_Glyph(face.*.glyph, c.FT_RENDER_MODE_NORMAL) != 0) continue;
-                run_bytes += @as(usize, face.*.glyph.*.bitmap.width) * @as(usize, face.*.glyph.*.bitmap.rows);
-            }
-        }
-        glyph_prep_all_total_us += usFrom(start);
-        if (run == 0) bitmap_bytes_all = run_bytes;
-    }
-
-    const LayoutCtx = struct {
-        face: c.FT_Face,
-
-        fn layoutString(self: @This(), text: []const u8) void {
-            var pen_x: i32 = 0;
-            var prev: u32 = 0;
-            for (text) |ch| {
-                const gi = c.FT_Get_Char_Index(self.face, ch);
-                if (prev != 0 and gi != 0) {
-                    var delta: c.FT_Vector = undefined;
-                    _ = c.FT_Get_Kerning(self.face, prev, gi, c.FT_KERNING_DEFAULT, &delta);
-                    pen_x += @intCast(delta.x >> 6);
-                }
-                if (c.FT_Load_Glyph(self.face, gi, c.FT_LOAD_DEFAULT) == 0) {
-                    pen_x += @intCast(self.face.*.glyph.*.advance.x >> 6);
-                }
-                prev = gi;
-            }
-            std.mem.doNotOptimizeAway(pen_x);
-        }
-    };
-    const ctx = LayoutCtx{ .face = face };
-
-    _ = c.FT_Set_Pixel_Sizes(face, 0, 24);
-    var start = nowNs();
-    for (0..TEXT_ITERS) |_| ctx.layoutString(SHORT);
-    const short_us = usFrom(start) / TEXT_ITERS;
-
-    _ = c.FT_Set_Pixel_Sizes(face, 0, 48);
-    start = nowNs();
-    for (0..TEXT_ITERS) |_| ctx.layoutString(SENTENCE);
-    const sentence_us = usFrom(start) / TEXT_ITERS;
-
-    _ = c.FT_Set_Pixel_Sizes(face, 0, 18);
-    start = nowNs();
-    for (0..TEXT_ITERS) |_| ctx.layoutString(PARAGRAPH);
-    const paragraph_us = usFrom(start) / TEXT_ITERS;
-
-    start = nowNs();
-    for (0..TEXT_ITERS) |_| {
-        for (SIZES) |sz| {
-            _ = c.FT_Set_Pixel_Sizes(face, 0, sz);
-            ctx.layoutString(PARAGRAPH);
-        }
-    }
-    const torture_us = usFrom(start) / TEXT_ITERS;
-
-    return .{
-        .font_load_us = font_load_total_us / PREP_RUNS,
-        .glyph_prep_us = glyph_prep_total_us / PREP_RUNS,
-        .glyph_prep_all_sizes_us = glyph_prep_all_total_us / PREP_RUNS,
-        .bitmap_bytes_single = bitmap_bytes_single,
-        .bitmap_bytes_all = bitmap_bytes_all,
-        .layout_short_us = short_us,
-        .layout_sentence_us = sentence_us,
-        .layout_paragraph_us = paragraph_us,
-        .layout_torture_us = torture_us,
-    };
-}
-
 fn timeRecordBuild(
     prepared: *const snail.PreparedResources,
     scene: *const snail.Scene,
@@ -856,243 +648,6 @@ fn benchModes(
     }
 }
 
-fn initFramebuffer() struct { fbo: gl.GLuint, texture: gl.GLuint } {
-    var fbo: gl.GLuint = 0;
-    var tex: gl.GLuint = 0;
-    gl.glGenFramebuffers(1, &fbo);
-    gl.glGenTextures(1, &tex);
-    gl.glBindTexture(gl.GL_TEXTURE_2D, tex);
-    gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, GL_SRGB8_ALPHA8, WIDTH, HEIGHT, 0, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, null);
-    gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, fbo);
-    gl.glFramebufferTexture2D(gl.GL_FRAMEBUFFER, gl.GL_COLOR_ATTACHMENT0, gl.GL_TEXTURE_2D, tex, 0);
-    gl.glViewport(0, 0, WIDTH, HEIGHT);
-    return .{ .fbo = fbo, .texture = tex };
-}
-
-fn clearGlFrame() void {
-    gl.glClearColor(0.02, 0.025, 0.03, 1.0);
-    gl.glClear(gl.GL_COLOR_BUFFER_BIT);
-}
-
-fn timeCpuDraw(
-    renderer: *snail.Renderer,
-    prepared: *const snail.PreparedResources,
-    scene: *const snail.PreparedScene,
-    options: snail.DrawOptions,
-    pixels: []u8,
-) !f64 {
-    for (0..CPU_WARMUP) |_| {
-        @memset(pixels, 0);
-        try renderer.drawPrepared(prepared, scene, options);
-    }
-
-    const start = nowNs();
-    for (0..CPU_FRAMES) |_| {
-        @memset(pixels, 0);
-        try renderer.drawPrepared(prepared, scene, options);
-    }
-    return usFrom(start) / CPU_FRAMES;
-}
-
-fn timeGlDraw(
-    renderer: *snail.Renderer,
-    prepared: *const snail.PreparedResources,
-    scene: *const snail.PreparedScene,
-    options: snail.DrawOptions,
-) !f64 {
-    for (0..GPU_WARMUP) |_| {
-        clearGlFrame();
-        try renderer.drawPrepared(prepared, scene, options);
-    }
-    gl.glFinish();
-
-    const start = nowNs();
-    for (0..GPU_FRAMES) |_| {
-        clearGlFrame();
-        try renderer.drawPrepared(prepared, scene, options);
-    }
-    gl.glFinish();
-    return usFrom(start) / GPU_FRAMES;
-}
-
-fn timeVulkanDraw(
-    vk_renderer: *snail.VulkanRenderer,
-    renderer: *snail.Renderer,
-    prepared: *const snail.PreparedResources,
-    scene: *const snail.PreparedScene,
-    options: snail.DrawOptions,
-) !f64 {
-    if (comptime !build_options.enable_vulkan) unreachable;
-
-    for (0..GPU_WARMUP) |_| {
-        const cmd = vulkan_platform.beginFrameOffscreen();
-        vk_renderer.beginFrame(.{ .cmd = cmd, .frame_index = vulkan_platform.currentOffscreenFrameIndex() });
-        try renderer.drawPrepared(prepared, scene, options);
-        vulkan_platform.endFrameOffscreen();
-    }
-    vulkan_platform.queueWaitIdle();
-
-    const start = nowNs();
-    for (0..GPU_FRAMES) |_| {
-        const cmd = vulkan_platform.beginFrameOffscreen();
-        vk_renderer.beginFrame(.{ .cmd = cmd, .frame_index = vulkan_platform.currentOffscreenFrameIndex() });
-        try renderer.drawPrepared(prepared, scene, options);
-        vulkan_platform.endFrameOffscreen();
-    }
-    vulkan_platform.queueWaitIdle();
-    return usFrom(start) / GPU_FRAMES;
-}
-
-fn printPreparationTables(snail_prep: SnailPrep, vector_prep: VectorPrep, ft: FreetypeResults) void {
-    std.debug.print(
-        \\## Preparation
-        \\
-        \\| Workload | Snail | FreeType | FreeType / Snail |
-        \\|---|---:|---:|---:|
-        \\| Font load | {d:.2} us | {d:.2} us | {d:.2}x |
-        \\| Glyph prep, ASCII | {d:.2} us | {d:.2} us | {d:.2}x |
-        \\| Glyph prep, 7 sizes | {d:.2} us | {d:.2} us | {d:.2}x |
-        \\| PathPicture freeze, {d} shapes | {d:.2} us | n/a | n/a |
-        \\
-        \\## Prepared Resource Memory
-        \\
-        \\| Resource | Used bytes | Allocated GPU bytes | Used KiB | Allocated KiB |
-        \\|---|---:|---:|---:|---:|
-        \\| Snail text textures | {d} | {d} | {d:.1} | {d:.1} |
-        \\| Snail vector textures | {d} | {d} | {d:.1} | {d:.1} |
-        \\| FreeType bitmaps, one size | {d} | {d} | {d:.1} | {d:.1} |
-        \\| FreeType bitmaps, seven sizes | {d} | {d} | {d:.1} | {d:.1} |
-        \\
-    , .{
-        snail_prep.font_load_us,
-        ft.font_load_us,
-        ratio(ft.font_load_us, snail_prep.font_load_us),
-        snail_prep.ascii_prep_us,
-        ft.glyph_prep_us,
-        ratio(ft.glyph_prep_us, snail_prep.ascii_prep_us),
-        snail_prep.ascii_prep_us,
-        ft.glyph_prep_all_sizes_us,
-        ratio(ft.glyph_prep_all_sizes_us, snail_prep.ascii_prep_us),
-        vector_prep.shapes,
-        vector_prep.freeze_us,
-        snail_prep.footprint.usedBytes(),
-        snail_prep.footprint.allocatedBytes(),
-        kib(snail_prep.footprint.usedBytes()),
-        kib(snail_prep.footprint.allocatedBytes()),
-        vector_prep.footprint.usedBytes(),
-        vector_prep.footprint.allocatedBytes(),
-        kib(vector_prep.footprint.usedBytes()),
-        kib(vector_prep.footprint.allocatedBytes()),
-        ft.bitmap_bytes_single,
-        ft.bitmap_bytes_single,
-        kib(ft.bitmap_bytes_single),
-        kib(ft.bitmap_bytes_single),
-        ft.bitmap_bytes_all,
-        ft.bitmap_bytes_all,
-        kib(ft.bitmap_bytes_all),
-        kib(ft.bitmap_bytes_all),
-    });
-    std.debug.print("\n", .{});
-}
-
-fn printTextTable(rows: []const TextRow) void {
-    std.debug.print(
-        \\## Text Creation And Layout
-        \\
-        \\| Workload | Snail TextBlob | FreeType layout | FreeType / Snail |
-        \\|---|---:|---:|---:|
-        \\
-    , .{});
-    for (rows) |row| {
-        std.debug.print(
-            \\| {s} | {d:.2} us | {d:.2} us | {d:.2}x |
-            \\
-        , .{
-            row.workload.name(),
-            row.snail_us,
-            row.ft_us,
-            ratio(row.ft_us, row.snail_us),
-        });
-    }
-    std.debug.print("\n", .{});
-}
-
-fn printRecordTable(rows: []const RecordRow) void {
-    std.debug.print(
-        \\## Draw Record Creation
-        \\
-        \\| Scene | Commands | Words | Segments | PreparedScene.initOwned |
-        \\|---|---:|---:|---:|---:|
-        \\
-    , .{});
-    for (rows) |row| {
-        std.debug.print(
-            \\| {s} | {d} | {d} | {d} | {d:.2} us |
-            \\
-        , .{ row.scene.name(), row.commands, row.words, row.segments, row.us });
-    }
-    std.debug.print("\n", .{});
-}
-
-fn printModeTable(rows: []const ModeRow) void {
-    std.debug.print(
-        \\## Render Modes
-        \\
-        \\Per-AA timings for the text and multi-script scenes. AA controls
-        \\the fragment-shader path (grayscale vs LCD subpixel).
-        \\
-        \\| Backend | Scene | AA | Words | Segments | PreparedScene | Draw |
-        \\|---|---|---|---:|---:|---:|---:|
-        \\
-    , .{});
-    for (rows) |row| {
-        std.debug.print(
-            \\| {s} | {s} | {s} | {d} | {d} | {d:.2} us | {d:.2} us |
-            \\
-        , .{
-            row.backend,
-            row.scene.name(),
-            row.mode.aaName(),
-            row.words,
-            row.segments,
-            row.record_us,
-            row.draw_us,
-        });
-    }
-    std.debug.print("\n", .{});
-}
-
-fn printRenderTable(rows: []const RenderRow) void {
-    std.debug.print(
-        \\## Prepared Render
-        \\
-        \\Target: {d}x{d}. CPU uses {d} measured frames; GPU backends use {d} measured frames.
-        \\
-        \\| Backend | Scene | Frames | Commands | Words | Segments | Instance bytes/frame | Draw prepared scene |
-        \\|---|---|---:|---:|---:|---:|---:|---:|
-        \\
-    , .{ WIDTH, HEIGHT, CPU_FRAMES, GPU_FRAMES });
-    for (rows) |row| {
-        std.debug.print(
-            \\| {s} | {s} | {d} | {d} | {d} | {d} | {d} | {d:.2} us |
-            \\
-        , .{
-            row.backend,
-            row.scene.name(),
-            row.frames,
-            row.commands,
-            row.words,
-            row.segments,
-            row.instance_bytes,
-            row.us,
-        });
-    }
-    if (!build_options.enable_vulkan) {
-        std.debug.print("| Vulkan | disabled (`zig build bench -Dvulkan=false`) | - | - | - | - | - | - |\n", .{});
-    }
-    std.debug.print("\n", .{});
-}
-
 pub fn main() !void {
     const allocator = std.heap.smp_allocator;
     const options = drawOptions(WIDTH, HEIGHT, .rgb);
@@ -1100,7 +655,15 @@ pub fn main() !void {
     const font_data = assets.noto_sans_regular;
     const snail_prep = try benchSnailPrep(allocator, font_data);
     const vector_prep = try timeVectorFreeze();
-    const ft = try benchFreetype(font_data);
+    const ft = try freetype.bench(font_data, .{
+        .prep_runs = PREP_RUNS,
+        .text_iters = TEXT_ITERS,
+        .printable_ascii = PRINTABLE_ASCII[0..],
+        .sizes = SIZES[0..],
+        .short = SHORT,
+        .sentence = SENTENCE,
+        .paragraph = PARAGRAPH,
+    });
 
     var text_atlas = try initTextAtlas(allocator, &.{.{ .data = font_data }}, &.{
         &PRINTABLE_ASCII,
@@ -1190,7 +753,7 @@ pub fn main() !void {
             .words = prepared_scenes[i].words.len,
             .segments = prepared_scenes[i].segments.len,
             .instance_bytes = prepared_scenes[i].words.len * @sizeOf(u32),
-            .us = try timeCpuDraw(&cpu_renderer, &cpu_resources[i], &prepared_scenes[i], options, cpu_pixels),
+            .us = try render_timing.timeCpuDraw(&cpu_renderer, &cpu_resources[i], &prepared_scenes[i], options, cpu_pixels, CPU_WARMUP, CPU_FRAMES),
         });
     }
 
@@ -1203,19 +766,14 @@ pub fn main() !void {
             .words = prepared_scenes[i].words.len,
             .segments = prepared_scenes[i].segments.len,
             .instance_bytes = prepared_scenes[i].words.len * @sizeOf(u32),
-            .us = try timeCpuDraw(&cpu_threaded_renderer, &cpu_resources[i], &prepared_scenes[i], options, cpu_pixels_threaded),
+            .us = try render_timing.timeCpuDraw(&cpu_threaded_renderer, &cpu_resources[i], &prepared_scenes[i], options, cpu_pixels_threaded, CPU_WARMUP, CPU_FRAMES),
         });
     }
 
     var gl_ctx = try egl_offscreen.Context.init(WIDTH, HEIGHT);
     defer gl_ctx.deinit();
-    const framebuffer = initFramebuffer();
-    defer {
-        var fbo = framebuffer.fbo;
-        var tex = framebuffer.texture;
-        gl.glDeleteFramebuffers(1, &fbo);
-        gl.glDeleteTextures(1, &tex);
-    }
+    const framebuffer = render_timing.initFramebuffer(WIDTH, HEIGHT);
+    defer render_timing.destroyFramebuffer(framebuffer);
 
     var gl_renderer_state = try snail.GlRenderer.init(allocator);
     defer gl_renderer_state.deinit();
@@ -1233,7 +791,7 @@ pub fn main() !void {
             .words = gl_scene.words.len,
             .segments = gl_scene.segments.len,
             .instance_bytes = gl_scene.words.len * @sizeOf(u32),
-            .us = try timeGlDraw(&gl_renderer, &gl_resources, &gl_scene, options),
+            .us = try render_timing.timeGlDraw(&gl_renderer, &gl_resources, &gl_scene, options, GPU_WARMUP, GPU_FRAMES),
         });
     }
 
@@ -1258,7 +816,7 @@ pub fn main() !void {
                 .words = vk_scene.words.len,
                 .segments = vk_scene.segments.len,
                 .instance_bytes = vk_scene.words.len * @sizeOf(u32),
-                .us = try timeVulkanDraw(&vk_state.?, &vk_renderer, &vk_resources, &vk_scene, options),
+                .us = try render_timing.timeVulkanDraw(&vk_state.?, &vk_renderer, &vk_resources, &vk_scene, options, GPU_WARMUP, GPU_FRAMES),
             });
         }
     }
@@ -1282,7 +840,7 @@ pub fn main() !void {
             scene: *const snail.PreparedScene,
             opts: snail.DrawOptions,
         ) !f64 {
-            return timeCpuDraw(self.renderer_ptr, prepared, scene, opts, self.pixels_buf);
+            return render_timing.timeCpuDraw(self.renderer_ptr, prepared, scene, opts, self.pixels_buf, CPU_WARMUP, CPU_FRAMES);
         }
     };
     try benchModes(allocator, "CPU", &atlas, &mode_rows, CpuTimer{ .renderer_ptr = &cpu_renderer, .pixels_buf = cpu_pixels });
@@ -1298,7 +856,7 @@ pub fn main() !void {
             scene: *const snail.PreparedScene,
             opts: snail.DrawOptions,
         ) !f64 {
-            return timeGlDraw(self.renderer_ptr, prepared, scene, opts);
+            return render_timing.timeGlDraw(self.renderer_ptr, prepared, scene, opts, GPU_WARMUP, GPU_FRAMES);
         }
     };
     try benchModes(allocator, gl_renderer_state.backendName(), &atlas, &mode_rows, GlTimer{ .renderer_ptr = &gl_renderer });
@@ -1316,7 +874,7 @@ pub fn main() !void {
                 scene: *const snail.PreparedScene,
                 opts: snail.DrawOptions,
             ) !f64 {
-                return timeVulkanDraw(self.state, self.renderer_ptr, prepared, scene, opts);
+                return render_timing.timeVulkanDraw(self.state, self.renderer_ptr, prepared, scene, opts, GPU_WARMUP, GPU_FRAMES);
             }
         };
         try benchModes(allocator, vk_state.?.backendName(), &atlas, &mode_rows, VkTimer{ .state = &vk_state.?, .renderer_ptr = &vk_renderer });
@@ -1331,10 +889,10 @@ pub fn main() !void {
         \\
         \\
     , .{ PREP_RUNS, TEXT_ITERS, RECORD_ITERS });
-    printHardwareTable(true, build_options.enable_vulkan);
-    printPreparationTables(snail_prep, vector_prep, ft);
-    printTextTable(&text_rows);
-    printRecordTable(&record_rows);
-    printRenderTable(render_rows.items);
-    printModeTable(mode_rows.items);
+    report.printHardwareTable(true, build_options.enable_vulkan);
+    report.printPreparationTables(snail_prep, vector_prep, ft);
+    report.printTextTable(&text_rows);
+    report.printRecordTable(&record_rows);
+    report.printRenderTable(WIDTH, HEIGHT, CPU_FRAMES, GPU_FRAMES, render_rows.items);
+    report.printModeTable(mode_rows.items);
 }
