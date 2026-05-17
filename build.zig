@@ -112,6 +112,19 @@ fn createDemoVulkanPlatformModule(
     return mod;
 }
 
+fn createSupportModule(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) *std.Build.Module {
+    return b.createModule(.{
+        .root_source_file = b.path("src/support/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+}
+
 fn createCoreTestModule(
     b: *std.Build,
     root_source_file: std.Build.LazyPath,
@@ -231,6 +244,8 @@ pub fn build(b: *std.Build) void {
     const options_mod = options.createModule();
 
     const assets_mod = b.createModule(.{ .root_source_file = b.path("assets/assets.zig") });
+    const support_mod = createSupportModule(b, target, optimize);
+    const release_support_mod = createSupportModule(b, target, .ReleaseFast);
 
     // ── SPIR-V shader compilation (only when Vulkan enabled) ──
     const vk_shaders_mod = vulkan_shaders.createModule(b, enable_vulkan);
@@ -318,6 +333,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "assets", .module = assets_mod },
             .{ .name = "snail", .module = snail_mod },
+            .{ .name = "support", .module = support_mod },
         },
     });
     configureDemoModule(demo_module, b, options_mod, enable_opengl, enable_vulkan, enable_harfbuzz, vk_shaders_mod);
@@ -352,6 +368,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "assets", .module = assets_mod },
             .{ .name = "snail", .module = game_snail_mod },
+            .{ .name = "support", .module = support_mod },
         },
     });
     configureDemoModule(game_demo_module, b, game_demo_options_mod, true, false, enable_harfbuzz, vk_shaders_mod);
@@ -460,6 +477,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "snail", .module = release_snail_mod },
             .{ .name = "demo_platform_offscreen_gl", .module = release_offscreen_gl_mod },
             .{ .name = "demo_platform_vulkan", .module = release_vulkan_platform_mod orelse release_offscreen_gl_mod },
+            .{ .name = "support", .module = release_support_mod },
         },
     });
     configureEglOffscreenModule(bench_module, options_mod, enable_opengl, enable_vulkan, enable_harfbuzz, vk_shaders_mod);
@@ -497,6 +515,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "assets", .module = assets_mod },
             .{ .name = "snail", .module = release_snail_mod },
+            .{ .name = "support", .module = release_support_mod },
         },
     });
     configureEglOffscreenModule(screenshot_module, options_mod, enable_opengl, enable_vulkan, enable_harfbuzz, vk_shaders_mod);
@@ -529,6 +548,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "snail", .module = backend_compare_snail_mod },
             .{ .name = "demo_platform_offscreen_gl", .module = compare_offscreen_gl_mod },
             .{ .name = "demo_platform_vulkan", .module = compare_vulkan_platform_mod orelse compare_offscreen_gl_mod },
+            .{ .name = "support", .module = support_mod },
         },
     });
     configureEglOffscreenModule(backend_compare_module, compare_options_mod, true, enable_vulkan, enable_harfbuzz, vk_shaders_mod);

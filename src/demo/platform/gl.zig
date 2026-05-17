@@ -5,7 +5,7 @@ const snail = @import("snail");
 const SubpixelOrder = snail.SubpixelOrder;
 pub const presentation = @import("presentation.zig");
 const wayland = @import("wayland.zig");
-pub const gl = @import("../internal_gl.zig").gl;
+pub const gl = @import("support").gl;
 
 const egl = @cImport({
     @cInclude("EGL/egl.h");

@@ -1,25 +1,21 @@
 const std = @import("std");
-const snail = @import("snail");
-const gl = @import("../internal_gl.zig").gl;
+const gl = @import("gl.zig").gl;
 
-/// Write raw RGBA pixels as a TGA file
 pub fn writeTga(path: [*:0]const u8, pixels: []const u8, width: u32, height: u32) void {
     const c_file = std.c.fopen(path, "wb") orelse return;
     defer _ = std.c.fclose(c_file);
 
-    // TGA header (18 bytes)
     var header: [18]u8 = .{0} ** 18;
-    header[2] = 2; // uncompressed true-color
+    header[2] = 2;
     header[12] = @intCast(width & 0xFF);
     header[13] = @intCast((width >> 8) & 0xFF);
     header[14] = @intCast(height & 0xFF);
     header[15] = @intCast((height >> 8) & 0xFF);
-    header[16] = 32; // bits per pixel
-    header[17] = 0x28; // top-left origin + 8 alpha bits
+    header[16] = 32;
+    header[17] = 0x28;
 
     _ = std.c.fwrite(&header, 1, 18, c_file);
 
-    // TGA uses BGRA. Write row by row (flipping vertically).
     var row: u32 = 0;
     while (row < height) : (row += 1) {
         const src_row = height - 1 - row;
@@ -28,13 +24,12 @@ pub fn writeTga(path: [*:0]const u8, pixels: []const u8, width: u32, height: u32
         var col: u32 = 0;
         while (col < width) : (col += 1) {
             const i = src_off + col * 4;
-            const bgra = [4]u8{ pixels[i + 2], pixels[i + 1], pixels[i + 0], pixels[i + 3] };
+            const bgra = [4]u8{ pixels[i + 2], pixels[i + 1], pixels[i], pixels[i + 3] };
             _ = std.c.fwrite(&bgra, 1, 4, c_file);
         }
     }
 }
 
-/// Capture the current framebuffer contents
 pub fn captureFramebuffer(allocator: std.mem.Allocator, width: u32, height: u32) ![]u8 {
     const size = width * height * 4;
     const pixels = try allocator.alloc(u8, size);

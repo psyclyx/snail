@@ -1,6 +1,6 @@
 const std = @import("std");
 const build_options = @import("build_options");
-const gl = @import("../internal_gl.zig").gl;
+const gl = @import("support").gl;
 const vulkan_platform = if (build_options.enable_vulkan) @import("demo_platform_vulkan") else struct {};
 
 fn ratio(numerator: f64, denominator: f64) f64 {

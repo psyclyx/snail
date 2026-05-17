@@ -1,6 +1,6 @@
 const std = @import("std");
 const snail = @import("snail");
-const gl = @import("../internal_gl.zig").gl;
+const gl = @import("support").gl;
 
 pub const GL_SRGB8_ALPHA8: gl.GLenum = 0x8C43;
 

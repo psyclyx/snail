@@ -2,14 +2,14 @@ const std = @import("std");
 const builtin = @import("builtin");
 const snail = @import("snail");
 const build_options = @import("build_options");
-const screenshot = @import("platform/screenshot.zig");
+const screenshot = @import("support").screenshot;
 const presentation = @import("platform/presentation.zig");
 const wayland = @import("platform/wayland.zig");
 
 const gl_platform = if (build_options.enable_opengl) @import("platform/gl.zig") else struct {};
 const vulkan_platform = if (build_options.enable_vulkan) @import("platform/vulkan.zig") else struct {};
 const cpu_platform = if (build_options.enable_cpu) @import("platform/cpu.zig") else struct {};
-const gl = if (build_options.enable_opengl) @import("internal_gl.zig").gl else struct {};
+const gl = if (build_options.enable_opengl) @import("support").gl else struct {};
 
 pub const Kind = enum {
     vulkan,

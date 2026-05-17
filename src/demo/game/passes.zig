@@ -1,7 +1,7 @@
 const std = @import("std");
 const snail = @import("snail");
 const assets = @import("assets");
-const gl = @import("../internal_gl.zig").gl;
+const gl = @import("support").gl;
 const common = @import("common.zig");
 
 const MATERIAL_TEXTURE_SIZE: u32 = 1024;

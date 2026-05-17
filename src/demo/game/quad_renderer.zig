@@ -1,6 +1,6 @@
 const std = @import("std");
 const snail = @import("snail");
-const gl = @import("../internal_gl.zig").gl;
+const gl = @import("support").gl;
 const common = @import("common.zig");
 
 const Vec3 = common.Vec3;
