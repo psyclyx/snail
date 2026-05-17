@@ -3,16 +3,16 @@ const std = @import("std");
 const band_tex = @import("../band_texture.zig");
 const bezier = @import("../../../math/bezier.zig");
 const build_options = @import("build_options");
+const font_mod = @import("../../../font.zig");
 const image_mod = @import("../../../image.zig");
 const opentype = @import("../../../font/opentype.zig");
 const page_mod = @import("page.zig");
-const text_mod = @import("../../../text.zig");
 const ttf = @import("../../../font/ttf.zig");
 const harfbuzz = if (build_options.enable_harfbuzz) @import("../../../font/harfbuzz.zig") else struct {
     pub const HarfBuzzShaper = void;
 };
 
-const Font = text_mod.Font;
+const Font = font_mod.Font;
 const Image = image_mod.Image;
 const AtlasPage = page_mod.AtlasPage;
 

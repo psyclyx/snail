@@ -3,21 +3,22 @@ const std = @import("std");
 const band_tex = @import("../render/format/band_texture.zig");
 const bezier = @import("../math/bezier.zig");
 const build_options = @import("build_options");
+const config_mod = @import("config.zig");
 const curve_tex = @import("../render/format/curve_texture.zig");
+const font_mod = @import("../font.zig");
 const opentype = @import("../font/opentype.zig");
 const atlas_curve_mod = @import("../render/format/atlas/curve.zig");
 const atlas_page_mod = @import("../render/format/atlas/page.zig");
-const text_mod = @import("../text.zig");
 const ttf = @import("../font/ttf.zig");
 
 const Atlas = atlas_curve_mod.Atlas;
 const AtlasPage = atlas_page_mod.AtlasPage;
 const ColrBaseInfo = Atlas.ColrBaseInfo;
 const CurveSegment = bezier.CurveSegment;
-const Font = text_mod.Font;
+const Font = font_mod.Font;
 const GlyphInfo = Atlas.GlyphInfo;
 const BuildPageResult = Atlas.BuildPageResult;
-const isRenderableTextCodepoint = text_mod.isRenderableTextCodepoint;
+const isRenderableTextCodepoint = config_mod.isRenderableTextCodepoint;
 
 pub fn initFromParts(
     allocator: std.mem.Allocator,

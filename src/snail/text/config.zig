@@ -53,6 +53,14 @@ pub const ItemizedRun = struct {
     text_end: u32,
 };
 
+pub fn isRenderableTextCodepoint(codepoint: u32) bool {
+    if (codepoint > std.math.maxInt(u21)) return false;
+    if (!std.unicode.utf8ValidCodepoint(@intCast(codepoint))) return false;
+    if (codepoint < 0x20) return false;
+    if (codepoint >= 0x7F and codepoint < 0xA0) return false;
+    return true;
+}
+
 // ── Internal types ──
 
 /// Immutable font configuration shared across snapshots via refcount.

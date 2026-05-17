@@ -10,6 +10,7 @@ const atlas_page_mod = @import("render/format/atlas/page.zig");
 const upload_common = @import("render/format/upload_common.zig");
 
 pub const math = @import("math.zig");
+pub const font = @import("font.zig");
 pub const text = @import("text.zig");
 pub const image = @import("image.zig");
 pub const path = @import("path.zig");
@@ -28,10 +29,10 @@ pub const BBox = math.BBox;
 pub const Transform2D = math.Transform2D;
 pub const Rect = target.Rect;
 
-pub const GlyphMetrics = text.GlyphMetrics;
-pub const LineMetrics = text.LineMetrics;
-pub const DecorationMetrics = text.DecorationMetrics;
-pub const ScriptMetrics = text.ScriptMetrics;
+pub const GlyphMetrics = font.GlyphMetrics;
+pub const LineMetrics = font.LineMetrics;
+pub const DecorationMetrics = font.DecorationMetrics;
+pub const ScriptMetrics = font.ScriptMetrics;
 pub const FaceIndex = text.FaceIndex;
 pub const TextAtlas = text.TextAtlas;
 pub const ShapedText = text.ShapedText;
@@ -49,7 +50,7 @@ pub const FaceSpec = text.FaceSpec;
 pub const FontWeight = text.FontWeight;
 pub const FontStyle = text.FontStyle;
 pub const SyntheticStyle = text.SyntheticStyle;
-pub const Font = text.Font;
+pub const Font = font.Font;
 pub const TextBatch = text.TextBatch;
 pub const TEXT_WORDS_PER_VERTEX = text.TEXT_WORDS_PER_VERTEX;
 pub const TEXT_VERTICES_PER_GLYPH = text.TEXT_VERTICES_PER_GLYPH;
@@ -155,6 +156,7 @@ pub const ASCII_PRINTABLE = blk: {
 
 test {
     _ = math;
+    _ = font;
     _ = text;
     _ = image;
     _ = path;
