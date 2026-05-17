@@ -35,6 +35,16 @@
   `drawCoverage`, `drawVertices`, and `TextCoverageRecords.buildLocal`.
 - Removed the unused `snail.backend.*` namespace. Use `BackendKind` and the
   direct `GlRenderer`, `VulkanRenderer`, and `CpuRenderer` types.
+- Split the Zig font facade from the text facade. `Font` and font metric types
+  now live under `snail.font`; top-level aliases remain, but `snail.text` is
+  limited to text shaping, atlases, blobs, batches, and text configuration.
+- Resource upload types and helpers now live under `snail.upload` instead of
+  `snail.resources`; `snail.resources` is limited to resource sets, prepared
+  resources, views, stamps, and footprint accounting.
+- `snail.math` now exposes only math primitives. Use `snail.target` or the
+  top-level aliases for target geometry such as `Rect` and `PixelGrid`.
+- Removed stale HarfBuzz direct-emission helpers that bypassed the current
+  shaped-text/blob draw path.
 
 ### Fixed
 
@@ -53,6 +63,16 @@
   and don't-care backdrops plus full-target or pixel-rect resolve regions. GL
   can use RGBA16F or RGBA32F intermediates; CPU follows the same contract in its
   RGBA8 buffer. Vulkan still reports `error.UnsupportedResolve` for `.linear`.
+
+### Docs and tooling
+
+- README benchmarks now include `CPU (threaded)` rows in the Render Modes table.
+- README architecture docs now reflect the current `font`, `text`, `upload`,
+  `resources`, and demo/tool `support` module layout.
+- Build-option module setup now flows through the shared `ModuleOptions` path,
+  matching dependency and workspace builds.
+- C API implementation modules now import only their local domain dependencies
+  instead of a large flat Zig-level C API reexport table.
 
 ## 0.8.0 - 2026-05-15
 
