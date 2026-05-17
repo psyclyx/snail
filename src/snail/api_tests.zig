@@ -326,17 +326,24 @@ test "Renderer.draw source stays free of upload allocation" {
 }
 
 test "Vulkan renderer path contains no device or queue idle" {
-    const source = @embedFile("render/backend/vulkan/pipeline.zig");
-    try std.testing.expect(std.mem.indexOf(u8, source, "vkDeviceWaitIdle") == null);
-    try std.testing.expect(std.mem.indexOf(u8, source, "vkQueueWaitIdle") == null);
+    const sources = [_][]const u8{
+        @embedFile("render/backend/vulkan/pipeline.zig"),
+        @embedFile("render/backend/vulkan/upload.zig"),
+        @embedFile("render/backend/vulkan/device.zig"),
+    };
+    for (sources) |source| {
+        try std.testing.expect(std.mem.indexOf(u8, source, "vkDeviceWaitIdle") == null);
+        try std.testing.expect(std.mem.indexOf(u8, source, "vkQueueWaitIdle") == null);
+    }
 }
 
 test "Vulkan scheduled upload path records without internal submit" {
-    const source = @embedFile("render/backend/vulkan/pipeline.zig");
+    const upload_source = @embedFile("render/backend/vulkan/upload.zig");
+    const source = @embedFile("render/backend/vulkan/device.zig");
     const start = std.mem.indexOf(u8, source, "fn finishTransferCommand").?;
     const end = start + std.mem.indexOf(u8, source[start..], "fn submitTransferAndWait").?;
     const scheduled_finish = source[start..end];
-    try std.testing.expect(std.mem.indexOf(u8, source, "beginResourceUploadRecording") != null);
+    try std.testing.expect(std.mem.indexOf(u8, upload_source, "beginResourceUploadRecording") != null);
     try std.testing.expect(std.mem.indexOf(u8, scheduled_finish, "if (!transfer.owned) return;") != null);
     try std.testing.expect(std.mem.indexOf(u8, scheduled_finish, "vkQueueSubmit") == null);
     try std.testing.expect(std.mem.indexOf(u8, scheduled_finish, "vkWaitForFences") == null);
