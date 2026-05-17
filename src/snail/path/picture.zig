@@ -9,6 +9,7 @@ const atlas_page_mod = @import("../render/format/atlas/page.zig");
 const paint_api = @import("../paint.zig");
 const paint_records = @import("../paint_records.zig");
 const picture_compile = @import("picture_compile.zig");
+const picture_debug = @import("picture_debug.zig");
 const footprint_types = @import("../resources/footprint_types.zig");
 const resource_footprint_mod = @import("../resources/footprint.zig");
 const scene_mod = @import("../scene.zig");
@@ -44,19 +45,8 @@ pub const PATH_PAINT_TAG_RADIAL_GRADIENT: f32 = paint_records.tag_radial_gradien
 pub const PATH_PAINT_TAG_IMAGE: f32 = paint_records.tag_image;
 pub const PATH_PAINT_TAG_COMPOSITE_GROUP: f32 = paint_records.tag_composite_group;
 
-pub const PathPictureDebugView = enum(u8) {
-    normal,
-    fill_mask,
-    stroke_mask,
-    layer_tint,
-};
-
-pub const PathPictureBoundsOverlayOptions = struct {
-    stroke_color: [4]f32 = .{ 1.0, 0.36, 0.24, 0.95 },
-    stroke_width: f32 = 1.0,
-    origin_color: [4]f32 = .{ 1.0, 0.78, 0.22, 0.95 },
-    origin_size: f32 = 6.0,
-};
+pub const PathPictureDebugView = picture_debug.View;
+pub const PathPictureBoundsOverlayOptions = picture_debug.BoundsOverlayOptions;
 
 const kPaintInfoWidth: u32 = PATH_PAINT_INFO_WIDTH;
 const kPaintTexelsPerRecord: u32 = PATH_PAINT_TEXELS_PER_RECORD;
@@ -85,46 +75,6 @@ fn readPathLayerInfoTexel(data: []const f32, texel_width: u32, texel_offset: u32
 
 fn writePathLayerInfoTexel(data: []f32, texel_width: u32, texel_offset: u32, value: [4]f32) void {
     paint_records.setTexel(data, texel_width, texel_offset, value);
-}
-
-fn paletteColor(index: usize) [4]f32 {
-    const palette = [_][4]f32{
-        .{ 0.27, 0.86, 0.98, 0.96 },
-        .{ 0.98, 0.54, 0.29, 0.96 },
-        .{ 0.58, 0.94, 0.43, 0.96 },
-        .{ 0.95, 0.39, 0.77, 0.96 },
-        .{ 0.99, 0.86, 0.28, 0.96 },
-        .{ 0.56, 0.66, 0.98, 0.96 },
-    };
-    return palette[index % palette.len];
-}
-
-fn blendColor(a: [4]f32, b: [4]f32, t: f32) [4]f32 {
-    return .{
-        a[0] + (b[0] - a[0]) * t,
-        a[1] + (b[1] - a[1]) * t,
-        a[2] + (b[2] - a[2]) * t,
-        a[3] + (b[3] - a[3]) * t,
-    };
-}
-
-fn debugPaintColor(view: PathPictureDebugView, role: PathPicture.LayerRole, shape_index: usize) [4]f32 {
-    const base = paletteColor(shape_index);
-    return switch (view) {
-        .normal => .{ 0, 0, 0, 0 },
-        .fill_mask => switch (role) {
-            .fill => base,
-            .stroke => .{ 0.0, 0.0, 0.0, 0.0 },
-        },
-        .stroke_mask => switch (role) {
-            .fill => .{ 0.0, 0.0, 0.0, 0.0 },
-            .stroke => base,
-        },
-        .layer_tint => switch (role) {
-            .fill => blendColor(base, .{ 0.15, 0.90, 0.98, 0.96 }, 0.45),
-            .stroke => blendColor(base, .{ 0.98, 0.24, 0.82, 0.96 }, 0.55),
-        },
-    };
 }
 
 pub const PathPicture = struct {
@@ -188,7 +138,7 @@ pub const PathPicture = struct {
                 var info = readPathLayerInfoTexel(data, width, texel_offset);
                 info[3] = PATH_PAINT_TAG_SOLID;
                 writePathLayerInfoTexel(data, width, texel_offset, info);
-                writePathLayerInfoTexel(data, width, texel_offset + 2, debugPaintColor(view, self.layer_roles[role_index], shape_index));
+                writePathLayerInfoTexel(data, width, texel_offset + 2, picture_debug.paintColor(view, self.layer_roles[role_index] == .fill, shape_index));
             }
         }
     }
