@@ -38,7 +38,9 @@ test "vector path band count tracks source cubic commands" {
     const filled = try path.cloneFilledCurves(std.testing.allocator);
     defer std.testing.allocator.free(filled);
 
-    try std.testing.expect(filled.len > 2);
+    try std.testing.expectEqual(@as(usize, 2), filled.len);
+    try std.testing.expectEqual(bezier.CurveKind.cubic, filled[0].kind);
+    try std.testing.expectEqual(bezier.CurveKind.line, filled[1].kind);
     try std.testing.expectEqual(@as(usize, 2), path.filledBandCurveCount());
 }
 
@@ -98,7 +100,7 @@ test "path picture layers use direct local curve encoding" {
     try std.testing.expect(fill_info.band_entry.h_band_count > 0);
     try std.testing.expect(stroke_info.band_entry.h_band_count > 0);
     try std.testing.expectEqual(
-        curve_tex.f32ToF16(curve_tex.DIRECT_ENCODING_KIND_BIAS),
+        curve_tex.f32ToF16(curve_tex.DIRECT_ENCODING_KIND_BIAS + @as(f32, @floatFromInt(@intFromEnum(bezier.CurveKind.cubic)))),
         compiled_picture.atlas.page(0).curve_data[10],
     );
 }

@@ -510,6 +510,25 @@ pub fn build(b: *std.Build) void {
     const screenshot_step = b.step("screenshot", "Render the demo scene offscreen and write zig-out/demo-screenshot.tga");
     screenshot_step.dependOn(&run_screenshot.step);
 
+    // ── README algorithm diagrams ──
+    const algorithm_screenshots_module = b.createModule(.{
+        .root_source_file = b.path("src/demo/algorithm_screenshots.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "assets", .module = assets_mod },
+            .{ .name = "snail", .module = release_snail_mod },
+            .{ .name = "support", .module = release_support_mod },
+        },
+    });
+    configureEglOffscreenModule(algorithm_screenshots_module, options_mod, core_options, vk_shaders_mod);
+
+    const algorithm_screenshots_exe = b.addExecutable(.{ .name = "snail-algorithm-screenshots", .root_module = algorithm_screenshots_module });
+    const run_algorithm_screenshots = b.addRunArtifact(algorithm_screenshots_exe);
+    const algorithm_screenshots_step = b.step("algorithm-screenshots", "Render README algorithm diagrams offscreen and write zig-out/algorithm-*.png");
+    algorithm_screenshots_step.dependOn(&run_algorithm_screenshots.step);
+
     // ── Backend pixel comparison ──
     const compare_options = ModuleOptions{
         .enable_profiling = false,

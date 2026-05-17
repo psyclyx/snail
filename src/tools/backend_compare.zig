@@ -18,6 +18,7 @@ const APPEND_BASE_TEXT = "ABCDEFGHIJKLMNOPQRSTUVWXY";
 const APPEND_DRAW_TEXT = "SNAP";
 const APPEND_EXTRA_TEXT = "Z";
 const APPEND_RESOURCE_KEY = snail.ResourceKey.named("backend-compare.append-atlas");
+const BAND_STRESS_FILL = [4]f32{ 0.58, 0.68, 0.54, 1.0 };
 
 const CompareCase = struct {
     name: []const u8,
@@ -616,6 +617,60 @@ const AppendSceneBundle = struct {
     }
 };
 
+const PathBandStressBundle = struct {
+    picture: *snail.PathPicture,
+    overrides: []snail.Override,
+    scene: snail.Scene,
+    allocator: std.mem.Allocator,
+
+    fn deinit(self: *PathBandStressBundle) void {
+        self.scene.deinit();
+        self.allocator.free(self.overrides);
+        self.picture.deinit();
+        self.allocator.destroy(self.picture);
+        self.* = undefined;
+    }
+};
+
+fn buildPathBandStressPicture(allocator: std.mem.Allocator) !snail.PathPicture {
+    var builder = snail.PathPictureBuilder.init(allocator);
+    defer builder.deinit();
+
+    var path = snail.Path.init(allocator);
+    defer path.deinit();
+    try path.moveTo(.{ .x = 18.0, .y = 82.0 });
+    try path.cubicTo(.{ .x = 34.0, .y = 38.0 }, .{ .x = 72.0, .y = 22.0 }, .{ .x = 105.0, .y = 36.0 });
+    try path.cubicTo(.{ .x = 134.0, .y = 48.0 }, .{ .x = 158.0, .y = 18.0 }, .{ .x = 194.0, .y = 35.0 });
+    try path.cubicTo(.{ .x = 214.0, .y = 45.0 }, .{ .x = 208.0, .y = 83.0 }, .{ .x = 178.0, .y = 93.0 });
+    try path.cubicTo(.{ .x = 136.0, .y = 108.0 }, .{ .x = 72.0, .y = 103.0 }, .{ .x = 18.0, .y = 82.0 });
+    try path.close();
+
+    try builder.addPath(&path, .{ .paint = .{ .solid = BAND_STRESS_FILL } }, null, .identity);
+    return builder.freeze(.{ .persistent_allocator = allocator, .scratch_allocator = allocator });
+}
+
+fn buildPathBandStressScene(allocator: std.mem.Allocator) !PathBandStressBundle {
+    const picture = try allocator.create(snail.PathPicture);
+    errdefer allocator.destroy(picture);
+    picture.* = try buildPathBandStressPicture(allocator);
+    errdefer picture.deinit();
+
+    const overrides = try allocator.alloc(snail.Override, 1);
+    errdefer allocator.free(overrides);
+    overrides[0] = .{};
+
+    var scene = snail.Scene.init(allocator);
+    errdefer scene.deinit();
+    try scene.addPath(.{ .picture = picture, .instances = overrides });
+
+    return .{
+        .picture = picture,
+        .overrides = overrides,
+        .scene = scene,
+        .allocator = allocator,
+    };
+}
+
 fn buildAppendScene(allocator: std.mem.Allocator) !AppendSceneBundle {
     const atlas = try allocator.create(snail.TextAtlas);
     errdefer allocator.destroy(atlas);
@@ -777,6 +832,55 @@ fn runVulkanAppendSnapshotRegression(
     try checkBackendAgainstCpu(allocator, "append-bank", backend_name, "vulkan", bank_cpu, bank_vk);
 }
 
+fn runPathBandSpanRegression(
+    allocator: std.mem.Allocator,
+    gl_renderer: *snail.Renderer,
+    gl_fbo: gl.GLuint,
+    gl_name: []const u8,
+    vk_renderer_state: if (build_options.enable_vulkan) *snail.VulkanRenderer else void,
+    vk_renderer: if (build_options.enable_vulkan) *snail.Renderer else void,
+    vk_name: if (build_options.enable_vulkan) []const u8 else void,
+) !void {
+    var bundle = try buildPathBandStressScene(allocator);
+    defer bundle.deinit();
+
+    const options = drawOptions(.none);
+    const shape_origin = bundle.picture.shapes[0].transform.applyPoint(.zero);
+    const scales = [_]f32{ 0.62, 0.83, 1.07, 1.31 };
+    const offsets = [_]f32{ -0.49, -0.17, 0.0, 0.17, 0.49 };
+
+    var case_index: usize = 0;
+    for (scales) |scale| {
+        for (offsets) |offset| {
+            const target_x = 106.5 + offset;
+            const target_y = 58.5 - offset * 0.5;
+            const tx = target_x - shape_origin.x * scale;
+            const ty = target_y - shape_origin.y * scale;
+            bundle.overrides[0].transform = snail.Transform2D.multiply(
+                snail.Transform2D.translate(tx, ty),
+                snail.Transform2D.scale(scale, scale),
+            );
+
+            const case_name = try std.fmt.allocPrint(allocator, "path-band-span-{d}", .{case_index});
+            defer allocator.free(case_name);
+            case_index += 1;
+
+            const cpu_pixels = try renderCpu(allocator, &bundle.scene, options);
+            defer allocator.free(cpu_pixels);
+
+            const gl_pixels = try renderGl(allocator, gl_renderer, gl_fbo, &bundle.scene, options);
+            defer allocator.free(gl_pixels);
+            try checkBackendAgainstCpu(allocator, case_name, gl_name, "gl", cpu_pixels, gl_pixels);
+
+            if (comptime build_options.enable_vulkan) {
+                const vk_pixels = try renderVulkan(allocator, vk_renderer_state, vk_renderer, &bundle.scene, options);
+                defer allocator.free(vk_pixels);
+                try checkBackendAgainstCpu(allocator, case_name, vk_name, "vulkan", cpu_pixels, vk_pixels);
+            }
+        }
+    }
+}
+
 pub fn main() !void {
     var da: std.heap.DebugAllocator(.{}) = .init;
     defer _ = da.deinit();
@@ -827,6 +931,15 @@ pub fn main() !void {
     if (comptime build_options.enable_vulkan) {
         try runVulkanAppendSnapshotRegression(allocator, &vk_renderer_state, &vk_renderer, vk_renderer_state.backendName());
     }
+    try runPathBandSpanRegression(
+        allocator,
+        &gl_renderer,
+        framebuffer.fbo,
+        gl_renderer_state.backendName(),
+        if (build_options.enable_vulkan) &vk_renderer_state else {},
+        if (build_options.enable_vulkan) &vk_renderer else {},
+        if (build_options.enable_vulkan) vk_renderer_state.backendName() else {},
+    );
 
     const cases = [_]CompareCase{
         .{ .name = "grayscale", .subpixel_order = .none },

@@ -61,18 +61,18 @@ test {
     _ = @import("text.zig");
 }
 
-test "vector path approximates cubic commands into quadratic segments and reports bounds" {
+test "vector path preserves cubic commands and reports bounds" {
     var path = Path.init(std.testing.allocator);
     defer path.deinit();
 
     try path.moveTo(.{ .x = 0, .y = 0 });
     try path.cubicTo(.{ .x = 8, .y = 20 }, .{ .x = 16, .y = -20 }, .{ .x = 24, .y = 0 });
 
-    try std.testing.expect(path.curves.items.len > 0);
+    try std.testing.expectEqual(@as(usize, 1), path.curves.items.len);
     const last = path.curves.items[path.curves.items.len - 1];
-    try std.testing.expectEqual(bezier.CurveKind.quadratic, last.kind);
-    try std.testing.expectApproxEqAbs(@as(f32, 24), last.p2.x, 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 0), last.p2.y, 0.001);
+    try std.testing.expectEqual(bezier.CurveKind.cubic, last.kind);
+    try std.testing.expectApproxEqAbs(@as(f32, 24), last.p3.x, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), last.p3.y, 0.001);
 
     const bounds = path.bounds() orelse return error.TestExpectedEqual;
     try std.testing.expect(bounds.max.y > 0);

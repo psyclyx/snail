@@ -23,8 +23,6 @@ const Vec2 = vec.Vec2;
 const kPathArcSplitMaxDepth: u8 = 8;
 const kPathStrokeOffsetTolerance: f32 = 0.005;
 const kPathStrokeOffsetMaxDepth: u8 = 10;
-const kPathCurveApproxTolerance: f32 = 0.005;
-const kPathCurveApproxMaxDepth: u8 = 10;
 pub const kPathLargePrimitiveTileExtent: f32 = 512.0;
 
 fn makePathLineCurve(p0: Vec2, p1: Vec2) bezier.QuadBezier {
@@ -255,54 +253,6 @@ fn fitOffsetCurveQuad(curve: CurveSegment, offset: f32) CurveSegment {
     });
 }
 
-fn fitCurveQuadratic(curve: CurveSegment) CurveSegment {
-    if (curve.kind == .quadratic) return curve;
-    const p0 = curve.evaluate(0.0);
-    const pm = curve.evaluate(0.5);
-    const p2 = curve.evaluate(1.0);
-    const control = Vec2.new(
-        pm.x * 2.0 - (p0.x + p2.x) * 0.5,
-        pm.y * 2.0 - (p0.y + p2.y) * 0.5,
-    );
-    return CurveSegment.fromQuad(.{
-        .p0 = p0,
-        .p1 = control,
-        .p2 = p2,
-    });
-}
-
-fn curveQuadraticApproxError(curve: CurveSegment) f32 {
-    if (curve.kind == .quadratic) return 0.0;
-    const approx = fitCurveQuadratic(curve).asQuad();
-    var max_error: f32 = 0.0;
-    inline for ([_]f32{ 0.25, 0.75 }) |t| {
-        const expected = curve.evaluate(t);
-        const actual = approx.evaluate(t);
-        max_error = @max(max_error, Vec2.length(Vec2.sub(expected, actual)));
-    }
-    return max_error;
-}
-
-fn appendAdaptiveQuadraticApprox(
-    path: *Path,
-    curve: CurveSegment,
-    depth: u8,
-) !void {
-    if (curve.kind == .quadratic) {
-        try path.appendSegment(curve);
-        return;
-    }
-
-    if (depth == 0 or curveQuadraticApproxError(curve) <= kPathCurveApproxTolerance) {
-        try path.appendSegment(fitCurveQuadratic(curve));
-        return;
-    }
-
-    const halves = curve.split(0.5);
-    try appendAdaptiveQuadraticApprox(path, halves[0], depth - 1);
-    try appendAdaptiveQuadraticApprox(path, halves[1], depth - 1);
-}
-
 fn offsetCurveApproxError(curve: CurveSegment, offset: f32) f32 {
     const approx = fitOffsetCurveQuad(curve, offset).asQuad();
     var max_error: f32 = 0.0;
@@ -415,12 +365,12 @@ pub const Path = struct {
     pub fn cubicTo(self: *Path, control1: Vec2, control2: Vec2, point: Vec2) !void {
         const contour = self.requireContour() orelse return error.PathMissingMoveTo;
         self.band_curve_count += 1;
-        try appendAdaptiveQuadraticApprox(self, CurveSegment.fromCubic(.{
+        try self.appendSegment(CurveSegment.fromCubic(.{
             .p0 = contour.current_point,
             .p1 = control1,
             .p2 = control2,
             .p3 = point,
-        }), kPathCurveApproxMaxDepth);
+        }));
     }
 
     pub fn close(self: *Path) !void {

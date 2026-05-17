@@ -40,6 +40,7 @@ const clamp01 = cpu_color.clamp01;
 const compositeOver = cpu_path_paint.compositeOver;
 const compositeSubpixelOver = cpu_coverage.compositeSubpixelOver;
 const evalGlyphCoverage = cpu_coverage.evalGlyphCoverage;
+const evalGlyphCoverageBandSpan = cpu_coverage.evalGlyphCoverageBandSpan;
 const evalGlyphCoverageSubpixel = cpu_coverage.evalGlyphCoverageSubpixel;
 const expandBoundsForSubpixel = cpu_geometry.expandBoundsForSubpixel;
 const f16ToF32 = cpu_texture.f16ToF32;
@@ -316,7 +317,7 @@ pub const CpuRenderer = struct {
                     const world = Vec2.new(@as(f32, @floatFromInt(col)) + 0.5, @as(f32, @floatFromInt(row)) + 0.5);
                     const local = inverse.applyPoint(world);
                     const paint = samplePathPaint(&picture.atlas, shape, shape.glyph_id, local);
-                    const cov = self.applyCoverageTransfer(evalGlyphCoverage(
+                    const cov = self.applyCoverageTransfer(evalGlyphCoverageBandSpan(
                         page,
                         local.x,
                         local.y,
@@ -641,7 +642,7 @@ pub const CpuRenderer = struct {
                                 &result_blend,
                             );
                         } else {
-                            const cov = self.applyCoverageTransfer(evalGlyphCoverage(page, local.x, local.y, ppe.x, ppe.y, be, band_max_h, band_max_v, self.fill_rule));
+                            const cov = self.applyCoverageTransfer(evalGlyphCoverageBandSpan(page, local.x, local.y, ppe.x, ppe.y, be, band_max_h, band_max_v, self.fill_rule));
 
                             if (outline_composite and l < 2) {
                                 if (l == 0) {
@@ -744,7 +745,7 @@ pub const CpuRenderer = struct {
                 });
                 while (col < @as(u32, @intCast(px1))) : (advanceLocalPixel(&col, &local, sample_dx)) {
                     if (!allow_subpixel or self.subpixel_order == .none) {
-                        const cov = self.applyCoverageTransfer(evalGlyphCoverage(page, local.x, local.y, ppe.x, ppe.y, be, band_max_h, band_max_v, self.fill_rule));
+                        const cov = self.applyCoverageTransfer(evalGlyphCoverageBandSpan(page, local.x, local.y, ppe.x, ppe.y, be, band_max_h, band_max_v, self.fill_rule));
                         if (cov < 1.0 / 255.0) continue;
                         var paint = paint_program.sample(local);
                         paint.color = multiplyLinearColor(paint.color, tint);

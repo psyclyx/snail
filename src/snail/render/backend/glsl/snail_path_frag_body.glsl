@@ -1,4 +1,8 @@
 #define kDirectEncodingKindBias 4.0
+const float kParamEps = 1e-5;
+const float kCoordEps = 1.0 / 65536.0;
+const float kDerivativeEps = 1e-6;
+const int kCubicRootIterations = 14;
 
 ivec2 offsetLayerLoc(ivec2 base, int offset) {
     int width = textureSize(u_layer_tex, 0).x;
@@ -20,15 +24,12 @@ struct SegmentData {
     vec3 weights;
 };
 
-// User paths are reduced to lines/quadratics/conics before atlas upload, so
-// the path-only shaders do not need the heavier cubic solver/evaluator.
-
 void appendRoot(inout SegmentRoots roots, float t) {
     if (roots.count >= 3) return;
-    if (t < -1e-5 || t > 1.0 + 1e-5) return;
+    if (t < -kParamEps || t > 1.0 + kParamEps) return;
     float clamped = clamp(t, 0.0, 1.0);
     for (int i = 0; i < roots.count; i++) {
-        if (abs(roots.t[i] - clamped) <= 1e-5) return;
+        if (abs(roots.t[i] - clamped) <= kParamEps) return;
     }
     int insertAt = roots.count;
     while (insertAt > 0 && roots.t[insertAt - 1] > clamped) {
@@ -43,8 +44,8 @@ SegmentRoots solveQuadraticRoots(float a, float b, float cVal) {
     SegmentRoots roots;
     roots.count = 0;
     roots.t = vec3(0.0);
-    if (abs(a) < 1.0 / 65536.0) {
-        if (abs(b) < 1.0 / 65536.0) return roots;
+    if (abs(a) < kCoordEps) {
+        if (abs(b) < kCoordEps) return roots;
         appendRoot(roots, -cVal / b);
         return roots;
     }
@@ -60,6 +61,79 @@ SegmentRoots solveQuadraticRoots(float a, float b, float cVal) {
     float inv2a = 0.5 / a;
     appendRoot(roots, (-b - sqrtDisc) * inv2a);
     appendRoot(roots, (-b + sqrtDisc) * inv2a);
+    return roots;
+}
+
+float cubicValue(float p0, float p1, float p2, float p3, float t) {
+    float mt = 1.0 - t;
+    return mt * mt * mt * p0 + 3.0 * mt * mt * t * p1 + 3.0 * mt * t * t * p2 + t * t * t * p3;
+}
+
+float cubicDerivative(float p0, float p1, float p2, float p3, float t) {
+    float mt = 1.0 - t;
+    return 3.0 * mt * mt * (p1 - p0) + 6.0 * mt * t * (p2 - p1) + 3.0 * t * t * (p3 - p2);
+}
+
+void appendCubicRootInterval(inout SegmentRoots roots, float p0, float p1, float p2, float p3, float target, float lo, float hi) {
+    if (hi - lo <= kParamEps) return;
+
+    float flo = cubicValue(p0, p1, p2, p3, lo) - target;
+    float fhi = cubicValue(p0, p1, p2, p3, hi) - target;
+
+    if (abs(flo) <= kCoordEps) {
+        appendRoot(roots, lo);
+        return;
+    }
+    if (abs(fhi) <= kCoordEps) {
+        appendRoot(roots, hi);
+        return;
+    }
+    if ((flo < 0.0) == (fhi < 0.0)) return;
+
+    float denom = abs(flo) + abs(fhi);
+    float t = (denom > kCoordEps) ? mix(lo, hi, abs(flo) / denom) : (lo + hi) * 0.5;
+    for (int i = 0; i < kCubicRootIterations; i++) {
+        float f = cubicValue(p0, p1, p2, p3, t) - target;
+        float df = cubicDerivative(p0, p1, p2, p3, t);
+        if ((f < 0.0) == (flo < 0.0)) {
+            lo = t;
+            flo = f;
+        } else {
+            hi = t;
+            fhi = f;
+        }
+
+        float next = t;
+        if (abs(df) > kDerivativeEps) {
+            next = t - f / df;
+        }
+        if (next <= lo || next >= hi) {
+            next = (lo + hi) * 0.5;
+        }
+        t = next;
+    }
+    appendRoot(roots, (lo + hi) * 0.5);
+}
+
+SegmentRoots solveCubicRootsMonotonic(float p0, float p1, float p2, float p3, float target) {
+    SegmentRoots roots;
+    roots.count = 0;
+    roots.t = vec3(0.0);
+
+    float a = -p0 + 3.0 * p1 - 3.0 * p2 + p3;
+    float b = 3.0 * p0 - 6.0 * p1 + 3.0 * p2;
+    float c = -3.0 * p0 + 3.0 * p1;
+    SegmentRoots extrema = solveQuadraticRoots(3.0 * a, 2.0 * b, c);
+
+    float lo = 0.0;
+    for (int i = 0; i < extrema.count; i++) {
+        float hi = extrema.t[i];
+        if (hi > lo + kParamEps && hi < 1.0 - kParamEps) {
+            appendCubicRootInterval(roots, p0, p1, p2, p3, target, lo, hi);
+            lo = hi;
+        }
+    }
+    appendCubicRootInterval(roots, p0, p1, p2, p3, target, lo, 1.0);
     return roots;
 }
 
@@ -158,10 +232,15 @@ vec2 evalSegmentPoint(SegmentData seg, float t) {
         float bw0 = b0 * seg.weights.x;
         float bw1 = b1 * seg.weights.y;
         float bw2 = b2 * seg.weights.z;
-        float denom = max(bw0 + bw1 + bw2, 1.0 / 65536.0);
+        float denom = max(bw0 + bw1 + bw2, kCoordEps);
         return (seg.p0 * bw0 + seg.p1 * bw1 + seg.p2 * bw2) / denom;
     }
     return mt * mt * seg.p0 + 2.0 * mt * t * seg.p1 + t * t * seg.p2;
+}
+
+vec2 evalCubicPoint(SegmentData seg, float t) {
+    float mt = 1.0 - t;
+    return mt * mt * mt * seg.p0 + 3.0 * mt * mt * t * seg.p1 + 3.0 * mt * t * t * seg.p2 + t * t * t * seg.p3;
 }
 
 vec2 evalSegmentDerivative(SegmentData seg, float t) {
@@ -182,13 +261,18 @@ vec2 evalSegmentDerivative(SegmentData seg, float t) {
         float dbw0 = db0 * seg.weights.x;
         float dbw1 = db1 * seg.weights.y;
         float dbw2 = db2 * seg.weights.z;
-        float denom = max(bw0 + bw1 + bw2, 1.0 / 65536.0);
+        float denom = max(bw0 + bw1 + bw2, kCoordEps);
         float denomPrime = dbw0 + dbw1 + dbw2;
         vec2 numer = seg.p0 * bw0 + seg.p1 * bw1 + seg.p2 * bw2;
         vec2 numerPrime = seg.p0 * dbw0 + seg.p1 * dbw1 + seg.p2 * dbw2;
         return (numerPrime * denom - numer * denomPrime) / (denom * denom);
     }
     return 2.0 * mt * (seg.p1 - seg.p0) + 2.0 * t * (seg.p2 - seg.p1);
+}
+
+vec2 evalCubicDerivative(SegmentData seg, float t) {
+    float mt = 1.0 - t;
+    return 3.0 * mt * mt * (seg.p1 - seg.p0) + 6.0 * mt * t * (seg.p2 - seg.p1) + 3.0 * t * t * (seg.p3 - seg.p2);
 }
 
 SegmentRoots solveSegmentHorizontalRoots(SegmentData seg, float py) {
@@ -223,79 +307,127 @@ SegmentRoots solveSegmentVerticalRoots(SegmentData seg, float px) {
 
 float segmentMaxX(SegmentData seg) {
     if (seg.kind == 3) return max(seg.p0.x, seg.p2.x);
+    if (seg.kind == 2) return max(max(seg.p0.x, seg.p1.x), max(seg.p2.x, seg.p3.x));
     return max(max(seg.p0.x, seg.p1.x), seg.p2.x);
 }
 
 float segmentMaxY(SegmentData seg) {
     if (seg.kind == 3) return max(seg.p0.y, seg.p2.y);
+    if (seg.kind == 2) return max(max(seg.p0.y, seg.p1.y), max(seg.p2.y, seg.p3.y));
     return max(max(seg.p0.y, seg.p1.y), seg.p2.y);
 }
 
-vec2 evalAxisCoverage(vec2 sampleRc, float ppe, ivec2 bandLoc, int count, int layer, bool horizontal) {
+bool accumulateAxisCoverageSegment(inout float cov, inout float wgt, vec2 sampleRc, float ppe, SegmentData seg, bool horizontal) {
+    float maxCoord = (horizontal ? segmentMaxX(seg) - sampleRc.x : segmentMaxY(seg) - sampleRc.y);
+    if (maxCoord * ppe < -0.5) return false;
+
+    if (seg.kind == 0) {
+        float p0x = seg.p0.x - sampleRc.x;
+        float p0y = seg.p0.y - sampleRc.y;
+        float p1x = seg.p1.x - sampleRc.x;
+        float p1y = seg.p1.y - sampleRc.y;
+        float p2x = seg.p2.x - sampleRc.x;
+        float p2y = seg.p2.y - sampleRc.y;
+        uint code = horizontal ? calcRootCode(p0y, p1y, p2y) : calcRootCode(p0x, p1x, p2x);
+        if (code == 0u) return true;
+
+        vec2 roots = horizontal
+            ? solveQuadraticHorizDistances(p0x, p0y, p1x, p1y, p2x, p2y, ppe)
+            : solveQuadraticVertDistances(p0x, p0y, p1x, p1y, p2x, p2y, ppe);
+
+        if ((code & 1u) != 0u) {
+            cov += (horizontal ? 1.0 : -1.0) * clamp(roots.x + 0.5, 0.0, 1.0);
+            wgt = max(wgt, clamp(1.0 - abs(roots.x) * 2.0, 0.0, 1.0));
+        }
+        if (code > 1u) {
+            cov += (horizontal ? -1.0 : 1.0) * clamp(roots.y + 0.5, 0.0, 1.0);
+            wgt = max(wgt, clamp(1.0 - abs(roots.y) * 2.0, 0.0, 1.0));
+        }
+        return true;
+    }
+
+    SegmentRoots roots = (seg.kind == 2)
+        ? (horizontal
+            ? solveCubicRootsMonotonic(seg.p0.y, seg.p1.y, seg.p2.y, seg.p3.y, sampleRc.y)
+            : solveCubicRootsMonotonic(seg.p0.x, seg.p1.x, seg.p2.x, seg.p3.x, sampleRc.x))
+        : (horizontal ? solveSegmentHorizontalRoots(seg, sampleRc.y) : solveSegmentVerticalRoots(seg, sampleRc.x));
+    for (int ri = 0; ri < roots.count; ri++) {
+        float t = roots.t[ri];
+        // Treat segment intersections as half-open [0, 1) so shared joins
+        // between adjacent segments are counted once instead of twice.
+        if (t >= 1.0 - kParamEps) continue;
+        vec2 point = (seg.kind == 2) ? evalCubicPoint(seg, t) : evalSegmentPoint(seg, t);
+        vec2 deriv = (seg.kind == 2) ? evalCubicDerivative(seg, t) : evalSegmentDerivative(seg, t);
+        float derivAxis = horizontal ? deriv.y : -deriv.x;
+        if (abs(derivAxis) <= kParamEps) continue;
+        float dist = (horizontal ? point.x - sampleRc.x : point.y - sampleRc.y) * ppe;
+        cov += (derivAxis > 0.0 ? 1.0 : -1.0) * clamp(dist + 0.5, 0.0, 1.0);
+        wgt = max(wgt, clamp(1.0 - abs(dist) * 2.0, 0.0, 1.0));
+    }
+    return true;
+}
+
+bool bandContainsCurve(ivec2 bandLoc, int count, int layer, ivec2 curveLoc) {
+    for (int i = 0; i < count; i++) {
+        ivec2 loc = calcBandLoc(bandLoc, uint(i));
+        ivec2 candidate = ivec2(texelFetch(u_band_tex, ivec3(loc, layer), 0).xy);
+        if (all(equal(candidate, curveLoc))) return true;
+    }
+    return false;
+}
+
+bool previousBandsContainCurve(ivec2 gLoc, int headerBase, int firstBand, int currentBand, int layer, ivec2 curveLoc) {
+    for (int band = firstBand; band < currentBand; band++) {
+        ivec2 headerLoc = calcBandLoc(gLoc, uint(headerBase + band));
+        uvec2 bd = texelFetch(u_band_tex, ivec3(headerLoc, layer), 0).xy;
+        if (bandContainsCurve(calcBandLoc(gLoc, bd.y), int(bd.x), layer, curveLoc)) return true;
+    }
+    return false;
+}
+
+vec2 evalAxisCoverageBands(vec2 sampleRc, float ppe, ivec2 gLoc, int headerBase, int firstBand, int lastBand, int layer, bool horizontal) {
     float cov = 0.0;
     float wgt = 0.0;
-    for (int i = 0; i < count; i++) {
-        ivec2 bLoc = calcBandLoc(bandLoc, uint(i));
-        ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec3(bLoc, layer), 0).xy);
-        SegmentData seg = fetchSegment(cLoc, layer);
-        float maxCoord = (horizontal ? segmentMaxX(seg) - sampleRc.x : segmentMaxY(seg) - sampleRc.y);
-        if (maxCoord * ppe < -0.5) break;
-        if (seg.kind == 0) {
-            float p0x = seg.p0.x - sampleRc.x;
-            float p0y = seg.p0.y - sampleRc.y;
-            float p1x = seg.p1.x - sampleRc.x;
-            float p1y = seg.p1.y - sampleRc.y;
-            float p2x = seg.p2.x - sampleRc.x;
-            float p2y = seg.p2.y - sampleRc.y;
-            uint code = horizontal ? calcRootCode(p0y, p1y, p2y) : calcRootCode(p0x, p1x, p2x);
-            if (code == 0u) continue;
-
-            vec2 roots = horizontal
-                ? solveQuadraticHorizDistances(p0x, p0y, p1x, p1y, p2x, p2y, ppe)
-                : solveQuadraticVertDistances(p0x, p0y, p1x, p1y, p2x, p2y, ppe);
-
-            if ((code & 1u) != 0u) {
-                cov += (horizontal ? 1.0 : -1.0) * clamp(roots.x + 0.5, 0.0, 1.0);
-                wgt = max(wgt, clamp(1.0 - abs(roots.x) * 2.0, 0.0, 1.0));
-            }
-            if (code > 1u) {
-                cov += (horizontal ? -1.0 : 1.0) * clamp(roots.y + 0.5, 0.0, 1.0);
-                wgt = max(wgt, clamp(1.0 - abs(roots.y) * 2.0, 0.0, 1.0));
-            }
-            continue;
-        }
-        SegmentRoots roots = horizontal ? solveSegmentHorizontalRoots(seg, sampleRc.y) : solveSegmentVerticalRoots(seg, sampleRc.x);
-        for (int ri = 0; ri < roots.count; ri++) {
-            float t = roots.t[ri];
-            // Treat segment intersections as half-open [0, 1) so shared joins
-            // between adjacent segments are counted once instead of twice.
-            if (t >= 1.0 - 1e-5) continue;
-            vec2 point = evalSegmentPoint(seg, t);
-            vec2 deriv = evalSegmentDerivative(seg, t);
-            float derivAxis = horizontal ? deriv.y : -deriv.x;
-            if (abs(derivAxis) <= 1e-5) continue;
-            float dist = (horizontal ? point.x - sampleRc.x : point.y - sampleRc.y) * ppe;
-            cov += (derivAxis > 0.0 ? 1.0 : -1.0) * clamp(dist + 0.5, 0.0, 1.0);
-            wgt = max(wgt, clamp(1.0 - abs(dist) * 2.0, 0.0, 1.0));
+    for (int band = firstBand; band <= lastBand; band++) {
+        ivec2 headerLoc = calcBandLoc(gLoc, uint(headerBase + band));
+        uvec2 bd = texelFetch(u_band_tex, ivec3(headerLoc, layer), 0).xy;
+        ivec2 bandLoc = calcBandLoc(gLoc, bd.y);
+        int count = int(bd.x);
+        for (int i = 0; i < count; i++) {
+            ivec2 bLoc = calcBandLoc(bandLoc, uint(i));
+            ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec3(bLoc, layer), 0).xy);
+            if (band > firstBand && previousBandsContainCurve(gLoc, headerBase, firstBand, band, layer, cLoc)) continue;
+            if (!accumulateAxisCoverageSegment(cov, wgt, sampleRc, ppe, fetchSegment(cLoc, layer), horizontal)) break;
         }
     }
     return vec2(cov, wgt);
 }
 
+struct BandSpan {
+    int first;
+    int last;
+};
+
+// Convert the pixel footprint into band space. Near a band boundary the
+// renderer evaluates the covered band span and de-duplicates curve records,
+// avoiding one-pixel cracks under fractional pan/zoom transforms.
+BandSpan coverageBandSpan(float coord, float eppAxis, float bandScale, float bandOffset, int bandMax) {
+    float center = coord * bandScale + bandOffset;
+    float halfWidth = max(abs(eppAxis * bandScale) * 0.5, kParamEps);
+    int first = clamp(int(floor(center - halfWidth)), 0, bandMax);
+    int last = clamp(int(floor(center + halfWidth)), 0, bandMax);
+    return BandSpan(first, max(first, last));
+}
+
 float evalGlyphCoverage(vec2 rc, vec2 epp, vec2 ppe,
                         ivec2 gLoc, ivec2 bandMax, vec4 banding, int texLayer) {
-    ivec2 bandIdx = clamp(ivec2(rc * banding.xy + banding.zw), ivec2(0), bandMax);
-    uvec2 hbd = texelFetch(u_band_tex, ivec3(gLoc.x + bandIdx.y, gLoc.y, texLayer), 0).xy;
-    ivec2 hLoc = calcBandLoc(gLoc, hbd.y);
-    int hCount = int(hbd.x);
-    vec2 horiz = evalAxisCoverage(rc, ppe.x, hLoc, hCount, texLayer, true);
-    uvec2 vbd = texelFetch(u_band_tex, ivec3(gLoc.x + bandMax.y + 1 + bandIdx.x, gLoc.y, texLayer), 0).xy;
-    ivec2 vLoc = calcBandLoc(gLoc, vbd.y);
-    int vCount = int(vbd.x);
-    vec2 vert = evalAxisCoverage(rc, ppe.y, vLoc, vCount, texLayer, false);
+    BandSpan hSpan = coverageBandSpan(rc.y, epp.y, banding.y, banding.w, bandMax.y);
+    BandSpan vSpan = coverageBandSpan(rc.x, epp.x, banding.x, banding.z, bandMax.x);
+    vec2 horiz = evalAxisCoverageBands(rc, ppe.x, gLoc, 0, hSpan.first, hSpan.last, texLayer, true);
+    vec2 vert = evalAxisCoverageBands(rc, ppe.y, gLoc, bandMax.y + 1, vSpan.first, vSpan.last, texLayer, false);
     float wsum = horiz.y + vert.y;
     float blended = horiz.x * horiz.y + vert.x * vert.y;
-    float cov = max(applyFillRule(blended / max(wsum, 1.0 / 65536.0)),
+    float cov = max(applyFillRule(blended / max(wsum, kCoordEps)),
                     min(applyFillRule(horiz.x), applyFillRule(vert.x)));
     return applyCoverageTransfer(cov);
 }
@@ -371,7 +503,7 @@ PathPaintSample samplePathPaint(vec2 rc, ivec2 infoBase, vec4 info) {
     }
 
     if (paintKind == 3) {
-        float radius = max(abs(data0.z), 1.0 / 65536.0);
+        float radius = max(abs(data0.z), kCoordEps);
         float t = length(rc - data0.xy) / radius;
         return PathPaintSample(mixGradient(color0, color1, wrapPaintT(t, data0.w)), 1.0);
     }

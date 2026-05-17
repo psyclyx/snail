@@ -638,6 +638,19 @@ test "buildGlyphBandData keeps direct encoded font bbox semantics" {
     try std.testing.expectApproxEqAbs(-local_bbox.min.y * bd.band_scale_y, bd.band_offset_y, 0.0001);
 }
 
+test "direct encoded band overlap tracks coordinate quantization" {
+    const curves = [_]CurveSegment{
+        CurveSegment.fromLine(Vec2.new(10.03, 26.47), Vec2.new(90.11, 26.47)),
+        CurveSegment.fromLine(Vec2.new(10.03, 60.19), Vec2.new(90.11, 60.19)),
+    };
+    const prepared = try curve_tex.prepareGlyphCurvesForDirectEncoding(std.testing.allocator, &curves, .zero);
+    defer std.testing.allocator.free(prepared);
+
+    const overlap = directEncodingBandOverlap(&curves, prepared, .zero);
+    try std.testing.expect(overlap >= 1.0 / 1024.0);
+    try std.testing.expect(overlap < 0.1);
+}
+
 test "buildGlyphBandData sorts horizontal curves by shader max x" {
     const curves = [_]CurveSegment{
         .{

@@ -20,25 +20,62 @@ The Slug patent (US 10,373,352) was [dedicated to the public domain](https://ter
 
 ### How it works
 
-**Font loading.** snail parses TrueType fonts directly: `cmap` for codepoint-to-glyph mapping, `glyf`/`loca` for outlines, `hhea`/`hmtx` for metrics, `kern` for legacy kerning, and `OS/2` + `post` for underline/strikethrough/superscript/subscript metrics. `COLR` is parsed for color emoji. Optional OpenType shaping applies GSUB ligature substitution (type 4) and GPOS pair positioning (type 2). HarfBuzz can be compiled in for full complex-script shaping.
+**Input.** snail parses TrueType fonts directly: `cmap` for codepoint-to-glyph
+mapping, `glyf`/`loca` for outlines, `hhea`/`hmtx` for metrics, `kern` for
+legacy kerning, and `OS/2` + `post` for underline/strikethrough/superscript/
+subscript metrics. `COLR` is parsed for color emoji. Optional OpenType shaping
+applies GSUB ligature substitution (type 4) and GPOS pair positioning (type 2).
+HarfBuzz can be compiled in for full complex-script shaping.
 
-**Atlas preparation.** Each glyph's quadratic Bezier curves are packed into two GPU textures at load time:
+**Atlas preparation.** Glyph and path outlines stay as curves. Preparation
+packs those curves plus a small acceleration structure into atlas pages:
 
-- *Curve texture* (RGBA16F): control points for every curve segment, stored as f16 in font-unit coordinates.
-- *Band texture* (RG16UI): spatial subdivision indices. The glyph bounding box is split into horizontal and vertical bands; each band records which curve segments intersect it.
+- *Curve texture* (RGBA16F): each segment occupies four texels. Coordinates are
+  localized to a glyph/path origin and stored either directly or as an anchor
+  plus f16 deltas.
+- *Band texture* (RG16UI): each glyph/path bounding box is split into horizontal
+  and vertical bands. Each band stores curve-texture locations for the curves
+  that can affect samples in that band.
+- *Layer records* (RGBA32F): per-glyph or per-shape metadata such as bounds,
+  band transforms, paint records, and color-font/composite-layer data.
 
-This preprocessing is CPU-only and runs once per glyph set. GPU backends upload the prepared data into 2D texture arrays (one layer per atlas page); the CPU backend reads the same arrays directly without uploading.
+<img src="assets/algorithm_atlas.png?raw=true" alt="snail-rendered diagram of curve and band atlas preparation" width="320">
 
-**Fragment shader.** At draw time, each glyph is a screen-space quad. The fragment shader:
+This preprocessing is CPU-only and runs when an immutable `TextAtlas` or
+`PathPicture` snapshot is built. GPU backends upload the prepared data into 2D
+texture arrays, one layer per atlas page. The CPU backend reads the same
+prepared atlas data directly.
 
-1. Reads the band indices for this fragment's position.
-2. For each curve in the active bands, evaluates a quadratic Bezier root equation to count ray crossings.
-3. Applies the winding rule (non-zero or even-odd) to determine inside/outside.
-4. Outputs analytic coverage as alpha, optionally with per-channel LCD subpixel offsets for horizontal RGB/BGR or vertical VRGB/VBGR subpixel rendering.
+**Coverage evaluation.** At draw time, text glyphs and path shapes are emitted
+as ordinary quads. The fragment shader maps the fragment back into local outline
+coordinates, chooses the horizontal and vertical bands for that sample, and
+walks only the curves referenced by those bands.
 
-There is no rasterization, no texture sampling for glyph shapes, and no distance field approximation.
+For each candidate curve, snail solves the ray/Bezier root equation at the
+sample coordinate. The text shader uses the TrueType fast path for quadratic
+glyph outlines. The path shader handles lines, quadratics, rational conics, and
+cubics. A root contributes signed coverage based on which side of the sample
+the crossing falls on; crossings more than half a pixel away contribute zero to
+antialiasing.
+Horizontal and vertical estimates are weighted together, then the configured
+fill rule (`nonzero` or `even_odd`) maps the signed winding value to final
+alpha.
 
-**Vector paths.** Filled and stroked `Path` geometry shares the curve/band texture format with text; only the fragment shader differs (the path shader handles per-shape paint records and composite groups, while the text shader fast-paths plain coverage). Cubic Bezier inputs are adaptively approximated to quadratics. Strokes are expanded into offset curves with joins (miter, bevel, round) and caps (butt, square, round). The `PathPicture` type freezes a set of styled paths into an immutable atlas snapshot that can be instanced cheaply per frame.
+<img src="assets/algorithm_coverage.png?raw=true" alt="snail-rendered diagram of per-fragment curve coverage evaluation" width="320">
+
+Grayscale antialiasing samples once per pixel. LCD subpixel modes take offset
+samples along the display's RGB/BGR or vertical subpixel axis and filter them
+into per-channel coverage. There is no bitmap glyph atlas, no distance field,
+and no texture sample that represents a pre-rasterized glyph shape.
+
+**Vector paths.** Filled and stroked `Path` geometry uses the same curve/band
+atlas format as text. The path shader handles per-shape paint records, image and
+gradient paints, and composite fill+stroke groups; the text shader keeps the
+plain glyph-coverage path lean. Public `Path.cubicTo` inputs are preserved as
+cubic segments for fills, while strokes are expanded into offset curves with
+joins (miter, bevel, round) and caps (butt, square, round). The `PathPicture`
+type freezes styled paths into an immutable atlas snapshot that can be instanced
+cheaply per frame.
 
 ## Color convention
 
@@ -77,6 +114,7 @@ zig build run -Dopengl=false                    # demo without OpenGL
 zig build run -Dcpu-renderer=false              # demo without CPU rendering
 zig build run-game-demo                         # 3D scene with HUD + world-space text on walls
 zig build screenshot                            # 2D demo offscreen → zig-out/demo-screenshot.tga
+zig build algorithm-screenshots                 # README algorithm diagrams → zig-out/algorithm-*.png
 zig build backend-compare                       # CPU/GL/Vulkan parity
 zig build bench                                 # benchmarks, including Vulkan rows when a Vulkan device is available
 zig build install --release=fast                # install libsnail, enabled C headers, and snail.pc
@@ -100,7 +138,10 @@ prefix when the C API is enabled; they are intentionally not checked in. C
 consumers should use the installed headers rather than the source-tree
 `include/` directory by itself.
 
-The checked-in screenshot at `assets/demo_screenshot.png` is regenerated from the `zig build screenshot` TGA output.
+The checked-in screenshot at `assets/demo_screenshot.png` is regenerated from
+the `zig build screenshot` TGA output. The checked-in algorithm diagrams at
+`assets/algorithm_*.png` are generated by `zig build algorithm-screenshots`;
+the committed copies are PNG-optimized to keep the repository small.
 
 ### Nix
 
@@ -599,7 +640,7 @@ Vulkan descriptor layout helpers live in `snail_vulkan.h`.
 | `path.moveTo(point)` | Begin subpath. |
 | `path.lineTo(point)` | Line segment. |
 | `path.quadTo(control, point)` | Quadratic Bezier. |
-| `path.cubicTo(c1, c2, point)` | Cubic Bezier (adaptively approximated to quadratics). |
+| `path.cubicTo(c1, c2, point)` | Cubic Bezier; fills preserve cubic segments, and stroked offset geometry is approximated as needed. |
 | `path.close()` | Close current subpath. |
 | `path.addRect(rect)` / `path.addRectReversed(rect)` | Append rectangle subpath. The `Reversed` variant emits the opposite winding (use it to punch a hole through a fill of the same path under nonzero fill rule). |
 | `path.addRoundedRect(rect, radius)` / `path.addRoundedRectReversed(rect, radius)` | Append rounded rectangle (and reversed-winding form). |
@@ -851,6 +892,7 @@ src/
     main.zig             interactive renderer demo
     game.zig             game-style OpenGL demo entry point
     screenshot.zig       headless screenshot demo
+    algorithm_screenshots.zig README algorithm diagram renderer
     renderer_driver.zig  backend-selection glue for the interactive demo
     banner.zig           reusable demo layout
     scene.zig            interactive demo scene construction
@@ -873,7 +915,7 @@ src/
   support/
     root.zig             shared support module for demos/tools only
     gl.zig               shared OpenGL C imports for demos/tools
-    screenshot.zig       shared framebuffer capture/TGA writer
+    screenshot.zig       shared framebuffer capture and TGA/PNG writers
 include/
   snail.h                shared C API: resources, upload, draw records, coverage records
   snail_generated.h      generated by build/install; not checked in

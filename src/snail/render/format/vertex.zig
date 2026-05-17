@@ -71,12 +71,54 @@ fn f32ToF16Bits(value: f32) u16 {
     return curve_tex.f32ToF16(value);
 }
 
+fn f16BitsToNextDown(bits: u16) u16 {
+    if (bits == 0xFC00) return bits;
+    if ((bits & 0x8000) != 0) return bits + 1;
+    if (bits == 0) return 0x8001;
+    return bits - 1;
+}
+
+fn f16BitsToNextUp(bits: u16) u16 {
+    if (bits == 0x7C00) return bits;
+    if ((bits & 0x8000) != 0) {
+        if (bits == 0x8000) return 0x0001;
+        return bits - 1;
+    }
+    return bits + 1;
+}
+
+fn f32ToF16RectMin(value: f32) u16 {
+    const bits = f32ToF16Bits(value);
+    return if (f16BitsToF32(bits) > value) f16BitsToNextDown(bits) else bits;
+}
+
+fn f32ToF16RectMax(value: f32) u16 {
+    const bits = f32ToF16Bits(value);
+    return if (f16BitsToF32(bits) < value) f16BitsToNextUp(bits) else bits;
+}
+
 fn half4(values: [4]f32) [4]u16 {
     return .{
         f32ToF16Bits(values[0]),
         f32ToF16Bits(values[1]),
         f32ToF16Bits(values[2]),
         f32ToF16Bits(values[3]),
+    };
+}
+
+fn rectHalf4(values: [4]f32) [4]u16 {
+    return .{
+        f32ToF16RectMin(values[0]),
+        f32ToF16RectMin(values[1]),
+        f32ToF16RectMax(values[2]),
+        f32ToF16RectMax(values[3]),
+    };
+}
+
+fn specialRectHalf4(kind: SpecialGlyphKind, values: [4]f32) [4]u16 {
+    return switch (kind) {
+        .path => rectHalf4(values),
+        .colr => half4(values),
     };
 }
 
@@ -311,7 +353,7 @@ fn generateSpecialLayerVerticesTinted(
     const gw = specialGlyphWord(layer_count, kind);
 
     writeInstance(buf, .{
-        .rect = half4(.{ union_bbox.min.x, union_bbox.min.y, union_bbox.max.x, union_bbox.max.y }),
+        .rect = specialRectHalf4(kind, .{ union_bbox.min.x, union_bbox.min.y, union_bbox.max.x, union_bbox.max.y }),
         .xform = .{ font_size, 0, 0, -font_size },
         .origin = .{ x, y },
         .glyph = .{ gz, gw },
@@ -384,7 +426,7 @@ fn generateSpecialLayerVerticesTransformedTinted(
     const gw = specialGlyphWord(layer_count, kind);
 
     writeInstance(buf, .{
-        .rect = half4(.{ bbox.min.x, bbox.min.y, bbox.max.x, bbox.max.y }),
+        .rect = specialRectHalf4(kind, .{ bbox.min.x, bbox.min.y, bbox.max.x, bbox.max.y }),
         .xform = .{ transform.xx, transform.xy, transform.yx, transform.yy },
         .origin = .{ transform.tx, transform.ty },
         .glyph = .{ gz, gw },
@@ -436,6 +478,16 @@ test "instance data produces correct layout" {
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), decoded.tint[1], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), decoded.tint[2], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), decoded.tint[3], 0.001);
+}
+
+test "instance rect half encoding encloses source bbox" {
+    const encoded = rectHalf4(.{ -18.37, -0.213, 142.91, 67.49 });
+    const decoded = decodeHalf4(encoded);
+
+    try std.testing.expect(decoded[0] <= -18.37);
+    try std.testing.expect(decoded[1] <= -0.213);
+    try std.testing.expect(decoded[2] >= 142.91);
+    try std.testing.expect(decoded[3] >= 67.49);
 }
 
 test "multi-layer glyph instance preserves wide layer counts" {

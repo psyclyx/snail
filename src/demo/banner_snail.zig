@@ -81,6 +81,7 @@ pub fn addVectorSnail(builder: *snail.PathPictureBuilder, snail_stage: snail.Rec
         .paint = .{ .solid = .{ 0.45, 0.50, 0.38, 0.50 } },
         .width = 2.0,
         .join = .round,
+        .placement = .inside,
     }, transform);
 
     var belly = snail.Path.init(builder.allocator);

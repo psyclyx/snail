@@ -50,7 +50,9 @@ pub const PreparedAtlasPage = struct {
             const segment = decodeCurveSegmentFromSlice(curve_data, @intCast(curve_base));
 
             h_curves[texel_idx] = try prepareAxisCurve(allocator, &h_cold_curves, segment, true);
+            h_curves[texel_idx].curve_base = @intCast(curve_base);
             v_curves[texel_idx] = try prepareAxisCurve(allocator, &v_cold_curves, segment, false);
+            v_curves[texel_idx].curve_base = @intCast(curve_base);
         }
 
         const h_cold_curves_owned = try h_cold_curves.toOwnedSlice(allocator);
