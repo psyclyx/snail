@@ -3,17 +3,9 @@
 //! via the HarfBuzz library. Compile with -Dharfbuzz=true.
 
 const std = @import("std");
-const glyph_emit = @import("../glyph_emit.zig");
 const hb = @cImport({
     @cInclude("hb.h");
 });
-const ttf = @import("ttf.zig");
-
-pub const ShapedGlyph = struct {
-    glyph_id: u16,
-    x_offset: f32,
-    y_offset: f32,
-};
 
 pub const HarfBuzzShaper = struct {
     hb_face: *hb.hb_face_t,
@@ -79,54 +71,6 @@ pub const HarfBuzzShaper = struct {
         const infos = hb.hb_buffer_get_glyph_infos(self.hb_buffer, &count);
         const positions = hb.hb_buffer_get_glyph_positions(self.hb_buffer, &count);
         return .{ .count = count, .infos = infos, .positions = positions };
-    }
-
-    /// Shape text and emit glyphs directly into a vertex buffer.
-    /// Zero-allocation: reuses internal HarfBuzz buffer, iterates output in-place.
-    /// Returns the total advance width in pixels.
-    pub fn shapeAndEmit(
-        self: *const HarfBuzzShaper,
-        text: []const u8,
-        font_size: f32,
-        x: f32,
-        y: f32,
-        color: [4]f32,
-        view: anytype,
-        batch: anytype,
-    ) f32 {
-        const shaped = self.shapeText(text);
-        if (shaped.count == 0 or shaped.infos == null or shaped.positions == null) return 0;
-
-        const scale = font_size / @as(f32, @floatFromInt(self.units_per_em));
-        var cursor_x: f32 = 0;
-        var cursor_y: f32 = 0;
-
-        for (0..shaped.count) |i| {
-            const gid: u16 = @intCast(shaped.infos[i].codepoint);
-            const pos = shaped.positions[i];
-
-            const glyph_x = x + (cursor_x + @as(f32, @floatFromInt(pos.x_offset))) * scale;
-            const glyph_y = y - (cursor_y + @as(f32, @floatFromInt(pos.y_offset))) * scale;
-            if (glyph_emit.emitGlyph(batch, view, gid, glyph_x, glyph_y, font_size, color) == .buffer_full) break;
-
-            cursor_x += @as(f32, @floatFromInt(pos.x_advance));
-            cursor_y += @as(f32, @floatFromInt(pos.y_advance));
-        }
-
-        return cursor_x * scale;
-    }
-
-    /// Measure the advance width of shaped text without emitting vertices.
-    pub fn measureWidth(self: *const HarfBuzzShaper, text: []const u8, font_size: f32) f32 {
-        const shaped = self.shapeText(text);
-        if (shaped.count == 0 or shaped.positions == null) return 0;
-
-        const scale = font_size / @as(f32, @floatFromInt(self.units_per_em));
-        var width: f32 = 0;
-        for (0..shaped.count) |i| {
-            width += @as(f32, @floatFromInt(shaped.positions[i].x_advance));
-        }
-        return width * scale;
     }
 
     /// Discover all glyph IDs that HarfBuzz produces for the given text.
