@@ -30,6 +30,7 @@ const cpu_geometry = @import("geometry.zig");
 const cpu_path_paint = @import("path_paint.zig");
 const cpu_resources = @import("resources.zig");
 const cpu_texture = @import("texture.zig");
+const cpu_tile_frame = @import("tile_frame.zig");
 
 const SubpixelCoverage = cpu_coverage.SubpixelCoverage;
 const SubpixelCoveragePlan = cpu_coverage.SubpixelCoveragePlan;
@@ -382,13 +383,13 @@ pub const CpuRenderer = struct {
     ) void {
         const span = self.row_clip_max - self.row_clip_min;
         const tile_count = (span + TILE_ROWS - 1) / TILE_ROWS;
-        var ctx = TileFrameCtx{
+        var ctx = cpu_tile_frame.Context(CpuRenderer){
             .self = self,
             .backend_prepared = backend_prepared,
             .records = records,
             .options = options,
         };
-        pool.dispatch(tile_count, &ctx, runFrameTile);
+        pool.dispatch(tile_count, &ctx, cpu_tile_frame.callback(CpuRenderer, TILE_ROWS));
     }
 
     pub fn drawTextBatchPrepared(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const u32, scene_to_pixel: Transform2D, texture_layer_base: u32, allow_subpixel: bool) void {
@@ -988,22 +989,3 @@ pub const test_api = if (builtin.is_test) struct {
     pub const drawGlyphId = CpuRenderer.drawGlyphId;
     pub const blendPremultipliedPixel = CpuRenderer.blendPremultipliedPixel;
 } else struct {};
-
-const TileFrameCtx = struct {
-    self: *const CpuRenderer,
-    backend_prepared: ?*const anyopaque,
-    records: snail.DrawRecords,
-    options: snail.DrawOptions,
-};
-
-fn runFrameTile(opaque_ctx: *anyopaque, tile_index: u32) void {
-    const ctx: *const TileFrameCtx = @ptrCast(@alignCast(opaque_ctx));
-    var tile_renderer = ctx.self.*;
-    tile_renderer.thread_pool = null;
-    const tile_min = ctx.self.row_clip_min + tile_index * CpuRenderer.TILE_ROWS;
-    tile_renderer.row_clip_min = tile_min;
-    tile_renderer.row_clip_max = @min(tile_min + CpuRenderer.TILE_ROWS, ctx.self.row_clip_max);
-
-    var renderer = tile_renderer.asRenderer();
-    renderer.iterateRecords(ctx.records, ctx.options, ctx.backend_prepared);
-}
