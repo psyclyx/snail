@@ -436,12 +436,25 @@ pub const CpuRenderer = struct {
         }
     }
 
-    fn renderBatchInstance(self: *CpuRenderer, prepared: *const PreparedResources, inst: []const u32, scene_to_pixel: Transform2D, texture_layer_base: u32, allow_subpixel: bool) void {
+    const BatchInstance = struct {
+        bbox: bezier.BBox,
+        transform: Transform2D,
+        glyph: [2]u32,
+        band: [4]f32,
+        color: [4]f32,
+        tint: [4]f32,
+
+        fn atlasLayerByte(self: BatchInstance) u8 {
+            return @intCast(self.glyph[1] >> 24);
+        }
+
+        fn isSpecialLayer(self: BatchInstance) bool {
+            return self.atlasLayerByte() == render_abi.special_layer_sentinel;
+        }
+    };
+
+    fn decodeBatchInstance(inst: []const u32, scene_to_pixel: Transform2D) BatchInstance {
         const encoded = vertex.instanceAt(inst, 0);
-        const bbox = bezier.BBox{
-            .min = .{ .x = f16ToF32(encoded.rect[0]), .y = f16ToF32(encoded.rect[1]) },
-            .max = .{ .x = f16ToF32(encoded.rect[2]), .y = f16ToF32(encoded.rect[3]) },
-        };
         const instance_transform = Transform2D{
             .xx = encoded.xform[0],
             .xy = encoded.xform[1],
@@ -450,56 +463,66 @@ pub const CpuRenderer = struct {
             .tx = encoded.origin[0],
             .ty = encoded.origin[1],
         };
-        // Compose the scene-to-pixel transform onto the baked instance
-        // transform; GPU backends do this in the vertex shader via the MVP
-        // uniform, the CPU rasterizer has to do it here.
-        const transform = Transform2D.multiply(scene_to_pixel, instance_transform);
-        const gz = encoded.glyph[0];
-        const gw = encoded.glyph[1];
-        const color = srgbBytesToLinearColor(encoded.color);
-        const tint = srgbBytesToLinearColor(encoded.tint);
+        return .{
+            .bbox = .{
+                .min = .{ .x = f16ToF32(encoded.rect[0]), .y = f16ToF32(encoded.rect[1]) },
+                .max = .{ .x = f16ToF32(encoded.rect[2]), .y = f16ToF32(encoded.rect[3]) },
+            },
+            // GPU backends compose this with the MVP uniform in the vertex
+            // shader. The CPU backend renders in pixel space directly.
+            .transform = Transform2D.multiply(scene_to_pixel, instance_transform),
+            .glyph = encoded.glyph,
+            .band = encoded.band,
+            .color = srgbBytesToLinearColor(encoded.color),
+            .tint = srgbBytesToLinearColor(encoded.tint),
+        };
+    }
 
-        const atlas_layer_byte: u8 = @intCast(gw >> 24);
-
-        if (atlas_layer_byte == render_abi.special_layer_sentinel) {
-            const layer_count: u16 = @intCast(gw & 0xFFFF);
-            const info_x: u16 = @intCast(gz & 0xFFFF);
-            const info_y: u16 = @intCast(gz >> 16);
-            const atlas_layer = texture_layer_base + @as(u32, @intFromFloat(encoded.band[3]));
-
-            // Resolve the layer info for this info_y (handles multi-atlas row offsets).
-            const resolved = prepared.resolveLayerInfo(info_y) orelse return;
-            const entry = resolved.entry;
-            const first_tag = fetchLayerInfoTexel(entry.data, entry.width, info_x, resolved.local_y, 0)[3];
-            if (first_tag < 0.0) {
-                const record = entry.pathRecordAt(info_x, resolved.local_y) orelse return;
-                self.renderPathBatchLayers(prepared, bbox, transform, tint, atlas_layer, entry, record, false);
-            } else {
-                self.renderColrBatchLayers(prepared, bbox, transform, color, tint, info_x, resolved.local_y, layer_count, atlas_layer, entry.data, entry.width);
-            }
-            return;
+    fn renderBatchInstance(self: *CpuRenderer, prepared: *const PreparedResources, inst: []const u32, scene_to_pixel: Transform2D, texture_layer_base: u32, allow_subpixel: bool) void {
+        const decoded = decodeBatchInstance(inst, scene_to_pixel);
+        if (decoded.isSpecialLayer()) {
+            self.renderSpecialBatchInstance(prepared, decoded, texture_layer_base);
+        } else {
+            self.renderRegularBatchInstance(prepared, decoded, texture_layer_base, allow_subpixel);
         }
+    }
 
-        // Regular glyph: decode band entry from vertex data.
-        const glyph_x: u16 = @intCast(gz & 0xFFFF);
-        const glyph_y: u16 = @intCast(gz >> 16);
-        const h_band_count: u16 = @intCast((gw & 0xFFFF) + 1);
-        const v_band_count: u16 = @intCast(((gw >> 16) & 0xFF) + 1);
-
+    fn renderRegularBatchInstance(self: *CpuRenderer, prepared: *const PreparedResources, decoded: BatchInstance, texture_layer_base: u32, allow_subpixel: bool) void {
+        const gz = decoded.glyph[0];
+        const gw = decoded.glyph[1];
         const be = GlyphBandEntry{
-            .glyph_x = glyph_x,
-            .glyph_y = glyph_y,
-            .h_band_count = h_band_count,
-            .v_band_count = v_band_count,
-            .band_scale_x = encoded.band[0],
-            .band_scale_y = encoded.band[1],
-            .band_offset_x = encoded.band[2],
-            .band_offset_y = encoded.band[3],
+            .glyph_x = @intCast(gz & 0xFFFF),
+            .glyph_y = @intCast(gz >> 16),
+            .h_band_count = @intCast((gw & 0xFFFF) + 1),
+            .v_band_count = @intCast(((gw >> 16) & 0xFF) + 1),
+            .band_scale_x = decoded.band[0],
+            .band_scale_y = decoded.band[1],
+            .band_offset_x = decoded.band[2],
+            .band_offset_y = decoded.band[3],
         };
 
-        const atlas_layer = texture_layer_base + @as(u32, atlas_layer_byte);
+        const atlas_layer = texture_layer_base + @as(u32, decoded.atlasLayerByte());
         const page = (if (atlas_layer < prepared.atlas_pages.len) prepared.atlas_pages[atlas_layer] else null) orelse return;
-        self.renderTransformedGlyph(page, bbox, be, transform, multiplyLinearColor(color, tint), allow_subpixel);
+        self.renderTransformedGlyph(page, decoded.bbox, be, decoded.transform, multiplyLinearColor(decoded.color, decoded.tint), allow_subpixel);
+    }
+
+    fn renderSpecialBatchInstance(self: *CpuRenderer, prepared: *const PreparedResources, decoded: BatchInstance, texture_layer_base: u32) void {
+        const gz = decoded.glyph[0];
+        const gw = decoded.glyph[1];
+        const layer_count: u16 = @intCast(gw & 0xFFFF);
+        const info_x: u16 = @intCast(gz & 0xFFFF);
+        const info_y: u16 = @intCast(gz >> 16);
+        const atlas_layer = texture_layer_base + @as(u32, @intFromFloat(decoded.band[3]));
+
+        const resolved = prepared.resolveLayerInfo(info_y) orelse return;
+        const entry = resolved.entry;
+        const first_tag = fetchLayerInfoTexel(entry.data, entry.width, info_x, resolved.local_y, 0)[3];
+        if (first_tag < 0.0) {
+            const record = entry.pathRecordAt(info_x, resolved.local_y) orelse return;
+            self.renderPathBatchLayers(prepared, decoded.bbox, decoded.transform, decoded.tint, atlas_layer, entry, record, false);
+        } else {
+            self.renderColrBatchLayers(prepared, decoded.bbox, decoded.transform, decoded.color, decoded.tint, info_x, resolved.local_y, layer_count, atlas_layer, entry.data, entry.width);
+        }
     }
 
     fn renderColrBatchLayers(
