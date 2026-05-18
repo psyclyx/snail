@@ -209,7 +209,6 @@ SegmentData fetchSegment(ivec2 loc, int layer) {
     vec4 tex0 = texelFetch(u_curve_tex, ivec3(loc, layer), 0);
     vec4 tex1 = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(loc, 1), layer), 0);
     vec4 tex2 = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(loc, 2), layer), 0);
-    vec4 meta = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(loc, 3), layer), 0);
     SegmentData seg;
     bool direct = tex2.z >= kDirectEncodingKindBias - 0.5;
     if (direct) {
@@ -218,6 +217,7 @@ SegmentData fetchSegment(ivec2 loc, int layer) {
         seg.p1 = tex0.zw;
         seg.p2 = tex1.xy;
         seg.p3 = tex1.zw;
+        seg.weights = vec3(tex2.w, tex2.x, tex2.y);
     } else {
         vec2 anchor = tex0.xy * 256.0 + tex0.zw;
         seg.kind = int(tex2.z + 0.5);
@@ -225,8 +225,12 @@ SegmentData fetchSegment(ivec2 loc, int layer) {
         seg.p1 = anchor + tex1.xy;
         seg.p2 = anchor + tex1.zw;
         seg.p3 = anchor + tex2.xy;
+        seg.weights = vec3(1.0);
+        if (seg.kind == 1) {
+            vec4 meta = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(loc, 3), layer), 0);
+            seg.weights = vec3(tex2.w, meta.x, meta.y);
+        }
     }
-    seg.weights = vec3(tex2.w, meta.x, meta.y);
     return seg;
 }
 
@@ -393,6 +397,7 @@ bool accumulateAxisCoverageSegment(inout float cov, inout float wgt, vec2 sample
 vec2 evalAxisCoverageBands(vec2 sampleRc, float ppe, ivec2 gLoc, int headerBase, int firstBand, int lastBand, int layer, bool horizontal) {
     float cov = 0.0;
     float wgt = 0.0;
+    bool dedup = firstBand != lastBand;
     for (int band = firstBand; band <= lastBand; band++) {
         ivec2 headerLoc = calcBandLoc(gLoc, uint(headerBase + band));
         uvec2 bd = texelFetch(u_band_tex, ivec3(headerLoc, layer), 0).xy;
@@ -401,8 +406,10 @@ vec2 evalAxisCoverageBands(vec2 sampleRc, float ppe, ivec2 gLoc, int headerBase,
         for (int i = 0; i < count; i++) {
             ivec2 bLoc = calcBandLoc(bandLoc, uint(i));
             uvec2 ref = texelFetch(u_band_tex, ivec3(bLoc, layer), 0).xy;
-            int ownerBand = max(decodeBandCurveFirstMember(ref), firstBand);
-            if (band != ownerBand) continue;
+            if (dedup) {
+                int ownerBand = max(decodeBandCurveFirstMember(ref), firstBand);
+                if (band != ownerBand) continue;
+            }
             ivec2 cLoc = decodeBandCurveLoc(ref);
             if (!accumulateAxisCoverageSegment(cov, wgt, sampleRc, ppe, fetchSegment(cLoc, layer), horizontal)) break;
         }

@@ -114,7 +114,7 @@ pub fn decodeCurveSegment(tex0: [4]f32, tex1: [4]f32, tex2: [4]f32, meta: [4]f32
             .p1 = .{ .x = tex0[2], .y = tex0[3] },
             .p2 = .{ .x = tex1[0], .y = tex1[1] },
             .p3 = .{ .x = tex1[2], .y = tex1[3] },
-            .weights = .{ tex2[3], meta[0], meta[1] },
+            .weights = .{ tex2[3], tex2[0], tex2[1] },
         };
     }
 

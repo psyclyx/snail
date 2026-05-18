@@ -109,7 +109,7 @@ pub fn splitCurvesForPacking(
 ///   packed texel 3: (w1, w2, 0, 0)
 ///   direct texel 0: (p0.x, p0.y, p1.x, p1.y)
 ///   direct texel 1: (p2.x, p2.y, p3.x, p3.y)
-///   direct texel 2: (0, 0, kind + DIRECT_ENCODING_KIND_BIAS, w0)
+///   direct texel 2: (w1, w2, kind + DIRECT_ENCODING_KIND_BIAS, w0)
 ///   direct texel 3: (w1, w2, 0, 0)
 pub const CurveTexture = struct {
     data: []u16,
@@ -182,8 +182,8 @@ pub fn buildCurveTexture(
                 data[base + 5] = f32ToF16(quantized_curve.p2.y);
                 data[base + 6] = f32ToF16(quantized_curve.p3.x);
                 data[base + 7] = f32ToF16(quantized_curve.p3.y);
-                data[base + 8] = 0;
-                data[base + 9] = 0;
+                data[base + 8] = f32ToF16(quantized_curve.weights[1]);
+                data[base + 9] = f32ToF16(quantized_curve.weights[2]);
                 data[base + 10] = f32ToF16(DIRECT_ENCODING_KIND_BIAS + @as(f32, @floatFromInt(@intFromEnum(quantized_curve.kind))));
                 data[base + 11] = f32ToF16(quantized_curve.weights[0]);
                 data[base + 12] = f32ToF16(quantized_curve.weights[1]);
@@ -437,8 +437,8 @@ fn decodeStoredSegment(data: []const u16) CurveSegment {
             .p3 = Vec2.new(f16BitsToF32(data[6]), f16BitsToF32(data[7])),
             .weights = .{
                 f16BitsToF32(data[11]),
-                f16BitsToF32(data[12]),
-                f16BitsToF32(data[13]),
+                f16BitsToF32(data[8]),
+                f16BitsToF32(data[9]),
             },
         };
     }

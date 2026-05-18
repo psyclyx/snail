@@ -847,6 +847,7 @@ fn evalPreparedGlyphCoverageAxisBandSpan(
     if (span.first > span.last) return result;
     const curves = if (horizontal) page.h_curves else page.v_curves;
     const cold_curves = if (horizontal) page.h_cold_curves else page.v_cold_curves;
+    const dedup = span.first != span.last;
 
     var band = span.first;
     while (band <= span.last) : (band += 1) {
@@ -860,7 +861,7 @@ fn evalPreparedGlyphCoverageAxisBandSpan(
         while (i < band_count) : (i += 1) {
             const curve = &band_curves[i];
             if (!curve.valid) continue;
-            if (!isBandSpanOwner(curve.first_member_band, band, span.first)) continue;
+            if (dedup and !isBandSpanOwner(curve.first_member_band, band, span.first)) continue;
             if (accumulatePreparedCurveCoverage(&result, curve, cold_curves, sample_rc, ppe, horizontal) == .stop_scan) break;
         }
     }
@@ -878,6 +879,7 @@ fn evalGenericGlyphCoverageAxisBandSpan(
 ) CoveragePair {
     var result = CoveragePair{ .cov = 0.0, .wgt = 0.0 };
     if (span.first > span.last) return result;
+    const dedup = span.first != span.last;
 
     var band = span.first;
     while (band <= span.last) : (band += 1) {
@@ -886,7 +888,7 @@ fn evalGenericGlyphCoverageAxisBandSpan(
         var i: u32 = 0;
         while (i < header[0]) : (i += 1) {
             const curve_ref = readBandCurveRef(page, band_base + i) orelse continue;
-            if (!isBandSpanOwner(curve_ref.first_member_band, band, span.first)) continue;
+            if (dedup and !isBandSpanOwner(curve_ref.first_member_band, band, span.first)) continue;
 
             const tex0 = readCurveTexelF32Base(page, curve_ref.base);
             const tex1 = readCurveTexelF32Base(page, curve_ref.base + 4);
