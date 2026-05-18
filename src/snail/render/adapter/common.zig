@@ -146,13 +146,17 @@ pub fn vtable(comptime Config: type) interface.Renderer.VTable {
     return .{
         .backend = Config.backend_kind,
         .deinit = &S.deinitFn,
-        .uploadResources = &S.uploadResourcesFn,
-        .coverageBackend = &S.coverageBackendFn,
-        .draw = &S.drawFn,
-        .drawPass = &S.drawPassFn,
-        .drawText = &S.drawTextFn,
-        .drawPaths = &S.drawPathsFn,
-        .beginDraw = &S.beginDrawFn,
+        .upload = .{
+            .uploadResources = &S.uploadResourcesFn,
+            .coverageBackend = &S.coverageBackendFn,
+        },
+        .draw = .{
+            .draw = &S.drawFn,
+            .drawPass = &S.drawPassFn,
+            .drawText = &S.drawTextFn,
+            .drawPaths = &S.drawPathsFn,
+            .beginDraw = &S.beginDrawFn,
+        },
         .resource_cache = .{
             .uses_resource_cache = Config.uses_resource_cache,
             .stats = &S.resourceCacheStatsFn,

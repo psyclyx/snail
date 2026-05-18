@@ -297,13 +297,17 @@ test "draw dispatch uses only prepared stamps and caller records" {
     const fake_vtable = Renderer.VTable{
         .backend = .cpu,
         .deinit = Fake.deinit,
-        .uploadResources = Fake.uploadResources,
-        .coverageBackend = Fake.coverageBackend,
-        .draw = Fake.draw,
-        .drawPass = Fake.drawPass,
-        .drawText = Fake.drawText,
-        .drawPaths = Fake.drawPaths,
-        .beginDraw = Fake.beginDraw,
+        .upload = .{
+            .uploadResources = Fake.uploadResources,
+            .coverageBackend = Fake.coverageBackend,
+        },
+        .draw = .{
+            .draw = Fake.draw,
+            .drawPass = Fake.drawPass,
+            .drawText = Fake.drawText,
+            .drawPaths = Fake.drawPaths,
+            .beginDraw = Fake.beginDraw,
+        },
         .resource_cache = .{
             .uses_resource_cache = false,
             .stats = Fake.resourceCacheStats,

@@ -42,19 +42,24 @@ pub const Renderer = struct {
         imageArrayWouldRebuild: *const fn (*const PreparedResources, u32, u32, u32) bool,
     };
 
-    pub const VTable = struct {
-        backend: BackendKind,
-        deinit: *const fn (*anyopaque) void,
+    pub const UploadVTable = struct {
         uploadResources: *const fn (*anyopaque, UploadAllocators, *PreparedResources, ResourceUploadBatch) anyerror!void,
         coverageBackend: *const fn (*anyopaque, *const PreparedResources) ?CoverageBackend,
-        // Draw-level execution: validate, set state, walk records. Each backend
-        // owns this so it can decide how to schedule the work.
+    };
+
+    pub const DrawVTable = struct {
         draw: *const fn (*Renderer, *const PreparedResources, DrawRecords, DrawState) anyerror!void,
         drawPass: *const fn (*Renderer, *const PreparedResources, DrawRecords, DrawPass) anyerror!void,
-        // Segment-level dispatch, called from `iterateRecords`.
         drawText: *const fn (*anyopaque, ?*const anyopaque, []const u32, DrawState, u32) anyerror!void,
         drawPaths: *const fn (*anyopaque, ?*const anyopaque, []const u32, DrawState, u32) anyerror!void,
         beginDraw: *const fn (*anyopaque) void,
+    };
+
+    pub const VTable = struct {
+        backend: BackendKind,
+        deinit: *const fn (*anyopaque) void,
+        upload: UploadVTable,
+        draw: DrawVTable,
         resource_cache: ResourceCacheVTable,
         backendName: *const fn (*anyopaque) []const u8,
     };
@@ -67,11 +72,11 @@ pub const Renderer = struct {
     }
 
     pub fn uploadResourceBatch(self: *Renderer, allocators: UploadAllocators, prepared: *PreparedResources, batch: ResourceUploadBatch) !void {
-        try self.vtable.uploadResources(self.ptr, allocators, prepared, batch);
+        try self.vtable.upload.uploadResources(self.ptr, allocators, prepared, batch);
     }
 
     pub fn coverageBackend(self: *Renderer, prepared: *const PreparedResources) ?CoverageBackend {
-        return self.vtable.coverageBackend(self.ptr, prepared);
+        return self.vtable.upload.coverageBackend(self.ptr, prepared);
     }
 
     pub fn planResourceUpload(self: *Renderer, allocator: std.mem.Allocator, current: ?*const PreparedResources, next_set: *const ResourceManifest) !ResourceUploadPlan {
@@ -126,7 +131,7 @@ pub const Renderer = struct {
     /// or invalidates resources. The backend's vtable entry decides whether
     /// to walk records serially or fan them out across worker threads.
     pub fn draw(self: *Renderer, prepared: *const PreparedResources, records: DrawRecords, state: DrawState) !void {
-        return self.vtable.draw(self, prepared, records, state);
+        return self.vtable.draw.draw(self, prepared, records, state);
     }
 
     pub fn drawPrepared(self: *Renderer, prepared: *const PreparedResources, scene: *const PreparedScene, state: DrawState) !void {
@@ -134,7 +139,7 @@ pub const Renderer = struct {
     }
 
     pub fn drawPass(self: *Renderer, prepared: *const PreparedResources, records: DrawRecords, pass: DrawPass) !void {
-        return self.vtable.drawPass(self, prepared, records, pass);
+        return self.vtable.draw.drawPass(self, prepared, records, pass);
     }
 
     pub fn drawPreparedPass(self: *Renderer, prepared: *const PreparedResources, scene: *const PreparedScene, pass: DrawPass) !void {
@@ -178,15 +183,15 @@ pub const Renderer = struct {
     }
 
     fn beginBackendDraw(self: *Renderer) void {
-        self.vtable.beginDraw(self.ptr);
+        self.vtable.draw.beginDraw(self.ptr);
     }
 
     fn drawText(self: *Renderer, backend_prepared: ?*const anyopaque, vertices: []const u32, state: DrawState, texture_layer_base: u32) !void {
-        try self.vtable.drawText(self.ptr, backend_prepared, vertices, state, texture_layer_base);
+        try self.vtable.draw.drawText(self.ptr, backend_prepared, vertices, state, texture_layer_base);
     }
 
     fn drawPaths(self: *Renderer, backend_prepared: ?*const anyopaque, vertices: []const u32, state: DrawState, texture_layer_base: u32) !void {
-        try self.vtable.drawPaths(self.ptr, backend_prepared, vertices, state, texture_layer_base);
+        try self.vtable.draw.drawPaths(self.ptr, backend_prepared, vertices, state, texture_layer_base);
     }
 
     pub fn backendName(self: *const Renderer) []const u8 {
@@ -249,13 +254,17 @@ pub fn disabledVTable(comptime backend_kind: BackendKind) Renderer.VTable {
     return .{
         .backend = backend_kind,
         .deinit = &S.deinitFn,
-        .uploadResources = &S.uploadResourcesFn,
-        .coverageBackend = &S.coverageBackendFn,
-        .draw = &S.drawFn,
-        .drawPass = &S.drawPassFn,
-        .drawText = &S.drawTextFn,
-        .drawPaths = &S.drawPathsFn,
-        .beginDraw = &S.beginDrawFn,
+        .upload = .{
+            .uploadResources = &S.uploadResourcesFn,
+            .coverageBackend = &S.coverageBackendFn,
+        },
+        .draw = .{
+            .draw = &S.drawFn,
+            .drawPass = &S.drawPassFn,
+            .drawText = &S.drawTextFn,
+            .drawPaths = &S.drawPathsFn,
+            .beginDraw = &S.beginDrawFn,
+        },
         .resource_cache = .{
             .uses_resource_cache = false,
             .stats = &S.resourceCacheStatsFn,
