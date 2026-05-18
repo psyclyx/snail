@@ -20,10 +20,10 @@ const TextAtlas = text_mod.TextAtlas;
 const TextBlob = text_mod.TextBlob;
 const mix64 = resource_key_mod.mix64;
 
-pub fn textAtlasStamp(atlas: *const TextAtlas) ResourceStamp {
+pub fn textAtlasStamp(key: ResourceKey, atlas: *const TextAtlas) ResourceStamp {
     var layout = mix64(@as(u64, @intCast(atlas.pageCount())), @as(u64, atlas.layer_info_width));
     layout = mix64(layout, atlas.layer_info_height);
-    var content = atlas.snapshotIdentity();
+    var content = key.id;
     for (atlas.pageSlice()) |page| {
         content = hashAtlasPage(content, page);
     }
@@ -31,17 +31,16 @@ pub fn textAtlasStamp(atlas: *const TextAtlas) ResourceStamp {
         content = hashBytes(content, 0x544558544c415945, std.mem.sliceAsBytes(data));
     }
     return .{
-        .identity = atlas.snapshotIdentity(),
+        .identity = key.id,
         .layout = layout,
         .content = content,
     };
 }
 
-pub fn textPaintStamp(blob: *const TextBlob) ResourceStamp {
-    const atlas_stamp = textAtlasStamp(blob.atlas);
-    var layout = mix64(atlas_stamp.layout, blob.paint_layer_info_width);
+pub fn textPaintStamp(key: ResourceKey, blob: *const TextBlob) ResourceStamp {
+    var layout = mix64(0x544558545041494e, blob.paint_layer_info_width);
     layout = mix64(layout, blob.paint_layer_info_height);
-    var content = atlas_stamp.content;
+    var content = key.id;
     if (blob.paint_layer_info_data) |data| {
         content = mix64(content, std.hash.Wyhash.hash(0x544558545041494e, std.mem.sliceAsBytes(data)));
     }
@@ -49,17 +48,17 @@ pub fn textPaintStamp(blob: *const TextBlob) ResourceStamp {
         content = hashPaintImageRecords(content, records);
     }
     return .{
-        .identity = mix64(@intCast(@intFromPtr(blob)), atlas_stamp.identity),
+        .identity = key.id,
         .layout = layout,
         .content = content,
     };
 }
 
-pub fn pathPictureStamp(picture: *const PathPicture) ResourceStamp {
+pub fn pathPictureStamp(key: ResourceKey, picture: *const PathPicture) ResourceStamp {
     var layout = mix64(@as(u64, @intCast(picture.shapeCount())), picture.atlas.pageCount());
     layout = mix64(layout, picture.atlas.layer_info_width);
     layout = mix64(layout, picture.atlas.layer_info_height);
-    var content = @as(u64, @intCast(@intFromPtr(picture)));
+    var content = key.id;
     for (picture.shapes) |shape| {
         content = hashPathShape(content, shape);
     }
@@ -74,19 +73,24 @@ pub fn pathPictureStamp(picture: *const PathPicture) ResourceStamp {
         content = hashPaintImageRecords(content, records);
     }
     return .{
-        .identity = @intCast(@intFromPtr(picture)),
+        .identity = key.id,
         .layout = layout,
         .content = content,
     };
 }
 
-pub fn imageStamp(image: *const Image) ResourceStamp {
+fn imageContentStamp(image: *const Image) ResourceStamp {
     const pixels = image.pixelSlice();
     return .{
-        .identity = @intCast(@intFromPtr(image)),
         .layout = mix64(@as(u64, image.width), image.height),
         .content = std.hash.Wyhash.hash(0x494d414745535247, pixels),
     };
+}
+
+pub fn imageStamp(key: ResourceKey, image: *const Image) ResourceStamp {
+    var stamp = imageContentStamp(image);
+    stamp.identity = key.id;
+    return stamp;
 }
 
 pub fn textPaintLayerInfoUpload(blob: *const TextBlob) PreparedLayerInfoUpload {
@@ -109,10 +113,10 @@ pub fn resourceEntryKey(entry: ResourceManifest.Entry) ResourceKey {
 
 pub fn resourceEntryStamp(entry: ResourceManifest.Entry) ResourceStamp {
     return switch (entry) {
-        .text_atlas => |text| textAtlasStamp(text.atlas),
-        .text_paint => |text| textPaintStamp(text.blob),
-        .path_picture => |path| pathPictureStamp(path.picture),
-        .image => |image| imageStamp(image.image),
+        .text_atlas => |text| textAtlasStamp(text.key, text.atlas),
+        .text_paint => |text| textPaintStamp(text.key, text.blob),
+        .path_picture => |path| pathPictureStamp(path.key, path.picture),
+        .image => |image| imageStamp(image.key, image.image),
     };
 }
 
@@ -211,8 +215,7 @@ fn hashPaintImageRecords(seed: u64, records: []const ?Atlas.PaintImageRecord) u6
         };
         h = mix64(h, 1);
         h = mix64(h, resolved.texel_offset);
-        const stamp = imageStamp(resolved.image);
-        h = mix64(h, stamp.identity);
+        const stamp = imageContentStamp(resolved.image);
         h = mix64(h, stamp.layout);
         h = mix64(h, stamp.content);
     }

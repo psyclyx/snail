@@ -81,6 +81,12 @@ typedef struct {
 typedef uint64_t SnailResourceKey;
 
 typedef struct {
+    SnailResourceKey atlas_key;
+    SnailResourceKey paint_key;
+    bool has_paint_key;
+} SnailTextResourceKeys;
+
+typedef struct {
     uint64_t identity;
     uint64_t layout;
     uint64_t content;
@@ -529,29 +535,40 @@ int snail_scene_init(const SnailAllocator *alloc, SnailScene **out);
 void snail_scene_deinit(SnailScene *scene);
 void snail_scene_reset(SnailScene *scene);
 size_t snail_scene_command_count(const SnailScene *scene);
-int snail_scene_add_text(SnailScene *scene, const SnailTextBlob *blob);
+int snail_scene_add_text(SnailScene *scene,
+                         const SnailTextBlob *blob,
+                         SnailTextResourceKeys resources);
 int snail_scene_add_text_transformed(SnailScene *scene,
                                      const SnailTextBlob *blob,
+                                     SnailTextResourceKeys resources,
                                      SnailTransform2D transform);
 int snail_scene_add_text_override(SnailScene *scene,
                                   const SnailTextBlob *blob,
+                                  SnailTextResourceKeys resources,
                                   SnailOverride override_value);
-int snail_scene_add_path_picture(SnailScene *scene, const SnailPathPicture *picture);
+int snail_scene_add_path_picture(SnailScene *scene,
+                                 const SnailPathPicture *picture,
+                                 SnailResourceKey key);
 int snail_scene_add_path_picture_range(SnailScene *scene,
                                        const SnailPathPicture *picture,
+                                       SnailResourceKey key,
                                        SnailRange range);
 int snail_scene_add_path_picture_transformed(SnailScene *scene,
                                              const SnailPathPicture *picture,
+                                             SnailResourceKey key,
                                              SnailTransform2D transform);
 int snail_scene_add_path_picture_range_transformed(SnailScene *scene,
                                                    const SnailPathPicture *picture,
+                                                   SnailResourceKey key,
                                                    SnailRange range,
                                                    SnailTransform2D transform);
 int snail_scene_add_path_picture_override(SnailScene *scene,
                                           const SnailPathPicture *picture,
+                                          SnailResourceKey key,
                                           SnailOverride override_value);
 int snail_scene_add_path_picture_range_override(SnailScene *scene,
                                                 const SnailPathPicture *picture,
+                                                SnailResourceKey key,
                                                 SnailRange range,
                                                 SnailOverride override_value);
 
@@ -571,9 +588,13 @@ int snail_resource_manifest_put_text_atlas_reserved(SnailResourceManifest *set,
                                                SnailResourceKey key,
                                                const SnailTextAtlas *atlas,
                                                uint32_t reserved_pages);
-int snail_resource_manifest_put_text_paint(SnailResourceManifest *set,
-                                           SnailResourceKey key,
-                                           const SnailTextBlob *blob);
+int snail_text_blob_resource_keys(SnailResourceKey atlas_key,
+                                  SnailResourceKey blob_key,
+                                  const SnailTextBlob *blob,
+                                  SnailTextResourceKeys *out);
+int snail_resource_manifest_put_text_blob(SnailResourceManifest *set,
+                                          SnailTextResourceKeys resources,
+                                          const SnailTextBlob *blob);
 int snail_resource_manifest_put_path_picture(SnailResourceManifest *set,
                                         SnailResourceKey key,
                                         const SnailPathPicture *picture);
@@ -644,6 +665,7 @@ const uint32_t *snail_text_coverage_records_words(const SnailTextCoverageRecords
 int snail_text_coverage_records_build_local(SnailTextCoverageRecords *records,
                                             const SnailPreparedResources *prepared,
                                             const SnailTextBlob *blob,
+                                            SnailTextResourceKeys resources,
                                             SnailTransform2D transform);
 bool snail_text_coverage_records_valid_for(const SnailTextCoverageRecords *records,
                                            const SnailPreparedResources *prepared);

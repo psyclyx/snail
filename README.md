@@ -269,15 +269,15 @@ _ = try blob_builder.append(.{
 var blob = try blob_builder.finish();
 defer blob.deinit();
 
-var scene = snail.Scene.init(allocator);
-defer scene.deinit();
-try scene.addText(.{ .blob = &blob });
-// (See "Vector Paths" below for adding a PathPicture to the same scene.)
-
 var resource_entries: [8]snail.ResourceManifest.Entry = undefined;
 var resources = snail.ResourceManifest.init(&resource_entries);
-try resources.putTextAtlas(.fonts, blob.atlas);
-if (blob.hasPaintRecords()) try resources.putTextPaint(.text_paint, &blob);
+const text_resources = snail.ResourceManifest.textBlobResourceKeys(.fonts, .hello_text, &blob);
+try resources.putTextBlob(text_resources, &blob);
+
+var scene = snail.Scene.init(allocator);
+defer scene.deinit();
+try scene.addText(.{ .blob = &blob, .resources = text_resources });
+// (See "Vector Paths" below for adding a PathPicture to the same scene.)
 
 // Requires an active GL context. Vulkan uses snail.VulkanRenderer.init(allocator, ctx).
 var gl = try snail.GlRenderer.init(allocator);
@@ -353,7 +353,7 @@ var picture = try builder.freeze(.{
 defer picture.deinit();
 
 // Submit before uploading (see the Zig example above).
-try scene.addPath(.{ .picture = &picture });
+try scene.addPath(.{ .picture = &picture, .resource_key = snail.ResourceKey.named("logo_paths") });
 ```
 
 ## Example: C
@@ -416,14 +416,17 @@ snail_path_picture_builder_add_filled_path(builder, path, fill,
 SnailPathPicture *picture = NULL;
 snail_path_picture_builder_freeze(builder, NULL, NULL, &picture);
 
+SnailTextResourceKeys text_resources = {0};
+snail_text_blob_resource_keys(1, 3, blob, &text_resources);
+
 SnailScene *scene = NULL;
 snail_scene_init(NULL, &scene);
-snail_scene_add_text(scene, blob);
-snail_scene_add_path_picture(scene, picture);
+snail_scene_add_text(scene, blob, text_resources);
+snail_scene_add_path_picture(scene, picture, 2);
 
 SnailResourceManifest *resources = NULL;
 snail_resource_manifest_init(NULL, 8, &resources);
-snail_resource_manifest_put_text_atlas(resources, 1, atlas);
+snail_resource_manifest_put_text_blob(resources, text_resources, blob);
 snail_resource_manifest_put_path_picture(resources, 2, picture);
 
 SnailRenderer *renderer = NULL;
@@ -553,27 +556,28 @@ A scene is a borrowed list of `PathDraw` / `TextDraw` submissions. Each submissi
 | Method | Description |
 |--------|-------------|
 | `Scene.init(alloc) Scene` | New empty scene. |
-| `scene.addPath(PathDraw) !void` | Submit a path draw. Borrows `picture` and `instances`. |
-| `scene.addText(TextDraw) !void` | Submit a text draw. Borrows `blob` and `instances`. |
+| `scene.addPath(PathDraw) !void` | Submit a path draw. Borrows `picture` and `instances`; `resource_key` selects the prepared path resource. |
+| `scene.addText(TextDraw) !void` | Submit a text draw. Borrows `blob` and `instances`; `resources` selects the prepared atlas and optional paint records. |
 | `scene.reset()` | Clear commands; capacity is retained. |
 | `scene.deinit()` | Free the command list. |
 
 ```zig
 // Trivial draw.
-try scene.addPath(.{ .picture = &picture });
+try scene.addPath(.{ .picture = &picture, .resource_key = snail.ResourceKey.named("picture") });
 
 // One transform.
 const overrides = [_]snail.Override{.{ .transform = transform }};
-try scene.addPath(.{ .picture = &picture, .instances = &overrides });
+try scene.addPath(.{ .picture = &picture, .resource_key = snail.ResourceKey.named("picture"), .instances = &overrides });
 
 // Sub-range of shapes.
 try scene.addPath(.{
     .picture = &picture,
+    .resource_key = snail.ResourceKey.named("picture"),
     .shapes = .{ .start = 4, .count = 12 },
 });
 
 // Many instances (tile / sprite / particle batch).
-try scene.addPath(.{ .picture = &sprite, .instances = entity_overrides });
+try scene.addPath(.{ .picture = &sprite, .resource_key = snail.ResourceKey.named("sprite"), .instances = entity_overrides });
 ```
 
 ### ResourceManifest
@@ -584,8 +588,9 @@ try scene.addPath(.{ .picture = &sprite, .instances = entity_overrides });
 |--------|-------------|
 | `ResourceManifest.init(entries)` | Wrap a caller-owned `[]ResourceManifest.Entry` buffer. |
 | `set.reset()` | Clear entries; capacity is retained. |
-| `set.putTextAtlas(key, atlas)` / `set.putTextAtlasOptions(key, atlas, options)` | Add a text atlas, optionally overriding atlas capacity mode. |
-| `set.putTextPaint(key, blob)` | Add the layer-info/image-paint records for a `TextBlob` that uses non-solid paints. |
+| `ResourceManifest.textBlobResourceKeys(atlas_key, blob_key, blob)` | Build the key bundle a text draw and manifest entry share. Paint records are derived from `blob_key` only when the blob needs them. |
+| `set.putTextBlob(resources, blob)` | Add the text atlas plus any layer-info/image-paint records needed by `blob`. |
+| `set.putTextAtlas(key, atlas)` / `set.putTextAtlasOptions(key, atlas, options)` | Add an atlas-only resource, optionally overriding atlas capacity mode. |
 | `set.putPathPicture(key, picture)` / `set.putPathPictureOptions(key, picture, options)` | Add a path picture, optionally overriding atlas capacity mode. |
 | `set.putImage(key, image)` | Add an image resource. |
 | `set.estimateUploadFootprint() !ResourceFootprint` | Allocation-free estimate for a resource manifest before upload. |
@@ -679,11 +684,11 @@ masking, or compositing.
 - `snail.coverage.TextCoverageRecords` is the per-glyph vertex stream over a caller-owned
   `[]u32`. Size it with `snail.coverage.TextCoverageRecords.wordCapacityForBlob(blob)`,
   initialize with `snail.coverage.TextCoverageRecords.init(buffer)`, then call
-  `records.buildLocal(prepared, blob, .{ .transform = ... })`. `buildLocal`
+  `records.buildLocal(prepared, blob, .{ .resources = text_resources, .transform = ... })`. `buildLocal`
   does not allocate; it returns `error.DrawListFull` if the buffer is too
   small. Pass `records.layerWindowBase()` to custom shaders as `u_layer_base`.
   Call `records.validFor(prepared)` after a re-upload and
-  `records.buildLocal(prepared, blob, options)` if the atlas has moved.
+  `records.buildLocal(prepared, blob, options)` with the same text resource keys if the atlas has moved.
 - `snail.coverage.Backend` is the backend hook. Get one from
   `prepared.coverageBackend(renderer)` (or `gl.coverageBackend(prepared)`
   on typed renderers, or `vk.frame(.{ .cmd, .slot }).coverageBackend(prepared)`

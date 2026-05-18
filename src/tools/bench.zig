@@ -25,6 +25,7 @@ const CPU_WARMUP = 5;
 const CPU_FRAMES = 20;
 const WIDTH: u32 = 640;
 const HEIGHT: u32 = 360;
+const VECTOR_RESOURCE_KEY = snail.ResourceKey.named("bench.vectors");
 
 const PRINTABLE_ASCII = blk: {
     var chars: [95]u8 = undefined;
@@ -89,6 +90,10 @@ const SceneKind = enum {
 };
 
 const scene_kinds = [_]SceneKind{ .text, .rich_text, .vector, .mixed, .multi_script };
+
+fn sceneTextKey(index: usize) snail.ResourceKey {
+    return snail.ResourceKey.fromId(@intCast(index + 1));
+}
 
 const RenderMode = struct {
     aa: snail.SubpixelOrder,
@@ -514,14 +519,20 @@ fn buildScene(
     if (kind == .rich_text) {
         blobs = try allocator.alloc(snail.TextBlob, 1);
         blobs[blob_count] = try makeRichTextBlob(allocator, atlas);
-        try scene.addText(.{ .blob = &blobs[blob_count] });
+        try scene.addText(.{
+            .blob = &blobs[blob_count],
+            .resources = snail.ResourceManifest.textBlobResourceKeys(.fonts, sceneTextKey(blob_count), &blobs[blob_count]),
+        });
         blob_count += 1;
     } else if (needs_text) {
         const lines: []const TextLine = if (kind == .multi_script) scene_multi_script_lines[0..] else scene_text_lines[0..];
         blobs = try allocator.alloc(snail.TextBlob, lines.len);
         for (lines) |line| {
             blobs[blob_count] = try makeTextBlob(allocator, atlas, line);
-            try scene.addText(.{ .blob = &blobs[blob_count] });
+            try scene.addText(.{
+                .blob = &blobs[blob_count],
+                .resources = snail.ResourceManifest.textBlobResourceKeys(.fonts, sceneTextKey(blob_count), &blobs[blob_count]),
+            });
             blob_count += 1;
         }
     }
@@ -540,7 +551,7 @@ fn buildScene(
             return err;
         };
         picture = allocated_picture;
-        try scene.addPath(.{ .picture = allocated_picture });
+        try scene.addPath(.{ .picture = allocated_picture, .resource_key = VECTOR_RESOURCE_KEY });
     }
 
     return .{
@@ -560,11 +571,10 @@ fn uploadSceneResources(
     defer allocator.free(entries);
 
     var set = snail.ResourceManifest.init(entries);
-    if (bundle.blobs.len > 0) try set.putTextAtlas(.fonts, bundle.blobs[0].atlas);
     for (bundle.blobs, 0..) |*blob, i| {
-        if (blob.hasPaintRecords()) try set.putTextPaint(snail.ResourceKey.fromId(@intCast(i + 1)), blob);
+        try set.putTextBlob(snail.ResourceManifest.textBlobResourceKeys(.fonts, sceneTextKey(i), blob), blob);
     }
-    if (bundle.picture) |picture| try set.putPathPicture(.vectors, picture);
+    if (bundle.picture) |picture| try set.putPathPicture(VECTOR_RESOURCE_KEY, picture);
     return renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set);
 }
 

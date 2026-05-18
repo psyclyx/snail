@@ -492,7 +492,7 @@ test "cpu renderer renders image-painted path picture" {
     var renderer_iface = prepared_renderer.asRenderer();
     var scene = snail.Scene.init(testing.allocator);
     defer scene.deinit();
-    try scene.addPath(.{ .picture = &picture });
+    try scene.addPath(.{ .picture = &picture, .resource_key = snail.ResourceKey.named("picture") });
 
     var resource_entries: [4]snail.ResourceManifest.Entry = undefined;
     var resources = snail.ResourceManifest.init(&resource_entries);
@@ -804,11 +804,12 @@ test "cpu renderer threaded draw matches single-threaded byte-for-byte" {
     }, .{ .paint = .{ .solid = .{ 1, 1, 1, 1 } }, .width = 1.5 }, 4, .identity);
     var picture = try builder.freeze(.{ .persistent_allocator = testing.allocator, .scratch_allocator = testing.allocator });
     defer picture.deinit();
+    const text_keys = snail.ResourceManifest.textBlobResourceKeys(.fonts, .threaded_text, &blob);
 
     var scene = snail.Scene.init(testing.allocator);
     defer scene.deinit();
-    try scene.addPath(.{ .picture = &picture });
-    try scene.addText(.{ .blob = &blob });
+    try scene.addPath(.{ .picture = &picture, .resource_key = snail.ResourceKey.named("shape") });
+    try scene.addText(.{ .blob = &blob, .resources = text_keys });
 
     const options = snail.DrawState{
         .mvp = snail.Mat4.ortho(0, @floatFromInt(width), @floatFromInt(height), 0, -1, 1),
@@ -829,7 +830,7 @@ test "cpu renderer threaded draw matches single-threaded byte-for-byte" {
         var entries: [4]snail.ResourceManifest.Entry = undefined;
         var set = snail.ResourceManifest.init(&entries);
         try set.putPathPicture(.shape, &picture);
-        try set.putTextAtlas(.fonts, &atlas);
+        try set.putTextBlob(text_keys, &blob);
         break :blk &set;
     });
     defer serial_resources.deinit();
@@ -851,7 +852,7 @@ test "cpu renderer threaded draw matches single-threaded byte-for-byte" {
         var entries: [4]snail.ResourceManifest.Entry = undefined;
         var set = snail.ResourceManifest.init(&entries);
         try set.putPathPicture(.shape, &picture);
-        try set.putTextAtlas(.fonts, &atlas);
+        try set.putTextBlob(text_keys, &blob);
         break :blk &set;
     });
     defer threaded_resources.deinit();
@@ -897,7 +898,7 @@ test "cpu renderer drawPaths batch matches drawPathPicture" {
     var renderer = batch_renderer.asRenderer();
     var scene = snail.Scene.init(testing.allocator);
     defer scene.deinit();
-    try scene.addPath(.{ .picture = &picture });
+    try scene.addPath(.{ .picture = &picture, .resource_key = snail.ResourceKey.named("shape") });
 
     var resource_entries: [4]snail.ResourceManifest.Entry = undefined;
     var resources = snail.ResourceManifest.init(&resource_entries);
@@ -956,7 +957,7 @@ test "cpu renderer applies path draw tint in prepared batches" {
     const overrides = [_]snail.Override{.{ .tint = .{ 1, 0, 0, 0.5 } }};
     var scene = snail.Scene.init(testing.allocator);
     defer scene.deinit();
-    try scene.addPath(.{ .picture = &picture, .instances = &overrides });
+    try scene.addPath(.{ .picture = &picture, .resource_key = snail.ResourceKey.named("shape"), .instances = &overrides });
 
     var renderer = cpu.asRenderer();
     var resource_entries: [4]snail.ResourceManifest.Entry = undefined;

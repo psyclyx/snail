@@ -16,6 +16,7 @@ const SnailRect = c.SnailRect;
 const SnailResourceCacheStats = c.SnailResourceCacheStats;
 const SnailResourceFootprint = c.SnailResourceFootprint;
 const SnailResourceStamp = c.SnailResourceStamp;
+const SnailTextResourceKeys = c.SnailTextResourceKeys;
 const SnailRasterOptions = c.SnailRasterOptions;
 const SnailTargetSurface = c.SnailTargetSurface;
 const SnailScriptMetrics = c.SnailScriptMetrics;
@@ -73,6 +74,21 @@ pub fn wrapResourceStamp(stamp: snail.ResourceStamp) SnailResourceStamp {
         .identity = stamp.identity,
         .layout = stamp.layout,
         .content = stamp.content,
+    };
+}
+
+pub fn wrapTextResourceKeys(keys: snail.ResourceManifest.TextBlobResourceKeys) SnailTextResourceKeys {
+    return .{
+        .atlas_key = keys.atlas.id,
+        .paint_key = if (keys.paint) |paint| paint.id else 0,
+        .has_paint_key = keys.paint != null,
+    };
+}
+
+pub fn toTextResourceKeys(keys: SnailTextResourceKeys) snail.TextResourceKeys {
+    return .{
+        .atlas = snail.ResourceKey.fromId(keys.atlas_key),
+        .paint = if (keys.has_paint_key) snail.ResourceKey.fromId(keys.paint_key) else null,
     };
 }
 

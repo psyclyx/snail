@@ -18,7 +18,13 @@ const LINEAR_RESOLVE = snail.LinearResolve{};
 const APPEND_BASE_TEXT = "ABCDEFGHIJKLMNOPQRSTUVWXY";
 const APPEND_DRAW_TEXT = "SNAP";
 const APPEND_EXTRA_TEXT = "Z";
+const SCENE_TEXT_ATLAS_KEY = snail.ResourceKey.named("backend-compare.scene-text-atlas");
+const SCENE_LATIN_TEXT_KEY = snail.ResourceKey.named("backend-compare.scene-latin-text");
+const SCENE_DEVANAGARI_TEXT_KEY = snail.ResourceKey.named("backend-compare.scene-devanagari-text");
+const SCENE_PATH_KEY = snail.ResourceKey.named("backend-compare.scene-path");
 const APPEND_RESOURCE_KEY = snail.ResourceKey.named("backend-compare.append-atlas");
+const APPEND_TEXT_KEY = snail.ResourceKey.named("backend-compare.append-text");
+const PATH_BAND_RESOURCE_KEY = snail.ResourceKey.named("backend-compare.path-band");
 const BAND_STRESS_FILL = [4]f32{ 0.58, 0.68, 0.54, 1.0 };
 
 const CompareCase = struct {
@@ -268,9 +274,15 @@ fn buildScene(allocator: std.mem.Allocator) !SceneBundle {
 
     var scene = snail.Scene.init(allocator);
     errdefer scene.deinit();
-    try scene.addPath(.{ .picture = picture });
-    try scene.addText(.{ .blob = latin_blob });
-    try scene.addText(.{ .blob = devanagari_blob });
+    try scene.addPath(.{ .picture = picture, .resource_key = SCENE_PATH_KEY });
+    try scene.addText(.{
+        .blob = latin_blob,
+        .resources = snail.ResourceManifest.textBlobResourceKeys(SCENE_TEXT_ATLAS_KEY, SCENE_LATIN_TEXT_KEY, latin_blob),
+    });
+    try scene.addText(.{
+        .blob = devanagari_blob,
+        .resources = snail.ResourceManifest.textBlobResourceKeys(SCENE_TEXT_ATLAS_KEY, SCENE_DEVANAGARI_TEXT_KEY, devanagari_blob),
+    });
 
     return .{
         .atlas = atlas,
@@ -290,13 +302,8 @@ fn uploadSceneResources(
     var entries: [8]snail.ResourceManifest.Entry = undefined;
     var set = snail.ResourceManifest.init(&entries);
     for (scene.commands.items) |command| switch (command) {
-        .text => |text| {
-            try set.putTextAtlas(snail.ResourceKey.fromId(@intCast(@intFromPtr(text.blob.atlas))), text.blob.atlas);
-            if (text.blob.hasPaintRecords()) {
-                try set.putTextPaint(snail.ResourceKey.fromId(@intCast(@intFromPtr(text.blob))), text.blob);
-            }
-        },
-        .path => |path| try set.putPathPicture(snail.ResourceKey.fromId(@intCast(@intFromPtr(path.picture))), path.picture),
+        .text => |text| try set.putTextBlob(text.resources, text.blob),
+        .path => |path| try set.putPathPicture(path.resource_key, path.picture),
     };
     return renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set);
 }
@@ -942,7 +949,7 @@ fn buildPathBandStressScene(allocator: std.mem.Allocator) !PathBandStressBundle 
 
     var scene = snail.Scene.init(allocator);
     errdefer scene.deinit();
-    try scene.addPath(.{ .picture = picture, .instances = overrides });
+    try scene.addPath(.{ .picture = picture, .resource_key = PATH_BAND_RESOURCE_KEY, .instances = overrides });
 
     return .{
         .picture = picture,
@@ -969,7 +976,10 @@ fn buildAppendScene(allocator: std.mem.Allocator) !AppendSceneBundle {
 
     var scene = snail.Scene.init(allocator);
     errdefer scene.deinit();
-    try scene.addText(.{ .blob = blob });
+    try scene.addText(.{
+        .blob = blob,
+        .resources = snail.ResourceManifest.textBlobResourceKeys(APPEND_RESOURCE_KEY, APPEND_TEXT_KEY, blob),
+    });
 
     return .{
         .atlas = atlas,
@@ -1013,7 +1023,10 @@ fn buildAppendedPagePreparedScene(
 
     var scene = snail.Scene.init(allocator);
     errdefer scene.deinit();
-    try scene.addText(.{ .blob = blob });
+    try scene.addText(.{
+        .blob = blob,
+        .resources = snail.ResourceManifest.textBlobResourceKeys(APPEND_RESOURCE_KEY, APPEND_TEXT_KEY, blob),
+    });
 
     const prepared_scene = try snail.PreparedScene.initOwned(allocator, prepared, &scene);
     return .{ .blob = blob, .scene = scene, .prepared_scene = prepared_scene };

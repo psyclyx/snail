@@ -325,17 +325,19 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
             text_blob = try builder.finish();
             path_picture = try demo_banner_scene.buildPathPicture(allocator, layout, &scene_assets, dec_rects[0..text_result.decoration_count]);
             uploaded_size = size_key;
-            scene.reset();
-            if (path_picture) |*picture| try scene.addPath(.{ .picture = picture });
-            if (text_blob) |*blob| try scene.addText(.{ .blob = blob });
 
             var resource_entries: [8]snail.ResourceManifest.Entry = undefined;
             var resources = snail.ResourceManifest.init(&resource_entries);
             if (path_picture) |*picture| try resources.putPathPicture(.banner_paths, picture);
-            if (text_blob) |*blob| {
-                try resources.putTextAtlas(.banner_fonts, blob.atlas);
-                if (blob.hasPaintRecords()) try resources.putTextPaint(.banner_text_paint, blob);
-            }
+            const text_keys = if (text_blob) |*blob| keys: {
+                const keys = snail.ResourceManifest.textBlobResourceKeys(.banner_fonts, .banner_text, blob);
+                try resources.putTextBlob(keys, blob);
+                break :keys keys;
+            } else null;
+
+            scene.reset();
+            if (path_picture) |*picture| try scene.addPath(.{ .picture = picture, .resource_key = snail.ResourceKey.named("banner_paths") });
+            if (text_blob) |*blob| try scene.addText(.{ .blob = blob, .resources = text_keys.? });
             var renderer = active.renderer();
             prepared = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &resources);
         }

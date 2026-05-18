@@ -60,9 +60,9 @@ pub fn main() !void {
     var draw_buf: []u32 = &.{};
     defer if (draw_buf.len > 0) allocator.free(draw_buf);
 
-    var rough_wall_text = try SurfaceTextDraw.init(allocator, &scene_resources, world_passes.rough_wall.prepared.text);
+    var rough_wall_text = try SurfaceTextDraw.init(allocator, &scene_resources, world_passes.rough_wall.prepared.text, world_passes.rough_wall.prepared.text_resources);
     defer rough_wall_text.deinit();
-    var center_panel_text = try SurfaceTextDraw.init(allocator, &scene_resources, world_passes.center_panel.prepared.text);
+    var center_panel_text = try SurfaceTextDraw.init(allocator, &scene_resources, world_passes.center_panel.prepared.text, world_passes.center_panel.prepared.text_resources);
     defer center_panel_text.deinit();
     var hud_window_size = initial_window;
 
@@ -193,10 +193,9 @@ pub fn main() !void {
     }
 }
 
-fn addPassResources(set: *snail.ResourceManifest, comptime name: []const u8, pass: *const PreparedPass) !void {
-    try set.putTextAtlas(.game_fonts, pass.text.atlas);
-    if (pass.text.hasPaintRecords()) try set.putTextPaint(snail.ResourceKey.named(name ++ ".text_paint"), pass.text);
-    if (pass.picture) |picture| try set.putPathPicture(snail.ResourceKey.named(name ++ ".path"), picture);
+fn addPassResources(set: *snail.ResourceManifest, pass: *const PreparedPass) !void {
+    try set.putTextBlob(pass.text_resources, pass.text);
+    if (pass.picture) |picture| try set.putPathPicture(pass.path_key.?, picture);
 }
 
 fn buildSceneResourceManifest(
@@ -205,12 +204,12 @@ fn buildSceneResourceManifest(
     entries: []snail.ResourceManifest.Entry,
 ) !snail.ResourceManifest {
     var set = snail.ResourceManifest.init(entries);
-    try addPassResources(&set, "world.rough_wall", &world_passes.rough_wall.prepared);
-    try addPassResources(&set, "world.center_panel", &world_passes.center_panel.prepared);
-    try addPassResources(&set, "world.glass", &world_passes.glass.prepared);
-    try addPassResources(&set, "hud.plain", &hud_passes.plain);
-    try addPassResources(&set, "hud.translucent", &hud_passes.translucent);
-    try addPassResources(&set, "hud.solid", &hud_passes.solid);
+    try addPassResources(&set, &world_passes.rough_wall.prepared);
+    try addPassResources(&set, &world_passes.center_panel.prepared);
+    try addPassResources(&set, &world_passes.glass.prepared);
+    try addPassResources(&set, &hud_passes.plain);
+    try addPassResources(&set, &hud_passes.translucent);
+    try addPassResources(&set, &hud_passes.solid);
     return set;
 }
 

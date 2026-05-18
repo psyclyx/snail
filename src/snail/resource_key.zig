@@ -31,12 +31,23 @@ pub const ResourceStamp = struct {
     }
 };
 
+pub const TextResourceKeys = struct {
+    atlas: ResourceKey,
+    paint: ?ResourceKey = null,
+};
+
 pub fn hashBytes(bytes: []const u8) u64 {
     return std.hash.Wyhash.hash(0x534e41494c5f4b45, bytes);
 }
 
 pub fn mix64(h: u64, v: u64) u64 {
     return h ^ (v +% 0x9e3779b97f4a7c15 +% (h << 6) +% (h >> 2));
+}
+
+pub fn derived(parent: ResourceKey, label: []const u8) ResourceKey {
+    var h = hashBytes(label);
+    h = mix64(h, parent.id);
+    return .{ .id = h };
 }
 
 pub fn resourceKey(key_value: anytype) ResourceKey {
@@ -52,19 +63,13 @@ pub fn resourceKey(key_value: anytype) ResourceKey {
                 .array => |array| {
                     if (array.child == u8) {
                         const slice: []const u8 = key_value;
-                        break :blk ResourceKey.fromName(std.mem.trimRight(u8, slice, "\x00"));
+                        break :blk ResourceKey.fromName(std.mem.trimEnd(u8, slice, "\x00"));
                     }
                 },
                 else => {},
             }
-            break :blk ResourceKey.fromId(@intCast(@intFromPtr(key_value)));
+            @compileError("resource key pointers must point to u8 strings; use ResourceKey.fromId for explicit numeric keys");
         },
-        else => @compileError("resource keys must be enum literals, enums, strings, integers, or pointers"),
+        else => @compileError("resource keys must be enum literals, enums, strings, or integers"),
     };
-}
-
-pub fn pointerResourceKey(comptime prefix: []const u8, ptr: anytype) ResourceKey {
-    var h = hashBytes(prefix);
-    h = mix64(h, @intCast(@intFromPtr(ptr)));
-    return .{ .id = h, .name = prefix };
 }

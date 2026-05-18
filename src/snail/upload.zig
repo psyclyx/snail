@@ -261,7 +261,7 @@ pub fn uploadPreparedResourceEntries(renderer: anytype, entries: []const Resourc
                     .text_atlas = text.atlas,
                     .atlas = undefined,
                     .owns_wrapper = true,
-                    .stamp = stamp_mod.textAtlasStamp(text.atlas),
+                    .stamp = stamp_mod.resourceEntryStamp(entry),
                 };
                 prepared.atlases[atlas_i].wrapper = text.atlas.uploadAtlas();
                 prepared.atlases[atlas_i].atlas = &prepared.atlases[atlas_i].wrapper;
@@ -273,7 +273,7 @@ pub fn uploadPreparedResourceEntries(renderer: anytype, entries: []const Resourc
                 prepared.layer_infos[layer_info_i] = .{
                     .key = text.key,
                     .text_blob = text.blob,
-                    .stamp = stamp_mod.textPaintStamp(text.blob),
+                    .stamp = stamp_mod.resourceEntryStamp(entry),
                 };
                 upload_layer_infos[layer_info_i] = stamp_mod.textPaintLayerInfoUpload(text.blob);
                 layer_info_i += 1;
@@ -284,7 +284,7 @@ pub fn uploadPreparedResourceEntries(renderer: anytype, entries: []const Resourc
                     .kind = .path,
                     .picture = path.picture,
                     .atlas = &path.picture.atlas,
-                    .stamp = stamp_mod.pathPictureStamp(path.picture),
+                    .stamp = stamp_mod.resourceEntryStamp(entry),
                 };
                 upload_atlases[atlas_i] = prepared.atlases[atlas_i].atlas;
                 atlas_capacity_modes[atlas_i] = path.atlas_capacity;
@@ -294,7 +294,7 @@ pub fn uploadPreparedResourceEntries(renderer: anytype, entries: []const Resourc
                 prepared.images[image_i] = .{
                     .key = image.key,
                     .image = image.image,
-                    .stamp = stamp_mod.imageStamp(image.image),
+                    .stamp = stamp_mod.resourceEntryStamp(entry),
                 };
                 upload_images[image_i] = image.image;
                 image_i += 1;

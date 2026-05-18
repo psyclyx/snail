@@ -11,10 +11,13 @@ const SNAIL_ERR_INVALID_ARGUMENT = common.SNAIL_ERR_INVALID_ARGUMENT;
 const SNAIL_ERR_DRAW_FAILED = common.SNAIL_ERR_DRAW_FAILED;
 const SnailTransform2D = common.SnailTransform2D;
 const SnailResourceKey = common.SnailResourceKey;
+const SnailTextResourceKeys = common.SnailTextResourceKeys;
 const SnailResourceStamp = common.SnailResourceStamp;
 const SnailResourceFootprint = common.SnailResourceFootprint;
 const wrapResourceStamp = common.wrapResourceStamp;
+const wrapTextResourceKeys = common.wrapTextResourceKeys;
 const toTransform = common.toTransform;
+const toTextResourceKeys = common.toTextResourceKeys;
 const fromResourceFootprint = common.fromResourceFootprint;
 const toResourceCapacityMode = common.toResourceCapacityMode;
 const reservedResourceCapacityMode = common.reservedResourceCapacityMode;
@@ -83,8 +86,17 @@ pub export fn snail_resource_manifest_put_text_atlas_reserved(set: *ResourceMani
     return SNAIL_OK;
 }
 
-pub export fn snail_resource_manifest_put_text_paint(set: *ResourceManifestImpl, key: SnailResourceKey, blob: *const TextBlobImpl) c_int {
-    set.inner.putTextPaint(snail.ResourceKey.fromId(key), &blob.inner) catch |err| return mapError(err);
+pub export fn snail_text_blob_resource_keys(atlas_key: SnailResourceKey, blob_key: SnailResourceKey, blob: *const TextBlobImpl, out: *SnailTextResourceKeys) c_int {
+    out.* = wrapTextResourceKeys(snail.ResourceManifest.textBlobResourceKeys(
+        snail.ResourceKey.fromId(atlas_key),
+        snail.ResourceKey.fromId(blob_key),
+        &blob.inner,
+    ));
+    return SNAIL_OK;
+}
+
+pub export fn snail_resource_manifest_put_text_blob(set: *ResourceManifestImpl, resources: SnailTextResourceKeys, blob: *const TextBlobImpl) c_int {
+    set.inner.putTextBlob(toTextResourceKeys(resources), &blob.inner) catch |err| return mapError(err);
     return SNAIL_OK;
 }
 
@@ -306,8 +318,11 @@ pub export fn snail_text_coverage_records_words(records: *const TextCoverageReco
     return records.words.ptr;
 }
 
-pub export fn snail_text_coverage_records_build_local(records: *TextCoverageRecordsImpl, prepared: *const PreparedResourcesImpl, blob: *const TextBlobImpl, transform: SnailTransform2D) c_int {
-    records.inner.buildLocal(&prepared.inner, &blob.inner, .{ .transform = toTransform(transform) }) catch |err| return mapError(err);
+pub export fn snail_text_coverage_records_build_local(records: *TextCoverageRecordsImpl, prepared: *const PreparedResourcesImpl, blob: *const TextBlobImpl, resources: SnailTextResourceKeys, transform: SnailTransform2D) c_int {
+    records.inner.buildLocal(&prepared.inner, &blob.inner, .{
+        .resources = toTextResourceKeys(resources),
+        .transform = toTransform(transform),
+    }) catch |err| return mapError(err);
     return SNAIL_OK;
 }
 

@@ -183,6 +183,12 @@ pub const SnailDrawState = extern struct {
 
 pub const SnailResourceKey = u64;
 
+pub const SnailTextResourceKeys = extern struct {
+    atlas_key: SnailResourceKey = 0,
+    paint_key: SnailResourceKey = 0,
+    has_paint_key: bool = false,
+};
+
 pub const SnailResourceStamp = extern struct {
     identity: u64 = 0,
     layout: u64 = 0,

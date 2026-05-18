@@ -175,13 +175,14 @@ fn addSceneToBuffers(
     for (scene.commands.items) |command| {
         switch (command) {
             .text => |draw| {
-                var view = try prepared.textAtlasView(draw.blob.atlas);
+                var view = try prepared.textAtlasView(draw.resources.atlas);
                 const segment_key, const segment_stamp = if (draw.blob.hasPaintRecords()) blk: {
-                    const paint_view = try prepared.textPaintView(draw.blob);
+                    const paint_key = draw.resources.paint orelse return error.MissingPreparedResource;
+                    const paint_view = try prepared.textPaintView(paint_key);
                     view.paint_info_row_base = paint_view.info_row_base;
-                    break :blk .{ try prepared.textPaintKey(draw.blob), try prepared.textPaintStamp(draw.blob) };
+                    break :blk .{ paint_key, try prepared.textPaintStamp(paint_key) };
                 } else blk: {
-                    break :blk .{ try prepared.textAtlasKey(draw.blob.atlas), try prepared.textStamp(draw.blob.atlas) };
+                    break :blk .{ draw.resources.atlas, try prepared.textStamp(draw.resources.atlas) };
                 };
                 const glyph_range = draw.glyphs.resolve(draw.blob.glyphCount());
                 for (draw.instances, 0..) |_, override_index| {
@@ -209,7 +210,7 @@ fn addSceneToBuffers(
                 }
             },
             .path => |draw| {
-                const view = try prepared.pathAtlasView(draw.picture);
+                const view = try prepared.pathAtlasView(draw.resource_key);
                 const range = draw.shapes.resolve(draw.picture.shapes.len);
                 for (draw.instances, 0..) |_, override_index| {
                     var shape_start = range.start;
@@ -228,8 +229,8 @@ fn addSceneToBuffers(
                             .offset = start,
                             .len = batch.slice().len,
                             .texture_layer_base = result.layer_window_base,
-                            .key = try prepared.pathPictureKey(draw.picture),
-                            .resource_stamp = try prepared.pathStamp(draw.picture),
+                            .key = draw.resource_key,
+                            .resource_stamp = try prepared.pathStamp(draw.resource_key),
                         });
                         if (result.completed) break;
                     }

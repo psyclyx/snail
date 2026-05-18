@@ -118,6 +118,7 @@ pub const VulkanRenderer = render.VulkanRenderer;
 
 pub const Range = scene.Range;
 pub const Override = scene.Override;
+pub const TextResourceKeys = scene.TextResourceKeys;
 pub const PathDraw = scene.PathDraw;
 pub const TextDraw = scene.TextDraw;
 pub const Scene = scene.Scene;

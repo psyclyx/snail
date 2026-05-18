@@ -12,6 +12,7 @@ const ResourceFootprint = footprint_types.ResourceFootprint;
 const ResourceKey = resource_key_mod.ResourceKey;
 const TextAtlas = text_mod.TextAtlas;
 const TextBlob = text_mod.TextBlob;
+const derivedResourceKey = resource_key_mod.derived;
 const resourceKey = resource_key_mod.resourceKey;
 
 pub const ResourceManifest = struct {
@@ -48,6 +49,8 @@ pub const ResourceManifest = struct {
         key: ResourceKey,
         image: *const Image,
     };
+
+    pub const TextBlobResourceKeys = resource_key_mod.TextResourceKeys;
 
     pub const TextAtlasOptions = struct {
         /// `.growable` gives Snail one heuristic growth window. Use
@@ -86,11 +89,24 @@ pub const ResourceManifest = struct {
         } });
     }
 
-    pub fn putTextPaint(self: *ResourceManifest, key_value: anytype, blob: *const TextBlob) !void {
+    fn putTextBlobPaint(self: *ResourceManifest, key_value: anytype, blob: *const TextBlob) !void {
         try self.put(.{ .text_paint = .{
             .key = resourceKey(key_value),
             .blob = blob,
         } });
+    }
+
+    pub fn textBlobResourceKeys(atlas_key_value: anytype, blob_key_value: anytype, blob: *const TextBlob) TextBlobResourceKeys {
+        const blob_key = resourceKey(blob_key_value);
+        return .{
+            .atlas = resourceKey(atlas_key_value),
+            .paint = if (blob.hasPaintRecords()) derivedResourceKey(blob_key, "text_paint") else null,
+        };
+    }
+
+    pub fn putTextBlob(self: *ResourceManifest, keys: TextBlobResourceKeys, blob: *const TextBlob) !void {
+        try self.putTextAtlas(keys.atlas, blob.atlas);
+        if (keys.paint) |paint_key| try self.putTextBlobPaint(paint_key, blob);
     }
 
     pub fn putPathPicture(self: *ResourceManifest, key_value: anytype, picture: *const PathPicture) !void {

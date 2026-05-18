@@ -2,11 +2,14 @@ const std = @import("std");
 const draw_mod = @import("draw.zig");
 const path_mod = @import("path.zig");
 const range_mod = @import("range.zig");
+const resource_key_mod = @import("resource_key.zig");
 const text_mod = @import("text.zig");
 const vec = @import("math/vec.zig");
 
 const Transform2D = vec.Transform2D;
 const PathPicture = path_mod.PathPicture;
+const ResourceKey = resource_key_mod.ResourceKey;
+pub const TextResourceKeys = resource_key_mod.TextResourceKeys;
 const TextBlob = text_mod.TextBlob;
 
 pub const Range = range_mod.Range;
@@ -27,6 +30,7 @@ const identity_overrides = [_]Override{.{}};
 /// it (same lifetime contract as `picture`).
 pub const PathDraw = struct {
     picture: *const PathPicture,
+    resource_key: ResourceKey,
     shapes: Range = .{},
     instances: []const Override = &identity_overrides,
 };
@@ -34,6 +38,7 @@ pub const PathDraw = struct {
 /// A draw of a `TextBlob`: see `PathDraw` for the instance/lifetime model.
 pub const TextDraw = struct {
     blob: *const TextBlob,
+    resources: TextResourceKeys,
     glyphs: Range = .{},
     instances: []const Override = &identity_overrides,
 };

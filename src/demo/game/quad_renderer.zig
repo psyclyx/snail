@@ -667,12 +667,17 @@ pub const SurfaceTextDraw = struct {
     record_buffer: gl.GLuint = 0,
     record_texture: gl.GLuint = 0,
 
-    pub fn init(allocator: std.mem.Allocator, prepared: *const snail.PreparedResources, blob: *const snail.TextBlob) !SurfaceTextDraw {
+    pub fn init(
+        allocator: std.mem.Allocator,
+        prepared: *const snail.PreparedResources,
+        blob: *const snail.TextBlob,
+        resources: snail.TextResourceKeys,
+    ) !SurfaceTextDraw {
         const coverage_words = try allocator.alloc(u32, snail.coverage.TextCoverageRecords.wordCapacityForBlob(blob));
         errdefer allocator.free(coverage_words);
 
         var coverage = snail.coverage.TextCoverageRecords.init(coverage_words);
-        try coverage.buildLocal(prepared, blob, .{});
+        try coverage.buildLocal(prepared, blob, .{ .resources = resources });
 
         var self = SurfaceTextDraw{
             .allocator = allocator,

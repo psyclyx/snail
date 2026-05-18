@@ -24,12 +24,12 @@ const vulkan_pipeline = if (build_options.enable_vulkan) @import("render/backend
 
 const BackendKind = backend_kind_mod.BackendKind;
 const Transform2D = vec.Transform2D;
-const TextAtlas = text_mod.TextAtlas;
 const TextBlob = text_mod.TextBlob;
 const ResourceStamp = resource_key_mod.ResourceStamp;
 const PreparedResources = prepared_mod.PreparedResources;
 const Override = scene_mod.Override;
 const TextDraw = scene_mod.TextDraw;
+const TextResourceKeys = scene_mod.TextResourceKeys;
 const TextBatch = text_mod.TextBatch;
 
 const TEXT_WORDS_PER_GLYPH = text_mod.TEXT_WORDS_PER_GLYPH;
@@ -140,6 +140,7 @@ pub const Program = union(BackendKind) {
 /// Resolve options used when preparing text coverage geometry for a custom
 /// material shader.
 pub const TextCoverageOptions = struct {
+    resources: TextResourceKeys,
     transform: Transform2D = .identity,
 };
 
@@ -150,9 +151,8 @@ pub const TextCoverageOptions = struct {
 pub const TextCoverageRecords = struct {
     buffer: []u32,
     len: usize = 0,
-    atlas: ?*const TextAtlas = null,
+    resources: ?TextResourceKeys = null,
     atlas_stamp: ResourceStamp = .{},
-    paint_blob: ?*const TextBlob = null,
     paint_stamp: ResourceStamp = .{},
     layer_window_base: u32 = 0,
 
@@ -166,9 +166,8 @@ pub const TextCoverageRecords = struct {
 
     pub fn reset(self: *TextCoverageRecords) void {
         self.len = 0;
-        self.atlas = null;
+        self.resources = null;
         self.atlas_stamp = .{};
-        self.paint_blob = null;
         self.paint_stamp = .{};
         self.layer_window_base = 0;
     }
@@ -192,15 +191,16 @@ pub const TextCoverageRecords = struct {
         options: TextCoverageOptions,
     ) !void {
         self.reset();
-        var atlas_view = try prepared.textAtlasView(blob.atlas);
+        var atlas_view = try prepared.textAtlasView(options.resources.atlas);
         if (blob.hasPaintRecords()) {
-            const paint_view = try prepared.textPaintView(blob);
+            const paint_key = options.resources.paint orelse return error.MissingPreparedResource;
+            const paint_view = try prepared.textPaintView(paint_key);
             atlas_view.paint_info_row_base = paint_view.info_row_base;
         }
 
         var batch = TextBatch.init(self.buffer);
         const overrides = [_]Override{.{ .transform = options.transform }};
-        const draw = TextDraw{ .blob = blob, .instances = &overrides };
+        const draw = TextDraw{ .blob = blob, .resources = options.resources, .instances = &overrides };
         const result = try batch.addDraw(atlas_view, draw, 0, 0);
         self.layer_window_base = result.layer_window_base;
         if (!result.completed) {
@@ -208,24 +208,24 @@ pub const TextCoverageRecords = struct {
             return error.DrawListFull;
         }
 
-        const stamp = try prepared.textStamp(blob.atlas);
+        const stamp = try prepared.textStamp(options.resources.atlas);
         self.len = batch.slice().len;
-        self.atlas = blob.atlas;
+        self.resources = options.resources;
         self.atlas_stamp = stamp;
         if (blob.hasPaintRecords()) {
-            self.paint_blob = blob;
-            self.paint_stamp = try prepared.textPaintStamp(blob);
+            const paint_key = options.resources.paint orelse return error.MissingPreparedResource;
+            self.paint_stamp = try prepared.textPaintStamp(paint_key);
         }
     }
 
     pub fn validFor(self: *const TextCoverageRecords, prepared: *const PreparedResources) bool {
-        const atlas = self.atlas orelse return false;
-        const stamp = prepared.textStamp(atlas) catch return false;
+        const resources = self.resources orelse return false;
+        const stamp = prepared.textStamp(resources.atlas) catch return false;
         if (!self.atlas_stamp.eql(stamp)) return false;
-        const atlas_view = prepared.textAtlasView(atlas) catch return false;
+        const atlas_view = prepared.textAtlasView(resources.atlas) catch return false;
         if (!self.layerWindowValidFor(atlas_view)) return false;
-        if (self.paint_blob) |blob| {
-            const paint_stamp = prepared.textPaintStamp(blob) catch return false;
+        if (resources.paint) |paint_key| {
+            const paint_stamp = prepared.textPaintStamp(paint_key) catch return false;
             if (!self.paint_stamp.eql(paint_stamp)) return false;
         }
         return true;

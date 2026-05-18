@@ -95,9 +95,9 @@ test "path picture stamp tracks shape content" {
     var picture = try testRectPicture(allocator, 0);
     defer picture.deinit();
 
-    const before = stamp_mod.pathPictureStamp(&picture);
+    const before = stamp_mod.pathPictureStamp(ResourceKey.named("picture"), &picture);
     picture.shapes[0].transform.tx += 3.0;
-    const after = stamp_mod.pathPictureStamp(&picture);
+    const after = stamp_mod.pathPictureStamp(ResourceKey.named("picture"), &picture);
 
     try std.testing.expect(!before.eql(after));
 }
@@ -120,9 +120,9 @@ test "path picture stamp tracks image paint records" {
 
     const records = picture.atlas.paint_image_records orelse return error.TestExpectedOptional;
     const record = records[0] orelse return error.TestExpectedOptional;
-    const before = stamp_mod.pathPictureStamp(&picture);
+    const before = stamp_mod.pathPictureStamp(ResourceKey.named("picture"), &picture);
     records[0] = .{ .image = record.image, .texel_offset = record.texel_offset + 1 };
-    const after = stamp_mod.pathPictureStamp(&picture);
+    const after = stamp_mod.pathPictureStamp(ResourceKey.named("picture"), &picture);
 
     try std.testing.expect(!before.eql(after));
 }
@@ -498,17 +498,17 @@ test "ResourceManifest uploads explicit text paint resources" {
     defer blob.deinit();
     try std.testing.expect(blob.hasPaintRecords());
 
-    var scene = Scene.init(allocator);
-    defer scene.deinit();
-    try scene.addText(.{ .blob = &blob });
-
     var set_entries: [2]ResourceManifest.Entry = undefined;
     var set = ResourceManifest.init(&set_entries);
-    try set.putTextAtlas(.fonts, &atlas);
-    try set.putTextPaint(.paint, &blob);
+    const text_keys = ResourceManifest.textBlobResourceKeys(.fonts, .headline, &blob);
+    try set.putTextBlob(text_keys, &blob);
     try std.testing.expectEqual(@as(usize, 2), set.slice().len);
     try std.testing.expect(std.meta.activeTag(set.slice()[0]) == .text_atlas);
     try std.testing.expect(std.meta.activeTag(set.slice()[1]) == .text_paint);
+
+    var scene = Scene.init(allocator);
+    defer scene.deinit();
+    try scene.addText(.{ .blob = &blob, .resources = text_keys });
 
     const footprint = try set.estimateUploadFootprint();
     try std.testing.expectEqual(blob.paint_layer_info_data.?.len * @sizeOf(f32), footprint.layer_info_bytes_used);
@@ -535,7 +535,7 @@ test "ResourceManifest uploads explicit text paint resources" {
     try draw.addScene(&prepared, &scene);
 
     try std.testing.expectEqual(@as(usize, 1), draw.slice().segments.len);
-    try std.testing.expect(draw.slice().segments[0].key.eql(ResourceKey.named("paint")));
+    try std.testing.expect(draw.slice().segments[0].key.eql(text_keys.paint.?));
     const decoded = vertex_mod.decodeInstance(draw.slice().words);
     try std.testing.expectEqual(@as(u32, 0xFF), decoded.glyph[1] >> 24);
     try std.testing.expectEqual(@as(u32, @intFromEnum(vertex_mod.SpecialGlyphKind.path)), (decoded.glyph[1] >> 16) & 0xFF);
@@ -563,14 +563,9 @@ test "ResourceManifest footprint counts text image paint payloads" {
     var blob = try builder.finish();
     defer blob.deinit();
 
-    var scene = Scene.init(allocator);
-    defer scene.deinit();
-    try scene.addText(.{ .blob = &blob });
-
     var set_entries: [2]ResourceManifest.Entry = undefined;
     var set = ResourceManifest.init(&set_entries);
-    try set.putTextAtlas(.fonts, &atlas);
-    try set.putTextPaint(.paint, &blob);
+    try set.putTextBlob(ResourceManifest.textBlobResourceKeys(.fonts, .image_text, &blob), &blob);
     const footprint = try set.estimateUploadFootprint();
     try std.testing.expectEqual(image.pixelSlice().len, footprint.image_bytes_used);
     try std.testing.expect(footprint.image_bytes_allocated >= footprint.image_bytes_used);
@@ -648,10 +643,16 @@ test "DrawList estimate upper-bounds ranged text draw output" {
     };
     defer blob.deinit();
 
+    var set_entries: [1]ResourceManifest.Entry = undefined;
+    var set = ResourceManifest.init(&set_entries);
+    const text_keys = ResourceManifest.textBlobResourceKeys(.fonts, .glyph_subset_text, &blob);
+    try set.putTextBlob(text_keys, &blob);
+
     var scene = Scene.init(allocator);
     defer scene.deinit();
     try scene.addText(.{
         .blob = &blob,
+        .resources = text_keys,
         .glyphs = .{ .start = selected_glyph_index, .count = 1 },
     });
 
@@ -664,9 +665,6 @@ test "DrawList estimate upper-bounds ranged text draw output" {
     var renderer = cpu.asRenderer();
     defer renderer.deinit();
 
-    var set_entries: [1]ResourceManifest.Entry = undefined;
-    var set = ResourceManifest.init(&set_entries);
-    try set.putTextAtlas(.fonts, &atlas);
     var prepared = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set);
     defer prepared.deinit();
 
@@ -722,7 +720,8 @@ test "replacing path-picture key does not invalidate unrelated text coverage rec
 
     var set_a_entries: [4]ResourceManifest.Entry = undefined;
     var set_a = ResourceManifest.init(&set_a_entries);
-    try set_a.putTextAtlas(.fonts, &atlas);
+    const text_keys = ResourceManifest.textBlobResourceKeys(.fonts, .coverage_text, &blob);
+    try set_a.putTextBlob(text_keys, &blob);
     try set_a.putPathPicture(.hud_panel, &picture_a);
     var prepared_a = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set_a);
     defer prepared_a.deinit();
@@ -731,13 +730,13 @@ test "replacing path-picture key does not invalidate unrelated text coverage rec
     const coverage_words = try allocator.alloc(u32, TextCoverageRecords.wordCapacityForBlob(&blob));
     defer allocator.free(coverage_words);
     var records = TextCoverageRecords.init(coverage_words);
-    try records.buildLocal(&prepared_a, &blob, .{});
+    try records.buildLocal(&prepared_a, &blob, .{ .resources = text_keys });
     try std.testing.expect(records.validFor(&prepared_a));
     try std.testing.expectEqual(@as(u32, texture_layers.WINDOW_SIZE), records.layerWindowBase());
 
     var set_b_entries: [4]ResourceManifest.Entry = undefined;
     var set_b = ResourceManifest.init(&set_b_entries);
-    try set_b.putTextAtlas(.fonts, &atlas);
+    try set_b.putTextBlob(text_keys, &blob);
     try set_b.putPathPicture(.hud_panel, &picture_b);
     var prepared_b = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set_b);
     defer prepared_b.deinit();
@@ -768,7 +767,7 @@ test "draw rejects stale records when a resource key is replaced" {
 
     var scene = Scene.init(allocator);
     defer scene.deinit();
-    try scene.addPath(.{ .picture = &picture_a });
+    try scene.addPath(.{ .picture = &picture_a, .resource_key = ResourceKey.named("hud_panel") });
 
     var set_a_entries: [2]ResourceManifest.Entry = undefined;
     var set_a = ResourceManifest.init(&set_a_entries);
@@ -936,8 +935,8 @@ test "resource upload plan accounts for image array rebuilds" {
     const key_small = ResourceKey.named("small");
     const key_grow = ResourceKey.named("grow");
     var current_images = [_]PreparedResources.PreparedImageResource{
-        .{ .key = key_small, .image = &image_small, .stamp = stamp_mod.imageStamp(&image_small) },
-        .{ .key = key_grow, .image = &image_old, .stamp = stamp_mod.imageStamp(&image_old) },
+        .{ .key = key_small, .image = &image_small, .stamp = stamp_mod.imageStamp(key_small, &image_small) },
+        .{ .key = key_grow, .image = &image_old, .stamp = stamp_mod.imageStamp(key_grow, &image_old) },
     };
     const current = PreparedResources{
         .allocator = allocator,
@@ -1084,7 +1083,7 @@ test "CPU draw uses prepared resource views" {
 
     var scene = Scene.init(allocator);
     defer scene.deinit();
-    try scene.addPath(.{ .picture = &picture });
+    try scene.addPath(.{ .picture = &picture, .resource_key = ResourceKey.named("panel") });
 
     var set_entries: [2]ResourceManifest.Entry = undefined;
     var set = ResourceManifest.init(&set_entries);

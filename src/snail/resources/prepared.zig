@@ -125,29 +125,29 @@ pub const PreparedResources = struct {
         return renderer.coverageBackend(self);
     }
 
-    fn textAtlasEntry(self: *const PreparedResources, atlas: *const TextAtlas) ?*const PreparedAtlasResource {
+    fn textAtlasEntry(self: *const PreparedResources, key: ResourceKey) ?*const PreparedAtlasResource {
         for (self.atlases) |*entry| {
-            if (entry.kind == .text and entry.text_atlas == atlas) return entry;
+            if (entry.kind == .text and entry.key.eql(key)) return entry;
         }
         return null;
     }
 
-    fn textPaintEntry(self: *const PreparedResources, blob: *const TextBlob) ?*const PreparedLayerInfoResource {
+    fn textPaintEntry(self: *const PreparedResources, key: ResourceKey) ?*const PreparedLayerInfoResource {
         for (self.layer_infos) |*entry| {
-            if (entry.text_blob == blob) return entry;
+            if (entry.key.eql(key)) return entry;
         }
         return null;
     }
 
-    fn pathPictureEntry(self: *const PreparedResources, picture: *const PathPicture) ?*const PreparedAtlasResource {
+    fn pathPictureEntry(self: *const PreparedResources, key: ResourceKey) ?*const PreparedAtlasResource {
         for (self.atlases) |*entry| {
-            if (entry.kind == .path and entry.picture == picture) return entry;
+            if (entry.kind == .path and entry.key.eql(key)) return entry;
         }
         return null;
     }
 
-    pub fn textAtlasView(self: *const PreparedResources, atlas: *const TextAtlas) !PreparedTextAtlasView {
-        const entry = self.textAtlasEntry(atlas) orelse return error.MissingPreparedResource;
+    pub fn textAtlasView(self: *const PreparedResources, key_value: anytype) !PreparedTextAtlasView {
+        const entry = self.textAtlasEntry(resourceKey(key_value)) orelse return error.MissingPreparedResource;
         return .{
             .layer_base = entry.view.layer_base,
             .page_layers = entry.view.page_layers,
@@ -155,38 +155,26 @@ pub const PreparedResources = struct {
         };
     }
 
-    pub fn textAtlasKey(self: *const PreparedResources, atlas: *const TextAtlas) !ResourceKey {
-        return (self.textAtlasEntry(atlas) orelse return error.MissingPreparedResource).key;
-    }
-
-    pub fn textPaintView(self: *const PreparedResources, blob: *const TextBlob) !PreparedLayerInfoView {
-        const entry = self.textPaintEntry(blob) orelse return error.MissingPreparedResource;
+    pub fn textPaintView(self: *const PreparedResources, key_value: anytype) !PreparedLayerInfoView {
+        const entry = self.textPaintEntry(resourceKey(key_value)) orelse return error.MissingPreparedResource;
         return entry.view;
     }
 
-    pub fn textPaintKey(self: *const PreparedResources, blob: *const TextBlob) !ResourceKey {
-        return (self.textPaintEntry(blob) orelse return error.MissingPreparedResource).key;
-    }
-
-    pub fn pathAtlasView(self: *const PreparedResources, picture: *const PathPicture) !PreparedAtlasView {
-        const entry = self.pathPictureEntry(picture) orelse return error.MissingPreparedResource;
+    pub fn pathAtlasView(self: *const PreparedResources, key_value: anytype) !PreparedAtlasView {
+        const entry = self.pathPictureEntry(resourceKey(key_value)) orelse return error.MissingPreparedResource;
         return entry.view;
     }
 
-    pub fn pathPictureKey(self: *const PreparedResources, picture: *const PathPicture) !ResourceKey {
-        return (self.pathPictureEntry(picture) orelse return error.MissingPreparedResource).key;
+    pub fn textStamp(self: *const PreparedResources, key_value: anytype) !ResourceStamp {
+        return (self.textAtlasEntry(resourceKey(key_value)) orelse return error.MissingPreparedResource).stamp;
     }
 
-    pub fn textStamp(self: *const PreparedResources, atlas: *const TextAtlas) !ResourceStamp {
-        return (self.textAtlasEntry(atlas) orelse return error.MissingPreparedResource).stamp;
+    pub fn textPaintStamp(self: *const PreparedResources, key_value: anytype) !ResourceStamp {
+        return (self.textPaintEntry(resourceKey(key_value)) orelse return error.MissingPreparedResource).stamp;
     }
 
-    pub fn textPaintStamp(self: *const PreparedResources, blob: *const TextBlob) !ResourceStamp {
-        return (self.textPaintEntry(blob) orelse return error.MissingPreparedResource).stamp;
-    }
-
-    pub fn pathStamp(self: *const PreparedResources, picture: *const PathPicture) !ResourceStamp {
-        return (self.pathPictureEntry(picture) orelse return error.MissingPreparedResource).stamp;
+    pub fn pathStamp(self: *const PreparedResources, key_value: anytype) !ResourceStamp {
+        return (self.pathPictureEntry(resourceKey(key_value)) orelse return error.MissingPreparedResource).stamp;
     }
 };
 

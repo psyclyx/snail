@@ -124,16 +124,16 @@ fn renderDiagram(
     var path_picture = try path_builder.freeze(.{ .persistent_allocator = allocator, .scratch_allocator = allocator });
     defer path_picture.deinit();
 
-    var scene = snail.Scene.init(allocator);
-    defer scene.deinit();
-    try scene.addPath(.{ .picture = &path_picture });
-    try scene.addText(.{ .blob = &text_blob });
-
     var resource_entries: [8]snail.ResourceManifest.Entry = undefined;
     var resources = snail.ResourceManifest.init(&resource_entries);
     try resources.putPathPicture(.diagram_paths, &path_picture);
-    try resources.putTextAtlas(.diagram_fonts, text_blob.atlas);
-    if (text_blob.hasPaintRecords()) try resources.putTextPaint(.diagram_text_paint, &text_blob);
+    const text_keys = snail.ResourceManifest.textBlobResourceKeys(.diagram_fonts, .diagram_text, &text_blob);
+    try resources.putTextBlob(text_keys, &text_blob);
+
+    var scene = snail.Scene.init(allocator);
+    defer scene.deinit();
+    try scene.addPath(.{ .picture = &path_picture, .resource_key = snail.ResourceKey.named("diagram_paths") });
+    try scene.addText(.{ .blob = &text_blob, .resources = text_keys });
     var prepared = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &resources);
     defer prepared.deinit();
 

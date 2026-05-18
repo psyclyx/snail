@@ -9,11 +9,14 @@ const MATERIAL_TEXTURE_SIZE: u32 = 1024;
 pub const PreparedPass = struct {
     allocator: std.mem.Allocator,
     picture: ?*snail.PathPicture = null,
+    path_key: ?snail.ResourceKey = null,
     text: *snail.TextBlob,
+    text_resources: snail.TextResourceKeys,
     scene: snail.Scene,
 
     pub fn init(
         allocator: std.mem.Allocator,
+        comptime name: []const u8,
         text: snail.TextBlob,
         picture: ?snail.PathPicture,
     ) !PreparedPass {
@@ -31,7 +34,9 @@ pub const PreparedPass = struct {
         var pass = PreparedPass{
             .allocator = allocator,
             .picture = owned_picture,
+            .path_key = if (owned_picture != null) snail.ResourceKey.named(name ++ ".path") else null,
             .text = owned_text,
+            .text_resources = snail.ResourceManifest.textBlobResourceKeys(.game_fonts, name ++ ".text", owned_text),
             .scene = snail.Scene.init(allocator),
         };
         errdefer {
@@ -44,8 +49,8 @@ pub const PreparedPass = struct {
             }
         }
 
-        if (pass.picture) |owned_picture_ptr| try pass.scene.addPath(.{ .picture = owned_picture_ptr });
-        try pass.scene.addText(.{ .blob = pass.text });
+        if (pass.picture) |owned_picture_ptr| try pass.scene.addPath(.{ .picture = owned_picture_ptr, .resource_key = pass.path_key.? });
+        try pass.scene.addText(.{ .blob = pass.text, .resources = pass.text_resources });
         return pass;
     }
 
@@ -239,7 +244,7 @@ fn buildHudPlainPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas, wind
     const text = try builder.finish();
 
     _ = window_w;
-    return PreparedPass.init(allocator, text, null);
+    return PreparedPass.init(allocator, "hud_plain", text, null);
 }
 
 fn buildHudTranslucentPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas, window_w: u32) !PreparedPass {
@@ -296,7 +301,7 @@ fn buildHudTranslucentPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas
     _ = try appendText(&builder, .{}, note, tx, rect.y + pad_y + title_size + 54.0, note_size, .{ 0.73, 0.82, 0.90, 1.0 });
     const text = try builder.finish();
 
-    return PreparedPass.init(allocator, text, picture);
+    return PreparedPass.init(allocator, "hud_translucent", text, picture);
 }
 
 fn buildHudSolidPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas, window_w: u32, _: u32) !PreparedPass {
@@ -369,7 +374,7 @@ fn buildHudSolidPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas, wind
     _ = try appendText(&builder, .{}, note, tx, rect.y + 124.0, note_size, .{ 0.78, 0.86, 0.92, 1.0 });
     const text = try builder.finish();
 
-    return PreparedPass.init(allocator, text, picture);
+    return PreparedPass.init(allocator, "hud_solid", text, picture);
 }
 
 fn buildRoughWallTextPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas) !PlanePass {
@@ -383,7 +388,7 @@ fn buildRoughWallTextPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas)
     const text = try builder.finish();
 
     return .{
-        .prepared = try PreparedPass.init(allocator, text, null),
+        .prepared = try PreparedPass.init(allocator, "rough_wall", text, null),
         .scene_width = scene_w,
         .scene_height = scene_h,
         .opaque_backdrop = true,
@@ -424,7 +429,7 @@ fn buildCenterPanelPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas) !
     const text = try builder.finish();
 
     return .{
-        .prepared = try PreparedPass.init(allocator, text, null),
+        .prepared = try PreparedPass.init(allocator, "center_panel", text, null),
         .scene_width = scene_w,
         .scene_height = scene_h,
         .opaque_backdrop = true,
@@ -482,7 +487,7 @@ fn buildGlassPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas) !PlaneP
     const text = try builder.finish();
 
     return .{
-        .prepared = try PreparedPass.init(allocator, text, picture),
+        .prepared = try PreparedPass.init(allocator, "glass", text, picture),
         .scene_width = scene_w,
         .scene_height = scene_h,
         .opaque_backdrop = false,
