@@ -59,6 +59,15 @@ test "TextAtlas.init with single face" {
     try testing.expectEqual(@as(usize, 0), fonts.pageCount());
 }
 
+test "font config cache distinguishes same-pointer slices by length" {
+    const assets_data = @import("assets");
+    const full = assets_data.noto_sans_regular;
+    try testing.expectError(error.UnexpectedEof, TextAtlas.init(testing.allocator, &.{
+        .{ .data = full },
+        .{ .data = full[0..12], .fallback = true },
+    }));
+}
+
 test "TextAtlas.ensureText adds missing glyphs" {
     const assets_data = @import("assets");
     var fonts = try TextAtlas.init(testing.allocator, &.{

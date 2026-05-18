@@ -12,6 +12,24 @@ const Allocator = std.mem.Allocator;
 const GlyphInfo = atlas_curve_mod.CurveAtlas.GlyphInfo;
 const ColrBaseInfo = atlas_curve_mod.CurveAtlas.ColrBaseInfo;
 
+const FontDataKey = struct {
+    ptr: [*]const u8,
+    len: usize,
+};
+
+const ParsedFont = struct {
+    font: ttf.Font,
+    shaper: ?opentype.Shaper,
+    hb_shaper: if (build_options.enable_harfbuzz) ?harfbuzz.HarfBuzzShaper else void,
+
+    fn deinit(self: *ParsedFont) void {
+        if (self.shaper) |*s| s.deinit();
+        if (comptime build_options.enable_harfbuzz) {
+            if (self.hb_shaper) |*hbs| hbs.deinit();
+        }
+    }
+};
+
 pub const FaceIndex = u16;
 
 pub const FontWeight = enum(u4) {
@@ -211,13 +229,18 @@ pub fn buildFontConfig(allocator: Allocator, specs: []const FaceSpec) !*FontConf
 
     const faces = try allocator.alloc(FaceConfig, specs.len);
     errdefer allocator.free(faces);
+    var initialized_faces: usize = 0;
+    errdefer {
+        for (faces[0..initialized_faces]) |*face| face.deinit();
+    }
 
-    // Parse fonts, deduplicating by data pointer.
-    var parsed_cache = std.AutoHashMap([*]const u8, struct { font: ttf.Font, shaper: ?opentype.Shaper, hb_shaper: if (build_options.enable_harfbuzz) ?harfbuzz.HarfBuzzShaper else void }).init(allocator);
+    // Parse fonts, deduplicating by the complete slice identity.
+    var parsed_cache = std.AutoHashMap(FontDataKey, ParsedFont).init(allocator);
     defer parsed_cache.deinit();
 
     for (specs, 0..) |spec, i| {
-        if (parsed_cache.get(spec.data.ptr)) |cached| {
+        const key = FontDataKey{ .ptr = spec.data.ptr, .len = spec.data.len };
+        if (parsed_cache.get(key)) |cached| {
             faces[i] = .{
                 .font = cached.font,
                 .font_data = spec.data,
@@ -228,25 +251,32 @@ pub fn buildFontConfig(allocator: Allocator, specs: []const FaceSpec) !*FontConf
                 .hb_shaper = cached.hb_shaper,
                 .owns_shapers = false,
             };
+            initialized_faces += 1;
         } else {
-            const font = try ttf.Font.init(spec.data);
-            const shaper = opentype.Shaper.init(allocator, spec.data, font.gsub_offset, font.gpos_offset) catch null;
-            const hb_shaper = if (comptime build_options.enable_harfbuzz)
-                harfbuzz.HarfBuzzShaper.init(spec.data, font.units_per_em) catch null
-            else {};
+            var parsed = ParsedFont{
+                .font = try ttf.Font.init(spec.data),
+                .shaper = null,
+                .hb_shaper = if (comptime build_options.enable_harfbuzz) null else {},
+            };
+            errdefer parsed.deinit();
+            parsed.shaper = opentype.Shaper.init(allocator, spec.data, parsed.font.gsub_offset, parsed.font.gpos_offset) catch null;
+            if (comptime build_options.enable_harfbuzz) {
+                parsed.hb_shaper = harfbuzz.HarfBuzzShaper.init(spec.data, parsed.font.units_per_em) catch null;
+            }
 
-            try parsed_cache.put(spec.data.ptr, .{ .font = font, .shaper = shaper, .hb_shaper = hb_shaper });
+            try parsed_cache.put(key, parsed);
 
             faces[i] = .{
-                .font = font,
+                .font = parsed.font,
                 .font_data = spec.data,
                 .weight = spec.weight,
                 .italic = spec.italic,
                 .synthetic = spec.synthetic,
-                .shaper = shaper,
-                .hb_shaper = hb_shaper,
+                .shaper = parsed.shaper,
+                .hb_shaper = parsed.hb_shaper,
                 .owns_shapers = true,
             };
+            initialized_faces += 1;
         }
     }
 
