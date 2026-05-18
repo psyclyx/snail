@@ -8,6 +8,7 @@ const target_mod = @import("target.zig");
 const text_mod = @import("text.zig");
 
 pub const DrawState = target_mod.DrawState;
+pub const DrawPass = target_mod.DrawPass;
 pub const TargetSurface = target_mod.TargetSurface;
 pub const TargetEncoding = target_mod.TargetEncoding;
 pub const PixelRect = target_mod.PixelRect;

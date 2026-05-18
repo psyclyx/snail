@@ -35,10 +35,18 @@ int snail_vulkan_frame_draw(SnailVulkanFrame *frame,
                             const SnailPreparedResources *prepared,
                             const SnailDrawList *list,
                             SnailDrawState state);
+int snail_vulkan_frame_draw_pass(SnailVulkanFrame *frame,
+                                 const SnailPreparedResources *prepared,
+                                 const SnailDrawList *list,
+                                 SnailDrawPass pass);
 int snail_vulkan_frame_draw_prepared(SnailVulkanFrame *frame,
                                      const SnailPreparedResources *prepared,
                                      const SnailPreparedScene *scene,
                                      SnailDrawState state);
+int snail_vulkan_frame_draw_prepared_pass(SnailVulkanFrame *frame,
+                                          const SnailPreparedResources *prepared,
+                                          const SnailPreparedScene *scene,
+                                          SnailDrawPass pass);
 int snail_vulkan_frame_coverage_backend(SnailVulkanFrame *frame,
                                         const SnailPreparedResources *prepared,
                                         SnailCoverageBackend **out);

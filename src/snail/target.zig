@@ -77,6 +77,11 @@ pub const LinearResolve = struct {
     intermediate_format: IntermediateFormat = .rgba16f,
 };
 
+pub const DrawResolve = union(enum) {
+    direct,
+    linear: LinearResolve,
+};
+
 pub const TargetSurface = struct {
     pixel_width: f32,
     pixel_height: f32,
@@ -104,6 +109,19 @@ pub const DrawState = struct {
     mvp: Mat4,
     surface: TargetSurface,
     raster: RasterOptions = .{},
+};
+
+pub const DrawPass = struct {
+    state: DrawState,
+    resolve: DrawResolve = .direct,
+
+    pub fn direct(state: DrawState) DrawPass {
+        return .{ .state = state };
+    }
+
+    pub fn linear(state: DrawState, resolve: LinearResolve) DrawPass {
+        return .{ .state = state, .resolve = .{ .linear = resolve } };
+    }
 };
 
 pub const TargetEncoding = struct {

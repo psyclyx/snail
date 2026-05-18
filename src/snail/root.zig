@@ -94,6 +94,7 @@ pub const ResolveRegion = target.ResolveRegion;
 pub const ResolveBackdrop = target.ResolveBackdrop;
 pub const IntermediateFormat = target.IntermediateFormat;
 pub const LinearResolve = target.LinearResolve;
+pub const DrawResolve = target.DrawResolve;
 pub const CoverageTransfer = target.CoverageTransfer;
 pub const SnapRule = target.SnapRule;
 pub const pixelStep = target.pixelStep;
@@ -106,6 +107,7 @@ pub const snapRectToStep = target.snapRectToStep;
 pub const TargetSurface = target.TargetSurface;
 pub const RasterOptions = target.RasterOptions;
 pub const DrawState = target.DrawState;
+pub const DrawPass = target.DrawPass;
 pub const resolveRect = target.resolveRect;
 
 pub const BackendKind = backend_kind.BackendKind;

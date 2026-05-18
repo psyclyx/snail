@@ -11,8 +11,10 @@ const SNAIL_OK = common.SNAIL_OK;
 const SNAIL_ERR_OUT_OF_MEMORY = common.SNAIL_ERR_OUT_OF_MEMORY;
 const SNAIL_ERR_RENDERER_FAILED = common.SNAIL_ERR_RENDERER_FAILED;
 const SNAIL_ERR_INVALID_ARGUMENT = common.SNAIL_ERR_INVALID_ARGUMENT;
+const SnailDrawPass = common.SnailDrawPass;
 const SnailDrawState = common.SnailDrawState;
 const SnailVulkanContext = common.SnailVulkanContext;
+const toDrawPass = common.toDrawPass;
 const toDrawState = common.toDrawState;
 const PreparedResourcesImpl = common.PreparedResourcesImpl;
 const PreparedSceneImpl = common.PreparedSceneImpl;
@@ -200,6 +202,17 @@ pub export fn snail_vulkan_frame_draw(
     return SNAIL_OK;
 }
 
+pub export fn snail_vulkan_frame_draw_pass(
+    frame: *VulkanFrameImpl,
+    prepared: *const PreparedResourcesImpl,
+    list: *const DrawListImpl,
+    pass: SnailDrawPass,
+) c_int {
+    if (comptime !build_options.enable_vulkan) return SNAIL_ERR_RENDERER_FAILED;
+    frame.inner.drawPass(&prepared.inner, list.inner.slice(), toDrawPass(pass) catch return SNAIL_ERR_INVALID_ARGUMENT) catch |err| return mapError(err);
+    return SNAIL_OK;
+}
+
 pub export fn snail_vulkan_frame_draw_prepared(
     frame: *VulkanFrameImpl,
     prepared: *const PreparedResourcesImpl,
@@ -208,6 +221,17 @@ pub export fn snail_vulkan_frame_draw_prepared(
 ) c_int {
     if (comptime !build_options.enable_vulkan) return SNAIL_ERR_RENDERER_FAILED;
     frame.inner.drawPrepared(&prepared.inner, &scene.inner, toDrawState(state) catch return SNAIL_ERR_INVALID_ARGUMENT) catch |err| return mapError(err);
+    return SNAIL_OK;
+}
+
+pub export fn snail_vulkan_frame_draw_prepared_pass(
+    frame: *VulkanFrameImpl,
+    prepared: *const PreparedResourcesImpl,
+    scene: *const PreparedSceneImpl,
+    pass: SnailDrawPass,
+) c_int {
+    if (comptime !build_options.enable_vulkan) return SNAIL_ERR_RENDERER_FAILED;
+    frame.inner.drawPreparedPass(&prepared.inner, &scene.inner, toDrawPass(pass) catch return SNAIL_ERR_INVALID_ARGUMENT) catch |err| return mapError(err);
     return SNAIL_OK;
 }
 

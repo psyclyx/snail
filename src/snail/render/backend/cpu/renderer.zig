@@ -388,6 +388,16 @@ pub const CpuRenderer = struct {
         try renderer.drawPrepared(prepared, scene, state);
     }
 
+    pub fn drawPass(self: *CpuRenderer, prepared: *const snail.PreparedResources, records: snail.DrawRecords, pass: snail.DrawPass) !void {
+        var renderer = self.asRenderer();
+        try renderer.drawPass(prepared, records, pass);
+    }
+
+    pub fn drawPreparedPass(self: *CpuRenderer, prepared: *const snail.PreparedResources, scene: *const snail.PreparedScene, pass: snail.DrawPass) !void {
+        var renderer = self.asRenderer();
+        try renderer.drawPreparedPass(prepared, scene, pass);
+    }
+
     /// Frame-level fan-out invoked by the CPU vtable's `draw` entry when a
     /// thread pool is attached. Caller has already validated records, so
     /// each tile worker can call `iterateRecords` with no expected draw

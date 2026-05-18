@@ -33,6 +33,7 @@ const Renderer = snail.Renderer;
 const CpuRenderer = snail.CpuRenderer;
 const DrawSegment = snail.DrawSegment;
 const DrawRecords = snail.DrawRecords;
+const DrawPass = snail.DrawPass;
 const DrawState = snail.DrawState;
 const DrawList = snail.DrawList;
 const Scene = snail.Scene;
@@ -234,6 +235,12 @@ test "draw dispatch uses only prepared stamps and caller records" {
             try renderer.validateRecords(prepared, records);
             try renderer.iterateRecords(records, options, null);
         }
+        fn drawPass(renderer: *Renderer, prepared: *const PreparedResources, records: DrawRecords, pass: DrawPass) anyerror!void {
+            return switch (pass.resolve) {
+                .direct => draw(renderer, prepared, records, pass.state),
+                .linear => error.UnsupportedResolve,
+            };
+        }
         fn drawText(ptr: *anyopaque, backend_prepared: ?*const anyopaque, vertices: []const u32, draw_state: DrawState, _: u32) anyerror!void {
             const s = state(ptr);
             s.text_count += 1;
@@ -293,6 +300,7 @@ test "draw dispatch uses only prepared stamps and caller records" {
         .uploadResources = Fake.uploadResources,
         .coverageBackend = Fake.coverageBackend,
         .draw = Fake.draw,
+        .drawPass = Fake.drawPass,
         .drawText = Fake.drawText,
         .drawPaths = Fake.drawPaths,
         .beginDraw = Fake.beginDraw,

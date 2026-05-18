@@ -15,9 +15,9 @@ const pipeline = if (build_options.enable_opengl) @import("../backend/gl/state.z
 };
 
 const CoverageBackend = coverage_mod.Backend;
+const DrawPass = draw_mod.DrawPass;
 const DrawState = draw_mod.DrawState;
 const DrawRecords = draw_mod.DrawRecords;
-const LinearResolve = draw_mod.LinearResolve;
 const ErasedRenderer = interface.Renderer;
 const PendingResourceUpload = upload_mod.PendingResourceUpload;
 const PreparedResources = prepared_mod.PreparedResources;
@@ -26,7 +26,6 @@ const ResourceCacheStats = upload_mod.ResourceCacheStats;
 const ResourceManifest = set_mod.ResourceManifest;
 const ResourceUploadPlan = upload_mod.ResourceUploadPlan;
 const ResourceUploadBatch = upload_mod.ResourceUploadBatch;
-const TargetSurface = draw_mod.TargetSurface;
 const UploadAllocators = upload_mod.UploadAllocators;
 
 const Config = if (build_options.enable_opengl) struct {
@@ -66,6 +65,18 @@ const Config = if (build_options.enable_opengl) struct {
         try renderer.validateRecords(prepared_resources, records);
         try renderer.iterateRecords(records, state, @ptrCast(backend_prepared));
     }
+
+    pub fn drawPass(renderer: *ErasedRenderer, prepared_resources: *const PreparedResources, records: DrawRecords, pass: DrawPass) anyerror!void {
+        switch (pass.resolve) {
+            .direct => try draw(renderer, prepared_resources, records, pass.state),
+            .linear => |resolve| {
+                const gl_state: *Backend = @ptrCast(@alignCast(renderer.ptr));
+                const restore = try gl_state.beginLinearResolve(pass.state.surface, resolve);
+                defer gl_state.endLinearResolve(restore);
+                try draw(renderer, prepared_resources, records, pass.state);
+            },
+        }
+    }
 } else struct {};
 
 pub const vtable = if (build_options.enable_opengl) common.vtable(Config) else interface.disabledVTable(.gl);
@@ -76,8 +87,6 @@ pub const vtable = if (build_options.enable_opengl) common.vtable(Config) else i
 /// the erased renderer for callers that want to stay strongly typed.
 pub const Renderer = if (build_options.enable_opengl) struct {
     const Self = @This();
-    pub const LinearResolveRestore = pipeline.LinearResolveRestore;
-
     allocator: std.mem.Allocator,
     state: *pipeline.GlTextState,
 
@@ -124,12 +133,14 @@ pub const Renderer = if (build_options.enable_opengl) struct {
         try renderer.drawPrepared(prepared, scene, state);
     }
 
-    pub fn beginLinearResolve(self: *Self, surface: TargetSurface, resolve: LinearResolve) !LinearResolveRestore {
-        return self.state.beginLinearResolve(surface, resolve);
+    pub fn drawPass(self: *Self, prepared: *const PreparedResources, records: DrawRecords, pass: DrawPass) !void {
+        var renderer = self.asRenderer();
+        try renderer.drawPass(prepared, records, pass);
     }
 
-    pub fn endLinearResolve(self: *Self, restore: LinearResolveRestore) void {
-        self.state.endLinearResolve(restore);
+    pub fn drawPreparedPass(self: *Self, prepared: *const PreparedResources, scene: *const PreparedScene, pass: DrawPass) !void {
+        var renderer = self.asRenderer();
+        try renderer.drawPreparedPass(prepared, scene, pass);
     }
 
     pub fn coverageBackend(self: *Self, prepared_resources: *const PreparedResources) ?CoverageBackend {

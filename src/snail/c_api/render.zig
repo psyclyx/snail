@@ -7,12 +7,14 @@ const SnailAllocator = common.SnailAllocator;
 const SNAIL_OK = common.SNAIL_OK;
 const SNAIL_ERR_OUT_OF_MEMORY = common.SNAIL_ERR_OUT_OF_MEMORY;
 const SNAIL_ERR_INVALID_ARGUMENT = common.SNAIL_ERR_INVALID_ARGUMENT;
+const SnailDrawPass = common.SnailDrawPass;
 const SnailDrawState = common.SnailDrawState;
 const SnailResourceKey = common.SnailResourceKey;
 const SnailResourceFootprint = common.SnailResourceFootprint;
 const SnailResourceCacheStats = common.SnailResourceCacheStats;
 const fromResourceFootprint = common.fromResourceFootprint;
 const fromResourceCacheStats = common.fromResourceCacheStats;
+const toDrawPass = common.toDrawPass;
 const toDrawState = common.toDrawState;
 const ResourceManifestImpl = common.ResourceManifestImpl;
 const PreparedResourcesImpl = common.PreparedResourcesImpl;
@@ -235,6 +237,17 @@ pub export fn snail_renderer_draw(
     return SNAIL_OK;
 }
 
+pub export fn snail_renderer_draw_pass(
+    renderer: *RendererImpl,
+    prepared: *const PreparedResourcesImpl,
+    list: *const DrawListImpl,
+    pass: SnailDrawPass,
+) c_int {
+    var erased = renderer.asRenderer();
+    erased.drawPass(&prepared.inner, list.inner.slice(), toDrawPass(pass) catch return SNAIL_ERR_INVALID_ARGUMENT) catch |err| return mapError(err);
+    return SNAIL_OK;
+}
+
 pub export fn snail_renderer_draw_prepared(
     renderer: *RendererImpl,
     prepared: *const PreparedResourcesImpl,
@@ -243,5 +256,16 @@ pub export fn snail_renderer_draw_prepared(
 ) c_int {
     var erased = renderer.asRenderer();
     erased.drawPrepared(&prepared.inner, &scene.inner, toDrawState(state) catch return SNAIL_ERR_INVALID_ARGUMENT) catch |err| return mapError(err);
+    return SNAIL_OK;
+}
+
+pub export fn snail_renderer_draw_prepared_pass(
+    renderer: *RendererImpl,
+    prepared: *const PreparedResourcesImpl,
+    scene: *const PreparedSceneImpl,
+    pass: SnailDrawPass,
+) c_int {
+    var erased = renderer.asRenderer();
+    erased.drawPreparedPass(&prepared.inner, &scene.inner, toDrawPass(pass) catch return SNAIL_ERR_INVALID_ARGUMENT) catch |err| return mapError(err);
     return SNAIL_OK;
 }

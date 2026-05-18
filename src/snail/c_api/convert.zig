@@ -4,6 +4,7 @@ const c = @import("types.zig");
 
 const SnailBBox = c.SnailBBox;
 const SnailDecorationMetrics = c.SnailDecorationMetrics;
+const SnailDrawPass = c.SnailDrawPass;
 const SnailDrawState = c.SnailDrawState;
 const SnailFillStyle = c.SnailFillStyle;
 const SnailFontStyle = c.SnailFontStyle;
@@ -19,6 +20,8 @@ const SnailResourceFootprint = c.SnailResourceFootprint;
 const SnailResourceStamp = c.SnailResourceStamp;
 const SnailTextResourceKeys = c.SnailTextResourceKeys;
 const SnailRasterOptions = c.SnailRasterOptions;
+const SnailLinearResolve = c.SnailLinearResolve;
+const SnailPixelRect = c.SnailPixelRect;
 const SnailTargetSurface = c.SnailTargetSurface;
 const SnailScriptMetrics = c.SnailScriptMetrics;
 const SnailScriptTransform = c.SnailScriptTransform;
@@ -336,11 +339,31 @@ pub fn toResolveBackdrop(kind: c_int, clear_color: [4]f32) !snail.ResolveBackdro
     };
 }
 
+pub fn toPixelRect(rect: SnailPixelRect) snail.PixelRect {
+    return .{ .x = rect.x, .y = rect.y, .w = rect.w, .h = rect.h };
+}
+
+pub fn toResolveRegion(kind: c_int, rect: SnailPixelRect) !snail.ResolveRegion {
+    return switch (kind) {
+        0 => .full_target,
+        1 => .{ .pixel_rect = toPixelRect(rect) },
+        else => error.InvalidEnum,
+    };
+}
+
 pub fn toIntermediateFormat(v: c_int) !snail.IntermediateFormat {
     return switch (v) {
         0 => .rgba16f,
         1 => .rgba32f,
         else => error.InvalidEnum,
+    };
+}
+
+pub fn toLinearResolve(resolve: SnailLinearResolve) !snail.LinearResolve {
+    return .{
+        .backdrop = try toResolveBackdrop(resolve.backdrop_kind, resolve.clear_color),
+        .region = try toResolveRegion(resolve.region_kind, resolve.region_rect),
+        .intermediate_format = try toIntermediateFormat(resolve.intermediate_format),
     };
 }
 
@@ -368,6 +391,17 @@ pub fn toDrawState(state: SnailDrawState) !snail.DrawState {
         .mvp = toMat4(state.mvp),
         .surface = try toTargetSurface(state.surface),
         .raster = try toRasterOptions(state.raster),
+    };
+}
+
+pub fn toDrawPass(pass: SnailDrawPass) !snail.DrawPass {
+    return .{
+        .state = try toDrawState(pass.state),
+        .resolve = switch (pass.resolve_kind) {
+            0 => .direct,
+            1 => .{ .linear = try toLinearResolve(pass.linear_resolve) },
+            else => return error.InvalidEnum,
+        },
     };
 }
 

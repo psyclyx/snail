@@ -400,14 +400,12 @@ fn renderCpuLinearSeeded(
     clearPixelsTo(pixels, seed);
 
     var cpu = snail.CpuRenderer.init(pixels.ptr, WIDTH, HEIGHT, WIDTH * 4);
-    const restore = try cpu.beginLinearResolve(state.surface, resolve);
-    defer cpu.endLinearResolve(restore);
     var renderer = cpu.asRenderer();
     var prepared = try uploadSceneResources(allocator, &renderer, scene);
     defer prepared.deinit();
     var prepared_scene = try snail.PreparedScene.initOwned(allocator, &prepared, scene);
     defer prepared_scene.deinit();
-    try renderer.drawPrepared(&prepared, &prepared_scene, state);
+    try renderer.drawPreparedPass(&prepared, &prepared_scene, .{ .state = state, .resolve = .{ .linear = resolve } });
     return pixels;
 }
 
@@ -502,11 +500,7 @@ fn renderGlLinearSeeded(
     defer prepared.deinit();
     var prepared_scene = try snail.PreparedScene.initOwned(allocator, &prepared, scene);
     defer prepared_scene.deinit();
-    {
-        const restore = try gl_renderer.beginLinearResolve(state.surface, resolve);
-        defer gl_renderer.endLinearResolve(restore);
-        try renderer.drawPrepared(&prepared, &prepared_scene, state);
-    }
+    try renderer.drawPreparedPass(&prepared, &prepared_scene, .{ .state = state, .resolve = .{ .linear = resolve } });
     gl.glFinish();
 
     const pixels = try screenshot.captureFramebuffer(allocator, WIDTH, HEIGHT);

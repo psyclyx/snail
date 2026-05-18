@@ -169,6 +169,21 @@ pub const SnailTargetSurface = extern struct {
     stored_pixel_encoding: c_int = 0,
 };
 
+pub const SnailPixelRect = extern struct {
+    x: i32 = 0,
+    y: i32 = 0,
+    w: u32 = 0,
+    h: u32 = 0,
+};
+
+pub const SnailLinearResolve = extern struct {
+    backdrop_kind: c_int = 0,
+    clear_color: [4]f32 = .{ 0, 0, 0, 0 },
+    region_kind: c_int = 0,
+    region_rect: SnailPixelRect = .{},
+    intermediate_format: c_int = 0,
+};
+
 pub const SnailRasterOptions = extern struct {
     subpixel_order: c_int = 0,
     fill_rule: c_int = 0,
@@ -179,6 +194,12 @@ pub const SnailDrawState = extern struct {
     mvp: SnailMat4,
     surface: SnailTargetSurface,
     raster: SnailRasterOptions = .{},
+};
+
+pub const SnailDrawPass = extern struct {
+    state: SnailDrawState,
+    resolve_kind: c_int = 0,
+    linear_resolve: SnailLinearResolve = .{},
 };
 
 pub const SnailResourceKey = u64;

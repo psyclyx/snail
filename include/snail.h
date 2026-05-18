@@ -204,6 +204,21 @@ typedef struct {
 } SnailTargetSurface;
 
 typedef struct {
+    int32_t x;
+    int32_t y;
+    uint32_t w;
+    uint32_t h;
+} SnailPixelRect;
+
+typedef struct {
+    int backdrop_kind;
+    float clear_color[4];
+    int region_kind;
+    SnailPixelRect region_rect;
+    int intermediate_format;
+} SnailLinearResolve;
+
+typedef struct {
     int subpixel_order;
     int fill_rule;
     /* Exponent applied to analytic coverage after edge evaluation.
@@ -217,6 +232,12 @@ typedef struct {
     SnailTargetSurface surface;
     SnailRasterOptions raster;
 } SnailDrawState;
+
+typedef struct {
+    SnailDrawState state;
+    int resolve_kind;
+    SnailLinearResolve linear_resolve;
+} SnailDrawPass;
 
 typedef struct {
     int fill_rule;
@@ -245,6 +266,16 @@ typedef struct {
 
 #define SNAIL_COLOR_ENCODING_LINEAR 0
 #define SNAIL_COLOR_ENCODING_SRGB 1
+#define SNAIL_DRAW_RESOLVE_DIRECT 0
+#define SNAIL_DRAW_RESOLVE_LINEAR 1
+#define SNAIL_RESOLVE_BACKDROP_TARGET 0
+#define SNAIL_RESOLVE_BACKDROP_CLEAR 1
+#define SNAIL_RESOLVE_BACKDROP_TRANSPARENT 2
+#define SNAIL_RESOLVE_BACKDROP_DONT_CARE 3
+#define SNAIL_RESOLVE_REGION_FULL_TARGET 0
+#define SNAIL_RESOLVE_REGION_PIXEL_RECT 1
+#define SNAIL_INTERMEDIATE_FORMAT_RGBA16F 0
+#define SNAIL_INTERMEDIATE_FORMAT_RGBA32F 1
 
 #define SNAIL_EXTEND_CLAMP 0
 #define SNAIL_EXTEND_REPEAT 1
@@ -753,10 +784,18 @@ int snail_renderer_draw(SnailRenderer *renderer,
                         const SnailPreparedResources *prepared,
                         const SnailDrawList *list,
                         SnailDrawState state);
+int snail_renderer_draw_pass(SnailRenderer *renderer,
+                             const SnailPreparedResources *prepared,
+                             const SnailDrawList *list,
+                             SnailDrawPass pass);
 int snail_renderer_draw_prepared(SnailRenderer *renderer,
                                  const SnailPreparedResources *prepared,
                                  const SnailPreparedScene *scene,
                                  SnailDrawState state);
+int snail_renderer_draw_prepared_pass(SnailRenderer *renderer,
+                                      const SnailPreparedResources *prepared,
+                                      const SnailPreparedScene *scene,
+                                      SnailDrawPass pass);
 
 /* Features and constants */
 

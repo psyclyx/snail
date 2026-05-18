@@ -95,11 +95,6 @@ pub const Driver = union(Kind) {
     cpu_less_threaded: if (build_options.enable_cpu) CpuDriver else void,
     cpu_unthreaded: if (build_options.enable_cpu) CpuDriver else void,
 
-    pub const LinearResolveRestore = union(enum) {
-        gl: if (build_options.enable_opengl) snail.GlRenderer.LinearResolveRestore else void,
-        cpu: if (build_options.enable_cpu) snail.CpuRenderer.LinearResolveRestore else void,
-    };
-
     pub fn init(allocator: std.mem.Allocator, window: *wayland.Window, selected: Kind) !Driver {
         return switch (selected) {
             .vulkan => if (comptime build_options.enable_vulkan)
@@ -202,50 +197,17 @@ pub const Driver = union(Kind) {
     }
 
     pub fn draw(self: *Driver, prepared: *const snail.PreparedResources, records: snail.DrawRecords, state: snail.DrawState) !void {
+        try self.drawPass(prepared, records, .{ .state = state });
+    }
+
+    pub fn drawPass(self: *Driver, prepared: *const snail.PreparedResources, records: snail.DrawRecords, pass: snail.DrawPass) !void {
         switch (self.*) {
             .vulkan => |*driver| if (comptime build_options.enable_vulkan) {
-                try driver.draw(prepared, records, state);
+                try driver.drawPass(prepared, records, pass);
             } else unreachable,
             else => {
                 var r = self.renderer();
-                try r.draw(prepared, records, state);
-            },
-        }
-    }
-
-    pub fn beginLinearResolve(self: *Driver, surface: snail.TargetSurface, resolve: snail.LinearResolve) !LinearResolveRestore {
-        return switch (self.*) {
-            .vulkan => error.UnsupportedResolve,
-            .gl => |*driver| if (comptime build_options.enable_opengl)
-                .{ .gl = try driver.renderer_state.beginLinearResolve(surface, resolve) }
-            else
-                unreachable,
-            .cpu => |*driver| if (comptime build_options.enable_cpu)
-                .{ .cpu = try driver.renderer_state.beginLinearResolve(surface, resolve) }
-            else
-                unreachable,
-            .cpu_less_threaded => |*driver| if (comptime build_options.enable_cpu)
-                .{ .cpu = try driver.renderer_state.beginLinearResolve(surface, resolve) }
-            else
-                unreachable,
-            .cpu_unthreaded => |*driver| if (comptime build_options.enable_cpu)
-                .{ .cpu = try driver.renderer_state.beginLinearResolve(surface, resolve) }
-            else
-                unreachable,
-        };
-    }
-
-    pub fn endLinearResolve(self: *Driver, restore: LinearResolveRestore) void {
-        switch (restore) {
-            .gl => |gl_restore| switch (self.*) {
-                .gl => |*driver| if (comptime build_options.enable_opengl) driver.renderer_state.endLinearResolve(gl_restore) else unreachable,
-                else => unreachable,
-            },
-            .cpu => |cpu_restore| switch (self.*) {
-                .cpu => |*driver| if (comptime build_options.enable_cpu) driver.renderer_state.endLinearResolve(cpu_restore) else unreachable,
-                .cpu_less_threaded => |*driver| if (comptime build_options.enable_cpu) driver.renderer_state.endLinearResolve(cpu_restore) else unreachable,
-                .cpu_unthreaded => |*driver| if (comptime build_options.enable_cpu) driver.renderer_state.endLinearResolve(cpu_restore) else unreachable,
-                else => unreachable,
+                try r.drawPass(prepared, records, pass);
             },
         }
     }
@@ -302,8 +264,12 @@ const VulkanDriver = if (build_options.enable_vulkan) struct {
     }
 
     fn draw(self: *VulkanDriver, prepared: *const snail.PreparedResources, records: snail.DrawRecords, state: snail.DrawState) !void {
+        try self.drawPass(prepared, records, .{ .state = state });
+    }
+
+    fn drawPass(self: *VulkanDriver, prepared: *const snail.PreparedResources, records: snail.DrawRecords, pass: snail.DrawPass) !void {
         const frame = self.frame orelse return error.MissingCommandBuffer;
-        try frame.draw(prepared, records, state);
+        try frame.drawPass(prepared, records, pass);
     }
 } else void;
 

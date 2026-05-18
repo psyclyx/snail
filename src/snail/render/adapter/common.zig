@@ -8,6 +8,7 @@ const upload_mod = @import("../../upload.zig");
 const upload_plan = @import("../upload_plan.zig");
 
 const CoverageBackend = coverage_mod.Backend;
+const DrawPass = draw_mod.DrawPass;
 const DrawState = draw_mod.DrawState;
 const DrawRecords = draw_mod.DrawRecords;
 const PreparedResources = prepared_mod.PreparedResources;
@@ -132,6 +133,15 @@ pub fn vtable(comptime Config: type) interface.Renderer.VTable {
         fn drawFn(renderer: *interface.Renderer, prepared: *const PreparedResources, records: DrawRecords, state: DrawState) anyerror!void {
             return Config.draw(renderer, prepared, records, state);
         }
+        fn drawPassFn(renderer: *interface.Renderer, prepared: *const PreparedResources, records: DrawRecords, pass: DrawPass) anyerror!void {
+            if (comptime @hasDecl(Config, "drawPass")) {
+                return Config.drawPass(renderer, prepared, records, pass);
+            }
+            return switch (pass.resolve) {
+                .direct => Config.draw(renderer, prepared, records, pass.state),
+                .linear => error.UnsupportedResolve,
+            };
+        }
     };
     return .{
         .backend = Config.backend_kind,
@@ -139,6 +149,7 @@ pub fn vtable(comptime Config: type) interface.Renderer.VTable {
         .uploadResources = &S.uploadResourcesFn,
         .coverageBackend = &S.coverageBackendFn,
         .draw = &S.drawFn,
+        .drawPass = &S.drawPassFn,
         .drawText = &S.drawTextFn,
         .drawPaths = &S.drawPathsFn,
         .beginDraw = &S.beginDrawFn,

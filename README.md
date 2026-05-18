@@ -95,7 +95,7 @@ All color parameters are **sRGB, straight (unpremultiplied) alpha**, as `[4]f32`
 
 `LinearResolve` is an explicit backend pass for gamma-correct Snail composition into sRGB pixels on a linear attachment:
 
-- Draw with `TargetEncoding.srgb_pixels_on_linear_attachment` inside the resolve pass.
+- Draw with `DrawPass.linear(state, resolve)` and `TargetEncoding.srgb_pixels_on_linear_attachment`.
 - `LinearResolve.backdrop` chooses whether to seed from the target, a clear color, transparent black, or unspecified contents.
 - `LinearResolve.region` can restrict the resolve to a pixel rectangle.
 - `LinearResolve.intermediate_format` selects RGBA16F or RGBA32F for GL.
@@ -503,6 +503,7 @@ borrowed `Scene` + `PathDraw` / `TextDraw` primitive used by Zig.
 | `DrawList` | Caller-buffered draw records. |
 | `PreparedScene` | Optional owned draw-record cache for static scenes. |
 | `DrawState` | Per-draw transform, target surface metadata, and rasterization policy. |
+| `DrawPass` | A draw state plus resolve mode. The default is direct; `.linear(state, resolve)` runs an explicit linear resolve pass. |
 | `TargetSurface` | Per-draw target pixel size and color encoding. |
 | `RasterOptions` | Per-draw raster policy: subpixel order, fill rule, and coverage transfer. |
 | `TargetEncoding` | Pair of color encodings for attachment interpretation and final stored pixels. Common presets are `.srgb`, `.linear`, and `.srgb_pixels_on_linear_attachment`. |
@@ -615,6 +616,7 @@ try scene.addPath(.{ .picture = &sprite, .resource_key = snail.ResourceKey.named
 | `PreparedScene.initOwned(alloc, prepared, scene) !PreparedScene` | Build an owned draw-record cache for a static scene. |
 | `renderer.draw(prepared, records, options)` | Execute prebuilt draw records on CPU/GL or other renderer-owned draw contexts. No resource discovery or upload. |
 | `renderer.drawPrepared(prepared, prepared_scene, options)` | Draw a `PreparedScene` cache. For Vulkan, call `vk.frame(.{ .cmd, .slot }).drawPrepared(...)`. |
+| `renderer.drawPass(prepared, records, pass)` / `renderer.drawPreparedPass(...)` | Execute an explicit draw pass, including linear resolve when requested. Vulkan currently rejects linear resolve with `error.UnsupportedResolve`. |
 | `prepared.retireNow()` | Retire backend resources immediately once no in-flight frame references them. |
 | `PreparedResourceRetirementQueue.init(alloc)` / `queue.sweep()` | Caller-owned queue for prepared resources that must retire after a fence completes. |
 | `prepared.retireAfter(&queue, fence_or_frame)` | Move prepared resources into the caller-owned retirement queue. |
@@ -659,7 +661,8 @@ CPU/GL; Vulkan callers use
 `snail_vulkan_pending_resource_upload_ready_fence`. Vulkan drawing in C is also
 frame-scoped: create `SnailVulkanFrame` with
 `snail_vulkan_renderer_frame(renderer, command_buffer, frame_slot, &frame)`,
-then call `snail_vulkan_frame_draw` or `snail_vulkan_frame_draw_prepared`.
+then call `snail_vulkan_frame_draw`, `snail_vulkan_frame_draw_pass`, or their
+prepared-scene variants.
 
 ### Text coverage in custom shaders
 

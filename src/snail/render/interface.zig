@@ -11,6 +11,7 @@ const upload_plan = @import("upload_plan.zig");
 pub const BackendKind = backend_kind_mod.BackendKind;
 
 const CoverageBackend = coverage_mod.Backend;
+const DrawPass = draw_mod.DrawPass;
 const DrawState = draw_mod.DrawState;
 const DrawRecords = draw_mod.DrawRecords;
 const PendingResourceUpload = upload_mod.PendingResourceUpload;
@@ -49,6 +50,7 @@ pub const Renderer = struct {
         // Draw-level execution: validate, set state, walk records. Each backend
         // owns this so it can decide how to schedule the work.
         draw: *const fn (*Renderer, *const PreparedResources, DrawRecords, DrawState) anyerror!void,
+        drawPass: *const fn (*Renderer, *const PreparedResources, DrawRecords, DrawPass) anyerror!void,
         // Segment-level dispatch, called from `iterateRecords`.
         drawText: *const fn (*anyopaque, ?*const anyopaque, []const u32, DrawState, u32) anyerror!void,
         drawPaths: *const fn (*anyopaque, ?*const anyopaque, []const u32, DrawState, u32) anyerror!void,
@@ -131,6 +133,14 @@ pub const Renderer = struct {
         return self.draw(prepared, scene.slice(), state);
     }
 
+    pub fn drawPass(self: *Renderer, prepared: *const PreparedResources, records: DrawRecords, pass: DrawPass) !void {
+        return self.vtable.drawPass(self, prepared, records, pass);
+    }
+
+    pub fn drawPreparedPass(self: *Renderer, prepared: *const PreparedResources, scene: *const PreparedScene, pass: DrawPass) !void {
+        return self.drawPass(prepared, scene.slice(), pass);
+    }
+
     /// Verify every segment's stamps still match the live prepared resources.
     /// Returns `error.StaleDrawRecords` if a resource has been re-uploaded;
     /// `error.MissingPreparedResource` if a key is gone.
@@ -196,6 +206,9 @@ pub fn disabledVTable(comptime backend_kind: BackendKind) Renderer.VTable {
         fn drawFn(_: *Renderer, _: *const PreparedResources, _: DrawRecords, _: DrawState) anyerror!void {
             return error.UnsupportedRenderer;
         }
+        fn drawPassFn(_: *Renderer, _: *const PreparedResources, _: DrawRecords, _: DrawPass) anyerror!void {
+            return error.UnsupportedRenderer;
+        }
         fn drawTextFn(_: *anyopaque, _: ?*const anyopaque, _: []const u32, _: DrawState, _: u32) anyerror!void {
             return error.UnsupportedRenderer;
         }
@@ -239,6 +252,7 @@ pub fn disabledVTable(comptime backend_kind: BackendKind) Renderer.VTable {
         .uploadResources = &S.uploadResourcesFn,
         .coverageBackend = &S.coverageBackendFn,
         .draw = &S.drawFn,
+        .drawPass = &S.drawPassFn,
         .drawText = &S.drawTextFn,
         .drawPaths = &S.drawPathsFn,
         .beginDraw = &S.beginDrawFn,

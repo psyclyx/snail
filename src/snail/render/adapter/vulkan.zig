@@ -18,9 +18,9 @@ const pipeline = if (build_options.enable_vulkan) @import("../backend/vulkan/pip
 pub const VulkanContext = pipeline.VulkanContext;
 
 const CoverageBackend = coverage_mod.Backend;
+const DrawPass = draw_mod.DrawPass;
 const DrawState = draw_mod.DrawState;
 const DrawRecords = draw_mod.DrawRecords;
-const LinearResolve = draw_mod.LinearResolve;
 const ErasedRenderer = interface.Renderer;
 const PendingResourceUpload = upload_mod.PendingResourceUpload;
 const PreparedResources = prepared_mod.PreparedResources;
@@ -29,7 +29,6 @@ const ResourceCacheStats = upload_mod.ResourceCacheStats;
 const ResourceManifest = set_mod.ResourceManifest;
 const ResourceUploadPlan = upload_mod.ResourceUploadPlan;
 const ResourceUploadBatch = upload_mod.ResourceUploadBatch;
-const TargetSurface = draw_mod.TargetSurface;
 const UploadAllocators = upload_mod.UploadAllocators;
 
 const Config = if (build_options.enable_vulkan) struct {
@@ -67,6 +66,13 @@ const Config = if (build_options.enable_vulkan) struct {
         try renderer.validateRecords(prepared_resources, records);
         try renderer.iterateRecords(records, state, @ptrCast(backend_prepared));
     }
+
+    pub fn drawPass(renderer: *ErasedRenderer, prepared_resources: *const PreparedResources, records: DrawRecords, pass: DrawPass) anyerror!void {
+        return switch (pass.resolve) {
+            .direct => draw(renderer, prepared_resources, records, pass.state),
+            .linear => error.UnsupportedResolve,
+        };
+    }
 } else struct {};
 
 pub const vtable = if (build_options.enable_vulkan) common.vtable(Config) else interface.disabledVTable(.vulkan);
@@ -76,8 +82,6 @@ pub const vtable = if (build_options.enable_vulkan) common.vtable(Config) else i
 /// The typed handle exists for Vulkan-specific command-buffer integration.
 pub const Renderer = if (build_options.enable_vulkan) struct {
     const Self = @This();
-    pub const LinearResolveRestore = void;
-
     pub const Frame = struct {
         renderer: *Self,
         cmd: pipeline.vk.VkCommandBuffer,
@@ -92,6 +96,17 @@ pub const Renderer = if (build_options.enable_vulkan) struct {
 
         pub fn drawPrepared(self: Frame, prepared: *const PreparedResources, scene: *const PreparedScene, state: DrawState) !void {
             try self.draw(prepared, scene.slice(), state);
+        }
+
+        pub fn drawPass(self: Frame, prepared: *const PreparedResources, records: DrawRecords, pass: DrawPass) !void {
+            self.renderer.state.setCommandBuffer(self.cmd);
+            defer self.renderer.state.clearCommandBuffer();
+            var renderer = self.renderer.asRenderer();
+            try renderer.drawPass(prepared, records, pass);
+        }
+
+        pub fn drawPreparedPass(self: Frame, prepared: *const PreparedResources, scene: *const PreparedScene, pass: DrawPass) !void {
+            try self.drawPass(prepared, scene.slice(), pass);
         }
 
         pub fn coverageBackend(self: Frame, prepared_resources: *const PreparedResources) ?CoverageBackend {
@@ -151,12 +166,6 @@ pub const Renderer = if (build_options.enable_vulkan) struct {
         var renderer = self.asRenderer();
         return renderer.beginResourceUpload(allocators, plan);
     }
-
-    pub fn beginLinearResolve(_: *Self, _: TargetSurface, _: LinearResolve) !LinearResolveRestore {
-        return error.UnsupportedResolve;
-    }
-
-    pub fn endLinearResolve(_: *Self, _: LinearResolveRestore) void {}
 
     pub fn backendName(self: *const Self) []const u8 {
         return self.state.backendName();

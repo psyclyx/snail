@@ -251,13 +251,10 @@ fn renderRepro(allocator: std.mem.Allocator) !void {
     defer allocator.free(draw_segments_buf);
     var draw = snail.DrawList.init(draw_buf, draw_segments_buf);
     try draw.addScene(&prepared, &scene);
-    if (linear_resolve) {
-        const restore = try gl_renderer.beginLinearResolve(draw_state.surface, .{});
-        defer gl_renderer.endLinearResolve(restore);
-        try renderer.draw(&prepared, draw.slice(), draw_state);
-    } else {
-        try renderer.draw(&prepared, draw.slice(), draw_state);
-    }
+    try renderer.drawPass(&prepared, draw.slice(), .{
+        .state = draw_state,
+        .resolve = if (linear_resolve) .{ .linear = .{} } else .direct,
+    });
 
     if (screenshot.captureFramebuffer(allocator, framebuffer_width, framebuffer_height) catch null) |px| {
         defer allocator.free(px);

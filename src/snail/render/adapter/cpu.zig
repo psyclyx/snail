@@ -15,6 +15,7 @@ const pipeline = if (build_options.enable_cpu) @import("../backend/cpu/renderer.
 pub const CpuRenderer = pipeline.CpuRenderer;
 
 const CoverageBackend = coverage_mod.Backend;
+const DrawPass = draw_mod.DrawPass;
 const DrawState = draw_mod.DrawState;
 const DrawRecords = draw_mod.DrawRecords;
 const ErasedRenderer = interface.Renderer;
@@ -52,6 +53,18 @@ const Config = if (build_options.enable_cpu) struct {
         const cpu_self: *Backend = @ptrCast(@alignCast(renderer.ptr));
         if (dispatchThreaded(cpu_self, backend_prepared, records, state)) return;
         try renderer.iterateRecords(records, state, @ptrCast(backend_prepared));
+    }
+
+    pub fn drawPass(renderer: *ErasedRenderer, prepared_resources: *const UnifiedPreparedResources, records: DrawRecords, pass: DrawPass) anyerror!void {
+        const cpu_self: *Backend = @ptrCast(@alignCast(renderer.ptr));
+        switch (pass.resolve) {
+            .direct => try draw(renderer, prepared_resources, records, pass.state),
+            .linear => |resolve| {
+                const restore = try cpu_self.beginLinearResolve(pass.state.surface, resolve);
+                defer cpu_self.endLinearResolve(restore);
+                try draw(renderer, prepared_resources, records, pass.state);
+            },
+        }
     }
 
     fn dispatchThreaded(cpu_self: *Backend, backend_prepared: *const Prepared, records: DrawRecords, state: DrawState) bool {
