@@ -256,6 +256,15 @@ pub fn build(b: *std.Build) void {
         .name = "snail-gen-c-api",
         .root_module = c_api_generator_mod,
     });
+    const c_api_header_check_mod = b.createModule(.{
+        .root_source_file = b.path("tools/check_c_api_headers.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    });
+    const c_api_header_check = b.addExecutable(.{
+        .name = "snail-check-c-api-headers",
+        .root_module = c_api_header_check_mod,
+    });
 
     const gen_c_api_run = b.addRunArtifact(c_api_generator);
     gen_c_api_run.addArg("--emit");
@@ -270,6 +279,8 @@ pub fn build(b: *std.Build) void {
 
     const check_c_api_step = b.step("check-c-api", "Validate the C API generator by emitting cache artifacts");
     check_c_api_step.dependOn(&gen_c_api_run.step);
+    const check_c_api_headers_run = b.addRunArtifact(c_api_header_check);
+    check_c_api_step.dependOn(&check_c_api_headers_run.step);
 
     // ── C API libraries ──
     if (enable_c_api) {

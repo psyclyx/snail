@@ -100,6 +100,18 @@ typedef struct {
     size_t image_bytes_allocated;
 } SnailResourceFootprint;
 
+typedef struct {
+    uint64_t generation;
+    uint32_t active_atlas_pages_resident;
+    uint32_t active_atlas_layers_allocated;
+    uint32_t atlas_pages_resident;
+    uint32_t atlas_layers_allocated;
+    uint32_t active_image_layers_resident;
+    uint32_t active_image_layers_allocated;
+    uint32_t image_layers_resident;
+    uint32_t image_layers_allocated;
+} SnailResourceCacheStats;
+
 size_t snail_resource_footprint_used_bytes(SnailResourceFootprint footprint);
 size_t snail_resource_footprint_allocated_bytes(SnailResourceFootprint footprint);
 SnailResourceKey snail_resource_key_from_bytes(const char *data, size_t len);
@@ -580,6 +592,10 @@ int snail_resource_set_put_text_atlas_options(SnailResourceSet *set,
                                               SnailResourceKey key,
                                               const SnailTextAtlas *atlas,
                                               int atlas_capacity);
+int snail_resource_set_put_text_atlas_reserved(SnailResourceSet *set,
+                                               SnailResourceKey key,
+                                               const SnailTextAtlas *atlas,
+                                               uint32_t reserved_pages);
 int snail_resource_set_put_path_picture(SnailResourceSet *set,
                                         SnailResourceKey key,
                                         const SnailPathPicture *picture);
@@ -587,6 +603,10 @@ int snail_resource_set_put_path_picture_options(SnailResourceSet *set,
                                                 SnailResourceKey key,
                                                 const SnailPathPicture *picture,
                                                 int atlas_capacity);
+int snail_resource_set_put_path_picture_reserved(SnailResourceSet *set,
+                                                 SnailResourceKey key,
+                                                 const SnailPathPicture *picture,
+                                                 uint32_t reserved_pages);
 int snail_resource_set_put_image(SnailResourceSet *set,
                                  SnailResourceKey key,
                                  const SnailImage *image);
@@ -676,6 +696,9 @@ int snail_coverage_backend_draw_words(SnailCoverageBackend *backend,
 
 void snail_renderer_deinit(SnailRenderer *renderer);
 const char *snail_renderer_backend_name(const SnailRenderer *renderer);
+void snail_renderer_resource_cache_stats(SnailRenderer *renderer,
+                                         SnailResourceCacheStats *out);
+void snail_renderer_reset_resource_cache(SnailRenderer *renderer);
 int snail_renderer_upload_resources_blocking(SnailRenderer *renderer,
                                              const SnailAllocator *alloc,
                                              const SnailResourceSet *set,
@@ -688,6 +711,16 @@ int snail_renderer_plan_resource_upload(SnailRenderer *renderer,
 void snail_resource_upload_plan_deinit(SnailResourceUploadPlan *plan);
 SnailResourceFootprint snail_resource_upload_plan_footprint(const SnailResourceUploadPlan *plan);
 size_t snail_resource_upload_plan_upload_bytes(const SnailResourceUploadPlan *plan);
+uint32_t snail_resource_upload_plan_reused_atlas_pages(const SnailResourceUploadPlan *plan);
+uint32_t snail_resource_upload_plan_missing_atlas_pages(const SnailResourceUploadPlan *plan);
+uint32_t snail_resource_upload_plan_reused_images(const SnailResourceUploadPlan *plan);
+uint32_t snail_resource_upload_plan_missing_images(const SnailResourceUploadPlan *plan);
+uint32_t snail_resource_upload_plan_atlas_cache_rebuilds(const SnailResourceUploadPlan *plan);
+uint32_t snail_resource_upload_plan_image_cache_rebuilds(const SnailResourceUploadPlan *plan);
+size_t snail_resource_upload_plan_curve_bytes(const SnailResourceUploadPlan *plan);
+size_t snail_resource_upload_plan_band_bytes(const SnailResourceUploadPlan *plan);
+size_t snail_resource_upload_plan_layer_info_bytes(const SnailResourceUploadPlan *plan);
+size_t snail_resource_upload_plan_image_bytes(const SnailResourceUploadPlan *plan);
 size_t snail_resource_upload_plan_changed_bytes(const SnailResourceUploadPlan *plan);
 size_t snail_resource_upload_plan_changed_key_count(const SnailResourceUploadPlan *plan);
 bool snail_resource_upload_plan_changed_key(const SnailResourceUploadPlan *plan,
@@ -700,6 +733,9 @@ int snail_renderer_begin_resource_upload(SnailRenderer *renderer,
 void snail_pending_resource_upload_deinit(SnailPendingResourceUpload *pending);
 int snail_pending_resource_upload_record(SnailPendingResourceUpload *pending,
                                          size_t budget_bytes);
+int snail_pending_resource_upload_record_checked(SnailPendingResourceUpload *pending,
+                                                 size_t budget_bytes,
+                                                 bool allow_cache_rebuilds);
 bool snail_pending_resource_upload_ready(SnailPendingResourceUpload *pending,
                                          bool ready);
 bool snail_pending_resource_upload_ready_now(SnailPendingResourceUpload *pending);

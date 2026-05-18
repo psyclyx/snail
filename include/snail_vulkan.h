@@ -32,6 +32,10 @@ int snail_vulkan_renderer_begin_frame(SnailRenderer *renderer,
 int snail_vulkan_pending_resource_upload_record(SnailPendingResourceUpload *pending,
                                                 VkCommandBuffer command_buffer,
                                                 size_t budget_bytes);
+int snail_vulkan_pending_resource_upload_record_checked(SnailPendingResourceUpload *pending,
+                                                        VkCommandBuffer command_buffer,
+                                                        size_t budget_bytes,
+                                                        bool allow_cache_rebuilds);
 bool snail_vulkan_pending_resource_upload_ready_fence(SnailPendingResourceUpload *pending,
                                                       VkFence fence);
 int snail_vulkan_prepared_resource_retirement_queue_retire_after(SnailPreparedResourceRetirementQueue *queue,
