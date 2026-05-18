@@ -83,16 +83,16 @@ pub fn wrapResourceStamp(stamp: snail.ResourceStamp) SnailResourceStamp {
 
 pub fn wrapTextResourceKeys(keys: snail.ResourceManifest.TextBlobResourceKeys) SnailTextResourceKeys {
     return .{
-        .atlas_key = keys.atlas.id,
-        .paint_key = if (keys.paint) |paint| paint.id else 0,
+        .atlas_key = keys.atlas.toOpaque(),
+        .paint_key = if (keys.paint) |paint| paint.toOpaque() else 0,
         .has_paint_key = keys.paint != null,
     };
 }
 
 pub fn toTextResourceKeys(keys: SnailTextResourceKeys) snail.TextResourceKeys {
     return .{
-        .atlas = snail.ResourceKey.fromId(keys.atlas_key),
-        .paint = if (keys.has_paint_key) snail.ResourceKey.fromId(keys.paint_key) else null,
+        .atlas = snail.ResourceKey.fromOpaque(keys.atlas_key),
+        .paint = if (keys.has_paint_key) snail.ResourceKey.fromOpaque(keys.paint_key) else null,
     };
 }
 

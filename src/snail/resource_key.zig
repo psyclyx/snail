@@ -4,20 +4,43 @@ pub const ResourceKey = struct {
     id: u64,
     name: []const u8 = "",
 
+    const namespace_shift = 62;
+    const namespace_mask: u64 = 0b11 << namespace_shift;
+    const payload_mask: u64 = ~namespace_mask;
+
+    const Namespace = enum(u2) {
+        numeric = 1,
+        named = 2,
+        derived = 3,
+    };
+
     pub fn named(comptime name: []const u8) ResourceKey {
-        return .{ .id = hashBytes(name), .name = name };
+        return .{ .id = namespaced(.named, hashBytes(name)), .name = name };
     }
 
     pub fn fromName(name: []const u8) ResourceKey {
-        return .{ .id = hashBytes(name), .name = name };
+        return .{ .id = namespaced(.named, hashBytes(name)), .name = name };
     }
 
     pub fn fromId(id: u64) ResourceKey {
+        return .{ .id = namespaced(.numeric, id) };
+    }
+
+    pub fn fromOpaque(id: u64) ResourceKey {
+        if ((id & namespace_mask) == 0) return fromId(id);
         return .{ .id = id };
+    }
+
+    pub fn toOpaque(self: ResourceKey) u64 {
+        return self.id;
     }
 
     pub fn eql(a: ResourceKey, b: ResourceKey) bool {
         return a.id == b.id;
+    }
+
+    fn namespaced(namespace: Namespace, raw: u64) u64 {
+        return (@as(u64, @intFromEnum(namespace)) << namespace_shift) | (raw & payload_mask);
     }
 };
 
@@ -47,29 +70,12 @@ pub fn mix64(h: u64, v: u64) u64 {
 pub fn derived(parent: ResourceKey, label: []const u8) ResourceKey {
     var h = hashBytes(label);
     h = mix64(h, parent.id);
-    return .{ .id = h };
+    return .{ .id = ResourceKey.namespaced(.derived, h) };
 }
 
-pub fn resourceKey(key_value: anytype) ResourceKey {
-    const T = @TypeOf(key_value);
-    if (T == ResourceKey) return key_value;
-    return switch (@typeInfo(T)) {
-        .enum_literal => ResourceKey.fromName(@tagName(key_value)),
-        .@"enum" => ResourceKey.fromName(@tagName(key_value)),
-        .comptime_int, .int => ResourceKey.fromId(@intCast(key_value)),
-        .pointer => |ptr| blk: {
-            if (ptr.child == u8) break :blk ResourceKey.fromName(key_value);
-            switch (@typeInfo(ptr.child)) {
-                .array => |array| {
-                    if (array.child == u8) {
-                        const slice: []const u8 = key_value;
-                        break :blk ResourceKey.fromName(std.mem.trimEnd(u8, slice, "\x00"));
-                    }
-                },
-                else => {},
-            }
-            @compileError("resource key pointers must point to u8 strings; use ResourceKey.fromId for explicit numeric keys");
-        },
-        else => @compileError("resource keys must be enum literals, enums, strings, or integers"),
-    };
+test "resource key namespaces are distinct" {
+    try std.testing.expect(!ResourceKey.fromId(hashBytes("x")).eql(ResourceKey.fromName("x")));
+    try std.testing.expect(!ResourceKey.fromId(7).eql(derived(ResourceKey.fromId(7), "child")));
+    try std.testing.expect(ResourceKey.fromOpaque(7).eql(ResourceKey.fromId(7)));
+    try std.testing.expect(ResourceKey.fromOpaque(ResourceKey.fromName("x").toOpaque()).eql(ResourceKey.fromName("x")));
 }

@@ -36,6 +36,21 @@ fn ensureForText(atlas_ptr: **c.test_api.TextAtlasImpl, text: []const u8) !void 
     }
 }
 
+fn declareTextBlobResources(
+    resources: *c.test_api.ResourceManifestImpl,
+    atlas_key: c.SnailResourceKey,
+    blob_key: c.SnailResourceKey,
+    atlas: *const c.test_api.TextAtlasImpl,
+    blob: *const c.test_api.TextBlobImpl,
+    out: *c.SnailTextResourceKeys,
+) !void {
+    try testing.expectEqual(c.SNAIL_OK, c_resources.snail_text_blob_resource_keys(atlas_key, blob_key, blob, out));
+    try testing.expectEqual(c.SNAIL_OK, c_resources.snail_resource_manifest_put_text_atlas(resources, out.atlas_key, atlas));
+    if (out.has_paint_key) {
+        try testing.expectEqual(c.SNAIL_OK, c_resources.snail_resource_manifest_put_text_paint(resources, out.paint_key, blob));
+    }
+}
+
 fn testDrawState(width: f32, height: f32) c.SnailDrawState {
     return .{
         .mvp = c_constants.snail_mat4_identity(),
@@ -245,7 +260,7 @@ test "c_api: scheduled upload draw list coverage records and retirement" {
     try testing.expectEqual(c.SNAIL_OK, c_resources.snail_resource_manifest_init(null, 4, &resources));
     defer c_resources.snail_resource_manifest_deinit(resources);
     var text_keys: c.SnailTextResourceKeys = .{};
-    try testing.expectEqual(c.SNAIL_OK, c_resources.snail_resource_manifest_put_text_blob_keyed(resources.?, 1, 2, blob.?, &text_keys));
+    try declareTextBlobResources(resources.?, 1, 2, atlas, blob.?, &text_keys);
 
     var scene: ?*c.test_api.SceneImpl = null;
     try testing.expectEqual(c.SNAIL_OK, c_scene.snail_scene_init(null, &scene));
@@ -338,7 +353,7 @@ test "c_api: scene and resource manifest follow public model" {
     try testing.expectEqual(c.SNAIL_OK, c_resources.snail_resource_manifest_init(null, 4, &resources));
     defer c_resources.snail_resource_manifest_deinit(resources);
     var text_keys: c.SnailTextResourceKeys = .{};
-    try testing.expectEqual(c.SNAIL_OK, c_resources.snail_resource_manifest_put_text_blob_keyed(resources.?, 1, 2, blob.?, &text_keys));
+    try declareTextBlobResources(resources.?, 1, 2, atlas, blob.?, &text_keys);
     try testing.expectEqual(@as(usize, 1), c_resources.snail_resource_manifest_count(resources.?));
 
     var scene: ?*c.test_api.SceneImpl = null;

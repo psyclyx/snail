@@ -25,6 +25,11 @@ const rose_soft = [4]f32{ 1.0, 0.82, 0.87, 1.0 };
 const amber = [4]f32{ 0.86, 0.60, 0.14, 1.0 };
 const amber_soft = [4]f32{ 1.0, 0.92, 0.72, 1.0 };
 
+fn declareTextBlobResources(set: *snail.ResourceManifest, keys: snail.TextResourceKeys, blob: *const snail.TextBlob) !void {
+    try set.putTextAtlas(keys.atlas, blob.atlas);
+    if (keys.paint) |paint_key| try set.putTextPaint(paint_key, blob);
+}
+
 const Diagram = enum {
     atlas,
     coverage,
@@ -126,9 +131,9 @@ fn renderDiagram(
 
     var resource_entries: [8]snail.ResourceManifest.Entry = undefined;
     var resources = snail.ResourceManifest.init(&resource_entries);
-    try resources.putPathPicture(.diagram_paths, &path_picture);
-    const text_keys = snail.ResourceManifest.textBlobResourceKeys(.diagram_fonts, .diagram_text, &text_blob);
-    try resources.putTextBlob(text_keys, &text_blob);
+    try resources.putPathPicture(snail.ResourceKey.named("diagram_paths"), &path_picture);
+    const text_keys = snail.ResourceManifest.textBlobResourceKeys(snail.ResourceKey.named("diagram_fonts"), snail.ResourceKey.named("diagram_text"), &text_blob);
+    try declareTextBlobResources(&resources, text_keys, &text_blob);
 
     var scene = snail.Scene.init(allocator);
     defer scene.deinit();

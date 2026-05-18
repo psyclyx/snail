@@ -29,7 +29,6 @@ const PreparedLayerInfoView = view_mod.PreparedLayerInfoView;
 const PreparedTextAtlasView = view_mod.PreparedTextAtlasView;
 const ResourceKey = resource_key_mod.ResourceKey;
 const ResourceStamp = resource_key_mod.ResourceStamp;
-const resourceKey = resource_key_mod.resourceKey;
 
 pub const PreparedResources = struct {
     allocator: std.mem.Allocator,
@@ -95,8 +94,7 @@ pub const PreparedResources = struct {
         try queue.retireAfter(self, fence_or_frame);
     }
 
-    pub fn stampForKey(self: *const PreparedResources, key_value: anytype) ?ResourceStamp {
-        const key = resourceKey(key_value);
+    pub fn stampForKey(self: *const PreparedResources, key: ResourceKey) ?ResourceStamp {
         for (self.atlases) |entry| if (entry.key.eql(key)) return entry.stamp;
         for (self.layer_infos) |entry| if (entry.key.eql(key)) return entry.stamp;
         for (self.images) |entry| if (entry.key.eql(key)) return entry.stamp;
@@ -128,8 +126,8 @@ pub const PreparedResources = struct {
         return null;
     }
 
-    pub fn textAtlasView(self: *const PreparedResources, key_value: anytype) !PreparedTextAtlasView {
-        const entry = self.textAtlasEntry(resourceKey(key_value)) orelse return error.MissingPreparedResource;
+    pub fn textAtlasView(self: *const PreparedResources, key: ResourceKey) !PreparedTextAtlasView {
+        const entry = self.textAtlasEntry(key) orelse return error.MissingPreparedResource;
         return .{
             .layer_base = entry.view.layer_base,
             .page_layers = entry.view.page_layers,
@@ -137,26 +135,26 @@ pub const PreparedResources = struct {
         };
     }
 
-    pub fn textPaintView(self: *const PreparedResources, key_value: anytype) !PreparedLayerInfoView {
-        const entry = self.textPaintEntry(resourceKey(key_value)) orelse return error.MissingPreparedResource;
+    pub fn textPaintView(self: *const PreparedResources, key: ResourceKey) !PreparedLayerInfoView {
+        const entry = self.textPaintEntry(key) orelse return error.MissingPreparedResource;
         return entry.view;
     }
 
-    pub fn pathAtlasView(self: *const PreparedResources, key_value: anytype) !PreparedAtlasView {
-        const entry = self.pathPictureEntry(resourceKey(key_value)) orelse return error.MissingPreparedResource;
+    pub fn pathAtlasView(self: *const PreparedResources, key: ResourceKey) !PreparedAtlasView {
+        const entry = self.pathPictureEntry(key) orelse return error.MissingPreparedResource;
         return entry.view;
     }
 
-    pub fn textStamp(self: *const PreparedResources, key_value: anytype) !ResourceStamp {
-        return (self.textAtlasEntry(resourceKey(key_value)) orelse return error.MissingPreparedResource).stamp;
+    pub fn textStamp(self: *const PreparedResources, key: ResourceKey) !ResourceStamp {
+        return (self.textAtlasEntry(key) orelse return error.MissingPreparedResource).stamp;
     }
 
-    pub fn textPaintStamp(self: *const PreparedResources, key_value: anytype) !ResourceStamp {
-        return (self.textPaintEntry(resourceKey(key_value)) orelse return error.MissingPreparedResource).stamp;
+    pub fn textPaintStamp(self: *const PreparedResources, key: ResourceKey) !ResourceStamp {
+        return (self.textPaintEntry(key) orelse return error.MissingPreparedResource).stamp;
     }
 
-    pub fn pathStamp(self: *const PreparedResources, key_value: anytype) !ResourceStamp {
-        return (self.pathPictureEntry(resourceKey(key_value)) orelse return error.MissingPreparedResource).stamp;
+    pub fn pathStamp(self: *const PreparedResources, key: ResourceKey) !ResourceStamp {
+        return (self.pathPictureEntry(key) orelse return error.MissingPreparedResource).stamp;
     }
 };
 

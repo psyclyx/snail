@@ -18,6 +18,11 @@ const REPRO_SCREENSHOT_PATH = "zig-out/repro-frame.tga";
 const GL_RGBA8: gl.GLint = 0x8058;
 const GL_SRGB8_ALPHA8: gl.GLint = 0x8C43;
 
+fn declareTextBlobResources(set: *snail.ResourceManifest, keys: snail.TextResourceKeys, blob: *const snail.TextBlob) !void {
+    try set.putTextAtlas(keys.atlas, blob.atlas);
+    if (keys.paint) |paint_key| try set.putTextPaint(paint_key, blob);
+}
+
 pub fn main() !void {
     var da: std.heap.DebugAllocator(.{}) = .init;
     defer _ = da.deinit();
@@ -139,9 +144,9 @@ fn renderCompactBanner(allocator: std.mem.Allocator) !void {
     defer path_picture.deinit();
     var resource_entries: [8]snail.ResourceManifest.Entry = undefined;
     var resources = snail.ResourceManifest.init(&resource_entries);
-    try resources.putPathPicture(.compact_paths, &path_picture);
-    const text_keys = snail.ResourceManifest.textBlobResourceKeys(.compact_fonts, .compact_text, &text_blob);
-    try resources.putTextBlob(text_keys, &text_blob);
+    try resources.putPathPicture(snail.ResourceKey.named("compact_paths"), &path_picture);
+    const text_keys = snail.ResourceManifest.textBlobResourceKeys(snail.ResourceKey.named("compact_fonts"), snail.ResourceKey.named("compact_text"), &text_blob);
+    try declareTextBlobResources(&resources, text_keys, &text_blob);
 
     var scene = snail.Scene.init(allocator);
     defer scene.deinit();
@@ -217,9 +222,9 @@ fn renderRepro(allocator: std.mem.Allocator) !void {
     defer path_picture.deinit();
     var resource_entries: [8]snail.ResourceManifest.Entry = undefined;
     var resources = snail.ResourceManifest.init(&resource_entries);
-    try resources.putPathPicture(.repro_paths, &path_picture);
-    const text_keys = snail.ResourceManifest.textBlobResourceKeys(.repro_fonts, .repro_text, &text_blob);
-    try resources.putTextBlob(text_keys, &text_blob);
+    try resources.putPathPicture(snail.ResourceKey.named("repro_paths"), &path_picture);
+    const text_keys = snail.ResourceManifest.textBlobResourceKeys(snail.ResourceKey.named("repro_fonts"), snail.ResourceKey.named("repro_text"), &text_blob);
+    try declareTextBlobResources(&resources, text_keys, &text_blob);
 
     var scene = snail.Scene.init(allocator);
     defer scene.deinit();

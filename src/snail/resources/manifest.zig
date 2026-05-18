@@ -13,7 +13,6 @@ const ResourceKey = resource_key_mod.ResourceKey;
 const TextAtlas = text_mod.TextAtlas;
 const TextBlob = text_mod.TextBlob;
 const derivedResourceKey = resource_key_mod.derived;
-const resourceKey = resource_key_mod.resourceKey;
 
 pub const ResourceManifest = struct {
     /// Caller-buffered CPU manifest. Entries point at app-owned
@@ -77,58 +76,46 @@ pub const ResourceManifest = struct {
         self.len = 0;
     }
 
-    pub fn putTextAtlas(self: *ResourceManifest, key_value: anytype, atlas: *const TextAtlas) !void {
-        try self.putTextAtlasOptions(key_value, atlas, .{});
+    pub fn putTextAtlas(self: *ResourceManifest, key: ResourceKey, atlas: *const TextAtlas) !void {
+        try self.putTextAtlasOptions(key, atlas, .{});
     }
 
-    pub fn putTextAtlasOptions(self: *ResourceManifest, key_value: anytype, atlas: *const TextAtlas, options: TextAtlasOptions) !void {
+    pub fn putTextAtlasOptions(self: *ResourceManifest, key: ResourceKey, atlas: *const TextAtlas, options: TextAtlasOptions) !void {
         try self.put(.{ .text_atlas = .{
-            .key = resourceKey(key_value),
+            .key = key,
             .atlas = atlas,
             .atlas_capacity = options.atlas_capacity,
         } });
     }
 
-    fn putTextBlobPaint(self: *ResourceManifest, key_value: anytype, blob: *const TextBlob) !void {
+    pub fn putTextPaint(self: *ResourceManifest, key: ResourceKey, blob: *const TextBlob) !void {
         try self.put(.{ .text_paint = .{
-            .key = resourceKey(key_value),
+            .key = key,
             .blob = blob,
         } });
     }
 
-    pub fn textBlobResourceKeys(atlas_key_value: anytype, blob_key_value: anytype, blob: *const TextBlob) TextBlobResourceKeys {
-        const blob_key = resourceKey(blob_key_value);
+    pub fn textBlobResourceKeys(atlas_key: ResourceKey, blob_key: ResourceKey, blob: *const TextBlob) TextBlobResourceKeys {
         return .{
-            .atlas = resourceKey(atlas_key_value),
+            .atlas = atlas_key,
             .paint = if (blob.hasPaintRecords()) derivedResourceKey(blob_key, "text_paint") else null,
         };
     }
 
-    pub fn putTextBlobKeyed(self: *ResourceManifest, atlas_key_value: anytype, blob_key_value: anytype, blob: *const TextBlob) !TextBlobResourceKeys {
-        const keys = textBlobResourceKeys(atlas_key_value, blob_key_value, blob);
-        try self.putTextBlob(keys, blob);
-        return keys;
+    pub fn putPathPicture(self: *ResourceManifest, key: ResourceKey, picture: *const PathPicture) !void {
+        try self.putPathPictureOptions(key, picture, .{});
     }
 
-    pub fn putTextBlob(self: *ResourceManifest, keys: TextBlobResourceKeys, blob: *const TextBlob) !void {
-        try self.putTextAtlas(keys.atlas, blob.atlas);
-        if (keys.paint) |paint_key| try self.putTextBlobPaint(paint_key, blob);
-    }
-
-    pub fn putPathPicture(self: *ResourceManifest, key_value: anytype, picture: *const PathPicture) !void {
-        try self.putPathPictureOptions(key_value, picture, .{});
-    }
-
-    pub fn putPathPictureOptions(self: *ResourceManifest, key_value: anytype, picture: *const PathPicture, options: PathPictureOptions) !void {
+    pub fn putPathPictureOptions(self: *ResourceManifest, key: ResourceKey, picture: *const PathPicture, options: PathPictureOptions) !void {
         try self.put(.{ .path_picture = .{
-            .key = resourceKey(key_value),
+            .key = key,
             .picture = picture,
             .atlas_capacity = options.atlas_capacity,
         } });
     }
 
-    pub fn putImage(self: *ResourceManifest, key_value: anytype, image: *const Image) !void {
-        try self.put(.{ .image = .{ .key = resourceKey(key_value), .image = image } });
+    pub fn putImage(self: *ResourceManifest, key: ResourceKey, image: *const Image) !void {
+        try self.put(.{ .image = .{ .key = key, .image = image } });
     }
 
     fn put(self: *ResourceManifest, entry: Entry) !void {

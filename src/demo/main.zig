@@ -20,6 +20,11 @@ const KEY_RIGHT = wayland.KEY_RIGHT;
 const KEY_UP = wayland.KEY_UP;
 const KEY_DOWN = wayland.KEY_DOWN;
 
+fn declareTextBlobResources(set: *snail.ResourceManifest, keys: snail.TextResourceKeys, blob: *const snail.TextBlob) !void {
+    try set.putTextAtlas(keys.atlas, blob.atlas);
+    if (keys.paint) |paint_key| try set.putTextPaint(paint_key, blob);
+}
+
 pub fn main() !void {
     var da: std.heap.DebugAllocator(.{}) = .init;
     defer _ = da.deinit();
@@ -328,10 +333,10 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
 
             var resource_entries: [8]snail.ResourceManifest.Entry = undefined;
             var resources = snail.ResourceManifest.init(&resource_entries);
-            if (path_picture) |*picture| try resources.putPathPicture(.banner_paths, picture);
+            if (path_picture) |*picture| try resources.putPathPicture(snail.ResourceKey.named("banner_paths"), picture);
             const text_keys = if (text_blob) |*blob| keys: {
-                const keys = snail.ResourceManifest.textBlobResourceKeys(.banner_fonts, .banner_text, blob);
-                try resources.putTextBlob(keys, blob);
+                const keys = snail.ResourceManifest.textBlobResourceKeys(snail.ResourceKey.named("banner_fonts"), snail.ResourceKey.named("banner_text"), blob);
+                try declareTextBlobResources(&resources, keys, blob);
                 break :keys keys;
             } else null;
 

@@ -95,6 +95,11 @@ fn sceneTextKey(index: usize) snail.ResourceKey {
     return snail.ResourceKey.fromId(@intCast(index + 1));
 }
 
+fn declareTextBlobResources(set: *snail.ResourceManifest, keys: snail.TextResourceKeys, blob: *const snail.TextBlob) !void {
+    try set.putTextAtlas(keys.atlas, blob.atlas);
+    if (keys.paint) |paint_key| try set.putTextPaint(paint_key, blob);
+}
+
 const RenderMode = struct {
     aa: snail.SubpixelOrder,
 
@@ -521,7 +526,7 @@ fn buildScene(
         blobs[blob_count] = try makeRichTextBlob(allocator, atlas);
         try scene.addText(.{
             .blob = &blobs[blob_count],
-            .resources = snail.ResourceManifest.textBlobResourceKeys(.fonts, sceneTextKey(blob_count), &blobs[blob_count]),
+            .resources = snail.ResourceManifest.textBlobResourceKeys(snail.ResourceKey.named("fonts"), sceneTextKey(blob_count), &blobs[blob_count]),
         });
         blob_count += 1;
     } else if (needs_text) {
@@ -531,7 +536,7 @@ fn buildScene(
             blobs[blob_count] = try makeTextBlob(allocator, atlas, line);
             try scene.addText(.{
                 .blob = &blobs[blob_count],
-                .resources = snail.ResourceManifest.textBlobResourceKeys(.fonts, sceneTextKey(blob_count), &blobs[blob_count]),
+                .resources = snail.ResourceManifest.textBlobResourceKeys(snail.ResourceKey.named("fonts"), sceneTextKey(blob_count), &blobs[blob_count]),
             });
             blob_count += 1;
         }
@@ -572,7 +577,7 @@ fn uploadSceneResources(
 
     var set = snail.ResourceManifest.init(entries);
     for (bundle.blobs, 0..) |*blob, i| {
-        try set.putTextBlob(snail.ResourceManifest.textBlobResourceKeys(.fonts, sceneTextKey(i), blob), blob);
+        try declareTextBlobResources(&set, snail.ResourceManifest.textBlobResourceKeys(snail.ResourceKey.named("fonts"), sceneTextKey(i), blob), blob);
     }
     if (bundle.picture) |picture| try set.putPathPicture(VECTOR_RESOURCE_KEY, picture);
     return renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set);

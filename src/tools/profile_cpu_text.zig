@@ -38,6 +38,11 @@ fn textResourceKey(index: usize) snail.ResourceKey {
     return snail.ResourceKey.fromId(@intCast(index + 1));
 }
 
+fn declareTextBlobResources(set: *snail.ResourceManifest, keys: snail.TextResourceKeys, blob: *const snail.TextBlob) !void {
+    try set.putTextAtlas(keys.atlas, blob.atlas);
+    if (keys.paint) |paint_key| try set.putTextPaint(paint_key, blob);
+}
+
 fn nowNs() u64 {
     var ts: std.c.timespec = undefined;
     _ = std.c.clock_gettime(.MONOTONIC, &ts);
@@ -113,7 +118,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var scene = snail.Scene.init(arena);
     defer scene.deinit();
     for (blobs, 0..) |*blob, i| {
-        try scene.addText(.{ .blob = blob, .resources = snail.ResourceManifest.textBlobResourceKeys(.fonts, textResourceKey(i), blob) });
+        try scene.addText(.{ .blob = blob, .resources = snail.ResourceManifest.textBlobResourceKeys(snail.ResourceKey.named("fonts"), textResourceKey(i), blob) });
     }
 
     const pixel_count = @as(usize, width) * @as(usize, height) * 4;
@@ -129,7 +134,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var entries: [8]snail.ResourceManifest.Entry = undefined;
     var set = snail.ResourceManifest.init(&entries);
     for (blobs, 0..) |*blob, i| {
-        try set.putTextBlob(snail.ResourceManifest.textBlobResourceKeys(.fonts, textResourceKey(i), blob), blob);
+        try declareTextBlobResources(&set, snail.ResourceManifest.textBlobResourceKeys(snail.ResourceKey.named("fonts"), textResourceKey(i), blob), blob);
     }
 
     var resources = try cpu.uploadResourcesBlocking(.{ .persistent = arena, .scratch = arena }, &set);

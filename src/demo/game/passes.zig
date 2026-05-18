@@ -36,7 +36,7 @@ pub const PreparedPass = struct {
             .picture = owned_picture,
             .path_key = if (owned_picture != null) snail.ResourceKey.named(name ++ ".path") else null,
             .text = owned_text,
-            .text_resources = snail.ResourceManifest.textBlobResourceKeys(.game_fonts, name ++ ".text", owned_text),
+            .text_resources = snail.ResourceManifest.textBlobResourceKeys(snail.ResourceKey.named("game_fonts"), snail.ResourceKey.fromName(name ++ ".text"), owned_text),
             .scene = snail.Scene.init(allocator),
         };
         errdefer {

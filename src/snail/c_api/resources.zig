@@ -72,69 +72,59 @@ pub export fn snail_resource_manifest_capacity(set: *const ResourceManifestImpl)
 }
 
 pub export fn snail_resource_manifest_put_text_atlas(set: *ResourceManifestImpl, key: SnailResourceKey, atlas: *const TextAtlasImpl) c_int {
-    set.inner.putTextAtlas(snail.ResourceKey.fromId(key), &atlas.inner) catch |err| return mapError(err);
+    set.inner.putTextAtlas(snail.ResourceKey.fromOpaque(key), &atlas.inner) catch |err| return mapError(err);
     return SNAIL_OK;
 }
 
 pub export fn snail_resource_manifest_put_text_atlas_options(set: *ResourceManifestImpl, key: SnailResourceKey, atlas: *const TextAtlasImpl, atlas_capacity: c_int) c_int {
-    set.inner.putTextAtlasOptions(snail.ResourceKey.fromId(key), &atlas.inner, .{
+    set.inner.putTextAtlasOptions(snail.ResourceKey.fromOpaque(key), &atlas.inner, .{
         .atlas_capacity = toResourceCapacityMode(atlas_capacity) catch return SNAIL_ERR_INVALID_ARGUMENT,
     }) catch |err| return mapError(err);
     return SNAIL_OK;
 }
 
 pub export fn snail_resource_manifest_put_text_atlas_reserved(set: *ResourceManifestImpl, key: SnailResourceKey, atlas: *const TextAtlasImpl, reserved_pages: u32) c_int {
-    set.inner.putTextAtlasOptions(snail.ResourceKey.fromId(key), &atlas.inner, .{
+    set.inner.putTextAtlasOptions(snail.ResourceKey.fromOpaque(key), &atlas.inner, .{
         .atlas_capacity = reservedResourceCapacityMode(reserved_pages),
     }) catch |err| return mapError(err);
     return SNAIL_OK;
 }
 
+pub export fn snail_resource_manifest_put_text_paint(set: *ResourceManifestImpl, key: SnailResourceKey, blob: *const TextBlobImpl) c_int {
+    set.inner.putTextPaint(snail.ResourceKey.fromOpaque(key), &blob.inner) catch |err| return mapError(err);
+    return SNAIL_OK;
+}
+
 pub export fn snail_text_blob_resource_keys(atlas_key: SnailResourceKey, blob_key: SnailResourceKey, blob: *const TextBlobImpl, out: *SnailTextResourceKeys) c_int {
     out.* = wrapTextResourceKeys(snail.ResourceManifest.textBlobResourceKeys(
-        snail.ResourceKey.fromId(atlas_key),
-        snail.ResourceKey.fromId(blob_key),
+        snail.ResourceKey.fromOpaque(atlas_key),
+        snail.ResourceKey.fromOpaque(blob_key),
         &blob.inner,
     ));
     return SNAIL_OK;
 }
 
-pub export fn snail_resource_manifest_put_text_blob_keyed(set: *ResourceManifestImpl, atlas_key: SnailResourceKey, blob_key: SnailResourceKey, blob: *const TextBlobImpl, out: *SnailTextResourceKeys) c_int {
-    const keys = set.inner.putTextBlobKeyed(
-        snail.ResourceKey.fromId(atlas_key),
-        snail.ResourceKey.fromId(blob_key),
-        &blob.inner,
-    ) catch |err| return mapError(err);
-    out.* = wrapTextResourceKeys(keys);
-    return SNAIL_OK;
-}
-
-pub export fn snail_resource_manifest_put_text_blob(set: *ResourceManifestImpl, resources: SnailTextResourceKeys, blob: *const TextBlobImpl) c_int {
-    set.inner.putTextBlob(toTextResourceKeys(resources), &blob.inner) catch |err| return mapError(err);
-    return SNAIL_OK;
-}
-
 pub export fn snail_resource_manifest_put_path_picture(set: *ResourceManifestImpl, key: SnailResourceKey, picture: *const PathPictureImpl) c_int {
-    set.inner.putPathPicture(snail.ResourceKey.fromId(key), &picture.inner) catch |err| return mapError(err);
+    set.inner.putPathPicture(snail.ResourceKey.fromOpaque(key), &picture.inner) catch |err| return mapError(err);
     return SNAIL_OK;
 }
 
 pub export fn snail_resource_manifest_put_path_picture_options(set: *ResourceManifestImpl, key: SnailResourceKey, picture: *const PathPictureImpl, atlas_capacity: c_int) c_int {
-    set.inner.putPathPictureOptions(snail.ResourceKey.fromId(key), &picture.inner, .{
+    set.inner.putPathPictureOptions(snail.ResourceKey.fromOpaque(key), &picture.inner, .{
         .atlas_capacity = toResourceCapacityMode(atlas_capacity) catch return SNAIL_ERR_INVALID_ARGUMENT,
     }) catch |err| return mapError(err);
     return SNAIL_OK;
 }
 
 pub export fn snail_resource_manifest_put_path_picture_reserved(set: *ResourceManifestImpl, key: SnailResourceKey, picture: *const PathPictureImpl, reserved_pages: u32) c_int {
-    set.inner.putPathPictureOptions(snail.ResourceKey.fromId(key), &picture.inner, .{
+    set.inner.putPathPictureOptions(snail.ResourceKey.fromOpaque(key), &picture.inner, .{
         .atlas_capacity = reservedResourceCapacityMode(reserved_pages),
     }) catch |err| return mapError(err);
     return SNAIL_OK;
 }
 
 pub export fn snail_resource_manifest_put_image(set: *ResourceManifestImpl, key: SnailResourceKey, image: *const ImageImpl) c_int {
-    set.inner.putImage(snail.ResourceKey.fromId(key), &image.inner) catch |err| return mapError(err);
+    set.inner.putImage(snail.ResourceKey.fromOpaque(key), &image.inner) catch |err| return mapError(err);
     return SNAIL_OK;
 }
 
@@ -151,7 +141,7 @@ pub export fn snail_prepared_resources_deinit(prepared: ?*PreparedResourcesImpl)
 }
 
 pub export fn snail_prepared_resources_stamp_for_key(prepared: *const PreparedResourcesImpl, key: SnailResourceKey, out: *SnailResourceStamp) bool {
-    if (prepared.inner.stampForKey(snail.ResourceKey.fromId(key))) |stamp| {
+    if (prepared.inner.stampForKey(snail.ResourceKey.fromOpaque(key))) |stamp| {
         out.* = wrapResourceStamp(stamp);
         return true;
     }

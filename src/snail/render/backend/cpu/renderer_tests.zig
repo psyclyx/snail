@@ -6,8 +6,14 @@ const cpu_texture = @import("texture.zig");
 const glyph_atlas = @import("../../../text/glyph_atlas.zig");
 
 const CpuRenderer = cpu_renderer.CpuRenderer;
+const ResourceKey = snail.ResourceKey;
 const Transform2D = snail.Transform2D;
 const test_api = cpu_renderer.test_api;
+
+fn declareTextBlobResources(set: *snail.ResourceManifest, keys: snail.TextResourceKeys, blob: *const snail.TextBlob) !void {
+    try set.putTextAtlas(keys.atlas, blob.atlas);
+    if (keys.paint) |paint_key| try set.putTextPaint(paint_key, blob);
+}
 
 fn expectEqualSlicesWithinU8(expected: []const u8, actual: []const u8, max_diff: u8, max_differences: usize) !void {
     try std.testing.expectEqual(expected.len, actual.len);
@@ -496,7 +502,7 @@ test "cpu renderer renders image-painted path picture" {
 
     var resource_entries: [4]snail.ResourceManifest.Entry = undefined;
     var resources = snail.ResourceManifest.init(&resource_entries);
-    try resources.putPathPicture(.picture, &picture);
+    try resources.putPathPicture(ResourceKey.named("picture"), &picture);
     var prepared = try renderer_iface.uploadResourcesBlocking(.{ .persistent = testing.allocator, .scratch = testing.allocator }, &resources);
     defer prepared.deinit();
 
@@ -804,7 +810,7 @@ test "cpu renderer threaded draw matches single-threaded byte-for-byte" {
     }, .{ .paint = .{ .solid = .{ 1, 1, 1, 1 } }, .width = 1.5 }, 4, .identity);
     var picture = try builder.freeze(.{ .persistent_allocator = testing.allocator, .scratch_allocator = testing.allocator });
     defer picture.deinit();
-    const text_keys = snail.ResourceManifest.textBlobResourceKeys(.fonts, .threaded_text, &blob);
+    const text_keys = snail.ResourceManifest.textBlobResourceKeys(ResourceKey.named("fonts"), ResourceKey.named("threaded_text"), &blob);
 
     var scene = snail.Scene.init(testing.allocator);
     defer scene.deinit();
@@ -829,8 +835,8 @@ test "cpu renderer threaded draw matches single-threaded byte-for-byte" {
     var serial_resources = try serial_cpu.uploadResourcesBlocking(.{ .persistent = testing.allocator, .scratch = testing.allocator }, blk: {
         var entries: [4]snail.ResourceManifest.Entry = undefined;
         var set = snail.ResourceManifest.init(&entries);
-        try set.putPathPicture(.shape, &picture);
-        try set.putTextBlob(text_keys, &blob);
+        try set.putPathPicture(ResourceKey.named("shape"), &picture);
+        try declareTextBlobResources(&set, text_keys, &blob);
         break :blk &set;
     });
     defer serial_resources.deinit();
@@ -851,8 +857,8 @@ test "cpu renderer threaded draw matches single-threaded byte-for-byte" {
     var threaded_resources = try threaded_cpu.uploadResourcesBlocking(.{ .persistent = testing.allocator, .scratch = testing.allocator }, blk: {
         var entries: [4]snail.ResourceManifest.Entry = undefined;
         var set = snail.ResourceManifest.init(&entries);
-        try set.putPathPicture(.shape, &picture);
-        try set.putTextBlob(text_keys, &blob);
+        try set.putPathPicture(ResourceKey.named("shape"), &picture);
+        try declareTextBlobResources(&set, text_keys, &blob);
         break :blk &set;
     });
     defer threaded_resources.deinit();
@@ -902,7 +908,7 @@ test "cpu renderer drawPaths batch matches drawPathPicture" {
 
     var resource_entries: [4]snail.ResourceManifest.Entry = undefined;
     var resources = snail.ResourceManifest.init(&resource_entries);
-    try resources.putPathPicture(.shape, &picture);
+    try resources.putPathPicture(ResourceKey.named("shape"), &picture);
     var prepared = try renderer.uploadResourcesBlocking(.{ .persistent = testing.allocator, .scratch = testing.allocator }, &resources);
     defer prepared.deinit();
 
@@ -962,7 +968,7 @@ test "cpu renderer applies path draw tint in prepared batches" {
     var renderer = cpu.asRenderer();
     var resource_entries: [4]snail.ResourceManifest.Entry = undefined;
     var resources = snail.ResourceManifest.init(&resource_entries);
-    try resources.putPathPicture(.shape, &picture);
+    try resources.putPathPicture(ResourceKey.named("shape"), &picture);
     var prepared = try renderer.uploadResourcesBlocking(.{ .persistent = testing.allocator, .scratch = testing.allocator }, &resources);
     defer prepared.deinit();
 

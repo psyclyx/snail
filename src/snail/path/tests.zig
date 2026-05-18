@@ -176,8 +176,8 @@ test "resource upload footprints are allocation-free and policy-aware" {
 
     var entries: [2]ResourceManifest.Entry = undefined;
     var set = ResourceManifest.init(&entries);
-    try set.putPathPicture(.shape, &compiled_picture);
-    try set.putImage(.image, &image);
+    try set.putPathPicture(ResourceKey.named("shape"), &compiled_picture);
+    try set.putImage(ResourceKey.named("image"), &image);
     const set_fp = try set.estimateUploadFootprint();
     try std.testing.expectEqual(picture_fp.layer_info_bytes_used, set_fp.layer_info_bytes_used);
     try std.testing.expectEqual(@as(usize, 4), set_fp.image_bytes_used);
@@ -185,7 +185,7 @@ test "resource upload footprints are allocation-free and policy-aware" {
 
     var growable_entries: [1]ResourceManifest.Entry = undefined;
     var growable_set = ResourceManifest.init(&growable_entries);
-    try growable_set.putPathPictureOptions(.shape, &compiled_picture, .{ .atlas_capacity = .growable });
+    try growable_set.putPathPictureOptions(ResourceKey.named("shape"), &compiled_picture, .{ .atlas_capacity = .growable });
     const growable_fp = try growable_set.estimateUploadFootprint();
     try std.testing.expect(growable_fp.curve_bytes_allocated > set_fp.curve_bytes_allocated);
 }

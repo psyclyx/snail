@@ -27,6 +27,11 @@ const APPEND_TEXT_KEY = snail.ResourceKey.named("backend-compare.append-text");
 const PATH_BAND_RESOURCE_KEY = snail.ResourceKey.named("backend-compare.path-band");
 const BAND_STRESS_FILL = [4]f32{ 0.58, 0.68, 0.54, 1.0 };
 
+fn declareTextBlobResources(set: *snail.ResourceManifest, keys: snail.TextResourceKeys, blob: *const snail.TextBlob) !void {
+    try set.putTextAtlas(keys.atlas, blob.atlas);
+    if (keys.paint) |paint_key| try set.putTextPaint(paint_key, blob);
+}
+
 const CompareCase = struct {
     name: []const u8,
     subpixel_order: snail.SubpixelOrder,
@@ -302,7 +307,7 @@ fn uploadSceneResources(
     var entries: [8]snail.ResourceManifest.Entry = undefined;
     var set = snail.ResourceManifest.init(&entries);
     for (scene.commands.items) |command| switch (command) {
-        .text => |text| try set.putTextBlob(text.resources, text.blob),
+        .text => |text| try declareTextBlobResources(&set, text.resources, text.blob),
         .path => |path| try set.putPathPicture(path.resource_key, path.picture),
     };
     return renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set);

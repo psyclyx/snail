@@ -71,7 +71,7 @@ pub export fn snail_scene_add_path_picture_draw(scene: *SceneImpl, draw: SnailPa
     const picture = draw.picture orelse return SNAIL_ERR_INVALID_ARGUMENT;
     var path_draw = snail.PathDraw{
         .picture = &picture.inner,
-        .resource_key = snail.ResourceKey.fromId(draw.key),
+        .resource_key = snail.ResourceKey.fromOpaque(draw.key),
     };
     if (draw.has_range) path_draw.shapes = toRange(draw.range);
     if (draw.has_override) {

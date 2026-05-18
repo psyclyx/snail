@@ -194,7 +194,8 @@ pub fn main() !void {
 }
 
 fn addPassResources(set: *snail.ResourceManifest, pass: *const PreparedPass) !void {
-    try set.putTextBlob(pass.text_resources, pass.text);
+    try set.putTextAtlas(pass.text_resources.atlas, pass.text.atlas);
+    if (pass.text_resources.paint) |paint_key| try set.putTextPaint(paint_key, pass.text);
     if (pass.picture) |picture| try set.putPathPicture(pass.path_key.?, picture);
 }
 

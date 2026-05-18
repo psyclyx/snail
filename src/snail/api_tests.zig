@@ -39,6 +39,11 @@ const DrawState = snail.DrawState;
 const DrawList = snail.DrawList;
 const Scene = snail.Scene;
 const CoverageTransfer = snail.CoverageTransfer;
+
+fn declareTextBlobResources(set: *ResourceManifest, keys: snail.TextResourceKeys, blob: *const TextBlob) !void {
+    try set.putTextAtlas(keys.atlas, blob.atlas);
+    if (keys.paint) |paint_key| try set.putTextPaint(paint_key, blob);
+}
 const SubpixelOrder = snail.SubpixelOrder;
 const FillRule = snail.FillRule;
 const TargetEncoding = snail.TargetEncoding;
@@ -159,8 +164,8 @@ test "cpu prepared resources own uploaded buffers" {
 
     var entries: [2]ResourceManifest.Entry = undefined;
     var set = ResourceManifest.init(&entries);
-    try set.putPathPicture(.painted_path, &picture);
-    try set.putImage(.source_image, &image);
+    try set.putPathPicture(ResourceKey.named("painted_path"), &picture);
+    try set.putImage(ResourceKey.named("source_image"), &image);
 
     var prepared = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set);
     defer prepared.deinit();
@@ -506,8 +511,8 @@ test "ResourceManifest uploads explicit text paint resources" {
 
     var set_entries: [2]ResourceManifest.Entry = undefined;
     var set = ResourceManifest.init(&set_entries);
-    const text_keys = ResourceManifest.textBlobResourceKeys(.fonts, .headline, &blob);
-    try set.putTextBlob(text_keys, &blob);
+    const text_keys = ResourceManifest.textBlobResourceKeys(ResourceKey.named("fonts"), ResourceKey.named("headline"), &blob);
+    try declareTextBlobResources(&set, text_keys, &blob);
     try std.testing.expectEqual(@as(usize, 2), set.slice().len);
     try std.testing.expect(std.meta.activeTag(set.slice()[0]) == .text_atlas);
     try std.testing.expect(std.meta.activeTag(set.slice()[1]) == .text_paint);
@@ -571,7 +576,7 @@ test "ResourceManifest footprint counts text image paint payloads" {
 
     var set_entries: [2]ResourceManifest.Entry = undefined;
     var set = ResourceManifest.init(&set_entries);
-    try set.putTextBlob(ResourceManifest.textBlobResourceKeys(.fonts, .image_text, &blob), &blob);
+    try declareTextBlobResources(&set, ResourceManifest.textBlobResourceKeys(ResourceKey.named("fonts"), ResourceKey.named("image_text"), &blob), &blob);
     const footprint = try set.estimateUploadFootprint();
     try std.testing.expectEqual(image.pixelSlice().len, footprint.image_bytes_used);
     try std.testing.expect(footprint.image_bytes_allocated >= footprint.image_bytes_used);
@@ -651,8 +656,8 @@ test "DrawList estimate upper-bounds ranged text draw output" {
 
     var set_entries: [1]ResourceManifest.Entry = undefined;
     var set = ResourceManifest.init(&set_entries);
-    const text_keys = ResourceManifest.textBlobResourceKeys(.fonts, .glyph_subset_text, &blob);
-    try set.putTextBlob(text_keys, &blob);
+    const text_keys = ResourceManifest.textBlobResourceKeys(ResourceKey.named("fonts"), ResourceKey.named("glyph_subset_text"), &blob);
+    try declareTextBlobResources(&set, text_keys, &blob);
 
     var scene = Scene.init(allocator);
     defer scene.deinit();
@@ -726,9 +731,9 @@ test "replacing path-picture key does not invalidate unrelated text coverage rec
 
     var set_a_entries: [4]ResourceManifest.Entry = undefined;
     var set_a = ResourceManifest.init(&set_a_entries);
-    const text_keys = ResourceManifest.textBlobResourceKeys(.fonts, .coverage_text, &blob);
-    try set_a.putTextBlob(text_keys, &blob);
-    try set_a.putPathPicture(.hud_panel, &picture_a);
+    const text_keys = ResourceManifest.textBlobResourceKeys(ResourceKey.named("fonts"), ResourceKey.named("coverage_text"), &blob);
+    try declareTextBlobResources(&set_a, text_keys, &blob);
+    try set_a.putPathPicture(ResourceKey.named("hud_panel"), &picture_a);
     var prepared_a = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set_a);
     defer prepared_a.deinit();
     prepared_a.atlases[0].view.layer_base = texture_layers.WINDOW_SIZE;
@@ -742,8 +747,8 @@ test "replacing path-picture key does not invalidate unrelated text coverage rec
 
     var set_b_entries: [4]ResourceManifest.Entry = undefined;
     var set_b = ResourceManifest.init(&set_b_entries);
-    try set_b.putTextBlob(text_keys, &blob);
-    try set_b.putPathPicture(.hud_panel, &picture_b);
+    try declareTextBlobResources(&set_b, text_keys, &blob);
+    try set_b.putPathPicture(ResourceKey.named("hud_panel"), &picture_b);
     var prepared_b = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set_b);
     defer prepared_b.deinit();
     prepared_b.atlases[0].view.layer_base = texture_layers.WINDOW_SIZE;
@@ -777,7 +782,7 @@ test "draw rejects stale records when a resource key is replaced" {
 
     var set_a_entries: [2]ResourceManifest.Entry = undefined;
     var set_a = ResourceManifest.init(&set_a_entries);
-    try set_a.putPathPicture(.hud_panel, &picture_a);
+    try set_a.putPathPicture(ResourceKey.named("hud_panel"), &picture_a);
     var prepared_a = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set_a);
     defer prepared_a.deinit();
 
@@ -796,7 +801,7 @@ test "draw rejects stale records when a resource key is replaced" {
 
     var set_b_entries: [2]ResourceManifest.Entry = undefined;
     var set_b = ResourceManifest.init(&set_b_entries);
-    try set_b.putPathPicture(.hud_panel, &picture_b);
+    try set_b.putPathPicture(ResourceKey.named("hud_panel"), &picture_b);
     var prepared_b = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set_b);
     defer prepared_b.deinit();
 
@@ -825,7 +830,7 @@ test "resource upload plan reports changed keys and enforces budget" {
 
     var set_a_entries: [2]ResourceManifest.Entry = undefined;
     var set_a = ResourceManifest.init(&set_a_entries);
-    try set_a.putPathPicture(.hud_panel, &picture_a);
+    try set_a.putPathPicture(ResourceKey.named("hud_panel"), &picture_a);
     var prepared_a = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set_a);
     defer prepared_a.deinit();
 
@@ -839,7 +844,7 @@ test "resource upload plan reports changed keys and enforces budget" {
 
     var set_b_entries: [2]ResourceManifest.Entry = undefined;
     var set_b = ResourceManifest.init(&set_b_entries);
-    try set_b.putPathPicture(.hud_panel, &picture_b);
+    try set_b.putPathPicture(ResourceKey.named("hud_panel"), &picture_b);
     var plan_b = try renderer.planResourceUpload(allocator, &prepared_a, &set_b);
     defer plan_b.deinit();
     try std.testing.expect(plan_b.upload.bytes > 0);
@@ -850,7 +855,7 @@ test "resource upload plan reports changed keys and enforces budget" {
     try std.testing.expect(plan_b.diff.keys()[0].eql(ResourceKey.named("hud_panel")));
 
     set_b.reset();
-    try set_b.putPathPicture(.hud_panel, &picture_a);
+    try set_b.putPathPicture(ResourceKey.named("hud_panel"), &picture_a);
 
     var pending = try renderer.beginResourceUpload(.{ .persistent = allocator, .scratch = allocator }, &plan_b);
     defer pending.deinit();
@@ -872,8 +877,8 @@ test "resource upload plan reports changed keys and enforces budget" {
     try std.testing.expect(pending.readyNow());
     var prepared_b = try pending.publish();
     defer prepared_b.deinit();
-    try std.testing.expect(prepared_b.stampForKey(.hud_panel) != null);
-    try std.testing.expect(!prepared_b.stampForKey(.hud_panel).?.eql(prepared_a.stampForKey(.hud_panel).?));
+    try std.testing.expect(prepared_b.stampForKey(ResourceKey.named("hud_panel")) != null);
+    try std.testing.expect(!prepared_b.stampForKey(ResourceKey.named("hud_panel")).?.eql(prepared_a.stampForKey(ResourceKey.named("hud_panel")).?));
 }
 
 test "resource upload plan reports appended atlas pages" {
@@ -906,13 +911,13 @@ test "resource upload plan reports appended atlas pages" {
 
     var set_a_entries: [1]ResourceManifest.Entry = undefined;
     var set_a = ResourceManifest.init(&set_a_entries);
-    try set_a.putTextAtlas(.fonts, &atlas_a);
+    try set_a.putTextAtlas(ResourceKey.named("fonts"), &atlas_a);
     var prepared_a = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set_a);
     defer prepared_a.deinit();
 
     var set_b_entries: [1]ResourceManifest.Entry = undefined;
     var set_b = ResourceManifest.init(&set_b_entries);
-    try set_b.putTextAtlas(.fonts, &atlas_b);
+    try set_b.putTextAtlas(ResourceKey.named("fonts"), &atlas_b);
     var plan = try renderer.planResourceUpload(allocator, &prepared_a, &set_b);
     defer plan.deinit();
 
@@ -1006,7 +1011,7 @@ test "pending upload publish waits for external completion marker" {
 
     var set_entries: [2]ResourceManifest.Entry = undefined;
     var set = ResourceManifest.init(&set_entries);
-    try set.putPathPicture(.hud_panel, &picture);
+    try set.putPathPicture(ResourceKey.named("hud_panel"), &picture);
     var plan = try renderer.planResourceUpload(allocator, null, &set);
     defer plan.deinit();
 
@@ -1024,7 +1029,7 @@ test "pending upload publish waits for external completion marker" {
     try std.testing.expect(pending.ready(true));
     var prepared = try pending.publish();
     defer prepared.deinit();
-    try std.testing.expect(prepared.stampForKey(.hud_panel) != null);
+    try std.testing.expect(prepared.stampForKey(ResourceKey.named("hud_panel")) != null);
 }
 
 test "pending upload stores renderer handle by value" {
@@ -1051,7 +1056,7 @@ test "prepared resource retirement queue is caller-owned" {
 
     var set_entries: [2]ResourceManifest.Entry = undefined;
     var set = ResourceManifest.init(&set_entries);
-    try set.putPathPicture(.hud_panel, &picture);
+    try set.putPathPicture(ResourceKey.named("hud_panel"), &picture);
 
     var prepared = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set);
     var queue = PreparedResourceRetirementQueue.init(allocator);
@@ -1085,7 +1090,7 @@ test "CPU draw uses prepared resource views" {
 
     var set_entries: [2]ResourceManifest.Entry = undefined;
     var set = ResourceManifest.init(&set_entries);
-    try set.putPathPicture(.panel, &picture);
+    try set.putPathPicture(ResourceKey.named("panel"), &picture);
     var prepared = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set);
     defer prepared.deinit();
 

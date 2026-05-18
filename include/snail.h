@@ -78,6 +78,8 @@ typedef struct {
     size_t shape_count;
 } SnailShapeMark;
 
+/* Opaque resource key value. Literal integers remain valid numeric keys; use
+ * snail_resource_key_from_bytes/cstr for named keys. */
 typedef uint64_t SnailResourceKey;
 
 typedef struct {
@@ -622,18 +624,13 @@ int snail_resource_manifest_put_text_atlas_reserved(SnailResourceManifest *set,
                                                SnailResourceKey key,
                                                const SnailTextAtlas *atlas,
                                                uint32_t reserved_pages);
+int snail_resource_manifest_put_text_paint(SnailResourceManifest *set,
+                                           SnailResourceKey key,
+                                           const SnailTextBlob *blob);
 int snail_text_blob_resource_keys(SnailResourceKey atlas_key,
                                   SnailResourceKey blob_key,
                                   const SnailTextBlob *blob,
                                   SnailTextResourceKeys *out);
-int snail_resource_manifest_put_text_blob_keyed(SnailResourceManifest *set,
-                                                SnailResourceKey atlas_key,
-                                                SnailResourceKey blob_key,
-                                                const SnailTextBlob *blob,
-                                                SnailTextResourceKeys *out);
-int snail_resource_manifest_put_text_blob(SnailResourceManifest *set,
-                                          SnailTextResourceKeys resources,
-                                          const SnailTextBlob *blob);
 int snail_resource_manifest_put_path_picture(SnailResourceManifest *set,
                                         SnailResourceKey key,
                                         const SnailPathPicture *picture);

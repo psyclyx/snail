@@ -298,7 +298,13 @@ defer blob.deinit();
 
 var resource_entries: [8]snail.ResourceManifest.Entry = undefined;
 var resources = snail.ResourceManifest.init(&resource_entries);
-const text_resources = try resources.putTextBlobKeyed(.fonts, .hello_text, &blob);
+const text_resources = snail.ResourceManifest.textBlobResourceKeys(
+    snail.ResourceKey.named("fonts"),
+    snail.ResourceKey.named("hello_text"),
+    &blob,
+);
+try resources.putTextAtlas(text_resources.atlas, blob.atlas);
+if (text_resources.paint) |paint_key| try resources.putTextPaint(paint_key, &blob);
 
 var scene = snail.Scene.init(allocator);
 defer scene.deinit();
@@ -445,7 +451,11 @@ snail_path_picture_builder_freeze(builder, NULL, NULL, &picture);
 SnailResourceManifest *resources = NULL;
 snail_resource_manifest_init(NULL, 8, &resources);
 SnailTextResourceKeys text_resources = {0};
-snail_resource_manifest_put_text_blob_keyed(resources, 1, 3, blob, &text_resources);
+snail_text_blob_resource_keys(1, 3, blob, &text_resources);
+snail_resource_manifest_put_text_atlas(resources, text_resources.atlas_key, atlas);
+if (text_resources.has_paint_key) {
+    snail_resource_manifest_put_text_paint(resources, text_resources.paint_key, blob);
+}
 snail_resource_manifest_put_path_picture(resources, 2, picture);
 
 SnailScene *scene = NULL;
@@ -521,6 +531,7 @@ borrowed `Scene` + `PathDraw` / `TextDraw` primitive used by Zig.
 | `PathDraw`, `TextDraw` | Submission record: resource pointer, optional sub-range, and an `[]const Override` array (length = GPU instance count). |
 | `Override` | Per-instance composition: `transform` composed onto baked transform, `tint` multiplied onto the resource's baked color or paint, including color-font palette layers. |
 | `Range` | `{ start, count }` slice into a `PathPicture`'s shapes or a `TextBlob`'s glyphs. |
+| `ResourceKey` | Explicit resource identity. `fromId`, `named`/`fromName`, and derived keys use distinct namespaces. |
 | `ResourceManifest` | Fixed-capacity borrowed manifest of CPU values. |
 | `ResourceFootprint` | Used and allocated upload bytes split by curve, band, layer-info, and image storage. |
 | `PreparedResources` | Backend realization for one renderer/context. |
@@ -613,10 +624,9 @@ try scene.addPath(.{ .picture = &sprite, .resource_key = snail.ResourceKey.named
 |--------|-------------|
 | `ResourceManifest.init(entries)` | Wrap a caller-owned `[]ResourceManifest.Entry` buffer. |
 | `set.reset()` | Clear entries; capacity is retained. |
-| `set.putTextBlobKeyed(atlas_key, blob_key, blob)` | Add the text atlas plus any layer-info/image-paint records needed by `blob`, returning the key bundle used for scene submission. |
-| `ResourceManifest.textBlobResourceKeys(atlas_key, blob_key, blob)` | Build the key bundle a text draw and manifest entry share. Paint records are derived from `blob_key` only when the blob needs them. |
-| `set.putTextBlob(resources, blob)` | Add the text atlas plus any layer-info/image-paint records needed by `blob`. |
-| `set.putTextAtlas(key, atlas)` / `set.putTextAtlasOptions(key, atlas, options)` | Add an atlas-only resource, optionally overriding atlas capacity mode. |
+| `ResourceManifest.textBlobResourceKeys(atlas_key, blob_key, blob)` | Build the key bundle a text draw and manifest entries share. Paint records are derived from `blob_key` only when the blob needs them. |
+| `set.putTextAtlas(key, atlas)` / `set.putTextAtlasOptions(key, atlas, options)` | Add a text atlas resource, optionally overriding atlas capacity mode. |
+| `set.putTextPaint(key, blob)` | Add the text paint/layer-info resource for a painted `TextBlob`. Call this only when the key bundle has a paint key. |
 | `set.putPathPicture(key, picture)` / `set.putPathPictureOptions(key, picture, options)` | Add a path picture, optionally overriding atlas capacity mode. |
 | `set.putImage(key, image)` | Add an image resource. |
 | `set.estimateUploadFootprint() !ResourceFootprint` | Allocation-free estimate for a resource manifest before upload. |
