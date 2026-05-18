@@ -10,6 +10,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const snail = @import("../../../root.zig");
+const cpu_adapter = @import("../../adapter/cpu.zig");
 const bezier = @import("../../../math/bezier.zig");
 const curve_tex = @import("../../format/curve_texture.zig");
 const atlas_curve_mod = @import("../../format/atlas/curve.zig");
@@ -353,7 +354,7 @@ pub const CpuRenderer = struct {
     }
 
     pub fn asRenderer(self: *CpuRenderer) snail.Renderer {
-        return snail.render.adapter.cpu.borrow(self);
+        return cpu_adapter.borrow(self);
     }
 
     pub fn uploadResourcesBlocking(self: *CpuRenderer, allocators: snail.UploadAllocators, set: *const snail.ResourceSet) !snail.PreparedResources {

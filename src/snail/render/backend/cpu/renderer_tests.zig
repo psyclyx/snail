@@ -3,6 +3,7 @@ const snail = @import("../../../root.zig");
 const cpu_color = @import("color.zig");
 const cpu_renderer = @import("renderer.zig");
 const cpu_texture = @import("texture.zig");
+const glyph_atlas = @import("../../../text/glyph_atlas.zig");
 
 const CpuRenderer = cpu_renderer.CpuRenderer;
 const Transform2D = snail.Transform2D;
@@ -37,7 +38,7 @@ test "cpu renderer renders glyphs" {
     var font = try snail.Font.init(font_data);
     defer font.deinit();
 
-    var atlas = try snail.text.glyph_atlas.initAscii(testing.allocator, &font, &snail.ASCII_PRINTABLE);
+    var atlas = try glyph_atlas.initAscii(testing.allocator, &font, &snail.ASCII_PRINTABLE);
     defer atlas.deinit();
 
     const width: u32 = 200;

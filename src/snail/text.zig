@@ -2,9 +2,7 @@ const atlas_mod = @import("text/atlas.zig");
 const batch_mod = @import("text/batch.zig");
 const blob_mod = @import("text/blob.zig");
 const config_mod = @import("text/config.zig");
-const glyph_atlas_mod = @import("text/glyph_atlas.zig");
 const types_mod = @import("text/types.zig");
-const view_mod = @import("text/view.zig");
 
 pub const FaceSpec = config_mod.FaceSpec;
 pub const FaceIndex = config_mod.FaceIndex;
@@ -12,11 +10,6 @@ pub const ItemizedRun = config_mod.ItemizedRun;
 pub const FontWeight = config_mod.FontWeight;
 pub const FontStyle = config_mod.FontStyle;
 pub const SyntheticStyle = config_mod.SyntheticStyle;
-pub const FontConfig = config_mod.FontConfig;
-pub const FaceConfig = config_mod.FaceConfig;
-pub const FaceGlyphData = config_mod.FaceGlyphData;
-pub const FaceView = view_mod.FaceView;
-pub const glyph_atlas = glyph_atlas_mod;
 pub const isRenderableTextCodepoint = config_mod.isRenderableTextCodepoint;
 
 pub const TextAtlas = atlas_mod.TextAtlas;

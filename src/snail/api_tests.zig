@@ -5,6 +5,7 @@ const snail = @import("root.zig");
 const bezier = @import("math/bezier.zig");
 const resource_key = @import("resource_key.zig");
 const stamp_mod = @import("resources/stamp.zig");
+const upload_mod = @import("upload.zig");
 const upload_plan = @import("render/upload_plan.zig");
 const texture_layers = @import("render/format/texture_layers.zig");
 const vertex_mod = @import("render/format/vertex.zig");
@@ -25,6 +26,7 @@ const ResourceKey = snail.ResourceKey;
 const ResourceStamp = snail.ResourceStamp;
 const ResourceSet = snail.ResourceSet;
 const ResourceCacheStats = snail.ResourceCacheStats;
+const ResourceUploadBatch = upload_mod.ResourceUploadBatch;
 const PreparedResources = snail.PreparedResources;
 const PreparedResourceRetirementQueue = snail.PreparedResourceRetirementQueue;
 const PendingResourceUpload = snail.PendingResourceUpload;
@@ -289,7 +291,7 @@ test "draw dispatch uses only prepared stamps and caller records" {
         fn backendName(_: *anyopaque) []const u8 {
             return "fake";
         }
-        fn uploadResources(_: *anyopaque, _: snail.UploadAllocators, _: *PreparedResources, _: snail.ResourceUploadBatch) anyerror!void {}
+        fn uploadResources(_: *anyopaque, _: snail.UploadAllocators, _: *PreparedResources, _: ResourceUploadBatch) anyerror!void {}
         fn coverageBackend(_: *anyopaque, _: *const PreparedResources) ?snail.coverage.Backend {
             return null;
         }

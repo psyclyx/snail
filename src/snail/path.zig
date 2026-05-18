@@ -1,6 +1,6 @@
-pub const core = @import("path/core.zig");
-pub const picture = @import("path/picture.zig");
-pub const batch = @import("path/batch.zig");
+const core = @import("path/core.zig");
+const picture = @import("path/picture.zig");
+const batch = @import("path/batch.zig");
 
 pub const Path = core.Path;
 pub const PathPicture = picture.PathPicture;
