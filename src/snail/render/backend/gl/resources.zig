@@ -388,14 +388,7 @@ pub const PreparedResources = struct {
             for (records) |record| {
                 const image = (record orelse continue).image;
                 if (self.findImageSlot(image) != null) continue;
-                var already_queued = false;
-                for (images.items) |queued| {
-                    if (queued == image) {
-                        already_queued = true;
-                        break;
-                    }
-                }
-                if (!already_queued) try images.append(scratch, image);
+                if (!upload_common.imageListContains(images.items, image)) try images.append(scratch, image);
             }
         }
         try self.ensureImagesRegistered(scratch, images.items);
@@ -422,23 +415,9 @@ pub const PreparedResources = struct {
         for (images) |image| {
             required_width = @max(required_width, image.width);
             required_height = @max(required_height, image.height);
-            var target_seen = false;
-            for (target_images.items) |queued| {
-                if (queued == image) {
-                    target_seen = true;
-                    break;
-                }
-            }
-            if (!target_seen) try target_images.append(scratch, image);
+            if (!upload_common.imageListContains(target_images.items, image)) try target_images.append(scratch, image);
             if (self.findImageSlot(image) != null) continue;
-            var already_queued = false;
-            for (new_images.items) |queued| {
-                if (queued == image) {
-                    already_queued = true;
-                    break;
-                }
-            }
-            if (!already_queued) try new_images.append(scratch, image);
+            if (!upload_common.imageListContains(new_images.items, image)) try new_images.append(scratch, image);
         }
 
         if (new_images.items.len == 0 and self.image_array != 0) return;
@@ -457,22 +436,23 @@ pub const PreparedResources = struct {
             if (self.image_array != 0) try self.retainActiveBank();
             try self.ensureImageSlotCapacity(target_images.items.len);
             for (target_images.items, 0..) |image, i| {
-                self.image_slots[i] = .{ .image = image };
+                self.image_slots[i] = .{ .fingerprint = image.fingerprint() };
             }
             self.image_slot_count = target_images.items.len;
-            self.rebuildImageArray();
+            self.rebuildImageArray(target_images.items);
             return;
         }
 
         for (new_images.items, 0..) |image, i| {
             const slot_index = self.image_slot_count + i;
-            self.image_slots[slot_index] = .{ .image = image };
+            self.image_slots[slot_index] = .{ .fingerprint = image.fingerprint() };
             self.uploadImageLayer(image, @intCast(slot_index));
         }
         self.image_slot_count += new_images.items.len;
     }
 
-    fn rebuildImageArray(self: *PreparedResources) void {
+    fn rebuildImageArray(self: *PreparedResources, images: []const *const snail_mod.Image) void {
+        std.debug.assert(images.len == self.image_slot_count);
         const had_array = self.image_array != 0;
         if (self.image_array != 0) gl.glDeleteTextures(1, &self.image_array);
         self.image_array = 0;
@@ -487,8 +467,7 @@ pub const PreparedResources = struct {
 
         var max_width: u32 = 1;
         var max_height: u32 = 1;
-        for (self.image_slots[0..self.image_slot_count]) |slot| {
-            const image = slot.image orelse continue;
+        for (images) |image| {
             max_width = @max(max_width, image.width);
             max_height = @max(max_height, image.height);
         }
@@ -531,8 +510,8 @@ pub const PreparedResources = struct {
             },
         }
 
-        for (self.image_slots[0..self.image_slot_count], 0..) |slot, i| {
-            self.uploadImageLayer(slot.image.?, @intCast(i));
+        for (images, 0..) |image, i| {
+            self.uploadImageLayer(image, @intCast(i));
         }
     }
 

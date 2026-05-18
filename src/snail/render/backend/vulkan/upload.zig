@@ -398,14 +398,7 @@ fn ensureLayerInfoImagesRegistered(self: anytype, prepared: *PreparedResources, 
         for (records) |record| {
             const image = (record orelse continue).image;
             if (prepared.findImageSlot(image) != null) continue;
-            var already_queued = false;
-            for (images.items) |queued| {
-                if (queued == image) {
-                    already_queued = true;
-                    break;
-                }
-            }
-            if (!already_queued) try images.append(scratch, image);
+            if (!upload_common.imageListContains(images.items, image)) try images.append(scratch, image);
         }
     }
     try ensureImagesRegistered(self, prepared, scratch, images.items);
@@ -432,23 +425,9 @@ fn ensureImagesRegistered(self: anytype, prepared: *PreparedResources, scratch: 
     for (images) |image| {
         required_width = @max(required_width, image.width);
         required_height = @max(required_height, image.height);
-        var target_seen = false;
-        for (target_images.items) |queued| {
-            if (queued == image) {
-                target_seen = true;
-                break;
-            }
-        }
-        if (!target_seen) try target_images.append(scratch, image);
+        if (!upload_common.imageListContains(target_images.items, image)) try target_images.append(scratch, image);
         if (prepared.findImageSlot(image) != null) continue;
-        var already_queued = false;
-        for (new_images.items) |queued| {
-            if (queued == image) {
-                already_queued = true;
-                break;
-            }
-        }
-        if (!already_queued) try new_images.append(scratch, image);
+        if (!upload_common.imageListContains(new_images.items, image)) try new_images.append(scratch, image);
     }
 
     if (new_images.items.len == 0 and prepared.image_image != null) return;
@@ -467,15 +446,15 @@ fn ensureImagesRegistered(self: anytype, prepared: *PreparedResources, scratch: 
         if (prepared.image_image != null) try prepared.retainActiveBank();
         try ensureImageSlotCapacity(prepared, target_images.items.len);
         for (target_images.items, 0..) |image, i| {
-            prepared.image_slots[i] = .{ .image = image };
+            prepared.image_slots[i] = .{ .fingerprint = image.fingerprint() };
         }
         prepared.image_slot_count = target_images.items.len;
-        try rebuildImageArray(self, prepared, scratch);
+        try rebuildImageArray(self, prepared, scratch, target_images.items);
         return;
     }
 
     for (new_images.items, 0..) |image, i| {
-        prepared.image_slots[prepared.image_slot_count + i] = .{ .image = image };
+        prepared.image_slots[prepared.image_slot_count + i] = .{ .fingerprint = image.fingerprint() };
     }
     try uploadImagesToArray(self, prepared, scratch, new_images.items, @intCast(prepared.image_slot_count), vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     prepared.image_slot_count += new_images.items.len;
@@ -852,7 +831,8 @@ fn uploadLayerInfoData(self: anytype, prepared: *PreparedResources, data: []f32,
     try device.finishUploadStaging(self, prepared, staging_buf, staging_mem);
 }
 
-fn rebuildImageArray(self: anytype, prepared: *PreparedResources, scratch: std.mem.Allocator) !void {
+fn rebuildImageArray(self: anytype, prepared: *PreparedResources, scratch: std.mem.Allocator, images: []const *const snail_mod.Image) !void {
+    std.debug.assert(images.len == prepared.image_slot_count);
     const had_image = prepared.image_image != null;
     if (prepared.image_view != null) {
         vk.vkDestroyImageView(self.ctx.device, prepared.image_view, null);
@@ -877,13 +857,7 @@ fn rebuildImageArray(self: anytype, prepared: *PreparedResources, scratch: std.m
 
     var max_width: u32 = 1;
     var max_height: u32 = 1;
-    const all_images = try scratch.alloc(*const snail_mod.Image, prepared.image_slot_count);
-    defer scratch.free(all_images);
-    var image_count: usize = 0;
-    for (prepared.image_slots[0..prepared.image_slot_count]) |slot| {
-        const image = slot.image orelse continue;
-        all_images[image_count] = image;
-        image_count += 1;
+    for (images) |image| {
         max_width = @max(max_width, image.width);
         max_height = @max(max_height, image.height);
     }
@@ -895,7 +869,7 @@ fn rebuildImageArray(self: anytype, prepared: *PreparedResources, scratch: std.m
     prepared.image_image = try device.createImage2DArray(self, prepared.allocated_image_width, prepared.allocated_image_height, prepared.allocated_image_count, vk.VK_FORMAT_R8G8B8A8_SRGB);
     prepared.image_memory = try device.allocateImageMemory(self, prepared.image_image);
     _ = vk.vkBindImageMemory(self.ctx.device, prepared.image_image, prepared.image_memory, 0);
-    try uploadImagesToArray(self, prepared, scratch, all_images[0..image_count], 0, vk.VK_IMAGE_LAYOUT_UNDEFINED);
+    try uploadImagesToArray(self, prepared, scratch, images, 0, vk.VK_IMAGE_LAYOUT_UNDEFINED);
     prepared.image_view = try device.createImageView(self, prepared.image_image, vk.VK_FORMAT_R8G8B8A8_SRGB, prepared.allocated_image_count);
 }
 

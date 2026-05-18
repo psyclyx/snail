@@ -4,6 +4,15 @@ const atlas_page_mod = @import("atlas/page.zig");
 
 pub const PageFingerprint = atlas_page_mod.PageFingerprint;
 
+pub const ImageFingerprint = struct {
+    layout: u64 = 0,
+    content: u64 = 0,
+
+    pub fn eql(a: ImageFingerprint, b: ImageFingerprint) bool {
+        return a.layout == b.layout and a.content == b.content;
+    }
+};
+
 pub fn BufferElement(comptime Buffer: type) type {
     return switch (@typeInfo(Buffer)) {
         .pointer => |ptr| switch (@typeInfo(ptr.child)) {
@@ -67,8 +76,9 @@ pub fn AtlasSlot(comptime Atlas: type, comptime AtlasPage: type) type {
 }
 
 pub fn ImageSlot(comptime Image: type) type {
+    _ = Image;
     return struct {
-        image: ?*const Image = null,
+        fingerprint: ImageFingerprint = .{},
     };
 }
 
@@ -298,10 +308,23 @@ pub fn fillAtlasViews(atlas_slots: anytype, atlases: anytype, out_views: anytype
 }
 
 pub fn findImageSlot(image_slots: anytype, image_slot_count: usize, image: anytype) ?usize {
+    const fingerprint = imageFingerprint(image);
     for (image_slots[0..image_slot_count], 0..) |slot, i| {
-        if (slot.image == image) return i;
+        if (slot.fingerprint.eql(fingerprint)) return i;
     }
     return null;
+}
+
+pub fn imageFingerprint(image: anytype) ImageFingerprint {
+    return image.fingerprint();
+}
+
+pub fn imageListContains(images: anytype, image: anytype) bool {
+    const fingerprint = imageFingerprint(image);
+    for (images) |existing| {
+        if (imageFingerprint(existing).eql(fingerprint)) return true;
+    }
+    return false;
 }
 
 pub fn currentImageView(
@@ -328,14 +351,7 @@ pub fn collectAtlasImages(allocator: std.mem.Allocator, image_slots: anytype, im
         for (records) |record| {
             const image = (record orelse continue).image;
             if (findImageSlot(image_slots, image_slot_count, image) != null) continue;
-            var already_queued = false;
-            for (out.items) |queued| {
-                if (queued == image) {
-                    already_queued = true;
-                    break;
-                }
-            }
-            if (!already_queued) try out.append(allocator, image);
+            if (!imageListContains(out.items, image)) try out.append(allocator, image);
         }
     }
 }
