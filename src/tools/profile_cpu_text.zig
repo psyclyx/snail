@@ -129,16 +129,14 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     const wf: f32 = @floatFromInt(width);
     const hf: f32 = @floatFromInt(height);
-    const options = snail.DrawOptions{
+    const options = snail.DrawState{
         .mvp = snail.Mat4.ortho(0, wf, hf, 0, -1, 1),
-        .target = .{
+        .surface = .{
             .pixel_width = wf,
             .pixel_height = hf,
-            .subpixel_order = .rgb,
-            .is_final_composite = true,
-            .opaque_backdrop = true,
             .encoding = .srgb,
         },
+        .raster = .{ .subpixel_order = .rgb },
     };
 
     var prepared = try snail.PreparedScene.initOwned(arena, &resources, &scene);

@@ -6,9 +6,9 @@ const resource_key_mod = @import("resource_key.zig");
 const scene_mod = @import("scene.zig");
 const target_mod = @import("target.zig");
 const text_mod = @import("text.zig");
-const vec = @import("math/vec.zig");
 
-pub const ResolveTarget = target_mod.ResolveTarget;
+pub const DrawState = target_mod.DrawState;
+pub const TargetSurface = target_mod.TargetSurface;
 pub const TargetEncoding = target_mod.TargetEncoding;
 pub const PixelRect = target_mod.PixelRect;
 pub const ResolveRegion = target_mod.ResolveRegion;
@@ -22,7 +22,6 @@ pub const CoverageTransfer = target_mod.CoverageTransfer;
 pub const SubpixelOrder = target_mod.SubpixelOrder;
 
 pub const DrawKind = enum { text, path };
-const Mat4 = vec.Mat4;
 const PathBatch = path_mod.PathBatch;
 const PATH_WORDS_PER_SHAPE = path_mod.PATH_WORDS_PER_SHAPE;
 const PreparedResources = prepared_mod.PreparedResources;
@@ -31,11 +30,6 @@ const ResourceStamp = resource_key_mod.ResourceStamp;
 const Scene = scene_mod.Scene;
 const TextBatch = text_mod.TextBatch;
 const TEXT_WORDS_PER_GLYPH = text_mod.TEXT_WORDS_PER_GLYPH;
-
-pub const DrawOptions = struct {
-    mvp: Mat4,
-    target: ResolveTarget,
-};
 
 pub const DrawSegment = struct {
     kind: DrawKind,

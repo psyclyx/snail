@@ -152,18 +152,17 @@ fn renderCompactBanner(allocator: std.mem.Allocator) !void {
     gl.glClearColor(srgbToLinear(clear[0]), srgbToLinear(clear[1]), srgbToLinear(clear[2]), clear[3]);
     gl.glClear(gl.GL_COLOR_BUFFER_BIT);
 
-    const draw_options = snail.DrawOptions{
+    const draw_state = snail.DrawState{
         .mvp = projection,
-        .target = .{
+        .surface = .{
             .pixel_width = w,
             .pixel_height = h,
-            .subpixel_order = .none,
             .encoding = .srgb,
         },
     };
     var prepared_scene = try snail.PreparedScene.initOwned(allocator, &prepared, &scene);
     defer prepared_scene.deinit();
-    try renderer.drawPrepared(&prepared, &prepared_scene, draw_options);
+    try renderer.drawPrepared(&prepared, &prepared_scene, draw_state);
 
     if (screenshot.captureFramebuffer(allocator, SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT) catch null) |px| {
         defer allocator.free(px);
@@ -229,16 +228,14 @@ fn renderRepro(allocator: std.mem.Allocator) !void {
     gl.glClear(gl.GL_COLOR_BUFFER_BIT);
 
     const fallback_mvp = snail.Mat4.ortho(0, w, h, 0, -1, 1);
-    const draw_options = snail.DrawOptions{
+    const draw_state = snail.DrawState{
         .mvp = envMat4("SNAIL_REPRO_MVP", fallback_mvp),
-        .target = .{
+        .surface = .{
             .pixel_width = viewport_w,
             .pixel_height = viewport_h,
-            .subpixel_order = envSubpixelOrder(),
-            .will_resample = envBool("SNAIL_REPRO_WILL_RESAMPLE", false),
             .encoding = target_encoding,
-            .resolve = if (envBool("SNAIL_REPRO_RESOLVE_LINEAR", false)) .{ .linear = .{} } else .{ .direct = .{} },
         },
+        .raster = .{ .subpixel_order = if (envBool("SNAIL_REPRO_WILL_RESAMPLE", false)) .none else envSubpixelOrder() },
     };
 
     const needed = snail.DrawList.estimate(&scene);
@@ -249,7 +246,7 @@ fn renderRepro(allocator: std.mem.Allocator) !void {
     defer allocator.free(draw_segments_buf);
     var draw = snail.DrawList.init(draw_buf, draw_segments_buf);
     try draw.addScene(&prepared, &scene);
-    try renderer.draw(&prepared, draw.slice(), draw_options);
+    try renderer.draw(&prepared, draw.slice(), draw_state);
 
     if (screenshot.captureFramebuffer(allocator, framebuffer_width, framebuffer_height) catch null) |px| {
         defer allocator.free(px);

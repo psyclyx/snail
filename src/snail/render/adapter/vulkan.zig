@@ -18,7 +18,7 @@ const pipeline = if (build_options.enable_vulkan) @import("../backend/vulkan/pip
 pub const VulkanContext = pipeline.VulkanContext;
 
 const CoverageBackend = coverage_mod.Backend;
-const DrawOptions = draw_mod.DrawOptions;
+const DrawState = draw_mod.DrawState;
 const DrawRecords = draw_mod.DrawRecords;
 const ErasedRenderer = interface.Renderer;
 const PendingResourceUpload = upload_mod.PendingResourceUpload;
@@ -63,17 +63,10 @@ const Config = if (build_options.enable_vulkan) struct {
         return null;
     }
 
-    pub fn draw(renderer: *ErasedRenderer, prepared_resources: *const PreparedResources, records: DrawRecords, options: DrawOptions) anyerror!void {
+    pub fn draw(renderer: *ErasedRenderer, prepared_resources: *const PreparedResources, records: DrawRecords, state: DrawState) anyerror!void {
         const backend_prepared = prepared(prepared_resources) orelse return error.MissingPreparedResource;
         try renderer.validateRecords(prepared_resources, records);
-        switch (options.target.resolve) {
-            .direct => {},
-            .linear => {
-                if (!options.target.supportsLinearResolve()) return error.InvalidResolve;
-                return error.UnsupportedResolve;
-            },
-        }
-        try renderer.iterateRecords(records, options, @ptrCast(backend_prepared));
+        try renderer.iterateRecords(records, state, @ptrCast(backend_prepared));
     }
 } else struct {};
 
@@ -127,14 +120,14 @@ pub const Renderer = if (build_options.enable_vulkan) struct {
         return renderer.beginResourceUpload(allocators, plan);
     }
 
-    pub fn draw(self: *Self, prepared: *const PreparedResources, records: DrawRecords, options: DrawOptions) !void {
+    pub fn draw(self: *Self, prepared: *const PreparedResources, records: DrawRecords, state: DrawState) !void {
         var renderer = self.asRenderer();
-        try renderer.draw(prepared, records, options);
+        try renderer.draw(prepared, records, state);
     }
 
-    pub fn drawPrepared(self: *Self, prepared: *const PreparedResources, scene: *const PreparedScene, options: DrawOptions) !void {
+    pub fn drawPrepared(self: *Self, prepared: *const PreparedResources, scene: *const PreparedScene, state: DrawState) !void {
         var renderer = self.asRenderer();
-        try renderer.drawPrepared(prepared, scene, options);
+        try renderer.drawPrepared(prepared, scene, state);
     }
 
     pub fn coverageBackend(self: *Self, prepared_resources: *const PreparedResources) ?CoverageBackend {

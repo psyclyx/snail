@@ -7,16 +7,12 @@ const shaders = @import("shaders.zig");
 const subpixel_policy = @import("../subpixel_policy.zig");
 const texture_layers = @import("../../format/texture_layers.zig");
 const vertex = @import("../../format/vertex.zig");
-const vec = @import("../../../math/vec.zig");
-const Mat4 = vec.Mat4;
 const snail_mod = @import("../../../root.zig");
 const SubpixelOrder = @import("../../format/subpixel_order.zig").SubpixelOrder;
-const TargetEncoding = snail_mod.TargetEncoding;
-const Resolve = snail_mod.Resolve;
 const LinearResolve = snail_mod.LinearResolve;
 const PixelRect = snail_mod.PixelRect;
 const IntermediateFormat = snail_mod.IntermediateFormat;
-const CoverageTransfer = snail_mod.CoverageTransfer;
+const DrawState = snail_mod.DrawState;
 
 // ── Backend selection ──
 
@@ -24,7 +20,6 @@ pub const Backend = gl_backend.Backend;
 
 // ── Shared types ──
 
-const FillRule = snail_mod.FillRule;
 const ProgramState = gl_programs.ProgramState;
 const deleteProgramState = gl_programs.deleteProgramState;
 const linkProgram = gl_programs.linkProgram;
@@ -68,11 +63,6 @@ pub const GlTextState = struct {
     text_subpixel_dual_program: ProgramState = .{},
     colr_program: ProgramState = .{},
     path_program: ProgramState = .{},
-    subpixel_order: SubpixelOrder = .none,
-    fill_rule: FillRule = .non_zero,
-    target_encoding: TargetEncoding = .srgb,
-    resolve: Resolve = .{ .direct = .{} },
-    coverage_transfer: CoverageTransfer = .identity,
     linear_resolve_program: gl.GLuint = 0,
     linear_resolve_tex_loc: gl.GLint = -1,
     linear_resolve_dst_tex_loc: gl.GLint = -1,
@@ -274,7 +264,7 @@ pub const GlTextState = struct {
     }
 
     pub fn beginLinearResolve(self: *GlTextState, width: u32, height: u32, resolve: LinearResolve) !LinearResolveRestore {
-        if (width == 0 or height == 0) return error.InvalidResolveTarget;
+        if (width == 0 or height == 0) return error.InvalidTargetSurface;
         try self.ensureLinearResolve(width, height, resolve.intermediate_format);
 
         var restore: LinearResolveRestore = .{};
@@ -493,7 +483,7 @@ pub const GlTextState = struct {
 
     // ── Draw ──
 
-    fn drawTextInternal(self: *GlTextState, prepared: *const PreparedResources, vertices: []const u32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32, allow_subpixel: bool) !void {
+    fn drawTextInternal(self: *GlTextState, prepared: *const PreparedResources, vertices: []const u32, draw_state: DrawState, texture_layer_base: u32, allow_subpixel: bool) !void {
         // VAO may have been unbound by other renderers in the same context.
         gl.glBindVertexArray(self.vao);
         if (self.backend == .gl33) {
@@ -503,9 +493,9 @@ pub const GlTextState = struct {
         const total_glyphs = vertices.len / vertex.WORDS_PER_INSTANCE;
         const render_mode = subpixel_policy.chooseTextRenderMode(
             vertices,
-            mvp,
+            draw_state.mvp,
             allow_subpixel,
-            self.subpixel_order,
+            draw_state.raster.subpixel_order,
             self.supports_dual_source_blend,
         );
         if (!prepared.atlas_has_special_text_runs) {
@@ -514,7 +504,7 @@ pub const GlTextState = struct {
                 .grayscale => &self.text_program,
                 .subpixel_dual_source => &self.text_subpixel_dual_program,
             };
-            try self.bindProgramState(prepared, prog_state, mvp, viewport_w, viewport_h, texture_layer_base, render_mode);
+            try self.bindProgramState(prepared, prog_state, draw_state, texture_layer_base, render_mode);
             self.drawGlyphRange(vertices, 0, total_glyphs);
             return;
         }
@@ -531,9 +521,9 @@ pub const GlTextState = struct {
                     vertices,
                     run_start,
                     run_end - run_start,
-                    mvp,
+                    draw_state.mvp,
                     allow_subpixel,
-                    self.subpixel_order,
+                    draw_state.raster.subpixel_order,
                     self.supports_dual_source_blend,
                 );
             setTextBlendMode(run_kind != .regular, run_mode);
@@ -545,14 +535,14 @@ pub const GlTextState = struct {
                 .colr => self.ensureColrProgram(),
                 .path => self.ensurePathProgram(),
             };
-            try self.bindProgramState(prepared, prog_state, mvp, viewport_w, viewport_h, texture_layer_base, run_mode);
+            try self.bindProgramState(prepared, prog_state, draw_state, texture_layer_base, run_mode);
             self.drawGlyphRange(vertices, run_start, run_end - run_start);
             run_start = run_end;
         }
     }
 
-    pub fn drawTextPrepared(self: *GlTextState, prepared: *const PreparedResources, vertices: []const u32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32) !void {
-        try self.drawTextInternal(prepared, vertices, mvp, viewport_w, viewport_h, texture_layer_base, true);
+    pub fn drawTextPrepared(self: *GlTextState, prepared: *const PreparedResources, vertices: []const u32, draw_state: DrawState, texture_layer_base: u32) !void {
+        try self.drawTextInternal(prepared, vertices, draw_state, texture_layer_base, true);
     }
 
     pub fn drawPreparedText(self: *GlTextState, prepared: *const PreparedResources, vertices: []const u32) void {
@@ -565,7 +555,7 @@ pub const GlTextState = struct {
         self.drawGlyphRange(vertices, 0, vertices.len / vertex.WORDS_PER_INSTANCE);
     }
 
-    pub fn drawPathsPrepared(self: *GlTextState, prepared: *const PreparedResources, vertices: []const u32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32) !void {
+    pub fn drawPathsPrepared(self: *GlTextState, prepared: *const PreparedResources, vertices: []const u32, draw_state: DrawState, texture_layer_base: u32) !void {
         const render_mode: subpixel_policy.TextRenderMode = .grayscale;
         const prog_state = self.ensurePathProgram();
         gl.glBindVertexArray(self.vao);
@@ -575,7 +565,7 @@ pub const GlTextState = struct {
 
         setTextBlendMode(false, render_mode);
 
-        try self.bindProgramState(prepared, prog_state, mvp, viewport_w, viewport_h, texture_layer_base, render_mode);
+        try self.bindProgramState(prepared, prog_state, draw_state, texture_layer_base, render_mode);
         self.drawGlyphRange(vertices, 0, vertices.len / vertex.WORDS_PER_INSTANCE);
     }
 
@@ -588,50 +578,6 @@ pub const GlTextState = struct {
         }
     }
 
-    pub fn setSubpixelOrder(self: *GlTextState, order: SubpixelOrder) void {
-        self.subpixel_order = order;
-    }
-
-    pub fn getSubpixelOrder(self: *const GlTextState) SubpixelOrder {
-        return self.subpixel_order;
-    }
-
-    pub fn setFillRule(self: *GlTextState, rule: FillRule) void {
-        self.fill_rule = rule;
-    }
-
-    pub fn getFillRule(self: *const GlTextState) FillRule {
-        return self.fill_rule;
-    }
-
-    pub fn setTargetEncoding(self: *GlTextState, encoding: TargetEncoding) void {
-        self.target_encoding = encoding;
-    }
-
-    pub fn getTargetEncoding(self: *const GlTextState) TargetEncoding {
-        return self.target_encoding;
-    }
-
-    pub fn setResolve(self: *GlTextState, resolve: Resolve) void {
-        self.resolve = resolve;
-    }
-
-    pub fn getResolve(self: *const GlTextState) Resolve {
-        return self.resolve;
-    }
-
-    pub fn setCoverageTransfer(self: *GlTextState, transfer: CoverageTransfer) void {
-        self.coverage_transfer = transfer;
-    }
-
-    pub fn getCoverageTransfer(self: *const GlTextState) CoverageTransfer {
-        return self.coverage_transfer;
-    }
-
-    inline fn shaderEncodesSrgb(self: *const GlTextState) bool {
-        return self.target_encoding.shaderEncodesSrgb();
-    }
-
     fn ensureColrProgram(self: *GlTextState) *const ProgramState {
         std.debug.assert(self.colr_program.handle != 0);
         return &self.colr_program;
@@ -642,7 +588,7 @@ pub const GlTextState = struct {
         return &self.path_program;
     }
 
-    fn bindProgramState(self: *GlTextState, prepared: *const PreparedResources, prog_state: *const ProgramState, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32, render_mode: subpixel_policy.TextRenderMode) !void {
+    fn bindProgramState(self: *GlTextState, prepared: *const PreparedResources, prog_state: *const ProgramState, draw_state: DrawState, texture_layer_base: u32, render_mode: subpixel_policy.TextRenderMode) !void {
         const bank_id = texture_layers.bank(texture_layer_base);
         const bank = prepared.bankForId(bank_id) orelse return error.MissingPreparedResource;
         if (prog_state.handle != self.active_program or !self.frame_begun or bank_id != self.active_resource_bank_id) {
@@ -677,19 +623,19 @@ pub const GlTextState = struct {
             self.frame_begun = true;
         }
 
-        gl.glUniformMatrix4fv(prog_state.mvp_loc, 1, gl.GL_FALSE, &mvp.data);
-        gl.glUniform2f(prog_state.viewport_loc, viewport_w, viewport_h);
+        gl.glUniformMatrix4fv(prog_state.mvp_loc, 1, gl.GL_FALSE, &draw_state.mvp.data);
+        gl.glUniform2f(prog_state.viewport_loc, draw_state.surface.pixel_width, draw_state.surface.pixel_height);
         if (prog_state.layer_base_loc >= 0) gl.glUniform1i(prog_state.layer_base_loc, @intCast(texture_layers.bankLocal(texture_layer_base)));
-        gl.glUniform1i(prog_state.fill_rule_loc, @intFromEnum(self.fill_rule));
+        gl.glUniform1i(prog_state.fill_rule_loc, @intFromEnum(draw_state.raster.fill_rule));
         if (prog_state.subpixel_order_loc >= 0) {
-            const order = if (render_mode == .grayscale) SubpixelOrder.none else self.subpixel_order;
+            const order = if (render_mode == .grayscale) SubpixelOrder.none else draw_state.raster.subpixel_order;
             gl.glUniform1i(prog_state.subpixel_order_loc, @intFromEnum(order));
         }
         if (prog_state.output_srgb_loc >= 0) {
-            gl.glUniform1i(prog_state.output_srgb_loc, @intFromBool(self.shaderEncodesSrgb()));
+            gl.glUniform1i(prog_state.output_srgb_loc, @intFromBool(draw_state.surface.encoding.shaderEncodesSrgb()));
         }
         if (prog_state.coverage_exponent_loc >= 0) {
-            gl.glUniform1f(prog_state.coverage_exponent_loc, self.coverage_transfer.shaderExponent());
+            gl.glUniform1f(prog_state.coverage_exponent_loc, draw_state.raster.coverage_transfer.shaderExponent());
         }
     }
 

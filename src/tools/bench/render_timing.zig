@@ -52,7 +52,7 @@ pub fn timeCpuDraw(
     renderer: *snail.Renderer,
     prepared: *const snail.PreparedResources,
     scene: *const snail.PreparedScene,
-    options: snail.DrawOptions,
+    options: snail.DrawState,
     pixels: []u8,
     warmup_frames: usize,
     frames: usize,
@@ -74,7 +74,7 @@ pub fn timeGlDraw(
     renderer: *snail.Renderer,
     prepared: *const snail.PreparedResources,
     scene: *const snail.PreparedScene,
-    options: snail.DrawOptions,
+    options: snail.DrawState,
     warmup_frames: usize,
     frames: usize,
 ) !f64 {
@@ -98,7 +98,7 @@ pub fn timeVulkanDraw(
     renderer: *snail.Renderer,
     prepared: *const snail.PreparedResources,
     scene: *const snail.PreparedScene,
-    options: snail.DrawOptions,
+    options: snail.DrawState,
     warmup_frames: usize,
     frames: usize,
 ) !f64 {

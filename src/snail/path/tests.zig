@@ -13,7 +13,7 @@ const vertex_mod = @import("../render/format/vertex.zig");
 const vec = @import("../math/vec.zig");
 
 const DrawList = draw_mod.DrawList;
-const DrawOptions = draw_mod.DrawOptions;
+const DrawState = draw_mod.DrawState;
 const Image = image_mod.Image;
 const Mat4 = vec.Mat4;
 const Path = path_mod.Path;

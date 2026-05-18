@@ -489,6 +489,17 @@ fn buildGlassPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas) !PlaneP
     };
 }
 
+pub const DrawTarget = struct {
+    surface: snail.TargetSurface,
+    raster: snail.RasterOptions = .{},
+};
+
+fn effectiveSubpixelOrder(subpixel_order: snail.SubpixelOrder, opaque_backdrop: bool, will_resample: bool) snail.SubpixelOrder {
+    if (will_resample) return .none;
+    if (!opaque_backdrop) return .none;
+    return subpixel_order;
+}
+
 pub fn hudTarget(
     window_size: [2]u32,
     fb_size: [2]u32,
@@ -496,33 +507,26 @@ pub fn hudTarget(
     opaque_backdrop: bool,
     encoding: snail.TargetEncoding,
     will_resample: bool,
-) snail.ResolveTarget {
+) DrawTarget {
     _ = window_size;
-    const resolve: snail.Resolve = if (encoding.attachment == .linear and encoding.stored_pixels == .srgb)
-        .{ .linear = .{} }
-    else
-        .{ .direct = .{} };
     return .{
-        .pixel_width = @floatFromInt(fb_size[0]),
-        .pixel_height = @floatFromInt(fb_size[1]),
-        .subpixel_order = subpixel_order,
-        .is_final_composite = true,
-        .opaque_backdrop = opaque_backdrop,
-        .will_resample = will_resample,
-        .encoding = encoding,
-        .resolve = resolve,
+        .surface = .{
+            .pixel_width = @floatFromInt(fb_size[0]),
+            .pixel_height = @floatFromInt(fb_size[1]),
+            .encoding = encoding,
+        },
+        .raster = .{ .subpixel_order = effectiveSubpixelOrder(subpixel_order, opaque_backdrop, will_resample) },
     };
 }
 
-pub fn worldTarget(fb_size: [2]u32, subpixel_order: snail.SubpixelOrder, opaque_backdrop: bool) snail.ResolveTarget {
+pub fn worldTarget(fb_size: [2]u32, subpixel_order: snail.SubpixelOrder, opaque_backdrop: bool) DrawTarget {
     return .{
-        .pixel_width = @floatFromInt(fb_size[0]),
-        .pixel_height = @floatFromInt(fb_size[1]),
-        .subpixel_order = subpixel_order,
-        .is_final_composite = true,
-        .opaque_backdrop = opaque_backdrop,
-        .will_resample = false,
-        .encoding = .srgb,
+        .surface = .{
+            .pixel_width = @floatFromInt(fb_size[0]),
+            .pixel_height = @floatFromInt(fb_size[1]),
+            .encoding = .srgb,
+        },
+        .raster = .{ .subpixel_order = effectiveSubpixelOrder(subpixel_order, opaque_backdrop, false) },
     };
 }
 

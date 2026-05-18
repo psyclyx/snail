@@ -36,10 +36,10 @@ fn ensureForText(atlas_ptr: **c.test_api.TextAtlasImpl, text: []const u8) !void 
     }
 }
 
-fn testDrawOptions(width: f32, height: f32) c.SnailDrawOptions {
+fn testDrawState(width: f32, height: f32) c.SnailDrawState {
     return .{
         .mvp = c_constants.snail_mat4_identity(),
-        .target = .{
+        .surface = .{
             .pixel_width = width,
             .pixel_height = height,
             .attachment_encoding = 1,
@@ -294,20 +294,20 @@ test "c_api: scheduled upload draw list coverage records and retirement" {
     try testing.expectEqual(c.SNAIL_ERR_INVALID_ARGUMENT, c_resources.snail_coverage_backend_init(renderer.?, prepared.?, &coverage_backend));
     try testing.expectEqual(@as(?*c.test_api.CoverageBackendImpl, null), coverage_backend);
 
-    const options = testDrawOptions(64, 64);
-    const word_capacity = c_resources.snail_draw_list_estimate_word_count(scene.?, options);
-    const segment_capacity = c_resources.snail_draw_list_estimate_segment_count(scene.?, options);
+    const state = testDrawState(64, 64);
+    const word_capacity = c_resources.snail_draw_list_estimate_word_count(scene.?);
+    const segment_capacity = c_resources.snail_draw_list_estimate_segment_count(scene.?);
     try testing.expect(word_capacity > 0);
     try testing.expect(segment_capacity > 0);
 
     var list: ?*c.test_api.DrawListImpl = null;
     try testing.expectEqual(c.SNAIL_OK, c_resources.snail_draw_list_init(null, word_capacity, segment_capacity, &list));
     defer c_resources.snail_draw_list_deinit(list);
-    try testing.expectEqual(c.SNAIL_OK, c_resources.snail_draw_list_add_scene(list.?, prepared.?, scene.?, options));
+    try testing.expectEqual(c.SNAIL_OK, c_resources.snail_draw_list_add_scene(list.?, prepared.?, scene.?));
     try testing.expect(c_resources.snail_draw_list_word_count(list.?) > 0);
     try testing.expect(c_resources.snail_draw_list_segment_count(list.?) > 0);
     try testing.expect(c_resources.snail_draw_list_words(list.?) != null);
-    try testing.expectEqual(c.SNAIL_OK, c_render.snail_renderer_draw(renderer.?, prepared.?, list.?, options));
+    try testing.expectEqual(c.SNAIL_OK, c_render.snail_renderer_draw(renderer.?, prepared.?, list.?, state));
 
     var queue: ?*c.test_api.PreparedResourceRetirementQueueImpl = null;
     try testing.expectEqual(c.SNAIL_OK, c_resources.snail_prepared_resource_retirement_queue_init(null, &queue));

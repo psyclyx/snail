@@ -74,7 +74,7 @@ pub const CpuRenderer = struct {
     fill_rule: FillRule,
     subpixel_order: SubpixelOrder,
     /// Encoding of the caller-owned pixel buffer. The unified `Renderer.draw`
-    /// path sets this from `ResolveTarget.encoding` every frame.
+    /// path sets this from `DrawState.surface.encoding` every frame.
     target_encoding: snail.TargetEncoding,
     target_resolve: snail.Resolve,
     coverage_transfer: snail.CoverageTransfer,
@@ -99,7 +99,7 @@ pub const CpuRenderer = struct {
             .subpixel_order = .none,
             // CPU's pixel-buffer contract is sRGB bytes (cf. the file-level
             // doc). The unified `Renderer.draw` path overrides this from
-            // `ResolveTarget.encoding` per frame.
+            // `DrawState.surface.encoding` per frame.
             .target_encoding = .srgb,
             .target_resolve = .{ .direct = .{} },
             .coverage_transfer = .identity,
@@ -185,21 +185,27 @@ pub const CpuRenderer = struct {
         row_clip_max: u32,
         col_clip_min: u32,
         col_clip_max: u32,
+        target_encoding: snail.TargetEncoding,
+        target_resolve: snail.Resolve,
     };
 
-    pub fn beginLinearResolve(self: *CpuRenderer, target: snail.ResolveTarget, resolve: snail.LinearResolve) LinearResolveRestore {
+    pub fn beginLinearResolve(self: *CpuRenderer, surface: snail.TargetSurface, resolve: snail.LinearResolve) LinearResolveRestore {
         const restore = LinearResolveRestore{
             .row_clip_min = self.row_clip_min,
             .row_clip_max = self.row_clip_max,
             .col_clip_min = self.col_clip_min,
             .col_clip_max = self.col_clip_max,
+            .target_encoding = self.target_encoding,
+            .target_resolve = self.target_resolve,
         };
-        const rect = target.resolveRect();
+        const rect = snail.resolveRect(surface, resolve);
         self.col_clip_min = @intCast(rect.x);
         self.row_clip_min = @intCast(rect.y);
         self.col_clip_max = self.col_clip_min + rect.w;
         self.row_clip_max = self.row_clip_min + rect.h;
-        self.seedLinearResolveBackdrop(target.encoding, rect, resolve.backdrop);
+        self.target_encoding = surface.encoding;
+        self.target_resolve = .{ .linear = resolve };
+        self.seedLinearResolveBackdrop(surface.encoding, rect, resolve.backdrop);
         return restore;
     }
 
@@ -208,6 +214,8 @@ pub const CpuRenderer = struct {
         self.row_clip_max = restore.row_clip_max;
         self.col_clip_min = restore.col_clip_min;
         self.col_clip_max = restore.col_clip_max;
+        self.target_encoding = restore.target_encoding;
+        self.target_resolve = restore.target_resolve;
     }
 
     fn seedLinearResolveBackdrop(self: *CpuRenderer, encoding: snail.TargetEncoding, rect: snail.PixelRect, backdrop: snail.ResolveBackdrop) void {
@@ -339,13 +347,49 @@ pub const CpuRenderer = struct {
         }
     }
 
-    pub fn drawTextPrepared(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const u32, mvp: snail.Mat4, vw: f32, vh: f32, texture_layer_base: u32) !void {
-        const scene = sceneToPixelFromMvp(mvp, vw, vh);
+    const DrawStateRestore = struct {
+        fill_rule: FillRule,
+        subpixel_order: SubpixelOrder,
+        target_encoding: snail.TargetEncoding,
+        target_resolve: snail.Resolve,
+        coverage_transfer: snail.CoverageTransfer,
+    };
+
+    fn applyDrawState(self: *CpuRenderer, state: snail.DrawState) DrawStateRestore {
+        const restore = DrawStateRestore{
+            .fill_rule = self.fill_rule,
+            .subpixel_order = self.subpixel_order,
+            .target_encoding = self.target_encoding,
+            .target_resolve = self.target_resolve,
+            .coverage_transfer = self.coverage_transfer,
+        };
+        self.fill_rule = state.raster.fill_rule;
+        self.subpixel_order = state.raster.subpixel_order;
+        self.target_encoding = state.surface.encoding;
+        self.target_resolve = .{ .direct = .{} };
+        self.coverage_transfer = state.raster.coverage_transfer;
+        return restore;
+    }
+
+    fn restoreDrawState(self: *CpuRenderer, restore: DrawStateRestore) void {
+        self.fill_rule = restore.fill_rule;
+        self.subpixel_order = restore.subpixel_order;
+        self.target_encoding = restore.target_encoding;
+        self.target_resolve = restore.target_resolve;
+        self.coverage_transfer = restore.coverage_transfer;
+    }
+
+    pub fn drawTextPrepared(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const u32, state: snail.DrawState, texture_layer_base: u32) !void {
+        const restore = self.applyDrawState(state);
+        defer self.restoreDrawState(restore);
+        const scene = sceneToPixelFromMvp(state.mvp, state.surface.pixel_width, state.surface.pixel_height);
         self.drawTextBatchPrepared(prepared, vertices, scene, texture_layer_base, true);
     }
 
-    pub fn drawPathsPrepared(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const u32, mvp: snail.Mat4, vw: f32, vh: f32, texture_layer_base: u32) !void {
-        const scene = sceneToPixelFromMvp(mvp, vw, vh);
+    pub fn drawPathsPrepared(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const u32, state: snail.DrawState, texture_layer_base: u32) !void {
+        const restore = self.applyDrawState(state);
+        defer self.restoreDrawState(restore);
+        const scene = sceneToPixelFromMvp(state.mvp, state.surface.pixel_width, state.surface.pixel_height);
         self.drawTextBatchPrepared(prepared, vertices, scene, texture_layer_base, false);
     }
 
@@ -364,14 +408,14 @@ pub const CpuRenderer = struct {
         return renderer.uploadResourcesBlocking(allocators, set);
     }
 
-    pub fn draw(self: *CpuRenderer, prepared: *const snail.PreparedResources, records: snail.DrawRecords, options: snail.DrawOptions) !void {
+    pub fn draw(self: *CpuRenderer, prepared: *const snail.PreparedResources, records: snail.DrawRecords, state: snail.DrawState) !void {
         var renderer = self.asRenderer();
-        try renderer.draw(prepared, records, options);
+        try renderer.draw(prepared, records, state);
     }
 
-    pub fn drawPrepared(self: *CpuRenderer, prepared: *const snail.PreparedResources, scene: *const snail.PreparedScene, options: snail.DrawOptions) !void {
+    pub fn drawPrepared(self: *CpuRenderer, prepared: *const snail.PreparedResources, scene: *const snail.PreparedScene, state: snail.DrawState) !void {
         var renderer = self.asRenderer();
-        try renderer.drawPrepared(prepared, scene, options);
+        try renderer.drawPrepared(prepared, scene, state);
     }
 
     /// Frame-level fan-out invoked by the CPU vtable's `draw` entry when a
@@ -384,7 +428,7 @@ pub const CpuRenderer = struct {
         pool: *snail.ThreadPool,
         backend_prepared: ?*const anyopaque,
         records: snail.DrawRecords,
-        options: snail.DrawOptions,
+        state: snail.DrawState,
     ) void {
         const span = self.row_clip_max - self.row_clip_min;
         const tile_count = (span + TILE_ROWS - 1) / TILE_ROWS;
@@ -392,7 +436,7 @@ pub const CpuRenderer = struct {
             .self = self,
             .backend_prepared = backend_prepared,
             .records = records,
-            .options = options,
+            .state = state,
         };
         pool.dispatch(tile_count, &ctx, cpu_tile_frame.callback(CpuRenderer, TILE_ROWS));
     }

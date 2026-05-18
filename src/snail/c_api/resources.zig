@@ -10,7 +10,6 @@ const SNAIL_ERR_OUT_OF_MEMORY = common.SNAIL_ERR_OUT_OF_MEMORY;
 const SNAIL_ERR_INVALID_ARGUMENT = common.SNAIL_ERR_INVALID_ARGUMENT;
 const SNAIL_ERR_DRAW_FAILED = common.SNAIL_ERR_DRAW_FAILED;
 const SnailTransform2D = common.SnailTransform2D;
-const SnailDrawOptions = common.SnailDrawOptions;
 const SnailResourceKey = common.SnailResourceKey;
 const SnailResourceStamp = common.SnailResourceStamp;
 const SnailResourceFootprint = common.SnailResourceFootprint;
@@ -19,7 +18,6 @@ const toTransform = common.toTransform;
 const fromResourceFootprint = common.fromResourceFootprint;
 const toResourceCapacityMode = common.toResourceCapacityMode;
 const reservedResourceCapacityMode = common.reservedResourceCapacityMode;
-const toDrawOptions = common.toDrawOptions;
 const TextAtlasImpl = common.TextAtlasImpl;
 const TextBlobImpl = common.TextBlobImpl;
 const ImageImpl = common.ImageImpl;
@@ -138,10 +136,8 @@ pub export fn snail_prepared_scene_init(
     alloc_ptr: ?*const SnailAllocator,
     prepared: *const PreparedResourcesImpl,
     scene: *const SceneImpl,
-    options: SnailDrawOptions,
     out: *?*PreparedSceneImpl,
 ) c_int {
-    _ = options;
     const allocator = resolveAllocator(alloc_ptr);
     const prepared_scene = snail.PreparedScene.initOwned(allocator, &prepared.inner, &scene.inner) catch |err| return mapError(err);
     const impl = handleAllocator().create(PreparedSceneImpl) catch {
@@ -194,13 +190,11 @@ pub export fn snail_prepared_resource_retirement_queue_retire(queue: *PreparedRe
     return SNAIL_OK;
 }
 
-pub export fn snail_draw_list_estimate_word_count(scene: *const SceneImpl, options: SnailDrawOptions) usize {
-    _ = options;
+pub export fn snail_draw_list_estimate_word_count(scene: *const SceneImpl) usize {
     return snail.DrawList.estimate(&scene.inner);
 }
 
-pub export fn snail_draw_list_estimate_segment_count(scene: *const SceneImpl, options: SnailDrawOptions) usize {
-    _ = options;
+pub export fn snail_draw_list_estimate_segment_count(scene: *const SceneImpl) usize {
     return snail.DrawList.estimateSegments(&scene.inner);
 }
 
@@ -259,8 +253,7 @@ pub export fn snail_draw_list_words(list: *const DrawListImpl) ?[*]const u32 {
     return list.words.ptr;
 }
 
-pub export fn snail_draw_list_add_scene(list: *DrawListImpl, prepared: *const PreparedResourcesImpl, scene: *const SceneImpl, options: SnailDrawOptions) c_int {
-    _ = options;
+pub export fn snail_draw_list_add_scene(list: *DrawListImpl, prepared: *const PreparedResourcesImpl, scene: *const SceneImpl) c_int {
     list.inner.addScene(&prepared.inner, &scene.inner) catch |err| return mapError(err);
     return SNAIL_OK;
 }

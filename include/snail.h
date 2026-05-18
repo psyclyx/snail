@@ -186,11 +186,6 @@ typedef struct {
 typedef struct {
     float pixel_width;
     float pixel_height;
-    int subpixel_order;
-    int fill_rule;
-    bool is_final_composite;
-    bool opaque_backdrop;
-    bool will_resample;
     /* Explicit color encoding for this target.
      * attachment_encoding describes how the current attachment interprets
      * fragment outputs.
@@ -200,28 +195,22 @@ typedef struct {
      * SNAIL_COLOR_ENCODING_SRGB. */
     int attachment_encoding;
     int stored_pixel_encoding;
-    /* Explicit resolve contract. SNAIL_RESOLVE_LINEAR resolves through a
-     * linear intermediate using the selected backdrop, region, and intermediate
-     * format. */
-    int resolve_kind;
-    int resolve_backdrop;
-    float resolve_clear_color[4];
-    int resolve_region;
-    int resolve_region_x;
-    int resolve_region_y;
-    uint32_t resolve_region_w;
-    uint32_t resolve_region_h;
-    int resolve_intermediate_format;
+} SnailTargetSurface;
+
+typedef struct {
+    int subpixel_order;
+    int fill_rule;
     /* Exponent applied to analytic coverage after edge evaluation.
      * 1.0 is identity; values below 1.0 strengthen antialiased edges and
      * values above 1.0 lighten them. */
     float coverage_exponent;
-} SnailResolveTarget;
+} SnailRasterOptions;
 
 typedef struct {
     SnailMat4 mvp;
-    SnailResolveTarget target;
-} SnailDrawOptions;
+    SnailTargetSurface surface;
+    SnailRasterOptions raster;
+} SnailDrawState;
 
 /* Enums */
 
@@ -242,20 +231,6 @@ typedef struct {
 
 #define SNAIL_COLOR_ENCODING_LINEAR 0
 #define SNAIL_COLOR_ENCODING_SRGB 1
-
-#define SNAIL_RESOLVE_DIRECT 0
-#define SNAIL_RESOLVE_LINEAR 1
-
-#define SNAIL_RESOLVE_BACKDROP_TARGET 0
-#define SNAIL_RESOLVE_BACKDROP_CLEAR 1
-#define SNAIL_RESOLVE_BACKDROP_TRANSPARENT 2
-#define SNAIL_RESOLVE_BACKDROP_DONT_CARE 3
-
-#define SNAIL_RESOLVE_REGION_FULL_TARGET 0
-#define SNAIL_RESOLVE_REGION_PIXEL_RECT 1
-
-#define SNAIL_INTERMEDIATE_FORMAT_RGBA16F 0
-#define SNAIL_INTERMEDIATE_FORMAT_RGBA32F 1
 
 #define SNAIL_EXTEND_CLAMP 0
 #define SNAIL_EXTEND_REPEAT 1
@@ -621,7 +596,6 @@ bool snail_prepared_resources_stamp_for_key(const SnailPreparedResources *prepar
 int snail_prepared_scene_init(const SnailAllocator *alloc,
                               const SnailPreparedResources *prepared,
                               const SnailScene *scene,
-                              SnailDrawOptions options,
                               SnailPreparedScene **out);
 void snail_prepared_scene_deinit(SnailPreparedScene *scene);
 size_t snail_prepared_scene_word_count(const SnailPreparedScene *scene);
@@ -636,10 +610,8 @@ int snail_prepared_resource_retirement_queue_retire(SnailPreparedResourceRetirem
 
 /* Caller-buffered draw records */
 
-size_t snail_draw_list_estimate_word_count(const SnailScene *scene,
-                                           SnailDrawOptions options);
-size_t snail_draw_list_estimate_segment_count(const SnailScene *scene,
-                                              SnailDrawOptions options);
+size_t snail_draw_list_estimate_word_count(const SnailScene *scene);
+size_t snail_draw_list_estimate_segment_count(const SnailScene *scene);
 int snail_draw_list_init(const SnailAllocator *alloc,
                          size_t word_capacity,
                          size_t segment_capacity,
@@ -653,8 +625,7 @@ size_t snail_draw_list_segment_capacity(const SnailDrawList *list);
 const uint32_t *snail_draw_list_words(const SnailDrawList *list);
 int snail_draw_list_add_scene(SnailDrawList *list,
                               const SnailPreparedResources *prepared,
-                              const SnailScene *scene,
-                              SnailDrawOptions options);
+                              const SnailScene *scene);
 
 /* Custom text coverage records */
 
@@ -744,11 +715,11 @@ int snail_pending_resource_upload_publish(SnailPendingResourceUpload *pending,
 int snail_renderer_draw(SnailRenderer *renderer,
                         const SnailPreparedResources *prepared,
                         const SnailDrawList *list,
-                        SnailDrawOptions options);
+                        SnailDrawState state);
 int snail_renderer_draw_prepared(SnailRenderer *renderer,
                                  const SnailPreparedResources *prepared,
                                  const SnailPreparedScene *scene,
-                                 SnailDrawOptions options);
+                                 SnailDrawState state);
 
 /* Features and constants */
 

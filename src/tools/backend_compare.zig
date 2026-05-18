@@ -122,27 +122,24 @@ const SceneBundle = struct {
     }
 };
 
-fn drawOptions(subpixel_order: snail.SubpixelOrder) snail.DrawOptions {
+fn drawState(subpixel_order: snail.SubpixelOrder) snail.DrawState {
     const wf: f32 = @floatFromInt(WIDTH);
     const hf: f32 = @floatFromInt(HEIGHT);
     return .{
         .mvp = snail.Mat4.ortho(0, wf, hf, 0, -1, 1),
-        .target = .{
+        .surface = .{
             .pixel_width = wf,
             .pixel_height = hf,
-            .subpixel_order = subpixel_order,
-            .is_final_composite = true,
-            .opaque_backdrop = true,
             .encoding = .srgb,
         },
+        .raster = .{ .subpixel_order = subpixel_order },
     };
 }
 
-fn linearResolveDrawOptions(subpixel_order: snail.SubpixelOrder) snail.DrawOptions {
-    var options = drawOptions(subpixel_order);
-    options.target.encoding = .srgb_pixels_on_linear_attachment;
-    options.target.resolve = .{ .linear = .{} };
-    return options;
+fn linearResolveDrawState(subpixel_order: snail.SubpixelOrder) snail.DrawState {
+    var state = drawState(subpixel_order);
+    state.surface.encoding = .srgb_pixels_on_linear_attachment;
+    return state;
 }
 
 fn ensureText(atlas: *snail.TextAtlas, style: snail.FontStyle, text: []const u8) !void {
@@ -350,7 +347,7 @@ fn clearPixelsTo(pixels: []u8, color: [4]u8) void {
 fn renderCpu(
     allocator: std.mem.Allocator,
     scene: *const snail.Scene,
-    options: snail.DrawOptions,
+    options: snail.DrawState,
 ) ![]u8 {
     return renderCpuSeeded(allocator, scene, options, .{ 0, 0, 0, 255 });
 }
@@ -358,7 +355,7 @@ fn renderCpu(
 fn renderCpuSeeded(
     allocator: std.mem.Allocator,
     scene: *const snail.Scene,
-    options: snail.DrawOptions,
+    options: snail.DrawState,
     seed: [4]u8,
 ) ![]u8 {
     const pixels = try allocator.alloc(u8, WIDTH * HEIGHT * 4);
@@ -419,7 +416,7 @@ fn renderGl(
     renderer: *snail.Renderer,
     fbo: gl.GLuint,
     scene: *const snail.Scene,
-    options: snail.DrawOptions,
+    options: snail.DrawState,
 ) ![]u8 {
     return renderGlSeeded(allocator, renderer, fbo, scene, options, .{ 0, 0, 0, 255 });
 }
@@ -429,7 +426,7 @@ fn renderGlSeeded(
     renderer: *snail.Renderer,
     fbo: gl.GLuint,
     scene: *const snail.Scene,
-    options: snail.DrawOptions,
+    options: snail.DrawState,
     seed: [4]u8,
 ) ![]u8 {
     gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, fbo);
@@ -454,7 +451,7 @@ fn drawPreparedGlToPixels(
     fbo: gl.GLuint,
     prepared: *const snail.PreparedResources,
     scene: *const snail.PreparedScene,
-    options: snail.DrawOptions,
+    options: snail.DrawState,
     seed: [4]u8,
 ) ![]u8 {
     gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, fbo);
@@ -473,7 +470,7 @@ fn renderVulkan(
     vk_renderer: *snail.VulkanRenderer,
     renderer: *snail.Renderer,
     scene: *const snail.Scene,
-    options: snail.DrawOptions,
+    options: snail.DrawState,
 ) ![]u8 {
     if (comptime !build_options.enable_vulkan) unreachable;
 
@@ -496,7 +493,7 @@ fn drawPreparedVulkanToPixels(
     renderer: *snail.Renderer,
     prepared: *const snail.PreparedResources,
     scene: *const snail.PreparedScene,
-    options: snail.DrawOptions,
+    options: snail.DrawState,
 ) ![]u8 {
     if (comptime !build_options.enable_vulkan) unreachable;
 
@@ -945,7 +942,7 @@ fn buildAppendedPagePreparedScene(
     allocator: std.mem.Allocator,
     prepared: *const snail.PreparedResources,
     atlas: *const snail.TextAtlas,
-    options: snail.DrawOptions,
+    options: snail.DrawState,
 ) !struct { blob: *snail.TextBlob, scene: snail.Scene, prepared_scene: snail.PreparedScene } {
     const blob = try allocator.create(snail.TextBlob);
     errdefer allocator.destroy(blob);
@@ -974,7 +971,7 @@ fn runGlAppendSnapshotRegression(
 
     var prepared = try uploadTextAtlasResourceWithCapacity(allocator, renderer, APPEND_RESOURCE_KEY, bundle.atlas, .exact);
     defer prepared.deinit();
-    const options = drawOptions(.none);
+    const options = drawState(.none);
     var prepared_scene = try snail.PreparedScene.initOwned(allocator, &prepared, &bundle.scene);
     defer prepared_scene.deinit();
 
@@ -1021,7 +1018,7 @@ fn runVulkanAppendSnapshotRegression(
 
     var prepared = try uploadTextAtlasResourceWithCapacity(allocator, renderer, APPEND_RESOURCE_KEY, bundle.atlas, .exact);
     defer prepared.deinit();
-    const options = drawOptions(.none);
+    const options = drawState(.none);
     var prepared_scene = try snail.PreparedScene.initOwned(allocator, &prepared, &bundle.scene);
     defer prepared_scene.deinit();
 
@@ -1064,7 +1061,7 @@ fn runPathBandSpanRegression(
     var bundle = try buildPathBandStressScene(allocator);
     defer bundle.deinit();
 
-    const options = drawOptions(.none);
+    const options = drawState(.none);
     const shape_origin = bundle.picture.shapes[0].transform.applyPoint(.zero);
     const scales = [_]f32{ 0.62, 0.83, 1.07, 1.31 };
     const offsets = [_]f32{ -0.49, -0.17, 0.0, 0.17, 0.49 };
@@ -1168,7 +1165,7 @@ pub fn main() !void {
 
     var any_failure = false;
     for (cases) |case| {
-        const options = drawOptions(case.subpixel_order);
+        const options = drawState(case.subpixel_order);
         const cpu_pixels = try renderCpu(allocator, &scene_bundle.scene, options);
         defer allocator.free(cpu_pixels);
 
@@ -1205,7 +1202,7 @@ pub fn main() !void {
         if (!case.requires_dual_source or gl_supports_lcd) {
             const linear_case_name = try std.fmt.allocPrint(allocator, "{s}-linear-resolve", .{case.name});
             defer allocator.free(linear_case_name);
-            const linear_options = linearResolveDrawOptions(case.subpixel_order);
+            const linear_options = linearResolveDrawState(case.subpixel_order);
             const cpu_linear_pixels = try renderCpuSeeded(allocator, &scene_bundle.scene, linear_options, LINEAR_RESOLVE_SEED);
             defer allocator.free(cpu_linear_pixels);
             const gl_linear_pixels = try renderGlSeeded(allocator, &gl_renderer, linear_framebuffer.fbo, &scene_bundle.scene, linear_options, LINEAR_RESOLVE_SEED);

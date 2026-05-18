@@ -141,18 +141,17 @@ fn renderDiagram(
 
     const w: f32 = @floatFromInt(WIDTH);
     const h: f32 = @floatFromInt(HEIGHT);
-    const draw_options = snail.DrawOptions{
+    const draw_state = snail.DrawState{
         .mvp = snail.Mat4.ortho(0, w, h, 0, -1, 1),
-        .target = .{
+        .surface = .{
             .pixel_width = w,
             .pixel_height = h,
-            .subpixel_order = .none,
             .encoding = .srgb,
         },
     };
     var prepared_scene = try snail.PreparedScene.initOwned(allocator, &prepared, &scene);
     defer prepared_scene.deinit();
-    try renderer.drawPrepared(&prepared, &prepared_scene, draw_options);
+    try renderer.drawPrepared(&prepared, &prepared_scene, draw_state);
 
     const pixels = try screenshot.captureFramebuffer(allocator, WIDTH, HEIGHT);
     defer allocator.free(pixels);

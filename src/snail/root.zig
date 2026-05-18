@@ -105,7 +105,10 @@ pub const snapDeltaToStep = target.snapDeltaToStep;
 pub const snapLengthToStep = target.snapLengthToStep;
 pub const snapPointToStep = target.snapPointToStep;
 pub const snapRectToStep = target.snapRectToStep;
-pub const ResolveTarget = target.ResolveTarget;
+pub const TargetSurface = target.TargetSurface;
+pub const RasterOptions = target.RasterOptions;
+pub const DrawState = target.DrawState;
+pub const resolveRect = target.resolveRect;
 
 pub const BackendKind = backend_kind.BackendKind;
 pub const VulkanContext = render.VulkanContext;
@@ -135,7 +138,6 @@ pub const ResourceUploadCommand = upload.ResourceUploadCommand;
 pub const ResourceUploadCompletion = upload.ResourceUploadCompletion;
 pub const PendingResourceUpload = upload.PendingResourceUpload;
 
-pub const DrawOptions = draw.DrawOptions;
 pub const DrawSegment = draw.DrawSegment;
 pub const DrawRecords = draw.DrawRecords;
 pub const DrawList = draw.DrawList;

@@ -245,11 +245,11 @@ fn drawSnailScene(
     prepared: *const snail.PreparedResources,
     scene: *const snail.Scene,
     mvp: snail.Mat4,
-    target: snail.ResolveTarget,
+    target: demo_passes.DrawTarget,
     draw_buf: *[]u32,
     allocator: std.mem.Allocator,
 ) !void {
-    const options = snail.DrawOptions{ .mvp = mvp, .target = target };
+    const options = snail.DrawState{ .mvp = mvp, .surface = target.surface, .raster = target.raster };
     const needed = snail.DrawList.estimate(scene);
     const needed_segments = snail.DrawList.estimateSegments(scene);
     if (draw_buf.*.len < needed) {

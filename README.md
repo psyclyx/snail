@@ -85,22 +85,24 @@ All color parameters are **sRGB, straight (unpremultiplied) alpha**, as `[4]f32`
 
 **Gradients** interpolate in sRGB space, which gives perceptually smooth results for UI use. `LinearGradient` and `RadialGradient` provide extend modes for clamp, repeat, and reflect behavior.
 
-**Blending** uses premultiplied alpha. Shaders decode sRGB inputs to linear before applying coverage. On GL/Vulkan sRGB attachments, fixed-function attachment encoding handles linear->sRGB storage and gamma-correct blending. On linear attachments or CPU buffers, `ResolveTarget.encoding` states what the attachment accepts and what final pixel bytes the consumer expects.
+**Blending** uses premultiplied alpha. Shaders decode sRGB inputs to linear before applying coverage. On GL/Vulkan sRGB attachments, fixed-function attachment encoding handles linear->sRGB storage and gamma-correct blending. On linear attachments or CPU buffers, `DrawState.surface.encoding` states what the attachment accepts and what final pixel bytes the consumer expects.
 
-**Output encoding.** `ResolveTarget.encoding` is required on every draw:
+**Output encoding.** `TargetSurface.encoding` is required on every draw:
 
 - `TargetEncoding.srgb`: normal GL/Vulkan `_SRGB` attachment or swapchain image; the attachment does the final encode.
 - `TargetEncoding.linear`: linear UNORM/float targets or CPU buffers whose bytes should stay linear.
 - `TargetEncoding.srgb_pixels_on_linear_attachment`: linear-format storage, including CPU byte buffers, whose consumer expects sRGB bytes. With the default direct resolve, fixed-function blending happens in storage space; this is a compatibility path for targets that cannot be tagged as sRGB, not a gamma-correct composition path.
 
-`ResolveTarget.resolve` selects how Snail resolves into the target:
+`LinearResolve` is an explicit backend pass for gamma-correct Snail composition into sRGB pixels on a linear attachment:
 
-- `.direct`: draw straight into the target. This is the default.
-- `.linear`: valid with `TargetEncoding.srgb_pixels_on_linear_attachment`. Snail resolves through a linear intermediate, then encodes the result into the linear-format target as sRGB pixels. `LinearResolve.backdrop` chooses whether to seed from the target, a clear color, transparent black, or unspecified contents; `LinearResolve.region` can restrict the resolve to a pixel rectangle; `LinearResolve.intermediate_format` selects RGBA16F or RGBA32F. GL supports the full contract, CPU uses the equivalent linear decode/blend/encode path, and Vulkan currently reports `error.UnsupportedResolve` because its renderer records inside a caller-owned render pass.
+- Draw with `TargetEncoding.srgb_pixels_on_linear_attachment` inside the resolve pass.
+- `LinearResolve.backdrop` chooses whether to seed from the target, a clear color, transparent black, or unspecified contents.
+- `LinearResolve.region` can restrict the resolve to a pixel rectangle.
+- `LinearResolve.intermediate_format` selects RGBA16F or RGBA32F for GL.
 
 The CPU renderer has no format-level encoder: it writes RGBA8 bytes according to `encoding.stored_pixels`. It uses an exact 256-entry sRGB->linear LUT for u8 texels and the IEC 61966-2-1 formula directly for linear->sRGB output, with round-to-nearest rounding.
 
-**Coverage transfer.** `ResolveTarget.coverage_transfer` optionally remaps analytic coverage before blending. The default is identity; `CoverageTransfer.power(exponent)` exposes explicit display tuning when a target benefits from slightly stronger or lighter antialiasing.
+**Coverage transfer.** `DrawState.raster.coverage_transfer` optionally remaps analytic coverage before blending. The default is identity; `CoverageTransfer.power(exponent)` exposes explicit display tuning when a target benefits from slightly stronger or lighter antialiasing.
 
 ## Hinting And Pixel Snapping
 
@@ -284,19 +286,19 @@ defer prepared.deinit();
 
 const viewport_wf: f32 = @floatFromInt(viewport_w);
 const viewport_hf: f32 = @floatFromInt(viewport_h);
-const options = snail.DrawOptions{
+const state = snail.DrawState{
     .mvp = snail.Mat4.ortho(0, viewport_wf, viewport_hf, 0, -1, 1),
-    .target = .{
+    .surface = .{
         .pixel_width = viewport_wf,
         .pixel_height = viewport_hf,
-        .subpixel_order = .rgb,
         .encoding = .srgb,
     },
+    .raster = .{ .subpixel_order = .rgb },
 };
 
 var prepared_scene = try snail.PreparedScene.initOwned(allocator, &prepared, &scene);
 defer prepared_scene.deinit();
-try gl.drawPrepared(&prepared, &prepared_scene, options);
+try gl.drawPrepared(&prepared, &prepared_scene, state);
 ```
 
 ### On-demand Atlas Extension
@@ -425,22 +427,17 @@ snail_resource_set_add_scene(resources, scene);
 SnailRenderer *renderer = NULL;
 snail_gl_renderer_init(&renderer);
 
-SnailDrawOptions draw_options = {
+SnailDrawState draw_state = {
     .mvp = snail_mat4_identity(), // replace with your pixel-to-clip projection
-    .target = {
+    .surface = {
         .pixel_width = 1280,
         .pixel_height = 720,
-        .subpixel_order = SNAIL_SUBPIXEL_RGB,
-        .fill_rule = SNAIL_FILL_NONZERO,
-        .is_final_composite = true,
-        .opaque_backdrop = true,
-        .will_resample = false,
         .attachment_encoding = SNAIL_COLOR_ENCODING_SRGB,
         .stored_pixel_encoding = SNAIL_COLOR_ENCODING_SRGB,
-        .resolve_kind = SNAIL_RESOLVE_DIRECT,
-        .resolve_backdrop = SNAIL_RESOLVE_BACKDROP_TARGET,
-        .resolve_region = SNAIL_RESOLVE_REGION_FULL_TARGET,
-        .resolve_intermediate_format = SNAIL_INTERMEDIATE_FORMAT_RGBA16F,
+    },
+    .raster = {
+        .subpixel_order = SNAIL_SUBPIXEL_RGB,
+        .fill_rule = SNAIL_FILL_NONZERO,
         .coverage_exponent = 1.0f,
     },
 };
@@ -449,8 +446,8 @@ SnailPreparedResources *prepared = NULL;
 snail_renderer_upload_resources_blocking(renderer, NULL, resources, &prepared);
 
 SnailPreparedScene *prepared_scene = NULL;
-snail_prepared_scene_init(NULL, prepared, scene, draw_options, &prepared_scene);
-snail_renderer_draw_prepared(renderer, prepared, prepared_scene, draw_options);
+snail_prepared_scene_init(NULL, prepared, scene, &prepared_scene);
+snail_renderer_draw_prepared(renderer, prepared, prepared_scene, draw_state);
 
 // Cleanup
 snail_prepared_scene_deinit(prepared_scene);
@@ -500,9 +497,12 @@ borrowed `Scene` + `PathDraw` / `TextDraw` primitive used by Zig.
 | `PreparedResources` | Backend realization for one renderer/context. |
 | `DrawList` | Caller-buffered draw records. |
 | `PreparedScene` | Optional owned draw-record cache for static scenes. |
+| `DrawState` | Per-draw transform, target surface metadata, and rasterization policy. |
+| `TargetSurface` | Per-draw target pixel size and color encoding. |
+| `RasterOptions` | Per-draw raster policy: subpixel order, fill rule, and coverage transfer. |
 | `TargetEncoding` | Pair of color encodings for attachment interpretation and final stored pixels. Common presets are `.srgb`, `.linear`, and `.srgb_pixels_on_linear_attachment`. |
-| `Resolve` | Per-target resolve path: `.direct` or `.linear` for gamma-correct Snail composition into sRGB pixels on a linear attachment. |
-| `LinearResolve` | Options for `.linear`: `backdrop`, `region`, and `intermediate_format`. |
+| `Resolve` | Explicit resolve path for gamma-correct Snail composition into sRGB pixels on a linear attachment. |
+| `LinearResolve` | Options for linear resolve: `backdrop`, `region`, and `intermediate_format`. |
 | `ResolveBackdrop` | Backdrop contract for a linear resolve: `.target`, `.clear`, `.transparent`, or `.dont_care`. |
 | `ResolveRegion` | Full-target or pixel-rectangle bounds for a resolve. |
 | `PixelRect` | Integer pixel rectangle `{ .x, .y, .w, .h }` used by `ResolveRegion.pixel_rect`. |
@@ -513,7 +513,6 @@ borrowed `Scene` + `PathDraw` / `TextDraw` primitive used by Zig.
 | `snapToStep` / `snapDeltaToStep` | Snap a scalar to an explicit step, or return the delta needed to reach that snap. |
 | `snapLengthToStep` | Snap a length to an explicit step with a caller-provided minimum step count. |
 | `snapPointToStep` / `snapRectToStep` | Snap a point or rectangle using explicit per-axis steps. |
-| `ResolveTarget` | Final target metadata: pixel size, subpixel order, fill rule, composite safety flags, required `encoding`, explicit `resolve`, and optional `coverage_transfer`. |
 | `GlRenderer`, `VulkanRenderer`, `CpuRenderer` | First-class backend renderers. |
 | `Renderer` | Type-erased convenience wrapper around a backend renderer. |
 | `Rect` | `{ x, y, w, h }` rectangle. |

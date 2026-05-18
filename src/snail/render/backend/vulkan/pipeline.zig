@@ -5,13 +5,9 @@ const atlas_page_mod = @import("../../format/atlas/page.zig");
 const texture_layers = @import("../../format/texture_layers.zig");
 const upload_common = @import("../../format/upload_common.zig");
 const vertex = @import("../../format/vertex.zig");
-const vec = @import("../../../math/vec.zig");
-const Mat4 = vec.Mat4;
 const snail_mod = @import("../../../root.zig");
 const SubpixelOrder = @import("../../format/subpixel_order.zig").SubpixelOrder;
-const TargetEncoding = snail_mod.TargetEncoding;
-const Resolve = snail_mod.Resolve;
-const CoverageTransfer = snail_mod.CoverageTransfer;
+const DrawState = snail_mod.DrawState;
 const vulkan_types = @import("types.zig");
 const vulkan_resources = @import("resources.zig");
 
@@ -61,7 +57,6 @@ const ResourceBank = vulkan_resources.ResourceBank;
 const atlasPagesInBank = vulkan_resources.atlasPagesInBank;
 const retainPage = vulkan_resources.retainPage;
 pub const PreparedResources = vulkan_resources.PreparedResources;
-const FillRule = snail_mod.FillRule;
 
 // ── Internal helpers ──
 
@@ -95,11 +90,6 @@ pub const VulkanPipeline = struct {
 
     // Per-frame state
     active_cmd: vk.VkCommandBuffer = null,
-    subpixel_order: SubpixelOrder = .none,
-    fill_rule: FillRule = .non_zero,
-    target_encoding: TargetEncoding = .srgb,
-    resolve: Resolve = .{ .direct = .{} },
-    coverage_transfer: CoverageTransfer = .identity,
     resource_cache: ?PreparedResources = null,
 
     // ── Init / Deinit ──
@@ -304,50 +294,6 @@ pub const VulkanPipeline = struct {
         return "Vulkan";
     }
 
-    pub fn setSubpixelOrder(self: *VulkanPipeline, order: SubpixelOrder) void {
-        self.subpixel_order = order;
-    }
-
-    pub fn getSubpixelOrder(self: *const VulkanPipeline) SubpixelOrder {
-        return self.subpixel_order;
-    }
-
-    pub fn setFillRule(self: *VulkanPipeline, rule: FillRule) void {
-        self.fill_rule = rule;
-    }
-
-    pub fn getFillRule(self: *const VulkanPipeline) FillRule {
-        return self.fill_rule;
-    }
-
-    pub fn setTargetEncoding(self: *VulkanPipeline, encoding: TargetEncoding) void {
-        self.target_encoding = encoding;
-    }
-
-    pub fn getTargetEncoding(self: *const VulkanPipeline) TargetEncoding {
-        return self.target_encoding;
-    }
-
-    pub fn setResolve(self: *VulkanPipeline, resolve: Resolve) void {
-        self.resolve = resolve;
-    }
-
-    pub fn getResolve(self: *const VulkanPipeline) Resolve {
-        return self.resolve;
-    }
-
-    pub fn setCoverageTransfer(self: *VulkanPipeline, transfer: CoverageTransfer) void {
-        self.coverage_transfer = transfer;
-    }
-
-    pub fn getCoverageTransfer(self: *const VulkanPipeline) CoverageTransfer {
-        return self.coverage_transfer;
-    }
-
-    inline fn shaderEncodesSrgb(self: *const VulkanPipeline) bool {
-        return self.target_encoding.shaderEncodesSrgb();
-    }
-
     // ── Command buffer (set by caller per-frame) ──
 
     pub fn setCommandBuffer(self: *VulkanPipeline, cmd: anytype) void {
@@ -412,7 +358,7 @@ pub const VulkanPipeline = struct {
         try vulkan_upload.uploadPreparedImages(self, prepared, scratch, images, out_views);
     }
 
-    fn drawTextInternal(self: *VulkanPipeline, prepared: *const PreparedResources, vertices: []const u32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32, allow_subpixel: bool) !void {
+    fn drawTextInternal(self: *VulkanPipeline, prepared: *const PreparedResources, vertices: []const u32, state: DrawState, texture_layer_base: u32, allow_subpixel: bool) !void {
         const cmd = self.active_cmd orelse return error.MissingCommandBuffer;
         if (vertices.len == 0) return;
 
@@ -424,13 +370,13 @@ pub const VulkanPipeline = struct {
 
         vk.vkCmdBindIndexBuffer(cmd, self.index_buffer, 0, vk.VK_INDEX_TYPE_UINT32);
         vk.vkCmdBindDescriptorSets(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, self.pipeline_layout, 0, 1, @ptrCast(&bank.desc_set), 0, null);
-        setViewportAndScissor(cmd, viewport_w, viewport_h);
+        setViewportAndScissor(cmd, state.surface.pixel_width, state.surface.pixel_height);
 
         const render_mode = subpixel_policy.chooseTextRenderMode(
             vertices,
-            mvp,
+            state.mvp,
             allow_subpixel,
-            self.subpixel_order,
+            state.raster.subpixel_order,
             self.ctx.supports_dual_source_blend,
         );
 
@@ -442,13 +388,13 @@ pub const VulkanPipeline = struct {
             vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pip);
 
             const pc = PushConstants{
-                .mvp = mvp.data,
-                .viewport = .{ viewport_w, viewport_h },
-                .fill_rule = @intFromEnum(self.fill_rule),
-                .subpixel_order = @intFromEnum(if (render_mode == .grayscale) SubpixelOrder.none else self.subpixel_order),
-                .output_srgb = if (self.shaderEncodesSrgb()) 1 else 0,
+                .mvp = state.mvp.data,
+                .viewport = .{ state.surface.pixel_width, state.surface.pixel_height },
+                .fill_rule = @intFromEnum(state.raster.fill_rule),
+                .subpixel_order = @intFromEnum(if (render_mode == .grayscale) SubpixelOrder.none else state.raster.subpixel_order),
+                .output_srgb = if (state.surface.encoding.shaderEncodesSrgb()) 1 else 0,
                 .layer_base = @intCast(local_layer_base),
-                .coverage_exponent = self.coverage_transfer.shaderExponent(),
+                .coverage_exponent = state.raster.coverage_transfer.shaderExponent(),
             };
             vk.vkCmdPushConstants(cmd, self.pipeline_layout, vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(PushConstants), &pc);
             try self.drawGlyphRange(vertices, 0, total_glyphs);
@@ -467,9 +413,9 @@ pub const VulkanPipeline = struct {
                     vertices,
                     run_start,
                     run_end - run_start,
-                    mvp,
+                    state.mvp,
                     allow_subpixel,
-                    self.subpixel_order,
+                    state.raster.subpixel_order,
                     self.ctx.supports_dual_source_blend,
                 );
             const pip = switch (run_kind) {
@@ -483,13 +429,13 @@ pub const VulkanPipeline = struct {
             vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pip);
 
             const pc = PushConstants{
-                .mvp = mvp.data,
-                .viewport = .{ viewport_w, viewport_h },
-                .fill_rule = @intFromEnum(self.fill_rule),
-                .subpixel_order = @intFromEnum(if (run_mode == .grayscale) SubpixelOrder.none else self.subpixel_order),
-                .output_srgb = if (self.shaderEncodesSrgb()) 1 else 0,
+                .mvp = state.mvp.data,
+                .viewport = .{ state.surface.pixel_width, state.surface.pixel_height },
+                .fill_rule = @intFromEnum(state.raster.fill_rule),
+                .subpixel_order = @intFromEnum(if (run_mode == .grayscale) SubpixelOrder.none else state.raster.subpixel_order),
+                .output_srgb = if (state.surface.encoding.shaderEncodesSrgb()) 1 else 0,
                 .layer_base = @intCast(local_layer_base),
-                .coverage_exponent = self.coverage_transfer.shaderExponent(),
+                .coverage_exponent = state.raster.coverage_transfer.shaderExponent(),
             };
             vk.vkCmdPushConstants(cmd, self.pipeline_layout, vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(PushConstants), &pc);
             try self.drawGlyphRange(vertices, run_start, run_end - run_start);
@@ -497,8 +443,8 @@ pub const VulkanPipeline = struct {
         }
     }
 
-    pub fn drawTextPrepared(self: *VulkanPipeline, prepared: *const PreparedResources, vertices: []const u32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32) !void {
-        try self.drawTextInternal(prepared, vertices, mvp, viewport_w, viewport_h, texture_layer_base, true);
+    pub fn drawTextPrepared(self: *VulkanPipeline, prepared: *const PreparedResources, vertices: []const u32, state: DrawState, texture_layer_base: u32) !void {
+        try self.drawTextInternal(prepared, vertices, state, texture_layer_base, true);
     }
 
     pub fn bindTextCoverageResources(self: *VulkanPipeline, prepared: *const PreparedResources, bindings: TextCoverageBindings) !void {
@@ -525,7 +471,7 @@ pub const VulkanPipeline = struct {
         try self.drawGlyphRange(vertices, 0, total_glyphs);
     }
 
-    pub fn drawPathsPrepared(self: *VulkanPipeline, prepared: *const PreparedResources, vertices: []const u32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32) !void {
+    pub fn drawPathsPrepared(self: *VulkanPipeline, prepared: *const PreparedResources, vertices: []const u32, state: DrawState, texture_layer_base: u32) !void {
         const cmd = self.active_cmd orelse return error.MissingCommandBuffer;
         if (vertices.len == 0) return;
 
@@ -537,20 +483,20 @@ pub const VulkanPipeline = struct {
 
         vk.vkCmdBindIndexBuffer(cmd, self.index_buffer, 0, vk.VK_INDEX_TYPE_UINT32);
         vk.vkCmdBindDescriptorSets(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, self.pipeline_layout, 0, 1, @ptrCast(&bank.desc_set), 0, null);
-        setViewportAndScissor(cmd, viewport_w, viewport_h);
+        setViewportAndScissor(cmd, state.surface.pixel_width, state.surface.pixel_height);
 
         const render_mode: subpixel_policy.TextRenderMode = .grayscale;
         const pip = try self.ensurePathPipeline();
         vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pip);
 
         const pc = PushConstants{
-            .mvp = mvp.data,
-            .viewport = .{ viewport_w, viewport_h },
-            .fill_rule = @intFromEnum(self.fill_rule),
-            .subpixel_order = @intFromEnum(if (render_mode == .grayscale) SubpixelOrder.none else self.subpixel_order),
-            .output_srgb = if (self.shaderEncodesSrgb()) 1 else 0,
+            .mvp = state.mvp.data,
+            .viewport = .{ state.surface.pixel_width, state.surface.pixel_height },
+            .fill_rule = @intFromEnum(state.raster.fill_rule),
+            .subpixel_order = @intFromEnum(if (render_mode == .grayscale) SubpixelOrder.none else state.raster.subpixel_order),
+            .output_srgb = if (state.surface.encoding.shaderEncodesSrgb()) 1 else 0,
             .layer_base = @intCast(local_layer_base),
-            .coverage_exponent = self.coverage_transfer.shaderExponent(),
+            .coverage_exponent = state.raster.coverage_transfer.shaderExponent(),
         };
         vk.vkCmdPushConstants(cmd, self.pipeline_layout, vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(PushConstants), &pc);
         try self.drawGlyphRange(vertices, 0, total_glyphs);

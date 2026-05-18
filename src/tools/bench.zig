@@ -217,19 +217,17 @@ fn usFrom(start: u64) f64 {
     return @as(f64, @floatFromInt(nowNs() - start)) / 1000.0;
 }
 
-fn drawOptions(width: u32, height: u32, subpixel_order: snail.SubpixelOrder) snail.DrawOptions {
+fn drawState(width: u32, height: u32, subpixel_order: snail.SubpixelOrder) snail.DrawState {
     const wf: f32 = @floatFromInt(width);
     const hf: f32 = @floatFromInt(height);
     return .{
         .mvp = snail.Mat4.ortho(0, wf, hf, 0, -1, 1),
-        .target = .{
+        .surface = .{
             .pixel_width = wf,
             .pixel_height = hf,
-            .subpixel_order = subpixel_order,
-            .is_final_composite = true,
-            .opaque_backdrop = true,
             .encoding = .srgb,
         },
+        .raster = .{ .subpixel_order = subpixel_order },
     };
 }
 
@@ -595,7 +593,7 @@ fn benchSnailPrep(allocator: std.mem.Allocator, font_data: []const u8) !SnailPre
 fn timeRecordBuild(
     prepared: *const snail.PreparedResources,
     scene: *const snail.Scene,
-    options: snail.DrawOptions,
+    options: snail.DrawState,
 ) !f64 {
     const allocator = std.heap.smp_allocator;
     for (0..RECORD_WARMUP) |_| {
@@ -626,7 +624,7 @@ fn benchModes(
             var bundle = try buildScene(allocator, atlas, scene_kind);
             defer bundle.deinit();
 
-            const opts = drawOptions(WIDTH, HEIGHT, mode.aa);
+            const opts = drawState(WIDTH, HEIGHT, mode.aa);
             var resources = try uploadSceneResources(allocator, timer.renderer(), &bundle.scene);
             defer resources.deinit();
             var prepared_scene = try snail.PreparedScene.initOwned(allocator, &resources, &bundle.scene);
@@ -650,7 +648,7 @@ fn benchModes(
 
 pub fn main() !void {
     const allocator = std.heap.smp_allocator;
-    const options = drawOptions(WIDTH, HEIGHT, .rgb);
+    const options = drawState(WIDTH, HEIGHT, .rgb);
 
     const font_data = assets.noto_sans_regular;
     const snail_prep = try benchSnailPrep(allocator, font_data);
@@ -838,7 +836,7 @@ pub fn main() !void {
             self: @This(),
             prepared: *const snail.PreparedResources,
             scene: *const snail.PreparedScene,
-            opts: snail.DrawOptions,
+            opts: snail.DrawState,
         ) !f64 {
             return render_timing.timeCpuDraw(self.renderer_ptr, prepared, scene, opts, self.pixels_buf, CPU_WARMUP, CPU_FRAMES);
         }
@@ -855,7 +853,7 @@ pub fn main() !void {
             self: @This(),
             prepared: *const snail.PreparedResources,
             scene: *const snail.PreparedScene,
-            opts: snail.DrawOptions,
+            opts: snail.DrawState,
         ) !f64 {
             return render_timing.timeGlDraw(self.renderer_ptr, prepared, scene, opts, GPU_WARMUP, GPU_FRAMES);
         }
@@ -873,7 +871,7 @@ pub fn main() !void {
                 self: @This(),
                 prepared: *const snail.PreparedResources,
                 scene: *const snail.PreparedScene,
-                opts: snail.DrawOptions,
+                opts: snail.DrawState,
             ) !f64 {
                 return render_timing.timeVulkanDraw(self.state, self.renderer_ptr, prepared, scene, opts, GPU_WARMUP, GPU_FRAMES);
             }

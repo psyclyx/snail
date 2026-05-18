@@ -15,7 +15,7 @@ const pipeline = if (build_options.enable_cpu) @import("../backend/cpu/renderer.
 pub const CpuRenderer = pipeline.CpuRenderer;
 
 const CoverageBackend = coverage_mod.Backend;
-const DrawOptions = draw_mod.DrawOptions;
+const DrawState = draw_mod.DrawState;
 const DrawRecords = draw_mod.DrawRecords;
 const ErasedRenderer = interface.Renderer;
 const ResourceUploadBatch = upload_mod.ResourceUploadBatch;
@@ -46,31 +46,19 @@ const Config = if (build_options.enable_cpu) struct {
         return null;
     }
 
-    pub fn draw(renderer: *ErasedRenderer, prepared_resources: *const UnifiedPreparedResources, records: DrawRecords, options: DrawOptions) anyerror!void {
+    pub fn draw(renderer: *ErasedRenderer, prepared_resources: *const UnifiedPreparedResources, records: DrawRecords, state: DrawState) anyerror!void {
         const backend_prepared = prepared(prepared_resources) orelse return error.MissingPreparedResource;
         try renderer.validateRecords(prepared_resources, records);
-        switch (options.target.resolve) {
-            .direct => {},
-            .linear => |linear| {
-                if (!options.target.supportsLinearResolve()) return error.InvalidResolve;
-                const cpu_self: *Backend = @ptrCast(@alignCast(renderer.ptr));
-                const restore = cpu_self.beginLinearResolve(options.target, linear);
-                defer cpu_self.endLinearResolve(restore);
-                if (dispatchThreaded(cpu_self, backend_prepared, records, options)) return;
-                try renderer.iterateRecords(records, options, @ptrCast(backend_prepared));
-                return;
-            },
-        }
         const cpu_self: *Backend = @ptrCast(@alignCast(renderer.ptr));
-        if (dispatchThreaded(cpu_self, backend_prepared, records, options)) return;
-        try renderer.iterateRecords(records, options, @ptrCast(backend_prepared));
+        if (dispatchThreaded(cpu_self, backend_prepared, records, state)) return;
+        try renderer.iterateRecords(records, state, @ptrCast(backend_prepared));
     }
 
-    fn dispatchThreaded(cpu_self: *Backend, backend_prepared: *const Prepared, records: DrawRecords, options: DrawOptions) bool {
+    fn dispatchThreaded(cpu_self: *Backend, backend_prepared: *const Prepared, records: DrawRecords, state: DrawState) bool {
         if (cpu_self.thread_pool) |pool| {
             const span = cpu_self.row_clip_max - cpu_self.row_clip_min;
             if (span >= 2 * Backend.TILE_ROWS) {
-                cpu_self.dispatchTiledDraw(pool, @ptrCast(backend_prepared), records, options);
+                cpu_self.dispatchTiledDraw(pool, @ptrCast(backend_prepared), records, state);
                 return true;
             }
         }

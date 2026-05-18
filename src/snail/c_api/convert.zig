@@ -4,7 +4,7 @@ const c = @import("types.zig");
 
 const SnailBBox = c.SnailBBox;
 const SnailDecorationMetrics = c.SnailDecorationMetrics;
-const SnailDrawOptions = c.SnailDrawOptions;
+const SnailDrawState = c.SnailDrawState;
 const SnailFillStyle = c.SnailFillStyle;
 const SnailFontStyle = c.SnailFontStyle;
 const SnailGlTextCoverageBindings = c.SnailGlTextCoverageBindings;
@@ -16,7 +16,8 @@ const SnailRect = c.SnailRect;
 const SnailResourceCacheStats = c.SnailResourceCacheStats;
 const SnailResourceFootprint = c.SnailResourceFootprint;
 const SnailResourceStamp = c.SnailResourceStamp;
-const SnailResolveTarget = c.SnailResolveTarget;
+const SnailRasterOptions = c.SnailRasterOptions;
+const SnailTargetSurface = c.SnailTargetSurface;
 const SnailScriptMetrics = c.SnailScriptMetrics;
 const SnailScriptTransform = c.SnailScriptTransform;
 const SnailShapeMark = c.SnailShapeMark;
@@ -303,19 +304,6 @@ pub fn toResolveBackdrop(kind: c_int, clear_color: [4]f32) !snail.ResolveBackdro
     };
 }
 
-pub fn toResolveRegion(target: SnailResolveTarget) !snail.ResolveRegion {
-    return switch (target.resolve_region) {
-        0 => .full_target,
-        1 => .{ .pixel_rect = .{
-            .x = target.resolve_region_x,
-            .y = target.resolve_region_y,
-            .w = target.resolve_region_w,
-            .h = target.resolve_region_h,
-        } },
-        else => error.InvalidEnum,
-    };
-}
-
 pub fn toIntermediateFormat(v: c_int) !snail.IntermediateFormat {
     return switch (v) {
         0 => .rgba16f,
@@ -324,39 +312,31 @@ pub fn toIntermediateFormat(v: c_int) !snail.IntermediateFormat {
     };
 }
 
-pub fn toResolve(target: SnailResolveTarget) !snail.Resolve {
-    const linear = snail.LinearResolve{
-        .backdrop = try toResolveBackdrop(target.resolve_backdrop, target.resolve_clear_color),
-        .region = try toResolveRegion(target),
-        .intermediate_format = try toIntermediateFormat(target.resolve_intermediate_format),
-    };
-    return switch (target.resolve_kind) {
-        0 => .{ .direct = .{} },
-        1 => .{ .linear = linear },
-        else => error.InvalidEnum,
-    };
-}
-
-pub fn toResolveTarget(target: SnailResolveTarget) !snail.ResolveTarget {
+pub fn toTargetSurface(surface: SnailTargetSurface) !snail.TargetSurface {
     return .{
-        .pixel_width = target.pixel_width,
-        .pixel_height = target.pixel_height,
-        .subpixel_order = try toSubpixelOrder(target.subpixel_order),
-        .fill_rule = try toFillRule(target.fill_rule),
-        .is_final_composite = target.is_final_composite,
-        .opaque_backdrop = target.opaque_backdrop,
-        .will_resample = target.will_resample,
+        .pixel_width = surface.pixel_width,
+        .pixel_height = surface.pixel_height,
         .encoding = .{
-            .attachment = try toColorEncoding(target.attachment_encoding),
-            .stored_pixels = try toColorEncoding(target.stored_pixel_encoding),
+            .attachment = try toColorEncoding(surface.attachment_encoding),
+            .stored_pixels = try toColorEncoding(surface.stored_pixel_encoding),
         },
-        .resolve = try toResolve(target),
-        .coverage_transfer = .{ .exponent = target.coverage_exponent },
     };
 }
 
-pub fn toDrawOptions(options: SnailDrawOptions) !snail.DrawOptions {
-    return .{ .mvp = toMat4(options.mvp), .target = try toResolveTarget(options.target) };
+pub fn toRasterOptions(raster: SnailRasterOptions) !snail.RasterOptions {
+    return .{
+        .subpixel_order = try toSubpixelOrder(raster.subpixel_order),
+        .fill_rule = try toFillRule(raster.fill_rule),
+        .coverage_transfer = .{ .exponent = raster.coverage_exponent },
+    };
+}
+
+pub fn toDrawState(state: SnailDrawState) !snail.DrawState {
+    return .{
+        .mvp = toMat4(state.mvp),
+        .surface = try toTargetSurface(state.surface),
+        .raster = try toRasterOptions(state.raster),
+    };
 }
 
 pub fn toTextPlacement(placement: SnailTextPlacement) snail.TextPlacement {

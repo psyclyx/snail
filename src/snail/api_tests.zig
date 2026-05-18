@@ -34,14 +34,13 @@ const Renderer = snail.Renderer;
 const CpuRenderer = snail.CpuRenderer;
 const DrawSegment = snail.DrawSegment;
 const DrawRecords = snail.DrawRecords;
-const DrawOptions = snail.DrawOptions;
+const DrawState = snail.DrawState;
 const DrawList = snail.DrawList;
 const Scene = snail.Scene;
 const CoverageTransfer = snail.CoverageTransfer;
 const SubpixelOrder = snail.SubpixelOrder;
 const FillRule = snail.FillRule;
 const TargetEncoding = snail.TargetEncoding;
-const Resolve = snail.Resolve;
 const TextCoverageRecords = snail.coverage.TextCoverageRecords;
 const TEXT_WORDS_PER_GLYPH = snail.TEXT_WORDS_PER_GLYPH;
 const pointerResourceKey = resource_key.pointerResourceKey;
@@ -211,7 +210,7 @@ test "draw with missing prepared resources fails" {
     const records = DrawRecords{ .words = &words, .segments = &segments };
     try std.testing.expectError(error.MissingPreparedResource, renderer.draw(&prepared, records, .{
         .mvp = Mat4.identity,
-        .target = .{ .pixel_width = width, .pixel_height = height, .encoding = .srgb },
+        .surface = .{ .pixel_width = width, .pixel_height = height, .encoding = .srgb },
     }));
 }
 
@@ -225,7 +224,6 @@ test "draw dispatch uses only prepared stamps and caller records" {
         subpixel_order: SubpixelOrder = .none,
         fill_rule: FillRule = .non_zero,
         target_encoding: TargetEncoding = .linear,
-        resolve: Resolve = .{ .direct = .{} },
         coverage_transfer: CoverageTransfer = .identity,
         saw_backend_prepared: bool = true,
     };
@@ -234,56 +232,34 @@ test "draw dispatch uses only prepared stamps and caller records" {
             return @ptrCast(@alignCast(ptr));
         }
         fn deinit(_: *anyopaque) void {}
-        fn draw(renderer: *Renderer, prepared: *const PreparedResources, records: DrawRecords, options: DrawOptions) anyerror!void {
+        fn draw(renderer: *Renderer, prepared: *const PreparedResources, records: DrawRecords, options: DrawState) anyerror!void {
             try renderer.validateRecords(prepared, records);
             try renderer.iterateRecords(records, options, null);
         }
-        fn drawText(ptr: *anyopaque, backend_prepared: ?*const anyopaque, vertices: []const u32, _: Mat4, viewport_w: f32, viewport_h: f32, _: u32) anyerror!void {
+        fn drawText(ptr: *anyopaque, backend_prepared: ?*const anyopaque, vertices: []const u32, draw_state: DrawState, _: u32) anyerror!void {
             const s = state(ptr);
             s.text_count += 1;
             s.words_seen += vertices.len;
-            s.viewport_seen = .{ viewport_w, viewport_h };
+            s.viewport_seen = .{ draw_state.surface.pixel_width, draw_state.surface.pixel_height };
+            s.subpixel_order = draw_state.raster.subpixel_order;
+            s.fill_rule = draw_state.raster.fill_rule;
+            s.target_encoding = draw_state.surface.encoding;
+            s.coverage_transfer = draw_state.raster.coverage_transfer;
             s.saw_backend_prepared = backend_prepared != null;
         }
-        fn drawPaths(ptr: *anyopaque, backend_prepared: ?*const anyopaque, vertices: []const u32, _: Mat4, viewport_w: f32, viewport_h: f32, _: u32) anyerror!void {
+        fn drawPaths(ptr: *anyopaque, backend_prepared: ?*const anyopaque, vertices: []const u32, draw_state: DrawState, _: u32) anyerror!void {
             const s = state(ptr);
             s.path_count += 1;
             s.words_seen += vertices.len;
-            s.viewport_seen = .{ viewport_w, viewport_h };
+            s.viewport_seen = .{ draw_state.surface.pixel_width, draw_state.surface.pixel_height };
+            s.subpixel_order = draw_state.raster.subpixel_order;
+            s.fill_rule = draw_state.raster.fill_rule;
+            s.target_encoding = draw_state.surface.encoding;
+            s.coverage_transfer = draw_state.raster.coverage_transfer;
             s.saw_backend_prepared = backend_prepared != null;
         }
         fn beginFrame(ptr: *anyopaque) void {
             state(ptr).begin_count += 1;
-        }
-        fn setSubpixelOrder(ptr: *anyopaque, order: SubpixelOrder) void {
-            state(ptr).subpixel_order = order;
-        }
-        fn getSubpixelOrder(ptr: *anyopaque) SubpixelOrder {
-            return state(ptr).subpixel_order;
-        }
-        fn setFillRule(ptr: *anyopaque, rule: FillRule) void {
-            state(ptr).fill_rule = rule;
-        }
-        fn getFillRule(ptr: *anyopaque) FillRule {
-            return state(ptr).fill_rule;
-        }
-        fn setTargetEncoding(ptr: *anyopaque, encoding: TargetEncoding) void {
-            state(ptr).target_encoding = encoding;
-        }
-        fn getTargetEncoding(ptr: *anyopaque) TargetEncoding {
-            return state(ptr).target_encoding;
-        }
-        fn setResolve(ptr: *anyopaque, resolve: Resolve) void {
-            state(ptr).resolve = resolve;
-        }
-        fn getResolve(ptr: *anyopaque) Resolve {
-            return state(ptr).resolve;
-        }
-        fn setCoverageTransfer(ptr: *anyopaque, transfer: CoverageTransfer) void {
-            state(ptr).coverage_transfer = transfer;
-        }
-        fn getCoverageTransfer(ptr: *anyopaque) CoverageTransfer {
-            return state(ptr).coverage_transfer;
         }
         fn backendName(_: *anyopaque) []const u8 {
             return "fake";
@@ -322,16 +298,6 @@ test "draw dispatch uses only prepared stamps and caller records" {
         .drawText = Fake.drawText,
         .drawPaths = Fake.drawPaths,
         .beginFrame = Fake.beginFrame,
-        .setSubpixelOrder = Fake.setSubpixelOrder,
-        .getSubpixelOrder = Fake.getSubpixelOrder,
-        .setFillRule = Fake.setFillRule,
-        .getFillRule = Fake.getFillRule,
-        .setTargetEncoding = Fake.setTargetEncoding,
-        .getTargetEncoding = Fake.getTargetEncoding,
-        .setResolve = Fake.setResolve,
-        .getResolve = Fake.getResolve,
-        .setCoverageTransfer = Fake.setCoverageTransfer,
-        .getCoverageTransfer = Fake.getCoverageTransfer,
         .resource_cache = .{
             .uses_resource_cache = false,
             .stats = Fake.resourceCacheStats,
@@ -359,14 +325,16 @@ test "draw dispatch uses only prepared stamps and caller records" {
         .images = image_resources[0..],
     };
 
-    const options = DrawOptions{
+    const options = DrawState{
         .mvp = Mat4.identity,
-        .target = .{
+        .surface = .{
             .pixel_width = 8,
             .pixel_height = 8,
+            .encoding = .srgb,
+        },
+        .raster = .{
             .subpixel_order = .rgb,
             .fill_rule = .even_odd,
-            .encoding = .srgb,
             .coverage_transfer = .{ .exponent = 0.875 },
         },
     };
@@ -391,7 +359,6 @@ test "draw dispatch uses only prepared stamps and caller records" {
     try std.testing.expectEqual(SubpixelOrder.rgb, state.subpixel_order);
     try std.testing.expectEqual(FillRule.even_odd, state.fill_rule);
     try std.testing.expectEqual(TargetEncoding.srgb, state.target_encoding);
-    try std.testing.expect(std.meta.eql(Resolve{ .direct = .{} }, state.resolve));
     try std.testing.expectEqual(@as(f32, 0.875), state.coverage_transfer.exponent);
     try std.testing.expectEqual(@as(f32, 8), state.viewport_seen[0]);
     try std.testing.expectEqual(@as(f32, 8), state.viewport_seen[1]);
@@ -809,9 +776,9 @@ test "draw rejects stale records when a resource key is replaced" {
     var prepared_a = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set_a);
     defer prepared_a.deinit();
 
-    const draw_options = DrawOptions{
+    const draw_state = DrawState{
         .mvp = Mat4.identity,
-        .target = .{ .pixel_width = width, .pixel_height = height, .encoding = .srgb },
+        .surface = .{ .pixel_width = width, .pixel_height = height, .encoding = .srgb },
     };
     const needed = DrawList.estimate(&scene);
     const needed_segments = DrawList.estimateSegments(&scene);
@@ -828,7 +795,7 @@ test "draw rejects stale records when a resource key is replaced" {
     var prepared_b = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set_b);
     defer prepared_b.deinit();
 
-    try std.testing.expectError(error.StaleDrawRecords, renderer.draw(&prepared_b, draw.slice(), draw_options));
+    try std.testing.expectError(error.StaleDrawRecords, renderer.draw(&prepared_b, draw.slice(), draw_state));
 }
 
 test "resource upload plan reports changed keys and enforces budget" {
@@ -1125,9 +1092,9 @@ test "CPU draw uses prepared resource views" {
     var prepared = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set);
     defer prepared.deinit();
 
-    const draw_options = DrawOptions{
+    const draw_state = DrawState{
         .mvp = Mat4.identity,
-        .target = .{ .pixel_width = width, .pixel_height = height, .encoding = .srgb },
+        .surface = .{ .pixel_width = width, .pixel_height = height, .encoding = .srgb },
     };
     const needed = DrawList.estimate(&scene);
     const needed_segments = DrawList.estimateSegments(&scene);
@@ -1137,7 +1104,7 @@ test "CPU draw uses prepared resource views" {
     defer allocator.free(draw_segments);
     var draw = DrawList.init(draw_buf, draw_segments);
     try draw.addScene(&prepared, &scene);
-    try renderer.draw(&prepared, draw.slice(), draw_options);
+    try renderer.draw(&prepared, draw.slice(), draw_state);
 
     var changed = false;
     for (pixels) |byte| {

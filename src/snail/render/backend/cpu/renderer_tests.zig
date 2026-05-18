@@ -502,9 +502,9 @@ test "cpu renderer renders image-painted path picture" {
 
     const wf: f32 = @floatFromInt(width);
     const hf: f32 = @floatFromInt(height);
-    const options = snail.DrawOptions{
+    const options = snail.DrawState{
         .mvp = snail.Mat4.ortho(0, wf, hf, 0, -1, 1),
-        .target = .{ .pixel_width = wf, .pixel_height = hf, .encoding = .srgb },
+        .surface = .{ .pixel_width = wf, .pixel_height = hf, .encoding = .srgb },
     };
     const needed = snail.DrawList.estimate(&scene);
     const needed_segments = snail.DrawList.estimateSegments(&scene);
@@ -631,14 +631,13 @@ test "cpu linear resolve clear backdrop seeds only resolve region" {
         .backdrop = .{ .clear = .{ 1, 0, 0, 1 } },
         .region = .{ .pixel_rect = .{ .x = 1, .y = 1, .w = 2, .h = 1 } },
     };
-    const target = snail.ResolveTarget{
+    const surface = snail.TargetSurface{
         .pixel_width = @floatFromInt(width),
         .pixel_height = @floatFromInt(height),
         .encoding = .srgb_pixels_on_linear_attachment,
-        .resolve = .{ .linear = linear },
     };
 
-    const restore = renderer.beginLinearResolve(target, linear);
+    const restore = renderer.beginLinearResolve(surface, linear);
     renderer.endLinearResolve(restore);
 
     for (0..height_usize) |row| {
@@ -807,14 +806,14 @@ test "cpu renderer threaded draw matches single-threaded byte-for-byte" {
     try scene.addPath(.{ .picture = &picture });
     try scene.addText(.{ .blob = &blob });
 
-    const options = snail.DrawOptions{
+    const options = snail.DrawState{
         .mvp = snail.Mat4.ortho(0, @floatFromInt(width), @floatFromInt(height), 0, -1, 1),
-        .target = .{
+        .surface = .{
             .pixel_width = @floatFromInt(width),
             .pixel_height = @floatFromInt(height),
-            .subpixel_order = .rgb,
             .encoding = .srgb,
         },
+        .raster = .{ .subpixel_order = .rgb },
     };
 
     const serial_buf = try testing.allocator.alloc(u8, stride * height);
@@ -822,7 +821,6 @@ test "cpu renderer threaded draw matches single-threaded byte-for-byte" {
     @memset(serial_buf, 0);
 
     var serial_cpu = CpuRenderer.init(serial_buf.ptr, width, height, stride);
-    serial_cpu.setSubpixelOrder(.rgb);
     var serial_resources = try serial_cpu.uploadResourcesBlocking(.{ .persistent = testing.allocator, .scratch = testing.allocator }, blk: {
         var entries: [4]snail.ResourceSet.Entry = undefined;
         var set = snail.ResourceSet.init(&entries);
@@ -843,7 +841,6 @@ test "cpu renderer threaded draw matches single-threaded byte-for-byte" {
     @memset(threaded_buf, 0);
 
     var threaded_cpu = CpuRenderer.init(threaded_buf.ptr, width, height, stride);
-    threaded_cpu.setSubpixelOrder(.rgb);
     threaded_cpu.setThreadPool(&pool);
     var threaded_resources = try threaded_cpu.uploadResourcesBlocking(.{ .persistent = testing.allocator, .scratch = testing.allocator }, blk: {
         var entries: [4]snail.ResourceSet.Entry = undefined;
@@ -904,9 +901,10 @@ test "cpu renderer drawPaths batch matches drawPathPicture" {
 
     const wf: f32 = @floatFromInt(width);
     const hf: f32 = @floatFromInt(height);
-    const options = snail.DrawOptions{
+    const options = snail.DrawState{
         .mvp = snail.Mat4.ortho(0, wf, hf, 0, -1, 1),
-        .target = .{ .pixel_width = wf, .pixel_height = hf, .subpixel_order = .rgb, .encoding = .srgb },
+        .surface = .{ .pixel_width = wf, .pixel_height = hf, .encoding = .srgb },
+        .raster = .{ .subpixel_order = .rgb },
     };
     const needed = snail.DrawList.estimate(&scene);
     const needed_segments = snail.DrawList.estimateSegments(&scene);
@@ -963,9 +961,9 @@ test "cpu renderer applies path draw tint in prepared batches" {
 
     const wf: f32 = @floatFromInt(width);
     const hf: f32 = @floatFromInt(height);
-    const options = snail.DrawOptions{
+    const options = snail.DrawState{
         .mvp = snail.Mat4.ortho(0, wf, hf, 0, -1, 1),
-        .target = .{ .pixel_width = wf, .pixel_height = hf, .subpixel_order = .none, .encoding = .srgb },
+        .surface = .{ .pixel_width = wf, .pixel_height = hf, .encoding = .srgb },
     };
     var prepared_scene = try snail.PreparedScene.initOwned(testing.allocator, &prepared, &scene);
     defer prepared_scene.deinit();

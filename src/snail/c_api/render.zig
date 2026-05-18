@@ -7,13 +7,13 @@ const SnailAllocator = common.SnailAllocator;
 const SNAIL_OK = common.SNAIL_OK;
 const SNAIL_ERR_OUT_OF_MEMORY = common.SNAIL_ERR_OUT_OF_MEMORY;
 const SNAIL_ERR_INVALID_ARGUMENT = common.SNAIL_ERR_INVALID_ARGUMENT;
-const SnailDrawOptions = common.SnailDrawOptions;
+const SnailDrawState = common.SnailDrawState;
 const SnailResourceKey = common.SnailResourceKey;
 const SnailResourceFootprint = common.SnailResourceFootprint;
 const SnailResourceCacheStats = common.SnailResourceCacheStats;
 const fromResourceFootprint = common.fromResourceFootprint;
 const fromResourceCacheStats = common.fromResourceCacheStats;
-const toDrawOptions = common.toDrawOptions;
+const toDrawState = common.toDrawState;
 const ResourceSetImpl = common.ResourceSetImpl;
 const PreparedResourcesImpl = common.PreparedResourcesImpl;
 const PreparedSceneImpl = common.PreparedSceneImpl;
@@ -219,10 +219,10 @@ pub export fn snail_renderer_draw(
     renderer: *RendererImpl,
     prepared: *const PreparedResourcesImpl,
     list: *const DrawListImpl,
-    options: SnailDrawOptions,
+    state: SnailDrawState,
 ) c_int {
     var erased = renderer.asRenderer();
-    erased.draw(&prepared.inner, list.inner.slice(), toDrawOptions(options) catch return SNAIL_ERR_INVALID_ARGUMENT) catch |err| return mapError(err);
+    erased.draw(&prepared.inner, list.inner.slice(), toDrawState(state) catch return SNAIL_ERR_INVALID_ARGUMENT) catch |err| return mapError(err);
     return SNAIL_OK;
 }
 
@@ -230,9 +230,9 @@ pub export fn snail_renderer_draw_prepared(
     renderer: *RendererImpl,
     prepared: *const PreparedResourcesImpl,
     scene: *const PreparedSceneImpl,
-    options: SnailDrawOptions,
+    state: SnailDrawState,
 ) c_int {
     var erased = renderer.asRenderer();
-    erased.drawPrepared(&prepared.inner, &scene.inner, toDrawOptions(options) catch return SNAIL_ERR_INVALID_ARGUMENT) catch |err| return mapError(err);
+    erased.drawPrepared(&prepared.inner, &scene.inner, toDrawState(state) catch return SNAIL_ERR_INVALID_ARGUMENT) catch |err| return mapError(err);
     return SNAIL_OK;
 }

@@ -91,6 +91,35 @@ pub const Resolve = union(enum) {
     }
 };
 
+pub const TargetSurface = struct {
+    pixel_width: f32,
+    pixel_height: f32,
+    encoding: TargetEncoding,
+
+    pub fn pixelRect(self: TargetSurface) PixelRect {
+        return PixelRect.full(
+            @intFromFloat(@max(self.pixel_width, 0.0)),
+            @intFromFloat(@max(self.pixel_height, 0.0)),
+        );
+    }
+
+    pub fn supportsLinearResolve(self: TargetSurface) bool {
+        return self.encoding.attachment == .linear and self.encoding.stored_pixels == .srgb;
+    }
+};
+
+pub const RasterOptions = struct {
+    subpixel_order: SubpixelOrder = .none,
+    fill_rule: FillRule = .non_zero,
+    coverage_transfer: CoverageTransfer = .identity,
+};
+
+pub const DrawState = struct {
+    mvp: Mat4,
+    surface: TargetSurface,
+    raster: RasterOptions = .{},
+};
+
 pub const TargetEncoding = struct {
     /// How the current attachment interprets color values written by the
     /// fragment stage. Use `.srgb` for GL/Vulkan sRGB formats and `.linear` for
@@ -203,54 +232,10 @@ pub fn snapRectToStep(rect: Rect, step: Vec2, rule: SnapRule) Rect {
     };
 }
 
-pub const ResolveTarget = struct {
-    pixel_width: f32,
-    pixel_height: f32,
-    subpixel_order: SubpixelOrder = .none,
-    fill_rule: FillRule = .non_zero,
-    is_final_composite: bool = true,
-    opaque_backdrop: bool = true,
-    will_resample: bool = false,
-    /// Explicit color encoding for this target. No renderer-global format
-    /// state is consulted; each draw states the attachment encoding and the
-    /// expected final pixel encoding.
-    encoding: TargetEncoding,
-    /// How Snail resolves into this target. `.direct` draws straight into the
-    /// attachment. `.linear` resolves through a linear intermediate using an
-    /// explicit backdrop and region contract.
-    resolve: Resolve = .{ .direct = .{} },
-    /// Optional, explicit transfer from analytically evaluated coverage to the
-    /// coverage used for blending. This is a caller-controlled primitive for
-    /// display tuning; renderers do not infer or remember it globally.
-    coverage_transfer: CoverageTransfer = .identity,
-
-    pub fn usesLinearResolve(self: ResolveTarget) bool {
-        return self.resolve.isLinear();
-    }
-
-    pub fn supportsLinearResolve(self: ResolveTarget) bool {
-        return self.encoding.attachment == .linear and self.encoding.stored_pixels == .srgb;
-    }
-
-    pub fn resolveRect(self: ResolveTarget) PixelRect {
-        const width: u32 = @intFromFloat(@max(self.pixel_width, 0.0));
-        const height: u32 = @intFromFloat(@max(self.pixel_height, 0.0));
-        return switch (self.resolve) {
-            .direct => PixelRect.full(width, height),
-            .linear => |linear| linear.region.rect(width, height),
-        };
-    }
-};
-
-pub fn effectiveSubpixelOrder(target: ResolveTarget) SubpixelOrder {
-    return effectiveSubpixelOrderRef(&target);
-}
-
-pub fn effectiveSubpixelOrderRef(target: *const ResolveTarget) SubpixelOrder {
-    if (target.will_resample) return .none;
-    if (!target.is_final_composite) return .none;
-    if (!target.opaque_backdrop) return .none;
-    return target.subpixel_order;
+pub fn resolveRect(surface: TargetSurface, resolve: LinearResolve) PixelRect {
+    const width: u32 = @intFromFloat(@max(surface.pixel_width, 0.0));
+    const height: u32 = @intFromFloat(@max(surface.pixel_height, 0.0));
+    return resolve.region.rect(width, height);
 }
 
 pub const Rect = struct {

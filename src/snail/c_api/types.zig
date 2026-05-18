@@ -162,31 +162,23 @@ pub const SnailTextAppendOptions = extern struct {
     fill: SnailPaint = .{},
 };
 
-pub const SnailResolveTarget = extern struct {
+pub const SnailTargetSurface = extern struct {
     pixel_width: f32,
     pixel_height: f32,
-    subpixel_order: c_int = 0,
-    fill_rule: c_int = 0,
-    is_final_composite: bool = true,
-    opaque_backdrop: bool = true,
-    will_resample: bool = false,
     attachment_encoding: c_int = 0,
     stored_pixel_encoding: c_int = 0,
-    resolve_kind: c_int = 0,
-    resolve_backdrop: c_int = 0,
-    resolve_clear_color: [4]f32 = .{ 0, 0, 0, 0 },
-    resolve_region: c_int = 0,
-    resolve_region_x: i32 = 0,
-    resolve_region_y: i32 = 0,
-    resolve_region_w: u32 = 0,
-    resolve_region_h: u32 = 0,
-    resolve_intermediate_format: c_int = 0,
+};
+
+pub const SnailRasterOptions = extern struct {
+    subpixel_order: c_int = 0,
+    fill_rule: c_int = 0,
     coverage_exponent: f32 = 1.0,
 };
 
-pub const SnailDrawOptions = extern struct {
+pub const SnailDrawState = extern struct {
     mvp: SnailMat4,
-    target: SnailResolveTarget,
+    surface: SnailTargetSurface,
+    raster: SnailRasterOptions = .{},
 };
 
 pub const SnailResourceKey = u64;

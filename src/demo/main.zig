@@ -359,16 +359,14 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
         if (dump_repro or (dump_every != 0 and frame_count % dump_every == 0)) {
             dumpReproFrame(frame_count, active.backendName(), current_order, present, target_encoding, resolve, pan_x, pan_y, zoom, angle, projection, scene_transform, mvp);
         }
-        const draw_options = snail.DrawOptions{
+        const draw_state = snail.DrawState{
             .mvp = mvp,
-            .target = .{
+            .surface = .{
                 .pixel_width = viewport_w,
                 .pixel_height = viewport_h,
-                .subpixel_order = current_order,
-                .will_resample = present.will_resample,
                 .encoding = target_encoding,
-                .resolve = resolve,
             },
+            .raster = .{ .subpixel_order = if (present.will_resample) .none else current_order },
         };
         const needed = snail.DrawList.estimate(&scene);
         const needed_segments = snail.DrawList.estimateSegments(&scene);
@@ -383,7 +381,7 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
         var draw = snail.DrawList.init(draw_buf[0..needed], draw_segments_buf[0..needed_segments]);
         try draw.addScene(&prepared.?, &scene);
         var renderer = active.renderer();
-        try renderer.draw(&prepared.?, draw.slice(), draw_options);
+        try renderer.draw(&prepared.?, draw.slice(), draw_state);
 
         if (frame_count == 2) {
             active.captureDebugFrame(allocator, fb_size);
