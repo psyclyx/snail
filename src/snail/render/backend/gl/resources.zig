@@ -62,14 +62,6 @@ pub fn atlasPagesInBank(slots: []const AtlasSlot, bank_id: u32) u32 {
     return total;
 }
 
-fn retainPage(page: *const AtlasPage) void {
-    _ = @constCast(page).retain();
-}
-
-fn releasePage(page: *const AtlasPage) void {
-    @constCast(page).release();
-}
-
 pub const AtlasTextureBank = struct {
     id: u32 = 0,
     curve_array: gl.GLuint = 0,
@@ -603,7 +595,6 @@ pub const PreparedResources = struct {
         self.allocated_band_height = slot_info.allocated_band_height;
         self.allocated_layer_count = slot_info.allocated_layer_count;
         self.encodeSlotPageLayers();
-        self.retainAtlasPageRefs();
         self.fillLayerInfoViews(slot_info.layer_info_rows, layer_infos, out_layer_info_views);
 
         const first_atlas = upload_common.firstNonEmptyAtlas(atlases) orelse {
@@ -634,9 +625,10 @@ pub const PreparedResources = struct {
             const page_count: u32 = @intCast(atlas.pageCount());
             if (page_count < slot.uploaded_pages or page_count > slot.capacity_pages) return false;
             start_pages[i] = slot.uploaded_pages;
-            if (slot.uploaded_pages > slot.page_ptrs.len) return false;
+            if (slot.uploaded_pages > slot.page_fingerprints.len) return false;
             for (0..slot.uploaded_pages) |page_index| {
-                if (slot.page_ptrs[page_index] != atlas.page(@intCast(page_index))) return false;
+                const fingerprint = upload_common.atlasPageFingerprint(atlas, page_index);
+                if (!slot.page_fingerprints[page_index].eql(fingerprint)) return false;
             }
             for (0..page_count) |page_index| {
                 const page = atlas.page(@intCast(page_index));
@@ -655,7 +647,6 @@ pub const PreparedResources = struct {
 
         try upload_common.refreshAtlasSlots(self.atlas_slots, atlases);
         self.encodeSlotPageLayersFromStarts(start_pages[0..atlases.len]);
-        self.retainAtlasPageRefsFromStarts(start_pages[0..atlases.len]);
         return true;
     }
 
@@ -770,12 +761,10 @@ pub const PreparedResources = struct {
             for (old_pages..new_pages) |page_index| {
                 const page = atlas.page(@intCast(page_index));
                 self.uploadAtlasPageToBank(bank, page, layer);
-                slot.page_ptrs[page_index] = page;
+                slot.page_fingerprints[page_index] = page.fingerprint();
                 slot.page_layers[page_index] = texture_layers.inBank(bank.id, layer);
-                retainPage(page);
                 layer += 1;
             }
-            slot.atlas = atlas;
             slot.uploaded_pages = new_pages;
         }
     }
@@ -839,7 +828,6 @@ pub const PreparedResources = struct {
     }
 
     fn resetAtlasUploadState(self: *PreparedResources) void {
-        self.releaseAtlasPageRefs();
         for (self.atlas_slots) |*slot| slot.deinit(self.allocator);
         if (self.atlas_slots.len > 0) self.allocator.free(self.atlas_slots);
         self.atlas_slots = &.{};
@@ -848,32 +836,6 @@ pub const PreparedResources = struct {
         self.allocated_band_height = 0;
         self.allocated_layer_count = 0;
         self.atlas_has_special_text_runs = false;
-    }
-
-    fn retainAtlasPageRefs(self: *PreparedResources) void {
-        for (self.atlas_slots[0..self.atlas_slot_count]) |slot| {
-            for (slot.page_ptrs[0..@min(slot.uploaded_pages, slot.page_ptrs.len)]) |maybe_page| {
-                if (maybe_page) |page| retainPage(page);
-            }
-        }
-    }
-
-    fn retainAtlasPageRefsFromStarts(self: *PreparedResources, start_pages: []const u32) void {
-        for (self.atlas_slots[0..self.atlas_slot_count], 0..) |slot, i| {
-            const start = if (i < start_pages.len) start_pages[i] else slot.uploaded_pages;
-            if (start >= slot.uploaded_pages) continue;
-            for (slot.page_ptrs[start..@min(slot.uploaded_pages, slot.page_ptrs.len)]) |maybe_page| {
-                if (maybe_page) |page| retainPage(page);
-            }
-        }
-    }
-
-    fn releaseAtlasPageRefs(self: *PreparedResources) void {
-        for (self.atlas_slots[0..self.atlas_slot_count]) |slot| {
-            for (slot.page_ptrs[0..@min(slot.uploaded_pages, slot.page_ptrs.len)]) |maybe_page| {
-                if (maybe_page) |page| releasePage(page);
-            }
-        }
     }
 
     fn createTextureArrays(self: *PreparedResources, first_atlas: *const CurveAtlas, layer_count: u32, max_curve_h: u32, max_band_h: u32) void {

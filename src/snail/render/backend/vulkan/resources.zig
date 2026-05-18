@@ -33,14 +33,6 @@ pub fn atlasPagesInBank(slots: []const AtlasSlot, bank_id: u32) u32 {
     return total;
 }
 
-pub fn retainPage(page: *const AtlasPage) void {
-    _ = @constCast(page).retain();
-}
-
-pub fn releasePage(page: *const AtlasPage) void {
-    @constCast(page).release();
-}
-
 pub const UploadStagingBuffer = struct {
     buffer: vk.VkBuffer = null,
     memory: vk.VkDeviceMemory = null,
@@ -348,7 +340,6 @@ pub const PreparedResources = struct {
     }
 
     pub fn resetAtlasUploadState(self: *PreparedResources) void {
-        self.releaseAtlasPageRefs();
         for (self.atlas_slots) |*slot| slot.deinit(self.allocator);
         if (self.atlas_slots.len > 0) self.allocator.free(self.atlas_slots);
         self.atlas_slots = &.{};
@@ -366,32 +357,6 @@ pub const PreparedResources = struct {
         self.allocated_image_count = 0;
         if (self.image_slots.len > 0) self.allocator.free(self.image_slots);
         self.image_slots = &.{};
-    }
-
-    pub fn retainAtlasPageRefs(self: *PreparedResources) void {
-        for (self.atlas_slots[0..self.atlas_slot_count]) |slot| {
-            for (slot.page_ptrs[0..@min(slot.uploaded_pages, slot.page_ptrs.len)]) |maybe_page| {
-                if (maybe_page) |page| retainPage(page);
-            }
-        }
-    }
-
-    pub fn retainAtlasPageRefsFromStarts(self: *PreparedResources, start_pages: []const u32) void {
-        for (self.atlas_slots[0..self.atlas_slot_count], 0..) |slot, i| {
-            const start = if (i < start_pages.len) start_pages[i] else slot.uploaded_pages;
-            if (start >= slot.uploaded_pages) continue;
-            for (slot.page_ptrs[start..@min(slot.uploaded_pages, slot.page_ptrs.len)]) |maybe_page| {
-                if (maybe_page) |page| retainPage(page);
-            }
-        }
-    }
-
-    pub fn releaseAtlasPageRefs(self: *PreparedResources) void {
-        for (self.atlas_slots[0..self.atlas_slot_count]) |slot| {
-            for (slot.page_ptrs[0..@min(slot.uploaded_pages, slot.page_ptrs.len)]) |maybe_page| {
-                if (maybe_page) |page| releasePage(page);
-            }
-        }
     }
 
     pub fn destroyAtlasTextureResources(self: *PreparedResources) void {

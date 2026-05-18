@@ -164,9 +164,10 @@ pub fn atlasSlotWouldRebuild(slot: anytype, allocated_curve_height: u32, allocat
     if (atlas.pageCount() > std.math.maxInt(u16)) return true;
     const page_count: u32 = @intCast(atlas.pageCount());
     if (page_count < slot.uploaded_pages or page_count > slot.capacity_pages) return true;
-    if (slot.uploaded_pages > slot.page_ptrs.len) return true;
+    if (slot.uploaded_pages > slot.page_fingerprints.len) return true;
     for (0..slot.uploaded_pages) |page_index| {
-        if (slot.page_ptrs[page_index] != atlas.page(page_index)) return true;
+        const fingerprint = upload_common.pageFingerprint(atlas.page(page_index));
+        if (!slot.page_fingerprints[page_index].eql(fingerprint)) return true;
     }
     for (0..page_count) |page_index| {
         const page = atlas.page(page_index);
@@ -190,9 +191,10 @@ pub fn atlasSlotCanOverflowIntoBank(slot: anytype, atlas: AtlasRef) bool {
     if (atlas.pageCount() > std.math.maxInt(u16)) return false;
     const page_count: u32 = @intCast(atlas.pageCount());
     if (page_count < slot.uploaded_pages) return false;
-    if (slot.uploaded_pages > slot.page_ptrs.len) return false;
+    if (slot.uploaded_pages > slot.page_fingerprints.len) return false;
     for (0..slot.uploaded_pages) |page_index| {
-        if (slot.page_ptrs[page_index] != atlas.page(page_index)) return false;
+        const fingerprint = upload_common.pageFingerprint(atlas.page(page_index));
+        if (!slot.page_fingerprints[page_index].eql(fingerprint)) return false;
     }
     return true;
 }

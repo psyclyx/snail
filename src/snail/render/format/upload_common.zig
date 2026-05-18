@@ -1,5 +1,8 @@
 const std = @import("std");
 const texture_layers = @import("texture_layers.zig");
+const atlas_page_mod = @import("atlas/page.zig");
+
+pub const PageFingerprint = atlas_page_mod.PageFingerprint;
 
 pub fn BufferElement(comptime Buffer: type) type {
     return switch (@typeInfo(Buffer)) {
@@ -13,19 +16,19 @@ pub fn BufferElement(comptime Buffer: type) type {
 }
 
 pub fn AtlasSlot(comptime Atlas: type, comptime AtlasPage: type) type {
+    _ = AtlasPage;
     return struct {
         const Self = @This();
 
-        atlas: ?*const Atlas = null,
         base_layer: u32 = 0,
         info_row_base: u32 = 0,
         capacity_pages: u32 = 0,
         uploaded_pages: u32 = 0,
-        page_ptrs: []?*const AtlasPage = &.{},
+        page_fingerprints: []PageFingerprint = &.{},
         page_layers: []u32 = &.{},
 
         pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
-            if (self.page_ptrs.len > 0) allocator.free(self.page_ptrs);
+            if (self.page_fingerprints.len > 0) allocator.free(self.page_fingerprints);
             if (self.page_layers.len > 0) allocator.free(self.page_layers);
             self.* = .{};
         }
@@ -39,22 +42,22 @@ pub fn AtlasSlot(comptime Atlas: type, comptime AtlasPage: type) type {
             capacity_pages: u32,
             uploaded_pages: u32,
         ) !void {
-            if (self.page_ptrs.len != capacity_pages) {
-                var next: []?*const AtlasPage = &.{};
+            if (self.page_fingerprints.len != capacity_pages) {
+                var next: []PageFingerprint = &.{};
                 var next_layers: []u32 = &.{};
                 if (capacity_pages != 0) {
-                    next = try allocator.alloc(?*const AtlasPage, @intCast(capacity_pages));
+                    next = try allocator.alloc(PageFingerprint, @intCast(capacity_pages));
                     errdefer allocator.free(next);
                     next_layers = try allocator.alloc(u32, @intCast(capacity_pages));
                 }
-                if (self.page_ptrs.len > 0) allocator.free(self.page_ptrs);
+                if (self.page_fingerprints.len > 0) allocator.free(self.page_fingerprints);
                 if (self.page_layers.len > 0) allocator.free(self.page_layers);
-                self.page_ptrs = next;
+                self.page_fingerprints = next;
                 self.page_layers = next_layers;
             }
-            @memset(self.page_ptrs, null);
+            @memset(self.page_fingerprints, .{});
             @memset(self.page_layers, 0);
-            self.atlas = atlas;
+            _ = atlas;
             self.base_layer = base_layer;
             self.info_row_base = info_row_base;
             self.capacity_pages = capacity_pages;
@@ -90,6 +93,18 @@ pub fn firstNonEmptyAtlas(atlases: anytype) ?BufferElement(@TypeOf(atlases)) {
     return null;
 }
 
+pub fn pageFingerprint(page: anytype) PageFingerprint {
+    return page.fingerprint();
+}
+
+pub fn atlasPageFingerprint(atlas: anytype, page_index: usize) PageFingerprint {
+    return pageFingerprint(atlas.page(@intCast(page_index)));
+}
+
+fn slotPageMatches(slot: anytype, atlas: anytype, page_index: usize) bool {
+    return slot.page_fingerprints[page_index].eql(atlasPageFingerprint(atlas, page_index));
+}
+
 pub fn atlasSlotsCompatible(atlas_slots: anytype, atlas_slot_count: usize, atlases: anytype) bool {
     if (atlases.len != atlas_slot_count) return false;
     for (atlases, 0..) |atlas, i| {
@@ -97,9 +112,9 @@ pub fn atlasSlotsCompatible(atlas_slots: anytype, atlas_slot_count: usize, atlas
         if (atlas.pageCount() > std.math.maxInt(u16)) return false;
         const page_count: u32 = @intCast(atlas.pageCount());
         if (page_count < slot.uploaded_pages or page_count > slot.capacity_pages) return false;
-        if (slot.uploaded_pages > slot.page_ptrs.len) return false;
+        if (slot.uploaded_pages > slot.page_fingerprints.len) return false;
         for (0..slot.uploaded_pages) |page_index| {
-            if (slot.page_ptrs[page_index] != atlas.page(@intCast(page_index))) return false;
+            if (!slotPageMatches(slot, atlas, page_index)) return false;
         }
     }
     return true;
@@ -119,9 +134,9 @@ pub fn atlasPrefixesCompatibleForOverflow(atlas_slots: anytype, atlas_slot_count
         if (atlas.pageCount() > std.math.maxInt(u32)) return false;
         const page_count: u32 = @intCast(atlas.pageCount());
         if (page_count < slot.uploaded_pages) return false;
-        if (slot.uploaded_pages > slot.page_ptrs.len) return false;
+        if (slot.uploaded_pages > slot.page_fingerprints.len) return false;
         for (0..slot.uploaded_pages) |page_index| {
-            if (slot.page_ptrs[page_index] != atlas.page(@intCast(page_index))) return false;
+            if (!slotPageMatches(slot, atlas, page_index)) return false;
         }
     }
     return true;
@@ -167,19 +182,19 @@ pub fn fillLayerInfoViews(row_base_start: u32, layer_infos: anytype, out_views: 
 }
 
 pub fn ensureSlotPageCapacity(allocator: std.mem.Allocator, slot: anytype, capacity: u32) !void {
-    if (capacity <= slot.page_ptrs.len and capacity <= slot.page_layers.len) return;
-    const next_ptrs = try allocator.alloc(BufferElement(@TypeOf(slot.page_ptrs)), capacity);
-    errdefer allocator.free(next_ptrs);
+    if (capacity <= slot.page_fingerprints.len and capacity <= slot.page_layers.len) return;
+    const next_fingerprints = try allocator.alloc(PageFingerprint, capacity);
+    errdefer allocator.free(next_fingerprints);
     const next_layers = try allocator.alloc(u32, capacity);
-    @memset(next_ptrs, null);
+    @memset(next_fingerprints, .{});
     @memset(next_layers, 0);
     if (slot.uploaded_pages > 0) {
-        @memcpy(next_ptrs[0..slot.uploaded_pages], slot.page_ptrs[0..slot.uploaded_pages]);
+        @memcpy(next_fingerprints[0..slot.uploaded_pages], slot.page_fingerprints[0..slot.uploaded_pages]);
         @memcpy(next_layers[0..slot.uploaded_pages], slot.page_layers[0..slot.uploaded_pages]);
     }
-    if (slot.page_ptrs.len > 0) allocator.free(slot.page_ptrs);
+    if (slot.page_fingerprints.len > 0) allocator.free(slot.page_fingerprints);
     if (slot.page_layers.len > 0) allocator.free(slot.page_layers);
-    slot.page_ptrs = next_ptrs;
+    slot.page_fingerprints = next_fingerprints;
     slot.page_layers = next_layers;
     slot.capacity_pages = capacity;
 }
@@ -198,7 +213,7 @@ pub fn rebuildAtlasSlots(allocator: std.mem.Allocator, atlas_slots: anytype, atl
         try slot.resetForAtlas(allocator, atlas, total_layers, total_info_rows, capacity, @intCast(page_count));
         for (0..page_count) |page_index| {
             const page = atlas.page(@intCast(page_index));
-            slot.page_ptrs[page_index] = page;
+            slot.page_fingerprints[page_index] = pageFingerprint(page);
             slot.page_layers[page_index] = slot.base_layer + @as(u32, @intCast(page_index));
             if (page.curve_height > max_curve_h) max_curve_h = page.curve_height;
             if (page.band_height > max_band_h) max_band_h = page.band_height;
@@ -232,7 +247,7 @@ pub fn rebuildAtlasSlotsWithCapacityModes(allocator: std.mem.Allocator, atlas_sl
         try slot.resetForAtlas(allocator, atlas, total_layers, total_info_rows, capacity, @intCast(page_count));
         for (0..page_count) |page_index| {
             const page = atlas.page(@intCast(page_index));
-            slot.page_ptrs[page_index] = page;
+            slot.page_fingerprints[page_index] = pageFingerprint(page);
             slot.page_layers[page_index] = slot.base_layer + @as(u32, @intCast(page_index));
             if (page.curve_height > max_curve_h) max_curve_h = page.curve_height;
             if (page.band_height > max_band_h) max_band_h = page.band_height;
@@ -257,12 +272,11 @@ pub fn refreshAtlasSlots(atlas_slots: anytype, atlases: anytype) !void {
         const old_pages = slot.uploaded_pages;
         if (atlas.pageCount() > std.math.maxInt(u16)) return error.AtlasPageCountOverflow;
         const new_pages: u32 = @intCast(atlas.pageCount());
-        if (new_pages > slot.page_ptrs.len) return error.AtlasSlotCapacityExceeded;
+        if (new_pages > slot.page_fingerprints.len) return error.AtlasSlotCapacityExceeded;
         for (old_pages..new_pages) |page_index| {
-            slot.page_ptrs[page_index] = atlas.page(@intCast(page_index));
+            slot.page_fingerprints[page_index] = atlasPageFingerprint(atlas, page_index);
             slot.page_layers[page_index] = slot.base_layer + @as(u32, @intCast(page_index));
         }
-        slot.atlas = atlas;
         slot.uploaded_pages = new_pages;
         slot.info_row_base = total_info_rows;
         total_info_rows += atlas.layer_info_height;
@@ -415,6 +429,10 @@ test "zero-page atlases keep slots and views without requiring pages" {
     const Page = struct {
         curve_height: u32 = 1,
         band_height: u32 = 1,
+
+        fn fingerprint(self: *const @This()) PageFingerprint {
+            return .{ .layout = self.curve_height, .content = self.band_height };
+        }
     };
     const Atlas = struct {
         page_count: usize,
@@ -460,6 +478,10 @@ test "exact atlas capacity packs immutable one-page atlases tightly" {
     const Page = struct {
         curve_height: u32 = 7,
         band_height: u32 = 5,
+
+        fn fingerprint(self: *const @This()) PageFingerprint {
+            return .{ .layout = self.curve_height, .content = self.band_height };
+        }
     };
     const Atlas = struct {
         page_ref: *const Page,
@@ -505,6 +527,10 @@ test "atlas slot metadata is sized from the submitted atlas set" {
     const Page = struct {
         curve_height: u32 = 3,
         band_height: u32 = 2,
+
+        fn fingerprint(self: *const @This()) PageFingerprint {
+            return .{ .layout = self.curve_height, .content = self.band_height };
+        }
     };
     const Atlas = struct {
         pages: []const Page,
@@ -531,8 +557,8 @@ test "atlas slot metadata is sized from the submitted atlas set" {
     const info = try rebuildAtlasSlots(std.testing.allocator, slots[0..], atlases[0..]);
     try std.testing.expectEqual(@as(usize, 1), info.atlas_slot_count);
     try std.testing.expectEqual(@as(u32, page_count), slots[0].uploaded_pages);
-    try std.testing.expect(slots[0].page_ptrs.len >= page_count);
-    try std.testing.expect(slots[0].page_ptrs[page_count - 1] == &pages[page_count - 1]);
+    try std.testing.expect(slots[0].page_fingerprints.len >= page_count);
+    try std.testing.expect(slots[0].page_fingerprints[page_count - 1].eql(pages[page_count - 1].fingerprint()));
 }
 
 test "compact layer-info rows patch image records in upload texture coordinates" {

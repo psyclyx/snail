@@ -15,7 +15,6 @@ const AtlasPage = atlas_page_mod.AtlasPage;
 const ImageSlot = vulkan_resources.ImageSlot;
 const AtlasPageUpload = vulkan_resources.AtlasPageUpload;
 const ResourceBank = vulkan_resources.ResourceBank;
-const retainPage = vulkan_resources.retainPage;
 pub const PreparedResources = vulkan_resources.PreparedResources;
 
 /// Use a caller-owned, already-recording command buffer for resource
@@ -172,7 +171,6 @@ fn rebuildTextureArrays(
     prepared.allocated_band_height = slot_info.allocated_band_height;
     prepared.allocated_layer_count = slot_info.allocated_layer_count;
     prepared.encodeSlotPageLayers();
-    prepared.retainAtlasPageRefs();
     prepared.fillLayerInfoViews(slot_info.layer_info_rows, layer_infos, out_layer_info_views);
 
     const first_atlas = upload_common.firstNonEmptyAtlas(atlases) orelse {
@@ -219,9 +217,10 @@ fn appendTexturePages(self: anytype, prepared: *PreparedResources, scratch: std.
         const page_count: u32 = @intCast(atlas.pageCount());
         if (page_count < slot.uploaded_pages or page_count > slot.capacity_pages) return false;
         start_pages[i] = slot.uploaded_pages;
-        if (slot.uploaded_pages > slot.page_ptrs.len) return false;
+        if (slot.uploaded_pages > slot.page_fingerprints.len) return false;
         for (0..slot.uploaded_pages) |page_index| {
-            if (slot.page_ptrs[page_index] != atlas.page(@intCast(page_index))) return false;
+            const fingerprint = upload_common.atlasPageFingerprint(atlas, page_index);
+            if (!slot.page_fingerprints[page_index].eql(fingerprint)) return false;
         }
         for (0..page_count) |page_index| {
             const page = atlas.page(@intCast(page_index));
@@ -236,7 +235,6 @@ fn appendTexturePages(self: anytype, prepared: *PreparedResources, scratch: std.
 
     try upload_common.refreshAtlasSlots(prepared.atlas_slots, atlases);
     prepared.encodeSlotPageLayersFromStarts(start_pages[0..atlases.len]);
-    prepared.retainAtlasPageRefsFromStarts(start_pages[0..atlases.len]);
     return true;
 }
 
@@ -340,12 +338,10 @@ fn installNewBankPages(prepared: *PreparedResources, atlases: []const *const Cur
         const new_pages: u32 = @intCast(atlas.pageCount());
         for (old_pages..new_pages) |page_index| {
             const page = atlas.page(@intCast(page_index));
-            slot.page_ptrs[page_index] = page;
+            slot.page_fingerprints[page_index] = page.fingerprint();
             slot.page_layers[page_index] = texture_layers.inBank(bank_id, layer);
-            retainPage(page);
             layer += 1;
         }
-        slot.atlas = atlas;
         slot.uploaded_pages = new_pages;
     }
 }
