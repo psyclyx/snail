@@ -75,13 +75,6 @@ pub const PathPictureBuilder = path.PathPictureBuilder;
 pub const PATH_WORDS_PER_VERTEX = path.PATH_WORDS_PER_VERTEX;
 pub const PATH_VERTICES_PER_SHAPE = path.PATH_VERTICES_PER_SHAPE;
 pub const PATH_WORDS_PER_SHAPE = path.PATH_WORDS_PER_SHAPE;
-pub const PATH_PAINT_INFO_WIDTH = path.PATH_PAINT_INFO_WIDTH;
-pub const PATH_PAINT_TEXELS_PER_RECORD = path.PATH_PAINT_TEXELS_PER_RECORD;
-pub const PATH_PAINT_TAG_SOLID = path.PATH_PAINT_TAG_SOLID;
-pub const PATH_PAINT_TAG_LINEAR_GRADIENT = path.PATH_PAINT_TAG_LINEAR_GRADIENT;
-pub const PATH_PAINT_TAG_RADIAL_GRADIENT = path.PATH_PAINT_TAG_RADIAL_GRADIENT;
-pub const PATH_PAINT_TAG_IMAGE = path.PATH_PAINT_TAG_IMAGE;
-pub const PATH_PAINT_TAG_COMPOSITE_GROUP = path.PATH_PAINT_TAG_COMPOSITE_GROUP;
 pub const PathPictureDebugView = path.PathPictureDebugView;
 pub const PathPictureBoundsOverlayOptions = path.PathPictureBoundsOverlayOptions;
 

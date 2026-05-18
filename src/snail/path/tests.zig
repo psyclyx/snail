@@ -5,6 +5,7 @@ const curve_tex = @import("../render/format/curve_texture.zig");
 const draw_mod = @import("../draw.zig");
 const image_mod = @import("../image.zig");
 const path_mod = @import("../path.zig");
+const paint_records = @import("../paint_records.zig");
 const resources_view = @import("../resources/view.zig");
 const resource_manifest_mod = @import("../resources/manifest.zig");
 const resource_key_mod = @import("../resource_key.zig");
@@ -27,7 +28,7 @@ const ResourceManifest = resource_manifest_mod.ResourceManifest;
 const ResourceKey = resource_key_mod.ResourceKey;
 const Scene = scene_mod.Scene;
 const Vec2 = vec.Vec2;
-const kPaintTexelsPerRecord = path_mod.PATH_PAINT_TEXELS_PER_RECORD;
+const kPaintTexelsPerRecord = paint_records.texels_per_record;
 const textureLayerLocal = @import("../render/format/texture_layers.zig").local;
 
 test "vector path band count tracks source cubic commands" {

@@ -38,24 +38,16 @@ const kPathLargePrimitiveTileExtent = core.kPathLargePrimitiveTileExtent;
 const translateBBox = core.translateBBox;
 const translatePaint = core.translatePaint;
 
-pub const PATH_PAINT_INFO_WIDTH: u32 = paint_records.info_width;
-pub const PATH_PAINT_TEXELS_PER_RECORD: u32 = paint_records.texels_per_record;
-pub const PATH_PAINT_TAG_SOLID: f32 = paint_records.tag_solid;
-pub const PATH_PAINT_TAG_LINEAR_GRADIENT: f32 = paint_records.tag_linear_gradient;
-pub const PATH_PAINT_TAG_RADIAL_GRADIENT: f32 = paint_records.tag_radial_gradient;
-pub const PATH_PAINT_TAG_IMAGE: f32 = paint_records.tag_image;
-pub const PATH_PAINT_TAG_COMPOSITE_GROUP: f32 = paint_records.tag_composite_group;
-
 pub const PathPictureDebugView = picture_debug.View;
 pub const PathPictureBoundsOverlayOptions = picture_debug.BoundsOverlayOptions;
 
-const kPaintInfoWidth: u32 = PATH_PAINT_INFO_WIDTH;
-const kPaintTexelsPerRecord: u32 = PATH_PAINT_TEXELS_PER_RECORD;
-const kPaintTagSolid: f32 = PATH_PAINT_TAG_SOLID;
-const kPaintTagLinearGradient: f32 = PATH_PAINT_TAG_LINEAR_GRADIENT;
-const kPaintTagRadialGradient: f32 = PATH_PAINT_TAG_RADIAL_GRADIENT;
-const kPaintTagImage: f32 = PATH_PAINT_TAG_IMAGE;
-const kPaintTagCompositeGroup: f32 = PATH_PAINT_TAG_COMPOSITE_GROUP;
+const kPaintInfoWidth: u32 = paint_records.info_width;
+const kPaintTexelsPerRecord: u32 = paint_records.texels_per_record;
+const kPaintTagSolid: f32 = paint_records.tag_solid;
+const kPaintTagLinearGradient: f32 = paint_records.tag_linear_gradient;
+const kPaintTagRadialGradient: f32 = paint_records.tag_radial_gradient;
+const kPaintTagImage: f32 = paint_records.tag_image;
+const kPaintTagCompositeGroup: f32 = paint_records.tag_composite_group;
 
 const PathCompositeMode = enum(u8) {
     source_over = render_abi.composite_mode_source_over,
@@ -157,7 +149,7 @@ pub const PathPicture = struct {
             var layer_count: usize = 1;
             var record_base = info_offset;
 
-            if (@abs(header[3] - PATH_PAINT_TAG_COMPOSITE_GROUP) <= 0.001) {
+            if (@abs(header[3] - kPaintTagCompositeGroup) <= 0.001) {
                 layer_count = @intCast(@as(i32, @intFromFloat(@round(header[0]))));
                 header[1] = @floatFromInt(@intFromEnum(PathCompositeMode.source_over));
                 writePathLayerInfoTexel(data, width, info_offset, header);
@@ -167,9 +159,9 @@ pub const PathPicture = struct {
             for (0..layer_count) |layer_index| {
                 const role_index = @as(usize, shape.glyph_id - 1) + layer_index;
                 if (role_index >= self.layer_roles.len) break;
-                const texel_offset = record_base + @as(u32, @intCast(layer_index)) * PATH_PAINT_TEXELS_PER_RECORD;
+                const texel_offset = record_base + @as(u32, @intCast(layer_index)) * kPaintTexelsPerRecord;
                 var info = readPathLayerInfoTexel(data, width, texel_offset);
-                info[3] = PATH_PAINT_TAG_SOLID;
+                info[3] = kPaintTagSolid;
                 writePathLayerInfoTexel(data, width, texel_offset, info);
                 writePathLayerInfoTexel(data, width, texel_offset + 2, picture_debug.paintColor(view, self.layer_roles[role_index] == .fill, shape_index));
             }
