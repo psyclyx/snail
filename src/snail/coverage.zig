@@ -269,6 +269,7 @@ pub const VulkanBackend = if (build_options.enable_vulkan) struct {
     vk: *vulkan_pipeline.VulkanPipeline,
     vk_resources: *const vulkan_pipeline.PreparedResources,
     prepared: *const PreparedResources,
+    cmd: vulkan_pipeline.vk.VkCommandBuffer,
 
     pub fn descriptorSetLayout(self: VulkanBackend) vulkan_pipeline.vk.VkDescriptorSetLayout {
         return self.vk.textCoverageDescriptorSetLayout();
@@ -279,6 +280,8 @@ pub const VulkanBackend = if (build_options.enable_vulkan) struct {
     }
 
     pub fn bindResources(self: VulkanBackend, bindings: VulkanBindings) !void {
+        self.vk.setCommandBuffer(self.cmd);
+        defer self.vk.clearCommandBuffer();
         try self.vk.bindTextCoverageResources(self.vk_resources, bindings);
     }
 
@@ -288,6 +291,8 @@ pub const VulkanBackend = if (build_options.enable_vulkan) struct {
     }
 
     pub fn drawVertices(self: VulkanBackend, vertices: []const u32) !void {
+        self.vk.setCommandBuffer(self.cmd);
+        defer self.vk.clearCommandBuffer();
         try self.vk.drawPreparedTextCoverage(vertices);
     }
 } else struct {};

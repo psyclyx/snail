@@ -201,6 +201,18 @@ pub const Driver = union(Kind) {
         };
     }
 
+    pub fn draw(self: *Driver, prepared: *const snail.PreparedResources, records: snail.DrawRecords, state: snail.DrawState) !void {
+        switch (self.*) {
+            .vulkan => |*driver| if (comptime build_options.enable_vulkan) {
+                try driver.draw(prepared, records, state);
+            } else unreachable,
+            else => {
+                var r = self.renderer();
+                try r.draw(prepared, records, state);
+            },
+        }
+    }
+
     pub fn beginLinearResolve(self: *Driver, surface: snail.TargetSurface, resolve: snail.LinearResolve) !LinearResolveRestore {
         return switch (self.*) {
             .vulkan => error.UnsupportedResolve,
@@ -240,7 +252,10 @@ pub const Driver = union(Kind) {
 
     pub fn endFrame(self: *Driver) void {
         switch (self.*) {
-            .vulkan => if (comptime build_options.enable_vulkan) vulkan_platform.endFrame(),
+            .vulkan => |*driver| if (comptime build_options.enable_vulkan) {
+                driver.frame = null;
+                vulkan_platform.endFrame();
+            },
             .gl => if (comptime build_options.enable_opengl) gl_platform.swapBuffers(),
             .cpu => if (comptime build_options.enable_cpu) cpu_platform.swapBuffers(),
             .cpu_less_threaded => if (comptime build_options.enable_cpu) cpu_platform.swapBuffers(),
@@ -261,6 +276,7 @@ pub const Driver = union(Kind) {
 
 const VulkanDriver = if (build_options.enable_vulkan) struct {
     renderer_state: snail.VulkanRenderer,
+    frame: ?snail.VulkanRenderer.Frame = null,
 
     fn init(allocator: std.mem.Allocator, window: *wayland.Window) !VulkanDriver {
         const ctx = try vulkan_platform.initForWindow(window);
@@ -281,8 +297,13 @@ const VulkanDriver = if (build_options.enable_vulkan) struct {
 
     fn beginFrame(self: *VulkanDriver) bool {
         const cmd = vulkan_platform.beginFrame() orelse return false;
-        self.renderer_state.beginFrame(.{ .cmd = cmd, .frame_index = vulkan_platform.currentFrameIndex() });
+        self.frame = self.renderer_state.frame(.{ .cmd = cmd, .slot = vulkan_platform.currentFrameIndex() });
         return true;
+    }
+
+    fn draw(self: *VulkanDriver, prepared: *const snail.PreparedResources, records: snail.DrawRecords, state: snail.DrawState) !void {
+        const frame = self.frame orelse return error.MissingCommandBuffer;
+        try frame.draw(prepared, records, state);
     }
 } else void;
 

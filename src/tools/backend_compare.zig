@@ -542,8 +542,8 @@ fn renderVulkan(
     defer prepared_scene.deinit();
 
     const cmd = vulkan_platform.beginFrameOffscreenWithClear(.{ 0.0, 0.0, 0.0, 1.0 });
-    vk_renderer.beginFrame(.{ .cmd = cmd, .frame_index = vulkan_platform.currentOffscreenFrameIndex() });
-    try renderer.drawPrepared(&prepared, &prepared_scene, options);
+    const frame = vk_renderer.frame(.{ .cmd = cmd, .slot = vulkan_platform.currentOffscreenFrameIndex() });
+    try frame.drawPrepared(&prepared, &prepared_scene, options);
     vulkan_platform.endFrameOffscreen();
     vulkan_platform.queueWaitIdle();
     return vulkan_platform.captureOffscreenRgba8(allocator);
@@ -558,10 +558,11 @@ fn drawPreparedVulkanToPixels(
     options: snail.DrawState,
 ) ![]u8 {
     if (comptime !build_options.enable_vulkan) unreachable;
+    _ = renderer;
 
     const cmd = vulkan_platform.beginFrameOffscreenWithClear(.{ 0.0, 0.0, 0.0, 1.0 });
-    vk_renderer.beginFrame(.{ .cmd = cmd, .frame_index = vulkan_platform.currentOffscreenFrameIndex() });
-    try renderer.drawPrepared(prepared, scene, options);
+    const frame = vk_renderer.frame(.{ .cmd = cmd, .slot = vulkan_platform.currentOffscreenFrameIndex() });
+    try frame.drawPrepared(prepared, scene, options);
     vulkan_platform.endFrameOffscreen();
     vulkan_platform.queueWaitIdle();
     return vulkan_platform.captureOffscreenRgba8(allocator);

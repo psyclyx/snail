@@ -256,7 +256,7 @@ test "draw dispatch uses only prepared stamps and caller records" {
             s.coverage_transfer = draw_state.raster.coverage_transfer;
             s.saw_backend_prepared = backend_prepared != null;
         }
-        fn beginFrame(ptr: *anyopaque) void {
+        fn beginDraw(ptr: *anyopaque) void {
             state(ptr).begin_count += 1;
         }
         fn backendName(_: *anyopaque) []const u8 {
@@ -295,7 +295,7 @@ test "draw dispatch uses only prepared stamps and caller records" {
         .draw = Fake.draw,
         .drawText = Fake.drawText,
         .drawPaths = Fake.drawPaths,
-        .beginFrame = Fake.beginFrame,
+        .beginDraw = Fake.beginDraw,
         .resource_cache = .{
             .uses_resource_cache = false,
             .stats = Fake.resourceCacheStats,

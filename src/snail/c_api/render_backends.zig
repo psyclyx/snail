@@ -11,10 +11,16 @@ const SNAIL_OK = common.SNAIL_OK;
 const SNAIL_ERR_OUT_OF_MEMORY = common.SNAIL_ERR_OUT_OF_MEMORY;
 const SNAIL_ERR_RENDERER_FAILED = common.SNAIL_ERR_RENDERER_FAILED;
 const SNAIL_ERR_INVALID_ARGUMENT = common.SNAIL_ERR_INVALID_ARGUMENT;
+const SnailDrawState = common.SnailDrawState;
 const SnailVulkanContext = common.SnailVulkanContext;
+const toDrawState = common.toDrawState;
 const PreparedResourcesImpl = common.PreparedResourcesImpl;
+const PreparedSceneImpl = common.PreparedSceneImpl;
 const PreparedResourceRetirementQueueImpl = common.PreparedResourceRetirementQueueImpl;
 const PendingResourceUploadImpl = common.PendingResourceUploadImpl;
+const VulkanFrameImpl = common.VulkanFrameImpl;
+const DrawListImpl = common.DrawListImpl;
+const CoverageBackendImpl = common.CoverageBackendImpl;
 const ThreadPoolImpl = common.ThreadPoolImpl;
 const RendererImpl = common.RendererImpl;
 const destroyHandle = common.destroyHandle;
@@ -161,14 +167,61 @@ pub export fn snail_vulkan_renderer_init(ctx: *const SnailVulkanContext, out: *?
     }
 }
 
-pub export fn snail_vulkan_renderer_begin_frame(renderer: *RendererImpl, command_buffer: vk.VkCommandBuffer, frame_slot: u32) c_int {
+pub export fn snail_vulkan_renderer_frame(
+    renderer: *RendererImpl,
+    command_buffer: vk.VkCommandBuffer,
+    frame_slot: u32,
+    out: *?*VulkanFrameImpl,
+) c_int {
     if (comptime !build_options.enable_vulkan) return SNAIL_ERR_RENDERER_FAILED;
     if (renderer.backend != .vulkan) return SNAIL_ERR_INVALID_ARGUMENT;
     if (renderer.vulkan) |*vk_renderer| {
-        vk_renderer.beginFrame(.{ .cmd = command_buffer, .frame_index = frame_slot });
+        const frame = vk_renderer.frame(.{ .cmd = command_buffer, .slot = frame_slot });
+        const impl = handleAllocator().create(VulkanFrameImpl) catch return SNAIL_ERR_OUT_OF_MEMORY;
+        impl.* = .{ .inner = frame };
+        out.* = impl;
         return SNAIL_OK;
     }
     return SNAIL_ERR_INVALID_ARGUMENT;
+}
+
+pub export fn snail_vulkan_frame_deinit(frame: ?*VulkanFrameImpl) void {
+    if (frame) |f| destroyHandle(f);
+}
+
+pub export fn snail_vulkan_frame_draw(
+    frame: *VulkanFrameImpl,
+    prepared: *const PreparedResourcesImpl,
+    list: *const DrawListImpl,
+    state: SnailDrawState,
+) c_int {
+    if (comptime !build_options.enable_vulkan) return SNAIL_ERR_RENDERER_FAILED;
+    frame.inner.draw(&prepared.inner, list.inner.slice(), toDrawState(state) catch return SNAIL_ERR_INVALID_ARGUMENT) catch |err| return mapError(err);
+    return SNAIL_OK;
+}
+
+pub export fn snail_vulkan_frame_draw_prepared(
+    frame: *VulkanFrameImpl,
+    prepared: *const PreparedResourcesImpl,
+    scene: *const PreparedSceneImpl,
+    state: SnailDrawState,
+) c_int {
+    if (comptime !build_options.enable_vulkan) return SNAIL_ERR_RENDERER_FAILED;
+    frame.inner.drawPrepared(&prepared.inner, &scene.inner, toDrawState(state) catch return SNAIL_ERR_INVALID_ARGUMENT) catch |err| return mapError(err);
+    return SNAIL_OK;
+}
+
+pub export fn snail_vulkan_frame_coverage_backend(
+    frame: *VulkanFrameImpl,
+    prepared: *const PreparedResourcesImpl,
+    out: *?*CoverageBackendImpl,
+) c_int {
+    if (comptime !build_options.enable_vulkan) return SNAIL_ERR_RENDERER_FAILED;
+    const backend = frame.inner.coverageBackend(&prepared.inner) orelse return SNAIL_ERR_INVALID_ARGUMENT;
+    const impl = handleAllocator().create(CoverageBackendImpl) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    impl.* = .{ .inner = backend };
+    out.* = impl;
+    return SNAIL_OK;
 }
 
 pub export fn snail_vulkan_pending_resource_upload_record(pending: *PendingResourceUploadImpl, command_buffer: vk.VkCommandBuffer, budget_bytes: usize) c_int {

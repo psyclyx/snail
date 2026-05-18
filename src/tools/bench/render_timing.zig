@@ -103,11 +103,12 @@ pub fn timeVulkanDraw(
     frames: usize,
 ) !f64 {
     if (comptime !build_options.enable_vulkan) unreachable;
+    _ = renderer;
 
     for (0..warmup_frames) |_| {
         const cmd = vulkan_platform.beginFrameOffscreen();
-        vk_renderer.beginFrame(.{ .cmd = cmd, .frame_index = vulkan_platform.currentOffscreenFrameIndex() });
-        try renderer.drawPrepared(prepared, scene, options);
+        const frame = vk_renderer.frame(.{ .cmd = cmd, .slot = vulkan_platform.currentOffscreenFrameIndex() });
+        try frame.drawPrepared(prepared, scene, options);
         vulkan_platform.endFrameOffscreen();
     }
     vulkan_platform.queueWaitIdle();
@@ -115,8 +116,8 @@ pub fn timeVulkanDraw(
     const start = nowNs();
     for (0..frames) |_| {
         const cmd = vulkan_platform.beginFrameOffscreen();
-        vk_renderer.beginFrame(.{ .cmd = cmd, .frame_index = vulkan_platform.currentOffscreenFrameIndex() });
-        try renderer.drawPrepared(prepared, scene, options);
+        const frame = vk_renderer.frame(.{ .cmd = cmd, .slot = vulkan_platform.currentOffscreenFrameIndex() });
+        try frame.drawPrepared(prepared, scene, options);
         vulkan_platform.endFrameOffscreen();
     }
     vulkan_platform.queueWaitIdle();

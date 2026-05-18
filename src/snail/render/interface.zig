@@ -46,13 +46,13 @@ pub const Renderer = struct {
         deinit: *const fn (*anyopaque) void,
         uploadResources: *const fn (*anyopaque, UploadAllocators, *PreparedResources, ResourceUploadBatch) anyerror!void,
         coverageBackend: *const fn (*anyopaque, *const PreparedResources) ?CoverageBackend,
-        // Frame-level draw: validate, set state, walk records. Each backend
+        // Draw-level execution: validate, set state, walk records. Each backend
         // owns this so it can decide how to schedule the work.
         draw: *const fn (*Renderer, *const PreparedResources, DrawRecords, DrawState) anyerror!void,
         // Segment-level dispatch, called from `iterateRecords`.
         drawText: *const fn (*anyopaque, ?*const anyopaque, []const u32, DrawState, u32) anyerror!void,
         drawPaths: *const fn (*anyopaque, ?*const anyopaque, []const u32, DrawState, u32) anyerror!void,
-        beginFrame: *const fn (*anyopaque) void,
+        beginDraw: *const fn (*anyopaque) void,
         resource_cache: ResourceCacheVTable,
         backendName: *const fn (*anyopaque) []const u8,
     };
@@ -148,12 +148,12 @@ pub const Renderer = struct {
         }
     }
 
-    /// Frame-level draw: set state, walk records serially dispatching each
+    /// Draw-level execution: set state, walk records serially dispatching each
     /// segment to the backend's `drawText` / `drawPaths`. Used by GPU adapters
     /// directly, and by the CPU adapter's serial fallback / tile workers.
     /// Caller has already invoked `validateRecords`.
     pub fn iterateRecords(self: *Renderer, records: DrawRecords, state: DrawState, backend_prepared: ?*const anyopaque) !void {
-        self.beginBackendFrame();
+        self.beginBackendDraw();
         for (records.segments) |segment| {
             const vertices = records.words[segment.offset..][0..segment.len];
             switch (segment.kind) {
@@ -167,8 +167,8 @@ pub const Renderer = struct {
         self.vtable.deinit(self.ptr);
     }
 
-    fn beginBackendFrame(self: *Renderer) void {
-        self.vtable.beginFrame(self.ptr);
+    fn beginBackendDraw(self: *Renderer) void {
+        self.vtable.beginDraw(self.ptr);
     }
 
     fn drawText(self: *Renderer, backend_prepared: ?*const anyopaque, vertices: []const u32, state: DrawState, texture_layer_base: u32) !void {
@@ -202,7 +202,7 @@ pub fn disabledVTable(comptime backend_kind: BackendKind) Renderer.VTable {
         fn drawPathsFn(_: *anyopaque, _: ?*const anyopaque, _: []const u32, _: DrawState, _: u32) anyerror!void {
             return error.UnsupportedRenderer;
         }
-        fn beginFrameFn(_: *anyopaque) void {}
+        fn beginDrawFn(_: *anyopaque) void {}
         fn resourceCacheStatsFn(_: *const anyopaque) ResourceCacheStats {
             return .{};
         }
@@ -241,7 +241,7 @@ pub fn disabledVTable(comptime backend_kind: BackendKind) Renderer.VTable {
         .draw = &S.drawFn,
         .drawText = &S.drawTextFn,
         .drawPaths = &S.drawPathsFn,
-        .beginFrame = &S.beginFrameFn,
+        .beginDraw = &S.beginDrawFn,
         .resource_cache = .{
             .uses_resource_cache = false,
             .stats = &S.resourceCacheStatsFn,

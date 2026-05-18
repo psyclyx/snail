@@ -395,7 +395,7 @@ pub const CpuRenderer = struct {
         self.drawTextBatchPrepared(prepared, vertices, scene, texture_layer_base, false);
     }
 
-    pub fn beginFrame(_: *CpuRenderer) void {}
+    pub fn beginDraw(_: *CpuRenderer) void {}
 
     pub fn backendName(_: *const CpuRenderer) []const u8 {
         return "CPU";

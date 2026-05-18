@@ -600,7 +600,7 @@ try scene.addPath(.{ .picture = &sprite, .instances = entity_overrides });
 | `VulkanRenderer.init(alloc, ctx) !VulkanRenderer` | Initialize the Vulkan backend from a caller-owned `VulkanContext`. |
 | `CpuRenderer.init(pixels, w, h, stride) CpuRenderer` | Initialize the CPU backend over a caller-owned RGBA8 buffer. |
 | `cpu.setThreadPool(?*snail.ThreadPool)` | Opt into scanline-tiled multithreaded rendering using a caller-owned `snail.ThreadPool`. Byte-identical output to the single-threaded path; the draw call itself stays allocation-free. |
-| `vk.beginFrame(.{ .cmd, .frame_index })` | Bind a caller-recorded Vulkan command buffer + frame index for the current frame. |
+| `vk.frame(.{ .cmd, .slot })` | Create a Vulkan frame encoder for a caller-recorded command buffer and upload-ring slot. |
 | `renderer.uploadResourcesBlocking(.{ .persistent, .scratch }, set) !PreparedResources` | Blocking upload + view construction. Persistent allocations live with `PreparedResources`; scratch allocations end when upload returns. |
 | `renderer.planResourceUpload(alloc, current, next_set) !ResourceUploadPlan` | Snapshot and diff a new resource manifest against existing prepared resources. |
 | `renderer.beginResourceUpload(.{ .persistent, .scratch }, &plan) !PendingResourceUpload` | Start a scheduled upload; record into a caller command buffer for Vulkan, then call `pending.publish()`. |
@@ -608,8 +608,8 @@ try scene.addPath(.{ .picture = &sprite, .instances = entity_overrides });
 | `DrawList.estimate(scene)` | Upper bound for the word buffer required by `draw.addScene(prepared, scene)`. |
 | `DrawList.estimateSegments(scene)` | Upper bound for the segment buffer required by `draw.addScene(prepared, scene)`. |
 | `PreparedScene.initOwned(alloc, prepared, scene) !PreparedScene` | Build an owned draw-record cache for a static scene. |
-| `renderer.draw(prepared, records, options)` | Execute prebuilt draw records. No resource discovery or upload. |
-| `renderer.drawPrepared(prepared, prepared_scene, options)` | Draw a `PreparedScene` cache. |
+| `renderer.draw(prepared, records, options)` | Execute prebuilt draw records on CPU/GL or other renderer-owned draw contexts. No resource discovery or upload. |
+| `renderer.drawPrepared(prepared, prepared_scene, options)` | Draw a `PreparedScene` cache. For Vulkan, call `vk.frame(.{ .cmd, .slot }).drawPrepared(...)`. |
 | `prepared.retireNow()` | Retire backend resources immediately once no in-flight frame references them. |
 | `PreparedResourceRetirementQueue.init(alloc)` / `queue.sweep()` | Caller-owned queue for prepared resources that must retire after a fence completes. |
 | `prepared.retireAfter(&queue, fence_or_frame)` | Move prepared resources into the caller-owned retirement queue. |
@@ -651,7 +651,10 @@ C callers use the same flow through `SnailResourceUploadPlan` and
 `SnailPendingResourceUpload`. `snail_pending_resource_upload_record` covers
 CPU/GL; Vulkan callers use
 `snail_vulkan_pending_resource_upload_record(command_buffer, budget_bytes)` and
-`snail_vulkan_pending_resource_upload_ready_fence`.
+`snail_vulkan_pending_resource_upload_ready_fence`. Vulkan drawing in C is also
+frame-scoped: create `SnailVulkanFrame` with
+`snail_vulkan_renderer_frame(renderer, command_buffer, frame_slot, &frame)`,
+then call `snail_vulkan_frame_draw` or `snail_vulkan_frame_draw_prepared`.
 
 ### Text coverage in custom shaders
 
@@ -683,13 +686,14 @@ masking, or compositing.
   `records.buildLocal(prepared, blob, options)` if the atlas has moved.
 - `snail.coverage.Backend` is the backend hook. Get one from
   `prepared.coverageBackend(renderer)` (or `gl.coverageBackend(prepared)`
-  / `vk.coverageBackend(prepared)` on typed renderers). Call
+  on typed renderers, or `vk.frame(.{ .cmd, .slot }).coverageBackend(prepared)`
+  for Vulkan). Call
   `bindResources(.{ .gl = bindings })` or `bindResources(.{ .vulkan = bindings })`, then
   `drawCoverage(&records)` or `drawVertices` with your own buffer.
 
 C callers use `SnailTextCoverageRecords` and `SnailCoverageBackend` from
 `snail.h`; GL binding uniforms and shader snippets live in `snail_gl.h`, and
-Vulkan descriptor layout helpers live in `snail_vulkan.h`.
+Vulkan frame-scoped coverage binding lives in `snail_vulkan.h`.
 
 ### Path
 

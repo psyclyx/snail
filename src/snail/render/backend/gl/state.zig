@@ -579,7 +579,7 @@ pub const GlTextState = struct {
         self.drawGlyphRange(vertices, 0, vertices.len / vertex.WORDS_PER_INSTANCE);
     }
 
-    pub fn beginFrame(self: *GlTextState) void {
+    pub fn beginDraw(self: *GlTextState) void {
         self.frame_begun = false;
         if (self.backend == .gl44 and self.ring_segment_dirty[self.ring_segment]) {
             self.fenceRingSegment(self.ring_segment);
@@ -730,7 +730,7 @@ pub fn deinit() void {
 }
 
 pub fn beginFrame() void {
-    state.beginFrame();
+    state.beginDraw();
 }
 
 pub fn backendName() []const u8 {

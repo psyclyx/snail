@@ -381,13 +381,12 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
         }
         var draw = snail.DrawList.init(draw_buf[0..needed], draw_segments_buf[0..needed_segments]);
         try draw.addScene(&prepared.?, &scene);
-        var renderer = active.renderer();
         if (linear_resolve) |resolve| {
             const restore = try active.beginLinearResolve(draw_state.surface, resolve);
             defer active.endLinearResolve(restore);
-            try renderer.draw(&prepared.?, draw.slice(), draw_state);
+            try active.draw(&prepared.?, draw.slice(), draw_state);
         } else {
-            try renderer.draw(&prepared.?, draw.slice(), draw_state);
+            try active.draw(&prepared.?, draw.slice(), draw_state);
         }
 
         if (frame_count == 2) {

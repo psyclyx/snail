@@ -37,6 +37,9 @@ pub const ResourceUploadPlanImpl = struct {
 pub const PendingResourceUploadImpl = struct {
     inner: snail.PendingResourceUpload,
 };
+pub const VulkanFrameImpl = struct {
+    inner: if (build_options.enable_vulkan) snail.VulkanRenderer.Frame else void,
+};
 pub const DrawListImpl = struct {
     inner: snail.DrawList,
     allocator: std.mem.Allocator,

@@ -33,6 +33,7 @@ pub const handles = [_]Handle{
     .{ .name = "SnailPreparedResourceRetirementQueue" },
     .{ .name = "SnailResourceUploadPlan" },
     .{ .name = "SnailPendingResourceUpload" },
+    .{ .name = "SnailVulkanFrame" },
     .{ .name = "SnailDrawList" },
     .{ .name = "SnailTextCoverageRecords" },
     .{ .name = "SnailCoverageBackend" },

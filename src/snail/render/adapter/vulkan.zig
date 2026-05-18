@@ -58,10 +58,7 @@ const Config = if (build_options.enable_vulkan) struct {
         prepared_resources.backend.generation = vk_prepared.generation;
     }
 
-    pub fn coverageBackend(self: *Backend, prepared_resources: *const PreparedResources) ?CoverageBackend {
-        if (prepared_resources.backend.vulkan) |vk_resources| {
-            return .{ .vulkan = .{ .vk = self, .vk_resources = vk_resources, .prepared = prepared_resources } };
-        }
+    pub fn coverageBackend(_: *Backend, _: *const PreparedResources) ?CoverageBackend {
         return null;
     }
 
@@ -76,11 +73,39 @@ pub const vtable = if (build_options.enable_vulkan) common.vtable(Config) else i
 
 /// Typed handle for the Vulkan backend.
 ///
-/// The typed handle exists so `beginFrame(.{ .cmd, .frame_index })`, which
-/// takes a backend-specific argument, has somewhere to live.
+/// The typed handle exists for Vulkan-specific command-buffer integration.
 pub const Renderer = if (build_options.enable_vulkan) struct {
     const Self = @This();
     pub const LinearResolveRestore = void;
+
+    pub const Frame = struct {
+        renderer: *Self,
+        cmd: pipeline.vk.VkCommandBuffer,
+        slot: u32,
+
+        pub fn draw(self: Frame, prepared: *const PreparedResources, records: DrawRecords, state: DrawState) !void {
+            self.renderer.state.setCommandBuffer(self.cmd);
+            defer self.renderer.state.clearCommandBuffer();
+            var renderer = self.renderer.asRenderer();
+            try renderer.draw(prepared, records, state);
+        }
+
+        pub fn drawPrepared(self: Frame, prepared: *const PreparedResources, scene: *const PreparedScene, state: DrawState) !void {
+            try self.draw(prepared, scene.slice(), state);
+        }
+
+        pub fn coverageBackend(self: Frame, prepared_resources: *const PreparedResources) ?CoverageBackend {
+            if (prepared_resources.backend.vulkan) |vk_resources| {
+                return .{ .vulkan = .{
+                    .vk = self.renderer.state,
+                    .vk_resources = vk_resources,
+                    .prepared = prepared_resources,
+                    .cmd = self.cmd,
+                } };
+            }
+            return null;
+        }
+    };
 
     allocator: std.mem.Allocator,
     state: *pipeline.VulkanPipeline,
@@ -103,9 +128,13 @@ pub const Renderer = if (build_options.enable_vulkan) struct {
         return .{ .ptr = @ptrCast(self.state), .vtable = &vtable };
     }
 
-    pub fn beginFrame(self: *Self, frame: anytype) void {
-        self.state.setCommandBuffer(frame.cmd);
-        self.state.setFrameSlot(frame.frame_index);
+    pub fn frame(self: *Self, context: anytype) Frame {
+        self.state.setFrameSlot(context.slot);
+        return .{
+            .renderer = self,
+            .cmd = @ptrCast(context.cmd),
+            .slot = context.slot,
+        };
     }
 
     pub fn uploadResourcesBlocking(self: *Self, allocators: UploadAllocators, set: *const ResourceManifest) !PreparedResources {
@@ -123,28 +152,11 @@ pub const Renderer = if (build_options.enable_vulkan) struct {
         return renderer.beginResourceUpload(allocators, plan);
     }
 
-    pub fn draw(self: *Self, prepared: *const PreparedResources, records: DrawRecords, state: DrawState) !void {
-        var renderer = self.asRenderer();
-        try renderer.draw(prepared, records, state);
-    }
-
-    pub fn drawPrepared(self: *Self, prepared: *const PreparedResources, scene: *const PreparedScene, state: DrawState) !void {
-        var renderer = self.asRenderer();
-        try renderer.drawPrepared(prepared, scene, state);
-    }
-
     pub fn beginLinearResolve(_: *Self, _: TargetSurface, _: LinearResolve) !LinearResolveRestore {
         return error.UnsupportedResolve;
     }
 
     pub fn endLinearResolve(_: *Self, _: LinearResolveRestore) void {}
-
-    pub fn coverageBackend(self: *Self, prepared_resources: *const PreparedResources) ?CoverageBackend {
-        if (prepared_resources.backend.vulkan) |vk_resources| {
-            return .{ .vulkan = .{ .vk = self.state, .vk_resources = vk_resources, .prepared = prepared_resources } };
-        }
-        return null;
-    }
 
     pub fn backendName(self: *const Self) []const u8 {
         return self.state.backendName();

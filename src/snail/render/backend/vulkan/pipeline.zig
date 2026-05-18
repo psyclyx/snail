@@ -300,6 +300,10 @@ pub const VulkanPipeline = struct {
         self.active_cmd = @ptrCast(cmd);
     }
 
+    pub fn clearCommandBuffer(self: *VulkanPipeline) void {
+        self.active_cmd = null;
+    }
+
     pub fn setFrameSlot(self: *VulkanPipeline, slot: u32) void {
         std.debug.assert(slot < UPLOAD_SLOTS);
         self.active_upload_slot = slot;
@@ -502,7 +506,7 @@ pub const VulkanPipeline = struct {
         try self.drawGlyphRange(vertices, 0, total_glyphs);
     }
 
-    pub fn beginFrame(self: *VulkanPipeline) void {
+    pub fn beginDraw(self: *VulkanPipeline) void {
         // No-op for Vulkan (ring buffer handles frame separation)
         _ = self;
     }

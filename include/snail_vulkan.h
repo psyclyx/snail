@@ -26,9 +26,22 @@ typedef struct {
 bool snail_vulkan_available(void);
 int snail_vulkan_renderer_init(const SnailVulkanContext *context,
                                SnailRenderer **out);
-int snail_vulkan_renderer_begin_frame(SnailRenderer *renderer,
-                                      VkCommandBuffer command_buffer,
-                                      uint32_t frame_slot);
+int snail_vulkan_renderer_frame(SnailRenderer *renderer,
+                                VkCommandBuffer command_buffer,
+                                uint32_t frame_slot,
+                                SnailVulkanFrame **out);
+void snail_vulkan_frame_deinit(SnailVulkanFrame *frame);
+int snail_vulkan_frame_draw(SnailVulkanFrame *frame,
+                            const SnailPreparedResources *prepared,
+                            const SnailDrawList *list,
+                            SnailDrawState state);
+int snail_vulkan_frame_draw_prepared(SnailVulkanFrame *frame,
+                                     const SnailPreparedResources *prepared,
+                                     const SnailPreparedScene *scene,
+                                     SnailDrawState state);
+int snail_vulkan_frame_coverage_backend(SnailVulkanFrame *frame,
+                                        const SnailPreparedResources *prepared,
+                                        SnailCoverageBackend **out);
 int snail_vulkan_pending_resource_upload_record(SnailPendingResourceUpload *pending,
                                                 VkCommandBuffer command_buffer,
                                                 size_t budget_bytes);

@@ -56,8 +56,8 @@ pub fn vtable(comptime Config: type) interface.Renderer.VTable {
             }
             return error.MissingPreparedResource;
         }
-        fn beginFrameFn(ptr: *anyopaque) void {
-            cast(ptr).beginFrame();
+        fn beginDrawFn(ptr: *anyopaque) void {
+            cast(ptr).beginDraw();
         }
         fn resourceCacheStatsFn(ptr: *const anyopaque) ResourceCacheStats {
             if (comptime Config.uses_resource_cache) return constCastConst(ptr).resourceCacheStats();
@@ -141,7 +141,7 @@ pub fn vtable(comptime Config: type) interface.Renderer.VTable {
         .draw = &S.drawFn,
         .drawText = &S.drawTextFn,
         .drawPaths = &S.drawPathsFn,
-        .beginFrame = &S.beginFrameFn,
+        .beginDraw = &S.beginDrawFn,
         .resource_cache = .{
             .uses_resource_cache = Config.uses_resource_cache,
             .stats = &S.resourceCacheStatsFn,
