@@ -46,13 +46,42 @@ const ComparePolicy = struct {
     average_budget: f64,
 };
 
-// CPU and GPU paths intentionally use different arithmetic, so CPU-vs-backend
-// comparison allows a tight budget of rare near-tangent conic outliers.
-const cpu_backend_policy = ComparePolicy{
-    .tolerance = 1,
-    .max_channel_delta = 64,
-    .outlier_budget = 32,
-    .average_budget = 0.05,
+const EdgePolicy = struct {
+    edge_threshold: u8,
+    edge_radius: u32,
+};
+
+const LowPassPolicy = struct {
+    tolerance: u8,
+    max_channel_delta: u8,
+    average_budget: f64,
+};
+
+const CpuBackendPolicy = struct {
+    raw: ComparePolicy,
+    edge: EdgePolicy,
+    low_pass: LowPassPolicy,
+};
+
+// CPU and GPU paths intentionally use different arithmetic. Keep raw drift
+// bounded, require every raw outlier to be near a reference edge, and separately
+// verify visual equivalence after a deterministic low-pass filter.
+const cpu_backend_policy = CpuBackendPolicy{
+    .raw = .{
+        .tolerance = 1,
+        .max_channel_delta = 64,
+        .outlier_budget = 32,
+        .average_budget = 0.05,
+    },
+    .edge = .{
+        .edge_threshold = 8,
+        .edge_radius = 2,
+    },
+    .low_pass = .{
+        .tolerance = 1,
+        .max_channel_delta = 12,
+        .average_budget = 0.04,
+    },
 };
 
 // GL and Vulkan should be the same shader algorithm. Allow only 2-LSB store
@@ -500,6 +529,137 @@ fn comparePixels(expected: []const u8, actual: []const u8, tolerance: u8) Compar
     return stats;
 }
 
+fn channelDelta(lhs: u8, rhs: u8) u8 {
+    return if (lhs > rhs) lhs - rhs else rhs - lhs;
+}
+
+fn pixelMaxDelta(expected: []const u8, actual: []const u8, pixel: usize) u8 {
+    const base = pixel * 4;
+    var max_delta: u8 = 0;
+    for (0..4) |channel| {
+        max_delta = @max(max_delta, channelDelta(expected[base + channel], actual[base + channel]));
+    }
+    return max_delta;
+}
+
+fn pixelEdgeMagnitude(pixels: []const u8, x: u32, y: u32) u8 {
+    const center = (@as(usize, y) * WIDTH + @as(usize, x)) * 4;
+    const offsets = [_]i32{ -1, 0, 1 };
+    const width_i: i32 = @intCast(WIDTH);
+    const height_i: i32 = @intCast(HEIGHT);
+    const x_i: i32 = @intCast(x);
+    const y_i: i32 = @intCast(y);
+    var result: u8 = 0;
+
+    for (offsets) |dy| {
+        for (offsets) |dx| {
+            if (dx == 0 and dy == 0) continue;
+            const nx = x_i + dx;
+            const ny = y_i + dy;
+            if (nx < 0 or ny < 0 or nx >= width_i or ny >= height_i) continue;
+            const neighbor = (@as(usize, @intCast(ny)) * WIDTH + @as(usize, @intCast(nx))) * 4;
+            for (0..4) |channel| {
+                result = @max(result, channelDelta(pixels[center + channel], pixels[neighbor + channel]));
+            }
+        }
+    }
+    return result;
+}
+
+fn isNearReferenceEdge(expected: []const u8, pixel: usize, policy: EdgePolicy) bool {
+    const px: i32 = @intCast(pixel % WIDTH);
+    const py: i32 = @intCast(pixel / WIDTH);
+    const radius: i32 = @intCast(policy.edge_radius);
+    const width_i: i32 = @intCast(WIDTH);
+    const height_i: i32 = @intCast(HEIGHT);
+
+    var y = py - radius;
+    while (y <= py + radius) : (y += 1) {
+        if (y < 0 or y >= height_i) continue;
+        var x = px - radius;
+        while (x <= px + radius) : (x += 1) {
+            if (x < 0 or x >= width_i) continue;
+            if (pixelEdgeMagnitude(expected, @intCast(x), @intCast(y)) >= policy.edge_threshold) return true;
+        }
+    }
+    return false;
+}
+
+const EdgeOutlierStats = struct {
+    outlier_pixels: usize = 0,
+    non_edge_pixels: usize = 0,
+    worst_offset: usize = 0,
+    max_channel_delta: u8 = 0,
+};
+
+fn compareEdgeLocalizedOutliers(expected: []const u8, actual: []const u8, raw_tolerance: u8, policy: EdgePolicy) EdgeOutlierStats {
+    std.debug.assert(expected.len == actual.len);
+    var stats = EdgeOutlierStats{};
+    const pixel_count = expected.len / 4;
+    for (0..pixel_count) |pixel| {
+        const delta = pixelMaxDelta(expected, actual, pixel);
+        if (delta <= raw_tolerance) continue;
+        stats.outlier_pixels += 1;
+        if (delta > stats.max_channel_delta) {
+            stats.max_channel_delta = delta;
+            stats.worst_offset = pixel * 4;
+        }
+        if (!isNearReferenceEdge(expected, pixel, policy)) stats.non_edge_pixels += 1;
+    }
+    return stats;
+}
+
+// Separable binomial [1 4 6 4 1] / 16 low-pass. This smooths one-pixel
+// coverage phase differences without pulling in a perceptual-image dependency.
+const blur_weights = [_]u16{ 1, 4, 6, 4, 1 };
+
+fn clampCoord(v: i32, max: u32) u32 {
+    if (v <= 0) return 0;
+    const max_i: i32 = @intCast(max - 1);
+    if (v >= max_i) return @intCast(max_i);
+    return @intCast(v);
+}
+
+fn lowPassChannel(pixels: []const u8, x: u32, y: u32, channel: usize) u8 {
+    var sum: u32 = 0;
+    const x_i: i32 = @intCast(x);
+    const y_i: i32 = @intCast(y);
+    for (blur_weights, 0..) |wy, ky| {
+        const sy = clampCoord(y_i + @as(i32, @intCast(ky)) - 2, HEIGHT);
+        for (blur_weights, 0..) |wx, kx| {
+            const sx = clampCoord(x_i + @as(i32, @intCast(kx)) - 2, WIDTH);
+            const weight = @as(u32, wy) * @as(u32, wx);
+            const offset = (@as(usize, sy) * WIDTH + @as(usize, sx)) * 4 + channel;
+            sum += weight * pixels[offset];
+        }
+    }
+    return @intCast((sum + 128) / 256);
+}
+
+fn compareLowPassPixels(expected: []const u8, actual: []const u8, tolerance: u8) CompareStats {
+    std.debug.assert(expected.len == actual.len);
+    var stats = CompareStats{ .pixel_count = expected.len / 4 };
+    for (0..HEIGHT) |y| {
+        for (0..WIDTH) |x| {
+            var pixel_mismatch = false;
+            const pixel = y * WIDTH + x;
+            for (0..4) |channel| {
+                const expected_channel = lowPassChannel(expected, @intCast(x), @intCast(y), channel);
+                const actual_channel = lowPassChannel(actual, @intCast(x), @intCast(y), channel);
+                const delta = channelDelta(expected_channel, actual_channel);
+                stats.total_channel_delta += delta;
+                if (delta > stats.max_channel_delta) {
+                    stats.max_channel_delta = delta;
+                    stats.worst_offset = pixel * 4 + channel;
+                }
+                if (delta > tolerance) pixel_mismatch = true;
+            }
+            if (pixel_mismatch) stats.mismatched_pixels += 1;
+        }
+    }
+    return stats;
+}
+
 fn makeDiffImage(allocator: std.mem.Allocator, expected: []const u8, actual: []const u8) ![]u8 {
     const diff = try allocator.alloc(u8, expected.len);
     errdefer allocator.free(diff);
@@ -587,7 +747,67 @@ fn checkBackendAgainstCpu(
     cpu_pixels: []const u8,
     backend_pixels: []const u8,
 ) !void {
-    try checkPixelMatch(allocator, case_name, "CPU", "cpu", backend_name, backend_slug, cpu_pixels, backend_pixels, cpu_backend_policy);
+    const raw_stats = comparePixels(cpu_pixels, backend_pixels, cpu_backend_policy.raw.tolerance);
+    const raw_pass = raw_stats.mismatched_pixels <= cpu_backend_policy.raw.outlier_budget and
+        raw_stats.averageChannelDelta() <= cpu_backend_policy.raw.average_budget and
+        raw_stats.max_channel_delta <= cpu_backend_policy.raw.max_channel_delta;
+    if (!raw_pass) {
+        const pixel = raw_stats.worst_offset / 4;
+        const x = pixel % WIDTH;
+        const y = pixel / WIDTH;
+        std.debug.print(
+            "{s}: {s} differs from CPU raw pixels: {d}/{d} pixels over {d} LSB, max channel delta {d} at ({d}, {d}), avg channel delta {d:.3}\n",
+            .{ case_name, backend_name, raw_stats.mismatched_pixels, raw_stats.pixel_count, cpu_backend_policy.raw.tolerance, raw_stats.max_channel_delta, x, y, raw_stats.averageChannelDelta() },
+        );
+        try dumpFailure(allocator, case_name, "cpu", backend_slug, cpu_pixels, backend_pixels);
+        return error.BackendPixelMismatch;
+    }
+
+    const edge_stats = compareEdgeLocalizedOutliers(cpu_pixels, backend_pixels, cpu_backend_policy.raw.tolerance, cpu_backend_policy.edge);
+    if (edge_stats.non_edge_pixels != 0) {
+        const pixel = edge_stats.worst_offset / 4;
+        const x = pixel % WIDTH;
+        const y = pixel / WIDTH;
+        std.debug.print(
+            "{s}: {s} has {d}/{d} raw outliers away from CPU reference edges (radius {d}, edge threshold {d}); max delta {d} at ({d}, {d})\n",
+            .{ case_name, backend_name, edge_stats.non_edge_pixels, edge_stats.outlier_pixels, cpu_backend_policy.edge.edge_radius, cpu_backend_policy.edge.edge_threshold, edge_stats.max_channel_delta, x, y },
+        );
+        try dumpFailure(allocator, case_name, "cpu", backend_slug, cpu_pixels, backend_pixels);
+        return error.BackendPixelMismatch;
+    }
+
+    const low_pass_stats = compareLowPassPixels(cpu_pixels, backend_pixels, cpu_backend_policy.low_pass.tolerance);
+    const low_pass_pass = low_pass_stats.averageChannelDelta() <= cpu_backend_policy.low_pass.average_budget and
+        low_pass_stats.max_channel_delta <= cpu_backend_policy.low_pass.max_channel_delta;
+    if (!low_pass_pass) {
+        const pixel = low_pass_stats.worst_offset / 4;
+        const x = pixel % WIDTH;
+        const y = pixel / WIDTH;
+        std.debug.print(
+            "{s}: {s} differs from CPU after low-pass compare: {d}/{d} pixels over {d} LSB, max channel delta {d} at ({d}, {d}), avg channel delta {d:.3}\n",
+            .{ case_name, backend_name, low_pass_stats.mismatched_pixels, low_pass_stats.pixel_count, cpu_backend_policy.low_pass.tolerance, low_pass_stats.max_channel_delta, x, y, low_pass_stats.averageChannelDelta() },
+        );
+        try dumpFailure(allocator, case_name, "cpu", backend_slug, cpu_pixels, backend_pixels);
+        return error.BackendPixelMismatch;
+    }
+
+    std.debug.print(
+        "{s}: {s} matches CPU (raw {d} pixels over {d} LSB, max delta {d}, avg {d:.3}; edge-localized {d}/{d}; low-pass {d} pixels over {d} LSB, max delta {d}, avg {d:.3})\n",
+        .{
+            case_name,
+            backend_name,
+            raw_stats.mismatched_pixels,
+            cpu_backend_policy.raw.tolerance,
+            raw_stats.max_channel_delta,
+            raw_stats.averageChannelDelta(),
+            edge_stats.outlier_pixels - edge_stats.non_edge_pixels,
+            edge_stats.outlier_pixels,
+            low_pass_stats.mismatched_pixels,
+            cpu_backend_policy.low_pass.tolerance,
+            low_pass_stats.max_channel_delta,
+            low_pass_stats.averageChannelDelta(),
+        },
+    );
 }
 
 fn checkGpuConsistency(
