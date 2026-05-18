@@ -33,13 +33,9 @@ pub const PreparedResourceRetirementQueueImpl = struct {
 };
 pub const ResourceUploadPlanImpl = struct {
     inner: snail.ResourceUploadPlan,
-    allocator: std.mem.Allocator,
-    changed_keys: []snail.ResourceKey,
 };
 pub const PendingResourceUploadImpl = struct {
     inner: snail.PendingResourceUpload,
-    allocator: std.mem.Allocator,
-    changed_keys: []snail.ResourceKey,
 };
 pub const DrawListImpl = struct {
     inner: snail.DrawList,

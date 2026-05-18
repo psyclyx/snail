@@ -760,8 +760,8 @@ test "resource upload plan reports changed keys and enforces budget" {
     var prepared_a = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set_a);
     defer prepared_a.deinit();
 
-    var changed_same: [2]ResourceKey = undefined;
-    const plan_same = try renderer.planResourceUpload(&prepared_a, &set_a, &changed_same);
+    var plan_same = try renderer.planResourceUpload(allocator, &prepared_a, &set_a);
+    defer plan_same.deinit();
     try std.testing.expect(plan_same.upload_bytes > 0);
     try std.testing.expectEqual(plan_same.upload_footprint.allocatedBytes(), plan_same.upload_bytes);
     try std.testing.expect(plan_same.upload_footprint.curve_bytes_allocated > 0);
@@ -771,8 +771,8 @@ test "resource upload plan reports changed keys and enforces budget" {
     var set_b_entries: [2]ResourceSet.Entry = undefined;
     var set_b = ResourceSet.init(&set_b_entries);
     try set_b.putPathPicture(.hud_panel, &picture_b);
-    var changed_b: [2]ResourceKey = undefined;
-    const plan_b = try renderer.planResourceUpload(&prepared_a, &set_b, &changed_b);
+    var plan_b = try renderer.planResourceUpload(allocator, &prepared_a, &set_b);
+    defer plan_b.deinit();
     try std.testing.expect(plan_b.upload_bytes > 0);
     try std.testing.expectEqual(plan_b.upload_footprint.allocatedBytes(), plan_b.upload_bytes);
     try std.testing.expect(plan_b.upload_footprint.curve_bytes_allocated > 0);
@@ -780,15 +780,19 @@ test "resource upload plan reports changed keys and enforces budget" {
     try std.testing.expectEqual(@as(usize, 1), plan_b.changedKeys().len);
     try std.testing.expect(plan_b.changedKeys()[0].eql(ResourceKey.named("hud_panel")));
 
-    var pending = try renderer.beginResourceUpload(.{ .persistent = allocator, .scratch = allocator }, plan_b);
+    set_b.reset();
+    try set_b.putPathPicture(.hud_panel, &picture_a);
+
+    var pending = try renderer.beginResourceUpload(.{ .persistent = allocator, .scratch = allocator }, &plan_b);
     defer pending.deinit();
     try std.testing.expectError(error.ResourceUploadBudgetExceeded, pending.record(.no_command, .{ .budget_bytes = 0 }));
     try std.testing.expect(!pending.ready(.pending));
 
-    var rebuild_plan = plan_b;
+    var rebuild_plan = try plan_b.clone(allocator);
+    defer rebuild_plan.deinit();
     rebuild_plan.atlas_cache_rebuilds = 1;
     try std.testing.expect(rebuild_plan.requiresCacheRebuild());
-    var rebuild_pending = try renderer.beginResourceUpload(.{ .persistent = allocator, .scratch = allocator }, rebuild_plan);
+    var rebuild_pending = try renderer.beginResourceUpload(.{ .persistent = allocator, .scratch = allocator }, &rebuild_plan);
     defer rebuild_pending.deinit();
     try std.testing.expectError(error.ResourceCacheRebuildRequired, rebuild_pending.record(.no_command, .{
         .budget_bytes = plan_b.upload_bytes,
@@ -800,6 +804,7 @@ test "resource upload plan reports changed keys and enforces budget" {
     var prepared_b = try pending.publish();
     defer prepared_b.deinit();
     try std.testing.expect(prepared_b.stampForKey(.hud_panel) != null);
+    try std.testing.expect(!prepared_b.stampForKey(.hud_panel).?.eql(prepared_a.stampForKey(.hud_panel).?));
 }
 
 test "resource upload plan reports appended atlas pages" {
@@ -839,8 +844,8 @@ test "resource upload plan reports appended atlas pages" {
     var set_b_entries: [1]ResourceSet.Entry = undefined;
     var set_b = ResourceSet.init(&set_b_entries);
     try set_b.putTextAtlas(.fonts, &atlas_b);
-    var changed: [1]ResourceKey = undefined;
-    const plan = try renderer.planResourceUpload(&prepared_a, &set_b, &changed);
+    var plan = try renderer.planResourceUpload(allocator, &prepared_a, &set_b);
+    defer plan.deinit();
 
     try std.testing.expectEqual(@as(u32, @intCast(atlas_a.pageCount())), plan.reused_atlas_pages);
     try std.testing.expectEqual(@as(u32, @intCast(atlas_b.pageCount() - atlas_a.pageCount())), plan.missing_atlas_pages);
@@ -871,12 +876,12 @@ test "pending upload publish waits for external completion marker" {
     var set_entries: [2]ResourceSet.Entry = undefined;
     var set = ResourceSet.init(&set_entries);
     try set.putPathPicture(.hud_panel, &picture);
-    var changed_keys: [2]ResourceKey = undefined;
-    const plan = try renderer.planResourceUpload(null, &set, &changed_keys);
+    var plan = try renderer.planResourceUpload(allocator, null, &set);
+    defer plan.deinit();
 
     var pending = PendingResourceUpload{
         .renderer = renderer,
-        .plan = plan,
+        .plan = try plan.clone(allocator),
         .allocators = .{ .persistent = allocator, .scratch = allocator },
         .prepared = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set),
         .external_completion_required = true,

@@ -314,22 +314,23 @@ const AppendPlanExpectation = struct {
 };
 
 fn checkAppendPlanForTextAtlas(
+    allocator: std.mem.Allocator,
     renderer: *snail.Renderer,
     current: *const snail.PreparedResources,
     key: snail.ResourceKey,
     atlas: *const snail.TextAtlas,
-    changed_keys: []snail.ResourceKey,
     capacity: snail.ResourceCapacityMode,
     expected: AppendPlanExpectation,
 ) !void {
     var entries: [1]snail.ResourceSet.Entry = undefined;
     var set = snail.ResourceSet.init(&entries);
     try set.putTextAtlasOptions(key, atlas, .{ .atlas_capacity = capacity });
-    const plan = try renderer.planResourceUpload(current, &set, changed_keys);
-    try expectAppendPlan(plan, current.atlases[0].atlas.pageCount(), atlas.pageCount(), expected);
+    var plan = try renderer.planResourceUpload(allocator, current, &set);
+    defer plan.deinit();
+    try expectAppendPlan(&plan, current.atlases[0].atlas.pageCount(), atlas.pageCount(), expected);
 }
 
-fn expectAppendPlan(plan: snail.ResourceUploadPlan, old_pages: usize, new_pages: usize, expected: AppendPlanExpectation) !void {
+fn expectAppendPlan(plan: *const snail.ResourceUploadPlan, old_pages: usize, new_pages: usize, expected: AppendPlanExpectation) !void {
     if (plan.reused_atlas_pages != old_pages) return error.AppendPlanDidNotReusePages;
     if (plan.missing_atlas_pages != new_pages - old_pages) return error.AppendPlanMissingPageMismatch;
     if (plan.new_atlas_banks != expected.new_atlas_banks) return error.AppendPlanBankMismatch;
@@ -936,8 +937,7 @@ fn uploadAppendedAtlas(
     capacity: snail.ResourceCapacityMode,
     expected: AppendPlanExpectation,
 ) !snail.PreparedResources {
-    var changed_keys: [1]snail.ResourceKey = undefined;
-    try checkAppendPlanForTextAtlas(renderer, current, APPEND_RESOURCE_KEY, grown, &changed_keys, capacity, expected);
+    try checkAppendPlanForTextAtlas(allocator, renderer, current, APPEND_RESOURCE_KEY, grown, capacity, expected);
     return uploadTextAtlasResourceWithCapacity(allocator, renderer, APPEND_RESOURCE_KEY, grown, capacity);
 }
 

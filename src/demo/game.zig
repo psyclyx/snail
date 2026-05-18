@@ -231,10 +231,10 @@ fn planSceneResources(
     hud_passes: *const HudPasses,
 ) !snail.PreparedResources {
     var resource_entries: [16]snail.ResourceSet.Entry = undefined;
-    var changed_keys: [16]snail.ResourceKey = undefined;
     var set = try buildSceneResourceSet(world_passes, hud_passes, &resource_entries);
-    const plan = try renderer.planResourceUpload(current, &set, &changed_keys);
-    var pending = try renderer.beginResourceUpload(.{ .persistent = allocator, .scratch = allocator }, plan);
+    var plan = try renderer.planResourceUpload(allocator, current, &set);
+    defer plan.deinit();
+    var pending = try renderer.beginResourceUpload(.{ .persistent = allocator, .scratch = allocator }, &plan);
     defer pending.deinit();
     try pending.record(.no_command, .{});
     return pending.publish();

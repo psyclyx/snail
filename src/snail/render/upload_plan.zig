@@ -77,9 +77,9 @@ const PreparedAtlasLookup = struct {
     index: usize,
 };
 
-fn countResourceSetEntries(set: *const ResourceSet) ResourceSetCounts {
+fn countResourceEntries(entries: []const ResourceSet.Entry) ResourceSetCounts {
     var counts: ResourceSetCounts = .{};
-    for (set.slice()) |entry| switch (entry) {
+    for (entries) |entry| switch (entry) {
         .text_atlas, .path_picture => counts.atlases += 1,
         .text_paint => counts.layer_infos += 1,
         .image => counts.images += 1,
@@ -184,13 +184,13 @@ fn currentAtlasWouldRebuild(renderer: anytype, current: ?*const PreparedResource
     return renderer.atlasWouldRebuild(prepared, lookup.index, atlas);
 }
 
-fn resourceSetCanUseAtlasOverflowBanks(renderer: anytype, current: ?*const PreparedResources, next_set: *const ResourceSet, counts: ResourceSetCounts) bool {
+fn resourceSetCanUseAtlasOverflowBanks(renderer: anytype, current: ?*const PreparedResources, entries: []const ResourceSet.Entry, counts: ResourceSetCounts) bool {
     const prepared = current orelse return false;
     if (counts.layer_infos != 0 or counts.atlases != prepared.atlases.len) return false;
     if (!renderer.canUseAtlasOverflowBanks(prepared, counts.atlases)) return false;
 
     var atlas_index: usize = 0;
-    for (next_set.slice()) |entry| switch (entry) {
+    for (entries) |entry| switch (entry) {
         .text_atlas => |text| {
             const lookup = preparedAtlasForKeyWithIndex(prepared, text.key) orelse return false;
             defer atlas_index += 1;
@@ -208,15 +208,18 @@ fn resourceSetCanUseAtlasOverflowBanks(renderer: anytype, current: ?*const Prepa
     return true;
 }
 
-pub fn planResourceUpload(renderer: anytype, current: ?*const PreparedResources, next_set: *const ResourceSet, changed_keys: []ResourceKey) !ResourceUploadPlan {
-    const counts = countResourceSetEntries(next_set);
+pub fn planResourceUpload(renderer: anytype, allocator: std.mem.Allocator, current: ?*const PreparedResources, next_set: *const ResourceSet) !ResourceUploadPlan {
+    var plan = try ResourceUploadPlan.init(allocator, next_set);
+    errdefer plan.deinit();
+
+    const entries = plan.entries;
+    const counts = countResourceEntries(entries);
     const uses_resource_cache = renderer.usesResourceCache();
-    var plan = ResourceUploadPlan{ .set = next_set, .changed_keys = changed_keys };
     plan.upload_footprint = try next_set.estimateUploadFootprint();
     plan.gpu_bytes_allocated = plan.upload_footprint.allocatedBytes();
     var needs_atlas_overflow_bank = false;
     var next_atlas_index: usize = 0;
-    for (next_set.slice()) |entry| {
+    for (entries) |entry| {
         const key = resourceEntryKey(entry);
         const stamp = resourceEntryStamp(entry);
         const bytes = resourceEntryUploadBytes(entry);
@@ -292,7 +295,7 @@ pub fn planResourceUpload(renderer: anytype, current: ?*const PreparedResources,
     if (plan.new_atlas_banks > 0 and
         stats.active_atlas_layers_allocated > 0 and
         uses_resource_cache and
-        !resourceSetCanUseAtlasOverflowBanks(renderer, current, next_set, counts))
+        !resourceSetCanUseAtlasOverflowBanks(renderer, current, entries, counts))
     {
         plan.atlas_cache_rebuilds = 1;
     }

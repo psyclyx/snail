@@ -58,7 +58,8 @@ pub const ResourceUploadBatch = struct {
 };
 
 pub const ResourceUploadPlan = struct {
-    set: *const ResourceSet,
+    allocator: std.mem.Allocator,
+    entries: []ResourceSet.Entry,
     /// Backend allocation footprint for the next prepared resource set.
     upload_footprint: ResourceFootprint = .{},
     /// Bytes this backend path will upload or construct for the next prepared
@@ -83,6 +84,37 @@ pub const ResourceUploadPlan = struct {
     layer_info_bytes_upload: usize = 0,
     image_bytes_upload: usize = 0,
     gpu_bytes_allocated: usize = 0,
+
+    pub fn init(allocator: std.mem.Allocator, set: *const ResourceSet) !ResourceUploadPlan {
+        const entries = try allocator.dupe(ResourceSet.Entry, set.slice());
+        errdefer allocator.free(entries);
+        const changed_keys = try allocator.alloc(ResourceKey, entries.len);
+        return .{
+            .allocator = allocator,
+            .entries = entries,
+            .changed_keys = changed_keys,
+        };
+    }
+
+    pub fn clone(self: *const ResourceUploadPlan, allocator: std.mem.Allocator) !ResourceUploadPlan {
+        const entries = try allocator.dupe(ResourceSet.Entry, self.entries);
+        errdefer allocator.free(entries);
+        const changed_keys = try allocator.alloc(ResourceKey, self.changed_keys.len);
+        errdefer allocator.free(changed_keys);
+        @memcpy(changed_keys[0..self.changed_len], self.changedKeys());
+
+        var out = self.*;
+        out.allocator = allocator;
+        out.entries = entries;
+        out.changed_keys = changed_keys;
+        return out;
+    }
+
+    pub fn deinit(self: *ResourceUploadPlan) void {
+        self.allocator.free(self.entries);
+        self.allocator.free(self.changed_keys);
+        self.* = undefined;
+    }
 
     pub fn changedKeys(self: *const ResourceUploadPlan) []const ResourceKey {
         return self.changed_keys[0..self.changed_len];
@@ -121,12 +153,16 @@ pub const ResourceUploadCompletion = union(enum) {
 };
 
 pub fn uploadPreparedResources(renderer: anytype, set: *const ResourceSet, allocators: UploadAllocators) !PreparedResources {
+    return uploadPreparedResourceEntries(renderer, set.slice(), allocators);
+}
+
+pub fn uploadPreparedResourceEntries(renderer: anytype, entries: []const ResourceSet.Entry, allocators: UploadAllocators) !PreparedResources {
     const persistent = allocators.persistent;
     const scratch = allocators.scratch;
     var atlas_count: usize = 0;
     var layer_info_count: usize = 0;
     var image_count: usize = 0;
-    for (set.slice()) |entry| switch (entry) {
+    for (entries) |entry| switch (entry) {
         .text_atlas, .path_picture => atlas_count += 1,
         .text_paint => layer_info_count += 1,
         .image => image_count += 1,
@@ -160,7 +196,7 @@ pub fn uploadPreparedResources(renderer: anytype, set: *const ResourceSet, alloc
     var atlas_i: usize = 0;
     var layer_info_i: usize = 0;
     var image_i: usize = 0;
-    for (set.slice()) |entry| {
+    for (entries) |entry| {
         switch (entry) {
             .text_atlas => |text| {
                 prepared.atlases[atlas_i] = .{
@@ -269,14 +305,14 @@ pub const PendingResourceUpload = struct {
                 const vk_state: *vulkan_pipeline.VulkanPipeline = @ptrCast(@alignCast(self.renderer.ptr));
                 vk_state.beginResourceUploadRecording(cmd);
                 defer vk_state.endResourceUploadRecording();
-                self.prepared = try uploadPreparedResources(&self.renderer, self.plan.set, self.allocators);
+                self.prepared = try uploadPreparedResourceEntries(&self.renderer, self.plan.entries, self.allocators);
                 self.external_completion_required = true;
                 self.ready_to_publish = false;
                 return;
             }
         }
 
-        self.prepared = try self.renderer.uploadResourcesBlocking(self.allocators, self.plan.set);
+        self.prepared = try uploadPreparedResourceEntries(&self.renderer, self.plan.entries, self.allocators);
         self.external_completion_required = false;
         self.ready_to_publish = true;
     }
@@ -307,6 +343,7 @@ pub const PendingResourceUpload = struct {
 
     pub fn deinit(self: *PendingResourceUpload) void {
         if (self.prepared) |*prepared| prepared.deinit();
+        self.plan.deinit();
         self.prepared = null;
         self.external_completion_required = false;
         self.ready_to_publish = false;

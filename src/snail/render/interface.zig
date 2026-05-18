@@ -4,7 +4,6 @@ const backend_kind_mod = @import("../backend_kind.zig");
 const coverage_mod = @import("../coverage.zig");
 const draw_mod = @import("../draw.zig");
 const prepared_mod = @import("../resources/prepared.zig");
-const resource_key_mod = @import("../resource_key.zig");
 const set_mod = @import("../resources/set.zig");
 const target_mod = @import("../target.zig");
 const upload_mod = @import("../upload.zig");
@@ -25,7 +24,6 @@ const PreparedScene = draw_mod.PreparedScene;
 const Resolve = target_mod.Resolve;
 const ResourceCacheStats = upload_mod.ResourceCacheStats;
 const ResourceUploadBatch = upload_mod.ResourceUploadBatch;
-const ResourceKey = resource_key_mod.ResourceKey;
 const ResourceSet = set_mod.ResourceSet;
 const ResourceUploadPlan = upload_mod.ResourceUploadPlan;
 const SubpixelOrder = target_mod.SubpixelOrder;
@@ -93,12 +91,16 @@ pub const Renderer = struct {
         return self.vtable.coverageBackend(self.ptr, prepared);
     }
 
-    pub fn planResourceUpload(self: *Renderer, current: ?*const PreparedResources, next_set: *const ResourceSet, changed_keys: []ResourceKey) !ResourceUploadPlan {
-        return upload_plan.planResourceUpload(self, current, next_set, changed_keys);
+    pub fn planResourceUpload(self: *Renderer, allocator: std.mem.Allocator, current: ?*const PreparedResources, next_set: *const ResourceSet) !ResourceUploadPlan {
+        return upload_plan.planResourceUpload(self, allocator, current, next_set);
     }
 
-    pub fn beginResourceUpload(self: *Renderer, allocators: UploadAllocators, plan: ResourceUploadPlan) !PendingResourceUpload {
-        return .{ .renderer = self.*, .allocators = allocators, .plan = plan };
+    pub fn beginResourceUpload(self: *Renderer, allocators: UploadAllocators, plan: *const ResourceUploadPlan) !PendingResourceUpload {
+        return .{
+            .renderer = self.*,
+            .allocators = allocators,
+            .plan = try plan.clone(allocators.persistent),
+        };
     }
 
     pub fn resourceCacheStats(self: *const Renderer) ResourceCacheStats {

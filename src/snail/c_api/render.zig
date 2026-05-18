@@ -71,32 +71,25 @@ pub export fn snail_renderer_plan_resource_upload(
     out: *?*ResourceUploadPlanImpl,
 ) c_int {
     const allocator = resolveAllocator(alloc_ptr);
-    const changed_keys = allocator.alloc(snail.ResourceKey, next_set.inner.slice().len) catch return SNAIL_ERR_OUT_OF_MEMORY;
     var erased = renderer.asRenderer();
     const plan = erased.planResourceUpload(
+        allocator,
         if (current) |prepared| &prepared.inner else null,
         &next_set.inner,
-        changed_keys,
-    ) catch |err| {
-        allocator.free(changed_keys);
-        return mapError(err);
-    };
+    ) catch |err| return mapError(err);
     const impl = handleAllocator().create(ResourceUploadPlanImpl) catch {
-        allocator.free(changed_keys);
+        var doomed = plan;
+        doomed.deinit();
         return SNAIL_ERR_OUT_OF_MEMORY;
     };
-    impl.* = .{
-        .inner = plan,
-        .allocator = allocator,
-        .changed_keys = changed_keys,
-    };
+    impl.* = .{ .inner = plan };
     out.* = impl;
     return SNAIL_OK;
 }
 
 pub export fn snail_resource_upload_plan_deinit(plan: ?*ResourceUploadPlanImpl) void {
     if (plan) |p| {
-        p.allocator.free(p.changed_keys);
+        p.inner.deinit();
         destroyHandle(p);
     }
 }
@@ -170,28 +163,14 @@ pub export fn snail_renderer_begin_resource_upload(
     out: *?*PendingResourceUploadImpl,
 ) c_int {
     const allocator = resolveAllocator(alloc_ptr);
-    const changed = plan.inner.changedKeys();
-    const changed_keys = allocator.alloc(snail.ResourceKey, changed.len) catch return SNAIL_ERR_OUT_OF_MEMORY;
-    @memcpy(changed_keys, changed);
-    var plan_copy = plan.inner;
-    plan_copy.changed_keys = changed_keys;
-    plan_copy.changed_len = changed.len;
     var erased = renderer.asRenderer();
-    const pending = erased.beginResourceUpload(.{ .persistent = allocator, .scratch = allocator }, plan_copy) catch |err| {
-        allocator.free(changed_keys);
-        return mapError(err);
-    };
+    const pending = erased.beginResourceUpload(.{ .persistent = allocator, .scratch = allocator }, &plan.inner) catch |err| return mapError(err);
     const impl = handleAllocator().create(PendingResourceUploadImpl) catch {
         var doomed = pending;
         doomed.deinit();
-        allocator.free(changed_keys);
         return SNAIL_ERR_OUT_OF_MEMORY;
     };
-    impl.* = .{
-        .inner = pending,
-        .allocator = allocator,
-        .changed_keys = changed_keys,
-    };
+    impl.* = .{ .inner = pending };
     out.* = impl;
     return SNAIL_OK;
 }
@@ -199,7 +178,6 @@ pub export fn snail_renderer_begin_resource_upload(
 pub export fn snail_pending_resource_upload_deinit(pending: ?*PendingResourceUploadImpl) void {
     if (pending) |p| {
         p.inner.deinit();
-        p.allocator.free(p.changed_keys);
         destroyHandle(p);
     }
 }
