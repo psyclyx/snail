@@ -109,12 +109,8 @@ pub fn expandBoundsForSubpixel(bounds: *ScreenBounds, order: SubpixelOrder, allo
 }
 
 pub fn expandBoundsForCoverageSupport(bounds: *ScreenBounds, order: SubpixelOrder, allow_subpixel: bool) void {
-    // Fragment coverage can extend just outside the stored contour bbox; GPU
-    // backends cover that with vertex dilation.
-    bounds.min.x -= 1.0;
-    bounds.min.y -= 1.0;
-    bounds.max.x += 1.0;
-    bounds.max.y += 1.0;
+    // floor(min) / ceil(max) already includes pixel centers up to the
+    // half-pixel analytic coverage fringe. Only LCD sampling needs more span.
     expandBoundsForSubpixel(bounds, order, allow_subpixel);
 }
 

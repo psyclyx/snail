@@ -338,8 +338,12 @@ float segmentEndRootDelta(SegmentData seg, vec2 sampleRc, bool horizontal) {
     return horizontal ? seg.p2.y - sampleRc.y : seg.p2.x - sampleRc.x;
 }
 
-bool isHalfOpenEndpointRoot(float t, float endRootDelta) {
-    return t >= 1.0 - kParamEps && abs(endRootDelta) <= kCoordEps;
+bool isNearEndRoot(float t) {
+    return t >= 1.0 - kParamEps;
+}
+
+bool isEndpointRootDelta(float endRootDelta) {
+    return abs(endRootDelta) <= kCoordEps;
 }
 
 void appendCoverageContribution(inout float cov, inout float wgt, float distance, float sign) {
@@ -356,7 +360,7 @@ void accumulateLineCoverage(inout float cov, inout float wgt, float p0x, float p
     float tRaw = -rootAxis0 / denom;
     if (tRaw < -kParamEps || tRaw > 1.0 + kParamEps) return;
     float t = clamp(tRaw, 0.0, 1.0);
-    if (isHalfOpenEndpointRoot(t, rootAxis2)) return;
+    if (isNearEndRoot(t) && isEndpointRootDelta(rootAxis2)) return;
 
     float derivativeAxis = horizontal ? p2y - p0y : p0x - p2x;
     if (abs(derivativeAxis) <= kParamEps) return;
@@ -417,7 +421,7 @@ bool accumulateAxisCoverageSegment(inout float cov, inout float wgt, vec2 sample
         // between adjacent segments are counted once instead of twice. Do not
         // drop near-end roots unless the sample is actually on the endpoint;
         // otherwise a shallow cubic can lose a thin interior column.
-        if (isHalfOpenEndpointRoot(t, segmentEndRootDelta(seg, sampleRc, horizontal))) continue;
+        if (isNearEndRoot(t) && isEndpointRootDelta(segmentEndRootDelta(seg, sampleRc, horizontal))) continue;
         vec2 point = (seg.kind == 2) ? evalCubicPoint(seg, t) : evalSegmentPoint(seg, t);
         vec2 deriv = (seg.kind == 2) ? evalCubicDerivative(seg, t) : evalSegmentDerivative(seg, t);
         float derivAxis = horizontal ? deriv.y : -deriv.x;
@@ -462,8 +466,8 @@ struct BandSpan {
 BandSpan coverageBandSpan(float coord, float eppAxis, float bandScale, float bandOffset, int bandMax) {
     float center = coord * bandScale + bandOffset;
     float halfWidth = max(abs(eppAxis * bandScale) * 0.5, kParamEps);
-    int first = clamp(int(floor(center - halfWidth)), 0, bandMax);
-    int last = clamp(int(floor(center + halfWidth)), 0, bandMax);
+    int first = clamp(int(center - halfWidth), 0, bandMax);
+    int last = clamp(int(center + halfWidth), 0, bandMax);
     return BandSpan(first, max(first, last));
 }
 

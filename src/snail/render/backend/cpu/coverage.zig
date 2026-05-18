@@ -387,8 +387,16 @@ inline fn rootCodeCoord(v: f32) f32 {
     return if (@abs(v) <= root_code_eps) 0.0 else v;
 }
 
+inline fn isNearEndRoot(t: f32) bool {
+    return t >= 1.0 - 1e-5;
+}
+
+inline fn isEndpointRootDelta(end_root_delta: f32) bool {
+    return @abs(end_root_delta) <= root_code_eps;
+}
+
 inline fn isHalfOpenEndpointRoot(t: f32, end_root_delta: f32) bool {
-    return t >= 1.0 - 1e-5 and @abs(end_root_delta) <= root_code_eps;
+    return isNearEndRoot(t) and isEndpointRootDelta(end_root_delta);
 }
 
 test "half-open endpoint guard preserves near-end interior roots" {
@@ -450,7 +458,7 @@ inline fn accumulateLineCoverage(
     const t_raw = -root_axis0 / denom;
     if (t_raw < -1e-5 or t_raw > 1.0 + 1e-5) return;
     const t = std.math.clamp(t_raw, 0.0, 1.0);
-    if (isHalfOpenEndpointRoot(t, root_axis2)) return;
+    if (isNearEndRoot(t) and isEndpointRootDelta(root_axis2)) return;
 
     const derivative_axis = if (horizontal) p2y - p0y else p0x - p2x;
     if (@abs(derivative_axis) <= 1e-5) return;
@@ -504,11 +512,13 @@ inline fn accumulateGlyphCoverageSegment(
         solveSegmentVerticalRoots(segment, sample_rc.x);
 
     for (roots.t[0..roots.count]) |t| {
-        const end_root_delta = switch (segment.kind) {
-            .conic, .quadratic, .line => if (horizontal) segment.p2.y - sample_rc.y else segment.p2.x - sample_rc.x,
-            .cubic => if (horizontal) segment.p3.y - sample_rc.y else segment.p3.x - sample_rc.x,
-        };
-        if (isHalfOpenEndpointRoot(t, end_root_delta)) continue;
+        if (isNearEndRoot(t)) {
+            const end_root_delta = switch (segment.kind) {
+                .conic, .quadratic, .line => if (horizontal) segment.p2.y - sample_rc.y else segment.p2.x - sample_rc.x,
+                .cubic => if (horizontal) segment.p3.y - sample_rc.y else segment.p3.x - sample_rc.x,
+            };
+            if (isEndpointRootDelta(end_root_delta)) continue;
+        }
         const point = segment.evaluate(t);
         const deriv = segment.derivative(t);
         const derivative_axis = if (horizontal) deriv.y else -deriv.x;
@@ -591,7 +601,7 @@ inline fn accumulatePreparedLineCoverage(
     const t_raw = -(curve.p0_root - sample_root) / denom;
     if (t_raw < -1e-5 or t_raw > 1.0 + 1e-5) return;
     const t = std.math.clamp(t_raw, 0.0, 1.0);
-    if (isHalfOpenEndpointRoot(t, curve.p0_root + curve.a_root - sample_root)) return;
+    if (isNearEndRoot(t) and isEndpointRootDelta(curve.p0_root + curve.a_root - sample_root)) return;
 
     const derivative_axis = if (horizontal) curve.a_root else -curve.a_root;
     if (@abs(derivative_axis) <= 1e-5) return;
@@ -682,14 +692,15 @@ inline fn accumulatePreparedCurveCoverage(
         .cubic => solvePreparedCubicRoots(curve, cold, sample_root),
         .quadratic, .line => unreachable,
     };
-    const end_root = switch (curve.kind) {
-        .conic => curve.p2_root,
-        .cubic => cold.cubic_a_root + cold.cubic_b_root + cold.cubic_c_root + curve.p0_root,
-        .quadratic, .line => unreachable,
-    };
-
     for (roots.t[0..roots.count]) |t| {
-        if (isHalfOpenEndpointRoot(t, end_root - sample_root)) continue;
+        if (isNearEndRoot(t)) {
+            const end_root = switch (curve.kind) {
+                .conic => curve.p2_root,
+                .cubic => cold.cubic_a_root + cold.cubic_b_root + cold.cubic_c_root + curve.p0_root,
+                .quadratic, .line => unreachable,
+            };
+            if (isEndpointRootDelta(end_root - sample_root)) continue;
+        }
         const along = switch (curve.kind) {
             .conic => evaluatePreparedConicAlong(cold, t),
             .cubic => evaluatePreparedCubicAlong(curve, cold, t),
@@ -951,6 +962,8 @@ pub fn evalGlyphCoverageBandSpan(
     page: anytype,
     em_x: f32,
     em_y: f32,
+    epp_x: f32,
+    epp_y: f32,
     ppe_x: f32,
     ppe_y: f32,
     be: GlyphBandEntry,
@@ -960,8 +973,6 @@ pub fn evalGlyphCoverageBandSpan(
 ) f32 {
     const glyph_band_base = @as(usize, be.glyph_y) * @as(usize, page.band_width) + @as(usize, be.glyph_x);
     const sample_rc = Vec2.new(em_x, em_y);
-    const epp_x = 1.0 / @max(@abs(ppe_x), 1.0 / 65536.0);
-    const epp_y = 1.0 / @max(@abs(ppe_y), 1.0 / 65536.0);
     const h_span = coverageBandSpan(em_y, epp_y, be.band_scale_y, be.band_offset_y, band_max_h);
     const v_span = coverageBandSpan(em_x, epp_x, be.band_scale_x, be.band_offset_x, band_max_v);
     return resolveCoverage(

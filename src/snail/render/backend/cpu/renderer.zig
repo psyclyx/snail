@@ -323,6 +323,8 @@ pub const CpuRenderer = struct {
                         page,
                         local.x,
                         local.y,
+                        epp.x,
+                        epp.y,
                         ppe.x,
                         ppe.y,
                         info.band_entry,
@@ -645,7 +647,7 @@ pub const CpuRenderer = struct {
                                 &result_blend,
                             );
                         } else {
-                            const cov = self.applyCoverageTransfer(evalGlyphCoverageBandSpan(page, local.x, local.y, ppe.x, ppe.y, be, band_max_h, band_max_v, self.fill_rule));
+                            const cov = self.applyCoverageTransfer(evalGlyphCoverageBandSpan(page, local.x, local.y, epp.x, epp.y, ppe.x, ppe.y, be, band_max_h, band_max_v, self.fill_rule));
 
                             if (outline_composite and l < 2) {
                                 if (l == 0) {
@@ -749,7 +751,7 @@ pub const CpuRenderer = struct {
                 });
                 while (col < @as(u32, @intCast(px1))) : (advanceLocalPixel(&col, &local, sample_dx)) {
                     if (!allow_subpixel or self.subpixel_order == .none) {
-                        const cov = self.applyCoverageTransfer(evalGlyphCoverageBandSpan(page, local.x, local.y, ppe.x, ppe.y, be, band_max_h, band_max_v, self.fill_rule));
+                        const cov = self.applyCoverageTransfer(evalGlyphCoverageBandSpan(page, local.x, local.y, epp.x, epp.y, ppe.x, ppe.y, be, band_max_h, band_max_v, self.fill_rule));
                         if (cov < 1.0 / 255.0) continue;
                         var paint = paint_program.sample(local);
                         paint.color = multiplyLinearColor(paint.color, tint);
