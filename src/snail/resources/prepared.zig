@@ -42,8 +42,8 @@ const resourceKey = resource_key_mod.resourceKey;
 pub const PreparedResources = struct {
     allocator: std.mem.Allocator,
     /// Validated bindings for one render/backend/context. GPU backends point at
-    /// renderer-owned resident caches; CPU prepared resources still own their
-    /// prepared curve sidecars and borrow immutable source data.
+    /// renderer-owned resident caches; CPU prepared resources own render-time
+    /// snapshots for the data they sample.
     atlases: []PreparedAtlasResource = &.{},
     layer_infos: []PreparedLayerInfoResource = &.{},
     images: []PreparedImageResource = &.{},

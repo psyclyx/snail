@@ -8,6 +8,7 @@ const texture = @import("texture.zig");
 
 const AtlasPage = atlas_page_mod.AtlasPage;
 const CurveAtlas = atlas_curve_mod.CurveAtlas;
+const PaintImageRecord = CurveAtlas.PaintImageRecord;
 const LayerInfoEntry = path_paint.LayerInfoEntry;
 const PreparedAxisCurve = coverage.PreparedAxisCurve;
 const PreparedAxisCurveCold = coverage.PreparedAxisCurveCold;
@@ -34,6 +35,8 @@ pub const PreparedAtlasPage = struct {
             curve_data[i] = f16ToF32(value);
         }
         const band_texel_count = page.band_data.len / 2;
+        const band_data = try allocator.dupe(u16, page.band_data);
+        errdefer allocator.free(band_data);
         const h_curves = try allocator.alloc(PreparedAxisCurve, band_texel_count);
         errdefer allocator.free(h_curves);
         const v_curves = try allocator.alloc(PreparedAxisCurve, band_texel_count);
@@ -64,7 +67,7 @@ pub const PreparedAtlasPage = struct {
         errdefer allocator.free(v_cold_curves_owned);
 
         return .{
-            .band_data = page.band_data,
+            .band_data = band_data,
             .h_curves = h_curves,
             .v_curves = v_curves,
             .h_cold_curves = h_cold_curves_owned,
@@ -75,6 +78,7 @@ pub const PreparedAtlasPage = struct {
     }
 
     fn deinit(self: *PreparedAtlasPage, allocator: std.mem.Allocator) void {
+        allocator.free(self.band_data);
         allocator.free(self.h_curves);
         allocator.free(self.v_curves);
         allocator.free(self.h_cold_curves);
@@ -90,6 +94,8 @@ pub const PreparedResources = struct {
     /// Layer info entries from uploaded atlases (combined, like the GPU texture).
     layer_infos: []LayerInfoEntry = &.{},
     layer_info_count: usize = 0,
+    /// CPU-owned snapshots for top-level image resources.
+    images: []snail.Image = &.{},
 
     pub fn init(allocator: std.mem.Allocator, atlases: []const *const CurveAtlas, layer_info_blocks: anytype) !PreparedResources {
         var layer_count: usize = 0;
@@ -126,6 +132,7 @@ pub const PreparedResources = struct {
             if (page.*) |*prepared_page| prepared_page.deinit(self.allocator);
         }
         for (self.layer_infos[0..self.layer_info_count]) |*entry| entry.deinit(self.allocator);
+        self.clearImages();
         @memset(self.atlas_pages, null);
         @memset(self.layer_infos, LayerInfoEntry{});
         self.layer_info_count = 0;
@@ -149,26 +156,41 @@ pub const PreparedResources = struct {
             out_views[i] = .{ .info_row_base = row_base };
             if (block.data) |data| {
                 if (self.layer_info_count >= self.layer_infos.len) return error.PreparedResourceCapacityExceeded;
-                const prepared_layers = try preparePathLayerInfoRecords(self.allocator, data, block.width, block.height, block.paint_image_records);
-                self.layer_infos[self.layer_info_count] = .{
-                    .data = data,
-                    .width = block.width,
-                    .height = block.height,
-                    .row_base = row_base,
-                    .path_records = prepared_layers.records,
-                    .path_layers = prepared_layers.layers,
-                    .paint_image_records = block.paint_image_records,
-                };
+                self.layer_infos[self.layer_info_count] = try self.prepareLayerInfoEntry(
+                    data,
+                    block.width,
+                    block.height,
+                    row_base,
+                    block.paint_image_records,
+                );
                 self.layer_info_count += 1;
             }
             row_base += block.height;
         }
     }
 
-    pub fn uploadImages(_: *PreparedResources, images: []const *const snail.Image, out_views: anytype) void {
-        for (out_views, images) |*v, img| {
-            v.* = .{ .image = img };
+    pub fn uploadImages(self: *PreparedResources, images: []const *const snail.Image, out_views: anytype) !void {
+        self.clearImages();
+        const owned = try self.allocator.alloc(snail.Image, images.len);
+        errdefer self.allocator.free(owned);
+
+        var initialized: usize = 0;
+        errdefer {
+            for (owned[0..initialized]) |*image| image.deinit();
         }
+
+        for (out_views, images, 0..) |*v, img, i| {
+            owned[i] = try snail.Image.initSrgba8(self.allocator, img.width, img.height, img.pixelSlice());
+            initialized += 1;
+            v.* = .{ .image = &owned[i] };
+        }
+        self.images = owned;
+    }
+
+    fn clearImages(self: *PreparedResources) void {
+        for (self.images) |*image| image.deinit();
+        if (self.images.len > 0) self.allocator.free(self.images);
+        self.images = &.{};
     }
 
     fn nextLayerInfoRowBase(self: *const PreparedResources) u32 {
@@ -187,18 +209,45 @@ pub const PreparedResources = struct {
         }
         if (atlas.layer_info_data) |lid| {
             if (self.layer_info_count >= self.layer_infos.len) return error.PreparedResourceCapacityExceeded;
-            const prepared_layers = try preparePathLayerInfoRecords(self.allocator, lid, atlas.layer_info_width, atlas.layer_info_height, atlas.paint_image_records);
-            self.layer_infos[self.layer_info_count] = .{
-                .data = lid,
-                .width = atlas.layer_info_width,
-                .height = atlas.layer_info_height,
-                .row_base = info_row_base,
-                .path_records = prepared_layers.records,
-                .path_layers = prepared_layers.layers,
-                .paint_image_records = atlas.paint_image_records,
-            };
+            self.layer_infos[self.layer_info_count] = try self.prepareLayerInfoEntry(
+                lid,
+                atlas.layer_info_width,
+                atlas.layer_info_height,
+                info_row_base,
+                atlas.paint_image_records,
+            );
             self.layer_info_count += 1;
         }
+    }
+
+    fn prepareLayerInfoEntry(
+        self: *PreparedResources,
+        data: []const f32,
+        width: u32,
+        height: u32,
+        row_base: u32,
+        paint_image_records: ?[]const ?PaintImageRecord,
+    ) !LayerInfoEntry {
+        const owned_data = try self.allocator.dupe(f32, data);
+        errdefer self.allocator.free(owned_data);
+        var owned_records = try clonePaintImageRecords(self.allocator, paint_image_records);
+        errdefer owned_records.deinit(self.allocator);
+        const prepared_layers = try preparePathLayerInfoRecords(self.allocator, owned_data, width, height, owned_records.records);
+        errdefer {
+            self.allocator.free(prepared_layers.records);
+            self.allocator.free(prepared_layers.layers);
+        }
+        return .{
+            .data = owned_data,
+            .width = width,
+            .height = height,
+            .row_base = row_base,
+            .path_records = prepared_layers.records,
+            .path_layers = prepared_layers.layers,
+            .owns_data = true,
+            .paint_image_records = owned_records.records,
+            .owned_images = owned_records.images,
+        };
     }
 
     /// Resolve a global (info_x, info_y) into data pointer, width, and
@@ -216,3 +265,58 @@ pub const PreparedResources = struct {
         return null;
     }
 };
+
+const OwnedPaintImageRecords = struct {
+    records: ?[]?PaintImageRecord = null,
+    images: []snail.Image = &.{},
+
+    fn deinit(self: *OwnedPaintImageRecords, allocator: std.mem.Allocator) void {
+        if (self.records) |records| allocator.free(records);
+        for (self.images) |*image| image.deinit();
+        if (self.images.len > 0) allocator.free(self.images);
+        self.* = .{};
+    }
+};
+
+fn clonePaintImageRecords(
+    allocator: std.mem.Allocator,
+    maybe_records: ?[]const ?PaintImageRecord,
+) !OwnedPaintImageRecords {
+    const source_records = maybe_records orelse return .{};
+
+    const records = try allocator.alloc(?PaintImageRecord, source_records.len);
+    errdefer allocator.free(records);
+
+    var image_count: usize = 0;
+    for (source_records) |record| {
+        if (record != null) image_count += 1;
+    }
+
+    const images = try allocator.alloc(snail.Image, image_count);
+    errdefer allocator.free(images);
+
+    var initialized_images: usize = 0;
+    errdefer {
+        for (images[0..initialized_images]) |*image| image.deinit();
+    }
+
+    for (source_records, 0..) |maybe_record, i| {
+        const record = maybe_record orelse {
+            records[i] = null;
+            continue;
+        };
+        images[initialized_images] = try snail.Image.initSrgba8(
+            allocator,
+            record.image.width,
+            record.image.height,
+            record.image.pixelSlice(),
+        );
+        records[i] = .{
+            .image = &images[initialized_images],
+            .texel_offset = record.texel_offset,
+        };
+        initialized_images += 1;
+    }
+
+    return .{ .records = records, .images = images };
+}

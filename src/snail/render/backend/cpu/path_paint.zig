@@ -34,16 +34,20 @@ pub const LayerInfoEntry = struct {
     row_base: u32 = 0,
     path_records: []PreparedPathRecord = &.{},
     path_layers: []PreparedPathLayer = &.{},
-    /// Source atlas's image-paint records, borrowed. Used by the prepared
-    /// sampler to resolve tag-4 (image) paints — the atlas-side patching
-    /// done by the GPU upload (`pipeline.zig` / `vulkan_pipeline.zig`)
-    /// doesn't happen on the CPU, so we look up the `*const snail.Image`
-    /// via this slice instead.
+    owns_data: bool = false,
+    /// CPU-owned image-paint records. Used by the prepared sampler to
+    /// resolve tag-4 (image) paints; GPU backends patch layer-info texels at
+    /// upload time, while the CPU keeps direct image snapshots here.
     paint_image_records: ?[]const ?PaintImageRecord = null,
+    owned_images: []snail.Image = &.{},
 
     pub fn deinit(self: *LayerInfoEntry, allocator: std.mem.Allocator) void {
+        if (self.owns_data and self.data.len > 0) allocator.free(self.data);
         if (self.path_records.len > 0) allocator.free(self.path_records);
         if (self.path_layers.len > 0) allocator.free(self.path_layers);
+        if (self.paint_image_records) |records| allocator.free(records);
+        for (self.owned_images) |*image| image.deinit();
+        if (self.owned_images.len > 0) allocator.free(self.owned_images);
         self.* = .{};
     }
 

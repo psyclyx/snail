@@ -130,6 +130,61 @@ test "path picture stamp tracks image paint records" {
     try std.testing.expect(!before.eql(after));
 }
 
+test "cpu prepared resources own uploaded buffers" {
+    if (comptime !build_options.enable_cpu) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+
+    var image = try Image.initSrgba8(allocator, 1, 1, &.{ 17, 31, 47, 255 });
+    defer image.deinit();
+
+    var path = Path.init(allocator);
+    defer path.deinit();
+    try path.addRect(.{ .x = 0, .y = 0, .w = 20, .h = 10 });
+
+    var builder = PathPictureBuilder.init(allocator);
+    defer builder.deinit();
+    try builder.addFilledPath(&path, .{ .paint = .{ .image = .{ .image = &image } } }, .identity);
+    var picture = try builder.freeze(.{ .persistent_allocator = allocator, .scratch_allocator = allocator });
+    defer picture.deinit();
+
+    const width: u32 = 4;
+    const height: u32 = 4;
+    const stride: u32 = width * 4;
+    const pixels = try allocator.alloc(u8, stride * height);
+    defer allocator.free(pixels);
+
+    var cpu = CpuRenderer.init(pixels.ptr, width, height, stride);
+    var renderer = cpu.asRenderer();
+    defer renderer.deinit();
+
+    var entries: [2]ResourceSet.Entry = undefined;
+    var set = ResourceSet.init(&entries);
+    try set.putPathPicture(.painted_path, &picture);
+    try set.putImage(.source_image, &image);
+
+    var prepared = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set);
+    defer prepared.deinit();
+
+    const cpu_prepared = &prepared.backend.cpu.?;
+    const source_page = picture.atlas.page(0);
+    const prepared_page = cpu_prepared.atlas_pages[0].?;
+    try std.testing.expect(prepared_page.band_data.ptr != source_page.band_data.ptr);
+    try std.testing.expectEqualSlices(u16, source_page.band_data, prepared_page.band_data);
+
+    const source_layer_info = picture.atlas.layer_info_data orelse return error.TestExpectedOptional;
+    const prepared_layer_info = cpu_prepared.layer_infos[0];
+    try std.testing.expect(prepared_layer_info.data.ptr != source_layer_info.ptr);
+    try std.testing.expectEqualSlices(f32, source_layer_info, prepared_layer_info.data);
+
+    const prepared_record = prepared_layer_info.paint_image_records.?[0] orelse return error.TestExpectedOptional;
+    try std.testing.expect(prepared_record.image != &image);
+    try std.testing.expectEqualSlices(u8, image.pixelSlice(), prepared_record.image.pixelSlice());
+
+    try std.testing.expect(prepared.images[0].view.image != &image);
+    try std.testing.expectEqualSlices(u8, image.pixelSlice(), prepared.images[0].view.image.pixelSlice());
+}
+
 test "draw with missing prepared resources fails" {
     if (comptime !build_options.enable_cpu) return error.SkipZigTest;
 

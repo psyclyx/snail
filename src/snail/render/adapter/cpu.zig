@@ -38,7 +38,7 @@ const Config = if (build_options.enable_cpu) struct {
         errdefer cpu_prepared.deinit();
         if (batch.atlases.len > 0) try cpu_prepared.uploadAtlases(batch.atlases, batch.atlas_views);
         if (batch.layer_infos.len > 0) try cpu_prepared.uploadLayerInfoBlocks(batch.layer_infos, batch.layer_info_views);
-        if (batch.images.len > 0) cpu_prepared.uploadImages(batch.images, batch.image_views);
+        if (batch.images.len > 0) try cpu_prepared.uploadImages(batch.images, batch.image_views);
         prepared_resources.backend.cpu = cpu_prepared;
     }
 
