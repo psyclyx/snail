@@ -278,14 +278,8 @@ test "draw dispatch uses only prepared stamps and caller records" {
         }
         fn resetResourceCache(_: *anyopaque) void {}
         fn validateBackendGeneration(_: *const PreparedResources) anyerror!void {}
-        fn atlasSlotCanOverflowIntoBank(_: *const PreparedResources, _: usize, _: upload_plan.AtlasRef) bool {
-            return false;
-        }
-        fn atlasNeedsOverflowBank(_: *const PreparedResources, _: usize, _: upload_plan.AtlasRef) bool {
-            return false;
-        }
-        fn atlasWouldRebuild(_: *const PreparedResources, _: usize, _: upload_plan.AtlasRef) bool {
-            return false;
+        fn atlasCacheStatus(_: *const PreparedResources, _: usize, _: upload_plan.AtlasRef) upload_plan.AtlasCacheStatus {
+            return .{};
         }
         fn canUseAtlasOverflowBanks(_: *const PreparedResources, _: usize) bool {
             return false;
@@ -313,9 +307,7 @@ test "draw dispatch uses only prepared stamps and caller records" {
             .stats = Fake.resourceCacheStats,
             .reset = Fake.resetResourceCache,
             .validateBackendGeneration = Fake.validateBackendGeneration,
-            .atlasSlotCanOverflowIntoBank = Fake.atlasSlotCanOverflowIntoBank,
-            .atlasNeedsOverflowBank = Fake.atlasNeedsOverflowBank,
-            .atlasWouldRebuild = Fake.atlasWouldRebuild,
+            .atlasCacheStatus = Fake.atlasCacheStatus,
             .canUseAtlasOverflowBanks = Fake.canUseAtlasOverflowBanks,
             .imageArrayWouldRebuild = Fake.imageArrayWouldRebuild,
         },
@@ -969,20 +961,12 @@ test "resource upload plan accounts for image array rebuilds" {
             return .{};
         }
 
-        pub fn atlasNeedsOverflowBank(_: *@This(), _: *const PreparedResources, _: usize, _: upload_plan.AtlasRef) bool {
-            return false;
-        }
-
-        pub fn atlasWouldRebuild(_: *@This(), _: *const PreparedResources, _: usize, _: upload_plan.AtlasRef) bool {
-            return false;
-        }
-
         pub fn canUseAtlasOverflowBanks(_: *@This(), _: *const PreparedResources, _: usize) bool {
             return false;
         }
 
-        pub fn atlasSlotCanOverflowIntoBank(_: *@This(), _: *const PreparedResources, _: usize, _: upload_plan.AtlasRef) bool {
-            return false;
+        pub fn atlasCacheStatus(_: *@This(), _: *const PreparedResources, _: usize, _: upload_plan.AtlasRef) upload_plan.AtlasCacheStatus {
+            return .{};
         }
 
         pub fn imageArrayWouldRebuild(_: *@This(), _: *const PreparedResources, count: u32, width: u32, _: u32) bool {

@@ -72,41 +72,30 @@ pub fn vtable(comptime Config: type) interface.Renderer.VTable {
             const cache = Config.prepared(prepared_resources) orelse return error.MissingPreparedResource;
             if (cache.generation != prepared_resources.backend.generation) return error.StalePreparedResources;
         }
-        fn atlasSlotCanOverflowIntoBankFn(prepared_resources: *const PreparedResources, index: usize, atlas: upload_plan.AtlasRef) bool {
-            if (comptime !Config.uses_resource_cache) return false;
-            if (atlas.has_layer_info_or_images) return false;
-            const cache = Config.prepared(prepared_resources) orelse return false;
-            if (activeLayerInfo(cache) or index >= cache.atlas_slot_count) return false;
-            return upload_plan.atlasSlotCanOverflowIntoBank(cache.atlas_slots[index], atlas);
-        }
-        fn atlasNeedsOverflowBankFn(prepared_resources: *const PreparedResources, index: usize, atlas: upload_plan.AtlasRef) bool {
-            if (comptime !Config.uses_resource_cache) return false;
-            if (atlas.has_layer_info_or_images) return false;
-            const cache = Config.prepared(prepared_resources) orelse return false;
-            if (activeLayerInfo(cache) or index >= cache.atlas_slot_count) return false;
-            return upload_plan.atlasSlotNeedsOverflowBank(
-                cache.atlas_slots[index],
-                cache.allocated_curve_height,
-                cache.allocated_band_height,
-                atlas,
-            );
-        }
-        fn atlasWouldRebuildFn(prepared_resources: *const PreparedResources, index: usize, atlas: upload_plan.AtlasRef) bool {
-            if (comptime !Config.uses_resource_cache) return false;
-            const cache = Config.prepared(prepared_resources) orelse return false;
-            if (index >= cache.atlas_slot_count) return true;
-            if (!atlas.has_layer_info_or_images and
+        fn atlasCacheStatusFn(prepared_resources: *const PreparedResources, index: usize, atlas: upload_plan.AtlasRef) upload_plan.AtlasCacheStatus {
+            if (comptime !Config.uses_resource_cache) return .{};
+            const cache = Config.prepared(prepared_resources) orelse return .{};
+            if (index >= cache.atlas_slot_count) return .{ .would_rebuild = true };
+            const can_overflow = !atlas.has_layer_info_or_images and
                 !activeLayerInfo(cache) and
-                upload_plan.atlasSlotCanOverflowIntoBank(cache.atlas_slots[index], atlas))
-            {
-                return false;
-            }
-            return upload_plan.atlasSlotWouldRebuild(
+                upload_plan.atlasSlotCanOverflowIntoBank(cache.atlas_slots[index], atlas);
+            const needs_overflow = can_overflow and upload_plan.atlasSlotNeedsOverflowBank(
                 cache.atlas_slots[index],
                 cache.allocated_curve_height,
                 cache.allocated_band_height,
                 atlas,
             );
+            const would_rebuild = upload_plan.atlasSlotWouldRebuild(
+                cache.atlas_slots[index],
+                cache.allocated_curve_height,
+                cache.allocated_band_height,
+                atlas,
+            );
+            return .{
+                .can_overflow_into_bank = can_overflow,
+                .needs_overflow_bank = needs_overflow,
+                .would_rebuild = if (can_overflow) false else would_rebuild,
+            };
         }
         fn canUseAtlasOverflowBanksFn(prepared_resources: *const PreparedResources, atlas_count: usize) bool {
             if (comptime !Config.uses_resource_cache) return false;
@@ -162,9 +151,7 @@ pub fn vtable(comptime Config: type) interface.Renderer.VTable {
             .stats = &S.resourceCacheStatsFn,
             .reset = &S.resetResourceCacheFn,
             .validateBackendGeneration = &S.validateBackendGenerationFn,
-            .atlasSlotCanOverflowIntoBank = &S.atlasSlotCanOverflowIntoBankFn,
-            .atlasNeedsOverflowBank = &S.atlasNeedsOverflowBankFn,
-            .atlasWouldRebuild = &S.atlasWouldRebuildFn,
+            .atlasCacheStatus = &S.atlasCacheStatusFn,
             .canUseAtlasOverflowBanks = &S.canUseAtlasOverflowBanksFn,
             .imageArrayWouldRebuild = &S.imageArrayWouldRebuildFn,
         },

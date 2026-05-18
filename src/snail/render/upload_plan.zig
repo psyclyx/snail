@@ -63,6 +63,12 @@ pub const AtlasRef = struct {
     }
 };
 
+pub const AtlasCacheStatus = struct {
+    can_overflow_into_bank: bool = false,
+    needs_overflow_bank: bool = false,
+    would_rebuild: bool = false,
+};
+
 const AtlasUploadDelta = struct {
     reused_pages: u32 = 0,
     missing_pages: u32 = 0,
@@ -197,13 +203,13 @@ pub fn atlasSlotNeedsOverflowBank(slot: anytype, allocated_curve_height: u32, al
 fn currentAtlasNeedsOverflowBank(renderer: anytype, current: ?*const PreparedResources, key: ResourceKey, atlas: AtlasRef) bool {
     const prepared = current orelse return false;
     const lookup = preparedAtlasForKeyWithIndex(prepared, key) orelse return false;
-    return renderer.atlasNeedsOverflowBank(prepared, lookup.index, atlas);
+    return renderer.atlasCacheStatus(prepared, lookup.index, atlas).needs_overflow_bank;
 }
 
 fn currentAtlasWouldRebuild(renderer: anytype, current: ?*const PreparedResources, key: ResourceKey, atlas: AtlasRef) bool {
     const prepared = current orelse return false;
     const lookup = preparedAtlasForKeyWithIndex(prepared, key) orelse return false;
-    return renderer.atlasWouldRebuild(prepared, lookup.index, atlas);
+    return renderer.atlasCacheStatus(prepared, lookup.index, atlas).would_rebuild;
 }
 
 fn resourceManifestCanUseAtlasOverflowBanks(renderer: anytype, current: ?*const PreparedResources, entries: []const ResourceManifest.Entry, counts: ResourceManifestCounts) bool {
@@ -217,13 +223,13 @@ fn resourceManifestCanUseAtlasOverflowBanks(renderer: anytype, current: ?*const 
             const lookup = preparedAtlasForKeyWithIndex(prepared, text.key) orelse return false;
             defer atlas_index += 1;
             if (lookup.index != atlas_index) return false;
-            if (!renderer.atlasSlotCanOverflowIntoBank(prepared, lookup.index, AtlasRef.init(text.atlas))) return false;
+            if (!renderer.atlasCacheStatus(prepared, lookup.index, AtlasRef.init(text.atlas)).can_overflow_into_bank) return false;
         },
         .path_picture => |path| {
             const lookup = preparedAtlasForKeyWithIndex(prepared, path.key) orelse return false;
             defer atlas_index += 1;
             if (lookup.index != atlas_index) return false;
-            if (!renderer.atlasSlotCanOverflowIntoBank(prepared, lookup.index, AtlasRef.init(&path.picture.atlas))) return false;
+            if (!renderer.atlasCacheStatus(prepared, lookup.index, AtlasRef.init(&path.picture.atlas)).can_overflow_into_bank) return false;
         },
         .text_paint, .image => {},
     };
