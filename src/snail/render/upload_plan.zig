@@ -13,7 +13,9 @@ const AtlasPage = atlas_page_mod.AtlasPage;
 const Image = image_mod.Image;
 const PreparedResources = prepared_mod.PreparedResources;
 const ResourceKey = resource_key_mod.ResourceKey;
+const ResourceStamp = resource_key_mod.ResourceStamp;
 const ResourceManifest = manifest_mod.ResourceManifest;
+const ResourceCacheStats = upload_mod.ResourceCacheStats;
 const ResourceUploadPlan = upload_mod.ResourceUploadPlan;
 
 const PreparedAtlasResource = PreparedResources.PreparedAtlasResource;
@@ -200,16 +202,10 @@ pub fn atlasSlotNeedsOverflowBank(slot: anytype, allocated_curve_height: u32, al
         atlasSlotWouldRebuild(slot, allocated_curve_height, allocated_band_height, atlas);
 }
 
-fn currentAtlasNeedsOverflowBank(renderer: anytype, current: ?*const PreparedResources, key: ResourceKey, atlas: AtlasRef) bool {
-    const prepared = current orelse return false;
-    const lookup = preparedAtlasForKeyWithIndex(prepared, key) orelse return false;
-    return renderer.atlasCacheStatus(prepared, lookup.index, atlas).needs_overflow_bank;
-}
-
-fn currentAtlasWouldRebuild(renderer: anytype, current: ?*const PreparedResources, key: ResourceKey, atlas: AtlasRef) bool {
-    const prepared = current orelse return false;
-    const lookup = preparedAtlasForKeyWithIndex(prepared, key) orelse return false;
-    return renderer.atlasCacheStatus(prepared, lookup.index, atlas).would_rebuild;
+fn currentAtlasCacheStatus(renderer: anytype, current: ?*const PreparedResources, key: ResourceKey, atlas: AtlasRef) ?AtlasCacheStatus {
+    const prepared = current orelse return null;
+    const lookup = preparedAtlasForKeyWithIndex(prepared, key) orelse return null;
+    return renderer.atlasCacheStatus(prepared, lookup.index, atlas);
 }
 
 fn resourceManifestCanUseAtlasOverflowBanks(renderer: anytype, current: ?*const PreparedResources, entries: []const ResourceManifest.Entry, counts: ResourceManifestCounts) bool {
@@ -274,86 +270,100 @@ fn appendUniqueImage(allocator: std.mem.Allocator, images: *std.ArrayListUnmanag
     try images.append(allocator, image);
 }
 
-pub fn planResourceUpload(renderer: anytype, allocator: std.mem.Allocator, current: ?*const PreparedResources, next_set: *const ResourceManifest) !ResourceUploadPlan {
-    var plan = try ResourceUploadPlan.init(allocator, next_set);
-    errdefer plan.deinit();
+fn recordEntryDiff(plan: *ResourceUploadPlan, current: ?*const PreparedResources, key: ResourceKey, stamp: ResourceStamp, bytes: usize) !bool {
+    const old_stamp = if (current) |prepared| prepared.stampForKey(key) else null;
+    const changed = if (old_stamp) |old| !old.eql(stamp) else true;
+    if (changed) try plan.diff.add(key, bytes);
+    return changed;
+}
 
-    const entries = plan.manifest.entries;
-    const counts = countResourceEntries(entries);
-    const image_requirements = try collectImageRequirements(allocator, entries);
-    const uses_resource_cache = renderer.usesResourceCache();
-    plan.footprint = try next_set.estimateUploadFootprint();
+fn recordAtlasUploadPlan(
+    renderer: anytype,
+    plan: *ResourceUploadPlan,
+    current: ?*const PreparedResources,
+    key: ResourceKey,
+    atlas: AtlasRef,
+    atlas_index: usize,
+    uses_resource_cache: bool,
+    needs_atlas_overflow_bank: *bool,
+) void {
+    const delta = atlasUploadDelta(current, key, atlas);
+    plan.cache.reused_atlas_pages += delta.reused_pages;
+    plan.cache.missing_atlas_pages += delta.missing_pages;
+    plan.upload.curve_bytes += delta.curve_bytes;
+    plan.upload.band_bytes += delta.band_bytes;
+
+    if (current) |prepared| {
+        if (preparedAtlasForKeyWithIndex(prepared, key)) |lookup| {
+            if (lookup.index != atlas_index and uses_resource_cache) plan.cache.atlas_rebuilds = 1;
+        }
+    }
+    if (currentAtlasCacheStatus(renderer, current, key, atlas)) |status| {
+        if (status.needs_overflow_bank) needs_atlas_overflow_bank.* = true;
+        if (status.would_rebuild) plan.cache.atlas_rebuilds = 1;
+    }
+}
+
+fn recordLayerInfoUploadPlan(plan: *ResourceUploadPlan, current: ?*const PreparedResources, key: ResourceKey, changed: bool, bytes: usize) void {
+    const old_layer = if (current) |prepared| preparedLayerInfoForKey(prepared, key) else null;
+    if (old_layer == null or changed) plan.upload.layer_info_bytes += bytes;
+}
+
+fn recordImageUploadPlan(plan: *ResourceUploadPlan, current: ?*const PreparedResources, key: ResourceKey, stamp: ResourceStamp, image: *const Image) void {
+    const old_image = if (current) |prepared| preparedImageForKey(prepared, key) else null;
+    if (old_image) |prev| {
+        if (prev.stamp.eql(stamp)) {
+            plan.cache.reused_images += 1;
+        } else {
+            plan.cache.missing_images += 1;
+            plan.upload.image_bytes += image.pixelSlice().len;
+        }
+    } else {
+        plan.cache.missing_images += 1;
+        plan.upload.image_bytes += image.pixelSlice().len;
+    }
+}
+
+fn recordManifestUploadPlan(renderer: anytype, plan: *ResourceUploadPlan, current: ?*const PreparedResources, uses_resource_cache: bool, entries: []const ResourceManifest.Entry) !bool {
     var needs_atlas_overflow_bank = false;
     var next_atlas_index: usize = 0;
     for (entries) |entry| {
         const key = resourceEntryKey(entry);
         const stamp = resourceEntryStamp(entry);
         const bytes = resourceEntryUploadBytes(entry);
-        const old_stamp = if (current) |prepared| prepared.stampForKey(key) else null;
-        const changed = if (old_stamp) |old| !old.eql(stamp) else true;
-        if (changed) {
-            try plan.diff.add(key, bytes);
-        }
+        const changed = try recordEntryDiff(plan, current, key, stamp, bytes);
         switch (entry) {
             .text_atlas => |text| {
-                const atlas_index = next_atlas_index;
-                next_atlas_index += 1;
-                const atlas = AtlasRef.init(text.atlas);
-                const delta = atlasUploadDelta(current, key, atlas);
-                plan.cache.reused_atlas_pages += delta.reused_pages;
-                plan.cache.missing_atlas_pages += delta.missing_pages;
-                plan.upload.curve_bytes += delta.curve_bytes;
-                plan.upload.band_bytes += delta.band_bytes;
-                if (current) |prepared| {
-                    if (preparedAtlasForKeyWithIndex(prepared, key)) |lookup| {
-                        if (lookup.index != atlas_index and uses_resource_cache) plan.cache.atlas_rebuilds = 1;
-                    }
-                }
-                if (currentAtlasNeedsOverflowBank(renderer, current, key, atlas)) needs_atlas_overflow_bank = true;
-                if (currentAtlasWouldRebuild(renderer, current, key, atlas)) plan.cache.atlas_rebuilds = 1;
+                defer next_atlas_index += 1;
+                recordAtlasUploadPlan(renderer, plan, current, key, AtlasRef.init(text.atlas), next_atlas_index, uses_resource_cache, &needs_atlas_overflow_bank);
             },
             .path_picture => |path| {
-                const atlas_index = next_atlas_index;
-                next_atlas_index += 1;
-                const atlas = AtlasRef.init(&path.picture.atlas);
-                const delta = atlasUploadDelta(current, key, atlas);
-                plan.cache.reused_atlas_pages += delta.reused_pages;
-                plan.cache.missing_atlas_pages += delta.missing_pages;
-                plan.upload.curve_bytes += delta.curve_bytes;
-                plan.upload.band_bytes += delta.band_bytes;
-                if (current) |prepared| {
-                    if (preparedAtlasForKeyWithIndex(prepared, key)) |lookup| {
-                        if (lookup.index != atlas_index and uses_resource_cache) plan.cache.atlas_rebuilds = 1;
-                    }
-                }
-                if (currentAtlasNeedsOverflowBank(renderer, current, key, atlas)) needs_atlas_overflow_bank = true;
-                if (currentAtlasWouldRebuild(renderer, current, key, atlas)) plan.cache.atlas_rebuilds = 1;
+                defer next_atlas_index += 1;
+                recordAtlasUploadPlan(renderer, plan, current, key, AtlasRef.init(&path.picture.atlas), next_atlas_index, uses_resource_cache, &needs_atlas_overflow_bank);
             },
-            .text_paint => {
-                const old_layer = if (current) |prepared| preparedLayerInfoForKey(prepared, key) else null;
-                if (old_layer == null or changed) plan.upload.layer_info_bytes += bytes;
-            },
-            .image => |image| {
-                const old_image = if (current) |prepared| preparedImageForKey(prepared, key) else null;
-                if (old_image) |prev| {
-                    if (prev.stamp.eql(stamp)) {
-                        plan.cache.reused_images += 1;
-                    } else {
-                        plan.cache.missing_images += 1;
-                        plan.upload.image_bytes += image.image.pixelSlice().len;
-                    }
-                } else {
-                    plan.cache.missing_images += 1;
-                    plan.upload.image_bytes += image.image.pixelSlice().len;
-                }
-            },
+            .text_paint => recordLayerInfoUploadPlan(plan, current, key, changed, bytes),
+            .image => |image| recordImageUploadPlan(plan, current, key, stamp, image.image),
         }
     }
-    const stats = renderer.resourceCacheStats();
+    return needs_atlas_overflow_bank;
+}
+
+fn recordCacheBankNeeds(plan: *ResourceUploadPlan, stats: ResourceCacheStats, needs_atlas_overflow_bank: bool) void {
     const free_atlas_layers = stats.active_atlas_layers_allocated -| stats.active_atlas_pages_resident;
     const free_image_layers = stats.active_image_layers_allocated -| stats.active_image_layers_resident;
     plan.cache.new_atlas_banks = if (needs_atlas_overflow_bank or plan.cache.missing_atlas_pages > free_atlas_layers) 1 else 0;
     plan.cache.new_image_banks = if (plan.cache.missing_images > free_image_layers) 1 else 0;
+}
+
+fn recordAtlasRebuildNeeds(
+    renderer: anytype,
+    plan: *ResourceUploadPlan,
+    current: ?*const PreparedResources,
+    entries: []const ResourceManifest.Entry,
+    counts: ResourceManifestCounts,
+    stats: ResourceCacheStats,
+    uses_resource_cache: bool,
+) void {
     if (counts.layer_infos > 0 and current != null and uses_resource_cache) plan.cache.atlas_rebuilds = 1;
     if (current) |prepared| {
         if (counts.atlases != prepared.atlases.len and uses_resource_cache) plan.cache.atlas_rebuilds = 1;
@@ -365,6 +375,16 @@ pub fn planResourceUpload(renderer: anytype, allocator: std.mem.Allocator, curre
     {
         plan.cache.atlas_rebuilds = 1;
     }
+}
+
+fn recordImageRebuildNeeds(
+    renderer: anytype,
+    plan: *ResourceUploadPlan,
+    current: ?*const PreparedResources,
+    image_requirements: ImageRequirements,
+    stats: ResourceCacheStats,
+    uses_resource_cache: bool,
+) void {
     if (plan.cache.new_image_banks > 0 and stats.active_image_layers_allocated > 0 and uses_resource_cache) plan.cache.image_rebuilds = 1;
     if (current) |prepared| {
         if (uses_resource_cache and renderer.imageArrayWouldRebuild(
@@ -376,6 +396,9 @@ pub fn planResourceUpload(renderer: anytype, allocator: std.mem.Allocator, curre
             plan.cache.image_rebuilds = 1;
         }
     }
+}
+
+fn applyRebuildUploadCosts(plan: *ResourceUploadPlan) void {
     if (plan.cache.atlas_rebuilds > 0) {
         plan.upload.curve_bytes = plan.footprint.curve_bytes_used;
         plan.upload.band_bytes = plan.footprint.band_bytes_used;
@@ -383,6 +406,9 @@ pub fn planResourceUpload(renderer: anytype, allocator: std.mem.Allocator, curre
     if (plan.cache.image_rebuilds > 0) {
         plan.upload.image_bytes = plan.footprint.image_bytes_used;
     }
+}
+
+fn finishUploadByteTotal(plan: *ResourceUploadPlan, uses_resource_cache: bool) void {
     plan.upload.bytes = if (uses_resource_cache)
         plan.upload.curve_bytes +
             plan.upload.band_bytes +
@@ -390,5 +416,23 @@ pub fn planResourceUpload(renderer: anytype, allocator: std.mem.Allocator, curre
             plan.upload.image_bytes
     else
         plan.footprint.allocatedBytes();
+}
+
+pub fn planResourceUpload(renderer: anytype, allocator: std.mem.Allocator, current: ?*const PreparedResources, next_set: *const ResourceManifest) !ResourceUploadPlan {
+    var plan = try ResourceUploadPlan.init(allocator, next_set);
+    errdefer plan.deinit();
+
+    const entries = plan.manifest.entries;
+    const counts = countResourceEntries(entries);
+    const image_requirements = try collectImageRequirements(allocator, entries);
+    const uses_resource_cache = renderer.usesResourceCache();
+    plan.footprint = try next_set.estimateUploadFootprint();
+    const stats = renderer.resourceCacheStats();
+    const needs_atlas_overflow_bank = try recordManifestUploadPlan(renderer, &plan, current, uses_resource_cache, entries);
+    recordCacheBankNeeds(&plan, stats, needs_atlas_overflow_bank);
+    recordAtlasRebuildNeeds(renderer, &plan, current, entries, counts, stats, uses_resource_cache);
+    recordImageRebuildNeeds(renderer, &plan, current, image_requirements, stats, uses_resource_cache);
+    applyRebuildUploadCosts(&plan);
+    finishUploadByteTotal(&plan, uses_resource_cache);
     return plan;
 }
