@@ -42,7 +42,7 @@ const compositeSubpixelOver = cpu_coverage.compositeSubpixelOver;
 const evalGlyphCoverage = cpu_coverage.evalGlyphCoverage;
 const evalGlyphCoverageBandSpan = cpu_coverage.evalGlyphCoverageBandSpan;
 const evalGlyphCoverageSubpixel = cpu_coverage.evalGlyphCoverageSubpixel;
-const expandBoundsForSubpixel = cpu_geometry.expandBoundsForSubpixel;
+const expandBoundsForCoverageSupport = cpu_geometry.expandBoundsForCoverageSupport;
 const f16ToF32 = cpu_texture.f16ToF32;
 const fetchLayerInfoTexel = cpu_path_paint.fetchLayerInfoTexel;
 const glyphEdgePixelsPerPixel = cpu_geometry.glyphEdgePixelsPerPixel;
@@ -297,7 +297,8 @@ pub const CpuRenderer = struct {
             const info = picture.atlas.getGlyph(shape.glyph_id) orelse continue;
             const final_transform = Transform2D.multiply(transform, shape.transform);
             const inverse = inverseTransform(final_transform) orelse continue;
-            const bounds = transformedGlyphBounds(info.bbox, final_transform);
+            var bounds = transformedGlyphBounds(info.bbox, final_transform);
+            expandBoundsForCoverageSupport(&bounds, self.subpixel_order, false);
             const px0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.x))), @as(i32, @intCast(self.col_clip_min)));
             const py0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.y))), @as(i32, @intCast(self.row_clip_min)));
             const px1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.x))), @as(i32, @intCast(self.col_clip_max)));
@@ -560,7 +561,8 @@ pub const CpuRenderer = struct {
             const layers = entry.path_layers[record.layer_start..][0..layer_count];
 
             const inverse = inverseTransform(transform) orelse return;
-            const bounds = transformedGlyphBounds(union_bbox, transform);
+            var bounds = transformedGlyphBounds(union_bbox, transform);
+            expandBoundsForCoverageSupport(&bounds, self.subpixel_order, allow_subpixel);
             const px0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.x))), @as(i32, @intCast(self.col_clip_min)));
             const px1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.x))), @as(i32, @intCast(self.col_clip_max)));
             const py0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.y))), @as(i32, @intCast(self.row_clip_min)));
@@ -720,7 +722,8 @@ pub const CpuRenderer = struct {
             const be = layer.band_entry;
 
             const inverse = inverseTransform(transform) orelse return;
-            const bounds = transformedGlyphBounds(union_bbox, transform);
+            var bounds = transformedGlyphBounds(union_bbox, transform);
+            expandBoundsForCoverageSupport(&bounds, self.subpixel_order, allow_subpixel);
             const px0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.x))), @as(i32, @intCast(self.col_clip_min)));
             const px1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.x))), @as(i32, @intCast(self.col_clip_max)));
             const py0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.y))), @as(i32, @intCast(self.row_clip_min)));
@@ -787,7 +790,7 @@ pub const CpuRenderer = struct {
     ) void {
         const inverse = inverseTransform(transform) orelse return;
         var bounds = transformedGlyphBounds(bbox, transform);
-        expandBoundsForSubpixel(&bounds, self.subpixel_order, allow_subpixel);
+        expandBoundsForCoverageSupport(&bounds, self.subpixel_order, allow_subpixel);
 
         const px0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.x))), @as(i32, @intCast(self.col_clip_min)));
         const px1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.x))), @as(i32, @intCast(self.col_clip_max)));
@@ -899,7 +902,7 @@ pub const CpuRenderer = struct {
             .min = Vec2.new(glyph_x0, glyph_y0),
             .max = Vec2.new(glyph_x1, glyph_y1),
         };
-        expandBoundsForSubpixel(&bounds, self.subpixel_order, allow_subpixel);
+        expandBoundsForCoverageSupport(&bounds, self.subpixel_order, allow_subpixel);
 
         const px0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.x))), @as(i32, @intCast(self.col_clip_min)));
         const px1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.x))), @as(i32, @intCast(self.col_clip_max)));
@@ -962,6 +965,7 @@ pub const CpuRenderer = struct {
         return .{
             .pixels = self.pixels,
             .stride = self.stride,
+            .height = self.height,
             .target_encoding = self.target_encoding,
             .target_resolve = self.target_resolve,
         };

@@ -16,6 +16,7 @@ const subpixelBlendCoverage = cpu_coverage.subpixelBlendCoverage;
 pub const Target = struct {
     pixels: [*]u8,
     stride: u32,
+    height: u32,
     target_encoding: snail.TargetEncoding,
     target_resolve: snail.Resolve,
 
@@ -63,6 +64,11 @@ pub const Target = struct {
         if (!self.storageSpaceSrgbBlend()) return color;
         return linearColorToSrgb(color);
     }
+
+    inline fn ditherRow(self: Target, row: u32) u32 {
+        // Match shader dither, which keys noise from bottom-origin gl_FragCoord.
+        return if (row < self.height) self.height - 1 - row else row;
+    }
 };
 
 pub fn colorBytesForEncoding(encoding: snail.TargetEncoding, color_srgb: [4]f32) [4]u8 {
@@ -104,7 +110,7 @@ pub fn blendPremultipliedPixel(target: Target, row: u32, col: u32, src: [4]f32, 
     const out_a = src_a + dst_a * (1.0 - src_a);
 
     const dither = if (apply_dither)
-        (interleavedGradientNoise(row, col) - 0.5) * (clamp01(out_a) / 255.0)
+        (interleavedGradientNoise(target.ditherRow(row), col) - 0.5) * (clamp01(out_a) / 255.0)
     else
         0.0;
     target.pixels[off + 0] = target.writeChannel(out_r, dither);
@@ -127,7 +133,7 @@ pub fn blendSubpixelPremultipliedPixel(target: Target, row: u32, col: u32, src: 
     const out_a = src_a + dst_a * (1.0 - src_a);
 
     const dither = if (apply_dither)
-        (interleavedGradientNoise(row, col) - 0.5) * (clamp01(out_a) / 255.0)
+        (interleavedGradientNoise(target.ditherRow(row), col) - 0.5) * (clamp01(out_a) / 255.0)
     else
         0.0;
     target.pixels[off + 0] = target.writeChannel(out_r, dither);

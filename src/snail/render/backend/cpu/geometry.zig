@@ -108,6 +108,16 @@ pub fn expandBoundsForSubpixel(bounds: *ScreenBounds, order: SubpixelOrder, allo
     bounds.max.y += extra.y;
 }
 
+pub fn expandBoundsForCoverageSupport(bounds: *ScreenBounds, order: SubpixelOrder, allow_subpixel: bool) void {
+    // Fragment coverage can extend just outside the stored contour bbox; GPU
+    // backends cover that with vertex dilation.
+    bounds.min.x -= 1.0;
+    bounds.min.y -= 1.0;
+    bounds.max.x += 1.0;
+    bounds.max.y += 1.0;
+    expandBoundsForSubpixel(bounds, order, allow_subpixel);
+}
+
 pub fn glyphEdgePixelsPerPixel(inverse: Transform2D) Vec2 {
     return .{
         .x = @max(@sqrt(inverse.xx * inverse.xx + inverse.xy * inverse.xy), 1.0 / 65536.0),

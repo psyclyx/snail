@@ -818,12 +818,12 @@ const BandSpan = struct {
     last: i32,
 };
 
-fn coverageBandSpan(coord: f32, ppe: f32, band_scale: f32, band_offset: f32, band_max: i32) BandSpan {
+fn coverageBandSpan(coord: f32, epp_axis: f32, band_scale: f32, band_offset: f32, band_max: i32) BandSpan {
     if (band_max < 0) return .{ .first = 0, .last = -1 };
     const center = coord * band_scale + band_offset;
     // Match the path shader: evaluate every band touched by the pixel
     // footprint, then de-duplicate curve records across the span.
-    const half_width = @max(@abs(band_scale) * (0.5 / @max(@abs(ppe), 1.0 / 65536.0)), 1e-5);
+    const half_width = @max(@abs(epp_axis * band_scale) * 0.5, 1e-5);
     const first = clampInt(@as(i32, @intFromFloat(@floor(center - half_width))), 0, band_max);
     const last = clampInt(@as(i32, @intFromFloat(@floor(center + half_width))), 0, band_max);
     return .{ .first = first, .last = @max(first, last) };
@@ -960,8 +960,10 @@ pub fn evalGlyphCoverageBandSpan(
 ) f32 {
     const glyph_band_base = @as(usize, be.glyph_y) * @as(usize, page.band_width) + @as(usize, be.glyph_x);
     const sample_rc = Vec2.new(em_x, em_y);
-    const h_span = coverageBandSpan(em_y, ppe_y, be.band_scale_y, be.band_offset_y, band_max_h);
-    const v_span = coverageBandSpan(em_x, ppe_x, be.band_scale_x, be.band_offset_x, band_max_v);
+    const epp_x = 1.0 / @max(@abs(ppe_x), 1.0 / 65536.0);
+    const epp_y = 1.0 / @max(@abs(ppe_y), 1.0 / 65536.0);
+    const h_span = coverageBandSpan(em_y, epp_y, be.band_scale_y, be.band_offset_y, band_max_h);
+    const v_span = coverageBandSpan(em_x, epp_x, be.band_scale_x, be.band_offset_x, band_max_v);
     return resolveCoverage(
         evalGlyphCoverageAxisBandSpan(page, sample_rc, ppe_x, glyph_band_base, 0, h_span, true),
         evalGlyphCoverageAxisBandSpan(page, sample_rc, ppe_y, glyph_band_base, band_max_h + 1, v_span, false),
