@@ -26,7 +26,9 @@ pub const SNAIL_ERR_RENDERER_FAILED = c_runtime.SNAIL_ERR_RENDERER_FAILED;
 pub const SNAIL_ERR_INVALID_ARGUMENT = c_runtime.SNAIL_ERR_INVALID_ARGUMENT;
 pub const SNAIL_ERR_DRAW_FAILED = c_runtime.SNAIL_ERR_DRAW_FAILED;
 
+const TextBlobImpl = c_handles.TextBlobImpl;
 const ImageImpl = c_handles.ImageImpl;
+const PathPictureImpl = c_handles.PathPictureImpl;
 
 pub const SnailVulkanContext = extern struct {
     physical_device: vk.VkPhysicalDevice,
@@ -208,6 +210,22 @@ pub const SnailTextResourceKeys = extern struct {
     atlas_key: SnailResourceKey = 0,
     paint_key: SnailResourceKey = 0,
     has_paint_key: bool = false,
+};
+
+pub const SnailTextDraw = extern struct {
+    blob: ?*const TextBlobImpl = null,
+    resources: SnailTextResourceKeys = .{},
+    override_value: SnailOverride = .{},
+    has_override: bool = false,
+};
+
+pub const SnailPathPictureDraw = extern struct {
+    picture: ?*const PathPictureImpl = null,
+    key: SnailResourceKey = 0,
+    range: SnailRange = .{},
+    override_value: SnailOverride = .{},
+    has_range: bool = false,
+    has_override: bool = false,
 };
 
 pub const SnailResourceStamp = extern struct {

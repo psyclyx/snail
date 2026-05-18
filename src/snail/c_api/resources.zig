@@ -99,6 +99,16 @@ pub export fn snail_text_blob_resource_keys(atlas_key: SnailResourceKey, blob_ke
     return SNAIL_OK;
 }
 
+pub export fn snail_resource_manifest_put_text_blob_keyed(set: *ResourceManifestImpl, atlas_key: SnailResourceKey, blob_key: SnailResourceKey, blob: *const TextBlobImpl, out: *SnailTextResourceKeys) c_int {
+    const keys = set.inner.putTextBlobKeyed(
+        snail.ResourceKey.fromId(atlas_key),
+        snail.ResourceKey.fromId(blob_key),
+        &blob.inner,
+    ) catch |err| return mapError(err);
+    out.* = wrapTextResourceKeys(keys);
+    return SNAIL_OK;
+}
+
 pub export fn snail_resource_manifest_put_text_blob(set: *ResourceManifestImpl, resources: SnailTextResourceKeys, blob: *const TextBlobImpl) c_int {
     set.inner.putTextBlob(toTextResourceKeys(resources), &blob.inner) catch |err| return mapError(err);
     return SNAIL_OK;

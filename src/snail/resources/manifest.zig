@@ -104,6 +104,12 @@ pub const ResourceManifest = struct {
         };
     }
 
+    pub fn putTextBlobKeyed(self: *ResourceManifest, atlas_key_value: anytype, blob_key_value: anytype, blob: *const TextBlob) !TextBlobResourceKeys {
+        const keys = textBlobResourceKeys(atlas_key_value, blob_key_value, blob);
+        try self.putTextBlob(keys, blob);
+        return keys;
+    }
+
     pub fn putTextBlob(self: *ResourceManifest, keys: TextBlobResourceKeys, blob: *const TextBlob) !void {
         try self.putTextAtlas(keys.atlas, blob.atlas);
         if (keys.paint) |paint_key| try self.putTextBlobPaint(paint_key, blob);

@@ -271,8 +271,7 @@ defer blob.deinit();
 
 var resource_entries: [8]snail.ResourceManifest.Entry = undefined;
 var resources = snail.ResourceManifest.init(&resource_entries);
-const text_resources = snail.ResourceManifest.textBlobResourceKeys(.fonts, .hello_text, &blob);
-try resources.putTextBlob(text_resources, &blob);
+const text_resources = try resources.putTextBlobKeyed(.fonts, .hello_text, &blob);
 
 var scene = snail.Scene.init(allocator);
 defer scene.deinit();
@@ -416,18 +415,16 @@ snail_path_picture_builder_add_filled_path(builder, path, fill,
 SnailPathPicture *picture = NULL;
 snail_path_picture_builder_freeze(builder, NULL, NULL, &picture);
 
+SnailResourceManifest *resources = NULL;
+snail_resource_manifest_init(NULL, 8, &resources);
 SnailTextResourceKeys text_resources = {0};
-snail_text_blob_resource_keys(1, 3, blob, &text_resources);
+snail_resource_manifest_put_text_blob_keyed(resources, 1, 3, blob, &text_resources);
+snail_resource_manifest_put_path_picture(resources, 2, picture);
 
 SnailScene *scene = NULL;
 snail_scene_init(NULL, &scene);
-snail_scene_add_text(scene, blob, text_resources);
-snail_scene_add_path_picture(scene, picture, 2);
-
-SnailResourceManifest *resources = NULL;
-snail_resource_manifest_init(NULL, 8, &resources);
-snail_resource_manifest_put_text_blob(resources, text_resources, blob);
-snail_resource_manifest_put_path_picture(resources, 2, picture);
+snail_scene_add_text_draw(scene, (SnailTextDraw){blob, text_resources});
+snail_scene_add_path_picture_draw(scene, (SnailPathPictureDraw){picture, 2});
 
 SnailRenderer *renderer = NULL;
 snail_gl_renderer_init(&renderer);
@@ -589,6 +586,7 @@ try scene.addPath(.{ .picture = &sprite, .resource_key = snail.ResourceKey.named
 |--------|-------------|
 | `ResourceManifest.init(entries)` | Wrap a caller-owned `[]ResourceManifest.Entry` buffer. |
 | `set.reset()` | Clear entries; capacity is retained. |
+| `set.putTextBlobKeyed(atlas_key, blob_key, blob)` | Add the text atlas plus any layer-info/image-paint records needed by `blob`, returning the key bundle used for scene submission. |
 | `ResourceManifest.textBlobResourceKeys(atlas_key, blob_key, blob)` | Build the key bundle a text draw and manifest entry share. Paint records are derived from `blob_key` only when the blob needs them. |
 | `set.putTextBlob(resources, blob)` | Add the text atlas plus any layer-info/image-paint records needed by `blob`. |
 | `set.putTextAtlas(key, atlas)` / `set.putTextAtlasOptions(key, atlas, options)` | Add an atlas-only resource, optionally overriding atlas capacity mode. |

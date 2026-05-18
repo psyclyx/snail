@@ -245,13 +245,15 @@ test "c_api: scheduled upload draw list coverage records and retirement" {
     try testing.expectEqual(c.SNAIL_OK, c_resources.snail_resource_manifest_init(null, 4, &resources));
     defer c_resources.snail_resource_manifest_deinit(resources);
     var text_keys: c.SnailTextResourceKeys = .{};
-    try testing.expectEqual(c.SNAIL_OK, c_resources.snail_text_blob_resource_keys(1, 2, blob.?, &text_keys));
-    try testing.expectEqual(c.SNAIL_OK, c_resources.snail_resource_manifest_put_text_blob(resources.?, text_keys, blob.?));
+    try testing.expectEqual(c.SNAIL_OK, c_resources.snail_resource_manifest_put_text_blob_keyed(resources.?, 1, 2, blob.?, &text_keys));
 
     var scene: ?*c.test_api.SceneImpl = null;
     try testing.expectEqual(c.SNAIL_OK, c_scene.snail_scene_init(null, &scene));
     defer c_scene.snail_scene_deinit(scene);
-    try testing.expectEqual(c.SNAIL_OK, c_scene.snail_scene_add_text(scene.?, blob.?, text_keys));
+    try testing.expectEqual(c.SNAIL_OK, c_scene.snail_scene_add_text_draw(scene.?, .{
+        .blob = blob.?,
+        .resources = text_keys,
+    }));
 
     var pixels = [_]u8{0} ** (64 * 64 * 4);
     var renderer: ?*c.test_api.RendererImpl = null;
@@ -334,16 +336,21 @@ test "c_api: scene and resource manifest follow public model" {
     try testing.expectEqual(c.SNAIL_OK, c_resources.snail_resource_manifest_init(null, 4, &resources));
     defer c_resources.snail_resource_manifest_deinit(resources);
     var text_keys: c.SnailTextResourceKeys = .{};
-    try testing.expectEqual(c.SNAIL_OK, c_resources.snail_text_blob_resource_keys(1, 2, blob.?, &text_keys));
-    try testing.expectEqual(c.SNAIL_OK, c_resources.snail_resource_manifest_put_text_blob(resources.?, text_keys, blob.?));
+    try testing.expectEqual(c.SNAIL_OK, c_resources.snail_resource_manifest_put_text_blob_keyed(resources.?, 1, 2, blob.?, &text_keys));
     try testing.expectEqual(@as(usize, 1), c_resources.snail_resource_manifest_count(resources.?));
 
     var scene: ?*c.test_api.SceneImpl = null;
     try testing.expectEqual(c.SNAIL_OK, c_scene.snail_scene_init(null, &scene));
     defer c_scene.snail_scene_deinit(scene);
-    try testing.expectEqual(c.SNAIL_OK, c_scene.snail_scene_add_text(scene.?, blob.?, text_keys));
-    try testing.expectEqual(c.SNAIL_OK, c_scene.snail_scene_add_text_override(scene.?, blob.?, text_keys, .{
-        .tint = .{ 0.5, 0.75, 1.0, 0.5 },
+    try testing.expectEqual(c.SNAIL_OK, c_scene.snail_scene_add_text_draw(scene.?, .{
+        .blob = blob.?,
+        .resources = text_keys,
+    }));
+    try testing.expectEqual(c.SNAIL_OK, c_scene.snail_scene_add_text_draw(scene.?, .{
+        .blob = blob.?,
+        .resources = text_keys,
+        .override_value = .{ .tint = .{ 0.5, 0.75, 1.0, 0.5 } },
+        .has_override = true,
     }));
     try testing.expectEqual(@as(usize, 2), c_scene.snail_scene_command_count(scene.?));
 }
@@ -414,9 +421,19 @@ test "c_api: path picture builder" {
     var scene: ?*c.test_api.SceneImpl = null;
     try testing.expectEqual(c.SNAIL_OK, c_scene.snail_scene_init(null, &scene));
     defer c_scene.snail_scene_deinit(scene);
-    try testing.expectEqual(c.SNAIL_OK, c_scene.snail_scene_add_path_picture_range(scene.?, picture.?, 7, second_range));
-    try testing.expectEqual(c.SNAIL_OK, c_scene.snail_scene_add_path_picture_range_override(scene.?, picture.?, 7, second_range, .{
-        .tint = .{ 1, 0.5, 0.25, 1 },
+    try testing.expectEqual(c.SNAIL_OK, c_scene.snail_scene_add_path_picture_draw(scene.?, .{
+        .picture = picture.?,
+        .key = 7,
+        .range = second_range,
+        .has_range = true,
+    }));
+    try testing.expectEqual(c.SNAIL_OK, c_scene.snail_scene_add_path_picture_draw(scene.?, .{
+        .picture = picture.?,
+        .key = 7,
+        .range = second_range,
+        .override_value = .{ .tint = .{ 1, 0.5, 0.25, 1 } },
+        .has_range = true,
+        .has_override = true,
     }));
     try testing.expectEqual(@as(usize, 2), c_scene.snail_scene_command_count(scene.?));
 }

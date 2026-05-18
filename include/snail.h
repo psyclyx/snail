@@ -87,6 +87,22 @@ typedef struct {
 } SnailTextResourceKeys;
 
 typedef struct {
+    const SnailTextBlob *blob;
+    SnailTextResourceKeys resources;
+    SnailOverride override_value;
+    bool has_override;
+} SnailTextDraw;
+
+typedef struct {
+    const SnailPathPicture *picture;
+    SnailResourceKey key;
+    SnailRange range;
+    SnailOverride override_value;
+    bool has_range;
+    bool has_override;
+} SnailPathPictureDraw;
+
+typedef struct {
     uint64_t identity;
     uint64_t layout;
     uint64_t content;
@@ -577,6 +593,8 @@ size_t snail_scene_command_count(const SnailScene *scene);
 int snail_scene_add_text(SnailScene *scene,
                          const SnailTextBlob *blob,
                          SnailTextResourceKeys resources);
+int snail_scene_add_text_draw(SnailScene *scene,
+                              SnailTextDraw draw);
 int snail_scene_add_text_transformed(SnailScene *scene,
                                      const SnailTextBlob *blob,
                                      SnailTextResourceKeys resources,
@@ -588,6 +606,8 @@ int snail_scene_add_text_override(SnailScene *scene,
 int snail_scene_add_path_picture(SnailScene *scene,
                                  const SnailPathPicture *picture,
                                  SnailResourceKey key);
+int snail_scene_add_path_picture_draw(SnailScene *scene,
+                                      SnailPathPictureDraw draw);
 int snail_scene_add_path_picture_range(SnailScene *scene,
                                        const SnailPathPicture *picture,
                                        SnailResourceKey key,
@@ -631,6 +651,11 @@ int snail_text_blob_resource_keys(SnailResourceKey atlas_key,
                                   SnailResourceKey blob_key,
                                   const SnailTextBlob *blob,
                                   SnailTextResourceKeys *out);
+int snail_resource_manifest_put_text_blob_keyed(SnailResourceManifest *set,
+                                                SnailResourceKey atlas_key,
+                                                SnailResourceKey blob_key,
+                                                const SnailTextBlob *blob,
+                                                SnailTextResourceKeys *out);
 int snail_resource_manifest_put_text_blob(SnailResourceManifest *set,
                                           SnailTextResourceKeys resources,
                                           const SnailTextBlob *blob);
