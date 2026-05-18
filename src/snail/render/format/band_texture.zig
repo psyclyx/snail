@@ -13,6 +13,107 @@ const BandGeometry = struct {
     epsilon: f32,
 };
 
+const max_band_count = 12;
+const sentinel_band = std.math.maxInt(u16);
+
+const BandLists = struct {
+    h_band_count: u16,
+    v_band_count: u16,
+    h_band_min: [max_band_count]f32 = undefined,
+    h_band_max: [max_band_count]f32 = undefined,
+    v_band_min: [max_band_count]f32 = undefined,
+    v_band_max: [max_band_count]f32 = undefined,
+    h_first_member: []u16,
+    v_first_member: []u16,
+    h_lists: [max_band_count]std.ArrayList(u16) = undefined,
+    v_lists: [max_band_count]std.ArrayList(u16) = undefined,
+
+    fn init(allocator: std.mem.Allocator, curve_count: usize, geometry: BandGeometry, h_bands: u16, v_bands: u16) !BandLists {
+        var out = BandLists{
+            .h_band_count = h_bands,
+            .v_band_count = v_bands,
+            .h_first_member = try allocator.alloc(u16, curve_count),
+            .v_first_member = undefined,
+        };
+        errdefer allocator.free(out.h_first_member);
+        out.v_first_member = try allocator.alloc(u16, curve_count);
+        errdefer allocator.free(out.v_first_member);
+
+        var h_inited: usize = 0;
+        var v_inited: usize = 0;
+        errdefer {
+            while (h_inited > 0) {
+                h_inited -= 1;
+                out.h_lists[h_inited].deinit(allocator);
+            }
+            while (v_inited > 0) {
+                v_inited -= 1;
+                out.v_lists[v_inited].deinit(allocator);
+            }
+        }
+
+        for (0..h_bands) |bi| {
+            const t0 = @as(f32, @floatFromInt(bi)) / @as(f32, @floatFromInt(h_bands));
+            const t1 = @as(f32, @floatFromInt(bi + 1)) / @as(f32, @floatFromInt(h_bands));
+            out.h_band_min[bi] = geometry.bbox.min.y + geometry.height * t0 - geometry.epsilon;
+            out.h_band_max[bi] = geometry.bbox.min.y + geometry.height * t1 + geometry.epsilon;
+            out.h_lists[bi] = try std.ArrayList(u16).initCapacity(allocator, curve_count);
+            h_inited += 1;
+        }
+        for (0..v_bands) |bi| {
+            const t0 = @as(f32, @floatFromInt(bi)) / @as(f32, @floatFromInt(v_bands));
+            const t1 = @as(f32, @floatFromInt(bi + 1)) / @as(f32, @floatFromInt(v_bands));
+            out.v_band_min[bi] = geometry.bbox.min.x + geometry.width * t0 - geometry.epsilon;
+            out.v_band_max[bi] = geometry.bbox.min.x + geometry.width * t1 + geometry.epsilon;
+            out.v_lists[bi] = try std.ArrayList(u16).initCapacity(allocator, curve_count);
+            v_inited += 1;
+        }
+
+        @memset(out.h_first_member, sentinel_band);
+        @memset(out.v_first_member, sentinel_band);
+        return out;
+    }
+
+    fn deinit(self: *BandLists, allocator: std.mem.Allocator) void {
+        for (self.h_lists[0..@as(usize, self.h_band_count)]) |*band| band.deinit(allocator);
+        for (self.v_lists[0..@as(usize, self.v_band_count)]) |*band| band.deinit(allocator);
+        allocator.free(self.h_first_member);
+        allocator.free(self.v_first_member);
+    }
+
+    fn recordMembership(self: *BandLists, curve_bboxes: []const BBox) void {
+        for (curve_bboxes, 0..) |cb, ci| {
+            const curve_idx: u16 = @intCast(ci);
+            for (0..self.h_band_count) |bi| {
+                if (cb.max.y >= self.h_band_min[bi] and cb.min.y <= self.h_band_max[bi]) {
+                    if (self.h_first_member[ci] == sentinel_band) self.h_first_member[ci] = @intCast(bi);
+                    self.h_lists[bi].appendAssumeCapacity(curve_idx);
+                }
+            }
+            for (0..self.v_band_count) |bi| {
+                if (cb.max.x >= self.v_band_min[bi] and cb.min.x <= self.v_band_max[bi]) {
+                    if (self.v_first_member[ci] == sentinel_band) self.v_first_member[ci] = @intCast(bi);
+                    self.v_lists[bi].appendAssumeCapacity(curve_idx);
+                }
+            }
+        }
+    }
+
+    fn sortMembership(self: *BandLists, curve_sort_max_x: []const f32, curve_sort_max_y: []const f32) void {
+        for (self.h_lists[0..@as(usize, self.h_band_count)]) |band| {
+            sortCurveIndicesDescending(band.items, curve_sort_max_x);
+        }
+        for (self.v_lists[0..@as(usize, self.v_band_count)]) |band| {
+            sortCurveIndicesDescending(band.items, curve_sort_max_y);
+        }
+    }
+};
+
+const PackedBandData = struct {
+    data: []u16,
+    texel_count: u32,
+};
+
 fn curveControlMaxX(curve: CurveSegment) f32 {
     var result = @max(curve.p0.x, @max(curve.p1.x, curve.p2.x));
     if (curve.kind == .cubic) result = @max(result, curve.p3.x);
@@ -130,6 +231,120 @@ fn emptyGlyphBandData() GlyphBandData {
     };
 }
 
+fn collectPreparedCurveMetrics(
+    prepared_curves: []const CurveSegment,
+    curve_bboxes: []BBox,
+    curve_sort_max_x: []f32,
+    curve_sort_max_y: []f32,
+) BBox {
+    var prepared_bbox = prepared_curves[0].boundingBox();
+    for (prepared_curves, 0..) |curve, ci| {
+        const cb = curve.boundingBox();
+        curve_bboxes[ci] = cb;
+        curve_sort_max_x[ci] = curveControlMaxX(curve);
+        curve_sort_max_y[ci] = curveControlMaxY(curve);
+        prepared_bbox = if (ci == 0) cb else prepared_bbox.merge(cb);
+    }
+    return prepared_bbox;
+}
+
+fn collectBandGeometry(
+    curves: []const CurveSegment,
+    bbox: BBox,
+    origin: Vec2,
+    prefer_direct_encoding: bool,
+    prepared_curves: []const CurveSegment,
+    curve_bboxes: []BBox,
+    curve_sort_max_x: []f32,
+    curve_sort_max_y: []f32,
+) BandGeometry {
+    const prepared_bbox = collectPreparedCurveMetrics(
+        prepared_curves,
+        curve_bboxes,
+        curve_sort_max_x,
+        curve_sort_max_y,
+    );
+    if (prefer_direct_encoding) {
+        const delta = Vec2.new(-origin.x, -origin.y);
+        const direct_bbox = BBox{
+            .min = Vec2.add(bbox.min, delta),
+            .max = Vec2.add(bbox.max, delta),
+        };
+        const geometry_bbox = direct_bbox.merge(prepared_bbox);
+        return .{
+            .bbox = geometry_bbox,
+            .width = geometry_bbox.max.x - geometry_bbox.min.x,
+            .height = geometry_bbox.max.y - geometry_bbox.min.y,
+            .epsilon = directEncodingBandOverlap(curves, prepared_curves, origin),
+        };
+    }
+    return .{
+        .bbox = prepared_bbox,
+        .width = prepared_bbox.max.x - prepared_bbox.min.x,
+        .height = prepared_bbox.max.y - prepared_bbox.min.y,
+        .epsilon = @max(@as(f32, 1.0 / 1024.0), curve_tex.PACKED_BAND_DILATION),
+    };
+}
+
+fn packBandLists(
+    allocator: std.mem.Allocator,
+    curve_entry: curve_tex.GlyphCurveEntry,
+    lists: *const BandLists,
+) !PackedBandData {
+    const h_bands = @as(usize, lists.h_band_count);
+    const v_bands = @as(usize, lists.v_band_count);
+    const header_count: u32 = @as(u32, lists.h_band_count) + @as(u32, lists.v_band_count);
+    var total_indices: u32 = 0;
+    for (lists.h_lists[0..h_bands]) |band| total_indices += @intCast(band.items.len);
+    for (lists.v_lists[0..v_bands]) |band| total_indices += @intCast(band.items.len);
+
+    const total_texels = header_count + total_indices;
+    var data = try allocator.alloc(u16, total_texels * 2);
+    @memset(data, 0);
+
+    var index_offset: u32 = header_count;
+    for (0..h_bands) |bi| {
+        const band = lists.h_lists[bi];
+        data[bi * 2 + 0] = @intCast(band.items.len);
+        data[bi * 2 + 1] = @intCast(index_offset);
+        index_offset += @intCast(band.items.len);
+    }
+
+    for (0..v_bands) |bi| {
+        const off = (h_bands + bi) * 2;
+        const band = lists.v_lists[bi];
+        data[off + 0] = @intCast(band.items.len);
+        data[off + 1] = @intCast(index_offset);
+        index_offset += @intCast(band.items.len);
+    }
+
+    var write_pos: u32 = header_count;
+    for (lists.h_lists[0..h_bands]) |band| {
+        for (band.items) |curve_idx| {
+            const curve_texel = @as(u32, curve_entry.offset) + @as(u32, curve_idx) * curve_tex.SEGMENT_TEXELS;
+            const encoded = packBandCurveRef(curve_texel, lists.h_first_member[@intCast(curve_idx)]);
+            data[write_pos * 2 + 0] = encoded[0];
+            data[write_pos * 2 + 1] = encoded[1];
+            write_pos += 1;
+        }
+    }
+
+    for (lists.v_lists[0..v_bands]) |band| {
+        for (band.items) |curve_idx| {
+            const curve_texel = @as(u32, curve_entry.offset) + @as(u32, curve_idx) * curve_tex.SEGMENT_TEXELS;
+            const encoded = packBandCurveRef(curve_texel, lists.v_first_member[@intCast(curve_idx)]);
+            data[write_pos * 2 + 0] = encoded[0];
+            data[write_pos * 2 + 1] = encoded[1];
+            write_pos += 1;
+        }
+    }
+
+    return .{
+        .data = data,
+        .texel_count = total_texels,
+    };
+}
+
 pub fn buildGlyphBandDataForGlyph(
     allocator: std.mem.Allocator,
     glyph: curve_tex.GlyphCurves,
@@ -207,193 +422,30 @@ pub fn buildGlyphBandDataWithPreparedCurves(
     const band_curve_count = if (logical_curve_count == 0) curves.len else logical_curve_count;
     const h_bands = bandCount(band_curve_count);
     const v_bands = bandCount(band_curve_count);
-    const max_band_count = 12;
     std.debug.assert(h_bands <= max_band_count and v_bands <= max_band_count);
 
-    var curve_bboxes = try allocator.alloc(BBox, prepared_curves.len);
+    const curve_bboxes = try allocator.alloc(BBox, prepared_curves.len);
     defer allocator.free(curve_bboxes);
-    var curve_sort_max_x = try allocator.alloc(f32, prepared_curves.len);
+    const curve_sort_max_x = try allocator.alloc(f32, prepared_curves.len);
     defer allocator.free(curve_sort_max_x);
-    var curve_sort_max_y = try allocator.alloc(f32, prepared_curves.len);
+    const curve_sort_max_y = try allocator.alloc(f32, prepared_curves.len);
     defer allocator.free(curve_sort_max_y);
-    const geometry: BandGeometry = blk: {
-        if (prefer_direct_encoding) {
-            const delta = Vec2.new(-origin.x, -origin.y);
-            const direct_bbox = BBox{
-                .min = Vec2.add(bbox.min, delta),
-                .max = Vec2.add(bbox.max, delta),
-            };
-            var prepared_bbox = prepared_curves[0].boundingBox();
-            for (prepared_curves, 0..) |curve, ci| {
-                const cb = curve.boundingBox();
-                curve_bboxes[ci] = cb;
-                curve_sort_max_x[ci] = curveControlMaxX(curve);
-                curve_sort_max_y[ci] = curveControlMaxY(curve);
-                prepared_bbox = if (ci == 0) cb else prepared_bbox.merge(cb);
-            }
-            const geometry_bbox = direct_bbox.merge(prepared_bbox);
-            break :blk .{
-                .bbox = geometry_bbox,
-                .width = geometry_bbox.max.x - geometry_bbox.min.x,
-                .height = geometry_bbox.max.y - geometry_bbox.min.y,
-                .epsilon = directEncodingBandOverlap(curves, prepared_curves, origin),
-            };
-        }
+    const geometry = collectBandGeometry(
+        curves,
+        bbox,
+        origin,
+        prefer_direct_encoding,
+        prepared_curves,
+        curve_bboxes,
+        curve_sort_max_x,
+        curve_sort_max_y,
+    );
 
-        var prepared_bbox = prepared_curves[0].boundingBox();
-        for (prepared_curves, 0..) |curve, ci| {
-            const cb = curve.boundingBox();
-            curve_bboxes[ci] = cb;
-            curve_sort_max_x[ci] = curveControlMaxX(curve);
-            curve_sort_max_y[ci] = curveControlMaxY(curve);
-            prepared_bbox = if (ci == 0) cb else prepared_bbox.merge(cb);
-        }
-        break :blk .{
-            .bbox = prepared_bbox,
-            .width = prepared_bbox.max.x - prepared_bbox.min.x,
-            .height = prepared_bbox.max.y - prepared_bbox.min.y,
-            .epsilon = @max(@as(f32, 1.0 / 1024.0), curve_tex.PACKED_BAND_DILATION),
-        };
-    };
-
-    var h_band_min: [max_band_count]f32 = undefined;
-    var h_band_max: [max_band_count]f32 = undefined;
-    var v_band_min: [max_band_count]f32 = undefined;
-    var v_band_max: [max_band_count]f32 = undefined;
-    var h_first_member = try allocator.alloc(u16, prepared_curves.len);
-    defer allocator.free(h_first_member);
-    var v_first_member = try allocator.alloc(u16, prepared_curves.len);
-    defer allocator.free(v_first_member);
-    var h_lists: [max_band_count]std.ArrayList(u16) = undefined;
-    var v_lists: [max_band_count]std.ArrayList(u16) = undefined;
-    var h_inited: usize = 0;
-    var v_inited: usize = 0;
-    errdefer {
-        while (h_inited > 0) {
-            h_inited -= 1;
-            h_lists[h_inited].deinit(allocator);
-        }
-        while (v_inited > 0) {
-            v_inited -= 1;
-            v_lists[v_inited].deinit(allocator);
-        }
-    }
-
-    for (0..h_bands) |bi| {
-        const t0 = @as(f32, @floatFromInt(bi)) / @as(f32, @floatFromInt(h_bands));
-        const t1 = @as(f32, @floatFromInt(bi + 1)) / @as(f32, @floatFromInt(h_bands));
-        h_band_min[bi] = geometry.bbox.min.y + geometry.height * t0 - geometry.epsilon;
-        h_band_max[bi] = geometry.bbox.min.y + geometry.height * t1 + geometry.epsilon;
-        h_lists[bi] = try std.ArrayList(u16).initCapacity(allocator, prepared_curves.len);
-        h_inited += 1;
-    }
-    for (0..v_bands) |bi| {
-        const t0 = @as(f32, @floatFromInt(bi)) / @as(f32, @floatFromInt(v_bands));
-        const t1 = @as(f32, @floatFromInt(bi + 1)) / @as(f32, @floatFromInt(v_bands));
-        v_band_min[bi] = geometry.bbox.min.x + geometry.width * t0 - geometry.epsilon;
-        v_band_max[bi] = geometry.bbox.min.x + geometry.width * t1 + geometry.epsilon;
-        v_lists[bi] = try std.ArrayList(u16).initCapacity(allocator, prepared_curves.len);
-        v_inited += 1;
-    }
-
-    var band_lists_ready = false;
-    defer {
-        if (band_lists_ready) {
-            for (h_lists[0..@as(usize, h_bands)]) |*band| band.deinit(allocator);
-            for (v_lists[0..@as(usize, v_bands)]) |*band| band.deinit(allocator);
-        } else {
-            while (h_inited > 0) {
-                h_inited -= 1;
-                h_lists[h_inited].deinit(allocator);
-            }
-            while (v_inited > 0) {
-                v_inited -= 1;
-                v_lists[v_inited].deinit(allocator);
-            }
-        }
-    }
-    band_lists_ready = true;
-
-    const sentinel_band = std.math.maxInt(u16);
-    @memset(h_first_member[0..prepared_curves.len], sentinel_band);
-    @memset(v_first_member[0..prepared_curves.len], sentinel_band);
-
-    // Record band membership once per curve and append to pre-sized lists.
-    for (curve_bboxes, 0..) |cb, ci| {
-        const curve_idx: u16 = @intCast(ci);
-        for (0..h_bands) |bi| {
-            if (cb.max.y >= h_band_min[bi] and cb.min.y <= h_band_max[bi]) {
-                if (h_first_member[ci] == sentinel_band) h_first_member[ci] = @intCast(bi);
-                h_lists[bi].appendAssumeCapacity(curve_idx);
-            }
-        }
-        for (0..v_bands) |bi| {
-            if (cb.max.x >= v_band_min[bi] and cb.min.x <= v_band_max[bi]) {
-                if (v_first_member[ci] == sentinel_band) v_first_member[ci] = @intCast(bi);
-                v_lists[bi].appendAssumeCapacity(curve_idx);
-            }
-        }
-    }
-
-    // Sort curves within bands: horizontal bands by descending max x, vertical by descending max y
-    for (h_lists[0..@as(usize, h_bands)]) |band| {
-        sortCurveIndicesDescending(band.items, curve_sort_max_x);
-    }
-    for (v_lists[0..@as(usize, v_bands)]) |band| {
-        sortCurveIndicesDescending(band.items, curve_sort_max_y);
-    }
-
-    // Pack into band texture format.
-    // Layout: [h_bands headers] [v_bands headers] [h_band_indices...] [v_band_indices...]
-    const header_count: u32 = @as(u32, h_bands) + @as(u32, v_bands);
-    var total_indices: u32 = 0;
-    for (h_lists[0..@as(usize, h_bands)]) |band| total_indices += @intCast(band.items.len);
-    for (v_lists[0..@as(usize, v_bands)]) |band| total_indices += @intCast(band.items.len);
-
-    const total_texels = header_count + total_indices;
-    var data = try allocator.alloc(u16, total_texels * 2);
-    @memset(data, 0);
-
-    // Write horizontal band headers
-    var index_offset: u32 = header_count;
-    for (0..h_bands) |bi| {
-        const band = h_lists[bi];
-        data[bi * 2 + 0] = @intCast(band.items.len); // curve count
-        data[bi * 2 + 1] = @intCast(index_offset); // offset from glyph loc
-        index_offset += @intCast(band.items.len);
-    }
-
-    // Write vertical band headers
-    for (0..v_bands) |bi| {
-        const off = (@as(usize, h_bands) + bi) * 2;
-        const band = v_lists[bi];
-        data[off + 0] = @intCast(band.items.len);
-        data[off + 1] = @intCast(index_offset);
-        index_offset += @intCast(band.items.len);
-    }
-
-    // Write horizontal band index entries (curveLoc in curve texture)
-    var write_pos: u32 = header_count;
-    for (h_lists[0..h_bands]) |band| {
-        for (band.items) |curve_idx| {
-            const curve_texel = @as(u32, curve_entry.offset) + @as(u32, curve_idx) * curve_tex.SEGMENT_TEXELS;
-            const encoded = packBandCurveRef(curve_texel, h_first_member[@intCast(curve_idx)]);
-            data[write_pos * 2 + 0] = encoded[0];
-            data[write_pos * 2 + 1] = encoded[1];
-            write_pos += 1;
-        }
-    }
-
-    // Write vertical band index entries
-    for (v_lists[0..v_bands]) |band| {
-        for (band.items) |curve_idx| {
-            const curve_texel = @as(u32, curve_entry.offset) + @as(u32, curve_idx) * curve_tex.SEGMENT_TEXELS;
-            const encoded = packBandCurveRef(curve_texel, v_first_member[@intCast(curve_idx)]);
-            data[write_pos * 2 + 0] = encoded[0];
-            data[write_pos * 2 + 1] = encoded[1];
-            write_pos += 1;
-        }
-    }
+    var lists = try BandLists.init(allocator, prepared_curves.len, geometry, h_bands, v_bands);
+    defer lists.deinit(allocator);
+    lists.recordMembership(curve_bboxes);
+    lists.sortMembership(curve_sort_max_x, curve_sort_max_y);
+    const packed_data = try packBandLists(allocator, curve_entry, &lists);
 
     // Band transform: maps em-space coords to band indices
     const band_scale_x = @as(f32, @floatFromInt(v_bands)) / @max(geometry.width, 1e-10);
@@ -402,8 +454,8 @@ pub fn buildGlyphBandDataWithPreparedCurves(
     const band_offset_y = -geometry.bbox.min.y * band_scale_y;
 
     return .{
-        .data = data,
-        .texel_count = total_texels,
+        .data = packed_data.data,
+        .texel_count = packed_data.texel_count,
         .h_band_count = h_bands,
         .v_band_count = v_bands,
         .band_scale_x = band_scale_x,
