@@ -73,7 +73,7 @@ pub fn write(
 }
 
 fn writeBandHeader(data: []f32, texel_width: u32, texel_offset: u32, band_entry: band_tex.GlyphBandEntry, tag: f32) void {
-    const packed_bands: u32 = @as(u32, band_entry.h_band_count - 1) | (@as(u32, band_entry.v_band_count - 1) << 16);
+    const packed_bands = render_abi.packBandCounts(band_entry.h_band_count, band_entry.v_band_count);
     setTexel(data, texel_width, texel_offset + 0, .{
         @floatFromInt(band_entry.glyph_x),
         @floatFromInt(band_entry.glyph_y),

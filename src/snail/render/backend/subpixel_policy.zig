@@ -65,11 +65,10 @@ pub fn glyphRunIsSpecial(vertices: []const u32, glyph_index: usize) bool {
 pub fn glyphRunKind(vertices: []const u32, glyph_index: usize) GlyphRunKind {
     std.debug.assert(vertices.len % vertex.WORDS_PER_INSTANCE == 0);
     const packed_word = vertex.instanceAt(vertices, glyph_index).glyph[1];
-    if ((packed_word >> 24) != render_abi.special_layer_sentinel) return .regular;
-    const kind = @as(u8, @intCast((packed_word >> 16) & 0xFF));
-    return switch (kind) {
-        @intFromEnum(render_abi.SpecialLayerKind.path) => .path,
-        else => .colr,
+    if (!render_abi.glyphWordIsSpecial(packed_word)) return .regular;
+    return switch (render_abi.specialGlyphWordKind(packed_word) orelse .colr) {
+        .path => .path,
+        .colr => .colr,
     };
 }
 
@@ -272,14 +271,10 @@ test "LCD range mode accepts transformed glyphs" {
 
 test "special text run helpers split sentinel runs" {
     var buf = [_]u32{0} ** (vertex.WORDS_PER_INSTANCE * 4);
-    const sentinel = @as(u32, render_abi.special_layer_sentinel) << 24;
 
-    vertex.instanceAtMut(&buf, 1).glyph[1] = sentinel |
-        (@as(u32, @intFromEnum(render_abi.SpecialLayerKind.colr)) << 16);
-    vertex.instanceAtMut(&buf, 2).glyph[1] = sentinel |
-        (@as(u32, @intFromEnum(render_abi.SpecialLayerKind.colr)) << 16);
-    vertex.instanceAtMut(&buf, 3).glyph[1] = sentinel |
-        (@as(u32, @intFromEnum(render_abi.SpecialLayerKind.path)) << 16);
+    vertex.instanceAtMut(&buf, 1).glyph[1] = render_abi.specialGlyphWord(0, .colr);
+    vertex.instanceAtMut(&buf, 2).glyph[1] = render_abi.specialGlyphWord(0, .colr);
+    vertex.instanceAtMut(&buf, 3).glyph[1] = render_abi.specialGlyphWord(0, .path);
 
     try std.testing.expect(!glyphRunIsSpecial(&buf, 0));
     try std.testing.expect(glyphRunIsSpecial(&buf, 1));

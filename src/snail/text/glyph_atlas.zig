@@ -9,6 +9,7 @@ const font_mod = @import("../font.zig");
 const opentype = @import("../font/opentype.zig");
 const atlas_curve_mod = @import("../render/format/atlas/curve.zig");
 const atlas_page_mod = @import("../render/format/atlas/page.zig");
+const render_abi = @import("../render/format/abi.zig");
 const ttf = @import("../font/ttf.zig");
 
 const Atlas = atlas_curve_mod.Atlas;
@@ -269,11 +270,10 @@ fn colrBaseLayerInfo(self: *const Atlas, font: *const Font, gid: u16) ColrBaseLa
 
 fn writeColrLayerRecord(data: []f32, texel_offset: u32, linfo: GlyphInfo, layer: anytype) void {
     const be = linfo.band_entry;
-    const band_packed: u32 = @as(u32, be.h_band_count - 1) | (@as(u32, be.v_band_count - 1) << 16);
     writeColrTexel(data, texel_offset, .{
         @floatFromInt(be.glyph_x),
         @floatFromInt(be.glyph_y),
-        @bitCast(band_packed),
+        @bitCast(render_abi.packBandCounts(be.h_band_count, be.v_band_count)),
         @floatFromInt(linfo.page_index),
     });
     writeColrTexel(data, texel_offset + 1, .{

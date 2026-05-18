@@ -445,11 +445,11 @@ pub const CpuRenderer = struct {
         tint: [4]f32,
 
         fn atlasLayerByte(self: BatchInstance) u8 {
-            return @intCast(self.glyph[1] >> 24);
+            return render_abi.glyphWordAtlasLayer(self.glyph[1]);
         }
 
         fn isSpecialLayer(self: BatchInstance) bool {
-            return self.atlasLayerByte() == render_abi.special_layer_sentinel;
+            return render_abi.glyphWordIsSpecial(self.glyph[1]);
         }
     };
 
@@ -491,10 +491,10 @@ pub const CpuRenderer = struct {
         const gz = decoded.glyph[0];
         const gw = decoded.glyph[1];
         const be = GlyphBandEntry{
-            .glyph_x = @intCast(gz & 0xFFFF),
-            .glyph_y = @intCast(gz >> 16),
-            .h_band_count = @intCast((gw & 0xFFFF) + 1),
-            .v_band_count = @intCast(((gw >> 16) & 0xFF) + 1),
+            .glyph_x = render_abi.glyphLocationX(gz),
+            .glyph_y = render_abi.glyphLocationY(gz),
+            .h_band_count = render_abi.regularGlyphWordHBandCount(gw),
+            .v_band_count = render_abi.regularGlyphWordVBandCount(gw),
             .band_scale_x = decoded.band[0],
             .band_scale_y = decoded.band[1],
             .band_offset_x = decoded.band[2],
@@ -509,9 +509,9 @@ pub const CpuRenderer = struct {
     fn renderSpecialBatchInstance(self: *CpuRenderer, prepared: *const PreparedResources, decoded: BatchInstance, texture_layer_base: u32) void {
         const gz = decoded.glyph[0];
         const gw = decoded.glyph[1];
-        const layer_count: u16 = @intCast(gw & 0xFFFF);
-        const info_x: u16 = @intCast(gz & 0xFFFF);
-        const info_y: u16 = @intCast(gz >> 16);
+        const layer_count = render_abi.specialGlyphWordLayerCount(gw);
+        const info_x = render_abi.glyphLocationX(gz);
+        const info_y = render_abi.glyphLocationY(gz);
         const atlas_layer = texture_layer_base + @as(u32, @intFromFloat(decoded.band[3]));
 
         const resolved = prepared.resolveLayerInfo(info_y) orelse return;
@@ -550,9 +550,7 @@ pub const CpuRenderer = struct {
             if (t0 + 3 >= data.len) return;
             const glyph_x: u16 = @intFromFloat(data[t0 + 0]);
             const glyph_y: u16 = @intFromFloat(data[t0 + 1]);
-            const band_packed: u32 = @bitCast(data[t0 + 2]);
-            const h_band_count: u16 = @intCast((band_packed & 0xFFFF) + 1);
-            const v_band_count: u16 = @intCast(((band_packed >> 16) & 0xFFFF) + 1);
+            const band_counts = render_abi.unpackBandCounts(@bitCast(data[t0 + 2]));
 
             // texel 1: (band_scale_x, band_scale_y, band_offset_x, band_offset_y)
             const t1_base = base + 1;
@@ -579,8 +577,8 @@ pub const CpuRenderer = struct {
             const be = GlyphBandEntry{
                 .glyph_x = glyph_x,
                 .glyph_y = glyph_y,
-                .h_band_count = h_band_count,
-                .v_band_count = v_band_count,
+                .h_band_count = band_counts.h,
+                .v_band_count = band_counts.v,
                 .band_scale_x = data[t1 + 0],
                 .band_scale_y = data[t1 + 1],
                 .band_offset_x = data[t1 + 2],

@@ -153,9 +153,7 @@ fn decodeColor4(color: [4]u8) [4]f32 {
 }
 
 fn specialGlyphWord(layer_count: u16, kind: SpecialLayerKind) u32 {
-    return @as(u32, layer_count) |
-        (@as(u32, @intFromEnum(kind)) << 16) |
-        (@as(u32, render_abi.special_layer_sentinel) << 24);
+    return render_abi.specialGlyphWord(layer_count, kind);
 }
 
 fn instancePtr(words: []u32) *Instance {
@@ -501,9 +499,8 @@ test "multi-layer glyph instance preserves wide layer counts" {
     generateMultiLayerGlyphVertices(&buf, 10.0, 20.0, 24.0, bbox, 12, 34, 300, color, 7);
 
     const packed_gw = decodeInstance(&buf).glyph[1];
-    try std.testing.expectEqual(@as(u32, 300), packed_gw & 0xFFFF);
-    try std.testing.expectEqual(@as(u32, @intFromEnum(SpecialLayerKind.colr)), (packed_gw >> 16) & 0xFF);
-    try std.testing.expectEqual(@as(u32, render_abi.special_layer_sentinel), packed_gw >> 24);
+    try std.testing.expectEqual(@as(u16, 300), render_abi.specialGlyphWordLayerCount(packed_gw));
+    try std.testing.expectEqual(SpecialLayerKind.colr, render_abi.specialGlyphWordKind(packed_gw).?);
 }
 
 test "path record instance uses path special kind" {
@@ -516,9 +513,8 @@ test "path record instance uses path special kind" {
     generatePathRecordVerticesTinted(&buf, 10.0, 20.0, 24.0, bbox, 12, 34, 1, .{ 1, 1, 1, 1 }, .{ 1, 1, 1, 1 }, 7);
 
     const packed_gw = decodeInstance(&buf).glyph[1];
-    try std.testing.expectEqual(@as(u32, 1), packed_gw & 0xFFFF);
-    try std.testing.expectEqual(@as(u32, @intFromEnum(SpecialLayerKind.path)), (packed_gw >> 16) & 0xFF);
-    try std.testing.expectEqual(@as(u32, render_abi.special_layer_sentinel), packed_gw >> 24);
+    try std.testing.expectEqual(@as(u16, 1), render_abi.specialGlyphWordLayerCount(packed_gw));
+    try std.testing.expectEqual(SpecialLayerKind.path, render_abi.specialGlyphWordKind(packed_gw).?);
 }
 
 test "transformed glyph instance stores affine transform" {
@@ -582,10 +578,9 @@ test "transformed multi-layer glyph instance preserves info pointer and atlas se
     const decoded = decodeInstance(&buf);
     const packed_gz = decoded.glyph[0];
     const packed_gw = decoded.glyph[1];
-    try std.testing.expectEqual(@as(u32, 12), packed_gz & 0xFFFF);
-    try std.testing.expectEqual(@as(u32, 34), packed_gz >> 16);
-    try std.testing.expectEqual(@as(u32, 1), packed_gw & 0xFFFF);
-    try std.testing.expectEqual(@as(u32, @intFromEnum(SpecialLayerKind.colr)), (packed_gw >> 16) & 0xFF);
-    try std.testing.expectEqual(@as(u32, render_abi.special_layer_sentinel), packed_gw >> 24);
+    try std.testing.expectEqual(@as(u16, 12), render_abi.glyphLocationX(packed_gz));
+    try std.testing.expectEqual(@as(u16, 34), render_abi.glyphLocationY(packed_gz));
+    try std.testing.expectEqual(@as(u16, 1), render_abi.specialGlyphWordLayerCount(packed_gw));
+    try std.testing.expectEqual(SpecialLayerKind.colr, render_abi.specialGlyphWordKind(packed_gw).?);
     try std.testing.expectApproxEqAbs(@as(f32, 9), decoded.band[3], 0.001);
 }

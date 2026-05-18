@@ -149,8 +149,7 @@ test "path picture freeze compiles atlas and transformed batch vertices" {
     try std.testing.expectApproxEqAbs(@as(f32, 20), world_x, 0.5);
     try std.testing.expectApproxEqAbs(@as(f32, 30), world_y, 0.5);
     const packed_gw = s.glyph[1];
-    try std.testing.expectEqual(@as(u32, render_abi.special_layer_sentinel), packed_gw >> 24);
-    try std.testing.expectEqual(@as(u32, @intFromEnum(render_abi.SpecialLayerKind.path)), (packed_gw >> 16) & 0xFF);
+    try std.testing.expectEqual(render_abi.SpecialLayerKind.path, render_abi.specialGlyphWordKind(packed_gw).?);
     try std.testing.expectApproxEqAbs(@as(f32, 0), s.band[3], 0.001);
 }
 
@@ -282,8 +281,8 @@ test "path batch offsets layer info rows through atlas views" {
     }
     const s = vertex_mod.decodeInstance(path_batch.slice());
     const packed_gz = s.glyph[0];
-    try std.testing.expectEqual(@as(u32, compiled_picture.shapes[0].info_x), packed_gz & 0xFFFF);
-    try std.testing.expectEqual(@as(u32, offset_view.info_row_base + compiled_picture.shapes[0].info_y), packed_gz >> 16);
+    try std.testing.expectEqual(compiled_picture.shapes[0].info_x, render_abi.glyphLocationX(packed_gz));
+    try std.testing.expectEqual(offset_view.info_row_base + compiled_picture.shapes[0].info_y, render_abi.glyphLocationY(packed_gz));
     try std.testing.expectApproxEqAbs(@as(f32, @floatFromInt(try textureLayerLocal(offset_view.glyphLayer(0)))), s.band[3], 0.001);
 }
 

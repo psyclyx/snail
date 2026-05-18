@@ -197,12 +197,12 @@ fn preparePathLayerFromLayerInfoOffset(
 ) PreparedPathLayer {
     const info = fetchLayerInfoTexelOffset(data, texel_offset);
     const band = fetchLayerInfoTexelOffset(data, texel_offset + 1);
-    const band_packed: u32 = @bitCast(info[2]);
+    const band_counts = render_abi.unpackBandCounts(@bitCast(info[2]));
     const be = GlyphBandEntry{
         .glyph_x = @intFromFloat(info[0]),
         .glyph_y = @intFromFloat(info[1]),
-        .h_band_count = @intCast((band_packed & 0xFFFF) + 1),
-        .v_band_count = @intCast(((band_packed >> 16) & 0xFFFF) + 1),
+        .h_band_count = band_counts.h,
+        .v_band_count = band_counts.v,
         .band_scale_x = band[0],
         .band_scale_y = band[1],
         .band_offset_x = band[2],

@@ -552,8 +552,7 @@ test "ResourceManifest uploads explicit text paint resources" {
     try std.testing.expectEqual(@as(usize, 1), draw.slice().segments.len);
     try std.testing.expect(draw.slice().segments[0].key.eql(text_keys.paint.?));
     const decoded = vertex_mod.decodeInstance(draw.slice().words);
-    try std.testing.expectEqual(@as(u32, render_abi.special_layer_sentinel), decoded.glyph[1] >> 24);
-    try std.testing.expectEqual(@as(u32, @intFromEnum(render_abi.SpecialLayerKind.path)), (decoded.glyph[1] >> 16) & 0xFF);
+    try std.testing.expectEqual(render_abi.SpecialLayerKind.path, render_abi.specialGlyphWordKind(decoded.glyph[1]).?);
 }
 
 test "ResourceManifest footprint counts text image paint payloads" {

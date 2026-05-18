@@ -21,6 +21,70 @@ pub const paint_texels_per_record: u32 = 6;
 pub const composite_mode_source_over: u8 = 0;
 pub const composite_mode_fill_stroke_inside: u8 = 1;
 
+pub fn packGlyphLocation(x: u16, y: u16) u32 {
+    return @as(u32, x) | (@as(u32, y) << 16);
+}
+
+pub fn glyphLocationX(word: u32) u16 {
+    return @intCast(word & 0xffff);
+}
+
+pub fn glyphLocationY(word: u32) u16 {
+    return @intCast(word >> 16);
+}
+
+pub fn specialGlyphWord(layer_count: u16, kind: SpecialLayerKind) u32 {
+    return @as(u32, layer_count) |
+        (@as(u32, @intFromEnum(kind)) << 16) |
+        (@as(u32, special_layer_sentinel) << 24);
+}
+
+pub fn glyphWordAtlasLayer(word: u32) u8 {
+    return @intCast(word >> 24);
+}
+
+pub fn glyphWordIsSpecial(word: u32) bool {
+    return glyphWordAtlasLayer(word) == special_layer_sentinel;
+}
+
+pub fn specialGlyphWordLayerCount(word: u32) u16 {
+    return @intCast(word & 0xffff);
+}
+
+pub fn specialGlyphWordKind(word: u32) ?SpecialLayerKind {
+    if (!glyphWordIsSpecial(word)) return null;
+    const raw: u8 = @intCast((word >> 16) & 0xff);
+    return switch (raw) {
+        @intFromEnum(SpecialLayerKind.colr) => .colr,
+        @intFromEnum(SpecialLayerKind.path) => .path,
+        else => null,
+    };
+}
+
+pub fn regularGlyphWordHBandCount(word: u32) u16 {
+    return @intCast((word & 0xffff) + 1);
+}
+
+pub fn regularGlyphWordVBandCount(word: u32) u16 {
+    return @intCast(((word >> 16) & 0xff) + 1);
+}
+
+pub const BandCounts = struct {
+    h: u16,
+    v: u16,
+};
+
+pub fn packBandCounts(h: u16, v: u16) u32 {
+    return @as(u32, h - 1) | (@as(u32, v - 1) << 16);
+}
+
+pub fn unpackBandCounts(word: u32) BandCounts {
+    return .{
+        .h = @intCast((word & 0xffff) + 1),
+        .v = @intCast(((word >> 16) & 0xffff) + 1),
+    };
+}
+
 pub fn paintRecordTag(kind: PaintRecordKind) f32 {
     return -@as(f32, @floatFromInt(@intFromEnum(kind)));
 }
