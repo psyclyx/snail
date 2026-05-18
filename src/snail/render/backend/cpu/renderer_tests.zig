@@ -592,7 +592,6 @@ test "cpu direct sRGB pixels on linear attachment blends in storage space" {
     var buf = [_]u8{ 0, 0, 0, 255 };
     var renderer = CpuRenderer.init(buf[0..].ptr, 1, 1, 4);
     renderer.setTargetEncoding(.srgb_pixels_on_linear_attachment);
-    renderer.setResolve(.{ .direct = .{} });
 
     test_api.blendPremultipliedPixel(&renderer, 0, 0, .{ 0.5, 0.5, 0.5, 0.5 }, false);
 
@@ -605,8 +604,13 @@ test "cpu direct sRGB pixels on linear attachment blends in storage space" {
 test "cpu linear resolve sRGB pixels on linear attachment blends in linear space" {
     var buf = [_]u8{ 0, 0, 0, 255 };
     var renderer = CpuRenderer.init(buf[0..].ptr, 1, 1, 4);
-    renderer.setTargetEncoding(.srgb_pixels_on_linear_attachment);
-    renderer.setResolve(.{ .linear = .{} });
+    const surface = snail.TargetSurface{
+        .pixel_width = 1,
+        .pixel_height = 1,
+        .encoding = .srgb_pixels_on_linear_attachment,
+    };
+    const restore = try renderer.beginLinearResolve(surface, .{});
+    defer renderer.endLinearResolve(restore);
 
     test_api.blendPremultipliedPixel(&renderer, 0, 0, .{ 0.5, 0.5, 0.5, 0.5 }, false);
 
@@ -637,7 +641,7 @@ test "cpu linear resolve clear backdrop seeds only resolve region" {
         .encoding = .srgb_pixels_on_linear_attachment,
     };
 
-    const restore = renderer.beginLinearResolve(surface, linear);
+    const restore = try renderer.beginLinearResolve(surface, linear);
     renderer.endLinearResolve(restore);
 
     for (0..height_usize) |row| {

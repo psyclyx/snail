@@ -13,6 +13,7 @@ const LinearResolve = snail_mod.LinearResolve;
 const PixelRect = snail_mod.PixelRect;
 const IntermediateFormat = snail_mod.IntermediateFormat;
 const DrawState = snail_mod.DrawState;
+const TargetSurface = snail_mod.TargetSurface;
 
 // ── Backend selection ──
 
@@ -74,6 +75,7 @@ pub const GlTextState = struct {
     linear_resolve_width: u32 = 0,
     linear_resolve_height: u32 = 0,
     linear_resolve_format: IntermediateFormat = .rgba16f,
+    linear_resolve_active: bool = false,
     vao: gl.GLuint = 0,
     vbo: gl.GLuint = 0,
     ebo: gl.GLuint = 0,
@@ -263,7 +265,12 @@ pub const GlTextState = struct {
         };
     }
 
-    pub fn beginLinearResolve(self: *GlTextState, width: u32, height: u32, resolve: LinearResolve) !LinearResolveRestore {
+    pub fn beginLinearResolve(self: *GlTextState, surface: TargetSurface, resolve: LinearResolve) !LinearResolveRestore {
+        if (!surface.supportsLinearResolve()) return error.UnsupportedResolve;
+        if (self.linear_resolve_active) return error.LinearResolveAlreadyActive;
+        const target_rect = surface.pixelRect();
+        const width = target_rect.w;
+        const height = target_rect.h;
         if (width == 0 or height == 0) return error.InvalidTargetSurface;
         try self.ensureLinearResolve(width, height, resolve.intermediate_format);
 
@@ -296,10 +303,12 @@ pub const GlTextState = struct {
             },
             .dont_care => {},
         }
+        self.linear_resolve_active = true;
         return restore;
     }
 
     pub fn endLinearResolve(self: *GlTextState, restore: LinearResolveRestore) void {
+        std.debug.assert(self.linear_resolve_active);
         gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, @intCast(restore.draw_fbo));
         gl.glViewport(restore.viewport[0], restore.viewport[1], restore.viewport[2], restore.viewport[3]);
         gl.glDisable(gl.GL_DEPTH_TEST);
@@ -325,6 +334,7 @@ pub const GlTextState = struct {
             gl.glDisable(gl.GL_SCISSOR_TEST);
         }
         gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, @intCast(restore.read_fbo));
+        self.linear_resolve_active = false;
         self.frame_begun = false;
     }
 
@@ -632,7 +642,8 @@ pub const GlTextState = struct {
             gl.glUniform1i(prog_state.subpixel_order_loc, @intFromEnum(order));
         }
         if (prog_state.output_srgb_loc >= 0) {
-            gl.glUniform1i(prog_state.output_srgb_loc, @intFromBool(draw_state.surface.encoding.shaderEncodesSrgb()));
+            const output_srgb = draw_state.surface.encoding.shaderEncodesSrgb() and !self.linear_resolve_active;
+            gl.glUniform1i(prog_state.output_srgb_loc, @intFromBool(output_srgb));
         }
         if (prog_state.coverage_exponent_loc >= 0) {
             gl.glUniform1f(prog_state.coverage_exponent_loc, draw_state.raster.coverage_transfer.shaderExponent());

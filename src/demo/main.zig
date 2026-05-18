@@ -42,11 +42,11 @@ fn displayTargetEncoding(info: presentation.Info) snail.TargetEncoding {
     };
 }
 
-fn displayResolve(kind: renderer_driver.Kind, encoding: snail.TargetEncoding) snail.Resolve {
+fn displayLinearResolve(kind: renderer_driver.Kind, encoding: snail.TargetEncoding) ?snail.LinearResolve {
     if (encoding.attachment == .linear and encoding.stored_pixels == .srgb and kind != .vulkan) {
-        return .{ .linear = .{} };
+        return .{};
     }
-    return .{ .direct = .{} };
+    return null;
 }
 
 fn cycleSubpixelOrder(o: snail.SubpixelOrder) snail.SubpixelOrder {
@@ -86,11 +86,8 @@ fn colorEncodingInt(encoding: snail.ColorEncoding) u32 {
     };
 }
 
-fn resolveLinearInt(resolve: snail.Resolve) u32 {
-    return switch (resolve) {
-        .direct => 0,
-        .linear => 1,
-    };
+fn resolveLinearInt(resolve: ?snail.LinearResolve) u32 {
+    return if (resolve == null) 0 else 1;
 }
 
 fn printMat4Bits(name: []const u8, m: snail.Mat4) void {
@@ -116,7 +113,7 @@ fn dumpReproFrame(
     current_order: snail.SubpixelOrder,
     present: presentation.Info,
     target_encoding: snail.TargetEncoding,
-    resolve: snail.Resolve,
+    resolve: ?snail.LinearResolve,
     pan_x: f32,
     pan_y: f32,
     zoom: f32,
@@ -295,7 +292,7 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
         const size = present.logical_size;
         const fb_size = present.framebuffer_size;
         const target_encoding = displayTargetEncoding(present);
-        const resolve = displayResolve(active.kind(), target_encoding);
+        const linear_resolve = displayLinearResolve(active.kind(), target_encoding);
         const w: f32 = @floatFromInt(size[0]);
         const h: f32 = @floatFromInt(size[1]);
         const viewport_w: f32 = @floatFromInt(fb_size[0]);
@@ -357,7 +354,7 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
         );
         const mvp = snail.Mat4.multiply(projection, scene_transform);
         if (dump_repro or (dump_every != 0 and frame_count % dump_every == 0)) {
-            dumpReproFrame(frame_count, active.backendName(), current_order, present, target_encoding, resolve, pan_x, pan_y, zoom, angle, projection, scene_transform, mvp);
+            dumpReproFrame(frame_count, active.backendName(), current_order, present, target_encoding, linear_resolve, pan_x, pan_y, zoom, angle, projection, scene_transform, mvp);
         }
         const draw_state = snail.DrawState{
             .mvp = mvp,
@@ -381,7 +378,13 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
         var draw = snail.DrawList.init(draw_buf[0..needed], draw_segments_buf[0..needed_segments]);
         try draw.addScene(&prepared.?, &scene);
         var renderer = active.renderer();
-        try renderer.draw(&prepared.?, draw.slice(), draw_state);
+        if (linear_resolve) |resolve| {
+            const restore = try active.beginLinearResolve(draw_state.surface, resolve);
+            defer active.endLinearResolve(restore);
+            try renderer.draw(&prepared.?, draw.slice(), draw_state);
+        } else {
+            try renderer.draw(&prepared.?, draw.slice(), draw_state);
+        }
 
         if (frame_count == 2) {
             active.captureDebugFrame(allocator, fb_size);

@@ -501,8 +501,7 @@ borrowed `Scene` + `PathDraw` / `TextDraw` primitive used by Zig.
 | `TargetSurface` | Per-draw target pixel size and color encoding. |
 | `RasterOptions` | Per-draw raster policy: subpixel order, fill rule, and coverage transfer. |
 | `TargetEncoding` | Pair of color encodings for attachment interpretation and final stored pixels. Common presets are `.srgb`, `.linear`, and `.srgb_pixels_on_linear_attachment`. |
-| `Resolve` | Explicit resolve path for gamma-correct Snail composition into sRGB pixels on a linear attachment. |
-| `LinearResolve` | Options for linear resolve: `backdrop`, `region`, and `intermediate_format`. |
+| `LinearResolve` | Explicit resolve-pass options for gamma-correct Snail composition into sRGB pixels on a linear attachment. |
 | `ResolveBackdrop` | Backdrop contract for a linear resolve: `.target`, `.clear`, `.transparent`, or `.dont_care`. |
 | `ResolveRegion` | Full-target or pixel-rectangle bounds for a resolve. |
 | `PixelRect` | Integer pixel rectangle `{ .x, .y, .w, .h }` used by `ResolveRegion.pixel_rect`. |

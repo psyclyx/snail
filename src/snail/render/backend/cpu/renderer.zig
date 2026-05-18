@@ -76,7 +76,8 @@ pub const CpuRenderer = struct {
     /// Encoding of the caller-owned pixel buffer. The unified `Renderer.draw`
     /// path sets this from `DrawState.surface.encoding` every frame.
     target_encoding: snail.TargetEncoding,
-    target_resolve: snail.Resolve,
+    target_resolve: cpu_blend.ResolveMode,
+    linear_resolve_active: bool,
     coverage_transfer: snail.CoverageTransfer,
     thread_pool: ?*snail.ThreadPool,
     // Half-open row window [row_clip_min, row_clip_max). Pixel writes outside
@@ -101,7 +102,8 @@ pub const CpuRenderer = struct {
             // doc). The unified `Renderer.draw` path overrides this from
             // `DrawState.surface.encoding` per frame.
             .target_encoding = .srgb,
-            .target_resolve = .{ .direct = .{} },
+            .target_resolve = .{ .direct = {} },
+            .linear_resolve_active = false,
             .coverage_transfer = .identity,
             .thread_pool = null,
             .row_clip_min = 0,
@@ -164,14 +166,6 @@ pub const CpuRenderer = struct {
         return self.target_encoding;
     }
 
-    pub fn setResolve(self: *CpuRenderer, resolve: snail.Resolve) void {
-        self.target_resolve = resolve;
-    }
-
-    pub fn getResolve(self: *const CpuRenderer) snail.Resolve {
-        return self.target_resolve;
-    }
-
     pub fn setCoverageTransfer(self: *CpuRenderer, transfer: snail.CoverageTransfer) void {
         self.coverage_transfer = transfer;
     }
@@ -186,10 +180,15 @@ pub const CpuRenderer = struct {
         col_clip_min: u32,
         col_clip_max: u32,
         target_encoding: snail.TargetEncoding,
-        target_resolve: snail.Resolve,
+        target_resolve: cpu_blend.ResolveMode,
+        linear_resolve_active: bool,
     };
 
-    pub fn beginLinearResolve(self: *CpuRenderer, surface: snail.TargetSurface, resolve: snail.LinearResolve) LinearResolveRestore {
+    pub fn beginLinearResolve(self: *CpuRenderer, surface: snail.TargetSurface, resolve: snail.LinearResolve) !LinearResolveRestore {
+        if (!surface.supportsLinearResolve()) return error.UnsupportedResolve;
+        if (self.linear_resolve_active) return error.LinearResolveAlreadyActive;
+        const rect = snail.resolveRect(surface, resolve);
+        if (rect.w == 0 or rect.h == 0) return error.InvalidTargetSurface;
         const restore = LinearResolveRestore{
             .row_clip_min = self.row_clip_min,
             .row_clip_max = self.row_clip_max,
@@ -197,25 +196,28 @@ pub const CpuRenderer = struct {
             .col_clip_max = self.col_clip_max,
             .target_encoding = self.target_encoding,
             .target_resolve = self.target_resolve,
+            .linear_resolve_active = self.linear_resolve_active,
         };
-        const rect = snail.resolveRect(surface, resolve);
         self.col_clip_min = @intCast(rect.x);
         self.row_clip_min = @intCast(rect.y);
         self.col_clip_max = self.col_clip_min + rect.w;
         self.row_clip_max = self.row_clip_min + rect.h;
         self.target_encoding = surface.encoding;
         self.target_resolve = .{ .linear = resolve };
+        self.linear_resolve_active = true;
         self.seedLinearResolveBackdrop(surface.encoding, rect, resolve.backdrop);
         return restore;
     }
 
     pub fn endLinearResolve(self: *CpuRenderer, restore: LinearResolveRestore) void {
+        std.debug.assert(self.linear_resolve_active);
         self.row_clip_min = restore.row_clip_min;
         self.row_clip_max = restore.row_clip_max;
         self.col_clip_min = restore.col_clip_min;
         self.col_clip_max = restore.col_clip_max;
         self.target_encoding = restore.target_encoding;
         self.target_resolve = restore.target_resolve;
+        self.linear_resolve_active = restore.linear_resolve_active;
     }
 
     fn seedLinearResolveBackdrop(self: *CpuRenderer, encoding: snail.TargetEncoding, rect: snail.PixelRect, backdrop: snail.ResolveBackdrop) void {
@@ -351,7 +353,7 @@ pub const CpuRenderer = struct {
         fill_rule: FillRule,
         subpixel_order: SubpixelOrder,
         target_encoding: snail.TargetEncoding,
-        target_resolve: snail.Resolve,
+        target_resolve: cpu_blend.ResolveMode,
         coverage_transfer: snail.CoverageTransfer,
     };
 
@@ -360,13 +362,13 @@ pub const CpuRenderer = struct {
             .fill_rule = self.fill_rule,
             .subpixel_order = self.subpixel_order,
             .target_encoding = self.target_encoding,
-            .target_resolve = self.target_resolve,
             .coverage_transfer = self.coverage_transfer,
+            .target_resolve = self.target_resolve,
         };
         self.fill_rule = state.raster.fill_rule;
         self.subpixel_order = state.raster.subpixel_order;
         self.target_encoding = state.surface.encoding;
-        self.target_resolve = .{ .direct = .{} };
+        if (!self.linear_resolve_active) self.target_resolve = .{ .direct = {} };
         self.coverage_transfer = state.raster.coverage_transfer;
         return restore;
     }

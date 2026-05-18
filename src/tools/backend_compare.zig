@@ -14,6 +14,7 @@ const GL_SRGB8_ALPHA8: gl.GLenum = 0x8C43;
 const DUMP_DIR = "zig-out/backend-compare";
 const DEVANAGARI_TEXT = "\xe0\xa4\xa8\xe0\xa4\xae\xe0\xa4\xb8\xe0\xa5\x8d\xe0\xa4\xa4\xe0\xa5\x87";
 const LINEAR_RESOLVE_SEED = [4]u8{ 34, 45, 59, 255 };
+const LINEAR_RESOLVE = snail.LinearResolve{};
 const APPEND_BASE_TEXT = "ABCDEFGHIJKLMNOPQRSTUVWXY";
 const APPEND_DRAW_TEXT = "SNAP";
 const APPEND_EXTRA_TEXT = "Z";
@@ -372,6 +373,29 @@ fn renderCpuSeeded(
     return pixels;
 }
 
+fn renderCpuLinearSeeded(
+    allocator: std.mem.Allocator,
+    scene: *const snail.Scene,
+    state: snail.DrawState,
+    seed: [4]u8,
+    resolve: snail.LinearResolve,
+) ![]u8 {
+    const pixels = try allocator.alloc(u8, WIDTH * HEIGHT * 4);
+    errdefer allocator.free(pixels);
+    clearPixelsTo(pixels, seed);
+
+    var cpu = snail.CpuRenderer.init(pixels.ptr, WIDTH, HEIGHT, WIDTH * 4);
+    const restore = try cpu.beginLinearResolve(state.surface, resolve);
+    defer cpu.endLinearResolve(restore);
+    var renderer = cpu.asRenderer();
+    var prepared = try uploadSceneResources(allocator, &renderer, scene);
+    defer prepared.deinit();
+    var prepared_scene = try snail.PreparedScene.initOwned(allocator, &prepared, scene);
+    defer prepared_scene.deinit();
+    try renderer.drawPrepared(&prepared, &prepared_scene, state);
+    return pixels;
+}
+
 fn initFramebuffer(internal_format: gl.GLenum) !struct { fbo: gl.GLuint, texture: gl.GLuint } {
     var fbo: gl.GLuint = 0;
     var tex: gl.GLuint = 0;
@@ -438,6 +462,36 @@ fn renderGlSeeded(
     var prepared_scene = try snail.PreparedScene.initOwned(allocator, &prepared, scene);
     defer prepared_scene.deinit();
     try renderer.drawPrepared(&prepared, &prepared_scene, options);
+    gl.glFinish();
+
+    const pixels = try screenshot.captureFramebuffer(allocator, WIDTH, HEIGHT);
+    flipRowsInPlace(pixels);
+    return pixels;
+}
+
+fn renderGlLinearSeeded(
+    allocator: std.mem.Allocator,
+    gl_renderer: *snail.GlRenderer,
+    fbo: gl.GLuint,
+    scene: *const snail.Scene,
+    state: snail.DrawState,
+    seed: [4]u8,
+    resolve: snail.LinearResolve,
+) ![]u8 {
+    gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, fbo);
+    gl.glViewport(0, 0, WIDTH, HEIGHT);
+    clearGlTo(seed);
+
+    var renderer = gl_renderer.asRenderer();
+    var prepared = try uploadSceneResources(allocator, &renderer, scene);
+    defer prepared.deinit();
+    var prepared_scene = try snail.PreparedScene.initOwned(allocator, &prepared, scene);
+    defer prepared_scene.deinit();
+    {
+        const restore = try gl_renderer.beginLinearResolve(state.surface, resolve);
+        defer gl_renderer.endLinearResolve(restore);
+        try renderer.drawPrepared(&prepared, &prepared_scene, state);
+    }
     gl.glFinish();
 
     const pixels = try screenshot.captureFramebuffer(allocator, WIDTH, HEIGHT);
@@ -942,7 +996,6 @@ fn buildAppendedPagePreparedScene(
     allocator: std.mem.Allocator,
     prepared: *const snail.PreparedResources,
     atlas: *const snail.TextAtlas,
-    options: snail.DrawState,
 ) !struct { blob: *snail.TextBlob, scene: snail.Scene, prepared_scene: snail.PreparedScene } {
     const blob = try allocator.create(snail.TextBlob);
     errdefer allocator.destroy(blob);
@@ -988,7 +1041,7 @@ fn runGlAppendSnapshotRegression(
 
     try checkPixelMatch(allocator, "append-snapshot", backend_name, "gl-before", backend_name, "gl-after", before, after, exact_policy);
 
-    var appended_draw = try buildAppendedPagePreparedScene(allocator, &appended, &grown, options);
+    var appended_draw = try buildAppendedPagePreparedScene(allocator, &appended, &grown);
     defer {
         appended_draw.blob.deinit();
         allocator.destroy(appended_draw.blob);
@@ -1035,7 +1088,7 @@ fn runVulkanAppendSnapshotRegression(
 
     try checkPixelMatch(allocator, "append-snapshot", backend_name, "vulkan-before", backend_name, "vulkan-after", before, after, exact_policy);
 
-    var appended_draw = try buildAppendedPagePreparedScene(allocator, &appended, &grown, options);
+    var appended_draw = try buildAppendedPagePreparedScene(allocator, &appended, &grown);
     defer {
         appended_draw.blob.deinit();
         allocator.destroy(appended_draw.blob);
@@ -1203,9 +1256,9 @@ pub fn main() !void {
             const linear_case_name = try std.fmt.allocPrint(allocator, "{s}-linear-resolve", .{case.name});
             defer allocator.free(linear_case_name);
             const linear_options = linearResolveDrawState(case.subpixel_order);
-            const cpu_linear_pixels = try renderCpuSeeded(allocator, &scene_bundle.scene, linear_options, LINEAR_RESOLVE_SEED);
+            const cpu_linear_pixels = try renderCpuLinearSeeded(allocator, &scene_bundle.scene, linear_options, LINEAR_RESOLVE_SEED, LINEAR_RESOLVE);
             defer allocator.free(cpu_linear_pixels);
-            const gl_linear_pixels = try renderGlSeeded(allocator, &gl_renderer, linear_framebuffer.fbo, &scene_bundle.scene, linear_options, LINEAR_RESOLVE_SEED);
+            const gl_linear_pixels = try renderGlLinearSeeded(allocator, &gl_renderer_state, linear_framebuffer.fbo, &scene_bundle.scene, linear_options, LINEAR_RESOLVE_SEED, LINEAR_RESOLVE);
             defer allocator.free(gl_linear_pixels);
             checkBackendAgainstCpu(allocator, linear_case_name, gl_renderer_state.backendName(), "gl", cpu_linear_pixels, gl_linear_pixels) catch {
                 any_failure = true;

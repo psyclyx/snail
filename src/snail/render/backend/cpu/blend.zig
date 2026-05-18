@@ -13,12 +13,17 @@ const srgbToLinear = cpu_color.srgbToLinear;
 const premultiplySubpixelCoverage = cpu_coverage.premultiplySubpixelCoverage;
 const subpixelBlendCoverage = cpu_coverage.subpixelBlendCoverage;
 
+pub const ResolveMode = union(enum) {
+    direct: void,
+    linear: snail.LinearResolve,
+};
+
 pub const Target = struct {
     pixels: [*]u8,
     stride: u32,
     height: u32,
     target_encoding: snail.TargetEncoding,
-    target_resolve: snail.Resolve,
+    target_resolve: ResolveMode,
 
     inline fn readDstChannel(self: Target, byte: u8) f32 {
         if (self.storageSpaceSrgbBlend()) {

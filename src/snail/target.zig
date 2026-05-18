@@ -71,24 +71,10 @@ pub const IntermediateFormat = enum(c_int) {
     rgba32f = 1,
 };
 
-pub const DirectResolve = struct {};
-
 pub const LinearResolve = struct {
     backdrop: ResolveBackdrop = .target,
     region: ResolveRegion = .full_target,
     intermediate_format: IntermediateFormat = .rgba16f,
-};
-
-pub const Resolve = union(enum) {
-    direct: DirectResolve,
-    linear: LinearResolve,
-
-    pub fn isLinear(self: Resolve) bool {
-        return switch (self) {
-            .direct => false,
-            .linear => true,
-        };
-    }
 };
 
 pub const TargetSurface = struct {

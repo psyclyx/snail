@@ -20,6 +20,7 @@ pub const VulkanContext = pipeline.VulkanContext;
 const CoverageBackend = coverage_mod.Backend;
 const DrawState = draw_mod.DrawState;
 const DrawRecords = draw_mod.DrawRecords;
+const LinearResolve = draw_mod.LinearResolve;
 const ErasedRenderer = interface.Renderer;
 const PendingResourceUpload = upload_mod.PendingResourceUpload;
 const PreparedResources = prepared_mod.PreparedResources;
@@ -28,6 +29,7 @@ const ResourceCacheStats = upload_mod.ResourceCacheStats;
 const ResourceSet = set_mod.ResourceSet;
 const ResourceUploadPlan = upload_mod.ResourceUploadPlan;
 const ResourceUploadBatch = upload_mod.ResourceUploadBatch;
+const TargetSurface = draw_mod.TargetSurface;
 const UploadAllocators = upload_mod.UploadAllocators;
 
 const Config = if (build_options.enable_vulkan) struct {
@@ -78,6 +80,7 @@ pub const vtable = if (build_options.enable_vulkan) common.vtable(Config) else i
 /// takes a backend-specific argument, has somewhere to live.
 pub const Renderer = if (build_options.enable_vulkan) struct {
     const Self = @This();
+    pub const LinearResolveRestore = void;
 
     allocator: std.mem.Allocator,
     state: *pipeline.VulkanPipeline,
@@ -129,6 +132,12 @@ pub const Renderer = if (build_options.enable_vulkan) struct {
         var renderer = self.asRenderer();
         try renderer.drawPrepared(prepared, scene, state);
     }
+
+    pub fn beginLinearResolve(_: *Self, _: TargetSurface, _: LinearResolve) !LinearResolveRestore {
+        return error.UnsupportedResolve;
+    }
+
+    pub fn endLinearResolve(_: *Self, _: LinearResolveRestore) void {}
 
     pub fn coverageBackend(self: *Self, prepared_resources: *const PreparedResources) ?CoverageBackend {
         if (prepared_resources.backend.vulkan) |vk_resources| {

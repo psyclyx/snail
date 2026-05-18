@@ -182,6 +182,7 @@ fn renderRepro(allocator: std.mem.Allocator) !void {
         .attachment = colorEncodingFromEnv("SNAIL_REPRO_ATTACHMENT", .srgb),
         .stored_pixels = colorEncodingFromEnv("SNAIL_REPRO_STORED", .srgb),
     };
+    const linear_resolve = envBool("SNAIL_REPRO_RESOLVE_LINEAR", false);
 
     var gl_ctx = try egl_offscreen.Context.init(framebuffer_width, framebuffer_height);
     defer gl_ctx.deinit();
@@ -246,7 +247,13 @@ fn renderRepro(allocator: std.mem.Allocator) !void {
     defer allocator.free(draw_segments_buf);
     var draw = snail.DrawList.init(draw_buf, draw_segments_buf);
     try draw.addScene(&prepared, &scene);
-    try renderer.draw(&prepared, draw.slice(), draw_state);
+    if (linear_resolve) {
+        const restore = try gl_renderer.beginLinearResolve(draw_state.surface, .{});
+        defer gl_renderer.endLinearResolve(restore);
+        try renderer.draw(&prepared, draw.slice(), draw_state);
+    } else {
+        try renderer.draw(&prepared, draw.slice(), draw_state);
+    }
 
     if (screenshot.captureFramebuffer(allocator, framebuffer_width, framebuffer_height) catch null) |px| {
         defer allocator.free(px);

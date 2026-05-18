@@ -95,6 +95,11 @@ pub const Driver = union(Kind) {
     cpu_less_threaded: if (build_options.enable_cpu) CpuDriver else void,
     cpu_unthreaded: if (build_options.enable_cpu) CpuDriver else void,
 
+    pub const LinearResolveRestore = union(enum) {
+        gl: if (build_options.enable_opengl) snail.GlRenderer.LinearResolveRestore else void,
+        cpu: if (build_options.enable_cpu) snail.CpuRenderer.LinearResolveRestore else void,
+    };
+
     pub fn init(allocator: std.mem.Allocator, window: *wayland.Window, selected: Kind) !Driver {
         return switch (selected) {
             .vulkan => if (comptime build_options.enable_vulkan)
@@ -194,6 +199,43 @@ pub const Driver = union(Kind) {
             .cpu_less_threaded => |*driver| if (comptime build_options.enable_cpu) driver.beginFrame(clear_srgb, target_encoding) else false,
             .cpu_unthreaded => |*driver| if (comptime build_options.enable_cpu) driver.beginFrame(clear_srgb, target_encoding) else false,
         };
+    }
+
+    pub fn beginLinearResolve(self: *Driver, surface: snail.TargetSurface, resolve: snail.LinearResolve) !LinearResolveRestore {
+        return switch (self.*) {
+            .vulkan => error.UnsupportedResolve,
+            .gl => |*driver| if (comptime build_options.enable_opengl)
+                .{ .gl = try driver.renderer_state.beginLinearResolve(surface, resolve) }
+            else
+                unreachable,
+            .cpu => |*driver| if (comptime build_options.enable_cpu)
+                .{ .cpu = try driver.renderer_state.beginLinearResolve(surface, resolve) }
+            else
+                unreachable,
+            .cpu_less_threaded => |*driver| if (comptime build_options.enable_cpu)
+                .{ .cpu = try driver.renderer_state.beginLinearResolve(surface, resolve) }
+            else
+                unreachable,
+            .cpu_unthreaded => |*driver| if (comptime build_options.enable_cpu)
+                .{ .cpu = try driver.renderer_state.beginLinearResolve(surface, resolve) }
+            else
+                unreachable,
+        };
+    }
+
+    pub fn endLinearResolve(self: *Driver, restore: LinearResolveRestore) void {
+        switch (restore) {
+            .gl => |gl_restore| switch (self.*) {
+                .gl => |*driver| if (comptime build_options.enable_opengl) driver.renderer_state.endLinearResolve(gl_restore) else unreachable,
+                else => unreachable,
+            },
+            .cpu => |cpu_restore| switch (self.*) {
+                .cpu => |*driver| if (comptime build_options.enable_cpu) driver.renderer_state.endLinearResolve(cpu_restore) else unreachable,
+                .cpu_less_threaded => |*driver| if (comptime build_options.enable_cpu) driver.renderer_state.endLinearResolve(cpu_restore) else unreachable,
+                .cpu_unthreaded => |*driver| if (comptime build_options.enable_cpu) driver.renderer_state.endLinearResolve(cpu_restore) else unreachable,
+                else => unreachable,
+            },
+        }
     }
 
     pub fn endFrame(self: *Driver) void {
