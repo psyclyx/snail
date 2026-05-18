@@ -5,6 +5,7 @@ const vk = common.vk;
 const SNAIL_OK = common.SNAIL_OK;
 const SNAIL_ERR_RENDERER_FAILED = common.SNAIL_ERR_RENDERER_FAILED;
 const SNAIL_ERR_INVALID_ARGUMENT = common.SNAIL_ERR_INVALID_ARGUMENT;
+const SNAIL_ERR_DRAW_FAILED = common.SNAIL_ERR_DRAW_FAILED;
 const SnailString = common.SnailString;
 const SnailGlTextCoverageBindings = common.SnailGlTextCoverageBindings;
 const SnailVulkanTextCoverageBindings = common.SnailVulkanTextCoverageBindings;
@@ -52,7 +53,7 @@ pub export fn snail_gl_coverage_backend_bind_resources(backend: *CoverageBackend
     if (comptime !build_options.enable_opengl) return SNAIL_ERR_RENDERER_FAILED;
     switch (backend.inner) {
         .gl => |gl_backend| {
-            gl_backend.bindResources(toGlCoverageBindings(bindings) catch return SNAIL_ERR_INVALID_ARGUMENT);
+            gl_backend.bindResources(toGlCoverageBindings(bindings) catch return SNAIL_ERR_INVALID_ARGUMENT) catch return SNAIL_ERR_DRAW_FAILED;
             return SNAIL_OK;
         },
         else => return SNAIL_ERR_INVALID_ARGUMENT,
@@ -109,7 +110,7 @@ pub export fn snail_vulkan_coverage_backend_bind_resources(backend: *CoverageBac
     if (comptime !build_options.enable_vulkan) return SNAIL_ERR_RENDERER_FAILED;
     switch (backend.inner) {
         .vulkan => |vk_backend| {
-            vk_backend.bindResources(toVulkanCoverageBindings(bindings));
+            vk_backend.bindResources(toVulkanCoverageBindings(bindings)) catch return SNAIL_ERR_DRAW_FAILED;
             return SNAIL_OK;
         },
         else => return SNAIL_ERR_INVALID_ARGUMENT,

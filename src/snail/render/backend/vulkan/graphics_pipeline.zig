@@ -176,12 +176,12 @@ pub fn ensureTextSubpixelDualPipeline(self: anytype) !vk.VkPipeline {
     return self.pipeline_text_subpixel_dual orelse error.PipelineUnavailable;
 }
 
-pub fn drawGlyphRange(self: anytype, vertices: []const u32, glyph_offset: usize, glyph_count: usize) void {
+pub fn drawGlyphRange(self: anytype, vertices: []const u32, glyph_offset: usize, glyph_count: usize) !void {
     var glyphs_drawn: usize = 0;
     while (glyphs_drawn < glyph_count) {
         const available_bytes = UPLOAD_SLOT_BYTES - self.upload_cursor;
         const available_glyphs = available_bytes / BYTES_PER_GLYPH;
-        if (available_glyphs == 0) @panic("Vulkan upload slot exhausted while drawing glyphs");
+        if (available_glyphs == 0) return error.VulkanUploadSlotExhausted;
         const chunk: usize = @min(glyph_count - glyphs_drawn, available_glyphs);
         const word_offset = (glyph_offset + glyphs_drawn) * vertex.WORDS_PER_INSTANCE;
         const byte_size = chunk * BYTES_PER_GLYPH;

@@ -73,7 +73,7 @@ const Config = if (build_options.enable_vulkan) struct {
                 return error.UnsupportedResolve;
             },
         }
-        renderer.iterateRecords(records, options, @ptrCast(backend_prepared));
+        try renderer.iterateRecords(records, options, @ptrCast(backend_prepared));
     }
 } else struct {};
 

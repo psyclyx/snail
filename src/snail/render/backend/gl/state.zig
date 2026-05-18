@@ -493,7 +493,7 @@ pub const GlTextState = struct {
 
     // ── Draw ──
 
-    fn drawTextInternal(self: *GlTextState, prepared: *const PreparedResources, vertices: []const u32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32, allow_subpixel: bool) void {
+    fn drawTextInternal(self: *GlTextState, prepared: *const PreparedResources, vertices: []const u32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32, allow_subpixel: bool) !void {
         // VAO may have been unbound by other renderers in the same context.
         gl.glBindVertexArray(self.vao);
         if (self.backend == .gl33) {
@@ -514,7 +514,7 @@ pub const GlTextState = struct {
                 .grayscale => &self.text_program,
                 .subpixel_dual_source => &self.text_subpixel_dual_program,
             };
-            self.bindProgramState(prepared, prog_state, mvp, viewport_w, viewport_h, texture_layer_base, render_mode);
+            try self.bindProgramState(prepared, prog_state, mvp, viewport_w, viewport_h, texture_layer_base, render_mode);
             self.drawGlyphRange(vertices, 0, total_glyphs);
             return;
         }
@@ -545,14 +545,14 @@ pub const GlTextState = struct {
                 .colr => self.ensureColrProgram(),
                 .path => self.ensurePathProgram(),
             };
-            self.bindProgramState(prepared, prog_state, mvp, viewport_w, viewport_h, texture_layer_base, run_mode);
+            try self.bindProgramState(prepared, prog_state, mvp, viewport_w, viewport_h, texture_layer_base, run_mode);
             self.drawGlyphRange(vertices, run_start, run_end - run_start);
             run_start = run_end;
         }
     }
 
-    pub fn drawTextPrepared(self: *GlTextState, prepared: *const PreparedResources, vertices: []const u32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32) void {
-        self.drawTextInternal(prepared, vertices, mvp, viewport_w, viewport_h, texture_layer_base, true);
+    pub fn drawTextPrepared(self: *GlTextState, prepared: *const PreparedResources, vertices: []const u32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32) !void {
+        try self.drawTextInternal(prepared, vertices, mvp, viewport_w, viewport_h, texture_layer_base, true);
     }
 
     pub fn drawPreparedText(self: *GlTextState, prepared: *const PreparedResources, vertices: []const u32) void {
@@ -565,7 +565,7 @@ pub const GlTextState = struct {
         self.drawGlyphRange(vertices, 0, vertices.len / vertex.WORDS_PER_INSTANCE);
     }
 
-    pub fn drawPathsPrepared(self: *GlTextState, prepared: *const PreparedResources, vertices: []const u32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32) void {
+    pub fn drawPathsPrepared(self: *GlTextState, prepared: *const PreparedResources, vertices: []const u32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32) !void {
         const render_mode: subpixel_policy.TextRenderMode = .grayscale;
         const prog_state = self.ensurePathProgram();
         gl.glBindVertexArray(self.vao);
@@ -575,7 +575,7 @@ pub const GlTextState = struct {
 
         setTextBlendMode(false, render_mode);
 
-        self.bindProgramState(prepared, prog_state, mvp, viewport_w, viewport_h, texture_layer_base, render_mode);
+        try self.bindProgramState(prepared, prog_state, mvp, viewport_w, viewport_h, texture_layer_base, render_mode);
         self.drawGlyphRange(vertices, 0, vertices.len / vertex.WORDS_PER_INSTANCE);
     }
 
@@ -642,9 +642,9 @@ pub const GlTextState = struct {
         return &self.path_program;
     }
 
-    fn bindProgramState(self: *GlTextState, prepared: *const PreparedResources, prog_state: *const ProgramState, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32, render_mode: subpixel_policy.TextRenderMode) void {
+    fn bindProgramState(self: *GlTextState, prepared: *const PreparedResources, prog_state: *const ProgramState, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32, render_mode: subpixel_policy.TextRenderMode) !void {
         const bank_id = texture_layers.bank(texture_layer_base);
-        const bank = prepared.bankForId(bank_id) orelse return;
+        const bank = prepared.bankForId(bank_id) orelse return error.MissingPreparedResource;
         if (prog_state.handle != self.active_program or !self.frame_begun or bank_id != self.active_resource_bank_id) {
             gl.glUseProgram(prog_state.handle);
             self.active_program = prog_state.handle;

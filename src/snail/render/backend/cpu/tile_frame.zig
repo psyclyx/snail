@@ -20,7 +20,7 @@ pub fn callback(comptime Renderer: type, comptime tile_rows: u32) *const fn (*an
             tile_renderer.row_clip_max = @min(tile_min + tile_rows, ctx.self.row_clip_max);
 
             var renderer = tile_renderer.asRenderer();
-            renderer.iterateRecords(ctx.records, ctx.options, ctx.backend_prepared);
+            renderer.iterateRecords(ctx.records, ctx.options, ctx.backend_prepared) catch unreachable;
         }
     }.run;
 }

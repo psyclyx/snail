@@ -412,14 +412,14 @@ pub const VulkanPipeline = struct {
         try vulkan_upload.uploadPreparedImages(self, prepared, scratch, images, out_views);
     }
 
-    fn drawTextInternal(self: *VulkanPipeline, prepared: *const PreparedResources, vertices: []const u32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32, allow_subpixel: bool) void {
-        const cmd = self.active_cmd orelse return;
+    fn drawTextInternal(self: *VulkanPipeline, prepared: *const PreparedResources, vertices: []const u32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32, allow_subpixel: bool) !void {
+        const cmd = self.active_cmd orelse return error.MissingCommandBuffer;
         if (vertices.len == 0) return;
 
         const total_glyphs = vertices.len / vertex.WORDS_PER_INSTANCE;
         if (total_glyphs == 0) return;
         const bank_id = texture_layers.bank(texture_layer_base);
-        const bank = prepared.bankForId(bank_id) orelse return;
+        const bank = prepared.bankForId(bank_id) orelse return error.MissingPreparedResource;
         const local_layer_base = texture_layers.bankLocal(texture_layer_base);
 
         vk.vkCmdBindIndexBuffer(cmd, self.index_buffer, 0, vk.VK_INDEX_TYPE_UINT32);
@@ -436,14 +436,8 @@ pub const VulkanPipeline = struct {
 
         if (!prepared.atlas_has_special_text_runs) {
             const pip = switch (render_mode) {
-                .grayscale => self.ensureTextPipeline() catch {
-                    std.debug.print("Vulkan: failed to create text pipeline\n", .{});
-                    return;
-                },
-                .subpixel_dual_source => self.ensureTextSubpixelDualPipeline() catch {
-                    std.debug.print("Vulkan: failed to create dual-source subpixel pipeline\n", .{});
-                    return;
-                },
+                .grayscale => try self.ensureTextPipeline(),
+                .subpixel_dual_source => try self.ensureTextSubpixelDualPipeline(),
             };
             vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pip);
 
@@ -457,7 +451,7 @@ pub const VulkanPipeline = struct {
                 .coverage_exponent = self.coverage_transfer.shaderExponent(),
             };
             vk.vkCmdPushConstants(cmd, self.pipeline_layout, vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(PushConstants), &pc);
-            self.drawGlyphRange(vertices, 0, total_glyphs);
+            try self.drawGlyphRange(vertices, 0, total_glyphs);
             return;
         }
 
@@ -480,23 +474,11 @@ pub const VulkanPipeline = struct {
                 );
             const pip = switch (run_kind) {
                 .regular => switch (run_mode) {
-                    .grayscale => self.ensureTextPipeline() catch {
-                        std.debug.print("Vulkan: failed to create text pipeline\n", .{});
-                        return;
-                    },
-                    .subpixel_dual_source => self.ensureTextSubpixelDualPipeline() catch {
-                        std.debug.print("Vulkan: failed to create dual-source subpixel pipeline\n", .{});
-                        return;
-                    },
+                    .grayscale => try self.ensureTextPipeline(),
+                    .subpixel_dual_source => try self.ensureTextSubpixelDualPipeline(),
                 },
-                .colr => self.ensureColrPipeline() catch {
-                    std.debug.print("Vulkan: failed to create COLR pipeline\n", .{});
-                    return;
-                },
-                .path => self.ensurePathPipeline() catch {
-                    std.debug.print("Vulkan: failed to create path pipeline\n", .{});
-                    return;
-                },
+                .colr => try self.ensureColrPipeline(),
+                .path => try self.ensurePathPipeline(),
             };
             vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pip);
 
@@ -510,17 +492,17 @@ pub const VulkanPipeline = struct {
                 .coverage_exponent = self.coverage_transfer.shaderExponent(),
             };
             vk.vkCmdPushConstants(cmd, self.pipeline_layout, vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(PushConstants), &pc);
-            self.drawGlyphRange(vertices, run_start, run_end - run_start);
+            try self.drawGlyphRange(vertices, run_start, run_end - run_start);
             run_start = run_end;
         }
     }
 
-    pub fn drawTextPrepared(self: *VulkanPipeline, prepared: *const PreparedResources, vertices: []const u32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32) void {
-        self.drawTextInternal(prepared, vertices, mvp, viewport_w, viewport_h, texture_layer_base, true);
+    pub fn drawTextPrepared(self: *VulkanPipeline, prepared: *const PreparedResources, vertices: []const u32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32) !void {
+        try self.drawTextInternal(prepared, vertices, mvp, viewport_w, viewport_h, texture_layer_base, true);
     }
 
-    pub fn bindTextCoverageResources(self: *VulkanPipeline, prepared: *const PreparedResources, bindings: TextCoverageBindings) void {
-        const cmd = self.active_cmd orelse return;
+    pub fn bindTextCoverageResources(self: *VulkanPipeline, prepared: *const PreparedResources, bindings: TextCoverageBindings) !void {
+        const cmd = self.active_cmd orelse return error.MissingCommandBuffer;
         const layout = if (bindings.pipeline_layout != null) bindings.pipeline_layout else self.pipeline_layout;
         vk.vkCmdBindDescriptorSets(
             cmd,
@@ -534,23 +516,23 @@ pub const VulkanPipeline = struct {
         );
     }
 
-    pub fn drawPreparedTextCoverage(self: *VulkanPipeline, vertices: []const u32) void {
-        const cmd = self.active_cmd orelse return;
+    pub fn drawPreparedTextCoverage(self: *VulkanPipeline, vertices: []const u32) !void {
+        const cmd = self.active_cmd orelse return error.MissingCommandBuffer;
         if (vertices.len == 0) return;
         const total_glyphs = vertices.len / vertex.WORDS_PER_INSTANCE;
         if (total_glyphs == 0) return;
         vk.vkCmdBindIndexBuffer(cmd, self.index_buffer, 0, vk.VK_INDEX_TYPE_UINT32);
-        self.drawGlyphRange(vertices, 0, total_glyphs);
+        try self.drawGlyphRange(vertices, 0, total_glyphs);
     }
 
-    pub fn drawPathsPrepared(self: *VulkanPipeline, prepared: *const PreparedResources, vertices: []const u32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32) void {
-        const cmd = self.active_cmd orelse return;
+    pub fn drawPathsPrepared(self: *VulkanPipeline, prepared: *const PreparedResources, vertices: []const u32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32) !void {
+        const cmd = self.active_cmd orelse return error.MissingCommandBuffer;
         if (vertices.len == 0) return;
 
         const total_glyphs = vertices.len / vertex.WORDS_PER_INSTANCE;
         if (total_glyphs == 0) return;
         const bank_id = texture_layers.bank(texture_layer_base);
-        const bank = prepared.bankForId(bank_id) orelse return;
+        const bank = prepared.bankForId(bank_id) orelse return error.MissingPreparedResource;
         const local_layer_base = texture_layers.bankLocal(texture_layer_base);
 
         vk.vkCmdBindIndexBuffer(cmd, self.index_buffer, 0, vk.VK_INDEX_TYPE_UINT32);
@@ -558,10 +540,7 @@ pub const VulkanPipeline = struct {
         setViewportAndScissor(cmd, viewport_w, viewport_h);
 
         const render_mode: subpixel_policy.TextRenderMode = .grayscale;
-        const pip = self.ensurePathPipeline() catch {
-            std.debug.print("Vulkan: missing path pipeline\n", .{});
-            return;
-        };
+        const pip = try self.ensurePathPipeline();
         vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pip);
 
         const pc = PushConstants{
@@ -574,7 +553,7 @@ pub const VulkanPipeline = struct {
             .coverage_exponent = self.coverage_transfer.shaderExponent(),
         };
         vk.vkCmdPushConstants(cmd, self.pipeline_layout, vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(PushConstants), &pc);
-        self.drawGlyphRange(vertices, 0, total_glyphs);
+        try self.drawGlyphRange(vertices, 0, total_glyphs);
     }
 
     pub fn beginFrame(self: *VulkanPipeline) void {
@@ -608,8 +587,8 @@ pub const VulkanPipeline = struct {
         return vulkan_graphics.ensureTextSubpixelDualPipeline(self);
     }
 
-    fn drawGlyphRange(self: *VulkanPipeline, vertices: []const u32, glyph_offset: usize, glyph_count: usize) void {
-        vulkan_graphics.drawGlyphRange(self, vertices, glyph_offset, glyph_count);
+    fn drawGlyphRange(self: *VulkanPipeline, vertices: []const u32, glyph_offset: usize, glyph_count: usize) !void {
+        try vulkan_graphics.drawGlyphRange(self, vertices, glyph_offset, glyph_count);
     }
 
     fn createBuffer(self: *const VulkanPipeline, size: vk.VkDeviceSize, usage: vk.VkBufferUsageFlags, properties: vk.VkMemoryPropertyFlags, buffer: *vk.VkBuffer, memory: *vk.VkDeviceMemory) !void {

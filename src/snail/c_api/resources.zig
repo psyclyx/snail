@@ -343,17 +343,17 @@ pub export fn snail_coverage_backend_deinit(backend: ?*CoverageBackendImpl) void
 pub export fn snail_coverage_backend_draw_coverage(backend: *CoverageBackendImpl, records: *const TextCoverageRecordsImpl) c_int {
     const prepared = coverageBackendPrepared(backend) orelse return SNAIL_ERR_INVALID_ARGUMENT;
     if (!records.inner.validFor(prepared)) return SNAIL_ERR_DRAW_FAILED;
-    backend.inner.drawCoverage(&records.inner);
+    backend.inner.drawCoverage(&records.inner) catch return SNAIL_ERR_DRAW_FAILED;
     return SNAIL_OK;
 }
 
 pub export fn snail_coverage_backend_draw_words(backend: *CoverageBackendImpl, words: ?[*]const u32, word_count: usize) c_int {
     if (coverageBackendPrepared(backend) == null) return SNAIL_ERR_INVALID_ARGUMENT;
     if (word_count == 0) {
-        backend.inner.drawVertices(&.{});
+        backend.inner.drawVertices(&.{}) catch return SNAIL_ERR_DRAW_FAILED;
         return SNAIL_OK;
     }
     const word_ptr = words orelse return SNAIL_ERR_INVALID_ARGUMENT;
-    backend.inner.drawVertices(word_ptr[0..word_count]);
+    backend.inner.drawVertices(word_ptr[0..word_count]) catch return SNAIL_ERR_DRAW_FAILED;
     return SNAIL_OK;
 }

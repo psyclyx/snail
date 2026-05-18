@@ -378,7 +378,7 @@ pub const QuadRenderer = struct {
                 .fill_rule = .non_zero,
                 .subpixel_order = .none,
                 .coverage_transfer = .identity,
-            } });
+            } }) catch unreachable;
         } else {
             gl.glActiveTexture(textureUnitEnum(TEXT_RECORD_TEXTURE_UNIT));
             gl.glBindTexture(gl.GL_TEXTURE_BUFFER, 0);

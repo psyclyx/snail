@@ -336,12 +336,12 @@ pub const CpuRenderer = struct {
         }
     }
 
-    pub fn drawTextPrepared(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const u32, mvp: snail.Mat4, vw: f32, vh: f32, texture_layer_base: u32) void {
+    pub fn drawTextPrepared(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const u32, mvp: snail.Mat4, vw: f32, vh: f32, texture_layer_base: u32) !void {
         const scene = sceneToPixelFromMvp(mvp, vw, vh);
         self.drawTextBatchPrepared(prepared, vertices, scene, texture_layer_base, true);
     }
 
-    pub fn drawPathsPrepared(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const u32, mvp: snail.Mat4, vw: f32, vh: f32, texture_layer_base: u32) void {
+    pub fn drawPathsPrepared(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const u32, mvp: snail.Mat4, vw: f32, vh: f32, texture_layer_base: u32) !void {
         const scene = sceneToPixelFromMvp(mvp, vw, vh);
         self.drawTextBatchPrepared(prepared, vertices, scene, texture_layer_base, false);
     }
@@ -373,8 +373,8 @@ pub const CpuRenderer = struct {
 
     /// Frame-level fan-out invoked by the CPU vtable's `draw` entry when a
     /// thread pool is attached. Caller has already validated records, so
-    /// each tile worker can call the void-returning `iterateRecords` path
-    /// directly. Fanning out once per frame (rather than per segment)
+    /// each tile worker can call `iterateRecords` with no expected draw
+    /// errors. Fanning out once per frame (rather than per segment)
     /// amortizes the wake-and-join cost across the whole scene.
     pub fn dispatchTiledDraw(
         self: *CpuRenderer,

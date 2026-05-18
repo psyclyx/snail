@@ -143,16 +143,16 @@ test "draw dispatch uses only prepared stamps and caller records" {
         fn deinit(_: *anyopaque) void {}
         fn draw(renderer: *Renderer, prepared: *const PreparedResources, records: DrawRecords, options: DrawOptions) anyerror!void {
             try renderer.validateRecords(prepared, records, options);
-            renderer.iterateRecords(records, options, null);
+            try renderer.iterateRecords(records, options, null);
         }
-        fn drawText(ptr: *anyopaque, backend_prepared: ?*const anyopaque, vertices: []const u32, _: Mat4, viewport_w: f32, viewport_h: f32, _: u32) void {
+        fn drawText(ptr: *anyopaque, backend_prepared: ?*const anyopaque, vertices: []const u32, _: Mat4, viewport_w: f32, viewport_h: f32, _: u32) anyerror!void {
             const s = state(ptr);
             s.text_count += 1;
             s.words_seen += vertices.len;
             s.viewport_seen = .{ viewport_w, viewport_h };
             s.saw_backend_prepared = backend_prepared != null;
         }
-        fn drawPaths(ptr: *anyopaque, backend_prepared: ?*const anyopaque, vertices: []const u32, _: Mat4, viewport_w: f32, viewport_h: f32, _: u32) void {
+        fn drawPaths(ptr: *anyopaque, backend_prepared: ?*const anyopaque, vertices: []const u32, _: Mat4, viewport_w: f32, viewport_h: f32, _: u32) anyerror!void {
             const s = state(ptr);
             s.path_count += 1;
             s.words_seen += vertices.len;

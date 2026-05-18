@@ -57,13 +57,13 @@ const Config = if (build_options.enable_cpu) struct {
                 const restore = cpu_self.beginLinearResolve(options.target, linear);
                 defer cpu_self.endLinearResolve(restore);
                 if (dispatchThreaded(cpu_self, backend_prepared, records, options)) return;
-                renderer.iterateRecords(records, options, @ptrCast(backend_prepared));
+                try renderer.iterateRecords(records, options, @ptrCast(backend_prepared));
                 return;
             },
         }
         const cpu_self: *Backend = @ptrCast(@alignCast(renderer.ptr));
         if (dispatchThreaded(cpu_self, backend_prepared, records, options)) return;
-        renderer.iterateRecords(records, options, @ptrCast(backend_prepared));
+        try renderer.iterateRecords(records, options, @ptrCast(backend_prepared));
     }
 
     fn dispatchThreaded(cpu_self: *Backend, backend_prepared: *const Prepared, records: DrawRecords, options: DrawOptions) bool {

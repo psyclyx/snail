@@ -48,21 +48,21 @@ pub fn vtable(comptime Config: type) interface.Renderer.VTable {
         fn coverageBackendFn(ptr: *anyopaque, prepared: *const PreparedResources) ?CoverageBackend {
             return Config.coverageBackend(cast(ptr), prepared);
         }
-        fn drawTextFn(ptr: *anyopaque, prepared: ?*const anyopaque, verts: []const u32, mvp: Mat4, vw: f32, vh: f32, texture_layer_base: u32) void {
+        fn drawTextFn(ptr: *anyopaque, prepared: ?*const anyopaque, verts: []const u32, mvp: Mat4, vw: f32, vh: f32, texture_layer_base: u32) anyerror!void {
             if (prepared) |backend_prepared| {
                 const typed: *const Prepared = @ptrCast(@alignCast(backend_prepared));
-                cast(ptr).drawTextPrepared(typed, verts, mvp, vw, vh, texture_layer_base);
+                try cast(ptr).drawTextPrepared(typed, verts, mvp, vw, vh, texture_layer_base);
                 return;
             }
-            std.debug.panic("drawText requires PreparedResources ({*}, {d}, {d}, {d}, {d})", .{ ptr, verts.len, mvp.data[0], vw, vh });
+            return error.MissingPreparedResource;
         }
-        fn drawPathsFn(ptr: *anyopaque, prepared: ?*const anyopaque, verts: []const u32, mvp: Mat4, vw: f32, vh: f32, texture_layer_base: u32) void {
+        fn drawPathsFn(ptr: *anyopaque, prepared: ?*const anyopaque, verts: []const u32, mvp: Mat4, vw: f32, vh: f32, texture_layer_base: u32) anyerror!void {
             if (prepared) |backend_prepared| {
                 const typed: *const Prepared = @ptrCast(@alignCast(backend_prepared));
-                cast(ptr).drawPathsPrepared(typed, verts, mvp, vw, vh, texture_layer_base);
+                try cast(ptr).drawPathsPrepared(typed, verts, mvp, vw, vh, texture_layer_base);
                 return;
             }
-            std.debug.panic("drawPaths requires PreparedResources ({*}, {d}, {d}, {d}, {d})", .{ ptr, verts.len, mvp.data[0], vw, vh });
+            return error.MissingPreparedResource;
         }
         fn beginFrameFn(ptr: *anyopaque) void {
             cast(ptr).beginFrame();

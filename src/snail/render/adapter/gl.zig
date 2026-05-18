@@ -73,14 +73,14 @@ const Config = if (build_options.enable_opengl) struct {
                 var inner_options = options;
                 inner_options.target.encoding = .linear;
                 inner_options.target.resolve = .{ .direct = .{} };
-                renderer.iterateRecords(records, inner_options, @ptrCast(backend_prepared));
+                try renderer.iterateRecords(records, inner_options, @ptrCast(backend_prepared));
                 gl_self.endLinearResolve(restore);
                 gl_self.setTargetEncoding(options.target.encoding);
                 gl_self.setResolve(options.target.resolve);
                 return;
             },
         }
-        renderer.iterateRecords(records, options, @ptrCast(backend_prepared));
+        try renderer.iterateRecords(records, options, @ptrCast(backend_prepared));
     }
 } else struct {};
 

@@ -251,16 +251,16 @@ pub const GlBackend = if (build_options.enable_opengl) struct {
         return self.gl;
     }
 
-    pub fn bindResources(self: GlBackend, bindings: GlBindings) void {
+    pub fn bindResources(self: GlBackend, bindings: GlBindings) !void {
         self.gl_resources.bindTextCoverageResources(bindings);
     }
 
-    pub fn drawCoverage(self: GlBackend, coverage: *const TextCoverageRecords) void {
+    pub fn drawCoverage(self: GlBackend, coverage: *const TextCoverageRecords) !void {
         std.debug.assert(coverage.validFor(self.prepared));
-        self.drawVertices(coverage.slice());
+        try self.drawVertices(coverage.slice());
     }
 
-    pub fn drawVertices(self: GlBackend, vertices: []const u32) void {
+    pub fn drawVertices(self: GlBackend, vertices: []const u32) !void {
         self.glState().drawPreparedText(self.gl_resources, vertices);
     }
 } else struct {};
@@ -278,17 +278,17 @@ pub const VulkanBackend = if (build_options.enable_vulkan) struct {
         return self.vk.textCoveragePipelineLayout();
     }
 
-    pub fn bindResources(self: VulkanBackend, bindings: VulkanBindings) void {
-        self.vk.bindTextCoverageResources(self.vk_resources, bindings);
+    pub fn bindResources(self: VulkanBackend, bindings: VulkanBindings) !void {
+        try self.vk.bindTextCoverageResources(self.vk_resources, bindings);
     }
 
-    pub fn drawCoverage(self: VulkanBackend, coverage: *const TextCoverageRecords) void {
+    pub fn drawCoverage(self: VulkanBackend, coverage: *const TextCoverageRecords) !void {
         std.debug.assert(coverage.validFor(self.prepared));
-        self.drawVertices(coverage.slice());
+        try self.drawVertices(coverage.slice());
     }
 
-    pub fn drawVertices(self: VulkanBackend, vertices: []const u32) void {
-        self.vk.drawPreparedTextCoverage(vertices);
+    pub fn drawVertices(self: VulkanBackend, vertices: []const u32) !void {
+        try self.vk.drawPreparedTextCoverage(vertices);
     }
 } else struct {};
 
@@ -298,28 +298,28 @@ pub const Backend = union(BackendKind) {
     vulkan: VulkanBackend,
     cpu: void,
 
-    pub fn bindResources(self: Backend, bindings: Bindings) void {
+    pub fn bindResources(self: Backend, bindings: Bindings) !void {
         switch (self) {
-            .gl => |backend| if (comptime build_options.enable_opengl) backend.bindResources(bindings.gl),
+            .gl => |backend| if (comptime build_options.enable_opengl) try backend.bindResources(bindings.gl),
             .vulkan => |backend| if (comptime build_options.enable_vulkan) {
-                backend.bindResources(bindings.vulkan);
+                try backend.bindResources(bindings.vulkan);
             },
             .cpu => {},
         }
     }
 
-    pub fn drawCoverage(self: Backend, coverage: *const TextCoverageRecords) void {
+    pub fn drawCoverage(self: Backend, coverage: *const TextCoverageRecords) !void {
         switch (self) {
-            .gl => |backend| if (comptime build_options.enable_opengl) backend.drawCoverage(coverage),
-            .vulkan => |backend| if (comptime build_options.enable_vulkan) backend.drawCoverage(coverage),
+            .gl => |backend| if (comptime build_options.enable_opengl) try backend.drawCoverage(coverage),
+            .vulkan => |backend| if (comptime build_options.enable_vulkan) try backend.drawCoverage(coverage),
             .cpu => {},
         }
     }
 
-    pub fn drawVertices(self: Backend, vertices: []const u32) void {
+    pub fn drawVertices(self: Backend, vertices: []const u32) !void {
         switch (self) {
-            .gl => |backend| if (comptime build_options.enable_opengl) backend.drawVertices(vertices),
-            .vulkan => |backend| if (comptime build_options.enable_vulkan) backend.drawVertices(vertices),
+            .gl => |backend| if (comptime build_options.enable_opengl) try backend.drawVertices(vertices),
+            .vulkan => |backend| if (comptime build_options.enable_vulkan) try backend.drawVertices(vertices),
             .cpu => {},
         }
     }

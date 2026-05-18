@@ -59,8 +59,8 @@ pub const Renderer = struct {
         // owns this so it can decide how to schedule the work.
         draw: *const fn (*Renderer, *const PreparedResources, DrawRecords, DrawOptions) anyerror!void,
         // Segment-level dispatch, called from `iterateRecords`.
-        drawText: *const fn (*anyopaque, ?*const anyopaque, []const u32, Mat4, f32, f32, u32) void,
-        drawPaths: *const fn (*anyopaque, ?*const anyopaque, []const u32, Mat4, f32, f32, u32) void,
+        drawText: *const fn (*anyopaque, ?*const anyopaque, []const u32, Mat4, f32, f32, u32) anyerror!void,
+        drawPaths: *const fn (*anyopaque, ?*const anyopaque, []const u32, Mat4, f32, f32, u32) anyerror!void,
         beginFrame: *const fn (*anyopaque) void,
         setSubpixelOrder: *const fn (*anyopaque, SubpixelOrder) void,
         getSubpixelOrder: *const fn (*anyopaque) SubpixelOrder,
@@ -170,7 +170,7 @@ pub const Renderer = struct {
     /// segment to the backend's `drawText` / `drawPaths`. Used by GPU adapters
     /// directly, and by the CPU adapter's serial fallback / tile workers.
     /// Caller has already invoked `validateRecords`.
-    pub fn iterateRecords(self: *Renderer, records: DrawRecords, options: DrawOptions, backend_prepared: ?*const anyopaque) void {
+    pub fn iterateRecords(self: *Renderer, records: DrawRecords, options: DrawOptions, backend_prepared: ?*const anyopaque) !void {
         self.applySubpixelOrder(effectiveSubpixelOrderRef(&options.target));
         self.applyFillRule(options.target.fill_rule);
         self.applyTargetEncoding(options.target.encoding);
@@ -180,8 +180,8 @@ pub const Renderer = struct {
         for (records.segments) |segment| {
             const vertices = records.words[segment.offset..][0..segment.len];
             switch (segment.kind) {
-                .text => if (vertices.len > 0) self.drawText(backend_prepared, vertices, options.mvp, options.target.pixel_width, options.target.pixel_height, segment.texture_layer_base),
-                .path => if (vertices.len > 0) self.drawPaths(backend_prepared, vertices, options.mvp, options.target.pixel_width, options.target.pixel_height, segment.texture_layer_base),
+                .text => if (vertices.len > 0) try self.drawText(backend_prepared, vertices, options.mvp, options.target.pixel_width, options.target.pixel_height, segment.texture_layer_base),
+                .path => if (vertices.len > 0) try self.drawPaths(backend_prepared, vertices, options.mvp, options.target.pixel_width, options.target.pixel_height, segment.texture_layer_base),
             }
         }
     }
@@ -194,12 +194,12 @@ pub const Renderer = struct {
         self.vtable.beginFrame(self.ptr);
     }
 
-    fn drawText(self: *Renderer, backend_prepared: ?*const anyopaque, vertices: []const u32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32) void {
-        self.vtable.drawText(self.ptr, backend_prepared, vertices, mvp, viewport_w, viewport_h, texture_layer_base);
+    fn drawText(self: *Renderer, backend_prepared: ?*const anyopaque, vertices: []const u32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32) !void {
+        try self.vtable.drawText(self.ptr, backend_prepared, vertices, mvp, viewport_w, viewport_h, texture_layer_base);
     }
 
-    fn drawPaths(self: *Renderer, backend_prepared: ?*const anyopaque, vertices: []const u32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32) void {
-        self.vtable.drawPaths(self.ptr, backend_prepared, vertices, mvp, viewport_w, viewport_h, texture_layer_base);
+    fn drawPaths(self: *Renderer, backend_prepared: ?*const anyopaque, vertices: []const u32, mvp: Mat4, viewport_w: f32, viewport_h: f32, texture_layer_base: u32) !void {
+        try self.vtable.drawPaths(self.ptr, backend_prepared, vertices, mvp, viewport_w, viewport_h, texture_layer_base);
     }
 
     fn applySubpixelOrder(self: *Renderer, order: SubpixelOrder) void {
@@ -239,8 +239,12 @@ pub fn disabledVTable(comptime backend_kind: BackendKind) Renderer.VTable {
         fn drawFn(_: *Renderer, _: *const PreparedResources, _: DrawRecords, _: DrawOptions) anyerror!void {
             return error.UnsupportedRenderer;
         }
-        fn drawTextFn(_: *anyopaque, _: ?*const anyopaque, _: []const u32, _: Mat4, _: f32, _: f32, _: u32) void {}
-        fn drawPathsFn(_: *anyopaque, _: ?*const anyopaque, _: []const u32, _: Mat4, _: f32, _: f32, _: u32) void {}
+        fn drawTextFn(_: *anyopaque, _: ?*const anyopaque, _: []const u32, _: Mat4, _: f32, _: f32, _: u32) anyerror!void {
+            return error.UnsupportedRenderer;
+        }
+        fn drawPathsFn(_: *anyopaque, _: ?*const anyopaque, _: []const u32, _: Mat4, _: f32, _: f32, _: u32) anyerror!void {
+            return error.UnsupportedRenderer;
+        }
         fn beginFrameFn(_: *anyopaque) void {}
         fn setSubpixelOrderFn(_: *anyopaque, _: SubpixelOrder) void {}
         fn getSubpixelOrderFn(_: *anyopaque) SubpixelOrder {
