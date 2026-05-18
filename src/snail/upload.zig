@@ -22,6 +22,7 @@ const PreparedResources = prepared_mod.PreparedResources;
 const Renderer = render_mod.Renderer;
 const ResourceKey = resource_key_mod.ResourceKey;
 const ResourceManifest = manifest_mod.ResourceManifest;
+const ResourceStamp = resource_key_mod.ResourceStamp;
 const TextAtlas = text_mod.TextAtlas;
 
 pub const ResourceFootprint = footprint_types.ResourceFootprint;
@@ -311,6 +312,71 @@ fn uploadTextAtlas(scratch: *ResourceUploadScratch, index: usize, text_atlas: *c
     return &scratch.text_wrappers[index];
 }
 
+fn prepareTextAtlasEntry(
+    allocator: std.mem.Allocator,
+    prepared: *PreparedResources,
+    scratch: *ResourceUploadScratch,
+    index: usize,
+    text: ResourceManifest.TextAtlasEntry,
+    stamp: ResourceStamp,
+) !void {
+    const atlas = uploadTextAtlas(scratch, index, text.atlas);
+    prepared.atlases[index] = .{
+        .key = text.key,
+        .kind = .text,
+        .page_fingerprints = try atlasPageFingerprints(allocator, atlas),
+        .stamp = stamp,
+    };
+    scratch.upload_atlases[index] = atlas;
+    scratch.atlas_capacity_modes[index] = text.atlas_capacity;
+}
+
+fn prepareTextPaintEntry(
+    prepared: *PreparedResources,
+    scratch: *ResourceUploadScratch,
+    index: usize,
+    text: ResourceManifest.TextPaintEntry,
+    stamp: ResourceStamp,
+) void {
+    prepared.layer_infos[index] = .{
+        .key = text.key,
+        .stamp = stamp,
+    };
+    scratch.upload_layer_infos[index] = stamp_mod.textPaintLayerInfoUpload(text.blob);
+}
+
+fn preparePathPictureEntry(
+    allocator: std.mem.Allocator,
+    prepared: *PreparedResources,
+    scratch: *ResourceUploadScratch,
+    index: usize,
+    path: ResourceManifest.PathPictureEntry,
+    stamp: ResourceStamp,
+) !void {
+    prepared.atlases[index] = .{
+        .key = path.key,
+        .kind = .path,
+        .page_fingerprints = try atlasPageFingerprints(allocator, &path.picture.atlas),
+        .stamp = stamp,
+    };
+    scratch.upload_atlases[index] = &path.picture.atlas;
+    scratch.atlas_capacity_modes[index] = path.atlas_capacity;
+}
+
+fn prepareImageEntry(
+    prepared: *PreparedResources,
+    scratch: *ResourceUploadScratch,
+    index: usize,
+    image: ResourceManifest.ImageEntry,
+    stamp: ResourceStamp,
+) void {
+    prepared.images[index] = .{
+        .key = image.key,
+        .stamp = stamp,
+    };
+    scratch.upload_images[index] = image.image;
+}
+
 fn populatePreparedResourceBatch(
     allocator: std.mem.Allocator,
     prepared: *PreparedResources,
@@ -321,44 +387,22 @@ fn populatePreparedResourceBatch(
     var layer_info_i: usize = 0;
     var image_i: usize = 0;
     for (entries) |entry| {
+        const stamp = stamp_mod.resourceEntryStamp(entry);
         switch (entry) {
             .text_atlas => |text| {
-                const atlas = uploadTextAtlas(scratch, atlas_i, text.atlas);
-                prepared.atlases[atlas_i] = .{
-                    .key = text.key,
-                    .kind = .text,
-                    .page_fingerprints = try atlasPageFingerprints(allocator, atlas),
-                    .stamp = stamp_mod.resourceEntryStamp(entry),
-                };
-                scratch.upload_atlases[atlas_i] = atlas;
-                scratch.atlas_capacity_modes[atlas_i] = text.atlas_capacity;
+                try prepareTextAtlasEntry(allocator, prepared, scratch, atlas_i, text, stamp);
                 atlas_i += 1;
             },
             .text_paint => |text| {
-                prepared.layer_infos[layer_info_i] = .{
-                    .key = text.key,
-                    .stamp = stamp_mod.resourceEntryStamp(entry),
-                };
-                scratch.upload_layer_infos[layer_info_i] = stamp_mod.textPaintLayerInfoUpload(text.blob);
+                prepareTextPaintEntry(prepared, scratch, layer_info_i, text, stamp);
                 layer_info_i += 1;
             },
             .path_picture => |path| {
-                prepared.atlases[atlas_i] = .{
-                    .key = path.key,
-                    .kind = .path,
-                    .page_fingerprints = try atlasPageFingerprints(allocator, &path.picture.atlas),
-                    .stamp = stamp_mod.resourceEntryStamp(entry),
-                };
-                scratch.upload_atlases[atlas_i] = &path.picture.atlas;
-                scratch.atlas_capacity_modes[atlas_i] = path.atlas_capacity;
+                try preparePathPictureEntry(allocator, prepared, scratch, atlas_i, path, stamp);
                 atlas_i += 1;
             },
             .image => |image| {
-                prepared.images[image_i] = .{
-                    .key = image.key,
-                    .stamp = stamp_mod.resourceEntryStamp(entry),
-                };
-                scratch.upload_images[image_i] = image.image;
+                prepareImageEntry(prepared, scratch, image_i, image, stamp);
                 image_i += 1;
             },
         }
