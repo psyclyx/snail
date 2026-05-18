@@ -4,11 +4,13 @@ const backend_kind_mod = @import("backend_kind.zig");
 const resource_key_mod = @import("resource_key.zig");
 const prepared_mod = @import("resources/prepared.zig");
 const scene_mod = @import("scene.zig");
+const target_mod = @import("target.zig");
 const text_mod = @import("text.zig");
 const texture_layers = @import("render/format/texture_layers.zig");
 const vec = @import("math/vec.zig");
 const pipeline = if (build_options.enable_opengl) @import("render/backend/gl/state.zig") else struct {
-    pub const TextCoverageBindings = struct {};
+    pub const TextCoverageProgram = struct {};
+    pub const TextCoverageDrawState = struct {};
     pub const GlTextState = void;
     pub const PreparedResources = void;
     pub const text_vertex_interface = "";
@@ -18,12 +20,17 @@ const pipeline = if (build_options.enable_opengl) @import("render/backend/gl/sta
     pub const text_sample_body = "";
 };
 const vulkan_pipeline = if (build_options.enable_vulkan) @import("render/backend/vulkan/pipeline.zig") else struct {
+    pub const TextCoverageProgram = struct {};
     pub const PreparedResources = void;
     pub const VulkanPipeline = void;
 };
 
 const BackendKind = backend_kind_mod.BackendKind;
 const Transform2D = vec.Transform2D;
+const CoverageTransfer = target_mod.CoverageTransfer;
+const FillRule = target_mod.FillRule;
+const RenderDrawState = target_mod.DrawState;
+const SubpixelOrder = target_mod.SubpixelOrder;
 const TextBlob = text_mod.TextBlob;
 const ResourceStamp = resource_key_mod.ResourceStamp;
 const PreparedResources = prepared_mod.PreparedResources;
@@ -34,12 +41,12 @@ const TextBatch = text_mod.TextBatch;
 
 const TEXT_WORDS_PER_GLYPH = text_mod.TEXT_WORDS_PER_GLYPH;
 
-pub const GlBindings = if (build_options.enable_opengl) pipeline.TextCoverageBindings else struct {};
-pub const VulkanBindings = if (build_options.enable_vulkan) vulkan_pipeline.TextCoverageBindings else struct {};
+pub const GlProgram = if (build_options.enable_opengl) pipeline.TextCoverageProgram else struct {};
+pub const VulkanProgram = if (build_options.enable_vulkan) vulkan_pipeline.TextCoverageProgram else struct {};
 
-pub const Bindings = union(BackendKind) {
-    gl: GlBindings,
-    vulkan: VulkanBindings,
+pub const Program = union(BackendKind) {
+    gl: GlProgram,
+    vulkan: VulkanProgram,
     cpu: void,
 };
 
@@ -120,22 +127,23 @@ pub const Shader = struct {
     };
 };
 
-pub const GlProgram = struct {
-    bindings: GlBindings = .{},
+pub const DrawState = struct {
+    fill_rule: FillRule = .non_zero,
+    subpixel_order: SubpixelOrder = .none,
+    output_srgb: bool = false,
+    coverage_transfer: CoverageTransfer = .identity,
+    layer_base: u32 = 0,
 };
 
-pub const VulkanProgram = if (build_options.enable_vulkan) struct {
-    pipeline_layout: vulkan_pipeline.vk.VkPipelineLayout = null,
-    descriptor_set_index: u32 = 0,
-} else struct {};
-
-pub const CpuProgram = struct {};
-
-pub const Program = union(BackendKind) {
-    gl: GlProgram,
-    vulkan: VulkanProgram,
-    cpu: CpuProgram,
-};
+pub fn drawStateFor(records: *const TextCoverageRecords, state: RenderDrawState) DrawState {
+    return .{
+        .fill_rule = state.raster.fill_rule,
+        .subpixel_order = state.raster.subpixel_order,
+        .output_srgb = state.surface.encoding.shaderEncodesSrgb(),
+        .coverage_transfer = state.raster.coverage_transfer,
+        .layer_base = records.layerWindowBase(),
+    };
+}
 
 /// Resolve options used when preparing text coverage geometry for a custom
 /// material shader.
@@ -251,8 +259,19 @@ pub const GlBackend = if (build_options.enable_opengl) struct {
         return self.gl;
     }
 
-    pub fn bindResources(self: GlBackend, bindings: GlBindings) !void {
-        self.gl_resources.bindTextCoverageResources(bindings);
+    pub fn bindProgram(self: GlBackend, program: GlProgram) !void {
+        self.gl_resources.bindTextCoverageProgram(program);
+    }
+
+    pub fn bindDrawState(self: GlBackend, program: GlProgram, state: DrawState) !void {
+        _ = self;
+        pipeline.PreparedResources.bindTextCoverageDrawState(program, .{
+            .fill_rule = state.fill_rule,
+            .subpixel_order = state.subpixel_order,
+            .output_srgb = state.output_srgb,
+            .coverage_transfer = state.coverage_transfer,
+            .layer_base = state.layer_base,
+        });
     }
 
     pub fn drawCoverage(self: GlBackend, coverage: *const TextCoverageRecords) !void {
@@ -279,10 +298,16 @@ pub const VulkanBackend = if (build_options.enable_vulkan) struct {
         return self.vk.textCoveragePipelineLayout();
     }
 
-    pub fn bindResources(self: VulkanBackend, bindings: VulkanBindings) !void {
+    pub fn bindProgram(self: VulkanBackend, program: VulkanProgram) !void {
         self.vk.setCommandBuffer(self.cmd);
         defer self.vk.clearCommandBuffer();
-        try self.vk.bindTextCoverageResources(self.vk_resources, bindings);
+        try self.vk.bindTextCoverageProgram(self.vk_resources, program);
+    }
+
+    pub fn bindDrawState(self: VulkanBackend, program: VulkanProgram, state: DrawState) !void {
+        _ = self;
+        _ = program;
+        _ = state;
     }
 
     pub fn drawCoverage(self: VulkanBackend, coverage: *const TextCoverageRecords) !void {
@@ -303,11 +328,21 @@ pub const Backend = union(BackendKind) {
     vulkan: VulkanBackend,
     cpu: void,
 
-    pub fn bindResources(self: Backend, bindings: Bindings) !void {
+    pub fn bindProgram(self: Backend, program: Program) !void {
         switch (self) {
-            .gl => |backend| if (comptime build_options.enable_opengl) try backend.bindResources(bindings.gl),
+            .gl => |backend| if (comptime build_options.enable_opengl) try backend.bindProgram(program.gl),
             .vulkan => |backend| if (comptime build_options.enable_vulkan) {
-                try backend.bindResources(bindings.vulkan);
+                try backend.bindProgram(program.vulkan);
+            },
+            .cpu => {},
+        }
+    }
+
+    pub fn bindDrawState(self: Backend, program: Program, state: DrawState) !void {
+        switch (self) {
+            .gl => |backend| if (comptime build_options.enable_opengl) try backend.bindDrawState(program.gl, state),
+            .vulkan => |backend| if (comptime build_options.enable_vulkan) {
+                try backend.bindDrawState(program.vulkan, state);
             },
             .cpu => {},
         }

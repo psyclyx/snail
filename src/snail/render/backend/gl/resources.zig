@@ -18,7 +18,7 @@ const setImageTexParamsDSA = gl_texture_params.setImageTexParamsDSA;
 const setTexParams = gl_texture_params.setTexParams;
 const setTexParamsDSA = gl_texture_params.setTexParamsDSA;
 
-pub const TextCoverageBindings = struct {
+pub const TextCoverageProgram = struct {
     curve_tex_loc: gl.GLint = -1,
     band_tex_loc: gl.GLint = -1,
     layer_tex_loc: gl.GLint = -1,
@@ -32,10 +32,11 @@ pub const TextCoverageBindings = struct {
     band_tex_unit: gl.GLint = 1,
     layer_tex_unit: gl.GLint = 2,
     image_tex_unit: gl.GLint = 3,
+};
+
+pub const TextCoverageDrawState = struct {
     fill_rule: FillRule = .non_zero,
     subpixel_order: SubpixelOrder = .none,
-    /// Value to write to the shader's `u_output_srgb` uniform — i.e.,
-    /// whether the shader itself should sRGB-encode its output.
     output_srgb: bool = false,
     coverage_transfer: CoverageTransfer = .identity,
     layer_base: u32 = 0,
@@ -330,36 +331,39 @@ pub const PreparedResources = struct {
         }
     }
 
-    pub fn bindTextCoverageResources(self: *const PreparedResources, bindings: TextCoverageBindings) void {
+    pub fn bindTextCoverageProgram(self: *const PreparedResources, program: TextCoverageProgram) void {
         if (self.backend == .gl44) {
-            gl.glBindTextureUnit(@intCast(bindings.curve_tex_unit), self.curve_array);
-            gl.glBindTextureUnit(@intCast(bindings.band_tex_unit), self.band_array);
-            if (bindings.layer_tex_loc >= 0) gl.glBindTextureUnit(@intCast(bindings.layer_tex_unit), self.layer_info_tex);
-            if (bindings.image_tex_loc >= 0) gl.glBindTextureUnit(@intCast(bindings.image_tex_unit), self.image_array);
+            gl.glBindTextureUnit(@intCast(program.curve_tex_unit), self.curve_array);
+            gl.glBindTextureUnit(@intCast(program.band_tex_unit), self.band_array);
+            if (program.layer_tex_loc >= 0) gl.glBindTextureUnit(@intCast(program.layer_tex_unit), self.layer_info_tex);
+            if (program.image_tex_loc >= 0) gl.glBindTextureUnit(@intCast(program.image_tex_unit), self.image_array);
         } else {
-            gl.glActiveTexture(textureUnitEnum(bindings.curve_tex_unit));
+            gl.glActiveTexture(textureUnitEnum(program.curve_tex_unit));
             gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, self.curve_array);
-            gl.glActiveTexture(textureUnitEnum(bindings.band_tex_unit));
+            gl.glActiveTexture(textureUnitEnum(program.band_tex_unit));
             gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, self.band_array);
-            if (bindings.layer_tex_loc >= 0) {
-                gl.glActiveTexture(textureUnitEnum(bindings.layer_tex_unit));
+            if (program.layer_tex_loc >= 0) {
+                gl.glActiveTexture(textureUnitEnum(program.layer_tex_unit));
                 gl.glBindTexture(gl.GL_TEXTURE_2D, self.layer_info_tex);
             }
-            if (bindings.image_tex_loc >= 0) {
-                gl.glActiveTexture(textureUnitEnum(bindings.image_tex_unit));
+            if (program.image_tex_loc >= 0) {
+                gl.glActiveTexture(textureUnitEnum(program.image_tex_unit));
                 gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, self.image_array);
             }
         }
 
-        if (bindings.curve_tex_loc >= 0) gl.glUniform1i(bindings.curve_tex_loc, @intCast(bindings.curve_tex_unit));
-        if (bindings.band_tex_loc >= 0) gl.glUniform1i(bindings.band_tex_loc, @intCast(bindings.band_tex_unit));
-        if (bindings.layer_tex_loc >= 0) gl.glUniform1i(bindings.layer_tex_loc, @intCast(bindings.layer_tex_unit));
-        if (bindings.image_tex_loc >= 0) gl.glUniform1i(bindings.image_tex_loc, @intCast(bindings.image_tex_unit));
-        if (bindings.fill_rule_loc >= 0) gl.glUniform1i(bindings.fill_rule_loc, @intFromEnum(bindings.fill_rule));
-        if (bindings.subpixel_order_loc >= 0) gl.glUniform1i(bindings.subpixel_order_loc, @intFromEnum(bindings.subpixel_order));
-        if (bindings.output_srgb_loc >= 0) gl.glUniform1i(bindings.output_srgb_loc, @intFromBool(bindings.output_srgb));
-        if (bindings.coverage_exponent_loc >= 0) gl.glUniform1f(bindings.coverage_exponent_loc, bindings.coverage_transfer.shaderExponent());
-        if (bindings.layer_base_loc >= 0) gl.glUniform1i(bindings.layer_base_loc, @intCast(bindings.layer_base));
+        if (program.curve_tex_loc >= 0) gl.glUniform1i(program.curve_tex_loc, @intCast(program.curve_tex_unit));
+        if (program.band_tex_loc >= 0) gl.glUniform1i(program.band_tex_loc, @intCast(program.band_tex_unit));
+        if (program.layer_tex_loc >= 0) gl.glUniform1i(program.layer_tex_loc, @intCast(program.layer_tex_unit));
+        if (program.image_tex_loc >= 0) gl.glUniform1i(program.image_tex_loc, @intCast(program.image_tex_unit));
+    }
+
+    pub fn bindTextCoverageDrawState(program: TextCoverageProgram, state: TextCoverageDrawState) void {
+        if (program.fill_rule_loc >= 0) gl.glUniform1i(program.fill_rule_loc, @intFromEnum(state.fill_rule));
+        if (program.subpixel_order_loc >= 0) gl.glUniform1i(program.subpixel_order_loc, @intFromEnum(state.subpixel_order));
+        if (program.output_srgb_loc >= 0) gl.glUniform1i(program.output_srgb_loc, @intFromBool(state.output_srgb));
+        if (program.coverage_exponent_loc >= 0) gl.glUniform1f(program.coverage_exponent_loc, state.coverage_transfer.shaderExponent());
+        if (program.layer_base_loc >= 0) gl.glUniform1i(program.layer_base_loc, @intCast(state.layer_base));
     }
 
     fn currentImageView(self: *const PreparedResources, comptime ImageView: type, image: *const snail_mod.Image) ImageView {

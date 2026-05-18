@@ -36,7 +36,7 @@ comptime {
 }
 
 pub const VulkanContext = vulkan_types.VulkanContext;
-pub const TextCoverageBindings = vulkan_types.TextCoverageBindings;
+pub const TextCoverageProgram = vulkan_types.TextCoverageProgram;
 
 // ── Constants ──
 
@@ -451,14 +451,14 @@ pub const VulkanPipeline = struct {
         try self.drawTextInternal(prepared, vertices, state, texture_layer_base, true);
     }
 
-    pub fn bindTextCoverageResources(self: *VulkanPipeline, prepared: *const PreparedResources, bindings: TextCoverageBindings) !void {
+    pub fn bindTextCoverageProgram(self: *VulkanPipeline, prepared: *const PreparedResources, program: TextCoverageProgram) !void {
         const cmd = self.active_cmd orelse return error.MissingCommandBuffer;
-        const layout = if (bindings.pipeline_layout != null) bindings.pipeline_layout else self.pipeline_layout;
+        const layout = if (program.pipeline_layout != null) program.pipeline_layout else self.pipeline_layout;
         vk.vkCmdBindDescriptorSets(
             cmd,
             vk.VK_PIPELINE_BIND_POINT_GRAPHICS,
             layout,
-            bindings.descriptor_set_index,
+            program.descriptor_set_index,
             1,
             @ptrCast(&prepared.desc_set),
             0,

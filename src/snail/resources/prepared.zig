@@ -10,7 +10,7 @@ const text_mod = @import("../text.zig");
 const view_mod = @import("view.zig");
 
 const pipeline = if (build_options.enable_opengl) @import("../render/backend/gl/state.zig") else struct {
-    pub const TextCoverageBindings = struct {};
+    pub const TextCoverageProgram = struct {};
     pub const GlTextState = void;
     pub const PreparedResources = void;
     pub const text_vertex_interface = "";

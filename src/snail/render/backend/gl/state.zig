@@ -26,7 +26,8 @@ const deleteProgramState = gl_programs.deleteProgramState;
 const linkProgram = gl_programs.linkProgram;
 const loadProgramState = gl_programs.loadProgramState;
 
-pub const TextCoverageBindings = gl_resources.TextCoverageBindings;
+pub const TextCoverageProgram = gl_resources.TextCoverageProgram;
+pub const TextCoverageDrawState = gl_resources.TextCoverageDrawState;
 pub const PreparedResources = gl_resources.PreparedResources;
 
 pub const text_vertex_interface = shaders.text_vertex_interface;

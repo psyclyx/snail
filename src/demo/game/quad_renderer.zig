@@ -115,6 +115,7 @@ const MaterialProgram = struct {
     text_band_tex_loc: gl.GLint = -1,
     text_fill_rule_loc: gl.GLint = -1,
     text_coverage_exponent_loc: gl.GLint = -1,
+    text_layer_base_loc: gl.GLint = -1,
 
     fn init() !MaterialProgram {
         const handle = try common.linkProgram(material_vertex_shader, material_fragment_shader);
@@ -146,6 +147,7 @@ const MaterialProgram = struct {
             .text_band_tex_loc = gl.glGetUniformLocation(handle, "u_band_tex"),
             .text_fill_rule_loc = gl.glGetUniformLocation(handle, "u_fill_rule"),
             .text_coverage_exponent_loc = gl.glGetUniformLocation(handle, "u_coverage_exponent"),
+            .text_layer_base_loc = gl.glGetUniformLocation(handle, "u_layer_base"),
         };
     }
 
@@ -368,17 +370,22 @@ pub const QuadRenderer = struct {
             gl.glUniform1i(self.material.text_glyph_count_loc, @intCast(input.text.coverage.glyphCount()));
             gl.glUniform2f(self.material.text_scene_size_loc, input.scene_size[0], input.scene_size[1]);
             gl.glUniform1f(self.material.text_relief_strength_loc, input.relief_strength);
-            backend.bindResources(.{ .gl = .{
+            const coverage_program = snail.coverage.Program{ .gl = .{
                 .curve_tex_loc = self.material.text_curve_tex_loc,
                 .band_tex_loc = self.material.text_band_tex_loc,
                 .fill_rule_loc = self.material.text_fill_rule_loc,
                 .coverage_exponent_loc = self.material.text_coverage_exponent_loc,
+                .layer_base_loc = self.material.text_layer_base_loc,
                 .curve_tex_unit = TEXT_CURVE_TEXTURE_UNIT,
                 .band_tex_unit = TEXT_BAND_TEXTURE_UNIT,
+            } };
+            backend.bindProgram(coverage_program) catch unreachable;
+            backend.bindDrawState(coverage_program, .{
                 .fill_rule = .non_zero,
                 .subpixel_order = .none,
                 .coverage_transfer = .identity,
-            } }) catch unreachable;
+                .layer_base = input.text.coverage.layerWindowBase(),
+            }) catch unreachable;
         } else {
             gl.glActiveTexture(textureUnitEnum(TEXT_RECORD_TEXTURE_UNIT));
             gl.glBindTexture(gl.GL_TEXTURE_BUFFER, 0);

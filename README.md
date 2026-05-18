@@ -675,8 +675,7 @@ masking, or compositing.
   `fragment_body`. For material shaders that sample text coverage from their
   own geometry, include `resource_interface`, `coverage_functions`,
   `sample_interface`, and `sample_functions`; upload `records.slice()` as a
-  `GL_R32UI` texture buffer, set `u_layer_base` from
-  `records.layerWindowBase()`, and call
+  `GL_R32UI` texture buffer and call
   `snail_text_sample_premul_linear(scene_pos)`.
 - `snail.coverage.Shader.vulkan` exposes the Vulkan shader sources and descriptor
   binding numbers. The Vulkan coverage backend binds Snail's descriptor set
@@ -692,13 +691,15 @@ masking, or compositing.
 - `snail.coverage.Backend` is the backend hook. Get one from
   `prepared.coverageBackend(renderer)` (or `gl.coverageBackend(prepared)`
   on typed renderers, or `vk.frame(.{ .cmd, .slot }).coverageBackend(prepared)`
-  for Vulkan). Call
-  `bindResources(.{ .gl = bindings })` or `bindResources(.{ .vulkan = bindings })`, then
+  for Vulkan). Bind the shader resource program with `bindProgram`, bind
+  per-draw uniforms with `bindDrawState(program, snail.coverage.drawStateFor(&records, draw_state))`, then
   `drawCoverage(&records)` or `drawVertices` with your own buffer.
 
 C callers use `SnailTextCoverageRecords` and `SnailCoverageBackend` from
-`snail.h`; GL binding uniforms and shader snippets live in `snail_gl.h`, and
-Vulkan frame-scoped coverage binding lives in `snail_vulkan.h`.
+`snail.h`; derive `SnailCoverageDrawState` with
+`snail_text_coverage_records_draw_state`. GL program uniforms and shader
+snippets live in `snail_gl.h`; Vulkan frame-scoped coverage programs live in
+`snail_vulkan.h`.
 
 ### Path
 

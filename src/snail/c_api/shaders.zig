@@ -7,11 +7,13 @@ const SNAIL_ERR_RENDERER_FAILED = common.SNAIL_ERR_RENDERER_FAILED;
 const SNAIL_ERR_INVALID_ARGUMENT = common.SNAIL_ERR_INVALID_ARGUMENT;
 const SNAIL_ERR_DRAW_FAILED = common.SNAIL_ERR_DRAW_FAILED;
 const SnailString = common.SnailString;
-const SnailGlTextCoverageBindings = common.SnailGlTextCoverageBindings;
-const SnailVulkanTextCoverageBindings = common.SnailVulkanTextCoverageBindings;
+const SnailCoverageDrawState = common.SnailCoverageDrawState;
+const SnailGlTextCoverageProgram = common.SnailGlTextCoverageProgram;
+const SnailVulkanTextCoverageProgram = common.SnailVulkanTextCoverageProgram;
 const wrapString = common.wrapString;
-const toGlCoverageBindings = common.toGlCoverageBindings;
-const toVulkanCoverageBindings = common.toVulkanCoverageBindings;
+const toCoverageDrawState = common.toCoverageDrawState;
+const toGlCoverageProgram = common.toGlCoverageProgram;
+const toVulkanCoverageProgram = common.toVulkanCoverageProgram;
 const CoverageBackendImpl = common.CoverageBackendImpl;
 
 pub export fn snail_gl_coverage_shader_vertex_interface() SnailString {
@@ -49,11 +51,25 @@ pub export fn snail_gl_coverage_shader_fragment_body() SnailString {
     return wrapString(snail.coverage.Shader.gl.fragment_body);
 }
 
-pub export fn snail_gl_coverage_backend_bind_resources(backend: *CoverageBackendImpl, bindings: SnailGlTextCoverageBindings) c_int {
+pub export fn snail_gl_coverage_backend_bind_program(backend: *CoverageBackendImpl, program: SnailGlTextCoverageProgram) c_int {
     if (comptime !build_options.enable_opengl) return SNAIL_ERR_RENDERER_FAILED;
     switch (backend.inner) {
         .gl => |gl_backend| {
-            gl_backend.bindResources(toGlCoverageBindings(bindings) catch return SNAIL_ERR_INVALID_ARGUMENT) catch return SNAIL_ERR_DRAW_FAILED;
+            gl_backend.bindProgram(toGlCoverageProgram(program) catch return SNAIL_ERR_INVALID_ARGUMENT) catch return SNAIL_ERR_DRAW_FAILED;
+            return SNAIL_OK;
+        },
+        else => return SNAIL_ERR_INVALID_ARGUMENT,
+    }
+}
+
+pub export fn snail_gl_coverage_backend_bind_draw_state(backend: *CoverageBackendImpl, program: SnailGlTextCoverageProgram, state: SnailCoverageDrawState) c_int {
+    if (comptime !build_options.enable_opengl) return SNAIL_ERR_RENDERER_FAILED;
+    switch (backend.inner) {
+        .gl => |gl_backend| {
+            gl_backend.bindDrawState(
+                toGlCoverageProgram(program) catch return SNAIL_ERR_INVALID_ARGUMENT,
+                toCoverageDrawState(state) catch return SNAIL_ERR_INVALID_ARGUMENT,
+            ) catch return SNAIL_ERR_DRAW_FAILED;
             return SNAIL_OK;
         },
         else => return SNAIL_ERR_INVALID_ARGUMENT,
@@ -106,11 +122,11 @@ pub export fn snail_vulkan_coverage_backend_pipeline_layout(backend: *CoverageBa
     };
 }
 
-pub export fn snail_vulkan_coverage_backend_bind_resources(backend: *CoverageBackendImpl, bindings: SnailVulkanTextCoverageBindings) c_int {
+pub export fn snail_vulkan_coverage_backend_bind_program(backend: *CoverageBackendImpl, program: SnailVulkanTextCoverageProgram) c_int {
     if (comptime !build_options.enable_vulkan) return SNAIL_ERR_RENDERER_FAILED;
     switch (backend.inner) {
         .vulkan => |vk_backend| {
-            vk_backend.bindResources(toVulkanCoverageBindings(bindings)) catch return SNAIL_ERR_DRAW_FAILED;
+            vk_backend.bindProgram(toVulkanCoverageProgram(program)) catch return SNAIL_ERR_DRAW_FAILED;
             return SNAIL_OK;
         },
         else => return SNAIL_ERR_INVALID_ARGUMENT,

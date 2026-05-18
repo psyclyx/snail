@@ -221,7 +221,15 @@ pub const SnailResourceCacheStats = extern struct {
     image_layers_allocated: u32 = 0,
 };
 
-pub const SnailGlTextCoverageBindings = extern struct {
+pub const SnailCoverageDrawState = extern struct {
+    fill_rule: c_int = 0,
+    subpixel_order: c_int = 0,
+    output_srgb: bool = false,
+    coverage_exponent: f32 = 1.0,
+    layer_base: u32 = 0,
+};
+
+pub const SnailGlTextCoverageProgram = extern struct {
     curve_tex_loc: c_int = -1,
     band_tex_loc: c_int = -1,
     layer_tex_loc: c_int = -1,
@@ -235,14 +243,9 @@ pub const SnailGlTextCoverageBindings = extern struct {
     band_tex_unit: c_int = 1,
     layer_tex_unit: c_int = 2,
     image_tex_unit: c_int = 3,
-    fill_rule: c_int = 0,
-    subpixel_order: c_int = 0,
-    output_srgb: bool = false,
-    coverage_exponent: f32 = 1.0,
-    layer_base: u32 = 0,
 };
 
-pub const SnailVulkanTextCoverageBindings = extern struct {
+pub const SnailVulkanTextCoverageProgram = extern struct {
     pipeline_layout: vk.VkPipelineLayout = null,
     descriptor_set_index: u32 = 0,
 };

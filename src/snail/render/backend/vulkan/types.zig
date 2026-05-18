@@ -13,7 +13,7 @@ pub const VulkanContext = struct {
     supports_dual_source_blend: bool = false,
 };
 
-pub const TextCoverageBindings = struct {
+pub const TextCoverageProgram = struct {
     /// Pipeline layout for the caller-owned graphics pipeline. Defaults to
     /// Snail's built-in layout, useful when the caller's layout is compatible
     /// with Snail's descriptor set and push-constant ranges.

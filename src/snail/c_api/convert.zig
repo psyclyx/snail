@@ -7,7 +7,8 @@ const SnailDecorationMetrics = c.SnailDecorationMetrics;
 const SnailDrawState = c.SnailDrawState;
 const SnailFillStyle = c.SnailFillStyle;
 const SnailFontStyle = c.SnailFontStyle;
-const SnailGlTextCoverageBindings = c.SnailGlTextCoverageBindings;
+const SnailCoverageDrawState = c.SnailCoverageDrawState;
+const SnailGlTextCoverageProgram = c.SnailGlTextCoverageProgram;
 const SnailMat4 = c.SnailMat4;
 const SnailOverride = c.SnailOverride;
 const SnailPaint = c.SnailPaint;
@@ -27,7 +28,7 @@ const SnailStrokeStyle = c.SnailStrokeStyle;
 const SnailSyntheticStyle = c.SnailSyntheticStyle;
 const SnailTextPlacement = c.SnailTextPlacement;
 const SnailTransform2D = c.SnailTransform2D;
-const SnailVulkanTextCoverageBindings = c.SnailVulkanTextCoverageBindings;
+const SnailVulkanTextCoverageProgram = c.SnailVulkanTextCoverageProgram;
 const SNAIL_PAINT_IMAGE = c.SNAIL_PAINT_IMAGE;
 const SNAIL_PAINT_LINEAR = c.SNAIL_PAINT_LINEAR;
 const SNAIL_PAINT_RADIAL = c.SNAIL_PAINT_RADIAL;
@@ -116,38 +117,53 @@ pub fn toOverride(override_value: SnailOverride) snail.Override {
     return .{ .transform = toTransform(override_value.transform), .tint = override_value.tint };
 }
 
-pub fn toGlCoverageBindings(bindings: SnailGlTextCoverageBindings) !snail.coverage.GlBindings {
+pub fn fromCoverageDrawState(state: snail.coverage.DrawState) SnailCoverageDrawState {
+    return .{
+        .fill_rule = @intFromEnum(state.fill_rule),
+        .subpixel_order = @intFromEnum(state.subpixel_order),
+        .output_srgb = state.output_srgb,
+        .coverage_exponent = state.coverage_transfer.exponent,
+        .layer_base = state.layer_base,
+    };
+}
+
+pub fn toCoverageDrawState(state: SnailCoverageDrawState) !snail.coverage.DrawState {
+    return .{
+        .fill_rule = try toFillRule(state.fill_rule),
+        .subpixel_order = try toSubpixelOrder(state.subpixel_order),
+        .output_srgb = state.output_srgb,
+        .coverage_transfer = .{ .exponent = state.coverage_exponent },
+        .layer_base = state.layer_base,
+    };
+}
+
+pub fn toGlCoverageProgram(program: SnailGlTextCoverageProgram) !snail.coverage.GlProgram {
     if (comptime build_options.enable_opengl) {
         return .{
-            .curve_tex_loc = bindings.curve_tex_loc,
-            .band_tex_loc = bindings.band_tex_loc,
-            .layer_tex_loc = bindings.layer_tex_loc,
-            .image_tex_loc = bindings.image_tex_loc,
-            .fill_rule_loc = bindings.fill_rule_loc,
-            .subpixel_order_loc = bindings.subpixel_order_loc,
-            .output_srgb_loc = bindings.output_srgb_loc,
-            .coverage_exponent_loc = bindings.coverage_exponent_loc,
-            .layer_base_loc = bindings.layer_base_loc,
-            .curve_tex_unit = bindings.curve_tex_unit,
-            .band_tex_unit = bindings.band_tex_unit,
-            .layer_tex_unit = bindings.layer_tex_unit,
-            .image_tex_unit = bindings.image_tex_unit,
-            .fill_rule = try toFillRule(bindings.fill_rule),
-            .subpixel_order = try toSubpixelOrder(bindings.subpixel_order),
-            .output_srgb = bindings.output_srgb,
-            .coverage_transfer = .{ .exponent = bindings.coverage_exponent },
-            .layer_base = bindings.layer_base,
+            .curve_tex_loc = program.curve_tex_loc,
+            .band_tex_loc = program.band_tex_loc,
+            .layer_tex_loc = program.layer_tex_loc,
+            .image_tex_loc = program.image_tex_loc,
+            .fill_rule_loc = program.fill_rule_loc,
+            .subpixel_order_loc = program.subpixel_order_loc,
+            .output_srgb_loc = program.output_srgb_loc,
+            .coverage_exponent_loc = program.coverage_exponent_loc,
+            .layer_base_loc = program.layer_base_loc,
+            .curve_tex_unit = program.curve_tex_unit,
+            .band_tex_unit = program.band_tex_unit,
+            .layer_tex_unit = program.layer_tex_unit,
+            .image_tex_unit = program.image_tex_unit,
         };
     } else {
         return .{};
     }
 }
 
-pub fn toVulkanCoverageBindings(bindings: SnailVulkanTextCoverageBindings) snail.coverage.VulkanBindings {
+pub fn toVulkanCoverageProgram(program: SnailVulkanTextCoverageProgram) snail.coverage.VulkanProgram {
     if (comptime build_options.enable_vulkan) {
         return .{
-            .pipeline_layout = bindings.pipeline_layout,
-            .descriptor_set_index = bindings.descriptor_set_index,
+            .pipeline_layout = program.pipeline_layout,
+            .descriptor_set_index = program.descriptor_set_index,
         };
     } else {
         return .{};

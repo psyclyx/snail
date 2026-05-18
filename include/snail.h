@@ -218,6 +218,14 @@ typedef struct {
     SnailRasterOptions raster;
 } SnailDrawState;
 
+typedef struct {
+    int fill_rule;
+    int subpixel_order;
+    bool output_srgb;
+    float coverage_exponent;
+    uint32_t layer_base;
+} SnailCoverageDrawState;
+
 /* Enums */
 
 #define SNAIL_FONT_WEIGHT_THIN 1
@@ -667,6 +675,9 @@ int snail_text_coverage_records_build_local(SnailTextCoverageRecords *records,
                                             const SnailTextBlob *blob,
                                             SnailTextResourceKeys resources,
                                             SnailTransform2D transform);
+int snail_text_coverage_records_draw_state(const SnailTextCoverageRecords *records,
+                                           SnailDrawState state,
+                                           SnailCoverageDrawState *out);
 bool snail_text_coverage_records_valid_for(const SnailTextCoverageRecords *records,
                                            const SnailPreparedResources *prepared);
 

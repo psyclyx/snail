@@ -21,12 +21,7 @@ typedef struct {
     int band_tex_unit;
     int layer_tex_unit;
     int image_tex_unit;
-    int fill_rule;
-    int subpixel_order;
-    bool output_srgb;
-    float coverage_exponent;
-    uint32_t layer_base;
-} SnailGlTextCoverageBindings;
+} SnailGlTextCoverageProgram;
 
 int snail_gl_renderer_init(SnailRenderer **out);
 SnailString snail_gl_coverage_shader_vertex_interface(void);
@@ -36,8 +31,11 @@ SnailString snail_gl_coverage_shader_coverage_functions(void);
 SnailString snail_gl_coverage_shader_sample_interface(void);
 SnailString snail_gl_coverage_shader_sample_functions(void);
 SnailString snail_gl_coverage_shader_fragment_body(void);
-int snail_gl_coverage_backend_bind_resources(SnailCoverageBackend *backend,
-                                             SnailGlTextCoverageBindings bindings);
+int snail_gl_coverage_backend_bind_program(SnailCoverageBackend *backend,
+                                           SnailGlTextCoverageProgram program);
+int snail_gl_coverage_backend_bind_draw_state(SnailCoverageBackend *backend,
+                                              SnailGlTextCoverageProgram program,
+                                              SnailCoverageDrawState state);
 
 #ifdef __cplusplus
 }

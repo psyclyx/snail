@@ -10,13 +10,17 @@ const SNAIL_ERR_OUT_OF_MEMORY = common.SNAIL_ERR_OUT_OF_MEMORY;
 const SNAIL_ERR_INVALID_ARGUMENT = common.SNAIL_ERR_INVALID_ARGUMENT;
 const SNAIL_ERR_DRAW_FAILED = common.SNAIL_ERR_DRAW_FAILED;
 const SnailTransform2D = common.SnailTransform2D;
+const SnailDrawState = common.SnailDrawState;
+const SnailCoverageDrawState = common.SnailCoverageDrawState;
 const SnailResourceKey = common.SnailResourceKey;
 const SnailTextResourceKeys = common.SnailTextResourceKeys;
 const SnailResourceStamp = common.SnailResourceStamp;
 const SnailResourceFootprint = common.SnailResourceFootprint;
 const wrapResourceStamp = common.wrapResourceStamp;
 const wrapTextResourceKeys = common.wrapTextResourceKeys;
+const fromCoverageDrawState = common.fromCoverageDrawState;
 const toTransform = common.toTransform;
+const toDrawState = common.toDrawState;
 const toTextResourceKeys = common.toTextResourceKeys;
 const fromResourceFootprint = common.fromResourceFootprint;
 const toResourceCapacityMode = common.toResourceCapacityMode;
@@ -323,6 +327,12 @@ pub export fn snail_text_coverage_records_build_local(records: *TextCoverageReco
         .resources = toTextResourceKeys(resources),
         .transform = toTransform(transform),
     }) catch |err| return mapError(err);
+    return SNAIL_OK;
+}
+
+pub export fn snail_text_coverage_records_draw_state(records: *const TextCoverageRecordsImpl, state: SnailDrawState, out: *SnailCoverageDrawState) c_int {
+    const draw_state = toDrawState(state) catch return SNAIL_ERR_INVALID_ARGUMENT;
+    out.* = fromCoverageDrawState(snail.coverage.drawStateFor(&records.inner, draw_state));
     return SNAIL_OK;
 }
 
