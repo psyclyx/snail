@@ -386,6 +386,17 @@ inline fn rootCodeCoord(v: f32) f32 {
     return if (@abs(v) <= root_code_eps) 0.0 else v;
 }
 
+inline fn isHalfOpenEndpointRoot(t: f32, end_root_delta: f32) bool {
+    return t >= 1.0 - 1e-5 and @abs(end_root_delta) <= root_code_eps;
+}
+
+test "half-open endpoint guard preserves near-end interior roots" {
+    try std.testing.expect(isHalfOpenEndpointRoot(1.0, 0.0));
+    try std.testing.expect(isHalfOpenEndpointRoot(1.0 - 5e-6, root_code_eps * 0.5));
+    try std.testing.expect(!isHalfOpenEndpointRoot(1.0 - 5e-6, root_code_eps * 2.0));
+    try std.testing.expect(!isHalfOpenEndpointRoot(1.0 - 2e-5, 0.0));
+}
+
 const CoverageScan = enum {
     continue_scan,
     stop_scan,
@@ -438,7 +449,7 @@ inline fn accumulateLineCoverage(
     const t_raw = -root_axis0 / denom;
     if (t_raw < -1e-5 or t_raw > 1.0 + 1e-5) return;
     const t = std.math.clamp(t_raw, 0.0, 1.0);
-    if (t >= 1.0 - 1e-5) return;
+    if (isHalfOpenEndpointRoot(t, root_axis2)) return;
 
     const derivative_axis = if (horizontal) p2y - p0y else p0x - p2x;
     if (@abs(derivative_axis) <= 1e-5) return;
@@ -492,7 +503,11 @@ inline fn accumulateGlyphCoverageSegment(
         solveSegmentVerticalRoots(segment, sample_rc.x);
 
     for (roots.t[0..roots.count]) |t| {
-        if (t >= 1.0 - 1e-5) continue;
+        const end_root_delta = switch (segment.kind) {
+            .conic, .quadratic, .line => if (horizontal) segment.p2.y - sample_rc.y else segment.p2.x - sample_rc.x,
+            .cubic => if (horizontal) segment.p3.y - sample_rc.y else segment.p3.x - sample_rc.x,
+        };
+        if (isHalfOpenEndpointRoot(t, end_root_delta)) continue;
         const point = segment.evaluate(t);
         const deriv = segment.derivative(t);
         const derivative_axis = if (horizontal) deriv.y else -deriv.x;
@@ -575,7 +590,7 @@ inline fn accumulatePreparedLineCoverage(
     const t_raw = -(curve.p0_root - sample_root) / denom;
     if (t_raw < -1e-5 or t_raw > 1.0 + 1e-5) return;
     const t = std.math.clamp(t_raw, 0.0, 1.0);
-    if (t >= 1.0 - 1e-5) return;
+    if (isHalfOpenEndpointRoot(t, curve.p0_root + curve.a_root - sample_root)) return;
 
     const derivative_axis = if (horizontal) curve.a_root else -curve.a_root;
     if (@abs(derivative_axis) <= 1e-5) return;
@@ -666,9 +681,14 @@ inline fn accumulatePreparedCurveCoverage(
         .cubic => solvePreparedCubicRoots(curve, cold, sample_root),
         .quadratic, .line => unreachable,
     };
+    const end_root = switch (curve.kind) {
+        .conic => curve.p2_root,
+        .cubic => cold.cubic_a_root + cold.cubic_b_root + cold.cubic_c_root + curve.p0_root,
+        .quadratic, .line => unreachable,
+    };
 
     for (roots.t[0..roots.count]) |t| {
-        if (t >= 1.0 - 1e-5) continue;
+        if (isHalfOpenEndpointRoot(t, end_root - sample_root)) continue;
         const along = switch (curve.kind) {
             .conic => evaluatePreparedConicAlong(cold, t),
             .cubic => evaluatePreparedCubicAlong(curve, cold, t),

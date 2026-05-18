@@ -108,6 +108,7 @@ const FrameTimings = struct {
 var ft = FrameTimings{};
 var frame_start_ns: u64 = 0;
 var cmd_ready_ns: u64 = 0; // set just before beginFrame returns
+var timing_reports_enabled: bool = false;
 
 pub fn init(width: u32, height: u32, title: [*:0]const u8) !snail.VulkanContext {
     // Note: this demo platform and the library Vulkan renderer have separate @cImport blocks
@@ -139,6 +140,8 @@ pub fn initForWindow(shared_window: *wayland.Window) !snail.VulkanContext {
 
 fn initForCurrentWindow() !snail.VulkanContext {
     errdefer destroyVulkanResources();
+
+    timing_reports_enabled = std.c.getenv("SNAIL_VK_TIMING") != null;
 
     try createInstance();
     try createSurface();
@@ -322,10 +325,12 @@ pub fn endFrame() void {
     ft.add(&ft.total_us, @as(f64, @floatFromInt(ts2 - frame_start_ns)) / 1000.0);
     ft.count += 1;
 
-    if (ft.window_start_ns == 0) ft.window_start_ns = frame_start_ns;
-    if (ts2 - ft.window_start_ns >= 1_000_000_000) {
-        ft.report();
-        ft.window_start_ns = ts2;
+    if (timing_reports_enabled) {
+        if (ft.window_start_ns == 0) ft.window_start_ns = frame_start_ns;
+        if (ts2 - ft.window_start_ns >= 1_000_000_000) {
+            ft.report();
+            ft.window_start_ns = ts2;
+        }
     }
 
     if (result == vk.VK_ERROR_OUT_OF_DATE_KHR or result == vk.VK_SUBOPTIMAL_KHR or framebuffer_resized) {

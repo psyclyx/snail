@@ -9,6 +9,7 @@ const wayland = @import("platform/wayland.zig");
 const presentation = @import("platform/presentation.zig");
 
 const KEY_R = wayland.KEY_R;
+const KEY_L = wayland.KEY_L;
 const KEY_Z = wayland.KEY_Z;
 const KEY_X = wayland.KEY_X;
 const KEY_B = wayland.KEY_B;
@@ -66,6 +67,97 @@ fn aaName(o: snail.SubpixelOrder) []const u8 {
         .vrgb => "subpixel-VRGB",
         .vbgr => "subpixel-VBGR",
     };
+}
+
+fn envU32(comptime name: [:0]const u8, default: u32) u32 {
+    const ptr = std.c.getenv(name.ptr) orelse return default;
+    const value = std.mem.span(ptr);
+    return std.fmt.parseInt(u32, value, 10) catch default;
+}
+
+fn f32Bits(value: f32) u32 {
+    return @as(u32, @bitCast(value));
+}
+
+fn colorEncodingInt(encoding: snail.ColorEncoding) u32 {
+    return switch (encoding) {
+        .linear => 0,
+        .srgb => 1,
+    };
+}
+
+fn resolveLinearInt(resolve: snail.Resolve) u32 {
+    return switch (resolve) {
+        .direct => 0,
+        .linear => 1,
+    };
+}
+
+fn printMat4Bits(name: []const u8, m: snail.Mat4) void {
+    std.debug.print("{s}=", .{name});
+    for (m.data, 0..) |value, i| {
+        if (i != 0) std.debug.print(",", .{});
+        std.debug.print("0x{x}", .{f32Bits(value)});
+    }
+    std.debug.print("\n", .{});
+}
+
+fn printMat4Env(name: []const u8, m: snail.Mat4) void {
+    std.debug.print(" {s}=", .{name});
+    for (m.data, 0..) |value, i| {
+        if (i != 0) std.debug.print(",", .{});
+        std.debug.print("0x{x}", .{f32Bits(value)});
+    }
+}
+
+fn dumpReproFrame(
+    frame_count: u32,
+    backend: []const u8,
+    current_order: snail.SubpixelOrder,
+    present: presentation.Info,
+    target_encoding: snail.TargetEncoding,
+    resolve: snail.Resolve,
+    pan_x: f32,
+    pan_y: f32,
+    zoom: f32,
+    angle: f32,
+    projection: snail.Mat4,
+    scene_transform: snail.Mat4,
+    mvp: snail.Mat4,
+) void {
+    std.debug.print("\n--- snail repro frame {} ---\n", .{frame_count});
+    std.debug.print("backend={s}\n", .{backend});
+    std.debug.print("logical_size={}x{}\n", .{ present.logical_size[0], present.logical_size[1] });
+    std.debug.print("framebuffer_size={}x{}\n", .{ present.framebuffer_size[0], present.framebuffer_size[1] });
+    std.debug.print("buffer_scale={}\n", .{present.buffer_scale});
+    std.debug.print("will_resample={}\n", .{@intFromBool(present.will_resample)});
+    std.debug.print("subpixel_order={}\n", .{@intFromEnum(current_order)});
+    std.debug.print("target_attachment={}\n", .{colorEncodingInt(target_encoding.attachment)});
+    std.debug.print("target_stored={}\n", .{colorEncodingInt(target_encoding.stored_pixels)});
+    std.debug.print("resolve_linear={}\n", .{resolveLinearInt(resolve)});
+    std.debug.print("controls_bits pan_x=0x{x} pan_y=0x{x} zoom=0x{x} angle=0x{x}\n", .{
+        f32Bits(pan_x),
+        f32Bits(pan_y),
+        f32Bits(zoom),
+        f32Bits(angle),
+    });
+    printMat4Bits("projection_bits", projection);
+    printMat4Bits("scene_transform_bits", scene_transform);
+    printMat4Bits("mvp_bits", mvp);
+    std.debug.print("repro_command: SNAIL_REPRO=1 SNAIL_REPRO_LOGICAL_W={} SNAIL_REPRO_LOGICAL_H={} SNAIL_REPRO_FB_W={} SNAIL_REPRO_FB_H={} SNAIL_REPRO_SUBPIXEL={} SNAIL_REPRO_WILL_RESAMPLE={} SNAIL_REPRO_ATTACHMENT={} SNAIL_REPRO_STORED={} SNAIL_REPRO_RESOLVE_LINEAR={} SNAIL_REPRO_OUTPUT=zig-out/repro-frame.tga", .{
+        present.logical_size[0],
+        present.logical_size[1],
+        present.framebuffer_size[0],
+        present.framebuffer_size[1],
+        @intFromEnum(current_order),
+        @intFromBool(present.will_resample),
+        colorEncodingInt(target_encoding.attachment),
+        colorEncodingInt(target_encoding.stored_pixels),
+        resolveLinearInt(resolve),
+    });
+    printMat4Env("SNAIL_REPRO_MVP", mvp);
+    std.debug.print(" zig build screenshot\n", .{});
+    std.debug.print("--- end snail repro frame ---\n", .{});
 }
 
 fn logPresentationInfo(info: presentation.Info) void {
@@ -135,6 +227,7 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
     var fps_frames: u32 = 0;
     var fps_display: f32 = 0.0;
     var last_presentation: ?presentation.Info = null;
+    const dump_every = envU32("SNAIL_DEMO_DUMP_EVERY", 0);
 
     std.debug.print("snail - GPU text & vector rendering\n", .{});
     std.debug.print("Backend: {s}, HarfBuzz: {s}\n", .{
@@ -142,7 +235,7 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
         if (build_options.enable_harfbuzz) "ON" else "OFF",
     });
     renderer_driver.warnIfDebugCpu(active.kind());
-    std.debug.print("Keys: arrows pan, Z/X zoom, R rotate, B AA mode, C backend/threading, Esc quit\n", .{});
+    std.debug.print("Keys: arrows pan, Z/X zoom, R rotate, B AA mode, C backend/threading, L dump repro, Esc quit\n", .{});
     std.debug.print("aa={s}\n", .{aaName(current_order)});
 
     while (!active.shouldClose()) {
@@ -161,6 +254,7 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
         // cycle with B if they want to track the current display.
         _ = window.consumeMonitorChanged();
 
+        const dump_repro = window.isKeyPressed(KEY_L);
         if (window.isKeyPressed(KEY_R)) rotate = !rotate;
         if (window.isKeyPressed(KEY_ESCAPE)) break;
         if (window.isKeyPressed(KEY_B)) {
@@ -262,6 +356,9 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
             ),
         );
         const mvp = snail.Mat4.multiply(projection, scene_transform);
+        if (dump_repro or (dump_every != 0 and frame_count % dump_every == 0)) {
+            dumpReproFrame(frame_count, active.backendName(), current_order, present, target_encoding, resolve, pan_x, pan_y, zoom, angle, projection, scene_transform, mvp);
+        }
         const draw_options = snail.DrawOptions{
             .mvp = mvp,
             .target = .{

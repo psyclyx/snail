@@ -317,6 +317,17 @@ float segmentMaxY(SegmentData seg) {
     return max(max(seg.p0.y, seg.p1.y), seg.p2.y);
 }
 
+float segmentEndRootDelta(SegmentData seg, vec2 sampleRc, bool horizontal) {
+    if (seg.kind == 2) {
+        return horizontal ? seg.p3.y - sampleRc.y : seg.p3.x - sampleRc.x;
+    }
+    return horizontal ? seg.p2.y - sampleRc.y : seg.p2.x - sampleRc.x;
+}
+
+bool isHalfOpenEndpointRoot(float t, float endRootDelta) {
+    return t >= 1.0 - kParamEps && abs(endRootDelta) <= kCoordEps;
+}
+
 bool accumulateAxisCoverageSegment(inout float cov, inout float wgt, vec2 sampleRc, float ppe, SegmentData seg, bool horizontal) {
     float maxCoord = (horizontal ? segmentMaxX(seg) - sampleRc.x : segmentMaxY(seg) - sampleRc.y);
     if (maxCoord * ppe < -0.5) return false;
@@ -354,8 +365,10 @@ bool accumulateAxisCoverageSegment(inout float cov, inout float wgt, vec2 sample
     for (int ri = 0; ri < roots.count; ri++) {
         float t = roots.t[ri];
         // Treat segment intersections as half-open [0, 1) so shared joins
-        // between adjacent segments are counted once instead of twice.
-        if (t >= 1.0 - kParamEps) continue;
+        // between adjacent segments are counted once instead of twice. Do not
+        // drop near-end roots unless the sample is actually on the endpoint;
+        // otherwise a shallow cubic can lose a thin interior column.
+        if (isHalfOpenEndpointRoot(t, segmentEndRootDelta(seg, sampleRc, horizontal))) continue;
         vec2 point = (seg.kind == 2) ? evalCubicPoint(seg, t) : evalSegmentPoint(seg, t);
         vec2 deriv = (seg.kind == 2) ? evalCubicDerivative(seg, t) : evalSegmentDerivative(seg, t);
         float derivAxis = horizontal ? deriv.y : -deriv.x;
