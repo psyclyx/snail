@@ -301,6 +301,10 @@ pub export fn snail_text_coverage_records_glyph_count(records: *const TextCovera
     return records.inner.glyphCount();
 }
 
+pub export fn snail_text_coverage_records_layer_window_base(records: *const TextCoverageRecordsImpl) u32 {
+    return records.inner.layerWindowBase();
+}
+
 pub export fn snail_text_coverage_records_words(records: *const TextCoverageRecordsImpl) ?[*]const u32 {
     if (records.inner.len == 0) return null;
     return records.words.ptr;

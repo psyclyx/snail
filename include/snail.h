@@ -646,6 +646,7 @@ void snail_text_coverage_records_deinit(SnailTextCoverageRecords *records);
 void snail_text_coverage_records_reset(SnailTextCoverageRecords *records);
 size_t snail_text_coverage_records_word_count(const SnailTextCoverageRecords *records);
 size_t snail_text_coverage_records_glyph_count(const SnailTextCoverageRecords *records);
+uint32_t snail_text_coverage_records_layer_window_base(const SnailTextCoverageRecords *records);
 const uint32_t *snail_text_coverage_records_words(const SnailTextCoverageRecords *records);
 int snail_text_coverage_records_build_local(SnailTextCoverageRecords *records,
                                             const SnailPreparedResources *prepared,

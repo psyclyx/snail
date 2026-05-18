@@ -110,6 +110,7 @@ pub fn toGlCoverageBindings(bindings: SnailGlTextCoverageBindings) !snail.covera
             .subpixel_order_loc = bindings.subpixel_order_loc,
             .output_srgb_loc = bindings.output_srgb_loc,
             .coverage_exponent_loc = bindings.coverage_exponent_loc,
+            .layer_base_loc = bindings.layer_base_loc,
             .curve_tex_unit = bindings.curve_tex_unit,
             .band_tex_unit = bindings.band_tex_unit,
             .layer_tex_unit = bindings.layer_tex_unit,
@@ -118,6 +119,7 @@ pub fn toGlCoverageBindings(bindings: SnailGlTextCoverageBindings) !snail.covera
             .subpixel_order = try toSubpixelOrder(bindings.subpixel_order),
             .output_srgb = bindings.output_srgb,
             .coverage_transfer = .{ .exponent = bindings.coverage_exponent },
+            .layer_base = bindings.layer_base,
         };
     } else {
         return .{};

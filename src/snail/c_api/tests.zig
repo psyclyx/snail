@@ -288,6 +288,7 @@ test "c_api: scheduled upload draw list coverage records and retirement" {
     try testing.expectEqual(c.SNAIL_OK, c_resources.snail_text_coverage_records_build_local(coverage.?, prepared.?, blob.?, .{}));
     try testing.expect(c_resources.snail_text_coverage_records_valid_for(coverage.?, prepared.?));
     try testing.expect(c_resources.snail_text_coverage_records_word_count(coverage.?) > 0);
+    try testing.expectEqual(@as(u32, 0), c_resources.snail_text_coverage_records_layer_window_base(coverage.?));
 
     var coverage_backend: ?*c.test_api.CoverageBackendImpl = null;
     try testing.expectEqual(c.SNAIL_ERR_INVALID_ARGUMENT, c_resources.snail_coverage_backend_init(renderer.?, prepared.?, &coverage_backend));

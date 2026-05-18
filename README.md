@@ -607,7 +607,8 @@ masking, or compositing.
   `fragment_body`. For material shaders that sample text coverage from their
   own geometry, include `resource_interface`, `coverage_functions`,
   `sample_interface`, and `sample_functions`; upload `records.slice()` as a
-  `GL_R32UI` texture buffer and call
+  `GL_R32UI` texture buffer, set `u_layer_base` from
+  `records.layerWindowBase()`, and call
   `snail_text_sample_premul_linear(scene_pos)`.
 - `snail.coverage.Shader.vulkan` exposes the Vulkan shader sources and descriptor
   binding numbers. The Vulkan coverage backend binds Snail's descriptor set
@@ -617,7 +618,8 @@ masking, or compositing.
   initialize with `snail.coverage.TextCoverageRecords.init(buffer)`, then call
   `records.buildLocal(prepared, blob, .{ .transform = ... })`. `buildLocal`
   does not allocate; it returns `error.DrawListFull` if the buffer is too
-  small. Call `records.validFor(prepared)` after a re-upload and
+  small. Pass `records.layerWindowBase()` to custom shaders as `u_layer_base`.
+  Call `records.validFor(prepared)` after a re-upload and
   `records.buildLocal(prepared, blob, options)` if the atlas has moved.
 - `snail.coverage.Backend` is the backend hook. Get one from
   `prepared.coverageBackend(renderer)` (or `gl.coverageBackend(prepared)`

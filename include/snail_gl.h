@@ -16,6 +16,7 @@ typedef struct {
     int subpixel_order_loc;
     int output_srgb_loc;
     int coverage_exponent_loc;
+    int layer_base_loc;
     int curve_tex_unit;
     int band_tex_unit;
     int layer_tex_unit;
@@ -24,6 +25,7 @@ typedef struct {
     int subpixel_order;
     bool output_srgb;
     float coverage_exponent;
+    uint32_t layer_base;
 } SnailGlTextCoverageBindings;
 
 int snail_gl_renderer_init(SnailRenderer **out);

@@ -5,6 +5,7 @@ const resource_key_mod = @import("resource_key.zig");
 const prepared_mod = @import("resources/prepared.zig");
 const scene_mod = @import("scene.zig");
 const text_mod = @import("text.zig");
+const texture_layers = @import("render/format/texture_layers.zig");
 const vec = @import("math/vec.zig");
 const pipeline = if (build_options.enable_opengl) @import("render/backend/gl/state.zig") else struct {
     pub const TextCoverageBindings = struct {};
@@ -53,7 +54,8 @@ pub const Bindings = union(BackendKind) {
 /// `snail.coverage.Shader.gl.resource_interface` and `snail.coverage.Shader.gl.coverage_functions`.
 /// Shaders that need random access to `TextCoverageRecords` can also include
 /// `sample_interface` and `sample_functions`, upload `records.slice()` as a
-/// `GL_R32UI` texture buffer, and call `snail_text_sample_premul_linear(scene_pos)`.
+/// `GL_R32UI` texture buffer, set `u_layer_base` to
+/// `records.layerWindowBase()`, and call `snail_text_sample_premul_linear(scene_pos)`.
 pub const Shader = struct {
     pub const gl = struct {
         pub const vertex_interface = pipeline.text_vertex_interface;
@@ -62,6 +64,7 @@ pub const Shader = struct {
             \\uniform sampler2DArray u_curve_tex;
             \\uniform usampler2DArray u_band_tex;
             \\uniform int u_fill_rule;
+            \\uniform int u_layer_base;
             \\
             \\#define SNAIL_FILL_RULE u_fill_rule
             \\
@@ -79,8 +82,9 @@ pub const Shader = struct {
             coverage_functions ++
             "\n" ++
             \\float snail_text_coverage() {
-            \\    int atlas_layer = (v_glyph.w >> 8) & 0xFF;
-            \\    if (atlas_layer == 0xFF) return 0.0;
+            \\    int layer_byte = (v_glyph.w >> 8) & 0xFF;
+            \\    if (layer_byte == 0xFF) return 0.0;
+            \\    int atlas_layer = u_layer_base + layer_byte;
             \\    vec2 rc = v_texcoord;
             \\    vec2 dx = vec2(dFdx(rc.x), dFdy(rc.x));
             \\    vec2 dy = vec2(dFdx(rc.y), dFdy(rc.y));
@@ -150,6 +154,7 @@ pub const TextCoverageRecords = struct {
     atlas_stamp: ResourceStamp = .{},
     paint_blob: ?*const TextBlob = null,
     paint_stamp: ResourceStamp = .{},
+    layer_window_base: u32 = 0,
 
     pub fn wordCapacityForBlob(blob: *const TextBlob) usize {
         return blob.gpu_instance_budget * TEXT_WORDS_PER_GLYPH;
@@ -165,6 +170,7 @@ pub const TextCoverageRecords = struct {
         self.atlas_stamp = .{};
         self.paint_blob = null;
         self.paint_stamp = .{};
+        self.layer_window_base = 0;
     }
 
     pub fn glyphCount(self: *const TextCoverageRecords) usize {
@@ -173,6 +179,10 @@ pub const TextCoverageRecords = struct {
 
     pub fn slice(self: *const TextCoverageRecords) []const u32 {
         return self.buffer[0..self.len];
+    }
+
+    pub fn layerWindowBase(self: *const TextCoverageRecords) u32 {
+        return self.layer_window_base;
     }
 
     pub fn buildLocal(
@@ -192,6 +202,7 @@ pub const TextCoverageRecords = struct {
         const overrides = [_]Override{.{ .transform = options.transform }};
         const draw = TextDraw{ .blob = blob, .instances = &overrides };
         const result = try batch.addDraw(atlas_view, draw, 0, 0);
+        self.layer_window_base = result.layer_window_base;
         if (!result.completed) {
             self.len = batch.slice().len;
             return error.DrawListFull;
@@ -211,11 +222,23 @@ pub const TextCoverageRecords = struct {
         const atlas = self.atlas orelse return false;
         const stamp = prepared.textStamp(atlas) catch return false;
         if (!self.atlas_stamp.eql(stamp)) return false;
+        const atlas_view = prepared.textAtlasView(atlas) catch return false;
+        if (!self.layerWindowValidFor(atlas_view)) return false;
         if (self.paint_blob) |blob| {
             const paint_stamp = prepared.textPaintStamp(blob) catch return false;
             if (!self.paint_stamp.eql(paint_stamp)) return false;
         }
         return true;
+    }
+
+    fn layerWindowValidFor(self: *const TextCoverageRecords, atlas_view: anytype) bool {
+        if (atlas_view.page_layers.len == 0) {
+            return texture_layers.windowBase(atlas_view.layer_base) == self.layer_window_base;
+        }
+        for (atlas_view.page_layers) |layer| {
+            if (texture_layers.windowBase(layer) == self.layer_window_base) return true;
+        }
+        return false;
     }
 };
 

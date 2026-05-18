@@ -5,6 +5,7 @@ const snail = @import("root.zig");
 const bezier = @import("math/bezier.zig");
 const resource_key = @import("resource_key.zig");
 const upload_plan = @import("render/upload_plan.zig");
+const texture_layers = @import("render/format/texture_layers.zig");
 const vertex_mod = @import("render/format/vertex.zig");
 
 const Mat4 = snail.Mat4;
@@ -665,12 +666,14 @@ test "replacing path-picture key does not invalidate unrelated text coverage rec
     try set_a.putPathPicture(.hud_panel, &picture_a);
     var prepared_a = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set_a);
     defer prepared_a.deinit();
+    prepared_a.atlases[0].view.layer_base = texture_layers.WINDOW_SIZE;
 
     const coverage_words = try allocator.alloc(u32, TextCoverageRecords.wordCapacityForBlob(&blob));
     defer allocator.free(coverage_words);
     var records = TextCoverageRecords.init(coverage_words);
     try records.buildLocal(&prepared_a, &blob, .{});
     try std.testing.expect(records.validFor(&prepared_a));
+    try std.testing.expectEqual(@as(u32, texture_layers.WINDOW_SIZE), records.layerWindowBase());
 
     var set_b_entries: [4]ResourceSet.Entry = undefined;
     var set_b = ResourceSet.init(&set_b_entries);
@@ -678,6 +681,7 @@ test "replacing path-picture key does not invalidate unrelated text coverage rec
     try set_b.putPathPicture(.hud_panel, &picture_b);
     var prepared_b = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set_b);
     defer prepared_b.deinit();
+    prepared_b.atlases[0].view.layer_base = texture_layers.WINDOW_SIZE;
 
     try std.testing.expect(records.validFor(&prepared_b));
 }

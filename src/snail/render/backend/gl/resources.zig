@@ -27,6 +27,7 @@ pub const TextCoverageBindings = struct {
     subpixel_order_loc: gl.GLint = -1,
     output_srgb_loc: gl.GLint = -1,
     coverage_exponent_loc: gl.GLint = -1,
+    layer_base_loc: gl.GLint = -1,
     curve_tex_unit: gl.GLint = 0,
     band_tex_unit: gl.GLint = 1,
     layer_tex_unit: gl.GLint = 2,
@@ -37,6 +38,7 @@ pub const TextCoverageBindings = struct {
     /// whether the shader itself should sRGB-encode its output.
     output_srgb: bool = false,
     coverage_transfer: CoverageTransfer = .identity,
+    layer_base: u32 = 0,
 };
 
 pub const CurveAtlas = atlas_curve_mod.CurveAtlas;
@@ -357,6 +359,7 @@ pub const PreparedResources = struct {
         if (bindings.subpixel_order_loc >= 0) gl.glUniform1i(bindings.subpixel_order_loc, @intFromEnum(bindings.subpixel_order));
         if (bindings.output_srgb_loc >= 0) gl.glUniform1i(bindings.output_srgb_loc, @intFromBool(bindings.output_srgb));
         if (bindings.coverage_exponent_loc >= 0) gl.glUniform1f(bindings.coverage_exponent_loc, bindings.coverage_transfer.shaderExponent());
+        if (bindings.layer_base_loc >= 0) gl.glUniform1i(bindings.layer_base_loc, @intCast(bindings.layer_base));
     }
 
     fn currentImageView(self: *const PreparedResources, comptime ImageView: type, image: *const snail_mod.Image) ImageView {

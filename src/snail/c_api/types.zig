@@ -232,6 +232,7 @@ pub const SnailGlTextCoverageBindings = extern struct {
     subpixel_order_loc: c_int = -1,
     output_srgb_loc: c_int = -1,
     coverage_exponent_loc: c_int = -1,
+    layer_base_loc: c_int = -1,
     curve_tex_unit: c_int = 0,
     band_tex_unit: c_int = 1,
     layer_tex_unit: c_int = 2,
@@ -240,6 +241,7 @@ pub const SnailGlTextCoverageBindings = extern struct {
     subpixel_order: c_int = 0,
     output_srgb: bool = false,
     coverage_exponent: f32 = 1.0,
+    layer_base: u32 = 0,
 };
 
 pub const SnailVulkanTextCoverageBindings = extern struct {

@@ -89,8 +89,9 @@ vec4 snail_text_sample_premul_linear(vec2 scene_pos) {
 
         uint gz = record.glyph.x;
         uint gw = record.glyph.y;
-        int atlas_layer = int((gw >> 24u) & 0xFFu);
-        if (atlas_layer == 0xFF) continue;
+        int layer_byte = int((gw >> 24u) & 0xFFu);
+        if (layer_byte == 0xFF) continue;
+        int atlas_layer = u_layer_base + layer_byte;
         ivec2 glyph_loc = ivec2(int(gz & 0xFFFFu), int(gz >> 16u));
         ivec2 band_max = ivec2(int((gw >> 16u) & 0xFFu), int(gw & 0xFFFFu));
         vec2 dx = vec2(dFdx(rc.x), dFdy(rc.x));
