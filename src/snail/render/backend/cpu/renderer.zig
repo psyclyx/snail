@@ -55,7 +55,9 @@ const multiplyLinearColor = cpu_color.multiplyLinearColor;
 const premultiplyCoverage = cpu_coverage.premultiplyCoverage;
 const premultiplySubpixelCoverage = cpu_coverage.premultiplySubpixelCoverage;
 const PreparedPathPaint = cpu_path_paint.PreparedPathPaint;
+const PreparedPathLayer = cpu_path_paint.PreparedPathLayer;
 const PreparedPathRecord = cpu_path_paint.PreparedPathRecord;
+const PreparedAtlasPage = cpu_resources.PreparedAtlasPage;
 const samplePathPaint = cpu_path_paint.samplePathPaint;
 const sceneToPixelFromMvp = cpu_geometry.sceneToPixelFromMvp;
 const ScreenBounds = cpu_geometry.ScreenBounds;
@@ -568,6 +570,243 @@ pub const CpuRenderer = struct {
         }
     }
 
+    const PathRasterState = struct {
+        inverse: Transform2D,
+        x0: u32,
+        x1: u32,
+        y0: u32,
+        y1: u32,
+        epp: Vec2,
+        ppe: Vec2,
+        sample_dx: Vec2,
+        subpixel_plan: SubpixelCoveragePlan,
+        use_subpixel: bool,
+    };
+
+    const PathCompositePrograms = struct {
+        outline: bool,
+        fill: PreparedPathPaint = .{},
+        stroke: PreparedPathPaint = .{},
+    };
+
+    const PathCompositeAccum = struct {
+        result: [4]f32 = .{ 0, 0, 0, 0 },
+        result_blend: [3]f32 = .{ 0, 0, 0 },
+        fill_cov: SubpixelCoverage = .{ .rgb = .{ 0, 0, 0 }, .alpha = 0 },
+        stroke_cov: SubpixelCoverage = .{ .rgb = .{ 0, 0, 0 }, .alpha = 0 },
+        fill_paint: [4]f32 = .{ 0, 0, 0, 0 },
+        stroke_paint: [4]f32 = .{ 0, 0, 0, 0 },
+        fill_apply_dither: bool = false,
+        stroke_apply_dither: bool = false,
+        has_gradient: bool = false,
+    };
+
+    const PathCompositePixel = struct {
+        color: [4]f32,
+        blend: [3]f32,
+        has_gradient: bool,
+    };
+
+    fn preparedAtlasPage(prepared: *const PreparedResources, atlas_layer: u32) ?*const PreparedAtlasPage {
+        if (atlas_layer >= prepared.atlas_pages.len) return null;
+        if (prepared.atlas_pages[atlas_layer]) |*page| return page;
+        return null;
+    }
+
+    fn pathRasterState(self: *const CpuRenderer, bbox: bezier.BBox, transform: Transform2D, allow_subpixel: bool) ?PathRasterState {
+        const inverse = inverseTransform(transform) orelse return null;
+        var bounds = transformedGlyphBounds(bbox, transform);
+        expandBoundsForCoverageSupport(&bounds, self.subpixel_order, allow_subpixel);
+
+        const px0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.x))), @as(i32, @intCast(self.col_clip_min)));
+        const px1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.x))), @as(i32, @intCast(self.col_clip_max)));
+        const py0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.y))), @as(i32, @intCast(self.row_clip_min)));
+        const py1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.y))), @as(i32, @intCast(self.row_clip_max)));
+        if (px0 >= px1 or py0 >= py1) return null;
+
+        const epp = glyphEdgePixelsPerPixel(inverse);
+        const ppe = Vec2.new(1.0 / epp.x, 1.0 / epp.y);
+        const sample_dx = Vec2.new(inverse.xx, inverse.yx);
+        const sample_dy = Vec2.new(inverse.xy, inverse.yy);
+        return .{
+            .inverse = inverse,
+            .x0 = @intCast(px0),
+            .x1 = @intCast(px1),
+            .y0 = @intCast(py0),
+            .y1 = @intCast(py1),
+            .epp = epp,
+            .ppe = ppe,
+            .sample_dx = sample_dx,
+            .subpixel_plan = SubpixelCoveragePlan.init(sample_dx, sample_dy, self.subpixel_order),
+            .use_subpixel = allow_subpixel and self.subpixel_order != .none,
+        };
+    }
+
+    fn recordCompositeSubpixelLayer(
+        self: *CpuRenderer,
+        accum: *PathCompositeAccum,
+        page: *const PreparedAtlasPage,
+        raster: PathRasterState,
+        layer: PreparedPathLayer,
+        layer_index: usize,
+        programs: PathCompositePrograms,
+        local: Vec2,
+        tint: [4]f32,
+    ) void {
+        const cov = self.applySubpixelCoverageTransfer(evalGlyphCoverageSubpixel(
+            page,
+            local,
+            raster.subpixel_plan,
+            layer.band_entry,
+            layer.band_max_h,
+            layer.band_max_v,
+            self.fill_rule,
+        ));
+
+        if (programs.outline and layer_index < 2) {
+            if (layer_index == 0) {
+                accum.fill_cov = cov;
+                if (max3(cov.rgb) > 0.0 or cov.alpha > 0.0) {
+                    const paint = programs.fill.sample(local);
+                    accum.fill_paint = multiplyLinearColor(paint.color, tint);
+                    accum.fill_apply_dither = paint.apply_dither;
+                }
+            } else {
+                accum.stroke_cov = cov;
+                if (max3(cov.rgb) > 0.0 or cov.alpha > 0.0) {
+                    const paint = programs.stroke.sample(local);
+                    accum.stroke_paint = multiplyLinearColor(paint.color, tint);
+                    accum.stroke_apply_dither = paint.apply_dither;
+                }
+            }
+            return;
+        }
+
+        if (max3(cov.rgb) <= 0.0 and cov.alpha <= 0.0) return;
+        var paint = layer.paint.sample(local);
+        paint.color = multiplyLinearColor(paint.color, tint);
+        if (paint.apply_dither and cov.alpha > 1e-6) accum.has_gradient = true;
+        compositeSubpixelOver(
+            premultiplySubpixelCoverage(paint.color, cov.rgb, cov.alpha),
+            subpixelBlendCoverage(paint.color, cov.rgb),
+            &accum.result,
+            &accum.result_blend,
+        );
+    }
+
+    fn recordCompositeScalarLayer(
+        self: *CpuRenderer,
+        accum: *PathCompositeAccum,
+        page: *const PreparedAtlasPage,
+        raster: PathRasterState,
+        layer: PreparedPathLayer,
+        layer_index: usize,
+        programs: PathCompositePrograms,
+        local: Vec2,
+        tint: [4]f32,
+    ) void {
+        const cov = self.applyCoverageTransfer(evalGlyphCoverageBandSpan(
+            page,
+            local.x,
+            local.y,
+            raster.epp.x,
+            raster.epp.y,
+            raster.ppe.x,
+            raster.ppe.y,
+            layer.band_entry,
+            layer.band_max_h,
+            layer.band_max_v,
+            self.fill_rule,
+        ));
+
+        if (programs.outline and layer_index < 2) {
+            const subpixel_cov: SubpixelCoverage = .{ .rgb = .{ cov, cov, cov }, .alpha = cov };
+            if (layer_index == 0) {
+                accum.fill_cov = subpixel_cov;
+                if (cov > 0.0) {
+                    const paint = programs.fill.sample(local);
+                    accum.fill_paint = multiplyLinearColor(paint.color, tint);
+                }
+            } else {
+                accum.stroke_cov = subpixel_cov;
+                if (cov > 0.0) {
+                    const paint = programs.stroke.sample(local);
+                    accum.stroke_paint = multiplyLinearColor(paint.color, tint);
+                }
+            }
+            return;
+        }
+
+        if (cov <= 0.0) return;
+        var paint = layer.paint.sample(local);
+        paint.color = multiplyLinearColor(paint.color, tint);
+        accum.result = compositeOver(premultiplyCoverage(paint.color, cov), accum.result);
+    }
+
+    fn finishOutlineComposite(accum: *PathCompositeAccum, use_subpixel: bool) void {
+        if (use_subpixel) {
+            const border_cov = [3]f32{
+                @min(accum.fill_cov.rgb[0], accum.stroke_cov.rgb[0]),
+                @min(accum.fill_cov.rgb[1], accum.stroke_cov.rgb[1]),
+                @min(accum.fill_cov.rgb[2], accum.stroke_cov.rgb[2]),
+            };
+            const interior_cov = [3]f32{
+                @max(accum.fill_cov.rgb[0] - border_cov[0], 0.0),
+                @max(accum.fill_cov.rgb[1] - border_cov[1], 0.0),
+                @max(accum.fill_cov.rgb[2] - border_cov[2], 0.0),
+            };
+            const border_alpha = @min(accum.fill_cov.alpha, accum.stroke_cov.alpha);
+            const interior_alpha = @max(accum.fill_cov.alpha - border_alpha, 0.0);
+            if (accum.fill_apply_dither and interior_alpha > 1e-6) accum.has_gradient = true;
+            if (accum.stroke_apply_dither and border_alpha > 1e-6) accum.has_gradient = true;
+            const fill_blend = subpixelBlendCoverage(accum.fill_paint, interior_cov);
+            const stroke_blend = subpixelBlendCoverage(accum.stroke_paint, border_cov);
+            compositeSubpixelOver(
+                addColors(
+                    premultiplySubpixelCoverage(accum.fill_paint, interior_cov, interior_alpha),
+                    premultiplySubpixelCoverage(accum.stroke_paint, border_cov, border_alpha),
+                ),
+                .{
+                    fill_blend[0] + stroke_blend[0],
+                    fill_blend[1] + stroke_blend[1],
+                    fill_blend[2] + stroke_blend[2],
+                },
+                &accum.result,
+                &accum.result_blend,
+            );
+        } else {
+            const border_cov = @min(accum.fill_cov.alpha, accum.stroke_cov.alpha);
+            const interior_cov = @max(accum.fill_cov.alpha - border_cov, 0.0);
+            const combined = addColors(premultiplyCoverage(accum.fill_paint, interior_cov), premultiplyCoverage(accum.stroke_paint, border_cov));
+            accum.result = compositeOver(combined, accum.result);
+        }
+    }
+
+    fn sampleCompositePathPixel(
+        self: *CpuRenderer,
+        page: *const PreparedAtlasPage,
+        raster: PathRasterState,
+        layers: []const PreparedPathLayer,
+        programs: PathCompositePrograms,
+        local: Vec2,
+        tint: [4]f32,
+    ) PathCompositePixel {
+        var accum: PathCompositeAccum = .{};
+        for (layers, 0..) |layer, layer_index| {
+            if (raster.use_subpixel) {
+                self.recordCompositeSubpixelLayer(&accum, page, raster, layer, layer_index, programs, local, tint);
+            } else {
+                self.recordCompositeScalarLayer(&accum, page, raster, layer, layer_index, programs, local, tint);
+            }
+        }
+        if (programs.outline) finishOutlineComposite(&accum, raster.use_subpixel);
+        return .{
+            .color = accum.result,
+            .blend = accum.result_blend,
+            .has_gradient = accum.has_gradient,
+        };
+    }
+
     fn renderPathBatchLayers(
         self: *CpuRenderer,
         prepared: *const PreparedResources,
@@ -579,228 +818,107 @@ pub const CpuRenderer = struct {
         record: *const PreparedPathRecord,
         allow_subpixel: bool,
     ) void {
-        const page = (if (atlas_layer < prepared.atlas_pages.len) prepared.atlas_pages[atlas_layer] else null) orelse return;
+        const page = preparedAtlasPage(prepared, atlas_layer) orelse return;
 
         if (record.tag == 5) {
-            // Composite group: header at offset 0, then 6 texels per layer starting at offset 1.
-            const layer_count = record.layer_count;
-            const composite_mode = record.composite_mode;
-            const layers = entry.path_layers[record.layer_start..][0..layer_count];
+            self.renderCompositePathBatchLayers(page, union_bbox, transform, tint, entry, record, allow_subpixel);
+        } else {
+            self.renderSinglePathBatchLayer(page, union_bbox, transform, tint, entry, record, allow_subpixel);
+        }
+    }
 
-            const inverse = inverseTransform(transform) orelse return;
-            var bounds = transformedGlyphBounds(union_bbox, transform);
-            expandBoundsForCoverageSupport(&bounds, self.subpixel_order, allow_subpixel);
-            const px0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.x))), @as(i32, @intCast(self.col_clip_min)));
-            const px1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.x))), @as(i32, @intCast(self.col_clip_max)));
-            const py0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.y))), @as(i32, @intCast(self.row_clip_min)));
-            const py1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.y))), @as(i32, @intCast(self.row_clip_max)));
-            if (px0 >= px1 or py0 >= py1) return;
+    fn renderCompositePathBatchLayers(
+        self: *CpuRenderer,
+        page: *const PreparedAtlasPage,
+        union_bbox: bezier.BBox,
+        transform: Transform2D,
+        tint: [4]f32,
+        entry: *const LayerInfoEntry,
+        record: *const PreparedPathRecord,
+        allow_subpixel: bool,
+    ) void {
+        // Composite group: header at offset 0, then 6 texels per layer starting at offset 1.
+        const layer_count = record.layer_count;
+        const layers = entry.path_layers[record.layer_start..][0..layer_count];
+        const raster = self.pathRasterState(union_bbox, transform, allow_subpixel) orelse return;
+        const outline_composite = record.composite_mode == 1 and layer_count >= 2;
+        const programs = PathCompositePrograms{
+            .outline = outline_composite,
+            .fill = if (outline_composite) layers[0].paint else .{},
+            .stroke = if (outline_composite) layers[1].paint else .{},
+        };
 
-            const epp = glyphEdgePixelsPerPixel(inverse);
-            const ppe = Vec2.new(1.0 / epp.x, 1.0 / epp.y);
-            const sample_dx = Vec2.new(inverse.xx, inverse.yx);
-            const sample_dy = Vec2.new(inverse.xy, inverse.yy);
-            const use_subpixel = allow_subpixel and self.subpixel_order != .none;
-            const subpixel_plan = SubpixelCoveragePlan.init(sample_dx, sample_dy, self.subpixel_order);
-            const outline_composite = composite_mode == 1 and layer_count >= 2;
-            const fill_paint_program: PreparedPathPaint = if (outline_composite) layers[0].paint else .{};
-            const stroke_paint_program: PreparedPathPaint = if (outline_composite) layers[1].paint else .{};
-
-            var row: u32 = @intCast(py0);
-            while (row < @as(u32, @intCast(py1))) : (row += 1) {
-                var col: u32 = @intCast(px0);
-                var local = inverse.applyPoint(.{
-                    .x = @as(f32, @floatFromInt(col)) + 0.5,
-                    .y = @as(f32, @floatFromInt(row)) + 0.5,
-                });
-                while (col < @as(u32, @intCast(px1))) : (advanceLocalPixel(&col, &local, sample_dx)) {
-                    var result = [4]f32{ 0, 0, 0, 0 };
-                    var result_blend = [3]f32{ 0, 0, 0 };
-                    var fill_cov: SubpixelCoverage = .{ .rgb = .{ 0, 0, 0 }, .alpha = 0 };
-                    var stroke_cov: SubpixelCoverage = .{ .rgb = .{ 0, 0, 0 }, .alpha = 0 };
-                    var fill_paint = [4]f32{ 0, 0, 0, 0 };
-                    var stroke_paint = [4]f32{ 0, 0, 0, 0 };
-                    var fill_apply_dither = false;
-                    var stroke_apply_dither = false;
-                    var has_gradient = false;
-
-                    for (0..layer_count) |l| {
-                        const layer = layers[l];
-                        const be = layer.band_entry;
-                        const band_max_h = layer.band_max_h;
-                        const band_max_v = layer.band_max_v;
-
-                        if (use_subpixel) {
-                            const cov = self.applySubpixelCoverageTransfer(evalGlyphCoverageSubpixel(
-                                page,
-                                local,
-                                subpixel_plan,
-                                be,
-                                band_max_h,
-                                band_max_v,
-                                self.fill_rule,
-                            ));
-
-                            if (outline_composite and l < 2) {
-                                if (l == 0) {
-                                    fill_cov = cov;
-                                    if (max3(cov.rgb) > 0.0 or cov.alpha > 0.0) {
-                                        const paint = fill_paint_program.sample(local);
-                                        fill_paint = multiplyLinearColor(paint.color, tint);
-                                        fill_apply_dither = paint.apply_dither;
-                                    }
-                                } else {
-                                    stroke_cov = cov;
-                                    if (max3(cov.rgb) > 0.0 or cov.alpha > 0.0) {
-                                        const paint = stroke_paint_program.sample(local);
-                                        stroke_paint = multiplyLinearColor(paint.color, tint);
-                                        stroke_apply_dither = paint.apply_dither;
-                                    }
-                                }
-                                continue;
-                            }
-
-                            if (max3(cov.rgb) <= 0.0 and cov.alpha <= 0.0) continue;
-                            var paint = layer.paint.sample(local);
-                            paint.color = multiplyLinearColor(paint.color, tint);
-                            if (paint.apply_dither and cov.alpha > 1e-6) has_gradient = true;
-                            compositeSubpixelOver(
-                                premultiplySubpixelCoverage(paint.color, cov.rgb, cov.alpha),
-                                subpixelBlendCoverage(paint.color, cov.rgb),
-                                &result,
-                                &result_blend,
-                            );
-                        } else {
-                            const cov = self.applyCoverageTransfer(evalGlyphCoverageBandSpan(page, local.x, local.y, epp.x, epp.y, ppe.x, ppe.y, be, band_max_h, band_max_v, self.fill_rule));
-
-                            if (outline_composite and l < 2) {
-                                if (l == 0) {
-                                    fill_cov = .{ .rgb = .{ cov, cov, cov }, .alpha = cov };
-                                    if (cov > 0.0) {
-                                        const paint = fill_paint_program.sample(local);
-                                        fill_paint = multiplyLinearColor(paint.color, tint);
-                                    }
-                                } else {
-                                    stroke_cov = .{ .rgb = .{ cov, cov, cov }, .alpha = cov };
-                                    if (cov > 0.0) {
-                                        const paint = stroke_paint_program.sample(local);
-                                        stroke_paint = multiplyLinearColor(paint.color, tint);
-                                    }
-                                }
-                                continue;
-                            }
-                            if (cov <= 0.0) continue;
-                            var paint = layer.paint.sample(local);
-                            paint.color = multiplyLinearColor(paint.color, tint);
-                            const premul = premultiplyCoverage(paint.color, cov);
-                            result = compositeOver(premul, result);
-                        }
-                    }
-
-                    if (outline_composite) {
-                        if (use_subpixel) {
-                            const border_cov = [3]f32{
-                                @min(fill_cov.rgb[0], stroke_cov.rgb[0]),
-                                @min(fill_cov.rgb[1], stroke_cov.rgb[1]),
-                                @min(fill_cov.rgb[2], stroke_cov.rgb[2]),
-                            };
-                            const interior_cov = [3]f32{
-                                @max(fill_cov.rgb[0] - border_cov[0], 0.0),
-                                @max(fill_cov.rgb[1] - border_cov[1], 0.0),
-                                @max(fill_cov.rgb[2] - border_cov[2], 0.0),
-                            };
-                            const border_alpha = @min(fill_cov.alpha, stroke_cov.alpha);
-                            const interior_alpha = @max(fill_cov.alpha - border_alpha, 0.0);
-                            if (fill_apply_dither and interior_alpha > 1e-6) has_gradient = true;
-                            if (stroke_apply_dither and border_alpha > 1e-6) has_gradient = true;
-                            compositeSubpixelOver(
-                                addColors(
-                                    premultiplySubpixelCoverage(fill_paint, interior_cov, interior_alpha),
-                                    premultiplySubpixelCoverage(stroke_paint, border_cov, border_alpha),
-                                ),
-                                .{
-                                    subpixelBlendCoverage(fill_paint, interior_cov)[0] + subpixelBlendCoverage(stroke_paint, border_cov)[0],
-                                    subpixelBlendCoverage(fill_paint, interior_cov)[1] + subpixelBlendCoverage(stroke_paint, border_cov)[1],
-                                    subpixelBlendCoverage(fill_paint, interior_cov)[2] + subpixelBlendCoverage(stroke_paint, border_cov)[2],
-                                },
-                                &result,
-                                &result_blend,
-                            );
-                        } else {
-                            const border_cov = @min(fill_cov.alpha, stroke_cov.alpha);
-                            const interior_cov = @max(fill_cov.alpha - border_cov, 0.0);
-                            const combined = addColors(premultiplyCoverage(fill_paint, interior_cov), premultiplyCoverage(stroke_paint, border_cov));
-                            result = compositeOver(combined, result);
-                        }
-                    }
-
-                    if (result[3] < 1.0 / 255.0) continue;
-                    if (use_subpixel) {
-                        self.blendSubpixelPremultipliedPixel(row, col, result, result_blend, has_gradient);
-                    } else {
-                        self.blendPremultipliedPixel(row, col, result, false);
-                    }
+        var row: u32 = raster.y0;
+        while (row < raster.y1) : (row += 1) {
+            var col: u32 = raster.x0;
+            var local = raster.inverse.applyPoint(.{
+                .x = @as(f32, @floatFromInt(col)) + 0.5,
+                .y = @as(f32, @floatFromInt(row)) + 0.5,
+            });
+            while (col < raster.x1) : (advanceLocalPixel(&col, &local, raster.sample_dx)) {
+                const pixel = self.sampleCompositePathPixel(page, raster, layers, programs, local, tint);
+                if (pixel.color[3] < 1.0 / 255.0) continue;
+                if (raster.use_subpixel) {
+                    self.blendSubpixelPremultipliedPixel(row, col, pixel.color, pixel.blend, pixel.has_gradient);
+                } else {
+                    self.blendPremultipliedPixel(row, col, pixel.color, false);
                 }
             }
-        } else {
-            // Single-layer path paint.
-            if (record.layer_count == 0) return;
-            const layer = entry.path_layers[record.layer_start];
-            const be = layer.band_entry;
+        }
+    }
 
-            const inverse = inverseTransform(transform) orelse return;
-            var bounds = transformedGlyphBounds(union_bbox, transform);
-            expandBoundsForCoverageSupport(&bounds, self.subpixel_order, allow_subpixel);
-            const px0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.x))), @as(i32, @intCast(self.col_clip_min)));
-            const px1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.x))), @as(i32, @intCast(self.col_clip_max)));
-            const py0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.y))), @as(i32, @intCast(self.row_clip_min)));
-            const py1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.y))), @as(i32, @intCast(self.row_clip_max)));
-            if (px0 >= px1 or py0 >= py1) return;
+    fn renderSinglePathBatchLayer(
+        self: *CpuRenderer,
+        page: *const PreparedAtlasPage,
+        union_bbox: bezier.BBox,
+        transform: Transform2D,
+        tint: [4]f32,
+        entry: *const LayerInfoEntry,
+        record: *const PreparedPathRecord,
+        allow_subpixel: bool,
+    ) void {
+        if (record.layer_count == 0) return;
+        const layer = entry.path_layers[record.layer_start];
+        const be = layer.band_entry;
+        const raster = self.pathRasterState(union_bbox, transform, allow_subpixel) orelse return;
+        const band_max_h = layer.band_max_h;
+        const band_max_v = layer.band_max_v;
+        const paint_program = layer.paint;
 
-            const epp = glyphEdgePixelsPerPixel(inverse);
-            const ppe = Vec2.new(1.0 / epp.x, 1.0 / epp.y);
-            const sample_dx = Vec2.new(inverse.xx, inverse.yx);
-            const sample_dy = Vec2.new(inverse.xy, inverse.yy);
-            const subpixel_plan = SubpixelCoveragePlan.init(sample_dx, sample_dy, self.subpixel_order);
-            const band_max_h = layer.band_max_h;
-            const band_max_v = layer.band_max_v;
-            const paint_program = layer.paint;
-
-            var row: u32 = @intCast(py0);
-            while (row < @as(u32, @intCast(py1))) : (row += 1) {
-                var col: u32 = @intCast(px0);
-                var local = inverse.applyPoint(.{
-                    .x = @as(f32, @floatFromInt(col)) + 0.5,
-                    .y = @as(f32, @floatFromInt(row)) + 0.5,
-                });
-                while (col < @as(u32, @intCast(px1))) : (advanceLocalPixel(&col, &local, sample_dx)) {
-                    if (!allow_subpixel or self.subpixel_order == .none) {
-                        const cov = self.applyCoverageTransfer(evalGlyphCoverageBandSpan(page, local.x, local.y, epp.x, epp.y, ppe.x, ppe.y, be, band_max_h, band_max_v, self.fill_rule));
-                        if (cov < 1.0 / 255.0) continue;
-                        var paint = paint_program.sample(local);
-                        paint.color = multiplyLinearColor(paint.color, tint);
-                        self.blendPremultipliedPixel(row, col, premultiplyCoverage(paint.color, cov), paint.apply_dither);
-                    } else {
-                        const cov = self.applySubpixelCoverageTransfer(evalGlyphCoverageSubpixel(
-                            page,
-                            local,
-                            subpixel_plan,
-                            be,
-                            band_max_h,
-                            band_max_v,
-                            self.fill_rule,
-                        ));
-                        if (max3(cov.rgb) < 1.0 / 255.0) continue;
-                        var paint = paint_program.sample(local);
-                        paint.color = multiplyLinearColor(paint.color, tint);
-                        self.blendSubpixelPremultipliedPixel(
-                            row,
-                            col,
-                            premultiplySubpixelCoverage(paint.color, cov.rgb, cov.alpha),
-                            subpixelBlendCoverage(paint.color, cov.rgb),
-                            paint.apply_dither,
-                        );
-                    }
+        var row: u32 = raster.y0;
+        while (row < raster.y1) : (row += 1) {
+            var col: u32 = raster.x0;
+            var local = raster.inverse.applyPoint(.{
+                .x = @as(f32, @floatFromInt(col)) + 0.5,
+                .y = @as(f32, @floatFromInt(row)) + 0.5,
+            });
+            while (col < raster.x1) : (advanceLocalPixel(&col, &local, raster.sample_dx)) {
+                if (!raster.use_subpixel) {
+                    const cov = self.applyCoverageTransfer(evalGlyphCoverageBandSpan(page, local.x, local.y, raster.epp.x, raster.epp.y, raster.ppe.x, raster.ppe.y, be, band_max_h, band_max_v, self.fill_rule));
+                    if (cov < 1.0 / 255.0) continue;
+                    var paint = paint_program.sample(local);
+                    paint.color = multiplyLinearColor(paint.color, tint);
+                    self.blendPremultipliedPixel(row, col, premultiplyCoverage(paint.color, cov), paint.apply_dither);
+                } else {
+                    const cov = self.applySubpixelCoverageTransfer(evalGlyphCoverageSubpixel(
+                        page,
+                        local,
+                        raster.subpixel_plan,
+                        be,
+                        band_max_h,
+                        band_max_v,
+                        self.fill_rule,
+                    ));
+                    if (max3(cov.rgb) < 1.0 / 255.0) continue;
+                    var paint = paint_program.sample(local);
+                    paint.color = multiplyLinearColor(paint.color, tint);
+                    self.blendSubpixelPremultipliedPixel(
+                        row,
+                        col,
+                        premultiplySubpixelCoverage(paint.color, cov.rgb, cov.alpha),
+                        subpixelBlendCoverage(paint.color, cov.rgb),
+                        paint.apply_dither,
+                    );
                 }
             }
         }
