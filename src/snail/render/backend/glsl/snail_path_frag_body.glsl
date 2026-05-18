@@ -342,6 +342,29 @@ bool isHalfOpenEndpointRoot(float t, float endRootDelta) {
     return t >= 1.0 - kParamEps && abs(endRootDelta) <= kCoordEps;
 }
 
+void appendCoverageContribution(inout float cov, inout float wgt, float distance, float sign) {
+    cov += sign * clamp(distance + 0.5, 0.0, 1.0);
+    wgt = max(wgt, clamp(1.0 - abs(distance) * 2.0, 0.0, 1.0));
+}
+
+void accumulateLineCoverage(inout float cov, inout float wgt, float p0x, float p0y, float p2x, float p2y, float ppe, bool horizontal) {
+    float rootAxis0 = horizontal ? p0y : p0x;
+    float rootAxis2 = horizontal ? p2y : p2x;
+    float denom = rootAxis2 - rootAxis0;
+    if (abs(denom) < 1e-10) return;
+
+    float tRaw = -rootAxis0 / denom;
+    if (tRaw < -kParamEps || tRaw > 1.0 + kParamEps) return;
+    float t = clamp(tRaw, 0.0, 1.0);
+    if (isHalfOpenEndpointRoot(t, rootAxis2)) return;
+
+    float derivativeAxis = horizontal ? p2y - p0y : p0x - p2x;
+    if (abs(derivativeAxis) <= kParamEps) return;
+
+    float distance = (horizontal ? p0x + (p2x - p0x) * t : p0y + (p2y - p0y) * t) * ppe;
+    appendCoverageContribution(cov, wgt, distance, derivativeAxis > 0.0 ? 1.0 : -1.0);
+}
+
 bool accumulateAxisCoverageSegment(inout float cov, inout float wgt, vec2 sampleRc, float ppe, SegmentData seg, bool horizontal) {
     float maxCoord = (horizontal ? segmentMaxX(seg) - sampleRc.x : segmentMaxY(seg) - sampleRc.y);
     if (maxCoord * ppe < -0.5) return false;
@@ -361,13 +384,25 @@ bool accumulateAxisCoverageSegment(inout float cov, inout float wgt, vec2 sample
             : solveQuadraticVertDistances(p0x, p0y, p1x, p1y, p2x, p2y, ppe);
 
         if ((code & 1u) != 0u) {
-            cov += (horizontal ? 1.0 : -1.0) * clamp(roots.x + 0.5, 0.0, 1.0);
-            wgt = max(wgt, clamp(1.0 - abs(roots.x) * 2.0, 0.0, 1.0));
+            appendCoverageContribution(cov, wgt, roots.x, horizontal ? 1.0 : -1.0);
         }
         if (code > 1u) {
-            cov += (horizontal ? -1.0 : 1.0) * clamp(roots.y + 0.5, 0.0, 1.0);
-            wgt = max(wgt, clamp(1.0 - abs(roots.y) * 2.0, 0.0, 1.0));
+            appendCoverageContribution(cov, wgt, roots.y, horizontal ? -1.0 : 1.0);
         }
+        return true;
+    }
+
+    if (seg.kind == 3) {
+        accumulateLineCoverage(
+            cov,
+            wgt,
+            seg.p0.x - sampleRc.x,
+            seg.p0.y - sampleRc.y,
+            seg.p2.x - sampleRc.x,
+            seg.p2.y - sampleRc.y,
+            ppe,
+            horizontal
+        );
         return true;
     }
 
@@ -388,8 +423,7 @@ bool accumulateAxisCoverageSegment(inout float cov, inout float wgt, vec2 sample
         float derivAxis = horizontal ? deriv.y : -deriv.x;
         if (abs(derivAxis) <= kParamEps) continue;
         float dist = (horizontal ? point.x - sampleRc.x : point.y - sampleRc.y) * ppe;
-        cov += (derivAxis > 0.0 ? 1.0 : -1.0) * clamp(dist + 0.5, 0.0, 1.0);
-        wgt = max(wgt, clamp(1.0 - abs(dist) * 2.0, 0.0, 1.0));
+        appendCoverageContribution(cov, wgt, dist, derivAxis > 0.0 ? 1.0 : -1.0);
     }
     return true;
 }
