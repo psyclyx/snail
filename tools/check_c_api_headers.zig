@@ -4,6 +4,11 @@ const File = struct {
     path: []const u8,
 };
 
+const Signature = struct {
+    name: []const u8,
+    param_count: usize,
+};
+
 const sources = [_]File{
     .{ .path = "src/snail/c_api/constants.zig" },
     .{ .path = "src/snail/c_api/font.zig" },
@@ -28,24 +33,43 @@ const headers = [_]File{
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const all_headers = try loadHeaders(init.io, arena);
+    var header_signatures = std.StringHashMap(Signature).init(arena);
+    try parseHeaderPrototypes(all_headers, &header_signatures);
+    var export_signatures = std.StringHashMap(Signature).init(arena);
 
-    var missing = false;
+    var mismatch = false;
     for (sources) |source| {
         const contents = try readFile(init.io, arena, source.path);
-        var rest = contents;
-        while (std.mem.indexOf(u8, rest, "pub export fn snail_")) |offset| {
-            const start = offset + "pub export fn ".len;
-            const tail = rest[start..];
-            const name_end = std.mem.indexOfAny(u8, tail, "(\n\r\t ") orelse tail.len;
-            const name = tail[0..name_end];
-            if (!headerContains(all_headers, name)) {
-                std.debug.print("{s}: exported {s} is missing from public headers\n", .{ source.path, name });
-                missing = true;
+        var exports = std.ArrayList(Signature).empty;
+        try parseZigExports(arena, contents, &exports);
+        for (exports.items) |exported| {
+            try export_signatures.put(exported.name, exported);
+            const header = header_signatures.get(exported.name) orelse {
+                std.debug.print("{s}: exported {s} is missing from public headers\n", .{ source.path, exported.name });
+                mismatch = true;
+                continue;
+            };
+            if (header.param_count != exported.param_count) {
+                std.debug.print("{s}: exported {s} has {d} parameters, header declares {d}\n", .{
+                    source.path,
+                    exported.name,
+                    exported.param_count,
+                    header.param_count,
+                });
+                mismatch = true;
             }
-            rest = tail[name_end..];
         }
     }
-    if (missing) return error.CApiHeaderMismatch;
+
+    var header_it = header_signatures.valueIterator();
+    while (header_it.next()) |header| {
+        if (!export_signatures.contains(header.name)) {
+            std.debug.print("public header declares {s}, but no Zig export exists\n", .{header.name});
+            mismatch = true;
+        }
+    }
+
+    if (mismatch) return error.CApiHeaderMismatch;
 }
 
 fn loadHeaders(io: std.Io, allocator: std.mem.Allocator) ![]const u8 {
@@ -64,6 +88,99 @@ fn readFile(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]const
     return std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(1 << 20));
 }
 
-fn headerContains(headers_blob: []const u8, name: []const u8) bool {
-    return std.mem.indexOf(u8, headers_blob, name) != null;
+fn parseZigExports(allocator: std.mem.Allocator, contents: []const u8, out: *std.ArrayList(Signature)) !void {
+    const prefix = "pub export fn ";
+    var cursor: usize = 0;
+    while (std.mem.indexOfPos(u8, contents, cursor, "pub export fn snail_")) |offset| {
+        const start = offset + prefix.len;
+        const tail = contents[start..];
+        const name_end = std.mem.indexOfScalar(u8, tail, '(') orelse return error.InvalidExportSignature;
+        const name = std.mem.trim(u8, tail[0..name_end], " \n\r\t");
+        const params_start = start + name_end;
+        const params_end = findMatchingParen(contents, params_start) orelse return error.InvalidExportSignature;
+        try out.append(allocator, .{
+            .name = name,
+            .param_count = countParams(contents[params_start + 1 .. params_end]),
+        });
+        cursor = params_end + 1;
+    }
+}
+
+fn parseHeaderPrototypes(header_blob: []const u8, out: *std.StringHashMap(Signature)) !void {
+    var cursor: usize = 0;
+    while (std.mem.indexOfPos(u8, header_blob, cursor, "snail_")) |name_start| {
+        var name_end = name_start;
+        while (name_end < header_blob.len and isIdent(header_blob[name_end])) : (name_end += 1) {}
+        var paren = name_end;
+        while (paren < header_blob.len and std.ascii.isWhitespace(header_blob[paren])) : (paren += 1) {}
+        if (paren >= header_blob.len or header_blob[paren] != '(') {
+            cursor = name_end;
+            continue;
+        }
+        const close = findMatchingParen(header_blob, paren) orelse return error.InvalidHeaderSignature;
+        var semi = close + 1;
+        while (semi < header_blob.len and std.ascii.isWhitespace(header_blob[semi])) : (semi += 1) {}
+        if (semi >= header_blob.len or header_blob[semi] != ';') {
+            cursor = close + 1;
+            continue;
+        }
+        const name = header_blob[name_start..name_end];
+        const sig = Signature{
+            .name = name,
+            .param_count = countParams(header_blob[paren + 1 .. close]),
+        };
+        const result = try out.getOrPut(name);
+        if (result.found_existing and result.value_ptr.param_count != sig.param_count) {
+            std.debug.print("conflicting public header declarations for {s}\n", .{name});
+            return error.CApiHeaderMismatch;
+        }
+        result.value_ptr.* = sig;
+        cursor = semi + 1;
+    }
+}
+
+fn findMatchingParen(bytes: []const u8, open_index: usize) ?usize {
+    std.debug.assert(bytes[open_index] == '(');
+    var depth: usize = 0;
+    var i = open_index;
+    while (i < bytes.len) : (i += 1) {
+        switch (bytes[i]) {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if (depth == 0) return i;
+            },
+            else => {},
+        }
+    }
+    return null;
+}
+
+fn countParams(params: []const u8) usize {
+    const trimmed = std.mem.trim(u8, params, " \n\r\t");
+    if (trimmed.len == 0 or std.mem.eql(u8, trimmed, "void")) return 0;
+
+    var count: usize = 0;
+    var param_start: usize = 0;
+    var paren_depth: usize = 0;
+    var bracket_depth: usize = 0;
+    for (trimmed, 0..) |c, i| switch (c) {
+        '(' => paren_depth += 1,
+        ')' => paren_depth -= 1,
+        '[' => bracket_depth += 1,
+        ']' => bracket_depth -= 1,
+        ',' => {
+            if (paren_depth == 0 and bracket_depth == 0) {
+                if (std.mem.trim(u8, trimmed[param_start..i], " \n\r\t").len != 0) count += 1;
+                param_start = i + 1;
+            }
+        },
+        else => {},
+    };
+    if (std.mem.trim(u8, trimmed[param_start..], " \n\r\t").len != 0) count += 1;
+    return count;
+}
+
+fn isIdent(c: u8) bool {
+    return std.ascii.isAlphanumeric(c) or c == '_';
 }
