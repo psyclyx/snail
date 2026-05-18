@@ -42,7 +42,8 @@
   `snail.resources`; `snail.resources` is limited to resource sets, prepared
   resources, views, stamps, and footprint accounting.
 - `snail.math` now exposes only math primitives. Use `snail.target` or the
-  top-level aliases for target geometry such as `Rect` and `PixelGrid`.
+  top-level aliases for target geometry and snapping such as `Rect`,
+  `SnapRule`, `pixelStep`, and `snapToStep`.
 - Removed stale HarfBuzz direct-emission helpers that bypassed the current
   shaped-text/blob draw path.
 

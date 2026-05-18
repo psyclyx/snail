@@ -146,69 +146,62 @@ pub const CoverageTransfer = struct {
     }
 };
 
-pub const PixelGrid = struct {
-    logical_size: [2]f32,
-    pixel_size: [2]u32,
-
-    pub fn init(logical_size: [2]f32, pixel_size: [2]u32) PixelGrid {
-        return .{ .logical_size = logical_size, .pixel_size = pixel_size };
-    }
-
-    pub fn fromTarget(logical_size: [2]f32, target: ResolveTarget) PixelGrid {
-        return .{
-            .logical_size = logical_size,
-            .pixel_size = .{
-                @intFromFloat(@max(target.pixel_width, 0.0)),
-                @intFromFloat(@max(target.pixel_height, 0.0)),
-            },
-        };
-    }
-
-    pub fn scale(self: PixelGrid) [2]f32 {
-        return .{ self.axisScale(0), self.axisScale(1) };
-    }
-
-    pub fn snapX(self: PixelGrid, x: f32) f32 {
-        return self.snapAxis(0, x);
-    }
-
-    pub fn snapY(self: PixelGrid, y: f32) f32 {
-        return self.snapAxis(1, y);
-    }
-
-    pub fn snapPoint(self: PixelGrid, point: Vec2) Vec2 {
-        return .{ .x = self.snapX(point.x), .y = self.snapY(point.y) };
-    }
-
-    pub fn snapRect(self: PixelGrid, rect: Rect) Rect {
-        const min = self.snapPoint(.{ .x = rect.x, .y = rect.y });
-        const max = self.snapPoint(.{ .x = rect.x + rect.w, .y = rect.y + rect.h });
-        return .{ .x = min.x, .y = min.y, .w = @max(max.x - min.x, 0.0), .h = @max(max.y - min.y, 0.0) };
-    }
-
-    pub fn snapLengthX(self: PixelGrid, value: f32) f32 {
-        return self.snapLengthAxis(0, value);
-    }
-
-    pub fn snapLengthY(self: PixelGrid, value: f32) f32 {
-        return self.snapLengthAxis(1, value);
-    }
-
-    fn axisScale(self: PixelGrid, axis: usize) f32 {
-        if (self.logical_size[axis] <= 0.0 or self.pixel_size[axis] == 0) return 1.0;
-        return @as(f32, @floatFromInt(self.pixel_size[axis])) / self.logical_size[axis];
-    }
-
-    fn snapAxis(self: PixelGrid, axis: usize, value: f32) f32 {
-        const s = self.axisScale(axis);
-        return @round(value * s) / s;
-    }
-
-    fn snapLengthAxis(self: PixelGrid, axis: usize, value: f32) f32 {
-        const s = self.axisScale(axis);
-        return @max(@round(value * s), 1.0) / s;
-    }
+pub const SnapRule = enum {
+    floor,
+    nearest,
+    ceil,
 };
+
+pub fn pixelStep(logical_size: f32, pixel_size: u32) f32 {
+    if (logical_size <= 0.0 or pixel_size == 0) return 1.0;
+    return logical_size / @as(f32, @floatFromInt(pixel_size));
+}
+
+pub fn pixelSteps(logical_size: [2]f32, pixel_size: [2]u32) Vec2 {
+    return .{
+        .x = pixelStep(logical_size[0], pixel_size[0]),
+        .y = pixelStep(logical_size[1], pixel_size[1]),
+    };
+}
+
+pub fn snapToStep(value: f32, step: f32, rule: SnapRule) f32 {
+    if (!std.math.isFinite(value) or !std.math.isFinite(step) or step <= 0.0) return value;
+    const scaled = value / step;
+    const snapped = switch (rule) {
+        .floor => @floor(scaled),
+        .nearest => @round(scaled),
+        .ceil => @ceil(scaled),
+    };
+    return snapped * step;
+}
+
+pub fn snapDeltaToStep(value: f32, step: f32, rule: SnapRule) f32 {
+    return snapToStep(value, step, rule) - value;
+}
+
+pub fn snapLengthToStep(value: f32, step: f32, rule: SnapRule, min_steps: f32) f32 {
+    const snapped = snapToStep(value, step, rule);
+    if (!std.math.isFinite(step) or step <= 0.0) return snapped;
+    return @max(snapped, @max(min_steps, 0.0) * step);
+}
+
+pub fn snapPointToStep(point: Vec2, step: Vec2, rule: SnapRule) Vec2 {
+    return .{
+        .x = snapToStep(point.x, step.x, rule),
+        .y = snapToStep(point.y, step.y, rule),
+    };
+}
+
+pub fn snapRectToStep(rect: Rect, step: Vec2, rule: SnapRule) Rect {
+    const min = snapPointToStep(.{ .x = rect.x, .y = rect.y }, step, rule);
+    const max = snapPointToStep(.{ .x = rect.x + rect.w, .y = rect.y + rect.h }, step, rule);
+    return .{
+        .x = min.x,
+        .y = min.y,
+        .w = @max(max.x - min.x, 0.0),
+        .h = @max(max.y - min.y, 0.0),
+    };
+}
 
 pub const ResolveTarget = struct {
     pixel_width: f32,

@@ -97,7 +97,14 @@ pub const DirectResolve = target.DirectResolve;
 pub const LinearResolve = target.LinearResolve;
 pub const Resolve = target.Resolve;
 pub const CoverageTransfer = target.CoverageTransfer;
-pub const PixelGrid = target.PixelGrid;
+pub const SnapRule = target.SnapRule;
+pub const pixelStep = target.pixelStep;
+pub const pixelSteps = target.pixelSteps;
+pub const snapToStep = target.snapToStep;
+pub const snapDeltaToStep = target.snapDeltaToStep;
+pub const snapLengthToStep = target.snapLengthToStep;
+pub const snapPointToStep = target.snapPointToStep;
+pub const snapRectToStep = target.snapRectToStep;
 pub const ResolveTarget = target.ResolveTarget;
 pub const TargetStamp = target.TargetStamp;
 

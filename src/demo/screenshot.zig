@@ -202,12 +202,12 @@ fn renderRepro(allocator: std.mem.Allocator) !void {
     const viewport_w: f32 = @floatFromInt(framebuffer_width);
     const viewport_h: f32 = @floatFromInt(framebuffer_height);
     const layout = demo_banner.buildLayout(w, h);
-    const grid = snail.PixelGrid.init(.{ w, h }, .{ framebuffer_width, framebuffer_height });
+    const snap_step = snail.pixelSteps(.{ w, h }, .{ framebuffer_width, framebuffer_height });
 
     var builder = snail.TextBlobBuilder.init(allocator, &scene_assets.fonts);
     defer builder.deinit();
     var dec_rects: [8]snail.Rect = undefined;
-    const text_result = demo_scene.buildTextBlob(&builder, layout, grid, &scene_assets, &dec_rects);
+    const text_result = demo_scene.buildTextBlob(&builder, layout, snap_step, &scene_assets, &dec_rects);
     var text_blob = try builder.finish();
     defer text_blob.deinit();
 

@@ -106,6 +106,6 @@ pub fn buildPathPicture(allocator: Allocator, layout: demo_banner.Layout, assets
 }
 
 /// Build the demo's prepared text blob and collect decoration rects.
-pub fn buildTextBlob(builder: *snail.TextBlobBuilder, layout: demo_banner.Layout, grid: snail.PixelGrid, assets_ref: *const Assets, decoration_rects: []snail.Rect) demo_banner.TextBuildResult {
-    return demo_banner.buildTextBlob(builder, layout, grid, &assets_ref.fonts, &assets_ref.paint_image, decoration_rects) catch .{ .decoration_count = 0, .missing = false };
+pub fn buildTextBlob(builder: *snail.TextBlobBuilder, layout: demo_banner.Layout, snap_step: snail.Vec2, assets_ref: *const Assets, decoration_rects: []snail.Rect) demo_banner.TextBuildResult {
+    return demo_banner.buildTextBlob(builder, layout, snap_step, &assets_ref.fonts, &assets_ref.paint_image, decoration_rects) catch .{ .decoration_count = 0, .missing = false };
 }

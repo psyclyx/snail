@@ -303,7 +303,7 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
         if (w < 1.0 or h < 1.0 or viewport_w < 1.0 or viewport_h < 1.0) continue;
 
         const layout = demo_banner.buildLayout(w, h);
-        const grid = snail.PixelGrid.init(.{ w, h }, fb_size);
+        const snap_step = snail.pixelSteps(.{ w, h }, fb_size);
         const size_key = [4]u32{ size[0], size[1], fb_size[0], fb_size[1] };
 
         // On resize/backend switch: lay out text to collect decoration rects,
@@ -323,7 +323,7 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
             var builder = snail.TextBlobBuilder.init(allocator, &scene_assets.fonts);
             defer builder.deinit();
             var dec_rects: [8]snail.Rect = undefined;
-            const text_result = demo_banner_scene.buildTextBlob(&builder, layout, grid, &scene_assets, &dec_rects);
+            const text_result = demo_banner_scene.buildTextBlob(&builder, layout, snap_step, &scene_assets, &dec_rects);
 
             text_blob = try builder.finish();
             path_picture = try demo_banner_scene.buildPathPicture(allocator, layout, &scene_assets, dec_rects[0..text_result.decoration_count]);

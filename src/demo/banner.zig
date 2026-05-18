@@ -293,11 +293,15 @@ const TextPlacement = struct {
 
 const TextPlacer = struct {
     builder: *snail.TextBlobBuilder,
-    grid: snail.PixelGrid,
+    snap_step: snail.Vec2,
 
     fn place(self: TextPlacer, x: f32, y: f32, size: f32) TextPlacement {
-        const point = self.grid.snapPoint(.{ .x = x, .y = y });
-        return .{ .x = point.x, .y = point.y, .size = self.grid.snapLengthY(size) };
+        const point = snail.snapPointToStep(.{ .x = x, .y = y }, self.snap_step, .nearest);
+        return .{
+            .x = point.x,
+            .y = point.y,
+            .size = snail.snapLengthToStep(size, self.snap_step.y, .nearest, 1.0),
+        };
     }
 
     fn appendPlaced(
@@ -357,14 +361,14 @@ const TextPlacer = struct {
 pub fn buildTextBlob(
     builder: *snail.TextBlobBuilder,
     layout: Layout,
-    grid: snail.PixelGrid,
+    snap_step: snail.Vec2,
     fonts: *const snail.TextAtlas,
     paint_image: *const snail.Image,
     decoration_rects_out: []snail.Rect,
 ) !TextBuildResult {
     var decoration_count: usize = 0;
     var had_missing = false;
-    const placer = TextPlacer{ .builder = builder, .grid = grid };
+    const placer = TextPlacer{ .builder = builder, .snap_step = snap_step };
     const s = layout.scale;
     const pad = card_pad * s;
     const label_size = heading_size * s;

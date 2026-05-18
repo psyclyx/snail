@@ -102,6 +102,59 @@ The CPU renderer has no format-level encoder: it writes RGBA8 bytes according to
 
 **Coverage transfer.** `ResolveTarget.coverage_transfer` optionally remaps analytic coverage before blending. The default is identity; `CoverageTransfer.power(exponent)` exposes explicit display tuning when a target benefits from slightly stronger or lighter antialiasing.
 
+## Hinting And Pixel Snapping
+
+Snail does not run TrueType bytecode or apply hidden render-time text hinting.
+For static UI text, align the values you care about before building a
+`TextBlob`. The snapping API is deliberately value-based: compute a step for
+the coordinate space you are using, then snap positions, lengths, or rectangles.
+
+```zig
+const step = snail.pixelSteps(.{ logical_w, logical_h }, .{ framebuffer_w, framebuffer_h });
+
+var baseline = snail.Vec2{ .x = raw_x, .y = raw_y };
+baseline = snail.snapPointToStep(baseline, step, .nearest);
+
+const em = snail.snapLengthToStep(raw_em, step.y, .nearest, 1.0);
+
+_ = try builder.append(.{
+    .shaped = &shaped,
+    .placement = .{ .baseline = baseline, .em = em },
+    .fill = .{ .solid = color },
+});
+```
+
+For LCD text, snap the stripe axis to thirds of a pixel and the other axis to a
+full pixel:
+
+```zig
+baseline.x = snail.snapToStep(raw_x, step.x / 3.0, .nearest);
+baseline.y = snail.snapToStep(raw_y, step.y, .nearest);
+```
+
+For decorations, snap the geometry separately:
+
+```zig
+var underline = try atlas.decorationRect(.underline, baseline.x, baseline.y, advance, em);
+underline.y = snail.snapToStep(underline.y, step.y, .nearest);
+underline.h = snail.snapLengthToStep(underline.h, step.y, .nearest, 1.0);
+```
+
+For terminal or grid layouts, snap the cell metrics you use for placement, then
+advance by those snapped values:
+
+```zig
+const raw_cell = try atlas.cellMetrics(.{ .style = .{}, .em = raw_em });
+const cell_w = snail.snapLengthToStep(raw_cell.cell_width, step.x, .nearest, 1.0);
+const line_h = snail.snapLengthToStep(raw_cell.line_height, step.y, .nearest, 1.0);
+```
+
+The usual rule is to snap the run baseline and preserve glyph advances.
+Per-glyph origin snapping can make tiny static text look more grid-fitted, but it
+also changes spacing and kerning. If text is later rotated, scaled, animated,
+or drawn through a non-axis-aligned MVP, snap in the final space or leave it
+unhinted.
+
 ## Build
 
 Requires [Zig 0.16](https://ziglang.org/download/), OpenGL 3.3+, Vulkan headers/loader, `glslc`, and pkg-config. Vulkan and HarfBuzz are enabled by default but can be disabled (see flags below). The interactive demo requires Wayland, plus EGL for OpenGL mode.
@@ -455,6 +508,11 @@ borrowed `Scene` + `PathDraw` / `TextDraw` primitive used by Zig.
 | `PixelRect` | Integer pixel rectangle `{ .x, .y, .w, .h }` used by `ResolveRegion.pixel_rect`. |
 | `IntermediateFormat` | GL linear intermediate precision: `.rgba16f` or `.rgba32f`. |
 | `CoverageTransfer` | Optional analytic coverage remap. `.identity` is the default; `.power(exponent)` is explicit display tuning. |
+| `SnapRule` | Quantization rule for explicit snapping: `.floor`, `.nearest`, or `.ceil`. |
+| `pixelStep` / `pixelSteps` | Compute logical-coordinate size of one backing pixel from logical and pixel extents. |
+| `snapToStep` / `snapDeltaToStep` | Snap a scalar to an explicit step, or return the delta needed to reach that snap. |
+| `snapLengthToStep` | Snap a length to an explicit step with a caller-provided minimum step count. |
+| `snapPointToStep` / `snapRectToStep` | Snap a point or rectangle using explicit per-axis steps. |
 | `ResolveTarget` | Final target metadata: pixel size, subpixel order, fill rule, composite safety flags, required `encoding`, explicit `resolve`, and optional `coverage_transfer`. |
 | `GlRenderer`, `VulkanRenderer`, `CpuRenderer` | First-class backend renderers. |
 | `Renderer` | Type-erased convenience wrapper around a backend renderer. |
@@ -860,7 +918,7 @@ src/
     font.zig             public font wrapper and font metric aliases
     text.zig             public text API facade
     text/                text atlases, shaping, blobs, batches, and text tests
-    target.zig           render-target geometry, pixel grids, resolve, and AA policy types
+    target.zig           render-target geometry, explicit snapping, resolve, and AA policy types
     math.zig             math facade for vectors, matrices, bounds, and curves
     path.zig             public vector path API facade
     path/                path storage, picture freezing, batches, debug overlays, and tests

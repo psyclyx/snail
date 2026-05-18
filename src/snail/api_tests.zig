@@ -38,7 +38,6 @@ const DrawOptions = snail.DrawOptions;
 const DrawList = snail.DrawList;
 const Scene = snail.Scene;
 const CoverageTransfer = snail.CoverageTransfer;
-const PixelGrid = snail.PixelGrid;
 const SubpixelOrder = snail.SubpixelOrder;
 const FillRule = snail.FillRule;
 const TargetEncoding = snail.TargetEncoding;
@@ -410,11 +409,16 @@ test "coverage transfer is explicit and clamps invalid exponents" {
     try std.testing.expectEqual(@as(f32, 1.0), CoverageTransfer.power(std.math.nan(f32)).shaderExponent());
 }
 
-test "pixel grid snaps logical coordinates to backing pixels" {
-    const grid = PixelGrid.init(.{ 100.0, 50.0 }, .{ 200, 150 });
-    try std.testing.expectApproxEqAbs(@as(f32, 10.5), grid.snapX(10.4), 0.0001);
-    try std.testing.expectApproxEqAbs(@as(f32, 10.333333), grid.snapY(10.4), 0.0001);
-    try std.testing.expectApproxEqAbs(@as(f32, 12.5), grid.snapLengthX(12.4), 0.0001);
+test "snap primitives quantize logical coordinates to backing pixels" {
+    const step = snail.pixelSteps(.{ 100.0, 50.0 }, .{ 200, 150 });
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), step.x, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.333333), step.y, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 10.5), snail.snapToStep(10.4, step.x, .nearest), 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 10.333333), snail.snapToStep(10.4, step.y, .nearest), 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 12.5), snail.snapLengthToStep(12.4, step.x, .nearest, 1.0), 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), snail.snapLengthToStep(0.1, step.x, .nearest, 1.0), 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 10.0), snail.snapToStep(10.4, step.x, .floor), 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 10.5), snail.snapToStep(10.1, step.x, .ceil), 0.0001);
 }
 
 test "Renderer.draw source stays free of upload allocation" {
