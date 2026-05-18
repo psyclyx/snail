@@ -1,13 +1,16 @@
 const std = @import("std");
 
 const atlas_page_mod = @import("../render/format/atlas/page.zig");
+const image_mod = @import("../image.zig");
 const prepared_mod = @import("../resources/prepared.zig");
 const resource_key_mod = @import("../resource_key.zig");
 const set_mod = @import("../resources/set.zig");
 const stamp_mod = @import("../resources/stamp.zig");
+const upload_common = @import("../render/format/upload_common.zig");
 const upload_mod = @import("../upload.zig");
 
 const AtlasPage = atlas_page_mod.AtlasPage;
+const Image = image_mod.Image;
 const PreparedResources = prepared_mod.PreparedResources;
 const ResourceKey = resource_key_mod.ResourceKey;
 const ResourceSet = set_mod.ResourceSet;
@@ -75,6 +78,25 @@ const ResourceSetCounts = struct {
 
 const PreparedAtlasLookup = struct {
     index: usize,
+};
+
+const ImageRequirements = struct {
+    count: u32 = 0,
+    max_width: u32 = 1,
+    max_height: u32 = 1,
+
+    fn capacityCount(self: ImageRequirements) u32 {
+        if (self.count == 0) return 0;
+        return upload_common.imageCapacity(self.count);
+    }
+
+    fn capacityWidth(self: ImageRequirements) u32 {
+        return upload_common.imageExtentCapacity(self.max_width);
+    }
+
+    fn capacityHeight(self: ImageRequirements) u32 {
+        return upload_common.imageExtentCapacity(self.max_height);
+    }
 };
 
 fn countResourceEntries(entries: []const ResourceSet.Entry) ResourceSetCounts {
@@ -208,12 +230,51 @@ fn resourceSetCanUseAtlasOverflowBanks(renderer: anytype, current: ?*const Prepa
     return true;
 }
 
+fn collectImageRequirements(allocator: std.mem.Allocator, entries: []const ResourceSet.Entry) !ImageRequirements {
+    var images = std.ArrayListUnmanaged(*const Image).empty;
+    defer images.deinit(allocator);
+
+    for (entries) |entry| switch (entry) {
+        .text_atlas => {},
+        .text_paint => |text| try appendPaintRecordImages(allocator, &images, text.blob.paint_image_records),
+        .path_picture => |path| try appendPaintRecordImages(allocator, &images, path.picture.atlas.paint_image_records),
+        .image => |image| try appendUniqueImage(allocator, &images, image.image),
+    };
+
+    var requirements: ImageRequirements = .{ .count = @intCast(images.items.len) };
+    for (images.items) |image| {
+        requirements.max_width = @max(requirements.max_width, image.width);
+        requirements.max_height = @max(requirements.max_height, image.height);
+    }
+    return requirements;
+}
+
+fn appendPaintRecordImages(
+    allocator: std.mem.Allocator,
+    images: *std.ArrayListUnmanaged(*const Image),
+    maybe_records: ?[]const ?@import("../render/format/atlas/curve.zig").Atlas.PaintImageRecord,
+) !void {
+    const records = maybe_records orelse return;
+    for (records) |record| {
+        const image = (record orelse continue).image;
+        try appendUniqueImage(allocator, images, image);
+    }
+}
+
+fn appendUniqueImage(allocator: std.mem.Allocator, images: *std.ArrayListUnmanaged(*const Image), image: *const Image) !void {
+    for (images.items) |existing| {
+        if (existing == image) return;
+    }
+    try images.append(allocator, image);
+}
+
 pub fn planResourceUpload(renderer: anytype, allocator: std.mem.Allocator, current: ?*const PreparedResources, next_set: *const ResourceSet) !ResourceUploadPlan {
     var plan = try ResourceUploadPlan.init(allocator, next_set);
     errdefer plan.deinit();
 
     const entries = plan.entries;
     const counts = countResourceEntries(entries);
+    const image_requirements = try collectImageRequirements(allocator, entries);
     const uses_resource_cache = renderer.usesResourceCache();
     plan.upload_footprint = try next_set.estimateUploadFootprint();
     plan.gpu_bytes_allocated = plan.upload_footprint.allocatedBytes();
@@ -300,6 +361,16 @@ pub fn planResourceUpload(renderer: anytype, allocator: std.mem.Allocator, curre
         plan.atlas_cache_rebuilds = 1;
     }
     if (plan.new_image_banks > 0 and stats.active_image_layers_allocated > 0 and uses_resource_cache) plan.image_cache_rebuilds = 1;
+    if (current) |prepared| {
+        if (uses_resource_cache and renderer.imageArrayWouldRebuild(
+            prepared,
+            image_requirements.capacityCount(),
+            image_requirements.capacityWidth(),
+            image_requirements.capacityHeight(),
+        )) {
+            plan.image_cache_rebuilds = 1;
+        }
+    }
     if (plan.atlas_cache_rebuilds > 0) {
         plan.curve_bytes_upload = plan.upload_footprint.curve_bytes_used;
         plan.band_bytes_upload = plan.upload_footprint.band_bytes_used;

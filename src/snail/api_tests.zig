@@ -4,6 +4,7 @@ const build_options = @import("build_options");
 const snail = @import("root.zig");
 const bezier = @import("math/bezier.zig");
 const resource_key = @import("resource_key.zig");
+const stamp_mod = @import("resources/stamp.zig");
 const upload_plan = @import("render/upload_plan.zig");
 const texture_layers = @import("render/format/texture_layers.zig");
 const vertex_mod = @import("render/format/vertex.zig");
@@ -89,6 +90,44 @@ fn testRectPicture(allocator: std.mem.Allocator, x: f32) !PathPicture {
     defer builder.deinit();
     try builder.addFilledPath(&path, .{ .paint = .{ .solid = .{ 0.2, 0.4, 0.8, 1.0 } } }, .identity);
     return builder.freeze(.{ .persistent_allocator = allocator, .scratch_allocator = allocator });
+}
+
+test "path picture stamp tracks shape content" {
+    const allocator = std.testing.allocator;
+
+    var picture = try testRectPicture(allocator, 0);
+    defer picture.deinit();
+
+    const before = stamp_mod.pathPictureStamp(&picture);
+    picture.shapes[0].transform.tx += 3.0;
+    const after = stamp_mod.pathPictureStamp(&picture);
+
+    try std.testing.expect(!before.eql(after));
+}
+
+test "path picture stamp tracks image paint records" {
+    const allocator = std.testing.allocator;
+
+    var image = try Image.initSrgba8(allocator, 1, 1, &.{ 255, 0, 0, 255 });
+    defer image.deinit();
+
+    var path = Path.init(allocator);
+    defer path.deinit();
+    try path.addRect(.{ .x = 0, .y = 0, .w = 20, .h = 10 });
+
+    var builder = PathPictureBuilder.init(allocator);
+    defer builder.deinit();
+    try builder.addFilledPath(&path, .{ .paint = .{ .image = .{ .image = &image } } }, .identity);
+    var picture = try builder.freeze(.{ .persistent_allocator = allocator, .scratch_allocator = allocator });
+    defer picture.deinit();
+
+    const records = picture.atlas.paint_image_records orelse return error.TestExpectedOptional;
+    const record = records[0] orelse return error.TestExpectedOptional;
+    const before = stamp_mod.pathPictureStamp(&picture);
+    records[0] = .{ .image = record.image, .texel_offset = record.texel_offset + 1 };
+    const after = stamp_mod.pathPictureStamp(&picture);
+
+    try std.testing.expect(!before.eql(after));
 }
 
 test "draw with missing prepared resources fails" {
@@ -216,6 +255,9 @@ test "draw dispatch uses only prepared stamps and caller records" {
         fn canUseAtlasOverflowBanks(_: *const PreparedResources, _: usize) bool {
             return false;
         }
+        fn imageArrayWouldRebuild(_: *const PreparedResources, _: u32, _: u32, _: u32) bool {
+            return false;
+        }
     };
     const fake_vtable = Renderer.VTable{
         .backend = .cpu,
@@ -245,6 +287,7 @@ test "draw dispatch uses only prepared stamps and caller records" {
             .atlasNeedsOverflowBank = Fake.atlasNeedsOverflowBank,
             .atlasWouldRebuild = Fake.atlasWouldRebuild,
             .canUseAtlasOverflowBanks = Fake.canUseAtlasOverflowBanks,
+            .imageArrayWouldRebuild = Fake.imageArrayWouldRebuild,
         },
         .backendName = Fake.backendName,
     };
@@ -857,6 +900,76 @@ test "resource upload plan reports appended atlas pages" {
     try std.testing.expect(plan.band_bytes_upload > 0);
     try std.testing.expectEqual(@as(usize, 1), plan.changedKeys().len);
     try std.testing.expect(plan.changedKeys()[0].eql(ResourceKey.named("fonts")));
+}
+
+test "resource upload plan accounts for image array rebuilds" {
+    const allocator = std.testing.allocator;
+
+    var small_pixels = [_]u8{ 255, 255, 255, 255 };
+    var old_pixels = [_]u8{ 0, 0, 0, 255 };
+    var large_pixels = [_]u8{ 64, 0, 0, 255 } ** 64;
+
+    var image_small = try Image.initSrgba8(allocator, 1, 1, &small_pixels);
+    defer image_small.deinit();
+    var image_old = try Image.initSrgba8(allocator, 1, 1, &old_pixels);
+    defer image_old.deinit();
+    var image_large = try Image.initSrgba8(allocator, 64, 1, &large_pixels);
+    defer image_large.deinit();
+
+    const key_small = ResourceKey.named("small");
+    const key_grow = ResourceKey.named("grow");
+    var current_images = [_]PreparedResources.PreparedImageResource{
+        .{ .key = key_small, .image = &image_small, .stamp = stamp_mod.imageStamp(&image_small) },
+        .{ .key = key_grow, .image = &image_old, .stamp = stamp_mod.imageStamp(&image_old) },
+    };
+    const current = PreparedResources{
+        .allocator = allocator,
+        .images = &current_images,
+    };
+
+    var entries: [2]ResourceSet.Entry = undefined;
+    var set = ResourceSet.init(&entries);
+    try set.putImage(key_small, &image_small);
+    try set.putImage(key_grow, &image_large);
+
+    const FakeRenderer = struct {
+        pub fn usesResourceCache(_: *@This()) bool {
+            return true;
+        }
+
+        pub fn resourceCacheStats(_: *@This()) ResourceCacheStats {
+            return .{};
+        }
+
+        pub fn atlasNeedsOverflowBank(_: *@This(), _: *const PreparedResources, _: usize, _: upload_plan.AtlasRef) bool {
+            return false;
+        }
+
+        pub fn atlasWouldRebuild(_: *@This(), _: *const PreparedResources, _: usize, _: upload_plan.AtlasRef) bool {
+            return false;
+        }
+
+        pub fn canUseAtlasOverflowBanks(_: *@This(), _: *const PreparedResources, _: usize) bool {
+            return false;
+        }
+
+        pub fn atlasSlotCanOverflowIntoBank(_: *@This(), _: *const PreparedResources, _: usize, _: upload_plan.AtlasRef) bool {
+            return false;
+        }
+
+        pub fn imageArrayWouldRebuild(_: *@This(), _: *const PreparedResources, count: u32, width: u32, _: u32) bool {
+            return count == 2 and width >= 64;
+        }
+    };
+
+    var fake_renderer = FakeRenderer{};
+    var plan = try upload_plan.planResourceUpload(&fake_renderer, allocator, &current, &set);
+    defer plan.deinit();
+
+    try std.testing.expectEqual(@as(u32, 1), plan.reused_images);
+    try std.testing.expectEqual(@as(u32, 1), plan.missing_images);
+    try std.testing.expectEqual(@as(u32, 1), plan.image_cache_rebuilds);
+    try std.testing.expectEqual(image_small.pixelSlice().len + image_large.pixelSlice().len, plan.image_bytes_upload);
 }
 
 test "pending upload publish waits for external completion marker" {

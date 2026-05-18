@@ -150,6 +150,20 @@ pub fn vtable(comptime Config: type) interface.Renderer.VTable {
             const cache = Config.prepared(prepared_resources) orelse return false;
             return !activeLayerInfo(cache) and cache.atlas_slot_count == atlas_count;
         }
+        fn imageArrayWouldRebuildFn(prepared_resources: *const PreparedResources, capacity_count: u32, capacity_width: u32, capacity_height: u32) bool {
+            if (comptime !Config.uses_resource_cache) return false;
+            const cache = Config.prepared(prepared_resources) orelse return false;
+            const has_active_image_array = if (comptime @hasField(Prepared, "image_array"))
+                cache.image_array != 0
+            else if (comptime @hasField(Prepared, "image_image"))
+                cache.image_image != null
+            else
+                false;
+            if (!has_active_image_array or capacity_count == 0) return false;
+            return capacity_count > cache.allocated_image_count or
+                capacity_width > cache.allocated_image_width or
+                capacity_height > cache.allocated_image_height;
+        }
         fn backendNameFn(ptr: *anyopaque) []const u8 {
             return constCast(ptr).backendName();
         }
@@ -185,6 +199,7 @@ pub fn vtable(comptime Config: type) interface.Renderer.VTable {
             .atlasNeedsOverflowBank = &S.atlasNeedsOverflowBankFn,
             .atlasWouldRebuild = &S.atlasWouldRebuildFn,
             .canUseAtlasOverflowBanks = &S.canUseAtlasOverflowBanksFn,
+            .imageArrayWouldRebuild = &S.imageArrayWouldRebuildFn,
         },
         .backendName = &S.backendNameFn,
     };

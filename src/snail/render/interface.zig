@@ -48,6 +48,7 @@ pub const Renderer = struct {
         atlasNeedsOverflowBank: *const fn (*const PreparedResources, usize, upload_plan.AtlasRef) bool,
         atlasWouldRebuild: *const fn (*const PreparedResources, usize, upload_plan.AtlasRef) bool,
         canUseAtlasOverflowBanks: *const fn (*const PreparedResources, usize) bool,
+        imageArrayWouldRebuild: *const fn (*const PreparedResources, u32, u32, u32) bool,
     };
 
     pub const VTable = struct {
@@ -133,6 +134,10 @@ pub const Renderer = struct {
 
     pub fn canUseAtlasOverflowBanks(self: *const Renderer, prepared: *const PreparedResources, atlas_count: usize) bool {
         return self.vtable.resource_cache.canUseAtlasOverflowBanks(prepared, atlas_count);
+    }
+
+    pub fn imageArrayWouldRebuild(self: *const Renderer, prepared: *const PreparedResources, capacity_count: u32, capacity_width: u32, capacity_height: u32) bool {
+        return self.vtable.resource_cache.imageArrayWouldRebuild(prepared, capacity_count, capacity_width, capacity_height);
     }
 
     /// Execute prebuilt draw records. This never discovers, uploads, allocates,
@@ -285,6 +290,9 @@ pub fn disabledVTable(comptime backend_kind: BackendKind) Renderer.VTable {
         fn canUseAtlasOverflowBanksFn(_: *const PreparedResources, _: usize) bool {
             return false;
         }
+        fn imageArrayWouldRebuildFn(_: *const PreparedResources, _: u32, _: u32, _: u32) bool {
+            return false;
+        }
         fn backendNameFn(_: *anyopaque) []const u8 {
             return switch (backend_kind) {
                 .gl => "OpenGL (disabled)",
@@ -321,6 +329,7 @@ pub fn disabledVTable(comptime backend_kind: BackendKind) Renderer.VTable {
             .atlasNeedsOverflowBank = &S.atlasNeedsOverflowBankFn,
             .atlasWouldRebuild = &S.atlasWouldRebuildFn,
             .canUseAtlasOverflowBanks = &S.canUseAtlasOverflowBanksFn,
+            .imageArrayWouldRebuild = &S.imageArrayWouldRebuildFn,
         },
         .backendName = &S.backendNameFn,
     };

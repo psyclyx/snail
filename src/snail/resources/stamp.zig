@@ -8,6 +8,7 @@ const set_mod = @import("set.zig");
 const text_mod = @import("../text.zig");
 const view_mod = @import("view.zig");
 
+const AtlasPage = @import("../render/format/atlas/page.zig").AtlasPage;
 const Atlas = atlas_curve_mod.Atlas;
 const Image = image_mod.Image;
 const PathPicture = path_mod.PathPicture;
@@ -24,8 +25,10 @@ pub fn textAtlasStamp(atlas: *const TextAtlas) ResourceStamp {
     layout = mix64(layout, atlas.layer_info_height);
     var content = atlas.snapshotIdentity();
     for (atlas.pageSlice()) |page| {
-        content = mix64(content, @intCast(@intFromPtr(page)));
-        content = mix64(content, page.textureBytes());
+        content = hashAtlasPage(content, page);
+    }
+    if (atlas.layer_info_data) |data| {
+        content = hashBytes(content, 0x544558544c415945, std.mem.sliceAsBytes(data));
     }
     return .{
         .identity = atlas.snapshotIdentity(),
@@ -43,13 +46,7 @@ pub fn textPaintStamp(blob: *const TextBlob) ResourceStamp {
         content = mix64(content, std.hash.Wyhash.hash(0x544558545041494e, std.mem.sliceAsBytes(data)));
     }
     if (blob.paint_image_records) |records| {
-        for (records) |record| {
-            const image = (record orelse continue).image;
-            const stamp = imageStamp(image);
-            content = mix64(content, stamp.identity);
-            content = mix64(content, stamp.layout);
-            content = mix64(content, stamp.content);
-        }
+        content = hashPaintImageRecords(content, records);
     }
     return .{
         .identity = mix64(@intCast(@intFromPtr(blob)), atlas_stamp.identity),
@@ -63,12 +60,18 @@ pub fn pathPictureStamp(picture: *const PathPicture) ResourceStamp {
     layout = mix64(layout, picture.atlas.layer_info_width);
     layout = mix64(layout, picture.atlas.layer_info_height);
     var content = @as(u64, @intCast(@intFromPtr(picture)));
+    for (picture.shapes) |shape| {
+        content = hashPathShape(content, shape);
+    }
+    content = hashBytes(content, 0x50415448524f4c45, std.mem.sliceAsBytes(picture.layer_roles));
     for (picture.atlas.pages) |page| {
-        content = mix64(content, @intCast(@intFromPtr(page)));
-        content = mix64(content, page.textureBytes());
+        content = hashAtlasPage(content, page);
     }
     if (picture.atlas.layer_info_data) |data| {
         content = mix64(content, std.hash.Wyhash.hash(0x5041544850494354, std.mem.sliceAsBytes(data)));
+    }
+    if (picture.atlas.paint_image_records) |records| {
+        content = hashPaintImageRecords(content, records);
     }
     return .{
         .identity = @intCast(@intFromPtr(picture)),
@@ -154,4 +157,72 @@ fn textPaintUploadBytes(blob: *const TextBlob) usize {
         }
     }
     return total;
+}
+
+fn hashAtlasPage(seed: u64, page: *const AtlasPage) u64 {
+    var h = seed;
+    h = mix64(h, page.curve_width);
+    h = mix64(h, page.curve_height);
+    h = hashBytes(h, 0x4355525645504147, std.mem.sliceAsBytes(page.curve_data));
+    h = mix64(h, page.band_width);
+    h = mix64(h, page.band_height);
+    h = hashBytes(h, 0x42414e4450414745, std.mem.sliceAsBytes(page.band_data));
+    return h;
+}
+
+fn hashPathShape(seed: u64, shape: PathPicture.Shape) u64 {
+    var h = seed;
+    h = mix64(h, shape.glyph_id);
+    h = hashBBox(h, shape.bbox);
+    h = mix64(h, shape.page_index);
+    h = mix64(h, shape.info_x);
+    h = mix64(h, shape.info_y);
+    h = mix64(h, shape.layer_count);
+    h = hashTransform(h, shape.transform);
+    return h;
+}
+
+fn hashBBox(seed: u64, bbox: anytype) u64 {
+    var h = seed;
+    h = hashF32(h, bbox.min.x);
+    h = hashF32(h, bbox.min.y);
+    h = hashF32(h, bbox.max.x);
+    h = hashF32(h, bbox.max.y);
+    return h;
+}
+
+fn hashTransform(seed: u64, transform: anytype) u64 {
+    var h = seed;
+    h = hashF32(h, transform.xx);
+    h = hashF32(h, transform.xy);
+    h = hashF32(h, transform.tx);
+    h = hashF32(h, transform.yx);
+    h = hashF32(h, transform.yy);
+    h = hashF32(h, transform.ty);
+    return h;
+}
+
+fn hashPaintImageRecords(seed: u64, records: []const ?Atlas.PaintImageRecord) u64 {
+    var h = mix64(seed, records.len);
+    for (records) |record| {
+        const resolved = record orelse {
+            h = mix64(h, 0);
+            continue;
+        };
+        h = mix64(h, 1);
+        h = mix64(h, resolved.texel_offset);
+        const stamp = imageStamp(resolved.image);
+        h = mix64(h, stamp.identity);
+        h = mix64(h, stamp.layout);
+        h = mix64(h, stamp.content);
+    }
+    return h;
+}
+
+fn hashBytes(seed: u64, comptime hash_seed: u64, bytes: []const u8) u64 {
+    return mix64(seed, std.hash.Wyhash.hash(hash_seed, bytes));
+}
+
+fn hashF32(seed: u64, value: f32) u64 {
+    return mix64(seed, @as(u32, @bitCast(value)));
 }
