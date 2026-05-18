@@ -208,47 +208,98 @@ pub const ResourceUploadCompletion = union(enum) {
     pub const pending = ResourceUploadCompletion{ .ready = false };
 };
 
-pub fn uploadPreparedResources(renderer: anytype, set: *const ResourceManifest, allocators: UploadAllocators) !PreparedResources {
-    return uploadPreparedResourceEntries(renderer, set.slice(), allocators);
+const UploadEntryCounts = struct {
+    atlases: usize = 0,
+    layer_infos: usize = 0,
+    images: usize = 0,
+};
+
+const ResourceUploadScratch = struct {
+    upload_atlases: []*const Atlas,
+    atlas_capacity_modes: []upload_common.AtlasCapacityMode,
+    atlas_views: []PreparedAtlasView,
+    upload_layer_infos: []PreparedLayerInfoUpload,
+    layer_info_views: []PreparedLayerInfoView,
+    upload_images: []*const Image,
+    image_views: []PreparedImageView,
+
+    fn init(allocator: std.mem.Allocator, counts: UploadEntryCounts) !ResourceUploadScratch {
+        const upload_atlases = try allocator.alloc(*const Atlas, counts.atlases);
+        errdefer allocator.free(upload_atlases);
+        const atlas_capacity_modes = try allocator.alloc(upload_common.AtlasCapacityMode, counts.atlases);
+        errdefer allocator.free(atlas_capacity_modes);
+        const atlas_views = try allocator.alloc(PreparedAtlasView, counts.atlases);
+        errdefer allocator.free(atlas_views);
+
+        const upload_layer_infos = try allocator.alloc(PreparedLayerInfoUpload, counts.layer_infos);
+        errdefer allocator.free(upload_layer_infos);
+        const layer_info_views = try allocator.alloc(PreparedLayerInfoView, counts.layer_infos);
+        errdefer allocator.free(layer_info_views);
+
+        const upload_images = try allocator.alloc(*const Image, counts.images);
+        errdefer allocator.free(upload_images);
+        const image_views = try allocator.alloc(PreparedImageView, counts.images);
+
+        return .{
+            .upload_atlases = upload_atlases,
+            .atlas_capacity_modes = atlas_capacity_modes,
+            .atlas_views = atlas_views,
+            .upload_layer_infos = upload_layer_infos,
+            .layer_info_views = layer_info_views,
+            .upload_images = upload_images,
+            .image_views = image_views,
+        };
+    }
+
+    fn deinit(self: *ResourceUploadScratch, allocator: std.mem.Allocator) void {
+        allocator.free(self.upload_atlases);
+        allocator.free(self.atlas_capacity_modes);
+        allocator.free(self.atlas_views);
+        allocator.free(self.upload_layer_infos);
+        allocator.free(self.layer_info_views);
+        allocator.free(self.upload_images);
+        allocator.free(self.image_views);
+    }
+
+    fn batch(self: *ResourceUploadScratch) ResourceUploadBatch {
+        return .{
+            .atlases = self.upload_atlases,
+            .atlas_capacity_modes = self.atlas_capacity_modes,
+            .atlas_views = self.atlas_views,
+            .layer_infos = self.upload_layer_infos,
+            .layer_info_views = self.layer_info_views,
+            .images = self.upload_images,
+            .image_views = self.image_views,
+        };
+    }
+};
+
+fn countUploadEntries(entries: []const ResourceManifest.Entry) UploadEntryCounts {
+    var counts: UploadEntryCounts = .{};
+    for (entries) |entry| switch (entry) {
+        .text_atlas, .path_picture => counts.atlases += 1,
+        .text_paint => counts.layer_infos += 1,
+        .image => counts.images += 1,
+    };
+    return counts;
 }
 
-pub fn uploadPreparedResourceEntries(renderer: anytype, entries: []const ResourceManifest.Entry, allocators: UploadAllocators) !PreparedResources {
-    const persistent = allocators.persistent;
-    const scratch = allocators.scratch;
-    var atlas_count: usize = 0;
-    var layer_info_count: usize = 0;
-    var image_count: usize = 0;
-    for (entries) |entry| switch (entry) {
-        .text_atlas, .path_picture => atlas_count += 1,
-        .text_paint => layer_info_count += 1,
-        .image => image_count += 1,
+fn initPreparedResourceSlots(allocator: std.mem.Allocator, counts: UploadEntryCounts) !PreparedResources {
+    const atlases = try allocator.alloc(PreparedResources.PreparedAtlasResource, counts.atlases);
+    errdefer allocator.free(atlases);
+    const layer_infos = try allocator.alloc(PreparedResources.PreparedLayerInfoResource, counts.layer_infos);
+    errdefer allocator.free(layer_infos);
+    const images = try allocator.alloc(PreparedResources.PreparedImageResource, counts.images);
+
+    return .{
+        .allocator = allocator,
+        .atlases = atlases,
+        .layer_infos = layer_infos,
+        .images = images,
     };
+}
 
-    var prepared = PreparedResources{
-        .allocator = persistent,
-        .atlases = try persistent.alloc(PreparedResources.PreparedAtlasResource, atlas_count),
-        .layer_infos = try persistent.alloc(PreparedResources.PreparedLayerInfoResource, layer_info_count),
-        .images = try persistent.alloc(PreparedResources.PreparedImageResource, image_count),
-    };
-    errdefer prepared.deinit();
-
-    const upload_atlases = try scratch.alloc(*const Atlas, atlas_count);
-    defer scratch.free(upload_atlases);
-    const atlas_capacity_modes = try scratch.alloc(upload_common.AtlasCapacityMode, atlas_count);
-    defer scratch.free(atlas_capacity_modes);
-    const atlas_views = try scratch.alloc(PreparedAtlasView, atlas_count);
-    defer scratch.free(atlas_views);
-
-    const upload_layer_infos = try scratch.alloc(PreparedLayerInfoUpload, layer_info_count);
-    defer scratch.free(upload_layer_infos);
-    const layer_info_views = try scratch.alloc(PreparedLayerInfoView, layer_info_count);
-    defer scratch.free(layer_info_views);
-
-    const upload_images = try scratch.alloc(*const Image, image_count);
-    defer scratch.free(upload_images);
-    const image_views = try scratch.alloc(PreparedImageView, image_count);
-    defer scratch.free(image_views);
-
+fn populatePreparedResourceBatch(prepared: *PreparedResources, scratch: *ResourceUploadScratch, entries: []const ResourceManifest.Entry) void {
     var atlas_i: usize = 0;
     var layer_info_i: usize = 0;
     var image_i: usize = 0;
@@ -265,8 +316,8 @@ pub fn uploadPreparedResourceEntries(renderer: anytype, entries: []const Resourc
                 };
                 prepared.atlases[atlas_i].wrapper = text.atlas.uploadAtlas();
                 prepared.atlases[atlas_i].atlas = &prepared.atlases[atlas_i].wrapper;
-                upload_atlases[atlas_i] = prepared.atlases[atlas_i].atlas;
-                atlas_capacity_modes[atlas_i] = text.atlas_capacity;
+                scratch.upload_atlases[atlas_i] = prepared.atlases[atlas_i].atlas;
+                scratch.atlas_capacity_modes[atlas_i] = text.atlas_capacity;
                 atlas_i += 1;
             },
             .text_paint => |text| {
@@ -275,7 +326,7 @@ pub fn uploadPreparedResourceEntries(renderer: anytype, entries: []const Resourc
                     .text_blob = text.blob,
                     .stamp = stamp_mod.resourceEntryStamp(entry),
                 };
-                upload_layer_infos[layer_info_i] = stamp_mod.textPaintLayerInfoUpload(text.blob);
+                scratch.upload_layer_infos[layer_info_i] = stamp_mod.textPaintLayerInfoUpload(text.blob);
                 layer_info_i += 1;
             },
             .path_picture => |path| {
@@ -286,8 +337,8 @@ pub fn uploadPreparedResourceEntries(renderer: anytype, entries: []const Resourc
                     .atlas = &path.picture.atlas,
                     .stamp = stamp_mod.resourceEntryStamp(entry),
                 };
-                upload_atlases[atlas_i] = prepared.atlases[atlas_i].atlas;
-                atlas_capacity_modes[atlas_i] = path.atlas_capacity;
+                scratch.upload_atlases[atlas_i] = prepared.atlases[atlas_i].atlas;
+                scratch.atlas_capacity_modes[atlas_i] = path.atlas_capacity;
                 atlas_i += 1;
             },
             .image => |image| {
@@ -296,32 +347,44 @@ pub fn uploadPreparedResourceEntries(renderer: anytype, entries: []const Resourc
                     .image = image.image,
                     .stamp = stamp_mod.resourceEntryStamp(entry),
                 };
-                upload_images[image_i] = image.image;
+                scratch.upload_images[image_i] = image.image;
                 image_i += 1;
             },
         }
     }
+}
 
-    try renderer.uploadResourceBatch(allocators, &prepared, .{
-        .atlases = upload_atlases,
-        .atlas_capacity_modes = atlas_capacity_modes[0..atlas_count],
-        .atlas_views = atlas_views,
-        .layer_infos = upload_layer_infos,
-        .layer_info_views = layer_info_views,
-        .images = upload_images,
-        .image_views = image_views,
-    });
-
+fn attachUploadedViews(allocator: std.mem.Allocator, prepared: *PreparedResources, scratch: *ResourceUploadScratch) !void {
     for (prepared.atlases, 0..) |*entry, i| {
-        entry.view = atlas_views[i];
-        if (atlas_views[i].page_layers.len > 0) {
-            const page_layers = try persistent.dupe(u32, atlas_views[i].page_layers);
+        entry.view = scratch.atlas_views[i];
+        if (scratch.atlas_views[i].page_layers.len > 0) {
+            const page_layers = try allocator.dupe(u32, scratch.atlas_views[i].page_layers);
             entry.view.page_layers = page_layers;
             entry.owns_page_layers = true;
         }
     }
-    for (prepared.layer_infos, 0..) |*entry, i| entry.view = layer_info_views[i];
-    for (prepared.images, 0..) |*entry, i| entry.view = image_views[i];
+    for (prepared.layer_infos, 0..) |*entry, i| entry.view = scratch.layer_info_views[i];
+    for (prepared.images, 0..) |*entry, i| entry.view = scratch.image_views[i];
+}
+
+pub fn uploadPreparedResources(renderer: anytype, set: *const ResourceManifest, allocators: UploadAllocators) !PreparedResources {
+    return uploadPreparedResourceEntries(renderer, set.slice(), allocators);
+}
+
+pub fn uploadPreparedResourceEntries(renderer: anytype, entries: []const ResourceManifest.Entry, allocators: UploadAllocators) !PreparedResources {
+    const persistent = allocators.persistent;
+    const scratch = allocators.scratch;
+
+    const counts = countUploadEntries(entries);
+    var prepared = try initPreparedResourceSlots(persistent, counts);
+    errdefer prepared.deinit();
+
+    var scratch_upload = try ResourceUploadScratch.init(scratch, counts);
+    defer scratch_upload.deinit(scratch);
+
+    populatePreparedResourceBatch(&prepared, &scratch_upload, entries);
+    try renderer.uploadResourceBatch(allocators, &prepared, scratch_upload.batch());
+    try attachUploadedViews(persistent, &prepared, &scratch_upload);
     return prepared;
 }
 
