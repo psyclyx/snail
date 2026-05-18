@@ -591,7 +591,7 @@ test "cpu renderer decodes translucent sRGB solid path colors before blending" {
 test "cpu direct sRGB pixels on linear attachment blends in storage space" {
     var buf = [_]u8{ 0, 0, 0, 255 };
     var renderer = CpuRenderer.init(buf[0..].ptr, 1, 1, 4);
-    renderer.setTargetEncoding(.srgb_pixels_on_linear_attachment);
+    renderer.target_encoding = .srgb_pixels_on_linear_attachment;
 
     test_api.blendPremultipliedPixel(&renderer, 0, 0, .{ 0.5, 0.5, 0.5, 0.5 }, false);
 
@@ -874,7 +874,7 @@ test "cpu renderer drawPaths batch matches drawPathPicture" {
     defer testing.allocator.free(ref_buf);
     var ref_renderer = CpuRenderer.init(ref_buf.ptr, width, height, stride);
     test_api.clear(&ref_renderer, 0, 0, 0, 0);
-    ref_renderer.setSubpixelOrder(.rgb);
+    ref_renderer.subpixel_order = .rgb;
 
     var builder = snail.PathPictureBuilder.init(testing.allocator);
     defer builder.deinit();
@@ -892,7 +892,7 @@ test "cpu renderer drawPaths batch matches drawPathPicture" {
     defer testing.allocator.free(batch_buf);
     var batch_renderer = CpuRenderer.init(batch_buf.ptr, width, height, stride);
     test_api.clear(&batch_renderer, 0, 0, 0, 0);
-    batch_renderer.setSubpixelOrder(.rgb);
+    batch_renderer.subpixel_order = .rgb;
 
     var renderer = batch_renderer.asRenderer();
     var scene = snail.Scene.init(testing.allocator);

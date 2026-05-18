@@ -142,38 +142,6 @@ pub const CpuRenderer = struct {
         self.thread_pool = pool;
     }
 
-    pub fn setFillRule(self: *CpuRenderer, rule: FillRule) void {
-        self.fill_rule = rule;
-    }
-
-    pub fn getFillRule(self: *const CpuRenderer) FillRule {
-        return self.fill_rule;
-    }
-
-    pub fn setSubpixelOrder(self: *CpuRenderer, order: SubpixelOrder) void {
-        self.subpixel_order = order;
-    }
-
-    pub fn getSubpixelOrder(self: *const CpuRenderer) SubpixelOrder {
-        return self.subpixel_order;
-    }
-
-    pub fn setTargetEncoding(self: *CpuRenderer, encoding: snail.TargetEncoding) void {
-        self.target_encoding = encoding;
-    }
-
-    pub fn getTargetEncoding(self: *const CpuRenderer) snail.TargetEncoding {
-        return self.target_encoding;
-    }
-
-    pub fn setCoverageTransfer(self: *CpuRenderer, transfer: snail.CoverageTransfer) void {
-        self.coverage_transfer = transfer;
-    }
-
-    pub fn getCoverageTransfer(self: *const CpuRenderer) snail.CoverageTransfer {
-        return self.coverage_transfer;
-    }
-
     pub const LinearResolveRestore = struct {
         row_clip_min: u32,
         row_clip_max: u32,
