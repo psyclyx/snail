@@ -57,82 +57,138 @@ pub const ResourceUploadBatch = struct {
     image_views: []PreparedImageView,
 };
 
-pub const ResourceUploadPlan = struct {
+pub const ResourceManifestSnapshot = struct {
     allocator: std.mem.Allocator,
     entries: []ResourceManifest.Entry,
-    /// Backend allocation footprint for the next prepared resource manifest.
-    upload_footprint: ResourceFootprint = .{},
-    /// Bytes this backend path will upload or construct for the next prepared
-    /// resource manifest. Backend packing may make this larger than `changed_bytes`.
-    upload_bytes: usize = 0,
-    /// Bytes whose dependency stamp differs from `current`, keyed by stable
-    /// ResourceManifest keys. Exposed so callers can see intent-preserving changes.
-    changed_bytes: usize = 0,
-    changed_keys: []ResourceKey = &.{},
-    changed_len: usize = 0,
-    reused_atlas_pages: u32 = 0,
-    missing_atlas_pages: u32 = 0,
-    duplicated_atlas_pages: u32 = 0,
-    new_atlas_banks: u32 = 0,
-    reused_images: u32 = 0,
-    missing_images: u32 = 0,
-    new_image_banks: u32 = 0,
-    atlas_cache_rebuilds: u32 = 0,
-    image_cache_rebuilds: u32 = 0,
-    curve_bytes_upload: usize = 0,
-    band_bytes_upload: usize = 0,
-    layer_info_bytes_upload: usize = 0,
-    image_bytes_upload: usize = 0,
-    gpu_bytes_allocated: usize = 0,
 
-    pub fn init(allocator: std.mem.Allocator, set: *const ResourceManifest) !ResourceUploadPlan {
-        const entries = try allocator.dupe(ResourceManifest.Entry, set.slice());
-        errdefer allocator.free(entries);
-        const changed_keys = try allocator.alloc(ResourceKey, entries.len);
+    pub fn init(allocator: std.mem.Allocator, manifest: *const ResourceManifest) !ResourceManifestSnapshot {
+        return initEntries(allocator, manifest.slice());
+    }
+
+    pub fn initEntries(allocator: std.mem.Allocator, entries: []const ResourceManifest.Entry) !ResourceManifestSnapshot {
         return .{
             .allocator = allocator,
-            .entries = entries,
-            .changed_keys = changed_keys,
+            .entries = try allocator.dupe(ResourceManifest.Entry, entries),
         };
     }
 
-    pub fn clone(self: *const ResourceUploadPlan, allocator: std.mem.Allocator) !ResourceUploadPlan {
-        const entries = try allocator.dupe(ResourceManifest.Entry, self.entries);
-        errdefer allocator.free(entries);
-        const changed_keys = try allocator.alloc(ResourceKey, self.changed_keys.len);
-        errdefer allocator.free(changed_keys);
-        @memcpy(changed_keys[0..self.changed_len], self.changedKeys());
+    pub fn clone(self: *const ResourceManifestSnapshot, allocator: std.mem.Allocator) !ResourceManifestSnapshot {
+        return initEntries(allocator, self.entries);
+    }
 
-        var out = self.*;
-        out.allocator = allocator;
-        out.entries = entries;
-        out.changed_keys = changed_keys;
+    pub fn deinit(self: *ResourceManifestSnapshot) void {
+        self.allocator.free(self.entries);
+        self.* = undefined;
+    }
+};
+
+pub const ResourceManifestDiff = struct {
+    allocator: std.mem.Allocator,
+    changed_keys: []ResourceKey,
+    changed_len: usize = 0,
+    changed_bytes: usize = 0,
+
+    pub fn initCapacity(allocator: std.mem.Allocator, capacity: usize) !ResourceManifestDiff {
+        return .{
+            .allocator = allocator,
+            .changed_keys = try allocator.alloc(ResourceKey, capacity),
+        };
+    }
+
+    pub fn clone(self: *const ResourceManifestDiff, allocator: std.mem.Allocator) !ResourceManifestDiff {
+        var out = try initCapacity(allocator, self.changed_keys.len);
+        errdefer out.deinit();
+        @memcpy(out.changed_keys[0..self.changed_len], self.keys());
+        out.changed_len = self.changed_len;
+        out.changed_bytes = self.changed_bytes;
         return out;
     }
 
-    pub fn deinit(self: *ResourceUploadPlan) void {
-        self.allocator.free(self.entries);
+    pub fn deinit(self: *ResourceManifestDiff) void {
         self.allocator.free(self.changed_keys);
         self.* = undefined;
     }
 
-    pub fn changedKeys(self: *const ResourceUploadPlan) []const ResourceKey {
+    pub fn keys(self: *const ResourceManifestDiff) []const ResourceKey {
         return self.changed_keys[0..self.changed_len];
     }
 
-    pub fn cacheRebuilds(self: *const ResourceUploadPlan) u32 {
-        return self.atlas_cache_rebuilds + self.image_cache_rebuilds;
-    }
-
-    pub fn requiresCacheRebuild(self: *const ResourceUploadPlan) bool {
-        return self.cacheRebuilds() != 0;
-    }
-
-    pub fn addChanged(self: *ResourceUploadPlan, key: ResourceKey, bytes: usize) !void {
+    pub fn add(self: *ResourceManifestDiff, key: ResourceKey, bytes: usize) !void {
         if (self.changed_len >= self.changed_keys.len) return error.ResourceUploadPlanFull;
         self.changed_keys[self.changed_len] = key;
         self.changed_len += 1;
         self.changed_bytes += bytes;
+    }
+};
+
+pub const ResourceCachePlan = struct {
+    reused_atlas_pages: u32 = 0,
+    missing_atlas_pages: u32 = 0,
+    new_atlas_banks: u32 = 0,
+    reused_images: u32 = 0,
+    missing_images: u32 = 0,
+    new_image_banks: u32 = 0,
+    atlas_rebuilds: u32 = 0,
+    image_rebuilds: u32 = 0,
+
+    pub fn rebuilds(self: ResourceCachePlan) u32 {
+        return self.atlas_rebuilds + self.image_rebuilds;
+    }
+
+    pub fn requiresRebuild(self: ResourceCachePlan) bool {
+        return self.rebuilds() != 0;
+    }
+};
+
+pub const ResourceUploadEstimate = struct {
+    /// Bytes this backend path will upload or construct for the next prepared
+    /// resource manifest. Backend packing may make this larger than the diff.
+    bytes: usize = 0,
+    curve_bytes: usize = 0,
+    band_bytes: usize = 0,
+    layer_info_bytes: usize = 0,
+    image_bytes: usize = 0,
+};
+
+pub const ResourceUploadPlan = struct {
+    manifest: ResourceManifestSnapshot,
+    /// Backend allocation footprint for the next prepared resource manifest.
+    footprint: ResourceFootprint = .{},
+    /// Logical differences between the current prepared resources and manifest.
+    diff: ResourceManifestDiff,
+    /// Backend cache admission and rebuild requirements.
+    cache: ResourceCachePlan = .{},
+    /// Executable upload/construct byte counts for this backend path.
+    upload: ResourceUploadEstimate = .{},
+
+    pub fn init(allocator: std.mem.Allocator, set: *const ResourceManifest) !ResourceUploadPlan {
+        var snapshot = try ResourceManifestSnapshot.init(allocator, set);
+        errdefer snapshot.deinit();
+        const diff = try ResourceManifestDiff.initCapacity(allocator, snapshot.entries.len);
+        return .{
+            .manifest = snapshot,
+            .diff = diff,
+        };
+    }
+
+    pub fn clone(self: *const ResourceUploadPlan, allocator: std.mem.Allocator) !ResourceUploadPlan {
+        var snapshot = try self.manifest.clone(allocator);
+        errdefer snapshot.deinit();
+        var diff = try self.diff.clone(allocator);
+        errdefer diff.deinit();
+        return .{
+            .manifest = snapshot,
+            .footprint = self.footprint,
+            .diff = diff,
+            .cache = self.cache,
+            .upload = self.upload,
+        };
+    }
+
+    pub fn deinit(self: *ResourceUploadPlan) void {
+        self.manifest.deinit();
+        self.diff.deinit();
+        self.* = undefined;
     }
 };
 
@@ -293,8 +349,8 @@ pub const PendingResourceUpload = struct {
     /// command buffer; CPU and GL complete during this call.
     pub fn record(self: *PendingResourceUpload, command: ResourceUploadCommand, options: RecordOptions) !void {
         if (self.prepared != null) return;
-        if (!options.allow_cache_rebuilds and self.plan.requiresCacheRebuild()) return error.ResourceCacheRebuildRequired;
-        if (self.plan.upload_bytes > options.budget_bytes) return error.ResourceUploadBudgetExceeded;
+        if (!options.allow_cache_rebuilds and self.plan.cache.requiresRebuild()) return error.ResourceCacheRebuildRequired;
+        if (self.plan.upload.bytes > options.budget_bytes) return error.ResourceUploadBudgetExceeded;
 
         if (comptime build_options.enable_vulkan) {
             if (self.renderer.backend() == .vulkan) {
@@ -305,14 +361,14 @@ pub const PendingResourceUpload = struct {
                 const vk_state: *vulkan_pipeline.VulkanPipeline = @ptrCast(@alignCast(self.renderer.ptr));
                 vk_state.beginResourceUploadRecording(cmd);
                 defer vk_state.endResourceUploadRecording();
-                self.prepared = try uploadPreparedResourceEntries(&self.renderer, self.plan.entries, self.allocators);
+                self.prepared = try uploadPreparedResourceEntries(&self.renderer, self.plan.manifest.entries, self.allocators);
                 self.external_completion_required = true;
                 self.ready_to_publish = false;
                 return;
             }
         }
 
-        self.prepared = try uploadPreparedResourceEntries(&self.renderer, self.plan.entries, self.allocators);
+        self.prepared = try uploadPreparedResourceEntries(&self.renderer, self.plan.manifest.entries, self.allocators);
         self.external_completion_required = false;
         self.ready_to_publish = true;
     }

@@ -625,10 +625,12 @@ scheduled uploads, including CPU-backed uploads.
    diffs `next_set` against the existing `PreparedResources` (or `null` for a
    first upload) and records which `ResourceKey` entries changed. The result
    owns a snapshot of the resource entries, so callers may reset or reuse the
-   original `ResourceManifest` after planning. It is a `ResourceUploadPlan` whose
-   `upload_footprint`, `upload_bytes`, and
-   `changedKeys()` are informational. `upload_bytes` is
-   `upload_footprint.allocatedBytes()` for simple budget checks.
+   original `ResourceManifest` after planning. `ResourceUploadPlan` is split
+   into `manifest`, `diff`, `footprint`, `cache`, and `upload` fields. Use
+   `plan.diff.keys()` / `plan.diff.changed_bytes` for logical changes,
+   `plan.cache` for resource-cache admission decisions, and
+   `plan.upload.bytes` for budget checks. For non-cached backends,
+   `plan.upload.bytes` is `plan.footprint.allocatedBytes()`.
    Call `plan.deinit()` when the plan is no longer needed.
 2. **Begin + record.** `renderer.beginResourceUpload(.{ .persistent = allocator, .scratch = allocator }, &plan)` returns
    a `PendingResourceUpload`. Call `pending.record(.no_command, .{ .budget_bytes = N })`

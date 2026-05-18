@@ -272,12 +272,11 @@ pub fn planResourceUpload(renderer: anytype, allocator: std.mem.Allocator, curre
     var plan = try ResourceUploadPlan.init(allocator, next_set);
     errdefer plan.deinit();
 
-    const entries = plan.entries;
+    const entries = plan.manifest.entries;
     const counts = countResourceEntries(entries);
     const image_requirements = try collectImageRequirements(allocator, entries);
     const uses_resource_cache = renderer.usesResourceCache();
-    plan.upload_footprint = try next_set.estimateUploadFootprint();
-    plan.gpu_bytes_allocated = plan.upload_footprint.allocatedBytes();
+    plan.footprint = try next_set.estimateUploadFootprint();
     var needs_atlas_overflow_bank = false;
     var next_atlas_index: usize = 0;
     for (entries) |entry| {
@@ -287,7 +286,7 @@ pub fn planResourceUpload(renderer: anytype, allocator: std.mem.Allocator, curre
         const old_stamp = if (current) |prepared| prepared.stampForKey(key) else null;
         const changed = if (old_stamp) |old| !old.eql(stamp) else true;
         if (changed) {
-            try plan.addChanged(key, bytes);
+            try plan.diff.add(key, bytes);
         }
         switch (entry) {
             .text_atlas => |text| {
@@ -295,51 +294,51 @@ pub fn planResourceUpload(renderer: anytype, allocator: std.mem.Allocator, curre
                 next_atlas_index += 1;
                 const atlas = AtlasRef.init(text.atlas);
                 const delta = atlasUploadDelta(current, key, atlas);
-                plan.reused_atlas_pages += delta.reused_pages;
-                plan.missing_atlas_pages += delta.missing_pages;
-                plan.curve_bytes_upload += delta.curve_bytes;
-                plan.band_bytes_upload += delta.band_bytes;
+                plan.cache.reused_atlas_pages += delta.reused_pages;
+                plan.cache.missing_atlas_pages += delta.missing_pages;
+                plan.upload.curve_bytes += delta.curve_bytes;
+                plan.upload.band_bytes += delta.band_bytes;
                 if (current) |prepared| {
                     if (preparedAtlasForKeyWithIndex(prepared, key)) |lookup| {
-                        if (lookup.index != atlas_index and uses_resource_cache) plan.atlas_cache_rebuilds = 1;
+                        if (lookup.index != atlas_index and uses_resource_cache) plan.cache.atlas_rebuilds = 1;
                     }
                 }
                 if (currentAtlasNeedsOverflowBank(renderer, current, key, atlas)) needs_atlas_overflow_bank = true;
-                if (currentAtlasWouldRebuild(renderer, current, key, atlas)) plan.atlas_cache_rebuilds = 1;
+                if (currentAtlasWouldRebuild(renderer, current, key, atlas)) plan.cache.atlas_rebuilds = 1;
             },
             .path_picture => |path| {
                 const atlas_index = next_atlas_index;
                 next_atlas_index += 1;
                 const atlas = AtlasRef.init(&path.picture.atlas);
                 const delta = atlasUploadDelta(current, key, atlas);
-                plan.reused_atlas_pages += delta.reused_pages;
-                plan.missing_atlas_pages += delta.missing_pages;
-                plan.curve_bytes_upload += delta.curve_bytes;
-                plan.band_bytes_upload += delta.band_bytes;
+                plan.cache.reused_atlas_pages += delta.reused_pages;
+                plan.cache.missing_atlas_pages += delta.missing_pages;
+                plan.upload.curve_bytes += delta.curve_bytes;
+                plan.upload.band_bytes += delta.band_bytes;
                 if (current) |prepared| {
                     if (preparedAtlasForKeyWithIndex(prepared, key)) |lookup| {
-                        if (lookup.index != atlas_index and uses_resource_cache) plan.atlas_cache_rebuilds = 1;
+                        if (lookup.index != atlas_index and uses_resource_cache) plan.cache.atlas_rebuilds = 1;
                     }
                 }
                 if (currentAtlasNeedsOverflowBank(renderer, current, key, atlas)) needs_atlas_overflow_bank = true;
-                if (currentAtlasWouldRebuild(renderer, current, key, atlas)) plan.atlas_cache_rebuilds = 1;
+                if (currentAtlasWouldRebuild(renderer, current, key, atlas)) plan.cache.atlas_rebuilds = 1;
             },
             .text_paint => {
                 const old_layer = if (current) |prepared| preparedLayerInfoForKey(prepared, key) else null;
-                if (old_layer == null or changed) plan.layer_info_bytes_upload += bytes;
+                if (old_layer == null or changed) plan.upload.layer_info_bytes += bytes;
             },
             .image => |image| {
                 const old_image = if (current) |prepared| preparedImageForKey(prepared, key) else null;
                 if (old_image) |prev| {
                     if (prev.stamp.eql(stamp)) {
-                        plan.reused_images += 1;
+                        plan.cache.reused_images += 1;
                     } else {
-                        plan.missing_images += 1;
-                        plan.image_bytes_upload += image.image.pixelSlice().len;
+                        plan.cache.missing_images += 1;
+                        plan.upload.image_bytes += image.image.pixelSlice().len;
                     }
                 } else {
-                    plan.missing_images += 1;
-                    plan.image_bytes_upload += image.image.pixelSlice().len;
+                    plan.cache.missing_images += 1;
+                    plan.upload.image_bytes += image.image.pixelSlice().len;
                 }
             },
         }
@@ -347,20 +346,20 @@ pub fn planResourceUpload(renderer: anytype, allocator: std.mem.Allocator, curre
     const stats = renderer.resourceCacheStats();
     const free_atlas_layers = stats.active_atlas_layers_allocated -| stats.active_atlas_pages_resident;
     const free_image_layers = stats.active_image_layers_allocated -| stats.active_image_layers_resident;
-    plan.new_atlas_banks = if (needs_atlas_overflow_bank or plan.missing_atlas_pages > free_atlas_layers) 1 else 0;
-    plan.new_image_banks = if (plan.missing_images > free_image_layers) 1 else 0;
-    if (counts.layer_infos > 0 and current != null and uses_resource_cache) plan.atlas_cache_rebuilds = 1;
+    plan.cache.new_atlas_banks = if (needs_atlas_overflow_bank or plan.cache.missing_atlas_pages > free_atlas_layers) 1 else 0;
+    plan.cache.new_image_banks = if (plan.cache.missing_images > free_image_layers) 1 else 0;
+    if (counts.layer_infos > 0 and current != null and uses_resource_cache) plan.cache.atlas_rebuilds = 1;
     if (current) |prepared| {
-        if (counts.atlases != prepared.atlases.len and uses_resource_cache) plan.atlas_cache_rebuilds = 1;
+        if (counts.atlases != prepared.atlases.len and uses_resource_cache) plan.cache.atlas_rebuilds = 1;
     }
-    if (plan.new_atlas_banks > 0 and
+    if (plan.cache.new_atlas_banks > 0 and
         stats.active_atlas_layers_allocated > 0 and
         uses_resource_cache and
         !resourceManifestCanUseAtlasOverflowBanks(renderer, current, entries, counts))
     {
-        plan.atlas_cache_rebuilds = 1;
+        plan.cache.atlas_rebuilds = 1;
     }
-    if (plan.new_image_banks > 0 and stats.active_image_layers_allocated > 0 and uses_resource_cache) plan.image_cache_rebuilds = 1;
+    if (plan.cache.new_image_banks > 0 and stats.active_image_layers_allocated > 0 and uses_resource_cache) plan.cache.image_rebuilds = 1;
     if (current) |prepared| {
         if (uses_resource_cache and renderer.imageArrayWouldRebuild(
             prepared,
@@ -368,22 +367,22 @@ pub fn planResourceUpload(renderer: anytype, allocator: std.mem.Allocator, curre
             image_requirements.capacityWidth(),
             image_requirements.capacityHeight(),
         )) {
-            plan.image_cache_rebuilds = 1;
+            plan.cache.image_rebuilds = 1;
         }
     }
-    if (plan.atlas_cache_rebuilds > 0) {
-        plan.curve_bytes_upload = plan.upload_footprint.curve_bytes_used;
-        plan.band_bytes_upload = plan.upload_footprint.band_bytes_used;
+    if (plan.cache.atlas_rebuilds > 0) {
+        plan.upload.curve_bytes = plan.footprint.curve_bytes_used;
+        plan.upload.band_bytes = plan.footprint.band_bytes_used;
     }
-    if (plan.image_cache_rebuilds > 0) {
-        plan.image_bytes_upload = plan.upload_footprint.image_bytes_used;
+    if (plan.cache.image_rebuilds > 0) {
+        plan.upload.image_bytes = plan.footprint.image_bytes_used;
     }
-    plan.upload_bytes = if (uses_resource_cache)
-        plan.curve_bytes_upload +
-            plan.band_bytes_upload +
-            plan.layer_info_bytes_upload +
-            plan.image_bytes_upload
+    plan.upload.bytes = if (uses_resource_cache)
+        plan.upload.curve_bytes +
+            plan.upload.band_bytes +
+            plan.upload.layer_info_bytes +
+            plan.upload.image_bytes
     else
-        plan.upload_footprint.allocatedBytes();
+        plan.footprint.allocatedBytes();
     return plan;
 }

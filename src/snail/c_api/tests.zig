@@ -258,10 +258,10 @@ test "c_api: scheduled upload draw list coverage records and retirement" {
 
     var plan: ?*c.test_api.ResourceUploadPlanImpl = null;
     try testing.expectEqual(c.SNAIL_OK, c_render.snail_renderer_plan_resource_upload(renderer.?, null, null, resources.?, &plan));
-    try testing.expect(c_render.snail_resource_upload_plan_upload_bytes(plan.?) > 0);
-    try testing.expect(c_render.snail_resource_upload_plan_changed_key_count(plan.?) > 0);
+    try testing.expect(c_render.snail_resource_upload_plan_upload_estimate_bytes(plan.?) > 0);
+    try testing.expect(c_render.snail_resource_upload_plan_diff_changed_key_count(plan.?) > 0);
     var changed_key: c.SnailResourceKey = 0;
-    try testing.expect(c_render.snail_resource_upload_plan_changed_key(plan.?, 0, &changed_key));
+    try testing.expect(c_render.snail_resource_upload_plan_diff_changed_key(plan.?, 0, &changed_key));
 
     var pending: ?*c.test_api.PendingResourceUploadImpl = null;
     try testing.expectEqual(c.SNAIL_OK, c_render.snail_renderer_begin_resource_upload(renderer.?, null, plan.?, &pending));
@@ -269,9 +269,9 @@ test "c_api: scheduled upload draw list coverage records and retirement" {
     plan = null;
     defer c_render.snail_pending_resource_upload_deinit(pending);
 
-    pending.?.inner.plan.atlas_cache_rebuilds = 1;
+    pending.?.inner.plan.cache.atlas_rebuilds = 1;
     try testing.expectEqual(c.SNAIL_ERR_INVALID_ARGUMENT, c_render.snail_pending_resource_upload_record_checked(pending.?, std.math.maxInt(usize), false));
-    pending.?.inner.plan.atlas_cache_rebuilds = 0;
+    pending.?.inner.plan.cache.atlas_rebuilds = 0;
     try testing.expectEqual(c.SNAIL_OK, c_render.snail_pending_resource_upload_record_checked(pending.?, std.math.maxInt(usize), false));
     try testing.expect(c_render.snail_pending_resource_upload_ready_now(pending.?));
 

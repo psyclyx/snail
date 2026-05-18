@@ -316,7 +316,7 @@ fn uploadTextAtlasResourceWithCapacity(
 
 const AppendPlanExpectation = struct {
     new_atlas_banks: u32 = 0,
-    atlas_cache_rebuilds: u32 = 0,
+    atlas_rebuilds: u32 = 0,
 };
 
 fn checkAppendPlanForTextAtlas(
@@ -337,10 +337,10 @@ fn checkAppendPlanForTextAtlas(
 }
 
 fn expectAppendPlan(plan: *const snail.ResourceUploadPlan, old_pages: usize, new_pages: usize, expected: AppendPlanExpectation) !void {
-    if (plan.reused_atlas_pages != old_pages) return error.AppendPlanDidNotReusePages;
-    if (plan.missing_atlas_pages != new_pages - old_pages) return error.AppendPlanMissingPageMismatch;
-    if (plan.new_atlas_banks != expected.new_atlas_banks) return error.AppendPlanBankMismatch;
-    if (plan.atlas_cache_rebuilds != expected.atlas_cache_rebuilds) return error.AppendPlanRebuildMismatch;
+    if (plan.cache.reused_atlas_pages != old_pages) return error.AppendPlanDidNotReusePages;
+    if (plan.cache.missing_atlas_pages != new_pages - old_pages) return error.AppendPlanMissingPageMismatch;
+    if (plan.cache.new_atlas_banks != expected.new_atlas_banks) return error.AppendPlanBankMismatch;
+    if (plan.cache.atlas_rebuilds != expected.atlas_rebuilds) return error.AppendPlanRebuildMismatch;
 }
 
 fn clearPixelsTo(pixels: []u8, color: [4]u8) void {

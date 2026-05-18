@@ -683,22 +683,24 @@ int snail_renderer_plan_resource_upload(SnailRenderer *renderer,
                                         SnailResourceUploadPlan **out);
 void snail_resource_upload_plan_deinit(SnailResourceUploadPlan *plan);
 SnailResourceFootprint snail_resource_upload_plan_footprint(const SnailResourceUploadPlan *plan);
-size_t snail_resource_upload_plan_upload_bytes(const SnailResourceUploadPlan *plan);
-uint32_t snail_resource_upload_plan_reused_atlas_pages(const SnailResourceUploadPlan *plan);
-uint32_t snail_resource_upload_plan_missing_atlas_pages(const SnailResourceUploadPlan *plan);
-uint32_t snail_resource_upload_plan_reused_images(const SnailResourceUploadPlan *plan);
-uint32_t snail_resource_upload_plan_missing_images(const SnailResourceUploadPlan *plan);
-uint32_t snail_resource_upload_plan_atlas_cache_rebuilds(const SnailResourceUploadPlan *plan);
-uint32_t snail_resource_upload_plan_image_cache_rebuilds(const SnailResourceUploadPlan *plan);
-size_t snail_resource_upload_plan_curve_bytes(const SnailResourceUploadPlan *plan);
-size_t snail_resource_upload_plan_band_bytes(const SnailResourceUploadPlan *plan);
-size_t snail_resource_upload_plan_layer_info_bytes(const SnailResourceUploadPlan *plan);
-size_t snail_resource_upload_plan_image_bytes(const SnailResourceUploadPlan *plan);
-size_t snail_resource_upload_plan_changed_bytes(const SnailResourceUploadPlan *plan);
-size_t snail_resource_upload_plan_changed_key_count(const SnailResourceUploadPlan *plan);
-bool snail_resource_upload_plan_changed_key(const SnailResourceUploadPlan *plan,
-                                            size_t index,
-                                            SnailResourceKey *out);
+size_t snail_resource_upload_plan_upload_estimate_bytes(const SnailResourceUploadPlan *plan);
+uint32_t snail_resource_upload_plan_cache_reused_atlas_pages(const SnailResourceUploadPlan *plan);
+uint32_t snail_resource_upload_plan_cache_missing_atlas_pages(const SnailResourceUploadPlan *plan);
+uint32_t snail_resource_upload_plan_cache_new_atlas_banks(const SnailResourceUploadPlan *plan);
+uint32_t snail_resource_upload_plan_cache_reused_images(const SnailResourceUploadPlan *plan);
+uint32_t snail_resource_upload_plan_cache_missing_images(const SnailResourceUploadPlan *plan);
+uint32_t snail_resource_upload_plan_cache_new_image_banks(const SnailResourceUploadPlan *plan);
+uint32_t snail_resource_upload_plan_cache_atlas_rebuilds(const SnailResourceUploadPlan *plan);
+uint32_t snail_resource_upload_plan_cache_image_rebuilds(const SnailResourceUploadPlan *plan);
+size_t snail_resource_upload_plan_upload_estimate_curve_bytes(const SnailResourceUploadPlan *plan);
+size_t snail_resource_upload_plan_upload_estimate_band_bytes(const SnailResourceUploadPlan *plan);
+size_t snail_resource_upload_plan_upload_estimate_layer_info_bytes(const SnailResourceUploadPlan *plan);
+size_t snail_resource_upload_plan_upload_estimate_image_bytes(const SnailResourceUploadPlan *plan);
+size_t snail_resource_upload_plan_diff_changed_bytes(const SnailResourceUploadPlan *plan);
+size_t snail_resource_upload_plan_diff_changed_key_count(const SnailResourceUploadPlan *plan);
+bool snail_resource_upload_plan_diff_changed_key(const SnailResourceUploadPlan *plan,
+                                                 size_t index,
+                                                 SnailResourceKey *out);
 int snail_renderer_begin_resource_upload(SnailRenderer *renderer,
                                          const SnailAllocator *alloc,
                                          const SnailResourceUploadPlan *plan,

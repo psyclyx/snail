@@ -826,23 +826,23 @@ test "resource upload plan reports changed keys and enforces budget" {
 
     var plan_same = try renderer.planResourceUpload(allocator, &prepared_a, &set_a);
     defer plan_same.deinit();
-    try std.testing.expect(plan_same.upload_bytes > 0);
-    try std.testing.expectEqual(plan_same.upload_footprint.allocatedBytes(), plan_same.upload_bytes);
-    try std.testing.expect(plan_same.upload_footprint.curve_bytes_allocated > 0);
-    try std.testing.expectEqual(@as(usize, 0), plan_same.changedKeys().len);
-    try std.testing.expectEqual(@as(usize, 0), plan_same.changed_bytes);
+    try std.testing.expect(plan_same.upload.bytes > 0);
+    try std.testing.expectEqual(plan_same.footprint.allocatedBytes(), plan_same.upload.bytes);
+    try std.testing.expect(plan_same.footprint.curve_bytes_allocated > 0);
+    try std.testing.expectEqual(@as(usize, 0), plan_same.diff.keys().len);
+    try std.testing.expectEqual(@as(usize, 0), plan_same.diff.changed_bytes);
 
     var set_b_entries: [2]ResourceManifest.Entry = undefined;
     var set_b = ResourceManifest.init(&set_b_entries);
     try set_b.putPathPicture(.hud_panel, &picture_b);
     var plan_b = try renderer.planResourceUpload(allocator, &prepared_a, &set_b);
     defer plan_b.deinit();
-    try std.testing.expect(plan_b.upload_bytes > 0);
-    try std.testing.expectEqual(plan_b.upload_footprint.allocatedBytes(), plan_b.upload_bytes);
-    try std.testing.expect(plan_b.upload_footprint.curve_bytes_allocated > 0);
-    try std.testing.expect(plan_b.changed_bytes > 0);
-    try std.testing.expectEqual(@as(usize, 1), plan_b.changedKeys().len);
-    try std.testing.expect(plan_b.changedKeys()[0].eql(ResourceKey.named("hud_panel")));
+    try std.testing.expect(plan_b.upload.bytes > 0);
+    try std.testing.expectEqual(plan_b.footprint.allocatedBytes(), plan_b.upload.bytes);
+    try std.testing.expect(plan_b.footprint.curve_bytes_allocated > 0);
+    try std.testing.expect(plan_b.diff.changed_bytes > 0);
+    try std.testing.expectEqual(@as(usize, 1), plan_b.diff.keys().len);
+    try std.testing.expect(plan_b.diff.keys()[0].eql(ResourceKey.named("hud_panel")));
 
     set_b.reset();
     try set_b.putPathPicture(.hud_panel, &picture_a);
@@ -854,16 +854,16 @@ test "resource upload plan reports changed keys and enforces budget" {
 
     var rebuild_plan = try plan_b.clone(allocator);
     defer rebuild_plan.deinit();
-    rebuild_plan.atlas_cache_rebuilds = 1;
-    try std.testing.expect(rebuild_plan.requiresCacheRebuild());
+    rebuild_plan.cache.atlas_rebuilds = 1;
+    try std.testing.expect(rebuild_plan.cache.requiresRebuild());
     var rebuild_pending = try renderer.beginResourceUpload(.{ .persistent = allocator, .scratch = allocator }, &rebuild_plan);
     defer rebuild_pending.deinit();
     try std.testing.expectError(error.ResourceCacheRebuildRequired, rebuild_pending.record(.no_command, .{
-        .budget_bytes = plan_b.upload_bytes,
+        .budget_bytes = plan_b.upload.bytes,
         .allow_cache_rebuilds = false,
     }));
 
-    try pending.record(.no_command, .{ .budget_bytes = plan_b.upload_bytes });
+    try pending.record(.no_command, .{ .budget_bytes = plan_b.upload.bytes });
     try std.testing.expect(pending.ready(.immediate));
     var prepared_b = try pending.publish();
     defer prepared_b.deinit();
@@ -911,12 +911,12 @@ test "resource upload plan reports appended atlas pages" {
     var plan = try renderer.planResourceUpload(allocator, &prepared_a, &set_b);
     defer plan.deinit();
 
-    try std.testing.expectEqual(@as(u32, @intCast(atlas_a.pageCount())), plan.reused_atlas_pages);
-    try std.testing.expectEqual(@as(u32, @intCast(atlas_b.pageCount() - atlas_a.pageCount())), plan.missing_atlas_pages);
-    try std.testing.expect(plan.curve_bytes_upload > 0);
-    try std.testing.expect(plan.band_bytes_upload > 0);
-    try std.testing.expectEqual(@as(usize, 1), plan.changedKeys().len);
-    try std.testing.expect(plan.changedKeys()[0].eql(ResourceKey.named("fonts")));
+    try std.testing.expectEqual(@as(u32, @intCast(atlas_a.pageCount())), plan.cache.reused_atlas_pages);
+    try std.testing.expectEqual(@as(u32, @intCast(atlas_b.pageCount() - atlas_a.pageCount())), plan.cache.missing_atlas_pages);
+    try std.testing.expect(plan.upload.curve_bytes > 0);
+    try std.testing.expect(plan.upload.band_bytes > 0);
+    try std.testing.expectEqual(@as(usize, 1), plan.diff.keys().len);
+    try std.testing.expect(plan.diff.keys()[0].eql(ResourceKey.named("fonts")));
 }
 
 test "resource upload plan accounts for image array rebuilds" {
@@ -983,10 +983,10 @@ test "resource upload plan accounts for image array rebuilds" {
     var plan = try upload_plan.planResourceUpload(&fake_renderer, allocator, &current, &set);
     defer plan.deinit();
 
-    try std.testing.expectEqual(@as(u32, 1), plan.reused_images);
-    try std.testing.expectEqual(@as(u32, 1), plan.missing_images);
-    try std.testing.expectEqual(@as(u32, 1), plan.image_cache_rebuilds);
-    try std.testing.expectEqual(image_small.pixelSlice().len + image_large.pixelSlice().len, plan.image_bytes_upload);
+    try std.testing.expectEqual(@as(u32, 1), plan.cache.reused_images);
+    try std.testing.expectEqual(@as(u32, 1), plan.cache.missing_images);
+    try std.testing.expectEqual(@as(u32, 1), plan.cache.image_rebuilds);
+    try std.testing.expectEqual(image_small.pixelSlice().len + image_large.pixelSlice().len, plan.upload.image_bytes);
 }
 
 test "pending upload publish waits for external completion marker" {
