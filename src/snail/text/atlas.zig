@@ -561,34 +561,33 @@ pub const TextAtlas = struct {
         return resource_footprint_mod.textAtlasUploadFootprint(self);
     }
 
+    pub const UploadAtlas = struct {
+        atlas: CurveAtlas,
+
+        pub fn deinit(self: *UploadAtlas) void {
+            self.atlas.glyph_map.deinit();
+            self.atlas.pages = &.{};
+            self.* = undefined;
+        }
+    };
+
     /// Low-level: create a temporary `CurveAtlas` wrapper that borrows this
     /// snapshot's pages for GPU upload. Most callers should use
     /// `Renderer.uploadResourcesBlocking` (or `planResourceUpload` /
     /// `beginResourceUpload`) instead — this entry point is for code that
     /// drives the upload helpers directly.
-    ///
-    /// The returned wrapper borrows `self.pages`. Free it via
-    /// `deinitUploadAtlas` (do NOT call `wrapper.deinit()`, which would
-    /// release the shared pages).
-    pub fn uploadAtlas(self: *const TextAtlas) CurveAtlas {
+    pub fn uploadAtlas(self: *const TextAtlas) UploadAtlas {
         return .{
-            .allocator = self.allocator,
-            .font = null,
-            .pages = self.pages,
-            .glyph_map = .init(self.allocator), // empty — glyph lookup goes through FaceView
-            .shaper = null,
-            .layer_info_data = self.layer_info_data,
-            .layer_info_width = self.layer_info_width,
-            .layer_info_height = self.layer_info_height,
+            .atlas = .{
+                .allocator = self.allocator,
+                .font = null,
+                .pages = self.pages,
+                .glyph_map = .init(self.allocator), // empty — glyph lookup goes through FaceView
+                .shaper = null,
+                .layer_info_data = self.layer_info_data,
+                .layer_info_width = self.layer_info_width,
+                .layer_info_height = self.layer_info_height,
+            },
         };
-    }
-
-    /// Clean up a wrapper Atlas from uploadAtlas(). Only frees the empty glyph_map,
-    /// NOT the shared pages.
-    pub fn deinitUploadAtlas(_: *const TextAtlas, wrapper: *CurveAtlas) void {
-        wrapper.glyph_map.deinit();
-        // Don't free pages — they belong to TextAtlas.
-        wrapper.pages = &.{};
-        // Don't call wrapper.deinit() — that would release shared pages.
     }
 };

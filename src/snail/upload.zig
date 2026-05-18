@@ -200,8 +200,8 @@ const ResourceUploadScratch = struct {
     upload_atlases: []*const Atlas,
     atlas_capacity_modes: []upload_common.AtlasCapacityMode,
     atlas_views: []PreparedAtlasView,
-    text_wrappers: []Atlas,
-    text_wrapper_sources: []?*const TextAtlas,
+    text_wrappers: []TextAtlas.UploadAtlas,
+    text_wrapper_initialized: []bool,
     upload_layer_infos: []PreparedLayerInfoUpload,
     layer_info_views: []PreparedLayerInfoView,
     upload_images: []*const Image,
@@ -214,11 +214,11 @@ const ResourceUploadScratch = struct {
         errdefer allocator.free(atlas_capacity_modes);
         const atlas_views = try allocator.alloc(PreparedAtlasView, counts.atlases);
         errdefer allocator.free(atlas_views);
-        const text_wrappers = try allocator.alloc(Atlas, counts.atlases);
+        const text_wrappers = try allocator.alloc(TextAtlas.UploadAtlas, counts.atlases);
         errdefer allocator.free(text_wrappers);
-        const text_wrapper_sources = try allocator.alloc(?*const TextAtlas, counts.atlases);
-        errdefer allocator.free(text_wrapper_sources);
-        @memset(text_wrapper_sources, null);
+        const text_wrapper_initialized = try allocator.alloc(bool, counts.atlases);
+        errdefer allocator.free(text_wrapper_initialized);
+        @memset(text_wrapper_initialized, false);
 
         const upload_layer_infos = try allocator.alloc(PreparedLayerInfoUpload, counts.layer_infos);
         errdefer allocator.free(upload_layer_infos);
@@ -234,7 +234,7 @@ const ResourceUploadScratch = struct {
             .atlas_capacity_modes = atlas_capacity_modes,
             .atlas_views = atlas_views,
             .text_wrappers = text_wrappers,
-            .text_wrapper_sources = text_wrapper_sources,
+            .text_wrapper_initialized = text_wrapper_initialized,
             .upload_layer_infos = upload_layer_infos,
             .layer_info_views = layer_info_views,
             .upload_images = upload_images,
@@ -243,14 +243,14 @@ const ResourceUploadScratch = struct {
     }
 
     fn deinit(self: *ResourceUploadScratch, allocator: std.mem.Allocator) void {
-        for (self.text_wrapper_sources, 0..) |source, i| {
-            if (source) |text_atlas| text_atlas.deinitUploadAtlas(&self.text_wrappers[i]);
+        for (self.text_wrappers, self.text_wrapper_initialized) |*wrapper, initialized| {
+            if (initialized) wrapper.deinit();
         }
         allocator.free(self.upload_atlases);
         allocator.free(self.atlas_capacity_modes);
         allocator.free(self.atlas_views);
         allocator.free(self.text_wrappers);
-        allocator.free(self.text_wrapper_sources);
+        allocator.free(self.text_wrapper_initialized);
         allocator.free(self.upload_layer_infos);
         allocator.free(self.layer_info_views);
         allocator.free(self.upload_images);
@@ -311,8 +311,8 @@ fn atlasPageFingerprints(allocator: std.mem.Allocator, atlas: *const Atlas) ![]u
 
 fn uploadTextAtlas(scratch: *ResourceUploadScratch, index: usize, text_atlas: *const TextAtlas) *const Atlas {
     scratch.text_wrappers[index] = text_atlas.uploadAtlas();
-    scratch.text_wrapper_sources[index] = text_atlas;
-    return &scratch.text_wrappers[index];
+    scratch.text_wrapper_initialized[index] = true;
+    return &scratch.text_wrappers[index].atlas;
 }
 
 fn prepareTextAtlasEntry(
