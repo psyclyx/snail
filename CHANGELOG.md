@@ -46,6 +46,15 @@
   `SnapRule`, `pixelStep`, and `snapToStep`.
 - Removed stale HarfBuzz direct-emission helpers that bypassed the current
   shaped-text/blob draw path.
+- Removed C scene convenience entry points for text and path pictures. C callers
+  now submit `SnailTextDraw` and `SnailPathPictureDraw` through
+  `snail_scene_add_text_draw` / `snail_scene_add_path_picture_draw`, with
+  scene-owned copies for optional paint overrides.
+- Replaced the C resource-upload-plan scalar getter family with
+  `SnailResourceUploadPlanSummary` plus indexed `changed_key` access.
+- Generic `PendingResourceUpload` no longer exposes Vulkan command-buffer or
+  fence concepts. Use `record` / `readyNow` for backend-owned synchronization
+  and the typed Vulkan record/fence helpers for caller-synchronized uploads.
 
 ### Fixed
 

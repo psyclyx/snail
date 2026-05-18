@@ -82,104 +82,123 @@ pub fn textAtlasUploadFootprint(atlas: *const TextAtlas) ResourceFootprint {
     return out;
 }
 
+const ManifestFootprintAccumulator = struct {
+    out: ResourceFootprint = .{},
+    total_layer_capacity: u32 = 0,
+    first_page: ?*const AtlasPage = null,
+    max_curve_h: u32 = 1,
+    max_band_h: u32 = 1,
+    total_layer_info_rows: u32 = 0,
+    max_layer_info_width: u32 = 1,
+    image_count: usize = 0,
+    max_image_width: u32 = 1,
+    max_image_height: u32 = 1,
+
+    fn addTextAtlas(self: *ManifestFootprintAccumulator, atlas: *const TextAtlas, capacity_mode: ResourceCapacityMode) !void {
+        try self.addLayerCapacity(atlas.pageCount(), capacity_mode);
+        for (atlas.pageSlice()) |page_ref| self.addPage(page_ref);
+        self.addLayerInfo(atlas.layer_info_data, atlas.layer_info_width, atlas.layer_info_height);
+    }
+
+    fn addCurveAtlas(self: *ManifestFootprintAccumulator, atlas: *const Atlas, capacity_mode: ResourceCapacityMode) !void {
+        try self.addLayerCapacity(atlas.pageCount(), capacity_mode);
+        for (0..atlas.pageCount()) |i| self.addPage(atlas.page(@intCast(i)));
+        self.addLayerInfo(atlas.layer_info_data, atlas.layer_info_width, atlas.layer_info_height);
+    }
+
+    fn addLayerCapacity(self: *ManifestFootprintAccumulator, page_count: usize, capacity_mode: ResourceCapacityMode) !void {
+        if (page_count > std.math.maxInt(u16)) return error.AtlasPageCountOverflow;
+        self.total_layer_capacity = try std.math.add(
+            u32,
+            self.total_layer_capacity,
+            upload_common.atlasCapacityForMode(@intCast(page_count), capacity_mode),
+        );
+    }
+
+    fn addPage(self: *ManifestFootprintAccumulator, page_ref: *const AtlasPage) void {
+        if (self.first_page == null) self.first_page = page_ref;
+        self.out.curve_bytes_used += page_ref.curveTextureBytes();
+        self.out.band_bytes_used += page_ref.bandTextureBytes();
+        self.max_curve_h = @max(self.max_curve_h, page_ref.curve_height);
+        self.max_band_h = @max(self.max_band_h, page_ref.band_height);
+    }
+
+    fn addLayerInfo(self: *ManifestFootprintAccumulator, data: ?[]const f32, width: u32, height: u32) void {
+        if (data) |d| self.out.layer_info_bytes_used += d.len * @sizeOf(f32);
+        if (height > 0) {
+            self.total_layer_info_rows += height;
+            self.max_layer_info_width = @max(self.max_layer_info_width, width);
+        }
+    }
+
+    fn addImage(self: *ManifestFootprintAccumulator, image: *const Image) void {
+        self.out.image_bytes_used += imageTextureBytes(image);
+        self.max_image_width = @max(self.max_image_width, image.width);
+        self.max_image_height = @max(self.max_image_height, image.height);
+        self.image_count += 1;
+    }
+
+    fn finish(self: *const ManifestFootprintAccumulator) !ResourceFootprint {
+        var out = self.out;
+        if (self.first_page) |page_ref| {
+            out.curve_bytes_allocated = @as(usize, page_ref.curve_width) *
+                @as(usize, upload_common.heightCapacity(self.max_curve_h)) *
+                @as(usize, self.total_layer_capacity) *
+                CURVE_TEXEL_BYTES;
+            out.band_bytes_allocated = @as(usize, page_ref.band_width) *
+                @as(usize, upload_common.heightCapacity(self.max_band_h)) *
+                @as(usize, self.total_layer_capacity) *
+                BAND_TEXEL_BYTES;
+        }
+
+        if (self.total_layer_info_rows > 0) {
+            out.layer_info_bytes_allocated = @as(usize, self.max_layer_info_width) *
+                @as(usize, self.total_layer_info_rows) *
+                LAYER_INFO_TEXEL_BYTES;
+        }
+
+        if (self.image_count > 0) {
+            if (self.image_count > std.math.maxInt(u32)) return error.ImageLayerCountOverflow;
+            out.image_bytes_allocated = @as(usize, upload_common.imageExtentCapacity(self.max_image_width)) *
+                @as(usize, upload_common.imageExtentCapacity(self.max_image_height)) *
+                @as(usize, upload_common.imageCapacity(@intCast(self.image_count))) *
+                IMAGE_TEXEL_BYTES;
+        }
+
+        return out;
+    }
+};
+
 pub fn resourceManifestUploadFootprint(set: *const ResourceManifest) !ResourceFootprint {
-    var out: ResourceFootprint = .{};
-    var total_layer_capacity: u32 = 0;
-    var first_page: ?*const AtlasPage = null;
-    var max_curve_h: u32 = 1;
-    var max_band_h: u32 = 1;
-    var total_layer_info_rows: u32 = 0;
-    var max_layer_info_width: u32 = 1;
-
-    var image_count: usize = 0;
-    var max_image_width: u32 = 1;
-    var max_image_height: u32 = 1;
-
+    var acc: ManifestFootprintAccumulator = .{};
     for (set.slice(), 0..) |entry, entry_index| {
         switch (entry) {
-            .text_atlas => |text| {
-                const atlas = text.atlas;
-                if (atlas.pageCount() > std.math.maxInt(u16)) return error.AtlasPageCountOverflow;
-                total_layer_capacity = try std.math.add(u32, total_layer_capacity, upload_common.atlasCapacityForMode(@intCast(atlas.pageCount()), text.atlas_capacity));
-                for (atlas.pageSlice()) |page_ref| {
-                    if (first_page == null) first_page = page_ref;
-                    out.curve_bytes_used += page_ref.curveTextureBytes();
-                    out.band_bytes_used += page_ref.bandTextureBytes();
-                    max_curve_h = @max(max_curve_h, page_ref.curve_height);
-                    max_band_h = @max(max_band_h, page_ref.band_height);
-                }
-                if (atlas.layer_info_data) |data| out.layer_info_bytes_used += data.len * @sizeOf(f32);
-                if (atlas.layer_info_height > 0) {
-                    total_layer_info_rows += atlas.layer_info_height;
-                    max_layer_info_width = @max(max_layer_info_width, atlas.layer_info_width);
-                }
-            },
+            .text_atlas => |text| try acc.addTextAtlas(text.atlas, text.atlas_capacity),
             .text_paint => |text| {
-                const blob = text.blob;
-                if (blob.paint_layer_info_data) |data| out.layer_info_bytes_used += data.len * @sizeOf(f32);
-                if (blob.paint_layer_info_height > 0) {
-                    total_layer_info_rows += blob.paint_layer_info_height;
-                    max_layer_info_width = @max(max_layer_info_width, blob.paint_layer_info_width);
-                }
-                if (blob.paint_image_records) |records| {
+                acc.addLayerInfo(text.blob.paint_layer_info_data, text.blob.paint_layer_info_width, text.blob.paint_layer_info_height);
+                if (text.blob.paint_image_records) |records| {
                     for (records, 0..) |record, record_index| {
-                        addImageFootprintIfFirst(&out, set, entry_index, record_index, (record orelse continue).image, &image_count, &max_image_width, &max_image_height);
+                        const image = (record orelse continue).image;
+                        if (!resourceManifestSawImageBefore(set, entry_index, record_index, image)) acc.addImage(image);
                     }
                 }
             },
             .path_picture => |path| {
                 const atlas = &path.picture.atlas;
-                if (atlas.pageCount() > std.math.maxInt(u16)) return error.AtlasPageCountOverflow;
-                total_layer_capacity = try std.math.add(u32, total_layer_capacity, upload_common.atlasCapacityForMode(@intCast(atlas.pageCount()), path.atlas_capacity));
-                for (0..atlas.pageCount()) |i| {
-                    const page_ref = atlas.page(@intCast(i));
-                    if (first_page == null) first_page = page_ref;
-                    out.curve_bytes_used += page_ref.curveTextureBytes();
-                    out.band_bytes_used += page_ref.bandTextureBytes();
-                    max_curve_h = @max(max_curve_h, page_ref.curve_height);
-                    max_band_h = @max(max_band_h, page_ref.band_height);
-                }
-                if (atlas.layer_info_data) |data| out.layer_info_bytes_used += data.len * @sizeOf(f32);
-                if (atlas.layer_info_height > 0) {
-                    total_layer_info_rows += atlas.layer_info_height;
-                    max_layer_info_width = @max(max_layer_info_width, atlas.layer_info_width);
-                }
+                try acc.addCurveAtlas(atlas, path.atlas_capacity);
                 if (atlas.paint_image_records) |records| {
                     for (records, 0..) |record, record_index| {
-                        addImageFootprintIfFirst(&out, set, entry_index, record_index, (record orelse continue).image, &image_count, &max_image_width, &max_image_height);
+                        const image = (record orelse continue).image;
+                        if (!resourceManifestSawImageBefore(set, entry_index, record_index, image)) acc.addImage(image);
                     }
                 }
             },
-            .image => |image| addImageFootprintIfFirst(&out, set, entry_index, null, image.image, &image_count, &max_image_width, &max_image_height),
+            .image => |image| {
+                if (!resourceManifestSawImageBefore(set, entry_index, null, image.image)) acc.addImage(image.image);
+            },
         }
     }
-
-    if (first_page) |page_ref| {
-        out.curve_bytes_allocated = @as(usize, page_ref.curve_width) *
-            @as(usize, upload_common.heightCapacity(max_curve_h)) *
-            @as(usize, total_layer_capacity) *
-            CURVE_TEXEL_BYTES;
-        out.band_bytes_allocated = @as(usize, page_ref.band_width) *
-            @as(usize, upload_common.heightCapacity(max_band_h)) *
-            @as(usize, total_layer_capacity) *
-            BAND_TEXEL_BYTES;
-    }
-
-    if (total_layer_info_rows > 0) {
-        out.layer_info_bytes_allocated = @as(usize, max_layer_info_width) *
-            @as(usize, total_layer_info_rows) *
-            LAYER_INFO_TEXEL_BYTES;
-    }
-
-    if (image_count > 0) {
-        if (image_count > std.math.maxInt(u32)) return error.ImageLayerCountOverflow;
-        out.image_bytes_allocated = @as(usize, upload_common.imageExtentCapacity(max_image_width)) *
-            @as(usize, upload_common.imageExtentCapacity(max_image_height)) *
-            @as(usize, upload_common.imageCapacity(@intCast(image_count))) *
-            IMAGE_TEXEL_BYTES;
-    }
-
-    return out;
+    return acc.finish();
 }
 
 fn addLayerInfoFootprint(out: *ResourceFootprint, data: ?[]const f32, width: u32, height: u32) void {
@@ -232,21 +251,4 @@ fn resourceManifestSawImageBefore(set: *const ResourceManifest, entry_index: usi
         return entryReferencesImageBeforeRecord(entries[entry_index], image, limit);
     }
     return false;
-}
-
-fn addImageFootprintIfFirst(
-    out: *ResourceFootprint,
-    set: *const ResourceManifest,
-    entry_index: usize,
-    record_index: ?usize,
-    image: *const Image,
-    image_count: *usize,
-    max_image_width: *u32,
-    max_image_height: *u32,
-) void {
-    if (resourceManifestSawImageBefore(set, entry_index, record_index, image)) return;
-    out.image_bytes_used += imageTextureBytes(image);
-    max_image_width.* = @max(max_image_width.*, image.width);
-    max_image_height.* = @max(max_image_height.*, image.height);
-    image_count.* += 1;
 }

@@ -3,6 +3,9 @@ const std = common.std;
 const snail = common.snail;
 const build_options = common.build_options;
 const vk = common.vk;
+const vulkan_pipeline = if (build_options.enable_vulkan) @import("../render/backend/vulkan/pipeline.zig") else struct {
+    pub const VulkanPipeline = void;
+};
 const resolveAllocator = common.resolveAllocator;
 const handleAllocator = common.handleAllocator;
 const mapError = common.mapError;
@@ -250,13 +253,21 @@ pub export fn snail_vulkan_frame_coverage_backend(
 
 pub export fn snail_vulkan_pending_resource_upload_record(pending: *PendingResourceUploadImpl, command_buffer: vk.VkCommandBuffer, budget_bytes: usize) c_int {
     if (comptime !build_options.enable_vulkan) return SNAIL_ERR_RENDERER_FAILED;
-    pending.inner.record(.{ .vulkan = command_buffer }, .{ .budget_bytes = budget_bytes }) catch |err| return mapError(err);
+    if (pending.inner.renderer.backend() != .vulkan) return SNAIL_ERR_INVALID_ARGUMENT;
+    const vk_state: *vulkan_pipeline.VulkanPipeline = @ptrCast(@alignCast(pending.inner.renderer.ptr));
+    vk_state.beginResourceUploadRecording(command_buffer);
+    defer vk_state.endResourceUploadRecording();
+    pending.inner.recordExternal(.{ .budget_bytes = budget_bytes }) catch |err| return mapError(err);
     return SNAIL_OK;
 }
 
 pub export fn snail_vulkan_pending_resource_upload_record_checked(pending: *PendingResourceUploadImpl, command_buffer: vk.VkCommandBuffer, budget_bytes: usize, allow_cache_rebuilds: bool) c_int {
     if (comptime !build_options.enable_vulkan) return SNAIL_ERR_RENDERER_FAILED;
-    pending.inner.record(.{ .vulkan = command_buffer }, .{
+    if (pending.inner.renderer.backend() != .vulkan) return SNAIL_ERR_INVALID_ARGUMENT;
+    const vk_state: *vulkan_pipeline.VulkanPipeline = @ptrCast(@alignCast(pending.inner.renderer.ptr));
+    vk_state.beginResourceUploadRecording(command_buffer);
+    defer vk_state.endResourceUploadRecording();
+    pending.inner.recordExternal(.{
         .budget_bytes = budget_bytes,
         .allow_cache_rebuilds = allow_cache_rebuilds,
     }) catch |err| return mapError(err);
@@ -265,7 +276,9 @@ pub export fn snail_vulkan_pending_resource_upload_record_checked(pending: *Pend
 
 pub export fn snail_vulkan_pending_resource_upload_ready_fence(pending: *PendingResourceUploadImpl, fence: vk.VkFence) bool {
     if (comptime !build_options.enable_vulkan) return false;
-    return pending.inner.ready(.{ .vulkan_fence = fence });
+    if (pending.inner.renderer.backend() != .vulkan) return false;
+    const vk_state: *vulkan_pipeline.VulkanPipeline = @ptrCast(@alignCast(pending.inner.renderer.ptr));
+    return pending.inner.ready(vk.vkGetFenceStatus(vk_state.ctx.device, fence) == vk.VK_SUCCESS);
 }
 
 pub export fn snail_vulkan_prepared_resource_retirement_queue_retire_after(queue: *PreparedResourceRetirementQueueImpl, prepared: *PreparedResourcesImpl, fence: vk.VkFence) c_int {

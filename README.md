@@ -607,7 +607,7 @@ try scene.addPath(.{ .picture = &sprite, .resource_key = snail.ResourceKey.named
 | `vk.frame(.{ .cmd, .slot })` | Create a Vulkan frame encoder for a caller-recorded command buffer and upload-ring slot. |
 | `renderer.uploadResourcesBlocking(.{ .persistent, .scratch }, set) !PreparedResources` | Blocking upload + view construction. Persistent allocations live with `PreparedResources`; scratch allocations end when upload returns. |
 | `renderer.planResourceUpload(alloc, current, next_set) !ResourceUploadPlan` | Snapshot and diff a new resource manifest against existing prepared resources. |
-| `renderer.beginResourceUpload(.{ .persistent, .scratch }, &plan) !PendingResourceUpload` | Start a scheduled upload; record into a caller command buffer for Vulkan, then call `pending.publish()`. |
+| `renderer.beginResourceUpload(.{ .persistent, .scratch }, &plan) !PendingResourceUpload` | Start a scheduled upload; record it, wait for completion if needed, then call `pending.publish()`. |
 | `DrawList.init(words, segments)` | Wrap a caller-buffered word + segment buffer for `addScene`. |
 | `DrawList.estimate(scene)` | Upper bound for the word buffer required by `draw.addScene(prepared, scene)`. |
 | `DrawList.estimateSegments(scene)` | Upper bound for the segment buffer required by `draw.addScene(prepared, scene)`. |
@@ -638,12 +638,16 @@ scheduled uploads, including CPU-backed uploads.
    `plan.upload.bytes` is `plan.footprint.allocatedBytes()`.
    Call `plan.deinit()` when the plan is no longer needed.
 2. **Begin + record.** `renderer.beginResourceUpload(.{ .persistent = allocator, .scratch = allocator }, &plan)` returns
-   a `PendingResourceUpload`. Call `pending.record(.no_command, .{ .budget_bytes = N })`
-   for GL/CPU. For Vulkan, pass `.{ .vulkan = command_buffer }` while recording
-   the caller-owned command buffer.
-3. **Wait + publish.** Call `pending.ready(.complete)`, `.pending`, or
-   `.{ .vulkan_fence = fence }` to report external completion. GL/CPU report
-   ready immediately after record. Once true, `pending.publish()` returns the new `PreparedResources`. Call
+   a `PendingResourceUpload`. Call `pending.record(.{ .budget_bytes = N })`
+   for backend-owned synchronization. CPU and GL complete during `record`;
+   Vulkan uses its internal transfer path and waits before returning. If a
+   Vulkan caller wants upload commands in a caller-owned command buffer, use the
+   typed Vulkan renderer's `recordResourceUpload(&pending, command_buffer, .{ .budget_bytes = N })`.
+3. **Wait + publish.** For backend-owned synchronization, publish immediately
+   after `record` returns; `pending.readyNow()` also reports true. For
+   caller-synchronized Vulkan recording, call
+   `vulkan.resourceUploadReadyFence(&pending, fence)` until it reports true.
+   Once ready, `pending.publish()` returns the new `PreparedResources`. Call
    `pending.deinit()` if you need to abandon the upload before publishing.
 
 The new `PreparedResources` replaces the old one; retire the old one via
@@ -653,10 +657,13 @@ resources that need fence retirement, keep a caller-owned
 sweep the queue explicitly.
 
 C callers use the same flow through `SnailResourceUploadPlan` and
-`SnailPendingResourceUpload`. `snail_pending_resource_upload_record` covers
-CPU/GL; Vulkan callers use
-`snail_vulkan_pending_resource_upload_record(command_buffer, budget_bytes)` and
-`snail_vulkan_pending_resource_upload_ready_fence`. Vulkan drawing in C is also
+`SnailPendingResourceUpload`. Use `snail_resource_upload_plan_summary` for the
+budget/cache/diff totals and `snail_resource_upload_plan_changed_key` to walk
+the changed keys. `snail_pending_resource_upload_record` covers CPU/GL and
+backend-owned Vulkan transfers; Vulkan callers that record into their own
+command buffer use
+`snail_vulkan_pending_resource_upload_record(pending, command_buffer, budget_bytes)` and
+`snail_vulkan_pending_resource_upload_ready_fence(pending, fence)`. Vulkan drawing in C is also
 frame-scoped: create `SnailVulkanFrame` with
 `snail_vulkan_renderer_frame(renderer, command_buffer, frame_slot, &frame)`,
 then call `snail_vulkan_frame_draw`, `snail_vulkan_frame_draw_pass`, or their

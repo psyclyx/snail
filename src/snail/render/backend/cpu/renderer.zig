@@ -1058,8 +1058,6 @@ pub const CpuRenderer = struct {
 
         const epp_x: f32 = 1.0 / scale;
         const epp_y: f32 = 1.0 / scale;
-        const ppe_x: f32 = scale;
-        const ppe_y: f32 = scale;
 
         const band_max_h: i32 = @as(i32, @intCast(be.h_band_count)) - 1;
         const band_max_v: i32 = @as(i32, @intCast(be.v_band_count)) - 1;
@@ -1069,41 +1067,59 @@ pub const CpuRenderer = struct {
         while (row < @as(u32, @intCast(py1))) : (row += 1) {
             var col: u32 = @intCast(px0);
             while (col < @as(u32, @intCast(px1))) : (col += 1) {
-                const px_f = @as(f32, @floatFromInt(col)) + 0.5;
-                const py_f = @as(f32, @floatFromInt(row)) + 0.5;
-
-                const em_x = (px_f - x) / scale;
-                const em_y = (y - py_f) / scale;
-
-                if (!allow_subpixel or self.subpixel_order == .none) {
-                    const cov = self.applyCoverageTransfer(evalGlyphCoverage(
-                        page,
-                        em_x,
-                        em_y,
-                        ppe_x,
-                        ppe_y,
-                        be,
-                        band_max_h,
-                        band_max_v,
-                        self.fill_rule,
-                    ));
-                    if (cov < 1.0 / 255.0) continue;
-                    self.blendPremultipliedPixel(row, col, premultiplyCoverage(color, cov), false);
-                } else {
-                    const cov = self.applySubpixelCoverageTransfer(evalGlyphCoverageSubpixel(
-                        page,
-                        Vec2.new(em_x, em_y),
-                        subpixel_plan,
-                        be,
-                        band_max_h,
-                        band_max_v,
-                        self.fill_rule,
-                    ));
-                    if (max3(cov.rgb) < 1.0 / 255.0) continue;
-                    self.blendSubpixelPixel(row, col, color, cov.rgb, cov.alpha);
-                }
+                self.renderGlyphPixel(page, row, col, x, y, scale, be, band_max_h, band_max_v, subpixel_plan, color, allow_subpixel);
             }
         }
+    }
+
+    fn renderGlyphPixel(
+        self: *CpuRenderer,
+        page: anytype,
+        row: u32,
+        col: u32,
+        x: f32,
+        y: f32,
+        scale: f32,
+        be: GlyphBandEntry,
+        band_max_h: i32,
+        band_max_v: i32,
+        subpixel_plan: SubpixelCoveragePlan,
+        color: [4]f32,
+        allow_subpixel: bool,
+    ) void {
+        const px_f = @as(f32, @floatFromInt(col)) + 0.5;
+        const py_f = @as(f32, @floatFromInt(row)) + 0.5;
+        const em_x = (px_f - x) / scale;
+        const em_y = (y - py_f) / scale;
+
+        if (!allow_subpixel or self.subpixel_order == .none) {
+            const cov = self.applyCoverageTransfer(evalGlyphCoverage(
+                page,
+                em_x,
+                em_y,
+                scale,
+                scale,
+                be,
+                band_max_h,
+                band_max_v,
+                self.fill_rule,
+            ));
+            if (cov < 1.0 / 255.0) return;
+            self.blendPremultipliedPixel(row, col, premultiplyCoverage(color, cov), false);
+            return;
+        }
+
+        const cov = self.applySubpixelCoverageTransfer(evalGlyphCoverageSubpixel(
+            page,
+            Vec2.new(em_x, em_y),
+            subpixel_plan,
+            be,
+            band_max_h,
+            band_max_v,
+            self.fill_rule,
+        ));
+        if (max3(cov.rgb) < 1.0 / 255.0) return;
+        self.blendSubpixelPixel(row, col, color, cov.rgb, cov.alpha);
     }
 
     inline fn blendTarget(self: *CpuRenderer) cpu_blend.Target {

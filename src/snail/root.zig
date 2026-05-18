@@ -139,8 +139,6 @@ pub const ResourceManifestDiff = upload.ResourceManifestDiff;
 pub const ResourceCachePlan = upload.ResourceCachePlan;
 pub const ResourceUploadEstimate = upload.ResourceUploadEstimate;
 pub const ResourceUploadPlan = upload.ResourceUploadPlan;
-pub const ResourceUploadCommand = upload.ResourceUploadCommand;
-pub const ResourceUploadCompletion = upload.ResourceUploadCompletion;
 pub const PendingResourceUpload = upload.PendingResourceUpload;
 
 pub const DrawSegment = draw.DrawSegment;

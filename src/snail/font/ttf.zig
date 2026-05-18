@@ -63,14 +63,22 @@ pub const GlyphCache = struct {
     pub fn deinit(self: *GlyphCache) void {
         var it = self.map.iterator();
         while (it.next()) |entry| {
-            for (entry.value_ptr.contours) |contour| {
-                self.allocator.free(contour.curves);
-            }
-            self.allocator.free(entry.value_ptr.contours);
+            freeGlyphContours(self.allocator, entry.value_ptr.contours);
         }
         self.map.deinit();
     }
 };
+
+fn freeGlyphContours(allocator: std.mem.Allocator, contours: []const Contour) void {
+    freeContourCurves(allocator, contours);
+    if (contours.len > 0) allocator.free(contours);
+}
+
+fn freeContourCurves(allocator: std.mem.Allocator, contours: []const Contour) void {
+    for (contours) |contour| {
+        if (contour.curves.len > 0) allocator.free(contour.curves);
+    }
+}
 
 /// Parsed TrueType font. Immutable after init — all methods are const.
 /// Thread-safe for concurrent reads (glyphIndex, getKerning, parseGlyph
@@ -432,90 +440,76 @@ pub const Font = struct {
         return self.parseSimpleGlyph(allocator, cache, glyph_id, base, @intCast(num_contours), metrics);
     }
 
-    fn parseSimpleGlyph(self: *const Font, allocator: std.mem.Allocator, cache: *GlyphCache, glyph_id: u16, base: u32, num_contours: u16, metrics: GlyphMetrics) ParseError!Glyph {
-        if (num_contours == 0) {
-            const glyph = Glyph{ .contours = &.{}, .metrics = metrics };
-            try cache.map.put(glyph_id, glyph);
-            return glyph;
-        }
-
-        const scale = 1.0 / @as(f32, @floatFromInt(self.units_per_em));
-
-        var end_pts = try allocator.alloc(u16, num_contours);
-        defer allocator.free(end_pts);
+    fn readSimpleGlyphEndPoints(self: *const Font, allocator: std.mem.Allocator, base: u32, num_contours: u16) ParseError![]u16 {
+        const end_pts = try allocator.alloc(u16, num_contours);
+        errdefer allocator.free(end_pts);
         for (0..num_contours) |i| {
             end_pts[i] = try readU16(self.data, base + 10 + @as(u32, @intCast(i)) * 2);
         }
+        return end_pts;
+    }
 
-        const num_points = @as(u32, end_pts[num_contours - 1]) + 1;
-        const instr_len_off = base + 10 + @as(u32, num_contours) * 2;
-        const instr_len = try readU16(self.data, instr_len_off);
-        var offset = instr_len_off + 2 + instr_len;
-
-        var flags = try allocator.alloc(u8, num_points);
-        defer allocator.free(flags);
-        {
-            var i: u32 = 0;
-            while (i < num_points) {
-                if (offset >= self.data.len) return error.UnexpectedEof;
-                const flag = self.data[offset];
-                offset += 1;
-                flags[i] = flag;
-                i += 1;
-                if (flag & 8 != 0) {
-                    if (offset >= self.data.len) return error.UnexpectedEof;
-                    const repeat = self.data[offset];
-                    offset += 1;
-                    for (0..repeat) |_| {
-                        if (i >= num_points) break;
-                        flags[i] = flag;
-                        i += 1;
-                    }
+    fn readSimpleGlyphFlags(self: *const Font, allocator: std.mem.Allocator, num_points: u32, offset: *u32) ParseError![]u8 {
+        const flags = try allocator.alloc(u8, num_points);
+        errdefer allocator.free(flags);
+        var i: u32 = 0;
+        while (i < num_points) {
+            if (offset.* >= self.data.len) return error.UnexpectedEof;
+            const flag = self.data[offset.*];
+            offset.* += 1;
+            flags[i] = flag;
+            i += 1;
+            if (flag & 8 != 0) {
+                if (offset.* >= self.data.len) return error.UnexpectedEof;
+                const repeat = self.data[offset.*];
+                offset.* += 1;
+                for (0..repeat) |_| {
+                    if (i >= num_points) break;
+                    flags[i] = flag;
+                    i += 1;
                 }
             }
         }
+        return flags;
+    }
 
-        var x_coords = try allocator.alloc(i16, num_points);
-        defer allocator.free(x_coords);
-        {
-            var x: i16 = 0;
-            for (0..num_points) |i| {
-                const flag = flags[i];
-                if (flag & 2 != 0) {
-                    if (offset >= self.data.len) return error.UnexpectedEof;
-                    const dx: i16 = @intCast(self.data[offset]);
-                    offset += 1;
-                    if (flag & 16 != 0) x += dx else x -= dx;
-                } else if (flag & 16 == 0) {
-                    x += try readI16(self.data, offset);
-                    offset += 2;
-                }
-                x_coords[i] = x;
+    fn readSimpleGlyphCoords(
+        self: *const Font,
+        allocator: std.mem.Allocator,
+        flags: []const u8,
+        offset: *u32,
+        short_vector_bit: u8,
+        same_or_positive_bit: u8,
+    ) ParseError![]i16 {
+        const coords = try allocator.alloc(i16, flags.len);
+        errdefer allocator.free(coords);
+        var coord: i16 = 0;
+        for (flags, 0..) |flag, i| {
+            if (flag & short_vector_bit != 0) {
+                if (offset.* >= self.data.len) return error.UnexpectedEof;
+                const delta: i16 = @intCast(self.data[offset.*]);
+                offset.* += 1;
+                if (flag & same_or_positive_bit != 0) coord += delta else coord -= delta;
+            } else if (flag & same_or_positive_bit == 0) {
+                coord += try readI16(self.data, offset.*);
+                offset.* += 2;
             }
+            coords[i] = coord;
         }
+        return coords;
+    }
 
-        var y_coords = try allocator.alloc(i16, num_points);
-        defer allocator.free(y_coords);
-        {
-            var y: i16 = 0;
-            for (0..num_points) |i| {
-                const flag = flags[i];
-                if (flag & 4 != 0) {
-                    if (offset >= self.data.len) return error.UnexpectedEof;
-                    const dy: i16 = @intCast(self.data[offset]);
-                    offset += 1;
-                    if (flag & 32 != 0) y += dy else y -= dy;
-                } else if (flag & 32 == 0) {
-                    y += try readI16(self.data, offset);
-                    offset += 2;
-                }
-                y_coords[i] = y;
-            }
-        }
-
+    fn buildSimpleGlyphContours(
+        allocator: std.mem.Allocator,
+        end_pts: []const u16,
+        flags: []const u8,
+        x_coords: []const i16,
+        y_coords: []const i16,
+        scale: f32,
+    ) ParseError![]Contour {
         var contours: std.ArrayList(Contour) = .empty;
         errdefer {
-            for (contours.items) |cont| allocator.free(cont.curves);
+            freeContourCurves(allocator, contours.items);
             contours.deinit(allocator);
         }
 
@@ -529,23 +523,53 @@ pub const Font = struct {
                 y_coords[contour_start..contour_end],
                 scale,
             );
-            try contours.append(allocator, .{ .curves = curves });
+            contours.append(allocator, .{ .curves = curves }) catch |err| {
+                if (curves.len > 0) allocator.free(curves);
+                return err;
+            };
             contour_start = contour_end;
         }
 
-        const glyph = Glyph{
-            .contours = try contours.toOwnedSlice(allocator),
-            .metrics = metrics,
-        };
+        return contours.toOwnedSlice(allocator);
+    }
+
+    fn cacheParsedGlyph(allocator: std.mem.Allocator, cache: *GlyphCache, glyph_id: u16, glyph: Glyph) ParseError!Glyph {
+        errdefer freeGlyphContours(allocator, glyph.contours);
         try cache.map.put(glyph_id, glyph);
         return glyph;
     }
 
+    fn parseSimpleGlyph(self: *const Font, allocator: std.mem.Allocator, cache: *GlyphCache, glyph_id: u16, base: u32, num_contours: u16, metrics: GlyphMetrics) ParseError!Glyph {
+        if (num_contours == 0) {
+            return cacheParsedGlyph(allocator, cache, glyph_id, .{ .contours = &.{}, .metrics = metrics });
+        }
+
+        const scale = 1.0 / @as(f32, @floatFromInt(self.units_per_em));
+        const end_pts = try self.readSimpleGlyphEndPoints(allocator, base, num_contours);
+        defer allocator.free(end_pts);
+        const num_points = @as(u32, end_pts[num_contours - 1]) + 1;
+        const instr_len_off = base + 10 + @as(u32, num_contours) * 2;
+        const instr_len = try readU16(self.data, instr_len_off);
+        var offset = instr_len_off + 2 + instr_len;
+
+        const flags = try self.readSimpleGlyphFlags(allocator, num_points, &offset);
+        defer allocator.free(flags);
+        const x_coords = try self.readSimpleGlyphCoords(allocator, flags, &offset, 2, 16);
+        defer allocator.free(x_coords);
+        const y_coords = try self.readSimpleGlyphCoords(allocator, flags, &offset, 4, 32);
+        defer allocator.free(y_coords);
+        const contours = try buildSimpleGlyphContours(allocator, end_pts, flags, x_coords, y_coords, scale);
+        return cacheParsedGlyph(allocator, cache, glyph_id, .{ .contours = contours, .metrics = metrics });
+    }
+
     fn parseCompoundGlyph(self: *const Font, allocator: std.mem.Allocator, cache: *GlyphCache, glyph_id: u16, base: u32, metrics: GlyphMetrics) ParseError!Glyph {
         var all_contours: std.ArrayList(Contour) = .empty;
+        var contours_owned_by_list = true;
         errdefer {
-            for (all_contours.items) |cont| allocator.free(cont.curves);
-            all_contours.deinit(allocator);
+            if (contours_owned_by_list) {
+                freeContourCurves(allocator, all_contours.items);
+                all_contours.deinit(allocator);
+            }
         }
 
         var offset: u32 = base + 10;
@@ -586,12 +610,10 @@ pub const Font = struct {
             more = (comp_flags & 32 != 0);
         }
 
-        const glyph = Glyph{
-            .contours = try all_contours.toOwnedSlice(allocator),
-            .metrics = metrics,
-        };
-        try cache.map.put(glyph_id, glyph);
-        return glyph;
+        const contours = try all_contours.toOwnedSlice(allocator);
+        contours_owned_by_list = false;
+        const glyph = Glyph{ .contours = contours, .metrics = metrics };
+        return cacheParsedGlyph(allocator, cache, glyph_id, glyph);
     }
 
     /// A single COLRv0 layer: the outline glyph to render and its RGBA color.

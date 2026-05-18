@@ -663,7 +663,14 @@ pub const PreparedResources = struct {
         return upload_common.ensureSlotPageCapacity(self.allocator, slot, capacity);
     }
 
-    fn appendTexturePagesIntoNewBank(self: *PreparedResources, scratch: std.mem.Allocator, atlases: []const *const CurveAtlas) !bool {
+    const AtlasAppendPlan = struct {
+        first_page: *const AtlasPage,
+        layer_count: u32,
+        curve_height: u32,
+        band_height: u32,
+    };
+
+    fn atlasAppendPlan(self: *const PreparedResources, atlases: []const *const CurveAtlas) !?AtlasAppendPlan {
         var page_count_total: usize = 0;
         var max_curve_h: u32 = 1;
         var max_band_h: u32 = 1;
@@ -678,68 +685,91 @@ pub const PreparedResources = struct {
                 page_count_total += 1;
             }
         }
-        const first = first_page orelse return true;
+        if (page_count_total == 0) return null;
         if (page_count_total > std.math.maxInt(u32)) return error.PreparedResourceCapacityExceeded;
+        return .{
+            .first_page = first_page.?,
+            .layer_count = @intCast(page_count_total),
+            .curve_height = upload_common.heightCapacity(max_curve_h),
+            .band_height = upload_common.heightCapacity(max_band_h),
+        };
+    }
 
+    fn createAtlasTextureBank(self: *PreparedResources, plan: AtlasAppendPlan) AtlasTextureBank {
         var bank = AtlasTextureBank{
             .id = self.next_atlas_bank_id,
-            .allocated_layer_count = @intCast(page_count_total),
-            .resident_atlas_pages = @intCast(page_count_total),
+            .allocated_layer_count = plan.layer_count,
+            .resident_atlas_pages = plan.layer_count,
         };
         self.next_atlas_bank_id +%= 1;
-        const curve_h = upload_common.heightCapacity(max_curve_h);
-        const band_h = upload_common.heightCapacity(max_band_h);
+        switch (self.backend) {
+            .gl33 => self.createAtlasTextureBankGl33(&bank, plan),
+            .gl44 => self.createAtlasTextureBankGl44(&bank, plan),
+        }
+        return bank;
+    }
 
+    fn createAtlasTextureBankGl33(self: *PreparedResources, bank: *AtlasTextureBank, plan: AtlasAppendPlan) void {
+        _ = self;
+        gl.glGenTextures(1, &bank.curve_array);
+        gl.glActiveTexture(gl.GL_TEXTURE0);
+        gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, bank.curve_array);
+        gl.glTexImage3D(gl.GL_TEXTURE_2D_ARRAY, 0, gl.GL_RGBA16F, @intCast(plan.first_page.curve_width), @intCast(plan.curve_height), @intCast(bank.allocated_layer_count), 0, gl.GL_RGBA, gl.GL_HALF_FLOAT, null);
+        setTexParams(gl.GL_TEXTURE_2D_ARRAY);
+
+        gl.glGenTextures(1, &bank.band_array);
+        gl.glActiveTexture(gl.GL_TEXTURE1);
+        gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, bank.band_array);
+        gl.glTexImage3D(gl.GL_TEXTURE_2D_ARRAY, 0, gl.GL_RG16UI, @intCast(plan.first_page.band_width), @intCast(plan.band_height), @intCast(bank.allocated_layer_count), 0, gl.GL_RG_INTEGER, gl.GL_UNSIGNED_SHORT, null);
+        setTexParams(gl.GL_TEXTURE_2D_ARRAY);
+    }
+
+    fn createAtlasTextureBankGl44(self: *PreparedResources, bank: *AtlasTextureBank, plan: AtlasAppendPlan) void {
+        _ = self;
+        gl.glCreateTextures(gl.GL_TEXTURE_2D_ARRAY, 1, &bank.curve_array);
+        gl.glTextureStorage3D(bank.curve_array, 1, gl.GL_RGBA16F, @intCast(plan.first_page.curve_width), @intCast(plan.curve_height), @intCast(bank.allocated_layer_count));
+        setTexParamsDSA(bank.curve_array);
+
+        gl.glCreateTextures(gl.GL_TEXTURE_2D_ARRAY, 1, &bank.band_array);
+        gl.glTextureStorage3D(bank.band_array, 1, gl.GL_RG16UI, @intCast(plan.first_page.band_width), @intCast(plan.band_height), @intCast(bank.allocated_layer_count));
+        setTexParamsDSA(bank.band_array);
+    }
+
+    fn ensureNewBankSlotCapacity(self: *PreparedResources, atlases: []const *const CurveAtlas) !void {
+        for (atlases, 0..) |atlas, i| {
+            const slot = &self.atlas_slots[i];
+            const new_pages: u32 = @intCast(atlas.pageCount());
+            try self.ensureSlotPageCapacity(slot, @max(new_pages, slot.capacity_pages));
+        }
+    }
+
+    fn uploadAtlasPageToBank(self: *PreparedResources, bank: *AtlasTextureBank, page: *const AtlasPage, layer: u32) void {
+        const layer_z: gl.GLint = @intCast(layer);
         switch (self.backend) {
             .gl33 => {
-                gl.glGenTextures(1, &bank.curve_array);
                 gl.glActiveTexture(gl.GL_TEXTURE0);
                 gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, bank.curve_array);
-                gl.glTexImage3D(gl.GL_TEXTURE_2D_ARRAY, 0, gl.GL_RGBA16F, @intCast(first.curve_width), @intCast(curve_h), @intCast(bank.allocated_layer_count), 0, gl.GL_RGBA, gl.GL_HALF_FLOAT, null);
-                setTexParams(gl.GL_TEXTURE_2D_ARRAY);
-
-                gl.glGenTextures(1, &bank.band_array);
+                gl.glTexSubImage3D(gl.GL_TEXTURE_2D_ARRAY, 0, 0, 0, layer_z, @intCast(page.curve_width), @intCast(page.curve_height), 1, gl.GL_RGBA, gl.GL_HALF_FLOAT, page.curve_data.ptr);
                 gl.glActiveTexture(gl.GL_TEXTURE1);
                 gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, bank.band_array);
-                gl.glTexImage3D(gl.GL_TEXTURE_2D_ARRAY, 0, gl.GL_RG16UI, @intCast(first.band_width), @intCast(band_h), @intCast(bank.allocated_layer_count), 0, gl.GL_RG_INTEGER, gl.GL_UNSIGNED_SHORT, null);
-                setTexParams(gl.GL_TEXTURE_2D_ARRAY);
+                gl.glTexSubImage3D(gl.GL_TEXTURE_2D_ARRAY, 0, 0, 0, layer_z, @intCast(page.band_width), @intCast(page.band_height), 1, gl.GL_RG_INTEGER, gl.GL_UNSIGNED_SHORT, page.band_data.ptr);
             },
             .gl44 => {
-                gl.glCreateTextures(gl.GL_TEXTURE_2D_ARRAY, 1, &bank.curve_array);
-                gl.glTextureStorage3D(bank.curve_array, 1, gl.GL_RGBA16F, @intCast(first.curve_width), @intCast(curve_h), @intCast(bank.allocated_layer_count));
-                setTexParamsDSA(bank.curve_array);
-
-                gl.glCreateTextures(gl.GL_TEXTURE_2D_ARRAY, 1, &bank.band_array);
-                gl.glTextureStorage3D(bank.band_array, 1, gl.GL_RG16UI, @intCast(first.band_width), @intCast(band_h), @intCast(bank.allocated_layer_count));
-                setTexParamsDSA(bank.band_array);
+                gl.glTextureSubImage3D(bank.curve_array, 0, 0, 0, layer_z, @intCast(page.curve_width), @intCast(page.curve_height), 1, gl.GL_RGBA, gl.GL_HALF_FLOAT, page.curve_data.ptr);
+                gl.glTextureSubImage3D(bank.band_array, 0, 0, 0, layer_z, @intCast(page.band_width), @intCast(page.band_height), 1, gl.GL_RG_INTEGER, gl.GL_UNSIGNED_SHORT, page.band_data.ptr);
             },
         }
-        errdefer bank.deinit();
+    }
 
-        try self.ensureRetainedBankCapacity(self.atlas_bank_count + 1);
+    fn uploadNewAtlasPagesIntoBank(self: *PreparedResources, bank: *AtlasTextureBank, atlases: []const *const CurveAtlas) void {
         var layer: u32 = 0;
         for (atlases, 0..) |atlas, i| {
             const slot = &self.atlas_slots[i];
             const old_pages = slot.uploaded_pages;
             const new_pages: u32 = @intCast(atlas.pageCount());
-            try self.ensureSlotPageCapacity(slot, @max(new_pages, slot.capacity_pages));
             for (old_pages..new_pages) |page_index| {
                 const page = atlas.page(@intCast(page_index));
-                const layer_z: gl.GLint = @intCast(layer);
-                switch (self.backend) {
-                    .gl33 => {
-                        gl.glActiveTexture(gl.GL_TEXTURE0);
-                        gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, bank.curve_array);
-                        gl.glTexSubImage3D(gl.GL_TEXTURE_2D_ARRAY, 0, 0, 0, layer_z, @intCast(page.curve_width), @intCast(page.curve_height), 1, gl.GL_RGBA, gl.GL_HALF_FLOAT, page.curve_data.ptr);
-                        gl.glActiveTexture(gl.GL_TEXTURE1);
-                        gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, bank.band_array);
-                        gl.glTexSubImage3D(gl.GL_TEXTURE_2D_ARRAY, 0, 0, 0, layer_z, @intCast(page.band_width), @intCast(page.band_height), 1, gl.GL_RG_INTEGER, gl.GL_UNSIGNED_SHORT, page.band_data.ptr);
-                    },
-                    .gl44 => {
-                        gl.glTextureSubImage3D(bank.curve_array, 0, 0, 0, layer_z, @intCast(page.curve_width), @intCast(page.curve_height), 1, gl.GL_RGBA, gl.GL_HALF_FLOAT, page.curve_data.ptr);
-                        gl.glTextureSubImage3D(bank.band_array, 0, 0, 0, layer_z, @intCast(page.band_width), @intCast(page.band_height), 1, gl.GL_RG_INTEGER, gl.GL_UNSIGNED_SHORT, page.band_data.ptr);
-                    },
-                }
+                self.uploadAtlasPageToBank(bank, page, layer);
                 slot.page_ptrs[page_index] = page;
                 slot.page_layers[page_index] = texture_layers.inBank(bank.id, layer);
                 retainPage(page);
@@ -748,6 +778,16 @@ pub const PreparedResources = struct {
             slot.atlas = atlas;
             slot.uploaded_pages = new_pages;
         }
+    }
+
+    fn appendTexturePagesIntoNewBank(self: *PreparedResources, scratch: std.mem.Allocator, atlases: []const *const CurveAtlas) !bool {
+        const plan = (try self.atlasAppendPlan(atlases)) orelse return true;
+        var bank = self.createAtlasTextureBank(plan);
+        errdefer bank.deinit();
+
+        try self.ensureRetainedBankCapacity(self.atlas_bank_count + 1);
+        try self.ensureNewBankSlotCapacity(atlases);
+        self.uploadNewAtlasPagesIntoBank(&bank, atlases);
         self.atlas_banks[self.atlas_bank_count] = bank;
         self.atlas_bank_count += 1;
         _ = scratch;

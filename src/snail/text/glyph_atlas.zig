@@ -17,7 +17,7 @@ const ColrBaseInfo = Atlas.ColrBaseInfo;
 const CurveSegment = bezier.CurveSegment;
 const Font = font_mod.Font;
 const GlyphInfo = Atlas.GlyphInfo;
-const BuildPageResult = Atlas.BuildPageResult;
+pub const BuildPageResult = Atlas.BuildPageResult;
 const isRenderableTextCodepoint = config_mod.isRenderableTextCodepoint;
 
 pub fn initFromParts(
@@ -38,6 +38,14 @@ fn freeGlyphCurveScratch(allocator: std.mem.Allocator, glyphs: []const curve_tex
         if (gc.prepared_curves) |prepared_curves| allocator.free(@constCast(prepared_curves));
     }
 }
+
+const PageGlyphMeta = struct {
+    gid: u16,
+    advance: u16,
+    bbox: bezier.BBox,
+};
+
+const COLR_LAYER_INFO_TEX_WIDTH: u32 = 4096;
 
 fn clonePages(allocator: std.mem.Allocator, pages: []const *AtlasPage) ![]*AtlasPage {
     const out = try allocator.alloc(*AtlasPage, pages.len);
@@ -150,112 +158,141 @@ fn buildColrLayerInfo(
 ) !void {
     if (font.inner.colr_offset == 0) return;
 
-    const TEX_WIDTH: u32 = 4096;
-
-    var base_glyphs: std.ArrayList(u16) = .empty;
+    var base_glyphs = try collectColrBaseGlyphs(self, font, allocator);
     defer base_glyphs.deinit(allocator);
-
-    var map_it = self.glyph_map.keyIterator();
-    while (map_it.next()) |gid_ptr| {
-        if (font.inner.colrLayerCount(gid_ptr.*) > 0) try base_glyphs.append(allocator, gid_ptr.*);
-    }
     if (base_glyphs.items.len == 0) return;
 
-    var total_texels: u32 = 0;
-    for (base_glyphs.items) |gid| {
-        const layer_count = font.inner.colrLayerCount(gid);
-        if (layer_count > 0) total_texels += @as(u32, layer_count) * 3;
-    }
+    const total_texels = colrLayerInfoTexelCount(font, base_glyphs.items);
     if (total_texels == 0) return;
 
-    const height = @max(1, (total_texels + TEX_WIDTH - 1) / TEX_WIDTH);
-    const data = try allocator.alloc(f32, TEX_WIDTH * height * 4);
+    const height = @max(1, (total_texels + COLR_LAYER_INFO_TEX_WIDTH - 1) / COLR_LAYER_INFO_TEX_WIDTH);
+    const data = try allocator.alloc(f32, COLR_LAYER_INFO_TEX_WIDTH * height * 4);
     @memset(data, 0);
 
     var colr_map = std.AutoHashMap(u16, ColrBaseInfo).init(allocator);
     errdefer colr_map.deinit();
 
+    try writeColrLayerInfoRecords(self, font, base_glyphs.items, data, &colr_map);
+
+    self.layer_info_data = data;
+    self.layer_info_width = COLR_LAYER_INFO_TEX_WIDTH;
+    self.layer_info_height = height;
+    self.colr_base_map = colr_map;
+}
+
+fn collectColrBaseGlyphs(self: *const Atlas, font: *const Font, allocator: std.mem.Allocator) !std.ArrayList(u16) {
+    var base_glyphs: std.ArrayList(u16) = .empty;
+    errdefer base_glyphs.deinit(allocator);
+    var map_it = self.glyph_map.keyIterator();
+    while (map_it.next()) |gid_ptr| {
+        if (font.inner.colrLayerCount(gid_ptr.*) > 0) try base_glyphs.append(allocator, gid_ptr.*);
+    }
+    return base_glyphs;
+}
+
+fn colrLayerInfoTexelCount(font: *const Font, base_glyphs: []const u16) u32 {
+    var total_texels: u32 = 0;
+    for (base_glyphs) |gid| {
+        const layer_count = font.inner.colrLayerCount(gid);
+        if (layer_count > 0) total_texels += @as(u32, layer_count) * 3;
+    }
+    return total_texels;
+}
+
+fn writeColrLayerInfoRecords(
+    self: *const Atlas,
+    font: *const Font,
+    base_glyphs: []const u16,
+    data: []f32,
+    colr_map: *std.AutoHashMap(u16, ColrBaseInfo),
+) !void {
     var texel_offset: u32 = 0;
-    for (base_glyphs.items) |gid| {
+    for (base_glyphs) |gid| {
         const layer_count = font.inner.colrLayerCount(gid);
         if (layer_count == 0) continue;
 
-        const info_x: u16 = @intCast(texel_offset % TEX_WIDTH);
-        const info_y: u16 = @intCast(texel_offset / TEX_WIDTH);
-
-        var union_bbox = bezier.BBox{
-            .min = .{ .x = std.math.inf(f32), .y = std.math.inf(f32) },
-            .max = .{ .x = -std.math.inf(f32), .y = -std.math.inf(f32) },
-        };
-
-        var layer_page_index: ?u16 = null;
-        var layers_share_page = true;
-
-        var bounds_it = font.inner.colrLayers(gid);
-        while (bounds_it.next()) |layer| {
-            const linfo = self.glyph_map.get(layer.glyph_id) orelse {
-                layers_share_page = false;
-                continue;
-            };
-            if (layer_page_index) |expected| {
-                if (expected != linfo.page_index) layers_share_page = false;
-            } else {
-                layer_page_index = linfo.page_index;
-            }
-            union_bbox.min.x = @min(union_bbox.min.x, linfo.bbox.min.x);
-            union_bbox.min.y = @min(union_bbox.min.y, linfo.bbox.min.y);
-            union_bbox.max.x = @max(union_bbox.max.x, linfo.bbox.max.x);
-            union_bbox.max.y = @max(union_bbox.max.y, linfo.bbox.max.y);
-        }
+        const info_x: u16 = @intCast(texel_offset % COLR_LAYER_INFO_TEX_WIDTH);
+        const info_y: u16 = @intCast(texel_offset / COLR_LAYER_INFO_TEX_WIDTH);
+        const base_info = colrBaseLayerInfo(self, font, gid);
 
         var layer_it = font.inner.colrLayers(gid);
         while (layer_it.next()) |layer| {
             const linfo = self.glyph_map.get(layer.glyph_id) orelse continue;
-            const be = linfo.band_entry;
-
-            const t0 = texel_offset;
-            const t0_x = t0 % TEX_WIDTH;
-            const t0_y = t0 / TEX_WIDTH;
-            data[(t0_y * TEX_WIDTH + t0_x) * 4 + 0] = @floatFromInt(be.glyph_x);
-            data[(t0_y * TEX_WIDTH + t0_x) * 4 + 1] = @floatFromInt(be.glyph_y);
-            const band_packed: u32 = @as(u32, be.h_band_count - 1) | (@as(u32, be.v_band_count - 1) << 16);
-            data[(t0_y * TEX_WIDTH + t0_x) * 4 + 2] = @bitCast(band_packed);
-            data[(t0_y * TEX_WIDTH + t0_x) * 4 + 3] = @floatFromInt(linfo.page_index);
-
-            const t1 = texel_offset + 1;
-            const t1_x = t1 % TEX_WIDTH;
-            const t1_y = t1 / TEX_WIDTH;
-            data[(t1_y * TEX_WIDTH + t1_x) * 4 + 0] = be.band_scale_x;
-            data[(t1_y * TEX_WIDTH + t1_x) * 4 + 1] = be.band_scale_y;
-            data[(t1_y * TEX_WIDTH + t1_x) * 4 + 2] = be.band_offset_x;
-            data[(t1_y * TEX_WIDTH + t1_x) * 4 + 3] = be.band_offset_y;
-
-            const t2 = texel_offset + 2;
-            const t2_x = t2 % TEX_WIDTH;
-            const t2_y = t2 / TEX_WIDTH;
-            data[(t2_y * TEX_WIDTH + t2_x) * 4 + 0] = layer.color[0];
-            data[(t2_y * TEX_WIDTH + t2_x) * 4 + 1] = layer.color[1];
-            data[(t2_y * TEX_WIDTH + t2_x) * 4 + 2] = layer.color[2];
-            data[(t2_y * TEX_WIDTH + t2_x) * 4 + 3] = layer.color[3];
-
+            writeColrLayerRecord(data, texel_offset, linfo, layer);
             texel_offset += 3;
         }
 
-        if (!layers_share_page or layer_page_index == null) continue;
+        if (!base_info.layers_share_page or base_info.page_index == null) continue;
 
         try colr_map.put(gid, .{
             .info_x = info_x,
             .info_y = info_y,
             .layer_count = layer_count,
-            .union_bbox = union_bbox,
-            .page_index = layer_page_index.?,
+            .union_bbox = base_info.union_bbox,
+            .page_index = base_info.page_index.?,
         });
     }
+}
 
-    self.layer_info_data = data;
-    self.layer_info_width = TEX_WIDTH;
-    self.layer_info_height = height;
-    self.colr_base_map = colr_map;
+const ColrBaseLayerInfo = struct {
+    union_bbox: bezier.BBox,
+    page_index: ?u16 = null,
+    layers_share_page: bool = true,
+};
+
+fn colrBaseLayerInfo(self: *const Atlas, font: *const Font, gid: u16) ColrBaseLayerInfo {
+    var out = ColrBaseLayerInfo{
+        .union_bbox = .{
+            .min = .{ .x = std.math.inf(f32), .y = std.math.inf(f32) },
+            .max = .{ .x = -std.math.inf(f32), .y = -std.math.inf(f32) },
+        },
+    };
+
+    var bounds_it = font.inner.colrLayers(gid);
+    while (bounds_it.next()) |layer| {
+        const linfo = self.glyph_map.get(layer.glyph_id) orelse {
+            out.layers_share_page = false;
+            continue;
+        };
+        if (out.page_index) |expected| {
+            if (expected != linfo.page_index) out.layers_share_page = false;
+        } else {
+            out.page_index = linfo.page_index;
+        }
+        out.union_bbox.min.x = @min(out.union_bbox.min.x, linfo.bbox.min.x);
+        out.union_bbox.min.y = @min(out.union_bbox.min.y, linfo.bbox.min.y);
+        out.union_bbox.max.x = @max(out.union_bbox.max.x, linfo.bbox.max.x);
+        out.union_bbox.max.y = @max(out.union_bbox.max.y, linfo.bbox.max.y);
+    }
+    return out;
+}
+
+fn writeColrLayerRecord(data: []f32, texel_offset: u32, linfo: GlyphInfo, layer: anytype) void {
+    const be = linfo.band_entry;
+    const band_packed: u32 = @as(u32, be.h_band_count - 1) | (@as(u32, be.v_band_count - 1) << 16);
+    writeColrTexel(data, texel_offset, .{
+        @floatFromInt(be.glyph_x),
+        @floatFromInt(be.glyph_y),
+        @bitCast(band_packed),
+        @floatFromInt(linfo.page_index),
+    });
+    writeColrTexel(data, texel_offset + 1, .{
+        be.band_scale_x,
+        be.band_scale_y,
+        be.band_offset_x,
+        be.band_offset_y,
+    });
+    writeColrTexel(data, texel_offset + 2, layer.color);
+}
+
+fn writeColrTexel(data: []f32, texel: u32, value: [4]f32) void {
+    const x = texel % COLR_LAYER_INFO_TEX_WIDTH;
+    const y = texel / COLR_LAYER_INFO_TEX_WIDTH;
+    const base: usize = @intCast((y * COLR_LAYER_INFO_TEX_WIDTH + x) * 4);
+    data[base + 0] = value[0];
+    data[base + 1] = value[1];
+    data[base + 2] = value[2];
+    data[base + 3] = value[3];
 }
 
 /// Build a single immutable page and glyph map from a set of glyph IDs.
@@ -282,54 +319,12 @@ pub fn buildPageDataInner(
     errdefer if (glyph_curves_owned) freeGlyphCurveScratch(allocator, glyph_curves_list.items);
     defer glyph_curves_list.deinit(allocator);
 
-    const GlyphMeta = struct {
-        gid: u16,
-        advance: u16,
-        bbox: bezier.BBox,
-    };
-    var glyph_infos: std.ArrayList(GlyphMeta) = .empty;
+    var glyph_infos: std.ArrayList(PageGlyphMeta) = .empty;
     defer glyph_infos.deinit(allocator);
 
     var seen_it = glyph_id_set.keyIterator();
     while (seen_it.next()) |gid_ptr| {
-        const gid = gid_ptr.*;
-        const glyph = font.parseGlyph(allocator, &cache, gid) catch continue;
-
-        var all_curves: std.ArrayList(CurveSegment) = .empty;
-        defer all_curves.deinit(allocator);
-        for (glyph.contours) |contour| {
-            for (contour.curves) |curve| {
-                try all_curves.append(allocator, CurveSegment.fromQuad(curve));
-            }
-        }
-
-        const owned = try allocator.dupe(CurveSegment, all_curves.items);
-        const prepared = curve_tex.prepareGlyphCurvesForDirectEncoding(allocator, owned, .zero) catch |err| {
-            allocator.free(owned);
-            return err;
-        };
-        const render_bbox = blk: {
-            if (prepared.len == 0) break :blk glyph.metrics.bbox;
-            var prepared_bbox = prepared[0].boundingBox();
-            for (prepared[1..]) |curve| prepared_bbox = prepared_bbox.merge(curve.boundingBox());
-            break :blk glyph.metrics.bbox.merge(prepared_bbox);
-        };
-        glyph_curves_list.append(allocator, .{
-            .curves = owned,
-            .bbox = render_bbox,
-            .logical_curve_count = owned.len,
-            .prefer_direct_encoding = true,
-            .prepared_curves = prepared,
-        }) catch |err| {
-            allocator.free(owned);
-            allocator.free(prepared);
-            return err;
-        };
-        try glyph_infos.append(allocator, .{
-            .gid = gid,
-            .advance = glyph.metrics.advance_width,
-            .bbox = render_bbox,
-        });
+        try appendGlyphCurvesForId(allocator, font, &cache, gid_ptr.*, &glyph_curves_list, &glyph_infos);
     }
 
     var ct = try curve_tex.buildCurveTexture(allocator, allocator, glyph_curves_list.items);
@@ -337,32 +332,16 @@ pub fn buildPageDataInner(
     errdefer if (ct_texture_owned) ct.texture.deinit();
     defer allocator.free(ct.entries);
 
-    var glyph_band_data: std.ArrayList(band_tex.GlyphBandData) = .empty;
-    defer {
-        for (glyph_band_data.items) |*bd| band_tex.freeGlyphBandData(allocator, bd);
-        glyph_band_data.deinit(allocator);
-    }
-    for (glyph_curves_list.items, 0..) |gc, i| {
-        var bd = try band_tex.buildGlyphBandDataForGlyph(allocator, gc, ct.entries[i]);
-        try glyph_band_data.append(allocator, bd);
-        _ = &bd;
-    }
+    var glyph_band_data = try buildGlyphBandDataList(allocator, glyph_curves_list.items, ct.entries);
+    defer deinitGlyphBandDataList(allocator, &glyph_band_data);
 
     var bt = try band_tex.buildBandTexture(allocator, allocator, glyph_band_data.items);
     var bt_texture_owned = true;
     errdefer if (bt_texture_owned) bt.texture.deinit();
     defer allocator.free(bt.entries);
 
-    var glyph_map = std.AutoHashMap(u16, GlyphInfo).init(allocator);
+    var glyph_map = try buildGlyphMap(allocator, glyph_infos.items, bt.entries, page_index);
     errdefer glyph_map.deinit();
-    for (glyph_infos.items, 0..) |info, i| {
-        try glyph_map.put(info.gid, .{
-            .bbox = info.bbox,
-            .advance_width = info.advance,
-            .band_entry = bt.entries[i],
-            .page_index = page_index,
-        });
-    }
 
     freeGlyphCurveScratch(allocator, glyph_curves_list.items);
     glyph_curves_owned = false;
@@ -383,6 +362,91 @@ pub fn buildPageDataInner(
         .page = atlas_page,
         .glyph_map = glyph_map,
     };
+}
+
+fn appendGlyphCurvesForId(
+    allocator: std.mem.Allocator,
+    font: *const ttf.Font,
+    cache: *ttf.GlyphCache,
+    gid: u16,
+    glyph_curves_list: *std.ArrayList(curve_tex.GlyphCurves),
+    glyph_infos: *std.ArrayList(PageGlyphMeta),
+) !void {
+    const glyph = font.parseGlyph(allocator, cache, gid) catch return;
+    var all_curves: std.ArrayList(CurveSegment) = .empty;
+    defer all_curves.deinit(allocator);
+    for (glyph.contours) |contour| {
+        for (contour.curves) |curve| try all_curves.append(allocator, CurveSegment.fromQuad(curve));
+    }
+
+    const owned = try allocator.dupe(CurveSegment, all_curves.items);
+    const prepared = curve_tex.prepareGlyphCurvesForDirectEncoding(allocator, owned, .zero) catch |err| {
+        allocator.free(owned);
+        return err;
+    };
+    const render_bbox = glyphRenderBBox(glyph.metrics.bbox, prepared);
+    glyph_curves_list.append(allocator, .{
+        .curves = owned,
+        .bbox = render_bbox,
+        .logical_curve_count = owned.len,
+        .prefer_direct_encoding = true,
+        .prepared_curves = prepared,
+    }) catch |err| {
+        allocator.free(owned);
+        allocator.free(prepared);
+        return err;
+    };
+    try glyph_infos.append(allocator, .{
+        .gid = gid,
+        .advance = glyph.metrics.advance_width,
+        .bbox = render_bbox,
+    });
+}
+
+fn glyphRenderBBox(metrics_bbox: bezier.BBox, prepared: []const CurveSegment) bezier.BBox {
+    if (prepared.len == 0) return metrics_bbox;
+    var prepared_bbox = prepared[0].boundingBox();
+    for (prepared[1..]) |curve| prepared_bbox = prepared_bbox.merge(curve.boundingBox());
+    return metrics_bbox.merge(prepared_bbox);
+}
+
+fn buildGlyphBandDataList(
+    allocator: std.mem.Allocator,
+    glyph_curves: []const curve_tex.GlyphCurves,
+    curve_entries: []const curve_tex.GlyphCurveEntry,
+) !std.ArrayList(band_tex.GlyphBandData) {
+    var glyph_band_data: std.ArrayList(band_tex.GlyphBandData) = .empty;
+    errdefer deinitGlyphBandDataList(allocator, &glyph_band_data);
+    for (glyph_curves, 0..) |gc, i| {
+        var bd = try band_tex.buildGlyphBandDataForGlyph(allocator, gc, curve_entries[i]);
+        try glyph_band_data.append(allocator, bd);
+        _ = &bd;
+    }
+    return glyph_band_data;
+}
+
+fn deinitGlyphBandDataList(allocator: std.mem.Allocator, glyph_band_data: *std.ArrayList(band_tex.GlyphBandData)) void {
+    for (glyph_band_data.items) |*bd| band_tex.freeGlyphBandData(allocator, bd);
+    glyph_band_data.deinit(allocator);
+}
+
+fn buildGlyphMap(
+    allocator: std.mem.Allocator,
+    glyph_infos: []const PageGlyphMeta,
+    band_entries: []const band_tex.GlyphBandEntry,
+    page_index: u16,
+) !std.AutoHashMap(u16, GlyphInfo) {
+    var glyph_map = std.AutoHashMap(u16, GlyphInfo).init(allocator);
+    errdefer glyph_map.deinit();
+    for (glyph_infos, 0..) |info, i| {
+        try glyph_map.put(info.gid, .{
+            .bbox = info.bbox,
+            .advance_width = info.advance,
+            .band_entry = band_entries[i],
+            .page_index = page_index,
+        });
+    }
+    return glyph_map;
 }
 /// Build an atlas snapshot for the given codepoints.
 pub fn init(allocator: std.mem.Allocator, font: *const Font, codepoints: []const u32) !Atlas {

@@ -8,11 +8,6 @@ const SnailAllocator = common.SnailAllocator;
 const SNAIL_OK = common.SNAIL_OK;
 const SNAIL_ERR_OUT_OF_MEMORY = common.SNAIL_ERR_OUT_OF_MEMORY;
 const SNAIL_ERR_INVALID_ARGUMENT = common.SNAIL_ERR_INVALID_ARGUMENT;
-const SnailTransform2D = common.SnailTransform2D;
-const SnailOverride = common.SnailOverride;
-const SnailRange = common.SnailRange;
-const SnailResourceKey = common.SnailResourceKey;
-const SnailTextResourceKeys = common.SnailTextResourceKeys;
 const SnailTextDraw = common.SnailTextDraw;
 const SnailPathPictureDraw = common.SnailPathPictureDraw;
 const toOverride = common.toOverride;
@@ -59,13 +54,6 @@ fn stashOverride(scene: *SceneImpl, override: snail.Override) ![]const snail.Ove
     return slot;
 }
 
-pub export fn snail_scene_add_text(scene: *SceneImpl, blob: *const TextBlobImpl, resources: SnailTextResourceKeys) c_int {
-    return snail_scene_add_text_draw(scene, .{
-        .blob = blob,
-        .resources = resources,
-    });
-}
-
 pub export fn snail_scene_add_text_draw(scene: *SceneImpl, draw: SnailTextDraw) c_int {
     const blob = draw.blob orelse return SNAIL_ERR_INVALID_ARGUMENT;
     var text_draw = snail.TextDraw{
@@ -77,31 +65,6 @@ pub export fn snail_scene_add_text_draw(scene: *SceneImpl, draw: SnailTextDraw) 
     }
     scene.inner.addText(text_draw) catch |err| return mapError(err);
     return SNAIL_OK;
-}
-
-pub export fn snail_scene_add_text_transformed(scene: *SceneImpl, blob: *const TextBlobImpl, resources: SnailTextResourceKeys, transform: SnailTransform2D) c_int {
-    return snail_scene_add_text_draw(scene, .{
-        .blob = blob,
-        .resources = resources,
-        .override_value = .{ .transform = transform },
-        .has_override = true,
-    });
-}
-
-pub export fn snail_scene_add_text_override(scene: *SceneImpl, blob: *const TextBlobImpl, resources: SnailTextResourceKeys, override_value: SnailOverride) c_int {
-    return snail_scene_add_text_draw(scene, .{
-        .blob = blob,
-        .resources = resources,
-        .override_value = override_value,
-        .has_override = true,
-    });
-}
-
-pub export fn snail_scene_add_path_picture(scene: *SceneImpl, picture: *const PathPictureImpl, key: SnailResourceKey) c_int {
-    return snail_scene_add_path_picture_draw(scene, .{
-        .picture = picture,
-        .key = key,
-    });
 }
 
 pub export fn snail_scene_add_path_picture_draw(scene: *SceneImpl, draw: SnailPathPictureDraw) c_int {
@@ -116,53 +79,4 @@ pub export fn snail_scene_add_path_picture_draw(scene: *SceneImpl, draw: SnailPa
     }
     scene.inner.addPath(path_draw) catch |err| return mapError(err);
     return SNAIL_OK;
-}
-
-pub export fn snail_scene_add_path_picture_range(scene: *SceneImpl, picture: *const PathPictureImpl, key: SnailResourceKey, range: SnailRange) c_int {
-    return snail_scene_add_path_picture_draw(scene, .{
-        .picture = picture,
-        .key = key,
-        .range = range,
-        .has_range = true,
-    });
-}
-
-pub export fn snail_scene_add_path_picture_transformed(scene: *SceneImpl, picture: *const PathPictureImpl, key: SnailResourceKey, transform: SnailTransform2D) c_int {
-    return snail_scene_add_path_picture_draw(scene, .{
-        .picture = picture,
-        .key = key,
-        .override_value = .{ .transform = transform },
-        .has_override = true,
-    });
-}
-
-pub export fn snail_scene_add_path_picture_range_transformed(scene: *SceneImpl, picture: *const PathPictureImpl, key: SnailResourceKey, range: SnailRange, transform: SnailTransform2D) c_int {
-    return snail_scene_add_path_picture_draw(scene, .{
-        .picture = picture,
-        .key = key,
-        .range = range,
-        .override_value = .{ .transform = transform },
-        .has_range = true,
-        .has_override = true,
-    });
-}
-
-pub export fn snail_scene_add_path_picture_override(scene: *SceneImpl, picture: *const PathPictureImpl, key: SnailResourceKey, override_value: SnailOverride) c_int {
-    return snail_scene_add_path_picture_draw(scene, .{
-        .picture = picture,
-        .key = key,
-        .override_value = override_value,
-        .has_override = true,
-    });
-}
-
-pub export fn snail_scene_add_path_picture_range_override(scene: *SceneImpl, picture: *const PathPictureImpl, key: SnailResourceKey, range: SnailRange, override_value: SnailOverride) c_int {
-    return snail_scene_add_path_picture_draw(scene, .{
-        .picture = picture,
-        .key = key,
-        .range = range,
-        .override_value = override_value,
-        .has_range = true,
-        .has_override = true,
-    });
 }

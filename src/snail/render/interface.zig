@@ -42,6 +42,9 @@ pub const Renderer = struct {
 
     pub const UploadVTable = struct {
         uploadResources: *const fn (*anyopaque, UploadAllocators, *PreparedResources, ResourceUploadBatch) anyerror!void,
+    };
+
+    pub const CoverageVTable = struct {
         coverageBackend: *const fn (*anyopaque, *const PreparedResources) ?CoverageBackend,
     };
 
@@ -57,6 +60,7 @@ pub const Renderer = struct {
         backend: BackendKind,
         deinit: *const fn (*anyopaque) void,
         upload: UploadVTable,
+        coverage: CoverageVTable,
         draw: DrawVTable,
         resource_cache: ResourceCacheVTable,
         backendName: *const fn (*anyopaque) []const u8,
@@ -74,7 +78,7 @@ pub const Renderer = struct {
     }
 
     pub fn coverageBackend(self: *Renderer, prepared: *const PreparedResources) ?CoverageBackend {
-        return self.vtable.upload.coverageBackend(self.ptr, prepared);
+        return self.vtable.coverage.coverageBackend(self.ptr, prepared);
     }
 
     pub fn planResourceUpload(self: *Renderer, allocator: std.mem.Allocator, current: ?*const PreparedResources, next_set: *const ResourceManifest) !ResourceUploadPlan {
@@ -189,75 +193,102 @@ pub const Renderer = struct {
     }
 };
 
-pub fn disabledVTable(comptime backend_kind: BackendKind) Renderer.VTable {
-    const S = struct {
-        fn deinitFn(_: *anyopaque) void {}
-        fn uploadResourcesFn(_: *anyopaque, _: UploadAllocators, _: *PreparedResources, _: ResourceUploadBatch) anyerror!void {
-            return error.UnsupportedRenderer;
-        }
-        fn coverageBackendFn(_: *anyopaque, _: *const PreparedResources) ?CoverageBackend {
-            return null;
-        }
-        fn drawFn(_: *Renderer, _: *const PreparedResources, _: DrawRecords, _: DrawState) anyerror!void {
-            return error.UnsupportedRenderer;
-        }
-        fn drawPassFn(_: *Renderer, _: *const PreparedResources, _: DrawRecords, _: DrawPass) anyerror!void {
-            return error.UnsupportedRenderer;
-        }
-        fn drawTextFn(_: *anyopaque, _: ?*const anyopaque, _: []const u32, _: DrawState, _: u32) anyerror!void {
-            return error.UnsupportedRenderer;
-        }
-        fn drawPathsFn(_: *anyopaque, _: ?*const anyopaque, _: []const u32, _: DrawState, _: u32) anyerror!void {
-            return error.UnsupportedRenderer;
-        }
-        fn beginDrawFn(_: *anyopaque) void {}
-        fn resourceCacheStatsFn(_: *const anyopaque) ResourceCacheStats {
-            return .{};
-        }
-        fn resetResourceCacheFn(_: *anyopaque) void {}
-        fn validateBackendGenerationFn(_: *const PreparedResources) anyerror!void {
-            return error.UnsupportedRenderer;
-        }
-        fn atlasCacheStatusFn(_: *const PreparedResources, _: usize, _: upload_plan.AtlasRef) upload_plan.AtlasCacheStatus {
-            return .{};
-        }
-        fn canUseAtlasOverflowBanksFn(_: *const PreparedResources, _: usize) bool {
-            return false;
-        }
-        fn imageArrayWouldRebuildFn(_: *const PreparedResources, _: u32, _: u32, _: u32) bool {
-            return false;
-        }
-        fn backendNameFn(_: *anyopaque) []const u8 {
-            return switch (backend_kind) {
-                .gl => "OpenGL (disabled)",
-                .vulkan => "Vulkan (disabled)",
-                .cpu => "CPU (disabled)",
-            };
-        }
+fn disabledDeinit(_: *anyopaque) void {}
+
+fn disabledUploadResources(_: *anyopaque, _: UploadAllocators, _: *PreparedResources, _: ResourceUploadBatch) anyerror!void {
+    return error.UnsupportedRenderer;
+}
+
+fn disabledCoverageBackend(_: *anyopaque, _: *const PreparedResources) ?CoverageBackend {
+    return null;
+}
+
+fn disabledDraw(_: *Renderer, _: *const PreparedResources, _: DrawRecords, _: DrawState) anyerror!void {
+    return error.UnsupportedRenderer;
+}
+
+fn disabledDrawPass(_: *Renderer, _: *const PreparedResources, _: DrawRecords, _: DrawPass) anyerror!void {
+    return error.UnsupportedRenderer;
+}
+
+fn disabledDrawText(_: *anyopaque, _: ?*const anyopaque, _: []const u32, _: DrawState, _: u32) anyerror!void {
+    return error.UnsupportedRenderer;
+}
+
+fn disabledDrawPaths(_: *anyopaque, _: ?*const anyopaque, _: []const u32, _: DrawState, _: u32) anyerror!void {
+    return error.UnsupportedRenderer;
+}
+
+fn disabledBeginDraw(_: *anyopaque) void {}
+
+fn disabledResourceCacheStats(_: *const anyopaque) ResourceCacheStats {
+    return .{};
+}
+
+fn disabledResetResourceCache(_: *anyopaque) void {}
+
+fn disabledValidateBackendGeneration(_: *const PreparedResources) anyerror!void {
+    return error.UnsupportedRenderer;
+}
+
+fn disabledAtlasCacheStatus(_: *const PreparedResources, _: usize, _: upload_plan.AtlasRef) upload_plan.AtlasCacheStatus {
+    return .{};
+}
+
+fn disabledCanUseAtlasOverflowBanks(_: *const PreparedResources, _: usize) bool {
+    return false;
+}
+
+fn disabledImageArrayWouldRebuild(_: *const PreparedResources, _: u32, _: u32, _: u32) bool {
+    return false;
+}
+
+fn disabledGlBackendName(_: *anyopaque) []const u8 {
+    return "OpenGL (disabled)";
+}
+
+fn disabledVulkanBackendName(_: *anyopaque) []const u8 {
+    return "Vulkan (disabled)";
+}
+
+fn disabledCpuBackendName(_: *anyopaque) []const u8 {
+    return "CPU (disabled)";
+}
+
+fn disabledBackendName(comptime backend_kind: BackendKind) *const fn (*anyopaque) []const u8 {
+    return switch (backend_kind) {
+        .gl => &disabledGlBackendName,
+        .vulkan => &disabledVulkanBackendName,
+        .cpu => &disabledCpuBackendName,
     };
+}
+
+pub fn disabledVTable(comptime backend_kind: BackendKind) Renderer.VTable {
     return .{
         .backend = backend_kind,
-        .deinit = &S.deinitFn,
+        .deinit = &disabledDeinit,
         .upload = .{
-            .uploadResources = &S.uploadResourcesFn,
-            .coverageBackend = &S.coverageBackendFn,
+            .uploadResources = &disabledUploadResources,
+        },
+        .coverage = .{
+            .coverageBackend = &disabledCoverageBackend,
         },
         .draw = .{
-            .draw = &S.drawFn,
-            .drawPass = &S.drawPassFn,
-            .drawText = &S.drawTextFn,
-            .drawPaths = &S.drawPathsFn,
-            .beginDraw = &S.beginDrawFn,
+            .draw = &disabledDraw,
+            .drawPass = &disabledDrawPass,
+            .drawText = &disabledDrawText,
+            .drawPaths = &disabledDrawPaths,
+            .beginDraw = &disabledBeginDraw,
         },
         .resource_cache = .{
             .uses_resource_cache = false,
-            .stats = &S.resourceCacheStatsFn,
-            .reset = &S.resetResourceCacheFn,
-            .validateBackendGeneration = &S.validateBackendGenerationFn,
-            .atlasCacheStatus = &S.atlasCacheStatusFn,
-            .canUseAtlasOverflowBanks = &S.canUseAtlasOverflowBanksFn,
-            .imageArrayWouldRebuild = &S.imageArrayWouldRebuildFn,
+            .stats = &disabledResourceCacheStats,
+            .reset = &disabledResetResourceCache,
+            .validateBackendGeneration = &disabledValidateBackendGeneration,
+            .atlasCacheStatus = &disabledAtlasCacheStatus,
+            .canUseAtlasOverflowBanks = &disabledCanUseAtlasOverflowBanks,
+            .imageArrayWouldRebuild = &disabledImageArrayWouldRebuild,
         },
-        .backendName = &S.backendNameFn,
+        .backendName = disabledBackendName(backend_kind),
     };
 }

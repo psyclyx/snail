@@ -134,6 +134,18 @@ typedef struct {
     uint32_t image_layers_allocated;
 } SnailResourceCacheStats;
 
+typedef struct {
+    SnailResourceFootprint footprint;
+    size_t upload_bytes;
+    size_t upload_curve_bytes;
+    size_t upload_band_bytes;
+    size_t upload_layer_info_bytes;
+    size_t upload_image_bytes;
+    size_t changed_bytes;
+    size_t changed_key_count;
+    bool requires_cache_rebuild;
+} SnailResourceUploadPlanSummary;
+
 size_t snail_resource_footprint_used_bytes(SnailResourceFootprint footprint);
 size_t snail_resource_footprint_allocated_bytes(SnailResourceFootprint footprint);
 SnailResourceKey snail_resource_key_from_bytes(const char *data, size_t len);
@@ -579,57 +591,20 @@ void snail_path_picture_upload_footprint(const SnailPathPicture *picture,
 /* Scene and resources */
 
 /*
- * Transformed/override submission helpers need their per-call override to
- * outlive the caller's stack, so the scene keeps it in an internal arena.
- * That arena grows monotonically until `snail_scene_reset` releases its
- * capacity for reuse — long-running streams of additions without a reset will
- * grow memory unboundedly. Call `snail_scene_reset` between frames or before
- * rebuilding a scene from scratch.
+ * `SnailTextDraw` and `SnailPathPictureDraw` copy one optional override value
+ * into scene-owned storage when `has_override` is true. `snail_scene_reset`
+ * is the explicit lifetime boundary for that copied storage and the command
+ * list. Blob, picture, and resource handles are borrowed; keep them alive
+ * until the scene is reset or destroyed.
  */
 int snail_scene_init(const SnailAllocator *alloc, SnailScene **out);
 void snail_scene_deinit(SnailScene *scene);
 void snail_scene_reset(SnailScene *scene);
 size_t snail_scene_command_count(const SnailScene *scene);
-int snail_scene_add_text(SnailScene *scene,
-                         const SnailTextBlob *blob,
-                         SnailTextResourceKeys resources);
 int snail_scene_add_text_draw(SnailScene *scene,
                               SnailTextDraw draw);
-int snail_scene_add_text_transformed(SnailScene *scene,
-                                     const SnailTextBlob *blob,
-                                     SnailTextResourceKeys resources,
-                                     SnailTransform2D transform);
-int snail_scene_add_text_override(SnailScene *scene,
-                                  const SnailTextBlob *blob,
-                                  SnailTextResourceKeys resources,
-                                  SnailOverride override_value);
-int snail_scene_add_path_picture(SnailScene *scene,
-                                 const SnailPathPicture *picture,
-                                 SnailResourceKey key);
 int snail_scene_add_path_picture_draw(SnailScene *scene,
                                       SnailPathPictureDraw draw);
-int snail_scene_add_path_picture_range(SnailScene *scene,
-                                       const SnailPathPicture *picture,
-                                       SnailResourceKey key,
-                                       SnailRange range);
-int snail_scene_add_path_picture_transformed(SnailScene *scene,
-                                             const SnailPathPicture *picture,
-                                             SnailResourceKey key,
-                                             SnailTransform2D transform);
-int snail_scene_add_path_picture_range_transformed(SnailScene *scene,
-                                                   const SnailPathPicture *picture,
-                                                   SnailResourceKey key,
-                                                   SnailRange range,
-                                                   SnailTransform2D transform);
-int snail_scene_add_path_picture_override(SnailScene *scene,
-                                          const SnailPathPicture *picture,
-                                          SnailResourceKey key,
-                                          SnailOverride override_value);
-int snail_scene_add_path_picture_range_override(SnailScene *scene,
-                                                const SnailPathPicture *picture,
-                                                SnailResourceKey key,
-                                                SnailRange range,
-                                                SnailOverride override_value);
 
 int snail_resource_manifest_init(const SnailAllocator *alloc, size_t capacity, SnailResourceManifest **out);
 void snail_resource_manifest_deinit(SnailResourceManifest *set);
@@ -771,25 +746,11 @@ int snail_renderer_plan_resource_upload(SnailRenderer *renderer,
                                         const SnailResourceManifest *next_set,
                                         SnailResourceUploadPlan **out);
 void snail_resource_upload_plan_deinit(SnailResourceUploadPlan *plan);
-SnailResourceFootprint snail_resource_upload_plan_footprint(const SnailResourceUploadPlan *plan);
-size_t snail_resource_upload_plan_upload_estimate_bytes(const SnailResourceUploadPlan *plan);
-uint32_t snail_resource_upload_plan_cache_reused_atlas_pages(const SnailResourceUploadPlan *plan);
-uint32_t snail_resource_upload_plan_cache_missing_atlas_pages(const SnailResourceUploadPlan *plan);
-uint32_t snail_resource_upload_plan_cache_new_atlas_banks(const SnailResourceUploadPlan *plan);
-uint32_t snail_resource_upload_plan_cache_reused_images(const SnailResourceUploadPlan *plan);
-uint32_t snail_resource_upload_plan_cache_missing_images(const SnailResourceUploadPlan *plan);
-uint32_t snail_resource_upload_plan_cache_new_image_banks(const SnailResourceUploadPlan *plan);
-uint32_t snail_resource_upload_plan_cache_atlas_rebuilds(const SnailResourceUploadPlan *plan);
-uint32_t snail_resource_upload_plan_cache_image_rebuilds(const SnailResourceUploadPlan *plan);
-size_t snail_resource_upload_plan_upload_estimate_curve_bytes(const SnailResourceUploadPlan *plan);
-size_t snail_resource_upload_plan_upload_estimate_band_bytes(const SnailResourceUploadPlan *plan);
-size_t snail_resource_upload_plan_upload_estimate_layer_info_bytes(const SnailResourceUploadPlan *plan);
-size_t snail_resource_upload_plan_upload_estimate_image_bytes(const SnailResourceUploadPlan *plan);
-size_t snail_resource_upload_plan_diff_changed_bytes(const SnailResourceUploadPlan *plan);
-size_t snail_resource_upload_plan_diff_changed_key_count(const SnailResourceUploadPlan *plan);
-bool snail_resource_upload_plan_diff_changed_key(const SnailResourceUploadPlan *plan,
-                                                 size_t index,
-                                                 SnailResourceKey *out);
+void snail_resource_upload_plan_summary(const SnailResourceUploadPlan *plan,
+                                        SnailResourceUploadPlanSummary *out);
+bool snail_resource_upload_plan_changed_key(const SnailResourceUploadPlan *plan,
+                                            size_t index,
+                                            SnailResourceKey *out);
 int snail_renderer_begin_resource_upload(SnailRenderer *renderer,
                                          const SnailAllocator *alloc,
                                          const SnailResourceUploadPlan *plan,

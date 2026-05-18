@@ -21,13 +21,8 @@ const BlendMode = enum {
     dual_source,
 };
 
-fn createGraphicsPipeline(self: anytype, frag_code: []const u8, blend_mode: BlendMode) !vk.VkPipeline {
-    const vert_module = try createShaderModule(self, vert_spv);
-    defer vk.vkDestroyShaderModule(self.ctx.device, vert_module, null);
-    const frag_module = try createShaderModule(self, frag_code);
-    defer vk.vkDestroyShaderModule(self.ctx.device, frag_module, null);
-
-    const stages = [2]vk.VkPipelineShaderStageCreateInfo{
+fn pipelineShaderStages(vert_module: vk.VkShaderModule, frag_module: vk.VkShaderModule) [2]vk.VkPipelineShaderStageCreateInfo {
+    return .{
         std.mem.zeroInit(vk.VkPipelineShaderStageCreateInfo, .{
             .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
             .stage = vk.VK_SHADER_STAGE_VERTEX_BIT,
@@ -41,16 +36,18 @@ fn createGraphicsPipeline(self: anytype, frag_code: []const u8, blend_mode: Blen
             .pName = "main",
         }),
     };
+}
 
-    // Vertex input: mixed-format per-instance attributes, single binding
-    const stride: u32 = vertex.BYTES_PER_INSTANCE;
-    const binding = vk.VkVertexInputBindingDescription{
+fn vertexInputBinding() vk.VkVertexInputBindingDescription {
+    return .{
         .binding = 0,
-        .stride = stride,
+        .stride = vertex.BYTES_PER_INSTANCE,
         .inputRate = vk.VK_VERTEX_INPUT_RATE_INSTANCE,
     };
+}
 
-    const attrs = [7]vk.VkVertexInputAttributeDescription{
+fn vertexInputAttributes() [7]vk.VkVertexInputAttributeDescription {
+    return .{
         .{ .location = 0, .binding = 0, .format = vk.VK_FORMAT_R16G16B16A16_SFLOAT, .offset = @offsetOf(vertex.Instance, "rect") },
         .{ .location = 1, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = @offsetOf(vertex.Instance, "xform") },
         .{ .location = 2, .binding = 0, .format = vk.VK_FORMAT_R32G32_SFLOAT, .offset = @offsetOf(vertex.Instance, "origin") },
@@ -59,53 +56,71 @@ fn createGraphicsPipeline(self: anytype, frag_code: []const u8, blend_mode: Blen
         .{ .location = 5, .binding = 0, .format = vk.VK_FORMAT_R8G8B8A8_UNORM, .offset = @offsetOf(vertex.Instance, "color") },
         .{ .location = 6, .binding = 0, .format = vk.VK_FORMAT_R8G8B8A8_UNORM, .offset = @offsetOf(vertex.Instance, "tint") },
     };
+}
 
-    const vi_info = std.mem.zeroInit(vk.VkPipelineVertexInputStateCreateInfo, .{
+fn vertexInputState(
+    binding: *const vk.VkVertexInputBindingDescription,
+    attrs: *const [7]vk.VkVertexInputAttributeDescription,
+) vk.VkPipelineVertexInputStateCreateInfo {
+    return std.mem.zeroInit(vk.VkPipelineVertexInputStateCreateInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
         .vertexBindingDescriptionCount = 1,
-        .pVertexBindingDescriptions = &binding,
+        .pVertexBindingDescriptions = binding,
         .vertexAttributeDescriptionCount = attrs.len,
-        .pVertexAttributeDescriptions = &attrs,
+        .pVertexAttributeDescriptions = attrs,
     });
+}
 
-    const ia_info = std.mem.zeroInit(vk.VkPipelineInputAssemblyStateCreateInfo, .{
+fn inputAssemblyState() vk.VkPipelineInputAssemblyStateCreateInfo {
+    return std.mem.zeroInit(vk.VkPipelineInputAssemblyStateCreateInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
         .topology = vk.VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
     });
+}
 
-    // Dynamic viewport/scissor
-    const dyn_states = [2]vk.VkDynamicState{
+fn dynamicStates() [2]vk.VkDynamicState {
+    return .{
         vk.VK_DYNAMIC_STATE_VIEWPORT,
         vk.VK_DYNAMIC_STATE_SCISSOR,
     };
-    const dyn_info = std.mem.zeroInit(vk.VkPipelineDynamicStateCreateInfo, .{
-        .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-        .dynamicStateCount = 2,
-        .pDynamicStates = &dyn_states,
-    });
+}
 
-    const vp_info = std.mem.zeroInit(vk.VkPipelineViewportStateCreateInfo, .{
+fn dynamicStateInfo(states: *const [2]vk.VkDynamicState) vk.VkPipelineDynamicStateCreateInfo {
+    return std.mem.zeroInit(vk.VkPipelineDynamicStateCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        .dynamicStateCount = states.len,
+        .pDynamicStates = states,
+    });
+}
+
+fn viewportState() vk.VkPipelineViewportStateCreateInfo {
+    return std.mem.zeroInit(vk.VkPipelineViewportStateCreateInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
         .viewportCount = 1,
         .scissorCount = 1,
     });
+}
 
-    const rast_info = std.mem.zeroInit(vk.VkPipelineRasterizationStateCreateInfo, .{
+fn rasterizationState() vk.VkPipelineRasterizationStateCreateInfo {
+    return std.mem.zeroInit(vk.VkPipelineRasterizationStateCreateInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
         .polygonMode = vk.VK_POLYGON_MODE_FILL,
         .cullMode = vk.VK_CULL_MODE_NONE,
         .frontFace = vk.VK_FRONT_FACE_COUNTER_CLOCKWISE,
         .lineWidth = 1.0,
     });
+}
 
-    const ms_info = std.mem.zeroInit(vk.VkPipelineMultisampleStateCreateInfo, .{
+fn multisampleState() vk.VkPipelineMultisampleStateCreateInfo {
+    return std.mem.zeroInit(vk.VkPipelineMultisampleStateCreateInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
         .rasterizationSamples = vk.VK_SAMPLE_COUNT_1_BIT,
     });
+}
 
-    // Premultiplied alpha blending: shader outputs (color * coverage, alpha * coverage),
-    // so src factor is ONE to avoid double-multiplying coverage.
-    const blend_attach = std.mem.zeroInit(vk.VkPipelineColorBlendAttachmentState, .{
+fn colorBlendAttachment(blend_mode: BlendMode) vk.VkPipelineColorBlendAttachmentState {
+    // Shader outputs are premultiplied by coverage, so src factor stays ONE.
+    return std.mem.zeroInit(vk.VkPipelineColorBlendAttachmentState, .{
         .blendEnable = @as(vk.VkBool32, 1),
         .srcColorBlendFactor = @as(vk.VkBlendFactor, @intCast(vk.VK_BLEND_FACTOR_ONE)),
         .dstColorBlendFactor = @as(vk.VkBlendFactor, @intCast(switch (blend_mode) {
@@ -118,33 +133,72 @@ fn createGraphicsPipeline(self: anytype, frag_code: []const u8, blend_mode: Blen
         .alphaBlendOp = @as(vk.VkBlendOp, @intCast(vk.VK_BLEND_OP_ADD)),
         .colorWriteMask = @as(vk.VkColorComponentFlags, @intCast(vk.VK_COLOR_COMPONENT_R_BIT | vk.VK_COLOR_COMPONENT_G_BIT | vk.VK_COLOR_COMPONENT_B_BIT | vk.VK_COLOR_COMPONENT_A_BIT)),
     });
+}
 
-    const blend_info = std.mem.zeroInit(vk.VkPipelineColorBlendStateCreateInfo, .{
+fn colorBlendState(attachment: *const vk.VkPipelineColorBlendAttachmentState) vk.VkPipelineColorBlendStateCreateInfo {
+    return std.mem.zeroInit(vk.VkPipelineColorBlendStateCreateInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
         .attachmentCount = 1,
-        .pAttachments = &blend_attach,
+        .pAttachments = attachment,
     });
+}
 
-    const ds_info = std.mem.zeroInit(vk.VkPipelineDepthStencilStateCreateInfo, .{
+fn depthStencilState() vk.VkPipelineDepthStencilStateCreateInfo {
+    return std.mem.zeroInit(vk.VkPipelineDepthStencilStateCreateInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
     });
+}
 
-    const ci = std.mem.zeroInit(vk.VkGraphicsPipelineCreateInfo, .{
+fn graphicsPipelineInfo(
+    self: anytype,
+    stages: *const [2]vk.VkPipelineShaderStageCreateInfo,
+    vi_info: *const vk.VkPipelineVertexInputStateCreateInfo,
+    ia_info: *const vk.VkPipelineInputAssemblyStateCreateInfo,
+    vp_info: *const vk.VkPipelineViewportStateCreateInfo,
+    rast_info: *const vk.VkPipelineRasterizationStateCreateInfo,
+    ms_info: *const vk.VkPipelineMultisampleStateCreateInfo,
+    ds_info: *const vk.VkPipelineDepthStencilStateCreateInfo,
+    blend_info: *const vk.VkPipelineColorBlendStateCreateInfo,
+    dyn_info: *const vk.VkPipelineDynamicStateCreateInfo,
+) vk.VkGraphicsPipelineCreateInfo {
+    return std.mem.zeroInit(vk.VkGraphicsPipelineCreateInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-        .stageCount = 2,
-        .pStages = &stages,
-        .pVertexInputState = &vi_info,
-        .pInputAssemblyState = &ia_info,
-        .pViewportState = &vp_info,
-        .pRasterizationState = &rast_info,
-        .pMultisampleState = &ms_info,
-        .pDepthStencilState = &ds_info,
-        .pColorBlendState = &blend_info,
-        .pDynamicState = &dyn_info,
+        .stageCount = stages.len,
+        .pStages = stages,
+        .pVertexInputState = vi_info,
+        .pInputAssemblyState = ia_info,
+        .pViewportState = vp_info,
+        .pRasterizationState = rast_info,
+        .pMultisampleState = ms_info,
+        .pDepthStencilState = ds_info,
+        .pColorBlendState = blend_info,
+        .pDynamicState = dyn_info,
         .layout = self.pipeline_layout,
         .renderPass = self.ctx.render_pass,
         .subpass = 0,
     });
+}
+
+fn createGraphicsPipeline(self: anytype, frag_code: []const u8, blend_mode: BlendMode) !vk.VkPipeline {
+    const vert_module = try createShaderModule(self, vert_spv);
+    defer vk.vkDestroyShaderModule(self.ctx.device, vert_module, null);
+    const frag_module = try createShaderModule(self, frag_code);
+    defer vk.vkDestroyShaderModule(self.ctx.device, frag_module, null);
+
+    const stages = pipelineShaderStages(vert_module, frag_module);
+    const binding = vertexInputBinding();
+    const attrs = vertexInputAttributes();
+    const vi_info = vertexInputState(&binding, &attrs);
+    const ia_info = inputAssemblyState();
+    const dyn_states = dynamicStates();
+    const dyn_info = dynamicStateInfo(&dyn_states);
+    const vp_info = viewportState();
+    const rast_info = rasterizationState();
+    const ms_info = multisampleState();
+    const blend_attach = colorBlendAttachment(blend_mode);
+    const blend_info = colorBlendState(&blend_attach);
+    const ds_info = depthStencilState();
+    const ci = graphicsPipelineInfo(self, &stages, &vi_info, &ia_info, &vp_info, &rast_info, &ms_info, &ds_info, &blend_info, &dyn_info);
 
     var pip: vk.VkPipeline = null;
     try device.check(vk.vkCreateGraphicsPipelines(self.ctx.device, self.pipeline_cache, 1, &ci, null, &pip));

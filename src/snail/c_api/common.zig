@@ -64,6 +64,7 @@ pub const SNAIL_RESOURCE_CAPACITY_GROWABLE = c_types.SNAIL_RESOURCE_CAPACITY_GRO
 pub const SNAIL_RESOURCE_CAPACITY_EXACT = c_types.SNAIL_RESOURCE_CAPACITY_EXACT;
 pub const SnailResourceFootprint = c_types.SnailResourceFootprint;
 pub const SnailResourceCacheStats = c_types.SnailResourceCacheStats;
+pub const SnailResourceUploadPlanSummary = c_types.SnailResourceUploadPlanSummary;
 pub const SnailCoverageDrawState = c_types.SnailCoverageDrawState;
 pub const SnailGlTextCoverageProgram = c_types.SnailGlTextCoverageProgram;
 pub const SnailVulkanTextCoverageProgram = c_types.SnailVulkanTextCoverageProgram;

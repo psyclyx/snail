@@ -260,6 +260,18 @@ pub const SnailResourceCacheStats = extern struct {
     image_layers_allocated: u32 = 0,
 };
 
+pub const SnailResourceUploadPlanSummary = extern struct {
+    footprint: SnailResourceFootprint = .{},
+    upload_bytes: usize = 0,
+    upload_curve_bytes: usize = 0,
+    upload_band_bytes: usize = 0,
+    upload_layer_info_bytes: usize = 0,
+    upload_image_bytes: usize = 0,
+    changed_bytes: usize = 0,
+    changed_key_count: usize = 0,
+    requires_cache_rebuild: bool = false,
+};
+
 pub const SnailCoverageDrawState = extern struct {
     fill_rule: c_int = 0,
     subpixel_order: c_int = 0,

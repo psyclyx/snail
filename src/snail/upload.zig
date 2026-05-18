@@ -1,6 +1,5 @@
 const std = @import("std");
 
-const build_options = @import("build_options");
 const atlas_curve_mod = @import("render/format/atlas/curve.zig");
 const footprint_types = @import("resources/footprint_types.zig");
 const image_mod = @import("image.zig");
@@ -11,11 +10,6 @@ const manifest_mod = @import("resources/manifest.zig");
 const stamp_mod = @import("resources/stamp.zig");
 const upload_common = @import("render/format/upload_common.zig");
 const view_mod = @import("resources/view.zig");
-const vulkan_pipeline = if (build_options.enable_vulkan) @import("render/backend/vulkan/pipeline.zig") else struct {
-    pub const VkCommandBuffer = void;
-    pub const VkFence = void;
-    pub const VulkanPipeline = void;
-};
 
 const Atlas = atlas_curve_mod.Atlas;
 const Image = image_mod.Image;
@@ -190,22 +184,6 @@ pub const ResourceUploadPlan = struct {
         self.diff.deinit();
         self.* = undefined;
     }
-};
-
-pub const ResourceUploadCommand = union(enum) {
-    none,
-    vulkan: if (build_options.enable_vulkan) vulkan_pipeline.vk.VkCommandBuffer else void,
-
-    pub const no_command = ResourceUploadCommand{ .none = {} };
-};
-
-pub const ResourceUploadCompletion = union(enum) {
-    immediate,
-    ready: bool,
-    vulkan_fence: if (build_options.enable_vulkan) vulkan_pipeline.vk.VkFence else void,
-
-    pub const complete = ResourceUploadCompletion{ .ready = true };
-    pub const pending = ResourceUploadCompletion{ .ready = false };
 };
 
 const UploadEntryCounts = struct {
@@ -408,45 +386,45 @@ pub const PendingResourceUpload = struct {
         allow_cache_rebuilds: bool = true,
     };
 
-    /// Record upload work for this plan. Vulkan records into a caller-owned
-    /// command buffer; CPU and GL complete during this call.
-    pub fn record(self: *PendingResourceUpload, command: ResourceUploadCommand, options: RecordOptions) !void {
+    /// Record upload work for this plan using backend-owned synchronization.
+    /// CPU and GL complete during this call. Vulkan uses the renderer's
+    /// internal transfer path and waits before returning.
+    pub fn record(self: *PendingResourceUpload, options: RecordOptions) !void {
+        try self.recordPrepared(options, false);
+    }
+
+    /// Record upload work while a backend-specific caller-synchronized upload
+    /// scope is already active. Backend adapters use this after binding the
+    /// caller's command buffer or equivalent external completion mechanism.
+    pub fn recordExternal(self: *PendingResourceUpload, options: RecordOptions) !void {
+        try self.recordPrepared(options, true);
+    }
+
+    fn recordPrepared(self: *PendingResourceUpload, options: RecordOptions, external_completion_required: bool) !void {
         if (self.prepared != null) return;
         if (!options.allow_cache_rebuilds and self.plan.cache.requiresRebuild()) return error.ResourceCacheRebuildRequired;
         if (self.plan.upload.bytes > options.budget_bytes) return error.ResourceUploadBudgetExceeded;
 
-        if (comptime build_options.enable_vulkan) {
-            if (self.renderer.backend() == .vulkan) {
-                const cmd = switch (command) {
-                    .vulkan => |vk_cmd| vk_cmd,
-                    else => return error.MissingUploadCommand,
-                };
-                const vk_state: *vulkan_pipeline.VulkanPipeline = @ptrCast(@alignCast(self.renderer.ptr));
-                vk_state.beginResourceUploadRecording(cmd);
-                defer vk_state.endResourceUploadRecording();
-                self.prepared = try uploadPreparedResourceEntries(&self.renderer, self.plan.manifest.entries, self.allocators);
-                self.external_completion_required = true;
-                self.ready_to_publish = false;
-                return;
-            }
-        }
-
         self.prepared = try uploadPreparedResourceEntries(&self.renderer, self.plan.manifest.entries, self.allocators);
-        self.external_completion_required = false;
-        self.ready_to_publish = true;
+        self.external_completion_required = external_completion_required;
+        self.ready_to_publish = !external_completion_required;
     }
 
-    pub fn ready(self: *PendingResourceUpload, completion: ResourceUploadCompletion) bool {
+    pub fn ready(self: *PendingResourceUpload, is_ready: bool) bool {
         if (self.prepared == null) return false;
         if (!self.external_completion_required) {
             self.ready_to_publish = true;
             return true;
         }
-        if (self.externalCompletionReady(completion)) {
+        if (is_ready) {
             self.ready_to_publish = true;
             return true;
         }
         return false;
+    }
+
+    pub fn readyNow(self: *PendingResourceUpload) bool {
+        return self.ready(true);
     }
 
     pub fn publish(self: *PendingResourceUpload) !PreparedResources {
@@ -466,20 +444,5 @@ pub const PendingResourceUpload = struct {
         self.prepared = null;
         self.external_completion_required = false;
         self.ready_to_publish = false;
-    }
-
-    fn externalCompletionReady(self: *const PendingResourceUpload, completion: ResourceUploadCompletion) bool {
-        return switch (completion) {
-            .immediate => true,
-            .ready => |is_ready| is_ready,
-            .vulkan_fence => |fence| if (comptime build_options.enable_vulkan) self.vulkanFenceReady(fence) else false,
-        };
-    }
-
-    fn vulkanFenceReady(self: *const PendingResourceUpload, fence: if (build_options.enable_vulkan) vulkan_pipeline.vk.VkFence else void) bool {
-        if (comptime !build_options.enable_vulkan) return false;
-        if (self.renderer.backend() != .vulkan) return false;
-        const vk_state: *vulkan_pipeline.VulkanPipeline = @ptrCast(@alignCast(self.renderer.ptr));
-        return vulkan_pipeline.vk.vkGetFenceStatus(vk_state.ctx.device, fence) == vulkan_pipeline.vk.VK_SUCCESS;
     }
 };

@@ -435,78 +435,67 @@ pub fn samplePathPaintAt(atlas: *const CurveAtlas, info_x: u16, info_y: u16, gly
     const width = atlas.layer_info_width;
     const info = fetchLayerInfoTexel(data, width, info_x, info_y, 0);
     const tag: i32 = @intFromFloat(@round(-info[3]));
-
     const data0 = fetchLayerInfoTexel(data, width, info_x, info_y, 2);
+    if (tag == 5) {
+        const fill_info = fetchLayerInfoTexel(data, width, info_x, info_y, 1);
+        const fill_tag: i32 = @intFromFloat(@round(-fill_info[3]));
+        const fill_data0 = fetchLayerInfoTexel(data, width, info_x, info_y, 3);
+        return sampleLayerInfoPaint(atlas, glyph_id, data, width, info_x, info_y, fill_tag, 3, fill_data0, local);
+    }
+    return sampleLayerInfoPaint(atlas, glyph_id, data, width, info_x, info_y, tag, 2, data0, local);
+}
+
+fn sampleLayerInfoPaint(
+    atlas: *const CurveAtlas,
+    glyph_id: u16,
+    data: []const f32,
+    width: u32,
+    info_x: u16,
+    info_y: u16,
+    tag: i32,
+    data0_offset: u32,
+    data0: [4]f32,
+    local: Vec2,
+) PathPaintSample {
     switch (tag) {
         1 => return .{ .color = srgbColorToLinear(data0) },
         2 => {
-            const color0 = fetchLayerInfoTexel(data, width, info_x, info_y, 3);
-            const color1 = fetchLayerInfoTexel(data, width, info_x, info_y, 4);
-            const extra = fetchLayerInfoTexel(data, width, info_x, info_y, 5);
-            const start = Vec2.new(data0[0], data0[1]);
-            const end = Vec2.new(data0[2], data0[3]);
-            const delta = Vec2.sub(end, start);
-            const len_sq = Vec2.dot(delta, delta);
-            var t: f32 = 0.0;
-            if (len_sq > 1e-10) t = Vec2.dot(Vec2.sub(local, start), delta) / len_sq;
-            return .{
-                .color = lerpGradientColor(color0, color1, wrapPaintT(t, paintExtendFromFloat(extra[0]))),
-                .apply_dither = true,
-            };
+            const color0 = fetchLayerInfoTexel(data, width, info_x, info_y, data0_offset + 1);
+            const color1 = fetchLayerInfoTexel(data, width, info_x, info_y, data0_offset + 2);
+            const extra = fetchLayerInfoTexel(data, width, info_x, info_y, data0_offset + 3);
+            return sampleLinearGradient(data0, color0, color1, extra, local);
         },
         3 => {
-            const color0 = fetchLayerInfoTexel(data, width, info_x, info_y, 3);
-            const color1 = fetchLayerInfoTexel(data, width, info_x, info_y, 4);
-            const center = Vec2.new(data0[0], data0[1]);
-            const radius = @max(@abs(data0[2]), 1.0 / 65536.0);
-            const t = Vec2.length(Vec2.sub(local, center)) / radius;
-            return .{
-                .color = lerpGradientColor(color0, color1, wrapPaintT(t, paintExtendFromFloat(data0[3]))),
-                .apply_dither = true,
-            };
+            const color0 = fetchLayerInfoTexel(data, width, info_x, info_y, data0_offset + 1);
+            const color1 = fetchLayerInfoTexel(data, width, info_x, info_y, data0_offset + 2);
+            return sampleRadialGradient(data0, color0, color1, local);
         },
-        4 => return sampleImagePaint(atlas, glyph_id, data, width, info_x, info_y, 2, data0, local),
-        5 => {
-            // Composite group: 1-texel header, then 6-texel sub-records.
-            // Read the fill layer's paint tag at offset 1 from the group header.
-            const fill_info = fetchLayerInfoTexel(data, width, info_x, info_y, 1);
-            const fill_tag: i32 = @intFromFloat(@round(-fill_info[3]));
-            // Fill paint data starts at offset 3 (header=0, sub-record band info=1,2, paint data=3+)
-            const fill_data0 = fetchLayerInfoTexel(data, width, info_x, info_y, 3);
-            switch (fill_tag) {
-                1 => return .{ .color = srgbColorToLinear(fill_data0) },
-                2 => {
-                    const color0 = fetchLayerInfoTexel(data, width, info_x, info_y, 4);
-                    const color1 = fetchLayerInfoTexel(data, width, info_x, info_y, 5);
-                    const extra = fetchLayerInfoTexel(data, width, info_x, info_y, 6);
-                    const start = Vec2.new(fill_data0[0], fill_data0[1]);
-                    const end = Vec2.new(fill_data0[2], fill_data0[3]);
-                    const delta = Vec2.sub(end, start);
-                    const len_sq = Vec2.dot(delta, delta);
-                    var t: f32 = 0.0;
-                    if (len_sq > 1e-10) t = Vec2.dot(Vec2.sub(local, start), delta) / len_sq;
-                    return .{
-                        .color = lerpGradientColor(color0, color1, wrapPaintT(t, paintExtendFromFloat(extra[0]))),
-                        .apply_dither = true,
-                    };
-                },
-                3 => {
-                    const color0 = fetchLayerInfoTexel(data, width, info_x, info_y, 4);
-                    const color1 = fetchLayerInfoTexel(data, width, info_x, info_y, 5);
-                    const center = Vec2.new(fill_data0[0], fill_data0[1]);
-                    const radius = @max(@abs(fill_data0[2]), 1.0 / 65536.0);
-                    const t = Vec2.length(Vec2.sub(local, center)) / radius;
-                    return .{
-                        .color = lerpGradientColor(color0, color1, wrapPaintT(t, paintExtendFromFloat(fill_data0[3]))),
-                        .apply_dither = true,
-                    };
-                },
-                4 => return sampleImagePaint(atlas, glyph_id, data, width, info_x, info_y, 3, fill_data0, local),
-                else => return .{ .color = .{ 1, 0, 1, 1 } },
-            }
-        },
+        4 => return sampleImagePaint(atlas, glyph_id, data, width, info_x, info_y, data0_offset, data0, local),
         else => return .{ .color = .{ 1, 0, 1, 1 } },
     }
+}
+
+fn sampleLinearGradient(data0: [4]f32, color0: [4]f32, color1: [4]f32, extra: [4]f32, local: Vec2) PathPaintSample {
+    const start = Vec2.new(data0[0], data0[1]);
+    const end = Vec2.new(data0[2], data0[3]);
+    const delta = Vec2.sub(end, start);
+    const len_sq = Vec2.dot(delta, delta);
+    var t: f32 = 0.0;
+    if (len_sq > 1e-10) t = Vec2.dot(Vec2.sub(local, start), delta) / len_sq;
+    return .{
+        .color = lerpGradientColor(color0, color1, wrapPaintT(t, paintExtendFromFloat(extra[0]))),
+        .apply_dither = true,
+    };
+}
+
+fn sampleRadialGradient(data0: [4]f32, color0: [4]f32, color1: [4]f32, local: Vec2) PathPaintSample {
+    const center = Vec2.new(data0[0], data0[1]);
+    const radius = @max(@abs(data0[2]), 1.0 / 65536.0);
+    const t = Vec2.length(Vec2.sub(local, center)) / radius;
+    return .{
+        .color = lerpGradientColor(color0, color1, wrapPaintT(t, paintExtendFromFloat(data0[3]))),
+        .apply_dither = true,
+    };
 }
 
 pub fn sampleImagePaint(

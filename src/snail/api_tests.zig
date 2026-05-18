@@ -293,6 +293,8 @@ test "draw dispatch uses only prepared stamps and caller records" {
         .deinit = Fake.deinit,
         .upload = .{
             .uploadResources = Fake.uploadResources,
+        },
+        .coverage = .{
             .coverageBackend = Fake.coverageBackend,
         },
         .draw = .{
@@ -852,8 +854,8 @@ test "resource upload plan reports changed keys and enforces budget" {
 
     var pending = try renderer.beginResourceUpload(.{ .persistent = allocator, .scratch = allocator }, &plan_b);
     defer pending.deinit();
-    try std.testing.expectError(error.ResourceUploadBudgetExceeded, pending.record(.no_command, .{ .budget_bytes = 0 }));
-    try std.testing.expect(!pending.ready(.pending));
+    try std.testing.expectError(error.ResourceUploadBudgetExceeded, pending.record(.{ .budget_bytes = 0 }));
+    try std.testing.expect(!pending.ready(false));
 
     var rebuild_plan = try plan_b.clone(allocator);
     defer rebuild_plan.deinit();
@@ -861,13 +863,13 @@ test "resource upload plan reports changed keys and enforces budget" {
     try std.testing.expect(rebuild_plan.cache.requiresRebuild());
     var rebuild_pending = try renderer.beginResourceUpload(.{ .persistent = allocator, .scratch = allocator }, &rebuild_plan);
     defer rebuild_pending.deinit();
-    try std.testing.expectError(error.ResourceCacheRebuildRequired, rebuild_pending.record(.no_command, .{
+    try std.testing.expectError(error.ResourceCacheRebuildRequired, rebuild_pending.record(.{
         .budget_bytes = plan_b.upload.bytes,
         .allow_cache_rebuilds = false,
     }));
 
-    try pending.record(.no_command, .{ .budget_bytes = plan_b.upload.bytes });
-    try std.testing.expect(pending.ready(.immediate));
+    try pending.record(.{ .budget_bytes = plan_b.upload.bytes });
+    try std.testing.expect(pending.readyNow());
     var prepared_b = try pending.publish();
     defer prepared_b.deinit();
     try std.testing.expect(prepared_b.stampForKey(.hud_panel) != null);
@@ -1017,9 +1019,9 @@ test "pending upload publish waits for external completion marker" {
     };
     defer pending.deinit();
 
-    try std.testing.expect(!pending.ready(.pending));
+    try std.testing.expect(!pending.ready(false));
     try std.testing.expectError(error.ResourceUploadNotReady, pending.publish());
-    try std.testing.expect(pending.ready(.complete));
+    try std.testing.expect(pending.ready(true));
     var prepared = try pending.publish();
     defer prepared.deinit();
     try std.testing.expect(prepared.stampForKey(.hud_panel) != null);

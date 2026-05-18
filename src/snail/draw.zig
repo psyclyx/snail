@@ -175,68 +175,85 @@ fn addSceneToBuffers(
 ) !void {
     for (scene.commands.items) |command| {
         switch (command) {
-            .text => |draw| {
-                var view = try prepared.textAtlasView(draw.resources.atlas);
-                const segment_key, const segment_stamp = if (draw.blob.hasPaintRecords()) blk: {
-                    const paint_key = draw.resources.paint orelse return error.MissingPreparedResource;
-                    const paint_view = try prepared.textPaintView(paint_key);
-                    view.paint_info_row_base = paint_view.info_row_base;
-                    break :blk .{ paint_key, try prepared.textPaintStamp(paint_key) };
-                } else blk: {
-                    break :blk .{ draw.resources.atlas, try prepared.textStamp(draw.resources.atlas) };
-                };
-                const glyph_range = draw.glyphs.resolve(draw.blob.glyphCount());
-                for (draw.instances, 0..) |_, override_index| {
-                    var glyph_start = glyph_range.start;
-                    while (glyph_start < glyph_range.end) {
-                        const start = word_len.*;
-                        var batch = TextBatch.init(words[word_len.*..]);
-                        const result = try batch.addDraw(view, draw, override_index, glyph_start);
-                        glyph_start = result.next_glyph;
-                        if (batch.glyphCount() == 0) {
-                            if (result.completed) break;
-                            continue;
-                        }
-                        word_len.* += batch.slice().len;
-                        try segments.add(.{
-                            .kind = .text,
-                            .offset = start,
-                            .len = batch.slice().len,
-                            .texture_layer_base = result.layer_window_base,
-                            .key = segment_key,
-                            .resource_stamp = segment_stamp,
-                        });
-                        if (result.completed) break;
-                    }
-                }
-            },
-            .path => |draw| {
-                const view = try prepared.pathAtlasView(draw.resource_key);
-                const range = draw.shapes.resolve(draw.picture.shapes.len);
-                for (draw.instances, 0..) |_, override_index| {
-                    var shape_start = range.start;
-                    while (shape_start < range.end) {
-                        const start = word_len.*;
-                        var batch = PathBatch.init(words[word_len.*..]);
-                        const result = try batch.addDraw(&view, draw, override_index, shape_start);
-                        shape_start = result.next_shape;
-                        if (batch.shapeCount() == 0) {
-                            if (result.completed) break;
-                            continue;
-                        }
-                        word_len.* += batch.slice().len;
-                        try segments.add(.{
-                            .kind = .path,
-                            .offset = start,
-                            .len = batch.slice().len,
-                            .texture_layer_base = result.layer_window_base,
-                            .key = draw.resource_key,
-                            .resource_stamp = try prepared.pathStamp(draw.resource_key),
-                        });
-                        if (result.completed) break;
-                    }
-                }
-            },
+            .text => |draw| try addTextDrawToBuffers(words, word_len, segments, prepared, draw),
+            .path => |draw| try addPathDrawToBuffers(words, word_len, segments, prepared, draw),
+        }
+    }
+}
+
+fn addTextDrawToBuffers(
+    words: []u32,
+    word_len: *usize,
+    segments: *SegmentSink,
+    prepared: *const PreparedResources,
+    draw: scene_mod.TextDraw,
+) !void {
+    var view = try prepared.textAtlasView(draw.resources.atlas);
+    const segment_key, const segment_stamp = if (draw.blob.hasPaintRecords()) blk: {
+        const paint_key = draw.resources.paint orelse return error.MissingPreparedResource;
+        const paint_view = try prepared.textPaintView(paint_key);
+        view.paint_info_row_base = paint_view.info_row_base;
+        break :blk .{ paint_key, try prepared.textPaintStamp(paint_key) };
+    } else blk: {
+        break :blk .{ draw.resources.atlas, try prepared.textStamp(draw.resources.atlas) };
+    };
+
+    const glyph_range = draw.glyphs.resolve(draw.blob.glyphCount());
+    for (draw.instances, 0..) |_, override_index| {
+        var glyph_start = glyph_range.start;
+        while (glyph_start < glyph_range.end) {
+            const start = word_len.*;
+            var batch = TextBatch.init(words[word_len.*..]);
+            const result = try batch.addDraw(view, draw, override_index, glyph_start);
+            glyph_start = result.next_glyph;
+            if (batch.glyphCount() == 0) {
+                if (result.completed) break;
+                continue;
+            }
+            word_len.* += batch.slice().len;
+            try segments.add(.{
+                .kind = .text,
+                .offset = start,
+                .len = batch.slice().len,
+                .texture_layer_base = result.layer_window_base,
+                .key = segment_key,
+                .resource_stamp = segment_stamp,
+            });
+            if (result.completed) break;
+        }
+    }
+}
+
+fn addPathDrawToBuffers(
+    words: []u32,
+    word_len: *usize,
+    segments: *SegmentSink,
+    prepared: *const PreparedResources,
+    draw: scene_mod.PathDraw,
+) !void {
+    const view = try prepared.pathAtlasView(draw.resource_key);
+    const range = draw.shapes.resolve(draw.picture.shapes.len);
+    for (draw.instances, 0..) |_, override_index| {
+        var shape_start = range.start;
+        while (shape_start < range.end) {
+            const start = word_len.*;
+            var batch = PathBatch.init(words[word_len.*..]);
+            const result = try batch.addDraw(&view, draw, override_index, shape_start);
+            shape_start = result.next_shape;
+            if (batch.shapeCount() == 0) {
+                if (result.completed) break;
+                continue;
+            }
+            word_len.* += batch.slice().len;
+            try segments.add(.{
+                .kind = .path,
+                .offset = start,
+                .len = batch.slice().len,
+                .texture_layer_base = result.layer_window_base,
+                .key = draw.resource_key,
+                .resource_stamp = try prepared.pathStamp(draw.resource_key),
+            });
+            if (result.completed) break;
         }
     }
 }

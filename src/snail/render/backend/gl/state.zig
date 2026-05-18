@@ -405,25 +405,8 @@ pub const GlTextState = struct {
     }
 
     fn ensureLinearResolve(self: *GlTextState, width: u32, height: u32, format: IntermediateFormat) !void {
-        if (self.linear_resolve_fbo != 0 and
-            self.linear_resolve_tex != 0 and
-            self.linear_resolve_dst_tex != 0 and
-            self.linear_resolve_width == width and
-            self.linear_resolve_height == height and
-            self.linear_resolve_format == format)
-        {
-            return;
-        }
-
-        if (self.linear_resolve_fbo != 0) gl.glDeleteFramebuffers(1, &self.linear_resolve_fbo);
-        if (self.linear_resolve_tex != 0) gl.glDeleteTextures(1, &self.linear_resolve_tex);
-        if (self.linear_resolve_dst_tex != 0) gl.glDeleteTextures(1, &self.linear_resolve_dst_tex);
-        self.linear_resolve_fbo = 0;
-        self.linear_resolve_tex = 0;
-        self.linear_resolve_dst_tex = 0;
-        self.linear_resolve_width = 0;
-        self.linear_resolve_height = 0;
-        self.linear_resolve_format = format;
+        if (self.linearResolveReady(width, height, format)) return;
+        self.resetLinearResolveObjects(format);
 
         var prev_draw: gl.GLint = 0;
         var prev_read: gl.GLint = 0;
@@ -440,48 +423,8 @@ pub const GlTextState = struct {
         gl.glGenFramebuffers(1, &self.linear_resolve_fbo);
         gl.glGenTextures(1, &self.linear_resolve_tex);
         gl.glGenTextures(1, &self.linear_resolve_dst_tex);
-        gl.glBindTexture(gl.GL_TEXTURE_2D, self.linear_resolve_tex);
-        const internal_format: gl.GLint = switch (format) {
-            .rgba16f => gl.GL_RGBA16F,
-            .rgba32f => gl.GL_RGBA32F,
-        };
-        const pixel_type: gl.GLenum = switch (format) {
-            .rgba16f => gl.GL_HALF_FLOAT,
-            .rgba32f => gl.GL_FLOAT,
-        };
-        gl.glTexImage2D(
-            gl.GL_TEXTURE_2D,
-            0,
-            internal_format,
-            @intCast(width),
-            @intCast(height),
-            0,
-            gl.GL_RGBA,
-            pixel_type,
-            null,
-        );
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST);
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST);
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE);
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE);
-
-        gl.glBindTexture(gl.GL_TEXTURE_2D, self.linear_resolve_dst_tex);
-        gl.glTexImage2D(
-            gl.GL_TEXTURE_2D,
-            0,
-            internal_format,
-            @intCast(width),
-            @intCast(height),
-            0,
-            gl.GL_RGBA,
-            pixel_type,
-            null,
-        );
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST);
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST);
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE);
-        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE);
-
+        initLinearResolveTexture(self.linear_resolve_tex, width, height, format);
+        initLinearResolveTexture(self.linear_resolve_dst_tex, width, height, format);
         gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, self.linear_resolve_fbo);
         gl.glFramebufferTexture2D(gl.GL_DRAW_FRAMEBUFFER, gl.GL_COLOR_ATTACHMENT0, gl.GL_TEXTURE_2D, self.linear_resolve_tex, 0);
         if (gl.glCheckFramebufferStatus(gl.GL_DRAW_FRAMEBUFFER) != gl.GL_FRAMEBUFFER_COMPLETE) {
@@ -490,6 +433,44 @@ pub const GlTextState = struct {
 
         self.linear_resolve_width = width;
         self.linear_resolve_height = height;
+    }
+
+    fn linearResolveReady(self: *const GlTextState, width: u32, height: u32, format: IntermediateFormat) bool {
+        return self.linear_resolve_fbo != 0 and
+            self.linear_resolve_tex != 0 and
+            self.linear_resolve_dst_tex != 0 and
+            self.linear_resolve_width == width and
+            self.linear_resolve_height == height and
+            self.linear_resolve_format == format;
+    }
+
+    fn resetLinearResolveObjects(self: *GlTextState, format: IntermediateFormat) void {
+        if (self.linear_resolve_fbo != 0) gl.glDeleteFramebuffers(1, &self.linear_resolve_fbo);
+        if (self.linear_resolve_tex != 0) gl.glDeleteTextures(1, &self.linear_resolve_tex);
+        if (self.linear_resolve_dst_tex != 0) gl.glDeleteTextures(1, &self.linear_resolve_dst_tex);
+        self.linear_resolve_fbo = 0;
+        self.linear_resolve_tex = 0;
+        self.linear_resolve_dst_tex = 0;
+        self.linear_resolve_width = 0;
+        self.linear_resolve_height = 0;
+        self.linear_resolve_format = format;
+    }
+
+    fn initLinearResolveTexture(texture: gl.GLuint, width: u32, height: u32, format: IntermediateFormat) void {
+        const internal_format: gl.GLint = switch (format) {
+            .rgba16f => gl.GL_RGBA16F,
+            .rgba32f => gl.GL_RGBA32F,
+        };
+        const pixel_type: gl.GLenum = switch (format) {
+            .rgba16f => gl.GL_HALF_FLOAT,
+            .rgba32f => gl.GL_FLOAT,
+        };
+        gl.glBindTexture(gl.GL_TEXTURE_2D, texture);
+        gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, internal_format, @intCast(width), @intCast(height), 0, gl.GL_RGBA, pixel_type, null);
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST);
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST);
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE);
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE);
     }
 
     // ── Draw ──

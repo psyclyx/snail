@@ -12,6 +12,7 @@ const SnailDrawState = common.SnailDrawState;
 const SnailResourceKey = common.SnailResourceKey;
 const SnailResourceFootprint = common.SnailResourceFootprint;
 const SnailResourceCacheStats = common.SnailResourceCacheStats;
+const SnailResourceUploadPlanSummary = common.SnailResourceUploadPlanSummary;
 const fromResourceFootprint = common.fromResourceFootprint;
 const fromResourceCacheStats = common.fromResourceCacheStats;
 const toDrawPass = common.toDrawPass;
@@ -96,71 +97,21 @@ pub export fn snail_resource_upload_plan_deinit(plan: ?*ResourceUploadPlanImpl) 
     }
 }
 
-pub export fn snail_resource_upload_plan_footprint(plan: *const ResourceUploadPlanImpl) SnailResourceFootprint {
-    return fromResourceFootprint(plan.inner.footprint);
+pub export fn snail_resource_upload_plan_summary(plan: *const ResourceUploadPlanImpl, out: *SnailResourceUploadPlanSummary) void {
+    out.* = .{
+        .footprint = fromResourceFootprint(plan.inner.footprint),
+        .upload_bytes = plan.inner.upload.bytes,
+        .upload_curve_bytes = plan.inner.upload.curve_bytes,
+        .upload_band_bytes = plan.inner.upload.band_bytes,
+        .upload_layer_info_bytes = plan.inner.upload.layer_info_bytes,
+        .upload_image_bytes = plan.inner.upload.image_bytes,
+        .changed_bytes = plan.inner.diff.changed_bytes,
+        .changed_key_count = plan.inner.diff.keys().len,
+        .requires_cache_rebuild = plan.inner.cache.requiresRebuild(),
+    };
 }
 
-pub export fn snail_resource_upload_plan_upload_estimate_bytes(plan: *const ResourceUploadPlanImpl) usize {
-    return plan.inner.upload.bytes;
-}
-
-pub export fn snail_resource_upload_plan_cache_reused_atlas_pages(plan: *const ResourceUploadPlanImpl) u32 {
-    return plan.inner.cache.reused_atlas_pages;
-}
-
-pub export fn snail_resource_upload_plan_cache_missing_atlas_pages(plan: *const ResourceUploadPlanImpl) u32 {
-    return plan.inner.cache.missing_atlas_pages;
-}
-
-pub export fn snail_resource_upload_plan_cache_new_atlas_banks(plan: *const ResourceUploadPlanImpl) u32 {
-    return plan.inner.cache.new_atlas_banks;
-}
-
-pub export fn snail_resource_upload_plan_cache_reused_images(plan: *const ResourceUploadPlanImpl) u32 {
-    return plan.inner.cache.reused_images;
-}
-
-pub export fn snail_resource_upload_plan_cache_missing_images(plan: *const ResourceUploadPlanImpl) u32 {
-    return plan.inner.cache.missing_images;
-}
-
-pub export fn snail_resource_upload_plan_cache_new_image_banks(plan: *const ResourceUploadPlanImpl) u32 {
-    return plan.inner.cache.new_image_banks;
-}
-
-pub export fn snail_resource_upload_plan_cache_atlas_rebuilds(plan: *const ResourceUploadPlanImpl) u32 {
-    return plan.inner.cache.atlas_rebuilds;
-}
-
-pub export fn snail_resource_upload_plan_cache_image_rebuilds(plan: *const ResourceUploadPlanImpl) u32 {
-    return plan.inner.cache.image_rebuilds;
-}
-
-pub export fn snail_resource_upload_plan_upload_estimate_curve_bytes(plan: *const ResourceUploadPlanImpl) usize {
-    return plan.inner.upload.curve_bytes;
-}
-
-pub export fn snail_resource_upload_plan_upload_estimate_band_bytes(plan: *const ResourceUploadPlanImpl) usize {
-    return plan.inner.upload.band_bytes;
-}
-
-pub export fn snail_resource_upload_plan_upload_estimate_layer_info_bytes(plan: *const ResourceUploadPlanImpl) usize {
-    return plan.inner.upload.layer_info_bytes;
-}
-
-pub export fn snail_resource_upload_plan_upload_estimate_image_bytes(plan: *const ResourceUploadPlanImpl) usize {
-    return plan.inner.upload.image_bytes;
-}
-
-pub export fn snail_resource_upload_plan_diff_changed_bytes(plan: *const ResourceUploadPlanImpl) usize {
-    return plan.inner.diff.changed_bytes;
-}
-
-pub export fn snail_resource_upload_plan_diff_changed_key_count(plan: *const ResourceUploadPlanImpl) usize {
-    return plan.inner.diff.keys().len;
-}
-
-pub export fn snail_resource_upload_plan_diff_changed_key(plan: *const ResourceUploadPlanImpl, index: usize, out: *SnailResourceKey) bool {
+pub export fn snail_resource_upload_plan_changed_key(plan: *const ResourceUploadPlanImpl, index: usize, out: *SnailResourceKey) bool {
     const keys = plan.inner.diff.keys();
     if (index >= keys.len) return false;
     out.* = keys[index].id;
@@ -194,12 +145,12 @@ pub export fn snail_pending_resource_upload_deinit(pending: ?*PendingResourceUpl
 }
 
 pub export fn snail_pending_resource_upload_record(pending: *PendingResourceUploadImpl, budget_bytes: usize) c_int {
-    pending.inner.record(.no_command, .{ .budget_bytes = budget_bytes }) catch |err| return mapError(err);
+    pending.inner.record(.{ .budget_bytes = budget_bytes }) catch |err| return mapError(err);
     return SNAIL_OK;
 }
 
 pub export fn snail_pending_resource_upload_record_checked(pending: *PendingResourceUploadImpl, budget_bytes: usize, allow_cache_rebuilds: bool) c_int {
-    pending.inner.record(.no_command, .{
+    pending.inner.record(.{
         .budget_bytes = budget_bytes,
         .allow_cache_rebuilds = allow_cache_rebuilds,
     }) catch |err| return mapError(err);
@@ -207,11 +158,11 @@ pub export fn snail_pending_resource_upload_record_checked(pending: *PendingReso
 }
 
 pub export fn snail_pending_resource_upload_ready(pending: *PendingResourceUploadImpl, ready: bool) bool {
-    return pending.inner.ready(.{ .ready = ready });
+    return pending.inner.ready(ready);
 }
 
 pub export fn snail_pending_resource_upload_ready_now(pending: *PendingResourceUploadImpl) bool {
-    return pending.inner.ready(.immediate);
+    return pending.inner.readyNow();
 }
 
 pub export fn snail_pending_resource_upload_publish(pending: *PendingResourceUploadImpl, out: *?*PreparedResourcesImpl) c_int {

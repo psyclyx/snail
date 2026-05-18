@@ -96,7 +96,24 @@ pub const VulkanPipeline = struct {
 
     pub fn init(self: *VulkanPipeline, vk_ctx: VulkanContext) !void {
         self.ctx = vk_ctx;
+        errdefer self.deinitResources();
 
+        try self.initSamplers();
+        try self.initDescriptorSetLayout();
+        try self.initPipelineLayout();
+        try self.createPipelineCache();
+
+        // Create draw pipelines during renderer init so draw never creates pipelines.
+        try self.warmGraphicsPipelines();
+
+        try self.initVertexUploadRing();
+        try self.initTransferCommandPool();
+        try self.initIndexBuffer();
+
+        self.initialized = true;
+    }
+
+    fn initSamplers(self: *VulkanPipeline) !void {
         const sampler_info = std.mem.zeroInit(vk.VkSamplerCreateInfo, .{
             .sType = vk.VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
             .magFilter = vk.VK_FILTER_NEAREST,
@@ -118,10 +135,9 @@ pub const VulkanPipeline = struct {
             .mipmapMode = vk.VK_SAMPLER_MIPMAP_MODE_LINEAR,
         });
         try check(vk.vkCreateSampler(self.ctx.device, &linear_sampler_info, null, &self.sampler_linear));
+    }
 
-        // Descriptor set layout: curve, band, layer info, image array.
-        // Bindings must be constructed programmatically because immutable sampler
-        // pointers point into self (runtime address, not comptime).
+    fn initDescriptorSetLayout(self: *VulkanPipeline) !void {
         var bindings: [4]vk.VkDescriptorSetLayoutBinding = undefined;
         bindings[0] = std.mem.zeroInit(vk.VkDescriptorSetLayoutBinding, .{
             .binding = 0,
@@ -158,7 +174,9 @@ pub const VulkanPipeline = struct {
             .pBindings = &bindings,
         });
         try check(vk.vkCreateDescriptorSetLayout(self.ctx.device, &dsl_info, null, &self.desc_set_layout));
+    }
 
+    fn initPipelineLayout(self: *VulkanPipeline) !void {
         const push_range = std.mem.zeroInit(vk.VkPushConstantRange, .{
             .stageFlags = vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT,
             .offset = 0,
@@ -172,12 +190,9 @@ pub const VulkanPipeline = struct {
         pl_info.pushConstantRangeCount = 1;
         pl_info.pPushConstantRanges = &push_range;
         try check(vk.vkCreatePipelineLayout(self.ctx.device, &pl_info, null, &self.pipeline_layout));
+    }
 
-        try self.createPipelineCache();
-
-        // Create draw pipelines during renderer init so draw never creates pipelines.
-        try self.warmGraphicsPipelines();
-
+    fn initVertexUploadRing(self: *VulkanPipeline) !void {
         try self.createBuffer(
             RING_TOTAL_BYTES,
             vk.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
@@ -188,21 +203,23 @@ pub const VulkanPipeline = struct {
         var map_ptr: ?*anyopaque = null;
         try check(vk.vkMapMemory(self.ctx.device, self.vertex_memory, 0, RING_TOTAL_BYTES, 0, &map_ptr));
         self.persistent_map = @ptrCast(map_ptr);
+    }
 
+    fn initTransferCommandPool(self: *VulkanPipeline) !void {
         const cp_info = std.mem.zeroInit(vk.VkCommandPoolCreateInfo, .{
             .sType = vk.VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
             .flags = vk.VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
             .queueFamilyIndex = self.ctx.queue_family_index,
         });
         try check(vk.vkCreateCommandPool(self.ctx.device, &cp_info, null, &self.transfer_cmd_pool));
-
-        try self.initIndexBuffer();
-
-        self.initialized = true;
     }
 
     pub fn deinit(self: *VulkanPipeline) void {
         if (!self.initialized) return;
+        self.deinitResources();
+    }
+
+    fn deinitResources(self: *VulkanPipeline) void {
         // Caller-owned frame synchronization must make renderer teardown safe.
         // Keep deinit free of implicit device-wide waits.
         if (self.resource_cache) |*cache| {
@@ -210,24 +227,30 @@ pub const VulkanPipeline = struct {
             self.resource_cache = null;
         }
         if (self.transfer_cmd_pool != null) vk.vkDestroyCommandPool(self.ctx.device, self.transfer_cmd_pool, null);
-        if (self.sampler_linear != null) vk.vkDestroySampler(self.ctx.device, self.sampler_linear, null);
-        if (self.sampler_nearest != null) vk.vkDestroySampler(self.ctx.device, self.sampler_nearest, null);
+        self.transfer_cmd_pool = null;
         if (self.index_buffer != null) {
             vk.vkDestroyBuffer(self.ctx.device, self.index_buffer, null);
             vk.vkFreeMemory(self.ctx.device, self.index_memory, null);
         }
+        self.index_buffer = null;
+        self.index_memory = null;
         if (self.vertex_buffer != null) {
-            vk.vkUnmapMemory(self.ctx.device, self.vertex_memory);
+            if (self.persistent_map != null) vk.vkUnmapMemory(self.ctx.device, self.vertex_memory);
             vk.vkDestroyBuffer(self.ctx.device, self.vertex_buffer, null);
             vk.vkFreeMemory(self.ctx.device, self.vertex_memory, null);
         }
-        if (self.desc_set_layout != null) vk.vkDestroyDescriptorSetLayout(self.ctx.device, self.desc_set_layout, null);
+        self.vertex_buffer = null;
+        self.vertex_memory = null;
+        self.persistent_map = null;
         if (self.pipeline_text_subpixel_dual != null) vk.vkDestroyPipeline(self.ctx.device, self.pipeline_text_subpixel_dual, null);
         if (self.pipeline_path != null) vk.vkDestroyPipeline(self.ctx.device, self.pipeline_path, null);
         if (self.pipeline_colr != null) vk.vkDestroyPipeline(self.ctx.device, self.pipeline_colr, null);
         if (self.pipeline_text != null) vk.vkDestroyPipeline(self.ctx.device, self.pipeline_text, null);
         if (self.pipeline_cache != null) vk.vkDestroyPipelineCache(self.ctx.device, self.pipeline_cache, null);
         if (self.pipeline_layout != null) vk.vkDestroyPipelineLayout(self.ctx.device, self.pipeline_layout, null);
+        if (self.desc_set_layout != null) vk.vkDestroyDescriptorSetLayout(self.ctx.device, self.desc_set_layout, null);
+        if (self.sampler_linear != null) vk.vkDestroySampler(self.ctx.device, self.sampler_linear, null);
+        if (self.sampler_nearest != null) vk.vkDestroySampler(self.ctx.device, self.sampler_nearest, null);
 
         self.pipeline_text_subpixel_dual = null;
         self.pipeline_path = null;
@@ -235,7 +258,9 @@ pub const VulkanPipeline = struct {
         self.pipeline_text = null;
         self.pipeline_cache = null;
         self.pipeline_layout = null;
-        self.persistent_map = null;
+        self.desc_set_layout = null;
+        self.sampler_linear = null;
+        self.sampler_nearest = null;
         self.initialized = false;
     }
 
@@ -376,50 +401,63 @@ pub const VulkanPipeline = struct {
         vk.vkCmdBindDescriptorSets(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, self.pipeline_layout, 0, 1, @ptrCast(&bank.desc_set), 0, null);
         setViewportAndScissor(cmd, state.surface.pixel_width, state.surface.pixel_height);
 
-        const render_mode = subpixel_policy.chooseTextRenderMode(
-            vertices,
-            state.mvp,
-            allow_subpixel,
-            state.raster.subpixel_order,
-            self.ctx.supports_dual_source_blend,
-        );
-
+        const draw_context = TextDrawContext{
+            .cmd = cmd,
+            .vertices = vertices,
+            .state = state,
+            .local_layer_base = local_layer_base,
+            .allow_subpixel = allow_subpixel,
+            .total_glyphs = total_glyphs,
+        };
         if (!prepared.atlas_has_special_text_runs) {
-            const pip = switch (render_mode) {
-                .grayscale => try self.ensureTextPipeline(),
-                .subpixel_dual_source => try self.ensureTextSubpixelDualPipeline(),
-            };
-            vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pip);
-
-            const pc = PushConstants{
-                .mvp = state.mvp.data,
-                .viewport = .{ state.surface.pixel_width, state.surface.pixel_height },
-                .fill_rule = @intFromEnum(state.raster.fill_rule),
-                .subpixel_order = @intFromEnum(if (render_mode == .grayscale) SubpixelOrder.none else state.raster.subpixel_order),
-                .output_srgb = if (state.surface.encoding.shaderEncodesSrgb()) 1 else 0,
-                .layer_base = @intCast(local_layer_base),
-                .coverage_exponent = state.raster.coverage_transfer.shaderExponent(),
-            };
-            vk.vkCmdPushConstants(cmd, self.pipeline_layout, vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(PushConstants), &pc);
-            try self.drawGlyphRange(vertices, 0, total_glyphs);
+            try self.drawRegularTextRun(draw_context);
             return;
         }
+        try self.drawSpecialTextRuns(draw_context);
+    }
 
+    const TextDrawContext = struct {
+        cmd: vk.VkCommandBuffer,
+        vertices: []const u32,
+        state: DrawState,
+        local_layer_base: u32,
+        allow_subpixel: bool,
+        total_glyphs: usize,
+    };
+
+    fn drawRegularTextRun(self: *VulkanPipeline, context: TextDrawContext) !void {
+        const render_mode = subpixel_policy.chooseTextRenderMode(
+            context.vertices,
+            context.state.mvp,
+            context.allow_subpixel,
+            context.state.raster.subpixel_order,
+            self.ctx.supports_dual_source_blend,
+        );
+        const pip = switch (render_mode) {
+            .grayscale => try self.ensureTextPipeline(),
+            .subpixel_dual_source => try self.ensureTextSubpixelDualPipeline(),
+        };
+        vk.vkCmdBindPipeline(context.cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pip);
+        self.pushTextConstants(context.cmd, context.state, context.local_layer_base, render_mode);
+        try self.drawGlyphRange(context.vertices, 0, context.total_glyphs);
+    }
+
+    fn drawSpecialTextRuns(self: *VulkanPipeline, context: TextDrawContext) !void {
         var run_start: usize = 0;
-        while (run_start < total_glyphs) {
-            const run_kind = subpixel_policy.glyphRunKind(vertices, run_start);
-            const run_end = subpixel_policy.glyphRunEnd(vertices, run_start, run_kind);
+        while (run_start < context.total_glyphs) {
+            const run_kind = subpixel_policy.glyphRunKind(context.vertices, run_start);
+            const run_end = subpixel_policy.glyphRunEnd(context.vertices, run_start, run_kind);
 
             const run_mode: subpixel_policy.TextRenderMode = if (run_kind != .regular)
                 .grayscale
             else
                 subpixel_policy.chooseTextRenderModeRange(
-                    vertices,
+                    context.vertices,
                     run_start,
                     run_end - run_start,
-                    state.mvp,
-                    allow_subpixel,
-                    state.raster.subpixel_order,
+                    context.state.mvp,
+                    context.allow_subpixel,
+                    context.state.raster.subpixel_order,
                     self.ctx.supports_dual_source_blend,
                 );
             const pip = switch (run_kind) {
@@ -430,21 +468,24 @@ pub const VulkanPipeline = struct {
                 .colr => try self.ensureColrPipeline(),
                 .path => try self.ensurePathPipeline(),
             };
-            vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pip);
-
-            const pc = PushConstants{
-                .mvp = state.mvp.data,
-                .viewport = .{ state.surface.pixel_width, state.surface.pixel_height },
-                .fill_rule = @intFromEnum(state.raster.fill_rule),
-                .subpixel_order = @intFromEnum(if (run_mode == .grayscale) SubpixelOrder.none else state.raster.subpixel_order),
-                .output_srgb = if (state.surface.encoding.shaderEncodesSrgb()) 1 else 0,
-                .layer_base = @intCast(local_layer_base),
-                .coverage_exponent = state.raster.coverage_transfer.shaderExponent(),
-            };
-            vk.vkCmdPushConstants(cmd, self.pipeline_layout, vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(PushConstants), &pc);
-            try self.drawGlyphRange(vertices, run_start, run_end - run_start);
+            vk.vkCmdBindPipeline(context.cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pip);
+            self.pushTextConstants(context.cmd, context.state, context.local_layer_base, run_mode);
+            try self.drawGlyphRange(context.vertices, run_start, run_end - run_start);
             run_start = run_end;
         }
+    }
+
+    fn pushTextConstants(self: *VulkanPipeline, cmd: vk.VkCommandBuffer, state: DrawState, local_layer_base: u32, render_mode: subpixel_policy.TextRenderMode) void {
+        const pc = PushConstants{
+            .mvp = state.mvp.data,
+            .viewport = .{ state.surface.pixel_width, state.surface.pixel_height },
+            .fill_rule = @intFromEnum(state.raster.fill_rule),
+            .subpixel_order = @intFromEnum(if (render_mode == .grayscale) SubpixelOrder.none else state.raster.subpixel_order),
+            .output_srgb = if (state.surface.encoding.shaderEncodesSrgb()) 1 else 0,
+            .layer_base = @intCast(local_layer_base),
+            .coverage_exponent = state.raster.coverage_transfer.shaderExponent(),
+        };
+        vk.vkCmdPushConstants(cmd, self.pipeline_layout, vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(PushConstants), &pc);
     }
 
     pub fn drawTextPrepared(self: *VulkanPipeline, prepared: *const PreparedResources, vertices: []const u32, state: DrawState, texture_layer_base: u32) !void {

@@ -417,91 +417,130 @@ pub const TextAtlas = struct {
 
     fn ensureGlyphMaps(self: *const TextAtlas, face_new_gids: []?std.AutoHashMap(u16, void)) !?TextAtlas {
         std.debug.assert(face_new_gids.len == self.config.faces.len);
+        if (!hasMissingGlyphs(face_new_gids)) return null;
 
-        var any_missing = false;
-        for (face_new_gids) |maybe_map| {
-            if (maybe_map) |map| {
-                if (map.count() > 0) {
-                    any_missing = true;
-                    break;
-                }
-            }
-        }
-        if (!any_missing) return null;
-
-        // Build new pages for each face with missing glyphs.
         var new_pages_list = std.ArrayListUnmanaged(*AtlasPage).empty;
         defer new_pages_list.deinit(self.allocator);
+        errdefer releasePages(new_pages_list.items);
 
-        const new_face_glyphs = try self.allocator.alloc(FaceGlyphData, self.config.faces.len);
-        const new_face_glyphs_initialized = try self.allocator.alloc(bool, self.config.faces.len);
-        defer self.allocator.free(new_face_glyphs_initialized);
-        @memset(new_face_glyphs_initialized, false);
-        errdefer {
-            for (new_face_glyphs, new_face_glyphs_initialized) |*fg, initialized| {
-                if (initialized) fg.deinit(self.allocator);
-            }
-            self.allocator.free(new_face_glyphs);
-        }
+        const new_face_glyphs = try self.buildExtendedFaceGlyphs(face_new_gids, &new_pages_list);
+        errdefer deinitFaceGlyphSlice(self.allocator, new_face_glyphs);
 
-        for (self.config.faces, 0..) |*fc, fi| {
-            if (face_new_gids[fi]) |*new_gids| {
-                // Expand COLR layers.
-                try glyph_atlas_mod.expandColrLayersInner(&fc.font, self.allocator, new_gids);
-
-                // Filter out glyph IDs already in the atlas.
-                var filtered = std.AutoHashMap(u16, void).init(self.allocator);
-                defer filtered.deinit();
-                var git = new_gids.keyIterator();
-                while (git.next()) |gid_ptr| {
-                    if (!self.face_glyphs[fi].glyph_map.contains(gid_ptr.*))
-                        try filtered.put(gid_ptr.*, {});
-                }
-
-                if (filtered.count() == 0) {
-                    new_face_glyphs[fi] = try self.face_glyphs[fi].clone(self.allocator);
-                    new_face_glyphs_initialized[fi] = true;
-                    continue;
-                }
-
-                // Build page for the new glyphs. `page_index` is u16 because
-                // the GPU vertex encoding only has 16 bits for it.
-                const next_page = self.pages.len + new_pages_list.items.len;
-                if (next_page > std.math.maxInt(u16)) return error.AtlasPageLimitExceeded;
-                const page_index: u16 = @intCast(next_page);
-                const page_result = try glyph_atlas_mod.buildPageDataInner(self.allocator, &fc.font, &filtered, page_index);
-                try new_pages_list.append(self.allocator, page_result.page);
-
-                // Merge glyph maps.
-                var merged = std.AutoHashMap(u16, GlyphInfo).init(self.allocator);
-                var eit = self.face_glyphs[fi].glyph_map.iterator();
-                while (eit.next()) |entry| try merged.put(entry.key_ptr.*, entry.value_ptr.*);
-                var nit = page_result.glyph_map.iterator();
-                while (nit.next()) |entry| try merged.put(entry.key_ptr.*, entry.value_ptr.*);
-                var pm = page_result.glyph_map;
-                pm.deinit();
-
-                new_face_glyphs[fi] = .{ .glyph_map = merged };
-                new_face_glyphs_initialized[fi] = true;
-                try new_face_glyphs[fi].buildGlyphLut(self.allocator);
-            } else {
-                new_face_glyphs[fi] = try self.face_glyphs[fi].clone(self.allocator);
-                new_face_glyphs_initialized[fi] = true;
-            }
-        }
-
-        // Assemble new pages array: retain old + own new.
-        const total_pages = self.pages.len + new_pages_list.items.len;
-        const new_pages = try self.allocator.alloc(*AtlasPage, total_pages);
-        for (self.pages, 0..) |p, i| new_pages[i] = p.retain();
-        for (new_pages_list.items, 0..) |p, i| new_pages[self.pages.len + i] = p;
-
+        const new_pages = try self.retainPagesWithNew(new_pages_list.items);
         return .{
             .allocator = self.allocator,
             .config = self.config.retain(),
             .pages = new_pages,
             .face_glyphs = new_face_glyphs,
         };
+    }
+
+    fn buildExtendedFaceGlyphs(
+        self: *const TextAtlas,
+        face_new_gids: []?std.AutoHashMap(u16, void),
+        new_pages_list: *std.ArrayListUnmanaged(*AtlasPage),
+    ) ![]FaceGlyphData {
+        const new_face_glyphs = try self.allocator.alloc(FaceGlyphData, self.config.faces.len);
+        const initialized = try self.allocator.alloc(bool, self.config.faces.len);
+        defer self.allocator.free(initialized);
+        @memset(initialized, false);
+        errdefer deinitInitializedFaceGlyphs(self.allocator, new_face_glyphs, initialized);
+
+        for (self.config.faces, 0..) |*fc, fi| {
+            if (face_new_gids[fi]) |*new_gids| {
+                var filtered = try self.filteredNewGlyphs(&fc.font, fi, new_gids);
+                defer filtered.deinit();
+                if (filtered.count() == 0) {
+                    new_face_glyphs[fi] = try self.face_glyphs[fi].clone(self.allocator);
+                    initialized[fi] = true;
+                    continue;
+                }
+
+                var page_result = try self.buildNextGlyphPage(&fc.font, &filtered, new_pages_list.items.len);
+                var page_map_owned = true;
+                errdefer if (page_map_owned) page_result.glyph_map.deinit();
+                var page_owned = true;
+                errdefer if (page_owned) page_result.page.release();
+                try new_pages_list.append(self.allocator, page_result.page);
+                page_owned = false;
+
+                new_face_glyphs[fi] = .{ .glyph_map = try self.mergedGlyphMap(fi, &page_result.glyph_map) };
+                page_result.glyph_map.deinit();
+                page_map_owned = false;
+                initialized[fi] = true;
+                try new_face_glyphs[fi].buildGlyphLut(self.allocator);
+            } else {
+                new_face_glyphs[fi] = try self.face_glyphs[fi].clone(self.allocator);
+                initialized[fi] = true;
+            }
+        }
+        return new_face_glyphs;
+    }
+
+    fn filteredNewGlyphs(self: *const TextAtlas, font: *const ttf.Font, face_index: usize, new_gids: *std.AutoHashMap(u16, void)) !std.AutoHashMap(u16, void) {
+        try glyph_atlas_mod.expandColrLayersInner(font, self.allocator, new_gids);
+        var filtered = std.AutoHashMap(u16, void).init(self.allocator);
+        errdefer filtered.deinit();
+        var git = new_gids.keyIterator();
+        while (git.next()) |gid_ptr| {
+            if (!self.face_glyphs[face_index].glyph_map.contains(gid_ptr.*)) try filtered.put(gid_ptr.*, {});
+        }
+        return filtered;
+    }
+
+    fn buildNextGlyphPage(
+        self: *const TextAtlas,
+        font: *const ttf.Font,
+        filtered: *const std.AutoHashMap(u16, void),
+        new_page_count: usize,
+    ) !glyph_atlas_mod.BuildPageResult {
+        const next_page = self.pages.len + new_page_count;
+        if (next_page > std.math.maxInt(u16)) return error.AtlasPageLimitExceeded;
+        return glyph_atlas_mod.buildPageDataInner(self.allocator, font, filtered, @intCast(next_page));
+    }
+
+    fn mergedGlyphMap(self: *const TextAtlas, face_index: usize, page_map: *const std.AutoHashMap(u16, GlyphInfo)) !std.AutoHashMap(u16, GlyphInfo) {
+        var merged = std.AutoHashMap(u16, GlyphInfo).init(self.allocator);
+        errdefer merged.deinit();
+        var eit = self.face_glyphs[face_index].glyph_map.iterator();
+        while (eit.next()) |entry| try merged.put(entry.key_ptr.*, entry.value_ptr.*);
+        var nit = page_map.iterator();
+        while (nit.next()) |entry| try merged.put(entry.key_ptr.*, entry.value_ptr.*);
+        return merged;
+    }
+
+    fn retainPagesWithNew(self: *const TextAtlas, new_page_list: []const *AtlasPage) ![]*AtlasPage {
+        const total_pages = self.pages.len + new_page_list.len;
+        const new_pages = try self.allocator.alloc(*AtlasPage, total_pages);
+        errdefer releasePages(new_pages[0..self.pages.len]);
+        for (self.pages, 0..) |p, i| new_pages[i] = p.retain();
+        for (new_page_list, 0..) |p, i| new_pages[self.pages.len + i] = p;
+        return new_pages;
+    }
+
+    fn hasMissingGlyphs(face_new_gids: []?std.AutoHashMap(u16, void)) bool {
+        for (face_new_gids) |maybe_map| {
+            if (maybe_map) |map| {
+                if (map.count() > 0) return true;
+            }
+        }
+        return false;
+    }
+
+    fn releasePages(pages: []const *AtlasPage) void {
+        for (pages) |page_ref| page_ref.release();
+    }
+
+    fn deinitFaceGlyphSlice(allocator: std.mem.Allocator, face_glyphs: []FaceGlyphData) void {
+        for (face_glyphs) |*fg| fg.deinit(allocator);
+        allocator.free(face_glyphs);
+    }
+
+    fn deinitInitializedFaceGlyphs(allocator: std.mem.Allocator, face_glyphs: []FaceGlyphData, initialized: []const bool) void {
+        for (face_glyphs, initialized) |*fg, is_initialized| {
+            if (is_initialized) fg.deinit(allocator);
+        }
+        allocator.free(face_glyphs);
     }
 
     // ── GPU upload helpers ──

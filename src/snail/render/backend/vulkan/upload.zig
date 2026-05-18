@@ -269,7 +269,14 @@ fn createAtlasTextureBank(
     return bank;
 }
 
-fn appendTexturePagesIntoNewBank(self: anytype, prepared: *PreparedResources, scratch: std.mem.Allocator, atlases: []const *const CurveAtlas) !bool {
+const AtlasAppendPlan = struct {
+    first_page: *const AtlasPage,
+    layer_count: u32,
+    curve_height: u32,
+    band_height: u32,
+};
+
+fn atlasAppendPlan(prepared: *const PreparedResources, atlases: []const *const CurveAtlas) !?AtlasAppendPlan {
     var page_count_total: usize = 0;
     var max_curve_h: u32 = 1;
     var max_band_h: u32 = 1;
@@ -284,19 +291,33 @@ fn appendTexturePagesIntoNewBank(self: anytype, prepared: *PreparedResources, sc
             page_count_total += 1;
         }
     }
-    const first = first_page orelse return true;
+    if (page_count_total == 0) return null;
     if (page_count_total > std.math.maxInt(u32)) return error.PreparedResourceCapacityExceeded;
-    const layer_count: u32 = @intCast(page_count_total);
+    return .{
+        .first_page = first_page.?,
+        .layer_count = @intCast(page_count_total),
+        .curve_height = upload_common.heightCapacity(max_curve_h),
+        .band_height = upload_common.heightCapacity(max_band_h),
+    };
+}
 
+fn ensureNewBankSlotCapacity(prepared: *PreparedResources, atlases: []const *const CurveAtlas) !void {
     try prepared.ensureRetainedBankCapacity(prepared.atlas_bank_count + 1);
     for (atlases, 0..) |atlas, i| {
         const slot = &prepared.atlas_slots[i];
         const new_pages: u32 = @intCast(atlas.pageCount());
         try prepared.ensureSlotPageCapacity(slot, @max(new_pages, slot.capacity_pages));
     }
+}
 
+fn buildNewBankUploads(
+    prepared: *const PreparedResources,
+    scratch: std.mem.Allocator,
+    atlases: []const *const CurveAtlas,
+    layer_count: u32,
+) ![]AtlasPageUpload {
     const uploads = try scratch.alloc(AtlasPageUpload, layer_count);
-    defer scratch.free(uploads);
+    errdefer scratch.free(uploads);
     var layer: u32 = 0;
     for (atlases, 0..) |atlas, i| {
         const slot = &prepared.atlas_slots[i];
@@ -308,14 +329,40 @@ fn appendTexturePagesIntoNewBank(self: anytype, prepared: *PreparedResources, sc
             layer += 1;
         }
     }
+    return uploads;
+}
+
+fn installNewBankPages(prepared: *PreparedResources, atlases: []const *const CurveAtlas, bank_id: u32) void {
+    var layer: u32 = 0;
+    for (atlases, 0..) |atlas, i| {
+        const slot = &prepared.atlas_slots[i];
+        const old_pages = slot.uploaded_pages;
+        const new_pages: u32 = @intCast(atlas.pageCount());
+        for (old_pages..new_pages) |page_index| {
+            const page = atlas.page(@intCast(page_index));
+            slot.page_ptrs[page_index] = page;
+            slot.page_layers[page_index] = texture_layers.inBank(bank_id, layer);
+            retainPage(page);
+            layer += 1;
+        }
+        slot.atlas = atlas;
+        slot.uploaded_pages = new_pages;
+    }
+}
+
+fn appendTexturePagesIntoNewBank(self: anytype, prepared: *PreparedResources, scratch: std.mem.Allocator, atlases: []const *const CurveAtlas) !bool {
+    const plan = (try atlasAppendPlan(prepared, atlases)) orelse return true;
+    try ensureNewBankSlotCapacity(prepared, atlases);
+    const uploads = try buildNewBankUploads(prepared, scratch, atlases, plan.layer_count);
+    defer scratch.free(uploads);
 
     var bank = try createAtlasTextureBank(
         self,
         prepared,
-        first,
-        layer_count,
-        upload_common.heightCapacity(max_curve_h),
-        upload_common.heightCapacity(max_band_h),
+        plan.first_page,
+        plan.layer_count,
+        plan.curve_height,
+        plan.band_height,
     );
     errdefer bank.deinit(prepared.ctx);
 
@@ -334,22 +381,7 @@ fn appendTexturePagesIntoNewBank(self: anytype, prepared: *PreparedResources, sc
     bank.band_view = try device.createImageView(self, bank.band_image, vk.VK_FORMAT_R16G16_UINT, bank.allocated_layer_count);
     updateDescriptorSetViews(self, bank.desc_set, bank.curve_view, bank.band_view, null, null);
 
-    layer = 0;
-    for (atlases, 0..) |atlas, i| {
-        const slot = &prepared.atlas_slots[i];
-        const old_pages = slot.uploaded_pages;
-        const new_pages: u32 = @intCast(atlas.pageCount());
-        for (old_pages..new_pages) |page_index| {
-            const page = atlas.page(@intCast(page_index));
-            slot.page_ptrs[page_index] = page;
-            slot.page_layers[page_index] = texture_layers.inBank(bank.id, layer);
-            retainPage(page);
-            layer += 1;
-        }
-        slot.atlas = atlas;
-        slot.uploaded_pages = new_pages;
-    }
-
+    installNewBankPages(prepared, atlases, bank.id);
     prepared.atlas_banks[prepared.atlas_bank_count] = bank;
     prepared.atlas_bank_count += 1;
     return true;
@@ -638,28 +670,25 @@ fn uploadTextureData(
     );
 }
 
-fn uploadPageDataToImages(
-    self: anytype,
-    prepared: *PreparedResources,
-    scratch: std.mem.Allocator,
-    uploads: []const AtlasPageUpload,
-    curve_image: vk.VkImage,
-    band_image: vk.VkImage,
-    layer_count: u32,
-    old_layout: vk.VkImageLayout,
-) !void {
-    if (uploads.len == 0) return;
+const MappedUploadStaging = struct {
+    buffer: vk.VkBuffer,
+    memory: vk.VkDeviceMemory,
+    data: [*]u8,
+};
+
+fn atlasUploadStagingByteCount(uploads: []const AtlasPageUpload) usize {
     const curve_px_bytes: usize = 4 * 2; // RGBA16F = 4 channels * 2 bytes
     const band_px_bytes: usize = 2 * 2; // RG16UI = 2 channels * 2 bytes
-
-    var total_staging: usize = 0;
+    var total: usize = 0;
     for (uploads) |upload| {
         const page = upload.page;
-        total_staging += @as(usize, page.curve_width) * @as(usize, page.curve_height) * curve_px_bytes;
-        total_staging += @as(usize, page.band_width) * @as(usize, page.band_height) * band_px_bytes;
+        total += @as(usize, page.curve_width) * @as(usize, page.curve_height) * curve_px_bytes;
+        total += @as(usize, page.band_width) * @as(usize, page.band_height) * band_px_bytes;
     }
-    const region_count: u32 = @intCast(uploads.len);
+    return total;
+}
 
+fn createMappedUploadStaging(self: anytype, total_staging: usize) !MappedUploadStaging {
     var staging_buf: vk.VkBuffer = null;
     var staging_mem: vk.VkDeviceMemory = null;
     try device.createBuffer(
@@ -674,15 +703,31 @@ fn uploadPageDataToImages(
 
     var map_ptr: ?*anyopaque = null;
     try device.check(vk.vkMapMemory(self.ctx.device, staging_mem, 0, @intCast(total_staging), 0, &map_ptr));
-    const staging_data: [*]u8 = @ptrCast(map_ptr orelse return error.VulkanMapMemoryReturnedNull);
+    const data: [*]u8 = @ptrCast(map_ptr orelse {
+        vk.vkUnmapMemory(self.ctx.device, staging_mem);
+        return error.VulkanMapMemoryReturnedNull;
+    });
+    return .{ .buffer = staging_buf, .memory = staging_mem, .data = data };
+}
 
-    // Record one VkBufferImageCopy per (atlas page, image), sized to the
-    // total page count discovered above. Static arrays would silently
-    // overflow when many fonts/atlases are uploaded together.
-    const curve_regions = try scratch.alloc(vk.VkBufferImageCopy, region_count);
-    defer scratch.free(curve_regions);
-    const band_regions = try scratch.alloc(vk.VkBufferImageCopy, region_count);
-    defer scratch.free(band_regions);
+fn imageCopyRegion(buffer_offset: usize, layer: u32, width: u32, height: u32) vk.VkBufferImageCopy {
+    var region: vk.VkBufferImageCopy = std.mem.zeroes(vk.VkBufferImageCopy);
+    region.bufferOffset = @intCast(buffer_offset);
+    region.imageSubresource.aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.baseArrayLayer = layer;
+    region.imageSubresource.layerCount = 1;
+    region.imageExtent = .{ .width = width, .height = height, .depth = 1 };
+    return region;
+}
+
+fn writeAtlasPageUploadRegions(
+    staging_data: [*]u8,
+    uploads: []const AtlasPageUpload,
+    curve_regions: []vk.VkBufferImageCopy,
+    band_regions: []vk.VkBufferImageCopy,
+) void {
+    const curve_px_bytes: usize = 4 * 2;
+    const band_px_bytes: usize = 2 * 2;
     var staging_offset: usize = 0;
 
     for (uploads, 0..) |upload, region_index| {
@@ -692,33 +737,30 @@ fn uploadPageDataToImages(
         const curve_size = @as(usize, page.curve_width) * @as(usize, page.curve_height) * curve_px_bytes;
         const curve_bytes: [*]const u8 = @ptrCast(page.curve_data.ptr);
         @memcpy(staging_data[staging_offset..][0..curve_size], curve_bytes[0..curve_size]);
-        var cr: vk.VkBufferImageCopy = std.mem.zeroes(vk.VkBufferImageCopy);
-        cr.bufferOffset = @intCast(staging_offset);
-        cr.imageSubresource.aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT;
-        cr.imageSubresource.baseArrayLayer = layer;
-        cr.imageSubresource.layerCount = 1;
-        cr.imageExtent = .{ .width = page.curve_width, .height = page.curve_height, .depth = 1 };
-        curve_regions[region_index] = cr;
+        curve_regions[region_index] = imageCopyRegion(staging_offset, layer, page.curve_width, page.curve_height);
         staging_offset += curve_size;
 
         const band_size = @as(usize, page.band_width) * @as(usize, page.band_height) * band_px_bytes;
         const band_bytes: [*]const u8 = @ptrCast(page.band_data.ptr);
         @memcpy(staging_data[staging_offset..][0..band_size], band_bytes[0..band_size]);
-        var br: vk.VkBufferImageCopy = std.mem.zeroes(vk.VkBufferImageCopy);
-        br.bufferOffset = @intCast(staging_offset);
-        br.imageSubresource.aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT;
-        br.imageSubresource.baseArrayLayer = layer;
-        br.imageSubresource.layerCount = 1;
-        br.imageExtent = .{ .width = page.band_width, .height = page.band_height, .depth = 1 };
-        band_regions[region_index] = br;
+        band_regions[region_index] = imageCopyRegion(staging_offset, layer, page.band_width, page.band_height);
         staging_offset += band_size;
     }
+}
 
-    vk.vkUnmapMemory(self.ctx.device, staging_mem);
-
-    const transfer = try device.beginTransferCommand(
-        self,
-    );
+fn submitAtlasPageUpload(
+    self: anytype,
+    prepared: *PreparedResources,
+    staging: MappedUploadStaging,
+    curve_image: vk.VkImage,
+    band_image: vk.VkImage,
+    layer_count: u32,
+    old_layout: vk.VkImageLayout,
+    curve_regions: []const vk.VkBufferImageCopy,
+    band_regions: []const vk.VkBufferImageCopy,
+) !void {
+    const region_count: u32 = @intCast(curve_regions.len);
+    const transfer = try device.beginTransferCommand(self);
     var transfer_finished = false;
     errdefer if (!transfer_finished) device.discardTransferCommand(self, transfer);
     const cmd = transfer.cmd;
@@ -726,15 +768,48 @@ fn uploadPageDataToImages(
     device.transitionImageLayout(cmd, curve_image, layer_count, old_layout, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     device.transitionImageLayout(cmd, band_image, layer_count, old_layout, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
-    vk.vkCmdCopyBufferToImage(cmd, staging_buf, curve_image, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region_count, curve_regions.ptr);
-    vk.vkCmdCopyBufferToImage(cmd, staging_buf, band_image, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region_count, band_regions.ptr);
+    vk.vkCmdCopyBufferToImage(cmd, staging.buffer, curve_image, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region_count, curve_regions.ptr);
+    vk.vkCmdCopyBufferToImage(cmd, staging.buffer, band_image, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region_count, band_regions.ptr);
 
     device.transitionImageLayout(cmd, curve_image, layer_count, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     device.transitionImageLayout(cmd, band_image, layer_count, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
     try device.finishTransferCommand(self, transfer);
     transfer_finished = true;
-    try device.finishUploadStaging(self, prepared, staging_buf, staging_mem);
+    try device.finishUploadStaging(self, prepared, staging.buffer, staging.memory);
+}
+
+fn uploadPageDataToImages(
+    self: anytype,
+    prepared: *PreparedResources,
+    scratch: std.mem.Allocator,
+    uploads: []const AtlasPageUpload,
+    curve_image: vk.VkImage,
+    band_image: vk.VkImage,
+    layer_count: u32,
+    old_layout: vk.VkImageLayout,
+) !void {
+    if (uploads.len == 0) return;
+    const region_count: u32 = @intCast(uploads.len);
+    const staging = try createMappedUploadStaging(self, atlasUploadStagingByteCount(uploads));
+    var staging_owned = true;
+    var staging_mapped = true;
+    errdefer if (staging_owned) device.destroyStagingBuffer(self, staging.buffer, staging.memory);
+    errdefer if (staging_mapped) vk.vkUnmapMemory(self.ctx.device, staging.memory);
+
+    // Record one VkBufferImageCopy per (atlas page, image), sized to the
+    // total page count discovered above. Static arrays would silently
+    // overflow when many fonts/atlases are uploaded together.
+    const curve_regions = try scratch.alloc(vk.VkBufferImageCopy, region_count);
+    defer scratch.free(curve_regions);
+    const band_regions = try scratch.alloc(vk.VkBufferImageCopy, region_count);
+    defer scratch.free(band_regions);
+    writeAtlasPageUploadRegions(staging.data, uploads, curve_regions, band_regions);
+
+    vk.vkUnmapMemory(self.ctx.device, staging.memory);
+    staging_mapped = false;
+    try submitAtlasPageUpload(self, prepared, staging, curve_image, band_image, layer_count, old_layout, curve_regions, band_regions);
+    staging_owned = false;
 }
 
 fn uploadLayerInfoData(self: anytype, prepared: *PreparedResources, data: []f32, width: u32, height: u32) !void {

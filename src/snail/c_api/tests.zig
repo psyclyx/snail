@@ -262,10 +262,12 @@ test "c_api: scheduled upload draw list coverage records and retirement" {
 
     var plan: ?*c.test_api.ResourceUploadPlanImpl = null;
     try testing.expectEqual(c.SNAIL_OK, c_render.snail_renderer_plan_resource_upload(renderer.?, null, null, resources.?, &plan));
-    try testing.expect(c_render.snail_resource_upload_plan_upload_estimate_bytes(plan.?) > 0);
-    try testing.expect(c_render.snail_resource_upload_plan_diff_changed_key_count(plan.?) > 0);
+    var summary: c.SnailResourceUploadPlanSummary = .{};
+    c_render.snail_resource_upload_plan_summary(plan.?, &summary);
+    try testing.expect(summary.upload_bytes > 0);
+    try testing.expect(summary.changed_key_count > 0);
     var changed_key: c.SnailResourceKey = 0;
-    try testing.expect(c_render.snail_resource_upload_plan_diff_changed_key(plan.?, 0, &changed_key));
+    try testing.expect(c_render.snail_resource_upload_plan_changed_key(plan.?, 0, &changed_key));
 
     var pending: ?*c.test_api.PendingResourceUploadImpl = null;
     try testing.expectEqual(c.SNAIL_OK, c_render.snail_renderer_begin_resource_upload(renderer.?, null, plan.?, &pending));

@@ -237,7 +237,7 @@ fn planSceneResources(
     defer plan.deinit();
     var pending = try renderer.beginResourceUpload(.{ .persistent = allocator, .scratch = allocator }, &plan);
     defer pending.deinit();
-    try pending.record(.no_command, .{});
+    try pending.record(.{});
     return pending.publish();
 }
 

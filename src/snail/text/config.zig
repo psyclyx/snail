@@ -227,14 +227,29 @@ pub fn buildFontConfig(allocator: Allocator, specs: []const FaceSpec) !*FontConf
     const config = try allocator.create(FontConfig);
     errdefer allocator.destroy(config);
 
+    const faces = try buildFaceConfigs(allocator, specs);
+    errdefer deinitFaceConfigs(allocator, faces);
+
+    var chains = try buildFontChains(allocator, specs);
+    errdefer chains.deinit(allocator);
+
+    config.* = .{
+        .allocator = allocator,
+        .faces = faces,
+        .style_chains = chains.style_chains,
+        .global_chain = chains.global_chain,
+        .primary_face = chains.primary_face,
+    };
+
+    return config;
+}
+
+fn buildFaceConfigs(allocator: Allocator, specs: []const FaceSpec) ![]FaceConfig {
     const faces = try allocator.alloc(FaceConfig, specs.len);
     errdefer allocator.free(faces);
-    var initialized_faces: usize = 0;
-    errdefer {
-        for (faces[0..initialized_faces]) |*face| face.deinit();
-    }
+    var initialized: usize = 0;
+    errdefer deinitInitializedFaces(faces[0..initialized]);
 
-    // Parse fonts, deduplicating by the complete slice identity.
     var parsed_cache = std.AutoHashMap(FontDataKey, ParsedFont).init(allocator);
     defer parsed_cache.deinit();
 
@@ -251,21 +266,11 @@ pub fn buildFontConfig(allocator: Allocator, specs: []const FaceSpec) !*FontConf
                 .hb_shaper = cached.hb_shaper,
                 .owns_shapers = false,
             };
-            initialized_faces += 1;
+            initialized += 1;
         } else {
-            var parsed = ParsedFont{
-                .font = try ttf.Font.init(spec.data),
-                .shaper = null,
-                .hb_shaper = if (comptime build_options.enable_harfbuzz) null else {},
-            };
+            var parsed = try parseFont(allocator, spec.data);
             errdefer parsed.deinit();
-            parsed.shaper = opentype.Shaper.init(allocator, spec.data, parsed.font.gsub_offset, parsed.font.gpos_offset) catch null;
-            if (comptime build_options.enable_harfbuzz) {
-                parsed.hb_shaper = harfbuzz.HarfBuzzShaper.init(spec.data, parsed.font.units_per_em) catch null;
-            }
-
             try parsed_cache.put(key, parsed);
-
             faces[i] = .{
                 .font = parsed.font,
                 .font_data = spec.data,
@@ -276,35 +281,54 @@ pub fn buildFontConfig(allocator: Allocator, specs: []const FaceSpec) !*FontConf
                 .hb_shaper = parsed.hb_shaper,
                 .owns_shapers = true,
             };
-            initialized_faces += 1;
+            initialized += 1;
         }
     }
 
-    // Build style chains and global fallback chain.
-    var style_chains = std.AutoHashMapUnmanaged(u8, std.ArrayListUnmanaged(FaceIndex)).empty;
-    errdefer {
-        var it = style_chains.iterator();
-        while (it.next()) |entry| entry.value_ptr.deinit(allocator);
-        style_chains.deinit(allocator);
-    }
+    return faces;
+}
 
+fn parseFont(allocator: Allocator, data: []const u8) !ParsedFont {
+    var parsed = ParsedFont{
+        .font = try ttf.Font.init(data),
+        .shaper = null,
+        .hb_shaper = if (comptime build_options.enable_harfbuzz) null else {},
+    };
+    errdefer parsed.deinit();
+    parsed.shaper = opentype.Shaper.init(allocator, data, parsed.font.gsub_offset, parsed.font.gpos_offset) catch null;
+    if (comptime build_options.enable_harfbuzz) {
+        parsed.hb_shaper = harfbuzz.HarfBuzzShaper.init(data, parsed.font.units_per_em) catch null;
+    }
+    return parsed;
+}
+
+const FontChains = struct {
+    style_chains: std.AutoHashMapUnmanaged(u8, std.ArrayListUnmanaged(FaceIndex)),
+    global_chain: []FaceIndex,
+    primary_face: ?FaceIndex,
+
+    fn deinit(self: *FontChains, allocator: Allocator) void {
+        var it = self.style_chains.iterator();
+        while (it.next()) |entry| entry.value_ptr.deinit(allocator);
+        self.style_chains.deinit(allocator);
+        allocator.free(self.global_chain);
+    }
+};
+
+fn buildFontChains(allocator: Allocator, specs: []const FaceSpec) !FontChains {
+    var style_chains = std.AutoHashMapUnmanaged(u8, std.ArrayListUnmanaged(FaceIndex)).empty;
+    errdefer deinitStyleChains(allocator, &style_chains);
     var global_chain_list = std.ArrayListUnmanaged(FaceIndex).empty;
     errdefer global_chain_list.deinit(allocator);
-
     var primary_face: ?FaceIndex = null;
 
     for (specs, 0..) |spec, i| {
         const fi: FaceIndex = @intCast(i);
-
         if (spec.fallback) {
             try global_chain_list.append(allocator, fi);
             if (primary_face == null) primary_face = fi;
         } else {
-            const key = packStyle(.{ .weight = spec.weight, .italic = spec.italic });
-            const gop = try style_chains.getOrPut(allocator, key);
-            if (!gop.found_existing) gop.value_ptr.* = .empty;
-            try gop.value_ptr.append(allocator, fi);
-
+            try appendStyleFace(allocator, &style_chains, spec, fi);
             if (primary_face == null and spec.weight == .regular and !spec.italic) {
                 primary_face = fi;
             }
@@ -315,15 +339,41 @@ pub fn buildFontConfig(allocator: Allocator, specs: []const FaceSpec) !*FontConf
     @memcpy(global_chain, global_chain_list.items);
     global_chain_list.deinit(allocator);
 
-    config.* = .{
-        .allocator = allocator,
-        .faces = faces,
+    return .{
         .style_chains = style_chains,
         .global_chain = global_chain,
         .primary_face = primary_face,
     };
+}
 
-    return config;
+fn appendStyleFace(
+    allocator: Allocator,
+    style_chains: *std.AutoHashMapUnmanaged(u8, std.ArrayListUnmanaged(FaceIndex)),
+    spec: FaceSpec,
+    face_index: FaceIndex,
+) !void {
+    const key = packStyle(.{ .weight = spec.weight, .italic = spec.italic });
+    const gop = try style_chains.getOrPut(allocator, key);
+    if (!gop.found_existing) gop.value_ptr.* = .empty;
+    try gop.value_ptr.append(allocator, face_index);
+}
+
+fn deinitInitializedFaces(faces: []FaceConfig) void {
+    for (faces) |*face| face.deinit();
+}
+
+fn deinitFaceConfigs(allocator: Allocator, faces: []FaceConfig) void {
+    deinitInitializedFaces(faces);
+    allocator.free(faces);
+}
+
+fn deinitStyleChains(
+    allocator: Allocator,
+    style_chains: *std.AutoHashMapUnmanaged(u8, std.ArrayListUnmanaged(FaceIndex)),
+) void {
+    var it = style_chains.iterator();
+    while (it.next()) |entry| entry.value_ptr.deinit(allocator);
+    style_chains.deinit(allocator);
 }
 
 // ── Resolution helpers ──

@@ -61,6 +61,21 @@ const PathCompositeMode = enum(u8) {
     fill_stroke_inside = 1,
 };
 
+const RoundedRectCorner = struct {
+    center: Vec2,
+    start_angle: f32,
+    end_angle: f32,
+};
+
+fn roundedRectCorners(rect: Rect, size: Vec2, radius: f32) [4]RoundedRectCorner {
+    return .{
+        .{ .center = .{ .x = rect.x + radius, .y = rect.y + radius }, .start_angle = std.math.pi, .end_angle = std.math.pi * 1.5 },
+        .{ .center = .{ .x = rect.x + size.x - radius, .y = rect.y + radius }, .start_angle = std.math.pi * 1.5, .end_angle = std.math.pi * 2.0 },
+        .{ .center = .{ .x = rect.x + size.x - radius, .y = rect.y + size.y - radius }, .start_angle = 0.0, .end_angle = std.math.pi * 0.5 },
+        .{ .center = .{ .x = rect.x + radius, .y = rect.y + size.y - radius }, .start_angle = std.math.pi * 0.5, .end_angle = std.math.pi },
+    };
+}
+
 fn pathPaintInfoWidth(texel_count: u32) u32 {
     return paint_records.infoWidth(texel_count);
 }
@@ -439,13 +454,7 @@ pub const PathPictureBuilder = struct {
             }, fill, transform);
         }
 
-        const centers = [4]struct { center: Vec2, start_angle: f32, end_angle: f32 }{
-            .{ .center = .{ .x = rect.x + radius, .y = rect.y + radius }, .start_angle = std.math.pi, .end_angle = std.math.pi * 1.5 },
-            .{ .center = .{ .x = rect.x + size.x - radius, .y = rect.y + radius }, .start_angle = std.math.pi * 1.5, .end_angle = std.math.pi * 2.0 },
-            .{ .center = .{ .x = rect.x + size.x - radius, .y = rect.y + size.y - radius }, .start_angle = 0.0, .end_angle = std.math.pi * 0.5 },
-            .{ .center = .{ .x = rect.x + radius, .y = rect.y + size.y - radius }, .start_angle = std.math.pi * 0.5, .end_angle = std.math.pi },
-        };
-        for (centers) |corner| {
+        for (roundedRectCorners(rect, size, radius)) |corner| {
             try self.addFilledCircularSector(
                 corner.center,
                 radius,
@@ -473,51 +482,82 @@ pub const PathPictureBuilder = struct {
         const radius = std.math.clamp(corner_radius, 0.0, max_radius);
         const inset = std.math.clamp(stroke.width, 0.0, max_radius);
         if (radius <= 1.0 / 65536.0) {
-            if (fill) |style| {
-                const inner_w = @max(size.x - inset * 2.0, 0.0);
-                const inner_h = @max(size.y - inset * 2.0, 0.0);
-                if (inner_w > 1e-4 and inner_h > 1e-4) {
-                    try self.addFilledRectTiles(.{
-                        .x = rect.x + inset,
-                        .y = rect.y + inset,
-                        .w = inner_w,
-                        .h = inner_h,
-                    }, style, transform);
-                }
-            }
-            const stroke_fill = fillStyleForStroke(stroke);
-            if (inset > 1e-4) {
-                try self.addFilledRectTiles(.{ .x = rect.x, .y = rect.y, .w = size.x, .h = inset }, stroke_fill, transform);
-                try self.addFilledRectTiles(.{ .x = rect.x, .y = rect.y + size.y - inset, .w = size.x, .h = inset }, stroke_fill, transform);
-                const middle_h = size.y - inset * 2.0;
-                if (middle_h > 1e-4) {
-                    try self.addFilledRectTiles(.{ .x = rect.x, .y = rect.y + inset, .w = inset, .h = middle_h }, stroke_fill, transform);
-                    try self.addFilledRectTiles(.{ .x = rect.x + size.x - inset, .y = rect.y + inset, .w = inset, .h = middle_h }, stroke_fill, transform);
-                }
-            }
-            return;
+            return self.addInsideStrokeSharpRect(rect, size, fill, stroke, inset, transform);
         }
 
-        if (fill) |style| {
-            const inner_rect = Rect{
-                .x = rect.x + inset,
-                .y = rect.y + inset,
-                .w = size.x - inset * 2.0,
-                .h = size.y - inset * 2.0,
-            };
-            if (inner_rect.w > 1e-4 and inner_rect.h > 1e-4) {
-                const inner_radius = std.math.clamp(radius - inset, 0.0, @min(inner_rect.w, inner_rect.h) * 0.5);
-                if (shouldTileRoundedRect(Vec2.new(inner_rect.w, inner_rect.h))) {
-                    try self.addLargeFilledRoundedRect(inner_rect, style, inner_radius, transform);
-                } else {
-                    try self.addSimpleFilledRoundedRect(inner_rect, style, inner_radius, transform);
-                }
-            }
-        }
-
+        try self.addInsideStrokeRoundedFill(rect, size, fill, inset, radius, transform);
         if (inset <= 1e-4) return;
-
         const stroke_fill = fillStyleForStroke(stroke);
+        try self.addInsideStrokeStraightEdges(rect, size, radius, inset, stroke_fill, transform);
+        try self.addInsideStrokeRoundedCorners(rect, size, radius, inset, stroke_fill, transform);
+    }
+
+    fn addInsideStrokeSharpRect(
+        self: *PathPictureBuilder,
+        rect: Rect,
+        size: Vec2,
+        fill: ?FillStyle,
+        stroke: StrokeStyle,
+        inset: f32,
+        transform: Transform2D,
+    ) !void {
+        if (fill) |style| {
+            const inner_w = @max(size.x - inset * 2.0, 0.0);
+            const inner_h = @max(size.y - inset * 2.0, 0.0);
+            if (inner_w > 1e-4 and inner_h > 1e-4) {
+                try self.addFilledRectTiles(.{
+                    .x = rect.x + inset,
+                    .y = rect.y + inset,
+                    .w = inner_w,
+                    .h = inner_h,
+                }, style, transform);
+            }
+        }
+        if (inset <= 1e-4) return;
+        const stroke_fill = fillStyleForStroke(stroke);
+        try self.addFilledRectTiles(.{ .x = rect.x, .y = rect.y, .w = size.x, .h = inset }, stroke_fill, transform);
+        try self.addFilledRectTiles(.{ .x = rect.x, .y = rect.y + size.y - inset, .w = size.x, .h = inset }, stroke_fill, transform);
+        const middle_h = size.y - inset * 2.0;
+        if (middle_h > 1e-4) {
+            try self.addFilledRectTiles(.{ .x = rect.x, .y = rect.y + inset, .w = inset, .h = middle_h }, stroke_fill, transform);
+            try self.addFilledRectTiles(.{ .x = rect.x + size.x - inset, .y = rect.y + inset, .w = inset, .h = middle_h }, stroke_fill, transform);
+        }
+    }
+
+    fn addInsideStrokeRoundedFill(
+        self: *PathPictureBuilder,
+        rect: Rect,
+        size: Vec2,
+        fill: ?FillStyle,
+        inset: f32,
+        radius: f32,
+        transform: Transform2D,
+    ) !void {
+        const style = fill orelse return;
+        const inner_rect = Rect{
+            .x = rect.x + inset,
+            .y = rect.y + inset,
+            .w = size.x - inset * 2.0,
+            .h = size.y - inset * 2.0,
+        };
+        if (inner_rect.w <= 1e-4 or inner_rect.h <= 1e-4) return;
+        const inner_radius = std.math.clamp(radius - inset, 0.0, @min(inner_rect.w, inner_rect.h) * 0.5);
+        if (shouldTileRoundedRect(Vec2.new(inner_rect.w, inner_rect.h))) {
+            try self.addLargeFilledRoundedRect(inner_rect, style, inner_radius, transform);
+        } else {
+            try self.addSimpleFilledRoundedRect(inner_rect, style, inner_radius, transform);
+        }
+    }
+
+    fn addInsideStrokeStraightEdges(
+        self: *PathPictureBuilder,
+        rect: Rect,
+        size: Vec2,
+        radius: f32,
+        inset: f32,
+        stroke_fill: FillStyle,
+        transform: Transform2D,
+    ) !void {
         const straight_w = size.x - radius * 2.0;
         const straight_h = size.y - radius * 2.0;
         if (straight_w > 1e-4) {
@@ -548,15 +588,19 @@ pub const PathPictureBuilder = struct {
                 .h = straight_h,
             }, stroke_fill, transform);
         }
+    }
 
+    fn addInsideStrokeRoundedCorners(
+        self: *PathPictureBuilder,
+        rect: Rect,
+        size: Vec2,
+        radius: f32,
+        inset: f32,
+        stroke_fill: FillStyle,
+        transform: Transform2D,
+    ) !void {
         const inner_radius = @max(radius - inset, 0.0);
-        const centers = [4]struct { center: Vec2, start_angle: f32, end_angle: f32 }{
-            .{ .center = .{ .x = rect.x + radius, .y = rect.y + radius }, .start_angle = std.math.pi, .end_angle = std.math.pi * 1.5 },
-            .{ .center = .{ .x = rect.x + size.x - radius, .y = rect.y + radius }, .start_angle = std.math.pi * 1.5, .end_angle = std.math.pi * 2.0 },
-            .{ .center = .{ .x = rect.x + size.x - radius, .y = rect.y + size.y - radius }, .start_angle = 0.0, .end_angle = std.math.pi * 0.5 },
-            .{ .center = .{ .x = rect.x + radius, .y = rect.y + size.y - radius }, .start_angle = std.math.pi * 0.5, .end_angle = std.math.pi },
-        };
-        for (centers) |corner| {
+        for (roundedRectCorners(rect, size, radius)) |corner| {
             try self.addFilledCircularSector(
                 corner.center,
                 radius,

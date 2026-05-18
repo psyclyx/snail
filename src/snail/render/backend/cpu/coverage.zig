@@ -744,84 +744,80 @@ fn evalGlyphCoverageAxis(page: anytype, sample_rc: Vec2, ppe: f32, band_base: us
     if (comptime @hasField(Page, "h_curves")) {
         return evalPreparedGlyphCoverageAxisFromBand(page, sample_rc, ppe, band_base, count, horizontal);
     }
+    return evalGenericGlyphCoverageAxisFromBand(page, sample_rc, ppe, band_base, count, horizontal);
+}
 
+fn evalGenericGlyphCoverageAxisFromBand(page: anytype, sample_rc: Vec2, ppe: f32, band_base: usize, count: u32, comptime horizontal: bool) CoveragePair {
     var result = CoveragePair{ .cov = 0.0, .wgt = 0.0 };
     var i: u32 = 0;
     while (i < count) : (i += 1) {
         const curve_ref = readBandCurveRef(page, band_base + i) orelse continue;
-        const curve_base = curve_ref.base;
-
-        const tex0 = readCurveTexelF32Base(page, curve_base);
-        const tex1 = readCurveTexelF32Base(page, curve_base + 4);
-        const tex2 = readCurveTexelF32Base(page, curve_base + 8);
-
-        const stored_kind = tex2[2];
-        const direct_quadratic = stored_kind >= curve_tex.DIRECT_ENCODING_KIND_BIAS - 0.5 and
-            stored_kind < curve_tex.DIRECT_ENCODING_KIND_BIAS + 0.5;
-        const packed_quadratic = stored_kind < 0.5;
-        if (packed_quadratic or direct_quadratic) {
-            const p0_abs = if (direct_quadratic)
-                Vec2.new(tex0[0], tex0[1])
-            else
-                Vec2.new(
-                    tex0[0] * curve_tex.PACKED_ANCHOR_CHUNK_EXTENT + tex0[2],
-                    tex0[1] * curve_tex.PACKED_ANCHOR_CHUNK_EXTENT + tex0[3],
-                );
-            const p1_abs = if (direct_quadratic)
-                Vec2.new(tex0[2], tex0[3])
-            else
-                Vec2.new(p0_abs.x + tex1[0], p0_abs.y + tex1[1]);
-            const p2_abs = if (direct_quadratic)
-                Vec2.new(tex1[0], tex1[1])
-            else
-                Vec2.new(p0_abs.x + tex1[2], p0_abs.y + tex1[3]);
-
-            const p0x = p0_abs.x - sample_rc.x;
-            const p0y = p0_abs.y - sample_rc.y;
-            const p1x = p1_abs.x - sample_rc.x;
-            const p1y = p1_abs.y - sample_rc.y;
-            const p2x = p2_abs.x - sample_rc.x;
-            const p2y = p2_abs.y - sample_rc.y;
-            const max_coord = if (horizontal)
-                @max(@max(p0x, p1x), p2x)
-            else
-                @max(@max(p0y, p1y), p2y);
-            if (max_coord * ppe < -0.5) break;
-            accumulateQuadraticCoverage(&result, p0x, p0y, p1x, p1y, p2x, p2y, ppe, horizontal);
-            continue;
-        }
-
-        const direct_line = stored_kind >= curve_tex.DIRECT_ENCODING_KIND_BIAS + 2.5 and
-            stored_kind < curve_tex.DIRECT_ENCODING_KIND_BIAS + 3.5;
-        const packed_line = stored_kind >= 2.5 and stored_kind < 3.5;
-        if (packed_line or direct_line) {
-            const p0_abs = if (direct_line)
-                Vec2.new(tex0[0], tex0[1])
-            else
-                Vec2.new(
-                    tex0[0] * curve_tex.PACKED_ANCHOR_CHUNK_EXTENT + tex0[2],
-                    tex0[1] * curve_tex.PACKED_ANCHOR_CHUNK_EXTENT + tex0[3],
-                );
-            const p2_abs = if (direct_line)
-                Vec2.new(tex1[0], tex1[1])
-            else
-                Vec2.new(p0_abs.x + tex1[2], p0_abs.y + tex1[3]);
-
-            const p0x = p0_abs.x - sample_rc.x;
-            const p0y = p0_abs.y - sample_rc.y;
-            const p2x = p2_abs.x - sample_rc.x;
-            const p2y = p2_abs.y - sample_rc.y;
-            const max_coord = if (horizontal) @max(p0x, p2x) else @max(p0y, p2y);
-            if (max_coord * ppe < -0.5) break;
-            accumulateLineCoverage(&result, p0x, p0y, p2x, p2y, ppe, horizontal);
-            continue;
-        }
-
-        const meta = readCurveTexelF32Base(page, curve_base + 12);
-        const segment = decodeCurveSegment(tex0, tex1, tex2, meta);
-        if (accumulateGlyphCoverageSegment(&result, segment, sample_rc, ppe, horizontal) == .stop_scan) break;
+        if (accumulateGenericCurveCoverage(&result, page, curve_ref.base, sample_rc, ppe, horizontal) == .stop_scan) break;
     }
     return result;
+}
+
+fn accumulateGenericCurveCoverage(result: *CoveragePair, page: anytype, curve_base: usize, sample_rc: Vec2, ppe: f32, comptime horizontal: bool) CoverageScan {
+    const tex0 = readCurveTexelF32Base(page, curve_base);
+    const tex1 = readCurveTexelF32Base(page, curve_base + 4);
+    const tex2 = readCurveTexelF32Base(page, curve_base + 8);
+    const stored_kind = tex2[2];
+
+    const direct_quadratic = stored_kind >= curve_tex.DIRECT_ENCODING_KIND_BIAS - 0.5 and
+        stored_kind < curve_tex.DIRECT_ENCODING_KIND_BIAS + 0.5;
+    if (stored_kind < 0.5 or direct_quadratic) {
+        return accumulateEncodedQuadraticCoverage(result, tex0, tex1, sample_rc, ppe, direct_quadratic, horizontal);
+    }
+
+    const direct_line = stored_kind >= curve_tex.DIRECT_ENCODING_KIND_BIAS + 2.5 and
+        stored_kind < curve_tex.DIRECT_ENCODING_KIND_BIAS + 3.5;
+    if ((stored_kind >= 2.5 and stored_kind < 3.5) or direct_line) {
+        return accumulateEncodedLineCoverage(result, tex0, tex1, sample_rc, ppe, direct_line, horizontal);
+    }
+
+    const meta = readCurveTexelF32Base(page, curve_base + 12);
+    return accumulateGlyphCoverageSegment(result, decodeCurveSegment(tex0, tex1, tex2, meta), sample_rc, ppe, horizontal);
+}
+
+fn accumulateEncodedQuadraticCoverage(result: *CoveragePair, tex0: [4]f32, tex1: [4]f32, sample_rc: Vec2, ppe: f32, direct: bool, comptime horizontal: bool) CoverageScan {
+    const p0_abs = if (direct)
+        Vec2.new(tex0[0], tex0[1])
+    else
+        Vec2.new(
+            tex0[0] * curve_tex.PACKED_ANCHOR_CHUNK_EXTENT + tex0[2],
+            tex0[1] * curve_tex.PACKED_ANCHOR_CHUNK_EXTENT + tex0[3],
+        );
+    const p1_abs = if (direct) Vec2.new(tex0[2], tex0[3]) else Vec2.new(p0_abs.x + tex1[0], p0_abs.y + tex1[1]);
+    const p2_abs = if (direct) Vec2.new(tex1[0], tex1[1]) else Vec2.new(p0_abs.x + tex1[2], p0_abs.y + tex1[3]);
+    const p0x = p0_abs.x - sample_rc.x;
+    const p0y = p0_abs.y - sample_rc.y;
+    const p1x = p1_abs.x - sample_rc.x;
+    const p1y = p1_abs.y - sample_rc.y;
+    const p2x = p2_abs.x - sample_rc.x;
+    const p2y = p2_abs.y - sample_rc.y;
+    const max_coord = if (horizontal) @max(@max(p0x, p1x), p2x) else @max(@max(p0y, p1y), p2y);
+    if (max_coord * ppe < -0.5) return .stop_scan;
+    accumulateQuadraticCoverage(result, p0x, p0y, p1x, p1y, p2x, p2y, ppe, horizontal);
+    return .continue_scan;
+}
+
+fn accumulateEncodedLineCoverage(result: *CoveragePair, tex0: [4]f32, tex1: [4]f32, sample_rc: Vec2, ppe: f32, direct: bool, comptime horizontal: bool) CoverageScan {
+    const p0_abs = if (direct)
+        Vec2.new(tex0[0], tex0[1])
+    else
+        Vec2.new(
+            tex0[0] * curve_tex.PACKED_ANCHOR_CHUNK_EXTENT + tex0[2],
+            tex0[1] * curve_tex.PACKED_ANCHOR_CHUNK_EXTENT + tex0[3],
+        );
+    const p2_abs = if (direct) Vec2.new(tex1[0], tex1[1]) else Vec2.new(p0_abs.x + tex1[2], p0_abs.y + tex1[3]);
+    const p0x = p0_abs.x - sample_rc.x;
+    const p0y = p0_abs.y - sample_rc.y;
+    const p2x = p2_abs.x - sample_rc.x;
+    const p2y = p2_abs.y - sample_rc.y;
+    const max_coord = if (horizontal) @max(p0x, p2x) else @max(p0y, p2y);
+    if (max_coord * ppe < -0.5) return .stop_scan;
+    accumulateLineCoverage(result, p0x, p0y, p2x, p2y, ppe, horizontal);
+    return .continue_scan;
 }
 
 const BandSpan = struct {

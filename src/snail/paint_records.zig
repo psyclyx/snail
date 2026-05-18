@@ -60,12 +60,22 @@ pub fn write(
     band_entry: band_tex.GlyphBandEntry,
     paint: anytype,
 ) void {
+    writeBandHeader(data, texel_width, texel_offset, band_entry, tagFor(paint));
+    switch (paint) {
+        .solid => |color| setTexel(data, texel_width, texel_offset + 2, color),
+        .linear_gradient => |gradient| writeLinearGradient(data, texel_width, texel_offset, gradient),
+        .radial_gradient => |gradient| writeRadialGradient(data, texel_width, texel_offset, gradient),
+        .image => |image| writeImagePaint(data, texel_width, texel_offset, image),
+    }
+}
+
+fn writeBandHeader(data: []f32, texel_width: u32, texel_offset: u32, band_entry: band_tex.GlyphBandEntry, tag: f32) void {
     const packed_bands: u32 = @as(u32, band_entry.h_band_count - 1) | (@as(u32, band_entry.v_band_count - 1) << 16);
     setTexel(data, texel_width, texel_offset + 0, .{
         @floatFromInt(band_entry.glyph_x),
         @floatFromInt(band_entry.glyph_y),
         @bitCast(packed_bands),
-        tagFor(paint),
+        tag,
     });
     setTexel(data, texel_width, texel_offset + 1, .{
         band_entry.band_scale_x,
@@ -73,63 +83,55 @@ pub fn write(
         band_entry.band_offset_x,
         band_entry.band_offset_y,
     });
+}
 
-    switch (paint) {
-        .solid => |color| {
-            setTexel(data, texel_width, texel_offset + 2, color);
-        },
-        .linear_gradient => |gradient| {
-            setTexel(data, texel_width, texel_offset + 2, .{
-                gradient.start.x,
-                gradient.start.y,
-                gradient.end.x,
-                gradient.end.y,
-            });
-            setTexel(data, texel_width, texel_offset + 3, srgbToLinearColor(gradient.start_color));
-            setTexel(data, texel_width, texel_offset + 4, srgbToLinearColor(gradient.end_color));
-            setTexel(data, texel_width, texel_offset + 5, .{
-                @floatFromInt(@intFromEnum(gradient.extend)),
-                0,
-                0,
-                0,
-            });
-        },
-        .radial_gradient => |gradient| {
-            setTexel(data, texel_width, texel_offset + 2, .{
-                gradient.center.x,
-                gradient.center.y,
-                gradient.radius,
-                @floatFromInt(@intFromEnum(gradient.extend)),
-            });
-            setTexel(data, texel_width, texel_offset + 3, srgbToLinearColor(gradient.inner_color));
-            setTexel(data, texel_width, texel_offset + 4, srgbToLinearColor(gradient.outer_color));
-            setTexel(data, texel_width, texel_offset + 5, .{
-                0,
-                0,
-                0,
-                0,
-            });
-        },
-        .image => |image| {
-            setTexel(data, texel_width, texel_offset + 2, .{
-                image.uv_transform.xx,
-                image.uv_transform.xy,
-                image.uv_transform.tx,
-                0,
-            });
-            setTexel(data, texel_width, texel_offset + 3, .{
-                image.uv_transform.yx,
-                image.uv_transform.yy,
-                image.uv_transform.ty,
-                @floatFromInt(@intFromEnum(image.filter)),
-            });
-            setTexel(data, texel_width, texel_offset + 4, srgbToLinearColor(image.tint));
-            setTexel(data, texel_width, texel_offset + 5, .{
-                0,
-                0,
-                @floatFromInt(@intFromEnum(image.extend_x)),
-                @floatFromInt(@intFromEnum(image.extend_y)),
-            });
-        },
-    }
+fn writeLinearGradient(data: []f32, texel_width: u32, texel_offset: u32, gradient: anytype) void {
+    setTexel(data, texel_width, texel_offset + 2, .{
+        gradient.start.x,
+        gradient.start.y,
+        gradient.end.x,
+        gradient.end.y,
+    });
+    setTexel(data, texel_width, texel_offset + 3, srgbToLinearColor(gradient.start_color));
+    setTexel(data, texel_width, texel_offset + 4, srgbToLinearColor(gradient.end_color));
+    setTexel(data, texel_width, texel_offset + 5, .{
+        @floatFromInt(@intFromEnum(gradient.extend)),
+        0,
+        0,
+        0,
+    });
+}
+
+fn writeRadialGradient(data: []f32, texel_width: u32, texel_offset: u32, gradient: anytype) void {
+    setTexel(data, texel_width, texel_offset + 2, .{
+        gradient.center.x,
+        gradient.center.y,
+        gradient.radius,
+        @floatFromInt(@intFromEnum(gradient.extend)),
+    });
+    setTexel(data, texel_width, texel_offset + 3, srgbToLinearColor(gradient.inner_color));
+    setTexel(data, texel_width, texel_offset + 4, srgbToLinearColor(gradient.outer_color));
+    setTexel(data, texel_width, texel_offset + 5, .{ 0, 0, 0, 0 });
+}
+
+fn writeImagePaint(data: []f32, texel_width: u32, texel_offset: u32, image: anytype) void {
+    setTexel(data, texel_width, texel_offset + 2, .{
+        image.uv_transform.xx,
+        image.uv_transform.xy,
+        image.uv_transform.tx,
+        0,
+    });
+    setTexel(data, texel_width, texel_offset + 3, .{
+        image.uv_transform.yx,
+        image.uv_transform.yy,
+        image.uv_transform.ty,
+        @floatFromInt(@intFromEnum(image.filter)),
+    });
+    setTexel(data, texel_width, texel_offset + 4, srgbToLinearColor(image.tint));
+    setTexel(data, texel_width, texel_offset + 5, .{
+        0,
+        0,
+        @floatFromInt(@intFromEnum(image.extend_x)),
+        @floatFromInt(@intFromEnum(image.extend_y)),
+    });
 }

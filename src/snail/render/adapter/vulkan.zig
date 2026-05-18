@@ -167,6 +167,22 @@ pub const Renderer = if (build_options.enable_vulkan) struct {
         return renderer.beginResourceUpload(allocators, plan);
     }
 
+    pub fn recordResourceUpload(self: *Self, pending: *PendingResourceUpload, cmd: pipeline.vk.VkCommandBuffer, options: PendingResourceUpload.RecordOptions) !void {
+        if (!self.ownsPendingResourceUpload(pending)) return error.InvalidArgument;
+        self.state.beginResourceUploadRecording(cmd);
+        defer self.state.endResourceUploadRecording();
+        try pending.recordExternal(options);
+    }
+
+    pub fn resourceUploadReadyFence(self: *Self, pending: *PendingResourceUpload, fence: pipeline.vk.VkFence) bool {
+        if (!self.ownsPendingResourceUpload(pending)) return false;
+        return pending.ready(pipeline.vk.vkGetFenceStatus(self.state.ctx.device, fence) == pipeline.vk.VK_SUCCESS);
+    }
+
+    fn ownsPendingResourceUpload(self: *const Self, pending: *const PendingResourceUpload) bool {
+        return pending.renderer.ptr == @as(*anyopaque, @ptrCast(self.state)) and pending.renderer.backend() == .vulkan;
+    }
+
     pub fn backendName(self: *const Self) []const u8 {
         return self.state.backendName();
     }
