@@ -1,7 +1,6 @@
 const image_mod = @import("../image.zig");
 const atlas_curve_mod = @import("../render/format/atlas/curve.zig");
 const texture_layers = @import("../render/format/texture_layers.zig");
-const ttf = @import("../font/ttf.zig");
 const vec = @import("../math/vec.zig");
 
 const Atlas = atlas_curve_mod.Atlas;
@@ -21,7 +20,6 @@ pub const PreparedImageView = struct {
 };
 
 pub const PreparedAtlasView = struct {
-    atlas: *const Atlas,
     layer_base: u32 = 0,
     page_layers: []const u32 = &.{},
     info_row_base: u32 = 0,
@@ -42,19 +40,6 @@ pub const PreparedAtlasView = struct {
             .y = @intCast(self.info_row_base + info_y),
         };
     }
-
-    pub fn getGlyph(self: *const PreparedAtlasView, gid: u16) ?Atlas.GlyphInfo {
-        return self.atlas.getGlyph(gid);
-    }
-
-    pub fn getColrBase(self: *const PreparedAtlasView, gid: u16) ?Atlas.ColrBaseInfo {
-        if (self.atlas.colr_base_map) |cbm| return cbm.get(gid);
-        return null;
-    }
-
-    pub fn colrLayers(self: *const PreparedAtlasView, gid: u16) ttf.Font.ColrLayerIterator {
-        return self.atlas.colrLayers(gid);
-    }
 };
 
 pub const PreparedLayerInfoUpload = struct {
@@ -72,7 +57,7 @@ pub fn coerceAtlasHandle(atlas_like: anytype) PreparedAtlasView {
     const T = @TypeOf(atlas_like);
     return switch (T) {
         *const PreparedAtlasView, *PreparedAtlasView => atlas_like.*,
-        *const Atlas, *Atlas => .{ .atlas = atlas_like, .layer_base = 0 },
+        *const Atlas, *Atlas => .{},
         else => @compileError("expected *CurveAtlas or prepared atlas view"),
     };
 }

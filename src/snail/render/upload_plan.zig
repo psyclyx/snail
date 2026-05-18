@@ -142,11 +142,11 @@ fn preparedImageForKey(prepared: *const PreparedResources, key: ResourceKey) ?*c
 fn atlasUploadDelta(current: ?*const PreparedResources, key: ResourceKey, atlas: AtlasRef) AtlasUploadDelta {
     var out: AtlasUploadDelta = .{};
     const old = if (current) |prepared| preparedAtlasForKey(prepared, key) else null;
-    const old_atlas = if (old) |entry| entry.atlas else null;
     for (0..atlas.pageCount()) |page_index| {
         const page = atlas.page(page_index);
-        const reused = if (old_atlas) |prev|
-            page_index < prev.pageCount() and prev.page(@intCast(page_index)) == page
+        const fingerprint = upload_common.pageFingerprint(page);
+        const reused = if (old) |entry|
+            page_index < entry.page_fingerprints.len and entry.page_fingerprints[page_index].eql(fingerprint)
         else
             false;
         if (reused) {

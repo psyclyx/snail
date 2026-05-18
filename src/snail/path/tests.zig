@@ -135,7 +135,7 @@ test "path picture freeze compiles atlas and transformed batch vertices" {
 
     var vertex_buf: [PATH_WORDS_PER_SHAPE]u32 = undefined;
     var path_batch = PathBatch.init(&vertex_buf);
-    const view = PreparedAtlasView{ .atlas = &compiled_picture.atlas };
+    const view = PreparedAtlasView{};
     const result = try path_batch.addDraw(&view, .{ .picture = &compiled_picture, .resource_key = ResourceKey.named("compiled_picture") }, 0, 0);
     try std.testing.expectEqual(@as(usize, 1), result.emitted);
     try std.testing.expect(result.completed);
@@ -214,7 +214,7 @@ test "path picture ranges emit selected shapes" {
 
     var vertex_buf: [PATH_WORDS_PER_SHAPE]u32 = undefined;
     var path_batch = PathBatch.init(&vertex_buf);
-    const view = PreparedAtlasView{ .atlas = &compiled_picture.atlas };
+    const view = PreparedAtlasView{};
     const result = try path_batch.addDraw(&view, .{
         .picture = &compiled_picture,
         .resource_key = ResourceKey.named("compiled_picture"),
@@ -250,7 +250,7 @@ test "path picture freeze separates persistent and scratch allocators" {
 
     var vertex_buf: [PATH_WORDS_PER_SHAPE]u32 = undefined;
     var path_batch = PathBatch.init(&vertex_buf);
-    const view = PreparedAtlasView{ .atlas = &compiled_picture.atlas };
+    const view = PreparedAtlasView{};
     const result = try path_batch.addDraw(&view, .{ .picture = &compiled_picture, .resource_key = ResourceKey.named("compiled_picture") }, 0, 0);
     try std.testing.expectEqual(@as(usize, 1), result.emitted);
     try std.testing.expect(result.completed);
@@ -271,7 +271,6 @@ test "path batch offsets layer info rows through atlas views" {
     var vertex_buf: [PATH_WORDS_PER_SHAPE]u32 = undefined;
     var path_batch = PathBatch.init(&vertex_buf);
     const offset_view = PreparedAtlasView{
-        .atlas = &compiled_picture.atlas,
         .layer_base = 3,
         .info_row_base = 17,
     };

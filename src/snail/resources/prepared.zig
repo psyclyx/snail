@@ -2,11 +2,8 @@ const std = @import("std");
 
 const build_options = @import("build_options");
 const coverage_mod = @import("../coverage.zig");
-const image_mod = @import("../image.zig");
-const path_mod = @import("../path.zig");
 const resource_key_mod = @import("../resource_key.zig");
-const atlas_curve_mod = @import("../render/format/atlas/curve.zig");
-const text_mod = @import("../text.zig");
+const atlas_page_mod = @import("../render/format/atlas/page.zig");
 const view_mod = @import("view.zig");
 
 const pipeline = if (build_options.enable_opengl) @import("../render/backend/gl/state.zig") else struct {
@@ -25,18 +22,13 @@ const vulkan_pipeline = if (build_options.enable_vulkan) @import("../render/back
     pub const VulkanPipeline = void;
 };
 
-const Atlas = atlas_curve_mod.Atlas;
 const CoverageBackend = coverage_mod.Backend;
-const Image = image_mod.Image;
-const PathPicture = path_mod.PathPicture;
+const PageFingerprint = atlas_page_mod.PageFingerprint;
 const PreparedAtlasView = view_mod.PreparedAtlasView;
-const PreparedImageView = view_mod.PreparedImageView;
 const PreparedLayerInfoView = view_mod.PreparedLayerInfoView;
 const PreparedTextAtlasView = view_mod.PreparedTextAtlasView;
 const ResourceKey = resource_key_mod.ResourceKey;
 const ResourceStamp = resource_key_mod.ResourceStamp;
-const TextAtlas = text_mod.TextAtlas;
-const TextBlob = text_mod.TextBlob;
 const resourceKey = resource_key_mod.resourceKey;
 
 pub const PreparedResources = struct {
@@ -62,30 +54,23 @@ pub const PreparedResources = struct {
     };
 
     pub const PreparedAtlasResource = struct {
-        key: ResourceKey,
-        kind: PreparedAtlasKind,
-        text_atlas: ?*const TextAtlas = null,
-        picture: ?*const PathPicture = null,
-        atlas: *const Atlas,
-        wrapper: Atlas = undefined,
-        owns_wrapper: bool = false,
-        view: PreparedAtlasView = undefined,
+        key: ResourceKey = .{ .id = 0 },
+        kind: PreparedAtlasKind = .text,
+        page_fingerprints: []PageFingerprint = &.{},
+        view: PreparedAtlasView = .{},
         owns_page_layers: bool = false,
-        stamp: ResourceStamp,
+        stamp: ResourceStamp = .{},
     };
 
     pub const PreparedLayerInfoResource = struct {
-        key: ResourceKey,
-        text_blob: *const TextBlob,
-        view: PreparedLayerInfoView = undefined,
-        stamp: ResourceStamp,
+        key: ResourceKey = .{ .id = 0 },
+        view: PreparedLayerInfoView = .{},
+        stamp: ResourceStamp = .{},
     };
 
     pub const PreparedImageResource = struct {
-        key: ResourceKey,
-        image: *const Image,
-        view: PreparedImageView = undefined,
-        stamp: ResourceStamp,
+        key: ResourceKey = .{ .id = 0 },
+        stamp: ResourceStamp = .{},
     };
 
     pub fn deinit(self: *PreparedResources) void {
@@ -93,10 +78,7 @@ pub const PreparedResources = struct {
             if (self.backend.cpu) |*cpu_resources| cpu_resources.deinit();
         }
         for (self.atlases) |*entry| {
-            if (entry.owns_wrapper) switch (entry.kind) {
-                .text => entry.text_atlas.?.deinitUploadAtlas(&entry.wrapper),
-                .path => {},
-            };
+            if (entry.page_fingerprints.len > 0) self.allocator.free(entry.page_fingerprints);
             if (entry.owns_page_layers and entry.view.page_layers.len > 0) self.allocator.free(entry.view.page_layers);
         }
         if (self.atlases.len > 0) self.allocator.free(self.atlases);

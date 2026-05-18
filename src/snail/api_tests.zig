@@ -179,8 +179,9 @@ test "cpu prepared resources own uploaded buffers" {
     try std.testing.expect(prepared_record.image != &image);
     try std.testing.expectEqualSlices(u8, image.pixelSlice(), prepared_record.image.pixelSlice());
 
-    try std.testing.expect(prepared.images[0].view.image != &image);
-    try std.testing.expectEqualSlices(u8, image.pixelSlice(), prepared.images[0].view.image.pixelSlice());
+    try std.testing.expectEqual(@as(usize, 1), cpu_prepared.images.len);
+    try std.testing.expect(&cpu_prepared.images[0] != &image);
+    try std.testing.expectEqualSlices(u8, image.pixelSlice(), cpu_prepared.images[0].pixelSlice());
 }
 
 test "draw with missing prepared resources fails" {
@@ -318,10 +319,8 @@ test "draw dispatch uses only prepared stamps and caller records" {
 
     const key = ResourceKey.named("shape");
     const stamp = ResourceStamp{ .identity = 1, .layout = 2, .content = 3 };
-    var image: Image = .{ .allocator = std.testing.allocator, .width = 1, .height = 1, .pixels = &.{ 255, 255, 255, 255 } };
     var image_resources = [_]PreparedResources.PreparedImageResource{.{
         .key = key,
-        .image = &image,
         .stamp = stamp,
     }};
     var prepared = PreparedResources{
@@ -941,8 +940,8 @@ test "resource upload plan accounts for image array rebuilds" {
     const key_small = ResourceKey.named("small");
     const key_grow = ResourceKey.named("grow");
     var current_images = [_]PreparedResources.PreparedImageResource{
-        .{ .key = key_small, .image = &image_small, .stamp = stamp_mod.imageStamp(key_small, &image_small) },
-        .{ .key = key_grow, .image = &image_old, .stamp = stamp_mod.imageStamp(key_grow, &image_old) },
+        .{ .key = key_small, .stamp = stamp_mod.imageStamp(key_small, &image_small) },
+        .{ .key = key_grow, .stamp = stamp_mod.imageStamp(key_grow, &image_old) },
     };
     const current = PreparedResources{
         .allocator = allocator,

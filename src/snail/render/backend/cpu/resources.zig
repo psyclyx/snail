@@ -143,7 +143,7 @@ pub const PreparedResources = struct {
         var info_row_base: u32 = 0;
         self.reset();
         for (out_views, atlases) |*v, a| {
-            v.* = .{ .atlas = a, .layer_base = layer_base, .info_row_base = info_row_base };
+            v.* = .{ .layer_base = layer_base, .info_row_base = info_row_base };
             try self.storeAtlasPages(a, layer_base, info_row_base);
             layer_base += @intCast(a.pageCount());
             info_row_base += a.layer_info_height;

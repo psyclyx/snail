@@ -8,6 +8,7 @@ const render_mod = @import("render.zig");
 const resource_key_mod = @import("resource_key.zig");
 const manifest_mod = @import("resources/manifest.zig");
 const stamp_mod = @import("resources/stamp.zig");
+const text_mod = @import("text.zig");
 const upload_common = @import("render/format/upload_common.zig");
 const view_mod = @import("resources/view.zig");
 
@@ -21,6 +22,7 @@ const PreparedResources = prepared_mod.PreparedResources;
 const Renderer = render_mod.Renderer;
 const ResourceKey = resource_key_mod.ResourceKey;
 const ResourceManifest = manifest_mod.ResourceManifest;
+const TextAtlas = text_mod.TextAtlas;
 
 pub const ResourceFootprint = footprint_types.ResourceFootprint;
 
@@ -196,6 +198,8 @@ const ResourceUploadScratch = struct {
     upload_atlases: []*const Atlas,
     atlas_capacity_modes: []upload_common.AtlasCapacityMode,
     atlas_views: []PreparedAtlasView,
+    text_wrappers: []Atlas,
+    text_wrapper_sources: []?*const TextAtlas,
     upload_layer_infos: []PreparedLayerInfoUpload,
     layer_info_views: []PreparedLayerInfoView,
     upload_images: []*const Image,
@@ -208,6 +212,11 @@ const ResourceUploadScratch = struct {
         errdefer allocator.free(atlas_capacity_modes);
         const atlas_views = try allocator.alloc(PreparedAtlasView, counts.atlases);
         errdefer allocator.free(atlas_views);
+        const text_wrappers = try allocator.alloc(Atlas, counts.atlases);
+        errdefer allocator.free(text_wrappers);
+        const text_wrapper_sources = try allocator.alloc(?*const TextAtlas, counts.atlases);
+        errdefer allocator.free(text_wrapper_sources);
+        @memset(text_wrapper_sources, null);
 
         const upload_layer_infos = try allocator.alloc(PreparedLayerInfoUpload, counts.layer_infos);
         errdefer allocator.free(upload_layer_infos);
@@ -222,6 +231,8 @@ const ResourceUploadScratch = struct {
             .upload_atlases = upload_atlases,
             .atlas_capacity_modes = atlas_capacity_modes,
             .atlas_views = atlas_views,
+            .text_wrappers = text_wrappers,
+            .text_wrapper_sources = text_wrapper_sources,
             .upload_layer_infos = upload_layer_infos,
             .layer_info_views = layer_info_views,
             .upload_images = upload_images,
@@ -230,9 +241,14 @@ const ResourceUploadScratch = struct {
     }
 
     fn deinit(self: *ResourceUploadScratch, allocator: std.mem.Allocator) void {
+        for (self.text_wrapper_sources, 0..) |source, i| {
+            if (source) |text_atlas| text_atlas.deinitUploadAtlas(&self.text_wrappers[i]);
+        }
         allocator.free(self.upload_atlases);
         allocator.free(self.atlas_capacity_modes);
         allocator.free(self.atlas_views);
+        allocator.free(self.text_wrappers);
+        allocator.free(self.text_wrapper_sources);
         allocator.free(self.upload_layer_infos);
         allocator.free(self.layer_info_views);
         allocator.free(self.upload_images);
@@ -268,6 +284,9 @@ fn initPreparedResourceSlots(allocator: std.mem.Allocator, counts: UploadEntryCo
     const layer_infos = try allocator.alloc(PreparedResources.PreparedLayerInfoResource, counts.layer_infos);
     errdefer allocator.free(layer_infos);
     const images = try allocator.alloc(PreparedResources.PreparedImageResource, counts.images);
+    @memset(atlases, .{});
+    @memset(layer_infos, .{});
+    @memset(images, .{});
 
     return .{
         .allocator = allocator,
@@ -277,31 +296,47 @@ fn initPreparedResourceSlots(allocator: std.mem.Allocator, counts: UploadEntryCo
     };
 }
 
-fn populatePreparedResourceBatch(prepared: *PreparedResources, scratch: *ResourceUploadScratch, entries: []const ResourceManifest.Entry) void {
+fn atlasPageFingerprints(allocator: std.mem.Allocator, atlas: *const Atlas) ![]upload_common.PageFingerprint {
+    const fingerprints = try allocator.alloc(upload_common.PageFingerprint, atlas.pageCount());
+    errdefer allocator.free(fingerprints);
+    for (fingerprints, 0..) |*fingerprint, i| {
+        fingerprint.* = upload_common.atlasPageFingerprint(atlas, i);
+    }
+    return fingerprints;
+}
+
+fn uploadTextAtlas(scratch: *ResourceUploadScratch, index: usize, text_atlas: *const TextAtlas) *const Atlas {
+    scratch.text_wrappers[index] = text_atlas.uploadAtlas();
+    scratch.text_wrapper_sources[index] = text_atlas;
+    return &scratch.text_wrappers[index];
+}
+
+fn populatePreparedResourceBatch(
+    allocator: std.mem.Allocator,
+    prepared: *PreparedResources,
+    scratch: *ResourceUploadScratch,
+    entries: []const ResourceManifest.Entry,
+) !void {
     var atlas_i: usize = 0;
     var layer_info_i: usize = 0;
     var image_i: usize = 0;
     for (entries) |entry| {
         switch (entry) {
             .text_atlas => |text| {
+                const atlas = uploadTextAtlas(scratch, atlas_i, text.atlas);
                 prepared.atlases[atlas_i] = .{
                     .key = text.key,
                     .kind = .text,
-                    .text_atlas = text.atlas,
-                    .atlas = undefined,
-                    .owns_wrapper = true,
+                    .page_fingerprints = try atlasPageFingerprints(allocator, atlas),
                     .stamp = stamp_mod.resourceEntryStamp(entry),
                 };
-                prepared.atlases[atlas_i].wrapper = text.atlas.uploadAtlas();
-                prepared.atlases[atlas_i].atlas = &prepared.atlases[atlas_i].wrapper;
-                scratch.upload_atlases[atlas_i] = prepared.atlases[atlas_i].atlas;
+                scratch.upload_atlases[atlas_i] = atlas;
                 scratch.atlas_capacity_modes[atlas_i] = text.atlas_capacity;
                 atlas_i += 1;
             },
             .text_paint => |text| {
                 prepared.layer_infos[layer_info_i] = .{
                     .key = text.key,
-                    .text_blob = text.blob,
                     .stamp = stamp_mod.resourceEntryStamp(entry),
                 };
                 scratch.upload_layer_infos[layer_info_i] = stamp_mod.textPaintLayerInfoUpload(text.blob);
@@ -311,18 +346,16 @@ fn populatePreparedResourceBatch(prepared: *PreparedResources, scratch: *Resourc
                 prepared.atlases[atlas_i] = .{
                     .key = path.key,
                     .kind = .path,
-                    .picture = path.picture,
-                    .atlas = &path.picture.atlas,
+                    .page_fingerprints = try atlasPageFingerprints(allocator, &path.picture.atlas),
                     .stamp = stamp_mod.resourceEntryStamp(entry),
                 };
-                scratch.upload_atlases[atlas_i] = prepared.atlases[atlas_i].atlas;
+                scratch.upload_atlases[atlas_i] = &path.picture.atlas;
                 scratch.atlas_capacity_modes[atlas_i] = path.atlas_capacity;
                 atlas_i += 1;
             },
             .image => |image| {
                 prepared.images[image_i] = .{
                     .key = image.key,
-                    .image = image.image,
                     .stamp = stamp_mod.resourceEntryStamp(entry),
                 };
                 scratch.upload_images[image_i] = image.image;
@@ -342,7 +375,6 @@ fn attachUploadedViews(allocator: std.mem.Allocator, prepared: *PreparedResource
         }
     }
     for (prepared.layer_infos, 0..) |*entry, i| entry.view = scratch.layer_info_views[i];
-    for (prepared.images, 0..) |*entry, i| entry.view = scratch.image_views[i];
 }
 
 pub fn uploadPreparedResources(renderer: anytype, set: *const ResourceManifest, allocators: UploadAllocators) !PreparedResources {
@@ -360,7 +392,7 @@ pub fn uploadPreparedResourceEntries(renderer: anytype, entries: []const Resourc
     var scratch_upload = try ResourceUploadScratch.init(scratch, counts);
     defer scratch_upload.deinit(scratch);
 
-    populatePreparedResourceBatch(&prepared, &scratch_upload, entries);
+    try populatePreparedResourceBatch(persistent, &prepared, &scratch_upload, entries);
     try renderer.uploadResourceBatch(allocators, &prepared, scratch_upload.batch());
     try attachUploadedViews(persistent, &prepared, &scratch_upload);
     return prepared;

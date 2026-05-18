@@ -287,11 +287,10 @@ pub fn fillAtlasViews(atlas_slots: anytype, atlases: anytype, out_views: anytype
     std.debug.assert(atlases.len == out_views.len);
     for (atlases, 0..) |atlas, i| {
         const View = BufferElement(@TypeOf(out_views));
-        out_views[i] = .{
-            .atlas = atlas,
-            .layer_base = atlas_slots[i].base_layer,
-            .info_row_base = atlas_slots[i].info_row_base,
-        };
+        out_views[i] = .{};
+        if (@hasField(View, "atlas")) out_views[i].atlas = atlas;
+        if (@hasField(View, "layer_base")) out_views[i].layer_base = atlas_slots[i].base_layer;
+        if (@hasField(View, "info_row_base")) out_views[i].info_row_base = atlas_slots[i].info_row_base;
         if (@hasField(View, "page_layers")) {
             out_views[i].page_layers = atlas_slots[i].page_layers[0..atlas.pageCount()];
         }
