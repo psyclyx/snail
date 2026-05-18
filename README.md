@@ -539,6 +539,7 @@ borrowed `Scene` + `PathDraw` / `TextDraw` primitive used by Zig.
 | `PreparedManifest` | Logical prepared keys, stamps, and views. |
 | `ResidentResources` | Backend-specific residency state for one renderer/context. |
 | `PreparedResources` | Pair of `PreparedManifest` and `ResidentResources` used by draw APIs. |
+| `ResourceUploader` | Type-erased upload/cache capability without draw methods. |
 | `DrawList` | Caller-buffered draw records. |
 | `PreparedScene` | Optional owned draw-record cache for static scenes. |
 | `DrawState` | Per-draw transform, target surface metadata, and rasterization policy. |
@@ -637,7 +638,7 @@ try scene.addPath(.{ .picture = &sprite, .resource_key = snail.ResourceKey.named
 
 ### Renderer
 
-`GlRenderer`, `VulkanRenderer`, and `CpuRenderer` are first-class types; `Renderer` is a type-erased wrapper for backend-agnostic code. Blocking upload and draw methods are present on each concrete renderer and on `Renderer`; scheduled upload is exposed on `Renderer`, `GlRenderer`, and `VulkanRenderer`.
+`GlRenderer`, `VulkanRenderer`, and `CpuRenderer` are first-class types; `Renderer` is a type-erased draw wrapper for backend-agnostic code. Upload planning and scheduled upload use the narrower `ResourceUploader` capability internally; `Renderer` exposes convenience forwarding methods.
 
 | Method | Description |
 |--------|-------------|
@@ -649,6 +650,7 @@ try scene.addPath(.{ .picture = &sprite, .resource_key = snail.ResourceKey.named
 | `renderer.uploadResourcesBlocking(.{ .persistent, .scratch }, set) !PreparedResources` | Blocking upload + view construction. Persistent allocations live with `PreparedResources`; scratch allocations end when upload returns. |
 | `renderer.planResourceUpload(alloc, current, next_set) !ResourceUploadPlan` | Snapshot and diff a new resource manifest against existing prepared resources. |
 | `renderer.beginResourceUpload(.{ .persistent, .scratch }, &plan) !PendingResourceUpload` | Start a scheduled upload; record it, wait for completion if needed, then call `pending.publish()`. |
+| `renderer.resourceUploader()` | Return the upload/cache-only capability used by scheduled uploads. |
 | `DrawList.init(words, segments)` | Wrap a caller-buffered word + segment buffer for `addScene`. |
 | `DrawList.estimate(scene)` | Upper bound for the word buffer required by `draw.addScene(prepared, scene)`. |
 | `DrawList.estimateSegments(scene)` | Upper bound for the segment buffer required by `draw.addScene(prepared, scene)`. |
@@ -664,8 +666,9 @@ try scene.addPath(.{ .picture = &sprite, .resource_key = snail.ResourceKey.named
 
 `uploadResourcesBlocking` is the simple path; for engines that want to overlap
 upload with the main render queue (Vulkan in particular) there is an explicit
-plan / record / publish flow. Use a type-erased `Renderer` for backend-agnostic
-scheduled uploads, including CPU-backed uploads.
+plan / record / publish flow. Use `ResourceUploader` for backend-agnostic
+scheduled uploads, including CPU-backed uploads; `Renderer` forwards to it for
+convenience.
 
 1. **Plan.** `renderer.planResourceUpload(allocator, current, next_set)`
    diffs `next_set` against the existing `PreparedResources` (or `null` for a

@@ -20,7 +20,7 @@ const PreparedLayerInfoUpload = view_mod.PreparedLayerInfoUpload;
 const PreparedLayerInfoView = view_mod.PreparedLayerInfoView;
 const PreparedManifest = prepared_mod.PreparedManifest;
 const PreparedResources = prepared_mod.PreparedResources;
-const Renderer = render_mod.Renderer;
+const ResourceUploader = render_mod.ResourceUploader;
 const ResourceKey = resource_key_mod.ResourceKey;
 const ResourceManifest = manifest_mod.ResourceManifest;
 const ResourceStamp = resource_key_mod.ResourceStamp;
@@ -445,15 +445,15 @@ pub fn uploadPreparedResourceEntries(renderer: anytype, entries: []const Resourc
     return prepared;
 }
 
-/// In-flight scheduled upload returned by `Renderer.beginResourceUpload` and
-/// the typed GL/Vulkan wrappers.
+/// In-flight scheduled upload returned by `ResourceUploader.beginResourceUpload`,
+/// `Renderer.beginResourceUpload`, and the typed GL/Vulkan wrappers.
 ///
 /// Callers should construct this through `beginResourceUpload`, then call
 /// `record`, `ready`, `publish`, and `deinit` as needed.
-/// The erased renderer handle is copied; the underlying backend state still
-/// must outlive the pending upload.
+/// The erased upload/cache capability is copied; the underlying backend state
+/// still must outlive the pending upload.
 pub const PendingResourceUpload = struct {
-    renderer: Renderer,
+    uploader: ResourceUploader,
     allocators: UploadAllocators,
     plan: ResourceUploadPlan,
     prepared: ?PreparedResources = null,
@@ -484,7 +484,7 @@ pub const PendingResourceUpload = struct {
         if (!options.allow_cache_rebuilds and self.plan.cache.requiresRebuild()) return error.ResourceCacheRebuildRequired;
         if (self.plan.upload.bytes > options.budget_bytes) return error.ResourceUploadBudgetExceeded;
 
-        self.prepared = try uploadPreparedResourceEntries(&self.renderer, self.plan.manifest.entries, self.allocators);
+        self.prepared = try uploadPreparedResourceEntries(&self.uploader, self.plan.manifest.entries, self.allocators);
         self.external_completion_required = external_completion_required;
         self.ready_to_publish = !external_completion_required;
     }

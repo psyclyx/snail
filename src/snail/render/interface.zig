@@ -70,11 +70,13 @@ pub const Renderer = struct {
     /// be current. CPU upload builds cheap views. Vulkan does not perform an
     /// implicit device/queue idle here.
     pub fn uploadResourcesBlocking(self: *Renderer, allocators: UploadAllocators, set: *const ResourceManifest) !PreparedResources {
-        return uploadPreparedResources(self, set, allocators);
+        var uploader = self.resourceUploader();
+        return uploader.uploadResourcesBlocking(allocators, set);
     }
 
     pub fn uploadResourceBatch(self: *Renderer, allocators: UploadAllocators, prepared: *PreparedResources, batch: ResourceUploadBatch) !void {
-        try self.vtable.upload.uploadResources(self.ptr, allocators, prepared, batch);
+        var uploader = self.resourceUploader();
+        try uploader.uploadResourceBatch(allocators, prepared, batch);
     }
 
     pub fn coverageBackend(self: *Renderer, prepared: *const PreparedResources) ?CoverageBackend {
@@ -82,15 +84,13 @@ pub const Renderer = struct {
     }
 
     pub fn planResourceUpload(self: *Renderer, allocator: std.mem.Allocator, current: ?*const PreparedResources, next_set: *const ResourceManifest) !ResourceUploadPlan {
-        return upload_plan.planResourceUpload(self, allocator, current, next_set);
+        var uploader = self.resourceUploader();
+        return uploader.planResourceUpload(allocator, current, next_set);
     }
 
     pub fn beginResourceUpload(self: *Renderer, allocators: UploadAllocators, plan: *const ResourceUploadPlan) !PendingResourceUpload {
-        return .{
-            .renderer = self.*,
-            .allocators = allocators,
-            .plan = try plan.clone(allocators.persistent),
-        };
+        var uploader = self.resourceUploader();
+        return uploader.beginResourceUpload(allocators, plan);
     }
 
     pub fn resourceCacheStats(self: *const Renderer) ResourceCacheStats {
@@ -103,6 +103,16 @@ pub const Renderer = struct {
 
     pub fn backend(self: *const Renderer) BackendKind {
         return self.vtable.backend;
+    }
+
+    pub fn resourceUploader(self: *Renderer) ResourceUploader {
+        return .{
+            .ptr = self.ptr,
+            .backend_kind = self.vtable.backend,
+            .upload = &self.vtable.upload,
+            .resource_cache = &self.vtable.resource_cache,
+            .backendNameFn = self.vtable.backendName,
+        };
     }
 
     pub fn usesResourceCache(self: *const Renderer) bool {
@@ -190,6 +200,66 @@ pub const Renderer = struct {
 
     pub fn backendName(self: *const Renderer) []const u8 {
         return self.vtable.backendName(@constCast(self.ptr));
+    }
+};
+
+pub const ResourceUploader = struct {
+    ptr: *anyopaque,
+    backend_kind: BackendKind,
+    upload: *const Renderer.UploadVTable,
+    resource_cache: *const Renderer.ResourceCacheVTable,
+    backendNameFn: *const fn (*anyopaque) []const u8,
+
+    pub fn uploadResourcesBlocking(self: *ResourceUploader, allocators: UploadAllocators, set: *const ResourceManifest) !PreparedResources {
+        return uploadPreparedResources(self, set, allocators);
+    }
+
+    pub fn uploadResourceBatch(self: *ResourceUploader, allocators: UploadAllocators, prepared: *PreparedResources, batch: ResourceUploadBatch) !void {
+        try self.upload.uploadResources(self.ptr, allocators, prepared, batch);
+    }
+
+    pub fn planResourceUpload(self: *ResourceUploader, allocator: std.mem.Allocator, current: ?*const PreparedResources, next_set: *const ResourceManifest) !ResourceUploadPlan {
+        return upload_plan.planResourceUpload(self, allocator, current, next_set);
+    }
+
+    pub fn beginResourceUpload(self: *ResourceUploader, allocators: UploadAllocators, plan: *const ResourceUploadPlan) !PendingResourceUpload {
+        return .{
+            .uploader = self.*,
+            .allocators = allocators,
+            .plan = try plan.clone(allocators.persistent),
+        };
+    }
+
+    pub fn resourceCacheStats(self: *const ResourceUploader) ResourceCacheStats {
+        return self.resource_cache.stats(self.ptr);
+    }
+
+    pub fn resetResourceCache(self: *ResourceUploader) void {
+        self.resource_cache.reset(self.ptr);
+    }
+
+    pub fn backend(self: *const ResourceUploader) BackendKind {
+        return self.backend_kind;
+    }
+
+    pub fn usesResourceCache(self: *const ResourceUploader) bool {
+        return self.resource_cache.uses_resource_cache;
+    }
+
+    pub fn atlasCacheStatus(self: *const ResourceUploader, prepared: *const PreparedResources, atlas_index: usize, atlas: upload_plan.AtlasRef) upload_plan.AtlasCacheStatus {
+        return self.resource_cache.atlasCacheStatus(prepared, atlas_index, atlas);
+    }
+
+    pub fn canUseAtlasOverflowBanks(self: *const ResourceUploader, prepared: *const PreparedResources, atlas_count: usize) bool {
+        return self.resource_cache.canUseAtlasOverflowBanks(prepared, atlas_count);
+    }
+
+    pub fn imageArrayWouldRebuild(self: *const ResourceUploader, prepared: *const PreparedResources, capacity_count: u32, capacity_width: u32, capacity_height: u32) bool {
+        return self.resource_cache.imageArrayWouldRebuild(prepared, capacity_count, capacity_width, capacity_height);
+    }
+
+    pub fn backendName(self: *const ResourceUploader) []const u8 {
+        return self.backendNameFn(@constCast(self.ptr));
     }
 };
 

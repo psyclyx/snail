@@ -180,7 +180,7 @@ pub const Renderer = if (build_options.enable_vulkan) struct {
     }
 
     fn ownsPendingResourceUpload(self: *const Self, pending: *const PendingResourceUpload) bool {
-        return pending.renderer.ptr == @as(*anyopaque, @ptrCast(self.state)) and pending.renderer.backend() == .vulkan;
+        return pending.uploader.ptr == @as(*anyopaque, @ptrCast(self.state)) and pending.uploader.backend() == .vulkan;
     }
 
     pub fn backendName(self: *const Self) []const u8 {

@@ -8,6 +8,7 @@ pub const adapter = struct {
 
 pub const BackendKind = interface.BackendKind;
 pub const Renderer = interface.Renderer;
+pub const ResourceUploader = interface.ResourceUploader;
 
 pub const CpuRenderer = adapter.cpu.CpuRenderer;
 pub const GlRenderer = adapter.gl.Renderer;

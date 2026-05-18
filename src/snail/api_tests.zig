@@ -31,6 +31,7 @@ const PreparedManifest = snail.PreparedManifest;
 const PreparedResources = snail.PreparedResources;
 const PreparedResourceRetirementQueue = snail.PreparedResourceRetirementQueue;
 const PendingResourceUpload = snail.PendingResourceUpload;
+const ResourceUploader = snail.ResourceUploader;
 const Renderer = snail.Renderer;
 const CpuRenderer = snail.CpuRenderer;
 const DrawSegment = snail.DrawSegment;
@@ -1021,7 +1022,7 @@ test "pending upload publish waits for external completion marker" {
     defer plan.deinit();
 
     var pending = PendingResourceUpload{
-        .renderer = renderer,
+        .uploader = renderer.resourceUploader(),
         .plan = try plan.clone(allocator),
         .allocators = .{ .persistent = allocator, .scratch = allocator },
         .prepared = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set),
@@ -1037,8 +1038,8 @@ test "pending upload publish waits for external completion marker" {
     try std.testing.expect(prepared.stampForKey(ResourceKey.named("hud_panel")) != null);
 }
 
-test "pending upload stores renderer handle by value" {
-    try std.testing.expectEqual(Renderer, @TypeOf(@as(PendingResourceUpload, undefined).renderer));
+test "pending upload stores upload capability by value" {
+    try std.testing.expectEqual(ResourceUploader, @TypeOf(@as(PendingResourceUpload, undefined).uploader));
 }
 
 test "prepared resource retirement queue is caller-owned" {

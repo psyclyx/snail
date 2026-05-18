@@ -115,6 +115,7 @@ pub const VulkanContext = render.VulkanContext;
 pub const CpuRenderer = render.CpuRenderer;
 pub const ThreadPool = render.ThreadPool;
 pub const Renderer = render.Renderer;
+pub const ResourceUploader = render.ResourceUploader;
 pub const GlRenderer = render.GlRenderer;
 pub const VulkanRenderer = render.VulkanRenderer;
 
