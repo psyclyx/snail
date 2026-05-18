@@ -1,4 +1,9 @@
 #define kDirectEncodingKindBias 4.0
+const uint kBandCurveLocXMask = 0x0FFFu;
+
+ivec2 decodeBandCurveLoc(uvec2 ref) {
+    return ivec2(int(ref.x & kBandCurveLocXMask), int(ref.y));
+}
 
 ivec2 offsetLayerLoc(ivec2 base, int offset) {
     int width = textureSize(u_layer_tex, 0).x;
@@ -59,7 +64,7 @@ vec2 evalAxisCoverage(vec2 rc, float ppe, ivec2 bandLoc, int count, int layer, b
     float wgt = 0.0;
     for (int i = 0; i < count; i++) {
         ivec2 bLoc = calcBandLoc(bandLoc, uint(i));
-        ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec3(bLoc, layer), 0).xy);
+        ivec2 cLoc = decodeBandCurveLoc(texelFetch(u_band_tex, ivec3(bLoc, layer), 0).xy);
         vec4 tex0 = texelFetch(u_curve_tex, ivec3(cLoc, layer), 0);
         vec4 tex1 = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(cLoc, 1), layer), 0);
         vec4 tex2 = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(cLoc, 2), layer), 0);

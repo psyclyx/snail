@@ -71,7 +71,7 @@ pub const TEX_WIDTH: u32 = curve_tex.TEX_WIDTH;
 ///   [hband0] [hband1] ... [hbandN-1]  [vband0] [vband1] ... [vbandN-1]  [hband_indices...] [vband_indices...]
 ///
 /// Each hband/vband entry: RG16UI = (curve_count, index_offset_from_glyphLoc)
-/// Each index entry: RG16UI = (curveLoc.x, curveLoc.y) in the curve texture
+/// Each index entry: RG16UI = ((first_member_band << 12) | curveLoc.x, curveLoc.y)
 pub const GlyphBandData = struct {
     /// All u16 pairs (RG) for this glyph's band texture row
     data: []u16,
@@ -94,6 +94,27 @@ fn bandCount(num_curves: usize) u16 {
     if (num_curves <= 24) return 6;
     if (num_curves <= 48) return 8;
     return 12;
+}
+
+const curve_loc_x_bits = 12;
+const curve_loc_x_limit: u32 = 1 << curve_loc_x_bits;
+const curve_loc_x_mask: u16 = (1 << curve_loc_x_bits) - 1;
+
+comptime {
+    if (TEX_WIDTH > curve_loc_x_limit) {
+        @compileError("band curve refs pack curveLoc.x into 12 bits");
+    }
+}
+
+fn packBandCurveRef(curve_texel: u32, first_member_band: u16) [2]u16 {
+    const cx = curve_texel % TEX_WIDTH;
+    const cy = curve_texel / TEX_WIDTH;
+    std.debug.assert(cx <= curve_loc_x_mask);
+    std.debug.assert(first_member_band < (1 << (16 - curve_loc_x_bits)));
+    return .{
+        @as(u16, @intCast(cx)) | (first_member_band << curve_loc_x_bits),
+        @intCast(cy),
+    };
 }
 
 fn emptyGlyphBandData() GlyphBandData {
@@ -239,6 +260,10 @@ pub fn buildGlyphBandDataWithPreparedCurves(
     var h_band_max: [max_band_count]f32 = undefined;
     var v_band_min: [max_band_count]f32 = undefined;
     var v_band_max: [max_band_count]f32 = undefined;
+    var h_first_member = try allocator.alloc(u16, prepared_curves.len);
+    defer allocator.free(h_first_member);
+    var v_first_member = try allocator.alloc(u16, prepared_curves.len);
+    defer allocator.free(v_first_member);
     var h_lists: [max_band_count]std.ArrayList(u16) = undefined;
     var v_lists: [max_band_count]std.ArrayList(u16) = undefined;
     var h_inited: usize = 0;
@@ -289,16 +314,22 @@ pub fn buildGlyphBandDataWithPreparedCurves(
     }
     band_lists_ready = true;
 
+    const sentinel_band = std.math.maxInt(u16);
+    @memset(h_first_member[0..prepared_curves.len], sentinel_band);
+    @memset(v_first_member[0..prepared_curves.len], sentinel_band);
+
     // Record band membership once per curve and append to pre-sized lists.
     for (curve_bboxes, 0..) |cb, ci| {
         const curve_idx: u16 = @intCast(ci);
         for (0..h_bands) |bi| {
             if (cb.max.y >= h_band_min[bi] and cb.min.y <= h_band_max[bi]) {
+                if (h_first_member[ci] == sentinel_band) h_first_member[ci] = @intCast(bi);
                 h_lists[bi].appendAssumeCapacity(curve_idx);
             }
         }
         for (0..v_bands) |bi| {
             if (cb.max.x >= v_band_min[bi] and cb.min.x <= v_band_max[bi]) {
+                if (v_first_member[ci] == sentinel_band) v_first_member[ci] = @intCast(bi);
                 v_lists[bi].appendAssumeCapacity(curve_idx);
             }
         }
@@ -346,10 +377,9 @@ pub fn buildGlyphBandDataWithPreparedCurves(
     for (h_lists[0..h_bands]) |band| {
         for (band.items) |curve_idx| {
             const curve_texel = @as(u32, curve_entry.offset) + @as(u32, curve_idx) * curve_tex.SEGMENT_TEXELS;
-            const cx = curve_texel % TEX_WIDTH;
-            const cy = curve_texel / TEX_WIDTH;
-            data[write_pos * 2 + 0] = @intCast(cx);
-            data[write_pos * 2 + 1] = @intCast(cy);
+            const encoded = packBandCurveRef(curve_texel, h_first_member[@intCast(curve_idx)]);
+            data[write_pos * 2 + 0] = encoded[0];
+            data[write_pos * 2 + 1] = encoded[1];
             write_pos += 1;
         }
     }
@@ -358,10 +388,9 @@ pub fn buildGlyphBandDataWithPreparedCurves(
     for (v_lists[0..v_bands]) |band| {
         for (band.items) |curve_idx| {
             const curve_texel = @as(u32, curve_entry.offset) + @as(u32, curve_idx) * curve_tex.SEGMENT_TEXELS;
-            const cx = curve_texel % TEX_WIDTH;
-            const cy = curve_texel / TEX_WIDTH;
-            data[write_pos * 2 + 0] = @intCast(cx);
-            data[write_pos * 2 + 1] = @intCast(cy);
+            const encoded = packBandCurveRef(curve_texel, v_first_member[@intCast(curve_idx)]);
+            data[write_pos * 2 + 0] = encoded[0];
+            data[write_pos * 2 + 1] = encoded[1];
             write_pos += 1;
         }
     }

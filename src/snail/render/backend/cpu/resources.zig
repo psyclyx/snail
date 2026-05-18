@@ -16,7 +16,7 @@ const decodeCurveSegmentFromSlice = texture.decodeCurveSegmentFromSlice;
 const f16ToF32 = texture.f16ToF32;
 const prepareAxisCurve = coverage.prepareAxisCurve;
 const preparePathLayerInfoRecords = path_paint.preparePathLayerInfoRecords;
-const readBandCurveBase = texture.readBandCurveBase;
+const readBandCurveRef = texture.readBandCurveRef;
 
 pub const PreparedAtlasPage = struct {
     band_data: []const u16,
@@ -46,13 +46,16 @@ pub const PreparedAtlasPage = struct {
         errdefer v_cold_curves.deinit(allocator);
 
         for (0..band_texel_count) |texel_idx| {
-            const curve_base = readBandCurveBase(page, texel_idx) orelse continue;
+            const curve_ref = readBandCurveRef(page, texel_idx) orelse continue;
+            const curve_base = curve_ref.base;
             const segment = decodeCurveSegmentFromSlice(curve_data, @intCast(curve_base));
 
             h_curves[texel_idx] = try prepareAxisCurve(allocator, &h_cold_curves, segment, true);
             h_curves[texel_idx].curve_base = @intCast(curve_base);
+            h_curves[texel_idx].first_member_band = @intCast(curve_ref.first_member_band);
             v_curves[texel_idx] = try prepareAxisCurve(allocator, &v_cold_curves, segment, false);
             v_curves[texel_idx].curve_base = @intCast(curve_base);
+            v_curves[texel_idx].first_member_band = @intCast(curve_ref.first_member_band);
         }
 
         const h_cold_curves_owned = try h_cold_curves.toOwnedSlice(allocator);

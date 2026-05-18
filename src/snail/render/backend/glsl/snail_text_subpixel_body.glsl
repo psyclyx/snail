@@ -6,6 +6,12 @@ vec3 applyCoverageTransfer(vec3 cov) {
     );
 }
 
+const uint kBandCurveLocXMask = 0x0FFFu;
+
+ivec2 decodeBandCurveLoc(uvec2 ref) {
+    return ivec2(int(ref.x & kBandCurveLocXMask), int(ref.y));
+}
+
 vec2 solveHorizPoly(vec4 p12, vec2 p3) {
     vec2 a = p12.xy - p12.zw * 2.0 + p3;
     vec2 b = p12.xy - p12.zw;
@@ -60,7 +66,7 @@ vec2 evalHorizCoverage(vec2 rc, float x_offset, vec2 ppe, ivec2 band_loc, int co
     rc += vec2(x_offset, 0.0);
     for (int i = 0; i < count; i++) {
         ivec2 b_loc = calcBandLoc(band_loc, uint(i));
-        ivec2 c_loc = ivec2(texelFetch(u_band_tex, ivec3(b_loc, layer), 0).xy);
+        ivec2 c_loc = decodeBandCurveLoc(texelFetch(u_band_tex, ivec3(b_loc, layer), 0).xy);
         vec4 tex0 = texelFetch(u_curve_tex, ivec3(c_loc, layer), 0);
         vec4 tex1 = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(c_loc, 1), layer), 0);
         vec4 p12 = vec4(tex0.xy, tex0.zw) - vec4(rc, rc);
@@ -87,7 +93,7 @@ vec2 evalVertCoverage(vec2 rc, float y_offset, vec2 ppe, ivec2 band_loc, int cou
     rc += vec2(0.0, y_offset);
     for (int i = 0; i < count; i++) {
         ivec2 b_loc = calcBandLoc(band_loc, uint(i));
-        ivec2 c_loc = ivec2(texelFetch(u_band_tex, ivec3(b_loc, layer), 0).xy);
+        ivec2 c_loc = decodeBandCurveLoc(texelFetch(u_band_tex, ivec3(b_loc, layer), 0).xy);
         vec4 tex0 = texelFetch(u_curve_tex, ivec3(c_loc, layer), 0);
         vec4 tex1 = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(c_loc, 1), layer), 0);
         vec4 p12 = vec4(tex0.xy, tex0.zw) - vec4(rc, rc);

@@ -14,7 +14,7 @@ const SubpixelOrder = snail.SubpixelOrder;
 const Vec2 = snail.Vec2;
 const clamp01 = color_mod.clamp01;
 const decodeCurveSegment = texture.decodeCurveSegment;
-const readBandCurveBase = texture.readBandCurveBase;
+const readBandCurveRef = texture.readBandCurveRef;
 const readBandTexelLinear = texture.readBandTexelLinear;
 const readCurveTexelF32Base = texture.readCurveTexelF32Base;
 
@@ -85,6 +85,7 @@ pub const PreparedAxisCurve = struct {
     kind: bezier.CurveKind = .quadratic,
     cold_index: u32 = invalid_prepared_cold,
     curve_base: u32 = std.math.maxInt(u32),
+    first_member_band: u16 = 0,
     max_axis: f32 = 0.0,
     p0_root: f32 = 0.0,
     p1_root: f32 = 0.0,
@@ -736,7 +737,8 @@ fn evalGlyphCoverageAxis(page: anytype, sample_rc: Vec2, ppe: f32, band_base: us
     var result = CoveragePair{ .cov = 0.0, .wgt = 0.0 };
     var i: u32 = 0;
     while (i < count) : (i += 1) {
-        const curve_base = readBandCurveBase(page, band_base + i) orelse continue;
+        const curve_ref = readBandCurveRef(page, band_base + i) orelse continue;
+        const curve_base = curve_ref.base;
 
         const tex0 = readCurveTexelF32Base(page, curve_base);
         const tex1 = readCurveTexelF32Base(page, curve_base + 4);
@@ -827,60 +829,9 @@ fn coverageBandSpan(coord: f32, ppe: f32, band_scale: f32, band_offset: f32, ban
     return .{ .first = first, .last = @max(first, last) };
 }
 
-fn preparedBandContainsCurveBase(
-    curves: []const PreparedAxisCurve,
-    band_base: usize,
-    count: u32,
-    curve_base: u32,
-) bool {
-    if (band_base >= curves.len) return false;
-    const band_count = @min(@as(usize, count), curves.len - band_base);
-    for (curves[band_base..][0..band_count]) |curve| {
-        if (curve.valid and curve.curve_base == curve_base) return true;
-    }
-    return false;
-}
-
-fn previousPreparedBandsContainCurveBase(
-    page: anytype,
-    glyph_band_base: usize,
-    header_base: i32,
-    first_band: i32,
-    current_band: i32,
-    curve_base: u32,
-    comptime horizontal: bool,
-) bool {
-    const curves = if (horizontal) page.h_curves else page.v_curves;
-    var band = first_band;
-    while (band < current_band) : (band += 1) {
-        const header = readBandTexelLinear(page, glyph_band_base + @as(usize, @intCast(header_base + band)));
-        if (preparedBandContainsCurveBase(curves, glyph_band_base + header[1], header[0], curve_base)) return true;
-    }
-    return false;
-}
-
-fn genericBandContainsCurveBase(page: anytype, band_base: usize, count: u32, curve_base: usize) bool {
-    var i: u32 = 0;
-    while (i < count) : (i += 1) {
-        if ((readBandCurveBase(page, band_base + i) orelse continue) == curve_base) return true;
-    }
-    return false;
-}
-
-fn previousGenericBandsContainCurveBase(
-    page: anytype,
-    glyph_band_base: usize,
-    header_base: i32,
-    first_band: i32,
-    current_band: i32,
-    curve_base: usize,
-) bool {
-    var band = first_band;
-    while (band < current_band) : (band += 1) {
-        const header = readBandTexelLinear(page, glyph_band_base + @as(usize, @intCast(header_base + band)));
-        if (genericBandContainsCurveBase(page, glyph_band_base + header[1], header[0], curve_base)) return true;
-    }
-    return false;
+fn isBandSpanOwner(first_member: u32, band: i32, first_span_band: i32) bool {
+    const first_member_band: i32 = @intCast(first_member);
+    return band == @max(first_member_band, first_span_band);
 }
 
 fn evalPreparedGlyphCoverageAxisBandSpan(
@@ -909,15 +860,7 @@ fn evalPreparedGlyphCoverageAxisBandSpan(
         while (i < band_count) : (i += 1) {
             const curve = &band_curves[i];
             if (!curve.valid) continue;
-            if (band > span.first and previousPreparedBandsContainCurveBase(
-                page,
-                glyph_band_base,
-                header_base,
-                span.first,
-                band,
-                curve.curve_base,
-                horizontal,
-            )) continue;
+            if (!isBandSpanOwner(curve.first_member_band, band, span.first)) continue;
             if (accumulatePreparedCurveCoverage(&result, curve, cold_curves, sample_rc, ppe, horizontal) == .stop_scan) break;
         }
     }
@@ -942,20 +885,13 @@ fn evalGenericGlyphCoverageAxisBandSpan(
         const band_base = glyph_band_base + header[1];
         var i: u32 = 0;
         while (i < header[0]) : (i += 1) {
-            const curve_base = readBandCurveBase(page, band_base + i) orelse continue;
-            if (band > span.first and previousGenericBandsContainCurveBase(
-                page,
-                glyph_band_base,
-                header_base,
-                span.first,
-                band,
-                curve_base,
-            )) continue;
+            const curve_ref = readBandCurveRef(page, band_base + i) orelse continue;
+            if (!isBandSpanOwner(curve_ref.first_member_band, band, span.first)) continue;
 
-            const tex0 = readCurveTexelF32Base(page, curve_base);
-            const tex1 = readCurveTexelF32Base(page, curve_base + 4);
-            const tex2 = readCurveTexelF32Base(page, curve_base + 8);
-            const meta = readCurveTexelF32Base(page, curve_base + 12);
+            const tex0 = readCurveTexelF32Base(page, curve_ref.base);
+            const tex1 = readCurveTexelF32Base(page, curve_ref.base + 4);
+            const tex2 = readCurveTexelF32Base(page, curve_ref.base + 8);
+            const meta = readCurveTexelF32Base(page, curve_ref.base + 12);
             const segment = decodeCurveSegment(tex0, tex1, tex2, meta);
             if (accumulateGlyphCoverageSegment(&result, segment, sample_rc, ppe, horizontal) == .stop_scan) break;
         }

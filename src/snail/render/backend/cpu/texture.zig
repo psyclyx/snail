@@ -4,6 +4,13 @@ const bezier = @import("../../../math/bezier.zig");
 const curve_tex = @import("../../format/curve_texture.zig");
 const CurveSegment = bezier.CurveSegment;
 const Vec2 = snail.Vec2;
+const band_curve_loc_x_bits = 12;
+const band_curve_loc_x_mask: u32 = (1 << band_curve_loc_x_bits) - 1;
+
+pub const BandCurveRef = struct {
+    base: usize,
+    first_member_band: u32,
+};
 
 // ---------------------------------------------------------------------------
 // Texture access helpers
@@ -19,9 +26,22 @@ pub fn readBandTexelLinear(page: anytype, texel_idx: usize) [2]u32 {
 }
 
 pub fn readBandCurveBase(page: anytype, texel_idx: usize) ?usize {
-    const ref = readBandTexelLinear(page, texel_idx);
-    if (ref[0] >= page.curve_width or ref[1] >= page.curve_height) return null;
-    return @as(usize, (ref[1] * page.curve_width + ref[0]) * 4);
+    return (readBandCurveRef(page, texel_idx) orelse return null).base;
+}
+
+pub fn readBandFirstMember(page: anytype, texel_idx: usize) u32 {
+    const raw = readBandTexelLinear(page, texel_idx);
+    return raw[0] >> band_curve_loc_x_bits;
+}
+
+pub fn readBandCurveRef(page: anytype, texel_idx: usize) ?BandCurveRef {
+    const raw = readBandTexelLinear(page, texel_idx);
+    const curve_x = raw[0] & band_curve_loc_x_mask;
+    if (curve_x >= page.curve_width or raw[1] >= page.curve_height) return null;
+    return .{
+        .base = @as(usize, (raw[1] * page.curve_width + curve_x) * 4),
+        .first_member_band = raw[0] >> band_curve_loc_x_bits,
+    };
 }
 
 pub fn readCurveTexelF32Base(page: anytype, idx: usize) [4]f32 {

@@ -2,6 +2,12 @@
 // q = b + sign(b)*sqrt(disc); roots are q/a and p0/q (Vieta).
 // Preserves the original t1=(b-d)/a, t2=(b+d)/a ordering so downstream
 // `calcRootCode` bit interpretation stays correct.
+const uint kBandCurveLocXMask = 0x0FFFu;
+
+ivec2 decodeBandCurveLoc(uvec2 ref) {
+    return ivec2(int(ref.x & kBandCurveLocXMask), int(ref.y));
+}
+
 vec2 solveHorizPoly(vec4 p12, vec2 p3) {
     vec2 a = p12.xy - p12.zw * 2.0 + p3;
     vec2 b = p12.xy - p12.zw;
@@ -59,7 +65,7 @@ float evalGlyphCoverage(vec2 rc, vec2 ppe, ivec2 gLoc, ivec2 bandMax, vec4 bandi
     int hCount = int(hbd.x);
     for (int i = 0; i < hCount; i++) {
         ivec2 bLoc_h = calcBandLoc(hLoc, uint(i));
-        ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec3(bLoc_h, texLayer), 0).xy);
+        ivec2 cLoc = decodeBandCurveLoc(texelFetch(u_band_tex, ivec3(bLoc_h, texLayer), 0).xy);
         vec4 tex0 = texelFetch(u_curve_tex, ivec3(cLoc, texLayer), 0);
         vec4 tex1 = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(cLoc, 1), texLayer), 0);
         vec4 p12 = vec4(tex0.xy, tex0.zw) - vec4(rc, rc);
@@ -79,7 +85,7 @@ float evalGlyphCoverage(vec2 rc, vec2 ppe, ivec2 gLoc, ivec2 bandMax, vec4 bandi
     int vCount = int(vbd.x);
     for (int i = 0; i < vCount; i++) {
         ivec2 bLoc_v = calcBandLoc(vLoc, uint(i));
-        ivec2 cLoc = ivec2(texelFetch(u_band_tex, ivec3(bLoc_v, texLayer), 0).xy);
+        ivec2 cLoc = decodeBandCurveLoc(texelFetch(u_band_tex, ivec3(bLoc_v, texLayer), 0).xy);
         vec4 tex0 = texelFetch(u_curve_tex, ivec3(cLoc, texLayer), 0);
         vec4 tex1 = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(cLoc, 1), texLayer), 0);
         vec4 p12 = vec4(tex0.xy, tex0.zw) - vec4(rc, rc);
