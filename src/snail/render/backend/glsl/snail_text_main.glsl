@@ -1,6 +1,6 @@
 void main() {
     int layer_byte = (v_glyph.w >> 8) & 0xFF;
-    if (layer_byte == 0xFF) discard;
+    if (layer_byte == SNAIL_SPECIAL_LAYER_SENTINEL) discard;
     int atlas_layer = u_layer_base + layer_byte;
     vec2 rc = v_texcoord;
     vec2 dx = vec2(dFdx(rc.x), dFdy(rc.x));

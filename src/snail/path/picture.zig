@@ -6,6 +6,7 @@ const core = @import("core.zig");
 const curve_tex = @import("../render/format/curve_texture.zig");
 const atlas_curve_mod = @import("../render/format/atlas/curve.zig");
 const atlas_page_mod = @import("../render/format/atlas/page.zig");
+const render_abi = @import("../render/format/abi.zig");
 const paint_api = @import("../paint.zig");
 const paint_records = @import("../paint_records.zig");
 const picture_compile = @import("picture_compile.zig");
@@ -57,8 +58,8 @@ const kPaintTagImage: f32 = PATH_PAINT_TAG_IMAGE;
 const kPaintTagCompositeGroup: f32 = PATH_PAINT_TAG_COMPOSITE_GROUP;
 
 const PathCompositeMode = enum(u8) {
-    source_over = 0,
-    fill_stroke_inside = 1,
+    source_over = render_abi.composite_mode_source_over,
+    fill_stroke_inside = render_abi.composite_mode_fill_stroke_inside,
 };
 
 const RoundedRectCorner = struct {

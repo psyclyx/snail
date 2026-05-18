@@ -90,7 +90,7 @@ pub const Shader = struct {
             "\n" ++
             \\float snail_text_coverage() {
             \\    int layer_byte = (v_glyph.w >> 8) & 0xFF;
-            \\    if (layer_byte == 0xFF) return 0.0;
+            \\    if (layer_byte == SNAIL_SPECIAL_LAYER_SENTINEL) return 0.0;
             \\    int atlas_layer = u_layer_base + layer_byte;
             \\    vec2 rc = v_texcoord;
             \\    vec2 dx = vec2(dFdx(rc.x), dFdy(rc.x));
@@ -116,6 +116,8 @@ pub const Shader = struct {
         pub const vertex_shader = @embedFile("render/backend/vulkan_glsl/snail.vert");
         pub const text_fragment_shader = @embedFile("render/backend/vulkan_glsl/snail_text.frag");
         pub const coverage_functions =
+            @embedFile("render/backend/glsl/snail_render_abi.glsl") ++
+            "\n" ++
             @embedFile("render/backend/glsl/snail_coverage_common.glsl") ++
             "\n" ++
             @embedFile("render/backend/glsl/snail_color_common.glsl") ++

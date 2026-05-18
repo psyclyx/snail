@@ -10,6 +10,7 @@ const resource_manifest_mod = @import("../resources/manifest.zig");
 const resource_key_mod = @import("../resource_key.zig");
 const roots = @import("../math/roots.zig");
 const scene_mod = @import("../scene.zig");
+const render_abi = @import("../render/format/abi.zig");
 const vertex_mod = @import("../render/format/vertex.zig");
 const vec = @import("../math/vec.zig");
 
@@ -147,8 +148,8 @@ test "path picture freeze compiles atlas and transformed batch vertices" {
     try std.testing.expectApproxEqAbs(@as(f32, 20), world_x, 0.5);
     try std.testing.expectApproxEqAbs(@as(f32, 30), world_y, 0.5);
     const packed_gw = s.glyph[1];
-    try std.testing.expectEqual(@as(u32, 0xFF), packed_gw >> 24);
-    try std.testing.expectEqual(@as(u32, @intFromEnum(vertex_mod.SpecialGlyphKind.path)), (packed_gw >> 16) & 0xFF);
+    try std.testing.expectEqual(@as(u32, render_abi.special_layer_sentinel), packed_gw >> 24);
+    try std.testing.expectEqual(@as(u32, @intFromEnum(render_abi.SpecialLayerKind.path)), (packed_gw >> 16) & 0xFF);
     try std.testing.expectApproxEqAbs(@as(f32, 0), s.band[3], 0.001);
 }
 

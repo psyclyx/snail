@@ -1,13 +1,16 @@
 const std = @import("std");
 const band_tex = @import("render/format/band_texture.zig");
+const render_abi = @import("render/format/abi.zig");
 
-pub const info_width: u32 = 4096;
-pub const texels_per_record: u32 = 6;
-pub const tag_solid: f32 = -1.0;
-pub const tag_linear_gradient: f32 = -2.0;
-pub const tag_radial_gradient: f32 = -3.0;
-pub const tag_image: f32 = -4.0;
-pub const tag_composite_group: f32 = -5.0;
+pub const PaintRecordKind = render_abi.PaintRecordKind;
+
+pub const info_width: u32 = render_abi.paint_info_width;
+pub const texels_per_record: u32 = render_abi.paint_texels_per_record;
+pub const tag_solid: f32 = render_abi.paintRecordTag(.solid);
+pub const tag_linear_gradient: f32 = render_abi.paintRecordTag(.linear_gradient);
+pub const tag_radial_gradient: f32 = render_abi.paintRecordTag(.radial_gradient);
+pub const tag_image: f32 = render_abi.paintRecordTag(.image);
+pub const tag_composite_group: f32 = render_abi.paintRecordTag(.composite_group);
 
 pub fn infoWidth(texel_count: u32) u32 {
     return @min(@max(texel_count, 1), info_width);
@@ -45,12 +48,12 @@ pub fn srgbToLinearColor(color: [4]f32) [4]f32 {
 }
 
 pub fn tagFor(paint: anytype) f32 {
-    return switch (paint) {
-        .solid => tag_solid,
-        .linear_gradient => tag_linear_gradient,
-        .radial_gradient => tag_radial_gradient,
-        .image => tag_image,
-    };
+    return render_abi.paintRecordTag(switch (paint) {
+        .solid => .solid,
+        .linear_gradient => .linear_gradient,
+        .radial_gradient => .radial_gradient,
+        .image => .image,
+    });
 }
 
 pub fn write(

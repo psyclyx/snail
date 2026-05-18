@@ -15,6 +15,7 @@ const bezier = @import("../../../math/bezier.zig");
 const curve_tex = @import("../../format/curve_texture.zig");
 const atlas_curve_mod = @import("../../format/atlas/curve.zig");
 const atlas_page_mod = @import("../../format/atlas/page.zig");
+const render_abi = @import("../../format/abi.zig");
 const vertex = @import("../../format/vertex.zig");
 const CurveSegment = bezier.CurveSegment;
 const CurveAtlas = atlas_curve_mod.CurveAtlas;
@@ -460,7 +461,7 @@ pub const CpuRenderer = struct {
 
         const atlas_layer_byte: u8 = @intCast(gw >> 24);
 
-        if (atlas_layer_byte == 0xFF) {
+        if (atlas_layer_byte == render_abi.special_layer_sentinel) {
             const layer_count: u16 = @intCast(gw & 0xFFFF);
             const info_x: u16 = @intCast(gz & 0xFFFF);
             const info_y: u16 = @intCast(gz >> 16);
@@ -820,7 +821,7 @@ pub const CpuRenderer = struct {
     ) void {
         const page = preparedAtlasPage(prepared, atlas_layer) orelse return;
 
-        if (record.tag == 5) {
+        if (record.tag == @intFromEnum(render_abi.PaintRecordKind.composite_group)) {
             self.renderCompositePathBatchLayers(page, union_bbox, transform, tint, entry, record, allow_subpixel);
         } else {
             self.renderSinglePathBatchLayer(page, union_bbox, transform, tint, entry, record, allow_subpixel);
@@ -841,7 +842,7 @@ pub const CpuRenderer = struct {
         const layer_count = record.layer_count;
         const layers = entry.path_layers[record.layer_start..][0..layer_count];
         const raster = self.pathRasterState(union_bbox, transform, allow_subpixel) orelse return;
-        const outline_composite = record.composite_mode == 1 and layer_count >= 2;
+        const outline_composite = record.composite_mode == render_abi.composite_mode_fill_stroke_inside and layer_count >= 2;
         const programs = PathCompositePrograms{
             .outline = outline_composite,
             .fill = if (outline_composite) layers[0].paint else .{},

@@ -9,10 +9,13 @@ const gl330_text_subpixel_interface = @embedFile("../glsl/snail_text_subpixel.in
 const gl330_text_coverage_interface = @embedFile("../glsl/snail_text_coverage.interface.glsl");
 const gl330_text_sample_interface = @embedFile("../glsl/snail_text_sample.interface.glsl");
 
+const shared_render_abi = @embedFile("../glsl/snail_render_abi.glsl");
 const shared_vertex_body = @embedFile("../glsl/snail_vert_body.glsl");
 const shared_coverage_common = @embedFile("../glsl/snail_coverage_common.glsl");
 const shared_color_common = @embedFile("../glsl/snail_color_common.glsl");
 const shared_text_coverage_fragment_body =
+    shared_render_abi ++
+    "\n" ++
     shared_coverage_common ++
     "\n" ++
     shared_color_common ++
@@ -21,24 +24,30 @@ const shared_text_coverage_fragment_body =
 const shared_text_fragment_main = @embedFile("../glsl/snail_text_main.glsl");
 const shared_text_fragment_body = shared_text_coverage_fragment_body ++ "\n" ++ shared_text_fragment_main;
 const shared_colr_fragment_body =
+    shared_render_abi ++
+    "\n" ++
     shared_coverage_common ++
     "\n" ++
     shared_color_common ++
     "\n" ++
     @embedFile("../glsl/snail_colr_frag_body.glsl");
 const shared_path_fragment_body =
+    shared_render_abi ++
+    "\n" ++
     shared_coverage_common ++
     "\n" ++
     shared_color_common ++
     "\n" ++
     @embedFile("../glsl/snail_path_frag_body.glsl");
 const shared_text_subpixel_body =
+    shared_render_abi ++
+    "\n" ++
     shared_coverage_common ++
     "\n" ++
     shared_color_common ++
     "\n" ++
     @embedFile("../glsl/snail_text_subpixel_body.glsl");
-const shared_text_sample_body = @embedFile("../glsl/snail_text_sample_body.glsl");
+const shared_text_sample_body = shared_render_abi ++ "\n" ++ @embedFile("../glsl/snail_text_sample_body.glsl");
 
 pub const text_vertex_interface = gl330_vert_interface;
 pub const text_fragment_interface = gl330_text_subpixel_interface;

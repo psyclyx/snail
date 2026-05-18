@@ -2,6 +2,7 @@ const std = @import("std");
 const snail = @import("../../../root.zig");
 const color = @import("color.zig");
 const atlas_curve_mod = @import("../../format/atlas/curve.zig");
+const render_abi = @import("../../format/abi.zig");
 
 const CurveAtlas = atlas_curve_mod.CurveAtlas;
 const PaintImageRecord = CurveAtlas.PaintImageRecord;
@@ -436,7 +437,7 @@ pub fn samplePathPaintAt(atlas: *const CurveAtlas, info_x: u16, info_y: u16, gly
     const info = fetchLayerInfoTexel(data, width, info_x, info_y, 0);
     const tag: i32 = @intFromFloat(@round(-info[3]));
     const data0 = fetchLayerInfoTexel(data, width, info_x, info_y, 2);
-    if (tag == 5) {
+    if (tag == @intFromEnum(render_abi.PaintRecordKind.composite_group)) {
         const fill_info = fetchLayerInfoTexel(data, width, info_x, info_y, 1);
         const fill_tag: i32 = @intFromFloat(@round(-fill_info[3]));
         const fill_data0 = fetchLayerInfoTexel(data, width, info_x, info_y, 3);

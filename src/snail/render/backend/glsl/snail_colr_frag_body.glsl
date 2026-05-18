@@ -116,7 +116,7 @@ float evalGlyphCoverage(vec2 rc, vec2 ppe, ivec2 gLoc, ivec2 bandMax, vec4 bandi
 void main() {
     int atlas_layer = (v_glyph.w >> 8) & 0xFF;
     int special_kind = v_glyph.w & 0xFF;
-    if (atlas_layer != 0xFF || special_kind != 0) discard;
+    if (atlas_layer != SNAIL_SPECIAL_LAYER_SENTINEL || special_kind != SNAIL_SPECIAL_KIND_COLR) discard;
     vec2 rc = v_texcoord;
     vec2 dx = vec2(dFdx(rc.x), dFdy(rc.x));
     vec2 dy = vec2(dFdx(rc.y), dFdy(rc.y));

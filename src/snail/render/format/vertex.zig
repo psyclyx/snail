@@ -5,6 +5,7 @@ const Mat4 = vec.Mat4;
 const BBox = @import("../../math/bezier.zig").BBox;
 const band_tex = @import("band_texture.zig");
 const curve_tex = @import("curve_texture.zig");
+const render_abi = @import("abi.zig");
 
 /// Per-instance data: 64 bytes = 16 u32 words per glyph.
 ///   rect:  4x f16 — bbox in em-space
@@ -34,10 +35,7 @@ pub const BYTES_PER_VERTEX = BYTES_PER_INSTANCE;
 pub const WORDS_PER_VERTEX = WORDS_PER_INSTANCE;
 pub const VERTICES_PER_GLYPH = INSTANCES_PER_GLYPH;
 
-pub const SpecialGlyphKind = enum(u8) {
-    colr = 0,
-    path = 1,
-};
+pub const SpecialLayerKind = render_abi.SpecialLayerKind;
 
 comptime {
     std.debug.assert(BYTES_PER_INSTANCE == 64);
@@ -115,7 +113,7 @@ fn rectHalf4(values: [4]f32) [4]u16 {
     };
 }
 
-fn specialRectHalf4(kind: SpecialGlyphKind, values: [4]f32) [4]u16 {
+fn specialRectHalf4(kind: SpecialLayerKind, values: [4]f32) [4]u16 {
     return switch (kind) {
         .path => rectHalf4(values),
         .colr => half4(values),
@@ -154,10 +152,10 @@ fn decodeColor4(color: [4]u8) [4]f32 {
     };
 }
 
-fn specialGlyphWord(layer_count: u16, kind: SpecialGlyphKind) u32 {
+fn specialGlyphWord(layer_count: u16, kind: SpecialLayerKind) u32 {
     return @as(u32, layer_count) |
         (@as(u32, @intFromEnum(kind)) << 16) |
-        (@as(u32, 0xFF) << 24);
+        (@as(u32, render_abi.special_layer_sentinel) << 24);
 }
 
 fn instancePtr(words: []u32) *Instance {
@@ -347,7 +345,7 @@ fn generateSpecialLayerVerticesTinted(
     color: [4]f32,
     tint: [4]f32,
     atlas_layer: u8,
-    kind: SpecialGlyphKind,
+    kind: SpecialLayerKind,
 ) void {
     const gz: u32 = @as(u32, info_x) | (@as(u32, info_y) << 16);
     const gw = specialGlyphWord(layer_count, kind);
@@ -417,7 +415,7 @@ fn generateSpecialLayerVerticesTransformedTinted(
     tint: [4]f32,
     atlas_layer: u8,
     transform: vec.Transform2D,
-    kind: SpecialGlyphKind,
+    kind: SpecialLayerKind,
 ) bool {
     const det = transform.xx * transform.yy - transform.xy * transform.yx;
     if (@abs(det) < 1e-10) return false;
@@ -504,8 +502,8 @@ test "multi-layer glyph instance preserves wide layer counts" {
 
     const packed_gw = decodeInstance(&buf).glyph[1];
     try std.testing.expectEqual(@as(u32, 300), packed_gw & 0xFFFF);
-    try std.testing.expectEqual(@as(u32, @intFromEnum(SpecialGlyphKind.colr)), (packed_gw >> 16) & 0xFF);
-    try std.testing.expectEqual(@as(u32, 0xFF), packed_gw >> 24);
+    try std.testing.expectEqual(@as(u32, @intFromEnum(SpecialLayerKind.colr)), (packed_gw >> 16) & 0xFF);
+    try std.testing.expectEqual(@as(u32, render_abi.special_layer_sentinel), packed_gw >> 24);
 }
 
 test "path record instance uses path special kind" {
@@ -519,8 +517,8 @@ test "path record instance uses path special kind" {
 
     const packed_gw = decodeInstance(&buf).glyph[1];
     try std.testing.expectEqual(@as(u32, 1), packed_gw & 0xFFFF);
-    try std.testing.expectEqual(@as(u32, @intFromEnum(SpecialGlyphKind.path)), (packed_gw >> 16) & 0xFF);
-    try std.testing.expectEqual(@as(u32, 0xFF), packed_gw >> 24);
+    try std.testing.expectEqual(@as(u32, @intFromEnum(SpecialLayerKind.path)), (packed_gw >> 16) & 0xFF);
+    try std.testing.expectEqual(@as(u32, render_abi.special_layer_sentinel), packed_gw >> 24);
 }
 
 test "transformed glyph instance stores affine transform" {
@@ -587,7 +585,7 @@ test "transformed multi-layer glyph instance preserves info pointer and atlas se
     try std.testing.expectEqual(@as(u32, 12), packed_gz & 0xFFFF);
     try std.testing.expectEqual(@as(u32, 34), packed_gz >> 16);
     try std.testing.expectEqual(@as(u32, 1), packed_gw & 0xFFFF);
-    try std.testing.expectEqual(@as(u32, @intFromEnum(SpecialGlyphKind.colr)), (packed_gw >> 16) & 0xFF);
-    try std.testing.expectEqual(@as(u32, 0xFF), packed_gw >> 24);
+    try std.testing.expectEqual(@as(u32, @intFromEnum(SpecialLayerKind.colr)), (packed_gw >> 16) & 0xFF);
+    try std.testing.expectEqual(@as(u32, render_abi.special_layer_sentinel), packed_gw >> 24);
     try std.testing.expectApproxEqAbs(@as(f32, 9), decoded.band[3], 0.001);
 }

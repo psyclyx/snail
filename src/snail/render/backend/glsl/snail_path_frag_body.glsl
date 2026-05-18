@@ -536,14 +536,14 @@ vec4 ditherPremultipliedColor(vec4 color) {
 PathPaintSample samplePathPaint(vec2 rc, ivec2 infoBase, vec4 info) {
     int paintKind = int(-info.w + 0.5);
     vec4 data0 = texelFetch(u_layer_tex, offsetLayerLoc(infoBase, 2), 0);
-    if (paintKind == 1) {
+    if (paintKind == SNAIL_PAINT_KIND_SOLID) {
         return PathPaintSample(vec4(srgbDecode(data0.r), srgbDecode(data0.g), srgbDecode(data0.b), data0.a), 0.0);
     }
 
     vec4 color0 = texelFetch(u_layer_tex, offsetLayerLoc(infoBase, 3), 0);
     vec4 color1 = texelFetch(u_layer_tex, offsetLayerLoc(infoBase, 4), 0);
 
-    if (paintKind == 2) {
+    if (paintKind == SNAIL_PAINT_KIND_LINEAR_GRADIENT) {
         vec2 delta = data0.zw - data0.xy;
         float lenSq = dot(delta, delta);
         float t = 0.0;
@@ -554,13 +554,13 @@ PathPaintSample samplePathPaint(vec2 rc, ivec2 infoBase, vec4 info) {
         return PathPaintSample(mixGradient(color0, color1, wrapPaintT(t, extra.x)), 1.0);
     }
 
-    if (paintKind == 3) {
+    if (paintKind == SNAIL_PAINT_KIND_RADIAL_GRADIENT) {
         float radius = max(abs(data0.z), kCoordEps);
         float t = length(rc - data0.xy) / radius;
         return PathPaintSample(mixGradient(color0, color1, wrapPaintT(t, data0.w)), 1.0);
     }
 
-    if (paintKind == 4) {
+    if (paintKind == SNAIL_PAINT_KIND_IMAGE) {
         vec4 data1 = texelFetch(u_layer_tex, offsetLayerLoc(infoBase, 3), 0);
         vec4 tint = texelFetch(u_layer_tex, offsetLayerLoc(infoBase, 4), 0);
         vec4 extra = texelFetch(u_layer_tex, offsetLayerLoc(infoBase, 5), 0);
@@ -589,7 +589,7 @@ PathCompositeSample compositePathGroup(vec2 rc, vec2 epp, vec2 ppe, ivec2 infoBa
     PathPaintSample stroke_paint = PathPaintSample(vec4(0.0), 0.0);
 
     for (int l = 0; l < layer_count; l++) {
-        ivec2 loc = offsetLayerLoc(infoBase, 1 + l * 6);
+        ivec2 loc = offsetLayerLoc(infoBase, 1 + l * SNAIL_PAINT_TEXELS_PER_RECORD);
         vec4 info = texelFetch(u_layer_tex, loc, 0);
         vec4 band = texelFetch(u_layer_tex, offsetLayerLoc(loc, 1), 0);
         ivec2 gLoc = ivec2(info.xy);
@@ -599,7 +599,7 @@ PathCompositeSample compositePathGroup(vec2 rc, vec2 epp, vec2 ppe, ivec2 infoBa
         PathPaintSample paint = samplePathPaint(rc, loc, info);
         paint.color *= tint;
 
-        if (composite_mode == 1 && layer_count >= 2 && l < 2) {
+        if (composite_mode == SNAIL_PATH_COMPOSITE_MODE_FILL_STROKE_INSIDE && layer_count >= 2 && l < 2) {
             if (l == 0) {
                 fill_cov = cov;
                 fill_paint = paint;
@@ -615,7 +615,7 @@ PathCompositeSample compositePathGroup(vec2 rc, vec2 epp, vec2 ppe, ivec2 infoBa
         result = premul + result * (1.0 - premul.a);
     }
 
-    if (composite_mode == 1 && layer_count >= 2) {
+    if (composite_mode == SNAIL_PATH_COMPOSITE_MODE_FILL_STROKE_INSIDE && layer_count >= 2) {
         float border_cov = min(fill_cov, stroke_cov);
         float interior_cov = max(fill_cov - border_cov, 0.0);
         if (fill_paint.gradient > 0.5 && interior_cov > 1e-6) has_gradient = 1.0;
@@ -635,14 +635,14 @@ void main() {
     vec2 ppe = 1.0 / max(epp, vec2(1.0 / 65536.0));
 
     int special_kind = v_glyph.w & 0xFF;
-    if (((v_glyph.w >> 8) & 0xFF) != 0xFF || special_kind != 1) discard;
+    if (((v_glyph.w >> 8) & 0xFF) != SNAIL_SPECIAL_LAYER_SENTINEL || special_kind != SNAIL_SPECIAL_KIND_PATH) discard;
     ivec2 infoBase = v_glyph.xy;
     vec4 firstInfo = texelFetch(u_layer_tex, infoBase, 0);
     if (firstInfo.w >= 0.0) discard;
 
     int texLayer = u_layer_base + int(v_banding.w);
     vec4 linear_tint = vec4(srgbDecode(v_tint.r), srgbDecode(v_tint.g), srgbDecode(v_tint.b), v_tint.a);
-    if (int(-firstInfo.w + 0.5) == 5) {
+    if (int(-firstInfo.w + 0.5) == SNAIL_PAINT_KIND_COMPOSITE_GROUP) {
         PathCompositeSample result = compositePathGroup(rc, epp, ppe, infoBase, firstInfo, texLayer, linear_tint);
         if (result.color.a < 1.0 / 255.0) discard;
         vec4 emit = (result.gradient > 0.5) ? ditherPremultipliedColor(result.color) : result.color;

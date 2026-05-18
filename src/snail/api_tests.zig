@@ -7,6 +7,7 @@ const stamp_mod = @import("resources/stamp.zig");
 const upload_mod = @import("upload.zig");
 const upload_plan = @import("render/upload_plan.zig");
 const texture_layers = @import("render/format/texture_layers.zig");
+const render_abi = @import("render/format/abi.zig");
 const vertex_mod = @import("render/format/vertex.zig");
 
 const Mat4 = snail.Mat4;
@@ -542,8 +543,8 @@ test "ResourceManifest uploads explicit text paint resources" {
     try std.testing.expectEqual(@as(usize, 1), draw.slice().segments.len);
     try std.testing.expect(draw.slice().segments[0].key.eql(text_keys.paint.?));
     const decoded = vertex_mod.decodeInstance(draw.slice().words);
-    try std.testing.expectEqual(@as(u32, 0xFF), decoded.glyph[1] >> 24);
-    try std.testing.expectEqual(@as(u32, @intFromEnum(vertex_mod.SpecialGlyphKind.path)), (decoded.glyph[1] >> 16) & 0xFF);
+    try std.testing.expectEqual(@as(u32, render_abi.special_layer_sentinel), decoded.glyph[1] >> 24);
+    try std.testing.expectEqual(@as(u32, @intFromEnum(render_abi.SpecialLayerKind.path)), (decoded.glyph[1] >> 16) & 0xFF);
 }
 
 test "ResourceManifest footprint counts text image paint payloads" {

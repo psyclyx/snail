@@ -226,7 +226,7 @@ void main() {
     frag_blend = vec4(0.0);
 #endif
     int layer_byte = (v_glyph.w >> 8) & 0xFF;
-    if (layer_byte == 0xFF) discard;
+    if (layer_byte == SNAIL_SPECIAL_LAYER_SENTINEL) discard;
     int layer = u_layer_base + layer_byte;
 
     vec2 rc = v_texcoord;

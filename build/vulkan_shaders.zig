@@ -74,6 +74,7 @@ const ShaderSpec = struct {
 };
 
 const fragment_common_includes =
+    "#include \"snail_render_abi.glsl\"\n" ++
     "#include \"snail_coverage_common.glsl\"\n" ++
     "#include \"snail_color_common.glsl\"\n";
 
@@ -95,6 +96,7 @@ const shader_specs = [_]ShaderSpec{
             "#include \"snail_text_frag_body.glsl\"\n" ++
             "#include \"snail_text_main.glsl\"",
         .source_paths = &.{
+            "../src/snail/render/backend/glsl/snail_render_abi.glsl",
             "../src/snail/render/backend/glsl/snail_coverage_common.glsl",
             "../src/snail/render/backend/glsl/snail_color_common.glsl",
             "../src/snail/render/backend/glsl/snail_text_frag_body.glsl",
@@ -109,6 +111,7 @@ const shader_specs = [_]ShaderSpec{
         .wrapper_path = "../src/snail/render/backend/vulkan_glsl/snail_colr.frag",
         .include_directive = fragment_common_includes ++ "#include \"snail_colr_frag_body.glsl\"",
         .source_paths = &.{
+            "../src/snail/render/backend/glsl/snail_render_abi.glsl",
             "../src/snail/render/backend/glsl/snail_coverage_common.glsl",
             "../src/snail/render/backend/glsl/snail_color_common.glsl",
             "../src/snail/render/backend/glsl/snail_colr_frag_body.glsl",
@@ -122,6 +125,7 @@ const shader_specs = [_]ShaderSpec{
         .wrapper_path = "../src/snail/render/backend/vulkan_glsl/snail.frag",
         .include_directive = fragment_common_includes ++ "#include \"snail_path_frag_body.glsl\"",
         .source_paths = &.{
+            "../src/snail/render/backend/glsl/snail_render_abi.glsl",
             "../src/snail/render/backend/glsl/snail_coverage_common.glsl",
             "../src/snail/render/backend/glsl/snail_color_common.glsl",
             "../src/snail/render/backend/glsl/snail_path_frag_body.glsl",
@@ -135,6 +139,7 @@ const shader_specs = [_]ShaderSpec{
         .wrapper_path = "../src/snail/render/backend/vulkan_glsl/snail_text_subpixel.frag",
         .include_directive = fragment_common_includes ++ "#include \"snail_text_subpixel_body.glsl\"",
         .source_paths = &.{
+            "../src/snail/render/backend/glsl/snail_render_abi.glsl",
             "../src/snail/render/backend/glsl/snail_coverage_common.glsl",
             "../src/snail/render/backend/glsl/snail_color_common.glsl",
             "../src/snail/render/backend/glsl/snail_text_subpixel_body.glsl",

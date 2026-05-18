@@ -2,6 +2,7 @@ const std = @import("std");
 const band_tex = @import("../format/band_texture.zig");
 const BBox = @import("../../math/bezier.zig").BBox;
 const Vec2 = @import("../../math/vec.zig").Vec2;
+const render_abi = @import("../format/abi.zig");
 const vertex = @import("../format/vertex.zig");
 const Mat4 = @import("../../math/vec.zig").Mat4;
 const Transform2D = @import("../../math/vec.zig").Transform2D;
@@ -64,10 +65,10 @@ pub fn glyphRunIsSpecial(vertices: []const u32, glyph_index: usize) bool {
 pub fn glyphRunKind(vertices: []const u32, glyph_index: usize) GlyphRunKind {
     std.debug.assert(vertices.len % vertex.WORDS_PER_INSTANCE == 0);
     const packed_word = vertex.instanceAt(vertices, glyph_index).glyph[1];
-    if ((packed_word >> 24) != 0xFF) return .regular;
+    if ((packed_word >> 24) != render_abi.special_layer_sentinel) return .regular;
     const kind = @as(u8, @intCast((packed_word >> 16) & 0xFF));
     return switch (kind) {
-        @intFromEnum(vertex.SpecialGlyphKind.path) => .path,
+        @intFromEnum(render_abi.SpecialLayerKind.path) => .path,
         else => .colr,
     };
 }
@@ -271,10 +272,14 @@ test "LCD range mode accepts transformed glyphs" {
 
 test "special text run helpers split sentinel runs" {
     var buf = [_]u32{0} ** (vertex.WORDS_PER_INSTANCE * 4);
+    const sentinel = @as(u32, render_abi.special_layer_sentinel) << 24;
 
-    vertex.instanceAtMut(&buf, 1).glyph[1] = 0xFF00_0000;
-    vertex.instanceAtMut(&buf, 2).glyph[1] = 0xFF00_0000;
-    vertex.instanceAtMut(&buf, 3).glyph[1] = 0xFF01_0000;
+    vertex.instanceAtMut(&buf, 1).glyph[1] = sentinel |
+        (@as(u32, @intFromEnum(render_abi.SpecialLayerKind.colr)) << 16);
+    vertex.instanceAtMut(&buf, 2).glyph[1] = sentinel |
+        (@as(u32, @intFromEnum(render_abi.SpecialLayerKind.colr)) << 16);
+    vertex.instanceAtMut(&buf, 3).glyph[1] = sentinel |
+        (@as(u32, @intFromEnum(render_abi.SpecialLayerKind.path)) << 16);
 
     try std.testing.expect(!glyphRunIsSpecial(&buf, 0));
     try std.testing.expect(glyphRunIsSpecial(&buf, 1));
