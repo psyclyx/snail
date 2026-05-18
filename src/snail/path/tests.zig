@@ -6,7 +6,7 @@ const draw_mod = @import("../draw.zig");
 const image_mod = @import("../image.zig");
 const path_mod = @import("../path.zig");
 const resources_view = @import("../resources/view.zig");
-const resource_set_mod = @import("../resources/set.zig");
+const resource_manifest_mod = @import("../resources/manifest.zig");
 const roots = @import("../math/roots.zig");
 const scene_mod = @import("../scene.zig");
 const vertex_mod = @import("../render/format/vertex.zig");
@@ -21,7 +21,7 @@ const PathBatch = path_mod.PathBatch;
 const PathPictureBuilder = path_mod.PathPictureBuilder;
 const PATH_WORDS_PER_SHAPE = path_mod.PATH_WORDS_PER_SHAPE;
 const PreparedAtlasView = resources_view.PreparedAtlasView;
-const ResourceSet = resource_set_mod.ResourceSet;
+const ResourceManifest = resource_manifest_mod.ResourceManifest;
 const Scene = scene_mod.Scene;
 const Vec2 = vec.Vec2;
 const kPaintTexelsPerRecord = path_mod.PATH_PAINT_TEXELS_PER_RECORD;
@@ -171,8 +171,8 @@ test "resource upload footprints are allocation-free and policy-aware" {
     try std.testing.expectEqual(@as(usize, 4), image_fp.image_bytes_used);
     try std.testing.expectEqual(@as(usize, 4), image_fp.image_bytes_allocated);
 
-    var entries: [2]ResourceSet.Entry = undefined;
-    var set = ResourceSet.init(&entries);
+    var entries: [2]ResourceManifest.Entry = undefined;
+    var set = ResourceManifest.init(&entries);
     try set.putPathPicture(.shape, &compiled_picture);
     try set.putImage(.image, &image);
     const set_fp = try set.estimateUploadFootprint();
@@ -180,8 +180,8 @@ test "resource upload footprints are allocation-free and policy-aware" {
     try std.testing.expectEqual(@as(usize, 4), set_fp.image_bytes_used);
     try std.testing.expectEqual(@as(usize, 4), set_fp.image_bytes_allocated);
 
-    var growable_entries: [1]ResourceSet.Entry = undefined;
-    var growable_set = ResourceSet.init(&growable_entries);
+    var growable_entries: [1]ResourceManifest.Entry = undefined;
+    var growable_set = ResourceManifest.init(&growable_entries);
     try growable_set.putPathPictureOptions(.shape, &compiled_picture, .{ .atlas_capacity = .growable });
     const growable_fp = try growable_set.estimateUploadFootprint();
     try std.testing.expect(growable_fp.curve_bytes_allocated > set_fp.curve_bytes_allocated);

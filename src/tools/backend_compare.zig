@@ -287,9 +287,17 @@ fn uploadSceneResources(
     renderer: *snail.Renderer,
     scene: *const snail.Scene,
 ) !snail.PreparedResources {
-    var entries: [8]snail.ResourceSet.Entry = undefined;
-    var set = snail.ResourceSet.init(&entries);
-    try set.addScene(scene);
+    var entries: [8]snail.ResourceManifest.Entry = undefined;
+    var set = snail.ResourceManifest.init(&entries);
+    for (scene.commands.items) |command| switch (command) {
+        .text => |text| {
+            try set.putTextAtlas(snail.ResourceKey.fromId(@intCast(@intFromPtr(text.blob.atlas))), text.blob.atlas);
+            if (text.blob.hasPaintRecords()) {
+                try set.putTextPaint(snail.ResourceKey.fromId(@intCast(@intFromPtr(text.blob))), text.blob);
+            }
+        },
+        .path => |path| try set.putPathPicture(snail.ResourceKey.fromId(@intCast(@intFromPtr(path.picture))), path.picture),
+    };
     return renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set);
 }
 
@@ -300,8 +308,8 @@ fn uploadTextAtlasResourceWithCapacity(
     atlas: *const snail.TextAtlas,
     capacity: snail.ResourceCapacityMode,
 ) !snail.PreparedResources {
-    var entries: [1]snail.ResourceSet.Entry = undefined;
-    var set = snail.ResourceSet.init(&entries);
+    var entries: [1]snail.ResourceManifest.Entry = undefined;
+    var set = snail.ResourceManifest.init(&entries);
     try set.putTextAtlasOptions(key, atlas, .{ .atlas_capacity = capacity });
     return renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set);
 }
@@ -320,8 +328,8 @@ fn checkAppendPlanForTextAtlas(
     capacity: snail.ResourceCapacityMode,
     expected: AppendPlanExpectation,
 ) !void {
-    var entries: [1]snail.ResourceSet.Entry = undefined;
-    var set = snail.ResourceSet.init(&entries);
+    var entries: [1]snail.ResourceManifest.Entry = undefined;
+    var set = snail.ResourceManifest.init(&entries);
     try set.putTextAtlasOptions(key, atlas, .{ .atlas_capacity = capacity });
     var plan = try renderer.planResourceUpload(allocator, current, &set);
     defer plan.deinit();

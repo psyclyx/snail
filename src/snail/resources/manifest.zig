@@ -2,7 +2,6 @@ const image_mod = @import("../image.zig");
 const path_mod = @import("../path.zig");
 const footprint_types = @import("footprint_types.zig");
 const resource_key_mod = @import("../resource_key.zig");
-const scene_mod = @import("../scene.zig");
 const text_mod = @import("../text.zig");
 const upload_common = @import("../render/format/upload_common.zig");
 
@@ -11,13 +10,11 @@ const PathPicture = path_mod.PathPicture;
 const ResourceCapacityMode = upload_common.AtlasCapacityMode;
 const ResourceFootprint = footprint_types.ResourceFootprint;
 const ResourceKey = resource_key_mod.ResourceKey;
-const Scene = scene_mod.Scene;
 const TextAtlas = text_mod.TextAtlas;
 const TextBlob = text_mod.TextBlob;
-const pointerResourceKey = resource_key_mod.pointerResourceKey;
 const resourceKey = resource_key_mod.resourceKey;
 
-pub const ResourceSet = struct {
+pub const ResourceManifest = struct {
     /// Caller-buffered CPU manifest. Entries point at app-owned
     /// TextAtlas, PathPicture, and Image values; no upload happens here.
     entries: []Entry = &.{},
@@ -65,23 +62,23 @@ pub const ResourceSet = struct {
         atlas_capacity: ResourceCapacityMode = .exact,
     };
 
-    pub fn init(entries: []Entry) ResourceSet {
+    pub fn init(entries: []Entry) ResourceManifest {
         return .{ .entries = entries };
     }
 
-    pub fn capacity(self: *const ResourceSet) usize {
+    pub fn capacity(self: *const ResourceManifest) usize {
         return self.entries.len;
     }
 
-    pub fn reset(self: *ResourceSet) void {
+    pub fn reset(self: *ResourceManifest) void {
         self.len = 0;
     }
 
-    pub fn putTextAtlas(self: *ResourceSet, key_value: anytype, atlas: *const TextAtlas) !void {
+    pub fn putTextAtlas(self: *ResourceManifest, key_value: anytype, atlas: *const TextAtlas) !void {
         try self.putTextAtlasOptions(key_value, atlas, .{});
     }
 
-    pub fn putTextAtlasOptions(self: *ResourceSet, key_value: anytype, atlas: *const TextAtlas, options: TextAtlasOptions) !void {
+    pub fn putTextAtlasOptions(self: *ResourceManifest, key_value: anytype, atlas: *const TextAtlas, options: TextAtlasOptions) !void {
         try self.put(.{ .text_atlas = .{
             .key = resourceKey(key_value),
             .atlas = atlas,
@@ -89,11 +86,18 @@ pub const ResourceSet = struct {
         } });
     }
 
-    pub fn putPathPicture(self: *ResourceSet, key_value: anytype, picture: *const PathPicture) !void {
+    pub fn putTextPaint(self: *ResourceManifest, key_value: anytype, blob: *const TextBlob) !void {
+        try self.put(.{ .text_paint = .{
+            .key = resourceKey(key_value),
+            .blob = blob,
+        } });
+    }
+
+    pub fn putPathPicture(self: *ResourceManifest, key_value: anytype, picture: *const PathPicture) !void {
         try self.putPathPictureOptions(key_value, picture, .{});
     }
 
-    pub fn putPathPictureOptions(self: *ResourceSet, key_value: anytype, picture: *const PathPicture, options: PathPictureOptions) !void {
+    pub fn putPathPictureOptions(self: *ResourceManifest, key_value: anytype, picture: *const PathPicture, options: PathPictureOptions) !void {
         try self.put(.{ .path_picture = .{
             .key = resourceKey(key_value),
             .picture = picture,
@@ -101,34 +105,11 @@ pub const ResourceSet = struct {
         } });
     }
 
-    pub fn putImage(self: *ResourceSet, key_value: anytype, image: *const Image) !void {
+    pub fn putImage(self: *ResourceManifest, key_value: anytype, image: *const Image) !void {
         try self.put(.{ .image = .{ .key = resourceKey(key_value), .image = image } });
     }
 
-    pub fn addScene(self: *ResourceSet, scene: *const Scene) !void {
-        for (scene.commands.items) |command| {
-            switch (command) {
-                .text => |text| {
-                    try self.put(.{ .text_atlas = .{
-                        .key = pointerResourceKey("scene.text_atlas", text.blob.atlas),
-                        .atlas = text.blob.atlas,
-                    } });
-                    if (text.blob.hasPaintRecords()) {
-                        try self.put(.{ .text_paint = .{
-                            .key = pointerResourceKey("scene.text_paint", text.blob),
-                            .blob = text.blob,
-                        } });
-                    }
-                },
-                .path => |path| try self.put(.{ .path_picture = .{
-                    .key = pointerResourceKey("scene.path_picture", path.picture),
-                    .picture = path.picture,
-                } }),
-            }
-        }
-    }
-
-    fn put(self: *ResourceSet, entry: Entry) !void {
+    fn put(self: *ResourceManifest, entry: Entry) !void {
         const key = entryKey(entry);
         for (self.entries[0..self.len], 0..) |existing, i| {
             if (entryKey(existing).eql(key)) {
@@ -136,7 +117,7 @@ pub const ResourceSet = struct {
                 return;
             }
         }
-        if (self.len >= self.entries.len) return error.ResourceSetFull;
+        if (self.len >= self.entries.len) return error.ResourceManifestFull;
         self.entries[self.len] = entry;
         self.len += 1;
     }
@@ -150,11 +131,11 @@ pub const ResourceSet = struct {
         };
     }
 
-    pub fn slice(self: *const ResourceSet) []const Entry {
+    pub fn slice(self: *const ResourceManifest) []const Entry {
         return self.entries[0..self.len];
     }
 
-    pub fn estimateUploadFootprint(self: *const ResourceSet) !ResourceFootprint {
-        return @import("footprint.zig").resourceSetUploadFootprint(self);
+    pub fn estimateUploadFootprint(self: *const ResourceManifest) !ResourceFootprint {
+        return @import("footprint.zig").resourceManifestUploadFootprint(self);
     }
 };

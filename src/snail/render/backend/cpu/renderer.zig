@@ -405,7 +405,7 @@ pub const CpuRenderer = struct {
         return cpu_adapter.borrow(self);
     }
 
-    pub fn uploadResourcesBlocking(self: *CpuRenderer, allocators: snail.UploadAllocators, set: *const snail.ResourceSet) !snail.PreparedResources {
+    pub fn uploadResourcesBlocking(self: *CpuRenderer, allocators: snail.UploadAllocators, set: *const snail.ResourceManifest) !snail.PreparedResources {
         var renderer = self.asRenderer();
         return renderer.uploadResourcesBlocking(allocators, set);
     }

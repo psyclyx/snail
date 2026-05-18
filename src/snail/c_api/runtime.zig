@@ -83,7 +83,7 @@ pub fn mapError(err: anyerror) c_int {
         error.PathMissingMoveTo,
         error.EmptyPath,
         error.EmptyStyle,
-        error.ResourceSetFull,
+        error.ResourceManifestFull,
         error.DrawListFull,
         error.ResourceUploadPlanFull,
         error.ResourceUploadBudgetExceeded,

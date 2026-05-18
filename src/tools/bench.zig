@@ -554,13 +554,17 @@ fn buildScene(
 fn uploadSceneResources(
     allocator: std.mem.Allocator,
     renderer: *snail.Renderer,
-    scene: *const snail.Scene,
+    bundle: *const SceneBundle,
 ) !snail.PreparedResources {
-    const entries = try allocator.alloc(snail.ResourceSet.Entry, @max(scene.commandCount() * 2, 1));
+    const entries = try allocator.alloc(snail.ResourceManifest.Entry, @max(bundle.scene.commandCount() * 2, 1));
     defer allocator.free(entries);
 
-    var set = snail.ResourceSet.init(entries);
-    try set.addScene(scene);
+    var set = snail.ResourceManifest.init(entries);
+    if (bundle.blobs.len > 0) try set.putTextAtlas(.fonts, bundle.blobs[0].atlas);
+    for (bundle.blobs, 0..) |*blob, i| {
+        if (blob.hasPaintRecords()) try set.putTextPaint(snail.ResourceKey.fromId(@intCast(i + 1)), blob);
+    }
+    if (bundle.picture) |picture| try set.putPathPicture(.vectors, picture);
     return renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set);
 }
 
@@ -593,7 +597,6 @@ fn benchSnailPrep(allocator: std.mem.Allocator, font_data: []const u8) !SnailPre
 fn timeRecordBuild(
     prepared: *const snail.PreparedResources,
     scene: *const snail.Scene,
-    options: snail.DrawState,
 ) !f64 {
     const allocator = std.heap.smp_allocator;
     for (0..RECORD_WARMUP) |_| {
@@ -625,12 +628,12 @@ fn benchModes(
             defer bundle.deinit();
 
             const opts = drawState(WIDTH, HEIGHT, mode.aa);
-            var resources = try uploadSceneResources(allocator, timer.renderer(), &bundle.scene);
+            var resources = try uploadSceneResources(allocator, timer.renderer(), &bundle);
             defer resources.deinit();
             var prepared_scene = try snail.PreparedScene.initOwned(allocator, &resources, &bundle.scene);
             defer prepared_scene.deinit();
 
-            const record_us = try timeRecordBuild(&resources, &bundle.scene, opts);
+            const record_us = try timeRecordBuild(&resources, &bundle.scene);
             const draw_us = try timer.timeDraw(&resources, &prepared_scene, opts);
 
             try rows.append(allocator, .{
@@ -726,13 +729,13 @@ pub fn main() !void {
         for (prepared_scenes[0..prepared_count]) |*scene| scene.deinit();
     }
     for (scene_kinds, 0..) |kind, i| {
-        cpu_resources[i] = try uploadSceneResources(allocator, &cpu_renderer, &bundles[i].scene);
+        cpu_resources[i] = try uploadSceneResources(allocator, &cpu_renderer, &bundles[i]);
         cpu_resource_count += 1;
         prepared_scenes[i] = try snail.PreparedScene.initOwned(allocator, &cpu_resources[i], &bundles[i].scene);
         prepared_count += 1;
         record_rows[i] = .{
             .scene = kind,
-            .us = try timeRecordBuild(&cpu_resources[i], &bundles[i].scene, options),
+            .us = try timeRecordBuild(&cpu_resources[i], &bundles[i].scene),
             .commands = bundles[i].scene.commandCount(),
             .words = prepared_scenes[i].words.len,
             .segments = prepared_scenes[i].segments.len,
@@ -777,7 +780,7 @@ pub fn main() !void {
     defer gl_renderer_state.deinit();
     var gl_renderer = gl_renderer_state.asRenderer();
     for (scene_kinds, 0..) |kind, i| {
-        var gl_resources = try uploadSceneResources(allocator, &gl_renderer, &bundles[i].scene);
+        var gl_resources = try uploadSceneResources(allocator, &gl_renderer, &bundles[i]);
         defer gl_resources.deinit();
         var gl_scene = try snail.PreparedScene.initOwned(allocator, &gl_resources, &bundles[i].scene);
         defer gl_scene.deinit();
@@ -802,7 +805,7 @@ pub fn main() !void {
         errdefer if (vk_state) |*s| s.deinit();
         vk_renderer = vk_state.?.asRenderer();
         for (scene_kinds, 0..) |kind, i| {
-            var vk_resources = try uploadSceneResources(allocator, &vk_renderer, &bundles[i].scene);
+            var vk_resources = try uploadSceneResources(allocator, &vk_renderer, &bundles[i]);
             defer vk_resources.deinit();
             var vk_scene = try snail.PreparedScene.initOwned(allocator, &vk_resources, &bundles[i].scene);
             defer vk_scene.deinit();

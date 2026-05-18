@@ -4,7 +4,7 @@ const backend_kind_mod = @import("../backend_kind.zig");
 const coverage_mod = @import("../coverage.zig");
 const draw_mod = @import("../draw.zig");
 const prepared_mod = @import("../resources/prepared.zig");
-const set_mod = @import("../resources/set.zig");
+const set_mod = @import("../resources/manifest.zig");
 const upload_mod = @import("../upload.zig");
 const upload_plan = @import("upload_plan.zig");
 
@@ -18,7 +18,7 @@ const PreparedResources = prepared_mod.PreparedResources;
 const PreparedScene = draw_mod.PreparedScene;
 const ResourceCacheStats = upload_mod.ResourceCacheStats;
 const ResourceUploadBatch = upload_mod.ResourceUploadBatch;
-const ResourceSet = set_mod.ResourceSet;
+const ResourceManifest = set_mod.ResourceManifest;
 const ResourceUploadPlan = upload_mod.ResourceUploadPlan;
 const UploadAllocators = upload_mod.UploadAllocators;
 const uploadPreparedResources = upload_mod.uploadPreparedResources;
@@ -60,7 +60,7 @@ pub const Renderer = struct {
     /// Blocking upload for simple programs. GL requires the target context to
     /// be current. CPU upload builds cheap views. Vulkan does not perform an
     /// implicit device/queue idle here.
-    pub fn uploadResourcesBlocking(self: *Renderer, allocators: UploadAllocators, set: *const ResourceSet) !PreparedResources {
+    pub fn uploadResourcesBlocking(self: *Renderer, allocators: UploadAllocators, set: *const ResourceManifest) !PreparedResources {
         return uploadPreparedResources(self, set, allocators);
     }
 
@@ -72,7 +72,7 @@ pub const Renderer = struct {
         return self.vtable.coverageBackend(self.ptr, prepared);
     }
 
-    pub fn planResourceUpload(self: *Renderer, allocator: std.mem.Allocator, current: ?*const PreparedResources, next_set: *const ResourceSet) !ResourceUploadPlan {
+    pub fn planResourceUpload(self: *Renderer, allocator: std.mem.Allocator, current: ?*const PreparedResources, next_set: *const ResourceManifest) !ResourceUploadPlan {
         return upload_plan.planResourceUpload(self, allocator, current, next_set);
     }
 

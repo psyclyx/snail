@@ -120,9 +120,12 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     if (threaded) cpu.setThreadPool(&pool);
 
-    var entries: [8]snail.ResourceSet.Entry = undefined;
-    var set = snail.ResourceSet.init(&entries);
-    try set.addScene(&scene);
+    var entries: [8]snail.ResourceManifest.Entry = undefined;
+    var set = snail.ResourceManifest.init(&entries);
+    if (blobs.len > 0) try set.putTextAtlas(.fonts, blobs[0].atlas);
+    for (blobs, 0..) |*blob, i| {
+        if (blob.hasPaintRecords()) try set.putTextPaint(snail.ResourceKey.fromId(@intCast(i + 1)), blob);
+    }
 
     var resources = try cpu.uploadResourcesBlocking(.{ .persistent = arena, .scratch = arena }, &set);
     defer resources.deinit();

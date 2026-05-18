@@ -329,9 +329,13 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
             if (path_picture) |*picture| try scene.addPath(.{ .picture = picture });
             if (text_blob) |*blob| try scene.addText(.{ .blob = blob });
 
-            var resource_entries: [8]snail.ResourceSet.Entry = undefined;
-            var resources = snail.ResourceSet.init(&resource_entries);
-            try resources.addScene(&scene);
+            var resource_entries: [8]snail.ResourceManifest.Entry = undefined;
+            var resources = snail.ResourceManifest.init(&resource_entries);
+            if (path_picture) |*picture| try resources.putPathPicture(.banner_paths, picture);
+            if (text_blob) |*blob| {
+                try resources.putTextAtlas(.banner_fonts, blob.atlas);
+                if (blob.hasPaintRecords()) try resources.putTextPaint(.banner_text_paint, blob);
+            }
             var renderer = active.renderer();
             prepared = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &resources);
         }

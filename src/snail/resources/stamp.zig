@@ -4,7 +4,7 @@ const image_mod = @import("../image.zig");
 const path_mod = @import("../path.zig");
 const resource_key_mod = @import("../resource_key.zig");
 const atlas_curve_mod = @import("../render/format/atlas/curve.zig");
-const set_mod = @import("set.zig");
+const manifest_mod = @import("manifest.zig");
 const text_mod = @import("../text.zig");
 const view_mod = @import("view.zig");
 
@@ -14,7 +14,7 @@ const Image = image_mod.Image;
 const PathPicture = path_mod.PathPicture;
 const PreparedLayerInfoUpload = view_mod.PreparedLayerInfoUpload;
 const ResourceKey = resource_key_mod.ResourceKey;
-const ResourceSet = set_mod.ResourceSet;
+const ResourceManifest = manifest_mod.ResourceManifest;
 const ResourceStamp = resource_key_mod.ResourceStamp;
 const TextAtlas = text_mod.TextAtlas;
 const TextBlob = text_mod.TextBlob;
@@ -98,7 +98,7 @@ pub fn textPaintLayerInfoUpload(blob: *const TextBlob) PreparedLayerInfoUpload {
     };
 }
 
-pub fn resourceEntryKey(entry: ResourceSet.Entry) ResourceKey {
+pub fn resourceEntryKey(entry: ResourceManifest.Entry) ResourceKey {
     return switch (entry) {
         .text_atlas => |text| text.key,
         .text_paint => |text| text.key,
@@ -107,7 +107,7 @@ pub fn resourceEntryKey(entry: ResourceSet.Entry) ResourceKey {
     };
 }
 
-pub fn resourceEntryStamp(entry: ResourceSet.Entry) ResourceStamp {
+pub fn resourceEntryStamp(entry: ResourceManifest.Entry) ResourceStamp {
     return switch (entry) {
         .text_atlas => |text| textAtlasStamp(text.atlas),
         .text_paint => |text| textPaintStamp(text.blob),
@@ -116,7 +116,7 @@ pub fn resourceEntryStamp(entry: ResourceSet.Entry) ResourceStamp {
     };
 }
 
-pub fn resourceEntryUploadBytes(entry: ResourceSet.Entry) usize {
+pub fn resourceEntryUploadBytes(entry: ResourceManifest.Entry) usize {
     return switch (entry) {
         .text_atlas => |text| textAtlasUploadBytes(text.atlas),
         .text_paint => |text| textPaintUploadBytes(text.blob),

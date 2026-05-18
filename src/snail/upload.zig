@@ -7,7 +7,7 @@ const image_mod = @import("image.zig");
 const prepared_mod = @import("resources/prepared.zig");
 const render_mod = @import("render.zig");
 const resource_key_mod = @import("resource_key.zig");
-const set_mod = @import("resources/set.zig");
+const manifest_mod = @import("resources/manifest.zig");
 const stamp_mod = @import("resources/stamp.zig");
 const upload_common = @import("render/format/upload_common.zig");
 const view_mod = @import("resources/view.zig");
@@ -26,7 +26,7 @@ const PreparedLayerInfoView = view_mod.PreparedLayerInfoView;
 const PreparedResources = prepared_mod.PreparedResources;
 const Renderer = render_mod.Renderer;
 const ResourceKey = resource_key_mod.ResourceKey;
-const ResourceSet = set_mod.ResourceSet;
+const ResourceManifest = manifest_mod.ResourceManifest;
 
 pub const ResourceFootprint = footprint_types.ResourceFootprint;
 
@@ -59,14 +59,14 @@ pub const ResourceUploadBatch = struct {
 
 pub const ResourceUploadPlan = struct {
     allocator: std.mem.Allocator,
-    entries: []ResourceSet.Entry,
-    /// Backend allocation footprint for the next prepared resource set.
+    entries: []ResourceManifest.Entry,
+    /// Backend allocation footprint for the next prepared resource manifest.
     upload_footprint: ResourceFootprint = .{},
     /// Bytes this backend path will upload or construct for the next prepared
-    /// resource set. Backend packing may make this larger than `changed_bytes`.
+    /// resource manifest. Backend packing may make this larger than `changed_bytes`.
     upload_bytes: usize = 0,
     /// Bytes whose dependency stamp differs from `current`, keyed by stable
-    /// ResourceSet keys. Exposed so callers can see intent-preserving changes.
+    /// ResourceManifest keys. Exposed so callers can see intent-preserving changes.
     changed_bytes: usize = 0,
     changed_keys: []ResourceKey = &.{},
     changed_len: usize = 0,
@@ -85,8 +85,8 @@ pub const ResourceUploadPlan = struct {
     image_bytes_upload: usize = 0,
     gpu_bytes_allocated: usize = 0,
 
-    pub fn init(allocator: std.mem.Allocator, set: *const ResourceSet) !ResourceUploadPlan {
-        const entries = try allocator.dupe(ResourceSet.Entry, set.slice());
+    pub fn init(allocator: std.mem.Allocator, set: *const ResourceManifest) !ResourceUploadPlan {
+        const entries = try allocator.dupe(ResourceManifest.Entry, set.slice());
         errdefer allocator.free(entries);
         const changed_keys = try allocator.alloc(ResourceKey, entries.len);
         return .{
@@ -97,7 +97,7 @@ pub const ResourceUploadPlan = struct {
     }
 
     pub fn clone(self: *const ResourceUploadPlan, allocator: std.mem.Allocator) !ResourceUploadPlan {
-        const entries = try allocator.dupe(ResourceSet.Entry, self.entries);
+        const entries = try allocator.dupe(ResourceManifest.Entry, self.entries);
         errdefer allocator.free(entries);
         const changed_keys = try allocator.alloc(ResourceKey, self.changed_keys.len);
         errdefer allocator.free(changed_keys);
@@ -152,11 +152,11 @@ pub const ResourceUploadCompletion = union(enum) {
     pub const pending = ResourceUploadCompletion{ .ready = false };
 };
 
-pub fn uploadPreparedResources(renderer: anytype, set: *const ResourceSet, allocators: UploadAllocators) !PreparedResources {
+pub fn uploadPreparedResources(renderer: anytype, set: *const ResourceManifest, allocators: UploadAllocators) !PreparedResources {
     return uploadPreparedResourceEntries(renderer, set.slice(), allocators);
 }
 
-pub fn uploadPreparedResourceEntries(renderer: anytype, entries: []const ResourceSet.Entry, allocators: UploadAllocators) !PreparedResources {
+pub fn uploadPreparedResourceEntries(renderer: anytype, entries: []const ResourceManifest.Entry, allocators: UploadAllocators) !PreparedResources {
     const persistent = allocators.persistent;
     const scratch = allocators.scratch;
     var atlas_count: usize = 0;

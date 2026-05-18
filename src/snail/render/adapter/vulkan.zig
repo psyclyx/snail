@@ -6,7 +6,7 @@ const coverage_mod = @import("../../coverage.zig");
 const draw_mod = @import("../../draw.zig");
 const interface = @import("../interface.zig");
 const prepared_mod = @import("../../resources/prepared.zig");
-const set_mod = @import("../../resources/set.zig");
+const set_mod = @import("../../resources/manifest.zig");
 const upload_mod = @import("../../upload.zig");
 
 const pipeline = if (build_options.enable_vulkan) @import("../backend/vulkan/pipeline.zig") else struct {
@@ -26,7 +26,7 @@ const PendingResourceUpload = upload_mod.PendingResourceUpload;
 const PreparedResources = prepared_mod.PreparedResources;
 const PreparedScene = draw_mod.PreparedScene;
 const ResourceCacheStats = upload_mod.ResourceCacheStats;
-const ResourceSet = set_mod.ResourceSet;
+const ResourceManifest = set_mod.ResourceManifest;
 const ResourceUploadPlan = upload_mod.ResourceUploadPlan;
 const ResourceUploadBatch = upload_mod.ResourceUploadBatch;
 const TargetSurface = draw_mod.TargetSurface;
@@ -108,12 +108,12 @@ pub const Renderer = if (build_options.enable_vulkan) struct {
         self.state.setFrameSlot(frame.frame_index);
     }
 
-    pub fn uploadResourcesBlocking(self: *Self, allocators: UploadAllocators, set: *const ResourceSet) !PreparedResources {
+    pub fn uploadResourcesBlocking(self: *Self, allocators: UploadAllocators, set: *const ResourceManifest) !PreparedResources {
         var renderer = self.asRenderer();
         return renderer.uploadResourcesBlocking(allocators, set);
     }
 
-    pub fn planResourceUpload(self: *Self, allocator: std.mem.Allocator, current: ?*const PreparedResources, next_set: *const ResourceSet) !ResourceUploadPlan {
+    pub fn planResourceUpload(self: *Self, allocator: std.mem.Allocator, current: ?*const PreparedResources, next_set: *const ResourceManifest) !ResourceUploadPlan {
         var renderer = self.asRenderer();
         return renderer.planResourceUpload(allocator, current, next_set);
     }

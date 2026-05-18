@@ -4,7 +4,7 @@ const image_mod = @import("../image.zig");
 const atlas_curve_mod = @import("../render/format/atlas/curve.zig");
 const atlas_page_mod = @import("../render/format/atlas/page.zig");
 const footprint_types = @import("footprint_types.zig");
-const set_mod = @import("set.zig");
+const manifest_mod = @import("manifest.zig");
 const text_mod = @import("../text.zig");
 const upload_common = @import("../render/format/upload_common.zig");
 
@@ -13,7 +13,7 @@ const AtlasPage = atlas_page_mod.AtlasPage;
 const Image = image_mod.Image;
 const ResourceCapacityMode = upload_common.AtlasCapacityMode;
 const ResourceFootprint = footprint_types.ResourceFootprint;
-const ResourceSet = set_mod.ResourceSet;
+const ResourceManifest = manifest_mod.ResourceManifest;
 const TextAtlas = text_mod.TextAtlas;
 
 const CURVE_TEXEL_BYTES: usize = 8; // RGBA16F
@@ -82,7 +82,7 @@ pub fn textAtlasUploadFootprint(atlas: *const TextAtlas) ResourceFootprint {
     return out;
 }
 
-pub fn resourceSetUploadFootprint(set: *const ResourceSet) !ResourceFootprint {
+pub fn resourceManifestUploadFootprint(set: *const ResourceManifest) !ResourceFootprint {
     var out: ResourceFootprint = .{};
     var total_layer_capacity: u32 = 0;
     var first_page: ?*const AtlasPage = null;
@@ -195,7 +195,7 @@ fn imageTextureBytes(image: *const Image) usize {
     return image_mod.textureBytes(image);
 }
 
-fn entryPaintImageRecords(entry: ResourceSet.Entry) ?[]const ?Atlas.PaintImageRecord {
+fn entryPaintImageRecords(entry: ResourceManifest.Entry) ?[]const ?Atlas.PaintImageRecord {
     return switch (entry) {
         .text_paint => |text| text.blob.paint_image_records,
         .path_picture => |path| path.picture.atlas.paint_image_records,
@@ -203,7 +203,7 @@ fn entryPaintImageRecords(entry: ResourceSet.Entry) ?[]const ?Atlas.PaintImageRe
     };
 }
 
-fn entryReferencesImage(entry: ResourceSet.Entry, image: *const Image) bool {
+fn entryReferencesImage(entry: ResourceManifest.Entry, image: *const Image) bool {
     switch (entry) {
         .image => |entry_image| if (entry_image.image == image) return true,
         else => {},
@@ -215,7 +215,7 @@ fn entryReferencesImage(entry: ResourceSet.Entry, image: *const Image) bool {
     return false;
 }
 
-fn entryReferencesImageBeforeRecord(entry: ResourceSet.Entry, image: *const Image, record_limit: usize) bool {
+fn entryReferencesImageBeforeRecord(entry: ResourceManifest.Entry, image: *const Image, record_limit: usize) bool {
     const records = entryPaintImageRecords(entry) orelse return false;
     for (records[0..@min(record_limit, records.len)]) |record| {
         if ((record orelse continue).image == image) return true;
@@ -223,7 +223,7 @@ fn entryReferencesImageBeforeRecord(entry: ResourceSet.Entry, image: *const Imag
     return false;
 }
 
-fn resourceSetSawImageBefore(set: *const ResourceSet, entry_index: usize, record_index: ?usize, image: *const Image) bool {
+fn resourceManifestSawImageBefore(set: *const ResourceManifest, entry_index: usize, record_index: ?usize, image: *const Image) bool {
     const entries = set.slice();
     for (entries[0..entry_index]) |entry| {
         if (entryReferencesImage(entry, image)) return true;
@@ -236,7 +236,7 @@ fn resourceSetSawImageBefore(set: *const ResourceSet, entry_index: usize, record
 
 fn addImageFootprintIfFirst(
     out: *ResourceFootprint,
-    set: *const ResourceSet,
+    set: *const ResourceManifest,
     entry_index: usize,
     record_index: ?usize,
     image: *const Image,
@@ -244,7 +244,7 @@ fn addImageFootprintIfFirst(
     max_image_width: *u32,
     max_image_height: *u32,
 ) void {
-    if (resourceSetSawImageBefore(set, entry_index, record_index, image)) return;
+    if (resourceManifestSawImageBefore(set, entry_index, record_index, image)) return;
     out.image_bytes_used += imageTextureBytes(image);
     max_image_width.* = @max(max_image_width.*, image.width);
     max_image_height.* = @max(max_image_height.*, image.height);

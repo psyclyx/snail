@@ -2,8 +2,8 @@
  *
  * C API model:
  *   - CPU values are owned handles: TextAtlas, ShapedText, TextBlob, Image,
- *     PathPicture, Scene, ResourceSet, PreparedResources, PreparedScene.
- *   - Resource upload is explicit: build a ResourceSet, upload it with a
+ *     PathPicture, Scene, ResourceManifest, PreparedResources, PreparedScene.
+ *   - Resource upload is explicit: build a ResourceManifest, upload it with a
  *     Renderer, then draw a PreparedScene.
  *   - Pass NULL for SnailAllocator to use libc malloc/free.
  *
@@ -555,39 +555,41 @@ int snail_scene_add_path_picture_range_override(SnailScene *scene,
                                                 SnailRange range,
                                                 SnailOverride override_value);
 
-int snail_resource_set_init(const SnailAllocator *alloc, size_t capacity, SnailResourceSet **out);
-void snail_resource_set_deinit(SnailResourceSet *set);
-void snail_resource_set_reset(SnailResourceSet *set);
-size_t snail_resource_set_count(const SnailResourceSet *set);
-size_t snail_resource_set_capacity(const SnailResourceSet *set);
-int snail_resource_set_put_text_atlas(SnailResourceSet *set,
+int snail_resource_manifest_init(const SnailAllocator *alloc, size_t capacity, SnailResourceManifest **out);
+void snail_resource_manifest_deinit(SnailResourceManifest *set);
+void snail_resource_manifest_reset(SnailResourceManifest *set);
+size_t snail_resource_manifest_count(const SnailResourceManifest *set);
+size_t snail_resource_manifest_capacity(const SnailResourceManifest *set);
+int snail_resource_manifest_put_text_atlas(SnailResourceManifest *set,
                                       SnailResourceKey key,
                                       const SnailTextAtlas *atlas);
-int snail_resource_set_put_text_atlas_options(SnailResourceSet *set,
+int snail_resource_manifest_put_text_atlas_options(SnailResourceManifest *set,
                                               SnailResourceKey key,
                                               const SnailTextAtlas *atlas,
                                               int atlas_capacity);
-int snail_resource_set_put_text_atlas_reserved(SnailResourceSet *set,
+int snail_resource_manifest_put_text_atlas_reserved(SnailResourceManifest *set,
                                                SnailResourceKey key,
                                                const SnailTextAtlas *atlas,
                                                uint32_t reserved_pages);
-int snail_resource_set_put_path_picture(SnailResourceSet *set,
+int snail_resource_manifest_put_text_paint(SnailResourceManifest *set,
+                                           SnailResourceKey key,
+                                           const SnailTextBlob *blob);
+int snail_resource_manifest_put_path_picture(SnailResourceManifest *set,
                                         SnailResourceKey key,
                                         const SnailPathPicture *picture);
-int snail_resource_set_put_path_picture_options(SnailResourceSet *set,
+int snail_resource_manifest_put_path_picture_options(SnailResourceManifest *set,
                                                 SnailResourceKey key,
                                                 const SnailPathPicture *picture,
                                                 int atlas_capacity);
-int snail_resource_set_put_path_picture_reserved(SnailResourceSet *set,
+int snail_resource_manifest_put_path_picture_reserved(SnailResourceManifest *set,
                                                  SnailResourceKey key,
                                                  const SnailPathPicture *picture,
                                                  uint32_t reserved_pages);
-int snail_resource_set_put_image(SnailResourceSet *set,
+int snail_resource_manifest_put_image(SnailResourceManifest *set,
                                  SnailResourceKey key,
                                  const SnailImage *image);
-int snail_resource_set_estimate_upload_footprint(const SnailResourceSet *set,
+int snail_resource_manifest_estimate_upload_footprint(const SnailResourceManifest *set,
                                                  SnailResourceFootprint *out);
-int snail_resource_set_add_scene(SnailResourceSet *set, const SnailScene *scene);
 
 void snail_prepared_resources_deinit(SnailPreparedResources *prepared);
 bool snail_prepared_resources_stamp_for_key(const SnailPreparedResources *prepared,
@@ -672,12 +674,12 @@ void snail_renderer_resource_cache_stats(SnailRenderer *renderer,
 void snail_renderer_reset_resource_cache(SnailRenderer *renderer);
 int snail_renderer_upload_resources_blocking(SnailRenderer *renderer,
                                              const SnailAllocator *alloc,
-                                             const SnailResourceSet *set,
+                                             const SnailResourceManifest *set,
                                              SnailPreparedResources **out);
 int snail_renderer_plan_resource_upload(SnailRenderer *renderer,
                                         const SnailAllocator *alloc,
                                         const SnailPreparedResources *current,
-                                        const SnailResourceSet *next_set,
+                                        const SnailResourceManifest *next_set,
                                         SnailResourceUploadPlan **out);
 void snail_resource_upload_plan_deinit(SnailResourceUploadPlan *plan);
 SnailResourceFootprint snail_resource_upload_plan_footprint(const SnailResourceUploadPlan *plan);

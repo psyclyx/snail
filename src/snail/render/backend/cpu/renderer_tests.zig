@@ -494,9 +494,9 @@ test "cpu renderer renders image-painted path picture" {
     defer scene.deinit();
     try scene.addPath(.{ .picture = &picture });
 
-    var resource_entries: [4]snail.ResourceSet.Entry = undefined;
-    var resources = snail.ResourceSet.init(&resource_entries);
-    try resources.addScene(&scene);
+    var resource_entries: [4]snail.ResourceManifest.Entry = undefined;
+    var resources = snail.ResourceManifest.init(&resource_entries);
+    try resources.putPathPicture(.picture, &picture);
     var prepared = try renderer_iface.uploadResourcesBlocking(.{ .persistent = testing.allocator, .scratch = testing.allocator }, &resources);
     defer prepared.deinit();
 
@@ -826,9 +826,10 @@ test "cpu renderer threaded draw matches single-threaded byte-for-byte" {
 
     var serial_cpu = CpuRenderer.init(serial_buf.ptr, width, height, stride);
     var serial_resources = try serial_cpu.uploadResourcesBlocking(.{ .persistent = testing.allocator, .scratch = testing.allocator }, blk: {
-        var entries: [4]snail.ResourceSet.Entry = undefined;
-        var set = snail.ResourceSet.init(&entries);
-        try set.addScene(&scene);
+        var entries: [4]snail.ResourceManifest.Entry = undefined;
+        var set = snail.ResourceManifest.init(&entries);
+        try set.putPathPicture(.shape, &picture);
+        try set.putTextAtlas(.fonts, &atlas);
         break :blk &set;
     });
     defer serial_resources.deinit();
@@ -847,9 +848,10 @@ test "cpu renderer threaded draw matches single-threaded byte-for-byte" {
     var threaded_cpu = CpuRenderer.init(threaded_buf.ptr, width, height, stride);
     threaded_cpu.setThreadPool(&pool);
     var threaded_resources = try threaded_cpu.uploadResourcesBlocking(.{ .persistent = testing.allocator, .scratch = testing.allocator }, blk: {
-        var entries: [4]snail.ResourceSet.Entry = undefined;
-        var set = snail.ResourceSet.init(&entries);
-        try set.addScene(&scene);
+        var entries: [4]snail.ResourceManifest.Entry = undefined;
+        var set = snail.ResourceManifest.init(&entries);
+        try set.putPathPicture(.shape, &picture);
+        try set.putTextAtlas(.fonts, &atlas);
         break :blk &set;
     });
     defer threaded_resources.deinit();
@@ -897,9 +899,9 @@ test "cpu renderer drawPaths batch matches drawPathPicture" {
     defer scene.deinit();
     try scene.addPath(.{ .picture = &picture });
 
-    var resource_entries: [4]snail.ResourceSet.Entry = undefined;
-    var resources = snail.ResourceSet.init(&resource_entries);
-    try resources.addScene(&scene);
+    var resource_entries: [4]snail.ResourceManifest.Entry = undefined;
+    var resources = snail.ResourceManifest.init(&resource_entries);
+    try resources.putPathPicture(.shape, &picture);
     var prepared = try renderer.uploadResourcesBlocking(.{ .persistent = testing.allocator, .scratch = testing.allocator }, &resources);
     defer prepared.deinit();
 
@@ -957,9 +959,9 @@ test "cpu renderer applies path draw tint in prepared batches" {
     try scene.addPath(.{ .picture = &picture, .instances = &overrides });
 
     var renderer = cpu.asRenderer();
-    var resource_entries: [4]snail.ResourceSet.Entry = undefined;
-    var resources = snail.ResourceSet.init(&resource_entries);
-    try resources.addScene(&scene);
+    var resource_entries: [4]snail.ResourceManifest.Entry = undefined;
+    var resources = snail.ResourceManifest.init(&resource_entries);
+    try resources.putPathPicture(.shape, &picture);
     var prepared = try renderer.uploadResourcesBlocking(.{ .persistent = testing.allocator, .scratch = testing.allocator }, &resources);
     defer prepared.deinit();
 

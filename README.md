@@ -274,9 +274,10 @@ defer scene.deinit();
 try scene.addText(.{ .blob = &blob });
 // (See "Vector Paths" below for adding a PathPicture to the same scene.)
 
-var resource_entries: [8]snail.ResourceSet.Entry = undefined;
-var resources = snail.ResourceSet.init(&resource_entries);
-try resources.addScene(&scene);
+var resource_entries: [8]snail.ResourceManifest.Entry = undefined;
+var resources = snail.ResourceManifest.init(&resource_entries);
+try resources.putTextAtlas(.fonts, blob.atlas);
+if (blob.hasPaintRecords()) try resources.putTextPaint(.text_paint, &blob);
 
 // Requires an active GL context. Vulkan uses snail.VulkanRenderer.init(allocator, ctx).
 var gl = try snail.GlRenderer.init(allocator);
@@ -329,8 +330,8 @@ if (try atlas.ensureGlyphs(face_index, glyph_ids)) |next| {
 ### Vector Paths
 
 A `PathPicture` is built once and submitted to a `Scene` like a `TextBlob`. Add
-all draws to the scene **before** calling `resources.addScene` and uploading —
-`PreparedResources` is a snapshot of the scene's resource set at upload time.
+the `PathPicture`, `TextAtlas`, `TextBlob` paint records, and images your scene
+uses to a `ResourceManifest` before uploading.
 
 ```zig
 var path = snail.Path.init(allocator);
@@ -420,9 +421,10 @@ snail_scene_init(NULL, &scene);
 snail_scene_add_text(scene, blob);
 snail_scene_add_path_picture(scene, picture);
 
-SnailResourceSet *resources = NULL;
-snail_resource_set_init(NULL, 8, &resources);
-snail_resource_set_add_scene(resources, scene);
+SnailResourceManifest *resources = NULL;
+snail_resource_manifest_init(NULL, 8, &resources);
+snail_resource_manifest_put_text_atlas(resources, 1, atlas);
+snail_resource_manifest_put_path_picture(resources, 2, picture);
 
 SnailRenderer *renderer = NULL;
 snail_gl_renderer_init(&renderer);
@@ -453,7 +455,7 @@ snail_renderer_draw_prepared(renderer, prepared, prepared_scene, draw_state);
 snail_prepared_scene_deinit(prepared_scene);
 snail_prepared_resources_deinit(prepared);
 snail_renderer_deinit(renderer);
-snail_resource_set_deinit(resources);
+snail_resource_manifest_deinit(resources);
 snail_scene_deinit(scene);
 snail_text_blob_deinit(blob);
 snail_path_picture_deinit(picture);
@@ -492,7 +494,7 @@ borrowed `Scene` + `PathDraw` / `TextDraw` primitive used by Zig.
 | `PathDraw`, `TextDraw` | Submission record: resource pointer, optional sub-range, and an `[]const Override` array (length = GPU instance count). |
 | `Override` | Per-instance composition: `transform` composed onto baked transform, `tint` multiplied onto the resource's baked color or paint, including color-font palette layers. |
 | `Range` | `{ start, count }` slice into a `PathPicture`'s shapes or a `TextBlob`'s glyphs. |
-| `ResourceSet` | Fixed-capacity borrowed manifest of CPU values. |
+| `ResourceManifest` | Fixed-capacity borrowed manifest of CPU values. |
 | `ResourceFootprint` | Used and allocated upload bytes split by curve, band, layer-info, and image storage. |
 | `PreparedResources` | Backend realization for one renderer/context. |
 | `DrawList` | Caller-buffered draw records. |
@@ -574,19 +576,19 @@ try scene.addPath(.{
 try scene.addPath(.{ .picture = &sprite, .instances = entity_overrides });
 ```
 
-### ResourceSet
+### ResourceManifest
 
-`ResourceSet` is a caller-buffered manifest of CPU resources to prepare for a renderer. Entries borrow their source objects; keep those objects alive through the blocking upload or through `pending.record` for a scheduled upload. GPU backends copy texture payload during upload. CPU-backed `PreparedResources` still borrow uploaded atlas band/layer-info data and image pixels, so keep uploaded `TextAtlas`, painted `TextBlob`, `PathPicture`, and `Image` values alive until those CPU prepared resources are retired.
+`ResourceManifest` is a caller-buffered manifest of CPU resources to prepare for a renderer. Entries borrow their source objects; keep those objects alive through the blocking upload or through `pending.record` for a scheduled upload. GPU backends copy texture payload during upload. CPU-backed `PreparedResources` still borrow uploaded atlas band/layer-info data and image pixels, so keep uploaded `TextAtlas`, painted `TextBlob`, `PathPicture`, and `Image` values alive until those CPU prepared resources are retired.
 
 | Method | Description |
 |--------|-------------|
-| `ResourceSet.init(entries)` | Wrap a caller-owned `[]ResourceSet.Entry` buffer. |
+| `ResourceManifest.init(entries)` | Wrap a caller-owned `[]ResourceManifest.Entry` buffer. |
 | `set.reset()` | Clear entries; capacity is retained. |
 | `set.putTextAtlas(key, atlas)` / `set.putTextAtlasOptions(key, atlas, options)` | Add a text atlas, optionally overriding atlas capacity mode. |
+| `set.putTextPaint(key, blob)` | Add the layer-info/image-paint records for a `TextBlob` that uses non-solid paints. |
 | `set.putPathPicture(key, picture)` / `set.putPathPictureOptions(key, picture, options)` | Add a path picture, optionally overriding atlas capacity mode. |
 | `set.putImage(key, image)` | Add an image resource. |
-| `set.addScene(scene)` | Discover and add all resources referenced by a scene. |
-| `set.estimateUploadFootprint() !ResourceFootprint` | Allocation-free estimate for a resource set before upload. |
+| `set.estimateUploadFootprint() !ResourceFootprint` | Allocation-free estimate for a resource manifest before upload. |
 
 ### Renderer
 
@@ -600,7 +602,7 @@ try scene.addPath(.{ .picture = &sprite, .instances = entity_overrides });
 | `cpu.setThreadPool(?*snail.ThreadPool)` | Opt into scanline-tiled multithreaded rendering using a caller-owned `snail.ThreadPool`. Byte-identical output to the single-threaded path; the draw call itself stays allocation-free. |
 | `vk.beginFrame(.{ .cmd, .frame_index })` | Bind a caller-recorded Vulkan command buffer + frame index for the current frame. |
 | `renderer.uploadResourcesBlocking(.{ .persistent, .scratch }, set) !PreparedResources` | Blocking upload + view construction. Persistent allocations live with `PreparedResources`; scratch allocations end when upload returns. |
-| `renderer.planResourceUpload(alloc, current, next_set) !ResourceUploadPlan` | Snapshot and diff a new resource set against existing prepared resources. |
+| `renderer.planResourceUpload(alloc, current, next_set) !ResourceUploadPlan` | Snapshot and diff a new resource manifest against existing prepared resources. |
 | `renderer.beginResourceUpload(.{ .persistent, .scratch }, &plan) !PendingResourceUpload` | Start a scheduled upload; record into a caller command buffer for Vulkan, then call `pending.publish()`. |
 | `DrawList.init(words, segments)` | Wrap a caller-buffered word + segment buffer for `addScene`. |
 | `DrawList.estimate(scene)` | Upper bound for the word buffer required by `draw.addScene(prepared, scene)`. |
@@ -623,7 +625,7 @@ scheduled uploads, including CPU-backed uploads.
    diffs `next_set` against the existing `PreparedResources` (or `null` for a
    first upload) and records which `ResourceKey` entries changed. The result
    owns a snapshot of the resource entries, so callers may reset or reuse the
-   original `ResourceSet` after planning. It is a `ResourceUploadPlan` whose
+   original `ResourceManifest` after planning. It is a `ResourceUploadPlan` whose
    `upload_footprint`, `upload_bytes`, and
    `changedKeys()` are informational. `upload_bytes` is
    `upload_footprint.allocatedBytes()` for simple budget checks.
@@ -750,13 +752,13 @@ build-only internal modules.
 |------|------|
 | `TextAtlas` | Immutable snapshot. Safe for concurrent reads. `ensureText`, `ensureShaped`, and `ensureGlyphs` return a new snapshot; old remains valid for in-flight readers. |
 | `TextBlob`, `PathPicture`, `Image` | Safe for concurrent reads while the borrowed atlas / pictures / pixels outlive the reader. `TextBlob.rebound` returns a new blob instead of mutating the existing one. |
-| `ResourceSet`, `Scene` | Borrowed manifests/lists. Source values must outlive upload/record building; CPU prepared resources extend some source lifetimes as described below. |
+| `ResourceManifest`, `Scene` | Borrowed manifests/lists. Source values must outlive upload/record building; CPU prepared resources extend some source lifetimes as described below. |
 | `PreparedResources` | Backend/context-specific. GPU prepared resources own backend texture uploads. CPU prepared resources own prepared curve sidecars but still borrow atlas band/layer-info data, painted `TextBlob` layer-info data, and image pixels. |
 | `DrawList` | Caller-owned buffer. Thread-local — no sharing needed. |
 | `Renderer` | Single-threaded. Must be called from the GL/Vulkan context thread. |
 | `CpuRenderer` | Single-threaded by default. Pass a `*snail.ThreadPool` via `cpu.setThreadPool` to enable internal scanline-tiled parallelism; the renderer fans tile work out and joins before each draw returns, so calls remain serial from the caller's perspective. |
 
-Typical pattern: build `TextAtlas` and call `ensureText` / `ensureShaped` on a loading thread, publish a new `ResourceSet` to the render thread, upload into `PreparedResources`, build `DrawList` records or a `PreparedScene`, then draw. The draw call does not allocate, upload, discover resources, or invalidate caches.
+Typical pattern: build `TextAtlas` and call `ensureText` / `ensureShaped` on a loading thread, publish a new `ResourceManifest` to the render thread, upload into `PreparedResources`, build `DrawList` records or a `PreparedScene`, then draw. The draw call does not allocate, upload, discover resources, or invalidate caches.
 
 For CPU-backend speed, hand the renderer a `snail.ThreadPool`. The pool allocates once at `init` (a `[]std.Thread` slice); `dispatch` and the draw path itself are heap-free.
 
@@ -922,8 +924,8 @@ src/
     path/                path storage, picture freezing, batches, debug overlays, and tests
     paint.zig            paint, gradient, image-paint public types
     image.zig            immutable image resource wrapper
-    resources.zig        public resource set/prepared-resource facade
-    resources/           prepared resources, views, stamps, sets, and footprint accounting
+    resources.zig        public resource manifest/prepared-resource facade
+    resources/           prepared resources, views, stamps, manifests, and footprint accounting
     upload.zig           resource upload batches and prepared-resource upload execution
     draw.zig             draw options and public draw-record types
     scene.zig            immutable ordered draw scene

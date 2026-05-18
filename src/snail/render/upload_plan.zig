@@ -4,7 +4,7 @@ const atlas_page_mod = @import("../render/format/atlas/page.zig");
 const image_mod = @import("../image.zig");
 const prepared_mod = @import("../resources/prepared.zig");
 const resource_key_mod = @import("../resource_key.zig");
-const set_mod = @import("../resources/set.zig");
+const manifest_mod = @import("../resources/manifest.zig");
 const stamp_mod = @import("../resources/stamp.zig");
 const upload_common = @import("../render/format/upload_common.zig");
 const upload_mod = @import("../upload.zig");
@@ -13,7 +13,7 @@ const AtlasPage = atlas_page_mod.AtlasPage;
 const Image = image_mod.Image;
 const PreparedResources = prepared_mod.PreparedResources;
 const ResourceKey = resource_key_mod.ResourceKey;
-const ResourceSet = set_mod.ResourceSet;
+const ResourceManifest = manifest_mod.ResourceManifest;
 const ResourceUploadPlan = upload_mod.ResourceUploadPlan;
 
 const PreparedAtlasResource = PreparedResources.PreparedAtlasResource;
@@ -70,7 +70,7 @@ const AtlasUploadDelta = struct {
     band_bytes: usize = 0,
 };
 
-const ResourceSetCounts = struct {
+const ResourceManifestCounts = struct {
     atlases: usize = 0,
     layer_infos: usize = 0,
     images: usize = 0,
@@ -99,8 +99,8 @@ const ImageRequirements = struct {
     }
 };
 
-fn countResourceEntries(entries: []const ResourceSet.Entry) ResourceSetCounts {
-    var counts: ResourceSetCounts = .{};
+fn countResourceEntries(entries: []const ResourceManifest.Entry) ResourceManifestCounts {
+    var counts: ResourceManifestCounts = .{};
     for (entries) |entry| switch (entry) {
         .text_atlas, .path_picture => counts.atlases += 1,
         .text_paint => counts.layer_infos += 1,
@@ -206,7 +206,7 @@ fn currentAtlasWouldRebuild(renderer: anytype, current: ?*const PreparedResource
     return renderer.atlasWouldRebuild(prepared, lookup.index, atlas);
 }
 
-fn resourceSetCanUseAtlasOverflowBanks(renderer: anytype, current: ?*const PreparedResources, entries: []const ResourceSet.Entry, counts: ResourceSetCounts) bool {
+fn resourceManifestCanUseAtlasOverflowBanks(renderer: anytype, current: ?*const PreparedResources, entries: []const ResourceManifest.Entry, counts: ResourceManifestCounts) bool {
     const prepared = current orelse return false;
     if (counts.layer_infos != 0 or counts.atlases != prepared.atlases.len) return false;
     if (!renderer.canUseAtlasOverflowBanks(prepared, counts.atlases)) return false;
@@ -230,7 +230,7 @@ fn resourceSetCanUseAtlasOverflowBanks(renderer: anytype, current: ?*const Prepa
     return true;
 }
 
-fn collectImageRequirements(allocator: std.mem.Allocator, entries: []const ResourceSet.Entry) !ImageRequirements {
+fn collectImageRequirements(allocator: std.mem.Allocator, entries: []const ResourceManifest.Entry) !ImageRequirements {
     var images = std.ArrayListUnmanaged(*const Image).empty;
     defer images.deinit(allocator);
 
@@ -268,7 +268,7 @@ fn appendUniqueImage(allocator: std.mem.Allocator, images: *std.ArrayListUnmanag
     try images.append(allocator, image);
 }
 
-pub fn planResourceUpload(renderer: anytype, allocator: std.mem.Allocator, current: ?*const PreparedResources, next_set: *const ResourceSet) !ResourceUploadPlan {
+pub fn planResourceUpload(renderer: anytype, allocator: std.mem.Allocator, current: ?*const PreparedResources, next_set: *const ResourceManifest) !ResourceUploadPlan {
     var plan = try ResourceUploadPlan.init(allocator, next_set);
     errdefer plan.deinit();
 
@@ -356,7 +356,7 @@ pub fn planResourceUpload(renderer: anytype, allocator: std.mem.Allocator, curre
     if (plan.new_atlas_banks > 0 and
         stats.active_atlas_layers_allocated > 0 and
         uses_resource_cache and
-        !resourceSetCanUseAtlasOverflowBanks(renderer, current, entries, counts))
+        !resourceManifestCanUseAtlasOverflowBanks(renderer, current, entries, counts))
     {
         plan.atlas_cache_rebuilds = 1;
     }

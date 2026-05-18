@@ -124,7 +124,7 @@ pub const Scene = scene.Scene;
 
 pub const ResourceStamp = resource_key.ResourceStamp;
 pub const ResourceKey = resource_key.ResourceKey;
-pub const ResourceSet = resources.ResourceSet;
+pub const ResourceManifest = resources.ResourceManifest;
 pub const PreparedResources = resources.PreparedResources;
 pub const PreparedResourceRetirementQueue = resources.PreparedResourceRetirementQueue;
 pub const ResourceCapacityMode = upload_common.AtlasCapacityMode;

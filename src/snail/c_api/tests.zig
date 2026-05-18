@@ -189,10 +189,10 @@ test "c_api: invalid caller input maps to invalid argument" {
 
     const atlas = try testTextAtlas();
     defer c_text.snail_text_atlas_deinit(atlas);
-    var resources: ?*c.test_api.ResourceSetImpl = null;
-    try testing.expectEqual(c.SNAIL_OK, c_resources.snail_resource_set_init(null, 0, &resources));
-    defer c_resources.snail_resource_set_deinit(resources);
-    try testing.expectEqual(c.SNAIL_ERR_INVALID_ARGUMENT, c_resources.snail_resource_set_put_text_atlas(resources.?, 1, atlas));
+    var resources: ?*c.test_api.ResourceManifestImpl = null;
+    try testing.expectEqual(c.SNAIL_OK, c_resources.snail_resource_manifest_init(null, 0, &resources));
+    defer c_resources.snail_resource_manifest_deinit(resources);
+    try testing.expectEqual(c.SNAIL_ERR_INVALID_ARGUMENT, c_resources.snail_resource_manifest_put_text_atlas(resources.?, 1, atlas));
 
     const pixels = [_]u8{ 255, 255, 255, 255 };
     var image: ?*c.test_api.ImageImpl = null;
@@ -246,10 +246,10 @@ test "c_api: scheduled upload draw list coverage records and retirement" {
     defer c_scene.snail_scene_deinit(scene);
     try testing.expectEqual(c.SNAIL_OK, c_scene.snail_scene_add_text(scene.?, blob.?));
 
-    var resources: ?*c.test_api.ResourceSetImpl = null;
-    try testing.expectEqual(c.SNAIL_OK, c_resources.snail_resource_set_init(null, 4, &resources));
-    defer c_resources.snail_resource_set_deinit(resources);
-    try testing.expectEqual(c.SNAIL_OK, c_resources.snail_resource_set_add_scene(resources.?, scene.?));
+    var resources: ?*c.test_api.ResourceManifestImpl = null;
+    try testing.expectEqual(c.SNAIL_OK, c_resources.snail_resource_manifest_init(null, 4, &resources));
+    defer c_resources.snail_resource_manifest_deinit(resources);
+    try testing.expectEqual(c.SNAIL_OK, c_resources.snail_resource_manifest_put_text_atlas(resources.?, 1, atlas));
 
     var pixels = [_]u8{0} ** (64 * 64 * 4);
     var renderer: ?*c.test_api.RendererImpl = null;
@@ -316,7 +316,7 @@ test "c_api: scheduled upload draw list coverage records and retirement" {
     prepared = null;
 }
 
-test "c_api: scene and resource set follow public model" {
+test "c_api: scene and resource manifest follow public model" {
     var atlas = try testTextAtlas();
     defer c_text.snail_text_atlas_deinit(atlas);
     try ensureForText(&atlas, "Hi");
@@ -337,11 +337,11 @@ test "c_api: scene and resource set follow public model" {
     }));
     try testing.expectEqual(@as(usize, 2), c_scene.snail_scene_command_count(scene.?));
 
-    var resources: ?*c.test_api.ResourceSetImpl = null;
-    try testing.expectEqual(c.SNAIL_OK, c_resources.snail_resource_set_init(null, 4, &resources));
-    defer c_resources.snail_resource_set_deinit(resources);
-    try testing.expectEqual(c.SNAIL_OK, c_resources.snail_resource_set_add_scene(resources.?, scene.?));
-    try testing.expectEqual(@as(usize, 1), c_resources.snail_resource_set_count(resources.?));
+    var resources: ?*c.test_api.ResourceManifestImpl = null;
+    try testing.expectEqual(c.SNAIL_OK, c_resources.snail_resource_manifest_init(null, 4, &resources));
+    defer c_resources.snail_resource_manifest_deinit(resources);
+    try testing.expectEqual(c.SNAIL_OK, c_resources.snail_resource_manifest_put_text_atlas(resources.?, 1, atlas));
+    try testing.expectEqual(@as(usize, 1), c_resources.snail_resource_manifest_count(resources.?));
 }
 
 test "c_api: path picture builder" {
@@ -388,23 +388,23 @@ test "c_api: path picture builder" {
     c_path.snail_path_picture_upload_footprint(picture.?, &picture_footprint);
     try testing.expect(c_misc.snail_resource_footprint_allocated_bytes(picture_footprint) > 0);
 
-    var resources: ?*c.test_api.ResourceSetImpl = null;
-    try testing.expectEqual(c.SNAIL_OK, c_resources.snail_resource_set_init(null, 2, &resources));
-    defer c_resources.snail_resource_set_deinit(resources);
-    try testing.expectEqual(c.SNAIL_OK, c_resources.snail_resource_set_put_path_picture_options(
+    var resources: ?*c.test_api.ResourceManifestImpl = null;
+    try testing.expectEqual(c.SNAIL_OK, c_resources.snail_resource_manifest_init(null, 2, &resources));
+    defer c_resources.snail_resource_manifest_deinit(resources);
+    try testing.expectEqual(c.SNAIL_OK, c_resources.snail_resource_manifest_put_path_picture_options(
         resources.?,
         7,
         picture.?,
         c.SNAIL_RESOURCE_CAPACITY_EXACT,
     ));
-    try testing.expectEqual(c.SNAIL_ERR_INVALID_ARGUMENT, c_resources.snail_resource_set_put_path_picture_options(
+    try testing.expectEqual(c.SNAIL_ERR_INVALID_ARGUMENT, c_resources.snail_resource_manifest_put_path_picture_options(
         resources.?,
         8,
         picture.?,
         99,
     ));
     var set_footprint: c.SnailResourceFootprint = .{};
-    try testing.expectEqual(c.SNAIL_OK, c_resources.snail_resource_set_estimate_upload_footprint(resources.?, &set_footprint));
+    try testing.expectEqual(c.SNAIL_OK, c_resources.snail_resource_manifest_estimate_upload_footprint(resources.?, &set_footprint));
     try testing.expect(c_misc.snail_resource_footprint_allocated_bytes(set_footprint) >= c_misc.snail_resource_footprint_allocated_bytes(picture_footprint));
 
     var scene: ?*c.test_api.SceneImpl = null;

@@ -3,7 +3,6 @@ const std = @import("std");
 const build_options = @import("build_options");
 const snail = @import("root.zig");
 const bezier = @import("math/bezier.zig");
-const resource_key = @import("resource_key.zig");
 const stamp_mod = @import("resources/stamp.zig");
 const upload_mod = @import("upload.zig");
 const upload_plan = @import("render/upload_plan.zig");
@@ -24,7 +23,7 @@ const Paint = snail.Paint;
 const Image = snail.Image;
 const ResourceKey = snail.ResourceKey;
 const ResourceStamp = snail.ResourceStamp;
-const ResourceSet = snail.ResourceSet;
+const ResourceManifest = snail.ResourceManifest;
 const ResourceCacheStats = snail.ResourceCacheStats;
 const ResourceUploadBatch = upload_mod.ResourceUploadBatch;
 const PreparedResources = snail.PreparedResources;
@@ -43,7 +42,6 @@ const FillRule = snail.FillRule;
 const TargetEncoding = snail.TargetEncoding;
 const TextCoverageRecords = snail.coverage.TextCoverageRecords;
 const TEXT_WORDS_PER_GLYPH = snail.TEXT_WORDS_PER_GLYPH;
-const pointerResourceKey = resource_key.pointerResourceKey;
 
 test {
     _ = @import("math/vec.zig");
@@ -157,8 +155,8 @@ test "cpu prepared resources own uploaded buffers" {
     var renderer = cpu.asRenderer();
     defer renderer.deinit();
 
-    var entries: [2]ResourceSet.Entry = undefined;
-    var set = ResourceSet.init(&entries);
+    var entries: [2]ResourceManifest.Entry = undefined;
+    var set = ResourceManifest.init(&entries);
     try set.putPathPicture(.painted_path, &picture);
     try set.putImage(.source_image, &image);
 
@@ -472,7 +470,7 @@ test "TextBlob validation catches wrong atlas snapshot" {
     try std.testing.expectError(error.WrongTextAtlasSnapshot, blob.validate());
 }
 
-test "ResourceSet discovers and draws text paint resources" {
+test "ResourceManifest uploads explicit text paint resources" {
     if (comptime !build_options.enable_cpu) return error.SkipZigTest;
 
     const assets_data = @import("assets");
@@ -504,9 +502,10 @@ test "ResourceSet discovers and draws text paint resources" {
     defer scene.deinit();
     try scene.addText(.{ .blob = &blob });
 
-    var set_entries: [2]ResourceSet.Entry = undefined;
-    var set = ResourceSet.init(&set_entries);
-    try set.addScene(&scene);
+    var set_entries: [2]ResourceManifest.Entry = undefined;
+    var set = ResourceManifest.init(&set_entries);
+    try set.putTextAtlas(.fonts, &atlas);
+    try set.putTextPaint(.paint, &blob);
     try std.testing.expectEqual(@as(usize, 2), set.slice().len);
     try std.testing.expect(std.meta.activeTag(set.slice()[0]) == .text_atlas);
     try std.testing.expect(std.meta.activeTag(set.slice()[1]) == .text_paint);
@@ -536,13 +535,13 @@ test "ResourceSet discovers and draws text paint resources" {
     try draw.addScene(&prepared, &scene);
 
     try std.testing.expectEqual(@as(usize, 1), draw.slice().segments.len);
-    try std.testing.expect(draw.slice().segments[0].key.eql(pointerResourceKey("scene.text_paint", &blob)));
+    try std.testing.expect(draw.slice().segments[0].key.eql(ResourceKey.named("paint")));
     const decoded = vertex_mod.decodeInstance(draw.slice().words);
     try std.testing.expectEqual(@as(u32, 0xFF), decoded.glyph[1] >> 24);
     try std.testing.expectEqual(@as(u32, @intFromEnum(vertex_mod.SpecialGlyphKind.path)), (decoded.glyph[1] >> 16) & 0xFF);
 }
 
-test "ResourceSet footprint counts text image paint payloads" {
+test "ResourceManifest footprint counts text image paint payloads" {
     const assets_data = @import("assets");
     const allocator = std.testing.allocator;
     var image = try Image.initSrgba8(allocator, 1, 1, &.{ 255, 64, 32, 255 });
@@ -568,15 +567,16 @@ test "ResourceSet footprint counts text image paint payloads" {
     defer scene.deinit();
     try scene.addText(.{ .blob = &blob });
 
-    var set_entries: [2]ResourceSet.Entry = undefined;
-    var set = ResourceSet.init(&set_entries);
-    try set.addScene(&scene);
+    var set_entries: [2]ResourceManifest.Entry = undefined;
+    var set = ResourceManifest.init(&set_entries);
+    try set.putTextAtlas(.fonts, &atlas);
+    try set.putTextPaint(.paint, &blob);
     const footprint = try set.estimateUploadFootprint();
     try std.testing.expectEqual(image.pixelSlice().len, footprint.image_bytes_used);
     try std.testing.expect(footprint.image_bytes_allocated >= footprint.image_bytes_used);
 }
 
-test "ResourceSet footprint image accounting has no fixed slot cap" {
+test "ResourceManifest footprint image accounting has no fixed slot cap" {
     const allocator = std.testing.allocator;
     const image_count = 300;
 
@@ -586,8 +586,8 @@ test "ResourceSet footprint image accounting has no fixed slot cap" {
         for (images[0..initialized]) |*image| image.deinit();
     }
 
-    var entries: [image_count]ResourceSet.Entry = undefined;
-    var set = ResourceSet.init(entries[0..]);
+    var entries: [image_count]ResourceManifest.Entry = undefined;
+    var set = ResourceManifest.init(entries[0..]);
     for (0..image_count) |i| {
         const px = [_]u8{ @intCast(i % 251), 64, 32, 255 };
         images[i] = try Image.initSrgba8(allocator, 1, 1, px[0..]);
@@ -664,9 +664,9 @@ test "DrawList estimate upper-bounds ranged text draw output" {
     var renderer = cpu.asRenderer();
     defer renderer.deinit();
 
-    var set_entries: [1]ResourceSet.Entry = undefined;
-    var set = ResourceSet.init(&set_entries);
-    try set.addScene(&scene);
+    var set_entries: [1]ResourceManifest.Entry = undefined;
+    var set = ResourceManifest.init(&set_entries);
+    try set.putTextAtlas(.fonts, &atlas);
     var prepared = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set);
     defer prepared.deinit();
 
@@ -720,8 +720,8 @@ test "replacing path-picture key does not invalidate unrelated text coverage rec
     var renderer = cpu.asRenderer();
     defer renderer.deinit();
 
-    var set_a_entries: [4]ResourceSet.Entry = undefined;
-    var set_a = ResourceSet.init(&set_a_entries);
+    var set_a_entries: [4]ResourceManifest.Entry = undefined;
+    var set_a = ResourceManifest.init(&set_a_entries);
     try set_a.putTextAtlas(.fonts, &atlas);
     try set_a.putPathPicture(.hud_panel, &picture_a);
     var prepared_a = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set_a);
@@ -735,8 +735,8 @@ test "replacing path-picture key does not invalidate unrelated text coverage rec
     try std.testing.expect(records.validFor(&prepared_a));
     try std.testing.expectEqual(@as(u32, texture_layers.WINDOW_SIZE), records.layerWindowBase());
 
-    var set_b_entries: [4]ResourceSet.Entry = undefined;
-    var set_b = ResourceSet.init(&set_b_entries);
+    var set_b_entries: [4]ResourceManifest.Entry = undefined;
+    var set_b = ResourceManifest.init(&set_b_entries);
     try set_b.putTextAtlas(.fonts, &atlas);
     try set_b.putPathPicture(.hud_panel, &picture_b);
     var prepared_b = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set_b);
@@ -770,8 +770,8 @@ test "draw rejects stale records when a resource key is replaced" {
     defer scene.deinit();
     try scene.addPath(.{ .picture = &picture_a });
 
-    var set_a_entries: [2]ResourceSet.Entry = undefined;
-    var set_a = ResourceSet.init(&set_a_entries);
+    var set_a_entries: [2]ResourceManifest.Entry = undefined;
+    var set_a = ResourceManifest.init(&set_a_entries);
     try set_a.putPathPicture(.hud_panel, &picture_a);
     var prepared_a = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set_a);
     defer prepared_a.deinit();
@@ -789,8 +789,8 @@ test "draw rejects stale records when a resource key is replaced" {
     var draw = DrawList.init(draw_buf, draw_segments);
     try draw.addScene(&prepared_a, &scene);
 
-    var set_b_entries: [2]ResourceSet.Entry = undefined;
-    var set_b = ResourceSet.init(&set_b_entries);
+    var set_b_entries: [2]ResourceManifest.Entry = undefined;
+    var set_b = ResourceManifest.init(&set_b_entries);
     try set_b.putPathPicture(.hud_panel, &picture_b);
     var prepared_b = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set_b);
     defer prepared_b.deinit();
@@ -818,8 +818,8 @@ test "resource upload plan reports changed keys and enforces budget" {
     var renderer = cpu.asRenderer();
     defer renderer.deinit();
 
-    var set_a_entries: [2]ResourceSet.Entry = undefined;
-    var set_a = ResourceSet.init(&set_a_entries);
+    var set_a_entries: [2]ResourceManifest.Entry = undefined;
+    var set_a = ResourceManifest.init(&set_a_entries);
     try set_a.putPathPicture(.hud_panel, &picture_a);
     var prepared_a = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set_a);
     defer prepared_a.deinit();
@@ -832,8 +832,8 @@ test "resource upload plan reports changed keys and enforces budget" {
     try std.testing.expectEqual(@as(usize, 0), plan_same.changedKeys().len);
     try std.testing.expectEqual(@as(usize, 0), plan_same.changed_bytes);
 
-    var set_b_entries: [2]ResourceSet.Entry = undefined;
-    var set_b = ResourceSet.init(&set_b_entries);
+    var set_b_entries: [2]ResourceManifest.Entry = undefined;
+    var set_b = ResourceManifest.init(&set_b_entries);
     try set_b.putPathPicture(.hud_panel, &picture_b);
     var plan_b = try renderer.planResourceUpload(allocator, &prepared_a, &set_b);
     defer plan_b.deinit();
@@ -899,14 +899,14 @@ test "resource upload plan reports appended atlas pages" {
     var renderer = cpu.asRenderer();
     defer renderer.deinit();
 
-    var set_a_entries: [1]ResourceSet.Entry = undefined;
-    var set_a = ResourceSet.init(&set_a_entries);
+    var set_a_entries: [1]ResourceManifest.Entry = undefined;
+    var set_a = ResourceManifest.init(&set_a_entries);
     try set_a.putTextAtlas(.fonts, &atlas_a);
     var prepared_a = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set_a);
     defer prepared_a.deinit();
 
-    var set_b_entries: [1]ResourceSet.Entry = undefined;
-    var set_b = ResourceSet.init(&set_b_entries);
+    var set_b_entries: [1]ResourceManifest.Entry = undefined;
+    var set_b = ResourceManifest.init(&set_b_entries);
     try set_b.putTextAtlas(.fonts, &atlas_b);
     var plan = try renderer.planResourceUpload(allocator, &prepared_a, &set_b);
     defer plan.deinit();
@@ -944,8 +944,8 @@ test "resource upload plan accounts for image array rebuilds" {
         .images = &current_images,
     };
 
-    var entries: [2]ResourceSet.Entry = undefined;
-    var set = ResourceSet.init(&entries);
+    var entries: [2]ResourceManifest.Entry = undefined;
+    var set = ResourceManifest.init(&entries);
     try set.putImage(key_small, &image_small);
     try set.putImage(key_grow, &image_large);
 
@@ -1007,8 +1007,8 @@ test "pending upload publish waits for external completion marker" {
     var renderer = cpu.asRenderer();
     defer renderer.deinit();
 
-    var set_entries: [2]ResourceSet.Entry = undefined;
-    var set = ResourceSet.init(&set_entries);
+    var set_entries: [2]ResourceManifest.Entry = undefined;
+    var set = ResourceManifest.init(&set_entries);
     try set.putPathPicture(.hud_panel, &picture);
     var plan = try renderer.planResourceUpload(allocator, null, &set);
     defer plan.deinit();
@@ -1052,8 +1052,8 @@ test "prepared resource retirement queue is caller-owned" {
     var renderer = cpu.asRenderer();
     defer renderer.deinit();
 
-    var set_entries: [2]ResourceSet.Entry = undefined;
-    var set = ResourceSet.init(&set_entries);
+    var set_entries: [2]ResourceManifest.Entry = undefined;
+    var set = ResourceManifest.init(&set_entries);
     try set.putPathPicture(.hud_panel, &picture);
 
     var prepared = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set);
@@ -1086,8 +1086,8 @@ test "CPU draw uses prepared resource views" {
     defer scene.deinit();
     try scene.addPath(.{ .picture = &picture });
 
-    var set_entries: [2]ResourceSet.Entry = undefined;
-    var set = ResourceSet.init(&set_entries);
+    var set_entries: [2]ResourceManifest.Entry = undefined;
+    var set = ResourceManifest.init(&set_entries);
     try set.putPathPicture(.panel, &picture);
     var prepared = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set);
     defer prepared.deinit();

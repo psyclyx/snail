@@ -20,9 +20,9 @@ pub const SceneImpl = struct {
     // `inner` so capacity is reused frame-to-frame.
     overrides_arena: std.heap.ArenaAllocator,
 };
-pub const ResourceSetImpl = struct {
-    inner: snail.ResourceSet,
-    entries: []snail.ResourceSet.Entry,
+pub const ResourceManifestImpl = struct {
+    inner: snail.ResourceManifest,
+    entries: []snail.ResourceManifest.Entry,
     allocator: std.mem.Allocator,
 };
 pub const PreparedResourcesImpl = struct { inner: snail.PreparedResources };

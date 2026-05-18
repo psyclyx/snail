@@ -14,7 +14,7 @@ const SnailResourceCacheStats = common.SnailResourceCacheStats;
 const fromResourceFootprint = common.fromResourceFootprint;
 const fromResourceCacheStats = common.fromResourceCacheStats;
 const toDrawState = common.toDrawState;
-const ResourceSetImpl = common.ResourceSetImpl;
+const ResourceManifestImpl = common.ResourceManifestImpl;
 const PreparedResourcesImpl = common.PreparedResourcesImpl;
 const PreparedSceneImpl = common.PreparedSceneImpl;
 const ResourceUploadPlanImpl = common.ResourceUploadPlanImpl;
@@ -47,7 +47,7 @@ pub export fn snail_renderer_reset_resource_cache(renderer: *RendererImpl) void 
 pub export fn snail_renderer_upload_resources_blocking(
     renderer: *RendererImpl,
     alloc_ptr: ?*const SnailAllocator,
-    set: *const ResourceSetImpl,
+    set: *const ResourceManifestImpl,
     out: *?*PreparedResourcesImpl,
 ) c_int {
     const allocator = resolveAllocator(alloc_ptr);
@@ -67,7 +67,7 @@ pub export fn snail_renderer_plan_resource_upload(
     renderer: *RendererImpl,
     alloc_ptr: ?*const SnailAllocator,
     current: ?*const PreparedResourcesImpl,
-    next_set: *const ResourceSetImpl,
+    next_set: *const ResourceManifestImpl,
     out: *?*ResourceUploadPlanImpl,
 ) c_int {
     const allocator = resolveAllocator(alloc_ptr);

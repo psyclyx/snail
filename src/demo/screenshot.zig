@@ -142,9 +142,11 @@ fn renderCompactBanner(allocator: std.mem.Allocator) !void {
     try scene.addPath(.{ .picture = &path_picture });
     try scene.addText(.{ .blob = &text_blob });
 
-    var resource_entries: [8]snail.ResourceSet.Entry = undefined;
-    var resources = snail.ResourceSet.init(&resource_entries);
-    try resources.addScene(&scene);
+    var resource_entries: [8]snail.ResourceManifest.Entry = undefined;
+    var resources = snail.ResourceManifest.init(&resource_entries);
+    try resources.putPathPicture(.compact_paths, &path_picture);
+    try resources.putTextAtlas(.compact_fonts, text_blob.atlas);
+    if (text_blob.hasPaintRecords()) try resources.putTextPaint(.compact_text_paint, &text_blob);
     var prepared = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &resources);
     defer prepared.deinit();
 
@@ -218,9 +220,11 @@ fn renderRepro(allocator: std.mem.Allocator) !void {
     try scene.addPath(.{ .picture = &path_picture });
     try scene.addText(.{ .blob = &text_blob });
 
-    var resource_entries: [8]snail.ResourceSet.Entry = undefined;
-    var resources = snail.ResourceSet.init(&resource_entries);
-    try resources.addScene(&scene);
+    var resource_entries: [8]snail.ResourceManifest.Entry = undefined;
+    var resources = snail.ResourceManifest.init(&resource_entries);
+    try resources.putPathPicture(.repro_paths, &path_picture);
+    try resources.putTextAtlas(.repro_fonts, text_blob.atlas);
+    if (text_blob.hasPaintRecords()) try resources.putTextPaint(.repro_text_paint, &text_blob);
     var prepared = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &resources);
     defer prepared.deinit();
 
