@@ -35,7 +35,7 @@ const Config = if (build_options.enable_opengl) struct {
     pub const uses_resource_cache = true;
 
     pub fn prepared(prepared_resources: *const PreparedResources) ?*const Prepared {
-        return prepared_resources.backend.gl orelse null;
+        return prepared_resources.resident.gl orelse null;
     }
 
     pub fn uploadResources(self: *Backend, allocators: UploadAllocators, prepared_resources: *PreparedResources, batch: ResourceUploadBatch) !void {
@@ -49,12 +49,12 @@ const Config = if (build_options.enable_opengl) struct {
             batch.layer_info_views,
         );
         if (batch.images.len > 0) try gl_prepared.uploadImages(allocators.scratch, batch.images, batch.image_views);
-        prepared_resources.backend.gl = gl_prepared;
-        prepared_resources.backend.generation = gl_prepared.generation;
+        prepared_resources.resident.gl = gl_prepared;
+        prepared_resources.resident.generation = gl_prepared.generation;
     }
 
     pub fn coverageBackend(self: *Backend, prepared_resources: *const PreparedResources) ?CoverageBackend {
-        if (prepared_resources.backend.gl) |gl_resources| {
+        if (prepared_resources.resident.gl) |gl_resources| {
             return .{ .gl = .{ .gl = self, .gl_resources = gl_resources, .prepared = prepared_resources } };
         }
         return null;
@@ -144,7 +144,7 @@ pub const Renderer = if (build_options.enable_opengl) struct {
     }
 
     pub fn coverageBackend(self: *Self, prepared_resources: *const PreparedResources) ?CoverageBackend {
-        if (prepared_resources.backend.gl) |gl_resources| {
+        if (prepared_resources.resident.gl) |gl_resources| {
             return .{ .gl = .{ .gl = self.state, .gl_resources = gl_resources, .prepared = prepared_resources } };
         }
         return null;

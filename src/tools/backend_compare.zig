@@ -345,7 +345,7 @@ fn checkAppendPlanForTextAtlas(
     try set.putTextAtlasOptions(key, atlas, .{ .atlas_capacity = capacity });
     var plan = try renderer.planResourceUpload(allocator, current, &set);
     defer plan.deinit();
-    try expectAppendPlan(&plan, current.atlases[0].atlas.pageCount(), atlas.pageCount(), expected);
+    try expectAppendPlan(&plan, current.manifest.atlases[0].page_fingerprints.len, atlas.pageCount(), expected);
 }
 
 fn expectAppendPlan(plan: *const snail.ResourceUploadPlan, old_pages: usize, new_pages: usize, expected: AppendPlanExpectation) !void {

@@ -30,7 +30,7 @@ const PreparedTextAtlasView = view_mod.PreparedTextAtlasView;
 const ResourceKey = resource_key_mod.ResourceKey;
 const ResourceStamp = resource_key_mod.ResourceStamp;
 
-pub const PreparedResources = struct {
+pub const PreparedManifest = struct {
     allocator: std.mem.Allocator,
     /// Validated bindings for one render/backend/context. GPU backends point at
     /// renderer-owned resident caches; CPU prepared resources own render-time
@@ -38,14 +38,6 @@ pub const PreparedResources = struct {
     atlases: []PreparedAtlasResource = &.{},
     layer_infos: []PreparedLayerInfoResource = &.{},
     images: []PreparedImageResource = &.{},
-    backend: BackendResources = .{},
-
-    pub const BackendResources = struct {
-        gl: if (build_options.enable_opengl) ?*pipeline.PreparedResources else void = if (build_options.enable_opengl) null else {},
-        vulkan: if (build_options.enable_vulkan) ?*vulkan_pipeline.PreparedResources else void = if (build_options.enable_vulkan) null else {},
-        cpu: if (build_options.enable_cpu) ?cpu_renderer_mod.PreparedResources else void = if (build_options.enable_cpu) null else {},
-        generation: u64 = 0,
-    };
 
     pub const PreparedAtlasKind = enum {
         text,
@@ -72,10 +64,7 @@ pub const PreparedResources = struct {
         stamp: ResourceStamp = .{},
     };
 
-    pub fn deinit(self: *PreparedResources) void {
-        if (comptime build_options.enable_cpu) {
-            if (self.backend.cpu) |*cpu_resources| cpu_resources.deinit();
-        }
+    pub fn deinit(self: *PreparedManifest) void {
         for (self.atlases) |*entry| {
             if (entry.page_fingerprints.len > 0) self.allocator.free(entry.page_fingerprints);
             if (entry.owns_page_layers and entry.view.page_layers.len > 0) self.allocator.free(entry.view.page_layers);
@@ -83,6 +72,90 @@ pub const PreparedResources = struct {
         if (self.atlases.len > 0) self.allocator.free(self.atlases);
         if (self.layer_infos.len > 0) self.allocator.free(self.layer_infos);
         if (self.images.len > 0) self.allocator.free(self.images);
+        self.* = undefined;
+    }
+
+    pub fn stampForKey(self: *const PreparedManifest, key: ResourceKey) ?ResourceStamp {
+        for (self.atlases) |entry| if (entry.key.eql(key)) return entry.stamp;
+        for (self.layer_infos) |entry| if (entry.key.eql(key)) return entry.stamp;
+        for (self.images) |entry| if (entry.key.eql(key)) return entry.stamp;
+        return null;
+    }
+
+    fn textAtlasEntry(self: *const PreparedManifest, key: ResourceKey) ?*const PreparedAtlasResource {
+        for (self.atlases) |*entry| {
+            if (entry.kind == .text and entry.key.eql(key)) return entry;
+        }
+        return null;
+    }
+
+    fn textPaintEntry(self: *const PreparedManifest, key: ResourceKey) ?*const PreparedLayerInfoResource {
+        for (self.layer_infos) |*entry| {
+            if (entry.key.eql(key)) return entry;
+        }
+        return null;
+    }
+
+    fn pathPictureEntry(self: *const PreparedManifest, key: ResourceKey) ?*const PreparedAtlasResource {
+        for (self.atlases) |*entry| {
+            if (entry.kind == .path and entry.key.eql(key)) return entry;
+        }
+        return null;
+    }
+
+    pub fn textAtlasView(self: *const PreparedManifest, key: ResourceKey) !PreparedTextAtlasView {
+        const entry = self.textAtlasEntry(key) orelse return error.MissingPreparedResource;
+        return .{
+            .layer_base = entry.view.layer_base,
+            .page_layers = entry.view.page_layers,
+            .info_row_base = entry.view.info_row_base,
+        };
+    }
+
+    pub fn textPaintView(self: *const PreparedManifest, key: ResourceKey) !PreparedLayerInfoView {
+        const entry = self.textPaintEntry(key) orelse return error.MissingPreparedResource;
+        return entry.view;
+    }
+
+    pub fn pathAtlasView(self: *const PreparedManifest, key: ResourceKey) !PreparedAtlasView {
+        const entry = self.pathPictureEntry(key) orelse return error.MissingPreparedResource;
+        return entry.view;
+    }
+
+    pub fn textStamp(self: *const PreparedManifest, key: ResourceKey) !ResourceStamp {
+        return (self.textAtlasEntry(key) orelse return error.MissingPreparedResource).stamp;
+    }
+
+    pub fn textPaintStamp(self: *const PreparedManifest, key: ResourceKey) !ResourceStamp {
+        return (self.textPaintEntry(key) orelse return error.MissingPreparedResource).stamp;
+    }
+
+    pub fn pathStamp(self: *const PreparedManifest, key: ResourceKey) !ResourceStamp {
+        return (self.pathPictureEntry(key) orelse return error.MissingPreparedResource).stamp;
+    }
+};
+
+pub const ResidentResources = struct {
+    gl: if (build_options.enable_opengl) ?*pipeline.PreparedResources else void = if (build_options.enable_opengl) null else {},
+    vulkan: if (build_options.enable_vulkan) ?*vulkan_pipeline.PreparedResources else void = if (build_options.enable_vulkan) null else {},
+    cpu: if (build_options.enable_cpu) ?cpu_renderer_mod.PreparedResources else void = if (build_options.enable_cpu) null else {},
+    generation: u64 = 0,
+
+    pub fn deinit(self: *ResidentResources) void {
+        if (comptime build_options.enable_cpu) {
+            if (self.cpu) |*cpu_resources| cpu_resources.deinit();
+        }
+        self.* = undefined;
+    }
+};
+
+pub const PreparedResources = struct {
+    manifest: PreparedManifest,
+    resident: ResidentResources = .{},
+
+    pub fn deinit(self: *PreparedResources) void {
+        self.resident.deinit();
+        self.manifest.deinit();
         self.* = undefined;
     }
 
@@ -95,66 +168,35 @@ pub const PreparedResources = struct {
     }
 
     pub fn stampForKey(self: *const PreparedResources, key: ResourceKey) ?ResourceStamp {
-        for (self.atlases) |entry| if (entry.key.eql(key)) return entry.stamp;
-        for (self.layer_infos) |entry| if (entry.key.eql(key)) return entry.stamp;
-        for (self.images) |entry| if (entry.key.eql(key)) return entry.stamp;
-        return null;
+        return self.manifest.stampForKey(key);
     }
 
     pub fn coverageBackend(self: *const PreparedResources, renderer: anytype) ?CoverageBackend {
         return renderer.coverageBackend(self);
     }
 
-    fn textAtlasEntry(self: *const PreparedResources, key: ResourceKey) ?*const PreparedAtlasResource {
-        for (self.atlases) |*entry| {
-            if (entry.kind == .text and entry.key.eql(key)) return entry;
-        }
-        return null;
-    }
-
-    fn textPaintEntry(self: *const PreparedResources, key: ResourceKey) ?*const PreparedLayerInfoResource {
-        for (self.layer_infos) |*entry| {
-            if (entry.key.eql(key)) return entry;
-        }
-        return null;
-    }
-
-    fn pathPictureEntry(self: *const PreparedResources, key: ResourceKey) ?*const PreparedAtlasResource {
-        for (self.atlases) |*entry| {
-            if (entry.kind == .path and entry.key.eql(key)) return entry;
-        }
-        return null;
-    }
-
     pub fn textAtlasView(self: *const PreparedResources, key: ResourceKey) !PreparedTextAtlasView {
-        const entry = self.textAtlasEntry(key) orelse return error.MissingPreparedResource;
-        return .{
-            .layer_base = entry.view.layer_base,
-            .page_layers = entry.view.page_layers,
-            .info_row_base = entry.view.info_row_base,
-        };
+        return self.manifest.textAtlasView(key);
     }
 
     pub fn textPaintView(self: *const PreparedResources, key: ResourceKey) !PreparedLayerInfoView {
-        const entry = self.textPaintEntry(key) orelse return error.MissingPreparedResource;
-        return entry.view;
+        return self.manifest.textPaintView(key);
     }
 
     pub fn pathAtlasView(self: *const PreparedResources, key: ResourceKey) !PreparedAtlasView {
-        const entry = self.pathPictureEntry(key) orelse return error.MissingPreparedResource;
-        return entry.view;
+        return self.manifest.pathAtlasView(key);
     }
 
     pub fn textStamp(self: *const PreparedResources, key: ResourceKey) !ResourceStamp {
-        return (self.textAtlasEntry(key) orelse return error.MissingPreparedResource).stamp;
+        return self.manifest.textStamp(key);
     }
 
     pub fn textPaintStamp(self: *const PreparedResources, key: ResourceKey) !ResourceStamp {
-        return (self.textPaintEntry(key) orelse return error.MissingPreparedResource).stamp;
+        return self.manifest.textPaintStamp(key);
     }
 
     pub fn pathStamp(self: *const PreparedResources, key: ResourceKey) !ResourceStamp {
-        return (self.pathPictureEntry(key) orelse return error.MissingPreparedResource).stamp;
+        return self.manifest.pathStamp(key);
     }
 };
 
@@ -204,7 +246,7 @@ pub const PreparedResourceRetirementQueue = struct {
     pub fn retireAfter(self: *PreparedResourceRetirementQueue, resources: *PreparedResources, fence_or_frame: anytype) !void {
         self.sweep();
         if (comptime build_options.enable_vulkan) {
-            if (resources.backend.vulkan != null) {
+            if (resources.resident.vulkan != null) {
                 const fence = preparedRetirementFence(resources, fence_or_frame) orelse return error.InvalidRetirementFence;
                 const node = try self.allocator.create(Node);
                 node.* = .{
@@ -233,7 +275,7 @@ pub const PreparedResourceRetirementQueue = struct {
 
 fn preparedRetirementFence(resources: *const PreparedResources, fence_or_frame: anytype) ?VulkanRetirementFence {
     if (comptime !build_options.enable_vulkan) return null;
-    const vk_resources = resources.backend.vulkan orelse return null;
+    const vk_resources = resources.resident.vulkan orelse return null;
     const T = @TypeOf(fence_or_frame);
     switch (@typeInfo(T)) {
         .@"struct" => {

@@ -18,6 +18,7 @@ const PreparedAtlasView = view_mod.PreparedAtlasView;
 const PreparedImageView = view_mod.PreparedImageView;
 const PreparedLayerInfoUpload = view_mod.PreparedLayerInfoUpload;
 const PreparedLayerInfoView = view_mod.PreparedLayerInfoView;
+const PreparedManifest = prepared_mod.PreparedManifest;
 const PreparedResources = prepared_mod.PreparedResources;
 const Renderer = render_mod.Renderer;
 const ResourceKey = resource_key_mod.ResourceKey;
@@ -280,20 +281,22 @@ fn countUploadEntries(entries: []const ResourceManifest.Entry) UploadEntryCounts
 }
 
 fn initPreparedResourceSlots(allocator: std.mem.Allocator, counts: UploadEntryCounts) !PreparedResources {
-    const atlases = try allocator.alloc(PreparedResources.PreparedAtlasResource, counts.atlases);
+    const atlases = try allocator.alloc(PreparedManifest.PreparedAtlasResource, counts.atlases);
     errdefer allocator.free(atlases);
-    const layer_infos = try allocator.alloc(PreparedResources.PreparedLayerInfoResource, counts.layer_infos);
+    const layer_infos = try allocator.alloc(PreparedManifest.PreparedLayerInfoResource, counts.layer_infos);
     errdefer allocator.free(layer_infos);
-    const images = try allocator.alloc(PreparedResources.PreparedImageResource, counts.images);
+    const images = try allocator.alloc(PreparedManifest.PreparedImageResource, counts.images);
     @memset(atlases, .{});
     @memset(layer_infos, .{});
     @memset(images, .{});
 
     return .{
-        .allocator = allocator,
-        .atlases = atlases,
-        .layer_infos = layer_infos,
-        .images = images,
+        .manifest = .{
+            .allocator = allocator,
+            .atlases = atlases,
+            .layer_infos = layer_infos,
+            .images = images,
+        },
     };
 }
 
@@ -321,7 +324,7 @@ fn prepareTextAtlasEntry(
     stamp: ResourceStamp,
 ) !void {
     const atlas = uploadTextAtlas(scratch, index, text.atlas);
-    prepared.atlases[index] = .{
+    prepared.manifest.atlases[index] = .{
         .key = text.key,
         .kind = .text,
         .page_fingerprints = try atlasPageFingerprints(allocator, atlas),
@@ -338,7 +341,7 @@ fn prepareTextPaintEntry(
     text: ResourceManifest.TextPaintEntry,
     stamp: ResourceStamp,
 ) void {
-    prepared.layer_infos[index] = .{
+    prepared.manifest.layer_infos[index] = .{
         .key = text.key,
         .stamp = stamp,
     };
@@ -353,7 +356,7 @@ fn preparePathPictureEntry(
     path: ResourceManifest.PathPictureEntry,
     stamp: ResourceStamp,
 ) !void {
-    prepared.atlases[index] = .{
+    prepared.manifest.atlases[index] = .{
         .key = path.key,
         .kind = .path,
         .page_fingerprints = try atlasPageFingerprints(allocator, &path.picture.atlas),
@@ -370,7 +373,7 @@ fn prepareImageEntry(
     image: ResourceManifest.ImageEntry,
     stamp: ResourceStamp,
 ) void {
-    prepared.images[index] = .{
+    prepared.manifest.images[index] = .{
         .key = image.key,
         .stamp = stamp,
     };
@@ -410,7 +413,7 @@ fn populatePreparedResourceBatch(
 }
 
 fn attachUploadedViews(allocator: std.mem.Allocator, prepared: *PreparedResources, scratch: *ResourceUploadScratch) !void {
-    for (prepared.atlases, 0..) |*entry, i| {
+    for (prepared.manifest.atlases, 0..) |*entry, i| {
         entry.view = scratch.atlas_views[i];
         if (scratch.atlas_views[i].page_layers.len > 0) {
             const page_layers = try allocator.dupe(u32, scratch.atlas_views[i].page_layers);
@@ -418,7 +421,7 @@ fn attachUploadedViews(allocator: std.mem.Allocator, prepared: *PreparedResource
             entry.owns_page_layers = true;
         }
     }
-    for (prepared.layer_infos, 0..) |*entry, i| entry.view = scratch.layer_info_views[i];
+    for (prepared.manifest.layer_infos, 0..) |*entry, i| entry.view = scratch.layer_info_views[i];
 }
 
 pub fn uploadPreparedResources(renderer: anytype, set: *const ResourceManifest, allocators: UploadAllocators) !PreparedResources {

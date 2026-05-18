@@ -117,7 +117,9 @@ application around it.
 | `PathPicture` | Frozen path atlas/layer records allocated by its allocator. | Nothing after freeze. | Immutable snapshot. Can be declared in a manifest by pointer. |
 | `Image` | Pixel storage according to the image constructor. | Nothing unless explicitly documented by the constructor. | Immutable render resource while it is declared in a manifest. |
 | `ResourceManifest` | Only its caller-provided entry buffer. | `TextAtlas`, painted `TextBlob`, `PathPicture`, and `Image` values. | A declaration list. Upload planning may inspect it, but insertion should not imply backend effects. |
-| `PreparedResources` | Persistent prepared-resource allocations and CPU backend snapshots. | Renderer-owned GPU caches where applicable. | Backend realization for one renderer/context. Retire it only after no in-flight draw can reference it. |
+| `PreparedManifest` | Resource keys, stamps, and prepared views. | Nothing outside its own arrays. | Logical prepared resource binding; backend-agnostic. |
+| `ResidentResources` | CPU backend snapshots and backend residency handles. | Renderer-owned GPU caches where applicable. | Backend realization for one renderer/context. Retire it only after no in-flight draw can reference it. |
+| `PreparedResources` | A `PreparedManifest` plus `ResidentResources`. | See those two fields. | Draw APIs take this pair so logical validation and backend sampling stay together at the call boundary. |
 | `Scene` | Command storage. | Submitted `TextBlob`/`PathPicture` values and override slices. | A borrowed command list; it does not make resources resident or keep them alive. |
 | `PreparedScene` | Draw-record words and segments. | `PreparedResources` compatibility through recorded stamps. | Rebuild it when the source scene or prepared resources change. |
 
@@ -534,7 +536,9 @@ borrowed `Scene` + `PathDraw` / `TextDraw` primitive used by Zig.
 | `ResourceKey` | Explicit resource identity. `fromId`, `named`/`fromName`, and derived keys use distinct namespaces. |
 | `ResourceManifest` | Fixed-capacity borrowed manifest of CPU values. |
 | `ResourceFootprint` | Used and allocated upload bytes split by curve, band, layer-info, and image storage. |
-| `PreparedResources` | Backend realization for one renderer/context. |
+| `PreparedManifest` | Logical prepared keys, stamps, and views. |
+| `ResidentResources` | Backend-specific residency state for one renderer/context. |
+| `PreparedResources` | Pair of `PreparedManifest` and `ResidentResources` used by draw APIs. |
 | `DrawList` | Caller-buffered draw records. |
 | `PreparedScene` | Optional owned draw-record cache for static scenes. |
 | `DrawState` | Per-draw transform, target surface metadata, and rasterization policy. |

@@ -27,6 +27,7 @@ const ResourceStamp = snail.ResourceStamp;
 const ResourceManifest = snail.ResourceManifest;
 const ResourceCacheStats = snail.ResourceCacheStats;
 const ResourceUploadBatch = upload_mod.ResourceUploadBatch;
+const PreparedManifest = snail.PreparedManifest;
 const PreparedResources = snail.PreparedResources;
 const PreparedResourceRetirementQueue = snail.PreparedResourceRetirementQueue;
 const PendingResourceUpload = snail.PendingResourceUpload;
@@ -170,7 +171,7 @@ test "cpu prepared resources own uploaded buffers" {
     var prepared = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set);
     defer prepared.deinit();
 
-    const cpu_prepared = &prepared.backend.cpu.?;
+    const cpu_prepared = &prepared.resident.cpu.?;
     const source_page = picture.atlas.page(0);
     const prepared_page = cpu_prepared.atlas_pages[0].?;
     try std.testing.expect(prepared_page.band_data.ptr != source_page.band_data.ptr);
@@ -204,7 +205,7 @@ test "draw with missing prepared resources fails" {
     var renderer = cpu.asRenderer();
     defer renderer.deinit();
 
-    var prepared = PreparedResources{ .allocator = allocator };
+    var prepared = PreparedResources{ .manifest = .{ .allocator = allocator } };
     var words: [TEXT_WORDS_PER_GLYPH]u32 = undefined;
     const segments = [_]DrawSegment{.{
         .kind = .text,
@@ -325,13 +326,15 @@ test "draw dispatch uses only prepared stamps and caller records" {
 
     const key = ResourceKey.named("shape");
     const stamp = ResourceStamp{ .identity = 1, .layout = 2, .content = 3 };
-    var image_resources = [_]PreparedResources.PreparedImageResource{.{
+    var image_resources = [_]PreparedManifest.PreparedImageResource{.{
         .key = key,
         .stamp = stamp,
     }};
     var prepared = PreparedResources{
-        .allocator = std.testing.allocator,
-        .images = image_resources[0..],
+        .manifest = .{
+            .allocator = std.testing.allocator,
+            .images = image_resources[0..],
+        },
     };
 
     const options = DrawState{
@@ -535,8 +538,8 @@ test "ResourceManifest uploads explicit text paint resources" {
 
     var prepared = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set);
     defer prepared.deinit();
-    try std.testing.expectEqual(@as(usize, 1), prepared.atlases.len);
-    try std.testing.expectEqual(@as(usize, 1), prepared.layer_infos.len);
+    try std.testing.expectEqual(@as(usize, 1), prepared.manifest.atlases.len);
+    try std.testing.expectEqual(@as(usize, 1), prepared.manifest.layer_infos.len);
 
     const words = try allocator.alloc(u32, DrawList.estimate(&scene));
     defer allocator.free(words);
@@ -736,7 +739,7 @@ test "replacing path-picture key does not invalidate unrelated text coverage rec
     try set_a.putPathPicture(ResourceKey.named("hud_panel"), &picture_a);
     var prepared_a = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set_a);
     defer prepared_a.deinit();
-    prepared_a.atlases[0].view.layer_base = texture_layers.WINDOW_SIZE;
+    prepared_a.manifest.atlases[0].view.layer_base = texture_layers.WINDOW_SIZE;
 
     const coverage_words = try allocator.alloc(u32, TextCoverageRecords.wordCapacityForBlob(&blob));
     defer allocator.free(coverage_words);
@@ -751,7 +754,7 @@ test "replacing path-picture key does not invalidate unrelated text coverage rec
     try set_b.putPathPicture(ResourceKey.named("hud_panel"), &picture_b);
     var prepared_b = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set_b);
     defer prepared_b.deinit();
-    prepared_b.atlases[0].view.layer_base = texture_layers.WINDOW_SIZE;
+    prepared_b.manifest.atlases[0].view.layer_base = texture_layers.WINDOW_SIZE;
 
     try std.testing.expect(records.validFor(&prepared_b));
 }
@@ -945,13 +948,15 @@ test "resource upload plan accounts for image array rebuilds" {
 
     const key_small = ResourceKey.named("small");
     const key_grow = ResourceKey.named("grow");
-    var current_images = [_]PreparedResources.PreparedImageResource{
+    var current_images = [_]PreparedManifest.PreparedImageResource{
         .{ .key = key_small, .stamp = stamp_mod.imageStamp(key_small, &image_small) },
         .{ .key = key_grow, .stamp = stamp_mod.imageStamp(key_grow, &image_old) },
     };
     const current = PreparedResources{
-        .allocator = allocator,
-        .images = &current_images,
+        .manifest = .{
+            .allocator = allocator,
+            .images = &current_images,
+        },
     };
 
     var entries: [2]ResourceManifest.Entry = undefined;

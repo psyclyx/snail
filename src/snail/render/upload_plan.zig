@@ -11,6 +11,7 @@ const upload_mod = @import("../upload.zig");
 
 const AtlasPage = atlas_page_mod.AtlasPage;
 const Image = image_mod.Image;
+const PreparedManifest = prepared_mod.PreparedManifest;
 const PreparedResources = prepared_mod.PreparedResources;
 const ResourceKey = resource_key_mod.ResourceKey;
 const ResourceStamp = resource_key_mod.ResourceStamp;
@@ -18,9 +19,9 @@ const ResourceManifest = manifest_mod.ResourceManifest;
 const ResourceCacheStats = upload_mod.ResourceCacheStats;
 const ResourceUploadPlan = upload_mod.ResourceUploadPlan;
 
-const PreparedAtlasResource = PreparedResources.PreparedAtlasResource;
-const PreparedImageResource = PreparedResources.PreparedImageResource;
-const PreparedLayerInfoResource = PreparedResources.PreparedLayerInfoResource;
+const PreparedAtlasResource = PreparedManifest.PreparedAtlasResource;
+const PreparedImageResource = PreparedManifest.PreparedImageResource;
+const PreparedLayerInfoResource = PreparedManifest.PreparedLayerInfoResource;
 
 const resourceEntryKey = stamp_mod.resourceEntryKey;
 const resourceEntryStamp = stamp_mod.resourceEntryStamp;
@@ -118,24 +119,24 @@ fn countResourceEntries(entries: []const ResourceManifest.Entry) ResourceManifes
 }
 
 fn preparedAtlasForKey(prepared: *const PreparedResources, key: ResourceKey) ?*const PreparedAtlasResource {
-    for (prepared.atlases) |*entry| if (entry.key.eql(key)) return entry;
+    for (prepared.manifest.atlases) |*entry| if (entry.key.eql(key)) return entry;
     return null;
 }
 
 fn preparedAtlasForKeyWithIndex(prepared: *const PreparedResources, key: ResourceKey) ?PreparedAtlasLookup {
-    for (prepared.atlases, 0..) |*entry, i| {
+    for (prepared.manifest.atlases, 0..) |*entry, i| {
         if (entry.key.eql(key)) return .{ .index = i };
     }
     return null;
 }
 
 fn preparedLayerInfoForKey(prepared: *const PreparedResources, key: ResourceKey) ?*const PreparedLayerInfoResource {
-    for (prepared.layer_infos) |*entry| if (entry.key.eql(key)) return entry;
+    for (prepared.manifest.layer_infos) |*entry| if (entry.key.eql(key)) return entry;
     return null;
 }
 
 fn preparedImageForKey(prepared: *const PreparedResources, key: ResourceKey) ?*const PreparedImageResource {
-    for (prepared.images) |*entry| if (entry.key.eql(key)) return entry;
+    for (prepared.manifest.images) |*entry| if (entry.key.eql(key)) return entry;
     return null;
 }
 
@@ -212,7 +213,7 @@ fn currentAtlasCacheStatus(renderer: anytype, current: ?*const PreparedResources
 
 fn resourceManifestCanUseAtlasOverflowBanks(renderer: anytype, current: ?*const PreparedResources, entries: []const ResourceManifest.Entry, counts: ResourceManifestCounts) bool {
     const prepared = current orelse return false;
-    if (counts.layer_infos != 0 or counts.atlases != prepared.atlases.len) return false;
+    if (counts.layer_infos != 0 or counts.atlases != prepared.manifest.atlases.len) return false;
     if (!renderer.canUseAtlasOverflowBanks(prepared, counts.atlases)) return false;
 
     var atlas_index: usize = 0;
@@ -368,7 +369,7 @@ fn recordAtlasRebuildNeeds(
 ) void {
     if (counts.layer_infos > 0 and current != null and uses_resource_cache) plan.cache.atlas_rebuilds = 1;
     if (current) |prepared| {
-        if (counts.atlases != prepared.atlases.len and uses_resource_cache) plan.cache.atlas_rebuilds = 1;
+        if (counts.atlases != prepared.manifest.atlases.len and uses_resource_cache) plan.cache.atlas_rebuilds = 1;
     }
     if (plan.cache.new_atlas_banks > 0 and
         stats.active_atlas_layers_allocated > 0 and

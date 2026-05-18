@@ -105,7 +105,7 @@ fn resourceCacheVTable(comptime Config: type) interface.Renderer.ResourceCacheVT
         fn validateBackendGenerationFn(prepared_resources: *const PreparedResources) anyerror!void {
             if (comptime !Config.uses_resource_cache) return;
             const cache = Config.prepared(prepared_resources) orelse return error.MissingPreparedResource;
-            if (cache.generation != prepared_resources.backend.generation) return error.StalePreparedResources;
+            if (cache.generation != prepared_resources.resident.generation) return error.StalePreparedResources;
         }
 
         fn atlasCacheStatusFn(prepared_resources: *const PreparedResources, index: usize, atlas: upload_plan.AtlasRef) upload_plan.AtlasCacheStatus {
