@@ -150,7 +150,7 @@ fn renderDiagram(
             .encoding = .srgb,
         },
     };
-    var prepared_scene = try snail.PreparedScene.initOwned(allocator, &prepared, &scene, draw_options);
+    var prepared_scene = try snail.PreparedScene.initOwned(allocator, &prepared, &scene);
     defer prepared_scene.deinit();
     try renderer.drawPrepared(&prepared, &prepared_scene, draw_options);
 

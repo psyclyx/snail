@@ -61,7 +61,7 @@ const Config = if (build_options.enable_opengl) struct {
 
     pub fn draw(renderer: *ErasedRenderer, prepared_resources: *const PreparedResources, records: DrawRecords, options: DrawOptions) anyerror!void {
         const backend_prepared = prepared(prepared_resources) orelse return error.MissingPreparedResource;
-        try renderer.validateRecords(prepared_resources, records, options);
+        try renderer.validateRecords(prepared_resources, records);
         switch (options.target.resolve) {
             .direct => {},
             .linear => |linear| {

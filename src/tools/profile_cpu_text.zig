@@ -141,7 +141,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         },
     };
 
-    var prepared = try snail.PreparedScene.initOwned(arena, &resources, &scene, options);
+    var prepared = try snail.PreparedScene.initOwned(arena, &resources, &scene);
     defer prepared.deinit();
 
     // Warmup

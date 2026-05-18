@@ -294,7 +294,7 @@ const options = snail.DrawOptions{
     },
 };
 
-var prepared_scene = try snail.PreparedScene.initOwned(allocator, &prepared, &scene, options);
+var prepared_scene = try snail.PreparedScene.initOwned(allocator, &prepared, &scene);
 defer prepared_scene.deinit();
 try gl.drawPrepared(&prepared, &prepared_scene, options);
 ```
@@ -605,9 +605,9 @@ try scene.addPath(.{ .picture = &sprite, .instances = entity_overrides });
 | `renderer.planResourceUpload(alloc, current, next_set) !ResourceUploadPlan` | Snapshot and diff a new resource set against existing prepared resources. |
 | `renderer.beginResourceUpload(.{ .persistent, .scratch }, &plan) !PendingResourceUpload` | Start a scheduled upload; record into a caller command buffer for Vulkan, then call `pending.publish()`. |
 | `DrawList.init(words, segments)` | Wrap a caller-buffered word + segment buffer for `addScene`. |
-| `DrawList.estimate(scene, options)` | Upper bound for the word buffer required by `draw.addScene(prepared, scene, options)`. |
-| `DrawList.estimateSegments(scene, options)` | Upper bound for the segment buffer required by `draw.addScene(prepared, scene, options)`. |
-| `PreparedScene.initOwned(alloc, prepared, scene, options) !PreparedScene` | Build an owned draw-record cache for a static scene. |
+| `DrawList.estimate(scene)` | Upper bound for the word buffer required by `draw.addScene(prepared, scene)`. |
+| `DrawList.estimateSegments(scene)` | Upper bound for the segment buffer required by `draw.addScene(prepared, scene)`. |
+| `PreparedScene.initOwned(alloc, prepared, scene) !PreparedScene` | Build an owned draw-record cache for a static scene. |
 | `renderer.draw(prepared, records, options)` | Execute prebuilt draw records. No resource discovery or upload. |
 | `renderer.drawPrepared(prepared, prepared_scene, options)` | Draw a `PreparedScene` cache. |
 | `prepared.retireNow()` | Retire backend resources immediately once no in-flight frame references them. |

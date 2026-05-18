@@ -599,14 +599,14 @@ fn timeRecordBuild(
 ) !f64 {
     const allocator = std.heap.smp_allocator;
     for (0..RECORD_WARMUP) |_| {
-        var prepared_scene = try snail.PreparedScene.initOwned(allocator, prepared, scene, options);
+        var prepared_scene = try snail.PreparedScene.initOwned(allocator, prepared, scene);
         std.mem.doNotOptimizeAway(prepared_scene.words.len);
         prepared_scene.deinit();
     }
 
     const start = nowNs();
     for (0..RECORD_ITERS) |_| {
-        var prepared_scene = try snail.PreparedScene.initOwned(allocator, prepared, scene, options);
+        var prepared_scene = try snail.PreparedScene.initOwned(allocator, prepared, scene);
         std.mem.doNotOptimizeAway(prepared_scene.words.len);
         prepared_scene.deinit();
     }
@@ -629,7 +629,7 @@ fn benchModes(
             const opts = drawOptions(WIDTH, HEIGHT, mode.aa);
             var resources = try uploadSceneResources(allocator, timer.renderer(), &bundle.scene);
             defer resources.deinit();
-            var prepared_scene = try snail.PreparedScene.initOwned(allocator, &resources, &bundle.scene, opts);
+            var prepared_scene = try snail.PreparedScene.initOwned(allocator, &resources, &bundle.scene);
             defer prepared_scene.deinit();
 
             const record_us = try timeRecordBuild(&resources, &bundle.scene, opts);
@@ -730,7 +730,7 @@ pub fn main() !void {
     for (scene_kinds, 0..) |kind, i| {
         cpu_resources[i] = try uploadSceneResources(allocator, &cpu_renderer, &bundles[i].scene);
         cpu_resource_count += 1;
-        prepared_scenes[i] = try snail.PreparedScene.initOwned(allocator, &cpu_resources[i], &bundles[i].scene, options);
+        prepared_scenes[i] = try snail.PreparedScene.initOwned(allocator, &cpu_resources[i], &bundles[i].scene);
         prepared_count += 1;
         record_rows[i] = .{
             .scene = kind,
@@ -781,7 +781,7 @@ pub fn main() !void {
     for (scene_kinds, 0..) |kind, i| {
         var gl_resources = try uploadSceneResources(allocator, &gl_renderer, &bundles[i].scene);
         defer gl_resources.deinit();
-        var gl_scene = try snail.PreparedScene.initOwned(allocator, &gl_resources, &bundles[i].scene, options);
+        var gl_scene = try snail.PreparedScene.initOwned(allocator, &gl_resources, &bundles[i].scene);
         defer gl_scene.deinit();
         try render_rows.append(allocator, .{
             .backend = gl_renderer_state.backendName(),
@@ -806,7 +806,7 @@ pub fn main() !void {
         for (scene_kinds, 0..) |kind, i| {
             var vk_resources = try uploadSceneResources(allocator, &vk_renderer, &bundles[i].scene);
             defer vk_resources.deinit();
-            var vk_scene = try snail.PreparedScene.initOwned(allocator, &vk_resources, &bundles[i].scene, options);
+            var vk_scene = try snail.PreparedScene.initOwned(allocator, &vk_resources, &bundles[i].scene);
             defer vk_scene.deinit();
             try render_rows.append(allocator, .{
                 .backend = vk_state.?.backendName(),

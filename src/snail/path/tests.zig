@@ -224,9 +224,8 @@ test "path picture ranges emit selected shapes" {
     var scene = Scene.init(std.testing.allocator);
     defer scene.deinit();
     try scene.addPath(.{ .picture = &compiled_picture, .shapes = second_range });
-    const options = DrawOptions{ .mvp = Mat4.identity, .target = .{ .pixel_width = 100, .pixel_height = 100, .encoding = .srgb } };
-    try std.testing.expectEqual(@as(usize, PATH_WORDS_PER_SHAPE), DrawList.estimate(&scene, options));
-    try std.testing.expectEqual(@as(usize, 1), DrawList.estimateSegments(&scene, options));
+    try std.testing.expectEqual(@as(usize, PATH_WORDS_PER_SHAPE), DrawList.estimate(&scene));
+    try std.testing.expectEqual(@as(usize, 1), DrawList.estimateSegments(&scene));
 }
 
 test "path picture freeze separates persistent and scratch allocators" {

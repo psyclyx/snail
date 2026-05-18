@@ -42,7 +42,6 @@ const SubpixelOrder = snail.SubpixelOrder;
 const FillRule = snail.FillRule;
 const TargetEncoding = snail.TargetEncoding;
 const Resolve = snail.Resolve;
-const TargetStamp = snail.TargetStamp;
 const TextCoverageRecords = snail.coverage.TextCoverageRecords;
 const TEXT_WORDS_PER_GLYPH = snail.TEXT_WORDS_PER_GLYPH;
 const pointerResourceKey = resource_key.pointerResourceKey;
@@ -208,7 +207,6 @@ test "draw with missing prepared resources fails" {
         .len = TEXT_WORDS_PER_GLYPH,
         .key = ResourceKey.named("missing"),
         .resource_stamp = .{},
-        .target_stamp = .{},
     }};
     const records = DrawRecords{ .words = &words, .segments = &segments };
     try std.testing.expectError(error.MissingPreparedResource, renderer.draw(&prepared, records, .{
@@ -237,7 +235,7 @@ test "draw dispatch uses only prepared stamps and caller records" {
         }
         fn deinit(_: *anyopaque) void {}
         fn draw(renderer: *Renderer, prepared: *const PreparedResources, records: DrawRecords, options: DrawOptions) anyerror!void {
-            try renderer.validateRecords(prepared, records, options);
+            try renderer.validateRecords(prepared, records);
             try renderer.iterateRecords(records, options, null);
         }
         fn drawText(ptr: *anyopaque, backend_prepared: ?*const anyopaque, vertices: []const u32, _: Mat4, viewport_w: f32, viewport_h: f32, _: u32) anyerror!void {
@@ -379,7 +377,6 @@ test "draw dispatch uses only prepared stamps and caller records" {
         .len = words.len,
         .key = key,
         .resource_stamp = stamp,
-        .target_stamp = TargetStamp.from(options.mvp, options.target),
     }};
     const records = DrawRecords{ .words = &words, .segments = &segments };
 
@@ -564,16 +561,12 @@ test "ResourceSet discovers and draws text paint resources" {
     try std.testing.expectEqual(@as(usize, 1), prepared.atlases.len);
     try std.testing.expectEqual(@as(usize, 1), prepared.layer_infos.len);
 
-    const options = DrawOptions{
-        .mvp = Mat4.identity,
-        .target = .{ .pixel_width = width, .pixel_height = height, .encoding = .srgb },
-    };
-    const words = try allocator.alloc(u32, DrawList.estimate(&scene, options));
+    const words = try allocator.alloc(u32, DrawList.estimate(&scene));
     defer allocator.free(words);
-    const segments = try allocator.alloc(DrawSegment, DrawList.estimateSegments(&scene, options));
+    const segments = try allocator.alloc(DrawSegment, DrawList.estimateSegments(&scene));
     defer allocator.free(segments);
     var draw = DrawList.init(words, segments);
-    try draw.addScene(&prepared, &scene, options);
+    try draw.addScene(&prepared, &scene);
 
     try std.testing.expectEqual(@as(usize, 1), draw.slice().segments.len);
     try std.testing.expect(draw.slice().segments[0].key.eql(pointerResourceKey("scene.text_paint", &blob)));
@@ -710,12 +703,8 @@ test "DrawList estimate upper-bounds ranged text draw output" {
     var prepared = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set);
     defer prepared.deinit();
 
-    const options = DrawOptions{
-        .mvp = Mat4.identity,
-        .target = .{ .pixel_width = width, .pixel_height = height, .encoding = .srgb },
-    };
-    const needed = DrawList.estimate(&scene, options);
-    const needed_segments = DrawList.estimateSegments(&scene, options);
+    const needed = DrawList.estimate(&scene);
+    const needed_segments = DrawList.estimateSegments(&scene);
     try std.testing.expectEqual(@as(usize, 2 * TEXT_WORDS_PER_GLYPH), needed);
     try std.testing.expectEqual(@as(usize, 1), needed_segments);
 
@@ -724,7 +713,7 @@ test "DrawList estimate upper-bounds ranged text draw output" {
     const draw_segments = try allocator.alloc(DrawSegment, needed_segments);
     defer allocator.free(draw_segments);
     var draw = DrawList.init(draw_buf, draw_segments);
-    try draw.addScene(&prepared, &scene, options);
+    try draw.addScene(&prepared, &scene);
     try std.testing.expectEqual(needed, draw.slice().words.len);
     try std.testing.expectEqual(@as(usize, 1), draw.slice().segments.len);
 }
@@ -824,14 +813,14 @@ test "draw rejects stale records when a resource key is replaced" {
         .mvp = Mat4.identity,
         .target = .{ .pixel_width = width, .pixel_height = height, .encoding = .srgb },
     };
-    const needed = DrawList.estimate(&scene, draw_options);
-    const needed_segments = DrawList.estimateSegments(&scene, draw_options);
+    const needed = DrawList.estimate(&scene);
+    const needed_segments = DrawList.estimateSegments(&scene);
     const draw_buf = try allocator.alloc(u32, needed);
     defer allocator.free(draw_buf);
     const draw_segments = try allocator.alloc(DrawSegment, needed_segments);
     defer allocator.free(draw_segments);
     var draw = DrawList.init(draw_buf, draw_segments);
-    try draw.addScene(&prepared_a, &scene, draw_options);
+    try draw.addScene(&prepared_a, &scene);
 
     var set_b_entries: [2]ResourceSet.Entry = undefined;
     var set_b = ResourceSet.init(&set_b_entries);
@@ -1140,14 +1129,14 @@ test "CPU draw uses prepared resource views" {
         .mvp = Mat4.identity,
         .target = .{ .pixel_width = width, .pixel_height = height, .encoding = .srgb },
     };
-    const needed = DrawList.estimate(&scene, draw_options);
-    const needed_segments = DrawList.estimateSegments(&scene, draw_options);
+    const needed = DrawList.estimate(&scene);
+    const needed_segments = DrawList.estimateSegments(&scene);
     const draw_buf = try allocator.alloc(u32, needed);
     defer allocator.free(draw_buf);
     const draw_segments = try allocator.alloc(DrawSegment, needed_segments);
     defer allocator.free(draw_segments);
     var draw = DrawList.init(draw_buf, draw_segments);
-    try draw.addScene(&prepared, &scene, draw_options);
+    try draw.addScene(&prepared, &scene);
     try renderer.draw(&prepared, draw.slice(), draw_options);
 
     var changed = false;

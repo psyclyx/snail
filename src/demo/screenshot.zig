@@ -161,7 +161,7 @@ fn renderCompactBanner(allocator: std.mem.Allocator) !void {
             .encoding = .srgb,
         },
     };
-    var prepared_scene = try snail.PreparedScene.initOwned(allocator, &prepared, &scene, draw_options);
+    var prepared_scene = try snail.PreparedScene.initOwned(allocator, &prepared, &scene);
     defer prepared_scene.deinit();
     try renderer.drawPrepared(&prepared, &prepared_scene, draw_options);
 
@@ -241,14 +241,14 @@ fn renderRepro(allocator: std.mem.Allocator) !void {
         },
     };
 
-    const needed = snail.DrawList.estimate(&scene, draw_options);
-    const needed_segments = snail.DrawList.estimateSegments(&scene, draw_options);
+    const needed = snail.DrawList.estimate(&scene);
+    const needed_segments = snail.DrawList.estimateSegments(&scene);
     const draw_buf = try allocator.alloc(u32, needed);
     defer allocator.free(draw_buf);
     const draw_segments_buf = try allocator.alloc(snail.DrawSegment, needed_segments);
     defer allocator.free(draw_segments_buf);
     var draw = snail.DrawList.init(draw_buf, draw_segments_buf);
-    try draw.addScene(&prepared, &scene, draw_options);
+    try draw.addScene(&prepared, &scene);
     try renderer.draw(&prepared, draw.slice(), draw_options);
 
     if (screenshot.captureFramebuffer(allocator, framebuffer_width, framebuffer_height) catch null) |px| {

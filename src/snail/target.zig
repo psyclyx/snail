@@ -253,50 +253,6 @@ pub fn effectiveSubpixelOrderRef(target: *const ResolveTarget) SubpixelOrder {
     return target.subpixel_order;
 }
 
-pub const TargetStamp = struct {
-    pixel_size: [2]u32 = .{ 0, 0 },
-    subpixel_order: SubpixelOrder = .none,
-    encoding: TargetEncoding = .linear,
-    resolve: Resolve = .{ .direct = .{} },
-    mvp_class: MvpClass = .projective,
-
-    pub const MvpClass = enum(u8) {
-        identity,
-        axis_aligned_2d,
-        affine_2d,
-        projective,
-    };
-
-    pub fn from(mvp: Mat4, target_value: ResolveTarget) TargetStamp {
-        return fromRef(&mvp, &target_value);
-    }
-
-    pub fn fromRef(mvp: *const Mat4, target_value: *const ResolveTarget) TargetStamp {
-        return .{
-            .pixel_size = .{
-                @intFromFloat(@max(target_value.pixel_width, 0.0)),
-                @intFromFloat(@max(target_value.pixel_height, 0.0)),
-            },
-            .subpixel_order = effectiveSubpixelOrderRef(target_value),
-            .encoding = target_value.encoding,
-            .resolve = target_value.resolve,
-            .mvp_class = classifyMvpRef(mvp),
-        };
-    }
-
-    fn classifyMvp(mvp: Mat4) MvpClass {
-        return classifyMvpRef(&mvp);
-    }
-
-    fn classifyMvpRef(mvp: *const Mat4) MvpClass {
-        if (std.meta.eql(mvp.*, Mat4.identity)) return .identity;
-        if (@abs(mvp.data[3]) > 1e-5 or @abs(mvp.data[7]) > 1e-5 or @abs(mvp.data[11]) > 1e-5) return .projective;
-        if (@abs(mvp.data[15] - 1.0) > 1e-5) return .projective;
-        if (@abs(mvp.data[1]) <= 1e-5 and @abs(mvp.data[4]) <= 1e-5) return .axis_aligned_2d;
-        return .affine_2d;
-    }
-};
-
 pub const Rect = struct {
     x: f32,
     y: f32,

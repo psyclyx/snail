@@ -369,7 +369,7 @@ fn renderCpuSeeded(
     var renderer = cpu.asRenderer();
     var prepared = try uploadSceneResources(allocator, &renderer, scene);
     defer prepared.deinit();
-    var prepared_scene = try snail.PreparedScene.initOwned(allocator, &prepared, scene, options);
+    var prepared_scene = try snail.PreparedScene.initOwned(allocator, &prepared, scene);
     defer prepared_scene.deinit();
     try renderer.drawPrepared(&prepared, &prepared_scene, options);
     return pixels;
@@ -438,7 +438,7 @@ fn renderGlSeeded(
 
     var prepared = try uploadSceneResources(allocator, renderer, scene);
     defer prepared.deinit();
-    var prepared_scene = try snail.PreparedScene.initOwned(allocator, &prepared, scene, options);
+    var prepared_scene = try snail.PreparedScene.initOwned(allocator, &prepared, scene);
     defer prepared_scene.deinit();
     try renderer.drawPrepared(&prepared, &prepared_scene, options);
     gl.glFinish();
@@ -479,7 +479,7 @@ fn renderVulkan(
 
     var prepared = try uploadSceneResources(allocator, renderer, scene);
     defer prepared.deinit();
-    var prepared_scene = try snail.PreparedScene.initOwned(allocator, &prepared, scene, options);
+    var prepared_scene = try snail.PreparedScene.initOwned(allocator, &prepared, scene);
     defer prepared_scene.deinit();
 
     const cmd = vulkan_platform.beginFrameOffscreenWithClear(.{ 0.0, 0.0, 0.0, 1.0 });
@@ -956,7 +956,7 @@ fn buildAppendedPagePreparedScene(
     errdefer scene.deinit();
     try scene.addText(.{ .blob = blob });
 
-    const prepared_scene = try snail.PreparedScene.initOwned(allocator, prepared, &scene, options);
+    const prepared_scene = try snail.PreparedScene.initOwned(allocator, prepared, &scene);
     return .{ .blob = blob, .scene = scene, .prepared_scene = prepared_scene };
 }
 
@@ -975,7 +975,7 @@ fn runGlAppendSnapshotRegression(
     var prepared = try uploadTextAtlasResourceWithCapacity(allocator, renderer, APPEND_RESOURCE_KEY, bundle.atlas, .exact);
     defer prepared.deinit();
     const options = drawOptions(.none);
-    var prepared_scene = try snail.PreparedScene.initOwned(allocator, &prepared, &bundle.scene, options);
+    var prepared_scene = try snail.PreparedScene.initOwned(allocator, &prepared, &bundle.scene);
     defer prepared_scene.deinit();
 
     const before = try drawPreparedGlToPixels(allocator, renderer, fbo, &prepared, &prepared_scene, options, .{ 0, 0, 0, 255 });
@@ -1022,7 +1022,7 @@ fn runVulkanAppendSnapshotRegression(
     var prepared = try uploadTextAtlasResourceWithCapacity(allocator, renderer, APPEND_RESOURCE_KEY, bundle.atlas, .exact);
     defer prepared.deinit();
     const options = drawOptions(.none);
-    var prepared_scene = try snail.PreparedScene.initOwned(allocator, &prepared, &bundle.scene, options);
+    var prepared_scene = try snail.PreparedScene.initOwned(allocator, &prepared, &bundle.scene);
     defer prepared_scene.deinit();
 
     const before = try drawPreparedVulkanToPixels(allocator, vk_renderer, renderer, &prepared, &prepared_scene, options);

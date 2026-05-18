@@ -370,8 +370,8 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
                 .resolve = resolve,
             },
         };
-        const needed = snail.DrawList.estimate(&scene, draw_options);
-        const needed_segments = snail.DrawList.estimateSegments(&scene, draw_options);
+        const needed = snail.DrawList.estimate(&scene);
+        const needed_segments = snail.DrawList.estimateSegments(&scene);
         if (draw_buf.len < needed) {
             if (draw_buf.len > 0) allocator.free(draw_buf);
             draw_buf = try allocator.alloc(u32, needed);
@@ -381,7 +381,7 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
             draw_segments_buf = try allocator.alloc(snail.DrawSegment, needed_segments);
         }
         var draw = snail.DrawList.init(draw_buf[0..needed], draw_segments_buf[0..needed_segments]);
-        try draw.addScene(&prepared.?, &scene, draw_options);
+        try draw.addScene(&prepared.?, &scene);
         var renderer = active.renderer();
         try renderer.draw(&prepared.?, draw.slice(), draw_options);
 

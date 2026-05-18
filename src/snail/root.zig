@@ -106,7 +106,6 @@ pub const snapLengthToStep = target.snapLengthToStep;
 pub const snapPointToStep = target.snapPointToStep;
 pub const snapRectToStep = target.snapRectToStep;
 pub const ResolveTarget = target.ResolveTarget;
-pub const TargetStamp = target.TargetStamp;
 
 pub const BackendKind = backend_kind.BackendKind;
 pub const VulkanContext = render.VulkanContext;

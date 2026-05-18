@@ -141,9 +141,9 @@ pub export fn snail_prepared_scene_init(
     options: SnailDrawOptions,
     out: *?*PreparedSceneImpl,
 ) c_int {
+    _ = options;
     const allocator = resolveAllocator(alloc_ptr);
-    const zig_options = toDrawOptions(options) catch return SNAIL_ERR_INVALID_ARGUMENT;
-    const prepared_scene = snail.PreparedScene.initOwned(allocator, &prepared.inner, &scene.inner, zig_options) catch |err| return mapError(err);
+    const prepared_scene = snail.PreparedScene.initOwned(allocator, &prepared.inner, &scene.inner) catch |err| return mapError(err);
     const impl = handleAllocator().create(PreparedSceneImpl) catch {
         var doomed = prepared_scene;
         doomed.deinit();
@@ -195,11 +195,13 @@ pub export fn snail_prepared_resource_retirement_queue_retire(queue: *PreparedRe
 }
 
 pub export fn snail_draw_list_estimate_word_count(scene: *const SceneImpl, options: SnailDrawOptions) usize {
-    return snail.DrawList.estimate(&scene.inner, toDrawOptions(options) catch return 0);
+    _ = options;
+    return snail.DrawList.estimate(&scene.inner);
 }
 
 pub export fn snail_draw_list_estimate_segment_count(scene: *const SceneImpl, options: SnailDrawOptions) usize {
-    return snail.DrawList.estimateSegments(&scene.inner, toDrawOptions(options) catch return 0);
+    _ = options;
+    return snail.DrawList.estimateSegments(&scene.inner);
 }
 
 pub export fn snail_draw_list_init(alloc_ptr: ?*const SnailAllocator, word_capacity: usize, segment_capacity: usize, out: *?*DrawListImpl) c_int {
@@ -258,7 +260,8 @@ pub export fn snail_draw_list_words(list: *const DrawListImpl) ?[*]const u32 {
 }
 
 pub export fn snail_draw_list_add_scene(list: *DrawListImpl, prepared: *const PreparedResourcesImpl, scene: *const SceneImpl, options: SnailDrawOptions) c_int {
-    list.inner.addScene(&prepared.inner, &scene.inner, toDrawOptions(options) catch return SNAIL_ERR_INVALID_ARGUMENT) catch |err| return mapError(err);
+    _ = options;
+    list.inner.addScene(&prepared.inner, &scene.inner) catch |err| return mapError(err);
     return SNAIL_OK;
 }
 

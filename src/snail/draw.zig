@@ -29,7 +29,6 @@ const PreparedResources = prepared_mod.PreparedResources;
 const ResourceKey = resource_key_mod.ResourceKey;
 const ResourceStamp = resource_key_mod.ResourceStamp;
 const Scene = scene_mod.Scene;
-const TargetStamp = target_mod.TargetStamp;
 const TextBatch = text_mod.TextBatch;
 const TEXT_WORDS_PER_GLYPH = text_mod.TEXT_WORDS_PER_GLYPH;
 
@@ -45,7 +44,6 @@ pub const DrawSegment = struct {
     texture_layer_base: u32 = 0,
     key: ResourceKey,
     resource_stamp: ResourceStamp,
-    target_stamp: TargetStamp,
 };
 
 pub const DrawRecords = struct {
@@ -73,7 +71,6 @@ const SegmentSink = union(enum) {
         if (prev.texture_layer_base != segment.texture_layer_base) return false;
         if (!prev.key.eql(segment.key)) return false;
         if (!prev.resource_stamp.eql(segment.resource_stamp)) return false;
-        if (!std.meta.eql(prev.target_stamp, segment.target_stamp)) return false;
         prev.len += segment.len;
         return true;
     }
@@ -117,8 +114,7 @@ pub const DrawList = struct {
     }
 
     /// Return an upper bound for the word buffer required by `addScene`.
-    pub fn estimate(scene: *const Scene, options: DrawOptions) usize {
-        _ = options;
+    pub fn estimate(scene: *const Scene) usize {
         return estimateWords(scene);
     }
 
@@ -144,8 +140,7 @@ pub const DrawList = struct {
         return total;
     }
 
-    pub fn estimateSegments(scene: *const Scene, options: DrawOptions) usize {
-        _ = options;
+    pub fn estimateSegments(scene: *const Scene) usize {
         return estimateSegmentUpperBound(scene);
     }
 
@@ -172,11 +167,9 @@ pub const DrawList = struct {
         self: *DrawList,
         prepared: *const PreparedResources,
         scene: *const Scene,
-        options: DrawOptions,
     ) !void {
-        const target_stamp = TargetStamp.fromRef(&options.mvp, &options.target);
         var segments = SegmentSink{ .fixed = .{ .buf = self.segments_buf, .len = &self.segment_len } };
-        try addSceneToBuffers(self.buf, &self.len, &segments, prepared, scene, target_stamp);
+        try addSceneToBuffers(self.buf, &self.len, &segments, prepared, scene);
     }
 };
 
@@ -186,7 +179,6 @@ fn addSceneToBuffers(
     segments: *SegmentSink,
     prepared: *const PreparedResources,
     scene: *const Scene,
-    target_stamp: TargetStamp,
 ) !void {
     for (scene.commands.items) |command| {
         switch (command) {
@@ -219,7 +211,6 @@ fn addSceneToBuffers(
                             .texture_layer_base = result.layer_window_base,
                             .key = segment_key,
                             .resource_stamp = segment_stamp,
-                            .target_stamp = target_stamp,
                         });
                         if (result.completed) break;
                     }
@@ -247,7 +238,6 @@ fn addSceneToBuffers(
                             .texture_layer_base = result.layer_window_base,
                             .key = try prepared.pathPictureKey(draw.picture),
                             .resource_stamp = try prepared.pathStamp(draw.picture),
-                            .target_stamp = target_stamp,
                         });
                         if (result.completed) break;
                     }
@@ -266,7 +256,6 @@ pub const PreparedScene = struct {
         allocator: std.mem.Allocator,
         prepared: *const PreparedResources,
         scene: *const Scene,
-        options: DrawOptions,
     ) !PreparedScene {
         const needed = DrawList.estimateWords(scene);
         const words = try allocator.alloc(u32, needed);
@@ -276,7 +265,7 @@ pub const PreparedScene = struct {
         try segment_list.ensureTotalCapacity(allocator, scene.commands.items.len);
         var word_len: usize = 0;
         var segment_sink = SegmentSink{ .dynamic = .{ .allocator = allocator, .segments = &segment_list } };
-        try addSceneToBuffers(words, &word_len, &segment_sink, prepared, scene, TargetStamp.fromRef(&options.mvp, &options.target));
+        try addSceneToBuffers(words, &word_len, &segment_sink, prepared, scene);
         const owned_segments = try segment_list.toOwnedSlice(allocator);
         errdefer allocator.free(owned_segments);
         return .{

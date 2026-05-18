@@ -28,7 +28,6 @@ const ResourceSet = set_mod.ResourceSet;
 const ResourceUploadPlan = upload_mod.ResourceUploadPlan;
 const SubpixelOrder = target_mod.SubpixelOrder;
 const TargetEncoding = target_mod.TargetEncoding;
-const TargetStamp = target_mod.TargetStamp;
 const UploadAllocators = upload_mod.UploadAllocators;
 const effectiveSubpixelOrderRef = target_mod.effectiveSubpixelOrderRef;
 const uploadPreparedResources = upload_mod.uploadPreparedResources;
@@ -151,23 +150,20 @@ pub const Renderer = struct {
         return self.draw(prepared, scene.slice(), options);
     }
 
-    /// Verify every segment's stamps still match the live prepared resources
-    /// and the requested draw target. Returns `error.StaleDrawRecords` if a
-    /// resource has been re-uploaded or the target/MVP has changed since the
-    /// records were built; `error.MissingPreparedResource` if a key is gone.
+    /// Verify every segment's stamps still match the live prepared resources.
+    /// Returns `error.StaleDrawRecords` if a resource has been re-uploaded;
+    /// `error.MissingPreparedResource` if a key is gone.
     /// Vtables call this once per frame before fan-out so per-tile workers
     /// don't have to re-validate (and don't need an error path).
     fn validateBackendGeneration(self: *Renderer, prepared: *const PreparedResources) !void {
         try self.vtable.resource_cache.validateBackendGeneration(prepared);
     }
 
-    pub fn validateRecords(self: *Renderer, prepared: *const PreparedResources, records: DrawRecords, options: DrawOptions) !void {
+    pub fn validateRecords(self: *Renderer, prepared: *const PreparedResources, records: DrawRecords) !void {
         try self.validateBackendGeneration(prepared);
-        const expected_target_stamp = TargetStamp.fromRef(&options.mvp, &options.target);
         for (records.segments) |segment| {
             const actual_stamp = prepared.stampForKey(segment.key) orelse return error.MissingPreparedResource;
             if (!actual_stamp.eql(segment.resource_stamp)) return error.StaleDrawRecords;
-            if (!std.meta.eql(expected_target_stamp, segment.target_stamp)) return error.StaleDrawRecords;
         }
     }
 

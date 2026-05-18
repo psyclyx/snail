@@ -506,14 +506,14 @@ test "cpu renderer renders image-painted path picture" {
         .mvp = snail.Mat4.ortho(0, wf, hf, 0, -1, 1),
         .target = .{ .pixel_width = wf, .pixel_height = hf, .encoding = .srgb },
     };
-    const needed = snail.DrawList.estimate(&scene, options);
-    const needed_segments = snail.DrawList.estimateSegments(&scene, options);
+    const needed = snail.DrawList.estimate(&scene);
+    const needed_segments = snail.DrawList.estimateSegments(&scene);
     const draw_buf = try testing.allocator.alloc(u32, needed);
     defer testing.allocator.free(draw_buf);
     const draw_segments = try testing.allocator.alloc(snail.DrawSegment, needed_segments);
     defer testing.allocator.free(draw_segments);
     var draw = snail.DrawList.init(draw_buf, draw_segments);
-    try draw.addScene(&prepared, &scene, options);
+    try draw.addScene(&prepared, &scene);
     try renderer_iface.draw(&prepared, draw.slice(), options);
 
     try testing.expect(prepared_buf[left + 0] > prepared_buf[left + 2]);
@@ -830,7 +830,7 @@ test "cpu renderer threaded draw matches single-threaded byte-for-byte" {
         break :blk &set;
     });
     defer serial_resources.deinit();
-    var serial_prepared = try snail.PreparedScene.initOwned(testing.allocator, &serial_resources, &scene, options);
+    var serial_prepared = try snail.PreparedScene.initOwned(testing.allocator, &serial_resources, &scene);
     defer serial_prepared.deinit();
     try serial_cpu.drawPrepared(&serial_resources, &serial_prepared, options);
 
@@ -852,7 +852,7 @@ test "cpu renderer threaded draw matches single-threaded byte-for-byte" {
         break :blk &set;
     });
     defer threaded_resources.deinit();
-    var threaded_prepared = try snail.PreparedScene.initOwned(testing.allocator, &threaded_resources, &scene, options);
+    var threaded_prepared = try snail.PreparedScene.initOwned(testing.allocator, &threaded_resources, &scene);
     defer threaded_prepared.deinit();
     try threaded_cpu.drawPrepared(&threaded_resources, &threaded_prepared, options);
 
@@ -908,14 +908,14 @@ test "cpu renderer drawPaths batch matches drawPathPicture" {
         .mvp = snail.Mat4.ortho(0, wf, hf, 0, -1, 1),
         .target = .{ .pixel_width = wf, .pixel_height = hf, .subpixel_order = .rgb, .encoding = .srgb },
     };
-    const needed = snail.DrawList.estimate(&scene, options);
-    const needed_segments = snail.DrawList.estimateSegments(&scene, options);
+    const needed = snail.DrawList.estimate(&scene);
+    const needed_segments = snail.DrawList.estimateSegments(&scene);
     const draw_buf = try testing.allocator.alloc(u32, needed);
     defer testing.allocator.free(draw_buf);
     const draw_segments = try testing.allocator.alloc(snail.DrawSegment, needed_segments);
     defer testing.allocator.free(draw_segments);
     var draw = snail.DrawList.init(draw_buf, draw_segments);
-    try draw.addScene(&prepared, &scene, options);
+    try draw.addScene(&prepared, &scene);
     try renderer.draw(&prepared, draw.slice(), options);
 
     const inside = ((12 * stride) + (16 * 4));
@@ -967,7 +967,7 @@ test "cpu renderer applies path draw tint in prepared batches" {
         .mvp = snail.Mat4.ortho(0, wf, hf, 0, -1, 1),
         .target = .{ .pixel_width = wf, .pixel_height = hf, .subpixel_order = .none, .encoding = .srgb },
     };
-    var prepared_scene = try snail.PreparedScene.initOwned(testing.allocator, &prepared, &scene, options);
+    var prepared_scene = try snail.PreparedScene.initOwned(testing.allocator, &prepared, &scene);
     defer prepared_scene.deinit();
     try renderer.drawPrepared(&prepared, &prepared_scene, options);
 

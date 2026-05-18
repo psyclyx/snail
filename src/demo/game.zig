@@ -250,8 +250,8 @@ fn drawSnailScene(
     allocator: std.mem.Allocator,
 ) !void {
     const options = snail.DrawOptions{ .mvp = mvp, .target = target };
-    const needed = snail.DrawList.estimate(scene, options);
-    const needed_segments = snail.DrawList.estimateSegments(scene, options);
+    const needed = snail.DrawList.estimate(scene);
+    const needed_segments = snail.DrawList.estimateSegments(scene);
     if (draw_buf.*.len < needed) {
         if (draw_buf.*.len > 0) allocator.free(draw_buf.*);
         draw_buf.* = try allocator.alloc(u32, needed);
@@ -259,7 +259,7 @@ fn drawSnailScene(
     const draw_segments = try allocator.alloc(snail.DrawSegment, needed_segments);
     defer allocator.free(draw_segments);
     var draw = snail.DrawList.init(draw_buf.*[0..needed], draw_segments);
-    try draw.addScene(prepared, scene, options);
+    try draw.addScene(prepared, scene);
     try renderer.draw(prepared, draw.slice(), options);
 }
 
