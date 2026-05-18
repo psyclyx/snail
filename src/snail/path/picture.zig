@@ -62,6 +62,23 @@ const PathCompositeMode = enum(u8) {
     fill_stroke_inside = render_abi.composite_mode_fill_stroke_inside,
 };
 
+const PathGeometry = struct {
+    curves: []CurveSegment,
+    bbox: BBox,
+    logical_curve_count: usize,
+
+    fn deinit(self: *PathGeometry, allocator: std.mem.Allocator) void {
+        allocator.free(self.curves);
+        self.* = undefined;
+    }
+};
+
+const PrimitiveShape = enum {
+    rect,
+    rounded_rect,
+    ellipse,
+};
+
 const RoundedRectCorner = struct {
     center: Vec2,
     start_angle: f32,
@@ -688,6 +705,92 @@ pub const PathPictureBuilder = struct {
         try self.addSingleRecord(stroke_curves, stroke_bbox, stroke_logical_curve_count, stroke_paint, .stroke, transform);
     }
 
+    fn cloneFillGeometry(self: *PathPictureBuilder, path: *const Path) !PathGeometry {
+        return .{
+            .bbox = path.bounds() orelse return error.EmptyPath,
+            .curves = try path.cloneFilledCurves(self.allocator),
+            .logical_curve_count = path.filledBandCurveCount(),
+        };
+    }
+
+    fn strokeGeometryStyle(style: StrokeStyle) StrokeStyle {
+        var geometry_style = style;
+        if (style.placement == .inside) geometry_style.width *= 2.0;
+        return geometry_style;
+    }
+
+    fn cloneStrokeGeometry(self: *PathPictureBuilder, path: *const Path, style: StrokeStyle) !?PathGeometry {
+        const stroke_geom = (try path.cloneStrokedCurves(self.allocator, strokeGeometryStyle(style))) orelse return null;
+        return .{
+            .curves = stroke_geom.curves,
+            .bbox = stroke_geom.bbox,
+            .logical_curve_count = stroke_geom.logical_curve_count,
+        };
+    }
+
+    fn addFillPathRecord(
+        self: *PathPictureBuilder,
+        path: *const Path,
+        fill: FillStyle,
+        stroke: ?StrokeStyle,
+        transform: Transform2D,
+    ) !void {
+        var fill_geom = try self.cloneFillGeometry(path);
+        errdefer fill_geom.deinit(self.allocator);
+
+        if (stroke) |stroke_style| {
+            if (try self.cloneStrokeGeometry(path, stroke_style)) |stroke_geom_value| {
+                var stroke_geom = stroke_geom_value;
+                errdefer stroke_geom.deinit(self.allocator);
+                try self.addCompositeRecord(
+                    fill_geom.curves,
+                    fill_geom.bbox,
+                    fill_geom.logical_curve_count,
+                    fill.paint,
+                    stroke_geom.curves,
+                    stroke_geom.bbox,
+                    stroke_geom.logical_curve_count,
+                    stroke_style.paint,
+                    transform,
+                    if (stroke_style.placement == .inside) .fill_stroke_inside else .source_over,
+                );
+                return;
+            }
+        }
+
+        try self.addSingleRecord(fill_geom.curves, fill_geom.bbox, fill_geom.logical_curve_count, fill.paint, .fill, transform);
+    }
+
+    fn addStrokePathRecord(
+        self: *PathPictureBuilder,
+        path: *const Path,
+        stroke: StrokeStyle,
+        transform: Transform2D,
+    ) !void {
+        var stroke_geom = (try self.cloneStrokeGeometry(path, stroke)) orelse return;
+        errdefer stroke_geom.deinit(self.allocator);
+
+        if (stroke.placement == .inside) {
+            var fill_geom = try self.cloneFillGeometry(path);
+            errdefer fill_geom.deinit(self.allocator);
+            try self.addCompositeRecord(
+                fill_geom.curves,
+                fill_geom.bbox,
+                fill_geom.logical_curve_count,
+                .{ .solid = .{ 0, 0, 0, 0 } },
+                stroke_geom.curves,
+                stroke_geom.bbox,
+                stroke_geom.logical_curve_count,
+                stroke.paint,
+                transform,
+                .fill_stroke_inside,
+            );
+            return;
+        }
+
+        try self.addSingleRecord(stroke_geom.curves, stroke_geom.bbox, stroke_geom.logical_curve_count, stroke.paint, .stroke, transform);
+    }
+
     fn addCompositeRecord(
         self: *PathPictureBuilder,
         fill_curves: []CurveSegment,
@@ -739,69 +842,10 @@ pub const PathPictureBuilder = struct {
         if (path.isEmpty()) return error.EmptyPath;
 
         if (fill) |style| {
-            const bbox = path.bounds() orelse return error.EmptyPath;
-            const curves = try path.cloneFilledCurves(self.allocator);
-            errdefer self.allocator.free(curves);
-            const logical_curve_count = path.filledBandCurveCount();
-            if (stroke) |stroke_style| {
-                var stroke_geom_style = stroke_style;
-                if (stroke_style.placement == .inside) stroke_geom_style.width *= 2.0;
-                if (try path.cloneStrokedCurves(self.allocator, stroke_geom_style)) |stroke_geom| {
-                    errdefer self.allocator.free(stroke_geom.curves);
-                    const composite_mode: PathCompositeMode = if (stroke_style.placement == .inside)
-                        .fill_stroke_inside
-                    else
-                        .source_over;
-                    try self.addCompositeRecord(
-                        curves,
-                        bbox,
-                        logical_curve_count,
-                        style.paint,
-                        stroke_geom.curves,
-                        stroke_geom.bbox,
-                        stroke_geom.logical_curve_count,
-                        stroke_style.paint,
-                        transform,
-                        composite_mode,
-                    );
-                    return;
-                }
-            }
-            try self.addSingleRecord(curves, bbox, logical_curve_count, style.paint, .fill, transform);
+            try self.addFillPathRecord(path, style, stroke, transform);
+            return;
         }
-        if (stroke) |style| {
-            var stroke_geom_style = style;
-            if (style.placement == .inside) stroke_geom_style.width *= 2.0;
-            if (try path.cloneStrokedCurves(self.allocator, stroke_geom_style)) |stroke_geom| {
-                errdefer self.allocator.free(stroke_geom.curves);
-                if (style.placement == .inside) {
-                    const fill_bbox = path.bounds() orelse return error.EmptyPath;
-                    const fill_curves = try path.cloneFilledCurves(self.allocator);
-                    errdefer self.allocator.free(fill_curves);
-                    try self.addCompositeRecord(
-                        fill_curves,
-                        fill_bbox,
-                        path.filledBandCurveCount(),
-                        .{ .solid = .{ 0, 0, 0, 0 } },
-                        stroke_geom.curves,
-                        stroke_geom.bbox,
-                        stroke_geom.logical_curve_count,
-                        style.paint,
-                        transform,
-                        .fill_stroke_inside,
-                    );
-                    return;
-                }
-                try self.addSingleRecord(
-                    stroke_geom.curves,
-                    stroke_geom.bbox,
-                    stroke_geom.logical_curve_count,
-                    style.paint,
-                    .stroke,
-                    transform,
-                );
-            }
-        }
+        if (stroke) |style| try self.addStrokePathRecord(path, style, transform);
     }
 
     pub fn addFilledPath(
@@ -822,6 +866,94 @@ pub const PathPictureBuilder = struct {
         try self.addPath(path, null, stroke, transform);
     }
 
+    fn addPrimitivePath(path: *Path, shape: PrimitiveShape, rect: Rect, radius: f32, reversed: bool) !void {
+        switch (shape) {
+            .rect => if (reversed) try path.addRectReversed(rect) else try path.addRect(rect),
+            .rounded_rect => if (reversed) try path.addRoundedRectReversed(rect, radius) else try path.addRoundedRect(rect, radius),
+            .ellipse => if (reversed) try path.addEllipseReversed(rect) else try path.addEllipse(rect),
+        }
+    }
+
+    fn innerStrokeRect(rect: Rect, size: Vec2, inset: f32) ?Rect {
+        const inner_w = size.x - inset * 2.0;
+        const inner_h = size.y - inset * 2.0;
+        if (inner_w <= 1e-4 or inner_h <= 1e-4) return null;
+        return .{
+            .x = rect.x + inset,
+            .y = rect.y + inset,
+            .w = inner_w,
+            .h = inner_h,
+        };
+    }
+
+    fn roundedRectRadius(size: Vec2, radius: f32) f32 {
+        return std.math.clamp(radius, 0.0, @min(size.x, size.y) * 0.5);
+    }
+
+    fn primitiveOuterRadius(shape: PrimitiveShape, size: Vec2, radius: f32) f32 {
+        return switch (shape) {
+            .rect, .ellipse => 0.0,
+            .rounded_rect => roundedRectRadius(size, radius),
+        };
+    }
+
+    fn primitiveInnerRadius(shape: PrimitiveShape, outer_radius: f32, inner: Rect, inset: f32) f32 {
+        return switch (shape) {
+            .rect, .ellipse => 0.0,
+            .rounded_rect => std.math.clamp(outer_radius - inset, 0.0, @min(inner.w, inner.h) * 0.5),
+        };
+    }
+
+    fn tryAddPrimitiveInsideStroke(
+        self: *PathPictureBuilder,
+        shape: PrimitiveShape,
+        rect: Rect,
+        radius: f32,
+        fill: ?FillStyle,
+        stroke: ?StrokeStyle,
+        transform: Transform2D,
+    ) !bool {
+        const stroke_style = stroke orelse return false;
+        if (stroke_style.placement != .inside) return false;
+
+        const size = Vec2.new(@max(rect.w, 0.0), @max(rect.h, 0.0));
+        const max_inset = @min(size.x, size.y) * 0.5;
+        const inset = std.math.clamp(stroke_style.width, 0.0, max_inset);
+        if (inset <= 1e-4) return false;
+
+        const outer_radius = primitiveOuterRadius(shape, size, radius);
+        var fill_path = Path.init(self.allocator);
+        defer fill_path.deinit();
+        try addPrimitivePath(&fill_path, shape, rect, outer_radius, false);
+
+        var stroke_path = Path.init(self.allocator);
+        defer stroke_path.deinit();
+        try addPrimitivePath(&stroke_path, shape, rect, outer_radius, false);
+        if (innerStrokeRect(rect, size, inset)) |inner| {
+            try addPrimitivePath(&stroke_path, shape, inner, primitiveInnerRadius(shape, outer_radius, inner, inset), true);
+        }
+
+        try self.addExplicitInsideStrokeRecord(&fill_path, fill, &stroke_path, stroke_style.paint, transform);
+        return true;
+    }
+
+    fn addPrimitive(
+        self: *PathPictureBuilder,
+        shape: PrimitiveShape,
+        rect: Rect,
+        radius: f32,
+        fill: ?FillStyle,
+        stroke: ?StrokeStyle,
+        transform: Transform2D,
+    ) !void {
+        if (try self.tryAddPrimitiveInsideStroke(shape, rect, radius, fill, stroke, transform)) return;
+
+        var path = Path.init(self.allocator);
+        defer path.deinit();
+        try addPrimitivePath(&path, shape, rect, radius, false);
+        try self.addPath(&path, fill, stroke, transform);
+    }
+
     pub fn addRect(
         self: *PathPictureBuilder,
         rect: Rect,
@@ -829,33 +961,7 @@ pub const PathPictureBuilder = struct {
         stroke: ?StrokeStyle,
         transform: Transform2D,
     ) !void {
-        if (stroke) |stroke_style| {
-            const size = Vec2.new(@max(rect.w, 0.0), @max(rect.h, 0.0));
-            const inset = std.math.clamp(stroke_style.width, 0.0, @min(size.x, size.y) * 0.5);
-            if (stroke_style.placement == .inside and inset > 1e-4) {
-                var fill_path = Path.init(self.allocator);
-                defer fill_path.deinit();
-                try fill_path.addRect(rect);
-
-                var stroke_path = Path.init(self.allocator);
-                defer stroke_path.deinit();
-                try stroke_path.addRect(rect);
-                if (size.x - inset * 2.0 > 1e-4 and size.y - inset * 2.0 > 1e-4) {
-                    try stroke_path.addRectReversed(.{
-                        .x = rect.x + inset,
-                        .y = rect.y + inset,
-                        .w = size.x - inset * 2.0,
-                        .h = size.y - inset * 2.0,
-                    });
-                }
-                return self.addExplicitInsideStrokeRecord(&fill_path, fill, &stroke_path, stroke_style.paint, transform);
-            }
-        }
-
-        var path = Path.init(self.allocator);
-        defer path.deinit();
-        try path.addRect(rect);
-        try self.addPath(&path, fill, stroke, transform);
+        try self.addPrimitive(.rect, rect, 0.0, fill, stroke, transform);
     }
 
     pub fn addRoundedRect(
@@ -866,38 +972,7 @@ pub const PathPictureBuilder = struct {
         corner_radius: f32,
         transform: Transform2D,
     ) !void {
-        const size = Vec2.new(@max(rect.w, 0.0), @max(rect.h, 0.0));
-
-        if (stroke) |stroke_style| {
-            const max_radius = @min(size.x, size.y) * 0.5;
-            const radius = std.math.clamp(corner_radius, 0.0, max_radius);
-            const inset = std.math.clamp(stroke_style.width, 0.0, max_radius);
-            if (stroke_style.placement == .inside and inset > 1e-4) {
-                var fill_path = Path.init(self.allocator);
-                defer fill_path.deinit();
-                try fill_path.addRoundedRect(rect, radius);
-
-                var stroke_path = Path.init(self.allocator);
-                defer stroke_path.deinit();
-                try stroke_path.addRoundedRect(rect, radius);
-                if (size.x - inset * 2.0 > 1e-4 and size.y - inset * 2.0 > 1e-4) {
-                    const inner_rect = Rect{
-                        .x = rect.x + inset,
-                        .y = rect.y + inset,
-                        .w = size.x - inset * 2.0,
-                        .h = size.y - inset * 2.0,
-                    };
-                    const inner_radius = std.math.clamp(radius - inset, 0.0, @min(inner_rect.w, inner_rect.h) * 0.5);
-                    try stroke_path.addRoundedRectReversed(inner_rect, inner_radius);
-                }
-                return self.addExplicitInsideStrokeRecord(&fill_path, fill, &stroke_path, stroke_style.paint, transform);
-            }
-        }
-
-        var path = Path.init(self.allocator);
-        defer path.deinit();
-        try path.addRoundedRect(rect, corner_radius);
-        try self.addPath(&path, fill, stroke, transform);
+        try self.addPrimitive(.rounded_rect, rect, corner_radius, fill, stroke, transform);
     }
 
     pub fn addEllipse(
@@ -907,33 +982,7 @@ pub const PathPictureBuilder = struct {
         stroke: ?StrokeStyle,
         transform: Transform2D,
     ) !void {
-        if (stroke) |stroke_style| {
-            const size = Vec2.new(@max(rect.w, 0.0), @max(rect.h, 0.0));
-            const inset = std.math.clamp(stroke_style.width, 0.0, @min(size.x, size.y) * 0.5);
-            if (stroke_style.placement == .inside and inset > 1e-4) {
-                var fill_path = Path.init(self.allocator);
-                defer fill_path.deinit();
-                try fill_path.addEllipse(rect);
-
-                var stroke_path = Path.init(self.allocator);
-                defer stroke_path.deinit();
-                try stroke_path.addEllipse(rect);
-                if (size.x - inset * 2.0 > 1e-4 and size.y - inset * 2.0 > 1e-4) {
-                    try stroke_path.addEllipseReversed(.{
-                        .x = rect.x + inset,
-                        .y = rect.y + inset,
-                        .w = size.x - inset * 2.0,
-                        .h = size.y - inset * 2.0,
-                    });
-                }
-                return self.addExplicitInsideStrokeRecord(&fill_path, fill, &stroke_path, stroke_style.paint, transform);
-            }
-        }
-
-        var path = Path.init(self.allocator);
-        defer path.deinit();
-        try path.addEllipse(rect);
-        try self.addPath(&path, fill, stroke, transform);
+        try self.addPrimitive(.ellipse, rect, 0.0, fill, stroke, transform);
     }
 
     pub fn addFilledRect(
