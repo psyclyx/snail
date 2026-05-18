@@ -104,6 +104,33 @@ The CPU renderer has no format-level encoder: it writes RGBA8 bytes according to
 
 **Coverage transfer.** `DrawState.raster.coverage_transfer` optionally remaps analytic coverage before blending. The default is identity; `CoverageTransfer.power(exponent)` exposes explicit display tuning when a target benefits from slightly stronger or lighter antialiasing.
 
+## Ownership and Lifetimes
+
+Snail separates immutable source values, resource declaration, backend
+residency, and draw commands. Keep those roles distinct when building an
+application around it.
+
+| Type | Owns | Borrows | Lifetime rule |
+|------|------|---------|---------------|
+| `TextAtlas` | Atlas pages and metadata allocated by its allocator. | Text configuration and source font data through the configuration. | Immutable snapshot. Any blob or manifest entry that points at it must not outlive it. |
+| `TextBlob` | Shaped glyph/run data allocated by its allocator. | A compatible `TextAtlas`. | Immutable snapshot. Its atlas pointer is a lifetime dependency, not content ownership. |
+| `PathPicture` | Frozen path atlas/layer records allocated by its allocator. | Nothing after freeze. | Immutable snapshot. Can be declared in a manifest by pointer. |
+| `Image` | Pixel storage according to the image constructor. | Nothing unless explicitly documented by the constructor. | Immutable render resource while it is declared in a manifest. |
+| `ResourceManifest` | Only its caller-provided entry buffer. | `TextAtlas`, painted `TextBlob`, `PathPicture`, and `Image` values. | A declaration list. Upload planning may inspect it, but insertion should not imply backend effects. |
+| `PreparedResources` | Persistent prepared-resource allocations and CPU backend snapshots. | Renderer-owned GPU caches where applicable. | Backend realization for one renderer/context. Retire it only after no in-flight draw can reference it. |
+| `Scene` | Command storage. | Submitted `TextBlob`/`PathPicture` values and override slices. | A borrowed command list; it does not make resources resident or keep them alive. |
+| `PreparedScene` | Draw-record words and segments. | `PreparedResources` compatibility through recorded stamps. | Rebuild it when the source scene or prepared resources change. |
+
+Upload has one ordered ownership flow: inspect a manifest, plan resource work,
+allocate scratch for that plan, execute backend upload, then publish prepared
+views. Scheduled uploads own their plan and destination resources until they are
+published or cancelled; the renderer/backend they borrow must outlive them.
+
+C handles are owned by Snail and must be released by the matching `*_deinit`
+function. Runtime allocators are payload allocators unless an API explicitly
+states that handle allocation also uses them. Resetting a handle may retain
+capacity; destroying it releases that capacity.
+
 ## Hinting And Pixel Snapping
 
 Snail does not run TrueType bytecode or apply hidden render-time text hinting.
