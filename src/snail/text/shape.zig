@@ -37,21 +37,37 @@ pub const ShapeRunResult = struct {
     advance_y: f32,
 };
 
-pub fn shapeRunForFace(
+const FallbackGlyphRun = struct {
+    gids: []u16,
+    src_starts: []u32,
+    src_ends: []u32,
+    glyph_count: usize,
+
+    fn deinit(self: *FallbackGlyphRun, allocator: Allocator) void {
+        allocator.free(self.gids);
+        allocator.free(self.src_starts);
+        allocator.free(self.src_ends);
+        self.* = undefined;
+    }
+};
+
+fn emptyShapeRun() ShapeRunResult {
+    return .{ .glyphs = &.{}, .advance_x = 0, .advance_y = 0 };
+}
+
+fn shapeRunWithHarfbuzz(
     allocator: Allocator,
     fc: *const FaceConfig,
     face_index: FaceIndex,
     text: []const u8,
     source_base: u32,
-) !ShapeRunResult {
-    if (text.len == 0) return .{ .glyphs = &.{}, .advance_x = 0, .advance_y = 0 };
-    const inv_upem = 1.0 / @as(f32, @floatFromInt(fc.font.units_per_em));
-
+    inv_upem: f32,
+) !?ShapeRunResult {
     if (comptime build_options.enable_harfbuzz) {
         if (fc.hb_shaper) |hbs| {
             const shaped = hbs.shapeText(text);
             if (shaped.count == 0 or shaped.infos == null or shaped.positions == null)
-                return .{ .glyphs = &.{}, .advance_x = 0, .advance_y = 0 };
+                return emptyShapeRun();
 
             const out = try allocator.alloc(ShapedText.Glyph, shaped.count);
             errdefer allocator.free(out);
@@ -83,50 +99,70 @@ pub fn shapeRunForFace(
             };
         }
     }
+    return null;
+}
 
+fn countUtf8Codepoints(text: []const u8) usize {
     var cp_count: usize = 0;
-    {
-        const utf8_view = std.unicode.Utf8View.initUnchecked(text);
-        var it = utf8_view.iterator();
-        while (it.nextCodepoint()) |_| cp_count += 1;
-    }
-    if (cp_count == 0) return .{ .glyphs = &.{}, .advance_x = 0, .advance_y = 0 };
+    const utf8_view = std.unicode.Utf8View.initUnchecked(text);
+    var it = utf8_view.iterator();
+    while (it.nextCodepoint()) |_| cp_count += 1;
+    return cp_count;
+}
 
+fn buildFallbackGlyphRun(allocator: Allocator, fc: *const FaceConfig, text: []const u8, source_base: u32, cp_count: usize) !FallbackGlyphRun {
     const gids = try allocator.alloc(u16, cp_count);
-    defer allocator.free(gids);
+    errdefer allocator.free(gids);
     const src_starts = try allocator.alloc(u32, cp_count);
-    defer allocator.free(src_starts);
+    errdefer allocator.free(src_starts);
     const src_ends = try allocator.alloc(u32, cp_count);
-    defer allocator.free(src_ends);
+    errdefer allocator.free(src_ends);
 
     var glyph_count: usize = 0;
-    {
-        const utf8_view = std.unicode.Utf8View.initUnchecked(text);
-        var it = utf8_view.iterator();
-        while (it.nextCodepointSlice()) |cp_slice| {
-            const byte_pos = @intFromPtr(cp_slice.ptr) - @intFromPtr(text.ptr);
-            const cp = std.unicode.utf8Decode(cp_slice) catch 0;
-            gids[glyph_count] = fc.font.glyphIndex(@intCast(cp)) catch 0;
-            src_starts[glyph_count] = source_base + @as(u32, @intCast(byte_pos));
-            src_ends[glyph_count] = source_base + @as(u32, @intCast(byte_pos + cp_slice.len));
-            glyph_count += 1;
-        }
+    const utf8_view = std.unicode.Utf8View.initUnchecked(text);
+    var it = utf8_view.iterator();
+    while (it.nextCodepointSlice()) |cp_slice| {
+        const byte_pos = @intFromPtr(cp_slice.ptr) - @intFromPtr(text.ptr);
+        const cp = std.unicode.utf8Decode(cp_slice) catch 0;
+        gids[glyph_count] = fc.font.glyphIndex(@intCast(cp)) catch 0;
+        src_starts[glyph_count] = source_base + @as(u32, @intCast(byte_pos));
+        src_ends[glyph_count] = source_base + @as(u32, @intCast(byte_pos + cp_slice.len));
+        glyph_count += 1;
     }
 
+    return .{
+        .gids = gids,
+        .src_starts = src_starts,
+        .src_ends = src_ends,
+        .glyph_count = glyph_count,
+    };
+}
+
+fn applyFallbackLigatures(fc: *const FaceConfig, run: *FallbackGlyphRun) void {
     if (fc.shaper) |shaper| {
-        glyph_count = shaper.applyLigaturesTracked(
-            gids[0..glyph_count],
-            src_starts[0..glyph_count],
-            src_ends[0..glyph_count],
-        ) catch glyph_count;
+        run.glyph_count = shaper.applyLigaturesTracked(
+            run.gids[0..run.glyph_count],
+            run.src_starts[0..run.glyph_count],
+            run.src_ends[0..run.glyph_count],
+        ) catch run.glyph_count;
     }
+}
 
-    const out = try allocator.alloc(ShapedText.Glyph, glyph_count);
+fn fallbackKerning(fc: *const FaceConfig, prev_gid: u16, gid: u16) i16 {
+    if (prev_gid == 0) return 0;
+    var kern: i16 = 0;
+    if (fc.shaper) |shaper| kern = shaper.getKernAdjustment(prev_gid, gid) catch 0;
+    if (kern == 0) kern = fc.font.getKerning(prev_gid, gid) catch 0;
+    return kern;
+}
+
+fn shapeFallbackGlyphs(allocator: Allocator, fc: *const FaceConfig, face_index: FaceIndex, run: FallbackGlyphRun, inv_upem: f32) !ShapeRunResult {
+    const out = try allocator.alloc(ShapedText.Glyph, run.glyph_count);
     errdefer allocator.free(out);
 
     var cursor_x: f32 = 0;
     var prev_gid: u16 = 0;
-    for (gids[0..glyph_count], 0..) |gid, i| {
+    for (run.gids[0..run.glyph_count], 0..) |gid, i| {
         if (gid == 0) {
             const advance = 500.0 * inv_upem;
             out[i] = .{
@@ -136,20 +172,15 @@ pub fn shapeRunForFace(
                 .y_offset = 0,
                 .x_advance = advance,
                 .y_advance = 0,
-                .source_start = src_starts[i],
-                .source_end = src_ends[i],
+                .source_start = run.src_starts[i],
+                .source_end = run.src_ends[i],
             };
             cursor_x += advance;
             prev_gid = 0;
             continue;
         }
 
-        if (prev_gid != 0) {
-            var kern: i16 = 0;
-            if (fc.shaper) |shaper| kern = shaper.getKernAdjustment(prev_gid, gid) catch 0;
-            if (kern == 0) kern = fc.font.getKerning(prev_gid, gid) catch 0;
-            cursor_x += @as(f32, @floatFromInt(kern)) * inv_upem;
-        }
+        cursor_x += @as(f32, @floatFromInt(fallbackKerning(fc, prev_gid, gid))) * inv_upem;
 
         const advance = @as(f32, @floatFromInt(fc.font.advanceWidth(gid) catch 500)) * inv_upem;
         out[i] = .{
@@ -159,14 +190,44 @@ pub fn shapeRunForFace(
             .y_offset = 0,
             .x_advance = advance,
             .y_advance = 0,
-            .source_start = src_starts[i],
-            .source_end = src_ends[i],
+            .source_start = run.src_starts[i],
+            .source_end = run.src_ends[i],
         };
         cursor_x += advance;
         prev_gid = gid;
     }
 
     return .{ .glyphs = out, .advance_x = cursor_x, .advance_y = 0 };
+}
+
+fn shapeRunWithFallback(
+    allocator: Allocator,
+    fc: *const FaceConfig,
+    face_index: FaceIndex,
+    text: []const u8,
+    source_base: u32,
+    inv_upem: f32,
+) !ShapeRunResult {
+    const cp_count = countUtf8Codepoints(text);
+    if (cp_count == 0) return emptyShapeRun();
+
+    var run = try buildFallbackGlyphRun(allocator, fc, text, source_base, cp_count);
+    defer run.deinit(allocator);
+    applyFallbackLigatures(fc, &run);
+    return shapeFallbackGlyphs(allocator, fc, face_index, run, inv_upem);
+}
+
+pub fn shapeRunForFace(
+    allocator: Allocator,
+    fc: *const FaceConfig,
+    face_index: FaceIndex,
+    text: []const u8,
+    source_base: u32,
+) !ShapeRunResult {
+    if (text.len == 0) return emptyShapeRun();
+    const inv_upem = 1.0 / @as(f32, @floatFromInt(fc.font.units_per_em));
+    if (try shapeRunWithHarfbuzz(allocator, fc, face_index, text, source_base, inv_upem)) |result| return result;
+    return shapeRunWithFallback(allocator, fc, face_index, text, source_base, inv_upem);
 }
 
 pub fn shapedGlyphAvailable(face_view: *const FaceView, glyph_id: u16) bool {
