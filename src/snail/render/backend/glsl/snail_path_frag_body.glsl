@@ -208,6 +208,35 @@ SegmentData fetchSegment(ivec2 loc, int layer) {
     return seg;
 }
 
+struct HintedTextRecord {
+    ivec2 infoBase;
+    int baseCurveTexel;
+    int curveCount;
+};
+
+int curveTexelFromLoc(ivec2 loc) {
+    return loc.y * (1 << kLogBandTextureWidth) + loc.x;
+}
+
+SegmentData addCurveDeltas(SegmentData seg, vec4 delta0, vec4 delta1) {
+    seg.p0 += delta0.xy;
+    seg.p1 += delta0.zw;
+    seg.p2 += delta1.xy;
+    seg.p3 += delta1.zw;
+    return seg;
+}
+
+SegmentData fetchHintedSegment(ivec2 loc, int layer, HintedTextRecord record) {
+    SegmentData seg = fetchSegment(loc, layer);
+    int curveIndex = (curveTexelFromLoc(loc) - record.baseCurveTexel) / int(4);
+    if (curveIndex < 0 || curveIndex >= record.curveCount) return seg;
+
+    int deltaOffset = 3 + curveIndex * 2;
+    vec4 delta0 = texelFetch(u_layer_tex, offsetLayerLoc(record.infoBase, deltaOffset), 0);
+    vec4 delta1 = texelFetch(u_layer_tex, offsetLayerLoc(record.infoBase, deltaOffset + 1), 0);
+    return addCurveDeltas(seg, delta0, delta1);
+}
+
 float segmentMaxX(SegmentData seg) {
     if (seg.kind == 3) return max(seg.p0.x, seg.p2.x);
     if (seg.kind == 2) return max(max(seg.p0.x, seg.p1.x), max(seg.p2.x, seg.p3.x));
@@ -444,6 +473,29 @@ vec2 evalAxisCoverageBands(vec2 sampleRc, float ppe, ivec2 gLoc, int headerBase,
     return vec2(cov, wgt);
 }
 
+vec2 evalAxisCoverageBandsHinted(vec2 sampleRc, float ppe, ivec2 gLoc, int headerBase, int firstBand, int lastBand, int layer, bool horizontal, HintedTextRecord record) {
+    float cov = 0.0;
+    float wgt = 0.0;
+    bool dedup = firstBand != lastBand;
+    for (int band = firstBand; band <= lastBand; band++) {
+        ivec2 headerLoc = calcBandLoc(gLoc, uint(headerBase + band));
+        uvec2 bd = texelFetch(u_band_tex, ivec3(headerLoc, layer), 0).xy;
+        ivec2 bandLoc = calcBandLoc(gLoc, bd.y);
+        int count = int(bd.x);
+        for (int i = 0; i < count; i++) {
+            ivec2 bLoc = calcBandLoc(bandLoc, uint(i));
+            uvec2 ref = texelFetch(u_band_tex, ivec3(bLoc, layer), 0).xy;
+            if (dedup) {
+                int ownerBand = max(decodeBandCurveFirstMember(ref), firstBand);
+                if (band != ownerBand) continue;
+            }
+            ivec2 cLoc = decodeBandCurveLoc(ref);
+            if (!accumulateAxisCoverageSegment(cov, wgt, sampleRc, ppe, fetchHintedSegment(cLoc, layer, record), horizontal)) break;
+        }
+    }
+    return vec2(cov, wgt);
+}
+
 struct BandSpan {
     int first;
     int last;
@@ -466,6 +518,19 @@ float evalGlyphCoverage(vec2 rc, vec2 epp, vec2 ppe,
     BandSpan vSpan = coverageBandSpan(rc.x, epp.x, banding.x, banding.z, bandMax.x);
     vec2 horiz = evalAxisCoverageBands(rc, ppe.x, gLoc, 0, hSpan.first, hSpan.last, texLayer, true);
     vec2 vert = evalAxisCoverageBands(rc, ppe.y, gLoc, bandMax.y + 1, vSpan.first, vSpan.last, texLayer, false);
+    float wsum = horiz.y + vert.y;
+    float blended = horiz.x * horiz.y + vert.x * vert.y;
+    float cov = max(applyFillRule(blended / max(wsum, kCoordEps)),
+                    min(applyFillRule(horiz.x), applyFillRule(vert.x)));
+    return applyCoverageTransfer(cov);
+}
+
+float evalHintedTextCoverage(vec2 rc, vec2 epp, vec2 ppe,
+                             ivec2 gLoc, ivec2 bandMax, vec4 banding, int texLayer, HintedTextRecord record) {
+    BandSpan hSpan = coverageBandSpan(rc.y, epp.y, banding.y, banding.w, bandMax.y);
+    BandSpan vSpan = coverageBandSpan(rc.x, epp.x, banding.x, banding.z, bandMax.x);
+    vec2 horiz = evalAxisCoverageBandsHinted(rc, ppe.x, gLoc, 0, hSpan.first, hSpan.last, texLayer, true, record);
+    vec2 vert = evalAxisCoverageBandsHinted(rc, ppe.y, gLoc, bandMax.y + 1, vSpan.first, vSpan.last, texLayer, false, record);
     float wsum = horiz.y + vert.y;
     float blended = horiz.x * horiz.y + vert.x * vert.y;
     float cov = max(applyFillRule(blended / max(wsum, kCoordEps)),
@@ -624,13 +689,32 @@ void main() {
     vec2 ppe = 1.0 / max(epp, vec2(1.0 / 65536.0));
 
     int special_kind = v_glyph.w & 0xFF;
-    if (((v_glyph.w >> 8) & 0xFF) != SNAIL_SPECIAL_LAYER_SENTINEL || special_kind != SNAIL_SPECIAL_KIND_PATH) discard;
+    if (((v_glyph.w >> 8) & 0xFF) != SNAIL_SPECIAL_LAYER_SENTINEL) discard;
+    if (special_kind != SNAIL_SPECIAL_KIND_PATH && special_kind != SNAIL_SPECIAL_KIND_HINTED_TEXT) discard;
     ivec2 infoBase = v_glyph.xy;
     vec4 firstInfo = texelFetch(u_layer_tex, infoBase, 0);
-    if (firstInfo.w >= 0.0) discard;
 
     int texLayer = u_layer_base + int(v_banding.w);
     vec4 linear_tint = vec4(srgbDecode(v_tint.r), srgbDecode(v_tint.g), srgbDecode(v_tint.b), v_tint.a);
+    if (special_kind == SNAIL_SPECIAL_KIND_HINTED_TEXT) {
+        vec4 band = texelFetch(u_layer_tex, offsetLayerLoc(infoBase, 1), 0);
+        vec4 meta = texelFetch(u_layer_tex, offsetLayerLoc(infoBase, 2), 0);
+        ivec2 gLoc = ivec2(firstInfo.xy);
+        int bandMaxH = floatBitsToInt(firstInfo.z) & 0xFFFF;
+        int bandMaxV = (floatBitsToInt(firstInfo.z) >> 16) & 0xFFFF;
+        HintedTextRecord record;
+        record.infoBase = infoBase;
+        record.baseCurveTexel = int(meta.x + 0.5);
+        record.curveCount = int(meta.y + 0.5);
+        float cov = evalHintedTextCoverage(rc, epp, ppe, gLoc, ivec2(bandMaxV, bandMaxH), band, texLayer, record);
+        if (cov < 1.0 / 255.0) discard;
+        vec4 linear_color = vec4(srgbDecode(v_color.r), srgbDecode(v_color.g), srgbDecode(v_color.b), v_color.a);
+        vec4 result = premultiplyColor(linear_color * linear_tint, cov);
+        frag_color = (SNAIL_OUTPUT_SRGB != 0) ? srgbEncodePremultiplied(result) : result;
+        return;
+    }
+
+    if (firstInfo.w >= 0.0) discard;
     if (int(-firstInfo.w + 0.5) == SNAIL_PAINT_KIND_COMPOSITE_GROUP) {
         PathCompositeSample result = compositePathGroup(rc, epp, ppe, infoBase, firstInfo, texLayer, linear_tint);
         if (result.color.a < 1.0 / 255.0) discard;
