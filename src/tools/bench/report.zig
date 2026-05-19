@@ -78,6 +78,8 @@ pub fn printPreparationTables(snail_prep: anytype, vector_prep: anytype, ft: any
         \\| TT hint setup @ 12px | {d:.2} us | n/a | n/a |
         \\| TT hint execute, ASCII @ 12px | {d:.2} us | n/a | n/a |
         \\| TT hint plan, ASCII @ 12px | {d:.2} us | n/a | n/a |
+        \\| TT hint context cold, paragraph @ 12px | {d:.2} us | n/a | n/a |
+        \\| TT hint context warm, paragraph @ 12px | {d:.2} us | n/a | n/a |
         \\| PathPicture freeze, {d} shapes | {d:.2} us | n/a | n/a |
         \\
         \\## Prepared Resource Memory
@@ -102,6 +104,8 @@ pub fn printPreparationTables(snail_prep: anytype, vector_prep: anytype, ft: any
         snail_prep.ascii_hint_setup_us,
         snail_prep.ascii_hint_execute_us,
         snail_prep.ascii_hint_us,
+        snail_prep.paragraph_hint_context_cold_us,
+        snail_prep.paragraph_hint_context_warm_us,
         vector_prep.shapes,
         vector_prep.freeze_us,
         snail_prep.footprint.usedBytes(),
