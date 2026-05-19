@@ -24,6 +24,19 @@ pub const Point = struct {
     touched_y: bool = false,
 };
 
+pub const phantom_count = 4;
+
+pub const PhantomMetrics = struct {
+    x_min: i16,
+    y_min: i16,
+    x_max: i16,
+    y_max: i16,
+    advance_width: u16,
+    left_side_bearing: i16,
+    advance_height: i32,
+    top_side_bearing: i32 = 0,
+};
+
 pub const Zone = struct {
     points: []Point,
     contours: []const tt_outline.ContourRange = &.{},
@@ -47,6 +60,20 @@ pub const Zone = struct {
             };
         }
         return .{ .points = buffer[0..outline.len], .contours = contours };
+    }
+
+    pub fn initGlyphWithPhantoms(
+        buffer: []Point,
+        outline: []const tt_outline.Point,
+        contours: []const tt_outline.ContourRange,
+        environment: tt_graphics.Environment,
+        phantoms: PhantomMetrics,
+    ) Error!Zone {
+        const point_count = outline.len + phantom_count;
+        if (buffer.len < point_count) return Error.BufferTooSmall;
+        const zone = try initGlyph(buffer, outline, contours, environment);
+        initPhantomPoints(buffer[outline.len..][0..phantom_count], phantoms, environment);
+        return .{ .points = buffer[0..point_count], .contours = zone.contours };
     }
 
     pub fn initTwilight(buffer: []Point) Zone {
@@ -146,6 +173,16 @@ pub const Zone = struct {
         return pointsToCurves(allocator, self.points[contour.start..contour.end], scale);
     }
 
+    pub fn horizontalAdvance(self: *const Zone, phantom_start: usize) Error!i32 {
+        if (phantom_start + 1 >= self.points.len) return Error.InvalidPoint;
+        return subWrap(self.points[phantom_start + 1].x, self.points[phantom_start].x);
+    }
+
+    pub fn originalHorizontalAdvance(self: *const Zone, phantom_start: usize) Error!i32 {
+        if (phantom_start + 1 >= self.points.len) return Error.InvalidPoint;
+        return subWrap(self.points[phantom_start + 1].ox, self.points[phantom_start].ox);
+    }
+
     fn interpolateContour(self: *Zone, axis: tt_graphics.Axis, contour: tt_outline.ContourRange) Error!void {
         if (contour.end <= contour.start) return;
         const start: usize = contour.start;
@@ -215,6 +252,28 @@ pub const Zone = struct {
         return &self.points[index];
     }
 };
+
+fn initPhantomPoints(points: []Point, metrics: PhantomMetrics, environment: tt_graphics.Environment) void {
+    const left = @as(i32, metrics.x_min) - @as(i32, metrics.left_side_bearing);
+    const right = left + @as(i32, metrics.advance_width);
+    const top = @as(i32, metrics.y_max) + metrics.top_side_bearing;
+    const bottom = top - metrics.advance_height;
+
+    points[0] = phantomPoint(environment.scaleFUnitsX(left), 0);
+    points[1] = phantomPoint(environment.scaleFUnitsX(right), 0);
+    points[2] = phantomPoint(0, environment.scaleFUnitsY(top));
+    points[3] = phantomPoint(0, environment.scaleFUnitsY(bottom));
+}
+
+fn phantomPoint(x: i32, y: i32) Point {
+    return .{
+        .x = x,
+        .y = y,
+        .ox = x,
+        .oy = y,
+        .on_curve = true,
+    };
+}
 
 pub const Zones = struct {
     twilight: Zone,

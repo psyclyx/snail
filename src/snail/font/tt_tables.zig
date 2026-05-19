@@ -44,10 +44,24 @@ pub const MaxProfile = struct {
     max_component_depth: u16 = 0,
 };
 
+pub const HorizontalHeader = struct {
+    ascent: i16,
+    descent: i16,
+    line_gap: i16,
+    number_of_h_metrics: u16,
+};
+
+pub const HorizontalMetrics = struct {
+    advance_width: u16,
+    left_side_bearing: i16,
+};
+
 pub const ProgramTables = struct {
     data: []const u8,
     head: TableRecord,
     maxp: TableRecord,
+    hhea: ?TableRecord = null,
+    hmtx: ?TableRecord = null,
     glyf: ?TableRecord = null,
     loca: ?TableRecord = null,
     cvt: ?TableRecord = null,
@@ -83,6 +97,10 @@ pub const ProgramTables = struct {
             } else if (tagEql(tag, "maxp")) {
                 out.maxp = record;
                 have_maxp = true;
+            } else if (tagEql(tag, "hhea")) {
+                out.hhea = record;
+            } else if (tagEql(tag, "hmtx")) {
+                out.hmtx = record;
             } else if (tagEql(tag, "glyf")) {
                 out.glyf = record;
             } else if (tagEql(tag, "loca")) {
@@ -102,6 +120,33 @@ pub const ProgramTables = struct {
 
         if (!have_head or !have_maxp) return error.MissingRequiredTable;
         return out;
+    }
+
+    pub fn horizontalHeader(self: ProgramTables) ParseError!HorizontalHeader {
+        const record = self.hhea orelse return error.MissingRequiredTable;
+        const bytes = try record.bytes(self.data);
+        if (bytes.len < 36) return error.UnexpectedEof;
+        return .{
+            .ascent = try readI16(bytes, 4),
+            .descent = try readI16(bytes, 6),
+            .line_gap = try readI16(bytes, 8),
+            .number_of_h_metrics = try readU16(bytes, 34),
+        };
+    }
+
+    pub fn horizontalMetrics(
+        self: ProgramTables,
+        glyph_id: u16,
+        num_glyphs: u16,
+        number_of_h_metrics: u16,
+    ) ParseError!HorizontalMetrics {
+        if (glyph_id >= num_glyphs or number_of_h_metrics == 0) return error.InvalidFont;
+        const bytes = try self.tableBytes(self.hmtx);
+        if (glyph_id < number_of_h_metrics) return readLongHorizontalMetric(bytes, glyph_id);
+        return .{
+            .advance_width = (try readLongHorizontalMetric(bytes, number_of_h_metrics - 1)).advance_width,
+            .left_side_bearing = try readLeftSideBearing(bytes, glyph_id, number_of_h_metrics),
+        };
     }
 
     pub fn headInfo(self: ProgramTables) ParseError!Head {
@@ -160,13 +205,32 @@ fn readU32(data: []const u8, offset: usize) ParseError!u32 {
     return std.mem.readInt(u32, data[offset..][0..4], .big);
 }
 
+fn readLongHorizontalMetric(bytes: []const u8, glyph_id: u16) ParseError!HorizontalMetrics {
+    const offset = @as(usize, glyph_id) * 4;
+    if (offset + 4 > bytes.len) return error.UnexpectedEof;
+    return .{
+        .advance_width = try readU16(bytes, offset),
+        .left_side_bearing = try readI16(bytes, offset + 2),
+    };
+}
+
+fn readLeftSideBearing(bytes: []const u8, glyph_id: u16, number_of_h_metrics: u16) ParseError!i16 {
+    const offset = @as(usize, number_of_h_metrics) * 4 +
+        (@as(usize, glyph_id) - @as(usize, number_of_h_metrics)) * 2;
+    return readI16(bytes, offset);
+}
+
 test "read TT program tables from bundled font" {
     const tables = try ProgramTables.init(@import("assets").noto_sans_regular);
     const head = try tables.headInfo();
     const maxp = try tables.maxProfile();
+    const hhea = try tables.horizontalHeader();
+    const hmtx = try tables.horizontalMetrics(36, maxp.num_glyphs, hhea.number_of_h_metrics);
 
     try std.testing.expect(head.units_per_em > 0);
     try std.testing.expect(maxp.num_glyphs > 0);
+    try std.testing.expect(hhea.number_of_h_metrics > 0);
+    try std.testing.expect(hmtx.advance_width > 0);
     try std.testing.expect(tables.glyf != null);
     try std.testing.expect(tables.loca != null);
     try std.testing.expect((try tables.tableBytes(tables.fpgm)).len > 0);

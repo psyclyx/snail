@@ -2,6 +2,7 @@ const std = @import("std");
 
 const tt_exec = @import("tt_exec.zig");
 const tt_outline = @import("tt_outline.zig");
+const tt_points = @import("tt_points.zig");
 const tt_tables = @import("tt_tables.zig");
 
 pub const RenderMode = enum {
@@ -33,11 +34,23 @@ pub const ExecutionBuffers = struct {
     storage: []i32,
 };
 
+pub const GlyphBounds = struct {
+    x_min: i16,
+    y_min: i16,
+    x_max: i16,
+    y_max: i16,
+
+    pub fn fallbackAdvanceHeight(self: GlyphBounds) i32 {
+        return @max(0, @as(i32, self.y_max) - @as(i32, self.y_min));
+    }
+};
+
 pub const Program = struct {
     data: []const u8,
     tables: tt_tables.ProgramTables,
     head: tt_tables.Head,
     maxp: tt_tables.MaxProfile,
+    hhea: tt_tables.HorizontalHeader,
 
     pub fn init(data: []const u8) !Program {
         const tables = try tt_tables.ProgramTables.init(data);
@@ -46,6 +59,7 @@ pub const Program = struct {
             .tables = tables,
             .head = try tables.headInfo(),
             .maxp = try tables.maxProfile(),
+            .hhea = try tables.horizontalHeader(),
         };
     }
 
@@ -66,9 +80,11 @@ pub const Program = struct {
             .storage = @as(usize, self.maxp.max_storage),
             .functions = @as(usize, self.maxp.max_function_defs),
             .twilight_points = @as(usize, self.maxp.max_twilight_points),
-            .glyph_points = @max(
-                @as(usize, self.maxp.max_points),
-                @as(usize, self.maxp.max_composite_points),
+            .glyph_points = hintedGlyphPointCapacity(
+                @max(
+                    @as(usize, self.maxp.max_points),
+                    @as(usize, self.maxp.max_composite_points),
+                ),
             ),
         };
     }
@@ -100,6 +116,36 @@ pub const Program = struct {
         ) };
     }
 
+    pub fn horizontalMetrics(self: *const Program, glyph_id: u16) !tt_tables.HorizontalMetrics {
+        return self.tables.horizontalMetrics(glyph_id, self.maxp.num_glyphs, self.hhea.number_of_h_metrics);
+    }
+
+    pub fn glyphBounds(self: *const Program, glyph_id: u16) !GlyphBounds {
+        if (glyph_id >= self.maxp.num_glyphs) return error.InvalidFont;
+        if (try self.glyphLength(glyph_id) == 0) return emptyGlyphBounds();
+        const base = try self.glyphBase(glyph_id);
+        return .{
+            .x_min = try readI16(self.data, base + 2),
+            .y_min = try readI16(self.data, base + 4),
+            .x_max = try readI16(self.data, base + 6),
+            .y_max = try readI16(self.data, base + 8),
+        };
+    }
+
+    pub fn glyphPhantomMetrics(self: *const Program, glyph_id: u16) !tt_points.PhantomMetrics {
+        const metrics = try self.horizontalMetrics(glyph_id);
+        const bounds = try self.glyphBounds(glyph_id);
+        return .{
+            .x_min = bounds.x_min,
+            .y_min = bounds.y_min,
+            .x_max = bounds.x_max,
+            .y_max = bounds.y_max,
+            .advance_width = metrics.advance_width,
+            .left_side_bearing = metrics.left_side_bearing,
+            .advance_height = bounds.fallbackAdvanceHeight(),
+        };
+    }
+
     fn glyphBase(self: *const Program, glyph_id: u16) !usize {
         const glyf = self.tables.glyf orelse return error.MissingRequiredTable;
         return @as(usize, glyf.offset) + @as(usize, try self.glyphOffset(glyph_id));
@@ -125,6 +171,19 @@ pub const Program = struct {
         return off1 - off0;
     }
 };
+
+fn hintedGlyphPointCapacity(outline_points: usize) usize {
+    return outline_points + tt_points.phantom_count;
+}
+
+fn emptyGlyphBounds() GlyphBounds {
+    return .{
+        .x_min = 0,
+        .y_min = 0,
+        .x_max = 0,
+        .y_max = 0,
+    };
+}
 
 pub const GlyphTopology = union(enum) {
     empty,
@@ -195,6 +254,21 @@ pub const SizeState = struct {
         glyph: *const tt_outline.SimpleGlyph,
     ) !tt_exec.PointZone {
         return tt_exec.PointZone.initGlyph(buffer, glyph.points, glyph.contours, self.environment());
+    }
+
+    pub fn initSimpleGlyphZoneWithPhantoms(
+        self: *const SizeState,
+        buffer: []tt_exec.Point,
+        glyph: *const tt_outline.SimpleGlyph,
+        phantoms: tt_points.PhantomMetrics,
+    ) !tt_exec.PointZone {
+        return tt_exec.PointZone.initGlyphWithPhantoms(
+            buffer,
+            glyph.points,
+            glyph.contours,
+            self.environment(),
+            phantoms,
+        );
     }
 };
 
@@ -276,7 +350,22 @@ test "program exposes execution buffer sizing" {
 
     try std.testing.expect(sizes.stack >= 256);
     try std.testing.expect(sizes.functions >= program.maxp.max_function_defs);
-    try std.testing.expect(sizes.glyph_points >= program.maxp.max_points);
+    try std.testing.expect(sizes.glyph_points >= @as(usize, program.maxp.max_points) + tt_points.phantom_count);
+}
+
+test "program exposes horizontal metrics for phantom points" {
+    const assets = @import("assets");
+    const program = try Program.init(assets.noto_sans_regular);
+    const font = try @import("ttf.zig").Font.init(assets.noto_sans_regular);
+    const glyph_id = try font.glyphIndex('A');
+    const expected = try font.glyphMetrics(glyph_id);
+    const metrics = try program.horizontalMetrics(glyph_id);
+    const phantoms = try program.glyphPhantomMetrics(glyph_id);
+
+    try std.testing.expectEqual(expected.advance_width, metrics.advance_width);
+    try std.testing.expectEqual(expected.lsb, metrics.left_side_bearing);
+    try std.testing.expect(phantoms.x_max > phantoms.x_min);
+    try std.testing.expect(phantoms.advance_width > 0);
 }
 
 test "size state initializes execution context over caller buffers" {
@@ -404,4 +493,40 @@ test "program executes bundled simple glyph instructions" {
 
     try std.testing.expect(zones.glyph.points.len == simple.points.len);
     try std.testing.expect(zones.glyph.points.len > 0);
+}
+
+test "size state initializes simple glyph phantom points" {
+    const allocator = std.testing.allocator;
+    const assets = @import("assets");
+    const program = try Program.init(assets.noto_sans_regular);
+    const font = try @import("ttf.zig").Font.init(assets.noto_sans_regular);
+    const glyph_id = try font.glyphIndex('A');
+
+    var topology = try program.loadGlyphTopology(allocator, glyph_id);
+    defer topology.deinit();
+    const simple = switch (topology) {
+        .simple => |*glyph| glyph,
+        else => return error.TestExpectedGlyph,
+    };
+
+    var size = try program.sizeState(allocator, .{
+        .ppem_x_26_6 = 12 * 64,
+        .ppem_y_26_6 = 12 * 64,
+    });
+    defer size.deinit();
+
+    const phantoms = try program.glyphPhantomMetrics(glyph_id);
+    const point_count = simple.points.len + tt_points.phantom_count;
+    const points = try allocator.alloc(tt_exec.Point, point_count);
+    defer allocator.free(points);
+
+    const zone = try size.initSimpleGlyphZoneWithPhantoms(points, simple, phantoms);
+    const phantom_start = simple.points.len;
+    const left = @as(i32, phantoms.x_min) - @as(i32, phantoms.left_side_bearing);
+    const right = left + @as(i32, phantoms.advance_width);
+
+    try std.testing.expectEqual(point_count, zone.points.len);
+    try std.testing.expectEqual(size.environment().scaleFUnitsX(left), zone.points[phantom_start].x);
+    try std.testing.expectEqual(size.environment().scaleFUnitsX(right), zone.points[phantom_start + 1].x);
+    try std.testing.expectEqual(try zone.originalHorizontalAdvance(phantom_start), try zone.horizontalAdvance(phantom_start));
 }
