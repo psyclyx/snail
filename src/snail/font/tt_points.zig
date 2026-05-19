@@ -1,7 +1,12 @@
 const std = @import("std");
 
+const bezier = @import("../math/bezier.zig");
 const tt_graphics = @import("tt_graphics.zig");
 const tt_outline = @import("tt_outline.zig");
+const vec = @import("../math/vec.zig");
+
+const QuadBezier = bezier.QuadBezier;
+const Vec2 = vec.Vec2;
 
 pub const Error = error{
     BufferTooSmall,
@@ -136,6 +141,11 @@ pub const Zone = struct {
         }
     }
 
+    pub fn contourToCurves(self: *const Zone, allocator: std.mem.Allocator, contour: tt_outline.ContourRange, scale: f32) ![]QuadBezier {
+        if (contour.end > self.points.len or contour.start > contour.end) return Error.InvalidPoint;
+        return pointsToCurves(allocator, self.points[contour.start..contour.end], scale);
+    }
+
     fn interpolateContour(self: *Zone, axis: tt_graphics.Axis, contour: tt_outline.ContourRange) Error!void {
         if (contour.end <= contour.start) return;
         const start: usize = contour.start;
@@ -238,6 +248,94 @@ pub fn directionFromVector(vector: tt_graphics.Vector) ?Direction {
         return .{ .axis = .y, .sign = if (vector.y < 0) -1 else 1 };
     }
     return null;
+}
+
+const CurvePoint = struct {
+    pos: Vec2,
+    on_curve: bool,
+};
+
+fn pointsToCurves(allocator: std.mem.Allocator, points: []const Point, scale: f32) ![]QuadBezier {
+    if (points.len < 2) return &.{};
+
+    var scaled: std.ArrayList(CurvePoint) = .empty;
+    defer scaled.deinit(allocator);
+    for (points) |point| {
+        try scaled.append(allocator, .{
+            .pos = Vec2.new(
+                @as(f32, @floatFromInt(point.x)) * scale,
+                @as(f32, @floatFromInt(point.y)) * scale,
+            ),
+            .on_curve = point.on_curve,
+        });
+    }
+
+    var expanded: std.ArrayList(CurvePoint) = .empty;
+    defer expanded.deinit(allocator);
+    for (0..scaled.items.len) |i| {
+        const curr = scaled.items[i];
+        try expanded.append(allocator, curr);
+        if (!curr.on_curve) {
+            const next = scaled.items[(i + 1) % scaled.items.len];
+            if (!next.on_curve) {
+                try expanded.append(allocator, .{
+                    .pos = Vec2.lerp(curr.pos, next.pos, 0.5),
+                    .on_curve = true,
+                });
+            }
+        }
+    }
+
+    return expandedContourToCurves(allocator, expanded.items);
+}
+
+fn expandedContourToCurves(allocator: std.mem.Allocator, points: []const CurvePoint) ![]QuadBezier {
+    if (points.len < 2) return &.{};
+
+    var curves: std.ArrayList(QuadBezier) = .empty;
+    errdefer curves.deinit(allocator);
+
+    const start_idx = firstOnCurvePoint(points);
+    var idx = start_idx;
+    var iterations: usize = 0;
+    while (iterations < points.len + 1) {
+        const p0 = points[idx % points.len];
+        if (!p0.on_curve) {
+            idx += 1;
+            iterations += 1;
+            continue;
+        }
+
+        const next1 = points[(idx + 1) % points.len];
+        if (next1.on_curve) {
+            try curves.append(allocator, .{
+                .p0 = p0.pos,
+                .p1 = Vec2.lerp(p0.pos, next1.pos, 0.5),
+                .p2 = next1.pos,
+            });
+            idx += 1;
+        } else {
+            const next2 = points[(idx + 2) % points.len];
+            try curves.append(allocator, .{
+                .p0 = p0.pos,
+                .p1 = next1.pos,
+                .p2 = next2.pos,
+            });
+            idx += 2;
+        }
+
+        iterations += 1;
+        if (idx % points.len == start_idx) break;
+    }
+
+    return curves.toOwnedSlice(allocator);
+}
+
+fn firstOnCurvePoint(points: []const CurvePoint) usize {
+    for (points, 0..) |point, i| {
+        if (point.on_curve) return i;
+    }
+    return 0;
 }
 
 fn touchPoint(point: *Point, axis: tt_graphics.Axis) void {
@@ -392,4 +490,22 @@ test "point zone shifts a contour range" {
     try std.testing.expectEqual(@as(i32, 30), zone.points[3].x);
     try std.testing.expect(zone.points[2].touched_x);
     try std.testing.expect(!zone.points[3].touched_x);
+}
+
+test "point zone converts hinted contour points to curves" {
+    var buffer: [3]Point = .{
+        .{ .x = 0, .y = 0, .ox = 0, .oy = 0, .on_curve = true },
+        .{ .x = 64, .y = 64, .ox = 64, .oy = 64, .on_curve = false },
+        .{ .x = 128, .y = 0, .ox = 128, .oy = 0, .on_curve = true },
+    };
+    const contours = [_]tt_outline.ContourRange{.{ .start = 0, .end = 3 }};
+    const zone: Zone = .{ .points = &buffer, .contours = &contours };
+
+    const curves = try zone.contourToCurves(std.testing.allocator, contours[0], 1.0 / 64.0);
+    defer std.testing.allocator.free(curves);
+
+    try std.testing.expectEqual(@as(usize, 2), curves.len);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), curves[0].p1.x, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), curves[0].p1.y, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 2.0), curves[0].p2.x, 0.001);
 }
