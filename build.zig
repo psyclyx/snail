@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const version = "0.7.0";
+
 pub const ModuleOptions = struct {
     enable_profiling: bool = false,
     enable_opengl: bool = true,
@@ -8,6 +10,36 @@ pub const ModuleOptions = struct {
     enable_harfbuzz: bool = true,
     force_gl33: bool = false,
 };
+
+fn pkgConfigRequires(opengl: bool, vulkan: bool, harfbuzz: bool) []const u8 {
+    if (opengl) {
+        if (harfbuzz) return if (vulkan) "gl harfbuzz vulkan" else "gl harfbuzz";
+        return if (vulkan) "gl vulkan" else "gl";
+    }
+    if (harfbuzz) return if (vulkan) "harfbuzz vulkan" else "harfbuzz";
+    return if (vulkan) "vulkan" else "";
+}
+
+fn renderPkgConfig(
+    b: *std.Build,
+    opengl: bool,
+    vulkan: bool,
+    harfbuzz: bool,
+) []const u8 {
+    return b.fmt(
+        \\prefix=${{pcfiledir}}/../..
+        \\libdir=${{prefix}}/lib
+        \\includedir=${{prefix}}/include
+        \\
+        \\Name: snail
+        \\Description: GPU font rendering via direct Bezier curve evaluation (Slug algorithm)
+        \\Version: {s}
+        \\Libs: -L${{libdir}} -lsnail
+        \\Cflags: -I${{includedir}}
+        \\Requires: {s}
+        \\
+    , .{ version, pkgConfigRequires(opengl, vulkan, harfbuzz) });
+}
 
 fn assembledGlslSource(
     allocator: std.mem.Allocator,
@@ -389,6 +421,12 @@ pub fn build(b: *std.Build) void {
         if (enable_opengl) b.installFile("include/snail_gl.h", "include/snail_gl.h");
         if (enable_vulkan) b.installFile("include/snail_vulkan.h", "include/snail_vulkan.h");
         if (enable_cpu) b.installFile("include/snail_cpu.h", "include/snail_cpu.h");
+
+        const generated_pkg_config = b.addWriteFiles().add(
+            "snail.pc",
+            renderPkgConfig(b, enable_opengl, enable_vulkan, enable_harfbuzz),
+        );
+        b.getInstallStep().dependOn(&b.addInstallFile(generated_pkg_config, "lib/pkgconfig/snail.pc").step);
     }
 
     // ── Zig module (for downstream zig package consumers) ──
