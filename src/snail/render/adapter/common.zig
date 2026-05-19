@@ -17,7 +17,7 @@ const UploadAllocators = upload_mod.UploadAllocators;
 pub fn vtable(comptime Config: type) interface.Renderer.VTable {
     const S = struct {
         fn deinitFn(_: *anyopaque) void {}
-        fn backendNameFn(ptr: *anyopaque) []const u8 {
+        fn backendNameFn(ptr: *anyopaque) [:0]const u8 {
             return constCast(Config.Backend, ptr).backendName();
         }
     };

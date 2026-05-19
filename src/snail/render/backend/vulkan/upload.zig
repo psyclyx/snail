@@ -98,18 +98,35 @@ fn uploadPreparedAtlasesAndLayerInfoWithOptionalCapacityModes(
     if (capacity_modes) |modes| std.debug.assert(atlases.len == modes.len);
     std.debug.assert(layer_infos.len == out_layer_info_views.len);
 
-    if (atlases.len == 0 and layer_infos.len == 0) {
-        prepared.destroyAtlasTextureResources();
-        prepared.resetAtlasUploadState();
-        return;
-    }
-
-    const simple_atlases = atlasesHaveNoLayerInfoOrImages(atlases);
-    const no_active_layer_info = prepared.layer_image == null;
-    const can_overflow_bank = layer_infos.len == 0 and simple_atlases and no_active_layer_info and prepared.texturesReady() and prepared.atlasPrefixesCompatibleForOverflow(atlases);
-    const can_incremental = layer_infos.len == 0 and simple_atlases and no_active_layer_info and prepared.texturesReady() and prepared.atlasSlotsCompatible(atlases);
-    if (!can_incremental and can_overflow_bank) {
-        if (!try appendTexturePagesIntoNewBank(self, prepared, scratch, atlases)) {
+    const decision = upload_common.decideAtlasUpload(.{
+        .atlas_count = atlases.len,
+        .layer_info_count = layer_infos.len,
+        .simple_atlases = atlasesHaveNoLayerInfoOrImages(atlases),
+        .no_active_layer_info = prepared.layer_image == null,
+        .textures_ready = prepared.texturesReady(),
+        .slots_compatible = prepared.atlasSlotsCompatible(atlases),
+        .overflow_bank_compatible = prepared.atlasPrefixesCompatibleForOverflow(atlases),
+    });
+    switch (decision) {
+        .clear => {
+            prepared.destroyAtlasTextureResources();
+            prepared.resetAtlasUploadState();
+            return;
+        },
+        .rebuild => try rebuildTextureArrays(self, prepared, scratch, atlases, capacity_modes, out_views, layer_infos, out_layer_info_views),
+        .append_overflow_bank => {
+            if (!try appendTexturePagesIntoNewBank(self, prepared, scratch, atlases)) {
+                try rebuildTextureArrays(self, prepared, scratch, atlases, capacity_modes, out_views, layer_infos, out_layer_info_views);
+            } else {
+                prepared.fillAtlasViews(atlases, out_views);
+                prepared.fillLayerInfoViews(prepared.atlasLayerInfoRows(atlases), layer_infos, out_layer_info_views);
+                try ensureAtlasImagesRegistered(self, prepared, scratch, atlases);
+                try ensureLayerInfoImagesRegistered(self, prepared, scratch, layer_infos);
+                try rebuildLayerInfoTexture(self, prepared, scratch, atlases, layer_infos, out_layer_info_views);
+                prepared.atlas_has_special_text_runs = subpixel_policy.resourcesHaveSpecialTextRuns(atlases, layer_infos);
+            }
+        },
+        .append_pages => if (!try appendTexturePages(self, prepared, scratch, atlases)) {
             try rebuildTextureArrays(self, prepared, scratch, atlases, capacity_modes, out_views, layer_infos, out_layer_info_views);
         } else {
             prepared.fillAtlasViews(atlases, out_views);
@@ -118,19 +135,8 @@ fn uploadPreparedAtlasesAndLayerInfoWithOptionalCapacityModes(
             try ensureLayerInfoImagesRegistered(self, prepared, scratch, layer_infos);
             try rebuildLayerInfoTexture(self, prepared, scratch, atlases, layer_infos, out_layer_info_views);
             prepared.atlas_has_special_text_runs = subpixel_policy.resourcesHaveSpecialTextRuns(atlases, layer_infos);
-        }
-    } else if (!can_incremental) {
-        try rebuildTextureArrays(self, prepared, scratch, atlases, capacity_modes, out_views, layer_infos, out_layer_info_views);
-    } else if (!try appendTexturePages(self, prepared, scratch, atlases)) {
-        try rebuildTextureArrays(self, prepared, scratch, atlases, capacity_modes, out_views, layer_infos, out_layer_info_views);
-    } else {
-        prepared.fillAtlasViews(atlases, out_views);
-        prepared.fillLayerInfoViews(prepared.atlasLayerInfoRows(atlases), layer_infos, out_layer_info_views);
-        try ensureAtlasImagesRegistered(self, prepared, scratch, atlases);
-        try ensureLayerInfoImagesRegistered(self, prepared, scratch, layer_infos);
-        try rebuildLayerInfoTexture(self, prepared, scratch, atlases, layer_infos, out_layer_info_views);
-        prepared.atlas_has_special_text_runs = subpixel_policy.resourcesHaveSpecialTextRuns(atlases, layer_infos);
-        updateDescriptorSet(self, prepared);
+            updateDescriptorSet(self, prepared);
+        },
     }
 }
 

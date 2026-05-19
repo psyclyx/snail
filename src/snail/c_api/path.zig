@@ -1,7 +1,8 @@
 const common = @import("common.zig");
 const snail = common.snail;
 const resolveAllocator = common.resolveAllocator;
-const handleAllocator = common.handleAllocator;
+const createHandle = common.createHandle;
+const allocatorForHandle = common.allocatorForHandle;
 const mapError = common.mapError;
 const SnailAllocator = common.SnailAllocator;
 const SNAIL_OK = common.SNAIL_OK;
@@ -34,9 +35,8 @@ const destroyHandle = common.destroyHandle;
 // Paths and path pictures
 
 pub export fn snail_path_init(alloc_ptr: ?*const SnailAllocator, out: *?*PathImpl) c_int {
-    const allocator = resolveAllocator(alloc_ptr);
-    const impl = handleAllocator().create(PathImpl) catch return SNAIL_ERR_OUT_OF_MEMORY;
-    impl.* = .{ .inner = snail.Path.init(allocator) };
+    const impl = createHandle(PathImpl, alloc_ptr) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    impl.inner = snail.Path.init(allocatorForHandle(impl));
     out.* = impl;
     return SNAIL_OK;
 }
@@ -120,9 +120,8 @@ pub export fn snail_path_add_ellipse_reversed(path: *PathImpl, rect: SnailRect) 
 }
 
 pub export fn snail_path_picture_builder_init(alloc_ptr: ?*const SnailAllocator, out: *?*PathPictureBuilderImpl) c_int {
-    const allocator = resolveAllocator(alloc_ptr);
-    const impl = handleAllocator().create(PathPictureBuilderImpl) catch return SNAIL_ERR_OUT_OF_MEMORY;
-    impl.* = .{ .inner = snail.PathPictureBuilder.init(allocator) };
+    const impl = createHandle(PathPictureBuilderImpl, alloc_ptr) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    impl.inner = snail.PathPictureBuilder.init(allocatorForHandle(impl));
     out.* = impl;
     return SNAIL_OK;
 }
@@ -181,17 +180,17 @@ pub export fn snail_path_picture_builder_add_ellipse(builder: *PathPictureBuilde
 }
 
 pub export fn snail_path_picture_builder_freeze(builder: *const PathPictureBuilderImpl, alloc_ptr: ?*const SnailAllocator, scratch_alloc_ptr: ?*const SnailAllocator, out: *?*PathPictureImpl) c_int {
-    const allocator = resolveAllocator(alloc_ptr);
+    const impl = createHandle(PathPictureImpl, alloc_ptr) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    const allocator = allocatorForHandle(impl);
     const scratch_allocator = resolveAllocator(scratch_alloc_ptr);
-    var picture = builder.inner.freeze(.{
+    const picture = builder.inner.freeze(.{
         .persistent_allocator = allocator,
         .scratch_allocator = scratch_allocator,
-    }) catch |err| return mapError(err);
-    const impl = handleAllocator().create(PathPictureImpl) catch {
-        picture.deinit();
-        return SNAIL_ERR_OUT_OF_MEMORY;
+    }) catch |err| {
+        destroyHandle(impl);
+        return mapError(err);
     };
-    impl.* = .{ .inner = picture };
+    impl.inner = picture;
     out.* = impl;
     return SNAIL_OK;
 }

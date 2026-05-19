@@ -314,7 +314,7 @@ pub const VulkanPipeline = struct {
         return .{};
     }
 
-    pub fn backendName(self: *const VulkanPipeline) []const u8 {
+    pub fn backendName(self: *const VulkanPipeline) [:0]const u8 {
         _ = self;
         return "Vulkan";
     }

@@ -1,8 +1,9 @@
 const common = @import("common.zig");
 const std = common.std;
 const snail = common.snail;
-const resolveAllocator = common.resolveAllocator;
-const handleAllocator = common.handleAllocator;
+const createHandle = common.createHandle;
+const createHandleSharingAllocator = common.createHandleSharingAllocator;
+const allocatorForHandle = common.allocatorForHandle;
 const mapError = common.mapError;
 const SnailAllocator = common.SnailAllocator;
 const SNAIL_OK = common.SNAIL_OK;
@@ -41,27 +42,35 @@ pub export fn snail_text_atlas_init(
     out: *?*TextAtlasImpl,
 ) c_int {
     if (spec_count == 0) return SNAIL_ERR_INVALID_ARGUMENT;
-    const allocator = resolveAllocator(alloc_ptr);
-    const zig_specs = allocator.alloc(snail.FaceSpec, spec_count) catch return SNAIL_ERR_OUT_OF_MEMORY;
-    defer allocator.free(zig_specs);
+    const impl = createHandle(TextAtlasImpl, alloc_ptr) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    const allocator = allocatorForHandle(impl);
+    const zig_specs = allocator.alloc(snail.FaceSpec, spec_count) catch {
+        destroyHandle(impl);
+        return SNAIL_ERR_OUT_OF_MEMORY;
+    };
 
     for (specs[0..spec_count], 0..) |spec, i| {
+        const weight = toFontWeight(spec.weight) catch {
+            allocator.free(zig_specs);
+            destroyHandle(impl);
+            return SNAIL_ERR_INVALID_ARGUMENT;
+        };
         zig_specs[i] = .{
             .data = spec.data[0..spec.len],
-            .weight = toFontWeight(spec.weight) catch return SNAIL_ERR_INVALID_ARGUMENT,
+            .weight = weight,
             .italic = spec.italic,
             .fallback = spec.fallback,
             .synthetic = toSyntheticStyle(spec.synthetic),
         };
     }
 
-    const atlas = snail.TextAtlas.init(allocator, zig_specs) catch |err| return mapError(err);
-    const impl = handleAllocator().create(TextAtlasImpl) catch {
-        var doomed = atlas;
-        doomed.deinit();
-        return SNAIL_ERR_OUT_OF_MEMORY;
+    const atlas = snail.TextAtlas.init(allocator, zig_specs) catch |err| {
+        allocator.free(zig_specs);
+        destroyHandle(impl);
+        return mapError(err);
     };
-    impl.* = .{ .inner = atlas, .allocator = allocator };
+    allocator.free(zig_specs);
+    impl.inner = atlas;
     out.* = impl;
     return SNAIL_OK;
 }
@@ -181,13 +190,16 @@ pub export fn snail_text_atlas_shape_utf8(
     text_len: usize,
     out: *?*ShapedTextImpl,
 ) c_int {
-    const shaped = atlas.inner.shapeText(atlas.allocator, toFontStyle(style) catch return SNAIL_ERR_INVALID_ARGUMENT, text[0..text_len]) catch |err| return mapError(err);
-    const impl = handleAllocator().create(ShapedTextImpl) catch {
-        var doomed = shaped;
-        doomed.deinit();
-        return SNAIL_ERR_OUT_OF_MEMORY;
+    const impl = createHandle(ShapedTextImpl, &atlas.handle_allocator.inner) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    const allocator = allocatorForHandle(impl);
+    const shaped = atlas.inner.shapeText(allocator, toFontStyle(style) catch {
+        destroyHandle(impl);
+        return SNAIL_ERR_INVALID_ARGUMENT;
+    }, text[0..text_len]) catch |err| {
+        destroyHandle(impl);
+        return mapError(err);
     };
-    impl.* = .{ .inner = shaped };
+    impl.inner = shaped;
     out.* = impl;
     return SNAIL_OK;
 }
@@ -201,12 +213,12 @@ pub export fn snail_text_atlas_ensure_text(
 ) c_int {
     const next = atlas.inner.ensureText(toFontStyle(style) catch return SNAIL_ERR_INVALID_ARGUMENT, text[0..text_len]) catch |err| return mapError(err);
     if (next) |new_atlas| {
-        const impl = handleAllocator().create(TextAtlasImpl) catch {
+        const impl = createHandleSharingAllocator(TextAtlasImpl, atlas.handle_allocator) catch {
             var doomed = new_atlas;
             doomed.deinit();
             return SNAIL_ERR_OUT_OF_MEMORY;
         };
-        impl.* = .{ .inner = new_atlas, .allocator = atlas.allocator };
+        impl.inner = new_atlas;
         out.* = impl;
     } else {
         out.* = null;
@@ -217,12 +229,12 @@ pub export fn snail_text_atlas_ensure_text(
 pub export fn snail_text_atlas_ensure_shaped(atlas: *const TextAtlasImpl, shaped: *const ShapedTextImpl, out: *?*TextAtlasImpl) c_int {
     const next = atlas.inner.ensureShaped(&shaped.inner) catch |err| return mapError(err);
     if (next) |new_atlas| {
-        const impl = handleAllocator().create(TextAtlasImpl) catch {
+        const impl = createHandleSharingAllocator(TextAtlasImpl, atlas.handle_allocator) catch {
             var doomed = new_atlas;
             doomed.deinit();
             return SNAIL_ERR_OUT_OF_MEMORY;
         };
-        impl.* = .{ .inner = new_atlas, .allocator = atlas.allocator };
+        impl.inner = new_atlas;
         out.* = impl;
     } else {
         out.* = null;
@@ -241,12 +253,12 @@ pub export fn snail_text_atlas_ensure_glyphs(
     const gids = if (glyph_count == 0) &.{} else glyph_ids.?[0..glyph_count];
     const next = atlas.inner.ensureGlyphs(face_index, gids) catch |err| return mapError(err);
     if (next) |new_atlas| {
-        const impl = handleAllocator().create(TextAtlasImpl) catch {
+        const impl = createHandleSharingAllocator(TextAtlasImpl, atlas.handle_allocator) catch {
             var doomed = new_atlas;
             doomed.deinit();
             return SNAIL_ERR_OUT_OF_MEMORY;
         };
-        impl.* = .{ .inner = new_atlas, .allocator = atlas.allocator };
+        impl.inner = new_atlas;
         out.* = impl;
     } else {
         out.* = null;
@@ -313,18 +325,20 @@ pub export fn snail_text_blob_init_from_shaped(
     options: SnailTextAppendOptions,
     out: *?*TextBlobImpl,
 ) c_int {
-    const allocator = resolveAllocator(alloc_ptr);
+    const impl = createHandle(TextBlobImpl, alloc_ptr) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    const allocator = allocatorForHandle(impl);
     const blob = snail.TextBlob.init(allocator, &atlas.inner, .{
         .shaped = &shaped.inner,
         .placement = toTextPlacement(options.placement),
-        .fill = toPaint(options.fill) catch return SNAIL_ERR_INVALID_ARGUMENT,
-    }) catch |err| return mapError(err);
-    const impl = handleAllocator().create(TextBlobImpl) catch {
-        var doomed = blob;
-        doomed.deinit();
-        return SNAIL_ERR_OUT_OF_MEMORY;
+        .fill = toPaint(options.fill) catch {
+            destroyHandle(impl);
+            return SNAIL_ERR_INVALID_ARGUMENT;
+        },
+    }) catch |err| {
+        destroyHandle(impl);
+        return mapError(err);
     };
-    impl.* = .{ .inner = blob };
+    impl.inner = blob;
     out.* = impl;
     return SNAIL_OK;
 }
@@ -338,10 +352,34 @@ pub export fn snail_text_blob_init_text(
     options: SnailTextAppendOptions,
     out: *?*TextBlobImpl,
 ) c_int {
-    const allocator = resolveAllocator(alloc_ptr);
-    var shaped = atlas.inner.shapeText(allocator, toFontStyle(style) catch return SNAIL_ERR_INVALID_ARGUMENT, text[0..text_len]) catch |err| return mapError(err);
-    defer shaped.deinit();
-    return snail_text_blob_init_from_shaped(alloc_ptr, atlas, &.{ .inner = shaped }, options, out);
+    const impl = createHandle(TextBlobImpl, alloc_ptr) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    const allocator = allocatorForHandle(impl);
+    const font_style = toFontStyle(style) catch {
+        destroyHandle(impl);
+        return SNAIL_ERR_INVALID_ARGUMENT;
+    };
+    var shaped = atlas.inner.shapeText(allocator, font_style, text[0..text_len]) catch |err| {
+        destroyHandle(impl);
+        return mapError(err);
+    };
+    const paint = toPaint(options.fill) catch {
+        shaped.deinit();
+        destroyHandle(impl);
+        return SNAIL_ERR_INVALID_ARGUMENT;
+    };
+    const blob = snail.TextBlob.init(allocator, &atlas.inner, .{
+        .shaped = &shaped,
+        .placement = toTextPlacement(options.placement),
+        .fill = paint,
+    }) catch |err| {
+        shaped.deinit();
+        destroyHandle(impl);
+        return mapError(err);
+    };
+    shaped.deinit();
+    impl.inner = blob;
+    out.* = impl;
+    return SNAIL_OK;
 }
 
 pub export fn snail_text_blob_deinit(blob: ?*TextBlobImpl) void {
@@ -361,14 +399,13 @@ pub export fn snail_text_blob_rebound(
     atlas: *const TextAtlasImpl,
     out: *?*TextBlobImpl,
 ) c_int {
-    const allocator = resolveAllocator(alloc_ptr);
-    const rebound = blob.inner.rebound(allocator, &atlas.inner) catch |err| return mapError(err);
-    const impl = handleAllocator().create(TextBlobImpl) catch {
-        var doomed = rebound;
-        doomed.deinit();
-        return SNAIL_ERR_OUT_OF_MEMORY;
+    const impl = createHandle(TextBlobImpl, alloc_ptr) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    const allocator = allocatorForHandle(impl);
+    const rebound = blob.inner.rebound(allocator, &atlas.inner) catch |err| {
+        destroyHandle(impl);
+        return mapError(err);
     };
-    impl.* = .{ .inner = rebound };
+    impl.inner = rebound;
     out.* = impl;
     return SNAIL_OK;
 }

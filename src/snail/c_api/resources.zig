@@ -1,8 +1,10 @@
 const common = @import("common.zig");
+const std = common.std;
 const snail = common.snail;
 const build_options = common.build_options;
-const resolveAllocator = common.resolveAllocator;
-const handleAllocator = common.handleAllocator;
+const c_runtime = common.c_runtime;
+const createHandle = common.createHandle;
+const allocatorForHandle = common.allocatorForHandle;
 const mapError = common.mapError;
 const SnailAllocator = common.SnailAllocator;
 const SNAIL_OK = common.SNAIL_OK;
@@ -41,20 +43,21 @@ const RendererImpl = common.RendererImpl;
 const destroyHandle = common.destroyHandle;
 
 pub export fn snail_resource_manifest_init(alloc_ptr: ?*const SnailAllocator, capacity: usize, out: *?*ResourceManifestImpl) c_int {
-    const allocator = resolveAllocator(alloc_ptr);
-    const entries = allocator.alloc(snail.ResourceManifest.Entry, capacity) catch return SNAIL_ERR_OUT_OF_MEMORY;
-    const impl = handleAllocator().create(ResourceManifestImpl) catch {
-        allocator.free(entries);
+    const impl = createHandle(ResourceManifestImpl, alloc_ptr) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    const allocator = allocatorForHandle(impl);
+    const entries = allocator.alloc(snail.ResourceManifest.Entry, capacity) catch {
+        destroyHandle(impl);
         return SNAIL_ERR_OUT_OF_MEMORY;
     };
-    impl.* = .{ .inner = snail.ResourceManifest.init(entries), .entries = entries, .allocator = allocator };
+    impl.inner = snail.ResourceManifest.init(entries);
+    impl.entries = entries;
     out.* = impl;
     return SNAIL_OK;
 }
 
 pub export fn snail_resource_manifest_deinit(set: ?*ResourceManifestImpl) void {
     if (set) |s| {
-        s.allocator.free(s.entries);
+        allocatorForHandle(s).free(s.entries);
         destroyHandle(s);
     }
 }
@@ -154,14 +157,13 @@ pub export fn snail_prepared_scene_init(
     scene: *const SceneImpl,
     out: *?*PreparedSceneImpl,
 ) c_int {
-    const allocator = resolveAllocator(alloc_ptr);
-    const prepared_scene = snail.PreparedScene.initOwned(allocator, &prepared.inner, &scene.inner) catch |err| return mapError(err);
-    const impl = handleAllocator().create(PreparedSceneImpl) catch {
-        var doomed = prepared_scene;
-        doomed.deinit();
-        return SNAIL_ERR_OUT_OF_MEMORY;
+    const impl = createHandle(PreparedSceneImpl, alloc_ptr) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    const allocator = allocatorForHandle(impl);
+    const prepared_scene = snail.PreparedScene.initOwned(allocator, &prepared.inner, &scene.inner) catch |err| {
+        destroyHandle(impl);
+        return mapError(err);
     };
-    impl.* = .{ .inner = prepared_scene };
+    impl.inner = prepared_scene;
     out.* = impl;
     return SNAIL_OK;
 }
@@ -182,9 +184,9 @@ pub export fn snail_prepared_scene_segment_count(scene: *const PreparedSceneImpl
 }
 
 pub export fn snail_prepared_resource_retirement_queue_init(alloc_ptr: ?*const SnailAllocator, out: *?*PreparedResourceRetirementQueueImpl) c_int {
-    const allocator = resolveAllocator(alloc_ptr);
-    const impl = handleAllocator().create(PreparedResourceRetirementQueueImpl) catch return SNAIL_ERR_OUT_OF_MEMORY;
-    impl.* = .{ .inner = snail.PreparedResourceRetirementQueue.init(allocator), .allocator = allocator };
+    const impl = createHandle(PreparedResourceRetirementQueueImpl, alloc_ptr) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    impl.inner = snail.PreparedResourceRetirementQueue.init(allocatorForHandle(impl));
+    impl.retained_resource_allocators = .empty;
     out.* = impl;
     return SNAIL_OK;
 }
@@ -192,6 +194,8 @@ pub export fn snail_prepared_resource_retirement_queue_init(alloc_ptr: ?*const S
 pub export fn snail_prepared_resource_retirement_queue_deinit(queue: ?*PreparedResourceRetirementQueueImpl) void {
     if (queue) |q| {
         q.inner.deinit();
+        for (q.retained_resource_allocators.items) |allocator| c_runtime.destroyStoredAllocator(allocator);
+        q.retained_resource_allocators.deinit(allocatorForHandle(q));
         destroyHandle(q);
     }
 }
@@ -200,8 +204,33 @@ pub export fn snail_prepared_resource_retirement_queue_sweep(queue: *PreparedRes
     queue.inner.sweep();
 }
 
+fn preparedRetirementMayDelay(prepared: *const PreparedResourcesImpl) bool {
+    if (comptime build_options.enable_vulkan) return prepared.inner.resident.vulkan != null;
+    return false;
+}
+
+fn retainPreparedResourceAllocator(queue: *PreparedResourceRetirementQueueImpl, prepared: *PreparedResourcesImpl) !*c_runtime.StoredAllocator {
+    const retained = c_runtime.retainStoredAllocator(prepared.handle_allocator);
+    errdefer c_runtime.destroyStoredAllocator(retained);
+    try queue.retained_resource_allocators.append(allocatorForHandle(queue), retained);
+    return retained;
+}
+
+fn undoRetainedPreparedResourceAllocator(queue: *PreparedResourceRetirementQueueImpl, retained: *c_runtime.StoredAllocator) void {
+    std.debug.assert(queue.retained_resource_allocators.items.len > 0);
+    queue.retained_resource_allocators.items.len -= 1;
+    c_runtime.destroyStoredAllocator(retained);
+}
+
 pub export fn snail_prepared_resource_retirement_queue_retire(queue: *PreparedResourceRetirementQueueImpl, prepared: *PreparedResourcesImpl) c_int {
-    queue.inner.retireAfter(&prepared.inner, {}) catch |err| return mapError(err);
+    const retained_allocator = if (preparedRetirementMayDelay(prepared))
+        retainPreparedResourceAllocator(queue, prepared) catch return SNAIL_ERR_OUT_OF_MEMORY
+    else
+        null;
+    queue.inner.retireAfter(&prepared.inner, {}) catch |err| {
+        if (retained_allocator) |retained| undoRetainedPreparedResourceAllocator(queue, retained);
+        return mapError(err);
+    };
     destroyHandle(prepared);
     return SNAIL_OK;
 }
@@ -215,31 +244,29 @@ pub export fn snail_draw_list_estimate_segment_count(scene: *const SceneImpl) us
 }
 
 pub export fn snail_draw_list_init(alloc_ptr: ?*const SnailAllocator, word_capacity: usize, segment_capacity: usize, out: *?*DrawListImpl) c_int {
-    const allocator = resolveAllocator(alloc_ptr);
-    const words = allocator.alloc(u32, word_capacity) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    const impl = createHandle(DrawListImpl, alloc_ptr) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    const allocator = allocatorForHandle(impl);
+    const words = allocator.alloc(u32, word_capacity) catch {
+        destroyHandle(impl);
+        return SNAIL_ERR_OUT_OF_MEMORY;
+    };
     const segments = allocator.alloc(snail.DrawSegment, segment_capacity) catch {
         allocator.free(words);
+        destroyHandle(impl);
         return SNAIL_ERR_OUT_OF_MEMORY;
     };
-    const impl = handleAllocator().create(DrawListImpl) catch {
-        allocator.free(segments);
-        allocator.free(words);
-        return SNAIL_ERR_OUT_OF_MEMORY;
-    };
-    impl.* = .{
-        .inner = snail.DrawList.init(words, segments),
-        .allocator = allocator,
-        .words = words,
-        .segments = segments,
-    };
+    impl.inner = snail.DrawList.init(words, segments);
+    impl.words = words;
+    impl.segments = segments;
     out.* = impl;
     return SNAIL_OK;
 }
 
 pub export fn snail_draw_list_deinit(list: ?*DrawListImpl) void {
     if (list) |l| {
-        l.allocator.free(l.words);
-        l.allocator.free(l.segments);
+        const allocator = allocatorForHandle(l);
+        allocator.free(l.words);
+        allocator.free(l.segments);
         destroyHandle(l);
     }
 }
@@ -279,24 +306,21 @@ pub export fn snail_text_coverage_records_word_capacity_for_blob(blob: *const Te
 }
 
 pub export fn snail_text_coverage_records_init(alloc_ptr: ?*const SnailAllocator, word_capacity: usize, out: *?*TextCoverageRecordsImpl) c_int {
-    const allocator = resolveAllocator(alloc_ptr);
-    const words = allocator.alloc(u32, word_capacity) catch return SNAIL_ERR_OUT_OF_MEMORY;
-    const impl = handleAllocator().create(TextCoverageRecordsImpl) catch {
-        allocator.free(words);
+    const impl = createHandle(TextCoverageRecordsImpl, alloc_ptr) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    const allocator = allocatorForHandle(impl);
+    const words = allocator.alloc(u32, word_capacity) catch {
+        destroyHandle(impl);
         return SNAIL_ERR_OUT_OF_MEMORY;
     };
-    impl.* = .{
-        .inner = snail.coverage.TextCoverageRecords.init(words),
-        .allocator = allocator,
-        .words = words,
-    };
+    impl.inner = snail.coverage.TextCoverageRecords.init(words);
+    impl.words = words;
     out.* = impl;
     return SNAIL_OK;
 }
 
 pub export fn snail_text_coverage_records_deinit(records: ?*TextCoverageRecordsImpl) void {
     if (records) |r| {
-        r.allocator.free(r.words);
+        allocatorForHandle(r).free(r.words);
         destroyHandle(r);
     }
 }
@@ -351,8 +375,8 @@ fn coverageBackendPrepared(backend: *const CoverageBackendImpl) ?*const snail.Pr
 pub export fn snail_coverage_backend_init(renderer: *RendererImpl, prepared: *const PreparedResourcesImpl, out: *?*CoverageBackendImpl) c_int {
     var erased = renderer.asRenderer();
     const backend = prepared.inner.coverageBackend(&erased) orelse return SNAIL_ERR_INVALID_ARGUMENT;
-    const impl = handleAllocator().create(CoverageBackendImpl) catch return SNAIL_ERR_OUT_OF_MEMORY;
-    impl.* = .{ .inner = backend };
+    const impl = createHandle(CoverageBackendImpl, null) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    impl.inner = backend;
     out.* = impl;
     return SNAIL_OK;
 }

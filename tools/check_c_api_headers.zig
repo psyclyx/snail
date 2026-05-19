@@ -6,7 +6,25 @@ const File = struct {
 
 const Signature = struct {
     name: []const u8,
+    return_kind: ReturnKind,
     param_count: usize,
+};
+
+const ReturnKind = enum {
+    void,
+    int,
+    bool,
+    size,
+    u32,
+    u16,
+    i16,
+    f32,
+    string,
+    resource_key,
+    mat4,
+    pointer,
+    vulkan_handle,
+    other,
 };
 
 const sources = [_]File{
@@ -58,6 +76,15 @@ pub fn main(init: std.process.Init) !void {
                 });
                 mismatch = true;
             }
+            if (header.return_kind != exported.return_kind) {
+                std.debug.print("{s}: exported {s} has return kind {t}, header declares {t}\n", .{
+                    source.path,
+                    exported.name,
+                    exported.return_kind,
+                    header.return_kind,
+                });
+                mismatch = true;
+            }
         }
     }
 
@@ -98,11 +125,13 @@ fn parseZigExports(allocator: std.mem.Allocator, contents: []const u8, out: *std
         const name = std.mem.trim(u8, tail[0..name_end], " \n\r\t");
         const params_start = start + name_end;
         const params_end = findMatchingParen(contents, params_start) orelse return error.InvalidExportSignature;
+        const body_start = std.mem.indexOfScalarPos(u8, contents, params_end + 1, '{') orelse return error.InvalidExportSignature;
         try out.append(allocator, .{
             .name = name,
+            .return_kind = zigReturnKind(std.mem.trim(u8, contents[params_end + 1 .. body_start], " \n\r\t")),
             .param_count = countParams(contents[params_start + 1 .. params_end]),
         });
-        cursor = params_end + 1;
+        cursor = body_start + 1;
     }
 }
 
@@ -125,18 +154,30 @@ fn parseHeaderPrototypes(header_blob: []const u8, out: *std.StringHashMap(Signat
             continue;
         }
         const name = header_blob[name_start..name_end];
+        const return_start = lastLineStart(header_blob, name_start);
+        const return_type = std.mem.trim(u8, header_blob[return_start..name_start], " \n\r\t");
         const sig = Signature{
             .name = name,
+            .return_kind = headerReturnKind(return_type),
             .param_count = countParams(header_blob[paren + 1 .. close]),
         };
         const result = try out.getOrPut(name);
-        if (result.found_existing and result.value_ptr.param_count != sig.param_count) {
+        if (result.found_existing and (result.value_ptr.param_count != sig.param_count or result.value_ptr.return_kind != sig.return_kind)) {
             std.debug.print("conflicting public header declarations for {s}\n", .{name});
             return error.CApiHeaderMismatch;
         }
         result.value_ptr.* = sig;
         cursor = semi + 1;
     }
+}
+
+fn lastLineStart(bytes: []const u8, before: usize) usize {
+    var i = before;
+    while (i > 0) {
+        if (bytes[i - 1] == '\n') return i;
+        i -= 1;
+    }
+    return 0;
 }
 
 fn findMatchingParen(bytes: []const u8, open_index: usize) ?usize {
@@ -179,6 +220,40 @@ fn countParams(params: []const u8) usize {
     };
     if (std.mem.trim(u8, trimmed[param_start..], " \n\r\t").len != 0) count += 1;
     return count;
+}
+
+fn zigReturnKind(return_type: []const u8) ReturnKind {
+    if (std.mem.eql(u8, return_type, "void")) return .void;
+    if (std.mem.eql(u8, return_type, "c_int")) return .int;
+    if (std.mem.eql(u8, return_type, "bool")) return .bool;
+    if (std.mem.eql(u8, return_type, "usize")) return .size;
+    if (std.mem.eql(u8, return_type, "u32")) return .u32;
+    if (std.mem.eql(u8, return_type, "u16")) return .u16;
+    if (std.mem.eql(u8, return_type, "i16")) return .i16;
+    if (std.mem.eql(u8, return_type, "f32")) return .f32;
+    if (std.mem.eql(u8, return_type, "SnailString")) return .string;
+    if (std.mem.eql(u8, return_type, "SnailResourceKey")) return .resource_key;
+    if (std.mem.eql(u8, return_type, "SnailMat4")) return .mat4;
+    if (std.mem.startsWith(u8, return_type, "?[*]") or std.mem.startsWith(u8, return_type, "[*:")) return .pointer;
+    if (std.mem.startsWith(u8, return_type, "vk.Vk")) return .vulkan_handle;
+    return .other;
+}
+
+fn headerReturnKind(return_type: []const u8) ReturnKind {
+    if (std.mem.eql(u8, return_type, "void")) return .void;
+    if (std.mem.eql(u8, return_type, "int")) return .int;
+    if (std.mem.eql(u8, return_type, "bool")) return .bool;
+    if (std.mem.eql(u8, return_type, "size_t")) return .size;
+    if (std.mem.eql(u8, return_type, "uint32_t")) return .u32;
+    if (std.mem.eql(u8, return_type, "uint16_t")) return .u16;
+    if (std.mem.eql(u8, return_type, "int16_t")) return .i16;
+    if (std.mem.eql(u8, return_type, "float")) return .f32;
+    if (std.mem.eql(u8, return_type, "SnailString")) return .string;
+    if (std.mem.eql(u8, return_type, "SnailResourceKey")) return .resource_key;
+    if (std.mem.eql(u8, return_type, "SnailMat4")) return .mat4;
+    if (std.mem.endsWith(u8, return_type, "*")) return .pointer;
+    if (std.mem.startsWith(u8, return_type, "Vk")) return .vulkan_handle;
+    return .other;
 }
 
 fn isIdent(c: u8) bool {

@@ -129,9 +129,11 @@ views. Scheduled uploads own their plan and destination resources until they are
 published or cancelled; the renderer/backend they borrow must outlive them.
 
 C handles are owned by Snail and must be released by the matching `*_deinit`
-function. Runtime allocators are payload allocators unless an API explicitly
-states that handle allocation also uses them. Resetting a handle may retain
-capacity; destroying it releases that capacity.
+function. The C API copies the `SnailAllocator` descriptor when a handle is
+created; the descriptor pointer may be stack-local, but its callbacks and
+`ctx` must remain valid until every handle or derived snapshot using it has
+been destroyed. Resetting a handle may retain capacity; destroying it releases
+that capacity.
 
 ## Hinting And Pixel Snapping
 
@@ -623,7 +625,7 @@ try scene.addPath(.{ .picture = &sprite, .resource_key = snail.ResourceKey.named
 
 ### ResourceManifest
 
-`ResourceManifest` is a caller-buffered manifest of CPU resources to prepare for a renderer. Entries borrow their source objects; keep those objects alive through the blocking upload or through `pending.record` for a scheduled upload. GPU backends copy texture payload during upload. CPU-backed `PreparedResources` still borrow uploaded atlas band/layer-info data and image pixels, so keep uploaded `TextAtlas`, painted `TextBlob`, `PathPicture`, and `Image` values alive until those CPU prepared resources are retired.
+`ResourceManifest` is a caller-buffered manifest of CPU resources to prepare for a renderer. Entries borrow their source objects; keep those objects alive through the blocking upload or through `pending.record` for a scheduled upload. GPU backends copy texture payload during upload into renderer-owned caches. CPU-backed `PreparedResources` own the prepared snapshots they sample at draw time.
 
 | Method | Description |
 |--------|-------------|
@@ -816,8 +818,8 @@ build-only internal modules.
 |------|------|
 | `TextAtlas` | Immutable snapshot. Safe for concurrent reads. `ensureText`, `ensureShaped`, and `ensureGlyphs` return a new snapshot; old remains valid for in-flight readers. |
 | `TextBlob`, `PathPicture`, `Image` | Safe for concurrent reads while the borrowed atlas / pictures / pixels outlive the reader. `TextBlob.rebound` returns a new blob instead of mutating the existing one. |
-| `ResourceManifest`, `Scene` | Borrowed manifests/lists. Source values must outlive upload/record building; CPU prepared resources extend some source lifetimes as described below. |
-| `PreparedResources` | Backend/context-specific. GPU prepared resources own backend texture uploads. CPU prepared resources own prepared curve sidecars but still borrow atlas band/layer-info data, painted `TextBlob` layer-info data, and image pixels. |
+| `ResourceManifest`, `Scene` | Borrowed manifests/lists. Source values must outlive upload/record building. |
+| `PreparedResources` | Backend/context-specific. GPU prepared resources reference renderer-owned residency; CPU prepared resources own the prepared snapshots they sample. |
 | `DrawList` | Caller-owned buffer. Thread-local — no sharing needed. |
 | `Renderer` | Single-threaded. Must be called from the GL/Vulkan context thread. |
 | `CpuRenderer` | Single-threaded by default. Pass a `*snail.ThreadPool` via `cpu.setThreadPool` to enable internal scanline-tiled parallelism; the renderer fans tile work out and joins before each draw returns, so calls remain serial from the caller's perspective. |

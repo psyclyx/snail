@@ -183,7 +183,7 @@ pub const Renderer = if (build_options.enable_vulkan) struct {
         return pending.uploader.ptr == @as(*anyopaque, @ptrCast(self.state)) and pending.uploader.backend() == .vulkan;
     }
 
-    pub fn backendName(self: *const Self) []const u8 {
+    pub fn backendName(self: *const Self) [:0]const u8 {
         return self.state.backendName();
     }
 

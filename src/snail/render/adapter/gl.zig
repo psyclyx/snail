@@ -150,7 +150,7 @@ pub const Renderer = if (build_options.enable_opengl) struct {
         return null;
     }
 
-    pub fn backendName(self: *const Self) []const u8 {
+    pub fn backendName(self: *const Self) [:0]const u8 {
         return self.state.backendName();
     }
 

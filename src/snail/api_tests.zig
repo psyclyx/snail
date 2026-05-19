@@ -275,7 +275,7 @@ test "draw dispatch uses only prepared stamps and caller records" {
         fn beginDraw(ptr: *anyopaque) void {
             state(ptr).begin_count += 1;
         }
-        fn backendName(_: *anyopaque) []const u8 {
+        fn backendName(_: *anyopaque) [:0]const u8 {
             return "fake";
         }
         fn uploadResources(_: *anyopaque, _: snail.UploadAllocators, _: *PreparedResources, _: ResourceUploadBatch) anyerror!void {}

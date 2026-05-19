@@ -2,12 +2,13 @@ const common = @import("common.zig");
 const std = common.std;
 const snail = common.snail;
 const build_options = common.build_options;
+const c_runtime = common.c_runtime;
 const vk = common.vk;
 const vulkan_pipeline = if (build_options.enable_vulkan) @import("../render/backend/vulkan/pipeline.zig") else struct {
     pub const VulkanPipeline = void;
 };
-const resolveAllocator = common.resolveAllocator;
-const handleAllocator = common.handleAllocator;
+const createHandle = common.createHandle;
+const allocatorForHandle = common.allocatorForHandle;
 const mapError = common.mapError;
 const SnailAllocator = common.SnailAllocator;
 const SNAIL_OK = common.SNAIL_OK;
@@ -42,13 +43,13 @@ fn cpuPixels(pixels: ?[*]u8, width: u32, height: u32, stride: u32) ?[*]u8 {
 
 pub export fn snail_gl_renderer_init(out: *?*RendererImpl) c_int {
     if (comptime build_options.enable_opengl) {
-        const gl = snail.GlRenderer.init(handleAllocator()) catch return SNAIL_ERR_RENDERER_FAILED;
-        const impl = handleAllocator().create(RendererImpl) catch {
-            var doomed = gl;
-            doomed.deinit();
-            return SNAIL_ERR_OUT_OF_MEMORY;
+        const impl = createHandle(RendererImpl, null) catch return SNAIL_ERR_OUT_OF_MEMORY;
+        const gl = snail.GlRenderer.init(allocatorForHandle(impl)) catch {
+            destroyHandle(impl);
+            return SNAIL_ERR_RENDERER_FAILED;
         };
-        impl.* = .{ .backend = .gl, .gl = gl };
+        impl.backend = .gl;
+        impl.gl = gl;
         out.* = impl;
         return SNAIL_OK;
     } else {
@@ -73,10 +74,10 @@ fn initThreadPool(
     out: *?*ThreadPoolImpl,
 ) c_int {
     if (comptime !build_options.enable_cpu) return SNAIL_ERR_RENDERER_FAILED;
-    const allocator = resolveAllocator(alloc_ptr);
-    const impl = handleAllocator().create(ThreadPoolImpl) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    const impl = createHandle(ThreadPoolImpl, alloc_ptr) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    const allocator = allocatorForHandle(impl);
     impl.inner.init(allocator, .{ .threads = worker_count }) catch |err| {
-        handleAllocator().destroy(impl);
+        destroyHandle(impl);
         return mapThreadPoolInitError(err);
     };
     out.* = impl;
@@ -113,8 +114,9 @@ pub export fn snail_cpu_renderer_init(pixels: ?[*]u8, width: u32, height: u32, s
     if (comptime build_options.enable_cpu) {
         const pixel_ptr = cpuPixels(pixels, width, height, stride) orelse return SNAIL_ERR_INVALID_ARGUMENT;
         const cpu = snail.CpuRenderer.init(pixel_ptr, width, height, stride);
-        const impl = handleAllocator().create(RendererImpl) catch return SNAIL_ERR_OUT_OF_MEMORY;
-        impl.* = .{ .backend = .cpu, .cpu = cpu };
+        const impl = createHandle(RendererImpl, null) catch return SNAIL_ERR_OUT_OF_MEMORY;
+        impl.backend = .cpu;
+        impl.cpu = cpu;
         out.* = impl;
         return SNAIL_OK;
     } else {
@@ -158,13 +160,13 @@ pub export fn snail_vulkan_renderer_init(ctx: *const SnailVulkanContext, out: *?
             .color_format = ctx.color_format,
             .supports_dual_source_blend = ctx.supports_dual_source_blend,
         };
-        const vk_renderer = snail.VulkanRenderer.init(handleAllocator(), vk_ctx) catch return SNAIL_ERR_RENDERER_FAILED;
-        const impl = handleAllocator().create(RendererImpl) catch {
-            var doomed = vk_renderer;
-            doomed.deinit();
-            return SNAIL_ERR_OUT_OF_MEMORY;
+        const impl = createHandle(RendererImpl, null) catch return SNAIL_ERR_OUT_OF_MEMORY;
+        const vk_renderer = snail.VulkanRenderer.init(allocatorForHandle(impl), vk_ctx) catch {
+            destroyHandle(impl);
+            return SNAIL_ERR_RENDERER_FAILED;
         };
-        impl.* = .{ .backend = .vulkan, .vulkan = vk_renderer };
+        impl.backend = .vulkan;
+        impl.vulkan = vk_renderer;
         out.* = impl;
         return SNAIL_OK;
     } else {
@@ -182,8 +184,8 @@ pub export fn snail_vulkan_renderer_frame(
     if (renderer.backend != .vulkan) return SNAIL_ERR_INVALID_ARGUMENT;
     if (renderer.vulkan) |*vk_renderer| {
         const frame = vk_renderer.frame(.{ .cmd = command_buffer, .slot = frame_slot });
-        const impl = handleAllocator().create(VulkanFrameImpl) catch return SNAIL_ERR_OUT_OF_MEMORY;
-        impl.* = .{ .inner = frame };
+        const impl = createHandle(VulkanFrameImpl, null) catch return SNAIL_ERR_OUT_OF_MEMORY;
+        impl.inner = frame;
         out.* = impl;
         return SNAIL_OK;
     }
@@ -245,8 +247,8 @@ pub export fn snail_vulkan_frame_coverage_backend(
 ) c_int {
     if (comptime !build_options.enable_vulkan) return SNAIL_ERR_RENDERER_FAILED;
     const backend = frame.inner.coverageBackend(&prepared.inner) orelse return SNAIL_ERR_INVALID_ARGUMENT;
-    const impl = handleAllocator().create(CoverageBackendImpl) catch return SNAIL_ERR_OUT_OF_MEMORY;
-    impl.* = .{ .inner = backend };
+    const impl = createHandle(CoverageBackendImpl, null) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    impl.inner = backend;
     out.* = impl;
     return SNAIL_OK;
 }
@@ -283,7 +285,22 @@ pub export fn snail_vulkan_pending_resource_upload_ready_fence(pending: *Pending
 
 pub export fn snail_vulkan_prepared_resource_retirement_queue_retire_after(queue: *PreparedResourceRetirementQueueImpl, prepared: *PreparedResourcesImpl, fence: vk.VkFence) c_int {
     if (comptime !build_options.enable_vulkan) return SNAIL_ERR_RENDERER_FAILED;
-    queue.inner.retireAfter(&prepared.inner, fence) catch |err| return mapError(err);
+    const retained_allocator = if (prepared.inner.resident.vulkan != null) blk: {
+        const retained = c_runtime.retainStoredAllocator(prepared.handle_allocator);
+        queue.retained_resource_allocators.append(allocatorForHandle(queue), retained) catch {
+            c_runtime.destroyStoredAllocator(retained);
+            return SNAIL_ERR_OUT_OF_MEMORY;
+        };
+        break :blk retained;
+    } else null;
+    queue.inner.retireAfter(&prepared.inner, fence) catch |err| {
+        if (retained_allocator) |retained| {
+            std.debug.assert(queue.retained_resource_allocators.items.len > 0);
+            queue.retained_resource_allocators.items.len -= 1;
+            c_runtime.destroyStoredAllocator(retained);
+        }
+        return mapError(err);
+    };
     destroyHandle(prepared);
     return SNAIL_OK;
 }

@@ -259,7 +259,7 @@ pub const GlTextState = struct {
         return .{};
     }
 
-    pub fn backendName(self: *const GlTextState) []const u8 {
+    pub fn backendName(self: *const GlTextState) [:0]const u8 {
         return switch (self.backend) {
             .gl33 => "GL 3.3",
             .gl44 => "GL 4.4 (persistent mapped)",
@@ -715,7 +715,7 @@ pub fn beginFrame() void {
     state.beginDraw();
 }
 
-pub fn backendName() []const u8 {
+pub fn backendName() [:0]const u8 {
     return state.backendName();
 }
 

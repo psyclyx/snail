@@ -1,7 +1,8 @@
 const common = @import("common.zig");
 const snail = common.snail;
-const resolveAllocator = common.resolveAllocator;
-const handleAllocator = common.handleAllocator;
+const createHandle = common.createHandle;
+const createHandleSharingAllocator = common.createHandleSharingAllocator;
+const allocatorForHandle = common.allocatorForHandle;
 const mapError = common.mapError;
 const SnailAllocator = common.SnailAllocator;
 const SNAIL_OK = common.SNAIL_OK;
@@ -34,7 +35,7 @@ pub export fn snail_renderer_deinit(renderer: ?*RendererImpl) void {
 }
 
 pub export fn snail_renderer_backend_name(renderer: *const RendererImpl) [*:0]const u8 {
-    return @ptrCast(renderer.backendName().ptr);
+    return renderer.backendName().ptr;
 }
 
 pub export fn snail_renderer_resource_cache_stats(renderer: *RendererImpl, out: *SnailResourceCacheStats) void {
@@ -53,15 +54,14 @@ pub export fn snail_renderer_upload_resources_blocking(
     set: *const ResourceManifestImpl,
     out: *?*PreparedResourcesImpl,
 ) c_int {
-    const allocator = resolveAllocator(alloc_ptr);
+    const impl = createHandle(PreparedResourcesImpl, alloc_ptr) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    const allocator = allocatorForHandle(impl);
     var erased = renderer.asRenderer();
-    const prepared = erased.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set.inner) catch |err| return mapError(err);
-    const impl = handleAllocator().create(PreparedResourcesImpl) catch {
-        var doomed = prepared;
-        doomed.deinit();
-        return SNAIL_ERR_OUT_OF_MEMORY;
+    const prepared = erased.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set.inner) catch |err| {
+        destroyHandle(impl);
+        return mapError(err);
     };
-    impl.* = .{ .inner = prepared };
+    impl.inner = prepared;
     out.* = impl;
     return SNAIL_OK;
 }
@@ -73,19 +73,18 @@ pub export fn snail_renderer_plan_resource_upload(
     next_set: *const ResourceManifestImpl,
     out: *?*ResourceUploadPlanImpl,
 ) c_int {
-    const allocator = resolveAllocator(alloc_ptr);
+    const impl = createHandle(ResourceUploadPlanImpl, alloc_ptr) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    const allocator = allocatorForHandle(impl);
     var erased = renderer.asRenderer();
     const plan = erased.planResourceUpload(
         allocator,
         if (current) |prepared| &prepared.inner else null,
         &next_set.inner,
-    ) catch |err| return mapError(err);
-    const impl = handleAllocator().create(ResourceUploadPlanImpl) catch {
-        var doomed = plan;
-        doomed.deinit();
-        return SNAIL_ERR_OUT_OF_MEMORY;
+    ) catch |err| {
+        destroyHandle(impl);
+        return mapError(err);
     };
-    impl.* = .{ .inner = plan };
+    impl.inner = plan;
     out.* = impl;
     return SNAIL_OK;
 }
@@ -114,7 +113,7 @@ pub export fn snail_resource_upload_plan_summary(plan: *const ResourceUploadPlan
 pub export fn snail_resource_upload_plan_changed_key(plan: *const ResourceUploadPlanImpl, index: usize, out: *SnailResourceKey) bool {
     const keys = plan.inner.diff.keys();
     if (index >= keys.len) return false;
-    out.* = keys[index].id;
+    out.* = keys[index].toExternalOpaque();
     return true;
 }
 
@@ -124,15 +123,14 @@ pub export fn snail_renderer_begin_resource_upload(
     plan: *const ResourceUploadPlanImpl,
     out: *?*PendingResourceUploadImpl,
 ) c_int {
-    const allocator = resolveAllocator(alloc_ptr);
+    const impl = createHandle(PendingResourceUploadImpl, alloc_ptr) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    const allocator = allocatorForHandle(impl);
     var erased = renderer.asRenderer();
-    const pending = erased.beginResourceUpload(.{ .persistent = allocator, .scratch = allocator }, &plan.inner) catch |err| return mapError(err);
-    const impl = handleAllocator().create(PendingResourceUploadImpl) catch {
-        var doomed = pending;
-        doomed.deinit();
-        return SNAIL_ERR_OUT_OF_MEMORY;
+    const pending = erased.beginResourceUpload(.{ .persistent = allocator, .scratch = allocator }, &plan.inner) catch |err| {
+        destroyHandle(impl);
+        return mapError(err);
     };
-    impl.* = .{ .inner = pending };
+    impl.inner = pending;
     out.* = impl;
     return SNAIL_OK;
 }
@@ -167,12 +165,12 @@ pub export fn snail_pending_resource_upload_ready_now(pending: *PendingResourceU
 
 pub export fn snail_pending_resource_upload_publish(pending: *PendingResourceUploadImpl, out: *?*PreparedResourcesImpl) c_int {
     const prepared = pending.inner.publish() catch |err| return mapError(err);
-    const impl = handleAllocator().create(PreparedResourcesImpl) catch {
+    const impl = createHandleSharingAllocator(PreparedResourcesImpl, pending.handle_allocator) catch {
         var doomed = prepared;
         doomed.deinit();
         return SNAIL_ERR_OUT_OF_MEMORY;
     };
-    impl.* = .{ .inner = prepared };
+    impl.inner = prepared;
     out.* = impl;
     return SNAIL_OK;
 }

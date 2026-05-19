@@ -63,7 +63,7 @@ pub const Renderer = struct {
         coverage: CoverageVTable,
         draw: DrawVTable,
         resource_cache: ResourceCacheVTable,
-        backendName: *const fn (*anyopaque) []const u8,
+        backendName: *const fn (*anyopaque) [:0]const u8,
     };
 
     /// Blocking upload for simple programs. GL requires the target context to
@@ -198,7 +198,7 @@ pub const Renderer = struct {
         try self.vtable.draw.drawPaths(self.ptr, backend_prepared, vertices, state, texture_layer_base);
     }
 
-    pub fn backendName(self: *const Renderer) []const u8 {
+    pub fn backendName(self: *const Renderer) [:0]const u8 {
         return self.vtable.backendName(@constCast(self.ptr));
     }
 };
@@ -208,7 +208,7 @@ pub const ResourceUploader = struct {
     backend_kind: BackendKind,
     upload: *const Renderer.UploadVTable,
     resource_cache: *const Renderer.ResourceCacheVTable,
-    backendNameFn: *const fn (*anyopaque) []const u8,
+    backendNameFn: *const fn (*anyopaque) [:0]const u8,
 
     pub fn uploadResourcesBlocking(self: *ResourceUploader, allocators: UploadAllocators, set: *const ResourceManifest) !PreparedResources {
         return uploadPreparedResources(self, set, allocators);
@@ -258,7 +258,7 @@ pub const ResourceUploader = struct {
         return self.resource_cache.imageArrayWouldRebuild(prepared, capacity_count, capacity_width, capacity_height);
     }
 
-    pub fn backendName(self: *const ResourceUploader) []const u8 {
+    pub fn backendName(self: *const ResourceUploader) [:0]const u8 {
         return self.backendNameFn(@constCast(self.ptr));
     }
 };
@@ -313,19 +313,19 @@ fn disabledImageArrayWouldRebuild(_: *const PreparedResources, _: u32, _: u32, _
     return false;
 }
 
-fn disabledGlBackendName(_: *anyopaque) []const u8 {
+fn disabledGlBackendName(_: *anyopaque) [:0]const u8 {
     return "OpenGL (disabled)";
 }
 
-fn disabledVulkanBackendName(_: *anyopaque) []const u8 {
+fn disabledVulkanBackendName(_: *anyopaque) [:0]const u8 {
     return "Vulkan (disabled)";
 }
 
-fn disabledCpuBackendName(_: *anyopaque) []const u8 {
+fn disabledCpuBackendName(_: *anyopaque) [:0]const u8 {
     return "CPU (disabled)";
 }
 
-fn disabledBackendName(comptime backend_kind: BackendKind) *const fn (*anyopaque) []const u8 {
+fn disabledBackendName(comptime backend_kind: BackendKind) *const fn (*anyopaque) [:0]const u8 {
     return switch (backend_kind) {
         .gl => &disabledGlBackendName,
         .vulkan => &disabledVulkanBackendName,

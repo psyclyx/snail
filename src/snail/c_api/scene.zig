@@ -1,8 +1,8 @@
 const common = @import("common.zig");
 const std = common.std;
 const snail = common.snail;
-const resolveAllocator = common.resolveAllocator;
-const handleAllocator = common.handleAllocator;
+const createHandle = common.createHandle;
+const allocatorForHandle = common.allocatorForHandle;
 const mapError = common.mapError;
 const SnailAllocator = common.SnailAllocator;
 const SNAIL_OK = common.SNAIL_OK;
@@ -21,12 +21,10 @@ const destroyHandle = common.destroyHandle;
 // Scene and resources
 
 pub export fn snail_scene_init(alloc_ptr: ?*const SnailAllocator, out: *?*SceneImpl) c_int {
-    const allocator = resolveAllocator(alloc_ptr);
-    const impl = handleAllocator().create(SceneImpl) catch return SNAIL_ERR_OUT_OF_MEMORY;
-    impl.* = .{
-        .inner = snail.Scene.init(allocator),
-        .overrides_arena = std.heap.ArenaAllocator.init(allocator),
-    };
+    const impl = createHandle(SceneImpl, alloc_ptr) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    const allocator = allocatorForHandle(impl);
+    impl.inner = snail.Scene.init(allocator);
+    impl.overrides_arena = std.heap.ArenaAllocator.init(allocator);
     out.* = impl;
     return SNAIL_OK;
 }

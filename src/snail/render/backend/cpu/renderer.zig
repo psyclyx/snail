@@ -368,7 +368,7 @@ pub const CpuRenderer = struct {
 
     pub fn beginDraw(_: *CpuRenderer) void {}
 
-    pub fn backendName(_: *const CpuRenderer) []const u8 {
+    pub fn backendName(_: *const CpuRenderer) [:0]const u8 {
         return "CPU";
     }
 

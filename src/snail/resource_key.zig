@@ -35,6 +35,11 @@ pub const ResourceKey = struct {
         return self.id;
     }
 
+    pub fn toExternalOpaque(self: ResourceKey) u64 {
+        if ((self.id & namespace_mask) == namespaced(.numeric, 0)) return self.id & payload_mask;
+        return self.id;
+    }
+
     pub fn eql(a: ResourceKey, b: ResourceKey) bool {
         return a.id == b.id;
     }
@@ -77,5 +82,6 @@ test "resource key namespaces are distinct" {
     try std.testing.expect(!ResourceKey.fromId(hashBytes("x")).eql(ResourceKey.fromName("x")));
     try std.testing.expect(!ResourceKey.fromId(7).eql(derived(ResourceKey.fromId(7), "child")));
     try std.testing.expect(ResourceKey.fromOpaque(7).eql(ResourceKey.fromId(7)));
+    try std.testing.expectEqual(@as(u64, 7), ResourceKey.fromOpaque(7).toExternalOpaque());
     try std.testing.expect(ResourceKey.fromOpaque(ResourceKey.fromName("x").toOpaque()).eql(ResourceKey.fromName("x")));
 }

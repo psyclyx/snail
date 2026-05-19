@@ -88,6 +88,33 @@ pub const AtlasCapacityMode = union(enum) {
     reserve_pages: u32,
 };
 
+pub const AtlasUploadDecision = enum {
+    clear,
+    rebuild,
+    append_pages,
+    append_overflow_bank,
+};
+
+pub const AtlasUploadDecisionInput = struct {
+    atlas_count: usize,
+    layer_info_count: usize,
+    simple_atlases: bool,
+    no_active_layer_info: bool,
+    textures_ready: bool,
+    slots_compatible: bool,
+    overflow_bank_compatible: bool,
+};
+
+pub fn decideAtlasUpload(input: AtlasUploadDecisionInput) AtlasUploadDecision {
+    if (input.atlas_count == 0 and input.layer_info_count == 0) return .clear;
+
+    const simple_without_layer_info = input.layer_info_count == 0 and input.simple_atlases and input.no_active_layer_info and input.textures_ready;
+    if (!simple_without_layer_info) return .rebuild;
+    if (input.slots_compatible) return .append_pages;
+    if (input.overflow_bank_compatible) return .append_overflow_bank;
+    return .rebuild;
+}
+
 pub const AtlasSlotBuildInfo = struct {
     atlas_slot_count: usize,
     allocated_curve_height: u32,

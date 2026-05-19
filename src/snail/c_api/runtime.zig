@@ -2,7 +2,7 @@ const std = @import("std");
 const generated = @import("c_api_generated");
 
 pub const SnailAllocFn = *const fn (ctx: ?*anyopaque, size: usize, alignment: usize) callconv(.c) ?[*]u8;
-pub const SnailFreeFn = *const fn (ctx: ?*anyopaque, ptr: ?[*]u8, size: usize) callconv(.c) void;
+pub const SnailFreeFn = *const fn (ctx: ?*anyopaque, ptr: ?[*]u8, size: usize, alignment: usize) callconv(.c) void;
 
 pub const SnailAllocator = extern struct {
     alloc_fn: SnailAllocFn,
@@ -23,9 +23,9 @@ fn toZigAllocator(ca: *const SnailAllocator) std.mem.Allocator {
             const ca_inner: *const SnailAllocator = @ptrCast(@alignCast(ctx_ptr));
             return ca_inner.alloc_fn(ca_inner.ctx, len, alignment.toByteUnits());
         }
-        fn free(ctx_ptr: *anyopaque, buf: []u8, _: std.mem.Alignment, _: usize) void {
+        fn free(ctx_ptr: *anyopaque, buf: []u8, alignment: std.mem.Alignment, _: usize) void {
             const ca_inner: *const SnailAllocator = @ptrCast(@alignCast(ctx_ptr));
-            ca_inner.free_fn(ca_inner.ctx, buf.ptr, buf.len);
+            ca_inner.free_fn(ca_inner.ctx, buf.ptr, buf.len, alignment.toByteUnits());
         }
         fn resize(_: *anyopaque, _: []u8, _: std.mem.Alignment, _: usize, _: usize) bool {
             return false;
@@ -44,23 +44,54 @@ fn libcAlloc(_: ?*anyopaque, size: usize, _: usize) callconv(.c) ?[*]u8 {
     return @ptrCast(std.c.malloc(size) orelse return null);
 }
 
-fn libcFree(_: ?*anyopaque, ptr: ?[*]u8, _: usize) callconv(.c) void {
+fn libcFree(_: ?*anyopaque, ptr: ?[*]u8, _: usize, _: usize) callconv(.c) void {
     if (ptr) |p| std.c.free(p);
 }
 
-const default_c_allocator = SnailAllocator{
+pub const default_c_allocator = SnailAllocator{
     .alloc_fn = &libcAlloc,
     .free_fn = &libcFree,
     .ctx = null,
 };
 
+pub const StoredAllocator = struct {
+    ref_count: std.atomic.Value(u32) = std.atomic.Value(u32).init(1),
+    inner: SnailAllocator,
+
+    pub fn init(ca: ?*const SnailAllocator) StoredAllocator {
+        return .{ .inner = if (ca) |a| a.* else default_c_allocator };
+    }
+
+    pub fn allocator(self: *const StoredAllocator) std.mem.Allocator {
+        return toZigAllocator(&self.*.inner);
+    }
+};
+
+pub fn createStoredAllocator(ca: ?*const SnailAllocator) !*StoredAllocator {
+    const stored = StoredAllocator.init(ca);
+    const allocator = stored.allocator();
+    const ptr = try allocator.create(StoredAllocator);
+    ptr.* = stored;
+    return ptr;
+}
+
+pub fn destroyStoredAllocator(ptr: *StoredAllocator) void {
+    if (ptr.ref_count.fetchSub(1, .acq_rel) != 1) return;
+    const stored = ptr.*;
+    const allocator = stored.allocator();
+    allocator.destroy(ptr);
+}
+
+pub fn retainStoredAllocator(ptr: *StoredAllocator) *StoredAllocator {
+    _ = ptr.ref_count.fetchAdd(1, .monotonic);
+    return ptr;
+}
+
+/// Adapter for temporary allocations that are fully released before the export
+/// returns. Owned handles should use StoredAllocator instead.
 pub fn resolveAllocator(ca: ?*const SnailAllocator) std.mem.Allocator {
     if (ca) |a| return toZigAllocator(a);
     return toZigAllocator(&default_c_allocator);
-}
-
-pub fn handleAllocator() std.mem.Allocator {
-    return std.heap.smp_allocator;
 }
 
 pub fn mapError(err: anyerror) c_int {

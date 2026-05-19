@@ -16,6 +16,37 @@ const c_text = c_api.text;
 
 const testing = std.testing;
 
+const CountingAllocatorCtx = struct {
+    alloc_count: usize = 0,
+    free_count: usize = 0,
+};
+
+fn countingAlloc(ctx: ?*anyopaque, size: usize, alignment: usize) callconv(.c) ?[*]u8 {
+    _ = alignment;
+    const counts: *CountingAllocatorCtx = @ptrCast(@alignCast(ctx.?));
+    counts.alloc_count += 1;
+    return @ptrCast(std.c.malloc(size) orelse return null);
+}
+
+fn countingFree(ctx: ?*anyopaque, ptr: ?[*]u8, size: usize, alignment: usize) callconv(.c) void {
+    _ = size;
+    _ = alignment;
+    const counts: *CountingAllocatorCtx = @ptrCast(@alignCast(ctx.?));
+    counts.free_count += 1;
+    if (ptr) |p| std.c.free(p);
+}
+
+fn initPathWithStackAllocator(counts: *CountingAllocatorCtx) !*c.test_api.PathImpl {
+    const allocator = c.SnailAllocator{
+        .alloc_fn = &countingAlloc,
+        .free_fn = &countingFree,
+        .ctx = counts,
+    };
+    var path: ?*c.test_api.PathImpl = null;
+    try testing.expectEqual(c.SNAIL_OK, c_path.snail_path_init(&allocator, &path));
+    return path.?;
+}
+
 fn testTextAtlas() !*c.test_api.TextAtlasImpl {
     const assets = @import("assets");
     var atlas: ?*c.test_api.TextAtlasImpl = null;
@@ -215,6 +246,15 @@ test "c_api: invalid caller input maps to invalid argument" {
     try testing.expectEqual(@as(?*c.test_api.ImageImpl, null), image);
 }
 
+test "c_api: allocator descriptor may be stack-local" {
+    var counts: CountingAllocatorCtx = .{};
+    const path = try initPathWithStackAllocator(&counts);
+    try testing.expect(counts.alloc_count > 0);
+    try testing.expectEqual(c.SNAIL_OK, c_path.snail_path_move_to(path, 0, 0));
+    c_path.snail_path_deinit(path);
+    try testing.expect(counts.free_count > 0);
+}
+
 test "c_api: cpu renderer and thread pool" {
     if (!build_options.enable_cpu) {
         try testing.expect(!c_render_backends.snail_cpu_available());
@@ -261,6 +301,7 @@ test "c_api: scheduled upload draw list coverage records and retirement" {
     defer c_resources.snail_resource_manifest_deinit(resources);
     var text_keys: c.SnailTextResourceKeys = .{};
     try declareTextBlobResources(resources.?, 1, 2, atlas, blob.?, &text_keys);
+    try testing.expectEqual(@as(c.SnailResourceKey, 1), text_keys.atlas_key);
 
     var scene: ?*c.test_api.SceneImpl = null;
     try testing.expectEqual(c.SNAIL_OK, c_scene.snail_scene_init(null, &scene));
@@ -283,6 +324,7 @@ test "c_api: scheduled upload draw list coverage records and retirement" {
     try testing.expect(summary.changed_key_count > 0);
     var changed_key: c.SnailResourceKey = 0;
     try testing.expect(c_render.snail_resource_upload_plan_changed_key(plan.?, 0, &changed_key));
+    try testing.expectEqual(@as(c.SnailResourceKey, 1), changed_key);
 
     var pending: ?*c.test_api.PendingResourceUploadImpl = null;
     try testing.expectEqual(c.SNAIL_OK, c_render.snail_renderer_begin_resource_upload(renderer.?, null, plan.?, &pending));

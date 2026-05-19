@@ -15,7 +15,6 @@ pub const c_types = @import("types.zig");
 pub const vk = c_types.vk;
 
 pub const resolveAllocator = c_runtime.resolveAllocator;
-pub const handleAllocator = c_runtime.handleAllocator;
 pub const mapError = c_runtime.mapError;
 
 pub const SnailAllocFn = c_types.SnailAllocFn;
@@ -165,6 +164,29 @@ pub const test_api = if (builtin.is_test) struct {
     pub const RendererImpl = c_handles.RendererImpl;
 } else struct {};
 
+pub fn createHandle(comptime T: type, alloc_ptr: ?*const SnailAllocator) !*T {
+    const stored = try c_runtime.createStoredAllocator(alloc_ptr);
+    errdefer c_runtime.destroyStoredAllocator(stored);
+    const ptr = try stored.allocator().create(T);
+    ptr.handle_allocator = stored;
+    return ptr;
+}
+
+pub fn createHandleSharingAllocator(comptime T: type, stored: *c_runtime.StoredAllocator) !*T {
+    _ = c_runtime.retainStoredAllocator(stored);
+    errdefer c_runtime.destroyStoredAllocator(stored);
+    const ptr = try stored.allocator().create(T);
+    ptr.handle_allocator = stored;
+    return ptr;
+}
+
+pub fn allocatorForHandle(ptr: anytype) std.mem.Allocator {
+    return ptr.*.handle_allocator.allocator();
+}
+
 pub fn destroyHandle(ptr: anytype) void {
-    handleAllocator().destroy(ptr);
+    const stored = ptr.*.handle_allocator;
+    const allocator = stored.allocator();
+    allocator.destroy(ptr);
+    c_runtime.destroyStoredAllocator(stored);
 }

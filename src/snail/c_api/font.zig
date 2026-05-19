@@ -1,6 +1,6 @@
 const common = @import("common.zig");
 const ttf = common.ttf;
-const handleAllocator = common.handleAllocator;
+const createHandle = common.createHandle;
 const SNAIL_OK = common.SNAIL_OK;
 const SNAIL_ERR_INVALID_FONT = common.SNAIL_ERR_INVALID_FONT;
 const SNAIL_ERR_OUT_OF_MEMORY = common.SNAIL_ERR_OUT_OF_MEMORY;
@@ -19,8 +19,8 @@ const destroyHandle = common.destroyHandle;
 
 pub export fn snail_font_init(data: [*]const u8, len: usize, out: *?*FontImpl) c_int {
     const font = ttf.Font.init(data[0..len]) catch return SNAIL_ERR_INVALID_FONT;
-    const impl = handleAllocator().create(FontImpl) catch return SNAIL_ERR_OUT_OF_MEMORY;
-    impl.* = .{ .inner = font };
+    const impl = createHandle(FontImpl, null) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    impl.inner = font;
     out.* = impl;
     return SNAIL_OK;
 }

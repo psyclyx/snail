@@ -6,6 +6,10 @@
  *   - Resource upload is explicit: build a ResourceManifest, upload it with a
  *     Renderer, then draw a PreparedScene.
  *   - Pass NULL for SnailAllocator to use libc malloc/free.
+ *   - Allocator descriptors are copied at handle creation. The descriptor
+ *     pointer may be temporary, but its ctx and callbacks must remain valid
+ *     until all handles and derived snapshots using that allocator are
+ *     destroyed.
  *
  * MIT License. */
 
@@ -25,8 +29,11 @@ extern "C" {
 
 /* Allocator */
 
+/* `free_fn` receives the size and alignment originally requested through the
+ * Zig allocator adapter. It may ignore either value when the backing allocator
+ * does not require them. */
 typedef void *(*SnailAllocFn)(void *ctx, size_t size, size_t alignment);
-typedef void (*SnailFreeFn)(void *ctx, void *ptr, size_t size);
+typedef void (*SnailFreeFn)(void *ctx, void *ptr, size_t size, size_t alignment);
 
 typedef struct {
     SnailAllocFn alloc_fn;
@@ -78,8 +85,9 @@ typedef struct {
     size_t shape_count;
 } SnailShapeMark;
 
-/* Opaque resource key value. Literal integers remain valid numeric keys; use
- * snail_resource_key_from_bytes/cstr for named keys. */
+/* Opaque resource key value. Literal integers remain valid numeric keys and
+ * round-trip through result APIs as the same integer. Named and derived keys
+ * use the high bits internally; treat non-literal keys as opaque values. */
 typedef uint64_t SnailResourceKey;
 
 typedef struct {
@@ -648,6 +656,10 @@ int snail_resource_manifest_put_image(SnailResourceManifest *set,
 int snail_resource_manifest_estimate_upload_footprint(const SnailResourceManifest *set,
                                                  SnailResourceFootprint *out);
 
+/* PreparedResources owns CPU-side prepared data. GPU residency is owned by the
+ * renderer resource cache; deinit/retire releases this handle's manifest and
+ * CPU snapshot, but does not immediately evict renderer-owned GPU cache
+ * entries. */
 void snail_prepared_resources_deinit(SnailPreparedResources *prepared);
 bool snail_prepared_resources_stamp_for_key(const SnailPreparedResources *prepared,
                                             SnailResourceKey key,
@@ -729,6 +741,7 @@ int snail_coverage_backend_draw_words(SnailCoverageBackend *backend,
  */
 
 void snail_renderer_deinit(SnailRenderer *renderer);
+/* Static, null-terminated backend name. The returned pointer is borrowed. */
 const char *snail_renderer_backend_name(const SnailRenderer *renderer);
 void snail_renderer_resource_cache_stats(SnailRenderer *renderer,
                                          SnailResourceCacheStats *out);

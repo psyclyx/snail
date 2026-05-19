@@ -1,18 +1,22 @@
 const std = @import("std");
 const snail = @import("../root.zig");
 const ttf = @import("../font/ttf.zig");
+const c_runtime = @import("runtime.zig");
 
 const build_options = @import("build_options");
 
-pub const FontImpl = struct { inner: ttf.Font };
-pub const TextAtlasImpl = struct { inner: snail.TextAtlas, allocator: std.mem.Allocator };
-pub const ShapedTextImpl = struct { inner: snail.ShapedText };
-pub const TextBlobImpl = struct { inner: snail.TextBlob };
-pub const ImageImpl = struct { inner: snail.Image };
-pub const PathImpl = struct { inner: snail.Path };
-pub const PathPictureBuilderImpl = struct { inner: snail.PathPictureBuilder };
-pub const PathPictureImpl = struct { inner: snail.PathPicture };
+pub const HandleAllocator = c_runtime.StoredAllocator;
+
+pub const FontImpl = struct { handle_allocator: *HandleAllocator, inner: ttf.Font };
+pub const TextAtlasImpl = struct { handle_allocator: *HandleAllocator, inner: snail.TextAtlas };
+pub const ShapedTextImpl = struct { handle_allocator: *HandleAllocator, inner: snail.ShapedText };
+pub const TextBlobImpl = struct { handle_allocator: *HandleAllocator, inner: snail.TextBlob };
+pub const ImageImpl = struct { handle_allocator: *HandleAllocator, inner: snail.Image };
+pub const PathImpl = struct { handle_allocator: *HandleAllocator, inner: snail.Path };
+pub const PathPictureBuilderImpl = struct { handle_allocator: *HandleAllocator, inner: snail.PathPictureBuilder };
+pub const PathPictureImpl = struct { handle_allocator: *HandleAllocator, inner: snail.PathPicture };
 pub const SceneImpl = struct {
+    handle_allocator: *HandleAllocator,
     inner: snail.Scene,
     // C callers can't keep an `[]Override` slice alive across the boundary,
     // so the C entry points that take a transform stash a single-element
@@ -21,41 +25,50 @@ pub const SceneImpl = struct {
     overrides_arena: std.heap.ArenaAllocator,
 };
 pub const ResourceManifestImpl = struct {
+    handle_allocator: *HandleAllocator,
     inner: snail.ResourceManifest,
     entries: []snail.ResourceManifest.Entry,
-    allocator: std.mem.Allocator,
 };
-pub const PreparedResourcesImpl = struct { inner: snail.PreparedResources };
-pub const PreparedSceneImpl = struct { inner: snail.PreparedScene };
+pub const PreparedResourcesImpl = struct { handle_allocator: *HandleAllocator, inner: snail.PreparedResources };
+pub const PreparedSceneImpl = struct { handle_allocator: *HandleAllocator, inner: snail.PreparedScene };
 pub const PreparedResourceRetirementQueueImpl = struct {
+    handle_allocator: *HandleAllocator,
     inner: snail.PreparedResourceRetirementQueue,
-    allocator: std.mem.Allocator,
+    // Vulkan retirement can move PreparedResources into the core queue after
+    // the C handle is destroyed. Keep those payload allocators alive until the
+    // retirement queue itself is destroyed.
+    retained_resource_allocators: std.ArrayListUnmanaged(*HandleAllocator) = .empty,
 };
 pub const ResourceUploadPlanImpl = struct {
+    handle_allocator: *HandleAllocator,
     inner: snail.ResourceUploadPlan,
 };
 pub const PendingResourceUploadImpl = struct {
+    handle_allocator: *HandleAllocator,
     inner: snail.PendingResourceUpload,
 };
 pub const VulkanFrameImpl = struct {
+    handle_allocator: *HandleAllocator,
     inner: if (build_options.enable_vulkan) snail.VulkanRenderer.Frame else void,
 };
 pub const DrawListImpl = struct {
+    handle_allocator: *HandleAllocator,
     inner: snail.DrawList,
-    allocator: std.mem.Allocator,
     words: []u32,
     segments: []snail.DrawSegment,
 };
 pub const TextCoverageRecordsImpl = struct {
+    handle_allocator: *HandleAllocator,
     inner: snail.coverage.TextCoverageRecords,
-    allocator: std.mem.Allocator,
     words: []u32,
 };
 pub const CoverageBackendImpl = struct {
+    handle_allocator: *HandleAllocator,
     inner: snail.coverage.Backend,
 };
-pub const ThreadPoolImpl = struct { inner: snail.ThreadPool };
+pub const ThreadPoolImpl = struct { handle_allocator: *HandleAllocator, inner: snail.ThreadPool };
 pub const RendererImpl = struct {
+    handle_allocator: *HandleAllocator,
     backend: snail.BackendKind,
     gl: if (build_options.enable_opengl) ?snail.GlRenderer else void = if (build_options.enable_opengl) null else {},
     vulkan: if (build_options.enable_vulkan) ?snail.VulkanRenderer else void = if (build_options.enable_vulkan) null else {},
@@ -91,10 +104,9 @@ pub const RendererImpl = struct {
             },
             .cpu => {},
         }
-        self.* = undefined;
     }
 
-    pub fn backendName(self: *const RendererImpl) []const u8 {
+    pub fn backendName(self: *const RendererImpl) [:0]const u8 {
         return switch (self.backend) {
             .gl => if (comptime build_options.enable_opengl)
                 self.gl.?.backendName()
