@@ -200,6 +200,17 @@ pub const GlyphTopology = union(enum) {
     }
 };
 
+pub const HintedSimpleGlyph = struct {
+    zone: tt_exec.PointZone,
+    phantom_start: usize,
+    advance_x_26_6: i32,
+    original_advance_x_26_6: i32,
+
+    pub fn curves(self: *const HintedSimpleGlyph, allocator: std.mem.Allocator, scale: f32) ![]tt_points.QuadBezier {
+        return self.zone.contoursToCurves(allocator, scale);
+    }
+};
+
 pub const SizeState = struct {
     allocator: std.mem.Allocator,
     request: SizeRequest,
@@ -270,7 +281,31 @@ pub const SizeState = struct {
             phantoms,
         );
     }
+
+    pub fn executeSimpleGlyph(
+        self: *const SizeState,
+        context: *tt_exec.Context,
+        zones: *tt_exec.PointZones,
+        buffer: []tt_exec.Point,
+        glyph: *const tt_outline.SimpleGlyph,
+        phantoms: tt_points.PhantomMetrics,
+    ) !HintedSimpleGlyph {
+        zones.glyph = try self.initSimpleGlyphZoneWithPhantoms(buffer, glyph, phantoms);
+        context.reset();
+        context.setZones(zones);
+        try context.execute(glyph.instructions);
+        return hintedSimpleGlyphView(zones.glyph, glyph.points.len);
+    }
 };
+
+fn hintedSimpleGlyphView(zone: tt_exec.PointZone, phantom_start: usize) !HintedSimpleGlyph {
+    return .{
+        .zone = zone,
+        .phantom_start = phantom_start,
+        .advance_x_26_6 = try zone.horizontalAdvance(phantom_start),
+        .original_advance_x_26_6 = try zone.originalHorizontalAdvance(phantom_start),
+    };
+}
 
 fn scaledCvt(
     allocator: std.mem.Allocator,
@@ -439,8 +474,9 @@ test "program executes bundled simple glyph instructions" {
     const program = try Program.init(assets.noto_sans_regular);
     const font = try @import("ttf.zig").Font.init(assets.noto_sans_regular);
     const sizes = program.executionBufferSizes();
+    const glyph_id = try font.glyphIndex('A');
 
-    var topology = try program.loadGlyphTopology(allocator, try font.glyphIndex('A'));
+    var topology = try program.loadGlyphTopology(allocator, glyph_id);
     defer topology.deinit();
     const simple = switch (topology) {
         .simple => |*glyph| glyph,
@@ -486,13 +522,20 @@ test "program executes bundled simple glyph instructions" {
     context.setZones(&zones);
     try program.runControlProgram(&context);
 
-    zones.glyph = try size.initSimpleGlyphZone(glyph_points, simple);
-    context.reset();
-    context.setZones(&zones);
-    try context.execute(simple.instructions);
+    const hinted = try size.executeSimpleGlyph(
+        &context,
+        &zones,
+        glyph_points,
+        simple,
+        try program.glyphPhantomMetrics(glyph_id),
+    );
+    const curves = try hinted.curves(allocator, 1.0 / 64.0);
+    defer allocator.free(curves);
 
-    try std.testing.expect(zones.glyph.points.len == simple.points.len);
-    try std.testing.expect(zones.glyph.points.len > 0);
+    try std.testing.expect(hinted.zone.points.len == simple.points.len + tt_points.phantom_count);
+    try std.testing.expect(hinted.advance_x_26_6 > 0);
+    try std.testing.expect(hinted.original_advance_x_26_6 > 0);
+    try std.testing.expect(curves.len > 0);
 }
 
 test "size state initializes simple glyph phantom points" {

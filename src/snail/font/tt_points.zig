@@ -5,7 +5,7 @@ const tt_graphics = @import("tt_graphics.zig");
 const tt_outline = @import("tt_outline.zig");
 const vec = @import("../math/vec.zig");
 
-const QuadBezier = bezier.QuadBezier;
+pub const QuadBezier = bezier.QuadBezier;
 const Vec2 = vec.Vec2;
 
 pub const Error = error{
@@ -171,6 +171,19 @@ pub const Zone = struct {
     pub fn contourToCurves(self: *const Zone, allocator: std.mem.Allocator, contour: tt_outline.ContourRange, scale: f32) ![]QuadBezier {
         if (contour.end > self.points.len or contour.start > contour.end) return Error.InvalidPoint;
         return pointsToCurves(allocator, self.points[contour.start..contour.end], scale);
+    }
+
+    pub fn contoursToCurves(self: *const Zone, allocator: std.mem.Allocator, scale: f32) ![]QuadBezier {
+        var out: std.ArrayList(QuadBezier) = .empty;
+        errdefer out.deinit(allocator);
+
+        for (self.contours) |contour| {
+            const curves = try self.contourToCurves(allocator, contour, scale);
+            defer if (curves.len > 0) allocator.free(curves);
+            try out.appendSlice(allocator, curves);
+        }
+
+        return out.toOwnedSlice(allocator);
     }
 
     pub fn horizontalAdvance(self: *const Zone, phantom_start: usize) Error!i32 {
