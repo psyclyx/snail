@@ -581,6 +581,8 @@ fn addBenchStep(
     const run_bench = b.addRunArtifact(bench_exe);
     const bench_step = b.step("run-bench", "Run consolidated benchmarks");
     bench_step.dependOn(&run_bench.step);
+    const bench_alias = b.step("bench", "Run consolidated benchmarks");
+    bench_alias.dependOn(&run_bench.step);
 }
 
 fn addProfileCpuTextStep(

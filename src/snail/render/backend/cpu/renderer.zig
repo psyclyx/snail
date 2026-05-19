@@ -718,18 +718,14 @@ pub const CpuRenderer = struct {
         );
     }
 
-    fn recordCompositeScalarLayer(
+    fn scalarPathLayerCoverage(
         self: *CpuRenderer,
-        accum: *PathCompositeAccum,
         page: *const PreparedAtlasPage,
         raster: PathRasterState,
         layer: PreparedPathLayer,
-        layer_index: usize,
-        programs: PathCompositePrograms,
         local: Vec2,
-        tint: [4]f32,
-    ) void {
-        const cov = self.applyCoverageTransfer(evalGlyphCoverageBandSpan(
+    ) f32 {
+        return self.applyCoverageTransfer(evalGlyphCoverageBandSpan(
             page,
             local.x,
             local.y,
@@ -742,6 +738,20 @@ pub const CpuRenderer = struct {
             layer.band_max_v,
             self.fill_rule,
         ));
+    }
+
+    fn recordCompositeScalarLayer(
+        self: *CpuRenderer,
+        accum: *PathCompositeAccum,
+        page: *const PreparedAtlasPage,
+        raster: PathRasterState,
+        layer: PreparedPathLayer,
+        layer_index: usize,
+        programs: PathCompositePrograms,
+        local: Vec2,
+        tint: [4]f32,
+    ) void {
+        const cov = self.scalarPathLayerCoverage(page, raster, layer, local);
 
         if (programs.outline and layer_index < 2) {
             const subpixel_cov: SubpixelCoverage = .{ .rgb = .{ cov, cov, cov }, .alpha = cov };
@@ -851,6 +861,47 @@ pub const CpuRenderer = struct {
         }
     }
 
+    fn renderScalarInsideStrokeCompositePathBatchLayers(
+        self: *CpuRenderer,
+        page: *const PreparedAtlasPage,
+        raster: PathRasterState,
+        tint: [4]f32,
+        fill_layer: PreparedPathLayer,
+        stroke_layer: PreparedPathLayer,
+        fill_program: PreparedPathPaint,
+        stroke_program: PreparedPathPaint,
+    ) void {
+        var row: u32 = raster.y0;
+        while (row < raster.y1) : (row += 1) {
+            var col: u32 = raster.x0;
+            var local = raster.inverse.applyPoint(.{
+                .x = @as(f32, @floatFromInt(col)) + 0.5,
+                .y = @as(f32, @floatFromInt(row)) + 0.5,
+            });
+            while (col < raster.x1) : (advanceLocalPixel(&col, &local, raster.sample_dx)) {
+                const fill_cov = self.scalarPathLayerCoverage(page, raster, fill_layer, local);
+                if (fill_cov <= 0.0) continue;
+
+                const stroke_cov = self.scalarPathLayerCoverage(page, raster, stroke_layer, local);
+                const border_cov = @min(fill_cov, stroke_cov);
+                const interior_cov = @max(fill_cov - border_cov, 0.0);
+                if (interior_cov <= 0.0 and border_cov <= 0.0) continue;
+
+                var combined = [4]f32{ 0, 0, 0, 0 };
+                if (interior_cov > 0.0) {
+                    const fill = fill_program.sample(local);
+                    combined = addColors(combined, premultiplyCoverage(multiplyLinearColor(fill.color, tint), interior_cov));
+                }
+                if (border_cov > 0.0) {
+                    const stroke = stroke_program.sample(local);
+                    combined = addColors(combined, premultiplyCoverage(multiplyLinearColor(stroke.color, tint), border_cov));
+                }
+                if (combined[3] < 1.0 / 255.0) continue;
+                self.blendPremultipliedPixel(row, col, combined, false);
+            }
+        }
+    }
+
     fn renderCompositePathBatchLayers(
         self: *CpuRenderer,
         page: *const PreparedAtlasPage,
@@ -871,6 +922,10 @@ pub const CpuRenderer = struct {
             .fill = if (outline_composite) layers[0].paint else .{},
             .stroke = if (outline_composite) layers[1].paint else .{},
         };
+        if (outline_composite and !raster.use_subpixel and layer_count == 2) {
+            self.renderScalarInsideStrokeCompositePathBatchLayers(page, raster, tint, layers[0], layers[1], programs.fill, programs.stroke);
+            return;
+        }
 
         var row: u32 = raster.y0;
         while (row < raster.y1) : (row += 1) {

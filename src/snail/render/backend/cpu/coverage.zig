@@ -399,6 +399,18 @@ inline fn isHalfOpenEndpointRoot(t: f32, end_root_delta: f32) bool {
     return isNearEndRoot(t) and isEndpointRootDelta(end_root_delta);
 }
 
+inline fn rootHullCanCross3(p0: f32, p1: f32, p2: f32, sample_root: f32) bool {
+    const min_root = @min(@min(p0, p1), p2);
+    const max_root = @max(@max(p0, p1), p2);
+    return min_root - sample_root <= root_code_eps and max_root - sample_root >= -root_code_eps;
+}
+
+inline fn rootHullCanCross4(p0: f32, p1: f32, p2: f32, p3: f32, sample_root: f32) bool {
+    const min_root = @min(@min(p0, p1), @min(p2, p3));
+    const max_root = @max(@max(p0, p1), @max(p2, p3));
+    return min_root - sample_root <= root_code_eps and max_root - sample_root >= -root_code_eps;
+}
+
 test "half-open endpoint guard preserves near-end interior roots" {
     try std.testing.expect(isHalfOpenEndpointRoot(1.0, 0.0));
     try std.testing.expect(isHalfOpenEndpointRoot(1.0 - 5e-6, root_code_eps * 0.5));
@@ -504,6 +516,25 @@ inline fn accumulateGlyphCoverageSegment(
             horizontal,
         );
         return .continue_scan;
+    }
+
+    switch (segment.kind) {
+        .conic => {
+            const p0 = if (horizontal) segment.p0.y else segment.p0.x;
+            const p1 = if (horizontal) segment.p1.y else segment.p1.x;
+            const p2 = if (horizontal) segment.p2.y else segment.p2.x;
+            const sample_root = if (horizontal) sample_rc.y else sample_rc.x;
+            if (!rootHullCanCross3(p0, p1, p2, sample_root)) return .continue_scan;
+        },
+        .cubic => {
+            const p0 = if (horizontal) segment.p0.y else segment.p0.x;
+            const p1 = if (horizontal) segment.p1.y else segment.p1.x;
+            const p2 = if (horizontal) segment.p2.y else segment.p2.x;
+            const p3 = if (horizontal) segment.p3.y else segment.p3.x;
+            const sample_root = if (horizontal) sample_rc.y else sample_rc.x;
+            if (!rootHullCanCross4(p0, p1, p2, p3, sample_root)) return .continue_scan;
+        },
+        .quadratic, .line => unreachable,
     }
 
     const roots = if (horizontal)
@@ -686,7 +717,16 @@ inline fn accumulatePreparedCurveCoverage(
         return .continue_scan;
     }
 
+    if (curve.kind == .conic and !rootHullCanCross3(curve.p0_root, curve.p1_root, curve.p2_root, sample_root)) {
+        return .continue_scan;
+    }
+
     const cold = preparedCurveCold(curve, cold_curves);
+    if (curve.kind == .cubic) {
+        const p3_root = cold.cubic_a_root + cold.cubic_b_root + cold.cubic_c_root + curve.p0_root;
+        if (!rootHullCanCross4(curve.p0_root, curve.p1_root, curve.p2_root, p3_root, sample_root)) return .continue_scan;
+    }
+
     const roots = switch (curve.kind) {
         .conic => solvePreparedConicRoots(cold, sample_root),
         .cubic => solvePreparedCubicRoots(curve, cold, sample_root),
