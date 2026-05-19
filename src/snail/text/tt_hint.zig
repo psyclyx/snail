@@ -123,6 +123,7 @@ pub const HintMachine = struct {
     storage: []i32,
     storage_snapshot: []i32,
     function_entries: []tt_exec.Function,
+    function_lookup: []?[]const u8,
     functions: tt_exec.FunctionDefs,
     twilight_points: []tt_exec.Point,
     glyph_points: []tt_exec.Point,
@@ -146,6 +147,7 @@ pub const HintMachine = struct {
         self.allocator.free(self.storage);
         self.allocator.free(self.storage_snapshot);
         self.allocator.free(self.function_entries);
+        self.allocator.free(self.function_lookup);
         self.allocator.free(self.twilight_points);
         self.allocator.free(self.glyph_points);
         self.size.deinit();
@@ -332,6 +334,9 @@ fn allocateMachine(allocator: Allocator, program: *const Program, ppem: HintPpem
     errdefer allocator.free(storage_snapshot);
     const function_entries = try allocator.alloc(tt_exec.Function, @max(sizes.functions, 1));
     errdefer allocator.free(function_entries);
+    const function_lookup = try allocator.alloc(?[]const u8, functionLookupCapacity(sizes.functions));
+    errdefer allocator.free(function_lookup);
+    @memset(function_lookup, null);
     const twilight_points = try allocator.alloc(tt_exec.Point, @max(sizes.twilight_points, 1));
     errdefer allocator.free(twilight_points);
     const glyph_points = try allocator.alloc(tt_exec.Point, @max(sizes.glyph_points, 1));
@@ -345,7 +350,8 @@ fn allocateMachine(allocator: Allocator, program: *const Program, ppem: HintPpem
         .storage = storage,
         .storage_snapshot = storage_snapshot,
         .function_entries = function_entries,
-        .functions = .{ .entries = function_entries },
+        .function_lookup = function_lookup,
+        .functions = .{ .entries = function_entries, .lookup = function_lookup },
         .twilight_points = twilight_points,
         .glyph_points = glyph_points,
         .zones = .{
@@ -354,6 +360,10 @@ fn allocateMachine(allocator: Allocator, program: *const Program, ppem: HintPpem
         },
         .snapshot = .{ .graphics = .{}, .storage = storage_snapshot },
     };
+}
+
+fn functionLookupCapacity(function_count: usize) usize {
+    return @max(function_count, 256);
 }
 
 fn hintedCurves(allocator: Allocator, hinted: tt_vm.HintedSimpleGlyph, scale_x: f32, scale_y: f32) ![]CurveSegment {

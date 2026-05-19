@@ -49,29 +49,49 @@ pub const Function = struct {
 
 pub const FunctionDefs = struct {
     entries: []Function,
+    lookup: []?[]const u8 = &.{},
     len: usize = 0,
 
     pub fn reset(self: *FunctionDefs) void {
         self.len = 0;
+        @memset(self.lookup, null);
     }
 
     pub fn put(self: *FunctionDefs, id: i32, code: []const u8) Error!void {
+        const direct_slot = self.lookupSlot(id);
         for (self.entries[0..self.len]) |*entry| {
             if (entry.id == id) {
                 entry.code = code;
+                if (direct_slot) |slot| slot.* = code;
                 return;
             }
         }
         if (self.len >= self.entries.len) return Error.TooManyFunctions;
         self.entries[self.len] = .{ .id = id, .code = code };
         self.len += 1;
+        if (direct_slot) |slot| slot.* = code;
     }
 
     pub fn get(self: *const FunctionDefs, id: i32) ?[]const u8 {
+        if (self.lookupCode(id)) |code| return code;
         for (self.entries[0..self.len]) |entry| {
             if (entry.id == id) return entry.code;
         }
         return null;
+    }
+
+    fn lookupSlot(self: *FunctionDefs, id: i32) ?*?[]const u8 {
+        if (id < 0) return null;
+        const index: usize = @intCast(id);
+        if (index >= self.lookup.len) return null;
+        return &self.lookup[index];
+    }
+
+    fn lookupCode(self: *const FunctionDefs, id: i32) ?[]const u8 {
+        if (id < 0) return null;
+        const index: usize = @intCast(id);
+        if (index >= self.lookup.len) return null;
+        return self.lookup[index];
     }
 };
 
@@ -141,21 +161,23 @@ pub const Context = struct {
     }
 
     pub fn execute(self: *Context, code: []const u8) Error!void {
-        try self.executeCode(code);
+        var steps = self.steps;
+        defer self.steps = steps;
+        try self.executeCode(code, &steps);
     }
 
-    fn executeCode(self: *Context, code: []const u8) Error!void {
+    fn executeCode(self: *Context, code: []const u8, steps: *u32) Error!void {
         var pc: usize = 0;
         while (pc < code.len) {
-            try self.countStep();
+            try self.countStep(steps);
             const op_pc = pc;
             const op = code[pc];
             pc += 1;
-            try self.executeOp(code, &pc, op_pc, op);
+            try self.executeOp(code, &pc, op_pc, op, steps);
         }
     }
 
-    fn executeOp(self: *Context, code: []const u8, pc: *usize, op_pc: usize, op: u8) Error!void {
+    fn executeOp(self: *Context, code: []const u8, pc: *usize, op_pc: usize, op: u8, steps: *u32) Error!void {
         if (op >= 0xB0 and op <= 0xB7) {
             return self.pushBytes(code, pc, @as(usize, op - 0xB0) + 1);
         }
@@ -167,7 +189,7 @@ pub const Context = struct {
             0x00...0x05, 0x0A...0x0E, 0x10...0x1A, 0x1D...0x1F => try self.executeGraphicsOp(op),
             0x20...0x26 => try self.executeStackOp(op),
             0x27, 0x29, 0x2E...0x35, 0x38...0x3C, 0x3E...0x3F, 0x46...0x4A, 0xC0...0xFF => try self.executePointOp(op),
-            0x2A...0x2C => try self.executeFunctionOp(code, pc, op),
+            0x2A...0x2C => try self.executeFunctionOp(code, pc, op, steps),
             0x2D => return Error.InvalidOpcode,
             0x40 => try self.pushBytes(code, pc, try readU8(code, pc)),
             0x41 => try self.pushWords(code, pc, try readU8(code, pc)),
@@ -181,17 +203,17 @@ pub const Context = struct {
         }
     }
 
-    fn executeFunctionOp(self: *Context, code: []const u8, pc: *usize, op: u8) Error!void {
+    fn executeFunctionOp(self: *Context, code: []const u8, pc: *usize, op: u8, steps: *u32) Error!void {
         switch (op) {
             0x2A => {
                 const function_id = try self.pop();
                 const count = try self.popU32();
                 var i: u32 = 0;
                 while (i < count) : (i += 1) {
-                    try self.callFunction(function_id);
+                    try self.callFunction(function_id, steps);
                 }
             },
-            0x2B => try self.callFunction(try self.pop()),
+            0x2B => try self.callFunction(try self.pop(), steps),
             0x2C => {
                 const function_id = try self.pop();
                 const body_start = pc.*;
@@ -391,9 +413,9 @@ pub const Context = struct {
         }
     }
 
-    inline fn countStep(self: *Context) Error!void {
-        if (self.steps >= self.limits.max_steps) return Error.ExecutionLimitExceeded;
-        self.steps += 1;
+    inline fn countStep(self: *Context, steps: *u32) Error!void {
+        if (steps.* >= self.limits.max_steps) return Error.ExecutionLimitExceeded;
+        steps.* += 1;
     }
 
     inline fn push(self: *Context, value: i32) Error!void {
@@ -831,14 +853,14 @@ pub const Context = struct {
         if (set_rp0) self.graphics.rp0 = point;
     }
 
-    fn callFunction(self: *Context, function_id: i32) Error!void {
+    fn callFunction(self: *Context, function_id: i32, steps: *u32) Error!void {
         const defs = try self.functionDefs();
         const code = defs.get(function_id) orelse return Error.UnknownFunction;
         if (self.call_depth >= self.limits.max_call_depth) return Error.CallDepthExceeded;
 
         self.call_depth += 1;
         defer self.call_depth -= 1;
-        try self.executeCode(code);
+        try self.executeCode(code, steps);
     }
 
     fn functionDefs(self: *Context) Error!*FunctionDefs {
@@ -1179,6 +1201,19 @@ test "tt executor pushes and computes stack math" {
     try expectStack(&ctx, &.{ 13, 128 });
 }
 
+test "function definitions use direct lookup when supplied" {
+    var entries: [2]Function = undefined;
+    var lookup = [_]?[]const u8{null} ** 256;
+    var defs = FunctionDefs{ .entries = &entries, .lookup = &lookup };
+    const code = [_]u8{0x2D};
+
+    try defs.put(42, &code);
+    try std.testing.expectEqualSlices(u8, &code, defs.get(42).?);
+
+    defs.reset();
+    try std.testing.expect(defs.get(42) == null);
+}
+
 test "tt executor supports push words and stack indexing" {
     var stack: [16]i32 = undefined;
     var storage: [1]i32 = .{0};
@@ -1246,6 +1281,7 @@ test "tt executor enforces execution limit" {
     }, .{ .max_steps = 2 });
 
     try std.testing.expectError(Error.ExecutionLimitExceeded, ctx.execute(&.{ 0xB0, 1, 0xB0, 2, 0x60 }));
+    try std.testing.expectEqual(@as(u32, 2), ctx.steps);
 }
 
 test "tt executor updates graphics vectors and round state" {

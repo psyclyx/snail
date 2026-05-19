@@ -609,6 +609,30 @@ fn addProfileCpuTextStep(
     profile_text_step.dependOn(&install_profile_text.step);
 }
 
+fn addProfileTtHintStep(
+    b: *std.Build,
+    config: BuildConfig,
+    modules: ProjectModules,
+    release: ReleaseToolModules,
+) void {
+    const profile_tt_module = b.createModule(.{
+        .root_source_file = b.path("src/tools/profile_tt_hint.zig"),
+        .target = config.target,
+        .optimize = .ReleaseFast,
+        .omit_frame_pointer = false,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "assets", .module = modules.assets },
+            .{ .name = "snail", .module = release.snail },
+        },
+    });
+    configureCoreModule(profile_tt_module, modules.options, config.core_options, modules.vk_shaders);
+    const profile_tt_exe = b.addExecutable(.{ .name = "snail-profile-tt-hint", .root_module = profile_tt_module });
+    const install_profile_tt = b.addInstallArtifact(profile_tt_exe, .{});
+    const profile_tt_step = b.step("install-profile-tt-hint", "Install TrueType hint profile executable");
+    profile_tt_step.dependOn(&install_profile_tt.step);
+}
+
 fn addScreenshotStep(
     b: *std.Build,
     config: BuildConfig,
@@ -707,6 +731,7 @@ fn addToolSteps(
     const release = createReleaseToolModules(b, config, release_support_mod, modules);
     addBenchStep(b, config, modules, release);
     addProfileCpuTextStep(b, config, modules, release);
+    addProfileTtHintStep(b, config, modules, release);
     addScreenshotStep(b, config, modules, release);
     addAlgorithmScreenshotsStep(b, config, modules, release);
     addBackendCompareStep(b, config, modules);
