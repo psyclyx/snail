@@ -772,10 +772,13 @@ fn prepareHintContextRun(
     context: *snail.TrueTypeHintContext,
     shaped: *const snail.ShapedText,
 ) !void {
-    var run = try context.prepareRun(allocator, .{
+    var run = context.prepareRun(allocator, .{
         .shaped = shaped,
         .ppem = snail.TrueTypeHintPpem.uniform(12 * 64),
-    });
+    }) catch |err| switch (err) {
+        error.HintUnavailable => return,
+        else => return err,
+    };
     defer run.deinit();
     std.mem.doNotOptimizeAway(run.glyphs.len);
     std.mem.doNotOptimizeAway(run.stats.advance.x);
