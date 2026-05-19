@@ -162,4 +162,22 @@ pub const Cursor = struct {
             return error.InvalidTransform;
         self.commitInstance();
     }
+
+    pub fn appendHintedTextTransformedTinted(
+        self: Cursor,
+        union_bbox: BBox,
+        info_x: u16,
+        info_y: u16,
+        layer_count: u16,
+        color: [4]f32,
+        tint: [4]f32,
+        atlas_layer: u32,
+        transform: Transform2D,
+    ) !void {
+        try self.ensureInstanceCapacity();
+        const local_layer = try self.localLayer(atlas_layer);
+        if (!vertex.generateHintedTextVerticesTransformedTinted(self.remaining(), union_bbox, info_x, info_y, layer_count, color, tint, local_layer, transform))
+            return error.InvalidTransform;
+        self.commitInstance();
+    }
 };

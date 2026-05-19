@@ -116,6 +116,7 @@ fn rectHalf4(values: [4]f32) [4]u16 {
 fn specialRectHalf4(kind: SpecialLayerKind, values: [4]f32) [4]u16 {
     return switch (kind) {
         .path => rectHalf4(values),
+        .hinted_text => rectHalf4(values),
         .colr => half4(values),
     };
 }
@@ -331,6 +332,23 @@ pub fn generatePathRecordVerticesTinted(
     generateSpecialLayerVerticesTinted(buf, x, y, font_size, union_bbox, info_x, info_y, layer_count, color, tint, atlas_layer, .path);
 }
 
+/// Generate instance data for a tinted hinted text layer-info record.
+pub fn generateHintedTextVerticesTinted(
+    buf: []u32,
+    x: f32,
+    y: f32,
+    font_size: f32,
+    union_bbox: BBox,
+    info_x: u16,
+    info_y: u16,
+    layer_count: u16,
+    color: [4]f32,
+    tint: [4]f32,
+    atlas_layer: u8,
+) void {
+    generateSpecialLayerVerticesTinted(buf, x, y, font_size, union_bbox, info_x, info_y, layer_count, color, tint, atlas_layer, .hinted_text);
+}
+
 fn generateSpecialLayerVerticesTinted(
     buf: []u32,
     x: f32,
@@ -401,6 +419,21 @@ pub fn generatePathRecordVerticesTransformedTinted(
     transform: vec.Transform2D,
 ) bool {
     return generateSpecialLayerVerticesTransformedTinted(buf, bbox, info_x, info_y, layer_count, color, tint, atlas_layer, transform, .path);
+}
+
+/// Generate instance data for a tinted transformed hinted text layer-info record.
+pub fn generateHintedTextVerticesTransformedTinted(
+    buf: []u32,
+    bbox: BBox,
+    info_x: u16,
+    info_y: u16,
+    layer_count: u16,
+    color: [4]f32,
+    tint: [4]f32,
+    atlas_layer: u8,
+    transform: vec.Transform2D,
+) bool {
+    return generateSpecialLayerVerticesTransformedTinted(buf, bbox, info_x, info_y, layer_count, color, tint, atlas_layer, transform, .hinted_text);
 }
 
 fn generateSpecialLayerVerticesTransformedTinted(
@@ -515,6 +548,20 @@ test "path record instance uses path special kind" {
     const packed_gw = decodeInstance(&buf).glyph[1];
     try std.testing.expectEqual(@as(u16, 1), render_abi.specialGlyphWordLayerCount(packed_gw));
     try std.testing.expectEqual(SpecialLayerKind.path, render_abi.specialGlyphWordKind(packed_gw).?);
+}
+
+test "hinted text instance uses hinted special kind" {
+    var buf: [WORDS_PER_INSTANCE]u32 = undefined;
+    const bbox = BBox{
+        .min = Vec2.new(-0.1, -0.2),
+        .max = Vec2.new(0.6, 0.8),
+    };
+
+    generateHintedTextVerticesTinted(&buf, 10.0, 20.0, 24.0, bbox, 12, 34, 1, .{ 1, 1, 1, 1 }, .{ 1, 1, 1, 1 }, 7);
+
+    const packed_gw = decodeInstance(&buf).glyph[1];
+    try std.testing.expectEqual(@as(u16, 1), render_abi.specialGlyphWordLayerCount(packed_gw));
+    try std.testing.expectEqual(SpecialLayerKind.hinted_text, render_abi.specialGlyphWordKind(packed_gw).?);
 }
 
 test "transformed glyph instance stores affine transform" {

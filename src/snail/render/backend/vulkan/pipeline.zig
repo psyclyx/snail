@@ -467,6 +467,7 @@ pub const VulkanPipeline = struct {
                 },
                 .colr => try self.ensureColrPipeline(),
                 .path => try self.ensurePathPipeline(),
+                .hinted_text => try self.ensurePathPipeline(),
             };
             vk.vkCmdBindPipeline(context.cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pip);
             self.pushTextConstants(context.cmd, context.state, context.local_layer_base, run_mode);

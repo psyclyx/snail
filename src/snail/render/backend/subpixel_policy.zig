@@ -17,6 +17,7 @@ pub const GlyphRunKind = enum {
     regular,
     colr,
     path,
+    hinted_text,
 };
 
 pub fn chooseBaseTextRenderMode(
@@ -68,6 +69,7 @@ pub fn glyphRunKind(vertices: []const u32, glyph_index: usize) GlyphRunKind {
     if (!render_abi.glyphWordIsSpecial(packed_word)) return .regular;
     return switch (render_abi.specialGlyphWordKind(packed_word) orelse .colr) {
         .path => .path,
+        .hinted_text => .hinted_text,
         .colr => .colr,
     };
 }
@@ -270,23 +272,27 @@ test "LCD range mode accepts transformed glyphs" {
 }
 
 test "special text run helpers split sentinel runs" {
-    var buf = [_]u32{0} ** (vertex.WORDS_PER_INSTANCE * 4);
+    var buf = [_]u32{0} ** (vertex.WORDS_PER_INSTANCE * 5);
 
     vertex.instanceAtMut(&buf, 1).glyph[1] = render_abi.specialGlyphWord(0, .colr);
     vertex.instanceAtMut(&buf, 2).glyph[1] = render_abi.specialGlyphWord(0, .colr);
     vertex.instanceAtMut(&buf, 3).glyph[1] = render_abi.specialGlyphWord(0, .path);
+    vertex.instanceAtMut(&buf, 4).glyph[1] = render_abi.specialGlyphWord(0, .hinted_text);
 
     try std.testing.expect(!glyphRunIsSpecial(&buf, 0));
     try std.testing.expect(glyphRunIsSpecial(&buf, 1));
     try std.testing.expect(glyphRunIsSpecial(&buf, 2));
     try std.testing.expect(glyphRunIsSpecial(&buf, 3));
+    try std.testing.expect(glyphRunIsSpecial(&buf, 4));
     try std.testing.expectEqual(GlyphRunKind.regular, glyphRunKind(&buf, 0));
     try std.testing.expectEqual(GlyphRunKind.colr, glyphRunKind(&buf, 1));
     try std.testing.expectEqual(GlyphRunKind.path, glyphRunKind(&buf, 3));
-    try std.testing.expectEqual(@as(usize, 1), specialRunEnd(&buf, 0, false));
-    try std.testing.expectEqual(@as(usize, 4), specialRunEnd(&buf, 1, true));
+    try std.testing.expectEqual(GlyphRunKind.hinted_text, glyphRunKind(&buf, 4));
+    try std.testing.expectEqual(@as(usize, 1), glyphRunEnd(&buf, 0, .regular));
+    try std.testing.expectEqual(@as(usize, 5), specialRunEnd(&buf, 1, true));
     try std.testing.expectEqual(@as(usize, 3), glyphRunEnd(&buf, 1, .colr));
     try std.testing.expectEqual(@as(usize, 4), glyphRunEnd(&buf, 3, .path));
+    try std.testing.expectEqual(@as(usize, 5), glyphRunEnd(&buf, 4, .hinted_text));
 }
 
 test "layer info upload blocks mark prepared resources as special text" {

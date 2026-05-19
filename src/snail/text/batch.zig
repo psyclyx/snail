@@ -204,6 +204,20 @@ pub const TextBatch = struct {
     ) !void {
         try self.cursor().appendPathRecordTransformedTinted(union_bbox, info_x, info_y, layer_count, color, tint, atlas_layer, transform);
     }
+
+    pub fn addHintedTextTransformedTinted(
+        self: *TextBatch,
+        union_bbox: bezier.BBox,
+        info_x: u16,
+        info_y: u16,
+        layer_count: u16,
+        color: [4]f32,
+        tint: [4]f32,
+        atlas_layer: u32,
+        transform: Transform2D,
+    ) !void {
+        try self.cursor().appendHintedTextTransformedTinted(union_bbox, info_x, info_y, layer_count, color, tint, atlas_layer, transform);
+    }
 };
 
 /// Emit one slice of a `TextDraw` into `batch`.

@@ -526,6 +526,7 @@ pub const GlTextState = struct {
                 },
                 .colr => self.ensureColrProgram(),
                 .path => self.ensurePathProgram(),
+                .hinted_text => self.ensurePathProgram(),
             };
             try self.bindProgramState(prepared, prog_state, draw_state, texture_layer_base, run_mode);
             self.drawGlyphRange(vertices, run_start, run_end - run_start);

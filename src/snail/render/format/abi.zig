@@ -5,6 +5,7 @@ pub const special_layer_sentinel: u8 = 0xff;
 pub const SpecialLayerKind = enum(u8) {
     colr = 0,
     path = 1,
+    hinted_text = 2,
 };
 
 pub const PaintRecordKind = enum(u8) {
@@ -57,6 +58,7 @@ pub fn specialGlyphWordKind(word: u32) ?SpecialLayerKind {
     return switch (raw) {
         @intFromEnum(SpecialLayerKind.colr) => .colr,
         @intFromEnum(SpecialLayerKind.path) => .path,
+        @intFromEnum(SpecialLayerKind.hinted_text) => .hinted_text,
         else => null,
     };
 }
@@ -107,6 +109,7 @@ test "GLSL render ABI constants match Zig constants" {
     try expectGlslConst(glsl, "SNAIL_SPECIAL_LAYER_SENTINEL", special_layer_sentinel);
     try expectGlslConst(glsl, "SNAIL_SPECIAL_KIND_COLR", @intFromEnum(SpecialLayerKind.colr));
     try expectGlslConst(glsl, "SNAIL_SPECIAL_KIND_PATH", @intFromEnum(SpecialLayerKind.path));
+    try expectGlslConst(glsl, "SNAIL_SPECIAL_KIND_HINTED_TEXT", @intFromEnum(SpecialLayerKind.hinted_text));
     try expectGlslConst(glsl, "SNAIL_PAINT_KIND_SOLID", @intFromEnum(PaintRecordKind.solid));
     try expectGlslConst(glsl, "SNAIL_PAINT_KIND_LINEAR_GRADIENT", @intFromEnum(PaintRecordKind.linear_gradient));
     try expectGlslConst(glsl, "SNAIL_PAINT_KIND_RADIAL_GRADIENT", @intFromEnum(PaintRecordKind.radial_gradient));
