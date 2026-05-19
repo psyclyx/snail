@@ -25,6 +25,7 @@ pub const SNAIL_ERR_OUT_OF_MEMORY = c_runtime.SNAIL_ERR_OUT_OF_MEMORY;
 pub const SNAIL_ERR_RENDERER_FAILED = c_runtime.SNAIL_ERR_RENDERER_FAILED;
 pub const SNAIL_ERR_INVALID_ARGUMENT = c_runtime.SNAIL_ERR_INVALID_ARGUMENT;
 pub const SNAIL_ERR_DRAW_FAILED = c_runtime.SNAIL_ERR_DRAW_FAILED;
+pub const SNAIL_ERR_HINT_UNAVAILABLE = c_runtime.SNAIL_ERR_HINT_UNAVAILABLE;
 
 const TextBlobImpl = c_handles.TextBlobImpl;
 const ImageImpl = c_handles.ImageImpl;
@@ -162,6 +163,23 @@ pub const SnailTextPlacement = extern struct {
 pub const SnailTextAppendOptions = extern struct {
     placement: SnailTextPlacement,
     fill: SnailPaint = .{},
+};
+
+pub const SnailTextAppendResult = extern struct {
+    advance_x: f32 = 0,
+    advance_y: f32 = 0,
+    missing: bool = false,
+};
+
+pub const SnailTrueTypeHintPpem = extern struct {
+    x_26_6: u32,
+    y_26_6: u32,
+};
+
+pub const SnailTrueTypeHintRunStats = extern struct {
+    glyph_count: usize = 0,
+    advance_x: f32 = 0,
+    advance_y: f32 = 0,
 };
 
 pub const SnailTargetSurface = extern struct {

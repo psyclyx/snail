@@ -1,8 +1,9 @@
 /* snail - GPU font rendering via direct Bezier curve evaluation.
  *
  * C API model:
- *   - CPU values are owned handles: TextAtlas, ShapedText, TextBlob, Image,
- *     PathPicture, Scene, ResourceManifest, PreparedResources, PreparedScene.
+ *   - CPU values are owned handles: TextAtlas, ShapedText, TextBlob,
+ *     TextBlobBuilder, Image, PathPicture, Scene, ResourceManifest,
+ *     PreparedResources, PreparedScene.
  *   - Resource upload is explicit: build a ResourceManifest, upload it with a
  *     Renderer, then draw a PreparedScene.
  *   - Pass NULL for SnailAllocator to use libc malloc/free.
@@ -381,6 +382,21 @@ typedef struct {
 } SnailTextAppendOptions;
 
 typedef struct {
+    float advance_x, advance_y;
+    bool missing;
+} SnailTextAppendResult;
+
+typedef struct {
+    uint32_t x_26_6;
+    uint32_t y_26_6;
+} SnailTrueTypeHintPpem;
+
+typedef struct {
+    size_t glyph_count;
+    float advance_x, advance_y;
+} SnailTrueTypeHintRunStats;
+
+typedef struct {
     SnailPaint paint;
 } SnailFillStyle;
 
@@ -493,6 +509,55 @@ bool snail_shaped_text_glyph(const SnailShapedText *shaped, size_t index, SnailS
 size_t snail_shaped_text_copy_glyphs(const SnailShapedText *shaped,
                                      SnailShapedGlyph *out,
                                      size_t capacity);
+
+int snail_text_blob_builder_init(const SnailAllocator *alloc,
+                                 const SnailTextAtlas *atlas,
+                                 SnailTextBlobBuilder **out);
+void snail_text_blob_builder_deinit(SnailTextBlobBuilder *builder);
+void snail_text_blob_builder_reset(SnailTextBlobBuilder *builder);
+size_t snail_text_blob_builder_glyph_count(const SnailTextBlobBuilder *builder);
+int snail_text_blob_builder_append_shaped(SnailTextBlobBuilder *builder,
+                                          const SnailShapedText *shaped,
+                                          SnailRange glyphs,
+                                          SnailTextAppendOptions options,
+                                          SnailTextAppendResult *out_result);
+int snail_text_blob_builder_append_prepared_hinted_run(SnailTextBlobBuilder *builder,
+                                                       const SnailTrueTypePreparedHintRun *run,
+                                                       SnailTextPlacement placement,
+                                                       const float color[4],
+                                                       SnailTextAppendResult *out_result);
+int snail_text_blob_builder_finish(SnailTextBlobBuilder *builder,
+                                   SnailTextBlob **out);
+
+/* Explicit TrueType hinting for grid-fitted small text. Prepared hint runs
+ * borrow the hint context cache and atlas snapshot until appended or destroyed.
+ * Functions return SNAIL_ERR_HINT_UNAVAILABLE when a font/glyph cannot be
+ * represented as reusable hinted curve deltas; callers should fall back to the
+ * normal unhinted text path. */
+SnailTrueTypeHintPpem snail_true_type_hint_ppem_uniform(uint32_t ppem_26_6);
+int snail_true_type_hint_context_init(const SnailAllocator *alloc,
+                                      const SnailTextAtlas *atlas,
+                                      SnailTrueTypeHintContext **out);
+void snail_true_type_hint_context_deinit(SnailTrueTypeHintContext *context);
+void snail_true_type_hint_context_reset_for_atlas(SnailTrueTypeHintContext *context,
+                                                 const SnailTextAtlas *atlas);
+int snail_true_type_hint_context_prepare_size(SnailTrueTypeHintContext *context,
+                                             size_t face_index,
+                                             SnailTrueTypeHintPpem ppem);
+int snail_true_type_hint_context_prepare_run(SnailTrueTypeHintContext *context,
+                                            const SnailAllocator *alloc,
+                                            const SnailShapedText *shaped,
+                                            SnailRange glyphs,
+                                            SnailTrueTypeHintPpem ppem,
+                                            SnailTrueTypePreparedHintRun **out);
+void snail_true_type_prepared_hint_run_deinit(SnailTrueTypePreparedHintRun *run);
+void snail_true_type_prepared_hint_run_stats(const SnailTrueTypePreparedHintRun *run,
+                                             SnailTrueTypeHintRunStats *out);
+int snail_text_blob_init_from_prepared_hinted_run(const SnailAllocator *alloc,
+                                                  const SnailTrueTypePreparedHintRun *run,
+                                                  SnailTextPlacement placement,
+                                                  const float color[4],
+                                                  SnailTextBlob **out);
 
 int snail_text_blob_init_from_shaped(const SnailAllocator *alloc,
                                      const SnailTextAtlas *atlas,

@@ -20,43 +20,53 @@ The Slug patent (US 10,373,352) was [dedicated to the public domain](https://ter
 
 ### How it works
 
-**Input.** snail parses TrueType fonts directly: `cmap` for codepoint-to-glyph
-mapping, `glyf`/`loca` for outlines, `hhea`/`hmtx` for metrics, `kern` for
-legacy kerning, and `OS/2` + `post` for underline/strikethrough/superscript/
-subscript metrics. `COLR` is parsed for color emoji. Optional OpenType shaping
-applies GSUB ligature substitution (type 4) and GPOS pair positioning (type 2).
-HarfBuzz can be compiled in for full complex-script shaping.
+snail turns immutable text, path, and image inputs into renderer-specific
+prepared resources, then draws compact records that reference those resources.
+The draw call itself does not parse fonts, upload textures, allocate memory, or
+discover missing resources.
 
-**Atlas preparation.** Glyph and path outlines stay as curves. Preparation
-packs those curves plus a small acceleration structure into atlas pages:
+**Text input.** `TextAtlas` parses TrueType `cmap`, `glyf`/`loca`, metrics,
+legacy `kern`, decoration/script metrics, and `COLR` color layers. HarfBuzz is
+used when enabled; otherwise the built-in shaper covers GSUB ligatures (type 4)
+and GPOS pair positioning (type 2). `ensureText`, `ensureShaped`, and
+`ensureGlyphs` extend the immutable atlas by returning a new snapshot.
 
-- *Curve texture* (RGBA16F): each segment occupies four texels. Coordinates are
-  localized to a glyph/path origin and stored either directly or as an anchor
-  plus f16 deltas.
-- *Band texture* (RG16UI): each glyph/path bounding box is split into horizontal
-  and vertical bands. Each band stores curve-texture locations for the curves
+**Vector input.** `PathPictureBuilder` freezes filled/stroked `Path` geometry
+into an immutable `PathPicture`. Fills preserve line, quadratic, rational conic,
+and cubic segments; strokes are expanded into offset curves with the requested
+caps and joins.
+
+**Atlas data.** Glyph and path outlines stay as curves. Preparation packs those
+curves plus a small lookup structure into atlas pages:
+
+- *Curve texture* (RGBA16F): one curve segment occupies four texels, localized to
+  a glyph/path origin and stored directly or as an anchor plus f16 deltas.
+- *Band texture* (RG16UI): horizontal and vertical bands list only the curves
   that can affect samples in that band.
-- *Layer records* (RGBA32F): per-glyph or per-shape metadata such as bounds,
-  band transforms, paint records, and color-font/composite-layer data.
+- *Layer records* (RGBA32F): bounds, band transforms, paint records, color-font
+  layers, composite groups, and optional per-size TrueType hint records.
 
 <img src="assets/algorithm_atlas.png?raw=true" alt="snail-rendered diagram of curve and band atlas preparation" width="320">
 
-This preprocessing is CPU-only and runs when an immutable `TextAtlas` or
-`PathPicture` snapshot is built. GPU backends upload the prepared data into 2D
-texture arrays, one layer per atlas page. The CPU backend reads the same
-prepared atlas data directly.
+This preprocessing is CPU-only. GPU backends upload the prepared data into 2D
+texture arrays, one layer per atlas page. The CPU backend reads equivalent
+prepared snapshots in software.
 
-**Coverage evaluation.** At draw time, text glyphs and path shapes are emitted
-as ordinary quads. The fragment shader maps the fragment back into local outline
+**Draw records.** A `Scene` borrows `TextBlob` and `PathPicture` values.
+`PreparedScene` or `DrawList.addScene` resolves those submissions against
+`PreparedResources` into packed draw records. Records are validated with resource
+stamps before drawing, so stale or missing resources fail explicitly.
+
+**Coverage evaluation.** Text glyphs and path shapes are emitted as ordinary
+quads. The shader or CPU rasterizer maps each sample back into local outline
 coordinates, chooses the horizontal and vertical bands for that sample, and
 walks only the curves referenced by those bands.
 
 For each candidate curve, snail solves the ray/Bezier root equation at the
-sample coordinate. The text shader uses the TrueType fast path for quadratic
-glyph outlines. The path shader handles lines, quadratics, rational conics, and
-cubics. A root contributes signed coverage based on which side of the sample
-the crossing falls on; crossings more than half a pixel away contribute zero to
-antialiasing.
+sample coordinate. The text path uses the TrueType quadratic fast path; vector
+paths handle lines, quadratics, rational conics, and cubics. A root contributes
+signed coverage based on which side of the sample the crossing falls on;
+crossings more than half a pixel away contribute zero to antialiasing.
 Horizontal and vertical estimates are weighted together, then the configured
 fill rule (`nonzero` or `even_odd`) maps the signed winding value to final
 alpha.
@@ -68,14 +78,12 @@ samples along the display's RGB/BGR or vertical subpixel axis and filter them
 into per-channel coverage. There is no bitmap glyph atlas, no distance field,
 and no texture sample that represents a pre-rasterized glyph shape.
 
-**Vector paths.** Filled and stroked `Path` geometry uses the same curve/band
-atlas format as text. The path shader handles per-shape paint records, image and
-gradient paints, and composite fill+stroke groups; the text shader keeps the
-plain glyph-coverage path lean. Public `Path.cubicTo` inputs are preserved as
-cubic segments for fills, while strokes are expanded into offset curves with
-joins (miter, bevel, round) and caps (butt, square, round). The `PathPicture`
-type freezes styled paths into an immutable atlas snapshot that can be instanced
-cheaply per frame.
+**Optional TrueType hints.** The default text path is unhinted and
+resolution-independent. Zig callers can opt into per-size TrueType bytecode
+execution with `TrueTypeHintContext`; hinted glyphs are stored as curve-delta
+records attached to a `TextBlob`, and the renderer still evaluates curves at
+draw time. Unsupported glyphs, color glyphs, synthetic styles, or topology
+changes can fall back to the normal unhinted path.
 
 ## Color convention
 
@@ -135,10 +143,11 @@ that capacity.
 
 ## Hinting And Pixel Snapping
 
-Snail does not run TrueType bytecode or apply hidden render-time text hinting.
-For static UI text, align the values you care about before building a
-`TextBlob`. The snapping API is deliberately value-based: compute a step for
-the coordinate space you are using, then snap positions, lengths, or rectangles.
+Snail's default text path is unhinted. It does not apply hidden render-time
+snapping or mutate glyph positions during draw. For static UI text, align the
+values you care about before building a `TextBlob`. The snapping API is
+deliberately value-based: compute a step for the coordinate space you are using,
+then snap positions, lengths, or rectangles.
 
 ```zig
 const step = snail.pixelSteps(.{ logical_w, logical_h }, .{ framebuffer_w, framebuffer_h });
@@ -180,11 +189,40 @@ const cell_w = snail.snapLengthToStep(raw_cell.cell_width, step.x, .nearest, 1.0
 const line_h = snail.snapLengthToStep(raw_cell.line_height, step.y, .nearest, 1.0);
 ```
 
+Callers that want grid-fitted small text can opt into explicit TrueType hinting
+for a chosen ppem. The hint context executes TrueType bytecode, checks that the
+hinted outline can reuse the atlas band structure, and stores curve deltas in
+the `TextBlob` layer records.
+
+```zig
+var hint_context = snail.TrueTypeHintContext.init(allocator, &atlas);
+defer hint_context.deinit();
+
+var shaped = try atlas.shapeText(allocator, .{}, "Small text");
+defer shaped.deinit();
+
+var hinted = try hint_context.prepareRun(allocator, .{
+    .shaped = &shaped,
+    .ppem = snail.TrueTypeHintPpem.uniform(12 * 64),
+});
+defer hinted.deinit();
+
+_ = try builder.appendPreparedHintedRun(&hinted, .{
+    .baseline = baseline,
+    .em = 12,
+}, color);
+```
+
+C uses the same model through `SnailTrueTypeHintContext`,
+`SnailTrueTypePreparedHintRun`, and `SnailTextBlobBuilder`. If preparing a run
+returns `SNAIL_ERR_HINT_UNAVAILABLE`, fall back to
+`snail_text_blob_builder_append_shaped` or `snail_text_blob_init_from_shaped`.
+
 The usual rule is to snap the run baseline and preserve glyph advances.
-Per-glyph origin snapping can make tiny static text look more grid-fitted, but it
-also changes spacing and kerning. If text is later rotated, scaled, animated,
-or drawn through a non-axis-aligned MVP, snap in the final space or leave it
-unhinted.
+Per-glyph origin snapping or hinted runs can make tiny static text look more
+grid-fitted, but both are per-size choices. If text is later rotated, scaled,
+animated, or drawn through a non-axis-aligned MVP, snap in the final space or
+leave it unhinted.
 
 ## Build
 
@@ -203,6 +241,7 @@ zig build run-backend-compare                   # CPU/GL/Vulkan parity
 zig build run-bench                             # benchmarks, including Vulkan rows when a Vulkan device is available
 zig build install --release=fast                # install libsnail, enabled C headers, and snail.pc
 zig build generate-c-api                        # emit generated C API artifacts into the Zig cache
+zig build check-c-api                           # verify C headers against generated handles and Zig exports
 ```
 
 Library backend flags:
@@ -264,6 +303,27 @@ exe.root_module.addImport("snail", snail_dep.module("snail"));
 ```
 
 The default dependency module enables OpenGL, Vulkan, CPU rendering, and HarfBuzz. Workspace builds that import `snail/build.zig` directly can call `moduleWithOptions` to trim backend support explicitly. On NixOS/nix-shell, system libraries are provided automatically; on other systems, install the development packages for your distro.
+
+## Using the API
+
+The Zig and C APIs use the same explicit resource model:
+
+1. Build immutable CPU values: `TextAtlas`/`TextBlob`, `PathPicture`, and
+   `Image`. Use `TextBlobBuilder` when composing multiple shaped runs or
+   appending prepared TrueType hint runs.
+2. Put the values a scene may sample into a `ResourceManifest` using stable
+   `ResourceKey` / `TextResourceKeys` identities.
+3. Upload the manifest with a renderer to get `PreparedResources`.
+4. Add borrowed `TextDraw` and `PathDraw` submissions to a `Scene`.
+5. Convert the scene into either a caller-buffered `DrawList` or an owned
+   `PreparedScene`, then draw with a per-call `DrawState` or `DrawPass`.
+6. When resources change, upload a replacement `PreparedResources`, rebuild
+   stale draw records, and retire the old prepared resources after in-flight
+   frames are done.
+
+The simple path is `uploadResourcesBlocking` + `PreparedScene.initOwned` +
+`drawPrepared`. Engines that need upload scheduling can use the plan / begin /
+record / publish flow described below.
 
 ## Example: Zig
 
@@ -390,7 +450,16 @@ try scene.addPath(.{ .picture = &picture, .resource_key = snail.ResourceKey.name
 
 ## Example: C
 
-> **Note:** This example uses the OpenGL C backend and requires an active OpenGL context. CPU callers include `snail_cpu.h`, provide a caller-owned RGBA8 buffer, and may attach a caller-owned `SnailThreadPool`; Vulkan callers include `snail_vulkan.h` and provide a `SnailVulkanContext`. Error checks are omitted here for brevity.
+The installed C API consists of `snail.h`, generated `snail_generated.h`, and
+one backend header for each enabled backend. Pass `NULL` for `SnailAllocator` to
+use libc allocation; otherwise the allocator callbacks and `ctx` must outlive
+every handle created from that descriptor.
+
+This example uses the OpenGL backend and requires an active OpenGL context. CPU
+callers include `snail_cpu.h`, provide a caller-owned RGBA8 buffer, and may
+attach a caller-owned `SnailThreadPool`; Vulkan callers include
+`snail_vulkan.h`, provide `SnailVulkanContext`, and draw through
+`SnailVulkanFrame`. Error checks are omitted here for brevity.
 
 ```c
 #include "snail.h"
@@ -430,6 +499,25 @@ SnailTextAppendOptions text_options = {
     .fill = {.kind = SNAIL_PAINT_SOLID, .paint_solid = {1, 1, 1, 1}},
 };
 snail_text_blob_init_from_shaped(NULL, atlas, shaped, text_options, &blob);
+
+// Optional: build a hinted solid-color run for small static text.
+SnailTrueTypeHintContext *hint_context = NULL;
+SnailTrueTypePreparedHintRun *hinted = NULL;
+SnailTextBlob *hinted_blob = NULL;
+float white[4] = {1, 1, 1, 1};
+if (snail_true_type_hint_context_init(NULL, atlas, &hint_context) == SNAIL_OK &&
+    snail_true_type_hint_context_prepare_run(
+        hint_context, NULL, shaped, SNAIL_RANGE_ALL,
+        snail_true_type_hint_ppem_uniform(12 * 64), &hinted) == SNAIL_OK) {
+    snail_text_blob_init_from_prepared_hinted_run(
+        NULL, hinted, (SnailTextPlacement){10, 430, 12}, white, &hinted_blob);
+}
+if (hinted_blob) {
+    snail_text_blob_deinit(blob);
+    blob = hinted_blob;
+}
+snail_true_type_prepared_hint_run_deinit(hinted);
+snail_true_type_hint_context_deinit(hint_context);
 snail_shaped_text_deinit(shaped);
 
 // Vector path
@@ -457,8 +545,14 @@ snail_resource_manifest_put_path_picture(resources, 2, picture);
 
 SnailScene *scene = NULL;
 snail_scene_init(NULL, &scene);
-snail_scene_add_text_draw(scene, (SnailTextDraw){blob, text_resources});
-snail_scene_add_path_picture_draw(scene, (SnailPathPictureDraw){picture, 2});
+snail_scene_add_text_draw(scene, (SnailTextDraw){
+    .blob = blob,
+    .resources = text_resources,
+});
+snail_scene_add_path_picture_draw(scene, (SnailPathPictureDraw){
+    .picture = picture,
+    .key = 2,
+});
 
 SnailRenderer *renderer = NULL;
 snail_gl_renderer_init(&renderer);
@@ -498,10 +592,10 @@ snail_path_deinit(path);
 snail_text_atlas_deinit(atlas);
 ```
 
-The C scene API includes C-only helper variants for common cases such as a
-single transform, a sub-range, or an owned override copy. Those helpers exist
-to make FFI lifetime management explicit; the core model is still the same
-borrowed `Scene` + `PathDraw` / `TextDraw` primitive used by Zig.
+The C scene API submits `SnailTextDraw` and `SnailPathPictureDraw` directly.
+When `has_override` is true, the scene copies that one override value into
+scene-owned storage; blob, picture, and resource handles are still borrowed
+until `snail_scene_reset` or `snail_scene_deinit`.
 
 ## API reference
 
@@ -512,6 +606,7 @@ borrowed `Scene` + `PathDraw` / `TextDraw` primitive used by Zig.
 | `TextAtlas` | Immutable CPU font/glyph snapshot. `ensureText`, `ensureShaped`, and `ensureGlyphs` return a new snapshot; old stays valid. |
 | `ShapedText` | Shaped glyph placements for a string/run. |
 | `TextBlob` | Positioned text that borrows a `TextAtlas` snapshot. It can be rebound to a compatible superset snapshot when cache lifetime needs it. |
+| `TextBlobBuilder` | Mutable builder for one or more shaped runs, including prepared TrueType hint runs. The C API exposes it as `SnailTextBlobBuilder`. |
 | `Font` | Stable parsed-font helper for `unitsPerEm`, `glyphIndex`, and `advanceWidth` when callers manage raw font data directly. |
 | `FaceSpec` | `{ .data, .weight, .italic, .fallback, .synthetic }` — font face specification for `TextAtlas.init`. |
 | `FaceIndex` | `u16` face handle returned by atlas resolution/itemization and accepted by per-face metric helpers. |
@@ -545,6 +640,7 @@ borrowed `Scene` + `PathDraw` / `TextDraw` primitive used by Zig.
 | `PixelRect` | Integer pixel rectangle `{ .x, .y, .w, .h }` used by `ResolveRegion.pixel_rect`. |
 | `IntermediateFormat` | GL linear intermediate precision: `.rgba16f` or `.rgba32f`. |
 | `CoverageTransfer` | Optional analytic coverage remap. `.identity` is the default; `.power(exponent)` is explicit display tuning. |
+| `TrueTypeHintContext`, `TrueTypeHintPpem`, `TrueTypePreparedHintRun` | Opt-in TrueType bytecode hinting helpers for building hinted `TextBlob` records at a chosen ppem. The C API exposes matching `SnailTrueTypeHintContext`, `SnailTrueTypeHintPpem`, and `SnailTrueTypePreparedHintRun` handles/types. |
 | `SnapRule` | Quantization rule for explicit snapping: `.floor`, `.nearest`, or `.ceil`. |
 | `pixelStep` / `pixelSteps` | Compute logical-coordinate size of one backing pixel from logical and pixel extents. |
 | `snapToStep` / `snapDeltaToStep` | Snap a scalar to an explicit step, or return the delta needed to reach that snap. |
@@ -580,6 +676,7 @@ borrowed `Scene` + `PathDraw` / `TextDraw` primitive used by Zig.
 | `blob.resourceKeys(atlas_key, blob_key) TextResourceKeys` | Build the resource binding used by both `scene.addText` and `ResourceManifest.putTextBlob`. |
 | `blob.rebound(alloc, new_atlas) !TextBlob` | Optional cache/lifetime helper: return a blob bound to a compatible atlas snapshot that retains old pages and contains all referenced glyphs. |
 | `TextBlobBuilder.init(alloc, atlas)` / `builder.append(TextAppend) !TextAppendResult` / `builder.finish() !TextBlob` | Append shaped runs with explicit placement and fill. Call `atlas.ensureText`/`ensureShaped`/`ensureGlyphs` first if all glyphs must be renderable. |
+| `TrueTypeHintContext.init(alloc, atlas)` / `context.prepareRun(alloc, .{ .shaped, .ppem })` / `builder.appendPreparedHintedRun(run, placement, color)` | Explicit TrueType hinting path for solid-color runs. Keep the context tied to the atlas snapshot, and fall back to `builder.append` when hinting rejects a glyph. C callers use `snail_true_type_hint_context_prepare_run`, `snail_text_blob_builder_append_prepared_hinted_run`, or `snail_text_blob_init_from_prepared_hinted_run`. |
 | `TextAppend` | `{ .shaped, .glyphs, .placement = .{ .baseline, .em }, .fill }` — appends a whole shaped run or glyph subrange with independent position/scale and paint. Fill accepts the same `Paint` union used by paths, in the same coordinate space as `placement`. |
 | `TextAppendResult` | `{ .advance: Vec2, .missing: bool }` — pen advance and whether any referenced glyph was absent from the current atlas snapshot. |
 
@@ -645,8 +742,8 @@ try scene.addPath(.{ .picture = &sprite, .resource_key = snail.ResourceKey.named
 | `DrawList.estimate(scene)` | Upper bound for the word buffer required by `draw.addScene(prepared, scene)`. |
 | `DrawList.estimateSegments(scene)` | Upper bound for the segment buffer required by `draw.addScene(prepared, scene)`. |
 | `PreparedScene.initOwned(alloc, prepared, scene) !PreparedScene` | Build an owned draw-record cache for a static scene. |
-| `renderer.draw(prepared, list, options)` | Execute a `DrawList` on CPU/GL or other renderer-owned draw contexts. No resource discovery or upload. |
-| `renderer.drawPrepared(prepared, prepared_scene, options)` | Draw a `PreparedScene` cache. For Vulkan, call `vk.frame(.{ .cmd, .slot }).drawPrepared(...)`. |
+| `renderer.draw(prepared, list, state)` | Execute a `DrawList` on CPU/GL or other renderer-owned draw contexts. No resource discovery or upload. |
+| `renderer.drawPrepared(prepared, prepared_scene, state)` | Draw a `PreparedScene` cache. For Vulkan, call `vk.frame(.{ .cmd, .slot }).drawPrepared(...)`. |
 | `renderer.drawPass(prepared, list, pass)` / `renderer.drawPreparedPass(...)` | Execute an explicit draw pass, including linear resolve when requested. Vulkan currently rejects linear resolve with `error.UnsupportedResolve`. |
 | `prepared.retireNow()` | Retire backend resources immediately once no in-flight frame references them. |
 | `PreparedResourceRetirementQueue.init(alloc)` / `queue.sweep()` | Caller-owned queue for prepared resources that must retire after a fence completes. |
@@ -704,10 +801,10 @@ prepared-scene variants.
 ### Text coverage in custom shaders
 
 `snail.coverage.Shader`, `snail.coverage.TextCoverageRecords`, and
-`snail.coverage.Backend` let a
-material shader sample snail's exact glyph coverage without going through
-`Renderer.draw`. The typical use is layering text with custom lighting,
-masking, or compositing.
+`snail.coverage.Backend` let a material shader sample snail's exact glyph
+coverage without going through `Renderer.draw`. Use this when text is part of a
+3D material, mask, custom compositor, or post-process pass instead of a normal
+2D scene draw.
 
 - `snail.coverage.Shader.gl` exposes GLSL 330 sources you can `@embedFile`-style
   splice into your own program: `vertex_interface`,
@@ -737,9 +834,10 @@ masking, or compositing.
 
 C callers use `SnailTextCoverageRecords` and `SnailCoverageBackend` from
 `snail.h`; derive `SnailCoverageDrawState` with
-`snail_text_coverage_records_draw_state`. GL program uniforms and shader
-snippets live in `snail_gl.h`; Vulkan frame-scoped coverage programs live in
-`snail_vulkan.h`.
+`snail_text_coverage_records_draw_state`. GL shader snippets and program
+uniform bindings live in `snail_gl.h`. Vulkan shader snippets, descriptor
+binding numbers, and frame-scoped coverage programs live in `snail_vulkan.h`.
+The CPU backend has no custom shader hook.
 
 ### Path
 
@@ -839,7 +937,8 @@ snail is used in development but is not yet stable. The Zig API is settling and 
 - The C API exposes the same main workflow as Zig: CPU/OpenGL/Vulkan backend
   constructors, blocking and scheduled upload, prepared-resource retirement,
   owned draw-list records, prepared-scene drawing, CPU thread pools, and
-  GL/Vulkan text coverage hooks for custom shaders.
+  GL/Vulkan text coverage hooks for custom shaders. It also exposes
+  `SnailTextBlobBuilder` and the explicit TrueType hint-run helpers.
 
 ## Benchmarks
 
@@ -848,7 +947,7 @@ zig build run-bench
 zig build run-bench -Dvulkan=false  # skip Vulkan rows
 ```
 
-Last run: 2026-05-16, `zig build run-bench`, ReleaseFast benchmark build. Lower
+Last run: 2026-05-19, `zig build run-bench`, ReleaseFast benchmark build. Lower
 times are better. These numbers are one local machine/run, not a portability
 guarantee.
 
@@ -869,65 +968,70 @@ The vector workload contains filled and stroked rounded rectangles, ellipses, an
 
 | Workload | Snail | FreeType | FreeType / Snail |
 |---|---:|---:|---:|
-| Font load | 1.79 us | 8.68 us | 4.85x |
-| Glyph prep, ASCII | 423.87 us | 1054.34 us | 2.49x |
-| Glyph prep, 7 sizes | 423.87 us | 6965.33 us | 16.43x |
-| PathPicture freeze, 25 shapes | 133.57 us | n/a | n/a |
+| Font load | 1.36 us | 9.06 us | 6.65x |
+| Glyph prep, ASCII | 395.32 us | 1048.04 us | 2.65x |
+| Glyph prep, 7 sizes | 395.32 us | 7225.29 us | 18.28x |
+| TT hint setup @ 12px | 31.10 us | n/a | n/a |
+| TT hint execute, ASCII @ 12px | 716.71 us | n/a | n/a |
+| TT hint plan, ASCII @ 12px | 794.31 us | n/a | n/a |
+| TT hint context cold, paragraph @ 12px | 46.61 us | n/a | n/a |
+| TT hint context warm, paragraph @ 12px | 0.05 us | n/a | n/a |
+| PathPicture freeze, 25 shapes | 175.32 us | n/a | n/a |
 
 ### Prepared Resource Memory
 
-| Resource | Bytes | KiB |
-|---|---:|---:|
-| Snail text curve/band textures | 98304 | 96.0 |
-| Snail vector curve/band textures | 54352 | 53.1 |
-| FreeType bitmaps, one size | 65001 | 63.5 |
-| FreeType bitmaps, seven sizes | 538020 | 525.4 |
+| Resource | Used bytes | Allocated GPU bytes | Used KiB | Allocated KiB |
+|---|---:|---:|---:|---:|
+| Snail text textures | 98304 | 196608 | 96.0 | 192.0 |
+| Snail vector textures | 54352 | 54352 | 53.1 | 53.1 |
+| FreeType bitmaps, one size | 65001 | 65001 | 63.5 | 63.5 |
+| FreeType bitmaps, seven sizes | 538020 | 538020 | 525.4 | 525.4 |
 
 ### Text Creation And Layout
 
 | Workload | Snail TextBlob | FreeType layout | FreeType / Snail |
 |---|---:|---:|---:|
-| Short string | 1.71 us | 77.39 us | 45.33x |
-| Sentence | 5.77 us | 377.71 us | 65.49x |
-| Paragraph | 19.77 us | 1386.03 us | 70.09x |
-| Paragraph x 7 sizes | 140.73 us | 10047.97 us | 71.40x |
+| Short string | 1.49 us | 82.50 us | 55.54x |
+| Sentence | 4.98 us | 405.84 us | 81.57x |
+| Paragraph | 19.43 us | 1458.68 us | 75.08x |
+| Paragraph x 7 sizes | 117.45 us | 10305.86 us | 87.75x |
 
 ### Draw Record Creation
 
 | Scene | Commands | Words | Segments | PreparedScene.initOwned |
 |---|---:|---:|---:|---:|
-| Text | 4 | 4048 | 1 | 8.06 us |
-| Rich text | 1 | 1136 | 1 | 2.14 us |
-| Vector paths | 1 | 400 | 1 | 0.23 us |
-| Mixed text + vector | 5 | 4448 | 2 | 7.94 us |
-| Multi-script text | 4 | 1488 | 1 | 2.82 us |
+| Text | 4 | 4048 | 1 | 8.59 us |
+| Rich text | 1 | 1136 | 1 | 2.21 us |
+| Vector paths | 1 | 400 | 1 | 0.31 us |
+| Mixed text + vector | 5 | 4448 | 2 | 8.81 us |
+| Multi-script text | 4 | 1488 | 1 | 3.00 us |
 
 ### Prepared Render
 
 Target: 640x360. CPU uses 20 measured frames; GPU backends use 500 measured frames.
 
-| Backend | Scene | Frames | Commands | Words | Segments | Draw prepared scene |
-|---|---|---:|---:|---:|---:|---:|
-| CPU | Text | 20 | 4 | 4048 | 1 | 8043.31 us |
-| CPU | Rich text | 20 | 1 | 1136 | 1 | 4203.87 us |
-| CPU | Vector paths | 20 | 1 | 400 | 1 | 16398.11 us |
-| CPU | Mixed text + vector | 20 | 5 | 4448 | 2 | 24645.27 us |
-| CPU | Multi-script text | 20 | 4 | 1488 | 1 | 4886.27 us |
-| CPU (threaded) | Text | 20 | 4 | 4048 | 1 | 3314.75 us |
-| CPU (threaded) | Rich text | 20 | 1 | 1136 | 1 | 2146.50 us |
-| CPU (threaded) | Vector paths | 20 | 1 | 400 | 1 | 3382.64 us |
-| CPU (threaded) | Mixed text + vector | 20 | 5 | 4448 | 2 | 5594.72 us |
-| CPU (threaded) | Multi-script text | 20 | 4 | 1488 | 1 | 2108.47 us |
-| GL 4.4 (persistent mapped) | Text | 500 | 4 | 4048 | 1 | 101.68 us |
-| GL 4.4 (persistent mapped) | Rich text | 500 | 1 | 1136 | 1 | 85.84 us |
-| GL 4.4 (persistent mapped) | Vector paths | 500 | 1 | 400 | 1 | 100.10 us |
-| GL 4.4 (persistent mapped) | Mixed text + vector | 500 | 5 | 4448 | 2 | 167.02 us |
-| GL 4.4 (persistent mapped) | Multi-script text | 500 | 4 | 1488 | 1 | 84.30 us |
-| Vulkan | Text | 500 | 4 | 4048 | 1 | 82.50 us |
-| Vulkan | Rich text | 500 | 1 | 1136 | 1 | 97.17 us |
-| Vulkan | Vector paths | 500 | 1 | 400 | 1 | 81.73 us |
-| Vulkan | Mixed text + vector | 500 | 5 | 4448 | 2 | 137.60 us |
-| Vulkan | Multi-script text | 500 | 4 | 1488 | 1 | 89.78 us |
+| Backend | Scene | Frames | Commands | Words | Segments | Instance bytes/frame | Draw prepared scene |
+|---|---|---:|---:|---:|---:|---:|---:|
+| CPU | Text | 20 | 4 | 4048 | 1 | 16192 | 8439.33 us |
+| CPU | Rich text | 20 | 1 | 1136 | 1 | 4544 | 4494.61 us |
+| CPU | Vector paths | 20 | 1 | 400 | 1 | 1600 | 16554.21 us |
+| CPU | Mixed text + vector | 20 | 5 | 4448 | 2 | 17792 | 24971.55 us |
+| CPU | Multi-script text | 20 | 4 | 1488 | 1 | 5952 | 5078.26 us |
+| CPU (threaded) | Text | 20 | 4 | 4048 | 1 | 16192 | 3420.37 us |
+| CPU (threaded) | Rich text | 20 | 1 | 1136 | 1 | 4544 | 2181.56 us |
+| CPU (threaded) | Vector paths | 20 | 1 | 400 | 1 | 1600 | 3096.39 us |
+| CPU (threaded) | Mixed text + vector | 20 | 5 | 4448 | 2 | 17792 | 5304.89 us |
+| CPU (threaded) | Multi-script text | 20 | 4 | 1488 | 1 | 5952 | 2208.68 us |
+| GL 4.4 (persistent mapped) | Text | 500 | 4 | 4048 | 1 | 16192 | 84.26 us |
+| GL 4.4 (persistent mapped) | Rich text | 500 | 1 | 1136 | 1 | 4544 | 96.61 us |
+| GL 4.4 (persistent mapped) | Vector paths | 500 | 1 | 400 | 1 | 1600 | 72.81 us |
+| GL 4.4 (persistent mapped) | Mixed text + vector | 500 | 5 | 4448 | 2 | 17792 | 152.70 us |
+| GL 4.4 (persistent mapped) | Multi-script text | 500 | 4 | 1488 | 1 | 5952 | 78.21 us |
+| Vulkan | Text | 500 | 4 | 4048 | 1 | 16192 | 80.45 us |
+| Vulkan | Rich text | 500 | 1 | 1136 | 1 | 4544 | 96.07 us |
+| Vulkan | Vector paths | 500 | 1 | 400 | 1 | 1600 | 87.67 us |
+| Vulkan | Mixed text + vector | 500 | 5 | 4448 | 2 | 17792 | 114.46 us |
+| Vulkan | Multi-script text | 500 | 4 | 1488 | 1 | 5952 | 90.10 us |
 
 ### Render Modes
 
@@ -936,30 +1040,30 @@ the fragment-shader path (grayscale vs LCD subpixel).
 
 | Backend | Scene | AA | Words | Segments | PreparedScene | Draw |
 |---|---|---|---:|---:|---:|---:|
-| CPU | Text | grayscale | 4048 | 1 | 8.46 us | 1560.23 us |
-| CPU | Text | subpixel rgb | 4048 | 1 | 8.94 us | 8038.56 us |
-| CPU | Rich text | grayscale | 1136 | 1 | 2.07 us | 1376.51 us |
-| CPU | Rich text | subpixel rgb | 1136 | 1 | 2.10 us | 4180.93 us |
-| CPU | Multi-script text | grayscale | 1488 | 1 | 2.90 us | 991.40 us |
-| CPU | Multi-script text | subpixel rgb | 1488 | 1 | 2.89 us | 4838.58 us |
-| CPU (threaded) | Text | grayscale | 4048 | 1 | 8.00 us | 828.06 us |
-| CPU (threaded) | Text | subpixel rgb | 4048 | 1 | 7.91 us | 3290.64 us |
-| CPU (threaded) | Rich text | grayscale | 1136 | 1 | 2.46 us | 669.83 us |
-| CPU (threaded) | Rich text | subpixel rgb | 1136 | 1 | 2.28 us | 2055.01 us |
-| CPU (threaded) | Multi-script text | grayscale | 1488 | 1 | 2.86 us | 492.11 us |
-| CPU (threaded) | Multi-script text | subpixel rgb | 1488 | 1 | 2.91 us | 2098.07 us |
-| GL 4.4 (persistent mapped) | Text | grayscale | 4048 | 1 | 8.29 us | 27.61 us |
-| GL 4.4 (persistent mapped) | Text | subpixel rgb | 4048 | 1 | 8.12 us | 100.51 us |
-| GL 4.4 (persistent mapped) | Rich text | grayscale | 1136 | 1 | 2.09 us | 30.48 us |
-| GL 4.4 (persistent mapped) | Rich text | subpixel rgb | 1136 | 1 | 2.15 us | 71.17 us |
-| GL 4.4 (persistent mapped) | Multi-script text | grayscale | 1488 | 1 | 2.99 us | 34.73 us |
-| GL 4.4 (persistent mapped) | Multi-script text | subpixel rgb | 1488 | 1 | 3.11 us | 87.94 us |
-| Vulkan | Text | grayscale | 4048 | 1 | 7.99 us | 33.78 us |
-| Vulkan | Text | subpixel rgb | 4048 | 1 | 8.13 us | 87.06 us |
-| Vulkan | Rich text | grayscale | 1136 | 1 | 2.13 us | 32.28 us |
-| Vulkan | Rich text | subpixel rgb | 1136 | 1 | 2.07 us | 96.52 us |
-| Vulkan | Multi-script text | grayscale | 1488 | 1 | 2.85 us | 28.51 us |
-| Vulkan | Multi-script text | subpixel rgb | 1488 | 1 | 3.00 us | 88.21 us |
+| CPU | Text | grayscale | 4048 | 1 | 8.66 us | 1762.94 us |
+| CPU | Text | subpixel rgb | 4048 | 1 | 8.30 us | 8615.11 us |
+| CPU | Rich text | grayscale | 1136 | 1 | 2.23 us | 1500.18 us |
+| CPU | Rich text | subpixel rgb | 1136 | 1 | 2.20 us | 4488.80 us |
+| CPU | Multi-script text | grayscale | 1488 | 1 | 3.02 us | 1038.25 us |
+| CPU | Multi-script text | subpixel rgb | 1488 | 1 | 3.02 us | 5202.40 us |
+| CPU (threaded) | Text | grayscale | 4048 | 1 | 8.36 us | 827.03 us |
+| CPU (threaded) | Text | subpixel rgb | 4048 | 1 | 8.43 us | 3664.37 us |
+| CPU (threaded) | Rich text | grayscale | 1136 | 1 | 2.21 us | 704.73 us |
+| CPU (threaded) | Rich text | subpixel rgb | 1136 | 1 | 2.61 us | 2255.57 us |
+| CPU (threaded) | Multi-script text | grayscale | 1488 | 1 | 3.06 us | 514.82 us |
+| CPU (threaded) | Multi-script text | subpixel rgb | 1488 | 1 | 3.20 us | 2241.10 us |
+| GL 4.4 (persistent mapped) | Text | grayscale | 4048 | 1 | 8.72 us | 26.01 us |
+| GL 4.4 (persistent mapped) | Text | subpixel rgb | 4048 | 1 | 8.42 us | 94.03 us |
+| GL 4.4 (persistent mapped) | Rich text | grayscale | 1136 | 1 | 2.29 us | 41.71 us |
+| GL 4.4 (persistent mapped) | Rich text | subpixel rgb | 1136 | 1 | 2.17 us | 72.58 us |
+| GL 4.4 (persistent mapped) | Multi-script text | grayscale | 1488 | 1 | 2.99 us | 34.96 us |
+| GL 4.4 (persistent mapped) | Multi-script text | subpixel rgb | 1488 | 1 | 3.11 us | 94.81 us |
+| Vulkan | Text | grayscale | 4048 | 1 | 8.60 us | 26.92 us |
+| Vulkan | Text | subpixel rgb | 4048 | 1 | 8.56 us | 99.31 us |
+| Vulkan | Rich text | grayscale | 1136 | 1 | 2.26 us | 40.52 us |
+| Vulkan | Rich text | subpixel rgb | 1136 | 1 | 2.25 us | 95.52 us |
+| Vulkan | Multi-script text | grayscale | 1488 | 1 | 2.96 us | 26.40 us |
+| Vulkan | Multi-script text | subpixel rgb | 1488 | 1 | 3.15 us | 85.73 us |
 
 ## Architecture
 
@@ -969,7 +1073,7 @@ src/
     root.zig             public API facade and domain-module exports
     font.zig             public font wrapper and font metric aliases
     text.zig             public text API facade
-    text/                text atlases, shaping, blobs, batches, and text tests
+    text/                text atlases, shaping, TT hint helpers, blobs, batches, and tests
     target.zig           render-target geometry, explicit snapping, resolve, and AA policy types
     math.zig             math facade for vectors, matrices, bounds, and curves
     path.zig             public vector path API facade
@@ -1039,4 +1143,8 @@ include/
 
 ## License
 
-MIT
+snail source code is MIT licensed; see `LICENSE`.
+
+Bundled demo/test fonts and emoji assets have separate notices in
+`assets/LICENSES.md`. In short, the Noto fonts are under the SIL Open Font
+License 1.1, and `TwemojiMozilla.ttf` includes Twemoji artwork under CC BY 4.0.

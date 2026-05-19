@@ -14,23 +14,35 @@ const SnailLineMetrics = common.SnailLineMetrics;
 const SnailScriptTransform = common.SnailScriptTransform;
 const SnailCellMetrics = common.SnailCellMetrics;
 const SnailRect = common.SnailRect;
+const SnailRange = common.SnailRange;
 const SnailFaceSpec = common.SnailFaceSpec;
 const SnailFontStyle = common.SnailFontStyle;
 const SnailShapedGlyph = common.SnailShapedGlyph;
 const SnailTextAppendOptions = common.SnailTextAppendOptions;
+const SnailTextAppendResult = common.SnailTextAppendResult;
+const SnailTextPlacement = common.SnailTextPlacement;
+const SnailTrueTypeHintPpem = common.SnailTrueTypeHintPpem;
+const SnailTrueTypeHintRunStats = common.SnailTrueTypeHintRunStats;
 const SnailResourceFootprint = common.SnailResourceFootprint;
 const wrapScriptTransform = common.wrapScriptTransform;
 const toSnailRect = common.toSnailRect;
 const fromResourceFootprint = common.fromResourceFootprint;
+const fromTextAppendResult = common.fromTextAppendResult;
 const toSyntheticStyle = common.toSyntheticStyle;
 const toFontWeight = common.toFontWeight;
 const toFontStyle = common.toFontStyle;
 const toDecoration = common.toDecoration;
+const toRange = common.toRange;
 const toTextPlacement = common.toTextPlacement;
+const toTrueTypeHintPpem = common.toTrueTypeHintPpem;
+const fromTrueTypeHintRunStats = common.fromTrueTypeHintRunStats;
 const toPaint = common.toPaint;
 const TextAtlasImpl = common.TextAtlasImpl;
 const ShapedTextImpl = common.ShapedTextImpl;
 const TextBlobImpl = common.TextBlobImpl;
+const TextBlobBuilderImpl = common.TextBlobBuilderImpl;
+const TrueTypeHintContextImpl = common.TrueTypeHintContextImpl;
+const TrueTypePreparedHintRunImpl = common.TrueTypePreparedHintRunImpl;
 const destroyHandle = common.destroyHandle;
 
 // TextAtlas and shaping
@@ -318,6 +330,185 @@ pub export fn snail_shaped_text_copy_glyphs(shaped: *const ShapedTextImpl, out: 
     return count;
 }
 
+// TextBlobBuilder
+
+pub export fn snail_text_blob_builder_init(
+    alloc_ptr: ?*const SnailAllocator,
+    atlas: *const TextAtlasImpl,
+    out: *?*TextBlobBuilderImpl,
+) c_int {
+    const impl = createHandle(TextBlobBuilderImpl, alloc_ptr) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    const allocator = allocatorForHandle(impl);
+    impl.inner = snail.TextBlobBuilder.init(allocator, &atlas.inner);
+    out.* = impl;
+    return SNAIL_OK;
+}
+
+pub export fn snail_text_blob_builder_deinit(builder: ?*TextBlobBuilderImpl) void {
+    if (builder) |b| {
+        b.inner.deinit();
+        destroyHandle(b);
+    }
+}
+
+pub export fn snail_text_blob_builder_reset(builder: *TextBlobBuilderImpl) void {
+    builder.inner.reset();
+}
+
+pub export fn snail_text_blob_builder_glyph_count(builder: *const TextBlobBuilderImpl) usize {
+    return builder.inner.glyphCount();
+}
+
+pub export fn snail_text_blob_builder_append_shaped(
+    builder: *TextBlobBuilderImpl,
+    shaped: *const ShapedTextImpl,
+    glyphs: SnailRange,
+    options: SnailTextAppendOptions,
+    out_result: ?*SnailTextAppendResult,
+) c_int {
+    const paint = toPaint(options.fill) catch return SNAIL_ERR_INVALID_ARGUMENT;
+    const result = builder.inner.append(.{
+        .shaped = &shaped.inner,
+        .glyphs = toRange(glyphs),
+        .placement = toTextPlacement(options.placement),
+        .fill = paint,
+    }) catch |err| return mapError(err);
+    if (out_result) |out| out.* = fromTextAppendResult(result);
+    return SNAIL_OK;
+}
+
+pub export fn snail_text_blob_builder_append_prepared_hinted_run(
+    builder: *TextBlobBuilderImpl,
+    run: *const TrueTypePreparedHintRunImpl,
+    placement: SnailTextPlacement,
+    color: ?[*]const f32,
+    out_result: ?*SnailTextAppendResult,
+) c_int {
+    const result = builder.inner.appendPreparedHintedRun(
+        &run.inner,
+        toTextPlacement(placement),
+        color4(color) catch return SNAIL_ERR_INVALID_ARGUMENT,
+    ) catch |err| return mapError(err);
+    if (out_result) |out| out.* = fromTextAppendResult(result);
+    return SNAIL_OK;
+}
+
+pub export fn snail_text_blob_builder_finish(builder: *TextBlobBuilderImpl, out: *?*TextBlobImpl) c_int {
+    const impl = createHandleSharingAllocator(TextBlobImpl, builder.handle_allocator) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    const blob = builder.inner.finish() catch |err| {
+        destroyHandle(impl);
+        return mapError(err);
+    };
+    impl.inner = blob;
+    out.* = impl;
+    return SNAIL_OK;
+}
+
+// TrueType hinting
+
+pub export fn snail_true_type_hint_ppem_uniform(ppem_26_6: u32) SnailTrueTypeHintPpem {
+    return .{ .x_26_6 = ppem_26_6, .y_26_6 = ppem_26_6 };
+}
+
+pub export fn snail_true_type_hint_context_init(
+    alloc_ptr: ?*const SnailAllocator,
+    atlas: *const TextAtlasImpl,
+    out: *?*TrueTypeHintContextImpl,
+) c_int {
+    const impl = createHandle(TrueTypeHintContextImpl, alloc_ptr) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    const allocator = allocatorForHandle(impl);
+    impl.inner = snail.TrueTypeHintContext.init(allocator, &atlas.inner);
+    out.* = impl;
+    return SNAIL_OK;
+}
+
+pub export fn snail_true_type_hint_context_deinit(context: ?*TrueTypeHintContextImpl) void {
+    if (context) |c| {
+        c.inner.deinit();
+        destroyHandle(c);
+    }
+}
+
+pub export fn snail_true_type_hint_context_reset_for_atlas(context: *TrueTypeHintContextImpl, atlas: *const TextAtlasImpl) void {
+    context.inner.resetForAtlas(&atlas.inner);
+}
+
+pub export fn snail_true_type_hint_context_prepare_size(
+    context: *TrueTypeHintContextImpl,
+    face_index: usize,
+    ppem: SnailTrueTypeHintPpem,
+) c_int {
+    if (face_index >= context.inner.atlas.faceCount()) return SNAIL_ERR_INVALID_ARGUMENT;
+    const face = std.math.cast(snail.FaceIndex, face_index) orelse return SNAIL_ERR_INVALID_ARGUMENT;
+    context.inner.prepareSize(face, toTrueTypeHintPpem(ppem)) catch |err| return mapError(err);
+    return SNAIL_OK;
+}
+
+pub export fn snail_true_type_hint_context_prepare_run(
+    context: *TrueTypeHintContextImpl,
+    alloc_ptr: ?*const SnailAllocator,
+    shaped: *const ShapedTextImpl,
+    glyphs: SnailRange,
+    ppem: SnailTrueTypeHintPpem,
+    out: *?*TrueTypePreparedHintRunImpl,
+) c_int {
+    const impl = createHandle(TrueTypePreparedHintRunImpl, alloc_ptr) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    const allocator = allocatorForHandle(impl);
+    const run = context.inner.prepareRun(allocator, .{
+        .shaped = &shaped.inner,
+        .glyphs = toRange(glyphs),
+        .ppem = toTrueTypeHintPpem(ppem),
+    }) catch |err| {
+        destroyHandle(impl);
+        return mapError(err);
+    };
+    impl.inner = run;
+    out.* = impl;
+    return SNAIL_OK;
+}
+
+pub export fn snail_true_type_prepared_hint_run_deinit(run: ?*TrueTypePreparedHintRunImpl) void {
+    if (run) |r| {
+        r.inner.deinit();
+        destroyHandle(r);
+    }
+}
+
+pub export fn snail_true_type_prepared_hint_run_stats(run: *const TrueTypePreparedHintRunImpl, out: *SnailTrueTypeHintRunStats) void {
+    out.* = fromTrueTypeHintRunStats(run.inner.stats);
+}
+
+pub export fn snail_text_blob_init_from_prepared_hinted_run(
+    alloc_ptr: ?*const SnailAllocator,
+    run: *const TrueTypePreparedHintRunImpl,
+    placement: SnailTextPlacement,
+    color: ?[*]const f32,
+    out: *?*TextBlobImpl,
+) c_int {
+    const impl = createHandle(TextBlobImpl, alloc_ptr) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    const allocator = allocatorForHandle(impl);
+    var builder = snail.TextBlobBuilder.init(allocator, run.inner.atlas);
+    defer builder.deinit();
+    _ = builder.appendPreparedHintedRun(
+        &run.inner,
+        toTextPlacement(placement),
+        color4(color) catch {
+            destroyHandle(impl);
+            return SNAIL_ERR_INVALID_ARGUMENT;
+        },
+    ) catch |err| {
+        destroyHandle(impl);
+        return mapError(err);
+    };
+    const blob = builder.finish() catch |err| {
+        destroyHandle(impl);
+        return mapError(err);
+    };
+    impl.inner = blob;
+    out.* = impl;
+    return SNAIL_OK;
+}
+
 pub export fn snail_text_blob_init_from_shaped(
     alloc_ptr: ?*const SnailAllocator,
     atlas: *const TextAtlasImpl,
@@ -408,4 +599,9 @@ pub export fn snail_text_blob_rebound(
     impl.inner = rebound;
     out.* = impl;
     return SNAIL_OK;
+}
+
+fn color4(color: ?[*]const f32) ![4]f32 {
+    const p = color orelse return error.InvalidArgument;
+    return .{ p[0], p[1], p[2], p[3] };
 }

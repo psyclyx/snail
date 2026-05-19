@@ -1,6 +1,17 @@
 # Changelog
 
-## 0.9.0 - 2026-05-16
+## 0.9.0 - 2026-05-19
+
+### Added
+
+- Explicit TrueType hinting helpers: Zig `TrueTypeHintContext`,
+  `TrueTypeHintPpem`, low-level `TrueTypeHintMachine` helpers, and
+  `TextBlobBuilder.appendPreparedHintedRun` / hinted glyph record support for
+  per-size grid-fitted text while preserving Snail's curve-evaluation draw path.
+- C API coverage for the same hinting path: `SnailTextBlobBuilder`,
+  `SnailTrueTypeHintContext`, `SnailTrueTypePreparedHintRun`,
+  `SnailTrueTypeHintPpem`, `SNAIL_ERR_HINT_UNAVAILABLE`, and direct hinted-blob
+  construction from prepared hint runs.
 
 ### Changed
 
@@ -76,7 +87,13 @@
 
 ### Docs and tooling
 
-- README benchmarks now include `CPU (threaded)` rows in the Render Modes table.
+- README benchmarks were refreshed from a new 2026-05-19 `zig build run-bench`
+  round and now include TT hint timings, used-vs-allocated resource memory, and
+  per-frame instance bytes.
+- README docs now describe the shared Zig/C API workflow, C header layout,
+  custom shader coverage hooks, explicit TrueType hinting, and third-party asset
+  license notices.
+- Added `assets/LICENSES.md` for bundled Noto and Twemoji Mozilla font assets.
 - README architecture docs now reflect the current `font`, `text`, `upload`,
   `resources`, and demo/tool `support` module layout.
 - Build-option module setup now flows through the shared `ModuleOptions` path,

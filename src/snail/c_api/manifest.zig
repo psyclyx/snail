@@ -15,6 +15,7 @@ pub const errors = [_]ErrorCode{
     .{ .name = "renderer_failed", .c_name = "SNAIL_ERR_RENDERER_FAILED", .value = -3 },
     .{ .name = "invalid_argument", .c_name = "SNAIL_ERR_INVALID_ARGUMENT", .value = -4 },
     .{ .name = "draw_failed", .c_name = "SNAIL_ERR_DRAW_FAILED", .value = -5 },
+    .{ .name = "hint_unavailable", .c_name = "SNAIL_ERR_HINT_UNAVAILABLE", .value = -6 },
 };
 
 pub const handles = [_]Handle{
@@ -22,6 +23,9 @@ pub const handles = [_]Handle{
     .{ .name = "SnailTextAtlas" },
     .{ .name = "SnailShapedText" },
     .{ .name = "SnailTextBlob" },
+    .{ .name = "SnailTextBlobBuilder" },
+    .{ .name = "SnailTrueTypeHintContext" },
+    .{ .name = "SnailTrueTypePreparedHintRun" },
     .{ .name = "SnailImage" },
     .{ .name = "SnailPath" },
     .{ .name = "SnailPathPictureBuilder" },

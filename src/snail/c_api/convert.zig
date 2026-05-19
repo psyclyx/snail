@@ -29,8 +29,11 @@ const SnailShapeMark = c.SnailShapeMark;
 const SnailString = c.SnailString;
 const SnailStrokeStyle = c.SnailStrokeStyle;
 const SnailSyntheticStyle = c.SnailSyntheticStyle;
+const SnailTextAppendResult = c.SnailTextAppendResult;
 const SnailTextPlacement = c.SnailTextPlacement;
 const SnailTransform2D = c.SnailTransform2D;
+const SnailTrueTypeHintPpem = c.SnailTrueTypeHintPpem;
+const SnailTrueTypeHintRunStats = c.SnailTrueTypeHintRunStats;
 const SnailVulkanTextCoverageProgram = c.SnailVulkanTextCoverageProgram;
 const SNAIL_PAINT_IMAGE = c.SNAIL_PAINT_IMAGE;
 const SNAIL_PAINT_LINEAR = c.SNAIL_PAINT_LINEAR;
@@ -409,6 +412,26 @@ pub fn toTextPlacement(placement: SnailTextPlacement) snail.TextPlacement {
     return .{
         .baseline = .{ .x = placement.baseline_x, .y = placement.baseline_y },
         .em = placement.em,
+    };
+}
+
+pub fn fromTextAppendResult(result: snail.TextAppendResult) SnailTextAppendResult {
+    return .{
+        .advance_x = result.advance.x,
+        .advance_y = result.advance.y,
+        .missing = result.missing,
+    };
+}
+
+pub fn toTrueTypeHintPpem(ppem: SnailTrueTypeHintPpem) snail.TrueTypeHintPpem {
+    return .{ .x_26_6 = ppem.x_26_6, .y_26_6 = ppem.y_26_6 };
+}
+
+pub fn fromTrueTypeHintRunStats(stats: snail.TrueTypeHintRunStats) SnailTrueTypeHintRunStats {
+    return .{
+        .glyph_count = stats.glyph_count,
+        .advance_x = stats.advance.x,
+        .advance_y = stats.advance.y,
     };
 }
 

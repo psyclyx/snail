@@ -199,6 +199,83 @@ test "c_api: text atlas shape ensure and blob" {
     try testing.expectEqual(@as(usize, 5), c_text.snail_text_blob_glyph_count(blob.?));
 }
 
+test "c_api: text blob builder and true type hinted runs" {
+    var atlas = try testTextAtlas();
+    defer c_text.snail_text_atlas_deinit(atlas);
+
+    try ensureForText(&atlas, snail.ASCII_PRINTABLE[0..]);
+
+    var context: ?*c.test_api.TrueTypeHintContextImpl = null;
+    try testing.expectEqual(c.SNAIL_OK, c_text.snail_true_type_hint_context_init(null, atlas, &context));
+    defer c_text.snail_true_type_hint_context_deinit(context);
+
+    const ppem = c_text.snail_true_type_hint_ppem_uniform(12 * 64);
+    if (c_text.snail_true_type_hint_context_prepare_size(context.?, 0, ppem) == c.SNAIL_ERR_HINT_UNAVAILABLE) {
+        return error.SkipZigTest;
+    }
+
+    for (snail.ASCII_PRINTABLE) |ch| {
+        const text = [_]u8{ ch, ch, ch, ch };
+        var shaped: ?*c.test_api.ShapedTextImpl = null;
+        try testing.expectEqual(c.SNAIL_OK, c_text.snail_text_atlas_shape_utf8(atlas, .{}, text[0..].ptr, text.len, &shaped));
+        defer c_text.snail_shaped_text_deinit(shaped);
+
+        var run: ?*c.test_api.TrueTypePreparedHintRunImpl = null;
+        const prepare_rc = c_text.snail_true_type_hint_context_prepare_run(
+            context.?,
+            null,
+            shaped.?,
+            .{ .start = 0, .count = std.math.maxInt(usize) },
+            ppem,
+            &run,
+        );
+        if (prepare_rc == c.SNAIL_ERR_HINT_UNAVAILABLE) continue;
+        try testing.expectEqual(c.SNAIL_OK, prepare_rc);
+        defer c_text.snail_true_type_prepared_hint_run_deinit(run);
+
+        var stats: c.SnailTrueTypeHintRunStats = .{};
+        c_text.snail_true_type_prepared_hint_run_stats(run.?, &stats);
+        try testing.expectEqual(@as(usize, text.len), stats.glyph_count);
+        try testing.expect(stats.advance_x > 0);
+
+        var builder: ?*c.test_api.TextBlobBuilderImpl = null;
+        try testing.expectEqual(c.SNAIL_OK, c_text.snail_text_blob_builder_init(null, atlas, &builder));
+        defer c_text.snail_text_blob_builder_deinit(builder);
+
+        const color = [_]f32{ 1, 1, 1, 1 };
+        var append_result: c.SnailTextAppendResult = .{};
+        try testing.expectEqual(c.SNAIL_OK, c_text.snail_text_blob_builder_append_prepared_hinted_run(
+            builder.?,
+            run.?,
+            .{ .baseline_x = 0, .baseline_y = 12, .em = 12 },
+            &color,
+            &append_result,
+        ));
+        try testing.expect(!append_result.missing);
+        try testing.expect(append_result.advance_x > 0);
+        try testing.expect(c_text.snail_text_blob_builder_glyph_count(builder.?) > 0);
+
+        var blob: ?*c.test_api.TextBlobImpl = null;
+        try testing.expectEqual(c.SNAIL_OK, c_text.snail_text_blob_builder_finish(builder.?, &blob));
+        defer c_text.snail_text_blob_deinit(blob);
+        try testing.expect(c_text.snail_text_blob_glyph_count(blob.?) > 0);
+
+        var direct_blob: ?*c.test_api.TextBlobImpl = null;
+        try testing.expectEqual(c.SNAIL_OK, c_text.snail_text_blob_init_from_prepared_hinted_run(
+            null,
+            run.?,
+            .{ .baseline_x = 0, .baseline_y = 24, .em = 12 },
+            &color,
+            &direct_blob,
+        ));
+        defer c_text.snail_text_blob_deinit(direct_blob);
+        try testing.expect(c_text.snail_text_blob_glyph_count(direct_blob.?) > 0);
+        return;
+    }
+
+    return error.SkipZigTest;
+}
+
 test "c_api: text blob rebound returns a new handle" {
     var atlas = try testTextAtlas();
     defer c_text.snail_text_atlas_deinit(atlas);

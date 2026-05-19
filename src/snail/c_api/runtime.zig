@@ -16,6 +16,7 @@ pub const SNAIL_ERR_OUT_OF_MEMORY = generated.SNAIL_ERR_OUT_OF_MEMORY;
 pub const SNAIL_ERR_RENDERER_FAILED = generated.SNAIL_ERR_RENDERER_FAILED;
 pub const SNAIL_ERR_INVALID_ARGUMENT = generated.SNAIL_ERR_INVALID_ARGUMENT;
 pub const SNAIL_ERR_DRAW_FAILED = generated.SNAIL_ERR_DRAW_FAILED;
+pub const SNAIL_ERR_HINT_UNAVAILABLE = generated.SNAIL_ERR_HINT_UNAVAILABLE;
 
 fn toZigAllocator(ca: *const SnailAllocator) std.mem.Allocator {
     const S = struct {
@@ -99,6 +100,9 @@ pub fn mapError(err: anyerror) c_int {
         error.OutOfMemory => SNAIL_ERR_OUT_OF_MEMORY,
         error.InvalidFont, error.NoFaces, error.MissingCellMetricsGlyph => SNAIL_ERR_INVALID_FONT,
         error.UnsupportedRenderer => SNAIL_ERR_RENDERER_FAILED,
+        error.HintUnavailable,
+        error.NoTrueTypeProgram,
+        => SNAIL_ERR_HINT_UNAVAILABLE,
         error.InvalidEnum,
         error.InvalidArgument,
         error.InvalidFaceIndex,
@@ -111,6 +115,8 @@ pub fn mapError(err: anyerror) c_int {
         error.InvalidOverrideIndex,
         error.InvalidTransform,
         error.InvalidImageData,
+        error.InvalidHintDeltaCount,
+        error.EmptyHintedGlyph,
         error.PathMissingMoveTo,
         error.EmptyPath,
         error.EmptyStyle,

@@ -47,7 +47,7 @@ const shared_text_subpixel_body =
     shared_color_common ++
     "\n" ++
     @embedFile("../glsl/snail_text_subpixel_body.glsl");
-const shared_text_sample_body = shared_render_abi ++ "\n" ++ @embedFile("../glsl/snail_text_sample_body.glsl");
+const shared_text_sample_body = @embedFile("../glsl/snail_text_sample_body.glsl");
 
 pub const text_vertex_interface = gl330_vert_interface;
 pub const text_fragment_interface = gl330_text_subpixel_interface;
