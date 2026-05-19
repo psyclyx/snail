@@ -518,13 +518,45 @@ pub const CpuRenderer = struct {
 
         const resolved = prepared.resolveLayerInfo(info_y) orelse return;
         const entry = resolved.entry;
+        const special_kind = render_abi.specialGlyphWordKind(gw) orelse .colr;
+        if (special_kind == .hinted_text) {
+            self.renderHintedTextBatchInstance(prepared, decoded, atlas_layer, entry, info_x, resolved.local_y);
+            return;
+        }
+
         const first_tag = fetchLayerInfoTexel(entry.data, entry.width, info_x, resolved.local_y, 0)[3];
-        if (first_tag < 0.0) {
+        if (special_kind == .path and first_tag < 0.0) {
             const record = entry.pathRecordAt(info_x, resolved.local_y) orelse return;
             self.renderPathBatchLayers(prepared, decoded.bbox, decoded.transform, decoded.tint, atlas_layer, entry, record, false);
-        } else {
+        } else if (special_kind == .colr) {
             self.renderColrBatchLayers(prepared, decoded.bbox, decoded.transform, decoded.color, decoded.tint, info_x, resolved.local_y, layer_count, atlas_layer, entry.data, entry.width);
         }
+    }
+
+    fn renderHintedTextBatchInstance(
+        self: *CpuRenderer,
+        prepared: *const PreparedResources,
+        decoded: BatchInstance,
+        atlas_layer: u32,
+        entry: *const LayerInfoEntry,
+        info_x: u16,
+        info_y: u16,
+    ) void {
+        const page = (if (atlas_layer < prepared.atlas_pages.len) prepared.atlas_pages[atlas_layer] else null) orelse return;
+        const header = fetchLayerInfoTexel(entry.data, entry.width, info_x, info_y, 0);
+        const band = fetchLayerInfoTexel(entry.data, entry.width, info_x, info_y, 1);
+        const band_counts = render_abi.unpackBandCounts(@bitCast(header[2]));
+        const be = GlyphBandEntry{
+            .glyph_x = @intFromFloat(header[0]),
+            .glyph_y = @intFromFloat(header[1]),
+            .h_band_count = band_counts.h,
+            .v_band_count = band_counts.v,
+            .band_scale_x = band[0],
+            .band_scale_y = band[1],
+            .band_offset_x = band[2],
+            .band_offset_y = band[3],
+        };
+        self.renderTransformedGlyph(page, decoded.bbox, be, decoded.transform, multiplyLinearColor(decoded.color, decoded.tint), false);
     }
 
     fn renderColrBatchLayers(
