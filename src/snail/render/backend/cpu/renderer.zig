@@ -38,6 +38,7 @@ const cpu_tile_frame = @import("tile_frame.zig");
 
 const SubpixelCoverage = cpu_coverage.SubpixelCoverage;
 const SubpixelCoveragePlan = cpu_coverage.SubpixelCoveragePlan;
+const HintedTextRecord = cpu_coverage.HintedTextRecord;
 const addColors = cpu_path_paint.addColors;
 const advanceLocalPixel = cpu_geometry.advanceLocalPixel;
 const clamp01 = cpu_color.clamp01;
@@ -46,6 +47,7 @@ const compositeSubpixelOver = cpu_coverage.compositeSubpixelOver;
 const evalGlyphCoverage = cpu_coverage.evalGlyphCoverage;
 const evalGlyphCoverageBandSpan = cpu_coverage.evalGlyphCoverageBandSpan;
 const evalGlyphCoverageSubpixel = cpu_coverage.evalGlyphCoverageSubpixel;
+const evalHintedTextCoverageBandSpan = cpu_coverage.evalHintedTextCoverageBandSpan;
 const expandBoundsForCoverageSupport = cpu_geometry.expandBoundsForCoverageSupport;
 const f16ToF32 = cpu_texture.f16ToF32;
 const fetchLayerInfoTexel = cpu_path_paint.fetchLayerInfoTexel;
@@ -545,6 +547,7 @@ pub const CpuRenderer = struct {
         const page = (if (atlas_layer < prepared.atlas_pages.len) prepared.atlas_pages[atlas_layer] else null) orelse return;
         const header = fetchLayerInfoTexel(entry.data, entry.width, info_x, info_y, 0);
         const band = fetchLayerInfoTexel(entry.data, entry.width, info_x, info_y, 1);
+        const meta = fetchLayerInfoTexel(entry.data, entry.width, info_x, info_y, 2);
         const band_counts = render_abi.unpackBandCounts(@bitCast(header[2]));
         const be = GlyphBandEntry{
             .glyph_x = @intFromFloat(header[0]),
@@ -556,7 +559,21 @@ pub const CpuRenderer = struct {
             .band_offset_x = band[2],
             .band_offset_y = band[3],
         };
-        self.renderTransformedGlyph(page, decoded.bbox, be, decoded.transform, multiplyLinearColor(decoded.color, decoded.tint), false);
+        self.renderTransformedHintedGlyph(
+            page,
+            decoded.bbox,
+            be,
+            decoded.transform,
+            multiplyLinearColor(decoded.color, decoded.tint),
+            .{
+                .data = entry.data,
+                .width = entry.width,
+                .info_x = info_x,
+                .info_y = info_y,
+                .base_curve_texel = @intFromFloat(meta[0]),
+                .curve_count = @intFromFloat(meta[1]),
+            },
+        );
     }
 
     fn renderColrBatchLayers(
@@ -1044,6 +1061,31 @@ pub const CpuRenderer = struct {
         color: [4]f32,
         allow_subpixel: bool,
     ) void {
+        self.renderTransformedGlyphMaybeHinted(page, bbox, be, transform, color, allow_subpixel, null);
+    }
+
+    fn renderTransformedHintedGlyph(
+        self: *CpuRenderer,
+        page: anytype,
+        bbox: bezier.BBox,
+        be: GlyphBandEntry,
+        transform: Transform2D,
+        color: [4]f32,
+        record: HintedTextRecord,
+    ) void {
+        self.renderTransformedGlyphMaybeHinted(page, bbox, be, transform, color, false, record);
+    }
+
+    fn renderTransformedGlyphMaybeHinted(
+        self: *CpuRenderer,
+        page: anytype,
+        bbox: bezier.BBox,
+        be: GlyphBandEntry,
+        transform: Transform2D,
+        color: [4]f32,
+        allow_subpixel: bool,
+        hint_record: ?HintedTextRecord,
+    ) void {
         const inverse = inverseTransform(transform) orelse return;
         var bounds = transformedGlyphBounds(bbox, transform);
         expandBoundsForCoverageSupport(&bounds, self.subpixel_order, allow_subpixel);
@@ -1071,7 +1113,11 @@ pub const CpuRenderer = struct {
             });
             while (col < @as(u32, @intCast(px1))) : (advanceLocalPixel(&col, &display_local, sample_dx)) {
                 if (!allow_subpixel or self.subpixel_order == .none) {
-                    const cov = self.applyCoverageTransfer(evalGlyphCoverage(page, display_local.x, display_local.y, ppe.x, ppe.y, be, band_max_h, band_max_v, self.fill_rule));
+                    const raw_cov = if (hint_record) |record|
+                        evalHintedTextCoverageBandSpan(page, record, display_local.x, display_local.y, epp.x, epp.y, ppe.x, ppe.y, be, band_max_h, band_max_v, self.fill_rule)
+                    else
+                        evalGlyphCoverage(page, display_local.x, display_local.y, ppe.x, ppe.y, be, band_max_h, band_max_v, self.fill_rule);
+                    const cov = self.applyCoverageTransfer(raw_cov);
                     if (cov < 1.0 / 255.0) continue;
                     self.blendPremultipliedPixel(row, col, premultiplyCoverage(color, cov), false);
                 } else {

@@ -147,6 +147,15 @@ pub const CoveragePair = struct {
     wgt: f32,
 };
 
+pub const HintedTextRecord = struct {
+    data: []const f32,
+    width: u32,
+    info_x: u16,
+    info_y: u16,
+    base_curve_texel: u32,
+    curve_count: u16,
+};
+
 const GlyphBandState = struct {
     h_base: usize,
     h_count: u32,
@@ -819,6 +828,63 @@ fn accumulateGenericCurveCoverage(result: *CoveragePair, page: anytype, curve_ba
     return accumulateGlyphCoverageSegment(result, decodeCurveSegment(tex0, tex1, tex2, meta), sample_rc, ppe, horizontal);
 }
 
+fn hintedCurveIndex(record: HintedTextRecord, curve_base: usize) ?u32 {
+    const curve_texel = @as(u32, @intCast(curve_base / 4));
+    if (curve_texel < record.base_curve_texel) return null;
+    const delta = curve_texel - record.base_curve_texel;
+    if (delta % curve_tex.SEGMENT_TEXELS != 0) return null;
+    const index = delta / curve_tex.SEGMENT_TEXELS;
+    if (index >= record.curve_count) return null;
+    return index;
+}
+
+fn hintedLayerTexel(record: HintedTextRecord, offset: u32) [4]f32 {
+    if (record.width == 0) return .{ 0, 0, 0, 0 };
+    const texel = @as(u32, record.info_y) * record.width + @as(u32, record.info_x) + offset;
+    const base = @as(usize, texel) * 4;
+    if (base + 3 >= record.data.len) return .{ 0, 0, 0, 0 };
+    return .{
+        record.data[base + 0],
+        record.data[base + 1],
+        record.data[base + 2],
+        record.data[base + 3],
+    };
+}
+
+fn applyHintDeltas(segment: CurveSegment, record: HintedTextRecord, curve_index: u32) CurveSegment {
+    const delta_offset = 3 + curve_index * 2;
+    const d0 = hintedLayerTexel(record, delta_offset);
+    const d1 = hintedLayerTexel(record, delta_offset + 1);
+    var out = segment;
+    out.p0 = Vec2.add(out.p0, .{ .x = d0[0], .y = d0[1] });
+    out.p1 = Vec2.add(out.p1, .{ .x = d0[2], .y = d0[3] });
+    out.p2 = Vec2.add(out.p2, .{ .x = d1[0], .y = d1[1] });
+    out.p3 = Vec2.add(out.p3, .{ .x = d1[2], .y = d1[3] });
+    return out;
+}
+
+fn hintedSegment(page: anytype, record: HintedTextRecord, curve_base: usize) CurveSegment {
+    const tex0 = readCurveTexelF32Base(page, curve_base);
+    const tex1 = readCurveTexelF32Base(page, curve_base + 4);
+    const tex2 = readCurveTexelF32Base(page, curve_base + 8);
+    const meta = readCurveTexelF32Base(page, curve_base + 12);
+    const base = decodeCurveSegment(tex0, tex1, tex2, meta);
+    const curve_index = hintedCurveIndex(record, curve_base) orelse return base;
+    return applyHintDeltas(base, record, curve_index);
+}
+
+fn accumulateHintedCurveCoverage(
+    result: *CoveragePair,
+    page: anytype,
+    record: HintedTextRecord,
+    curve_base: usize,
+    sample_rc: Vec2,
+    ppe: f32,
+    comptime horizontal: bool,
+) CoverageScan {
+    return accumulateGlyphCoverageSegment(result, hintedSegment(page, record, curve_base), sample_rc, ppe, horizontal);
+}
+
 fn accumulateEncodedQuadraticCoverage(result: *CoveragePair, tex0: [4]f32, tex1: [4]f32, sample_rc: Vec2, ppe: f32, direct: bool, comptime horizontal: bool) CoverageScan {
     const p0_abs = if (direct)
         Vec2.new(tex0[0], tex0[1])
@@ -948,6 +1014,34 @@ fn evalGenericGlyphCoverageAxisBandSpan(
     return result;
 }
 
+fn evalHintedTextCoverageAxisBandSpan(
+    page: anytype,
+    record: HintedTextRecord,
+    sample_rc: Vec2,
+    ppe: f32,
+    glyph_band_base: usize,
+    header_base: i32,
+    span: BandSpan,
+    comptime horizontal: bool,
+) CoveragePair {
+    var result = CoveragePair{ .cov = 0.0, .wgt = 0.0 };
+    if (span.first > span.last) return result;
+    const dedup = span.first != span.last;
+
+    var band = span.first;
+    while (band <= span.last) : (band += 1) {
+        const header = readBandTexelLinear(page, glyph_band_base + @as(usize, @intCast(header_base + band)));
+        const band_base = glyph_band_base + header[1];
+        var i: u32 = 0;
+        while (i < header[0]) : (i += 1) {
+            const curve_ref = readBandCurveRef(page, band_base + i) orelse continue;
+            if (dedup and !isBandSpanOwner(curve_ref.first_member_band, band, span.first)) continue;
+            if (accumulateHintedCurveCoverage(&result, page, record, curve_ref.base, sample_rc, ppe, horizontal) == .stop_scan) break;
+        }
+    }
+    return result;
+}
+
 fn evalGlyphCoverageAxisBandSpan(
     page: anytype,
     sample_rc: Vec2,
@@ -1014,6 +1108,31 @@ pub fn evalGlyphCoverageBandSpan(
     return resolveCoverage(
         evalGlyphCoverageAxisBandSpan(page, sample_rc, ppe_x, glyph_band_base, 0, h_span, true),
         evalGlyphCoverageAxisBandSpan(page, sample_rc, ppe_y, glyph_band_base, band_max_h + 1, v_span, false),
+        fill_rule,
+    );
+}
+
+pub fn evalHintedTextCoverageBandSpan(
+    page: anytype,
+    record: HintedTextRecord,
+    em_x: f32,
+    em_y: f32,
+    epp_x: f32,
+    epp_y: f32,
+    ppe_x: f32,
+    ppe_y: f32,
+    be: GlyphBandEntry,
+    band_max_h: i32,
+    band_max_v: i32,
+    fill_rule: FillRule,
+) f32 {
+    const glyph_band_base = @as(usize, be.glyph_y) * @as(usize, page.band_width) + @as(usize, be.glyph_x);
+    const sample_rc = Vec2.new(em_x, em_y);
+    const h_span = coverageBandSpan(em_y, epp_y, be.band_scale_y, be.band_offset_y, band_max_h);
+    const v_span = coverageBandSpan(em_x, epp_x, be.band_scale_x, be.band_offset_x, band_max_v);
+    return resolveCoverage(
+        evalHintedTextCoverageAxisBandSpan(page, record, sample_rc, ppe_x, glyph_band_base, 0, h_span, true),
+        evalHintedTextCoverageAxisBandSpan(page, record, sample_rc, ppe_y, glyph_band_base, band_max_h + 1, v_span, false),
         fill_rule,
     );
 }
@@ -1131,6 +1250,43 @@ fn solveVertPoly(p1x: f32, p1y: f32, p2x: f32, p2y: f32, p3x: f32, p3y: f32, ppe
 test "root code treats tiny exact-edge drift as zero" {
     try std.testing.expectEqual(calcRootCode(0.0, -0.25, -0.5), calcRootCode(-root_code_eps * 0.5, -0.25, -0.5));
     try std.testing.expectEqual(@as(u16, 0), calcRootCode(-root_code_eps * 2.0, -0.25, -0.5));
+}
+
+test "hinted segment applies layer-info curve deltas" {
+    const toF16 = curve_tex.f32ToF16;
+    const page = struct {
+        curve_data: []const u16,
+        curve_width: u32 = 4,
+        curve_height: u32 = 1,
+    }{
+        .curve_data = &.{
+            toF16(0), toF16(0), toF16(0.5),                                 toF16(1),
+            toF16(1), toF16(0), toF16(0),                                   toF16(0),
+            toF16(1), toF16(1), toF16(curve_tex.DIRECT_ENCODING_KIND_BIAS), toF16(1),
+            toF16(0), toF16(0), toF16(0),                                   toF16(0),
+        },
+    };
+    const layer_info = [_]f32{
+        0,     0,   0,   0,
+        0,     0,   0,   0,
+        0,     1,   0,   0,
+        0.25,  0.0, 0.0, -0.5,
+        -0.25, 0.5, 0.0, 0.0,
+    };
+    const record = HintedTextRecord{
+        .data = &layer_info,
+        .width = 5,
+        .info_x = 0,
+        .info_y = 0,
+        .base_curve_texel = 0,
+        .curve_count = 1,
+    };
+
+    const segment = hintedSegment(page, record, 0);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.25), segment.p0.x, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), segment.p1.y, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.75), segment.p2.x, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), segment.p2.y, 0.001);
 }
 
 fn clampInt(v: i32, lo: i32, hi: i32) i32 {

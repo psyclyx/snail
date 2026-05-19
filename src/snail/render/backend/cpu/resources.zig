@@ -20,19 +20,25 @@ const preparePathLayerInfoRecords = path_paint.preparePathLayerInfoRecords;
 const readBandCurveRef = texture.readBandCurveRef;
 
 pub const PreparedAtlasPage = struct {
+    curve_data: []const u16,
     band_data: []const u16,
     h_curves: []PreparedAxisCurve,
     v_curves: []PreparedAxisCurve,
     h_cold_curves: []PreparedAxisCurveCold,
     v_cold_curves: []PreparedAxisCurveCold,
+    curve_width: u32,
+    curve_height: u32,
     band_width: u32,
     band_height: u32,
 
     fn init(allocator: std.mem.Allocator, page: *const AtlasPage) !PreparedAtlasPage {
-        const curve_data = try allocator.alloc(f32, page.curve_data.len);
-        defer allocator.free(curve_data);
+        const curve_data = try allocator.dupe(u16, page.curve_data);
+        errdefer allocator.free(curve_data);
+
+        const curve_data_f32 = try allocator.alloc(f32, page.curve_data.len);
+        defer allocator.free(curve_data_f32);
         for (page.curve_data, 0..) |value, i| {
-            curve_data[i] = f16ToF32(value);
+            curve_data_f32[i] = f16ToF32(value);
         }
         const band_texel_count = page.band_data.len / 2;
         const band_data = try allocator.dupe(u16, page.band_data);
@@ -51,7 +57,7 @@ pub const PreparedAtlasPage = struct {
         for (0..band_texel_count) |texel_idx| {
             const curve_ref = readBandCurveRef(page, texel_idx) orelse continue;
             const curve_base = curve_ref.base;
-            const segment = decodeCurveSegmentFromSlice(curve_data, @intCast(curve_base));
+            const segment = decodeCurveSegmentFromSlice(curve_data_f32, @intCast(curve_base));
 
             h_curves[texel_idx] = try prepareAxisCurve(allocator, &h_cold_curves, segment, true);
             h_curves[texel_idx].curve_base = @intCast(curve_base);
@@ -67,17 +73,21 @@ pub const PreparedAtlasPage = struct {
         errdefer allocator.free(v_cold_curves_owned);
 
         return .{
+            .curve_data = curve_data,
             .band_data = band_data,
             .h_curves = h_curves,
             .v_curves = v_curves,
             .h_cold_curves = h_cold_curves_owned,
             .v_cold_curves = v_cold_curves_owned,
+            .curve_width = page.curve_width,
+            .curve_height = page.curve_height,
             .band_width = page.band_width,
             .band_height = page.band_height,
         };
     }
 
     fn deinit(self: *PreparedAtlasPage, allocator: std.mem.Allocator) void {
+        allocator.free(self.curve_data);
         allocator.free(self.band_data);
         allocator.free(self.h_curves);
         allocator.free(self.v_curves);
