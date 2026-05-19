@@ -6,10 +6,18 @@ pub const LineMetrics = ttf.LineMetrics;
 pub const DecorationMetrics = ttf.DecorationMetrics;
 pub const ScriptMetrics = ttf.ScriptMetrics;
 pub const tt = struct {
+    pub const exec = @import("font/tt_exec.zig");
     pub const outline = @import("font/tt_outline.zig");
     pub const tables = @import("font/tt_tables.zig");
     pub const vm = @import("font/tt_vm.zig");
 };
+
+test {
+    _ = tt.exec.Context;
+    _ = tt.outline.Point;
+    _ = tt.tables.ProgramTables;
+    _ = tt.vm.Program;
+}
 
 /// A parsed TrueType font. Immutable after init.
 /// Thread-safe for concurrent reads (glyphIndex, getKerning).
