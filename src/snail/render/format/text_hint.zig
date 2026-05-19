@@ -3,6 +3,7 @@ const std = @import("std");
 const band_tex = @import("band_texture.zig");
 const bezier = @import("../../math/bezier.zig");
 const curve_tex = @import("curve_texture.zig");
+const render_abi = @import("abi.zig");
 
 pub const HintHandle = u16;
 pub const no_hint: HintHandle = 0;
@@ -46,6 +47,88 @@ pub const GlyphRecord = struct {
         .max = .{ .x = 0, .y = 0 },
     },
 };
+
+pub const record_header_texels: u32 = 3;
+pub const curve_delta_texels: u32 = 2;
+pub const delta_values_per_curve: usize = 8;
+
+pub fn recordTexelCount(curve_count: usize) u32 {
+    return record_header_texels + @as(u32, @intCast(curve_count)) * curve_delta_texels;
+}
+
+pub fn infoWidth(texel_count: u32) u32 {
+    return @min(@max(texel_count, 1), render_abi.paint_info_width);
+}
+
+pub fn writeGlyphRecord(
+    data: []f32,
+    texel_width: u32,
+    texel_offset: u32,
+    record: GlyphRecord,
+    curve_deltas_f16: []const u16,
+) !void {
+    const expected_deltas = @as(usize, record.curve_count) * delta_values_per_curve;
+    if (curve_deltas_f16.len != expected_deltas) return error.InvalidHintDeltaCount;
+
+    try writeRecordHeader(data, texel_width, texel_offset, record);
+    for (0..record.curve_count) |curve_index| {
+        const deltas = curve_deltas_f16[curve_index * delta_values_per_curve ..][0..delta_values_per_curve];
+        const delta_texel = texel_offset + record_header_texels + @as(u32, @intCast(curve_index)) * curve_delta_texels;
+        try setTexel(data, texel_width, delta_texel + 0, .{
+            f16BitsToF32(deltas[0]),
+            f16BitsToF32(deltas[1]),
+            f16BitsToF32(deltas[2]),
+            f16BitsToF32(deltas[3]),
+        });
+        try setTexel(data, texel_width, delta_texel + 1, .{
+            f16BitsToF32(deltas[4]),
+            f16BitsToF32(deltas[5]),
+            f16BitsToF32(deltas[6]),
+            f16BitsToF32(deltas[7]),
+        });
+    }
+}
+
+fn writeRecordHeader(data: []f32, texel_width: u32, texel_offset: u32, record: GlyphRecord) !void {
+    const packed_bands = render_abi.packBandCounts(record.band_entry.h_band_count, record.band_entry.v_band_count);
+    try setTexel(data, texel_width, texel_offset + 0, .{
+        @floatFromInt(record.band_entry.glyph_x),
+        @floatFromInt(record.band_entry.glyph_y),
+        @bitCast(packed_bands),
+        0,
+    });
+    try setTexel(data, texel_width, texel_offset + 1, .{
+        record.band_entry.band_scale_x,
+        record.band_entry.band_scale_y,
+        record.band_entry.band_offset_x,
+        record.band_entry.band_offset_y,
+    });
+    try setTexel(data, texel_width, texel_offset + 2, .{
+        @floatFromInt(record.base_curve_texel),
+        @floatFromInt(record.curve_count),
+        @floatFromInt(record.flags.bits()),
+        @floatFromInt(record.delta_offset),
+    });
+}
+
+fn setTexel(data: []f32, texel_width: u32, texel_offset: u32, value: [4]f32) !void {
+    if (texel_width == 0) return error.InvalidLayerInfoWidth;
+    const base = @as(usize, texel_offset) * 4;
+    if (base + 4 > data.len) return error.LayerInfoRecordOutOfBounds;
+    data[base + 0] = value[0];
+    data[base + 1] = value[1];
+    data[base + 2] = value[2];
+    data[base + 3] = value[3];
+}
+
+fn readTexel(data: []const f32, texel_offset: u32) [4]f32 {
+    const base = @as(usize, texel_offset) * 4;
+    return .{ data[base + 0], data[base + 1], data[base + 2], data[base + 3] };
+}
+
+fn f16BitsToF32(bits: u16) f32 {
+    return @floatCast(@as(f16, @bitCast(bits)));
+}
 
 pub const UploadBytes = struct {
     byte_len: usize = 0,
@@ -225,6 +308,41 @@ test "upload ops report byte totals" {
         .{ .band_rows = .{ .byte_len = 32 } },
     };
     try std.testing.expectEqual(@as(usize, 224), totalUploadBytes(&ops));
+}
+
+test "hint glyph record writes band header and curve deltas" {
+    var data = [_]f32{0} ** (@as(usize, recordTexelCount(1)) * 4);
+    const deltas = [_]u16{
+        curve_tex.f32ToF16(0.125),
+        curve_tex.f32ToF16(-0.25),
+        curve_tex.f32ToF16(0.5),
+        curve_tex.f32ToF16(0.75),
+        curve_tex.f32ToF16(-1.0),
+        curve_tex.f32ToF16(1.25),
+        curve_tex.f32ToF16(0.0),
+        curve_tex.f32ToF16(2.0),
+    };
+
+    try writeGlyphRecord(&data, infoWidth(recordTexelCount(1)), 0, .{
+        .base_curve_texel = 128,
+        .curve_count = 1,
+        .band_entry = testBandEntry(),
+    }, &deltas);
+
+    const header = readTexel(&data, 0);
+    const meta = readTexel(&data, 2);
+    const delta0 = readTexel(&data, 3);
+    const delta1 = readTexel(&data, 4);
+    const packed_bands: u32 = @bitCast(header[2]);
+    try std.testing.expectEqual(@as(f32, 0), header[0]);
+    try std.testing.expectEqual(@as(f32, 0), header[1]);
+    try std.testing.expectEqual(render_abi.packBandCounts(1, 1), packed_bands);
+    try std.testing.expectEqual(@as(f32, 128), meta[0]);
+    try std.testing.expectEqual(@as(f32, 1), meta[1]);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.125), delta0[0], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, -0.25), delta0[1], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, -1.0), delta1[0], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 2.0), delta1[3], 0.001);
 }
 
 test "band reuse proof accepts stable membership and ordering" {
