@@ -169,16 +169,35 @@ pub const Zone = struct {
     }
 
     pub fn contourToCurves(self: *const Zone, allocator: std.mem.Allocator, contour: tt_outline.ContourRange, scale: f32) ![]QuadBezier {
+        return self.contourToCurvesXY(allocator, contour, scale, scale);
+    }
+
+    pub fn contourToCurvesXY(
+        self: *const Zone,
+        allocator: std.mem.Allocator,
+        contour: tt_outline.ContourRange,
+        scale_x: f32,
+        scale_y: f32,
+    ) ![]QuadBezier {
         if (contour.end > self.points.len or contour.start > contour.end) return Error.InvalidPoint;
-        return pointsToCurves(allocator, self.points[contour.start..contour.end], scale);
+        return pointsToCurves(allocator, self.points[contour.start..contour.end], scale_x, scale_y);
     }
 
     pub fn contoursToCurves(self: *const Zone, allocator: std.mem.Allocator, scale: f32) ![]QuadBezier {
+        return self.contoursToCurvesXY(allocator, scale, scale);
+    }
+
+    pub fn contoursToCurvesXY(
+        self: *const Zone,
+        allocator: std.mem.Allocator,
+        scale_x: f32,
+        scale_y: f32,
+    ) ![]QuadBezier {
         var out: std.ArrayList(QuadBezier) = .empty;
         errdefer out.deinit(allocator);
 
         for (self.contours) |contour| {
-            const curves = try self.contourToCurves(allocator, contour, scale);
+            const curves = try self.contourToCurvesXY(allocator, contour, scale_x, scale_y);
             defer if (curves.len > 0) allocator.free(curves);
             try out.appendSlice(allocator, curves);
         }
@@ -327,7 +346,7 @@ const CurvePoint = struct {
     on_curve: bool,
 };
 
-fn pointsToCurves(allocator: std.mem.Allocator, points: []const Point, scale: f32) ![]QuadBezier {
+fn pointsToCurves(allocator: std.mem.Allocator, points: []const Point, scale_x: f32, scale_y: f32) ![]QuadBezier {
     if (points.len < 2) return &.{};
 
     var scaled: std.ArrayList(CurvePoint) = .empty;
@@ -335,8 +354,8 @@ fn pointsToCurves(allocator: std.mem.Allocator, points: []const Point, scale: f3
     for (points) |point| {
         try scaled.append(allocator, .{
             .pos = Vec2.new(
-                @as(f32, @floatFromInt(point.x)) * scale,
-                @as(f32, @floatFromInt(point.y)) * scale,
+                @as(f32, @floatFromInt(point.x)) * scale_x,
+                @as(f32, @floatFromInt(point.y)) * scale_y,
             ),
             .on_curve = point.on_curve,
         });

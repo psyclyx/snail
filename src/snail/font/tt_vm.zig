@@ -226,6 +226,15 @@ pub const HintedSimpleGlyph = struct {
     pub fn curves(self: *const HintedSimpleGlyph, allocator: std.mem.Allocator, scale: f32) ![]tt_points.QuadBezier {
         return self.zone.contoursToCurves(allocator, scale);
     }
+
+    pub fn curvesXY(
+        self: *const HintedSimpleGlyph,
+        allocator: std.mem.Allocator,
+        scale_x: f32,
+        scale_y: f32,
+    ) ![]tt_points.QuadBezier {
+        return self.zone.contoursToCurvesXY(allocator, scale_x, scale_y);
+    }
 };
 
 pub const SizeState = struct {
