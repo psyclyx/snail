@@ -726,13 +726,15 @@ fn hintAsciiOnce(
         const scratch = arena.allocator();
         const glyph_id = (try atlas.glyphIndex(0, ch)) orelse continue;
         const info = atlas.face_glyphs[0].getGlyph(glyph_id) orelse continue;
-        const hint = machine.hintCachedGlyph(scratch, topology_cache, glyph_id, .{
-            .base = .{ .info = info, .page = atlas.pages[info.page_index] },
-        }) catch |err| switch (err) {
+        const hint = machine.hintCachedGlyph(scratch, topology_cache, glyph_id) catch |err| switch (err) {
             error.UnsupportedCompoundHinting => continue,
             else => return err,
         };
-        std.mem.doNotOptimizeAway(hint.curveDeltaBytes());
+        const patch = try snail.patchTrueTypeGlyphHint(scratch, .{
+            .info = info,
+            .page = atlas.pages[info.page_index],
+        }, &hint);
+        std.mem.doNotOptimizeAway(patch.curveDeltaBytes());
     }
 }
 

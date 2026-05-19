@@ -36,10 +36,6 @@ pub const BaseGlyph = struct {
     page: *const AtlasPage,
 };
 
-pub const GlyphHintOptions = struct {
-    base: ?BaseGlyph = null,
-};
-
 pub const GlyphHint = struct {
     allocator: Allocator,
     glyph_id: u16,
@@ -48,27 +44,36 @@ pub const GlyphHint = struct {
     curves: []CurveSegment,
     prepared_curves: []CurveSegment,
     curve_bboxes: []BBox,
-    curve_deltas_f16: []u16,
-    band_reuse: ?text_hint.BandReuseProof = null,
 
     pub fn deinit(self: *GlyphHint) void {
         self.allocator.free(self.curves);
         self.allocator.free(self.prepared_curves);
         self.allocator.free(self.curve_bboxes);
+        self.* = undefined;
+    }
+};
+
+pub const GlyphHintPatch = struct {
+    allocator: Allocator,
+    record: text_hint.GlyphRecord,
+    curve_deltas_f16: []u16,
+    band_reuse: text_hint.BandReuseProof,
+
+    pub fn deinit(self: *GlyphHintPatch) void {
         self.allocator.free(self.curve_deltas_f16);
         self.* = undefined;
     }
 
-    pub fn curveDeltaBytes(self: *const GlyphHint) usize {
+    pub fn curveDeltaBytes(self: *const GlyphHintPatch) usize {
         return self.curve_deltas_f16.len * @sizeOf(u16);
     }
 
-    pub fn curveDeltaUpload(self: *const GlyphHint) text_hint.UploadOp {
+    pub fn curveDeltaUpload(self: *const GlyphHintPatch) text_hint.UploadOp {
         return .{ .curve_deltas = .{ .byte_len = self.curveDeltaBytes() } };
     }
 
-    pub fn bandsReusable(self: *const GlyphHint) ?bool {
-        return if (self.band_reuse) |proof| proof.reusable() else null;
+    pub fn bandsReusable(self: *const GlyphHintPatch) bool {
+        return self.band_reuse.reusable();
     }
 };
 
@@ -154,11 +159,11 @@ pub const HintMachine = struct {
         self.* = undefined;
     }
 
-    pub fn hintGlyph(self: *HintMachine, allocator: Allocator, glyph_id: u16, options: GlyphHintOptions) !GlyphHint {
+    pub fn hintGlyph(self: *HintMachine, allocator: Allocator, glyph_id: u16) !GlyphHint {
         var topology = try self.program.loadGlyphTopology(allocator, glyph_id);
         defer topology.deinit();
         const executed = try self.executeTopology(glyph_id, &topology);
-        return self.buildGlyphHint(allocator, glyph_id, executed, options);
+        return self.buildGlyphHint(allocator, glyph_id, executed);
     }
 
     pub fn hintCachedGlyph(
@@ -166,10 +171,9 @@ pub const HintMachine = struct {
         allocator: Allocator,
         cache: *GlyphTopologyCache,
         glyph_id: u16,
-        options: GlyphHintOptions,
     ) !GlyphHint {
         const executed = try self.executeCachedGlyph(cache, glyph_id);
-        return self.buildGlyphHint(allocator, glyph_id, executed, options);
+        return self.buildGlyphHint(allocator, glyph_id, executed);
     }
 
     /// Executes the glyph program using caller-owned face-invariant topology.
@@ -187,11 +191,10 @@ pub const HintMachine = struct {
         allocator: Allocator,
         glyph_id: u16,
         executed: ExecutedGlyph,
-        options: GlyphHintOptions,
     ) !GlyphHint {
         return switch (executed) {
             .empty => |advance| emptyGlyphHint(allocator, glyph_id, advance),
-            .simple => |hinted| self.makeGlyphHint(allocator, glyph_id, hinted, options),
+            .simple => |hinted| self.makeGlyphHint(allocator, glyph_id, hinted),
         };
     }
 
@@ -257,7 +260,6 @@ pub const HintMachine = struct {
             .curves = &.{},
             .prepared_curves = &.{},
             .curve_bboxes = &.{},
-            .curve_deltas_f16 = &.{},
         };
     }
 
@@ -266,7 +268,6 @@ pub const HintMachine = struct {
         allocator: Allocator,
         glyph_id: u16,
         hinted: tt_vm.HintedSimpleGlyph,
-        options: GlyphHintOptions,
     ) !GlyphHint {
         const curves = try hintedCurves(allocator, hinted, self.ppemScaleX(), self.ppemScaleY());
         errdefer allocator.free(curves);
@@ -274,8 +275,6 @@ pub const HintMachine = struct {
         errdefer allocator.free(prepared);
         const curve_bboxes = try collectCurveBboxes(allocator, prepared);
         errdefer allocator.free(curve_bboxes);
-        const deltas = try maybeEncodeDeltas(allocator, options.base, prepared);
-        errdefer allocator.free(deltas);
 
         return .{
             .allocator = allocator,
@@ -285,8 +284,6 @@ pub const HintMachine = struct {
             .curves = curves,
             .prepared_curves = prepared,
             .curve_bboxes = curve_bboxes,
-            .curve_deltas_f16 = deltas,
-            .band_reuse = proveBandReuse(options.base, curve_bboxes),
         };
     }
 
@@ -380,14 +377,29 @@ fn collectCurveBboxes(allocator: Allocator, curves: []const CurveSegment) ![]BBo
     return bboxes;
 }
 
-fn maybeEncodeDeltas(allocator: Allocator, base: ?BaseGlyph, hinted: []const CurveSegment) ![]u16 {
-    const base_glyph = base orelse return &.{};
-    if (base_glyph.info.curve_count != hinted.len) return error.CurveTopologyChanged;
+pub fn patchGlyphHint(allocator: Allocator, base: BaseGlyph, hint: *const GlyphHint) !GlyphHintPatch {
+    const deltas = try encodeDeltas(allocator, base, hint.prepared_curves);
+    errdefer allocator.free(deltas);
+    return .{
+        .allocator = allocator,
+        .record = .{
+            .base_curve_texel = base.info.base_curve_texel,
+            .curve_count = base.info.curve_count,
+            .band_entry = base.info.band_entry,
+            .bbox = hint.bbox,
+        },
+        .curve_deltas_f16 = deltas,
+        .band_reuse = proveBandReuse(base, hint.curve_bboxes),
+    };
+}
+
+fn encodeDeltas(allocator: Allocator, base: BaseGlyph, hinted: []const CurveSegment) ![]u16 {
+    if (base.info.curve_count != hinted.len) return error.CurveTopologyChanged;
     const encoded = try allocator.alloc(u16, hinted.len * 8);
     errdefer allocator.free(encoded);
 
     for (hinted, 0..) |hinted_curve, i| {
-        const base_curve = decodeBaseCurve(base_glyph, i) orelse return error.InvalidBaseCurve;
+        const base_curve = decodeBaseCurve(base, i) orelse return error.InvalidBaseCurve;
         if (base_curve.kind != hinted_curve.kind) return error.CurveTopologyChanged;
         encodeCurveDelta(encoded[i * 8 ..][0..8], base_curve, hinted_curve);
     }
@@ -411,13 +423,12 @@ fn encodePointDelta(out: []u16, base: Vec2, hinted: Vec2) void {
     out[1] = curve_tex.f32ToF16(hinted.y - base.y);
 }
 
-fn proveBandReuse(base: ?BaseGlyph, curve_bboxes: []const BBox) ?text_hint.BandReuseProof {
-    const base_glyph = base orelse return null;
+fn proveBandReuse(base: BaseGlyph, curve_bboxes: []const BBox) text_hint.BandReuseProof {
     return text_hint.proveBandReuse(.{
-        .band_data = base_glyph.page.band_data,
-        .band_width = base_glyph.page.band_width,
-        .band_entry = base_glyph.info.band_entry,
-        .base_curve_texel = base_glyph.info.base_curve_texel,
+        .band_data = base.page.band_data,
+        .band_width = base.page.band_width,
+        .band_entry = base.info.band_entry,
+        .base_curve_texel = base.info.base_curve_texel,
         .hinted_curve_bboxes = curve_bboxes,
     });
 }
@@ -452,15 +463,18 @@ test "hint machine emits simple glyph curves and band proof" {
     var machine = try HintMachine.init(std.testing.allocator, face, HintPpem.uniform(12 * 64));
     defer machine.deinit();
 
-    var hint = try machine.hintGlyph(std.testing.allocator, glyph_id, .{
-        .base = .{ .info = info, .page = atlas.pages[info.page_index] },
-    });
+    var hint = try machine.hintGlyph(std.testing.allocator, glyph_id);
     defer hint.deinit();
+    var patch = try patchGlyphHint(std.testing.allocator, .{
+        .info = info,
+        .page = atlas.pages[info.page_index],
+    }, &hint);
+    defer patch.deinit();
 
     try std.testing.expect(hint.advance.x > 0);
     try std.testing.expectEqual(@as(usize, info.curve_count), hint.prepared_curves.len);
-    try std.testing.expectEqual(@as(usize, info.curve_count) * 8, hint.curve_deltas_f16.len);
-    try std.testing.expect(hint.band_reuse != null);
+    try std.testing.expectEqual(@as(usize, info.curve_count) * 8, patch.curve_deltas_f16.len);
+    try std.testing.expectEqual(info.base_curve_texel, patch.record.base_curve_texel);
 }
 
 test "hint machine handles empty glyph advances" {
@@ -477,7 +491,7 @@ test "hint machine handles empty glyph advances" {
     var machine = try HintMachine.init(std.testing.allocator, face, HintPpem.uniform(12 * 64));
     defer machine.deinit();
 
-    var hint = try machine.hintGlyph(std.testing.allocator, glyph_id, .{});
+    var hint = try machine.hintGlyph(std.testing.allocator, glyph_id);
     defer hint.deinit();
 
     try std.testing.expectEqual(@as(usize, 0), hint.curves.len);

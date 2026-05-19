@@ -341,15 +341,8 @@ pub const TrueTypeHintContext = struct {
             else => return err,
         };
 
-        const base_info = face_view.getGlyph(key.glyph_id);
-        const base = if (base_info) |info|
-            tt_hint.BaseGlyph{ .info = info, .page = self.atlas.pages[info.page_index] }
-        else
-            null;
-
-        var hint = size_state.machine.hintCachedGlyph(self.allocator, &face_state.cache, key.glyph_id, .{ .base = base }) catch |err| switch (err) {
+        var hint = size_state.machine.hintCachedGlyph(self.allocator, &face_state.cache, key.glyph_id) catch |err| switch (err) {
             error.UnsupportedCompoundHinting => return self.putUnsupported(key, .unsupported_compound),
-            error.CurveTopologyChanged, error.InvalidBaseCurve => return self.putUnsupported(key, .topology_changed),
             else => return err,
         };
 
@@ -365,16 +358,31 @@ pub const TrueTypeHintContext = struct {
             });
         }
 
+        const base_info = face_view.getGlyph(key.glyph_id);
         const info = base_info orelse {
             hint.deinit();
             return self.putUnsupported(key, .missing_base_glyph);
         };
-        if (hint.bandsReusable() != true) {
+        var patch = tt_hint.patchGlyphHint(self.allocator, .{
+            .info = info,
+            .page = self.atlas.pages[info.page_index],
+        }, &hint) catch |err| switch (err) {
+            error.CurveTopologyChanged, error.InvalidBaseCurve => {
+                hint.deinit();
+                return self.putUnsupported(key, .topology_changed);
+            },
+            else => {
+                hint.deinit();
+                return err;
+            },
+        };
+        if (!patch.bandsReusable()) {
+            patch.deinit();
             hint.deinit();
             return self.putUnsupported(key, .bands_not_reusable);
         }
 
-        return self.putReadyValue(takeHintedGlyphValue(key, info, &hint));
+        return self.putReadyValue(takeHintedGlyphValue(key, &hint, &patch));
     }
 
     fn prepareShapedGlyph(
@@ -437,11 +445,12 @@ pub fn keyForGlyph(glyph: ShapedText.Glyph, ppem: tt_hint.HintPpem) HintGlyphKey
 
 fn takeHintedGlyphValue(
     key: HintGlyphKey,
-    base_info: @import("../render/format/atlas/curve.zig").CurveAtlas.GlyphInfo,
     hint: *tt_hint.GlyphHint,
+    patch: *tt_hint.GlyphHintPatch,
 ) HintedGlyphValue {
-    const deltas = hint.curve_deltas_f16;
-    hint.curve_deltas_f16 = &.{};
+    const deltas = patch.curve_deltas_f16;
+    patch.curve_deltas_f16 = &.{};
+    defer patch.deinit();
     defer hint.deinit();
 
     return .{
@@ -449,12 +458,7 @@ fn takeHintedGlyphValue(
         .advance = hint.advance,
         .bbox = hint.bbox,
         .attachment = .{
-            .record = .{
-                .base_curve_texel = base_info.base_curve_texel,
-                .curve_count = base_info.curve_count,
-                .band_entry = base_info.band_entry,
-                .bbox = hint.bbox,
-            },
+            .record = patch.record,
             .curve_deltas_f16 = deltas,
         },
     };

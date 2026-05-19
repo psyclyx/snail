@@ -51,7 +51,7 @@ pub const TrueTypeHintPrepareRunOptions = text.TrueTypeHintPrepareRunOptions;
 pub const TextHintGlyphRecord = text.TextHintGlyphRecord;
 pub const TrueTypeHintMachine = text.TrueTypeHintMachine;
 pub const TrueTypeGlyphHint = text.TrueTypeGlyphHint;
-pub const TrueTypeGlyphHintOptions = text.TrueTypeGlyphHintOptions;
+pub const TrueTypeGlyphHintPatch = text.TrueTypeGlyphHintPatch;
 pub const TrueTypeExecutedGlyph = text.TrueTypeExecutedGlyph;
 pub const TrueTypeHintPpem = text.TrueTypeHintPpem;
 pub const TrueTypeBaseGlyphHint = text.TrueTypeBaseGlyphHint;
@@ -73,6 +73,7 @@ pub const TEXT_WORDS_PER_VERTEX = text.TEXT_WORDS_PER_VERTEX;
 pub const TEXT_VERTICES_PER_GLYPH = text.TEXT_VERTICES_PER_GLYPH;
 pub const TEXT_WORDS_PER_GLYPH = text.TEXT_WORDS_PER_GLYPH;
 pub const isRenderableTextCodepoint = text.isRenderableTextCodepoint;
+pub const patchTrueTypeGlyphHint = text.patchTrueTypeGlyphHint;
 
 pub const PaintExtend = paint.Extend;
 pub const ImageFilter = paint.ImageFilter;

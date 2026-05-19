@@ -36,7 +36,7 @@ pub const TrueTypeHintPrepareRunOptions = hint_context_mod.PrepareRunOptions;
 pub const TextHintGlyphRecord = text_hint_format.GlyphRecord;
 pub const TrueTypeHintMachine = tt_hint_mod.HintMachine;
 pub const TrueTypeGlyphHint = tt_hint_mod.GlyphHint;
-pub const TrueTypeGlyphHintOptions = tt_hint_mod.GlyphHintOptions;
+pub const TrueTypeGlyphHintPatch = tt_hint_mod.GlyphHintPatch;
 pub const TrueTypeExecutedGlyph = tt_hint_mod.ExecutedGlyph;
 pub const TrueTypeHintPpem = tt_hint_mod.HintPpem;
 pub const TrueTypeBaseGlyphHint = tt_hint_mod.BaseGlyph;
@@ -52,6 +52,7 @@ pub const TEXT_WORDS_PER_GLYPH = batch_mod.WORDS_PER_GLYPH;
 
 pub const appendTextDrawIntoBatch = batch_mod.appendTextDrawIntoBatch;
 pub const textBlobRangeGpuInstanceBudget = blob_mod.textBlobRangeGpuInstanceBudget;
+pub const patchTrueTypeGlyphHint = tt_hint_mod.patchGlyphHint;
 
 test {
     _ = @import("text/tests.zig");
