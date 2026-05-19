@@ -33,6 +33,8 @@ const Rect = target_mod.Rect;
 const ResourceFootprint = footprint_types.ResourceFootprint;
 const ScriptTransform = types_mod.ScriptTransform;
 const ShapedText = types_mod.ShapedText;
+const TextCellGrid = types_mod.TextCellGrid;
+const TextCellGridOptions = types_mod.TextCellGridOptions;
 const TextAppendResult = types_mod.TextAppendResult;
 const TextBatchAppend = types_mod.TextBatchAppend;
 const buildFontConfig = config_mod.buildFontConfig;
@@ -168,6 +170,28 @@ pub const TextAtlas = struct {
         return .{
             .cell_width = @as(f32, @floatFromInt(advance)) * scale,
             .line_height = @as(f32, @floatFromInt(@as(i32, lm.ascent) - @as(i32, lm.descent) + @as(i32, lm.line_gap))) * scale,
+        };
+    }
+
+    /// Return a snapped cell grid suitable for terminal-style placement.
+    /// Baselines returned by the grid are aligned to `options.pixel_step`.
+    pub fn cellGrid(self: *const TextAtlas, options: TextCellGridOptions) !TextCellGrid {
+        const em = target_mod.snapLengthToStep(options.em, options.pixel_step.y, options.snap_rule, 1.0);
+        const fi = self.resolve(options.style, 'M') orelse try self.primaryFaceIndex();
+        const fc = &self.config.faces[fi];
+        const gid = try glyphIndexForCellMetrics(fc);
+        const advance = try fc.font.advanceWidth(gid);
+        const lm = try fc.font.lineMetrics();
+        const scale = em / @as(f32, @floatFromInt(fc.font.units_per_em));
+        const line_height = @as(f32, @floatFromInt(@as(i32, lm.ascent) - @as(i32, lm.descent) + @as(i32, lm.line_gap))) * scale;
+        const baseline_offset = @as(f32, @floatFromInt(lm.ascent)) * scale;
+
+        return .{
+            .origin = target_mod.snapPointToStep(options.origin, options.pixel_step, options.snap_rule),
+            .cell_width = target_mod.snapLengthToStep(@as(f32, @floatFromInt(advance)) * scale, options.pixel_step.x, options.snap_rule, 1.0),
+            .line_height = target_mod.snapLengthToStep(line_height, options.pixel_step.y, options.snap_rule, 1.0),
+            .baseline_offset = target_mod.snapLengthToStep(baseline_offset, options.pixel_step.y, options.snap_rule, 0.0),
+            .em = em,
         };
     }
 

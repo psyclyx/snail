@@ -43,6 +43,8 @@ pub const TrueTypeBaseGlyphHint = tt_hint_mod.BaseGlyph;
 pub const TrueTypeGlyphTopologyCache = tt_hint_mod.GlyphTopologyCache;
 pub const CellMetrics = types_mod.CellMetrics;
 pub const CellMetricsOptions = types_mod.CellMetricsOptions;
+pub const TextCellGrid = types_mod.TextCellGrid;
+pub const TextCellGridOptions = types_mod.TextCellGridOptions;
 pub const Decoration = types_mod.Decoration;
 pub const ScriptTransform = types_mod.ScriptTransform;
 

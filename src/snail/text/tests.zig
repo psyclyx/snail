@@ -486,6 +486,33 @@ test "TextAtlas exposes per-face metrics and cell metrics" {
     try testing.expect(metrics.line_height > metrics.cell_width);
 }
 
+test "TextAtlas cell grid snaps terminal placements" {
+    const assets_data = @import("assets");
+    var fonts = try TextAtlas.init(testing.allocator, &.{
+        .{ .data = assets_data.noto_sans_regular },
+    });
+    defer fonts.deinit();
+
+    const pixel_step = snail.Vec2{ .x = 0.5, .y = 0.25 };
+    const grid = try fonts.cellGrid(.{
+        .origin = .{ .x = 1.11, .y = 2.13 },
+        .em = 15.9,
+        .pixel_step = pixel_step,
+        .snap_rule = .nearest,
+    });
+
+    try testing.expectApproxEqAbs(snail.snapToStep(1.11, pixel_step.x, .nearest), grid.origin.x, 0.0001);
+    try testing.expectApproxEqAbs(snail.snapToStep(2.13, pixel_step.y, .nearest), grid.origin.y, 0.0001);
+    try testing.expectApproxEqAbs(snail.snapToStep(grid.cell_width, pixel_step.x, .nearest), grid.cell_width, 0.0001);
+    try testing.expectApproxEqAbs(snail.snapToStep(grid.line_height, pixel_step.y, .nearest), grid.line_height, 0.0001);
+    try testing.expectApproxEqAbs(snail.snapToStep(grid.baseline_offset, pixel_step.y, .nearest), grid.baseline_offset, 0.0001);
+
+    const placement = grid.placement(3, 2);
+    try testing.expectApproxEqAbs(grid.origin.x + grid.cell_width * 3, placement.baseline.x, 0.0001);
+    try testing.expectApproxEqAbs(grid.origin.y + grid.line_height * 2 + grid.baseline_offset, placement.baseline.y, 0.0001);
+    try testing.expectApproxEqAbs(grid.em, placement.em, 0.0001);
+}
+
 test "TextAtlas.ensureGlyphs extends by resolved glyph id" {
     const assets_data = @import("assets");
     var fonts = try TextAtlas.init(testing.allocator, &.{
