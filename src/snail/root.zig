@@ -50,6 +50,7 @@ pub const FontWeight = text.FontWeight;
 pub const FontStyle = text.FontStyle;
 pub const SyntheticStyle = text.SyntheticStyle;
 pub const Font = font.Font;
+pub const tt = font.tt;
 pub const TextBatch = text.TextBatch;
 pub const TEXT_WORDS_PER_VERTEX = text.TEXT_WORDS_PER_VERTEX;
 pub const TEXT_VERTICES_PER_GLYPH = text.TEXT_VERTICES_PER_GLYPH;

@@ -5,6 +5,11 @@ pub const GlyphMetrics = ttf.GlyphMetrics;
 pub const LineMetrics = ttf.LineMetrics;
 pub const DecorationMetrics = ttf.DecorationMetrics;
 pub const ScriptMetrics = ttf.ScriptMetrics;
+pub const tt = struct {
+    pub const outline = @import("font/tt_outline.zig");
+    pub const tables = @import("font/tt_tables.zig");
+    pub const vm = @import("font/tt_vm.zig");
+};
 
 /// A parsed TrueType font. Immutable after init.
 /// Thread-safe for concurrent reads (glyphIndex, getKerning).
