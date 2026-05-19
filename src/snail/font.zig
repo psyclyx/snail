@@ -7,6 +7,7 @@ pub const DecorationMetrics = ttf.DecorationMetrics;
 pub const ScriptMetrics = ttf.ScriptMetrics;
 pub const tt = struct {
     pub const exec = @import("font/tt_exec.zig");
+    pub const graphics = @import("font/tt_graphics.zig");
     pub const outline = @import("font/tt_outline.zig");
     pub const tables = @import("font/tt_tables.zig");
     pub const vm = @import("font/tt_vm.zig");
@@ -14,6 +15,7 @@ pub const tt = struct {
 
 test {
     _ = tt.exec.Context;
+    _ = tt.graphics.GraphicsState;
     _ = tt.outline.Point;
     _ = tt.tables.ProgramTables;
     _ = tt.vm.Program;

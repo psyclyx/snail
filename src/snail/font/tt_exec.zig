@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const tt_graphics = @import("tt_graphics.zig");
+
 pub const Error = error{
     UnexpectedEof,
     StackUnderflow,
@@ -7,10 +9,14 @@ pub const Error = error{
     InvalidOpcode,
     InvalidStorageIndex,
     InvalidCvtIndex,
+    InvalidZone,
     InvalidJump,
     ExecutionLimitExceeded,
     DivisionByZero,
 };
+
+pub const Environment = tt_graphics.Environment;
+pub const GraphicsState = tt_graphics.GraphicsState;
 
 pub const Limits = struct {
     max_steps: u32 = 100_000,
@@ -27,6 +33,8 @@ pub const Context = struct {
     storage: []i32,
     cvt: []i32,
     limits: Limits,
+    graphics: GraphicsState = .{},
+    environment: Environment = .{},
     sp: usize = 0,
     steps: u32 = 0,
 
@@ -37,6 +45,14 @@ pub const Context = struct {
             .cvt = buffers.cvt,
             .limits = limits,
         };
+    }
+
+    pub fn setEnvironment(self: *Context, environment: Environment) void {
+        self.environment = environment;
+    }
+
+    pub fn resetGraphics(self: *Context) void {
+        self.graphics = .{};
     }
 
     pub fn reset(self: *Context) void {
@@ -77,14 +93,47 @@ pub const Context = struct {
         }
 
         switch (op) {
+            0x00...0x05, 0x0A...0x0E, 0x10...0x1A, 0x1D...0x1F => try self.executeGraphicsOp(op),
             0x20...0x26 => try self.executeStackOp(op),
             0x40 => try self.pushBytes(code, pc, try readU8(code, pc)),
             0x41 => try self.pushWords(code, pc, try readU8(code, pc)),
-            0x42...0x45 => try self.executeMemoryOp(op),
+            0x42...0x45, 0x70 => try self.executeMemoryOp(op),
+            0x4B...0x4E, 0x56, 0x57, 0x68...0x6F, 0x7A, 0x7C, 0x7D, 0x85, 0x88, 0x8A, 0x8D, 0x8E => try self.executeStateOp(op),
             0x50...0x55, 0x5A...0x5C => try self.executeLogicOp(op),
             0x60...0x67, 0x8B, 0x8C => try self.executeMathOp(op),
             0x1B, 0x1C, 0x58, 0x59, 0x78, 0x79 => try self.executeFlowOp(code, pc, op_pc, op),
             else => return Error.InvalidOpcode,
+        }
+    }
+
+    fn executeGraphicsOp(self: *Context, op: u8) Error!void {
+        switch (op) {
+            0x00 => self.graphics.setVectorToAxis(.y, .both),
+            0x01 => self.graphics.setVectorToAxis(.x, .both),
+            0x02 => self.graphics.setVectorToAxis(.y, .projection),
+            0x03 => self.graphics.setVectorToAxis(.x, .projection),
+            0x04 => self.graphics.setVectorToAxis(.y, .freedom),
+            0x05 => self.graphics.setVectorToAxis(.x, .freedom),
+            0x0A => self.graphics.projection = try self.popVector(),
+            0x0B => self.graphics.freedom = try self.popVector(),
+            0x0C => try self.pushVector(self.graphics.projection),
+            0x0D => try self.pushVector(self.graphics.freedom),
+            0x0E => self.graphics.freedom = self.graphics.projection,
+            0x10 => self.graphics.setReferencePoint(0, try self.popU32()),
+            0x11 => self.graphics.setReferencePoint(1, try self.popU32()),
+            0x12 => self.graphics.setReferencePoint(2, try self.popU32()),
+            0x13 => self.graphics.setZone(.zp0, try zonePointer(try self.pop())),
+            0x14 => self.graphics.setZone(.zp1, try zonePointer(try self.pop())),
+            0x15 => self.graphics.setZone(.zp2, try zonePointer(try self.pop())),
+            0x16 => self.graphics.setZone(.all, try zonePointer(try self.pop())),
+            0x17 => self.graphics.loop_count = try self.popU32(),
+            0x18 => self.graphics.round_mode = .grid,
+            0x19 => self.graphics.round_mode = .half_grid,
+            0x1A => self.graphics.minimum_distance = try self.pop(),
+            0x1D => self.graphics.control_value_cut_in = try self.pop(),
+            0x1E => self.graphics.single_width_cut_in = try self.pop(),
+            0x1F => self.graphics.single_width_value = self.scaleFUnits(try self.pop()),
+            else => unreachable,
         }
     }
 
@@ -121,6 +170,33 @@ pub const Context = struct {
                 const index = try checkedIndex(try self.pop(), self.cvt.len, Error.InvalidCvtIndex);
                 try self.push(self.cvt[index]);
             },
+            0x70 => {
+                const value = try self.pop();
+                const index = try checkedIndex(try self.pop(), self.cvt.len, Error.InvalidCvtIndex);
+                self.cvt[index] = self.scaleFUnits(value);
+            },
+            else => unreachable,
+        }
+    }
+
+    fn executeStateOp(self: *Context, op: u8) Error!void {
+        switch (op) {
+            0x4B => try self.push(@intCast(self.projectionPpem26Dot6() / 64)),
+            0x4C => try self.push(self.environment.point_size_26_6),
+            0x4D => self.graphics.auto_flip = true,
+            0x4E => self.graphics.auto_flip = false,
+            0x56 => try self.oddEven(.odd),
+            0x57 => try self.oddEven(.even),
+            0x68...0x6B => try self.push(self.graphics.round_mode.apply(try self.pop())),
+            0x6C...0x6F => try self.push(try self.pop()),
+            0x7A => self.graphics.round_mode = .off,
+            0x7C => self.graphics.round_mode = .up_grid,
+            0x7D => self.graphics.round_mode = .down_grid,
+            0x85 => self.graphics.scan_control = try self.pop(),
+            0x88 => try self.push(engineInfo(try self.pop())),
+            0x8A => try self.roll(),
+            0x8D => self.graphics.scan_type = try self.pop(),
+            0x8E => try self.setInstructionControl(),
             else => unreachable,
         }
     }
@@ -228,6 +304,14 @@ pub const Context = struct {
         self.stack[self.sp - 1] = value;
     }
 
+    fn roll(self: *Context) Error!void {
+        if (self.sp < 3) return Error.StackUnderflow;
+        const a = self.stack[self.sp - 3];
+        self.stack[self.sp - 3] = self.stack[self.sp - 2];
+        self.stack[self.sp - 2] = self.stack[self.sp - 1];
+        self.stack[self.sp - 1] = a;
+    }
+
     fn pushBytes(self: *Context, code: []const u8, pc: *usize, count: usize) Error!void {
         if (pc.* + count > code.len) return Error.UnexpectedEof;
         if (self.sp + count > self.stack.len) return Error.StackOverflow;
@@ -284,6 +368,72 @@ pub const Context = struct {
         };
         try self.push(result);
     }
+
+    fn oddEven(self: *Context, parity: Parity) Error!void {
+        const rounded = self.graphics.round_mode.apply(try self.pop());
+        const integer = @divTrunc(rounded, 64);
+        try self.push(boolInt(switch (parity) {
+            .odd => integer & 1 != 0,
+            .even => integer & 1 == 0,
+        }));
+    }
+
+    fn setInstructionControl(self: *Context) Error!void {
+        const value = try self.pop();
+        const selector = try self.pop();
+        switch (selector) {
+            1 => {
+                if (value != 0) {
+                    self.graphics.instruct_control |= 1;
+                } else {
+                    self.graphics.instruct_control &= ~@as(i32, 1);
+                }
+            },
+            2 => {
+                if (value != 0) {
+                    self.graphics.instruct_control |= 2;
+                } else {
+                    self.graphics.instruct_control &= ~@as(i32, 2);
+                }
+            },
+            else => {},
+        }
+    }
+
+    fn popU32(self: *Context) Error!u32 {
+        const value = try self.pop();
+        if (value < 0) return Error.StackUnderflow;
+        return @intCast(value);
+    }
+
+    fn popVector(self: *Context) Error!tt_graphics.Vector {
+        const y = try self.pop();
+        const x = try self.pop();
+        return tt_graphics.normalizeF2Dot14(x, y);
+    }
+
+    fn pushVector(self: *Context, vector: tt_graphics.Vector) Error!void {
+        try self.push(vector.x);
+        try self.push(vector.y);
+    }
+
+    fn scaleFUnits(self: *const Context, value: i32) i32 {
+        return if (self.usesXScale())
+            self.environment.scaleFUnitsX(value)
+        else
+            self.environment.scaleFUnitsY(value);
+    }
+
+    fn projectionPpem26Dot6(self: *const Context) u32 {
+        return if (self.usesXScale())
+            self.environment.ppem_x_26_6
+        else
+            self.environment.ppem_y_26_6;
+    }
+
+    fn usesXScale(self: *const Context) bool {
+        return absI32(self.graphics.projection.x) >= absI32(self.graphics.projection.y);
+    }
 };
 
 const Pair = struct {
@@ -312,6 +462,11 @@ const IntOp = enum {
     mul,
     max,
     min,
+};
+
+const Parity = enum {
+    odd,
+    even,
 };
 
 inline fn readU8(code: []const u8, pc: *usize) Error!u8 {
@@ -347,6 +502,10 @@ fn negWrap(value: i32) i32 {
     return @truncate(-@as(i64, value));
 }
 
+fn absI32(value: i32) i32 {
+    return if (value < 0) negWrap(value) else value;
+}
+
 fn div26Dot6(lhs: i32, rhs: i32) Error!i32 {
     if (rhs == 0) return Error.DivisionByZero;
     return @truncate(@divTrunc(@as(i64, lhs) * 64, rhs));
@@ -362,6 +521,21 @@ fn floor26Dot6(value: i32) i32 {
 
 fn ceil26Dot6(value: i32) i32 {
     return floor26Dot6(@truncate(@as(i64, value) + 63));
+}
+
+fn zonePointer(value: i32) Error!tt_graphics.ZonePointer {
+    return switch (value) {
+        0 => .twilight,
+        1 => .glyph,
+        else => Error.InvalidZone,
+    };
+}
+
+fn engineInfo(selector: i32) i32 {
+    var result: i32 = 0;
+    if (selector & 1 != 0) result |= 35;
+    if (selector & 32 != 0) result |= 4096;
+    return result;
 }
 
 fn jumpTarget(code_len: usize, op_pc: usize, offset: i32) Error!usize {
@@ -508,4 +682,51 @@ test "tt executor enforces execution limit" {
     }, .{ .max_steps = 2 });
 
     try std.testing.expectError(Error.ExecutionLimitExceeded, ctx.execute(&.{ 0xB0, 1, 0xB0, 2, 0x60 }));
+}
+
+test "tt executor updates graphics vectors and round state" {
+    var stack: [16]i32 = undefined;
+    var storage: [1]i32 = .{0};
+    var cvt: [1]i32 = .{0};
+    var ctx = Context.init(.{ .stack = &stack, .storage = &storage, .cvt = &cvt }, .{});
+
+    try ctx.execute(&.{
+        0x00, // SVTCA[y]
+        0x0C, // GPV
+        0x7A, // ROFF
+        0xB0, 33, 0x68, // ROUND[0] with off mode
+        0x18, // RTG
+        0xB0, 33, 0x68, // ROUND[0] to grid
+    });
+
+    try expectStack(&ctx, &.{ 0, 0x4000, 33, 64 });
+    try std.testing.expectEqual(tt_graphics.RoundMode.grid, ctx.graphics.round_mode);
+}
+
+test "tt executor scales WCVTF through caller environment" {
+    var stack: [16]i32 = undefined;
+    var storage: [1]i32 = .{0};
+    var cvt: [2]i32 = .{ 0, 0 };
+    var ctx = Context.init(.{ .stack = &stack, .storage = &storage, .cvt = &cvt }, .{});
+    ctx.setEnvironment(.{
+        .ppem_x_26_6 = 10 * 64,
+        .ppem_y_26_6 = 12 * 64,
+        .units_per_em = 1000,
+    });
+
+    try ctx.execute(&.{
+        0x01, // SVTCA[x]
+        0xB1,
+        0,
+        50,
+        0x70,
+        0x00, // SVTCA[y]
+        0xB1,
+        1,
+        50,
+        0x70,
+    });
+
+    try std.testing.expectEqual(@as(i32, 32), cvt[0]);
+    try std.testing.expectEqual(@as(i32, 38), cvt[1]);
 }
