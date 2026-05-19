@@ -56,6 +56,26 @@ pub const HorizontalMetrics = struct {
     left_side_bearing: i16,
 };
 
+pub const GaspBehavior = packed struct(u16) {
+    gridfit: bool = false,
+    grayscale: bool = false,
+    symmetric_smoothing: bool = false,
+    symmetric_gridfit: bool = false,
+    reserved: u12 = 0,
+
+    pub fn fromFlags(flag_bits: u16) GaspBehavior {
+        return @bitCast(flag_bits);
+    }
+
+    pub fn flags(self: GaspBehavior) u16 {
+        return @bitCast(self);
+    }
+
+    pub fn gridFits(self: GaspBehavior) bool {
+        return self.gridfit or self.symmetric_gridfit;
+    }
+};
+
 pub const ProgramTables = struct {
     data: []const u8,
     head: TableRecord,
@@ -184,7 +204,27 @@ pub const ProgramTables = struct {
     pub fn tableBytes(self: ProgramTables, record: ?TableRecord) ParseError![]const u8 {
         return if (record) |r| try r.bytes(self.data) else &.{};
     }
+
+    pub fn gaspBehavior(self: ProgramTables, ppem: u16) ParseError!?GaspBehavior {
+        return gaspBehaviorForPpem(try self.tableBytes(self.gasp), ppem);
+    }
 };
+
+pub fn gaspBehaviorForPpem(bytes: []const u8, ppem: u16) ParseError!?GaspBehavior {
+    if (bytes.len == 0) return null;
+    if (bytes.len < 4) return error.UnexpectedEof;
+
+    const num_ranges = try readU16(bytes, 2);
+    var offset: usize = 4;
+    for (0..num_ranges) |_| {
+        if (offset + 4 > bytes.len) return error.UnexpectedEof;
+        const max_ppem = try readU16(bytes, offset);
+        const behavior = GaspBehavior.fromFlags(try readU16(bytes, offset + 2));
+        if (ppem <= max_ppem) return behavior;
+        offset += 4;
+    }
+    return null;
+}
 
 fn tagEql(actual: []const u8, comptime expected: *const [4]u8) bool {
     return std.mem.eql(u8, actual, expected);
@@ -235,4 +275,19 @@ test "read TT program tables from bundled font" {
     try std.testing.expect(tables.loca != null);
     try std.testing.expect((try tables.tableBytes(tables.fpgm)).len > 0);
     try std.testing.expect((try tables.tableBytes(tables.prep)).len > 0);
+}
+
+test "gasp behavior resolves ppem ranges" {
+    const bytes = [_]u8{
+        0, 1, // version
+        0, 2, // ranges
+        0, 8, 0, 1, // <= 8 ppem: gridfit
+        0xFF, 0xFF, 0, 2, // otherwise: grayscale
+    };
+
+    const small = (try gaspBehaviorForPpem(&bytes, 8)).?;
+    const large = (try gaspBehaviorForPpem(&bytes, 9)).?;
+    try std.testing.expect(small.gridFits());
+    try std.testing.expect(!large.gridFits());
+    try std.testing.expect(large.grayscale);
 }

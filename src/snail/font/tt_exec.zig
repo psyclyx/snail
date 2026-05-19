@@ -186,7 +186,7 @@ pub const Context = struct {
         }
 
         switch (op) {
-            0x00...0x05, 0x0A...0x0E, 0x10...0x1A, 0x1D...0x1F => try self.executeGraphicsOp(op),
+            0x00...0x0E, 0x10...0x1A, 0x1D...0x1F, 0x84 => try self.executeGraphicsOp(op),
             0x20...0x26 => try self.executeStackOp(op),
             0x27, 0x29, 0x2E...0x35, 0x38...0x3C, 0x3E...0x3F, 0x46...0x4A, 0xC0...0xFF => try self.executePointOp(op),
             0x2A...0x2C => try self.executeFunctionOp(code, pc, op, steps),
@@ -256,6 +256,8 @@ pub const Context = struct {
             0x03 => self.graphics.setVectorToAxis(.x, .projection),
             0x04 => self.graphics.setVectorToAxis(.y, .freedom),
             0x05 => self.graphics.setVectorToAxis(.x, .freedom),
+            0x06, 0x07 => self.graphics.projection = try self.lineVector((op & 1) != 0),
+            0x08, 0x09 => self.graphics.freedom = try self.lineVector((op & 1) != 0),
             0x0A => self.graphics.projection = try self.popVector(),
             0x0B => self.graphics.freedom = try self.popVector(),
             0x0C => try self.pushVector(self.graphics.projection),
@@ -275,6 +277,11 @@ pub const Context = struct {
             0x1D => self.graphics.control_value_cut_in = try self.pop(),
             0x1E => self.graphics.single_width_cut_in = try self.pop(),
             0x1F => self.graphics.single_width_value = self.scaleFUnits(try self.pop()),
+            0x84 => {
+                const vector = try self.lineVector(false);
+                self.graphics.projection = vector;
+                self.graphics.dual_projection = vector;
+            },
             else => unreachable,
         }
     }
@@ -901,6 +908,19 @@ pub const Context = struct {
         return tt_graphics.normalizeF2Dot14(x, y);
     }
 
+    fn lineVector(self: *Context, perpendicular: bool) Error!tt_graphics.Vector {
+        const point_b = try self.popU32();
+        const point_a = try self.popU32();
+        const a = try self.zonePoint(self.graphics.zp1, point_a);
+        const b = try self.zonePoint(self.graphics.zp2, point_b);
+        const dx = subWrap(b.x, a.x);
+        const dy = subWrap(b.y, a.y);
+        return if (perpendicular)
+            tt_graphics.normalizeF2Dot14(-dy, dx)
+        else
+            tt_graphics.normalizeF2Dot14(dx, dy);
+    }
+
     fn pushVector(self: *Context, vector: tt_graphics.Vector) Error!void {
         try self.push(vector.x);
         try self.push(vector.y);
@@ -914,6 +934,13 @@ pub const Context = struct {
     fn zoneConst(self: *const Context, pointer: tt_graphics.ZonePointer) Error!*const PointZone {
         const zones = self.zones orelse return Error.MissingZones;
         return zones.selectConst(pointer);
+    }
+
+    fn zonePoint(self: *const Context, pointer: tt_graphics.ZonePointer, point_index: u32) Error!Point {
+        const z = try self.zoneConst(pointer);
+        const index: usize = point_index;
+        if (index >= z.points.len) return Error.InvalidPoint;
+        return z.points[index];
     }
 
     fn projectionDirection(self: *const Context, original: bool) Error!tt_points.Direction {
@@ -1301,6 +1328,30 @@ test "tt executor updates graphics vectors and round state" {
 
     try expectStack(&ctx, &.{ 0, 0x4000, 33, 64 });
     try std.testing.expectEqual(tt_graphics.RoundMode.grid, ctx.graphics.round_mode);
+}
+
+test "tt executor derives vectors from point lines" {
+    var stack: [16]i32 = undefined;
+    var storage: [1]i32 = .{0};
+    var cvt: [1]i32 = .{0};
+    var ctx = Context.init(.{ .stack = &stack, .storage = &storage, .cvt = &cvt }, .{});
+    var twilight_points: [1]Point = undefined;
+    var glyph_points: [2]Point = .{
+        .{ .x = 0, .y = 0, .ox = 0, .oy = 0, .on_curve = true },
+        .{ .x = 64, .y = 0, .ox = 64, .oy = 0, .on_curve = true },
+    };
+    var zones: PointZones = .{
+        .twilight = PointZone.initTwilight(&twilight_points),
+        .glyph = .{ .points = &glyph_points },
+    };
+    ctx.setZones(&zones);
+
+    try ctx.execute(&.{
+        0xB1, 0, 1, 0x06, 0x0C, // SPVTL[0], GPV
+        0xB1, 0, 1, 0x07, 0x0C, // SPVTL[1], GPV
+    });
+
+    try expectStack(&ctx, &.{ 0x4000, 0, 0, 0x4000 });
 }
 
 test "tt executor scales WCVTF through caller environment" {

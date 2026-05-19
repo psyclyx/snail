@@ -87,6 +87,7 @@ pub const HintRejectReason = enum {
     no_true_type_program,
     synthetic_embolden,
     color_glyph,
+    grid_fit_disabled,
     missing_base_glyph,
     topology_changed,
     bands_not_reusable,
@@ -339,6 +340,7 @@ pub const TrueTypeHintContext = struct {
             error.NoTrueTypeProgram => return self.putUnsupported(key, .no_true_type_program),
             else => return err,
         };
+        if (!size_state.machine.gridFits()) return self.putUnsupported(key, .grid_fit_disabled);
 
         var hint = try size_state.machine.hintCachedGlyph(self.allocator, &face_state.cache, key.glyph_id);
 

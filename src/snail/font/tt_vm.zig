@@ -86,9 +86,15 @@ pub const Program = struct {
             .allocator = allocator,
             .request = request,
             .units_per_em = self.head.units_per_em,
+            .grid_fit = try self.gridFits(request.ppem_y_26_6),
             .cvt_x = try scaledCvt(allocator, cvt_bytes, request.ppem_x_26_6, self.head.units_per_em),
             .cvt_y = try scaledCvt(allocator, cvt_bytes, request.ppem_y_26_6, self.head.units_per_em),
         };
+    }
+
+    pub fn gridFits(self: *const Program, ppem_26_6: u32) !bool {
+        const behavior = try self.tables.gaspBehavior(ppemFrom26Dot6(ppem_26_6)) orelse return true;
+        return behavior.gridFits();
     }
 
     pub fn executionBufferSizes(self: *const Program) ExecutionBufferSizes {
@@ -241,6 +247,7 @@ pub const SizeState = struct {
     allocator: std.mem.Allocator,
     request: SizeRequest,
     units_per_em: u16,
+    grid_fit: bool,
     cvt_x: []i32,
     cvt_y: []i32,
 
@@ -328,11 +335,10 @@ pub const SizeState = struct {
         phantom_start: usize,
         instructions: []const u8,
     ) !HintedSimpleGlyph {
-        _ = self;
         zones.glyph = zone;
         context.reset();
         context.setZones(zones);
-        if ((context.graphics.instruct_control & 1) == 0) {
+        if (self.grid_fit and (context.graphics.instruct_control & 1) == 0) {
             try context.execute(instructions);
         }
         return hintedSimpleGlyphView(zones.glyph, phantom_start);
@@ -377,6 +383,10 @@ fn scaledCvt(
         value.* = scaleFWordTo26Dot6(fword, ppem_26_6, units_per_em);
     }
     return values;
+}
+
+fn ppemFrom26Dot6(ppem_26_6: u32) u16 {
+    return @intCast(@min((ppem_26_6 + 32) / 64, std.math.maxInt(u16)));
 }
 
 fn readI16(data: []const u8, offset: usize) !i16 {
@@ -617,6 +627,47 @@ test "program executes bundled simple glyph instructions" {
     try std.testing.expect(hinted.advance_x_26_6 > 0);
     try std.testing.expect(hinted.original_advance_x_26_6 > 0);
     try std.testing.expect(curves.len > 0);
+}
+
+test "size state skips glyph instructions when grid fitting is disabled" {
+    var cvt: [0]i32 = .{};
+    var size = SizeState{
+        .allocator = std.testing.allocator,
+        .request = .{ .ppem_x_26_6 = 12 * 64, .ppem_y_26_6 = 12 * 64 },
+        .units_per_em = 1000,
+        .grid_fit = false,
+        .cvt_x = &cvt,
+        .cvt_y = &cvt,
+    };
+    var stack: [8]i32 = undefined;
+    var storage: [1]i32 = .{0};
+    var twilight_points: [1]tt_exec.Point = undefined;
+    var glyph_points: [5]tt_exec.Point = .{
+        .{ .x = 33, .y = 0, .ox = 33, .oy = 0, .on_curve = true },
+        .{ .x = 0, .y = 0, .ox = 0, .oy = 0, .on_curve = true },
+        .{ .x = 64, .y = 0, .ox = 64, .oy = 0, .on_curve = true },
+        .{ .x = 0, .y = 64, .ox = 0, .oy = 64, .on_curve = true },
+        .{ .x = 0, .y = 0, .ox = 0, .oy = 0, .on_curve = true },
+    };
+    const contours = [_]tt_outline.ContourRange{.{ .start = 0, .end = 1 }};
+    var zones: tt_exec.PointZones = .{
+        .twilight = tt_exec.PointZone.initTwilight(&twilight_points),
+        .glyph = .{ .points = &glyph_points, .contours = &contours },
+    };
+    var context = size.executionContext(.{
+        .stack = &stack,
+        .storage = &storage,
+    }, .x, .{});
+
+    _ = try size.executeGlyphZone(
+        &context,
+        &zones,
+        zones.glyph,
+        1,
+        &.{ 0xB0, 0, 0x2F },
+    );
+
+    try std.testing.expectEqual(@as(i32, 33), glyph_points[0].x);
 }
 
 test "size state initializes simple glyph phantom points" {

@@ -208,6 +208,10 @@ pub const HintMachine = struct {
         };
     }
 
+    pub fn gridFits(self: *const HintMachine) bool {
+        return self.size.grid_fit;
+    }
+
     fn runSetupPrograms(self: *HintMachine) !void {
         var context = self.makeContext();
         context.setFunctions(&self.functions);
