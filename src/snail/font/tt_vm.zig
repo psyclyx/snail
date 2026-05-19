@@ -188,6 +188,14 @@ pub const SizeState = struct {
         }
         return context;
     }
+
+    pub fn initSimpleGlyphZone(
+        self: *const SizeState,
+        buffer: []tt_exec.Point,
+        glyph: *const tt_outline.SimpleGlyph,
+    ) !tt_exec.PointZone {
+        return tt_exec.PointZone.initGlyph(buffer, glyph.points, glyph.contours, self.environment());
+    }
 };
 
 fn scaledCvt(
@@ -334,4 +342,66 @@ test "program executes bundled font and control programs" {
     context.setFunctions(&functions);
     context.setZones(&zones);
     try program.runControlProgram(&context);
+}
+
+test "program executes bundled simple glyph instructions" {
+    const allocator = std.testing.allocator;
+    const assets = @import("assets");
+    const program = try Program.init(assets.noto_sans_regular);
+    const font = try @import("ttf.zig").Font.init(assets.noto_sans_regular);
+    const sizes = program.executionBufferSizes();
+
+    var topology = try program.loadGlyphTopology(allocator, try font.glyphIndex('A'));
+    defer topology.deinit();
+    const simple = switch (topology) {
+        .simple => |*glyph| glyph,
+        else => return error.TestExpectedGlyph,
+    };
+
+    const stack = try allocator.alloc(i32, sizes.stack);
+    defer allocator.free(stack);
+    const storage = try allocator.alloc(i32, @max(sizes.storage, 1));
+    defer allocator.free(storage);
+    @memset(storage, 0);
+    const function_entries = try allocator.alloc(tt_exec.Function, @max(sizes.functions, 1));
+    defer allocator.free(function_entries);
+    var functions: tt_exec.FunctionDefs = .{ .entries = function_entries };
+    const twilight_points = try allocator.alloc(tt_exec.Point, @max(sizes.twilight_points, 1));
+    defer allocator.free(twilight_points);
+    const glyph_points = try allocator.alloc(tt_exec.Point, @max(sizes.glyph_points, simple.points.len));
+    defer allocator.free(glyph_points);
+    var empty_glyph_points: [0]tt_exec.Point = .{};
+
+    var size = try program.sizeState(allocator, .{
+        .ppem_x_26_6 = 12 * 64,
+        .ppem_y_26_6 = 12 * 64,
+    });
+    defer size.deinit();
+
+    var zones: tt_exec.PointZones = .{
+        .twilight = tt_exec.PointZone.initTwilight(twilight_points),
+        .glyph = .{ .points = &empty_glyph_points },
+    };
+    var context = size.executionContext(.{
+        .stack = stack,
+        .storage = storage,
+    }, .x, .{});
+    context.setFunctions(&functions);
+    context.setZones(&zones);
+
+    try program.runFontProgram(&context);
+    context.reset();
+    context.resetGraphics();
+    context.setEnvironment(size.environment());
+    context.setFunctions(&functions);
+    context.setZones(&zones);
+    try program.runControlProgram(&context);
+
+    zones.glyph = try size.initSimpleGlyphZone(glyph_points, simple);
+    context.reset();
+    context.setZones(&zones);
+    try context.execute(simple.instructions);
+
+    try std.testing.expect(zones.glyph.points.len == simple.points.len);
+    try std.testing.expect(zones.glyph.points.len > 0);
 }
