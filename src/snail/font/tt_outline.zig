@@ -43,6 +43,35 @@ pub const SimpleGlyph = struct {
     }
 };
 
+pub const ComponentTransform = struct {
+    xx: f32 = 1,
+    xy: f32 = 0,
+    yx: f32 = 0,
+    yy: f32 = 1,
+};
+
+pub const CompoundComponent = struct {
+    flags: u16,
+    glyph_id: u16,
+    arg1: i16,
+    arg2: i16,
+    dx: f32 = 0,
+    dy: f32 = 0,
+    args_are_xy: bool,
+    transform: ComponentTransform = .{},
+};
+
+pub const CompoundGlyph = struct {
+    allocator: std.mem.Allocator,
+    components: []CompoundComponent,
+    instructions: []const u8,
+
+    pub fn deinit(self: *CompoundGlyph) void {
+        self.allocator.free(self.components);
+        self.* = undefined;
+    }
+};
+
 fn readU16(data: []const u8, offset: usize) ParseError!u16 {
     if (offset + 2 > data.len) return error.UnexpectedEof;
     return std.mem.readInt(u16, data[offset..][0..2], .big);
@@ -219,6 +248,106 @@ pub fn parseSimpleGlyph(
     };
 }
 
+pub fn parseCompoundGlyph(
+    allocator: std.mem.Allocator,
+    data: []const u8,
+    base: usize,
+    unit_scale: f32,
+) ParseError!CompoundGlyph {
+    var components: std.ArrayList(CompoundComponent) = .empty;
+    errdefer components.deinit(allocator);
+
+    var offset: usize = base + 10;
+    var more = true;
+    var has_instructions = false;
+    while (more) {
+        const flags = try readU16(data, offset);
+        const glyph_id = try readU16(data, offset + 2);
+        offset += 4;
+
+        const args = try readComponentArgs(data, &offset, flags);
+        const transform = try readComponentTransform(data, &offset, flags);
+        const args_are_xy = flags & component_args_are_xy_values != 0;
+        try components.append(allocator, .{
+            .flags = flags,
+            .glyph_id = glyph_id,
+            .arg1 = args[0],
+            .arg2 = args[1],
+            .dx = if (args_are_xy) @as(f32, @floatFromInt(args[0])) * unit_scale else 0,
+            .dy = if (args_are_xy) @as(f32, @floatFromInt(args[1])) * unit_scale else 0,
+            .args_are_xy = args_are_xy,
+            .transform = transform,
+        });
+
+        has_instructions = has_instructions or (flags & component_has_instructions != 0);
+        more = flags & component_more_components != 0;
+    }
+
+    const instructions = if (has_instructions) blk: {
+        const length = try readU16(data, offset);
+        const start = offset + 2;
+        const end = start + length;
+        if (end > data.len) return error.UnexpectedEof;
+        break :blk data[start..end];
+    } else &.{};
+
+    return .{
+        .allocator = allocator,
+        .components = try components.toOwnedSlice(allocator),
+        .instructions = instructions,
+    };
+}
+
+const component_arg_1_and_2_are_words = 0x0001;
+const component_args_are_xy_values = 0x0002;
+const component_has_scale = 0x0008;
+const component_more_components = 0x0020;
+const component_has_xy_scale = 0x0040;
+const component_has_two_by_two = 0x0080;
+const component_has_instructions = 0x0100;
+
+fn readComponentArgs(data: []const u8, offset: *usize, flags: u16) ParseError![2]i16 {
+    if (flags & component_arg_1_and_2_are_words != 0) {
+        const arg1 = try readI16(data, offset.*);
+        const arg2 = try readI16(data, offset.* + 2);
+        offset.* += 4;
+        return .{ arg1, arg2 };
+    }
+
+    if (offset.* + 2 > data.len) return error.UnexpectedEof;
+    const arg1: i8 = @bitCast(data[offset.*]);
+    const arg2: i8 = @bitCast(data[offset.* + 1]);
+    offset.* += 2;
+    return .{ arg1, arg2 };
+}
+
+fn readComponentTransform(data: []const u8, offset: *usize, flags: u16) ParseError!ComponentTransform {
+    if (flags & component_has_scale != 0) {
+        const scale = try readF2Dot14(data, offset.*);
+        offset.* += 2;
+        return .{ .xx = scale, .yy = scale };
+    }
+    if (flags & component_has_xy_scale != 0) {
+        const xx = try readF2Dot14(data, offset.*);
+        const yy = try readF2Dot14(data, offset.* + 2);
+        offset.* += 4;
+        return .{ .xx = xx, .yy = yy };
+    }
+    if (flags & component_has_two_by_two != 0) {
+        const xx = try readF2Dot14(data, offset.*);
+        const yx = try readF2Dot14(data, offset.* + 2);
+        const xy = try readF2Dot14(data, offset.* + 4);
+        const yy = try readF2Dot14(data, offset.* + 6);
+        offset.* += 8;
+        return .{ .xx = xx, .xy = xy, .yx = yx, .yy = yy };
+    }
+    return .{};
+}
+
+fn readF2Dot14(data: []const u8, offset: usize) ParseError!f32 {
+    return @as(f32, @floatFromInt(try readI16(data, offset))) / 16384.0;
+}
+
 const CurvePoint = struct {
     pos: Vec2,
     on_curve: bool,
@@ -332,4 +461,27 @@ test "parse simple glyph topology preserves instructions and points" {
     const curves = try contourToCurves(std.testing.allocator, glyph.points, 1.0);
     defer std.testing.allocator.free(curves);
     try std.testing.expectEqual(@as(usize, 3), curves.len);
+}
+
+test "parse compound glyph preserves component flags transform and instructions" {
+    const data = [_]u8{
+        0xFF, 0xFF, 0, 0, 0, 0, 0, 0, 0, 0, // compound glyph header, bbox ignored here
+        0x01, 0x0B, // words, xy args, scale, instructions
+        0x00, 0x07, // component glyph id
+        0x00, 0x14, 0xFF, 0xF6, // dx = 20, dy = -10
+        0x20, 0x00, // F2DOT14 scale = 0.5
+        0x00, 0x01, 0x2A, // instruction bytes
+    };
+
+    var glyph = try parseCompoundGlyph(std.testing.allocator, &data, 0, 0.01);
+    defer glyph.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), glyph.components.len);
+    try std.testing.expectEqual(@as(u16, 7), glyph.components[0].glyph_id);
+    try std.testing.expect(glyph.components[0].args_are_xy);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.2), glyph.components[0].dx, 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, -0.1), glyph.components[0].dy, 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), glyph.components[0].transform.xx, 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), glyph.components[0].transform.yy, 1e-6);
+    try std.testing.expectEqualSlices(u8, &.{0x2A}, glyph.instructions);
 }

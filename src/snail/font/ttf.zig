@@ -493,32 +493,15 @@ pub const Font = struct {
             }
         }
 
-        var offset: u32 = base + 10;
-        var more = true;
-        while (more) {
-            const comp_flags = try readU16(self.data, offset);
-            const component_glyph_id = try readU16(self.data, offset + 2);
-            offset += 4;
-            var dx: f32 = 0;
-            var dy: f32 = 0;
-            const sf = 1.0 / @as(f32, @floatFromInt(self.units_per_em));
-            if (comp_flags & 1 != 0) {
-                dx = @as(f32, @floatFromInt(try readI16(self.data, offset))) * sf;
-                dy = @as(f32, @floatFromInt(try readI16(self.data, offset + 2))) * sf;
-                offset += 4;
-            } else {
-                const b1: i8 = @bitCast(self.data[offset]);
-                const b2: i8 = @bitCast(self.data[offset + 1]);
-                dx = @as(f32, @floatFromInt(b1)) * sf;
-                dy = @as(f32, @floatFromInt(b2)) * sf;
-                offset += 2;
-            }
-            if (comp_flags & 8 != 0) offset += 2 else if (comp_flags & 64 != 0) offset += 4 else if (comp_flags & 128 != 0) offset += 8;
+        const sf = 1.0 / @as(f32, @floatFromInt(self.units_per_em));
+        var compound = try tt_outline.parseCompoundGlyph(allocator, self.data, base, sf);
+        defer compound.deinit();
 
-            const component = try self.parseGlyph(allocator, cache, component_glyph_id);
+        for (compound.components) |component_ref| {
+            const component = try self.parseGlyph(allocator, cache, component_ref.glyph_id);
             for (component.contours) |contour| {
                 var transformed = try allocator.alloc(QuadBezier, contour.curves.len);
-                const d = Vec2.new(dx, dy);
+                const d = Vec2.new(component_ref.dx, component_ref.dy);
                 for (contour.curves, 0..) |curve, ci| {
                     transformed[ci] = .{
                         .p0 = Vec2.add(curve.p0, d),
@@ -528,7 +511,6 @@ pub const Font = struct {
                 }
                 try all_contours.append(allocator, .{ .curves = transformed });
             }
-            more = (comp_flags & 32 != 0);
         }
 
         const contours = try all_contours.toOwnedSlice(allocator);
