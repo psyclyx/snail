@@ -416,6 +416,12 @@ pub fn prepareGlyphCurvesForDirectEncoding(
     return prepareGlyphCurves(allocator, curves, origin, .direct);
 }
 
+pub fn decodeSegmentAt(data: []const u16, curve_texel: u32) ?CurveSegment {
+    const index = @as(usize, curve_texel) * 4;
+    if (index + SEGMENT_TEXELS * 4 > data.len) return null;
+    return decodeStoredSegment(data[index..][0 .. SEGMENT_TEXELS * 4]);
+}
+
 fn decodeStoredSegment(data: []const u16) CurveSegment {
     const stored_kind = f16BitsToF32(data[10]);
     const kind_u16: u16 = @intCast(if (stored_kind >= DIRECT_ENCODING_KIND_BIAS - 0.5)

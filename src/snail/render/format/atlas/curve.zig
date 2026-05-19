@@ -50,6 +50,8 @@ pub const CurveAtlas = struct {
     pub const GlyphInfo = struct {
         bbox: bezier.BBox,
         advance_width: u16,
+        base_curve_texel: u32 = 0,
+        curve_count: u16 = 0,
         band_entry: band_tex.GlyphBandEntry,
         page_index: u16,
     };

@@ -340,7 +340,7 @@ pub fn buildPageDataInner(
     errdefer if (bt_texture_owned) bt.texture.deinit();
     defer allocator.free(bt.entries);
 
-    var glyph_map = try buildGlyphMap(allocator, glyph_infos.items, bt.entries, page_index);
+    var glyph_map = try buildGlyphMap(allocator, glyph_infos.items, ct.entries, bt.entries, page_index);
     errdefer glyph_map.deinit();
 
     freeGlyphCurveScratch(allocator, glyph_curves_list.items);
@@ -433,6 +433,7 @@ fn deinitGlyphBandDataList(allocator: std.mem.Allocator, glyph_band_data: *std.A
 fn buildGlyphMap(
     allocator: std.mem.Allocator,
     glyph_infos: []const PageGlyphMeta,
+    curve_entries: []const curve_tex.GlyphCurveEntry,
     band_entries: []const band_tex.GlyphBandEntry,
     page_index: u16,
 ) !std.AutoHashMap(u16, GlyphInfo) {
@@ -442,6 +443,8 @@ fn buildGlyphMap(
         try glyph_map.put(info.gid, .{
             .bbox = info.bbox,
             .advance_width = info.advance,
+            .base_curve_texel = curve_entries[i].offset,
+            .curve_count = curve_entries[i].count,
             .band_entry = band_entries[i],
             .page_index = page_index,
         });
