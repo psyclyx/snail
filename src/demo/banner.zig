@@ -288,6 +288,7 @@ pub const TextBuildResult = struct {
 pub const TextHintOptions = struct {
     enabled: bool = false,
     ppem_scale: f32 = 1.0,
+    max_ppem: f32 = 32.0,
 };
 
 const TextPlacement = struct {
@@ -319,13 +320,15 @@ const HintBuildContext = struct {
     allocator: std.mem.Allocator,
     atlas: *const snail.TextAtlas,
     ppem_scale: f32,
+    max_ppem: f32,
     states: std.AutoHashMap(u64, HintFaceState),
 
-    fn init(allocator: std.mem.Allocator, atlas: *const snail.TextAtlas, ppem_scale: f32) HintBuildContext {
+    fn init(allocator: std.mem.Allocator, atlas: *const snail.TextAtlas, ppem_scale: f32, max_ppem: f32) HintBuildContext {
         return .{
             .allocator = allocator,
             .atlas = atlas,
             .ppem_scale = ppem_scale,
+            .max_ppem = max_ppem,
             .states = std.AutoHashMap(u64, HintFaceState).init(allocator),
         };
     }
@@ -345,6 +348,11 @@ const HintBuildContext = struct {
         errdefer state.deinit();
         try self.states.put(key, state);
         return self.states.getPtr(key).?;
+    }
+
+    fn shouldHintSize(self: *const HintBuildContext, font_size: f32) bool {
+        const ppem = font_size * self.ppem_scale;
+        return std.math.isFinite(ppem) and ppem >= 1.0 and ppem <= self.max_ppem;
     }
 };
 
@@ -400,10 +408,12 @@ const TextPlacer = struct {
         if (self.hint) |hint_context| {
             switch (paint) {
                 .solid => |color| {
-                    return self.appendPlacedHinted(hint_context, &shaped, p, color) catch |err| {
-                        if (err == error.OutOfMemory) return err;
-                        return self.appendRegular(&shaped, p, paint);
-                    };
+                    if (hint_context.shouldHintSize(p.size)) {
+                        return self.appendPlacedHinted(hint_context, &shaped, p, color) catch |err| {
+                            if (err == error.OutOfMemory) return err;
+                            return self.appendRegular(&shaped, p, paint);
+                        };
+                    }
                 },
                 else => {},
             }
@@ -506,8 +516,8 @@ fn hintStateKey(face_index: snail.FaceIndex, ppem_26_6: u32) u64 {
     return (@as(u64, @intCast(face_index)) << 32) | @as(u64, ppem_26_6);
 }
 
-fn hintPpem26_6(em: f32, ppem_scale: f32) !u32 {
-    const ppem = em * ppem_scale;
+fn hintPpem26_6(font_size: f32, ppem_scale: f32) !u32 {
+    const ppem = font_size * ppem_scale;
     if (!std.math.isFinite(ppem) or ppem < 1.0) return error.HintUnavailable;
     return @intFromFloat(@round(@min(ppem, 4096.0) * 64.0));
 }
@@ -530,6 +540,10 @@ fn buildRunHintData(
         var hint = try buildGlyphHint(context, glyph, ppem_26_6);
         advances[i] = hint.advance;
         if (hint.curves.len == 0) {
+            if (!glyphCanSkipEmptyHint(context, glyph)) {
+                hint.deinit();
+                return error.HintUnavailable;
+            }
             hint.deinit();
             continue;
         }
@@ -561,13 +575,28 @@ fn buildGlyphHint(
     const face = &context.atlas.config.faces[glyph.face_index];
     if (face.synthetic.embolden != 0) return error.HintUnavailable;
 
-    var state = try context.stateFor(glyph.face_index, ppem_26_6);
     const face_view = context.atlas.faceView(glyph.face_index, .{});
+    if (glyphHasColorLayers(&face_view, glyph.glyph_id)) return error.HintUnavailable;
+
+    var state = try context.stateFor(glyph.face_index, ppem_26_6);
     const base = if (face_view.getGlyph(glyph.glyph_id)) |info|
         snail.TrueTypeBaseGlyphHint{ .info = info, .page = context.atlas.pages[info.page_index] }
     else
         null;
     return state.machine.hintCachedGlyph(context.allocator, &state.cache, glyph.glyph_id, .{ .base = base });
+}
+
+fn glyphCanSkipEmptyHint(context: *HintBuildContext, glyph: snail.ShapedText.Glyph) bool {
+    if (glyph.glyph_id == 0) return true;
+    const face_view = context.atlas.faceView(glyph.face_index, .{});
+    if (glyphHasColorLayers(&face_view, glyph.glyph_id)) return false;
+    return face_view.getGlyph(glyph.glyph_id) == null;
+}
+
+fn glyphHasColorLayers(face_view: anytype, glyph_id: u16) bool {
+    if (face_view.getColrBase(glyph_id) != null) return true;
+    var layers = face_view.colrLayers(glyph_id);
+    return layers.count() != 0;
 }
 
 /// Build the demo's prepared text blob and collect decoration rects.
@@ -585,7 +614,7 @@ pub fn buildTextBlob(
     var hint_context_storage: HintBuildContext = undefined;
     var hint_context: ?*HintBuildContext = null;
     if (hint_options.enabled) {
-        hint_context_storage = HintBuildContext.init(builder.allocator, fonts, hint_options.ppem_scale);
+        hint_context_storage = HintBuildContext.init(builder.allocator, fonts, hint_options.ppem_scale, hint_options.max_ppem);
         hint_context = &hint_context_storage;
     }
     defer if (hint_context) |ctx| ctx.deinit();

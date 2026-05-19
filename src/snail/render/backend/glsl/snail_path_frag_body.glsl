@@ -496,10 +496,63 @@ vec2 evalAxisCoverageBandsHinted(vec2 sampleRc, float ppe, ivec2 gLoc, int heade
     return vec2(cov, wgt);
 }
 
+bool accumulateHintedTextSegment(inout float cov, inout float wgt, vec2 sampleRc, float ppe, SegmentData seg, bool horizontal) {
+    float maxCoord = (horizontal ? segmentMaxX(seg) - sampleRc.x : segmentMaxY(seg) - sampleRc.y);
+    if (maxCoord * ppe < -0.5) return false;
+
+    if (seg.kind != 0) {
+        return accumulateAxisCoverageSegment(cov, wgt, sampleRc, ppe, seg, horizontal);
+    }
+
+    float p0x = seg.p0.x - sampleRc.x;
+    float p0y = seg.p0.y - sampleRc.y;
+    float p1x = seg.p1.x - sampleRc.x;
+    float p1y = seg.p1.y - sampleRc.y;
+    float p2x = seg.p2.x - sampleRc.x;
+    float p2y = seg.p2.y - sampleRc.y;
+    uint code = horizontal ? calcRootCode(p0y, p1y, p2y) : calcRootCode(p0x, p1x, p2x);
+    if (code == 0u) return true;
+
+    vec2 roots = horizontal
+        ? solveQuadraticHorizDistances(p0x, p0y, p1x, p1y, p2x, p2y, ppe)
+        : solveQuadraticVertDistances(p0x, p0y, p1x, p1y, p2x, p2y, ppe);
+
+    if (horizontal) {
+        if ((code & 1u) != 0u) appendCoverageContribution(cov, wgt, roots.x, 1.0);
+        if (code > 1u) appendCoverageContribution(cov, wgt, roots.y, -1.0);
+    } else {
+        if ((code & 1u) != 0u) appendCoverageContribution(cov, wgt, roots.x, -1.0);
+        if (code > 1u) appendCoverageContribution(cov, wgt, roots.y, 1.0);
+    }
+    return true;
+}
+
+vec2 evalHintedTextSingleBand(vec2 sampleRc, float ppe, ivec2 gLoc, int headerOffset, int layer, bool horizontal, HintedTextRecord record) {
+    float cov = 0.0;
+    float wgt = 0.0;
+    ivec2 headerLoc = calcBandLoc(gLoc, uint(headerOffset));
+    uvec2 bd = texelFetch(u_band_tex, ivec3(headerLoc, layer), 0).xy;
+    ivec2 bandLoc = calcBandLoc(gLoc, bd.y);
+    int count = int(bd.x);
+    for (int i = 0; i < count; i++) {
+        ivec2 bLoc = calcBandLoc(bandLoc, uint(i));
+        ivec2 cLoc = decodeBandCurveLoc(texelFetch(u_band_tex, ivec3(bLoc, layer), 0).xy);
+        if (!accumulateHintedTextSegment(cov, wgt, sampleRc, ppe, fetchHintedSegment(cLoc, layer, record), horizontal)) break;
+    }
+    return vec2(cov, wgt);
+}
+
 struct BandSpan {
     int first;
     int last;
 };
+
+vec2 evalHintedTextBandSpan(vec2 sampleRc, float ppe, ivec2 gLoc, int headerBase, BandSpan span, int layer, bool horizontal, HintedTextRecord record) {
+    if (span.first == span.last) {
+        return evalHintedTextSingleBand(sampleRc, ppe, gLoc, headerBase + span.first, layer, horizontal, record);
+    }
+    return evalAxisCoverageBandsHinted(sampleRc, ppe, gLoc, headerBase, span.first, span.last, layer, horizontal, record);
+}
 
 // Convert the pixel footprint into band space. Near a band boundary the
 // renderer evaluates the covered band span and de-duplicates curve records,
@@ -529,8 +582,8 @@ float evalHintedTextCoverage(vec2 rc, vec2 epp, vec2 ppe,
                              ivec2 gLoc, ivec2 bandMax, vec4 banding, int texLayer, HintedTextRecord record) {
     BandSpan hSpan = coverageBandSpan(rc.y, epp.y, banding.y, banding.w, bandMax.y);
     BandSpan vSpan = coverageBandSpan(rc.x, epp.x, banding.x, banding.z, bandMax.x);
-    vec2 horiz = evalAxisCoverageBandsHinted(rc, ppe.x, gLoc, 0, hSpan.first, hSpan.last, texLayer, true, record);
-    vec2 vert = evalAxisCoverageBandsHinted(rc, ppe.y, gLoc, bandMax.y + 1, vSpan.first, vSpan.last, texLayer, false, record);
+    vec2 horiz = evalHintedTextBandSpan(rc, ppe.x, gLoc, 0, hSpan, texLayer, true, record);
+    vec2 vert = evalHintedTextBandSpan(rc, ppe.y, gLoc, bandMax.y + 1, vSpan, texLayer, false, record);
     float wsum = horiz.y + vert.y;
     float blended = horiz.x * horiz.y + vert.x * vert.y;
     float cov = max(applyFillRule(blended / max(wsum, kCoordEps)),
