@@ -172,8 +172,9 @@ pub const Context = struct {
             0x40 => try self.pushBytes(code, pc, try readU8(code, pc)),
             0x41 => try self.pushWords(code, pc, try readU8(code, pc)),
             0x42...0x45, 0x70 => try self.executeMemoryOp(op),
-            0x4B...0x4E, 0x56, 0x57, 0x68...0x6F, 0x7A, 0x7C, 0x7D, 0x85, 0x88, 0x8A, 0x8D, 0x8E => try self.executeStateOp(op),
+            0x4B...0x4E, 0x56, 0x57, 0x5E, 0x5F, 0x68...0x6F, 0x7A, 0x7C, 0x7D, 0x85, 0x88, 0x8A, 0x8D, 0x8E => try self.executeStateOp(op),
             0x50...0x55, 0x5A...0x5C => try self.executeLogicOp(op),
+            0x5D, 0x71...0x75 => try self.executeDeltaOp(op),
             0x60...0x67, 0x8B, 0x8C => try self.executeMathOp(op),
             0x1B, 0x1C, 0x58, 0x59, 0x78, 0x79 => try self.executeFlowOp(code, pc, op_pc, op),
             else => return Error.InvalidOpcode,
@@ -305,6 +306,8 @@ pub const Context = struct {
             0x4E => self.graphics.auto_flip = false,
             0x56 => try self.oddEven(.odd),
             0x57 => try self.oddEven(.even),
+            0x5E => self.graphics.delta_base = try self.pop(),
+            0x5F => self.graphics.delta_shift = try self.pop(),
             0x68...0x6B => try self.push(self.graphics.round_mode.apply(try self.pop())),
             0x6C...0x6F => try self.push(try self.pop()),
             0x7A => self.graphics.round_mode = .off,
@@ -330,6 +333,18 @@ pub const Context = struct {
             0x5A => try self.binaryBool(.@"and"),
             0x5B => try self.binaryBool(.@"or"),
             0x5C => try self.push(boolInt((try self.pop()) == 0)),
+            else => unreachable,
+        }
+    }
+
+    fn executeDeltaOp(self: *Context, op: u8) Error!void {
+        switch (op) {
+            0x5D => try self.executeDeltaPoint(0),
+            0x71 => try self.executeDeltaPoint(16),
+            0x72 => try self.executeDeltaPoint(32),
+            0x73 => try self.executeDeltaCvt(0),
+            0x74 => try self.executeDeltaCvt(16),
+            0x75 => try self.executeDeltaCvt(32),
             else => unreachable,
         }
     }
@@ -485,6 +500,50 @@ pub const Context = struct {
             .min => @min(pair.lhs, pair.rhs),
         };
         try self.push(result);
+    }
+
+    fn executeDeltaPoint(self: *Context, base_offset: i32) Error!void {
+        const freedom = try self.freedomDirection();
+        const zone_ptr = try self.zone(self.graphics.zp0);
+        const count = try self.popU32();
+
+        var i: u32 = 0;
+        while (i < count) : (i += 1) {
+            const arg = try self.pop();
+            const point = try self.popU32();
+            if (self.deltaDistance(arg, base_offset)) |distance| {
+                try zone_ptr.shift(freedom, point, distance);
+            }
+        }
+    }
+
+    fn executeDeltaCvt(self: *Context, base_offset: i32) Error!void {
+        const count = try self.popU32();
+
+        var i: u32 = 0;
+        while (i < count) : (i += 1) {
+            const arg = try self.pop();
+            const cvt_index = try checkedIndex(try self.pop(), self.cvt.len, Error.InvalidCvtIndex);
+            if (self.deltaDistance(arg, base_offset)) |distance| {
+                self.cvt[cvt_index] = addWrap(self.cvt[cvt_index], distance);
+            }
+        }
+    }
+
+    fn deltaDistance(self: *const Context, arg: i32, base_offset: i32) ?i32 {
+        if (arg < 0) return null;
+        const encoded: u8 = @truncate(@as(u32, @intCast(arg)));
+        const ppem = self.projectionPpem26Dot6() / 64;
+        const target_ppem = self.graphics.delta_base + base_offset + @as(i32, encoded >> 4);
+        if (@as(i32, @intCast(ppem)) != target_ppem) return null;
+
+        const low = encoded & 0x0F;
+        const steps = if (low > 7)
+            @as(i32, low) - 8
+        else
+            @as(i32, low) - 7;
+        if (steps == 0) return null;
+        return @truncate(@as(i64, steps) * deltaQuantum(self.graphics.delta_shift));
     }
 
     fn oddEven(self: *Context, parity: Parity) Error!void {
@@ -943,6 +1002,12 @@ fn signsDiffer(lhs: i32, rhs: i32) bool {
     return (lhs < 0 and rhs > 0) or (lhs > 0 and rhs < 0);
 }
 
+fn deltaQuantum(delta_shift: i32) i32 {
+    if (delta_shift <= 0) return 64;
+    if (delta_shift >= 6) return 1;
+    return @as(i32, 64) >> @intCast(delta_shift);
+}
+
 fn addWrap(lhs: i32, rhs: i32) i32 {
     return @truncate(@as(i64, lhs) + @as(i64, rhs));
 }
@@ -1389,6 +1454,41 @@ test "tt executor interpolates points by reference points" {
     try std.testing.expectEqual(@as(i32, 100), glyph_points[1].x);
     try std.testing.expect(glyph_points[1].touched_x);
     try std.testing.expectEqual(@as(u32, 1), ctx.graphics.loop_count);
+}
+
+test "tt executor applies delta point and cvt exceptions" {
+    var stack: [32]i32 = undefined;
+    var storage: [1]i32 = .{0};
+    var cvt: [2]i32 = .{ 100, 200 };
+    var ctx = Context.init(.{ .stack = &stack, .storage = &storage, .cvt = &cvt }, .{});
+    ctx.setEnvironment(.{
+        .ppem_x_26_6 = 12 * 64,
+        .ppem_y_26_6 = 12 * 64,
+        .units_per_em = 1000,
+    });
+
+    var twilight_points: [1]Point = undefined;
+    var glyph_points: [2]Point = .{
+        .{ .x = 0, .y = 0, .ox = 0, .oy = 0, .on_curve = true },
+        .{ .x = 100, .y = 0, .ox = 100, .oy = 0, .on_curve = true },
+    };
+    var zones: PointZones = .{
+        .twilight = PointZone.initTwilight(&twilight_points),
+        .glyph = .{ .points = &glyph_points },
+    };
+    ctx.setZones(&zones);
+
+    try ctx.execute(&.{
+        0xB2, 0, 0x39, 1, 0x5D, // DELTAP1: ppem 12, +1/8px
+        0xB2, 0, 0x36, 1, 0x73, // DELTAC1: ppem 12, -1/8px
+        0xB0, 10, 0x5E, // SDB 10
+        0xB0, 4, 0x5F, // SDS 4
+        0xB2, 1, 0x29, 1, 0x5D, // DELTAP1: ppem 12, +1/16px
+    });
+
+    try std.testing.expectEqual(@as(i32, 8), glyph_points[0].x);
+    try std.testing.expectEqual(@as(i32, 104), glyph_points[1].x);
+    try std.testing.expectEqual(@as(i32, 92), cvt[0]);
 }
 
 test "tt executor records and calls function definitions" {
