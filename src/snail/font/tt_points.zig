@@ -93,6 +93,26 @@ pub const Zone = struct {
         touchPoint(p, freedom.axis);
     }
 
+    pub fn shiftContour(
+        self: *Zone,
+        freedom: Direction,
+        contour_index: u32,
+        distance: i32,
+        skip_point: ?u32,
+    ) Error!void {
+        const contour_i: usize = contour_index;
+        if (contour_i >= self.contours.len) return Error.InvalidPoint;
+        const contour = self.contours[contour_i];
+        if (contour.end > self.points.len or contour.start > contour.end) return Error.InvalidPoint;
+
+        var i: u32 = contour.start;
+        while (i < contour.end) : (i += 1) {
+            if (skip_point == null or skip_point.? != i) {
+                try self.shift(freedom, i, distance);
+            }
+        }
+    }
+
     pub fn touch(self: *Zone, freedom: Direction, point: u32) Error!void {
         touchPoint(try self.getMutable(point), freedom.axis);
     }
@@ -350,4 +370,26 @@ test "point zone interpolates untouched contour points" {
 
     try std.testing.expectEqual(@as(i32, 100), zone.points[1].x);
     try std.testing.expect(!zone.points[1].touched_x);
+}
+
+test "point zone shifts a contour range" {
+    var buffer: [4]Point = .{
+        .{ .x = 0, .y = 0, .ox = 0, .oy = 0, .on_curve = true },
+        .{ .x = 10, .y = 0, .ox = 10, .oy = 0, .on_curve = true },
+        .{ .x = 20, .y = 0, .ox = 20, .oy = 0, .on_curve = true },
+        .{ .x = 30, .y = 0, .ox = 30, .oy = 0, .on_curve = true },
+    };
+    const contours = [_]tt_outline.ContourRange{
+        .{ .start = 0, .end = 2 },
+        .{ .start = 2, .end = 4 },
+    };
+    var zone: Zone = .{ .points = &buffer, .contours = &contours };
+    const x_pos: Direction = .{ .axis = .x, .sign = 1 };
+
+    try zone.shiftContour(x_pos, 1, 5, 3);
+
+    try std.testing.expectEqual(@as(i32, 25), zone.points[2].x);
+    try std.testing.expectEqual(@as(i32, 30), zone.points[3].x);
+    try std.testing.expect(zone.points[2].touched_x);
+    try std.testing.expect(!zone.points[3].touched_x);
 }

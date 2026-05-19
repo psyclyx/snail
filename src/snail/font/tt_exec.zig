@@ -166,7 +166,7 @@ pub const Context = struct {
         switch (op) {
             0x00...0x05, 0x0A...0x0E, 0x10...0x1A, 0x1D...0x1F => try self.executeGraphicsOp(op),
             0x20...0x26 => try self.executeStackOp(op),
-            0x27, 0x29, 0x2E...0x33, 0x38...0x3C, 0x3E...0x3F, 0x46...0x4A, 0xC0...0xFF => try self.executePointOp(op),
+            0x27, 0x29, 0x2E...0x35, 0x38...0x3C, 0x3E...0x3F, 0x46...0x4A, 0xC0...0xFF => try self.executePointOp(op),
             0x2A...0x2C => try self.executeFunctionOp(code, pc, op),
             0x2D => return Error.InvalidOpcode,
             0x40 => try self.pushBytes(code, pc, try readU8(code, pc)),
@@ -211,6 +211,7 @@ pub const Context = struct {
             0x2E, 0x2F => try self.moveDirectAbsolutePoint(op == 0x2F),
             0x30, 0x31 => try self.interpolateUntouchedPoints(op),
             0x32, 0x33 => try self.shiftPointsByReference(op),
+            0x34, 0x35 => try self.shiftContourByReference(op),
             0x38 => try self.shiftPointsByPixels(),
             0x39 => try self.interpolatePointsByReference(),
             0x3A, 0x3B => try self.moveStackIndirectRelativePoint(op == 0x3B),
@@ -750,16 +751,34 @@ pub const Context = struct {
 
     fn shiftPointsByReference(self: *Context, op: u8) Error!void {
         const projection = try self.projectionDirection(false);
+        const dual_projection = try self.projectionDirection(true);
         const freedom = try self.freedomDirection();
         const ref_pointer = if (op == 0x32) self.graphics.zp1 else self.graphics.zp0;
         const ref_point = if (op == 0x32) self.graphics.rp2 else self.graphics.rp1;
         const ref_zone = try self.zoneConst(ref_pointer);
         const distance = subWrap(
             try ref_zone.coordinate(projection, ref_point, false),
-            try ref_zone.coordinate(projection, ref_point, true),
+            try ref_zone.coordinate(dual_projection, ref_point, true),
         );
         const point_zone = try self.zone(self.graphics.zp2);
         try self.shiftLoopPoints(point_zone, freedom, distance);
+    }
+
+    fn shiftContourByReference(self: *Context, op: u8) Error!void {
+        const contour = try self.popU32();
+        const projection = try self.projectionDirection(false);
+        const dual_projection = try self.projectionDirection(true);
+        const freedom = try self.freedomDirection();
+        const ref_pointer = if (op == 0x34) self.graphics.zp1 else self.graphics.zp0;
+        const ref_point = if (op == 0x34) self.graphics.rp2 else self.graphics.rp1;
+        const ref_zone = try self.zoneConst(ref_pointer);
+        const distance = subWrap(
+            try ref_zone.coordinate(projection, ref_point, false),
+            try ref_zone.coordinate(dual_projection, ref_point, true),
+        );
+        const skip_point: ?u32 = if (ref_pointer == self.graphics.zp2) ref_point else null;
+        const point_zone = try self.zone(self.graphics.zp2);
+        try point_zone.shiftContour(freedom, contour, distance, skip_point);
     }
 
     fn shiftPointsByPixels(self: *Context) Error!void {
@@ -1340,6 +1359,38 @@ test "tt executor shifts looped points and requires attached zones" {
     try std.testing.expectEqual(@as(i32, 15), glyph_points[1].x);
     try std.testing.expectEqual(@as(i32, 25), glyph_points[2].x);
     try std.testing.expectEqual(@as(u32, 1), ctx.graphics.loop_count);
+}
+
+test "tt executor shifts contours by reference movement" {
+    var stack: [32]i32 = undefined;
+    var storage: [1]i32 = .{0};
+    var cvt: [1]i32 = .{0};
+    var ctx = Context.init(.{ .stack = &stack, .storage = &storage, .cvt = &cvt }, .{});
+
+    var twilight_points: [1]Point = undefined;
+    var glyph_points: [4]Point = .{
+        .{ .x = 10, .y = 0, .ox = 0, .oy = 0, .on_curve = true },
+        .{ .x = 20, .y = 0, .ox = 20, .oy = 0, .on_curve = true },
+        .{ .x = 30, .y = 0, .ox = 30, .oy = 0, .on_curve = true },
+        .{ .x = 40, .y = 0, .ox = 40, .oy = 0, .on_curve = true },
+    };
+    const contours = [_]@import("tt_outline.zig").ContourRange{
+        .{ .start = 0, .end = 2 },
+        .{ .start = 2, .end = 4 },
+    };
+    var zones: PointZones = .{
+        .twilight = PointZone.initTwilight(&twilight_points),
+        .glyph = .{ .points = &glyph_points, .contours = &contours },
+    };
+    ctx.setZones(&zones);
+
+    try ctx.execute(&.{
+        0xB0, 0, 0x11, // SRP1 0
+        0xB0, 1, 0x35, // SHC[1] contour 1 by rp1 delta
+    });
+
+    try std.testing.expectEqual(@as(i32, 40), glyph_points[2].x);
+    try std.testing.expectEqual(@as(i32, 50), glyph_points[3].x);
 }
 
 test "tt executor interpolates untouched glyph points" {
