@@ -68,6 +68,7 @@ pub const FaceSpec = text.FaceSpec;
 pub const FontWeight = text.FontWeight;
 pub const FontStyle = text.FontStyle;
 pub const SyntheticStyle = text.SyntheticStyle;
+pub const MissingGlyphReplacement = text.MissingGlyphReplacement;
 pub const Font = font.Font;
 pub const tt = font.tt;
 pub const TextBatch = text.TextBatch;

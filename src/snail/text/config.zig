@@ -73,6 +73,12 @@ pub const ItemizedRun = struct {
     text_end: u32,
 };
 
+pub const MissingGlyphReplacement = struct {
+    face_index: FaceIndex,
+    glyph_id: u16,
+    codepoint: u21,
+};
+
 pub fn isRenderableTextCodepoint(codepoint: u32) bool {
     if (codepoint > std.math.maxInt(u21)) return false;
     if (!std.unicode.utf8ValidCodepoint(@intCast(codepoint))) return false;
@@ -92,6 +98,7 @@ pub const FontConfig = struct {
     style_chains: std.AutoHashMapUnmanaged(u8, std.ArrayListUnmanaged(FaceIndex)),
     global_chain: []FaceIndex,
     primary_face: ?FaceIndex,
+    missing_glyph_replacement: ?MissingGlyphReplacement,
 
     pub fn retain(self: *FontConfig) *FontConfig {
         _ = self.ref_count.fetchAdd(1, .monotonic);
@@ -242,6 +249,7 @@ pub fn buildFontConfig(allocator: Allocator, specs: []const FaceSpec) !*FontConf
         .style_chains = chains.style_chains,
         .global_chain = chains.global_chain,
         .primary_face = chains.primary_face,
+        .missing_glyph_replacement = findMissingGlyphReplacement(faces, &chains),
     };
 
     return config;
@@ -364,6 +372,43 @@ fn appendStyleFace(
     try gop.value_ptr.append(allocator, face_index);
 }
 
+const missing_glyph_replacement_codepoints = [_]u21{ 0xFFFD, 0x25A1 };
+
+fn findMissingGlyphReplacement(faces: []const FaceConfig, chains: *const FontChains) ?MissingGlyphReplacement {
+    for (missing_glyph_replacement_codepoints) |codepoint| {
+        if (findReplacementInPreferredFaces(faces, chains, codepoint)) |replacement| return replacement;
+    }
+    return null;
+}
+
+fn findReplacementInPreferredFaces(
+    faces: []const FaceConfig,
+    chains: *const FontChains,
+    codepoint: u21,
+) ?MissingGlyphReplacement {
+    if (chains.primary_face) |fi| {
+        if (replacementInFace(faces, fi, codepoint)) |replacement| return replacement;
+    }
+    for (chains.global_chain) |fi| {
+        if (replacementInFace(faces, fi, codepoint)) |replacement| return replacement;
+    }
+    for (faces, 0..) |_, i| {
+        const fi: FaceIndex = @intCast(i);
+        if (replacementInFace(faces, fi, codepoint)) |replacement| return replacement;
+    }
+    return null;
+}
+
+fn replacementInFace(faces: []const FaceConfig, face_index: FaceIndex, codepoint: u21) ?MissingGlyphReplacement {
+    const gid = faces[face_index].font.glyphIndex(codepoint) catch return null;
+    if (gid == 0) return null;
+    return .{
+        .face_index = face_index,
+        .glyph_id = gid,
+        .codepoint = codepoint,
+    };
+}
+
 fn deinitInitializedFaces(faces: []FaceConfig) void {
     for (faces) |*face| face.deinit();
 }
@@ -440,12 +485,11 @@ pub fn itemizeText(allocator: Allocator, config: *const FontConfig, style: FontS
         if (i + cp_len > text.len) return error.InvalidUtf8;
         const cp: u21 = std.unicode.utf8Decode(text[i..][0..cp_len]) catch return error.InvalidUtf8;
 
-        const face_idx = resolveInner(config, style, cp, 0) orelse
-            if (config.primary_face) |pf| pf else {
-                i += cp_len;
-                byte_offset += @intCast(cp_len);
-                continue;
-            };
+        const face_idx = resolveInner(config, style, cp, 0) orelse unresolvedCodepointFace(config) orelse {
+            i += cp_len;
+            byte_offset += @intCast(cp_len);
+            continue;
+        };
 
         if (current_face == null) {
             current_face = face_idx;
@@ -473,6 +517,11 @@ pub fn itemizeText(allocator: Allocator, config: *const FontConfig, style: FontS
     }
 
     return try runs.toOwnedSlice(allocator);
+}
+
+fn unresolvedCodepointFace(config: *const FontConfig) ?FaceIndex {
+    if (config.missing_glyph_replacement) |replacement| return replacement.face_index;
+    return config.primary_face;
 }
 
 pub fn glyphIndexForCellMetrics(fc: *const FaceConfig) !u16 {

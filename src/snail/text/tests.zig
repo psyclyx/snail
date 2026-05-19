@@ -117,6 +117,42 @@ test "TextAtlas.ensureText is stable for runs containing empty glyphs" {
     try testing.expectEqual(pages_after_first, fonts.pageCount());
 }
 
+test "TextAtlas uses replacement glyph for unresolved codepoints" {
+    const assets_data = @import("assets");
+    const missing_text = "\xF4\x8F\xBF\xBF";
+    var fonts = try TextAtlas.init(testing.allocator, &.{
+        .{ .data = assets_data.noto_sans_regular },
+    });
+    defer fonts.deinit();
+
+    try testing.expectEqual(@as(?u16, null), try fonts.glyphIndex(0, 0x10FFFF));
+    const replacement = fonts.missingGlyphReplacement().?;
+    try testing.expectEqual(@as(u21, 0xFFFD), replacement.codepoint);
+
+    var shaped = try fonts.shapeText(testing.allocator, .{}, missing_text);
+    defer shaped.deinit();
+    try testing.expectEqual(@as(usize, 1), shaped.glyphs.len);
+    try testing.expectEqual(replacement.face_index, shaped.glyphs[0].face_index);
+    try testing.expectEqual(replacement.glyph_id, shaped.glyphs[0].glyph_id);
+    try testing.expect(shaped.advance_x > 0);
+
+    if (try fonts.ensureShaped(&shaped)) |next| {
+        fonts.deinit();
+        fonts = next;
+    }
+    try testing.expect(fonts.hasPreparedGlyph(replacement.face_index, replacement.glyph_id));
+
+    var buf: [8 * snail.TEXT_WORDS_PER_GLYPH]u32 = undefined;
+    var batch = snail.TextBatch.init(&buf);
+    const result = try fonts.appendTextBatch(&batch, .{
+        .shaped = &shaped,
+        .placement = .{ .baseline = .{ .x = 0, .y = 16 }, .em = 16 },
+        .color = .{ 1, 1, 1, 1 },
+    }, true);
+    try testing.expect(!result.missing);
+    try testing.expect(batch.glyphCount() > 0);
+}
+
 test "TextAtlas.ensureText snapshot immutability" {
     const assets_data = @import("assets");
     var fonts1 = try TextAtlas.init(testing.allocator, &.{

@@ -13,6 +13,7 @@ pub const ItemizedRun = config_mod.ItemizedRun;
 pub const FontWeight = config_mod.FontWeight;
 pub const FontStyle = config_mod.FontStyle;
 pub const SyntheticStyle = config_mod.SyntheticStyle;
+pub const MissingGlyphReplacement = config_mod.MissingGlyphReplacement;
 pub const isRenderableTextCodepoint = config_mod.isRenderableTextCodepoint;
 
 pub const TextAtlas = atlas_mod.TextAtlas;

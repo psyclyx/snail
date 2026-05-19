@@ -11,6 +11,7 @@ const Allocator = std.mem.Allocator;
 const FaceConfig = config_mod.FaceConfig;
 const FaceIndex = config_mod.FaceIndex;
 const FaceView = view_mod.FaceView;
+const MissingGlyphReplacement = config_mod.MissingGlyphReplacement;
 const Range = range_mod.Range;
 const ShapedText = types_mod.ShapedText;
 const Transform2D = vec.Transform2D;
@@ -62,6 +63,7 @@ fn shapeRunWithHarfbuzz(
     text: []const u8,
     source_base: u32,
     inv_upem: f32,
+    missing_replacement: ?u16,
 ) !?ShapeRunResult {
     if (comptime build_options.enable_harfbuzz) {
         if (fc.hb_shaper) |hbs| {
@@ -78,17 +80,20 @@ fn shapeRunWithHarfbuzz(
                 const info = shaped.infos[i];
                 const pos = shaped.positions[i];
                 const cluster = @min(@as(u32, @intCast(info.cluster)), @as(u32, @intCast(text.len)));
+                const raw_gid: u16 = @intCast(info.codepoint);
+                const glyph_id = replacementGlyphId(raw_gid, missing_replacement);
+                const advance_x = harfbuzzAdvanceX(fc, raw_gid, glyph_id, pos.x_advance);
                 out[i] = .{
                     .face_index = face_index,
-                    .glyph_id = @intCast(info.codepoint),
+                    .glyph_id = glyph_id,
                     .x_offset = (cursor_x + @as(f32, @floatFromInt(pos.x_offset))) * inv_upem,
                     .y_offset = -(cursor_y + @as(f32, @floatFromInt(pos.y_offset))) * inv_upem,
-                    .x_advance = @as(f32, @floatFromInt(pos.x_advance)) * inv_upem,
+                    .x_advance = advance_x * inv_upem,
                     .y_advance = -@as(f32, @floatFromInt(pos.y_advance)) * inv_upem,
                     .source_start = source_base + cluster,
                     .source_end = source_base + @as(u32, @intCast(text.len)),
                 };
-                cursor_x += @as(f32, @floatFromInt(pos.x_advance));
+                cursor_x += advance_x;
                 cursor_y += @as(f32, @floatFromInt(pos.y_advance));
             }
 
@@ -100,6 +105,22 @@ fn shapeRunWithHarfbuzz(
         }
     }
     return null;
+}
+
+fn replacementForFace(replacement: ?MissingGlyphReplacement, face_index: FaceIndex) ?u16 {
+    const value = replacement orelse return null;
+    if (value.face_index != face_index) return null;
+    return value.glyph_id;
+}
+
+fn replacementGlyphId(glyph_id: u16, missing_replacement: ?u16) u16 {
+    if (glyph_id != 0) return glyph_id;
+    return missing_replacement orelse 0;
+}
+
+fn harfbuzzAdvanceX(fc: *const FaceConfig, raw_gid: u16, glyph_id: u16, shaped_advance: i32) f32 {
+    if (raw_gid != 0 or glyph_id == 0) return @floatFromInt(shaped_advance);
+    return @floatFromInt(fc.font.advanceWidth(glyph_id) catch 500);
 }
 
 fn countUtf8Codepoints(text: []const u8) usize {
@@ -156,7 +177,14 @@ fn fallbackKerning(fc: *const FaceConfig, prev_gid: u16, gid: u16) i16 {
     return kern;
 }
 
-fn shapeFallbackGlyphs(allocator: Allocator, fc: *const FaceConfig, face_index: FaceIndex, run: FallbackGlyphRun, inv_upem: f32) !ShapeRunResult {
+fn shapeFallbackGlyphs(
+    allocator: Allocator,
+    fc: *const FaceConfig,
+    face_index: FaceIndex,
+    run: FallbackGlyphRun,
+    inv_upem: f32,
+    missing_replacement: ?u16,
+) !ShapeRunResult {
     const out = try allocator.alloc(ShapedText.Glyph, run.glyph_count);
     errdefer allocator.free(out);
 
@@ -164,10 +192,11 @@ fn shapeFallbackGlyphs(allocator: Allocator, fc: *const FaceConfig, face_index: 
     var prev_gid: u16 = 0;
     for (run.gids[0..run.glyph_count], 0..) |gid, i| {
         if (gid == 0) {
-            const advance = 500.0 * inv_upem;
+            const glyph_id = missing_replacement orelse 0;
+            const advance = fallbackAdvance(fc, glyph_id, inv_upem);
             out[i] = .{
                 .face_index = face_index,
-                .glyph_id = 0,
+                .glyph_id = glyph_id,
                 .x_offset = cursor_x,
                 .y_offset = 0,
                 .x_advance = advance,
@@ -200,6 +229,11 @@ fn shapeFallbackGlyphs(allocator: Allocator, fc: *const FaceConfig, face_index: 
     return .{ .glyphs = out, .advance_x = cursor_x, .advance_y = 0 };
 }
 
+fn fallbackAdvance(fc: *const FaceConfig, glyph_id: u16, inv_upem: f32) f32 {
+    if (glyph_id == 0) return 500.0 * inv_upem;
+    return @as(f32, @floatFromInt(fc.font.advanceWidth(glyph_id) catch 500)) * inv_upem;
+}
+
 fn shapeRunWithFallback(
     allocator: Allocator,
     fc: *const FaceConfig,
@@ -207,6 +241,7 @@ fn shapeRunWithFallback(
     text: []const u8,
     source_base: u32,
     inv_upem: f32,
+    missing_replacement: ?u16,
 ) !ShapeRunResult {
     const cp_count = countUtf8Codepoints(text);
     if (cp_count == 0) return emptyShapeRun();
@@ -214,7 +249,7 @@ fn shapeRunWithFallback(
     var run = try buildFallbackGlyphRun(allocator, fc, text, source_base, cp_count);
     defer run.deinit(allocator);
     applyFallbackLigatures(fc, &run);
-    return shapeFallbackGlyphs(allocator, fc, face_index, run, inv_upem);
+    return shapeFallbackGlyphs(allocator, fc, face_index, run, inv_upem, missing_replacement);
 }
 
 pub fn shapeRunForFace(
@@ -223,11 +258,13 @@ pub fn shapeRunForFace(
     face_index: FaceIndex,
     text: []const u8,
     source_base: u32,
+    replacement: ?MissingGlyphReplacement,
 ) !ShapeRunResult {
     if (text.len == 0) return emptyShapeRun();
     const inv_upem = 1.0 / @as(f32, @floatFromInt(fc.font.units_per_em));
-    if (try shapeRunWithHarfbuzz(allocator, fc, face_index, text, source_base, inv_upem)) |result| return result;
-    return shapeRunWithFallback(allocator, fc, face_index, text, source_base, inv_upem);
+    const missing_replacement = replacementForFace(replacement, face_index);
+    if (try shapeRunWithHarfbuzz(allocator, fc, face_index, text, source_base, inv_upem, missing_replacement)) |result| return result;
+    return shapeRunWithFallback(allocator, fc, face_index, text, source_base, inv_upem, missing_replacement);
 }
 
 pub fn shapedGlyphAvailable(face_view: *const FaceView, glyph_id: u16) bool {

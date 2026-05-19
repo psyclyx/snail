@@ -29,6 +29,7 @@ const FontStyle = config_mod.FontStyle;
 const FontConfig = config_mod.FontConfig;
 const ItemizedRun = config_mod.ItemizedRun;
 const LineMetrics = ttf.LineMetrics;
+const MissingGlyphReplacement = config_mod.MissingGlyphReplacement;
 const Rect = target_mod.Rect;
 const ResourceFootprint = footprint_types.ResourceFootprint;
 const ScriptTransform = types_mod.ScriptTransform;
@@ -114,6 +115,10 @@ pub const TextAtlas = struct {
 
     pub fn resolve(self: *const TextAtlas, style: FontStyle, codepoint: u21) ?FaceIndex {
         return resolveInner(self.config, style, codepoint, 0);
+    }
+
+    pub fn missingGlyphReplacement(self: *const TextAtlas) ?MissingGlyphReplacement {
+        return self.config.missing_glyph_replacement;
     }
 
     // ── Metrics ──
@@ -317,7 +322,14 @@ pub const TextAtlas = struct {
         for (runs) |run| {
             const fc = &self.config.faces[run.face_index];
             const segment = text[run.text_start..run.text_end];
-            const shaped_run = try shapeRunForFace(allocator, fc, run.face_index, segment, run.text_start);
+            const shaped_run = try shapeRunForFace(
+                allocator,
+                fc,
+                run.face_index,
+                segment,
+                run.text_start,
+                self.config.missing_glyph_replacement,
+            );
             defer if (shaped_run.glyphs.len > 0) allocator.free(shaped_run.glyphs);
 
             for (shaped_run.glyphs) |glyph| {
