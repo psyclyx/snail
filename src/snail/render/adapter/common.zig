@@ -108,7 +108,7 @@ fn resourceCacheVTable(comptime Config: type) interface.Renderer.ResourceCacheVT
             if (cache.generation != prepared_resources.resident.generation) return error.StalePreparedResources;
         }
 
-        fn atlasCacheStatusFn(prepared_resources: *const PreparedResources, index: usize, atlas: upload_plan.AtlasRef) upload_plan.AtlasCacheStatus {
+        fn atlasCacheStatusFn(prepared_resources: *const PreparedResources, index: usize, atlas: upload_plan.PagedAtlasSource) upload_plan.AtlasCacheStatus {
             if (comptime !Config.uses_resource_cache) return .{};
             const cache = Config.prepared(prepared_resources) orelse return .{};
             if (index >= cache.atlas_slot_count) return .{ .would_rebuild = true };
@@ -141,7 +141,7 @@ fn resourceCacheVTable(comptime Config: type) interface.Renderer.ResourceCacheVT
     };
 }
 
-fn atlasCacheStatus(comptime Prepared: type, cache: *const Prepared, index: usize, atlas: upload_plan.AtlasRef) upload_plan.AtlasCacheStatus {
+fn atlasCacheStatus(comptime Prepared: type, cache: *const Prepared, index: usize, atlas: upload_plan.PagedAtlasSource) upload_plan.AtlasCacheStatus {
     const can_overflow = !atlas.has_layer_info_or_images and
         !activeLayerInfo(Prepared, cache) and
         upload_plan.atlasSlotCanOverflowIntoBank(cache.atlas_slots[index], atlas);

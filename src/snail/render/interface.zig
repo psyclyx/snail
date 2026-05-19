@@ -35,7 +35,7 @@ pub const Renderer = struct {
         stats: *const fn (*const anyopaque) ResourceCacheStats,
         reset: *const fn (*anyopaque) void,
         validateBackendGeneration: *const fn (*const PreparedResources) anyerror!void,
-        atlasCacheStatus: *const fn (*const PreparedResources, usize, upload_plan.AtlasRef) upload_plan.AtlasCacheStatus,
+        atlasCacheStatus: *const fn (*const PreparedResources, usize, upload_plan.PagedAtlasSource) upload_plan.AtlasCacheStatus,
         canUseAtlasOverflowBanks: *const fn (*const PreparedResources, usize) bool,
         imageArrayWouldRebuild: *const fn (*const PreparedResources, u32, u32, u32) bool,
     };
@@ -119,7 +119,7 @@ pub const Renderer = struct {
         return self.vtable.resource_cache.uses_resource_cache;
     }
 
-    pub fn atlasCacheStatus(self: *const Renderer, prepared: *const PreparedResources, atlas_index: usize, atlas: upload_plan.AtlasRef) upload_plan.AtlasCacheStatus {
+    pub fn atlasCacheStatus(self: *const Renderer, prepared: *const PreparedResources, atlas_index: usize, atlas: upload_plan.PagedAtlasSource) upload_plan.AtlasCacheStatus {
         return self.vtable.resource_cache.atlasCacheStatus(prepared, atlas_index, atlas);
     }
 
@@ -246,7 +246,7 @@ pub const ResourceUploader = struct {
         return self.resource_cache.uses_resource_cache;
     }
 
-    pub fn atlasCacheStatus(self: *const ResourceUploader, prepared: *const PreparedResources, atlas_index: usize, atlas: upload_plan.AtlasRef) upload_plan.AtlasCacheStatus {
+    pub fn atlasCacheStatus(self: *const ResourceUploader, prepared: *const PreparedResources, atlas_index: usize, atlas: upload_plan.PagedAtlasSource) upload_plan.AtlasCacheStatus {
         return self.resource_cache.atlasCacheStatus(prepared, atlas_index, atlas);
     }
 
@@ -301,7 +301,7 @@ fn disabledValidateBackendGeneration(_: *const PreparedResources) anyerror!void 
     return error.UnsupportedRenderer;
 }
 
-fn disabledAtlasCacheStatus(_: *const PreparedResources, _: usize, _: upload_plan.AtlasRef) upload_plan.AtlasCacheStatus {
+fn disabledAtlasCacheStatus(_: *const PreparedResources, _: usize, _: upload_plan.PagedAtlasSource) upload_plan.AtlasCacheStatus {
     return .{};
 }
 

@@ -3,6 +3,7 @@ const texture_layers = @import("texture_layers.zig");
 const atlas_page_mod = @import("atlas/page.zig");
 
 pub const PageFingerprint = atlas_page_mod.PageFingerprint;
+const PagedAtlasPage = atlas_page_mod.AtlasPage;
 
 pub const ImageFingerprint = struct {
     layout: u64 = 0,
@@ -22,6 +23,61 @@ pub fn BufferElement(comptime Buffer: type) type {
         .array => |array| array.child,
         else => @compileError("expected a slice, pointer, or array buffer"),
     };
+}
+
+/// Erased view over atlas snapshots that expose curve/band pages.
+///
+/// Upload planning needs page fingerprints and layer-info/image presence, but
+/// it should not care whether the source is a text atlas wrapper or a path
+/// picture atlas. Keep that interface explicit instead of relying on scattered
+/// `anytype` calls at planning boundaries.
+pub const PagedAtlasSource = struct {
+    ptr: *const anyopaque,
+    page_count: *const fn (*const anyopaque) usize,
+    page_at: *const fn (*const anyopaque, usize) *const PagedAtlasPage,
+    has_layer_info_or_images: bool,
+
+    pub fn init(atlas: anytype) PagedAtlasSource {
+        const Atlas = switch (@typeInfo(@TypeOf(atlas))) {
+            .pointer => |ptr| ptr.child,
+            else => @TypeOf(atlas),
+        };
+        const S = struct {
+            fn pageCount(ptr: *const anyopaque) usize {
+                const typed: *const Atlas = @ptrCast(@alignCast(ptr));
+                return typed.pageCount();
+            }
+
+            fn pageAt(ptr: *const anyopaque, page_index: usize) *const PagedAtlasPage {
+                const typed: *const Atlas = @ptrCast(@alignCast(ptr));
+                return typed.page(@intCast(page_index));
+            }
+        };
+        return .{
+            .ptr = @ptrCast(atlas),
+            .page_count = &S.pageCount,
+            .page_at = &S.pageAt,
+            .has_layer_info_or_images = sourceHasLayerInfoOrImages(atlas),
+        };
+    }
+
+    pub fn pageCount(self: PagedAtlasSource) usize {
+        return self.page_count(self.ptr);
+    }
+
+    pub fn page(self: PagedAtlasSource, page_index: usize) *const PagedAtlasPage {
+        return self.page_at(self.ptr, page_index);
+    }
+};
+
+fn sourceHasLayerInfoOrImages(atlas: anytype) bool {
+    const Atlas = switch (@typeInfo(@TypeOf(atlas))) {
+        .pointer => |ptr| ptr.child,
+        else => @TypeOf(atlas),
+    };
+    const has_layer_info = if (@hasField(Atlas, "layer_info_height")) atlas.layer_info_height != 0 else false;
+    const has_paint_images = if (@hasField(Atlas, "paint_image_records")) atlas.paint_image_records != null else false;
+    return has_layer_info or has_paint_images;
 }
 
 pub fn AtlasSlot(comptime Atlas: type, comptime AtlasPage: type) type {

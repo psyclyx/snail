@@ -287,7 +287,7 @@ test "draw dispatch uses only prepared stamps and caller records" {
         }
         fn resetResourceCache(_: *anyopaque) void {}
         fn validateBackendGeneration(_: *const PreparedResources) anyerror!void {}
-        fn atlasCacheStatus(_: *const PreparedResources, _: usize, _: upload_plan.AtlasRef) upload_plan.AtlasCacheStatus {
+        fn atlasCacheStatus(_: *const PreparedResources, _: usize, _: upload_plan.PagedAtlasSource) upload_plan.AtlasCacheStatus {
             return .{};
         }
         fn canUseAtlasOverflowBanks(_: *const PreparedResources, _: usize) bool {
@@ -977,7 +977,7 @@ test "resource upload plan accounts for image array rebuilds" {
             return false;
         }
 
-        pub fn atlasCacheStatus(_: *@This(), _: *const PreparedResources, _: usize, _: upload_plan.AtlasRef) upload_plan.AtlasCacheStatus {
+        pub fn atlasCacheStatus(_: *@This(), _: *const PreparedResources, _: usize, _: upload_plan.PagedAtlasSource) upload_plan.AtlasCacheStatus {
             return .{};
         }
 

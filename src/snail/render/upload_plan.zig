@@ -1,6 +1,5 @@
 const std = @import("std");
 
-const atlas_page_mod = @import("../render/format/atlas/page.zig");
 const image_mod = @import("../image.zig");
 const prepared_mod = @import("../resources/prepared.zig");
 const resource_key_mod = @import("../resource_key.zig");
@@ -9,7 +8,6 @@ const stamp_mod = @import("../resources/stamp.zig");
 const upload_common = @import("../render/format/upload_common.zig");
 const upload_mod = @import("../upload.zig");
 
-const AtlasPage = atlas_page_mod.AtlasPage;
 const Image = image_mod.Image;
 const PreparedManifest = prepared_mod.PreparedManifest;
 const PreparedResources = prepared_mod.PreparedResources;
@@ -27,44 +25,8 @@ const resourceEntryKey = stamp_mod.resourceEntryKey;
 const resourceEntryStamp = stamp_mod.resourceEntryStamp;
 const resourceEntryUploadBytes = stamp_mod.resourceEntryUploadBytes;
 
-pub const AtlasRef = struct {
-    ptr: *const anyopaque,
-    page_count: *const fn (*const anyopaque) usize,
-    page_at: *const fn (*const anyopaque, usize) *const AtlasPage,
-    has_layer_info_or_images: bool,
-
-    pub fn init(atlas: anytype) AtlasRef {
-        const Atlas = switch (@typeInfo(@TypeOf(atlas))) {
-            .pointer => |ptr| ptr.child,
-            else => @TypeOf(atlas),
-        };
-        const S = struct {
-            fn pageCount(ptr: *const anyopaque) usize {
-                const typed: *const Atlas = @ptrCast(@alignCast(ptr));
-                return typed.pageCount();
-            }
-
-            fn pageAt(ptr: *const anyopaque, page_index: usize) *const AtlasPage {
-                const typed: *const Atlas = @ptrCast(@alignCast(ptr));
-                return typed.page(@intCast(page_index));
-            }
-        };
-        return .{
-            .ptr = @ptrCast(atlas),
-            .page_count = &S.pageCount,
-            .page_at = &S.pageAt,
-            .has_layer_info_or_images = atlasHasLayerInfoOrImages(atlas),
-        };
-    }
-
-    pub fn pageCount(self: AtlasRef) usize {
-        return self.page_count(self.ptr);
-    }
-
-    pub fn page(self: AtlasRef, page_index: usize) *const AtlasPage {
-        return self.page_at(self.ptr, page_index);
-    }
-};
+pub const PagedAtlasSource = upload_common.PagedAtlasSource;
+pub const AtlasRef = PagedAtlasSource;
 
 pub const AtlasCacheStatus = struct {
     can_overflow_into_bank: bool = false,
@@ -140,7 +102,7 @@ fn preparedImageForKey(prepared: *const PreparedResources, key: ResourceKey) ?*c
     return null;
 }
 
-fn atlasUploadDelta(current: ?*const PreparedResources, key: ResourceKey, atlas: AtlasRef) AtlasUploadDelta {
+fn atlasUploadDelta(current: ?*const PreparedResources, key: ResourceKey, atlas: PagedAtlasSource) AtlasUploadDelta {
     var out: AtlasUploadDelta = .{};
     const old = if (current) |prepared| preparedAtlasForKey(prepared, key) else null;
     for (0..atlas.pageCount()) |page_index| {
@@ -161,7 +123,7 @@ fn atlasUploadDelta(current: ?*const PreparedResources, key: ResourceKey, atlas:
     return out;
 }
 
-pub fn atlasSlotWouldRebuild(slot: anytype, allocated_curve_height: u32, allocated_band_height: u32, atlas: AtlasRef) bool {
+pub fn atlasSlotWouldRebuild(slot: anytype, allocated_curve_height: u32, allocated_band_height: u32, atlas: PagedAtlasSource) bool {
     if (atlas.pageCount() > std.math.maxInt(u16)) return true;
     const page_count: u32 = @intCast(atlas.pageCount());
     if (page_count < slot.uploaded_pages or page_count > slot.capacity_pages) return true;
@@ -178,17 +140,7 @@ pub fn atlasSlotWouldRebuild(slot: anytype, allocated_curve_height: u32, allocat
     return false;
 }
 
-fn atlasHasLayerInfoOrImages(atlas: anytype) bool {
-    const Atlas = switch (@typeInfo(@TypeOf(atlas))) {
-        .pointer => |ptr| ptr.child,
-        else => @TypeOf(atlas),
-    };
-    const has_layer_info = if (@hasField(Atlas, "layer_info_height")) atlas.layer_info_height != 0 else false;
-    const has_paint_images = if (@hasField(Atlas, "paint_image_records")) atlas.paint_image_records != null else false;
-    return has_layer_info or has_paint_images;
-}
-
-pub fn atlasSlotCanOverflowIntoBank(slot: anytype, atlas: AtlasRef) bool {
+pub fn atlasSlotCanOverflowIntoBank(slot: anytype, atlas: PagedAtlasSource) bool {
     if (atlas.pageCount() > std.math.maxInt(u16)) return false;
     const page_count: u32 = @intCast(atlas.pageCount());
     if (page_count < slot.uploaded_pages) return false;
@@ -200,12 +152,12 @@ pub fn atlasSlotCanOverflowIntoBank(slot: anytype, atlas: AtlasRef) bool {
     return true;
 }
 
-pub fn atlasSlotNeedsOverflowBank(slot: anytype, allocated_curve_height: u32, allocated_band_height: u32, atlas: AtlasRef) bool {
+pub fn atlasSlotNeedsOverflowBank(slot: anytype, allocated_curve_height: u32, allocated_band_height: u32, atlas: PagedAtlasSource) bool {
     return atlasSlotCanOverflowIntoBank(slot, atlas) and
         atlasSlotWouldRebuild(slot, allocated_curve_height, allocated_band_height, atlas);
 }
 
-fn currentAtlasCacheStatus(renderer: anytype, current: ?*const PreparedResources, key: ResourceKey, atlas: AtlasRef) ?AtlasCacheStatus {
+fn currentAtlasCacheStatus(renderer: anytype, current: ?*const PreparedResources, key: ResourceKey, atlas: PagedAtlasSource) ?AtlasCacheStatus {
     const prepared = current orelse return null;
     const lookup = preparedAtlasForKeyWithIndex(prepared, key) orelse return null;
     return renderer.atlasCacheStatus(prepared, lookup.index, atlas);
@@ -222,13 +174,13 @@ fn resourceManifestCanUseAtlasOverflowBanks(renderer: anytype, current: ?*const 
             const lookup = preparedAtlasForKeyWithIndex(prepared, text.key) orelse return false;
             defer atlas_index += 1;
             if (lookup.index != atlas_index) return false;
-            if (!renderer.atlasCacheStatus(prepared, lookup.index, AtlasRef.init(text.atlas)).can_overflow_into_bank) return false;
+            if (!renderer.atlasCacheStatus(prepared, lookup.index, PagedAtlasSource.init(text.atlas)).can_overflow_into_bank) return false;
         },
         .path_picture => |path| {
             const lookup = preparedAtlasForKeyWithIndex(prepared, path.key) orelse return false;
             defer atlas_index += 1;
             if (lookup.index != atlas_index) return false;
-            if (!renderer.atlasCacheStatus(prepared, lookup.index, AtlasRef.init(&path.picture.atlas)).can_overflow_into_bank) return false;
+            if (!renderer.atlasCacheStatus(prepared, lookup.index, PagedAtlasSource.init(&path.picture.atlas)).can_overflow_into_bank) return false;
         },
         .text_paint, .image => {},
     };
@@ -285,7 +237,7 @@ fn recordAtlasUploadPlan(
     plan: *ResourceUploadPlan,
     current: ?*const PreparedResources,
     key: ResourceKey,
-    atlas: AtlasRef,
+    atlas: PagedAtlasSource,
     atlas_index: usize,
     uses_resource_cache: bool,
     needs_atlas_overflow_bank: *bool,
@@ -338,11 +290,11 @@ fn recordManifestUploadPlan(renderer: anytype, plan: *ResourceUploadPlan, curren
         switch (entry) {
             .text_atlas => |text| {
                 defer next_atlas_index += 1;
-                recordAtlasUploadPlan(renderer, plan, current, key, AtlasRef.init(text.atlas), next_atlas_index, uses_resource_cache, &needs_atlas_overflow_bank);
+                recordAtlasUploadPlan(renderer, plan, current, key, PagedAtlasSource.init(text.atlas), next_atlas_index, uses_resource_cache, &needs_atlas_overflow_bank);
             },
             .path_picture => |path| {
                 defer next_atlas_index += 1;
-                recordAtlasUploadPlan(renderer, plan, current, key, AtlasRef.init(&path.picture.atlas), next_atlas_index, uses_resource_cache, &needs_atlas_overflow_bank);
+                recordAtlasUploadPlan(renderer, plan, current, key, PagedAtlasSource.init(&path.picture.atlas), next_atlas_index, uses_resource_cache, &needs_atlas_overflow_bank);
             },
             .text_paint => recordLayerInfoUploadPlan(plan, current, key, changed, bytes),
             .image => |image| recordImageUploadPlan(plan, current, key, stamp, image.image),
