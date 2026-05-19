@@ -166,7 +166,7 @@ pub const Context = struct {
         switch (op) {
             0x00...0x05, 0x0A...0x0E, 0x10...0x1A, 0x1D...0x1F => try self.executeGraphicsOp(op),
             0x20...0x26 => try self.executeStackOp(op),
-            0x27, 0x29, 0x2E...0x33, 0x38, 0x3A...0x3C, 0x3E...0x3F, 0x46...0x4A, 0xC0...0xFF => try self.executePointOp(op),
+            0x27, 0x29, 0x2E...0x33, 0x38...0x3C, 0x3E...0x3F, 0x46...0x4A, 0xC0...0xFF => try self.executePointOp(op),
             0x2A...0x2C => try self.executeFunctionOp(code, pc, op),
             0x2D => return Error.InvalidOpcode,
             0x40 => try self.pushBytes(code, pc, try readU8(code, pc)),
@@ -211,6 +211,7 @@ pub const Context = struct {
             0x30, 0x31 => try self.interpolateUntouchedPoints(op),
             0x32, 0x33 => try self.shiftPointsByReference(op),
             0x38 => try self.shiftPointsByPixels(),
+            0x39 => try self.interpolatePointsByReference(),
             0x3A, 0x3B => try self.moveStackIndirectRelativePoint(op == 0x3B),
             0x3C => try self.alignReferencePoints(),
             0x3E, 0x3F => try self.moveIndirectAbsolutePoint(op == 0x3F),
@@ -636,6 +637,31 @@ pub const Context = struct {
         self.graphics.loop_count = 1;
     }
 
+    fn interpolatePointsByReference(self: *Context) Error!void {
+        const projection = try self.projectionDirection(false);
+        const dual_projection = try self.projectionDirection(true);
+        const freedom = try self.freedomDirection();
+        const zone0 = try self.zoneConst(self.graphics.zp0);
+        const zone1 = try self.zoneConst(self.graphics.zp1);
+        const zone2 = try self.zone(self.graphics.zp2);
+
+        const org1 = try zone0.coordinate(dual_projection, self.graphics.rp1, true);
+        const org2 = try zone1.coordinate(dual_projection, self.graphics.rp2, true);
+        const cur1 = try zone0.coordinate(projection, self.graphics.rp1, false);
+        const cur2 = try zone1.coordinate(projection, self.graphics.rp2, false);
+
+        const count = self.graphics.loop_count;
+        if (count == 0) return Error.StackUnderflow;
+        var i: u32 = 0;
+        while (i < count) : (i += 1) {
+            const point = try self.popU32();
+            const org = try zone2.coordinate(dual_projection, point, true);
+            const target = interpolateReferenceCoord(org, org1, org2, cur1, cur2);
+            try zone2.moveTo(projection, freedom, point, target);
+        }
+        self.graphics.loop_count = 1;
+    }
+
     fn getCoordinate(self: *Context, original: bool) Error!void {
         const point = try self.popU32();
         const projection = try self.projectionDirection(original);
@@ -923,6 +949,25 @@ fn addWrap(lhs: i32, rhs: i32) i32 {
 
 fn subWrap(lhs: i32, rhs: i32) i32 {
     return @truncate(@as(i64, lhs) - @as(i64, rhs));
+}
+
+fn interpolateReferenceCoord(org: i32, org1: i32, org2: i32, cur1: i32, cur2: i32) i32 {
+    if (org1 == org2) return addWrap(org, subWrap(cur1, org1));
+
+    if (org1 < org2) {
+        if (org <= org1) return addWrap(org, subWrap(cur1, org1));
+        if (org >= org2) return addWrap(org, subWrap(cur2, org2));
+        return lerpReferenceCoord(org, org1, org2, cur1, cur2);
+    }
+
+    if (org <= org2) return addWrap(org, subWrap(cur2, org2));
+    if (org >= org1) return addWrap(org, subWrap(cur1, org1));
+    return lerpReferenceCoord(org, org2, org1, cur2, cur1);
+}
+
+fn lerpReferenceCoord(org: i32, org1: i32, org2: i32, cur1: i32, cur2: i32) i32 {
+    const numerator = (@as(i64, org) - @as(i64, org1)) * (@as(i64, cur2) - @as(i64, cur1));
+    return @truncate(@as(i64, cur1) + @divTrunc(numerator, @as(i64, org2) - @as(i64, org1)));
 }
 
 fn div26Dot6(lhs: i32, rhs: i32) Error!i32 {
@@ -1315,6 +1360,35 @@ test "tt executor handles direct and indirect relative moves" {
     try std.testing.expectEqual(@as(u32, 1), ctx.graphics.rp1);
     try std.testing.expectEqual(@as(u32, 2), ctx.graphics.rp2);
     try std.testing.expectEqual(@as(u32, 1), ctx.graphics.rp0);
+}
+
+test "tt executor interpolates points by reference points" {
+    var stack: [32]i32 = undefined;
+    var storage: [1]i32 = .{0};
+    var cvt: [1]i32 = .{0};
+    var ctx = Context.init(.{ .stack = &stack, .storage = &storage, .cvt = &cvt }, .{});
+
+    var twilight_points: [1]Point = undefined;
+    var glyph_points: [3]Point = .{
+        .{ .x = 0, .y = 0, .ox = 0, .oy = 0, .on_curve = true },
+        .{ .x = 50, .y = 0, .ox = 50, .oy = 0, .on_curve = true },
+        .{ .x = 200, .y = 0, .ox = 100, .oy = 0, .on_curve = true },
+    };
+    var zones: PointZones = .{
+        .twilight = PointZone.initTwilight(&twilight_points),
+        .glyph = .{ .points = &glyph_points },
+    };
+    ctx.setZones(&zones);
+
+    try ctx.execute(&.{
+        0xB0, 0, 0x11, // SRP1 0
+        0xB0, 2, 0x12, // SRP2 2
+        0xB0, 1, 0x39, // IP point 1
+    });
+
+    try std.testing.expectEqual(@as(i32, 100), glyph_points[1].x);
+    try std.testing.expect(glyph_points[1].touched_x);
+    try std.testing.expectEqual(@as(u32, 1), ctx.graphics.loop_count);
 }
 
 test "tt executor records and calls function definitions" {
