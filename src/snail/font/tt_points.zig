@@ -21,8 +21,14 @@ pub const Point = struct {
 
 pub const Zone = struct {
     points: []Point,
+    contours: []const tt_outline.ContourRange = &.{},
 
-    pub fn initGlyph(buffer: []Point, outline: []const tt_outline.Point, environment: tt_graphics.Environment) Error!Zone {
+    pub fn initGlyph(
+        buffer: []Point,
+        outline: []const tt_outline.Point,
+        contours: []const tt_outline.ContourRange,
+        environment: tt_graphics.Environment,
+    ) Error!Zone {
         if (buffer.len < outline.len) return Error.BufferTooSmall;
         for (outline, 0..) |source, i| {
             const x = environment.scaleFUnitsX(source.x);
@@ -35,7 +41,7 @@ pub const Zone = struct {
                 .on_curve = source.on_curve,
             };
         }
-        return .{ .points = buffer[0..outline.len] };
+        return .{ .points = buffer[0..outline.len], .contours = contours };
     }
 
     pub fn initTwilight(buffer: []Point) Zone {
@@ -96,6 +102,69 @@ pub const Zone = struct {
         }
     }
 
+    pub fn interpolateUntouched(self: *Zone, axis: tt_graphics.Axis) Error!void {
+        for (self.contours) |contour| {
+            try self.interpolateContour(axis, contour);
+        }
+    }
+
+    fn interpolateContour(self: *Zone, axis: tt_graphics.Axis, contour: tt_outline.ContourRange) Error!void {
+        if (contour.end <= contour.start) return;
+        const start: usize = contour.start;
+        const end: usize = contour.end;
+        if (end > self.points.len) return Error.InvalidPoint;
+
+        const first_touched = self.findTouched(axis, start, end) orelse return;
+        const second_touched = self.findTouchedAfter(axis, first_touched, start, end) orelse {
+            const delta = subWrap(
+                currentCoord(self.points[first_touched], axis),
+                originalCoord(self.points[first_touched], axis),
+            );
+            var i = start;
+            while (i < end) : (i += 1) {
+                if (!isTouched(self.points[i], axis)) {
+                    setCurrentCoord(&self.points[i], axis, addWrap(originalCoord(self.points[i], axis), delta));
+                }
+            }
+            return;
+        };
+
+        var prev = first_touched;
+        var next = second_touched;
+        while (true) {
+            self.interpolateRun(axis, prev, next, start, end);
+            prev = next;
+            next = self.findTouchedAfter(axis, prev, start, end) orelse first_touched;
+            if (prev == first_touched) break;
+        }
+    }
+
+    fn interpolateRun(self: *Zone, axis: tt_graphics.Axis, prev: usize, next: usize, start: usize, end: usize) void {
+        var i = advanceContourIndex(prev, start, end);
+        while (i != next) : (i = advanceContourIndex(i, start, end)) {
+            if (!isTouched(self.points[i], axis)) {
+                const value = interpolateCoord(self.points[i], self.points[prev], self.points[next], axis);
+                setCurrentCoord(&self.points[i], axis, value);
+            }
+        }
+    }
+
+    fn findTouched(self: *const Zone, axis: tt_graphics.Axis, start: usize, end: usize) ?usize {
+        var i = start;
+        while (i < end) : (i += 1) {
+            if (isTouched(self.points[i], axis)) return i;
+        }
+        return null;
+    }
+
+    fn findTouchedAfter(self: *const Zone, axis: tt_graphics.Axis, point: usize, start: usize, end: usize) ?usize {
+        var i = advanceContourIndex(point, start, end);
+        while (i != point) : (i = advanceContourIndex(i, start, end)) {
+            if (isTouched(self.points[i], axis)) return i;
+        }
+        return null;
+    }
+
     fn get(self: *const Zone, point: u32) Error!*const Point {
         const index: usize = point;
         if (index >= self.points.len) return Error.InvalidPoint;
@@ -150,12 +219,74 @@ fn touchPoint(point: *Point, axis: tt_graphics.Axis) void {
     }
 }
 
+fn isTouched(point: Point, axis: tt_graphics.Axis) bool {
+    return switch (axis) {
+        .x => point.touched_x,
+        .y => point.touched_y,
+    };
+}
+
+fn originalCoord(point: Point, axis: tt_graphics.Axis) i32 {
+    return switch (axis) {
+        .x => point.ox,
+        .y => point.oy,
+    };
+}
+
+fn currentCoord(point: Point, axis: tt_graphics.Axis) i32 {
+    return switch (axis) {
+        .x => point.x,
+        .y => point.y,
+    };
+}
+
+fn setCurrentCoord(point: *Point, axis: tt_graphics.Axis, value: i32) void {
+    switch (axis) {
+        .x => point.x = value,
+        .y => point.y = value,
+    }
+}
+
+fn advanceContourIndex(point: usize, start: usize, end: usize) usize {
+    const next = point + 1;
+    return if (next == end) start else next;
+}
+
+fn interpolateCoord(point: Point, prev: Point, next: Point, axis: tt_graphics.Axis) i32 {
+    const org = originalCoord(point, axis);
+    const org1 = originalCoord(prev, axis);
+    const org2 = originalCoord(next, axis);
+    const cur1 = currentCoord(prev, axis);
+    const cur2 = currentCoord(next, axis);
+
+    if (org1 == org2) return addWrap(org, subWrap(cur1, org1));
+
+    if (org1 < org2) {
+        if (org <= org1) return addWrap(org, subWrap(cur1, org1));
+        if (org >= org2) return addWrap(org, subWrap(cur2, org2));
+        return lerpCoord(org, org1, org2, cur1, cur2);
+    }
+
+    if (org <= org2) return addWrap(org, subWrap(cur2, org2));
+    if (org >= org1) return addWrap(org, subWrap(cur1, org1));
+    return lerpCoord(org, org2, org1, cur2, cur1);
+}
+
+fn lerpCoord(org: i32, org1: i32, org2: i32, cur1: i32, cur2: i32) i32 {
+    const numerator = (@as(i64, org) - @as(i64, org1)) * (@as(i64, cur2) - @as(i64, cur1));
+    return @truncate(@as(i64, cur1) + @divTrunc(numerator, @as(i64, org2) - @as(i64, org1)));
+}
+
 fn applySign(value: i32, sign: i32) i32 {
     return @truncate(@as(i64, value) * @as(i64, sign));
 }
 
 fn addWrap(lhs: i32, rhs: i32) i32 {
     return @truncate(@as(i64, lhs) + @as(i64, rhs));
+}
+
+fn subWrap(lhs: i32, rhs: i32) i32 {
+    return @truncate(@as(i64, lhs) - @as(i64, rhs));
 }
 
 test "point zone scales glyph points without allocation" {
@@ -170,7 +301,8 @@ test "point zone scales glyph points without allocation" {
         .units_per_em = 1000,
     };
 
-    const zone = try Zone.initGlyph(&buffer, &raw, env);
+    const contours = [_]tt_outline.ContourRange{.{ .start = 0, .end = @intCast(raw.len) }};
+    const zone = try Zone.initGlyph(&buffer, &raw, &contours, env);
 
     try std.testing.expectEqual(@as(i32, 32), zone.points[1].x);
     try std.testing.expectEqual(@as(i32, -38), zone.points[1].y);
@@ -195,4 +327,19 @@ test "point zone moves and shifts directed axis coordinates" {
 
     try zone.shift(x_pos, 0, 16);
     try std.testing.expectEqual(@as(i32, 80), zone.points[0].x);
+}
+
+test "point zone interpolates untouched contour points" {
+    var buffer: [3]Point = .{
+        .{ .x = 0, .y = 0, .ox = 0, .oy = 0, .on_curve = true, .touched_x = true },
+        .{ .x = 50, .y = 0, .ox = 50, .oy = 0, .on_curve = true },
+        .{ .x = 200, .y = 0, .ox = 100, .oy = 0, .on_curve = true, .touched_x = true },
+    };
+    const contours = [_]tt_outline.ContourRange{.{ .start = 0, .end = 3 }};
+    var zone: Zone = .{ .points = &buffer, .contours = &contours };
+
+    try zone.interpolateUntouched(.x);
+
+    try std.testing.expectEqual(@as(i32, 100), zone.points[1].x);
+    try std.testing.expect(!zone.points[1].touched_x);
 }

@@ -166,7 +166,7 @@ pub const Context = struct {
         switch (op) {
             0x00...0x05, 0x0A...0x0E, 0x10...0x1A, 0x1D...0x1F => try self.executeGraphicsOp(op),
             0x20...0x26 => try self.executeStackOp(op),
-            0x29, 0x2E...0x2F, 0x32...0x33, 0x38, 0x3A...0x3B, 0x3E...0x3F, 0x46...0x4A => try self.executePointOp(op),
+            0x29, 0x2E...0x33, 0x38, 0x3A...0x3B, 0x3E...0x3F, 0x46...0x4A => try self.executePointOp(op),
             0x2A...0x2C => try self.executeFunctionOp(code, pc, op),
             0x2D => return Error.InvalidOpcode,
             0x40 => try self.pushBytes(code, pc, try readU8(code, pc)),
@@ -207,6 +207,7 @@ pub const Context = struct {
         switch (op) {
             0x29 => try self.untouchPoint(),
             0x2E, 0x2F => try self.moveDirectAbsolutePoint(op == 0x2F),
+            0x30, 0x31 => try self.interpolateUntouchedPoints(op),
             0x32, 0x33 => try self.shiftPointsByReference(op),
             0x38 => try self.shiftPointsByPixels(),
             0x3A, 0x3B => try self.moveStackIndirectRelativePoint(op == 0x3B),
@@ -602,6 +603,11 @@ pub const Context = struct {
         const point = try self.popU32();
         const zone_ptr = try self.zone(self.graphics.zp0);
         try zone_ptr.untouch(self.graphics.freedom, point);
+    }
+
+    fn interpolateUntouchedPoints(self: *Context, op: u8) Error!void {
+        const zone_ptr = try self.zone(.glyph);
+        try zone_ptr.interpolateUntouched(if (op == 0x30) .y else .x);
     }
 
     fn callFunction(self: *Context, function_id: i32) Error!void {
@@ -1082,6 +1088,30 @@ test "tt executor shifts looped points and requires attached zones" {
     try std.testing.expectEqual(@as(i32, 15), glyph_points[1].x);
     try std.testing.expectEqual(@as(i32, 25), glyph_points[2].x);
     try std.testing.expectEqual(@as(u32, 1), ctx.graphics.loop_count);
+}
+
+test "tt executor interpolates untouched glyph points" {
+    var stack: [16]i32 = undefined;
+    var storage: [1]i32 = .{0};
+    var cvt: [1]i32 = .{0};
+    var ctx = Context.init(.{ .stack = &stack, .storage = &storage, .cvt = &cvt }, .{});
+
+    var twilight_points: [1]Point = undefined;
+    var glyph_points: [3]Point = .{
+        .{ .x = 0, .y = 0, .ox = 0, .oy = 0, .on_curve = true, .touched_x = true },
+        .{ .x = 50, .y = 0, .ox = 50, .oy = 0, .on_curve = true },
+        .{ .x = 200, .y = 0, .ox = 100, .oy = 0, .on_curve = true, .touched_x = true },
+    };
+    const contours = [_]@import("tt_outline.zig").ContourRange{.{ .start = 0, .end = 3 }};
+    var zones: PointZones = .{
+        .twilight = PointZone.initTwilight(&twilight_points),
+        .glyph = .{ .points = &glyph_points, .contours = &contours },
+    };
+    ctx.setZones(&zones);
+
+    try ctx.execute(&.{0x31}); // IUP[x]
+
+    try std.testing.expectEqual(@as(i32, 100), glyph_points[1].x);
 }
 
 test "tt executor records and calls function definitions" {
