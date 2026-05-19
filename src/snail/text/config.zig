@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const atlas_curve_mod = @import("../render/format/atlas/curve.zig");
+const tt_vm = @import("../font/tt_vm.zig");
 const ttf = @import("../font/ttf.zig");
 const opentype = @import("../font/opentype.zig");
 const build_options = @import("build_options");
@@ -19,6 +20,7 @@ const FontDataKey = struct {
 
 const ParsedFont = struct {
     font: ttf.Font,
+    tt_program: ?tt_vm.Program,
     shaper: ?opentype.Shaper,
     hb_shaper: if (build_options.enable_harfbuzz) ?harfbuzz.HarfBuzzShaper else void,
 
@@ -115,6 +117,7 @@ pub const FontConfig = struct {
 /// Per-face immutable data: parsed font, shapers, style metadata.
 pub const FaceConfig = struct {
     font: ttf.Font,
+    tt_program: ?tt_vm.Program,
     font_data: []const u8,
     weight: FontWeight,
     italic: bool,
@@ -258,6 +261,7 @@ fn buildFaceConfigs(allocator: Allocator, specs: []const FaceSpec) ![]FaceConfig
         if (parsed_cache.get(key)) |cached| {
             faces[i] = .{
                 .font = cached.font,
+                .tt_program = cached.tt_program,
                 .font_data = spec.data,
                 .weight = spec.weight,
                 .italic = spec.italic,
@@ -273,6 +277,7 @@ fn buildFaceConfigs(allocator: Allocator, specs: []const FaceSpec) ![]FaceConfig
             try parsed_cache.put(key, parsed);
             faces[i] = .{
                 .font = parsed.font,
+                .tt_program = parsed.tt_program,
                 .font_data = spec.data,
                 .weight = spec.weight,
                 .italic = spec.italic,
@@ -291,6 +296,7 @@ fn buildFaceConfigs(allocator: Allocator, specs: []const FaceSpec) ![]FaceConfig
 fn parseFont(allocator: Allocator, data: []const u8) !ParsedFont {
     var parsed = ParsedFont{
         .font = try ttf.Font.init(data),
+        .tt_program = tt_vm.Program.init(data) catch null,
         .shaper = null,
         .hb_shaper = if (comptime build_options.enable_harfbuzz) null else {},
     };
