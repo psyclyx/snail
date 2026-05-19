@@ -61,7 +61,7 @@ pub fn printHardwareTable(gl_initialized: bool, vulkan_initialized: bool) void {
             std.debug.print("| Vulkan device | {s} |\n", .{name});
         }
     } else {
-        std.debug.print("| Vulkan | disabled (`zig build bench -Dvulkan=false`) |\n", .{});
+        std.debug.print("| Vulkan | disabled (`zig build run-bench -Dvulkan=false`) |\n", .{});
     }
     std.debug.print("\n", .{});
 }
@@ -211,7 +211,7 @@ pub fn printRenderTable(comptime width: u32, comptime height: u32, cpu_frames: u
         });
     }
     if (!build_options.enable_vulkan) {
-        std.debug.print("| Vulkan | disabled (`zig build bench -Dvulkan=false`) | - | - | - | - | - | - |\n", .{});
+        std.debug.print("| Vulkan | disabled (`zig build run-bench -Dvulkan=false`) | - | - | - | - | - | - |\n", .{});
     }
     std.debug.print("\n", .{});
 }

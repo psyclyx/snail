@@ -158,7 +158,7 @@ fn dumpReproFrame(
         resolveLinearInt(resolve),
     });
     printMat4Env("SNAIL_REPRO_MVP", mvp);
-    std.debug.print(" zig build screenshot\n", .{});
+    std.debug.print(" zig build run-screenshot\n", .{});
     std.debug.print("--- end snail repro frame ---\n", .{});
 }
 

@@ -63,23 +63,23 @@ jobs:
 
       - name: Build demos
         run: |
-          zig build demo --release=fast -Dcpu=baseline
-          zig build game-demo --release=fast -Dcpu=baseline
+          zig build install-demo --release=fast -Dcpu=baseline
+          zig build install-game-demo --release=fast -Dcpu=baseline
 
       - name: Build demo renderer combinations
         run: |
-          zig build demo --release=fast -Dcpu=baseline -Dopengl=false
-          zig build demo --release=fast -Dcpu=baseline -Dvulkan=false
-          zig build demo --release=fast -Dcpu=baseline -Dcpu-renderer=false
-          zig build demo --release=fast -Dcpu=baseline -Dopengl=false -Dcpu-renderer=false
-          zig build demo --release=fast -Dcpu=baseline -Dvulkan=false -Dcpu-renderer=false
-          zig build demo --release=fast -Dcpu=baseline -Dopengl=false -Dvulkan=false
+          zig build install-demo --release=fast -Dcpu=baseline -Dopengl=false
+          zig build install-demo --release=fast -Dcpu=baseline -Dvulkan=false
+          zig build install-demo --release=fast -Dcpu=baseline -Dcpu-renderer=false
+          zig build install-demo --release=fast -Dcpu=baseline -Dopengl=false -Dcpu-renderer=false
+          zig build install-demo --release=fast -Dcpu=baseline -Dvulkan=false -Dcpu-renderer=false
+          zig build install-demo --release=fast -Dcpu=baseline -Dopengl=false -Dvulkan=false
 
       - name: Backend pixel comparison
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
           GALLIUM_DRIVER: llvmpipe
-        run: zig build backend-compare -Dcpu=baseline
+        run: zig build run-backend-compare -Dcpu=baseline
 
   nix:
     name: Nix
