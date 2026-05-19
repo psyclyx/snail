@@ -155,7 +155,9 @@ pub const HintMachine = struct {
     }
 
     pub fn hintGlyph(self: *HintMachine, allocator: Allocator, glyph_id: u16, options: GlyphHintOptions) !GlyphHint {
-        const executed = try self.executeGlyph(allocator, glyph_id);
+        var topology = try self.program.loadGlyphTopology(allocator, glyph_id);
+        defer topology.deinit();
+        const executed = try self.executeTopology(glyph_id, &topology);
         return self.buildGlyphHint(allocator, glyph_id, executed, options);
     }
 
@@ -168,14 +170,6 @@ pub const HintMachine = struct {
     ) !GlyphHint {
         const executed = try self.executeCachedGlyph(cache, glyph_id);
         return self.buildGlyphHint(allocator, glyph_id, executed, options);
-    }
-
-    /// Executes the glyph program into the machine's reusable point buffers.
-    /// The returned simple glyph view is invalidated by the next glyph execution.
-    pub fn executeGlyph(self: *HintMachine, allocator: Allocator, glyph_id: u16) !ExecutedGlyph {
-        var topology = try self.program.loadGlyphTopology(allocator, glyph_id);
-        defer topology.deinit();
-        return self.executeTopology(glyph_id, &topology);
     }
 
     /// Executes the glyph program using caller-owned face-invariant topology.

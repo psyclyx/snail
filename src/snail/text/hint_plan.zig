@@ -1,11 +1,12 @@
 const std = @import("std");
 
+const hint_context = @import("hint_context.zig");
 const range_mod = @import("../range.zig");
 const shape_mod = @import("shape.zig");
-const text_hint = @import("../render/format/text_hint.zig");
 const types_mod = @import("types.zig");
 const vec = @import("../math/vec.zig");
 
+const HintedGlyphValue = hint_context.HintedGlyphValue;
 const Range = range_mod.Range;
 const ShapedText = types_mod.ShapedText;
 const TextAtlas = @import("atlas.zig").TextAtlas;
@@ -25,20 +26,18 @@ pub const HintedPlacement = struct {
 
 pub const HintPlanStats = struct {
     glyph_count: usize = 0,
-    upload_count: usize = 0,
-    upload_bytes: usize = 0,
     advance: Vec2 = .zero,
 };
 
 pub const TextHintRunPlan = struct {
     allocator: std.mem.Allocator,
     placements: []HintedPlacement,
-    uploads: []text_hint.UploadOp,
+    hinted_glyphs: []?*const HintedGlyphValue,
     stats: HintPlanStats,
 
     pub fn deinit(self: *TextHintRunPlan) void {
         self.allocator.free(self.placements);
-        self.allocator.free(self.uploads);
+        self.allocator.free(self.hinted_glyphs);
         self.* = undefined;
     }
 };
@@ -48,9 +47,8 @@ pub const PlanRunOptions = struct {
     shaped: *const ShapedText,
     glyphs: Range = .{},
     placement: TextPlacement,
-    /// One hinted advance per glyph in the resolved range, in em units.
-    hinted_advances: []const Vec2,
-    uploads: []const text_hint.UploadOp = &.{},
+    /// One cached hinted glyph value per glyph in the resolved range.
+    hinted_glyphs: []const ?*const HintedGlyphValue,
 };
 
 pub fn planRun(allocator: std.mem.Allocator, options: PlanRunOptions) !TextHintRunPlan {
@@ -58,13 +56,17 @@ pub fn planRun(allocator: std.mem.Allocator, options: PlanRunOptions) !TextHintR
 
     const range = options.glyphs.resolve(options.shaped.glyphs.len);
     const glyph_count = range.end - range.start;
-    if (options.hinted_advances.len != glyph_count) return error.MissingHintedAdvance;
+    if (options.hinted_glyphs.len != glyph_count) return error.MissingHintedGlyph;
 
     const placements = try allocator.alloc(HintedPlacement, glyph_count);
     errdefer allocator.free(placements);
 
+    const hinted_glyphs = try allocator.dupe(?*const HintedGlyphValue, options.hinted_glyphs);
+    errdefer allocator.free(hinted_glyphs);
+
     var hinted_pen = Vec2.zero;
-    for (placements, 0..) |*out, local_index| {
+    for (placements, hinted_glyphs, 0..) |*out, hinted_glyph, local_index| {
+        const hint = hinted_glyph orelse return error.MissingHintedGlyph;
         const shaped_index = range.start + local_index;
         const glyph = options.shaped.glyphs[shaped_index];
         const fc = &options.atlas.config.faces[glyph.face_index];
@@ -81,20 +83,15 @@ pub fn planRun(allocator: std.mem.Allocator, options: PlanRunOptions) !TextHintR
             .glyph_id = glyph.glyph_id,
             .transform = glyphPlacementTransform(x, y, options.placement.em, fc.synthetic.skew_x),
         };
-        hinted_pen = Vec2.add(hinted_pen, options.hinted_advances[local_index]);
+        hinted_pen = Vec2.add(hinted_pen, hint.advance);
     }
-
-    const uploads = try allocator.dupe(text_hint.UploadOp, options.uploads);
-    errdefer allocator.free(uploads);
 
     return .{
         .allocator = allocator,
         .placements = placements,
-        .uploads = uploads,
+        .hinted_glyphs = hinted_glyphs,
         .stats = .{
             .glyph_count = glyph_count,
-            .upload_count = uploads.len,
-            .upload_bytes = text_hint.totalUploadBytes(uploads),
             .advance = Vec2{
                 .x = hinted_pen.x * options.placement.em,
                 .y = hinted_pen.y * options.placement.em,
@@ -115,21 +112,31 @@ test "hint run plan uses caller supplied advances" {
     var shaped = try atlas.shapeText(std.testing.allocator, .{}, "AB");
     defer shaped.deinit();
 
-    const advances = [_]Vec2{
-        .{ .x = 0.5, .y = 0 },
-        .{ .x = 0.25, .y = 0 },
+    const values = [_]hint_context.HintedGlyphValue{
+        .{
+            .key = .{ .face_index = 0, .ppem_x_26_6 = 12 * 64, .ppem_y_26_6 = 12 * 64, .glyph_id = shaped.glyphs[0].glyph_id },
+            .advance = .{ .x = 0.5, .y = 0 },
+            .bbox = .{ .min = .zero, .max = .zero },
+        },
+        .{
+            .key = .{ .face_index = 0, .ppem_x_26_6 = 12 * 64, .ppem_y_26_6 = 12 * 64, .glyph_id = shaped.glyphs[1].glyph_id },
+            .advance = .{ .x = 0.25, .y = 0 },
+            .bbox = .{ .min = .zero, .max = .zero },
+        },
+    };
+    const hints = [_]?*const hint_context.HintedGlyphValue{
+        &values[0],
+        &values[1],
     };
     var plan = try planRun(std.testing.allocator, .{
         .atlas = &atlas,
         .shaped = &shaped,
         .placement = .{ .baseline = .{ .x = 10, .y = 20 }, .em = 12 },
-        .hinted_advances = &advances,
-        .uploads = &.{.{ .curve_deltas = .{ .byte_len = 128 } }},
+        .hinted_glyphs = &hints,
     });
     defer plan.deinit();
 
     try std.testing.expectEqual(@as(usize, 2), plan.placements.len);
-    try std.testing.expectEqual(@as(usize, 128), plan.stats.upload_bytes);
     try std.testing.expectApproxEqAbs(@as(f32, 9), plan.stats.advance.x, 1e-5);
     try std.testing.expect(plan.placements[1].transform.tx >= plan.placements[0].transform.tx + 5.9);
 }

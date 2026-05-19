@@ -5,6 +5,7 @@ const paint_records = @import("../paint_records.zig");
 const atlas_curve_mod = @import("../render/format/atlas/curve.zig");
 const band_tex = @import("../render/format/band_texture.zig");
 const bezier = @import("../math/bezier.zig");
+const hint_context = @import("hint_context.zig");
 const resource_key_mod = @import("../resource_key.zig");
 const text_hint = @import("../render/format/text_hint.zig");
 const atlas_mod = @import("atlas.zig");
@@ -19,6 +20,7 @@ const Allocator = std.mem.Allocator;
 const BBox = bezier.BBox;
 const FaceIndex = config_mod.FaceIndex;
 const FaceView = view_mod.FaceView;
+const HintedGlyphValue = hint_context.HintedGlyphValue;
 const Paint = paint_mod.Paint;
 const PaintImageRecord = atlas_curve_mod.CurveAtlas.PaintImageRecord;
 const Range = range_mod.Range;
@@ -175,6 +177,7 @@ pub const TextBlobBuilder = struct {
     glyphs: std.ArrayListUnmanaged(TextBlob.Glyph) = .empty,
     paint_records: std.ArrayListUnmanaged(PendingPaintRecord) = .empty,
     hint_records: std.ArrayListUnmanaged(PendingHintRecord) = .empty,
+    hint_record_refs: std.AutoHashMapUnmanaged(usize, u32) = .empty,
     gpu_instance_budget: usize = 0,
 
     const PendingPaintRecord = struct {
@@ -199,6 +202,7 @@ pub const TextBlobBuilder = struct {
         self.paint_records.deinit(self.allocator);
         self.clearHintRecords();
         self.hint_records.deinit(self.allocator);
+        self.hint_record_refs.deinit(self.allocator);
         self.* = undefined;
     }
 
@@ -206,6 +210,7 @@ pub const TextBlobBuilder = struct {
         self.glyphs.clearRetainingCapacity();
         self.paint_records.clearRetainingCapacity();
         self.clearHintRecords();
+        self.hint_record_refs.clearRetainingCapacity();
         self.gpu_instance_budget = 0;
     }
 
@@ -272,6 +277,31 @@ pub const TextBlobBuilder = struct {
         self.gpu_instance_budget += 1;
     }
 
+    pub fn appendHintedGlyphRef(
+        self: *TextBlobBuilder,
+        face_index: FaceIndex,
+        glyph_id: u16,
+        transform: Transform2D,
+        color: [4]f32,
+        value: *const HintedGlyphValue,
+    ) !void {
+        const attachment = value.attachment orelse return error.EmptyHintedGlyph;
+        const intern_key = @intFromPtr(value);
+        const intern = try self.internHintRecord(intern_key, attachment.record, attachment.curve_deltas_f16);
+        errdefer if (intern.created) self.removeInternedHintRecord(intern_key, intern.index);
+
+        try self.glyphs.append(self.allocator, .{
+            .face_index = face_index,
+            .glyph_id = glyph_id,
+            .transform = transform,
+            .embolden = 0,
+            .color = color,
+            .hint_record_texel = intern.index,
+            .hint_bbox = value.bbox,
+        });
+        self.gpu_instance_budget += 1;
+    }
+
     const FinishedLayerInfoRecords = struct {
         data: ?[]f32 = null,
         width: u32 = 0,
@@ -320,6 +350,7 @@ pub const TextBlobBuilder = struct {
 
         self.paint_records.clearRetainingCapacity();
         self.clearHintRecords();
+        self.hint_record_refs.clearRetainingCapacity();
 
         return .{
             .data = data,
@@ -354,6 +385,37 @@ pub const TextBlobBuilder = struct {
         const last_index = self.hint_records.items.len - 1;
         self.allocator.free(self.hint_records.items[last_index].curve_deltas_f16);
         self.hint_records.items.len = last_index;
+    }
+
+    const InternedHintRecord = struct {
+        index: u32,
+        created: bool,
+    };
+
+    fn internHintRecord(
+        self: *TextBlobBuilder,
+        intern_key: usize,
+        record: text_hint.GlyphRecord,
+        curve_deltas_f16: []const u16,
+    ) !InternedHintRecord {
+        if (self.hint_record_refs.get(intern_key)) |index| return .{ .index = index, .created = false };
+
+        const index: u32 = @intCast(self.hint_records.items.len);
+        const deltas = try self.allocator.dupe(u16, curve_deltas_f16);
+        errdefer self.allocator.free(deltas);
+        try self.hint_records.append(self.allocator, .{
+            .record = record,
+            .curve_deltas_f16 = deltas,
+        });
+        errdefer self.removeLastHintRecord();
+        try self.hint_record_refs.put(self.allocator, intern_key, index);
+        return .{ .index = index, .created = true };
+    }
+
+    fn removeInternedHintRecord(self: *TextBlobBuilder, intern_key: usize, index: u32) void {
+        _ = self.hint_record_refs.remove(intern_key);
+        std.debug.assert(index + 1 == self.hint_records.items.len);
+        self.removeLastHintRecord();
     }
 };
 

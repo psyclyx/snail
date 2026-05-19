@@ -227,6 +227,8 @@ fn releasePrepared(prepared: *?snail.PreparedResources) void {
 fn mainLoop(allocator: std.mem.Allocator) !void {
     var scene_assets = try demo_banner_scene.Assets.init(allocator);
     defer scene_assets.deinit();
+    var hint_context = snail.TrueTypeHintContext.init(allocator, &scene_assets.fonts);
+    defer hint_context.deinit();
 
     const window = try wayland.Window.init(1280, 720, "snail");
     defer window.deinit();
@@ -382,7 +384,7 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
             var builder = snail.TextBlobBuilder.init(allocator, &scene_assets.fonts);
             defer builder.deinit();
             var dec_rects: [8]snail.Rect = undefined;
-            const text_result = demo_banner_scene.buildTextBlobWithHinting(&builder, layout, snap_step, &scene_assets, &dec_rects, .{
+            const text_result = demo_banner_scene.buildTextBlobWithHinting(&builder, layout, snap_step, &scene_assets, &hint_context, &dec_rects, .{
                 .enabled = hint_active,
                 .ppem_scale = hint_scale,
             });

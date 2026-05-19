@@ -409,25 +409,36 @@ test "TextBlobBuilder stores hinted glyph records and emits hinted special verti
     const deltas = try testing.allocator.alloc(u16, @as(usize, info.curve_count) * text_hint_format.delta_values_per_curve);
     defer testing.allocator.free(deltas);
     @memset(deltas, 0);
+    var hinted_value = snail.TrueTypeHintedGlyph{
+        .key = .{ .face_index = 0, .ppem_x_26_6 = 12 * 64, .ppem_y_26_6 = 12 * 64, .glyph_id = gid },
+        .advance = .{ .x = 1, .y = 0 },
+        .bbox = info.bbox,
+        .attachment = .{
+            .record = .{
+                .base_curve_texel = info.base_curve_texel,
+                .curve_count = info.curve_count,
+                .band_entry = info.band_entry,
+                .bbox = info.bbox,
+            },
+            .curve_deltas_f16 = deltas,
+        },
+    };
 
     var builder = TextBlobBuilder.init(testing.allocator, &fonts);
     defer builder.deinit();
-    try builder.appendHintedGlyph(0, gid, snail.Transform2D.scale(12, -12), .{ 0.2, 0.4, 0.6, 1 }, .{
-        .base_curve_texel = info.base_curve_texel,
-        .curve_count = info.curve_count,
-        .band_entry = info.band_entry,
-        .bbox = info.bbox,
-    }, deltas);
+    try builder.appendHintedGlyphRef(0, gid, snail.Transform2D.scale(12, -12), .{ 0.2, 0.4, 0.6, 1 }, &hinted_value);
+    try builder.appendHintedGlyphRef(0, gid, .{ .xx = 12, .yy = -12, .tx = 14, .ty = 0 }, .{ 0.2, 0.4, 0.6, 1 }, &hinted_value);
 
     var blob = try builder.finish();
     defer blob.deinit();
     const hint_texel = blob.glyphs[0].hint_record_texel orelse return error.TestExpectedEqual;
+    try testing.expectEqual(hint_texel, blob.glyphs[1].hint_record_texel.?);
     const meta = paint_records.readTexel(blob.paint_layer_info_data.?, blob.paint_layer_info_width, hint_texel + 2);
     try testing.expectEqual(@as(?u32, null), blob.glyphs[0].paint_record_index);
     try testing.expectEqual(@as(f32, @floatFromInt(info.base_curve_texel)), meta[0]);
     try testing.expectEqual(@as(f32, @floatFromInt(info.curve_count)), meta[1]);
 
-    var buf = [_]u32{0} ** snail.TEXT_WORDS_PER_GLYPH;
+    var buf = [_]u32{0} ** (snail.TEXT_WORDS_PER_GLYPH * 2);
     var batch = TextBatch.init(&buf);
     const result = try batch.addDraw(.{}, .{
         .blob = &blob,
@@ -435,7 +446,7 @@ test "TextBlobBuilder stores hinted glyph records and emits hinted special verti
     }, 0, 0);
 
     try testing.expect(result.completed);
-    try testing.expectEqual(@as(usize, 1), result.emitted);
+    try testing.expectEqual(@as(usize, 2), result.emitted);
     const packed_gw = vertex.decodeInstance(batch.slice()).glyph[1];
     try testing.expectEqual(render_abi.SpecialLayerKind.hinted_text, render_abi.specialGlyphWordKind(packed_gw).?);
 }
