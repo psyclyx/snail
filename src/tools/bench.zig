@@ -179,6 +179,7 @@ const SceneBundle = struct {
 const SnailPrep = struct {
     font_load_us: f64,
     ascii_prep_us: f64,
+    ascii_hint_execute_us: f64,
     ascii_hint_us: f64,
     footprint: snail.ResourceFootprint,
 };
@@ -612,14 +613,32 @@ fn benchSnailPrep(allocator: std.mem.Allocator, font_data: []const u8) !SnailPre
     var hint_atlas = try snail.TextAtlas.init(allocator, &.{.{ .data = font_data }});
     defer hint_atlas.deinit();
     try ensureText(&hint_atlas, .{}, &PRINTABLE_ASCII);
+    const ascii_hint_execute_us = try timeAsciiTrueTypeExecute(&hint_atlas);
     const ascii_hint_us = try timeAsciiTrueTypeHint(&hint_atlas);
 
     return .{
         .font_load_us = font_load_total_us / PREP_RUNS,
         .ascii_prep_us = prep_total_us / PREP_RUNS,
+        .ascii_hint_execute_us = ascii_hint_execute_us,
         .ascii_hint_us = ascii_hint_us,
         .footprint = footprint,
     };
+}
+
+fn timeAsciiTrueTypeExecute(atlas: *snail.TextAtlas) !f64 {
+    const allocator = std.heap.smp_allocator;
+    const face = &atlas.config.faces[0];
+    var topology_cache = try snail.TrueTypeGlyphTopologyCache.init(allocator, face);
+    defer topology_cache.deinit();
+    try preloadAsciiHintTopology(atlas, &topology_cache);
+
+    var total_us: f64 = 0;
+    for (0..PREP_RUNS) |_| {
+        const start = nowNs();
+        try executeAsciiOnce(atlas, &topology_cache);
+        total_us += usFrom(start);
+    }
+    return total_us / PREP_RUNS;
 }
 
 fn timeAsciiTrueTypeHint(atlas: *snail.TextAtlas) !f64 {
@@ -636,6 +655,29 @@ fn timeAsciiTrueTypeHint(atlas: *snail.TextAtlas) !f64 {
         total_us += usFrom(start);
     }
     return total_us / PREP_RUNS;
+}
+
+fn executeAsciiOnce(atlas: *snail.TextAtlas, topology_cache: *snail.TrueTypeGlyphTopologyCache) !void {
+    const allocator = std.heap.smp_allocator;
+    const face = &atlas.config.faces[0];
+    var machine = try snail.TrueTypeHintMachine.init(allocator, face, snail.TrueTypeHintPpem.uniform(12 * 64));
+    defer machine.deinit();
+
+    for (PRINTABLE_ASCII) |ch| {
+        const glyph_id = (try atlas.glyphIndex(0, ch)) orelse continue;
+        const executed = machine.executeCachedGlyph(topology_cache, glyph_id) catch |err| switch (err) {
+            error.UnsupportedCompoundHinting => continue,
+            else => return err,
+        };
+        keepExecutedGlyphAlive(executed);
+    }
+}
+
+fn keepExecutedGlyphAlive(executed: snail.TrueTypeExecutedGlyph) void {
+    switch (executed) {
+        .empty => |advance| std.mem.doNotOptimizeAway(advance.x),
+        .simple => |hinted| std.mem.doNotOptimizeAway(hinted.advance_x_26_6),
+    }
 }
 
 fn preloadAsciiHintTopology(atlas: *snail.TextAtlas, topology_cache: *snail.TrueTypeGlyphTopologyCache) !void {

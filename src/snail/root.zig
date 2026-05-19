@@ -49,6 +49,7 @@ pub const TextHintHandle = text.TextHintHandle;
 pub const TrueTypeHintMachine = text.TrueTypeHintMachine;
 pub const TrueTypeGlyphHint = text.TrueTypeGlyphHint;
 pub const TrueTypeGlyphHintOptions = text.TrueTypeGlyphHintOptions;
+pub const TrueTypeExecutedGlyph = text.TrueTypeExecutedGlyph;
 pub const TrueTypeHintPpem = text.TrueTypeHintPpem;
 pub const TrueTypeBaseGlyphHint = text.TrueTypeBaseGlyphHint;
 pub const TrueTypeGlyphTopologyCache = text.TrueTypeGlyphTopologyCache;

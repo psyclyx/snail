@@ -72,6 +72,11 @@ pub const GlyphHint = struct {
     }
 };
 
+pub const ExecutedGlyph = union(enum) {
+    empty: Vec2,
+    simple: tt_vm.HintedSimpleGlyph,
+};
+
 pub const GlyphTopologyCache = struct {
     allocator: Allocator,
     program: *const Program,
@@ -148,9 +153,8 @@ pub const HintMachine = struct {
     }
 
     pub fn hintGlyph(self: *HintMachine, allocator: Allocator, glyph_id: u16, options: GlyphHintOptions) !GlyphHint {
-        var topology = try self.program.loadGlyphTopology(allocator, glyph_id);
-        defer topology.deinit();
-        return self.hintTopology(allocator, glyph_id, &topology, options);
+        const executed = try self.executeGlyph(allocator, glyph_id);
+        return self.buildGlyphHint(allocator, glyph_id, executed, options);
     }
 
     pub fn hintCachedGlyph(
@@ -160,20 +164,38 @@ pub const HintMachine = struct {
         glyph_id: u16,
         options: GlyphHintOptions,
     ) !GlyphHint {
-        return self.hintTopology(allocator, glyph_id, try cache.get(glyph_id), options);
+        const executed = try self.executeCachedGlyph(cache, glyph_id);
+        return self.buildGlyphHint(allocator, glyph_id, executed, options);
     }
 
-    fn hintTopology(
+    /// Executes the glyph program into the machine's reusable point buffers.
+    /// The returned simple glyph view is invalidated by the next glyph execution.
+    pub fn executeGlyph(self: *HintMachine, allocator: Allocator, glyph_id: u16) !ExecutedGlyph {
+        var topology = try self.program.loadGlyphTopology(allocator, glyph_id);
+        defer topology.deinit();
+        return self.executeTopology(glyph_id, &topology);
+    }
+
+    /// Executes the glyph program using caller-owned face-invariant topology.
+    /// The returned simple glyph view is invalidated by the next glyph execution.
+    pub fn executeCachedGlyph(
         self: *HintMachine,
+        cache: *GlyphTopologyCache,
+        glyph_id: u16,
+    ) !ExecutedGlyph {
+        return self.executeTopology(glyph_id, try cache.get(glyph_id));
+    }
+
+    pub fn buildGlyphHint(
+        self: *const HintMachine,
         allocator: Allocator,
         glyph_id: u16,
-        topology: *tt_vm.GlyphTopology,
+        executed: ExecutedGlyph,
         options: GlyphHintOptions,
     ) !GlyphHint {
-        return switch (topology.*) {
-            .empty => self.hintEmptyGlyph(allocator, glyph_id),
-            .simple => |*simple| self.hintSimpleGlyph(allocator, glyph_id, simple, options),
-            .compound => error.UnsupportedCompoundHinting,
+        return switch (executed) {
+            .empty => |advance| emptyGlyphHint(allocator, glyph_id, advance),
+            .simple => |hinted| self.makeGlyphHint(allocator, glyph_id, hinted, options),
         };
     }
 
@@ -199,39 +221,48 @@ pub const HintMachine = struct {
         }, .x, .{});
     }
 
-    fn hintEmptyGlyph(self: *HintMachine, allocator: Allocator, glyph_id: u16) !GlyphHint {
-        return .{
-            .allocator = allocator,
-            .glyph_id = glyph_id,
-            .advance = try self.emptyAdvance(glyph_id),
-            .bbox = emptyBBox(),
-            .curves = &.{},
-            .prepared_curves = &.{},
-            .curve_bboxes = &.{},
-            .curve_deltas_f16 = &.{},
+    fn executeTopology(
+        self: *HintMachine,
+        glyph_id: u16,
+        topology: *tt_vm.GlyphTopology,
+    ) !ExecutedGlyph {
+        return switch (topology.*) {
+            .empty => .{ .empty = try self.emptyAdvance(glyph_id) },
+            .simple => |*simple| .{ .simple = try self.executeSimpleGlyph(glyph_id, simple) },
+            .compound => error.UnsupportedCompoundHinting,
         };
     }
 
-    fn hintSimpleGlyph(
+    fn executeSimpleGlyph(
         self: *HintMachine,
-        allocator: Allocator,
         glyph_id: u16,
         simple: *const tt_outline.SimpleGlyph,
-        options: GlyphHintOptions,
-    ) !GlyphHint {
+    ) !tt_vm.HintedSimpleGlyph {
         var context = self.makeContext();
         try self.snapshot.restore(&context);
         context.setFunctions(&self.functions);
         context.setZones(&self.zones);
 
-        const hinted = try self.size.executeSimpleGlyph(
+        return self.size.executeSimpleGlyph(
             &context,
             &self.zones,
             self.glyph_points,
             simple,
             try self.program.glyphPhantomMetrics(glyph_id),
         );
-        return self.makeGlyphHint(allocator, glyph_id, hinted, options);
+    }
+
+    fn emptyGlyphHint(allocator: Allocator, glyph_id: u16, advance: Vec2) GlyphHint {
+        return .{
+            .allocator = allocator,
+            .glyph_id = glyph_id,
+            .advance = advance,
+            .bbox = emptyBBox(),
+            .curves = &.{},
+            .prepared_curves = &.{},
+            .curve_bboxes = &.{},
+            .curve_deltas_f16 = &.{},
+        };
     }
 
     fn makeGlyphHint(

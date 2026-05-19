@@ -34,6 +34,7 @@ pub const TextHintHandle = text_hint_format.HintHandle;
 pub const TrueTypeHintMachine = tt_hint_mod.HintMachine;
 pub const TrueTypeGlyphHint = tt_hint_mod.GlyphHint;
 pub const TrueTypeGlyphHintOptions = tt_hint_mod.GlyphHintOptions;
+pub const TrueTypeExecutedGlyph = tt_hint_mod.ExecutedGlyph;
 pub const TrueTypeHintPpem = tt_hint_mod.HintPpem;
 pub const TrueTypeBaseGlyphHint = tt_hint_mod.BaseGlyph;
 pub const TrueTypeGlyphTopologyCache = tt_hint_mod.GlyphTopologyCache;
