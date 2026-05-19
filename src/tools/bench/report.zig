@@ -75,6 +75,7 @@ pub fn printPreparationTables(snail_prep: anytype, vector_prep: anytype, ft: any
         \\| Font load | {d:.2} us | {d:.2} us | {d:.2}x |
         \\| Glyph prep, ASCII | {d:.2} us | {d:.2} us | {d:.2}x |
         \\| Glyph prep, 7 sizes | {d:.2} us | {d:.2} us | {d:.2}x |
+        \\| TT hint plan, ASCII @ 12px | {d:.2} us | n/a | n/a |
         \\| PathPicture freeze, {d} shapes | {d:.2} us | n/a | n/a |
         \\
         \\## Prepared Resource Memory
@@ -96,6 +97,7 @@ pub fn printPreparationTables(snail_prep: anytype, vector_prep: anytype, ft: any
         snail_prep.ascii_prep_us,
         ft.glyph_prep_all_sizes_us,
         ratio(ft.glyph_prep_all_sizes_us, snail_prep.ascii_prep_us),
+        snail_prep.ascii_hint_us,
         vector_prep.shapes,
         vector_prep.freeze_us,
         snail_prep.footprint.usedBytes(),

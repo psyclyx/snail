@@ -179,6 +179,7 @@ const SceneBundle = struct {
 const SnailPrep = struct {
     font_load_us: f64,
     ascii_prep_us: f64,
+    ascii_hint_us: f64,
     footprint: snail.ResourceFootprint,
 };
 
@@ -608,11 +609,47 @@ fn benchSnailPrep(allocator: std.mem.Allocator, font_data: []const u8) !SnailPre
         atlas.deinit();
     }
 
+    var hint_atlas = try snail.TextAtlas.init(allocator, &.{.{ .data = font_data }});
+    defer hint_atlas.deinit();
+    try ensureText(&hint_atlas, .{}, &PRINTABLE_ASCII);
+    const ascii_hint_us = try timeAsciiTrueTypeHint(&hint_atlas);
+
     return .{
         .font_load_us = font_load_total_us / PREP_RUNS,
         .ascii_prep_us = prep_total_us / PREP_RUNS,
+        .ascii_hint_us = ascii_hint_us,
         .footprint = footprint,
     };
+}
+
+fn timeAsciiTrueTypeHint(atlas: *snail.TextAtlas) !f64 {
+    var total_us: f64 = 0;
+    for (0..PREP_RUNS) |_| {
+        const start = nowNs();
+        try hintAsciiOnce(atlas);
+        total_us += usFrom(start);
+    }
+    return total_us / PREP_RUNS;
+}
+
+fn hintAsciiOnce(atlas: *snail.TextAtlas) !void {
+    const allocator = std.heap.smp_allocator;
+    const face = &atlas.config.faces[0];
+    var machine = try snail.TrueTypeHintMachine.init(allocator, face, snail.TrueTypeHintPpem.uniform(12 * 64));
+    defer machine.deinit();
+
+    for (PRINTABLE_ASCII) |ch| {
+        const glyph_id = (try atlas.glyphIndex(0, ch)) orelse continue;
+        const info = atlas.face_glyphs[0].getGlyph(glyph_id) orelse continue;
+        var hint = machine.hintGlyph(allocator, glyph_id, .{
+            .base = .{ .info = info, .page = atlas.pages[info.page_index] },
+        }) catch |err| switch (err) {
+            error.UnsupportedCompoundHinting => continue,
+            else => return err,
+        };
+        std.mem.doNotOptimizeAway(hint.curveDeltaBytes());
+        hint.deinit();
+    }
 }
 
 fn timeRecordBuild(
