@@ -402,6 +402,8 @@ fn addInteractiveDemoSteps(
 
     const install_demo_step = b.step("install-demo", "Install the interactive demo executable");
     install_demo_step.dependOn(&install_demo.step);
+    const demo_step = b.step("demo", "Install the interactive demo executable");
+    demo_step.dependOn(&install_demo.step);
 
     const run_cmd = b.addRunArtifact(exe);
     if (b.args) |args| run_cmd.addArgs(args);

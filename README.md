@@ -254,6 +254,7 @@ Requires [Zig 0.16](https://ziglang.org/download/), OpenGL 3.3+, Vulkan headers/
 
 ```sh
 zig build test                                  # unit tests
+zig build demo                                  # build/install the interactive demo executable
 zig build run                                   # interactive 2D demo; press C to cycle enabled backends
 zig build run -Dvulkan=false                    # demo without Vulkan
 zig build run -Dopengl=false                    # demo without OpenGL
