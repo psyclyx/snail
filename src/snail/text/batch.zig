@@ -6,8 +6,7 @@ const blob_mod = @import("blob.zig");
 const glyph_emit = @import("../glyph_emit.zig");
 const scene_mod = @import("../scene.zig");
 const shape_mod = @import("shape.zig");
-const texture_layers = @import("../render/format/texture_layers.zig");
-const vertex_mod = @import("../render/format/vertex.zig");
+const instance_emit = @import("../render/format/instance_emit.zig");
 const vec = @import("../math/vec.zig");
 const view_mod = @import("view.zig");
 
@@ -18,8 +17,8 @@ const Transform2D = vec.Transform2D;
 const isIdentityTransform = shape_mod.isIdentityTransform;
 const preparedViewPaintInfoRowBase = view_mod.preparedViewPaintInfoRowBase;
 
-pub const WORDS_PER_VERTEX = vertex_mod.WORDS_PER_VERTEX;
-pub const VERTICES_PER_GLYPH = vertex_mod.VERTICES_PER_GLYPH;
+pub const WORDS_PER_VERTEX = instance_emit.WORDS_PER_VERTEX;
+pub const VERTICES_PER_GLYPH = instance_emit.VERTICES_PER_GLYPH;
 pub const WORDS_PER_GLYPH = WORDS_PER_VERTEX * VERTICES_PER_GLYPH;
 
 /// Accumulates glyph vertices into a caller-provided buffer.
@@ -50,6 +49,14 @@ pub const TextBatch = struct {
         return self.layer_window_base orelse 0;
     }
 
+    fn cursor(self: *TextBatch) instance_emit.Cursor {
+        return .{
+            .buf = self.buf,
+            .len = &self.len,
+            .layer_window_base = &self.layer_window_base,
+        };
+    }
+
     pub const AppendResult = struct {
         emitted: usize,
         next_glyph: usize,
@@ -70,16 +77,6 @@ pub const TextBatch = struct {
         start_glyph: usize,
     ) !AppendResult {
         return appendTextDrawIntoBatch(self, view, draw, override_index, start_glyph);
-    }
-
-    fn localLayer(self: *TextBatch, atlas_layer: u32) !u8 {
-        const base = texture_layers.windowBase(atlas_layer);
-        if (self.layer_window_base) |expected| {
-            if (base != expected) return error.TextureLayerWindowChanged;
-        } else {
-            self.layer_window_base = base;
-        }
-        return texture_layers.local(atlas_layer);
     }
 
     /// Append a single glyph quad.
@@ -107,10 +104,7 @@ pub const TextBatch = struct {
         tint: [4]f32,
         atlas_layer: u32,
     ) !void {
-        if (self.len + WORDS_PER_GLYPH > self.buf.len) return error.DrawListFull;
-        const local_layer = try self.localLayer(atlas_layer);
-        vertex_mod.generateGlyphVerticesTinted(self.buf[self.len..], x, y, font_size, bbox, band_entry, color, tint, local_layer);
-        self.len += WORDS_PER_GLYPH;
+        try self.cursor().appendGlyphTinted(x, y, font_size, bbox, band_entry, color, tint, atlas_layer);
     }
 
     /// Append a multi-layer COLR glyph quad.
@@ -142,22 +136,7 @@ pub const TextBatch = struct {
         tint: [4]f32,
         atlas_layer: u32,
     ) !void {
-        if (self.len + WORDS_PER_GLYPH > self.buf.len) return error.DrawListFull;
-        const local_layer = try self.localLayer(atlas_layer);
-        vertex_mod.generateMultiLayerGlyphVerticesTinted(
-            self.buf[self.len..],
-            x,
-            y,
-            font_size,
-            union_bbox,
-            info_x,
-            info_y,
-            layer_count,
-            color,
-            tint,
-            local_layer,
-        );
-        self.len += WORDS_PER_GLYPH;
+        try self.cursor().appendMultiLayerGlyphTinted(x, y, font_size, union_bbox, info_x, info_y, layer_count, color, tint, atlas_layer);
     }
 
     /// Append a single glyph quad with a 2D transform.
@@ -181,11 +160,7 @@ pub const TextBatch = struct {
         atlas_layer: u32,
         transform: Transform2D,
     ) !void {
-        if (self.len + WORDS_PER_GLYPH > self.buf.len) return error.DrawListFull;
-        const local_layer = try self.localLayer(atlas_layer);
-        if (!vertex_mod.generateGlyphVerticesTransformedTinted(self.buf[self.len..], bbox, band_entry, color, tint, local_layer, transform))
-            return error.InvalidTransform;
-        self.len += WORDS_PER_GLYPH;
+        try self.cursor().appendGlyphTransformedTinted(bbox, band_entry, color, tint, atlas_layer, transform);
     }
 
     /// Append a multi-layer COLR glyph quad with a 2D transform.
@@ -213,11 +188,7 @@ pub const TextBatch = struct {
         atlas_layer: u32,
         transform: Transform2D,
     ) !void {
-        if (self.len + WORDS_PER_GLYPH > self.buf.len) return error.DrawListFull;
-        const local_layer = try self.localLayer(atlas_layer);
-        if (!vertex_mod.generateMultiLayerGlyphVerticesTransformedTinted(self.buf[self.len..], union_bbox, info_x, info_y, layer_count, color, tint, local_layer, transform))
-            return error.InvalidTransform;
-        self.len += WORDS_PER_GLYPH;
+        try self.cursor().appendMultiLayerGlyphTransformedTinted(union_bbox, info_x, info_y, layer_count, color, tint, atlas_layer, transform);
     }
 
     pub fn addPathRecordTransformedTinted(
@@ -231,11 +202,7 @@ pub const TextBatch = struct {
         atlas_layer: u32,
         transform: Transform2D,
     ) !void {
-        if (self.len + WORDS_PER_GLYPH > self.buf.len) return error.DrawListFull;
-        const local_layer = try self.localLayer(atlas_layer);
-        if (!vertex_mod.generatePathRecordVerticesTransformedTinted(self.buf[self.len..], union_bbox, info_x, info_y, layer_count, color, tint, local_layer, transform))
-            return error.InvalidTransform;
-        self.len += WORDS_PER_GLYPH;
+        try self.cursor().appendPathRecordTransformedTinted(union_bbox, info_x, info_y, layer_count, color, tint, atlas_layer, transform);
     }
 };
 

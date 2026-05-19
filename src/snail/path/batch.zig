@@ -1,14 +1,13 @@
-const texture_layers = @import("../render/format/texture_layers.zig");
+const instance_emit = @import("../render/format/instance_emit.zig");
 const resources_view = @import("../resources/view.zig");
 const scene_mod = @import("../scene.zig");
-const vertex_mod = @import("../render/format/vertex.zig");
 const vec = @import("../math/vec.zig");
 
 const PathDraw = scene_mod.PathDraw;
 const Transform2D = vec.Transform2D;
 
-pub const PATH_WORDS_PER_VERTEX = vertex_mod.WORDS_PER_VERTEX;
-pub const PATH_VERTICES_PER_SHAPE = vertex_mod.VERTICES_PER_GLYPH;
+pub const PATH_WORDS_PER_VERTEX = instance_emit.WORDS_PER_VERTEX;
+pub const PATH_VERTICES_PER_SHAPE = instance_emit.VERTICES_PER_GLYPH;
 pub const PATH_WORDS_PER_SHAPE = PATH_WORDS_PER_VERTEX * PATH_VERTICES_PER_SHAPE;
 
 pub const PathBatch = struct {
@@ -44,14 +43,12 @@ pub const PathBatch = struct {
         return self.layer_window_base orelse 0;
     }
 
-    fn localLayer(self: *PathBatch, atlas_layer: u32) !u8 {
-        const base = texture_layers.windowBase(atlas_layer);
-        if (self.layer_window_base) |expected| {
-            if (base != expected) return error.TextureLayerWindowChanged;
-        } else {
-            self.layer_window_base = base;
-        }
-        return texture_layers.local(atlas_layer);
+    fn cursor(self: *PathBatch) instance_emit.Cursor {
+        return .{
+            .buf = self.buf,
+            .len = &self.len,
+            .layer_window_base = &self.layer_window_base,
+        };
     }
 
     /// Emit one slice of a `PathDraw` into this batch: the shapes from
@@ -83,22 +80,18 @@ pub const PathBatch = struct {
             } else {
                 self.layer_window_base = layer_base;
             }
-            if (self.len + PATH_WORDS_PER_SHAPE > self.buf.len) return error.DrawListFull;
             const final_transform = Transform2D.multiply(override.transform, shape.transform);
             const info_loc = view.layerInfoLoc(shape.info_x, shape.info_y);
-            const local_layer = try self.localLayer(view.glyphLayer(shape.page_index));
-            if (!vertex_mod.generatePathRecordVerticesTransformedTinted(
-                self.buf[self.len..],
+            try self.cursor().appendPathRecordTransformedTinted(
                 shape.bbox,
                 info_loc.x,
                 info_loc.y,
                 shape.layer_count,
                 .{ 1, 1, 1, 1 },
                 override.tint,
-                local_layer,
+                view.glyphLayer(shape.page_index),
                 final_transform,
-            )) return error.InvalidTransform;
-            self.len += PATH_WORDS_PER_SHAPE;
+            );
             count += 1;
         }
         return .{
