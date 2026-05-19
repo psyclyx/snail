@@ -3,6 +3,7 @@ const std = @import("std");
 const band_tex = @import("../render/format/band_texture.zig");
 const bezier = @import("../math/bezier.zig");
 const core = @import("core.zig");
+const geometry = @import("geometry.zig");
 const curve_tex = @import("../render/format/curve_texture.zig");
 const atlas_curve_mod = @import("../render/format/atlas/curve.zig");
 const atlas_page_mod = @import("../render/format/atlas/page.zig");
@@ -52,17 +53,6 @@ const kPaintTagCompositeGroup: f32 = paint_records.tag_composite_group;
 const PathCompositeMode = enum(u8) {
     source_over = render_abi.composite_mode_source_over,
     fill_stroke_inside = render_abi.composite_mode_fill_stroke_inside,
-};
-
-const PathGeometry = struct {
-    curves: []CurveSegment,
-    bbox: BBox,
-    logical_curve_count: usize,
-
-    fn deinit(self: *PathGeometry, allocator: std.mem.Allocator) void {
-        allocator.free(self.curves);
-        self.* = undefined;
-    }
 };
 
 const PrimitiveShape = enum {
@@ -669,24 +659,20 @@ pub const PathPictureBuilder = struct {
         stroke_paint: Paint,
         transform: Transform2D,
     ) !void {
-        const stroke_bbox = stroke_path.bounds() orelse return error.EmptyPath;
-        const stroke_curves = try stroke_path.cloneFilledCurves(self.allocator);
-        errdefer self.allocator.free(stroke_curves);
-        const stroke_logical_curve_count = stroke_path.filledBandCurveCount();
+        var stroke_geom = try geometry.cloneFill(self.allocator, stroke_path);
+        errdefer stroke_geom.deinit(self.allocator);
 
         if (fill) |style| {
-            const fill_bbox = fill_path.bounds() orelse return error.EmptyPath;
-            const fill_curves = try fill_path.cloneFilledCurves(self.allocator);
-            errdefer self.allocator.free(fill_curves);
-            const fill_logical_curve_count = fill_path.filledBandCurveCount();
+            var fill_geom = try geometry.cloneFill(self.allocator, fill_path);
+            errdefer fill_geom.deinit(self.allocator);
             try self.addCompositeRecord(
-                fill_curves,
-                fill_bbox,
-                fill_logical_curve_count,
+                fill_geom.curves,
+                fill_geom.bbox,
+                fill_geom.logical_curve_count,
                 style.paint,
-                stroke_curves,
-                stroke_bbox,
-                stroke_logical_curve_count,
+                stroke_geom.curves,
+                stroke_geom.bbox,
+                stroke_geom.logical_curve_count,
                 stroke_paint,
                 transform,
                 .fill_stroke_inside,
@@ -694,30 +680,7 @@ pub const PathPictureBuilder = struct {
             return;
         }
 
-        try self.addSingleRecord(stroke_curves, stroke_bbox, stroke_logical_curve_count, stroke_paint, .stroke, transform);
-    }
-
-    fn cloneFillGeometry(self: *PathPictureBuilder, path: *const Path) !PathGeometry {
-        return .{
-            .bbox = path.bounds() orelse return error.EmptyPath,
-            .curves = try path.cloneFilledCurves(self.allocator),
-            .logical_curve_count = path.filledBandCurveCount(),
-        };
-    }
-
-    fn strokeGeometryStyle(style: StrokeStyle) StrokeStyle {
-        var geometry_style = style;
-        if (style.placement == .inside) geometry_style.width *= 2.0;
-        return geometry_style;
-    }
-
-    fn cloneStrokeGeometry(self: *PathPictureBuilder, path: *const Path, style: StrokeStyle) !?PathGeometry {
-        const stroke_geom = (try path.cloneStrokedCurves(self.allocator, strokeGeometryStyle(style))) orelse return null;
-        return .{
-            .curves = stroke_geom.curves,
-            .bbox = stroke_geom.bbox,
-            .logical_curve_count = stroke_geom.logical_curve_count,
-        };
+        try self.addSingleRecord(stroke_geom.curves, stroke_geom.bbox, stroke_geom.logical_curve_count, stroke_paint, .stroke, transform);
     }
 
     fn addFillPathRecord(
@@ -727,11 +690,11 @@ pub const PathPictureBuilder = struct {
         stroke: ?StrokeStyle,
         transform: Transform2D,
     ) !void {
-        var fill_geom = try self.cloneFillGeometry(path);
+        var fill_geom = try geometry.cloneFill(self.allocator, path);
         errdefer fill_geom.deinit(self.allocator);
 
         if (stroke) |stroke_style| {
-            if (try self.cloneStrokeGeometry(path, stroke_style)) |stroke_geom_value| {
+            if (try geometry.cloneStroke(self.allocator, path, stroke_style)) |stroke_geom_value| {
                 var stroke_geom = stroke_geom_value;
                 errdefer stroke_geom.deinit(self.allocator);
                 try self.addCompositeRecord(
@@ -759,11 +722,11 @@ pub const PathPictureBuilder = struct {
         stroke: StrokeStyle,
         transform: Transform2D,
     ) !void {
-        var stroke_geom = (try self.cloneStrokeGeometry(path, stroke)) orelse return;
+        var stroke_geom = (try geometry.cloneStroke(self.allocator, path, stroke)) orelse return;
         errdefer stroke_geom.deinit(self.allocator);
 
         if (stroke.placement == .inside) {
-            var fill_geom = try self.cloneFillGeometry(path);
+            var fill_geom = try geometry.cloneFill(self.allocator, path);
             errdefer fill_geom.deinit(self.allocator);
             try self.addCompositeRecord(
                 fill_geom.curves,
