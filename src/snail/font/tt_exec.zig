@@ -166,7 +166,7 @@ pub const Context = struct {
         switch (op) {
             0x00...0x05, 0x0A...0x0E, 0x10...0x1A, 0x1D...0x1F => try self.executeGraphicsOp(op),
             0x20...0x26 => try self.executeStackOp(op),
-            0x29, 0x2E...0x33, 0x38, 0x3A...0x3B, 0x3E...0x3F, 0x46...0x4A => try self.executePointOp(op),
+            0x27, 0x29, 0x2E...0x33, 0x38, 0x3A...0x3C, 0x3E...0x3F, 0x46...0x4A, 0xC0...0xFF => try self.executePointOp(op),
             0x2A...0x2C => try self.executeFunctionOp(code, pc, op),
             0x2D => return Error.InvalidOpcode,
             0x40 => try self.pushBytes(code, pc, try readU8(code, pc)),
@@ -205,16 +205,20 @@ pub const Context = struct {
 
     fn executePointOp(self: *Context, op: u8) Error!void {
         switch (op) {
+            0x27 => try self.alignPoints(),
             0x29 => try self.untouchPoint(),
             0x2E, 0x2F => try self.moveDirectAbsolutePoint(op == 0x2F),
             0x30, 0x31 => try self.interpolateUntouchedPoints(op),
             0x32, 0x33 => try self.shiftPointsByReference(op),
             0x38 => try self.shiftPointsByPixels(),
             0x3A, 0x3B => try self.moveStackIndirectRelativePoint(op == 0x3B),
+            0x3C => try self.alignReferencePoints(),
             0x3E, 0x3F => try self.moveIndirectAbsolutePoint(op == 0x3F),
             0x46, 0x47 => try self.getCoordinate(op == 0x47),
             0x48 => try self.setCoordinateFromStack(),
             0x49, 0x4A => try self.measureDistance(op == 0x4A),
+            0xC0...0xDF => try self.moveDirectRelativePoint(relativeFlags(op, 0xC0)),
+            0xE0...0xFF => try self.moveIndirectRelativePoint(relativeFlags(op, 0xE0)),
             else => unreachable,
         }
     }
@@ -526,6 +530,66 @@ pub const Context = struct {
         self.graphics.rp1 = point;
     }
 
+    fn moveDirectRelativePoint(self: *Context, flags: RelativeFlags) Error!void {
+        const point = try self.popU32();
+        const projection = try self.projectionDirection(false);
+        const dual_projection = try self.projectionDirection(true);
+        const freedom = try self.freedomDirection();
+        const ref_zone = try self.zoneConst(self.graphics.zp0);
+        const point_zone = try self.zone(self.graphics.zp1);
+
+        const original_distance = subWrap(
+            try point_zone.coordinate(dual_projection, point, true),
+            try ref_zone.coordinate(dual_projection, self.graphics.rp0, true),
+        );
+        var distance = self.applySingleWidth(original_distance);
+        if (flags.round) distance = self.graphics.round_mode.apply(distance);
+        distance = self.applyMinimumDistance(distance, original_distance, flags.minimum_distance);
+
+        const target = addWrap(try ref_zone.coordinate(projection, self.graphics.rp0, false), distance);
+        try point_zone.moveTo(projection, freedom, point, target);
+        self.updateRelativeReferencePoints(point, flags.set_rp0);
+    }
+
+    fn moveIndirectRelativePoint(self: *Context, flags: RelativeFlags) Error!void {
+        const cvt_index = try checkedIndex(try self.pop(), self.cvt.len, Error.InvalidCvtIndex);
+        const point = try self.popU32();
+        const projection = try self.projectionDirection(false);
+        const dual_projection = try self.projectionDirection(true);
+        const freedom = try self.freedomDirection();
+        const ref_zone = try self.zoneConst(self.graphics.zp0);
+        const point_zone = try self.zone(self.graphics.zp1);
+
+        var cvt_distance = self.cvt[cvt_index];
+        var original_distance = subWrap(
+            try point_zone.coordinate(dual_projection, point, true),
+            try ref_zone.coordinate(dual_projection, self.graphics.rp0, true),
+        );
+        if (self.graphics.auto_flip and signsDiffer(cvt_distance, original_distance)) {
+            cvt_distance = negWrap(cvt_distance);
+        }
+        if (self.graphics.zp1 == .twilight) {
+            original_distance = cvt_distance;
+            const original_target = addWrap(
+                try ref_zone.coordinate(dual_projection, self.graphics.rp0, true),
+                original_distance,
+            );
+            try point_zone.setOriginalCoordinate(dual_projection, point, original_target);
+        }
+
+        var distance = cvt_distance;
+        if (flags.round and absDiffI32(cvt_distance, original_distance) > self.graphics.control_value_cut_in) {
+            distance = original_distance;
+        }
+        distance = self.applySingleWidth(distance);
+        if (flags.round) distance = self.graphics.round_mode.apply(distance);
+        distance = self.applyMinimumDistance(distance, original_distance, flags.minimum_distance);
+
+        const target = addWrap(try ref_zone.coordinate(projection, self.graphics.rp0, false), distance);
+        try point_zone.moveTo(projection, freedom, point, target);
+        self.updateRelativeReferencePoints(point, flags.set_rp0);
+    }
+
     fn moveStackIndirectRelativePoint(self: *Context, set_rp0: bool) Error!void {
         const distance = try self.pop();
         const point = try self.popU32();
@@ -539,6 +603,37 @@ pub const Context = struct {
         self.graphics.rp1 = self.graphics.rp0;
         self.graphics.rp2 = point;
         if (set_rp0) self.graphics.rp0 = point;
+    }
+
+    fn alignPoints(self: *Context) Error!void {
+        const p1 = try self.popU32();
+        const p2 = try self.popU32();
+        const projection = try self.projectionDirection(false);
+        const freedom = try self.freedomDirection();
+        const zone1 = try self.zone(self.graphics.zp1);
+        const zone0 = try self.zone(self.graphics.zp0);
+        const c1 = try zone1.coordinate(projection, p1, false);
+        const c2 = try zone0.coordinate(projection, p2, false);
+        const target: i32 = @truncate(@divTrunc(@as(i64, c1) + @as(i64, c2), 2));
+
+        try zone1.moveTo(projection, freedom, p1, target);
+        try zone0.moveTo(projection, freedom, p2, target);
+    }
+
+    fn alignReferencePoints(self: *Context) Error!void {
+        const projection = try self.projectionDirection(false);
+        const freedom = try self.freedomDirection();
+        const ref_zone = try self.zoneConst(self.graphics.zp0);
+        const point_zone = try self.zone(self.graphics.zp1);
+        const target = try ref_zone.coordinate(projection, self.graphics.rp0, false);
+
+        const count = self.graphics.loop_count;
+        if (count == 0) return Error.StackUnderflow;
+        var i: u32 = 0;
+        while (i < count) : (i += 1) {
+            try point_zone.moveTo(projection, freedom, try self.popU32(), target);
+        }
+        self.graphics.loop_count = 1;
     }
 
     fn getCoordinate(self: *Context, original: bool) Error!void {
@@ -606,8 +701,30 @@ pub const Context = struct {
     }
 
     fn interpolateUntouchedPoints(self: *Context, op: u8) Error!void {
-        const zone_ptr = try self.zone(.glyph);
+        const zone_ptr = try self.zone(self.graphics.zp2);
         try zone_ptr.interpolateUntouched(if (op == 0x30) .y else .x);
+    }
+
+    fn applySingleWidth(self: *const Context, distance: i32) i32 {
+        const cut_in = self.graphics.single_width_cut_in;
+        if (cut_in <= 0) return distance;
+
+        const width = absI32(self.graphics.single_width_value);
+        if (absDiffI32(absI32(distance), width) >= cut_in) return distance;
+        return withSign(width, distance);
+    }
+
+    fn applyMinimumDistance(self: *const Context, distance: i32, sign_hint: i32, enabled: bool) i32 {
+        if (!enabled) return distance;
+        const minimum = absI32(self.graphics.minimum_distance);
+        if (absI32(distance) >= minimum) return distance;
+        return withSign(minimum, if (distance == 0) sign_hint else distance);
+    }
+
+    fn updateRelativeReferencePoints(self: *Context, point: u32, set_rp0: bool) void {
+        self.graphics.rp1 = self.graphics.rp0;
+        self.graphics.rp2 = point;
+        if (set_rp0) self.graphics.rp0 = point;
     }
 
     fn callFunction(self: *Context, function_id: i32) Error!void {
@@ -734,6 +851,23 @@ const Parity = enum {
     even,
 };
 
+const RelativeFlags = struct {
+    set_rp0: bool,
+    minimum_distance: bool,
+    round: bool,
+    distance_type: u2,
+};
+
+fn relativeFlags(op: u8, base: u8) RelativeFlags {
+    const flags = op - base;
+    return .{
+        .set_rp0 = flags & 0x10 != 0,
+        .minimum_distance = flags & 0x08 != 0,
+        .round = flags & 0x04 != 0,
+        .distance_type = @intCast(flags & 0x03),
+    };
+}
+
 inline fn readU8(code: []const u8, pc: *usize) Error!u8 {
     if (pc.* >= code.len) return Error.UnexpectedEof;
     const value = code[pc.*];
@@ -773,6 +907,14 @@ fn absI32(value: i32) i32 {
 
 fn absDiffI32(lhs: i32, rhs: i32) i32 {
     return absI32(subWrap(lhs, rhs));
+}
+
+fn withSign(magnitude: i32, sign_hint: i32) i32 {
+    return if (sign_hint < 0) negWrap(magnitude) else magnitude;
+}
+
+fn signsDiffer(lhs: i32, rhs: i32) bool {
+    return (lhs < 0 and rhs > 0) or (lhs > 0 and rhs < 0);
 }
 
 fn addWrap(lhs: i32, rhs: i32) i32 {
@@ -1112,6 +1254,67 @@ test "tt executor interpolates untouched glyph points" {
     try ctx.execute(&.{0x31}); // IUP[x]
 
     try std.testing.expectEqual(@as(i32, 100), glyph_points[1].x);
+}
+
+test "tt executor aligns points and reference points" {
+    var stack: [32]i32 = undefined;
+    var storage: [1]i32 = .{0};
+    var cvt: [1]i32 = .{0};
+    var ctx = Context.init(.{ .stack = &stack, .storage = &storage, .cvt = &cvt }, .{});
+
+    var twilight_points: [1]Point = undefined;
+    var glyph_points: [3]Point = .{
+        .{ .x = 0, .y = 0, .ox = 0, .oy = 0, .on_curve = true },
+        .{ .x = 100, .y = 0, .ox = 100, .oy = 0, .on_curve = true },
+        .{ .x = 160, .y = 0, .ox = 160, .oy = 0, .on_curve = true },
+    };
+    var zones: PointZones = .{
+        .twilight = PointZone.initTwilight(&twilight_points),
+        .glyph = .{ .points = &glyph_points },
+    };
+    ctx.setZones(&zones);
+
+    try ctx.execute(&.{
+        0xB1, 0, 1, 0x27, // ALIGNPTS point 0 and point 1 at their midpoint
+        0xB0, 0, 0x10, // SRP0 0
+        0xB0, 2, 0x3C, // ALIGNRP point 2 to rp0
+    });
+
+    try std.testing.expectEqual(@as(i32, 50), glyph_points[0].x);
+    try std.testing.expectEqual(@as(i32, 50), glyph_points[1].x);
+    try std.testing.expectEqual(@as(i32, 50), glyph_points[2].x);
+    try std.testing.expectEqual(@as(u32, 1), ctx.graphics.loop_count);
+}
+
+test "tt executor handles direct and indirect relative moves" {
+    var stack: [32]i32 = undefined;
+    var storage: [1]i32 = .{0};
+    var cvt: [2]i32 = .{ 100, 20 };
+    var ctx = Context.init(.{ .stack = &stack, .storage = &storage, .cvt = &cvt }, .{});
+
+    var twilight_points: [1]Point = undefined;
+    var glyph_points: [3]Point = .{
+        .{ .x = 80, .y = 0, .ox = 40, .oy = 0, .on_curve = true },
+        .{ .x = 140, .y = 0, .ox = 140, .oy = 0, .on_curve = true },
+        .{ .x = 180, .y = 0, .ox = 180, .oy = 0, .on_curve = true },
+    };
+    var zones: PointZones = .{
+        .twilight = PointZone.initTwilight(&twilight_points),
+        .glyph = .{ .points = &glyph_points },
+    };
+    ctx.setZones(&zones);
+
+    try ctx.execute(&.{
+        0xB0, 0, 0x10, // SRP0 0
+        0xB0, 1, 0xD4, // MDRP[10100]: round original distance and set rp0
+        0xB1, 2, 0, 0xE4, // MIRP[00100]: use cvt[0] with rounding/cut-in
+    });
+
+    try std.testing.expectEqual(@as(i32, 208), glyph_points[1].x);
+    try std.testing.expectEqual(@as(i32, 336), glyph_points[2].x);
+    try std.testing.expectEqual(@as(u32, 1), ctx.graphics.rp1);
+    try std.testing.expectEqual(@as(u32, 2), ctx.graphics.rp2);
+    try std.testing.expectEqual(@as(u32, 1), ctx.graphics.rp0);
 }
 
 test "tt executor records and calls function definitions" {

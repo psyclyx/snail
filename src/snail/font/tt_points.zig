@@ -76,6 +76,14 @@ pub const Zone = struct {
         touchPoint(p, freedom.axis);
     }
 
+    pub fn setOriginalCoordinate(self: *Zone, direction: Direction, point: u32, target: i32) Error!void {
+        const p = try self.getMutable(point);
+        switch (direction.axis) {
+            .x => p.ox = applySign(target, direction.sign),
+            .y => p.oy = applySign(target, direction.sign),
+        }
+    }
+
     pub fn shift(self: *Zone, freedom: Direction, point: u32, distance: i32) Error!void {
         const p = try self.getMutable(point);
         switch (freedom.axis) {
