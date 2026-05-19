@@ -1,4 +1,5 @@
 const std = @import("std");
+const tt_outline = @import("tt_outline.zig");
 const vec = @import("../math/vec.zig");
 const bezier_mod = @import("../math/bezier.zig");
 const Vec2 = vec.Vec2;
@@ -47,8 +48,6 @@ pub const Glyph = struct {
     contours: []const Contour,
     metrics: GlyphMetrics,
 };
-
-const PointInfo = struct { pos: Vec2, on_curve: bool };
 
 /// Glyph cache for parsed glyph outlines. Caller-owned, enabling thread-safe
 /// usage patterns: each thread (or Atlas) gets its own cache.
@@ -440,71 +439,9 @@ pub const Font = struct {
         return self.parseSimpleGlyph(allocator, cache, glyph_id, base, @intCast(num_contours), metrics);
     }
 
-    fn readSimpleGlyphEndPoints(self: *const Font, allocator: std.mem.Allocator, base: u32, num_contours: u16) ParseError![]u16 {
-        const end_pts = try allocator.alloc(u16, num_contours);
-        errdefer allocator.free(end_pts);
-        for (0..num_contours) |i| {
-            end_pts[i] = try readU16(self.data, base + 10 + @as(u32, @intCast(i)) * 2);
-        }
-        return end_pts;
-    }
-
-    fn readSimpleGlyphFlags(self: *const Font, allocator: std.mem.Allocator, num_points: u32, offset: *u32) ParseError![]u8 {
-        const flags = try allocator.alloc(u8, num_points);
-        errdefer allocator.free(flags);
-        var i: u32 = 0;
-        while (i < num_points) {
-            if (offset.* >= self.data.len) return error.UnexpectedEof;
-            const flag = self.data[offset.*];
-            offset.* += 1;
-            flags[i] = flag;
-            i += 1;
-            if (flag & 8 != 0) {
-                if (offset.* >= self.data.len) return error.UnexpectedEof;
-                const repeat = self.data[offset.*];
-                offset.* += 1;
-                for (0..repeat) |_| {
-                    if (i >= num_points) break;
-                    flags[i] = flag;
-                    i += 1;
-                }
-            }
-        }
-        return flags;
-    }
-
-    fn readSimpleGlyphCoords(
-        self: *const Font,
-        allocator: std.mem.Allocator,
-        flags: []const u8,
-        offset: *u32,
-        short_vector_bit: u8,
-        same_or_positive_bit: u8,
-    ) ParseError![]i16 {
-        const coords = try allocator.alloc(i16, flags.len);
-        errdefer allocator.free(coords);
-        var coord: i16 = 0;
-        for (flags, 0..) |flag, i| {
-            if (flag & short_vector_bit != 0) {
-                if (offset.* >= self.data.len) return error.UnexpectedEof;
-                const delta: i16 = @intCast(self.data[offset.*]);
-                offset.* += 1;
-                if (flag & same_or_positive_bit != 0) coord += delta else coord -= delta;
-            } else if (flag & same_or_positive_bit == 0) {
-                coord += try readI16(self.data, offset.*);
-                offset.* += 2;
-            }
-            coords[i] = coord;
-        }
-        return coords;
-    }
-
     fn buildSimpleGlyphContours(
         allocator: std.mem.Allocator,
-        end_pts: []const u16,
-        flags: []const u8,
-        x_coords: []const i16,
-        y_coords: []const i16,
+        outline: *const tt_outline.SimpleGlyph,
         scale: f32,
     ) ParseError![]Contour {
         var contours: std.ArrayList(Contour) = .empty;
@@ -513,21 +450,16 @@ pub const Font = struct {
             contours.deinit(allocator);
         }
 
-        var contour_start: u32 = 0;
-        for (end_pts) |end_pt| {
-            const contour_end: u32 = @as(u32, end_pt) + 1;
+        for (outline.contours) |range| {
             const curves = try contourToCurves(
                 allocator,
-                flags[contour_start..contour_end],
-                x_coords[contour_start..contour_end],
-                y_coords[contour_start..contour_end],
+                outline.points[range.start..range.end],
                 scale,
             );
             contours.append(allocator, .{ .curves = curves }) catch |err| {
                 if (curves.len > 0) allocator.free(curves);
                 return err;
             };
-            contour_start = contour_end;
         }
 
         return contours.toOwnedSlice(allocator);
@@ -545,20 +477,9 @@ pub const Font = struct {
         }
 
         const scale = 1.0 / @as(f32, @floatFromInt(self.units_per_em));
-        const end_pts = try self.readSimpleGlyphEndPoints(allocator, base, num_contours);
-        defer allocator.free(end_pts);
-        const num_points = @as(u32, end_pts[num_contours - 1]) + 1;
-        const instr_len_off = base + 10 + @as(u32, num_contours) * 2;
-        const instr_len = try readU16(self.data, instr_len_off);
-        var offset = instr_len_off + 2 + instr_len;
-
-        const flags = try self.readSimpleGlyphFlags(allocator, num_points, &offset);
-        defer allocator.free(flags);
-        const x_coords = try self.readSimpleGlyphCoords(allocator, flags, &offset, 2, 16);
-        defer allocator.free(x_coords);
-        const y_coords = try self.readSimpleGlyphCoords(allocator, flags, &offset, 4, 32);
-        defer allocator.free(y_coords);
-        const contours = try buildSimpleGlyphContours(allocator, end_pts, flags, x_coords, y_coords, scale);
+        var outline = try tt_outline.parseSimpleGlyph(allocator, self.data, base, num_contours);
+        defer outline.deinit();
+        const contours = try buildSimpleGlyphContours(allocator, &outline, scale);
         return cacheParsedGlyph(allocator, cache, glyph_id, .{ .contours = contours, .metrics = metrics });
     }
 
@@ -761,70 +682,12 @@ pub const Font = struct {
     }
 };
 
-fn contourToCurves(allocator: std.mem.Allocator, point_flags: []const u8, x_coords: []const i16, y_coords: []const i16, scale: f32) ![]QuadBezier {
-    const n = point_flags.len;
-    if (n < 2) return &.{};
-
-    var points: std.ArrayList(PointInfo) = .empty;
-    defer points.deinit(allocator);
-    for (0..n) |i| {
-        const px = @as(f32, @floatFromInt(x_coords[i])) * scale;
-        const py = @as(f32, @floatFromInt(y_coords[i])) * scale;
-        try points.append(allocator, .{ .pos = Vec2.new(px, py), .on_curve = (point_flags[i] & 1) != 0 });
-    }
-
-    var expanded: std.ArrayList(PointInfo) = .empty;
-    defer expanded.deinit(allocator);
-    for (0..points.items.len) |i| {
-        const curr = points.items[i];
-        try expanded.append(allocator, curr);
-        if (!curr.on_curve) {
-            const next = points.items[(i + 1) % points.items.len];
-            if (!next.on_curve) {
-                try expanded.append(allocator, .{
-                    .pos = Vec2.lerp(curr.pos, next.pos, 0.5),
-                    .on_curve = true,
-                });
-            }
-        }
-    }
-
-    var curves: std.ArrayList(QuadBezier) = .empty;
-    errdefer curves.deinit(allocator);
-    const pts = expanded.items;
-    if (pts.len < 2) return &.{};
-
-    var start_idx: usize = 0;
-    for (0..pts.len) |i| {
-        if (pts[i].on_curve) {
-            start_idx = i;
-            break;
-        }
-    }
-
-    var idx = start_idx;
-    var iterations: usize = 0;
-    while (iterations < pts.len + 1) {
-        const p0 = pts[idx % pts.len];
-        if (!p0.on_curve) {
-            idx += 1;
-            iterations += 1;
-            continue;
-        }
-        const next1 = pts[(idx + 1) % pts.len];
-        if (next1.on_curve) {
-            try curves.append(allocator, .{ .p0 = p0.pos, .p1 = Vec2.lerp(p0.pos, next1.pos, 0.5), .p2 = next1.pos });
-            idx += 1;
-        } else {
-            const next2 = pts[(idx + 2) % pts.len];
-            try curves.append(allocator, .{ .p0 = p0.pos, .p1 = next1.pos, .p2 = next2.pos });
-            idx += 2;
-        }
-        iterations += 1;
-        if (idx % pts.len == start_idx) break;
-    }
-
-    return curves.toOwnedSlice(allocator);
+fn contourToCurves(
+    allocator: std.mem.Allocator,
+    points: []const tt_outline.Point,
+    scale: f32,
+) ![]QuadBezier {
+    return tt_outline.contourToCurves(allocator, points, scale);
 }
 
 test "font basic validation" {
