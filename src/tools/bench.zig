@@ -95,9 +95,15 @@ fn sceneTextKey(index: usize) snail.ResourceKey {
     return snail.ResourceKey.fromId(@intCast(index + 1));
 }
 
-fn declareTextBlobResources(set: *snail.ResourceManifest, keys: snail.TextResourceKeys, blob: *const snail.TextBlob) !void {
-    try set.putTextAtlas(keys.atlas, blob.atlas);
-    if (keys.paint) |paint_key| try set.putTextPaint(paint_key, blob);
+fn declareTextBlobResources(
+    set: *snail.ResourceManifest,
+    atlas_key: snail.ResourceKey,
+    blob_key: snail.ResourceKey,
+    blob: *const snail.TextBlob,
+) !snail.TextResourceKeys {
+    const resources = blob.resourceKeys(atlas_key, blob_key);
+    try set.putTextBlob(resources, blob);
+    return resources;
 }
 
 const RenderMode = struct {
@@ -526,7 +532,7 @@ fn buildScene(
         blobs[blob_count] = try makeRichTextBlob(allocator, atlas);
         try scene.addText(.{
             .blob = &blobs[blob_count],
-            .resources = snail.ResourceManifest.textBlobResourceKeys(snail.ResourceKey.named("fonts"), sceneTextKey(blob_count), &blobs[blob_count]),
+            .resources = blobs[blob_count].resourceKeys(snail.ResourceKey.named("fonts"), sceneTextKey(blob_count)),
         });
         blob_count += 1;
     } else if (needs_text) {
@@ -536,7 +542,7 @@ fn buildScene(
             blobs[blob_count] = try makeTextBlob(allocator, atlas, line);
             try scene.addText(.{
                 .blob = &blobs[blob_count],
-                .resources = snail.ResourceManifest.textBlobResourceKeys(snail.ResourceKey.named("fonts"), sceneTextKey(blob_count), &blobs[blob_count]),
+                .resources = blobs[blob_count].resourceKeys(snail.ResourceKey.named("fonts"), sceneTextKey(blob_count)),
             });
             blob_count += 1;
         }
@@ -577,7 +583,7 @@ fn uploadSceneResources(
 
     var set = snail.ResourceManifest.init(entries);
     for (bundle.blobs, 0..) |*blob, i| {
-        try declareTextBlobResources(&set, snail.ResourceManifest.textBlobResourceKeys(snail.ResourceKey.named("fonts"), sceneTextKey(i), blob), blob);
+        _ = try declareTextBlobResources(&set, snail.ResourceKey.named("fonts"), sceneTextKey(i), blob);
     }
     if (bundle.picture) |picture| try set.putPathPicture(VECTOR_RESOURCE_KEY, picture);
     return renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set);
@@ -616,14 +622,14 @@ fn timeRecordBuild(
     const allocator = std.heap.smp_allocator;
     for (0..RECORD_WARMUP) |_| {
         var prepared_scene = try snail.PreparedScene.initOwned(allocator, prepared, scene);
-        std.mem.doNotOptimizeAway(prepared_scene.words.len);
+        std.mem.doNotOptimizeAway(prepared_scene.wordCount());
         prepared_scene.deinit();
     }
 
     const start = nowNs();
     for (0..RECORD_ITERS) |_| {
         var prepared_scene = try snail.PreparedScene.initOwned(allocator, prepared, scene);
-        std.mem.doNotOptimizeAway(prepared_scene.words.len);
+        std.mem.doNotOptimizeAway(prepared_scene.wordCount());
         prepared_scene.deinit();
     }
     return usFrom(start) / RECORD_ITERS;
@@ -657,7 +663,7 @@ fn benchModes(
                 .mode = mode,
                 .record_us = record_us,
                 .draw_us = draw_us,
-                .words = prepared_scene.words.len,
+                .words = prepared_scene.wordCount(),
                 .segments = prepared_scene.segments.len,
             });
         }
@@ -752,7 +758,7 @@ pub fn main() !void {
             .scene = kind,
             .us = try timeRecordBuild(&cpu_resources[i], &bundles[i].scene),
             .commands = bundles[i].scene.commandCount(),
-            .words = prepared_scenes[i].words.len,
+            .words = prepared_scenes[i].wordCount(),
             .segments = prepared_scenes[i].segments.len,
         };
     }
@@ -766,9 +772,9 @@ pub fn main() !void {
             .scene = kind,
             .frames = CPU_FRAMES,
             .commands = bundles[i].scene.commandCount(),
-            .words = prepared_scenes[i].words.len,
+            .words = prepared_scenes[i].wordCount(),
             .segments = prepared_scenes[i].segments.len,
-            .instance_bytes = prepared_scenes[i].words.len * @sizeOf(u32),
+            .instance_bytes = prepared_scenes[i].wordCount() * @sizeOf(u32),
             .us = try render_timing.timeCpuDraw(&cpu_renderer, &cpu_resources[i], &prepared_scenes[i], options, cpu_pixels, CPU_WARMUP, CPU_FRAMES),
         });
     }
@@ -779,9 +785,9 @@ pub fn main() !void {
             .scene = kind,
             .frames = CPU_FRAMES,
             .commands = bundles[i].scene.commandCount(),
-            .words = prepared_scenes[i].words.len,
+            .words = prepared_scenes[i].wordCount(),
             .segments = prepared_scenes[i].segments.len,
-            .instance_bytes = prepared_scenes[i].words.len * @sizeOf(u32),
+            .instance_bytes = prepared_scenes[i].wordCount() * @sizeOf(u32),
             .us = try render_timing.timeCpuDraw(&cpu_threaded_renderer, &cpu_resources[i], &prepared_scenes[i], options, cpu_pixels_threaded, CPU_WARMUP, CPU_FRAMES),
         });
     }
@@ -804,9 +810,9 @@ pub fn main() !void {
             .scene = kind,
             .frames = GPU_FRAMES,
             .commands = bundles[i].scene.commandCount(),
-            .words = gl_scene.words.len,
+            .words = gl_scene.wordCount(),
             .segments = gl_scene.segments.len,
-            .instance_bytes = gl_scene.words.len * @sizeOf(u32),
+            .instance_bytes = gl_scene.wordCount() * @sizeOf(u32),
             .us = try render_timing.timeGlDraw(&gl_renderer, &gl_resources, &gl_scene, options, GPU_WARMUP, GPU_FRAMES),
         });
     }
@@ -829,9 +835,9 @@ pub fn main() !void {
                 .scene = kind,
                 .frames = GPU_FRAMES,
                 .commands = bundles[i].scene.commandCount(),
-                .words = vk_scene.words.len,
+                .words = vk_scene.wordCount(),
                 .segments = vk_scene.segments.len,
-                .instance_bytes = vk_scene.words.len * @sizeOf(u32),
+                .instance_bytes = vk_scene.wordCount() * @sizeOf(u32),
                 .us = try render_timing.timeVulkanDraw(&vk_state.?, &vk_renderer, &vk_resources, &vk_scene, options, GPU_WARMUP, GPU_FRAMES),
             });
         }

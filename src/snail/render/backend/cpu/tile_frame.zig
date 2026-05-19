@@ -1,10 +1,12 @@
 const snail = @import("../../../root.zig");
+const draw_mod = @import("../../../draw.zig");
+const interface = @import("../../interface.zig");
 
 pub fn Context(comptime Renderer: type) type {
     return struct {
         self: *const Renderer,
         backend_prepared: ?*const anyopaque,
-        records: snail.DrawRecords,
+        records: draw_mod.DrawRecords,
         state: snail.DrawState,
     };
 }
@@ -20,7 +22,7 @@ pub fn callback(comptime Renderer: type, comptime tile_rows: u32) *const fn (*an
             tile_renderer.row_clip_max = @min(tile_min + tile_rows, ctx.self.row_clip_max);
 
             var renderer = tile_renderer.asRenderer();
-            renderer.iterateRecords(ctx.records, ctx.state, ctx.backend_prepared) catch unreachable;
+            interface.iterateRecords(&renderer, ctx.records, ctx.state, ctx.backend_prepared) catch unreachable;
         }
     }.run;
 }

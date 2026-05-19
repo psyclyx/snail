@@ -71,15 +71,11 @@ fn declareTextBlobResources(
     resources: *c.test_api.ResourceManifestImpl,
     atlas_key: c.SnailResourceKey,
     blob_key: c.SnailResourceKey,
-    atlas: *const c.test_api.TextAtlasImpl,
     blob: *const c.test_api.TextBlobImpl,
     out: *c.SnailTextResourceKeys,
 ) !void {
-    try testing.expectEqual(c.SNAIL_OK, c_resources.snail_text_blob_resource_keys(atlas_key, blob_key, blob, out));
-    try testing.expectEqual(c.SNAIL_OK, c_resources.snail_resource_manifest_put_text_atlas(resources, out.atlas_key, atlas));
-    if (out.has_paint_key) {
-        try testing.expectEqual(c.SNAIL_OK, c_resources.snail_resource_manifest_put_text_paint(resources, out.paint_key, blob));
-    }
+    try testing.expectEqual(c.SNAIL_OK, c_resources.snail_text_resource_keys_for_blob(atlas_key, blob_key, blob, out));
+    try testing.expectEqual(c.SNAIL_OK, c_resources.snail_resource_manifest_put_text_blob(resources, out.*, blob));
 }
 
 fn testDrawState(width: f32, height: f32) c.SnailDrawState {
@@ -233,12 +229,23 @@ test "c_api: invalid caller input maps to invalid argument" {
     defer c_path.snail_path_deinit(path);
     try testing.expectEqual(c.SNAIL_ERR_INVALID_ARGUMENT, c_path.snail_path_line_to(path.?, 1, 1));
 
-    const atlas = try testTextAtlas();
+    var atlas = try testTextAtlas();
     defer c_text.snail_text_atlas_deinit(atlas);
+    try ensureForText(&atlas, "A");
+
+    var blob: ?*c.test_api.TextBlobImpl = null;
+    try testing.expectEqual(c.SNAIL_OK, c_text.snail_text_blob_init_text(null, atlas, .{}, "A", 1, .{
+        .placement = .{ .baseline_x = 0, .baseline_y = 24, .em = 24 },
+        .fill = .{ .kind = c.SNAIL_PAINT_SOLID, .paint_solid = .{ 1, 1, 1, 1 } },
+    }, &blob));
+    defer c_text.snail_text_blob_deinit(blob);
+
     var resources: ?*c.test_api.ResourceManifestImpl = null;
     try testing.expectEqual(c.SNAIL_OK, c_resources.snail_resource_manifest_init(null, 0, &resources));
     defer c_resources.snail_resource_manifest_deinit(resources);
-    try testing.expectEqual(c.SNAIL_ERR_INVALID_ARGUMENT, c_resources.snail_resource_manifest_put_text_atlas(resources.?, 1, atlas));
+    var keys: c.SnailTextResourceKeys = .{};
+    try testing.expectEqual(c.SNAIL_OK, c_resources.snail_text_resource_keys_for_blob(1, 2, blob.?, &keys));
+    try testing.expectEqual(c.SNAIL_ERR_INVALID_ARGUMENT, c_resources.snail_resource_manifest_put_text_blob(resources.?, keys, blob.?));
 
     const pixels = [_]u8{ 255, 255, 255, 255 };
     var image: ?*c.test_api.ImageImpl = null;
@@ -300,7 +307,7 @@ test "c_api: scheduled upload draw list coverage records and retirement" {
     try testing.expectEqual(c.SNAIL_OK, c_resources.snail_resource_manifest_init(null, 4, &resources));
     defer c_resources.snail_resource_manifest_deinit(resources);
     var text_keys: c.SnailTextResourceKeys = .{};
-    try declareTextBlobResources(resources.?, 1, 2, atlas, blob.?, &text_keys);
+    try declareTextBlobResources(resources.?, 1, 2, blob.?, &text_keys);
     try testing.expectEqual(@as(c.SnailResourceKey, 1), text_keys.atlas_key);
 
     var scene: ?*c.test_api.SceneImpl = null;
@@ -395,7 +402,7 @@ test "c_api: scene and resource manifest follow public model" {
     try testing.expectEqual(c.SNAIL_OK, c_resources.snail_resource_manifest_init(null, 4, &resources));
     defer c_resources.snail_resource_manifest_deinit(resources);
     var text_keys: c.SnailTextResourceKeys = .{};
-    try declareTextBlobResources(resources.?, 1, 2, atlas, blob.?, &text_keys);
+    try declareTextBlobResources(resources.?, 1, 2, blob.?, &text_keys);
     try testing.expectEqual(@as(usize, 1), c_resources.snail_resource_manifest_count(resources.?));
 
     var scene: ?*c.test_api.SceneImpl = null;

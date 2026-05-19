@@ -314,7 +314,6 @@ pub const TextAtlas = struct {
 
         return .{
             .allocator = allocator,
-            .atlas_identity = self.snapshotIdentity(),
             .config = self.config,
             .glyphs = try glyphs.toOwnedSlice(allocator),
             .advance_x = cursor_x,

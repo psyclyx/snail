@@ -621,24 +621,21 @@ void snail_resource_manifest_deinit(SnailResourceManifest *set);
 void snail_resource_manifest_reset(SnailResourceManifest *set);
 size_t snail_resource_manifest_count(const SnailResourceManifest *set);
 size_t snail_resource_manifest_capacity(const SnailResourceManifest *set);
-int snail_resource_manifest_put_text_atlas(SnailResourceManifest *set,
-                                      SnailResourceKey key,
-                                      const SnailTextAtlas *atlas);
-int snail_resource_manifest_put_text_atlas_options(SnailResourceManifest *set,
-                                              SnailResourceKey key,
-                                              const SnailTextAtlas *atlas,
-                                              int atlas_capacity);
-int snail_resource_manifest_put_text_atlas_reserved(SnailResourceManifest *set,
-                                               SnailResourceKey key,
-                                               const SnailTextAtlas *atlas,
-                                               uint32_t reserved_pages);
-int snail_resource_manifest_put_text_paint(SnailResourceManifest *set,
-                                           SnailResourceKey key,
-                                           const SnailTextBlob *blob);
-int snail_text_blob_resource_keys(SnailResourceKey atlas_key,
-                                  SnailResourceKey blob_key,
-                                  const SnailTextBlob *blob,
-                                  SnailTextResourceKeys *out);
+int snail_text_resource_keys_for_blob(SnailResourceKey atlas_key,
+                                      SnailResourceKey blob_key,
+                                      const SnailTextBlob *blob,
+                                      SnailTextResourceKeys *out);
+int snail_resource_manifest_put_text_blob(SnailResourceManifest *set,
+                                          SnailTextResourceKeys resources,
+                                          const SnailTextBlob *blob);
+int snail_resource_manifest_put_text_blob_options(SnailResourceManifest *set,
+                                                  SnailTextResourceKeys resources,
+                                                  const SnailTextBlob *blob,
+                                                  int atlas_capacity);
+int snail_resource_manifest_put_text_blob_reserved(SnailResourceManifest *set,
+                                                   SnailTextResourceKeys resources,
+                                                   const SnailTextBlob *blob,
+                                                   uint32_t reserved_pages);
 int snail_resource_manifest_put_path_picture(SnailResourceManifest *set,
                                         SnailResourceKey key,
                                         const SnailPathPicture *picture);

@@ -10,6 +10,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const snail = @import("../../../root.zig");
+const draw_mod = @import("../../../draw.zig");
 const cpu_adapter = @import("../../adapter/cpu.zig");
 const bezier = @import("../../../math/bezier.zig");
 const curve_tex = @import("../../format/curve_texture.zig");
@@ -23,6 +24,7 @@ const AtlasPage = atlas_page_mod.AtlasPage;
 const GlyphBandEntry = std.meta.fieldInfo(CurveAtlas.GlyphInfo, .band_entry).type;
 const Vec2 = snail.Vec2;
 const Transform2D = snail.Transform2D;
+const DrawRecords = draw_mod.DrawRecords;
 const FillRule = snail.FillRule;
 const SubpixelOrder = snail.SubpixelOrder;
 const cpu_blend = @import("blend.zig");
@@ -381,9 +383,9 @@ pub const CpuRenderer = struct {
         return renderer.uploadResourcesBlocking(allocators, set);
     }
 
-    pub fn draw(self: *CpuRenderer, prepared: *const snail.PreparedResources, records: snail.DrawRecords, state: snail.DrawState) !void {
+    pub fn draw(self: *CpuRenderer, prepared: *const snail.PreparedResources, list: *const snail.DrawList, state: snail.DrawState) !void {
         var renderer = self.asRenderer();
-        try renderer.draw(prepared, records, state);
+        try renderer.draw(prepared, list, state);
     }
 
     pub fn drawPrepared(self: *CpuRenderer, prepared: *const snail.PreparedResources, scene: *const snail.PreparedScene, state: snail.DrawState) !void {
@@ -391,9 +393,9 @@ pub const CpuRenderer = struct {
         try renderer.drawPrepared(prepared, scene, state);
     }
 
-    pub fn drawPass(self: *CpuRenderer, prepared: *const snail.PreparedResources, records: snail.DrawRecords, pass: snail.DrawPass) !void {
+    pub fn drawPass(self: *CpuRenderer, prepared: *const snail.PreparedResources, list: *const snail.DrawList, pass: snail.DrawPass) !void {
         var renderer = self.asRenderer();
-        try renderer.drawPass(prepared, records, pass);
+        try renderer.drawPass(prepared, list, pass);
     }
 
     pub fn drawPreparedPass(self: *CpuRenderer, prepared: *const snail.PreparedResources, scene: *const snail.PreparedScene, pass: snail.DrawPass) !void {
@@ -410,7 +412,7 @@ pub const CpuRenderer = struct {
         self: *CpuRenderer,
         pool: *snail.ThreadPool,
         backend_prepared: ?*const anyopaque,
-        records: snail.DrawRecords,
+        records: DrawRecords,
         state: snail.DrawState,
     ) void {
         const span = self.row_clip_max - self.row_clip_min;

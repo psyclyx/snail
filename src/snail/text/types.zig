@@ -55,7 +55,6 @@ pub const ScriptTransform = struct {
 
 pub const ShapedText = struct {
     allocator: Allocator,
-    atlas_identity: u64,
     config: *const FontConfig,
     glyphs: []Glyph,
     advance_x: f32,

@@ -49,10 +49,10 @@ const Config = if (build_options.enable_cpu) struct {
 
     pub fn draw(renderer: *ErasedRenderer, prepared_resources: *const UnifiedPreparedResources, records: DrawRecords, state: DrawState) anyerror!void {
         const backend_prepared = prepared(prepared_resources) orelse return error.MissingPreparedResource;
-        try renderer.validateRecords(prepared_resources, records);
+        try interface.validateRecords(renderer, prepared_resources, records);
         const cpu_self: *Backend = @ptrCast(@alignCast(renderer.ptr));
         if (dispatchThreaded(cpu_self, backend_prepared, records, state)) return;
-        try renderer.iterateRecords(records, state, @ptrCast(backend_prepared));
+        try interface.iterateRecords(renderer, records, state, @ptrCast(backend_prepared));
     }
 
     pub fn drawPass(renderer: *ErasedRenderer, prepared_resources: *const UnifiedPreparedResources, records: DrawRecords, pass: DrawPass) anyerror!void {

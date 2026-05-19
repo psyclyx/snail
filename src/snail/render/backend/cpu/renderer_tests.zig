@@ -10,9 +10,10 @@ const ResourceKey = snail.ResourceKey;
 const Transform2D = snail.Transform2D;
 const test_api = cpu_renderer.test_api;
 
-fn declareTextBlobResources(set: *snail.ResourceManifest, keys: snail.TextResourceKeys, blob: *const snail.TextBlob) !void {
-    try set.putTextAtlas(keys.atlas, blob.atlas);
-    if (keys.paint) |paint_key| try set.putTextPaint(paint_key, blob);
+fn declareTextBlobResources(set: *snail.ResourceManifest, atlas_key: snail.ResourceKey, blob_key: snail.ResourceKey, blob: *const snail.TextBlob) !snail.TextResourceKeys {
+    const resources = blob.resourceKeys(atlas_key, blob_key);
+    try set.putTextBlob(resources, blob);
+    return resources;
 }
 
 fn expectEqualSlicesWithinU8(expected: []const u8, actual: []const u8, max_diff: u8, max_differences: usize) !void {
@@ -516,11 +517,11 @@ test "cpu renderer renders image-painted path picture" {
     const needed_segments = snail.DrawList.estimateSegments(&scene);
     const draw_buf = try testing.allocator.alloc(u32, needed);
     defer testing.allocator.free(draw_buf);
-    const draw_segments = try testing.allocator.alloc(snail.DrawSegment, needed_segments);
+    const draw_segments = try testing.allocator.alloc(snail.DrawList.Segment, needed_segments);
     defer testing.allocator.free(draw_segments);
     var draw = snail.DrawList.init(draw_buf, draw_segments);
     try draw.addScene(&prepared, &scene);
-    try renderer_iface.draw(&prepared, draw.slice(), options);
+    try renderer_iface.draw(&prepared, &draw, options);
 
     try testing.expect(prepared_buf[left + 0] > prepared_buf[left + 2]);
     try testing.expect(prepared_buf[left + 3] > 200);
@@ -810,7 +811,9 @@ test "cpu renderer threaded draw matches single-threaded byte-for-byte" {
     }, .{ .paint = .{ .solid = .{ 1, 1, 1, 1 } }, .width = 1.5 }, 4, .identity);
     var picture = try builder.freeze(.{ .persistent_allocator = testing.allocator, .scratch_allocator = testing.allocator });
     defer picture.deinit();
-    const text_keys = snail.ResourceManifest.textBlobResourceKeys(ResourceKey.named("fonts"), ResourceKey.named("threaded_text"), &blob);
+    var key_entries: [2]snail.ResourceManifest.Entry = undefined;
+    var key_manifest = snail.ResourceManifest.init(&key_entries);
+    const text_keys = try declareTextBlobResources(&key_manifest, ResourceKey.named("fonts"), ResourceKey.named("threaded_text"), &blob);
 
     var scene = snail.Scene.init(testing.allocator);
     defer scene.deinit();
@@ -836,7 +839,7 @@ test "cpu renderer threaded draw matches single-threaded byte-for-byte" {
         var entries: [4]snail.ResourceManifest.Entry = undefined;
         var set = snail.ResourceManifest.init(&entries);
         try set.putPathPicture(ResourceKey.named("shape"), &picture);
-        try declareTextBlobResources(&set, text_keys, &blob);
+        _ = try declareTextBlobResources(&set, ResourceKey.named("fonts"), ResourceKey.named("threaded_text"), &blob);
         break :blk &set;
     });
     defer serial_resources.deinit();
@@ -858,7 +861,7 @@ test "cpu renderer threaded draw matches single-threaded byte-for-byte" {
         var entries: [4]snail.ResourceManifest.Entry = undefined;
         var set = snail.ResourceManifest.init(&entries);
         try set.putPathPicture(ResourceKey.named("shape"), &picture);
-        try declareTextBlobResources(&set, text_keys, &blob);
+        _ = try declareTextBlobResources(&set, ResourceKey.named("fonts"), ResourceKey.named("threaded_text"), &blob);
         break :blk &set;
     });
     defer threaded_resources.deinit();
@@ -923,11 +926,11 @@ test "cpu renderer drawPaths batch matches drawPathPicture" {
     const needed_segments = snail.DrawList.estimateSegments(&scene);
     const draw_buf = try testing.allocator.alloc(u32, needed);
     defer testing.allocator.free(draw_buf);
-    const draw_segments = try testing.allocator.alloc(snail.DrawSegment, needed_segments);
+    const draw_segments = try testing.allocator.alloc(snail.DrawList.Segment, needed_segments);
     defer testing.allocator.free(draw_segments);
     var draw = snail.DrawList.init(draw_buf, draw_segments);
     try draw.addScene(&prepared, &scene);
-    try renderer.draw(&prepared, draw.slice(), options);
+    try renderer.draw(&prepared, &draw, options);
 
     const inside = ((12 * stride) + (16 * 4));
     try testing.expect(ref_buf[inside + 0] > 200);

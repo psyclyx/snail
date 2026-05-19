@@ -55,7 +55,7 @@ pub const DrawListImpl = struct {
     handle_allocator: *HandleAllocator,
     inner: snail.DrawList,
     words: []u32,
-    segments: []snail.DrawSegment,
+    segments: []snail.DrawList.Segment,
 };
 pub const TextCoverageRecordsImpl = struct {
     handle_allocator: *HandleAllocator,

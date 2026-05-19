@@ -85,6 +85,8 @@ const SegmentSink = union(enum) {
 };
 
 pub const DrawList = struct {
+    pub const Segment = DrawSegment;
+
     buf: []u32,
     len: usize = 0,
     segments_buf: []DrawSegment,
@@ -99,7 +101,7 @@ pub const DrawList = struct {
         self.segment_len = 0;
     }
 
-    pub fn slice(self: *const DrawList) DrawRecords {
+    fn records(self: *const DrawList) DrawRecords {
         return .{
             .words = self.buf[0..self.len],
             .segments = self.segments_buf[0..self.segment_len],
@@ -165,6 +167,10 @@ pub const DrawList = struct {
         try addSceneToBuffers(self.buf, &self.len, &segments, prepared, scene);
     }
 };
+
+pub fn recordsForList(list: *const DrawList) DrawRecords {
+    return list.records();
+}
 
 fn addSceneToBuffers(
     words: []u32,
@@ -260,7 +266,8 @@ fn addPathDrawToBuffers(
 
 pub const PreparedScene = struct {
     allocator: std.mem.Allocator,
-    words: []u32 = &.{},
+    word_storage: []u32 = &.{},
+    word_len: usize = 0,
     segments: []DrawSegment = &.{},
 
     pub fn initOwned(
@@ -281,21 +288,30 @@ pub const PreparedScene = struct {
         errdefer allocator.free(owned_segments);
         return .{
             .allocator = allocator,
-            .words = words[0..word_len],
+            .word_storage = words,
+            .word_len = word_len,
             .segments = owned_segments,
         };
     }
 
     pub fn deinit(self: *PreparedScene) void {
-        if (self.words.len > 0) self.allocator.free(self.words);
+        if (self.word_storage.len > 0) self.allocator.free(self.word_storage);
         if (self.segments.len > 0) self.allocator.free(self.segments);
         self.* = undefined;
     }
 
-    pub fn slice(self: *const PreparedScene) DrawRecords {
+    pub fn wordCount(self: *const PreparedScene) usize {
+        return self.word_len;
+    }
+
+    fn records(self: *const PreparedScene) DrawRecords {
         return .{
-            .words = self.words,
+            .words = self.word_storage[0..self.word_len],
             .segments = self.segments,
         };
     }
 };
+
+pub fn recordsForPreparedScene(scene: *const PreparedScene) DrawRecords {
+    return scene.records();
+}

@@ -17,6 +17,7 @@ const pipeline = if (build_options.enable_opengl) @import("../backend/gl/state.z
 const CoverageBackend = coverage_mod.Backend;
 const DrawPass = draw_mod.DrawPass;
 const DrawState = draw_mod.DrawState;
+const DrawList = draw_mod.DrawList;
 const DrawRecords = draw_mod.DrawRecords;
 const ErasedRenderer = interface.Renderer;
 const PendingResourceUpload = upload_mod.PendingResourceUpload;
@@ -62,8 +63,8 @@ const Config = if (build_options.enable_opengl) struct {
 
     pub fn draw(renderer: *ErasedRenderer, prepared_resources: *const PreparedResources, records: DrawRecords, state: DrawState) anyerror!void {
         const backend_prepared = prepared(prepared_resources) orelse return error.MissingPreparedResource;
-        try renderer.validateRecords(prepared_resources, records);
-        try renderer.iterateRecords(records, state, @ptrCast(backend_prepared));
+        try interface.validateRecords(renderer, prepared_resources, records);
+        try interface.iterateRecords(renderer, records, state, @ptrCast(backend_prepared));
     }
 
     pub fn drawPass(renderer: *ErasedRenderer, prepared_resources: *const PreparedResources, records: DrawRecords, pass: DrawPass) anyerror!void {
@@ -123,9 +124,9 @@ pub const Renderer = if (build_options.enable_opengl) struct {
         return renderer.beginResourceUpload(allocators, plan);
     }
 
-    pub fn draw(self: *Self, prepared: *const PreparedResources, records: DrawRecords, state: DrawState) !void {
+    pub fn draw(self: *Self, prepared: *const PreparedResources, list: *const DrawList, state: DrawState) !void {
         var renderer = self.asRenderer();
-        try renderer.draw(prepared, records, state);
+        try renderer.draw(prepared, list, state);
     }
 
     pub fn drawPrepared(self: *Self, prepared: *const PreparedResources, scene: *const PreparedScene, state: DrawState) !void {
@@ -133,9 +134,9 @@ pub const Renderer = if (build_options.enable_opengl) struct {
         try renderer.drawPrepared(prepared, scene, state);
     }
 
-    pub fn drawPass(self: *Self, prepared: *const PreparedResources, records: DrawRecords, pass: DrawPass) !void {
+    pub fn drawPass(self: *Self, prepared: *const PreparedResources, list: *const DrawList, pass: DrawPass) !void {
         var renderer = self.asRenderer();
-        try renderer.drawPass(prepared, records, pass);
+        try renderer.drawPass(prepared, list, pass);
     }
 
     pub fn drawPreparedPass(self: *Self, prepared: *const PreparedResources, scene: *const PreparedScene, pass: DrawPass) !void {

@@ -27,11 +27,6 @@ const APPEND_TEXT_KEY = snail.ResourceKey.named("backend-compare.append-text");
 const PATH_BAND_RESOURCE_KEY = snail.ResourceKey.named("backend-compare.path-band");
 const BAND_STRESS_FILL = [4]f32{ 0.58, 0.68, 0.54, 1.0 };
 
-fn declareTextBlobResources(set: *snail.ResourceManifest, keys: snail.TextResourceKeys, blob: *const snail.TextBlob) !void {
-    try set.putTextAtlas(keys.atlas, blob.atlas);
-    if (keys.paint) |paint_key| try set.putTextPaint(paint_key, blob);
-}
-
 const CompareCase = struct {
     name: []const u8,
     subpixel_order: snail.SubpixelOrder,
@@ -282,11 +277,11 @@ fn buildScene(allocator: std.mem.Allocator) !SceneBundle {
     try scene.addPath(.{ .picture = picture, .resource_key = SCENE_PATH_KEY });
     try scene.addText(.{
         .blob = latin_blob,
-        .resources = snail.ResourceManifest.textBlobResourceKeys(SCENE_TEXT_ATLAS_KEY, SCENE_LATIN_TEXT_KEY, latin_blob),
+        .resources = latin_blob.resourceKeys(SCENE_TEXT_ATLAS_KEY, SCENE_LATIN_TEXT_KEY),
     });
     try scene.addText(.{
         .blob = devanagari_blob,
-        .resources = snail.ResourceManifest.textBlobResourceKeys(SCENE_TEXT_ATLAS_KEY, SCENE_DEVANAGARI_TEXT_KEY, devanagari_blob),
+        .resources = devanagari_blob.resourceKeys(SCENE_TEXT_ATLAS_KEY, SCENE_DEVANAGARI_TEXT_KEY),
     });
 
     return .{
@@ -307,22 +302,23 @@ fn uploadSceneResources(
     var entries: [8]snail.ResourceManifest.Entry = undefined;
     var set = snail.ResourceManifest.init(&entries);
     for (scene.commands.items) |command| switch (command) {
-        .text => |text| try declareTextBlobResources(&set, text.resources, text.blob),
+        .text => |text| try set.putTextBlob(text.resources, text.blob),
         .path => |path| try set.putPathPicture(path.resource_key, path.picture),
     };
     return renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set);
 }
 
-fn uploadTextAtlasResourceWithCapacity(
+fn uploadTextBlobResourceWithCapacity(
     allocator: std.mem.Allocator,
     renderer: *snail.Renderer,
-    key: snail.ResourceKey,
-    atlas: *const snail.TextAtlas,
+    atlas_key: snail.ResourceKey,
+    blob_key: snail.ResourceKey,
+    blob: *const snail.TextBlob,
     capacity: snail.ResourceCapacityMode,
 ) !snail.PreparedResources {
-    var entries: [1]snail.ResourceManifest.Entry = undefined;
+    var entries: [2]snail.ResourceManifest.Entry = undefined;
     var set = snail.ResourceManifest.init(&entries);
-    try set.putTextAtlasOptions(key, atlas, .{ .atlas_capacity = capacity });
+    try set.putTextBlobOptions(blob.resourceKeys(atlas_key, blob_key), blob, .{ .atlas_capacity = capacity });
     return renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set);
 }
 
@@ -331,21 +327,22 @@ const AppendPlanExpectation = struct {
     atlas_rebuilds: u32 = 0,
 };
 
-fn checkAppendPlanForTextAtlas(
+fn checkAppendPlanForTextBlob(
     allocator: std.mem.Allocator,
     renderer: *snail.Renderer,
     current: *const snail.PreparedResources,
-    key: snail.ResourceKey,
-    atlas: *const snail.TextAtlas,
+    atlas_key: snail.ResourceKey,
+    blob_key: snail.ResourceKey,
+    blob: *const snail.TextBlob,
     capacity: snail.ResourceCapacityMode,
     expected: AppendPlanExpectation,
 ) !void {
-    var entries: [1]snail.ResourceManifest.Entry = undefined;
+    var entries: [2]snail.ResourceManifest.Entry = undefined;
     var set = snail.ResourceManifest.init(&entries);
-    try set.putTextAtlasOptions(key, atlas, .{ .atlas_capacity = capacity });
+    try set.putTextBlobOptions(blob.resourceKeys(atlas_key, blob_key), blob, .{ .atlas_capacity = capacity });
     var plan = try renderer.planResourceUpload(allocator, current, &set);
     defer plan.deinit();
-    try expectAppendPlan(&plan, current.manifest.atlases[0].page_fingerprints.len, atlas.pageCount(), expected);
+    try expectAppendPlan(&plan, current.manifest.atlases[0].page_fingerprints.len, blob.atlas.pageCount(), expected);
 }
 
 fn expectAppendPlan(plan: *const snail.ResourceUploadPlan, old_pages: usize, new_pages: usize, expected: AppendPlanExpectation) !void {
@@ -977,7 +974,7 @@ fn buildAppendScene(allocator: std.mem.Allocator) !AppendSceneBundle {
     errdefer scene.deinit();
     try scene.addText(.{
         .blob = blob,
-        .resources = snail.ResourceManifest.textBlobResourceKeys(APPEND_RESOURCE_KEY, APPEND_TEXT_KEY, blob),
+        .resources = blob.resourceKeys(APPEND_RESOURCE_KEY, APPEND_TEXT_KEY),
     });
 
     return .{
@@ -1006,8 +1003,10 @@ fn uploadAppendedAtlas(
     capacity: snail.ResourceCapacityMode,
     expected: AppendPlanExpectation,
 ) !snail.PreparedResources {
-    try checkAppendPlanForTextAtlas(allocator, renderer, current, APPEND_RESOURCE_KEY, grown, capacity, expected);
-    return uploadTextAtlasResourceWithCapacity(allocator, renderer, APPEND_RESOURCE_KEY, grown, capacity);
+    var resource_blob = try buildTextBlob(allocator, grown, APPEND_EXTRA_TEXT, 18.0, 62.0, 32.0, .{ 0.95, 0.7, 0.2, 1.0 });
+    defer resource_blob.deinit();
+    try checkAppendPlanForTextBlob(allocator, renderer, current, APPEND_RESOURCE_KEY, APPEND_TEXT_KEY, &resource_blob, capacity, expected);
+    return uploadTextBlobResourceWithCapacity(allocator, renderer, APPEND_RESOURCE_KEY, APPEND_TEXT_KEY, &resource_blob, capacity);
 }
 
 fn buildAppendedPagePreparedScene(
@@ -1024,7 +1023,7 @@ fn buildAppendedPagePreparedScene(
     errdefer scene.deinit();
     try scene.addText(.{
         .blob = blob,
-        .resources = snail.ResourceManifest.textBlobResourceKeys(APPEND_RESOURCE_KEY, APPEND_TEXT_KEY, blob),
+        .resources = blob.resourceKeys(APPEND_RESOURCE_KEY, APPEND_TEXT_KEY),
     });
 
     const prepared_scene = try snail.PreparedScene.initOwned(allocator, prepared, &scene);
@@ -1043,7 +1042,7 @@ fn runGlAppendSnapshotRegression(
     var bundle = try buildAppendScene(allocator);
     defer bundle.deinit();
 
-    var prepared = try uploadTextAtlasResourceWithCapacity(allocator, renderer, APPEND_RESOURCE_KEY, bundle.atlas, .exact);
+    var prepared = try uploadTextBlobResourceWithCapacity(allocator, renderer, APPEND_RESOURCE_KEY, APPEND_TEXT_KEY, bundle.blob, .exact);
     defer prepared.deinit();
     const options = drawState(.none);
     var prepared_scene = try snail.PreparedScene.initOwned(allocator, &prepared, &bundle.scene);
@@ -1090,7 +1089,7 @@ fn runVulkanAppendSnapshotRegression(
     var bundle = try buildAppendScene(allocator);
     defer bundle.deinit();
 
-    var prepared = try uploadTextAtlasResourceWithCapacity(allocator, renderer, APPEND_RESOURCE_KEY, bundle.atlas, .exact);
+    var prepared = try uploadTextBlobResourceWithCapacity(allocator, renderer, APPEND_RESOURCE_KEY, APPEND_TEXT_KEY, bundle.blob, .exact);
     defer prepared.deinit();
     const options = drawState(.none);
     var prepared_scene = try snail.PreparedScene.initOwned(allocator, &prepared, &bundle.scene);

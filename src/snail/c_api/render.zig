@@ -182,7 +182,7 @@ pub export fn snail_renderer_draw(
     state: SnailDrawState,
 ) c_int {
     var erased = renderer.asRenderer();
-    erased.draw(&prepared.inner, list.inner.slice(), toDrawState(state) catch return SNAIL_ERR_INVALID_ARGUMENT) catch |err| return mapError(err);
+    erased.draw(&prepared.inner, &list.inner, toDrawState(state) catch return SNAIL_ERR_INVALID_ARGUMENT) catch |err| return mapError(err);
     return SNAIL_OK;
 }
 
@@ -193,7 +193,7 @@ pub export fn snail_renderer_draw_pass(
     pass: SnailDrawPass,
 ) c_int {
     var erased = renderer.asRenderer();
-    erased.drawPass(&prepared.inner, list.inner.slice(), toDrawPass(pass) catch return SNAIL_ERR_INVALID_ARGUMENT) catch |err| return mapError(err);
+    erased.drawPass(&prepared.inner, &list.inner, toDrawPass(pass) catch return SNAIL_ERR_INVALID_ARGUMENT) catch |err| return mapError(err);
     return SNAIL_OK;
 }
 

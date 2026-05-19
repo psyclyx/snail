@@ -2,7 +2,6 @@ const std = @import("std");
 
 pub const ResourceKey = struct {
     id: u64,
-    name: []const u8 = "",
 
     const namespace_shift = 62;
     const namespace_mask: u64 = 0b11 << namespace_shift;
@@ -15,11 +14,11 @@ pub const ResourceKey = struct {
     };
 
     pub fn named(comptime name: []const u8) ResourceKey {
-        return .{ .id = namespaced(.named, hashBytes(name)), .name = name };
+        return .{ .id = namespaced(.named, hashBytes(name)) };
     }
 
     pub fn fromName(name: []const u8) ResourceKey {
-        return .{ .id = namespaced(.named, hashBytes(name)), .name = name };
+        return .{ .id = namespaced(.named, hashBytes(name)) };
     }
 
     pub fn fromId(id: u64) ResourceKey {

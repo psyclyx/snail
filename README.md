@@ -116,10 +116,8 @@ application around it.
 | `TextBlob` | Shaped glyph/run data allocated by its allocator. | A compatible `TextAtlas`. | Immutable snapshot. Its atlas pointer is a lifetime dependency, not content ownership. |
 | `PathPicture` | Frozen path atlas/layer records allocated by its allocator. | Nothing after freeze. | Immutable snapshot. Can be declared in a manifest by pointer. |
 | `Image` | Pixel storage according to the image constructor. | Nothing unless explicitly documented by the constructor. | Immutable render resource while it is declared in a manifest. |
-| `ResourceManifest` | Only its caller-provided entry buffer. | `TextAtlas`, painted `TextBlob`, `PathPicture`, and `Image` values. | A declaration list. Upload planning may inspect it, but insertion should not imply backend effects. |
-| `PreparedManifest` | Resource keys, stamps, and prepared views. | Nothing outside its own arrays. | Logical prepared resource binding; backend-agnostic. |
-| `ResidentResources` | CPU backend snapshots and backend residency handles. | Renderer-owned GPU caches where applicable. | Backend realization for one renderer/context. Retire it only after no in-flight draw can reference it. |
-| `PreparedResources` | A `PreparedManifest` plus `ResidentResources`. | See those two fields. | Draw APIs take this pair so logical validation and backend sampling stay together at the call boundary. |
+| `ResourceManifest` | Only its caller-provided entry buffer. | `TextBlob`/`TextAtlas`, `PathPicture`, and `Image` values. | A declaration list. Upload planning may inspect it, but insertion should not imply backend effects. |
+| `PreparedResources` | Logical resource bindings plus backend residency state. | Renderer-owned GPU caches where applicable. | Draw APIs take this value so logical validation and backend sampling stay together at the call boundary. Retire it only after no in-flight draw can reference it. |
 | `Scene` | Command storage. | Submitted `TextBlob`/`PathPicture` values and override slices. | A borrowed command list; it does not make resources resident or keep them alive. |
 | `PreparedScene` | Draw-record words and segments. | `PreparedResources` compatibility through recorded stamps. | Rebuild it when the source scene or prepared resources change. |
 
@@ -302,13 +300,11 @@ defer blob.deinit();
 
 var resource_entries: [8]snail.ResourceManifest.Entry = undefined;
 var resources = snail.ResourceManifest.init(&resource_entries);
-const text_resources = snail.ResourceManifest.textBlobResourceKeys(
+const text_resources = blob.resourceKeys(
     snail.ResourceKey.named("fonts"),
     snail.ResourceKey.named("hello_text"),
-    &blob,
 );
-try resources.putTextAtlas(text_resources.atlas, blob.atlas);
-if (text_resources.paint) |paint_key| try resources.putTextPaint(paint_key, &blob);
+try resources.putTextBlob(text_resources, &blob);
 
 var scene = snail.Scene.init(allocator);
 defer scene.deinit();
@@ -366,8 +362,8 @@ if (try atlas.ensureGlyphs(face_index, glyph_ids)) |next| {
 ### Vector Paths
 
 A `PathPicture` is built once and submitted to a `Scene` like a `TextBlob`. Add
-the `PathPicture`, `TextAtlas`, `TextBlob` paint records, and images your scene
-uses to a `ResourceManifest` before uploading.
+the path picture, text blob resources, and images your scene uses to a
+`ResourceManifest` before uploading.
 
 ```zig
 var path = snail.Path.init(allocator);
@@ -455,11 +451,8 @@ snail_path_picture_builder_freeze(builder, NULL, NULL, &picture);
 SnailResourceManifest *resources = NULL;
 snail_resource_manifest_init(NULL, 8, &resources);
 SnailTextResourceKeys text_resources = {0};
-snail_text_blob_resource_keys(1, 3, blob, &text_resources);
-snail_resource_manifest_put_text_atlas(resources, text_resources.atlas_key, atlas);
-if (text_resources.has_paint_key) {
-    snail_resource_manifest_put_text_paint(resources, text_resources.paint_key, blob);
-}
+snail_text_resource_keys_for_blob(1, 3, blob, &text_resources);
+snail_resource_manifest_put_text_blob(resources, text_resources, blob);
 snail_resource_manifest_put_path_picture(resources, 2, picture);
 
 SnailScene *scene = NULL;
@@ -538,10 +531,7 @@ borrowed `Scene` + `PathDraw` / `TextDraw` primitive used by Zig.
 | `ResourceKey` | Explicit resource identity. `fromId`, `named`/`fromName`, and derived keys use distinct namespaces. |
 | `ResourceManifest` | Fixed-capacity borrowed manifest of CPU values. |
 | `ResourceFootprint` | Used and allocated upload bytes split by curve, band, layer-info, and image storage. |
-| `PreparedManifest` | Logical prepared keys, stamps, and views. |
-| `ResidentResources` | Backend-specific residency state for one renderer/context. |
-| `PreparedResources` | Pair of `PreparedManifest` and `ResidentResources` used by draw APIs. |
-| `ResourceUploader` | Type-erased upload/cache capability without draw methods. |
+| `PreparedResources` | Logical prepared views plus backend-specific residency state used by draw APIs. |
 | `DrawList` | Caller-buffered draw records. |
 | `PreparedScene` | Optional owned draw-record cache for static scenes. |
 | `DrawState` | Per-draw transform, target surface metadata, and rasterization policy. |
@@ -587,6 +577,7 @@ borrowed `Scene` + `PathDraw` / `TextDraw` primitive used by Zig.
 | `atlas.superscriptTransform(x, y, em) !ScriptTransform` / `atlas.subscriptTransform(x, y, em) !ScriptTransform` | Script placement and em-size from primary-face OS/2 metrics. |
 | `atlas.measureText(style, text, em) !f32` | Shape text and return horizontal advance in caller units. |
 | `TextBlob.init(alloc, atlas, append) !TextBlob` | Build one positioned, painted `TextAppend` from a `ShapedText`. The blob borrows `atlas`. |
+| `blob.resourceKeys(atlas_key, blob_key) TextResourceKeys` | Build the resource binding used by both `scene.addText` and `ResourceManifest.putTextBlob`. |
 | `blob.rebound(alloc, new_atlas) !TextBlob` | Optional cache/lifetime helper: return a blob bound to a compatible atlas snapshot that retains old pages and contains all referenced glyphs. |
 | `TextBlobBuilder.init(alloc, atlas)` / `builder.append(TextAppend) !TextAppendResult` / `builder.finish() !TextBlob` | Append shaped runs with explicit placement and fill. Call `atlas.ensureText`/`ensureShaped`/`ensureGlyphs` first if all glyphs must be renderable. |
 | `TextAppend` | `{ .shaped, .glyphs, .placement = .{ .baseline, .em }, .fill }` — appends a whole shaped run or glyph subrange with independent position/scale and paint. Fill accepts the same `Paint` union used by paths, in the same coordinate space as `placement`. |
@@ -631,16 +622,14 @@ try scene.addPath(.{ .picture = &sprite, .resource_key = snail.ResourceKey.named
 |--------|-------------|
 | `ResourceManifest.init(entries)` | Wrap a caller-owned `[]ResourceManifest.Entry` buffer. |
 | `set.reset()` | Clear entries; capacity is retained. |
-| `ResourceManifest.textBlobResourceKeys(atlas_key, blob_key, blob)` | Build the key bundle a text draw and manifest entries share. Paint records are derived from `blob_key` only when the blob needs them. |
-| `set.putTextAtlas(key, atlas)` / `set.putTextAtlasOptions(key, atlas, options)` | Add a text atlas resource, optionally overriding atlas capacity mode. |
-| `set.putTextPaint(key, blob)` | Add the text paint/layer-info resource for a painted `TextBlob`. Call this only when the key bundle has a paint key. |
+| `set.putTextBlob(resources, blob)` / `set.putTextBlobOptions(resources, blob, options)` | Add a text blob's atlas and optional paint records under the same `TextResourceKeys` used by `scene.addText`. Options can override atlas capacity mode. |
 | `set.putPathPicture(key, picture)` / `set.putPathPictureOptions(key, picture, options)` | Add a path picture, optionally overriding atlas capacity mode. |
 | `set.putImage(key, image)` | Add an image resource. |
 | `set.estimateUploadFootprint() !ResourceFootprint` | Allocation-free estimate for a resource manifest before upload. |
 
 ### Renderer
 
-`GlRenderer`, `VulkanRenderer`, and `CpuRenderer` are first-class types; `Renderer` is a type-erased draw wrapper for backend-agnostic code. Upload planning and scheduled upload use the narrower `ResourceUploader` capability internally; `Renderer` exposes convenience forwarding methods.
+`GlRenderer`, `VulkanRenderer`, and `CpuRenderer` are first-class types; `Renderer` is the type-erased backend-agnostic API for upload, cache inspection, and draw submission.
 
 | Method | Description |
 |--------|-------------|
@@ -652,14 +641,13 @@ try scene.addPath(.{ .picture = &sprite, .resource_key = snail.ResourceKey.named
 | `renderer.uploadResourcesBlocking(.{ .persistent, .scratch }, set) !PreparedResources` | Blocking upload + view construction. Persistent allocations live with `PreparedResources`; scratch allocations end when upload returns. |
 | `renderer.planResourceUpload(alloc, current, next_set) !ResourceUploadPlan` | Snapshot and diff a new resource manifest against existing prepared resources. |
 | `renderer.beginResourceUpload(.{ .persistent, .scratch }, &plan) !PendingResourceUpload` | Start a scheduled upload; record it, wait for completion if needed, then call `pending.publish()`. |
-| `renderer.resourceUploader()` | Return the upload/cache-only capability used by scheduled uploads. |
 | `DrawList.init(words, segments)` | Wrap a caller-buffered word + segment buffer for `addScene`. |
 | `DrawList.estimate(scene)` | Upper bound for the word buffer required by `draw.addScene(prepared, scene)`. |
 | `DrawList.estimateSegments(scene)` | Upper bound for the segment buffer required by `draw.addScene(prepared, scene)`. |
 | `PreparedScene.initOwned(alloc, prepared, scene) !PreparedScene` | Build an owned draw-record cache for a static scene. |
-| `renderer.draw(prepared, records, options)` | Execute prebuilt draw records on CPU/GL or other renderer-owned draw contexts. No resource discovery or upload. |
+| `renderer.draw(prepared, list, options)` | Execute a `DrawList` on CPU/GL or other renderer-owned draw contexts. No resource discovery or upload. |
 | `renderer.drawPrepared(prepared, prepared_scene, options)` | Draw a `PreparedScene` cache. For Vulkan, call `vk.frame(.{ .cmd, .slot }).drawPrepared(...)`. |
-| `renderer.drawPass(prepared, records, pass)` / `renderer.drawPreparedPass(...)` | Execute an explicit draw pass, including linear resolve when requested. Vulkan currently rejects linear resolve with `error.UnsupportedResolve`. |
+| `renderer.drawPass(prepared, list, pass)` / `renderer.drawPreparedPass(...)` | Execute an explicit draw pass, including linear resolve when requested. Vulkan currently rejects linear resolve with `error.UnsupportedResolve`. |
 | `prepared.retireNow()` | Retire backend resources immediately once no in-flight frame references them. |
 | `PreparedResourceRetirementQueue.init(alloc)` / `queue.sweep()` | Caller-owned queue for prepared resources that must retire after a fence completes. |
 | `prepared.retireAfter(&queue, fence_or_frame)` | Move prepared resources into the caller-owned retirement queue. |
@@ -668,9 +656,7 @@ try scene.addPath(.{ .picture = &sprite, .resource_key = snail.ResourceKey.named
 
 `uploadResourcesBlocking` is the simple path; for engines that want to overlap
 upload with the main render queue (Vulkan in particular) there is an explicit
-plan / record / publish flow. Use `ResourceUploader` for backend-agnostic
-scheduled uploads, including CPU-backed uploads; `Renderer` forwards to it for
-convenience.
+`Renderer` plan / record / publish flow, including CPU-backed uploads.
 
 1. **Plan.** `renderer.planResourceUpload(allocator, current, next_set)`
    diffs `next_set` against the existing `PreparedResources` (or `null` for a

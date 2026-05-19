@@ -12,11 +12,10 @@ const ResourceFootprint = footprint_types.ResourceFootprint;
 const ResourceKey = resource_key_mod.ResourceKey;
 const TextAtlas = text_mod.TextAtlas;
 const TextBlob = text_mod.TextBlob;
-const derivedResourceKey = resource_key_mod.derived;
 
 pub const ResourceManifest = struct {
     /// Caller-buffered CPU manifest. Entries point at app-owned
-    /// TextAtlas, PathPicture, and Image values; no upload happens here.
+    /// TextBlob/TextAtlas, PathPicture, and Image values; no upload happens here.
     entries: []Entry = &.{},
     len: usize = 0,
 
@@ -51,7 +50,7 @@ pub const ResourceManifest = struct {
 
     pub const TextBlobResourceKeys = resource_key_mod.TextResourceKeys;
 
-    pub const TextAtlasOptions = struct {
+    pub const TextBlobOptions = struct {
         /// `.growable` gives Snail one heuristic growth window. Use
         /// `.reserve_pages` when the caller knows the intended atlas headroom.
         atlas_capacity: ResourceCapacityMode = .growable,
@@ -76,30 +75,30 @@ pub const ResourceManifest = struct {
         self.len = 0;
     }
 
-    pub fn putTextAtlas(self: *ResourceManifest, key: ResourceKey, atlas: *const TextAtlas) !void {
-        try self.putTextAtlasOptions(key, atlas, .{});
+    pub fn putTextBlob(self: *ResourceManifest, resources: TextBlobResourceKeys, blob: *const TextBlob) !void {
+        try self.putTextBlobOptions(resources, blob, .{});
     }
 
-    pub fn putTextAtlasOptions(self: *ResourceManifest, key: ResourceKey, atlas: *const TextAtlas, options: TextAtlasOptions) !void {
+    pub fn putTextBlobOptions(
+        self: *ResourceManifest,
+        resources: TextBlobResourceKeys,
+        blob: *const TextBlob,
+        options: TextBlobOptions,
+    ) !void {
+        try blob.validate();
+        if (blob.hasPaintRecords() != (resources.paint != null)) return error.InvalidTextResourceKeys;
+        try self.ensureCapacityForTextBlob(resources);
         try self.put(.{ .text_atlas = .{
-            .key = key,
-            .atlas = atlas,
+            .key = resources.atlas,
+            .atlas = blob.atlas,
             .atlas_capacity = options.atlas_capacity,
         } });
-    }
-
-    pub fn putTextPaint(self: *ResourceManifest, key: ResourceKey, blob: *const TextBlob) !void {
-        try self.put(.{ .text_paint = .{
-            .key = key,
-            .blob = blob,
-        } });
-    }
-
-    pub fn textBlobResourceKeys(atlas_key: ResourceKey, blob_key: ResourceKey, blob: *const TextBlob) TextBlobResourceKeys {
-        return .{
-            .atlas = atlas_key,
-            .paint = if (blob.hasPaintRecords()) derivedResourceKey(blob_key, "text_paint") else null,
-        };
+        if (resources.paint) |paint_key| {
+            try self.put(.{ .text_paint = .{
+                .key = paint_key,
+                .blob = blob,
+            } });
+        }
     }
 
     pub fn putPathPicture(self: *ResourceManifest, key: ResourceKey, picture: *const PathPicture) !void {
@@ -129,6 +128,22 @@ pub const ResourceManifest = struct {
         if (self.len >= self.entries.len) return error.ResourceManifestFull;
         self.entries[self.len] = entry;
         self.len += 1;
+    }
+
+    fn ensureCapacityForTextBlob(self: *const ResourceManifest, keys: TextBlobResourceKeys) !void {
+        var missing: usize = 0;
+        if (!self.containsKey(keys.atlas)) missing += 1;
+        if (keys.paint) |paint_key| {
+            if (!self.containsKey(paint_key)) missing += 1;
+        }
+        if (self.len + missing > self.entries.len) return error.ResourceManifestFull;
+    }
+
+    fn containsKey(self: *const ResourceManifest, key: ResourceKey) bool {
+        for (self.entries[0..self.len]) |entry| {
+            if (entryKey(entry).eql(key)) return true;
+        }
+        return false;
     }
 
     fn entryKey(entry: Entry) ResourceKey {

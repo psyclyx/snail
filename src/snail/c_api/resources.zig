@@ -74,36 +74,56 @@ pub export fn snail_resource_manifest_capacity(set: *const ResourceManifestImpl)
     return set.inner.capacity();
 }
 
-pub export fn snail_resource_manifest_put_text_atlas(set: *ResourceManifestImpl, key: SnailResourceKey, atlas: *const TextAtlasImpl) c_int {
-    set.inner.putTextAtlas(snail.ResourceKey.fromOpaque(key), &atlas.inner) catch |err| return mapError(err);
-    return SNAIL_OK;
-}
-
-pub export fn snail_resource_manifest_put_text_atlas_options(set: *ResourceManifestImpl, key: SnailResourceKey, atlas: *const TextAtlasImpl, atlas_capacity: c_int) c_int {
-    set.inner.putTextAtlasOptions(snail.ResourceKey.fromOpaque(key), &atlas.inner, .{
-        .atlas_capacity = toResourceCapacityMode(atlas_capacity) catch return SNAIL_ERR_INVALID_ARGUMENT,
-    }) catch |err| return mapError(err);
-    return SNAIL_OK;
-}
-
-pub export fn snail_resource_manifest_put_text_atlas_reserved(set: *ResourceManifestImpl, key: SnailResourceKey, atlas: *const TextAtlasImpl, reserved_pages: u32) c_int {
-    set.inner.putTextAtlasOptions(snail.ResourceKey.fromOpaque(key), &atlas.inner, .{
-        .atlas_capacity = reservedResourceCapacityMode(reserved_pages),
-    }) catch |err| return mapError(err);
-    return SNAIL_OK;
-}
-
-pub export fn snail_resource_manifest_put_text_paint(set: *ResourceManifestImpl, key: SnailResourceKey, blob: *const TextBlobImpl) c_int {
-    set.inner.putTextPaint(snail.ResourceKey.fromOpaque(key), &blob.inner) catch |err| return mapError(err);
-    return SNAIL_OK;
-}
-
-pub export fn snail_text_blob_resource_keys(atlas_key: SnailResourceKey, blob_key: SnailResourceKey, blob: *const TextBlobImpl, out: *SnailTextResourceKeys) c_int {
-    out.* = wrapTextResourceKeys(snail.ResourceManifest.textBlobResourceKeys(
+pub export fn snail_text_resource_keys_for_blob(
+    atlas_key: SnailResourceKey,
+    blob_key: SnailResourceKey,
+    blob: *const TextBlobImpl,
+    out: *SnailTextResourceKeys,
+) c_int {
+    out.* = wrapTextResourceKeys(blob.inner.resourceKeys(
         snail.ResourceKey.fromOpaque(atlas_key),
         snail.ResourceKey.fromOpaque(blob_key),
-        &blob.inner,
     ));
+    return SNAIL_OK;
+}
+
+pub export fn snail_resource_manifest_put_text_blob(
+    set: *ResourceManifestImpl,
+    resources: SnailTextResourceKeys,
+    blob: *const TextBlobImpl,
+) c_int {
+    set.inner.putTextBlob(
+        toTextResourceKeys(resources),
+        &blob.inner,
+    ) catch |err| return mapError(err);
+    return SNAIL_OK;
+}
+
+pub export fn snail_resource_manifest_put_text_blob_options(
+    set: *ResourceManifestImpl,
+    resources: SnailTextResourceKeys,
+    blob: *const TextBlobImpl,
+    atlas_capacity: c_int,
+) c_int {
+    set.inner.putTextBlobOptions(
+        toTextResourceKeys(resources),
+        &blob.inner,
+        .{ .atlas_capacity = toResourceCapacityMode(atlas_capacity) catch return SNAIL_ERR_INVALID_ARGUMENT },
+    ) catch |err| return mapError(err);
+    return SNAIL_OK;
+}
+
+pub export fn snail_resource_manifest_put_text_blob_reserved(
+    set: *ResourceManifestImpl,
+    resources: SnailTextResourceKeys,
+    blob: *const TextBlobImpl,
+    reserved_pages: u32,
+) c_int {
+    set.inner.putTextBlobOptions(
+        toTextResourceKeys(resources),
+        &blob.inner,
+        .{ .atlas_capacity = reservedResourceCapacityMode(reserved_pages) },
+    ) catch |err| return mapError(err);
     return SNAIL_OK;
 }
 
@@ -176,7 +196,7 @@ pub export fn snail_prepared_scene_deinit(scene: ?*PreparedSceneImpl) void {
 }
 
 pub export fn snail_prepared_scene_word_count(scene: *const PreparedSceneImpl) usize {
-    return scene.inner.words.len;
+    return scene.inner.wordCount();
 }
 
 pub export fn snail_prepared_scene_segment_count(scene: *const PreparedSceneImpl) usize {
@@ -250,7 +270,7 @@ pub export fn snail_draw_list_init(alloc_ptr: ?*const SnailAllocator, word_capac
         destroyHandle(impl);
         return SNAIL_ERR_OUT_OF_MEMORY;
     };
-    const segments = allocator.alloc(snail.DrawSegment, segment_capacity) catch {
+    const segments = allocator.alloc(snail.DrawList.Segment, segment_capacity) catch {
         allocator.free(words);
         destroyHandle(impl);
         return SNAIL_ERR_OUT_OF_MEMORY;

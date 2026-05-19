@@ -20,9 +20,10 @@ const KEY_RIGHT = wayland.KEY_RIGHT;
 const KEY_UP = wayland.KEY_UP;
 const KEY_DOWN = wayland.KEY_DOWN;
 
-fn declareTextBlobResources(set: *snail.ResourceManifest, keys: snail.TextResourceKeys, blob: *const snail.TextBlob) !void {
-    try set.putTextAtlas(keys.atlas, blob.atlas);
-    if (keys.paint) |paint_key| try set.putTextPaint(paint_key, blob);
+fn declareTextBlobResources(set: *snail.ResourceManifest, atlas_key: snail.ResourceKey, blob_key: snail.ResourceKey, blob: *const snail.TextBlob) !snail.TextResourceKeys {
+    const resources = blob.resourceKeys(atlas_key, blob_key);
+    try set.putTextBlob(resources, blob);
+    return resources;
 }
 
 pub fn main() !void {
@@ -214,7 +215,7 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
     defer releasePrepared(&prepared);
     var draw_buf: []u32 = &.{};
     defer if (draw_buf.len > 0) allocator.free(draw_buf);
-    var draw_segments_buf: []snail.DrawSegment = &.{};
+    var draw_segments_buf: []snail.DrawList.Segment = &.{};
     defer if (draw_segments_buf.len > 0) allocator.free(draw_segments_buf);
     var uploaded_size = [4]u32{ 0, 0, 0, 0 };
 
@@ -335,8 +336,7 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
             var resources = snail.ResourceManifest.init(&resource_entries);
             if (path_picture) |*picture| try resources.putPathPicture(snail.ResourceKey.named("banner_paths"), picture);
             const text_keys = if (text_blob) |*blob| keys: {
-                const keys = snail.ResourceManifest.textBlobResourceKeys(snail.ResourceKey.named("banner_fonts"), snail.ResourceKey.named("banner_text"), blob);
-                try declareTextBlobResources(&resources, keys, blob);
+                const keys = try declareTextBlobResources(&resources, snail.ResourceKey.named("banner_fonts"), snail.ResourceKey.named("banner_text"), blob);
                 break :keys keys;
             } else null;
 
@@ -384,7 +384,7 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
         }
         if (draw_segments_buf.len < needed_segments) {
             if (draw_segments_buf.len > 0) allocator.free(draw_segments_buf);
-            draw_segments_buf = try allocator.alloc(snail.DrawSegment, needed_segments);
+            draw_segments_buf = try allocator.alloc(snail.DrawList.Segment, needed_segments);
         }
         var draw = snail.DrawList.init(draw_buf[0..needed], draw_segments_buf[0..needed_segments]);
         try draw.addScene(&prepared.?, &scene);
@@ -392,7 +392,7 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
             .state = draw_state,
             .resolve = if (linear_resolve) |resolve| .{ .linear = resolve } else .direct,
         };
-        try active.drawPass(&prepared.?, draw.slice(), draw_pass);
+        try active.drawPass(&prepared.?, &draw, draw_pass);
 
         if (frame_count == 2) {
             active.captureDebugFrame(allocator, fb_size);

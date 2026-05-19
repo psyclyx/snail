@@ -31,12 +31,15 @@ pub const PreparedPass = struct {
             owned_picture.?.* = value;
         }
 
+        const text_blob_key = snail.ResourceKey.fromName(name ++ ".text");
+        const text_resources = owned_text.resourceKeys(snail.ResourceKey.named("game_fonts"), text_blob_key);
+
         var pass = PreparedPass{
             .allocator = allocator,
             .picture = owned_picture,
             .path_key = if (owned_picture != null) snail.ResourceKey.named(name ++ ".path") else null,
             .text = owned_text,
-            .text_resources = snail.ResourceManifest.textBlobResourceKeys(snail.ResourceKey.named("game_fonts"), snail.ResourceKey.fromName(name ++ ".text"), owned_text),
+            .text_resources = text_resources,
             .scene = snail.Scene.init(allocator),
         };
         errdefer {

@@ -108,7 +108,6 @@ pub const VulkanContext = render.VulkanContext;
 pub const CpuRenderer = render.CpuRenderer;
 pub const ThreadPool = render.ThreadPool;
 pub const Renderer = render.Renderer;
-pub const ResourceUploader = render.ResourceUploader;
 pub const GlRenderer = render.GlRenderer;
 pub const VulkanRenderer = render.VulkanRenderer;
 
@@ -122,23 +121,15 @@ pub const Scene = scene.Scene;
 pub const ResourceStamp = resource_key.ResourceStamp;
 pub const ResourceKey = resource_key.ResourceKey;
 pub const ResourceManifest = resources.ResourceManifest;
-pub const PreparedManifest = resources.PreparedManifest;
-pub const ResidentResources = resources.ResidentResources;
 pub const PreparedResources = resources.PreparedResources;
 pub const PreparedResourceRetirementQueue = resources.PreparedResourceRetirementQueue;
 pub const ResourceCapacityMode = upload_common.AtlasCapacityMode;
 pub const ResourceFootprint = resources.ResourceFootprint;
 pub const ResourceCacheStats = upload.ResourceCacheStats;
 pub const UploadAllocators = upload.UploadAllocators;
-pub const ResourceManifestSnapshot = upload.ResourceManifestSnapshot;
-pub const ResourceManifestDiff = upload.ResourceManifestDiff;
-pub const ResourceCachePlan = upload.ResourceCachePlan;
-pub const ResourceUploadEstimate = upload.ResourceUploadEstimate;
 pub const ResourceUploadPlan = upload.ResourceUploadPlan;
 pub const PendingResourceUpload = upload.PendingResourceUpload;
 
-pub const DrawSegment = draw.DrawSegment;
-pub const DrawRecords = draw.DrawRecords;
 pub const DrawList = draw.DrawList;
 pub const PreparedScene = draw.PreparedScene;
 

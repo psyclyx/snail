@@ -203,7 +203,7 @@ pub export fn snail_vulkan_frame_draw(
     state: SnailDrawState,
 ) c_int {
     if (comptime !build_options.enable_vulkan) return SNAIL_ERR_RENDERER_FAILED;
-    frame.inner.draw(&prepared.inner, list.inner.slice(), toDrawState(state) catch return SNAIL_ERR_INVALID_ARGUMENT) catch |err| return mapError(err);
+    frame.inner.draw(&prepared.inner, &list.inner, toDrawState(state) catch return SNAIL_ERR_INVALID_ARGUMENT) catch |err| return mapError(err);
     return SNAIL_OK;
 }
 
@@ -214,7 +214,7 @@ pub export fn snail_vulkan_frame_draw_pass(
     pass: SnailDrawPass,
 ) c_int {
     if (comptime !build_options.enable_vulkan) return SNAIL_ERR_RENDERER_FAILED;
-    frame.inner.drawPass(&prepared.inner, list.inner.slice(), toDrawPass(pass) catch return SNAIL_ERR_INVALID_ARGUMENT) catch |err| return mapError(err);
+    frame.inner.drawPass(&prepared.inner, &list.inner, toDrawPass(pass) catch return SNAIL_ERR_INVALID_ARGUMENT) catch |err| return mapError(err);
     return SNAIL_OK;
 }
 
@@ -255,8 +255,8 @@ pub export fn snail_vulkan_frame_coverage_backend(
 
 pub export fn snail_vulkan_pending_resource_upload_record(pending: *PendingResourceUploadImpl, command_buffer: vk.VkCommandBuffer, budget_bytes: usize) c_int {
     if (comptime !build_options.enable_vulkan) return SNAIL_ERR_RENDERER_FAILED;
-    if (pending.inner.uploader.backend() != .vulkan) return SNAIL_ERR_INVALID_ARGUMENT;
-    const vk_state: *vulkan_pipeline.VulkanPipeline = @ptrCast(@alignCast(pending.inner.uploader.ptr));
+    if (pending.inner.backend() != .vulkan) return SNAIL_ERR_INVALID_ARGUMENT;
+    const vk_state: *vulkan_pipeline.VulkanPipeline = @ptrCast(@alignCast(pending.inner.renderer.ptr));
     vk_state.beginResourceUploadRecording(command_buffer);
     defer vk_state.endResourceUploadRecording();
     pending.inner.recordExternal(.{ .budget_bytes = budget_bytes }) catch |err| return mapError(err);
@@ -265,8 +265,8 @@ pub export fn snail_vulkan_pending_resource_upload_record(pending: *PendingResou
 
 pub export fn snail_vulkan_pending_resource_upload_record_checked(pending: *PendingResourceUploadImpl, command_buffer: vk.VkCommandBuffer, budget_bytes: usize, allow_cache_rebuilds: bool) c_int {
     if (comptime !build_options.enable_vulkan) return SNAIL_ERR_RENDERER_FAILED;
-    if (pending.inner.uploader.backend() != .vulkan) return SNAIL_ERR_INVALID_ARGUMENT;
-    const vk_state: *vulkan_pipeline.VulkanPipeline = @ptrCast(@alignCast(pending.inner.uploader.ptr));
+    if (pending.inner.backend() != .vulkan) return SNAIL_ERR_INVALID_ARGUMENT;
+    const vk_state: *vulkan_pipeline.VulkanPipeline = @ptrCast(@alignCast(pending.inner.renderer.ptr));
     vk_state.beginResourceUploadRecording(command_buffer);
     defer vk_state.endResourceUploadRecording();
     pending.inner.recordExternal(.{
@@ -278,8 +278,8 @@ pub export fn snail_vulkan_pending_resource_upload_record_checked(pending: *Pend
 
 pub export fn snail_vulkan_pending_resource_upload_ready_fence(pending: *PendingResourceUploadImpl, fence: vk.VkFence) bool {
     if (comptime !build_options.enable_vulkan) return false;
-    if (pending.inner.uploader.backend() != .vulkan) return false;
-    const vk_state: *vulkan_pipeline.VulkanPipeline = @ptrCast(@alignCast(pending.inner.uploader.ptr));
+    if (pending.inner.backend() != .vulkan) return false;
+    const vk_state: *vulkan_pipeline.VulkanPipeline = @ptrCast(@alignCast(pending.inner.renderer.ptr));
     return pending.inner.ready(vk.vkGetFenceStatus(vk_state.ctx.device, fence) == vk.VK_SUCCESS);
 }
 

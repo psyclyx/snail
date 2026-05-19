@@ -4,6 +4,7 @@ const paint_mod = @import("../paint.zig");
 const paint_records = @import("../paint_records.zig");
 const atlas_curve_mod = @import("../render/format/atlas/curve.zig");
 const band_tex = @import("../render/format/band_texture.zig");
+const resource_key_mod = @import("../resource_key.zig");
 const atlas_mod = @import("atlas.zig");
 const config_mod = @import("config.zig");
 const range_mod = @import("../range.zig");
@@ -18,11 +19,13 @@ const FaceView = view_mod.FaceView;
 const Paint = paint_mod.Paint;
 const PaintImageRecord = atlas_curve_mod.CurveAtlas.PaintImageRecord;
 const Range = range_mod.Range;
+const ResourceKey = resource_key_mod.ResourceKey;
 const ShapedText = types_mod.ShapedText;
 const SyntheticStyle = config_mod.SyntheticStyle;
 const TextAppend = types_mod.TextAppend;
 const TextAppendResult = types_mod.TextAppendResult;
 const TextAtlas = atlas_mod.TextAtlas;
+const TextResourceKeys = resource_key_mod.TextResourceKeys;
 const Transform2D = vec.Transform2D;
 const glyphInstanceBudget = shape_mod.glyphInstanceBudget;
 const glyphPlacementTransform = shape_mod.glyphPlacementTransform;
@@ -78,6 +81,13 @@ pub const TextBlob = struct {
 
     pub fn hasPaintRecords(self: *const TextBlob) bool {
         return self.paint_layer_info_data != null;
+    }
+
+    pub fn resourceKeys(self: *const TextBlob, atlas_key: ResourceKey, blob_key: ResourceKey) TextResourceKeys {
+        return .{
+            .atlas = atlas_key,
+            .paint = if (self.hasPaintRecords()) resource_key_mod.derived(blob_key, "text_paint") else null,
+        };
     }
 
     pub fn paintRecordLoc(self: *const TextBlob, record_index: u32) struct { x: u16, y: u16 } {

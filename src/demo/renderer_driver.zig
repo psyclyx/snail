@@ -196,18 +196,18 @@ pub const Driver = union(Kind) {
         };
     }
 
-    pub fn draw(self: *Driver, prepared: *const snail.PreparedResources, records: snail.DrawRecords, state: snail.DrawState) !void {
-        try self.drawPass(prepared, records, .{ .state = state });
+    pub fn draw(self: *Driver, prepared: *const snail.PreparedResources, list: *const snail.DrawList, state: snail.DrawState) !void {
+        try self.drawPass(prepared, list, .{ .state = state });
     }
 
-    pub fn drawPass(self: *Driver, prepared: *const snail.PreparedResources, records: snail.DrawRecords, pass: snail.DrawPass) !void {
+    pub fn drawPass(self: *Driver, prepared: *const snail.PreparedResources, list: *const snail.DrawList, pass: snail.DrawPass) !void {
         switch (self.*) {
             .vulkan => |*driver| if (comptime build_options.enable_vulkan) {
-                try driver.drawPass(prepared, records, pass);
+                try driver.drawPass(prepared, list, pass);
             } else unreachable,
             else => {
                 var r = self.renderer();
-                try r.drawPass(prepared, records, pass);
+                try r.drawPass(prepared, list, pass);
             },
         }
     }
@@ -263,13 +263,13 @@ const VulkanDriver = if (build_options.enable_vulkan) struct {
         return true;
     }
 
-    fn draw(self: *VulkanDriver, prepared: *const snail.PreparedResources, records: snail.DrawRecords, state: snail.DrawState) !void {
-        try self.drawPass(prepared, records, .{ .state = state });
+    fn draw(self: *VulkanDriver, prepared: *const snail.PreparedResources, list: *const snail.DrawList, state: snail.DrawState) !void {
+        try self.drawPass(prepared, list, .{ .state = state });
     }
 
-    fn drawPass(self: *VulkanDriver, prepared: *const snail.PreparedResources, records: snail.DrawRecords, pass: snail.DrawPass) !void {
+    fn drawPass(self: *VulkanDriver, prepared: *const snail.PreparedResources, list: *const snail.DrawList, pass: snail.DrawPass) !void {
         const frame = self.frame orelse return error.MissingCommandBuffer;
-        try frame.drawPass(prepared, records, pass);
+        try frame.drawPass(prepared, list, pass);
     }
 } else void;
 

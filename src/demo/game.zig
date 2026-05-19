@@ -194,8 +194,7 @@ pub fn main() !void {
 }
 
 fn addPassResources(set: *snail.ResourceManifest, pass: *const PreparedPass) !void {
-    try set.putTextAtlas(pass.text_resources.atlas, pass.text.atlas);
-    if (pass.text_resources.paint) |paint_key| try set.putTextPaint(paint_key, pass.text);
+    try set.putTextBlob(pass.text_resources, pass.text);
     if (pass.picture) |picture| try set.putPathPicture(pass.path_key.?, picture);
 }
 
@@ -258,11 +257,11 @@ fn drawSnailScene(
         if (draw_buf.*.len > 0) allocator.free(draw_buf.*);
         draw_buf.* = try allocator.alloc(u32, needed);
     }
-    const draw_segments = try allocator.alloc(snail.DrawSegment, needed_segments);
+    const draw_segments = try allocator.alloc(snail.DrawList.Segment, needed_segments);
     defer allocator.free(draw_segments);
     var draw = snail.DrawList.init(draw_buf.*[0..needed], draw_segments);
     try draw.addScene(prepared, scene);
-    try renderer.draw(prepared, draw.slice(), options);
+    try renderer.draw(prepared, &draw, options);
 }
 
 fn updateCamera(camera: *Camera, dt: f32) void {

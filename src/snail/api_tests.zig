@@ -4,7 +4,10 @@ const build_options = @import("build_options");
 const snail = @import("root.zig");
 const bezier = @import("math/bezier.zig");
 const stamp_mod = @import("resources/stamp.zig");
+const prepared_mod = @import("resources/prepared.zig");
+const draw_mod = @import("draw.zig");
 const upload_mod = @import("upload.zig");
+const render_interface = @import("render/interface.zig");
 const upload_plan = @import("render/upload_plan.zig");
 const texture_layers = @import("render/format/texture_layers.zig");
 const render_abi = @import("render/format/abi.zig");
@@ -27,24 +30,24 @@ const ResourceStamp = snail.ResourceStamp;
 const ResourceManifest = snail.ResourceManifest;
 const ResourceCacheStats = snail.ResourceCacheStats;
 const ResourceUploadBatch = upload_mod.ResourceUploadBatch;
-const PreparedManifest = snail.PreparedManifest;
+const PreparedManifest = prepared_mod.PreparedManifest;
 const PreparedResources = snail.PreparedResources;
 const PreparedResourceRetirementQueue = snail.PreparedResourceRetirementQueue;
 const PendingResourceUpload = snail.PendingResourceUpload;
-const ResourceUploader = snail.ResourceUploader;
 const Renderer = snail.Renderer;
 const CpuRenderer = snail.CpuRenderer;
-const DrawSegment = snail.DrawSegment;
-const DrawRecords = snail.DrawRecords;
+const DrawSegment = draw_mod.DrawSegment;
+const DrawRecords = draw_mod.DrawRecords;
 const DrawPass = snail.DrawPass;
 const DrawState = snail.DrawState;
 const DrawList = snail.DrawList;
 const Scene = snail.Scene;
 const CoverageTransfer = snail.CoverageTransfer;
 
-fn declareTextBlobResources(set: *ResourceManifest, keys: snail.TextResourceKeys, blob: *const TextBlob) !void {
-    try set.putTextAtlas(keys.atlas, blob.atlas);
-    if (keys.paint) |paint_key| try set.putTextPaint(paint_key, blob);
+fn declareTextBlobResources(set: *ResourceManifest, atlas_key: ResourceKey, blob_key: ResourceKey, blob: *const TextBlob) !snail.TextResourceKeys {
+    const resources = blob.resourceKeys(atlas_key, blob_key);
+    try set.putTextBlob(resources, blob);
+    return resources;
 }
 const SubpixelOrder = snail.SubpixelOrder;
 const FillRule = snail.FillRule;
@@ -208,15 +211,17 @@ test "draw with missing prepared resources fails" {
 
     var prepared = PreparedResources{ .manifest = .{ .allocator = allocator } };
     var words: [TEXT_WORDS_PER_GLYPH]u32 = undefined;
-    const segments = [_]DrawSegment{.{
+    var segments = [_]DrawSegment{.{
         .kind = .text,
         .offset = 0,
         .len = TEXT_WORDS_PER_GLYPH,
         .key = ResourceKey.named("missing"),
         .resource_stamp = .{},
     }};
-    const records = DrawRecords{ .words = &words, .segments = &segments };
-    try std.testing.expectError(error.MissingPreparedResource, renderer.draw(&prepared, records, .{
+    var draw = DrawList.init(&words, &segments);
+    draw.len = words.len;
+    draw.segment_len = segments.len;
+    try std.testing.expectError(error.MissingPreparedResource, renderer.draw(&prepared, &draw, .{
         .mvp = Mat4.identity,
         .surface = .{ .pixel_width = width, .pixel_height = height, .encoding = .srgb },
     }));
@@ -241,8 +246,8 @@ test "draw dispatch uses only prepared stamps and caller records" {
         }
         fn deinit(_: *anyopaque) void {}
         fn draw(renderer: *Renderer, prepared: *const PreparedResources, records: DrawRecords, options: DrawState) anyerror!void {
-            try renderer.validateRecords(prepared, records);
-            try renderer.iterateRecords(records, options, null);
+            try render_interface.validateRecords(renderer, prepared, records);
+            try render_interface.iterateRecords(renderer, records, options, null);
         }
         fn drawPass(renderer: *Renderer, prepared: *const PreparedResources, records: DrawRecords, pass: DrawPass) anyerror!void {
             return switch (pass.resolve) {
@@ -352,18 +357,20 @@ test "draw dispatch uses only prepared stamps and caller records" {
         },
     };
     var words = [_]u32{ 1, 2, 3, 4 };
-    const segments = [_]DrawSegment{.{
+    var segments = [_]DrawSegment{.{
         .kind = .text,
         .offset = 0,
         .len = words.len,
         .key = key,
         .resource_stamp = stamp,
     }};
-    const records = DrawRecords{ .words = &words, .segments = &segments };
+    var draw = DrawList.init(&words, &segments);
+    draw.len = words.len;
+    draw.segment_len = segments.len;
 
     var state: FakeState = .{};
     var renderer = Renderer{ .ptr = @ptrCast(&state), .vtable = &fake_vtable };
-    try renderer.draw(&prepared, records, options);
+    try renderer.draw(&prepared, &draw, options);
 
     try std.testing.expectEqual(@as(u32, 1), state.begin_count);
     try std.testing.expectEqual(@as(u32, 1), state.text_count);
@@ -515,8 +522,7 @@ test "ResourceManifest uploads explicit text paint resources" {
 
     var set_entries: [2]ResourceManifest.Entry = undefined;
     var set = ResourceManifest.init(&set_entries);
-    const text_keys = ResourceManifest.textBlobResourceKeys(ResourceKey.named("fonts"), ResourceKey.named("headline"), &blob);
-    try declareTextBlobResources(&set, text_keys, &blob);
+    const text_keys = try declareTextBlobResources(&set, ResourceKey.named("fonts"), ResourceKey.named("headline"), &blob);
     try std.testing.expectEqual(@as(usize, 2), set.slice().len);
     try std.testing.expect(std.meta.activeTag(set.slice()[0]) == .text_atlas);
     try std.testing.expect(std.meta.activeTag(set.slice()[1]) == .text_paint);
@@ -549,9 +555,10 @@ test "ResourceManifest uploads explicit text paint resources" {
     var draw = DrawList.init(words, segments);
     try draw.addScene(&prepared, &scene);
 
-    try std.testing.expectEqual(@as(usize, 1), draw.slice().segments.len);
-    try std.testing.expect(draw.slice().segments[0].key.eql(text_keys.paint.?));
-    const decoded = vertex_mod.decodeInstance(draw.slice().words);
+    const records = draw_mod.recordsForList(&draw);
+    try std.testing.expectEqual(@as(usize, 1), records.segments.len);
+    try std.testing.expect(records.segments[0].key.eql(text_keys.paint.?));
+    const decoded = vertex_mod.decodeInstance(records.words);
     try std.testing.expectEqual(render_abi.SpecialLayerKind.path, render_abi.specialGlyphWordKind(decoded.glyph[1]).?);
 }
 
@@ -579,7 +586,7 @@ test "ResourceManifest footprint counts text image paint payloads" {
 
     var set_entries: [2]ResourceManifest.Entry = undefined;
     var set = ResourceManifest.init(&set_entries);
-    try declareTextBlobResources(&set, ResourceManifest.textBlobResourceKeys(ResourceKey.named("fonts"), ResourceKey.named("image_text"), &blob), &blob);
+    _ = try declareTextBlobResources(&set, ResourceKey.named("fonts"), ResourceKey.named("image_text"), &blob);
     const footprint = try set.estimateUploadFootprint();
     try std.testing.expectEqual(image.pixelSlice().len, footprint.image_bytes_used);
     try std.testing.expect(footprint.image_bytes_allocated >= footprint.image_bytes_used);
@@ -659,8 +666,7 @@ test "DrawList estimate upper-bounds ranged text draw output" {
 
     var set_entries: [1]ResourceManifest.Entry = undefined;
     var set = ResourceManifest.init(&set_entries);
-    const text_keys = ResourceManifest.textBlobResourceKeys(ResourceKey.named("fonts"), ResourceKey.named("glyph_subset_text"), &blob);
-    try declareTextBlobResources(&set, text_keys, &blob);
+    const text_keys = try declareTextBlobResources(&set, ResourceKey.named("fonts"), ResourceKey.named("glyph_subset_text"), &blob);
 
     var scene = Scene.init(allocator);
     defer scene.deinit();
@@ -693,8 +699,9 @@ test "DrawList estimate upper-bounds ranged text draw output" {
     defer allocator.free(draw_segments);
     var draw = DrawList.init(draw_buf, draw_segments);
     try draw.addScene(&prepared, &scene);
-    try std.testing.expectEqual(needed, draw.slice().words.len);
-    try std.testing.expectEqual(@as(usize, 1), draw.slice().segments.len);
+    const records = draw_mod.recordsForList(&draw);
+    try std.testing.expectEqual(needed, records.words.len);
+    try std.testing.expectEqual(@as(usize, 1), records.segments.len);
 }
 
 test "replacing path-picture key does not invalidate unrelated text coverage records" {
@@ -734,8 +741,7 @@ test "replacing path-picture key does not invalidate unrelated text coverage rec
 
     var set_a_entries: [4]ResourceManifest.Entry = undefined;
     var set_a = ResourceManifest.init(&set_a_entries);
-    const text_keys = ResourceManifest.textBlobResourceKeys(ResourceKey.named("fonts"), ResourceKey.named("coverage_text"), &blob);
-    try declareTextBlobResources(&set_a, text_keys, &blob);
+    const text_keys = try declareTextBlobResources(&set_a, ResourceKey.named("fonts"), ResourceKey.named("coverage_text"), &blob);
     try set_a.putPathPicture(ResourceKey.named("hud_panel"), &picture_a);
     var prepared_a = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set_a);
     defer prepared_a.deinit();
@@ -750,7 +756,7 @@ test "replacing path-picture key does not invalidate unrelated text coverage rec
 
     var set_b_entries: [4]ResourceManifest.Entry = undefined;
     var set_b = ResourceManifest.init(&set_b_entries);
-    try declareTextBlobResources(&set_b, text_keys, &blob);
+    _ = try declareTextBlobResources(&set_b, ResourceKey.named("fonts"), ResourceKey.named("coverage_text"), &blob);
     try set_b.putPathPicture(ResourceKey.named("hud_panel"), &picture_b);
     var prepared_b = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set_b);
     defer prepared_b.deinit();
@@ -808,7 +814,7 @@ test "draw rejects stale records when a resource key is replaced" {
     var prepared_b = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set_b);
     defer prepared_b.deinit();
 
-    try std.testing.expectError(error.StaleDrawRecords, renderer.draw(&prepared_b, draw.slice(), draw_state));
+    try std.testing.expectError(error.StaleDrawRecords, renderer.draw(&prepared_b, &draw, draw_state));
 }
 
 test "resource upload plan reports changed keys and enforces budget" {
@@ -902,6 +908,17 @@ test "resource upload plan reports appended atlas pages" {
     var atlas_b = (try atlas_a.ensureText(.{}, "HelloZ")) orelse return error.TestExpectedOptional;
     defer atlas_b.deinit();
 
+    var shaped = try atlas_a.shapeText(allocator, .{}, "Hello");
+    defer shaped.deinit();
+    var blob_a = try TextBlob.init(allocator, &atlas_a, .{
+        .shaped = &shaped,
+        .placement = .{ .baseline = .{ .x = 0, .y = 12 }, .em = 12 },
+        .fill = .{ .solid = .{ 1, 1, 1, 1 } },
+    });
+    defer blob_a.deinit();
+    var blob_b = try blob_a.rebound(allocator, &atlas_b);
+    defer blob_b.deinit();
+
     const width: u32 = 16;
     const height: u32 = 16;
     const stride: u32 = width * 4;
@@ -914,13 +931,13 @@ test "resource upload plan reports appended atlas pages" {
 
     var set_a_entries: [1]ResourceManifest.Entry = undefined;
     var set_a = ResourceManifest.init(&set_a_entries);
-    try set_a.putTextAtlas(ResourceKey.named("fonts"), &atlas_a);
+    try set_a.putTextBlob(blob_a.resourceKeys(ResourceKey.named("fonts"), ResourceKey.named("atlas_pages_text")), &blob_a);
     var prepared_a = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set_a);
     defer prepared_a.deinit();
 
     var set_b_entries: [1]ResourceManifest.Entry = undefined;
     var set_b = ResourceManifest.init(&set_b_entries);
-    try set_b.putTextAtlas(ResourceKey.named("fonts"), &atlas_b);
+    try set_b.putTextBlob(blob_b.resourceKeys(ResourceKey.named("fonts"), ResourceKey.named("atlas_pages_text")), &blob_b);
     var plan = try renderer.planResourceUpload(allocator, &prepared_a, &set_b);
     defer plan.deinit();
 
@@ -1021,7 +1038,7 @@ test "pending upload publish waits for external completion marker" {
     defer plan.deinit();
 
     var pending = PendingResourceUpload{
-        .uploader = renderer.resourceUploader(),
+        .renderer = renderer,
         .plan = try plan.clone(allocator),
         .allocators = .{ .persistent = allocator, .scratch = allocator },
         .prepared = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set),
@@ -1037,8 +1054,8 @@ test "pending upload publish waits for external completion marker" {
     try std.testing.expect(prepared.stampForKey(ResourceKey.named("hud_panel")) != null);
 }
 
-test "pending upload stores upload capability by value" {
-    try std.testing.expectEqual(ResourceUploader, @TypeOf(@as(PendingResourceUpload, undefined).uploader));
+test "pending upload stores renderer capability by value" {
+    try std.testing.expectEqual(Renderer, @TypeOf(@as(PendingResourceUpload, undefined).renderer));
 }
 
 test "prepared resource retirement queue is caller-owned" {
@@ -1111,7 +1128,7 @@ test "CPU draw uses prepared resource views" {
     defer allocator.free(draw_segments);
     var draw = DrawList.init(draw_buf, draw_segments);
     try draw.addScene(&prepared, &scene);
-    try renderer.draw(&prepared, draw.slice(), draw_state);
+    try renderer.draw(&prepared, &draw, draw_state);
 
     var changed = false;
     for (pixels) |byte| {

@@ -13,6 +13,7 @@ pub const BackendKind = backend_kind_mod.BackendKind;
 const CoverageBackend = coverage_mod.Backend;
 const DrawPass = draw_mod.DrawPass;
 const DrawState = draw_mod.DrawState;
+const DrawList = draw_mod.DrawList;
 const DrawRecords = draw_mod.DrawRecords;
 const PendingResourceUpload = upload_mod.PendingResourceUpload;
 const PreparedResources = prepared_mod.PreparedResources;
@@ -70,13 +71,11 @@ pub const Renderer = struct {
     /// be current. CPU upload builds cheap views. Vulkan does not perform an
     /// implicit device/queue idle here.
     pub fn uploadResourcesBlocking(self: *Renderer, allocators: UploadAllocators, set: *const ResourceManifest) !PreparedResources {
-        var uploader = self.resourceUploader();
-        return uploader.uploadResourcesBlocking(allocators, set);
+        return uploadPreparedResources(self, set, allocators);
     }
 
     pub fn uploadResourceBatch(self: *Renderer, allocators: UploadAllocators, prepared: *PreparedResources, batch: ResourceUploadBatch) !void {
-        var uploader = self.resourceUploader();
-        try uploader.uploadResourceBatch(allocators, prepared, batch);
+        try self.vtable.upload.uploadResources(self.ptr, allocators, prepared, batch);
     }
 
     pub fn coverageBackend(self: *Renderer, prepared: *const PreparedResources) ?CoverageBackend {
@@ -84,13 +83,15 @@ pub const Renderer = struct {
     }
 
     pub fn planResourceUpload(self: *Renderer, allocator: std.mem.Allocator, current: ?*const PreparedResources, next_set: *const ResourceManifest) !ResourceUploadPlan {
-        var uploader = self.resourceUploader();
-        return uploader.planResourceUpload(allocator, current, next_set);
+        return upload_plan.planResourceUpload(self, allocator, current, next_set);
     }
 
     pub fn beginResourceUpload(self: *Renderer, allocators: UploadAllocators, plan: *const ResourceUploadPlan) !PendingResourceUpload {
-        var uploader = self.resourceUploader();
-        return uploader.beginResourceUpload(allocators, plan);
+        return .{
+            .renderer = self.*,
+            .allocators = allocators,
+            .plan = try plan.clone(allocators.persistent),
+        };
     }
 
     pub fn resourceCacheStats(self: *const Renderer) ResourceCacheStats {
@@ -103,16 +104,6 @@ pub const Renderer = struct {
 
     pub fn backend(self: *const Renderer) BackendKind {
         return self.vtable.backend;
-    }
-
-    pub fn resourceUploader(self: *Renderer) ResourceUploader {
-        return .{
-            .ptr = self.ptr,
-            .backend_kind = self.vtable.backend,
-            .upload = &self.vtable.upload,
-            .resource_cache = &self.vtable.resource_cache,
-            .backendNameFn = self.vtable.backendName,
-        };
     }
 
     pub fn usesResourceCache(self: *const Renderer) bool {
@@ -134,52 +125,24 @@ pub const Renderer = struct {
     /// Execute prebuilt draw records. This never discovers, uploads, allocates,
     /// or invalidates resources. The backend's vtable entry decides whether
     /// to walk records serially or fan them out across worker threads.
-    pub fn draw(self: *Renderer, prepared: *const PreparedResources, records: DrawRecords, state: DrawState) !void {
-        return self.vtable.draw.draw(self, prepared, records, state);
+    pub fn draw(self: *Renderer, prepared: *const PreparedResources, list: *const DrawList, state: DrawState) !void {
+        return self.vtable.draw.draw(self, prepared, draw_mod.recordsForList(list), state);
     }
 
     pub fn drawPrepared(self: *Renderer, prepared: *const PreparedResources, scene: *const PreparedScene, state: DrawState) !void {
-        return self.draw(prepared, scene.slice(), state);
+        return self.vtable.draw.draw(self, prepared, draw_mod.recordsForPreparedScene(scene), state);
     }
 
-    pub fn drawPass(self: *Renderer, prepared: *const PreparedResources, records: DrawRecords, pass: DrawPass) !void {
-        return self.vtable.draw.drawPass(self, prepared, records, pass);
+    pub fn drawPass(self: *Renderer, prepared: *const PreparedResources, list: *const DrawList, pass: DrawPass) !void {
+        return self.vtable.draw.drawPass(self, prepared, draw_mod.recordsForList(list), pass);
     }
 
     pub fn drawPreparedPass(self: *Renderer, prepared: *const PreparedResources, scene: *const PreparedScene, pass: DrawPass) !void {
-        return self.drawPass(prepared, scene.slice(), pass);
+        return self.vtable.draw.drawPass(self, prepared, draw_mod.recordsForPreparedScene(scene), pass);
     }
 
-    /// Verify every segment's stamps still match the live prepared resources.
-    /// Returns `error.StaleDrawRecords` if a resource has been re-uploaded;
-    /// `error.MissingPreparedResource` if a key is gone.
-    /// Vtables call this once per frame before fan-out so per-tile workers
-    /// don't have to re-validate (and don't need an error path).
     fn validateBackendGeneration(self: *Renderer, prepared: *const PreparedResources) !void {
         try self.vtable.resource_cache.validateBackendGeneration(prepared);
-    }
-
-    pub fn validateRecords(self: *Renderer, prepared: *const PreparedResources, records: DrawRecords) !void {
-        try self.validateBackendGeneration(prepared);
-        for (records.segments) |segment| {
-            const actual_stamp = prepared.stampForKey(segment.key) orelse return error.MissingPreparedResource;
-            if (!actual_stamp.eql(segment.resource_stamp)) return error.StaleDrawRecords;
-        }
-    }
-
-    /// Draw-level execution: set state, walk records serially dispatching each
-    /// segment to the backend's `drawText` / `drawPaths`. Used by GPU adapters
-    /// directly, and by the CPU adapter's serial fallback / tile workers.
-    /// Caller has already invoked `validateRecords`.
-    pub fn iterateRecords(self: *Renderer, records: DrawRecords, state: DrawState, backend_prepared: ?*const anyopaque) !void {
-        self.beginBackendDraw();
-        for (records.segments) |segment| {
-            const vertices = records.words[segment.offset..][0..segment.len];
-            switch (segment.kind) {
-                .text => if (vertices.len > 0) try self.drawText(backend_prepared, vertices, state, segment.texture_layer_base),
-                .path => if (vertices.len > 0) try self.drawPaths(backend_prepared, vertices, state, segment.texture_layer_base),
-            }
-        }
     }
 
     pub fn deinit(self: *Renderer) void {
@@ -203,65 +166,33 @@ pub const Renderer = struct {
     }
 };
 
-pub const ResourceUploader = struct {
-    ptr: *anyopaque,
-    backend_kind: BackendKind,
-    upload: *const Renderer.UploadVTable,
-    resource_cache: *const Renderer.ResourceCacheVTable,
-    backendNameFn: *const fn (*anyopaque) [:0]const u8,
-
-    pub fn uploadResourcesBlocking(self: *ResourceUploader, allocators: UploadAllocators, set: *const ResourceManifest) !PreparedResources {
-        return uploadPreparedResources(self, set, allocators);
+/// Verify every segment's stamps still match the live prepared resources.
+/// Returns `error.StaleDrawRecords` if a resource has been re-uploaded;
+/// `error.MissingPreparedResource` if a key is gone.
+/// Vtables call this once per frame before fan-out so per-tile workers
+/// don't have to re-validate (and don't need an error path).
+pub fn validateRecords(renderer: *Renderer, prepared: *const PreparedResources, records: DrawRecords) !void {
+    try renderer.validateBackendGeneration(prepared);
+    for (records.segments) |segment| {
+        const actual_stamp = prepared.stampForKey(segment.key) orelse return error.MissingPreparedResource;
+        if (!actual_stamp.eql(segment.resource_stamp)) return error.StaleDrawRecords;
     }
+}
 
-    pub fn uploadResourceBatch(self: *ResourceUploader, allocators: UploadAllocators, prepared: *PreparedResources, batch: ResourceUploadBatch) !void {
-        try self.upload.uploadResources(self.ptr, allocators, prepared, batch);
+/// Draw-level execution: set state, walk records serially dispatching each
+/// segment to the backend's `drawText` / `drawPaths`. Used by GPU adapters
+/// directly, and by the CPU adapter's serial fallback / tile workers.
+/// Caller has already invoked `validateRecords`.
+pub fn iterateRecords(renderer: *Renderer, records: DrawRecords, state: DrawState, backend_prepared: ?*const anyopaque) !void {
+    renderer.beginBackendDraw();
+    for (records.segments) |segment| {
+        const vertices = records.words[segment.offset..][0..segment.len];
+        switch (segment.kind) {
+            .text => if (vertices.len > 0) try renderer.drawText(backend_prepared, vertices, state, segment.texture_layer_base),
+            .path => if (vertices.len > 0) try renderer.drawPaths(backend_prepared, vertices, state, segment.texture_layer_base),
+        }
     }
-
-    pub fn planResourceUpload(self: *ResourceUploader, allocator: std.mem.Allocator, current: ?*const PreparedResources, next_set: *const ResourceManifest) !ResourceUploadPlan {
-        return upload_plan.planResourceUpload(self, allocator, current, next_set);
-    }
-
-    pub fn beginResourceUpload(self: *ResourceUploader, allocators: UploadAllocators, plan: *const ResourceUploadPlan) !PendingResourceUpload {
-        return .{
-            .uploader = self.*,
-            .allocators = allocators,
-            .plan = try plan.clone(allocators.persistent),
-        };
-    }
-
-    pub fn resourceCacheStats(self: *const ResourceUploader) ResourceCacheStats {
-        return self.resource_cache.stats(self.ptr);
-    }
-
-    pub fn resetResourceCache(self: *ResourceUploader) void {
-        self.resource_cache.reset(self.ptr);
-    }
-
-    pub fn backend(self: *const ResourceUploader) BackendKind {
-        return self.backend_kind;
-    }
-
-    pub fn usesResourceCache(self: *const ResourceUploader) bool {
-        return self.resource_cache.uses_resource_cache;
-    }
-
-    pub fn atlasCacheStatus(self: *const ResourceUploader, prepared: *const PreparedResources, atlas_index: usize, atlas: upload_plan.PagedAtlasSource) upload_plan.AtlasCacheStatus {
-        return self.resource_cache.atlasCacheStatus(prepared, atlas_index, atlas);
-    }
-
-    pub fn canUseAtlasOverflowBanks(self: *const ResourceUploader, prepared: *const PreparedResources, atlas_count: usize) bool {
-        return self.resource_cache.canUseAtlasOverflowBanks(prepared, atlas_count);
-    }
-
-    pub fn imageArrayWouldRebuild(self: *const ResourceUploader, prepared: *const PreparedResources, capacity_count: u32, capacity_width: u32, capacity_height: u32) bool {
-        return self.resource_cache.imageArrayWouldRebuild(prepared, capacity_count, capacity_width, capacity_height);
-    }
-
-    pub fn backendName(self: *const ResourceUploader) [:0]const u8 {
-        return self.backendNameFn(@constCast(self.ptr));
-    }
-};
+}
 
 fn disabledDeinit(_: *anyopaque) void {}
 
