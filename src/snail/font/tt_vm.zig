@@ -34,6 +34,23 @@ pub const ExecutionBuffers = struct {
     storage: []i32,
 };
 
+pub const ControlProgramSnapshot = struct {
+    graphics: tt_exec.GraphicsState,
+    storage: []i32,
+
+    pub fn capture(self: ControlProgramSnapshot, context: *const tt_exec.Context) !void {
+        if (self.storage.len != context.storage.len) return error.InvalidStorageSnapshot;
+        @memcpy(self.storage, context.storage);
+    }
+
+    pub fn restore(self: ControlProgramSnapshot, context: *tt_exec.Context) !void {
+        if (self.storage.len != context.storage.len) return error.InvalidStorageSnapshot;
+        @memcpy(context.storage, self.storage);
+        context.graphics = self.graphics;
+        context.reset();
+    }
+};
+
 pub const GlyphBounds = struct {
     x_min: i16,
     y_min: i16,
@@ -293,8 +310,24 @@ pub const SizeState = struct {
         zones.glyph = try self.initSimpleGlyphZoneWithPhantoms(buffer, glyph, phantoms);
         context.reset();
         context.setZones(zones);
-        try context.execute(glyph.instructions);
+        if ((context.graphics.instruct_control & 1) == 0) {
+            try context.execute(glyph.instructions);
+        }
         return hintedSimpleGlyphView(zones.glyph, glyph.points.len);
+    }
+
+    pub fn captureControlProgramSnapshot(
+        self: *const SizeState,
+        context: *const tt_exec.Context,
+        storage: []i32,
+    ) !ControlProgramSnapshot {
+        _ = self;
+        var snapshot = ControlProgramSnapshot{
+            .graphics = context.graphics,
+            .storage = storage,
+        };
+        try snapshot.capture(context);
+        return snapshot;
     }
 };
 
@@ -421,6 +454,32 @@ test "size state initializes execution context over caller buffers" {
     try context.execute(&.{ 0xB1, 0, 50, 0x70, 0x4B });
     try std.testing.expectEqual(scaleFWordTo26Dot6(50, 12 * 64, program.head.units_per_em), size.cvt_y[0]);
     try std.testing.expectEqual(@as(i32, 12), try context.top());
+}
+
+test "control program snapshot restores glyph-start state" {
+    const program = try Program.init(@import("assets").noto_sans_regular);
+    var size = try program.sizeState(std.testing.allocator, .{
+        .ppem_x_26_6 = 10 * 64,
+        .ppem_y_26_6 = 12 * 64,
+    });
+    defer size.deinit();
+
+    var stack: [16]i32 = undefined;
+    var storage: [3]i32 = .{ 10, 20, 30 };
+    var context = size.executionContext(.{
+        .stack = &stack,
+        .storage = &storage,
+    }, .x, .{});
+    context.graphics.round_mode = .off;
+
+    var snapshot_storage: [3]i32 = undefined;
+    const snapshot = try size.captureControlProgramSnapshot(&context, &snapshot_storage);
+    storage[1] = 99;
+    context.graphics.round_mode = .half_grid;
+
+    try snapshot.restore(&context);
+    try std.testing.expectEqual(@as(i32, 20), storage[1]);
+    try std.testing.expectEqual(@as(@TypeOf(context.graphics.round_mode), .off), context.graphics.round_mode);
 }
 
 test "program executes bundled font and control programs" {
