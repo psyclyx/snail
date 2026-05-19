@@ -504,9 +504,9 @@ pub const Font = struct {
                 const d = Vec2.new(component_ref.dx, component_ref.dy);
                 for (contour.curves, 0..) |curve, ci| {
                     transformed[ci] = .{
-                        .p0 = Vec2.add(curve.p0, d),
-                        .p1 = Vec2.add(curve.p1, d),
-                        .p2 = Vec2.add(curve.p2, d),
+                        .p0 = transformComponentPoint(component_ref.transform, curve.p0, d),
+                        .p1 = transformComponentPoint(component_ref.transform, curve.p1, d),
+                        .p2 = transformComponentPoint(component_ref.transform, curve.p2, d),
                     };
                 }
                 try all_contours.append(allocator, .{ .curves = transformed });
@@ -517,6 +517,10 @@ pub const Font = struct {
         contours_owned_by_list = false;
         const glyph = Glyph{ .contours = contours, .metrics = metrics };
         return cacheParsedGlyph(allocator, cache, glyph_id, glyph);
+    }
+
+    fn transformComponentPoint(transform: tt_outline.ComponentTransform, point: Vec2, offset: Vec2) Vec2 {
+        return Vec2.add(transform.apply(point), offset);
     }
 
     /// A single COLRv0 layer: the outline glyph to render and its RGBA color.

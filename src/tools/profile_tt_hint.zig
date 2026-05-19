@@ -125,10 +125,7 @@ fn executeOnce(
 ) !void {
     for (snail.ASCII_PRINTABLE) |ch| {
         const glyph_id = (try atlas.glyphIndex(0, ch)) orelse continue;
-        const executed = machine.executeCachedGlyph(cache, glyph_id) catch |err| switch (err) {
-            error.UnsupportedCompoundHinting => continue,
-            else => return err,
-        };
+        const executed = try machine.executeCachedGlyph(cache, glyph_id);
         keepExecutedGlyphAlive(executed);
     }
 }
@@ -144,10 +141,7 @@ fn planOnce(
         const scratch = scratch_state.allocator();
         const glyph_id = (try atlas.glyphIndex(0, ch)) orelse continue;
         const info = atlas.face_glyphs[0].getGlyph(glyph_id) orelse continue;
-        const hint = machine.hintCachedGlyph(scratch, cache, glyph_id) catch |err| switch (err) {
-            error.UnsupportedCompoundHinting => continue,
-            else => return err,
-        };
+        const hint = try machine.hintCachedGlyph(scratch, cache, glyph_id);
         const patch = try snail.patchTrueTypeGlyphHint(scratch, .{
             .info = info,
             .page = atlas.pages[info.page_index],

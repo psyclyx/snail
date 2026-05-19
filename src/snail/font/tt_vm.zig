@@ -317,12 +317,25 @@ pub const SizeState = struct {
         phantoms: tt_points.PhantomMetrics,
     ) !HintedSimpleGlyph {
         zones.glyph = try self.initSimpleGlyphZoneWithPhantoms(buffer, glyph, phantoms);
+        return self.executeGlyphZone(context, zones, zones.glyph, glyph.points.len, glyph.instructions);
+    }
+
+    pub fn executeGlyphZone(
+        self: *const SizeState,
+        context: *tt_exec.Context,
+        zones: *tt_exec.PointZones,
+        zone: tt_exec.PointZone,
+        phantom_start: usize,
+        instructions: []const u8,
+    ) !HintedSimpleGlyph {
+        _ = self;
+        zones.glyph = zone;
         context.reset();
         context.setZones(zones);
         if ((context.graphics.instruct_control & 1) == 0) {
-            try context.execute(glyph.instructions);
+            try context.execute(instructions);
         }
-        return hintedSimpleGlyphView(zones.glyph, glyph.points.len);
+        return hintedSimpleGlyphView(zones.glyph, phantom_start);
     }
 
     pub fn captureControlProgramSnapshot(

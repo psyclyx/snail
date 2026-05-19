@@ -88,7 +88,6 @@ pub const HintRejectReason = enum {
     synthetic_embolden,
     color_glyph,
     missing_base_glyph,
-    unsupported_compound,
     topology_changed,
     bands_not_reusable,
     empty_hinted_outline,
@@ -341,10 +340,7 @@ pub const TrueTypeHintContext = struct {
             else => return err,
         };
 
-        var hint = size_state.machine.hintCachedGlyph(self.allocator, &face_state.cache, key.glyph_id) catch |err| switch (err) {
-            error.UnsupportedCompoundHinting => return self.putUnsupported(key, .unsupported_compound),
-            else => return err,
-        };
+        var hint = try size_state.machine.hintCachedGlyph(self.allocator, &face_state.cache, key.glyph_id);
 
         if (hint.curves.len == 0) {
             const can_skip = glyphCanSkipEmptyHint(&face_view, key.glyph_id);

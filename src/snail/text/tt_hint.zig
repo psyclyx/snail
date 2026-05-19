@@ -82,6 +82,14 @@ pub const ExecutedGlyph = union(enum) {
     simple: tt_vm.HintedSimpleGlyph,
 };
 
+const CompoundBuildError = error{
+    BufferTooSmall,
+    InvalidFont,
+    MissingRequiredTable,
+    OutOfMemory,
+    UnexpectedEof,
+};
+
 pub const GlyphTopologyCache = struct {
     allocator: Allocator,
     program: *const Program,
@@ -132,6 +140,7 @@ pub const HintMachine = struct {
     functions: tt_exec.FunctionDefs,
     twilight_points: []tt_exec.Point,
     glyph_points: []tt_exec.Point,
+    compound_contours: []tt_outline.ContourRange,
     zones: tt_exec.PointZones,
     snapshot: tt_vm.ControlProgramSnapshot,
 
@@ -155,6 +164,7 @@ pub const HintMachine = struct {
         self.allocator.free(self.function_lookup);
         self.allocator.free(self.twilight_points);
         self.allocator.free(self.glyph_points);
+        self.allocator.free(self.compound_contours);
         self.size.deinit();
         self.* = undefined;
     }
@@ -162,7 +172,7 @@ pub const HintMachine = struct {
     pub fn hintGlyph(self: *HintMachine, allocator: Allocator, glyph_id: u16) !GlyphHint {
         var topology = try self.program.loadGlyphTopology(allocator, glyph_id);
         defer topology.deinit();
-        const executed = try self.executeTopology(glyph_id, &topology);
+        const executed = try self.executeTopology(glyph_id, &topology, null);
         return self.buildGlyphHint(allocator, glyph_id, executed);
     }
 
@@ -183,7 +193,7 @@ pub const HintMachine = struct {
         cache: *GlyphTopologyCache,
         glyph_id: u16,
     ) !ExecutedGlyph {
-        return self.executeTopology(glyph_id, try cache.get(glyph_id));
+        return self.executeTopology(glyph_id, try cache.get(glyph_id), cache);
     }
 
     pub fn buildGlyphHint(
@@ -224,11 +234,12 @@ pub const HintMachine = struct {
         self: *HintMachine,
         glyph_id: u16,
         topology: *tt_vm.GlyphTopology,
+        cache: ?*GlyphTopologyCache,
     ) !ExecutedGlyph {
         return switch (topology.*) {
             .empty => .{ .empty = try self.emptyAdvance(glyph_id) },
             .simple => |*simple| .{ .simple = try self.executeSimpleGlyph(glyph_id, simple) },
-            .compound => error.UnsupportedCompoundHinting,
+            .compound => |*compound| .{ .simple = try self.executeCompoundGlyph(glyph_id, compound, cache) },
         };
     }
 
@@ -249,6 +260,91 @@ pub const HintMachine = struct {
             simple,
             try self.program.glyphPhantomMetrics(glyph_id),
         );
+    }
+
+    fn executeCompoundGlyph(
+        self: *HintMachine,
+        glyph_id: u16,
+        compound: *const tt_outline.CompoundGlyph,
+        cache: ?*GlyphTopologyCache,
+    ) !tt_vm.HintedSimpleGlyph {
+        var builder = CompoundGlyphBuilder.init(
+            self.size.environment(),
+            self.glyph_points,
+            self.compound_contours,
+        );
+        try self.appendCompoundGlyph(&builder, compound, .{}, .zero, cache);
+        const metrics_id = compoundMetricsGlyphId(glyph_id, compound);
+        const phantom_start = try builder.appendPhantoms(try self.program.glyphPhantomMetrics(metrics_id));
+
+        var context = self.makeContext();
+        try self.snapshot.restore(&context);
+        context.setFunctions(&self.functions);
+        context.setZones(&self.zones);
+        return self.size.executeGlyphZone(
+            &context,
+            &self.zones,
+            builder.zone(),
+            phantom_start,
+            compound.instructions,
+        );
+    }
+
+    fn appendCompoundGlyph(
+        self: *HintMachine,
+        builder: *CompoundGlyphBuilder,
+        compound: *const tt_outline.CompoundGlyph,
+        transform: tt_outline.ComponentTransform,
+        offset: Vec2,
+        cache: ?*GlyphTopologyCache,
+    ) CompoundBuildError!void {
+        for (compound.components) |component| {
+            try self.appendCompoundComponent(builder, component, transform, offset, cache);
+        }
+    }
+
+    fn appendCompoundComponent(
+        self: *HintMachine,
+        builder: *CompoundGlyphBuilder,
+        component: tt_outline.CompoundComponent,
+        parent_transform: tt_outline.ComponentTransform,
+        parent_offset: Vec2,
+        cache: ?*GlyphTopologyCache,
+    ) CompoundBuildError!void {
+        const point_start = builder.point_count;
+        const transform = parent_transform.concat(component.transform);
+        const offset = componentOffset(parent_transform, parent_offset, component);
+        try self.appendComponentTopology(builder, component.glyph_id, transform, offset, cache);
+        if (component.args_are_xy) {
+            if (component.roundXYToGrid()) builder.roundOffset(point_start, parent_transform.apply(componentRawOffset(component)));
+            return;
+        }
+        try builder.alignComponentPoints(try componentPointArg(component.arg1), try componentPointArg(component.arg2), point_start);
+    }
+
+    fn appendComponentTopology(
+        self: *HintMachine,
+        builder: *CompoundGlyphBuilder,
+        glyph_id: u16,
+        transform: tt_outline.ComponentTransform,
+        offset: Vec2,
+        cache: ?*GlyphTopologyCache,
+    ) CompoundBuildError!void {
+        var owned: ?tt_vm.GlyphTopology = null;
+        defer if (owned) |*topology| topology.deinit();
+
+        const topology = if (cache) |topology_cache|
+            try topology_cache.get(glyph_id)
+        else blk: {
+            owned = try self.program.loadGlyphTopology(self.allocator, glyph_id);
+            break :blk &owned.?;
+        };
+
+        return switch (topology.*) {
+            .empty => {},
+            .simple => |*simple| builder.appendSimple(simple, transform, offset),
+            .compound => |*compound| self.appendCompoundGlyph(builder, compound, transform, offset, cache),
+        };
     }
 
     fn emptyGlyphHint(allocator: Allocator, glyph_id: u16, advance: Vec2) GlyphHint {
@@ -332,6 +428,8 @@ fn allocateMachine(allocator: Allocator, program: *const Program, ppem: HintPpem
     errdefer allocator.free(twilight_points);
     const glyph_points = try allocator.alloc(tt_exec.Point, @max(sizes.glyph_points, 1));
     errdefer allocator.free(glyph_points);
+    const compound_contours = try allocator.alloc(tt_outline.ContourRange, compoundContourCapacity(program));
+    errdefer allocator.free(compound_contours);
 
     return .{
         .allocator = allocator,
@@ -345,6 +443,7 @@ fn allocateMachine(allocator: Allocator, program: *const Program, ppem: HintPpem
         .functions = .{ .entries = function_entries, .lookup = function_lookup },
         .twilight_points = twilight_points,
         .glyph_points = glyph_points,
+        .compound_contours = compound_contours,
         .zones = .{
             .twilight = tt_exec.PointZone.initTwilight(twilight_points),
             .glyph = .{ .points = glyph_points[0..0] },
@@ -353,8 +452,204 @@ fn allocateMachine(allocator: Allocator, program: *const Program, ppem: HintPpem
     };
 }
 
+const CompoundGlyphBuilder = struct {
+    environment: tt_exec.Environment,
+    points: []tt_exec.Point,
+    contours: []tt_outline.ContourRange,
+    point_count: usize = 0,
+    contour_count: usize = 0,
+
+    fn init(
+        environment: tt_exec.Environment,
+        points: []tt_exec.Point,
+        contours: []tt_outline.ContourRange,
+    ) CompoundGlyphBuilder {
+        return .{
+            .environment = environment,
+            .points = points,
+            .contours = contours,
+        };
+    }
+
+    fn appendSimple(
+        self: *CompoundGlyphBuilder,
+        simple: *const tt_outline.SimpleGlyph,
+        transform: tt_outline.ComponentTransform,
+        offset: Vec2,
+    ) !void {
+        const point_base = self.point_count;
+        try self.appendContours(simple.contours, point_base);
+        for (simple.points) |source| try self.appendPoint(source, transform, offset);
+    }
+
+    fn appendPhantoms(self: *CompoundGlyphBuilder, metrics: tt_points.PhantomMetrics) !usize {
+        if (self.point_count + tt_points.phantom_count > self.points.len) return error.BufferTooSmall;
+        const phantom_start = self.point_count;
+        const left = @as(i32, metrics.x_min) - @as(i32, metrics.left_side_bearing);
+        const right = left + @as(i32, metrics.advance_width);
+        const top = @as(i32, metrics.y_max) + metrics.top_side_bearing;
+        const bottom = top - metrics.advance_height;
+        self.writePhantom(0, self.environment.scaleFUnitsX(left), 0);
+        self.writePhantom(1, self.environment.scaleFUnitsX(right), 0);
+        self.writePhantom(2, 0, self.environment.scaleFUnitsY(top));
+        self.writePhantom(3, 0, self.environment.scaleFUnitsY(bottom));
+        self.point_count += tt_points.phantom_count;
+        return phantom_start;
+    }
+
+    fn zone(self: *const CompoundGlyphBuilder) tt_exec.PointZone {
+        return .{
+            .points = self.points[0..self.point_count],
+            .contours = self.contours[0..self.contour_count],
+        };
+    }
+
+    fn alignComponentPoints(
+        self: *CompoundGlyphBuilder,
+        parent_point: usize,
+        component_point: usize,
+        component_start: usize,
+    ) !void {
+        if (parent_point >= component_start) return error.InvalidFont;
+        if (component_point < component_start or component_point >= self.point_count) return error.InvalidFont;
+        const dx = subWrap(self.points[parent_point].x, self.points[component_point].x);
+        const dy = subWrap(self.points[parent_point].y, self.points[component_point].y);
+        self.shiftRange(component_start, self.point_count, dx, dy);
+    }
+
+    fn roundOffset(self: *CompoundGlyphBuilder, point_start: usize, offset: Vec2) void {
+        const dx = round26Dot6(self.scaleX(offset.x)) - self.scaleX(offset.x);
+        const dy = round26Dot6(self.scaleY(offset.y)) - self.scaleY(offset.y);
+        self.shiftRange(point_start, self.point_count, dx, dy);
+    }
+
+    fn appendContours(self: *CompoundGlyphBuilder, contours: []const tt_outline.ContourRange, point_base: usize) !void {
+        if (self.contour_count + contours.len > self.contours.len) return error.BufferTooSmall;
+        const base: u32 = @intCast(point_base);
+        for (contours) |contour| {
+            self.contours[self.contour_count] = .{
+                .start = base + contour.start,
+                .end = base + contour.end,
+            };
+            self.contour_count += 1;
+        }
+    }
+
+    fn appendPoint(
+        self: *CompoundGlyphBuilder,
+        source: tt_outline.Point,
+        transform: tt_outline.ComponentTransform,
+        offset: Vec2,
+    ) !void {
+        if (self.point_count >= self.points.len) return error.BufferTooSmall;
+        const raw = transform.apply(.{
+            .x = @floatFromInt(source.x),
+            .y = @floatFromInt(source.y),
+        });
+        self.points[self.point_count] = self.makePoint(Vec2.add(raw, offset), source.on_curve);
+        self.point_count += 1;
+    }
+
+    fn makePoint(self: *const CompoundGlyphBuilder, raw: Vec2, on_curve: bool) tt_exec.Point {
+        const x = self.scaleX(raw.x);
+        const y = self.scaleY(raw.y);
+        return .{
+            .x = x,
+            .y = y,
+            .ox = x,
+            .oy = y,
+            .on_curve = on_curve,
+        };
+    }
+
+    fn writePhantom(self: *CompoundGlyphBuilder, index: usize, x: i32, y: i32) void {
+        const point_index = self.point_count + index;
+        self.points[point_index] = .{
+            .x = x,
+            .y = y,
+            .ox = x,
+            .oy = y,
+            .on_curve = true,
+        };
+    }
+
+    fn shiftRange(self: *CompoundGlyphBuilder, start: usize, end: usize, dx: i32, dy: i32) void {
+        for (self.points[start..end]) |*p| {
+            p.x = addWrap(p.x, dx);
+            p.y = addWrap(p.y, dy);
+            p.ox = addWrap(p.ox, dx);
+            p.oy = addWrap(p.oy, dy);
+        }
+    }
+
+    fn scaleX(self: *const CompoundGlyphBuilder, value: f32) i32 {
+        return scaleFUnitFloat(value, self.environment.ppem_x_26_6, self.environment.units_per_em);
+    }
+
+    fn scaleY(self: *const CompoundGlyphBuilder, value: f32) i32 {
+        return scaleFUnitFloat(value, self.environment.ppem_y_26_6, self.environment.units_per_em);
+    }
+};
+
+fn componentOffset(
+    parent_transform: tt_outline.ComponentTransform,
+    parent_offset: Vec2,
+    component: tt_outline.CompoundComponent,
+) Vec2 {
+    if (!component.args_are_xy) return parent_offset;
+    return Vec2.add(parent_offset, parent_transform.apply(componentRawOffset(component)));
+}
+
+fn componentRawOffset(component: tt_outline.CompoundComponent) Vec2 {
+    return .{
+        .x = @floatFromInt(component.arg1),
+        .y = @floatFromInt(component.arg2),
+    };
+}
+
+fn componentPointArg(value: i16) !usize {
+    if (value < 0) return error.InvalidFont;
+    return @intCast(value);
+}
+
+fn compoundMetricsGlyphId(glyph_id: u16, compound: *const tt_outline.CompoundGlyph) u16 {
+    for (compound.components) |component| {
+        if (component.useMyMetrics()) return component.glyph_id;
+    }
+    return glyph_id;
+}
+
+fn compoundContourCapacity(program: *const Program) usize {
+    return @max(
+        @as(usize, program.maxp.max_composite_contours),
+        @as(usize, program.maxp.max_contours),
+        1,
+    );
+}
+
 fn functionLookupCapacity(function_count: usize) usize {
     return @max(function_count, 256);
+}
+
+fn scaleFUnitFloat(value: f32, ppem_26_6: u32, units_per_em: u16) i32 {
+    if (units_per_em == 0) return 0;
+    const scaled = @as(f64, @floatCast(value)) *
+        @as(f64, @floatFromInt(ppem_26_6)) /
+        @as(f64, @floatFromInt(units_per_em));
+    return @intFromFloat(@round(scaled));
+}
+
+fn round26Dot6(value: i32) i32 {
+    if (value >= 0) return @intCast(@divTrunc(@as(i64, value) + 32, 64) * 64);
+    return @intCast(-@divTrunc(@as(i64, -value) + 32, 64) * 64);
+}
+
+fn addWrap(lhs: i32, rhs: i32) i32 {
+    return @truncate(@as(i64, lhs) + @as(i64, rhs));
+}
+
+fn subWrap(lhs: i32, rhs: i32) i32 {
+    return @truncate(@as(i64, lhs) - @as(i64, rhs));
 }
 
 fn hintedCurves(allocator: Allocator, hinted: tt_vm.HintedSimpleGlyph, scale_x: f32, scale_y: f32) ![]CurveSegment {
@@ -496,4 +791,36 @@ test "hint machine handles empty glyph advances" {
 
     try std.testing.expectEqual(@as(usize, 0), hint.curves.len);
     try std.testing.expect(hint.advance.x > 0);
+}
+
+test "hint machine flattens compound glyphs" {
+    const assets = @import("assets");
+    const font_mod = @import("../font/ttf.zig");
+    const allocator = std.testing.allocator;
+    const samples = [_]u32{ 0x00C0, 0x00C1, 0x00C5, 0x00E9, 0x00F1, 0x00FC };
+
+    const program = try Program.init(assets.noto_sans_regular);
+    const font = try font_mod.Font.init(assets.noto_sans_regular);
+    var machine = try HintMachine.initForProgram(allocator, &program, HintPpem.uniform(12 * 64));
+    defer machine.deinit();
+
+    for (samples) |codepoint| {
+        const glyph_id = try font.glyphIndex(codepoint);
+        if (glyph_id == 0) continue;
+
+        var topology = try program.loadGlyphTopology(allocator, glyph_id);
+        defer topology.deinit();
+        switch (topology) {
+            .compound => {},
+            else => continue,
+        }
+
+        var hint = try machine.hintGlyph(allocator, glyph_id);
+        defer hint.deinit();
+        try std.testing.expect(hint.advance.x > 0);
+        try std.testing.expect(hint.curves.len > 0);
+        return;
+    }
+
+    return error.SkipZigTest;
 }

@@ -48,6 +48,22 @@ pub const ComponentTransform = struct {
     xy: f32 = 0,
     yx: f32 = 0,
     yy: f32 = 1,
+
+    pub fn apply(self: ComponentTransform, point: Vec2) Vec2 {
+        return .{
+            .x = self.xx * point.x + self.xy * point.y,
+            .y = self.yx * point.x + self.yy * point.y,
+        };
+    }
+
+    pub fn concat(self: ComponentTransform, child: ComponentTransform) ComponentTransform {
+        return .{
+            .xx = self.xx * child.xx + self.xy * child.yx,
+            .xy = self.xx * child.xy + self.xy * child.yy,
+            .yx = self.yx * child.xx + self.yy * child.yx,
+            .yy = self.yx * child.xy + self.yy * child.yy,
+        };
+    }
 };
 
 pub const CompoundComponent = struct {
@@ -59,6 +75,14 @@ pub const CompoundComponent = struct {
     dy: f32 = 0,
     args_are_xy: bool,
     transform: ComponentTransform = .{},
+
+    pub fn roundXYToGrid(self: CompoundComponent) bool {
+        return self.flags & component_round_xy_to_grid != 0;
+    }
+
+    pub fn useMyMetrics(self: CompoundComponent) bool {
+        return self.flags & component_use_my_metrics != 0;
+    }
 };
 
 pub const CompoundGlyph = struct {
@@ -300,11 +324,13 @@ pub fn parseCompoundGlyph(
 
 const component_arg_1_and_2_are_words = 0x0001;
 const component_args_are_xy_values = 0x0002;
+const component_round_xy_to_grid = 0x0004;
 const component_has_scale = 0x0008;
 const component_more_components = 0x0020;
 const component_has_xy_scale = 0x0040;
 const component_has_two_by_two = 0x0080;
 const component_has_instructions = 0x0100;
+const component_use_my_metrics = 0x0200;
 
 fn readComponentArgs(data: []const u8, offset: *usize, flags: u16) ParseError![2]i16 {
     if (flags & component_arg_1_and_2_are_words != 0) {
@@ -335,8 +361,8 @@ fn readComponentTransform(data: []const u8, offset: *usize, flags: u16) ParseErr
     }
     if (flags & component_has_two_by_two != 0) {
         const xx = try readF2Dot14(data, offset.*);
-        const yx = try readF2Dot14(data, offset.* + 2);
-        const xy = try readF2Dot14(data, offset.* + 4);
+        const xy = try readF2Dot14(data, offset.* + 2);
+        const yx = try readF2Dot14(data, offset.* + 4);
         const yy = try readF2Dot14(data, offset.* + 6);
         offset.* += 8;
         return .{ .xx = xx, .xy = xy, .yx = yx, .yy = yy };
@@ -484,4 +510,19 @@ test "parse compound glyph preserves component flags transform and instructions"
     try std.testing.expectApproxEqAbs(@as(f32, 0.5), glyph.components[0].transform.xx, 1e-6);
     try std.testing.expectApproxEqAbs(@as(f32, 0.5), glyph.components[0].transform.yy, 1e-6);
     try std.testing.expectEqualSlices(u8, &.{0x2A}, glyph.instructions);
+}
+
+test "component transform applies and composes two by two matrices" {
+    const parent = ComponentTransform{ .xx = 2, .xy = 0.5, .yx = -1, .yy = 3 };
+    const child = ComponentTransform{ .xx = 0.25, .xy = 4, .yx = 2, .yy = -0.5 };
+    const point = Vec2{ .x = 4, .y = 6 };
+
+    const applied = parent.apply(point);
+    try std.testing.expectApproxEqAbs(@as(f32, 11), applied.x, 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 14), applied.y, 1e-6);
+
+    const composed = parent.concat(child).apply(point);
+    const sequential = parent.apply(child.apply(point));
+    try std.testing.expectApproxEqAbs(sequential.x, composed.x, 1e-6);
+    try std.testing.expectApproxEqAbs(sequential.y, composed.y, 1e-6);
 }

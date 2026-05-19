@@ -693,10 +693,7 @@ fn executeAsciiOnce(
 ) !void {
     for (PRINTABLE_ASCII) |ch| {
         const glyph_id = (try atlas.glyphIndex(0, ch)) orelse continue;
-        const executed = machine.executeCachedGlyph(topology_cache, glyph_id) catch |err| switch (err) {
-            error.UnsupportedCompoundHinting => continue,
-            else => return err,
-        };
+        const executed = try machine.executeCachedGlyph(topology_cache, glyph_id);
         keepExecutedGlyphAlive(executed);
     }
 }
@@ -726,10 +723,7 @@ fn hintAsciiOnce(
         const scratch = arena.allocator();
         const glyph_id = (try atlas.glyphIndex(0, ch)) orelse continue;
         const info = atlas.face_glyphs[0].getGlyph(glyph_id) orelse continue;
-        const hint = machine.hintCachedGlyph(scratch, topology_cache, glyph_id) catch |err| switch (err) {
-            error.UnsupportedCompoundHinting => continue,
-            else => return err,
-        };
+        const hint = try machine.hintCachedGlyph(scratch, topology_cache, glyph_id);
         const patch = try snail.patchTrueTypeGlyphHint(scratch, .{
             .info = info,
             .page = atlas.pages[info.page_index],
