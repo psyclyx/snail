@@ -1,22 +1,30 @@
 const std = @import("std");
 
 const tt_graphics = @import("tt_graphics.zig");
+const tt_points = @import("tt_points.zig");
 
 pub const Error = error{
+    BufferTooSmall,
     UnexpectedEof,
     StackUnderflow,
     StackOverflow,
     InvalidOpcode,
     InvalidStorageIndex,
     InvalidCvtIndex,
+    InvalidPoint,
     InvalidZone,
     InvalidJump,
+    MissingZones,
+    UnsupportedVector,
     ExecutionLimitExceeded,
     DivisionByZero,
 };
 
 pub const Environment = tt_graphics.Environment;
 pub const GraphicsState = tt_graphics.GraphicsState;
+pub const Point = tt_points.Point;
+pub const PointZone = tt_points.Zone;
+pub const PointZones = tt_points.Zones;
 
 pub const Limits = struct {
     max_steps: u32 = 100_000,
@@ -35,6 +43,7 @@ pub const Context = struct {
     limits: Limits,
     graphics: GraphicsState = .{},
     environment: Environment = .{},
+    zones: ?*PointZones = null,
     sp: usize = 0,
     steps: u32 = 0,
 
@@ -49,6 +58,14 @@ pub const Context = struct {
 
     pub fn setEnvironment(self: *Context, environment: Environment) void {
         self.environment = environment;
+    }
+
+    pub fn setZones(self: *Context, zones: *PointZones) void {
+        self.zones = zones;
+    }
+
+    pub fn clearZones(self: *Context) void {
+        self.zones = null;
     }
 
     pub fn resetGraphics(self: *Context) void {
@@ -95,6 +112,7 @@ pub const Context = struct {
         switch (op) {
             0x00...0x05, 0x0A...0x0E, 0x10...0x1A, 0x1D...0x1F => try self.executeGraphicsOp(op),
             0x20...0x26 => try self.executeStackOp(op),
+            0x29, 0x2E...0x2F, 0x32...0x33, 0x38, 0x3A...0x3B, 0x3E...0x3F, 0x46...0x4A => try self.executePointOp(op),
             0x40 => try self.pushBytes(code, pc, try readU8(code, pc)),
             0x41 => try self.pushWords(code, pc, try readU8(code, pc)),
             0x42...0x45, 0x70 => try self.executeMemoryOp(op),
@@ -103,6 +121,21 @@ pub const Context = struct {
             0x60...0x67, 0x8B, 0x8C => try self.executeMathOp(op),
             0x1B, 0x1C, 0x58, 0x59, 0x78, 0x79 => try self.executeFlowOp(code, pc, op_pc, op),
             else => return Error.InvalidOpcode,
+        }
+    }
+
+    fn executePointOp(self: *Context, op: u8) Error!void {
+        switch (op) {
+            0x29 => try self.untouchPoint(),
+            0x2E, 0x2F => try self.moveDirectAbsolutePoint(op == 0x2F),
+            0x32, 0x33 => try self.shiftPointsByReference(op),
+            0x38 => try self.shiftPointsByPixels(),
+            0x3A, 0x3B => try self.moveStackIndirectRelativePoint(op == 0x3B),
+            0x3E, 0x3F => try self.moveIndirectAbsolutePoint(op == 0x3F),
+            0x46, 0x47 => try self.getCoordinate(op == 0x47),
+            0x48 => try self.setCoordinateFromStack(),
+            0x49, 0x4A => try self.measureDistance(op == 0x4A),
+            else => unreachable,
         }
     }
 
@@ -378,6 +411,120 @@ pub const Context = struct {
         }));
     }
 
+    fn moveDirectAbsolutePoint(self: *Context, round: bool) Error!void {
+        const point = try self.popU32();
+        const projection = try self.projectionDirection(false);
+        const freedom = try self.freedomDirection();
+        const zone_ptr = try self.zone(self.graphics.zp0);
+
+        var target = try zone_ptr.coordinate(projection, point, false);
+        if (round) target = self.graphics.round_mode.apply(target);
+        try zone_ptr.moveTo(projection, freedom, point, target);
+
+        self.graphics.rp0 = point;
+        self.graphics.rp1 = point;
+    }
+
+    fn moveIndirectAbsolutePoint(self: *Context, round: bool) Error!void {
+        const cvt_index = try checkedIndex(try self.pop(), self.cvt.len, Error.InvalidCvtIndex);
+        const point = try self.popU32();
+        const projection = try self.projectionDirection(false);
+        const freedom = try self.freedomDirection();
+        const zone_ptr = try self.zone(self.graphics.zp0);
+
+        var target = self.cvt[cvt_index];
+        if (round) {
+            const original = try zone_ptr.coordinate(projection, point, true);
+            if (absDiffI32(target, original) > self.graphics.control_value_cut_in) {
+                target = original;
+            }
+            target = self.graphics.round_mode.apply(target);
+        }
+        try zone_ptr.moveTo(projection, freedom, point, target);
+
+        self.graphics.rp0 = point;
+        self.graphics.rp1 = point;
+    }
+
+    fn moveStackIndirectRelativePoint(self: *Context, set_rp0: bool) Error!void {
+        const distance = try self.pop();
+        const point = try self.popU32();
+        const projection = try self.projectionDirection(false);
+        const freedom = try self.freedomDirection();
+        const ref_zone = try self.zoneConst(self.graphics.zp0);
+        const point_zone = try self.zone(self.graphics.zp1);
+        const target = addWrap(try ref_zone.coordinate(projection, self.graphics.rp0, false), distance);
+
+        try point_zone.moveTo(projection, freedom, point, target);
+        self.graphics.rp1 = self.graphics.rp0;
+        self.graphics.rp2 = point;
+        if (set_rp0) self.graphics.rp0 = point;
+    }
+
+    fn getCoordinate(self: *Context, original: bool) Error!void {
+        const point = try self.popU32();
+        const projection = try self.projectionDirection(original);
+        const zone_ptr = try self.zoneConst(self.graphics.zp2);
+        try self.push(try zone_ptr.coordinate(projection, point, original));
+    }
+
+    fn setCoordinateFromStack(self: *Context) Error!void {
+        const coordinate = try self.pop();
+        const point = try self.popU32();
+        const projection = try self.projectionDirection(false);
+        const freedom = try self.freedomDirection();
+        const zone_ptr = try self.zone(self.graphics.zp2);
+        try zone_ptr.moveTo(projection, freedom, point, coordinate);
+    }
+
+    fn measureDistance(self: *Context, original: bool) Error!void {
+        const p2 = try self.popU32();
+        const p1 = try self.popU32();
+        const projection = try self.projectionDirection(original);
+        const zone1 = try self.zoneConst(self.graphics.zp0);
+        const zone2 = try self.zoneConst(self.graphics.zp1);
+        const c1 = try zone1.coordinate(projection, p1, original);
+        const c2 = try zone2.coordinate(projection, p2, original);
+        try self.push(subWrap(c2, c1));
+    }
+
+    fn shiftPointsByReference(self: *Context, op: u8) Error!void {
+        const projection = try self.projectionDirection(false);
+        const freedom = try self.freedomDirection();
+        const ref_pointer = if (op == 0x32) self.graphics.zp1 else self.graphics.zp0;
+        const ref_point = if (op == 0x32) self.graphics.rp2 else self.graphics.rp1;
+        const ref_zone = try self.zoneConst(ref_pointer);
+        const distance = subWrap(
+            try ref_zone.coordinate(projection, ref_point, false),
+            try ref_zone.coordinate(projection, ref_point, true),
+        );
+        const point_zone = try self.zone(self.graphics.zp2);
+        try self.shiftLoopPoints(point_zone, freedom, distance);
+    }
+
+    fn shiftPointsByPixels(self: *Context) Error!void {
+        const distance = try self.pop();
+        const freedom = try self.freedomDirection();
+        const zone_ptr = try self.zone(self.graphics.zp2);
+        try self.shiftLoopPoints(zone_ptr, freedom, distance);
+    }
+
+    fn shiftLoopPoints(self: *Context, zone_ptr: *PointZone, freedom: tt_points.Direction, distance: i32) Error!void {
+        const count = self.graphics.loop_count;
+        if (count == 0) return Error.StackUnderflow;
+        var i: u32 = 0;
+        while (i < count) : (i += 1) {
+            try zone_ptr.shift(freedom, try self.popU32(), distance);
+        }
+        self.graphics.loop_count = 1;
+    }
+
+    fn untouchPoint(self: *Context) Error!void {
+        const point = try self.popU32();
+        const zone_ptr = try self.zone(self.graphics.zp0);
+        try zone_ptr.untouch(self.graphics.freedom, point);
+    }
+
     fn setInstructionControl(self: *Context) Error!void {
         const value = try self.pop();
         const selector = try self.pop();
@@ -415,6 +562,25 @@ pub const Context = struct {
     fn pushVector(self: *Context, vector: tt_graphics.Vector) Error!void {
         try self.push(vector.x);
         try self.push(vector.y);
+    }
+
+    fn zone(self: *Context, pointer: tt_graphics.ZonePointer) Error!*PointZone {
+        const zones = self.zones orelse return Error.MissingZones;
+        return zones.select(pointer);
+    }
+
+    fn zoneConst(self: *const Context, pointer: tt_graphics.ZonePointer) Error!*const PointZone {
+        const zones = self.zones orelse return Error.MissingZones;
+        return zones.selectConst(pointer);
+    }
+
+    fn projectionDirection(self: *const Context, original: bool) Error!tt_points.Direction {
+        const vector = if (original) self.graphics.dual_projection else self.graphics.projection;
+        return tt_points.directionFromVector(vector) orelse Error.UnsupportedVector;
+    }
+
+    fn freedomDirection(self: *const Context) Error!tt_points.Direction {
+        return tt_points.directionFromVector(self.graphics.freedom) orelse Error.UnsupportedVector;
     }
 
     fn scaleFUnits(self: *const Context, value: i32) i32 {
@@ -504,6 +670,18 @@ fn negWrap(value: i32) i32 {
 
 fn absI32(value: i32) i32 {
     return if (value < 0) negWrap(value) else value;
+}
+
+fn absDiffI32(lhs: i32, rhs: i32) i32 {
+    return absI32(subWrap(lhs, rhs));
+}
+
+fn addWrap(lhs: i32, rhs: i32) i32 {
+    return @truncate(@as(i64, lhs) + @as(i64, rhs));
+}
+
+fn subWrap(lhs: i32, rhs: i32) i32 {
+    return @truncate(@as(i64, lhs) - @as(i64, rhs));
 }
 
 fn div26Dot6(lhs: i32, rhs: i32) Error!i32 {
@@ -729,4 +907,70 @@ test "tt executor scales WCVTF through caller environment" {
 
     try std.testing.expectEqual(@as(i32, 32), cvt[0]);
     try std.testing.expectEqual(@as(i32, 38), cvt[1]);
+}
+
+test "tt executor moves and measures attached point zones" {
+    var stack: [32]i32 = undefined;
+    var storage: [1]i32 = .{0};
+    var cvt: [1]i32 = .{90};
+    var ctx = Context.init(.{ .stack = &stack, .storage = &storage, .cvt = &cvt }, .{});
+
+    var twilight_points: [1]Point = undefined;
+    var glyph_points: [3]Point = .{
+        .{ .x = 40, .y = 0, .ox = 40, .oy = 0, .on_curve = true },
+        .{ .x = 80, .y = 0, .ox = 80, .oy = 0, .on_curve = true },
+        .{ .x = 120, .y = 0, .ox = 120, .oy = 0, .on_curve = true },
+    };
+    var zones: PointZones = .{
+        .twilight = PointZone.initTwilight(&twilight_points),
+        .glyph = .{ .points = &glyph_points },
+    };
+    ctx.setZones(&zones);
+
+    try ctx.execute(&.{
+        0xB0, 0, 0x2F, // MDAP[1]: round point 0 to x=64
+        0xB0, 0, 0x46, // GC[0]
+        0xB1, 1, 128, 0x48, // SCFS: move point 1 to x=128
+        0xB1, 0, 1, 0x49, // MD[0]: current distance p0->p1
+        0xB1, 2, 0, 0x3E, // MIAP[0]: move point 2 to cvt[0]
+    });
+
+    try expectStack(&ctx, &.{ 64, 64 });
+    try std.testing.expectEqual(@as(i32, 64), glyph_points[0].x);
+    try std.testing.expectEqual(@as(i32, 128), glyph_points[1].x);
+    try std.testing.expectEqual(@as(i32, 90), glyph_points[2].x);
+    try std.testing.expect(glyph_points[0].touched_x);
+    try std.testing.expect(glyph_points[1].touched_x);
+    try std.testing.expect(glyph_points[2].touched_x);
+}
+
+test "tt executor shifts looped points and requires attached zones" {
+    var stack: [32]i32 = undefined;
+    var storage: [1]i32 = .{0};
+    var cvt: [1]i32 = .{0};
+    var ctx = Context.init(.{ .stack = &stack, .storage = &storage, .cvt = &cvt }, .{});
+
+    try std.testing.expectError(Error.MissingZones, ctx.execute(&.{ 0xB0, 0, 0x2E }));
+
+    ctx.reset();
+    var twilight_points: [1]Point = undefined;
+    var glyph_points: [3]Point = .{
+        .{ .x = 0, .y = 0, .ox = 0, .oy = 0, .on_curve = true },
+        .{ .x = 10, .y = 0, .ox = 10, .oy = 0, .on_curve = true },
+        .{ .x = 20, .y = 0, .ox = 20, .oy = 0, .on_curve = true },
+    };
+    var zones: PointZones = .{
+        .twilight = PointZone.initTwilight(&twilight_points),
+        .glyph = .{ .points = &glyph_points },
+    };
+    ctx.setZones(&zones);
+
+    try ctx.execute(&.{
+        0xB0, 2, 0x17, // SLOOP 2
+        0xB2, 1, 2, 5, 0x38, // SHPIX: shift p1,p2 by 5 along x
+    });
+
+    try std.testing.expectEqual(@as(i32, 15), glyph_points[1].x);
+    try std.testing.expectEqual(@as(i32, 25), glyph_points[2].x);
+    try std.testing.expectEqual(@as(u32, 1), ctx.graphics.loop_count);
 }

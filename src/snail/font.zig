@@ -9,6 +9,7 @@ pub const tt = struct {
     pub const exec = @import("font/tt_exec.zig");
     pub const graphics = @import("font/tt_graphics.zig");
     pub const outline = @import("font/tt_outline.zig");
+    pub const points = @import("font/tt_points.zig");
     pub const tables = @import("font/tt_tables.zig");
     pub const vm = @import("font/tt_vm.zig");
 };
@@ -17,6 +18,7 @@ test {
     _ = tt.exec.Context;
     _ = tt.graphics.GraphicsState;
     _ = tt.outline.Point;
+    _ = tt.points.Zone;
     _ = tt.tables.ProgramTables;
     _ = tt.vm.Program;
 }
