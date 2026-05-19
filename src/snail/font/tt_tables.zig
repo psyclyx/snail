@@ -48,6 +48,8 @@ pub const ProgramTables = struct {
     data: []const u8,
     head: TableRecord,
     maxp: TableRecord,
+    glyf: ?TableRecord = null,
+    loca: ?TableRecord = null,
     cvt: ?TableRecord = null,
     fpgm: ?TableRecord = null,
     prep: ?TableRecord = null,
@@ -81,6 +83,10 @@ pub const ProgramTables = struct {
             } else if (tagEql(tag, "maxp")) {
                 out.maxp = record;
                 have_maxp = true;
+            } else if (tagEql(tag, "glyf")) {
+                out.glyf = record;
+            } else if (tagEql(tag, "loca")) {
+                out.loca = record;
             } else if (tagEql(tag, "cvt ")) {
                 out.cvt = record;
             } else if (tagEql(tag, "fpgm")) {
@@ -161,6 +167,8 @@ test "read TT program tables from bundled font" {
 
     try std.testing.expect(head.units_per_em > 0);
     try std.testing.expect(maxp.num_glyphs > 0);
+    try std.testing.expect(tables.glyf != null);
+    try std.testing.expect(tables.loca != null);
     try std.testing.expect((try tables.tableBytes(tables.fpgm)).len > 0);
     try std.testing.expect((try tables.tableBytes(tables.prep)).len > 0);
 }

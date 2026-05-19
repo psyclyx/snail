@@ -1,5 +1,6 @@
 const std = @import("std");
 
+const tt_outline = @import("tt_outline.zig");
 const tt_tables = @import("tt_tables.zig");
 
 pub const RenderMode = enum {
@@ -39,6 +40,65 @@ pub const Program = struct {
             .cvt_y = try scaledCvt(allocator, cvt_bytes, request.ppem_y_26_6, self.head.units_per_em),
         };
     }
+
+    pub fn loadGlyphTopology(self: *const Program, allocator: std.mem.Allocator, glyph_id: u16) !GlyphTopology {
+        if (glyph_id >= self.maxp.num_glyphs) return error.InvalidFont;
+        const glyph_len = try self.glyphLength(glyph_id);
+        if (glyph_len == 0) return .empty;
+
+        const base = try self.glyphBase(glyph_id);
+        const num_contours = try readI16(self.data, base);
+        if (num_contours >= 0) {
+            return .{ .simple = try tt_outline.parseSimpleGlyph(allocator, self.data, base, @intCast(num_contours)) };
+        }
+
+        return .{ .compound = try tt_outline.parseCompoundGlyph(
+            allocator,
+            self.data,
+            base,
+            1.0 / @as(f32, @floatFromInt(self.head.units_per_em)),
+        ) };
+    }
+
+    fn glyphBase(self: *const Program, glyph_id: u16) !usize {
+        const glyf = self.tables.glyf orelse return error.MissingRequiredTable;
+        return @as(usize, glyf.offset) + @as(usize, try self.glyphOffset(glyph_id));
+    }
+
+    fn glyphOffset(self: *const Program, glyph_id: u16) !u32 {
+        const loca = try self.tables.tableBytes(self.tables.loca);
+        if (self.head.index_to_loc_format == 0) {
+            const offset = @as(usize, glyph_id) * 2;
+            if (offset + 2 > loca.len) return error.UnexpectedEof;
+            return @as(u32, std.mem.readInt(u16, loca[offset..][0..2], .big)) * 2;
+        }
+
+        const offset = @as(usize, glyph_id) * 4;
+        if (offset + 4 > loca.len) return error.UnexpectedEof;
+        return std.mem.readInt(u32, loca[offset..][0..4], .big);
+    }
+
+    fn glyphLength(self: *const Program, glyph_id: u16) !u32 {
+        const off0 = try self.glyphOffset(glyph_id);
+        const off1 = try self.glyphOffset(glyph_id + 1);
+        if (off1 < off0) return error.InvalidFont;
+        return off1 - off0;
+    }
+};
+
+pub const GlyphTopology = union(enum) {
+    empty,
+    simple: tt_outline.SimpleGlyph,
+    compound: tt_outline.CompoundGlyph,
+
+    pub fn deinit(self: *GlyphTopology) void {
+        switch (self.*) {
+            .empty => {},
+            .simple => |*simple| simple.deinit(),
+            .compound => |*compound| compound.deinit(),
+        }
+        self.* = undefined;
+    }
 };
 
 pub const SizeState = struct {
@@ -72,6 +132,11 @@ fn scaledCvt(
     return values;
 }
 
+fn readI16(data: []const u8, offset: usize) !i16 {
+    if (offset + 2 > data.len) return error.UnexpectedEof;
+    return std.mem.readInt(i16, data[offset..][0..2], .big);
+}
+
 fn scaleFWordTo26Dot6(value: i16, ppem_26_6: u32, units_per_em: u16) i32 {
     if (units_per_em == 0) return 0;
 
@@ -101,4 +166,23 @@ test "size state scales cvt values in 26.6 pixels" {
 test "scale FWORD handles signed values" {
     try std.testing.expectEqual(@as(i32, 32), scaleFWordTo26Dot6(50, 640, 1000));
     try std.testing.expectEqual(@as(i32, -32), scaleFWordTo26Dot6(-50, 640, 1000));
+}
+
+test "program loads raw glyph topology" {
+    const assets = @import("assets");
+    const program = try Program.init(assets.noto_sans_regular);
+    const font = try @import("ttf.zig").Font.init(assets.noto_sans_regular);
+    const glyph_id = try font.glyphIndex('A');
+
+    var topology = try program.loadGlyphTopology(std.testing.allocator, glyph_id);
+    defer topology.deinit();
+
+    switch (topology) {
+        .simple => |simple| {
+            try std.testing.expect(simple.points.len > 0);
+            try std.testing.expect(simple.contours.len > 0);
+        },
+        .compound => |compound| try std.testing.expect(compound.components.len > 0),
+        .empty => return error.TestExpectedGlyph,
+    }
 }
