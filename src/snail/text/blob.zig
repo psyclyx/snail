@@ -4,7 +4,9 @@ const paint_mod = @import("../paint.zig");
 const paint_records = @import("../paint_records.zig");
 const atlas_curve_mod = @import("../render/format/atlas/curve.zig");
 const band_tex = @import("../render/format/band_texture.zig");
+const bezier = @import("../math/bezier.zig");
 const resource_key_mod = @import("../resource_key.zig");
+const text_hint = @import("../render/format/text_hint.zig");
 const atlas_mod = @import("atlas.zig");
 const config_mod = @import("config.zig");
 const range_mod = @import("../range.zig");
@@ -14,6 +16,7 @@ const vec = @import("../math/vec.zig");
 const view_mod = @import("view.zig");
 
 const Allocator = std.mem.Allocator;
+const BBox = bezier.BBox;
 const FaceIndex = config_mod.FaceIndex;
 const FaceView = view_mod.FaceView;
 const Paint = paint_mod.Paint;
@@ -27,6 +30,7 @@ const TextAppendResult = types_mod.TextAppendResult;
 const TextAtlas = atlas_mod.TextAtlas;
 const TextResourceKeys = resource_key_mod.TextResourceKeys;
 const Transform2D = vec.Transform2D;
+const Vec2 = vec.Vec2;
 const glyphInstanceBudget = shape_mod.glyphInstanceBudget;
 const glyphPlacementTransform = shape_mod.glyphPlacementTransform;
 const scaleAdvance = shape_mod.scaleAdvance;
@@ -58,7 +62,11 @@ pub const TextBlob = struct {
         embolden: f32,
         color: [4]f32,
         paint_record_index: ?u32 = null,
+        hint_record_texel: ?u32 = null,
+        hint_bbox: BBox = emptyBBox(),
     };
+
+    pub const LayerInfoLoc = struct { x: u16, y: u16 };
 
     pub fn deinit(self: *TextBlob) void {
         self.allocator.free(self.glyphs);
@@ -90,8 +98,16 @@ pub const TextBlob = struct {
         };
     }
 
-    pub fn paintRecordLoc(self: *const TextBlob, record_index: u32) struct { x: u16, y: u16 } {
+    pub fn paintRecordLoc(self: *const TextBlob, record_index: u32) LayerInfoLoc {
         const texel_offset = record_index * paint_records.texels_per_record;
+        return self.layerInfoLoc(texel_offset);
+    }
+
+    pub fn hintRecordLoc(self: *const TextBlob, texel_offset: u32) LayerInfoLoc {
+        return self.layerInfoLoc(texel_offset);
+    }
+
+    fn layerInfoLoc(self: *const TextBlob, texel_offset: u32) LayerInfoLoc {
         return .{
             .x = @intCast(texel_offset % self.paint_layer_info_width),
             .y = @intCast(texel_offset / self.paint_layer_info_width),
@@ -158,11 +174,17 @@ pub const TextBlobBuilder = struct {
     atlas: *const TextAtlas,
     glyphs: std.ArrayListUnmanaged(TextBlob.Glyph) = .empty,
     paint_records: std.ArrayListUnmanaged(PendingPaintRecord) = .empty,
+    hint_records: std.ArrayListUnmanaged(PendingHintRecord) = .empty,
     gpu_instance_budget: usize = 0,
 
     const PendingPaintRecord = struct {
         band_entry: band_tex.GlyphBandEntry,
         paint: Paint,
+    };
+
+    const PendingHintRecord = struct {
+        record: text_hint.GlyphRecord,
+        curve_deltas_f16: []u16,
     };
 
     pub fn init(allocator: Allocator, atlas: *const TextAtlas) TextBlobBuilder {
@@ -175,12 +197,15 @@ pub const TextBlobBuilder = struct {
     pub fn deinit(self: *TextBlobBuilder) void {
         self.glyphs.deinit(self.allocator);
         self.paint_records.deinit(self.allocator);
+        self.clearHintRecords();
+        self.hint_records.deinit(self.allocator);
         self.* = undefined;
     }
 
     pub fn reset(self: *TextBlobBuilder) void {
         self.glyphs.clearRetainingCapacity();
         self.paint_records.clearRetainingCapacity();
+        self.clearHintRecords();
         self.gpu_instance_budget = 0;
     }
 
@@ -191,7 +216,7 @@ pub const TextBlobBuilder = struct {
     pub fn finish(self: *TextBlobBuilder) !TextBlob {
         const owned = try self.glyphs.toOwnedSlice(self.allocator);
         errdefer self.allocator.free(owned);
-        const paint_info = try self.finishPaintRecords();
+        const paint_info = try self.finishLayerInfoRecords(owned);
         errdefer if (paint_info.data) |data| self.allocator.free(data);
         errdefer if (paint_info.image_records) |records| self.allocator.free(records);
         const gpu_instance_budget = self.gpu_instance_budget;
@@ -214,25 +239,61 @@ pub const TextBlobBuilder = struct {
         return appendShapedTextBlob(self.atlas, self, text_append, true);
     }
 
-    const FinishedPaintRecords = struct {
+    pub fn appendHintedGlyph(
+        self: *TextBlobBuilder,
+        face_index: FaceIndex,
+        glyph_id: u16,
+        transform: Transform2D,
+        color: [4]f32,
+        record: text_hint.GlyphRecord,
+        curve_deltas_f16: []const u16,
+    ) !void {
+        const expected_deltas = @as(usize, record.curve_count) * text_hint.delta_values_per_curve;
+        if (curve_deltas_f16.len != expected_deltas) return error.InvalidHintDeltaCount;
+
+        const hint_index: u32 = @intCast(self.hint_records.items.len);
+        const deltas = try self.allocator.dupe(u16, curve_deltas_f16);
+        errdefer self.allocator.free(deltas);
+        try self.hint_records.append(self.allocator, .{
+            .record = record,
+            .curve_deltas_f16 = deltas,
+        });
+        errdefer self.removeLastHintRecord();
+
+        try self.glyphs.append(self.allocator, .{
+            .face_index = face_index,
+            .glyph_id = glyph_id,
+            .transform = transform,
+            .embolden = 0,
+            .color = color,
+            .hint_record_texel = hint_index,
+            .hint_bbox = record.bbox,
+        });
+        self.gpu_instance_budget += 1;
+    }
+
+    const FinishedLayerInfoRecords = struct {
         data: ?[]f32 = null,
         width: u32 = 0,
         height: u32 = 0,
         image_records: ?[]?PaintImageRecord = null,
     };
 
-    fn finishPaintRecords(self: *TextBlobBuilder) !FinishedPaintRecords {
-        const count = self.paint_records.items.len;
-        if (count == 0) return .{};
+    fn finishLayerInfoRecords(self: *TextBlobBuilder, glyphs: []TextBlob.Glyph) !FinishedLayerInfoRecords {
+        const paint_count = self.paint_records.items.len;
+        const hint_count = self.hint_records.items.len;
+        if (paint_count == 0 and hint_count == 0) return .{};
 
-        const texel_count: u32 = @intCast(count * paint_records.texels_per_record);
-        const width = paint_records.infoWidth(texel_count);
+        const hint_offsets = try self.computeHintRecordOffsets(paint_count);
+        defer self.allocator.free(hint_offsets);
+        const texel_count = totalLayerInfoTexels(paint_count, self.hint_records.items);
+        const width = text_hint.infoWidth(texel_count);
         const height = @max(@as(u32, 1), (texel_count + width - 1) / width);
         const data = try self.allocator.alloc(f32, @as(usize, width) * @as(usize, height) * 4);
         errdefer self.allocator.free(data);
         @memset(data, 0);
 
-        const image_records = try self.allocator.alloc(?PaintImageRecord, count);
+        const image_records = try self.allocator.alloc(?PaintImageRecord, @max(paint_count, 1));
         errdefer self.allocator.free(image_records);
         @memset(image_records, null);
         var has_image_paints = false;
@@ -251,7 +312,14 @@ pub const TextBlobBuilder = struct {
                 else => {},
             }
         }
+
+        for (self.hint_records.items, hint_offsets) |record, texel_offset| {
+            try text_hint.writeGlyphRecord(data, width, texel_offset, record.record, record.curve_deltas_f16);
+        }
+        patchHintGlyphTexels(glyphs, hint_offsets);
+
         self.paint_records.clearRetainingCapacity();
+        self.clearHintRecords();
 
         return .{
             .data = data,
@@ -262,6 +330,30 @@ pub const TextBlobBuilder = struct {
                 break :blk null;
             },
         };
+    }
+
+    fn computeHintRecordOffsets(self: *TextBlobBuilder, paint_count: usize) ![]u32 {
+        const offsets = try self.allocator.alloc(u32, self.hint_records.items.len);
+        errdefer self.allocator.free(offsets);
+
+        var texel_offset: u32 = @intCast(paint_count * paint_records.texels_per_record);
+        for (self.hint_records.items, offsets) |record, *offset| {
+            offset.* = texel_offset;
+            texel_offset += text_hint.recordTexelCount(record.record.curve_count);
+        }
+        return offsets;
+    }
+
+    fn clearHintRecords(self: *TextBlobBuilder) void {
+        for (self.hint_records.items) |record| self.allocator.free(record.curve_deltas_f16);
+        self.hint_records.clearRetainingCapacity();
+    }
+
+    fn removeLastHintRecord(self: *TextBlobBuilder) void {
+        std.debug.assert(self.hint_records.items.len > 0);
+        const last_index = self.hint_records.items.len - 1;
+        self.allocator.free(self.hint_records.items[last_index].curve_deltas_f16);
+        self.hint_records.items.len = last_index;
     }
 };
 
@@ -318,6 +410,10 @@ pub fn appendShapedTextBlob(
 fn textBlobGpuInstanceBudgetForAtlas(atlas: *const TextAtlas, glyphs: []const TextBlob.Glyph) usize {
     var total: usize = 0;
     for (glyphs) |glyph| {
+        if (glyph.hint_record_texel != null) {
+            total += 1;
+            continue;
+        }
         const fi = atlas.checkedFaceIndex(glyph.face_index) catch continue;
         const face_view = atlas.faceView(fi, .{});
         const base_budget = glyphInstanceBudget(&face_view, glyph.glyph_id);
@@ -332,6 +428,10 @@ fn textBlobGpuInstanceBudgetForAtlas(atlas: *const TextAtlas, glyphs: []const Te
 pub fn textBlobRangeGpuInstanceBudget(blob: *const TextBlob, range: Range.Resolved) usize {
     var total: usize = 0;
     for (blob.glyphs[range.start..range.end]) |glyph| {
+        if (glyph.hint_record_texel != null) {
+            total += 1;
+            continue;
+        }
         const face_view = blob.atlas.faceView(glyph.face_index, .{});
         const base_budget = glyphInstanceBudget(&face_view, glyph.glyph_id);
         total += base_budget;
@@ -395,4 +495,22 @@ fn appendBlobGlyph(
     if (synthetic.embolden != 0 and glyph_id != 0) {
         builder.gpu_instance_budget += glyphInstanceBudget(face_view, glyph_id);
     }
+}
+
+fn totalLayerInfoTexels(paint_count: usize, hint_records: []const TextBlobBuilder.PendingHintRecord) u32 {
+    var total: u32 = @intCast(paint_count * paint_records.texels_per_record);
+    for (hint_records) |record| total += text_hint.recordTexelCount(record.record.curve_count);
+    return total;
+}
+
+fn patchHintGlyphTexels(glyphs: []TextBlob.Glyph, hint_offsets: []const u32) void {
+    for (glyphs) |*glyph| {
+        const hint_index = glyph.hint_record_texel orelse continue;
+        if (hint_index >= hint_offsets.len) continue;
+        glyph.hint_record_texel = hint_offsets[hint_index];
+    }
+}
+
+fn emptyBBox() BBox {
+    return .{ .min = Vec2.zero, .max = Vec2.zero };
 }

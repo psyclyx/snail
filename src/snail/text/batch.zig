@@ -254,7 +254,10 @@ pub fn appendTextDrawIntoBatch(
         if (has_outer_transform) {
             final_transform = Transform2D.multiply(override.transform, final_transform);
         }
-        if (glyph.paint_record_index) |record_index| {
+        if (glyph.hint_record_texel) |hint_texel| {
+            try emitHintedBlobGlyph(batch, blob, &face_view, glyph, hint_texel, paint_info_row_base, override.tint, final_transform);
+            count += 1;
+        } else if (glyph.paint_record_index) |record_index| {
             try emitPaintedBlobGlyph(batch, blob, &face_view, glyph.glyph_id, record_index, paint_info_row_base, override.tint, final_transform);
             count += 1;
         } else {
@@ -273,7 +276,9 @@ pub fn appendTextDrawIntoBatch(
             if (has_outer_transform) {
                 bold_transform = Transform2D.multiply(override.transform, bold_transform);
             }
-            if (glyph.paint_record_index) |record_index| {
+            if (glyph.hint_record_texel) |hint_texel| {
+                try emitHintedBlobGlyph(batch, blob, &face_view, glyph, hint_texel, paint_info_row_base, override.tint, bold_transform);
+            } else if (glyph.paint_record_index) |record_index| {
                 try emitPaintedBlobGlyph(batch, blob, &face_view, glyph.glyph_id, record_index, paint_info_row_base, override.tint, bold_transform);
             } else {
                 switch (glyph_emit.emitGlyphWithTransformTinted(batch, &face_view, glyph.glyph_id, glyph.color, override.tint, bold_transform)) {
@@ -291,6 +296,33 @@ pub fn appendTextDrawIntoBatch(
         .completed = glyph_index >= range.end,
         .layer_window_base = batch.currentLayerWindowBase(),
     };
+}
+
+fn emitHintedBlobGlyph(
+    batch: *TextBatch,
+    blob: *const TextBlob,
+    face_view: *const FaceView,
+    glyph: TextBlob.Glyph,
+    record_texel: u32,
+    paint_info_row_base: u32,
+    tint: [4]f32,
+    transform: Transform2D,
+) !void {
+    const info = face_view.getGlyph(glyph.glyph_id) orelse return;
+    if (info.band_entry.h_band_count == 0 or info.band_entry.v_band_count == 0) return;
+    const loc = blob.hintRecordLoc(record_texel);
+    const info_y = paint_info_row_base + loc.y;
+    if (info_y > std.math.maxInt(u16)) return error.LayerInfoLimitExceeded;
+    try batch.addHintedTextTransformedTinted(
+        glyph.hint_bbox,
+        loc.x,
+        @intCast(info_y),
+        1,
+        glyph.color,
+        tint,
+        face_view.glyphLayer(info.page_index),
+        transform,
+    );
 }
 
 fn emitPaintedBlobGlyph(

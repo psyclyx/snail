@@ -1,7 +1,10 @@
 const std = @import("std");
 
 const paint_records = @import("../paint_records.zig");
+const render_abi = @import("../render/format/abi.zig");
 const snail = @import("../root.zig");
+const text_hint_format = @import("../render/format/text_hint.zig");
+const vertex = @import("../render/format/vertex.zig");
 
 const FaceIndex = snail.FaceIndex;
 const TextAppendResult = snail.TextAppendResult;
@@ -386,6 +389,55 @@ test "TextBlobBuilder.append stores image paint records" {
     try testing.expectApproxEqAbs(@as(f32, 0), data1[0], 0.001);
     try testing.expectApproxEqAbs(@as(f32, -1), data1[1], 0.001);
     try testing.expectApproxEqAbs(@as(f32, 4), data1[2], 0.001);
+}
+
+test "TextBlobBuilder stores hinted glyph records and emits hinted special vertices" {
+    const assets_data = @import("assets");
+    var fonts = try TextAtlas.init(testing.allocator, &.{
+        .{ .data = assets_data.noto_sans_regular },
+    });
+    defer fonts.deinit();
+
+    if (try fonts.ensureText(.{}, "A")) |next| {
+        fonts.deinit();
+        fonts = next;
+    }
+
+    const gid = (try fonts.glyphIndex(0, 'A')).?;
+    const face_view = fonts.faceView(0, .{});
+    const info = face_view.getGlyph(gid).?;
+    const deltas = try testing.allocator.alloc(u16, @as(usize, info.curve_count) * text_hint_format.delta_values_per_curve);
+    defer testing.allocator.free(deltas);
+    @memset(deltas, 0);
+
+    var builder = TextBlobBuilder.init(testing.allocator, &fonts);
+    defer builder.deinit();
+    try builder.appendHintedGlyph(0, gid, snail.Transform2D.scale(12, -12), .{ 0.2, 0.4, 0.6, 1 }, .{
+        .base_curve_texel = info.base_curve_texel,
+        .curve_count = info.curve_count,
+        .band_entry = info.band_entry,
+        .bbox = info.bbox,
+    }, deltas);
+
+    var blob = try builder.finish();
+    defer blob.deinit();
+    const hint_texel = blob.glyphs[0].hint_record_texel orelse return error.TestExpectedEqual;
+    const meta = paint_records.readTexel(blob.paint_layer_info_data.?, blob.paint_layer_info_width, hint_texel + 2);
+    try testing.expectEqual(@as(?u32, null), blob.glyphs[0].paint_record_index);
+    try testing.expectEqual(@as(f32, @floatFromInt(info.base_curve_texel)), meta[0]);
+    try testing.expectEqual(@as(f32, @floatFromInt(info.curve_count)), meta[1]);
+
+    var buf = [_]u32{0} ** snail.TEXT_WORDS_PER_GLYPH;
+    var batch = TextBatch.init(&buf);
+    const result = try batch.addDraw(.{}, .{
+        .blob = &blob,
+        .resources = blob.resourceKeys(snail.ResourceKey.named("fonts"), snail.ResourceKey.named("text")),
+    }, 0, 0);
+
+    try testing.expect(result.completed);
+    try testing.expectEqual(@as(usize, 1), result.emitted);
+    const packed_gw = vertex.decodeInstance(batch.slice()).glyph[1];
+    try testing.expectEqual(render_abi.SpecialLayerKind.hinted_text, render_abi.specialGlyphWordKind(packed_gw).?);
 }
 
 test "TextAtlas.lineMetrics returns primary face metrics" {
