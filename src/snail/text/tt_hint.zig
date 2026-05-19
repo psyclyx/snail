@@ -72,6 +72,44 @@ pub const GlyphHint = struct {
     }
 };
 
+pub const GlyphTopologyCache = struct {
+    allocator: Allocator,
+    program: *const Program,
+    map: std.AutoHashMap(u16, tt_vm.GlyphTopology),
+
+    pub fn init(allocator: Allocator, face: *const FaceConfig) !GlyphTopologyCache {
+        const program = if (face.tt_program) |*program| program else return error.NoTrueTypeProgram;
+        return initForProgram(allocator, program);
+    }
+
+    pub fn initForProgram(allocator: Allocator, program: *const Program) GlyphTopologyCache {
+        return .{
+            .allocator = allocator,
+            .program = program,
+            .map = std.AutoHashMap(u16, tt_vm.GlyphTopology).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *GlyphTopologyCache) void {
+        var values = self.map.valueIterator();
+        while (values.next()) |topology| topology.deinit();
+        self.map.deinit();
+        self.* = undefined;
+    }
+
+    pub fn preload(self: *GlyphTopologyCache, glyph_ids: []const u16) !void {
+        for (glyph_ids) |glyph_id| _ = try self.get(glyph_id);
+    }
+
+    pub fn get(self: *GlyphTopologyCache, glyph_id: u16) !*tt_vm.GlyphTopology {
+        const gop = try self.map.getOrPut(glyph_id);
+        if (!gop.found_existing) {
+            gop.value_ptr.* = try self.program.loadGlyphTopology(self.allocator, glyph_id);
+        }
+        return gop.value_ptr;
+    }
+};
+
 pub const HintMachine = struct {
     allocator: Allocator,
     program: *const Program,
@@ -112,7 +150,27 @@ pub const HintMachine = struct {
     pub fn hintGlyph(self: *HintMachine, allocator: Allocator, glyph_id: u16, options: GlyphHintOptions) !GlyphHint {
         var topology = try self.program.loadGlyphTopology(allocator, glyph_id);
         defer topology.deinit();
-        return switch (topology) {
+        return self.hintTopology(allocator, glyph_id, &topology, options);
+    }
+
+    pub fn hintCachedGlyph(
+        self: *HintMachine,
+        allocator: Allocator,
+        cache: *GlyphTopologyCache,
+        glyph_id: u16,
+        options: GlyphHintOptions,
+    ) !GlyphHint {
+        return self.hintTopology(allocator, glyph_id, try cache.get(glyph_id), options);
+    }
+
+    fn hintTopology(
+        self: *HintMachine,
+        allocator: Allocator,
+        glyph_id: u16,
+        topology: *tt_vm.GlyphTopology,
+        options: GlyphHintOptions,
+    ) !GlyphHint {
+        return switch (topology.*) {
             .empty => self.hintEmptyGlyph(allocator, glyph_id),
             .simple => |*simple| self.hintSimpleGlyph(allocator, glyph_id, simple, options),
             .compound => error.UnsupportedCompoundHinting,

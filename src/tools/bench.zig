@@ -623,32 +623,48 @@ fn benchSnailPrep(allocator: std.mem.Allocator, font_data: []const u8) !SnailPre
 }
 
 fn timeAsciiTrueTypeHint(atlas: *snail.TextAtlas) !f64 {
+    const allocator = std.heap.smp_allocator;
+    const face = &atlas.config.faces[0];
+    var topology_cache = try snail.TrueTypeGlyphTopologyCache.init(allocator, face);
+    defer topology_cache.deinit();
+    try preloadAsciiHintTopology(atlas, &topology_cache);
+
     var total_us: f64 = 0;
     for (0..PREP_RUNS) |_| {
         const start = nowNs();
-        try hintAsciiOnce(atlas);
+        try hintAsciiOnce(atlas, &topology_cache);
         total_us += usFrom(start);
     }
     return total_us / PREP_RUNS;
 }
 
-fn hintAsciiOnce(atlas: *snail.TextAtlas) !void {
+fn preloadAsciiHintTopology(atlas: *snail.TextAtlas, topology_cache: *snail.TrueTypeGlyphTopologyCache) !void {
+    for (PRINTABLE_ASCII) |ch| {
+        const glyph_id = (try atlas.glyphIndex(0, ch)) orelse continue;
+        _ = try topology_cache.get(glyph_id);
+    }
+}
+
+fn hintAsciiOnce(atlas: *snail.TextAtlas, topology_cache: *snail.TrueTypeGlyphTopologyCache) !void {
     const allocator = std.heap.smp_allocator;
     const face = &atlas.config.faces[0];
     var machine = try snail.TrueTypeHintMachine.init(allocator, face, snail.TrueTypeHintPpem.uniform(12 * 64));
     defer machine.deinit();
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
 
     for (PRINTABLE_ASCII) |ch| {
+        _ = arena.reset(.retain_capacity);
+        const scratch = arena.allocator();
         const glyph_id = (try atlas.glyphIndex(0, ch)) orelse continue;
         const info = atlas.face_glyphs[0].getGlyph(glyph_id) orelse continue;
-        var hint = machine.hintGlyph(allocator, glyph_id, .{
+        const hint = machine.hintCachedGlyph(scratch, topology_cache, glyph_id, .{
             .base = .{ .info = info, .page = atlas.pages[info.page_index] },
         }) catch |err| switch (err) {
             error.UnsupportedCompoundHinting => continue,
             else => return err,
         };
         std.mem.doNotOptimizeAway(hint.curveDeltaBytes());
-        hint.deinit();
     }
 }
 

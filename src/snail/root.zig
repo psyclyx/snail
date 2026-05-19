@@ -51,6 +51,7 @@ pub const TrueTypeGlyphHint = text.TrueTypeGlyphHint;
 pub const TrueTypeGlyphHintOptions = text.TrueTypeGlyphHintOptions;
 pub const TrueTypeHintPpem = text.TrueTypeHintPpem;
 pub const TrueTypeBaseGlyphHint = text.TrueTypeBaseGlyphHint;
+pub const TrueTypeGlyphTopologyCache = text.TrueTypeGlyphTopologyCache;
 pub const CellMetrics = text.CellMetrics;
 pub const CellMetricsOptions = text.CellMetricsOptions;
 pub const Decoration = text.Decoration;
