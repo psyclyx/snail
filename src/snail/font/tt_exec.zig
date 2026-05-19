@@ -16,6 +16,11 @@ pub const Error = error{
     InvalidJump,
     MissingZones,
     UnsupportedVector,
+    MissingFunctions,
+    TooManyFunctions,
+    UnknownFunction,
+    CallDepthExceeded,
+    InvalidFunctionDefinition,
     ExecutionLimitExceeded,
     DivisionByZero,
 };
@@ -28,12 +33,46 @@ pub const PointZones = tt_points.Zones;
 
 pub const Limits = struct {
     max_steps: u32 = 100_000,
+    max_call_depth: u32 = 64,
 };
 
 pub const Buffers = struct {
     stack: []i32,
     storage: []i32,
     cvt: []i32,
+};
+
+pub const Function = struct {
+    id: i32,
+    code: []const u8,
+};
+
+pub const FunctionDefs = struct {
+    entries: []Function,
+    len: usize = 0,
+
+    pub fn reset(self: *FunctionDefs) void {
+        self.len = 0;
+    }
+
+    pub fn put(self: *FunctionDefs, id: i32, code: []const u8) Error!void {
+        for (self.entries[0..self.len]) |*entry| {
+            if (entry.id == id) {
+                entry.code = code;
+                return;
+            }
+        }
+        if (self.len >= self.entries.len) return Error.TooManyFunctions;
+        self.entries[self.len] = .{ .id = id, .code = code };
+        self.len += 1;
+    }
+
+    pub fn get(self: *const FunctionDefs, id: i32) ?[]const u8 {
+        for (self.entries[0..self.len]) |entry| {
+            if (entry.id == id) return entry.code;
+        }
+        return null;
+    }
 };
 
 pub const Context = struct {
@@ -44,8 +83,10 @@ pub const Context = struct {
     graphics: GraphicsState = .{},
     environment: Environment = .{},
     zones: ?*PointZones = null,
+    functions: ?*FunctionDefs = null,
     sp: usize = 0,
     steps: u32 = 0,
+    call_depth: u32 = 0,
 
     pub fn init(buffers: Buffers, limits: Limits) Context {
         return .{
@@ -68,6 +109,14 @@ pub const Context = struct {
         self.zones = null;
     }
 
+    pub fn setFunctions(self: *Context, functions: *FunctionDefs) void {
+        self.functions = functions;
+    }
+
+    pub fn clearFunctions(self: *Context) void {
+        self.functions = null;
+    }
+
     pub fn resetGraphics(self: *Context) void {
         self.graphics = .{};
     }
@@ -75,6 +124,7 @@ pub const Context = struct {
     pub fn reset(self: *Context) void {
         self.sp = 0;
         self.steps = 0;
+        self.call_depth = 0;
     }
 
     pub fn stackDepth(self: *const Context) usize {
@@ -91,6 +141,10 @@ pub const Context = struct {
     }
 
     pub fn execute(self: *Context, code: []const u8) Error!void {
+        try self.executeCode(code);
+    }
+
+    fn executeCode(self: *Context, code: []const u8) Error!void {
         var pc: usize = 0;
         while (pc < code.len) {
             try self.countStep();
@@ -113,6 +167,8 @@ pub const Context = struct {
             0x00...0x05, 0x0A...0x0E, 0x10...0x1A, 0x1D...0x1F => try self.executeGraphicsOp(op),
             0x20...0x26 => try self.executeStackOp(op),
             0x29, 0x2E...0x2F, 0x32...0x33, 0x38, 0x3A...0x3B, 0x3E...0x3F, 0x46...0x4A => try self.executePointOp(op),
+            0x2A...0x2C => try self.executeFunctionOp(code, pc, op),
+            0x2D => return Error.InvalidOpcode,
             0x40 => try self.pushBytes(code, pc, try readU8(code, pc)),
             0x41 => try self.pushWords(code, pc, try readU8(code, pc)),
             0x42...0x45, 0x70 => try self.executeMemoryOp(op),
@@ -121,6 +177,29 @@ pub const Context = struct {
             0x60...0x67, 0x8B, 0x8C => try self.executeMathOp(op),
             0x1B, 0x1C, 0x58, 0x59, 0x78, 0x79 => try self.executeFlowOp(code, pc, op_pc, op),
             else => return Error.InvalidOpcode,
+        }
+    }
+
+    fn executeFunctionOp(self: *Context, code: []const u8, pc: *usize, op: u8) Error!void {
+        switch (op) {
+            0x2A => {
+                const function_id = try self.pop();
+                const count = try self.popU32();
+                var i: u32 = 0;
+                while (i < count) : (i += 1) {
+                    try self.callFunction(function_id);
+                }
+            },
+            0x2B => try self.callFunction(try self.pop()),
+            0x2C => {
+                const function_id = try self.pop();
+                const body_start = pc.*;
+                const body_end = try findEndf(code, body_start);
+                const defs = try self.functionDefs();
+                try defs.put(function_id, code[body_start..body_end]);
+                pc.* = body_end + 1;
+            },
+            else => unreachable,
         }
     }
 
@@ -525,6 +604,20 @@ pub const Context = struct {
         try zone_ptr.untouch(self.graphics.freedom, point);
     }
 
+    fn callFunction(self: *Context, function_id: i32) Error!void {
+        const defs = try self.functionDefs();
+        const code = defs.get(function_id) orelse return Error.UnknownFunction;
+        if (self.call_depth >= self.limits.max_call_depth) return Error.CallDepthExceeded;
+
+        self.call_depth += 1;
+        defer self.call_depth -= 1;
+        try self.executeCode(code);
+    }
+
+    fn functionDefs(self: *Context) Error!*FunctionDefs {
+        return self.functions orelse Error.MissingFunctions;
+    }
+
     fn setInstructionControl(self: *Context) Error!void {
         const value = try self.pop();
         const selector = try self.pop();
@@ -753,7 +846,23 @@ fn skipStructured(code: []const u8, start: usize, stop_at_else: bool) Error!usiz
     return Error.UnexpectedEof;
 }
 
+fn findEndf(code: []const u8, start: usize) Error!usize {
+    var pc = start;
+    while (pc < code.len) {
+        const op = code[pc];
+        if (op == 0x2D) return pc;
+        pc += 1;
+        try skipInlineOperands(code, &pc, op);
+    }
+    return Error.InvalidFunctionDefinition;
+}
+
 fn skipInlineOperands(code: []const u8, pc: *usize, op: u8) Error!void {
+    if (op == 0x2C) {
+        pc.* = (try findEndf(code, pc.*)) + 1;
+        return;
+    }
+
     const bytes = if (op >= 0xB0 and op <= 0xB7)
         @as(usize, op - 0xB0) + 1
     else if (op >= 0xB8 and op <= 0xBF)
@@ -973,4 +1082,54 @@ test "tt executor shifts looped points and requires attached zones" {
     try std.testing.expectEqual(@as(i32, 15), glyph_points[1].x);
     try std.testing.expectEqual(@as(i32, 25), glyph_points[2].x);
     try std.testing.expectEqual(@as(u32, 1), ctx.graphics.loop_count);
+}
+
+test "tt executor records and calls function definitions" {
+    var stack: [16]i32 = undefined;
+    var storage: [1]i32 = .{0};
+    var cvt: [1]i32 = .{0};
+    var entries: [4]Function = undefined;
+    var functions: FunctionDefs = .{ .entries = &entries };
+    var ctx = Context.init(.{ .stack = &stack, .storage = &storage, .cvt = &cvt }, .{});
+    ctx.setFunctions(&functions);
+
+    try ctx.execute(&.{
+        0xB0, 7, 0x2C, // FDEF 7
+        0xB0, 1, 0x60, // add one to the caller's top stack value
+        0x2D, // ENDF
+        0xB0,
+        41,
+        0xB0, 7, 0x2B, // CALL 7
+    });
+
+    try expectStack(&ctx, &.{42});
+    try std.testing.expectEqual(@as(usize, 1), functions.len);
+}
+
+test "tt executor loop-calls functions and enforces call depth" {
+    var stack: [16]i32 = undefined;
+    var storage: [1]i32 = .{0};
+    var cvt: [1]i32 = .{0};
+    var entries: [4]Function = undefined;
+    var functions: FunctionDefs = .{ .entries = &entries };
+    var ctx = Context.init(.{ .stack = &stack, .storage = &storage, .cvt = &cvt }, .{ .max_call_depth = 2 });
+    ctx.setFunctions(&functions);
+
+    try ctx.execute(&.{
+        0xB0, 4, 0x2C, // FDEF 4
+        0xB0, 1, 0x60,
+        0x2D,
+        0xB2, 0, 3, 4, 0x2A, // LOOPCALL function 4 three times
+    });
+
+    try expectStack(&ctx, &.{3});
+
+    ctx.reset();
+    functions.reset();
+    try ctx.execute(&.{
+        0xB0, 5, 0x2C, // FDEF 5
+        0xB0, 5, 0x2B, // recursive CALL 5
+        0x2D,
+    });
+    try std.testing.expectError(Error.CallDepthExceeded, ctx.execute(&.{ 0xB0, 5, 0x2B }));
 }
