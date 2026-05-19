@@ -289,31 +289,21 @@ fn collectCurveBboxes(allocator: Allocator, curves: []const CurveSegment) ![]BBo
 
 fn maybeEncodeDeltas(allocator: Allocator, base: ?BaseGlyph, hinted: []const CurveSegment) ![]u16 {
     const base_glyph = base orelse return &.{};
-    const base_curves = try decodeBaseCurves(allocator, base_glyph);
-    defer allocator.free(base_curves);
-    return encodeCurveDeltas(allocator, base_curves, hinted);
-}
-
-fn decodeBaseCurves(allocator: Allocator, base: BaseGlyph) ![]CurveSegment {
-    const curves = try allocator.alloc(CurveSegment, base.info.curve_count);
-    errdefer allocator.free(curves);
-    for (curves, 0..) |*curve, i| {
-        const texel = base.info.base_curve_texel + @as(u32, @intCast(i)) * curve_tex.SEGMENT_TEXELS;
-        curve.* = curve_tex.decodeSegmentAt(base.page.curve_data, texel) orelse return error.InvalidBaseCurve;
-    }
-    return curves;
-}
-
-fn encodeCurveDeltas(allocator: Allocator, base: []const CurveSegment, hinted: []const CurveSegment) ![]u16 {
-    if (base.len != hinted.len) return error.CurveTopologyChanged;
-    const encoded = try allocator.alloc(u16, base.len * 8);
+    if (base_glyph.info.curve_count != hinted.len) return error.CurveTopologyChanged;
+    const encoded = try allocator.alloc(u16, hinted.len * 8);
     errdefer allocator.free(encoded);
 
-    for (base, hinted, 0..) |base_curve, hinted_curve, i| {
+    for (hinted, 0..) |hinted_curve, i| {
+        const base_curve = decodeBaseCurve(base_glyph, i) orelse return error.InvalidBaseCurve;
         if (base_curve.kind != hinted_curve.kind) return error.CurveTopologyChanged;
         encodeCurveDelta(encoded[i * 8 ..][0..8], base_curve, hinted_curve);
     }
     return encoded;
+}
+
+fn decodeBaseCurve(base: BaseGlyph, index: usize) ?CurveSegment {
+    const texel = base.info.base_curve_texel + @as(u32, @intCast(index)) * curve_tex.SEGMENT_TEXELS;
+    return curve_tex.decodeSegmentAt(base.page.curve_data, texel);
 }
 
 fn encodeCurveDelta(out: []u16, base: CurveSegment, hinted: CurveSegment) void {
