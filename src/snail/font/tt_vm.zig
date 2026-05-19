@@ -1,5 +1,6 @@
 const std = @import("std");
 
+const tt_exec = @import("tt_exec.zig");
 const tt_outline = @import("tt_outline.zig");
 const tt_tables = @import("tt_tables.zig");
 
@@ -12,6 +13,24 @@ pub const SizeRequest = struct {
     ppem_x_26_6: u32,
     ppem_y_26_6: u32,
     mode: RenderMode = .grayscale,
+};
+
+pub const CvtAxis = enum {
+    x,
+    y,
+};
+
+pub const ExecutionBufferSizes = struct {
+    stack: usize,
+    storage: usize,
+    functions: usize,
+    twilight_points: usize,
+    glyph_points: usize,
+};
+
+pub const ExecutionBuffers = struct {
+    stack: []i32,
+    storage: []i32,
 };
 
 pub const Program = struct {
@@ -39,6 +58,27 @@ pub const Program = struct {
             .cvt_x = try scaledCvt(allocator, cvt_bytes, request.ppem_x_26_6, self.head.units_per_em),
             .cvt_y = try scaledCvt(allocator, cvt_bytes, request.ppem_y_26_6, self.head.units_per_em),
         };
+    }
+
+    pub fn executionBufferSizes(self: *const Program) ExecutionBufferSizes {
+        return .{
+            .stack = @max(@as(usize, self.maxp.max_stack_elements), 256),
+            .storage = @as(usize, self.maxp.max_storage),
+            .functions = @as(usize, self.maxp.max_function_defs),
+            .twilight_points = @as(usize, self.maxp.max_twilight_points),
+            .glyph_points = @max(
+                @as(usize, self.maxp.max_points),
+                @as(usize, self.maxp.max_composite_points),
+            ),
+        };
+    }
+
+    pub fn runFontProgram(self: *const Program, context: *tt_exec.Context) !void {
+        try context.execute(try self.tables.tableBytes(self.tables.fpgm));
+    }
+
+    pub fn runControlProgram(self: *const Program, context: *tt_exec.Context) !void {
+        try context.execute(try self.tables.tableBytes(self.tables.prep));
     }
 
     pub fn loadGlyphTopology(self: *const Program, allocator: std.mem.Allocator, glyph_id: u16) !GlyphTopology {
@@ -113,6 +153,41 @@ pub const SizeState = struct {
         self.allocator.free(self.cvt_y);
         self.* = undefined;
     }
+
+    pub fn environment(self: *const SizeState) tt_exec.Environment {
+        return .{
+            .ppem_x_26_6 = self.request.ppem_x_26_6,
+            .ppem_y_26_6 = self.request.ppem_y_26_6,
+            .units_per_em = self.units_per_em,
+            .point_size_26_6 = @intCast(self.request.ppem_y_26_6),
+        };
+    }
+
+    pub fn cvtForAxis(self: *SizeState, axis: CvtAxis) []i32 {
+        return switch (axis) {
+            .x => self.cvt_x,
+            .y => self.cvt_y,
+        };
+    }
+
+    pub fn executionContext(
+        self: *SizeState,
+        buffers: ExecutionBuffers,
+        axis: CvtAxis,
+        limits: tt_exec.Limits,
+    ) tt_exec.Context {
+        var context = tt_exec.Context.init(.{
+            .stack = buffers.stack,
+            .storage = buffers.storage,
+            .cvt = self.cvtForAxis(axis),
+        }, limits);
+        context.setEnvironment(self.environment());
+        switch (axis) {
+            .x => context.graphics.setVectorToAxis(.x, .both),
+            .y => context.graphics.setVectorToAxis(.y, .both),
+        }
+        return context;
+    }
 };
 
 fn scaledCvt(
@@ -185,4 +260,33 @@ test "program loads raw glyph topology" {
         .compound => |compound| try std.testing.expect(compound.components.len > 0),
         .empty => return error.TestExpectedGlyph,
     }
+}
+
+test "program exposes execution buffer sizing" {
+    const program = try Program.init(@import("assets").noto_sans_regular);
+    const sizes = program.executionBufferSizes();
+
+    try std.testing.expect(sizes.stack >= 256);
+    try std.testing.expect(sizes.functions >= program.maxp.max_function_defs);
+    try std.testing.expect(sizes.glyph_points >= program.maxp.max_points);
+}
+
+test "size state initializes execution context over caller buffers" {
+    const program = try Program.init(@import("assets").noto_sans_regular);
+    var size = try program.sizeState(std.testing.allocator, .{
+        .ppem_x_26_6 = 10 * 64,
+        .ppem_y_26_6 = 12 * 64,
+    });
+    defer size.deinit();
+
+    var stack: [16]i32 = undefined;
+    var storage: [4]i32 = .{ 0, 0, 0, 0 };
+    var context = size.executionContext(.{
+        .stack = &stack,
+        .storage = &storage,
+    }, .y, .{});
+
+    try context.execute(&.{ 0xB1, 0, 50, 0x70, 0x4B });
+    try std.testing.expectEqual(scaleFWordTo26Dot6(50, 12 * 64, program.head.units_per_em), size.cvt_y[0]);
+    try std.testing.expectEqual(@as(i32, 12), try context.top());
 }
