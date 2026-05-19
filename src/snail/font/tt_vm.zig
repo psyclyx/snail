@@ -290,3 +290,48 @@ test "size state initializes execution context over caller buffers" {
     try std.testing.expectEqual(scaleFWordTo26Dot6(50, 12 * 64, program.head.units_per_em), size.cvt_y[0]);
     try std.testing.expectEqual(@as(i32, 12), try context.top());
 }
+
+test "program executes bundled font and control programs" {
+    const allocator = std.testing.allocator;
+    const program = try Program.init(@import("assets").noto_sans_regular);
+    const sizes = program.executionBufferSizes();
+
+    const stack = try allocator.alloc(i32, sizes.stack);
+    defer allocator.free(stack);
+    const storage = try allocator.alloc(i32, @max(sizes.storage, 1));
+    defer allocator.free(storage);
+    @memset(storage, 0);
+    const function_entries = try allocator.alloc(tt_exec.Function, @max(sizes.functions, 1));
+    defer allocator.free(function_entries);
+    var functions: tt_exec.FunctionDefs = .{ .entries = function_entries };
+    const twilight_points = try allocator.alloc(tt_exec.Point, @max(sizes.twilight_points, 1));
+    defer allocator.free(twilight_points);
+    var empty_glyph_points: [0]tt_exec.Point = .{};
+    var zones: tt_exec.PointZones = .{
+        .twilight = tt_exec.PointZone.initTwilight(twilight_points),
+        .glyph = .{ .points = &empty_glyph_points },
+    };
+
+    var size = try program.sizeState(allocator, .{
+        .ppem_x_26_6 = 12 * 64,
+        .ppem_y_26_6 = 12 * 64,
+    });
+    defer size.deinit();
+
+    var context = size.executionContext(.{
+        .stack = stack,
+        .storage = storage,
+    }, .x, .{});
+    context.setFunctions(&functions);
+    context.setZones(&zones);
+
+    try program.runFontProgram(&context);
+    try std.testing.expect(functions.len > 0);
+
+    context.reset();
+    context.resetGraphics();
+    context.setEnvironment(size.environment());
+    context.setFunctions(&functions);
+    context.setZones(&zones);
+    try program.runControlProgram(&context);
+}
