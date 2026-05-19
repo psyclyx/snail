@@ -12,6 +12,7 @@ const KEY_R = wayland.KEY_R;
 const KEY_L = wayland.KEY_L;
 const KEY_Z = wayland.KEY_Z;
 const KEY_X = wayland.KEY_X;
+const KEY_H = wayland.KEY_H;
 const KEY_B = wayland.KEY_B;
 const KEY_C = wayland.KEY_C;
 const KEY_ESCAPE = wayland.KEY_ESCAPE;
@@ -75,6 +76,36 @@ fn aaName(o: snail.SubpixelOrder) []const u8 {
     };
 }
 
+const HintMode = enum {
+    always,
+    never,
+    still,
+
+    fn next(self: HintMode) HintMode {
+        return switch (self) {
+            .always => .never,
+            .never => .still,
+            .still => .always,
+        };
+    }
+
+    fn name(self: HintMode) []const u8 {
+        return switch (self) {
+            .always => "always-tt",
+            .never => "never-tt",
+            .still => "tt-when-still",
+        };
+    }
+
+    fn active(self: HintMode, moving: bool) bool {
+        return switch (self) {
+            .always => true,
+            .never => false,
+            .still => !moving,
+        };
+    }
+};
+
 fn envU32(comptime name: [:0]const u8, default: u32) u32 {
     const ptr = std.c.getenv(name.ptr) orelse return default;
     const value = std.mem.span(ptr);
@@ -90,6 +121,11 @@ fn colorEncodingInt(encoding: snail.ColorEncoding) u32 {
         .linear => 0,
         .srgb => 1,
     };
+}
+
+fn hintPpemScale(zoom: f32, snap_step: snail.Vec2) f32 {
+    if (!std.math.isFinite(snap_step.y) or snap_step.y <= 0.0) return zoom;
+    return zoom / snap_step.y;
 }
 
 fn resolveLinearInt(resolve: ?snail.LinearResolve) u32 {
@@ -230,6 +266,9 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
     var fps_frames: u32 = 0;
     var fps_display: f32 = 0.0;
     var last_presentation: ?presentation.Info = null;
+    var hint_mode: HintMode = .still;
+    var uploaded_hint_active = false;
+    var uploaded_hint_scale_bits: u32 = 0;
     const dump_every = envU32("SNAIL_DEMO_DUMP_EVERY", 0);
 
     std.debug.print("snail - GPU text & vector rendering\n", .{});
@@ -238,8 +277,9 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
         if (build_options.enable_harfbuzz) "ON" else "OFF",
     });
     renderer_driver.warnIfDebugCpu(active.kind());
-    std.debug.print("Keys: arrows pan, Z/X zoom, R rotate, B AA mode, C backend/threading, L dump repro, Esc quit\n", .{});
+    std.debug.print("Keys: arrows pan, Z/X zoom, R rotate, H TT hinting, B AA mode, C backend/threading, L dump repro, Esc quit\n", .{});
     std.debug.print("aa={s}\n", .{aaName(current_order)});
+    std.debug.print("hinting={s}\n", .{hint_mode.name()});
 
     while (!active.shouldClose()) {
         const now = wayland.getTime();
@@ -259,6 +299,10 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
 
         const dump_repro = window.isKeyPressed(KEY_L);
         if (window.isKeyPressed(KEY_R)) rotate = !rotate;
+        if (window.isKeyPressed(KEY_H)) {
+            hint_mode = hint_mode.next();
+            std.debug.print("\nhinting={s}\n", .{hint_mode.name()});
+        }
         if (window.isKeyPressed(KEY_ESCAPE)) break;
         if (window.isKeyPressed(KEY_B)) {
             current_order = cycleSubpixelOrder(current_order);
@@ -281,14 +325,22 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
                 continue;
             }
         }
+        const zoom_in = window.isKeyDown(KEY_Z);
+        const zoom_out = window.isKeyDown(KEY_X);
+        const pan_left = window.isKeyDown(KEY_LEFT);
+        const pan_right = window.isKeyDown(KEY_RIGHT);
+        const pan_up = window.isKeyDown(KEY_UP);
+        const pan_down = window.isKeyDown(KEY_DOWN);
+        const moving = rotate or zoom_in or zoom_out or pan_left or pan_right or pan_up or pan_down;
+
         if (rotate) angle += dt * 0.5;
-        if (window.isKeyDown(KEY_Z)) zoom *= 1.0 + dt * 2.0;
-        if (window.isKeyDown(KEY_X)) zoom *= 1.0 - dt * 2.0;
+        if (zoom_in) zoom *= 1.0 + dt * 2.0;
+        if (zoom_out) zoom *= 1.0 - dt * 2.0;
         const pan_step = 900.0 * dt;
-        if (window.isKeyDown(KEY_LEFT)) pan_x += pan_step;
-        if (window.isKeyDown(KEY_RIGHT)) pan_x -= pan_step;
-        if (window.isKeyDown(KEY_UP)) pan_y += pan_step;
-        if (window.isKeyDown(KEY_DOWN)) pan_y -= pan_step;
+        if (pan_left) pan_x += pan_step;
+        if (pan_right) pan_x -= pan_step;
+        if (pan_up) pan_y += pan_step;
+        if (pan_down) pan_y -= pan_step;
 
         const present = active.presentationInfo();
         if (last_presentation == null or !std.meta.eql(last_presentation.?, present)) {
@@ -308,10 +360,14 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
         const layout = demo_banner.buildLayout(w, h);
         const snap_step = snail.pixelSteps(.{ w, h }, fb_size);
         const size_key = [4]u32{ size[0], size[1], fb_size[0], fb_size[1] };
+        const hint_active = hint_mode.active(moving);
+        const hint_scale = hintPpemScale(zoom, snap_step);
+        const hint_scale_bits = if (hint_active) f32Bits(hint_scale) else 0;
+        const hint_key_changed = hint_active != uploaded_hint_active or (hint_active and hint_scale_bits != uploaded_hint_scale_bits);
 
         // On resize/backend switch: lay out text to collect decoration rects,
         // rebuild path picture, and rebuild immutable scene resources.
-        const needs_resource_rebuild = prepared == null or path_picture == null or text_blob == null or !std.mem.eql(u32, size_key[0..], uploaded_size[0..]);
+        const needs_resource_rebuild = prepared == null or path_picture == null or text_blob == null or !std.mem.eql(u32, size_key[0..], uploaded_size[0..]) or hint_key_changed;
         if (needs_resource_rebuild) {
             releasePrepared(&prepared);
             if (path_picture) |*picture| {
@@ -326,11 +382,16 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
             var builder = snail.TextBlobBuilder.init(allocator, &scene_assets.fonts);
             defer builder.deinit();
             var dec_rects: [8]snail.Rect = undefined;
-            const text_result = demo_banner_scene.buildTextBlob(&builder, layout, snap_step, &scene_assets, &dec_rects);
+            const text_result = demo_banner_scene.buildTextBlobWithHinting(&builder, layout, snap_step, &scene_assets, &dec_rects, .{
+                .enabled = hint_active,
+                .ppem_scale = hint_scale,
+            });
 
             text_blob = try builder.finish();
             path_picture = try demo_banner_scene.buildPathPicture(allocator, layout, &scene_assets, dec_rects[0..text_result.decoration_count]);
             uploaded_size = size_key;
+            uploaded_hint_active = hint_active;
+            uploaded_hint_scale_bits = hint_scale_bits;
 
             var resource_entries: [8]snail.ResourceManifest.Entry = undefined;
             var resources = snail.ResourceManifest.init(&resource_entries);
@@ -399,7 +460,13 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
         }
         if (frame_count % 60 == 0 and fps_display > 0.0) {
             const glyphs = if (text_blob) |*blob| blob.glyphCount() else 0;
-            std.debug.print("\rFPS: {d:.0}  Backend: {s}  Glyphs: {}   ", .{ fps_display, active.backendName(), glyphs });
+            std.debug.print("\rFPS: {d:.0}  Backend: {s}  Hint: {s}{s}  Glyphs: {}   ", .{
+                fps_display,
+                active.backendName(),
+                hint_mode.name(),
+                if (hint_active) "" else " (off)",
+                glyphs,
+            });
         }
         frame_count += 1;
 

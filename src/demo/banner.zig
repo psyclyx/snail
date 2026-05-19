@@ -285,15 +285,88 @@ pub const TextBuildResult = struct {
     missing: bool,
 };
 
+pub const TextHintOptions = struct {
+    enabled: bool = false,
+    ppem_scale: f32 = 1.0,
+};
+
 const TextPlacement = struct {
     x: f32,
     y: f32,
     size: f32,
 };
 
+const HintFaceState = struct {
+    machine: snail.TrueTypeHintMachine,
+    cache: snail.TrueTypeGlyphTopologyCache,
+
+    fn initForFace(allocator: std.mem.Allocator, face: anytype, ppem_26_6: u32) !HintFaceState {
+        var machine = try snail.TrueTypeHintMachine.init(allocator, face, snail.TrueTypeHintPpem.uniform(ppem_26_6));
+        errdefer machine.deinit();
+        var cache = try snail.TrueTypeGlyphTopologyCache.init(allocator, face);
+        errdefer cache.deinit();
+        return .{ .machine = machine, .cache = cache };
+    }
+
+    fn deinit(self: *HintFaceState) void {
+        self.machine.deinit();
+        self.cache.deinit();
+        self.* = undefined;
+    }
+};
+
+const HintBuildContext = struct {
+    allocator: std.mem.Allocator,
+    atlas: *const snail.TextAtlas,
+    ppem_scale: f32,
+    states: std.AutoHashMap(u64, HintFaceState),
+
+    fn init(allocator: std.mem.Allocator, atlas: *const snail.TextAtlas, ppem_scale: f32) HintBuildContext {
+        return .{
+            .allocator = allocator,
+            .atlas = atlas,
+            .ppem_scale = ppem_scale,
+            .states = std.AutoHashMap(u64, HintFaceState).init(allocator),
+        };
+    }
+
+    fn deinit(self: *HintBuildContext) void {
+        var values = self.states.valueIterator();
+        while (values.next()) |state| state.deinit();
+        self.states.deinit();
+        self.* = undefined;
+    }
+
+    fn stateFor(self: *HintBuildContext, face_index: snail.FaceIndex, ppem_26_6: u32) !*HintFaceState {
+        const key = hintStateKey(face_index, ppem_26_6);
+        if (self.states.getPtr(key)) |state| return state;
+        const face = &self.atlas.config.faces[face_index];
+        var state = try HintFaceState.initForFace(self.allocator, face, ppem_26_6);
+        errdefer state.deinit();
+        try self.states.put(key, state);
+        return self.states.getPtr(key).?;
+    }
+};
+
+const RunHintData = struct {
+    allocator: std.mem.Allocator,
+    hints: []?snail.TrueTypeGlyphHint,
+    advances: []snail.Vec2,
+
+    fn deinit(self: *RunHintData) void {
+        for (self.hints) |*hint_or_null| {
+            if (hint_or_null.*) |*hint| hint.deinit();
+        }
+        self.allocator.free(self.hints);
+        self.allocator.free(self.advances);
+        self.* = undefined;
+    }
+};
+
 const TextPlacer = struct {
     builder: *snail.TextBlobBuilder,
     snap_step: snail.Vec2,
+    hint: ?*HintBuildContext = null,
 
     fn place(self: TextPlacer, x: f32, y: f32, size: f32) TextPlacement {
         const point = snail.snapPointToStep(.{ .x = x, .y = y }, self.snap_step, .nearest);
@@ -323,11 +396,83 @@ const TextPlacer = struct {
     ) !snail.TextAppendResult {
         var shaped = try self.builder.atlas.shapeText(self.builder.allocator, style, string);
         defer shaped.deinit();
+
+        if (self.hint) |hint_context| {
+            switch (paint) {
+                .solid => |color| {
+                    return self.appendPlacedHinted(hint_context, &shaped, p, color) catch |err| {
+                        if (err == error.OutOfMemory) return err;
+                        return self.appendRegular(&shaped, p, paint);
+                    };
+                },
+                else => {},
+            }
+        }
+        return self.appendRegular(&shaped, p, paint);
+    }
+
+    fn appendRegular(
+        self: TextPlacer,
+        shaped: *const snail.ShapedText,
+        p: TextPlacement,
+        paint: snail.Paint,
+    ) !snail.TextAppendResult {
         return self.builder.append(.{
-            .shaped = &shaped,
+            .shaped = shaped,
             .placement = .{ .baseline = .{ .x = p.x, .y = p.y }, .em = p.size },
             .fill = paint,
         });
+    }
+
+    fn appendPlacedHinted(
+        self: TextPlacer,
+        hint_context: *HintBuildContext,
+        shaped: *const snail.ShapedText,
+        p: TextPlacement,
+        color: [4]f32,
+    ) !snail.TextAppendResult {
+        const ppem_26_6 = try hintPpem26_6(p.size, hint_context.ppem_scale);
+        var hint_data = try buildRunHintData(hint_context, shaped, ppem_26_6);
+        defer hint_data.deinit();
+
+        var plan = try snail.planHintedRun(self.builder.allocator, .{
+            .atlas = self.builder.atlas,
+            .shaped = shaped,
+            .placement = .{ .baseline = .{ .x = p.x, .y = p.y }, .em = p.size },
+            .hinted_advances = hint_data.advances,
+        });
+        defer plan.deinit();
+
+        try self.appendHintedPlan(shaped, &hint_data, plan.placements, color);
+        return .{ .advance = plan.stats.advance, .missing = false };
+    }
+
+    fn appendHintedPlan(
+        self: TextPlacer,
+        shaped: *const snail.ShapedText,
+        hint_data: *const RunHintData,
+        placements: []const snail.HintedPlacement,
+        color: [4]f32,
+    ) !void {
+        for (placements) |placement| {
+            const hint = hint_data.hints[placement.shaped_index] orelse continue;
+            const shaped_glyph = shaped.glyphs[placement.shaped_index];
+            const face_view = self.builder.atlas.faceView(shaped_glyph.face_index, .{});
+            const base = face_view.getGlyph(shaped_glyph.glyph_id) orelse return error.HintUnavailable;
+            try self.builder.appendHintedGlyph(
+                placement.face_index,
+                placement.glyph_id,
+                placement.transform,
+                color,
+                .{
+                    .base_curve_texel = base.base_curve_texel,
+                    .curve_count = base.curve_count,
+                    .band_entry = base.band_entry,
+                    .bbox = hint.bbox,
+                },
+                hint.curve_deltas_f16,
+            );
+        }
     }
 
     fn addText(
@@ -357,6 +502,74 @@ const TextPlacer = struct {
     }
 };
 
+fn hintStateKey(face_index: snail.FaceIndex, ppem_26_6: u32) u64 {
+    return (@as(u64, @intCast(face_index)) << 32) | @as(u64, ppem_26_6);
+}
+
+fn hintPpem26_6(em: f32, ppem_scale: f32) !u32 {
+    const ppem = em * ppem_scale;
+    if (!std.math.isFinite(ppem) or ppem < 1.0) return error.HintUnavailable;
+    return @intFromFloat(@round(@min(ppem, 4096.0) * 64.0));
+}
+
+fn buildRunHintData(
+    context: *HintBuildContext,
+    shaped: *const snail.ShapedText,
+    ppem_26_6: u32,
+) !RunHintData {
+    const allocator = context.allocator;
+    const hints = try allocator.alloc(?snail.TrueTypeGlyphHint, shaped.glyphs.len);
+    errdefer allocator.free(hints);
+    @memset(hints, null);
+    errdefer deinitPartialHints(hints);
+
+    const advances = try allocator.alloc(snail.Vec2, shaped.glyphs.len);
+    errdefer allocator.free(advances);
+
+    for (shaped.glyphs, 0..) |glyph, i| {
+        var hint = try buildGlyphHint(context, glyph, ppem_26_6);
+        advances[i] = hint.advance;
+        if (hint.curves.len == 0) {
+            hint.deinit();
+            continue;
+        }
+        if (hint.bandsReusable() != true) {
+            hint.deinit();
+            return error.HintUnavailable;
+        }
+        hints[i] = hint;
+    }
+
+    return .{
+        .allocator = allocator,
+        .hints = hints,
+        .advances = advances,
+    };
+}
+
+fn deinitPartialHints(hints: []?snail.TrueTypeGlyphHint) void {
+    for (hints) |*hint_or_null| {
+        if (hint_or_null.*) |*hint| hint.deinit();
+    }
+}
+
+fn buildGlyphHint(
+    context: *HintBuildContext,
+    glyph: snail.ShapedText.Glyph,
+    ppem_26_6: u32,
+) !snail.TrueTypeGlyphHint {
+    const face = &context.atlas.config.faces[glyph.face_index];
+    if (face.synthetic.embolden != 0) return error.HintUnavailable;
+
+    var state = try context.stateFor(glyph.face_index, ppem_26_6);
+    const face_view = context.atlas.faceView(glyph.face_index, .{});
+    const base = if (face_view.getGlyph(glyph.glyph_id)) |info|
+        snail.TrueTypeBaseGlyphHint{ .info = info, .page = context.atlas.pages[info.page_index] }
+    else
+        null;
+    return state.machine.hintCachedGlyph(context.allocator, &state.cache, glyph.glyph_id, .{ .base = base });
+}
+
 /// Build the demo's prepared text blob and collect decoration rects.
 pub fn buildTextBlob(
     builder: *snail.TextBlobBuilder,
@@ -365,10 +578,19 @@ pub fn buildTextBlob(
     fonts: *const snail.TextAtlas,
     paint_image: *const snail.Image,
     decoration_rects_out: []snail.Rect,
+    hint_options: TextHintOptions,
 ) !TextBuildResult {
     var decoration_count: usize = 0;
     var had_missing = false;
-    const placer = TextPlacer{ .builder = builder, .snap_step = snap_step };
+    var hint_context_storage: HintBuildContext = undefined;
+    var hint_context: ?*HintBuildContext = null;
+    if (hint_options.enabled) {
+        hint_context_storage = HintBuildContext.init(builder.allocator, fonts, hint_options.ppem_scale);
+        hint_context = &hint_context_storage;
+    }
+    defer if (hint_context) |ctx| ctx.deinit();
+
+    const placer = TextPlacer{ .builder = builder, .snap_step = snap_step, .hint = hint_context };
     const s = layout.scale;
     const pad = card_pad * s;
     const label_size = heading_size * s;
