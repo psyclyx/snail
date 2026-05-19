@@ -3,7 +3,6 @@ const batch_mod = @import("text/batch.zig");
 const blob_mod = @import("text/blob.zig");
 const config_mod = @import("text/config.zig");
 const hint_context_mod = @import("text/hint_context.zig");
-const hint_plan_mod = @import("text/hint_plan.zig");
 const tt_hint_mod = @import("text/tt_hint.zig");
 const text_hint_format = @import("render/format/text_hint.zig");
 const types_mod = @import("text/types.zig");
@@ -30,15 +29,11 @@ pub const TrueTypeHintGlyphKey = hint_context_mod.HintGlyphKey;
 pub const TrueTypeHintReject = hint_context_mod.HintReject;
 pub const TrueTypeHintRejectReason = hint_context_mod.HintRejectReason;
 pub const TrueTypeHintedGlyph = hint_context_mod.HintedGlyphValue;
-pub const TrueTypeHintRunKeys = hint_context_mod.HintRunKeys;
-pub const TrueTypeHintRunAvailability = hint_context_mod.HintRunAvailability;
-pub const TextHintRunPlan = hint_plan_mod.TextHintRunPlan;
-pub const HintedPlacement = hint_plan_mod.HintedPlacement;
-pub const HintPlanStats = hint_plan_mod.HintPlanStats;
-pub const TextHintPlanOptions = hint_plan_mod.PlanRunOptions;
-pub const TextHintUploadOp = text_hint_format.UploadOp;
+pub const TrueTypePreparedHintGlyph = hint_context_mod.PreparedHintGlyph;
+pub const TrueTypePreparedHintRun = hint_context_mod.PreparedHintRun;
+pub const TrueTypeHintRunStats = hint_context_mod.PreparedHintRunStats;
+pub const TrueTypeHintPrepareRunOptions = hint_context_mod.PrepareRunOptions;
 pub const TextHintGlyphRecord = text_hint_format.GlyphRecord;
-pub const TextHintHandle = text_hint_format.HintHandle;
 pub const TrueTypeHintMachine = tt_hint_mod.HintMachine;
 pub const TrueTypeGlyphHint = tt_hint_mod.GlyphHint;
 pub const TrueTypeGlyphHintOptions = tt_hint_mod.GlyphHintOptions;
@@ -57,8 +52,6 @@ pub const TEXT_WORDS_PER_GLYPH = batch_mod.WORDS_PER_GLYPH;
 
 pub const appendTextDrawIntoBatch = batch_mod.appendTextDrawIntoBatch;
 pub const textBlobRangeGpuInstanceBudget = blob_mod.textBlobRangeGpuInstanceBudget;
-pub const gatherTrueTypeHintRunKeys = hint_context_mod.gatherRunKeys;
-pub const planHintedRun = hint_plan_mod.planRun;
 
 test {
     _ = @import("text/tests.zig");

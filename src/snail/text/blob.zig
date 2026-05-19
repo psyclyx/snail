@@ -23,6 +23,7 @@ const FaceView = view_mod.FaceView;
 const HintedGlyphValue = hint_context.HintedGlyphValue;
 const Paint = paint_mod.Paint;
 const PaintImageRecord = atlas_curve_mod.CurveAtlas.PaintImageRecord;
+const PreparedHintRun = hint_context.PreparedHintRun;
 const Range = range_mod.Range;
 const ResourceKey = resource_key_mod.ResourceKey;
 const ShapedText = types_mod.ShapedText;
@@ -30,6 +31,7 @@ const SyntheticStyle = config_mod.SyntheticStyle;
 const TextAppend = types_mod.TextAppend;
 const TextAppendResult = types_mod.TextAppendResult;
 const TextAtlas = atlas_mod.TextAtlas;
+const TextPlacement = types_mod.TextPlacement;
 const TextResourceKeys = resource_key_mod.TextResourceKeys;
 const Transform2D = vec.Transform2D;
 const Vec2 = vec.Vec2;
@@ -302,6 +304,26 @@ pub const TextBlobBuilder = struct {
         self.gpu_instance_budget += 1;
     }
 
+    pub fn appendPreparedHintedRun(
+        self: *TextBlobBuilder,
+        run: *const PreparedHintRun,
+        placement: TextPlacement,
+        color: [4]f32,
+    ) !TextAppendResult {
+        try run.validateAtlas(self.atlas);
+
+        var hinted_pen = Vec2.zero;
+        for (run.glyphs) |glyph| {
+            try self.appendPreparedHintedGlyph(glyph, hinted_pen, placement, color);
+            hinted_pen = Vec2.add(hinted_pen, glyph.hint.advance);
+        }
+
+        return .{
+            .advance = scaleAdvance(run.stats.advance, placement.em),
+            .missing = false,
+        };
+    }
+
     const FinishedLayerInfoRecords = struct {
         data: ?[]f32 = null,
         width: u32 = 0,
@@ -416,6 +438,23 @@ pub const TextBlobBuilder = struct {
         _ = self.hint_record_refs.remove(intern_key);
         std.debug.assert(index + 1 == self.hint_records.items.len);
         self.removeLastHintRecord();
+    }
+
+    fn appendPreparedHintedGlyph(
+        self: *TextBlobBuilder,
+        glyph: hint_context.PreparedHintGlyph,
+        hinted_pen: Vec2,
+        placement: TextPlacement,
+        color: [4]f32,
+    ) !void {
+        if (!glyph.hint.renderable()) return;
+
+        const face = &self.atlas.config.faces[glyph.face_index];
+        const x = placement.baseline.x + (hinted_pen.x + glyph.placement_delta.x) * placement.em;
+        const y = placement.baseline.y + (hinted_pen.y + glyph.placement_delta.y) * placement.em;
+        const transform = glyphPlacementTransform(x, y, placement.em, face.synthetic.skew_x);
+
+        try self.appendHintedGlyphRef(glyph.face_index, glyph.glyph_id, transform, color, glyph.hint);
     }
 };
 

@@ -4,6 +4,7 @@ const atlas_mod = @import("atlas.zig");
 const bezier = @import("../math/bezier.zig");
 const config_mod = @import("config.zig");
 const range_mod = @import("../range.zig");
+const shape_mod = @import("shape.zig");
 const text_hint = @import("../render/format/text_hint.zig");
 const tt_hint = @import("tt_hint.zig");
 const types_mod = @import("types.zig");
@@ -16,6 +17,7 @@ const Range = range_mod.Range;
 const ShapedText = types_mod.ShapedText;
 const TextAtlas = atlas_mod.TextAtlas;
 const Vec2 = vec.Vec2;
+const shapedPenAt = shape_mod.shapedPenAt;
 
 pub const HintGlyphKey = struct {
     face_index: FaceIndex,
@@ -124,39 +126,40 @@ pub const HintGlyphStatus = union(enum) {
     unsupported: HintRejectReason,
 };
 
-pub const RunGlyphKey = struct {
-    shaped_index: usize,
-    key: HintGlyphKey,
+pub const PreparedHintGlyph = struct {
+    face_index: FaceIndex,
+    glyph_id: u16,
+    placement_delta: Vec2,
+    hint: *const HintedGlyphValue,
 };
 
-pub const HintRunKeys = struct {
-    allocator: Allocator,
-    glyphs: []RunGlyphKey,
-    unique: []HintGlyphKey,
+pub const PreparedHintRunStats = struct {
+    glyph_count: usize = 0,
+    advance: Vec2 = .zero,
+};
 
-    pub fn deinit(self: *HintRunKeys) void {
+pub const PreparedHintRun = struct {
+    allocator: Allocator,
+    atlas: *const TextAtlas,
+    atlas_identity: u64,
+    glyphs: []PreparedHintGlyph,
+    stats: PreparedHintRunStats,
+
+    pub fn validateAtlas(self: *const PreparedHintRun, atlas: *const TextAtlas) !void {
+        if (self.atlas != atlas) return error.WrongTextAtlasSnapshot;
+        if (atlas.snapshotIdentity() != self.atlas_identity) return error.WrongTextAtlasSnapshot;
+    }
+
+    pub fn deinit(self: *PreparedHintRun) void {
         self.allocator.free(self.glyphs);
-        self.allocator.free(self.unique);
         self.* = undefined;
     }
 };
 
-pub const HintRunAvailability = struct {
-    allocator: Allocator,
-    glyphs: []?*const HintedGlyphValue,
-    missing_keys: []HintGlyphKey,
-    unsupported: []HintReject,
-
-    pub fn deinit(self: *HintRunAvailability) void {
-        self.allocator.free(self.glyphs);
-        self.allocator.free(self.missing_keys);
-        self.allocator.free(self.unsupported);
-        self.* = undefined;
-    }
-
-    pub fn ready(self: *const HintRunAvailability) bool {
-        return self.missing_keys.len == 0 and self.unsupported.len == 0;
-    }
+pub const PrepareRunOptions = struct {
+    shaped: *const ShapedText,
+    glyphs: Range = .{},
+    ppem: tt_hint.HintPpem,
 };
 
 const FaceProgramState = struct {
@@ -193,7 +196,6 @@ const GlyphEntry = union(enum) {
 const FaceProgramMap = std.HashMap(FaceIndex, FaceProgramState, FaceIndexContext, 80);
 const SizeStateMap = std.HashMap(SizeKey, SizeHintState, SizeKey.Context, 80);
 const GlyphMap = std.HashMap(HintGlyphKey, GlyphEntry, HintGlyphKey.Context, 80);
-const KeySet = std.HashMap(HintGlyphKey, void, HintGlyphKey.Context, 80);
 
 pub const TrueTypeHintContext = struct {
     allocator: Allocator,
@@ -260,42 +262,41 @@ pub const TrueTypeHintContext = struct {
         return self.computeMissingGlyph(key);
     }
 
-    pub fn queryRun(
-        self: *const TrueTypeHintContext,
+    pub fn prepareRun(
+        self: *TrueTypeHintContext,
         allocator: Allocator,
-        keys: *const HintRunKeys,
-    ) !HintRunAvailability {
+        options: PrepareRunOptions,
+    ) !PreparedHintRun {
         try self.validateAtlas();
+        if (options.shaped.config != self.atlas.config) return error.WrongTextAtlasSnapshot;
 
-        const glyphs = try allocator.alloc(?*const HintedGlyphValue, keys.glyphs.len);
-        errdefer allocator.free(glyphs);
-        @memset(glyphs, null);
+        const range = options.glyphs.resolve(options.shaped.glyphs.len);
+        const out_glyphs = try allocator.alloc(PreparedHintGlyph, range.end - range.start);
+        errdefer allocator.free(out_glyphs);
 
-        var missing = std.ArrayListUnmanaged(HintGlyphKey).empty;
-        errdefer missing.deinit(allocator);
-        var unsupported = std.ArrayListUnmanaged(HintReject).empty;
-        errdefer unsupported.deinit(allocator);
-
-        for (keys.unique) |key| {
-            switch (self.queryGlyph(key)) {
-                .ready => {},
-                .missing => try missing.append(allocator, key),
-                .unsupported => |reason| try unsupported.append(allocator, .{ .key = key, .reason = reason }),
-            }
-        }
-
-        for (keys.glyphs, glyphs) |run_key, *out| {
-            out.* = switch (self.queryGlyph(run_key.key)) {
-                .ready => |value| value,
-                else => null,
+        var nominal_pen = shapedPenAt(options.shaped, range.start);
+        var hinted_pen = Vec2.zero;
+        for (out_glyphs, options.shaped.glyphs[range.start..range.end]) |*out, glyph| {
+            const hint = try self.prepareShapedGlyph(glyph, options.ppem);
+            out.* = .{
+                .face_index = glyph.face_index,
+                .glyph_id = glyph.glyph_id,
+                .placement_delta = .{
+                    .x = glyph.x_offset - nominal_pen.x,
+                    .y = glyph.y_offset - nominal_pen.y,
+                },
+                .hint = hint,
             };
+            nominal_pen = Vec2.add(nominal_pen, .{ .x = glyph.x_advance, .y = glyph.y_advance });
+            hinted_pen = Vec2.add(hinted_pen, hint.advance);
         }
 
         return .{
             .allocator = allocator,
-            .glyphs = glyphs,
-            .missing_keys = try missing.toOwnedSlice(allocator),
-            .unsupported = try unsupported.toOwnedSlice(allocator),
+            .atlas = self.atlas,
+            .atlas_identity = self.atlas_identity,
+            .glyphs = out_glyphs,
+            .stats = .{ .glyph_count = out_glyphs.len, .advance = hinted_pen },
         };
     }
 
@@ -376,6 +377,18 @@ pub const TrueTypeHintContext = struct {
         return self.putReadyValue(takeHintedGlyphValue(key, info, &hint));
     }
 
+    fn prepareShapedGlyph(
+        self: *TrueTypeHintContext,
+        glyph: ShapedText.Glyph,
+        ppem: tt_hint.HintPpem,
+    ) !*const HintedGlyphValue {
+        const status = try self.computeGlyph(keyForGlyph(glyph, ppem));
+        return switch (status) {
+            .ready => |value| value,
+            .missing, .unsupported => error.HintUnavailable,
+        };
+    }
+
     fn faceStateFor(self: *TrueTypeHintContext, face_index: FaceIndex) !*FaceProgramState {
         if (self.face_programs.getPtr(face_index)) |state| return state;
         const face = &self.atlas.config.faces[face_index];
@@ -419,37 +432,6 @@ pub fn keyForGlyph(glyph: ShapedText.Glyph, ppem: tt_hint.HintPpem) HintGlyphKey
         .ppem_x_26_6 = ppem.x_26_6,
         .ppem_y_26_6 = ppem.y_26_6,
         .glyph_id = glyph.glyph_id,
-    };
-}
-
-pub fn gatherRunKeys(
-    allocator: Allocator,
-    shaped: *const ShapedText,
-    glyphs: Range,
-    ppem: tt_hint.HintPpem,
-) !HintRunKeys {
-    const range = glyphs.resolve(shaped.glyphs.len);
-    var run_keys = std.ArrayListUnmanaged(RunGlyphKey).empty;
-    errdefer run_keys.deinit(allocator);
-    try run_keys.ensureTotalCapacity(allocator, range.end - range.start);
-
-    var unique = std.ArrayListUnmanaged(HintGlyphKey).empty;
-    errdefer unique.deinit(allocator);
-
-    var seen = KeySet.init(allocator);
-    defer seen.deinit();
-
-    for (shaped.glyphs[range.start..range.end], range.start..) |glyph, shaped_index| {
-        const key = keyForGlyph(glyph, ppem);
-        try run_keys.append(allocator, .{ .shaped_index = shaped_index, .key = key });
-        const gop = try seen.getOrPut(key);
-        if (!gop.found_existing) try unique.append(allocator, key);
-    }
-
-    return .{
-        .allocator = allocator,
-        .glyphs = try run_keys.toOwnedSlice(allocator),
-        .unique = try unique.toOwnedSlice(allocator),
     };
 }
 
@@ -497,13 +479,14 @@ fn hashField(seed: u64, value: anytype) u64 {
     return h;
 }
 
-test "hint context caches repeated glyphs by face size and glyph id" {
+test "hint context prepares runs and caches repeated glyphs" {
     const assets = @import("assets");
     const testing = std.testing;
+    const samples = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 
     var atlas = try TextAtlas.init(testing.allocator, &.{.{ .data = assets.noto_sans_regular }});
     defer atlas.deinit();
-    if (try atlas.ensureText(.{}, "A")) |next| {
+    if (try atlas.ensureText(.{}, samples)) |next| {
         atlas.deinit();
         atlas = next;
     }
@@ -511,45 +494,34 @@ test "hint context caches repeated glyphs by face size and glyph id" {
     var context = TrueTypeHintContext.init(testing.allocator, &atlas);
     defer context.deinit();
 
-    var shaped = try atlas.shapeText(testing.allocator, .{}, "AAAA");
-    defer shaped.deinit();
+    for (samples) |sample| {
+        var text = [_]u8{ sample, sample, sample, sample };
+        var shaped = try atlas.shapeText(testing.allocator, .{}, &text);
+        defer shaped.deinit();
+        if (shaped.glyphs.len != text.len) continue;
 
-    var keys = try gatherRunKeys(testing.allocator, &shaped, .{}, tt_hint.HintPpem.uniform(12 * 64));
-    defer keys.deinit();
-    try testing.expectEqual(@as(usize, 4), keys.glyphs.len);
-    try testing.expectEqual(@as(usize, 1), keys.unique.len);
+        var first_run = context.prepareRun(testing.allocator, .{
+            .shaped = &shaped,
+            .ppem = tt_hint.HintPpem.uniform(12 * 64),
+        }) catch |err| switch (err) {
+            error.HintUnavailable => continue,
+            else => return err,
+        };
+        defer first_run.deinit();
+        try testing.expectEqual(@as(usize, 4), first_run.glyphs.len);
+        try testing.expect(first_run.stats.advance.x > 0);
 
-    var missing = try context.queryRun(testing.allocator, &keys);
-    defer missing.deinit();
-    try testing.expectEqual(@as(usize, 1), missing.missing_keys.len);
-    try testing.expectEqual(@as(usize, 0), missing.unsupported.len);
+        const cached = first_run.glyphs[0].hint;
+        for (first_run.glyphs) |glyph| try testing.expect(glyph.hint == cached);
 
-    const first_status = try context.computeGlyph(keys.unique[0]);
-    const second_status = try context.computeGlyph(keys.unique[0]);
-    switch (first_status) {
-        .ready => |first| {
-            const second = switch (second_status) {
-                .ready => |value| value,
-                else => return error.TestExpectedEqual,
-            };
-            try testing.expect(first == second);
-
-            var ready = try context.queryRun(testing.allocator, &keys);
-            defer ready.deinit();
-            try testing.expect(ready.ready());
-            for (ready.glyphs) |value| try testing.expect(value.? == first);
-        },
-        .unsupported => |reason| {
-            try testing.expectEqual(reason, switch (second_status) {
-                .unsupported => |second_reason| second_reason,
-                else => return error.TestExpectedEqual,
-            });
-
-            var rejected = try context.queryRun(testing.allocator, &keys);
-            defer rejected.deinit();
-            try testing.expectEqual(@as(usize, 1), rejected.unsupported.len);
-            try testing.expectEqual(reason, rejected.unsupported[0].reason);
-        },
-        .missing => return error.TestExpectedEqual,
+        var second_run = try context.prepareRun(testing.allocator, .{
+            .shaped = &shaped,
+            .ppem = tt_hint.HintPpem.uniform(12 * 64),
+        });
+        defer second_run.deinit();
+        try testing.expect(second_run.glyphs[0].hint == cached);
+        return;
     }
+
+    return error.SkipZigTest;
 }

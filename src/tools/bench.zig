@@ -746,7 +746,7 @@ fn timeTrueTypeContextCold(atlas: *snail.TextAtlas, text: []const u8) !f64 {
         const start = nowNs();
         var context = snail.TrueTypeHintContext.init(allocator, atlas);
         errdefer context.deinit();
-        try prepareHintContextRun(allocator, &context, atlas, &shaped);
+        try prepareHintContextRun(allocator, &context, &shaped);
         total_us += usFrom(start);
         context.deinit();
     }
@@ -760,12 +760,12 @@ fn timeTrueTypeContextWarm(atlas: *snail.TextAtlas, text: []const u8) !f64 {
 
     var context = snail.TrueTypeHintContext.init(allocator, atlas);
     defer context.deinit();
-    try prepareHintContextRun(allocator, &context, atlas, &shaped);
+    try prepareHintContextRun(allocator, &context, &shaped);
 
     var total_us: f64 = 0;
     for (0..TEXT_ITERS) |_| {
         const start = nowNs();
-        try queryHintContextRun(allocator, &context, atlas, &shaped);
+        try prepareHintContextRun(allocator, &context, &shaped);
         total_us += usFrom(start);
     }
     return total_us / TEXT_ITERS;
@@ -774,51 +774,15 @@ fn timeTrueTypeContextWarm(atlas: *snail.TextAtlas, text: []const u8) !f64 {
 fn prepareHintContextRun(
     allocator: std.mem.Allocator,
     context: *snail.TrueTypeHintContext,
-    atlas: *snail.TextAtlas,
     shaped: *const snail.ShapedText,
 ) !void {
-    var keys = try snail.gatherTrueTypeHintRunKeys(allocator, shaped, .{}, snail.TrueTypeHintPpem.uniform(12 * 64));
-    defer keys.deinit();
-
-    var availability = try context.queryRun(allocator, &keys);
-    defer availability.deinit();
-    for (availability.missing_keys) |key| _ = try context.computeGlyph(key);
-
-    try queryHintContextRunWithKeys(allocator, context, atlas, shaped, &keys);
-}
-
-fn queryHintContextRun(
-    allocator: std.mem.Allocator,
-    context: *snail.TrueTypeHintContext,
-    atlas: *snail.TextAtlas,
-    shaped: *const snail.ShapedText,
-) !void {
-    var keys = try snail.gatherTrueTypeHintRunKeys(allocator, shaped, .{}, snail.TrueTypeHintPpem.uniform(12 * 64));
-    defer keys.deinit();
-    try queryHintContextRunWithKeys(allocator, context, atlas, shaped, &keys);
-}
-
-fn queryHintContextRunWithKeys(
-    allocator: std.mem.Allocator,
-    context: *snail.TrueTypeHintContext,
-    atlas: *snail.TextAtlas,
-    shaped: *const snail.ShapedText,
-    keys: *const snail.TrueTypeHintRunKeys,
-) !void {
-    var availability = try context.queryRun(allocator, keys);
-    defer availability.deinit();
-    std.mem.doNotOptimizeAway(availability.missing_keys.len);
-    std.mem.doNotOptimizeAway(availability.unsupported.len);
-    if (!availability.ready()) return;
-
-    var plan = try snail.planHintedRun(allocator, .{
-        .atlas = atlas,
+    var run = try context.prepareRun(allocator, .{
         .shaped = shaped,
-        .placement = .{ .baseline = .zero, .em = 12 },
-        .hinted_glyphs = availability.glyphs,
+        .ppem = snail.TrueTypeHintPpem.uniform(12 * 64),
     });
-    defer plan.deinit();
-    std.mem.doNotOptimizeAway(plan.stats.advance.x);
+    defer run.deinit();
+    std.mem.doNotOptimizeAway(run.glyphs.len);
+    std.mem.doNotOptimizeAway(run.stats.advance.x);
 }
 
 fn timeRecordBuild(

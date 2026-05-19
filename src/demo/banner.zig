@@ -379,42 +379,16 @@ const TextPlacer = struct {
         color: [4]f32,
     ) !snail.TextAppendResult {
         const ppem_26_6 = try hintPpem26_6(p.size, hint_context.ppem_scale);
-        const ppem = snail.TrueTypeHintPpem.uniform(ppem_26_6);
-        var run_keys = try snail.gatherTrueTypeHintRunKeys(self.builder.allocator, shaped, .{}, ppem);
-        defer run_keys.deinit();
-
-        var availability = try prepareRunHints(self.builder.allocator, hint_context.context, &run_keys);
-        defer availability.deinit();
-        if (!availability.ready()) return error.HintUnavailable;
-
-        var plan = try snail.planHintedRun(self.builder.allocator, .{
-            .atlas = self.builder.atlas,
+        var run = try hint_context.context.prepareRun(self.builder.allocator, .{
             .shaped = shaped,
-            .placement = .{ .baseline = .{ .x = p.x, .y = p.y }, .em = p.size },
-            .hinted_glyphs = availability.glyphs,
+            .ppem = snail.TrueTypeHintPpem.uniform(ppem_26_6),
         });
-        defer plan.deinit();
+        defer run.deinit();
 
-        try self.appendHintedPlan(&plan, color);
-        return .{ .advance = plan.stats.advance, .missing = false };
-    }
-
-    fn appendHintedPlan(
-        self: TextPlacer,
-        plan: *const snail.TextHintRunPlan,
-        color: [4]f32,
-    ) !void {
-        for (plan.placements, plan.hinted_glyphs) |placement, hint_or_null| {
-            const hint = hint_or_null orelse return error.HintUnavailable;
-            if (!hint.renderable()) continue;
-            try self.builder.appendHintedGlyphRef(
-                placement.face_index,
-                placement.glyph_id,
-                placement.transform,
-                color,
-                hint,
-            );
-        }
+        return self.builder.appendPreparedHintedRun(&run, .{
+            .baseline = .{ .x = p.x, .y = p.y },
+            .em = p.size,
+        }, color);
     }
 
     fn addText(
@@ -448,21 +422,6 @@ fn hintPpem26_6(font_size: f32, ppem_scale: f32) !u32 {
     const ppem = font_size * ppem_scale;
     if (!std.math.isFinite(ppem) or ppem < 1.0) return error.HintUnavailable;
     return @intFromFloat(@round(@min(ppem, 4096.0) * 64.0));
-}
-
-fn prepareRunHints(
-    allocator: std.mem.Allocator,
-    context: *snail.TrueTypeHintContext,
-    keys: *const snail.TrueTypeHintRunKeys,
-) !snail.TrueTypeHintRunAvailability {
-    var availability = try context.queryRun(allocator, keys);
-    if (availability.unsupported.len != 0 or availability.missing_keys.len == 0) return availability;
-
-    for (availability.missing_keys) |key| {
-        _ = try context.computeGlyph(key);
-    }
-    availability.deinit();
-    return context.queryRun(allocator, keys);
 }
 
 /// Build the demo's prepared text blob and collect decoration rects.
