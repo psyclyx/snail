@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.10.0 - 2026-05-20
+
+### Fixed
+
+- GL and Vulkan prepared resources now retain resident atlas and image banks by
+  backend generation while scheduled prepared resources are still live,
+  preventing stale releases from dropping newer active references or freeing
+  old-generation banks too early during resource rebuilds.
+- High-rate GL and Vulkan resource rebuilds no longer exhaust encoded texture
+  bank IDs. Backends now reset the bank-id counter after all retained banks have
+  been pruned and no active GPU resources remain.
+
 ## 0.9.0 - 2026-05-19
 
 ### Added
