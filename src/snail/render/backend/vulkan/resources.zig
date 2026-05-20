@@ -253,6 +253,19 @@ pub const PreparedResources = struct {
         }
         @memset(self.atlas_banks[write..old_count], ResourceBank{});
         self.atlas_bank_count = write;
+        self.maybeResetBankIdCounter();
+    }
+
+    /// Reclaim the bank-id space when nothing is live. See the GL backend's
+    /// equivalent helper for the full rationale — `inBank` encodes
+    /// `bank_id * BANK_STRIDE + layer` into a u32 and overflows at
+    /// `bank_id >= 257`. With nothing retained and no active resources,
+    /// nothing references those IDs, so resetting is safe.
+    fn maybeResetBankIdCounter(self: *PreparedResources) void {
+        if (self.atlas_bank_count != 0) return;
+        if (self.activeBankHasAnyResources()) return;
+        self.next_atlas_bank_id = 1;
+        self.active_atlas_bank_id = 0;
     }
 
     pub fn ensureRetainedBankCapacity(self: *PreparedResources, capacity: usize) !void {

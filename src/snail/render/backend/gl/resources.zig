@@ -226,6 +226,22 @@ pub const PreparedResources = struct {
         }
         @memset(self.atlas_banks[write..old_count], AtlasTextureBank{});
         self.atlas_bank_count = write;
+        self.maybeResetBankIdCounter();
+    }
+
+    /// Reclaim the bank-id space when nothing is live. `next_atlas_bank_id`
+    /// is a monotonic counter, but `inBank` (`texture_layers.zig:13`)
+    /// encodes `bank_id * BANK_STRIDE + layer` into a u32, which overflows
+    /// at `bank_id >= 257`. Callers with high resource-rebuild rates (e.g.
+    /// per-frame `.rebuild` decisions) hit that ceiling in seconds. Resetting
+    /// the counter while no retained banks are alive and there's no active
+    /// bank either is safe — by construction nothing can be referencing the
+    /// IDs we're freeing up.
+    fn maybeResetBankIdCounter(self: *PreparedResources) void {
+        if (self.atlas_bank_count != 0) return;
+        if (self.activeBankHasAnyResources()) return;
+        self.next_atlas_bank_id = 1;
+        self.active_atlas_bank_id = 0;
     }
 
     fn ensureRetainedBankCapacity(self: *PreparedResources, capacity: usize) !void {
