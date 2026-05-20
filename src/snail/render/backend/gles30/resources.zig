@@ -673,7 +673,7 @@ pub const PreparedResources = struct {
         if (atlases.len != self.atlas_slot_count) return false;
         if (max_curve_h > self.allocated_curve_height or max_band_h > self.allocated_band_height) return false;
 
-        self.uploadTexturePagesGles3WithStarts(atlases, start_pages[0..atlases.len]);
+        self.uploadTexturePagesGles30WithStarts(atlases, start_pages[0..atlases.len]);
 
         try upload_common.refreshAtlasSlots(self.atlas_slots, atlases);
         self.encodeSlotPageLayersFromStarts(start_pages[0..atlases.len]);
@@ -724,11 +724,11 @@ pub const PreparedResources = struct {
             .generation = self.generation,
         };
         self.next_atlas_bank_id +%= 1;
-        self.createAtlasTextureBankGles3(&bank, plan);
+        self.createAtlasTextureBankGles30(&bank, plan);
         return bank;
     }
 
-    fn createAtlasTextureBankGles3(self: *PreparedResources, bank: *AtlasTextureBank, plan: AtlasAppendPlan) void {
+    fn createAtlasTextureBankGles30(self: *PreparedResources, bank: *AtlasTextureBank, plan: AtlasAppendPlan) void {
         _ = self;
         gl.glGenTextures(1, &bank.curve_array);
         gl.glActiveTexture(gl.GL_TEXTURE0);
@@ -866,10 +866,10 @@ pub const PreparedResources = struct {
     }
 
     fn uploadAllPages(self: *PreparedResources, atlases: []const *const CurveAtlas) void {
-        self.uploadTexturePagesGles3WithStarts(atlases, null);
+        self.uploadTexturePagesGles30WithStarts(atlases, null);
     }
 
-    fn uploadTexturePagesGles3WithStarts(self: *const PreparedResources, atlases: []const *const CurveAtlas, start_pages: ?[]const u32) void {
+    fn uploadTexturePagesGles30WithStarts(self: *const PreparedResources, atlases: []const *const CurveAtlas, start_pages: ?[]const u32) void {
         for (atlases, 0..) |atlas, i| {
             const start_page = if (start_pages) |sp| sp[i] else 0;
             const base_layer = self.atlas_slots[i].base_layer;
@@ -951,7 +951,7 @@ pub const PreparedResources = struct {
 
 test "prepared resource retirement releases unreferenced GL banks" {
     const allocator = std.testing.allocator;
-    var cache = PreparedResources{ .allocator = allocator, .backend = .gles3, .active_atlas_bank_id = 99 };
+    var cache = PreparedResources{ .allocator = allocator, .backend = .gles30, .active_atlas_bank_id = 99 };
     cache.atlas_banks = try allocator.alloc(AtlasTextureBank, 2);
     @memset(cache.atlas_banks, AtlasTextureBank{});
     cache.atlas_banks[0] = .{ .id = 7 };
@@ -980,7 +980,7 @@ test "prepared resource retirement releases unreferenced GL banks" {
 
 test "released GL banks stay resident while referenced by current atlas state" {
     const allocator = std.testing.allocator;
-    var cache = PreparedResources{ .allocator = allocator, .backend = .gles3, .active_atlas_bank_id = 99 };
+    var cache = PreparedResources{ .allocator = allocator, .backend = .gles30, .active_atlas_bank_id = 99 };
     cache.atlas_banks = try allocator.alloc(AtlasTextureBank, 1);
     @memset(cache.atlas_banks, AtlasTextureBank{});
     cache.atlas_banks[0] = .{ .id = 7 };
@@ -1006,7 +1006,7 @@ test "released GL banks stay resident while referenced by current atlas state" {
 test "stale GL prepared release does not touch active refs from newer generation" {
     var cache = PreparedResources{
         .allocator = std.testing.allocator,
-        .backend = .gles3,
+        .backend = .gles30,
         .active_atlas_bank_id = 7,
         .active_atlas_bank_refs = 1,
         .generation = 1,
@@ -1027,7 +1027,7 @@ test "stale GL prepared release still frees matching retained old-generation ban
     const allocator = std.testing.allocator;
     var cache = PreparedResources{
         .allocator = allocator,
-        .backend = .gles3,
+        .backend = .gles30,
         .active_atlas_bank_id = 7,
         .active_atlas_bank_refs = 1,
         .generation = 1,

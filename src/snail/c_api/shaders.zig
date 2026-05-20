@@ -10,13 +10,13 @@ const SnailString = common.SnailString;
 const SnailCoverageDrawState = common.SnailCoverageDrawState;
 const SnailGl33TextCoverageProgram = common.SnailGl33TextCoverageProgram;
 const SnailGl44TextCoverageProgram = common.SnailGl44TextCoverageProgram;
-const SnailGles3TextCoverageProgram = common.SnailGles3TextCoverageProgram;
+const SnailGles30TextCoverageProgram = common.SnailGles30TextCoverageProgram;
 const SnailVulkanTextCoverageProgram = common.SnailVulkanTextCoverageProgram;
 const wrapString = common.wrapString;
 const toCoverageDrawState = common.toCoverageDrawState;
 const toGl33CoverageProgram = common.toGl33CoverageProgram;
 const toGl44CoverageProgram = common.toGl44CoverageProgram;
-const toGles3CoverageProgram = common.toGles3CoverageProgram;
+const toGles30CoverageProgram = common.toGles30CoverageProgram;
 const toVulkanCoverageProgram = common.toVulkanCoverageProgram;
 const CoverageBackendImpl = common.CoverageBackendImpl;
 
@@ -140,58 +140,58 @@ pub export fn snail_gl44_coverage_backend_bind_draw_state(backend: *CoverageBack
     }
 }
 
-pub export fn snail_gles3_coverage_shader_vertex_interface() SnailString {
-    if (comptime !build_options.enable_gles3) return wrapString("");
-    return wrapString(snail.coverage.Shader.gles3.vertex_interface);
+pub export fn snail_gles30_coverage_shader_vertex_interface() SnailString {
+    if (comptime !build_options.enable_gles30) return wrapString("");
+    return wrapString(snail.coverage.Shader.gles30.vertex_interface);
 }
 
-pub export fn snail_gles3_coverage_shader_fragment_interface() SnailString {
-    if (comptime !build_options.enable_gles3) return wrapString("");
-    return wrapString(snail.coverage.Shader.gles3.fragment_interface);
+pub export fn snail_gles30_coverage_shader_fragment_interface() SnailString {
+    if (comptime !build_options.enable_gles30) return wrapString("");
+    return wrapString(snail.coverage.Shader.gles30.fragment_interface);
 }
 
-pub export fn snail_gles3_coverage_shader_resource_interface() SnailString {
-    if (comptime !build_options.enable_gles3) return wrapString("");
-    return wrapString(snail.coverage.Shader.gles3.resource_interface);
+pub export fn snail_gles30_coverage_shader_resource_interface() SnailString {
+    if (comptime !build_options.enable_gles30) return wrapString("");
+    return wrapString(snail.coverage.Shader.gles30.resource_interface);
 }
 
-pub export fn snail_gles3_coverage_shader_coverage_functions() SnailString {
-    if (comptime !build_options.enable_gles3) return wrapString("");
-    return wrapString(snail.coverage.Shader.gles3.coverage_functions);
+pub export fn snail_gles30_coverage_shader_coverage_functions() SnailString {
+    if (comptime !build_options.enable_gles30) return wrapString("");
+    return wrapString(snail.coverage.Shader.gles30.coverage_functions);
 }
 
-pub export fn snail_gles3_coverage_shader_sample_interface() SnailString {
-    if (comptime !build_options.enable_gles3) return wrapString("");
-    return wrapString(snail.coverage.Shader.gles3.sample_interface);
+pub export fn snail_gles30_coverage_shader_sample_interface() SnailString {
+    if (comptime !build_options.enable_gles30) return wrapString("");
+    return wrapString(snail.coverage.Shader.gles30.sample_interface);
 }
 
-pub export fn snail_gles3_coverage_shader_sample_functions() SnailString {
-    if (comptime !build_options.enable_gles3) return wrapString("");
-    return wrapString(snail.coverage.Shader.gles3.sample_functions);
+pub export fn snail_gles30_coverage_shader_sample_functions() SnailString {
+    if (comptime !build_options.enable_gles30) return wrapString("");
+    return wrapString(snail.coverage.Shader.gles30.sample_functions);
 }
 
-pub export fn snail_gles3_coverage_shader_fragment_body() SnailString {
-    if (comptime !build_options.enable_gles3) return wrapString("");
-    return wrapString(snail.coverage.Shader.gles3.fragment_body);
+pub export fn snail_gles30_coverage_shader_fragment_body() SnailString {
+    if (comptime !build_options.enable_gles30) return wrapString("");
+    return wrapString(snail.coverage.Shader.gles30.fragment_body);
 }
 
-pub export fn snail_gles3_coverage_backend_bind_program(backend: *CoverageBackendImpl, program: SnailGles3TextCoverageProgram) c_int {
-    if (comptime !build_options.enable_gles3) return SNAIL_ERR_RENDERER_FAILED;
+pub export fn snail_gles30_coverage_backend_bind_program(backend: *CoverageBackendImpl, program: SnailGles30TextCoverageProgram) c_int {
+    if (comptime !build_options.enable_gles30) return SNAIL_ERR_RENDERER_FAILED;
     switch (backend.inner) {
-        .gles3 => |gles3_backend| {
-            gles3_backend.bindProgram(toGles3CoverageProgram(program) catch return SNAIL_ERR_INVALID_ARGUMENT) catch return SNAIL_ERR_DRAW_FAILED;
+        .gles30 => |gles30_backend| {
+            gles30_backend.bindProgram(toGles30CoverageProgram(program) catch return SNAIL_ERR_INVALID_ARGUMENT) catch return SNAIL_ERR_DRAW_FAILED;
             return SNAIL_OK;
         },
         else => return SNAIL_ERR_INVALID_ARGUMENT,
     }
 }
 
-pub export fn snail_gles3_coverage_backend_bind_draw_state(backend: *CoverageBackendImpl, program: SnailGles3TextCoverageProgram, state: SnailCoverageDrawState) c_int {
-    if (comptime !build_options.enable_gles3) return SNAIL_ERR_RENDERER_FAILED;
+pub export fn snail_gles30_coverage_backend_bind_draw_state(backend: *CoverageBackendImpl, program: SnailGles30TextCoverageProgram, state: SnailCoverageDrawState) c_int {
+    if (comptime !build_options.enable_gles30) return SNAIL_ERR_RENDERER_FAILED;
     switch (backend.inner) {
-        .gles3 => |gles3_backend| {
-            gles3_backend.bindDrawState(
-                toGles3CoverageProgram(program) catch return SNAIL_ERR_INVALID_ARGUMENT,
+        .gles30 => |gles30_backend| {
+            gles30_backend.bindDrawState(
+                toGles30CoverageProgram(program) catch return SNAIL_ERR_INVALID_ARGUMENT,
                 toCoverageDrawState(state) catch return SNAIL_ERR_INVALID_ARGUMENT,
             ) catch return SNAIL_ERR_DRAW_FAILED;
             return SNAIL_OK;

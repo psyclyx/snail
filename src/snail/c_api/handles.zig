@@ -75,7 +75,7 @@ pub const RendererImpl = struct {
     backend: snail.BackendKind,
     gl33: if (build_options.enable_gl33) ?snail.Gl33Renderer else void = if (build_options.enable_gl33) null else {},
     gl44: if (build_options.enable_gl44) ?snail.Gl44Renderer else void = if (build_options.enable_gl44) null else {},
-    gles3: if (build_options.enable_gles3) ?snail.Gles3Renderer else void = if (build_options.enable_gles3) null else {},
+    gles30: if (build_options.enable_gles30) ?snail.Gles30Renderer else void = if (build_options.enable_gles30) null else {},
     vulkan: if (build_options.enable_vulkan) ?snail.VulkanRenderer else void = if (build_options.enable_vulkan) null else {},
     cpu: if (build_options.enable_cpu) ?snail.CpuRenderer else void = if (build_options.enable_cpu) null else {},
 
@@ -91,9 +91,9 @@ pub const RendererImpl = struct {
                 if (self.gl44) |*gl| break :blk gl.asRenderer();
                 unreachable;
             },
-            .gles3 => blk: {
-                if (comptime !build_options.enable_gles3) unreachable;
-                if (self.gles3) |*gles3| break :blk gles3.asRenderer();
+            .gles30 => blk: {
+                if (comptime !build_options.enable_gles30) unreachable;
+                if (self.gles30) |*gles30| break :blk gles30.asRenderer();
                 unreachable;
             },
             .vulkan => blk: {
@@ -117,8 +117,8 @@ pub const RendererImpl = struct {
             .gl44 => if (comptime build_options.enable_gl44) {
                 if (self.gl44) |*gl| gl.deinit();
             },
-            .gles3 => if (comptime build_options.enable_gles3) {
-                if (self.gles3) |*gles3| gles3.deinit();
+            .gles30 => if (comptime build_options.enable_gles30) {
+                if (self.gles30) |*gles30| gles30.deinit();
             },
             .vulkan => if (comptime build_options.enable_vulkan) {
                 if (self.vulkan) |*vk_renderer| vk_renderer.deinit();
@@ -137,8 +137,8 @@ pub const RendererImpl = struct {
                 self.gl44.?.backendName()
             else
                 "GL 4.4 (disabled)",
-            .gles3 => if (comptime build_options.enable_gles3)
-                self.gles3.?.backendName()
+            .gles30 => if (comptime build_options.enable_gles30)
+                self.gles30.?.backendName()
             else
                 "OpenGL ES 3.0 (disabled)",
             .vulkan => if (comptime build_options.enable_vulkan)

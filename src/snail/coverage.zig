@@ -21,10 +21,10 @@ const pipeline = if ((build_options.enable_gl33 or build_options.enable_gl44)) @
     pub const text_sample_interface = "";
     pub const text_sample_body = "";
 };
-const gles3_pipeline = if (build_options.enable_gles3) @import("render/backend/gles3/state.zig") else struct {
+const gles30_pipeline = if (build_options.enable_gles30) @import("render/backend/gles30/state.zig") else struct {
     pub const TextCoverageProgram = struct {};
     pub const TextCoverageDrawState = struct {};
-    pub const Gles3TextState = void;
+    pub const Gles30TextState = void;
     pub const PreparedResources = void;
     pub const text_vertex_interface = "";
     pub const text_coverage_fragment_interface = "";
@@ -55,7 +55,7 @@ const TextBatch = text_mod.TextBatch;
 const TEXT_WORDS_PER_GLYPH = text_mod.TEXT_WORDS_PER_GLYPH;
 
 pub const GlProgram = if ((build_options.enable_gl33 or build_options.enable_gl44)) pipeline.TextCoverageProgram else struct {};
-pub const Gles3Program = if (build_options.enable_gles3) gles3_pipeline.TextCoverageProgram else struct {};
+pub const Gles30Program = if (build_options.enable_gles30) gles30_pipeline.TextCoverageProgram else struct {};
 pub const VulkanProgram = if (build_options.enable_vulkan) vulkan_pipeline.TextCoverageProgram else struct {};
 
 pub const Program = union(BackendKind) {
@@ -63,7 +63,7 @@ pub const Program = union(BackendKind) {
     gl44: GlProgram,
     vulkan: VulkanProgram,
     cpu: void,
-    gles3: Gles3Program,
+    gles30: Gles30Program,
 };
 
 /// GLSL 330 pieces for material shaders that consume Snail text coverage.
@@ -132,9 +132,9 @@ pub const Shader = struct {
     pub const gl33 = GlShaderSources;
     pub const gl44 = GlShaderSources;
 
-    pub const gles3 = struct {
-        pub const vertex_interface = gles3_pipeline.text_vertex_interface;
-        pub const fragment_interface = gles3_pipeline.text_coverage_fragment_interface;
+    pub const gles30 = struct {
+        pub const vertex_interface = gles30_pipeline.text_vertex_interface;
+        pub const fragment_interface = gles30_pipeline.text_coverage_fragment_interface;
         pub const resource_interface =
             \\uniform sampler2DArray u_curve_tex;
             \\uniform usampler2DArray u_band_tex;
@@ -144,13 +144,13 @@ pub const Shader = struct {
             \\#define SNAIL_FILL_RULE u_fill_rule
             \\
         ;
-        pub const coverage_functions = gles3_pipeline.text_coverage_fragment_body;
-        pub const sample_interface = gles3_pipeline.text_sample_interface;
-        pub const sample_functions = if (build_options.enable_gles3)
+        pub const coverage_functions = gles30_pipeline.text_coverage_fragment_body;
+        pub const sample_interface = gles30_pipeline.text_sample_interface;
+        pub const sample_functions = if (build_options.enable_gles30)
             std.fmt.comptimePrint(
                 "#define SNAIL_TEXT_RECORD_WORDS_PER_GLYPH {d}\n",
                 .{TEXT_WORDS_PER_GLYPH},
-            ) ++ gles3_pipeline.text_sample_body
+            ) ++ gles30_pipeline.text_sample_body
         else
             "";
         pub const fragment_body =
@@ -379,22 +379,22 @@ fn GlBackendFor(comptime backend: BackendKind) type {
 pub const Gl33Backend = if (build_options.enable_gl33) GlBackendFor(.gl33) else struct {};
 pub const Gl44Backend = if (build_options.enable_gl44) GlBackendFor(.gl44) else struct {};
 
-pub const Gles3Backend = if (build_options.enable_gles3) struct {
-    gles3: *gles3_pipeline.Gles3TextState,
-    gles3_resources: *const gles3_pipeline.PreparedResources,
+pub const Gles30Backend = if (build_options.enable_gles30) struct {
+    gles30: *gles30_pipeline.Gles30TextState,
+    gles30_resources: *const gles30_pipeline.PreparedResources,
     prepared: *const PreparedResources,
 
-    fn gles3State(self: Gles3Backend) *gles3_pipeline.Gles3TextState {
-        return self.gles3;
+    fn gles30State(self: Gles30Backend) *gles30_pipeline.Gles30TextState {
+        return self.gles30;
     }
 
-    pub fn bindProgram(self: Gles3Backend, program: Gles3Program) !void {
-        self.gles3_resources.bindTextCoverageProgram(program);
+    pub fn bindProgram(self: Gles30Backend, program: Gles30Program) !void {
+        self.gles30_resources.bindTextCoverageProgram(program);
     }
 
-    pub fn bindDrawState(self: Gles3Backend, program: Gles3Program, state: DrawState) !void {
+    pub fn bindDrawState(self: Gles30Backend, program: Gles30Program, state: DrawState) !void {
         _ = self;
-        gles3_pipeline.PreparedResources.bindTextCoverageDrawState(program, .{
+        gles30_pipeline.PreparedResources.bindTextCoverageDrawState(program, .{
             .fill_rule = state.fill_rule,
             .subpixel_order = state.subpixel_order,
             .output_srgb = state.output_srgb,
@@ -403,13 +403,13 @@ pub const Gles3Backend = if (build_options.enable_gles3) struct {
         });
     }
 
-    pub fn drawCoverage(self: Gles3Backend, coverage: *const TextCoverageRecords) !void {
+    pub fn drawCoverage(self: Gles30Backend, coverage: *const TextCoverageRecords) !void {
         std.debug.assert(coverage.validFor(self.prepared));
         try self.drawVertices(coverage.slice());
     }
 
-    pub fn drawVertices(self: Gles3Backend, vertices: []const u32) !void {
-        self.gles3State().drawPreparedText(self.gles3_resources, vertices);
+    pub fn drawVertices(self: Gles30Backend, vertices: []const u32) !void {
+        self.gles30State().drawPreparedText(self.gles30_resources, vertices);
     }
 } else struct {};
 
@@ -457,7 +457,7 @@ pub const Backend = union(BackendKind) {
     gl44: Gl44Backend,
     vulkan: VulkanBackend,
     cpu: void,
-    gles3: Gles3Backend,
+    gles30: Gles30Backend,
 
     pub fn bindProgram(self: Backend, program: Program) !void {
         switch (self) {
@@ -467,7 +467,7 @@ pub const Backend = union(BackendKind) {
                 try backend.bindProgram(program.vulkan);
             },
             .cpu => {},
-            .gles3 => |backend| if (comptime build_options.enable_gles3) try backend.bindProgram(program.gles3),
+            .gles30 => |backend| if (comptime build_options.enable_gles30) try backend.bindProgram(program.gles30),
         }
     }
 
@@ -479,7 +479,7 @@ pub const Backend = union(BackendKind) {
                 try backend.bindDrawState(program.vulkan, state);
             },
             .cpu => {},
-            .gles3 => |backend| if (comptime build_options.enable_gles3) try backend.bindDrawState(program.gles3, state),
+            .gles30 => |backend| if (comptime build_options.enable_gles30) try backend.bindDrawState(program.gles30, state),
         }
     }
 
@@ -489,7 +489,7 @@ pub const Backend = union(BackendKind) {
             .gl44 => |backend| if (comptime build_options.enable_gl44) try backend.drawCoverage(coverage),
             .vulkan => |backend| if (comptime build_options.enable_vulkan) try backend.drawCoverage(coverage),
             .cpu => {},
-            .gles3 => |backend| if (comptime build_options.enable_gles3) try backend.drawCoverage(coverage),
+            .gles30 => |backend| if (comptime build_options.enable_gles30) try backend.drawCoverage(coverage),
         }
     }
 
@@ -499,7 +499,7 @@ pub const Backend = union(BackendKind) {
             .gl44 => |backend| if (comptime build_options.enable_gl44) try backend.drawVertices(vertices),
             .vulkan => |backend| if (comptime build_options.enable_vulkan) try backend.drawVertices(vertices),
             .cpu => {},
-            .gles3 => |backend| if (comptime build_options.enable_gles3) try backend.drawVertices(vertices),
+            .gles30 => |backend| if (comptime build_options.enable_gles30) try backend.drawVertices(vertices),
         }
     }
 };

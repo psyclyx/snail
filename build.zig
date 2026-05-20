@@ -8,7 +8,7 @@ pub const ModuleOptions = struct {
     enable_profiling: bool = false,
     enable_gl33: bool = true,
     enable_gl44: bool = true,
-    enable_gles3: bool = true,
+    enable_gles30: bool = true,
     enable_vulkan: bool = true,
     enable_cpu: bool = true,
     enable_harfbuzz: bool = true,
@@ -19,7 +19,7 @@ fn createBuildOptionsModule(b: *std.Build, options: ModuleOptions) *std.Build.Mo
     opts.addOption(bool, "enable_profiling", options.enable_profiling);
     opts.addOption(bool, "enable_gl33", options.enable_gl33);
     opts.addOption(bool, "enable_gl44", options.enable_gl44);
-    opts.addOption(bool, "enable_gles3", options.enable_gles3);
+    opts.addOption(bool, "enable_gles30", options.enable_gles30);
     opts.addOption(bool, "enable_vulkan", options.enable_vulkan);
     opts.addOption(bool, "enable_cpu", options.enable_cpu);
     opts.addOption(bool, "enable_harfbuzz", options.enable_harfbuzz);
@@ -34,7 +34,7 @@ fn configureCoreModule(
 ) void {
     mod.addImport("build_options", build_options_mod);
     if (options.enable_gl33 or options.enable_gl44) mod.linkSystemLibrary("OpenGL", .{});
-    if (options.enable_gles3) mod.linkSystemLibrary("GLESv2", .{});
+    if (options.enable_gles30) mod.linkSystemLibrary("GLESv2", .{});
     mod.addImport("vulkan_shaders", vk_shaders);
     if (options.enable_vulkan) mod.linkSystemLibrary("vulkan", .{});
     if (options.enable_harfbuzz) mod.linkSystemLibrary("harfbuzz", .{});
@@ -176,7 +176,7 @@ fn createSnailModule(
 }
 
 /// For use as a dependency: returns a module with only the core snail library.
-/// Defaults to GL 3.3 + GL 4.4 + GLES3 + Vulkan + CPU + HarfBuzz; use moduleWithOptions to trim backend support.
+/// Defaults to GL 3.3 + GL 4.4 + GLES30 + Vulkan + CPU + HarfBuzz; use moduleWithOptions to trim backend support.
 pub fn module(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
     return moduleWithOptions(b, target, optimize, .{});
 }
@@ -216,7 +216,7 @@ fn parseBuildConfig(b: *std.Build) BuildConfig {
     const enable_profiling = b.option(bool, "profile", "Enable profiling instrumentation") orelse false;
     const enable_gl33 = b.option(bool, "gl33", "Enable GL 3.3 backend") orelse true;
     const enable_gl44 = b.option(bool, "gl44", "Enable GL 4.4 backend") orelse true;
-    const enable_gles3 = b.option(bool, "gles3", "Enable GLES3 backend") orelse true;
+    const enable_gles30 = b.option(bool, "gles30", "Enable OpenGL ES 3.0 backend") orelse true;
     const enable_cpu = b.option(bool, "cpu-renderer", "Enable CPU renderer backend") orelse true;
     const enable_vulkan = b.option(bool, "vulkan", "Enable Vulkan backend") orelse true;
     const enable_harfbuzz = b.option(bool, "harfbuzz", "Enable HarfBuzz text shaping") orelse true;
@@ -227,7 +227,7 @@ fn parseBuildConfig(b: *std.Build) BuildConfig {
         .enable_profiling = enable_profiling,
         .enable_gl33 = enable_gl33,
         .enable_gl44 = enable_gl44,
-        .enable_gles3 = enable_gles3,
+        .enable_gles30 = enable_gles30,
         .enable_vulkan = enable_vulkan,
         .enable_cpu = enable_cpu,
         .enable_harfbuzz = enable_harfbuzz,
@@ -236,7 +236,7 @@ fn parseBuildConfig(b: *std.Build) BuildConfig {
     const enable_c_api_shared = c_api_shared_option orelse enable_c_api;
     const enable_c_api_static = c_api_static_option orelse enable_c_api;
 
-    if (!core_options.enable_gl33 and !core_options.enable_gl44 and !core_options.enable_gles3 and !core_options.enable_vulkan and !core_options.enable_cpu) {
+    if (!core_options.enable_gl33 and !core_options.enable_gl44 and !core_options.enable_gles30 and !core_options.enable_vulkan and !core_options.enable_cpu) {
         @panic("at least one renderer backend must be enabled");
     }
     if (!enable_c_api and ((c_api_shared_option orelse false) or (c_api_static_option orelse false))) {
@@ -341,13 +341,13 @@ fn installCApi(
     if (config.core_options.enable_gl44) {
         b.installFile("include/snail_gl44.h", "include/snail_gl44.h");
     }
-    if (config.core_options.enable_gles3) b.installFile("include/snail_gles3.h", "include/snail_gles3.h");
+    if (config.core_options.enable_gles30) b.installFile("include/snail_gles30.h", "include/snail_gles30.h");
     if (config.core_options.enable_vulkan) b.installFile("include/snail_vulkan.h", "include/snail_vulkan.h");
     if (config.core_options.enable_cpu) b.installFile("include/snail_cpu.h", "include/snail_cpu.h");
 
     const generated_pkg_config = b.addWriteFiles().add(
         "snail.pc",
-        pkg_config.render(b, version, config.core_options.enable_gl33 or config.core_options.enable_gl44, config.core_options.enable_gles3, config.core_options.enable_vulkan, config.core_options.enable_harfbuzz),
+        pkg_config.render(b, version, config.core_options.enable_gl33 or config.core_options.enable_gl44, config.core_options.enable_gles30, config.core_options.enable_vulkan, config.core_options.enable_harfbuzz),
     );
     b.getInstallStep().dependOn(&b.addInstallFile(generated_pkg_config, "lib/pkgconfig/snail.pc").step);
 }
@@ -426,7 +426,7 @@ fn addGameDemoSteps(
         .enable_profiling = config.core_options.enable_profiling,
         .enable_gl33 = true,
         .enable_gl44 = true,
-        .enable_gles3 = false,
+        .enable_gles30 = false,
         .enable_vulkan = false,
         .enable_cpu = false,
         .enable_harfbuzz = config.core_options.enable_harfbuzz,
@@ -699,7 +699,7 @@ fn addBackendCompareStep(
         .enable_profiling = false,
         .enable_gl33 = true,
         .enable_gl44 = true,
-        .enable_gles3 = false,
+        .enable_gles30 = false,
         .enable_vulkan = config.core_options.enable_vulkan,
         .enable_cpu = true,
         .enable_harfbuzz = config.core_options.enable_harfbuzz,

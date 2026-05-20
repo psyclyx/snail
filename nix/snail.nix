@@ -12,7 +12,7 @@
 , version ? "0.11.0"
 , enableGL33 ? true
 , enableGL44 ? true
-, enableGLES3 ? true
+, enableGLES30 ? true
 , enableVulkan ? true
 , enableCpu ? true
 , enableHarfBuzz ? true
@@ -29,7 +29,7 @@ let
     inherit
       enableGL33
       enableGL44
-      enableGLES3
+      enableGLES30
       enableVulkan
       enableCpu
       enableHarfBuzz
@@ -51,7 +51,7 @@ stdenv.mkDerivation {
   ];
 
   buildInputs =
-    lib.optionals (enableGL33 || enableGL44 || enableGLES3) [
+    lib.optionals (enableGL33 || enableGL44 || enableGLES30) [
       libGL
     ]
     ++ lib.optionals enableHarfBuzz [

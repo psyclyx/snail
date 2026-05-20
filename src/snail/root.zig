@@ -132,7 +132,7 @@ pub const ThreadPool = render.ThreadPool;
 pub const Renderer = render.Renderer;
 pub const Gl33Renderer = render.Gl33Renderer;
 pub const Gl44Renderer = render.Gl44Renderer;
-pub const Gles3Renderer = render.Gles3Renderer;
+pub const Gles30Renderer = render.Gles30Renderer;
 pub const VulkanRenderer = render.VulkanRenderer;
 
 pub const Range = scene.Range;

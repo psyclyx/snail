@@ -73,15 +73,15 @@ pub export fn snail_gl44_renderer_init(out: *?*RendererImpl) c_int {
     }
 }
 
-pub export fn snail_gles3_renderer_init(out: *?*RendererImpl) c_int {
-    if (comptime build_options.enable_gles3) {
+pub export fn snail_gles30_renderer_init(out: *?*RendererImpl) c_int {
+    if (comptime build_options.enable_gles30) {
         const impl = createHandle(RendererImpl, null) catch return SNAIL_ERR_OUT_OF_MEMORY;
-        const gles3 = snail.Gles3Renderer.init(allocatorForHandle(impl)) catch {
+        const gles30 = snail.Gles30Renderer.init(allocatorForHandle(impl)) catch {
             destroyHandle(impl);
             return SNAIL_ERR_RENDERER_FAILED;
         };
-        impl.backend = .gles3;
-        impl.gles3 = gles3;
+        impl.backend = .gles30;
+        impl.gles30 = gles30;
         out.* = impl;
         return SNAIL_OK;
     } else {

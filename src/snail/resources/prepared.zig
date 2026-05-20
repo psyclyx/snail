@@ -14,9 +14,9 @@ const pipeline = if ((build_options.enable_gl33 or build_options.enable_gl44)) @
     pub const text_coverage_fragment_interface = "";
     pub const text_coverage_fragment_body = "";
 };
-const gles3_pipeline = if (build_options.enable_gles3) @import("../render/backend/gles3/state.zig") else struct {
+const gles30_pipeline = if (build_options.enable_gles30) @import("../render/backend/gles30/state.zig") else struct {
     pub const TextCoverageProgram = struct {};
-    pub const Gles3TextState = void;
+    pub const Gles30TextState = void;
     pub const PreparedResources = void;
     pub const text_vertex_interface = "";
     pub const text_coverage_fragment_interface = "";
@@ -146,7 +146,7 @@ pub const PreparedManifest = struct {
 pub const ResidentResources = struct {
     gl33: if (build_options.enable_gl33) ?*pipeline.Gl33PreparedResources else void = if (build_options.enable_gl33) null else {},
     gl44: if (build_options.enable_gl44) ?*pipeline.Gl44PreparedResources else void = if (build_options.enable_gl44) null else {},
-    gles3: if (build_options.enable_gles3) ?*gles3_pipeline.PreparedResources else void = if (build_options.enable_gles3) null else {},
+    gles30: if (build_options.enable_gles30) ?*gles30_pipeline.PreparedResources else void = if (build_options.enable_gles30) null else {},
     vulkan: if (build_options.enable_vulkan) ?*vulkan_pipeline.PreparedResources else void = if (build_options.enable_vulkan) null else {},
     cpu: if (build_options.enable_cpu) ?cpu_renderer_mod.PreparedResources else void = if (build_options.enable_cpu) null else {},
     generation: u64 = 0,
@@ -186,9 +186,9 @@ pub const PreparedResources = struct {
                 retained = true;
             }
         }
-        if (comptime build_options.enable_gles3) {
-            if (self.resident.gles3) |gles3_resources| {
-                gles3_resources.retainPreparedResources(self.manifest, self.resident.generation);
+        if (comptime build_options.enable_gles30) {
+            if (self.resident.gles30) |gles30_resources| {
+                gles30_resources.retainPreparedResources(self.manifest, self.resident.generation);
                 retained = true;
             }
         }
@@ -209,8 +209,8 @@ pub const PreparedResources = struct {
         if (comptime build_options.enable_gl44) {
             if (self.resident.gl44) |gl44_resources| gl44_resources.releasePreparedResources(self.manifest, self.resident.generation);
         }
-        if (comptime build_options.enable_gles3) {
-            if (self.resident.gles3) |gles3_resources| gles3_resources.releasePreparedResources(self.manifest, self.resident.generation);
+        if (comptime build_options.enable_gles30) {
+            if (self.resident.gles30) |gles30_resources| gles30_resources.releasePreparedResources(self.manifest, self.resident.generation);
         }
         if (comptime build_options.enable_vulkan) {
             if (self.resident.vulkan) |vk_resources| vk_resources.releasePreparedResources(self.manifest, self.resident.generation);
