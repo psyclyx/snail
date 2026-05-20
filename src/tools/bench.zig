@@ -961,7 +961,7 @@ pub fn main() !void {
         });
     }
 
-    var gl_ctx = try egl_offscreen.Context.init(WIDTH, HEIGHT);
+    var gl_ctx = try egl_offscreen.Context.init(WIDTH, HEIGHT, .gl33);
     defer gl_ctx.deinit();
     const framebuffer = render_timing.initFramebuffer(WIDTH, HEIGHT);
     defer render_timing.destroyFramebuffer(framebuffer);

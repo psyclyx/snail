@@ -2,27 +2,27 @@ const std = @import("std");
 const pkg_config = @import("build/pkg_config.zig");
 const vulkan_shaders = @import("build/vulkan_shaders.zig");
 
-const version = "0.10.0";
+const version = "0.11.0";
 
 pub const ModuleOptions = struct {
     enable_profiling: bool = false,
-    enable_opengl: bool = true,
+    enable_gl33: bool = true,
+    enable_gl44: bool = true,
     enable_opengles: bool = true,
     enable_vulkan: bool = true,
     enable_cpu: bool = true,
     enable_harfbuzz: bool = true,
-    force_gl33: bool = false,
 };
 
 fn createBuildOptionsModule(b: *std.Build, options: ModuleOptions) *std.Build.Module {
     const opts = b.addOptions();
     opts.addOption(bool, "enable_profiling", options.enable_profiling);
-    opts.addOption(bool, "enable_opengl", options.enable_opengl);
+    opts.addOption(bool, "enable_gl33", options.enable_gl33);
+    opts.addOption(bool, "enable_gl44", options.enable_gl44);
     opts.addOption(bool, "enable_opengles", options.enable_opengles);
     opts.addOption(bool, "enable_vulkan", options.enable_vulkan);
     opts.addOption(bool, "enable_cpu", options.enable_cpu);
     opts.addOption(bool, "enable_harfbuzz", options.enable_harfbuzz);
-    opts.addOption(bool, "force_gl33", options.force_gl33);
     return opts.createModule();
 }
 
@@ -33,7 +33,7 @@ fn configureCoreModule(
     vk_shaders: *std.Build.Module,
 ) void {
     mod.addImport("build_options", build_options_mod);
-    if (options.enable_opengl) mod.linkSystemLibrary("OpenGL", .{});
+    if (options.enable_gl33 or options.enable_gl44) mod.linkSystemLibrary("OpenGL", .{});
     if (options.enable_opengles) mod.linkSystemLibrary("GLESv2", .{});
     mod.addImport("vulkan_shaders", vk_shaders);
     if (options.enable_vulkan) mod.linkSystemLibrary("vulkan", .{});
@@ -49,7 +49,7 @@ fn configureDemoModule(
 ) void {
     configureCoreModule(mod, build_options_mod, options, vk_shaders);
     mod.linkSystemLibrary("wayland-client", .{});
-    if (options.enable_opengl) {
+    if (options.enable_gl33 or options.enable_gl44) {
         mod.linkSystemLibrary("wayland-egl", .{});
         mod.linkSystemLibrary("EGL", .{});
     }
@@ -176,7 +176,7 @@ fn createSnailModule(
 }
 
 /// For use as a dependency: returns a module with only the core snail library.
-/// Defaults to OpenGL + Vulkan + CPU + HarfBuzz; use moduleWithOptions to trim backend support.
+/// Defaults to GL 3.3 + GL 4.4 + OpenGL ES + Vulkan + CPU + HarfBuzz; use moduleWithOptions to trim backend support.
 pub fn module(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
     return moduleWithOptions(b, target, optimize, .{});
 }
@@ -187,10 +187,6 @@ pub fn moduleWithOptions(
     optimize: std.builtin.OptimizeMode,
     module_options: ModuleOptions,
 ) *std.Build.Module {
-    if (module_options.force_gl33 and !module_options.enable_opengl) {
-        @panic("ModuleOptions.force_gl33 requires ModuleOptions.enable_opengl");
-    }
-
     return createSnailModule(
         b,
         target,
@@ -218,33 +214,30 @@ const CApiArtifacts = struct {
 
 fn parseBuildConfig(b: *std.Build) BuildConfig {
     const enable_profiling = b.option(bool, "profile", "Enable profiling instrumentation") orelse false;
-    const enable_opengl = b.option(bool, "opengl", "Enable OpenGL backend") orelse true;
+    const enable_gl33 = b.option(bool, "gl33", "Enable GL 3.3 backend") orelse true;
+    const enable_gl44 = b.option(bool, "gl44", "Enable GL 4.4 backend") orelse true;
     const enable_opengles = b.option(bool, "opengl-es", "Enable OpenGL ES backend") orelse true;
     const enable_cpu = b.option(bool, "cpu-renderer", "Enable CPU renderer backend") orelse true;
     const enable_vulkan = b.option(bool, "vulkan", "Enable Vulkan backend") orelse true;
-    const force_gl33 = b.option(bool, "gl33", "Force OpenGL 3.3 context where OpenGL is used") orelse false;
     const enable_harfbuzz = b.option(bool, "harfbuzz", "Enable HarfBuzz text shaping") orelse true;
     const enable_c_api = b.option(bool, "c-api", "Build the C API libraries") orelse true;
     const c_api_shared_option = b.option(bool, "c-api-shared", "Build the C API shared library");
     const c_api_static_option = b.option(bool, "c-api-static", "Build the C API static library");
     const core_options = ModuleOptions{
         .enable_profiling = enable_profiling,
-        .enable_opengl = enable_opengl,
+        .enable_gl33 = enable_gl33,
+        .enable_gl44 = enable_gl44,
         .enable_opengles = enable_opengles,
         .enable_vulkan = enable_vulkan,
         .enable_cpu = enable_cpu,
         .enable_harfbuzz = enable_harfbuzz,
-        .force_gl33 = force_gl33,
     };
 
     const enable_c_api_shared = c_api_shared_option orelse enable_c_api;
     const enable_c_api_static = c_api_static_option orelse enable_c_api;
 
-    if (!core_options.enable_opengl and !core_options.enable_opengles and !core_options.enable_vulkan and !core_options.enable_cpu) {
+    if (!core_options.enable_gl33 and !core_options.enable_gl44 and !core_options.enable_opengles and !core_options.enable_vulkan and !core_options.enable_cpu) {
         @panic("at least one renderer backend must be enabled");
-    }
-    if (core_options.force_gl33 and !core_options.enable_opengl) {
-        @panic("-Dgl33=true requires -Dopengl=true");
     }
     if (!enable_c_api and ((c_api_shared_option orelse false) or (c_api_static_option orelse false))) {
         @panic("-Dc-api=false conflicts with -Dc-api-shared=true or -Dc-api-static=true");
@@ -342,14 +335,19 @@ fn installCApi(
 
     b.installFile("include/snail.h", "include/snail.h");
     b.getInstallStep().dependOn(&b.addInstallFile(c_api.generated_header, "include/snail_generated.h").step);
-    if (config.core_options.enable_opengl) b.installFile("include/snail_gl.h", "include/snail_gl.h");
+    if (config.core_options.enable_gl33) {
+        b.installFile("include/snail_gl33.h", "include/snail_gl33.h");
+    }
+    if (config.core_options.enable_gl44) {
+        b.installFile("include/snail_gl44.h", "include/snail_gl44.h");
+    }
     if (config.core_options.enable_opengles) b.installFile("include/snail_gles.h", "include/snail_gles.h");
     if (config.core_options.enable_vulkan) b.installFile("include/snail_vulkan.h", "include/snail_vulkan.h");
     if (config.core_options.enable_cpu) b.installFile("include/snail_cpu.h", "include/snail_cpu.h");
 
     const generated_pkg_config = b.addWriteFiles().add(
         "snail.pc",
-        pkg_config.render(b, version, config.core_options.enable_opengl, config.core_options.enable_opengles, config.core_options.enable_vulkan, config.core_options.enable_harfbuzz),
+        pkg_config.render(b, version, config.core_options.enable_gl33 or config.core_options.enable_gl44, config.core_options.enable_opengles, config.core_options.enable_vulkan, config.core_options.enable_harfbuzz),
     );
     b.getInstallStep().dependOn(&b.addInstallFile(generated_pkg_config, "lib/pkgconfig/snail.pc").step);
 }
@@ -426,12 +424,12 @@ fn addGameDemoSteps(
 ) void {
     const game_demo_options = ModuleOptions{
         .enable_profiling = config.core_options.enable_profiling,
-        .enable_opengl = true,
+        .enable_gl33 = true,
+        .enable_gl44 = true,
         .enable_opengles = false,
         .enable_vulkan = false,
         .enable_cpu = false,
         .enable_harfbuzz = config.core_options.enable_harfbuzz,
-        .force_gl33 = false,
     };
     const game_demo_options_mod = createBuildOptionsModule(b, game_demo_options);
     const game_snail_mod = createSnailModule(b, config.target, config.optimize, game_demo_options_mod, game_demo_options, modules.vk_shaders);
@@ -452,12 +450,12 @@ fn addGameDemoSteps(
     const game_demo_exe = b.addExecutable(.{ .name = "snail-game-demo", .root_module = game_demo_module });
     const install_game_demo = b.addInstallArtifact(game_demo_exe, .{});
 
-    const install_game_demo_step = b.step("install-game-demo", "Install the OpenGL game-style demo executable");
+    const install_game_demo_step = b.step("install-game-demo", "Install the GL game-style demo executable");
     install_game_demo_step.dependOn(&install_game_demo.step);
 
     const run_game_demo = b.addRunArtifact(game_demo_exe);
     if (b.args) |args| run_game_demo.addArgs(args);
-    const run_game_demo_step = b.step("run-game-demo", "Run the OpenGL game-style demo");
+    const run_game_demo_step = b.step("run-game-demo", "Run the GL game-style demo");
     run_game_demo_step.dependOn(&run_game_demo.step);
 }
 
@@ -699,12 +697,12 @@ fn addBackendCompareStep(
 ) void {
     const compare_options = ModuleOptions{
         .enable_profiling = false,
-        .enable_opengl = true,
+        .enable_gl33 = true,
+        .enable_gl44 = true,
         .enable_opengles = false,
         .enable_vulkan = config.core_options.enable_vulkan,
         .enable_cpu = true,
         .enable_harfbuzz = config.core_options.enable_harfbuzz,
-        .force_gl33 = false,
     };
     const compare_options_mod = createBuildOptionsModule(b, compare_options);
     const backend_compare_snail_mod = createSnailModule(b, config.target, config.optimize, compare_options_mod, compare_options, modules.vk_shaders);
@@ -728,7 +726,7 @@ fn addBackendCompareStep(
 
     const backend_compare_exe = b.addExecutable(.{ .name = "snail-backend-compare", .root_module = backend_compare_module });
     const run_backend_compare = b.addRunArtifact(backend_compare_exe);
-    const backend_compare_step = b.step("run-backend-compare", "Compare CPU/OpenGL/Vulkan backend pixels offscreen");
+    const backend_compare_step = b.step("run-backend-compare", "Compare CPU/GL/Vulkan backend pixels offscreen");
     backend_compare_step.dependOn(&run_backend_compare.step);
 }
 

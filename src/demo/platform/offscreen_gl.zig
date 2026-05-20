@@ -1,5 +1,4 @@
 const std = @import("std");
-const build_options = @import("build_options");
 const egl_common = @import("egl.zig");
 
 pub const egl = @cImport({
@@ -7,20 +6,22 @@ pub const egl = @cImport({
     @cInclude("EGL/eglext.h");
 });
 
+pub const GlApi = egl_common.GlApi;
+
 pub const Context = struct {
     display: egl.EGLDisplay = egl.EGL_NO_DISPLAY,
     config: egl.EGLConfig = null,
     context: egl.EGLContext = egl.EGL_NO_CONTEXT,
     surface: egl.EGLSurface = egl.EGL_NO_SURFACE,
 
-    pub fn init(width: u32, height: u32) !Context {
+    pub fn init(width: u32, height: u32, api: GlApi) !Context {
         var self = Context{};
         try self.initDisplay();
         errdefer self.deinit();
 
         try egl_common.chooseConfig(egl, self.display, egl.EGL_PBUFFER_BIT, &self.config);
         self.surface = createPbufferSurface(self.display, self.config, width, height) orelse return error.EglSurfaceCreateFailed;
-        self.context = try egl_common.createOpenGlContext(egl, build_options.force_gl33, self.display, self.config);
+        self.context = try egl_common.createOpenGlContext(egl, api, self.display, self.config);
         if (egl.eglMakeCurrent(self.display, self.surface, self.surface, self.context) == egl.EGL_FALSE) {
             return error.EglMakeCurrentFailed;
         }

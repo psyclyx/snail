@@ -118,7 +118,7 @@ fn outputPath(default: [*:0]const u8) [*:0]const u8 {
 }
 
 fn renderCompactBanner(allocator: std.mem.Allocator) !void {
-    var gl_ctx = try egl_offscreen.Context.init(SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT);
+    var gl_ctx = try egl_offscreen.Context.init(SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT, .gl33);
     defer gl_ctx.deinit();
 
     var target = try OffscreenTarget.init(SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT, .srgb);
@@ -191,7 +191,7 @@ fn renderRepro(allocator: std.mem.Allocator) !void {
     };
     const linear_resolve = envBool("SNAIL_REPRO_RESOLVE_LINEAR", false);
 
-    var gl_ctx = try egl_offscreen.Context.init(framebuffer_width, framebuffer_height);
+    var gl_ctx = try egl_offscreen.Context.init(framebuffer_width, framebuffer_height, .gl33);
     defer gl_ctx.deinit();
 
     var target = try OffscreenTarget.init(framebuffer_width, framebuffer_height, target_encoding.attachment);

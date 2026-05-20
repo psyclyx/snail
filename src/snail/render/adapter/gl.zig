@@ -9,10 +9,12 @@ const prepared_mod = @import("../../resources/prepared.zig");
 const set_mod = @import("../../resources/manifest.zig");
 const upload_mod = @import("../../upload.zig");
 
-const pipeline = if (build_options.enable_opengl) @import("../backend/gl/state.zig") else struct {
+const pipeline = if ((build_options.enable_gl33 or build_options.enable_gl44)) @import("../backend/gl/state.zig") else struct {
     pub const Backend = enum { gl33, gl44 };
-    pub const GlTextState = void;
-    pub const PreparedResources = void;
+    pub const Gl33TextState = void;
+    pub const Gl44TextState = void;
+    pub const Gl33PreparedResources = void;
+    pub const Gl44PreparedResources = void;
 };
 
 const CoverageBackend = coverage_mod.Backend;
@@ -30,15 +32,46 @@ const ResourceUploadPlan = upload_mod.ResourceUploadPlan;
 const ResourceUploadBatch = upload_mod.ResourceUploadBatch;
 const UploadAllocators = upload_mod.UploadAllocators;
 
+fn isEnabled(comptime backend: pipeline.Backend) bool {
+    return switch (backend) {
+        .gl33 => build_options.enable_gl33,
+        .gl44 => build_options.enable_gl44,
+    };
+}
+
+fn backendForKind(comptime kind: interface.BackendKind) pipeline.Backend {
+    return switch (kind) {
+        .gl33 => .gl33,
+        .gl44 => .gl44,
+        else => unreachable,
+    };
+}
+
+fn stateType(comptime backend: pipeline.Backend) type {
+    return switch (backend) {
+        .gl33 => pipeline.Gl33TextState,
+        .gl44 => pipeline.Gl44TextState,
+    };
+}
+
+fn preparedType(comptime backend: pipeline.Backend) type {
+    return switch (backend) {
+        .gl33 => pipeline.Gl33PreparedResources,
+        .gl44 => pipeline.Gl44PreparedResources,
+    };
+}
+
 fn Config(comptime kind: interface.BackendKind) type {
-    return if (build_options.enable_opengl) struct {
-        pub const Backend = pipeline.GlTextState;
-        pub const Prepared = pipeline.PreparedResources;
+    const gl_backend = backendForKind(kind);
+    return if (isEnabled(gl_backend)) struct {
+        pub const Backend = stateType(gl_backend);
+        pub const Prepared = preparedType(gl_backend);
         pub const backend_kind = kind;
         pub const uses_resource_cache = true;
 
         pub fn prepared(prepared_resources: *const PreparedResources) ?*const Prepared {
-            return prepared_resources.resident.gl orelse null;
+            if (comptime gl_backend == .gl33) return prepared_resources.resident.gl33 orelse null;
+            return prepared_resources.resident.gl44 orelse null;
         }
 
         pub fn uploadResources(self: *Backend, allocators: UploadAllocators, prepared_resources: *PreparedResources, batch: ResourceUploadBatch) !void {
@@ -52,12 +85,16 @@ fn Config(comptime kind: interface.BackendKind) type {
                 batch.layer_info_views,
             );
             if (batch.images.len > 0) try gl_prepared.uploadImages(allocators.scratch, batch.images, batch.image_views);
-            prepared_resources.resident.gl = gl_prepared;
+            if (comptime gl_backend == .gl33) {
+                prepared_resources.resident.gl33 = gl_prepared;
+            } else {
+                prepared_resources.resident.gl44 = gl_prepared;
+            }
             prepared_resources.resident.generation = gl_prepared.generation;
         }
 
         pub fn coverageBackend(self: *Backend, prepared_resources: *const PreparedResources) ?CoverageBackend {
-            if (prepared_resources.resident.gl) |gl_resources| {
+            if (prepared(prepared_resources)) |gl_resources| {
                 return switch (kind) {
                     .gl33 => .{ .gl33 = .{ .gl = self, .gl_resources = gl_resources, .prepared = prepared_resources } },
                     .gl44 => .{ .gl44 = .{ .gl = self, .gl_resources = gl_resources, .prepared = prepared_resources } },
@@ -87,8 +124,8 @@ fn Config(comptime kind: interface.BackendKind) type {
     } else struct {};
 }
 
-pub const vtable_gl33 = if (build_options.enable_opengl) common.vtable(Config(.gl33)) else interface.disabledVTable(.gl33);
-pub const vtable_gl44 = if (build_options.enable_opengl) common.vtable(Config(.gl44)) else interface.disabledVTable(.gl44);
+pub const vtable_gl33 = if (build_options.enable_gl33) common.vtable(Config(.gl33)) else interface.disabledVTable(.gl33);
+pub const vtable_gl44 = if (build_options.enable_gl44) common.vtable(Config(.gl44)) else interface.disabledVTable(.gl44);
 
 fn backendKind(comptime backend: pipeline.Backend) interface.BackendKind {
     return switch (backend) {
@@ -105,18 +142,19 @@ fn vtableFor(comptime backend: pipeline.Backend) *const ErasedRenderer.VTable {
 }
 
 fn RendererType(comptime gl_backend: pipeline.Backend) type {
-    return if (build_options.enable_opengl) struct {
+    return if (isEnabled(gl_backend)) struct {
         const Self = @This();
         const kind = backendKind(gl_backend);
+        const State = stateType(gl_backend);
 
         allocator: std.mem.Allocator,
-        state: *pipeline.GlTextState,
+        state: *State,
 
         pub fn init(allocator: std.mem.Allocator) !Self {
-            const text = try allocator.create(pipeline.GlTextState);
+            const text = try allocator.create(State);
             text.* = .{};
             errdefer allocator.destroy(text);
-            try text.init(gl_backend);
+            try text.init();
             return .{ .allocator = allocator, .state = text };
         }
 
@@ -166,14 +204,15 @@ fn RendererType(comptime gl_backend: pipeline.Backend) type {
         }
 
         pub fn coverageBackend(self: *Self, prepared_resources: *const PreparedResources) ?CoverageBackend {
-            if (prepared_resources.resident.gl) |gl_resources| {
-                return switch (kind) {
-                    .gl33 => .{ .gl33 = .{ .gl = self.state, .gl_resources = gl_resources, .prepared = prepared_resources } },
-                    .gl44 => .{ .gl44 = .{ .gl = self.state, .gl_resources = gl_resources, .prepared = prepared_resources } },
-                    else => unreachable,
-                };
-            }
-            return null;
+            const gl_resources = if (comptime gl_backend == .gl33)
+                prepared_resources.resident.gl33 orelse return null
+            else
+                prepared_resources.resident.gl44 orelse return null;
+            return switch (kind) {
+                .gl33 => .{ .gl33 = .{ .gl = self.state, .gl_resources = gl_resources, .prepared = prepared_resources } },
+                .gl44 => .{ .gl44 = .{ .gl = self.state, .gl_resources = gl_resources, .prepared = prepared_resources } },
+                else => unreachable,
+            };
         }
 
         pub fn backend(_: *const Self) interface.BackendKind {

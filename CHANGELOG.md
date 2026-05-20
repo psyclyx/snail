@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.11.0 - 2026-05-20
+
+### Added
+
+- Added an OpenGL ES renderer (`GlesRenderer`) with Zig and C entry points,
+  `snail_gles.h`, shader coverage helpers, and build/Nix flags.
+- GL 3.3 and GL 4.4 can now be enabled in the same build and instantiated as
+  separate renderer types.
+
+### Changed
+
+- Split the GL 3.3 and GL 4.4 backend surfaces: use `-Dgl33` / `-Dgl44`,
+  `Gl33Renderer` / `Gl44Renderer`, and `snail_gl33.h` / `snail_gl44.h`.
+- The demo/windowing helpers now request GL 3.3 or GL 4.4 contexts explicitly,
+  so backend switching can create the requested renderer.
+- GL 3.3 and GL 4.4 now have separate renderer state and prepared-resource
+  cache types while still sharing implementation code where the APIs match.
+- Nix packages now expose `enableGL33`, `enableGL44`, and `enableOpenGLES`
+  independently.
+
+### Removed
+
+- Removed the combined `-Dopengl` build flag and `snail_gl.h` header.
+
 ## 0.10.0 - 2026-05-20
 
 ### Fixed
@@ -57,7 +81,7 @@
   `CoverageShader`, `CoverageBackend`, `coverageBackend`, `bindResources`,
   `drawCoverage`, `drawVertices`, and `TextCoverageRecords.buildLocal`.
 - Removed the unused `snail.backend.*` namespace. Use `BackendKind` and the
-  direct `GlRenderer`, `VulkanRenderer`, and `CpuRenderer` types.
+  direct renderer types.
 - Split the Zig font facade from the text facade. `Font` and font metric types
   now live under `snail.font`; top-level aliases remain, but `snail.text` is
   limited to text shaping, atlases, blobs, batches, and text configuration.
@@ -148,10 +172,9 @@
   draws.
 - The demo and benchmark suite now include a rich-text scene that exercises
   mixed styles and painted text runs.
-- C callers now construct renderers through backend-specific headers:
-  `snail_cpu.h`, `snail_gl.h`, and `snail_vulkan.h`. The C API exposes CPU
-  renderer construction/rebuffering, explicit GL/Vulkan constructors, and
-  generated backend constants/handles.
+- C callers now construct renderers through backend-specific headers. The C API
+  exposes CPU renderer construction/rebuffering, explicit GL/Vulkan
+  constructors, and generated backend constants/handles.
 - Nix packaging is split into `nix/snail.nix` for the library and
   `nix/snail-demo.nix` for the interactive demo, both wired through
   `callPackage` and sharing backend option handling.

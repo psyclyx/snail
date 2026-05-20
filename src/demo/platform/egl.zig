@@ -18,27 +18,25 @@ pub fn chooseConfig(egl_mod: anytype, display: anytype, surface_bit: anytype, ou
     out.* = config;
 }
 
-pub fn createOpenGlContext(egl_mod: anytype, force_gl33: bool, display: anytype, config: anytype) !@TypeOf(egl_mod.EGL_NO_CONTEXT) {
-    const Int = @TypeOf(egl_mod.EGL_NONE);
-    var ctx: @TypeOf(egl_mod.EGL_NO_CONTEXT) = egl_mod.EGL_NO_CONTEXT;
-    if (!force_gl33) {
-        const attrs_44 = [_]Int{
-            egl_mod.EGL_CONTEXT_MAJOR_VERSION_KHR,       4,
-            egl_mod.EGL_CONTEXT_MINOR_VERSION_KHR,       4,
-            egl_mod.EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR, egl_mod.EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR,
-            egl_mod.EGL_NONE,
-        };
-        ctx = egl_mod.eglCreateContext(display, config, egl_mod.EGL_NO_CONTEXT, &attrs_44);
-        if (ctx != egl_mod.EGL_NO_CONTEXT) return ctx;
-    }
+pub const GlApi = enum {
+    gl33,
+    gl44,
+};
 
-    const attrs_33 = [_]Int{
-        egl_mod.EGL_CONTEXT_MAJOR_VERSION_KHR,       3,
-        egl_mod.EGL_CONTEXT_MINOR_VERSION_KHR,       3,
+pub fn createOpenGlContext(egl_mod: anytype, api: GlApi, display: anytype, config: anytype) !@TypeOf(egl_mod.EGL_NO_CONTEXT) {
+    const Int = @TypeOf(egl_mod.EGL_NONE);
+    const Version = struct { major: Int, minor: Int };
+    const version = switch (api) {
+        .gl33 => Version{ .major = 3, .minor = 3 },
+        .gl44 => Version{ .major = 4, .minor = 4 },
+    };
+    const attrs = [_]Int{
+        egl_mod.EGL_CONTEXT_MAJOR_VERSION_KHR,       version.major,
+        egl_mod.EGL_CONTEXT_MINOR_VERSION_KHR,       version.minor,
         egl_mod.EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR, egl_mod.EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR,
         egl_mod.EGL_NONE,
     };
-    ctx = egl_mod.eglCreateContext(display, config, egl_mod.EGL_NO_CONTEXT, &attrs_33);
+    const ctx = egl_mod.eglCreateContext(display, config, egl_mod.EGL_NO_CONTEXT, &attrs);
     if (ctx == egl_mod.EGL_NO_CONTEXT) return error.EglContextCreateFailed;
     return ctx;
 }

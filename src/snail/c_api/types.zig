@@ -298,7 +298,23 @@ pub const SnailCoverageDrawState = extern struct {
     layer_base: u32 = 0,
 };
 
-pub const SnailGlTextCoverageProgram = extern struct {
+pub const SnailGl33TextCoverageProgram = extern struct {
+    curve_tex_loc: c_int = -1,
+    band_tex_loc: c_int = -1,
+    layer_tex_loc: c_int = -1,
+    image_tex_loc: c_int = -1,
+    fill_rule_loc: c_int = -1,
+    subpixel_order_loc: c_int = -1,
+    output_srgb_loc: c_int = -1,
+    coverage_exponent_loc: c_int = -1,
+    layer_base_loc: c_int = -1,
+    curve_tex_unit: c_int = 0,
+    band_tex_unit: c_int = 1,
+    layer_tex_unit: c_int = 2,
+    image_tex_unit: c_int = 3,
+};
+
+pub const SnailGl44TextCoverageProgram = extern struct {
     curve_tex_loc: c_int = -1,
     band_tex_loc: c_int = -1,
     layer_tex_loc: c_int = -1,

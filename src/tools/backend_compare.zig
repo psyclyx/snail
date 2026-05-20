@@ -1179,7 +1179,7 @@ pub fn main() !void {
     var scene_bundle = try buildScene(allocator);
     defer scene_bundle.deinit();
 
-    var gl_ctx = try egl_offscreen.Context.init(WIDTH, HEIGHT);
+    var gl_ctx = try egl_offscreen.Context.init(WIDTH, HEIGHT, .gl33);
     defer gl_ctx.deinit();
     const framebuffer = try initFramebuffer(GL_SRGB8_ALPHA8);
     defer {

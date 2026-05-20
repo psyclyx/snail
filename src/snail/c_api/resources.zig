@@ -386,7 +386,8 @@ pub export fn snail_text_coverage_records_valid_for(records: *const TextCoverage
 
 fn coverageBackendPrepared(backend: *const CoverageBackendImpl) ?*const snail.PreparedResources {
     return switch (backend.inner) {
-        .gl33, .gl44 => |gl_backend| if (comptime build_options.enable_opengl) gl_backend.prepared else null,
+        .gl33 => |gl_backend| if (comptime build_options.enable_gl33) gl_backend.prepared else null,
+        .gl44 => |gl_backend| if (comptime build_options.enable_gl44) gl_backend.prepared else null,
         .vulkan => |vk_backend| if (comptime build_options.enable_vulkan) vk_backend.prepared else null,
         .cpu => null,
         .gles => |gles_backend| if (comptime build_options.enable_opengles) gles_backend.prepared else null,

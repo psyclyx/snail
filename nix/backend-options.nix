@@ -1,6 +1,7 @@
 { lib }:
 
-{ enableOpenGL ? true
+{ enableGL33 ? true
+, enableGL44 ? true
 , enableOpenGLES ? true
 , enableVulkan ? true
 , enableCpu ? true
@@ -19,7 +20,8 @@ in
   zigBuildFlags = [
     "--release=${optimize}"
     "-Dcpu=${cpu}"
-    (boolFlag "opengl" enableOpenGL)
+    (boolFlag "gl33" enableGL33)
+    (boolFlag "gl44" enableGL44)
     (boolFlag "opengl-es" enableOpenGLES)
     (boolFlag "vulkan" enableVulkan)
     (boolFlag "cpu-renderer" enableCpu)

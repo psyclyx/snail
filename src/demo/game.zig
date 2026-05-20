@@ -36,7 +36,7 @@ pub fn main() !void {
     defer _ = da.deinit();
     const allocator = da.allocator();
 
-    try platform.init(1440, 900, "snail-game-demo");
+    try platform.init(1440, 900, "snail-game-demo", .gl33);
     defer platform.deinit();
 
     var fonts = try demo_passes.initFonts(allocator);
@@ -75,7 +75,7 @@ pub fn main() !void {
     var current_order = platform.detectCurrentMonitorSubpixelOrder(sys_order);
     var last_time = platform.getTime();
 
-    std.debug.print("snail-game-demo - OpenGL room with HUD and world-space text\n", .{});
+    std.debug.print("snail-game-demo - GL room with HUD and world-space text\n", .{});
     std.debug.print("Controls: WASD move, QE rise, arrows look, R reset camera, Esc quit\n", .{});
     const initial_scale = initial_present.scale();
     std.debug.print(

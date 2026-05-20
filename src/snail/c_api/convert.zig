@@ -9,7 +9,8 @@ const SnailDrawState = c.SnailDrawState;
 const SnailFillStyle = c.SnailFillStyle;
 const SnailFontStyle = c.SnailFontStyle;
 const SnailCoverageDrawState = c.SnailCoverageDrawState;
-const SnailGlTextCoverageProgram = c.SnailGlTextCoverageProgram;
+const SnailGl33TextCoverageProgram = c.SnailGl33TextCoverageProgram;
+const SnailGl44TextCoverageProgram = c.SnailGl44TextCoverageProgram;
 const SnailGlesTextCoverageProgram = c.SnailGlesTextCoverageProgram;
 const SnailMat4 = c.SnailMat4;
 const SnailOverride = c.SnailOverride;
@@ -144,8 +145,8 @@ pub fn toCoverageDrawState(state: SnailCoverageDrawState) !snail.coverage.DrawSt
     };
 }
 
-pub fn toGlCoverageProgram(program: SnailGlTextCoverageProgram) !snail.coverage.GlProgram {
-    if (comptime build_options.enable_opengl) {
+fn toGlCoverageProgramFields(program: anytype) !snail.coverage.GlProgram {
+    if (comptime (build_options.enable_gl33 or build_options.enable_gl44)) {
         return .{
             .curve_tex_loc = program.curve_tex_loc,
             .band_tex_loc = program.band_tex_loc,
@@ -164,6 +165,14 @@ pub fn toGlCoverageProgram(program: SnailGlTextCoverageProgram) !snail.coverage.
     } else {
         return .{};
     }
+}
+
+pub fn toGl33CoverageProgram(program: SnailGl33TextCoverageProgram) !snail.coverage.GlProgram {
+    return toGlCoverageProgramFields(program);
+}
+
+pub fn toGl44CoverageProgram(program: SnailGl44TextCoverageProgram) !snail.coverage.GlProgram {
+    return toGlCoverageProgramFields(program);
 }
 
 pub fn toGlesCoverageProgram(program: SnailGlesTextCoverageProgram) !snail.coverage.GlesProgram {

@@ -77,7 +77,7 @@ pub fn main() !void {
     defer _ = da.deinit();
     const allocator = da.allocator();
 
-    var gl_ctx = try egl_offscreen.Context.init(WIDTH, HEIGHT);
+    var gl_ctx = try egl_offscreen.Context.init(WIDTH, HEIGHT, .gl33);
     defer gl_ctx.deinit();
 
     var fbo: gl.GLuint = 0;

@@ -42,7 +42,7 @@ fn cpuPixels(pixels: ?[*]u8, width: u32, height: u32, stride: u32) ?[*]u8 {
 }
 
 pub export fn snail_gl33_renderer_init(out: *?*RendererImpl) c_int {
-    if (comptime build_options.enable_opengl) {
+    if (comptime build_options.enable_gl33) {
         const impl = createHandle(RendererImpl, null) catch return SNAIL_ERR_OUT_OF_MEMORY;
         const gl = snail.Gl33Renderer.init(allocatorForHandle(impl)) catch {
             destroyHandle(impl);
@@ -58,7 +58,7 @@ pub export fn snail_gl33_renderer_init(out: *?*RendererImpl) c_int {
 }
 
 pub export fn snail_gl44_renderer_init(out: *?*RendererImpl) c_int {
-    if (comptime build_options.enable_opengl) {
+    if (comptime build_options.enable_gl44) {
         const impl = createHandle(RendererImpl, null) catch return SNAIL_ERR_OUT_OF_MEMORY;
         const gl = snail.Gl44Renderer.init(allocatorForHandle(impl)) catch {
             destroyHandle(impl);

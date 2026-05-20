@@ -798,7 +798,7 @@ int snail_coverage_backend_draw_words(SnailCoverageBackend *backend,
 /* Renderer
  *
  * Construct renderers through backend headers such as snail_cpu.h,
- * snail_gl.h, snail_gles.h, and snail_vulkan.h, then use this erased renderer
+ * snail_gl33.h, snail_gl44.h, snail_gles.h, and snail_vulkan.h, then use this erased renderer
  * handle for shared operations.
  */
 

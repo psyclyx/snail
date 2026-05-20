@@ -13,6 +13,7 @@ const egl = @cImport({
     @cInclude("wayland-egl.h");
 });
 
+pub const GlApi = egl_common.GlApi;
 pub const KEY_R = wayland.KEY_R;
 pub const KEY_L = wayland.KEY_L;
 pub const KEY_W = wayland.KEY_W;
@@ -44,7 +45,7 @@ const CreatedSurface = struct {
     encoding: presentation.ColorEncoding,
 };
 
-pub fn init(width: u32, height: u32, title: [*:0]const u8) !void {
+pub fn init(width: u32, height: u32, title: [*:0]const u8, api: GlApi) !void {
     const window = try wayland.Window.init(width, height, title);
     errdefer window.deinit();
 
@@ -55,10 +56,10 @@ pub fn init(width: u32, height: u32, title: [*:0]const u8) !void {
         owns_window = false;
     }
 
-    try initForCurrentWindow();
+    try initForCurrentWindow(api);
 }
 
-pub fn initForWindow(window: *wayland.Window) !void {
+pub fn initForWindow(window: *wayland.Window, api: GlApi) !void {
     app = window;
     owns_window = false;
     errdefer {
@@ -66,10 +67,10 @@ pub fn initForWindow(window: *wayland.Window) !void {
         owns_window = false;
     }
 
-    try initForCurrentWindow();
+    try initForCurrentWindow(api);
 }
 
-fn initForCurrentWindow() !void {
+fn initForCurrentWindow(api: GlApi) !void {
     egl_display = try initEglDisplay();
     errdefer {
         _ = egl.eglTerminate(egl_display);
@@ -79,7 +80,7 @@ fn initForCurrentWindow() !void {
     var config: egl.EGLConfig = null;
     try egl_common.chooseConfig(egl, egl_display, egl.EGL_WINDOW_BIT, &config);
 
-    egl_context = try egl_common.createOpenGlContext(egl, build_options.force_gl33, egl_display, config);
+    egl_context = try egl_common.createOpenGlContext(egl, api, egl_display, config);
     errdefer {
         _ = egl.eglDestroyContext(egl_display, egl_context);
         egl_context = egl.EGL_NO_CONTEXT;

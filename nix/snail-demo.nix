@@ -11,8 +11,9 @@
 , wayland-protocols
 , src ? ../.
 , pname ? "snail-demo"
-, version ? "0.10.0"
-, enableOpenGL ? true
+, version ? "0.11.0"
+, enableGL33 ? true
+, enableGL44 ? true
 , enableOpenGLES ? true
 , enableVulkan ? true
 , enableCpu ? true
@@ -25,7 +26,8 @@ let
   zig = zig_0_16;
   backendOptions = import ./backend-options.nix { inherit lib; } {
     inherit
-      enableOpenGL
+      enableGL33
+      enableGL44
       enableOpenGLES
       enableVulkan
       enableCpu
@@ -37,7 +39,7 @@ let
     cApiStatic = false;
   };
 in
-assert enableOpenGL || enableOpenGLES || enableVulkan || enableCpu;
+assert enableGL33 || enableGL44 || enableOpenGLES || enableVulkan || enableCpu;
 stdenv.mkDerivation {
   inherit pname version src;
 
@@ -49,7 +51,7 @@ stdenv.mkDerivation {
   ];
 
   buildInputs =
-    lib.optionals (enableOpenGL || enableOpenGLES) [
+    lib.optionals (enableGL33 || enableGL44 || enableOpenGLES) [
       libGL
     ]
     ++ lib.optionals enableHarfBuzz [
