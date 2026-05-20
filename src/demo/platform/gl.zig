@@ -39,6 +39,7 @@ var egl_context: egl.EGLContext = egl.EGL_NO_CONTEXT;
 var egl_surface: egl.EGLSurface = egl.EGL_NO_SURFACE;
 var egl_window: ?*egl.wl_egl_window = null;
 var window_surface_encoding: presentation.ColorEncoding = .linear;
+var active_api: GlApi = .gl33;
 
 const CreatedSurface = struct {
     surface: egl.EGLSurface,
@@ -71,10 +72,12 @@ pub fn initForWindow(window: *wayland.Window, api: GlApi) !void {
 }
 
 fn initForCurrentWindow(api: GlApi) !void {
+    active_api = api;
     egl_display = try initEglDisplay(api);
     errdefer {
         _ = egl.eglTerminate(egl_display);
         egl_display = egl.EGL_NO_DISPLAY;
+        active_api = .gl33;
     }
 
     var config: egl.EGLConfig = null;
@@ -163,6 +166,7 @@ pub fn deinit() void {
         egl_display = egl.EGL_NO_DISPLAY;
         egl_window = null;
         window_surface_encoding = .linear;
+        active_api = .gl33;
         if (owned) window.deinit();
         app = null;
         owns_window = false;
@@ -216,18 +220,36 @@ pub fn presentationInfo() presentation.Info {
 }
 
 pub fn defaultFramebufferEncoding() presentation.ColorEncoding {
-    if (window_surface_encoding == .srgb) return .srgb;
+    if (queryDefaultFramebufferEncoding(active_api)) |encoding| return encoding;
 
+    // EGL_GL_COLORSPACE_SRGB_KHR declares how the native window surface should
+    // be interpreted, but it does not prove shader writes get fixed-function
+    // sRGB conversion on every GLES default framebuffer. If the attachment
+    // query is unavailable, make GLES encode sRGB in shader space instead of
+    // presenting unencoded linear colors.
+    return switch (active_api) {
+        .gl33, .gl44 => window_surface_encoding,
+        .gles30 => .linear,
+    };
+}
+
+fn queryDefaultFramebufferEncoding(api: GlApi) ?presentation.ColorEncoding {
     var prev_draw_fb: gl.GLint = 0;
     gl.glGetIntegerv(gl.GL_DRAW_FRAMEBUFFER_BINDING, &prev_draw_fb);
     gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, 0);
     defer gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, @intCast(prev_draw_fb));
 
     while (gl.glGetError() != gl.GL_NO_ERROR) {}
+    const attachment: gl.GLenum = switch (api) {
+        .gl33, .gl44 => @intCast(gl.GL_BACK_LEFT),
+        .gles30 => @intCast(gl.GL_BACK),
+    };
     var encoding: gl.GLint = 0;
-    gl.glGetFramebufferAttachmentParameteriv(gl.GL_DRAW_FRAMEBUFFER, gl.GL_BACK_LEFT, gl.GL_FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING, &encoding);
-    if (gl.glGetError() == gl.GL_NO_ERROR and encoding == gl.GL_SRGB) return .srgb;
-    return .linear;
+    gl.glGetFramebufferAttachmentParameteriv(gl.GL_DRAW_FRAMEBUFFER, attachment, gl.GL_FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING, &encoding);
+    if (gl.glGetError() != gl.GL_NO_ERROR) return null;
+    if (encoding == gl.GL_SRGB) return .srgb;
+    if (encoding == gl.GL_LINEAR) return .linear;
+    return null;
 }
 
 pub fn getTime() f64 {

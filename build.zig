@@ -49,7 +49,7 @@ fn configureDemoModule(
 ) void {
     configureCoreModule(mod, build_options_mod, options, vk_shaders);
     mod.linkSystemLibrary("wayland-client", .{});
-    if (options.enable_gl33 or options.enable_gl44) {
+    if (options.enable_gl33 or options.enable_gl44 or options.enable_gles30) {
         mod.linkSystemLibrary("wayland-egl", .{});
         mod.linkSystemLibrary("EGL", .{});
     }
