@@ -196,21 +196,23 @@ pub fn printModeTable(rows: anytype) void {
     std.debug.print(
         \\## Render Modes
         \\
-        \\Per-AA timings for the text and multi-script scenes. AA controls
-        \\the fragment-shader path (grayscale vs LCD subpixel).
+        \\Per-AA timings for the text and multi-script scenes. Requested AA is
+        \\the draw-state request; effective AA shows backend fallbacks such as
+        \\GLES30 rendering grayscale when LCD dual-source blending is unavailable.
         \\
-        \\| Backend | Scene | AA | Words | Segments | PreparedScene | Draw |
-        \\|---|---|---|---:|---:|---:|---:|
+        \\| Backend | Scene | Requested AA | Effective AA | Words | Segments | PreparedScene | Draw |
+        \\|---|---|---|---|---:|---:|---:|---:|
         \\
     , .{});
     for (rows) |row| {
         std.debug.print(
-            \\| {s} | {s} | {s} | {d} | {d} | {d:.2} us | {d:.2} us |
+            \\| {s} | {s} | {s} | {s} | {d} | {d} | {d:.2} us | {d:.2} us |
             \\
         , .{
             row.backend,
             row.scene.name(),
             row.mode.aaName(),
+            row.effective_aa,
             row.words,
             row.segments,
             row.record_us,
@@ -224,19 +226,20 @@ pub fn printRenderTable(comptime width: u32, comptime height: u32, cpu_frames: u
     std.debug.print(
         \\## Prepared Render
         \\
-        \\Target: {d}x{d}. CPU uses {d} measured frames; GPU backends use {d} measured frames.
+        \\Target: {d}x{d}. Requested AA is subpixel rgb. CPU uses {d} measured frames; GPU backends use {d} measured frames.
         \\
-        \\| Backend | Scene | Frames | Commands | Words | Segments | Instance bytes/frame | Draw prepared scene |
-        \\|---|---|---:|---:|---:|---:|---:|---:|
+        \\| Backend | Scene | Effective AA | Frames | Commands | Words | Segments | Instance bytes/frame | Draw prepared scene |
+        \\|---|---|---|---:|---:|---:|---:|---:|---:|
         \\
     , .{ width, height, cpu_frames, gpu_frames });
     for (rows) |row| {
         std.debug.print(
-            \\| {s} | {s} | {d} | {d} | {d} | {d} | {d} | {d:.2} us |
+            \\| {s} | {s} | {s} | {d} | {d} | {d} | {d} | {d} | {d:.2} us |
             \\
         , .{
             row.backend,
             row.scene.name(),
+            row.effective_aa,
             row.frames,
             row.commands,
             row.words,

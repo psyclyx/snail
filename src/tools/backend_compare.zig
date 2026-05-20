@@ -33,6 +33,11 @@ const CompareCase = struct {
     requires_dual_source: bool = false,
 };
 
+const GlLcdSupport = enum {
+    detect,
+    unavailable,
+};
+
 const CompareStats = struct {
     pixel_count: usize,
     mismatched_pixels: usize = 0,
@@ -486,7 +491,7 @@ fn renderGlSeeded(
 
 fn renderGlLinearSeeded(
     allocator: std.mem.Allocator,
-    gl_renderer: *snail.Gl33Renderer,
+    renderer: *snail.Renderer,
     fbo: gl.GLuint,
     scene: *const snail.Scene,
     state: snail.DrawState,
@@ -497,8 +502,7 @@ fn renderGlLinearSeeded(
     gl.glViewport(0, 0, WIDTH, HEIGHT);
     clearGlTo(seed);
 
-    var renderer = gl_renderer.asRenderer();
-    var prepared = try uploadSceneResources(allocator, &renderer, scene);
+    var prepared = try uploadSceneResources(allocator, renderer, scene);
     defer prepared.deinit();
     var prepared_scene = try snail.PreparedScene.initOwned(allocator, &prepared, scene);
     defer prepared_scene.deinit();
@@ -878,11 +882,12 @@ fn checkGpuConsistency(
     allocator: std.mem.Allocator,
     case_name: []const u8,
     gl_name: []const u8,
+    gl_slug: []const u8,
     gl_pixels: []const u8,
     vk_name: []const u8,
     vk_pixels: []const u8,
 ) !void {
-    try checkPixelMatch(allocator, case_name, gl_name, "gl", vk_name, "vulkan", gl_pixels, vk_pixels, gpu_consistency_policy);
+    try checkPixelMatch(allocator, case_name, gl_name, gl_slug, vk_name, "vulkan", gl_pixels, vk_pixels, gpu_consistency_policy);
 }
 
 const AppendSceneBundle = struct {
@@ -1035,6 +1040,7 @@ fn runGlAppendSnapshotRegression(
     renderer: *snail.Renderer,
     fbo: gl.GLuint,
     backend_name: []const u8,
+    backend_slug: []const u8,
 ) !void {
     renderer.resetResourceCache();
     defer renderer.resetResourceCache();
@@ -1059,7 +1065,11 @@ fn runGlAppendSnapshotRegression(
     const after = try drawPreparedGlToPixels(allocator, renderer, fbo, &prepared, &prepared_scene, options, .{ 0, 0, 0, 255 });
     defer allocator.free(after);
 
-    try checkPixelMatch(allocator, "append-snapshot", backend_name, "gl-before", backend_name, "gl-after", before, after, exact_policy);
+    const before_slug = try std.fmt.allocPrint(allocator, "{s}-before", .{backend_slug});
+    defer allocator.free(before_slug);
+    const after_slug = try std.fmt.allocPrint(allocator, "{s}-after", .{backend_slug});
+    defer allocator.free(after_slug);
+    try checkPixelMatch(allocator, "append-snapshot", backend_name, before_slug, backend_name, after_slug, before, after, exact_policy);
 
     var appended_draw = try buildAppendedPagePreparedScene(allocator, &appended, &grown);
     defer {
@@ -1072,7 +1082,7 @@ fn runGlAppendSnapshotRegression(
     defer allocator.free(bank_cpu);
     const bank_gl = try drawPreparedGlToPixels(allocator, renderer, fbo, &appended, &appended_draw.prepared_scene, options, .{ 0, 0, 0, 255 });
     defer allocator.free(bank_gl);
-    try checkBackendAgainstCpu(allocator, "append-bank", backend_name, "gl", bank_cpu, bank_gl);
+    try checkBackendAgainstCpu(allocator, "append-bank", backend_name, backend_slug, bank_cpu, bank_gl);
 }
 
 fn runVulkanAppendSnapshotRegression(
@@ -1127,6 +1137,7 @@ fn runPathBandSpanRegression(
     gl_renderer: *snail.Renderer,
     gl_fbo: gl.GLuint,
     gl_name: []const u8,
+    gl_slug: []const u8,
     vk_renderer_state: if (build_options.enable_vulkan) *snail.VulkanRenderer else void,
     vk_renderer: if (build_options.enable_vulkan) *snail.Renderer else void,
     vk_name: if (build_options.enable_vulkan) []const u8 else void,
@@ -1160,7 +1171,7 @@ fn runPathBandSpanRegression(
 
             const gl_pixels = try renderGl(allocator, gl_renderer, gl_fbo, &bundle.scene, options);
             defer allocator.free(gl_pixels);
-            try checkBackendAgainstCpu(allocator, case_name, gl_name, "gl", cpu_pixels, gl_pixels);
+            try checkBackendAgainstCpu(allocator, case_name, gl_name, gl_slug, cpu_pixels, gl_pixels);
 
             if (comptime build_options.enable_vulkan) {
                 const vk_pixels = try renderVulkan(allocator, vk_renderer_state, vk_renderer, &bundle.scene, options);
@@ -1171,15 +1182,18 @@ fn runPathBandSpanRegression(
     }
 }
 
-pub fn main() !void {
-    var da: std.heap.DebugAllocator(.{}) = .init;
-    defer _ = da.deinit();
-    const allocator = da.allocator();
-
-    var scene_bundle = try buildScene(allocator);
-    defer scene_bundle.deinit();
-
-    var gl_ctx = try egl_offscreen.Context.init(WIDTH, HEIGHT, .gl33);
+fn runGlBackendCompare(
+    comptime Renderer: type,
+    comptime lcd_support: GlLcdSupport,
+    allocator: std.mem.Allocator,
+    scene_bundle: *const SceneBundle,
+    api: egl_offscreen.GlApi,
+    backend_slug: []const u8,
+    vk_renderer_state: if (build_options.enable_vulkan) *snail.VulkanRenderer else void,
+    vk_renderer: if (build_options.enable_vulkan) *snail.Renderer else void,
+    vk_name: if (build_options.enable_vulkan) []const u8 else void,
+) !bool {
+    var gl_ctx = try egl_offscreen.Context.init(WIDTH, HEIGHT, api);
     defer gl_ctx.deinit();
     const framebuffer = try initFramebuffer(GL_SRGB8_ALPHA8);
     defer {
@@ -1196,39 +1210,25 @@ pub fn main() !void {
         gl.glDeleteTextures(1, &texture);
     }
 
-    var gl_renderer_state = try snail.Gl33Renderer.init(allocator);
-    defer gl_renderer_state.deinit();
-    var gl_renderer = gl_renderer_state.asRenderer();
-    const gl_supports_lcd = gl_renderer_state.state.supports_dual_source_blend;
-
-    var vk_renderer_state: if (build_options.enable_vulkan) snail.VulkanRenderer else void = undefined;
-    var vk_renderer: if (build_options.enable_vulkan) snail.Renderer else void = undefined;
-    var vk_supports_lcd = false;
-    if (comptime build_options.enable_vulkan) {
-        const vk_ctx = try vulkan_platform.initOffscreen(WIDTH, HEIGHT);
-        errdefer vulkan_platform.deinitOffscreen();
-        vk_renderer_state = try snail.VulkanRenderer.init(allocator, vk_ctx);
-        errdefer vk_renderer_state.deinit();
-        vk_renderer = vk_renderer_state.asRenderer();
-        vk_supports_lcd = vk_renderer_state.state.ctx.supports_dual_source_blend;
-    }
-    defer if (build_options.enable_vulkan) {
-        vk_renderer_state.deinit();
-        vulkan_platform.deinitOffscreen();
+    var renderer_state = try Renderer.init(allocator);
+    defer renderer_state.deinit();
+    var renderer = renderer_state.asRenderer();
+    const backend_name = renderer_state.backendName();
+    const supports_lcd = switch (lcd_support) {
+        .detect => renderer_state.state.supports_dual_source_blend,
+        .unavailable => false,
     };
 
-    try runGlAppendSnapshotRegression(allocator, &gl_renderer, framebuffer.fbo, gl_renderer_state.backendName());
-    if (comptime build_options.enable_vulkan) {
-        try runVulkanAppendSnapshotRegression(allocator, &vk_renderer_state, &vk_renderer, vk_renderer_state.backendName());
-    }
+    try runGlAppendSnapshotRegression(allocator, &renderer, framebuffer.fbo, backend_name, backend_slug);
     try runPathBandSpanRegression(
         allocator,
-        &gl_renderer,
+        &renderer,
         framebuffer.fbo,
-        gl_renderer_state.backendName(),
-        if (build_options.enable_vulkan) &vk_renderer_state else {},
-        if (build_options.enable_vulkan) &vk_renderer else {},
-        if (build_options.enable_vulkan) vk_renderer_state.backendName() else {},
+        backend_name,
+        backend_slug,
+        vk_renderer_state,
+        vk_renderer,
+        vk_name,
     );
 
     const cases = [_]CompareCase{
@@ -1244,24 +1244,25 @@ pub fn main() !void {
 
         var gl_pixels_opt: ?[]u8 = null;
         defer if (gl_pixels_opt) |p| allocator.free(p);
-        if (!case.requires_dual_source or gl_supports_lcd) {
-            gl_pixels_opt = try renderGl(allocator, &gl_renderer, framebuffer.fbo, &scene_bundle.scene, options);
-            checkBackendAgainstCpu(allocator, case.name, gl_renderer_state.backendName(), "gl", cpu_pixels, gl_pixels_opt.?) catch {
+        if (!case.requires_dual_source or supports_lcd) {
+            gl_pixels_opt = try renderGl(allocator, &renderer, framebuffer.fbo, &scene_bundle.scene, options);
+            checkBackendAgainstCpu(allocator, case.name, backend_name, backend_slug, cpu_pixels, gl_pixels_opt.?) catch {
                 any_failure = true;
             };
         } else {
-            std.debug.print("{s}: skipping OpenGL LCD compare; dual-source blending unavailable\n", .{case.name});
+            std.debug.print("{s}: skipping {s} LCD compare; dual-source blending unavailable\n", .{ case.name, backend_name });
         }
 
         if (comptime build_options.enable_vulkan) {
+            const vk_supports_lcd = vk_renderer_state.state.ctx.supports_dual_source_blend;
             if (!case.requires_dual_source or vk_supports_lcd) {
-                const vk_pixels = try renderVulkan(allocator, &vk_renderer_state, &vk_renderer, &scene_bundle.scene, options);
+                const vk_pixels = try renderVulkan(allocator, vk_renderer_state, vk_renderer, &scene_bundle.scene, options);
                 defer allocator.free(vk_pixels);
-                checkBackendAgainstCpu(allocator, case.name, vk_renderer_state.backendName(), "vulkan", cpu_pixels, vk_pixels) catch {
+                checkBackendAgainstCpu(allocator, case.name, vk_name, "vulkan", cpu_pixels, vk_pixels) catch {
                     any_failure = true;
                 };
                 if (gl_pixels_opt) |gl_pixels| {
-                    checkGpuConsistency(allocator, case.name, gl_renderer_state.backendName(), gl_pixels, vk_renderer_state.backendName(), vk_pixels) catch {
+                    checkGpuConsistency(allocator, case.name, backend_name, backend_slug, gl_pixels, vk_name, vk_pixels) catch {
                         any_failure = true;
                     };
                 }
@@ -1272,18 +1273,88 @@ pub fn main() !void {
             std.debug.print("{s}: Vulkan disabled (`zig build run-backend-compare -Dvulkan=false`)\n", .{case.name});
         }
 
-        if (!case.requires_dual_source or gl_supports_lcd) {
-            const linear_case_name = try std.fmt.allocPrint(allocator, "{s}-linear-resolve", .{case.name});
+        if (!case.requires_dual_source or supports_lcd) {
+            const linear_case_name = try std.fmt.allocPrint(allocator, "{s}-{s}-linear-resolve", .{ case.name, backend_slug });
             defer allocator.free(linear_case_name);
             const linear_options = linearResolveDrawState(case.subpixel_order);
             const cpu_linear_pixels = try renderCpuLinearSeeded(allocator, &scene_bundle.scene, linear_options, LINEAR_RESOLVE_SEED, LINEAR_RESOLVE);
             defer allocator.free(cpu_linear_pixels);
-            const gl_linear_pixels = try renderGlLinearSeeded(allocator, &gl_renderer_state, linear_framebuffer.fbo, &scene_bundle.scene, linear_options, LINEAR_RESOLVE_SEED, LINEAR_RESOLVE);
+            const gl_linear_pixels = try renderGlLinearSeeded(allocator, &renderer, linear_framebuffer.fbo, &scene_bundle.scene, linear_options, LINEAR_RESOLVE_SEED, LINEAR_RESOLVE);
             defer allocator.free(gl_linear_pixels);
-            checkBackendAgainstCpu(allocator, linear_case_name, gl_renderer_state.backendName(), "gl", cpu_linear_pixels, gl_linear_pixels) catch {
+            checkBackendAgainstCpu(allocator, linear_case_name, backend_name, backend_slug, cpu_linear_pixels, gl_linear_pixels) catch {
                 any_failure = true;
             };
         }
+    }
+
+    return any_failure;
+}
+
+pub fn main() !void {
+    var da: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = da.deinit();
+    const allocator = da.allocator();
+
+    var scene_bundle = try buildScene(allocator);
+    defer scene_bundle.deinit();
+
+    var vk_renderer_state: if (build_options.enable_vulkan) snail.VulkanRenderer else void = undefined;
+    var vk_renderer: if (build_options.enable_vulkan) snail.Renderer else void = undefined;
+    if (comptime build_options.enable_vulkan) {
+        const vk_ctx = try vulkan_platform.initOffscreen(WIDTH, HEIGHT);
+        errdefer vulkan_platform.deinitOffscreen();
+        vk_renderer_state = try snail.VulkanRenderer.init(allocator, vk_ctx);
+        errdefer vk_renderer_state.deinit();
+        vk_renderer = vk_renderer_state.asRenderer();
+    }
+    defer if (build_options.enable_vulkan) {
+        vk_renderer_state.deinit();
+        vulkan_platform.deinitOffscreen();
+    };
+
+    if (comptime build_options.enable_vulkan) {
+        try runVulkanAppendSnapshotRegression(allocator, &vk_renderer_state, &vk_renderer, vk_renderer_state.backendName());
+    }
+
+    var any_failure = false;
+    if (comptime build_options.enable_gl33) {
+        any_failure = (try runGlBackendCompare(
+            snail.Gl33Renderer,
+            .detect,
+            allocator,
+            &scene_bundle,
+            .gl33,
+            "gl33",
+            if (build_options.enable_vulkan) &vk_renderer_state else {},
+            if (build_options.enable_vulkan) &vk_renderer else {},
+            if (build_options.enable_vulkan) vk_renderer_state.backendName() else {},
+        )) or any_failure;
+    }
+    if (comptime build_options.enable_gl44) {
+        any_failure = (try runGlBackendCompare(
+            snail.Gl44Renderer,
+            .detect,
+            allocator,
+            &scene_bundle,
+            .gl44,
+            "gl44",
+            if (build_options.enable_vulkan) &vk_renderer_state else {},
+            if (build_options.enable_vulkan) &vk_renderer else {},
+            if (build_options.enable_vulkan) vk_renderer_state.backendName() else {},
+        )) or any_failure;
+    }
+    if (comptime build_options.enable_gles30) {
+        any_failure = (try runGlBackendCompare(
+            snail.Gles30Renderer,
+            .unavailable,
+            allocator,
+            &scene_bundle,
+            .gles30,
+            "gles30",
+            if (build_options.enable_vulkan) &vk_renderer_state else {},
+            if (build_options.enable_vulkan) &vk_renderer else {},
+            if (build_options.enable_vulkan) vk_renderer_state.backendName() else {},
+        )) or any_failure;
     }
     if (any_failure) return error.BackendPixelMismatch;
 }

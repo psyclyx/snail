@@ -110,13 +110,7 @@ const RenderMode = struct {
     aa: snail.SubpixelOrder,
 
     pub fn aaName(self: RenderMode) []const u8 {
-        return switch (self.aa) {
-            .none => "grayscale",
-            .rgb => "subpixel rgb",
-            .bgr => "subpixel bgr",
-            .vrgb => "subpixel vrgb",
-            .vbgr => "subpixel vbgr",
-        };
+        return subpixelOrderName(self.aa);
     }
 };
 
@@ -126,6 +120,22 @@ const render_modes = [_]RenderMode{
 };
 
 const mode_scene_kinds = [_]SceneKind{ .text, .rich_text, .multi_script };
+
+fn subpixelOrderName(order: snail.SubpixelOrder) []const u8 {
+    return switch (order) {
+        .none => "grayscale",
+        .rgb => "subpixel rgb",
+        .bgr => "subpixel bgr",
+        .vrgb => "subpixel vrgb",
+        .vbgr => "subpixel vbgr",
+    };
+}
+
+fn effectiveAaLabel(order: snail.SubpixelOrder, supports_lcd: bool) []const u8 {
+    if (order == .none) return "grayscale";
+    if (supports_lcd) return subpixelOrderName(order);
+    return "grayscale (LCD unavailable)";
+}
 
 const scene_text_lines = [_]TextLine{
     .{ .text = "Score: 12345  FPS: 60  Level 7", .x = 18, .y = 30, .size = 18 },
@@ -211,6 +221,7 @@ const ModeRow = struct {
     backend: []const u8,
     scene: SceneKind,
     mode: RenderMode,
+    effective_aa: []const u8,
     record_us: f64,
     draw_us: f64,
     words: usize,
@@ -220,6 +231,7 @@ const ModeRow = struct {
 const RenderRow = struct {
     backend: []const u8,
     scene: SceneKind,
+    effective_aa: []const u8,
     frames: usize,
     commands: usize,
     words: usize,
@@ -830,6 +842,7 @@ fn benchModes(
                 .backend = backend_name,
                 .scene = scene_kind,
                 .mode = mode,
+                .effective_aa = timer.effectiveAaName(mode.aa),
                 .record_us = record_us,
                 .draw_us = draw_us,
                 .words = prepared_scene.wordCount(),
@@ -842,6 +855,7 @@ fn benchModes(
 fn appendGpuRenderRows(
     allocator: std.mem.Allocator,
     backend_name: []const u8,
+    effective_aa: []const u8,
     renderer: *snail.Renderer,
     bundles: []const SceneBundle,
     rows: *std.ArrayList(RenderRow),
@@ -855,6 +869,7 @@ fn appendGpuRenderRows(
         try rows.append(allocator, .{
             .backend = backend_name,
             .scene = kind,
+            .effective_aa = effective_aa,
             .frames = GPU_FRAMES,
             .commands = bundles[i].scene.commandCount(),
             .words = prepared_scene.wordCount(),
@@ -867,6 +882,7 @@ fn appendGpuRenderRows(
 
 fn benchGlRenderer(
     comptime Renderer: type,
+    comptime lcd_support: enum { detect, unavailable },
     allocator: std.mem.Allocator,
     api: egl_offscreen.GlApi,
     atlas: *snail.TextAtlas,
@@ -885,6 +901,10 @@ fn benchGlRenderer(
     defer renderer_state.deinit();
     var erased_renderer = renderer_state.asRenderer();
     const backend_name = renderer_state.backendName();
+    const supports_lcd = switch (lcd_support) {
+        .detect => renderer_state.state.supports_dual_source_blend,
+        .unavailable => false,
+    };
 
     const hardware = try report.captureGlHardwareRow(allocator, backend_name);
     gl_hardware_rows.append(allocator, hardware) catch |err| {
@@ -892,12 +912,16 @@ fn benchGlRenderer(
         return err;
     };
 
-    try appendGpuRenderRows(allocator, backend_name, &erased_renderer, bundles, render_rows, options);
+    try appendGpuRenderRows(allocator, backend_name, effectiveAaLabel(options.raster.subpixel_order, supports_lcd), &erased_renderer, bundles, render_rows, options);
 
     const GlTimer = struct {
         renderer_ptr: *snail.Renderer,
+        supports_lcd: bool,
         fn renderer(self: @This()) *snail.Renderer {
             return self.renderer_ptr;
+        }
+        fn effectiveAaName(self: @This(), order: snail.SubpixelOrder) []const u8 {
+            return effectiveAaLabel(order, self.supports_lcd);
         }
         fn timeDraw(
             self: @This(),
@@ -908,7 +932,7 @@ fn benchGlRenderer(
             return render_timing.timeGlDraw(self.renderer_ptr, prepared, scene, opts, GPU_WARMUP, GPU_FRAMES);
         }
     };
-    try benchModes(allocator, backend_name, atlas, mode_rows, GlTimer{ .renderer_ptr = &erased_renderer });
+    try benchModes(allocator, backend_name, atlas, mode_rows, GlTimer{ .renderer_ptr = &erased_renderer, .supports_lcd = supports_lcd });
 }
 
 pub fn main() !void {
@@ -1011,6 +1035,7 @@ pub fn main() !void {
         try render_rows.append(allocator, .{
             .backend = "CPU",
             .scene = kind,
+            .effective_aa = effectiveAaLabel(options.raster.subpixel_order, true),
             .frames = CPU_FRAMES,
             .commands = bundles[i].scene.commandCount(),
             .words = prepared_scenes[i].wordCount(),
@@ -1024,6 +1049,7 @@ pub fn main() !void {
         try render_rows.append(allocator, .{
             .backend = "CPU (threaded)",
             .scene = kind,
+            .effective_aa = effectiveAaLabel(options.raster.subpixel_order, true),
             .frames = CPU_FRAMES,
             .commands = bundles[i].scene.commandCount(),
             .words = prepared_scenes[i].wordCount(),
@@ -1047,6 +1073,9 @@ pub fn main() !void {
         fn renderer(self: @This()) *snail.Renderer {
             return self.renderer_ptr;
         }
+        fn effectiveAaName(_: @This(), order: snail.SubpixelOrder) []const u8 {
+            return effectiveAaLabel(order, true);
+        }
         fn timeDraw(
             self: @This(),
             prepared: *const snail.PreparedResources,
@@ -1060,13 +1089,13 @@ pub fn main() !void {
     try benchModes(allocator, "CPU (threaded)", &atlas, &mode_rows, CpuTimer{ .renderer_ptr = &cpu_threaded_renderer, .pixels_buf = cpu_pixels_threaded });
 
     if (comptime build_options.enable_gl33) {
-        try benchGlRenderer(snail.Gl33Renderer, allocator, .gl33, &atlas, &bundles, &render_rows, &mode_rows, &gl_hardware_rows, options);
+        try benchGlRenderer(snail.Gl33Renderer, .detect, allocator, .gl33, &atlas, &bundles, &render_rows, &mode_rows, &gl_hardware_rows, options);
     }
     if (comptime build_options.enable_gl44) {
-        try benchGlRenderer(snail.Gl44Renderer, allocator, .gl44, &atlas, &bundles, &render_rows, &mode_rows, &gl_hardware_rows, options);
+        try benchGlRenderer(snail.Gl44Renderer, .detect, allocator, .gl44, &atlas, &bundles, &render_rows, &mode_rows, &gl_hardware_rows, options);
     }
     if (comptime build_options.enable_gles30) {
-        try benchGlRenderer(snail.Gles30Renderer, allocator, .gles30, &atlas, &bundles, &render_rows, &mode_rows, &gl_hardware_rows, options);
+        try benchGlRenderer(snail.Gles30Renderer, .unavailable, allocator, .gles30, &atlas, &bundles, &render_rows, &mode_rows, &gl_hardware_rows, options);
     }
 
     var vk_state: if (build_options.enable_vulkan) ?snail.VulkanRenderer else void = if (build_options.enable_vulkan) null else {};
@@ -1085,6 +1114,7 @@ pub fn main() !void {
             try render_rows.append(allocator, .{
                 .backend = vk_state.?.backendName(),
                 .scene = kind,
+                .effective_aa = effectiveAaLabel(options.raster.subpixel_order, vk_state.?.state.ctx.supports_dual_source_blend),
                 .frames = GPU_FRAMES,
                 .commands = bundles[i].scene.commandCount(),
                 .words = vk_scene.wordCount(),
@@ -1099,6 +1129,9 @@ pub fn main() !void {
             renderer_ptr: *snail.Renderer,
             fn renderer(self: @This()) *snail.Renderer {
                 return self.renderer_ptr;
+            }
+            fn effectiveAaName(self: @This(), order: snail.SubpixelOrder) []const u8 {
+                return effectiveAaLabel(order, self.state.state.ctx.supports_dual_source_blend);
             }
             fn timeDraw(
                 self: @This(),

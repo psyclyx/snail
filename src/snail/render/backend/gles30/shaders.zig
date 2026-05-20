@@ -4,6 +4,7 @@ const glsl_300es_version =
     "#version 300 es\n" ++
     "precision highp float;\n" ++
     "precision highp int;\n" ++
+    "precision highp sampler2D;\n" ++
     "precision highp sampler2DArray;\n" ++
     "precision highp usampler2DArray;\n\n";
 

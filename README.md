@@ -250,7 +250,7 @@ leave it unhinted.
 
 ## Build
 
-Requires [Zig 0.16](https://ziglang.org/download/), a GL 3.3 context for `Gl33Renderer`, a GL 4.4 context for `Gl44Renderer`, an OpenGL ES 3.0 context for `Gles30Renderer`, Vulkan headers/loader, `glslc`, and pkg-config. Vulkan and HarfBuzz are enabled by default but can be disabled (see flags below). The interactive demo requires Wayland, plus EGL for the GL 3.3 and GL 4.4 modes.
+Requires [Zig 0.16](https://ziglang.org/download/), a GL 3.3 context for `Gl33Renderer`, a GL 4.4 context for `Gl44Renderer`, an OpenGL ES 3.0 context for `Gles30Renderer`, Vulkan headers/loader, `glslc`, and pkg-config. Vulkan and HarfBuzz are enabled by default but can be disabled (see flags below). The interactive demo requires Wayland, plus EGL for the GL 3.3, GL 4.4, and OpenGL ES 3.0 modes.
 
 ```sh
 zig build test                                  # unit tests
@@ -262,7 +262,7 @@ zig build run -Dcpu-renderer=false              # demo without CPU rendering
 zig build run-game-demo                         # 3D scene with HUD + world-space text on walls
 zig build run-screenshot                        # 2D demo offscreen → zig-out/demo-screenshot.tga
 zig build run-algorithm-screenshots             # README algorithm diagrams → zig-out/algorithm-*.png
-zig build run-backend-compare                   # CPU/GL/Vulkan parity
+zig build run-backend-compare                   # CPU/GL/GLES/Vulkan parity
 zig build run-bench                             # benchmarks all enabled backends
 zig build install --release=fast                # install libsnail, enabled C headers, and snail.pc
 zig build generate-c-api                        # emit generated C API artifacts into the Zig cache
@@ -981,7 +981,7 @@ zig build run-bench
 zig build run-bench -Dgl44=false -Dgles30=false -Dvulkan=false  # trim backend rows
 ```
 
-Last run: 2026-05-19, `zig build run-bench`, ReleaseFast benchmark build. Lower
+Last run: 2026-05-20, `zig build run-bench`, ReleaseFast benchmark build. Lower
 times are better. These numbers are one local machine/run, not a portability
 guarantee.
 
@@ -994,23 +994,27 @@ The vector workload contains filled and stroked rounded rectangles, ellipses, an
 | Component | Detected |
 |---|---|
 | CPU | AMD Ryzen 9 5950X 16-Core Processor |
-| OpenGL renderer | NVIDIA GeForce RTX 3090/PCIe/SSE2 |
-| OpenGL version | 4.4.0 NVIDIA 595.71.05 |
+| GL 3.3 renderer | NVIDIA GeForce RTX 3090/PCIe/SSE2 |
+| GL 3.3 version | 3.3.0 NVIDIA 595.71.05 |
+| GL 4.4 (persistent mapped) renderer | NVIDIA GeForce RTX 3090/PCIe/SSE2 |
+| GL 4.4 (persistent mapped) version | 4.4.0 NVIDIA 595.71.05 |
+| OpenGL ES 3.0 renderer | NVIDIA GeForce RTX 3090/PCIe/SSE2 |
+| OpenGL ES 3.0 version | OpenGL ES 3.2 NVIDIA 595.71.05 |
 | Vulkan device | NVIDIA GeForce RTX 3090 |
 
 ### Preparation
 
 | Workload | Snail | FreeType | FreeType / Snail |
 |---|---:|---:|---:|
-| Font load | 1.36 us | 9.06 us | 6.65x |
-| Glyph prep, ASCII | 395.32 us | 1048.04 us | 2.65x |
-| Glyph prep, 7 sizes | 395.32 us | 7225.29 us | 18.28x |
-| TT hint setup @ 12px | 31.10 us | n/a | n/a |
-| TT hint execute, ASCII @ 12px | 716.71 us | n/a | n/a |
-| TT hint plan, ASCII @ 12px | 794.31 us | n/a | n/a |
-| TT hint context cold, paragraph @ 12px | 46.61 us | n/a | n/a |
+| Font load | 1.87 us | 19.65 us | 10.52x |
+| Glyph prep, ASCII | 459.52 us | 1082.71 us | 2.36x |
+| Glyph prep, 7 sizes | 459.52 us | 9033.53 us | 19.66x |
+| TT hint setup @ 12px | 31.14 us | n/a | n/a |
+| TT hint execute, ASCII @ 12px | 698.99 us | n/a | n/a |
+| TT hint plan, ASCII @ 12px | 855.52 us | n/a | n/a |
+| TT hint context cold, paragraph @ 12px | 47.71 us | n/a | n/a |
 | TT hint context warm, paragraph @ 12px | 0.05 us | n/a | n/a |
-| PathPicture freeze, 25 shapes | 175.32 us | n/a | n/a |
+| PathPicture freeze, 25 shapes | 224.83 us | n/a | n/a |
 
 ### Prepared Resource Memory
 
@@ -1025,79 +1029,102 @@ The vector workload contains filled and stroked rounded rectangles, ellipses, an
 
 | Workload | Snail TextBlob | FreeType layout | FreeType / Snail |
 |---|---:|---:|---:|
-| Short string | 1.49 us | 82.50 us | 55.54x |
-| Sentence | 4.98 us | 405.84 us | 81.57x |
-| Paragraph | 19.43 us | 1458.68 us | 75.08x |
-| Paragraph x 7 sizes | 117.45 us | 10305.86 us | 87.75x |
+| Short string | 1.49 us | 95.13 us | 63.85x |
+| Sentence | 4.99 us | 499.10 us | 100.01x |
+| Paragraph | 19.78 us | 1756.30 us | 88.77x |
+| Paragraph x 7 sizes | 118.57 us | 11728.91 us | 98.92x |
 
 ### Draw Record Creation
 
 | Scene | Commands | Words | Segments | PreparedScene.initOwned |
 |---|---:|---:|---:|---:|
-| Text | 4 | 4048 | 1 | 8.59 us |
-| Rich text | 1 | 1136 | 1 | 2.21 us |
+| Text | 4 | 4048 | 1 | 9.00 us |
+| Rich text | 1 | 1136 | 1 | 2.05 us |
 | Vector paths | 1 | 400 | 1 | 0.31 us |
-| Mixed text + vector | 5 | 4448 | 2 | 8.81 us |
-| Multi-script text | 4 | 1488 | 1 | 3.00 us |
+| Mixed text + vector | 5 | 4448 | 2 | 8.61 us |
+| Multi-script text | 4 | 1488 | 1 | 2.91 us |
 
 ### Prepared Render
 
-Target: 640x360. CPU uses 20 measured frames; GPU backends use 500 measured frames.
+Target: 640x360. Requested AA is subpixel rgb. CPU uses 20 measured frames; GPU backends use 500 measured frames.
 
-| Backend | Scene | Frames | Commands | Words | Segments | Instance bytes/frame | Draw prepared scene |
-|---|---|---:|---:|---:|---:|---:|---:|
-| CPU | Text | 20 | 4 | 4048 | 1 | 16192 | 8439.33 us |
-| CPU | Rich text | 20 | 1 | 1136 | 1 | 4544 | 4494.61 us |
-| CPU | Vector paths | 20 | 1 | 400 | 1 | 1600 | 16554.21 us |
-| CPU | Mixed text + vector | 20 | 5 | 4448 | 2 | 17792 | 24971.55 us |
-| CPU | Multi-script text | 20 | 4 | 1488 | 1 | 5952 | 5078.26 us |
-| CPU (threaded) | Text | 20 | 4 | 4048 | 1 | 16192 | 3420.37 us |
-| CPU (threaded) | Rich text | 20 | 1 | 1136 | 1 | 4544 | 2181.56 us |
-| CPU (threaded) | Vector paths | 20 | 1 | 400 | 1 | 1600 | 3096.39 us |
-| CPU (threaded) | Mixed text + vector | 20 | 5 | 4448 | 2 | 17792 | 5304.89 us |
-| CPU (threaded) | Multi-script text | 20 | 4 | 1488 | 1 | 5952 | 2208.68 us |
-| GL 4.4 (persistent mapped) | Text | 500 | 4 | 4048 | 1 | 16192 | 84.26 us |
-| GL 4.4 (persistent mapped) | Rich text | 500 | 1 | 1136 | 1 | 4544 | 96.61 us |
-| GL 4.4 (persistent mapped) | Vector paths | 500 | 1 | 400 | 1 | 1600 | 72.81 us |
-| GL 4.4 (persistent mapped) | Mixed text + vector | 500 | 5 | 4448 | 2 | 17792 | 152.70 us |
-| GL 4.4 (persistent mapped) | Multi-script text | 500 | 4 | 1488 | 1 | 5952 | 78.21 us |
-| Vulkan | Text | 500 | 4 | 4048 | 1 | 16192 | 80.45 us |
-| Vulkan | Rich text | 500 | 1 | 1136 | 1 | 4544 | 96.07 us |
-| Vulkan | Vector paths | 500 | 1 | 400 | 1 | 1600 | 87.67 us |
-| Vulkan | Mixed text + vector | 500 | 5 | 4448 | 2 | 17792 | 114.46 us |
-| Vulkan | Multi-script text | 500 | 4 | 1488 | 1 | 5952 | 90.10 us |
+| Backend | Scene | Effective AA | Frames | Commands | Words | Segments | Instance bytes/frame | Draw prepared scene |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| CPU | Text | subpixel rgb | 20 | 4 | 4048 | 1 | 16192 | 8729.92 us |
+| CPU | Rich text | subpixel rgb | 20 | 1 | 1136 | 1 | 4544 | 4621.46 us |
+| CPU | Vector paths | subpixel rgb | 20 | 1 | 400 | 1 | 1600 | 16229.77 us |
+| CPU | Mixed text + vector | subpixel rgb | 20 | 5 | 4448 | 2 | 17792 | 24967.47 us |
+| CPU | Multi-script text | subpixel rgb | 20 | 4 | 1488 | 1 | 5952 | 5133.76 us |
+| CPU (threaded) | Text | subpixel rgb | 20 | 4 | 4048 | 1 | 16192 | 3683.48 us |
+| CPU (threaded) | Rich text | subpixel rgb | 20 | 1 | 1136 | 1 | 4544 | 2215.94 us |
+| CPU (threaded) | Vector paths | subpixel rgb | 20 | 1 | 400 | 1 | 1600 | 3202.55 us |
+| CPU (threaded) | Mixed text + vector | subpixel rgb | 20 | 5 | 4448 | 2 | 17792 | 5266.21 us |
+| CPU (threaded) | Multi-script text | subpixel rgb | 20 | 4 | 1488 | 1 | 5952 | 2276.15 us |
+| GL 3.3 | Text | subpixel rgb | 500 | 4 | 4048 | 1 | 16192 | 98.97 us |
+| GL 3.3 | Rich text | subpixel rgb | 500 | 1 | 1136 | 1 | 4544 | 277.07 us |
+| GL 3.3 | Vector paths | subpixel rgb | 500 | 1 | 400 | 1 | 1600 | 84.09 us |
+| GL 3.3 | Mixed text + vector | subpixel rgb | 500 | 5 | 4448 | 2 | 17792 | 164.05 us |
+| GL 3.3 | Multi-script text | subpixel rgb | 500 | 4 | 1488 | 1 | 5952 | 74.87 us |
+| GL 4.4 (persistent mapped) | Text | subpixel rgb | 500 | 4 | 4048 | 1 | 16192 | 84.09 us |
+| GL 4.4 (persistent mapped) | Rich text | subpixel rgb | 500 | 1 | 1136 | 1 | 4544 | 85.64 us |
+| GL 4.4 (persistent mapped) | Vector paths | subpixel rgb | 500 | 1 | 400 | 1 | 1600 | 76.21 us |
+| GL 4.4 (persistent mapped) | Mixed text + vector | subpixel rgb | 500 | 5 | 4448 | 2 | 17792 | 142.03 us |
+| GL 4.4 (persistent mapped) | Multi-script text | subpixel rgb | 500 | 4 | 1488 | 1 | 5952 | 86.23 us |
+| OpenGL ES 3.0 | Text | grayscale (LCD unavailable) | 500 | 4 | 4048 | 1 | 16192 | 140.24 us |
+| OpenGL ES 3.0 | Rich text | grayscale (LCD unavailable) | 500 | 1 | 1136 | 1 | 4544 | 207.37 us |
+| OpenGL ES 3.0 | Vector paths | grayscale (LCD unavailable) | 500 | 1 | 400 | 1 | 1600 | 87.72 us |
+| OpenGL ES 3.0 | Mixed text + vector | grayscale (LCD unavailable) | 500 | 5 | 4448 | 2 | 17792 | 113.63 us |
+| OpenGL ES 3.0 | Multi-script text | grayscale (LCD unavailable) | 500 | 4 | 1488 | 1 | 5952 | 23.01 us |
+| Vulkan | Text | subpixel rgb | 500 | 4 | 4048 | 1 | 16192 | 94.14 us |
+| Vulkan | Rich text | subpixel rgb | 500 | 1 | 1136 | 1 | 4544 | 87.61 us |
+| Vulkan | Vector paths | subpixel rgb | 500 | 1 | 400 | 1 | 1600 | 96.45 us |
+| Vulkan | Mixed text + vector | subpixel rgb | 500 | 5 | 4448 | 2 | 17792 | 118.88 us |
+| Vulkan | Multi-script text | subpixel rgb | 500 | 4 | 1488 | 1 | 5952 | 74.48 us |
 
 ### Render Modes
 
-Per-AA timings for the text and multi-script scenes. AA controls
-the fragment-shader path (grayscale vs LCD subpixel).
+Per-AA timings for the text and multi-script scenes. Requested AA is
+the draw-state request; effective AA shows backend fallbacks such as
+GLES30 rendering grayscale when LCD dual-source blending is unavailable.
 
-| Backend | Scene | AA | Words | Segments | PreparedScene | Draw |
-|---|---|---|---:|---:|---:|---:|
-| CPU | Text | grayscale | 4048 | 1 | 8.66 us | 1762.94 us |
-| CPU | Text | subpixel rgb | 4048 | 1 | 8.30 us | 8615.11 us |
-| CPU | Rich text | grayscale | 1136 | 1 | 2.23 us | 1500.18 us |
-| CPU | Rich text | subpixel rgb | 1136 | 1 | 2.20 us | 4488.80 us |
-| CPU | Multi-script text | grayscale | 1488 | 1 | 3.02 us | 1038.25 us |
-| CPU | Multi-script text | subpixel rgb | 1488 | 1 | 3.02 us | 5202.40 us |
-| CPU (threaded) | Text | grayscale | 4048 | 1 | 8.36 us | 827.03 us |
-| CPU (threaded) | Text | subpixel rgb | 4048 | 1 | 8.43 us | 3664.37 us |
-| CPU (threaded) | Rich text | grayscale | 1136 | 1 | 2.21 us | 704.73 us |
-| CPU (threaded) | Rich text | subpixel rgb | 1136 | 1 | 2.61 us | 2255.57 us |
-| CPU (threaded) | Multi-script text | grayscale | 1488 | 1 | 3.06 us | 514.82 us |
-| CPU (threaded) | Multi-script text | subpixel rgb | 1488 | 1 | 3.20 us | 2241.10 us |
-| GL 4.4 (persistent mapped) | Text | grayscale | 4048 | 1 | 8.72 us | 26.01 us |
-| GL 4.4 (persistent mapped) | Text | subpixel rgb | 4048 | 1 | 8.42 us | 94.03 us |
-| GL 4.4 (persistent mapped) | Rich text | grayscale | 1136 | 1 | 2.29 us | 41.71 us |
-| GL 4.4 (persistent mapped) | Rich text | subpixel rgb | 1136 | 1 | 2.17 us | 72.58 us |
-| GL 4.4 (persistent mapped) | Multi-script text | grayscale | 1488 | 1 | 2.99 us | 34.96 us |
-| GL 4.4 (persistent mapped) | Multi-script text | subpixel rgb | 1488 | 1 | 3.11 us | 94.81 us |
-| Vulkan | Text | grayscale | 4048 | 1 | 8.60 us | 26.92 us |
-| Vulkan | Text | subpixel rgb | 4048 | 1 | 8.56 us | 99.31 us |
-| Vulkan | Rich text | grayscale | 1136 | 1 | 2.26 us | 40.52 us |
-| Vulkan | Rich text | subpixel rgb | 1136 | 1 | 2.25 us | 95.52 us |
-| Vulkan | Multi-script text | grayscale | 1488 | 1 | 2.96 us | 26.40 us |
-| Vulkan | Multi-script text | subpixel rgb | 1488 | 1 | 3.15 us | 85.73 us |
+| Backend | Scene | Requested AA | Effective AA | Words | Segments | PreparedScene | Draw |
+|---|---|---|---|---:|---:|---:|---:|
+| CPU | Text | grayscale | grayscale | 4048 | 1 | 8.45 us | 1670.47 us |
+| CPU | Text | subpixel rgb | subpixel rgb | 4048 | 1 | 8.44 us | 8850.24 us |
+| CPU | Rich text | grayscale | grayscale | 1136 | 1 | 2.22 us | 1479.31 us |
+| CPU | Rich text | subpixel rgb | subpixel rgb | 1136 | 1 | 2.18 us | 4568.15 us |
+| CPU | Multi-script text | grayscale | grayscale | 1488 | 1 | 3.06 us | 1045.33 us |
+| CPU | Multi-script text | subpixel rgb | subpixel rgb | 1488 | 1 | 2.98 us | 5202.30 us |
+| CPU (threaded) | Text | grayscale | grayscale | 4048 | 1 | 8.32 us | 840.10 us |
+| CPU (threaded) | Text | subpixel rgb | subpixel rgb | 4048 | 1 | 8.91 us | 3591.08 us |
+| CPU (threaded) | Rich text | grayscale | grayscale | 1136 | 1 | 2.21 us | 738.30 us |
+| CPU (threaded) | Rich text | subpixel rgb | subpixel rgb | 1136 | 1 | 2.33 us | 2261.30 us |
+| CPU (threaded) | Multi-script text | grayscale | grayscale | 1488 | 1 | 3.15 us | 506.44 us |
+| CPU (threaded) | Multi-script text | subpixel rgb | subpixel rgb | 1488 | 1 | 3.13 us | 2250.42 us |
+| GL 3.3 | Text | grayscale | grayscale | 4048 | 1 | 9.14 us | 18.68 us |
+| GL 3.3 | Text | subpixel rgb | subpixel rgb | 4048 | 1 | 9.36 us | 80.08 us |
+| GL 3.3 | Rich text | grayscale | grayscale | 1136 | 1 | 2.13 us | 106.48 us |
+| GL 3.3 | Rich text | subpixel rgb | subpixel rgb | 1136 | 1 | 2.20 us | 245.07 us |
+| GL 3.3 | Multi-script text | grayscale | grayscale | 1488 | 1 | 2.88 us | 21.09 us |
+| GL 3.3 | Multi-script text | subpixel rgb | subpixel rgb | 1488 | 1 | 2.93 us | 81.66 us |
+| GL 4.4 (persistent mapped) | Text | grayscale | grayscale | 4048 | 1 | 8.58 us | 26.18 us |
+| GL 4.4 (persistent mapped) | Text | subpixel rgb | subpixel rgb | 4048 | 1 | 8.21 us | 80.82 us |
+| GL 4.4 (persistent mapped) | Rich text | grayscale | grayscale | 1136 | 1 | 2.15 us | 61.92 us |
+| GL 4.4 (persistent mapped) | Rich text | subpixel rgb | subpixel rgb | 1136 | 1 | 2.18 us | 72.29 us |
+| GL 4.4 (persistent mapped) | Multi-script text | grayscale | grayscale | 1488 | 1 | 2.98 us | 23.79 us |
+| GL 4.4 (persistent mapped) | Multi-script text | subpixel rgb | subpixel rgb | 1488 | 1 | 2.94 us | 92.37 us |
+| OpenGL ES 3.0 | Text | grayscale | grayscale | 4048 | 1 | 8.24 us | 20.22 us |
+| OpenGL ES 3.0 | Text | subpixel rgb | grayscale (LCD unavailable) | 4048 | 1 | 8.29 us | 17.49 us |
+| OpenGL ES 3.0 | Rich text | grayscale | grayscale | 1136 | 1 | 2.19 us | 103.37 us |
+| OpenGL ES 3.0 | Rich text | subpixel rgb | grayscale (LCD unavailable) | 1136 | 1 | 2.19 us | 95.61 us |
+| OpenGL ES 3.0 | Multi-script text | grayscale | grayscale | 1488 | 1 | 2.88 us | 17.26 us |
+| OpenGL ES 3.0 | Multi-script text | subpixel rgb | grayscale (LCD unavailable) | 1488 | 1 | 2.89 us | 25.11 us |
+| Vulkan | Text | grayscale | grayscale | 4048 | 1 | 7.98 us | 27.58 us |
+| Vulkan | Text | subpixel rgb | subpixel rgb | 4048 | 1 | 7.83 us | 94.17 us |
+| Vulkan | Rich text | grayscale | grayscale | 1136 | 1 | 2.18 us | 39.72 us |
+| Vulkan | Rich text | subpixel rgb | subpixel rgb | 1136 | 1 | 2.08 us | 85.37 us |
+| Vulkan | Multi-script text | grayscale | grayscale | 1488 | 1 | 2.79 us | 28.12 us |
+| Vulkan | Multi-script text | subpixel rgb | subpixel rgb | 1488 | 1 | 2.91 us | 74.29 us |
 
 ## Architecture
 
@@ -1128,7 +1155,7 @@ src/
     math/                Bezier, vector, matrix, and root-solving implementations
     render/
       interface.zig      renderer interface and draw entry points
-      adapter/           public CPU/GL/Vulkan renderer adapters
+      adapter/           public CPU/GL/GLES/Vulkan renderer adapters
       format/            shared packed atlas, vertex, and upload formats
       upload_plan.zig    prepared upload planning shared by backends
       backend/
@@ -1161,7 +1188,7 @@ src/
   tools/
     bench.zig            benchmark tool used to refresh README tables
     bench/               benchmark timing, report, and FreeType comparison helpers
-    backend_compare.zig  CPU/GL/Vulkan pixel comparison check
+    backend_compare.zig  CPU/GL/GLES/Vulkan pixel comparison check
     profile_cpu_text.zig CPU text-rendering profile target
   support/
     root.zig             shared support module for demos/tools only

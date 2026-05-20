@@ -697,9 +697,9 @@ fn addBackendCompareStep(
 ) void {
     const compare_options = ModuleOptions{
         .enable_profiling = false,
-        .enable_gl33 = true,
-        .enable_gl44 = true,
-        .enable_gles30 = false,
+        .enable_gl33 = config.core_options.enable_gl33,
+        .enable_gl44 = config.core_options.enable_gl44,
+        .enable_gles30 = config.core_options.enable_gles30,
         .enable_vulkan = config.core_options.enable_vulkan,
         .enable_cpu = true,
         .enable_harfbuzz = config.core_options.enable_harfbuzz,
@@ -726,7 +726,7 @@ fn addBackendCompareStep(
 
     const backend_compare_exe = b.addExecutable(.{ .name = "snail-backend-compare", .root_module = backend_compare_module });
     const run_backend_compare = b.addRunArtifact(backend_compare_exe);
-    const backend_compare_step = b.step("run-backend-compare", "Compare CPU/GL/Vulkan backend pixels offscreen");
+    const backend_compare_step = b.step("run-backend-compare", "Compare CPU/GL/GLES/Vulkan backend pixels offscreen");
     backend_compare_step.dependOn(&run_backend_compare.step);
 }
 
