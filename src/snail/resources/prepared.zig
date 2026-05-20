@@ -140,6 +140,7 @@ pub const ResidentResources = struct {
     vulkan: if (build_options.enable_vulkan) ?*vulkan_pipeline.PreparedResources else void = if (build_options.enable_vulkan) null else {},
     cpu: if (build_options.enable_cpu) ?cpu_renderer_mod.PreparedResources else void = if (build_options.enable_cpu) null else {},
     generation: u64 = 0,
+    backend_refs_retained: bool = false,
 
     pub fn deinit(self: *ResidentResources) void {
         if (comptime build_options.enable_cpu) {
@@ -154,9 +155,39 @@ pub const PreparedResources = struct {
     resident: ResidentResources = .{},
 
     pub fn deinit(self: *PreparedResources) void {
+        self.releaseResidentReferences();
         self.resident.deinit();
         self.manifest.deinit();
         self.* = undefined;
+    }
+
+    pub fn retainResidentReferences(self: *PreparedResources) void {
+        if (self.resident.backend_refs_retained) return;
+        var retained = false;
+        if (comptime build_options.enable_opengl) {
+            if (self.resident.gl) |gl_resources| {
+                gl_resources.retainPreparedResources(self.manifest, self.resident.generation);
+                retained = true;
+            }
+        }
+        if (comptime build_options.enable_vulkan) {
+            if (self.resident.vulkan) |vk_resources| {
+                vk_resources.retainPreparedResources(self.manifest, self.resident.generation);
+                retained = true;
+            }
+        }
+        self.resident.backend_refs_retained = retained;
+    }
+
+    fn releaseResidentReferences(self: *PreparedResources) void {
+        if (!self.resident.backend_refs_retained) return;
+        if (comptime build_options.enable_opengl) {
+            if (self.resident.gl) |gl_resources| gl_resources.releasePreparedResources(self.manifest, self.resident.generation);
+        }
+        if (comptime build_options.enable_vulkan) {
+            if (self.resident.vulkan) |vk_resources| vk_resources.releasePreparedResources(self.manifest, self.resident.generation);
+        }
+        self.resident.backend_refs_retained = false;
     }
 
     pub fn retireNow(self: *PreparedResources) void {

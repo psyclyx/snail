@@ -58,6 +58,8 @@ pub const ResourceBank = struct {
     allocated_image_count: u32 = 0,
     resident_atlas_pages: u32 = 0,
     resident_image_layers: u32 = 0,
+    generation: u64 = 0,
+    prepared_refs: u32 = 0,
 
     fn hasAny(self: *const ResourceBank) bool {
         return self.curve_image != null or
@@ -91,6 +93,7 @@ pub const PreparedResources = struct {
     desc_pool: vk.VkDescriptorPool = null,
     desc_set: vk.VkDescriptorSet = null,
     active_atlas_bank_id: u32 = 0,
+    active_atlas_bank_refs: u32 = 0,
     next_atlas_bank_id: u32 = 1,
 
     curve_image: vk.VkImage = null,
@@ -188,6 +191,70 @@ pub const PreparedResources = struct {
         self.atlas_bank_count = 0;
     }
 
+    pub fn retainPreparedResources(self: *PreparedResources, manifest: anytype, generation: u64) void {
+        for (manifest.atlases) |entry| self.retainAtlasViewBanks(entry.view, generation);
+    }
+
+    pub fn releasePreparedResources(self: *PreparedResources, manifest: anytype, generation: u64) void {
+        for (manifest.atlases) |entry| self.releaseAtlasViewBanks(entry.view, generation);
+        self.pruneReleasedRetainedBanks();
+    }
+
+    fn retainAtlasViewBanks(self: *PreparedResources, view: anytype, generation: u64) void {
+        for (view.page_layers) |layer| self.retainPreparedBankId(texture_layers.bank(layer), generation);
+    }
+
+    fn releaseAtlasViewBanks(self: *PreparedResources, view: anytype, generation: u64) void {
+        for (view.page_layers) |layer| self.releasePreparedBankId(texture_layers.bank(layer), generation);
+    }
+
+    fn retainPreparedBankId(self: *PreparedResources, bank_id: u32, generation: u64) void {
+        if (generation == self.generation and bank_id == self.active_atlas_bank_id) {
+            self.active_atlas_bank_refs += 1;
+            return;
+        }
+        const bank = self.retainedBankForId(bank_id, generation) orelse return;
+        bank.prepared_refs += 1;
+    }
+
+    fn releasePreparedBankId(self: *PreparedResources, bank_id: u32, generation: u64) void {
+        if (generation == self.generation and bank_id == self.active_atlas_bank_id) {
+            if (self.active_atlas_bank_refs > 0) self.active_atlas_bank_refs -= 1;
+            return;
+        }
+        const bank = self.retainedBankForId(bank_id, generation) orelse return;
+        if (bank.prepared_refs > 0) bank.prepared_refs -= 1;
+    }
+
+    fn retainedBankForId(self: *PreparedResources, bank_id: u32, generation: u64) ?*ResourceBank {
+        for (self.atlas_banks[0..self.atlas_bank_count]) |*bank| {
+            if (bank.id == bank_id and bank.generation == generation) return bank;
+        }
+        return null;
+    }
+
+    fn bankIsCurrentAtlasState(self: *const PreparedResources, bank: *const ResourceBank) bool {
+        if (bank.generation != self.generation) return false;
+        if (bank.id == self.active_atlas_bank_id) return true;
+        return atlasPagesInBank(self.atlas_slots[0..self.atlas_slot_count], bank.id) > 0;
+    }
+
+    fn pruneReleasedRetainedBanks(self: *PreparedResources) void {
+        var write: usize = 0;
+        var read: usize = 0;
+        const old_count = self.atlas_bank_count;
+        while (read < old_count) : (read += 1) {
+            if (self.atlas_banks[read].prepared_refs == 0 and !self.bankIsCurrentAtlasState(&self.atlas_banks[read])) {
+                self.atlas_banks[read].deinit(self.ctx);
+                continue;
+            }
+            if (write != read) self.atlas_banks[write] = self.atlas_banks[read];
+            write += 1;
+        }
+        @memset(self.atlas_banks[write..old_count], ResourceBank{});
+        self.atlas_bank_count = write;
+    }
+
     pub fn ensureRetainedBankCapacity(self: *PreparedResources, capacity: usize) !void {
         if (capacity <= self.atlas_banks.len) return;
         const next_len = @max(capacity, @max(self.atlas_banks.len * 2, 4));
@@ -228,8 +295,11 @@ pub const PreparedResources = struct {
             .allocated_image_count = self.allocated_image_count,
             .resident_atlas_pages = atlasPagesInBank(self.atlas_slots[0..self.atlas_slot_count], self.active_atlas_bank_id),
             .resident_image_layers = @intCast(self.image_slot_count),
+            .generation = self.generation,
+            .prepared_refs = self.active_atlas_bank_refs,
         };
         self.atlas_bank_count += 1;
+        self.active_atlas_bank_refs = 0;
         self.desc_pool = null;
         self.desc_set = null;
         self.curve_image = null;
@@ -248,6 +318,7 @@ pub const PreparedResources = struct {
         self.active_atlas_bank_id = self.next_atlas_bank_id;
         self.next_atlas_bank_id +%= 1;
         try self.initDescriptorSet();
+        self.pruneReleasedRetainedBanks();
     }
 
     pub fn bankForId(self: *const PreparedResources, bank_id: u32) ?ResourceBank {
@@ -348,6 +419,7 @@ pub const PreparedResources = struct {
         self.allocated_band_height = 0;
         self.allocated_layer_count = 0;
         self.atlas_has_special_text_runs = false;
+        self.pruneReleasedRetainedBanks();
     }
 
     pub fn resetImageUploadState(self: *PreparedResources) void {
@@ -399,7 +471,10 @@ pub const PreparedResources = struct {
             vk.vkFreeMemory(self.ctx.device, self.layer_memory, null);
             self.layer_memory = null;
         }
-        if (had_resources) self.generation +%= 1;
+        if (had_resources) {
+            self.generation +%= 1;
+            self.active_atlas_bank_refs = 0;
+        }
     }
 
     pub fn destroyImageResources(self: *PreparedResources) void {
@@ -417,7 +492,10 @@ pub const PreparedResources = struct {
             self.image_memory = null;
         }
         self.resetImageUploadState();
-        if (had_resources) self.generation +%= 1;
+        if (had_resources) {
+            self.generation +%= 1;
+            self.active_atlas_bank_refs = 0;
+        }
     }
 };
 

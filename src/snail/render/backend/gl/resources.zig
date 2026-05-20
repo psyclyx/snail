@@ -72,6 +72,8 @@ pub const AtlasTextureBank = struct {
     allocated_image_count: u32 = 0,
     resident_atlas_pages: u32 = 0,
     resident_image_layers: u32 = 0,
+    generation: u64 = 0,
+    prepared_refs: u32 = 0,
 
     fn hasAny(self: *const AtlasTextureBank) bool {
         return self.curve_array != 0 or
@@ -93,6 +95,7 @@ pub const PreparedResources = struct {
     allocator: std.mem.Allocator,
     backend: Backend,
     active_atlas_bank_id: u32 = 0,
+    active_atlas_bank_refs: u32 = 0,
     next_atlas_bank_id: u32 = 1,
     curve_array: gl.GLuint = 0,
     band_array: gl.GLuint = 0,
@@ -128,7 +131,10 @@ pub const PreparedResources = struct {
         self.curve_array = 0;
         self.band_array = 0;
         self.layer_info_tex = 0;
-        if (had_resources) self.generation +%= 1;
+        if (had_resources) {
+            self.generation +%= 1;
+            self.active_atlas_bank_refs = 0;
+        }
     }
 
     fn destroyImageResources(self: *PreparedResources) void {
@@ -136,7 +142,10 @@ pub const PreparedResources = struct {
         if (self.image_array != 0) gl.glDeleteTextures(1, &self.image_array);
         self.image_array = 0;
         self.resetImageUploadState();
-        if (had_resources) self.generation +%= 1;
+        if (had_resources) {
+            self.generation +%= 1;
+            self.active_atlas_bank_refs = 0;
+        }
     }
 
     fn resetImageUploadState(self: *PreparedResources) void {
@@ -153,6 +162,70 @@ pub const PreparedResources = struct {
         if (self.atlas_banks.len > 0) self.allocator.free(self.atlas_banks);
         self.atlas_banks = &.{};
         self.atlas_bank_count = 0;
+    }
+
+    pub fn retainPreparedResources(self: *PreparedResources, manifest: anytype, generation: u64) void {
+        for (manifest.atlases) |entry| self.retainAtlasViewBanks(entry.view, generation);
+    }
+
+    pub fn releasePreparedResources(self: *PreparedResources, manifest: anytype, generation: u64) void {
+        for (manifest.atlases) |entry| self.releaseAtlasViewBanks(entry.view, generation);
+        self.pruneReleasedRetainedBanks();
+    }
+
+    fn retainAtlasViewBanks(self: *PreparedResources, view: anytype, generation: u64) void {
+        for (view.page_layers) |layer| self.retainPreparedBankId(texture_layers.bank(layer), generation);
+    }
+
+    fn releaseAtlasViewBanks(self: *PreparedResources, view: anytype, generation: u64) void {
+        for (view.page_layers) |layer| self.releasePreparedBankId(texture_layers.bank(layer), generation);
+    }
+
+    fn retainPreparedBankId(self: *PreparedResources, bank_id: u32, generation: u64) void {
+        if (generation == self.generation and bank_id == self.active_atlas_bank_id) {
+            self.active_atlas_bank_refs += 1;
+            return;
+        }
+        const bank = self.retainedBankForId(bank_id, generation) orelse return;
+        bank.prepared_refs += 1;
+    }
+
+    fn releasePreparedBankId(self: *PreparedResources, bank_id: u32, generation: u64) void {
+        if (generation == self.generation and bank_id == self.active_atlas_bank_id) {
+            if (self.active_atlas_bank_refs > 0) self.active_atlas_bank_refs -= 1;
+            return;
+        }
+        const bank = self.retainedBankForId(bank_id, generation) orelse return;
+        if (bank.prepared_refs > 0) bank.prepared_refs -= 1;
+    }
+
+    fn retainedBankForId(self: *PreparedResources, bank_id: u32, generation: u64) ?*AtlasTextureBank {
+        for (self.atlas_banks[0..self.atlas_bank_count]) |*bank| {
+            if (bank.id == bank_id and bank.generation == generation) return bank;
+        }
+        return null;
+    }
+
+    fn bankIsCurrentAtlasState(self: *const PreparedResources, bank: *const AtlasTextureBank) bool {
+        if (bank.generation != self.generation) return false;
+        if (bank.id == self.active_atlas_bank_id) return true;
+        return atlasPagesInBank(self.atlas_slots[0..self.atlas_slot_count], bank.id) > 0;
+    }
+
+    fn pruneReleasedRetainedBanks(self: *PreparedResources) void {
+        var write: usize = 0;
+        var read: usize = 0;
+        const old_count = self.atlas_bank_count;
+        while (read < old_count) : (read += 1) {
+            if (self.atlas_banks[read].prepared_refs == 0 and !self.bankIsCurrentAtlasState(&self.atlas_banks[read])) {
+                self.atlas_banks[read].deinit();
+                continue;
+            }
+            if (write != read) self.atlas_banks[write] = self.atlas_banks[read];
+            write += 1;
+        }
+        @memset(self.atlas_banks[write..old_count], AtlasTextureBank{});
+        self.atlas_bank_count = write;
     }
 
     fn ensureRetainedBankCapacity(self: *PreparedResources, capacity: usize) !void {
@@ -185,8 +258,11 @@ pub const PreparedResources = struct {
             .allocated_image_count = self.allocated_image_count,
             .resident_atlas_pages = atlasPagesInBank(self.atlas_slots[0..self.atlas_slot_count], self.active_atlas_bank_id),
             .resident_image_layers = @intCast(self.image_slot_count),
+            .generation = self.generation,
+            .prepared_refs = self.active_atlas_bank_refs,
         };
         self.atlas_bank_count += 1;
+        self.active_atlas_bank_refs = 0;
         self.curve_array = 0;
         self.band_array = 0;
         self.layer_info_tex = 0;
@@ -194,6 +270,7 @@ pub const PreparedResources = struct {
         self.resetImageUploadState();
         self.active_atlas_bank_id = self.next_atlas_bank_id;
         self.next_atlas_bank_id +%= 1;
+        self.pruneReleasedRetainedBanks();
     }
 
     pub fn bankForId(self: *const PreparedResources, bank_id: u32) ?AtlasTextureBank {
@@ -676,6 +753,7 @@ pub const PreparedResources = struct {
             .id = self.next_atlas_bank_id,
             .allocated_layer_count = plan.layer_count,
             .resident_atlas_pages = plan.layer_count,
+            .generation = self.generation,
         };
         self.next_atlas_bank_id +%= 1;
         switch (self.backend) {
@@ -821,6 +899,7 @@ pub const PreparedResources = struct {
         self.allocated_band_height = 0;
         self.allocated_layer_count = 0;
         self.atlas_has_special_text_runs = false;
+        self.pruneReleasedRetainedBanks();
     }
 
     fn createTextureArrays(self: *PreparedResources, first_atlas: *const CurveAtlas, layer_count: u32, max_curve_h: u32, max_band_h: u32) void {
@@ -954,6 +1033,108 @@ pub const PreparedResources = struct {
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE);
     }
 };
+
+test "prepared resource retirement releases unreferenced GL banks" {
+    const allocator = std.testing.allocator;
+    var cache = PreparedResources{ .allocator = allocator, .backend = .gl33, .active_atlas_bank_id = 99 };
+    cache.atlas_banks = try allocator.alloc(AtlasTextureBank, 2);
+    @memset(cache.atlas_banks, AtlasTextureBank{});
+    cache.atlas_banks[0] = .{ .id = 7 };
+    cache.atlas_banks[1] = .{ .id = 8 };
+    cache.atlas_bank_count = 2;
+    defer cache.destroyRetainedBanks();
+
+    const layers = [_]u32{
+        texture_layers.inBank(7, 0),
+        texture_layers.inBank(7, 1),
+        texture_layers.inBank(8, 0),
+    };
+    const FakeView = struct { page_layers: []const u32 = &.{} };
+    const FakeEntry = struct { view: FakeView = .{} };
+    const FakeManifest = struct { atlases: []const FakeEntry = &.{} };
+    const entries = [_]FakeEntry{.{ .view = .{ .page_layers = layers[0..] } }};
+    const manifest = FakeManifest{ .atlases = entries[0..] };
+
+    cache.retainPreparedResources(manifest, cache.generation);
+    try std.testing.expectEqual(@as(u32, 2), cache.atlas_banks[0].prepared_refs);
+    try std.testing.expectEqual(@as(u32, 1), cache.atlas_banks[1].prepared_refs);
+
+    cache.releasePreparedResources(manifest, cache.generation);
+    try std.testing.expectEqual(@as(usize, 0), cache.atlas_bank_count);
+}
+
+test "released GL banks stay resident while referenced by current atlas state" {
+    const allocator = std.testing.allocator;
+    var cache = PreparedResources{ .allocator = allocator, .backend = .gl33, .active_atlas_bank_id = 99 };
+    cache.atlas_banks = try allocator.alloc(AtlasTextureBank, 1);
+    @memset(cache.atlas_banks, AtlasTextureBank{});
+    cache.atlas_banks[0] = .{ .id = 7 };
+    cache.atlas_bank_count = 1;
+    defer cache.destroyRetainedBanks();
+
+    cache.atlas_slots = try allocator.alloc(AtlasSlot, 1);
+    defer allocator.free(cache.atlas_slots);
+    const page_layers = try allocator.alloc(u32, 1);
+    defer allocator.free(page_layers);
+    page_layers[0] = texture_layers.inBank(7, 0);
+    cache.atlas_slots[0] = .{
+        .uploaded_pages = 1,
+        .page_layers = page_layers,
+    };
+    cache.atlas_slot_count = 1;
+
+    cache.pruneReleasedRetainedBanks();
+    try std.testing.expectEqual(@as(usize, 1), cache.atlas_bank_count);
+    try std.testing.expectEqual(@as(u32, 7), cache.atlas_banks[0].id);
+}
+
+test "stale GL prepared release does not touch active refs from newer generation" {
+    var cache = PreparedResources{
+        .allocator = std.testing.allocator,
+        .backend = .gl33,
+        .active_atlas_bank_id = 7,
+        .active_atlas_bank_refs = 1,
+        .generation = 1,
+    };
+
+    const layers = [_]u32{texture_layers.inBank(7, 0)};
+    const FakeView = struct { page_layers: []const u32 = &.{} };
+    const FakeEntry = struct { view: FakeView = .{} };
+    const FakeManifest = struct { atlases: []const FakeEntry = &.{} };
+    const entries = [_]FakeEntry{.{ .view = .{ .page_layers = layers[0..] } }};
+    const manifest = FakeManifest{ .atlases = entries[0..] };
+
+    cache.releasePreparedResources(manifest, 0);
+    try std.testing.expectEqual(@as(u32, 1), cache.active_atlas_bank_refs);
+}
+
+test "stale GL prepared release still frees matching retained old-generation banks" {
+    const allocator = std.testing.allocator;
+    var cache = PreparedResources{
+        .allocator = allocator,
+        .backend = .gl33,
+        .active_atlas_bank_id = 7,
+        .active_atlas_bank_refs = 1,
+        .generation = 1,
+    };
+    cache.atlas_banks = try allocator.alloc(AtlasTextureBank, 1);
+    @memset(cache.atlas_banks, AtlasTextureBank{});
+    cache.atlas_banks[0] = .{ .id = 7, .generation = 0, .prepared_refs = 1 };
+    cache.atlas_bank_count = 1;
+    defer cache.destroyRetainedBanks();
+
+    const layers = [_]u32{texture_layers.inBank(7, 0)};
+    const FakeView = struct { page_layers: []const u32 = &.{} };
+    const FakeEntry = struct { view: FakeView = .{} };
+    const FakeManifest = struct { atlases: []const FakeEntry = &.{} };
+    const entries = [_]FakeEntry{.{ .view = .{ .page_layers = layers[0..] } }};
+    const manifest = FakeManifest{ .atlases = entries[0..] };
+
+    cache.releasePreparedResources(manifest, 0);
+    try std.testing.expectEqual(@as(u32, 1), cache.active_atlas_bank_refs);
+    try std.testing.expectEqual(@as(usize, 0), cache.atlas_bank_count);
+}
+
 fn textureUnitEnum(unit: gl.GLint) gl.GLenum {
     return @intCast(@as(i64, @intCast(gl.GL_TEXTURE0)) + @as(i64, unit));
 }

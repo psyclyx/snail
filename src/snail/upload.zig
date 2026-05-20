@@ -442,6 +442,7 @@ pub fn uploadPreparedResourceEntries(renderer: anytype, entries: []const Resourc
     try populatePreparedResourceBatch(persistent, &prepared, &scratch_upload, entries);
     try renderer.uploadResourceBatch(allocators, &prepared, scratch_upload.batch());
     try attachUploadedViews(persistent, &prepared, &scratch_upload);
+    prepared.retainResidentReferences();
     return prepared;
 }
 

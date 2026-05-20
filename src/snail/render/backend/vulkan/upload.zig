@@ -256,6 +256,7 @@ fn createAtlasTextureBank(
         .id = prepared.next_atlas_bank_id,
         .allocated_layer_count = layer_count,
         .resident_atlas_pages = layer_count,
+        .generation = prepared.generation,
     };
     prepared.next_atlas_bank_id +%= 1;
     errdefer bank.deinit(prepared.ctx);
