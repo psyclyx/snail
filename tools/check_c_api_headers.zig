@@ -45,6 +45,7 @@ const headers = [_]File{
     .{ .path = "include/snail.h" },
     .{ .path = "include/snail_cpu.h" },
     .{ .path = "include/snail_gl.h" },
+    .{ .path = "include/snail_gles.h" },
     .{ .path = "include/snail_vulkan.h" },
 };
 

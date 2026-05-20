@@ -7,6 +7,7 @@ const version = "0.10.0";
 pub const ModuleOptions = struct {
     enable_profiling: bool = false,
     enable_opengl: bool = true,
+    enable_opengles: bool = true,
     enable_vulkan: bool = true,
     enable_cpu: bool = true,
     enable_harfbuzz: bool = true,
@@ -17,6 +18,7 @@ fn createBuildOptionsModule(b: *std.Build, options: ModuleOptions) *std.Build.Mo
     const opts = b.addOptions();
     opts.addOption(bool, "enable_profiling", options.enable_profiling);
     opts.addOption(bool, "enable_opengl", options.enable_opengl);
+    opts.addOption(bool, "enable_opengles", options.enable_opengles);
     opts.addOption(bool, "enable_vulkan", options.enable_vulkan);
     opts.addOption(bool, "enable_cpu", options.enable_cpu);
     opts.addOption(bool, "enable_harfbuzz", options.enable_harfbuzz);
@@ -32,6 +34,7 @@ fn configureCoreModule(
 ) void {
     mod.addImport("build_options", build_options_mod);
     if (options.enable_opengl) mod.linkSystemLibrary("OpenGL", .{});
+    if (options.enable_opengles) mod.linkSystemLibrary("GLESv2", .{});
     mod.addImport("vulkan_shaders", vk_shaders);
     if (options.enable_vulkan) mod.linkSystemLibrary("vulkan", .{});
     if (options.enable_harfbuzz) mod.linkSystemLibrary("harfbuzz", .{});
@@ -216,6 +219,7 @@ const CApiArtifacts = struct {
 fn parseBuildConfig(b: *std.Build) BuildConfig {
     const enable_profiling = b.option(bool, "profile", "Enable profiling instrumentation") orelse false;
     const enable_opengl = b.option(bool, "opengl", "Enable OpenGL backend") orelse true;
+    const enable_opengles = b.option(bool, "opengl-es", "Enable OpenGL ES backend") orelse true;
     const enable_cpu = b.option(bool, "cpu-renderer", "Enable CPU renderer backend") orelse true;
     const enable_vulkan = b.option(bool, "vulkan", "Enable Vulkan backend") orelse true;
     const force_gl33 = b.option(bool, "gl33", "Force OpenGL 3.3 context where OpenGL is used") orelse false;
@@ -226,6 +230,7 @@ fn parseBuildConfig(b: *std.Build) BuildConfig {
     const core_options = ModuleOptions{
         .enable_profiling = enable_profiling,
         .enable_opengl = enable_opengl,
+        .enable_opengles = enable_opengles,
         .enable_vulkan = enable_vulkan,
         .enable_cpu = enable_cpu,
         .enable_harfbuzz = enable_harfbuzz,
@@ -235,7 +240,7 @@ fn parseBuildConfig(b: *std.Build) BuildConfig {
     const enable_c_api_shared = c_api_shared_option orelse enable_c_api;
     const enable_c_api_static = c_api_static_option orelse enable_c_api;
 
-    if (!core_options.enable_opengl and !core_options.enable_vulkan and !core_options.enable_cpu) {
+    if (!core_options.enable_opengl and !core_options.enable_opengles and !core_options.enable_vulkan and !core_options.enable_cpu) {
         @panic("at least one renderer backend must be enabled");
     }
     if (core_options.force_gl33 and !core_options.enable_opengl) {
@@ -338,12 +343,13 @@ fn installCApi(
     b.installFile("include/snail.h", "include/snail.h");
     b.getInstallStep().dependOn(&b.addInstallFile(c_api.generated_header, "include/snail_generated.h").step);
     if (config.core_options.enable_opengl) b.installFile("include/snail_gl.h", "include/snail_gl.h");
+    if (config.core_options.enable_opengles) b.installFile("include/snail_gles.h", "include/snail_gles.h");
     if (config.core_options.enable_vulkan) b.installFile("include/snail_vulkan.h", "include/snail_vulkan.h");
     if (config.core_options.enable_cpu) b.installFile("include/snail_cpu.h", "include/snail_cpu.h");
 
     const generated_pkg_config = b.addWriteFiles().add(
         "snail.pc",
-        pkg_config.render(b, version, config.core_options.enable_opengl, config.core_options.enable_vulkan, config.core_options.enable_harfbuzz),
+        pkg_config.render(b, version, config.core_options.enable_opengl, config.core_options.enable_opengles, config.core_options.enable_vulkan, config.core_options.enable_harfbuzz),
     );
     b.getInstallStep().dependOn(&b.addInstallFile(generated_pkg_config, "lib/pkgconfig/snail.pc").step);
 }
@@ -421,6 +427,7 @@ fn addGameDemoSteps(
     const game_demo_options = ModuleOptions{
         .enable_profiling = config.core_options.enable_profiling,
         .enable_opengl = true,
+        .enable_opengles = false,
         .enable_vulkan = false,
         .enable_cpu = false,
         .enable_harfbuzz = config.core_options.enable_harfbuzz,
@@ -693,6 +700,7 @@ fn addBackendCompareStep(
     const compare_options = ModuleOptions{
         .enable_profiling = false,
         .enable_opengl = true,
+        .enable_opengles = false,
         .enable_vulkan = config.core_options.enable_vulkan,
         .enable_cpu = true,
         .enable_harfbuzz = config.core_options.enable_harfbuzz,

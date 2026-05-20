@@ -19,6 +19,17 @@ const pipeline = if (build_options.enable_opengl) @import("render/backend/gl/sta
     pub const text_sample_interface = "";
     pub const text_sample_body = "";
 };
+const gles_pipeline = if (build_options.enable_opengles) @import("render/backend/gles/state.zig") else struct {
+    pub const TextCoverageProgram = struct {};
+    pub const TextCoverageDrawState = struct {};
+    pub const GlesTextState = void;
+    pub const PreparedResources = void;
+    pub const text_vertex_interface = "";
+    pub const text_coverage_fragment_interface = "";
+    pub const text_coverage_fragment_body = "";
+    pub const text_sample_interface = "";
+    pub const text_sample_body = "";
+};
 const vulkan_pipeline = if (build_options.enable_vulkan) @import("render/backend/vulkan/pipeline.zig") else struct {
     pub const TextCoverageProgram = struct {};
     pub const PreparedResources = void;
@@ -42,12 +53,14 @@ const TextBatch = text_mod.TextBatch;
 const TEXT_WORDS_PER_GLYPH = text_mod.TEXT_WORDS_PER_GLYPH;
 
 pub const GlProgram = if (build_options.enable_opengl) pipeline.TextCoverageProgram else struct {};
+pub const GlesProgram = if (build_options.enable_opengles) gles_pipeline.TextCoverageProgram else struct {};
 pub const VulkanProgram = if (build_options.enable_vulkan) vulkan_pipeline.TextCoverageProgram else struct {};
 
 pub const Program = union(BackendKind) {
     gl: GlProgram,
     vulkan: VulkanProgram,
     cpu: void,
+    gles: GlesProgram,
 };
 
 /// GLSL 330 pieces for material shaders that consume Snail text coverage.
@@ -83,6 +96,54 @@ pub const Shader = struct {
                 "#define SNAIL_TEXT_RECORD_WORDS_PER_GLYPH {d}\n",
                 .{TEXT_WORDS_PER_GLYPH},
             ) ++ pipeline.text_sample_body
+        else
+            "";
+        pub const fragment_body =
+            coverage_functions ++
+            "\n" ++
+            \\float snail_text_coverage() {
+            \\    int layer_byte = (v_glyph.w >> 8) & 0xFF;
+            \\    if (layer_byte == SNAIL_SPECIAL_LAYER_SENTINEL) return 0.0;
+            \\    int atlas_layer = u_layer_base + layer_byte;
+            \\    vec2 rc = v_texcoord;
+            \\    vec2 dx = vec2(dFdx(rc.x), dFdy(rc.x));
+            \\    vec2 dy = vec2(dFdx(rc.y), dFdy(rc.y));
+            \\    vec2 ppe = vec2(1.0 / max(length(dx), 1.0 / 65536.0), 1.0 / max(length(dy), 1.0 / 65536.0));
+            \\    return evalGlyphCoverage(rc, ppe, v_glyph.xy,
+            \\                             ivec2(v_glyph.w & 0xFF, v_glyph.z),
+            \\                             v_banding, atlas_layer);
+            \\}
+            \\
+            \\vec4 snail_text_color_srgb() {
+            \\    return v_color;
+            \\}
+            \\
+            \\vec4 snail_text_color_linear() {
+            \\    return vec4(srgbDecode(v_color.r), srgbDecode(v_color.g), srgbDecode(v_color.b), v_color.a);
+            \\}
+            \\
+            ;
+    };
+
+    pub const gles = struct {
+        pub const vertex_interface = gles_pipeline.text_vertex_interface;
+        pub const fragment_interface = gles_pipeline.text_coverage_fragment_interface;
+        pub const resource_interface =
+            \\uniform sampler2DArray u_curve_tex;
+            \\uniform usampler2DArray u_band_tex;
+            \\uniform int u_fill_rule;
+            \\uniform int u_layer_base;
+            \\
+            \\#define SNAIL_FILL_RULE u_fill_rule
+            \\
+        ;
+        pub const coverage_functions = gles_pipeline.text_coverage_fragment_body;
+        pub const sample_interface = gles_pipeline.text_sample_interface;
+        pub const sample_functions = if (build_options.enable_opengles)
+            std.fmt.comptimePrint(
+                "#define SNAIL_TEXT_RECORD_WORDS_PER_GLYPH {d}\n",
+                .{TEXT_WORDS_PER_GLYPH},
+            ) ++ gles_pipeline.text_sample_body
         else
             "";
         pub const fragment_body =
@@ -286,6 +347,40 @@ pub const GlBackend = if (build_options.enable_opengl) struct {
     }
 } else struct {};
 
+pub const GlesBackend = if (build_options.enable_opengles) struct {
+    gles: *gles_pipeline.GlesTextState,
+    gles_resources: *const gles_pipeline.PreparedResources,
+    prepared: *const PreparedResources,
+
+    fn glesState(self: GlesBackend) *gles_pipeline.GlesTextState {
+        return self.gles;
+    }
+
+    pub fn bindProgram(self: GlesBackend, program: GlesProgram) !void {
+        self.gles_resources.bindTextCoverageProgram(program);
+    }
+
+    pub fn bindDrawState(self: GlesBackend, program: GlesProgram, state: DrawState) !void {
+        _ = self;
+        gles_pipeline.PreparedResources.bindTextCoverageDrawState(program, .{
+            .fill_rule = state.fill_rule,
+            .subpixel_order = state.subpixel_order,
+            .output_srgb = state.output_srgb,
+            .coverage_transfer = state.coverage_transfer,
+            .layer_base = state.layer_base,
+        });
+    }
+
+    pub fn drawCoverage(self: GlesBackend, coverage: *const TextCoverageRecords) !void {
+        std.debug.assert(coverage.validFor(self.prepared));
+        try self.drawVertices(coverage.slice());
+    }
+
+    pub fn drawVertices(self: GlesBackend, vertices: []const u32) !void {
+        self.glesState().drawPreparedText(self.gles_resources, vertices);
+    }
+} else struct {};
+
 pub const VulkanBackend = if (build_options.enable_vulkan) struct {
     vk: *vulkan_pipeline.VulkanPipeline,
     vk_resources: *const vulkan_pipeline.PreparedResources,
@@ -329,10 +424,12 @@ pub const Backend = union(BackendKind) {
     gl: GlBackend,
     vulkan: VulkanBackend,
     cpu: void,
+    gles: GlesBackend,
 
     pub fn bindProgram(self: Backend, program: Program) !void {
         switch (self) {
             .gl => |backend| if (comptime build_options.enable_opengl) try backend.bindProgram(program.gl),
+            .gles => |backend| if (comptime build_options.enable_opengles) try backend.bindProgram(program.gles),
             .vulkan => |backend| if (comptime build_options.enable_vulkan) {
                 try backend.bindProgram(program.vulkan);
             },
@@ -343,6 +440,7 @@ pub const Backend = union(BackendKind) {
     pub fn bindDrawState(self: Backend, program: Program, state: DrawState) !void {
         switch (self) {
             .gl => |backend| if (comptime build_options.enable_opengl) try backend.bindDrawState(program.gl, state),
+            .gles => |backend| if (comptime build_options.enable_opengles) try backend.bindDrawState(program.gles, state),
             .vulkan => |backend| if (comptime build_options.enable_vulkan) {
                 try backend.bindDrawState(program.vulkan, state);
             },
@@ -353,6 +451,7 @@ pub const Backend = union(BackendKind) {
     pub fn drawCoverage(self: Backend, coverage: *const TextCoverageRecords) !void {
         switch (self) {
             .gl => |backend| if (comptime build_options.enable_opengl) try backend.drawCoverage(coverage),
+            .gles => |backend| if (comptime build_options.enable_opengles) try backend.drawCoverage(coverage),
             .vulkan => |backend| if (comptime build_options.enable_vulkan) try backend.drawCoverage(coverage),
             .cpu => {},
         }
@@ -361,6 +460,7 @@ pub const Backend = union(BackendKind) {
     pub fn drawVertices(self: Backend, vertices: []const u32) !void {
         switch (self) {
             .gl => |backend| if (comptime build_options.enable_opengl) try backend.drawVertices(vertices),
+            .gles => |backend| if (comptime build_options.enable_opengles) try backend.drawVertices(vertices),
             .vulkan => |backend| if (comptime build_options.enable_vulkan) try backend.drawVertices(vertices),
             .cpu => {},
         }

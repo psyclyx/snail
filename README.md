@@ -250,7 +250,7 @@ leave it unhinted.
 
 ## Build
 
-Requires [Zig 0.16](https://ziglang.org/download/), OpenGL 3.3+, Vulkan headers/loader, `glslc`, and pkg-config. Vulkan and HarfBuzz are enabled by default but can be disabled (see flags below). The interactive demo requires Wayland, plus EGL for OpenGL mode.
+Requires [Zig 0.16](https://ziglang.org/download/), OpenGL 3.3+, OpenGL ES 3.0+, Vulkan headers/loader, `glslc`, and pkg-config. Vulkan and HarfBuzz are enabled by default but can be disabled (see flags below). The interactive demo requires Wayland, plus EGL for OpenGL mode.
 
 ```sh
 zig build test                                  # unit tests
@@ -271,7 +271,8 @@ zig build check-c-api                           # verify C headers against gener
 
 Library backend flags:
 
-- `-Dopengl=true` (default) — OpenGL backend (`GlRenderer`); installs `snail_gl.h` when the C API is enabled.
+- `-Dopengl=true` (default) — desktop OpenGL backend (`GlRenderer`); installs `snail_gl.h` when the C API is enabled.
+- `-Dopengl-es=true` (default) — OpenGL ES backend (`GlesRenderer`); installs `snail_gles.h` when the C API is enabled.
 - `-Dgl33=false` (default) — pass `=true` to force an OpenGL 3.3 context/backend path where OpenGL is used.
 - `-Dvulkan=true` (default) — Vulkan backend (`VulkanRenderer`); pass `=false` for a slimmer OpenGL/CPU-only build. SPIR-V shaders are compiled at build time via `glslc`; installs `snail_vulkan.h` when the C API is enabled. That extension header includes Vulkan headers.
 - `-Dcpu-renderer=true` (default) — CPU backend (`CpuRenderer`); pass `=false` to drop it. Installs `snail_cpu.h` when the C API is enabled.
@@ -671,7 +672,7 @@ until `snail_scene_reset` or `snail_scene_deinit`.
 | `snapToStep` / `snapDeltaToStep` | Snap a scalar to an explicit step, or return the delta needed to reach that snap. |
 | `snapLengthToStep` | Snap a length to an explicit step with a caller-provided minimum step count. |
 | `snapPointToStep` / `snapRectToStep` | Snap a point or rectangle using explicit per-axis steps. |
-| `GlRenderer`, `VulkanRenderer`, `CpuRenderer` | First-class backend renderers. |
+| `GlRenderer`, `GlesRenderer`, `VulkanRenderer`, `CpuRenderer` | First-class backend renderers. |
 | `Renderer` | Type-erased convenience wrapper around a backend renderer. |
 | `Rect` | `{ x, y, w, h }` rectangle. |
 | `Transform2D` | 2x3 affine matrix `{ xx, xy, tx, yx, yy, ty }`. |
@@ -751,11 +752,12 @@ try scene.addPath(.{ .picture = &sprite, .resource_key = snail.ResourceKey.named
 
 ### Renderer
 
-`GlRenderer`, `VulkanRenderer`, and `CpuRenderer` are first-class types; `Renderer` is the type-erased backend-agnostic API for upload, cache inspection, and draw submission.
+`GlRenderer`, `GlesRenderer`, `VulkanRenderer`, and `CpuRenderer` are first-class types; `Renderer` is the type-erased backend-agnostic API for upload, cache inspection, and draw submission.
 
 | Method | Description |
 |--------|-------------|
-| `GlRenderer.init(alloc) !GlRenderer` | Initialize the OpenGL backend. Requires the GL context to be current. |
+| `GlRenderer.init(alloc) !GlRenderer` | Initialize the desktop OpenGL backend. Requires the GL context to be current. |
+| `GlesRenderer.init(alloc) !GlesRenderer` | Initialize the OpenGL ES backend. Requires the GLES context to be current. |
 | `VulkanRenderer.init(alloc, ctx) !VulkanRenderer` | Initialize the Vulkan backend from a caller-owned `VulkanContext`. |
 | `CpuRenderer.init(pixels, w, h, stride) CpuRenderer` | Initialize the CPU backend over a caller-owned RGBA8 buffer. |
 | `cpu.setThreadPool(?*snail.ThreadPool)` | Opt into scanline-tiled multithreaded rendering using a caller-owned `snail.ThreadPool`. Byte-identical output to the single-threaded path; the draw call itself stays allocation-free. |
@@ -839,6 +841,9 @@ coverage without going through `Renderer.draw`. Use this when text is part of a
   `sample_interface`, and `sample_functions`; upload `records.slice()` as a
   `GL_R32UI` texture buffer and call
   `snail_text_sample_premul_linear(scene_pos)`.
+- `snail.coverage.Shader.gles` exposes the matching GLSL ES 300 sources for
+  OpenGL ES programs. The uniform/resource contract matches the desktop GL
+  coverage path.
 - `snail.coverage.Shader.vulkan` exposes the Vulkan shader sources and descriptor
   binding numbers. The Vulkan coverage backend binds Snail's descriptor set
   into a caller-owned compatible pipeline layout.
@@ -860,9 +865,10 @@ coverage without going through `Renderer.draw`. Use this when text is part of a
 C callers use `SnailTextCoverageRecords` and `SnailCoverageBackend` from
 `snail.h`; derive `SnailCoverageDrawState` with
 `snail_text_coverage_records_draw_state`. GL shader snippets and program
-uniform bindings live in `snail_gl.h`. Vulkan shader snippets, descriptor
-binding numbers, and frame-scoped coverage programs live in `snail_vulkan.h`.
-The CPU backend has no custom shader hook.
+uniform bindings live in `snail_gl.h`; GLES equivalents live in
+`snail_gles.h`. Vulkan shader snippets, descriptor binding numbers, and
+frame-scoped coverage programs live in `snail_vulkan.h`. The CPU backend has no
+custom shader hook.
 
 ### Path
 
@@ -1163,6 +1169,7 @@ include/
   snail_generated.h      generated by build/install; not checked in
   snail_cpu.h            CPU backend C constructor and thread-pool hook
   snail_gl.h             OpenGL backend C constructor and coverage bindings
+  snail_gles.h           OpenGL ES backend C constructor and coverage bindings
   snail_vulkan.h         Vulkan backend C constructor, upload, and coverage hooks
 ```
 

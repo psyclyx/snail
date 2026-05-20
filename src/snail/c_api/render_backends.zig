@@ -57,6 +57,22 @@ pub export fn snail_gl_renderer_init(out: *?*RendererImpl) c_int {
     }
 }
 
+pub export fn snail_gles_renderer_init(out: *?*RendererImpl) c_int {
+    if (comptime build_options.enable_opengles) {
+        const impl = createHandle(RendererImpl, null) catch return SNAIL_ERR_OUT_OF_MEMORY;
+        const gles = snail.GlesRenderer.init(allocatorForHandle(impl)) catch {
+            destroyHandle(impl);
+            return SNAIL_ERR_RENDERER_FAILED;
+        };
+        impl.backend = .gles;
+        impl.gles = gles;
+        out.* = impl;
+        return SNAIL_OK;
+    } else {
+        return SNAIL_ERR_RENDERER_FAILED;
+    }
+}
+
 pub export fn snail_cpu_available() bool {
     return build_options.enable_cpu;
 }

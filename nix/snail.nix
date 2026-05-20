@@ -11,6 +11,7 @@
 , pname ? "snail"
 , version ? "0.10.0"
 , enableOpenGL ? true
+, enableOpenGLES ? true
 , enableVulkan ? true
 , enableCpu ? true
 , enableHarfBuzz ? true
@@ -26,6 +27,7 @@ let
   backendOptions = import ./backend-options.nix { inherit lib; } {
     inherit
       enableOpenGL
+      enableOpenGLES
       enableVulkan
       enableCpu
       enableHarfBuzz
@@ -47,7 +49,7 @@ stdenv.mkDerivation {
   ];
 
   buildInputs =
-    lib.optionals enableOpenGL [
+    lib.optionals (enableOpenGL || enableOpenGLES) [
       libGL
     ]
     ++ lib.optionals enableHarfBuzz [

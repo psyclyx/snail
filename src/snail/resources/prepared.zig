@@ -14,6 +14,14 @@ const pipeline = if (build_options.enable_opengl) @import("../render/backend/gl/
     pub const text_coverage_fragment_interface = "";
     pub const text_coverage_fragment_body = "";
 };
+const gles_pipeline = if (build_options.enable_opengles) @import("../render/backend/gles/state.zig") else struct {
+    pub const TextCoverageProgram = struct {};
+    pub const GlesTextState = void;
+    pub const PreparedResources = void;
+    pub const text_vertex_interface = "";
+    pub const text_coverage_fragment_interface = "";
+    pub const text_coverage_fragment_body = "";
+};
 const cpu_renderer_mod = if (build_options.enable_cpu) @import("../render/backend/cpu/renderer.zig") else struct {
     pub const PreparedResources = void;
 };
@@ -137,6 +145,7 @@ pub const PreparedManifest = struct {
 
 pub const ResidentResources = struct {
     gl: if (build_options.enable_opengl) ?*pipeline.PreparedResources else void = if (build_options.enable_opengl) null else {},
+    gles: if (build_options.enable_opengles) ?*gles_pipeline.PreparedResources else void = if (build_options.enable_opengles) null else {},
     vulkan: if (build_options.enable_vulkan) ?*vulkan_pipeline.PreparedResources else void = if (build_options.enable_vulkan) null else {},
     cpu: if (build_options.enable_cpu) ?cpu_renderer_mod.PreparedResources else void = if (build_options.enable_cpu) null else {},
     generation: u64 = 0,
@@ -170,6 +179,12 @@ pub const PreparedResources = struct {
                 retained = true;
             }
         }
+        if (comptime build_options.enable_opengles) {
+            if (self.resident.gles) |gles_resources| {
+                gles_resources.retainPreparedResources(self.manifest, self.resident.generation);
+                retained = true;
+            }
+        }
         if (comptime build_options.enable_vulkan) {
             if (self.resident.vulkan) |vk_resources| {
                 vk_resources.retainPreparedResources(self.manifest, self.resident.generation);
@@ -183,6 +198,9 @@ pub const PreparedResources = struct {
         if (!self.resident.backend_refs_retained) return;
         if (comptime build_options.enable_opengl) {
             if (self.resident.gl) |gl_resources| gl_resources.releasePreparedResources(self.manifest, self.resident.generation);
+        }
+        if (comptime build_options.enable_opengles) {
+            if (self.resident.gles) |gles_resources| gles_resources.releasePreparedResources(self.manifest, self.resident.generation);
         }
         if (comptime build_options.enable_vulkan) {
             if (self.resident.vulkan) |vk_resources| vk_resources.releasePreparedResources(self.manifest, self.resident.generation);

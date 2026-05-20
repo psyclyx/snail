@@ -9,10 +9,12 @@ const SNAIL_ERR_DRAW_FAILED = common.SNAIL_ERR_DRAW_FAILED;
 const SnailString = common.SnailString;
 const SnailCoverageDrawState = common.SnailCoverageDrawState;
 const SnailGlTextCoverageProgram = common.SnailGlTextCoverageProgram;
+const SnailGlesTextCoverageProgram = common.SnailGlesTextCoverageProgram;
 const SnailVulkanTextCoverageProgram = common.SnailVulkanTextCoverageProgram;
 const wrapString = common.wrapString;
 const toCoverageDrawState = common.toCoverageDrawState;
 const toGlCoverageProgram = common.toGlCoverageProgram;
+const toGlesCoverageProgram = common.toGlesCoverageProgram;
 const toVulkanCoverageProgram = common.toVulkanCoverageProgram;
 const CoverageBackendImpl = common.CoverageBackendImpl;
 
@@ -68,6 +70,66 @@ pub export fn snail_gl_coverage_backend_bind_draw_state(backend: *CoverageBacken
         .gl => |gl_backend| {
             gl_backend.bindDrawState(
                 toGlCoverageProgram(program) catch return SNAIL_ERR_INVALID_ARGUMENT,
+                toCoverageDrawState(state) catch return SNAIL_ERR_INVALID_ARGUMENT,
+            ) catch return SNAIL_ERR_DRAW_FAILED;
+            return SNAIL_OK;
+        },
+        else => return SNAIL_ERR_INVALID_ARGUMENT,
+    }
+}
+
+pub export fn snail_gles_coverage_shader_vertex_interface() SnailString {
+    if (comptime !build_options.enable_opengles) return wrapString("");
+    return wrapString(snail.coverage.Shader.gles.vertex_interface);
+}
+
+pub export fn snail_gles_coverage_shader_fragment_interface() SnailString {
+    if (comptime !build_options.enable_opengles) return wrapString("");
+    return wrapString(snail.coverage.Shader.gles.fragment_interface);
+}
+
+pub export fn snail_gles_coverage_shader_resource_interface() SnailString {
+    if (comptime !build_options.enable_opengles) return wrapString("");
+    return wrapString(snail.coverage.Shader.gles.resource_interface);
+}
+
+pub export fn snail_gles_coverage_shader_coverage_functions() SnailString {
+    if (comptime !build_options.enable_opengles) return wrapString("");
+    return wrapString(snail.coverage.Shader.gles.coverage_functions);
+}
+
+pub export fn snail_gles_coverage_shader_sample_interface() SnailString {
+    if (comptime !build_options.enable_opengles) return wrapString("");
+    return wrapString(snail.coverage.Shader.gles.sample_interface);
+}
+
+pub export fn snail_gles_coverage_shader_sample_functions() SnailString {
+    if (comptime !build_options.enable_opengles) return wrapString("");
+    return wrapString(snail.coverage.Shader.gles.sample_functions);
+}
+
+pub export fn snail_gles_coverage_shader_fragment_body() SnailString {
+    if (comptime !build_options.enable_opengles) return wrapString("");
+    return wrapString(snail.coverage.Shader.gles.fragment_body);
+}
+
+pub export fn snail_gles_coverage_backend_bind_program(backend: *CoverageBackendImpl, program: SnailGlesTextCoverageProgram) c_int {
+    if (comptime !build_options.enable_opengles) return SNAIL_ERR_RENDERER_FAILED;
+    switch (backend.inner) {
+        .gles => |gles_backend| {
+            gles_backend.bindProgram(toGlesCoverageProgram(program) catch return SNAIL_ERR_INVALID_ARGUMENT) catch return SNAIL_ERR_DRAW_FAILED;
+            return SNAIL_OK;
+        },
+        else => return SNAIL_ERR_INVALID_ARGUMENT,
+    }
+}
+
+pub export fn snail_gles_coverage_backend_bind_draw_state(backend: *CoverageBackendImpl, program: SnailGlesTextCoverageProgram, state: SnailCoverageDrawState) c_int {
+    if (comptime !build_options.enable_opengles) return SNAIL_ERR_RENDERER_FAILED;
+    switch (backend.inner) {
+        .gles => |gles_backend| {
+            gles_backend.bindDrawState(
+                toGlesCoverageProgram(program) catch return SNAIL_ERR_INVALID_ARGUMENT,
                 toCoverageDrawState(state) catch return SNAIL_ERR_INVALID_ARGUMENT,
             ) catch return SNAIL_ERR_DRAW_FAILED;
             return SNAIL_OK;

@@ -6,7 +6,7 @@ pkgdesc='GPU font rendering via direct Bézier curve evaluation (Slug algorithm)
 arch=('x86_64')
 url='https://github.com/psyclyx/snail'
 license=('MIT')
-depends=('libgl' 'harfbuzz' 'vulkan-loader')
+depends=('libglvnd' 'harfbuzz' 'vulkan-loader')
 makedepends=('zig>=0.16' 'pkg-config' 'shaderc' 'vulkan-headers')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
 sha256sums=('SKIP')

@@ -131,6 +131,7 @@ pub const CpuRenderer = render.CpuRenderer;
 pub const ThreadPool = render.ThreadPool;
 pub const Renderer = render.Renderer;
 pub const GlRenderer = render.GlRenderer;
+pub const GlesRenderer = render.GlesRenderer;
 pub const VulkanRenderer = render.VulkanRenderer;
 
 pub const Range = scene.Range;

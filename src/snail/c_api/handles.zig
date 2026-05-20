@@ -74,6 +74,7 @@ pub const RendererImpl = struct {
     handle_allocator: *HandleAllocator,
     backend: snail.BackendKind,
     gl: if (build_options.enable_opengl) ?snail.GlRenderer else void = if (build_options.enable_opengl) null else {},
+    gles: if (build_options.enable_opengles) ?snail.GlesRenderer else void = if (build_options.enable_opengles) null else {},
     vulkan: if (build_options.enable_vulkan) ?snail.VulkanRenderer else void = if (build_options.enable_vulkan) null else {},
     cpu: if (build_options.enable_cpu) ?snail.CpuRenderer else void = if (build_options.enable_cpu) null else {},
 
@@ -82,6 +83,11 @@ pub const RendererImpl = struct {
             .gl => blk: {
                 if (comptime !build_options.enable_opengl) unreachable;
                 if (self.gl) |*gl| break :blk gl.asRenderer();
+                unreachable;
+            },
+            .gles => blk: {
+                if (comptime !build_options.enable_opengles) unreachable;
+                if (self.gles) |*gles| break :blk gles.asRenderer();
                 unreachable;
             },
             .vulkan => blk: {
@@ -102,6 +108,9 @@ pub const RendererImpl = struct {
             .gl => if (comptime build_options.enable_opengl) {
                 if (self.gl) |*gl| gl.deinit();
             },
+            .gles => if (comptime build_options.enable_opengles) {
+                if (self.gles) |*gles| gles.deinit();
+            },
             .vulkan => if (comptime build_options.enable_vulkan) {
                 if (self.vulkan) |*vk_renderer| vk_renderer.deinit();
             },
@@ -115,6 +124,10 @@ pub const RendererImpl = struct {
                 self.gl.?.backendName()
             else
                 "OpenGL (disabled)",
+            .gles => if (comptime build_options.enable_opengles)
+                self.gles.?.backendName()
+            else
+                "OpenGL ES (disabled)",
             .vulkan => if (comptime build_options.enable_vulkan)
                 self.vulkan.?.backendName()
             else

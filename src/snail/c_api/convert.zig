@@ -10,6 +10,7 @@ const SnailFillStyle = c.SnailFillStyle;
 const SnailFontStyle = c.SnailFontStyle;
 const SnailCoverageDrawState = c.SnailCoverageDrawState;
 const SnailGlTextCoverageProgram = c.SnailGlTextCoverageProgram;
+const SnailGlesTextCoverageProgram = c.SnailGlesTextCoverageProgram;
 const SnailMat4 = c.SnailMat4;
 const SnailOverride = c.SnailOverride;
 const SnailPaint = c.SnailPaint;
@@ -145,6 +146,28 @@ pub fn toCoverageDrawState(state: SnailCoverageDrawState) !snail.coverage.DrawSt
 
 pub fn toGlCoverageProgram(program: SnailGlTextCoverageProgram) !snail.coverage.GlProgram {
     if (comptime build_options.enable_opengl) {
+        return .{
+            .curve_tex_loc = program.curve_tex_loc,
+            .band_tex_loc = program.band_tex_loc,
+            .layer_tex_loc = program.layer_tex_loc,
+            .image_tex_loc = program.image_tex_loc,
+            .fill_rule_loc = program.fill_rule_loc,
+            .subpixel_order_loc = program.subpixel_order_loc,
+            .output_srgb_loc = program.output_srgb_loc,
+            .coverage_exponent_loc = program.coverage_exponent_loc,
+            .layer_base_loc = program.layer_base_loc,
+            .curve_tex_unit = program.curve_tex_unit,
+            .band_tex_unit = program.band_tex_unit,
+            .layer_tex_unit = program.layer_tex_unit,
+            .image_tex_unit = program.image_tex_unit,
+        };
+    } else {
+        return .{};
+    }
+}
+
+pub fn toGlesCoverageProgram(program: SnailGlesTextCoverageProgram) !snail.coverage.GlesProgram {
+    if (comptime build_options.enable_opengles) {
         return .{
             .curve_tex_loc = program.curve_tex_loc,
             .band_tex_loc = program.band_tex_loc,

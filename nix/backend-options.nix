@@ -1,6 +1,7 @@
 { lib }:
 
 { enableOpenGL ? true
+, enableOpenGLES ? true
 , enableVulkan ? true
 , enableCpu ? true
 , enableHarfBuzz ? true
@@ -19,6 +20,7 @@ in
     "--release=${optimize}"
     "-Dcpu=${cpu}"
     (boolFlag "opengl" enableOpenGL)
+    (boolFlag "opengl-es" enableOpenGLES)
     (boolFlag "vulkan" enableVulkan)
     (boolFlag "cpu-renderer" enableCpu)
     (boolFlag "harfbuzz" enableHarfBuzz)
