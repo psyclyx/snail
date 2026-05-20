@@ -38,13 +38,13 @@ pub const text_fragment_body = shaders.text_fragment_body;
 pub const text_coverage_fragment_body = shaders.text_coverage_fragment_body;
 pub const text_sample_body = shaders.text_sample_body;
 
-// ── GLES streaming constants ──
+// ── GLES3 streaming constants ──
 
 const STREAM_BYTES = 4 * 1024 * 1024;
 const BYTES_PER_GLYPH = vertex.BYTES_PER_INSTANCE;
 const MAX_GLYPHS_PER_UPLOAD = STREAM_BYTES / BYTES_PER_GLYPH;
 
-// ── GlesTextState ──
+// ── Gles3TextState ──
 
 pub const LinearResolveRestore = struct {
     draw_fbo: gl.GLint = 0,
@@ -56,7 +56,7 @@ pub const LinearResolveRestore = struct {
     blend: bool = false,
 };
 
-pub const GlesTextState = struct {
+pub const Gles3TextState = struct {
     backend: Backend = .gles3,
     text_program: ProgramState = .{},
     colr_program: ProgramState = .{},
@@ -83,7 +83,7 @@ pub const GlesTextState = struct {
 
     // ── Init / Deinit ──
 
-    pub fn init(self: *GlesTextState) !void {
+    pub fn init(self: *Gles3TextState) !void {
         self.backend = gl_backend.detect(gl);
 
         // Link all draw programs during renderer init so draw never compiles or links.
@@ -103,11 +103,11 @@ pub const GlesTextState = struct {
         // so use GL_ONE for src to avoid double-multiplying coverage.
         gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA);
 
-        // GLES has no GL_FRAMEBUFFER_SRGB toggle. sRGB framebuffer conversion
+        // GLES3 has no GL_FRAMEBUFFER_SRGB toggle. sRGB framebuffer conversion
         // is controlled by the framebuffer attachment format.
     }
 
-    fn initGles3(self: *GlesTextState) void {
+    fn initGles3(self: *Gles3TextState) void {
         gl.glGenVertexArrays(1, &self.vao);
         gl.glGenBuffers(1, &self.vbo);
         gl.glGenBuffers(1, &self.ebo);
@@ -120,7 +120,7 @@ pub const GlesTextState = struct {
         setupInstanceDivisors();
     }
 
-    pub fn deinit(self: *GlesTextState) void {
+    pub fn deinit(self: *Gles3TextState) void {
         if (self.resource_cache) |*cache| {
             cache.deinit();
             self.resource_cache = null;
@@ -139,7 +139,7 @@ pub const GlesTextState = struct {
         if (self.ebo != 0) gl.glDeleteBuffers(1, &self.ebo);
     }
 
-    pub fn resourceCache(self: *GlesTextState, allocator: std.mem.Allocator) *PreparedResources {
+    pub fn resourceCache(self: *Gles3TextState, allocator: std.mem.Allocator) *PreparedResources {
         if (self.resource_cache == null) {
             self.resource_cache = PreparedResources{
                 .allocator = allocator,
@@ -153,7 +153,7 @@ pub const GlesTextState = struct {
         unreachable;
     }
 
-    pub fn resetResourceCache(self: *GlesTextState) void {
+    pub fn resetResourceCache(self: *Gles3TextState) void {
         if (self.resource_cache) |*cache| {
             const allocator = cache.allocator;
             const generation = cache.generation +% 1;
@@ -166,7 +166,7 @@ pub const GlesTextState = struct {
         }
     }
 
-    pub fn resourceCacheStats(self: *const GlesTextState) snail_mod.ResourceCacheStats {
+    pub fn resourceCacheStats(self: *const Gles3TextState) snail_mod.ResourceCacheStats {
         if (self.resource_cache) |*cache| {
             const active_atlas_pages = gl_resources.atlasPagesInBank(cache.atlas_slots[0..cache.atlas_slot_count], cache.active_atlas_bank_id);
             const active_image_layers: u32 = @intCast(cache.image_slot_count);
@@ -195,12 +195,12 @@ pub const GlesTextState = struct {
         return .{};
     }
 
-    pub fn backendName(self: *const GlesTextState) [:0]const u8 {
+    pub fn backendName(self: *const Gles3TextState) [:0]const u8 {
         _ = self;
-        return "OpenGL ES 3";
+        return "OpenGL ES 3.0";
     }
 
-    pub fn beginLinearResolve(self: *GlesTextState, surface: TargetSurface, resolve: LinearResolve) !LinearResolveRestore {
+    pub fn beginLinearResolve(self: *Gles3TextState, surface: TargetSurface, resolve: LinearResolve) !LinearResolveRestore {
         if (!surface.supportsLinearResolve()) return error.UnsupportedResolve;
         if (self.linear_resolve_active) return error.LinearResolveAlreadyActive;
         const target_rect = surface.pixelRect();
@@ -242,7 +242,7 @@ pub const GlesTextState = struct {
         return restore;
     }
 
-    pub fn endLinearResolve(self: *GlesTextState, restore: LinearResolveRestore) void {
+    pub fn endLinearResolve(self: *Gles3TextState, restore: LinearResolveRestore) void {
         std.debug.assert(self.linear_resolve_active);
         gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, @intCast(restore.draw_fbo));
         gl.glViewport(restore.viewport[0], restore.viewport[1], restore.viewport[2], restore.viewport[3]);
@@ -278,7 +278,7 @@ pub const GlesTextState = struct {
         encode_to_target = 1,
     };
 
-    fn snapshotResolveDestination(self: *GlesTextState, restore: LinearResolveRestore, width: u32, height: u32) void {
+    fn snapshotResolveDestination(self: *Gles3TextState, restore: LinearResolveRestore, width: u32, height: u32) void {
         var prev_tex: gl.GLint = 0;
         gl.glGetIntegerv(gl.GL_TEXTURE_BINDING_2D, &prev_tex);
         defer gl.glBindTexture(gl.GL_TEXTURE_2D, @intCast(prev_tex));
@@ -300,7 +300,7 @@ pub const GlesTextState = struct {
         );
     }
 
-    fn drawLinearResolveTriangle(self: *GlesTextState, pass: LinearResolvePass) void {
+    fn drawLinearResolveTriangle(self: *Gles3TextState, pass: LinearResolvePass) void {
         gl.glUseProgram(self.linear_resolve_program);
         gl.glBindVertexArray(self.linear_resolve_vao);
         gl.glActiveTexture(gl.GL_TEXTURE0);
@@ -313,7 +313,7 @@ pub const GlesTextState = struct {
         gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3);
     }
 
-    fn setResolveScissor(_: *GlesTextState, rect: PixelRect, viewport_y: gl.GLint, viewport_height: u32) void {
+    fn setResolveScissor(_: *Gles3TextState, rect: PixelRect, viewport_y: gl.GLint, viewport_height: u32) void {
         const y = viewport_y + glRectY(rect, viewport_height);
         gl.glEnable(gl.GL_SCISSOR_TEST);
         gl.glScissor(rect.x, y, @intCast(rect.w), @intCast(rect.h));
@@ -338,7 +338,7 @@ pub const GlesTextState = struct {
         };
     }
 
-    fn ensureLinearResolve(self: *GlesTextState, width: u32, height: u32, format: IntermediateFormat) !void {
+    fn ensureLinearResolve(self: *Gles3TextState, width: u32, height: u32, format: IntermediateFormat) !void {
         if (self.linearResolveReady(width, height, format)) return;
         self.resetLinearResolveObjects(format);
 
@@ -369,7 +369,7 @@ pub const GlesTextState = struct {
         self.linear_resolve_height = height;
     }
 
-    fn linearResolveReady(self: *const GlesTextState, width: u32, height: u32, format: IntermediateFormat) bool {
+    fn linearResolveReady(self: *const Gles3TextState, width: u32, height: u32, format: IntermediateFormat) bool {
         return self.linear_resolve_fbo != 0 and
             self.linear_resolve_tex != 0 and
             self.linear_resolve_dst_tex != 0 and
@@ -378,7 +378,7 @@ pub const GlesTextState = struct {
             self.linear_resolve_format == format;
     }
 
-    fn resetLinearResolveObjects(self: *GlesTextState, format: IntermediateFormat) void {
+    fn resetLinearResolveObjects(self: *Gles3TextState, format: IntermediateFormat) void {
         if (self.linear_resolve_fbo != 0) gl.glDeleteFramebuffers(1, &self.linear_resolve_fbo);
         if (self.linear_resolve_tex != 0) gl.glDeleteTextures(1, &self.linear_resolve_tex);
         if (self.linear_resolve_dst_tex != 0) gl.glDeleteTextures(1, &self.linear_resolve_dst_tex);
@@ -409,7 +409,7 @@ pub const GlesTextState = struct {
 
     // ── Draw ──
 
-    fn drawTextInternal(self: *GlesTextState, prepared: *const PreparedResources, vertices: []const u32, draw_state: DrawState, texture_layer_base: u32, allow_subpixel: bool) !void {
+    fn drawTextInternal(self: *Gles3TextState, prepared: *const PreparedResources, vertices: []const u32, draw_state: DrawState, texture_layer_base: u32, allow_subpixel: bool) !void {
         // VAO may have been unbound by other renderers in the same context.
         gl.glBindVertexArray(self.vao);
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vbo);
@@ -466,11 +466,11 @@ pub const GlesTextState = struct {
         }
     }
 
-    pub fn drawTextPrepared(self: *GlesTextState, prepared: *const PreparedResources, vertices: []const u32, draw_state: DrawState, texture_layer_base: u32) !void {
+    pub fn drawTextPrepared(self: *Gles3TextState, prepared: *const PreparedResources, vertices: []const u32, draw_state: DrawState, texture_layer_base: u32) !void {
         try self.drawTextInternal(prepared, vertices, draw_state, texture_layer_base, true);
     }
 
-    pub fn drawPreparedText(self: *GlesTextState, prepared: *const PreparedResources, vertices: []const u32) void {
+    pub fn drawPreparedText(self: *Gles3TextState, prepared: *const PreparedResources, vertices: []const u32) void {
         _ = prepared;
         if (vertices.len == 0) return;
         gl.glBindVertexArray(self.vao);
@@ -478,7 +478,7 @@ pub const GlesTextState = struct {
         self.drawGlyphRange(vertices, 0, vertices.len / vertex.WORDS_PER_INSTANCE);
     }
 
-    pub fn drawPathsPrepared(self: *GlesTextState, prepared: *const PreparedResources, vertices: []const u32, draw_state: DrawState, texture_layer_base: u32) !void {
+    pub fn drawPathsPrepared(self: *Gles3TextState, prepared: *const PreparedResources, vertices: []const u32, draw_state: DrawState, texture_layer_base: u32) !void {
         const render_mode: subpixel_policy.TextRenderMode = .grayscale;
         const prog_state = self.ensurePathProgram();
         gl.glBindVertexArray(self.vao);
@@ -490,21 +490,21 @@ pub const GlesTextState = struct {
         self.drawGlyphRange(vertices, 0, vertices.len / vertex.WORDS_PER_INSTANCE);
     }
 
-    pub fn beginDraw(self: *GlesTextState) void {
+    pub fn beginDraw(self: *Gles3TextState) void {
         self.frame_begun = false;
     }
 
-    fn ensureColrProgram(self: *GlesTextState) *const ProgramState {
+    fn ensureColrProgram(self: *Gles3TextState) *const ProgramState {
         std.debug.assert(self.colr_program.handle != 0);
         return &self.colr_program;
     }
 
-    fn ensurePathProgram(self: *GlesTextState) *const ProgramState {
+    fn ensurePathProgram(self: *Gles3TextState) *const ProgramState {
         std.debug.assert(self.path_program.handle != 0);
         return &self.path_program;
     }
 
-    fn bindProgramState(self: *GlesTextState, prepared: *const PreparedResources, prog_state: *const ProgramState, draw_state: DrawState, texture_layer_base: u32, render_mode: subpixel_policy.TextRenderMode) !void {
+    fn bindProgramState(self: *Gles3TextState, prepared: *const PreparedResources, prog_state: *const ProgramState, draw_state: DrawState, texture_layer_base: u32, render_mode: subpixel_policy.TextRenderMode) !void {
         const bank_id = texture_layers.bank(texture_layer_base);
         const bank = prepared.bankForId(bank_id) orelse return error.MissingPreparedResource;
         if (prog_state.handle != self.active_program or !self.frame_begun or bank_id != self.active_resource_bank_id) {
@@ -549,7 +549,7 @@ pub const GlesTextState = struct {
         }
     }
 
-    fn drawGlyphRange(self: *GlesTextState, vertices: []const u32, glyph_offset: usize, glyph_count: usize) void {
+    fn drawGlyphRange(self: *Gles3TextState, vertices: []const u32, glyph_offset: usize, glyph_count: usize) void {
         _ = self;
         var glyphs_drawn: usize = 0;
         while (glyphs_drawn < glyph_count) {
@@ -568,7 +568,7 @@ pub const GlesTextState = struct {
 
 // ── Module-level state instance ──
 
-pub var state: GlesTextState = .{};
+pub var state: Gles3TextState = .{};
 
 pub fn init() !void {
     return state.init();

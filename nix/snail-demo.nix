@@ -14,7 +14,7 @@
 , version ? "0.11.0"
 , enableGL33 ? true
 , enableGL44 ? true
-, enableOpenGLES ? true
+, enableGLES3 ? true
 , enableVulkan ? true
 , enableCpu ? true
 , enableHarfBuzz ? true
@@ -28,7 +28,7 @@ let
     inherit
       enableGL33
       enableGL44
-      enableOpenGLES
+      enableGLES3
       enableVulkan
       enableCpu
       enableHarfBuzz
@@ -39,7 +39,7 @@ let
     cApiStatic = false;
   };
 in
-assert enableGL33 || enableGL44 || enableOpenGLES || enableVulkan || enableCpu;
+assert enableGL33 || enableGL44 || enableGLES3 || enableVulkan || enableCpu;
 stdenv.mkDerivation {
   inherit pname version src;
 
@@ -51,7 +51,7 @@ stdenv.mkDerivation {
   ];
 
   buildInputs =
-    lib.optionals (enableGL33 || enableGL44 || enableOpenGLES) [
+    lib.optionals (enableGL33 || enableGL44 || enableGLES3) [
       libGL
     ]
     ++ lib.optionals enableHarfBuzz [

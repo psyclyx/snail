@@ -1,10 +1,10 @@
 const std = @import("std");
 
-fn requires(b: *std.Build, opengl: bool, opengles: bool, vulkan: bool, harfbuzz: bool) []const u8 {
+fn requires(b: *std.Build, opengl: bool, gles3: bool, vulkan: bool, harfbuzz: bool) []const u8 {
     var out = std.ArrayListUnmanaged(u8).empty;
     const allocator = b.allocator;
     if (opengl) appendRequirement(allocator, &out, "gl");
-    if (opengles) appendRequirement(allocator, &out, "glesv2");
+    if (gles3) appendRequirement(allocator, &out, "glesv2");
     if (harfbuzz) appendRequirement(allocator, &out, "harfbuzz");
     if (vulkan) appendRequirement(allocator, &out, "vulkan");
     return out.toOwnedSlice(allocator) catch @panic("out of memory");
@@ -19,7 +19,7 @@ pub fn render(
     b: *std.Build,
     version: []const u8,
     opengl: bool,
-    opengles: bool,
+    gles3: bool,
     vulkan: bool,
     harfbuzz: bool,
 ) []const u8 {
@@ -35,5 +35,5 @@ pub fn render(
         \\Cflags: -I${{includedir}}
         \\Requires: {s}
         \\
-    , .{ version, requires(b, opengl, opengles, vulkan, harfbuzz) });
+    , .{ version, requires(b, opengl, gles3, vulkan, harfbuzz) });
 }

@@ -4,8 +4,8 @@
 
 ### Added
 
-- Added an OpenGL ES renderer (`GlesRenderer`) with Zig and C entry points,
-  `snail_gles.h`, shader coverage helpers, and build/Nix flags.
+- Added an OpenGL ES 3.0 renderer (`Gles3Renderer`) with Zig and C entry points,
+  `snail_gles3.h`, shader coverage helpers, and build/Nix flags.
 - GL 3.3 and GL 4.4 can now be enabled in the same build and instantiated as
   separate renderer types.
 
@@ -17,8 +17,10 @@
   so backend switching can create the requested renderer.
 - GL 3.3 and GL 4.4 now have separate renderer state and prepared-resource
   cache types while still sharing implementation code where the APIs match.
-- Nix packages now expose `enableGL33`, `enableGL44`, and `enableOpenGLES`
+- Nix packages now expose `enableGL33`, `enableGL44`, and `enableGLES3`
   independently.
+- Renamed the OpenGL ES backend surface to GLES3: use `-Dgles3`,
+  `Gles3Renderer`, `snail_gles3.h`, and `snail_gles3_*` C entry points.
 
 ### Removed
 

@@ -330,7 +330,7 @@ pub const SnailGl44TextCoverageProgram = extern struct {
     image_tex_unit: c_int = 3,
 };
 
-pub const SnailGlesTextCoverageProgram = extern struct {
+pub const SnailGles3TextCoverageProgram = extern struct {
     curve_tex_loc: c_int = -1,
     band_tex_loc: c_int = -1,
     layer_tex_loc: c_int = -1,

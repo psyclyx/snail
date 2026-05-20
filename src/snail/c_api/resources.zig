@@ -390,7 +390,7 @@ fn coverageBackendPrepared(backend: *const CoverageBackendImpl) ?*const snail.Pr
         .gl44 => |gl_backend| if (comptime build_options.enable_gl44) gl_backend.prepared else null,
         .vulkan => |vk_backend| if (comptime build_options.enable_vulkan) vk_backend.prepared else null,
         .cpu => null,
-        .gles => |gles_backend| if (comptime build_options.enable_opengles) gles_backend.prepared else null,
+        .gles3 => |gles3_backend| if (comptime build_options.enable_gles3) gles3_backend.prepared else null,
     };
 }
 

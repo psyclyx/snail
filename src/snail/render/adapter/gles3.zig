@@ -9,8 +9,8 @@ const prepared_mod = @import("../../resources/prepared.zig");
 const set_mod = @import("../../resources/manifest.zig");
 const upload_mod = @import("../../upload.zig");
 
-const pipeline = if (build_options.enable_opengles) @import("../backend/gles/state.zig") else struct {
-    pub const GlesTextState = void;
+const pipeline = if (build_options.enable_gles3) @import("../backend/gles3/state.zig") else struct {
+    pub const Gles3TextState = void;
     pub const PreparedResources = void;
 };
 
@@ -29,19 +29,19 @@ const ResourceUploadPlan = upload_mod.ResourceUploadPlan;
 const ResourceUploadBatch = upload_mod.ResourceUploadBatch;
 const UploadAllocators = upload_mod.UploadAllocators;
 
-const Config = if (build_options.enable_opengles) struct {
-    pub const Backend = pipeline.GlesTextState;
+const Config = if (build_options.enable_gles3) struct {
+    pub const Backend = pipeline.Gles3TextState;
     pub const Prepared = pipeline.PreparedResources;
-    pub const backend_kind = interface.BackendKind.gles;
+    pub const backend_kind = interface.BackendKind.gles3;
     pub const uses_resource_cache = true;
 
     pub fn prepared(prepared_resources: *const PreparedResources) ?*const Prepared {
-        return prepared_resources.resident.gles orelse null;
+        return prepared_resources.resident.gles3 orelse null;
     }
 
     pub fn uploadResources(self: *Backend, allocators: UploadAllocators, prepared_resources: *PreparedResources, batch: ResourceUploadBatch) !void {
-        const gles_prepared = self.resourceCache(allocators.persistent);
-        if (batch.atlases.len > 0 or batch.layer_infos.len > 0) try gles_prepared.uploadAtlasesAndLayerInfoWithCapacityModes(
+        const gles3_prepared = self.resourceCache(allocators.persistent);
+        if (batch.atlases.len > 0 or batch.layer_infos.len > 0) try gles3_prepared.uploadAtlasesAndLayerInfoWithCapacityModes(
             allocators.scratch,
             batch.atlases,
             batch.atlas_capacity_modes,
@@ -49,14 +49,14 @@ const Config = if (build_options.enable_opengles) struct {
             batch.layer_infos,
             batch.layer_info_views,
         );
-        if (batch.images.len > 0) try gles_prepared.uploadImages(allocators.scratch, batch.images, batch.image_views);
-        prepared_resources.resident.gles = gles_prepared;
-        prepared_resources.resident.generation = gles_prepared.generation;
+        if (batch.images.len > 0) try gles3_prepared.uploadImages(allocators.scratch, batch.images, batch.image_views);
+        prepared_resources.resident.gles3 = gles3_prepared;
+        prepared_resources.resident.generation = gles3_prepared.generation;
     }
 
     pub fn coverageBackend(self: *Backend, prepared_resources: *const PreparedResources) ?CoverageBackend {
-        if (prepared_resources.resident.gles) |gles_resources| {
-            return .{ .gles = .{ .gles = self, .gles_resources = gles_resources, .prepared = prepared_resources } };
+        if (prepared_resources.resident.gles3) |gles3_resources| {
+            return .{ .gles3 = .{ .gles3 = self, .gles3_resources = gles3_resources, .prepared = prepared_resources } };
         }
         return null;
     }
@@ -71,28 +71,28 @@ const Config = if (build_options.enable_opengles) struct {
         switch (pass.resolve) {
             .direct => try draw(renderer, prepared_resources, records, pass.state),
             .linear => |resolve| {
-                const gles_state: *Backend = @ptrCast(@alignCast(renderer.ptr));
-                const restore = try gles_state.beginLinearResolve(pass.state.surface, resolve);
-                defer gles_state.endLinearResolve(restore);
+                const gles3_state: *Backend = @ptrCast(@alignCast(renderer.ptr));
+                const restore = try gles3_state.beginLinearResolve(pass.state.surface, resolve);
+                defer gles3_state.endLinearResolve(restore);
                 try draw(renderer, prepared_resources, records, pass.state);
             },
         }
     }
 } else struct {};
 
-pub const vtable = if (build_options.enable_opengles) common.vtable(Config) else interface.disabledVTable(.gles);
+pub const vtable = if (build_options.enable_gles3) common.vtable(Config) else interface.disabledVTable(.gles3);
 
-/// Typed handle for the GLES backend.
+/// Typed handle for the GLES3 backend.
 ///
-/// `Renderer` owns the GLES state; the upload / draw methods are thin shims over
+/// `Renderer` owns the GLES3 state; the upload / draw methods are thin shims over
 /// the erased renderer for callers that want to stay strongly typed.
-pub const Renderer = if (build_options.enable_opengles) struct {
+pub const Renderer = if (build_options.enable_gles3) struct {
     const Self = @This();
     allocator: std.mem.Allocator,
-    state: *pipeline.GlesTextState,
+    state: *pipeline.Gles3TextState,
 
     pub fn init(allocator: std.mem.Allocator) !Self {
-        const text = try allocator.create(pipeline.GlesTextState);
+        const text = try allocator.create(pipeline.Gles3TextState);
         text.* = .{};
         errdefer allocator.destroy(text);
         try text.init();
@@ -145,8 +145,8 @@ pub const Renderer = if (build_options.enable_opengles) struct {
     }
 
     pub fn coverageBackend(self: *Self, prepared_resources: *const PreparedResources) ?CoverageBackend {
-        if (prepared_resources.resident.gles) |gles_resources| {
-            return .{ .gles = .{ .gles = self.state, .gles_resources = gles_resources, .prepared = prepared_resources } };
+        if (prepared_resources.resident.gles3) |gles3_resources| {
+            return .{ .gles3 = .{ .gles3 = self.state, .gles3_resources = gles3_resources, .prepared = prepared_resources } };
         }
         return null;
     }

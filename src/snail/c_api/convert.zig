@@ -11,7 +11,7 @@ const SnailFontStyle = c.SnailFontStyle;
 const SnailCoverageDrawState = c.SnailCoverageDrawState;
 const SnailGl33TextCoverageProgram = c.SnailGl33TextCoverageProgram;
 const SnailGl44TextCoverageProgram = c.SnailGl44TextCoverageProgram;
-const SnailGlesTextCoverageProgram = c.SnailGlesTextCoverageProgram;
+const SnailGles3TextCoverageProgram = c.SnailGles3TextCoverageProgram;
 const SnailMat4 = c.SnailMat4;
 const SnailOverride = c.SnailOverride;
 const SnailPaint = c.SnailPaint;
@@ -175,8 +175,8 @@ pub fn toGl44CoverageProgram(program: SnailGl44TextCoverageProgram) !snail.cover
     return toGlCoverageProgramFields(program);
 }
 
-pub fn toGlesCoverageProgram(program: SnailGlesTextCoverageProgram) !snail.coverage.GlesProgram {
-    if (comptime build_options.enable_opengles) {
+pub fn toGles3CoverageProgram(program: SnailGles3TextCoverageProgram) !snail.coverage.Gles3Program {
+    if (comptime build_options.enable_gles3) {
         return .{
             .curve_tex_loc = program.curve_tex_loc,
             .band_tex_loc = program.band_tex_loc,

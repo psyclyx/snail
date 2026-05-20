@@ -2,7 +2,7 @@
 
 { enableGL33 ? true
 , enableGL44 ? true
-, enableOpenGLES ? true
+, enableGLES3 ? true
 , enableVulkan ? true
 , enableCpu ? true
 , enableHarfBuzz ? true
@@ -22,7 +22,7 @@ in
     "-Dcpu=${cpu}"
     (boolFlag "gl33" enableGL33)
     (boolFlag "gl44" enableGL44)
-    (boolFlag "opengl-es" enableOpenGLES)
+    (boolFlag "gles3" enableGLES3)
     (boolFlag "vulkan" enableVulkan)
     (boolFlag "cpu-renderer" enableCpu)
     (boolFlag "harfbuzz" enableHarfBuzz)

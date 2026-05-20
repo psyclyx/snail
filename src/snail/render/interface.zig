@@ -252,8 +252,8 @@ fn disabledGl44BackendName(_: *anyopaque) [:0]const u8 {
     return "GL 4.4 (disabled)";
 }
 
-fn disabledGlesBackendName(_: *anyopaque) [:0]const u8 {
-    return "OpenGL ES (disabled)";
+fn disabledGles3BackendName(_: *anyopaque) [:0]const u8 {
+    return "OpenGL ES 3.0 (disabled)";
 }
 
 fn disabledVulkanBackendName(_: *anyopaque) [:0]const u8 {
@@ -270,7 +270,7 @@ fn disabledBackendName(comptime backend_kind: BackendKind) *const fn (*anyopaque
         .gl44 => &disabledGl44BackendName,
         .vulkan => &disabledVulkanBackendName,
         .cpu => &disabledCpuBackendName,
-        .gles => &disabledGlesBackendName,
+        .gles3 => &disabledGles3BackendName,
     };
 }
 
