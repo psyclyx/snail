@@ -73,16 +73,22 @@ pub const ThreadPoolImpl = struct { handle_allocator: *HandleAllocator, inner: s
 pub const RendererImpl = struct {
     handle_allocator: *HandleAllocator,
     backend: snail.BackendKind,
-    gl: if (build_options.enable_opengl) ?snail.GlRenderer else void = if (build_options.enable_opengl) null else {},
+    gl33: if (build_options.enable_opengl) ?snail.Gl33Renderer else void = if (build_options.enable_opengl) null else {},
+    gl44: if (build_options.enable_opengl) ?snail.Gl44Renderer else void = if (build_options.enable_opengl) null else {},
     gles: if (build_options.enable_opengles) ?snail.GlesRenderer else void = if (build_options.enable_opengles) null else {},
     vulkan: if (build_options.enable_vulkan) ?snail.VulkanRenderer else void = if (build_options.enable_vulkan) null else {},
     cpu: if (build_options.enable_cpu) ?snail.CpuRenderer else void = if (build_options.enable_cpu) null else {},
 
     pub fn asRenderer(self: *RendererImpl) snail.Renderer {
         return switch (self.backend) {
-            .gl => blk: {
+            .gl33 => blk: {
                 if (comptime !build_options.enable_opengl) unreachable;
-                if (self.gl) |*gl| break :blk gl.asRenderer();
+                if (self.gl33) |*gl| break :blk gl.asRenderer();
+                unreachable;
+            },
+            .gl44 => blk: {
+                if (comptime !build_options.enable_opengl) unreachable;
+                if (self.gl44) |*gl| break :blk gl.asRenderer();
                 unreachable;
             },
             .gles => blk: {
@@ -105,8 +111,11 @@ pub const RendererImpl = struct {
 
     pub fn deinit(self: *RendererImpl) void {
         switch (self.backend) {
-            .gl => if (comptime build_options.enable_opengl) {
-                if (self.gl) |*gl| gl.deinit();
+            .gl33 => if (comptime build_options.enable_opengl) {
+                if (self.gl33) |*gl| gl.deinit();
+            },
+            .gl44 => if (comptime build_options.enable_opengl) {
+                if (self.gl44) |*gl| gl.deinit();
             },
             .gles => if (comptime build_options.enable_opengles) {
                 if (self.gles) |*gles| gles.deinit();
@@ -120,10 +129,14 @@ pub const RendererImpl = struct {
 
     pub fn backendName(self: *const RendererImpl) [:0]const u8 {
         return switch (self.backend) {
-            .gl => if (comptime build_options.enable_opengl)
-                self.gl.?.backendName()
+            .gl33 => if (comptime build_options.enable_opengl)
+                self.gl33.?.backendName()
             else
-                "OpenGL (disabled)",
+                "GL 3.3 (disabled)",
+            .gl44 => if (comptime build_options.enable_opengl)
+                self.gl44.?.backendName()
+            else
+                "GL 4.4 (disabled)",
             .gles => if (comptime build_options.enable_opengles)
                 self.gles.?.backendName()
             else

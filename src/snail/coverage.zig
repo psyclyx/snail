@@ -57,7 +57,8 @@ pub const GlesProgram = if (build_options.enable_opengles) gles_pipeline.TextCov
 pub const VulkanProgram = if (build_options.enable_vulkan) vulkan_pipeline.TextCoverageProgram else struct {};
 
 pub const Program = union(BackendKind) {
-    gl: GlProgram,
+    gl33: GlProgram,
+    gl44: GlProgram,
     vulkan: VulkanProgram,
     cpu: void,
     gles: GlesProgram,
@@ -65,19 +66,20 @@ pub const Program = union(BackendKind) {
 
 /// GLSL 330 pieces for material shaders that consume Snail text coverage.
 ///
-/// Include `snail.coverage.Shader.gl.vertex_interface` in a vertex shader that draws
-/// prepared text coverage geometry, and `snail.coverage.Shader.gl.fragment_interface`
-/// plus `snail.coverage.Shader.gl.fragment_body` in the fragment shader. The fragment body exposes
+/// Include `snail.coverage.Shader.gl33.vertex_interface` or
+/// `snail.coverage.Shader.gl44.vertex_interface` in a vertex shader that draws
+/// prepared text coverage geometry, and the matching `fragment_interface`
+/// plus `fragment_body` in the fragment shader. The fragment body exposes
 /// `snail_text_coverage()`, `snail_text_color_srgb()`, and
 /// `snail_text_color_linear()` for use as material inputs. Material shaders
 /// that evaluate coverage without Snail's text varyings can instead include
-/// `snail.coverage.Shader.gl.resource_interface` and `snail.coverage.Shader.gl.coverage_functions`.
+/// the desktop GL `resource_interface` and `coverage_functions`.
 /// Shaders that need random access to `TextCoverageRecords` can also include
 /// `sample_interface` and `sample_functions`, upload `records.slice()` as a
 /// `GL_R32UI` texture buffer, set `u_layer_base` to
 /// `records.layerWindowBase()`, and call `snail_text_sample_premul_linear(scene_pos)`.
 pub const Shader = struct {
-    pub const gl = struct {
+    const DesktopGlShader = struct {
         pub const vertex_interface = pipeline.text_vertex_interface;
         pub const fragment_interface = pipeline.text_coverage_fragment_interface;
         pub const resource_interface =
@@ -124,6 +126,9 @@ pub const Shader = struct {
             \\
             ;
     };
+
+    pub const gl33 = DesktopGlShader;
+    pub const gl44 = DesktopGlShader;
 
     pub const gles = struct {
         pub const vertex_interface = gles_pipeline.text_vertex_interface;
@@ -421,48 +426,53 @@ pub const VulkanBackend = if (build_options.enable_vulkan) struct {
 
 /// Backend hook for evaluating Snail text coverage inside caller-owned shaders.
 pub const Backend = union(BackendKind) {
-    gl: GlBackend,
+    gl33: GlBackend,
+    gl44: GlBackend,
     vulkan: VulkanBackend,
     cpu: void,
     gles: GlesBackend,
 
     pub fn bindProgram(self: Backend, program: Program) !void {
         switch (self) {
-            .gl => |backend| if (comptime build_options.enable_opengl) try backend.bindProgram(program.gl),
-            .gles => |backend| if (comptime build_options.enable_opengles) try backend.bindProgram(program.gles),
+            .gl33 => |backend| if (comptime build_options.enable_opengl) try backend.bindProgram(program.gl33),
+            .gl44 => |backend| if (comptime build_options.enable_opengl) try backend.bindProgram(program.gl44),
             .vulkan => |backend| if (comptime build_options.enable_vulkan) {
                 try backend.bindProgram(program.vulkan);
             },
             .cpu => {},
+            .gles => |backend| if (comptime build_options.enable_opengles) try backend.bindProgram(program.gles),
         }
     }
 
     pub fn bindDrawState(self: Backend, program: Program, state: DrawState) !void {
         switch (self) {
-            .gl => |backend| if (comptime build_options.enable_opengl) try backend.bindDrawState(program.gl, state),
-            .gles => |backend| if (comptime build_options.enable_opengles) try backend.bindDrawState(program.gles, state),
+            .gl33 => |backend| if (comptime build_options.enable_opengl) try backend.bindDrawState(program.gl33, state),
+            .gl44 => |backend| if (comptime build_options.enable_opengl) try backend.bindDrawState(program.gl44, state),
             .vulkan => |backend| if (comptime build_options.enable_vulkan) {
                 try backend.bindDrawState(program.vulkan, state);
             },
             .cpu => {},
+            .gles => |backend| if (comptime build_options.enable_opengles) try backend.bindDrawState(program.gles, state),
         }
     }
 
     pub fn drawCoverage(self: Backend, coverage: *const TextCoverageRecords) !void {
         switch (self) {
-            .gl => |backend| if (comptime build_options.enable_opengl) try backend.drawCoverage(coverage),
-            .gles => |backend| if (comptime build_options.enable_opengles) try backend.drawCoverage(coverage),
+            .gl33 => |backend| if (comptime build_options.enable_opengl) try backend.drawCoverage(coverage),
+            .gl44 => |backend| if (comptime build_options.enable_opengl) try backend.drawCoverage(coverage),
             .vulkan => |backend| if (comptime build_options.enable_vulkan) try backend.drawCoverage(coverage),
             .cpu => {},
+            .gles => |backend| if (comptime build_options.enable_opengles) try backend.drawCoverage(coverage),
         }
     }
 
     pub fn drawVertices(self: Backend, vertices: []const u32) !void {
         switch (self) {
-            .gl => |backend| if (comptime build_options.enable_opengl) try backend.drawVertices(vertices),
-            .gles => |backend| if (comptime build_options.enable_opengles) try backend.drawVertices(vertices),
+            .gl33 => |backend| if (comptime build_options.enable_opengl) try backend.drawVertices(vertices),
+            .gl44 => |backend| if (comptime build_options.enable_opengl) try backend.drawVertices(vertices),
             .vulkan => |backend| if (comptime build_options.enable_vulkan) try backend.drawVertices(vertices),
             .cpu => {},
+            .gles => |backend| if (comptime build_options.enable_opengles) try backend.drawVertices(vertices),
         }
     }
 };

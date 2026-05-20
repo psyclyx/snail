@@ -966,7 +966,7 @@ pub fn main() !void {
     const framebuffer = render_timing.initFramebuffer(WIDTH, HEIGHT);
     defer render_timing.destroyFramebuffer(framebuffer);
 
-    var gl_renderer_state = try snail.GlRenderer.init(allocator);
+    var gl_renderer_state = try snail.Gl33Renderer.init(allocator);
     defer gl_renderer_state.deinit();
     var gl_renderer = gl_renderer_state.asRenderer();
     for (scene_kinds, 0..) |kind, i| {

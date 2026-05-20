@@ -41,15 +41,31 @@ fn cpuPixels(pixels: ?[*]u8, width: u32, height: u32, stride: u32) ?[*]u8 {
     return ptr;
 }
 
-pub export fn snail_gl_renderer_init(out: *?*RendererImpl) c_int {
+pub export fn snail_gl33_renderer_init(out: *?*RendererImpl) c_int {
     if (comptime build_options.enable_opengl) {
         const impl = createHandle(RendererImpl, null) catch return SNAIL_ERR_OUT_OF_MEMORY;
-        const gl = snail.GlRenderer.init(allocatorForHandle(impl)) catch {
+        const gl = snail.Gl33Renderer.init(allocatorForHandle(impl)) catch {
             destroyHandle(impl);
             return SNAIL_ERR_RENDERER_FAILED;
         };
-        impl.backend = .gl;
-        impl.gl = gl;
+        impl.backend = .gl33;
+        impl.gl33 = gl;
+        out.* = impl;
+        return SNAIL_OK;
+    } else {
+        return SNAIL_ERR_RENDERER_FAILED;
+    }
+}
+
+pub export fn snail_gl44_renderer_init(out: *?*RendererImpl) c_int {
+    if (comptime build_options.enable_opengl) {
+        const impl = createHandle(RendererImpl, null) catch return SNAIL_ERR_OUT_OF_MEMORY;
+        const gl = snail.Gl44Renderer.init(allocatorForHandle(impl)) catch {
+            destroyHandle(impl);
+            return SNAIL_ERR_RENDERER_FAILED;
+        };
+        impl.backend = .gl44;
+        impl.gl44 = gl;
         out.* = impl;
         return SNAIL_OK;
     } else {

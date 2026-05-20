@@ -486,7 +486,7 @@ fn renderGlSeeded(
 
 fn renderGlLinearSeeded(
     allocator: std.mem.Allocator,
-    gl_renderer: *snail.GlRenderer,
+    gl_renderer: *snail.Gl33Renderer,
     fbo: gl.GLuint,
     scene: *const snail.Scene,
     state: snail.DrawState,
@@ -1196,7 +1196,7 @@ pub fn main() !void {
         gl.glDeleteTextures(1, &texture);
     }
 
-    var gl_renderer_state = try snail.GlRenderer.init(allocator);
+    var gl_renderer_state = try snail.Gl33Renderer.init(allocator);
     defer gl_renderer_state.deinit();
     var gl_renderer = gl_renderer_state.asRenderer();
     const gl_supports_lcd = gl_renderer_state.state.supports_dual_source_blend;

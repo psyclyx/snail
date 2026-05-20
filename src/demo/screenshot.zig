@@ -127,7 +127,7 @@ fn renderCompactBanner(allocator: std.mem.Allocator) !void {
     var scene_assets = try compact_scene.Assets.init(allocator);
     defer scene_assets.deinit();
 
-    var gl_renderer = try snail.GlRenderer.init(allocator);
+    var gl_renderer = try snail.Gl33Renderer.init(allocator);
     defer gl_renderer.deinit();
     var renderer = gl_renderer.asRenderer();
 
@@ -200,7 +200,7 @@ fn renderRepro(allocator: std.mem.Allocator) !void {
     var scene_assets = try demo_scene.Assets.init(allocator);
     defer scene_assets.deinit();
 
-    var gl_renderer = try snail.GlRenderer.init(allocator);
+    var gl_renderer = try snail.Gl33Renderer.init(allocator);
     defer gl_renderer.deinit();
     var renderer = gl_renderer.asRenderer();
 

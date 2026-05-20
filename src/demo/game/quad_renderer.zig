@@ -370,7 +370,7 @@ pub const QuadRenderer = struct {
             gl.glUniform1i(self.material.text_glyph_count_loc, @intCast(input.text.coverage.glyphCount()));
             gl.glUniform2f(self.material.text_scene_size_loc, input.scene_size[0], input.scene_size[1]);
             gl.glUniform1f(self.material.text_relief_strength_loc, input.relief_strength);
-            const coverage_program = snail.coverage.Program{ .gl = .{
+            const gl_program = snail.coverage.GlProgram{
                 .curve_tex_loc = self.material.text_curve_tex_loc,
                 .band_tex_loc = self.material.text_band_tex_loc,
                 .fill_rule_loc = self.material.text_fill_rule_loc,
@@ -378,7 +378,12 @@ pub const QuadRenderer = struct {
                 .layer_base_loc = self.material.text_layer_base_loc,
                 .curve_tex_unit = TEXT_CURVE_TEXTURE_UNIT,
                 .band_tex_unit = TEXT_BAND_TEXTURE_UNIT,
-            } };
+            };
+            const coverage_program = switch ((renderer orelse unreachable).backend()) {
+                .gl33 => snail.coverage.Program{ .gl33 = gl_program },
+                .gl44 => snail.coverage.Program{ .gl44 = gl_program },
+                else => unreachable,
+            };
             backend.bindProgram(coverage_program) catch unreachable;
             backend.bindDrawState(coverage_program, .{
                 .fill_rule = .non_zero,
@@ -465,13 +470,13 @@ const material_vertex_shader: [:0]const u8 =
 
 const material_fragment_shader: [:0]const u8 =
     "#version 330 core\n\n" ++
-    snail.coverage.Shader.gl.resource_interface ++
+    snail.coverage.Shader.gl33.resource_interface ++
     "\n" ++
-    snail.coverage.Shader.gl.coverage_functions ++
+    snail.coverage.Shader.gl33.coverage_functions ++
     "\n" ++
-    snail.coverage.Shader.gl.sample_interface ++
+    snail.coverage.Shader.gl33.sample_interface ++
     "\n" ++
-    snail.coverage.Shader.gl.sample_functions ++
+    snail.coverage.Shader.gl33.sample_functions ++
     "\n" ++
     \\in vec2 v_uv;
     \\in vec3 v_world_pos;

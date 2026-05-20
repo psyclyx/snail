@@ -244,8 +244,12 @@ fn disabledImageArrayWouldRebuild(_: *const PreparedResources, _: u32, _: u32, _
     return false;
 }
 
-fn disabledGlBackendName(_: *anyopaque) [:0]const u8 {
-    return "OpenGL (disabled)";
+fn disabledGl33BackendName(_: *anyopaque) [:0]const u8 {
+    return "GL 3.3 (disabled)";
+}
+
+fn disabledGl44BackendName(_: *anyopaque) [:0]const u8 {
+    return "GL 4.4 (disabled)";
 }
 
 fn disabledGlesBackendName(_: *anyopaque) [:0]const u8 {
@@ -262,10 +266,11 @@ fn disabledCpuBackendName(_: *anyopaque) [:0]const u8 {
 
 fn disabledBackendName(comptime backend_kind: BackendKind) *const fn (*anyopaque) [:0]const u8 {
     return switch (backend_kind) {
-        .gl => &disabledGlBackendName,
-        .gles => &disabledGlesBackendName,
+        .gl33 => &disabledGl33BackendName,
+        .gl44 => &disabledGl44BackendName,
         .vulkan => &disabledVulkanBackendName,
         .cpu => &disabledCpuBackendName,
+        .gles => &disabledGlesBackendName,
     };
 }
 

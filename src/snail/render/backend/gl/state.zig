@@ -93,9 +93,11 @@ pub const GlTextState = struct {
 
     // ── Init / Deinit ──
 
-    pub fn init(self: *GlTextState) !void {
-        self.backend = gl_backend.detect(gl);
+    pub fn init(self: *GlTextState, backend: Backend) !void {
+        self.backend = backend;
+        if (backend == .gl44 and gl_backend.detect(gl) != .gl44) return error.UnsupportedOpenGlBackend;
         self.supports_dual_source_blend = detectDualSourceBlendSupport();
+        errdefer self.deinit();
 
         // Link all draw programs during renderer init so draw never compiles or links.
         self.text_program = try loadProgramState("text", shaders.vertex_shader, shaders.fragment_shader_text, false);
@@ -112,7 +114,7 @@ pub const GlTextState = struct {
 
         switch (self.backend) {
             .gl33 => self.initGl33(),
-            .gl44 => self.initGl44(),
+            .gl44 => try self.initGl44(),
         }
 
         gl.glEnable(gl.GL_BLEND);
@@ -139,7 +141,7 @@ pub const GlTextState = struct {
         setupInstanceDivisors();
     }
 
-    fn initGl44(self: *GlTextState) void {
+    fn initGl44(self: *GlTextState) !void {
         gl.glCreateVertexArrays(1, &self.vao);
         gl.glCreateBuffers(1, &self.vbo);
         gl.glCreateBuffers(1, &self.ebo);
@@ -149,13 +151,13 @@ pub const GlTextState = struct {
         self.persistent_map = @ptrCast(gl.glMapNamedBufferRange(self.vbo, 0, RING_TOTAL_BYTES, flags));
 
         if (self.persistent_map == null) {
-            // Persistent mapping unavailable — fall back to the GL 3.3 baseline path.
             gl.glDeleteVertexArrays(1, &self.vao);
             gl.glDeleteBuffers(1, &self.vbo);
             gl.glDeleteBuffers(1, &self.ebo);
-            self.backend = .gl33;
-            self.initGl33();
-            return;
+            self.vao = 0;
+            self.vbo = 0;
+            self.ebo = 0;
+            return error.UnsupportedOpenGlBackend;
         }
 
         // All vertex attribs are per-instance (binding divisor = 1).

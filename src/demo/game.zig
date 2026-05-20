@@ -42,7 +42,7 @@ pub fn main() !void {
     var fonts = try demo_passes.initFonts(allocator);
     defer fonts.deinit();
 
-    var gl_renderer = try snail.GlRenderer.init(allocator);
+    var gl_renderer = try snail.Gl33Renderer.init(allocator);
     defer gl_renderer.deinit();
     var snail_renderer = gl_renderer.asRenderer();
 

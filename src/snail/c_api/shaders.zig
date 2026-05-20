@@ -18,45 +18,80 @@ const toGlesCoverageProgram = common.toGlesCoverageProgram;
 const toVulkanCoverageProgram = common.toVulkanCoverageProgram;
 const CoverageBackendImpl = common.CoverageBackendImpl;
 
-pub export fn snail_gl_coverage_shader_vertex_interface() SnailString {
+pub export fn snail_gl33_coverage_shader_vertex_interface() SnailString {
     if (comptime !build_options.enable_opengl) return wrapString("");
-    return wrapString(snail.coverage.Shader.gl.vertex_interface);
+    return wrapString(snail.coverage.Shader.gl33.vertex_interface);
 }
 
-pub export fn snail_gl_coverage_shader_fragment_interface() SnailString {
+pub export fn snail_gl33_coverage_shader_fragment_interface() SnailString {
     if (comptime !build_options.enable_opengl) return wrapString("");
-    return wrapString(snail.coverage.Shader.gl.fragment_interface);
+    return wrapString(snail.coverage.Shader.gl33.fragment_interface);
 }
 
-pub export fn snail_gl_coverage_shader_resource_interface() SnailString {
+pub export fn snail_gl33_coverage_shader_resource_interface() SnailString {
     if (comptime !build_options.enable_opengl) return wrapString("");
-    return wrapString(snail.coverage.Shader.gl.resource_interface);
+    return wrapString(snail.coverage.Shader.gl33.resource_interface);
 }
 
-pub export fn snail_gl_coverage_shader_coverage_functions() SnailString {
+pub export fn snail_gl33_coverage_shader_coverage_functions() SnailString {
     if (comptime !build_options.enable_opengl) return wrapString("");
-    return wrapString(snail.coverage.Shader.gl.coverage_functions);
+    return wrapString(snail.coverage.Shader.gl33.coverage_functions);
 }
 
-pub export fn snail_gl_coverage_shader_sample_interface() SnailString {
+pub export fn snail_gl33_coverage_shader_sample_interface() SnailString {
     if (comptime !build_options.enable_opengl) return wrapString("");
-    return wrapString(snail.coverage.Shader.gl.sample_interface);
+    return wrapString(snail.coverage.Shader.gl33.sample_interface);
 }
 
-pub export fn snail_gl_coverage_shader_sample_functions() SnailString {
+pub export fn snail_gl33_coverage_shader_sample_functions() SnailString {
     if (comptime !build_options.enable_opengl) return wrapString("");
-    return wrapString(snail.coverage.Shader.gl.sample_functions);
+    return wrapString(snail.coverage.Shader.gl33.sample_functions);
 }
 
-pub export fn snail_gl_coverage_shader_fragment_body() SnailString {
+pub export fn snail_gl33_coverage_shader_fragment_body() SnailString {
     if (comptime !build_options.enable_opengl) return wrapString("");
-    return wrapString(snail.coverage.Shader.gl.fragment_body);
+    return wrapString(snail.coverage.Shader.gl33.fragment_body);
 }
 
-pub export fn snail_gl_coverage_backend_bind_program(backend: *CoverageBackendImpl, program: SnailGlTextCoverageProgram) c_int {
+pub export fn snail_gl44_coverage_shader_vertex_interface() SnailString {
+    if (comptime !build_options.enable_opengl) return wrapString("");
+    return wrapString(snail.coverage.Shader.gl44.vertex_interface);
+}
+
+pub export fn snail_gl44_coverage_shader_fragment_interface() SnailString {
+    if (comptime !build_options.enable_opengl) return wrapString("");
+    return wrapString(snail.coverage.Shader.gl44.fragment_interface);
+}
+
+pub export fn snail_gl44_coverage_shader_resource_interface() SnailString {
+    if (comptime !build_options.enable_opengl) return wrapString("");
+    return wrapString(snail.coverage.Shader.gl44.resource_interface);
+}
+
+pub export fn snail_gl44_coverage_shader_coverage_functions() SnailString {
+    if (comptime !build_options.enable_opengl) return wrapString("");
+    return wrapString(snail.coverage.Shader.gl44.coverage_functions);
+}
+
+pub export fn snail_gl44_coverage_shader_sample_interface() SnailString {
+    if (comptime !build_options.enable_opengl) return wrapString("");
+    return wrapString(snail.coverage.Shader.gl44.sample_interface);
+}
+
+pub export fn snail_gl44_coverage_shader_sample_functions() SnailString {
+    if (comptime !build_options.enable_opengl) return wrapString("");
+    return wrapString(snail.coverage.Shader.gl44.sample_functions);
+}
+
+pub export fn snail_gl44_coverage_shader_fragment_body() SnailString {
+    if (comptime !build_options.enable_opengl) return wrapString("");
+    return wrapString(snail.coverage.Shader.gl44.fragment_body);
+}
+
+pub export fn snail_gl33_coverage_backend_bind_program(backend: *CoverageBackendImpl, program: SnailGlTextCoverageProgram) c_int {
     if (comptime !build_options.enable_opengl) return SNAIL_ERR_RENDERER_FAILED;
     switch (backend.inner) {
-        .gl => |gl_backend| {
+        .gl33 => |gl_backend| {
             gl_backend.bindProgram(toGlCoverageProgram(program) catch return SNAIL_ERR_INVALID_ARGUMENT) catch return SNAIL_ERR_DRAW_FAILED;
             return SNAIL_OK;
         },
@@ -64,10 +99,35 @@ pub export fn snail_gl_coverage_backend_bind_program(backend: *CoverageBackendIm
     }
 }
 
-pub export fn snail_gl_coverage_backend_bind_draw_state(backend: *CoverageBackendImpl, program: SnailGlTextCoverageProgram, state: SnailCoverageDrawState) c_int {
+pub export fn snail_gl33_coverage_backend_bind_draw_state(backend: *CoverageBackendImpl, program: SnailGlTextCoverageProgram, state: SnailCoverageDrawState) c_int {
     if (comptime !build_options.enable_opengl) return SNAIL_ERR_RENDERER_FAILED;
     switch (backend.inner) {
-        .gl => |gl_backend| {
+        .gl33 => |gl_backend| {
+            gl_backend.bindDrawState(
+                toGlCoverageProgram(program) catch return SNAIL_ERR_INVALID_ARGUMENT,
+                toCoverageDrawState(state) catch return SNAIL_ERR_INVALID_ARGUMENT,
+            ) catch return SNAIL_ERR_DRAW_FAILED;
+            return SNAIL_OK;
+        },
+        else => return SNAIL_ERR_INVALID_ARGUMENT,
+    }
+}
+
+pub export fn snail_gl44_coverage_backend_bind_program(backend: *CoverageBackendImpl, program: SnailGlTextCoverageProgram) c_int {
+    if (comptime !build_options.enable_opengl) return SNAIL_ERR_RENDERER_FAILED;
+    switch (backend.inner) {
+        .gl44 => |gl_backend| {
+            gl_backend.bindProgram(toGlCoverageProgram(program) catch return SNAIL_ERR_INVALID_ARGUMENT) catch return SNAIL_ERR_DRAW_FAILED;
+            return SNAIL_OK;
+        },
+        else => return SNAIL_ERR_INVALID_ARGUMENT,
+    }
+}
+
+pub export fn snail_gl44_coverage_backend_bind_draw_state(backend: *CoverageBackendImpl, program: SnailGlTextCoverageProgram, state: SnailCoverageDrawState) c_int {
+    if (comptime !build_options.enable_opengl) return SNAIL_ERR_RENDERER_FAILED;
+    switch (backend.inner) {
+        .gl44 => |gl_backend| {
             gl_backend.bindDrawState(
                 toGlCoverageProgram(program) catch return SNAIL_ERR_INVALID_ARGUMENT,
                 toCoverageDrawState(state) catch return SNAIL_ERR_INVALID_ARGUMENT,

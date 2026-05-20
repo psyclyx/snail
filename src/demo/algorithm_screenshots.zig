@@ -99,7 +99,7 @@ pub fn main() !void {
     var scene_assets = try Assets.init(allocator);
     defer scene_assets.deinit();
 
-    var gl_renderer = try snail.GlRenderer.init(allocator);
+    var gl_renderer = try snail.Gl33Renderer.init(allocator);
     defer gl_renderer.deinit();
     var renderer = gl_renderer.asRenderer();
 

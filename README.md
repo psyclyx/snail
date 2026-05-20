@@ -271,9 +271,9 @@ zig build check-c-api                           # verify C headers against gener
 
 Library backend flags:
 
-- `-Dopengl=true` (default) — desktop OpenGL backend (`GlRenderer`); installs `snail_gl.h` when the C API is enabled.
+- `-Dopengl=true` (default) — desktop OpenGL backends (`Gl33Renderer` and `Gl44Renderer`); installs `snail_gl.h` when the C API is enabled.
 - `-Dopengl-es=true` (default) — OpenGL ES backend (`GlesRenderer`); installs `snail_gles.h` when the C API is enabled.
-- `-Dgl33=false` (default) — pass `=true` to force an OpenGL 3.3 context/backend path where OpenGL is used.
+- `-Dgl33=false` (default) — pass `=true` to force demo/tool OpenGL contexts onto the GL 3.3 path.
 - `-Dvulkan=true` (default) — Vulkan backend (`VulkanRenderer`); pass `=false` for a slimmer OpenGL/CPU-only build. SPIR-V shaders are compiled at build time via `glslc`; installs `snail_vulkan.h` when the C API is enabled. That extension header includes Vulkan headers.
 - `-Dcpu-renderer=true` (default) — CPU backend (`CpuRenderer`); pass `=false` to drop it. Installs `snail_cpu.h` when the C API is enabled.
 - `-Dharfbuzz=true` (default) — pass `=false` for a HarfBuzz-free build using the built-in GSUB type 4 / GPOS type 2 shaper.
@@ -398,7 +398,7 @@ try scene.addText(.{ .blob = &blob, .resources = text_resources });
 // (See "Vector Paths" below for adding a PathPicture to the same scene.)
 
 // Requires an active GL context. Vulkan uses snail.VulkanRenderer.init(allocator, ctx).
-var gl = try snail.GlRenderer.init(allocator);
+var gl = try snail.Gl33Renderer.init(allocator);
 defer gl.deinit();
 var prepared = try gl.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &resources);
 defer prepared.deinit();
@@ -581,7 +581,7 @@ snail_scene_add_path_picture_draw(scene, (SnailPathPictureDraw){
 });
 
 SnailRenderer *renderer = NULL;
-snail_gl_renderer_init(&renderer);
+snail_gl33_renderer_init(&renderer);
 
 SnailDrawState draw_state = {
     .mvp = snail_mat4_identity(), // replace with your pixel-to-clip projection
@@ -672,7 +672,7 @@ until `snail_scene_reset` or `snail_scene_deinit`.
 | `snapToStep` / `snapDeltaToStep` | Snap a scalar to an explicit step, or return the delta needed to reach that snap. |
 | `snapLengthToStep` | Snap a length to an explicit step with a caller-provided minimum step count. |
 | `snapPointToStep` / `snapRectToStep` | Snap a point or rectangle using explicit per-axis steps. |
-| `GlRenderer`, `GlesRenderer`, `VulkanRenderer`, `CpuRenderer` | First-class backend renderers. |
+| `Gl33Renderer`, `Gl44Renderer`, `GlesRenderer`, `VulkanRenderer`, `CpuRenderer` | First-class backend renderers. |
 | `Renderer` | Type-erased convenience wrapper around a backend renderer. |
 | `Rect` | `{ x, y, w, h }` rectangle. |
 | `Transform2D` | 2x3 affine matrix `{ xx, xy, tx, yx, yy, ty }`. |
@@ -752,11 +752,12 @@ try scene.addPath(.{ .picture = &sprite, .resource_key = snail.ResourceKey.named
 
 ### Renderer
 
-`GlRenderer`, `GlesRenderer`, `VulkanRenderer`, and `CpuRenderer` are first-class types; `Renderer` is the type-erased backend-agnostic API for upload, cache inspection, and draw submission.
+`Gl33Renderer`, `Gl44Renderer`, `GlesRenderer`, `VulkanRenderer`, and `CpuRenderer` are first-class types; `Renderer` is the type-erased backend-agnostic API for upload, cache inspection, and draw submission.
 
 | Method | Description |
 |--------|-------------|
-| `GlRenderer.init(alloc) !GlRenderer` | Initialize the desktop OpenGL backend. Requires the GL context to be current. |
+| `Gl33Renderer.init(alloc) !Gl33Renderer` | Initialize the GL 3.3 backend. Requires a current desktop GL context. |
+| `Gl44Renderer.init(alloc) !Gl44Renderer` | Initialize the GL 4.4 backend. Requires a current desktop GL 4.4 context. |
 | `GlesRenderer.init(alloc) !GlesRenderer` | Initialize the OpenGL ES backend. Requires the GLES context to be current. |
 | `VulkanRenderer.init(alloc, ctx) !VulkanRenderer` | Initialize the Vulkan backend from a caller-owned `VulkanContext`. |
 | `CpuRenderer.init(pixels, w, h, stride) CpuRenderer` | Initialize the CPU backend over a caller-owned RGBA8 buffer. |
@@ -833,8 +834,9 @@ coverage without going through `Renderer.draw`. Use this when text is part of a
 3D material, mask, custom compositor, or post-process pass instead of a normal
 2D scene draw.
 
-- `snail.coverage.Shader.gl` exposes GLSL 330 sources you can `@embedFile`-style
-  splice into your own program: `vertex_interface`,
+- `snail.coverage.Shader.gl33` and `snail.coverage.Shader.gl44` expose the
+  desktop GLSL sources you can `@embedFile`-style splice into your own program:
+  `vertex_interface`,
   `fragment_interface`, `resource_interface`, `coverage_functions`, and
   `fragment_body`. For material shaders that sample text coverage from their
   own geometry, include `resource_interface`, `coverage_functions`,
@@ -1168,7 +1170,7 @@ include/
   snail.h                shared C API: resources, upload, draw records, coverage records
   snail_generated.h      generated by build/install; not checked in
   snail_cpu.h            CPU backend C constructor and thread-pool hook
-  snail_gl.h             OpenGL backend C constructor and coverage bindings
+  snail_gl.h             GL 3.3/4.4 backend C constructors and coverage bindings
   snail_gles.h           OpenGL ES backend C constructor and coverage bindings
   snail_vulkan.h         Vulkan backend C constructor, upload, and coverage hooks
 ```

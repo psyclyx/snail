@@ -274,12 +274,12 @@ const VulkanDriver = if (build_options.enable_vulkan) struct {
 } else void;
 
 const GlDriver = if (build_options.enable_opengl) struct {
-    renderer_state: snail.GlRenderer,
+    renderer_state: snail.Gl33Renderer,
 
     fn init(allocator: std.mem.Allocator, window: *wayland.Window) !GlDriver {
         try gl_platform.initForWindow(window);
         errdefer gl_platform.deinit();
-        var renderer_state = try snail.GlRenderer.init(allocator);
+        var renderer_state = try snail.Gl33Renderer.init(allocator);
         errdefer renderer_state.deinit();
         return .{ .renderer_state = renderer_state };
     }

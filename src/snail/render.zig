@@ -11,7 +11,8 @@ pub const BackendKind = interface.BackendKind;
 pub const Renderer = interface.Renderer;
 
 pub const CpuRenderer = adapter.cpu.CpuRenderer;
-pub const GlRenderer = adapter.gl.Renderer;
+pub const Gl33Renderer = adapter.gl.Gl33Renderer;
+pub const Gl44Renderer = adapter.gl.Gl44Renderer;
 pub const GlesRenderer = adapter.gles.Renderer;
 pub const ThreadPool = @import("thread_pool.zig").ThreadPool;
 pub const VulkanContext = adapter.vulkan.VulkanContext;

@@ -130,7 +130,8 @@ pub const VulkanContext = render.VulkanContext;
 pub const CpuRenderer = render.CpuRenderer;
 pub const ThreadPool = render.ThreadPool;
 pub const Renderer = render.Renderer;
-pub const GlRenderer = render.GlRenderer;
+pub const Gl33Renderer = render.Gl33Renderer;
+pub const Gl44Renderer = render.Gl44Renderer;
 pub const GlesRenderer = render.GlesRenderer;
 pub const VulkanRenderer = render.VulkanRenderer;
 
