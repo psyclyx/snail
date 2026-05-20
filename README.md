@@ -263,7 +263,7 @@ zig build run-game-demo                         # 3D scene with HUD + world-spac
 zig build run-screenshot                        # 2D demo offscreen → zig-out/demo-screenshot.tga
 zig build run-algorithm-screenshots             # README algorithm diagrams → zig-out/algorithm-*.png
 zig build run-backend-compare                   # CPU/GL/Vulkan parity
-zig build run-bench                             # benchmarks, including Vulkan rows when a Vulkan device is available
+zig build run-bench                             # benchmarks all enabled backends
 zig build install --release=fast                # install libsnail, enabled C headers, and snail.pc
 zig build generate-c-api                        # emit generated C API artifacts into the Zig cache
 zig build check-c-api                           # verify C headers against generated handles and Zig exports
@@ -978,7 +978,7 @@ snail is used in development but is not yet stable. The Zig API is settling and 
 
 ```sh
 zig build run-bench
-zig build run-bench -Dvulkan=false  # skip Vulkan rows
+zig build run-bench -Dgl44=false -Dgles30=false -Dvulkan=false  # trim backend rows
 ```
 
 Last run: 2026-05-19, `zig build run-bench`, ReleaseFast benchmark build. Lower
@@ -987,7 +987,7 @@ guarantee.
 
 NotoSans-Regular, 20 prep runs, 1000 text iterations, 1000 draw-record iterations.
 
-The vector workload contains filled and stroked rounded rectangles, ellipses, and custom cubic/quadratic paths. Vulkan rows are emitted unless the build is configured with `-Dvulkan=false`.
+The vector workload contains filled and stroked rounded rectangles, ellipses, and custom cubic/quadratic paths. Backend rows follow the enabled build flags.
 
 ### Hardware
 

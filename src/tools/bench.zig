@@ -1,8 +1,8 @@
 //! Consolidated benchmarks for pasteable README tables.
 //!
 //! The benchmark covers preparation, text layout/object creation, vector path
-//! freezing, draw-record generation, and prepared rendering on CPU, GL, and
-//! Vulkan when Vulkan is built in.
+//! freezing, draw-record generation, and prepared rendering on each enabled
+//! CPU, GL, OpenGL ES, and Vulkan backend.
 
 const std = @import("std");
 const build_options = @import("build_options");
@@ -839,6 +839,78 @@ fn benchModes(
     }
 }
 
+fn appendGpuRenderRows(
+    allocator: std.mem.Allocator,
+    backend_name: []const u8,
+    renderer: *snail.Renderer,
+    bundles: []const SceneBundle,
+    rows: *std.ArrayList(RenderRow),
+    options: snail.DrawState,
+) !void {
+    for (scene_kinds, 0..) |kind, i| {
+        var resources = try uploadSceneResources(allocator, renderer, &bundles[i]);
+        defer resources.deinit();
+        var prepared_scene = try snail.PreparedScene.initOwned(allocator, &resources, &bundles[i].scene);
+        defer prepared_scene.deinit();
+        try rows.append(allocator, .{
+            .backend = backend_name,
+            .scene = kind,
+            .frames = GPU_FRAMES,
+            .commands = bundles[i].scene.commandCount(),
+            .words = prepared_scene.wordCount(),
+            .segments = prepared_scene.segments.len,
+            .instance_bytes = prepared_scene.wordCount() * @sizeOf(u32),
+            .us = try render_timing.timeGlDraw(renderer, &resources, &prepared_scene, options, GPU_WARMUP, GPU_FRAMES),
+        });
+    }
+}
+
+fn benchGlRenderer(
+    comptime Renderer: type,
+    allocator: std.mem.Allocator,
+    api: egl_offscreen.GlApi,
+    atlas: *snail.TextAtlas,
+    bundles: []const SceneBundle,
+    render_rows: *std.ArrayList(RenderRow),
+    mode_rows: *std.ArrayList(ModeRow),
+    gl_hardware_rows: *std.ArrayList(report.GlHardwareRow),
+    options: snail.DrawState,
+) !void {
+    var ctx = try egl_offscreen.Context.init(WIDTH, HEIGHT, api);
+    defer ctx.deinit();
+    const framebuffer = render_timing.initFramebuffer(WIDTH, HEIGHT);
+    defer render_timing.destroyFramebuffer(framebuffer);
+
+    var renderer_state = try Renderer.init(allocator);
+    defer renderer_state.deinit();
+    var erased_renderer = renderer_state.asRenderer();
+    const backend_name = renderer_state.backendName();
+
+    const hardware = try report.captureGlHardwareRow(allocator, backend_name);
+    gl_hardware_rows.append(allocator, hardware) catch |err| {
+        hardware.deinit(allocator);
+        return err;
+    };
+
+    try appendGpuRenderRows(allocator, backend_name, &erased_renderer, bundles, render_rows, options);
+
+    const GlTimer = struct {
+        renderer_ptr: *snail.Renderer,
+        fn renderer(self: @This()) *snail.Renderer {
+            return self.renderer_ptr;
+        }
+        fn timeDraw(
+            self: @This(),
+            prepared: *const snail.PreparedResources,
+            scene: *const snail.PreparedScene,
+            opts: snail.DrawState,
+        ) !f64 {
+            return render_timing.timeGlDraw(self.renderer_ptr, prepared, scene, opts, GPU_WARMUP, GPU_FRAMES);
+        }
+    };
+    try benchModes(allocator, backend_name, atlas, mode_rows, GlTimer{ .renderer_ptr = &erased_renderer });
+}
+
 pub fn main() !void {
     const allocator = std.heap.smp_allocator;
     const options = drawState(WIDTH, HEIGHT, .rgb);
@@ -961,29 +1033,40 @@ pub fn main() !void {
         });
     }
 
-    var gl_ctx = try egl_offscreen.Context.init(WIDTH, HEIGHT, .gl33);
-    defer gl_ctx.deinit();
-    const framebuffer = render_timing.initFramebuffer(WIDTH, HEIGHT);
-    defer render_timing.destroyFramebuffer(framebuffer);
+    var mode_rows: std.ArrayList(ModeRow) = .empty;
+    defer mode_rows.deinit(allocator);
+    var gl_hardware_rows: std.ArrayList(report.GlHardwareRow) = .empty;
+    defer {
+        for (gl_hardware_rows.items) |row| row.deinit(allocator);
+        gl_hardware_rows.deinit(allocator);
+    }
 
-    var gl_renderer_state = try snail.Gl33Renderer.init(allocator);
-    defer gl_renderer_state.deinit();
-    var gl_renderer = gl_renderer_state.asRenderer();
-    for (scene_kinds, 0..) |kind, i| {
-        var gl_resources = try uploadSceneResources(allocator, &gl_renderer, &bundles[i]);
-        defer gl_resources.deinit();
-        var gl_scene = try snail.PreparedScene.initOwned(allocator, &gl_resources, &bundles[i].scene);
-        defer gl_scene.deinit();
-        try render_rows.append(allocator, .{
-            .backend = gl_renderer_state.backendName(),
-            .scene = kind,
-            .frames = GPU_FRAMES,
-            .commands = bundles[i].scene.commandCount(),
-            .words = gl_scene.wordCount(),
-            .segments = gl_scene.segments.len,
-            .instance_bytes = gl_scene.wordCount() * @sizeOf(u32),
-            .us = try render_timing.timeGlDraw(&gl_renderer, &gl_resources, &gl_scene, options, GPU_WARMUP, GPU_FRAMES),
-        });
+    const CpuTimer = struct {
+        renderer_ptr: *snail.Renderer,
+        pixels_buf: []u8,
+        fn renderer(self: @This()) *snail.Renderer {
+            return self.renderer_ptr;
+        }
+        fn timeDraw(
+            self: @This(),
+            prepared: *const snail.PreparedResources,
+            scene: *const snail.PreparedScene,
+            opts: snail.DrawState,
+        ) !f64 {
+            return render_timing.timeCpuDraw(self.renderer_ptr, prepared, scene, opts, self.pixels_buf, CPU_WARMUP, CPU_FRAMES);
+        }
+    };
+    try benchModes(allocator, "CPU", &atlas, &mode_rows, CpuTimer{ .renderer_ptr = &cpu_renderer, .pixels_buf = cpu_pixels });
+    try benchModes(allocator, "CPU (threaded)", &atlas, &mode_rows, CpuTimer{ .renderer_ptr = &cpu_threaded_renderer, .pixels_buf = cpu_pixels_threaded });
+
+    if (comptime build_options.enable_gl33) {
+        try benchGlRenderer(snail.Gl33Renderer, allocator, .gl33, &atlas, &bundles, &render_rows, &mode_rows, &gl_hardware_rows, options);
+    }
+    if (comptime build_options.enable_gl44) {
+        try benchGlRenderer(snail.Gl44Renderer, allocator, .gl44, &atlas, &bundles, &render_rows, &mode_rows, &gl_hardware_rows, options);
+    }
+    if (comptime build_options.enable_gles30) {
+        try benchGlRenderer(snail.Gles30Renderer, allocator, .gles30, &atlas, &bundles, &render_rows, &mode_rows, &gl_hardware_rows, options);
     }
 
     var vk_state: if (build_options.enable_vulkan) ?snail.VulkanRenderer else void = if (build_options.enable_vulkan) null else {};
@@ -1010,50 +1093,7 @@ pub fn main() !void {
                 .us = try render_timing.timeVulkanDraw(&vk_state.?, &vk_renderer, &vk_resources, &vk_scene, options, GPU_WARMUP, GPU_FRAMES),
             });
         }
-    }
-    defer if (build_options.enable_vulkan) {
-        if (vk_state) |*s| s.deinit();
-        vulkan_platform.deinitOffscreen();
-    };
 
-    var mode_rows: std.ArrayList(ModeRow) = .empty;
-    defer mode_rows.deinit(allocator);
-
-    const CpuTimer = struct {
-        renderer_ptr: *snail.Renderer,
-        pixels_buf: []u8,
-        fn renderer(self: @This()) *snail.Renderer {
-            return self.renderer_ptr;
-        }
-        fn timeDraw(
-            self: @This(),
-            prepared: *const snail.PreparedResources,
-            scene: *const snail.PreparedScene,
-            opts: snail.DrawState,
-        ) !f64 {
-            return render_timing.timeCpuDraw(self.renderer_ptr, prepared, scene, opts, self.pixels_buf, CPU_WARMUP, CPU_FRAMES);
-        }
-    };
-    try benchModes(allocator, "CPU", &atlas, &mode_rows, CpuTimer{ .renderer_ptr = &cpu_renderer, .pixels_buf = cpu_pixels });
-    try benchModes(allocator, "CPU (threaded)", &atlas, &mode_rows, CpuTimer{ .renderer_ptr = &cpu_threaded_renderer, .pixels_buf = cpu_pixels_threaded });
-
-    const GlTimer = struct {
-        renderer_ptr: *snail.Renderer,
-        fn renderer(self: @This()) *snail.Renderer {
-            return self.renderer_ptr;
-        }
-        fn timeDraw(
-            self: @This(),
-            prepared: *const snail.PreparedResources,
-            scene: *const snail.PreparedScene,
-            opts: snail.DrawState,
-        ) !f64 {
-            return render_timing.timeGlDraw(self.renderer_ptr, prepared, scene, opts, GPU_WARMUP, GPU_FRAMES);
-        }
-    };
-    try benchModes(allocator, gl_renderer_state.backendName(), &atlas, &mode_rows, GlTimer{ .renderer_ptr = &gl_renderer });
-
-    if (comptime build_options.enable_vulkan) {
         const VkTimer = struct {
             state: *snail.VulkanRenderer,
             renderer_ptr: *snail.Renderer,
@@ -1071,17 +1111,21 @@ pub fn main() !void {
         };
         try benchModes(allocator, vk_state.?.backendName(), &atlas, &mode_rows, VkTimer{ .state = &vk_state.?, .renderer_ptr = &vk_renderer });
     }
+    defer if (build_options.enable_vulkan) {
+        if (vk_state) |*s| s.deinit();
+        vulkan_platform.deinitOffscreen();
+    };
 
     std.debug.print(
         \\# Snail Benchmarks
         \\
         \\NotoSans-Regular, {d} prep runs, {d} text iterations, {d} draw-record iterations.
         \\
-        \\The vector workload contains filled and stroked rounded rectangles, ellipses, and custom cubic/quadratic paths. Vulkan rows are emitted unless the build is configured with `-Dvulkan=false`.
+        \\The vector workload contains filled and stroked rounded rectangles, ellipses, and custom cubic/quadratic paths. Backend rows follow the enabled build flags.
         \\
         \\
     , .{ PREP_RUNS, TEXT_ITERS, RECORD_ITERS });
-    report.printHardwareTable(true, build_options.enable_vulkan);
+    report.printHardwareTable(gl_hardware_rows.items, build_options.enable_vulkan);
     report.printPreparationTables(snail_prep, vector_prep, ft);
     report.printTextTable(&text_rows);
     report.printRecordTable(&record_rows);

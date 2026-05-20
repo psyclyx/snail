@@ -71,14 +71,14 @@ pub fn initForWindow(window: *wayland.Window, api: GlApi) !void {
 }
 
 fn initForCurrentWindow(api: GlApi) !void {
-    egl_display = try initEglDisplay();
+    egl_display = try initEglDisplay(api);
     errdefer {
         _ = egl.eglTerminate(egl_display);
         egl_display = egl.EGL_NO_DISPLAY;
     }
 
     var config: egl.EGLConfig = null;
-    try egl_common.chooseConfig(egl, egl_display, egl.EGL_WINDOW_BIT, &config);
+    try egl_common.chooseConfig(egl, egl_display, egl.EGL_WINDOW_BIT, api, &config);
 
     egl_context = try egl_common.createOpenGlContext(egl, api, egl_display, config);
     errdefer {
@@ -244,7 +244,7 @@ pub fn isKeyPressed(key: u32) bool {
     return false;
 }
 
-fn initEglDisplay() !egl.EGLDisplay {
+fn initEglDisplay(api: GlApi) !egl.EGLDisplay {
     const get_platform_display = @as(
         ?*const fn (egl.EGLenum, ?*anyopaque, ?[*]const egl.EGLint) callconv(.c) egl.EGLDisplay,
         @ptrCast(egl.eglGetProcAddress("eglGetPlatformDisplayEXT")),
@@ -262,6 +262,6 @@ fn initEglDisplay() !egl.EGLDisplay {
     var major: egl.EGLint = 0;
     var minor: egl.EGLint = 0;
     if (egl.eglInitialize(display, &major, &minor) == egl.EGL_FALSE) return error.EglInitializeFailed;
-    if (egl.eglBindAPI(egl.EGL_OPENGL_API) == egl.EGL_FALSE) return error.EglBindApiFailed;
+    try egl_common.bindApi(egl, api);
     return display;
 }

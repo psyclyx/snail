@@ -35,7 +35,32 @@ fn glStringSafe(name: gl.GLenum) []const u8 {
     return std.mem.span(@as([*:0]const u8, @ptrCast(ptr)));
 }
 
-pub fn printHardwareTable(gl_initialized: bool, vulkan_initialized: bool) void {
+pub const GlHardwareRow = struct {
+    backend: []const u8,
+    renderer: []const u8,
+    version: []const u8,
+
+    pub fn deinit(self: GlHardwareRow, allocator: std.mem.Allocator) void {
+        allocator.free(self.backend);
+        allocator.free(self.renderer);
+        allocator.free(self.version);
+    }
+};
+
+pub fn captureGlHardwareRow(allocator: std.mem.Allocator, backend: []const u8) !GlHardwareRow {
+    const backend_copy = try allocator.dupe(u8, backend);
+    errdefer allocator.free(backend_copy);
+    const renderer_copy = try allocator.dupe(u8, glStringSafe(gl.GL_RENDERER));
+    errdefer allocator.free(renderer_copy);
+    const version_copy = try allocator.dupe(u8, glStringSafe(gl.GL_VERSION));
+    return .{
+        .backend = backend_copy,
+        .renderer = renderer_copy,
+        .version = version_copy,
+    };
+}
+
+pub fn printHardwareTable(gl_rows: []const GlHardwareRow, vulkan_initialized: bool) void {
     var cpu_buf: [256]u8 = undefined;
     const cpu = cpuModelName(&cpu_buf);
     std.debug.print(
@@ -47,10 +72,10 @@ pub fn printHardwareTable(gl_initialized: bool, vulkan_initialized: bool) void {
         \\
     , .{cpu});
 
-    if (gl_initialized) {
+    for (gl_rows) |row| {
         std.debug.print(
-            "| OpenGL renderer | {s} |\n| OpenGL version | {s} |\n",
-            .{ glStringSafe(gl.GL_RENDERER), glStringSafe(gl.GL_VERSION) },
+            "| {s} renderer | {s} |\n| {s} version | {s} |\n",
+            .{ row.backend, row.renderer, row.backend, row.version },
         );
     }
 

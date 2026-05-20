@@ -16,10 +16,10 @@ pub const Context = struct {
 
     pub fn init(width: u32, height: u32, api: GlApi) !Context {
         var self = Context{};
-        try self.initDisplay();
+        try self.initDisplay(api);
         errdefer self.deinit();
 
-        try egl_common.chooseConfig(egl, self.display, egl.EGL_PBUFFER_BIT, &self.config);
+        try egl_common.chooseConfig(egl, self.display, egl.EGL_PBUFFER_BIT, api, &self.config);
         self.surface = createPbufferSurface(self.display, self.config, width, height) orelse return error.EglSurfaceCreateFailed;
         self.context = try egl_common.createOpenGlContext(egl, api, self.display, self.config);
         if (egl.eglMakeCurrent(self.display, self.surface, self.surface, self.context) == egl.EGL_FALSE) {
@@ -38,7 +38,7 @@ pub const Context = struct {
         self.* = .{};
     }
 
-    fn initDisplay(self: *Context) !void {
+    fn initDisplay(self: *Context, api: GlApi) !void {
         const get_platform_display = @as(
             ?*const fn (egl.EGLenum, ?*anyopaque, ?[*]const egl.EGLint) callconv(.c) egl.EGLDisplay,
             @ptrCast(egl.eglGetProcAddress("eglGetPlatformDisplayEXT")),
@@ -55,7 +55,7 @@ pub const Context = struct {
         var major: egl.EGLint = 0;
         var minor: egl.EGLint = 0;
         if (egl.eglInitialize(self.display, &major, &minor) == egl.EGL_FALSE) return error.EglInitializeFailed;
-        if (egl.eglBindAPI(egl.EGL_OPENGL_API) == egl.EGL_FALSE) return error.EglBindApiFailed;
+        try egl_common.bindApi(egl, api);
     }
 };
 
