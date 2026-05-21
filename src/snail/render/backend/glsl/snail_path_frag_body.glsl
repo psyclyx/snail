@@ -1,9 +1,20 @@
 #define kDirectEncodingKindBias 4.0
 const float kParamEps = 1e-5;
 const float kCoordEps = 1.0 / 65536.0;
-const float kPi = 3.14159265358979323846;
 const uint kBandCurveLocXMask = 0x0FFFu;
 const uint kBandCurveFirstMemberShift = 12u;
+
+#ifndef SNAIL_ENABLE_PATH
+#define SNAIL_ENABLE_PATH 1
+#endif
+
+#ifndef SNAIL_ENABLE_HINTED_TEXT
+#define SNAIL_ENABLE_HINTED_TEXT 1
+#endif
+
+#if SNAIL_ENABLE_PATH
+const float kPi = 3.14159265358979323846;
+#endif
 
 ivec2 decodeBandCurveLoc(uvec2 ref) {
     return ivec2(int(ref.x & kBandCurveLocXMask), int(ref.y));
@@ -19,11 +30,6 @@ ivec2 offsetLayerLoc(ivec2 base, int offset) {
     return ivec2(texel % width, texel / width);
 }
 
-struct SegmentRoots {
-    int count;
-    vec3 t;
-};
-
 struct SegmentData {
     int kind;
     vec2 p0;
@@ -31,6 +37,12 @@ struct SegmentData {
     vec2 p2;
     vec2 p3;
     vec3 weights;
+};
+
+#if SNAIL_ENABLE_PATH
+struct SegmentRoots {
+    int count;
+    vec3 t;
 };
 
 void appendRoot(inout SegmentRoots roots, float t) {
@@ -120,6 +132,7 @@ SegmentRoots solveCubicRoots(float a, float b, float cVal, float d) {
     appendRoot(roots, twoR * cos((phi + 4.0 * kPi) * third) - offset);
     return roots;
 }
+#endif
 
 vec2 solveQuadraticHorizDistances(float p0x, float p0y, float p1x, float p1y, float p2x, float p2y, float ppeX) {
     float ax = p0x - p1x * 2.0 + p2x;
@@ -179,6 +192,7 @@ vec2 solveQuadraticVertDistances(float p0x, float p0y, float p1x, float p1y, flo
     return vec2(y1 * ppeY, y2 * ppeY);
 }
 
+#if SNAIL_ENABLE_PATH
 SegmentData fetchSegment(ivec2 loc, int layer) {
     vec4 tex0 = texelFetch(u_curve_tex, ivec3(loc, layer), 0);
     vec4 tex1 = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(loc, 1), layer), 0);
@@ -207,7 +221,9 @@ SegmentData fetchSegment(ivec2 loc, int layer) {
     }
     return seg;
 }
+#endif
 
+#if SNAIL_ENABLE_HINTED_TEXT
 struct HintedTextRecord {
     ivec2 infoBase;
     int baseCurveTexel;
@@ -236,8 +252,18 @@ SegmentData addCurveDeltas(SegmentData seg, vec4 delta0, vec4 delta1) {
     return seg;
 }
 
-SegmentData fetchHintedSegment(ivec2 loc, int layer, HintedTextRecord record) {
-    SegmentData seg = fetchSegment(loc, layer);
+SegmentData fetchHintedQuadraticSegment(ivec2 loc, int layer, HintedTextRecord record) {
+    // Hinted TrueType outlines are emitted as direct-encoded quadratic segments.
+    vec4 tex0 = texelFetch(u_curve_tex, ivec3(loc, layer), 0);
+    vec4 tex1 = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(loc, 1), layer), 0);
+    SegmentData seg;
+    seg.kind = 0;
+    seg.p0 = tex0.xy;
+    seg.p1 = tex0.zw;
+    seg.p2 = tex1.xy;
+    seg.p3 = vec2(0.0);
+    seg.weights = vec3(1.0);
+
     int curveIndex = (curveTexelFromLoc(loc) - record.baseCurveTexel) / int(4);
     if (curveIndex < 0 || curveIndex >= record.curveCount) return seg;
 
@@ -246,6 +272,7 @@ SegmentData fetchHintedSegment(ivec2 loc, int layer, HintedTextRecord record) {
     vec4 delta1 = texelFetch(u_layer_tex, offsetLayerLoc(record.infoBase, deltaOffset + 1), 0);
     return addCurveDeltas(seg, delta0, delta1);
 }
+#endif
 
 float segmentMaxX(SegmentData seg) {
     if (seg.kind == 3) return max(seg.p0.x, seg.p2.x);
@@ -259,6 +286,7 @@ float segmentMaxY(SegmentData seg) {
     return max(max(seg.p0.y, seg.p1.y), seg.p2.y);
 }
 
+#if SNAIL_ENABLE_PATH
 float segmentEndRootDelta(SegmentData seg, vec2 sampleRc, bool horizontal) {
     if (seg.kind == 2) {
         return horizontal ? seg.p3.y - sampleRc.y : seg.p3.x - sampleRc.x;
@@ -304,12 +332,14 @@ bool isNearEndRoot(float t) {
 bool isEndpointRootDelta(float endRootDelta) {
     return abs(endRootDelta) <= kCoordEps;
 }
+#endif
 
 void appendCoverageContribution(inout float cov, inout float wgt, float distance, float sign) {
     cov += sign * clamp(distance + 0.5, 0.0, 1.0);
     wgt = max(wgt, clamp(1.0 - abs(distance) * 2.0, 0.0, 1.0));
 }
 
+#if SNAIL_ENABLE_PATH
 void accumulateLineCoverage(inout float cov, inout float wgt, float p0x, float p0y, float p2x, float p2y, float ppe, bool horizontal) {
     float rootAxis0 = horizontal ? p0y : p0x;
     float rootAxis2 = horizontal ? p2y : p2x;
@@ -482,6 +512,10 @@ vec2 evalAxisCoverageBands(vec2 sampleRc, float ppe, ivec2 gLoc, int headerBase,
     }
     return vec2(cov, wgt);
 }
+#endif
+
+#if SNAIL_ENABLE_HINTED_TEXT
+bool accumulateHintedTextSegment(inout float cov, inout float wgt, vec2 sampleRc, float ppe, SegmentData seg, bool horizontal);
 
 vec2 evalAxisCoverageBandsHinted(vec2 sampleRc, float ppe, ivec2 gLoc, int headerBase, int firstBand, int lastBand, int layer, bool horizontal, HintedTextRecord record) {
     float cov = 0.0;
@@ -501,19 +535,19 @@ vec2 evalAxisCoverageBandsHinted(vec2 sampleRc, float ppe, ivec2 gLoc, int heade
                 if (band != ownerBand) continue;
             }
             ivec2 cLoc = decodeBandCurveLoc(ref);
-            if (!accumulateAxisCoverageSegment(cov, wgt, sampleRc, ppe, fetchHintedSegment(cLoc, layer, record), horizontal) && ordered) break;
+            if (!accumulateHintedTextSegment(cov, wgt, sampleRc, ppe, fetchHintedQuadraticSegment(cLoc, layer, record), horizontal) && ordered) break;
         }
     }
     return vec2(cov, wgt);
 }
 
 bool accumulateHintedTextSegment(inout float cov, inout float wgt, vec2 sampleRc, float ppe, SegmentData seg, bool horizontal) {
+    // Keep hinted text off the generic conic/cubic coverage path; NVIDIA's
+    // GLSL linker spends seconds optimizing that unreachable combination.
+    if (seg.kind != 0) return true;
+
     float maxCoord = (horizontal ? segmentMaxX(seg) - sampleRc.x : segmentMaxY(seg) - sampleRc.y);
     if (maxCoord * ppe < -0.5) return false;
-
-    if (seg.kind != 0) {
-        return accumulateAxisCoverageSegment(cov, wgt, sampleRc, ppe, seg, horizontal);
-    }
 
     float p0x = seg.p0.x - sampleRc.x;
     float p0y = seg.p0.y - sampleRc.y;
@@ -549,22 +583,25 @@ vec2 evalHintedTextSingleBand(vec2 sampleRc, float ppe, ivec2 gLoc, int headerOf
     for (int i = 0; i < count; i++) {
         ivec2 bLoc = calcBandLoc(bandLoc, uint(i));
         ivec2 cLoc = decodeBandCurveLoc(texelFetch(u_band_tex, ivec3(bLoc, layer), 0).xy);
-        if (!accumulateHintedTextSegment(cov, wgt, sampleRc, ppe, fetchHintedSegment(cLoc, layer, record), horizontal) && ordered) break;
+        if (!accumulateHintedTextSegment(cov, wgt, sampleRc, ppe, fetchHintedQuadraticSegment(cLoc, layer, record), horizontal) && ordered) break;
     }
     return vec2(cov, wgt);
 }
+#endif
 
 struct BandSpan {
     int first;
     int last;
 };
 
+#if SNAIL_ENABLE_HINTED_TEXT
 vec2 evalHintedTextBandSpan(vec2 sampleRc, float ppe, ivec2 gLoc, int headerBase, BandSpan span, int layer, bool horizontal, HintedTextRecord record) {
     if (span.first == span.last) {
         return evalHintedTextSingleBand(sampleRc, ppe, gLoc, headerBase + span.first, layer, horizontal, record);
     }
     return evalAxisCoverageBandsHinted(sampleRc, ppe, gLoc, headerBase, span.first, span.last, layer, horizontal, record);
 }
+#endif
 
 // Convert the pixel footprint into band space. Near a band boundary the
 // renderer evaluates the covered band span and de-duplicates curve records,
@@ -581,6 +618,7 @@ BandSpan expandBandSpan(BandSpan span, int pad, int bandMax) {
     return BandSpan(max(span.first - pad, 0), min(span.last + pad, bandMax));
 }
 
+#if SNAIL_ENABLE_PATH
 float evalGlyphCoverage(vec2 rc, vec2 epp, vec2 ppe,
                         ivec2 gLoc, ivec2 bandMax, vec4 banding, int texLayer) {
     BandSpan hSpan = coverageBandSpan(rc.y, epp.y, banding.y, banding.w, bandMax.y);
@@ -593,7 +631,9 @@ float evalGlyphCoverage(vec2 rc, vec2 epp, vec2 ppe,
                     min(applyFillRule(horiz.x), applyFillRule(vert.x)));
     return applyCoverageTransfer(cov);
 }
+#endif
 
+#if SNAIL_ENABLE_HINTED_TEXT
 float evalHintedTextCoverage(vec2 rc, vec2 epp, vec2 ppe,
                              ivec2 gLoc, ivec2 bandMax, vec4 banding, int texLayer, HintedTextRecord record) {
     BandSpan hSpan = coverageBandSpan(rc.y, epp.y, banding.y, banding.w, bandMax.y);
@@ -610,6 +650,9 @@ float evalHintedTextCoverage(vec2 rc, vec2 epp, vec2 ppe,
                     min(applyFillRule(horiz.x), applyFillRule(vert.x)));
     return applyCoverageTransfer(cov);
 }
+#endif
+
+#if SNAIL_ENABLE_PATH
 float wrapPaintT(float t, float extendMode) {
     int mode = int(extendMode + 0.5);
     if (mode == 1) {
@@ -753,6 +796,7 @@ PathCompositeSample compositePathGroup(vec2 rc, vec2 epp, vec2 ppe, ivec2 infoBa
 
     return PathCompositeSample(result, has_gradient);
 }
+#endif
 
 void main() {
     vec2 rc = v_texcoord;
@@ -763,12 +807,21 @@ void main() {
 
     int special_kind = v_glyph.w & 0xFF;
     if (((v_glyph.w >> 8) & 0xFF) != SNAIL_SPECIAL_LAYER_SENTINEL) discard;
+#if SNAIL_ENABLE_PATH && SNAIL_ENABLE_HINTED_TEXT
     if (special_kind != SNAIL_SPECIAL_KIND_PATH && special_kind != SNAIL_SPECIAL_KIND_HINTED_TEXT) discard;
+#elif SNAIL_ENABLE_PATH
+    if (special_kind != SNAIL_SPECIAL_KIND_PATH) discard;
+#elif SNAIL_ENABLE_HINTED_TEXT
+    if (special_kind != SNAIL_SPECIAL_KIND_HINTED_TEXT) discard;
+#else
+    discard;
+#endif
     ivec2 infoBase = v_glyph.xy;
     vec4 firstInfo = texelFetch(u_layer_tex, infoBase, 0);
 
     int texLayer = u_layer_base + int(v_banding.w);
     vec4 linear_tint = vec4(srgbDecode(v_tint.r), srgbDecode(v_tint.g), srgbDecode(v_tint.b), v_tint.a);
+#if SNAIL_ENABLE_HINTED_TEXT
     if (special_kind == SNAIL_SPECIAL_KIND_HINTED_TEXT) {
         vec4 band = texelFetch(u_layer_tex, offsetLayerLoc(infoBase, 1), 0);
         vec4 meta = texelFetch(u_layer_tex, offsetLayerLoc(infoBase, 2), 0);
@@ -789,7 +842,10 @@ void main() {
         frag_color = (SNAIL_OUTPUT_SRGB != 0) ? srgbEncodePremultiplied(result) : result;
         return;
     }
+#endif
 
+#if SNAIL_ENABLE_PATH
+    if (special_kind != SNAIL_SPECIAL_KIND_PATH) discard;
     if (firstInfo.w >= 0.0) discard;
     if (int(-firstInfo.w + 0.5) == SNAIL_PAINT_KIND_COMPOSITE_GROUP) {
         PathCompositeSample result = compositePathGroup(rc, epp, ppe, infoBase, firstInfo, texLayer, linear_tint);
@@ -810,4 +866,7 @@ void main() {
     vec4 result = premultiplyColor(paint.color, cov);
     vec4 emit = (paint.gradient > 0.5) ? ditherPremultipliedColor(result) : result;
     frag_color = (SNAIL_OUTPUT_SRGB != 0) ? srgbEncodePremultiplied(emit) : emit;
+    return;
+#endif
+    discard;
 }

@@ -72,6 +72,7 @@ fn TextStateFor(comptime backend: Backend) type {
         text_subpixel_dual_program: ProgramState = .{},
         colr_program: ProgramState = .{},
         path_program: ProgramState = .{},
+        hinted_text_program: ProgramState = .{},
         linear_resolve_program: gl.GLuint = 0,
         linear_resolve_tex_loc: gl.GLint = -1,
         linear_resolve_dst_tex_loc: gl.GLint = -1,
@@ -110,7 +111,8 @@ fn TextStateFor(comptime backend: Backend) type {
             // Link all draw programs during renderer init so draw never compiles or links.
             self.text_program = try loadProgramState("text", shaders.vertex_shader, shaders.fragment_shader_text, false);
             self.colr_program = try loadProgramState("text-colr", shaders.vertex_shader, shaders.fragment_shader_colr, false);
-            self.path_program = try loadProgramState("path", shaders.vertex_shader, shaders.fragment_shader, false);
+            self.path_program = try loadProgramState("path", shaders.vertex_shader, shaders.fragment_shader_path, false);
+            self.hinted_text_program = try loadProgramState("hinted-text", shaders.vertex_shader, shaders.fragment_shader_hinted_text, false);
             if (self.supports_dual_source_blend) {
                 self.text_subpixel_dual_program = try loadProgramState("text-subpixel-dual", shaders.vertex_shader, shaders.fragment_shader_text_subpixel_dual, true);
             }
@@ -204,6 +206,7 @@ fn TextStateFor(comptime backend: Backend) type {
             deleteProgramState(&self.text_subpixel_dual_program);
             deleteProgramState(&self.colr_program);
             deleteProgramState(&self.path_program);
+            deleteProgramState(&self.hinted_text_program);
             if (self.linear_resolve_program != 0) gl.glDeleteProgram(self.linear_resolve_program);
             if (self.linear_resolve_vao != 0) gl.glDeleteVertexArrays(1, &self.linear_resolve_vao);
             if (self.linear_resolve_fbo != 0) gl.glDeleteFramebuffers(1, &self.linear_resolve_fbo);
@@ -534,7 +537,7 @@ fn TextStateFor(comptime backend: Backend) type {
                     },
                     .colr => self.ensureColrProgram(),
                     .path => self.ensurePathProgram(),
-                    .hinted_text => self.ensurePathProgram(),
+                    .hinted_text => self.ensureHintedTextProgram(),
                 };
                 try self.bindProgramState(prepared, prog_state, draw_state, texture_layer_base, run_mode);
                 self.drawGlyphRange(vertices, run_start, run_end - run_start);
@@ -588,6 +591,11 @@ fn TextStateFor(comptime backend: Backend) type {
         fn ensurePathProgram(self: *GlTextState) *const ProgramState {
             std.debug.assert(self.path_program.handle != 0);
             return &self.path_program;
+        }
+
+        fn ensureHintedTextProgram(self: *GlTextState) *const ProgramState {
+            std.debug.assert(self.hinted_text_program.handle != 0);
+            return &self.hinted_text_program;
         }
 
         fn bindProgramState(self: *GlTextState, prepared: *const PreparedResources, prog_state: *const ProgramState, draw_state: DrawState, texture_layer_base: u32, render_mode: subpixel_policy.TextRenderMode) !void {
