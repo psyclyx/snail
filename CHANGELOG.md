@@ -8,6 +8,9 @@
   points, `snail_gles30.h`, shader coverage helpers, and build/Nix flags.
 - GL 3.3 and GL 4.4 can now be enabled in the same build and instantiated as
   separate renderer types.
+- Added best-effort TrueType hint-run helpers so callers can use hinted glyphs
+  when they are renderable while falling back per glyph for unsupported faces,
+  glyphs, or sizes.
 
 ### Changed
 
@@ -15,12 +18,29 @@
   `Gl33Renderer` / `Gl44Renderer`, and `snail_gl33.h` / `snail_gl44.h`.
 - The demo/windowing helpers now request GL 3.3 or GL 4.4 contexts explicitly,
   so backend switching can create the requested renderer.
+- The demo hinting mode now uses best-effort hinted text without a ppem cap and
+  reports how many glyphs were actually hinted.
 - GL 3.3 and GL 4.4 now have separate renderer state and prepared-resource
   cache types while still sharing implementation code where the APIs match.
+- Hinted text records can now carry expanded-band and unordered-band metadata so
+  renderers can reuse atlas band data for more TrueType-hinted outlines without
+  requiring a per-size atlas upload.
 - Nix packages now expose `enableGL33`, `enableGL44`, and `enableGLES30`
   independently.
 - Benchmarks now instantiate and time every enabled backend individually,
   including GL 3.3, GL 4.4, OpenGL ES 3.0, and Vulkan when enabled.
+- Prepared-render benchmarks now request grayscale AA consistently across
+  backends and include best-effort TT hinted layout, draw-record, and render
+  rows alongside the regular rows.
+
+### Fixed
+
+- Fixed TrueType hint execution for signed `MD` distances, `SDPVTL` opcodes,
+  non-axis projection/freedom vector movement, and twilight original
+  coordinates, resolving spiky hinted glyph outlines in the demo.
+- GLES window presentation now avoids depending on ambiguous default-framebuffer
+  sRGB behavior, while desktop GL still requests an sRGB window surface when
+  available.
 
 ### Removed
 

@@ -70,6 +70,7 @@ const TextWorkload = enum {
 };
 
 const text_workloads = [_]TextWorkload{ .short, .sentence, .paragraph, .paragraph_sizes };
+const hinted_text_workloads = text_workloads;
 
 const SceneKind = enum {
     text,
@@ -77,6 +78,9 @@ const SceneKind = enum {
     vector,
     mixed,
     multi_script,
+    hinted_text,
+    hinted_mixed,
+    hinted_multi_script,
 
     pub fn name(self: SceneKind) []const u8 {
         return switch (self) {
@@ -85,11 +89,14 @@ const SceneKind = enum {
             .vector => "Vector paths",
             .mixed => "Mixed text + vector",
             .multi_script => "Multi-script text",
+            .hinted_text => "Text (best-effort TT hinted)",
+            .hinted_mixed => "Mixed text + vector (best-effort TT hinted)",
+            .hinted_multi_script => "Multi-script text (best-effort TT hinted)",
         };
     }
 };
 
-const scene_kinds = [_]SceneKind{ .text, .rich_text, .vector, .mixed, .multi_script };
+const scene_kinds = [_]SceneKind{ .text, .rich_text, .vector, .mixed, .multi_script, .hinted_text, .hinted_mixed, .hinted_multi_script };
 
 fn sceneTextKey(index: usize) snail.ResourceKey {
     return snail.ResourceKey.fromId(@intCast(index + 1));
@@ -204,9 +211,9 @@ const VectorPrep = struct {
 };
 
 const TextRow = struct {
-    workload: TextWorkload,
+    label: []const u8,
     snail_us: f64,
-    ft_us: f64,
+    ft_us: ?f64,
 };
 
 const RecordRow = struct {
@@ -307,6 +314,36 @@ fn makeTextBlob(
         .placement = .{ .baseline = .{ .x = line.x, .y = line.y }, .em = line.size },
         .fill = .{ .solid = line.color },
     });
+    return builder.finish();
+}
+
+fn hintPpemForEm(em: f32) !snail.TrueTypeHintPpem {
+    const ppem = em * 64.0;
+    if (!std.math.isFinite(ppem) or ppem < 1.0) return error.HintUnavailable;
+    return snail.TrueTypeHintPpem.uniform(@intFromFloat(@round(ppem)));
+}
+
+fn makeBestEffortHintedTextBlob(
+    allocator: std.mem.Allocator,
+    atlas: *snail.TextAtlas,
+    context: *snail.TrueTypeHintContext,
+    line: TextLine,
+) !snail.TextBlob {
+    var shaped = try atlas.shapeText(allocator, line.style, line.text);
+    defer shaped.deinit();
+
+    var run = try context.prepareBestEffortRun(allocator, .{
+        .shaped = &shaped,
+        .ppem = try hintPpemForEm(line.size),
+    });
+    defer run.deinit();
+
+    var builder = snail.TextBlobBuilder.init(allocator, atlas);
+    errdefer builder.deinit();
+    _ = try builder.appendPreparedBestEffortHintRun(&run, .{
+        .baseline = .{ .x = line.x, .y = line.y },
+        .em = line.size,
+    }, line.color);
     return builder.finish();
 }
 
@@ -431,6 +468,36 @@ fn runTextWorkload(
     }
 }
 
+fn runHintedTextWorkload(
+    allocator: std.mem.Allocator,
+    atlas: *snail.TextAtlas,
+    context: *snail.TrueTypeHintContext,
+    workload: TextWorkload,
+) !void {
+    switch (workload) {
+        .short, .sentence, .paragraph => {
+            var blob = try makeBestEffortHintedTextBlob(allocator, atlas, context, lineFor(workload));
+            std.mem.doNotOptimizeAway(blob.glyphCount());
+            blob.deinit();
+        },
+        .paragraph_sizes => {
+            var y: f32 = 330;
+            for (SIZES) |size| {
+                var blob = try makeBestEffortHintedTextBlob(allocator, atlas, context, .{
+                    .text = PARAGRAPH,
+                    .x = 0,
+                    .y = y,
+                    .size = @floatFromInt(size),
+                });
+                std.mem.doNotOptimizeAway(blob.glyphCount());
+                blob.deinit();
+                y -= @as(f32, @floatFromInt(size)) * 1.4;
+            }
+            std.mem.doNotOptimizeAway(y);
+        },
+    }
+}
+
 fn timeTextWorkload(atlas: *snail.TextAtlas, workload: TextWorkload) !f64 {
     const allocator = std.heap.smp_allocator;
     for (0..TEXT_WARMUP) |_| try runTextWorkload(allocator, atlas, workload);
@@ -438,6 +505,27 @@ fn timeTextWorkload(atlas: *snail.TextAtlas, workload: TextWorkload) !f64 {
     const start = nowNs();
     for (0..TEXT_ITERS) |_| try runTextWorkload(allocator, atlas, workload);
     return usFrom(start) / TEXT_ITERS;
+}
+
+fn timeHintedTextWorkload(atlas: *snail.TextAtlas, workload: TextWorkload) !f64 {
+    const allocator = std.heap.smp_allocator;
+    var context = snail.TrueTypeHintContext.init(allocator, atlas);
+    defer context.deinit();
+
+    for (0..TEXT_WARMUP) |_| try runHintedTextWorkload(allocator, atlas, &context, workload);
+
+    const start = nowNs();
+    for (0..TEXT_ITERS) |_| try runHintedTextWorkload(allocator, atlas, &context, workload);
+    return usFrom(start) / TEXT_ITERS;
+}
+
+fn hintedTextWorkloadName(workload: TextWorkload) []const u8 {
+    return switch (workload) {
+        .short => "Short string (best-effort TT hinted @ 24px)",
+        .sentence => "Sentence (best-effort TT hinted @ 48px)",
+        .paragraph => "Paragraph (best-effort TT hinted @ 18px)",
+        .paragraph_sizes => "Paragraph x 7 sizes (best-effort TT hinted)",
+    };
 }
 
 fn addCustomVectorPath(builder: *snail.PathPictureBuilder, x: f32, y: f32, scale: f32, color: [4]f32) !void {
@@ -534,8 +622,9 @@ fn buildScene(
     var scene = snail.Scene.init(allocator);
     errdefer scene.deinit();
 
-    const needs_text = kind == .text or kind == .mixed or kind == .multi_script;
-    const needs_vector = kind == .vector or kind == .mixed;
+    const needs_hinted_text = kind == .hinted_text or kind == .hinted_mixed or kind == .hinted_multi_script;
+    const needs_text = kind == .text or kind == .mixed or kind == .multi_script or needs_hinted_text;
+    const needs_vector = kind == .vector or kind == .mixed or kind == .hinted_mixed;
 
     var blobs: []snail.TextBlob = &.{};
     var blob_count: usize = 0;
@@ -543,6 +632,10 @@ fn buildScene(
         for (blobs[0..blob_count]) |*blob| blob.deinit();
         if (blobs.len > 0) allocator.free(blobs);
     }
+
+    var hint_context: snail.TrueTypeHintContext = undefined;
+    if (needs_hinted_text) hint_context = snail.TrueTypeHintContext.init(allocator, atlas);
+    defer if (needs_hinted_text) hint_context.deinit();
 
     if (kind == .rich_text) {
         blobs = try allocator.alloc(snail.TextBlob, 1);
@@ -553,10 +646,13 @@ fn buildScene(
         });
         blob_count += 1;
     } else if (needs_text) {
-        const lines: []const TextLine = if (kind == .multi_script) scene_multi_script_lines[0..] else scene_text_lines[0..];
+        const lines: []const TextLine = if (kind == .multi_script or kind == .hinted_multi_script) scene_multi_script_lines[0..] else scene_text_lines[0..];
         blobs = try allocator.alloc(snail.TextBlob, lines.len);
         for (lines) |line| {
-            blobs[blob_count] = try makeTextBlob(allocator, atlas, line);
+            blobs[blob_count] = if (needs_hinted_text)
+                try makeBestEffortHintedTextBlob(allocator, atlas, &hint_context, line)
+            else
+                try makeTextBlob(allocator, atlas, line);
             try scene.addText(.{
                 .blob = &blobs[blob_count],
                 .resources = blobs[blob_count].resourceKeys(snail.ResourceKey.named("fonts"), sceneTextKey(blob_count)),
@@ -937,7 +1033,7 @@ fn benchGlRenderer(
 
 pub fn main() !void {
     const allocator = std.heap.smp_allocator;
-    const options = drawState(WIDTH, HEIGHT, .rgb);
+    const prepared_render_options = drawState(WIDTH, HEIGHT, .none);
 
     const font_data = assets.noto_sans_regular;
     const snail_prep = try benchSnailPrep(allocator, font_data);
@@ -960,13 +1056,21 @@ pub fn main() !void {
     });
     defer text_atlas.deinit();
 
-    var text_rows: [text_workloads.len]TextRow = undefined;
-    for (&text_rows, text_workloads) |*row, workload| {
-        row.* = .{
-            .workload = workload,
+    var text_rows: std.ArrayList(TextRow) = .empty;
+    defer text_rows.deinit(allocator);
+    for (text_workloads) |workload| {
+        try text_rows.append(allocator, .{
+            .label = workload.name(),
             .snail_us = try timeTextWorkload(&text_atlas, workload),
             .ft_us = ft.layout(workload),
-        };
+        });
+    }
+    for (hinted_text_workloads) |workload| {
+        try text_rows.append(allocator, .{
+            .label = hintedTextWorkloadName(workload),
+            .snail_us = try timeHintedTextWorkload(&text_atlas, workload),
+            .ft_us = null,
+        });
     }
 
     var atlas = try initTextAtlas(allocator, &.{
@@ -1035,13 +1139,13 @@ pub fn main() !void {
         try render_rows.append(allocator, .{
             .backend = "CPU",
             .scene = kind,
-            .effective_aa = effectiveAaLabel(options.raster.subpixel_order, true),
+            .effective_aa = effectiveAaLabel(prepared_render_options.raster.subpixel_order, true),
             .frames = CPU_FRAMES,
             .commands = bundles[i].scene.commandCount(),
             .words = prepared_scenes[i].wordCount(),
             .segments = prepared_scenes[i].segments.len,
             .instance_bytes = prepared_scenes[i].wordCount() * @sizeOf(u32),
-            .us = try render_timing.timeCpuDraw(&cpu_renderer, &cpu_resources[i], &prepared_scenes[i], options, cpu_pixels, CPU_WARMUP, CPU_FRAMES),
+            .us = try render_timing.timeCpuDraw(&cpu_renderer, &cpu_resources[i], &prepared_scenes[i], prepared_render_options, cpu_pixels, CPU_WARMUP, CPU_FRAMES),
         });
     }
 
@@ -1049,13 +1153,13 @@ pub fn main() !void {
         try render_rows.append(allocator, .{
             .backend = "CPU (threaded)",
             .scene = kind,
-            .effective_aa = effectiveAaLabel(options.raster.subpixel_order, true),
+            .effective_aa = effectiveAaLabel(prepared_render_options.raster.subpixel_order, true),
             .frames = CPU_FRAMES,
             .commands = bundles[i].scene.commandCount(),
             .words = prepared_scenes[i].wordCount(),
             .segments = prepared_scenes[i].segments.len,
             .instance_bytes = prepared_scenes[i].wordCount() * @sizeOf(u32),
-            .us = try render_timing.timeCpuDraw(&cpu_threaded_renderer, &cpu_resources[i], &prepared_scenes[i], options, cpu_pixels_threaded, CPU_WARMUP, CPU_FRAMES),
+            .us = try render_timing.timeCpuDraw(&cpu_threaded_renderer, &cpu_resources[i], &prepared_scenes[i], prepared_render_options, cpu_pixels_threaded, CPU_WARMUP, CPU_FRAMES),
         });
     }
 
@@ -1089,13 +1193,13 @@ pub fn main() !void {
     try benchModes(allocator, "CPU (threaded)", &atlas, &mode_rows, CpuTimer{ .renderer_ptr = &cpu_threaded_renderer, .pixels_buf = cpu_pixels_threaded });
 
     if (comptime build_options.enable_gl33) {
-        try benchGlRenderer(snail.Gl33Renderer, .detect, allocator, .gl33, &atlas, &bundles, &render_rows, &mode_rows, &gl_hardware_rows, options);
+        try benchGlRenderer(snail.Gl33Renderer, .detect, allocator, .gl33, &atlas, &bundles, &render_rows, &mode_rows, &gl_hardware_rows, prepared_render_options);
     }
     if (comptime build_options.enable_gl44) {
-        try benchGlRenderer(snail.Gl44Renderer, .detect, allocator, .gl44, &atlas, &bundles, &render_rows, &mode_rows, &gl_hardware_rows, options);
+        try benchGlRenderer(snail.Gl44Renderer, .detect, allocator, .gl44, &atlas, &bundles, &render_rows, &mode_rows, &gl_hardware_rows, prepared_render_options);
     }
     if (comptime build_options.enable_gles30) {
-        try benchGlRenderer(snail.Gles30Renderer, .unavailable, allocator, .gles30, &atlas, &bundles, &render_rows, &mode_rows, &gl_hardware_rows, options);
+        try benchGlRenderer(snail.Gles30Renderer, .unavailable, allocator, .gles30, &atlas, &bundles, &render_rows, &mode_rows, &gl_hardware_rows, prepared_render_options);
     }
 
     var vk_state: if (build_options.enable_vulkan) ?snail.VulkanRenderer else void = if (build_options.enable_vulkan) null else {};
@@ -1114,13 +1218,13 @@ pub fn main() !void {
             try render_rows.append(allocator, .{
                 .backend = vk_state.?.backendName(),
                 .scene = kind,
-                .effective_aa = effectiveAaLabel(options.raster.subpixel_order, vk_state.?.state.ctx.supports_dual_source_blend),
+                .effective_aa = effectiveAaLabel(prepared_render_options.raster.subpixel_order, vk_state.?.state.ctx.supports_dual_source_blend),
                 .frames = GPU_FRAMES,
                 .commands = bundles[i].scene.commandCount(),
                 .words = vk_scene.wordCount(),
                 .segments = vk_scene.segments.len,
                 .instance_bytes = vk_scene.wordCount() * @sizeOf(u32),
-                .us = try render_timing.timeVulkanDraw(&vk_state.?, &vk_renderer, &vk_resources, &vk_scene, options, GPU_WARMUP, GPU_FRAMES),
+                .us = try render_timing.timeVulkanDraw(&vk_state.?, &vk_renderer, &vk_resources, &vk_scene, prepared_render_options, GPU_WARMUP, GPU_FRAMES),
             });
         }
 
@@ -1160,7 +1264,7 @@ pub fn main() !void {
     , .{ PREP_RUNS, TEXT_ITERS, RECORD_ITERS });
     report.printHardwareTable(gl_hardware_rows.items, build_options.enable_vulkan);
     report.printPreparationTables(snail_prep, vector_prep, ft);
-    report.printTextTable(&text_rows);
+    report.printTextTable(text_rows.items);
     report.printRecordTable(&record_rows);
     report.printRenderTable(WIDTH, HEIGHT, CPU_FRAMES, GPU_FRAMES, render_rows.items);
     report.printModeTable(mode_rows.items);

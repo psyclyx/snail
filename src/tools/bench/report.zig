@@ -162,15 +162,22 @@ pub fn printTextTable(rows: anytype) void {
         \\
     , .{});
     for (rows) |row| {
-        std.debug.print(
-            \\| {s} | {d:.2} us | {d:.2} us | {d:.2}x |
-            \\
-        , .{
-            row.workload.name(),
-            row.snail_us,
-            row.ft_us,
-            ratio(row.ft_us, row.snail_us),
-        });
+        if (row.ft_us) |ft_us| {
+            std.debug.print(
+                \\| {s} | {d:.2} us | {d:.2} us | {d:.2}x |
+                \\
+            , .{
+                row.label,
+                row.snail_us,
+                ft_us,
+                ratio(ft_us, row.snail_us),
+            });
+        } else {
+            std.debug.print(
+                \\| {s} | {d:.2} us | n/a | n/a |
+                \\
+            , .{ row.label, row.snail_us });
+        }
     }
     std.debug.print("\n", .{});
 }
@@ -226,7 +233,7 @@ pub fn printRenderTable(comptime width: u32, comptime height: u32, cpu_frames: u
     std.debug.print(
         \\## Prepared Render
         \\
-        \\Target: {d}x{d}. Requested AA is subpixel rgb. CPU uses {d} measured frames; GPU backends use {d} measured frames.
+        \\Target: {d}x{d}. Requested AA is grayscale. CPU uses {d} measured frames; GPU backends use {d} measured frames.
         \\
         \\| Backend | Scene | Effective AA | Frames | Commands | Words | Segments | Instance bytes/frame | Draw prepared scene |
         \\|---|---|---|---:|---:|---:|---:|---:|---:|
