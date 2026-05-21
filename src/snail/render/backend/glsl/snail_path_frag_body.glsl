@@ -12,10 +12,6 @@ const uint kBandCurveFirstMemberShift = 12u;
 #define SNAIL_ENABLE_HINTED_TEXT 1
 #endif
 
-#if SNAIL_ENABLE_PATH
-const float kPi = 3.14159265358979323846;
-#endif
-
 ivec2 decodeBandCurveLoc(uvec2 ref) {
     return ivec2(int(ref.x & kBandCurveLocXMask), int(ref.y));
 }
@@ -85,51 +81,36 @@ SegmentRoots solveQuadraticRoots(float a, float b, float cVal) {
     return roots;
 }
 
-float cbrtSigned(float v) {
-    if (v == 0.0) return 0.0;
-    return sign(v) * pow(abs(v), 1.0 / 3.0);
-}
-
 SegmentRoots solveCubicRoots(float a, float b, float cVal, float d) {
-    if (abs(a) < 1e-10) return solveQuadraticRoots(b, cVal, d);
-
+    // Path preparation splits cubics at x/y extrema, so each uploaded cubic is
+    // monotonic along both sampling axes and can contribute at most one root.
     SegmentRoots roots;
     roots.count = 0;
     roots.t = vec3(0.0);
+    float f0 = d;
+    float f1 = ((a + b) + cVal) + d;
+    if ((f0 < -kCoordEps && f1 < -kCoordEps) || (f0 > kCoordEps && f1 > kCoordEps)) return roots;
 
-    float invA = 1.0 / a;
-    float aa = b * invA;
-    float bb = cVal * invA;
-    float cc = d * invA;
-    const float third = 1.0 / 3.0;
-    float p = bb - aa * aa * third;
-    float q = (2.0 * aa * aa * aa) / 27.0 - (aa * bb) * third + cc;
-    float halfQ = q * 0.5;
-    float thirdP = p * third;
-    float disc = halfQ * halfQ + thirdP * thirdP * thirdP;
-    float offset = aa * third;
-
-    if (disc > 1e-8) {
-        float sqrtDisc = sqrt(disc);
-        float u = cbrtSigned(-halfQ + sqrtDisc);
-        float v = cbrtSigned(-halfQ - sqrtDisc);
-        appendRoot(roots, u + v - offset);
-        return roots;
+    float lo = 0.0;
+    float hi = 1.0;
+    float t = 0.5;
+    bool increasing = f1 >= f0;
+    for (int i = 0; i < 16; i++) {
+        float f = ((a * t + b) * t + cVal) * t + d;
+        if ((increasing && f < 0.0) || (!increasing && f > 0.0)) {
+            lo = t;
+        } else {
+            hi = t;
+        }
+        float deriv = (3.0 * a * t + 2.0 * b) * t + cVal;
+        float next = (lo + hi) * 0.5;
+        if (abs(deriv) >= 1e-6) {
+            float newton = t - f / deriv;
+            if (newton > lo && newton < hi) next = newton;
+        }
+        t = next;
     }
-
-    if (disc >= -1e-8) {
-        float u = cbrtSigned(-halfQ);
-        appendRoot(roots, 2.0 * u - offset);
-        appendRoot(roots, -u - offset);
-        return roots;
-    }
-
-    float r = sqrt(-thirdP);
-    float phi = acos(clamp(-halfQ / (r * r * r), -1.0, 1.0));
-    float twoR = 2.0 * r;
-    appendRoot(roots, twoR * cos(phi * third) - offset);
-    appendRoot(roots, twoR * cos((phi + 2.0 * kPi) * third) - offset);
-    appendRoot(roots, twoR * cos((phi + 4.0 * kPi) * third) - offset);
+    appendRoot(roots, t);
     return roots;
 }
 #endif

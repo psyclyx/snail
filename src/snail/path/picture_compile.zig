@@ -118,7 +118,7 @@ fn buildPathGlyphCurves(comptime PathPictureBuilder: type, allocator: std.mem.Al
     for (self.paths.items) |path| {
         const origin = core.bboxCenter(path.bbox);
         for (path.layers[0..path.layer_count]) |layer| {
-            const stored_curves = try allocator.dupe(CurveSegment, layer.curves);
+            const stored_curves = try curve_tex.splitCubicsAtExtrema(allocator, layer.curves);
             const prepared_curves = curve_tex.prepareGlyphCurvesForDirectEncoding(allocator, stored_curves, origin) catch |err| {
                 allocator.free(stored_curves);
                 return err;

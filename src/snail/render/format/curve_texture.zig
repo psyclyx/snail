@@ -90,6 +90,91 @@ fn appendCurveForPacking(
     try appendCurveForPacking(allocator, out, halves[1], depth - 1);
 }
 
+const CUBIC_EXTREMA_SPLIT_EPS: f32 = 1e-5;
+
+fn appendCubicExtremumRoot(roots: *[4]f32, count: *usize, t: f32) void {
+    if (t <= CUBIC_EXTREMA_SPLIT_EPS or t >= 1.0 - CUBIC_EXTREMA_SPLIT_EPS) return;
+    for (roots[0..count.*]) |existing| {
+        if (@abs(existing - t) <= CUBIC_EXTREMA_SPLIT_EPS) return;
+    }
+
+    var insert_at = count.*;
+    while (insert_at > 0 and roots[insert_at - 1] > t) : (insert_at -= 1) {}
+    var i = count.*;
+    while (i > insert_at) : (i -= 1) roots[i] = roots[i - 1];
+    roots[insert_at] = t;
+    count.* += 1;
+}
+
+fn appendCubicExtremaForAxis(curve: CurveSegment, comptime axis: []const u8, roots: *[4]f32, count: *usize) void {
+    const p0 = @field(curve.p0, axis);
+    const p1 = @field(curve.p1, axis);
+    const p2 = @field(curve.p2, axis);
+    const p3 = @field(curve.p3, axis);
+    const a = -p0 + 3.0 * p1 - 3.0 * p2 + p3;
+    const b = 3.0 * p0 - 6.0 * p1 + 3.0 * p2;
+    const c = -3.0 * p0 + 3.0 * p1;
+    const qa = 3.0 * a;
+    const qb = 2.0 * b;
+    const qc = c;
+
+    if (@abs(qa) < 1e-10) {
+        if (@abs(qb) < 1e-10) return;
+        appendCubicExtremumRoot(roots, count, -qc / qb);
+        return;
+    }
+
+    const disc = qb * qb - 4.0 * qa * qc;
+    if (disc < 0.0) return;
+    const sqrt_disc = @sqrt(disc);
+    const inv_2a = 0.5 / qa;
+    appendCubicExtremumRoot(roots, count, (-qb - sqrt_disc) * inv_2a);
+    appendCubicExtremumRoot(roots, count, (-qb + sqrt_disc) * inv_2a);
+}
+
+fn appendCubicMonotonicSegments(allocator: std.mem.Allocator, out: *std.ArrayList(CurveSegment), curve: CurveSegment) !void {
+    var roots: [4]f32 = .{ 0, 0, 0, 0 };
+    var count: usize = 0;
+    appendCubicExtremaForAxis(curve, "x", &roots, &count);
+    appendCubicExtremaForAxis(curve, "y", &roots, &count);
+    if (count == 0) {
+        try out.append(allocator, curve);
+        return;
+    }
+
+    var current = curve;
+    var prev_t: f32 = 0.0;
+    for (roots[0..count]) |t| {
+        const remaining = 1.0 - prev_t;
+        if (remaining <= CUBIC_EXTREMA_SPLIT_EPS) break;
+        const local_t = (t - prev_t) / remaining;
+        const halves = current.split(local_t);
+        try out.append(allocator, halves[0]);
+        current = halves[1];
+        prev_t = t;
+    }
+    try out.append(allocator, current);
+}
+
+pub fn splitCubicsAtExtrema(
+    allocator: std.mem.Allocator,
+    curves: []const CurveSegment,
+) ![]CurveSegment {
+    // The GL/GLES path shader inverts cubics as monotonic spans. Split only
+    // cubics; conics still use the exact quadratic root path in the shader.
+    var out: std.ArrayList(CurveSegment) = .empty;
+    errdefer out.deinit(allocator);
+    try out.ensureTotalCapacity(allocator, curves.len);
+    for (curves) |curve| {
+        if (curve.kind == .cubic) {
+            try appendCubicMonotonicSegments(allocator, &out, curve);
+        } else {
+            try out.append(allocator, curve);
+        }
+    }
+    return out.toOwnedSlice(allocator);
+}
+
 pub fn splitCurvesForPacking(
     allocator: std.mem.Allocator,
     curves: []const CurveSegment,
