@@ -22,6 +22,9 @@ pub const paint_texels_per_record: u32 = 6;
 pub const composite_mode_source_over: u8 = 0;
 pub const composite_mode_fill_stroke_inside: u8 = 1;
 
+pub const hint_record_flag_expanded_bands: u16 = 1 << 0;
+pub const hint_record_flag_unordered_bands: u16 = 1 << 1;
+
 pub fn packGlyphLocation(x: u16, y: u16) u32 {
     return @as(u32, x) | (@as(u32, y) << 16);
 }
@@ -117,6 +120,8 @@ test "GLSL render ABI constants match Zig constants" {
     try expectGlslConst(glsl, "SNAIL_PAINT_KIND_COMPOSITE_GROUP", @intFromEnum(PaintRecordKind.composite_group));
     try expectGlslConst(glsl, "SNAIL_PAINT_TEXELS_PER_RECORD", paint_texels_per_record);
     try expectGlslConst(glsl, "SNAIL_PATH_COMPOSITE_MODE_FILL_STROKE_INSIDE", composite_mode_fill_stroke_inside);
+    try expectGlslConst(glsl, "SNAIL_HINT_RECORD_FLAG_EXPANDED_BANDS", hint_record_flag_expanded_bands);
+    try expectGlslConst(glsl, "SNAIL_HINT_RECORD_FLAG_UNORDERED_BANDS", hint_record_flag_unordered_bands);
 }
 
 fn expectGlslConst(glsl: []const u8, name: []const u8, value: anytype) !void {

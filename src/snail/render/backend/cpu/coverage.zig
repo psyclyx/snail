@@ -4,6 +4,7 @@ const color_mod = @import("color.zig");
 const subpixel = @import("coverage/subpixel.zig");
 const texture = @import("texture.zig");
 const atlas_curve_mod = @import("../../format/atlas/curve.zig");
+const render_abi = @import("../../format/abi.zig");
 
 const bezier = @import("../../../math/bezier.zig");
 const curve_tex = @import("../../format/curve_texture.zig");
@@ -154,6 +155,17 @@ pub const HintedTextRecord = struct {
     info_y: u16,
     base_curve_texel: u32,
     curve_count: u16,
+    flags: u16 = 0,
+    h_band_pad: u16 = 0,
+    v_band_pad: u16 = 0,
+
+    fn hasExpandedBands(self: HintedTextRecord) bool {
+        return (self.flags & render_abi.hint_record_flag_expanded_bands) != 0;
+    }
+
+    fn hasUnorderedBands(self: HintedTextRecord) bool {
+        return (self.flags & render_abi.hint_record_flag_unordered_bands) != 0;
+    }
 };
 
 const GlyphBandState = struct {
@@ -942,6 +954,15 @@ fn coverageBandSpan(coord: f32, epp_axis: f32, band_scale: f32, band_offset: f32
     return .{ .first = first, .last = @max(first, last) };
 }
 
+fn expandBandSpan(span: BandSpan, pad: u16, band_max: i32) BandSpan {
+    if (span.first > span.last or band_max < 0) return span;
+    const pad_i: i32 = @intCast(pad);
+    return .{
+        .first = clampInt(span.first - pad_i, 0, band_max),
+        .last = clampInt(span.last + pad_i, 0, band_max),
+    };
+}
+
 fn isBandSpanOwner(first_member: u32, band: i32, first_span_band: i32) bool {
     const first_member_band: i32 = @intCast(first_member);
     return band == @max(first_member_band, first_span_band);
@@ -1027,6 +1048,7 @@ fn evalHintedTextCoverageAxisBandSpan(
     var result = CoveragePair{ .cov = 0.0, .wgt = 0.0 };
     if (span.first > span.last) return result;
     const dedup = span.first != span.last;
+    const ordered = !record.hasUnorderedBands();
 
     var band = span.first;
     while (band <= span.last) : (band += 1) {
@@ -1036,7 +1058,7 @@ fn evalHintedTextCoverageAxisBandSpan(
         while (i < header[0]) : (i += 1) {
             const curve_ref = readBandCurveRef(page, band_base + i) orelse continue;
             if (dedup and !isBandSpanOwner(curve_ref.first_member_band, band, span.first)) continue;
-            if (accumulateHintedCurveCoverage(&result, page, record, curve_ref.base, sample_rc, ppe, horizontal) == .stop_scan) break;
+            if (accumulateHintedCurveCoverage(&result, page, record, curve_ref.base, sample_rc, ppe, horizontal) == .stop_scan and ordered) break;
         }
     }
     return result;
@@ -1128,8 +1150,12 @@ pub fn evalHintedTextCoverageBandSpan(
 ) f32 {
     const glyph_band_base = @as(usize, be.glyph_y) * @as(usize, page.band_width) + @as(usize, be.glyph_x);
     const sample_rc = Vec2.new(em_x, em_y);
-    const h_span = coverageBandSpan(em_y, epp_y, be.band_scale_y, be.band_offset_y, band_max_h);
-    const v_span = coverageBandSpan(em_x, epp_x, be.band_scale_x, be.band_offset_x, band_max_v);
+    var h_span = coverageBandSpan(em_y, epp_y, be.band_scale_y, be.band_offset_y, band_max_h);
+    var v_span = coverageBandSpan(em_x, epp_x, be.band_scale_x, be.band_offset_x, band_max_v);
+    if (record.hasExpandedBands()) {
+        h_span = expandBandSpan(h_span, record.h_band_pad, band_max_h);
+        v_span = expandBandSpan(v_span, record.v_band_pad, band_max_v);
+    }
     return resolveCoverage(
         evalHintedTextCoverageAxisBandSpan(page, record, sample_rc, ppe_x, glyph_band_base, 0, h_span, true),
         evalHintedTextCoverageAxisBandSpan(page, record, sample_rc, ppe_y, glyph_band_base, band_max_h + 1, v_span, false),

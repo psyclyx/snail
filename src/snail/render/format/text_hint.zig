@@ -14,8 +14,10 @@ pub const DeltaEncoding = enum(u8) {
 };
 
 pub const GlyphFlags = packed struct(u16) {
+    expanded_bands: bool = false,
+    unordered_bands: bool = false,
     has_band_patch: bool = false,
-    reserved: u15 = 0,
+    reserved: u13 = 0,
 
     pub fn bits(self: GlyphFlags) u16 {
         return @bitCast(self);
@@ -31,6 +33,8 @@ pub const GlyphRecord = struct {
     curve_count: u16 = 0,
     delta_offset: u32 = 0,
     band_offset: u32 = 0,
+    h_band_pad: u16 = 0,
+    v_band_pad: u16 = 0,
     flags: GlyphFlags = .{},
     band_entry: band_tex.GlyphBandEntry = .{
         .glyph_x = 0,
@@ -107,8 +111,19 @@ fn writeRecordHeader(data: []f32, texel_width: u32, texel_offset: u32, record: G
         @floatFromInt(record.base_curve_texel),
         @floatFromInt(record.curve_count),
         @floatFromInt(record.flags.bits()),
-        @floatFromInt(record.delta_offset),
+        @floatFromInt(packBandPadding(record.h_band_pad, record.v_band_pad)),
     });
+}
+
+pub fn packBandPadding(h: u16, v: u16) u32 {
+    return @as(u32, h) | (@as(u32, v) << 16);
+}
+
+pub fn unpackBandPadding(word: u32) struct { h: u16, v: u16 } {
+    return .{
+        .h = @intCast(word & 0xffff),
+        .v = @intCast(word >> 16),
+    };
 }
 
 fn setTexel(data: []f32, texel_width: u32, texel_offset: u32, value: [4]f32) !void {
@@ -157,9 +172,15 @@ pub fn totalUploadBytes(ops: []const UploadOp) usize {
 pub const BandReuseProof = struct {
     membership_ok: bool,
     ordering_ok: bool,
+    h_band_pad: u16 = 0,
+    v_band_pad: u16 = 0,
 
     pub fn reusable(self: BandReuseProof) bool {
         return self.membership_ok and self.ordering_ok;
+    }
+
+    pub fn needsExpandedBands(self: BandReuseProof) bool {
+        return self.h_band_pad != 0 or self.v_band_pad != 0;
     }
 };
 
@@ -180,26 +201,26 @@ pub fn proveBandReuse(input: BandReuseInput) BandReuseProof {
         };
     }
 
-    const membership_ok = proveBandMembership(input);
+    const h_band_pad = requiredBandPadding(input, .horizontal) orelse input.band_entry.h_band_count;
+    const v_band_pad = requiredBandPadding(input, .vertical) orelse input.band_entry.v_band_count;
+    const membership_ok = h_band_pad == 0 and v_band_pad == 0;
     const ordering_ok = proveBandOrdering(input);
-    return .{ .membership_ok = membership_ok, .ordering_ok = ordering_ok };
+    return .{
+        .membership_ok = membership_ok,
+        .ordering_ok = ordering_ok,
+        .h_band_pad = h_band_pad,
+        .v_band_pad = v_band_pad,
+    };
 }
 
-fn proveBandMembership(input: BandReuseInput) bool {
+fn requiredBandPadding(input: BandReuseInput, axis: Axis) ?u16 {
+    var required: u16 = 0;
     for (input.hinted_curve_bboxes, 0..) |bbox, curve_index| {
-        const h_range = bandRange(bbox.min.y, bbox.max.y, input.band_entry.band_scale_y, input.band_entry.band_offset_y, input.band_entry.h_band_count);
-        var h_band = h_range.start;
-        while (h_band <= h_range.end) : (h_band += 1) {
-            if (!bandContainsCurve(input, .horizontal, h_band, curve_index)) return false;
-        }
-
-        const v_range = bandRange(bbox.min.x, bbox.max.x, input.band_entry.band_scale_x, input.band_entry.band_offset_x, input.band_entry.v_band_count);
-        var v_band = v_range.start;
-        while (v_band <= v_range.end) : (v_band += 1) {
-            if (!bandContainsCurve(input, .vertical, v_band, curve_index)) return false;
-        }
+        const hinted_range = hintedBandRange(input, axis, bbox);
+        const base_range = curveBandRange(input, axis, curve_index) orelse return null;
+        required = @max(required, bandRangeExpansion(hinted_range, base_range));
     }
-    return true;
+    return required;
 }
 
 fn proveBandOrdering(input: BandReuseInput) bool {
@@ -227,6 +248,38 @@ fn bandRange(min_value: f32, max_value: f32, scale: f32, offset: f32, band_count
         .start = @intCast(@min(start, end)),
         .end = @intCast(@max(start, end)),
     };
+}
+
+fn hintedBandRange(input: BandReuseInput, axis: Axis, bbox: bezier.BBox) BandRange {
+    return switch (axis) {
+        .horizontal => bandRange(bbox.min.y, bbox.max.y, input.band_entry.band_scale_y, input.band_entry.band_offset_y, input.band_entry.h_band_count),
+        .vertical => bandRange(bbox.min.x, bbox.max.x, input.band_entry.band_scale_x, input.band_entry.band_offset_x, input.band_entry.v_band_count),
+    };
+}
+
+fn curveBandRange(input: BandReuseInput, axis: Axis, curve_index: usize) ?BandRange {
+    const band_count = switch (axis) {
+        .horizontal => input.band_entry.h_band_count,
+        .vertical => input.band_entry.v_band_count,
+    };
+    var found = false;
+    var out = BandRange{ .start = std.math.maxInt(u16), .end = 0 };
+    var band: u16 = 0;
+    while (band < band_count) : (band += 1) {
+        if (bandContainsCurve(input, axis, band, curve_index)) {
+            found = true;
+            out.start = @min(out.start, band);
+            out.end = @max(out.end, band);
+        }
+    }
+    return if (found) out else null;
+}
+
+fn bandRangeExpansion(hinted: BandRange, base: BandRange) u16 {
+    var required: u16 = 0;
+    if (hinted.start < base.start) required = @max(required, base.start - hinted.start);
+    if (hinted.end > base.end) required = @max(required, hinted.end - base.end);
+    return required;
 }
 
 fn clampBandIndex(value: f32, max_band: i32) i32 {
@@ -297,8 +350,11 @@ fn curveSortKey(bbox: bezier.BBox, axis: Axis) f32 {
 }
 
 test "hint flags round trip" {
-    const flags = GlyphFlags{ .has_band_patch = true };
-    try std.testing.expect(GlyphFlags.fromBits(flags.bits()).has_band_patch);
+    const flags = GlyphFlags{ .expanded_bands = true, .unordered_bands = true, .has_band_patch = true };
+    const decoded = GlyphFlags.fromBits(flags.bits());
+    try std.testing.expect(decoded.expanded_bands);
+    try std.testing.expect(decoded.unordered_bands);
+    try std.testing.expect(decoded.has_band_patch);
 }
 
 test "upload ops report byte totals" {
@@ -389,6 +445,78 @@ test "band reuse proof reports ordering failure" {
     });
     try std.testing.expect(proof.membership_ok);
     try std.testing.expect(!proof.ordering_ok);
+}
+
+test "band reuse proof reports required expansion" {
+    const band_data = [_]u16{
+        1, 4, // h0 header
+        0, 5, // h1 header
+        0, 5, // h2 header
+        1, 5, // v0 header
+        100, 0, // h0 curve 0
+        100, 0, // v0 curve 0
+    };
+    const bboxes = [_]bezier.BBox{
+        .{ .min = .{ .x = 0.1, .y = 2.1 }, .max = .{ .x = 0.2, .y = 2.2 } },
+    };
+    const proof = proveBandReuse(.{
+        .band_data = &band_data,
+        .band_width = 16,
+        .band_entry = .{
+            .glyph_x = 0,
+            .glyph_y = 0,
+            .h_band_count = 3,
+            .v_band_count = 1,
+            .band_scale_x = 1,
+            .band_scale_y = 1,
+            .band_offset_x = 0,
+            .band_offset_y = 0,
+        },
+        .base_curve_texel = 100,
+        .hinted_curve_bboxes = &bboxes,
+    });
+
+    try std.testing.expect(!proof.membership_ok);
+    try std.testing.expect(proof.ordering_ok);
+    try std.testing.expectEqual(@as(u16, 2), proof.h_band_pad);
+    try std.testing.expectEqual(@as(u16, 0), proof.v_band_pad);
+    try std.testing.expect(proof.needsExpandedBands());
+}
+
+test "band reuse proof expands partially overlapping ranges" {
+    const band_data = [_]u16{
+        0, 5, // h0 header
+        1, 5, // h1 header
+        1, 6, // h2 header
+        0, 7, // h3 header
+        1, 7, // v0 header
+        100, 0, // h1 curve 0
+        100, 0, // h2 curve 0
+        100, 0, // v0 curve 0
+    };
+    const bboxes = [_]bezier.BBox{
+        .{ .min = .{ .x = 0.1, .y = 2.1 }, .max = .{ .x = 0.2, .y = 3.1 } },
+    };
+    const proof = proveBandReuse(.{
+        .band_data = &band_data,
+        .band_width = 16,
+        .band_entry = .{
+            .glyph_x = 0,
+            .glyph_y = 0,
+            .h_band_count = 4,
+            .v_band_count = 1,
+            .band_scale_x = 1,
+            .band_scale_y = 1,
+            .band_offset_x = 0,
+            .band_offset_y = 0,
+        },
+        .base_curve_texel = 100,
+        .hinted_curve_bboxes = &bboxes,
+    });
+
+    try std.testing.expect(!proof.membership_ok);
+    try std.testing.expectEqual(@as(u16, 1), proof.h_band_pad);
+    try std.testing.expectEqual(@as(u16, 0), proof.v_band_pad);
 }
 
 fn testBandEntry() band_tex.GlyphBandEntry {

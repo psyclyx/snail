@@ -224,6 +224,14 @@ fn releasePrepared(prepared: *?snail.PreparedResources) void {
     }
 }
 
+fn hintedGlyphCount(blob: *const snail.TextBlob) usize {
+    var count: usize = 0;
+    for (blob.glyphs) |glyph| {
+        if (glyph.hint_record_texel != null) count += 1;
+    }
+    return count;
+}
+
 fn mainLoop(allocator: std.mem.Allocator) !void {
     var scene_assets = try demo_banner_scene.Assets.init(allocator);
     defer scene_assets.deinit();
@@ -268,9 +276,11 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
     var fps_frames: u32 = 0;
     var fps_display: f32 = 0.0;
     var last_presentation: ?presentation.Info = null;
-    var hint_mode: HintMode = .still;
+    var hint_mode: HintMode = .never;
     var uploaded_hint_active = false;
     var uploaded_hint_scale_bits: u32 = 0;
+    var uploaded_hint_glyphs: usize = 0;
+    var uploaded_total_glyphs: usize = 0;
     const dump_every = envU32("SNAIL_DEMO_DUMP_EVERY", 0);
 
     std.debug.print("snail - GPU text & vector rendering\n", .{});
@@ -390,10 +400,18 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
             });
 
             text_blob = try builder.finish();
+            uploaded_total_glyphs = if (text_blob) |*blob| blob.glyphCount() else 0;
+            uploaded_hint_glyphs = if (text_blob) |*blob| hintedGlyphCount(blob) else 0;
             path_picture = try demo_banner_scene.buildPathPicture(allocator, layout, &scene_assets, dec_rects[0..text_result.decoration_count]);
             uploaded_size = size_key;
             uploaded_hint_active = hint_active;
             uploaded_hint_scale_bits = hint_scale_bits;
+            std.debug.print("\nhinting={s}{s} hinted={}/{}\n", .{
+                hint_mode.name(),
+                if (hint_active) "" else " (off)",
+                uploaded_hint_glyphs,
+                uploaded_total_glyphs,
+            });
 
             var resource_entries: [8]snail.ResourceManifest.Entry = undefined;
             var resources = snail.ResourceManifest.init(&resource_entries);
@@ -461,13 +479,13 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
             active.captureDebugFrame(allocator, fb_size);
         }
         if (frame_count % 60 == 0 and fps_display > 0.0) {
-            const glyphs = if (text_blob) |*blob| blob.glyphCount() else 0;
-            std.debug.print("\rFPS: {d:.0}  Backend: {s}  Hint: {s}{s}  Glyphs: {}   ", .{
+            std.debug.print("\rFPS: {d:.0}  Backend: {s}  Hint: {s}{s}  Hinted: {}/{}   ", .{
                 fps_display,
                 active.backendName(),
                 hint_mode.name(),
                 if (hint_active) "" else " (off)",
-                glyphs,
+                uploaded_hint_glyphs,
+                uploaded_total_glyphs,
             });
         }
         frame_count += 1;

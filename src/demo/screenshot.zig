@@ -81,6 +81,11 @@ fn envBool(comptime name: [:0]const u8, default: bool) bool {
     return envU32(name, @intFromBool(default)) != 0;
 }
 
+fn envF32(comptime name: [:0]const u8, default: f32) f32 {
+    const ptr = std.c.getenv(name.ptr) orelse return default;
+    return std.fmt.parseFloat(f32, std.mem.span(ptr)) catch default;
+}
+
 fn envMat4(comptime name: [:0]const u8, fallback: snail.Mat4) snail.Mat4 {
     const ptr = std.c.getenv(name.ptr) orelse return fallback;
     var it = std.mem.splitScalar(u8, std.mem.span(ptr), ',');
@@ -210,11 +215,23 @@ fn renderRepro(allocator: std.mem.Allocator) !void {
     const viewport_h: f32 = @floatFromInt(framebuffer_height);
     const layout = demo_banner.buildLayout(w, h);
     const snap_step = snail.pixelSteps(.{ w, h }, .{ framebuffer_width, framebuffer_height });
+    const hint_enabled = envBool("SNAIL_REPRO_HINT", false);
+    const hint_ppem_scale = envF32("SNAIL_REPRO_HINT_SCALE", 1.0);
+    var hint_context = snail.TrueTypeHintContext.init(allocator, &scene_assets.fonts);
+    defer hint_context.deinit();
 
     var builder = snail.TextBlobBuilder.init(allocator, &scene_assets.fonts);
     defer builder.deinit();
     var dec_rects: [8]snail.Rect = undefined;
-    const text_result = demo_scene.buildTextBlob(&builder, layout, snap_step, &scene_assets, &dec_rects);
+    const text_result = demo_scene.buildTextBlobWithHinting(
+        &builder,
+        layout,
+        snap_step,
+        &scene_assets,
+        if (hint_enabled) &hint_context else null,
+        &dec_rects,
+        .{ .enabled = hint_enabled, .ppem_scale = hint_ppem_scale },
+    );
     var text_blob = try builder.finish();
     defer text_blob.deinit();
 

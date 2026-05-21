@@ -288,7 +288,6 @@ pub const TextBuildResult = struct {
 pub const TextHintOptions = struct {
     enabled: bool = false,
     ppem_scale: f32 = 1.0,
-    max_ppem: f32 = 32.0,
 };
 
 const TextPlacement = struct {
@@ -300,12 +299,6 @@ const TextPlacement = struct {
 const TextHintBuildContext = struct {
     context: *snail.TrueTypeHintContext,
     ppem_scale: f32,
-    max_ppem: f32,
-
-    fn shouldHintSize(self: *const TextHintBuildContext, font_size: f32) bool {
-        const ppem = font_size * self.ppem_scale;
-        return std.math.isFinite(ppem) and ppem >= 1.0 and ppem <= self.max_ppem;
-    }
 };
 
 const TextPlacer = struct {
@@ -345,12 +338,10 @@ const TextPlacer = struct {
         if (self.hint) |hint_context| {
             switch (paint) {
                 .solid => |color| {
-                    if (hint_context.shouldHintSize(p.size)) {
-                        return self.appendPlacedHinted(hint_context, &shaped, p, color) catch |err| {
-                            if (err == error.OutOfMemory) return err;
-                            return self.appendRegular(&shaped, p, paint);
-                        };
-                    }
+                    return self.appendPlacedHinted(hint_context, &shaped, p, color) catch |err| {
+                        if (err == error.OutOfMemory) return err;
+                        return self.appendRegular(&shaped, p, paint);
+                    };
                 },
                 else => {},
             }
@@ -379,13 +370,13 @@ const TextPlacer = struct {
         color: [4]f32,
     ) !snail.TextAppendResult {
         const ppem_26_6 = try hintPpem26_6(p.size, hint_context.ppem_scale);
-        var run = try hint_context.context.prepareRun(self.builder.allocator, .{
+        var run = try hint_context.context.prepareBestEffortRun(self.builder.allocator, .{
             .shaped = shaped,
             .ppem = snail.TrueTypeHintPpem.uniform(ppem_26_6),
         });
         defer run.deinit();
 
-        return self.builder.appendPreparedHintedRun(&run, .{
+        return self.builder.appendPreparedBestEffortHintRun(&run, .{
             .baseline = .{ .x = p.x, .y = p.y },
             .em = p.size,
         }, color);
@@ -438,7 +429,7 @@ pub fn buildTextBlob(
     var decoration_count: usize = 0;
     var had_missing = false;
     const hint_build_context: ?TextHintBuildContext = if (hint_options.enabled and hint_context != null)
-        .{ .context = hint_context.?, .ppem_scale = hint_options.ppem_scale, .max_ppem = hint_options.max_ppem }
+        .{ .context = hint_context.?, .ppem_scale = hint_options.ppem_scale }
     else
         null;
 

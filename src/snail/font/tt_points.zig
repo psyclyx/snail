@@ -98,6 +98,10 @@ pub const Zone = struct {
         return applySign(value, direction.sign);
     }
 
+    pub fn coordinateVector(self: *const Zone, vector: tt_graphics.Vector, point: u32, original: bool) Error!i32 {
+        return projectPoint(try self.get(point), vector, original);
+    }
+
     pub fn moveTo(self: *Zone, projection: Direction, freedom: Direction, point: u32, target: i32) Error!void {
         if (projection.axis != freedom.axis) return Error.UnsupportedVector;
         const p = try self.getMutable(point);
@@ -108,12 +112,31 @@ pub const Zone = struct {
         touchPoint(p, freedom.axis);
     }
 
+    pub fn moveToVector(self: *Zone, projection: tt_graphics.Vector, freedom: tt_graphics.Vector, point: u32, target: i32) Error!void {
+        const p = try self.getMutable(point);
+        const current = projectPoint(p, projection, false);
+        const delta = subWrap(target, current);
+        const move_delta = try projectedMoveDelta(delta, projection, freedom);
+        p.x = addWrap(p.x, move_delta.x);
+        p.y = addWrap(p.y, move_delta.y);
+        touchPointVector(p, freedom);
+    }
+
     pub fn setOriginalCoordinate(self: *Zone, direction: Direction, point: u32, target: i32) Error!void {
         const p = try self.getMutable(point);
         switch (direction.axis) {
             .x => p.ox = applySign(target, direction.sign),
             .y => p.oy = applySign(target, direction.sign),
         }
+    }
+
+    pub fn setOriginalCoordinateVector(self: *Zone, projection: tt_graphics.Vector, point: u32, target: i32) Error!void {
+        const p = try self.getMutable(point);
+        const current = projectPoint(p, projection, true);
+        const delta = subWrap(target, current);
+        const move_delta = try projectedMoveDelta(delta, projection, projection);
+        p.ox = addWrap(p.ox, move_delta.x);
+        p.oy = addWrap(p.oy, move_delta.y);
     }
 
     pub fn shift(self: *Zone, freedom: Direction, point: u32, distance: i32) Error!void {
@@ -123,6 +146,27 @@ pub const Zone = struct {
             .y => p.y = addWrap(p.y, applySign(distance, freedom.sign)),
         }
         touchPoint(p, freedom.axis);
+    }
+
+    pub fn shiftVector(self: *Zone, freedom: tt_graphics.Vector, point: u32, distance: i32) Error!void {
+        const p = try self.getMutable(point);
+        p.x = addWrap(p.x, try vectorDistanceDelta(distance, freedom.x));
+        p.y = addWrap(p.y, try vectorDistanceDelta(distance, freedom.y));
+        touchPointVector(p, freedom);
+    }
+
+    pub fn shiftProjectedVector(
+        self: *Zone,
+        projection: tt_graphics.Vector,
+        freedom: tt_graphics.Vector,
+        point: u32,
+        distance: i32,
+    ) Error!void {
+        const p = try self.getMutable(point);
+        const move_delta = try projectedMoveDelta(distance, projection, freedom);
+        p.x = addWrap(p.x, move_delta.x);
+        p.y = addWrap(p.y, move_delta.y);
+        touchPointVector(p, freedom);
     }
 
     pub fn shiftContour(
@@ -141,6 +185,27 @@ pub const Zone = struct {
         while (i < contour.end) : (i += 1) {
             if (skip_point == null or skip_point.? != i) {
                 try self.shift(freedom, i, distance);
+            }
+        }
+    }
+
+    pub fn shiftContourProjectedVector(
+        self: *Zone,
+        projection: tt_graphics.Vector,
+        freedom: tt_graphics.Vector,
+        contour_index: u32,
+        distance: i32,
+        skip_point: ?u32,
+    ) Error!void {
+        const contour_i: usize = contour_index;
+        if (contour_i >= self.contours.len) return Error.InvalidPoint;
+        const contour = self.contours[contour_i];
+        if (contour.end > self.points.len or contour.start > contour.end) return Error.InvalidPoint;
+
+        var i: u32 = contour.start;
+        while (i < contour.end) : (i += 1) {
+            if (skip_point == null or skip_point.? != i) {
+                try self.shiftProjectedVector(projection, freedom, i, distance);
             }
         }
     }
@@ -436,6 +501,11 @@ fn touchPoint(point: *Point, axis: tt_graphics.Axis) void {
     }
 }
 
+fn touchPointVector(point: *Point, vector: tt_graphics.Vector) void {
+    if (vector.x != 0) point.touched_x = true;
+    if (vector.y != 0) point.touched_y = true;
+}
+
 fn isTouched(point: Point, axis: tt_graphics.Axis) bool {
     return switch (axis) {
         .x => point.touched_x,
@@ -498,6 +568,43 @@ fn applySign(value: i32, sign: i32) i32 {
     return @truncate(@as(i64, value) * @as(i64, sign));
 }
 
+fn projectPoint(point: *const Point, vector: tt_graphics.Vector, original: bool) i32 {
+    const x = if (original) point.ox else point.x;
+    const y = if (original) point.oy else point.y;
+    return divRound(
+        @as(i64, x) * @as(i64, vector.x) + @as(i64, y) * @as(i64, vector.y),
+        tt_graphics.Vector.one,
+    );
+}
+
+fn vectorDistanceDelta(distance: i32, component: i32) Error!i32 {
+    return divRound(@as(i64, distance) * @as(i64, component), tt_graphics.Vector.one);
+}
+
+fn projectedMoveDelta(distance: i32, projection: tt_graphics.Vector, freedom: tt_graphics.Vector) Error!struct { x: i32, y: i32 } {
+    const denom = @as(i64, projection.x) * @as(i64, freedom.x) + @as(i64, projection.y) * @as(i64, freedom.y);
+    if (denom == 0) return Error.UnsupportedVector;
+    const scaled = @as(i64, distance) * tt_graphics.Vector.one;
+    return .{
+        .x = divRound(scaled * @as(i64, freedom.x), denom),
+        .y = divRound(scaled * @as(i64, freedom.y), denom),
+    };
+}
+
+fn divRound(numerator: i64, denominator: i64) i32 {
+    std.debug.assert(denominator != 0);
+    const half = @divTrunc(absI64(denominator), 2);
+    const adjusted = if ((numerator >= 0) == (denominator >= 0))
+        numerator + half
+    else
+        numerator - half;
+    return @truncate(@divTrunc(adjusted, denominator));
+}
+
+fn absI64(value: i64) i64 {
+    return if (value < 0) -value else value;
+}
+
 fn addWrap(lhs: i32, rhs: i32) i32 {
     return @truncate(@as(i64, lhs) + @as(i64, rhs));
 }
@@ -544,6 +651,25 @@ test "point zone moves and shifts directed axis coordinates" {
 
     try zone.shift(x_pos, 0, 16);
     try std.testing.expectEqual(@as(i32, 80), zone.points[0].x);
+}
+
+test "point zone moves along non-axis freedom vectors" {
+    var buffer: [1]Point = .{.{
+        .x = 0,
+        .y = 0,
+        .ox = 0,
+        .oy = 0,
+        .on_curve = true,
+    }};
+    var zone: Zone = .{ .points = &buffer };
+    const diagonal = tt_graphics.normalizeF2Dot14(tt_graphics.Vector.one, tt_graphics.Vector.one);
+
+    try zone.moveToVector(tt_graphics.Vector.x_axis, diagonal, 0, 64);
+
+    try std.testing.expectApproxEqAbs(@as(f32, 64), @as(f32, @floatFromInt(zone.points[0].x)), 1.0);
+    try std.testing.expectApproxEqAbs(@as(f32, 64), @as(f32, @floatFromInt(zone.points[0].y)), 1.0);
+    try std.testing.expect(zone.points[0].touched_x);
+    try std.testing.expect(zone.points[0].touched_y);
 }
 
 test "point zone interpolates untouched contour points" {

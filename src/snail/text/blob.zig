@@ -23,6 +23,7 @@ const FaceView = view_mod.FaceView;
 const HintedGlyphValue = hint_context.HintedGlyphValue;
 const Paint = paint_mod.Paint;
 const PaintImageRecord = atlas_curve_mod.CurveAtlas.PaintImageRecord;
+const PreparedBestEffortHintRun = hint_context.PreparedBestEffortHintRun;
 const PreparedHintRun = hint_context.PreparedHintRun;
 const Range = range_mod.Range;
 const ResourceKey = resource_key_mod.ResourceKey;
@@ -321,6 +322,55 @@ pub const TextBlobBuilder = struct {
         return .{
             .advance = scaleAdvance(run.stats.advance, placement.em),
             .missing = false,
+        };
+    }
+
+    pub fn appendPreparedBestEffortHintRun(
+        self: *TextBlobBuilder,
+        run: *const PreparedBestEffortHintRun,
+        placement: TextPlacement,
+        color: [4]f32,
+    ) !TextAppendResult {
+        try run.validateAtlas(self.atlas);
+
+        var missing = false;
+        var hinted_pen = Vec2.zero;
+        for (run.glyphs) |glyph| {
+            const face = &self.atlas.config.faces[glyph.face_index];
+            const x = placement.baseline.x + (hinted_pen.x + glyph.placement_delta.x) * placement.em;
+            const y = placement.baseline.y + (hinted_pen.y + glyph.placement_delta.y) * placement.em;
+            const transform = glyphPlacementTransform(x, y, placement.em, face.synthetic.skew_x);
+            switch (glyph.source) {
+                .hint => |hint| {
+                    if (hint.renderable()) {
+                        try self.appendHintedGlyphRef(glyph.face_index, glyph.glyph_id, transform, color, hint);
+                    }
+                },
+                .fallback => {
+                    const face_view = self.atlas.faceView(glyph.face_index, .{});
+                    if (!shapedGlyphAvailable(&face_view, glyph.glyph_id)) {
+                        missing = true;
+                    } else {
+                        const paint = try appendBlobGlyphPaint(self, &face_view, glyph.glyph_id, .{ .solid = color });
+                        try appendBlobGlyph(
+                            self,
+                            glyph.face_index,
+                            &face_view,
+                            glyph.glyph_id,
+                            transform,
+                            paint.color,
+                            paint.record_index,
+                            face.synthetic,
+                        );
+                    }
+                },
+            }
+            hinted_pen = Vec2.add(hinted_pen, glyph.advance);
+        }
+
+        return .{
+            .advance = scaleAdvance(run.stats.advance, placement.em),
+            .missing = missing,
         };
     }
 

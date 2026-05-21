@@ -679,6 +679,7 @@ fn collectCurveBboxes(allocator: Allocator, curves: []const CurveSegment) ![]BBo
 pub fn patchGlyphHint(allocator: Allocator, base: BaseGlyph, hint: *const GlyphHint) !GlyphHintPatch {
     const deltas = try encodeDeltas(allocator, base, hint.prepared_curves);
     errdefer allocator.free(deltas);
+    const band_reuse = proveBandReuse(base, hint.curve_bboxes);
     return .{
         .allocator = allocator,
         .record = .{
@@ -686,9 +687,15 @@ pub fn patchGlyphHint(allocator: Allocator, base: BaseGlyph, hint: *const GlyphH
             .curve_count = base.info.curve_count,
             .band_entry = base.info.band_entry,
             .bbox = hint.bbox,
+            .h_band_pad = band_reuse.h_band_pad,
+            .v_band_pad = band_reuse.v_band_pad,
+            .flags = .{
+                .expanded_bands = band_reuse.needsExpandedBands(),
+                .unordered_bands = !band_reuse.ordering_ok,
+            },
         },
         .curve_deltas_f16 = deltas,
-        .band_reuse = proveBandReuse(base, hint.curve_bboxes),
+        .band_reuse = band_reuse,
     };
 }
 
@@ -771,9 +778,36 @@ test "hint machine emits simple glyph curves and band proof" {
     defer patch.deinit();
 
     try std.testing.expect(hint.advance.x > 0);
+    try std.testing.expect(hint.bbox.max.y - hint.bbox.min.y < 1.5);
     try std.testing.expectEqual(@as(usize, info.curve_count), hint.prepared_curves.len);
     try std.testing.expectEqual(@as(usize, info.curve_count) * 8, patch.curve_deltas_f16.len);
     try std.testing.expectEqual(info.base_curve_texel, patch.record.base_curve_texel);
+}
+
+test "hint machine keeps Noto Sans C shoulder in place" {
+    const assets = @import("assets");
+    const font_mod = @import("../font/ttf.zig");
+    const allocator = std.testing.allocator;
+
+    const program = try Program.init(assets.noto_sans_regular);
+    const font = try font_mod.Font.init(assets.noto_sans_regular);
+    var machine = try HintMachine.initForProgram(allocator, &program, HintPpem.uniform(26 * 64));
+    defer machine.deinit();
+    var cache = GlyphTopologyCache.initForProgram(allocator, &program);
+    defer cache.deinit();
+
+    const glyph_id = try font.glyphIndex('C');
+    const executed = try machine.executeCachedGlyph(&cache, glyph_id);
+    switch (executed) {
+        .simple => |simple| {
+            try std.testing.expect(simple.phantom_start > 24);
+            const shoulder = simple.zone.points[24];
+            try std.testing.expect(shoulder.y > 900);
+            try std.testing.expect(shoulder.y < 990);
+            try std.testing.expect(shoulder.touched_y);
+        },
+        else => return error.TestExpectedGlyph,
+    }
 }
 
 test "hint machine handles empty glyph advances" {

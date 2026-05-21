@@ -487,6 +487,51 @@ test "TextBlobBuilder stores hinted glyph records and emits hinted special verti
     try testing.expectEqual(render_abi.SpecialLayerKind.hinted_text, render_abi.specialGlyphWordKind(packed_gw).?);
 }
 
+test "TextBlobBuilder best-effort hinted run keeps fallback glyphs" {
+    const assets_data = @import("assets");
+    const sample = "A \xf0\x9f\x9a\x80 B";
+    var fonts = try TextAtlas.init(testing.allocator, &.{
+        .{ .data = assets_data.noto_sans_regular },
+        .{ .data = assets_data.twemoji_mozilla, .fallback = true },
+    });
+    defer fonts.deinit();
+
+    if (try fonts.ensureText(.{}, sample)) |next| {
+        fonts.deinit();
+        fonts = next;
+    }
+
+    var shaped = try fonts.shapeText(testing.allocator, .{}, sample);
+    defer shaped.deinit();
+
+    var context = snail.TrueTypeHintContext.init(testing.allocator, &fonts);
+    defer context.deinit();
+    var run = try context.prepareBestEffortRun(testing.allocator, .{
+        .shaped = &shaped,
+        .ppem = snail.TrueTypeHintPpem.uniform(12 * 64),
+    });
+    defer run.deinit();
+
+    try testing.expect(run.stats.hinted_count >= 2);
+    try testing.expect(run.stats.fallback_count >= 1);
+
+    var builder = TextBlobBuilder.init(testing.allocator, &fonts);
+    defer builder.deinit();
+    _ = try builder.appendPreparedBestEffortHintRun(&run, .{
+        .baseline = .{ .x = 0, .y = 12 },
+        .em = 12,
+    }, .{ 0.2, 0.4, 0.6, 1 });
+
+    var blob = try builder.finish();
+    defer blob.deinit();
+    var hinted_glyphs: usize = 0;
+    for (blob.glyphs) |glyph| {
+        if (glyph.hint_record_texel != null) hinted_glyphs += 1;
+    }
+    try testing.expect(hinted_glyphs >= 2);
+    try testing.expect(blob.glyphCount() > hinted_glyphs);
+}
+
 test "TextAtlas.lineMetrics returns primary face metrics" {
     const assets_data = @import("assets");
     var fonts = try TextAtlas.init(testing.allocator, &.{

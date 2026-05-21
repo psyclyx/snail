@@ -17,6 +17,7 @@ const curve_tex = @import("../../format/curve_texture.zig");
 const atlas_curve_mod = @import("../../format/atlas/curve.zig");
 const atlas_page_mod = @import("../../format/atlas/page.zig");
 const render_abi = @import("../../format/abi.zig");
+const text_hint_format = @import("../../format/text_hint.zig");
 const vertex = @import("../../format/vertex.zig");
 const CurveSegment = bezier.CurveSegment;
 const CurveAtlas = atlas_curve_mod.CurveAtlas;
@@ -549,6 +550,7 @@ pub const CpuRenderer = struct {
         const band = fetchLayerInfoTexel(entry.data, entry.width, info_x, info_y, 1);
         const meta = fetchLayerInfoTexel(entry.data, entry.width, info_x, info_y, 2);
         const band_counts = render_abi.unpackBandCounts(@bitCast(header[2]));
+        const band_pad = text_hint_format.unpackBandPadding(@intFromFloat(meta[3]));
         const be = GlyphBandEntry{
             .glyph_x = @intFromFloat(header[0]),
             .glyph_y = @intFromFloat(header[1]),
@@ -572,6 +574,9 @@ pub const CpuRenderer = struct {
                 .info_y = info_y,
                 .base_curve_texel = @intFromFloat(meta[0]),
                 .curve_count = @intFromFloat(meta[1]),
+                .flags = @intFromFloat(meta[2]),
+                .h_band_pad = band_pad.h,
+                .v_band_pad = band_pad.v,
             },
         );
     }

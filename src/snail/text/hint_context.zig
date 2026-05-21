@@ -156,6 +156,42 @@ pub const PreparedHintRun = struct {
     }
 };
 
+pub const PreparedBestEffortHintGlyph = struct {
+    face_index: FaceIndex,
+    glyph_id: u16,
+    placement_delta: Vec2,
+    advance: Vec2,
+    source: union(enum) {
+        hint: *const HintedGlyphValue,
+        fallback,
+    },
+};
+
+pub const PreparedBestEffortHintRunStats = struct {
+    glyph_count: usize = 0,
+    hinted_count: usize = 0,
+    fallback_count: usize = 0,
+    advance: Vec2 = .zero,
+};
+
+pub const PreparedBestEffortHintRun = struct {
+    allocator: Allocator,
+    atlas: *const TextAtlas,
+    atlas_identity: u64,
+    glyphs: []PreparedBestEffortHintGlyph,
+    stats: PreparedBestEffortHintRunStats,
+
+    pub fn validateAtlas(self: *const PreparedBestEffortHintRun, atlas: *const TextAtlas) !void {
+        if (self.atlas != atlas) return error.WrongTextAtlasSnapshot;
+        if (atlas.snapshotIdentity() != self.atlas_identity) return error.WrongTextAtlasSnapshot;
+    }
+
+    pub fn deinit(self: *PreparedBestEffortHintRun) void {
+        self.allocator.free(self.glyphs);
+        self.* = undefined;
+    }
+};
+
 pub const PrepareRunOptions = struct {
     shaped: *const ShapedText,
     glyphs: Range = .{},
@@ -300,6 +336,61 @@ pub const TrueTypeHintContext = struct {
         };
     }
 
+    pub fn prepareBestEffortRun(
+        self: *TrueTypeHintContext,
+        allocator: Allocator,
+        options: PrepareRunOptions,
+    ) !PreparedBestEffortHintRun {
+        try self.validateAtlas();
+        if (options.shaped.config != self.atlas.config) return error.WrongTextAtlasSnapshot;
+
+        const range = options.glyphs.resolve(options.shaped.glyphs.len);
+        const out_glyphs = try allocator.alloc(PreparedBestEffortHintGlyph, range.end - range.start);
+        errdefer allocator.free(out_glyphs);
+
+        var stats = PreparedBestEffortHintRunStats{ .glyph_count = out_glyphs.len };
+        var nominal_pen = shapedPenAt(options.shaped, range.start);
+        for (out_glyphs, options.shaped.glyphs[range.start..range.end]) |*out, glyph| {
+            const placement_delta = Vec2{
+                .x = glyph.x_offset - nominal_pen.x,
+                .y = glyph.y_offset - nominal_pen.y,
+            };
+            const status = try self.computeGlyph(keyForGlyph(glyph, options.ppem));
+            switch (status) {
+                .ready => |hint| {
+                    out.* = .{
+                        .face_index = glyph.face_index,
+                        .glyph_id = glyph.glyph_id,
+                        .placement_delta = placement_delta,
+                        .advance = hint.advance,
+                        .source = .{ .hint = hint },
+                    };
+                    if (hint.renderable()) stats.hinted_count += 1;
+                },
+                .missing, .unsupported => {
+                    out.* = .{
+                        .face_index = glyph.face_index,
+                        .glyph_id = glyph.glyph_id,
+                        .placement_delta = placement_delta,
+                        .advance = .{ .x = glyph.x_advance, .y = glyph.y_advance },
+                        .source = .fallback,
+                    };
+                    stats.fallback_count += 1;
+                },
+            }
+            nominal_pen = Vec2.add(nominal_pen, .{ .x = glyph.x_advance, .y = glyph.y_advance });
+            stats.advance = Vec2.add(stats.advance, out.advance);
+        }
+
+        return .{
+            .allocator = allocator,
+            .atlas = self.atlas,
+            .atlas_identity = self.atlas_identity,
+            .glyphs = out_glyphs,
+            .stats = stats,
+        };
+    }
+
     fn clear(self: *TrueTypeHintContext) void {
         var glyph_values = self.glyphs.valueIterator();
         while (glyph_values.next()) |entry| {
@@ -374,12 +465,6 @@ pub const TrueTypeHintContext = struct {
                 return err;
             },
         };
-        if (!patch.bandsReusable()) {
-            patch.deinit();
-            hint.deinit();
-            return self.putUnsupported(key, .bands_not_reusable);
-        }
-
         return self.putReadyValue(takeHintedGlyphValue(key, &hint, &patch));
     }
 
