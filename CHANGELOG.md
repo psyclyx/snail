@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.11.1 - 2026-05-20
+
+### Changed
+
+- Split the GL/GLES hinted-text shader away from the generic path shader so
+  hinted text no longer pays to link vector path conic/cubic coverage code.
+- Simplified GL/GLES vector path root solving for cubics and rational conics
+  after CPU path preparation has already constrained those curves, preserving
+  correctness while dramatically reducing cold NVIDIA shader link time for the
+  path program.
+
+### Fixed
+
+- Reduced first-run GL/GLES shader startup stalls without relying on saved
+  program binaries or driver cache reuse; cold path shader linking now stays
+  below one second on the tested NVIDIA setup.
+- Kept path, hinted text, COLR, and regular text shader paths eagerly linked so
+  resource-dependent draws do not introduce unpredictable first-use shader lag.
+
 ## 0.11.0 - 2026-05-20
 
 ### Added
