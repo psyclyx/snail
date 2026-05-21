@@ -36,60 +36,12 @@ struct SegmentData {
 };
 
 #if SNAIL_ENABLE_PATH
-struct SegmentRoots {
-    int count;
-    vec3 t;
-};
-
-void appendRoot(inout SegmentRoots roots, float t) {
-    if (roots.count >= 3) return;
-    if (t < -kParamEps || t > 1.0 + kParamEps) return;
-    float clamped = clamp(t, 0.0, 1.0);
-    for (int i = 0; i < roots.count; i++) {
-        if (abs(roots.t[i] - clamped) <= kParamEps) return;
-    }
-    int insertAt = roots.count;
-    while (insertAt > 0 && roots.t[insertAt - 1] > clamped) {
-        roots.t[insertAt] = roots.t[insertAt - 1];
-        insertAt--;
-    }
-    roots.t[insertAt] = clamped;
-    roots.count++;
-}
-
-SegmentRoots solveQuadraticRoots(float a, float b, float cVal) {
-    SegmentRoots roots;
-    roots.count = 0;
-    roots.t = vec3(0.0);
-    if (abs(a) < kCoordEps) {
-        if (abs(b) < kCoordEps) return roots;
-        appendRoot(roots, -cVal / b);
-        return roots;
-    }
-    float disc = b * b - 4.0 * a * cVal;
-    if (disc < 0.0) {
-        if (disc > -1e-6) {
-            disc = 0.0;
-        } else {
-            return roots;
-        }
-    }
-    float sqrtDisc = sqrt(disc);
-    float inv2a = 0.5 / a;
-    appendRoot(roots, (-b - sqrtDisc) * inv2a);
-    appendRoot(roots, (-b + sqrtDisc) * inv2a);
-    return roots;
-}
-
-SegmentRoots solveCubicRoots(float a, float b, float cVal, float d) {
+bool solveMonotonicCubicRoot(float a, float b, float cVal, float d, out float tOut) {
     // Path preparation splits cubics at x/y extrema, so each uploaded cubic is
     // monotonic along both sampling axes and can contribute at most one root.
-    SegmentRoots roots;
-    roots.count = 0;
-    roots.t = vec3(0.0);
     float f0 = d;
     float f1 = ((a + b) + cVal) + d;
-    if ((f0 < -kCoordEps && f1 < -kCoordEps) || (f0 > kCoordEps && f1 > kCoordEps)) return roots;
+    if ((f0 < -kCoordEps && f1 < -kCoordEps) || (f0 > kCoordEps && f1 > kCoordEps)) return false;
 
     float lo = 0.0;
     float hi = 1.0;
@@ -110,8 +62,14 @@ SegmentRoots solveCubicRoots(float a, float b, float cVal, float d) {
         }
         t = next;
     }
-    appendRoot(roots, t);
-    return roots;
+    tOut = t;
+    return true;
+}
+
+bool clampSegmentRoot(float tRaw, out float t) {
+    if (tRaw < -kParamEps || tRaw > 1.0 + kParamEps) return false;
+    t = clamp(tRaw, 0.0, 1.0);
+    return true;
 }
 #endif
 
@@ -339,6 +297,37 @@ void accumulateLineCoverage(inout float cov, inout float wgt, float p0x, float p
     appendCoverageContribution(cov, wgt, distance, derivativeAxis > 0.0 ? 1.0 : -1.0);
 }
 
+void accumulateConicRoot(inout float cov,
+                         inout float wgt,
+                         float t,
+                         float endRootDelta,
+                         float sampleAlong,
+                         float ppe,
+                         bool horizontal,
+                         float rootA,
+                         float rootB,
+                         float rootC,
+                         float alongA,
+                         float alongB,
+                         float alongC,
+                         float denA,
+                         float denB,
+                         float denC) {
+    if (isNearEndRoot(t) && isEndpointRootDelta(endRootDelta)) return;
+
+    float den = max((denA * t + denB) * t + denC, kCoordEps);
+    float along = ((alongA * t + alongB) * t + alongC) / den;
+    float rootNumer = (rootA * t + rootB) * t + rootC;
+    float rootPrime = 2.0 * rootA * t + rootB;
+    float denPrime = 2.0 * denA * t + denB;
+    float derivAxis = (rootPrime * den - rootNumer * denPrime) / (den * den);
+    if (!horizontal) derivAxis = -derivAxis;
+    if (abs(derivAxis) <= kParamEps) return;
+
+    float dist = (along - sampleAlong) * ppe;
+    appendCoverageContribution(cov, wgt, dist, derivAxis > 0.0 ? 1.0 : -1.0);
+}
+
 void accumulateConicCoverage(inout float cov, inout float wgt, SegmentData seg, vec2 sampleRc, float ppe, bool horizontal) {
     if (!segmentRootHullCanCross(seg, sampleRc, horizontal)) return;
 
@@ -354,7 +343,35 @@ void accumulateConicCoverage(inout float cov, inout float wgt, SegmentData seg, 
     float c0 = seg.weights.x * (p0Root - sampleRoot);
     float c1 = seg.weights.y * (p1Root - sampleRoot);
     float c2 = seg.weights.z * (p2Root - sampleRoot);
-    SegmentRoots roots = solveQuadraticRoots(c0 - 2.0 * c1 + c2, 2.0 * (c1 - c0), c0);
+    float quadA = c0 - 2.0 * c1 + c2;
+    float quadB = 2.0 * (c1 - c0);
+    float root0 = 0.0;
+    float root1 = 0.0;
+    int rootCount = 0;
+    if (abs(quadA) < kCoordEps) {
+        if (abs(quadB) >= kCoordEps && clampSegmentRoot(-c0 / quadB, root0)) rootCount = 1;
+    } else {
+        float disc = quadB * quadB - 4.0 * quadA * c0;
+        if (disc < 0.0) {
+            if (disc > -1e-6) disc = 0.0;
+        }
+        if (disc >= 0.0) {
+            float sqrtDisc = sqrt(disc);
+            float inv2a = 0.5 / quadA;
+            float tRaw0 = (-quadB - sqrtDisc) * inv2a;
+            float tRaw1 = (-quadB + sqrtDisc) * inv2a;
+            if (clampSegmentRoot(tRaw0, root0)) rootCount = 1;
+            if (clampSegmentRoot(tRaw1, root1)) {
+                if (rootCount == 0) {
+                    root0 = root1;
+                    rootCount = 1;
+                } else if (abs(root1 - root0) > kParamEps) {
+                    rootCount = 2;
+                }
+            }
+        }
+    }
+    if (rootCount == 0) return;
 
     float rootA = p0Root * seg.weights.x - 2.0 * p1Root * seg.weights.y + p2Root * seg.weights.z;
     float rootB = 2.0 * (p1Root * seg.weights.y - p0Root * seg.weights.x);
@@ -365,22 +382,13 @@ void accumulateConicCoverage(inout float cov, inout float wgt, SegmentData seg, 
     float denA = seg.weights.x - 2.0 * seg.weights.y + seg.weights.z;
     float denB = 2.0 * (seg.weights.y - seg.weights.x);
     float denC = seg.weights.x;
+    float endRootDelta = segmentEndRootDelta(seg, sampleRc, horizontal);
 
-    for (int ri = 0; ri < roots.count; ri++) {
-        float t = roots.t[ri];
-        if (isNearEndRoot(t) && isEndpointRootDelta(segmentEndRootDelta(seg, sampleRc, horizontal))) continue;
-
-        float den = max((denA * t + denB) * t + denC, kCoordEps);
-        float along = ((alongA * t + alongB) * t + alongC) / den;
-        float rootNumer = (rootA * t + rootB) * t + rootC;
-        float rootPrime = 2.0 * rootA * t + rootB;
-        float denPrime = 2.0 * denA * t + denB;
-        float derivAxis = (rootPrime * den - rootNumer * denPrime) / (den * den);
-        if (!horizontal) derivAxis = -derivAxis;
-        if (abs(derivAxis) <= kParamEps) continue;
-
-        float dist = (along - sampleAlong) * ppe;
-        appendCoverageContribution(cov, wgt, dist, derivAxis > 0.0 ? 1.0 : -1.0);
+    accumulateConicRoot(cov, wgt, root0, endRootDelta, sampleAlong, ppe, horizontal,
+                        rootA, rootB, rootC, alongA, alongB, alongC, denA, denB, denC);
+    if (rootCount == 2) {
+        accumulateConicRoot(cov, wgt, root1, endRootDelta, sampleAlong, ppe, horizontal,
+                            rootA, rootB, rootC, alongA, alongB, alongC, denA, denB, denC);
     }
 }
 
@@ -401,24 +409,21 @@ void accumulateCubicCoverage(inout float cov, inout float wgt, SegmentData seg, 
     float rootA = -p0Root + 3.0 * p1Root - 3.0 * p2Root + p3Root;
     float rootB = 3.0 * p0Root - 6.0 * p1Root + 3.0 * p2Root;
     float rootC = -3.0 * p0Root + 3.0 * p1Root;
-    SegmentRoots roots = solveCubicRoots(rootA, rootB, rootC, p0Root - sampleRoot);
+    float t = 0.0;
+    if (!solveMonotonicCubicRoot(rootA, rootB, rootC, p0Root - sampleRoot, t)) return;
+    if (isNearEndRoot(t) && isEndpointRootDelta(segmentEndRootDelta(seg, sampleRc, horizontal))) return;
 
     float alongA = -p0Along + 3.0 * p1Along - 3.0 * p2Along + p3Along;
     float alongB = 3.0 * p0Along - 6.0 * p1Along + 3.0 * p2Along;
     float alongC = -3.0 * p0Along + 3.0 * p1Along;
 
-    for (int ri = 0; ri < roots.count; ri++) {
-        float t = roots.t[ri];
-        if (isNearEndRoot(t) && isEndpointRootDelta(segmentEndRootDelta(seg, sampleRc, horizontal))) continue;
+    float along = ((alongA * t + alongB) * t + alongC) * t + p0Along;
+    float derivAxis = (3.0 * rootA * t + 2.0 * rootB) * t + rootC;
+    if (!horizontal) derivAxis = -derivAxis;
+    if (abs(derivAxis) <= kParamEps) return;
 
-        float along = ((alongA * t + alongB) * t + alongC) * t + p0Along;
-        float derivAxis = (3.0 * rootA * t + 2.0 * rootB) * t + rootC;
-        if (!horizontal) derivAxis = -derivAxis;
-        if (abs(derivAxis) <= kParamEps) continue;
-
-        float dist = (along - sampleAlong) * ppe;
-        appendCoverageContribution(cov, wgt, dist, derivAxis > 0.0 ? 1.0 : -1.0);
-    }
+    float dist = (along - sampleAlong) * ppe;
+    appendCoverageContribution(cov, wgt, dist, derivAxis > 0.0 ? 1.0 : -1.0);
 }
 
 bool accumulateAxisCoverageSegment(inout float cov, inout float wgt, vec2 sampleRc, float ppe, SegmentData seg, bool horizontal) {
