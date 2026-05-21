@@ -96,7 +96,7 @@ fn initForCurrentWindow(api: GlApi) !void {
         egl_window = null;
     }
 
-    const created_surface = createWindowSurface(egl_display, config, @as(egl.EGLNativeWindowType, @intCast(@intFromPtr(egl_window.?)))) orelse return error.EglSurfaceCreateFailed;
+    const created_surface = createWindowSurface(egl_display, config, @as(egl.EGLNativeWindowType, @intCast(@intFromPtr(egl_window.?))), api) orelse return error.EglSurfaceCreateFailed;
     egl_surface = created_surface.surface;
     window_surface_encoding = created_surface.encoding;
     errdefer {
@@ -112,11 +112,18 @@ fn initForCurrentWindow(api: GlApi) !void {
     _ = egl.eglSwapInterval(egl_display, 1);
 }
 
-// Falls back silently when an sRGB EGL surface is unavailable. The renderer
-// still works; gamma-correct compositing degrades to whatever the default
-// framebuffer offers. Surface attribute loss is platform-specific and not
-// worth printing to stderr from a library entry point.
-fn createWindowSurface(display: egl.EGLDisplay, config: egl.EGLConfig, native_window: egl.EGLNativeWindowType) ?CreatedSurface {
+// Desktop GL requests an sRGB window surface so GL_FRAMEBUFFER_SRGB can provide
+// fixed-function conversion. GLES uses a linear window surface intentionally:
+// default-framebuffer sRGB behavior on EGL window surfaces is too driver/window
+// system dependent, and Snail can explicitly encode into linear attachments.
+fn createWindowSurface(display: egl.EGLDisplay, config: egl.EGLConfig, native_window: egl.EGLNativeWindowType, api: GlApi) ?CreatedSurface {
+    return switch (api) {
+        .gl33, .gl44 => createSrgbWindowSurface(display, config, native_window) orelse createDefaultWindowSurface(display, config, native_window),
+        .gles30 => createLinearWindowSurface(display, config, native_window) orelse createDefaultWindowSurface(display, config, native_window),
+    };
+}
+
+fn createSrgbWindowSurface(display: egl.EGLDisplay, config: egl.EGLConfig, native_window: egl.EGLNativeWindowType) ?CreatedSurface {
     if (hasExtension(display, "EGL_KHR_gl_colorspace")) {
         const attrs = [_]egl.EGLint{
             egl.EGL_GL_COLORSPACE_KHR, egl.EGL_GL_COLORSPACE_SRGB_KHR,
@@ -125,6 +132,22 @@ fn createWindowSurface(display: egl.EGLDisplay, config: egl.EGLConfig, native_wi
         const surface = egl.eglCreateWindowSurface(display, config, native_window, &attrs);
         if (surface != egl.EGL_NO_SURFACE) return .{ .surface = surface, .encoding = .srgb };
     }
+    return null;
+}
+
+fn createLinearWindowSurface(display: egl.EGLDisplay, config: egl.EGLConfig, native_window: egl.EGLNativeWindowType) ?CreatedSurface {
+    if (hasExtension(display, "EGL_KHR_gl_colorspace")) {
+        const attrs = [_]egl.EGLint{
+            egl.EGL_GL_COLORSPACE_KHR, egl.EGL_GL_COLORSPACE_LINEAR_KHR,
+            egl.EGL_NONE,
+        };
+        const surface = egl.eglCreateWindowSurface(display, config, native_window, &attrs);
+        if (surface != egl.EGL_NO_SURFACE) return .{ .surface = surface, .encoding = .linear };
+    }
+    return null;
+}
+
+fn createDefaultWindowSurface(display: egl.EGLDisplay, config: egl.EGLConfig, native_window: egl.EGLNativeWindowType) ?CreatedSurface {
     const surface = egl.eglCreateWindowSurface(display, config, native_window, null);
     if (surface == egl.EGL_NO_SURFACE) return null;
     return .{ .surface = surface, .encoding = .linear };
@@ -220,32 +243,24 @@ pub fn presentationInfo() presentation.Info {
 }
 
 pub fn defaultFramebufferEncoding() presentation.ColorEncoding {
-    if (queryDefaultFramebufferEncoding(active_api)) |encoding| return encoding;
-
-    // EGL_GL_COLORSPACE_SRGB_KHR declares how the native window surface should
-    // be interpreted, but it does not prove shader writes get fixed-function
-    // sRGB conversion on every GLES default framebuffer. If the attachment
-    // query is unavailable, make GLES encode sRGB in shader space instead of
-    // presenting unencoded linear colors.
     return switch (active_api) {
-        .gl33, .gl44 => window_surface_encoding,
-        .gles30 => .linear,
+        .gl33, .gl44 => {
+            if (window_surface_encoding == .srgb) return .srgb;
+            return queryDefaultFramebufferEncoding() orelse .linear;
+        },
+        .gles30 => window_surface_encoding,
     };
 }
 
-fn queryDefaultFramebufferEncoding(api: GlApi) ?presentation.ColorEncoding {
+fn queryDefaultFramebufferEncoding() ?presentation.ColorEncoding {
     var prev_draw_fb: gl.GLint = 0;
     gl.glGetIntegerv(gl.GL_DRAW_FRAMEBUFFER_BINDING, &prev_draw_fb);
     gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, 0);
     defer gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, @intCast(prev_draw_fb));
 
     while (gl.glGetError() != gl.GL_NO_ERROR) {}
-    const attachment: gl.GLenum = switch (api) {
-        .gl33, .gl44 => @intCast(gl.GL_BACK_LEFT),
-        .gles30 => @intCast(gl.GL_BACK),
-    };
     var encoding: gl.GLint = 0;
-    gl.glGetFramebufferAttachmentParameteriv(gl.GL_DRAW_FRAMEBUFFER, attachment, gl.GL_FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING, &encoding);
+    gl.glGetFramebufferAttachmentParameteriv(gl.GL_DRAW_FRAMEBUFFER, @intCast(gl.GL_BACK_LEFT), gl.GL_FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING, &encoding);
     if (gl.glGetError() != gl.GL_NO_ERROR) return null;
     if (encoding == gl.GL_SRGB) return .srgb;
     if (encoding == gl.GL_LINEAR) return .linear;
