@@ -171,7 +171,7 @@ pub const TextBlob = struct {
     }
 };
 
-pub const TextBlobBuilder = struct {
+const TextBlobBuilder = struct {
     allocator: Allocator,
     atlas: *const TextAtlas,
     glyphs: std.ArrayListUnmanaged(TextBlob.Glyph) = .empty,

@@ -41,7 +41,6 @@ const toPaint = common.toPaint;
 const TextAtlasImpl = common.TextAtlasImpl;
 const ShapedTextImpl = common.ShapedTextImpl;
 const TextBlobImpl = common.TextBlobImpl;
-const TextBlobBuilderImpl = common.TextBlobBuilderImpl;
 const TrueTypeHintContextImpl = common.TrueTypeHintContextImpl;
 const TrueTypePreparedHintRunImpl = common.TrueTypePreparedHintRunImpl;
 const destroyHandle = common.destroyHandle;
@@ -329,81 +328,6 @@ pub export fn snail_shaped_text_copy_glyphs(shaped: *const ShapedTextImpl, out: 
         };
     }
     return count;
-}
-
-// TextBlobBuilder
-
-pub export fn snail_text_blob_builder_init(
-    alloc_ptr: ?*const SnailAllocator,
-    atlas: *const TextAtlasImpl,
-    out: *?*TextBlobBuilderImpl,
-) c_int {
-    const impl = createHandle(TextBlobBuilderImpl, alloc_ptr) catch return SNAIL_ERR_OUT_OF_MEMORY;
-    const allocator = allocatorForHandle(impl);
-    impl.inner = snail.TextBlobBuilder.init(allocator, &atlas.inner);
-    out.* = impl;
-    return SNAIL_OK;
-}
-
-pub export fn snail_text_blob_builder_deinit(builder: ?*TextBlobBuilderImpl) void {
-    if (builder) |b| {
-        b.inner.deinit();
-        destroyHandle(b);
-    }
-}
-
-pub export fn snail_text_blob_builder_reset(builder: *TextBlobBuilderImpl) void {
-    builder.inner.reset();
-}
-
-pub export fn snail_text_blob_builder_glyph_count(builder: *const TextBlobBuilderImpl) usize {
-    return builder.inner.glyphCount();
-}
-
-pub export fn snail_text_blob_builder_append_shaped(
-    builder: *TextBlobBuilderImpl,
-    shaped: *const ShapedTextImpl,
-    glyphs: SnailRange,
-    options: SnailTextAppendOptions,
-    out_result: ?*SnailTextAppendResult,
-) c_int {
-    const paint = toPaint(options.fill) catch return SNAIL_ERR_INVALID_ARGUMENT;
-    const range = toRange(glyphs).resolve(shaped.inner.glyphs.len);
-    const result = builder.inner.append(.{
-        .source = .{ .shaped = shaped.inner.glyphs[range.start..range.end] },
-        .placement = toTextPlacement(options.placement),
-        .fill = paint,
-    }) catch |err| return mapError(err);
-    if (out_result) |out| out.* = fromTextAppendResult(result);
-    return SNAIL_OK;
-}
-
-pub export fn snail_text_blob_builder_append_prepared_hint_run(
-    builder: *TextBlobBuilderImpl,
-    run: *const TrueTypePreparedHintRunImpl,
-    placement: SnailTextPlacement,
-    color: ?[*]const f32,
-    out_result: ?*SnailTextAppendResult,
-) c_int {
-    const c = color4(color) catch return SNAIL_ERR_INVALID_ARGUMENT;
-    const result = builder.inner.append(.{
-        .source = .{ .hinted = run.inner.glyphs },
-        .placement = toTextPlacement(placement),
-        .fill = .{ .solid = c },
-    }) catch |err| return mapError(err);
-    if (out_result) |out| out.* = fromTextAppendResult(result);
-    return SNAIL_OK;
-}
-
-pub export fn snail_text_blob_builder_finish(builder: *TextBlobBuilderImpl, out: *?*TextBlobImpl) c_int {
-    const impl = createHandleSharingAllocator(TextBlobImpl, builder.handle_allocator) catch return SNAIL_ERR_OUT_OF_MEMORY;
-    const blob = builder.inner.finish() catch |err| {
-        destroyHandle(impl);
-        return mapError(err);
-    };
-    impl.inner = blob;
-    out.* = impl;
-    return SNAIL_OK;
 }
 
 // ── TextBlobBundle / BlobInProgress ──

@@ -64,7 +64,6 @@ pub const TextCellGridOptions = text.TextCellGridOptions;
 pub const Decoration = text.Decoration;
 pub const ScriptTransform = text.ScriptTransform;
 pub const ItemizedRun = text.ItemizedRun;
-pub const TextBlobBuilder = text.TextBlobBuilder;
 pub const TextBlobBundle = text.TextBlobBundle;
 pub const BlobInProgress = text.BlobInProgress;
 pub const FaceSpec = text.FaceSpec;

@@ -24,7 +24,6 @@ pub const TextPlacement = types_mod.TextPlacement;
 pub const TextAppend = types_mod.TextAppend;
 pub const TextAppendResult = types_mod.TextAppendResult;
 pub const TextBatchAppend = types_mod.TextBatchAppend;
-pub const TextBlobBuilder = blob_mod.TextBlobBuilder;
 pub const TextBlobBundle = blob_mod.TextBlobBundle;
 pub const BlobInProgress = blob_mod.BlobInProgress;
 pub const TrueTypeHintContext = hint_context_mod.TrueTypeHintContext;

@@ -20,7 +20,7 @@ pub const TextPlacement = struct {
     em: f32,
 };
 
-/// A unit of text to append to a `TextBlobBuilder`. The `source` union
+/// A unit of text to append to a blob via `BlobInProgress`. The `source` union
 /// selects between an unhinted shaped-text slice and a slice of hinted
 /// glyphs from a `PreparedHintRun`. In both cases the slice is
 /// caller-owned; the first glyph in the slice lands at `placement.baseline`

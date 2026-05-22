@@ -23,7 +23,6 @@ pub const handles = [_]Handle{
     .{ .name = "SnailTextAtlas" },
     .{ .name = "SnailShapedText" },
     .{ .name = "SnailTextBlob" },
-    .{ .name = "SnailTextBlobBuilder" },
     .{ .name = "SnailTextBlobBundle" },
     .{ .name = "SnailBlobInProgress" },
     .{ .name = "SnailTrueTypeHintContext" },

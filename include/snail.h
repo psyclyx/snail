@@ -512,25 +512,6 @@ size_t snail_shaped_text_copy_glyphs(const SnailShapedText *shaped,
                                      SnailShapedGlyph *out,
                                      size_t capacity);
 
-int snail_text_blob_builder_init(const SnailAllocator *alloc,
-                                 const SnailTextAtlas *atlas,
-                                 SnailTextBlobBuilder **out);
-void snail_text_blob_builder_deinit(SnailTextBlobBuilder *builder);
-void snail_text_blob_builder_reset(SnailTextBlobBuilder *builder);
-size_t snail_text_blob_builder_glyph_count(const SnailTextBlobBuilder *builder);
-int snail_text_blob_builder_append_shaped(SnailTextBlobBuilder *builder,
-                                          const SnailShapedText *shaped,
-                                          SnailRange glyphs,
-                                          SnailTextAppendOptions options,
-                                          SnailTextAppendResult *out_result);
-int snail_text_blob_builder_append_prepared_hint_run(SnailTextBlobBuilder *builder,
-                                                     const SnailTrueTypePreparedHintRun *run,
-                                                     SnailTextPlacement placement,
-                                                     const float color[4],
-                                                     SnailTextAppendResult *out_result);
-int snail_text_blob_builder_finish(SnailTextBlobBuilder *builder,
-                                   SnailTextBlob **out);
-
 /* TextBlobBundle: arena-backed container for many TextBlobs sharing a
  * TextAtlas. Streaming construction via start_blob; bulk construction is a
  * future addition. Bundle owns blob lifetimes — `reset` invalidates every

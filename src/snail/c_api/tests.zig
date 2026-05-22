@@ -237,14 +237,17 @@ test "c_api: text blob builder and true type hinted runs" {
         try testing.expect(stats.advance_x > 0);
         if (stats.hinted_count == 0) continue;
 
-        var builder: ?*c.test_api.TextBlobBuilderImpl = null;
-        try testing.expectEqual(c.SNAIL_OK, c_text.snail_text_blob_builder_init(null, atlas, &builder));
-        defer c_text.snail_text_blob_builder_deinit(builder);
+        var bundle: ?*c.test_api.TextBlobBundleImpl = null;
+        try testing.expectEqual(c.SNAIL_OK, c_text.snail_text_blob_bundle_init(null, atlas, &bundle));
+        defer c_text.snail_text_blob_bundle_deinit(bundle);
+
+        var bip: ?*c.test_api.BlobInProgressImpl = null;
+        try testing.expectEqual(c.SNAIL_OK, c_text.snail_text_blob_bundle_start_blob(bundle.?, &bip));
 
         const color = [_]f32{ 1, 1, 1, 1 };
         var append_result: c.SnailTextAppendResult = .{};
-        try testing.expectEqual(c.SNAIL_OK, c_text.snail_text_blob_builder_append_prepared_hint_run(
-            builder.?,
+        try testing.expectEqual(c.SNAIL_OK, c_text.snail_blob_in_progress_append_prepared_hint_run(
+            bip.?,
             run.?,
             .{ .baseline_x = 0, .baseline_y = 12, .em = 12 },
             &color,
@@ -252,10 +255,10 @@ test "c_api: text blob builder and true type hinted runs" {
         ));
         try testing.expect(!append_result.missing);
         try testing.expect(append_result.advance_x > 0);
-        try testing.expect(c_text.snail_text_blob_builder_glyph_count(builder.?) > 0);
+        try testing.expect(c_text.snail_blob_in_progress_glyph_count(bip.?) > 0);
 
         var blob: ?*c.test_api.TextBlobImpl = null;
-        try testing.expectEqual(c.SNAIL_OK, c_text.snail_text_blob_builder_finish(builder.?, &blob));
+        try testing.expectEqual(c.SNAIL_OK, c_text.snail_blob_in_progress_finish(bip.?, c_misc.snail_resource_key_from_cstr("hint_blob"), &blob));
         defer c_text.snail_text_blob_deinit(blob);
         try testing.expect(c_text.snail_text_blob_glyph_count(blob.?) > 0);
 

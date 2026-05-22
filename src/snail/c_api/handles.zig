@@ -12,17 +12,15 @@ pub const TextAtlasImpl = struct { handle_allocator: *HandleAllocator, inner: sn
 pub const ShapedTextImpl = struct { handle_allocator: *HandleAllocator, inner: snail.ShapedText };
 pub const TextBlobImpl = struct {
     handle_allocator: *HandleAllocator,
-    /// Either an independently-owned blob value (legacy path through
-    /// SnailTextBlobBuilder / SnailTextBlob.init_*) or a borrowed pointer
-    /// into a SnailTextBlobBundle. When `borrowed_from` is non-null, the
-    /// inner blob is invalidated whenever the source bundle bumps
-    /// `generation`; dereferencing the handle then returns
-    /// `SNAIL_ERR_INVALID_HANDLE`.
+    /// Either an independently-owned blob value (legacy `init_*` paths)
+    /// or a borrowed pointer into a SnailTextBlobBundle. When
+    /// `borrowed_from` is non-null, the inner blob is invalidated
+    /// whenever the source bundle bumps `generation`; dereferencing the
+    /// handle then returns `SNAIL_ERR_INVALID_HANDLE`.
     inner: snail.TextBlob,
     borrowed_from: ?*TextBlobBundleImpl = null,
     borrowed_generation: u32 = 0,
 };
-pub const TextBlobBuilderImpl = struct { handle_allocator: *HandleAllocator, inner: snail.TextBlobBuilder };
 pub const TextBlobBundleImpl = struct { handle_allocator: *HandleAllocator, inner: snail.TextBlobBundle };
 pub const BlobInProgressImpl = struct {
     handle_allocator: *HandleAllocator,
