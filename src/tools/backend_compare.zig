@@ -114,8 +114,9 @@ const exact_policy = ComparePolicy{
 
 const SceneBundle = struct {
     atlas: *snail.TextAtlas,
-    latin_blob: *snail.TextBlob,
-    devanagari_blob: *snail.TextBlob,
+    text_bundle: *snail.TextBlobBundle,
+    latin_blob: *const snail.TextBlob,
+    devanagari_blob: *const snail.TextBlob,
     picture: *snail.PathPicture,
     scene: snail.Scene,
     allocator: std.mem.Allocator,
@@ -124,10 +125,8 @@ const SceneBundle = struct {
         self.scene.deinit();
         self.picture.deinit();
         self.allocator.destroy(self.picture);
-        self.devanagari_blob.deinit();
-        self.allocator.destroy(self.devanagari_blob);
-        self.latin_blob.deinit();
-        self.allocator.destroy(self.latin_blob);
+        self.text_bundle.deinit();
+        self.allocator.destroy(self.text_bundle);
         self.atlas.deinit();
         self.allocator.destroy(self.atlas);
         self.* = undefined;
@@ -162,36 +161,36 @@ fn ensureText(atlas: *snail.TextAtlas, style: snail.FontStyle, text: []const u8)
 }
 
 fn buildTextBlob(
-    allocator: std.mem.Allocator,
-    atlas: *const snail.TextAtlas,
+    bundle: *snail.TextBlobBundle,
+    key: snail.ResourceKey,
     text: []const u8,
     x: f32,
     y: f32,
     size: f32,
     color: [4]f32,
-) !snail.TextBlob {
-    return buildPaintedTextBlob(allocator, atlas, text, x, y, size, .{ .solid = color });
+) !*const snail.TextBlob {
+    return buildPaintedTextBlob(bundle, key, text, x, y, size, .{ .solid = color });
 }
 
 fn buildPaintedTextBlob(
-    allocator: std.mem.Allocator,
-    atlas: *const snail.TextAtlas,
+    bundle: *snail.TextBlobBundle,
+    key: snail.ResourceKey,
     text: []const u8,
     x: f32,
     y: f32,
     size: f32,
     paint: snail.Paint,
-) !snail.TextBlob {
-    var builder = snail.TextBlobBuilder.init(allocator, atlas);
-    defer builder.deinit();
-    var shaped = try atlas.shapeText(allocator, .{}, text);
+) !*const snail.TextBlob {
+    var shaped = try bundle.atlas.shapeText(bundle.gpa, .{}, text);
     defer shaped.deinit();
-    _ = try builder.append(.{
+    var bip = try bundle.startBlob();
+    errdefer bip.abort();
+    _ = try bip.append(.{
         .source = .{ .shaped = shaped.glyphs },
         .placement = .{ .baseline = .{ .x = x, .y = y }, .em = size },
         .fill = paint,
     });
-    return builder.finish();
+    return bip.finish(key);
 }
 
 fn buildPathPicture(allocator: std.mem.Allocator) !snail.PathPicture {
@@ -255,22 +254,20 @@ fn buildScene(allocator: std.mem.Allocator) !SceneBundle {
     try ensureText(atlas, .{}, "CH5+ Hello, world!");
     try ensureText(atlas, .{}, DEVANAGARI_TEXT);
 
-    const latin_blob = try allocator.create(snail.TextBlob);
-    errdefer allocator.destroy(latin_blob);
+    const text_bundle = try allocator.create(snail.TextBlobBundle);
+    errdefer allocator.destroy(text_bundle);
+    text_bundle.* = snail.TextBlobBundle.init(allocator, atlas);
+    errdefer text_bundle.deinit();
+
     // Keep baselines off exact half-pixel samples for the LCD compare; CPU and
     // GPU subpixel paths still have tiny interpolation-order differences there.
-    latin_blob.* = try buildPaintedTextBlob(allocator, atlas, "CH5+ Hello, world!", 18.25, 40.0, 24.0, .{ .linear_gradient = .{
+    const latin_blob = try buildPaintedTextBlob(text_bundle, SCENE_LATIN_TEXT_KEY, "CH5+ Hello, world!", 18.25, 40.0, 24.0, .{ .linear_gradient = .{
         .start = .{ .x = 18.25, .y = 16.0 },
         .end = .{ .x = 205.0, .y = 48.0 },
         .start_color = .{ 0.36, 0.68, 1.0, 1.0 },
         .end_color = .{ 0.98, 0.99, 1.0, 1.0 },
     } });
-    errdefer latin_blob.deinit();
-
-    const devanagari_blob = try allocator.create(snail.TextBlob);
-    errdefer allocator.destroy(devanagari_blob);
-    devanagari_blob.* = try buildTextBlob(allocator, atlas, DEVANAGARI_TEXT, 18.25, 73.0, 22.0, .{ 0.72, 0.84, 1.0, 1.0 });
-    errdefer devanagari_blob.deinit();
+    const devanagari_blob = try buildTextBlob(text_bundle, SCENE_DEVANAGARI_TEXT_KEY, DEVANAGARI_TEXT, 18.25, 73.0, 22.0, .{ 0.72, 0.84, 1.0, 1.0 });
 
     const picture = try allocator.create(snail.PathPicture);
     errdefer allocator.destroy(picture);
@@ -291,6 +288,7 @@ fn buildScene(allocator: std.mem.Allocator) !SceneBundle {
 
     return .{
         .atlas = atlas,
+        .text_bundle = text_bundle,
         .latin_blob = latin_blob,
         .devanagari_blob = devanagari_blob,
         .picture = picture,
@@ -892,14 +890,15 @@ fn checkGpuConsistency(
 
 const AppendSceneBundle = struct {
     atlas: *snail.TextAtlas,
-    blob: *snail.TextBlob,
+    text_bundle: *snail.TextBlobBundle,
+    blob: *const snail.TextBlob,
     scene: snail.Scene,
     allocator: std.mem.Allocator,
 
     fn deinit(self: *AppendSceneBundle) void {
         self.scene.deinit();
-        self.blob.deinit();
-        self.allocator.destroy(self.blob);
+        self.text_bundle.deinit();
+        self.allocator.destroy(self.text_bundle);
         self.atlas.deinit();
         self.allocator.destroy(self.atlas);
         self.* = undefined;
@@ -970,10 +969,12 @@ fn buildAppendScene(allocator: std.mem.Allocator) !AppendSceneBundle {
 
     try ensureText(atlas, .{}, APPEND_BASE_TEXT);
 
-    const blob = try allocator.create(snail.TextBlob);
-    errdefer allocator.destroy(blob);
-    blob.* = try buildTextBlob(allocator, atlas, APPEND_DRAW_TEXT, 18.0, 62.0, 32.0, .{ 0.9, 0.95, 1.0, 1.0 });
-    errdefer blob.deinit();
+    const text_bundle = try allocator.create(snail.TextBlobBundle);
+    errdefer allocator.destroy(text_bundle);
+    text_bundle.* = snail.TextBlobBundle.init(allocator, atlas);
+    errdefer text_bundle.deinit();
+
+    const blob = try buildTextBlob(text_bundle, APPEND_TEXT_KEY, APPEND_DRAW_TEXT, 18.0, 62.0, 32.0, .{ 0.9, 0.95, 1.0, 1.0 });
 
     var scene = snail.Scene.init(allocator);
     errdefer scene.deinit();
@@ -984,6 +985,7 @@ fn buildAppendScene(allocator: std.mem.Allocator) !AppendSceneBundle {
 
     return .{
         .atlas = atlas,
+        .text_bundle = text_bundle,
         .blob = blob,
         .scene = scene,
         .allocator = allocator,
@@ -1008,21 +1010,24 @@ fn uploadAppendedAtlas(
     capacity: snail.ResourceCapacityMode,
     expected: AppendPlanExpectation,
 ) !snail.PreparedResources {
-    var resource_blob = try buildTextBlob(allocator, grown, APPEND_EXTRA_TEXT, 18.0, 62.0, 32.0, .{ 0.95, 0.7, 0.2, 1.0 });
-    defer resource_blob.deinit();
-    try checkAppendPlanForTextBlob(allocator, renderer, current, APPEND_RESOURCE_KEY, APPEND_TEXT_KEY, &resource_blob, capacity, expected);
-    return uploadTextBlobResourceWithCapacity(allocator, renderer, APPEND_RESOURCE_KEY, APPEND_TEXT_KEY, &resource_blob, capacity);
+    var resource_bundle = snail.TextBlobBundle.init(allocator, grown);
+    defer resource_bundle.deinit();
+    const resource_blob = try buildTextBlob(&resource_bundle, APPEND_TEXT_KEY, APPEND_EXTRA_TEXT, 18.0, 62.0, 32.0, .{ 0.95, 0.7, 0.2, 1.0 });
+    try checkAppendPlanForTextBlob(allocator, renderer, current, APPEND_RESOURCE_KEY, APPEND_TEXT_KEY, resource_blob, capacity, expected);
+    return uploadTextBlobResourceWithCapacity(allocator, renderer, APPEND_RESOURCE_KEY, APPEND_TEXT_KEY, resource_blob, capacity);
 }
 
 fn buildAppendedPagePreparedScene(
     allocator: std.mem.Allocator,
     prepared: *const snail.PreparedResources,
     atlas: *const snail.TextAtlas,
-) !struct { blob: *snail.TextBlob, scene: snail.Scene, prepared_scene: snail.PreparedScene } {
-    const blob = try allocator.create(snail.TextBlob);
-    errdefer allocator.destroy(blob);
-    blob.* = try buildTextBlob(allocator, atlas, APPEND_EXTRA_TEXT, 18.0, 62.0, 32.0, .{ 0.95, 0.7, 0.2, 1.0 });
-    errdefer blob.deinit();
+) !struct { text_bundle: *snail.TextBlobBundle, scene: snail.Scene, prepared_scene: snail.PreparedScene } {
+    const text_bundle = try allocator.create(snail.TextBlobBundle);
+    errdefer allocator.destroy(text_bundle);
+    text_bundle.* = snail.TextBlobBundle.init(allocator, atlas);
+    errdefer text_bundle.deinit();
+
+    const blob = try buildTextBlob(text_bundle, APPEND_TEXT_KEY, APPEND_EXTRA_TEXT, 18.0, 62.0, 32.0, .{ 0.95, 0.7, 0.2, 1.0 });
 
     var scene = snail.Scene.init(allocator);
     errdefer scene.deinit();
@@ -1032,7 +1037,7 @@ fn buildAppendedPagePreparedScene(
     });
 
     const prepared_scene = try snail.PreparedScene.initOwned(allocator, prepared, &scene);
-    return .{ .blob = blob, .scene = scene, .prepared_scene = prepared_scene };
+    return .{ .text_bundle = text_bundle, .scene = scene, .prepared_scene = prepared_scene };
 }
 
 fn runGlAppendSnapshotRegression(
@@ -1073,8 +1078,8 @@ fn runGlAppendSnapshotRegression(
 
     var appended_draw = try buildAppendedPagePreparedScene(allocator, &appended, &grown);
     defer {
-        appended_draw.blob.deinit();
-        allocator.destroy(appended_draw.blob);
+        appended_draw.text_bundle.deinit();
+        allocator.destroy(appended_draw.text_bundle);
     }
     defer appended_draw.scene.deinit();
     defer appended_draw.prepared_scene.deinit();
@@ -1120,8 +1125,8 @@ fn runVulkanAppendSnapshotRegression(
 
     var appended_draw = try buildAppendedPagePreparedScene(allocator, &appended, &grown);
     defer {
-        appended_draw.blob.deinit();
-        allocator.destroy(appended_draw.blob);
+        appended_draw.text_bundle.deinit();
+        allocator.destroy(appended_draw.text_bundle);
     }
     defer appended_draw.scene.deinit();
     defer appended_draw.prepared_scene.deinit();
