@@ -315,20 +315,38 @@ pub const Context = struct {
             },
             0x44 => {
                 const value = try self.pop();
-                const index = try checkedIndex(try self.pop(), self.cvt.len, Error.InvalidCvtIndex);
-                self.cvt[index] = value;
+                self.cvtWrite(try self.pop(), value);
             },
             0x45 => {
-                const index = try checkedIndex(try self.pop(), self.cvt.len, Error.InvalidCvtIndex);
-                try self.push(self.cvt[index]);
+                try self.push(self.cvtRead(try self.pop()));
             },
             0x70 => {
                 const value = try self.pop();
-                const index = try checkedIndex(try self.pop(), self.cvt.len, Error.InvalidCvtIndex);
-                self.cvt[index] = self.scaleFUnits(value);
+                self.cvtWrite(try self.pop(), self.scaleFUnits(value));
             },
             else => unreachable,
         }
+    }
+
+    /// Read from CVT with FreeType-style OOB tolerance: out-of-range
+    /// (negative or past the end) returns 0 instead of erroring. Real fonts
+    /// in the wild (e.g. NotoSansSymbols' prep program produces idx=-8)
+    /// rely on this — strict spec behaviour rejects ~80% of such fonts'
+    /// glyphs and degrades to unhinted curves.
+    inline fn cvtRead(self: *const Context, raw_index: i32) i32 {
+        if (raw_index < 0) return 0;
+        const index: usize = @intCast(raw_index);
+        if (index >= self.cvt.len) return 0;
+        return self.cvt[index];
+    }
+
+    /// Write to CVT with FreeType-style OOB tolerance: out-of-range writes
+    /// are silently dropped instead of erroring. See `cvtRead`.
+    inline fn cvtWrite(self: *Context, raw_index: i32, value: i32) void {
+        if (raw_index < 0) return;
+        const index: usize = @intCast(raw_index);
+        if (index >= self.cvt.len) return;
+        self.cvt[index] = value;
     }
 
     inline fn executeStateOp(self: *Context, op: u8) Error!void {
@@ -556,9 +574,9 @@ pub const Context = struct {
         var i: u32 = 0;
         while (i < count) : (i += 1) {
             const arg = try self.pop();
-            const cvt_index = try checkedIndex(try self.pop(), self.cvt.len, Error.InvalidCvtIndex);
+            const raw_index = try self.pop();
             if (self.deltaDistance(arg, base_offset)) |distance| {
-                self.cvt[cvt_index] = addWrap(self.cvt[cvt_index], distance);
+                self.cvtWrite(raw_index, addWrap(self.cvtRead(raw_index), distance));
             }
         }
     }
@@ -603,13 +621,14 @@ pub const Context = struct {
     }
 
     fn moveIndirectAbsolutePoint(self: *Context, round: bool) Error!void {
-        const cvt_index = try checkedIndex(try self.pop(), self.cvt.len, Error.InvalidCvtIndex);
+        const raw_index = try self.pop();
+        const cvt_value = self.cvtRead(raw_index);
         const point = try self.popU32();
         const projection = self.projectionVector(false);
         const freedom = self.graphics.freedom;
         const zone_ptr = try self.zone(self.graphics.zp0);
 
-        var target = self.cvt[cvt_index];
+        var target = cvt_value;
         if (round) {
             if (self.graphics.zp0 != .twilight) {
                 const original = try zone_ptr.coordinateVector(projection, point, true);
@@ -620,7 +639,7 @@ pub const Context = struct {
             target = self.graphics.round_mode.apply(target);
         }
         if (self.graphics.zp0 == .twilight) {
-            try zone_ptr.setOriginalCoordinateVector(projection, point, self.cvt[cvt_index]);
+            try zone_ptr.setOriginalCoordinateVector(projection, point, cvt_value);
         }
         try zone_ptr.moveToVector(projection, freedom, point, target);
 
@@ -650,15 +669,13 @@ pub const Context = struct {
     }
 
     fn moveIndirectRelativePoint(self: *Context, flags: RelativeFlags) Error!void {
-        const cvt_index = try checkedIndex(try self.pop(), self.cvt.len, Error.InvalidCvtIndex);
+        var cvt_distance = self.cvtRead(try self.pop());
         const point = try self.popU32();
         const projection = self.projectionVector(false);
         const dual_projection = self.projectionVector(true);
         const freedom = self.graphics.freedom;
         const ref_zone = try self.zoneConst(self.graphics.zp0);
         const point_zone = try self.zone(self.graphics.zp1);
-
-        var cvt_distance = self.cvt[cvt_index];
         var original_distance = subWrap(
             try point_zone.coordinateVector(dual_projection, point, true),
             try ref_zone.coordinateVector(dual_projection, self.graphics.rp0, true),
@@ -1599,6 +1616,38 @@ test "tt executor reads and writes storage and cvt" {
     try std.testing.expectEqual(@as(i32, 99), storage[2]);
     try std.testing.expectEqual(@as(i32, 88), cvt[1]);
     try expectStack(&ctx, &.{ 99, 88 });
+}
+
+test "tt executor tolerates out-of-bounds CVT reads and writes" {
+    // Real-world fonts (e.g. NotoSansSymbols prep) compute CVT indices that
+    // wander out of range (idx=-8 in that font's case). FreeType/Skia/CoreText
+    // tolerate this: OOB reads return 0, OOB writes are silently dropped.
+    // Snail follows the same contract so the VM doesn't abort the entire run
+    // and degrade to unhinted rendering on the affected glyphs.
+    var stack: [16]i32 = undefined;
+    var storage: [1]i32 = .{0};
+    var cvt: [2]i32 = .{ 10, 20 };
+    var ctx = Context.init(.{ .stack = &stack, .storage = &storage, .cvt = &cvt }, .{});
+
+    // PUSHW -8, then RCVT — must yield 0, not error.
+    try ctx.execute(&.{ 0xB8, 0xFF, 0xF8, 0x45 });
+    try expectStack(&ctx, &.{0});
+    ctx.sp = 0;
+
+    // PUSHB index=99, value=77, WCVTP — must succeed (no-op), no error.
+    try ctx.execute(&.{ 0xB1, 99, 77, 0x44 });
+    try std.testing.expectEqual(@as(usize, 0), ctx.sp);
+    try std.testing.expectEqual(@as(i32, 10), cvt[0]);
+    try std.testing.expectEqual(@as(i32, 20), cvt[1]);
+
+    // PUSHW -1, then RCVT — also yield 0.
+    try ctx.execute(&.{ 0xB8, 0xFF, 0xFF, 0x45 });
+    try expectStack(&ctx, &.{0});
+    ctx.sp = 0;
+
+    // In-bounds RCVT still works.
+    try ctx.execute(&.{ 0xB0, 1, 0x45 });
+    try expectStack(&ctx, &.{20});
 }
 
 test "tt executor handles structured flow and jumps" {

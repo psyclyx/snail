@@ -187,6 +187,27 @@ migration recipes below each entry.
   encode the optional range), `SnailShapeOptions`, and
   `snail_text_atlas_shape_utf8_opts`.
 
+### Fixed
+
+- TrueType hint VM no longer segfaults on compound glyphs that recurse
+  through the `GlyphTopologyCache`. The cache stores `GlyphTopology`
+  values inside a `std.AutoHashMap`; recursive `cache.get` calls during
+  component walking could rehash and relocate the parent's value,
+  dangling the `*const CompoundGlyph` pointer that `executeCompoundGlyph`
+  was still holding. Slice headers (`components`, `instructions`) are
+  now snapshotted into locals before any recursion. Triggered immediately
+  on NotoSans-Regular when hinting every glyph.
+- TT hint VM now tolerates out-of-bounds CVT reads (return 0) and writes
+  (no-op), matching FreeType/Skia/CoreText behaviour. NotoSansSymbols'
+  prep program computes CVT indices that go negative (idx=-8), which
+  previously aborted ~80% of its glyph hint runs and degraded them to
+  unhinted curves. With lenient CVT handling the success rate goes from
+  20% to 99.5% on that font, with no observable change on fonts whose
+  CVT access stays in range. The pre-existing `cvt_headroom` knob still
+  works and is now most useful when a font writes past its declared CVT
+  length and later reads the value back (lenient mode alone would
+  silently drop both).
+
 ## 0.11.1 - 2026-05-20
 
 ### Changed
