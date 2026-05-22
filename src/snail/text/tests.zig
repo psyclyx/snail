@@ -947,3 +947,300 @@ test "clusters: from real shapeText output, source spans are monotonic" {
     try testing.expectEqual(shaped.glyphs.len, total);
 }
 
+fn makeShapedForTransform(glyphs: []snail.ShapedText.Glyph) snail.ShapedText {
+    return .{
+        .allocator = testing.allocator,
+        .config = undefined,
+        .glyphs = glyphs,
+    };
+}
+
+test "track: shifts subsequent clusters and bumps advance" {
+    var glyphs = [_]snail.ShapedText.Glyph{
+        makeGlyph(0, 3, 0.5),
+        makeGlyph(1, 3, 0.5),
+        makeGlyph(2, 3, 0.5),
+    };
+    var shaped = makeShapedForTransform(&glyphs);
+    snail.track(&shaped, 0.1);
+
+    try testing.expectApproxEqAbs(@as(f32, 0.0), shaped.glyphs[0].x_offset, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0.1), shaped.glyphs[1].x_offset, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0.2), shaped.glyphs[2].x_offset, 1e-6);
+
+    // Last glyph of each cluster gets the spacing baked into its x_advance.
+    try testing.expectApproxEqAbs(@as(f32, 0.6), shaped.glyphs[0].x_advance, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0.6), shaped.glyphs[1].x_advance, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0.6), shaped.glyphs[2].x_advance, 1e-6);
+
+    try testing.expectApproxEqAbs(@as(f32, 1.8), shaped.advanceX(), 1e-6);
+}
+
+test "track: preserves ligature internal layout" {
+    var glyphs = [_]snail.ShapedText.Glyph{
+        // "ffi" ligature: 3 glyphs in one cluster, only the first carries advance.
+        .{
+            .face_index = 0,
+            .glyph_id = 1,
+            .x_offset = 0.0,
+            .y_offset = 0,
+            .x_advance = 0.7,
+            .y_advance = 0,
+            .source_start = 0,
+            .source_end = 3,
+        },
+        .{
+            .face_index = 0,
+            .glyph_id = 2,
+            .x_offset = 0.2,
+            .y_offset = 0,
+            .x_advance = 0.0,
+            .y_advance = 0,
+            .source_start = 0,
+            .source_end = 3,
+        },
+        .{
+            .face_index = 0,
+            .glyph_id = 3,
+            .x_offset = 0.4,
+            .y_offset = 0,
+            .x_advance = 0.0,
+            .y_advance = 0,
+            .source_start = 0,
+            .source_end = 3,
+        },
+        makeGlyph(3, 4, 0.5),
+    };
+    var shaped = makeShapedForTransform(&glyphs);
+    snail.track(&shaped, 0.1);
+
+    // Cluster 0: x_offsets unchanged (k=0).
+    try testing.expectApproxEqAbs(@as(f32, 0.0), shaped.glyphs[0].x_offset, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0.2), shaped.glyphs[1].x_offset, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0.4), shaped.glyphs[2].x_offset, 1e-6);
+    // Cluster 1: shifted by k=1.
+    try testing.expectApproxEqAbs(@as(f32, 3.0 + 0.1 - 3.0), shaped.glyphs[3].x_offset, 1e-6);
+
+    // Cluster-0 spacing is on its *last* glyph, not the first.
+    try testing.expectApproxEqAbs(@as(f32, 0.7), shaped.glyphs[0].x_advance, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0.0), shaped.glyphs[1].x_advance, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0.1), shaped.glyphs[2].x_advance, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0.6), shaped.glyphs[3].x_advance, 1e-6);
+
+    try testing.expectApproxEqAbs(@as(f32, 1.4), shaped.advanceX(), 1e-6);
+}
+
+test "track: zero em is a no-op" {
+    var glyphs = [_]snail.ShapedText.Glyph{
+        makeGlyph(0, 2, 0.5),
+        makeGlyph(1, 2, 0.5),
+    };
+    const before = glyphs;
+    var shaped = makeShapedForTransform(&glyphs);
+    snail.track(&shaped, 0.0);
+    try testing.expectEqualSlices(snail.ShapedText.Glyph, &before, shaped.glyphs);
+    try testing.expectEqual(@as(f32, 1.0), shaped.advanceX());
+}
+
+test "track: empty input is a no-op" {
+    var glyphs = [_]snail.ShapedText.Glyph{};
+    var shaped = makeShapedForTransform(&glyphs);
+    snail.track(&shaped, 0.1);
+    try testing.expectEqual(@as(usize, 0), shaped.glyphs.len);
+    try testing.expectEqual(@as(f32, 0.0), shaped.advanceX());
+}
+
+test "shiftBaseline: positive em moves glyphs up" {
+    var glyphs = [_]snail.ShapedText.Glyph{
+        makeGlyph(0, 2, 0.5),
+        makeGlyph(1, 2, 0.5),
+    };
+    glyphs[0].y_offset = 0.0;
+    glyphs[1].y_offset = 0.1;
+    var shaped = makeShapedForTransform(&glyphs);
+    snail.shiftBaseline(&shaped, 0.3);
+
+    // y_offset convention: lower values render higher → +em subtracts.
+    try testing.expectApproxEqAbs(@as(f32, -0.3), shaped.glyphs[0].y_offset, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, -0.2), shaped.glyphs[1].y_offset, 1e-6);
+
+    // Horizontal metrics untouched.
+    try testing.expectApproxEqAbs(@as(f32, 0.5), shaped.glyphs[0].x_advance, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0.0), shaped.glyphs[0].x_offset, 1e-6);
+    try testing.expectEqual(@as(f32, 1.0), shaped.advanceX());
+}
+
+test "shiftBaseline: zero em is a no-op" {
+    var glyphs = [_]snail.ShapedText.Glyph{
+        makeGlyph(0, 1, 0.5),
+    };
+    glyphs[0].y_offset = 0.25;
+    var shaped = makeShapedForTransform(&glyphs);
+    snail.shiftBaseline(&shaped, 0.0);
+    try testing.expectEqual(@as(f32, 0.25), shaped.glyphs[0].y_offset);
+}
+
+test "spaceWords: whitespace cluster expands, others untouched" {
+    // Source: "a b" → 3 single-byte clusters at offsets 0, 1, 2.
+    const source = "a b";
+    var glyphs = [_]snail.ShapedText.Glyph{
+        makeGlyph(0, 3, 0.5), // 'a'
+        makeGlyph(1, 3, 0.3), // ' '
+        makeGlyph(2, 3, 0.5), // 'b'
+    };
+    var shaped = makeShapedForTransform(&glyphs);
+    snail.spaceWords(&shaped, source, 0.4);
+
+    // x_offset: cluster 0 untouched, cluster 1 untouched (no space added before it),
+    // cluster 2 shifted by 0.4 (the space's added em).
+    try testing.expectApproxEqAbs(@as(f32, 0.0), shaped.glyphs[0].x_offset, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0.0), shaped.glyphs[1].x_offset, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0.4), shaped.glyphs[2].x_offset, 1e-6);
+
+    // x_advance: only the space cluster's last glyph grew.
+    try testing.expectApproxEqAbs(@as(f32, 0.5), shaped.glyphs[0].x_advance, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0.7), shaped.glyphs[1].x_advance, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0.5), shaped.glyphs[2].x_advance, 1e-6);
+
+    try testing.expectApproxEqAbs(@as(f32, 1.7), shaped.advanceX(), 1e-6);
+}
+
+test "spaceWords: multiple whitespace clusters compound" {
+    const source = "a  b";
+    var glyphs = [_]snail.ShapedText.Glyph{
+        makeGlyph(0, 4, 0.5),
+        makeGlyph(1, 4, 0.3),
+        makeGlyph(2, 4, 0.3),
+        makeGlyph(3, 4, 0.5),
+    };
+    var shaped = makeShapedForTransform(&glyphs);
+    snail.spaceWords(&shaped, source, 0.2);
+
+    try testing.expectApproxEqAbs(@as(f32, 0.0), shaped.glyphs[0].x_offset, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0.0), shaped.glyphs[1].x_offset, 1e-6); // first ' '
+    try testing.expectApproxEqAbs(@as(f32, 0.2), shaped.glyphs[2].x_offset, 1e-6); // second ' ' after one space added
+    try testing.expectApproxEqAbs(@as(f32, 0.4), shaped.glyphs[3].x_offset, 1e-6); // 'b' after two spaces
+    try testing.expectApproxEqAbs(@as(f32, 2.0), shaped.advanceX(), 1e-6);
+}
+
+test "spaceWords: zero em and empty input are no-ops" {
+    const source = "a b";
+    var glyphs1 = [_]snail.ShapedText.Glyph{
+        makeGlyph(0, 3, 0.5),
+        makeGlyph(1, 3, 0.3),
+        makeGlyph(2, 3, 0.5),
+    };
+    const before = glyphs1;
+    var shaped1 = makeShapedForTransform(&glyphs1);
+    snail.spaceWords(&shaped1, source, 0.0);
+    try testing.expectEqualSlices(snail.ShapedText.Glyph, &before, shaped1.glyphs);
+
+    var empty = [_]snail.ShapedText.Glyph{};
+    var shaped2 = makeShapedForTransform(&empty);
+    snail.spaceWords(&shaped2, source, 0.4);
+    try testing.expectEqual(@as(usize, 0), shaped2.glyphs.len);
+}
+
+test "spaceWords: out-of-range source span is treated as non-whitespace" {
+    const source = "ab";
+    // Cluster claims source bytes [5..6] — outside source.
+    var glyphs = [_]snail.ShapedText.Glyph{
+        makeGlyph(5, 6, 0.5),
+    };
+    var shaped = makeShapedForTransform(&glyphs);
+    snail.spaceWords(&shaped, source, 0.4);
+    try testing.expectApproxEqAbs(@as(f32, 0.5), shaped.glyphs[0].x_advance, 1e-6);
+}
+
+test "snapAdvances: rounds each cluster advance to a multiple of step" {
+    var glyphs = [_]snail.ShapedText.Glyph{
+        makeGlyph(0, 3, 0.4), // rounds to 0.5
+        makeGlyph(1, 3, 0.7), // rounds to 0.5
+        makeGlyph(2, 3, 1.1), // rounds to 1.0
+    };
+    var shaped = makeShapedForTransform(&glyphs);
+    snail.snapAdvances(&shaped, 0.5);
+
+    try testing.expectApproxEqAbs(@as(f32, 0.5), shaped.glyphs[0].x_advance, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0.5), shaped.glyphs[1].x_advance, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 1.0), shaped.glyphs[2].x_advance, 1e-6);
+
+    // x_offsets shift by cumulative delta of preceding clusters.
+    // Cluster 0 delta = +0.1 → cluster 1 shifts by 0.1.
+    // Cluster 1 delta = -0.2 → cluster 2 shifts by 0.1 - 0.2 = -0.1.
+    try testing.expectApproxEqAbs(@as(f32, 0.0), shaped.glyphs[0].x_offset, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0.1), shaped.glyphs[1].x_offset, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, -0.1), shaped.glyphs[2].x_offset, 1e-6);
+
+    try testing.expectApproxEqAbs(@as(f32, 2.0), shaped.advanceX(), 1e-6);
+}
+
+test "snapAdvances: wide cluster rounds to multiple cells" {
+    var glyphs = [_]snail.ShapedText.Glyph{
+        makeGlyph(0, 2, 0.5), // narrow → 1 cell
+        makeGlyph(1, 2, 1.9), // wide → 2 cells (2.0 step)
+    };
+    var shaped = makeShapedForTransform(&glyphs);
+    snail.snapAdvances(&shaped, 1.0);
+
+    try testing.expectApproxEqAbs(@as(f32, 1.0), shaped.glyphs[0].x_advance, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 2.0), shaped.glyphs[1].x_advance, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 3.0), shaped.advanceX(), 1e-6);
+}
+
+test "snapAdvances: distributes ligature delta to last glyph only" {
+    var glyphs = [_]snail.ShapedText.Glyph{
+        .{
+            .face_index = 0,
+            .glyph_id = 1,
+            .x_offset = 0.0,
+            .y_offset = 0,
+            .x_advance = 0.7, // ligature cluster total 0.7+0+0 = 0.7 → snaps to 1.0
+            .y_advance = 0,
+            .source_start = 0,
+            .source_end = 3,
+        },
+        .{
+            .face_index = 0,
+            .glyph_id = 2,
+            .x_offset = 0.2,
+            .y_offset = 0,
+            .x_advance = 0.0,
+            .y_advance = 0,
+            .source_start = 0,
+            .source_end = 3,
+        },
+        .{
+            .face_index = 0,
+            .glyph_id = 3,
+            .x_offset = 0.4,
+            .y_offset = 0,
+            .x_advance = 0.0,
+            .y_advance = 0,
+            .source_start = 0,
+            .source_end = 3,
+        },
+    };
+    var shaped = makeShapedForTransform(&glyphs);
+    snail.snapAdvances(&shaped, 1.0);
+
+    // Delta = 0.3 added to last glyph of the ligature cluster.
+    try testing.expectApproxEqAbs(@as(f32, 0.7), shaped.glyphs[0].x_advance, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0.0), shaped.glyphs[1].x_advance, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0.3), shaped.glyphs[2].x_advance, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 1.0), shaped.advanceX(), 1e-6);
+}
+
+test "snapAdvances: non-positive step is a no-op" {
+    var glyphs = [_]snail.ShapedText.Glyph{
+        makeGlyph(0, 2, 0.4),
+        makeGlyph(1, 2, 0.7),
+    };
+    const before = glyphs;
+    var shaped = makeShapedForTransform(&glyphs);
+    snail.snapAdvances(&shaped, 0.0);
+    try testing.expectEqualSlices(snail.ShapedText.Glyph, &before, shaped.glyphs);
+    snail.snapAdvances(&shaped, -0.5);
+    try testing.expectEqualSlices(snail.ShapedText.Glyph, &before, shaped.glyphs);
+}
+

@@ -155,6 +155,15 @@ migration recipes below each entry.
   shaped output: a ligature, a composed grapheme, or a reorder block.
   Post-shape transforms (see below) iterate by cluster to avoid pulling
   ligature components apart.
+- Free-function post-shape transforms over `*ShapedText`:
+  `snail.track(&shaped, em)` (letter-spacing between clusters),
+  `snail.shiftBaseline(&shaped, em)` (super/subscript shift),
+  `snail.spaceWords(&shaped, source, em)` (extra space after ASCII
+  whitespace clusters), and `snail.snapAdvances(&shaped, em_step)`
+  (terminal-style cell snapping). All mutate the glyph stream in place;
+  no god-struct, no allocator. Cluster-aware: ligature internals are
+  preserved, and per-cluster deltas are baked into the cluster's last
+  glyph's `x_advance` so subsequent advance summation stays correct.
 
 ## 0.11.1 - 2026-05-20
 
