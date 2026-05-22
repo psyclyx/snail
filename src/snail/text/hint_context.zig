@@ -405,8 +405,12 @@ pub const TrueTypeHintContext = struct {
         const face_index = self.atlas.checkedFaceIndex(key.face_index) catch {
             return self.putUnsupported(key, .invalid_face);
         };
-        const face = &self.atlas.config.faces[face_index];
-        if (face.synthetic.embolden != 0) return self.putUnsupported(key, .synthetic_embolden);
+        // Synthetic emboldening (faux-bold) is applied as a second translated
+        // copy of the rendered glyph at draw time (see `batch.zig`). The hint
+        // VM runs on the un-emboldened outline; both copies share the same
+        // hinted geometry. Stems end up `embolden` pixels wider than the hint
+        // program anticipated, but every stem stays grid-aligned — strictly
+        // better than rejecting and rendering both copies unhinted.
 
         const face_view = self.atlas.faceView(face_index, .{});
         if (glyphHasColorLayers(&face_view, key.glyph_id)) return self.putUnsupported(key, .color_glyph);
@@ -651,4 +655,55 @@ test "snapEmAdvanceToPixels keeps integer pixel advances unchanged" {
     const snapped = snapEmAdvanceToPixels(.{ .x = 0.5, .y = 1.0 }, ppem);
     try std.testing.expectApproxEqAbs(@as(f32, 0.5), snapped.x, 1e-6);
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), snapped.y, 1e-6);
+}
+
+test "hint context hints emboldened faces (faux-bold)" {
+    const assets = @import("assets");
+    const testing = std.testing;
+
+    // Build the same font twice: once plain, once with synthetic embolden.
+    // Both should hint successfully and produce identical hint geometry —
+    // the embolden offset is applied as a second draw at render time, not
+    // baked into the hinted curves.
+    var plain = try TextAtlas.init(testing.allocator, &.{.{ .data = assets.noto_sans_regular }});
+    defer plain.deinit();
+    if (try plain.ensureText(.{}, "H")) |next| {
+        plain.deinit();
+        plain = next;
+    }
+
+    var bold = try TextAtlas.init(testing.allocator, &.{.{
+        .data = assets.noto_sans_regular,
+        .synthetic = .{ .embolden = 0.5 },
+    }});
+    defer bold.deinit();
+    if (try bold.ensureText(.{}, "H")) |next| {
+        bold.deinit();
+        bold = next;
+    }
+
+    var shaped_plain = try plain.shapeText(testing.allocator, .{}, "H");
+    defer shaped_plain.deinit();
+    var shaped_bold = try bold.shapeText(testing.allocator, .{}, "H");
+    defer shaped_bold.deinit();
+
+    var ctx_plain = TrueTypeHintContext.init(testing.allocator, &plain);
+    defer ctx_plain.deinit();
+    var ctx_bold = TrueTypeHintContext.init(testing.allocator, &bold);
+    defer ctx_bold.deinit();
+
+    const ppem = tt_hint.HintPpem.uniform(12 * 64);
+
+    var run_plain = try ctx_plain.prepareRun(testing.allocator, .{ .shaped = &shaped_plain, .ppem = ppem });
+    defer run_plain.deinit();
+    var run_bold = try ctx_bold.prepareRun(testing.allocator, .{ .shaped = &shaped_bold, .ppem = ppem });
+    defer run_bold.deinit();
+
+    // Both runs hint successfully — the emboldened face is no longer rejected.
+    try testing.expectEqual(@as(usize, 0), run_plain.stats.fallback_count);
+    try testing.expectEqual(@as(usize, 0), run_bold.stats.fallback_count);
+
+    // And both produce identical hinted advances (the embolden offset is a
+    // render-time concern, not a hint-time one).
+    try testing.expectApproxEqAbs(run_plain.stats.advance.x, run_bold.stats.advance.x, 1e-6);
 }

@@ -189,6 +189,16 @@ migration recipes below each entry.
 
 ### Changed
 
+- TrueType hint VM hints emboldened faces (faux-bold) instead of
+  rejecting them. Hint instructions still operate on the un-emboldened
+  outline; the existing render-time double-emit (`batch.zig`) draws the
+  hinted glyph twice — once at `transform.tx`, once at
+  `transform.tx + face.synthetic.embolden`. Stems end up `embolden`
+  pixels wider than the hint program anticipated but stay grid-aligned,
+  strictly better than rejecting into fully-unhinted geometry. The
+  `synthetic_embolden` rejection reason remains in the enum (ABI) but
+  is no longer produced; `appendHintedGlyphRef` now threads the face's
+  synthetic embolden through the glyph record.
 - `PreparedHintRun` produces pixel-snapped advances for `.fallback`
   glyphs whose rejection reason is `no_true_type_program`. The face has
   no TrueType bytecode to run, so we can't grid-fit the outline — but

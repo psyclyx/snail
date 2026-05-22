@@ -364,11 +364,16 @@ pub const BlobInProgress = struct {
         const intern = try pending.internHintRecord(gpa, intern_key, attachment.record, attachment.curve_deltas_f16);
         errdefer if (intern.created) pending.removeInternedHintRecord(gpa, intern_key, intern.index);
 
+        // Faux-bold: passthrough the face's embolden offset so the renderer
+        // emits a second hinted copy at `transform.tx + embolden`. The hint
+        // program ran on the un-emboldened outline; both copies share the
+        // same hinted geometry.
+        const face = &self.bundle.atlas.config.faces[face_index];
         try pending.glyphs.append(gpa, .{
             .face_index = face_index,
             .glyph_id = glyph_id,
             .transform = transform,
-            .embolden = 0,
+            .embolden = face.synthetic.embolden,
             .color = color,
             .hint_record_texel = intern.index,
             .hint_bbox = value.bbox,
