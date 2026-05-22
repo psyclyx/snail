@@ -89,9 +89,9 @@ const SceneKind = enum {
             .vector => "Vector paths",
             .mixed => "Mixed text + vector",
             .multi_script => "Multi-script text",
-            .hinted_text => "Text (best-effort TT hinted)",
-            .hinted_mixed => "Mixed text + vector (best-effort TT hinted)",
-            .hinted_multi_script => "Multi-script text (best-effort TT hinted)",
+            .hinted_text => "Text (TT hinted)",
+            .hinted_mixed => "Mixed text + vector (TT hinted)",
+            .hinted_multi_script => "Multi-script text (TT hinted)",
         };
     }
 };
@@ -326,7 +326,7 @@ fn hintPpemForEm(em: f32) !snail.TrueTypeHintPpem {
     return snail.TrueTypeHintPpem.uniform(@intFromFloat(@round(ppem)));
 }
 
-fn makeBestEffortHintedTextBlob(
+fn makeHintedTextBlob(
     bundle: *snail.TextBlobBundle,
     context: *snail.TrueTypeHintContext,
     line: TextLine,
@@ -477,13 +477,13 @@ fn runHintedTextWorkload(
     bundle.reset();
     switch (workload) {
         .short, .sentence, .paragraph => {
-            const blob = try makeBestEffortHintedTextBlob(bundle, context, lineFor(workload));
+            const blob = try makeHintedTextBlob(bundle, context, lineFor(workload));
             std.mem.doNotOptimizeAway(blob.glyphCount());
         },
         .paragraph_sizes => {
             var y: f32 = 330;
             for (SIZES) |size| {
-                const blob = try makeBestEffortHintedTextBlob(bundle, context, .{
+                const blob = try makeHintedTextBlob(bundle, context, .{
                     .text = PARAGRAPH,
                     .x = 0,
                     .y = y,
@@ -525,10 +525,10 @@ fn timeHintedTextWorkload(atlas: *snail.TextAtlas, workload: TextWorkload) !f64 
 
 fn hintedTextWorkloadName(workload: TextWorkload) []const u8 {
     return switch (workload) {
-        .short => "Short string (best-effort TT hinted @ 24px)",
-        .sentence => "Sentence (best-effort TT hinted @ 48px)",
-        .paragraph => "Paragraph (best-effort TT hinted @ 18px)",
-        .paragraph_sizes => "Paragraph x 7 sizes (best-effort TT hinted)",
+        .short => "Short string (TT hinted @ 24px)",
+        .sentence => "Sentence (TT hinted @ 48px)",
+        .paragraph => "Paragraph (TT hinted @ 18px)",
+        .paragraph_sizes => "Paragraph x 7 sizes (TT hinted)",
     };
 }
 
@@ -663,7 +663,7 @@ fn buildScene(
         blobs = try allocator.alloc(*const snail.TextBlob, lines.len);
         for (lines) |line| {
             blobs[blob_count] = if (needs_hinted_text)
-                try makeBestEffortHintedTextBlob(text_bundle.?, &hint_context, line)
+                try makeHintedTextBlob(text_bundle.?, &hint_context, line)
             else
                 try makeTextBlob(text_bundle.?, line);
             try scene.addText(.{
