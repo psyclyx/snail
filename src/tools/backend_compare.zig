@@ -187,7 +187,7 @@ fn buildPaintedTextBlob(
     var shaped = try atlas.shapeText(allocator, .{}, text);
     defer shaped.deinit();
     _ = try builder.append(.{
-        .shaped = &shaped,
+        .source = .{ .shaped = shaped.glyphs },
         .placement = .{ .baseline = .{ .x = x, .y = y }, .em = size },
         .fill = paint,
     });

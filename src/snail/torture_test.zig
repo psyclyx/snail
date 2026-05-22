@@ -21,7 +21,7 @@ fn appendBatchText(
     var shaped = try fonts.shapeText(allocator, style, text);
     defer shaped.deinit();
     return fonts.appendTextBatch(batch, .{
-        .shaped = &shaped,
+        .glyphs = shaped.glyphs,
         .placement = .{ .baseline = .{ .x = x, .y = y }, .em = em },
         .color = color,
     }, allow_missing);

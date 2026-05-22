@@ -38,9 +38,7 @@ const Vec2 = vec.Vec2;
 const glyphInstanceBudget = shape_mod.glyphInstanceBudget;
 const glyphPlacementTransform = shape_mod.glyphPlacementTransform;
 const scaleAdvance = shape_mod.scaleAdvance;
-const shapedAdvanceForRange = shape_mod.shapedAdvanceForRange;
 const shapedGlyphAvailable = shape_mod.shapedGlyphAvailable;
-const shapedPenAt = shape_mod.shapedPenAt;
 
 pub const TextBlob = struct {
     allocator: Allocator,
@@ -168,7 +166,7 @@ pub const TextBlob = struct {
     ) !TextBlob {
         var builder = TextBlobBuilder.init(allocator, atlas);
         errdefer builder.deinit();
-        _ = try appendShapedTextBlob(atlas, &builder, append, false);
+        _ = try appendIntoBuilder(atlas, &builder, append, false);
         return builder.finish();
     }
 };
@@ -242,8 +240,16 @@ pub const TextBlobBuilder = struct {
         };
     }
 
+    /// Append text glyphs to the builder. The `text_append.source` union
+    /// selects between an unhinted shaped slice and a slice of hinted
+    /// glyphs. The first glyph of the slice lands at
+    /// `text_append.placement.baseline`; subsequent glyphs are positioned
+    /// relative to it using their own `x_offset`/`y_offset`.
+    ///
+    /// For the hinted source, `text_append.fill` must be a solid color;
+    /// non-solid paints return `error.HintedAppendRequiresSolidFill`.
     pub fn append(self: *TextBlobBuilder, text_append: TextAppend) !TextAppendResult {
-        return appendShapedTextBlob(self.atlas, self, text_append, true);
+        return appendIntoBuilder(self.atlas, self, text_append, true);
     }
 
     pub fn appendHintedGlyph(
@@ -304,59 +310,6 @@ pub const TextBlobBuilder = struct {
         self.gpu_instance_budget += 1;
     }
 
-    /// Append a prepared hint run. Glyphs with a `.hint` source render
-    /// through the hinted pipeline; glyphs with a `.fallback` source render
-    /// through the unhinted shaped-text path. Callers wanting strict
-    /// all-or-nothing semantics should check `run.stats.fallback_count == 0`
-    /// before calling.
-    pub fn appendPreparedHintRun(
-        self: *TextBlobBuilder,
-        run: *const PreparedHintRun,
-        placement: TextPlacement,
-        color: [4]f32,
-    ) !TextAppendResult {
-        try run.validateAtlas(self.atlas);
-
-        var missing = false;
-        var hinted_pen = Vec2.zero;
-        for (run.glyphs) |glyph| {
-            const face = &self.atlas.config.faces[glyph.face_index];
-            const x = placement.baseline.x + (hinted_pen.x + glyph.placement_delta.x) * placement.em;
-            const y = placement.baseline.y + (hinted_pen.y + glyph.placement_delta.y) * placement.em;
-            const transform = glyphPlacementTransform(x, y, placement.em, face.synthetic.skew_x);
-            switch (glyph.source) {
-                .hint => |hint| {
-                    if (hint.renderable()) {
-                        try self.appendHintedGlyphRef(glyph.face_index, glyph.glyph_id, transform, color, hint);
-                    }
-                },
-                .fallback => {
-                    const face_view = self.atlas.faceView(glyph.face_index, .{});
-                    if (!shapedGlyphAvailable(&face_view, glyph.glyph_id)) {
-                        missing = true;
-                    } else {
-                        const paint = try appendBlobGlyphPaint(self, &face_view, glyph.glyph_id, .{ .solid = color });
-                        try appendBlobGlyph(
-                            self,
-                            glyph.face_index,
-                            &face_view,
-                            glyph.glyph_id,
-                            transform,
-                            paint.color,
-                            paint.record_index,
-                            face.synthetic,
-                        );
-                    }
-                },
-            }
-            hinted_pen = Vec2.add(hinted_pen, glyph.advance);
-        }
-
-        return .{
-            .advance = scaleAdvance(run.stats.advance, placement.em),
-            .missing = missing,
-        };
-    }
 
     const FinishedLayerInfoRecords = struct {
         data: ?[]f32 = null,
@@ -476,37 +429,49 @@ pub const TextBlobBuilder = struct {
 
 };
 
-pub fn appendShapedTextBlob(
+pub fn appendIntoBuilder(
     atlas: *const TextAtlas,
     builder: *TextBlobBuilder,
     append: TextAppend,
     allow_missing: bool,
 ) !TextAppendResult {
     std.debug.assert(builder.atlas == atlas);
-    const shaped = append.shaped;
-    if (shaped.config != atlas.config) return error.WrongTextAtlasSnapshot;
-    const range = append.glyphs.resolve(shaped.glyphs.len);
-    const pen_origin = shapedPenAt(shaped, range.start);
+    return switch (append.source) {
+        .shaped => |slice| appendShapedSlice(atlas, builder, slice, append.placement, append.fill, allow_missing),
+        .hinted => |slice| appendHintedSlice(atlas, builder, slice, append.placement, append.fill),
+    };
+}
+
+fn appendShapedSlice(
+    atlas: *const TextAtlas,
+    builder: *TextBlobBuilder,
+    slice: []const ShapedText.Glyph,
+    placement: TextPlacement,
+    fill: Paint,
+    allow_missing: bool,
+) !TextAppendResult {
+    if (slice.len == 0) return .{ .advance = .zero, .missing = false };
+    const origin_x = slice[0].x_offset;
+    const origin_y = slice[0].y_offset;
 
     var missing = false;
-    for (shaped.glyphs[range.start..range.end]) |glyph| {
+    var advance = Vec2.zero;
+    for (slice) |glyph| {
+        advance.x += glyph.x_advance;
+        advance.y += glyph.y_advance;
         const fc = &atlas.config.faces[glyph.face_index];
         const face_view = atlas.faceView(glyph.face_index, .{});
         if (!shapedGlyphAvailable(&face_view, glyph.glyph_id)) {
             missing = true;
             if (!allow_missing) return error.MissingPreparedGlyph;
             // Skip missing glyphs entirely so the produced blob never
-            // references unrasterized GIDs — appending one would leave
-            // the blob in a state where validate/draw both fail. The
-            // returned advance still reflects the full shaped run so
-            // the caller's cursor lands in the right place for the
-            // next text segment.
+            // references unrasterized GIDs.
             continue;
         }
-        const x = append.placement.baseline.x + (glyph.x_offset - pen_origin.x) * append.placement.em;
-        const y = append.placement.baseline.y + (glyph.y_offset - pen_origin.y) * append.placement.em;
-        const transform = glyphPlacementTransform(x, y, append.placement.em, fc.synthetic.skew_x);
-        const local_fill = paint_mod.mapToLocal(append.fill, transform) orelse return error.InvalidTransform;
+        const x = placement.baseline.x + (glyph.x_offset - origin_x) * placement.em;
+        const y = placement.baseline.y + (glyph.y_offset - origin_y) * placement.em;
+        const transform = glyphPlacementTransform(x, y, placement.em, fc.synthetic.skew_x);
+        const local_fill = paint_mod.mapToLocal(fill, transform) orelse return error.InvalidTransform;
         const paint = try appendBlobGlyphPaint(builder, &face_view, glyph.glyph_id, local_fill);
         try appendBlobGlyph(
             builder,
@@ -521,7 +486,62 @@ pub fn appendShapedTextBlob(
     }
 
     return .{
-        .advance = scaleAdvance(shapedAdvanceForRange(shaped, range), append.placement.em),
+        .advance = scaleAdvance(advance, placement.em),
+        .missing = missing,
+    };
+}
+
+fn appendHintedSlice(
+    atlas: *const TextAtlas,
+    builder: *TextBlobBuilder,
+    slice: []const PreparedHintRun.Glyph,
+    placement: TextPlacement,
+    fill: Paint,
+) !TextAppendResult {
+    const color = switch (fill) {
+        .solid => |c| c,
+        else => return error.HintedAppendRequiresSolidFill,
+    };
+
+    var missing = false;
+    var hinted_pen = Vec2.zero;
+    var advance = Vec2.zero;
+    for (slice) |glyph| {
+        advance = Vec2.add(advance, glyph.advance);
+        const face = &atlas.config.faces[glyph.face_index];
+        const x = placement.baseline.x + (hinted_pen.x + glyph.placement_delta.x) * placement.em;
+        const y = placement.baseline.y + (hinted_pen.y + glyph.placement_delta.y) * placement.em;
+        const transform = glyphPlacementTransform(x, y, placement.em, face.synthetic.skew_x);
+        switch (glyph.source) {
+            .hint => |hint| {
+                if (hint.renderable()) {
+                    try builder.appendHintedGlyphRef(glyph.face_index, glyph.glyph_id, transform, color, hint);
+                }
+            },
+            .fallback => {
+                const face_view = atlas.faceView(glyph.face_index, .{});
+                if (!shapedGlyphAvailable(&face_view, glyph.glyph_id)) {
+                    missing = true;
+                } else {
+                    const paint = try appendBlobGlyphPaint(builder, &face_view, glyph.glyph_id, .{ .solid = color });
+                    try appendBlobGlyph(
+                        builder,
+                        glyph.face_index,
+                        &face_view,
+                        glyph.glyph_id,
+                        transform,
+                        paint.color,
+                        paint.record_index,
+                        face.synthetic,
+                    );
+                }
+            },
+        }
+        hinted_pen = Vec2.add(hinted_pen, glyph.advance);
+    }
+
+    return .{
+        .advance = scaleAdvance(advance, placement.em),
         .missing = missing,
     };
 }

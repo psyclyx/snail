@@ -114,7 +114,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         defer shaped.deinit();
         var local_builder = snail.TextBlobBuilder.init(arena, &atlas);
         _ = try local_builder.append(.{
-            .shaped = &shaped,
+            .source = .{ .shaped = shaped.glyphs },
             .placement = .{ .baseline = .{ .x = line.x, .y = line.y }, .em = line.size },
             .fill = .{ .solid = line.color },
         });

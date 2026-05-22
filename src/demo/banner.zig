@@ -356,7 +356,7 @@ const TextPlacer = struct {
         paint: snail.Paint,
     ) !snail.TextAppendResult {
         return self.builder.append(.{
-            .shaped = shaped,
+            .source = .{ .shaped = shaped.glyphs },
             .placement = .{ .baseline = .{ .x = p.x, .y = p.y }, .em = p.size },
             .fill = paint,
         });
@@ -376,10 +376,11 @@ const TextPlacer = struct {
         });
         defer run.deinit();
 
-        return self.builder.appendPreparedHintRun(&run, .{
-            .baseline = .{ .x = p.x, .y = p.y },
-            .em = p.size,
-        }, color);
+        return self.builder.append(.{
+            .source = .{ .hinted = run.glyphs },
+            .placement = .{ .baseline = .{ .x = p.x, .y = p.y }, .em = p.size },
+            .fill = .{ .solid = color },
+        });
     }
 
     fn addText(

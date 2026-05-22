@@ -367,9 +367,9 @@ pub export fn snail_text_blob_builder_append_shaped(
     out_result: ?*SnailTextAppendResult,
 ) c_int {
     const paint = toPaint(options.fill) catch return SNAIL_ERR_INVALID_ARGUMENT;
+    const range = toRange(glyphs).resolve(shaped.inner.glyphs.len);
     const result = builder.inner.append(.{
-        .shaped = &shaped.inner,
-        .glyphs = toRange(glyphs),
+        .source = .{ .shaped = shaped.inner.glyphs[range.start..range.end] },
         .placement = toTextPlacement(options.placement),
         .fill = paint,
     }) catch |err| return mapError(err);
@@ -384,11 +384,12 @@ pub export fn snail_text_blob_builder_append_prepared_hint_run(
     color: ?[*]const f32,
     out_result: ?*SnailTextAppendResult,
 ) c_int {
-    const result = builder.inner.appendPreparedHintRun(
-        &run.inner,
-        toTextPlacement(placement),
-        color4(color) catch return SNAIL_ERR_INVALID_ARGUMENT,
-    ) catch |err| return mapError(err);
+    const c = color4(color) catch return SNAIL_ERR_INVALID_ARGUMENT;
+    const result = builder.inner.append(.{
+        .source = .{ .hinted = run.inner.glyphs },
+        .placement = toTextPlacement(placement),
+        .fill = .{ .solid = c },
+    }) catch |err| return mapError(err);
     if (out_result) |out| out.* = fromTextAppendResult(result);
     return SNAIL_OK;
 }
@@ -485,20 +486,15 @@ pub export fn snail_text_blob_init_from_prepared_hint_run(
 ) c_int {
     const impl = createHandle(TextBlobImpl, alloc_ptr) catch return SNAIL_ERR_OUT_OF_MEMORY;
     const allocator = allocatorForHandle(impl);
-    var builder = snail.TextBlobBuilder.init(allocator, run.inner.atlas);
-    defer builder.deinit();
-    _ = builder.appendPreparedHintRun(
-        &run.inner,
-        toTextPlacement(placement),
-        color4(color) catch {
-            destroyHandle(impl);
-            return SNAIL_ERR_INVALID_ARGUMENT;
-        },
-    ) catch |err| {
+    const c = color4(color) catch {
         destroyHandle(impl);
-        return mapError(err);
+        return SNAIL_ERR_INVALID_ARGUMENT;
     };
-    const blob = builder.finish() catch |err| {
+    const blob = snail.TextBlob.init(allocator, run.inner.atlas, .{
+        .source = .{ .hinted = run.inner.glyphs },
+        .placement = toTextPlacement(placement),
+        .fill = .{ .solid = c },
+    }) catch |err| {
         destroyHandle(impl);
         return mapError(err);
     };
@@ -517,7 +513,7 @@ pub export fn snail_text_blob_init_from_shaped(
     const impl = createHandle(TextBlobImpl, alloc_ptr) catch return SNAIL_ERR_OUT_OF_MEMORY;
     const allocator = allocatorForHandle(impl);
     const blob = snail.TextBlob.init(allocator, &atlas.inner, .{
-        .shaped = &shaped.inner,
+        .source = .{ .shaped = shaped.inner.glyphs },
         .placement = toTextPlacement(options.placement),
         .fill = toPaint(options.fill) catch {
             destroyHandle(impl);
@@ -557,7 +553,7 @@ pub export fn snail_text_blob_init_text(
         return SNAIL_ERR_INVALID_ARGUMENT;
     };
     const blob = snail.TextBlob.init(allocator, &atlas.inner, .{
-        .shaped = &shaped,
+        .source = .{ .shaped = shaped.glyphs },
         .placement = toTextPlacement(options.placement),
         .fill = paint,
     }) catch |err| {

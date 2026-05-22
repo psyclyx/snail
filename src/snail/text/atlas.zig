@@ -11,9 +11,11 @@ const shape_mod = @import("shape.zig");
 const target_mod = @import("../target.zig");
 const ttf = @import("../font/ttf.zig");
 const types_mod = @import("types.zig");
+const vec = @import("../math/vec.zig");
 const view_mod = @import("view.zig");
 
 const Allocator = std.mem.Allocator;
+const Vec2 = vec.Vec2;
 const CurveAtlas = atlas_curve_mod.CurveAtlas;
 const AtlasPage = atlas_page_mod.AtlasPage;
 const GlyphInfo = CurveAtlas.GlyphInfo;
@@ -45,9 +47,7 @@ const itemizeText = config_mod.itemizeText;
 const resolveInner = config_mod.resolveInner;
 const scaleAdvance = shape_mod.scaleAdvance;
 const shapeRunForFace = shape_mod.shapeRunForFace;
-const shapedAdvanceForRange = shape_mod.shapedAdvanceForRange;
 const shapedGlyphAvailable = shape_mod.shapedGlyphAvailable;
-const shapedPenAt = shape_mod.shapedPenAt;
 const preparedViewInfoRowBase = view_mod.preparedViewInfoRowBase;
 const preparedViewLayerBase = view_mod.preparedViewLayerBase;
 const preparedViewPageLayers = view_mod.preparedViewPageLayers;
@@ -357,20 +357,24 @@ pub const TextAtlas = struct {
         };
     }
 
-    /// Emit shaped text directly into a low-level TextBatch.
+    /// Emit shaped text directly into a low-level TextBatch. The first
+    /// glyph in `append.glyphs` lands at `append.placement.baseline`;
+    /// subsequent glyphs are positioned relative to it.
     pub fn appendTextBatch(
         self: *const TextAtlas,
         batch: anytype,
         append: TextBatchAppend,
         allow_missing: bool,
     ) !TextAppendResult {
-        const shaped = append.shaped;
-        if (shaped.config != self.config) return error.WrongTextAtlasSnapshot;
-        const range = append.glyphs.resolve(shaped.glyphs.len);
-        const pen_origin = shapedPenAt(shaped, range.start);
+        if (append.glyphs.len == 0) return .{ .advance = .zero, .missing = false };
+        const origin_x = append.glyphs[0].x_offset;
+        const origin_y = append.glyphs[0].y_offset;
 
         var missing = false;
-        for (shaped.glyphs[range.start..range.end]) |glyph| {
+        var advance = Vec2.zero;
+        for (append.glyphs) |glyph| {
+            advance.x += glyph.x_advance;
+            advance.y += glyph.y_advance;
             const fc = &self.config.faces[glyph.face_index];
             const face_view = self.faceView(glyph.face_index, .{});
             if (!shapedGlyphAvailable(&face_view, glyph.glyph_id)) {
@@ -379,13 +383,13 @@ pub const TextAtlas = struct {
                 continue;
             }
 
-            const x = append.placement.baseline.x + (glyph.x_offset - pen_origin.x) * append.placement.em;
-            const y = append.placement.baseline.y + (glyph.y_offset - pen_origin.y) * append.placement.em;
+            const x = append.placement.baseline.x + (glyph.x_offset - origin_x) * append.placement.em;
+            const y = append.placement.baseline.y + (glyph.y_offset - origin_y) * append.placement.em;
             if (glyph_emit.emitStyledGlyph(batch, &face_view, glyph.glyph_id, x, y, append.placement.em, append.color, fc.synthetic) == .buffer_full) break;
         }
 
         return .{
-            .advance = scaleAdvance(shapedAdvanceForRange(shaped, range), append.placement.em),
+            .advance = scaleAdvance(advance, append.placement.em),
             .missing = missing,
         };
     }

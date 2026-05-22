@@ -460,7 +460,7 @@ fn appendRootTestTextPaint(
     var shaped = try builder.atlas.shapeText(builder.allocator, style, text);
     defer shaped.deinit();
     return builder.append(.{
-        .shaped = &shaped,
+        .source = .{ .shaped = shaped.glyphs },
         .placement = .{ .baseline = baseline, .em = em },
         .fill = paint,
     });
@@ -911,7 +911,7 @@ test "resource upload plan reports appended atlas pages" {
     var shaped = try atlas_a.shapeText(allocator, .{}, "Hello");
     defer shaped.deinit();
     var blob_a = try TextBlob.init(allocator, &atlas_a, .{
-        .shaped = &shaped,
+        .source = .{ .shaped = shaped.glyphs },
         .placement = .{ .baseline = .{ .x = 0, .y = 12 }, .em = 12 },
         .fill = .{ .solid = .{ 1, 1, 1, 1 } },
     });

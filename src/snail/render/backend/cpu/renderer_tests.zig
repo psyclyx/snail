@@ -787,17 +787,17 @@ test "cpu renderer threaded draw matches single-threaded byte-for-byte" {
     var shaped = try atlas.shapeText(testing.allocator, .{}, "Hello, world!");
     defer shaped.deinit();
     _ = try blob_builder.append(.{
-        .shaped = &shaped,
+        .source = .{ .shaped = shaped.glyphs },
         .placement = .{ .baseline = .{ .x = 4, .y = 32 }, .em = 16 },
         .fill = .{ .solid = .{ 1, 1, 1, 1 } },
     });
     _ = try blob_builder.append(.{
-        .shaped = &shaped,
+        .source = .{ .shaped = shaped.glyphs },
         .placement = .{ .baseline = .{ .x = 4, .y = 56 }, .em = 16 },
         .fill = .{ .solid = .{ 1, 0.4, 0.4, 1 } },
     });
     _ = try blob_builder.append(.{
-        .shaped = &shaped,
+        .source = .{ .shaped = shaped.glyphs },
         .placement = .{ .baseline = .{ .x = 4, .y = 80 }, .em = 16 },
         .fill = .{ .solid = .{ 0.4, 1, 0.4, 1 } },
     });

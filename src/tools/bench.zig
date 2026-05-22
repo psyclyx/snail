@@ -310,7 +310,7 @@ fn makeTextBlob(
     var builder = snail.TextBlobBuilder.init(allocator, atlas);
     errdefer builder.deinit();
     _ = try builder.append(.{
-        .shaped = &shaped,
+        .source = .{ .shaped = shaped.glyphs },
         .placement = .{ .baseline = .{ .x = line.x, .y = line.y }, .em = line.size },
         .fill = .{ .solid = line.color },
     });
@@ -340,10 +340,11 @@ fn makeBestEffortHintedTextBlob(
 
     var builder = snail.TextBlobBuilder.init(allocator, atlas);
     errdefer builder.deinit();
-    _ = try builder.appendPreparedHintRun(&run, .{
-        .baseline = .{ .x = line.x, .y = line.y },
-        .em = line.size,
-    }, line.color);
+    _ = try builder.append(.{
+        .source = .{ .hinted = run.glyphs },
+        .placement = .{ .baseline = .{ .x = line.x, .y = line.y }, .em = line.size },
+        .fill = .{ .solid = line.color },
+    });
     return builder.finish();
 }
 
@@ -359,7 +360,7 @@ fn appendPaintedRun(
     var shaped = try builder.atlas.shapeText(builder.allocator, style, text);
     defer shaped.deinit();
     return builder.append(.{
-        .shaped = &shaped,
+        .source = .{ .shaped = shaped.glyphs },
         .placement = .{ .baseline = .{ .x = x, .y = y }, .em = em },
         .fill = paint,
     });

@@ -1,8 +1,8 @@
 const std = @import("std");
 
 const config_mod = @import("config.zig");
+const hint_context_mod = @import("hint_context.zig");
 const paint_mod = @import("../paint.zig");
-const range_mod = @import("../range.zig");
 const target_mod = @import("../target.zig");
 const vec = @import("../math/vec.zig");
 
@@ -11,7 +11,7 @@ const FaceIndex = config_mod.FaceIndex;
 const FontStyle = config_mod.FontStyle;
 const FontConfig = config_mod.FontConfig;
 const Paint = paint_mod.Paint;
-const Range = range_mod.Range;
+const PreparedHintRun = hint_context_mod.PreparedHintRun;
 const SnapRule = target_mod.SnapRule;
 const Vec2 = vec.Vec2;
 
@@ -20,9 +20,17 @@ pub const TextPlacement = struct {
     em: f32,
 };
 
+/// A unit of text to append to a `TextBlobBuilder`. The `source` union
+/// selects between an unhinted shaped-text slice and a slice of hinted
+/// glyphs from a `PreparedHintRun`. In both cases the slice is
+/// caller-owned; the first glyph in the slice lands at `placement.baseline`
+/// (any shaper offset on the first glyph is implicit — adjust `baseline`
+/// to account for it).
 pub const TextAppend = struct {
-    shaped: *const ShapedText,
-    glyphs: Range = .{},
+    source: union(enum) {
+        shaped: []const ShapedText.Glyph,
+        hinted: []const PreparedHintRun.Glyph,
+    },
     placement: TextPlacement,
     fill: Paint,
 };
@@ -33,8 +41,7 @@ pub const TextAppendResult = struct {
 };
 
 pub const TextBatchAppend = struct {
-    shaped: *const ShapedText,
-    glyphs: Range = .{},
+    glyphs: []const ShapedText.Glyph,
     placement: TextPlacement,
     color: [4]f32,
 };

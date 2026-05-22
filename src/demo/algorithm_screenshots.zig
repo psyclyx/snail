@@ -203,7 +203,7 @@ fn appendText(
     var shaped = try builder.atlas.shapeText(builder.allocator, style, text);
     defer shaped.deinit();
     _ = try builder.append(.{
-        .shaped = &shaped,
+        .source = .{ .shaped = shaped.glyphs },
         .placement = .{ .baseline = .{ .x = x, .y = y }, .em = em },
         .fill = .{ .solid = color },
     });

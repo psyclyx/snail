@@ -25,7 +25,7 @@ fn appendTestText(
     var shaped = try builder.atlas.shapeText(builder.allocator, style, text);
     defer shaped.deinit();
     return builder.append(.{
-        .shaped = &shaped,
+        .source = .{ .shaped = shaped.glyphs },
         .placement = .{ .baseline = baseline, .em = em },
         .fill = .{ .solid = color },
     });
@@ -44,7 +44,7 @@ fn appendTestTextBatch(
     var shaped = try atlas.shapeText(testing.allocator, style, text);
     defer shaped.deinit();
     return atlas.appendTextBatch(batch, .{
-        .shaped = &shaped,
+        .glyphs = shaped.glyphs,
         .placement = .{ .baseline = baseline, .em = em },
         .color = color,
     }, allow_missing);
@@ -145,7 +145,7 @@ test "TextAtlas uses replacement glyph for unresolved codepoints" {
     var buf: [8 * snail.TEXT_WORDS_PER_GLYPH]u32 = undefined;
     var batch = snail.TextBatch.init(&buf);
     const result = try fonts.appendTextBatch(&batch, .{
-        .shaped = &shaped,
+        .glyphs = shaped.glyphs,
         .placement = .{ .baseline = .{ .x = 0, .y = 16 }, .em = 16 },
         .color = .{ 1, 1, 1, 1 },
     }, true);
@@ -259,12 +259,12 @@ test "TextBlobBuilder.append separates shape from placement and fill" {
     defer builder.deinit();
 
     const first = try builder.append(.{
-        .shaped = &shaped,
+        .source = .{ .shaped = shaped.glyphs },
         .placement = .{ .baseline = .{ .x = 10, .y = 20 }, .em = 12 },
         .fill = .{ .solid = .{ 1, 0, 0, 1 } },
     });
     const second = try builder.append(.{
-        .shaped = &shaped,
+        .source = .{ .shaped = shaped.glyphs },
         .placement = .{ .baseline = .{ .x = 30, .y = 40 }, .em = 20 },
         .fill = .{ .solid = .{ 0, 1, 0, 1 } },
     });
@@ -305,14 +305,12 @@ test "TextBlobBuilder.append can style shaped glyph ranges independently" {
     defer builder.deinit();
 
     const first = try builder.append(.{
-        .shaped = &shaped,
-        .glyphs = .{ .start = 0, .count = 1 },
+        .source = .{ .shaped = shaped.glyphs[0..1] },
         .placement = .{ .baseline = .{ .x = 10, .y = 20 }, .em = 18 },
         .fill = .{ .solid = .{ 1, 0, 0, 1 } },
     });
     const second = try builder.append(.{
-        .shaped = &shaped,
-        .glyphs = .{ .start = 1, .count = 1 },
+        .source = .{ .shaped = shaped.glyphs[1..2] },
         .placement = .{ .baseline = .{ .x = 10 + first.advance.x, .y = 20 }, .em = 18 },
         .fill = .{ .solid = .{ 0, 0, 1, 1 } },
     });
@@ -347,7 +345,7 @@ test "TextBlobBuilder.append stores gradient paint records" {
     defer builder.deinit();
 
     _ = try builder.append(.{
-        .shaped = &shaped,
+        .source = .{ .shaped = shaped.glyphs },
         .placement = .{ .baseline = .{ .x = 10, .y = 20 }, .em = 10 },
         .fill = .{ .linear_gradient = .{
             .start = .{ .x = 10, .y = 20 },
@@ -400,7 +398,7 @@ test "TextBlobBuilder.append stores image paint records" {
     defer builder.deinit();
 
     _ = try builder.append(.{
-        .shaped = &shaped,
+        .source = .{ .shaped = shaped.glyphs },
         .placement = .{ .baseline = .{ .x = 4, .y = 8 }, .em = 2 },
         .fill = .{ .image = .{
             .image = &image,
@@ -517,10 +515,11 @@ test "TextBlobBuilder hint run keeps fallback glyphs" {
 
     var builder = TextBlobBuilder.init(testing.allocator, &fonts);
     defer builder.deinit();
-    _ = try builder.appendPreparedHintRun(&run, .{
-        .baseline = .{ .x = 0, .y = 12 },
-        .em = 12,
-    }, .{ 0.2, 0.4, 0.6, 1 });
+    _ = try builder.append(.{
+        .source = .{ .hinted = run.glyphs },
+        .placement = .{ .baseline = .{ .x = 0, .y = 12 }, .em = 12 },
+        .fill = .{ .solid = .{ 0.2, 0.4, 0.6, 1 } },
+    });
 
     var blob = try builder.finish();
     defer blob.deinit();
