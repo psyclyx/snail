@@ -205,7 +205,7 @@ pub const Context = struct {
         }
     }
 
-    fn executeFunctionOp(self: *Context, code: []const u8, pc: *usize, op: u8, steps: *u32) Error!void {
+    inline fn executeFunctionOp(self: *Context, code: []const u8, pc: *usize, op: u8, steps: *u32) Error!void {
         switch (op) {
             0x2A => {
                 const function_id = try self.pop();
@@ -370,7 +370,7 @@ pub const Context = struct {
         }
     }
 
-    fn executeDeltaOp(self: *Context, op: u8) Error!void {
+    inline fn executeDeltaOp(self: *Context, op: u8) Error!void {
         switch (op) {
             0x5D => try self.executeDeltaPoint(0),
             0x71 => try self.executeDeltaPoint(16),
@@ -401,7 +401,7 @@ pub const Context = struct {
         }
     }
 
-    fn executeFlowOp(self: *Context, code: []const u8, pc: *usize, op_pc: usize, op: u8) Error!void {
+    inline fn executeFlowOp(self: *Context, code: []const u8, pc: *usize, op_pc: usize, op: u8) Error!void {
         switch (op) {
             0x1B => pc.* = try skipToEif(code, pc.*),
             0x1C => pc.* = try jumpTarget(code.len, op_pc, try self.pop()),
@@ -1082,10 +1082,14 @@ const Parity = enum {
 // Each opcode handler ends in `@call(.always_tail, tail_dispatch[next_op], …)`.
 // Each specialized handler is a distinct function, so the CPU's BTB sees a
 // different indirect-branch target per opcode; the more opcodes are
-// specialized, the more dispatch parallelism the predictor sees. Heavy ops
-// (MIRP/MDRP/MDAP/IUP/CALL/FDEF/DELTA*) fall through to `handle_default`,
-// which routes back through the legacy `executeOp` switch — dispatch overhead
-// is negligible relative to their bodies.
+// specialized, the more dispatch parallelism the predictor sees, and each
+// handler skips the per-op category switch entirely.
+//
+// Boilerplate is kept minimal via comptime factory functions: `handleSimple`,
+// `handleFlow`, and `handleFunction` accept a comptime opcode and produce a
+// handler that calls the matching `inline fn` category implementation. The
+// inlined category fn collapses to that op's case body when the comptime op
+// is constant-propagated through its switch.
 
 const TailHandler = *const fn (
     self: *Context,
@@ -1110,7 +1114,10 @@ inline fn dispatchNext(
     }
 }
 
-fn handle_default(
+/// Fallback for reserved/invalid opcodes. Routes through `executeOp` so
+/// any future-defined opcode still picks up the legacy switch's coverage,
+/// and currently-undefined opcodes surface `Error.InvalidOpcode`.
+fn handleDefault(
     self: *Context,
     code: []const u8,
     pc: usize,
@@ -1123,66 +1130,46 @@ fn handle_default(
     return dispatchNext(self, code, local_pc, steps);
 }
 
-// Per-category handler factories. `op` is comptime-known, so calling the
-// inlined category function with a constant op collapses to that op's
-// case body — no per-op switch is emitted.
-
-fn handle_stack(comptime op: u8) TailHandler {
+/// Handler factory for ops that don't touch pc beyond the op byte itself.
+/// `exec_fn` is a category function with signature `fn(*Context, u8) Error!void`.
+/// Since `op` is comptime-known and category functions are `inline fn`, the
+/// category switch collapses to that op's case body.
+fn handleSimple(comptime exec_fn: anytype, comptime op: u8) TailHandler {
     return struct {
         fn h(self: *Context, code: []const u8, pc: usize, steps: *u32) Error!void {
-            try self.executeStackOp(op);
+            try exec_fn(self, op);
             return dispatchNext(self, code, pc, steps);
         }
     }.h;
 }
 
-fn handle_math(comptime op: u8) TailHandler {
+/// Handler factory for flow-control ops (ELSE/EIF/IF/JMPR/JROT/JROF). These
+/// can mutate pc (jumps, skips), so the handler threads it through a local.
+/// `op_pc` is `pc - 1` because pc enters positioned after the op byte.
+fn handleFlow(comptime op: u8) TailHandler {
     return struct {
         fn h(self: *Context, code: []const u8, pc: usize, steps: *u32) Error!void {
-            try self.executeMathOp(op);
-            return dispatchNext(self, code, pc, steps);
+            var local_pc = pc;
+            try self.executeFlowOp(code, &local_pc, pc - 1, op);
+            return dispatchNext(self, code, local_pc, steps);
         }
     }.h;
 }
 
-fn handle_logic(comptime op: u8) TailHandler {
+/// Handler factory for CALL/LOOPCALL/FDEF. These can recurse (callFunction)
+/// and may mutate pc (FDEF skips to ENDF+1).
+fn handleFunction(comptime op: u8) TailHandler {
     return struct {
         fn h(self: *Context, code: []const u8, pc: usize, steps: *u32) Error!void {
-            try self.executeLogicOp(op);
-            return dispatchNext(self, code, pc, steps);
+            var local_pc = pc;
+            try self.executeFunctionOp(code, &local_pc, op, steps);
+            return dispatchNext(self, code, local_pc, steps);
         }
     }.h;
 }
 
-fn handle_state(comptime op: u8) TailHandler {
-    return struct {
-        fn h(self: *Context, code: []const u8, pc: usize, steps: *u32) Error!void {
-            try self.executeStateOp(op);
-            return dispatchNext(self, code, pc, steps);
-        }
-    }.h;
-}
-
-fn handle_memory(comptime op: u8) TailHandler {
-    return struct {
-        fn h(self: *Context, code: []const u8, pc: usize, steps: *u32) Error!void {
-            try self.executeMemoryOp(op);
-            return dispatchNext(self, code, pc, steps);
-        }
-    }.h;
-}
-
-fn handle_graphics(comptime op: u8) TailHandler {
-    return struct {
-        fn h(self: *Context, code: []const u8, pc: usize, steps: *u32) Error!void {
-            try self.executeGraphicsOp(op);
-            return dispatchNext(self, code, pc, steps);
-        }
-    }.h;
-}
-
-// Push handlers: pc is already past the op byte. Read N immediate bytes
-// (or words), push them, advance pc.
+// Push handlers: pc enters positioned past the op byte. Read N immediate
+// bytes (or words), push them, advance pc by the consumed operand bytes.
 
 inline fn pushBytesAt(self: *Context, code: []const u8, pc: usize, count: usize) Error!void {
     if (pc + count > code.len) return Error.UnexpectedEof;
@@ -1204,7 +1191,7 @@ inline fn pushWordsAt(self: *Context, code: []const u8, pc: usize, count: usize)
     }
 }
 
-fn handle_pushb(comptime n: usize) TailHandler {
+fn handlePushB(comptime n: usize) TailHandler {
     return struct {
         fn h(self: *Context, code: []const u8, pc: usize, steps: *u32) Error!void {
             try pushBytesAt(self, code, pc, n);
@@ -1213,7 +1200,7 @@ fn handle_pushb(comptime n: usize) TailHandler {
     }.h;
 }
 
-fn handle_pushw(comptime n: usize) TailHandler {
+fn handlePushW(comptime n: usize) TailHandler {
     return struct {
         fn h(self: *Context, code: []const u8, pc: usize, steps: *u32) Error!void {
             try pushWordsAt(self, code, pc, n);
@@ -1222,14 +1209,14 @@ fn handle_pushw(comptime n: usize) TailHandler {
     }.h;
 }
 
-fn handle_npushb(self: *Context, code: []const u8, pc: usize, steps: *u32) Error!void {
+fn handleNPushB(self: *Context, code: []const u8, pc: usize, steps: *u32) Error!void {
     if (pc >= code.len) return Error.UnexpectedEof;
     const count: usize = code[pc];
     try pushBytesAt(self, code, pc + 1, count);
     return dispatchNext(self, code, pc + 1 + count, steps);
 }
 
-fn handle_npushw(self: *Context, code: []const u8, pc: usize, steps: *u32) Error!void {
+fn handleNPushW(self: *Context, code: []const u8, pc: usize, steps: *u32) Error!void {
     if (pc >= code.len) return Error.UnexpectedEof;
     const count: usize = code[pc];
     try pushWordsAt(self, code, pc + 1, count);
@@ -1237,46 +1224,78 @@ fn handle_npushw(self: *Context, code: []const u8, pc: usize, steps: *u32) Error
 }
 
 const tail_dispatch: [256]TailHandler = blk: {
-    var t: [256]TailHandler = @splat(handle_default);
+    var t: [256]TailHandler = @splat(handleDefault);
 
-    // Graphics ops (0x00..0x0E, 0x10..0x1A, 0x1D..0x1F): vector setters,
-    // reference-point setters, loop count, round modes, etc.
+    // The opcode ranges below mirror the legacy executeOp switch; any future
+    // additions there should be reflected here too.
+
+    // Graphics: vector setters (SVTCA/SFVTCA/SPVTCA/SDPVTL), ref-point and
+    // zone setters, loop count, round mode bases, cut-in values.
     for ([_]u8{
         0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
         0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E,
         0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
         0x18, 0x19, 0x1A, 0x1D, 0x1E, 0x1F,
         0x86, 0x87,
-    }) |op| t[op] = handle_graphics(op);
+    }) |op| t[op] = handleSimple(Context.executeGraphicsOp, op);
 
-    // Stack ops (0x20..0x26): DUP, POP, CLEAR, SWAP, DEPTH, CINDEX, MINDEX.
-    for ([_]u8{ 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26 }) |op| t[op] = handle_stack(op);
+    // Stack: DUP, POP, CLEAR, SWAP, DEPTH, CINDEX, MINDEX.
+    for ([_]u8{ 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26 }) |op|
+        t[op] = handleSimple(Context.executeStackOp, op);
 
-    // Memory ops (0x42..0x45, 0x70): WS, RS, WCVTP, RCVT, WCVTF.
-    for ([_]u8{ 0x42, 0x43, 0x44, 0x45, 0x70 }) |op| t[op] = handle_memory(op);
+    // Memory: WS, RS, WCVTP, RCVT, WCVTF.
+    for ([_]u8{ 0x42, 0x43, 0x44, 0x45, 0x70 }) |op|
+        t[op] = handleSimple(Context.executeMemoryOp, op);
 
-    // State ops (round modes, info, etc.).
+    // State: instruction-control, scan-control, MD, MPPEM/MPS, GETINFO,
+    // GETVARIATION, AA, SROUND/S45ROUND, etc.
     for ([_]u8{
         0x4B, 0x4C, 0x4D, 0x4E,
         0x56, 0x57, 0x5E, 0x5F,
         0x68, 0x69, 0x6A, 0x6B, 0x6C, 0x6D, 0x6E, 0x6F,
         0x7A, 0x7C, 0x7D, 0x85, 0x88, 0x8A, 0x8D, 0x8E,
-    }) |op| t[op] = handle_state(op);
+    }) |op| t[op] = handleSimple(Context.executeStateOp, op);
 
-    // Logic ops: LT, LTEQ, GT, GTEQ, EQ, NEQ, AND, OR, NOT.
-    for ([_]u8{ 0x50, 0x51, 0x52, 0x53, 0x54, 0x55, 0x5A, 0x5B, 0x5C }) |op| t[op] = handle_logic(op);
+    // Logic: LT/LTEQ/GT/GTEQ/EQ/NEQ/AND/OR/NOT.
+    for ([_]u8{ 0x50, 0x51, 0x52, 0x53, 0x54, 0x55, 0x5A, 0x5B, 0x5C }) |op|
+        t[op] = handleSimple(Context.executeLogicOp, op);
 
-    // Math ops: ADD, SUB, DIV, MUL, ABS, NEG, FLOOR, CEIL, MAX, MIN.
-    for ([_]u8{ 0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0x8B, 0x8C }) |op| t[op] = handle_math(op);
+    // Math: ADD/SUB/DIV/MUL/ABS/NEG/FLOOR/CEILING/MAX/MIN.
+    for ([_]u8{ 0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0x8B, 0x8C }) |op|
+        t[op] = handleSimple(Context.executeMathOp, op);
 
-    // Push immediates.
-    for (0..8) |n| t[0xB0 + n] = handle_pushb(n + 1);
-    for (0..8) |n| t[0xB8 + n] = handle_pushw(n + 1);
-    t[0x40] = handle_npushb;
-    t[0x41] = handle_npushw;
+    // Push immediates (PUSHB[1..8], PUSHW[1..8], NPUSHB, NPUSHW).
+    for (0..8) |n| t[0xB0 + n] = handlePushB(n + 1);
+    for (0..8) |n| t[0xB8 + n] = handlePushW(n + 1);
+    t[0x40] = handleNPushB;
+    t[0x41] = handleNPushW;
 
-    // Everything else (flow ops, function ops, point ops, deltas, FDEF, …)
-    // falls through to handle_default → executeOp.
+    // Point ops: alignment/shift/measure/move primitives plus the bulk
+    // MDRP (0xC0..0xDF) / MIRP (0xE0..0xFF) blocks. Specializing MDRP/MIRP
+    // is a real win — `relativeFlags(op, base)` becomes a comptime constant.
+    for ([_]u8{
+        0x27, 0x29,
+        0x2E, 0x2F, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37,
+        0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3E, 0x3F,
+        0x46, 0x47, 0x48, 0x49, 0x4A,
+    }) |op| t[op] = handleSimple(Context.executePointOp, op);
+    for (0xC0..0x100) |op| t[op] = handleSimple(Context.executePointOp, @intCast(op));
+
+    // Delta exceptions: DELTAP[1..3], DELTAC[1..3].
+    for ([_]u8{ 0x5D, 0x71, 0x72, 0x73, 0x74, 0x75 }) |op|
+        t[op] = handleSimple(Context.executeDeltaOp, op);
+
+    // Flow control: ELSE/JMPR/IF/EIF/JROT/JROF.
+    for ([_]u8{ 0x1B, 0x1C, 0x58, 0x59, 0x78, 0x79 }) |op|
+        t[op] = handleFlow(op);
+
+    // Function ops: LOOPCALL/CALL/FDEF.
+    for ([_]u8{ 0x2A, 0x2B, 0x2C }) |op|
+        t[op] = handleFunction(op);
+
+    // Anything left (notably 0x2D ENDF outside FDEF, plus reserved slots)
+    // falls through to handleDefault → executeOp, which produces
+    // Error.InvalidOpcode for unknown bytes.
 
     break :blk t;
 };
