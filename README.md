@@ -981,7 +981,7 @@ zig build run-bench
 zig build run-bench -Dgl44=false -Dgles30=false -Dvulkan=false  # trim backend rows
 ```
 
-Last run: 2026-05-20, `zig build run-bench`, ReleaseFast benchmark build. Lower
+Last run: 2026-05-22, `zig build run-bench`, ReleaseFast benchmark build. Lower
 times are better. These numbers are one local machine/run, not a portability
 guarantee.
 
@@ -1006,15 +1006,15 @@ The vector workload contains filled and stroked rounded rectangles, ellipses, an
 
 | Workload | Snail | FreeType | FreeType / Snail |
 |---|---:|---:|---:|
-| Font load | 1.57 us | 10.09 us | 6.42x |
-| Glyph prep, ASCII | 389.74 us | 1041.33 us | 2.67x |
-| Glyph prep, 7 sizes | 389.74 us | 7160.50 us | 18.37x |
-| TT hint setup @ 12px | 32.10 us | n/a | n/a |
-| TT hint execute, ASCII @ 12px | 663.61 us | n/a | n/a |
-| TT hint plan, ASCII @ 12px | 1060.93 us | n/a | n/a |
-| TT hint context cold, paragraph @ 12px | 85.45 us | n/a | n/a |
-| TT hint context warm, paragraph @ 12px | 0.10 us | n/a | n/a |
-| PathPicture freeze, 25 shapes | 178.64 us | n/a | n/a |
+| Font load | 1.58 us | 9.25 us | 5.87x |
+| Glyph prep, ASCII | 406.90 us | 986.69 us | 2.42x |
+| Glyph prep, 7 sizes | 406.90 us | 6933.72 us | 17.04x |
+| TT hint setup @ 12px | 27.74 us | n/a | n/a |
+| TT hint execute, ASCII @ 12px | 517.56 us | n/a | n/a |
+| TT hint plan, ASCII @ 12px | 843.94 us | n/a | n/a |
+| TT hint context cold, paragraph @ 12px | 245.32 us | n/a | n/a |
+| TT hint context warm, paragraph @ 12px | 1.53 us | n/a | n/a |
+| PathPicture freeze, 25 shapes | 180.22 us | n/a | n/a |
 
 ### Prepared Resource Memory
 
@@ -1029,27 +1029,27 @@ The vector workload contains filled and stroked rounded rectangles, ellipses, an
 
 | Workload | Snail TextBlob | FreeType layout | FreeType / Snail |
 |---|---:|---:|---:|
-| Short string | 1.59 us | 77.83 us | 48.94x |
-| Sentence | 5.38 us | 382.85 us | 71.20x |
-| Paragraph | 21.24 us | 1380.48 us | 65.01x |
-| Paragraph x 7 sizes | 130.68 us | 9993.28 us | 76.47x |
-| Short string (best-effort TT hinted @ 24px) | 3.08 us | n/a | n/a |
-| Sentence (best-effort TT hinted @ 48px) | 13.43 us | n/a | n/a |
-| Paragraph (best-effort TT hinted @ 18px) | 28.03 us | n/a | n/a |
-| Paragraph x 7 sizes (best-effort TT hinted) | 177.24 us | n/a | n/a |
+| Short string | 1.55 us | 77.63 us | 50.18x |
+| Sentence | 5.25 us | 379.35 us | 72.29x |
+| Paragraph | 18.07 us | 1373.78 us | 76.03x |
+| Paragraph x 7 sizes | 127.29 us | 10189.40 us | 80.05x |
+| Short string (best-effort TT hinted @ 24px) | 2.51 us | n/a | n/a |
+| Sentence (best-effort TT hinted @ 48px) | 9.63 us | n/a | n/a |
+| Paragraph (best-effort TT hinted @ 18px) | 20.12 us | n/a | n/a |
+| Paragraph x 7 sizes (best-effort TT hinted) | 143.96 us | n/a | n/a |
 
 ### Draw Record Creation
 
 | Scene | Commands | Words | Segments | PreparedScene.initOwned |
 |---|---:|---:|---:|---:|
-| Text | 4 | 4048 | 1 | 8.04 us |
-| Rich text | 1 | 1136 | 1 | 2.09 us |
-| Vector paths | 1 | 400 | 1 | 0.31 us |
-| Mixed text + vector | 5 | 4448 | 2 | 8.33 us |
-| Multi-script text | 4 | 1488 | 1 | 2.88 us |
-| Text (best-effort TT hinted) | 4 | 4048 | 4 | 7.34 us |
-| Mixed text + vector (best-effort TT hinted) | 5 | 4448 | 5 | 7.60 us |
-| Multi-script text (best-effort TT hinted) | 4 | 1488 | 4 | 2.70 us |
+| Text | 4 | 4048 | 1 | 8.81 us |
+| Rich text | 1 | 1136 | 1 | 2.23 us |
+| Vector paths | 1 | 400 | 1 | 0.30 us |
+| Mixed text + vector | 5 | 4448 | 2 | 8.98 us |
+| Multi-script text | 4 | 1488 | 1 | 3.09 us |
+| Text (best-effort TT hinted) | 4 | 4048 | 4 | 7.89 us |
+| Mixed text + vector (best-effort TT hinted) | 5 | 4448 | 5 | 8.26 us |
+| Multi-script text (best-effort TT hinted) | 4 | 1488 | 4 | 2.99 us |
 
 ### Prepared Render
 
@@ -1057,54 +1057,54 @@ Target: 640x360. Requested AA is grayscale. CPU uses 20 measured frames; GPU bac
 
 | Backend | Scene | Effective AA | Frames | Commands | Words | Segments | Instance bytes/frame | Draw prepared scene |
 |---|---|---|---:|---:|---:|---:|---:|---:|
-| CPU | Text | grayscale | 20 | 4 | 4048 | 1 | 16192 | 1623.52 us |
-| CPU | Rich text | grayscale | 20 | 1 | 1136 | 1 | 4544 | 1460.11 us |
-| CPU | Vector paths | grayscale | 20 | 1 | 400 | 1 | 1600 | 14775.98 us |
-| CPU | Mixed text + vector | grayscale | 20 | 5 | 4448 | 2 | 17792 | 16268.79 us |
-| CPU | Multi-script text | grayscale | 20 | 4 | 1488 | 1 | 5952 | 1046.98 us |
-| CPU | Text (best-effort TT hinted) | grayscale | 20 | 4 | 4048 | 4 | 16192 | 4544.85 us |
-| CPU | Mixed text + vector (best-effort TT hinted) | grayscale | 20 | 5 | 4448 | 5 | 17792 | 19209.01 us |
-| CPU | Multi-script text (best-effort TT hinted) | grayscale | 20 | 4 | 1488 | 4 | 5952 | 2790.66 us |
-| CPU (threaded) | Text | grayscale | 20 | 4 | 4048 | 1 | 16192 | 820.81 us |
-| CPU (threaded) | Rich text | grayscale | 20 | 1 | 1136 | 1 | 4544 | 721.77 us |
-| CPU (threaded) | Vector paths | grayscale | 20 | 1 | 400 | 1 | 1600 | 3105.61 us |
-| CPU (threaded) | Mixed text + vector | grayscale | 20 | 5 | 4448 | 2 | 17792 | 3585.16 us |
-| CPU (threaded) | Multi-script text | grayscale | 20 | 4 | 1488 | 1 | 5952 | 526.28 us |
-| CPU (threaded) | Text (best-effort TT hinted) | grayscale | 20 | 4 | 4048 | 4 | 16192 | 2094.14 us |
-| CPU (threaded) | Mixed text + vector (best-effort TT hinted) | grayscale | 20 | 5 | 4448 | 5 | 17792 | 4276.93 us |
-| CPU (threaded) | Multi-script text (best-effort TT hinted) | grayscale | 20 | 4 | 1488 | 4 | 5952 | 1362.30 us |
-| GL 3.3 | Text | grayscale | 500 | 4 | 4048 | 1 | 16192 | 20.93 us |
-| GL 3.3 | Rich text | grayscale | 500 | 1 | 1136 | 1 | 4544 | 113.79 us |
-| GL 3.3 | Vector paths | grayscale | 500 | 1 | 400 | 1 | 1600 | 74.59 us |
-| GL 3.3 | Mixed text + vector | grayscale | 500 | 5 | 4448 | 2 | 17792 | 102.67 us |
-| GL 3.3 | Multi-script text | grayscale | 500 | 4 | 1488 | 1 | 5952 | 16.96 us |
-| GL 3.3 | Text (best-effort TT hinted) | grayscale | 500 | 4 | 4048 | 4 | 16192 | 216.05 us |
-| GL 3.3 | Mixed text + vector (best-effort TT hinted) | grayscale | 500 | 5 | 4448 | 5 | 17792 | 313.31 us |
-| GL 3.3 | Multi-script text (best-effort TT hinted) | grayscale | 500 | 4 | 1488 | 4 | 5952 | 224.63 us |
-| GL 4.4 (persistent mapped) | Text | grayscale | 500 | 4 | 4048 | 1 | 16192 | 22.25 us |
-| GL 4.4 (persistent mapped) | Rich text | grayscale | 500 | 1 | 1136 | 1 | 4544 | 39.21 us |
-| GL 4.4 (persistent mapped) | Vector paths | grayscale | 500 | 1 | 400 | 1 | 1600 | 85.03 us |
-| GL 4.4 (persistent mapped) | Mixed text + vector | grayscale | 500 | 5 | 4448 | 2 | 17792 | 83.19 us |
-| GL 4.4 (persistent mapped) | Multi-script text | grayscale | 500 | 4 | 1488 | 1 | 5952 | 24.30 us |
-| GL 4.4 (persistent mapped) | Text (best-effort TT hinted) | grayscale | 500 | 4 | 4048 | 4 | 16192 | 81.31 us |
-| GL 4.4 (persistent mapped) | Mixed text + vector (best-effort TT hinted) | grayscale | 500 | 5 | 4448 | 5 | 17792 | 115.38 us |
-| GL 4.4 (persistent mapped) | Multi-script text (best-effort TT hinted) | grayscale | 500 | 4 | 1488 | 4 | 5952 | 80.15 us |
-| OpenGL ES 3.0 | Text | grayscale | 500 | 4 | 4048 | 1 | 16192 | 19.14 us |
-| OpenGL ES 3.0 | Rich text | grayscale | 500 | 1 | 1136 | 1 | 4544 | 108.61 us |
-| OpenGL ES 3.0 | Vector paths | grayscale | 500 | 1 | 400 | 1 | 1600 | 72.11 us |
-| OpenGL ES 3.0 | Mixed text + vector | grayscale | 500 | 5 | 4448 | 2 | 17792 | 105.08 us |
-| OpenGL ES 3.0 | Multi-script text | grayscale | 500 | 4 | 1488 | 1 | 5952 | 17.27 us |
-| OpenGL ES 3.0 | Text (best-effort TT hinted) | grayscale | 500 | 4 | 4048 | 4 | 16192 | 227.26 us |
-| OpenGL ES 3.0 | Mixed text + vector (best-effort TT hinted) | grayscale | 500 | 5 | 4448 | 5 | 17792 | 324.54 us |
-| OpenGL ES 3.0 | Multi-script text (best-effort TT hinted) | grayscale | 500 | 4 | 1488 | 4 | 5952 | 222.40 us |
-| Vulkan | Text | grayscale | 500 | 4 | 4048 | 1 | 16192 | 24.27 us |
-| Vulkan | Rich text | grayscale | 500 | 1 | 1136 | 1 | 4544 | 39.24 us |
-| Vulkan | Vector paths | grayscale | 500 | 1 | 400 | 1 | 1600 | 73.66 us |
-| Vulkan | Mixed text + vector | grayscale | 500 | 5 | 4448 | 2 | 17792 | 92.80 us |
-| Vulkan | Multi-script text | grayscale | 500 | 4 | 1488 | 1 | 5952 | 24.44 us |
-| Vulkan | Text (best-effort TT hinted) | grayscale | 500 | 4 | 4048 | 4 | 16192 | 71.05 us |
-| Vulkan | Mixed text + vector (best-effort TT hinted) | grayscale | 500 | 5 | 4448 | 5 | 17792 | 128.50 us |
-| Vulkan | Multi-script text (best-effort TT hinted) | grayscale | 500 | 4 | 1488 | 4 | 5952 | 75.13 us |
+| CPU | Text | grayscale | 20 | 4 | 4048 | 1 | 16192 | 1628.80 us |
+| CPU | Rich text | grayscale | 20 | 1 | 1136 | 1 | 4544 | 1462.09 us |
+| CPU | Vector paths | grayscale | 20 | 1 | 400 | 1 | 1600 | 15277.12 us |
+| CPU | Mixed text + vector | grayscale | 20 | 5 | 4448 | 2 | 17792 | 16705.08 us |
+| CPU | Multi-script text | grayscale | 20 | 4 | 1488 | 1 | 5952 | 1026.07 us |
+| CPU | Text (best-effort TT hinted) | grayscale | 20 | 4 | 4048 | 4 | 16192 | 4613.95 us |
+| CPU | Mixed text + vector (best-effort TT hinted) | grayscale | 20 | 5 | 4448 | 5 | 17792 | 19644.63 us |
+| CPU | Multi-script text (best-effort TT hinted) | grayscale | 20 | 4 | 1488 | 4 | 5952 | 2798.04 us |
+| CPU (threaded) | Text | grayscale | 20 | 4 | 4048 | 1 | 16192 | 817.08 us |
+| CPU (threaded) | Rich text | grayscale | 20 | 1 | 1136 | 1 | 4544 | 706.50 us |
+| CPU (threaded) | Vector paths | grayscale | 20 | 1 | 400 | 1 | 1600 | 3218.99 us |
+| CPU (threaded) | Mixed text + vector | grayscale | 20 | 5 | 4448 | 2 | 17792 | 3458.23 us |
+| CPU (threaded) | Multi-script text | grayscale | 20 | 4 | 1488 | 1 | 5952 | 500.96 us |
+| CPU (threaded) | Text (best-effort TT hinted) | grayscale | 20 | 4 | 4048 | 4 | 16192 | 1950.81 us |
+| CPU (threaded) | Mixed text + vector (best-effort TT hinted) | grayscale | 20 | 5 | 4448 | 5 | 17792 | 4326.22 us |
+| CPU (threaded) | Multi-script text (best-effort TT hinted) | grayscale | 20 | 4 | 1488 | 4 | 5952 | 1400.48 us |
+| GL 3.3 | Text | grayscale | 500 | 4 | 4048 | 1 | 16192 | 21.12 us |
+| GL 3.3 | Rich text | grayscale | 500 | 1 | 1136 | 1 | 4544 | 98.00 us |
+| GL 3.3 | Vector paths | grayscale | 500 | 1 | 400 | 1 | 1600 | 82.23 us |
+| GL 3.3 | Mixed text + vector | grayscale | 500 | 5 | 4448 | 2 | 17792 | 101.89 us |
+| GL 3.3 | Multi-script text | grayscale | 500 | 4 | 1488 | 1 | 5952 | 18.86 us |
+| GL 3.3 | Text (best-effort TT hinted) | grayscale | 500 | 4 | 4048 | 4 | 16192 | 228.72 us |
+| GL 3.3 | Mixed text + vector (best-effort TT hinted) | grayscale | 500 | 5 | 4448 | 5 | 17792 | 269.21 us |
+| GL 3.3 | Multi-script text (best-effort TT hinted) | grayscale | 500 | 4 | 1488 | 4 | 5952 | 184.14 us |
+| GL 4.4 (persistent mapped) | Text | grayscale | 500 | 4 | 4048 | 1 | 16192 | 23.38 us |
+| GL 4.4 (persistent mapped) | Rich text | grayscale | 500 | 1 | 1136 | 1 | 4544 | 38.02 us |
+| GL 4.4 (persistent mapped) | Vector paths | grayscale | 500 | 1 | 400 | 1 | 1600 | 80.75 us |
+| GL 4.4 (persistent mapped) | Mixed text + vector | grayscale | 500 | 5 | 4448 | 2 | 17792 | 90.35 us |
+| GL 4.4 (persistent mapped) | Multi-script text | grayscale | 500 | 4 | 1488 | 1 | 5952 | 22.18 us |
+| GL 4.4 (persistent mapped) | Text (best-effort TT hinted) | grayscale | 500 | 4 | 4048 | 4 | 16192 | 66.88 us |
+| GL 4.4 (persistent mapped) | Mixed text + vector (best-effort TT hinted) | grayscale | 500 | 5 | 4448 | 5 | 17792 | 105.85 us |
+| GL 4.4 (persistent mapped) | Multi-script text (best-effort TT hinted) | grayscale | 500 | 4 | 1488 | 4 | 5952 | 58.40 us |
+| OpenGL ES 3.0 | Text | grayscale | 500 | 4 | 4048 | 1 | 16192 | 18.87 us |
+| OpenGL ES 3.0 | Rich text | grayscale | 500 | 1 | 1136 | 1 | 4544 | 94.13 us |
+| OpenGL ES 3.0 | Vector paths | grayscale | 500 | 1 | 400 | 1 | 1600 | 76.84 us |
+| OpenGL ES 3.0 | Mixed text + vector | grayscale | 500 | 5 | 4448 | 2 | 17792 | 94.85 us |
+| OpenGL ES 3.0 | Multi-script text | grayscale | 500 | 4 | 1488 | 1 | 5952 | 17.50 us |
+| OpenGL ES 3.0 | Text (best-effort TT hinted) | grayscale | 500 | 4 | 4048 | 4 | 16192 | 193.23 us |
+| OpenGL ES 3.0 | Mixed text + vector (best-effort TT hinted) | grayscale | 500 | 5 | 4448 | 5 | 17792 | 275.71 us |
+| OpenGL ES 3.0 | Multi-script text (best-effort TT hinted) | grayscale | 500 | 4 | 1488 | 4 | 5952 | 181.09 us |
+| Vulkan | Text | grayscale | 500 | 4 | 4048 | 1 | 16192 | 22.78 us |
+| Vulkan | Rich text | grayscale | 500 | 1 | 1136 | 1 | 4544 | 42.93 us |
+| Vulkan | Vector paths | grayscale | 500 | 1 | 400 | 1 | 1600 | 71.64 us |
+| Vulkan | Mixed text + vector | grayscale | 500 | 5 | 4448 | 2 | 17792 | 73.07 us |
+| Vulkan | Multi-script text | grayscale | 500 | 4 | 1488 | 1 | 5952 | 22.49 us |
+| Vulkan | Text (best-effort TT hinted) | grayscale | 500 | 4 | 4048 | 4 | 16192 | 59.56 us |
+| Vulkan | Mixed text + vector (best-effort TT hinted) | grayscale | 500 | 5 | 4448 | 5 | 17792 | 99.01 us |
+| Vulkan | Multi-script text (best-effort TT hinted) | grayscale | 500 | 4 | 1488 | 4 | 5952 | 56.40 us |
 
 ### Render Modes
 
@@ -1114,42 +1114,42 @@ GLES30 rendering grayscale when LCD dual-source blending is unavailable.
 
 | Backend | Scene | Requested AA | Effective AA | Words | Segments | PreparedScene | Draw |
 |---|---|---|---|---:|---:|---:|---:|
-| CPU | Text | grayscale | grayscale | 4048 | 1 | 8.11 us | 1659.11 us |
-| CPU | Text | subpixel rgb | subpixel rgb | 4048 | 1 | 8.28 us | 8486.67 us |
-| CPU | Rich text | grayscale | grayscale | 1136 | 1 | 2.11 us | 1509.66 us |
-| CPU | Rich text | subpixel rgb | subpixel rgb | 1136 | 1 | 2.21 us | 4505.98 us |
-| CPU | Multi-script text | grayscale | grayscale | 1488 | 1 | 2.99 us | 1071.54 us |
-| CPU | Multi-script text | subpixel rgb | subpixel rgb | 1488 | 1 | 2.98 us | 5169.36 us |
-| CPU (threaded) | Text | grayscale | grayscale | 4048 | 1 | 8.36 us | 822.04 us |
-| CPU (threaded) | Text | subpixel rgb | subpixel rgb | 4048 | 1 | 8.33 us | 3485.12 us |
-| CPU (threaded) | Rich text | grayscale | grayscale | 1136 | 1 | 2.61 us | 677.29 us |
-| CPU (threaded) | Rich text | subpixel rgb | subpixel rgb | 1136 | 1 | 2.07 us | 2099.17 us |
-| CPU (threaded) | Multi-script text | grayscale | grayscale | 1488 | 1 | 2.96 us | 519.11 us |
-| CPU (threaded) | Multi-script text | subpixel rgb | subpixel rgb | 1488 | 1 | 2.89 us | 2118.58 us |
-| GL 3.3 | Text | grayscale | grayscale | 4048 | 1 | 8.80 us | 16.82 us |
-| GL 3.3 | Text | subpixel rgb | subpixel rgb | 4048 | 1 | 8.59 us | 78.14 us |
-| GL 3.3 | Rich text | grayscale | grayscale | 1136 | 1 | 2.25 us | 108.56 us |
-| GL 3.3 | Rich text | subpixel rgb | subpixel rgb | 1136 | 1 | 2.24 us | 240.38 us |
-| GL 3.3 | Multi-script text | grayscale | grayscale | 1488 | 1 | 3.03 us | 17.53 us |
-| GL 3.3 | Multi-script text | subpixel rgb | subpixel rgb | 1488 | 1 | 3.03 us | 98.23 us |
-| GL 4.4 (persistent mapped) | Text | grayscale | grayscale | 4048 | 1 | 8.31 us | 21.63 us |
-| GL 4.4 (persistent mapped) | Text | subpixel rgb | subpixel rgb | 4048 | 1 | 8.56 us | 89.53 us |
-| GL 4.4 (persistent mapped) | Rich text | grayscale | grayscale | 1136 | 1 | 2.22 us | 41.14 us |
-| GL 4.4 (persistent mapped) | Rich text | subpixel rgb | subpixel rgb | 1136 | 1 | 2.21 us | 70.00 us |
-| GL 4.4 (persistent mapped) | Multi-script text | grayscale | grayscale | 1488 | 1 | 2.98 us | 39.35 us |
-| GL 4.4 (persistent mapped) | Multi-script text | subpixel rgb | subpixel rgb | 1488 | 1 | 3.02 us | 79.54 us |
-| OpenGL ES 3.0 | Text | grayscale | grayscale | 4048 | 1 | 8.29 us | 18.28 us |
-| OpenGL ES 3.0 | Text | subpixel rgb | grayscale (LCD unavailable) | 4048 | 1 | 8.57 us | 19.00 us |
-| OpenGL ES 3.0 | Rich text | grayscale | grayscale | 1136 | 1 | 2.21 us | 97.25 us |
-| OpenGL ES 3.0 | Rich text | subpixel rgb | grayscale (LCD unavailable) | 1136 | 1 | 2.18 us | 105.13 us |
-| OpenGL ES 3.0 | Multi-script text | grayscale | grayscale | 1488 | 1 | 3.00 us | 19.84 us |
-| OpenGL ES 3.0 | Multi-script text | subpixel rgb | grayscale (LCD unavailable) | 1488 | 1 | 2.98 us | 18.08 us |
-| Vulkan | Text | grayscale | grayscale | 4048 | 1 | 8.55 us | 24.72 us |
-| Vulkan | Text | subpixel rgb | subpixel rgb | 4048 | 1 | 8.13 us | 83.72 us |
-| Vulkan | Rich text | grayscale | grayscale | 1136 | 1 | 2.16 us | 39.13 us |
-| Vulkan | Rich text | subpixel rgb | subpixel rgb | 1136 | 1 | 2.06 us | 75.81 us |
-| Vulkan | Multi-script text | grayscale | grayscale | 1488 | 1 | 2.88 us | 26.63 us |
-| Vulkan | Multi-script text | subpixel rgb | subpixel rgb | 1488 | 1 | 2.89 us | 90.22 us |
+| CPU | Text | grayscale | grayscale | 4048 | 1 | 8.28 us | 1654.82 us |
+| CPU | Text | subpixel rgb | subpixel rgb | 4048 | 1 | 8.02 us | 8467.31 us |
+| CPU | Rich text | grayscale | grayscale | 1136 | 1 | 2.17 us | 1517.11 us |
+| CPU | Rich text | subpixel rgb | subpixel rgb | 1136 | 1 | 2.14 us | 4503.85 us |
+| CPU | Multi-script text | grayscale | grayscale | 1488 | 1 | 2.87 us | 1036.50 us |
+| CPU | Multi-script text | subpixel rgb | subpixel rgb | 1488 | 1 | 2.85 us | 5017.80 us |
+| CPU (threaded) | Text | grayscale | grayscale | 4048 | 1 | 8.06 us | 803.20 us |
+| CPU (threaded) | Text | subpixel rgb | subpixel rgb | 4048 | 1 | 7.97 us | 3437.48 us |
+| CPU (threaded) | Rich text | grayscale | grayscale | 1136 | 1 | 2.11 us | 740.14 us |
+| CPU (threaded) | Rich text | subpixel rgb | subpixel rgb | 1136 | 1 | 2.10 us | 2157.90 us |
+| CPU (threaded) | Multi-script text | grayscale | grayscale | 1488 | 1 | 2.81 us | 528.86 us |
+| CPU (threaded) | Multi-script text | subpixel rgb | subpixel rgb | 1488 | 1 | 2.76 us | 2175.80 us |
+| GL 3.3 | Text | grayscale | grayscale | 4048 | 1 | 8.31 us | 16.85 us |
+| GL 3.3 | Text | subpixel rgb | subpixel rgb | 4048 | 1 | 8.29 us | 73.12 us |
+| GL 3.3 | Rich text | grayscale | grayscale | 1136 | 1 | 2.18 us | 93.54 us |
+| GL 3.3 | Rich text | subpixel rgb | subpixel rgb | 1136 | 1 | 2.16 us | 226.72 us |
+| GL 3.3 | Multi-script text | grayscale | grayscale | 1488 | 1 | 2.93 us | 17.46 us |
+| GL 3.3 | Multi-script text | subpixel rgb | subpixel rgb | 1488 | 1 | 2.95 us | 72.14 us |
+| GL 4.4 (persistent mapped) | Text | grayscale | grayscale | 4048 | 1 | 8.29 us | 25.37 us |
+| GL 4.4 (persistent mapped) | Text | subpixel rgb | subpixel rgb | 4048 | 1 | 8.38 us | 79.14 us |
+| GL 4.4 (persistent mapped) | Rich text | grayscale | grayscale | 1136 | 1 | 2.18 us | 54.60 us |
+| GL 4.4 (persistent mapped) | Rich text | subpixel rgb | subpixel rgb | 1136 | 1 | 2.25 us | 67.84 us |
+| GL 4.4 (persistent mapped) | Multi-script text | grayscale | grayscale | 1488 | 1 | 2.94 us | 26.15 us |
+| GL 4.4 (persistent mapped) | Multi-script text | subpixel rgb | subpixel rgb | 1488 | 1 | 2.94 us | 74.79 us |
+| OpenGL ES 3.0 | Text | grayscale | grayscale | 4048 | 1 | 8.29 us | 16.85 us |
+| OpenGL ES 3.0 | Text | subpixel rgb | grayscale (LCD unavailable) | 4048 | 1 | 8.37 us | 17.06 us |
+| OpenGL ES 3.0 | Rich text | grayscale | grayscale | 1136 | 1 | 2.19 us | 95.78 us |
+| OpenGL ES 3.0 | Rich text | subpixel rgb | grayscale (LCD unavailable) | 1136 | 1 | 2.19 us | 91.75 us |
+| OpenGL ES 3.0 | Multi-script text | grayscale | grayscale | 1488 | 1 | 2.92 us | 17.15 us |
+| OpenGL ES 3.0 | Multi-script text | subpixel rgb | grayscale (LCD unavailable) | 1488 | 1 | 2.97 us | 17.23 us |
+| Vulkan | Text | grayscale | grayscale | 4048 | 1 | 8.44 us | 22.75 us |
+| Vulkan | Text | subpixel rgb | subpixel rgb | 4048 | 1 | 8.92 us | 80.12 us |
+| Vulkan | Rich text | grayscale | grayscale | 1136 | 1 | 2.20 us | 36.05 us |
+| Vulkan | Rich text | subpixel rgb | subpixel rgb | 1136 | 1 | 2.18 us | 73.30 us |
+| Vulkan | Multi-script text | grayscale | grayscale | 1488 | 1 | 3.03 us | 27.99 us |
+| Vulkan | Multi-script text | subpixel rgb | subpixel rgb | 1488 | 1 | 3.06 us | 73.22 us |
 
 ## Architecture
 
