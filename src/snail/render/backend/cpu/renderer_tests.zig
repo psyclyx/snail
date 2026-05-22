@@ -782,27 +782,28 @@ test "cpu renderer threaded draw matches single-threaded byte-for-byte" {
         atlas = next;
     }
 
-    var blob_builder = snail.TextBlobBuilder.init(testing.allocator, &atlas);
-    defer blob_builder.deinit();
+    var bundle = snail.TextBlobBundle.init(testing.allocator, &atlas);
+    defer bundle.deinit();
+    var bip = try bundle.startBlob();
+    errdefer bip.abort();
     var shaped = try atlas.shapeText(testing.allocator, .{}, "Hello, world!");
     defer shaped.deinit();
-    _ = try blob_builder.append(.{
+    _ = try bip.append(.{
         .source = .{ .shaped = shaped.glyphs },
         .placement = .{ .baseline = .{ .x = 4, .y = 32 }, .em = 16 },
         .fill = .{ .solid = .{ 1, 1, 1, 1 } },
     });
-    _ = try blob_builder.append(.{
+    _ = try bip.append(.{
         .source = .{ .shaped = shaped.glyphs },
         .placement = .{ .baseline = .{ .x = 4, .y = 56 }, .em = 16 },
         .fill = .{ .solid = .{ 1, 0.4, 0.4, 1 } },
     });
-    _ = try blob_builder.append(.{
+    _ = try bip.append(.{
         .source = .{ .shaped = shaped.glyphs },
         .placement = .{ .baseline = .{ .x = 4, .y = 80 }, .em = 16 },
         .fill = .{ .solid = .{ 0.4, 1, 0.4, 1 } },
     });
-    var blob = try blob_builder.finish();
-    defer blob.deinit();
+    const blob = try bip.finish(snail.ResourceKey.named("threaded_text"));
 
     var builder = snail.PathPictureBuilder.init(testing.allocator);
     defer builder.deinit();
@@ -813,12 +814,12 @@ test "cpu renderer threaded draw matches single-threaded byte-for-byte" {
     defer picture.deinit();
     var key_entries: [2]snail.ResourceManifest.Entry = undefined;
     var key_manifest = snail.ResourceManifest.init(&key_entries);
-    const text_keys = try declareTextBlobResources(&key_manifest, ResourceKey.named("fonts"), ResourceKey.named("threaded_text"), &blob);
+    const text_keys = try declareTextBlobResources(&key_manifest, ResourceKey.named("fonts"), ResourceKey.named("threaded_text"), blob);
 
     var scene = snail.Scene.init(testing.allocator);
     defer scene.deinit();
     try scene.addPath(.{ .picture = &picture, .resource_key = snail.ResourceKey.named("shape") });
-    try scene.addText(.{ .blob = &blob, .resources = text_keys });
+    try scene.addText(.{ .blob = blob, .resources = text_keys });
 
     const options = snail.DrawState{
         .mvp = snail.Mat4.ortho(0, @floatFromInt(width), @floatFromInt(height), 0, -1, 1),
@@ -839,7 +840,7 @@ test "cpu renderer threaded draw matches single-threaded byte-for-byte" {
         var entries: [4]snail.ResourceManifest.Entry = undefined;
         var set = snail.ResourceManifest.init(&entries);
         try set.putPathPicture(ResourceKey.named("shape"), &picture);
-        _ = try declareTextBlobResources(&set, ResourceKey.named("fonts"), ResourceKey.named("threaded_text"), &blob);
+        _ = try declareTextBlobResources(&set, ResourceKey.named("fonts"), ResourceKey.named("threaded_text"), blob);
         break :blk &set;
     });
     defer serial_resources.deinit();
@@ -861,7 +862,7 @@ test "cpu renderer threaded draw matches single-threaded byte-for-byte" {
         var entries: [4]snail.ResourceManifest.Entry = undefined;
         var set = snail.ResourceManifest.init(&entries);
         try set.putPathPicture(ResourceKey.named("shape"), &picture);
-        _ = try declareTextBlobResources(&set, ResourceKey.named("fonts"), ResourceKey.named("threaded_text"), &blob);
+        _ = try declareTextBlobResources(&set, ResourceKey.named("fonts"), ResourceKey.named("threaded_text"), blob);
         break :blk &set;
     });
     defer threaded_resources.deinit();

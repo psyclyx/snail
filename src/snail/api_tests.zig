@@ -20,7 +20,6 @@ const PathPicture = snail.PathPicture;
 const PathPictureBuilder = snail.PathPictureBuilder;
 const TextAtlas = snail.TextAtlas;
 const TextBlob = snail.TextBlob;
-const TextBlobBuilder = snail.TextBlobBuilder;
 const TextAppendResult = snail.TextAppendResult;
 const FontStyle = snail.FontStyle;
 const Paint = snail.Paint;
@@ -439,27 +438,27 @@ test "Vulkan scheduled upload path records without internal submit" {
 }
 
 fn appendRootTestText(
-    builder: *TextBlobBuilder,
+    bip: snail.BlobInProgress,
     style: FontStyle,
     text: []const u8,
     baseline: Vec2,
     em: f32,
     color: [4]f32,
 ) !TextAppendResult {
-    return appendRootTestTextPaint(builder, style, text, baseline, em, .{ .solid = color });
+    return appendRootTestTextPaint(bip, style, text, baseline, em, .{ .solid = color });
 }
 
 fn appendRootTestTextPaint(
-    builder: *TextBlobBuilder,
+    bip: snail.BlobInProgress,
     style: FontStyle,
     text: []const u8,
     baseline: Vec2,
     em: f32,
     paint: Paint,
 ) !TextAppendResult {
-    var shaped = try builder.atlas.shapeText(builder.allocator, style, text);
+    var shaped = try bip.bundle.atlas.shapeText(bip.bundle.gpa, style, text);
     defer shaped.deinit();
-    return builder.append(.{
+    return bip.append(.{
         .source = .{ .shaped = shaped.glyphs },
         .placement = .{ .baseline = baseline, .em = em },
         .fill = paint,
@@ -478,11 +477,12 @@ test "TextBlob validation catches wrong atlas snapshot" {
         atlas = next;
     }
 
-    var builder = TextBlobBuilder.init(std.testing.allocator, &atlas);
-    defer builder.deinit();
-    _ = try appendRootTestText(&builder, .{}, "A", .{ .x = 0, .y = 20 }, 16, .{ 1, 1, 1, 1 });
-    var blob = try builder.finish();
-    defer blob.deinit();
+    var bundle = snail.TextBlobBundle.init(std.testing.allocator, &atlas);
+    defer bundle.deinit();
+    var bip = try bundle.startBlob();
+    errdefer bip.abort();
+    _ = try appendRootTestText(bip, .{}, "A", .{ .x = 0, .y = 20 }, 16, .{ 1, 1, 1, 1 });
+    const blob = try bip.finish(snail.ResourceKey.named("test_blob"));
     try blob.validate();
 
     if (try atlas.ensureText(.{}, "B")) |next| {
@@ -508,28 +508,29 @@ test "ResourceManifest uploads explicit text paint resources" {
         atlas = next;
     }
 
-    var builder = TextBlobBuilder.init(allocator, &atlas);
-    defer builder.deinit();
-    _ = try appendRootTestTextPaint(&builder, .{}, "A", .{ .x = 0, .y = 20 }, 16, .{ .linear_gradient = .{
+    var bundle = snail.TextBlobBundle.init(allocator, &atlas);
+    defer bundle.deinit();
+    var bip = try bundle.startBlob();
+    errdefer bip.abort();
+    _ = try appendRootTestTextPaint(bip, .{}, "A", .{ .x = 0, .y = 20 }, 16, .{ .linear_gradient = .{
         .start = .{ .x = 0, .y = 0 },
         .end = .{ .x = 20, .y = 0 },
         .start_color = .{ 1, 0, 0, 1 },
         .end_color = .{ 0, 0, 1, 1 },
     } });
-    var blob = try builder.finish();
-    defer blob.deinit();
+    const blob = try bip.finish(snail.ResourceKey.named("headline"));
     try std.testing.expect(blob.hasPaintRecords());
 
     var set_entries: [2]ResourceManifest.Entry = undefined;
     var set = ResourceManifest.init(&set_entries);
-    const text_keys = try declareTextBlobResources(&set, ResourceKey.named("fonts"), ResourceKey.named("headline"), &blob);
+    const text_keys = try declareTextBlobResources(&set, ResourceKey.named("fonts"), ResourceKey.named("headline"), blob);
     try std.testing.expectEqual(@as(usize, 2), set.slice().len);
     try std.testing.expect(std.meta.activeTag(set.slice()[0]) == .text_atlas);
     try std.testing.expect(std.meta.activeTag(set.slice()[1]) == .text_paint);
 
     var scene = Scene.init(allocator);
     defer scene.deinit();
-    try scene.addText(.{ .blob = &blob, .resources = text_keys });
+    try scene.addText(.{ .blob = blob, .resources = text_keys });
 
     const footprint = try set.estimateUploadFootprint();
     try std.testing.expectEqual(blob.paint_layer_info_data.?.len * @sizeOf(f32), footprint.layer_info_bytes_used);
@@ -578,15 +579,16 @@ test "ResourceManifest footprint counts text image paint payloads" {
         atlas = next;
     }
 
-    var builder = TextBlobBuilder.init(allocator, &atlas);
-    defer builder.deinit();
-    _ = try appendRootTestTextPaint(&builder, .{}, "A", .{ .x = 0, .y = 20 }, 16, .{ .image = .{ .image = &image } });
-    var blob = try builder.finish();
-    defer blob.deinit();
+    var bundle = snail.TextBlobBundle.init(allocator, &atlas);
+    defer bundle.deinit();
+    var bip = try bundle.startBlob();
+    errdefer bip.abort();
+    _ = try appendRootTestTextPaint(bip, .{}, "A", .{ .x = 0, .y = 20 }, 16, .{ .image = .{ .image = &image } });
+    const blob = try bip.finish(snail.ResourceKey.named("image_text"));
 
     var set_entries: [2]ResourceManifest.Entry = undefined;
     var set = ResourceManifest.init(&set_entries);
-    _ = try declareTextBlobResources(&set, ResourceKey.named("fonts"), ResourceKey.named("image_text"), &blob);
+    _ = try declareTextBlobResources(&set, ResourceKey.named("fonts"), ResourceKey.named("image_text"), blob);
     const footprint = try set.estimateUploadFootprint();
     try std.testing.expectEqual(image.pixelSlice().len, footprint.image_bytes_used);
     try std.testing.expect(footprint.image_bytes_allocated >= footprint.image_bytes_used);
@@ -632,11 +634,12 @@ test "DrawList estimate upper-bounds ranged text draw output" {
         atlas = next;
     }
 
-    var sample_builder = TextBlobBuilder.init(allocator, &atlas);
-    defer sample_builder.deinit();
-    _ = try appendRootTestText(&sample_builder, .{}, "A", .{ .x = 0, .y = 20 }, 16, .{ 1, 1, 1, 1 });
-    var sample_blob = try sample_builder.finish();
-    defer sample_blob.deinit();
+    var sample_bundle = snail.TextBlobBundle.init(allocator, &atlas);
+    defer sample_bundle.deinit();
+    var sample_bip = try sample_bundle.startBlob();
+    errdefer sample_bip.abort();
+    _ = try appendRootTestText(sample_bip, .{}, "A", .{ .x = 0, .y = 20 }, 16, .{ 1, 1, 1, 1 });
+    const sample_blob = try sample_bip.finish(snail.ResourceKey.named("sample"));
     try std.testing.expectEqual(@as(usize, 1), sample_blob.glyphCount());
     const sample_glyph = sample_blob.glyphs[0];
     try std.testing.expect(sample_glyph.glyph_id != 0);
@@ -719,11 +722,12 @@ test "replacing path-picture key does not invalidate unrelated text coverage rec
         atlas = next;
     }
 
-    var builder = TextBlobBuilder.init(allocator, &atlas);
-    defer builder.deinit();
-    _ = try appendRootTestText(&builder, .{}, "Hello", .{ .x = 0, .y = 24 }, 18, .{ 1, 1, 1, 1 });
-    var blob = try builder.finish();
-    defer blob.deinit();
+    var bundle = snail.TextBlobBundle.init(allocator, &atlas);
+    defer bundle.deinit();
+    var bip = try bundle.startBlob();
+    errdefer bip.abort();
+    _ = try appendRootTestText(bip, .{}, "Hello", .{ .x = 0, .y = 24 }, 18, .{ 1, 1, 1, 1 });
+    const blob = try bip.finish(snail.ResourceKey.named("coverage_text"));
 
     var picture_a = try testRectPicture(allocator, 0);
     defer picture_a.deinit();
@@ -741,22 +745,22 @@ test "replacing path-picture key does not invalidate unrelated text coverage rec
 
     var set_a_entries: [4]ResourceManifest.Entry = undefined;
     var set_a = ResourceManifest.init(&set_a_entries);
-    const text_keys = try declareTextBlobResources(&set_a, ResourceKey.named("fonts"), ResourceKey.named("coverage_text"), &blob);
+    const text_keys = try declareTextBlobResources(&set_a, ResourceKey.named("fonts"), ResourceKey.named("coverage_text"), blob);
     try set_a.putPathPicture(ResourceKey.named("hud_panel"), &picture_a);
     var prepared_a = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set_a);
     defer prepared_a.deinit();
     prepared_a.manifest.atlases[0].view.layer_base = texture_layers.WINDOW_SIZE;
 
-    const coverage_words = try allocator.alloc(u32, TextCoverageRecords.wordCapacityForBlob(&blob));
+    const coverage_words = try allocator.alloc(u32, TextCoverageRecords.wordCapacityForBlob(blob));
     defer allocator.free(coverage_words);
     var records = TextCoverageRecords.init(coverage_words);
-    try records.buildLocal(&prepared_a, &blob, .{ .resources = text_keys });
+    try records.buildLocal(&prepared_a, blob, .{ .resources = text_keys });
     try std.testing.expect(records.validFor(&prepared_a));
     try std.testing.expectEqual(@as(u32, texture_layers.WINDOW_SIZE), records.layerWindowBase());
 
     var set_b_entries: [4]ResourceManifest.Entry = undefined;
     var set_b = ResourceManifest.init(&set_b_entries);
-    _ = try declareTextBlobResources(&set_b, ResourceKey.named("fonts"), ResourceKey.named("coverage_text"), &blob);
+    _ = try declareTextBlobResources(&set_b, ResourceKey.named("fonts"), ResourceKey.named("coverage_text"), blob);
     try set_b.putPathPicture(ResourceKey.named("hud_panel"), &picture_b);
     var prepared_b = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set_b);
     defer prepared_b.deinit();

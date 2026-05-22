@@ -841,9 +841,7 @@ pub const BlobInProgress = struct {
     pub fn finish(self: BlobInProgress, key: ResourceKey) !*const TextBlob {
         _ = key; // future use; bundle's outer atlas key composes with it
         std.debug.assert(self.bundle.pending != null);
-        var builder = self.bundle.pending.?;
-        defer self.bundle.pending = null;
-        const blob = try builder.finish();
+        const blob = try self.bundle.pending.?.finish();
         errdefer {
             var owned = blob;
             owned.deinit();
@@ -852,6 +850,10 @@ pub const BlobInProgress = struct {
         errdefer self.bundle.gpa.destroy(slot);
         slot.* = blob;
         try self.bundle.blobs.append(self.bundle.gpa, slot);
+        // Free the builder's leftover ArrayList capacity now that we've
+        // hoisted the glyph data into the blob.
+        self.bundle.pending.?.deinit();
+        self.bundle.pending = null;
         return slot;
     }
 
