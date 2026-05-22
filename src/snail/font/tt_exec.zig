@@ -1220,6 +1220,23 @@ fn skipToEif(code: []const u8, pc: usize) Error!usize {
     return skipStructured(code, pc, false);
 }
 
+/// Per-opcode inline-operand byte count. Positive values are a constant
+/// number of bytes to skip; negative sentinels mean "consult slow path".
+/// Built at comptime so the skip loop is a single table lookup per op.
+const OP_OPERAND_NPUSHB: i16 = -1; // 0x40: next u8 = count, then `count` bytes
+const OP_OPERAND_NPUSHW: i16 = -2; // 0x41: next u8 = count, then `count*2` bytes
+const OP_OPERAND_FDEF: i16 = -3; // 0x2C: scan to ENDF (0x2D)
+
+const skip_operand_table: [256]i16 = blk: {
+    var t: [256]i16 = @splat(0);
+    for (0..8) |i| t[0xB0 + i] = @intCast(i + 1);
+    for (0..8) |i| t[0xB8 + i] = @intCast((i + 1) * 2);
+    t[0x40] = OP_OPERAND_NPUSHB;
+    t[0x41] = OP_OPERAND_NPUSHW;
+    t[0x2C] = OP_OPERAND_FDEF;
+    break :blk t;
+};
+
 fn skipStructured(code: []const u8, start: usize, stop_at_else: bool) Error!usize {
     var pc = start;
     var depth: u32 = 0;
@@ -1227,18 +1244,26 @@ fn skipStructured(code: []const u8, start: usize, stop_at_else: bool) Error!usiz
         const op = code[pc];
         pc += 1;
 
-        if (op == 0x58) {
-            depth += 1;
-            continue;
+        switch (op) {
+            0x58 => depth += 1,
+            0x59 => {
+                if (depth == 0) return pc;
+                depth -= 1;
+            },
+            0x1B => {
+                if (stop_at_else and depth == 0) return pc;
+            },
+            else => {
+                const entry = skip_operand_table[op];
+                if (entry >= 0) {
+                    const bytes: usize = @intCast(entry);
+                    if (pc + bytes > code.len) return Error.UnexpectedEof;
+                    pc += bytes;
+                } else {
+                    pc = try skipSpecialOperand(code, pc, entry);
+                }
+            },
         }
-        if (op == 0x59) {
-            if (depth == 0) return pc;
-            depth -= 1;
-            continue;
-        }
-        if (op == 0x1B and stop_at_else and depth == 0) return pc;
-
-        try skipInlineOperands(code, &pc, op);
     }
     return Error.UnexpectedEof;
 }
@@ -1249,35 +1274,38 @@ fn findEndf(code: []const u8, start: usize) Error!usize {
         const op = code[pc];
         if (op == 0x2D) return pc;
         pc += 1;
-        try skipInlineOperands(code, &pc, op);
+
+        const entry = skip_operand_table[op];
+        if (entry >= 0) {
+            const bytes: usize = @intCast(entry);
+            if (pc + bytes > code.len) return Error.UnexpectedEof;
+            pc += bytes;
+        } else {
+            pc = try skipSpecialOperand(code, pc, entry);
+        }
     }
     return Error.InvalidFunctionDefinition;
 }
 
-fn skipInlineOperands(code: []const u8, pc: *usize, op: u8) Error!void {
-    if (op == 0x2C) {
-        pc.* = (try findEndf(code, pc.*)) + 1;
-        return;
+fn skipSpecialOperand(code: []const u8, start: usize, entry: i16) Error!usize {
+    var pc = start;
+    switch (entry) {
+        OP_OPERAND_NPUSHB => {
+            const count: usize = try readU8(code, &pc);
+            if (pc + count > code.len) return Error.UnexpectedEof;
+            return pc + count;
+        },
+        OP_OPERAND_NPUSHW => {
+            const count: usize = try readU8(code, &pc);
+            const bytes = count * 2;
+            if (pc + bytes > code.len) return Error.UnexpectedEof;
+            return pc + bytes;
+        },
+        OP_OPERAND_FDEF => {
+            return (try findEndf(code, pc)) + 1;
+        },
+        else => unreachable,
     }
-
-    const bytes = if (op >= 0xB0 and op <= 0xB7)
-        @as(usize, op - 0xB0) + 1
-    else if (op >= 0xB8 and op <= 0xBF)
-        (@as(usize, op - 0xB8) + 1) * 2
-    else switch (op) {
-        0x40 => blk: {
-            const count = try readU8(code, pc);
-            break :blk @as(usize, count);
-        },
-        0x41 => blk: {
-            const count = try readU8(code, pc);
-            break :blk @as(usize, count) * 2;
-        },
-        else => 0,
-    };
-
-    if (pc.* + bytes > code.len) return Error.UnexpectedEof;
-    pc.* += bytes;
 }
 
 fn expectStack(ctx: *const Context, expected: []const i32) !void {
