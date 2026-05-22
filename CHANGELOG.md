@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+This release begins a pre-1.0 consolidation of the text construction
+surface. Several breaking changes; consumers should expect mechanical
+migration. See the migration recipes below each entry.
+
 ### Added
 
 - `TrueTypeHintContext.initWithOptions` accepts a `cvt_headroom` knob that
@@ -14,6 +18,64 @@
   `computeMissingGlyph` that converts any `tt_exec` execution error into a
   per-glyph rejection, so best-effort hint runs fall back per glyph instead of
   aborting the entire run on a single malformed program.
+- `TrueTypeHintContext.rebindAtlas` (rename of `resetForAtlas`): preserves
+  cached hint values, face programs, and size states when the new atlas
+  snapshot is prefix-compatible with the old (`canRebindFrom`). Eliminates the
+  warmup rehint storm on `ensureText`-style atlas growth. Migration:
+  `ctx.resetForAtlas(new)` → `ctx.rebindAtlas(new)`.
+- `TextBlobBundle` and `BlobInProgress`: value-driven blob construction.
+  A bundle owns a set of `TextBlob`s sharing a `TextAtlas` under a single
+  lifetime. Streaming construction via `bundle.startBlob()` returns a
+  `BlobInProgress` (terminate with `finish(key)` or `abort()`); bulk
+  construction via `bundle.buildBlob(key, []TextAppend, ?[]TextAppendResult)`.
+  Additional operations: `rebindAtlas`, `freeze`/`unfreeze`/`isFrozen`,
+  `blobCount`, `currentGeneration`. The bundle exists alongside
+  `TextBlobBuilder` for now; future passes will migrate consumers and
+  collapse the storage onto an arena.
+
+### Changed (breaking)
+
+- `PreparedHintRun` and `PreparedBestEffortHintRun` collapse into a single
+  `PreparedHintRun` whose `glyphs` carry a per-glyph `source` union
+  (`.hint` | `.fallback`). `Stats` gains `hinted_count` and
+  `fallback_count`. Strict callers check `stats.fallback_count == 0` to
+  detect partial hinting instead of calling a separate prepare path.
+  Migration: `context.prepareRun(alloc, .{...})` always returns the
+  unified type; check stats; `context.prepareBestEffortRun(...)` is gone.
+- `PrepareRunOptions.glyphs: Range` removed. Prepare is always whole-run;
+  hint values are already memoized by `(face, ppem, glyph_id)`.
+- `TextBlobBuilder.appendPreparedHintedRun` and
+  `appendPreparedBestEffortHintRun` collapse into a single
+  `builder.appendPreparedHintRun(*const PreparedHintRun, placement, color)`
+  that handles fallback glyphs via the unhinted path. With the new
+  `TextAppend.source` union below, this method is itself folded into
+  `builder.append(.{ .source = .{ .hinted = run.glyphs }, ... })`.
+- `TextAppend.source` becomes a tagged union over caller-owned slices:
+  `union(enum) { shaped: []const ShapedText.Glyph, hinted: []const
+  PreparedHintRun.Glyph }`. `TextAppend.glyphs: Range` is removed; sub-
+  selection is done via slice notation (`shaped.glyphs[a..b]`). The
+  hinted arm requires a solid `Paint`; non-solid returns
+  `error.HintedAppendRequiresSolidFill`. Migration:
+  `.shaped = &shaped, .glyphs = .{ .start = a, .count = c }` →
+  `.source = .{ .shaped = shaped.glyphs[a..a+c] }`. For hinted:
+  `.appendPreparedHintRun(&run, placement, color)` →
+  `.append(.{ .source = .{ .hinted = run.glyphs }, .placement, .fill = .{
+  .solid = color } })`.
+- `TextBatchAppend` likewise: `.shaped: *const ShapedText, .glyphs: Range`
+  → `.glyphs: []const ShapedText.Glyph`. Glyph positioning becomes
+  slice-relative: the first glyph in the slice lands exactly at
+  `placement.baseline`; subsequent glyphs offset from there using their
+  own `x_offset`/`y_offset`. The rare shaper-offset-on-first-glyph case
+  is now the caller's responsibility (adjust `baseline` as needed).
+- `SnailTrueTypeHintRunStats` gains `hinted_count` and `fallback_count`
+  fields. C ABI is breaking.
+- C API: `snail_true_type_hint_context_reset_for_atlas` →
+  `snail_true_type_hint_context_rebind_atlas`,
+  `snail_text_blob_builder_append_prepared_hinted_run` →
+  `snail_text_blob_builder_append_prepared_hint_run`, and
+  `snail_text_blob_init_from_prepared_hinted_run` →
+  `snail_text_blob_init_from_prepared_hint_run`. The `prepare_run` C
+  function drops its `glyphs: SnailRange` parameter.
 
 ## 0.11.1 - 2026-05-20
 
