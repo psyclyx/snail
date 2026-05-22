@@ -127,6 +127,19 @@ migration recipes below each entry.
   `rangeBetween` (composition aids that track shape offsets within a
   picture); the helpers `textBlobRangeGpuInstanceBudget` and
   `shapedAdvanceForRange` are removed.
+- `TextBlob` shape change: drops `allocator`, `atlas`, `atlas_identity`
+  fields and its `init` / `deinit` / `rebound` methods. All blobs are
+  bundle-owned by construction — the blob struct lives in
+  `bundle.gpa` for pointer stability, its glyph and paint content lives
+  in the bundle's `ArenaAllocator`. Access the atlas via `blob.atlas()`
+  / `blob.atlasIdentity()` (accessor methods that follow the bundle
+  pointer). Rebinding a blob to a new atlas is now
+  `target_bundle.rebound(key, src, new_atlas)`; the target bundle must
+  already be bound to `new_atlas`. C API `snail_text_blob_rebound`
+  internally creates an owned bundle bound to the new atlas and copies
+  the source blob into it — the C-side handle continues to work the
+  same way. The internal `TextBlobBuilder` type is gone; its
+  accumulator state is now `PendingBlob` inside the bundle.
 
 ## 0.11.1 - 2026-05-20
 
