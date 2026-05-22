@@ -199,15 +199,19 @@ migration recipes below each entry.
   `synthetic_embolden` rejection reason remains in the enum (ABI) but
   is no longer produced; `appendHintedGlyphRef` now threads the face's
   synthetic embolden through the glyph record.
-- `PreparedHintRun` produces pixel-snapped advances for `.fallback`
-  glyphs whose rejection reason is `no_true_type_program`. The face has
-  no TrueType bytecode to run, so we can't grid-fit the outline — but
-  we can snap each glyph's advance to whole pixels at the hint context's
-  PPEM. Adjacent glyphs in a run line up to the pixel grid and columns
-  of text stay aligned, even though the curve geometry still renders
-  unhinted. Other fallback reasons (exec_failed, color_glyph,
-  grid_fit_disabled, …) keep pass-through advances. Internal helper
-  `snapEmAdvanceToPixels(em_advance, ppem)` lives in `hint_context.zig`.
+- `PreparedHintRun` snaps each `.fallback` glyph's advance to whole
+  pixels at the hint context's PPEM, regardless of why hinting failed
+  (no bytecode, topology mismatch, exec failure, missing base, color
+  glyph, …). Unhinted curve geometry still renders via the `.fallback`
+  path downstream, but integer-pixel advances stop adjacent glyphs
+  from sub-pixel shimmering and let columns of text line up cleanly.
+  The one opt-out: `grid_fit_disabled` is the font author's explicit
+  "do not grid-fit at this PPEM" instruction — those glyphs keep
+  pass-through advances. Internal helper `snapEmAdvanceToPixels(
+  em_advance, ppem)` lives in `hint_context.zig`. Closes the visible
+  gap from `topology_changed` rejections — even when our delta-encoding
+  can't represent the hinted outline, the advance metric is still
+  pixel-correct.
 
 ### Fixed
 

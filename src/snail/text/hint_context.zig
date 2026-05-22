@@ -333,29 +333,27 @@ pub const TrueTypeHintContext = struct {
                     };
                     if (hint.renderable()) stats.hinted_count += 1;
                 },
-                .missing => {
-                    out.* = .{
-                        .face_index = glyph.face_index,
-                        .glyph_id = glyph.glyph_id,
-                        .placement_delta = placement_delta,
-                        .advance = .{ .x = glyph.x_advance, .y = glyph.y_advance },
-                        .source = .fallback,
+                .missing, .unsupported => {
+                    // Metric-only auto-hint: every fallback glyph gets its
+                    // advance snapped to whole pixels at the hint context's
+                    // PPEM. Unhinted curve geometry still renders via the
+                    // `.fallback` path downstream, but integer-pixel advances
+                    // stop adjacent glyphs from sub-pixel shimmering and let
+                    // columns of text line up cleanly. The one opt-out:
+                    // `grid_fit_disabled` is the font author's explicit
+                    // "do not grid-fit at this PPEM" instruction — honour
+                    // that by passing the original advance through.
+                    const honor_no_snap = switch (status) {
+                        .unsupported => |reason| reason == .grid_fit_disabled,
+                        else => false,
                     };
-                    stats.fallback_count += 1;
-                },
-                .unsupported => |reason| {
-                    // Metric-only auto-hint for fonts with no TrueType bytecode:
-                    // we can't run hints, but we can still snap advance widths
-                    // to whole pixels so columns line up and adjacent glyphs
-                    // stop sub-pixel shimmering. Unhinted curve geometry still
-                    // renders via the .fallback path downstream.
-                    const advance: Vec2 = if (reason == .no_true_type_program)
+                    const advance: Vec2 = if (honor_no_snap)
+                        .{ .x = glyph.x_advance, .y = glyph.y_advance }
+                    else
                         snapEmAdvanceToPixels(
                             .{ .x = glyph.x_advance, .y = glyph.y_advance },
                             options.ppem,
-                        )
-                    else
-                        .{ .x = glyph.x_advance, .y = glyph.y_advance };
+                        );
                     out.* = .{
                         .face_index = glyph.face_index,
                         .glyph_id = glyph.glyph_id,
