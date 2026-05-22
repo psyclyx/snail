@@ -531,6 +531,123 @@ test "TextBlobBuilder hint run keeps fallback glyphs" {
     try testing.expect(blob.glyphCount() > hinted_glyphs);
 }
 
+test "TextBlobBundle: streaming construction with abort/finish" {
+    const assets_data = @import("assets");
+    var fonts = try TextAtlas.init(testing.allocator, &.{
+        .{ .data = assets_data.noto_sans_regular },
+    });
+    defer fonts.deinit();
+    if (try fonts.ensureText(.{}, "Hi")) |next| {
+        fonts.deinit();
+        fonts = next;
+    }
+    var shaped = try fonts.shapeText(testing.allocator, .{}, "Hi");
+    defer shaped.deinit();
+
+    var bundle = snail.TextBlobBundle.init(testing.allocator, &fonts);
+    defer bundle.deinit();
+    try testing.expectEqual(@as(usize, 0), bundle.blobCount());
+
+    // Abort path: discard the in-progress blob, bundle stays empty.
+    var bip0 = try bundle.startBlob();
+    _ = try bip0.append(.{
+        .source = .{ .shaped = shaped.glyphs },
+        .placement = .{ .baseline = .{ .x = 0, .y = 12 }, .em = 12 },
+        .fill = .{ .solid = .{ 1, 1, 1, 1 } },
+    });
+    try testing.expect(bip0.glyphCount() > 0);
+    bip0.abort();
+    try testing.expectEqual(@as(usize, 0), bundle.blobCount());
+
+    // Finish path: produces a pointer-stable blob owned by the bundle.
+    var bip1 = try bundle.startBlob();
+    _ = try bip1.append(.{
+        .source = .{ .shaped = shaped.glyphs },
+        .placement = .{ .baseline = .{ .x = 0, .y = 12 }, .em = 12 },
+        .fill = .{ .solid = .{ 1, 1, 1, 1 } },
+    });
+    const blob = try bip1.finish(snail.ResourceKey.named("test_blob"));
+    try testing.expectEqual(@as(usize, 1), bundle.blobCount());
+    try testing.expect(blob.glyphCount() > 0);
+
+    // Second in-flight start fails until previous one terminates.
+    var bip2 = try bundle.startBlob();
+    try testing.expectError(error.BlobInFlight, bundle.startBlob());
+    bip2.abort();
+}
+
+test "TextBlobBundle: buildBlob bulk path with results" {
+    const assets_data = @import("assets");
+    var fonts = try TextAtlas.init(testing.allocator, &.{
+        .{ .data = assets_data.noto_sans_regular },
+    });
+    defer fonts.deinit();
+    if (try fonts.ensureText(.{}, "Hi")) |next| {
+        fonts.deinit();
+        fonts = next;
+    }
+    var shaped = try fonts.shapeText(testing.allocator, .{}, "Hi");
+    defer shaped.deinit();
+
+    var bundle = snail.TextBlobBundle.init(testing.allocator, &fonts);
+    defer bundle.deinit();
+
+    var results: [2]TextAppendResult = undefined;
+    const blob = try bundle.buildBlob(
+        snail.ResourceKey.named("test_blob"),
+        &.{
+            .{
+                .source = .{ .shaped = shaped.glyphs },
+                .placement = .{ .baseline = .{ .x = 0, .y = 12 }, .em = 12 },
+                .fill = .{ .solid = .{ 1, 0, 0, 1 } },
+            },
+            .{
+                .source = .{ .shaped = shaped.glyphs },
+                .placement = .{ .baseline = .{ .x = 0, .y = 24 }, .em = 12 },
+                .fill = .{ .solid = .{ 0, 1, 0, 1 } },
+            },
+        },
+        &results,
+    );
+    try testing.expect(blob.glyphCount() > 0);
+    try testing.expect(results[0].advance.x > 0);
+    try testing.expect(results[1].advance.x > 0);
+}
+
+test "TextBlobBundle: freeze blocks further construction; reset clears" {
+    const assets_data = @import("assets");
+    var fonts = try TextAtlas.init(testing.allocator, &.{
+        .{ .data = assets_data.noto_sans_regular },
+    });
+    defer fonts.deinit();
+    if (try fonts.ensureText(.{}, "A")) |next| {
+        fonts.deinit();
+        fonts = next;
+    }
+    var shaped = try fonts.shapeText(testing.allocator, .{}, "A");
+    defer shaped.deinit();
+
+    var bundle = snail.TextBlobBundle.init(testing.allocator, &fonts);
+    defer bundle.deinit();
+
+    _ = try bundle.buildBlob(snail.ResourceKey.named("k"), &.{
+        .{
+            .source = .{ .shaped = shaped.glyphs },
+            .placement = .{ .baseline = .{ .x = 0, .y = 12 }, .em = 12 },
+            .fill = .{ .solid = .{ 1, 1, 1, 1 } },
+        },
+    }, null);
+    bundle.freeze();
+    try testing.expect(bundle.isFrozen());
+    try testing.expectError(error.BundleFrozen, bundle.startBlob());
+
+    const before_gen = bundle.currentGeneration();
+    bundle.reset();
+    try testing.expect(!bundle.isFrozen());
+    try testing.expectEqual(@as(usize, 0), bundle.blobCount());
+    try testing.expect(bundle.currentGeneration() != before_gen);
+}
+
 test "TextAtlas.lineMetrics returns primary face metrics" {
     const assets_data = @import("assets");
     var fonts = try TextAtlas.init(testing.allocator, &.{

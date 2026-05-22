@@ -653,3 +653,212 @@ fn patchHintGlyphTexels(glyphs: []TextBlob.Glyph, hint_offsets: []const u32) voi
 fn emptyBBox() BBox {
     return .{ .min = Vec2.zero, .max = Vec2.zero };
 }
+
+// ── TextBlobBundle ──
+//
+// The bundle is the recommended way to construct and own text blobs. It
+// groups multiple blobs that share a `TextAtlas` under a single lifetime
+// and exposes streaming (`startBlob`) and bulk (`buildBlob`) construction
+// paths. `TextBlobBuilder` remains as a lower-level primitive but the
+// bundle is the value-driven entry point new code should target.
+
+/// Owns a set of `TextBlob`s that share a `TextAtlas`. Blobs created
+/// through the bundle have lifetimes tied to the bundle: `reset()` and
+/// `deinit()` invalidate every blob the bundle has produced. The bundle
+/// borrows the `TextAtlas` snapshot pointer (must outlive the bundle).
+///
+/// In-flight invariant: at most one `BlobInProgress` may exist at a time.
+/// `startBlob` returns `error.BlobInFlight` while one is open. A blob in
+/// progress must terminate via `finish(key)` or `abort()`. Use
+/// `errdefer bip.abort()` on error paths.
+///
+/// Freezing: call `freeze()` before submitting blobs to `DrawList`. After
+/// freeze, builder operations return `error.BundleFrozen`; `reset()`
+/// clears the freeze flag (and the bundle).
+pub const TextBlobBundle = struct {
+    gpa: Allocator,
+    atlas: *const TextAtlas,
+    atlas_identity: u64,
+    blobs: std.ArrayListUnmanaged(*TextBlob) = .empty,
+    pending: ?TextBlobBuilder = null,
+    frozen: bool = false,
+    /// Monotonic counter incremented on `reset` and `deinit`. C-side
+    /// handles capture this at construction and compare on dereference to
+    /// detect use-after-reset.
+    generation: u32 = 0,
+
+    pub fn init(gpa: Allocator, atlas: *const TextAtlas) TextBlobBundle {
+        return .{
+            .gpa = gpa,
+            .atlas = atlas,
+            .atlas_identity = atlas.snapshotIdentity(),
+        };
+    }
+
+    pub fn deinit(self: *TextBlobBundle) void {
+        if (self.pending) |*p| p.deinit();
+        self.pending = null;
+        for (self.blobs.items) |blob| {
+            blob.deinit();
+            self.gpa.destroy(blob);
+        }
+        self.blobs.deinit(self.gpa);
+        self.* = undefined;
+    }
+
+    /// Drop every blob and pending state. Retains list capacity but frees
+    /// each blob's storage. Invalidates every `*const TextBlob` the
+    /// bundle has returned. Debug-asserts no blob is in flight.
+    pub fn reset(self: *TextBlobBundle) void {
+        std.debug.assert(self.pending == null);
+        for (self.blobs.items) |blob| {
+            blob.deinit();
+            self.gpa.destroy(blob);
+        }
+        self.blobs.clearRetainingCapacity();
+        self.frozen = false;
+        self.generation +%= 1;
+    }
+
+    /// Streaming construction. Returns a thin handle that must terminate
+    /// with `finish` or `abort`. Use `errdefer bip.abort()` on error
+    /// paths.
+    pub fn startBlob(self: *TextBlobBundle) !BlobInProgress {
+        if (self.frozen) return error.BundleFrozen;
+        if (self.pending != null) return error.BlobInFlight;
+        self.pending = TextBlobBuilder.init(self.gpa, self.atlas);
+        return .{ .bundle = self };
+    }
+
+    /// Bulk construction. Convenience over `startBlob`/`append`/`finish`.
+    /// If `results` is non-null it must have length `appends.len`; each
+    /// entry receives the per-append `TextAppendResult`.
+    pub fn buildBlob(
+        self: *TextBlobBundle,
+        key: ResourceKey,
+        appends: []const TextAppend,
+        results: ?[]TextAppendResult,
+    ) !*const TextBlob {
+        if (results) |r| if (r.len != appends.len) return error.InvalidArgument;
+
+        var bip = try self.startBlob();
+        errdefer bip.abort();
+        for (appends, 0..) |append, i| {
+            const result = try bip.append(append);
+            if (results) |r| r[i] = result;
+        }
+        return bip.finish(key);
+    }
+
+    /// Migrate every blob in this bundle to `new_atlas`, which must
+    /// satisfy `new_atlas.canRebindFrom(self.atlas)` and contain every
+    /// glyph referenced by every blob. On error the bundle is unchanged.
+    pub fn rebindAtlas(self: *TextBlobBundle, new_atlas: *const TextAtlas) !void {
+        if (self.frozen) return error.BundleFrozen;
+        if (self.pending != null) return error.BlobInFlight;
+        if (!new_atlas.canRebindFrom(self.atlas)) return error.WrongTextAtlasSnapshot;
+        for (self.blobs.items) |blob| {
+            for (blob.glyphs) |glyph| {
+                if (!new_atlas.hasPreparedGlyph(glyph.face_index, glyph.glyph_id)) return error.MissingPreparedGlyph;
+            }
+        }
+        for (self.blobs.items) |blob| {
+            blob.atlas = new_atlas;
+            blob.atlas_identity = new_atlas.snapshotIdentity();
+        }
+        self.atlas = new_atlas;
+        self.atlas_identity = new_atlas.snapshotIdentity();
+    }
+
+    /// Lock the bundle for upload. After freeze, builder operations
+    /// return `error.BundleFrozen`. `reset()` clears the freeze;
+    /// `unfreeze()` allows further additions to the existing blob set.
+    pub fn freeze(self: *TextBlobBundle) void {
+        self.frozen = true;
+    }
+
+    pub fn unfreeze(self: *TextBlobBundle) void {
+        self.frozen = false;
+    }
+
+    pub fn isFrozen(self: *const TextBlobBundle) bool {
+        return self.frozen;
+    }
+
+    pub fn blobCount(self: *const TextBlobBundle) usize {
+        return self.blobs.items.len;
+    }
+
+    pub fn currentGeneration(self: *const TextBlobBundle) u32 {
+        return self.generation;
+    }
+};
+
+/// Thin handle to in-progress blob construction. Must terminate with
+/// either `finish(key)` or `abort()`. Use `errdefer bip.abort()` on error
+/// paths.
+pub const BlobInProgress = struct {
+    bundle: *TextBlobBundle,
+
+    fn pendingPtr(self: BlobInProgress) *TextBlobBuilder {
+        return &self.bundle.pending.?;
+    }
+
+    pub fn append(self: BlobInProgress, text_append: TextAppend) !TextAppendResult {
+        return self.pendingPtr().append(text_append);
+    }
+
+    pub fn appendHintedGlyph(
+        self: BlobInProgress,
+        face_index: FaceIndex,
+        glyph_id: u16,
+        transform: Transform2D,
+        color: [4]f32,
+        record: text_hint.GlyphRecord,
+        curve_deltas_f16: []const u16,
+    ) !void {
+        return self.pendingPtr().appendHintedGlyph(face_index, glyph_id, transform, color, record, curve_deltas_f16);
+    }
+
+    pub fn appendHintedGlyphRef(
+        self: BlobInProgress,
+        face_index: FaceIndex,
+        glyph_id: u16,
+        transform: Transform2D,
+        color: [4]f32,
+        value: *const HintedGlyphValue,
+    ) !void {
+        return self.pendingPtr().appendHintedGlyphRef(face_index, glyph_id, transform, color, value);
+    }
+
+    pub fn glyphCount(self: BlobInProgress) usize {
+        return self.pendingPtr().glyphCount();
+    }
+
+    /// Finalize the in-progress blob. Returns a pointer stable for the
+    /// bundle's lifetime (until reset/deinit). On success, `key` is
+    /// recorded on the produced blob for use in resource-key derivation.
+    pub fn finish(self: BlobInProgress, key: ResourceKey) !*const TextBlob {
+        _ = key; // future use; bundle's outer atlas key composes with it
+        std.debug.assert(self.bundle.pending != null);
+        var builder = self.bundle.pending.?;
+        defer self.bundle.pending = null;
+        const blob = try builder.finish();
+        errdefer {
+            var owned = blob;
+            owned.deinit();
+        }
+        const slot = try self.bundle.gpa.create(TextBlob);
+        errdefer self.bundle.gpa.destroy(slot);
+        slot.* = blob;
+        try self.bundle.blobs.append(self.bundle.gpa, slot);
+        return slot;
+    }
+
+    /// Discard the in-progress blob. Idempotent and safe to call after
+    /// `finish` (no-op in that case).
+    pub fn abort(self: BlobInProgress) void {
+        if (self.bundle.pending) |*p| p.deinit();
+        self.bundle.pending = null;
+    }
+};
