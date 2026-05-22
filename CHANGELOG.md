@@ -187,6 +187,18 @@ migration recipes below each entry.
   encode the optional range), `SnailShapeOptions`, and
   `snail_text_atlas_shape_utf8_opts`.
 
+### Changed
+
+- `PreparedHintRun` produces pixel-snapped advances for `.fallback`
+  glyphs whose rejection reason is `no_true_type_program`. The face has
+  no TrueType bytecode to run, so we can't grid-fit the outline — but
+  we can snap each glyph's advance to whole pixels at the hint context's
+  PPEM. Adjacent glyphs in a run line up to the pixel grid and columns
+  of text stay aligned, even though the curve geometry still renders
+  unhinted. Other fallback reasons (exec_failed, color_glyph,
+  grid_fit_disabled, …) keep pass-through advances. Internal helper
+  `snapEmAdvanceToPixels(em_advance, ppem)` lives in `hint_context.zig`.
+
 ### Fixed
 
 - TrueType hint VM no longer segfaults on compound glyphs that recurse

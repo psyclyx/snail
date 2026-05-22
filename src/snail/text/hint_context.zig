@@ -333,12 +333,34 @@ pub const TrueTypeHintContext = struct {
                     };
                     if (hint.renderable()) stats.hinted_count += 1;
                 },
-                .missing, .unsupported => {
+                .missing => {
                     out.* = .{
                         .face_index = glyph.face_index,
                         .glyph_id = glyph.glyph_id,
                         .placement_delta = placement_delta,
                         .advance = .{ .x = glyph.x_advance, .y = glyph.y_advance },
+                        .source = .fallback,
+                    };
+                    stats.fallback_count += 1;
+                },
+                .unsupported => |reason| {
+                    // Metric-only auto-hint for fonts with no TrueType bytecode:
+                    // we can't run hints, but we can still snap advance widths
+                    // to whole pixels so columns line up and adjacent glyphs
+                    // stop sub-pixel shimmering. Unhinted curve geometry still
+                    // renders via the .fallback path downstream.
+                    const advance: Vec2 = if (reason == .no_true_type_program)
+                        snapEmAdvanceToPixels(
+                            .{ .x = glyph.x_advance, .y = glyph.y_advance },
+                            options.ppem,
+                        )
+                    else
+                        .{ .x = glyph.x_advance, .y = glyph.y_advance };
+                    out.* = .{
+                        .face_index = glyph.face_index,
+                        .glyph_id = glyph.glyph_id,
+                        .placement_delta = placement_delta,
+                        .advance = advance,
                         .source = .fallback,
                     };
                     stats.fallback_count += 1;
@@ -504,6 +526,19 @@ fn takeHintedGlyphValue(
     };
 }
 
+/// Round each axis of an em-unit advance to the nearest whole pixel at the
+/// given PPEM. Used by the metric-only auto-hint path: even when we can't
+/// run a hint program, integer-pixel advances keep adjacent glyphs from
+/// shimmering on horizontal scrolls and let columns of text line up cleanly.
+fn snapEmAdvanceToPixels(em_advance: Vec2, ppem: tt_hint.HintPpem) Vec2 {
+    const ppem_x = @as(f32, @floatFromInt(ppem.x_26_6)) / 64.0;
+    const ppem_y = @as(f32, @floatFromInt(ppem.y_26_6)) / 64.0;
+    return .{
+        .x = if (ppem_x > 0) @round(em_advance.x * ppem_x) / ppem_x else em_advance.x,
+        .y = if (ppem_y > 0) @round(em_advance.y * ppem_y) / ppem_y else em_advance.y,
+    };
+}
+
 fn isExecFailure(err: anyerror) bool {
     return switch (err) {
         error.BufferTooSmall,
@@ -592,4 +627,28 @@ test "hint context prepares runs and caches repeated glyphs" {
     }
 
     return error.SkipZigTest;
+}
+
+test "snapEmAdvanceToPixels rounds each axis to the nearest pixel" {
+    const ppem = tt_hint.HintPpem.uniform(16 * 64); // 16 px/em
+    // 0.4 em * 16 = 6.4 px → 6 px → 0.375 em
+    // 0.6 em * 16 = 9.6 px → 10 px → 0.625 em
+    const snapped = snapEmAdvanceToPixels(.{ .x = 0.4, .y = 0.6 }, ppem);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.375), snapped.x, 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.625), snapped.y, 1e-6);
+}
+
+test "snapEmAdvanceToPixels handles zero ppem as identity" {
+    const ppem = tt_hint.HintPpem{ .x_26_6 = 0, .y_26_6 = 0 };
+    const snapped = snapEmAdvanceToPixels(.{ .x = 0.42, .y = 0.13 }, ppem);
+    try std.testing.expectEqual(@as(f32, 0.42), snapped.x);
+    try std.testing.expectEqual(@as(f32, 0.13), snapped.y);
+}
+
+test "snapEmAdvanceToPixels keeps integer pixel advances unchanged" {
+    const ppem = tt_hint.HintPpem.uniform(20 * 64); // 20 px/em
+    // 0.5 em * 20 = 10 px (already integer) → stays 0.5 em
+    const snapped = snapEmAdvanceToPixels(.{ .x = 0.5, .y = 1.0 }, ppem);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), snapped.x, 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), snapped.y, 1e-6);
 }
