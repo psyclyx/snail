@@ -67,7 +67,7 @@ const sample_size: f32 = 16.0;
 const sample_baseline: f32 = 196.0;
 
 fn appendText(
-    builder: *snail.TextBlobBuilder,
+    bip: snail.BlobInProgress,
     style: snail.FontStyle,
     text: []const u8,
     x: f32,
@@ -75,11 +75,11 @@ fn appendText(
     em: f32,
     color: [4]f32,
 ) !snail.TextAppendResult {
-    return appendPaintedText(builder, style, text, x, y, em, .{ .solid = color });
+    return appendPaintedText(bip, style, text, x, y, em, .{ .solid = color });
 }
 
 fn appendPaintedText(
-    builder: *snail.TextBlobBuilder,
+    bip: snail.BlobInProgress,
     style: snail.FontStyle,
     text: []const u8,
     x: f32,
@@ -87,19 +87,19 @@ fn appendPaintedText(
     em: f32,
     paint: snail.Paint,
 ) !snail.TextAppendResult {
-    var shaped = try builder.atlas.shapeText(builder.allocator, style, text);
+    var shaped = try bip.bundle.atlas.shapeText(bip.bundle.gpa, style, text);
     defer shaped.deinit();
-    return builder.append(.{
+    return bip.append(.{
         .source = .{ .shaped = shaped.glyphs },
         .placement = .{ .baseline = .{ .x = x, .y = y }, .em = em },
         .fill = paint,
     });
 }
 
-pub fn buildTextBlob(builder: *snail.TextBlobBuilder) !void {
+pub fn buildTextBlob(bip: snail.BlobInProgress) !void {
     var x = left_pad;
     const advance = try appendPaintedText(
-        builder,
+        bip,
         .{ .weight = .bold },
         "snail",
         x,
@@ -115,7 +115,7 @@ pub fn buildTextBlob(builder: *snail.TextBlobBuilder) !void {
     x += advance.advance.x;
 
     _ = try appendText(
-        builder,
+        bip,
         .{},
         "GPU text and vector rendering",
         left_pad,
@@ -135,10 +135,10 @@ pub fn buildTextBlob(builder: *snail.TextBlobBuilder) !void {
     var sx = left_pad;
     for (samples, 0..) |sample, i| {
         if (i != 0) {
-            const sep = try appendText(builder, .{}, " · ", sx, sample_baseline, sample_size, sep_color);
+            const sep = try appendText(bip, .{}, " · ", sx, sample_baseline, sample_size, sep_color);
             sx += sep.advance.x;
         }
-        const result = try appendText(builder, .{}, sample, sx, sample_baseline, sample_size, sample_color);
+        const result = try appendText(bip, .{}, sample, sx, sample_baseline, sample_size, sample_color);
         sx += result.advance.x;
     }
 }

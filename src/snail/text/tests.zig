@@ -11,6 +11,8 @@ const TextAppendResult = snail.TextAppendResult;
 const TextAtlas = snail.TextAtlas;
 const TextBatch = snail.TextBatch;
 const TextBlobBuilder = snail.TextBlobBuilder;
+const TextBlobBundle = snail.TextBlobBundle;
+const BlobInProgress = snail.BlobInProgress;
 
 const testing = std.testing;
 

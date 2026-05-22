@@ -302,7 +302,7 @@ const TextHintBuildContext = struct {
 };
 
 const TextPlacer = struct {
-    builder: *snail.TextBlobBuilder,
+    bip: snail.BlobInProgress,
     snap_step: snail.Vec2,
     hint: ?TextHintBuildContext = null,
 
@@ -332,7 +332,7 @@ const TextPlacer = struct {
         p: TextPlacement,
         paint: snail.Paint,
     ) !snail.TextAppendResult {
-        var shaped = try self.builder.atlas.shapeText(self.builder.allocator, style, string);
+        var shaped = try self.bip.bundle.atlas.shapeText(self.bip.bundle.gpa, style, string);
         defer shaped.deinit();
 
         if (self.hint) |hint_context| {
@@ -355,7 +355,7 @@ const TextPlacer = struct {
         p: TextPlacement,
         paint: snail.Paint,
     ) !snail.TextAppendResult {
-        return self.builder.append(.{
+        return self.bip.append(.{
             .source = .{ .shaped = shaped.glyphs },
             .placement = .{ .baseline = .{ .x = p.x, .y = p.y }, .em = p.size },
             .fill = paint,
@@ -370,13 +370,13 @@ const TextPlacer = struct {
         color: [4]f32,
     ) !snail.TextAppendResult {
         const ppem_26_6 = try hintPpem26_6(p.size, hint_context.ppem_scale);
-        var run = try hint_context.context.prepareRun(self.builder.allocator, .{
+        var run = try hint_context.context.prepareRun(self.bip.bundle.gpa, .{
             .shaped = shaped,
             .ppem = snail.TrueTypeHintPpem.uniform(ppem_26_6),
         });
         defer run.deinit();
 
-        return self.builder.append(.{
+        return self.bip.append(.{
             .source = .{ .hinted = run.glyphs },
             .placement = .{ .baseline = .{ .x = p.x, .y = p.y }, .em = p.size },
             .fill = .{ .solid = color },
@@ -418,7 +418,7 @@ fn hintPpem26_6(font_size: f32, ppem_scale: f32) !u32 {
 
 /// Build the demo's prepared text blob and collect decoration rects.
 pub fn buildTextBlob(
-    builder: *snail.TextBlobBuilder,
+    bip: snail.BlobInProgress,
     layout: Layout,
     snap_step: snail.Vec2,
     fonts: *const snail.TextAtlas,
@@ -434,7 +434,7 @@ pub fn buildTextBlob(
     else
         null;
 
-    const placer = TextPlacer{ .builder = builder, .snap_step = snap_step, .hint = hint_build_context };
+    const placer = TextPlacer{ .bip = bip, .snap_step = snap_step, .hint = hint_build_context };
     const s = layout.scale;
     const pad = card_pad * s;
     const label_size = heading_size * s;

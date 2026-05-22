@@ -106,12 +106,12 @@ pub fn buildPathPicture(allocator: Allocator, layout: demo_banner.Layout, assets
 }
 
 /// Build the demo's prepared text blob and collect decoration rects.
-pub fn buildTextBlob(builder: *snail.TextBlobBuilder, layout: demo_banner.Layout, snap_step: snail.Vec2, assets_ref: *const Assets, decoration_rects: []snail.Rect) demo_banner.TextBuildResult {
-    return buildTextBlobWithHinting(builder, layout, snap_step, assets_ref, null, decoration_rects, .{});
+pub fn buildTextBlob(bip: snail.BlobInProgress, layout: demo_banner.Layout, snap_step: snail.Vec2, assets_ref: *const Assets, decoration_rects: []snail.Rect) demo_banner.TextBuildResult {
+    return buildTextBlobWithHinting(bip, layout, snap_step, assets_ref, null, decoration_rects, .{});
 }
 
 pub fn buildTextBlobWithHinting(
-    builder: *snail.TextBlobBuilder,
+    bip: snail.BlobInProgress,
     layout: demo_banner.Layout,
     snap_step: snail.Vec2,
     assets_ref: *const Assets,
@@ -119,5 +119,5 @@ pub fn buildTextBlobWithHinting(
     decoration_rects: []snail.Rect,
     hint_options: demo_banner.TextHintOptions,
 ) demo_banner.TextBuildResult {
-    return demo_banner.buildTextBlob(builder, layout, snap_step, &assets_ref.fonts, hint_context, &assets_ref.paint_image, decoration_rects, hint_options) catch .{ .decoration_count = 0, .missing = false };
+    return demo_banner.buildTextBlob(bip, layout, snap_step, &assets_ref.fonts, hint_context, &assets_ref.paint_image, decoration_rects, hint_options) catch .{ .decoration_count = 0, .missing = false };
 }

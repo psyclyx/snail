@@ -105,25 +105,26 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     for (text_lines) |line| try ensureText(&atlas, .{}, line.text);
 
-    var blob_builder = snail.TextBlobBuilder.init(arena, &atlas);
-    defer blob_builder.deinit();
+    var bundle = snail.TextBlobBundle.init(arena, &atlas);
+    defer bundle.deinit();
 
-    var blobs = try arena.alloc(snail.TextBlob, text_lines.len);
+    const blobs = try arena.alloc(*const snail.TextBlob, text_lines.len);
     for (text_lines, 0..) |line, i| {
         var shaped = try atlas.shapeText(arena, .{}, line.text);
         defer shaped.deinit();
-        var local_builder = snail.TextBlobBuilder.init(arena, &atlas);
-        _ = try local_builder.append(.{
+        var bip = try bundle.startBlob();
+        errdefer bip.abort();
+        _ = try bip.append(.{
             .source = .{ .shaped = shaped.glyphs },
             .placement = .{ .baseline = .{ .x = line.x, .y = line.y }, .em = line.size },
             .fill = .{ .solid = line.color },
         });
-        blobs[i] = try local_builder.finish();
+        blobs[i] = try bip.finish(textResourceKey(i));
     }
 
     var scene = snail.Scene.init(arena);
     defer scene.deinit();
-    for (blobs, 0..) |*blob, i| {
+    for (blobs, 0..) |blob, i| {
         try scene.addText(.{ .blob = blob, .resources = blob.resourceKeys(snail.ResourceKey.named("fonts"), textResourceKey(i)) });
     }
 

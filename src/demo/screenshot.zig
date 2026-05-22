@@ -140,23 +140,24 @@ fn renderCompactBanner(allocator: std.mem.Allocator) !void {
     const h: f32 = @floatFromInt(SCREENSHOT_HEIGHT);
     const projection = snail.Mat4.ortho(0, w, h, 0, -1, 1);
 
-    var builder = snail.TextBlobBuilder.init(allocator, &scene_assets.fonts);
-    defer builder.deinit();
-    try compact_scene.buildTextBlob(&builder);
-    var text_blob = try builder.finish();
-    defer text_blob.deinit();
+    var text_bundle = snail.TextBlobBundle.init(allocator, &scene_assets.fonts);
+    defer text_bundle.deinit();
+    var bip = try text_bundle.startBlob();
+    errdefer bip.abort();
+    try compact_scene.buildTextBlob(bip);
+    const text_blob = try bip.finish(snail.ResourceKey.named("compact_text"));
 
     var path_picture = try compact_scene.buildPathPicture(allocator);
     defer path_picture.deinit();
     var resource_entries: [8]snail.ResourceManifest.Entry = undefined;
     var resources = snail.ResourceManifest.init(&resource_entries);
     try resources.putPathPicture(snail.ResourceKey.named("compact_paths"), &path_picture);
-    const text_keys = try declareTextBlobResources(&resources, snail.ResourceKey.named("compact_fonts"), snail.ResourceKey.named("compact_text"), &text_blob);
+    const text_keys = try declareTextBlobResources(&resources, snail.ResourceKey.named("compact_fonts"), snail.ResourceKey.named("compact_text"), text_blob);
 
     var scene = snail.Scene.init(allocator);
     defer scene.deinit();
     try scene.addPath(.{ .picture = &path_picture, .resource_key = snail.ResourceKey.named("compact_paths") });
-    try scene.addText(.{ .blob = &text_blob, .resources = text_keys });
+    try scene.addText(.{ .blob = text_blob, .resources = text_keys });
     var prepared = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &resources);
     defer prepared.deinit();
 
@@ -220,11 +221,13 @@ fn renderRepro(allocator: std.mem.Allocator) !void {
     var hint_context = snail.TrueTypeHintContext.init(allocator, &scene_assets.fonts);
     defer hint_context.deinit();
 
-    var builder = snail.TextBlobBuilder.init(allocator, &scene_assets.fonts);
-    defer builder.deinit();
+    var text_bundle = snail.TextBlobBundle.init(allocator, &scene_assets.fonts);
+    defer text_bundle.deinit();
+    var bip = try text_bundle.startBlob();
+    errdefer bip.abort();
     var dec_rects: [8]snail.Rect = undefined;
     const text_result = demo_scene.buildTextBlobWithHinting(
-        &builder,
+        bip,
         layout,
         snap_step,
         &scene_assets,
@@ -232,20 +235,19 @@ fn renderRepro(allocator: std.mem.Allocator) !void {
         &dec_rects,
         .{ .enabled = hint_enabled, .ppem_scale = hint_ppem_scale },
     );
-    var text_blob = try builder.finish();
-    defer text_blob.deinit();
+    const text_blob = try bip.finish(snail.ResourceKey.named("repro_text"));
 
     var path_picture = try demo_scene.buildPathPicture(allocator, layout, &scene_assets, dec_rects[0..text_result.decoration_count]);
     defer path_picture.deinit();
     var resource_entries: [8]snail.ResourceManifest.Entry = undefined;
     var resources = snail.ResourceManifest.init(&resource_entries);
     try resources.putPathPicture(snail.ResourceKey.named("repro_paths"), &path_picture);
-    const text_keys = try declareTextBlobResources(&resources, snail.ResourceKey.named("repro_fonts"), snail.ResourceKey.named("repro_text"), &text_blob);
+    const text_keys = try declareTextBlobResources(&resources, snail.ResourceKey.named("repro_fonts"), snail.ResourceKey.named("repro_text"), text_blob);
 
     var scene = snail.Scene.init(allocator);
     defer scene.deinit();
     try scene.addPath(.{ .picture = &path_picture, .resource_key = snail.ResourceKey.named("repro_paths") });
-    try scene.addText(.{ .blob = &text_blob, .resources = text_keys });
+    try scene.addText(.{ .blob = text_blob, .resources = text_keys });
     var prepared = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &resources);
     defer prepared.deinit();
 

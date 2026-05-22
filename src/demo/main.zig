@@ -253,8 +253,9 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
 
     var path_picture: ?snail.PathPicture = null;
     defer if (path_picture) |*picture| picture.deinit();
-    var text_blob: ?snail.TextBlob = null;
-    defer if (text_blob) |*blob| blob.deinit();
+    var text_bundle = snail.TextBlobBundle.init(allocator, &scene_assets.fonts);
+    defer text_bundle.deinit();
+    var text_blob: ?*const snail.TextBlob = null;
     var scene = snail.Scene.init(allocator);
     defer scene.deinit();
     var prepared: ?snail.PreparedResources = null;
@@ -386,22 +387,22 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
                 picture.deinit();
                 path_picture = null;
             }
-            if (text_blob) |*blob| {
-                blob.deinit();
+            if (text_blob != null) {
+                text_bundle.reset();
                 text_blob = null;
             }
 
-            var builder = snail.TextBlobBuilder.init(allocator, &scene_assets.fonts);
-            defer builder.deinit();
+            var bip = try text_bundle.startBlob();
+            errdefer bip.abort();
             var dec_rects: [8]snail.Rect = undefined;
-            const text_result = demo_banner_scene.buildTextBlobWithHinting(&builder, layout, snap_step, &scene_assets, &hint_context, &dec_rects, .{
+            const text_result = demo_banner_scene.buildTextBlobWithHinting(bip, layout, snap_step, &scene_assets, &hint_context, &dec_rects, .{
                 .enabled = hint_active,
                 .ppem_scale = hint_scale,
             });
 
-            text_blob = try builder.finish();
-            uploaded_total_glyphs = if (text_blob) |*blob| blob.glyphCount() else 0;
-            uploaded_hint_glyphs = if (text_blob) |*blob| hintedGlyphCount(blob) else 0;
+            text_blob = try bip.finish(snail.ResourceKey.named("banner_text"));
+            uploaded_total_glyphs = if (text_blob) |blob| blob.glyphCount() else 0;
+            uploaded_hint_glyphs = if (text_blob) |blob| hintedGlyphCount(blob) else 0;
             path_picture = try demo_banner_scene.buildPathPicture(allocator, layout, &scene_assets, dec_rects[0..text_result.decoration_count]);
             uploaded_size = size_key;
             uploaded_hint_active = hint_active;
@@ -416,14 +417,14 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
             var resource_entries: [8]snail.ResourceManifest.Entry = undefined;
             var resources = snail.ResourceManifest.init(&resource_entries);
             if (path_picture) |*picture| try resources.putPathPicture(snail.ResourceKey.named("banner_paths"), picture);
-            const text_keys = if (text_blob) |*blob| keys: {
+            const text_keys = if (text_blob) |blob| keys: {
                 const keys = try declareTextBlobResources(&resources, snail.ResourceKey.named("banner_fonts"), snail.ResourceKey.named("banner_text"), blob);
                 break :keys keys;
             } else null;
 
             scene.reset();
             if (path_picture) |*picture| try scene.addPath(.{ .picture = picture, .resource_key = snail.ResourceKey.named("banner_paths") });
-            if (text_blob) |*blob| try scene.addText(.{ .blob = blob, .resources = text_keys.? });
+            if (text_blob) |blob| try scene.addText(.{ .blob = blob, .resources = text_keys.? });
             var renderer = active.renderer();
             prepared = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &resources);
         }

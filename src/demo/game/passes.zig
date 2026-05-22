@@ -10,20 +10,18 @@ pub const PreparedPass = struct {
     allocator: std.mem.Allocator,
     picture: ?*snail.PathPicture = null,
     path_key: ?snail.ResourceKey = null,
-    text: *snail.TextBlob,
+    text_bundle: *snail.TextBlobBundle,
+    text: *const snail.TextBlob,
     text_resources: snail.TextResourceKeys,
     scene: snail.Scene,
 
     pub fn init(
         allocator: std.mem.Allocator,
         comptime name: []const u8,
-        text: snail.TextBlob,
+        text_bundle: *snail.TextBlobBundle,
+        text: *const snail.TextBlob,
         picture: ?snail.PathPicture,
     ) !PreparedPass {
-        const owned_text = try allocator.create(snail.TextBlob);
-        errdefer allocator.destroy(owned_text);
-        owned_text.* = text;
-
         var owned_picture: ?*snail.PathPicture = null;
         if (picture) |value| {
             owned_picture = try allocator.create(snail.PathPicture);
@@ -32,20 +30,19 @@ pub const PreparedPass = struct {
         }
 
         const text_blob_key = snail.ResourceKey.fromName(name ++ ".text");
-        const text_resources = owned_text.resourceKeys(snail.ResourceKey.named("game_fonts"), text_blob_key);
+        const text_resources = text.resourceKeys(snail.ResourceKey.named("game_fonts"), text_blob_key);
 
         var pass = PreparedPass{
             .allocator = allocator,
             .picture = owned_picture,
             .path_key = if (owned_picture != null) snail.ResourceKey.named(name ++ ".path") else null,
-            .text = owned_text,
+            .text_bundle = text_bundle,
+            .text = text,
             .text_resources = text_resources,
             .scene = snail.Scene.init(allocator),
         };
         errdefer {
             pass.scene.deinit();
-            pass.text.deinit();
-            allocator.destroy(pass.text);
             if (pass.picture) |owned_picture_ptr| {
                 owned_picture_ptr.deinit();
                 allocator.destroy(owned_picture_ptr);
@@ -59,8 +56,8 @@ pub const PreparedPass = struct {
 
     pub fn deinit(self: *PreparedPass) void {
         self.scene.deinit();
-        self.text.deinit();
-        self.allocator.destroy(self.text);
+        self.text_bundle.deinit();
+        self.allocator.destroy(self.text_bundle);
         if (self.picture) |picture| {
             picture.deinit();
             self.allocator.destroy(picture);
@@ -199,7 +196,7 @@ fn measureTextWidth(
 }
 
 fn appendText(
-    builder: *snail.TextBlobBuilder,
+    bip: snail.BlobInProgress,
     style: snail.FontStyle,
     text: []const u8,
     x: f32,
@@ -207,11 +204,11 @@ fn appendText(
     em: f32,
     color: [4]f32,
 ) !snail.TextAppendResult {
-    return appendPaintedText(builder, style, text, x, y, em, .{ .solid = color });
+    return appendPaintedText(bip, style, text, x, y, em, .{ .solid = color });
 }
 
 fn appendPaintedText(
-    builder: *snail.TextBlobBuilder,
+    bip: snail.BlobInProgress,
     style: snail.FontStyle,
     text: []const u8,
     x: f32,
@@ -219,13 +216,20 @@ fn appendPaintedText(
     em: f32,
     paint: snail.Paint,
 ) !snail.TextAppendResult {
-    var shaped = try builder.atlas.shapeText(builder.allocator, style, text);
+    var shaped = try bip.bundle.atlas.shapeText(bip.bundle.gpa, style, text);
     defer shaped.deinit();
-    return builder.append(.{
+    return bip.append(.{
         .source = .{ .shaped = shaped.glyphs },
         .placement = .{ .baseline = .{ .x = x, .y = y }, .em = em },
         .fill = paint,
     });
+}
+
+fn newTextBundle(allocator: std.mem.Allocator, fonts: *snail.TextAtlas) !*snail.TextBlobBundle {
+    const bundle = try allocator.create(snail.TextBlobBundle);
+    errdefer allocator.destroy(bundle);
+    bundle.* = snail.TextBlobBundle.init(allocator, fonts);
+    return bundle;
 }
 
 fn max3(a: f32, b: f32, c: f32) f32 {
@@ -237,17 +241,22 @@ fn max4(a: f32, b: f32, c: f32, d: f32) f32 {
 }
 
 fn buildHudPlainPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas, window_w: u32) !PreparedPass {
-    var builder = snail.TextBlobBuilder.init(allocator, fonts);
-    defer builder.deinit();
+    const bundle = try newTextBundle(allocator, fonts);
+    errdefer {
+        bundle.deinit();
+        allocator.destroy(bundle);
+    }
+    var bip = try bundle.startBlob();
+    errdefer bip.abort();
 
     const x = 34.0;
-    _ = try appendText(&builder, .{ .weight = .bold }, "HUD text / no backing", x, 52.0, 22.0, .{ 1, 1, 1, 1 });
-    _ = try appendText(&builder, .{}, "WASD move  QE rise  Arrows look  R reset", x, 84.0, 17.0, .{ 0.86, 0.90, 0.96, 1.0 });
-    _ = try appendText(&builder, .{}, "Final pixels, but no opaque backdrop under the glyphs.", x, 108.0, 15.0, .{ 0.68, 0.75, 0.84, 1.0 });
-    const text = try builder.finish();
+    _ = try appendText(bip, .{ .weight = .bold }, "HUD text / no backing", x, 52.0, 22.0, .{ 1, 1, 1, 1 });
+    _ = try appendText(bip, .{}, "WASD move  QE rise  Arrows look  R reset", x, 84.0, 17.0, .{ 0.86, 0.90, 0.96, 1.0 });
+    _ = try appendText(bip, .{}, "Final pixels, but no opaque backdrop under the glyphs.", x, 108.0, 15.0, .{ 0.68, 0.75, 0.84, 1.0 });
+    const text = try bip.finish(snail.ResourceKey.named("hud_plain.text"));
 
     _ = window_w;
-    return PreparedPass.init(allocator, "hud_plain", text, null);
+    return PreparedPass.init(allocator, "hud_plain", bundle, text, null);
 }
 
 fn buildHudTranslucentPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas, window_w: u32) !PreparedPass {
@@ -296,15 +305,20 @@ fn buildHudTranslucentPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas
     var picture = try path_builder.freeze(.{ .persistent_allocator = allocator, .scratch_allocator = allocator });
     errdefer picture.deinit();
 
-    var builder = snail.TextBlobBuilder.init(allocator, fonts);
-    defer builder.deinit();
+    const bundle = try newTextBundle(allocator, fonts);
+    errdefer {
+        bundle.deinit();
+        allocator.destroy(bundle);
+    }
+    var bip = try bundle.startBlob();
+    errdefer bip.abort();
     const tx = rect.x + pad_x;
-    _ = try appendText(&builder, .{ .weight = .bold }, title, tx, rect.y + pad_y + title_size, title_size, .{ 0.97, 0.99, 1.0, 1.0 });
-    _ = try appendText(&builder, .{}, body, tx, rect.y + pad_y + title_size + 30.0, body_size, .{ 0.88, 0.94, 0.98, 1.0 });
-    _ = try appendText(&builder, .{}, note, tx, rect.y + pad_y + title_size + 54.0, note_size, .{ 0.73, 0.82, 0.90, 1.0 });
-    const text = try builder.finish();
+    _ = try appendText(bip, .{ .weight = .bold }, title, tx, rect.y + pad_y + title_size, title_size, .{ 0.97, 0.99, 1.0, 1.0 });
+    _ = try appendText(bip, .{}, body, tx, rect.y + pad_y + title_size + 30.0, body_size, .{ 0.88, 0.94, 0.98, 1.0 });
+    _ = try appendText(bip, .{}, note, tx, rect.y + pad_y + title_size + 54.0, note_size, .{ 0.73, 0.82, 0.90, 1.0 });
+    const text = try bip.finish(snail.ResourceKey.named("hud_translucent.text"));
 
-    return PreparedPass.init(allocator, "hud_translucent", text, picture);
+    return PreparedPass.init(allocator, "hud_translucent", bundle, text, picture);
 }
 
 fn buildHudSolidPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas, window_w: u32, _: u32) !PreparedPass {
@@ -353,45 +367,55 @@ fn buildHudSolidPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas, wind
     var picture = try path_builder.freeze(.{ .persistent_allocator = allocator, .scratch_allocator = allocator });
     errdefer picture.deinit();
 
-    var builder = snail.TextBlobBuilder.init(allocator, fonts);
-    defer builder.deinit();
+    const bundle = try newTextBundle(allocator, fonts);
+    errdefer {
+        bundle.deinit();
+        allocator.destroy(bundle);
+    }
+    var bip = try bundle.startBlob();
+    errdefer bip.abort();
     const tx = rect.x + pad_x;
-    _ = try appendText(&builder, .{ .weight = .bold }, title, tx, rect.y + 42.0, title_size, .{ 1.0, 1.0, 1.0, 1.0 });
+    _ = try appendText(bip, .{ .weight = .bold }, title, tx, rect.y + 42.0, title_size, .{ 1.0, 1.0, 1.0, 1.0 });
     var cx = tx;
     const status_y = rect.y + 74.0;
-    cx += (try appendText(&builder, .{}, "HEALTH ", cx, status_y, body_size, .{ 0.78, 0.86, 0.92, 1.0 })).advance.x;
-    cx += (try appendText(&builder, .{ .weight = .bold }, "83", cx, status_y, body_size + 3.0, .{ 0.28, 0.92, 0.50, 1.0 })).advance.x;
-    cx += (try appendText(&builder, .{}, "   AMMO ", cx, status_y, body_size, .{ 0.78, 0.86, 0.92, 1.0 })).advance.x;
-    _ = try appendText(&builder, .{ .weight = .bold }, "42", cx, status_y, body_size + 3.0, .{ 0.98, 0.76, 0.28, 1.0 });
+    cx += (try appendText(bip, .{}, "HEALTH ", cx, status_y, body_size, .{ 0.78, 0.86, 0.92, 1.0 })).advance.x;
+    cx += (try appendText(bip, .{ .weight = .bold }, "83", cx, status_y, body_size + 3.0, .{ 0.28, 0.92, 0.50, 1.0 })).advance.x;
+    cx += (try appendText(bip, .{}, "   AMMO ", cx, status_y, body_size, .{ 0.78, 0.86, 0.92, 1.0 })).advance.x;
+    _ = try appendText(bip, .{ .weight = .bold }, "42", cx, status_y, body_size + 3.0, .{ 0.98, 0.76, 0.28, 1.0 });
 
     cx = tx;
     const link_y = rect.y + 98.0;
-    cx += (try appendText(&builder, .{}, "LINK ", cx, link_y, body_size, .{ 0.78, 0.86, 0.92, 1.0 })).advance.x;
-    cx += (try appendPaintedText(&builder, .{ .weight = .bold }, "SYNCED", cx, link_y, body_size, .{ .linear_gradient = .{
+    cx += (try appendText(bip, .{}, "LINK ", cx, link_y, body_size, .{ 0.78, 0.86, 0.92, 1.0 })).advance.x;
+    cx += (try appendPaintedText(bip, .{ .weight = .bold }, "SYNCED", cx, link_y, body_size, .{ .linear_gradient = .{
         .start = .{ .x = cx, .y = link_y - body_size },
         .end = .{ .x = cx + 74.0, .y = link_y },
         .start_color = .{ 0.22, 0.70, 1.0, 1.0 },
         .end_color = .{ 0.42, 0.94, 0.60, 1.0 },
     } })).advance.x;
-    _ = try appendText(&builder, .{}, " / TEMP NOMINAL", cx, link_y, body_size, .{ 0.78, 0.86, 0.92, 1.0 });
-    _ = try appendText(&builder, .{}, note, tx, rect.y + 124.0, note_size, .{ 0.78, 0.86, 0.92, 1.0 });
-    const text = try builder.finish();
+    _ = try appendText(bip, .{}, " / TEMP NOMINAL", cx, link_y, body_size, .{ 0.78, 0.86, 0.92, 1.0 });
+    _ = try appendText(bip, .{}, note, tx, rect.y + 124.0, note_size, .{ 0.78, 0.86, 0.92, 1.0 });
+    const text = try bip.finish(snail.ResourceKey.named("hud_solid.text"));
 
-    return PreparedPass.init(allocator, "hud_solid", text, picture);
+    return PreparedPass.init(allocator, "hud_solid", bundle, text, picture);
 }
 
 fn buildRoughWallTextPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas) !PlanePass {
     const scene_w = 760.0;
     const scene_h = 300.0;
-    var builder = snail.TextBlobBuilder.init(allocator, fonts);
-    defer builder.deinit();
-    _ = try appendText(&builder, .{ .weight = .bold }, "AUTHORIZED ONLY", 46.0, 118.0, 56.0, .{ 0.06, 0.055, 0.05, 1.0 });
-    _ = try appendText(&builder, .{}, "Text tinted directly onto the normal-mapped wall material.", 46.0, 168.0, 22.0, .{ 0.08, 0.07, 0.06, 0.96 });
-    _ = try appendText(&builder, .{}, "The wall keeps its surface detail; the glyphs are not billboarded.", 46.0, 198.0, 18.0, .{ 0.08, 0.07, 0.06, 0.92 });
-    const text = try builder.finish();
+    const bundle = try newTextBundle(allocator, fonts);
+    errdefer {
+        bundle.deinit();
+        allocator.destroy(bundle);
+    }
+    var bip = try bundle.startBlob();
+    errdefer bip.abort();
+    _ = try appendText(bip, .{ .weight = .bold }, "AUTHORIZED ONLY", 46.0, 118.0, 56.0, .{ 0.06, 0.055, 0.05, 1.0 });
+    _ = try appendText(bip, .{}, "Text tinted directly onto the normal-mapped wall material.", 46.0, 168.0, 22.0, .{ 0.08, 0.07, 0.06, 0.96 });
+    _ = try appendText(bip, .{}, "The wall keeps its surface detail; the glyphs are not billboarded.", 46.0, 198.0, 18.0, .{ 0.08, 0.07, 0.06, 0.92 });
+    const text = try bip.finish(snail.ResourceKey.named("rough_wall.text"));
 
     return .{
-        .prepared = try PreparedPass.init(allocator, "rough_wall", text, null),
+        .prepared = try PreparedPass.init(allocator, "rough_wall", bundle, text, null),
         .scene_width = scene_w,
         .scene_height = scene_h,
         .opaque_backdrop = true,
@@ -422,17 +446,22 @@ fn buildCenterPanelPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas) !
         .h = 278.0,
     };
 
-    var builder = snail.TextBlobBuilder.init(allocator, fonts);
-    defer builder.deinit();
+    const bundle = try newTextBundle(allocator, fonts);
+    errdefer {
+        bundle.deinit();
+        allocator.destroy(bundle);
+    }
+    var bip = try bundle.startBlob();
+    errdefer bip.abort();
     const tx = panel.x + pad_x;
-    _ = try appendText(&builder, .{ .weight = .bold }, kicker, panel.x + 42.0, panel.y + 76.0, kicker_size, .{ 0.10, 0.12, 0.14, 1.0 });
-    _ = try appendText(&builder, .{ .weight = .bold }, title, tx, panel.y + 154.0, title_size, .{ 0.93, 0.96, 0.96, 1.0 });
-    _ = try appendText(&builder, .{}, body, tx, panel.y + 204.0, body_size, .{ 0.82, 0.87, 0.88, 1.0 });
-    _ = try appendText(&builder, .{}, note, tx, panel.y + 236.0, note_size, .{ 0.66, 0.72, 0.75, 1.0 });
-    const text = try builder.finish();
+    _ = try appendText(bip, .{ .weight = .bold }, kicker, panel.x + 42.0, panel.y + 76.0, kicker_size, .{ 0.10, 0.12, 0.14, 1.0 });
+    _ = try appendText(bip, .{ .weight = .bold }, title, tx, panel.y + 154.0, title_size, .{ 0.93, 0.96, 0.96, 1.0 });
+    _ = try appendText(bip, .{}, body, tx, panel.y + 204.0, body_size, .{ 0.82, 0.87, 0.88, 1.0 });
+    _ = try appendText(bip, .{}, note, tx, panel.y + 236.0, note_size, .{ 0.66, 0.72, 0.75, 1.0 });
+    const text = try bip.finish(snail.ResourceKey.named("center_panel.text"));
 
     return .{
-        .prepared = try PreparedPass.init(allocator, "center_panel", text, null),
+        .prepared = try PreparedPass.init(allocator, "center_panel", bundle, text, null),
         .scene_width = scene_w,
         .scene_height = scene_h,
         .opaque_backdrop = true,
@@ -481,16 +510,21 @@ fn buildGlassPass(allocator: std.mem.Allocator, fonts: *snail.TextAtlas) !PlaneP
     var picture = try path_builder.freeze(.{ .persistent_allocator = allocator, .scratch_allocator = allocator });
     errdefer picture.deinit();
 
-    var builder = snail.TextBlobBuilder.init(allocator, fonts);
-    defer builder.deinit();
+    const bundle = try newTextBundle(allocator, fonts);
+    errdefer {
+        bundle.deinit();
+        allocator.destroy(bundle);
+    }
+    var bip = try bundle.startBlob();
+    errdefer bip.abort();
     const tx = rect.x + pad_x;
-    _ = try appendText(&builder, .{ .weight = .bold }, title, tx, rect.y + 72.0, 42.0, .{ 0.92, 0.98, 1.0, 0.78 });
-    _ = try appendText(&builder, .{}, body, tx, rect.y + 114.0, 21.0, .{ 0.84, 0.93, 0.98, 0.74 });
-    _ = try appendText(&builder, .{}, note, tx, rect.y + 144.0, 16.0, .{ 0.72, 0.84, 0.92, 0.70 });
-    const text = try builder.finish();
+    _ = try appendText(bip, .{ .weight = .bold }, title, tx, rect.y + 72.0, 42.0, .{ 0.92, 0.98, 1.0, 0.78 });
+    _ = try appendText(bip, .{}, body, tx, rect.y + 114.0, 21.0, .{ 0.84, 0.93, 0.98, 0.74 });
+    _ = try appendText(bip, .{}, note, tx, rect.y + 144.0, 16.0, .{ 0.72, 0.84, 0.92, 0.70 });
+    const text = try bip.finish(snail.ResourceKey.named("glass.text"));
 
     return .{
-        .prepared = try PreparedPass.init(allocator, "glass", text, picture),
+        .prepared = try PreparedPass.init(allocator, "glass", bundle, text, picture),
         .scene_width = scene_w,
         .scene_height = scene_h,
         .opaque_backdrop = false,

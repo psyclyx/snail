@@ -119,11 +119,12 @@ fn renderDiagram(
     diagram: Diagram,
     path: [*:0]const u8,
 ) !void {
-    var text_builder = snail.TextBlobBuilder.init(allocator, &scene_assets.fonts);
-    defer text_builder.deinit();
-    try buildDiagramText(&text_builder, diagram);
-    var text_blob = try text_builder.finish();
-    defer text_blob.deinit();
+    var text_bundle = snail.TextBlobBundle.init(allocator, &scene_assets.fonts);
+    defer text_bundle.deinit();
+    var bip = try text_bundle.startBlob();
+    errdefer bip.abort();
+    try buildDiagramText(bip, diagram);
+    const text_blob = try bip.finish(snail.ResourceKey.named("diagram_text"));
 
     var path_builder = snail.PathPictureBuilder.init(allocator);
     defer path_builder.deinit();
@@ -134,12 +135,12 @@ fn renderDiagram(
     var resource_entries: [8]snail.ResourceManifest.Entry = undefined;
     var resources = snail.ResourceManifest.init(&resource_entries);
     try resources.putPathPicture(snail.ResourceKey.named("diagram_paths"), &path_picture);
-    const text_keys = try declareTextBlobResources(&resources, snail.ResourceKey.named("diagram_fonts"), snail.ResourceKey.named("diagram_text"), &text_blob);
+    const text_keys = try declareTextBlobResources(&resources, snail.ResourceKey.named("diagram_fonts"), snail.ResourceKey.named("diagram_text"), text_blob);
 
     var scene = snail.Scene.init(allocator);
     defer scene.deinit();
     try scene.addPath(.{ .picture = &path_picture, .resource_key = snail.ResourceKey.named("diagram_paths") });
-    try scene.addText(.{ .blob = &text_blob, .resources = text_keys });
+    try scene.addText(.{ .blob = text_blob, .resources = text_keys });
     var prepared = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &resources);
     defer prepared.deinit();
 
@@ -192,7 +193,7 @@ fn rect(x: f32, y: f32, w: f32, h: f32) snail.Rect {
 }
 
 fn appendText(
-    builder: *snail.TextBlobBuilder,
+    bip: snail.BlobInProgress,
     style: snail.FontStyle,
     text: []const u8,
     x: f32,
@@ -200,9 +201,9 @@ fn appendText(
     em: f32,
     color: [4]f32,
 ) !void {
-    var shaped = try builder.atlas.shapeText(builder.allocator, style, text);
+    var shaped = try bip.bundle.atlas.shapeText(bip.bundle.gpa, style, text);
     defer shaped.deinit();
-    _ = try builder.append(.{
+    _ = try bip.append(.{
         .source = .{ .shaped = shaped.glyphs },
         .placement = .{ .baseline = .{ .x = x, .y = y }, .em = em },
         .fill = .{ .solid = color },
@@ -268,54 +269,54 @@ fn innerRect(r: snail.Rect, pad_x: f32, pad_y: f32) snail.Rect {
     return rect(r.x + pad_x, r.y + pad_y, r.w - pad_x * 2, r.h - pad_y * 2);
 }
 
-fn buildDiagramText(builder: *snail.TextBlobBuilder, diagram: Diagram) !void {
+fn buildDiagramText(bip: snail.BlobInProgress, diagram: Diagram) !void {
     switch (diagram) {
         .prep_curves => {
-            try appendText(builder, .{ .weight = .bold }, "1. Store curves", Layout.title_x, Layout.title_baseline, Layout.title_size, ink);
-            try appendText(builder, .{}, "outline", 38, 60, 12, ink);
-            try appendText(builder, .{}, "curve record", 202, 60, 12, ink);
+            try appendText(bip, .{ .weight = .bold }, "1. Store curves", Layout.title_x, Layout.title_baseline, Layout.title_size, ink);
+            try appendText(bip, .{}, "outline", 38, 60, 12, ink);
+            try appendText(bip, .{}, "curve record", 202, 60, 12, ink);
         },
         .prep_bands => {
-            try appendText(builder, .{ .weight = .bold }, "2. Build bands", Layout.title_x, Layout.title_baseline, Layout.title_size, ink);
-            try appendText(builder, .{}, "bands", 55, 60, 12, ink);
-            try appendText(builder, .{}, "band lists", 209, 60, 12, ink);
+            try appendText(bip, .{ .weight = .bold }, "2. Build bands", Layout.title_x, Layout.title_baseline, Layout.title_size, ink);
+            try appendText(bip, .{}, "bands", 55, 60, 12, ink);
+            try appendText(bip, .{}, "band lists", 209, 60, 12, ink);
         },
         .draw_quad => {
-            try appendText(builder, .{ .weight = .bold }, "3. Draw quads", Layout.title_x, Layout.title_baseline, Layout.title_size, ink);
-            try appendText(builder, .{}, "bounds quad", 36, 60, 12, ink);
-            try appendText(builder, .{}, "local coords", 204, 60, 12, ink);
+            try appendText(bip, .{ .weight = .bold }, "3. Draw quads", Layout.title_x, Layout.title_baseline, Layout.title_size, ink);
+            try appendText(bip, .{}, "bounds quad", 36, 60, 12, ink);
+            try appendText(bip, .{}, "local coords", 204, 60, 12, ink);
         },
         .sample_bands => {
-            try appendText(builder, .{ .weight = .bold }, "4. Pick bands", Layout.title_x, Layout.title_baseline, Layout.title_size, ink);
-            try appendText(builder, .{}, "sample", 50, 60, 12, ink);
-            try appendText(builder, .{}, "candidates", 206, 60, 12, ink);
+            try appendText(bip, .{ .weight = .bold }, "4. Pick bands", Layout.title_x, Layout.title_baseline, Layout.title_size, ink);
+            try appendText(bip, .{}, "sample", 50, 60, 12, ink);
+            try appendText(bip, .{}, "candidates", 206, 60, 12, ink);
         },
         .solve_roots => {
-            try appendText(builder, .{ .weight = .bold }, "5. Solve roots", Layout.title_x, Layout.title_baseline, Layout.title_size, ink);
-            try appendText(builder, .{}, "ray roots", 54, 60, 12, ink);
-            try appendText(builder, .{}, "h roots", 222, 78, 11, rose);
-            try appendText(builder, .{}, "v roots", 222, 123, 11, teal);
+            try appendText(bip, .{ .weight = .bold }, "5. Solve roots", Layout.title_x, Layout.title_baseline, Layout.title_size, ink);
+            try appendText(bip, .{}, "ray roots", 54, 60, 12, ink);
+            try appendText(bip, .{}, "h roots", 222, 78, 11, rose);
+            try appendText(bip, .{}, "v roots", 222, 123, 11, teal);
         },
         .winding => {
-            try appendText(builder, .{ .weight = .bold }, "6. Add winding", Layout.title_x, Layout.title_baseline, Layout.title_size, ink);
-            try appendText(builder, .{}, "signed roots", 52, 60, 12, ink);
-            try appendText(builder, .{}, "winding", 226, 60, 12, ink);
-            try appendText(builder, .{ .weight = .bold }, "+1", 142, 91, 11, rose);
-            try appendText(builder, .{ .weight = .bold }, "-1", 110, 123, 11, teal);
-            try appendText(builder, .{ .weight = .bold }, "+1", 144, 123, 11, rose);
-            try appendText(builder, .{}, "filled", 214, 92, 11, ink);
-            try appendText(builder, .{}, "w=+1", 259, 92, 11, ink);
-            try appendText(builder, .{}, "hole", 214, 125, 11, ink);
-            try appendText(builder, .{}, "w=0", 263, 125, 11, ink);
+            try appendText(bip, .{ .weight = .bold }, "6. Add winding", Layout.title_x, Layout.title_baseline, Layout.title_size, ink);
+            try appendText(bip, .{}, "signed roots", 52, 60, 12, ink);
+            try appendText(bip, .{}, "winding", 226, 60, 12, ink);
+            try appendText(bip, .{ .weight = .bold }, "+1", 142, 91, 11, rose);
+            try appendText(bip, .{ .weight = .bold }, "-1", 110, 123, 11, teal);
+            try appendText(bip, .{ .weight = .bold }, "+1", 144, 123, 11, rose);
+            try appendText(bip, .{}, "filled", 214, 92, 11, ink);
+            try appendText(bip, .{}, "w=+1", 259, 92, 11, ink);
+            try appendText(bip, .{}, "hole", 214, 125, 11, ink);
+            try appendText(bip, .{}, "w=0", 263, 125, 11, ink);
         },
         .fill_alpha => {
-            try appendText(builder, .{ .weight = .bold }, "7. Fill alpha", Layout.title_x, Layout.title_baseline, Layout.title_size, ink);
-            try appendText(builder, .{}, "fill rule", 48, 60, 12, ink);
-            try appendText(builder, .{}, "alpha", 230, 60, 12, ink);
-            try appendText(builder, .{}, "w=+1  fill", 61, 88, 11, ink);
-            try appendText(builder, .{}, "w=0  empty", 61, 116, 11, ink);
-            try appendText(builder, .{}, "edge  0..1", 61, 144, 11, ink);
-            try appendText(builder, .{}, "alpha 0.58", 222, 146, 11, ink);
+            try appendText(bip, .{ .weight = .bold }, "7. Fill alpha", Layout.title_x, Layout.title_baseline, Layout.title_size, ink);
+            try appendText(bip, .{}, "fill rule", 48, 60, 12, ink);
+            try appendText(bip, .{}, "alpha", 230, 60, 12, ink);
+            try appendText(bip, .{}, "w=+1  fill", 61, 88, 11, ink);
+            try appendText(bip, .{}, "w=0  empty", 61, 116, 11, ink);
+            try appendText(bip, .{}, "edge  0..1", 61, 144, 11, ink);
+            try appendText(bip, .{}, "alpha 0.58", 222, 146, 11, ink);
         },
     }
 }
