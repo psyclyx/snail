@@ -393,6 +393,8 @@ typedef struct {
 
 typedef struct {
     size_t glyph_count;
+    size_t hinted_count;
+    size_t fallback_count;
     float advance_x, advance_y;
 } SnailTrueTypeHintRunStats;
 
@@ -521,43 +523,46 @@ int snail_text_blob_builder_append_shaped(SnailTextBlobBuilder *builder,
                                           SnailRange glyphs,
                                           SnailTextAppendOptions options,
                                           SnailTextAppendResult *out_result);
-int snail_text_blob_builder_append_prepared_hinted_run(SnailTextBlobBuilder *builder,
-                                                       const SnailTrueTypePreparedHintRun *run,
-                                                       SnailTextPlacement placement,
-                                                       const float color[4],
-                                                       SnailTextAppendResult *out_result);
+int snail_text_blob_builder_append_prepared_hint_run(SnailTextBlobBuilder *builder,
+                                                     const SnailTrueTypePreparedHintRun *run,
+                                                     SnailTextPlacement placement,
+                                                     const float color[4],
+                                                     SnailTextAppendResult *out_result);
 int snail_text_blob_builder_finish(SnailTextBlobBuilder *builder,
                                    SnailTextBlob **out);
 
 /* Explicit TrueType hinting for grid-fitted small text. Prepared hint runs
- * borrow the hint context cache and atlas snapshot until appended or destroyed.
- * Functions return SNAIL_ERR_HINT_UNAVAILABLE when a font/glyph cannot be
- * represented as reusable hinted curve deltas; callers should fall back to the
- * normal unhinted text path. */
+ * cover every glyph of the source shaped text; each glyph in the result
+ * carries either a hint pointer or a fallback marker. Callers wanting strict
+ * all-or-nothing semantics should check `stats.fallback_count == 0` before
+ * consuming the run. `prepare_size` returns SNAIL_ERR_HINT_UNAVAILABLE when a
+ * face has no TrueType program. */
 SnailTrueTypeHintPpem snail_true_type_hint_ppem_uniform(uint32_t ppem_26_6);
 int snail_true_type_hint_context_init(const SnailAllocator *alloc,
                                       const SnailTextAtlas *atlas,
                                       SnailTrueTypeHintContext **out);
 void snail_true_type_hint_context_deinit(SnailTrueTypeHintContext *context);
-void snail_true_type_hint_context_reset_for_atlas(SnailTrueTypeHintContext *context,
-                                                 const SnailTextAtlas *atlas);
+/* Rebind to a new atlas snapshot. If the new snapshot extends the current one
+ * (same config, prefix-identical pages), the cached hint values, face
+ * programs, and size states are preserved; otherwise the cache is cleared. */
+void snail_true_type_hint_context_rebind_atlas(SnailTrueTypeHintContext *context,
+                                               const SnailTextAtlas *atlas);
 int snail_true_type_hint_context_prepare_size(SnailTrueTypeHintContext *context,
                                              size_t face_index,
                                              SnailTrueTypeHintPpem ppem);
 int snail_true_type_hint_context_prepare_run(SnailTrueTypeHintContext *context,
                                             const SnailAllocator *alloc,
                                             const SnailShapedText *shaped,
-                                            SnailRange glyphs,
                                             SnailTrueTypeHintPpem ppem,
                                             SnailTrueTypePreparedHintRun **out);
 void snail_true_type_prepared_hint_run_deinit(SnailTrueTypePreparedHintRun *run);
 void snail_true_type_prepared_hint_run_stats(const SnailTrueTypePreparedHintRun *run,
                                              SnailTrueTypeHintRunStats *out);
-int snail_text_blob_init_from_prepared_hinted_run(const SnailAllocator *alloc,
-                                                  const SnailTrueTypePreparedHintRun *run,
-                                                  SnailTextPlacement placement,
-                                                  const float color[4],
-                                                  SnailTextBlob **out);
+int snail_text_blob_init_from_prepared_hint_run(const SnailAllocator *alloc,
+                                                const SnailTrueTypePreparedHintRun *run,
+                                                SnailTextPlacement placement,
+                                                const float color[4],
+                                                SnailTextBlob **out);
 
 int snail_text_blob_init_from_shaped(const SnailAllocator *alloc,
                                      const SnailTextAtlas *atlas,

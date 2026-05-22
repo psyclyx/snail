@@ -462,6 +462,8 @@ pub fn toTrueTypeHintPpem(ppem: SnailTrueTypeHintPpem) snail.TrueTypeHintPpem {
 pub fn fromTrueTypeHintRunStats(stats: snail.TrueTypeHintRunStats) SnailTrueTypeHintRunStats {
     return .{
         .glyph_count = stats.glyph_count,
+        .hinted_count = stats.hinted_count,
+        .fallback_count = stats.fallback_count,
         .advance_x = stats.advance.x,
         .advance_y = stats.advance.y,
     };

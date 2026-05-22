@@ -178,6 +178,8 @@ pub const SnailTrueTypeHintPpem = extern struct {
 
 pub const SnailTrueTypeHintRunStats = extern struct {
     glyph_count: usize = 0,
+    hinted_count: usize = 0,
+    fallback_count: usize = 0,
     advance_x: f32 = 0,
     advance_y: f32 = 0,
 };

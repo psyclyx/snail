@@ -225,11 +225,9 @@ test "c_api: text blob builder and true type hinted runs" {
             context.?,
             null,
             shaped.?,
-            .{ .start = 0, .count = std.math.maxInt(usize) },
             ppem,
             &run,
         );
-        if (prepare_rc == c.SNAIL_ERR_HINT_UNAVAILABLE) continue;
         try testing.expectEqual(c.SNAIL_OK, prepare_rc);
         defer c_text.snail_true_type_prepared_hint_run_deinit(run);
 
@@ -237,6 +235,7 @@ test "c_api: text blob builder and true type hinted runs" {
         c_text.snail_true_type_prepared_hint_run_stats(run.?, &stats);
         try testing.expectEqual(@as(usize, text.len), stats.glyph_count);
         try testing.expect(stats.advance_x > 0);
+        if (stats.hinted_count == 0) continue;
 
         var builder: ?*c.test_api.TextBlobBuilderImpl = null;
         try testing.expectEqual(c.SNAIL_OK, c_text.snail_text_blob_builder_init(null, atlas, &builder));
@@ -244,7 +243,7 @@ test "c_api: text blob builder and true type hinted runs" {
 
         const color = [_]f32{ 1, 1, 1, 1 };
         var append_result: c.SnailTextAppendResult = .{};
-        try testing.expectEqual(c.SNAIL_OK, c_text.snail_text_blob_builder_append_prepared_hinted_run(
+        try testing.expectEqual(c.SNAIL_OK, c_text.snail_text_blob_builder_append_prepared_hint_run(
             builder.?,
             run.?,
             .{ .baseline_x = 0, .baseline_y = 12, .em = 12 },
@@ -261,7 +260,7 @@ test "c_api: text blob builder and true type hinted runs" {
         try testing.expect(c_text.snail_text_blob_glyph_count(blob.?) > 0);
 
         var direct_blob: ?*c.test_api.TextBlobImpl = null;
-        try testing.expectEqual(c.SNAIL_OK, c_text.snail_text_blob_init_from_prepared_hinted_run(
+        try testing.expectEqual(c.SNAIL_OK, c_text.snail_text_blob_init_from_prepared_hint_run(
             null,
             run.?,
             .{ .baseline_x = 0, .baseline_y = 24, .em = 12 },

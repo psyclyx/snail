@@ -377,14 +377,14 @@ pub export fn snail_text_blob_builder_append_shaped(
     return SNAIL_OK;
 }
 
-pub export fn snail_text_blob_builder_append_prepared_hinted_run(
+pub export fn snail_text_blob_builder_append_prepared_hint_run(
     builder: *TextBlobBuilderImpl,
     run: *const TrueTypePreparedHintRunImpl,
     placement: SnailTextPlacement,
     color: ?[*]const f32,
     out_result: ?*SnailTextAppendResult,
 ) c_int {
-    const result = builder.inner.appendPreparedHintedRun(
+    const result = builder.inner.appendPreparedHintRun(
         &run.inner,
         toTextPlacement(placement),
         color4(color) catch return SNAIL_ERR_INVALID_ARGUMENT,
@@ -429,8 +429,8 @@ pub export fn snail_true_type_hint_context_deinit(context: ?*TrueTypeHintContext
     }
 }
 
-pub export fn snail_true_type_hint_context_reset_for_atlas(context: *TrueTypeHintContextImpl, atlas: *const TextAtlasImpl) void {
-    context.inner.resetForAtlas(&atlas.inner);
+pub export fn snail_true_type_hint_context_rebind_atlas(context: *TrueTypeHintContextImpl, atlas: *const TextAtlasImpl) void {
+    context.inner.rebindAtlas(&atlas.inner);
 }
 
 pub export fn snail_true_type_hint_context_prepare_size(
@@ -448,7 +448,6 @@ pub export fn snail_true_type_hint_context_prepare_run(
     context: *TrueTypeHintContextImpl,
     alloc_ptr: ?*const SnailAllocator,
     shaped: *const ShapedTextImpl,
-    glyphs: SnailRange,
     ppem: SnailTrueTypeHintPpem,
     out: *?*TrueTypePreparedHintRunImpl,
 ) c_int {
@@ -456,7 +455,6 @@ pub export fn snail_true_type_hint_context_prepare_run(
     const allocator = allocatorForHandle(impl);
     const run = context.inner.prepareRun(allocator, .{
         .shaped = &shaped.inner,
-        .glyphs = toRange(glyphs),
         .ppem = toTrueTypeHintPpem(ppem),
     }) catch |err| {
         destroyHandle(impl);
@@ -478,7 +476,7 @@ pub export fn snail_true_type_prepared_hint_run_stats(run: *const TrueTypePrepar
     out.* = fromTrueTypeHintRunStats(run.inner.stats);
 }
 
-pub export fn snail_text_blob_init_from_prepared_hinted_run(
+pub export fn snail_text_blob_init_from_prepared_hint_run(
     alloc_ptr: ?*const SnailAllocator,
     run: *const TrueTypePreparedHintRunImpl,
     placement: SnailTextPlacement,
@@ -489,7 +487,7 @@ pub export fn snail_text_blob_init_from_prepared_hinted_run(
     const allocator = allocatorForHandle(impl);
     var builder = snail.TextBlobBuilder.init(allocator, run.inner.atlas);
     defer builder.deinit();
-    _ = builder.appendPreparedHintedRun(
+    _ = builder.appendPreparedHintRun(
         &run.inner,
         toTextPlacement(placement),
         color4(color) catch {

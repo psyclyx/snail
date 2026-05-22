@@ -487,7 +487,7 @@ test "TextBlobBuilder stores hinted glyph records and emits hinted special verti
     try testing.expectEqual(render_abi.SpecialLayerKind.hinted_text, render_abi.specialGlyphWordKind(packed_gw).?);
 }
 
-test "TextBlobBuilder best-effort hinted run keeps fallback glyphs" {
+test "TextBlobBuilder hint run keeps fallback glyphs" {
     const assets_data = @import("assets");
     const sample = "A \xf0\x9f\x9a\x80 B";
     var fonts = try TextAtlas.init(testing.allocator, &.{
@@ -506,7 +506,7 @@ test "TextBlobBuilder best-effort hinted run keeps fallback glyphs" {
 
     var context = snail.TrueTypeHintContext.init(testing.allocator, &fonts);
     defer context.deinit();
-    var run = try context.prepareBestEffortRun(testing.allocator, .{
+    var run = try context.prepareRun(testing.allocator, .{
         .shaped = &shaped,
         .ppem = snail.TrueTypeHintPpem.uniform(12 * 64),
     });
@@ -517,7 +517,7 @@ test "TextBlobBuilder best-effort hinted run keeps fallback glyphs" {
 
     var builder = TextBlobBuilder.init(testing.allocator, &fonts);
     defer builder.deinit();
-    _ = try builder.appendPreparedBestEffortHintRun(&run, .{
+    _ = try builder.appendPreparedHintRun(&run, .{
         .baseline = .{ .x = 0, .y = 12 },
         .em = 12,
     }, .{ 0.2, 0.4, 0.6, 1 });

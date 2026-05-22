@@ -332,7 +332,7 @@ fn makeBestEffortHintedTextBlob(
     var shaped = try atlas.shapeText(allocator, line.style, line.text);
     defer shaped.deinit();
 
-    var run = try context.prepareBestEffortRun(allocator, .{
+    var run = try context.prepareRun(allocator, .{
         .shaped = &shaped,
         .ppem = try hintPpemForEm(line.size),
     });
@@ -340,7 +340,7 @@ fn makeBestEffortHintedTextBlob(
 
     var builder = snail.TextBlobBuilder.init(allocator, atlas);
     errdefer builder.deinit();
-    _ = try builder.appendPreparedBestEffortHintRun(&run, .{
+    _ = try builder.appendPreparedHintRun(&run, .{
         .baseline = .{ .x = line.x, .y = line.y },
         .em = line.size,
     }, line.color);
@@ -880,13 +880,10 @@ fn prepareHintContextRun(
     context: *snail.TrueTypeHintContext,
     shaped: *const snail.ShapedText,
 ) !void {
-    var run = context.prepareRun(allocator, .{
+    var run = try context.prepareRun(allocator, .{
         .shaped = shaped,
         .ppem = snail.TrueTypeHintPpem.uniform(12 * 64),
-    }) catch |err| switch (err) {
-        error.HintUnavailable => return,
-        else => return err,
-    };
+    });
     defer run.deinit();
     std.mem.doNotOptimizeAway(run.glyphs.len);
     std.mem.doNotOptimizeAway(run.stats.advance.x);

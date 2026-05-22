@@ -3,8 +3,6 @@ const std = @import("std");
 const atlas_mod = @import("atlas.zig");
 const bezier = @import("../math/bezier.zig");
 const config_mod = @import("config.zig");
-const range_mod = @import("../range.zig");
-const shape_mod = @import("shape.zig");
 const text_hint = @import("../render/format/text_hint.zig");
 const tt_hint = @import("tt_hint.zig");
 const types_mod = @import("types.zig");
@@ -13,11 +11,9 @@ const vec = @import("../math/vec.zig");
 const Allocator = std.mem.Allocator;
 const BBox = bezier.BBox;
 const FaceIndex = config_mod.FaceIndex;
-const Range = range_mod.Range;
 const ShapedText = types_mod.ShapedText;
 const TextAtlas = atlas_mod.TextAtlas;
 const Vec2 = vec.Vec2;
-const shapedPenAt = shape_mod.shapedPenAt;
 
 pub const HintGlyphKey = struct {
     face_index: FaceIndex,
@@ -127,24 +123,34 @@ pub const HintGlyphStatus = union(enum) {
     unsupported: HintRejectReason,
 };
 
-pub const PreparedHintGlyph = struct {
-    face_index: FaceIndex,
-    glyph_id: u16,
-    placement_delta: Vec2,
-    hint: *const HintedGlyphValue,
-};
-
-pub const PreparedHintRunStats = struct {
-    glyph_count: usize = 0,
-    advance: Vec2 = .zero,
-};
-
+/// A prepared run of hinted glyphs. Always whole-run (covers every glyph of
+/// the source `ShapedText`). Each glyph carries either a hint pointer or a
+/// fallback marker; callers wanting strict all-or-nothing semantics check
+/// `stats.fallback_count == 0` before consuming the run.
 pub const PreparedHintRun = struct {
     allocator: Allocator,
     atlas: *const TextAtlas,
     atlas_identity: u64,
-    glyphs: []PreparedHintGlyph,
-    stats: PreparedHintRunStats,
+    glyphs: []Glyph,
+    stats: Stats,
+
+    pub const Glyph = struct {
+        face_index: FaceIndex,
+        glyph_id: u16,
+        placement_delta: Vec2,
+        advance: Vec2,
+        source: union(enum) {
+            hint: *const HintedGlyphValue,
+            fallback,
+        },
+    };
+
+    pub const Stats = struct {
+        glyph_count: usize = 0,
+        hinted_count: usize = 0,
+        fallback_count: usize = 0,
+        advance: Vec2 = .zero,
+    };
 
     pub fn validateAtlas(self: *const PreparedHintRun, atlas: *const TextAtlas) !void {
         if (self.atlas != atlas) return error.WrongTextAtlasSnapshot;
@@ -157,45 +163,8 @@ pub const PreparedHintRun = struct {
     }
 };
 
-pub const PreparedBestEffortHintGlyph = struct {
-    face_index: FaceIndex,
-    glyph_id: u16,
-    placement_delta: Vec2,
-    advance: Vec2,
-    source: union(enum) {
-        hint: *const HintedGlyphValue,
-        fallback,
-    },
-};
-
-pub const PreparedBestEffortHintRunStats = struct {
-    glyph_count: usize = 0,
-    hinted_count: usize = 0,
-    fallback_count: usize = 0,
-    advance: Vec2 = .zero,
-};
-
-pub const PreparedBestEffortHintRun = struct {
-    allocator: Allocator,
-    atlas: *const TextAtlas,
-    atlas_identity: u64,
-    glyphs: []PreparedBestEffortHintGlyph,
-    stats: PreparedBestEffortHintRunStats,
-
-    pub fn validateAtlas(self: *const PreparedBestEffortHintRun, atlas: *const TextAtlas) !void {
-        if (self.atlas != atlas) return error.WrongTextAtlasSnapshot;
-        if (atlas.snapshotIdentity() != self.atlas_identity) return error.WrongTextAtlasSnapshot;
-    }
-
-    pub fn deinit(self: *PreparedBestEffortHintRun) void {
-        self.allocator.free(self.glyphs);
-        self.* = undefined;
-    }
-};
-
 pub const PrepareRunOptions = struct {
     shaped: *const ShapedText,
-    glyphs: Range = .{},
     ppem: tt_hint.HintPpem,
 };
 
@@ -288,8 +257,13 @@ pub const TrueTypeHintContext = struct {
         self.* = undefined;
     }
 
-    pub fn resetForAtlas(self: *TrueTypeHintContext, atlas: *const TextAtlas) void {
-        self.clear();
+    /// Rebind to a new atlas snapshot. If the new snapshot extends the
+    /// current one (`canRebindFrom`), the cached hint values, face
+    /// programs, and size states are preserved — caches survive atlas
+    /// growth. Otherwise the cache is cleared. Eliminates the rehint
+    /// storm on `ensureText`-style snapshot extensions.
+    pub fn rebindAtlas(self: *TrueTypeHintContext, atlas: *const TextAtlas) void {
+        if (!atlas.canRebindFrom(self.atlas)) self.clear();
         self.atlas = atlas;
         self.atlas_identity = atlas.snapshotIdentity();
     }
@@ -326,6 +300,9 @@ pub const TrueTypeHintContext = struct {
         return self.computeMissingGlyph(key);
     }
 
+    /// Prepare hinted glyphs for the entire `options.shaped`. Per-glyph,
+    /// either a hint pointer or a `.fallback` marker is recorded. Strict
+    /// callers check `result.stats.fallback_count == 0` after this call.
     pub fn prepareRun(
         self: *TrueTypeHintContext,
         allocator: Allocator,
@@ -334,51 +311,12 @@ pub const TrueTypeHintContext = struct {
         try self.validateAtlas();
         if (options.shaped.config != self.atlas.config) return error.WrongTextAtlasSnapshot;
 
-        const range = options.glyphs.resolve(options.shaped.glyphs.len);
-        const out_glyphs = try allocator.alloc(PreparedHintGlyph, range.end - range.start);
+        const out_glyphs = try allocator.alloc(PreparedHintRun.Glyph, options.shaped.glyphs.len);
         errdefer allocator.free(out_glyphs);
 
-        var nominal_pen = shapedPenAt(options.shaped, range.start);
-        var hinted_pen = Vec2.zero;
-        for (out_glyphs, options.shaped.glyphs[range.start..range.end]) |*out, glyph| {
-            const hint = try self.prepareShapedGlyph(glyph, options.ppem);
-            out.* = .{
-                .face_index = glyph.face_index,
-                .glyph_id = glyph.glyph_id,
-                .placement_delta = .{
-                    .x = glyph.x_offset - nominal_pen.x,
-                    .y = glyph.y_offset - nominal_pen.y,
-                },
-                .hint = hint,
-            };
-            nominal_pen = Vec2.add(nominal_pen, .{ .x = glyph.x_advance, .y = glyph.y_advance });
-            hinted_pen = Vec2.add(hinted_pen, hint.advance);
-        }
-
-        return .{
-            .allocator = allocator,
-            .atlas = self.atlas,
-            .atlas_identity = self.atlas_identity,
-            .glyphs = out_glyphs,
-            .stats = .{ .glyph_count = out_glyphs.len, .advance = hinted_pen },
-        };
-    }
-
-    pub fn prepareBestEffortRun(
-        self: *TrueTypeHintContext,
-        allocator: Allocator,
-        options: PrepareRunOptions,
-    ) !PreparedBestEffortHintRun {
-        try self.validateAtlas();
-        if (options.shaped.config != self.atlas.config) return error.WrongTextAtlasSnapshot;
-
-        const range = options.glyphs.resolve(options.shaped.glyphs.len);
-        const out_glyphs = try allocator.alloc(PreparedBestEffortHintGlyph, range.end - range.start);
-        errdefer allocator.free(out_glyphs);
-
-        var stats = PreparedBestEffortHintRunStats{ .glyph_count = out_glyphs.len };
-        var nominal_pen = shapedPenAt(options.shaped, range.start);
-        for (out_glyphs, options.shaped.glyphs[range.start..range.end]) |*out, glyph| {
+        var stats = PreparedHintRun.Stats{ .glyph_count = out_glyphs.len };
+        var nominal_pen = Vec2.zero;
+        for (out_glyphs, options.shaped.glyphs) |*out, glyph| {
             const placement_delta = Vec2{
                 .x = glyph.x_offset - nominal_pen.x,
                 .y = glyph.y_offset - nominal_pen.y,
@@ -497,18 +435,6 @@ pub const TrueTypeHintContext = struct {
             },
         };
         return self.putReadyValue(takeHintedGlyphValue(key, &hint, &patch));
-    }
-
-    fn prepareShapedGlyph(
-        self: *TrueTypeHintContext,
-        glyph: ShapedText.Glyph,
-        ppem: tt_hint.HintPpem,
-    ) !*const HintedGlyphValue {
-        const status = try self.computeGlyph(keyForGlyph(glyph, ppem));
-        return switch (status) {
-            .ready => |value| value,
-            .missing, .unsupported => error.HintUnavailable,
-        };
     }
 
     fn faceStateFor(self: *TrueTypeHintContext, face_index: FaceIndex) !*FaceProgramState {
@@ -644,26 +570,24 @@ test "hint context prepares runs and caches repeated glyphs" {
         defer shaped.deinit();
         if (shaped.glyphs.len != text.len) continue;
 
-        var first_run = context.prepareRun(testing.allocator, .{
+        var first_run = try context.prepareRun(testing.allocator, .{
             .shaped = &shaped,
             .ppem = tt_hint.HintPpem.uniform(12 * 64),
-        }) catch |err| switch (err) {
-            error.HintUnavailable => continue,
-            else => return err,
-        };
+        });
         defer first_run.deinit();
+        if (first_run.stats.fallback_count != 0) continue;
         try testing.expectEqual(@as(usize, 4), first_run.glyphs.len);
         try testing.expect(first_run.stats.advance.x > 0);
 
-        const cached = first_run.glyphs[0].hint;
-        for (first_run.glyphs) |glyph| try testing.expect(glyph.hint == cached);
+        const cached = first_run.glyphs[0].source.hint;
+        for (first_run.glyphs) |glyph| try testing.expect(glyph.source.hint == cached);
 
         var second_run = try context.prepareRun(testing.allocator, .{
             .shaped = &shaped,
             .ppem = tt_hint.HintPpem.uniform(12 * 64),
         });
         defer second_run.deinit();
-        try testing.expect(second_run.glyphs[0].hint == cached);
+        try testing.expect(second_run.glyphs[0].source.hint == cached);
         return;
     }
 

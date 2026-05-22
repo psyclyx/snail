@@ -23,7 +23,6 @@ const FaceView = view_mod.FaceView;
 const HintedGlyphValue = hint_context.HintedGlyphValue;
 const Paint = paint_mod.Paint;
 const PaintImageRecord = atlas_curve_mod.CurveAtlas.PaintImageRecord;
-const PreparedBestEffortHintRun = hint_context.PreparedBestEffortHintRun;
 const PreparedHintRun = hint_context.PreparedHintRun;
 const Range = range_mod.Range;
 const ResourceKey = resource_key_mod.ResourceKey;
@@ -305,29 +304,14 @@ pub const TextBlobBuilder = struct {
         self.gpu_instance_budget += 1;
     }
 
-    pub fn appendPreparedHintedRun(
+    /// Append a prepared hint run. Glyphs with a `.hint` source render
+    /// through the hinted pipeline; glyphs with a `.fallback` source render
+    /// through the unhinted shaped-text path. Callers wanting strict
+    /// all-or-nothing semantics should check `run.stats.fallback_count == 0`
+    /// before calling.
+    pub fn appendPreparedHintRun(
         self: *TextBlobBuilder,
         run: *const PreparedHintRun,
-        placement: TextPlacement,
-        color: [4]f32,
-    ) !TextAppendResult {
-        try run.validateAtlas(self.atlas);
-
-        var hinted_pen = Vec2.zero;
-        for (run.glyphs) |glyph| {
-            try self.appendPreparedHintedGlyph(glyph, hinted_pen, placement, color);
-            hinted_pen = Vec2.add(hinted_pen, glyph.hint.advance);
-        }
-
-        return .{
-            .advance = scaleAdvance(run.stats.advance, placement.em),
-            .missing = false,
-        };
-    }
-
-    pub fn appendPreparedBestEffortHintRun(
-        self: *TextBlobBuilder,
-        run: *const PreparedBestEffortHintRun,
         placement: TextPlacement,
         color: [4]f32,
     ) !TextAppendResult {
@@ -490,22 +474,6 @@ pub const TextBlobBuilder = struct {
         self.removeLastHintRecord();
     }
 
-    fn appendPreparedHintedGlyph(
-        self: *TextBlobBuilder,
-        glyph: hint_context.PreparedHintGlyph,
-        hinted_pen: Vec2,
-        placement: TextPlacement,
-        color: [4]f32,
-    ) !void {
-        if (!glyph.hint.renderable()) return;
-
-        const face = &self.atlas.config.faces[glyph.face_index];
-        const x = placement.baseline.x + (hinted_pen.x + glyph.placement_delta.x) * placement.em;
-        const y = placement.baseline.y + (hinted_pen.y + glyph.placement_delta.y) * placement.em;
-        const transform = glyphPlacementTransform(x, y, placement.em, face.synthetic.skew_x);
-
-        try self.appendHintedGlyphRef(glyph.face_index, glyph.glyph_id, transform, color, glyph.hint);
-    }
 };
 
 pub fn appendShapedTextBlob(

@@ -370,13 +370,13 @@ const TextPlacer = struct {
         color: [4]f32,
     ) !snail.TextAppendResult {
         const ppem_26_6 = try hintPpem26_6(p.size, hint_context.ppem_scale);
-        var run = try hint_context.context.prepareBestEffortRun(self.builder.allocator, .{
+        var run = try hint_context.context.prepareRun(self.builder.allocator, .{
             .shaped = shaped,
             .ppem = snail.TrueTypeHintPpem.uniform(ppem_26_6),
         });
         defer run.deinit();
 
-        return self.builder.appendPreparedBestEffortHintRun(&run, .{
+        return self.builder.appendPreparedHintRun(&run, .{
             .baseline = .{ .x = p.x, .y = p.y },
             .em = p.size,
         }, color);
