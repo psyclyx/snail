@@ -90,7 +90,7 @@ pub const ResourceManifest = struct {
         try self.ensureCapacityForTextBlob(resources);
         try self.put(.{ .text_atlas = .{
             .key = resources.atlas,
-            .atlas = blob.atlas,
+            .atlas = blob.atlas(),
             .atlas_capacity = options.atlas_capacity,
         } });
         if (resources.paint) |paint_key| {

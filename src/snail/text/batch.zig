@@ -241,7 +241,7 @@ pub fn appendTextDrawIntoBatch(
     var glyph_index = start_glyph;
     while (glyph_index < glyph_end) : (glyph_index += 1) {
         const glyph = blob.glyphs[glyph_index];
-        const face_view = blob.atlas.faceView(glyph.face_index, view);
+        const face_view = blob.atlas().faceView(glyph.face_index, view);
         const glyph_layer_base = try textBlobGlyphLayerWindowBase(&face_view, glyph.glyph_id) orelse continue;
         if (batch.layer_window_base) |base| {
             if (base != glyph_layer_base) break;

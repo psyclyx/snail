@@ -345,7 +345,7 @@ fn checkAppendPlanForTextBlob(
     try set.putTextBlobOptions(blob.resourceKeys(atlas_key, blob_key), blob, .{ .atlas_capacity = capacity });
     var plan = try renderer.planResourceUpload(allocator, current, &set);
     defer plan.deinit();
-    try expectAppendPlan(&plan, current.manifest.atlases[0].page_fingerprints.len, blob.atlas.pageCount(), expected);
+    try expectAppendPlan(&plan, current.manifest.atlases[0].page_fingerprints.len, blob.atlas().pageCount(), expected);
 }
 
 fn expectAppendPlan(plan: *const snail.ResourceUploadPlan, old_pages: usize, new_pages: usize, expected: AppendPlanExpectation) !void {

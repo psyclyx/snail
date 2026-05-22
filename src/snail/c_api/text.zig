@@ -700,7 +700,7 @@ pub export fn snail_text_blob_rebound(
         return SNAIL_ERR_OUT_OF_MEMORY;
     };
     owned_bundle.* = snail.TextBlobBundle.init(allocator, &atlas.inner);
-    const rebound_ptr = reboundIntoBundle(owned_bundle, &blob.inner, &atlas.inner) catch |err| {
+    const rebound_ptr = owned_bundle.rebound(snail.ResourceKey.named("standalone_rebound"), &blob.inner, &atlas.inner) catch |err| {
         owned_bundle.deinit();
         allocator.destroy(owned_bundle);
         destroyHandle(impl);
@@ -712,36 +712,6 @@ pub export fn snail_text_blob_rebound(
     impl.borrowed_generation = 0;
     out.* = impl;
     return SNAIL_OK;
-}
-
-/// Copy `src` (a blob bound to a possibly-different atlas snapshot) into
-/// `bundle`, which is presumed to be empty and bound to `new_atlas`.
-/// Returns the new blob pointer, owned by `bundle`. The new atlas must
-/// be compatible with the source via `canRebindFrom` and contain every
-/// glyph the source references.
-fn reboundIntoBundle(
-    bundle: *snail.TextBlobBundle,
-    src: *const snail.TextBlob,
-    new_atlas: *const snail.TextAtlas,
-) !*const snail.TextBlob {
-    if (!new_atlas.canRebindFrom(src.atlas)) return error.WrongTextAtlasSnapshot;
-    for (src.glyphs) |g| {
-        if (!new_atlas.hasPreparedGlyph(g.face_index, g.glyph_id)) return error.MissingPreparedGlyph;
-    }
-    // Build the rebound blob with the source allocator, then publish it
-    // into the bundle by appending to bundle.blobs. The blob struct ends
-    // up with its own .atlas pointing at new_atlas; the bundle's deinit
-    // path will free it.
-    const rebound = try src.rebound(bundle.gpa, new_atlas);
-    errdefer {
-        var owned = rebound;
-        owned.deinit();
-    }
-    const slot = try bundle.gpa.create(snail.TextBlob);
-    errdefer bundle.gpa.destroy(slot);
-    slot.* = rebound;
-    try bundle.blobs.append(bundle.gpa, slot);
-    return slot;
 }
 
 fn color4(color: ?[*]const f32) ![4]f32 {

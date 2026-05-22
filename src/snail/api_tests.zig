@@ -825,14 +825,18 @@ test "resource upload plan reports appended atlas pages" {
 
     var shaped = try atlas_a.shapeText(allocator, .{}, "Hello");
     defer shaped.deinit();
-    var blob_a = try TextBlob.init(allocator, &atlas_a, .{
+
+    var bundle_a = snail.TextBlobBundle.init(allocator, &atlas_a);
+    defer bundle_a.deinit();
+    const blob_a = try bundle_a.buildBlob(snail.ResourceKey.named("atlas_pages_text"), &.{.{
         .source = .{ .shaped = shaped.glyphs },
         .placement = .{ .baseline = .{ .x = 0, .y = 12 }, .em = 12 },
         .fill = .{ .solid = .{ 1, 1, 1, 1 } },
-    });
-    defer blob_a.deinit();
-    var blob_b = try blob_a.rebound(allocator, &atlas_b);
-    defer blob_b.deinit();
+    }}, null);
+
+    var bundle_b = snail.TextBlobBundle.init(allocator, &atlas_b);
+    defer bundle_b.deinit();
+    const blob_b = try bundle_b.rebound(snail.ResourceKey.named("atlas_pages_text"), blob_a, &atlas_b);
 
     const width: u32 = 16;
     const height: u32 = 16;
@@ -846,13 +850,13 @@ test "resource upload plan reports appended atlas pages" {
 
     var set_a_entries: [1]ResourceManifest.Entry = undefined;
     var set_a = ResourceManifest.init(&set_a_entries);
-    try set_a.putTextBlob(blob_a.resourceKeys(ResourceKey.named("fonts"), ResourceKey.named("atlas_pages_text")), &blob_a);
+    try set_a.putTextBlob(blob_a.resourceKeys(ResourceKey.named("fonts"), ResourceKey.named("atlas_pages_text")), blob_a);
     var prepared_a = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set_a);
     defer prepared_a.deinit();
 
     var set_b_entries: [1]ResourceManifest.Entry = undefined;
     var set_b = ResourceManifest.init(&set_b_entries);
-    try set_b.putTextBlob(blob_b.resourceKeys(ResourceKey.named("fonts"), ResourceKey.named("atlas_pages_text")), &blob_b);
+    try set_b.putTextBlob(blob_b.resourceKeys(ResourceKey.named("fonts"), ResourceKey.named("atlas_pages_text")), blob_b);
     var plan = try renderer.planResourceUpload(allocator, &prepared_a, &set_b);
     defer plan.deinit();
 

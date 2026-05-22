@@ -755,12 +755,13 @@ test "TextBlob.rebound accepts atlas snapshots that retain referenced glyphs" {
     var next = (try fonts.ensureText(.{}, "B")).?;
     defer next.deinit();
 
-    var rebound = try blob.rebound(testing.allocator, &next);
-    defer rebound.deinit();
+    var rebound_bundle = snail.TextBlobBundle.init(testing.allocator, &next);
+    defer rebound_bundle.deinit();
+    const rebound = try rebound_bundle.rebound(snail.ResourceKey.named("rebound"), blob, &next);
     try rebound.validate();
 }
 
-test "TextBlob.rebound recomputes budget after ensureGlyphs" {
+test "TextBlobBundle.rebound recomputes budget after ensureGlyphs" {
     const assets_data = @import("assets");
     var fonts = try TextAtlas.init(testing.allocator, &.{
         .{ .data = assets_data.noto_sans_regular },
@@ -791,8 +792,9 @@ test "TextBlob.rebound recomputes budget after ensureGlyphs" {
     var next = (try fonts.ensureGlyphs(0, &.{gid_b})).?;
     defer next.deinit();
 
-    var rebound = try blob.rebound(testing.allocator, &next);
-    defer rebound.deinit();
+    var rebound_bundle = snail.TextBlobBundle.init(testing.allocator, &next);
+    defer rebound_bundle.deinit();
+    const rebound = try rebound_bundle.rebound(snail.ResourceKey.named("rebound"), blob, &next);
     try rebound.validate();
     try testing.expect(rebound.gpu_instance_budget > 0);
 }
