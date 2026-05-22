@@ -32,9 +32,17 @@ migration. See the migration recipes below each entry.
   `blobCount`, `currentGeneration`. The bundle exists alongside
   `TextBlobBuilder` for now; in-repo consumers (demos, benches, tests,
   api_tests, renderer_tests) have been migrated to the bundle.
-  `TextBlobBuilder` remains as the lower-level primitive until the C API
-  migrates and the TextBlob storage model collapses to the bundle's
-  arena (planned for a follow-up pre-1.0 pass).
+  `TextBlobBuilder` remains as the lower-level primitive until the
+  TextBlob storage model collapses to the bundle's arena (planned for a
+  follow-up pre-1.0 pass).
+- C API: `SnailTextBlobBundle` and `SnailBlobInProgress` mirror the Zig
+  bundle. New exports cover the full streaming lifecycle plus
+  `freeze`/`unfreeze`/`is_frozen`, `blob_count`, `generation`, and
+  `rebind_atlas`. `SnailTextBlob` handles returned by
+  `snail_blob_in_progress_finish` are bundle-owned; their storage is
+  reclaimed by the bundle and `snail_text_blob_deinit` skips the inner
+  deinit on those handles. A generation counter on the bundle lets the C
+  side detect use-after-reset on `SnailBlobInProgress` handles.
 
 ### Changed (breaking)
 
