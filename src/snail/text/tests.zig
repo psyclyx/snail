@@ -10,23 +10,22 @@ const FaceIndex = snail.FaceIndex;
 const TextAppendResult = snail.TextAppendResult;
 const TextAtlas = snail.TextAtlas;
 const TextBatch = snail.TextBatch;
-const TextBlobBuilder = snail.TextBlobBuilder;
 const TextBlobBundle = snail.TextBlobBundle;
 const BlobInProgress = snail.BlobInProgress;
 
 const testing = std.testing;
 
 fn appendTestText(
-    builder: *TextBlobBuilder,
+    bip: BlobInProgress,
     style: snail.FontStyle,
     text: []const u8,
     baseline: snail.Vec2,
     em: f32,
     color: [4]f32,
 ) !TextAppendResult {
-    var shaped = try builder.atlas.shapeText(builder.allocator, style, text);
+    var shaped = try bip.bundle.atlas.shapeText(bip.bundle.gpa, style, text);
     defer shaped.deinit();
-    return builder.append(.{
+    return bip.append(.{
         .source = .{ .shaped = shaped.glyphs },
         .placement = .{ .baseline = baseline, .em = em },
         .fill = .{ .solid = color },
@@ -214,7 +213,7 @@ test "TextAtlas.appendTextBatch reports missing glyphs" {
     try testing.expectEqual(@as(usize, 0), batch.glyphCount());
 }
 
-test "TextBlobBuilder.append with partially-prepared atlas skips missing glyphs" {
+test "TextBlobBundle.append with partially-prepared atlas skips missing glyphs" {
     const assets_data = @import("assets");
     var fonts = try TextAtlas.init(testing.allocator, &.{
         .{ .data = assets_data.noto_sans_regular },
@@ -227,22 +226,23 @@ test "TextBlobBuilder.append with partially-prepared atlas skips missing glyphs"
         fonts = next;
     }
 
-    var builder = TextBlobBuilder.init(testing.allocator, &fonts);
-    defer builder.deinit();
+    var bundle = snail.TextBlobBundle.init(testing.allocator, &fonts);
+    defer bundle.deinit();
+    var bip = try bundle.startBlob();
+    errdefer bip.abort();
 
-    const result = try appendTestText(&builder, .{}, "Hi there", .{ .x = 0, .y = 50 }, 16, .{ 1, 1, 1, 1 });
+    const result = try appendTestText(bip, .{}, "Hi there", .{ .x = 0, .y = 50 }, 16, .{ 1, 1, 1, 1 });
     try testing.expect(result.missing);
     try testing.expect(result.advance.x > 0); // advance still spans the full run
 
     // Builder must only retain glyphs that are actually in the atlas; the
     // resulting blob must validate cleanly against the same snapshot.
-    try testing.expect(builder.glyphCount() <= 2);
-    var blob = try builder.finish();
-    defer blob.deinit();
+    try testing.expect(bip.glyphCount() <= 2);
+    const blob = try bip.finish(snail.ResourceKey.named("test_blob"));
     try blob.validate();
 }
 
-test "TextBlobBuilder.append separates shape from placement and fill" {
+test "TextBlobBundle.append separates shape from placement and fill" {
     const assets_data = @import("assets");
     var fonts = try TextAtlas.init(testing.allocator, &.{
         .{ .data = assets_data.noto_sans_regular },
@@ -257,15 +257,17 @@ test "TextBlobBuilder.append separates shape from placement and fill" {
     var shaped = try fonts.shapeText(testing.allocator, .{}, "A");
     defer shaped.deinit();
 
-    var builder = TextBlobBuilder.init(testing.allocator, &fonts);
-    defer builder.deinit();
+    var bundle = snail.TextBlobBundle.init(testing.allocator, &fonts);
+    defer bundle.deinit();
+    var bip = try bundle.startBlob();
+    errdefer bip.abort();
 
-    const first = try builder.append(.{
+    const first = try bip.append(.{
         .source = .{ .shaped = shaped.glyphs },
         .placement = .{ .baseline = .{ .x = 10, .y = 20 }, .em = 12 },
         .fill = .{ .solid = .{ 1, 0, 0, 1 } },
     });
-    const second = try builder.append(.{
+    const second = try bip.append(.{
         .source = .{ .shaped = shaped.glyphs },
         .placement = .{ .baseline = .{ .x = 30, .y = 40 }, .em = 20 },
         .fill = .{ .solid = .{ 0, 1, 0, 1 } },
@@ -273,10 +275,9 @@ test "TextBlobBuilder.append separates shape from placement and fill" {
 
     try testing.expectApproxEqAbs(shaped.advance_x * 12, first.advance.x, 0.001);
     try testing.expectApproxEqAbs(shaped.advance_x * 20, second.advance.x, 0.001);
-    try testing.expectEqual(@as(usize, 2), builder.glyphCount());
+    try testing.expectEqual(@as(usize, 2), bip.glyphCount());
 
-    var blob = try builder.finish();
-    defer blob.deinit();
+    const blob = try bip.finish(snail.ResourceKey.named("test_blob"));
     try testing.expectApproxEqAbs(@as(f32, 10), blob.glyphs[0].transform.tx, 0.001);
     try testing.expectApproxEqAbs(@as(f32, 20), blob.glyphs[0].transform.ty, 0.001);
     try testing.expectApproxEqAbs(@as(f32, 12), blob.glyphs[0].transform.xx, 0.001);
@@ -287,7 +288,7 @@ test "TextBlobBuilder.append separates shape from placement and fill" {
     try testing.expectEqual([4]f32{ 0, 1, 0, 1 }, blob.glyphs[1].color);
 }
 
-test "TextBlobBuilder.append can style shaped glyph ranges independently" {
+test "TextBlobBundle.append can style shaped glyph ranges independently" {
     const assets_data = @import("assets");
     var fonts = try TextAtlas.init(testing.allocator, &.{
         .{ .data = assets_data.noto_sans_regular },
@@ -303,15 +304,17 @@ test "TextBlobBuilder.append can style shaped glyph ranges independently" {
     defer shaped.deinit();
     try testing.expect(shaped.glyphs.len >= 2);
 
-    var builder = TextBlobBuilder.init(testing.allocator, &fonts);
-    defer builder.deinit();
+    var bundle = snail.TextBlobBundle.init(testing.allocator, &fonts);
+    defer bundle.deinit();
+    var bip = try bundle.startBlob();
+    errdefer bip.abort();
 
-    const first = try builder.append(.{
+    const first = try bip.append(.{
         .source = .{ .shaped = shaped.glyphs[0..1] },
         .placement = .{ .baseline = .{ .x = 10, .y = 20 }, .em = 18 },
         .fill = .{ .solid = .{ 1, 0, 0, 1 } },
     });
-    const second = try builder.append(.{
+    const second = try bip.append(.{
         .source = .{ .shaped = shaped.glyphs[1..2] },
         .placement = .{ .baseline = .{ .x = 10 + first.advance.x, .y = 20 }, .em = 18 },
         .fill = .{ .solid = .{ 0, 0, 1, 1 } },
@@ -319,16 +322,15 @@ test "TextBlobBuilder.append can style shaped glyph ranges independently" {
 
     try testing.expect(first.advance.x > 0);
     try testing.expect(second.advance.x > 0);
-    try testing.expectEqual(@as(usize, 2), builder.glyphCount());
+    try testing.expectEqual(@as(usize, 2), bip.glyphCount());
 
-    var blob = try builder.finish();
-    defer blob.deinit();
+    const blob = try bip.finish(snail.ResourceKey.named("test_blob"));
     try testing.expectEqual([4]f32{ 1, 0, 0, 1 }, blob.glyphs[0].color);
     try testing.expectEqual([4]f32{ 0, 0, 1, 1 }, blob.glyphs[1].color);
     try testing.expectApproxEqAbs(10 + first.advance.x, blob.glyphs[1].transform.tx, 0.001);
 }
 
-test "TextBlobBuilder.append stores gradient paint records" {
+test "TextBlobBundle.append stores gradient paint records" {
     const assets_data = @import("assets");
     var fonts = try TextAtlas.init(testing.allocator, &.{
         .{ .data = assets_data.noto_sans_regular },
@@ -343,10 +345,12 @@ test "TextBlobBuilder.append stores gradient paint records" {
     var shaped = try fonts.shapeText(testing.allocator, .{}, "A");
     defer shaped.deinit();
 
-    var builder = TextBlobBuilder.init(testing.allocator, &fonts);
-    defer builder.deinit();
+    var bundle = snail.TextBlobBundle.init(testing.allocator, &fonts);
+    defer bundle.deinit();
+    var bip = try bundle.startBlob();
+    errdefer bip.abort();
 
-    _ = try builder.append(.{
+    _ = try bip.append(.{
         .source = .{ .shaped = shaped.glyphs },
         .placement = .{ .baseline = .{ .x = 10, .y = 20 }, .em = 10 },
         .fill = .{ .linear_gradient = .{
@@ -356,10 +360,9 @@ test "TextBlobBuilder.append stores gradient paint records" {
             .end_color = .{ 0, 0, 1, 1 },
         } },
     });
-    try testing.expectEqual(@as(usize, 1), builder.glyphCount());
+    try testing.expectEqual(@as(usize, 1), bip.glyphCount());
 
-    var blob = try builder.finish();
-    defer blob.deinit();
+    const blob = try bip.finish(snail.ResourceKey.named("test_blob"));
     try testing.expect(blob.hasPaintRecords());
     try testing.expectEqual(@as(?u32, 0), blob.glyphs[0].paint_record_index);
     try testing.expectEqual([4]f32{ 1, 1, 1, 1 }, blob.glyphs[0].color);
@@ -379,7 +382,7 @@ test "TextBlobBuilder.append stores gradient paint records" {
     try testing.expect(blob.paint_image_records == null);
 }
 
-test "TextBlobBuilder.append stores image paint records" {
+test "TextBlobBundle.append stores image paint records" {
     const assets_data = @import("assets");
     var image = try snail.Image.initSrgba8(testing.allocator, 1, 1, &.{ 255, 64, 32, 255 });
     defer image.deinit();
@@ -396,10 +399,12 @@ test "TextBlobBuilder.append stores image paint records" {
     var shaped = try fonts.shapeText(testing.allocator, .{}, "A");
     defer shaped.deinit();
 
-    var builder = TextBlobBuilder.init(testing.allocator, &fonts);
-    defer builder.deinit();
+    var bundle = snail.TextBlobBundle.init(testing.allocator, &fonts);
+    defer bundle.deinit();
+    var bip = try bundle.startBlob();
+    errdefer bip.abort();
 
-    _ = try builder.append(.{
+    _ = try bip.append(.{
         .source = .{ .shaped = shaped.glyphs },
         .placement = .{ .baseline = .{ .x = 4, .y = 8 }, .em = 2 },
         .fill = .{ .image = .{
@@ -408,8 +413,7 @@ test "TextBlobBuilder.append stores image paint records" {
         } },
     });
 
-    var blob = try builder.finish();
-    defer blob.deinit();
+    const blob = try bip.finish(snail.ResourceKey.named("test_blob"));
     try testing.expect(blob.hasPaintRecords());
     const records = blob.paint_image_records orelse return error.TestExpectedEqual;
     try testing.expectEqual(@as(usize, 1), records.len);
@@ -427,7 +431,7 @@ test "TextBlobBuilder.append stores image paint records" {
     try testing.expectApproxEqAbs(@as(f32, 4), data1[2], 0.001);
 }
 
-test "TextBlobBuilder stores hinted glyph records and emits hinted special vertices" {
+test "TextBlobBundle stores hinted glyph records and emits hinted special vertices" {
     const assets_data = @import("assets");
     var fonts = try TextAtlas.init(testing.allocator, &.{
         .{ .data = assets_data.noto_sans_regular },
@@ -460,13 +464,14 @@ test "TextBlobBuilder stores hinted glyph records and emits hinted special verti
         },
     };
 
-    var builder = TextBlobBuilder.init(testing.allocator, &fonts);
-    defer builder.deinit();
-    try builder.appendHintedGlyphRef(0, gid, snail.Transform2D.scale(12, -12), .{ 0.2, 0.4, 0.6, 1 }, &hinted_value);
-    try builder.appendHintedGlyphRef(0, gid, .{ .xx = 12, .yy = -12, .tx = 14, .ty = 0 }, .{ 0.2, 0.4, 0.6, 1 }, &hinted_value);
+    var bundle = snail.TextBlobBundle.init(testing.allocator, &fonts);
+    defer bundle.deinit();
+    var bip = try bundle.startBlob();
+    errdefer bip.abort();
+    try bip.appendHintedGlyphRef(0, gid, snail.Transform2D.scale(12, -12), .{ 0.2, 0.4, 0.6, 1 }, &hinted_value);
+    try bip.appendHintedGlyphRef(0, gid, .{ .xx = 12, .yy = -12, .tx = 14, .ty = 0 }, .{ 0.2, 0.4, 0.6, 1 }, &hinted_value);
 
-    var blob = try builder.finish();
-    defer blob.deinit();
+    const blob = try bip.finish(snail.ResourceKey.named("test_blob"));
     const hint_texel = blob.glyphs[0].hint_record_texel orelse return error.TestExpectedEqual;
     try testing.expectEqual(hint_texel, blob.glyphs[1].hint_record_texel.?);
     const meta = paint_records.readTexel(blob.paint_layer_info_data.?, blob.paint_layer_info_width, hint_texel + 2);
@@ -477,7 +482,7 @@ test "TextBlobBuilder stores hinted glyph records and emits hinted special verti
     var buf = [_]u32{0} ** (snail.TEXT_WORDS_PER_GLYPH * 2);
     var batch = TextBatch.init(&buf);
     const result = try batch.addDraw(.{}, .{
-        .blob = &blob,
+        .blob = blob,
         .resources = blob.resourceKeys(snail.ResourceKey.named("fonts"), snail.ResourceKey.named("text")),
     }, 0, 0);
 
@@ -487,7 +492,7 @@ test "TextBlobBuilder stores hinted glyph records and emits hinted special verti
     try testing.expectEqual(render_abi.SpecialLayerKind.hinted_text, render_abi.specialGlyphWordKind(packed_gw).?);
 }
 
-test "TextBlobBuilder hint run keeps fallback glyphs" {
+test "TextBlobBundle hint run keeps fallback glyphs" {
     const assets_data = @import("assets");
     const sample = "A \xf0\x9f\x9a\x80 B";
     var fonts = try TextAtlas.init(testing.allocator, &.{
@@ -515,16 +520,17 @@ test "TextBlobBuilder hint run keeps fallback glyphs" {
     try testing.expect(run.stats.hinted_count >= 2);
     try testing.expect(run.stats.fallback_count >= 1);
 
-    var builder = TextBlobBuilder.init(testing.allocator, &fonts);
-    defer builder.deinit();
-    _ = try builder.append(.{
+    var bundle = snail.TextBlobBundle.init(testing.allocator, &fonts);
+    defer bundle.deinit();
+    var bip = try bundle.startBlob();
+    errdefer bip.abort();
+    _ = try bip.append(.{
         .source = .{ .hinted = run.glyphs },
         .placement = .{ .baseline = .{ .x = 0, .y = 12 }, .em = 12 },
         .fill = .{ .solid = .{ 0.2, 0.4, 0.6, 1 } },
     });
 
-    var blob = try builder.finish();
-    defer blob.deinit();
+    const blob = try bip.finish(snail.ResourceKey.named("test_blob"));
     var hinted_glyphs: usize = 0;
     for (blob.glyphs) |glyph| {
         if (glyph.hint_record_texel != null) hinted_glyphs += 1;
@@ -739,11 +745,12 @@ test "TextBlob.rebound accepts atlas snapshots that retain referenced glyphs" {
         fonts = new_fonts;
     }
 
-    var builder = TextBlobBuilder.init(testing.allocator, &fonts);
-    defer builder.deinit();
-    _ = try appendTestText(&builder, .{}, "A", .{ .x = 0, .y = 20 }, 16, .{ 1, 1, 1, 1 });
-    var blob = try builder.finish();
-    defer blob.deinit();
+    var bundle = snail.TextBlobBundle.init(testing.allocator, &fonts);
+    defer bundle.deinit();
+    var bip = try bundle.startBlob();
+    errdefer bip.abort();
+    _ = try appendTestText(bip, .{}, "A", .{ .x = 0, .y = 20 }, 16, .{ 1, 1, 1, 1 });
+    const blob = try bip.finish(snail.ResourceKey.named("test_blob"));
 
     var next = (try fonts.ensureText(.{}, "B")).?;
     defer next.deinit();
@@ -768,12 +775,13 @@ test "TextBlob.rebound recomputes budget after ensureGlyphs" {
         fonts = next;
     }
 
-    var builder = TextBlobBuilder.init(testing.allocator, &fonts);
-    defer builder.deinit();
-    _ = try appendTestText(&builder, .{}, "A", .{ .x = 0, .y = 20 }, 16, .{ 1, 1, 1, 1 });
+    var bundle = snail.TextBlobBundle.init(testing.allocator, &fonts);
+    defer bundle.deinit();
+    var bip = try bundle.startBlob();
+    errdefer bip.abort();
+    _ = try appendTestText(bip, .{}, "A", .{ .x = 0, .y = 20 }, 16, .{ 1, 1, 1, 1 });
 
-    var blob = try builder.finish();
-    defer blob.deinit();
+    const blob = try bip.finish(snail.ResourceKey.named("test_blob"));
     const original_budget = blob.gpu_instance_budget;
     try testing.expect(original_budget > 0);
 
