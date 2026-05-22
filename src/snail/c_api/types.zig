@@ -154,6 +154,46 @@ pub const SnailShapedGlyph = extern struct {
     source_end: u32,
 };
 
+/// Half-open source-byte range. `end` exclusive.
+pub const SnailSourceRange = extern struct {
+    start: u32,
+    end: u32,
+};
+
+/// OpenType feature request. Tag is 4 bytes in font-canonical order (e.g.
+/// `{'l','i','g','a'}`). `value=0` disables, `value>=1` enables. When
+/// `has_range` is false the feature is global; otherwise it is restricted
+/// to `range`.
+pub const SnailOpenTypeFeature = extern struct {
+    tag: [4]u8,
+    value: u32,
+    has_range: bool,
+    range: SnailSourceRange,
+};
+
+/// Shape-time inputs. `features` may be null when `feature_count == 0`.
+pub const SnailShapeOptions = extern struct {
+    features: ?[*]const SnailOpenTypeFeature = null,
+    feature_count: usize = 0,
+};
+
+/// Caller-visible "atom" of a ShapedText: a maximal run of glyphs sharing
+/// `source_start`. Use `snail_shaped_text_glyph(shaped, glyph_start + i, ...)`
+/// to retrieve the cluster's glyphs.
+pub const SnailCluster = extern struct {
+    glyph_start: usize,
+    glyph_count: usize,
+    source_start: u32,
+    source_end: u32,
+};
+
+/// Stack-allocated iterator state. Treat the fields as opaque; the API may
+/// add fields in the future without changing the size class.
+pub const SnailClusterIterator = extern struct {
+    _shaped: ?*const anyopaque = null,
+    _index: usize = 0,
+};
+
 pub const SnailTextPlacement = extern struct {
     baseline_x: f32,
     baseline_y: f32,

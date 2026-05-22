@@ -18,6 +18,10 @@ const SnailRange = common.SnailRange;
 const SnailFaceSpec = common.SnailFaceSpec;
 const SnailFontStyle = common.SnailFontStyle;
 const SnailShapedGlyph = common.SnailShapedGlyph;
+const SnailShapeOptions = common.SnailShapeOptions;
+const SnailOpenTypeFeature = common.SnailOpenTypeFeature;
+const SnailCluster = common.SnailCluster;
+const SnailClusterIterator = common.SnailClusterIterator;
 const SnailTextAppendOptions = common.SnailTextAppendOptions;
 const SnailTextAppendResult = common.SnailTextAppendResult;
 const SnailTextPlacement = common.SnailTextPlacement;
@@ -328,6 +332,124 @@ pub export fn snail_shaped_text_copy_glyphs(shaped: *const ShapedTextImpl, out: 
         };
     }
     return count;
+}
+
+// ── Shape with options ──
+
+fn toOpenTypeFeatures(
+    allocator: std.mem.Allocator,
+    opts: ?*const SnailShapeOptions,
+) !?[]snail.OpenTypeFeature {
+    if (opts == null) return null;
+    const o = opts.?;
+    if (o.feature_count == 0) return null;
+    if (o.features == null) return error.InvalidArgument;
+    const buf = try allocator.alloc(snail.OpenTypeFeature, o.feature_count);
+    for (o.features.?[0..o.feature_count], 0..) |f, i| {
+        buf[i] = .{
+            .tag = f.tag,
+            .value = f.value,
+            .range = if (f.has_range) .{ .start = f.range.start, .end = f.range.end } else null,
+        };
+    }
+    return buf;
+}
+
+pub export fn snail_text_atlas_shape_utf8_opts(
+    atlas: *const TextAtlasImpl,
+    style: SnailFontStyle,
+    text: [*]const u8,
+    text_len: usize,
+    opts: ?*const SnailShapeOptions,
+    out: *?*ShapedTextImpl,
+) c_int {
+    const impl = createHandle(ShapedTextImpl, &atlas.handle_allocator.inner) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    const allocator = allocatorForHandle(impl);
+
+    const font_style = toFontStyle(style) catch {
+        destroyHandle(impl);
+        return SNAIL_ERR_INVALID_ARGUMENT;
+    };
+
+    const features = toOpenTypeFeatures(allocator, opts) catch {
+        destroyHandle(impl);
+        return SNAIL_ERR_INVALID_ARGUMENT;
+    };
+    defer if (features) |f| allocator.free(f);
+
+    const zig_opts: snail.ShapeOptions = .{ .features = features orelse &.{} };
+    const shaped = atlas.inner.shapeTextOpts(allocator, font_style, text[0..text_len], zig_opts) catch |err| {
+        destroyHandle(impl);
+        return mapError(err);
+    };
+    impl.inner = shaped;
+    out.* = impl;
+    return SNAIL_OK;
+}
+
+// ── Post-shape transforms ──
+
+pub export fn snail_shaped_text_track(shaped: *ShapedTextImpl, em: f32) void {
+    snail.track(&shaped.inner, em);
+}
+
+pub export fn snail_shaped_text_shift_baseline(shaped: *ShapedTextImpl, em: f32) void {
+    snail.shiftBaseline(&shaped.inner, em);
+}
+
+pub export fn snail_shaped_text_space_words(
+    shaped: *ShapedTextImpl,
+    source: [*]const u8,
+    source_len: usize,
+    em: f32,
+) void {
+    snail.spaceWords(&shaped.inner, source[0..source_len], em);
+}
+
+pub export fn snail_shaped_text_snap_advances(shaped: *ShapedTextImpl, em_step: f32) void {
+    snail.snapAdvances(&shaped.inner, em_step);
+}
+
+// ── Cluster iteration ──
+
+pub export fn snail_shaped_text_cluster_iterator(
+    shaped: *const ShapedTextImpl,
+    out: *SnailClusterIterator,
+) void {
+    out.* = .{ ._shaped = shaped, ._index = 0 };
+}
+
+pub export fn snail_cluster_iterator_next(
+    it: *SnailClusterIterator,
+    out: *SnailCluster,
+) bool {
+    const shaped_any = it._shaped orelse return false;
+    const shaped: *const ShapedTextImpl = @ptrCast(@alignCast(shaped_any));
+    const glyphs = shaped.inner.glyphs;
+    if (it._index >= glyphs.len) return false;
+
+    const start = it._index;
+    const source_start = glyphs[start].source_start;
+    var end = start + 1;
+    while (end < glyphs.len and glyphs[end].source_start == source_start) : (end += 1) {}
+
+    var source_end: u32 = source_start;
+    if (end < glyphs.len) {
+        source_end = glyphs[end].source_start;
+    } else {
+        for (glyphs[start..end]) |g| {
+            if (g.source_end > source_end) source_end = g.source_end;
+        }
+    }
+
+    it._index = end;
+    out.* = .{
+        .glyph_start = start,
+        .glyph_count = end - start,
+        .source_start = source_start,
+        .source_end = source_end,
+    };
+    return true;
 }
 
 // ── TextBlobBundle / BlobInProgress ──

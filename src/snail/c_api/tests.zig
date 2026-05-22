@@ -642,3 +642,91 @@ test "c_api: image paint init and constants" {
     try testing.expectEqual(snail.PATH_WORDS_PER_VERTEX, c_constants.snail_path_words_per_vertex());
     try testing.expectEqual(snail.PATH_VERTICES_PER_SHAPE, c_constants.snail_path_vertices_per_shape());
 }
+
+test "c_api: shape with options and post-shape transforms" {
+    const atlas = try testTextAtlas();
+    defer c_text.snail_text_atlas_deinit(atlas);
+
+    const text = "Affine";
+
+    // shape_utf8_opts with no features matches shape_utf8.
+    var baseline: ?*c.test_api.ShapedTextImpl = null;
+    try testing.expectEqual(c.SNAIL_OK, c_text.snail_text_atlas_shape_utf8(atlas, .{}, text.ptr, text.len, &baseline));
+    defer c_text.snail_shaped_text_deinit(baseline);
+
+    var with_opts: ?*c.test_api.ShapedTextImpl = null;
+    const opts: c.SnailShapeOptions = .{ .features = null, .feature_count = 0 };
+    try testing.expectEqual(c.SNAIL_OK, c_text.snail_text_atlas_shape_utf8_opts(atlas, .{}, text.ptr, text.len, &opts, &with_opts));
+    defer c_text.snail_shaped_text_deinit(with_opts);
+
+    try testing.expectEqual(c_text.snail_shaped_text_glyph_count(baseline.?), c_text.snail_shaped_text_glyph_count(with_opts.?));
+
+    // shape_utf8_opts with a known feature does not crash.
+    const features = [_]c.SnailOpenTypeFeature{
+        .{ .tag = .{ 'k', 'e', 'r', 'n' }, .value = 0, .has_range = false, .range = .{ .start = 0, .end = 0 } },
+    };
+    var disabled: ?*c.test_api.ShapedTextImpl = null;
+    const opts_with_feat: c.SnailShapeOptions = .{ .features = &features, .feature_count = features.len };
+    try testing.expectEqual(c.SNAIL_OK, c_text.snail_text_atlas_shape_utf8_opts(atlas, .{}, text.ptr, text.len, &opts_with_feat, &disabled));
+    defer c_text.snail_shaped_text_deinit(disabled);
+    try testing.expect(c_text.snail_shaped_text_glyph_count(disabled.?) > 0);
+
+    // track bumps advance.
+    var trackable: ?*c.test_api.ShapedTextImpl = null;
+    try testing.expectEqual(c.SNAIL_OK, c_text.snail_text_atlas_shape_utf8(atlas, .{}, text.ptr, text.len, &trackable));
+    defer c_text.snail_shaped_text_deinit(trackable);
+    const adv_before = c_text.snail_shaped_text_advance_x(trackable.?);
+    c_text.snail_shaped_text_track(trackable.?, 0.1);
+    try testing.expect(c_text.snail_shaped_text_advance_x(trackable.?) > adv_before);
+
+    // shift_baseline does not touch x advance.
+    var baseline_shifted: ?*c.test_api.ShapedTextImpl = null;
+    try testing.expectEqual(c.SNAIL_OK, c_text.snail_text_atlas_shape_utf8(atlas, .{}, text.ptr, text.len, &baseline_shifted));
+    defer c_text.snail_shaped_text_deinit(baseline_shifted);
+    const x_before = c_text.snail_shaped_text_advance_x(baseline_shifted.?);
+    c_text.snail_shaped_text_shift_baseline(baseline_shifted.?, 0.3);
+    try testing.expectApproxEqAbs(x_before, c_text.snail_shaped_text_advance_x(baseline_shifted.?), 1e-6);
+
+    // snap_advances rounds total advance to multiples of step.
+    var snappy: ?*c.test_api.ShapedTextImpl = null;
+    try testing.expectEqual(c.SNAIL_OK, c_text.snail_text_atlas_shape_utf8(atlas, .{}, text.ptr, text.len, &snappy));
+    defer c_text.snail_shaped_text_deinit(snappy);
+    c_text.snail_shaped_text_snap_advances(snappy.?, 1.0);
+    const snapped = c_text.snail_shaped_text_advance_x(snappy.?);
+    try testing.expectApproxEqAbs(@round(snapped), snapped, 1e-5);
+
+    // space_words leaves "Affine" (no whitespace) untouched.
+    var spacy: ?*c.test_api.ShapedTextImpl = null;
+    try testing.expectEqual(c.SNAIL_OK, c_text.snail_text_atlas_shape_utf8(atlas, .{}, text.ptr, text.len, &spacy));
+    defer c_text.snail_shaped_text_deinit(spacy);
+    const sx_before = c_text.snail_shaped_text_advance_x(spacy.?);
+    c_text.snail_shaped_text_space_words(spacy.?, text.ptr, text.len, 0.5);
+    try testing.expectApproxEqAbs(sx_before, c_text.snail_shaped_text_advance_x(spacy.?), 1e-6);
+}
+
+test "c_api: cluster iterator covers every glyph exactly once" {
+    const atlas = try testTextAtlas();
+    defer c_text.snail_text_atlas_deinit(atlas);
+
+    const text = "Hello";
+    var shaped: ?*c.test_api.ShapedTextImpl = null;
+    try testing.expectEqual(c.SNAIL_OK, c_text.snail_text_atlas_shape_utf8(atlas, .{}, text.ptr, text.len, &shaped));
+    defer c_text.snail_shaped_text_deinit(shaped);
+
+    const total = c_text.snail_shaped_text_glyph_count(shaped.?);
+
+    var it: c.SnailClusterIterator = .{};
+    c_text.snail_shaped_text_cluster_iterator(shaped.?, &it);
+
+    var seen: usize = 0;
+    var prev_start: ?u32 = null;
+    var cluster: c.SnailCluster = undefined;
+    while (c_text.snail_cluster_iterator_next(&it, &cluster)) {
+        try testing.expect(cluster.glyph_count >= 1);
+        try testing.expect(cluster.source_end > cluster.source_start);
+        if (prev_start) |p| try testing.expect(cluster.source_start > p);
+        prev_start = cluster.source_start;
+        seen += cluster.glyph_count;
+    }
+    try testing.expectEqual(total, seen);
+}

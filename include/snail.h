@@ -223,6 +223,46 @@ typedef struct {
     uint32_t source_start, source_end;
 } SnailShapedGlyph;
 
+/* Half-open source-byte range, `end` exclusive. Same coordinate system as
+ * the text passed to snail_text_atlas_shape_utf8 / _opts. */
+typedef struct {
+    uint32_t start;
+    uint32_t end;
+} SnailSourceRange;
+
+/* OpenType feature request. `tag` is 4 bytes in font-canonical order, e.g.
+ * {'l','i','g','a'}. value=0 disables, value>=1 enables. When has_range is
+ * false the feature is global; otherwise it is restricted to `range`. */
+typedef struct {
+    uint8_t tag[4];
+    uint32_t value;
+    bool has_range;
+    SnailSourceRange range;
+} SnailOpenTypeFeature;
+
+/* Shape-time inputs. `features` may be NULL when feature_count == 0. */
+typedef struct {
+    const SnailOpenTypeFeature *features;
+    size_t feature_count;
+} SnailShapeOptions;
+
+/* A `SnailCluster` is a maximal run of consecutive glyphs sharing
+ * `source_start`. Mirrors HarfBuzz's cluster contract: a ligature, a
+ * composed grapheme, or a reordering. Use snail_shaped_text_glyph(shaped,
+ * glyph_start + i, ...) to retrieve the cluster's glyphs. */
+typedef struct {
+    size_t glyph_start;
+    size_t glyph_count;
+    uint32_t source_start;
+    uint32_t source_end;
+} SnailCluster;
+
+/* Stack-allocated iterator state. Treat the fields as opaque. */
+typedef struct {
+    const void *_shaped;
+    size_t _index;
+} SnailClusterIterator;
+
 typedef struct {
     float baseline_x, baseline_y;
     float em;
@@ -511,6 +551,34 @@ bool snail_shaped_text_glyph(const SnailShapedText *shaped, size_t index, SnailS
 size_t snail_shaped_text_copy_glyphs(const SnailShapedText *shaped,
                                      SnailShapedGlyph *out,
                                      size_t capacity);
+
+/* Shape with explicit OpenType feature requests. `opts` may be NULL, in
+ * which case behaviour matches snail_text_atlas_shape_utf8. With HarfBuzz
+ * disabled at build time, features are silently ignored. */
+int snail_text_atlas_shape_utf8_opts(const SnailTextAtlas *atlas,
+                                     SnailFontStyle style,
+                                     const char *text,
+                                     size_t text_len,
+                                     const SnailShapeOptions *opts,
+                                     SnailShapedText **out);
+
+/* Post-shape transforms — mutate the glyph stream in place. All four are
+ * cluster-aware (ligature internals stay intact). */
+void snail_shaped_text_track(SnailShapedText *shaped, float em);
+void snail_shaped_text_shift_baseline(SnailShapedText *shaped, float em);
+void snail_shaped_text_space_words(SnailShapedText *shaped,
+                                   const char *source,
+                                   size_t source_len,
+                                   float em);
+void snail_shaped_text_snap_advances(SnailShapedText *shaped, float em_step);
+
+/* Cluster iteration. `iter` is caller-owned (stack allocation is fine).
+ * `_next` returns false when iteration is exhausted. The iterator borrows
+ * `shaped`; it stays valid as long as `shaped` does. */
+void snail_shaped_text_cluster_iterator(const SnailShapedText *shaped,
+                                        SnailClusterIterator *iter);
+bool snail_cluster_iterator_next(SnailClusterIterator *iter,
+                                 SnailCluster *out);
 
 /* TextBlobBundle: arena-backed container for many TextBlobs sharing a
  * TextAtlas. Streaming construction via start_blob; bulk construction is a

@@ -154,7 +154,12 @@ migration recipes below each entry.
   sharing a `source_start`. A cluster is the caller-visible "atom" of
   shaped output: a ligature, a composed grapheme, or a reorder block.
   Post-shape transforms (see below) iterate by cluster to avoid pulling
-  ligature components apart.
+  ligature components apart. C API: `SnailCluster`,
+  `SnailClusterIterator` (stack-allocated), with
+  `snail_shaped_text_cluster_iterator` /
+  `snail_cluster_iterator_next`. The C-side cluster carries
+  `glyph_start` / `glyph_count` indices into the shaped text rather
+  than borrowing glyph pointers.
 - Free-function post-shape transforms over `*ShapedText`:
   `snail.track(&shaped, em)` (letter-spacing between clusters),
   `snail.shiftBaseline(&shaped, em)` (super/subscript shift),
@@ -164,6 +169,9 @@ migration recipes below each entry.
   no god-struct, no allocator. Cluster-aware: ligature internals are
   preserved, and per-cluster deltas are baked into the cluster's last
   glyph's `x_advance` so subsequent advance summation stays correct.
+  C API: `snail_shaped_text_track` / `_shift_baseline` / `_space_words`
+  / `_snap_advances` mirror the Zig signatures and mutate the handle
+  in place.
 - `snail.ShapeOptions` and `snail.OpenTypeFeature` (with optional
   `snail.SourceRange`) provide shape-time inputs distinct from
   post-shape transforms. New `TextAtlas.shapeTextOpts(allocator, style,
@@ -174,7 +182,10 @@ migration recipes below each entry.
   fall outside a segment are silently dropped. Up to 32 concurrent
   features per segment (well beyond typical usage). With HarfBuzz
   disabled at build time, options are accepted but ignored — the
-  fallback shaper has no feature surface.
+  fallback shaper has no feature surface. C API:
+  `SnailSourceRange`, `SnailOpenTypeFeature` (with `has_range` bool to
+  encode the optional range), `SnailShapeOptions`, and
+  `snail_text_atlas_shape_utf8_opts`.
 
 ## 0.11.1 - 2026-05-20
 
