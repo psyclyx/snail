@@ -110,13 +110,17 @@ and no texture sample that represents a pre-rasterized glyph shape.
 
 **Optional TrueType hints.** The default text path is unhinted and
 resolution-independent. Zig callers can opt into per-size TrueType bytecode
-execution with `TrueTypeHintContext`; hinted glyphs are stored as curve-delta
-records attached to a `TextBlob`, and the renderer still evaluates curves at
-draw time. `prepareRun` is whole-run: every glyph comes back either hinted
-or with a per-glyph `.fallback` marker. Fallback glyphs render unhinted
-curves but their advances are still snapped to whole pixels at the chosen
-PPEM, so columns of text grid-align even when individual glyphs can't be
-hinted (font has no bytecode, hits a topology mismatch, etc.). Faux-bold
+execution with `TrueTypeHintContext`; hinted glyphs are stored as
+curve-delta records in a bundle-shared hint pool that the renderer reads
+at draw time, and the curve evaluation itself is unchanged. The pool is
+bundle-scoped: many small blobs over the same character set (terminal
+rows, code lines, log entries) share one hint upload per bundle rather
+than one per blob. `prepareRun` is whole-run: every glyph comes back
+either hinted or with a per-glyph `.fallback` marker. Fallback glyphs
+render unhinted curves but their advances are still snapped to whole
+pixels at the chosen PPEM, so columns of text grid-align even when
+individual glyphs can't be hinted (font has no bytecode, hits a
+topology mismatch, etc.). Faux-bold
 faces hint normally; the embolden offset is applied as a render-time second
 copy. Faces whose `gasp` table explicitly disables grid-fitting at a given
 size keep their original advances.
@@ -157,7 +161,7 @@ application around it.
 | Type | Owns | Borrows | Lifetime rule |
 |------|------|---------|---------------|
 | `TextAtlas` | Atlas pages and metadata allocated by its allocator. | Text configuration and source font data through the configuration. | Immutable snapshot. Any blob or manifest entry that points at it must not outlive it. |
-| `TextBlobBundle` | Arena holding many `TextBlob`s and their glyph/paint content. | A compatible `TextAtlas`. | Owns blob lifetimes. `reset` invalidates every outstanding blob borrowed from the bundle; `rebindAtlas` retargets to a compatible superset. |
+| `TextBlobBundle` | Arena holding many `TextBlob`s, their glyph/paint content, and the bundle-shared TT hint pool. | A compatible `TextAtlas`. | Owns blob lifetimes. `reset` invalidates every outstanding blob borrowed from the bundle; `rebindAtlas` retargets to a compatible superset. The hint pool is uploaded once per bundle: many blobs sharing a glyph at the same PPEM share one upload. |
 | `TextBlob` | A view into bundle-owned glyph/paint storage. | The bundle that produced it and that bundle's `TextAtlas`. | Immutable snapshot, pointer-stable until the bundle is reset/deinit'd. |
 | `PathPicture` | Frozen path atlas/layer records allocated by its allocator. | Nothing after freeze. | Immutable snapshot. Can be declared in a manifest by pointer. |
 | `Image` | Pixel storage according to the image constructor. | Nothing unless explicitly documented by the constructor. | Immutable render resource while it is declared in a manifest. |
@@ -256,6 +260,14 @@ a hint pointer or a `.fallback` marker. Strict callers check
 `hinted.stats.fallback_count == 0` before consuming the run. Fallback glyphs
 render via unhinted curves but their advances are pixel-snapped at the hint
 context's PPEM so adjacent glyphs still grid-align.
+
+The hint records themselves live in a bundle-shared pool. Many blobs built
+from the same `TextBlobBundle` that reference the same hint (same glyph at
+the same PPEM) collapse to one pool entry; the manifest auto-dedupes the
+`text_hint` resource derived from the atlas key, so the GPU upload is one
+hint slab per bundle rather than per blob — important for terminals,
+chat/log windows, and other workloads with many small blobs over the same
+character set.
 
 C uses the same model through `SnailTrueTypeHintContext`,
 `SnailTrueTypePreparedHintRun`, and the
@@ -661,7 +673,7 @@ until `snail_scene_reset` or `snail_scene_deinit`.
 | `TextAtlas` | Immutable CPU font/glyph snapshot. `ensureText`, `ensureShaped`, and `ensureGlyphs` return a new snapshot; old stays valid. |
 | `ShapedText` | Shaped glyph placements for a string/run. |
 | `TextBlob` | Bundle-owned positioned-text view: glyph indices, transforms, and paint records into the bundle's arena. Accessed via `blob.atlas()` and the rendering APIs; not directly destructible (the bundle owns its lifetime). |
-| `TextBlobBundle` / `BlobInProgress` | Arena-backed builder for one or many `TextBlob`s sharing a `TextAtlas`. `bundle.startBlob()` returns a `BlobInProgress`; finish it with `bip.finish(key)` to get a bundle-owned `*const TextBlob`, or abort with `bip.abort()`. `bundle.rebindAtlas` / `bundle.rebound` are the cache/lifetime helpers. C API: `SnailTextBlobBundle` + `SnailBlobInProgress`. |
+| `TextBlobBundle` / `BlobInProgress` | Arena-backed builder for one or many `TextBlob`s sharing a `TextAtlas`. `bundle.startBlob()` returns a `BlobInProgress`; finish it with `bip.finish(key)` to get a bundle-owned `*const TextBlob`, or abort with `bip.abort()`. `bundle.rebindAtlas` / `bundle.rebound` are the cache/lifetime helpers. The bundle also owns a shared TT hint pool — terminal-style workloads with many small blobs over the same character set upload that pool once instead of once per blob. C API: `SnailTextBlobBundle` + `SnailBlobInProgress`. |
 | `Font` | Stable parsed-font helper for `unitsPerEm`, `glyphIndex`, and `advanceWidth` when callers manage raw font data directly. |
 | `FaceSpec` | `{ .data, .weight, .italic, .fallback, .synthetic }` — font face specification for `TextAtlas.init`. |
 | `FaceIndex` | `u16` face handle returned by atlas resolution/itemization and accepted by per-face metric helpers. |
@@ -734,7 +746,7 @@ until `snail_scene_reset` or `snail_scene_deinit`.
 | `TextBlobBundle.init(gpa, atlas) TextBlobBundle` / `bundle.startBlob() !BlobInProgress` / `bip.append(TextAppend) !TextAppendResult` / `bip.finish(key) !*const TextBlob` / `bip.abort() void` | Streaming blob construction. The bundle owns blob lifetimes; multiple blobs sharing one atlas live in one arena. `bundle.buildBlob(key, []TextAppend, ?[]TextAppendResult)` is the bulk variant. |
 | `bundle.rebindAtlas(new_atlas)` / `target_bundle.rebound(key, src_blob, new_atlas) !*const TextBlob` | Cache/lifetime helpers for atlas extension. `rebindAtlas` retargets the whole bundle in place when the new snapshot is prefix-compatible; `rebound` copies one blob from a source bundle into a target bundle already bound to `new_atlas`. |
 | `bundle.reset()` / `bundle.freeze()` / `bundle.unfreeze()` / `bundle.isFrozen()` / `bundle.blobCount()` / `bundle.currentGeneration()` | Bundle lifecycle: `reset` invalidates every outstanding blob, the generation counter advances so callers can detect use-after-reset. C handles compare-and-validate against `snail_text_blob_bundle_generation`. |
-| `blob.resourceKeys(atlas_key, blob_key) TextResourceKeys` | Build the resource binding used by both `scene.addText` and `ResourceManifest.putTextBlob`. |
+| `blob.resourceKeys(atlas_key, blob_key) TextResourceKeys` | Build the resource binding used by both `scene.addText` and `ResourceManifest.putTextBlob`. Returns `{ atlas, paint?, hint? }`. The hint key is derived from `atlas_key` (not `blob_key`) so every blob from the same bundle resolves to the same `text_hint` manifest entry; the bundle hint pool uploads once per bundle. |
 | `TrueTypeHintContext.init(alloc, atlas)` / `context.prepareRun(alloc, .{ .shaped, .ppem })` | Whole-run TrueType hinting. The result covers every input glyph; rejected glyphs become `.fallback` entries with pixel-snapped advances rather than aborting the whole run. Strict callers check `stats.fallback_count == 0`. Append the run via `bip.append(.{ .source = .{ .hinted = run.glyphs }, .placement, .fill = .{ .solid = color } })`. C callers use `snail_true_type_hint_context_prepare_run` + `snail_blob_in_progress_append_prepared_hint_run` (or the standalone `snail_text_blob_init_from_prepared_hint_run`). |
 | `context.rebindAtlas(new_atlas)` | Preserve cached hint values, face programs, and size states across atlas extensions when the new snapshot is prefix-compatible with the old. Eliminates the warmup rehint storm on `ensureText`-style growth. |
 | `TextAppend` | `{ .source, .placement = .{ .baseline, .em }, .fill }` where `source` is `.{ .shaped = []const ShapedText.Glyph }` or `.{ .hinted = []const PreparedHintRun.Glyph }`. Slice notation handles sub-selection (`shaped.glyphs[a..b]`). Hinted runs require a solid `Paint`. |
@@ -780,7 +792,7 @@ try scene.addPath(.{ .picture = &sprite, .resource_key = snail.ResourceKey.named
 |--------|-------------|
 | `ResourceManifest.init(entries)` | Wrap a caller-owned `[]ResourceManifest.Entry` buffer. |
 | `set.reset()` | Clear entries; capacity is retained. |
-| `set.putTextBlob(resources, blob)` / `set.putTextBlobOptions(resources, blob, options)` | Add a text blob's atlas and optional paint records under the same `TextResourceKeys` used by `scene.addText`. Options can override atlas capacity mode. |
+| `set.putTextBlob(resources, blob)` / `set.putTextBlobOptions(resources, blob, options)` | Add a text blob's atlas, optional paint records, and optional bundle hint pool under the same `TextResourceKeys` used by `scene.addText`. Many blobs from one bundle share the hint key and dedupe to a single manifest entry. Options can override atlas capacity mode. |
 | `set.putPathPicture(key, picture)` / `set.putPathPictureOptions(key, picture, options)` | Add a path picture, optionally overriding atlas capacity mode. |
 | `set.putImage(key, image)` | Add an image resource. |
 | `set.estimateUploadFootprint() !ResourceFootprint` | Allocation-free estimate for a resource manifest before upload. |
@@ -1044,15 +1056,15 @@ The vector workload contains filled and stroked rounded rectangles, ellipses, an
 
 | Workload | Snail | FreeType | FreeType / Snail |
 |---|---:|---:|---:|
-| Font load | 1.55 us | 9.22 us | 5.97x |
-| Glyph prep, ASCII | 428.47 us | 1016.67 us | 2.37x |
-| Glyph prep, 7 sizes | 428.47 us | 7114.25 us | 16.60x |
-| TT hint setup @ 12px | 22.23 us | n/a | n/a |
-| TT hint execute, ASCII @ 12px | 505.22 us | n/a | n/a |
-| TT hint plan, ASCII @ 12px | 853.54 us | n/a | n/a |
-| TT hint context cold, paragraph @ 12px | 244.41 us | n/a | n/a |
-| TT hint context warm, paragraph @ 12px | 1.49 us | n/a | n/a |
-| PathPicture freeze, 25 shapes | 175.52 us | n/a | n/a |
+| Font load | 1.61 us | 8.87 us | 5.49x |
+| Glyph prep, ASCII | 419.84 us | 1028.71 us | 2.45x |
+| Glyph prep, 7 sizes | 419.84 us | 7233.28 us | 17.23x |
+| TT hint setup @ 12px | 22.13 us | n/a | n/a |
+| TT hint execute, ASCII @ 12px | 484.61 us | n/a | n/a |
+| TT hint plan, ASCII @ 12px | 855.09 us | n/a | n/a |
+| TT hint context cold, paragraph @ 12px | 246.96 us | n/a | n/a |
+| TT hint context warm, paragraph @ 12px | 1.59 us | n/a | n/a |
+| PathPicture freeze, 25 shapes | 178.69 us | n/a | n/a |
 
 ### Prepared Resource Memory
 
@@ -1067,27 +1079,27 @@ The vector workload contains filled and stroked rounded rectangles, ellipses, an
 
 | Workload | Snail TextBlob | FreeType layout | FreeType / Snail |
 |---|---:|---:|---:|
-| Short string | 1.55 us | 80.16 us | 51.87x |
-| Sentence | 5.37 us | 396.18 us | 73.73x |
-| Paragraph | 18.31 us | 1397.76 us | 76.35x |
-| Paragraph x 7 sizes | 128.22 us | 10048.87 us | 78.37x |
-| Short string (TT hinted @ 24px) | 2.47 us | n/a | n/a |
-| Sentence (TT hinted @ 48px) | 9.72 us | n/a | n/a |
-| Paragraph (TT hinted @ 18px) | 20.39 us | n/a | n/a |
-| Paragraph x 7 sizes (TT hinted) | 145.55 us | n/a | n/a |
+| Short string | 1.60 us | 82.59 us | 51.76x |
+| Sentence | 5.38 us | 397.40 us | 73.93x |
+| Paragraph | 18.30 us | 1419.90 us | 77.60x |
+| Paragraph x 7 sizes | 126.78 us | 10188.98 us | 80.37x |
+| Short string (TT hinted @ 24px) | 1.68 us | n/a | n/a |
+| Sentence (TT hinted @ 48px) | 5.92 us | n/a | n/a |
+| Paragraph (TT hinted @ 18px) | 17.59 us | n/a | n/a |
+| Paragraph x 7 sizes (TT hinted) | 126.33 us | n/a | n/a |
 
 ### Draw Record Creation
 
 | Scene | Commands | Words | Segments | PreparedScene.initOwned |
 |---|---:|---:|---:|---:|
-| Text | 4 | 4048 | 1 | 8.21 us |
-| Rich text | 1 | 1136 | 1 | 2.10 us |
-| Vector paths | 1 | 400 | 1 | 0.31 us |
-| Mixed text + vector | 5 | 4448 | 2 | 8.51 us |
-| Multi-script text | 4 | 1488 | 1 | 2.83 us |
-| Text (TT hinted) | 4 | 4048 | 4 | 7.52 us |
-| Mixed text + vector (TT hinted) | 5 | 4448 | 5 | 7.65 us |
-| Multi-script text (TT hinted) | 4 | 1488 | 4 | 2.76 us |
+| Text | 4 | 4048 | 1 | 8.57 us |
+| Rich text | 1 | 1136 | 1 | 2.24 us |
+| Vector paths | 1 | 400 | 1 | 0.32 us |
+| Mixed text + vector | 5 | 4448 | 2 | 9.20 us |
+| Multi-script text | 4 | 1488 | 1 | 3.11 us |
+| Text (TT hinted) | 4 | 4048 | 1 | 8.11 us |
+| Mixed text + vector (TT hinted) | 5 | 4448 | 2 | 8.26 us |
+| Multi-script text (TT hinted) | 4 | 1488 | 1 | 2.90 us |
 
 ### Prepared Render
 
@@ -1095,54 +1107,54 @@ Target: 640x360. Requested AA is grayscale. CPU uses 20 measured frames; GPU bac
 
 | Backend | Scene | Effective AA | Frames | Commands | Words | Segments | Instance bytes/frame | Draw prepared scene |
 |---|---|---|---:|---:|---:|---:|---:|---:|
-| CPU | Text | grayscale | 20 | 4 | 4048 | 1 | 16192 | 1656.78 us |
-| CPU | Rich text | grayscale | 20 | 1 | 1136 | 1 | 4544 | 1477.90 us |
-| CPU | Vector paths | grayscale | 20 | 1 | 400 | 1 | 1600 | 15123.74 us |
-| CPU | Mixed text + vector | grayscale | 20 | 5 | 4448 | 2 | 17792 | 16601.05 us |
-| CPU | Multi-script text | grayscale | 20 | 4 | 1488 | 1 | 5952 | 1043.89 us |
-| CPU | Text (TT hinted) | grayscale | 20 | 4 | 4048 | 4 | 16192 | 4608.51 us |
-| CPU | Mixed text + vector (TT hinted) | grayscale | 20 | 5 | 4448 | 5 | 17792 | 19818.33 us |
-| CPU | Multi-script text (TT hinted) | grayscale | 20 | 4 | 1488 | 4 | 5952 | 2832.21 us |
-| CPU (threaded) | Text | grayscale | 20 | 4 | 4048 | 1 | 16192 | 879.34 us |
-| CPU (threaded) | Rich text | grayscale | 20 | 1 | 1136 | 1 | 4544 | 755.28 us |
-| CPU (threaded) | Vector paths | grayscale | 20 | 1 | 400 | 1 | 1600 | 3243.85 us |
-| CPU (threaded) | Mixed text + vector | grayscale | 20 | 5 | 4448 | 2 | 17792 | 3587.18 us |
-| CPU (threaded) | Multi-script text | grayscale | 20 | 4 | 1488 | 1 | 5952 | 517.79 us |
-| CPU (threaded) | Text (TT hinted) | grayscale | 20 | 4 | 4048 | 4 | 16192 | 2006.12 us |
-| CPU (threaded) | Mixed text + vector (TT hinted) | grayscale | 20 | 5 | 4448 | 5 | 17792 | 4415.26 us |
-| CPU (threaded) | Multi-script text (TT hinted) | grayscale | 20 | 4 | 1488 | 4 | 5952 | 1393.67 us |
-| GL 3.3 | Text | grayscale | 500 | 4 | 4048 | 1 | 16192 | 29.12 us |
-| GL 3.3 | Rich text | grayscale | 500 | 1 | 1136 | 1 | 4544 | 147.25 us |
-| GL 3.3 | Vector paths | grayscale | 500 | 1 | 400 | 1 | 1600 | 122.78 us |
-| GL 3.3 | Mixed text + vector | grayscale | 500 | 5 | 4448 | 2 | 17792 | 141.35 us |
-| GL 3.3 | Multi-script text | grayscale | 500 | 4 | 1488 | 1 | 5952 | 18.98 us |
-| GL 3.3 | Text (TT hinted) | grayscale | 500 | 4 | 4048 | 4 | 16192 | 271.95 us |
-| GL 3.3 | Mixed text + vector (TT hinted) | grayscale | 500 | 5 | 4448 | 5 | 17792 | 381.46 us |
-| GL 3.3 | Multi-script text (TT hinted) | grayscale | 500 | 4 | 1488 | 4 | 5952 | 264.14 us |
-| GL 4.4 (persistent mapped) | Text | grayscale | 500 | 4 | 4048 | 1 | 16192 | 32.63 us |
-| GL 4.4 (persistent mapped) | Rich text | grayscale | 500 | 1 | 1136 | 1 | 4544 | 45.46 us |
-| GL 4.4 (persistent mapped) | Vector paths | grayscale | 500 | 1 | 400 | 1 | 1600 | 110.76 us |
-| GL 4.4 (persistent mapped) | Mixed text + vector | grayscale | 500 | 5 | 4448 | 2 | 17792 | 122.96 us |
-| GL 4.4 (persistent mapped) | Multi-script text | grayscale | 500 | 4 | 1488 | 1 | 5952 | 31.50 us |
-| GL 4.4 (persistent mapped) | Text (TT hinted) | grayscale | 500 | 4 | 4048 | 4 | 16192 | 92.42 us |
-| GL 4.4 (persistent mapped) | Mixed text + vector (TT hinted) | grayscale | 500 | 5 | 4448 | 5 | 17792 | 145.13 us |
-| GL 4.4 (persistent mapped) | Multi-script text (TT hinted) | grayscale | 500 | 4 | 1488 | 4 | 5952 | 86.95 us |
-| OpenGL ES 3.0 | Text | grayscale | 500 | 4 | 4048 | 1 | 16192 | 17.41 us |
-| OpenGL ES 3.0 | Rich text | grayscale | 500 | 1 | 1136 | 1 | 4544 | 130.70 us |
-| OpenGL ES 3.0 | Vector paths | grayscale | 500 | 1 | 400 | 1 | 1600 | 105.96 us |
-| OpenGL ES 3.0 | Mixed text + vector | grayscale | 500 | 5 | 4448 | 2 | 17792 | 134.22 us |
-| OpenGL ES 3.0 | Multi-script text | grayscale | 500 | 4 | 1488 | 1 | 5952 | 25.55 us |
-| OpenGL ES 3.0 | Text (TT hinted) | grayscale | 500 | 4 | 4048 | 4 | 16192 | 268.10 us |
-| OpenGL ES 3.0 | Mixed text + vector (TT hinted) | grayscale | 500 | 5 | 4448 | 5 | 17792 | 369.00 us |
-| OpenGL ES 3.0 | Multi-script text (TT hinted) | grayscale | 500 | 4 | 1488 | 4 | 5952 | 257.83 us |
-| Vulkan | Text | grayscale | 500 | 4 | 4048 | 1 | 16192 | 31.41 us |
-| Vulkan | Rich text | grayscale | 500 | 1 | 1136 | 1 | 4544 | 54.62 us |
-| Vulkan | Vector paths | grayscale | 500 | 1 | 400 | 1 | 1600 | 97.37 us |
-| Vulkan | Mixed text + vector | grayscale | 500 | 5 | 4448 | 2 | 17792 | 90.42 us |
-| Vulkan | Multi-script text | grayscale | 500 | 4 | 1488 | 1 | 5952 | 33.76 us |
-| Vulkan | Text (TT hinted) | grayscale | 500 | 4 | 4048 | 4 | 16192 | 86.91 us |
-| Vulkan | Mixed text + vector (TT hinted) | grayscale | 500 | 5 | 4448 | 5 | 17792 | 147.65 us |
-| Vulkan | Multi-script text (TT hinted) | grayscale | 500 | 4 | 1488 | 4 | 5952 | 75.00 us |
+| CPU | Text | grayscale | 20 | 4 | 4048 | 1 | 16192 | 1701.86 us |
+| CPU | Rich text | grayscale | 20 | 1 | 1136 | 1 | 4544 | 1459.42 us |
+| CPU | Vector paths | grayscale | 20 | 1 | 400 | 1 | 1600 | 14999.43 us |
+| CPU | Mixed text + vector | grayscale | 20 | 5 | 4448 | 2 | 17792 | 16529.82 us |
+| CPU | Multi-script text | grayscale | 20 | 4 | 1488 | 1 | 5952 | 1019.34 us |
+| CPU | Text (TT hinted) | grayscale | 20 | 4 | 4048 | 1 | 16192 | 4613.37 us |
+| CPU | Mixed text + vector (TT hinted) | grayscale | 20 | 5 | 4448 | 2 | 17792 | 19732.49 us |
+| CPU | Multi-script text (TT hinted) | grayscale | 20 | 4 | 1488 | 1 | 5952 | 2819.80 us |
+| CPU (threaded) | Text | grayscale | 20 | 4 | 4048 | 1 | 16192 | 827.71 us |
+| CPU (threaded) | Rich text | grayscale | 20 | 1 | 1136 | 1 | 4544 | 766.88 us |
+| CPU (threaded) | Vector paths | grayscale | 20 | 1 | 400 | 1 | 1600 | 3220.73 us |
+| CPU (threaded) | Mixed text + vector | grayscale | 20 | 5 | 4448 | 2 | 17792 | 3684.15 us |
+| CPU (threaded) | Multi-script text | grayscale | 20 | 4 | 1488 | 1 | 5952 | 508.30 us |
+| CPU (threaded) | Text (TT hinted) | grayscale | 20 | 4 | 4048 | 1 | 16192 | 2039.77 us |
+| CPU (threaded) | Mixed text + vector (TT hinted) | grayscale | 20 | 5 | 4448 | 2 | 17792 | 4540.15 us |
+| CPU (threaded) | Multi-script text (TT hinted) | grayscale | 20 | 4 | 1488 | 1 | 5952 | 1308.29 us |
+| GL 3.3 | Text | grayscale | 500 | 4 | 4048 | 1 | 16192 | 23.42 us |
+| GL 3.3 | Rich text | grayscale | 500 | 1 | 1136 | 1 | 4544 | 113.08 us |
+| GL 3.3 | Vector paths | grayscale | 500 | 1 | 400 | 1 | 1600 | 94.58 us |
+| GL 3.3 | Mixed text + vector | grayscale | 500 | 5 | 4448 | 2 | 17792 | 105.39 us |
+| GL 3.3 | Multi-script text | grayscale | 500 | 4 | 1488 | 1 | 5952 | 20.13 us |
+| GL 3.3 | Text (TT hinted) | grayscale | 500 | 4 | 4048 | 1 | 16192 | 60.56 us |
+| GL 3.3 | Mixed text + vector (TT hinted) | grayscale | 500 | 5 | 4448 | 2 | 17792 | 141.83 us |
+| GL 3.3 | Multi-script text (TT hinted) | grayscale | 500 | 4 | 1488 | 1 | 5952 | 51.13 us |
+| GL 4.4 (persistent mapped) | Text | grayscale | 500 | 4 | 4048 | 1 | 16192 | 21.68 us |
+| GL 4.4 (persistent mapped) | Rich text | grayscale | 500 | 1 | 1136 | 1 | 4544 | 40.21 us |
+| GL 4.4 (persistent mapped) | Vector paths | grayscale | 500 | 1 | 400 | 1 | 1600 | 82.92 us |
+| GL 4.4 (persistent mapped) | Mixed text + vector | grayscale | 500 | 5 | 4448 | 2 | 17792 | 89.07 us |
+| GL 4.4 (persistent mapped) | Multi-script text | grayscale | 500 | 4 | 1488 | 1 | 5952 | 22.17 us |
+| GL 4.4 (persistent mapped) | Text (TT hinted) | grayscale | 500 | 4 | 4048 | 1 | 16192 | 64.87 us |
+| GL 4.4 (persistent mapped) | Mixed text + vector (TT hinted) | grayscale | 500 | 5 | 4448 | 2 | 17792 | 109.83 us |
+| GL 4.4 (persistent mapped) | Multi-script text (TT hinted) | grayscale | 500 | 4 | 1488 | 1 | 5952 | 57.81 us |
+| OpenGL ES 3.0 | Text | grayscale | 500 | 4 | 4048 | 1 | 16192 | 17.19 us |
+| OpenGL ES 3.0 | Rich text | grayscale | 500 | 1 | 1136 | 1 | 4544 | 93.34 us |
+| OpenGL ES 3.0 | Vector paths | grayscale | 500 | 1 | 400 | 1 | 1600 | 80.60 us |
+| OpenGL ES 3.0 | Mixed text + vector | grayscale | 500 | 5 | 4448 | 2 | 17792 | 97.97 us |
+| OpenGL ES 3.0 | Multi-script text | grayscale | 500 | 4 | 1488 | 1 | 5952 | 18.82 us |
+| OpenGL ES 3.0 | Text (TT hinted) | grayscale | 500 | 4 | 4048 | 1 | 16192 | 59.83 us |
+| OpenGL ES 3.0 | Mixed text + vector (TT hinted) | grayscale | 500 | 5 | 4448 | 2 | 17792 | 138.73 us |
+| OpenGL ES 3.0 | Multi-script text (TT hinted) | grayscale | 500 | 4 | 1488 | 1 | 5952 | 50.44 us |
+| Vulkan | Text | grayscale | 500 | 4 | 4048 | 1 | 16192 | 23.94 us |
+| Vulkan | Rich text | grayscale | 500 | 1 | 1136 | 1 | 4544 | 39.87 us |
+| Vulkan | Vector paths | grayscale | 500 | 1 | 400 | 1 | 1600 | 71.42 us |
+| Vulkan | Mixed text + vector | grayscale | 500 | 5 | 4448 | 2 | 17792 | 75.29 us |
+| Vulkan | Multi-script text | grayscale | 500 | 4 | 1488 | 1 | 5952 | 23.91 us |
+| Vulkan | Text (TT hinted) | grayscale | 500 | 4 | 4048 | 1 | 16192 | 62.35 us |
+| Vulkan | Mixed text + vector (TT hinted) | grayscale | 500 | 5 | 4448 | 2 | 17792 | 108.91 us |
+| Vulkan | Multi-script text (TT hinted) | grayscale | 500 | 4 | 1488 | 1 | 5952 | 57.35 us |
 
 ### Render Modes
 
@@ -1152,42 +1164,43 @@ GLES30 rendering grayscale when LCD dual-source blending is unavailable.
 
 | Backend | Scene | Requested AA | Effective AA | Words | Segments | PreparedScene | Draw |
 |---|---|---|---|---:|---:|---:|---:|
-| CPU | Text | grayscale | grayscale | 4048 | 1 | 8.61 us | 1655.00 us |
-| CPU | Text | subpixel rgb | subpixel rgb | 4048 | 1 | 8.69 us | 8456.08 us |
-| CPU | Rich text | grayscale | grayscale | 1136 | 1 | 2.16 us | 1474.37 us |
-| CPU | Rich text | subpixel rgb | subpixel rgb | 1136 | 1 | 2.24 us | 4447.57 us |
-| CPU | Multi-script text | grayscale | grayscale | 1488 | 1 | 2.90 us | 1033.18 us |
-| CPU | Multi-script text | subpixel rgb | subpixel rgb | 1488 | 1 | 2.98 us | 5032.92 us |
-| CPU (threaded) | Text | grayscale | grayscale | 4048 | 1 | 8.51 us | 812.40 us |
-| CPU (threaded) | Text | subpixel rgb | subpixel rgb | 4048 | 1 | 8.46 us | 3412.18 us |
-| CPU (threaded) | Rich text | grayscale | grayscale | 1136 | 1 | 2.26 us | 680.40 us |
-| CPU (threaded) | Rich text | subpixel rgb | subpixel rgb | 1136 | 1 | 2.19 us | 2139.82 us |
-| CPU (threaded) | Multi-script text | grayscale | grayscale | 1488 | 1 | 2.97 us | 491.99 us |
-| CPU (threaded) | Multi-script text | subpixel rgb | subpixel rgb | 1488 | 1 | 2.99 us | 2133.17 us |
-| GL 3.3 | Text | grayscale | grayscale | 4048 | 1 | 8.23 us | 16.82 us |
-| GL 3.3 | Text | subpixel rgb | subpixel rgb | 4048 | 1 | 8.24 us | 102.59 us |
-| GL 3.3 | Rich text | grayscale | grayscale | 1136 | 1 | 2.14 us | 132.82 us |
-| GL 3.3 | Rich text | subpixel rgb | subpixel rgb | 1136 | 1 | 2.17 us | 301.99 us |
-| GL 3.3 | Multi-script text | grayscale | grayscale | 1488 | 1 | 2.84 us | 25.78 us |
-| GL 3.3 | Multi-script text | subpixel rgb | subpixel rgb | 1488 | 1 | 2.84 us | 90.46 us |
-| GL 4.4 (persistent mapped) | Text | grayscale | grayscale | 4048 | 1 | 8.29 us | 42.69 us |
-| GL 4.4 (persistent mapped) | Text | subpixel rgb | subpixel rgb | 4048 | 1 | 8.15 us | 113.01 us |
-| GL 4.4 (persistent mapped) | Rich text | grayscale | grayscale | 1136 | 1 | 2.12 us | 55.60 us |
-| GL 4.4 (persistent mapped) | Rich text | subpixel rgb | subpixel rgb | 1136 | 1 | 2.13 us | 96.62 us |
-| GL 4.4 (persistent mapped) | Multi-script text | grayscale | grayscale | 1488 | 1 | 2.84 us | 35.18 us |
-| GL 4.4 (persistent mapped) | Multi-script text | subpixel rgb | subpixel rgb | 1488 | 1 | 2.94 us | 103.96 us |
-| OpenGL ES 3.0 | Text | grayscale | grayscale | 4048 | 1 | 8.28 us | 17.76 us |
-| OpenGL ES 3.0 | Text | subpixel rgb | grayscale (LCD unavailable) | 4048 | 1 | 8.18 us | 27.45 us |
-| OpenGL ES 3.0 | Rich text | grayscale | grayscale | 1136 | 1 | 2.20 us | 127.98 us |
-| OpenGL ES 3.0 | Rich text | subpixel rgb | grayscale (LCD unavailable) | 1136 | 1 | 2.20 us | 128.99 us |
-| OpenGL ES 3.0 | Multi-script text | grayscale | grayscale | 1488 | 1 | 2.91 us | 25.17 us |
-| OpenGL ES 3.0 | Multi-script text | subpixel rgb | grayscale (LCD unavailable) | 1488 | 1 | 2.87 us | 26.41 us |
-| Vulkan | Text | grayscale | grayscale | 4048 | 1 | 8.72 us | 32.09 us |
-| Vulkan | Text | subpixel rgb | subpixel rgb | 4048 | 1 | 8.61 us | 108.89 us |
-| Vulkan | Rich text | grayscale | grayscale | 1136 | 1 | 2.73 us | 43.35 us |
-| Vulkan | Rich text | subpixel rgb | subpixel rgb | 1136 | 1 | 2.13 us | 104.70 us |
-| Vulkan | Multi-script text | grayscale | grayscale | 1488 | 1 | 3.60 us | 34.58 us |
-| Vulkan | Multi-script text | subpixel rgb | subpixel rgb | 1488 | 1 | 3.41 us | 104.23 us |
+| CPU | Text | grayscale | grayscale | 4048 | 1 | 8.19 us | 1632.09 us |
+| CPU | Text | subpixel rgb | subpixel rgb | 4048 | 1 | 8.17 us | 8299.91 us |
+| CPU | Rich text | grayscale | grayscale | 1136 | 1 | 2.13 us | 1506.68 us |
+| CPU | Rich text | subpixel rgb | subpixel rgb | 1136 | 1 | 2.11 us | 4385.59 us |
+| CPU | Multi-script text | grayscale | grayscale | 1488 | 1 | 2.87 us | 1030.27 us |
+| CPU | Multi-script text | subpixel rgb | subpixel rgb | 1488 | 1 | 2.89 us | 5001.23 us |
+| CPU (threaded) | Text | grayscale | grayscale | 4048 | 1 | 8.48 us | 798.84 us |
+| CPU (threaded) | Text | subpixel rgb | subpixel rgb | 4048 | 1 | 8.16 us | 3504.50 us |
+| CPU (threaded) | Rich text | grayscale | grayscale | 1136 | 1 | 2.19 us | 651.73 us |
+| CPU (threaded) | Rich text | subpixel rgb | subpixel rgb | 1136 | 1 | 2.23 us | 2168.48 us |
+| CPU (threaded) | Multi-script text | grayscale | grayscale | 1488 | 1 | 2.98 us | 488.95 us |
+| CPU (threaded) | Multi-script text | subpixel rgb | subpixel rgb | 1488 | 1 | 2.98 us | 2124.47 us |
+| GL 3.3 | Text | grayscale | grayscale | 4048 | 1 | 8.50 us | 16.80 us |
+| GL 3.3 | Text | subpixel rgb | subpixel rgb | 4048 | 1 | 8.55 us | 74.06 us |
+| GL 3.3 | Rich text | grayscale | grayscale | 1136 | 1 | 2.25 us | 93.42 us |
+| GL 3.3 | Rich text | subpixel rgb | subpixel rgb | 1136 | 1 | 2.31 us | 214.71 us |
+| GL 3.3 | Multi-script text | grayscale | grayscale | 1488 | 1 | 3.02 us | 17.50 us |
+| GL 3.3 | Multi-script text | subpixel rgb | subpixel rgb | 1488 | 1 | 3.01 us | 92.24 us |
+| GL 4.4 (persistent mapped) | Text | grayscale | grayscale | 4048 | 1 | 8.49 us | 25.39 us |
+| GL 4.4 (persistent mapped) | Text | subpixel rgb | subpixel rgb | 4048 | 1 | 8.44 us | 79.48 us |
+| GL 4.4 (persistent mapped) | Rich text | grayscale | grayscale | 1136 | 1 | 2.97 us | 51.90 us |
+| GL 4.4 (persistent mapped) | Rich text | subpixel rgb | subpixel rgb | 1136 | 1 | 2.31 us | 68.60 us |
+| GL 4.4 (persistent mapped) | Multi-script text | grayscale | grayscale | 1488 | 1 | 2.97 us | 26.11 us |
+| GL 4.4 (persistent mapped) | Multi-script text | subpixel rgb | subpixel rgb | 1488 | 1 | 2.99 us | 87.50 us |
+| OpenGL ES 3.0 | Text | grayscale | grayscale | 4048 | 1 | 8.75 us | 16.77 us |
+| OpenGL ES 3.0 | Text | subpixel rgb | grayscale (LCD unavailable) | 4048 | 1 | 8.79 us | 18.31 us |
+| OpenGL ES 3.0 | Rich text | grayscale | grayscale | 1136 | 1 | 2.34 us | 96.61 us |
+| OpenGL ES 3.0 | Rich text | subpixel rgb | grayscale (LCD unavailable) | 1136 | 1 | 2.26 us | 97.84 us |
+| OpenGL ES 3.0 | Multi-script text | grayscale | grayscale | 1488 | 1 | 3.39 us | 24.56 us |
+| OpenGL ES 3.0 | Multi-script text | subpixel rgb | grayscale (LCD unavailable) | 1488 | 1 | 3.64 us | 17.15 us |
+| Vulkan | Text | grayscale | grayscale | 4048 | 1 | 9.05 us | 24.26 us |
+| Vulkan | Text | subpixel rgb | subpixel rgb | 4048 | 1 | 9.10 us | 94.39 us |
+| Vulkan | Rich text | grayscale | grayscale | 1136 | 1 | 2.32 us | 35.51 us |
+| Vulkan | Rich text | subpixel rgb | subpixel rgb | 1136 | 1 | 2.57 us | 76.76 us |
+| Vulkan | Multi-script text | grayscale | grayscale | 1488 | 1 | 3.20 us | 27.27 us |
+| Vulkan | Multi-script text | subpixel rgb | subpixel rgb | 1488 | 1 | 3.23 us | 77.24 us |
+
 ## Architecture
 
 ```
