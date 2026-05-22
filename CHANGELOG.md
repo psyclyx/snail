@@ -30,8 +30,11 @@ migration. See the migration recipes below each entry.
   construction via `bundle.buildBlob(key, []TextAppend, ?[]TextAppendResult)`.
   Additional operations: `rebindAtlas`, `freeze`/`unfreeze`/`isFrozen`,
   `blobCount`, `currentGeneration`. The bundle exists alongside
-  `TextBlobBuilder` for now; future passes will migrate consumers and
-  collapse the storage onto an arena.
+  `TextBlobBuilder` for now; in-repo consumers (demos, benches, tests,
+  api_tests, renderer_tests) have been migrated to the bundle.
+  `TextBlobBuilder` remains as the lower-level primitive until the C API
+  migrates and the TextBlob storage model collapses to the bundle's
+  arena (planned for a follow-up pre-1.0 pass).
 
 ### Changed (breaking)
 
