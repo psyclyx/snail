@@ -295,13 +295,23 @@ pub const HintMachine = struct {
         compound: *const tt_outline.CompoundGlyph,
         cache: ?*GlyphTopologyCache,
     ) !tt_vm.HintedSimpleGlyph {
+        // The topology cache is an AutoHashMap that stores `GlyphTopology`
+        // values inline. `appendCompoundGlyph` recurses via `cache.get` for
+        // each component, and the resulting `getOrPut` can rehash, moving
+        // every value in the map — including the one `compound` points at.
+        // Snapshot the slice headers we need *before* the recursion; the
+        // backing arrays they reference live in `CompoundGlyph`'s allocator
+        // and remain valid even when the hash-map slot moves.
+        const components = compound.components;
+        const instructions = compound.instructions;
+
         var builder = CompoundGlyphBuilder.init(
             self.size.environment(),
             self.glyph_points,
             self.compound_contours,
         );
-        try self.appendCompoundGlyph(&builder, compound, .{}, .zero, cache);
-        const metrics_id = compoundMetricsGlyphId(glyph_id, compound);
+        try self.appendCompoundGlyph(&builder, components, .{}, .zero, cache);
+        const metrics_id = compoundMetricsGlyphId(glyph_id, components);
         const phantom_start = try builder.appendPhantoms(try self.program.glyphPhantomMetrics(metrics_id));
 
         var context = self.makeContext();
@@ -313,19 +323,19 @@ pub const HintMachine = struct {
             &self.zones,
             builder.zone(),
             phantom_start,
-            compound.instructions,
+            instructions,
         );
     }
 
     fn appendCompoundGlyph(
         self: *HintMachine,
         builder: *CompoundGlyphBuilder,
-        compound: *const tt_outline.CompoundGlyph,
+        components: []const tt_outline.CompoundComponent,
         transform: tt_outline.ComponentTransform,
         offset: Vec2,
         cache: ?*GlyphTopologyCache,
     ) CompoundBuildError!void {
-        for (compound.components) |component| {
+        for (components) |component| {
             try self.appendCompoundComponent(builder, component, transform, offset, cache);
         }
     }
@@ -370,7 +380,12 @@ pub const HintMachine = struct {
         return switch (topology.*) {
             .empty => {},
             .simple => |*simple| builder.appendSimple(simple, transform, offset),
-            .compound => |*compound| self.appendCompoundGlyph(builder, compound, transform, offset, cache),
+            .compound => |*compound| {
+                // Same hash-map relocation hazard as in executeCompoundGlyph:
+                // snapshot the components slice header before recursing.
+                const components = compound.components;
+                return self.appendCompoundGlyph(builder, components, transform, offset, cache);
+            },
         };
     }
 
@@ -645,8 +660,8 @@ fn componentPointArg(value: i16) !usize {
     return @intCast(value);
 }
 
-fn compoundMetricsGlyphId(glyph_id: u16, compound: *const tt_outline.CompoundGlyph) u16 {
-    for (compound.components) |component| {
+fn compoundMetricsGlyphId(glyph_id: u16, components: []const tt_outline.CompoundComponent) u16 {
+    for (components) |component| {
         if (component.useMyMetrics()) return component.glyph_id;
     }
     return glyph_id;

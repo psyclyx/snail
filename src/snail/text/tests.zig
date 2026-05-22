@@ -1304,3 +1304,48 @@ test "shapeTextOpts: feature range outside text is clipped to no-op" {
         try testing.expectApproxEqAbs(ga.x_advance, gb.x_advance, 1e-6);
     }
 }
+
+test "hint: compound glyphs survive topology-cache rehash" {
+    // Regression for a segfault in compoundMetricsGlyphId. The hint VM's
+    // executeCompoundGlyph held a `*const CompoundGlyph` pointing into the
+    // GlyphTopologyCache's std.AutoHashMap. appendCompoundGlyph recursively
+    // called cache.get for each component, and the resulting getOrPut could
+    // rehash the map, relocating every entry — including the parent — so the
+    // next deref of `compound` crashed. Reproduce by hinting every glyph in
+    // a font that has compound glyphs (NotoSans-Regular qualifies); the
+    // unfixed code crashes long before reaching gid=num_glyphs.
+    const assets_data = @import("assets");
+    const hint_context_mod = @import("hint_context.zig");
+
+    var fonts = try TextAtlas.init(testing.allocator, &.{
+        .{ .data = assets_data.noto_sans_regular },
+    });
+    defer fonts.deinit();
+
+    const num_glyphs = fonts.config.faces[0].font.num_glyphs;
+    var gids = std.array_list.Managed(u16).init(testing.allocator);
+    defer gids.deinit();
+    for (1..@as(usize, num_glyphs)) |gid| try gids.append(@intCast(gid));
+    if (try fonts.ensureGlyphs(0, gids.items)) |next| {
+        fonts.deinit();
+        fonts = next;
+    }
+
+    var ctx = hint_context_mod.TrueTypeHintContext.init(testing.allocator, &fonts);
+    defer ctx.deinit();
+
+    var ready: usize = 0;
+    for (1..@as(usize, num_glyphs)) |gid_usize| {
+        const status = ctx.computeGlyph(.{
+            .face_index = 0,
+            .ppem_x_26_6 = 12 * 64,
+            .ppem_y_26_6 = 12 * 64,
+            .glyph_id = @intCast(gid_usize),
+        }) catch continue;
+        switch (status) {
+            .ready => ready += 1,
+            else => {},
+        }
+    }
+    try testing.expect(ready > 0);
+}
