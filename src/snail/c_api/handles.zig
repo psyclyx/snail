@@ -10,8 +10,28 @@ pub const HandleAllocator = c_runtime.StoredAllocator;
 pub const FontImpl = struct { handle_allocator: *HandleAllocator, inner: ttf.Font };
 pub const TextAtlasImpl = struct { handle_allocator: *HandleAllocator, inner: snail.TextAtlas };
 pub const ShapedTextImpl = struct { handle_allocator: *HandleAllocator, inner: snail.ShapedText };
-pub const TextBlobImpl = struct { handle_allocator: *HandleAllocator, inner: snail.TextBlob };
+pub const TextBlobImpl = struct {
+    handle_allocator: *HandleAllocator,
+    /// Either an independently-owned blob value (legacy path through
+    /// SnailTextBlobBuilder / SnailTextBlob.init_*) or a borrowed pointer
+    /// into a SnailTextBlobBundle. When `borrowed_from` is non-null, the
+    /// inner blob is invalidated whenever the source bundle bumps
+    /// `generation`; dereferencing the handle then returns
+    /// `SNAIL_ERR_INVALID_HANDLE`.
+    inner: snail.TextBlob,
+    borrowed_from: ?*TextBlobBundleImpl = null,
+    borrowed_generation: u32 = 0,
+};
 pub const TextBlobBuilderImpl = struct { handle_allocator: *HandleAllocator, inner: snail.TextBlobBuilder };
+pub const TextBlobBundleImpl = struct { handle_allocator: *HandleAllocator, inner: snail.TextBlobBundle };
+pub const BlobInProgressImpl = struct {
+    handle_allocator: *HandleAllocator,
+    bundle: *TextBlobBundleImpl,
+    /// Generation captured when this handle was created. Stored so the C
+    /// side can detect a stray `start_blob` handle whose bundle was reset
+    /// before `finish` / `abort` ran.
+    generation: u32,
+};
 pub const TrueTypeHintContextImpl = struct { handle_allocator: *HandleAllocator, inner: snail.TrueTypeHintContext };
 pub const TrueTypePreparedHintRunImpl = struct { handle_allocator: *HandleAllocator, inner: snail.TrueTypePreparedHintRun };
 pub const ImageImpl = struct { handle_allocator: *HandleAllocator, inner: snail.Image };

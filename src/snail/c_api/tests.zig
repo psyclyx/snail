@@ -299,6 +299,50 @@ test "c_api: text blob rebound returns a new handle" {
     atlas = next.?;
 }
 
+test "c_api: text blob bundle drives streaming blob construction" {
+    var atlas = try testTextAtlas();
+    defer c_text.snail_text_atlas_deinit(atlas);
+    try ensureForText(&atlas, "Hi");
+
+    var bundle: ?*c.test_api.TextBlobBundleImpl = null;
+    try testing.expectEqual(c.SNAIL_OK, c_text.snail_text_blob_bundle_init(null, atlas, &bundle));
+    defer c_text.snail_text_blob_bundle_deinit(bundle);
+
+    try testing.expectEqual(@as(usize, 0), c_text.snail_text_blob_bundle_blob_count(bundle.?));
+
+    var shaped: ?*c.test_api.ShapedTextImpl = null;
+    try testing.expectEqual(c.SNAIL_OK, c_text.snail_text_atlas_shape_utf8(atlas, .{}, "Hi", 2, &shaped));
+    defer c_text.snail_shaped_text_deinit(shaped);
+
+    var bip: ?*c.test_api.BlobInProgressImpl = null;
+    try testing.expectEqual(c.SNAIL_OK, c_text.snail_text_blob_bundle_start_blob(bundle.?, &bip));
+
+    // A second start_blob while one is in flight is an error.
+    var bip_dup: ?*c.test_api.BlobInProgressImpl = null;
+    try testing.expect(c_text.snail_text_blob_bundle_start_blob(bundle.?, &bip_dup) != c.SNAIL_OK);
+
+    var append_result: c.SnailTextAppendResult = .{};
+    try testing.expectEqual(c.SNAIL_OK, c_text.snail_blob_in_progress_append_shaped(bip.?, shaped.?, .{ .start = 0, .count = std.math.maxInt(usize) }, .{
+        .placement = .{ .baseline_x = 0, .baseline_y = 12, .em = 12 },
+        .fill = .{ .kind = c.SNAIL_PAINT_SOLID, .paint_solid = .{ 1, 1, 1, 1 } },
+    }, &append_result));
+    try testing.expect(append_result.advance_x > 0);
+
+    var blob: ?*c.test_api.TextBlobImpl = null;
+    const key = c_misc.snail_resource_key_from_cstr("bundle_test_blob");
+    try testing.expectEqual(c.SNAIL_OK, c_text.snail_blob_in_progress_finish(bip.?, key, &blob));
+    defer c_text.snail_text_blob_deinit(blob);
+    try testing.expectEqual(@as(usize, 1), c_text.snail_text_blob_bundle_blob_count(bundle.?));
+    try testing.expect(c_text.snail_text_blob_glyph_count(blob.?) > 0);
+
+    // Reset bumps the generation; previously-borrowed blob handles become
+    // inert but freeing them is still safe.
+    const before_gen = c_text.snail_text_blob_bundle_generation(bundle.?);
+    c_text.snail_text_blob_bundle_reset(bundle.?);
+    try testing.expect(c_text.snail_text_blob_bundle_generation(bundle.?) != before_gen);
+    try testing.expectEqual(@as(usize, 0), c_text.snail_text_blob_bundle_blob_count(bundle.?));
+}
+
 test "c_api: invalid caller input maps to invalid argument" {
     var path: ?*c.test_api.PathImpl = null;
     try testing.expectEqual(c.SNAIL_OK, c_path.snail_path_init(null, &path));

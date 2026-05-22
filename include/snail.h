@@ -531,6 +531,48 @@ int snail_text_blob_builder_append_prepared_hint_run(SnailTextBlobBuilder *build
 int snail_text_blob_builder_finish(SnailTextBlobBuilder *builder,
                                    SnailTextBlob **out);
 
+/* TextBlobBundle: arena-backed container for many TextBlobs sharing a
+ * TextAtlas. Streaming construction via start_blob; bulk construction is a
+ * future addition. Bundle owns blob lifetimes — `reset` invalidates every
+ * outstanding blob handle, and a blob handle borrowed from a reset bundle
+ * becomes inert (operations return SNAIL_ERR_INVALID_ARGUMENT). The
+ * `generation` counter advances on every reset so external callers can
+ * compare-and-validate their references. */
+int snail_text_blob_bundle_init(const SnailAllocator *alloc,
+                                const SnailTextAtlas *atlas,
+                                SnailTextBlobBundle **out);
+void snail_text_blob_bundle_deinit(SnailTextBlobBundle *bundle);
+void snail_text_blob_bundle_reset(SnailTextBlobBundle *bundle);
+void snail_text_blob_bundle_freeze(SnailTextBlobBundle *bundle);
+void snail_text_blob_bundle_unfreeze(SnailTextBlobBundle *bundle);
+bool snail_text_blob_bundle_is_frozen(const SnailTextBlobBundle *bundle);
+size_t snail_text_blob_bundle_blob_count(const SnailTextBlobBundle *bundle);
+uint32_t snail_text_blob_bundle_generation(const SnailTextBlobBundle *bundle);
+int snail_text_blob_bundle_rebind_atlas(SnailTextBlobBundle *bundle,
+                                        const SnailTextAtlas *atlas);
+int snail_text_blob_bundle_start_blob(SnailTextBlobBundle *bundle,
+                                      SnailBlobInProgress **out);
+
+/* BlobInProgress: in-flight blob construction handle. Must terminate via
+ * `finish(key)` (returning a bundle-owned blob) or `abort`; the handle is
+ * destroyed in both cases. Append operations apply to the bundle's current
+ * in-flight blob. */
+int snail_blob_in_progress_append_shaped(SnailBlobInProgress *bip,
+                                         const SnailShapedText *shaped,
+                                         SnailRange glyphs,
+                                         SnailTextAppendOptions options,
+                                         SnailTextAppendResult *out_result);
+int snail_blob_in_progress_append_prepared_hint_run(SnailBlobInProgress *bip,
+                                                    const SnailTrueTypePreparedHintRun *run,
+                                                    SnailTextPlacement placement,
+                                                    const float color[4],
+                                                    SnailTextAppendResult *out_result);
+size_t snail_blob_in_progress_glyph_count(const SnailBlobInProgress *bip);
+int snail_blob_in_progress_finish(SnailBlobInProgress *bip,
+                                  SnailResourceKey key,
+                                  SnailTextBlob **out);
+void snail_blob_in_progress_abort(SnailBlobInProgress *bip);
+
 /* Explicit TrueType hinting for grid-fitted small text. Prepared hint runs
  * cover every glyph of the source shaped text; each glyph in the result
  * carries either a hint pointer or a fallback marker. Callers wanting strict

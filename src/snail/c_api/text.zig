@@ -21,6 +21,7 @@ const SnailShapedGlyph = common.SnailShapedGlyph;
 const SnailTextAppendOptions = common.SnailTextAppendOptions;
 const SnailTextAppendResult = common.SnailTextAppendResult;
 const SnailTextPlacement = common.SnailTextPlacement;
+const SnailResourceKey = common.SnailResourceKey;
 const SnailTrueTypeHintPpem = common.SnailTrueTypeHintPpem;
 const SnailTrueTypeHintRunStats = common.SnailTrueTypeHintRunStats;
 const SnailResourceFootprint = common.SnailResourceFootprint;
@@ -405,6 +406,164 @@ pub export fn snail_text_blob_builder_finish(builder: *TextBlobBuilderImpl, out:
     return SNAIL_OK;
 }
 
+// ── TextBlobBundle / BlobInProgress ──
+//
+// The bundle is the value-driven blob constructor. It owns the lifetime
+// of every TextBlob it produces — caller must keep the bundle alive for
+// as long as any of its blobs are in use. `reset` invalidates every
+// outstanding `SnailTextBlob` borrowed from the bundle; the handle's
+// captured generation no longer matches and access returns
+// `SNAIL_ERR_INVALID_HANDLE`.
+
+pub export fn snail_text_blob_bundle_init(
+    alloc_ptr: ?*const SnailAllocator,
+    atlas: *const TextAtlasImpl,
+    out: *?*common.TextBlobBundleImpl,
+) c_int {
+    const impl = createHandle(common.TextBlobBundleImpl, alloc_ptr) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    const allocator = allocatorForHandle(impl);
+    impl.inner = snail.TextBlobBundle.init(allocator, &atlas.inner);
+    out.* = impl;
+    return SNAIL_OK;
+}
+
+pub export fn snail_text_blob_bundle_deinit(bundle: ?*common.TextBlobBundleImpl) void {
+    if (bundle) |b| {
+        b.inner.deinit();
+        destroyHandle(b);
+    }
+}
+
+pub export fn snail_text_blob_bundle_reset(bundle: *common.TextBlobBundleImpl) void {
+    bundle.inner.reset();
+}
+
+pub export fn snail_text_blob_bundle_freeze(bundle: *common.TextBlobBundleImpl) void {
+    bundle.inner.freeze();
+}
+
+pub export fn snail_text_blob_bundle_unfreeze(bundle: *common.TextBlobBundleImpl) void {
+    bundle.inner.unfreeze();
+}
+
+pub export fn snail_text_blob_bundle_is_frozen(bundle: *const common.TextBlobBundleImpl) bool {
+    return bundle.inner.isFrozen();
+}
+
+pub export fn snail_text_blob_bundle_blob_count(bundle: *const common.TextBlobBundleImpl) usize {
+    return bundle.inner.blobCount();
+}
+
+pub export fn snail_text_blob_bundle_generation(bundle: *const common.TextBlobBundleImpl) u32 {
+    return bundle.inner.currentGeneration();
+}
+
+pub export fn snail_text_blob_bundle_rebind_atlas(
+    bundle: *common.TextBlobBundleImpl,
+    atlas: *const TextAtlasImpl,
+) c_int {
+    bundle.inner.rebindAtlas(&atlas.inner) catch |err| return mapError(err);
+    return SNAIL_OK;
+}
+
+pub export fn snail_text_blob_bundle_start_blob(
+    bundle: *common.TextBlobBundleImpl,
+    out: *?*common.BlobInProgressImpl,
+) c_int {
+    const bip = bundle.inner.startBlob() catch |err| return mapError(err);
+    const impl = createHandleSharingAllocator(common.BlobInProgressImpl, bundle.handle_allocator) catch {
+        bip.abort();
+        return SNAIL_ERR_OUT_OF_MEMORY;
+    };
+    impl.bundle = bundle;
+    impl.generation = bundle.inner.currentGeneration();
+    out.* = impl;
+    return SNAIL_OK;
+}
+
+fn bipValid(bip: *common.BlobInProgressImpl) bool {
+    return bip.generation == bip.bundle.inner.currentGeneration();
+}
+
+pub export fn snail_blob_in_progress_append_shaped(
+    bip: *common.BlobInProgressImpl,
+    shaped: *const ShapedTextImpl,
+    glyphs: SnailRange,
+    options: SnailTextAppendOptions,
+    out_result: ?*SnailTextAppendResult,
+) c_int {
+    if (!bipValid(bip)) return SNAIL_ERR_INVALID_ARGUMENT;
+    const paint = toPaint(options.fill) catch return SNAIL_ERR_INVALID_ARGUMENT;
+    const range = toRange(glyphs).resolve(shaped.inner.glyphs.len);
+    const handle = snail.BlobInProgress{ .bundle = &bip.bundle.inner };
+    const result = handle.append(.{
+        .source = .{ .shaped = shaped.inner.glyphs[range.start..range.end] },
+        .placement = toTextPlacement(options.placement),
+        .fill = paint,
+    }) catch |err| return mapError(err);
+    if (out_result) |out| out.* = fromTextAppendResult(result);
+    return SNAIL_OK;
+}
+
+pub export fn snail_blob_in_progress_append_prepared_hint_run(
+    bip: *common.BlobInProgressImpl,
+    run: *const TrueTypePreparedHintRunImpl,
+    placement: SnailTextPlacement,
+    color: ?[*]const f32,
+    out_result: ?*SnailTextAppendResult,
+) c_int {
+    if (!bipValid(bip)) return SNAIL_ERR_INVALID_ARGUMENT;
+    const c = color4(color) catch return SNAIL_ERR_INVALID_ARGUMENT;
+    const handle = snail.BlobInProgress{ .bundle = &bip.bundle.inner };
+    const result = handle.append(.{
+        .source = .{ .hinted = run.inner.glyphs },
+        .placement = toTextPlacement(placement),
+        .fill = .{ .solid = c },
+    }) catch |err| return mapError(err);
+    if (out_result) |out| out.* = fromTextAppendResult(result);
+    return SNAIL_OK;
+}
+
+pub export fn snail_blob_in_progress_glyph_count(bip: *const common.BlobInProgressImpl) usize {
+    if (bip.generation != bip.bundle.inner.currentGeneration()) return 0;
+    const handle = snail.BlobInProgress{ .bundle = @constCast(&bip.bundle.inner) };
+    return handle.glyphCount();
+}
+
+pub export fn snail_blob_in_progress_finish(
+    bip: *common.BlobInProgressImpl,
+    key: SnailResourceKey,
+    out: *?*TextBlobImpl,
+) c_int {
+    if (!bipValid(bip)) {
+        destroyHandle(bip);
+        return SNAIL_ERR_INVALID_ARGUMENT;
+    }
+    const handle = snail.BlobInProgress{ .bundle = &bip.bundle.inner };
+    const blob_ptr = handle.finish(snail.ResourceKey.fromOpaque(key)) catch |err| {
+        destroyHandle(bip);
+        return mapError(err);
+    };
+    const impl = createHandleSharingAllocator(TextBlobImpl, bip.handle_allocator) catch {
+        destroyHandle(bip);
+        return SNAIL_ERR_OUT_OF_MEMORY;
+    };
+    impl.inner = blob_ptr.*;
+    impl.borrowed_from = bip.bundle;
+    impl.borrowed_generation = bip.bundle.inner.currentGeneration();
+    out.* = impl;
+    destroyHandle(bip);
+    return SNAIL_OK;
+}
+
+pub export fn snail_blob_in_progress_abort(bip: *common.BlobInProgressImpl) void {
+    if (bipValid(bip)) {
+        const handle = snail.BlobInProgress{ .bundle = &bip.bundle.inner };
+        handle.abort();
+    }
+    destroyHandle(bip);
+}
+
 // TrueType hinting
 
 pub export fn snail_true_type_hint_ppem_uniform(ppem_26_6: u32) SnailTrueTypeHintPpem {
@@ -569,7 +728,10 @@ pub export fn snail_text_blob_init_text(
 
 pub export fn snail_text_blob_deinit(blob: ?*TextBlobImpl) void {
     if (blob) |b| {
-        b.inner.deinit();
+        // Bundle-owned blobs have their storage reclaimed by the bundle;
+        // freeing here would be a double-free. Only deinit independently
+        // allocated blobs (legacy builder/init_* paths).
+        if (b.borrowed_from == null) b.inner.deinit();
         destroyHandle(b);
     }
 }
