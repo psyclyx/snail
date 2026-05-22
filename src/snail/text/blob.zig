@@ -369,16 +369,19 @@ pub const BlobInProgress = struct {
         // program ran on the un-emboldened outline; both copies share the
         // same hinted geometry.
         const face = &self.bundle.atlas.config.faces[face_index];
+        const embolden = face.synthetic.embolden;
         try pending.glyphs.append(gpa, .{
             .face_index = face_index,
             .glyph_id = glyph_id,
             .transform = transform,
-            .embolden = face.synthetic.embolden,
+            .embolden = embolden,
             .color = color,
             .hint_record_texel = intern.index,
             .hint_bbox = value.bbox,
         });
-        pending.gpu_instance_budget += 1;
+        // Each hinted glyph is one GPU instance; emboldening emits a second
+        // copy at draw time so the budget must reserve two.
+        pending.gpu_instance_budget += if (embolden != 0) 2 else 1;
     }
 
     pub fn glyphCount(self: BlobInProgress) usize {
@@ -752,7 +755,8 @@ fn textBlobGpuInstanceBudgetForAtlas(atlas: *const TextAtlas, glyphs: []const Te
     var total: usize = 0;
     for (glyphs) |glyph| {
         if (glyph.hint_record_texel != null) {
-            total += 1;
+            // Hinted glyphs always emit one instance; faux-bold doubles it.
+            total += if (glyph.embolden != 0) 2 else 1;
             continue;
         }
         const fi = atlas.checkedFaceIndex(glyph.face_index) catch continue;

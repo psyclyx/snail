@@ -1349,3 +1349,50 @@ test "hint: compound glyphs survive topology-cache rehash" {
     }
     try testing.expect(ready > 0);
 }
+
+test "TextBlob budget doubles for emboldened hinted glyphs" {
+    // Regression: enabling hint on a synthetic-bold face used to under-budget
+    // the draw list — each hinted glyph reserved one instance but the renderer
+    // emits two (the second offset by face.synthetic.embolden). A scene with
+    // many hinted+emboldened glyphs would then hit `error.DrawListFull`
+    // mid-draw. The hinted path must account for the embolden double-emit.
+    const assets_data = @import("assets");
+    const hint_context_mod = @import("hint_context.zig");
+    const tt_hint_mod = @import("tt_hint.zig");
+
+    var fonts = try TextAtlas.init(testing.allocator, &.{.{
+        .data = assets_data.noto_sans_regular,
+        .synthetic = .{ .embolden = 0.5 },
+    }});
+    defer fonts.deinit();
+    if (try fonts.ensureText(.{}, "H")) |next| {
+        fonts.deinit();
+        fonts = next;
+    }
+
+    var shaped = try fonts.shapeText(testing.allocator, .{}, "H");
+    defer shaped.deinit();
+
+    var ctx = hint_context_mod.TrueTypeHintContext.init(testing.allocator, &fonts);
+    defer ctx.deinit();
+    var hinted = try ctx.prepareRun(testing.allocator, .{
+        .shaped = &shaped,
+        .ppem = tt_hint_mod.HintPpem.uniform(12 * 64),
+    });
+    defer hinted.deinit();
+    if (hinted.stats.hinted_count == 0) return error.SkipZigTest;
+
+    var bundle = TextBlobBundle.init(testing.allocator, &fonts);
+    defer bundle.deinit();
+    var bip = try bundle.startBlob();
+    errdefer bip.abort();
+    _ = try bip.append(.{
+        .source = .{ .hinted = hinted.glyphs },
+        .placement = .{ .baseline = .{ .x = 0, .y = 16 }, .em = 12 },
+        .fill = .{ .solid = .{ 1, 1, 1, 1 } },
+    });
+    const blob = try bip.finish(snail.ResourceKey.named("bold_hinted"));
+
+    // Single emboldened hinted glyph → two GPU instances.
+    try testing.expectEqual(@as(usize, 2), blob.gpu_instance_budget);
+}
