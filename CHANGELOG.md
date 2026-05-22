@@ -44,6 +44,36 @@ migration. See the migration recipes below each entry.
   deinit on those handles. A generation counter on the bundle lets the C
   side detect use-after-reset on `SnailBlobInProgress` handles.
 
+### Removed (breaking)
+
+- `snail.TextBlobBuilder` is no longer part of the public Zig API.
+  Migrate to `snail.TextBlobBundle`:
+  ```zig
+  // before
+  var builder = snail.TextBlobBuilder.init(allocator, &atlas);
+  defer builder.deinit();
+  _ = try builder.append(text_append);
+  var blob = try builder.finish();
+  defer blob.deinit();
+  // ... use &blob ...
+
+  // after
+  var bundle = snail.TextBlobBundle.init(allocator, &atlas);
+  defer bundle.deinit();
+  var bip = try bundle.startBlob();
+  errdefer bip.abort();
+  _ = try bip.append(text_append);
+  const blob = try bip.finish(snail.ResourceKey.named("my_blob"));
+  // ... use blob (a *const TextBlob owned by bundle) ...
+  ```
+  The builder remains as a private implementation detail of the bundle;
+  external code cannot reach it.
+- C API: `SnailTextBlobBuilder` handle and all
+  `snail_text_blob_builder_*` exports removed. Migrate to
+  `SnailTextBlobBundle` + `SnailBlobInProgress`
+  (`snail_text_blob_bundle_init/start_blob` and the
+  `snail_blob_in_progress_append_*/finish` calls).
+
 ### Changed (breaking)
 
 - `PreparedHintRun` and `PreparedBestEffortHintRun` collapse into a single
