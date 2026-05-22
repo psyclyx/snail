@@ -178,13 +178,17 @@ const rich_text_strings = [_][]const u8{
 const SceneBundle = struct {
     allocator: std.mem.Allocator,
     scene: snail.Scene,
-    blobs: []snail.TextBlob = &.{},
+    text_bundle: ?*snail.TextBlobBundle = null,
+    blobs: []*const snail.TextBlob = &.{},
     picture: ?*snail.PathPicture = null,
 
     fn deinit(self: *SceneBundle) void {
         self.scene.deinit();
-        for (self.blobs) |*blob| blob.deinit();
         if (self.blobs.len > 0) self.allocator.free(self.blobs);
+        if (self.text_bundle) |bundle| {
+            bundle.deinit();
+            self.allocator.destroy(bundle);
+        }
         if (self.picture) |picture| {
             picture.deinit();
             self.allocator.destroy(picture);
@@ -300,21 +304,20 @@ fn prepareSceneText(atlas: *snail.TextAtlas) !void {
 }
 
 fn makeTextBlob(
-    allocator: std.mem.Allocator,
-    atlas: *snail.TextAtlas,
+    bundle: *snail.TextBlobBundle,
     line: TextLine,
-) !snail.TextBlob {
-    var shaped = try atlas.shapeText(allocator, line.style, line.text);
+) !*const snail.TextBlob {
+    var shaped = try bundle.atlas.shapeText(bundle.gpa, line.style, line.text);
     defer shaped.deinit();
 
-    var builder = snail.TextBlobBuilder.init(allocator, atlas);
-    errdefer builder.deinit();
-    _ = try builder.append(.{
+    var bip = try bundle.startBlob();
+    errdefer bip.abort();
+    _ = try bip.append(.{
         .source = .{ .shaped = shaped.glyphs },
         .placement = .{ .baseline = .{ .x = line.x, .y = line.y }, .em = line.size },
         .fill = .{ .solid = line.color },
     });
-    return builder.finish();
+    return bip.finish(snail.ResourceKey.named("bench_text"));
 }
 
 fn hintPpemForEm(em: f32) !snail.TrueTypeHintPpem {
@@ -324,32 +327,31 @@ fn hintPpemForEm(em: f32) !snail.TrueTypeHintPpem {
 }
 
 fn makeBestEffortHintedTextBlob(
-    allocator: std.mem.Allocator,
-    atlas: *snail.TextAtlas,
+    bundle: *snail.TextBlobBundle,
     context: *snail.TrueTypeHintContext,
     line: TextLine,
-) !snail.TextBlob {
-    var shaped = try atlas.shapeText(allocator, line.style, line.text);
+) !*const snail.TextBlob {
+    var shaped = try bundle.atlas.shapeText(bundle.gpa, line.style, line.text);
     defer shaped.deinit();
 
-    var run = try context.prepareRun(allocator, .{
+    var run = try context.prepareRun(bundle.gpa, .{
         .shaped = &shaped,
         .ppem = try hintPpemForEm(line.size),
     });
     defer run.deinit();
 
-    var builder = snail.TextBlobBuilder.init(allocator, atlas);
-    errdefer builder.deinit();
-    _ = try builder.append(.{
+    var bip = try bundle.startBlob();
+    errdefer bip.abort();
+    _ = try bip.append(.{
         .source = .{ .hinted = run.glyphs },
         .placement = .{ .baseline = .{ .x = line.x, .y = line.y }, .em = line.size },
         .fill = .{ .solid = line.color },
     });
-    return builder.finish();
+    return bip.finish(snail.ResourceKey.named("bench_hinted_text"));
 }
 
 fn appendPaintedRun(
-    builder: *snail.TextBlobBuilder,
+    bip: snail.BlobInProgress,
     style: snail.FontStyle,
     text: []const u8,
     x: f32,
@@ -357,9 +359,9 @@ fn appendPaintedRun(
     em: f32,
     paint: snail.Paint,
 ) !snail.TextAppendResult {
-    var shaped = try builder.atlas.shapeText(builder.allocator, style, text);
+    var shaped = try bip.bundle.atlas.shapeText(bip.bundle.gpa, style, text);
     defer shaped.deinit();
-    return builder.append(.{
+    return bip.append(.{
         .source = .{ .shaped = shaped.glyphs },
         .placement = .{ .baseline = .{ .x = x, .y = y }, .em = em },
         .fill = paint,
@@ -367,7 +369,7 @@ fn appendPaintedRun(
 }
 
 fn appendSolidRun(
-    builder: *snail.TextBlobBuilder,
+    bip: snail.BlobInProgress,
     style: snail.FontStyle,
     text: []const u8,
     x: f32,
@@ -375,31 +377,31 @@ fn appendSolidRun(
     em: f32,
     color: [4]f32,
 ) !snail.TextAppendResult {
-    return appendPaintedRun(builder, style, text, x, y, em, .{ .solid = color });
+    return appendPaintedRun(bip, style, text, x, y, em, .{ .solid = color });
 }
 
-fn makeRichTextBlob(allocator: std.mem.Allocator, atlas: *snail.TextAtlas) !snail.TextBlob {
-    var builder = snail.TextBlobBuilder.init(allocator, atlas);
-    errdefer builder.deinit();
+fn makeRichTextBlob(bundle: *snail.TextBlobBundle) !*const snail.TextBlob {
+    var bip = try bundle.startBlob();
+    errdefer bip.abort();
 
     var x: f32 = 18.0;
     var y: f32 = 46.0;
-    x += (try appendSolidRun(&builder, .{ .weight = .bold }, "RICH ", x, y, 30.0, .{ 0.95, 0.97, 1.0, 1.0 })).advance.x;
-    x += (try appendPaintedRun(&builder, .{ .weight = .bold }, "gradient", x, y, 30.0, .{ .linear_gradient = .{
+    x += (try appendSolidRun(bip, .{ .weight = .bold }, "RICH ", x, y, 30.0, .{ 0.95, 0.97, 1.0, 1.0 })).advance.x;
+    x += (try appendPaintedRun(bip, .{ .weight = .bold }, "gradient", x, y, 30.0, .{ .linear_gradient = .{
         .start = .{ .x = x, .y = y - 30.0 },
         .end = .{ .x = x + 150.0, .y = y },
         .start_color = .{ 0.30, 0.65, 1.0, 1.0 },
         .end_color = .{ 1.0, 0.35, 0.58, 1.0 },
     } })).advance.x;
-    _ = try appendSolidRun(&builder, .{}, " runs", x, y, 22.0, .{ 0.72, 0.78, 0.86, 1.0 });
+    _ = try appendSolidRun(bip, .{}, " runs", x, y, 22.0, .{ 0.72, 0.78, 0.86, 1.0 });
 
     x = 18.0;
     y = 94.0;
-    x += (try appendSolidRun(&builder, .{}, "status  ", x, y, 18.0, .{ 0.60, 0.68, 0.76, 1.0 })).advance.x;
-    x += (try appendSolidRun(&builder, .{ .weight = .bold }, "HP ", x, y, 24.0, .{ 0.80, 0.92, 0.86, 1.0 })).advance.x;
-    x += (try appendSolidRun(&builder, .{ .weight = .bold }, "83", x, y, 28.0, .{ 0.25, 0.92, 0.50, 1.0 })).advance.x;
-    x += (try appendSolidRun(&builder, .{}, "   shield ", x, y, 18.0, .{ 0.62, 0.72, 0.82, 1.0 })).advance.x;
-    _ = try appendPaintedRun(&builder, .{ .weight = .bold }, "online", x, y, 22.0, .{ .linear_gradient = .{
+    x += (try appendSolidRun(bip, .{}, "status  ", x, y, 18.0, .{ 0.60, 0.68, 0.76, 1.0 })).advance.x;
+    x += (try appendSolidRun(bip, .{ .weight = .bold }, "HP ", x, y, 24.0, .{ 0.80, 0.92, 0.86, 1.0 })).advance.x;
+    x += (try appendSolidRun(bip, .{ .weight = .bold }, "83", x, y, 28.0, .{ 0.25, 0.92, 0.50, 1.0 })).advance.x;
+    x += (try appendSolidRun(bip, .{}, "   shield ", x, y, 18.0, .{ 0.62, 0.72, 0.82, 1.0 })).advance.x;
+    _ = try appendPaintedRun(bip, .{ .weight = .bold }, "online", x, y, 22.0, .{ .linear_gradient = .{
         .start = .{ .x = x, .y = y - 22.0 },
         .end = .{ .x = x + 76.0, .y = y },
         .start_color = .{ 0.20, 0.82, 0.92, 1.0 },
@@ -408,7 +410,7 @@ fn makeRichTextBlob(allocator: std.mem.Allocator, atlas: *snail.TextAtlas) !snai
 
     x = 18.0;
     y = 142.0;
-    x += (try appendSolidRun(&builder, .{}, "per-letter  ", x, y, 17.0, .{ 0.56, 0.64, 0.74, 1.0 })).advance.x;
+    x += (try appendSolidRun(bip, .{}, "per-letter  ", x, y, 17.0, .{ 0.56, 0.64, 0.74, 1.0 })).advance.x;
     const letters = "snail";
     const colors = [_][4]f32{
         .{ 0.28, 0.55, 0.96, 1.0 },
@@ -419,16 +421,16 @@ fn makeRichTextBlob(allocator: std.mem.Allocator, atlas: *snail.TextAtlas) !snai
     };
     for (letters, 0..) |letter, i| {
         const one = [_]u8{letter};
-        x += (try appendSolidRun(&builder, .{ .weight = .bold }, &one, x, y, 24.0 + @as(f32, @floatFromInt(i % 3)) * 3.0, colors[i])).advance.x;
+        x += (try appendSolidRun(bip, .{ .weight = .bold }, &one, x, y, 24.0 + @as(f32, @floatFromInt(i % 3)) * 3.0, colors[i])).advance.x;
     }
-    x += (try appendSolidRun(&builder, .{}, "  alerts ", x, y, 17.0, .{ 0.56, 0.64, 0.74, 1.0 })).advance.x;
-    x += (try appendSolidRun(&builder, .{ .weight = .bold }, "OK", x, y, 20.0, .{ 0.36, 0.92, 0.52, 1.0 })).advance.x;
-    x += (try appendSolidRun(&builder, .{}, " / ", x, y, 17.0, .{ 0.56, 0.64, 0.74, 1.0 })).advance.x;
-    x += (try appendSolidRun(&builder, .{ .weight = .bold }, "WARN", x, y, 20.0, .{ 0.98, 0.72, 0.32, 1.0 })).advance.x;
-    x += (try appendSolidRun(&builder, .{}, " / ", x, y, 17.0, .{ 0.56, 0.64, 0.74, 1.0 })).advance.x;
-    _ = try appendSolidRun(&builder, .{ .weight = .bold }, "CRIT", x, y, 20.0, .{ 1.0, 0.40, 0.44, 1.0 });
+    x += (try appendSolidRun(bip, .{}, "  alerts ", x, y, 17.0, .{ 0.56, 0.64, 0.74, 1.0 })).advance.x;
+    x += (try appendSolidRun(bip, .{ .weight = .bold }, "OK", x, y, 20.0, .{ 0.36, 0.92, 0.52, 1.0 })).advance.x;
+    x += (try appendSolidRun(bip, .{}, " / ", x, y, 17.0, .{ 0.56, 0.64, 0.74, 1.0 })).advance.x;
+    x += (try appendSolidRun(bip, .{ .weight = .bold }, "WARN", x, y, 20.0, .{ 0.98, 0.72, 0.32, 1.0 })).advance.x;
+    x += (try appendSolidRun(bip, .{}, " / ", x, y, 17.0, .{ 0.56, 0.64, 0.74, 1.0 })).advance.x;
+    _ = try appendSolidRun(bip, .{ .weight = .bold }, "CRIT", x, y, 20.0, .{ 1.0, 0.40, 0.44, 1.0 });
 
-    return builder.finish();
+    return bip.finish(snail.ResourceKey.named("bench_rich"));
 }
 
 fn lineFor(workload: TextWorkload) TextLine {
@@ -441,27 +443,25 @@ fn lineFor(workload: TextWorkload) TextLine {
 }
 
 fn runTextWorkload(
-    allocator: std.mem.Allocator,
-    atlas: *snail.TextAtlas,
+    bundle: *snail.TextBlobBundle,
     workload: TextWorkload,
 ) !void {
+    bundle.reset();
     switch (workload) {
         .short, .sentence, .paragraph => {
-            var blob = try makeTextBlob(allocator, atlas, lineFor(workload));
+            const blob = try makeTextBlob(bundle, lineFor(workload));
             std.mem.doNotOptimizeAway(blob.glyphCount());
-            blob.deinit();
         },
         .paragraph_sizes => {
             var y: f32 = 330;
             for (SIZES) |size| {
-                var blob = try makeTextBlob(allocator, atlas, .{
+                const blob = try makeTextBlob(bundle, .{
                     .text = PARAGRAPH,
                     .x = 0,
                     .y = y,
                     .size = @floatFromInt(size),
                 });
                 std.mem.doNotOptimizeAway(blob.glyphCount());
-                blob.deinit();
                 y -= @as(f32, @floatFromInt(size)) * 1.4;
             }
             std.mem.doNotOptimizeAway(y);
@@ -470,28 +470,26 @@ fn runTextWorkload(
 }
 
 fn runHintedTextWorkload(
-    allocator: std.mem.Allocator,
-    atlas: *snail.TextAtlas,
+    bundle: *snail.TextBlobBundle,
     context: *snail.TrueTypeHintContext,
     workload: TextWorkload,
 ) !void {
+    bundle.reset();
     switch (workload) {
         .short, .sentence, .paragraph => {
-            var blob = try makeBestEffortHintedTextBlob(allocator, atlas, context, lineFor(workload));
+            const blob = try makeBestEffortHintedTextBlob(bundle, context, lineFor(workload));
             std.mem.doNotOptimizeAway(blob.glyphCount());
-            blob.deinit();
         },
         .paragraph_sizes => {
             var y: f32 = 330;
             for (SIZES) |size| {
-                var blob = try makeBestEffortHintedTextBlob(allocator, atlas, context, .{
+                const blob = try makeBestEffortHintedTextBlob(bundle, context, .{
                     .text = PARAGRAPH,
                     .x = 0,
                     .y = y,
                     .size = @floatFromInt(size),
                 });
                 std.mem.doNotOptimizeAway(blob.glyphCount());
-                blob.deinit();
                 y -= @as(f32, @floatFromInt(size)) * 1.4;
             }
             std.mem.doNotOptimizeAway(y);
@@ -501,10 +499,13 @@ fn runHintedTextWorkload(
 
 fn timeTextWorkload(atlas: *snail.TextAtlas, workload: TextWorkload) !f64 {
     const allocator = std.heap.smp_allocator;
-    for (0..TEXT_WARMUP) |_| try runTextWorkload(allocator, atlas, workload);
+    var bundle = snail.TextBlobBundle.init(allocator, atlas);
+    defer bundle.deinit();
+
+    for (0..TEXT_WARMUP) |_| try runTextWorkload(&bundle, workload);
 
     const start = nowNs();
-    for (0..TEXT_ITERS) |_| try runTextWorkload(allocator, atlas, workload);
+    for (0..TEXT_ITERS) |_| try runTextWorkload(&bundle, workload);
     return usFrom(start) / TEXT_ITERS;
 }
 
@@ -512,11 +513,13 @@ fn timeHintedTextWorkload(atlas: *snail.TextAtlas, workload: TextWorkload) !f64 
     const allocator = std.heap.smp_allocator;
     var context = snail.TrueTypeHintContext.init(allocator, atlas);
     defer context.deinit();
+    var bundle = snail.TextBlobBundle.init(allocator, atlas);
+    defer bundle.deinit();
 
-    for (0..TEXT_WARMUP) |_| try runHintedTextWorkload(allocator, atlas, &context, workload);
+    for (0..TEXT_WARMUP) |_| try runHintedTextWorkload(&bundle, &context, workload);
 
     const start = nowNs();
-    for (0..TEXT_ITERS) |_| try runHintedTextWorkload(allocator, atlas, &context, workload);
+    for (0..TEXT_ITERS) |_| try runHintedTextWorkload(&bundle, &context, workload);
     return usFrom(start) / TEXT_ITERS;
 }
 
@@ -627,35 +630,44 @@ fn buildScene(
     const needs_text = kind == .text or kind == .mixed or kind == .multi_script or needs_hinted_text;
     const needs_vector = kind == .vector or kind == .mixed or kind == .hinted_mixed;
 
-    var blobs: []snail.TextBlob = &.{};
+    var text_bundle: ?*snail.TextBlobBundle = null;
+    var blobs: []*const snail.TextBlob = &.{};
     var blob_count: usize = 0;
     errdefer {
-        for (blobs[0..blob_count]) |*blob| blob.deinit();
         if (blobs.len > 0) allocator.free(blobs);
+        if (text_bundle) |bundle| {
+            bundle.deinit();
+            allocator.destroy(bundle);
+        }
     }
 
     var hint_context: snail.TrueTypeHintContext = undefined;
     if (needs_hinted_text) hint_context = snail.TrueTypeHintContext.init(allocator, atlas);
     defer if (needs_hinted_text) hint_context.deinit();
 
+    if (kind == .rich_text or needs_text) {
+        text_bundle = try allocator.create(snail.TextBlobBundle);
+        text_bundle.?.* = snail.TextBlobBundle.init(allocator, atlas);
+    }
+
     if (kind == .rich_text) {
-        blobs = try allocator.alloc(snail.TextBlob, 1);
-        blobs[blob_count] = try makeRichTextBlob(allocator, atlas);
+        blobs = try allocator.alloc(*const snail.TextBlob, 1);
+        blobs[blob_count] = try makeRichTextBlob(text_bundle.?);
         try scene.addText(.{
-            .blob = &blobs[blob_count],
+            .blob = blobs[blob_count],
             .resources = blobs[blob_count].resourceKeys(snail.ResourceKey.named("fonts"), sceneTextKey(blob_count)),
         });
         blob_count += 1;
     } else if (needs_text) {
         const lines: []const TextLine = if (kind == .multi_script or kind == .hinted_multi_script) scene_multi_script_lines[0..] else scene_text_lines[0..];
-        blobs = try allocator.alloc(snail.TextBlob, lines.len);
+        blobs = try allocator.alloc(*const snail.TextBlob, lines.len);
         for (lines) |line| {
             blobs[blob_count] = if (needs_hinted_text)
-                try makeBestEffortHintedTextBlob(allocator, atlas, &hint_context, line)
+                try makeBestEffortHintedTextBlob(text_bundle.?, &hint_context, line)
             else
-                try makeTextBlob(allocator, atlas, line);
+                try makeTextBlob(text_bundle.?, line);
             try scene.addText(.{
-                .blob = &blobs[blob_count],
+                .blob = blobs[blob_count],
                 .resources = blobs[blob_count].resourceKeys(snail.ResourceKey.named("fonts"), sceneTextKey(blob_count)),
             });
             blob_count += 1;
@@ -682,6 +694,7 @@ fn buildScene(
     return .{
         .allocator = allocator,
         .scene = scene,
+        .text_bundle = text_bundle,
         .blobs = blobs,
         .picture = picture,
     };
@@ -696,7 +709,7 @@ fn uploadSceneResources(
     defer allocator.free(entries);
 
     var set = snail.ResourceManifest.init(entries);
-    for (bundle.blobs, 0..) |*blob, i| {
+    for (bundle.blobs, 0..) |blob, i| {
         _ = try declareTextBlobResources(&set, snail.ResourceKey.named("fonts"), sceneTextKey(i), blob);
     }
     if (bundle.picture) |picture| try set.putPathPicture(VECTOR_RESOURCE_KEY, picture);
