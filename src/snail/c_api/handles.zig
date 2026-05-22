@@ -12,12 +12,20 @@ pub const TextAtlasImpl = struct { handle_allocator: *HandleAllocator, inner: sn
 pub const ShapedTextImpl = struct { handle_allocator: *HandleAllocator, inner: snail.ShapedText };
 pub const TextBlobImpl = struct {
     handle_allocator: *HandleAllocator,
-    /// Either an independently-owned blob value (legacy `init_*` paths)
-    /// or a borrowed pointer into a SnailTextBlobBundle. When
-    /// `borrowed_from` is non-null, the inner blob is invalidated
-    /// whenever the source bundle bumps `generation`; dereferencing the
-    /// handle then returns `SNAIL_ERR_INVALID_HANDLE`.
+    /// Snapshot of the bundle-owned blob's fields at finish/init time.
+    /// All blobs come from a TextBlobBundle. Two ownership patterns:
+    /// - If `owned_bundle` is non-null, this handle owns the bundle —
+    ///   typically a small bundle created by the convenience init paths
+    ///   (`snail_text_blob_init_*`, `snail_text_blob_rebound`). The
+    ///   handle's deinit frees the bundle.
+    /// - If `borrowed_from` is non-null, the bundle is externally owned
+    ///   (typical for `snail_blob_in_progress_finish`). The handle's
+    ///   deinit just frees the handle; the source bundle reclaims the
+    ///   blob's storage on its own reset/deinit. Operations on a borrowed
+    ///   blob whose `borrowed_generation` no longer matches the bundle's
+    ///   `currentGeneration()` are invalid.
     inner: snail.TextBlob,
+    owned_bundle: ?*snail.TextBlobBundle = null,
     borrowed_from: ?*TextBlobBundleImpl = null,
     borrowed_generation: u32 = 0,
 };

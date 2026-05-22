@@ -473,6 +473,7 @@ pub export fn snail_blob_in_progress_finish(
         return SNAIL_ERR_OUT_OF_MEMORY;
     };
     impl.inner = blob_ptr.*;
+    impl.owned_bundle = null;
     impl.borrowed_from = bip.bundle;
     impl.borrowed_generation = bip.bundle.inner.currentGeneration();
     out.* = impl;
@@ -560,6 +561,37 @@ pub export fn snail_true_type_prepared_hint_run_stats(run: *const TrueTypePrepar
     out.* = fromTrueTypeHintRunStats(run.inner.stats);
 }
 
+/// Internal helper: build a TextBlob into a freshly-allocated bundle
+/// owned by the returned TextBlobImpl. Used by all standalone
+/// init_* paths so callers that don't manage their own bundle can still
+/// get a TextBlob handle.
+fn initStandaloneBlob(
+    alloc_ptr: ?*const SnailAllocator,
+    atlas: *const snail.TextAtlas,
+    appends: []const snail.TextAppend,
+    out: *?*TextBlobImpl,
+) c_int {
+    const impl = createHandle(TextBlobImpl, alloc_ptr) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    const allocator = allocatorForHandle(impl);
+    const owned_bundle = allocator.create(snail.TextBlobBundle) catch {
+        destroyHandle(impl);
+        return SNAIL_ERR_OUT_OF_MEMORY;
+    };
+    owned_bundle.* = snail.TextBlobBundle.init(allocator, atlas);
+    const blob_ptr = owned_bundle.buildBlob(snail.ResourceKey.named("standalone_blob"), appends, null) catch |err| {
+        owned_bundle.deinit();
+        allocator.destroy(owned_bundle);
+        destroyHandle(impl);
+        return mapError(err);
+    };
+    impl.inner = blob_ptr.*;
+    impl.owned_bundle = owned_bundle;
+    impl.borrowed_from = null;
+    impl.borrowed_generation = 0;
+    out.* = impl;
+    return SNAIL_OK;
+}
+
 pub export fn snail_text_blob_init_from_prepared_hint_run(
     alloc_ptr: ?*const SnailAllocator,
     run: *const TrueTypePreparedHintRunImpl,
@@ -567,23 +599,13 @@ pub export fn snail_text_blob_init_from_prepared_hint_run(
     color: ?[*]const f32,
     out: *?*TextBlobImpl,
 ) c_int {
-    const impl = createHandle(TextBlobImpl, alloc_ptr) catch return SNAIL_ERR_OUT_OF_MEMORY;
-    const allocator = allocatorForHandle(impl);
-    const c = color4(color) catch {
-        destroyHandle(impl);
-        return SNAIL_ERR_INVALID_ARGUMENT;
-    };
-    const blob = snail.TextBlob.init(allocator, run.inner.atlas, .{
+    const c = color4(color) catch return SNAIL_ERR_INVALID_ARGUMENT;
+    const appends = [_]snail.TextAppend{.{
         .source = .{ .hinted = run.inner.glyphs },
         .placement = toTextPlacement(placement),
         .fill = .{ .solid = c },
-    }) catch |err| {
-        destroyHandle(impl);
-        return mapError(err);
-    };
-    impl.inner = blob;
-    out.* = impl;
-    return SNAIL_OK;
+    }};
+    return initStandaloneBlob(alloc_ptr, run.inner.atlas, &appends, out);
 }
 
 pub export fn snail_text_blob_init_from_shaped(
@@ -593,22 +615,13 @@ pub export fn snail_text_blob_init_from_shaped(
     options: SnailTextAppendOptions,
     out: *?*TextBlobImpl,
 ) c_int {
-    const impl = createHandle(TextBlobImpl, alloc_ptr) catch return SNAIL_ERR_OUT_OF_MEMORY;
-    const allocator = allocatorForHandle(impl);
-    const blob = snail.TextBlob.init(allocator, &atlas.inner, .{
+    const paint = toPaint(options.fill) catch return SNAIL_ERR_INVALID_ARGUMENT;
+    const appends = [_]snail.TextAppend{.{
         .source = .{ .shaped = shaped.inner.glyphs },
         .placement = toTextPlacement(options.placement),
-        .fill = toPaint(options.fill) catch {
-            destroyHandle(impl);
-            return SNAIL_ERR_INVALID_ARGUMENT;
-        },
-    }) catch |err| {
-        destroyHandle(impl);
-        return mapError(err);
-    };
-    impl.inner = blob;
-    out.* = impl;
-    return SNAIL_OK;
+        .fill = paint,
+    }};
+    return initStandaloneBlob(alloc_ptr, &atlas.inner, &appends, out);
 }
 
 pub export fn snail_text_blob_init_text(
@@ -626,36 +639,46 @@ pub export fn snail_text_blob_init_text(
         destroyHandle(impl);
         return SNAIL_ERR_INVALID_ARGUMENT;
     };
+    const paint = toPaint(options.fill) catch {
+        destroyHandle(impl);
+        return SNAIL_ERR_INVALID_ARGUMENT;
+    };
     var shaped = atlas.inner.shapeText(allocator, font_style, text[0..text_len]) catch |err| {
         destroyHandle(impl);
         return mapError(err);
     };
-    const paint = toPaint(options.fill) catch {
-        shaped.deinit();
+    defer shaped.deinit();
+    const owned_bundle = allocator.create(snail.TextBlobBundle) catch {
         destroyHandle(impl);
-        return SNAIL_ERR_INVALID_ARGUMENT;
+        return SNAIL_ERR_OUT_OF_MEMORY;
     };
-    const blob = snail.TextBlob.init(allocator, &atlas.inner, .{
+    owned_bundle.* = snail.TextBlobBundle.init(allocator, &atlas.inner);
+    const blob_ptr = owned_bundle.buildBlob(snail.ResourceKey.named("standalone_text"), &.{.{
         .source = .{ .shaped = shaped.glyphs },
         .placement = toTextPlacement(options.placement),
         .fill = paint,
-    }) catch |err| {
-        shaped.deinit();
+    }}, null) catch |err| {
+        owned_bundle.deinit();
+        allocator.destroy(owned_bundle);
         destroyHandle(impl);
         return mapError(err);
     };
-    shaped.deinit();
-    impl.inner = blob;
+    impl.inner = blob_ptr.*;
+    impl.owned_bundle = owned_bundle;
+    impl.borrowed_from = null;
+    impl.borrowed_generation = 0;
     out.* = impl;
     return SNAIL_OK;
 }
 
 pub export fn snail_text_blob_deinit(blob: ?*TextBlobImpl) void {
     if (blob) |b| {
-        // Bundle-owned blobs have their storage reclaimed by the bundle;
-        // freeing here would be a double-free. Only deinit independently
-        // allocated blobs (legacy builder/init_* paths).
-        if (b.borrowed_from == null) b.inner.deinit();
+        if (b.owned_bundle) |bundle| {
+            bundle.deinit();
+            b.handle_allocator.allocator().destroy(bundle);
+        }
+        // Bundle-borrowed blobs need no cleanup: the source bundle owns
+        // the blob storage and reclaims it on its own reset/deinit.
         destroyHandle(b);
     }
 }
@@ -672,13 +695,53 @@ pub export fn snail_text_blob_rebound(
 ) c_int {
     const impl = createHandle(TextBlobImpl, alloc_ptr) catch return SNAIL_ERR_OUT_OF_MEMORY;
     const allocator = allocatorForHandle(impl);
-    const rebound = blob.inner.rebound(allocator, &atlas.inner) catch |err| {
+    const owned_bundle = allocator.create(snail.TextBlobBundle) catch {
+        destroyHandle(impl);
+        return SNAIL_ERR_OUT_OF_MEMORY;
+    };
+    owned_bundle.* = snail.TextBlobBundle.init(allocator, &atlas.inner);
+    const rebound_ptr = reboundIntoBundle(owned_bundle, &blob.inner, &atlas.inner) catch |err| {
+        owned_bundle.deinit();
+        allocator.destroy(owned_bundle);
         destroyHandle(impl);
         return mapError(err);
     };
-    impl.inner = rebound;
+    impl.inner = rebound_ptr.*;
+    impl.owned_bundle = owned_bundle;
+    impl.borrowed_from = null;
+    impl.borrowed_generation = 0;
     out.* = impl;
     return SNAIL_OK;
+}
+
+/// Copy `src` (a blob bound to a possibly-different atlas snapshot) into
+/// `bundle`, which is presumed to be empty and bound to `new_atlas`.
+/// Returns the new blob pointer, owned by `bundle`. The new atlas must
+/// be compatible with the source via `canRebindFrom` and contain every
+/// glyph the source references.
+fn reboundIntoBundle(
+    bundle: *snail.TextBlobBundle,
+    src: *const snail.TextBlob,
+    new_atlas: *const snail.TextAtlas,
+) !*const snail.TextBlob {
+    if (!new_atlas.canRebindFrom(src.atlas)) return error.WrongTextAtlasSnapshot;
+    for (src.glyphs) |g| {
+        if (!new_atlas.hasPreparedGlyph(g.face_index, g.glyph_id)) return error.MissingPreparedGlyph;
+    }
+    // Build the rebound blob with the source allocator, then publish it
+    // into the bundle by appending to bundle.blobs. The blob struct ends
+    // up with its own .atlas pointing at new_atlas; the bundle's deinit
+    // path will free it.
+    const rebound = try src.rebound(bundle.gpa, new_atlas);
+    errdefer {
+        var owned = rebound;
+        owned.deinit();
+    }
+    const slot = try bundle.gpa.create(snail.TextBlob);
+    errdefer bundle.gpa.destroy(slot);
+    slot.* = rebound;
+    try bundle.blobs.append(bundle.gpa, slot);
+    return slot;
 }
 
 fn color4(color: ?[*]const f32) ![4]f32 {
