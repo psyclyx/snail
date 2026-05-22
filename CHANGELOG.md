@@ -147,6 +147,15 @@ migration recipes below each entry.
   → `shaped.advanceX()`. C API: `snail_shaped_text_advance_x` /
   `_advance_y` exports are unchanged.
 
+### Added (typography layer)
+
+- `snail.Cluster` / `snail.ClusterIterator` / `snail.clusters(&shaped)`
+  walk a `ShapedText` by HarfBuzz cluster — maximal runs of glyphs
+  sharing a `source_start`. A cluster is the caller-visible "atom" of
+  shaped output: a ligature, a composed grapheme, or a reorder block.
+  Post-shape transforms (see below) iterate by cluster to avoid pulling
+  ligature components apart.
+
 ## 0.11.1 - 2026-05-20
 
 ### Changed

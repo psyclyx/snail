@@ -827,3 +827,123 @@ test "TextAtlas deduplicates same font data" {
     // Both faces share the same parsed font (data pointer equality).
     try testing.expectEqual(fonts.config.faces[0].font.data.ptr, fonts.config.faces[1].font.data.ptr);
 }
+fn makeGlyph(source_start: u32, source_end: u32, x_advance: f32) snail.ShapedText.Glyph {
+    return .{
+        .face_index = 0,
+        .glyph_id = 1,
+        .x_offset = 0,
+        .y_offset = 0,
+        .x_advance = x_advance,
+        .y_advance = 0,
+        .source_start = source_start,
+        .source_end = source_end,
+    };
+}
+
+fn shapedFromGlyphs(glyphs: []snail.ShapedText.Glyph) snail.ShapedText {
+    return .{
+        .allocator = testing.allocator,
+        .config = undefined,
+        .glyphs = glyphs,
+    };
+}
+
+test "clusters: empty shaped text yields no clusters" {
+    var glyphs = [_]snail.ShapedText.Glyph{};
+    const shaped = shapedFromGlyphs(&glyphs);
+    var it = snail.clusters(&shaped);
+    try testing.expectEqual(@as(?snail.Cluster, null), it.next());
+}
+
+test "clusters: one glyph per cluster (plain Latin)" {
+    var glyphs = [_]snail.ShapedText.Glyph{
+        makeGlyph(0, 3, 0.5),
+        makeGlyph(1, 3, 0.5),
+        makeGlyph(2, 3, 0.5),
+    };
+    const shaped = shapedFromGlyphs(&glyphs);
+    var it = snail.clusters(&shaped);
+
+    const c0 = it.next().?;
+    try testing.expectEqual(@as(usize, 1), c0.glyphs.len);
+    try testing.expectEqual(@as(u32, 0), c0.source_start);
+    try testing.expectEqual(@as(u32, 1), c0.source_end);
+
+    const c1 = it.next().?;
+    try testing.expectEqual(@as(usize, 1), c1.glyphs.len);
+    try testing.expectEqual(@as(u32, 1), c1.source_start);
+    try testing.expectEqual(@as(u32, 2), c1.source_end);
+
+    const c2 = it.next().?;
+    try testing.expectEqual(@as(usize, 1), c2.glyphs.len);
+    try testing.expectEqual(@as(u32, 2), c2.source_start);
+    // Final cluster: source_end falls back to glyph.source_end.
+    try testing.expectEqual(@as(u32, 3), c2.source_end);
+
+    try testing.expectEqual(@as(?snail.Cluster, null), it.next());
+}
+
+test "clusters: ligature collapses multiple glyphs into one cluster" {
+    // HarfBuzz emits each ligature component with the same cluster index.
+    var glyphs = [_]snail.ShapedText.Glyph{
+        makeGlyph(0, 4, 0.7), // "ffi" ligature
+        makeGlyph(0, 4, 0.0),
+        makeGlyph(0, 4, 0.0),
+        makeGlyph(3, 4, 0.4), // trailing "."
+    };
+    const shaped = shapedFromGlyphs(&glyphs);
+    var it = snail.clusters(&shaped);
+
+    const c0 = it.next().?;
+    try testing.expectEqual(@as(usize, 3), c0.glyphs.len);
+    try testing.expectEqual(@as(u32, 0), c0.source_start);
+    try testing.expectEqual(@as(u32, 3), c0.source_end);
+
+    const c1 = it.next().?;
+    try testing.expectEqual(@as(usize, 1), c1.glyphs.len);
+    try testing.expectEqual(@as(u32, 3), c1.source_start);
+    try testing.expectEqual(@as(u32, 4), c1.source_end);
+
+    try testing.expectEqual(@as(?snail.Cluster, null), it.next());
+}
+
+test "clusters: covers every glyph exactly once" {
+    var glyphs = [_]snail.ShapedText.Glyph{
+        makeGlyph(0, 5, 0.5),
+        makeGlyph(0, 5, 0.0),
+        makeGlyph(2, 5, 0.5),
+        makeGlyph(3, 5, 0.5),
+        makeGlyph(3, 5, 0.0),
+        makeGlyph(3, 5, 0.0),
+    };
+    const shaped = shapedFromGlyphs(&glyphs);
+    var it = snail.clusters(&shaped);
+
+    var seen: usize = 0;
+    while (it.next()) |c| seen += c.glyphs.len;
+    try testing.expectEqual(glyphs.len, seen);
+}
+
+test "clusters: from real shapeText output, source spans are monotonic" {
+    const assets_data = @import("assets");
+    var fonts = try TextAtlas.init(testing.allocator, &.{
+        .{ .data = assets_data.noto_sans_regular },
+    });
+    defer fonts.deinit();
+
+    var shaped = try fonts.shapeText(testing.allocator, .{}, "Hello");
+    defer shaped.deinit();
+
+    var it = snail.clusters(&shaped);
+    var prev_start: ?u32 = null;
+    var total: usize = 0;
+    while (it.next()) |c| {
+        try testing.expect(c.glyphs.len >= 1);
+        try testing.expect(c.source_end > c.source_start);
+        if (prev_start) |p| try testing.expect(c.source_start > p);
+        prev_start = c.source_start;
+        total += c.glyphs.len;
+    }
+    try testing.expectEqual(shaped.glyphs.len, total);
+}
+

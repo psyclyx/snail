@@ -1,6 +1,7 @@
 const atlas_mod = @import("text/atlas.zig");
 const batch_mod = @import("text/batch.zig");
 const blob_mod = @import("text/blob.zig");
+const cluster_mod = @import("text/cluster.zig");
 const config_mod = @import("text/config.zig");
 const hint_context_mod = @import("text/hint_context.zig");
 const tt_hint_mod = @import("text/tt_hint.zig");
@@ -19,6 +20,9 @@ pub const isRenderableTextCodepoint = config_mod.isRenderableTextCodepoint;
 pub const TextAtlas = atlas_mod.TextAtlas;
 pub const TextBatch = batch_mod.TextBatch;
 pub const ShapedText = types_mod.ShapedText;
+pub const Cluster = cluster_mod.Cluster;
+pub const ClusterIterator = cluster_mod.ClusterIterator;
+pub const clusters = cluster_mod.clusters;
 pub const TextBlob = blob_mod.TextBlob;
 pub const TextPlacement = types_mod.TextPlacement;
 pub const TextAppend = types_mod.TextAppend;
