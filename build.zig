@@ -2,7 +2,7 @@ const std = @import("std");
 const pkg_config = @import("build/pkg_config.zig");
 const vulkan_shaders = @import("build/vulkan_shaders.zig");
 
-const version = "0.11.1";
+const version = "0.12.0";
 
 pub const ModuleOptions = struct {
     enable_profiling: bool = false,

@@ -1,10 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.12.0 - 2026-05-22
 
-This release begins a pre-1.0 consolidation of the text construction
-surface. Several breaking changes; consumers should expect mechanical
-migration. See the migration recipes below each entry.
+A pre-1.0 consolidation of the text construction surface. Several
+breaking changes; consumers should expect mechanical migration. See the
+migration recipes below each entry.
 
 ### Added
 
@@ -117,6 +117,16 @@ migration. See the migration recipes below each entry.
   `snail_text_blob_init_from_prepared_hinted_run` →
   `snail_text_blob_init_from_prepared_hint_run`. The `prepare_run` C
   function drops its `glyphs: SnailRange` parameter.
+- `TextDraw.glyphs` and `PathDraw.shapes` removed — draws apply to the
+  whole blob/picture. Sub-selection happens at composition time: build
+  smaller blobs into the same `TextBlobBundle` (the bundle amortises
+  allocation across them) or build smaller `PathPicture`s. C API
+  `SnailPathPictureDraw.range` / `.has_range` removed accordingly.
+- `snail.Range` is no longer used by any draw-time field. It remains as
+  a value type returned by `PathPictureBuilder.rangeFrom` /
+  `rangeBetween` (composition aids that track shape offsets within a
+  picture); the helpers `textBlobRangeGpuInstanceBudget` and
+  `shapedAdvanceForRange` are removed.
 
 ## 0.11.1 - 2026-05-20
 
