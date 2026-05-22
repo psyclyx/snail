@@ -1,7 +1,13 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const tt_graphics = @import("tt_graphics.zig");
 const tt_points = @import("tt_points.zig");
+
+/// LLVM (used in Release modes) supports `@call(.always_tail, ...)`; the
+/// stage2 x86_64 backend (used in Debug) does not. Gate the guaranteed
+/// tail call so Debug builds compile via a regular recursive call.
+const tail_calls_supported = builtin.mode != .Debug;
 
 pub const Error = error{
     BufferTooSmall,
@@ -167,14 +173,10 @@ pub const Context = struct {
     }
 
     fn executeCode(self: *Context, code: []const u8, steps: *u32) Error!void {
-        var pc: usize = 0;
-        while (pc < code.len) {
-            try self.countStep(steps);
-            const op_pc = pc;
-            const op = code[pc];
-            pc += 1;
-            try self.executeOp(code, &pc, op_pc, op, steps);
-        }
+        if (code.len == 0) return;
+        try self.countStep(steps);
+        const op = code[0];
+        return tail_dispatch[op](self, code, 1, steps);
     }
 
     fn executeOp(self: *Context, code: []const u8, pc: *usize, op_pc: usize, op: u8, steps: *u32) Error!void {
@@ -226,7 +228,7 @@ pub const Context = struct {
         }
     }
 
-    fn executePointOp(self: *Context, op: u8) Error!void {
+    inline fn executePointOp(self: *Context, op: u8) Error!void {
         switch (op) {
             0x27 => try self.alignPoints(),
             0x29 => try self.untouchPoint(),
@@ -249,7 +251,7 @@ pub const Context = struct {
         }
     }
 
-    fn executeGraphicsOp(self: *Context, op: u8) Error!void {
+    inline fn executeGraphicsOp(self: *Context, op: u8) Error!void {
         switch (op) {
             0x00 => self.graphics.setVectorToAxis(.y, .both),
             0x01 => self.graphics.setVectorToAxis(.x, .both),
@@ -287,7 +289,7 @@ pub const Context = struct {
         }
     }
 
-    fn executeStackOp(self: *Context, op: u8) Error!void {
+    inline fn executeStackOp(self: *Context, op: u8) Error!void {
         switch (op) {
             0x20 => try self.push(try self.top()),
             0x21 => _ = try self.pop(),
@@ -300,7 +302,7 @@ pub const Context = struct {
         }
     }
 
-    fn executeMemoryOp(self: *Context, op: u8) Error!void {
+    inline fn executeMemoryOp(self: *Context, op: u8) Error!void {
         switch (op) {
             0x42 => {
                 const value = try self.pop();
@@ -329,7 +331,7 @@ pub const Context = struct {
         }
     }
 
-    fn executeStateOp(self: *Context, op: u8) Error!void {
+    inline fn executeStateOp(self: *Context, op: u8) Error!void {
         switch (op) {
             0x4B => try self.push(@intCast(self.projectionPpem26Dot6() / 64)),
             0x4C => try self.push(self.environment.point_size_26_6),
@@ -353,7 +355,7 @@ pub const Context = struct {
         }
     }
 
-    fn executeLogicOp(self: *Context, op: u8) Error!void {
+    inline fn executeLogicOp(self: *Context, op: u8) Error!void {
         switch (op) {
             0x50 => try self.compare(.lt),
             0x51 => try self.compare(.lte),
@@ -380,7 +382,7 @@ pub const Context = struct {
         }
     }
 
-    fn executeMathOp(self: *Context, op: u8) Error!void {
+    inline fn executeMathOp(self: *Context, op: u8) Error!void {
         switch (op) {
             0x60 => try self.binaryInt(.add),
             0x61 => try self.binaryInt(.sub),
@@ -1073,6 +1075,210 @@ const IntOp = enum {
 const Parity = enum {
     odd,
     even,
+};
+
+// ── Tail-call dispatch ──
+//
+// Each opcode handler ends in `@call(.always_tail, tail_dispatch[next_op], …)`.
+// Each specialized handler is a distinct function, so the CPU's BTB sees a
+// different indirect-branch target per opcode; the more opcodes are
+// specialized, the more dispatch parallelism the predictor sees. Heavy ops
+// (MIRP/MDRP/MDAP/IUP/CALL/FDEF/DELTA*) fall through to `handle_default`,
+// which routes back through the legacy `executeOp` switch — dispatch overhead
+// is negligible relative to their bodies.
+
+const TailHandler = *const fn (
+    self: *Context,
+    code: []const u8,
+    pc: usize,
+    steps: *u32,
+) Error!void;
+
+inline fn dispatchNext(
+    self: *Context,
+    code: []const u8,
+    pc: usize,
+    steps: *u32,
+) Error!void {
+    if (pc >= code.len) return;
+    try self.countStep(steps);
+    const op = code[pc];
+    if (comptime tail_calls_supported) {
+        return @call(.always_tail, tail_dispatch[op], .{ self, code, pc + 1, steps });
+    } else {
+        return tail_dispatch[op](self, code, pc + 1, steps);
+    }
+}
+
+fn handle_default(
+    self: *Context,
+    code: []const u8,
+    pc: usize,
+    steps: *u32,
+) Error!void {
+    var local_pc = pc;
+    const op_pc = pc - 1;
+    const op = code[op_pc];
+    try self.executeOp(code, &local_pc, op_pc, op, steps);
+    return dispatchNext(self, code, local_pc, steps);
+}
+
+// Per-category handler factories. `op` is comptime-known, so calling the
+// inlined category function with a constant op collapses to that op's
+// case body — no per-op switch is emitted.
+
+fn handle_stack(comptime op: u8) TailHandler {
+    return struct {
+        fn h(self: *Context, code: []const u8, pc: usize, steps: *u32) Error!void {
+            try self.executeStackOp(op);
+            return dispatchNext(self, code, pc, steps);
+        }
+    }.h;
+}
+
+fn handle_math(comptime op: u8) TailHandler {
+    return struct {
+        fn h(self: *Context, code: []const u8, pc: usize, steps: *u32) Error!void {
+            try self.executeMathOp(op);
+            return dispatchNext(self, code, pc, steps);
+        }
+    }.h;
+}
+
+fn handle_logic(comptime op: u8) TailHandler {
+    return struct {
+        fn h(self: *Context, code: []const u8, pc: usize, steps: *u32) Error!void {
+            try self.executeLogicOp(op);
+            return dispatchNext(self, code, pc, steps);
+        }
+    }.h;
+}
+
+fn handle_state(comptime op: u8) TailHandler {
+    return struct {
+        fn h(self: *Context, code: []const u8, pc: usize, steps: *u32) Error!void {
+            try self.executeStateOp(op);
+            return dispatchNext(self, code, pc, steps);
+        }
+    }.h;
+}
+
+fn handle_memory(comptime op: u8) TailHandler {
+    return struct {
+        fn h(self: *Context, code: []const u8, pc: usize, steps: *u32) Error!void {
+            try self.executeMemoryOp(op);
+            return dispatchNext(self, code, pc, steps);
+        }
+    }.h;
+}
+
+fn handle_graphics(comptime op: u8) TailHandler {
+    return struct {
+        fn h(self: *Context, code: []const u8, pc: usize, steps: *u32) Error!void {
+            try self.executeGraphicsOp(op);
+            return dispatchNext(self, code, pc, steps);
+        }
+    }.h;
+}
+
+// Push handlers: pc is already past the op byte. Read N immediate bytes
+// (or words), push them, advance pc.
+
+inline fn pushBytesAt(self: *Context, code: []const u8, pc: usize, count: usize) Error!void {
+    if (pc + count > code.len) return Error.UnexpectedEof;
+    if (self.sp + count > self.stack.len) return Error.StackOverflow;
+    for (code[pc..][0..count]) |value| {
+        self.stack[self.sp] = value;
+        self.sp += 1;
+    }
+}
+
+inline fn pushWordsAt(self: *Context, code: []const u8, pc: usize, count: usize) Error!void {
+    const byte_count = count * 2;
+    if (pc + byte_count > code.len) return Error.UnexpectedEof;
+    if (self.sp + count > self.stack.len) return Error.StackOverflow;
+    var i: usize = 0;
+    while (i < count) : (i += 1) {
+        self.stack[self.sp] = readI16AssumeInBounds(code, pc + i * 2);
+        self.sp += 1;
+    }
+}
+
+fn handle_pushb(comptime n: usize) TailHandler {
+    return struct {
+        fn h(self: *Context, code: []const u8, pc: usize, steps: *u32) Error!void {
+            try pushBytesAt(self, code, pc, n);
+            return dispatchNext(self, code, pc + n, steps);
+        }
+    }.h;
+}
+
+fn handle_pushw(comptime n: usize) TailHandler {
+    return struct {
+        fn h(self: *Context, code: []const u8, pc: usize, steps: *u32) Error!void {
+            try pushWordsAt(self, code, pc, n);
+            return dispatchNext(self, code, pc + n * 2, steps);
+        }
+    }.h;
+}
+
+fn handle_npushb(self: *Context, code: []const u8, pc: usize, steps: *u32) Error!void {
+    if (pc >= code.len) return Error.UnexpectedEof;
+    const count: usize = code[pc];
+    try pushBytesAt(self, code, pc + 1, count);
+    return dispatchNext(self, code, pc + 1 + count, steps);
+}
+
+fn handle_npushw(self: *Context, code: []const u8, pc: usize, steps: *u32) Error!void {
+    if (pc >= code.len) return Error.UnexpectedEof;
+    const count: usize = code[pc];
+    try pushWordsAt(self, code, pc + 1, count);
+    return dispatchNext(self, code, pc + 1 + count * 2, steps);
+}
+
+const tail_dispatch: [256]TailHandler = blk: {
+    var t: [256]TailHandler = @splat(handle_default);
+
+    // Graphics ops (0x00..0x0E, 0x10..0x1A, 0x1D..0x1F): vector setters,
+    // reference-point setters, loop count, round modes, etc.
+    for ([_]u8{
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+        0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E,
+        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+        0x18, 0x19, 0x1A, 0x1D, 0x1E, 0x1F,
+        0x86, 0x87,
+    }) |op| t[op] = handle_graphics(op);
+
+    // Stack ops (0x20..0x26): DUP, POP, CLEAR, SWAP, DEPTH, CINDEX, MINDEX.
+    for ([_]u8{ 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26 }) |op| t[op] = handle_stack(op);
+
+    // Memory ops (0x42..0x45, 0x70): WS, RS, WCVTP, RCVT, WCVTF.
+    for ([_]u8{ 0x42, 0x43, 0x44, 0x45, 0x70 }) |op| t[op] = handle_memory(op);
+
+    // State ops (round modes, info, etc.).
+    for ([_]u8{
+        0x4B, 0x4C, 0x4D, 0x4E,
+        0x56, 0x57, 0x5E, 0x5F,
+        0x68, 0x69, 0x6A, 0x6B, 0x6C, 0x6D, 0x6E, 0x6F,
+        0x7A, 0x7C, 0x7D, 0x85, 0x88, 0x8A, 0x8D, 0x8E,
+    }) |op| t[op] = handle_state(op);
+
+    // Logic ops: LT, LTEQ, GT, GTEQ, EQ, NEQ, AND, OR, NOT.
+    for ([_]u8{ 0x50, 0x51, 0x52, 0x53, 0x54, 0x55, 0x5A, 0x5B, 0x5C }) |op| t[op] = handle_logic(op);
+
+    // Math ops: ADD, SUB, DIV, MUL, ABS, NEG, FLOOR, CEIL, MAX, MIN.
+    for ([_]u8{ 0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0x8B, 0x8C }) |op| t[op] = handle_math(op);
+
+    // Push immediates.
+    for (0..8) |n| t[0xB0 + n] = handle_pushb(n + 1);
+    for (0..8) |n| t[0xB8 + n] = handle_pushw(n + 1);
+    t[0x40] = handle_npushb;
+    t[0x41] = handle_npushw;
+
+    // Everything else (flow ops, function ops, point ops, deltas, FDEF, …)
+    // falls through to handle_default → executeOp.
+
+    break :blk t;
 };
 
 const RelativeFlags = struct {
