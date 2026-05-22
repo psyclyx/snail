@@ -28,8 +28,14 @@ discover missing resources.
 **Text input.** `TextAtlas` parses TrueType `cmap`, `glyf`/`loca`, metrics,
 legacy `kern`, decoration/script metrics, and `COLR` color layers. HarfBuzz is
 used when enabled; otherwise the built-in shaper covers GSUB ligatures (type 4)
-and GPOS pair positioning (type 2). `ensureText`, `ensureShaped`, and
-`ensureGlyphs` extend the immutable atlas by returning a new snapshot.
+and GPOS pair positioning (type 2). `shapeText` is the default; `shapeTextOpts`
+threads explicit `OpenTypeFeature` requests (tag + value + optional source
+range) when callers need to toggle ligatures, alternates, etc. The result is a
+`ShapedText` whose glyph stream is the single source of truth for advance;
+free-function transforms (`snail.track`, `snapAdvances`, `shiftBaseline`,
+`spaceWords`) mutate it in place between shape and blob construction.
+`ensureText`, `ensureShaped`, and `ensureGlyphs` extend the immutable atlas by
+returning a new snapshot.
 
 **Vector input.** `PathPictureBuilder` freezes filled/stroked `Path` geometry
 into an immutable `PathPicture`. Fills preserve line, quadratic, rational conic,
@@ -106,8 +112,14 @@ and no texture sample that represents a pre-rasterized glyph shape.
 resolution-independent. Zig callers can opt into per-size TrueType bytecode
 execution with `TrueTypeHintContext`; hinted glyphs are stored as curve-delta
 records attached to a `TextBlob`, and the renderer still evaluates curves at
-draw time. Unsupported glyphs, color glyphs, synthetic styles, or topology
-changes can fall back to the normal unhinted path.
+draw time. `prepareRun` is whole-run: every glyph comes back either hinted
+or with a per-glyph `.fallback` marker. Fallback glyphs render unhinted
+curves but their advances are still snapped to whole pixels at the chosen
+PPEM, so columns of text grid-align even when individual glyphs can't be
+hinted (font has no bytecode, hits a topology mismatch, etc.). Faux-bold
+faces hint normally; the embolden offset is applied as a render-time second
+copy. Faces whose `gasp` table explicitly disables grid-fitting at a given
+size keep their original advances.
 
 ## Color convention
 
