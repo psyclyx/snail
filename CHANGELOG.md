@@ -164,6 +164,17 @@ migration recipes below each entry.
   no god-struct, no allocator. Cluster-aware: ligature internals are
   preserved, and per-cluster deltas are baked into the cluster's last
   glyph's `x_advance` so subsequent advance summation stays correct.
+- `snail.ShapeOptions` and `snail.OpenTypeFeature` (with optional
+  `snail.SourceRange`) provide shape-time inputs distinct from
+  post-shape transforms. New `TextAtlas.shapeTextOpts(allocator, style,
+  text, opts)` forwards feature requests to HarfBuzz; the existing
+  `shapeText` is preserved as the zero-options shorthand. Features may
+  be global or scoped to a source-byte range; ranges are translated to
+  the local segment coordinates of each itemized run, and ranges that
+  fall outside a segment are silently dropped. Up to 32 concurrent
+  features per segment (well beyond typical usage). With HarfBuzz
+  disabled at build time, options are accepted but ignored — the
+  fallback shaper has no feature surface.
 
 ## 0.11.1 - 2026-05-20
 

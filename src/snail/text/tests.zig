@@ -1244,3 +1244,63 @@ test "snapAdvances: non-positive step is a no-op" {
     try testing.expectEqualSlices(snail.ShapedText.Glyph, &before, shaped.glyphs);
 }
 
+test "shapeTextOpts: empty opts produces same result as shapeText" {
+    const assets_data = @import("assets");
+    var fonts = try TextAtlas.init(testing.allocator, &.{
+        .{ .data = assets_data.noto_sans_regular },
+    });
+    defer fonts.deinit();
+
+    var a = try fonts.shapeText(testing.allocator, .{}, "Hello, world!");
+    defer a.deinit();
+    var b = try fonts.shapeTextOpts(testing.allocator, .{}, "Hello, world!", .{});
+    defer b.deinit();
+
+    try testing.expectEqual(a.glyphs.len, b.glyphs.len);
+    for (a.glyphs, b.glyphs) |ga, gb| {
+        try testing.expectEqual(ga.glyph_id, gb.glyph_id);
+        try testing.expectApproxEqAbs(ga.x_advance, gb.x_advance, 1e-6);
+        try testing.expectApproxEqAbs(ga.x_offset, gb.x_offset, 1e-6);
+        try testing.expectEqual(ga.source_start, gb.source_start);
+    }
+}
+
+test "shapeTextOpts: passing a known feature does not crash" {
+    const assets_data = @import("assets");
+    var fonts = try TextAtlas.init(testing.allocator, &.{
+        .{ .data = assets_data.noto_sans_regular },
+    });
+    defer fonts.deinit();
+
+    const features = [_]snail.OpenTypeFeature{
+        .{ .tag = .{ 'k', 'e', 'r', 'n' }, .value = 0 }, // disable kerning
+        .{ .tag = .{ 'l', 'i', 'g', 'a' }, .value = 0 }, // disable standard ligatures
+    };
+    var shaped = try fonts.shapeTextOpts(testing.allocator, .{}, "Affine", .{ .features = &features });
+    defer shaped.deinit();
+    try testing.expect(shaped.glyphs.len > 0);
+}
+
+test "shapeTextOpts: feature range outside text is clipped to no-op" {
+    const assets_data = @import("assets");
+    var fonts = try TextAtlas.init(testing.allocator, &.{
+        .{ .data = assets_data.noto_sans_regular },
+    });
+    defer fonts.deinit();
+
+    const text = "Hello";
+    var baseline = try fonts.shapeText(testing.allocator, .{}, text);
+    defer baseline.deinit();
+
+    const features = [_]snail.OpenTypeFeature{
+        .{ .tag = .{ 'k', 'e', 'r', 'n' }, .value = 0, .range = .{ .start = 100, .end = 200 } },
+    };
+    var with_oob = try fonts.shapeTextOpts(testing.allocator, .{}, text, .{ .features = &features });
+    defer with_oob.deinit();
+
+    try testing.expectEqual(baseline.glyphs.len, with_oob.glyphs.len);
+    for (baseline.glyphs, with_oob.glyphs) |ga, gb| {
+        try testing.expectEqual(ga.glyph_id, gb.glyph_id);
+        try testing.expectApproxEqAbs(ga.x_advance, gb.x_advance, 1e-6);
+    }
+}

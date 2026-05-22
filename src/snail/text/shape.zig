@@ -5,12 +5,15 @@ const config_mod = @import("config.zig");
 const types_mod = @import("types.zig");
 const vec = @import("../math/vec.zig");
 const view_mod = @import("view.zig");
+const harfbuzz = if (build_options.enable_harfbuzz) @import("../font/harfbuzz.zig") else struct {};
 
 const Allocator = std.mem.Allocator;
 const FaceConfig = config_mod.FaceConfig;
 const FaceIndex = config_mod.FaceIndex;
 const FaceView = view_mod.FaceView;
 const MissingGlyphReplacement = config_mod.MissingGlyphReplacement;
+const OpenTypeFeature = config_mod.OpenTypeFeature;
+const ShapeOptions = config_mod.ShapeOptions;
 const ShapedText = types_mod.ShapedText;
 const Transform2D = vec.Transform2D;
 const Vec2 = vec.Vec2;
@@ -62,10 +65,13 @@ fn shapeRunWithHarfbuzz(
     source_base: u32,
     inv_upem: f32,
     missing_replacement: ?u16,
+    opts: ShapeOptions,
 ) !?ShapeRunResult {
     if (comptime build_options.enable_harfbuzz) {
         if (fc.hb_shaper) |hbs| {
-            const shaped = hbs.shapeText(text);
+            var feature_buf: [32]harfbuzz.Feature = undefined;
+            const hb_features = buildHbFeatures(opts.features, source_base, @as(u32, @intCast(text.len)), &feature_buf);
+            const shaped = hbs.shapeTextWithFeatures(text, hb_features);
             if (shaped.count == 0 or shaped.infos == null or shaped.positions == null)
                 return emptyShapeRun();
 
@@ -257,12 +263,51 @@ pub fn shapeRunForFace(
     text: []const u8,
     source_base: u32,
     replacement: ?MissingGlyphReplacement,
+    opts: ShapeOptions,
 ) !ShapeRunResult {
     if (text.len == 0) return emptyShapeRun();
     const inv_upem = 1.0 / @as(f32, @floatFromInt(fc.font.units_per_em));
     const missing_replacement = replacementForFace(replacement, face_index);
-    if (try shapeRunWithHarfbuzz(allocator, fc, face_index, text, source_base, inv_upem, missing_replacement)) |result| return result;
+    if (try shapeRunWithHarfbuzz(allocator, fc, face_index, text, source_base, inv_upem, missing_replacement, opts)) |result| return result;
     return shapeRunWithFallback(allocator, fc, face_index, text, source_base, inv_upem, missing_replacement);
+}
+
+/// Convert snail OpenTypeFeatures into hb_feature_t entries scoped to the
+/// current segment. Features without an explicit range become global (whole
+/// segment). Features whose range does not overlap `[source_base,
+/// source_base + segment_len)` are dropped. The returned slice borrows from
+/// `out_buf`; if more features fit, the excess is silently truncated (32
+/// concurrent features is well beyond typical usage).
+fn buildHbFeatures(
+    features: []const OpenTypeFeature,
+    source_base: u32,
+    segment_len: u32,
+    out_buf: []harfbuzz.Feature,
+) []const harfbuzz.Feature {
+    if (comptime !build_options.enable_harfbuzz) return &.{};
+    if (features.len == 0) return &.{};
+    var n: usize = 0;
+    for (features) |f| {
+        if (n == out_buf.len) break;
+        var start: c_uint = harfbuzz.FEATURE_GLOBAL_START;
+        var end: c_uint = harfbuzz.FEATURE_GLOBAL_END;
+        if (f.range) |r| {
+            const seg_end = source_base + segment_len;
+            if (r.end <= source_base or r.start >= seg_end) continue;
+            const lo = if (r.start > source_base) r.start - source_base else 0;
+            const hi = if (r.end < seg_end) r.end - source_base else segment_len;
+            start = @intCast(lo);
+            end = @intCast(hi);
+        }
+        out_buf[n] = .{
+            .tag = harfbuzz.makeTag(f.tag),
+            .value = f.value,
+            .start = start,
+            .end = end,
+        };
+        n += 1;
+    }
+    return out_buf[0..n];
 }
 
 pub fn shapedGlyphAvailable(face_view: *const FaceView, glyph_id: u16) bool {

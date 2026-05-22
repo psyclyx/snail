@@ -311,6 +311,16 @@ pub const TextAtlas = struct {
         style: FontStyle,
         text: []const u8,
     ) !ShapedText {
+        return self.shapeTextOpts(allocator, style, text, .{});
+    }
+
+    pub fn shapeTextOpts(
+        self: *const TextAtlas,
+        allocator: Allocator,
+        style: FontStyle,
+        text: []const u8,
+        opts: config_mod.ShapeOptions,
+    ) !ShapedText {
         const runs = try itemizeText(allocator, self.config, style, text);
         defer allocator.free(runs);
 
@@ -329,6 +339,7 @@ pub const TextAtlas = struct {
                 segment,
                 run.text_start,
                 self.config.missing_glyph_replacement,
+                opts,
             );
             defer if (shaped_run.glyphs.len > 0) allocator.free(shaped_run.glyphs);
 

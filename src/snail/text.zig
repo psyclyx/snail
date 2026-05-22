@@ -11,6 +11,9 @@ const types_mod = @import("text/types.zig");
 
 pub const FaceSpec = config_mod.FaceSpec;
 pub const FaceIndex = config_mod.FaceIndex;
+pub const SourceRange = config_mod.SourceRange;
+pub const OpenTypeFeature = config_mod.OpenTypeFeature;
+pub const ShapeOptions = config_mod.ShapeOptions;
 pub const ItemizedRun = config_mod.ItemizedRun;
 pub const FontWeight = config_mod.FontWeight;
 pub const FontStyle = config_mod.FontStyle;

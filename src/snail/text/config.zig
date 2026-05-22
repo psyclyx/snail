@@ -34,6 +34,31 @@ const ParsedFont = struct {
 
 pub const FaceIndex = u16;
 
+/// Half-open source-byte range, in the coordinate system of the text passed
+/// to `shapeText` / `shapeTextOpts`. `end` is exclusive.
+pub const SourceRange = struct {
+    start: u32,
+    end: u32,
+};
+
+/// An OpenType feature request forwarded to the shaper. `tag` is the 4-byte
+/// feature tag in font-canonical order (e.g. `.{ 'l', 'i', 'g', 'a' }`).
+/// `value = 0` disables, `value >= 1` enables (some features take an index).
+/// `range = null` applies the feature to the entire text; a non-null range
+/// restricts it to those source bytes.
+pub const OpenTypeFeature = struct {
+    tag: [4]u8,
+    value: u32 = 1,
+    range: ?SourceRange = null,
+};
+
+/// Shape-time inputs the shaper needs to produce different glyphs or
+/// positions. Distinct from post-shape transforms like `track`, which mutate
+/// an already-shaped glyph stream.
+pub const ShapeOptions = struct {
+    features: []const OpenTypeFeature = &.{},
+};
+
 pub const FontWeight = enum(u4) {
     thin = 1,
     extra_light = 2,

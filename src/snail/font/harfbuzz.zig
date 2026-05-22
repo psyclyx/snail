@@ -7,6 +7,15 @@ const hb = @cImport({
     @cInclude("hb.h");
 });
 
+pub const Feature = hb.hb_feature_t;
+pub const FEATURE_GLOBAL_START: c_uint = 0;
+pub const FEATURE_GLOBAL_END: c_uint = 0xFFFFFFFF;
+
+pub fn makeTag(tag: [4]u8) u32 {
+    return (@as(u32, tag[0]) << 24) | (@as(u32, tag[1]) << 16) |
+        (@as(u32, tag[2]) << 8) | @as(u32, tag[3]);
+}
+
 pub const HarfBuzzShaper = struct {
     hb_face: *hb.hb_face_t,
     hb_font: *hb.hb_font_t,
@@ -62,10 +71,25 @@ pub const HarfBuzzShaper = struct {
         infos: [*c]hb.hb_glyph_info_t,
         positions: [*c]hb.hb_glyph_position_t,
     } {
+        return self.shapeTextWithFeatures(text, &.{});
+    }
+
+    /// Shape text with explicit OpenType feature requests. `features` are in
+    /// the buffer's local coordinates (start/end indices into `text`).
+    pub fn shapeTextWithFeatures(
+        self: *const HarfBuzzShaper,
+        text: []const u8,
+        features: []const hb.hb_feature_t,
+    ) struct {
+        count: c_uint,
+        infos: [*c]hb.hb_glyph_info_t,
+        positions: [*c]hb.hb_glyph_position_t,
+    } {
         hb.hb_buffer_clear_contents(self.hb_buffer);
         hb.hb_buffer_add_utf8(self.hb_buffer, text.ptr, @intCast(text.len), 0, @intCast(text.len));
         hb.hb_buffer_guess_segment_properties(self.hb_buffer);
-        hb.hb_shape(self.hb_font, self.hb_buffer, null, 0);
+        const features_ptr: [*c]const hb.hb_feature_t = if (features.len == 0) null else features.ptr;
+        hb.hb_shape(self.hb_font, self.hb_buffer, features_ptr, @intCast(features.len));
 
         var count: c_uint = 0;
         const infos = hb.hb_buffer_get_glyph_infos(self.hb_buffer, &count);
