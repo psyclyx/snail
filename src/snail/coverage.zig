@@ -275,6 +275,11 @@ pub const TextCoverageRecords = struct {
             const paint_view = try prepared.textPaintView(paint_key);
             atlas_view.paint_info_row_base = paint_view.info_row_base;
         }
+        if (blob.bundle.hasHintRecords()) {
+            const hint_key = options.resources.hint orelse return error.MissingPreparedResource;
+            const hint_view = try prepared.textHintView(hint_key);
+            atlas_view.hint_info_row_base = hint_view.info_row_base;
+        }
 
         var batch = TextBatch.init(self.buffer);
         const overrides = [_]Override{.{ .transform = options.transform }};

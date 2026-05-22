@@ -11,6 +11,10 @@ pub const PreparedTextAtlasView = struct {
     page_layers: []const u32 = &.{},
     info_row_base: u32 = 0,
     paint_info_row_base: u32 = 0,
+    /// Row base into the layer-info texture for the blob's bundle hint
+    /// pool. Bundle-shared: many blobs from one bundle resolve to the
+    /// same row_base so the hint records are uploaded once per bundle.
+    hint_info_row_base: u32 = 0,
 };
 
 pub const PreparedImageView = struct {
@@ -47,6 +51,13 @@ pub const PreparedLayerInfoUpload = struct {
     width: u32 = 0,
     height: u32 = 0,
     paint_image_records: ?[]const ?Atlas.PaintImageRecord = null,
+};
+
+/// Bundle-shared hint slab upload (no per-blob image records).
+pub const PreparedHintLayerInfoUpload = struct {
+    data: ?[]const f32 = null,
+    width: u32 = 0,
+    height: u32 = 0,
 };
 
 pub const PreparedLayerInfoView = struct {

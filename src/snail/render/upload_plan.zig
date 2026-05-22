@@ -74,7 +74,7 @@ fn countResourceEntries(entries: []const ResourceManifest.Entry) ResourceManifes
     var counts: ResourceManifestCounts = .{};
     for (entries) |entry| switch (entry) {
         .text_atlas, .path_picture => counts.atlases += 1,
-        .text_paint => counts.layer_infos += 1,
+        .text_paint, .text_hint => counts.layer_infos += 1,
         .image => counts.images += 1,
     };
     return counts;
@@ -182,7 +182,7 @@ fn resourceManifestCanUseAtlasOverflowBanks(renderer: anytype, current: ?*const 
             if (lookup.index != atlas_index) return false;
             if (!renderer.atlasCacheStatus(prepared, lookup.index, PagedAtlasSource.init(&path.picture.atlas)).can_overflow_into_bank) return false;
         },
-        .text_paint, .image => {},
+        .text_paint, .text_hint, .image => {},
     };
     return true;
 }
@@ -194,6 +194,7 @@ fn collectImageRequirements(allocator: std.mem.Allocator, entries: []const Resou
     for (entries) |entry| switch (entry) {
         .text_atlas => {},
         .text_paint => |text| try appendPaintRecordImages(allocator, &images, text.blob.paint_image_records),
+        .text_hint => {},
         .path_picture => |path| try appendPaintRecordImages(allocator, &images, path.picture.atlas.paint_image_records),
         .image => |image| try appendUniqueImage(allocator, &images, image.image),
     };
@@ -296,7 +297,7 @@ fn recordManifestUploadPlan(renderer: anytype, plan: *ResourceUploadPlan, curren
                 defer next_atlas_index += 1;
                 recordAtlasUploadPlan(renderer, plan, current, key, PagedAtlasSource.init(&path.picture.atlas), next_atlas_index, uses_resource_cache, &needs_atlas_overflow_bank);
             },
-            .text_paint => recordLayerInfoUploadPlan(plan, current, key, changed, bytes),
+            .text_paint, .text_hint => recordLayerInfoUploadPlan(plan, current, key, changed, bytes),
             .image => |image| recordImageUploadPlan(plan, current, key, stamp, image.image),
         }
     }

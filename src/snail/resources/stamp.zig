@@ -18,6 +18,7 @@ const ResourceManifest = manifest_mod.ResourceManifest;
 const ResourceStamp = resource_key_mod.ResourceStamp;
 const TextAtlas = text_mod.TextAtlas;
 const TextBlob = text_mod.TextBlob;
+const TextBlobBundle = text_mod.TextBlobBundle;
 const mix64 = resource_key_mod.mix64;
 
 pub fn textAtlasStamp(key: ResourceKey, atlas: *const TextAtlas) ResourceStamp {
@@ -102,10 +103,32 @@ pub fn textPaintLayerInfoUpload(blob: *const TextBlob) PreparedLayerInfoUpload {
     };
 }
 
+pub fn textHintStamp(key: ResourceKey, bundle: *TextBlobBundle) ResourceStamp {
+    bundle.materialiseHintLayerInfo() catch {};
+    var layout = mix64(0x544558548854494e, bundle.hint_layer_info_width);
+    layout = mix64(layout, bundle.hint_layer_info_height);
+    var content = key.id;
+    if (bundle.hint_layer_info_data) |data| {
+        content = mix64(content, std.hash.Wyhash.hash(0x544558548854494e, std.mem.sliceAsBytes(data)));
+    }
+    return .{ .identity = key.id, .layout = layout, .content = content };
+}
+
+pub fn textHintLayerInfoUpload(bundle: *TextBlobBundle) PreparedLayerInfoUpload {
+    bundle.materialiseHintLayerInfo() catch {};
+    return .{
+        .data = bundle.hint_layer_info_data,
+        .width = bundle.hint_layer_info_width,
+        .height = bundle.hint_layer_info_height,
+        .paint_image_records = null,
+    };
+}
+
 pub fn resourceEntryKey(entry: ResourceManifest.Entry) ResourceKey {
     return switch (entry) {
         .text_atlas => |text| text.key,
         .text_paint => |text| text.key,
+        .text_hint => |text| text.key,
         .path_picture => |path| path.key,
         .image => |image| image.key,
     };
@@ -115,6 +138,7 @@ pub fn resourceEntryStamp(entry: ResourceManifest.Entry) ResourceStamp {
     return switch (entry) {
         .text_atlas => |text| textAtlasStamp(text.key, text.atlas),
         .text_paint => |text| textPaintStamp(text.key, text.blob),
+        .text_hint => |text| textHintStamp(text.key, text.bundle),
         .path_picture => |path| pathPictureStamp(path.key, path.picture),
         .image => |image| imageStamp(image.key, image.image),
     };
@@ -124,9 +148,16 @@ pub fn resourceEntryUploadBytes(entry: ResourceManifest.Entry) usize {
     return switch (entry) {
         .text_atlas => |text| textAtlasUploadBytes(text.atlas),
         .text_paint => |text| textPaintUploadBytes(text.blob),
+        .text_hint => |text| textHintUploadBytes(text.bundle),
         .path_picture => |path| curveAtlasUploadBytes(&path.picture.atlas),
         .image => |image| image.image.pixelSlice().len,
     };
+}
+
+fn textHintUploadBytes(bundle: *TextBlobBundle) usize {
+    bundle.materialiseHintLayerInfo() catch return 0;
+    if (bundle.hint_layer_info_data) |data| return data.len * @sizeOf(f32);
+    return 0;
 }
 
 fn curveAtlasUploadBytes(atlas: *const Atlas) usize {

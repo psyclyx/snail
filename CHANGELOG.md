@@ -189,6 +189,21 @@ migration recipes below each entry.
 
 ### Changed
 
+- Hint records are now bundle-scoped, not blob-scoped: every blob in a
+  `TextBlobBundle` shares one hint pool, uploaded once per bundle
+  regardless of how many blobs reference it. New
+  `ResourceManifest.TextHintEntry` (also returned as the new
+  `TextResourceKeys.hint` field, derived from the atlas key so all
+  blobs in one bundle resolve to the same manifest entry).
+  `TextBlob.Glyph.hint_record_texel` changed semantics: it's now a
+  bundle pool index, resolved at render time via
+  `bundle.hintPoolTexelOffset(idx)` against the shared slab. A new
+  `PreparedTextAtlasView.hint_info_row_base` threads the bundle slab's
+  upload row through to hinted-glyph emit. Terminal-style workloads
+  (e.g. 50 lines of the same character set hinted at 12px) drop from
+  ~17 KiB *per blob* to one ~17 KiB shared slab: **~50× reduction in
+  layer-info upload bytes**. No render-output change; hint values and
+  per-glyph emit are identical.
 - TrueType hint VM hints emboldened faces (faux-bold) instead of
   rejecting them. Hint instructions still operate on the un-emboldened
   outline; the existing render-time double-emit (`batch.zig`) draws the

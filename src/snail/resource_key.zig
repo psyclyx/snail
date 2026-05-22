@@ -61,6 +61,11 @@ pub const ResourceStamp = struct {
 pub const TextResourceKeys = struct {
     atlas: ResourceKey,
     paint: ?ResourceKey = null,
+    /// Shared hint pool: bundle-scoped, set when the blob's bundle has any
+    /// hinted glyphs. Multiple blobs from the same bundle share this key
+    /// (the manifest auto-dedupes), so the hint record bytes are uploaded
+    /// once per bundle rather than once per blob.
+    hint: ?ResourceKey = null,
 };
 
 pub fn hashBytes(bytes: []const u8) u64 {

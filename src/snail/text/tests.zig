@@ -472,10 +472,18 @@ test "TextBlobBundle stores hinted glyph records and emits hinted special vertic
     try bip.appendHintedGlyphRef(0, gid, .{ .xx = 12, .yy = -12, .tx = 14, .ty = 0 }, .{ 0.2, 0.4, 0.6, 1 }, &hinted_value);
 
     const blob = try bip.finish(snail.ResourceKey.named("test_blob"));
-    const hint_texel = blob.glyphs[0].hint_record_texel orelse return error.TestExpectedEqual;
-    try testing.expectEqual(hint_texel, blob.glyphs[1].hint_record_texel.?);
-    const meta = paint_records.readTexel(blob.paint_layer_info_data.?, blob.paint_layer_info_width, hint_texel + 2);
+    // `hint_record_texel` is now a bundle hint-pool *index*, not a texel
+    // offset. Both glyphs referenced the same `*const HintedGlyphValue` →
+    // they intern to the same pool entry.
+    const pool_index = blob.glyphs[0].hint_record_texel orelse return error.TestExpectedEqual;
+    try testing.expectEqual(pool_index, blob.glyphs[1].hint_record_texel.?);
     try testing.expectEqual(@as(?u32, null), blob.glyphs[0].paint_record_index);
+    // Hint records live in the bundle's shared slab, not the blob's paint
+    // slab. Materialise the slab and verify the record header.
+    try bundle.materialiseHintLayerInfo();
+    const hint_data = bundle.hint_layer_info_data orelse return error.TestExpectedEqual;
+    const hint_texel = bundle.hintPoolTexelOffset(pool_index);
+    const meta = paint_records.readTexel(hint_data, bundle.hint_layer_info_width, hint_texel + 2);
     try testing.expectEqual(@as(f32, @floatFromInt(info.base_curve_texel)), meta[0]);
     try testing.expectEqual(@as(f32, @floatFromInt(info.curve_count)), meta[1]);
 
@@ -1395,4 +1403,55 @@ test "TextBlob budget doubles for emboldened hinted glyphs" {
 
     // Single emboldened hinted glyph → two GPU instances.
     try testing.expectEqual(@as(usize, 2), blob.gpu_instance_budget);
+}
+
+test "TextBlobBundle shares hint pool across blobs" {
+    // Regression: blobs in the same bundle that reference the same hinted
+    // glyph value should share a single pool entry, so the hint record
+    // bytes upload once per bundle rather than once per blob. Critical
+    // for terminal-style workloads (tmatrix, code listings) where many
+    // small blobs reuse the same character set at the same PPEM.
+    const assets_data = @import("assets");
+    const hint_context_mod = @import("hint_context.zig");
+    const tt_hint_mod = @import("tt_hint.zig");
+
+    var fonts = try TextAtlas.init(testing.allocator, &.{.{ .data = assets_data.noto_sans_regular }});
+    defer fonts.deinit();
+    if (try fonts.ensureText(.{}, "Hello")) |next| {
+        fonts.deinit();
+        fonts = next;
+    }
+
+    var ctx = hint_context_mod.TrueTypeHintContext.init(testing.allocator, &fonts);
+    defer ctx.deinit();
+
+    var shaped = try fonts.shapeText(testing.allocator, .{}, "Hello");
+    defer shaped.deinit();
+    var hinted = try ctx.prepareRun(testing.allocator, .{
+        .shaped = &shaped,
+        .ppem = tt_hint_mod.HintPpem.uniform(12 * 64),
+    });
+    defer hinted.deinit();
+
+    var bundle = TextBlobBundle.init(testing.allocator, &fonts);
+    defer bundle.deinit();
+
+    // Build five blobs each referencing the same hinted "Hello".
+    for (0..5) |i| {
+        var bip = try bundle.startBlob();
+        errdefer bip.abort();
+        _ = try bip.append(.{
+            .source = .{ .hinted = hinted.glyphs },
+            .placement = .{ .baseline = .{ .x = 0, .y = @floatFromInt(20 * (i + 1)) }, .em = 12 },
+            .fill = .{ .solid = .{ 1, 1, 1, 1 } },
+        });
+        _ = try bip.finish(snail.ResourceKey.fromId(@intCast(i + 1)));
+    }
+
+    // Pool size should equal the unique-hinted-glyph count, not the
+    // total across blobs. "Hello" has at most 5 unique hinted glyphs
+    // (one per distinct letter — H, e, l, o = 4); the bundle should
+    // hold ≤ 5 pool entries, not 25.
+    try testing.expect(bundle.hint_pool.items.len <= 5);
+    try testing.expect(bundle.blobs.items.len == 5);
 }

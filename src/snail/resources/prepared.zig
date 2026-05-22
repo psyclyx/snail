@@ -125,6 +125,20 @@ pub const PreparedManifest = struct {
         return entry.view;
     }
 
+    /// Bundle-shared hint slab lookup — the upload pipeline treats
+    /// `text_hint` entries identically to `text_paint` entries (both
+    /// produce a layer-info slab), so the same `layer_infos` array
+    /// holds both. Shared bundle hint pools resolve to one row_base
+    /// regardless of how many blobs reference them.
+    pub fn textHintView(self: *const PreparedManifest, key: ResourceKey) !PreparedLayerInfoView {
+        const entry = self.textPaintEntry(key) orelse return error.MissingPreparedResource;
+        return entry.view;
+    }
+
+    pub fn textHintStamp(self: *const PreparedManifest, key: ResourceKey) !ResourceStamp {
+        return (self.textPaintEntry(key) orelse return error.MissingPreparedResource).stamp;
+    }
+
     pub fn pathAtlasView(self: *const PreparedManifest, key: ResourceKey) !PreparedAtlasView {
         const entry = self.pathPictureEntry(key) orelse return error.MissingPreparedResource;
         return entry.view;
@@ -242,6 +256,10 @@ pub const PreparedResources = struct {
         return self.manifest.textPaintView(key);
     }
 
+    pub fn textHintView(self: *const PreparedResources, key: ResourceKey) !PreparedLayerInfoView {
+        return self.manifest.textHintView(key);
+    }
+
     pub fn pathAtlasView(self: *const PreparedResources, key: ResourceKey) !PreparedAtlasView {
         return self.manifest.pathAtlasView(key);
     }
@@ -252,6 +270,10 @@ pub const PreparedResources = struct {
 
     pub fn textPaintStamp(self: *const PreparedResources, key: ResourceKey) !ResourceStamp {
         return self.manifest.textPaintStamp(key);
+    }
+
+    pub fn textHintStamp(self: *const PreparedResources, key: ResourceKey) !ResourceStamp {
+        return self.manifest.textHintStamp(key);
     }
 
     pub fn pathStamp(self: *const PreparedResources, key: ResourceKey) !ResourceStamp {

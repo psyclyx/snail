@@ -14,6 +14,9 @@ const shape_mod = @import("shape.zig");
 const types_mod = @import("types.zig");
 const vec = @import("../math/vec.zig");
 const view_mod = @import("view.zig");
+const resource_view_mod = @import("../resources/view.zig");
+
+const PreparedHintLayerInfoUpload = resource_view_mod.PreparedHintLayerInfoUpload;
 
 const Allocator = std.mem.Allocator;
 const BBox = bezier.BBox;
@@ -102,9 +105,15 @@ pub const TextBlob = struct {
     }
 
     pub fn resourceKeys(self: *const TextBlob, atlas_key: ResourceKey, blob_key: ResourceKey) TextResourceKeys {
+        // The hint key is derived from the *atlas* key, not the blob key:
+        // every blob produced from the same bundle (which is bound to one
+        // atlas) shares the same hint pool, and we want them to dedupe to
+        // a single manifest entry. `atlas_key` is a stable shared identity
+        // across all blobs in a bundle.
         return .{
             .atlas = atlas_key,
             .paint = if (self.hasPaintRecords()) resource_key_mod.derived(blob_key, "text_paint") else null,
+            .hint = if (self.bundle.hasHintRecords()) resource_key_mod.derived(atlas_key, "text_hint") else null,
         };
     }
 
@@ -161,6 +170,27 @@ pub const TextBlobBundle = struct {
     /// to detect use-after-reset.
     generation: u32 = 0,
 
+    // ── Shared hint pool ──
+    //
+    // Hint records are bundle-scoped, not blob-scoped: every blob whose
+    // hinted glyphs reference the same `*const HintedGlyphValue` (same
+    // glyph_id at the same PPEM, same hint context) shares one encoded
+    // entry. The pool is built incrementally as blobs are finished.
+    //
+    // `hint_layer_info_data` is materialised lazily into the arena once
+    // the bundle is frozen (or once anyone calls `hintLayerInfoUpload`)
+    // and is invalidated by `reset`.
+    //
+    // Each `TextBlob.Glyph.hint_record_texel` is a *pool index* into
+    // `hint_pool` rather than a texel offset; the texel offset comes
+    // from `hint_pool_texel_offsets`, computed at materialisation time.
+    hint_pool: std.ArrayListUnmanaged(PendingHintRecord) = .empty,
+    hint_pool_refs: std.AutoHashMapUnmanaged(usize, u32) = .empty,
+    hint_pool_texel_offsets: ?[]u32 = null,
+    hint_layer_info_data: ?[]f32 = null,
+    hint_layer_info_width: u32 = 0,
+    hint_layer_info_height: u32 = 0,
+
     pub fn init(gpa: Allocator, atlas: *const TextAtlas) TextBlobBundle {
         return .{
             .gpa = gpa,
@@ -174,6 +204,10 @@ pub const TextBlobBundle = struct {
         self.pending.deinit(self.gpa);
         for (self.blobs.items) |blob| self.gpa.destroy(blob);
         self.blobs.deinit(self.gpa);
+        self.clearHintPool();
+        self.hint_pool.deinit(self.gpa);
+        self.hint_pool_refs.deinit(self.gpa);
+        if (self.hint_pool_texel_offsets) |buf| self.gpa.free(buf);
         self.arena.deinit();
         self.* = undefined;
     }
@@ -186,9 +220,114 @@ pub const TextBlobBundle = struct {
         self.pending.reset(self.gpa);
         for (self.blobs.items) |blob| self.gpa.destroy(blob);
         self.blobs.clearRetainingCapacity();
+        self.clearHintPool();
+        self.hint_pool.clearRetainingCapacity();
+        self.hint_pool_refs.clearRetainingCapacity();
+        if (self.hint_pool_texel_offsets) |buf| self.gpa.free(buf);
+        self.hint_pool_texel_offsets = null;
+        self.hint_layer_info_data = null;
+        self.hint_layer_info_width = 0;
+        self.hint_layer_info_height = 0;
         _ = self.arena.reset(.retain_capacity);
         self.frozen = false;
         self.generation +%= 1;
+    }
+
+    fn clearHintPool(self: *TextBlobBundle) void {
+        for (self.hint_pool.items) |entry| self.gpa.free(entry.curve_deltas_f16);
+    }
+
+    /// Intern a hinted glyph value into the bundle's pool. Returns the
+    /// pool index. Subsequent calls with the same `intern_key` (typically
+    /// `@intFromPtr(value)`) return the same index. Invalidates any
+    /// previously-materialised hint layer info data — call `materialiseHintLayerInfo`
+    /// (or `freeze`) before uploading after additions.
+    fn internHintRecord(
+        self: *TextBlobBundle,
+        intern_key: usize,
+        record: text_hint.GlyphRecord,
+        curve_deltas_f16: []const u16,
+    ) !u32 {
+        if (self.hint_pool_refs.get(intern_key)) |index| return index;
+        const index: u32 = @intCast(self.hint_pool.items.len);
+        const deltas = try self.gpa.dupe(u16, curve_deltas_f16);
+        errdefer self.gpa.free(deltas);
+        try self.hint_pool.append(self.gpa, .{
+            .record = record,
+            .curve_deltas_f16 = deltas,
+        });
+        errdefer _ = self.hint_pool.pop();
+        try self.hint_pool_refs.put(self.gpa, intern_key, index);
+        self.invalidateHintMaterialisation();
+        return index;
+    }
+
+    fn invalidateHintMaterialisation(self: *TextBlobBundle) void {
+        if (self.hint_pool_texel_offsets) |buf| self.gpa.free(buf);
+        self.hint_pool_texel_offsets = null;
+        self.hint_layer_info_data = null;
+        self.hint_layer_info_width = 0;
+        self.hint_layer_info_height = 0;
+    }
+
+    /// Pack the bundle's hint pool into a single layer-info slab and
+    /// compute per-entry texel offsets. Idempotent: returns immediately
+    /// once materialised. The slab lives in the bundle's arena; both are
+    /// invalidated by `reset` or any subsequent `internHintRecord`.
+    pub fn materialiseHintLayerInfo(self: *TextBlobBundle) !void {
+        if (self.hint_layer_info_data != null) return;
+        if (self.hint_pool.items.len == 0) return;
+
+        const offsets = try self.gpa.alloc(u32, self.hint_pool.items.len);
+        errdefer self.gpa.free(offsets);
+
+        var texel_cursor: u32 = 0;
+        for (self.hint_pool.items, offsets) |record, *offset| {
+            offset.* = texel_cursor;
+            texel_cursor += text_hint.recordTexelCount(record.record.curve_count);
+        }
+        const texel_count = texel_cursor;
+        const width = text_hint.infoWidth(texel_count);
+        const height = @max(@as(u32, 1), (texel_count + width - 1) / width);
+        const data = try self.arena.allocator().alloc(f32, @as(usize, width) * @as(usize, height) * 4);
+        @memset(data, 0);
+
+        for (self.hint_pool.items, offsets) |record, texel_offset| {
+            try text_hint.writeGlyphRecord(data, width, texel_offset, record.record, record.curve_deltas_f16);
+        }
+
+        self.hint_pool_texel_offsets = offsets;
+        self.hint_layer_info_data = data;
+        self.hint_layer_info_width = width;
+        self.hint_layer_info_height = height;
+    }
+
+    /// Returns the bundle's shared-hint upload payload. May be empty
+    /// (no hinted glyphs in the bundle). Triggers materialisation if not
+    /// already done.
+    pub fn hintLayerInfoUpload(self: *TextBlobBundle) !PreparedHintLayerInfoUpload {
+        try self.materialiseHintLayerInfo();
+        return .{
+            .data = self.hint_layer_info_data,
+            .width = self.hint_layer_info_width,
+            .height = self.hint_layer_info_height,
+        };
+    }
+
+    /// True if this bundle has any hinted glyphs (and therefore needs
+    /// a `text_hint` resource binding).
+    pub fn hasHintRecords(self: *const TextBlobBundle) bool {
+        return self.hint_pool.items.len > 0;
+    }
+
+    /// Texel offset of a pool entry, in the bundle's hint slab. Must be
+    /// called after `materialiseHintLayerInfo`. Used by the renderer to
+    /// resolve a `Glyph.hint_record_texel` (which is a pool index) to a
+    /// position in the shared slab.
+    pub fn hintPoolTexelOffset(self: *const TextBlobBundle, pool_index: u32) u32 {
+        const offsets = self.hint_pool_texel_offsets orelse return 0;
+        if (pool_index >= offsets.len) return 0;
+        return offsets[pool_index];
     }
 
     /// Streaming construction. Returns a thin handle that must terminate
@@ -326,27 +465,22 @@ pub const BlobInProgress = struct {
         const expected_deltas = @as(usize, record.curve_count) * text_hint.delta_values_per_curve;
         if (curve_deltas_f16.len != expected_deltas) return error.InvalidHintDeltaCount;
 
-        const pending = &self.bundle.pending;
-        const gpa = self.bundle.gpa;
-        const hint_index: u32 = @intCast(pending.hint_records.items.len);
-        const deltas = try gpa.dupe(u16, curve_deltas_f16);
-        errdefer gpa.free(deltas);
-        try pending.hint_records.append(gpa, .{
-            .record = record,
-            .curve_deltas_f16 = deltas,
-        });
-        errdefer pending.removeLastHintRecord(gpa);
+        // Raw record append: no `HintedGlyphValue` pointer to use as an
+        // intern key, so push a fresh pool entry. Callers using the cached
+        // hint context should prefer `appendHintedGlyphRef` to dedupe.
+        const intern_key = @intFromPtr(curve_deltas_f16.ptr);
+        const pool_index = try self.bundle.internHintRecord(intern_key, record, curve_deltas_f16);
 
-        try pending.glyphs.append(gpa, .{
+        try self.bundle.pending.glyphs.append(self.bundle.gpa, .{
             .face_index = face_index,
             .glyph_id = glyph_id,
             .transform = transform,
             .embolden = 0,
             .color = color,
-            .hint_record_texel = hint_index,
+            .hint_record_texel = pool_index,
             .hint_bbox = record.bbox,
         });
-        pending.gpu_instance_budget += 1;
+        self.bundle.pending.gpu_instance_budget += 1;
     }
 
     pub fn appendHintedGlyphRef(
@@ -358,11 +492,8 @@ pub const BlobInProgress = struct {
         value: *const HintedGlyphValue,
     ) !void {
         const attachment = value.attachment orelse return error.EmptyHintedGlyph;
-        const pending = &self.bundle.pending;
-        const gpa = self.bundle.gpa;
         const intern_key = @intFromPtr(value);
-        const intern = try pending.internHintRecord(gpa, intern_key, attachment.record, attachment.curve_deltas_f16);
-        errdefer if (intern.created) pending.removeInternedHintRecord(gpa, intern_key, intern.index);
+        const pool_index = try self.bundle.internHintRecord(intern_key, attachment.record, attachment.curve_deltas_f16);
 
         // Faux-bold: passthrough the face's embolden offset so the renderer
         // emits a second hinted copy at `transform.tx + embolden`. The hint
@@ -370,18 +501,18 @@ pub const BlobInProgress = struct {
         // same hinted geometry.
         const face = &self.bundle.atlas.config.faces[face_index];
         const embolden = face.synthetic.embolden;
-        try pending.glyphs.append(gpa, .{
+        try self.bundle.pending.glyphs.append(self.bundle.gpa, .{
             .face_index = face_index,
             .glyph_id = glyph_id,
             .transform = transform,
             .embolden = embolden,
             .color = color,
-            .hint_record_texel = intern.index,
+            .hint_record_texel = pool_index,
             .hint_bbox = value.bbox,
         });
         // Each hinted glyph is one GPU instance; emboldening emits a second
         // copy at draw time so the budget must reserve two.
-        pending.gpu_instance_budget += if (embolden != 0) 2 else 1;
+        self.bundle.pending.gpu_instance_budget += if (embolden != 0) 2 else 1;
     }
 
     pub fn glyphCount(self: BlobInProgress) usize {
@@ -439,69 +570,19 @@ pub const BlobInProgress = struct {
 const PendingBlob = struct {
     glyphs: std.ArrayListUnmanaged(TextBlob.Glyph) = .empty,
     paint_records: std.ArrayListUnmanaged(PendingPaintRecord) = .empty,
-    hint_records: std.ArrayListUnmanaged(PendingHintRecord) = .empty,
-    hint_record_refs: std.AutoHashMapUnmanaged(usize, u32) = .empty,
     gpu_instance_budget: usize = 0,
 
     fn deinit(self: *PendingBlob, gpa: Allocator) void {
         self.glyphs.deinit(gpa);
         self.paint_records.deinit(gpa);
-        self.clearHintRecords(gpa);
-        self.hint_records.deinit(gpa);
-        self.hint_record_refs.deinit(gpa);
         self.* = undefined;
     }
 
     fn reset(self: *PendingBlob, gpa: Allocator) void {
+        _ = gpa;
         self.glyphs.clearRetainingCapacity();
         self.paint_records.clearRetainingCapacity();
-        self.clearHintRecords(gpa);
-        self.hint_record_refs.clearRetainingCapacity();
         self.gpu_instance_budget = 0;
-    }
-
-    fn clearHintRecords(self: *PendingBlob, gpa: Allocator) void {
-        for (self.hint_records.items) |record| gpa.free(record.curve_deltas_f16);
-        self.hint_records.clearRetainingCapacity();
-    }
-
-    fn removeLastHintRecord(self: *PendingBlob, gpa: Allocator) void {
-        std.debug.assert(self.hint_records.items.len > 0);
-        const last_index = self.hint_records.items.len - 1;
-        gpa.free(self.hint_records.items[last_index].curve_deltas_f16);
-        self.hint_records.items.len = last_index;
-    }
-
-    const InternedHintRecord = struct {
-        index: u32,
-        created: bool,
-    };
-
-    fn internHintRecord(
-        self: *PendingBlob,
-        gpa: Allocator,
-        intern_key: usize,
-        record: text_hint.GlyphRecord,
-        curve_deltas_f16: []const u16,
-    ) !InternedHintRecord {
-        if (self.hint_record_refs.get(intern_key)) |index| return .{ .index = index, .created = false };
-
-        const index: u32 = @intCast(self.hint_records.items.len);
-        const deltas = try gpa.dupe(u16, curve_deltas_f16);
-        errdefer gpa.free(deltas);
-        try self.hint_records.append(gpa, .{
-            .record = record,
-            .curve_deltas_f16 = deltas,
-        });
-        errdefer self.removeLastHintRecord(gpa);
-        try self.hint_record_refs.put(gpa, intern_key, index);
-        return .{ .index = index, .created = true };
-    }
-
-    fn removeInternedHintRecord(self: *PendingBlob, gpa: Allocator, intern_key: usize, index: u32) void {
-        _ = self.hint_record_refs.remove(intern_key);
-        std.debug.assert(index + 1 == self.hint_records.items.len);
-        self.removeLastHintRecord(gpa);
     }
 };
 
@@ -528,19 +609,14 @@ fn finishLayerInfoRecords(
     arena: Allocator,
     glyphs: []TextBlob.Glyph,
 ) !FinishedLayerInfoRecords {
+    _ = gpa;
+    _ = glyphs;
     const paint_count = pending.paint_records.items.len;
-    const hint_count = pending.hint_records.items.len;
-    if (paint_count == 0 and hint_count == 0) return .{};
+    if (paint_count == 0) return .{};
 
-    const hint_offsets = try gpa.alloc(u32, pending.hint_records.items.len);
-    defer gpa.free(hint_offsets);
-
-    var texel_cursor: u32 = @intCast(paint_count * paint_records.texels_per_record);
-    for (pending.hint_records.items, hint_offsets) |record, *offset| {
-        offset.* = texel_cursor;
-        texel_cursor += text_hint.recordTexelCount(record.record.curve_count);
-    }
-    const texel_count = texel_cursor;
+    // Hint records live in the bundle's shared pool now; each blob's
+    // layer-info slab is paint-records-only.
+    const texel_count: u32 = @intCast(paint_count * paint_records.texels_per_record);
     const width = text_hint.infoWidth(texel_count);
     const height = @max(@as(u32, 1), (texel_count + width - 1) / width);
     const data = try arena.alloc(f32, @as(usize, width) * @as(usize, height) * 4);
@@ -564,11 +640,6 @@ fn finishLayerInfoRecords(
             else => {},
         }
     }
-
-    for (pending.hint_records.items, hint_offsets) |record, texel_offset| {
-        try text_hint.writeGlyphRecord(data, width, texel_offset, record.record, record.curve_deltas_f16);
-    }
-    patchHintGlyphTexels(glyphs, hint_offsets);
 
     return .{
         .data = data,
@@ -770,13 +841,9 @@ fn textBlobGpuInstanceBudgetForAtlas(atlas: *const TextAtlas, glyphs: []const Te
     return total;
 }
 
-fn patchHintGlyphTexels(glyphs: []TextBlob.Glyph, hint_offsets: []const u32) void {
-    for (glyphs) |*glyph| {
-        const hint_index = glyph.hint_record_texel orelse continue;
-        if (hint_index >= hint_offsets.len) continue;
-        glyph.hint_record_texel = hint_offsets[hint_index];
-    }
-}
+// Note: `TextBlob.Glyph.hint_record_texel` is now a bundle hint-pool index,
+// not a texel offset. The renderer resolves it via
+// `bundle.hintPoolTexelOffset(index)` against the bundle's shared hint slab.
 
 fn emptyBBox() BBox {
     return .{ .min = Vec2.zero, .max = Vec2.zero };

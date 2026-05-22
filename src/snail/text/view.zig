@@ -40,6 +40,14 @@ pub fn preparedViewPaintInfoRowBase(view: anytype) u32 {
     };
 }
 
+pub fn preparedViewHintInfoRowBase(view: anytype) u32 {
+    const T = @TypeOf(view);
+    return switch (@typeInfo(T)) {
+        .@"struct" => if (@hasField(T, "hint_info_row_base")) view.hint_info_row_base else 0,
+        else => 0,
+    };
+}
+
 /// View into one face's glyph data within a TextAtlas snapshot.
 /// Implements the interface expected by glyph_emit.emitGlyph.
 pub const FaceView = struct {

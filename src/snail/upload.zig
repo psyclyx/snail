@@ -274,7 +274,7 @@ fn countUploadEntries(entries: []const ResourceManifest.Entry) UploadEntryCounts
     var counts: UploadEntryCounts = .{};
     for (entries) |entry| switch (entry) {
         .text_atlas, .path_picture => counts.atlases += 1,
-        .text_paint => counts.layer_infos += 1,
+        .text_paint, .text_hint => counts.layer_infos += 1,
         .image => counts.images += 1,
     };
     return counts;
@@ -348,6 +348,26 @@ fn prepareTextPaintEntry(
     scratch.upload_layer_infos[index] = stamp_mod.textPaintLayerInfoUpload(text.blob);
 }
 
+fn prepareTextHintEntry(
+    prepared: *PreparedResources,
+    scratch: *ResourceUploadScratch,
+    index: usize,
+    text: ResourceManifest.TextHintEntry,
+    stamp: ResourceStamp,
+) void {
+    prepared.manifest.layer_infos[index] = .{
+        .key = text.key,
+        .stamp = stamp,
+    };
+    const hint_upload = stamp_mod.textHintLayerInfoUpload(text.bundle);
+    scratch.upload_layer_infos[index] = .{
+        .data = hint_upload.data,
+        .width = hint_upload.width,
+        .height = hint_upload.height,
+        .paint_image_records = null,
+    };
+}
+
 fn preparePathPictureEntry(
     allocator: std.mem.Allocator,
     prepared: *PreparedResources,
@@ -398,6 +418,10 @@ fn populatePreparedResourceBatch(
             },
             .text_paint => |text| {
                 prepareTextPaintEntry(prepared, scratch, layer_info_i, text, stamp);
+                layer_info_i += 1;
+            },
+            .text_hint => |text| {
+                prepareTextHintEntry(prepared, scratch, layer_info_i, text, stamp);
                 layer_info_i += 1;
             },
             .path_picture => |path| {

@@ -12,6 +12,7 @@ const ResourceFootprint = footprint_types.ResourceFootprint;
 const ResourceKey = resource_key_mod.ResourceKey;
 const TextAtlas = text_mod.TextAtlas;
 const TextBlob = text_mod.TextBlob;
+const TextBlobBundle = text_mod.TextBlobBundle;
 
 pub const ResourceManifest = struct {
     /// Caller-buffered CPU manifest. Entries point at app-owned
@@ -22,6 +23,7 @@ pub const ResourceManifest = struct {
     pub const Entry = union(enum) {
         text_atlas: TextAtlasEntry,
         text_paint: TextPaintEntry,
+        text_hint: TextHintEntry,
         path_picture: PathPictureEntry,
         image: ImageEntry,
     };
@@ -41,6 +43,14 @@ pub const ResourceManifest = struct {
     pub const TextPaintEntry = struct {
         key: ResourceKey,
         blob: *const TextBlob,
+    };
+
+    /// Bundle-shared hint pool. Uploaded once per bundle; many blobs from
+    /// the same bundle dedupe to one `text_hint` entry via the manifest's
+    /// existing key-based deduplication.
+    pub const TextHintEntry = struct {
+        key: ResourceKey,
+        bundle: *TextBlobBundle,
     };
 
     pub const ImageEntry = struct {
@@ -87,6 +97,8 @@ pub const ResourceManifest = struct {
     ) !void {
         try blob.validate();
         if (blob.hasPaintRecords() != (resources.paint != null)) return error.InvalidTextResourceKeys;
+        const bundle = @constCast(blob.bundle);
+        if (bundle.hasHintRecords() != (resources.hint != null)) return error.InvalidTextResourceKeys;
         try self.ensureCapacityForTextBlob(resources);
         try self.put(.{ .text_atlas = .{
             .key = resources.atlas,
@@ -97,6 +109,12 @@ pub const ResourceManifest = struct {
             try self.put(.{ .text_paint = .{
                 .key = paint_key,
                 .blob = blob,
+            } });
+        }
+        if (resources.hint) |hint_key| {
+            try self.put(.{ .text_hint = .{
+                .key = hint_key,
+                .bundle = bundle,
             } });
         }
     }
@@ -136,6 +154,9 @@ pub const ResourceManifest = struct {
         if (keys.paint) |paint_key| {
             if (!self.containsKey(paint_key)) missing += 1;
         }
+        if (keys.hint) |hint_key| {
+            if (!self.containsKey(hint_key)) missing += 1;
+        }
         if (self.len + missing > self.entries.len) return error.ResourceManifestFull;
     }
 
@@ -150,6 +171,7 @@ pub const ResourceManifest = struct {
         return switch (entry) {
             .text_atlas => |text| text.key,
             .text_paint => |text| text.key,
+            .text_hint => |text| text.key,
             .path_picture => |path| path.key,
             .image => |image| image.key,
         };

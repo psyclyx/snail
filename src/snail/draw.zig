@@ -192,6 +192,11 @@ fn addTextDrawToBuffers(
     } else blk: {
         break :blk .{ draw.resources.atlas, try prepared.textStamp(draw.resources.atlas) };
     };
+    if (draw.blob.bundle.hasHintRecords()) {
+        const hint_key = draw.resources.hint orelse return error.MissingPreparedResource;
+        const hint_view = try prepared.textHintView(hint_key);
+        view.hint_info_row_base = hint_view.info_row_base;
+    }
 
     const glyph_count = draw.blob.glyphCount();
     for (draw.instances, 0..) |_, override_index| {
