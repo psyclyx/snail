@@ -140,6 +140,12 @@ migration recipes below each entry.
   the source blob into it — the C-side handle continues to work the
   same way. The internal `TextBlobBuilder` type is gone; its
   accumulator state is now `PendingBlob` inside the bundle.
+- `ShapedText.advance_x` and `advance_y` fields removed; replaced by
+  `advanceX()` / `advanceY()` methods derived from the glyph stream.
+  The glyph slice is now the single source of truth for advance — no
+  field/stream desync is representable. Migration: `shaped.advance_x`
+  → `shaped.advanceX()`. C API: `snail_shaped_text_advance_x` /
+  `_advance_y` exports are unchanged.
 
 ## 0.11.1 - 2026-05-20
 

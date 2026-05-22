@@ -135,7 +135,7 @@ test "TextAtlas uses replacement glyph for unresolved codepoints" {
     try testing.expectEqual(@as(usize, 1), shaped.glyphs.len);
     try testing.expectEqual(replacement.face_index, shaped.glyphs[0].face_index);
     try testing.expectEqual(replacement.glyph_id, shaped.glyphs[0].glyph_id);
-    try testing.expect(shaped.advance_x > 0);
+    try testing.expect(shaped.advanceX() > 0);
 
     if (try fonts.ensureShaped(&shaped)) |next| {
         fonts.deinit();
@@ -273,8 +273,8 @@ test "TextBlobBundle.append separates shape from placement and fill" {
         .fill = .{ .solid = .{ 0, 1, 0, 1 } },
     });
 
-    try testing.expectApproxEqAbs(shaped.advance_x * 12, first.advance.x, 0.001);
-    try testing.expectApproxEqAbs(shaped.advance_x * 20, second.advance.x, 0.001);
+    try testing.expectApproxEqAbs(shaped.advanceX() * 12, first.advance.x, 0.001);
+    try testing.expectApproxEqAbs(shaped.advanceX() * 20, second.advance.x, 0.001);
     try testing.expectEqual(@as(usize, 2), bip.glyphCount());
 
     const blob = try bip.finish(snail.ResourceKey.named("test_blob"));

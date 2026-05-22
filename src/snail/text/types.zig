@@ -111,8 +111,6 @@ pub const ShapedText = struct {
     allocator: Allocator,
     config: *const FontConfig,
     glyphs: []Glyph,
-    advance_x: f32,
-    advance_y: f32,
 
     pub const Glyph = struct {
         face_index: FaceIndex,
@@ -124,6 +122,21 @@ pub const ShapedText = struct {
         source_start: u32,
         source_end: u32,
     };
+
+    /// Total horizontal advance in em units. Derived from glyph x_advance —
+    /// the glyph stream is the single source of truth.
+    pub fn advanceX(self: *const ShapedText) f32 {
+        var sum: f32 = 0;
+        for (self.glyphs) |g| sum += g.x_advance;
+        return sum;
+    }
+
+    /// Total vertical advance in em units. Derived from glyph y_advance.
+    pub fn advanceY(self: *const ShapedText) f32 {
+        var sum: f32 = 0;
+        for (self.glyphs) |g| sum += g.y_advance;
+        return sum;
+    }
 
     pub fn deinit(self: *ShapedText) void {
         self.allocator.free(self.glyphs);

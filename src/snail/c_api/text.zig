@@ -290,11 +290,11 @@ pub export fn snail_shaped_text_glyph_count(shaped: *const ShapedTextImpl) usize
 }
 
 pub export fn snail_shaped_text_advance_x(shaped: *const ShapedTextImpl) f32 {
-    return shaped.inner.advance_x;
+    return shaped.inner.advanceX();
 }
 
 pub export fn snail_shaped_text_advance_y(shaped: *const ShapedTextImpl) f32 {
-    return shaped.inner.advance_y;
+    return shaped.inner.advanceY();
 }
 
 pub export fn snail_shaped_text_glyph(shaped: *const ShapedTextImpl, index: usize, out: *SnailShapedGlyph) bool {

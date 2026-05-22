@@ -352,8 +352,6 @@ pub const TextAtlas = struct {
             .allocator = allocator,
             .config = self.config,
             .glyphs = try glyphs.toOwnedSlice(allocator),
-            .advance_x = cursor_x,
-            .advance_y = cursor_y,
         };
     }
 
@@ -403,7 +401,7 @@ pub const TextAtlas = struct {
     ) !f32 {
         var shaped = try self.shapeText(self.allocator, style, text);
         defer shaped.deinit();
-        return shaped.advance_x * font_size;
+        return shaped.advanceX() * font_size;
     }
 
     // ── Atlas extension ──
