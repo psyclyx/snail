@@ -145,7 +145,8 @@ application around it.
 | Type | Owns | Borrows | Lifetime rule |
 |------|------|---------|---------------|
 | `TextAtlas` | Atlas pages and metadata allocated by its allocator. | Text configuration and source font data through the configuration. | Immutable snapshot. Any blob or manifest entry that points at it must not outlive it. |
-| `TextBlob` | Shaped glyph/run data allocated by its allocator. | A compatible `TextAtlas`. | Immutable snapshot. Its atlas pointer is a lifetime dependency, not content ownership. |
+| `TextBlobBundle` | Arena holding many `TextBlob`s and their glyph/paint content. | A compatible `TextAtlas`. | Owns blob lifetimes. `reset` invalidates every outstanding blob borrowed from the bundle; `rebindAtlas` retargets to a compatible superset. |
+| `TextBlob` | A view into bundle-owned glyph/paint storage. | The bundle that produced it and that bundle's `TextAtlas`. | Immutable snapshot, pointer-stable until the bundle is reset/deinit'd. |
 | `PathPicture` | Frozen path atlas/layer records allocated by its allocator. | Nothing after freeze. | Immutable snapshot. Can be declared in a manifest by pointer. |
 | `Image` | Pixel storage according to the image constructor. | Nothing unless explicitly documented by the constructor. | Immutable render resource while it is declared in a manifest. |
 | `ResourceManifest` | Only its caller-provided entry buffer. | `TextBlob`/`TextAtlas`, `PathPicture`, and `Image` values. | A declaration list. Upload planning may inspect it, but insertion should not imply backend effects. |
@@ -181,8 +182,8 @@ baseline = snail.snapPointToStep(baseline, step, .nearest);
 
 const em = snail.snapLengthToStep(raw_em, step.y, .nearest, 1.0);
 
-_ = try builder.append(.{
-    .shaped = &shaped,
+_ = try bip.append(.{
+    .source = .{ .shaped = shaped.glyphs },
     .placement = .{ .baseline = baseline, .em = em },
     .fill = .{ .solid = color },
 });
@@ -231,16 +232,25 @@ var hinted = try hint_context.prepareRun(allocator, .{
 });
 defer hinted.deinit();
 
-_ = try builder.appendPreparedHintedRun(&hinted, .{
-    .baseline = baseline,
-    .em = 12,
-}, color);
+_ = try bip.append(.{
+    .source = .{ .hinted = hinted.glyphs },
+    .placement = .{ .baseline = baseline, .em = 12 },
+    .fill = .{ .solid = color },
+});
 ```
 
+`prepareRun` always covers every glyph of `shaped`; each entry carries either
+a hint pointer or a `.fallback` marker. Strict callers check
+`hinted.stats.fallback_count == 0` before consuming the run. Fallback glyphs
+render via unhinted curves but their advances are pixel-snapped at the hint
+context's PPEM so adjacent glyphs still grid-align.
+
 C uses the same model through `SnailTrueTypeHintContext`,
-`SnailTrueTypePreparedHintRun`, and `SnailTextBlobBuilder`. If preparing a run
-returns `SNAIL_ERR_HINT_UNAVAILABLE`, fall back to
-`snail_text_blob_builder_append_shaped` or `snail_text_blob_init_from_shaped`.
+`SnailTrueTypePreparedHintRun`, and the
+`SnailTextBlobBundle`/`SnailBlobInProgress` builder pair. If
+`snail_true_type_hint_context_init` returns `SNAIL_ERR_HINT_UNAVAILABLE` for a
+face with no TrueType bytecode, fall back to
+`snail_blob_in_progress_append_shaped` or `snail_text_blob_init_from_shaped`.
 
 The usual rule is to snap the run baseline and preserve glyph advances.
 Per-glyph origin snapping or hinted runs can make tiny static text look more
@@ -336,8 +346,8 @@ The default dependency module enables OpenGL, Vulkan, CPU rendering, and HarfBuz
 The Zig and C APIs use the same explicit resource model:
 
 1. Build immutable CPU values: `TextAtlas`/`TextBlob`, `PathPicture`, and
-   `Image`. Use `TextBlobBuilder` when composing multiple shaped runs or
-   appending prepared TrueType hint runs.
+   `Image`. Use `TextBlobBundle` + `BlobInProgress` to compose one or many
+   blobs into a shared arena, including prepared TrueType hint runs.
 2. Put the values a scene may sample into a `ResourceManifest` using stable
    `ResourceKey` / `TextResourceKeys` identities.
 3. Upload the manifest with a renderer to get `PreparedResources`.
@@ -372,18 +382,20 @@ if (try atlas.ensureText(.{}, "Hello, world!")) |next| {
     atlas = next;
 }
 
-var blob_builder = snail.TextBlobBuilder.init(allocator, &atlas);
-defer blob_builder.deinit();
+var bundle = snail.TextBlobBundle.init(allocator, &atlas);
+defer bundle.deinit();
+
 var shaped = try atlas.shapeText(allocator, .{}, "Hello, world!");
 defer shaped.deinit();
-_ = try blob_builder.append(.{
-    .shaped = &shaped,
+
+var bip = try bundle.startBlob();
+errdefer bip.abort();
+_ = try bip.append(.{
+    .source = .{ .shaped = shaped.glyphs },
     .placement = .{ .baseline = .{ .x = 10, .y = 400 }, .em = 48 },
     .fill = .{ .solid = .{ 1, 1, 1, 1 } },
 });
-
-var blob = try blob_builder.finish();
-defer blob.deinit();
+const blob = try bip.finish(snail.ResourceKey.named("hello_text"));
 
 var resource_entries: [8]snail.ResourceManifest.Entry = undefined;
 var resources = snail.ResourceManifest.init(&resource_entries);
@@ -391,11 +403,11 @@ const text_resources = blob.resourceKeys(
     snail.ResourceKey.named("fonts"),
     snail.ResourceKey.named("hello_text"),
 );
-try resources.putTextBlob(text_resources, &blob);
+try resources.putTextBlob(text_resources, blob);
 
 var scene = snail.Scene.init(allocator);
 defer scene.deinit();
-try scene.addText(.{ .blob = &blob, .resources = text_resources });
+try scene.addText(.{ .blob = blob, .resources = text_resources });
 // (See "Vector Paths" below for adding a PathPicture to the same scene.)
 
 // Requires an active GL context. Vulkan uses snail.VulkanRenderer.init(allocator, ctx).
@@ -432,17 +444,21 @@ if (try atlas.ensureText(.{}, text)) |next| {
 }
 ```
 
-`TextBlob.rebound` is optional. Use it when you cache blobs across atlas extension and want a new blob that borrows the compatible superset snapshot, usually so the old snapshot can be released and old prepared resources retired without reshaping unchanged text rows.
+`bundle.rebindAtlas` and `bundle.rebound` are the cache/lifetime helpers.
+`rebindAtlas` retargets the whole bundle to a compatible superset snapshot
+in place; `rebound` copies one blob from a source bundle into a target bundle
+that's already bound to the new atlas. Use either when you want to release
+the old atlas snapshot and retire its prepared resources without reshaping
+unchanged text rows.
 
-If you already have shaped glyph IDs, extend the atlas directly and create rebound copies only for the cached blobs you plan to keep:
+If you already have shaped glyph IDs, extend the atlas directly and either
+rebind the existing bundle or copy specific blobs into a new one:
 
 ```zig
 if (try atlas.ensureGlyphs(face_index, glyph_ids)) |next| {
-    var next_blob = try blob.rebound(allocator, &next);
-    blob.deinit();
-    blob = next_blob;
     atlas.deinit();
     atlas = next;
+    try bundle.rebindAtlas(&atlas);
 }
 ```
 
@@ -534,9 +550,9 @@ SnailTextBlob *hinted_blob = NULL;
 float white[4] = {1, 1, 1, 1};
 if (snail_true_type_hint_context_init(NULL, atlas, &hint_context) == SNAIL_OK &&
     snail_true_type_hint_context_prepare_run(
-        hint_context, NULL, shaped, SNAIL_RANGE_ALL,
+        hint_context, NULL, shaped,
         snail_true_type_hint_ppem_uniform(12 * 64), &hinted) == SNAIL_OK) {
-    snail_text_blob_init_from_prepared_hinted_run(
+    snail_text_blob_init_from_prepared_hint_run(
         NULL, hinted, (SnailTextPlacement){10, 430, 12}, white, &hinted_blob);
 }
 if (hinted_blob) {
@@ -632,8 +648,8 @@ until `snail_scene_reset` or `snail_scene_deinit`.
 |------|-------------|
 | `TextAtlas` | Immutable CPU font/glyph snapshot. `ensureText`, `ensureShaped`, and `ensureGlyphs` return a new snapshot; old stays valid. |
 | `ShapedText` | Shaped glyph placements for a string/run. |
-| `TextBlob` | Positioned text that borrows a `TextAtlas` snapshot. It can be rebound to a compatible superset snapshot when cache lifetime needs it. |
-| `TextBlobBuilder` | Mutable builder for one or more shaped runs, including prepared TrueType hint runs. The C API exposes it as `SnailTextBlobBuilder`. |
+| `TextBlob` | Bundle-owned positioned-text view: glyph indices, transforms, and paint records into the bundle's arena. Accessed via `blob.atlas()` and the rendering APIs; not directly destructible (the bundle owns its lifetime). |
+| `TextBlobBundle` / `BlobInProgress` | Arena-backed builder for one or many `TextBlob`s sharing a `TextAtlas`. `bundle.startBlob()` returns a `BlobInProgress`; finish it with `bip.finish(key)` to get a bundle-owned `*const TextBlob`, or abort with `bip.abort()`. `bundle.rebindAtlas` / `bundle.rebound` are the cache/lifetime helpers. C API: `SnailTextBlobBundle` + `SnailBlobInProgress`. |
 | `Font` | Stable parsed-font helper for `unitsPerEm`, `glyphIndex`, and `advanceWidth` when callers manage raw font data directly. |
 | `FaceSpec` | `{ .data, .weight, .italic, .fallback, .synthetic }` — font face specification for `TextAtlas.init`. |
 | `FaceIndex` | `u16` face handle returned by atlas resolution/itemization and accepted by per-face metric helpers. |
@@ -647,9 +663,9 @@ until `snail_scene_reset` or `snail_scene_deinit`.
 | `PathPictureBuilder` | Accumulates filled/stroked paths and shapes with paint styles. |
 | `PathPicture` | Immutable frozen vector art. |
 | `Scene` | Borrowed command list of `TextDraw` and `PathDraw` submissions. |
-| `PathDraw`, `TextDraw` | Submission record: resource pointer, optional sub-range, and an `[]const Override` array (length = GPU instance count). |
+| `PathDraw`, `TextDraw` | Submission record: resource pointer plus an `[]const Override` array (length = GPU instance count). Sub-selection happens at composition time — build a smaller `TextBlob`/`PathPicture` rather than passing a range. |
 | `Override` | Per-instance composition: `transform` composed onto baked transform, `tint` multiplied onto the resource's baked color or paint, including color-font palette layers. |
-| `Range` | `{ start, count }` slice into a `PathPicture`'s shapes or a `TextBlob`'s glyphs. |
+| `Range` | `{ start, count }` value type, used internally by `PathPictureBuilder.rangeFrom` / `rangeBetween` when composing paths. Not part of any draw-time field. |
 | `ResourceKey` | Explicit resource identity. `fromId`, `named`/`fromName`, and derived keys use distinct namespaces. |
 | `ResourceManifest` | Fixed-capacity borrowed manifest of CPU values. |
 | `ResourceFootprint` | Used and allocated upload bytes split by curve, band, layer-info, and image storage. |
@@ -667,7 +683,7 @@ until `snail_scene_reset` or `snail_scene_deinit`.
 | `PixelRect` | Integer pixel rectangle `{ .x, .y, .w, .h }` used by `ResolveRegion.pixel_rect`. |
 | `IntermediateFormat` | GL linear intermediate precision: `.rgba16f` or `.rgba32f`. |
 | `CoverageTransfer` | Optional analytic coverage remap. `.identity` is the default; `.power(exponent)` is explicit display tuning. |
-| `TrueTypeHintContext`, `TrueTypeHintPpem`, `TrueTypePreparedHintRun` | Opt-in TrueType bytecode hinting helpers for building hinted `TextBlob` records at a chosen ppem. The C API exposes matching `SnailTrueTypeHintContext`, `SnailTrueTypeHintPpem`, and `SnailTrueTypePreparedHintRun` handles/types. |
+| `TrueTypeHintContext`, `TrueTypeHintPpem`, `PreparedHintRun` | Opt-in TrueType bytecode hinting helpers for building hinted `TextBlob` records at a chosen ppem. `prepareRun` always covers every glyph of the source shaped text; each entry carries either a hint pointer or a `.fallback` marker with a pixel-snapped advance. Strict callers check `stats.fallback_count == 0`. The C API exposes matching `SnailTrueTypeHintContext`, `SnailTrueTypeHintPpem`, and `SnailTrueTypePreparedHintRun` handles/types. |
 | `SnapRule` | Quantization rule for explicit snapping: `.floor`, `.nearest`, or `.ceil`. |
 | `pixelStep` / `pixelSteps` | Compute logical-coordinate size of one backing pixel from logical and pixel extents. |
 | `snapToStep` / `snapDeltaToStep` | Snap a scalar to an explicit step, or return the delta needed to reach that snap. |
@@ -699,13 +715,19 @@ until `snail_scene_reset` or `snail_scene_deinit`.
 | `atlas.decorationRect(decoration, x, y, advance, em) !Rect` | Underline/strikethrough rectangle using primary-face font metrics. |
 | `atlas.superscriptTransform(x, y, em) !ScriptTransform` / `atlas.subscriptTransform(x, y, em) !ScriptTransform` | Script placement and em-size from primary-face OS/2 metrics. |
 | `atlas.measureText(style, text, em) !f32` | Shape text and return horizontal advance in caller units. |
-| `TextBlob.init(alloc, atlas, append) !TextBlob` | Build one positioned, painted `TextAppend` from a `ShapedText`. The blob borrows `atlas`. |
+| `atlas.shapeTextOpts(alloc, style, text, opts) !ShapedText` | Shape with explicit `ShapeOptions` (HarfBuzz feature requests). `shapeText` is the zero-options shorthand. |
+| `ShapedText.advanceX() f32` / `ShapedText.advanceY() f32` | Total advance summed from the glyph stream. The glyph slice is the single source of truth — no field/stream desync is representable. |
+| `snail.clusters(&shaped) ClusterIterator` | Walk a `ShapedText` by HarfBuzz cluster (maximal runs of glyphs sharing a `source_start`). Used by the post-shape transforms below; downstream layout code that needs to map shaped glyphs back to source bytes. |
+| `snail.track` / `snail.shiftBaseline` / `snail.spaceWords` / `snail.snapAdvances` | Free-function post-shape transforms over `*ShapedText`. Cluster-aware (ligature internals stay intact); per-cluster deltas are baked into the cluster's last glyph's advance. |
+| `TextBlobBundle.init(gpa, atlas) TextBlobBundle` / `bundle.startBlob() !BlobInProgress` / `bip.append(TextAppend) !TextAppendResult` / `bip.finish(key) !*const TextBlob` / `bip.abort() void` | Streaming blob construction. The bundle owns blob lifetimes; multiple blobs sharing one atlas live in one arena. `bundle.buildBlob(key, []TextAppend, ?[]TextAppendResult)` is the bulk variant. |
+| `bundle.rebindAtlas(new_atlas)` / `target_bundle.rebound(key, src_blob, new_atlas) !*const TextBlob` | Cache/lifetime helpers for atlas extension. `rebindAtlas` retargets the whole bundle in place when the new snapshot is prefix-compatible; `rebound` copies one blob from a source bundle into a target bundle already bound to `new_atlas`. |
+| `bundle.reset()` / `bundle.freeze()` / `bundle.unfreeze()` / `bundle.isFrozen()` / `bundle.blobCount()` / `bundle.currentGeneration()` | Bundle lifecycle: `reset` invalidates every outstanding blob, the generation counter advances so callers can detect use-after-reset. C handles compare-and-validate against `snail_text_blob_bundle_generation`. |
 | `blob.resourceKeys(atlas_key, blob_key) TextResourceKeys` | Build the resource binding used by both `scene.addText` and `ResourceManifest.putTextBlob`. |
-| `blob.rebound(alloc, new_atlas) !TextBlob` | Optional cache/lifetime helper: return a blob bound to a compatible atlas snapshot that retains old pages and contains all referenced glyphs. |
-| `TextBlobBuilder.init(alloc, atlas)` / `builder.append(TextAppend) !TextAppendResult` / `builder.finish() !TextBlob` | Append shaped runs with explicit placement and fill. Call `atlas.ensureText`/`ensureShaped`/`ensureGlyphs` first if all glyphs must be renderable. |
-| `TrueTypeHintContext.init(alloc, atlas)` / `context.prepareRun(alloc, .{ .shaped, .ppem })` / `builder.appendPreparedHintedRun(run, placement, color)` | Explicit TrueType hinting path for solid-color runs. Keep the context tied to the atlas snapshot, and fall back to `builder.append` when hinting rejects a glyph. C callers use `snail_true_type_hint_context_prepare_run`, `snail_text_blob_builder_append_prepared_hinted_run`, or `snail_text_blob_init_from_prepared_hinted_run`. |
-| `TextAppend` | `{ .shaped, .glyphs, .placement = .{ .baseline, .em }, .fill }` — appends a whole shaped run or glyph subrange with independent position/scale and paint. Fill accepts the same `Paint` union used by paths, in the same coordinate space as `placement`. |
+| `TrueTypeHintContext.init(alloc, atlas)` / `context.prepareRun(alloc, .{ .shaped, .ppem })` | Whole-run TrueType hinting. The result covers every input glyph; rejected glyphs become `.fallback` entries with pixel-snapped advances rather than aborting the whole run. Strict callers check `stats.fallback_count == 0`. Append the run via `bip.append(.{ .source = .{ .hinted = run.glyphs }, .placement, .fill = .{ .solid = color } })`. C callers use `snail_true_type_hint_context_prepare_run` + `snail_blob_in_progress_append_prepared_hint_run` (or the standalone `snail_text_blob_init_from_prepared_hint_run`). |
+| `context.rebindAtlas(new_atlas)` | Preserve cached hint values, face programs, and size states across atlas extensions when the new snapshot is prefix-compatible with the old. Eliminates the warmup rehint storm on `ensureText`-style growth. |
+| `TextAppend` | `{ .source, .placement = .{ .baseline, .em }, .fill }` where `source` is `.{ .shaped = []const ShapedText.Glyph }` or `.{ .hinted = []const PreparedHintRun.Glyph }`. Slice notation handles sub-selection (`shaped.glyphs[a..b]`). Hinted runs require a solid `Paint`. |
 | `TextAppendResult` | `{ .advance: Vec2, .missing: bool }` — pen advance and whether any referenced glyph was absent from the current atlas snapshot. |
+| `ShapeOptions` / `OpenTypeFeature` / `SourceRange` | Shape-time inputs. Features carry a 4-byte tag, value, and optional source-byte range; ranges outside an itemized segment are silently dropped. |
 
 ### Scene
 
@@ -935,7 +957,7 @@ build-only internal modules.
 | Type | Rule |
 |------|------|
 | `TextAtlas` | Immutable snapshot. Safe for concurrent reads. `ensureText`, `ensureShaped`, and `ensureGlyphs` return a new snapshot; old remains valid for in-flight readers. |
-| `TextBlob`, `PathPicture`, `Image` | Safe for concurrent reads while the borrowed atlas / pictures / pixels outlive the reader. `TextBlob.rebound` returns a new blob instead of mutating the existing one. |
+| `TextBlob`, `PathPicture`, `Image` | Safe for concurrent reads while the borrowed atlas / pictures / pixels outlive the reader. `bundle.rebound` produces a new blob in a target bundle instead of mutating the source. |
 | `ResourceManifest`, `Scene` | Borrowed manifests/lists. Source values must outlive upload/record building. |
 | `PreparedResources` | Backend/context-specific. GPU prepared resources reference renderer-owned residency; CPU prepared resources own the prepared snapshots they sample. |
 | `DrawList` | Caller-owned buffer. Thread-local — no sharing needed. |
@@ -972,7 +994,11 @@ snail is used in development but is not yet stable. The Zig API is settling and 
   constructors, blocking and scheduled upload, prepared-resource retirement,
   owned draw-list records, prepared-scene drawing, CPU thread pools, and
   GL/Vulkan text coverage hooks for custom shaders. It also exposes
-  `SnailTextBlobBuilder` and the explicit TrueType hint-run helpers.
+  `SnailTextBlobBundle` + `SnailBlobInProgress`, post-shape transforms
+  (`snail_shaped_text_track` / `_shift_baseline` / `_space_words` /
+  `_snap_advances`), `SnailClusterIterator`, `SnailShapeOptions` +
+  `SnailOpenTypeFeature` for shape-time feature requests, and the explicit
+  TrueType hint-run helpers.
 
 ## Benchmarks
 
