@@ -14,6 +14,13 @@ pub const SizeRequest = struct {
     ppem_x_26_6: u32,
     ppem_y_26_6: u32,
     mode: RenderMode = .grayscale,
+    /// Extra writable CVT slots appended after the font's own cvt table.
+    /// Non-zero values let WCVT*/WCVTF writes past the font's declared CVT
+    /// length succeed (RCVT in that range reads as zero) — matches the
+    /// tolerance behaviour of FreeType/Skia/CoreText for slightly malformed
+    /// fonts. Zero (the default) keeps strict spec behaviour: any OOB CVT
+    /// access surfaces as `tt_exec.Error.InvalidCvtIndex`.
+    cvt_headroom: u32 = 0,
 };
 
 pub const CvtAxis = enum {
@@ -82,13 +89,16 @@ pub const Program = struct {
 
     pub fn sizeState(self: *const Program, allocator: std.mem.Allocator, request: SizeRequest) !SizeState {
         const cvt_bytes = try self.tables.tableBytes(self.tables.cvt);
+        const cvt_x = try scaledCvt(allocator, cvt_bytes, request.ppem_x_26_6, self.head.units_per_em, request.cvt_headroom);
+        errdefer allocator.free(cvt_x);
+        const cvt_y = try scaledCvt(allocator, cvt_bytes, request.ppem_y_26_6, self.head.units_per_em, request.cvt_headroom);
         return .{
             .allocator = allocator,
             .request = request,
             .units_per_em = self.head.units_per_em,
             .grid_fit = try self.gridFits(request.ppem_y_26_6),
-            .cvt_x = try scaledCvt(allocator, cvt_bytes, request.ppem_x_26_6, self.head.units_per_em),
-            .cvt_y = try scaledCvt(allocator, cvt_bytes, request.ppem_y_26_6, self.head.units_per_em),
+            .cvt_x = cvt_x,
+            .cvt_y = cvt_y,
         };
     }
 
@@ -373,15 +383,19 @@ fn scaledCvt(
     cvt_bytes: []const u8,
     ppem_26_6: u32,
     units_per_em: u16,
+    headroom: u32,
 ) ![]i32 {
     if (cvt_bytes.len % 2 != 0) return error.InvalidFont;
-    const values = try allocator.alloc(i32, cvt_bytes.len / 2);
+    const font_count = cvt_bytes.len / 2;
+    const total = font_count + headroom;
+    const values = try allocator.alloc(i32, total);
     errdefer allocator.free(values);
 
-    for (values, 0..) |*value, i| {
+    for (values[0..font_count], 0..) |*value, i| {
         const fword = std.mem.readInt(i16, cvt_bytes[i * 2 ..][0..2], .big);
         value.* = scaleFWordTo26Dot6(fword, ppem_26_6, units_per_em);
     }
+    @memset(values[font_count..], 0);
     return values;
 }
 
@@ -418,6 +432,28 @@ test "size state scales cvt values in 26.6 pixels" {
     try std.testing.expectEqual(size.cvt_x.len, size.cvt_y.len);
     try std.testing.expect(size.cvt_y.len > 0);
     try std.testing.expectEqual(@as(u16, program.head.units_per_em), size.units_per_em);
+}
+
+test "size state appends zeroed cvt headroom" {
+    const program = try Program.init(@import("assets").noto_sans_regular);
+    var baseline = try program.sizeState(std.testing.allocator, .{
+        .ppem_x_26_6 = 12 * 64,
+        .ppem_y_26_6 = 12 * 64,
+    });
+    defer baseline.deinit();
+
+    var padded = try program.sizeState(std.testing.allocator, .{
+        .ppem_x_26_6 = 12 * 64,
+        .ppem_y_26_6 = 12 * 64,
+        .cvt_headroom = 8,
+    });
+    defer padded.deinit();
+
+    try std.testing.expectEqual(baseline.cvt_x.len + 8, padded.cvt_x.len);
+    try std.testing.expectEqual(baseline.cvt_y.len + 8, padded.cvt_y.len);
+    for (padded.cvt_x[baseline.cvt_x.len..]) |v| try std.testing.expectEqual(@as(i32, 0), v);
+    for (padded.cvt_y[baseline.cvt_y.len..]) |v| try std.testing.expectEqual(@as(i32, 0), v);
+    try std.testing.expectEqualSlices(i32, baseline.cvt_x, padded.cvt_x[0..baseline.cvt_x.len]);
 }
 
 test "scale FWORD handles signed values" {

@@ -40,6 +40,7 @@ pub const TextPlacement = text.TextPlacement;
 pub const TextAppend = text.TextAppend;
 pub const TextAppendResult = text.TextAppendResult;
 pub const TrueTypeHintContext = text.TrueTypeHintContext;
+pub const TrueTypeHintContextOptions = text.TrueTypeHintContextOptions;
 pub const TrueTypeHintGlyphKey = text.TrueTypeHintGlyphKey;
 pub const TrueTypeHintReject = text.TrueTypeHintReject;
 pub const TrueTypeHintRejectReason = text.TrueTypeHintRejectReason;

@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `TrueTypeHintContext.initWithOptions` accepts a `cvt_headroom` knob that
+  appends zeroed scratch slots to each cached size's CVT, letting fonts that
+  write past their declared CVT length (tolerated by FreeType/Skia/CoreText)
+  hint successfully instead of being rejected. Defaults to `0`, preserving
+  strict spec behaviour. Headroom is allocated once per `SizeState`; the hint
+  path remains free of per-op allocation.
+- `HintRejectReason.exec_failed` plus a safety-net catch in
+  `computeMissingGlyph` that converts any `tt_exec` execution error into a
+  per-glyph rejection, so best-effort hint runs fall back per glyph instead of
+  aborting the entire run on a single malformed program.
+
 ## 0.11.1 - 2026-05-20
 
 ### Changed

@@ -26,6 +26,7 @@ pub const TextAppendResult = types_mod.TextAppendResult;
 pub const TextBatchAppend = types_mod.TextBatchAppend;
 pub const TextBlobBuilder = blob_mod.TextBlobBuilder;
 pub const TrueTypeHintContext = hint_context_mod.TrueTypeHintContext;
+pub const TrueTypeHintContextOptions = hint_context_mod.TrueTypeHintContextOptions;
 pub const TrueTypeHintGlyphKey = hint_context_mod.HintGlyphKey;
 pub const TrueTypeHintReject = hint_context_mod.HintReject;
 pub const TrueTypeHintRejectReason = hint_context_mod.HintRejectReason;

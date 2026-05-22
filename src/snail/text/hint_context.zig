@@ -92,6 +92,7 @@ pub const HintRejectReason = enum {
     topology_changed,
     bands_not_reusable,
     empty_hinted_outline,
+    exec_failed,
 };
 
 pub const HintReject = struct {
@@ -214,8 +215,13 @@ const FaceProgramState = struct {
 const SizeHintState = struct {
     machine: tt_hint.HintMachine,
 
-    fn init(allocator: Allocator, face: anytype, ppem: tt_hint.HintPpem) !SizeHintState {
-        return .{ .machine = try tt_hint.HintMachine.init(allocator, face, ppem) };
+    fn init(
+        allocator: Allocator,
+        face: anytype,
+        ppem: tt_hint.HintPpem,
+        options: tt_hint.HintOptions,
+    ) !SizeHintState {
+        return .{ .machine = try tt_hint.HintMachine.initWithOptions(allocator, face, ppem, options) };
     }
 
     fn deinit(self: *SizeHintState) void {
@@ -233,19 +239,41 @@ const FaceProgramMap = std.HashMap(FaceIndex, FaceProgramState, FaceIndexContext
 const SizeStateMap = std.HashMap(SizeKey, SizeHintState, SizeKey.Context, 80);
 const GlyphMap = std.HashMap(HintGlyphKey, GlyphEntry, HintGlyphKey.Context, 80);
 
+pub const TrueTypeHintContextOptions = struct {
+    /// See `tt_vm.SizeRequest.cvt_headroom`. A small non-zero value (e.g.
+    /// 32) tolerates fonts that write past their declared CVT length —
+    /// common in the wild, accepted by FreeType/Skia/CoreText — at the
+    /// cost of a few hundred extra bytes per cached size.
+    cvt_headroom: u32 = 0,
+
+    fn toHintOptions(self: TrueTypeHintContextOptions) tt_hint.HintOptions {
+        return .{ .cvt_headroom = self.cvt_headroom };
+    }
+};
+
 pub const TrueTypeHintContext = struct {
     allocator: Allocator,
     atlas: *const TextAtlas,
     atlas_identity: u64,
+    options: TrueTypeHintContextOptions,
     face_programs: FaceProgramMap,
     size_states: SizeStateMap,
     glyphs: GlyphMap,
 
     pub fn init(allocator: Allocator, atlas: *const TextAtlas) TrueTypeHintContext {
+        return initWithOptions(allocator, atlas, .{});
+    }
+
+    pub fn initWithOptions(
+        allocator: Allocator,
+        atlas: *const TextAtlas,
+        options: TrueTypeHintContextOptions,
+    ) TrueTypeHintContext {
         return .{
             .allocator = allocator,
             .atlas = atlas,
             .atlas_identity = atlas.snapshotIdentity(),
+            .options = options,
             .face_programs = FaceProgramMap.init(allocator),
             .size_states = SizeStateMap.init(allocator),
             .glyphs = GlyphMap.init(allocator),
@@ -433,7 +461,10 @@ pub const TrueTypeHintContext = struct {
         };
         if (!size_state.machine.gridFits()) return self.putUnsupported(key, .grid_fit_disabled);
 
-        var hint = try size_state.machine.hintCachedGlyph(self.allocator, &face_state.cache, key.glyph_id);
+        var hint = size_state.machine.hintCachedGlyph(self.allocator, &face_state.cache, key.glyph_id) catch |err| {
+            if (isExecFailure(err)) return self.putUnsupported(key, .exec_failed);
+            return err;
+        };
 
         if (hint.curves.len == 0) {
             const can_skip = glyphCanSkipEmptyHint(&face_view, key.glyph_id);
@@ -495,7 +526,7 @@ pub const TrueTypeHintContext = struct {
         var state = try SizeHintState.init(self.allocator, face, .{
             .x_26_6 = key.ppem_x_26_6,
             .y_26_6 = key.ppem_y_26_6,
-        });
+        }, self.options.toHintOptions());
         errdefer state.deinit();
         try self.size_states.put(key, state);
         return self.size_states.getPtr(key).?;
@@ -544,6 +575,32 @@ fn takeHintedGlyphValue(
             .record = patch.record,
             .curve_deltas_f16 = deltas,
         },
+    };
+}
+
+fn isExecFailure(err: anyerror) bool {
+    return switch (err) {
+        error.BufferTooSmall,
+        error.UnexpectedEof,
+        error.StackUnderflow,
+        error.StackOverflow,
+        error.InvalidOpcode,
+        error.InvalidStorageIndex,
+        error.InvalidCvtIndex,
+        error.InvalidPoint,
+        error.InvalidZone,
+        error.InvalidJump,
+        error.MissingZones,
+        error.UnsupportedVector,
+        error.MissingFunctions,
+        error.TooManyFunctions,
+        error.UnknownFunction,
+        error.CallDepthExceeded,
+        error.InvalidFunctionDefinition,
+        error.ExecutionLimitExceeded,
+        error.DivisionByZero,
+        => true,
+        else => false,
     };
 }
 

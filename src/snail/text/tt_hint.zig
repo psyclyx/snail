@@ -31,6 +31,11 @@ pub const HintPpem = struct {
     }
 };
 
+pub const HintOptions = struct {
+    /// See `tt_vm.SizeRequest.cvt_headroom`.
+    cvt_headroom: u32 = 0,
+};
+
 pub const BaseGlyph = struct {
     info: GlyphInfo,
     page: *const AtlasPage,
@@ -145,12 +150,30 @@ pub const HintMachine = struct {
     snapshot: tt_vm.ControlProgramSnapshot,
 
     pub fn init(allocator: Allocator, face: *const FaceConfig, ppem: HintPpem) !HintMachine {
+        return initWithOptions(allocator, face, ppem, .{});
+    }
+
+    pub fn initWithOptions(
+        allocator: Allocator,
+        face: *const FaceConfig,
+        ppem: HintPpem,
+        options: HintOptions,
+    ) !HintMachine {
         const program = if (face.tt_program) |*program| program else return error.NoTrueTypeProgram;
-        return initForProgram(allocator, program, ppem);
+        return initForProgramWithOptions(allocator, program, ppem, options);
     }
 
     pub fn initForProgram(allocator: Allocator, program: *const Program, ppem: HintPpem) !HintMachine {
-        var machine = try allocateMachine(allocator, program, ppem);
+        return initForProgramWithOptions(allocator, program, ppem, .{});
+    }
+
+    pub fn initForProgramWithOptions(
+        allocator: Allocator,
+        program: *const Program,
+        ppem: HintPpem,
+        options: HintOptions,
+    ) !HintMachine {
+        var machine = try allocateMachine(allocator, program, ppem, options);
         errdefer machine.deinit();
         try machine.runSetupPrograms();
         return machine;
@@ -408,11 +431,17 @@ pub const HintMachine = struct {
     }
 };
 
-fn allocateMachine(allocator: Allocator, program: *const Program, ppem: HintPpem) !HintMachine {
+fn allocateMachine(
+    allocator: Allocator,
+    program: *const Program,
+    ppem: HintPpem,
+    options: HintOptions,
+) !HintMachine {
     const sizes = program.executionBufferSizes();
     var size = try program.sizeState(allocator, .{
         .ppem_x_26_6 = ppem.x_26_6,
         .ppem_y_26_6 = ppem.y_26_6,
+        .cvt_headroom = options.cvt_headroom,
     });
     errdefer size.deinit();
 
