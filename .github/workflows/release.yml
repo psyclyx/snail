@@ -53,16 +53,16 @@ jobs:
         run: zig build test -Dcpu=baseline
 
       - name: Build library
-        run: zig build --release=fast -Dcpu=baseline -Dopengl=true -Dvulkan=true -Dcpu-renderer=true -Dharfbuzz=true
+        run: zig build --release=fast -Dcpu=baseline -Dgl33=true -Dgl44=true -Dvulkan=true -Dcpu-renderer=true -Dharfbuzz=true
 
       - name: Build demo
-        run: zig build install-demo --release=fast -Dcpu=baseline -Dopengl=true -Dvulkan=true -Dcpu-renderer=true -Dharfbuzz=true
+        run: zig build install-demo --release=fast -Dcpu=baseline -Dgl33=true -Dgl44=true -Dvulkan=true -Dcpu-renderer=true -Dharfbuzz=true
 
       - name: Backend pixel comparison
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
           GALLIUM_DRIVER: llvmpipe
-        run: zig build run-backend-compare -Dcpu=baseline -Dopengl=true -Dvulkan=true -Dcpu-renderer=true -Dharfbuzz=true
+        run: zig build run-backend-compare -Dcpu=baseline -Dgl33=true -Dgl44=true -Dvulkan=true -Dcpu-renderer=true -Dharfbuzz=true
 
       - name: Package artifacts
         run: |

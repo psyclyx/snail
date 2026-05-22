@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.11.2 - 2026-05-22
+
+### Fixed
+
+- Release-workflow build commands passed `-Dopengl=true`/`-Dopengl=false`,
+  which has never been a valid build flag — `build.zig` accepts `-Dgl33`
+  and `-Dgl44` as the two desktop-GL backends. Both `release.yml` and
+  `ci.yml` updated to pass `-Dgl33=… -Dgl44=…` explicitly. Tag-only
+  release; no library or runtime changes vs. 0.11.1.
+
 ## 0.11.1 - 2026-05-20
 
 ### Changed

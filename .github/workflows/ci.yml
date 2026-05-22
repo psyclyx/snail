@@ -54,7 +54,7 @@ jobs:
 
       - name: Test backend-disabled builds
         run: |
-          zig build test -Dcpu=baseline -Dopengl=false
+          zig build test -Dcpu=baseline -Dgl33=false -Dgl44=false
           zig build test -Dcpu=baseline -Dvulkan=false
           zig build test -Dcpu=baseline -Dcpu-renderer=false
 
@@ -68,12 +68,12 @@ jobs:
 
       - name: Build demo renderer combinations
         run: |
-          zig build install-demo --release=fast -Dcpu=baseline -Dopengl=false
+          zig build install-demo --release=fast -Dcpu=baseline -Dgl33=false -Dgl44=false
           zig build install-demo --release=fast -Dcpu=baseline -Dvulkan=false
           zig build install-demo --release=fast -Dcpu=baseline -Dcpu-renderer=false
-          zig build install-demo --release=fast -Dcpu=baseline -Dopengl=false -Dcpu-renderer=false
+          zig build install-demo --release=fast -Dcpu=baseline -Dgl33=false -Dgl44=false -Dcpu-renderer=false
           zig build install-demo --release=fast -Dcpu=baseline -Dvulkan=false -Dcpu-renderer=false
-          zig build install-demo --release=fast -Dcpu=baseline -Dopengl=false -Dvulkan=false
+          zig build install-demo --release=fast -Dcpu=baseline -Dgl33=false -Dgl44=false -Dvulkan=false
 
       - name: Backend pixel comparison
         env:
