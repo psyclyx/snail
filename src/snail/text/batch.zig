@@ -230,17 +230,16 @@ pub fn appendTextDrawIntoBatch(
 ) !TextBatch.AppendResult {
     const blob = draw.blob;
     try blob.validate();
-    const range = draw.glyphs.resolve(blob.glyphs.len);
-    const start = @max(start_glyph, range.start);
-    if (start > range.end) return error.InvalidGlyphRange;
+    const glyph_end = blob.glyphs.len;
+    if (start_glyph > glyph_end) return error.InvalidGlyphRange;
     if (override_index >= draw.instances.len) return error.InvalidOverrideIndex;
     const override = draw.instances[override_index];
     const has_outer_transform = !isIdentityTransform(override.transform);
     const paint_info_row_base = preparedViewPaintInfoRowBase(view);
 
     var count: usize = 0;
-    var glyph_index = start;
-    while (glyph_index < range.end) : (glyph_index += 1) {
+    var glyph_index = start_glyph;
+    while (glyph_index < glyph_end) : (glyph_index += 1) {
         const glyph = blob.glyphs[glyph_index];
         const face_view = blob.atlas.faceView(glyph.face_index, view);
         const glyph_layer_base = try textBlobGlyphLayerWindowBase(&face_view, glyph.glyph_id) orelse continue;
@@ -293,7 +292,7 @@ pub fn appendTextDrawIntoBatch(
     return .{
         .emitted = count,
         .next_glyph = glyph_index,
-        .completed = glyph_index >= range.end,
+        .completed = glyph_index >= glyph_end,
         .layer_window_base = batch.currentLayerWindowBase(),
     };
 }

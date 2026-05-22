@@ -613,15 +613,11 @@ test "c_api: path picture builder" {
     try testing.expectEqual(c.SNAIL_OK, c_scene.snail_scene_add_path_picture_draw(scene.?, .{
         .picture = picture.?,
         .key = 7,
-        .range = second_range,
-        .has_range = true,
     }));
     try testing.expectEqual(c.SNAIL_OK, c_scene.snail_scene_add_path_picture_draw(scene.?, .{
         .picture = picture.?,
         .key = 7,
-        .range = second_range,
         .override_value = .{ .tint = .{ 1, 0.5, 0.25, 1 } },
-        .has_range = true,
         .has_override = true,
     }));
     try testing.expectEqual(@as(usize, 2), c_scene.snail_scene_command_count(scene.?));

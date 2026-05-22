@@ -10,7 +10,6 @@ const resource_key_mod = @import("../resource_key.zig");
 const text_hint = @import("../render/format/text_hint.zig");
 const atlas_mod = @import("atlas.zig");
 const config_mod = @import("config.zig");
-const range_mod = @import("../range.zig");
 const shape_mod = @import("shape.zig");
 const types_mod = @import("types.zig");
 const vec = @import("../math/vec.zig");
@@ -24,7 +23,6 @@ const HintedGlyphValue = hint_context.HintedGlyphValue;
 const Paint = paint_mod.Paint;
 const PaintImageRecord = atlas_curve_mod.CurveAtlas.PaintImageRecord;
 const PreparedHintRun = hint_context.PreparedHintRun;
-const Range = range_mod.Range;
 const ResourceKey = resource_key_mod.ResourceKey;
 const ShapedText = types_mod.ShapedText;
 const SyntheticStyle = config_mod.SyntheticStyle;
@@ -555,23 +553,6 @@ fn textBlobGpuInstanceBudgetForAtlas(atlas: *const TextAtlas, glyphs: []const Te
         }
         const fi = atlas.checkedFaceIndex(glyph.face_index) catch continue;
         const face_view = atlas.faceView(fi, .{});
-        const base_budget = glyphInstanceBudget(&face_view, glyph.glyph_id);
-        total += base_budget;
-        if (glyph.embolden != 0 and glyph.glyph_id != 0) {
-            total += base_budget;
-        }
-    }
-    return total;
-}
-
-pub fn textBlobRangeGpuInstanceBudget(blob: *const TextBlob, range: Range.Resolved) usize {
-    var total: usize = 0;
-    for (blob.glyphs[range.start..range.end]) |glyph| {
-        if (glyph.hint_record_texel != null) {
-            total += 1;
-            continue;
-        }
-        const face_view = blob.atlas.faceView(glyph.face_index, .{});
         const base_budget = glyphInstanceBudget(&face_view, glyph.glyph_id);
         total += base_budget;
         if (glyph.embolden != 0 and glyph.glyph_id != 0) {

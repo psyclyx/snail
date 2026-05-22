@@ -118,17 +118,10 @@ pub const DrawList = struct {
         for (scene.commands.items) |command| {
             switch (command) {
                 .text => |draw| {
-                    const glyphs = draw.glyphs.resolve(draw.blob.glyphCount());
-                    const range_budget = if (glyphs.start == 0 and glyphs.end == draw.blob.glyphCount())
-                        draw.blob.gpu_instance_budget
-                    else
-                        text_mod.textBlobRangeGpuInstanceBudget(draw.blob, glyphs);
-                    total += range_budget * draw.instances.len * TEXT_WORDS_PER_GLYPH;
+                    total += draw.blob.gpu_instance_budget * draw.instances.len * TEXT_WORDS_PER_GLYPH;
                 },
                 .path => |draw| {
-                    const range = draw.shapes.resolve(draw.picture.shapes.len);
-                    const span = range.end - range.start;
-                    total += span * draw.instances.len * PATH_WORDS_PER_SHAPE;
+                    total += draw.picture.shapes.len * draw.instances.len * PATH_WORDS_PER_SHAPE;
                 },
             }
         }
@@ -144,14 +137,10 @@ pub const DrawList = struct {
         for (scene.commands.items) |command| {
             switch (command) {
                 .text => |draw| {
-                    const glyphs = draw.glyphs.resolve(draw.blob.glyphCount());
-                    const span = glyphs.end - glyphs.start;
-                    total += span * draw.instances.len;
+                    total += draw.blob.glyphCount() * draw.instances.len;
                 },
                 .path => |draw| {
-                    const range = draw.shapes.resolve(draw.picture.shapes.len);
-                    const span = range.end - range.start;
-                    total += span * draw.instances.len;
+                    total += draw.picture.shapes.len * draw.instances.len;
                 },
             }
         }
@@ -204,10 +193,10 @@ fn addTextDrawToBuffers(
         break :blk .{ draw.resources.atlas, try prepared.textStamp(draw.resources.atlas) };
     };
 
-    const glyph_range = draw.glyphs.resolve(draw.blob.glyphCount());
+    const glyph_count = draw.blob.glyphCount();
     for (draw.instances, 0..) |_, override_index| {
-        var glyph_start = glyph_range.start;
-        while (glyph_start < glyph_range.end) {
+        var glyph_start: usize = 0;
+        while (glyph_start < glyph_count) {
             const start = word_len.*;
             var batch = TextBatch.init(words[word_len.*..]);
             const result = try batch.addDraw(view, draw, override_index, glyph_start);
@@ -238,10 +227,10 @@ fn addPathDrawToBuffers(
     draw: scene_mod.PathDraw,
 ) !void {
     const view = try prepared.pathAtlasView(draw.resource_key);
-    const range = draw.shapes.resolve(draw.picture.shapes.len);
+    const shape_count = draw.picture.shapes.len;
     for (draw.instances, 0..) |_, override_index| {
-        var shape_start = range.start;
-        while (shape_start < range.end) {
+        var shape_start: usize = 0;
+        while (shape_start < shape_count) {
             const start = word_len.*;
             var batch = PathBatch.init(words[word_len.*..]);
             const result = try batch.addDraw(&view, draw, override_index, shape_start);

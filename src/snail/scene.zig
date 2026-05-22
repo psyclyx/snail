@@ -1,7 +1,6 @@
 const std = @import("std");
 const draw_mod = @import("draw.zig");
 const path_mod = @import("path.zig");
-const range_mod = @import("range.zig");
 const resource_key_mod = @import("resource_key.zig");
 const text_mod = @import("text.zig");
 const vec = @import("math/vec.zig");
@@ -12,7 +11,6 @@ const ResourceKey = resource_key_mod.ResourceKey;
 pub const TextResourceKeys = resource_key_mod.TextResourceKeys;
 const TextBlob = text_mod.TextBlob;
 
-pub const Range = range_mod.Range;
 
 /// Per-instance override applied at submission time. `transform` composes
 /// onto the resource's baked transform; `tint` multiplies onto its baked
@@ -24,22 +22,24 @@ pub const Override = struct {
 
 const identity_overrides = [_]Override{.{}};
 
-/// A draw of a `PathPicture`: which shapes (sub-range) and one GPU instance
-/// per entry in `instances`. The default is a single identity instance.
-/// `Scene` borrows `instances`; the slice must outlive any scene that holds
-/// it (same lifetime contract as `picture`).
+/// A draw of a `PathPicture` with one GPU instance per entry in
+/// `instances`. The default is a single identity instance. `Scene`
+/// borrows `instances`; the slice must outlive any scene that holds it
+/// (same lifetime contract as `picture`). The whole picture is drawn —
+/// for sub-selection, compose a smaller `PathPicture` at build time.
 pub const PathDraw = struct {
     picture: *const PathPicture,
     resource_key: ResourceKey,
-    shapes: Range = .{},
     instances: []const Override = &identity_overrides,
 };
 
-/// A draw of a `TextBlob`: see `PathDraw` for the instance/lifetime model.
+/// A draw of a `TextBlob`: see `PathDraw` for the instance/lifetime
+/// model. The whole blob is drawn — for sub-selection, compose smaller
+/// blobs into the same `TextBlobBundle` (cheap; the bundle amortises
+/// allocation across them).
 pub const TextDraw = struct {
     blob: *const TextBlob,
     resources: TextResourceKeys,
-    glyphs: Range = .{},
     instances: []const Override = &identity_overrides,
 };
 

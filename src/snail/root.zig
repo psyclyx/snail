@@ -137,7 +137,7 @@ pub const Gl44Renderer = render.Gl44Renderer;
 pub const Gles30Renderer = render.Gles30Renderer;
 pub const VulkanRenderer = render.VulkanRenderer;
 
-pub const Range = scene.Range;
+pub const Range = @import("range.zig").Range;
 pub const Override = scene.Override;
 pub const TextResourceKeys = scene.TextResourceKeys;
 pub const PathDraw = scene.PathDraw;

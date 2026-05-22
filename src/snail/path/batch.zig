@@ -52,10 +52,10 @@ pub const PathBatch = struct {
     }
 
     /// Emit one slice of a `PathDraw` into this batch: the shapes from
-    /// `[shape_start, draw.shapes.end)` under `draw.instances[override_index]`.
-    /// Returns where to resume; the caller is responsible for advancing
-    /// across overrides and re-opening batches when full or when the
-    /// texture layer window changes.
+    /// `[shape_start, draw.picture.shapes.len)` under
+    /// `draw.instances[override_index]`. Returns where to resume; the
+    /// caller advances across overrides and re-opens batches when full or
+    /// when the texture layer window changes.
     pub fn addDraw(
         self: *PathBatch,
         atlas_like: anytype,
@@ -65,14 +65,13 @@ pub const PathBatch = struct {
     ) !AppendResult {
         const resolved_view = resources_view.coerceAtlasHandle(atlas_like);
         const view = &resolved_view;
-        const range = draw.shapes.resolve(draw.picture.shapes.len);
-        const start = @max(shape_start, range.start);
-        if (start > range.end) return error.InvalidShapeRange;
+        const shape_end = draw.picture.shapes.len;
+        if (shape_start > shape_end) return error.InvalidShapeRange;
         if (override_index >= draw.instances.len) return error.InvalidOverrideIndex;
         const override = draw.instances[override_index];
         var count: usize = 0;
-        var idx = start;
-        while (idx < range.end) : (idx += 1) {
+        var idx = shape_start;
+        while (idx < shape_end) : (idx += 1) {
             const shape = draw.picture.shapes[idx];
             const layer_base = view.glyphLayerWindowBase(shape.page_index);
             if (self.layer_window_base) |base| {
@@ -97,7 +96,7 @@ pub const PathBatch = struct {
         return .{
             .emitted = count,
             .next_shape = idx,
-            .completed = idx >= range.end,
+            .completed = idx >= shape_end,
             .layer_window_base = self.currentLayerWindowBase(),
         };
     }

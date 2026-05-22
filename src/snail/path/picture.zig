@@ -14,7 +14,6 @@ const picture_compile = @import("picture_compile.zig");
 const picture_debug = @import("picture_debug.zig");
 const footprint_types = @import("../resources/footprint_types.zig");
 const resource_footprint_mod = @import("../resources/footprint.zig");
-const scene_mod = @import("../scene.zig");
 const target_mod = @import("../target.zig");
 const vec = @import("../math/vec.zig");
 
@@ -25,7 +24,7 @@ const CurveSegment = bezier.CurveSegment;
 const FillStyle = paint_api.FillStyle;
 const Paint = paint_api.Paint;
 const Path = core.Path;
-const Range = scene_mod.Range;
+const Range = @import("../range.zig").Range;
 const Rect = target_mod.Rect;
 const ResourceFootprint = footprint_types.ResourceFootprint;
 const StrokeStyle = paint_api.StrokeStyle;

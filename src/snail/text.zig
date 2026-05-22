@@ -56,7 +56,6 @@ pub const TEXT_VERTICES_PER_GLYPH = batch_mod.VERTICES_PER_GLYPH;
 pub const TEXT_WORDS_PER_GLYPH = batch_mod.WORDS_PER_GLYPH;
 
 pub const appendTextDrawIntoBatch = batch_mod.appendTextDrawIntoBatch;
-pub const textBlobRangeGpuInstanceBudget = blob_mod.textBlobRangeGpuInstanceBudget;
 pub const patchTrueTypeGlyphHint = tt_hint_mod.patchGlyphHint;
 
 test {

@@ -190,7 +190,11 @@ test "resource upload footprints are allocation-free and policy-aware" {
     try std.testing.expect(growable_fp.curve_bytes_allocated > set_fp.curve_bytes_allocated);
 }
 
-test "path picture ranges emit selected shapes" {
+test "path picture marks track shape ranges during composition" {
+    // Builder-side mark/rangeFrom/rangeBetween let composition code stash
+    // shape offsets while building a picture. After freeze the whole
+    // picture is drawn; marks are a composition aid, not a draw-time
+    // selector.
     var builder = PathPictureBuilder.init(std.testing.allocator);
     defer builder.deinit();
     const first_mark = builder.mark();
@@ -209,27 +213,6 @@ test "path picture ranges emit selected shapes" {
     try std.testing.expectEqual(@as(usize, 2), full_range.count);
     try std.testing.expectError(error.InvalidShapeMark, builder.rangeFrom(.{ .shape_count = 3 }));
     try std.testing.expectError(error.InvalidShapeRange, builder.rangeBetween(second_mark, first_mark));
-
-    var compiled_picture = try builder.freeze(.{ .persistent_allocator = std.testing.allocator, .scratch_allocator = std.testing.allocator });
-    defer compiled_picture.deinit();
-
-    var vertex_buf: [PATH_WORDS_PER_SHAPE]u32 = undefined;
-    var path_batch = PathBatch.init(&vertex_buf);
-    const view = PreparedAtlasView{};
-    const result = try path_batch.addDraw(&view, .{
-        .picture = &compiled_picture,
-        .resource_key = ResourceKey.named("compiled_picture"),
-        .shapes = second_range,
-    }, 0, 0);
-    try std.testing.expectEqual(@as(usize, 1), result.emitted);
-    try std.testing.expect(result.completed);
-    try std.testing.expectEqual(@as(usize, PATH_WORDS_PER_SHAPE), path_batch.slice().len);
-
-    var scene = Scene.init(std.testing.allocator);
-    defer scene.deinit();
-    try scene.addPath(.{ .picture = &compiled_picture, .resource_key = ResourceKey.named("compiled_picture"), .shapes = second_range });
-    try std.testing.expectEqual(@as(usize, PATH_WORDS_PER_SHAPE), DrawList.estimate(&scene));
-    try std.testing.expectEqual(@as(usize, 1), DrawList.estimateSegments(&scene));
 }
 
 test "path picture freeze separates persistent and scratch allocators" {

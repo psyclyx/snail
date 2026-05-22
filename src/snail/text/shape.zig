@@ -2,7 +2,6 @@ const std = @import("std");
 
 const build_options = @import("build_options");
 const config_mod = @import("config.zig");
-const range_mod = @import("../range.zig");
 const types_mod = @import("types.zig");
 const vec = @import("../math/vec.zig");
 const view_mod = @import("view.zig");
@@ -12,7 +11,6 @@ const FaceConfig = config_mod.FaceConfig;
 const FaceIndex = config_mod.FaceIndex;
 const FaceView = view_mod.FaceView;
 const MissingGlyphReplacement = config_mod.MissingGlyphReplacement;
-const Range = range_mod.Range;
 const ShapedText = types_mod.ShapedText;
 const Transform2D = vec.Transform2D;
 const Vec2 = vec.Vec2;
@@ -305,15 +303,6 @@ pub fn shapedPenAt(shaped: *const ShapedText, glyph_index: usize) Vec2 {
         pen.y += glyph.y_advance;
     }
     return pen;
-}
-
-pub fn shapedAdvanceForRange(shaped: *const ShapedText, range: Range.Resolved) Vec2 {
-    var advance = Vec2.zero;
-    for (shaped.glyphs[range.start..range.end]) |glyph| {
-        advance.x += glyph.x_advance;
-        advance.y += glyph.y_advance;
-    }
-    return advance;
 }
 
 pub fn scaleAdvance(advance: Vec2, em: f32) Vec2 {

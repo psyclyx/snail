@@ -242,9 +242,7 @@ pub const SnailTextDraw = extern struct {
 pub const SnailPathPictureDraw = extern struct {
     picture: ?*const PathPictureImpl = null,
     key: SnailResourceKey = 0,
-    range: SnailRange = .{},
     override_value: SnailOverride = .{},
-    has_range: bool = false,
     has_override: bool = false,
 };
 
