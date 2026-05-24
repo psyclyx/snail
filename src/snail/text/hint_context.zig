@@ -413,6 +413,14 @@ pub const TrueTypeHintContext = struct {
         const face_view = self.atlas.faceView(face_index, .{});
         if (glyphHasColorLayers(&face_view, key.glyph_id)) return self.putUnsupported(key, .color_glyph);
 
+        // `getGlyph` reflects what the *current atlas snapshot* has loaded,
+        // not what the font contains. A later `ensureText` may add this gid,
+        // and `rebindAtlas` preserves caches across snapshot extensions —
+        // so this rejection is the one reason that must not be cached, lest
+        // we strand the glyph on the unhinted path after atlas growth.
+        const base_info = face_view.getGlyph(key.glyph_id) orelse
+            return .{ .unsupported = .missing_base_glyph };
+
         var face_state = self.faceStateFor(face_index) catch |err| switch (err) {
             error.NoTrueTypeProgram => return self.putUnsupported(key, .no_true_type_program),
             else => return err,
@@ -440,14 +448,9 @@ pub const TrueTypeHintContext = struct {
             });
         }
 
-        const base_info = face_view.getGlyph(key.glyph_id);
-        const info = base_info orelse {
-            hint.deinit();
-            return self.putUnsupported(key, .missing_base_glyph);
-        };
         var patch = tt_hint.patchGlyphHint(self.allocator, .{
-            .info = info,
-            .page = self.atlas.pages[info.page_index],
+            .info = base_info,
+            .page = self.atlas.pages[base_info.page_index],
         }, &hint) catch |err| switch (err) {
             error.CurveTopologyChanged, error.InvalidBaseCurve => {
                 hint.deinit();

@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- `TrueTypeHintContext` no longer strands glyphs on the unhinted path after
+  atlas growth. `missing_base_glyph` was the one rejection reason keyed off
+  atlas state (whether the gid has a loaded row), not intrinsic font/hint
+  properties — but `rebindAtlas` preserves caches across prefix-compatible
+  snapshots, so a glyph rejected once stayed rejected even after `ensureText`
+  loaded it. The atlas-presence probe now runs before the hint VM and its
+  negative result is no longer cached; the next `prepareRun` after extension
+  re-probes and lifts the glyph onto the hinted path. Side benefit: the hint
+  VM is skipped entirely for atlas-missing glyphs.
+
 ## 0.12.0 - 2026-05-22
 
 A pre-1.0 consolidation of the text construction surface. Several
