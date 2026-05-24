@@ -143,6 +143,7 @@ pub const HintMachine = struct {
     function_entries: []tt_exec.Function,
     function_lookup: []?[]const u8,
     functions: tt_exec.FunctionDefs,
+    skip_cache: tt_exec.SkipCache,
     twilight_points: []tt_exec.Point,
     glyph_points: []tt_exec.Point,
     compound_contours: []tt_outline.ContourRange,
@@ -188,6 +189,7 @@ pub const HintMachine = struct {
         self.allocator.free(self.twilight_points);
         self.allocator.free(self.glyph_points);
         self.allocator.free(self.compound_contours);
+        self.skip_cache.deinit();
         self.size.deinit();
         self.* = undefined;
     }
@@ -251,10 +253,12 @@ pub const HintMachine = struct {
     }
 
     fn makeContext(self: *HintMachine) tt_exec.Context {
-        return self.size.executionContext(.{
+        var context = self.size.executionContext(.{
             .stack = self.stack,
             .storage = self.storage,
         }, .x, .{});
+        context.setSkipCache(&self.skip_cache);
+        return context;
     }
 
     fn executeTopology(
@@ -489,6 +493,7 @@ fn allocateMachine(
         .function_entries = function_entries,
         .function_lookup = function_lookup,
         .functions = .{ .entries = function_entries, .lookup = function_lookup },
+        .skip_cache = tt_exec.SkipCache.init(allocator),
         .twilight_points = twilight_points,
         .glyph_points = glyph_points,
         .compound_contours = compound_contours,
@@ -729,7 +734,7 @@ fn collectCurveBboxes(allocator: Allocator, curves: []const CurveSegment) ![]BBo
 pub fn patchGlyphHint(allocator: Allocator, base: BaseGlyph, hint: *const GlyphHint) !GlyphHintPatch {
     const deltas = try encodeDeltas(allocator, base, hint.prepared_curves);
     errdefer allocator.free(deltas);
-    const band_reuse = proveBandReuse(base, hint.curve_bboxes);
+    const band_reuse = try proveBandReuse(allocator, base, hint.curve_bboxes);
     return .{
         .allocator = allocator,
         .record = .{
@@ -779,8 +784,8 @@ fn encodePointDelta(out: []u16, base: Vec2, hinted: Vec2) void {
     out[1] = curve_tex.f32ToF16(hinted.y - base.y);
 }
 
-fn proveBandReuse(base: BaseGlyph, curve_bboxes: []const BBox) text_hint.BandReuseProof {
-    return text_hint.proveBandReuse(.{
+fn proveBandReuse(allocator: Allocator, base: BaseGlyph, curve_bboxes: []const BBox) !text_hint.BandReuseProof {
+    return text_hint.proveBandReuse(allocator, .{
         .band_data = base.page.band_data,
         .band_width = base.page.band_width,
         .band_entry = base.info.band_entry,

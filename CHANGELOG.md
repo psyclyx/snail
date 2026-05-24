@@ -43,6 +43,30 @@
   touching the dispatch path. NROUND, previously a pass-through, now also
   applies the compensation.
 
+### Performance
+
+- TT hint VM: IF/ELSE/ENDIF skip targets are memoized per
+  `(code.ptr, pc, stop_at_else)` and reused across glyph executions.
+  Previously every taken branch re-scanned forward byte-by-byte through
+  the function body to find the matching ELSE/EIF — at 14% of execute-path
+  instructions in the ASCII@12px workload, the single largest non-dispatch
+  cost. The cache is owned by the `HintMachine`, populated lazily, and adds
+  a hash-map lookup on each flow op; net wall-time wins are ~6–13% on
+  execute and stack with the band-padding fix below. No behavioural change.
+- `proveBandReuse`: per-axis padding calculation rewritten from
+  O(curves × bands × refs_per_band) to O(total_refs). The previous
+  implementation iterated every hinted curve, scanned every base band, and
+  walked each band's ref list looking for that curve — quadratic in curve
+  count. The new path walks each axis's bands exactly once, records each
+  hinted curve's min/max base band into a scratch buffer (stack-fallback up
+  to 256 curves, heap thereafter), then computes expansions in one O(curves)
+  pass. This was 33% of plan-mode instructions; the ASCII@12px plan
+  benchmark drops from ~855 µs to ~590 µs (-31%), and cold
+  `TrueTypeHintContext.prepareRun` on a paragraph from ~247 µs to ~193 µs
+  (-22%). API change: `proveBandReuse` and the in-`tt_hint` wrapper now take
+  an `Allocator` and return `!BandReuseProof`; `patchGlyphHint` threads its
+  existing allocator through.
+
 ## 0.12.1 - 2026-05-23
 
 ### Fixed

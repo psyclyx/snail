@@ -192,7 +192,7 @@ pub const BandReuseInput = struct {
     hinted_curve_bboxes: []const bezier.BBox,
 };
 
-pub fn proveBandReuse(input: BandReuseInput) BandReuseProof {
+pub fn proveBandReuse(allocator: std.mem.Allocator, input: BandReuseInput) !BandReuseProof {
     if (input.band_width == 0) return .{ .membership_ok = false, .ordering_ok = false };
     if (input.band_entry.h_band_count == 0 or input.band_entry.v_band_count == 0) {
         return .{
@@ -201,8 +201,15 @@ pub fn proveBandReuse(input: BandReuseInput) BandReuseProof {
         };
     }
 
-    const h_band_pad = requiredBandPadding(input, .horizontal) orelse input.band_entry.h_band_count;
-    const v_band_pad = requiredBandPadding(input, .vertical) orelse input.band_entry.v_band_count;
+    // Single scratch buffer reused across both axes. Stack-fallback keeps the
+    // common (small-glyph) case heap-free; large CJK falls through to the gpa.
+    var stack_fallback = std.heap.stackFallback(256 * @sizeOf(BaseRange), allocator);
+    const scratch = stack_fallback.get();
+    const base_ranges = try scratch.alloc(BaseRange, input.hinted_curve_bboxes.len);
+    defer scratch.free(base_ranges);
+
+    const h_band_pad = requiredBandPadding(input, .horizontal, base_ranges) orelse input.band_entry.h_band_count;
+    const v_band_pad = requiredBandPadding(input, .vertical, base_ranges) orelse input.band_entry.v_band_count;
     const membership_ok = h_band_pad == 0 and v_band_pad == 0;
     const ordering_ok = proveBandOrdering(input);
     return .{
@@ -213,12 +220,42 @@ pub fn proveBandReuse(input: BandReuseInput) BandReuseProof {
     };
 }
 
-fn requiredBandPadding(input: BandReuseInput, axis: Axis) ?u16 {
+const BaseRange = struct {
+    start: u16,
+    end: u16,
+    found: bool,
+};
+
+/// Walks every band once and records each hinted curve's min/max base band.
+/// Replaces the previous O(curves × bands × refs_per_band) inner-loop search
+/// with a single O(total_refs) sweep, then an O(curves) expansion pass.
+fn requiredBandPadding(input: BandReuseInput, axis: Axis, base_ranges: []BaseRange) ?u16 {
+    for (base_ranges) |*r| r.* = .{ .start = std.math.maxInt(u16), .end = 0, .found = false };
+
+    const band_count: u16 = switch (axis) {
+        .horizontal => input.band_entry.h_band_count,
+        .vertical => input.band_entry.v_band_count,
+    };
+
+    var band: u16 = 0;
+    while (band < band_count) : (band += 1) {
+        const row = bandRow(input, axis, band) orelse continue;
+        for (0..row.count) |i| {
+            const ref_pair = pairAt(input, row.index_offset + @as(u32, @intCast(i))) orelse break;
+            const curve_index = curveIndexFromRef(input, ref_pair) orelse continue;
+            if (curve_index >= base_ranges.len) continue;
+            const r = &base_ranges[curve_index];
+            r.found = true;
+            r.start = @min(r.start, band);
+            r.end = @max(r.end, band);
+        }
+    }
+
     var required: u16 = 0;
-    for (input.hinted_curve_bboxes, 0..) |bbox, curve_index| {
+    for (input.hinted_curve_bboxes, base_ranges) |bbox, r| {
+        if (!r.found) return null;
         const hinted_range = hintedBandRange(input, axis, bbox);
-        const base_range = curveBandRange(input, axis, curve_index) orelse return null;
-        required = @max(required, bandRangeExpansion(hinted_range, base_range));
+        required = @max(required, bandRangeExpansion(hinted_range, .{ .start = r.start, .end = r.end }));
     }
     return required;
 }
@@ -257,24 +294,6 @@ fn hintedBandRange(input: BandReuseInput, axis: Axis, bbox: bezier.BBox) BandRan
     };
 }
 
-fn curveBandRange(input: BandReuseInput, axis: Axis, curve_index: usize) ?BandRange {
-    const band_count = switch (axis) {
-        .horizontal => input.band_entry.h_band_count,
-        .vertical => input.band_entry.v_band_count,
-    };
-    var found = false;
-    var out = BandRange{ .start = std.math.maxInt(u16), .end = 0 };
-    var band: u16 = 0;
-    while (band < band_count) : (band += 1) {
-        if (bandContainsCurve(input, axis, band, curve_index)) {
-            found = true;
-            out.start = @min(out.start, band);
-            out.end = @max(out.end, band);
-        }
-    }
-    return if (found) out else null;
-}
-
 fn bandRangeExpansion(hinted: BandRange, base: BandRange) u16 {
     var required: u16 = 0;
     if (hinted.start < base.start) required = @max(required, base.start - hinted.start);
@@ -286,15 +305,6 @@ fn clampBandIndex(value: f32, max_band: i32) i32 {
     if (!std.math.isFinite(value)) return 0;
     const index: i32 = @intFromFloat(value);
     return std.math.clamp(index, 0, max_band);
-}
-
-fn bandContainsCurve(input: BandReuseInput, axis: Axis, band_index: u16, curve_index: usize) bool {
-    const row = bandRow(input, axis, band_index) orelse return false;
-    for (0..row.count) |i| {
-        const ref_pair = pairAt(input, row.index_offset + @as(u32, @intCast(i))) orelse return false;
-        if (curveIndexFromRef(input, ref_pair) == curve_index) return true;
-    }
-    return false;
 }
 
 fn bandOrderIsDescending(input: BandReuseInput, axis: Axis, band_index: u16) bool {
@@ -415,7 +425,7 @@ test "band reuse proof accepts stable membership and ordering" {
         .{ .min = .{ .x = 0, .y = 0 }, .max = .{ .x = 1, .y = 1 } },
     };
 
-    const proof = proveBandReuse(.{
+    const proof = try proveBandReuse(std.testing.allocator, .{
         .band_data = &band_data,
         .band_width = 16,
         .band_entry = testBandEntry(),
@@ -436,7 +446,7 @@ test "band reuse proof reports ordering failure" {
         .{ .min = .{ .x = 0, .y = 0 }, .max = .{ .x = 2, .y = 2 } },
     };
 
-    const proof = proveBandReuse(.{
+    const proof = try proveBandReuse(std.testing.allocator, .{
         .band_data = &band_data,
         .band_width = 16,
         .band_entry = testBandEntry(),
@@ -459,7 +469,7 @@ test "band reuse proof reports required expansion" {
     const bboxes = [_]bezier.BBox{
         .{ .min = .{ .x = 0.1, .y = 2.1 }, .max = .{ .x = 0.2, .y = 2.2 } },
     };
-    const proof = proveBandReuse(.{
+    const proof = try proveBandReuse(std.testing.allocator, .{
         .band_data = &band_data,
         .band_width = 16,
         .band_entry = .{
@@ -497,7 +507,7 @@ test "band reuse proof expands partially overlapping ranges" {
     const bboxes = [_]bezier.BBox{
         .{ .min = .{ .x = 0.1, .y = 2.1 }, .max = .{ .x = 0.2, .y = 3.1 } },
     };
-    const proof = proveBandReuse(.{
+    const proof = try proveBandReuse(std.testing.allocator, .{
         .band_data = &band_data,
         .band_width = 16,
         .band_entry = .{

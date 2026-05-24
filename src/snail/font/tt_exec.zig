@@ -101,6 +101,49 @@ pub const FunctionDefs = struct {
     }
 };
 
+/// Memoizes IF/ELSE-to-EIF skip targets. The TT VM scans bytes forward to
+/// resolve a control-flow skip on every taken branch; for function bodies
+/// (called many times across a hint pass) the work is identical each call
+/// and is the single largest non-dispatch cost in the interpreter. Keyed by
+/// `(code.ptr, pc, stop_at_else)` so the cache is valid for any bytecode
+/// whose backing storage is stable — which covers font/control programs,
+/// function bodies, and the per-glyph instruction stream as long as the
+/// caller doesn't relocate the bytes underneath us.
+pub const SkipCache = struct {
+    map: std.AutoHashMap(Key, u32),
+
+    pub const Key = struct {
+        code_ptr: usize,
+        pc: u32,
+        stop_at_else: bool,
+    };
+
+    pub fn init(allocator: std.mem.Allocator) SkipCache {
+        return .{ .map = std.AutoHashMap(Key, u32).init(allocator) };
+    }
+
+    pub fn deinit(self: *SkipCache) void {
+        self.map.deinit();
+        self.* = undefined;
+    }
+
+    pub fn clear(self: *SkipCache) void {
+        self.map.clearRetainingCapacity();
+    }
+
+    fn keyFor(code: []const u8, pc: usize, stop_at_else: bool) Key {
+        return .{ .code_ptr = @intFromPtr(code.ptr), .pc = @intCast(pc), .stop_at_else = stop_at_else };
+    }
+
+    fn get(self: *const SkipCache, code: []const u8, pc: usize, stop_at_else: bool) ?u32 {
+        return self.map.get(keyFor(code, pc, stop_at_else));
+    }
+
+    fn put(self: *SkipCache, code: []const u8, pc: usize, stop_at_else: bool, target: u32) !void {
+        try self.map.put(keyFor(code, pc, stop_at_else), target);
+    }
+};
+
 pub const Context = struct {
     stack: []i32,
     storage: []i32,
@@ -110,6 +153,7 @@ pub const Context = struct {
     environment: Environment = .{},
     zones: ?*PointZones = null,
     functions: ?*FunctionDefs = null,
+    skip_cache: ?*SkipCache = null,
     sp: usize = 0,
     steps: u32 = 0,
     call_depth: u32 = 0,
@@ -149,6 +193,14 @@ pub const Context = struct {
 
     pub fn clearFunctions(self: *Context) void {
         self.functions = null;
+    }
+
+    pub fn setSkipCache(self: *Context, cache: *SkipCache) void {
+        self.skip_cache = cache;
+    }
+
+    pub fn clearSkipCache(self: *Context) void {
+        self.skip_cache = null;
     }
 
     pub fn resetGraphics(self: *Context) void {
@@ -472,10 +524,10 @@ pub const Context = struct {
 
     inline fn executeFlowOp(self: *Context, code: []const u8, pc: *usize, op_pc: usize, op: u8) Error!void {
         switch (op) {
-            0x1B => pc.* = try skipToEif(code, pc.*),
+            0x1B => pc.* = try self.cachedSkip(code, pc.*, false),
             0x1C => pc.* = try jumpTarget(code.len, op_pc, try self.pop()),
             0x58 => {
-                if ((try self.pop()) == 0) pc.* = try skipToElseOrEif(code, pc.*);
+                if ((try self.pop()) == 0) pc.* = try self.cachedSkip(code, pc.*, true);
             },
             0x59 => {},
             0x78 => {
@@ -495,6 +547,17 @@ pub const Context = struct {
     inline fn countStep(self: *Context, steps: *u32) Error!void {
         if (steps.* >= self.limits.max_steps) return Error.ExecutionLimitExceeded;
         steps.* += 1;
+    }
+
+    fn cachedSkip(self: *Context, code: []const u8, pc: usize, stop_at_else: bool) Error!usize {
+        if (self.skip_cache) |cache| {
+            if (cache.get(code, pc, stop_at_else)) |target| return @intCast(target);
+            const target = try skipStructured(code, pc, stop_at_else);
+            // Best-effort cache: an OOM here just means we'll re-scan next time.
+            cache.put(code, pc, stop_at_else, @intCast(target)) catch {};
+            return target;
+        }
+        return skipStructured(code, pc, stop_at_else);
     }
 
     inline fn push(self: *Context, value: i32) Error!void {
