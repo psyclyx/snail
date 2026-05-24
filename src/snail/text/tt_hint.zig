@@ -537,10 +537,10 @@ const CompoundGlyphBuilder = struct {
         const right = left + @as(i32, metrics.advance_width);
         const top = @as(i32, metrics.y_max) + metrics.top_side_bearing;
         const bottom = top - metrics.advance_height;
-        self.writePhantom(0, self.environment.scaleFUnitsX(left), 0);
-        self.writePhantom(1, self.environment.scaleFUnitsX(right), 0);
-        self.writePhantom(2, 0, self.environment.scaleFUnitsY(top));
-        self.writePhantom(3, 0, self.environment.scaleFUnitsY(bottom));
+        self.writePhantom(0, self.environment.scaleFUnitsX(left), 0, left, 0);
+        self.writePhantom(1, self.environment.scaleFUnitsX(right), 0, right, 0);
+        self.writePhantom(2, 0, self.environment.scaleFUnitsY(top), 0, top);
+        self.writePhantom(3, 0, self.environment.scaleFUnitsY(bottom), 0, bottom);
         self.point_count += tt_points.phantom_count;
         return phantom_start;
     }
@@ -590,11 +590,11 @@ const CompoundGlyphBuilder = struct {
         offset: Vec2,
     ) !void {
         if (self.point_count >= self.points.len) return error.BufferTooSmall;
-        const raw = transform.apply(.{
+        const raw = Vec2.add(transform.apply(.{
             .x = @floatFromInt(source.x),
             .y = @floatFromInt(source.y),
-        });
-        self.points[self.point_count] = self.makePoint(Vec2.add(raw, offset), source.on_curve);
+        }), offset);
+        self.points[self.point_count] = self.makePoint(raw, source.on_curve);
         self.point_count += 1;
     }
 
@@ -606,22 +606,28 @@ const CompoundGlyphBuilder = struct {
             .y = y,
             .ox = x,
             .oy = y,
+            .orus_x = @intFromFloat(@round(raw.x)),
+            .orus_y = @intFromFloat(@round(raw.y)),
             .on_curve = on_curve,
         };
     }
 
-    fn writePhantom(self: *CompoundGlyphBuilder, index: usize, x: i32, y: i32) void {
+    fn writePhantom(self: *CompoundGlyphBuilder, index: usize, x: i32, y: i32, orus_x: i32, orus_y: i32) void {
         const point_index = self.point_count + index;
         self.points[point_index] = .{
             .x = x,
             .y = y,
             .ox = x,
             .oy = y,
+            .orus_x = orus_x,
+            .orus_y = orus_y,
             .on_curve = true,
         };
     }
 
     fn shiftRange(self: *CompoundGlyphBuilder, start: usize, end: usize, dx: i32, dy: i32) void {
+        // shift only the scaled (cur/orig) coords; orus stays unscaled and is
+        // unaffected by component-offset rounding which is a pixel-space concern.
         for (self.points[start..end]) |*p| {
             p.x = addWrap(p.x, dx);
             p.y = addWrap(p.y, dy);

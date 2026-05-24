@@ -19,6 +19,12 @@ pub const Point = struct {
     y: i32,
     ox: i32,
     oy: i32,
+    /// Unscaled FUnit coordinates (FreeType's `orus`). IUP uses these for the
+    /// interpolation ratio so that two FUnit-distinct points whose scaled
+    /// pixel coords collapse to the same value still produce a meaningful
+    /// lerp instead of a degenerate org1 == org2 shift.
+    orus_x: i32 = 0,
+    orus_y: i32 = 0,
     on_curve: bool,
     touched_x: bool = false,
     touched_y: bool = false,
@@ -56,6 +62,8 @@ pub const Zone = struct {
                 .y = y,
                 .ox = x,
                 .oy = y,
+                .orus_x = source.x,
+                .orus_y = source.y,
                 .on_curve = source.on_curve,
             };
         }
@@ -356,18 +364,20 @@ fn initPhantomPoints(points: []Point, metrics: PhantomMetrics, environment: tt_g
     const top = @as(i32, metrics.y_max) + metrics.top_side_bearing;
     const bottom = top - metrics.advance_height;
 
-    points[0] = phantomPoint(environment.scaleFUnitsX(left), 0);
-    points[1] = phantomPoint(environment.scaleFUnitsX(right), 0);
-    points[2] = phantomPoint(0, environment.scaleFUnitsY(top));
-    points[3] = phantomPoint(0, environment.scaleFUnitsY(bottom));
+    points[0] = phantomPoint(environment.scaleFUnitsX(left), 0, left, 0);
+    points[1] = phantomPoint(environment.scaleFUnitsX(right), 0, right, 0);
+    points[2] = phantomPoint(0, environment.scaleFUnitsY(top), 0, top);
+    points[3] = phantomPoint(0, environment.scaleFUnitsY(bottom), 0, bottom);
 }
 
-fn phantomPoint(x: i32, y: i32) Point {
+fn phantomPoint(x: i32, y: i32, orus_x: i32, orus_y: i32) Point {
     return .{
         .x = x,
         .y = y,
         .ox = x,
         .oy = y,
+        .orus_x = orus_x,
+        .orus_y = orus_y,
         .on_curve = true,
     };
 }
@@ -520,6 +530,13 @@ fn originalCoord(point: Point, axis: tt_graphics.Axis) i32 {
     };
 }
 
+fn orusCoord(point: Point, axis: tt_graphics.Axis) i32 {
+    return switch (axis) {
+        .x => point.orus_x,
+        .y => point.orus_y,
+    };
+}
+
 fn currentCoord(point: Point, axis: tt_graphics.Axis) i32 {
     return switch (axis) {
         .x => point.x,
@@ -540,28 +557,42 @@ fn advanceContourIndex(point: usize, start: usize, end: usize) usize {
 }
 
 fn interpolateCoord(point: Point, prev: Point, next: Point, axis: tt_graphics.Axis) i32 {
+    // Matches FreeType `_iup_worker_interpolate`: in-range comparison uses
+    // scaled `org` coords (so the shift-by-neighbor branches stay in pixel
+    // space), but the lerp ratio uses unscaled FUnit `orus` coords. The
+    // FUnit denominator preserves precision when FUnit-distinct points
+    // scale to identical pixel values — without it, the lerp would either
+    // divide by zero (and hit the org1 == org2 shortcut) or compound the
+    // scale-rounding error across the interpolated point.
     const org = originalCoord(point, axis);
     const org1 = originalCoord(prev, axis);
     const org2 = originalCoord(next, axis);
     const cur1 = currentCoord(prev, axis);
     const cur2 = currentCoord(next, axis);
+    const orus = orusCoord(point, axis);
+    const orus1 = orusCoord(prev, axis);
+    const orus2 = orusCoord(next, axis);
 
-    if (org1 == org2) return addWrap(org, subWrap(cur1, org1));
+    if (orus1 == orus2) return addWrap(org, subWrap(cur1, org1));
 
-    if (org1 < org2) {
+    if (orus1 < orus2) {
         if (org <= org1) return addWrap(org, subWrap(cur1, org1));
         if (org >= org2) return addWrap(org, subWrap(cur2, org2));
-        return lerpCoord(org, org1, org2, cur1, cur2);
+        return lerpCoord(orus, orus1, orus2, cur1, cur2);
     }
 
     if (org <= org2) return addWrap(org, subWrap(cur2, org2));
     if (org >= org1) return addWrap(org, subWrap(cur1, org1));
-    return lerpCoord(org, org2, org1, cur2, cur1);
+    return lerpCoord(orus, orus2, orus1, cur2, cur1);
 }
 
-fn lerpCoord(org: i32, org1: i32, org2: i32, cur1: i32, cur2: i32) i32 {
-    const numerator = (@as(i64, org) - @as(i64, org1)) * (@as(i64, cur2) - @as(i64, cur1));
-    return @truncate(@as(i64, cur1) + @divTrunc(numerator, @as(i64, org2) - @as(i64, org1)));
+/// Compute `cur1 + (key - key1) * (cur2 - cur1) / (key2 - key1)`. The key
+/// arguments are unscaled FUnit coords; cur1/cur2 are 26.6 pixel coords.
+/// The pixel/FUnit ratio cancels in the final result, so the return value
+/// is in 26.6 pixels regardless of the key's units.
+fn lerpCoord(key: i32, key1: i32, key2: i32, cur1: i32, cur2: i32) i32 {
+    const numerator = (@as(i64, key) - @as(i64, key1)) * (@as(i64, cur2) - @as(i64, cur1));
+    return @truncate(@as(i64, cur1) + @divTrunc(numerator, @as(i64, key2) - @as(i64, key1)));
 }
 
 fn applySign(value: i32, sign: i32) i32 {
@@ -674,9 +705,9 @@ test "point zone moves along non-axis freedom vectors" {
 
 test "point zone interpolates untouched contour points" {
     var buffer: [3]Point = .{
-        .{ .x = 0, .y = 0, .ox = 0, .oy = 0, .on_curve = true, .touched_x = true },
-        .{ .x = 50, .y = 0, .ox = 50, .oy = 0, .on_curve = true },
-        .{ .x = 200, .y = 0, .ox = 100, .oy = 0, .on_curve = true, .touched_x = true },
+        .{ .x = 0, .y = 0, .ox = 0, .oy = 0, .orus_x = 0, .on_curve = true, .touched_x = true },
+        .{ .x = 50, .y = 0, .ox = 50, .oy = 0, .orus_x = 50, .on_curve = true },
+        .{ .x = 200, .y = 0, .ox = 100, .oy = 0, .orus_x = 100, .on_curve = true, .touched_x = true },
     };
     const contours = [_]tt_outline.ContourRange{.{ .start = 0, .end = 3 }};
     var zone: Zone = .{ .points = &buffer, .contours = &contours };
@@ -685,6 +716,25 @@ test "point zone interpolates untouched contour points" {
 
     try std.testing.expectEqual(@as(i32, 100), zone.points[1].x);
     try std.testing.expect(!zone.points[1].touched_x);
+}
+
+test "point zone IUP lerp uses orus, decoupling rounding-distorted ox ratios" {
+    // p1 is at FUnit position 50 out of [0, 100] — exactly halfway between
+    // its touched neighbors. Scaling rounded p1.ox to 3 instead of 2.5,
+    // distorting the org-space ratio to 3/5 = 0.6. Using ox for the lerp
+    // would place p1 at 60% of (cur1..cur2), the wrong answer. Using
+    // orus restores the true 0.5 ratio → cur1 + 0.5 * (cur2 - cur1) = 50.
+    var buffer: [3]Point = .{
+        .{ .x = 0, .y = 0, .ox = 0, .oy = 0, .orus_x = 0, .on_curve = true, .touched_x = true },
+        .{ .x = 3, .y = 0, .ox = 3, .oy = 0, .orus_x = 50, .on_curve = true },
+        .{ .x = 100, .y = 0, .ox = 5, .oy = 0, .orus_x = 100, .on_curve = true, .touched_x = true },
+    };
+    const contours = [_]tt_outline.ContourRange{.{ .start = 0, .end = 3 }};
+    var zone: Zone = .{ .points = &buffer, .contours = &contours };
+
+    try zone.interpolateUntouched(.x);
+
+    try std.testing.expectEqual(@as(i32, 50), zone.points[1].x);
 }
 
 test "point zone shifts a contour range" {

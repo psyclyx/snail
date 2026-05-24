@@ -113,6 +113,14 @@ pub const Context = struct {
     sp: usize = 0,
     steps: u32 = 0,
     call_depth: u32 = 0,
+    /// Per-distance-type rounding compensations indexed by `distance_type`
+    /// (gray, black, white, undef) of MIRP/MDRP/ROUND. Bias added to the
+    /// magnitude before rounding to model ink-spread compensation. FreeType
+    /// keeps these but sets them to zero in practice (its caller never
+    /// pokes them either); snail does the same, but the infrastructure
+    /// matches so a future engine pass — or a caller wiring non-zero
+    /// compensations — produces spec-compliant results.
+    compensations: [4]i32 = .{ 0, 0, 0, 0 },
 
     pub fn init(buffers: Buffers, limits: Limits) Context {
         return .{
@@ -193,10 +201,11 @@ pub const Context = struct {
             0x27, 0x29, 0x2E...0x3C, 0x3E...0x3F, 0x46...0x4A, 0xC0...0xFF => try self.executePointOp(op),
             0x2A...0x2C => try self.executeFunctionOp(code, pc, op, steps),
             0x2D => return Error.InvalidOpcode,
+            0x3D => self.graphics.round_mode = .double_grid, // RTDG
             0x40 => try self.pushBytes(code, pc, try readU8(code, pc)),
             0x41 => try self.pushWords(code, pc, try readU8(code, pc)),
             0x42...0x45, 0x70 => try self.executeMemoryOp(op),
-            0x4B...0x4E, 0x56, 0x57, 0x5E, 0x5F, 0x68...0x6F, 0x7A, 0x7C, 0x7D, 0x85, 0x88, 0x8A, 0x8D, 0x8E => try self.executeStateOp(op),
+            0x4B...0x4E, 0x56, 0x57, 0x5E, 0x5F, 0x68...0x6F, 0x76...0x77, 0x7A, 0x7C, 0x7D, 0x85, 0x88, 0x8A, 0x8D, 0x8E => try self.executeStateOp(op),
             0x50...0x55, 0x5A...0x5C => try self.executeLogicOp(op),
             0x5D, 0x71...0x75 => try self.executeDeltaOp(op),
             0x60...0x67, 0x8B, 0x8C => try self.executeMathOp(op),
@@ -314,6 +323,10 @@ pub const Context = struct {
                 try self.push(self.storage[index]);
             },
             0x44 => {
+                // WCVTP: write CVT in projection pixels. Per FreeType's
+                // Write_CVT_Stretched the incoming value (already in the
+                // current projection's 26.6) is divided by the projection
+                // ratio so the cell holds canonical (base-ppem) pixels.
                 const value = try self.pop();
                 self.cvtWrite(try self.pop(), value);
             },
@@ -321,11 +334,25 @@ pub const Context = struct {
                 try self.push(self.cvtRead(try self.pop()));
             },
             0x70 => {
+                // WCVTF: write CVT in FUnits. Per FreeType's Ins_WCVTF the
+                // value is multiplied by `tt_metrics.scale` (the base / y
+                // scale) and stored *directly* in the canonical cell — no
+                // projection ratio is applied, regardless of stretching.
                 const value = try self.pop();
-                self.cvtWrite(try self.pop(), self.scaleFUnits(value));
+                self.cvtWriteCanonical(try self.pop(), self.scaleFUnitsBase(value));
             },
             else => unreachable,
         }
+    }
+
+    /// Write to CVT bypassing the projection-ratio rescale. Used by WCVTF
+    /// (0x70) — per FreeType, only the per-pixel write path (WCVTP/Move_CVT)
+    /// applies stretching.
+    inline fn cvtWriteCanonical(self: *Context, raw_index: i32, value: i32) void {
+        if (raw_index < 0) return;
+        const index: usize = @intCast(raw_index);
+        if (index >= self.cvt.len) return;
+        self.cvt[index] = value;
     }
 
     /// Read from CVT with FreeType-style OOB tolerance: out-of-range
@@ -333,20 +360,34 @@ pub const Context = struct {
     /// in the wild (e.g. NotoSansSymbols' prep program produces idx=-8)
     /// rely on this — strict spec behaviour rejects ~80% of such fonts'
     /// glyphs and degrades to unhinted curves.
+    ///
+    /// The cell is stored in canonical (base-ppem) 26.6 pixels. We apply
+    /// the projection-relative ratio on read, matching FreeType's
+    /// `Read_CVT_Stretched`. This is what makes mid-prep SVTCA switches
+    /// produce consistent per-axis cut-ins and key-distance values.
     inline fn cvtRead(self: *const Context, raw_index: i32) i32 {
         if (raw_index < 0) return 0;
         const index: usize = @intCast(raw_index);
         if (index >= self.cvt.len) return 0;
-        return self.cvt[index];
+        const raw = self.cvt[index];
+        if (!self.environment.isStretched()) return raw;
+        return tt_graphics.mulFix16Dot16(raw, self.environment.projectionRatio(self.graphics.projection));
     }
 
     /// Write to CVT with FreeType-style OOB tolerance: out-of-range writes
-    /// are silently dropped instead of erroring. See `cvtRead`.
+    /// are silently dropped instead of erroring. See `cvtRead`. The incoming
+    /// `value` is in the *current* projection's 26.6 pixels; we divide by
+    /// the projection ratio so the stored cell stays in canonical base-ppem
+    /// pixels (matching FreeType's `Write_CVT_Stretched`).
     inline fn cvtWrite(self: *Context, raw_index: i32, value: i32) void {
         if (raw_index < 0) return;
         const index: usize = @intCast(raw_index);
         if (index >= self.cvt.len) return;
-        self.cvt[index] = value;
+        if (!self.environment.isStretched()) {
+            self.cvt[index] = value;
+            return;
+        }
+        self.cvt[index] = tt_graphics.divFix16Dot16(value, self.environment.projectionRatio(self.graphics.projection));
     }
 
     inline fn executeStateOp(self: *Context, op: u8) Error!void {
@@ -359,8 +400,18 @@ pub const Context = struct {
             0x57 => try self.oddEven(.even),
             0x5E => self.graphics.delta_base = try self.pop(),
             0x5F => self.graphics.delta_shift = try self.pop(),
-            0x68...0x6B => try self.push(self.graphics.round_mode.apply(try self.pop())),
-            0x6C...0x6F => try self.push(try self.pop()),
+            // ROUND[distance_type] / NROUND[distance_type]: the low 2 bits of
+            // the opcode select the per-color compensation (gray/black/white/
+            // undef). NROUND skips the rounding step but still applies the
+            // compensation (FreeType convention).
+            0x68...0x6B => try self.push(self.graphics.round_mode.apply(try self.pop(), self.compensations[op & 0x03])),
+            0x6C...0x6F => {
+                const value = try self.pop();
+                const compensated = (tt_graphics.RoundMode{ .off = {} }).apply(value, self.compensations[op & 0x03]);
+                try self.push(compensated);
+            },
+            0x76 => self.graphics.round_mode = .{ .super = tt_graphics.decodeSuperRound(0x40, try self.pop()) },
+            0x77 => self.graphics.round_mode = .{ .super = tt_graphics.decodeSuperRound(0x2D41, try self.pop()) },
             0x7A => self.graphics.round_mode = .off,
             0x7C => self.graphics.round_mode = .up_grid,
             0x7D => self.graphics.round_mode = .down_grid,
@@ -588,17 +639,21 @@ pub const Context = struct {
         const target_ppem = self.graphics.delta_base + base_offset + @as(i32, encoded >> 4);
         if (@as(i32, @intCast(ppem)) != target_ppem) return null;
 
+        // Per TrueType spec: low 4 bits encode magnitude with a forbidden 0:
+        //   0..7  → -8..-1  (negative magnitudes)
+        //   8..15 → +1..+8  (positive magnitudes)
+        // There is no encoding for zero — every byte produces a non-zero move.
         const low = encoded & 0x0F;
-        const steps = if (low > 7)
-            @as(i32, low) - 8
+        const steps: i32 = if (low > 7)
+            @as(i32, low) - 7
         else
-            @as(i32, low) - 7;
-        if (steps == 0) return null;
+            @as(i32, low) - 8;
         return @truncate(@as(i64, steps) * deltaQuantum(self.graphics.delta_shift));
     }
 
     fn oddEven(self: *Context, parity: Parity) Error!void {
-        const rounded = self.graphics.round_mode.apply(try self.pop());
+        // ODD/EVEN have no distance_type → no compensation, matching FreeType.
+        const rounded = self.graphics.round_mode.apply(try self.pop(), 0);
         const integer = @divTrunc(rounded, 64);
         try self.push(boolInt(switch (parity) {
             .odd => integer & 1 != 0,
@@ -613,7 +668,8 @@ pub const Context = struct {
         const zone_ptr = try self.zone(self.graphics.zp0);
 
         var target = try zone_ptr.coordinateVector(projection, point, false);
-        if (round) target = self.graphics.round_mode.apply(target);
+        // MDAP has no distance_type → compensation = 0 (matches FreeType).
+        if (round) target = self.graphics.round_mode.apply(target, 0);
         try zone_ptr.moveToVector(projection, freedom, point, target);
 
         self.graphics.rp0 = point;
@@ -636,7 +692,8 @@ pub const Context = struct {
                     target = original;
                 }
             }
-            target = self.graphics.round_mode.apply(target);
+            // MIAP has no distance_type → compensation = 0.
+            target = self.graphics.round_mode.apply(target, 0);
         }
         if (self.graphics.zp0 == .twilight) {
             try zone_ptr.setOriginalCoordinateVector(projection, point, cvt_value);
@@ -660,7 +717,7 @@ pub const Context = struct {
             try ref_zone.coordinateVector(dual_projection, self.graphics.rp0, true),
         );
         var distance = self.applySingleWidth(original_distance);
-        if (flags.round) distance = self.graphics.round_mode.apply(distance);
+        if (flags.round) distance = self.graphics.round_mode.apply(distance, self.compensations[flags.distance_type]);
         distance = self.applyMinimumDistance(distance, original_distance, flags.minimum_distance);
 
         const target = addWrap(try ref_zone.coordinateVector(projection, self.graphics.rp0, false), distance);
@@ -697,7 +754,7 @@ pub const Context = struct {
             distance = original_distance;
         }
         distance = self.applySingleWidth(distance);
-        if (flags.round) distance = self.graphics.round_mode.apply(distance);
+        if (flags.round) distance = self.graphics.round_mode.apply(distance, self.compensations[flags.distance_type]);
         distance = self.applyMinimumDistance(distance, original_distance, flags.minimum_distance);
 
         const target = addWrap(try ref_zone.coordinateVector(projection, self.graphics.rp0, false), distance);
@@ -843,6 +900,19 @@ pub const Context = struct {
         );
         const skip_point: ?u32 = if (ref_pointer == self.graphics.zp2) ref_point else null;
         const point_zone = try self.zone(self.graphics.zp2);
+        // UNDOCUMENTED (per FreeType / Greg Hitchcock): when zp2 is the
+        // twilight zone, SHC operates on a single virtual contour 0 covering
+        // every twilight point. snail's twilight zones have an empty
+        // contours array, so we can't go through the normal path.
+        if (self.graphics.zp2 == .twilight) {
+            if (contour != 0) return; // only virtual contour 0 exists in twilight.
+            var i: u32 = 0;
+            while (i < point_zone.points.len) : (i += 1) {
+                if (skip_point) |sp| if (sp == i) continue;
+                try point_zone.shiftProjectedVector(projection, freedom, i, distance);
+            }
+            return;
+        }
         try point_zone.shiftContourProjectedVector(projection, freedom, contour, distance, skip_point);
     }
 
@@ -854,15 +924,28 @@ pub const Context = struct {
         const ref_pointer = if (op == 0x36) self.graphics.zp1 else self.graphics.zp0;
         const ref_point = if (op == 0x36) self.graphics.rp2 else self.graphics.rp1;
         const ref_zone = try self.zoneConst(ref_pointer);
-        const target_zone = try self.zone(try zonePointer(zone_value));
+        const target_pointer = try zonePointer(zone_value);
+        const target_zone = try self.zone(target_pointer);
         const distance = subWrap(
             try ref_zone.coordinateVector(projection, ref_point, false),
             try ref_zone.coordinateVector(dual_projection, ref_point, true),
         );
 
+        // UNDOCUMENTED (per FreeType): SHZ on the glyph zone does NOT shift
+        // the four phantom points appended after the glyph outline. Shifting
+        // them would corrupt the per-glyph LSB / advance width / TSB /
+        // advance height that downstream rendering reads back.
+        const limit: u32 = blk: {
+            const all: u32 = @intCast(target_zone.points.len);
+            if (target_pointer == .glyph and all >= tt_points.phantom_count) {
+                break :blk all - tt_points.phantom_count;
+            }
+            break :blk all;
+        };
+
         var point: u32 = 0;
-        while (point < target_zone.points.len) : (point += 1) {
-            if (ref_pointer == try zonePointer(zone_value) and point == ref_point) continue;
+        while (point < limit) : (point += 1) {
+            if (ref_pointer == target_pointer and point == ref_point) continue;
             try target_zone.shiftProjectedVector(projection, freedom, point, distance);
         }
     }
@@ -950,23 +1033,18 @@ pub const Context = struct {
     fn setInstructionControl(self: *Context) Error!void {
         const value = try self.pop();
         const selector = try self.pop();
-        switch (selector) {
-            1 => {
-                if (value != 0) {
-                    self.graphics.instruct_control |= 1;
-                } else {
-                    self.graphics.instruct_control &= ~@as(i32, 1);
-                }
-            },
-            2 => {
-                if (value != 0) {
-                    self.graphics.instruct_control |= 2;
-                } else {
-                    self.graphics.instruct_control &= ~@as(i32, 2);
-                }
-            },
-            else => {},
-        }
+        // Per FreeType's Ins_INSTCTRL: selectors are 1..3 (not flags), and
+        // the value must be either 0 (clear) or exactly `1 << (selector-1)`
+        // (set the matching bit). Selector 3 is ClearType-mode and snail
+        // doesn't model the backward-compatibility state, so we accept it
+        // as a no-op rather than rejecting (matches FreeType's behavior on
+        // builds without subpixel hinting).
+        if (selector < 1 or selector > 3) return;
+        const flag: i32 = @as(i32, 1) << @intCast(selector - 1);
+        if (value != 0 and value != flag) return;
+        if (selector == 3) return; // ClearType mode — no-op without subpixel hinting.
+        self.graphics.instruct_control &= ~flag;
+        self.graphics.instruct_control |= value;
     }
 
     fn popU32(self: *Context) Error!u32 {
@@ -1042,6 +1120,9 @@ pub const Context = struct {
         return if (original) self.graphics.dual_projection else self.graphics.projection;
     }
 
+    /// FUnit → 26.6 pixels in the *current projection*. Used for the
+    /// single-width value (SSW, 0x1F) and other immediate-pixel writes that
+    /// should match the axis the program is currently working on.
     fn scaleFUnits(self: *const Context, value: i32) i32 {
         return if (self.usesXScale())
             self.environment.scaleFUnitsX(value)
@@ -1049,17 +1130,43 @@ pub const Context = struct {
             self.environment.scaleFUnitsY(value);
     }
 
+    /// FUnit → 26.6 pixels at the *base ppem* (max of x and y). Used by
+    /// WCVTF so the value stored in the canonical CVT cell can be rescaled
+    /// per-projection on read, matching FreeType's Write_CVT_Stretched.
+    fn scaleFUnitsBase(self: *const Context, value: i32) i32 {
+        const base = self.environment.basePpem26Dot6();
+        return scaleFUnitsAtPpem(value, base, self.environment.units_per_em);
+    }
+
+    /// MPPEM (0x4B). Per spec/FreeType: returns the ppem along the current
+    /// projection vector. For square pixels this is just `ppem_y`; for
+    /// stretched grids it interpolates via the projection ratio
+    /// (matches `Current_Ppem_Stretched`).
     fn projectionPpem26Dot6(self: *const Context) u32 {
-        return if (self.usesXScale())
-            self.environment.ppem_x_26_6
-        else
-            self.environment.ppem_y_26_6;
+        if (!self.environment.isStretched()) return self.environment.ppem_y_26_6;
+        const base = self.environment.basePpem26Dot6();
+        const ratio = self.environment.projectionRatio(self.graphics.projection);
+        const scaled = tt_graphics.mulFix16Dot16(@intCast(base), ratio);
+        if (scaled < 0) return 0;
+        return @intCast(scaled);
     }
 
     fn usesXScale(self: *const Context) bool {
         return absI32(self.graphics.projection.x) >= absI32(self.graphics.projection.y);
     }
 };
+
+fn scaleFUnitsAtPpem(value: i32, ppem_26_6: u32, units_per_em: u16) i32 {
+    if (units_per_em == 0) return 0;
+    const numerator = @as(i64, value) * @as(i64, ppem_26_6);
+    const denominator = @as(i64, units_per_em);
+    const half = @divTrunc(denominator, 2);
+    const rounded = if (numerator >= 0)
+        @divTrunc(numerator + half, denominator)
+    else
+        @divTrunc(numerator - half, denominator);
+    return @truncate(rounded);
+}
 
 const Pair = struct {
     lhs: i32,
@@ -1270,8 +1377,13 @@ const tail_dispatch: [256]TailHandler = blk: {
         0x4B, 0x4C, 0x4D, 0x4E,
         0x56, 0x57, 0x5E, 0x5F,
         0x68, 0x69, 0x6A, 0x6B, 0x6C, 0x6D, 0x6E, 0x6F,
+        0x76, 0x77,
         0x7A, 0x7C, 0x7D, 0x85, 0x88, 0x8A, 0x8D, 0x8E,
     }) |op| t[op] = handleSimple(Context.executeStateOp, op);
+
+    // RTDG (0x3D) — round to double grid. Wired through the slow path since
+    // it sits in the middle of the otherwise-point-op-only 0x2E..0x3F range.
+    t[0x3D] = handleDefault;
 
     // Logic: LT/LTEQ/GT/GTEQ/EQ/NEQ/AND/OR/NOT.
     for ([_]u8{ 0x50, 0x51, 0x52, 0x53, 0x54, 0x55, 0x5A, 0x5B, 0x5C }) |op|
@@ -1793,7 +1905,11 @@ test "tt executor resets dual projection except for SDPVTL" {
     try expectStack(&ctx, &.{ 0 });
 }
 
-test "tt executor scales WCVTF through caller environment" {
+test "tt executor scales WCVTF and RCVT through the projection-relative ratio" {
+    // WCVTF stores 26.6 pixels in the canonical CVT cell (base-ppem scaled),
+    // and RCVT rescales by the current projection ratio. This matches
+    // FreeType's Read_CVT_Stretched / Write_CVT_Stretched and is what
+    // lets a single prep program use the same CVT entry from either axis.
     var stack: [16]i32 = undefined;
     var storage: [1]i32 = .{0};
     var cvt: [2]i32 = .{ 0, 0 };
@@ -1806,19 +1922,24 @@ test "tt executor scales WCVTF through caller environment" {
 
     try ctx.execute(&.{
         0x01, // SVTCA[x]
-        0xB1,
-        0,
-        50,
-        0x70,
+        0xB1, 0, 50, 0x70, // WCVTF cvt[0] = 50 funits → x-pixels = 32, stored canonical
         0x00, // SVTCA[y]
-        0xB1,
-        1,
-        50,
-        0x70,
+        0xB1, 1, 50, 0x70, // WCVTF cvt[1] = 50 funits → y-pixels = 38, stored canonical
+        // Read both back along their write axis: should round-trip.
+        0x01, // SVTCA[x]
+        0xB0, 0, 0x45, // RCVT cvt[0] → 32 (x-axis)
+        0x00, // SVTCA[y]
+        0xB0, 1, 0x45, // RCVT cvt[1] → 38 (y-axis)
+        // And cross-read: cvt[1] in x-axis projection should rescale down to ~32.
+        0x01,
+        0xB0, 1, 0x45,
     });
 
-    try std.testing.expectEqual(@as(i32, 32), cvt[0]);
+    // Both cells canonical-stored at base ppem=12 → 38, regardless of write axis.
+    try std.testing.expectEqual(@as(i32, 38), cvt[0]);
     try std.testing.expectEqual(@as(i32, 38), cvt[1]);
+    // Stack: x-read of cvt[0] then y-read of cvt[1] then x-read of cvt[1].
+    try expectStack(&ctx, &.{ 32, 38, 32 });
 }
 
 test "tt executor moves and measures attached point zones" {
@@ -1966,9 +2087,9 @@ test "tt executor interpolates untouched glyph points" {
 
     var twilight_points: [1]Point = undefined;
     var glyph_points: [3]Point = .{
-        .{ .x = 0, .y = 0, .ox = 0, .oy = 0, .on_curve = true, .touched_x = true },
-        .{ .x = 50, .y = 0, .ox = 50, .oy = 0, .on_curve = true },
-        .{ .x = 200, .y = 0, .ox = 100, .oy = 0, .on_curve = true, .touched_x = true },
+        .{ .x = 0, .y = 0, .ox = 0, .oy = 0, .orus_x = 0, .on_curve = true, .touched_x = true },
+        .{ .x = 50, .y = 0, .ox = 50, .oy = 0, .orus_x = 50, .on_curve = true },
+        .{ .x = 200, .y = 0, .ox = 100, .oy = 0, .orus_x = 100, .on_curve = true, .touched_x = true },
     };
     const contours = [_]@import("tt_outline.zig").ContourRange{.{ .start = 0, .end = 3 }};
     var zones: PointZones = .{
@@ -2095,16 +2216,19 @@ test "tt executor applies delta point and cvt exceptions" {
     ctx.setZones(&zones);
 
     try ctx.execute(&.{
-        0xB2, 0, 0x39, 1, 0x5D, // DELTAP1: ppem 12, +1/8px
-        0xB2, 0, 0x36, 1, 0x73, // DELTAC1: ppem 12, -1/8px
+        // DELTAP1: ppem 12, low=9 → +2 steps × quantum(delta_shift=3 → 8) = +16/64 px
+        0xB2, 0, 0x39, 1, 0x5D,
+        // DELTAC1: ppem 12, low=6 → -2 steps × 8 = -16/64 px
+        0xB2, 0, 0x36, 1, 0x73,
         0xB0, 10, 0x5E, // SDB 10
         0xB0, 4, 0x5F, // SDS 4
-        0xB2, 1, 0x29, 1, 0x5D, // DELTAP1: ppem 12, +1/16px
+        // DELTAP1: ppem 12, low=9 → +2 steps × quantum(delta_shift=4 → 4) = +8/64 px
+        0xB2, 1, 0x29, 1, 0x5D,
     });
 
-    try std.testing.expectEqual(@as(i32, 8), glyph_points[0].x);
-    try std.testing.expectEqual(@as(i32, 104), glyph_points[1].x);
-    try std.testing.expectEqual(@as(i32, 92), cvt[0]);
+    try std.testing.expectEqual(@as(i32, 16), glyph_points[0].x);
+    try std.testing.expectEqual(@as(i32, 108), glyph_points[1].x);
+    try std.testing.expectEqual(@as(i32, 84), cvt[0]);
 }
 
 test "tt executor records and calls function definitions" {
@@ -2155,4 +2279,168 @@ test "tt executor loop-calls functions and enforces call depth" {
         0x2D,
     });
     try std.testing.expectError(Error.CallDepthExceeded, ctx.execute(&.{ 0xB0, 5, 0x2B }));
+}
+
+test "tt executor handles SROUND, S45ROUND and RTDG" {
+    // SROUND/S45ROUND (0x76/0x77) and RTDG (0x3D) were previously not
+    // implemented at all and would fail with InvalidOpcode on any font
+    // that used them — Times, Arial, and many CFFs do.
+    var stack: [16]i32 = undefined;
+    var storage: [1]i32 = .{0};
+    var cvt: [1]i32 = .{0};
+    var ctx = Context.init(.{ .stack = &stack, .storage = &storage, .cvt = &cvt }, .{});
+
+    // RTDG.
+    try ctx.execute(&.{0x3D});
+    try std.testing.expectEqual(tt_graphics.RoundMode{ .double_grid = {} }, ctx.graphics.round_mode);
+
+    // SROUND with byte 0x48: period=1px, phase=0, threshold=4. ROUND[0] of 33 → 64.
+    ctx.reset();
+    ctx.graphics = .{};
+    try ctx.execute(&.{ 0xB0, 0x48, 0x76, 0xB0, 33, 0x68 });
+    try expectStack(&ctx, &.{64});
+
+    // S45ROUND simply selects the 45-degree grid period; the call must
+    // succeed and leave a super round mode in place.
+    ctx.reset();
+    ctx.graphics = .{};
+    try ctx.execute(&.{ 0xB0, 0x40, 0x77 });
+    try std.testing.expectEqual(@as(std.meta.Tag(tt_graphics.RoundMode), .super), std.meta.activeTag(ctx.graphics.round_mode));
+}
+
+test "tt executor INSTCTRL rejects malformed value masks" {
+    // INSTCTRL value must be exactly `1 << (selector-1)` or zero. Previously
+    // any non-zero value would set the bit, which differs from FreeType's
+    // strict validation. Out-of-range selectors are also accepted as no-ops.
+    var stack: [16]i32 = undefined;
+    var storage: [1]i32 = .{0};
+    var cvt: [1]i32 = .{0};
+    var ctx = Context.init(.{ .stack = &stack, .storage = &storage, .cvt = &cvt }, .{});
+
+    // selector=1, value=99 — value doesn't match 1<<0=1, so reject silently.
+    try ctx.execute(&.{ 0xB1, 1, 99, 0x8E });
+    try std.testing.expectEqual(@as(i32, 0), ctx.graphics.instruct_control);
+
+    // selector=1, value=1 — valid set.
+    try ctx.execute(&.{ 0xB1, 1, 1, 0x8E });
+    try std.testing.expectEqual(@as(i32, 1), ctx.graphics.instruct_control);
+
+    // selector=1, value=0 — clear bit 0.
+    try ctx.execute(&.{ 0xB1, 1, 0, 0x8E });
+    try std.testing.expectEqual(@as(i32, 0), ctx.graphics.instruct_control);
+
+    // selector=2, value=2 — valid set bit 1.
+    try ctx.execute(&.{ 0xB1, 2, 2, 0x8E });
+    try std.testing.expectEqual(@as(i32, 2), ctx.graphics.instruct_control);
+
+    // selector=2, value=1 — wrong mask, reject.
+    try ctx.execute(&.{ 0xB1, 2, 1, 0x8E });
+    try std.testing.expectEqual(@as(i32, 2), ctx.graphics.instruct_control);
+
+    // selector=3 (ClearType) — accepted as no-op; doesn't touch instruct_control.
+    try ctx.execute(&.{ 0xB1, 3, 4, 0x8E });
+    try std.testing.expectEqual(@as(i32, 2), ctx.graphics.instruct_control);
+}
+
+test "tt executor SHZ leaves phantom points untouched" {
+    // SHZ on the glyph zone must skip the four trailing phantom points
+    // (LSB, advance, TSB, advance-height) per FreeType's undocumented
+    // behaviour. Without this, hinting overwrites the per-glyph advance
+    // width that downstream rendering reads back from the zone.
+    var stack: [32]i32 = undefined;
+    var storage: [1]i32 = .{0};
+    var cvt: [1]i32 = .{0};
+    var ctx = Context.init(.{ .stack = &stack, .storage = &storage, .cvt = &cvt }, .{});
+
+    var twilight_points: [1]Point = undefined;
+    var glyph_points: [6]Point = .{
+        .{ .x = 0, .y = 0, .ox = 0, .oy = 0, .on_curve = true },
+        .{ .x = 10, .y = 0, .ox = 5, .oy = 0, .on_curve = true }, // moved (dx=+5)
+        // 4 phantom points appended:
+        .{ .x = 0, .y = 0, .ox = 0, .oy = 0, .on_curve = true },
+        .{ .x = 500, .y = 0, .ox = 500, .oy = 0, .on_curve = true },
+        .{ .x = 0, .y = 0, .ox = 0, .oy = 0, .on_curve = true },
+        .{ .x = 0, .y = 0, .ox = 0, .oy = 0, .on_curve = true },
+    };
+    var zones: PointZones = .{
+        .twilight = PointZone.initTwilight(&twilight_points),
+        .glyph = .{ .points = &glyph_points },
+    };
+    ctx.setZones(&zones);
+
+    try ctx.execute(&.{
+        0xB0, 1, 0x10, // SRP0 1
+        0xB0, 1, 0x11, // SRP1 1 (so SHZ[1] uses rp1 in zp0)
+        0xB0, 1, 0x37, // SHZ[1] of glyph zone (1) — uses rp1 from zp0
+    });
+
+    // Non-phantom points shifted by (10 - 5) = 5; phantom points untouched.
+    try std.testing.expectEqual(@as(i32, 5), glyph_points[0].x);
+    try std.testing.expectEqual(@as(i32, 0), glyph_points[2].x);
+    try std.testing.expectEqual(@as(i32, 500), glyph_points[3].x);
+}
+
+test "tt executor SHC in twilight zone shifts virtual contour 0" {
+    // SHC on the twilight zone has an undocumented "virtual contour 0
+    // contains every point" semantic (per FreeType / Greg Hitchcock).
+    // Without this, snail returned InvalidPoint because the twilight zone
+    // had no contours array.
+    var stack: [16]i32 = undefined;
+    var storage: [1]i32 = .{0};
+    var cvt: [1]i32 = .{0};
+    var ctx = Context.init(.{ .stack = &stack, .storage = &storage, .cvt = &cvt }, .{});
+
+    var twilight_points: [3]Point = .{
+        .{ .x = 100, .y = 0, .ox = 50, .oy = 0, .on_curve = true }, // moved by +50
+        .{ .x = 0, .y = 0, .ox = 0, .oy = 0, .on_curve = true },
+        .{ .x = 0, .y = 0, .ox = 0, .oy = 0, .on_curve = true },
+    };
+    var glyph_points: [0]Point = .{};
+    var zones: PointZones = .{
+        .twilight = PointZone.initTwilight(&twilight_points),
+        .glyph = .{ .points = &glyph_points },
+    };
+    // Twilight initTwilight zeroes the points; overwrite after.
+    twilight_points[0] = .{ .x = 100, .y = 0, .ox = 50, .oy = 0, .on_curve = true };
+    ctx.setZones(&zones);
+
+    try ctx.execute(&.{
+        0xB0, 0, 0x16, // SZPS twilight (all zone pointers)
+        0xB0, 0, 0x10, // SRP0 0 (point 0 is the "moved" ref)
+        0xB0, 0, 0x11, // SRP1 0
+        0xB0, 0, 0x35, // SHC[1] contour 0 — uses rp1 in zp0
+    });
+
+    // Points 1 and 2 shift by (cur - org) of rp0 = 100 - 50 = 50. Point 0 is
+    // skipped because it is the reference (zp0 == zp2 here via SZPS).
+    try std.testing.expectEqual(@as(i32, 100), twilight_points[0].x); // ref, unchanged
+    try std.testing.expectEqual(@as(i32, 50), twilight_points[1].x);
+    try std.testing.expectEqual(@as(i32, 50), twilight_points[2].x);
+}
+
+test "tt executor cross-axis CVT round-trip with stretched pixels" {
+    // FreeType-style canonical CVT storage with on-read projection ratio:
+    // a single prep program can use SVTCA[x] / SVTCA[y] interchangeably and
+    // every read/write of the same cell sees the per-axis scaling, even
+    // when ppem_x != ppem_y. snail previously kept separate cvt_x / cvt_y
+    // arrays scaled at SizeState time, which only got the result right
+    // when the axis didn't change mid-prep.
+    var stack: [16]i32 = undefined;
+    var storage: [1]i32 = .{0};
+    var cvt: [1]i32 = .{0};
+    var ctx = Context.init(.{ .stack = &stack, .storage = &storage, .cvt = &cvt }, .{});
+    ctx.setEnvironment(.{
+        .ppem_x_26_6 = 10 * 64,
+        .ppem_y_26_6 = 12 * 64,
+        .units_per_em = 1000,
+    });
+
+    try ctx.execute(&.{
+        0x00, // SVTCA[y]
+        0xB1, 0, 64, 0x44, // WCVTP cvt[0] = 64 (=1px along y)
+        0xB0, 0, 0x45, // RCVT — should round-trip to 64
+        0x01, // SVTCA[x]
+        0xB0, 0, 0x45, // RCVT — same canonical cell, scaled to 10/12 px = 53
+    });
+    try expectStack(&ctx, &.{ 64, 53 });
 }

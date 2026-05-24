@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const tt_exec = @import("tt_exec.zig");
+const tt_graphics = @import("tt_graphics.zig");
 const tt_outline = @import("tt_outline.zig");
 const tt_points = @import("tt_points.zig");
 const tt_tables = @import("tt_tables.zig");
@@ -23,6 +24,11 @@ pub const SizeRequest = struct {
     cvt_headroom: u32 = 0,
 };
 
+/// Deprecated — kept only for callers that haven't migrated. With a unified
+/// CVT (FreeType-style projection-aware scaling), the axis selection at
+/// context-creation time no longer affects CVT storage. Pass `.x` or `.y`
+/// to seed the initial projection vector; the choice only impacts the
+/// graphics state's starting axis, not which CVT buffer is used.
 pub const CvtAxis = enum {
     x,
     y,
@@ -54,6 +60,21 @@ pub const ControlProgramSnapshot = struct {
         if (self.storage.len != context.storage.len) return error.InvalidStorageSnapshot;
         @memcpy(context.storage, self.storage);
         context.graphics = self.graphics;
+        // Per-glyph fields reset at the start of every glyph program, regardless
+        // of what prep left in the snapshot. FreeType's TT_Run_Context does the
+        // same thing — without it, fonts whose prep ends with a non-default
+        // projection vector (e.g. DejaVu Sans Mono leaves projection=Y) execute
+        // the entire glyph program with the wrong axis.
+        context.graphics.projection = tt_graphics.Vector.x_axis;
+        context.graphics.freedom = tt_graphics.Vector.x_axis;
+        context.graphics.dual_projection = tt_graphics.Vector.x_axis;
+        context.graphics.rp0 = 0;
+        context.graphics.rp1 = 0;
+        context.graphics.rp2 = 0;
+        context.graphics.zp0 = .glyph;
+        context.graphics.zp1 = .glyph;
+        context.graphics.zp2 = .glyph;
+        context.graphics.loop_count = 1;
         context.reset();
     }
 };
@@ -89,16 +110,23 @@ pub const Program = struct {
 
     pub fn sizeState(self: *const Program, allocator: std.mem.Allocator, request: SizeRequest) !SizeState {
         const cvt_bytes = try self.tables.tableBytes(self.tables.cvt);
-        const cvt_x = try scaledCvt(allocator, cvt_bytes, request.ppem_x_26_6, self.head.units_per_em, request.cvt_headroom);
-        errdefer allocator.free(cvt_x);
-        const cvt_y = try scaledCvt(allocator, cvt_bytes, request.ppem_y_26_6, self.head.units_per_em, request.cvt_headroom);
+        // CVT is stored once, in 26.6 px at the larger of the two ppems
+        // (the "base ppem"). On read/write the VM scales by a per-projection
+        // ratio (`Environment.projectionRatio`), matching FreeType's
+        // `Read_CVT_Stretched`/`Write_CVT_Stretched`. For square pixels the
+        // ratio is 1.0 and no scaling is applied. This is what fixes the
+        // axis-mid-prep correctness problem that the old per-axis cvt_x /
+        // cvt_y arrays could not handle: a single prep program can SVTCA
+        // between axes and read/write the same CVT entries with consistent
+        // scaling.
+        const base_ppem = @max(request.ppem_x_26_6, request.ppem_y_26_6);
+        const cvt = try scaledCvt(allocator, cvt_bytes, base_ppem, self.head.units_per_em, request.cvt_headroom);
         return .{
             .allocator = allocator,
             .request = request,
             .units_per_em = self.head.units_per_em,
             .grid_fit = try self.gridFits(request.ppem_y_26_6),
-            .cvt_x = cvt_x,
-            .cvt_y = cvt_y,
+            .cvt = cvt,
         };
     }
 
@@ -258,12 +286,13 @@ pub const SizeState = struct {
     request: SizeRequest,
     units_per_em: u16,
     grid_fit: bool,
-    cvt_x: []i32,
-    cvt_y: []i32,
+    /// Single CVT stored in 26.6 px at the base ppem (max of x and y).
+    /// Reads/writes are scaled by the current projection-relative ratio
+    /// inside the VM. See `Program.sizeState` for rationale.
+    cvt: []i32,
 
     pub fn deinit(self: *SizeState) void {
-        self.allocator.free(self.cvt_x);
-        self.allocator.free(self.cvt_y);
+        self.allocator.free(self.cvt);
         self.* = undefined;
     }
 
@@ -276,13 +305,6 @@ pub const SizeState = struct {
         };
     }
 
-    pub fn cvtForAxis(self: *SizeState, axis: CvtAxis) []i32 {
-        return switch (axis) {
-            .x => self.cvt_x,
-            .y => self.cvt_y,
-        };
-    }
-
     pub fn executionContext(
         self: *SizeState,
         buffers: ExecutionBuffers,
@@ -292,7 +314,7 @@ pub const SizeState = struct {
         var context = tt_exec.Context.init(.{
             .stack = buffers.stack,
             .storage = buffers.storage,
-            .cvt = self.cvtForAxis(axis),
+            .cvt = self.cvt,
         }, limits);
         context.setEnvironment(self.environment());
         switch (axis) {
@@ -421,7 +443,7 @@ fn scaleFWordTo26Dot6(value: i16, ppem_26_6: u32, units_per_em: u16) i32 {
     return @intCast(rounded);
 }
 
-test "size state scales cvt values in 26.6 pixels" {
+test "size state scales cvt values in 26.6 pixels at base ppem" {
     const program = try Program.init(@import("assets").noto_sans_regular);
     var size = try program.sizeState(std.testing.allocator, .{
         .ppem_x_26_6 = 12 * 64,
@@ -429,8 +451,7 @@ test "size state scales cvt values in 26.6 pixels" {
     });
     defer size.deinit();
 
-    try std.testing.expectEqual(size.cvt_x.len, size.cvt_y.len);
-    try std.testing.expect(size.cvt_y.len > 0);
+    try std.testing.expect(size.cvt.len > 0);
     try std.testing.expectEqual(@as(u16, program.head.units_per_em), size.units_per_em);
 }
 
@@ -449,11 +470,9 @@ test "size state appends zeroed cvt headroom" {
     });
     defer padded.deinit();
 
-    try std.testing.expectEqual(baseline.cvt_x.len + 8, padded.cvt_x.len);
-    try std.testing.expectEqual(baseline.cvt_y.len + 8, padded.cvt_y.len);
-    for (padded.cvt_x[baseline.cvt_x.len..]) |v| try std.testing.expectEqual(@as(i32, 0), v);
-    for (padded.cvt_y[baseline.cvt_y.len..]) |v| try std.testing.expectEqual(@as(i32, 0), v);
-    try std.testing.expectEqualSlices(i32, baseline.cvt_x, padded.cvt_x[0..baseline.cvt_x.len]);
+    try std.testing.expectEqual(baseline.cvt.len + 8, padded.cvt.len);
+    for (padded.cvt[baseline.cvt.len..]) |v| try std.testing.expectEqual(@as(i32, 0), v);
+    try std.testing.expectEqualSlices(i32, baseline.cvt, padded.cvt[0..baseline.cvt.len]);
 }
 
 test "scale FWORD handles signed values" {
@@ -520,7 +539,11 @@ test "size state initializes execution context over caller buffers" {
     }, .y, .{});
 
     try context.execute(&.{ 0xB1, 0, 50, 0x70, 0x4B });
-    try std.testing.expectEqual(scaleFWordTo26Dot6(50, 12 * 64, program.head.units_per_em), size.cvt_y[0]);
+    // CVT is stored in 26.6 px at the base ppem (max of x and y); for
+    // ppem_x=10, ppem_y=12 the base is 12. The projection vector starts on
+    // the y-axis so the projection ratio is 1.0, and the stored cell equals
+    // the FUnit-to-pixel scaling at base ppem.
+    try std.testing.expectEqual(scaleFWordTo26Dot6(50, 12 * 64, program.head.units_per_em), size.cvt[0]);
     try std.testing.expectEqual(@as(i32, 12), try context.top());
 }
 
@@ -672,8 +695,7 @@ test "size state skips glyph instructions when grid fitting is disabled" {
         .request = .{ .ppem_x_26_6 = 12 * 64, .ppem_y_26_6 = 12 * 64 },
         .units_per_em = 1000,
         .grid_fit = false,
-        .cvt_x = &cvt,
-        .cvt_y = &cvt,
+        .cvt = &cvt,
     };
     var stack: [8]i32 = undefined;
     var storage: [1]i32 = .{0};

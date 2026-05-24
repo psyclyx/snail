@@ -1,5 +1,48 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- TT hint VM: every glyph program now starts with the spec-default projection /
+  freedom / dual-projection vectors (X-axis), reference points (0), zone
+  pointers (glyph), and loop count (1), regardless of what `prep` left in the
+  graphics state. Previously snail's `ControlProgramSnapshot.restore` copied the
+  full saved state, including per-glyph fields. Fonts whose prep ends with a
+  non-X projection vector — DejaVu Sans Mono is the standout case — therefore
+  ran the entire glyph program in the wrong axis: the X-axis hint section
+  silently rewrote Y coordinates, then SVTCA[y] + the Y-axis section rewrote
+  them again, producing wildly displaced points (e.g. H's crossbar at y=-2 px
+  at 11 ppem) and the visible mangling reported in escarghost-style terminals.
+  Matches FreeType's `TT_Run_Context` reset.
+- TT hint VM: DELTAP/DELTAC magnitude decoding had its sign branches swapped.
+  The spec encodes low 4 bits 0..7 → -8..-1 and 8..15 → +1..+8; snail had the
+  ranges reversed, so every delta exception was applied with the wrong
+  magnitude (and the smallest steps silently dropped). Fixes fine grid-fitting
+  at small ppem for fonts that lean on delta exceptions.
+- TT hint VM: IUP interpolation now uses unscaled FUnit (`orus`) coords for the
+  lerp ratio, scaled-pixel (`org`) coords only for the in/out-of-range
+  comparison. Previously snail used `org` everywhere; two FUnit-distinct
+  points whose `org` values rounded to the same pixel value would produce a
+  degenerate ratio (skewed by the rounding error, or collapsed to the
+  org1==org2 simple-shift shortcut). Matches FreeType's
+  `_iup_worker_interpolate`. Visible on closely-spaced points at small ppem.
+- TT hint VM: RDTG / RUTG now round by magnitude (toward / away from zero)
+  rather than arithmetic floor / ceil (toward -∞ / +∞). For negative input
+  distances the two semantics diverge: a font asking "round this stem-length
+  down" expects magnitude reduced regardless of sign, which is what FreeType
+  does and what snail now matches.
+
+### Added
+
+- TT hint VM: ROUND/NROUND[gray|black|white|undef] (0x68–0x6F), MIRP, and
+  MDRP now thread the per-`distance_type` rounding compensation through the
+  round-mode application. snail keeps the 4-entry `Context.compensations`
+  array at zero (FreeType's default), but the structure is in place — a
+  future ink-spread / subpixel pass can wire non-zero values without
+  touching the dispatch path. NROUND, previously a pass-through, now also
+  applies the compensation.
+
 ## 0.12.1 - 2026-05-23
 
 ### Fixed
