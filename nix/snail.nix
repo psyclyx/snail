@@ -9,7 +9,7 @@
 , shaderc
 , src ? ../.
 , pname ? "snail"
-, version ? "0.11.1"
+, version ? "0.12.1"
 , enableGL33 ? true
 , enableGL44 ? true
 , enableGLES30 ? true

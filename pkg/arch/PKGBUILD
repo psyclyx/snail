@@ -1,6 +1,6 @@
 # Maintainer: psyclyx
 pkgname=snail
-pkgver=0.11.1
+pkgver=0.12.1
 pkgrel=1
 pkgdesc='GPU font rendering via direct Bézier curve evaluation (Slug algorithm)'
 arch=('x86_64')
