@@ -1171,11 +1171,10 @@ const subpixel_lane_count: usize = 7;
 
 // Per-curve solve cache for the row-batched H-axis path. One slot per H
 // curve in the row's band; populated once per row, used by every pixel.
+// Up to 3 sub-contributions per curve so cubic roots fit without spilling.
 pub const RowHorizCurveSolve = struct {
-    along_t1: f32,
-    along_t2: f32,
-    sign1: f32, // 0 => no contribution from t1
-    sign2: f32, // 0 => no contribution from t2
+    along: [3]f32 = .{ 0, 0, 0 },
+    sign: [3]f32 = .{ 0, 0, 0 }, // 0 => no contribution from this slot
 };
 
 const max_row_horiz_curves: usize = 32;
@@ -1186,41 +1185,69 @@ pub const RowHorizState = struct {
     valid: bool, // false => caller must fall back to per-pixel evaluation
 };
 
-inline fn solveRowHorizCurve(curve: *const PreparedAxisCurve, sample_root: f32) ?RowHorizCurveSolve {
+inline fn solveRowHorizCurve(curve: *const PreparedAxisCurve, cold_curves: []const PreparedAxisCurveCold, sample_root: f32) ?RowHorizCurveSolve {
+    var entry = RowHorizCurveSolve{};
     switch (curve.kind) {
         .quadratic => {
             const p0r = curve.p0_root - sample_root;
             const p1r = curve.p1_root - sample_root;
             const p2r = curve.p2_root - sample_root;
             const code = calcRootCode(p0r, p1r, p2r);
-            if (code == 0) {
-                return .{ .along_t1 = 0, .along_t2 = 0, .sign1 = 0, .sign2 = 0 };
+            if (code != 0) {
+                const roots = solvePreparedAxisQuadratic(curve, curve.p0_along, p0r, 1.0);
+                entry.along[0] = roots[0];
+                entry.along[1] = roots[1];
+                entry.sign[0] = if ((code & 1) != 0) 1.0 else 0.0;
+                entry.sign[1] = if (code > 1) -1.0 else 0.0;
             }
-            const roots = solvePreparedAxisQuadratic(curve, curve.p0_along, p0r, 1.0);
-            return .{
-                .along_t1 = roots[0],
-                .along_t2 = roots[1],
-                .sign1 = if ((code & 1) != 0) 1.0 else 0.0,
-                .sign2 = if (code > 1) -1.0 else 0.0,
-            };
+            return entry;
         },
         .line => {
             const denom = curve.a_root;
-            var entry = RowHorizCurveSolve{ .along_t1 = 0, .along_t2 = 0, .sign1 = 0, .sign2 = 0 };
             if (@abs(denom) >= 1e-10) {
                 const t_raw = -(curve.p0_root - sample_root) / denom;
                 if (t_raw >= -1e-5 and t_raw <= 1.0 + 1e-5) {
                     const t = std.math.clamp(t_raw, 0.0, 1.0);
                     const is_endpoint = isNearEndRoot(t) and isEndpointRootDelta(curve.p0_root + curve.a_root - sample_root);
                     if (!is_endpoint and @abs(denom) > 1e-5) {
-                        entry.along_t1 = curve.p0_along + curve.a_along * t;
-                        entry.sign1 = if (denom > 0.0) 1.0 else -1.0;
+                        entry.along[0] = curve.p0_along + curve.a_along * t;
+                        entry.sign[0] = if (denom > 0.0) 1.0 else -1.0;
                     }
                 }
             }
             return entry;
         },
-        .conic, .cubic => return null,
+        .conic => {
+            if (!rootHullCanCross3(curve.p0_root, curve.p1_root, curve.p2_root, sample_root)) return entry;
+            if (curve.cold_index >= cold_curves.len) return null;
+            const cold = &cold_curves[curve.cold_index];
+            const roots = solvePreparedConicRoots(cold, sample_root);
+            for (roots.t[0..roots.count], 0..) |t, idx| {
+                if (idx >= 3) break;
+                if (isNearEndRoot(t) and isEndpointRootDelta(curve.p2_root - sample_root)) continue;
+                const root_deriv = derivativePreparedConicRoot(cold, t);
+                if (@abs(root_deriv) <= 1e-5) continue;
+                entry.along[idx] = evaluatePreparedConicAlong(cold, t);
+                entry.sign[idx] = if (root_deriv > 0.0) 1.0 else -1.0;
+            }
+            return entry;
+        },
+        .cubic => {
+            if (curve.cold_index >= cold_curves.len) return null;
+            const cold = &cold_curves[curve.cold_index];
+            const p3_root = cold.cubic_a_root + cold.cubic_b_root + cold.cubic_c_root + curve.p0_root;
+            if (!rootHullCanCross4(curve.p0_root, curve.p1_root, curve.p2_root, p3_root, sample_root)) return entry;
+            const roots = solvePreparedCubicRoots(curve, cold, sample_root);
+            for (roots.t[0..roots.count], 0..) |t, idx| {
+                if (idx >= 3) break;
+                if (isNearEndRoot(t) and isEndpointRootDelta(p3_root - sample_root)) continue;
+                const root_deriv = derivativePreparedCubicRoot(cold, t);
+                if (@abs(root_deriv) <= 1e-5) continue;
+                entry.along[idx] = evaluatePreparedCubicAlong(curve, cold, t);
+                entry.sign[idx] = if (root_deriv > 0.0) 1.0 else -1.0;
+            }
+            return entry;
+        },
     }
 }
 
@@ -1257,14 +1284,11 @@ pub fn prepareRowHorizState(
     const band_curves = page.h_curves[band_base..][0..band_count];
     for (band_curves) |*curve| {
         if (!curve.valid) {
-            state.curves[state.count] = .{ .along_t1 = 0, .along_t2 = 0, .sign1 = 0, .sign2 = 0 };
+            state.curves[state.count] = .{};
             state.count += 1;
             continue;
         }
-        const solved = solveRowHorizCurve(curve, em_y_row) orelse {
-            // conic/cubic: refuse fast path, caller falls back to per-pixel.
-            return state;
-        };
+        const solved = solveRowHorizCurve(curve, page.h_cold_curves, em_y_row) orelse return state;
         state.curves[state.count] = solved;
         state.count += 1;
     }
@@ -1307,7 +1331,7 @@ pub fn prepareRowHorizSpanState(
             if (!curve.valid) continue;
             if (dedup and !isBandSpanOwner(curve.first_member_band, band, span.first)) continue;
             if (state.count >= max_row_horiz_curves) return state;
-            const solved = solveRowHorizCurve(curve, em_y_row) orelse return state;
+            const solved = solveRowHorizCurve(curve, page.h_cold_curves, em_y_row) orelse return state;
             state.curves[state.count] = solved;
             state.count += 1;
         }
@@ -1327,11 +1351,10 @@ fn applyRowHorizStateToScalar(
     var c: usize = 0;
     while (c < state.count) : (c += 1) {
         const entry = state.curves[c];
-        if (entry.sign1 != 0.0) {
-            appendCoverageContribution(h_pair, (entry.along_t1 - em_x_pixel) * ppe_x, entry.sign1);
-        }
-        if (entry.sign2 != 0.0) {
-            appendCoverageContribution(h_pair, (entry.along_t2 - em_x_pixel) * ppe_x, entry.sign2);
+        inline for (0..3) |s| {
+            if (entry.sign[s] != 0.0) {
+                appendCoverageContribution(h_pair, (entry.along[s] - em_x_pixel) * ppe_x, entry.sign[s]);
+            }
         }
     }
 }
@@ -1357,14 +1380,11 @@ fn applyRowHorizStateToPixel(
     var c: usize = 0;
     while (c < state.count) : (c += 1) {
         const entry = state.curves[c];
-        if (entry.sign1 != 0.0) {
-            inline for (0..W) |s| {
-                appendCoverageContribution(&h_pairs[s], (entry.along_t1 - sample_along[s]) * ppe_x, entry.sign1);
-            }
-        }
-        if (entry.sign2 != 0.0) {
-            inline for (0..W) |s| {
-                appendCoverageContribution(&h_pairs[s], (entry.along_t2 - sample_along[s]) * ppe_x, entry.sign2);
+        inline for (0..3) |slot| {
+            if (entry.sign[slot] != 0.0) {
+                inline for (0..W) |s| {
+                    appendCoverageContribution(&h_pairs[s], (entry.along[slot] - sample_along[s]) * ppe_x, entry.sign[slot]);
+                }
             }
         }
     }
