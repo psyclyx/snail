@@ -8,8 +8,10 @@ const render_abi = @import("abi.zig");
 pub const HintHandle = u16;
 pub const no_hint: HintHandle = 0;
 
-pub const DeltaEncoding = enum(u8) {
-    /// Per-curve deltas matching the decoded base curve texture coordinates.
+pub const PointEncoding = enum(u8) {
+    /// Per-curve absolute hinted control points in atlas em-units, encoded
+    /// as f16 pairs. Stored densely without reference to the unhinted base
+    /// outline; consumers do not consult `u_curve_tex` for hinted draws.
     curve_f16,
 };
 
@@ -29,9 +31,15 @@ pub const GlyphFlags = packed struct(u16) {
 };
 
 pub const GlyphRecord = struct {
+    /// Base curve texel anchor in `u_curve_tex` — retained so the renderer
+    /// can map a band reference (a base-atlas curve location) back to a
+    /// curve index into this record's `curve_points_f16` slab. The shader
+    /// otherwise does not fetch from `u_curve_tex` on a hinted draw.
     base_curve_texel: u32 = 0,
     curve_count: u16 = 0,
-    delta_offset: u32 = 0,
+    /// Texel offset of the first point texel within the layer-info slab,
+    /// resolved at snapshot materialisation time.
+    points_offset: u32 = 0,
     band_offset: u32 = 0,
     h_band_pad: u16 = 0,
     v_band_pad: u16 = 0,
@@ -53,11 +61,11 @@ pub const GlyphRecord = struct {
 };
 
 pub const record_header_texels: u32 = 3;
-pub const curve_delta_texels: u32 = 2;
-pub const delta_values_per_curve: usize = 8;
+pub const curve_point_texels: u32 = 2;
+pub const point_values_per_curve: usize = 8;
 
 pub fn recordTexelCount(curve_count: usize) u32 {
-    return record_header_texels + @as(u32, @intCast(curve_count)) * curve_delta_texels;
+    return record_header_texels + @as(u32, @intCast(curve_count)) * curve_point_texels;
 }
 
 pub fn infoWidth(texel_count: u32) u32 {
@@ -69,26 +77,26 @@ pub fn writeGlyphRecord(
     texel_width: u32,
     texel_offset: u32,
     record: GlyphRecord,
-    curve_deltas_f16: []const u16,
+    curve_points_f16: []const u16,
 ) !void {
-    const expected_deltas = @as(usize, record.curve_count) * delta_values_per_curve;
-    if (curve_deltas_f16.len != expected_deltas) return error.InvalidHintDeltaCount;
+    const expected_points = @as(usize, record.curve_count) * point_values_per_curve;
+    if (curve_points_f16.len != expected_points) return error.InvalidHintPointCount;
 
     try writeRecordHeader(data, texel_width, texel_offset, record);
     for (0..record.curve_count) |curve_index| {
-        const deltas = curve_deltas_f16[curve_index * delta_values_per_curve ..][0..delta_values_per_curve];
-        const delta_texel = texel_offset + record_header_texels + @as(u32, @intCast(curve_index)) * curve_delta_texels;
-        try setTexel(data, texel_width, delta_texel + 0, .{
-            f16BitsToF32(deltas[0]),
-            f16BitsToF32(deltas[1]),
-            f16BitsToF32(deltas[2]),
-            f16BitsToF32(deltas[3]),
+        const points = curve_points_f16[curve_index * point_values_per_curve ..][0..point_values_per_curve];
+        const point_texel = texel_offset + record_header_texels + @as(u32, @intCast(curve_index)) * curve_point_texels;
+        try setTexel(data, texel_width, point_texel + 0, .{
+            f16BitsToF32(points[0]),
+            f16BitsToF32(points[1]),
+            f16BitsToF32(points[2]),
+            f16BitsToF32(points[3]),
         });
-        try setTexel(data, texel_width, delta_texel + 1, .{
-            f16BitsToF32(deltas[4]),
-            f16BitsToF32(deltas[5]),
-            f16BitsToF32(deltas[6]),
-            f16BitsToF32(deltas[7]),
+        try setTexel(data, texel_width, point_texel + 1, .{
+            f16BitsToF32(points[4]),
+            f16BitsToF32(points[5]),
+            f16BitsToF32(points[6]),
+            f16BitsToF32(points[7]),
         });
     }
 }
@@ -151,13 +159,13 @@ pub const UploadBytes = struct {
 
 pub const UploadOp = union(enum) {
     glyph_records: UploadBytes,
-    curve_deltas: UploadBytes,
+    curve_points: UploadBytes,
     band_rows: UploadBytes,
 
     pub fn byteLen(self: UploadOp) usize {
         return switch (self) {
             .glyph_records => |bytes| bytes.byte_len,
-            .curve_deltas => |bytes| bytes.byte_len,
+            .curve_points => |bytes| bytes.byte_len,
             .band_rows => |bytes| bytes.byte_len,
         };
     }
@@ -370,15 +378,15 @@ test "hint flags round trip" {
 test "upload ops report byte totals" {
     const ops = [_]UploadOp{
         .{ .glyph_records = .{ .byte_len = 64 } },
-        .{ .curve_deltas = .{ .byte_len = 128 } },
+        .{ .curve_points = .{ .byte_len = 128 } },
         .{ .band_rows = .{ .byte_len = 32 } },
     };
     try std.testing.expectEqual(@as(usize, 224), totalUploadBytes(&ops));
 }
 
-test "hint glyph record writes band header and curve deltas" {
+test "hint glyph record writes band header and curve points" {
     var data = [_]f32{0} ** (@as(usize, recordTexelCount(1)) * 4);
-    const deltas = [_]u16{
+    const points = [_]u16{
         curve_tex.f32ToF16(0.125),
         curve_tex.f32ToF16(-0.25),
         curve_tex.f32ToF16(0.5),
@@ -393,22 +401,22 @@ test "hint glyph record writes band header and curve deltas" {
         .base_curve_texel = 128,
         .curve_count = 1,
         .band_entry = testBandEntry(),
-    }, &deltas);
+    }, &points);
 
     const header = readTexel(&data, 0);
     const meta = readTexel(&data, 2);
-    const delta0 = readTexel(&data, 3);
-    const delta1 = readTexel(&data, 4);
+    const point0 = readTexel(&data, 3);
+    const point1 = readTexel(&data, 4);
     const packed_bands: u32 = @bitCast(header[2]);
     try std.testing.expectEqual(@as(f32, 0), header[0]);
     try std.testing.expectEqual(@as(f32, 0), header[1]);
     try std.testing.expectEqual(render_abi.packBandCounts(1, 1), packed_bands);
     try std.testing.expectEqual(@as(f32, 128), meta[0]);
     try std.testing.expectEqual(@as(f32, 1), meta[1]);
-    try std.testing.expectApproxEqAbs(@as(f32, 0.125), delta0[0], 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, -0.25), delta0[1], 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, -1.0), delta1[0], 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 2.0), delta1[3], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.125), point0[0], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, -0.25), point0[1], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, -1.0), point1[0], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 2.0), point1[3], 0.001);
 }
 
 test "band reuse proof accepts stable membership and ordering" {

@@ -359,7 +359,7 @@ fn prepareTextHintEntry(
         .key = text.key,
         .stamp = stamp,
     };
-    const hint_upload = stamp_mod.textHintLayerInfoUpload(text.bundle);
+    const hint_upload = stamp_mod.textHintLayerInfoUpload(text.snapshot);
     scratch.upload_layer_infos[index] = .{
         .data = hint_upload.data,
         .width = hint_upload.width,

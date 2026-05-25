@@ -67,6 +67,7 @@ pub const VulkanPipeline = struct {
     pipeline_text: vk.VkPipeline = null,
     pipeline_colr: vk.VkPipeline = null,
     pipeline_path: vk.VkPipeline = null,
+    pipeline_hinted_text: vk.VkPipeline = null,
     pipeline_text_subpixel_dual: vk.VkPipeline = null,
     pipeline_cache: vk.VkPipelineCache = null,
     pipeline_layout: vk.VkPipelineLayout = null,
@@ -243,6 +244,7 @@ pub const VulkanPipeline = struct {
         self.vertex_memory = null;
         self.persistent_map = null;
         if (self.pipeline_text_subpixel_dual != null) vk.vkDestroyPipeline(self.ctx.device, self.pipeline_text_subpixel_dual, null);
+        if (self.pipeline_hinted_text != null) vk.vkDestroyPipeline(self.ctx.device, self.pipeline_hinted_text, null);
         if (self.pipeline_path != null) vk.vkDestroyPipeline(self.ctx.device, self.pipeline_path, null);
         if (self.pipeline_colr != null) vk.vkDestroyPipeline(self.ctx.device, self.pipeline_colr, null);
         if (self.pipeline_text != null) vk.vkDestroyPipeline(self.ctx.device, self.pipeline_text, null);
@@ -253,6 +255,7 @@ pub const VulkanPipeline = struct {
         if (self.sampler_nearest != null) vk.vkDestroySampler(self.ctx.device, self.sampler_nearest, null);
 
         self.pipeline_text_subpixel_dual = null;
+        self.pipeline_hinted_text = null;
         self.pipeline_path = null;
         self.pipeline_colr = null;
         self.pipeline_text = null;
@@ -467,7 +470,7 @@ pub const VulkanPipeline = struct {
                 },
                 .colr => try self.ensureColrPipeline(),
                 .path => try self.ensurePathPipeline(),
-                .hinted_text => try self.ensurePathPipeline(),
+                .hinted_text => try self.ensureHintedTextPipeline(),
             };
             vk.vkCmdBindPipeline(context.cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pip);
             self.pushTextConstants(context.cmd, context.state, context.local_layer_base, run_mode);
@@ -573,6 +576,10 @@ pub const VulkanPipeline = struct {
 
     fn ensurePathPipeline(self: *VulkanPipeline) !vk.VkPipeline {
         return vulkan_graphics.ensurePathPipeline(self);
+    }
+
+    fn ensureHintedTextPipeline(self: *VulkanPipeline) !vk.VkPipeline {
+        return vulkan_graphics.ensureHintedTextPipeline(self);
     }
 
     fn ensureTextSubpixelDualPipeline(self: *VulkanPipeline) !vk.VkPipeline {

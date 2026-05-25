@@ -61,20 +61,23 @@ pub const GlyphHint = struct {
 pub const GlyphHintPatch = struct {
     allocator: Allocator,
     record: text_hint.GlyphRecord,
-    curve_deltas_f16: []u16,
+    /// Absolute hinted control points in atlas em-units, encoded as
+    /// f16 pairs (`point_values_per_curve` per quadratic). Independent of
+    /// the unhinted base outline at the consumer side.
+    curve_points_f16: []u16,
     band_reuse: text_hint.BandReuseProof,
 
     pub fn deinit(self: *GlyphHintPatch) void {
-        self.allocator.free(self.curve_deltas_f16);
+        self.allocator.free(self.curve_points_f16);
         self.* = undefined;
     }
 
-    pub fn curveDeltaBytes(self: *const GlyphHintPatch) usize {
-        return self.curve_deltas_f16.len * @sizeOf(u16);
+    pub fn curvePointBytes(self: *const GlyphHintPatch) usize {
+        return self.curve_points_f16.len * @sizeOf(u16);
     }
 
-    pub fn curveDeltaUpload(self: *const GlyphHintPatch) text_hint.UploadOp {
-        return .{ .curve_deltas = .{ .byte_len = self.curveDeltaBytes() } };
+    pub fn curvePointUpload(self: *const GlyphHintPatch) text_hint.UploadOp {
+        return .{ .curve_points = .{ .byte_len = self.curvePointBytes() } };
     }
 
     pub fn bandsReusable(self: *const GlyphHintPatch) bool {
@@ -192,6 +195,21 @@ pub const HintMachine = struct {
         self.skip_cache.deinit();
         self.size.deinit();
         self.* = undefined;
+    }
+
+    /// Approximate heap footprint of this VM instance's allocations.
+    /// Sums the major arrays; the size-state and skip cache contributions
+    /// are estimated structurally. Used by `TrueTypeHintContext.byteFootprint`
+    /// so callers can decide eviction policies.
+    pub fn byteSize(self: *const HintMachine) usize {
+        return self.stack.len * @sizeOf(i32) +
+            self.storage.len * @sizeOf(i32) +
+            self.storage_snapshot.len * @sizeOf(i32) +
+            self.function_entries.len * @sizeOf(tt_exec.Function) +
+            self.function_lookup.len * @sizeOf(?[]const u8) +
+            self.twilight_points.len * @sizeOf(tt_exec.Point) +
+            self.glyph_points.len * @sizeOf(tt_exec.Point) +
+            self.compound_contours.len * @sizeOf(tt_outline.ContourRange);
     }
 
     pub fn hintGlyph(self: *HintMachine, allocator: Allocator, glyph_id: u16) !GlyphHint {
@@ -732,8 +750,8 @@ fn collectCurveBboxes(allocator: Allocator, curves: []const CurveSegment) ![]BBo
 }
 
 pub fn patchGlyphHint(allocator: Allocator, base: BaseGlyph, hint: *const GlyphHint) !GlyphHintPatch {
-    const deltas = try encodeDeltas(allocator, base, hint.prepared_curves);
-    errdefer allocator.free(deltas);
+    const points = try encodePoints(allocator, base, hint.prepared_curves);
+    errdefer allocator.free(points);
     const band_reuse = try proveBandReuse(allocator, base, hint.curve_bboxes);
     return .{
         .allocator = allocator,
@@ -749,12 +767,16 @@ pub fn patchGlyphHint(allocator: Allocator, base: BaseGlyph, hint: *const GlyphH
                 .unordered_bands = !band_reuse.ordering_ok,
             },
         },
-        .curve_deltas_f16 = deltas,
+        .curve_points_f16 = points,
         .band_reuse = band_reuse,
     };
 }
 
-fn encodeDeltas(allocator: Allocator, base: BaseGlyph, hinted: []const CurveSegment) ![]u16 {
+/// Encode each hinted quadratic as four absolute (x, y) f16 pairs covering
+/// p0/p1/p2/p3 in atlas em-units. Quadratics carry a zero p3. The base
+/// outline is consulted only to validate curve-topology stability; the
+/// encoded payload does not reference it numerically.
+fn encodePoints(allocator: Allocator, base: BaseGlyph, hinted: []const CurveSegment) ![]u16 {
     if (base.info.curve_count != hinted.len) return error.CurveTopologyChanged;
     const encoded = try allocator.alloc(u16, hinted.len * 8);
     errdefer allocator.free(encoded);
@@ -762,7 +784,7 @@ fn encodeDeltas(allocator: Allocator, base: BaseGlyph, hinted: []const CurveSegm
     for (hinted, 0..) |hinted_curve, i| {
         const base_curve = decodeBaseCurve(base, i) orelse return error.InvalidBaseCurve;
         if (base_curve.kind != hinted_curve.kind) return error.CurveTopologyChanged;
-        encodeCurveDelta(encoded[i * 8 ..][0..8], base_curve, hinted_curve);
+        encodeCurvePoints(encoded[i * 8 ..][0..8], hinted_curve);
     }
     return encoded;
 }
@@ -772,16 +794,16 @@ fn decodeBaseCurve(base: BaseGlyph, index: usize) ?CurveSegment {
     return curve_tex.decodeSegmentAt(base.page.curve_data, texel);
 }
 
-fn encodeCurveDelta(out: []u16, base: CurveSegment, hinted: CurveSegment) void {
-    encodePointDelta(out[0..][0..2], base.p0, hinted.p0);
-    encodePointDelta(out[2..][0..2], base.p1, hinted.p1);
-    encodePointDelta(out[4..][0..2], base.p2, hinted.p2);
-    encodePointDelta(out[6..][0..2], base.p3, hinted.p3);
+fn encodeCurvePoints(out: []u16, hinted: CurveSegment) void {
+    encodePoint(out[0..][0..2], hinted.p0);
+    encodePoint(out[2..][0..2], hinted.p1);
+    encodePoint(out[4..][0..2], hinted.p2);
+    encodePoint(out[6..][0..2], hinted.p3);
 }
 
-fn encodePointDelta(out: []u16, base: Vec2, hinted: Vec2) void {
-    out[0] = curve_tex.f32ToF16(hinted.x - base.x);
-    out[1] = curve_tex.f32ToF16(hinted.y - base.y);
+fn encodePoint(out: []u16, point: Vec2) void {
+    out[0] = curve_tex.f32ToF16(point.x);
+    out[1] = curve_tex.f32ToF16(point.y);
 }
 
 fn proveBandReuse(allocator: Allocator, base: BaseGlyph, curve_bboxes: []const BBox) !text_hint.BandReuseProof {
@@ -835,7 +857,7 @@ test "hint machine emits simple glyph curves and band proof" {
     try std.testing.expect(hint.advance.x > 0);
     try std.testing.expect(hint.bbox.max.y - hint.bbox.min.y < 1.5);
     try std.testing.expectEqual(@as(usize, info.curve_count), hint.prepared_curves.len);
-    try std.testing.expectEqual(@as(usize, info.curve_count) * 8, patch.curve_deltas_f16.len);
+    try std.testing.expectEqual(@as(usize, info.curve_count) * 8, patch.curve_points_f16.len);
     try std.testing.expectEqual(info.base_curve_texel, patch.record.base_curve_texel);
 }
 

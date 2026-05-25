@@ -237,6 +237,10 @@ test "c_api: text blob builder and true type hinted runs" {
         try testing.expect(stats.advance_x > 0);
         if (stats.hinted_count == 0) continue;
 
+        var snapshot: ?*c.test_api.GlyphHintSnapshotImpl = null;
+        try testing.expectEqual(c.SNAIL_OK, c_text.snail_true_type_hint_context_snapshot(null, context.?, &snapshot));
+        defer c_text.snail_glyph_hint_snapshot_deinit(snapshot);
+
         var bundle: ?*c.test_api.TextBlobBundleImpl = null;
         try testing.expectEqual(c.SNAIL_OK, c_text.snail_text_blob_bundle_init(null, atlas, &bundle));
         defer c_text.snail_text_blob_bundle_deinit(bundle);
@@ -249,6 +253,7 @@ test "c_api: text blob builder and true type hinted runs" {
         try testing.expectEqual(c.SNAIL_OK, c_text.snail_blob_in_progress_append_prepared_hint_run(
             bip.?,
             run.?,
+            snapshot.?,
             .{ .baseline_x = 0, .baseline_y = 12, .em = 12 },
             &color,
             &append_result,
@@ -266,6 +271,7 @@ test "c_api: text blob builder and true type hinted runs" {
         try testing.expectEqual(c.SNAIL_OK, c_text.snail_text_blob_init_from_prepared_hint_run(
             null,
             run.?,
+            snapshot.?,
             .{ .baseline_x = 0, .baseline_y = 24, .em = 12 },
             &color,
             &direct_blob,

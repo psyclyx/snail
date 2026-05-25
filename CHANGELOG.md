@@ -2,8 +2,161 @@
 
 ## Unreleased
 
+### Added
+
+- `GlyphHintSnapshot`: a public, immutable, per-`(atlas, hint_context, ppem)`
+  hinted-outline value, the per-PPEM counterpart to `TextAtlas`. Carries
+  absolute control points pre-packed for GPU upload, the per-glyph band-reuse
+  tag, and `(atlas_identity, snapshot_identity)` provenance. Built by
+  `TrueTypeHintContext.snapshot(allocator, options)`. Many `TextBlobBundle`s
+  can share one snapshot; the manifest dedupes on the snapshot's resource
+  key. Replaces the previous bundle-internal hint pool.
+- `TextBlobBundle.bindHintSnapshot(snapshot)` and
+  `TextBlobBundle.bindHintContext(context)`: two mutually-exclusive ways to
+  resolve hinted-glyph references. Borrowed mode is for pre-built,
+  cross-bundle-shared snapshots; auto mode owns a snapshot that grows with
+  each hinted append. Auto mode requires an explicit
+  `bundle.materialiseHintSnapshot()` call after appends complete and before
+  the bundle is added to a `ResourceManifest`. Materialise is the visible
+  upload point — manifest reads never trigger hidden slab packing.
+- Hint cache lifecycle verbs on `TrueTypeHintContext`: `byteFootprint()`
+  (per-tier counts + bytes for face programs, size states, glyph values),
+  `sizeKeyIterator()`/`glyphKeyIterator()` (walk cached entries to pick
+  eviction victims), `evictSize(face, ppem)` (drops the PPEM's VM state and
+  every glyph value at that face+PPEM), `evictPpem(ppem)` (same across all
+  faces), `clearGlyphs()` (drops outlines but keeps VMs warm — optimised for
+  zoom-scrubbing), and a public `clear()` (wholesale reset). Snail ships
+  mechanism, not policy: callers compose LRU, capacity-bound, manual, or
+  workload-scoped eviction in 5–10 lines. New supporting types:
+  `TrueTypeHintCacheFootprint`, `TrueTypeHintSizeKeyEntry`/`Iterator`,
+  `TrueTypeHintGlyphKeyEntry`/`Iterator`.
+- README: new top-level `## Hint Cache Lifecycle` section after
+  `## Hinting And Pixel Snapping`. Three-tier cost table (face programs /
+  size states / glyph values), verb reference, the eviction-safety
+  invariant, and four consumer recipes in Zig (terminal, editor,
+  animation/scrubbing, server).
+- C API: `SnailGlyphHintSnapshot` handle plus
+  `snail_true_type_hint_context_snapshot`, `snail_glyph_hint_snapshot_deinit`,
+  and `snail_text_blob_bundle_bind_hint_snapshot`. Mirrors the Zig binding
+  surface. Hint key derivation goes through the snapshot, so blobs sharing a
+  snapshot collapse to one `text_hint` manifest entry across bundles.
+- TT hint VM: ROUND/NROUND[gray|black|white|undef] (0x68–0x6F), MIRP, and
+  MDRP now thread the per-`distance_type` rounding compensation through the
+  round-mode application. snail keeps the 4-entry `Context.compensations`
+  array at zero (FreeType's default), but the structure is in place — a
+  future ink-spread / subpixel pass can wire non-zero values without
+  touching the dispatch path. NROUND, previously a pass-through, now also
+  applies the compensation.
+
+### Changed (breaking)
+
+- Hinted-text upload format: per-curve records now carry **absolute hinted
+  control points** rather than deltas relative to the unhinted base outline.
+  Renames at the format boundary: `text_hint.delta_values_per_curve` →
+  `point_values_per_curve`, `text_hint.curve_delta_texels` →
+  `curve_point_texels`, `UploadOp.curve_deltas` → `UploadOp.curve_points`,
+  `GlyphRecord.delta_offset` → `points_offset`, `DeltaEncoding` →
+  `PointEncoding`, `HintedGlyphAttachment.curve_deltas_f16` →
+  `curve_points_f16`, `GlyphHintPatch.curveDeltaBytes/curveDeltaUpload` →
+  `curvePointBytes/curvePointUpload`, `error.InvalidHintDeltaCount` →
+  `error.InvalidHintPointCount`. Most consumers will never touch these
+  names; the rename is documented because the field names appear in
+  serialised public types (`text_hint.GlyphRecord`, `GlyphHintPatch`).
+- `TextBlobBundle` no longer owns an internal hint pool. Hinted appends
+  require an explicit binding via `bindHintSnapshot` or `bindHintContext`
+  before `bip.append(.{ .source = .{ .hinted = run.glyphs }, … })`. The
+  previously private `appendHintedGlyph(record, curve_deltas_f16)` raw
+  builder method is removed; callers used `appendHintedGlyphRef`
+  exclusively. Migration:
+  ```zig
+  // before
+  var bundle = snail.TextBlobBundle.init(allocator, &atlas);
+  var bip = try bundle.startBlob();
+  _ = try bip.append(.{ .source = .{ .hinted = run.glyphs }, … });
+  // → bundle's auto pool materialised at manifest time
+
+  // after (auto mode — interleaved shape+append)
+  try bundle.bindHintContext(&hint_context);
+  var bip = try bundle.startBlob();
+  _ = try bip.append(.{ .source = .{ .hinted = run.glyphs }, … });
+  _ = try bip.finish(key);
+  try bundle.materialiseHintSnapshot(); // explicit upload point
+
+  // after (borrowed mode — cross-bundle sharing)
+  var snapshot = try hint_context.snapshot(allocator, .{});
+  try bundle.bindHintSnapshot(&snapshot);
+  var bip = try bundle.startBlob();
+  _ = try bip.append(.{ .source = .{ .hinted = run.glyphs }, … });
+  ```
+- `ResourceManifest.TextHintEntry`: `bundle: *TextBlobBundle` → `snapshot:
+  *const GlyphHintSnapshot`. `putTextBlobOptions` errors with
+  `error.InvalidTextResourceKeys` if a blob's `resourceKeys.hint` is set but
+  the bundle has no resolved snapshot — typically because the caller forgot
+  `materialiseHintSnapshot` in auto mode.
+- C API: `snail_blob_in_progress_append_prepared_hint_run` and
+  `snail_text_blob_init_from_prepared_hint_run` gain a leading
+  `SnailGlyphHintSnapshot *` parameter. Call
+  `snail_true_type_hint_context_snapshot` to obtain it. New error codes
+  surface through `SNAIL_ERR_INVALID_ARGUMENT`:
+  `NoHintSnapshotBound`, `GlyphNotInHintSnapshot`, `WrongHintSnapshot`,
+  `BundleFrozen`, `InvalidHintPointCount` (renamed from
+  `InvalidHintDeltaCount`).
+
+### Performance
+
+- Hinted-text GPU shader: extracted into its own fragment body
+  (`snail_hinted_text_frag_body.glsl`) and a dedicated Vulkan pipeline.
+  Dropped `SegmentData` boxing, the kind-dispatch inside the hot loop, the
+  dead `if (kind != 0)` guard, the runtime curve-index bounds check, and the
+  preprocessor conditionals that bundled hinted text alongside path rendering.
+  Inner loop now reads two `u_layer_tex` texels per curve (absolute control
+  points) instead of two `u_curve_tex` fetches + two `u_layer_tex` delta
+  fetches + arithmetic — **matches unhinted text's per-curve fetch count**.
+  Synthetic hinted-text bench reductions: GL 3.3 −25 to −33%, GL 4.4 −33%,
+  OpenGL ES 3.0 −40 to −46%, Vulkan −38 to −40%. CPU coverage backend gets
+  the same algorithmic simplification (no more `applyHintDeltas`): CPU
+  hinted-text bench −37 to −40%.
+- `proveBandReuse`: per-axis padding calculation rewritten from
+  O(curves × bands × refs_per_band) to O(total_refs). The previous
+  implementation iterated every hinted curve, scanned every base band, and
+  walked each band's ref list looking for that curve — quadratic in curve
+  count. The new path walks each axis's bands exactly once, records each
+  hinted curve's min/max base band into a scratch buffer (stack-fallback up
+  to 256 curves, heap thereafter), then computes expansions in one O(curves)
+  pass. This was 33% of plan-mode instructions; the ASCII@12px plan
+  benchmark drops from ~855 µs to ~590 µs (-31%), and cold
+  `TrueTypeHintContext.prepareRun` on a paragraph from ~247 µs to ~193 µs
+  (-22%). API change: `proveBandReuse` and the in-`tt_hint` wrapper now take
+  an `Allocator` and return `!BandReuseProof`; `patchGlyphHint` threads its
+  existing allocator through.
+- TT hint VM: IF/ELSE/ENDIF skip targets are memoized per
+  `(code.ptr, pc, stop_at_else)` and reused across glyph executions.
+  Previously every taken branch re-scanned forward byte-by-byte through
+  the function body to find the matching ELSE/EIF — at 14% of execute-path
+  instructions in the ASCII@12px workload, the single largest non-dispatch
+  cost. The cache is owned by the `HintMachine`, populated lazily, and adds
+  a hash-map lookup on each flow op; net wall-time wins are ~6–13% on
+  execute and stack with the band-padding fix above. No behavioural change.
+
 ### Fixed
 
+- Vulkan `VK_ERROR_DEVICE_LOST` (-4) when zooming fast with hinting
+  always-on in the demo: the default `GlyphHintSnapshot` resource key
+  baked in a per-snapshot monotonic identity, so every rebuild minted a
+  fresh manifest key and the upload pipeline accumulated `VkBuffer` /
+  `VkDeviceMemory` allocations per zoom level until VRAM was exhausted and
+  the driver dropped the device. Default key is now stable per-atlas
+  (`derived(atlas_snapshot_identity, "glyph_hint_snapshot")`); the
+  snapshot's own identity remains a separate field for runtime equality
+  checks (e.g. idempotent `bindHintSnapshot`). Callers that genuinely need
+  multiple concurrent snapshots per atlas pass an explicit
+  `BuilderOptions.key`.
+- `TextBlobBundle` in auto-snapshot mode copies pending hint points into
+  bundle-owned arena storage at append time instead of borrowing from the
+  hint context's `HintedGlyphValue`. The cache may now be evicted
+  (`clearGlyphs` / `evictSize` / `evictPpem` / `clear`) at any point between
+  `prepareRun`/`computeGlyph` calls without dangling references in
+  in-flight or already-materialised bundles.
 - TT hint VM: every glyph program now starts with the spec-default projection /
   freedom / dual-projection vectors (X-axis), reference points (0), zone
   pointers (glyph), and loop count (1), regardless of what `prep` left in the
@@ -32,40 +185,6 @@
   distances the two semantics diverge: a font asking "round this stem-length
   down" expects magnitude reduced regardless of sign, which is what FreeType
   does and what snail now matches.
-
-### Added
-
-- TT hint VM: ROUND/NROUND[gray|black|white|undef] (0x68–0x6F), MIRP, and
-  MDRP now thread the per-`distance_type` rounding compensation through the
-  round-mode application. snail keeps the 4-entry `Context.compensations`
-  array at zero (FreeType's default), but the structure is in place — a
-  future ink-spread / subpixel pass can wire non-zero values without
-  touching the dispatch path. NROUND, previously a pass-through, now also
-  applies the compensation.
-
-### Performance
-
-- TT hint VM: IF/ELSE/ENDIF skip targets are memoized per
-  `(code.ptr, pc, stop_at_else)` and reused across glyph executions.
-  Previously every taken branch re-scanned forward byte-by-byte through
-  the function body to find the matching ELSE/EIF — at 14% of execute-path
-  instructions in the ASCII@12px workload, the single largest non-dispatch
-  cost. The cache is owned by the `HintMachine`, populated lazily, and adds
-  a hash-map lookup on each flow op; net wall-time wins are ~6–13% on
-  execute and stack with the band-padding fix below. No behavioural change.
-- `proveBandReuse`: per-axis padding calculation rewritten from
-  O(curves × bands × refs_per_band) to O(total_refs). The previous
-  implementation iterated every hinted curve, scanned every base band, and
-  walked each band's ref list looking for that curve — quadratic in curve
-  count. The new path walks each axis's bands exactly once, records each
-  hinted curve's min/max base band into a scratch buffer (stack-fallback up
-  to 256 curves, heap thereafter), then computes expansions in one O(curves)
-  pass. This was 33% of plan-mode instructions; the ASCII@12px plan
-  benchmark drops from ~855 µs to ~590 µs (-31%), and cold
-  `TrueTypeHintContext.prepareRun` on a paragraph from ~247 µs to ~193 µs
-  (-22%). API change: `proveBandReuse` and the in-`tt_hint` wrapper now take
-  an `Allocator` and return `!BandReuseProof`; `patchGlyphHint` threads its
-  existing allocator through.
 
 ## 0.12.1 - 2026-05-23
 

@@ -223,6 +223,7 @@ fn renderRepro(allocator: std.mem.Allocator) !void {
 
     var text_bundle = snail.TextBlobBundle.init(allocator, &scene_assets.fonts);
     defer text_bundle.deinit();
+    if (hint_enabled) try text_bundle.bindHintContext(&hint_context);
     var bip = try text_bundle.startBlob();
     errdefer bip.abort();
     var dec_rects: [8]snail.Rect = undefined;
@@ -236,6 +237,7 @@ fn renderRepro(allocator: std.mem.Allocator) !void {
         .{ .enabled = hint_enabled, .ppem_scale = hint_ppem_scale },
     );
     const text_blob = try bip.finish(snail.ResourceKey.named("repro_text"));
+    try text_bundle.materialiseHintSnapshot();
 
     var path_picture = try demo_scene.buildPathPicture(allocator, layout, &scene_assets, dec_rects[0..text_result.decoration_count]);
     defer path_picture.deinit();

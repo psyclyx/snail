@@ -392,6 +392,7 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
                 text_blob = null;
             }
 
+            if (hint_active) try text_bundle.bindHintContext(&hint_context);
             var bip = try text_bundle.startBlob();
             errdefer bip.abort();
             var dec_rects: [8]snail.Rect = undefined;
@@ -401,6 +402,10 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
             });
 
             text_blob = try bip.finish(snail.ResourceKey.named("banner_text"));
+            // Pack any auto-mode pending hints into the bundle's owned
+            // snapshot before manifest preparation. Explicit step — keeps
+            // the upload point honest (no hidden slab packing on read).
+            try text_bundle.materialiseHintSnapshot();
             uploaded_total_glyphs = if (text_blob) |blob| blob.glyphCount() else 0;
             uploaded_hint_glyphs = if (text_blob) |blob| hintedGlyphCount(blob) else 0;
             path_picture = try demo_banner_scene.buildPathPicture(allocator, layout, &scene_assets, dec_rects[0..text_result.decoration_count]);

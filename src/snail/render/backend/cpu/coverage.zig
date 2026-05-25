@@ -863,38 +863,38 @@ fn hintedLayerTexel(record: HintedTextRecord, offset: u32) [4]f32 {
     };
 }
 
-fn applyHintDeltas(segment: CurveSegment, record: HintedTextRecord, curve_index: u32) CurveSegment {
-    const delta_offset = 3 + curve_index * 2;
-    const d0 = hintedLayerTexel(record, delta_offset);
-    const d1 = hintedLayerTexel(record, delta_offset + 1);
-    var out = segment;
-    out.p0 = Vec2.add(out.p0, .{ .x = d0[0], .y = d0[1] });
-    out.p1 = Vec2.add(out.p1, .{ .x = d0[2], .y = d0[3] });
-    out.p2 = Vec2.add(out.p2, .{ .x = d1[0], .y = d1[1] });
-    out.p3 = Vec2.add(out.p3, .{ .x = d1[2], .y = d1[3] });
+// Read absolute hinted control points for the curve at this index out of
+// the snapshot's layer-info slab. Matches `fetchHintedQuadratic` in the
+// GPU hinted shader: no base-outline fetch, two texels per curve, p3 is
+// retained for parity with `CurveSegment` but always zero for quadratics.
+fn hintedSegment(record: HintedTextRecord, curve_base: usize) CurveSegment {
+    var out = CurveSegment{
+        .kind = .quadratic,
+        .p0 = .zero,
+        .p1 = .zero,
+        .p2 = .zero,
+        .p3 = .zero,
+    };
+    const curve_index = hintedCurveIndex(record, curve_base) orelse return out;
+    const point_offset = 3 + curve_index * 2;
+    const pts0 = hintedLayerTexel(record, point_offset);
+    const pts1 = hintedLayerTexel(record, point_offset + 1);
+    out.p0 = .{ .x = pts0[0], .y = pts0[1] };
+    out.p1 = .{ .x = pts0[2], .y = pts0[3] };
+    out.p2 = .{ .x = pts1[0], .y = pts1[1] };
+    out.p3 = .{ .x = pts1[2], .y = pts1[3] };
     return out;
-}
-
-fn hintedSegment(page: anytype, record: HintedTextRecord, curve_base: usize) CurveSegment {
-    const tex0 = readCurveTexelF32Base(page, curve_base);
-    const tex1 = readCurveTexelF32Base(page, curve_base + 4);
-    const tex2 = readCurveTexelF32Base(page, curve_base + 8);
-    const meta = readCurveTexelF32Base(page, curve_base + 12);
-    const base = decodeCurveSegment(tex0, tex1, tex2, meta);
-    const curve_index = hintedCurveIndex(record, curve_base) orelse return base;
-    return applyHintDeltas(base, record, curve_index);
 }
 
 fn accumulateHintedCurveCoverage(
     result: *CoveragePair,
-    page: anytype,
     record: HintedTextRecord,
     curve_base: usize,
     sample_rc: Vec2,
     ppe: f32,
     comptime horizontal: bool,
 ) CoverageScan {
-    return accumulateGlyphCoverageSegment(result, hintedSegment(page, record, curve_base), sample_rc, ppe, horizontal);
+    return accumulateGlyphCoverageSegment(result, hintedSegment(record, curve_base), sample_rc, ppe, horizontal);
 }
 
 fn accumulateEncodedQuadraticCoverage(result: *CoveragePair, tex0: [4]f32, tex1: [4]f32, sample_rc: Vec2, ppe: f32, direct: bool, comptime horizontal: bool) CoverageScan {
@@ -1058,7 +1058,7 @@ fn evalHintedTextCoverageAxisBandSpan(
         while (i < header[0]) : (i += 1) {
             const curve_ref = readBandCurveRef(page, band_base + i) orelse continue;
             if (dedup and !isBandSpanOwner(curve_ref.first_member_band, band, span.first)) continue;
-            if (accumulateHintedCurveCoverage(&result, page, record, curve_ref.base, sample_rc, ppe, horizontal) == .stop_scan and ordered) break;
+            if (accumulateHintedCurveCoverage(&result, record, curve_ref.base, sample_rc, ppe, horizontal) == .stop_scan and ordered) break;
         }
     }
     return result;
@@ -1278,26 +1278,15 @@ test "root code treats tiny exact-edge drift as zero" {
     try std.testing.expectEqual(@as(u16, 0), calcRootCode(-root_code_eps * 2.0, -0.25, -0.5));
 }
 
-test "hinted segment applies layer-info curve deltas" {
-    const toF16 = curve_tex.f32ToF16;
-    const page = struct {
-        curve_data: []const u16,
-        curve_width: u32 = 4,
-        curve_height: u32 = 1,
-    }{
-        .curve_data = &.{
-            toF16(0), toF16(0), toF16(0.5),                                 toF16(1),
-            toF16(1), toF16(0), toF16(0),                                   toF16(0),
-            toF16(1), toF16(1), toF16(curve_tex.DIRECT_ENCODING_KIND_BIAS), toF16(1),
-            toF16(0), toF16(0), toF16(0),                                   toF16(0),
-        },
-    };
+test "hinted segment decodes absolute layer-info control points" {
+    // Snapshot layer-info slab holds absolute hinted positions directly;
+    // the base curve atlas is never consulted on a hinted lookup.
     const layer_info = [_]f32{
-        0,     0,   0,   0,
-        0,     0,   0,   0,
-        0,     1,   0,   0,
-        0.25,  0.0, 0.0, -0.5,
-        -0.25, 0.5, 0.0, 0.0,
+        0,    0,   0,   0,
+        0,    0,   0,   0,
+        0,    1,   0,   0,
+        0.25, 0.0, 0.0, 0.5,
+        0.75, 0.5, 0.0, 0.0,
     };
     const record = HintedTextRecord{
         .data = &layer_info,
@@ -1308,7 +1297,7 @@ test "hinted segment applies layer-info curve deltas" {
         .curve_count = 1,
     };
 
-    const segment = hintedSegment(page, record, 0);
+    const segment = hintedSegment(record, 0);
     try std.testing.expectApproxEqAbs(@as(f32, 0.25), segment.p0.x, 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 0.5), segment.p1.y, 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 0.75), segment.p2.x, 0.001);

@@ -181,6 +181,7 @@ const SceneBundle = struct {
     text_bundle: ?*snail.TextBlobBundle = null,
     blobs: []*const snail.TextBlob = &.{},
     picture: ?*snail.PathPicture = null,
+    hint_snapshot: ?*snail.GlyphHintSnapshot = null,
 
     fn deinit(self: *SceneBundle) void {
         self.scene.deinit();
@@ -188,6 +189,10 @@ const SceneBundle = struct {
         if (self.text_bundle) |bundle| {
             bundle.deinit();
             self.allocator.destroy(bundle);
+        }
+        if (self.hint_snapshot) |snap| {
+            snap.deinit();
+            self.allocator.destroy(snap);
         }
         if (self.picture) |picture| {
             picture.deinit();
@@ -324,6 +329,16 @@ fn hintPpemForEm(em: f32) !snail.TrueTypeHintPpem {
     const ppem = em * 64.0;
     if (!std.math.isFinite(ppem) or ppem < 1.0) return error.HintUnavailable;
     return snail.TrueTypeHintPpem.uniform(@intFromFloat(@round(ppem)));
+}
+
+fn primeHintCache(context: *snail.TrueTypeHintContext, allocator: std.mem.Allocator, line: TextLine) !void {
+    var shaped = try context.atlas.shapeText(allocator, line.style, line.text);
+    defer shaped.deinit();
+    var run = try context.prepareRun(allocator, .{
+        .shaped = &shaped,
+        .ppem = try hintPpemForEm(line.size),
+    });
+    run.deinit();
 }
 
 fn makeHintedTextBlob(
@@ -475,6 +490,24 @@ fn runHintedTextWorkload(
     workload: TextWorkload,
 ) !void {
     bundle.reset();
+    // Populate the hint context cache for every glyph this iteration
+    // will need before snapshotting; once bound the snapshot is frozen
+    // and additional `prepareRun` calls that would add new keys must be
+    // followed by a fresh snapshot.
+    switch (workload) {
+        .short, .sentence, .paragraph => try primeHintCache(context, bundle.gpa, lineFor(workload)),
+        .paragraph_sizes => for (SIZES) |size| {
+            try primeHintCache(context, bundle.gpa, .{
+                .text = PARAGRAPH,
+                .x = 0,
+                .y = 0,
+                .size = @floatFromInt(size),
+            });
+        },
+    }
+    var snapshot = try context.snapshot(bundle.gpa, .{});
+    defer snapshot.deinit();
+    try bundle.bindHintSnapshot(&snapshot);
     switch (workload) {
         .short, .sentence, .paragraph => {
             const blob = try makeHintedTextBlob(bundle, context, lineFor(workload));
@@ -645,6 +678,12 @@ fn buildScene(
     if (needs_hinted_text) hint_context = snail.TrueTypeHintContext.init(allocator, atlas);
     defer if (needs_hinted_text) hint_context.deinit();
 
+    var hint_snapshot: ?*snail.GlyphHintSnapshot = null;
+    errdefer if (hint_snapshot) |snap| {
+        snap.deinit();
+        allocator.destroy(snap);
+    };
+
     if (kind == .rich_text or needs_text) {
         text_bundle = try allocator.create(snail.TextBlobBundle);
         text_bundle.?.* = snail.TextBlobBundle.init(allocator, atlas);
@@ -660,6 +699,17 @@ fn buildScene(
         blob_count += 1;
     } else if (needs_text) {
         const lines: []const TextLine = if (kind == .multi_script or kind == .hinted_multi_script) scene_multi_script_lines[0..] else scene_text_lines[0..];
+        // Hinted scenes need a snapshot bound to the bundle. Prime the
+        // hint cache, freeze a snapshot, bind it, then build blobs. The
+        // snapshot is heap-allocated so its lifetime tracks the
+        // SceneBundle (which owns the text bundle that references it).
+        if (needs_hinted_text) {
+            for (lines) |line| try primeHintCache(&hint_context, allocator, line);
+            const snap_ptr = try allocator.create(snail.GlyphHintSnapshot);
+            snap_ptr.* = try hint_context.snapshot(allocator, .{});
+            hint_snapshot = snap_ptr;
+            try text_bundle.?.bindHintSnapshot(snap_ptr);
+        }
         blobs = try allocator.alloc(*const snail.TextBlob, lines.len);
         for (lines) |line| {
             blobs[blob_count] = if (needs_hinted_text)
@@ -697,6 +747,7 @@ fn buildScene(
         .text_bundle = text_bundle,
         .blobs = blobs,
         .picture = picture,
+        .hint_snapshot = hint_snapshot,
     };
 }
 
@@ -850,7 +901,7 @@ fn hintAsciiOnce(
             .info = info,
             .page = atlas.pages[info.page_index],
         }, &hint);
-        std.mem.doNotOptimizeAway(patch.curveDeltaBytes());
+        std.mem.doNotOptimizeAway(patch.curvePointBytes());
     }
 }
 

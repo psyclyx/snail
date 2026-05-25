@@ -109,21 +109,22 @@ into per-channel coverage. There is no bitmap glyph atlas, no distance field,
 and no texture sample that represents a pre-rasterized glyph shape.
 
 **Optional TrueType hints.** The default text path is unhinted and
-resolution-independent. Zig callers can opt into per-size TrueType bytecode
-execution with `TrueTypeHintContext`; hinted glyphs are stored as
-curve-delta records in a bundle-shared hint pool that the renderer reads
-at draw time, and the curve evaluation itself is unchanged. The pool is
-bundle-scoped: many small blobs over the same character set (terminal
-rows, code lines, log entries) share one hint upload per bundle rather
-than one per blob. `prepareRun` is whole-run: every glyph comes back
-either hinted or with a per-glyph `.fallback` marker. Fallback glyphs
-render unhinted curves but their advances are still snapped to whole
-pixels at the chosen PPEM, so columns of text grid-align even when
-individual glyphs can't be hinted (font has no bytecode, hits a
-topology mismatch, etc.). Faux-bold
-faces hint normally; the embolden offset is applied as a render-time second
-copy. Faces whose `gasp` table explicitly disables grid-fitting at a given
-size keep their original advances.
+resolution-independent. Zig callers can opt into per-size TrueType
+bytecode execution with `TrueTypeHintContext`, then freeze the result
+into a **`GlyphHintSnapshot`** — an immutable, per-(atlas, hint-context,
+ppem) value that carries absolute hinted control points. A hinted draw
+consults the atlas (band lookup) and the snapshot (outline geometry);
+the snapshot is bound to a `TextBlobBundle` via `bindHintSnapshot`, and
+many bundles can share one snapshot. The atlas itself stays
+PPEM-independent — hinting introduces a parallel resource, not a
+mutation. `prepareRun` is whole-run: every glyph comes back either
+hinted or with a per-glyph `.fallback` marker. Fallback glyphs render
+unhinted curves but their advances are still snapped to whole pixels at
+the chosen PPEM, so columns of text grid-align even when individual
+glyphs can't be hinted (font has no bytecode, hits a topology mismatch,
+etc.). Faux-bold faces hint normally; the embolden offset is applied as
+a render-time second copy. Faces whose `gasp` table explicitly disables
+grid-fitting at a given size keep their original advances.
 
 ## Color convention
 
@@ -161,7 +162,8 @@ application around it.
 | Type | Owns | Borrows | Lifetime rule |
 |------|------|---------|---------------|
 | `TextAtlas` | Atlas pages and metadata allocated by its allocator. | Text configuration and source font data through the configuration. | Immutable snapshot. Any blob or manifest entry that points at it must not outlive it. |
-| `TextBlobBundle` | Arena holding many `TextBlob`s, their glyph/paint content, and the bundle-shared TT hint pool. | A compatible `TextAtlas`. | Owns blob lifetimes. `reset` invalidates every outstanding blob borrowed from the bundle; `rebindAtlas` retargets to a compatible superset. The hint pool is uploaded once per bundle: many blobs sharing a glyph at the same PPEM share one upload. |
+| `TextBlobBundle` | Arena holding many `TextBlob`s and their glyph/paint content. Holds an optional `*const GlyphHintSnapshot` reference for hinted text. | A compatible `TextAtlas`; optionally a `GlyphHintSnapshot` derived from that atlas. | Owns blob lifetimes. `reset` invalidates every outstanding blob borrowed from the bundle; `rebindAtlas` retargets to a compatible superset; `bindHintSnapshot` pins the bundle's hinted-outline source. The snapshot uploads once per `(atlas, hint-context, ppem)` — many bundles can share one. |
+| `GlyphHintSnapshot` | Immutable per-(atlas, hint-context, ppem) snapshot of hinted outlines: absolute control points and band-reuse tags. | Built by `TrueTypeHintContext.snapshot(allocator, options)`. | Bound to a `TextBlobBundle` via `bindHintSnapshot`; many bundles can share one snapshot. The manifest dedupes on snapshot identity. |
 | `TextBlob` | A view into bundle-owned glyph/paint storage. | The bundle that produced it and that bundle's `TextAtlas`. | Immutable snapshot, pointer-stable until the bundle is reset/deinit'd. |
 | `PathPicture` | Frozen path atlas/layer records allocated by its allocator. | Nothing after freeze. | Immutable snapshot. Can be declared in a manifest by pointer. |
 | `Image` | Pixel storage according to the image constructor. | Nothing unless explicitly documented by the constructor. | Immutable render resource while it is declared in a manifest. |
@@ -230,10 +232,15 @@ const cell_w = snail.snapLengthToStep(raw_cell.cell_width, step.x, .nearest, 1.0
 const line_h = snail.snapLengthToStep(raw_cell.line_height, step.y, .nearest, 1.0);
 ```
 
-Callers that want grid-fitted small text can opt into explicit TrueType hinting
-for a chosen ppem. The hint context executes TrueType bytecode, checks that the
-hinted outline can reuse the atlas band structure, and stores curve deltas in
-the `TextBlob` layer records.
+Callers that want grid-fitted small text can opt into explicit TrueType
+hinting for a chosen ppem. Hinting is the one place snail deliberately
+gives up PPEM-independence: the atlas (`TextAtlas`) stays the same
+immutable, PPEM-independent value, but rendering also needs a
+**`GlyphHintSnapshot`** — an immutable, per-(atlas, hint-context, ppem)
+value carrying absolute hinted control points derived from that atlas at
+that ppem. A hinted draw consults both the atlas (band lookup) and the
+snapshot (outline geometry). A bundle binds one snapshot; many bundles
+can share one snapshot, and the manifest dedupes on snapshot identity.
 
 ```zig
 var hint_context = snail.TrueTypeHintContext.init(allocator, &atlas);
@@ -248,6 +255,12 @@ var hinted = try hint_context.prepareRun(allocator, .{
 });
 defer hinted.deinit();
 
+// Freeze the hint context's cache into an immutable snapshot, then bind
+// it to the bundle. The snapshot is the per-PPEM hinted-outline value.
+var hint_snapshot = try hint_context.snapshot(allocator, .{});
+defer hint_snapshot.deinit();
+try bundle.bindHintSnapshot(&hint_snapshot);
+
 _ = try bip.append(.{
     .source = .{ .hinted = hinted.glyphs },
     .placement = .{ .baseline = baseline, .em = 12 },
@@ -255,32 +268,114 @@ _ = try bip.append(.{
 });
 ```
 
-`prepareRun` always covers every glyph of `shaped`; each entry carries either
-a hint pointer or a `.fallback` marker. Strict callers check
-`hinted.stats.fallback_count == 0` before consuming the run. Fallback glyphs
-render via unhinted curves but their advances are pixel-snapped at the hint
-context's PPEM so adjacent glyphs still grid-align.
+`prepareRun` always covers every glyph of `shaped`; each entry carries
+either a hint pointer or a `.fallback` marker. Strict callers check
+`hinted.stats.fallback_count == 0` before consuming the run. Fallback
+glyphs render via unhinted curves but their advances are pixel-snapped
+at the hint context's PPEM so adjacent glyphs still grid-align.
 
-The hint records themselves live in a bundle-shared pool. Many blobs built
-from the same `TextBlobBundle` that reference the same hint (same glyph at
-the same PPEM) collapse to one pool entry; the manifest auto-dedupes the
-`text_hint` resource derived from the atlas key, so the GPU upload is one
-hint slab per bundle rather than per blob — important for terminals,
-chat/log windows, and other workloads with many small blobs over the same
+Band reuse: a snapshot reuses the atlas's per-glyph band table when the
+hinted outline preserves band membership and ordering. When hinting
+shifts a curve across a band boundary (rare at typical body-text ppems),
+the snapshot records an `expanded_bands` padding count and the renderer
+expands its sampling span accordingly; ordering breaks are flagged with
+`unordered_bands` and disable the early-exit on each band scan. Both are
+contractual properties of the snapshot, not implementation tricks: a
+snapshot whose `proveBandReuse` succeeds is bit-for-bit cheaper to
+render than one that needs padding, but both produce the same coverage.
+
+Snapshot dedup: many `TextBlobBundle`s built from the same
+`(atlas, hint_context, ppem)` reference one snapshot; the manifest
+dedupes on the snapshot's identity, so the GPU upload is one hint slab
+per snapshot rather than per bundle — important for terminals, chat/log
+windows, and other workloads with many small blobs over the same
 character set.
 
 C uses the same model through `SnailTrueTypeHintContext`,
-`SnailTrueTypePreparedHintRun`, and the
-`SnailTextBlobBundle`/`SnailBlobInProgress` builder pair. If
-`snail_true_type_hint_context_init` returns `SNAIL_ERR_HINT_UNAVAILABLE` for a
-face with no TrueType bytecode, fall back to
-`snail_blob_in_progress_append_shaped` or `snail_text_blob_init_from_shaped`.
+`SnailTrueTypePreparedHintRun`, `SnailGlyphHintSnapshot`, and the
+`SnailTextBlobBundle`/`SnailBlobInProgress` builder pair. Call
+`snail_true_type_hint_context_snapshot` after preparing hint runs, bind
+it via `snail_text_blob_bundle_bind_hint_snapshot`, then append. If
+`snail_true_type_hint_context_init` returns `SNAIL_ERR_HINT_UNAVAILABLE`
+for a face with no TrueType bytecode, fall back to
+`snail_blob_in_progress_append_shaped` or
+`snail_text_blob_init_from_shaped`.
 
 The usual rule is to snap the run baseline and preserve glyph advances.
 Per-glyph origin snapping or hinted runs can make tiny static text look more
 grid-fitted, but both are per-size choices. If text is later rotated, scaled,
 animated, or drawn through a non-axis-aligned MVP, snap in the final space or
 leave it unhinted.
+
+## Hint Cache Lifecycle
+
+`TrueTypeHintContext` caches three independent tiers as you call
+`prepareRun`/`computeGlyph`:
+
+| Tier | Keyed by | Cost to build | Cost per entry | Reuse pattern |
+|---|---|---|---|---|
+| Face programs | `face` | One-time bytecode parse | Small (kilobytes) | Bounded by font count; never needs eviction. |
+| Size states | `(face, ppem)` | Expensive — runs `fpgm`/`prep` setup, allocates VM tables | ~5–50 KB | Reusable across every glyph at that PPEM. |
+| Glyph values | `(face, ppem, glyph_id)` | Cheap once the size state is warm | ~80–800 B (curve points) | Populous. The tier that actually grows. |
+
+Snail ships **mechanism, not policy**: the context exposes inspection and
+eviction verbs but does not auto-evict, set capacity limits, or apply LRU.
+Pick a policy that matches your workload.
+
+| Verb | Effect |
+|---|---|
+| `ctx.byteFootprint() Footprint` | Per-tier counts and byte totals. Drives any eviction decision. |
+| `ctx.sizeKeyIterator()` / `ctx.glyphKeyIterator()` | Walk cached entries to choose victims; collect keys first, then evict. |
+| `ctx.evictSize(face, ppem)` | Drop the PPEM's VM state and every glyph value at that `(face, ppem)`. |
+| `ctx.evictPpem(ppem)` | Same as `evictSize` across every face. |
+| `ctx.clearGlyphs()` | Drop every glyph value; keep size states warm. Optimised for zoom-scrubbing where outlines churn but VMs are reused. |
+| `ctx.clear()` | Wholesale: every tier dropped. Equivalent to a fresh `init`. |
+
+**Invariant.** Cache entries are eligible for eviction at any point
+between `prepareRun`/`computeGlyph` calls. `TextBlobBundle`s built via
+`bindHintContext` copy their pending hint points into bundle-owned
+storage at append time, so eviction during bundle construction is safe
+— it never produces dangling references.
+
+Consumer recipes:
+
+```zig
+// Terminal at one PPEM, session-stable (escarghost). Default behaviour;
+// no eviction verbs needed.
+var ctx = snail.TrueTypeHintContext.init(allocator, &atlas);
+defer ctx.deinit();
+// ... draw frames forever; cache size is bounded by character set.
+
+// Editor with 3–10 zoom levels: drop levels the user leaves.
+fn onZoomChange(ctx: *snail.TrueTypeHintContext, old_ppem: snail.TrueTypeHintPpem) void {
+    ctx.evictSize(0, old_ppem);
+}
+
+// Animation/scrubbing through many PPEMs: drop outlines per frame,
+// keep VMs warm so the recent PPEM neighbourhood stays responsive.
+fn afterFrame(ctx: *snail.TrueTypeHintContext, current_ppem_26_6: u32) void {
+    ctx.clearGlyphs();
+    var it = ctx.sizeKeyIterator();
+    while (it.next()) |entry| {
+        const distance = if (entry.ppem.x_26_6 > current_ppem_26_6)
+            entry.ppem.x_26_6 - current_ppem_26_6
+        else
+            current_ppem_26_6 - entry.ppem.x_26_6;
+        if (distance > 5 * 64) ctx.evictSize(entry.face_index, entry.ppem);
+    }
+}
+
+// Server-side renderer in a tight loop: reset at request boundary.
+fn handleRequest(ctx: *snail.TrueTypeHintContext) !void {
+    defer ctx.clear();
+    // ... build snapshots, render, drop.
+}
+```
+
+The `Footprint.totalBytes()` value is a hint for when to act, not a
+guarantee. Snail measures the major allocations (VM stack/storage/points,
+curve point slices) but does not chase every hash-map bucket overhead;
+use the number as a workload-relative signal, not as an exact RSS attribution.
 
 ## Build
 
@@ -673,7 +768,7 @@ until `snail_scene_reset` or `snail_scene_deinit`.
 | `TextAtlas` | Immutable CPU font/glyph snapshot. `ensureText`, `ensureShaped`, and `ensureGlyphs` return a new snapshot; old stays valid. |
 | `ShapedText` | Shaped glyph placements for a string/run. |
 | `TextBlob` | Bundle-owned positioned-text view: glyph indices, transforms, and paint records into the bundle's arena. Accessed via `blob.atlas()` and the rendering APIs; not directly destructible (the bundle owns its lifetime). |
-| `TextBlobBundle` / `BlobInProgress` | Arena-backed builder for one or many `TextBlob`s sharing a `TextAtlas`. `bundle.startBlob()` returns a `BlobInProgress`; finish it with `bip.finish(key)` to get a bundle-owned `*const TextBlob`, or abort with `bip.abort()`. `bundle.rebindAtlas` / `bundle.rebound` are the cache/lifetime helpers. The bundle also owns a shared TT hint pool — terminal-style workloads with many small blobs over the same character set upload that pool once instead of once per blob. C API: `SnailTextBlobBundle` + `SnailBlobInProgress`. |
+| `TextBlobBundle` / `BlobInProgress` | Arena-backed builder for one or many `TextBlob`s sharing a `TextAtlas`. `bundle.startBlob()` returns a `BlobInProgress`; finish it with `bip.finish(key)` to get a bundle-owned `*const TextBlob`, or abort with `bip.abort()`. `bundle.rebindAtlas` / `bundle.rebound` are the cache/lifetime helpers. Hinted text requires `bundle.bindHintSnapshot(snapshot)` first; the bundle references a single `GlyphHintSnapshot` and many bundles can share one — terminal-style workloads with many small blobs at the same PPEM upload the snapshot's slab once per `(atlas, ppem)` rather than per blob. C API: `SnailTextBlobBundle` + `SnailBlobInProgress`. |
 | `Font` | Stable parsed-font helper for `unitsPerEm`, `glyphIndex`, and `advanceWidth` when callers manage raw font data directly. |
 | `FaceSpec` | `{ .data, .weight, .italic, .fallback, .synthetic }` — font face specification for `TextAtlas.init`. |
 | `FaceIndex` | `u16` face handle returned by atlas resolution/itemization and accepted by per-face metric helpers. |
@@ -746,7 +841,7 @@ until `snail_scene_reset` or `snail_scene_deinit`.
 | `TextBlobBundle.init(gpa, atlas) TextBlobBundle` / `bundle.startBlob() !BlobInProgress` / `bip.append(TextAppend) !TextAppendResult` / `bip.finish(key) !*const TextBlob` / `bip.abort() void` | Streaming blob construction. The bundle owns blob lifetimes; multiple blobs sharing one atlas live in one arena. `bundle.buildBlob(key, []TextAppend, ?[]TextAppendResult)` is the bulk variant. |
 | `bundle.rebindAtlas(new_atlas)` / `target_bundle.rebound(key, src_blob, new_atlas) !*const TextBlob` | Cache/lifetime helpers for atlas extension. `rebindAtlas` retargets the whole bundle in place when the new snapshot is prefix-compatible; `rebound` copies one blob from a source bundle into a target bundle already bound to `new_atlas`. |
 | `bundle.reset()` / `bundle.freeze()` / `bundle.unfreeze()` / `bundle.isFrozen()` / `bundle.blobCount()` / `bundle.currentGeneration()` | Bundle lifecycle: `reset` invalidates every outstanding blob, the generation counter advances so callers can detect use-after-reset. C handles compare-and-validate against `snail_text_blob_bundle_generation`. |
-| `blob.resourceKeys(atlas_key, blob_key) TextResourceKeys` | Build the resource binding used by both `scene.addText` and `ResourceManifest.putTextBlob`. Returns `{ atlas, paint?, hint? }`. The hint key is derived from `atlas_key` (not `blob_key`) so every blob from the same bundle resolves to the same `text_hint` manifest entry; the bundle hint pool uploads once per bundle. |
+| `blob.resourceKeys(atlas_key, blob_key) TextResourceKeys` | Build the resource binding used by both `scene.addText` and `ResourceManifest.putTextBlob`. Returns `{ atlas, paint?, hint? }`. The hint key is the bound `GlyphHintSnapshot`'s own key, so blobs across many bundles that share one snapshot collapse to one `text_hint` manifest entry; the snapshot slab uploads once per `(atlas, hint-context, ppem)`. |
 | `TrueTypeHintContext.init(alloc, atlas)` / `context.prepareRun(alloc, .{ .shaped, .ppem })` | Whole-run TrueType hinting. The result covers every input glyph; rejected glyphs become `.fallback` entries with pixel-snapped advances rather than aborting the whole run. Strict callers check `stats.fallback_count == 0`. Append the run via `bip.append(.{ .source = .{ .hinted = run.glyphs }, .placement, .fill = .{ .solid = color } })`. C callers use `snail_true_type_hint_context_prepare_run` + `snail_blob_in_progress_append_prepared_hint_run` (or the standalone `snail_text_blob_init_from_prepared_hint_run`). |
 | `context.rebindAtlas(new_atlas)` | Preserve cached hint values, face programs, and size states across atlas extensions when the new snapshot is prefix-compatible with the old. Eliminates the warmup rehint storm on `ensureText`-style growth. |
 | `TextAppend` | `{ .source, .placement = .{ .baseline, .em }, .fill }` where `source` is `.{ .shaped = []const ShapedText.Glyph }` or `.{ .hinted = []const PreparedHintRun.Glyph }`. Slice notation handles sub-selection (`shaped.glyphs[a..b]`). Hinted runs require a solid `Paint`. |
@@ -792,7 +887,7 @@ try scene.addPath(.{ .picture = &sprite, .resource_key = snail.ResourceKey.named
 |--------|-------------|
 | `ResourceManifest.init(entries)` | Wrap a caller-owned `[]ResourceManifest.Entry` buffer. |
 | `set.reset()` | Clear entries; capacity is retained. |
-| `set.putTextBlob(resources, blob)` / `set.putTextBlobOptions(resources, blob, options)` | Add a text blob's atlas, optional paint records, and optional bundle hint pool under the same `TextResourceKeys` used by `scene.addText`. Many blobs from one bundle share the hint key and dedupe to a single manifest entry. Options can override atlas capacity mode. |
+| `set.putTextBlob(resources, blob)` / `set.putTextBlobOptions(resources, blob, options)` | Add a text blob's atlas, optional paint records, and optional `GlyphHintSnapshot` under the same `TextResourceKeys` used by `scene.addText`. Blobs sharing one snapshot dedupe to a single `text_hint` manifest entry, regardless of which bundle each blob belongs to. Options can override atlas capacity mode. |
 | `set.putPathPicture(key, picture)` / `set.putPathPictureOptions(key, picture, options)` | Add a path picture, optionally overriding atlas capacity mode. |
 | `set.putImage(key, image)` | Add an image resource. |
 | `set.estimateUploadFootprint() !ResourceFootprint` | Allocation-free estimate for a resource manifest before upload. |

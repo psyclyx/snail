@@ -184,8 +184,7 @@ pub fn resourceManifestUploadFootprint(set: *const ResourceManifest) !ResourceFo
                 }
             },
             .text_hint => |text| {
-                text.bundle.materialiseHintLayerInfo() catch {};
-                acc.addLayerInfo(text.bundle.hint_layer_info_data, text.bundle.hint_layer_info_width, text.bundle.hint_layer_info_height);
+                acc.addLayerInfo(text.snapshot.layer_info_data, text.snapshot.layer_info_width, text.snapshot.layer_info_height);
             },
             .path_picture => |path| {
                 const atlas = &path.picture.atlas;

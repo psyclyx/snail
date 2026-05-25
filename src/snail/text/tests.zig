@@ -446,9 +446,9 @@ test "TextBlobBundle stores hinted glyph records and emits hinted special vertic
     const gid = (try fonts.glyphIndex(0, 'A')).?;
     const face_view = fonts.faceView(0, .{});
     const info = face_view.getGlyph(gid).?;
-    const deltas = try testing.allocator.alloc(u16, @as(usize, info.curve_count) * text_hint_format.delta_values_per_curve);
-    defer testing.allocator.free(deltas);
-    @memset(deltas, 0);
+    const points = try testing.allocator.alloc(u16, @as(usize, info.curve_count) * text_hint_format.point_values_per_curve);
+    defer testing.allocator.free(points);
+    @memset(points, 0);
     var hinted_value = snail.TrueTypeHintedGlyph{
         .key = .{ .face_index = 0, .ppem_x_26_6 = 12 * 64, .ppem_y_26_6 = 12 * 64, .glyph_id = gid },
         .advance = .{ .x = 1, .y = 0 },
@@ -460,30 +460,37 @@ test "TextBlobBundle stores hinted glyph records and emits hinted special vertic
                 .band_entry = info.band_entry,
                 .bbox = info.bbox,
             },
-            .curve_deltas_f16 = deltas,
+            .curve_points_f16 = points,
         },
     };
 
+    // Build a tiny snapshot covering just this glyph value, then bind it
+    // to the bundle. Mirrors the production flow: snapshots are the
+    // hinted-outline value, the bundle borrows one.
+    const hint_snapshot_mod = @import("hint_snapshot.zig");
+    var snapshot_builder = try hint_snapshot_mod.Builder.init(testing.allocator, &fonts, .{});
+    errdefer snapshot_builder.deinit();
+    try snapshot_builder.addRenderable(&hinted_value);
+    var snapshot = try snapshot_builder.finish();
+    defer snapshot.deinit();
+
     var bundle = snail.TextBlobBundle.init(testing.allocator, &fonts);
     defer bundle.deinit();
+    try bundle.bindHintSnapshot(&snapshot);
     var bip = try bundle.startBlob();
     errdefer bip.abort();
     try bip.appendHintedGlyphRef(0, gid, snail.Transform2D.scale(12, -12), .{ 0.2, 0.4, 0.6, 1 }, &hinted_value);
     try bip.appendHintedGlyphRef(0, gid, .{ .xx = 12, .yy = -12, .tx = 14, .ty = 0 }, .{ 0.2, 0.4, 0.6, 1 }, &hinted_value);
 
     const blob = try bip.finish(snail.ResourceKey.named("test_blob"));
-    // `hint_record_texel` is now a bundle hint-pool *index*, not a texel
-    // offset. Both glyphs referenced the same `*const HintedGlyphValue` →
-    // they intern to the same pool entry.
-    const pool_index = blob.glyphs[0].hint_record_texel orelse return error.TestExpectedEqual;
-    try testing.expectEqual(pool_index, blob.glyphs[1].hint_record_texel.?);
+    // `hint_record_texel` is now the absolute texel offset into the
+    // bound snapshot's layer-info slab. Both glyphs share the same
+    // snapshot entry, so the resolved offsets match.
+    const texel_offset = blob.glyphs[0].hint_record_texel orelse return error.TestExpectedEqual;
+    try testing.expectEqual(texel_offset, blob.glyphs[1].hint_record_texel.?);
     try testing.expectEqual(@as(?u32, null), blob.glyphs[0].paint_record_index);
-    // Hint records live in the bundle's shared slab, not the blob's paint
-    // slab. Materialise the slab and verify the record header.
-    try bundle.materialiseHintLayerInfo();
-    const hint_data = bundle.hint_layer_info_data orelse return error.TestExpectedEqual;
-    const hint_texel = bundle.hintPoolTexelOffset(pool_index);
-    const meta = paint_records.readTexel(hint_data, bundle.hint_layer_info_width, hint_texel + 2);
+    const hint_data = snapshot.layer_info_data orelse return error.TestExpectedEqual;
+    const meta = paint_records.readTexel(hint_data, snapshot.layer_info_width, texel_offset + 2);
     try testing.expectEqual(@as(f32, @floatFromInt(info.base_curve_texel)), meta[0]);
     try testing.expectEqual(@as(f32, @floatFromInt(info.curve_count)), meta[1]);
 
@@ -528,8 +535,12 @@ test "TextBlobBundle hint run keeps fallback glyphs" {
     try testing.expect(run.stats.hinted_count >= 2);
     try testing.expect(run.stats.fallback_count >= 1);
 
+    var snapshot = try context.snapshot(testing.allocator, .{});
+    defer snapshot.deinit();
+
     var bundle = snail.TextBlobBundle.init(testing.allocator, &fonts);
     defer bundle.deinit();
+    try bundle.bindHintSnapshot(&snapshot);
     var bip = try bundle.startBlob();
     errdefer bip.abort();
     _ = try bip.append(.{
@@ -1390,8 +1401,12 @@ test "TextBlob budget doubles for emboldened hinted glyphs" {
     defer hinted.deinit();
     if (hinted.stats.hinted_count == 0) return error.SkipZigTest;
 
+    var snapshot = try ctx.snapshot(testing.allocator, .{});
+    defer snapshot.deinit();
+
     var bundle = TextBlobBundle.init(testing.allocator, &fonts);
     defer bundle.deinit();
+    try bundle.bindHintSnapshot(&snapshot);
     var bip = try bundle.startBlob();
     errdefer bip.abort();
     _ = try bip.append(.{
@@ -1405,10 +1420,10 @@ test "TextBlob budget doubles for emboldened hinted glyphs" {
     try testing.expectEqual(@as(usize, 2), blob.gpu_instance_budget);
 }
 
-test "TextBlobBundle shares hint pool across blobs" {
+test "GlyphHintSnapshot dedupes hinted records across blobs sharing one bundle" {
     // Regression: blobs in the same bundle that reference the same hinted
-    // glyph value should share a single pool entry, so the hint record
-    // bytes upload once per bundle rather than once per blob. Critical
+    // glyph value should share a single snapshot entry, so the hint record
+    // bytes upload once per snapshot rather than once per blob. Critical
     // for terminal-style workloads (tmatrix, code listings) where many
     // small blobs reuse the same character set at the same PPEM.
     const assets_data = @import("assets");
@@ -1433,8 +1448,12 @@ test "TextBlobBundle shares hint pool across blobs" {
     });
     defer hinted.deinit();
 
+    var snapshot = try ctx.snapshot(testing.allocator, .{});
+    defer snapshot.deinit();
+
     var bundle = TextBlobBundle.init(testing.allocator, &fonts);
     defer bundle.deinit();
+    try bundle.bindHintSnapshot(&snapshot);
 
     // Build five blobs each referencing the same hinted "Hello".
     for (0..5) |i| {
@@ -1448,10 +1467,11 @@ test "TextBlobBundle shares hint pool across blobs" {
         _ = try bip.finish(snail.ResourceKey.fromId(@intCast(i + 1)));
     }
 
-    // Pool size should equal the unique-hinted-glyph count, not the
+    // Snapshot entry count equals the unique-hinted-glyph count, not the
     // total across blobs. "Hello" has at most 5 unique hinted glyphs
-    // (one per distinct letter — H, e, l, o = 4); the bundle should
-    // hold ≤ 5 pool entries, not 25.
-    try testing.expect(bundle.hint_pool.items.len <= 5);
+    // (one per distinct letter — H, e, l, o = 4); the snapshot should
+    // hold ≤ 5 entries, not 25, and every bundle sharing this snapshot
+    // pays just one upload's worth of bytes for the hint slab.
+    try testing.expect(snapshot.entries.count() <= 5);
     try testing.expect(bundle.blobs.items.len == 5);
 }

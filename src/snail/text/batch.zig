@@ -255,8 +255,8 @@ pub fn appendTextDrawIntoBatch(
         if (has_outer_transform) {
             final_transform = Transform2D.multiply(override.transform, final_transform);
         }
-        if (glyph.hint_record_texel) |hint_pool_index| {
-            try emitHintedBlobGlyph(batch, blob, &face_view, glyph, hint_pool_index, hint_info_row_base, override.tint, final_transform);
+        if (glyph.hint_record_texel) |texel_offset| {
+            try emitHintedBlobGlyph(batch, blob, &face_view, glyph, texel_offset, hint_info_row_base, override.tint, final_transform);
             count += 1;
         } else if (glyph.paint_record_index) |record_index| {
             try emitPaintedBlobGlyph(batch, blob, &face_view, glyph.glyph_id, record_index, paint_info_row_base, override.tint, final_transform);
@@ -277,8 +277,8 @@ pub fn appendTextDrawIntoBatch(
             if (has_outer_transform) {
                 bold_transform = Transform2D.multiply(override.transform, bold_transform);
             }
-            if (glyph.hint_record_texel) |hint_pool_index| {
-                try emitHintedBlobGlyph(batch, blob, &face_view, glyph, hint_pool_index, hint_info_row_base, override.tint, bold_transform);
+            if (glyph.hint_record_texel) |texel_offset| {
+                try emitHintedBlobGlyph(batch, blob, &face_view, glyph, texel_offset, hint_info_row_base, override.tint, bold_transform);
             } else if (glyph.paint_record_index) |record_index| {
                 try emitPaintedBlobGlyph(batch, blob, &face_view, glyph.glyph_id, record_index, paint_info_row_base, override.tint, bold_transform);
             } else {
@@ -304,18 +304,18 @@ fn emitHintedBlobGlyph(
     blob: *const TextBlob,
     face_view: *const FaceView,
     glyph: TextBlob.Glyph,
-    hint_pool_index: u32,
+    texel_offset: u32,
     hint_info_row_base: u32,
     tint: [4]f32,
     transform: Transform2D,
 ) !void {
     const info = face_view.getGlyph(glyph.glyph_id) orelse return;
     if (info.band_entry.h_band_count == 0 or info.band_entry.v_band_count == 0) return;
-    // Resolve the bundle-pool index to a position in the bundle's shared
-    // hint layer-info slab.
-    const bundle = blob.bundle;
-    const texel_offset = bundle.hintPoolTexelOffset(hint_pool_index);
-    const width = bundle.hint_layer_info_width;
+    // The texel offset is absolute within the bound `GlyphHintSnapshot`'s
+    // layer-info slab (resolved at append time). Split into (local_x, y)
+    // via the snapshot's slab width.
+    const snapshot = blob.bundle.hintSnapshotResolved() orelse return error.NoHintSnapshotBound;
+    const width = snapshot.layer_info_width;
     if (width == 0) return;
     const local_x: u16 = @intCast(texel_offset % width);
     const local_y: u16 = @intCast(texel_offset / width);

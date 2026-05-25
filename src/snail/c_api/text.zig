@@ -554,12 +554,14 @@ pub export fn snail_blob_in_progress_append_shaped(
 pub export fn snail_blob_in_progress_append_prepared_hint_run(
     bip: *common.BlobInProgressImpl,
     run: *const TrueTypePreparedHintRunImpl,
+    snapshot: *const common.GlyphHintSnapshotImpl,
     placement: SnailTextPlacement,
     color: ?[*]const f32,
     out_result: ?*SnailTextAppendResult,
 ) c_int {
     if (!bipValid(bip)) return SNAIL_ERR_INVALID_ARGUMENT;
     const c = color4(color) catch return SNAIL_ERR_INVALID_ARGUMENT;
+    bip.bundle.inner.bindHintSnapshot(&snapshot.inner) catch |err| return mapError(err);
     const handle = snail.BlobInProgress{ .bundle = &bip.bundle.inner };
     const result = handle.append(.{
         .source = .{ .hinted = run.inner.glyphs },
@@ -683,6 +685,39 @@ pub export fn snail_true_type_prepared_hint_run_stats(run: *const TrueTypePrepar
     out.* = fromTrueTypeHintRunStats(run.inner.stats);
 }
 
+// Glyph hint snapshot — the per-PPEM immutable hinted-outline value
+// derived from a (TextAtlas, TrueTypeHintContext) pair.
+
+pub export fn snail_true_type_hint_context_snapshot(
+    alloc_ptr: ?*const SnailAllocator,
+    context: *common.TrueTypeHintContextImpl,
+    out: *?*common.GlyphHintSnapshotImpl,
+) c_int {
+    const impl = createHandle(common.GlyphHintSnapshotImpl, alloc_ptr) catch return SNAIL_ERR_OUT_OF_MEMORY;
+    const allocator = allocatorForHandle(impl);
+    impl.inner = context.inner.snapshot(allocator, .{}) catch |err| {
+        destroyHandle(impl);
+        return mapError(err);
+    };
+    out.* = impl;
+    return SNAIL_OK;
+}
+
+pub export fn snail_glyph_hint_snapshot_deinit(snapshot: ?*common.GlyphHintSnapshotImpl) void {
+    if (snapshot) |s| {
+        s.inner.deinit();
+        destroyHandle(s);
+    }
+}
+
+pub export fn snail_text_blob_bundle_bind_hint_snapshot(
+    bundle: *common.TextBlobBundleImpl,
+    snapshot: *const common.GlyphHintSnapshotImpl,
+) c_int {
+    bundle.inner.bindHintSnapshot(&snapshot.inner) catch |err| return mapError(err);
+    return SNAIL_OK;
+}
+
 /// Internal helper: build a TextBlob into a freshly-allocated bundle
 /// owned by the returned TextBlobImpl. Used by all standalone
 /// init_* paths so callers that don't manage their own bundle can still
@@ -693,6 +728,16 @@ fn initStandaloneBlob(
     appends: []const snail.TextAppend,
     out: *?*TextBlobImpl,
 ) c_int {
+    return initStandaloneBlobWithHintSnapshot(alloc_ptr, atlas, null, appends, out);
+}
+
+fn initStandaloneBlobWithHintSnapshot(
+    alloc_ptr: ?*const SnailAllocator,
+    atlas: *const snail.TextAtlas,
+    hint_snapshot: ?*const snail.GlyphHintSnapshot,
+    appends: []const snail.TextAppend,
+    out: *?*TextBlobImpl,
+) c_int {
     const impl = createHandle(TextBlobImpl, alloc_ptr) catch return SNAIL_ERR_OUT_OF_MEMORY;
     const allocator = allocatorForHandle(impl);
     const owned_bundle = allocator.create(snail.TextBlobBundle) catch {
@@ -700,6 +745,14 @@ fn initStandaloneBlob(
         return SNAIL_ERR_OUT_OF_MEMORY;
     };
     owned_bundle.* = snail.TextBlobBundle.init(allocator, atlas);
+    if (hint_snapshot) |snapshot| {
+        owned_bundle.bindHintSnapshot(snapshot) catch |err| {
+            owned_bundle.deinit();
+            allocator.destroy(owned_bundle);
+            destroyHandle(impl);
+            return mapError(err);
+        };
+    }
     const blob_ptr = owned_bundle.buildBlob(snail.ResourceKey.named("standalone_blob"), appends, null) catch |err| {
         owned_bundle.deinit();
         allocator.destroy(owned_bundle);
@@ -717,6 +770,7 @@ fn initStandaloneBlob(
 pub export fn snail_text_blob_init_from_prepared_hint_run(
     alloc_ptr: ?*const SnailAllocator,
     run: *const TrueTypePreparedHintRunImpl,
+    snapshot: *const common.GlyphHintSnapshotImpl,
     placement: SnailTextPlacement,
     color: ?[*]const f32,
     out: *?*TextBlobImpl,
@@ -727,7 +781,7 @@ pub export fn snail_text_blob_init_from_prepared_hint_run(
         .placement = toTextPlacement(placement),
         .fill = .{ .solid = c },
     }};
-    return initStandaloneBlob(alloc_ptr, run.inner.atlas, &appends, out);
+    return initStandaloneBlobWithHintSnapshot(alloc_ptr, run.inner.atlas, &snapshot.inner, &appends, out);
 }
 
 pub export fn snail_text_blob_init_from_shaped(

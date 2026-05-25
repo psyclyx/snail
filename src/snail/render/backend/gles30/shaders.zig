@@ -7,12 +7,6 @@ const glsl_300es_version =
     "precision highp sampler2D;\n" ++
     "precision highp sampler2DArray;\n" ++
     "precision highp usampler2DArray;\n\n";
-const path_only_define =
-    "#define SNAIL_ENABLE_PATH 1\n" ++
-    "#define SNAIL_ENABLE_HINTED_TEXT 0\n\n";
-const hinted_text_only_define =
-    "#define SNAIL_ENABLE_PATH 0\n" ++
-    "#define SNAIL_ENABLE_HINTED_TEXT 1\n\n";
 
 const gles30_vert_interface = @embedFile("../glsl/snail_vert.interface.glsl");
 const gles30_frag_interface = @embedFile("../glsl/snail_frag.interface.glsl");
@@ -50,6 +44,14 @@ const shared_path_fragment_body =
     shared_color_common ++
     "\n" ++
     @embedFile("../glsl/snail_path_frag_body.glsl");
+const shared_hinted_text_fragment_body =
+    shared_render_abi ++
+    "\n" ++
+    shared_coverage_common ++
+    "\n" ++
+    shared_color_common ++
+    "\n" ++
+    @embedFile("../glsl/snail_hinted_text_frag_body.glsl");
 const shared_text_subpixel_body =
     shared_render_abi ++
     "\n" ++
@@ -87,24 +89,16 @@ pub const fragment_shader_colr =
     "\n" ++
     shared_colr_fragment_body;
 
-pub const fragment_shader =
-    glsl_300es_version ++
-    gles30_frag_interface ++
-    "\n" ++
-    shared_path_fragment_body;
-
 pub const fragment_shader_path =
     glsl_300es_version ++
-    path_only_define ++
     gles30_frag_interface ++
     "\n" ++
     shared_path_fragment_body;
 
 pub const fragment_shader_hinted_text =
     glsl_300es_version ++
-    hinted_text_only_define ++
     gles30_frag_interface ++
     "\n" ++
-    shared_path_fragment_body;
+    shared_hinted_text_fragment_body;
 
 pub const fragment_shader_text_subpixel_dual = "";

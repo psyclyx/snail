@@ -10,6 +10,7 @@ const view_mod = @import("view.zig");
 
 const AtlasPage = @import("../render/format/atlas/page.zig").AtlasPage;
 const Atlas = atlas_curve_mod.Atlas;
+const GlyphHintSnapshot = text_mod.GlyphHintSnapshot;
 const Image = image_mod.Image;
 const PathPicture = path_mod.PathPicture;
 const PreparedLayerInfoUpload = view_mod.PreparedLayerInfoUpload;
@@ -103,23 +104,21 @@ pub fn textPaintLayerInfoUpload(blob: *const TextBlob) PreparedLayerInfoUpload {
     };
 }
 
-pub fn textHintStamp(key: ResourceKey, bundle: *TextBlobBundle) ResourceStamp {
-    bundle.materialiseHintLayerInfo() catch {};
-    var layout = mix64(0x544558548854494e, bundle.hint_layer_info_width);
-    layout = mix64(layout, bundle.hint_layer_info_height);
+pub fn textHintStamp(key: ResourceKey, snapshot: *const GlyphHintSnapshot) ResourceStamp {
+    var layout = mix64(0x544558548854494e, snapshot.layer_info_width);
+    layout = mix64(layout, snapshot.layer_info_height);
     var content = key.id;
-    if (bundle.hint_layer_info_data) |data| {
+    if (snapshot.layer_info_data) |data| {
         content = mix64(content, std.hash.Wyhash.hash(0x544558548854494e, std.mem.sliceAsBytes(data)));
     }
     return .{ .identity = key.id, .layout = layout, .content = content };
 }
 
-pub fn textHintLayerInfoUpload(bundle: *TextBlobBundle) PreparedLayerInfoUpload {
-    bundle.materialiseHintLayerInfo() catch {};
+pub fn textHintLayerInfoUpload(snapshot: *const GlyphHintSnapshot) PreparedLayerInfoUpload {
     return .{
-        .data = bundle.hint_layer_info_data,
-        .width = bundle.hint_layer_info_width,
-        .height = bundle.hint_layer_info_height,
+        .data = snapshot.layer_info_data,
+        .width = snapshot.layer_info_width,
+        .height = snapshot.layer_info_height,
         .paint_image_records = null,
     };
 }
@@ -138,7 +137,7 @@ pub fn resourceEntryStamp(entry: ResourceManifest.Entry) ResourceStamp {
     return switch (entry) {
         .text_atlas => |text| textAtlasStamp(text.key, text.atlas),
         .text_paint => |text| textPaintStamp(text.key, text.blob),
-        .text_hint => |text| textHintStamp(text.key, text.bundle),
+        .text_hint => |text| textHintStamp(text.key, text.snapshot),
         .path_picture => |path| pathPictureStamp(path.key, path.picture),
         .image => |image| imageStamp(image.key, image.image),
     };
@@ -148,15 +147,14 @@ pub fn resourceEntryUploadBytes(entry: ResourceManifest.Entry) usize {
     return switch (entry) {
         .text_atlas => |text| textAtlasUploadBytes(text.atlas),
         .text_paint => |text| textPaintUploadBytes(text.blob),
-        .text_hint => |text| textHintUploadBytes(text.bundle),
+        .text_hint => |text| textHintUploadBytes(text.snapshot),
         .path_picture => |path| curveAtlasUploadBytes(&path.picture.atlas),
         .image => |image| image.image.pixelSlice().len,
     };
 }
 
-fn textHintUploadBytes(bundle: *TextBlobBundle) usize {
-    bundle.materialiseHintLayerInfo() catch return 0;
-    if (bundle.hint_layer_info_data) |data| return data.len * @sizeOf(f32);
+fn textHintUploadBytes(snapshot: *const GlyphHintSnapshot) usize {
+    if (snapshot.layer_info_data) |data| return data.len * @sizeOf(f32);
     return 0;
 }
 

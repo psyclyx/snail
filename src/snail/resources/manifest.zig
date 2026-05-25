@@ -5,6 +5,7 @@ const resource_key_mod = @import("../resource_key.zig");
 const text_mod = @import("../text.zig");
 const upload_common = @import("../render/format/upload_common.zig");
 
+const GlyphHintSnapshot = text_mod.GlyphHintSnapshot;
 const Image = image_mod.Image;
 const PathPicture = path_mod.PathPicture;
 const ResourceCapacityMode = upload_common.AtlasCapacityMode;
@@ -45,12 +46,12 @@ pub const ResourceManifest = struct {
         blob: *const TextBlob,
     };
 
-    /// Bundle-shared hint pool. Uploaded once per bundle; many blobs from
-    /// the same bundle dedupe to one `text_hint` entry via the manifest's
-    /// existing key-based deduplication.
+    /// Per-(atlas, PPEM, hint-context) hinted-outline snapshot. The
+    /// snapshot is immutable and value-typed; many bundles can reference
+    /// one snapshot, and the manifest dedupes on the snapshot's key.
     pub const TextHintEntry = struct {
         key: ResourceKey,
-        bundle: *TextBlobBundle,
+        snapshot: *const GlyphHintSnapshot,
     };
 
     pub const ImageEntry = struct {
@@ -112,9 +113,10 @@ pub const ResourceManifest = struct {
             } });
         }
         if (resources.hint) |hint_key| {
+            const snapshot = bundle.hintSnapshotResolved() orelse return error.InvalidTextResourceKeys;
             try self.put(.{ .text_hint = .{
                 .key = hint_key,
-                .bundle = bundle,
+                .snapshot = snapshot,
             } });
         }
     }

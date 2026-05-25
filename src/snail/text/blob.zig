@@ -6,6 +6,7 @@ const atlas_curve_mod = @import("../render/format/atlas/curve.zig");
 const band_tex = @import("../render/format/band_texture.zig");
 const bezier = @import("../math/bezier.zig");
 const hint_context = @import("hint_context.zig");
+const hint_snapshot_mod = @import("hint_snapshot.zig");
 const resource_key_mod = @import("../resource_key.zig");
 const text_hint = @import("../render/format/text_hint.zig");
 const atlas_mod = @import("atlas.zig");
@@ -22,6 +23,7 @@ const Allocator = std.mem.Allocator;
 const BBox = bezier.BBox;
 const FaceIndex = config_mod.FaceIndex;
 const FaceView = view_mod.FaceView;
+const GlyphHintSnapshot = hint_snapshot_mod.GlyphHintSnapshot;
 const HintedGlyphValue = hint_context.HintedGlyphValue;
 const Paint = paint_mod.Paint;
 const PaintImageRecord = atlas_curve_mod.CurveAtlas.PaintImageRecord;
@@ -35,6 +37,7 @@ const TextAtlas = atlas_mod.TextAtlas;
 const TextPlacement = types_mod.TextPlacement;
 const TextResourceKeys = resource_key_mod.TextResourceKeys;
 const Transform2D = vec.Transform2D;
+const TrueTypeHintContext = hint_context.TrueTypeHintContext;
 const Vec2 = vec.Vec2;
 const glyphInstanceBudget = shape_mod.glyphInstanceBudget;
 const glyphPlacementTransform = shape_mod.glyphPlacementTransform;
@@ -74,6 +77,10 @@ pub const TextBlob = struct {
         embolden: f32,
         color: [4]f32,
         paint_record_index: ?u32 = null,
+        /// Texel offset of the glyph's hinted-curve record within the
+        /// bound `GlyphHintSnapshot`'s layer-info slab. Resolved once at
+        /// append time from `snapshot.lookup(key)`; the renderer reads
+        /// this as an absolute texel coordinate without further indirection.
         hint_record_texel: ?u32 = null,
         hint_bbox: BBox = emptyBBox(),
     };
@@ -105,15 +112,18 @@ pub const TextBlob = struct {
     }
 
     pub fn resourceKeys(self: *const TextBlob, atlas_key: ResourceKey, blob_key: ResourceKey) TextResourceKeys {
-        // The hint key is derived from the *atlas* key, not the blob key:
-        // every blob produced from the same bundle (which is bound to one
-        // atlas) shares the same hint pool, and we want them to dedupe to
-        // a single manifest entry. `atlas_key` is a stable shared identity
-        // across all blobs in a bundle.
+        // The hint key comes from the bound `GlyphHintSnapshot` itself:
+        // many bundles can share one snapshot, and the snapshot's identity
+        // is the natural dedup boundary. Empty snapshots (no renderable
+        // entries) need no manifest binding.
+        const hint_key: ?ResourceKey = if (self.bundle.hintSnapshotResolved()) |snapshot|
+            (if (snapshot.hasRenderable()) snapshot.key else null)
+        else
+            null;
         return .{
             .atlas = atlas_key,
             .paint = if (self.hasPaintRecords()) resource_key_mod.derived(blob_key, "text_paint") else null,
-            .hint = if (self.bundle.hasHintRecords()) resource_key_mod.derived(atlas_key, "text_hint") else null,
+            .hint = hint_key,
         };
     }
 
@@ -170,26 +180,58 @@ pub const TextBlobBundle = struct {
     /// to detect use-after-reset.
     generation: u32 = 0,
 
-    // ── Shared hint pool ──
+    // ── Hint binding ──
     //
-    // Hint records are bundle-scoped, not blob-scoped: every blob whose
-    // hinted glyphs reference the same `*const HintedGlyphValue` (same
-    // glyph_id at the same PPEM, same hint context) shares one encoded
-    // entry. The pool is built incrementally as blobs are finished.
+    // Hinted glyphs are anchored to a `GlyphHintSnapshot` — the
+    // per-(atlas, hint-context, ppem) immutable hinted-outline value.
+    // The bundle supports two binding modes:
     //
-    // `hint_layer_info_data` is materialised lazily into the arena once
-    // the bundle is frozen (or once anyone calls `hintLayerInfoUpload`)
-    // and is invalidated by `reset`.
+    //   borrowed: a `*const GlyphHintSnapshot` pinned via
+    //   `bindHintSnapshot(snapshot)`. Use when the snapshot is built
+    //   ahead of time (cross-bundle sharing). Texel offsets resolve
+    //   immediately at append time.
     //
-    // Each `TextBlob.Glyph.hint_record_texel` is a *pool index* into
-    // `hint_pool` rather than a texel offset; the texel offset comes
-    // from `hint_pool_texel_offsets`, computed at materialisation time.
-    hint_pool: std.ArrayListUnmanaged(PendingHintRecord) = .empty,
-    hint_pool_refs: std.AutoHashMapUnmanaged(usize, u32) = .empty,
-    hint_pool_texel_offsets: ?[]u32 = null,
-    hint_layer_info_data: ?[]f32 = null,
-    hint_layer_info_width: u32 = 0,
-    hint_layer_info_height: u32 = 0,
+    //   auto: a `*TrueTypeHintContext` pinned via `bindHintContext`.
+    //   Texel offsets are still computed at append time (monotonic slab
+    //   cursor over pending entries); the user MUST call
+    //   `materialiseHintSnapshot()` once after the bundle's hinted
+    //   glyphs are all appended and before adding the blob to a
+    //   `ResourceManifest`. Materialisation is explicit so the upload
+    //   point is honest: manifest paths read the already-packed
+    //   snapshot without triggering hidden work.
+    //
+    // `Glyph.hint_record_texel` is always an absolute texel offset.
+    hint_binding: HintBinding = .{ .none = {} },
+
+    const HintBinding = union(enum) {
+        none,
+        borrowed: *const GlyphHintSnapshot,
+        auto: AutoHintState,
+    };
+
+    const AutoHintState = struct {
+        context: *TrueTypeHintContext,
+        snapshot: GlyphHintSnapshot,
+        pending: std.ArrayListUnmanaged(PendingEntry) = .empty,
+        pending_refs: std.AutoHashMapUnmanaged(usize, u32) = .empty,
+        texel_cursor: u32 = 0,
+        dirty: bool = false,
+
+        const PendingEntry = struct {
+            key: hint_context.HintGlyphKey,
+            advance: Vec2,
+            bbox: BBox,
+            record: text_hint.GlyphRecord,
+            points_f16: []const u16,
+            texel_offset: u32,
+        };
+
+        fn deinit(self: *AutoHintState, gpa: Allocator) void {
+            self.snapshot.deinit();
+            self.pending.deinit(gpa);
+            self.pending_refs.deinit(gpa);
+        }
+    };
 
     pub fn init(gpa: Allocator, atlas: *const TextAtlas) TextBlobBundle {
         return .{
@@ -204,10 +246,7 @@ pub const TextBlobBundle = struct {
         self.pending.deinit(self.gpa);
         for (self.blobs.items) |blob| self.gpa.destroy(blob);
         self.blobs.deinit(self.gpa);
-        self.clearHintPool();
-        self.hint_pool.deinit(self.gpa);
-        self.hint_pool_refs.deinit(self.gpa);
-        if (self.hint_pool_texel_offsets) |buf| self.gpa.free(buf);
+        self.clearHintBinding();
         self.arena.deinit();
         self.* = undefined;
     }
@@ -220,114 +259,139 @@ pub const TextBlobBundle = struct {
         self.pending.reset(self.gpa);
         for (self.blobs.items) |blob| self.gpa.destroy(blob);
         self.blobs.clearRetainingCapacity();
-        self.clearHintPool();
-        self.hint_pool.clearRetainingCapacity();
-        self.hint_pool_refs.clearRetainingCapacity();
-        if (self.hint_pool_texel_offsets) |buf| self.gpa.free(buf);
-        self.hint_pool_texel_offsets = null;
-        self.hint_layer_info_data = null;
-        self.hint_layer_info_width = 0;
-        self.hint_layer_info_height = 0;
+        self.clearHintBinding();
         _ = self.arena.reset(.retain_capacity);
         self.frozen = false;
         self.generation +%= 1;
     }
 
-    fn clearHintPool(self: *TextBlobBundle) void {
-        for (self.hint_pool.items) |entry| self.gpa.free(entry.curve_deltas_f16);
-    }
-
-    /// Intern a hinted glyph value into the bundle's pool. Returns the
-    /// pool index. Subsequent calls with the same `intern_key` (typically
-    /// `@intFromPtr(value)`) return the same index. Invalidates any
-    /// previously-materialised hint layer info data — call `materialiseHintLayerInfo`
-    /// (or `freeze`) before uploading after additions.
-    fn internHintRecord(
-        self: *TextBlobBundle,
-        intern_key: usize,
-        record: text_hint.GlyphRecord,
-        curve_deltas_f16: []const u16,
-    ) !u32 {
-        if (self.hint_pool_refs.get(intern_key)) |index| return index;
-        const index: u32 = @intCast(self.hint_pool.items.len);
-        const deltas = try self.gpa.dupe(u16, curve_deltas_f16);
-        errdefer self.gpa.free(deltas);
-        try self.hint_pool.append(self.gpa, .{
-            .record = record,
-            .curve_deltas_f16 = deltas,
-        });
-        errdefer _ = self.hint_pool.pop();
-        try self.hint_pool_refs.put(self.gpa, intern_key, index);
-        self.invalidateHintMaterialisation();
-        return index;
-    }
-
-    fn invalidateHintMaterialisation(self: *TextBlobBundle) void {
-        if (self.hint_pool_texel_offsets) |buf| self.gpa.free(buf);
-        self.hint_pool_texel_offsets = null;
-        self.hint_layer_info_data = null;
-        self.hint_layer_info_width = 0;
-        self.hint_layer_info_height = 0;
-    }
-
-    /// Pack the bundle's hint pool into a single layer-info slab and
-    /// compute per-entry texel offsets. Idempotent: returns immediately
-    /// once materialised. The slab lives in the bundle's arena; both are
-    /// invalidated by `reset` or any subsequent `internHintRecord`.
-    pub fn materialiseHintLayerInfo(self: *TextBlobBundle) !void {
-        if (self.hint_layer_info_data != null) return;
-        if (self.hint_pool.items.len == 0) return;
-
-        const offsets = try self.gpa.alloc(u32, self.hint_pool.items.len);
-        errdefer self.gpa.free(offsets);
-
-        var texel_cursor: u32 = 0;
-        for (self.hint_pool.items, offsets) |record, *offset| {
-            offset.* = texel_cursor;
-            texel_cursor += text_hint.recordTexelCount(record.record.curve_count);
+    fn clearHintBinding(self: *TextBlobBundle) void {
+        switch (self.hint_binding) {
+            .none, .borrowed => {},
+            .auto => |*state| state.deinit(self.gpa),
         }
-        const texel_count = texel_cursor;
-        const width = text_hint.infoWidth(texel_count);
-        const height = @max(@as(u32, 1), (texel_count + width - 1) / width);
-        const data = try self.arena.allocator().alloc(f32, @as(usize, width) * @as(usize, height) * 4);
-        @memset(data, 0);
-
-        for (self.hint_pool.items, offsets) |record, texel_offset| {
-            try text_hint.writeGlyphRecord(data, width, texel_offset, record.record, record.curve_deltas_f16);
-        }
-
-        self.hint_pool_texel_offsets = offsets;
-        self.hint_layer_info_data = data;
-        self.hint_layer_info_width = width;
-        self.hint_layer_info_height = height;
+        self.hint_binding = .{ .none = {} };
     }
 
-    /// Returns the bundle's shared-hint upload payload. May be empty
-    /// (no hinted glyphs in the bundle). Triggers materialisation if not
-    /// already done.
-    pub fn hintLayerInfoUpload(self: *TextBlobBundle) !PreparedHintLayerInfoUpload {
-        try self.materialiseHintLayerInfo();
-        return .{
-            .data = self.hint_layer_info_data,
-            .width = self.hint_layer_info_width,
-            .height = self.hint_layer_info_height,
+    /// Pin a `GlyphHintSnapshot` to this bundle (borrowed mode). The
+    /// snapshot is value-typed and outlives the bundle. Idempotent for
+    /// the same snapshot identity; errors if a different snapshot or a
+    /// hint context is already bound.
+    pub fn bindHintSnapshot(self: *TextBlobBundle, snapshot: *const GlyphHintSnapshot) !void {
+        if (self.frozen) return error.BundleFrozen;
+        try snapshot.validateAtlas(self.atlas);
+        switch (self.hint_binding) {
+            .none => self.hint_binding = .{ .borrowed = snapshot },
+            .borrowed => |existing| {
+                if (existing.snapshot_identity != snapshot.snapshot_identity) return error.WrongHintSnapshot;
+            },
+            .auto => return error.WrongHintSnapshot,
+        }
+    }
+
+    /// Pin a `TrueTypeHintContext` to this bundle (auto mode). The
+    /// bundle owns the resulting `GlyphHintSnapshot`; the user must
+    /// call `materialiseHintSnapshot()` after all hinted appends and
+    /// before any manifest preparation that consults the snapshot.
+    /// Errors if a snapshot is already bound or a different context
+    /// was already bound.
+    pub fn bindHintContext(self: *TextBlobBundle, context: *TrueTypeHintContext) !void {
+        if (self.frozen) return error.BundleFrozen;
+        try context.validateAtlas();
+        if (context.atlas != self.atlas) return error.WrongTextAtlasSnapshot;
+        switch (self.hint_binding) {
+            .none => {},
+            .auto => |existing| {
+                if (existing.context == context) return;
+                return error.WrongHintSnapshot;
+            },
+            .borrowed => return error.WrongHintSnapshot,
+        }
+        var builder = try hint_snapshot_mod.Builder.init(self.gpa, self.atlas, .{});
+        const snap = try builder.finish();
+        self.hint_binding = .{ .auto = .{
+            .context = context,
+            .snapshot = snap,
+        } };
+    }
+
+    /// Pack auto-mode pending entries into the bundle's owned
+    /// `GlyphHintSnapshot`. Must be called explicitly before the bundle
+    /// participates in a `ResourceManifest`. Idempotent: re-materialises
+    /// only when new pending entries have been added since the last call.
+    /// No-op (and OK) in borrowed mode or with no binding.
+    pub fn materialiseHintSnapshot(self: *TextBlobBundle) !void {
+        switch (self.hint_binding) {
+            .none, .borrowed => {},
+            .auto => |*state| if (state.dirty) try repackAutoSnapshot(self.gpa, self.atlas, state),
+        }
+    }
+
+    /// Returns the bundle's hint snapshot upload payload. Does not
+    /// materialise; in auto mode the user must have called
+    /// `materialiseHintSnapshot` first or the returned upload reflects
+    /// the snapshot's previous materialisation (possibly empty).
+    pub fn hintLayerInfoUpload(self: *const TextBlobBundle) PreparedHintLayerInfoUpload {
+        const snap = self.hintSnapshotResolved() orelse return .{};
+        return snap.layerInfoUpload();
+    }
+
+    /// True if this bundle has a bound snapshot with at least one
+    /// renderable hint. In auto mode reflects the most recently
+    /// materialised state — call `materialiseHintSnapshot` first to
+    /// include any unflushed pending entries.
+    pub fn hasHintRecords(self: *const TextBlobBundle) bool {
+        const snap = self.hintSnapshotResolved() orelse return false;
+        return snap.hasRenderable();
+    }
+
+    /// Read-only snapshot accessor used by `blob.resourceKeys`, the
+    /// renderer's batch emitter, and manifest preparation. Never
+    /// triggers materialisation; auto-mode callers are responsible for
+    /// calling `materialiseHintSnapshot` at the right time.
+    pub fn hintSnapshotResolved(self: *const TextBlobBundle) ?*const GlyphHintSnapshot {
+        return switch (self.hint_binding) {
+            .none => null,
+            .borrowed => |snap| snap,
+            .auto => |*state| &state.snapshot,
         };
     }
 
-    /// True if this bundle has any hinted glyphs (and therefore needs
-    /// a `text_hint` resource binding).
-    pub fn hasHintRecords(self: *const TextBlobBundle) bool {
-        return self.hint_pool.items.len > 0;
-    }
-
-    /// Texel offset of a pool entry, in the bundle's hint slab. Must be
-    /// called after `materialiseHintLayerInfo`. Used by the renderer to
-    /// resolve a `Glyph.hint_record_texel` (which is a pool index) to a
-    /// position in the shared slab.
-    pub fn hintPoolTexelOffset(self: *const TextBlobBundle, pool_index: u32) u32 {
-        const offsets = self.hint_pool_texel_offsets orelse return 0;
-        if (pool_index >= offsets.len) return 0;
-        return offsets[pool_index];
+    fn appendAutoHintEntry(
+        self: *TextBlobBundle,
+        value: *const HintedGlyphValue,
+    ) !u32 {
+        const state = switch (self.hint_binding) {
+            .auto => |*s| s,
+            else => return error.NoHintSnapshotBound,
+        };
+        const ptr_key = @intFromPtr(value);
+        if (state.pending_refs.get(ptr_key)) |existing_idx| {
+            return state.pending.items[existing_idx].texel_offset;
+        }
+        const attachment = value.attachment orelse return error.EmptyHintedGlyph;
+        const texel_offset = state.texel_cursor;
+        const record_size = text_hint.recordTexelCount(attachment.record.curve_count);
+        // Copy the f16 points into the bundle's arena so the pending
+        // entry never depends on the hint context's glyph storage —
+        // the cache may evict entries between appends and materialise
+        // without dangling references. Arena memory is reclaimed on
+        // `bundle.reset()`.
+        const owned_points = try self.arena.allocator().dupe(u16, attachment.curve_points_f16);
+        try state.pending.append(self.gpa, .{
+            .key = value.key,
+            .advance = value.advance,
+            .bbox = value.bbox,
+            .record = attachment.record,
+            .points_f16 = owned_points,
+            .texel_offset = texel_offset,
+        });
+        errdefer _ = state.pending.pop();
+        const pending_idx: u32 = @intCast(state.pending.items.len - 1);
+        try state.pending_refs.put(self.gpa, ptr_key, pending_idx);
+        state.texel_cursor += record_size;
+        state.dirty = true;
+        return texel_offset;
     }
 
     /// Streaming construction. Returns a thin handle that must terminate
@@ -453,36 +517,6 @@ pub const BlobInProgress = struct {
         return appendIntoPending(self.bundle, text_append, true);
     }
 
-    pub fn appendHintedGlyph(
-        self: BlobInProgress,
-        face_index: FaceIndex,
-        glyph_id: u16,
-        transform: Transform2D,
-        color: [4]f32,
-        record: text_hint.GlyphRecord,
-        curve_deltas_f16: []const u16,
-    ) !void {
-        const expected_deltas = @as(usize, record.curve_count) * text_hint.delta_values_per_curve;
-        if (curve_deltas_f16.len != expected_deltas) return error.InvalidHintDeltaCount;
-
-        // Raw record append: no `HintedGlyphValue` pointer to use as an
-        // intern key, so push a fresh pool entry. Callers using the cached
-        // hint context should prefer `appendHintedGlyphRef` to dedupe.
-        const intern_key = @intFromPtr(curve_deltas_f16.ptr);
-        const pool_index = try self.bundle.internHintRecord(intern_key, record, curve_deltas_f16);
-
-        try self.bundle.pending.glyphs.append(self.bundle.gpa, .{
-            .face_index = face_index,
-            .glyph_id = glyph_id,
-            .transform = transform,
-            .embolden = 0,
-            .color = color,
-            .hint_record_texel = pool_index,
-            .hint_bbox = record.bbox,
-        });
-        self.bundle.pending.gpu_instance_budget += 1;
-    }
-
     pub fn appendHintedGlyphRef(
         self: BlobInProgress,
         face_index: FaceIndex,
@@ -491,9 +525,15 @@ pub const BlobInProgress = struct {
         color: [4]f32,
         value: *const HintedGlyphValue,
     ) !void {
-        const attachment = value.attachment orelse return error.EmptyHintedGlyph;
-        const intern_key = @intFromPtr(value);
-        const pool_index = try self.bundle.internHintRecord(intern_key, attachment.record, attachment.curve_deltas_f16);
+        const texel_offset = switch (self.bundle.hint_binding) {
+            .none => return error.NoHintSnapshotBound,
+            .borrowed => |snapshot| blk: {
+                try snapshot.validateAtlas(self.bundle.atlas);
+                const entry = snapshot.lookup(value.key) orelse return error.GlyphNotInHintSnapshot;
+                break :blk (entry.record_texel_offset orelse return error.EmptyHintedGlyph);
+            },
+            .auto => try self.bundle.appendAutoHintEntry(value),
+        };
 
         // Faux-bold: passthrough the face's embolden offset so the renderer
         // emits a second hinted copy at `transform.tx + embolden`. The hint
@@ -507,7 +547,7 @@ pub const BlobInProgress = struct {
             .transform = transform,
             .embolden = embolden,
             .color = color,
-            .hint_record_texel = pool_index,
+            .hint_record_texel = texel_offset,
             .hint_bbox = value.bbox,
         });
         // Each hinted glyph is one GPU instance; emboldening emits a second
@@ -589,11 +629,6 @@ const PendingBlob = struct {
 const PendingPaintRecord = struct {
     band_entry: band_tex.GlyphBandEntry,
     paint: Paint,
-};
-
-const PendingHintRecord = struct {
-    record: text_hint.GlyphRecord,
-    curve_deltas_f16: []u16,
 };
 
 const FinishedLayerInfoRecords = struct {
@@ -841,9 +876,32 @@ fn textBlobGpuInstanceBudgetForAtlas(atlas: *const TextAtlas, glyphs: []const Te
     return total;
 }
 
-// Note: `TextBlob.Glyph.hint_record_texel` is now a bundle hint-pool index,
-// not a texel offset. The renderer resolves it via
-// `bundle.hintPoolTexelOffset(index)` against the bundle's shared hint slab.
+// `TextBlob.Glyph.hint_record_texel` is the absolute texel offset into the
+// bound `GlyphHintSnapshot`'s layer-info slab — resolved at append time via
+// `snapshot.lookup(value.key).record_texel_offset` (borrowed mode) or
+// `appendAutoHintEntry` (auto mode). The renderer reads it without further
+// indirection.
+
+fn repackAutoSnapshot(
+    gpa: Allocator,
+    atlas: *const TextAtlas,
+    state: *TextBlobBundle.AutoHintState,
+) !void {
+    // Rebuild the owned snapshot from the pending list. The texel
+    // offsets stored in `Glyph.hint_record_texel` are stable across
+    // repacks because the slab is laid out in the order pending entries
+    // were appended and `texel_offset` is captured at append time.
+    var builder = try hint_snapshot_mod.Builder.initWithCursor(gpa, atlas, .{}, state.texel_cursor);
+    errdefer builder.deinit();
+    for (state.pending.items) |entry| {
+        try builder.addAtOffset(entry.key, entry.advance, entry.bbox, entry.record, entry.points_f16, entry.texel_offset);
+    }
+    var new_snap = try builder.finish();
+    errdefer new_snap.deinit();
+    state.snapshot.deinit();
+    state.snapshot = new_snap;
+    state.dirty = false;
+}
 
 fn emptyBBox() BBox {
     return .{ .min = Vec2.zero, .max = Vec2.zero };

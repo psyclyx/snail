@@ -40,6 +40,7 @@ pub const BlobInProgressImpl = struct {
 };
 pub const TrueTypeHintContextImpl = struct { handle_allocator: *HandleAllocator, inner: snail.TrueTypeHintContext };
 pub const TrueTypePreparedHintRunImpl = struct { handle_allocator: *HandleAllocator, inner: snail.TrueTypePreparedHintRun };
+pub const GlyphHintSnapshotImpl = struct { handle_allocator: *HandleAllocator, inner: snail.GlyphHintSnapshot };
 pub const ImageImpl = struct { handle_allocator: *HandleAllocator, inner: snail.Image };
 pub const PathImpl = struct { handle_allocator: *HandleAllocator, inner: snail.Path };
 pub const PathPictureBuilderImpl = struct { handle_allocator: *HandleAllocator, inner: snail.PathPictureBuilder };

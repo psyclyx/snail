@@ -27,6 +27,7 @@ pub const handles = [_]Handle{
     .{ .name = "SnailBlobInProgress" },
     .{ .name = "SnailTrueTypeHintContext" },
     .{ .name = "SnailTrueTypePreparedHintRun" },
+    .{ .name = "SnailGlyphHintSnapshot" },
     .{ .name = "SnailImage" },
     .{ .name = "SnailPath" },
     .{ .name = "SnailPathPictureBuilder" },

@@ -3,14 +3,17 @@ const std = @import("std");
 const atlas_mod = @import("atlas.zig");
 const bezier = @import("../math/bezier.zig");
 const config_mod = @import("config.zig");
+const hint_snapshot_mod = @import("hint_snapshot.zig");
 const text_hint = @import("../render/format/text_hint.zig");
 const tt_hint = @import("tt_hint.zig");
+const tt_vm = @import("../font/tt_vm.zig");
 const types_mod = @import("types.zig");
 const vec = @import("../math/vec.zig");
 
 const Allocator = std.mem.Allocator;
 const BBox = bezier.BBox;
 const FaceIndex = config_mod.FaceIndex;
+const GlyphHintSnapshot = hint_snapshot_mod.GlyphHintSnapshot;
 const ShapedText = types_mod.ShapedText;
 const TextAtlas = atlas_mod.TextAtlas;
 const Vec2 = vec.Vec2;
@@ -21,7 +24,7 @@ pub const HintGlyphKey = struct {
     ppem_y_26_6: u32,
     glyph_id: u16,
 
-    const Context = struct {
+    pub const Context = struct {
         pub fn hash(_: Context, key: HintGlyphKey) u64 {
             var h = hashField(0xcbf29ce484222325, key.face_index);
             h = hashField(h, key.ppem_x_26_6);
@@ -98,7 +101,9 @@ pub const HintReject = struct {
 
 pub const HintedGlyphAttachment = struct {
     record: text_hint.GlyphRecord,
-    curve_deltas_f16: []u16,
+    /// Absolute hinted control points (f16 pairs, 8 per quadratic).
+    /// Consumers do not need the unhinted base outline to interpret these.
+    curve_points_f16: []u16,
 };
 
 pub const HintedGlyphValue = struct {
@@ -108,12 +113,20 @@ pub const HintedGlyphValue = struct {
     attachment: ?HintedGlyphAttachment = null,
 
     pub fn deinit(self: *HintedGlyphValue, allocator: Allocator) void {
-        if (self.attachment) |attachment| allocator.free(attachment.curve_deltas_f16);
+        if (self.attachment) |attachment| allocator.free(attachment.curve_points_f16);
         self.* = undefined;
     }
 
     pub fn renderable(self: *const HintedGlyphValue) bool {
         return self.attachment != null;
+    }
+
+    /// Approximate heap footprint of this glyph entry's allocations.
+    /// The `HintedGlyphValue` struct itself is excluded (one per map
+    /// slot; that overhead is counted at the map level).
+    pub fn byteSize(self: *const HintedGlyphValue) usize {
+        if (self.attachment) |attachment| return attachment.curve_points_f16.len * @sizeOf(u16);
+        return 0;
     }
 };
 
@@ -179,6 +192,12 @@ const FaceProgramState = struct {
         self.cache.deinit();
         self.* = undefined;
     }
+
+    fn byteSize(self: *const FaceProgramState) usize {
+        // Topology cache holds per-glyph parsed bytecode tables;
+        // the map and its values together approximate the working set.
+        return self.cache.map.count() * (@sizeOf(u16) + @sizeOf(tt_vm.GlyphTopology));
+    }
 };
 
 const SizeHintState = struct {
@@ -196,6 +215,10 @@ const SizeHintState = struct {
     fn deinit(self: *SizeHintState) void {
         self.machine.deinit();
         self.* = undefined;
+    }
+
+    fn byteSize(self: *const SizeHintState) usize {
+        return self.machine.byteSize();
     }
 };
 
@@ -250,7 +273,7 @@ pub const TrueTypeHintContext = struct {
     }
 
     pub fn deinit(self: *TrueTypeHintContext) void {
-        self.clear();
+        self.clearInternal();
         self.face_programs.deinit();
         self.size_states.deinit();
         self.glyphs.deinit();
@@ -377,7 +400,7 @@ pub const TrueTypeHintContext = struct {
         };
     }
 
-    fn clear(self: *TrueTypeHintContext) void {
+    fn clearInternal(self: *TrueTypeHintContext) void {
         var glyph_values = self.glyphs.valueIterator();
         while (glyph_values.next()) |entry| {
             switch (entry.*) {
@@ -499,7 +522,229 @@ pub const TrueTypeHintContext = struct {
         try self.glyphs.put(key, .{ .unsupported = reason });
         return .{ .unsupported = reason };
     }
+
+    /// Freeze the current cache into an immutable `GlyphHintSnapshot`. The
+    /// snapshot owns its own storage and slab; the context's cache is
+    /// untouched and can continue to grow. Multiple snapshots taken from
+    /// the same context are independent values and may be bound to
+    /// different bundles.
+    pub fn snapshot(
+        self: *TrueTypeHintContext,
+        allocator: Allocator,
+        options: hint_snapshot_mod.BuilderOptions,
+    ) !GlyphHintSnapshot {
+        try self.validateAtlas();
+        var builder = try hint_snapshot_mod.Builder.init(allocator, self.atlas, options);
+        errdefer builder.deinit();
+        var it = self.glyphs.valueIterator();
+        while (it.next()) |entry| switch (entry.*) {
+            .ready => |value| if (value.renderable())
+                try builder.addRenderable(value)
+            else
+                try builder.addEmpty(value),
+            .unsupported => {},
+        };
+        return builder.finish();
+    }
+
+    // ── Cache inspection and eviction ──
+    //
+    // The context's internal cache grows monotonically as new glyphs and
+    // PPEMs are queried. Snail ships mechanism, not policy: these verbs
+    // let any caller implement LRU, capacity-bound, manual, or
+    // workload-scoped eviction in user code without snail second-guessing
+    // them. See README §Hint Cache Lifecycle for consumer recipes.
+    //
+    // Invariant: cache entries are eligible for eviction at any point
+    // between `prepareRun`/`computeGlyph` calls. Bundles built via
+    // `bindHintContext` copy their pending points into bundle-owned
+    // storage at append time, so eviction never produces dangling
+    // references.
+
+    /// Heap footprint breakdown of the context's caches.
+    pub const Footprint = struct {
+        face_program_count: usize = 0,
+        face_program_bytes: usize = 0,
+        size_state_count: usize = 0,
+        size_state_bytes: usize = 0,
+        glyph_value_count: usize = 0,
+        glyph_value_bytes: usize = 0,
+
+        pub fn totalBytes(self: Footprint) usize {
+            return self.face_program_bytes + self.size_state_bytes + self.glyph_value_bytes;
+        }
+    };
+
+    pub fn byteFootprint(self: *const TrueTypeHintContext) Footprint {
+        var out: Footprint = .{};
+        var face_it = self.face_programs.iterator();
+        while (face_it.next()) |entry| {
+            out.face_program_count += 1;
+            out.face_program_bytes += entry.value_ptr.byteSize();
+        }
+        var size_it = self.size_states.iterator();
+        while (size_it.next()) |entry| {
+            out.size_state_count += 1;
+            out.size_state_bytes += entry.value_ptr.byteSize();
+        }
+        var glyph_it = self.glyphs.valueIterator();
+        while (glyph_it.next()) |entry| {
+            out.glyph_value_count += 1;
+            switch (entry.*) {
+                .ready => |value| out.glyph_value_bytes += value.byteSize(),
+                .unsupported => {},
+            }
+        }
+        return out;
+    }
+
+    pub const SizeKeyEntry = struct {
+        face_index: FaceIndex,
+        ppem: tt_hint.HintPpem,
+        byte_size: usize,
+    };
+
+    pub const SizeKeyIterator = struct {
+        inner: SizeStateMap.Iterator,
+
+        pub fn next(self: *SizeKeyIterator) ?SizeKeyEntry {
+            const entry = self.inner.next() orelse return null;
+            return .{
+                .face_index = entry.key_ptr.face_index,
+                .ppem = .{ .x_26_6 = entry.key_ptr.ppem_x_26_6, .y_26_6 = entry.key_ptr.ppem_y_26_6 },
+                .byte_size = entry.value_ptr.byteSize(),
+            };
+        }
+    };
+
+    /// Iterate every cached size state. Safe to inspect during iteration;
+    /// callers that want to evict during the walk should collect victim
+    /// keys first and pass them to `evictSize` after.
+    pub fn sizeKeyIterator(self: *const TrueTypeHintContext) SizeKeyIterator {
+        return .{ .inner = self.size_states.iterator() };
+    }
+
+    pub const GlyphKeyEntry = struct {
+        key: HintGlyphKey,
+        byte_size: usize,
+        renderable: bool,
+    };
+
+    pub const GlyphKeyIterator = struct {
+        inner: GlyphMap.Iterator,
+
+        pub fn next(self: *GlyphKeyIterator) ?GlyphKeyEntry {
+            const entry = self.inner.next() orelse return null;
+            const renderable = switch (entry.value_ptr.*) {
+                .ready => |v| v.renderable(),
+                .unsupported => false,
+            };
+            const bytes = switch (entry.value_ptr.*) {
+                .ready => |v| v.byteSize(),
+                .unsupported => 0,
+            };
+            return .{
+                .key = entry.key_ptr.*,
+                .byte_size = bytes,
+                .renderable = renderable,
+            };
+        }
+    };
+
+    pub fn glyphKeyIterator(self: *const TrueTypeHintContext) GlyphKeyIterator {
+        return .{ .inner = self.glyphs.iterator() };
+    }
+
+    /// Evict the size state for `(face_index, ppem)` and every cached
+    /// glyph value at that PPEM/face. No-op if the size state is absent.
+    /// Subsequent queries at this PPEM rebuild the VM on demand (the
+    /// expensive setup runs again).
+    pub fn evictSize(
+        self: *TrueTypeHintContext,
+        face_index: FaceIndex,
+        ppem: tt_hint.HintPpem,
+    ) void {
+        const size_key = SizeKey{
+            .face_index = face_index,
+            .ppem_x_26_6 = ppem.x_26_6,
+            .ppem_y_26_6 = ppem.y_26_6,
+        };
+        evictGlyphsMatching(self, .{ .face_index = face_index, .ppem = ppem });
+        if (self.size_states.fetchRemove(size_key)) |kv| {
+            var state = kv.value;
+            state.deinit();
+        }
+    }
+
+    /// Evict every cached size state and glyph value at this PPEM across
+    /// all faces. Useful for "drop everything for the zoom level I just
+    /// left" policies.
+    pub fn evictPpem(self: *TrueTypeHintContext, ppem: tt_hint.HintPpem) void {
+        var face_it = self.face_programs.keyIterator();
+        var face_buf: [16]FaceIndex = undefined;
+        var face_count: usize = 0;
+        while (face_it.next()) |key_ptr| : (face_count += 1) {
+            if (face_count >= face_buf.len) break;
+            face_buf[face_count] = key_ptr.*;
+        }
+        for (face_buf[0..face_count]) |face| self.evictSize(face, ppem);
+    }
+
+    /// Drop every cached glyph value but keep size states (and therefore
+    /// the warm TT VMs) intact. Optimised for the "zoom-scrubbing"
+    /// pattern where outline values churn but the VMs are reused
+    /// frame-to-frame.
+    pub fn clearGlyphs(self: *TrueTypeHintContext) void {
+        var values = self.glyphs.valueIterator();
+        while (values.next()) |entry| {
+            switch (entry.*) {
+                .ready => |value| {
+                    value.deinit(self.allocator);
+                    self.allocator.destroy(value);
+                },
+                .unsupported => {},
+            }
+        }
+        self.glyphs.clearRetainingCapacity();
+    }
+
+    /// Drop every cached glyph value, size state, and face program.
+    /// Equivalent to a fresh `init` on the same allocator/atlas; any
+    /// subsequent query rebuilds from scratch.
+    pub fn clear(self: *TrueTypeHintContext) void {
+        self.clearInternal();
+    }
 };
+
+const EvictMatch = struct {
+    face_index: config_mod.FaceIndex,
+    ppem: tt_hint.HintPpem,
+};
+
+fn evictGlyphsMatching(self: *TrueTypeHintContext, match: EvictMatch) void {
+    // Collect victim keys first; mutating the map while iterating is
+    // not safe in Zig's std HashMap.
+    var victims = std.ArrayListUnmanaged(HintGlyphKey).empty;
+    defer victims.deinit(self.allocator);
+    var it = self.glyphs.iterator();
+    while (it.next()) |entry| {
+        const key = entry.key_ptr.*;
+        if (key.face_index != match.face_index) continue;
+        if (key.ppem_x_26_6 != match.ppem.x_26_6 or key.ppem_y_26_6 != match.ppem.y_26_6) continue;
+        victims.append(self.allocator, key) catch return;
+    }
+    for (victims.items) |key| {
+        if (self.glyphs.fetchRemove(key)) |kv| {
+            switch (kv.value) {
+                .ready => |value| {
+                    value.deinit(self.allocator);
+                    self.allocator.destroy(value);
+                },
+                .unsupported => {},
+            }
+        }
+    }
+}
 
 pub fn keyForGlyph(glyph: ShapedText.Glyph, ppem: tt_hint.HintPpem) HintGlyphKey {
     return .{
@@ -515,8 +760,8 @@ fn takeHintedGlyphValue(
     hint: *tt_hint.GlyphHint,
     patch: *tt_hint.GlyphHintPatch,
 ) HintedGlyphValue {
-    const deltas = patch.curve_deltas_f16;
-    patch.curve_deltas_f16 = &.{};
+    const points = patch.curve_points_f16;
+    patch.curve_points_f16 = &.{};
     defer patch.deinit();
     defer hint.deinit();
 
@@ -526,7 +771,7 @@ fn takeHintedGlyphValue(
         .bbox = hint.bbox,
         .attachment = .{
             .record = patch.record,
-            .curve_deltas_f16 = deltas,
+            .curve_points_f16 = points,
         },
     };
 }
@@ -707,4 +952,136 @@ test "hint context hints emboldened faces (faux-bold)" {
     // And both produce identical hinted advances (the embolden offset is a
     // render-time concern, not a hint-time one).
     try testing.expectApproxEqAbs(run_plain.stats.advance.x, run_bold.stats.advance.x, 1e-6);
+}
+
+test "hint cache eviction verbs preserve invariants" {
+    const assets = @import("assets");
+    const testing = std.testing;
+
+    var atlas = try TextAtlas.init(testing.allocator, &.{.{ .data = assets.noto_sans_regular }});
+    defer atlas.deinit();
+    if (try atlas.ensureText(.{}, "AB")) |next| {
+        atlas.deinit();
+        atlas = next;
+    }
+
+    var ctx = TrueTypeHintContext.init(testing.allocator, &atlas);
+    defer ctx.deinit();
+
+    var shaped = try atlas.shapeText(testing.allocator, .{}, "AB");
+    defer shaped.deinit();
+
+    const ppem_a = tt_hint.HintPpem.uniform(12 * 64);
+    const ppem_b = tt_hint.HintPpem.uniform(16 * 64);
+
+    var run_a = try ctx.prepareRun(testing.allocator, .{ .shaped = &shaped, .ppem = ppem_a });
+    defer run_a.deinit();
+    var run_b = try ctx.prepareRun(testing.allocator, .{ .shaped = &shaped, .ppem = ppem_b });
+    defer run_b.deinit();
+    if (run_a.stats.hinted_count == 0 or run_b.stats.hinted_count == 0) return error.SkipZigTest;
+
+    const footprint_full = ctx.byteFootprint();
+    try testing.expect(footprint_full.size_state_count >= 2);
+    try testing.expect(footprint_full.glyph_value_count >= 2);
+    try testing.expect(footprint_full.totalBytes() > 0);
+
+    // clearGlyphs drops outlines but keeps VM state warm.
+    ctx.clearGlyphs();
+    const footprint_after_glyphs = ctx.byteFootprint();
+    try testing.expectEqual(@as(usize, 0), footprint_after_glyphs.glyph_value_count);
+    try testing.expect(footprint_after_glyphs.size_state_count >= 2);
+
+    // Re-prepare to repopulate glyphs; size state is reused.
+    var run_a2 = try ctx.prepareRun(testing.allocator, .{ .shaped = &shaped, .ppem = ppem_a });
+    defer run_a2.deinit();
+    try testing.expect(ctx.byteFootprint().glyph_value_count >= 2);
+
+    // evictSize(ppem_a) drops the ppem_a VM and any glyphs at that PPEM.
+    ctx.evictSize(0, ppem_a);
+    var glyph_it = ctx.glyphKeyIterator();
+    while (glyph_it.next()) |entry| {
+        try testing.expect(entry.key.ppem_x_26_6 != ppem_a.x_26_6 or entry.key.face_index != 0);
+    }
+    var size_it = ctx.sizeKeyIterator();
+    while (size_it.next()) |entry| {
+        try testing.expect(entry.ppem.x_26_6 != ppem_a.x_26_6 or entry.face_index != 0);
+    }
+
+    // clear() empties everything.
+    ctx.clear();
+    const empty = ctx.byteFootprint();
+    try testing.expectEqual(@as(usize, 0), empty.totalBytes());
+}
+
+test "default snapshot key is stable across rebuilds for same atlas" {
+    // Regression: each `bindHintContext` rebuild used to mint a unique
+    // resource key (snapshot identity was folded in), so the upload
+    // pipeline accumulated GPU buffers per zoom level until VRAM was
+    // exhausted. Default key must depend only on the atlas's snapshot
+    // identity so repeated rebuilds replace rather than accumulate.
+    const assets = @import("assets");
+    const testing = std.testing;
+
+    var atlas = try TextAtlas.init(testing.allocator, &.{.{ .data = assets.noto_sans_regular }});
+    defer atlas.deinit();
+
+    var ctx = TrueTypeHintContext.init(testing.allocator, &atlas);
+    defer ctx.deinit();
+
+    var snap_a = try ctx.snapshot(testing.allocator, .{});
+    defer snap_a.deinit();
+    var snap_b = try ctx.snapshot(testing.allocator, .{});
+    defer snap_b.deinit();
+
+    try testing.expect(snap_a.key.eql(snap_b.key));
+    // Identities still differ — that's what enables idempotent
+    // `bindHintSnapshot` to detect a genuinely different snapshot.
+    try testing.expect(snap_a.snapshot_identity != snap_b.snapshot_identity);
+}
+
+test "bundle copies hint points so eviction does not dangle" {
+    const assets = @import("assets");
+    const testing = std.testing;
+    const blob_mod = @import("blob.zig");
+
+    var atlas = try TextAtlas.init(testing.allocator, &.{.{ .data = assets.noto_sans_regular }});
+    defer atlas.deinit();
+    if (try atlas.ensureText(.{}, "AB")) |next| {
+        atlas.deinit();
+        atlas = next;
+    }
+
+    var ctx = TrueTypeHintContext.init(testing.allocator, &atlas);
+    defer ctx.deinit();
+
+    var shaped = try atlas.shapeText(testing.allocator, .{}, "AB");
+    defer shaped.deinit();
+    var run = try ctx.prepareRun(testing.allocator, .{
+        .shaped = &shaped,
+        .ppem = tt_hint.HintPpem.uniform(12 * 64),
+    });
+    defer run.deinit();
+    if (run.stats.hinted_count == 0) return error.SkipZigTest;
+
+    var bundle = blob_mod.TextBlobBundle.init(testing.allocator, &atlas);
+    defer bundle.deinit();
+    try bundle.bindHintContext(&ctx);
+
+    var bip = try bundle.startBlob();
+    errdefer bip.abort();
+    _ = try bip.append(.{
+        .source = .{ .hinted = run.glyphs },
+        .placement = .{ .baseline = .{ .x = 0, .y = 12 }, .em = 12 },
+        .fill = .{ .solid = .{ 1, 1, 1, 1 } },
+    });
+    _ = try bip.finish(@import("../resource_key.zig").ResourceKey.named("dangling_test"));
+    try bundle.materialiseHintSnapshot();
+
+    // Evict from the hint context. If the bundle had borrowed slices,
+    // this would dangle. With the copy-on-append fix, the bundle's
+    // owned snapshot is still valid.
+    ctx.clearGlyphs();
+    const snap = bundle.hintSnapshotResolved().?;
+    try testing.expect(snap.hasRenderable());
+    try testing.expect(snap.layer_info_data != null);
 }
