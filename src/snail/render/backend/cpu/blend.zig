@@ -102,13 +102,29 @@ pub fn colorBytesForEncoding(encoding: snail.TargetEncoding, color_srgb: [4]f32)
 
 pub fn blendPremultipliedPixel(target: Target, row: u32, col: u32, src: [4]f32, apply_dither: bool) void {
     const off = row * target.stride + col * 4;
+    const target_src = target.srcPremultipliedForTarget(src);
+    const src_a = clamp01(target_src[3]);
+
+    // Fully-opaque src: dst contribution is exactly zero (multiplied by 1 -
+    // src_a == 0), so the dst read and sRGB-decode would be discarded. Bit-
+    // identical to the slow path; hits the dense interior of solid-color text.
+    if (src_a >= 1.0) {
+        const dither = if (apply_dither)
+            (interleavedGradientNoise(target.ditherRow(row), col) - 0.5) * (1.0 / 255.0)
+        else
+            0.0;
+        target.pixels[off + 0] = target.writeChannel(target_src[0], dither);
+        target.pixels[off + 1] = target.writeChannel(target_src[1], dither);
+        target.pixels[off + 2] = target.writeChannel(target_src[2], dither);
+        target.pixels[off + 3] = 255;
+        return;
+    }
+
     const dst_r = target.readDstChannel(target.pixels[off + 0]);
     const dst_g = target.readDstChannel(target.pixels[off + 1]);
     const dst_b = target.readDstChannel(target.pixels[off + 2]);
     const dst_a = @as(f32, @floatFromInt(target.pixels[off + 3])) / 255.0;
 
-    const target_src = target.srcPremultipliedForTarget(src);
-    const src_a = clamp01(target_src[3]);
     const out_r = target_src[0] + dst_r * (1.0 - src_a);
     const out_g = target_src[1] + dst_g * (1.0 - src_a);
     const out_b = target_src[2] + dst_b * (1.0 - src_a);
@@ -126,6 +142,23 @@ pub fn blendPremultipliedPixel(target: Target, row: u32, col: u32, src: [4]f32, 
 
 pub fn blendSubpixelPremultipliedPixel(target: Target, row: u32, col: u32, src: [4]f32, src_blend: [3]f32, apply_dither: bool) void {
     const off = row * target.stride + col * 4;
+    const src_a = clamp01(src[3]);
+
+    // Per-channel fully-opaque src: each dst lane is annihilated by
+    // `1 - src_blend[i] == 0`, and the alpha lane by `1 - src_a == 0`.
+    // Bit-exact with the slow path, common in solid-color text interiors.
+    if (src_a >= 1.0 and src_blend[0] >= 1.0 and src_blend[1] >= 1.0 and src_blend[2] >= 1.0) {
+        const dither = if (apply_dither)
+            (interleavedGradientNoise(target.ditherRow(row), col) - 0.5) * (1.0 / 255.0)
+        else
+            0.0;
+        target.pixels[off + 0] = target.writeChannel(src[0], dither);
+        target.pixels[off + 1] = target.writeChannel(src[1], dither);
+        target.pixels[off + 2] = target.writeChannel(src[2], dither);
+        target.pixels[off + 3] = 255;
+        return;
+    }
+
     const dst_r = target.readDstChannel(target.pixels[off + 0]);
     const dst_g = target.readDstChannel(target.pixels[off + 1]);
     const dst_b = target.readDstChannel(target.pixels[off + 2]);
@@ -134,7 +167,6 @@ pub fn blendSubpixelPremultipliedPixel(target: Target, row: u32, col: u32, src: 
     const out_r = src[0] + dst_r * (1.0 - clamp01(src_blend[0]));
     const out_g = src[1] + dst_g * (1.0 - clamp01(src_blend[1]));
     const out_b = src[2] + dst_b * (1.0 - clamp01(src_blend[2]));
-    const src_a = clamp01(src[3]);
     const out_a = src_a + dst_a * (1.0 - src_a);
 
     const dither = if (apply_dither)
