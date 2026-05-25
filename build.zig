@@ -616,6 +616,40 @@ fn addProfileCpuTextStep(
     profile_text_step.dependOn(&install_profile_text.step);
 }
 
+fn addProfileCpuBannerStep(
+    b: *std.Build,
+    config: BuildConfig,
+    modules: ProjectModules,
+    release: ReleaseToolModules,
+) void {
+    const banner_module = b.createModule(.{
+        .root_source_file = b.path("src/demo/banner.zig"),
+        .target = config.target,
+        .optimize = .ReleaseFast,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "snail", .module = release.snail },
+        },
+    });
+    const profile_banner_module = b.createModule(.{
+        .root_source_file = b.path("src/tools/profile_cpu_banner.zig"),
+        .target = config.target,
+        .optimize = .ReleaseFast,
+        .omit_frame_pointer = false,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "assets", .module = modules.assets },
+            .{ .name = "snail", .module = release.snail },
+            .{ .name = "banner", .module = banner_module },
+        },
+    });
+    configureCoreModule(profile_banner_module, modules.options, config.core_options, modules.vk_shaders);
+    const profile_banner_exe = b.addExecutable(.{ .name = "snail-profile-cpu-banner", .root_module = profile_banner_module });
+    const install_profile_banner = b.addInstallArtifact(profile_banner_exe, .{});
+    const profile_banner_step = b.step("install-profile-cpu-banner", "Install CPU-banner profile executable");
+    profile_banner_step.dependOn(&install_profile_banner.step);
+}
+
 fn addProfileTtHintStep(
     b: *std.Build,
     config: BuildConfig,
@@ -739,6 +773,7 @@ fn addToolSteps(
     const release = createReleaseToolModules(b, config, release_support_mod, modules);
     addBenchStep(b, config, modules, release);
     addProfileCpuTextStep(b, config, modules, release);
+    addProfileCpuBannerStep(b, config, modules, release);
     addProfileTtHintStep(b, config, modules, release);
     addScreenshotStep(b, config, modules, release);
     addAlgorithmScreenshotsStep(b, config, modules, release);
