@@ -28,14 +28,19 @@ const linear_to_srgb_byte_thresholds: [255]f32 = blk: {
     break :blk table;
 };
 
-const linear_to_srgb_bucket_count = 4096;
+// 8192 buckets gives a bucket width of ~1.22e-4 in linear space, well below
+// the minimum sRGB byte-threshold gap of 1/(255 * 12.92) ≈ 3.04e-4. With at
+// most one threshold per bucket, an entry sized to the bucket's upper edge is
+// either correct or one byte too high, so the lookup is bit-exact with the
+// IEC 61966-2-1 formula after at most one branch-predicted step down.
+const linear_to_srgb_bucket_count = 8192;
 const linear_to_srgb_byte_buckets: [linear_to_srgb_bucket_count]u8 = blk: {
-    @setEvalBranchQuota(1_000_000);
+    @setEvalBranchQuota(10_000_000);
     var table: [linear_to_srgb_bucket_count]u8 = undefined;
     for (0..linear_to_srgb_bucket_count) |bucket| {
-        const lower = @as(f32, @floatFromInt(bucket)) / @as(f32, @floatFromInt(linear_to_srgb_bucket_count));
+        const upper = @as(f32, @floatFromInt(bucket + 1)) / @as(f32, @floatFromInt(linear_to_srgb_bucket_count));
         var byte: u8 = 0;
-        while (byte < linear_to_srgb_byte_thresholds.len and lower >= linear_to_srgb_byte_thresholds[byte]) {
+        while (byte < linear_to_srgb_byte_thresholds.len and upper >= linear_to_srgb_byte_thresholds[byte]) {
             byte += 1;
         }
         table[bucket] = byte;
@@ -58,10 +63,9 @@ pub fn linearToSrgbByte(v: f32) u8 {
     const bucket_float = clamped * @as(f32, @floatFromInt(linear_to_srgb_bucket_count));
     const bucket = @min(@as(usize, @intFromFloat(bucket_float)), linear_to_srgb_bucket_count - 1);
     var byte = linear_to_srgb_byte_buckets[bucket];
-    while (byte < linear_to_srgb_byte_thresholds.len and clamped >= linear_to_srgb_byte_thresholds[byte]) {
-        byte += 1;
-    }
-    while (byte > 0 and clamped < linear_to_srgb_byte_thresholds[byte - 1]) {
+    // LUT entry is the byte for the bucket's upper edge, so the answer is
+    // either correct or one too high. One conditional step-down is enough.
+    if (byte > 0 and clamped < linear_to_srgb_byte_thresholds[byte - 1]) {
         byte -= 1;
     }
     return byte;
