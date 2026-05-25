@@ -1271,6 +1271,26 @@ pub fn prepareRowHorizState(
     return state;
 }
 
+// Single-sample H accumulator: same row state, but one sample per pixel
+// (used by the non-subpixel/grayscale path).
+fn applyRowHorizStateToScalar(
+    state: *const RowHorizState,
+    em_x_pixel: f32,
+    ppe_x: f32,
+    h_pair: *CoveragePair,
+) void {
+    var c: usize = 0;
+    while (c < state.count) : (c += 1) {
+        const entry = state.curves[c];
+        if (entry.sign1 != 0.0) {
+            appendCoverageContribution(h_pair, (entry.along_t1 - em_x_pixel) * ppe_x, entry.sign1);
+        }
+        if (entry.sign2 != 0.0) {
+            appendCoverageContribution(h_pair, (entry.along_t2 - em_x_pixel) * ppe_x, entry.sign2);
+        }
+    }
+}
+
 // Per-pixel H-axis accumulator using a precomputed row state. Each of the 7
 // subpixel samples for this pixel has its own sample_along = em_x_pixel +
 // step.x * (s - 3); the H contribution is just the cached `along_t` minus
@@ -1303,6 +1323,40 @@ fn applyRowHorizStateToPixel(
             }
         }
     }
+}
+
+// Single-sample, single-call grayscale coverage using row-cached H solves.
+// Per pixel: V-axis is the only place that touches the curve solver; the
+// H-axis is just two cheap MAD + clamp per cached curve.
+pub fn evalGlyphCoverageRowH(
+    page: anytype,
+    em_x_pixel: f32,
+    em_y_row: f32,
+    row_state: *const RowHorizState,
+    ppe_x: f32,
+    ppe_y: f32,
+    be: GlyphBandEntry,
+    band_max_h: i32,
+    band_max_v: i32,
+    fill_rule: FillRule,
+) f32 {
+    var h_pair: CoveragePair = .{ .cov = 0, .wgt = 0 };
+    applyRowHorizStateToScalar(row_state, em_x_pixel, ppe_x, &h_pair);
+
+    // V-axis: a single sample per pixel, identical to the V half of
+    // initGlyphBandState + evalGlyphVertCoverage.
+    const band_idx_x_f = em_x_pixel * be.band_scale_x + be.band_offset_x;
+    const band_idx_x = clampInt(@as(i32, @intFromFloat(@floor(band_idx_x_f))), 0, band_max_v);
+    const glyph_band_base = @as(usize, be.glyph_y) * @as(usize, page.band_width) + @as(usize, be.glyph_x);
+    const v_header = readBandTexelLinear(page, glyph_band_base + @as(usize, @intCast(band_max_h)) + 1 + @as(usize, @intCast(band_idx_x)));
+    const v_state = GlyphBandState{
+        .h_base = 0,
+        .h_count = 0,
+        .v_base = glyph_band_base + v_header[1],
+        .v_count = v_header[0],
+    };
+    const v_pair = evalGlyphVertCoverage(page, Vec2.new(em_x_pixel, em_y_row), 0.0, ppe_y, v_state);
+    return resolveCoverage(h_pair, v_pair, fill_rule);
 }
 
 // Single-call row-batched subpixel coverage. Uses a row-precomputed H-axis

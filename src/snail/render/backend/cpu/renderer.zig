@@ -47,6 +47,7 @@ const compositeOver = cpu_path_paint.compositeOver;
 const compositeSubpixelOver = cpu_coverage.compositeSubpixelOver;
 const evalGlyphCoverage = cpu_coverage.evalGlyphCoverage;
 const evalGlyphCoverageBandSpan = cpu_coverage.evalGlyphCoverageBandSpan;
+const evalGlyphCoverageRowH = cpu_coverage.evalGlyphCoverageRowH;
 const evalGlyphCoverageSubpixel = cpu_coverage.evalGlyphCoverageSubpixel;
 const evalGlyphCoverageSubpixelRowH = cpu_coverage.evalGlyphCoverageSubpixelRowH;
 const evalHintedTextCoverageBandSpan = cpu_coverage.evalHintedTextCoverageBandSpan;
@@ -1119,14 +1120,24 @@ pub const CpuRenderer = struct {
         // page is prepared, and (d) hinting is off (hinted text caches
         // shaped curves elsewhere). When any of those fails we fall back to
         // per-pixel evaluation.
+        // Row-batched H-axis fast path. Applies when (a) the transform is
+        // axis-aligned (sample_dx.y == 0 so em_y is row-constant), (b) the
+        // atlas page is prepared, and (c) hinting is off (hinted text caches
+        // shaped curves elsewhere). For RGB/BGR subpixel we additionally
+        // require plan.step.y == 0 so all 7 subpixel samples share em_y too;
+        // the non-subpixel path needs only the row-constant em_y. When any
+        // condition fails we fall back to per-pixel evaluation.
         const PageType = switch (@typeInfo(@TypeOf(page))) {
             .pointer => |ptr| ptr.child,
             else => @TypeOf(page),
         };
         const prepared_page = comptime @hasField(PageType, "h_curves");
-        const axis_aligned = @abs(sample_dx.y) < 1e-9 and subpixel_plan.step.y == 0.0;
-        const subpixel_rgb = allow_subpixel and (self.subpixel_order == .rgb or self.subpixel_order == .bgr);
-        const use_row_h = prepared_page and axis_aligned and subpixel_rgb and hint_record == null;
+        const axis_aligned = @abs(sample_dx.y) < 1e-9;
+        const subpixel_rgb = allow_subpixel and (self.subpixel_order == .rgb or self.subpixel_order == .bgr) and subpixel_plan.step.y == 0.0;
+        const grayscale_path = !allow_subpixel or self.subpixel_order == .none;
+        const use_row_h_subpixel = prepared_page and axis_aligned and subpixel_rgb and hint_record == null;
+        const use_row_h_grayscale = prepared_page and axis_aligned and grayscale_path and hint_record == null;
+        const use_row_h = use_row_h_subpixel or use_row_h_grayscale;
 
         var row: u32 = @intCast(py0);
         while (row < @as(u32, @intCast(py1))) : (row += 1) {
@@ -1146,6 +1157,8 @@ pub const CpuRenderer = struct {
                 if (!allow_subpixel or self.subpixel_order == .none) {
                     const raw_cov = if (hint_record) |record|
                         evalHintedTextCoverageBandSpan(page, record, display_local.x, display_local.y, epp.x, epp.y, ppe.x, ppe.y, be, band_max_h, band_max_v, self.fill_rule)
+                    else if (row_state_ready)
+                        evalGlyphCoverageRowH(page, display_local.x, display_local.y, &row_state, ppe.x, ppe.y, be, band_max_h, band_max_v, self.fill_rule)
                     else
                         evalGlyphCoverage(page, display_local.x, display_local.y, ppe.x, ppe.y, be, band_max_h, band_max_v, self.fill_rule);
                     const cov = self.applyCoverageTransfer(raw_cov);
