@@ -6,6 +6,7 @@ const clamp01 = cpu_color.clamp01;
 const interleavedGradientNoise = cpu_color.interleavedGradientNoise;
 const linearColorToSrgb = cpu_color.linearColorToSrgb;
 const linearToSrgb = cpu_color.linearToSrgb;
+const linearToSrgbApprox = cpu_color.linearToSrgbApprox;
 const linearToSrgbByte = cpu_color.linearToSrgbByte;
 const srgbColorToLinear = cpu_color.srgbColorToLinear;
 const srgbToByte = cpu_color.srgbToByte;
@@ -41,7 +42,10 @@ pub const Target = struct {
         }
         if (self.target_encoding.cpuOutputSrgb()) {
             if (dither == 0.0) return linearToSrgbByte(value);
-            return srgbToByte(linearToSrgb(value) + dither);
+            // Use the LUT-approximated sRGB float to avoid `pow` per channel.
+            // The bucket error is ~3-4 orders below the dither amplitude, so
+            // the rounded byte still matches the formula within ≤1 LSB.
+            return srgbToByte(linearToSrgbApprox(value) + dither);
         }
         return srgbToByte(value + dither);
     }
@@ -100,7 +104,7 @@ pub fn colorBytesForEncoding(encoding: snail.TargetEncoding, color_srgb: [4]f32)
     };
 }
 
-pub fn blendPremultipliedPixel(target: Target, row: u32, col: u32, src: [4]f32, apply_dither: bool) void {
+pub inline fn blendPremultipliedPixel(target: Target, row: u32, col: u32, src: [4]f32, apply_dither: bool) void {
     const off = row * target.stride + col * 4;
     const target_src = target.srcPremultipliedForTarget(src);
     const src_a = clamp01(target_src[3]);
@@ -125,22 +129,27 @@ pub fn blendPremultipliedPixel(target: Target, row: u32, col: u32, src: [4]f32, 
     const dst_b = target.readDstChannel(target.pixels[off + 2]);
     const dst_a = @as(f32, @floatFromInt(target.pixels[off + 3])) / 255.0;
 
-    const out_r = target_src[0] + dst_r * (1.0 - src_a);
-    const out_g = target_src[1] + dst_g * (1.0 - src_a);
-    const out_b = target_src[2] + dst_b * (1.0 - src_a);
-    const out_a = src_a + dst_a * (1.0 - src_a);
+    // 4-wide blend: `out = target_src + dst * (1 - src_a)` fuses to one vmadd.
+    // target_src[3] == src_a (alpha preserved through srcPremultipliedForTarget),
+    // so `target_src[3] + dst_a * (1 - src_a) == src_a + dst_a * (1 - src_a)`,
+    // which is exactly the alpha composite formula.
+    const V = @Vector(4, f32);
+    const src_v: V = target_src;
+    const dst_v: V = .{ dst_r, dst_g, dst_b, dst_a };
+    const inv_alpha_v: V = @splat(1.0 - src_a);
+    const out_v = src_v + dst_v * inv_alpha_v;
 
     const dither = if (apply_dither)
-        (interleavedGradientNoise(target.ditherRow(row), col) - 0.5) * (clamp01(out_a) / 255.0)
+        (interleavedGradientNoise(target.ditherRow(row), col) - 0.5) * (clamp01(out_v[3]) / 255.0)
     else
         0.0;
-    target.pixels[off + 0] = target.writeChannel(out_r, dither);
-    target.pixels[off + 1] = target.writeChannel(out_g, dither);
-    target.pixels[off + 2] = target.writeChannel(out_b, dither);
-    target.pixels[off + 3] = srgbToByte(out_a);
+    target.pixels[off + 0] = target.writeChannel(out_v[0], dither);
+    target.pixels[off + 1] = target.writeChannel(out_v[1], dither);
+    target.pixels[off + 2] = target.writeChannel(out_v[2], dither);
+    target.pixels[off + 3] = srgbToByte(out_v[3]);
 }
 
-pub fn blendSubpixelPremultipliedPixel(target: Target, row: u32, col: u32, src: [4]f32, src_blend: [3]f32, apply_dither: bool) void {
+pub inline fn blendSubpixelPremultipliedPixel(target: Target, row: u32, col: u32, src: [4]f32, src_blend: [3]f32, apply_dither: bool) void {
     const off = row * target.stride + col * 4;
     const src_a = clamp01(src[3]);
 
@@ -179,7 +188,7 @@ pub fn blendSubpixelPremultipliedPixel(target: Target, row: u32, col: u32, src: 
     target.pixels[off + 3] = srgbToByte(out_a);
 }
 
-pub fn blendSubpixelPixel(target: Target, row: u32, col: u32, color: [4]f32, cov: [3]f32, alpha_cov: f32) void {
+pub inline fn blendSubpixelPixel(target: Target, row: u32, col: u32, color: [4]f32, cov: [3]f32, alpha_cov: f32) void {
     const target_color = target.srcColorForSubpixelTarget(color);
     const src_blend = subpixelBlendCoverage(color, cov);
     blendSubpixelPremultipliedPixel(target, row, col, premultiplySubpixelCoverage(target_color, cov, alpha_cov), src_blend, false);

@@ -1473,18 +1473,18 @@ pub const CpuRenderer = struct {
         };
     }
 
-    fn blendPremultipliedPixel(self: *CpuRenderer, row: u32, col: u32, src: [4]f32, apply_dither: bool) void {
+    inline fn blendPremultipliedPixel(self: *CpuRenderer, row: u32, col: u32, src: [4]f32, apply_dither: bool) void {
         cpu_blend.blendPremultipliedPixel(self.blendTarget(), row, col, src, apply_dither);
     }
 
-    fn blendSubpixelPremultipliedPixel(self: *CpuRenderer, row: u32, col: u32, src: [4]f32, src_blend: [3]f32, apply_dither: bool) void {
+    inline fn blendSubpixelPremultipliedPixel(self: *CpuRenderer, row: u32, col: u32, src: [4]f32, src_blend: [3]f32, apply_dither: bool) void {
         cpu_blend.blendSubpixelPremultipliedPixel(self.blendTarget(), row, col, src, src_blend, apply_dither);
     }
 
     /// Per-channel subpixel blend (equivalent to GPU dual-source blending).
     /// Each RGB channel has its own coverage, so the destination attenuation
     /// is per-channel: out.r = src.r * alpha_r + dst.r * (1 - alpha_r), etc.
-    fn blendSubpixelPixel(self: *CpuRenderer, row: u32, col: u32, color: [4]f32, cov: [3]f32, alpha_cov: f32) void {
+    inline fn blendSubpixelPixel(self: *CpuRenderer, row: u32, col: u32, color: [4]f32, cov: [3]f32, alpha_cov: f32) void {
         cpu_blend.blendSubpixelPixel(self.blendTarget(), row, col, color, cov, alpha_cov);
     }
 };

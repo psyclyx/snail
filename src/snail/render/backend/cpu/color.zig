@@ -58,6 +58,27 @@ pub fn linearToSrgb(v: f32) f32 {
     return if (clamped <= 0.0031308) clamped * 12.92 else 1.055 * std.math.pow(f32, clamped, 1.0 / 2.4) - 0.055;
 }
 
+// LUT-based approximation of `linearToSrgb`, sized so each bucket's
+// quantization error is well under one byte after re-quantization. Hot path:
+// dithered blends, where the formula's `pow` is otherwise per-pixel-per-channel.
+const linear_to_srgb_float_buckets: [linear_to_srgb_bucket_count]f32 = blk: {
+    @setEvalBranchQuota(1_000_000);
+    var table: [linear_to_srgb_bucket_count]f32 = undefined;
+    for (0..linear_to_srgb_bucket_count) |bucket| {
+        const center: f32 = (@as(f32, @floatFromInt(bucket)) + 0.5) / @as(f32, @floatFromInt(linear_to_srgb_bucket_count));
+        const clamped = @max(center, 0.0);
+        table[bucket] = if (clamped <= 0.0031308) clamped * 12.92 else 1.055 * std.math.pow(f32, clamped, 1.0 / 2.4) - 0.055;
+    }
+    break :blk table;
+};
+
+pub inline fn linearToSrgbApprox(v: f32) f32 {
+    const clamped = @min(@max(v, 0.0), 1.0);
+    const bucket_float = clamped * @as(f32, @floatFromInt(linear_to_srgb_bucket_count));
+    const bucket = @min(@as(usize, @intFromFloat(bucket_float)), linear_to_srgb_bucket_count - 1);
+    return linear_to_srgb_float_buckets[bucket];
+}
+
 pub fn linearToSrgbByte(v: f32) u8 {
     const clamped = @min(@max(v, 0.0), 1.0);
     const bucket_float = clamped * @as(f32, @floatFromInt(linear_to_srgb_bucket_count));
