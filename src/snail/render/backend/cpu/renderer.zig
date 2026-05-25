@@ -47,10 +47,12 @@ const compositeOver = cpu_path_paint.compositeOver;
 const compositeSubpixelOver = cpu_coverage.compositeSubpixelOver;
 const evalGlyphCoverage = cpu_coverage.evalGlyphCoverage;
 const evalGlyphCoverageBandSpan = cpu_coverage.evalGlyphCoverageBandSpan;
+const evalGlyphCoverageBandSpanRowH = cpu_coverage.evalGlyphCoverageBandSpanRowH;
 const evalGlyphCoverageRowH = cpu_coverage.evalGlyphCoverageRowH;
 const evalGlyphCoverageSubpixel = cpu_coverage.evalGlyphCoverageSubpixel;
 const evalGlyphCoverageSubpixelRowH = cpu_coverage.evalGlyphCoverageSubpixelRowH;
 const evalHintedTextCoverageBandSpan = cpu_coverage.evalHintedTextCoverageBandSpan;
+const prepareRowHorizSpanState = cpu_coverage.prepareRowHorizSpanState;
 const prepareRowHorizState = cpu_coverage.prepareRowHorizState;
 const RowHorizState = cpu_coverage.RowHorizState;
 const expandBoundsForCoverageSupport = cpu_geometry.expandBoundsForCoverageSupport;
@@ -101,6 +103,11 @@ pub const CpuRenderer = struct {
     col_clip_max: u32,
 
     pub const TILE_ROWS: u32 = 32;
+
+    // Stack-allocated row-state array for composite paths. Most COLR / outline
+    // groups have far fewer layers than this; spillover falls back to per-pixel
+    // evaluation.
+    const MAX_COMPOSITE_LAYERS: usize = 8;
 
     pub fn init(pixels: [*]u8, width: u32, height: u32, stride: u32) CpuRenderer {
         return .{
@@ -734,16 +741,29 @@ pub const CpuRenderer = struct {
         programs: PathCompositePrograms,
         local: Vec2,
         tint: [4]f32,
+        row_state: ?*const RowHorizState,
     ) void {
-        const cov = self.applySubpixelCoverageTransfer(evalGlyphCoverageSubpixel(
-            page,
-            local,
-            raster.subpixel_plan,
-            layer.band_entry,
-            layer.band_max_h,
-            layer.band_max_v,
-            self.fill_rule,
-        ));
+        const cov = if (row_state) |rs|
+            self.applySubpixelCoverageTransfer(evalGlyphCoverageSubpixelRowH(
+                page,
+                local.x,
+                local.y,
+                rs,
+                raster.subpixel_plan,
+                layer.band_entry,
+                layer.band_max_v,
+                self.fill_rule,
+            ))
+        else
+            self.applySubpixelCoverageTransfer(evalGlyphCoverageSubpixel(
+                page,
+                local,
+                raster.subpixel_plan,
+                layer.band_entry,
+                layer.band_max_h,
+                layer.band_max_v,
+                self.fill_rule,
+            ));
 
         if (programs.outline and layer_index < 2) {
             if (layer_index == 0) {
@@ -808,8 +828,24 @@ pub const CpuRenderer = struct {
         programs: PathCompositePrograms,
         local: Vec2,
         tint: [4]f32,
+        row_state: ?*const RowHorizState,
     ) void {
-        const cov = self.scalarPathLayerCoverage(page, raster, layer, local);
+        const cov = if (row_state) |rs|
+            self.applyCoverageTransfer(evalGlyphCoverageBandSpanRowH(
+                page,
+                local.x,
+                local.y,
+                rs,
+                raster.epp.x,
+                raster.ppe.x,
+                raster.ppe.y,
+                layer.band_entry,
+                layer.band_max_h,
+                layer.band_max_v,
+                self.fill_rule,
+            ))
+        else
+            self.scalarPathLayerCoverage(page, raster, layer, local);
 
         if (programs.outline and layer_index < 2) {
             const subpixel_cov: SubpixelCoverage = .{ .rgb = .{ cov, cov, cov }, .alpha = cov };
@@ -882,13 +918,15 @@ pub const CpuRenderer = struct {
         programs: PathCompositePrograms,
         local: Vec2,
         tint: [4]f32,
+        row_states: ?[]const RowHorizState,
     ) PathCompositePixel {
         var accum: PathCompositeAccum = .{};
         for (layers, 0..) |layer, layer_index| {
+            const rs: ?*const RowHorizState = if (row_states) |states| &states[layer_index] else null;
             if (raster.use_subpixel) {
-                self.recordCompositeSubpixelLayer(&accum, page, raster, layer, layer_index, programs, local, tint);
+                self.recordCompositeSubpixelLayer(&accum, page, raster, layer, layer_index, programs, local, tint, rs);
             } else {
-                self.recordCompositeScalarLayer(&accum, page, raster, layer, layer_index, programs, local, tint);
+                self.recordCompositeScalarLayer(&accum, page, raster, layer, layer_index, programs, local, tint, rs);
             }
         }
         if (programs.outline) finishOutlineComposite(&accum, raster.use_subpixel);
@@ -929,6 +967,8 @@ pub const CpuRenderer = struct {
         fill_program: PreparedPathPaint,
         stroke_program: PreparedPathPaint,
     ) void {
+        const axis_aligned = @abs(raster.sample_dx.y) < 1e-9;
+
         var row: u32 = raster.y0;
         while (row < raster.y1) : (row += 1) {
             var col: u32 = raster.x0;
@@ -936,11 +976,51 @@ pub const CpuRenderer = struct {
                 .x = @as(f32, @floatFromInt(col)) + 0.5,
                 .y = @as(f32, @floatFromInt(row)) + 0.5,
             });
+
+            var fill_state: RowHorizState = undefined;
+            var stroke_state: RowHorizState = undefined;
+            const row_state_ready = axis_aligned and blk: {
+                fill_state = prepareRowHorizSpanState(page, local.y, raster.epp.y, fill_layer.band_entry, fill_layer.band_max_h);
+                if (!fill_state.valid) break :blk false;
+                stroke_state = prepareRowHorizSpanState(page, local.y, raster.epp.y, stroke_layer.band_entry, stroke_layer.band_max_h);
+                break :blk stroke_state.valid;
+            };
+
             while (col < raster.x1) : (advanceLocalPixel(&col, &local, raster.sample_dx)) {
-                const fill_cov = self.scalarPathLayerCoverage(page, raster, fill_layer, local);
+                const fill_cov = if (row_state_ready)
+                    self.applyCoverageTransfer(evalGlyphCoverageBandSpanRowH(
+                        page,
+                        local.x,
+                        local.y,
+                        &fill_state,
+                        raster.epp.x,
+                        raster.ppe.x,
+                        raster.ppe.y,
+                        fill_layer.band_entry,
+                        fill_layer.band_max_h,
+                        fill_layer.band_max_v,
+                        self.fill_rule,
+                    ))
+                else
+                    self.scalarPathLayerCoverage(page, raster, fill_layer, local);
                 if (fill_cov <= 0.0) continue;
 
-                const stroke_cov = self.scalarPathLayerCoverage(page, raster, stroke_layer, local);
+                const stroke_cov = if (row_state_ready)
+                    self.applyCoverageTransfer(evalGlyphCoverageBandSpanRowH(
+                        page,
+                        local.x,
+                        local.y,
+                        &stroke_state,
+                        raster.epp.x,
+                        raster.ppe.x,
+                        raster.ppe.y,
+                        stroke_layer.band_entry,
+                        stroke_layer.band_max_h,
+                        stroke_layer.band_max_v,
+                        self.fill_rule,
+                    ))
+                else
+                    self.scalarPathLayerCoverage(page, raster, stroke_layer, local);
                 const border_cov = @min(fill_cov, stroke_cov);
                 const interior_cov = @max(fill_cov - border_cov, 0.0);
                 if (interior_cov <= 0.0 and border_cov <= 0.0) continue;
@@ -985,6 +1065,14 @@ pub const CpuRenderer = struct {
             return;
         }
 
+        // For axis-aligned + RGB/BGR-subpixel-or-grayscale, pre-solve every
+        // layer's H-axis curves once per row. Up to MAX_COMPOSITE_LAYERS is
+        // bounded so the state array sits on the stack; rarely-exceeded.
+        const axis_aligned = @abs(raster.sample_dx.y) < 1e-9;
+        const subpixel_rgb = raster.use_subpixel and (self.subpixel_order == .rgb or self.subpixel_order == .bgr) and raster.subpixel_plan.step.y == 0.0;
+        const grayscale_path = !raster.use_subpixel;
+        const can_row_batch = axis_aligned and (subpixel_rgb or grayscale_path) and layer_count <= MAX_COMPOSITE_LAYERS;
+
         var row: u32 = raster.y0;
         while (row < raster.y1) : (row += 1) {
             var col: u32 = raster.x0;
@@ -992,8 +1080,26 @@ pub const CpuRenderer = struct {
                 .x = @as(f32, @floatFromInt(col)) + 0.5,
                 .y = @as(f32, @floatFromInt(row)) + 0.5,
             });
+
+            var row_states_storage: [MAX_COMPOSITE_LAYERS]RowHorizState = undefined;
+            var row_states_ready: bool = false;
+            if (can_row_batch) {
+                row_states_ready = true;
+                for (layers, 0..) |layer, i| {
+                    row_states_storage[i] = if (subpixel_rgb)
+                        prepareRowHorizState(page, local.y, layer.band_entry, layer.band_max_h)
+                    else
+                        prepareRowHorizSpanState(page, local.y, raster.epp.y, layer.band_entry, layer.band_max_h);
+                    if (!row_states_storage[i].valid) {
+                        row_states_ready = false;
+                        break;
+                    }
+                }
+            }
+            const row_states: ?[]const RowHorizState = if (row_states_ready) row_states_storage[0..layer_count] else null;
+
             while (col < raster.x1) : (advanceLocalPixel(&col, &local, raster.sample_dx)) {
-                const pixel = self.sampleCompositePathPixel(page, raster, layers, programs, local, tint);
+                const pixel = self.sampleCompositePathPixel(page, raster, layers, programs, local, tint, row_states);
                 if (pixel.color[3] < 1.0 / 255.0) continue;
                 if (raster.use_subpixel) {
                     self.blendSubpixelPremultipliedPixel(row, col, pixel.color, pixel.blend, pixel.has_gradient);
@@ -1022,6 +1128,14 @@ pub const CpuRenderer = struct {
         const band_max_v = layer.band_max_v;
         const paint_program = layer.paint;
 
+        const axis_aligned = @abs(raster.sample_dx.y) < 1e-9;
+        const subpixel_rgb = raster.use_subpixel and (self.subpixel_order == .rgb or self.subpixel_order == .bgr) and raster.subpixel_plan.step.y == 0.0;
+        // Subpixel path uses single-band evalGlyphCoverageSubpixel internally,
+        // so the existing single-band row state applies. Non-subpixel path
+        // uses the band-span variant and needs the span-aware state.
+        const use_row_h_subpixel = axis_aligned and subpixel_rgb;
+        const use_row_h_span = axis_aligned and !raster.use_subpixel;
+
         var row: u32 = raster.y0;
         while (row < raster.y1) : (row += 1) {
             var col: u32 = raster.x0;
@@ -1029,23 +1143,36 @@ pub const CpuRenderer = struct {
                 .x = @as(f32, @floatFromInt(col)) + 0.5,
                 .y = @as(f32, @floatFromInt(row)) + 0.5,
             });
+
+            var row_state: RowHorizState = undefined;
+            const row_state_ready = blk: {
+                if (use_row_h_subpixel) {
+                    row_state = prepareRowHorizState(page, local.y, be, band_max_h);
+                    break :blk row_state.valid;
+                } else if (use_row_h_span) {
+                    row_state = prepareRowHorizSpanState(page, local.y, raster.epp.y, be, band_max_h);
+                    break :blk row_state.valid;
+                }
+                break :blk false;
+            };
+
             while (col < raster.x1) : (advanceLocalPixel(&col, &local, raster.sample_dx)) {
                 if (!raster.use_subpixel) {
-                    const cov = self.applyCoverageTransfer(evalGlyphCoverageBandSpan(page, local.x, local.y, raster.epp.x, raster.epp.y, raster.ppe.x, raster.ppe.y, be, band_max_h, band_max_v, self.fill_rule));
+                    const raw_cov = if (row_state_ready)
+                        evalGlyphCoverageBandSpanRowH(page, local.x, local.y, &row_state, raster.epp.x, raster.ppe.x, raster.ppe.y, be, band_max_h, band_max_v, self.fill_rule)
+                    else
+                        evalGlyphCoverageBandSpan(page, local.x, local.y, raster.epp.x, raster.epp.y, raster.ppe.x, raster.ppe.y, be, band_max_h, band_max_v, self.fill_rule);
+                    const cov = self.applyCoverageTransfer(raw_cov);
                     if (cov < 1.0 / 255.0) continue;
                     var paint = paint_program.sample(local);
                     paint.color = multiplyLinearColor(paint.color, tint);
                     self.blendPremultipliedPixel(row, col, premultiplyCoverage(paint.color, cov), paint.apply_dither);
                 } else {
-                    const cov = self.applySubpixelCoverageTransfer(evalGlyphCoverageSubpixel(
-                        page,
-                        local,
-                        raster.subpixel_plan,
-                        be,
-                        band_max_h,
-                        band_max_v,
-                        self.fill_rule,
-                    ));
+                    const raw_cov = if (row_state_ready)
+                        evalGlyphCoverageSubpixelRowH(page, local.x, local.y, &row_state, raster.subpixel_plan, be, band_max_v, self.fill_rule)
+                    else
+                        evalGlyphCoverageSubpixel(page, local, raster.subpixel_plan, be, band_max_h, band_max_v, self.fill_rule);
+                    const cov = self.applySubpixelCoverageTransfer(raw_cov);
                     if (max3(cov.rgb) < 1.0 / 255.0) continue;
                     var paint = paint_program.sample(local);
                     paint.color = multiplyLinearColor(paint.color, tint);

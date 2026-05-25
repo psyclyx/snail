@@ -1186,6 +1186,44 @@ pub const RowHorizState = struct {
     valid: bool, // false => caller must fall back to per-pixel evaluation
 };
 
+inline fn solveRowHorizCurve(curve: *const PreparedAxisCurve, sample_root: f32) ?RowHorizCurveSolve {
+    switch (curve.kind) {
+        .quadratic => {
+            const p0r = curve.p0_root - sample_root;
+            const p1r = curve.p1_root - sample_root;
+            const p2r = curve.p2_root - sample_root;
+            const code = calcRootCode(p0r, p1r, p2r);
+            if (code == 0) {
+                return .{ .along_t1 = 0, .along_t2 = 0, .sign1 = 0, .sign2 = 0 };
+            }
+            const roots = solvePreparedAxisQuadratic(curve, curve.p0_along, p0r, 1.0);
+            return .{
+                .along_t1 = roots[0],
+                .along_t2 = roots[1],
+                .sign1 = if ((code & 1) != 0) 1.0 else 0.0,
+                .sign2 = if (code > 1) -1.0 else 0.0,
+            };
+        },
+        .line => {
+            const denom = curve.a_root;
+            var entry = RowHorizCurveSolve{ .along_t1 = 0, .along_t2 = 0, .sign1 = 0, .sign2 = 0 };
+            if (@abs(denom) >= 1e-10) {
+                const t_raw = -(curve.p0_root - sample_root) / denom;
+                if (t_raw >= -1e-5 and t_raw <= 1.0 + 1e-5) {
+                    const t = std.math.clamp(t_raw, 0.0, 1.0);
+                    const is_endpoint = isNearEndRoot(t) and isEndpointRootDelta(curve.p0_root + curve.a_root - sample_root);
+                    if (!is_endpoint and @abs(denom) > 1e-5) {
+                        entry.along_t1 = curve.p0_along + curve.a_along * t;
+                        entry.sign1 = if (denom > 0.0) 1.0 else -1.0;
+                    }
+                }
+            }
+            return entry;
+        },
+        .conic, .cubic => return null,
+    }
+}
+
 // Precompute the row's H-axis curve solves. `em_y_row` is the row's em-space
 // y coordinate (shared across every pixel in the row); this is only valid
 // for axis-aligned + RGB/BGR-stripe subpixel orders, where `plan.step.y` is
@@ -1223,49 +1261,56 @@ pub fn prepareRowHorizState(
             state.count += 1;
             continue;
         }
-        switch (curve.kind) {
-            .quadratic => {
-                const p0r = curve.p0_root - em_y_row;
-                const p1r = curve.p1_root - em_y_row;
-                const p2r = curve.p2_root - em_y_row;
-                const code = calcRootCode(p0r, p1r, p2r);
-                if (code == 0) {
-                    state.curves[state.count] = .{ .along_t1 = 0, .along_t2 = 0, .sign1 = 0, .sign2 = 0 };
-                } else {
-                    const roots = solvePreparedAxisQuadratic(curve, curve.p0_along, p0r, 1.0);
-                    state.curves[state.count] = .{
-                        .along_t1 = roots[0],
-                        .along_t2 = roots[1],
-                        .sign1 = if ((code & 1) != 0) 1.0 else 0.0,
-                        .sign2 = if (code > 1) -1.0 else 0.0,
-                    };
-                }
-            },
-            .line => {
-                const denom = curve.a_root;
-                var entry = RowHorizCurveSolve{ .along_t1 = 0, .along_t2 = 0, .sign1 = 0, .sign2 = 0 };
-                if (@abs(denom) >= 1e-10) {
-                    const t_raw = -(curve.p0_root - em_y_row) / denom;
-                    if (t_raw >= -1e-5 and t_raw <= 1.0 + 1e-5) {
-                        const t = std.math.clamp(t_raw, 0.0, 1.0);
-                        const is_endpoint = isNearEndRoot(t) and isEndpointRootDelta(curve.p0_root + curve.a_root - em_y_row);
-                        if (!is_endpoint and @abs(denom) > 1e-5) {
-                            entry.along_t1 = curve.p0_along + curve.a_along * t;
-                            entry.sign1 = if (denom > 0.0) 1.0 else -1.0;
-                        }
-                    }
-                }
-                state.curves[state.count] = entry;
-            },
-            .conic, .cubic => {
-                // Row caching would require also caching the per-root along
-                // values from the conic/cubic solvers. Easier: refuse the
-                // fast path and let the caller fall back to the existing
-                // per-pixel evaluator for this row.
-                return state;
-            },
-        }
+        const solved = solveRowHorizCurve(curve, em_y_row) orelse {
+            // conic/cubic: refuse fast path, caller falls back to per-pixel.
+            return state;
+        };
+        state.curves[state.count] = solved;
         state.count += 1;
+    }
+    state.valid = true;
+    return state;
+}
+
+// Span-aware variant: walks every band the pixel footprint touches (matches
+// the GPU `*BandSpan` path) and pre-solves H-axis contributions across the
+// whole span. Same RowHorizState shape; per-pixel apply is identical.
+pub fn prepareRowHorizSpanState(
+    page: anytype,
+    em_y_row: f32,
+    epp_y: f32,
+    be: GlyphBandEntry,
+    band_max_h: i32,
+) RowHorizState {
+    var state: RowHorizState = .{
+        .curves = undefined,
+        .count = 0,
+        .valid = false,
+    };
+
+    const span = coverageBandSpan(em_y_row, epp_y, be.band_scale_y, be.band_offset_y, band_max_h);
+    if (span.first > span.last) {
+        state.valid = true;
+        return state;
+    }
+    const glyph_band_base = @as(usize, be.glyph_y) * @as(usize, page.band_width) + @as(usize, be.glyph_x);
+    const dedup = span.first != span.last;
+
+    var band = span.first;
+    while (band <= span.last) : (band += 1) {
+        const header = readBandTexelLinear(page, glyph_band_base + @as(usize, @intCast(band)));
+        const band_base = glyph_band_base + header[1];
+        if (band_base >= page.h_curves.len) continue;
+        const band_count = @min(@as(usize, header[0]), page.h_curves.len - band_base);
+        const band_curves = page.h_curves[band_base..][0..band_count];
+        for (band_curves) |*curve| {
+            if (!curve.valid) continue;
+            if (dedup and !isBandSpanOwner(curve.first_member_band, band, span.first)) continue;
+            if (state.count >= max_row_horiz_curves) return state;
+            const solved = solveRowHorizCurve(curve, em_y_row) orelse return state;
+            state.curves[state.count] = solved;
+            state.count += 1;
+        }
     }
     state.valid = true;
     return state;
@@ -1323,6 +1368,32 @@ fn applyRowHorizStateToPixel(
             }
         }
     }
+}
+
+// Single-sample band-span coverage using row-cached H solves. The H span
+// (and therefore the curve set after dedup) is identical across the row;
+// the V axis is still evaluated fresh per pixel using the band-span path.
+pub fn evalGlyphCoverageBandSpanRowH(
+    page: anytype,
+    em_x_pixel: f32,
+    em_y_row: f32,
+    row_state: *const RowHorizState,
+    epp_x: f32,
+    ppe_x: f32,
+    ppe_y: f32,
+    be: GlyphBandEntry,
+    band_max_h: i32,
+    band_max_v: i32,
+    fill_rule: FillRule,
+) f32 {
+    var h_pair: CoveragePair = .{ .cov = 0, .wgt = 0 };
+    applyRowHorizStateToScalar(row_state, em_x_pixel, ppe_x, &h_pair);
+
+    const sample_rc = Vec2.new(em_x_pixel, em_y_row);
+    const v_span = coverageBandSpan(em_x_pixel, epp_x, be.band_scale_x, be.band_offset_x, band_max_v);
+    const glyph_band_base = @as(usize, be.glyph_y) * @as(usize, page.band_width) + @as(usize, be.glyph_x);
+    const v_pair = evalGlyphCoverageAxisBandSpan(page, sample_rc, ppe_y, glyph_band_base, band_max_h + 1, v_span, false);
+    return resolveCoverage(h_pair, v_pair, fill_rule);
 }
 
 // Single-sample, single-call grayscale coverage using row-cached H solves.
