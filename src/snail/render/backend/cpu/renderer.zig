@@ -48,7 +48,10 @@ const compositeSubpixelOver = cpu_coverage.compositeSubpixelOver;
 const evalGlyphCoverage = cpu_coverage.evalGlyphCoverage;
 const evalGlyphCoverageBandSpan = cpu_coverage.evalGlyphCoverageBandSpan;
 const evalGlyphCoverageSubpixel = cpu_coverage.evalGlyphCoverageSubpixel;
+const evalGlyphCoverageSubpixelRowH = cpu_coverage.evalGlyphCoverageSubpixelRowH;
 const evalHintedTextCoverageBandSpan = cpu_coverage.evalHintedTextCoverageBandSpan;
+const prepareRowHorizState = cpu_coverage.prepareRowHorizState;
+const RowHorizState = cpu_coverage.RowHorizState;
 const expandBoundsForCoverageSupport = cpu_geometry.expandBoundsForCoverageSupport;
 const f16ToF32 = cpu_texture.f16ToF32;
 const fetchLayerInfoTexel = cpu_path_paint.fetchLayerInfoTexel;
@@ -1109,6 +1112,22 @@ pub const CpuRenderer = struct {
         const sample_dy = Vec2.new(inverse.xy, inverse.yy);
         const subpixel_plan = SubpixelCoveragePlan.init(sample_dx, sample_dy, self.subpixel_order);
 
+        // The row-batched H-axis fast path applies when (a) the transform is
+        // axis-aligned (sample_dx.y == 0 so em_y is row-constant), (b) we're
+        // in subpixel mode with RGB/BGR stripes (plan.step.y == 0 so all 7
+        // subpixel samples in every pixel share em_y too), (c) the atlas
+        // page is prepared, and (d) hinting is off (hinted text caches
+        // shaped curves elsewhere). When any of those fails we fall back to
+        // per-pixel evaluation.
+        const PageType = switch (@typeInfo(@TypeOf(page))) {
+            .pointer => |ptr| ptr.child,
+            else => @TypeOf(page),
+        };
+        const prepared_page = comptime @hasField(PageType, "h_curves");
+        const axis_aligned = @abs(sample_dx.y) < 1e-9 and subpixel_plan.step.y == 0.0;
+        const subpixel_rgb = allow_subpixel and (self.subpixel_order == .rgb or self.subpixel_order == .bgr);
+        const use_row_h = prepared_page and axis_aligned and subpixel_rgb and hint_record == null;
+
         var row: u32 = @intCast(py0);
         while (row < @as(u32, @intCast(py1))) : (row += 1) {
             var col: u32 = @intCast(px0);
@@ -1116,6 +1135,13 @@ pub const CpuRenderer = struct {
                 .x = @as(f32, @floatFromInt(col)) + 0.5,
                 .y = @as(f32, @floatFromInt(row)) + 0.5,
             });
+
+            var row_state: RowHorizState = undefined;
+            const row_state_ready = use_row_h and blk: {
+                row_state = prepareRowHorizState(page, display_local.y, be, band_max_h);
+                break :blk row_state.valid;
+            };
+
             while (col < @as(u32, @intCast(px1))) : (advanceLocalPixel(&col, &display_local, sample_dx)) {
                 if (!allow_subpixel or self.subpixel_order == .none) {
                     const raw_cov = if (hint_record) |record|
@@ -1125,6 +1151,19 @@ pub const CpuRenderer = struct {
                     const cov = self.applyCoverageTransfer(raw_cov);
                     if (cov < 1.0 / 255.0) continue;
                     self.blendPremultipliedPixel(row, col, premultiplyCoverage(color, cov), false);
+                } else if (row_state_ready) {
+                    const cov = self.applySubpixelCoverageTransfer(evalGlyphCoverageSubpixelRowH(
+                        page,
+                        display_local.x,
+                        display_local.y,
+                        &row_state,
+                        subpixel_plan,
+                        be,
+                        band_max_v,
+                        self.fill_rule,
+                    ));
+                    if (max3(cov.rgb) < 1.0 / 255.0) continue;
+                    self.blendSubpixelPixel(row, col, color, cov.rgb, cov.alpha);
                 } else {
                     const cov = self.applySubpixelCoverageTransfer(evalGlyphCoverageSubpixel(
                         page,

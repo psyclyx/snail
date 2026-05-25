@@ -1169,6 +1169,194 @@ pub fn evalHintedTextCoverageBandSpan(
 // count is fixed at 7; layout helpers above produce the offsets.
 const subpixel_lane_count: usize = 7;
 
+// Per-curve solve cache for the row-batched H-axis path. One slot per H
+// curve in the row's band; populated once per row, used by every pixel.
+pub const RowHorizCurveSolve = struct {
+    along_t1: f32,
+    along_t2: f32,
+    sign1: f32, // 0 => no contribution from t1
+    sign2: f32, // 0 => no contribution from t2
+};
+
+const max_row_horiz_curves: usize = 32;
+
+pub const RowHorizState = struct {
+    curves: [max_row_horiz_curves]RowHorizCurveSolve,
+    count: usize,
+    valid: bool, // false => caller must fall back to per-pixel evaluation
+};
+
+// Precompute the row's H-axis curve solves. `em_y_row` is the row's em-space
+// y coordinate (shared across every pixel in the row); this is only valid
+// for axis-aligned + RGB/BGR-stripe subpixel orders, where `plan.step.y` is
+// zero and `em_y` is therefore identical across all 7 subpixel samples in
+// every pixel of the row.
+pub fn prepareRowHorizState(
+    page: anytype,
+    em_y_row: f32,
+    be: GlyphBandEntry,
+    band_max_h: i32,
+) RowHorizState {
+    var state: RowHorizState = .{
+        .curves = undefined,
+        .count = 0,
+        .valid = false,
+    };
+
+    const band_idx_y_f = em_y_row * be.band_scale_y + be.band_offset_y;
+    const band_idx_y = clampInt(@as(i32, @intFromFloat(@floor(band_idx_y_f))), 0, band_max_h);
+
+    const glyph_band_base = @as(usize, be.glyph_y) * @as(usize, page.band_width) + @as(usize, be.glyph_x);
+    const header = readBandTexelLinear(page, glyph_band_base + @as(usize, @intCast(band_idx_y)));
+    const band_base = glyph_band_base + header[1];
+    if (band_base >= page.h_curves.len) {
+        state.valid = true;
+        return state;
+    }
+    const band_count = @min(@as(usize, header[0]), page.h_curves.len - band_base);
+    if (band_count > max_row_horiz_curves) return state;
+
+    const band_curves = page.h_curves[band_base..][0..band_count];
+    for (band_curves) |*curve| {
+        if (!curve.valid) {
+            state.curves[state.count] = .{ .along_t1 = 0, .along_t2 = 0, .sign1 = 0, .sign2 = 0 };
+            state.count += 1;
+            continue;
+        }
+        switch (curve.kind) {
+            .quadratic => {
+                const p0r = curve.p0_root - em_y_row;
+                const p1r = curve.p1_root - em_y_row;
+                const p2r = curve.p2_root - em_y_row;
+                const code = calcRootCode(p0r, p1r, p2r);
+                if (code == 0) {
+                    state.curves[state.count] = .{ .along_t1 = 0, .along_t2 = 0, .sign1 = 0, .sign2 = 0 };
+                } else {
+                    const roots = solvePreparedAxisQuadratic(curve, curve.p0_along, p0r, 1.0);
+                    state.curves[state.count] = .{
+                        .along_t1 = roots[0],
+                        .along_t2 = roots[1],
+                        .sign1 = if ((code & 1) != 0) 1.0 else 0.0,
+                        .sign2 = if (code > 1) -1.0 else 0.0,
+                    };
+                }
+            },
+            .line => {
+                const denom = curve.a_root;
+                var entry = RowHorizCurveSolve{ .along_t1 = 0, .along_t2 = 0, .sign1 = 0, .sign2 = 0 };
+                if (@abs(denom) >= 1e-10) {
+                    const t_raw = -(curve.p0_root - em_y_row) / denom;
+                    if (t_raw >= -1e-5 and t_raw <= 1.0 + 1e-5) {
+                        const t = std.math.clamp(t_raw, 0.0, 1.0);
+                        const is_endpoint = isNearEndRoot(t) and isEndpointRootDelta(curve.p0_root + curve.a_root - em_y_row);
+                        if (!is_endpoint and @abs(denom) > 1e-5) {
+                            entry.along_t1 = curve.p0_along + curve.a_along * t;
+                            entry.sign1 = if (denom > 0.0) 1.0 else -1.0;
+                        }
+                    }
+                }
+                state.curves[state.count] = entry;
+            },
+            .conic, .cubic => {
+                // Row caching would require also caching the per-root along
+                // values from the conic/cubic solvers. Easier: refuse the
+                // fast path and let the caller fall back to the existing
+                // per-pixel evaluator for this row.
+                return state;
+            },
+        }
+        state.count += 1;
+    }
+    state.valid = true;
+    return state;
+}
+
+// Per-pixel H-axis accumulator using a precomputed row state. Each of the 7
+// subpixel samples for this pixel has its own sample_along = em_x_pixel +
+// step.x * (s - 3); the H contribution is just the cached `along_t` minus
+// that, scaled by ppe.
+fn applyRowHorizStateToPixel(
+    state: *const RowHorizState,
+    em_x_pixel: f32,
+    step_x: f32,
+    ppe_x: f32,
+    h_pairs: *[subpixel_lane_count]CoveragePair,
+) void {
+    const W = subpixel_lane_count;
+    var sample_along: [W]f32 = undefined;
+    inline for (0..W) |s| {
+        const offset: f32 = @as(f32, @floatFromInt(@as(i32, @intCast(s)) - 3));
+        sample_along[s] = em_x_pixel + step_x * offset;
+    }
+
+    var c: usize = 0;
+    while (c < state.count) : (c += 1) {
+        const entry = state.curves[c];
+        if (entry.sign1 != 0.0) {
+            inline for (0..W) |s| {
+                appendCoverageContribution(&h_pairs[s], (entry.along_t1 - sample_along[s]) * ppe_x, entry.sign1);
+            }
+        }
+        if (entry.sign2 != 0.0) {
+            inline for (0..W) |s| {
+                appendCoverageContribution(&h_pairs[s], (entry.along_t2 - sample_along[s]) * ppe_x, entry.sign2);
+            }
+        }
+    }
+}
+
+// Single-call row-batched subpixel coverage. Uses a row-precomputed H-axis
+// state and evaluates the V axis fresh; for axis-aligned + RGB/BGR text
+// this collapses the per-pixel H-axis solve work into the row-level
+// prepare step.
+pub fn evalGlyphCoverageSubpixelRowH(
+    page: anytype,
+    em_x_pixel: f32,
+    em_y_row: f32,
+    row_state: *const RowHorizState,
+    plan: SubpixelCoveragePlan,
+    be: GlyphBandEntry,
+    band_max_v: i32,
+    fill_rule: FillRule,
+) SubpixelCoverage {
+    const W = subpixel_lane_count;
+    var h_pairs: [W]CoveragePair = @splat(CoveragePair{ .cov = 0, .wgt = 0 });
+    applyRowHorizStateToPixel(row_state, em_x_pixel, plan.step.x, plan.ppe.x, &h_pairs);
+
+    var em_x: [W]f32 = undefined;
+    inline for (0..W) |k| {
+        const offset: f32 = @as(f32, @floatFromInt(@as(i32, @intCast(k)) - 3));
+        em_x[k] = em_x_pixel + plan.step.x * offset;
+    }
+    const em_y: [W]f32 = @splat(em_y_row);
+
+    var v_band_idx: [W]i32 = undefined;
+    inline for (0..W) |i| {
+        const bx_f = em_x[i] * be.band_scale_x + be.band_offset_x;
+        v_band_idx[i] = clampInt(@as(i32, @intFromFloat(@floor(bx_f))), 0, band_max_v);
+    }
+
+    var v_pairs: [W]CoveragePair = @splat(CoveragePair{ .cov = 0, .wgt = 0 });
+    const glyph_band_base = @as(usize, be.glyph_y) * @as(usize, page.band_width) + @as(usize, be.glyph_x);
+    // V root varies (em_x changes per subpixel sample); pass root_shared=false.
+    evalPreparedSubpixelAxis(page, em_x, em_y, v_band_idx, glyph_band_base, @as(i32, @intCast(@as(u32, be.h_band_count))), plan.ppe.y, false, &v_pairs, false);
+
+    var raw: [W]f32 = undefined;
+    inline for (0..W) |i| {
+        raw[i] = resolveCoverage(h_pairs[i], v_pairs[i], fill_rule);
+    }
+    return subpixel.filterCoverage(
+        raw[0],
+        raw[1],
+        raw[2],
+        raw[3],
+        raw[4],
+        raw[5],
+        raw[6],
+        plan.reverse_order,
+    );
+}
+
 pub fn evalGlyphCoverageSubpixel(
     page: anytype,
     rc: Vec2,
