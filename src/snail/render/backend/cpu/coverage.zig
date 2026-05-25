@@ -1458,6 +1458,248 @@ pub fn evalGlyphCoverageBandSpanRowH(
     return resolveCoverage(h_pair, v_pair, fill_rule);
 }
 
+// ---------------------------------------------------------------------------
+// Saturated V-axis row state
+// ---------------------------------------------------------------------------
+//
+// Slug V-axis at a pixel sums per-curve contributions = sign * clamp01(distance + 0.5)
+// where distance = (curve.y(V_t) - em_y_row) * ppe_y and V_t solves curve.x(V_t) = em_x.
+// For curves whose y-extent is entirely below the sample (min_y > em_y_row +
+// 0.5/ppe_y) any V-ray crossing produces distance > 0.5 and the contribution
+// collapses to just `sign`. For curves entirely above the sample the
+// contribution is 0. We pre-classify each V-curve per row into:
+//
+//   below      — saturated, contributes ±sign for pixels where em_x is in
+//                the curve's x-extent (axis-extent winding).
+//   above      — contributes nothing; skipped.
+//   transition — y-extent straddles em_y_row ± 0.5/ppe_y, OR curve is not
+//                monotonic on x (so sign isn't constant); per-pixel Slug V
+//                eval is needed for pixels in the curve's x-extent.
+//
+// Per pixel we sum saturated `sign` values, and if em_x lies in any
+// transition x-extent we fall back to evalGlyphCoverageAxisBandSpan. This
+// reproduces Slug's V cov for monotonic curves while skipping the per-pixel
+// sqrt + divisions on the saturated-and-far common case.
+
+const max_sat_curves: usize = 48;
+
+pub const SaturatedBelowEntry = struct {
+    x_lo: f32,
+    x_hi: f32,
+    sign: f32,
+};
+
+pub const TransitionXRange = struct {
+    x_lo: f32,
+    x_hi: f32,
+};
+
+pub const SaturatedRowState = struct {
+    below: [max_sat_curves]SaturatedBelowEntry,
+    below_count: u32,
+    transition: [max_sat_curves]TransitionXRange,
+    transition_count: u32,
+    valid: bool,
+};
+
+fn curveVAxisXExtent(curve: *const PreparedAxisCurve, cold_curves: []const PreparedAxisCurveCold) struct { lo: f32, hi: f32 } {
+    var lo = curve.p0_root;
+    var hi = curve.p0_root;
+    switch (curve.kind) {
+        .line => {
+            const p2 = curve.p0_root + curve.a_root;
+            lo = @min(lo, p2);
+            hi = @max(hi, p2);
+        },
+        .quadratic, .conic => {
+            lo = @min(@min(lo, curve.p1_root), curve.p2_root);
+            hi = @max(@max(hi, curve.p1_root), curve.p2_root);
+        },
+        .cubic => {
+            lo = @min(@min(lo, curve.p1_root), curve.p2_root);
+            hi = @max(@max(hi, curve.p1_root), curve.p2_root);
+            if (curve.cold_index < cold_curves.len) {
+                const cold = &cold_curves[curve.cold_index];
+                const p3 = curve.p0_root + cold.cubic_c_root + cold.cubic_b_root + cold.cubic_a_root;
+                lo = @min(lo, p3);
+                hi = @max(hi, p3);
+            }
+        },
+    }
+    return .{ .lo = lo, .hi = hi };
+}
+
+// Returns the saturated-below entry for a curve, or null if the curve is not
+// monotonic on x (would have multiple V-ray crossings with potentially
+// different signs).
+fn classifySaturatedBelow(curve: *const PreparedAxisCurve, cold_curves: []const PreparedAxisCurveCold) ?SaturatedBelowEntry {
+    switch (curve.kind) {
+        .line => {
+            const p2 = curve.p0_root + curve.a_root;
+            const sign: f32 = if (curve.a_root < 0.0) 1.0 else -1.0;
+            return .{ .x_lo = @min(curve.p0_root, p2), .x_hi = @max(curve.p0_root, p2), .sign = sign };
+        },
+        .quadratic => {
+            // dx/dt = 2*(a_root*t - b_root). Zero at t = b_root / a_root.
+            // If that critical t is in (0, 1) the curve doubles back in x.
+            if (@abs(curve.a_root) > 1e-10) {
+                const t_crit = curve.b_root / curve.a_root;
+                if (t_crit > 1e-5 and t_crit < 1.0 - 1e-5) return null;
+            }
+            if (@abs(curve.p2_root - curve.p0_root) < 1e-10) return null;
+            const sign: f32 = if (curve.p2_root < curve.p0_root) 1.0 else -1.0;
+            return .{ .x_lo = @min(curve.p0_root, curve.p2_root), .x_hi = @max(curve.p0_root, curve.p2_root), .sign = sign };
+        },
+        .conic => {
+            // Conservative monotonic-on-x check: p1 is between p0 and p2.
+            // (Not strictly sufficient — a conic with weight imbalance can
+            // bend within the convex hull — but covers the common rounded-
+            // rect / ellipse arc case. Non-monotonic cases fall through to
+            // the transition path which is exact.)
+            const min_p = @min(curve.p0_root, curve.p2_root);
+            const max_p = @max(curve.p0_root, curve.p2_root);
+            if (curve.p1_root < min_p - 1e-5 or curve.p1_root > max_p + 1e-5) return null;
+            const sign: f32 = if (curve.p2_root < curve.p0_root) 1.0 else -1.0;
+            return .{ .x_lo = min_p, .x_hi = max_p, .sign = sign };
+        },
+        .cubic => {
+            // Cubics are pre-split at extrema so each piece is monotonic on
+            // both axes (see path/picture_compile.zig: splitCubicsAtExtrema).
+            if (curve.cold_index >= cold_curves.len) return null;
+            const cold = &cold_curves[curve.cold_index];
+            const p3 = curve.p0_root + cold.cubic_c_root + cold.cubic_b_root + cold.cubic_a_root;
+            // For a monotonic cubic, dx/dt has constant sign across t ∈ [0,1].
+            // derivative_axis = -dx/dt, so its sign matches sign(p0 - p3).
+            if (@abs(p3 - curve.p0_root) < 1e-10) return null;
+            const sign: f32 = if (p3 < curve.p0_root) 1.0 else -1.0;
+            return .{ .x_lo = @min(curve.p0_root, p3), .x_hi = @max(curve.p0_root, p3), .sign = sign };
+        },
+    }
+}
+
+pub fn prepareSaturatedRowState(
+    page: anytype,
+    em_y_row: f32,
+    ppe_y: f32,
+    be: GlyphBandEntry,
+    band_max_v: i32,
+) SaturatedRowState {
+    var state: SaturatedRowState = .{
+        .below = undefined,
+        .below_count = 0,
+        .transition = undefined,
+        .transition_count = 0,
+        .valid = false,
+    };
+
+    const threshold = 0.5 / @max(ppe_y, 1e-6);
+    const above_thresh = em_y_row - threshold;
+    const below_thresh = em_y_row + threshold;
+    const glyph_band_base = @as(usize, be.glyph_y) * @as(usize, page.band_width) + @as(usize, be.glyph_x);
+    const header_base: i32 = @as(i32, @intCast(@as(u32, be.h_band_count)));
+
+    var band: i32 = 0;
+    while (band <= band_max_v) : (band += 1) {
+        const header = readBandTexelLinear(page, glyph_band_base + @as(usize, @intCast(header_base + band)));
+        const band_base = glyph_band_base + header[1];
+        if (band_base >= page.v_curves.len) continue;
+        const band_count = @min(@as(usize, header[0]), page.v_curves.len - band_base);
+        const band_curves = page.v_curves[band_base..][0..band_count];
+
+        for (band_curves) |*curve| {
+            if (!curve.valid) continue;
+            // Process each curve only in its first_member_band, so curves
+            // present in multiple bands aren't counted twice.
+            if (@as(i32, @intCast(curve.first_member_band)) != band) continue;
+
+            const min_y = curve.min_axis;
+            const max_y = curve.max_axis;
+
+            // Above sample: saturated to 0, skip.
+            if (max_y < above_thresh) continue;
+
+            // Below sample: saturated contributes ±sign.
+            if (min_y > below_thresh) {
+                if (classifySaturatedBelow(curve, page.v_cold_curves)) |entry| {
+                    if (state.below_count >= max_sat_curves) {
+                        state.valid = false;
+                        return state;
+                    }
+                    state.below[state.below_count] = entry;
+                    state.below_count += 1;
+                    continue;
+                }
+                // Non-monotonic curve below sample — fall through to treat
+                // as transition (Slug V handles its multiple roots).
+            }
+
+            // Transition: curve straddles em_y_row's fringe (or is non-
+            // monotonic). Per-pixel Slug needed for pixels in its x-extent.
+            const xe = curveVAxisXExtent(curve, page.v_cold_curves);
+            if (state.transition_count >= max_sat_curves) {
+                state.valid = false;
+                return state;
+            }
+            state.transition[state.transition_count] = .{ .x_lo = xe.lo, .x_hi = xe.hi };
+            state.transition_count += 1;
+        }
+    }
+
+    state.valid = true;
+    return state;
+}
+
+inline fn pixelInVTransition(state: *const SaturatedRowState, em_x: f32) bool {
+    var i: usize = 0;
+    while (i < state.transition_count) : (i += 1) {
+        if (em_x >= state.transition[i].x_lo and em_x <= state.transition[i].x_hi) return true;
+    }
+    return false;
+}
+
+inline fn saturatedBelowSum(state: *const SaturatedRowState, em_x: f32) f32 {
+    var sum: f32 = 0;
+    var i: usize = 0;
+    while (i < state.below_count) : (i += 1) {
+        const entry = state.below[i];
+        if (em_x >= entry.x_lo and em_x <= entry.x_hi) {
+            sum += entry.sign;
+        }
+    }
+    return sum;
+}
+
+pub fn evalGlyphCoverageSaturatedRowH(
+    page: anytype,
+    em_x_pixel: f32,
+    em_y_row: f32,
+    row_state: *const RowHorizState,
+    saturated_state: *const SaturatedRowState,
+    epp_x: f32,
+    ppe_x: f32,
+    ppe_y: f32,
+    be: GlyphBandEntry,
+    band_max_h: i32,
+    band_max_v: i32,
+    fill_rule: FillRule,
+) f32 {
+    var h_pair: CoveragePair = .{ .cov = 0, .wgt = 0 };
+    applyRowHorizStateToScalar(row_state, em_x_pixel, ppe_x, &h_pair);
+
+    var v_pair: CoveragePair = .{ .cov = 0, .wgt = 0 };
+    if (pixelInVTransition(saturated_state, em_x_pixel)) {
+        const sample_rc = Vec2.new(em_x_pixel, em_y_row);
+        const v_span = coverageBandSpan(em_x_pixel, epp_x, be.band_scale_x, be.band_offset_x, band_max_v);
+        const glyph_band_base = @as(usize, be.glyph_y) * @as(usize, page.band_width) + @as(usize, be.glyph_x);
+        v_pair = evalGlyphCoverageAxisBandSpan(page, sample_rc, ppe_y, glyph_band_base, band_max_h + 1, v_span, false);
+    } else {
+        v_pair.cov = saturatedBelowSum(saturated_state, em_x_pixel);
+        v_pair.wgt = 0;
+    }
+
+    return resolveCoverage(h_pair, v_pair, fill_rule);
+}
+
 // Single-sample, single-call grayscale coverage using row-cached H solves.
 // Per pixel: V-axis is the only place that touches the curve solver; the
 // H-axis is just two cheap MAD + clamp per cached curve.

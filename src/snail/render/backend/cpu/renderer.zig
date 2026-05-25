@@ -49,12 +49,15 @@ const evalGlyphCoverage = cpu_coverage.evalGlyphCoverage;
 const evalGlyphCoverageBandSpan = cpu_coverage.evalGlyphCoverageBandSpan;
 const evalGlyphCoverageBandSpanRowH = cpu_coverage.evalGlyphCoverageBandSpanRowH;
 const evalGlyphCoverageRowH = cpu_coverage.evalGlyphCoverageRowH;
+const evalGlyphCoverageSaturatedRowH = cpu_coverage.evalGlyphCoverageSaturatedRowH;
 const evalGlyphCoverageSubpixel = cpu_coverage.evalGlyphCoverageSubpixel;
 const evalGlyphCoverageSubpixelRowH = cpu_coverage.evalGlyphCoverageSubpixelRowH;
 const evalHintedTextCoverageBandSpan = cpu_coverage.evalHintedTextCoverageBandSpan;
 const prepareRowHorizSpanState = cpu_coverage.prepareRowHorizSpanState;
 const prepareRowHorizState = cpu_coverage.prepareRowHorizState;
+const prepareSaturatedRowState = cpu_coverage.prepareSaturatedRowState;
 const RowHorizState = cpu_coverage.RowHorizState;
+const SaturatedRowState = cpu_coverage.SaturatedRowState;
 const expandBoundsForCoverageSupport = cpu_geometry.expandBoundsForCoverageSupport;
 const f16ToF32 = cpu_texture.f16ToF32;
 const fetchLayerInfoTexel = cpu_path_paint.fetchLayerInfoTexel;
@@ -829,9 +832,26 @@ pub const CpuRenderer = struct {
         local: Vec2,
         tint: [4]f32,
         row_state: ?*const RowHorizState,
+        sat_state: ?*const SaturatedRowState,
     ) void {
-        const cov = if (row_state) |rs|
-            self.applyCoverageTransfer(evalGlyphCoverageBandSpanRowH(
+        const cov = if (row_state) |rs| blk: {
+            if (sat_state) |ss| {
+                break :blk self.applyCoverageTransfer(evalGlyphCoverageSaturatedRowH(
+                    page,
+                    local.x,
+                    local.y,
+                    rs,
+                    ss,
+                    raster.epp.x,
+                    raster.ppe.x,
+                    raster.ppe.y,
+                    layer.band_entry,
+                    layer.band_max_h,
+                    layer.band_max_v,
+                    self.fill_rule,
+                ));
+            }
+            break :blk self.applyCoverageTransfer(evalGlyphCoverageBandSpanRowH(
                 page,
                 local.x,
                 local.y,
@@ -843,9 +863,8 @@ pub const CpuRenderer = struct {
                 layer.band_max_h,
                 layer.band_max_v,
                 self.fill_rule,
-            ))
-        else
-            self.scalarPathLayerCoverage(page, raster, layer, local);
+            ));
+        } else self.scalarPathLayerCoverage(page, raster, layer, local);
 
         if (programs.outline and layer_index < 2) {
             const subpixel_cov: SubpixelCoverage = .{ .rgb = .{ cov, cov, cov }, .alpha = cov };
@@ -919,14 +938,16 @@ pub const CpuRenderer = struct {
         local: Vec2,
         tint: [4]f32,
         row_states: ?[]const RowHorizState,
+        sat_states: ?[]const SaturatedRowState,
     ) PathCompositePixel {
         var accum: PathCompositeAccum = .{};
         for (layers, 0..) |layer, layer_index| {
             const rs: ?*const RowHorizState = if (row_states) |states| &states[layer_index] else null;
+            const ss: ?*const SaturatedRowState = if (sat_states) |states| &states[layer_index] else null;
             if (raster.use_subpixel) {
                 self.recordCompositeSubpixelLayer(&accum, page, raster, layer, layer_index, programs, local, tint, rs);
             } else {
-                self.recordCompositeScalarLayer(&accum, page, raster, layer, layer_index, programs, local, tint, rs);
+                self.recordCompositeScalarLayer(&accum, page, raster, layer, layer_index, programs, local, tint, rs, ss);
             }
         }
         if (programs.outline) finishOutlineComposite(&accum, raster.use_subpixel);
@@ -985,9 +1006,32 @@ pub const CpuRenderer = struct {
                 stroke_state = prepareRowHorizSpanState(page, local.y, raster.epp.y, stroke_layer.band_entry, stroke_layer.band_max_h);
                 break :blk stroke_state.valid;
             };
+            var fill_sat: SaturatedRowState = undefined;
+            var stroke_sat: SaturatedRowState = undefined;
+            const sat_state_ready = row_state_ready and blk: {
+                fill_sat = prepareSaturatedRowState(page, local.y, raster.ppe.y, fill_layer.band_entry, fill_layer.band_max_v);
+                if (!fill_sat.valid) break :blk false;
+                stroke_sat = prepareSaturatedRowState(page, local.y, raster.ppe.y, stroke_layer.band_entry, stroke_layer.band_max_v);
+                break :blk stroke_sat.valid;
+            };
 
             while (col < raster.x1) : (advanceLocalPixel(&col, &local, raster.sample_dx)) {
-                const fill_cov = if (row_state_ready)
+                const fill_cov = if (sat_state_ready)
+                    self.applyCoverageTransfer(evalGlyphCoverageSaturatedRowH(
+                        page,
+                        local.x,
+                        local.y,
+                        &fill_state,
+                        &fill_sat,
+                        raster.epp.x,
+                        raster.ppe.x,
+                        raster.ppe.y,
+                        fill_layer.band_entry,
+                        fill_layer.band_max_h,
+                        fill_layer.band_max_v,
+                        self.fill_rule,
+                    ))
+                else if (row_state_ready)
                     self.applyCoverageTransfer(evalGlyphCoverageBandSpanRowH(
                         page,
                         local.x,
@@ -1005,7 +1049,22 @@ pub const CpuRenderer = struct {
                     self.scalarPathLayerCoverage(page, raster, fill_layer, local);
                 if (fill_cov <= 0.0) continue;
 
-                const stroke_cov = if (row_state_ready)
+                const stroke_cov = if (sat_state_ready)
+                    self.applyCoverageTransfer(evalGlyphCoverageSaturatedRowH(
+                        page,
+                        local.x,
+                        local.y,
+                        &stroke_state,
+                        &stroke_sat,
+                        raster.epp.x,
+                        raster.ppe.x,
+                        raster.ppe.y,
+                        stroke_layer.band_entry,
+                        stroke_layer.band_max_h,
+                        stroke_layer.band_max_v,
+                        self.fill_rule,
+                    ))
+                else if (row_state_ready)
                     self.applyCoverageTransfer(evalGlyphCoverageBandSpanRowH(
                         page,
                         local.x,
@@ -1098,8 +1157,22 @@ pub const CpuRenderer = struct {
             }
             const row_states: ?[]const RowHorizState = if (row_states_ready) row_states_storage[0..layer_count] else null;
 
+            var sat_states_storage: [MAX_COMPOSITE_LAYERS]SaturatedRowState = undefined;
+            var sat_states_ready: bool = false;
+            if (row_states_ready and grayscale_path) {
+                sat_states_ready = true;
+                for (layers, 0..) |layer, i| {
+                    sat_states_storage[i] = prepareSaturatedRowState(page, local.y, raster.ppe.y, layer.band_entry, layer.band_max_v);
+                    if (!sat_states_storage[i].valid) {
+                        sat_states_ready = false;
+                        break;
+                    }
+                }
+            }
+            const sat_states: ?[]const SaturatedRowState = if (sat_states_ready) sat_states_storage[0..layer_count] else null;
+
             while (col < raster.x1) : (advanceLocalPixel(&col, &local, raster.sample_dx)) {
-                const pixel = self.sampleCompositePathPixel(page, raster, layers, programs, local, tint, row_states);
+                const pixel = self.sampleCompositePathPixel(page, raster, layers, programs, local, tint, row_states, sat_states);
                 if (pixel.color[3] < 1.0 / 255.0) continue;
                 if (raster.use_subpixel) {
                     self.blendSubpixelPremultipliedPixel(row, col, pixel.color, pixel.blend, pixel.has_gradient);
@@ -1155,10 +1228,17 @@ pub const CpuRenderer = struct {
                 }
                 break :blk false;
             };
+            var sat_state: SaturatedRowState = undefined;
+            const sat_state_ready = use_row_h_span and row_state_ready and blk: {
+                sat_state = prepareSaturatedRowState(page, local.y, raster.ppe.y, be, band_max_v);
+                break :blk sat_state.valid;
+            };
 
             while (col < raster.x1) : (advanceLocalPixel(&col, &local, raster.sample_dx)) {
                 if (!raster.use_subpixel) {
-                    const raw_cov = if (row_state_ready)
+                    const raw_cov = if (sat_state_ready)
+                        evalGlyphCoverageSaturatedRowH(page, local.x, local.y, &row_state, &sat_state, raster.epp.x, raster.ppe.x, raster.ppe.y, be, band_max_h, band_max_v, self.fill_rule)
+                    else if (row_state_ready)
                         evalGlyphCoverageBandSpanRowH(page, local.x, local.y, &row_state, raster.epp.x, raster.ppe.x, raster.ppe.y, be, band_max_h, band_max_v, self.fill_rule)
                     else
                         evalGlyphCoverageBandSpan(page, local.x, local.y, raster.epp.x, raster.epp.y, raster.ppe.x, raster.ppe.y, be, band_max_h, band_max_v, self.fill_rule);
