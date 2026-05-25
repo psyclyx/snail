@@ -85,6 +85,7 @@ pub const PreparedAxisCurveCold = struct {
 // loaded line covers every operand the hot solver touches.
 pub const PreparedAxisCurve = struct {
     max_axis: f32 = 0.0,
+    min_axis: f32 = 0.0,
     p0_root: f32 = 0.0,
     p1_root: f32 = 0.0,
     p2_root: f32 = 0.0,
@@ -110,6 +111,7 @@ pub const PreparedAxisCurve = struct {
             .valid = true,
             .kind = segment.kind,
             .max_axis = if (horizontal) segmentMaxX(segment) else segmentMaxY(segment),
+            .min_axis = if (horizontal) segmentMinX(segment) else segmentMinY(segment),
             .p0_root = p0_root,
             .p1_root = p1_root,
             .p2_root = p2_root,
@@ -393,6 +395,25 @@ fn segmentMaxY(segment: CurveSegment) f32 {
     if (segment.kind == .line) return @max(segment.p0.y, segment.p2.y);
     var result = @max(@max(segment.p0.y, segment.p1.y), segment.p2.y);
     if (segment.kind == .cubic) result = @max(result, segment.p3.y);
+    return result;
+}
+
+// Conservative lower bound on the curve's along-axis coordinate over t in
+// [0, 1]. For a Bezier the curve lies inside its convex hull, so the min of
+// the control points is a safe (possibly loose) lower bound. Used to skip
+// the sqrt-bearing solve when the whole curve sits above the current row's
+// sample point.
+fn segmentMinX(segment: CurveSegment) f32 {
+    if (segment.kind == .line) return @min(segment.p0.x, segment.p2.x);
+    var result = @min(@min(segment.p0.x, segment.p1.x), segment.p2.x);
+    if (segment.kind == .cubic) result = @min(result, segment.p3.x);
+    return result;
+}
+
+fn segmentMinY(segment: CurveSegment) f32 {
+    if (segment.kind == .line) return @min(segment.p0.y, segment.p2.y);
+    var result = @min(@min(segment.p0.y, segment.p1.y), segment.p2.y);
+    if (segment.kind == .cubic) result = @min(result, segment.p3.y);
     return result;
 }
 
@@ -722,7 +743,28 @@ inline fn accumulatePreparedCurveCoverage(
     const max_coord = curve.max_axis - sample_along;
     if (max_coord * ppe < -0.5) return .stop_scan;
 
+    // Saturated-above fast path: when the whole curve sits at least 0.5/ppe
+    // past the sample along its along-axis, every crossing's distance is > 0.5
+    // and `clamp01(distance + 0.5)` returns 1; `appendCoverageContribution`
+    // would then just add ±1 to result.cov and leave wgt alone. Skip the sqrt
+    // and divisions; we only need to know whether each potential root lies in
+    // [0, 1] (calcRootCode does that with three sign-bit extracts).
+    const min_coord = curve.min_axis - sample_along;
+    const above = min_coord * ppe > 0.5;
+
     if (curve.kind == .quadratic) {
+        if (above) {
+            const p0r = curve.p0_root - sample_root;
+            const p1r = curve.p1_root - sample_root;
+            const p2r = curve.p2_root - sample_root;
+            const code = calcRootCode(p0r, p1r, p2r);
+            if (code == 0) return .continue_scan;
+            const sign_first: f32 = if (horizontal) 1.0 else -1.0;
+            const sign_second: f32 = if (horizontal) -1.0 else 1.0;
+            if ((code & 1) != 0) result.cov += sign_first;
+            if (code > 1) result.cov += sign_second;
+            return .continue_scan;
+        }
         accumulatePreparedQuadraticCoverage(result, curve, sample_root, sample_along, ppe, horizontal);
         return .continue_scan;
     }
