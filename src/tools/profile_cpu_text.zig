@@ -140,7 +140,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     var entries: [8]snail.ResourceManifest.Entry = undefined;
     var set = snail.ResourceManifest.init(&entries);
-    for (blobs, 0..) |*blob, i| {
+    for (blobs, 0..) |blob, i| {
         _ = try declareTextBlobResources(&set, snail.ResourceKey.named("fonts"), textResourceKey(i), blob);
     }
 
