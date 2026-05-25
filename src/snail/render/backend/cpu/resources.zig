@@ -60,10 +60,8 @@ pub const PreparedAtlasPage = struct {
             const segment = decodeCurveSegmentFromSlice(curve_data_f32, @intCast(curve_base));
 
             h_curves[texel_idx] = try prepareAxisCurve(allocator, &h_cold_curves, segment, true);
-            h_curves[texel_idx].curve_base = @intCast(curve_base);
             h_curves[texel_idx].first_member_band = @intCast(curve_ref.first_member_band);
             v_curves[texel_idx] = try prepareAxisCurve(allocator, &v_cold_curves, segment, false);
-            v_curves[texel_idx].curve_base = @intCast(curve_base);
             v_curves[texel_idx].first_member_band = @intCast(curve_ref.first_member_band);
         }
 

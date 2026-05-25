@@ -80,13 +80,10 @@ pub const PreparedAxisCurveCold = struct {
 };
 
 // Hot per-axis eval record laid out for scanline walking. Quadratic and line
-// coverage use only this record; conic/cubic coefficients are indexed separately.
+// coverage use only this record; conic/cubic coefficients are indexed
+// separately via cold_index. Numeric fields are at the front so a single
+// loaded line covers every operand the hot solver touches.
 pub const PreparedAxisCurve = struct {
-    valid: bool = false,
-    kind: bezier.CurveKind = .quadratic,
-    cold_index: u32 = invalid_prepared_cold,
-    curve_base: u32 = std.math.maxInt(u32),
-    first_member_band: u16 = 0,
     max_axis: f32 = 0.0,
     p0_root: f32 = 0.0,
     p1_root: f32 = 0.0,
@@ -96,6 +93,10 @@ pub const PreparedAxisCurve = struct {
     b_root: f32 = 0.0,
     a_along: f32 = 0.0,
     b_along: f32 = 0.0,
+    cold_index: u32 = invalid_prepared_cold,
+    first_member_band: u16 = 0,
+    valid: bool = false,
+    kind: bezier.CurveKind = .quadratic,
 
     fn fromSegment(segment: CurveSegment, comptime horizontal: bool) PreparedAxisCurve {
         const p0_root = if (horizontal) segment.p0.y else segment.p0.x;
