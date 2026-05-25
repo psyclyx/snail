@@ -1065,7 +1065,7 @@ fn evalHintedTextCoverageAxisBandSpan(
     return result;
 }
 
-fn evalGlyphCoverageAxisBandSpan(
+inline fn evalGlyphCoverageAxisBandSpan(
     page: anytype,
     sample_rc: Vec2,
     ppe: f32,
