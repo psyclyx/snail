@@ -20,43 +20,36 @@ consumed by any code.
 
 ## Phase 1: page pool and append-only pages
 
-Files to write:
-- `src/snail/page.zig` — `AtlasPage` with append-only bytes, atomic
-  `data_len`, refcount, generation.
-- `src/snail/page_pool.zig` — `PagePool` with explicit capacity, free
-  list, stats tracking.
-- `src/snail/atlas.zig` — `Atlas` with `empty`, `from`, `combine`,
-  `extend`, `extendWith`, `lookup`, `compact`, `deinit`.
-- `src/snail/atlas_record.zig` — `AtlasRecord`.
+Status: ✅ Done. Two commits:
+- "rewrite: add AtlasPage, PagePool, AtlasRecord foundation"
+- "rewrite: add Atlas value type with combine, extend, compact"
 
-The `AtlasPage` here is structurally different from the existing
-`src/snail/render/format/atlas/page.zig`. Build it as a sibling type;
-keep the existing one for the old API.
-
-Tests:
-- Append concurrency (two threads extending atlases sharing a tail page).
-- Combine union semantics.
-- Extend with conflicting keys (existing wins).
-- Compact preserves keys.
-- Refcount-based page reclamation.
-
-Builds on Phase 0. Does not touch any existing code. End-of-phase commit:
-"rewrite: add Atlas, AtlasPage, PagePool foundation types."
+Built sibling types alongside the existing
+`render/format/atlas/page.zig` (kept intact for the old API). All
+tests pass, including multi-threaded reserve, generation-on-recycle,
+combine remap, extend dedup, and compact key preservation. `extendWith`
+is the one item from the spec deferred to Phase 3 (it composes with
+the provider trait that the hinter wraps).
 
 ## Phase 2: curves producers
 
-Files to write:
-- `src/snail/font.zig` (new) — public `Font` with `init`, `extractCurves`,
-  metrics queries. Wraps `src/snail/font/ttf.zig` internally.
-- `src/snail/paths.zig` — `pathToCurves`, `strokeToCurves`.
-- `src/snail/hinter.zig` — simpler `Hinter` (see [05-hinting.md](05-hinting.md)).
-  Wraps existing `src/snail/font/tt_*.zig` VM verbatim.
+Status: ✅ Done. Three commits:
+- "rewrite: add Font.extractCurves producer"
+- "rewrite: add pathToCurves and strokeToCurves producers"
+- "rewrite: add Hinter curves producer"
 
-Each producer returns the unified `GlyphCurves` type. Tests verify the
-output renders identically to the existing producers' outputs (byte-for-byte
-of curve_bytes and band_bytes).
+`Font.extractCurves` lives on the existing `Font` public type rather
+than a fresh `font.zig` — the public API surface for outline metrics
+is unchanged, and the new extractor sits next to its peers.
+`paths.zig` and `hinter.zig` are new top-level modules. All three
+producers funnel through `buildCurveTexture` / `buildGlyphBandData`
+so the curve+band byte format is shared verbatim with the existing
+TextAtlas path. Byte-for-byte equivalence is tested for the font
+producer; the others reuse the same packing path implicitly.
 
-End-of-phase commit: "rewrite: add curves producers (font, paths, hinter)."
+The `Hinter` deferred a few inspection helpers (byteFootprint,
+size/glyph key iterators, providerAt) to Phase 3 / later; the core
+mechanism — per-ppem cached VM producing `GlyphCurves` — is in place.
 
 ## Phase 3: picture, emit, draw records
 
