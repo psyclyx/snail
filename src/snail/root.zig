@@ -205,4 +205,5 @@ test {
     _ = @import("page.zig");
     _ = @import("page_pool.zig");
     _ = @import("atlas.zig");
+    _ = @import("paths.zig");
 }
