@@ -20,8 +20,13 @@ pub const BBox = bezier.BBox;
 pub const GlyphCurves = struct {
     allocator: std.mem.Allocator,
     /// Packed curve texture bytes (u16 half-floats, four texels per segment).
+    /// Laid out exactly as the existing `render/format/curve_texture.zig`
+    /// format expects, with the glyph's first segment at byte 0.
     curve_bytes: []const u16,
-    /// Packed band texture bytes (u16 indices).
+    /// Packed band texture bytes (u16 indices). Curve refs are encoded
+    /// assuming the glyph's first curve sits at texel 0 of the curve
+    /// texture; the atlas rewrites them at insertion time to absolute
+    /// page-local texel positions.
     band_bytes: []const u16,
     /// Number of curve segments (each segment occupies `SEGMENT_TEXELS` texels).
     curve_count: u16,
@@ -29,6 +34,14 @@ pub const GlyphCurves = struct {
     /// the candidate curves per sample).
     h_band_count: u16,
     v_band_count: u16,
+    /// Band transform: maps local-space coords to band indices. Computed by
+    /// the producer at curve-build time. Carried on `GlyphCurves` (not
+    /// recomputed at insertion) because it depends on the same dilated
+    /// bbox used to bucket curves into bands.
+    band_scale_x: f32,
+    band_scale_y: f32,
+    band_offset_x: f32,
+    band_offset_y: f32,
     /// Bounding box of the shape in its local (untransformed) coordinate space.
     bbox: BBox,
 
@@ -58,6 +71,10 @@ pub const GlyphCurves = struct {
             .curve_count = 0,
             .h_band_count = 0,
             .v_band_count = 0,
+            .band_scale_x = 0,
+            .band_scale_y = 0,
+            .band_offset_x = 0,
+            .band_offset_y = 0,
             .bbox = .{ .min = .zero, .max = .zero },
         };
     }

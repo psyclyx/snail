@@ -204,4 +204,5 @@ test {
     _ = @import("atlas_record.zig");
     _ = @import("page.zig");
     _ = @import("page_pool.zig");
+    _ = @import("atlas.zig");
 }
