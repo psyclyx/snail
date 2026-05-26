@@ -746,6 +746,54 @@ test "deinit releases pages back to the pool" {
     pool.release(reacquired);
 }
 
+test "atlas + font extract: end-to-end smoke test" {
+    const font_mod = @import("font.zig");
+    const font_data = @import("assets").noto_sans_regular;
+    var font = try font_mod.Font.init(font_data);
+    defer font.deinit();
+
+    var cache = font_mod.GlyphCache.init(testing.allocator);
+    defer cache.deinit();
+
+    var pool = try PagePool.init(testing.allocator, .{
+        .max_layers = 4,
+        .curve_words_per_page = 1 << 16,
+        .band_words_per_page = 1 << 14,
+    });
+    defer pool.deinit();
+
+    var entries: std.ArrayList(Entry) = .empty;
+    defer entries.deinit(testing.allocator);
+
+    var owned: std.ArrayList(GlyphCurves) = .empty;
+    defer {
+        for (owned.items) |*c| c.deinit();
+        owned.deinit(testing.allocator);
+    }
+
+    const codes = [_]u32{ 'A', 'B', 'C', 'M', 'a', 'g', 'o' };
+    for (codes) |cp| {
+        const gid = try font.glyphIndex(cp);
+        const curves = try font.extractCurves(testing.allocator, &cache, gid);
+        try owned.append(testing.allocator, curves);
+        try entries.append(testing.allocator, .{
+            .key = record_key_mod.unhintedGlyph(0, gid),
+            .curves = owned.items[owned.items.len - 1],
+        });
+    }
+
+    var atlas = try Atlas.from(testing.allocator, pool, entries.items);
+    defer atlas.deinit();
+
+    try testing.expectEqual(@as(u32, codes.len), atlas.recordCount());
+    for (codes) |cp| {
+        const gid = try font.glyphIndex(cp);
+        const key = record_key_mod.unhintedGlyph(0, gid);
+        const rec = atlas.lookupRecord(key) orelse return error.MissingRecord;
+        try testing.expect(rec.curve_count > 0);
+    }
+}
+
 test "compact preserves keys" {
     var pool = try PagePool.init(testing.allocator, .{
         .max_layers = 4,

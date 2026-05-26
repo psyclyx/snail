@@ -1,10 +1,15 @@
+const std = @import("std");
 const bezier = @import("math/bezier.zig");
 const ttf = @import("font/ttf.zig");
+const curves_mod = @import("curves.zig");
+const curve_tex = @import("render/format/curve_texture.zig");
+const band_tex = @import("render/format/band_texture.zig");
 
 pub const GlyphMetrics = ttf.GlyphMetrics;
 pub const LineMetrics = ttf.LineMetrics;
 pub const DecorationMetrics = ttf.DecorationMetrics;
 pub const ScriptMetrics = ttf.ScriptMetrics;
+pub const GlyphCache = ttf.GlyphCache;
 pub const tt = struct {
     pub const exec = @import("font/tt_exec.zig");
     pub const graphics = @import("font/tt_graphics.zig");
@@ -83,4 +88,194 @@ pub const Font = struct {
     pub fn bbox(self: *const Font, glyph_id: u16) !bezier.BBox {
         return self.inner.bbox(glyph_id);
     }
+
+    /// Extract a glyph's outlines into the renderable `GlyphCurves` form
+    /// the atlas consumes. The caller owns the returned value and must
+    /// call `deinit` when done.
+    ///
+    /// `cache` is the compound-glyph component cache; pass a long-lived
+    /// one across many `extractCurves` calls on the same font to avoid
+    /// re-parsing referenced components. The returned `GlyphCurves` does
+    /// not depend on the cache after the call returns.
+    ///
+    /// Glyphs with no contours (e.g. ASCII space) return `GlyphCurves.empty`.
+    pub fn extractCurves(
+        self: *const Font,
+        allocator: std.mem.Allocator,
+        cache: *GlyphCache,
+        glyph_id: u16,
+    ) !curves_mod.GlyphCurves {
+        return extractCurvesInner(self, allocator, cache, glyph_id);
+    }
 };
+
+const CurveSegment = bezier.CurveSegment;
+
+fn extractCurvesInner(
+    font: *const Font,
+    allocator: std.mem.Allocator,
+    cache: *GlyphCache,
+    glyph_id: u16,
+) !curves_mod.GlyphCurves {
+    const glyph = try font.inner.parseGlyph(allocator, cache, glyph_id);
+    if (glyph.contours.len == 0) return curves_mod.GlyphCurves.empty(allocator);
+
+    var total_curves: usize = 0;
+    for (glyph.contours) |contour| total_curves += contour.curves.len;
+    if (total_curves == 0) return curves_mod.GlyphCurves.empty(allocator);
+
+    const segs = try allocator.alloc(CurveSegment, total_curves);
+    defer allocator.free(segs);
+
+    var write_idx: usize = 0;
+    for (glyph.contours) |contour| {
+        for (contour.curves) |q| {
+            segs[write_idx] = CurveSegment.fromQuad(q);
+            write_idx += 1;
+        }
+    }
+
+    const prepared = try curve_tex.prepareGlyphCurvesForDirectEncoding(allocator, segs, .zero);
+    defer allocator.free(prepared);
+
+    const render_bbox = glyphRenderBBox(glyph.metrics.bbox, prepared);
+
+    // Pack the single glyph's curve segments into a contiguous u16 buffer
+    // matching the existing render/format/curve_texture.zig encoding. We
+    // reuse `buildCurveTexture` and dupe out only the words we actually
+    // touched (it pads to a full TEX_WIDTH-row buffer for the GPU).
+    const single = [_]curve_tex.GlyphCurves{.{
+        .curves = segs,
+        .bbox = render_bbox,
+        .logical_curve_count = segs.len,
+        .prefer_direct_encoding = true,
+        .prepared_curves = prepared,
+    }};
+    var ct = try curve_tex.buildCurveTexture(allocator, allocator, &single);
+    defer ct.texture.deinit();
+    defer allocator.free(ct.entries);
+
+    const curve_count: u16 = @intCast(prepared.len);
+    const curve_used_words: usize = @as(usize, curve_count) * curve_tex.SEGMENT_TEXELS * 4;
+    const curve_bytes = try allocator.dupe(u16, ct.texture.data[0..curve_used_words]);
+    errdefer allocator.free(curve_bytes);
+
+    const entry = curve_tex.GlyphCurveEntry{
+        .start_x = 0,
+        .start_y = 0,
+        .count = curve_count,
+        .offset = 0,
+    };
+    var bd = try band_tex.buildGlyphBandDataWithPreparedCurves(
+        allocator,
+        segs,
+        segs.len,
+        render_bbox,
+        entry,
+        .zero,
+        true,
+        prepared,
+    );
+    defer band_tex.freeGlyphBandData(allocator, &bd);
+
+    const band_bytes = try allocator.dupe(u16, bd.data);
+
+    return .{
+        .allocator = allocator,
+        .curve_bytes = curve_bytes,
+        .band_bytes = band_bytes,
+        .curve_count = curve_count,
+        .h_band_count = bd.h_band_count,
+        .v_band_count = bd.v_band_count,
+        .band_scale_x = bd.band_scale_x,
+        .band_scale_y = bd.band_scale_y,
+        .band_offset_x = bd.band_offset_x,
+        .band_offset_y = bd.band_offset_y,
+        .bbox = render_bbox,
+    };
+}
+
+fn glyphRenderBBox(metrics_bbox: bezier.BBox, prepared: []const CurveSegment) bezier.BBox {
+    if (prepared.len == 0) return metrics_bbox;
+    var prepared_bbox = prepared[0].boundingBox();
+    for (prepared[1..]) |curve| prepared_bbox = prepared_bbox.merge(curve.boundingBox());
+    return metrics_bbox.merge(prepared_bbox);
+}
+
+test "extractCurves returns non-empty curves for printable glyph" {
+    const font_data = @import("assets").noto_sans_regular;
+    var font = try Font.init(font_data);
+    defer font.deinit();
+
+    var cache = GlyphCache.init(std.testing.allocator);
+    defer cache.deinit();
+
+    const glyph_id = try font.glyphIndex('A');
+    var curves = try font.extractCurves(std.testing.allocator, &cache, glyph_id);
+    defer curves.deinit();
+
+    try std.testing.expect(curves.curve_count > 0);
+    try std.testing.expect(curves.curve_bytes.len > 0);
+    try std.testing.expect(curves.band_bytes.len > 0);
+    try std.testing.expect(curves.h_band_count > 0);
+    try std.testing.expect(curves.v_band_count > 0);
+}
+
+test "extractCurves returns empty for whitespace glyph" {
+    const font_data = @import("assets").noto_sans_regular;
+    var font = try Font.init(font_data);
+    defer font.deinit();
+
+    var cache = GlyphCache.init(std.testing.allocator);
+    defer cache.deinit();
+
+    const space_id = try font.glyphIndex(' ');
+    var curves = try font.extractCurves(std.testing.allocator, &cache, space_id);
+    defer curves.deinit();
+
+    try std.testing.expect(curves.isEmpty());
+}
+
+test "extractCurves matches existing curve packing path byte-for-byte" {
+    // The producer reuses `buildCurveTexture` and `buildGlyphBandData` from
+    // render/format. For a single-glyph input, the produced curve_bytes
+    // must equal the prefix of the existing packed curve-texture data.
+    const font_data = @import("assets").noto_sans_regular;
+    var font = try Font.init(font_data);
+    defer font.deinit();
+
+    var cache = GlyphCache.init(std.testing.allocator);
+    defer cache.deinit();
+
+    const glyph_id = try font.glyphIndex('M');
+    var curves = try font.extractCurves(std.testing.allocator, &cache, glyph_id);
+    defer curves.deinit();
+
+    // Re-run the same packing through the format helpers directly and
+    // compare. (This guards against accidental schema drift in the
+    // producer.)
+    const glyph = try font.inner.parseGlyph(std.testing.allocator, &cache, glyph_id);
+
+    var segs: std.ArrayList(CurveSegment) = .empty;
+    defer segs.deinit(std.testing.allocator);
+    for (glyph.contours) |contour| {
+        for (contour.curves) |q| try segs.append(std.testing.allocator, CurveSegment.fromQuad(q));
+    }
+    const prepared = try curve_tex.prepareGlyphCurvesForDirectEncoding(std.testing.allocator, segs.items, .zero);
+    defer std.testing.allocator.free(prepared);
+    const render_bbox = glyphRenderBBox(glyph.metrics.bbox, prepared);
+
+    const single = [_]curve_tex.GlyphCurves{.{
+        .curves = segs.items,
+        .bbox = render_bbox,
+        .logical_curve_count = segs.items.len,
+        .prefer_direct_encoding = true,
+        .prepared_curves = prepared,
+    }};
+    var ct = try curve_tex.buildCurveTexture(std.testing.allocator, std.testing.allocator, &single);
+    defer ct.texture.deinit();
+    defer std.testing.allocator.free(ct.entries);
+
+    const used_words: usize = @as(usize, curves.curve_count) * curve_tex.SEGMENT_TEXELS * 4;
+    try std.testing.expectEqualSlices(u16, ct.texture.data[0..used_words], curves.curve_bytes);
+}
