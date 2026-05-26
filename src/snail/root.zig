@@ -199,4 +199,9 @@ test {
     _ = paint;
     _ = @import("api_tests.zig");
     _ = @import("path_picture_tests.zig");
+    _ = @import("record_key.zig");
+    _ = @import("curves.zig");
+    _ = @import("atlas_record.zig");
+    _ = @import("page.zig");
+    _ = @import("page_pool.zig");
 }
