@@ -31,7 +31,12 @@ pub const PreparedAtlasPage = struct {
     band_width: u32,
     band_height: u32,
 
-    fn init(allocator: std.mem.Allocator, page: *const AtlasPage) !PreparedAtlasPage {
+    /// Build a prepared page view from any struct exposing the legacy
+    /// `AtlasPage` field shape (`curve_data`, `band_data`, plus per-texture
+    /// width/height pairs). Used both by the legacy `PreparedResources`
+    /// upload path and by `cpu_upload.CpuPreparedPages` which adapts the
+    /// new `page.AtlasPage` shape.
+    pub fn initFromView(allocator: std.mem.Allocator, page: anytype) !PreparedAtlasPage {
         const curve_data = try allocator.dupe(u16, page.curve_data);
         errdefer allocator.free(curve_data);
 
@@ -84,7 +89,7 @@ pub const PreparedAtlasPage = struct {
         };
     }
 
-    fn deinit(self: *PreparedAtlasPage, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *PreparedAtlasPage, allocator: std.mem.Allocator) void {
         allocator.free(self.curve_data);
         allocator.free(self.band_data);
         allocator.free(self.h_curves);
@@ -213,7 +218,7 @@ pub const PreparedResources = struct {
         for (0..atlas.pageCount()) |i| {
             const layer = layer_base + @as(u32, @intCast(i));
             if (layer >= self.atlas_pages.len) return error.PreparedResourceCapacityExceeded;
-            self.atlas_pages[layer] = try PreparedAtlasPage.init(self.allocator, atlas.page(@intCast(i)));
+            self.atlas_pages[layer] = try PreparedAtlasPage.initFromView(self.allocator, atlas.page(@intCast(i)));
         }
         if (atlas.layer_info_data) |lid| {
             if (self.layer_info_count >= self.layer_infos.len) return error.PreparedResourceCapacityExceeded;
