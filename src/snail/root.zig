@@ -213,4 +213,5 @@ test {
     _ = @import("emit.zig");
     _ = @import("cpu_upload.zig");
     _ = @import("cpu_draw.zig");
+    _ = @import("text_picture.zig");
 }
