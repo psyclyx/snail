@@ -9,7 +9,7 @@ const resource_key = @import("resource_key.zig");
 const upload_common = @import("render/format/upload_common.zig");
 
 const math = @import("math.zig");
-const font = @import("font.zig");
+pub const font = @import("font.zig");
 const text = @import("text.zig");
 const image = @import("image.zig");
 const path = @import("path.zig");
@@ -175,6 +175,28 @@ pub const PendingResourceUpload = upload.PendingResourceUpload;
 
 pub const DrawList = draw.DrawList;
 pub const PreparedScene = draw.PreparedScene;
+
+// --- New (rewrite) public surface. Coexists with the legacy types above
+// until Phase 6 sweeps the old API out.
+pub const recordKey = @import("record_key.zig");
+pub const RecordKey = recordKey.RecordKey;
+pub const GlyphCurves = @import("curves.zig").GlyphCurves;
+pub const PagePool = @import("page_pool.zig").PagePool;
+pub const AtlasPage = @import("page.zig").AtlasPage;
+const atlas_mod_pub = @import("atlas.zig");
+pub const Atlas = atlas_mod_pub.Atlas;
+pub const AtlasEntry = atlas_mod_pub.Entry;
+pub const AtlasRecord = @import("atlas_record.zig").AtlasRecord;
+pub const PaintRecordInfo = atlas_mod_pub.PaintRecordInfo;
+pub const Shape = @import("shape.zig").Shape;
+pub const Override2 = @import("shape.zig").Override;
+pub const Picture = @import("picture.zig").Picture;
+pub const DrawSegment = @import("draw_records.zig").DrawSegment;
+pub const Binding = @import("draw_records.zig").Binding;
+pub const emit = @import("emit.zig");
+pub const shapedRunPicture = @import("text_picture.zig").shapedRunPicture;
+pub const CpuPreparedPages = @import("cpu_upload.zig").CpuPreparedPages;
+pub const drawCpu = @import("cpu_draw.zig").drawCpu;
 
 /// Default ASCII printable character set (space through tilde).
 pub const ASCII_PRINTABLE = blk: {

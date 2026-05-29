@@ -697,6 +697,24 @@ fn addScreenshotStep(
     const run_screenshot = b.addRunArtifact(screenshot_exe);
     const screenshot_step = b.step("run-screenshot", "Render the demo scene offscreen and write zig-out/demo-screenshot.tga");
     screenshot_step.dependOn(&run_screenshot.step);
+
+    // New-API demo (rewrite). Renders a stripped-down screenshot through
+    // the new Picture/emit/drawCpu chain.
+    const screenshot_new_module = b.createModule(.{
+        .root_source_file = b.path("src/demo/screenshot_new.zig"),
+        .target = config.target,
+        .optimize = .ReleaseFast,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "assets", .module = modules.assets },
+            .{ .name = "snail", .module = release.snail },
+            .{ .name = "support", .module = release.support },
+        },
+    });
+    const screenshot_new_exe = b.addExecutable(.{ .name = "snail-screenshot-new", .root_module = screenshot_new_module });
+    const run_screenshot_new = b.addRunArtifact(screenshot_new_exe);
+    const screenshot_new_step = b.step("run-screenshot-new", "Render the rewrite-API demo offscreen and write zig-out/demo-screenshot-new.tga");
+    screenshot_new_step.dependOn(&run_screenshot_new.step);
 }
 
 fn addAlgorithmScreenshotsStep(
