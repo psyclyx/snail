@@ -11,6 +11,7 @@ const std = @import("std");
 const snail = @import("snail");
 const screenshot = @import("support").screenshot;
 const assets_data = @import("assets");
+const banner_snail_new = @import("banner_snail_new.zig");
 
 const W: u32 = 400;
 const H: u32 = 240;
@@ -223,27 +224,22 @@ pub fn main() !void {
         });
         try path_shapes.append(allocator, .{ .key = key, .local_transform = .identity, .local_color = .{ 1, 1, 1, 1 } });
     }
-    // Shell placeholder (radial-gradient ellipse).
-    const shell_cx: f32 = @as(f32, @floatFromInt(W)) - 70.0;
-    const shell_cy: f32 = 60.0;
+    // Full vector snail in the top-right corner (mirrors legacy demo).
     {
-        var p = snail.paths.Path.init(allocator);
-        defer p.deinit();
-        try p.addEllipse(.{ .x = shell_cx - 28, .y = shell_cy - 24, .w = 56, .h = 48 });
-        try path_curves_owned.append(allocator, try snail.paths.pathToCurves(allocator, &p));
-        const key = snail.RecordKey{ .namespace = snail.ns.path_fill, .a = next_path_id };
-        next_path_id += 1;
-        try path_entries.append(allocator, .{
-            .key = key,
-            .curves = path_curves_owned.items[path_curves_owned.items.len - 1],
-            .paint = .{ .radial_gradient = .{
-                .center = .{ .x = shell_cx - 5, .y = shell_cy - 6 },
-                .radius = 28,
-                .inner_color = .{ 0.95, 0.85, 0.55, 1.0 },
-                .outer_color = .{ 0.55, 0.40, 0.20, 1.0 },
-            } },
-        });
-        try path_shapes.append(allocator, .{ .key = key, .local_transform = .identity, .local_color = .{ 1, 1, 1, 1 } });
+        const snail_stage = snail.Rect{
+            .x = @as(f32, @floatFromInt(W)) - 154.0,
+            .y = 12.0,
+            .w = 140.0,
+            .h = 122.0,
+        };
+        const snail_builder = banner_snail_new.Builder{
+            .allocator = allocator,
+            .owned_curves = &path_curves_owned,
+            .entries = &path_entries,
+            .shapes = &path_shapes,
+            .next_id = &next_path_id,
+        };
+        try banner_snail_new.addVectorSnail(snail_builder, snail_stage);
     }
 
     var paths_atlas = try snail.Atlas.from(allocator, pool, path_entries.items);
