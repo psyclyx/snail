@@ -77,23 +77,33 @@ backend that consumes this lands in Phase 5.
 
 ## Phase 4: rewire one backend (CPU)
 
-The CPU renderer's existing `draw` walks `DrawRecords`-shaped data already.
-Adapter work:
-- `renderer.createPagePool(.{...})` creates the CPU pool (CPU pool has
-  no GPU backing — pages are CPU-resident byte slices).
-- `pool.upload(allocs, &atlas)` returns a `Binding` containing the pool ref.
-- `renderer.draw(state, records, &.{&pool})` does the validation and
-  walks segments.
+Status: 🟡 Plumbing landed (MVP). Two commits:
+- "rewrite: add CpuPreparedPages for CPU-side page preparation"
+- "rewrite: add drawCpu entry consuming DrawRecords and CpuPreparedPages"
 
-The CPU renderer's coverage evaluation already consumes curve and band
-bytes via the existing format helpers; switching it to read from the
-new `PagePool` pages requires updating where it looks up curve data, but
-the inner sampling loop is unchanged.
+`CpuPreparedPages` (in `src/snail/cpu_upload.zig`) is the CPU-side
+"upload": it builds a per-layer `PreparedAtlasPage` from the new
+`AtlasPage`'s byte buffers, reusing `cpu_resources.PreparedAtlasPage`
+(promoted to `initFromView(anytype)` so it consumes both the legacy
+and new page shapes). `cache.upload(atlas)` returns a `Binding`.
 
-End-of-phase commit: "rewrite: CPU backend on new API; one demo green."
+`drawCpu` (in `src/snail/cpu_draw.zig`) walks `DrawRecords.segments`,
+matches each segment's `Binding.pool` to a caller-supplied cache, and
+dispatches per-instance through the existing
+`CpuRenderer.drawTextPrepared`. Only `.heterogeneous` segments are
+supported; the replicated path needs per-shape × per-override outer
+product materialization on the CPU side and is deferred.
 
-This is the first phase where a demo can run end-to-end on the new API.
-The chosen demo is `run-screenshot` (CPU-only, offscreen, deterministic).
+What's NOT yet done in Phase 4:
+- The CPU rasterizer still consumes `prepared.atlas_pages` indexed by
+  a flat texture-layer base of `0`. Multi-pool scenes work (one cache
+  per pool, one segment per pool) but a single `PreparedResources`
+  spanning multiple pools is not built.
+- Path / paint / COLR special-layer rendering is *not* wired through
+  the new path. The new draw entry assumes `local_paint == null` on
+  each shape and dispatches only the regular text path.
+- `run-screenshot` still runs through the legacy demo path; migration
+  of the demo to the new API is part of Phase 6.
 
 ## Phase 5: rewire GPU backends
 
