@@ -108,6 +108,7 @@ pub const StrokeCap = paint.StrokeCap;
 pub const StrokeJoin = paint.StrokeJoin;
 pub const StrokePlacement = paint.StrokePlacement;
 pub const StrokeStyle = paint.StrokeStyle;
+pub const mapPaintToLocal = paint.mapToLocal;
 pub const Image = image.Image;
 
 pub const Path = path.Path;

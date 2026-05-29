@@ -121,25 +121,6 @@ pub fn main() !void {
     var text_entries: std.ArrayList(snail.AtlasEntry) = .empty;
     defer text_entries.deinit(allocator);
 
-    const wordmark_gradient = snail.LinearGradient{
-        .start = .{ .x = 0, .y = -0.7 },
-        .end = .{ .x = 1.0, .y = 0.0 },
-        .start_color = .{ 0.08, 0.30, 0.72, 1.0 },
-        .end_color = .{ 0.10, 0.10, 0.14, 1.0 },
-    };
-
-    for (shaped_wordmark.glyphs) |g| {
-        const fid: u32 = g.face_index;
-        const key = snail.recordKey.unhintedGlyph(fid, g.glyph_id);
-        if (containsKey(text_entries.items, key)) continue;
-        const curves = try fonts[fid].extractCurves(allocator, &glyph_cache, g.glyph_id);
-        try owned_curves.append(allocator, curves);
-        try text_entries.append(allocator, .{
-            .key = key,
-            .curves = owned_curves.items[owned_curves.items.len - 1],
-            .paint = .{ .linear_gradient = wordmark_gradient },
-        });
-    }
     for (shaped_tagline.glyphs) |g| {
         const fid: u32 = g.face_index;
         const key = snail.recordKey.unhintedGlyph(fid, g.glyph_id);
@@ -242,6 +223,55 @@ pub fn main() !void {
         try banner_snail_new.addVectorSnail(snail_builder, snail_stage);
     }
 
+    // -- Text layout constants (used by wordmark prepass and shaped runs).
+    const left_pad: f32 = 24;
+    const wordmark_baseline: f32 = 76;
+    const wordmark_em: f32 = 52;
+    const tagline_baseline: f32 = wordmark_baseline + 22;
+    const tagline_em: f32 = 13;
+    const tagline_color = [4]f32{ 0.42, 0.46, 0.52, 1.0 };
+
+    // Wordmark glyphs need per-instance paints so the linear gradient
+    // spans the entire word in world coordinates (not per glyph). Build
+    // them as path_fill entries with mapToLocal'd gradients per glyph,
+    // appended to path_entries / path_shapes so they share the same
+    // paint-record format the path renderer already handles.
+    const wordmark_world_gradient = snail.LinearGradient{
+        .start = .{ .x = left_pad, .y = wordmark_baseline - wordmark_em },
+        .end = .{ .x = left_pad + 135, .y = wordmark_baseline },
+        .start_color = .{ 0.08, 0.30, 0.72, 1.0 },
+        .end_color = .{ 0.10, 0.10, 0.14, 1.0 },
+    };
+    for (shaped_wordmark.glyphs) |g| {
+        const fid: u32 = g.face_index;
+        if (fid >= fonts.len) continue;
+        const pen_x = left_pad + wordmark_em * g.x_offset;
+        const pen_y = wordmark_baseline + wordmark_em * g.y_offset;
+        const transform = snail.Transform2D{
+            .xx = wordmark_em,
+            .xy = 0,
+            .tx = pen_x,
+            .yx = 0,
+            .yy = -wordmark_em,
+            .ty = pen_y,
+        };
+        const local_paint = snail.mapPaintToLocal(.{ .linear_gradient = wordmark_world_gradient }, transform) orelse continue;
+        const curves = try fonts[fid].extractCurves(allocator, &glyph_cache, g.glyph_id);
+        try path_curves_owned.append(allocator, curves);
+        const key = snail.RecordKey{ .namespace = snail.ns.path_fill, .a = next_path_id };
+        next_path_id += 1;
+        try path_entries.append(allocator, .{
+            .key = key,
+            .curves = path_curves_owned.items[path_curves_owned.items.len - 1],
+            .paint = local_paint,
+        });
+        try path_shapes.append(allocator, .{
+            .key = key,
+            .local_transform = transform,
+            .local_color = .{ 1, 1, 1, 1 },
+        });
+    }
+
     var paths_atlas = try snail.Atlas.from(allocator, pool, path_entries.items);
     defer paths_atlas.deinit();
     var paths_picture = try snail.Picture.from(allocator, path_shapes.items);
@@ -257,21 +287,6 @@ pub fn main() !void {
     const paths_binding = try cache.upload(&paths_atlas);
     const text_binding = try cache.upload(&text_atlas_new);
 
-    // -- Build text Picture via shapedRunPicture.
-    const left_pad: f32 = 24;
-    const wordmark_baseline: f32 = 76;
-    const wordmark_em: f32 = 52;
-    const tagline_baseline: f32 = wordmark_baseline + 22;
-    const tagline_em: f32 = 13;
-    const tagline_color = [4]f32{ 0.42, 0.46, 0.52, 1.0 };
-
-    var wordmark_pic = try snail.shapedRunPicture(allocator, &shaped_wordmark, .{
-        .baseline = .{ .x = left_pad, .y = wordmark_baseline },
-        .em = wordmark_em,
-        .color = .{ 1, 1, 1, 1 },
-        .face_to_font_id = &face_to_font_id,
-    });
-    defer wordmark_pic.deinit();
     var tagline_pic = try snail.shapedRunPicture(allocator, &shaped_tagline, .{
         .baseline = .{ .x = left_pad, .y = tagline_baseline },
         .em = tagline_em,
@@ -317,7 +332,6 @@ pub fn main() !void {
 
     var combine_inputs: std.ArrayList(*const snail.Picture) = .empty;
     defer combine_inputs.deinit(allocator);
-    try combine_inputs.append(allocator, &wordmark_pic);
     try combine_inputs.append(allocator, &tagline_pic);
     for (sample_pics.items) |*p| try combine_inputs.append(allocator, p);
 
