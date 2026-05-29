@@ -77,33 +77,54 @@ backend that consumes this lands in Phase 5.
 
 ## Phase 4: rewire one backend (CPU)
 
-Status: 🟡 Plumbing landed (MVP). Two commits:
-- "rewrite: add CpuPreparedPages for CPU-side page preparation"
-- "rewrite: add drawCpu entry consuming DrawRecords and CpuPreparedPages"
+Status: 🟡 Substantial CPU-side capability landed; demo migration
+partial.
 
-`CpuPreparedPages` (in `src/snail/cpu_upload.zig`) is the CPU-side
-"upload": it builds a per-layer `PreparedAtlasPage` from the new
-`AtlasPage`'s byte buffers, reusing `cpu_resources.PreparedAtlasPage`
-(promoted to `initFromView(anytype)` so it consumes both the legacy
-and new page shapes). `cache.upload(atlas)` returns a `Binding`.
+CPU-side machinery (committed):
+- `CpuPreparedPages` (`src/snail/cpu_upload.zig`) is the CPU-side
+  "upload": per-layer `PreparedAtlasPage` built from the new
+  `AtlasPage`'s byte buffers via `PreparedAtlasPage.initFromView`,
+  plus the atlas's `layer_info_data` baked into a single
+  `LayerInfoEntry`. Returns a `Binding`.
+- `drawCpu` (`src/snail/cpu_draw.zig`) walks `DrawRecords.segments`,
+  matches each segment's `Binding.pool` to a caller-supplied cache,
+  and dispatches through `CpuRenderer.drawTextPrepared`.
+  - Heterogeneous segments: direct dispatch.
+  - Replicated segments: materializes N×M composed instances in a
+    scratch buffer (transform-compose + tint override) then dispatches.
+- `Atlas` (`src/snail/atlas.zig`) carries paint records in
+  byte-compatible legacy format (`layer_info_data` + `paint_lookup`),
+  populated automatically by `Atlas.from` when entries carry
+  `.paint`. Combine/extend carry forward both.
+- `emit` (`src/snail/emit.zig`) checks `atlas.lookupPaintRecord`
+  per shape and encodes a `.path` special-layer instance when set,
+  via the existing `generatePathRecordVerticesTransformedTinted`.
+- `shapedRunPicture` (`src/snail/text_picture.zig`) bridges
+  `TextAtlas.shapeText` output to the new `Picture` model.
+- New public surface added to `root.zig` alongside the legacy types.
 
-`drawCpu` (in `src/snail/cpu_draw.zig`) walks `DrawRecords.segments`,
-matches each segment's `Binding.pool` to a caller-supplied cache, and
-dispatches per-instance through the existing
-`CpuRenderer.drawTextPrepared`. Only `.heterogeneous` segments are
-supported; the replicated path needs per-shape × per-override outer
-product materialization on the CPU side and is deferred.
+Demo (committed):
+- `src/demo/screenshot_new.zig` + `zig build run-screenshot-new`
+  exercises the new path end-to-end: shaped text + gradient-painted
+  wordmark, no PathPicture / no COLR.
 
-What's NOT yet done in Phase 4:
-- The CPU rasterizer still consumes `prepared.atlas_pages` indexed by
-  a flat texture-layer base of `0`. Multi-pool scenes work (one cache
-  per pool, one segment per pool) but a single `PreparedResources`
-  spanning multiple pools is not built.
-- Path / paint / COLR special-layer rendering is *not* wired through
-  the new path. The new draw entry assumes `local_paint == null` on
-  each shape and dispatches only the regular text path.
-- `run-screenshot` still runs through the legacy demo path; migration
-  of the demo to the new API is part of Phase 6.
+What's NOT yet done in Phase 4 for full "one demo green":
+- `PathPicture` → new-API Atlas conversion. The vector-snail logo
+  needs each PathShape's curves extracted from its source legacy
+  atlas page and re-packed as Atlas entries with the paint pulled
+  from layer_info. Composite (fill+stroke) shapes need multi-entry
+  fanout.
+- COLR / SVG color emoji. Per Q5, picture-construction expands COLR
+  glyphs into one shape per layer with its own `local_color`. No
+  implementation yet; emoji currently fall through as missing keys.
+- Multi-script samples (Arabic, Devanagari, Thai) work because
+  shaping is delegated to the existing `TextAtlas`; they just need
+  their fonts surfaced in the new demo's font list when re-enabled.
+- Pixel parity with `zig-out/demo-screenshot.tga`. The new demo
+  renders a recognizable scene but with subtle hue / coverage
+  differences vs the GL-rendered baseline; matching exactly needs
+  the PathPicture + COLR work above plus careful color-space
+  alignment.
 
 ## Phase 5: rewire GPU backends
 
