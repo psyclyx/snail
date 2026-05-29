@@ -80,10 +80,13 @@ pub const CpuPreparedPages = struct {
     /// finds the page extended (`data_len` grew) must rebuild the cache.
     prepared_curve_words: []u32,
     prepared_band_words: []u32,
-    /// Per-cache layer_info entry built from the bound atlas's
-    /// `layer_info_data`. There is at most one because each CpuPreparedPages
-    /// covers a single pool and we currently rebuild on every upload.
-    layer_info: ?cpu_resources.LayerInfoEntry = null,
+    /// Per-upload `LayerInfoEntry` slots, indexed by `binding.generation`.
+    /// Each call to `upload` appends one entry (or null when the atlas
+    /// had no `layer_info_data`); drawCpu looks up `slot[binding.generation - 1]`
+    /// to find the right paint-records buffer. This lets a single cache
+    /// serve multiple atlases over the same pool without clobbering each
+    /// other's layer_info.
+    layer_info_slots: std.ArrayList(?cpu_resources.LayerInfoEntry) = .empty,
     /// Monotonically increases per upload; carried back to the caller via
     /// `Binding.generation` so segments referencing a stale upload can be
     /// detected.
@@ -117,7 +120,10 @@ pub const CpuPreparedPages = struct {
         for (self.prepared) |*slot| {
             if (slot.*) |*p| p.deinit(self.allocator);
         }
-        if (self.layer_info) |*li| li.deinit(self.allocator);
+        for (self.layer_info_slots.items) |*slot| {
+            if (slot.*) |*li| li.deinit(self.allocator);
+        }
+        self.layer_info_slots.deinit(self.allocator);
         self.allocator.free(self.prepared);
         self.allocator.free(self.prepared_generation);
         self.allocator.free(self.prepared_curve_words);
@@ -155,13 +161,10 @@ pub const CpuPreparedPages = struct {
             self.prepared_band_words[layer] = cur_band;
         }
 
-        // Drop any previous layer_info; rebuild from the atlas's current
-        // layer_info_data slice. (Rebuilds are cheap relative to the
-        // per-page coverage prep; we can add staleness detection later.)
-        if (self.layer_info) |*li| {
-            li.deinit(self.allocator);
-            self.layer_info = null;
-        }
+        // Append (don't overwrite) a fresh LayerInfoEntry for this upload.
+        // drawCpu uses `binding.generation` to index back to the right
+        // slot when one cache serves multiple atlases.
+        var new_slot: ?cpu_resources.LayerInfoEntry = null;
         if (atlas.layer_info_data) |src_data| {
             const owned = try self.allocator.dupe(f32, src_data);
             errdefer self.allocator.free(owned);
@@ -176,7 +179,7 @@ pub const CpuPreparedPages = struct {
                 self.allocator.free(prepared_records.records);
                 self.allocator.free(prepared_records.layers);
             }
-            self.layer_info = .{
+            new_slot = .{
                 .data = owned,
                 .width = atlas.layer_info_width,
                 .height = atlas.layer_info_height,
@@ -188,8 +191,18 @@ pub const CpuPreparedPages = struct {
                 .owned_images = &.{},
             };
         }
+        try self.layer_info_slots.append(self.allocator, new_slot);
 
         return .{ .pool = self.pool, .generation = self.upload_generation };
+    }
+
+    /// Look up the layer_info entry for a given binding generation. Returns
+    /// null when the atlas behind that upload had no paint records.
+    pub fn layerInfoFor(self: *const CpuPreparedPages, generation: u32) ?*const cpu_resources.LayerInfoEntry {
+        if (generation == 0 or generation > self.layer_info_slots.items.len) return null;
+        const slot = &self.layer_info_slots.items[generation - 1];
+        if (slot.*) |*li| return li;
+        return null;
     }
 
     /// Look up the prepared page for a given pool layer. Returns null if the

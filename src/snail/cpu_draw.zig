@@ -64,8 +64,8 @@ pub fn drawCpu(
         var layer_info_buf: [1]cpu_resources.LayerInfoEntry = undefined;
         var layer_infos_slice: []cpu_resources.LayerInfoEntry = &.{};
         var layer_info_count: usize = 0;
-        if (cache.layer_info) |li| {
-            layer_info_buf[0] = li;
+        if (cache.layerInfoFor(seg.binding.generation)) |li_ptr| {
+            layer_info_buf[0] = li_ptr.*;
             layer_infos_slice = layer_info_buf[0..1];
             layer_info_count = 1;
         }
