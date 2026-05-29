@@ -145,18 +145,53 @@ What's NOT yet in Phase 4 (known limitations):
 
 ## Phase 5: rewire GPU backends
 
-Three sub-phases, one per backend family:
+Three sub-phases, one per backend family.
+
+Phase 4's CPU work showed the shape: a `*PreparedPages` per pool that
+holds backend-specific resident state, an `upload(atlas) -> Binding`
+that pushes deltas, and a `draw(state, records, pools)` that walks
+the new `DrawRecords.segments`. Each GPU backend follows that
+pattern with its own resident-state shape (texture handles, fences,
+descriptor sets).
 
 ### 5a. GL 3.3 + GL 4.4
 
-Existing `src/snail/render/backend/gl/state.zig` and
-`src/snail/render/backend/gl/resources.zig` know how to upload texture
-arrays and bind them. Adapt to:
-- Take a `PagePool` instead of an internal cache.
-- Upload pages from the pool's CPU side, push delta when `data_len > uploaded_len`.
-- Walk `DrawRecords.segments` from emit instead of the old segments.
+Status: 🟡 Not started. Plan and risk surface:
+
+The existing `gl/resources.zig` (~1150 LOC) and `gl/state.zig`
+(~840 LOC) are intricately woven through `CurveAtlas`-typed
+`AtlasSlot`s, refcounted `AtlasTextureBank` generations, and a
+decision matrix (clear / rebuild / append_overflow_bank /
+append_pages) that hangs off `ResourceManifest`. The new model is
+simpler — pages are append-only with stable `layer_index`, generation
+flips only on recycle — but a clean refactor requires rewiring all
+five of those concepts plus the legacy `uploadAtlases` /
+`drawTextPrepared` API surface that demos and `run-backend-compare`
+depend on until Phase 6.
+
+Concretely, refactor-in-place means:
+- Change `AtlasSlot`'s element type from `CurveAtlas` to `Atlas`.
+- Replace `upload_common.decideAtlasUpload` with PagePool's "any
+  page where `usedWords > uploadedWords`" delta-push model.
+- Retire (or repurpose) `AtlasTextureBank` — pool generation
+  replaces bank generation; layer_index replaces bank-local layer.
+- Adapt `bindProgramState` / `drawTextPrepared` to consume the new
+  `Binding` (one pool ref + generation) rather than the
+  `texture_layer_base` + bank-id encoding.
+- Keep legacy `uploadAtlases` working until Phase 6 by adapting at
+  the boundary: build a temporary `PagePool` + `Atlas` from each
+  legacy `CurveAtlas` at upload time and dispatch through the new
+  path.
 
 Shaders unchanged (they still consume the 64-byte instance format).
+
+Validation: `run-backend-compare` runs CPU vs GL vs GLES vs Vulkan
+headlessly and asserts pixel match — that's the gate per backend
+once the legacy adapter at the upload boundary is in place.
+
+Estimated effort: 2-3 days of focused work, dominated by the
+slot/bank refactor and adapting the legacy decision logic. Not
+attempted in this session.
 
 ### 5b. GLES30
 
