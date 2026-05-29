@@ -5,18 +5,20 @@
 //! generation against the cache's last upload, then dispatches per-instance
 //! into the existing CPU rasterizer via `CpuRenderer.drawTextPrepared`.
 //!
-//! Only `.heterogeneous` segments are supported in this MVP. Replicated
-//! emit produces N shape blocks + M override blocks; the CPU rasterizer
-//! doesn't yet materialize that outer product. Calls into replicated
-//! segments surface `error.UnsupportedSegmentKind`.
+//! Supports both `.heterogeneous` and `.replicated` segments. The
+//! replicated path materializes N shape blocks × M override blocks into
+//! N*M composed instances in a scratch buffer, then hands those to the
+//! existing rasterizer (same Instance format, so no rasterizer surgery).
 
 const std = @import("std");
 
 const build_options = @import("build_options");
 const snail = @import("root.zig");
+const math = @import("math/vec.zig");
 const draw_records = @import("draw_records.zig");
 const cpu_upload_mod = @import("cpu_upload.zig");
 const cpu_resources = @import("render/backend/cpu/resources.zig");
+const vertex = @import("render/format/vertex.zig");
 
 pub const DrawRecords = struct {
     words: []const u32,
@@ -25,14 +27,18 @@ pub const DrawRecords = struct {
 
 pub const CpuPreparedPages = cpu_upload_mod.CpuPreparedPages;
 pub const Binding = draw_records.Binding;
+pub const Transform2D = math.Transform2D;
+
+const WORDS_PER_INSTANCE: usize = vertex.WORDS_PER_INSTANCE;
+const WORDS_PER_OVERRIDE: usize = 8;
 
 pub const DrawError = error{
     /// Segment references a `PagePool` no entry in `caches` covers.
     MissingBinding,
     /// Segment's binding generation is newer than the cache's last upload.
     StaleBinding,
-    /// Segment kind not implemented by the CPU draw path.
-    UnsupportedSegmentKind,
+    /// Segment's word range is malformed for its declared shape/override counts.
+    MalformedSegment,
 };
 
 const CpuRendererPtr = if (build_options.enable_cpu)
@@ -48,21 +54,111 @@ pub fn drawCpu(
     records: DrawRecords,
     caches: []const *const CpuPreparedPages,
 ) (DrawError || anyerror)!void {
-    if (!build_options.enable_cpu) return error.UnsupportedSegmentKind;
+    if (!build_options.enable_cpu) return error.MalformedSegment;
     for (records.segments) |seg| {
         const cache = findCache(caches, seg.binding.pool) orelse return error.MissingBinding;
         if (seg.binding.generation != 0 and cache.upload_generation < seg.binding.generation) {
             return error.StaleBinding;
         }
-        if (seg.kind != .heterogeneous) return error.UnsupportedSegmentKind;
 
         var prepared = cpu_resources.PreparedResources{
             .allocator = cache.allocator,
             .atlas_pages = cache.prepared,
         };
         const seg_words = records.words[seg.words_offset..][0..seg.words_len];
-        try renderer.drawTextPrepared(&prepared, seg_words, state, 0);
+
+        switch (seg.kind) {
+            .heterogeneous => {
+                try renderer.drawTextPrepared(&prepared, seg_words, state, 0);
+            },
+            .replicated => {
+                try drawReplicatedSegment(renderer, &prepared, state, seg, seg_words, cache.allocator);
+            },
+        }
     }
+}
+
+/// Materialize a replicated segment's N shape blocks × M override blocks
+/// into N*M composed instances in a scratch buffer, then hand the buffer
+/// to the existing rasterizer.
+fn drawReplicatedSegment(
+    renderer: CpuRendererPtr,
+    prepared: *const cpu_resources.PreparedResources,
+    state: snail.DrawState,
+    seg: draw_records.DrawSegment,
+    seg_words: []const u32,
+    allocator: std.mem.Allocator,
+) !void {
+    const n = seg.shape_count;
+    const m = seg.override_count;
+    if (n == 0 or m == 0) return;
+    const expected_words = @as(usize, n) * WORDS_PER_INSTANCE + @as(usize, m) * WORDS_PER_OVERRIDE;
+    if (seg_words.len != expected_words) return error.MalformedSegment;
+
+    const composed = try allocator.alloc(u32, @as(usize, n) * @as(usize, m) * WORDS_PER_INSTANCE);
+    defer allocator.free(composed);
+
+    const shape_words = seg_words[0 .. @as(usize, n) * WORDS_PER_INSTANCE];
+    const override_words = seg_words[@as(usize, n) * WORDS_PER_INSTANCE ..];
+
+    var out_cursor: usize = 0;
+    var i: u32 = 0;
+    while (i < n) : (i += 1) {
+        const shape_inst = shape_words[@as(usize, i) * WORDS_PER_INSTANCE ..][0..WORDS_PER_INSTANCE];
+        var j: u32 = 0;
+        while (j < m) : (j += 1) {
+            const override_block = override_words[@as(usize, j) * WORDS_PER_OVERRIDE ..][0..WORDS_PER_OVERRIDE];
+            const dst = composed[out_cursor..][0..WORDS_PER_INSTANCE];
+            composeShapeOverride(dst, shape_inst, override_block);
+            out_cursor += WORDS_PER_INSTANCE;
+        }
+    }
+
+    try renderer.drawTextPrepared(prepared, composed, state, 0);
+}
+
+/// Compose one shape Instance with one Override block. The override's
+/// transform is left-multiplied onto the shape's, and the override's
+/// tint replaces the shape's identity tint. All other fields are copied
+/// verbatim from the shape block.
+fn composeShapeOverride(
+    dst: []u32,
+    shape: []const u32,
+    override: []const u32,
+) void {
+    std.debug.assert(dst.len == WORDS_PER_INSTANCE);
+    std.debug.assert(shape.len == WORDS_PER_INSTANCE);
+    std.debug.assert(override.len == WORDS_PER_OVERRIDE);
+
+    @memcpy(dst, shape);
+
+    const shape_t = Transform2D{
+        .xx = @bitCast(shape[2]),
+        .xy = @bitCast(shape[3]),
+        .yx = @bitCast(shape[4]),
+        .yy = @bitCast(shape[5]),
+        .tx = @bitCast(shape[6]),
+        .ty = @bitCast(shape[7]),
+    };
+    const override_t = Transform2D{
+        .xx = @bitCast(override[0]),
+        .xy = @bitCast(override[1]),
+        .tx = @bitCast(override[2]),
+        .yx = @bitCast(override[3]),
+        .yy = @bitCast(override[4]),
+        .ty = @bitCast(override[5]),
+    };
+    const composed_t = Transform2D.multiply(override_t, shape_t);
+    dst[2] = @bitCast(composed_t.xx);
+    dst[3] = @bitCast(composed_t.xy);
+    dst[4] = @bitCast(composed_t.yx);
+    dst[5] = @bitCast(composed_t.yy);
+    dst[6] = @bitCast(composed_t.tx);
+    dst[7] = @bitCast(composed_t.ty);
+
+    // Override's tint slot is at word 6 (packed u8x4). The shape block's
+    // tint slot is word 15. Overwrite verbatim.
+    dst[15] = override[6];
 }
 
 fn findCache(
@@ -125,33 +221,102 @@ test "drawCpu MissingBinding when no cache covers the binding's pool" {
     try testing.expectError(error.MissingBinding, drawCpu(&renderer, state, records, &.{&cache_a}));
 }
 
-test "drawCpu refuses replicated kind in this MVP" {
+test "drawCpu replicated produces same pixels as equivalent heterogeneous emit" {
     if (!build_options.enable_cpu) return error.SkipZigTest;
     const allocator = testing.allocator;
+    const font_data = @import("assets").noto_sans_regular;
+
+    const W: u32 = 96;
+    const H: u32 = 64;
+    const STRIDE: u32 = W * 4;
+    const px_hetero = try allocator.alloc(u8, H * STRIDE);
+    defer allocator.free(px_hetero);
+    @memset(px_hetero, 0);
+    const px_repl = try allocator.alloc(u8, H * STRIDE);
+    defer allocator.free(px_repl);
+    @memset(px_repl, 0);
+
+    var font = try snail.Font.init(font_data);
+    defer font.deinit();
+    var glyph_cache = @import("font.zig").GlyphCache.init(allocator);
+    defer glyph_cache.deinit();
+
+    const gid = try font.glyphIndex('o');
+    var curves = try font.extractCurves(allocator, &glyph_cache, gid);
+    defer curves.deinit();
 
     var pool = try @import("page_pool.zig").PagePool.init(allocator, .{
-        .max_layers = 1,
-        .curve_words_per_page = 64,
-        .band_words_per_page = 32,
+        .max_layers = 2,
+        .curve_words_per_page = 1 << 16,
+        .band_words_per_page = 1 << 14,
     });
     defer pool.deinit();
+    const key = @import("record_key.zig").unhintedGlyph(0, gid);
+    var atlas = try @import("atlas.zig").Atlas.from(allocator, pool, &.{.{ .key = key, .curves = curves }});
+    defer atlas.deinit();
+
     var cache = try CpuPreparedPages.init(allocator, pool);
     defer cache.deinit();
+    const binding = try cache.upload(&atlas);
 
-    var pixels: [8 * 8 * 4]u8 = .{0} ** (8 * 8 * 4);
-    var renderer = snail.CpuRenderer.init(&pixels, 8, 8, 8 * 4);
-    const state = makeIdentityState(8, 8);
+    const px_size: f32 = 16.0;
+    const base_shape = @import("shape.zig").Shape{
+        .key = key,
+        .local_transform = .{ .xx = px_size, .yy = -px_size, .tx = 16, .ty = 48 },
+        .local_color = .{ 1, 1, 1, 1 },
+    };
 
-    const segments = [_]draw_records.DrawSegment{.{
-        .kind = .replicated,
-        .binding = .{ .pool = pool, .generation = 0 },
-        .words_offset = 0,
-        .words_len = 0,
-        .shape_count = 0,
-        .override_count = 1,
-    }};
-    const records = DrawRecords{ .words = &.{}, .segments = &segments };
-    try testing.expectError(error.UnsupportedSegmentKind, drawCpu(&renderer, state, records, &.{&cache}));
+    const overrides = [_]@import("shape.zig").Override{
+        .{ .transform = .identity, .tint = .{ 1, 1, 1, 1 } },
+        .{ .transform = Transform2D.translate(20, 0), .tint = .{ 1, 1, 1, 1 } },
+        .{ .transform = Transform2D.translate(40, 0), .tint = .{ 1, 1, 1, 1 } },
+    };
+
+    // Heterogeneous: emit the shape three times, one for each override
+    // transform composed into the shape's local_transform.
+    {
+        var shapes = std.ArrayList(@import("shape.zig").Shape).empty;
+        defer shapes.deinit(allocator);
+        for (overrides) |ov| {
+            var s = base_shape;
+            s.local_transform = Transform2D.multiply(ov.transform, base_shape.local_transform);
+            try shapes.append(allocator, s);
+        }
+        var pic = try @import("picture.zig").Picture.from(allocator, shapes.items);
+        defer pic.deinit();
+
+        const emit_mod = @import("emit.zig");
+        const words = try allocator.alloc(u32, emit_mod.wordBudget(&pic, 0));
+        defer allocator.free(words);
+        var segs: [4]draw_records.DrawSegment = undefined;
+        var wlen: usize = 0;
+        var slen: usize = 0;
+        _ = try emit_mod.emit(words, segs[0..], &wlen, &slen, binding, &atlas, &pic, .identity, .{ 1, 1, 1, 1 });
+
+        var renderer = snail.CpuRenderer.init(px_hetero.ptr, W, H, STRIDE);
+        const state = makeIdentityState(W, H);
+        try drawCpu(&renderer, state, .{ .words = words[0..wlen], .segments = segs[0..slen] }, &.{&cache});
+    }
+
+    // Replicated: one base shape, three overrides via emitInstanced.
+    {
+        var pic = try @import("picture.zig").Picture.from(allocator, &.{base_shape});
+        defer pic.deinit();
+
+        const emit_mod = @import("emit.zig");
+        const words = try allocator.alloc(u32, emit_mod.wordBudget(&pic, overrides.len));
+        defer allocator.free(words);
+        var segs: [4]draw_records.DrawSegment = undefined;
+        var wlen: usize = 0;
+        var slen: usize = 0;
+        _ = try emit_mod.emitInstanced(words, segs[0..], &wlen, &slen, binding, &atlas, &pic, &overrides);
+
+        var renderer = snail.CpuRenderer.init(px_repl.ptr, W, H, STRIDE);
+        const state = makeIdentityState(W, H);
+        try drawCpu(&renderer, state, .{ .words = words[0..wlen], .segments = segs[0..slen] }, &.{&cache});
+    }
+
+    try testing.expectEqualSlices(u8, px_hetero, px_repl);
 }
 
 test "drawCpu renders a small Picture into non-zero pixels" {
