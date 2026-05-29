@@ -136,16 +136,19 @@ What's NOT yet in Phase 4 (known limitations):
   uses a uniform em across all faces), subtle gradient hue (legacy
   did sRGB→linear once in writeTga's GL path; we round-trip through
   Atlas paint records), and font ascender alignment.
-- Image paints. Atlas supports the `.image` tag in the paint record
-  format but the atlas-side `paint_image_records` slot isn't
-  populated yet, and CpuPreparedPages doesn't carry images.
-
 Investigated and resolved during 2026-05-29 session:
 - "Arabic visual order" — `shapedRunPicture` places each shaped
   glyph at byte-identical pixel coordinates to the legacy
   `appendShapedSlice`; the prior cropped-screenshot observation was
   dominated by `.rgb` subpixel fringing in the new demo vs `.none` in
   the legacy demo. screenshot_new now uses `.none` to match.
+- Image paints — `Atlas` now carries `paint_image_records` (one
+  slot per emitted paint record, populated for `.image` paints) and
+  `CpuPreparedPages.upload` threads it into the per-upload
+  `LayerInfoEntry`. End-to-end test in `cpu_draw.zig` exercises a
+  solid-red 4x4 image as a paint over a rectangle path. GPU
+  backends will populate their image arrays from the same slice in
+  Phase 5.
 
 ## Phase 5: rewire GPU backends
 
