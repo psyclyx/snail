@@ -207,4 +207,8 @@ test {
     _ = @import("atlas.zig");
     _ = @import("paths.zig");
     _ = @import("hinter.zig");
+    _ = @import("shape.zig");
+    _ = @import("picture.zig");
+    _ = @import("draw_records.zig");
+    _ = @import("emit.zig");
 }

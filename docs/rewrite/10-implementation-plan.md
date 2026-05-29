@@ -53,26 +53,27 @@ mechanism — per-ppem cached VM producing `GlyphCurves` — is in place.
 
 ## Phase 3: picture, emit, draw records
 
-Files to write:
-- `src/snail/shape.zig` — keep existing `shape()` function but expose it
-  cleanly; add `shapedRunKeys`, `shapedRunPicture`.
-- `src/snail/picture.zig` — `Picture` with monoidal ops and sub-picture
-  manipulation.
-- `src/snail/emit.zig` — `emit`, `emitInstanced`, `wordBudget`,
-  `segmentBudget`.
-- `src/snail/draw_records.zig` — `DrawRecords`, `DrawSegment`, `Kind`.
+Status: ✅ Done. Four commits' worth of changes landed:
+- `src/snail/shape.zig` (Shape + Override value types).
+- `src/snail/picture.zig` (empty/from/concat/append/transformed/tinted).
+- `src/snail/draw_records.zig` (DrawRecords, DrawSegment, Kind,
+  Binding, mergeIfAdjacent).
+- `src/snail/emit.zig` (emit, emitInstanced, wordBudget, segmentBudget).
 
 The packed instance format in `src/snail/render/format/vertex.zig`
-(64-byte instance) is unchanged. The emit primitives write into that
-format. Shaders don't need changes.
+(64-byte instance) is unchanged; emit goes through
+`generateGlyphVerticesTransformedTinted` so the heterogeneous case is
+byte-for-byte equivalent (verified in `emit.zig`'s
+"matches generateGlyphVerticesTransformedTinted byte-for-byte" test).
+Coalescing of adjacent same-binding segments and multi-binding
+separation are both covered. `shapedRunKeys` / `shapedRunPicture` are
+deferred to Phase 6 (they connect the new picture layer to the existing
+shape() function, which is a migration concern not a foundation one).
 
-Tests:
-- Emit produces same bytes as existing `appendTextDrawIntoBatch` for
-  equivalent inputs.
-- Coalescing of adjacent same-binding segments.
-- Multi-atlas pictures (one emit call per atlas).
-
-End-of-phase commit: "rewrite: add Picture, emit primitives, DrawRecords."
+The replicated layout in `emitInstanced` is N shape blocks (each a
+16-word Instance with identity tint) followed by M override blocks
+(8 words: 6 f32 transform + packed u8x4 tint + 1 reserved). The
+backend that consumes this lands in Phase 5.
 
 ## Phase 4: rewire one backend (CPU)
 
