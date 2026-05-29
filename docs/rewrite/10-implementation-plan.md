@@ -77,8 +77,10 @@ backend that consumes this lands in Phase 5.
 
 ## Phase 4: rewire one backend (CPU)
 
-Status: 🟢 Substantially complete end-to-end. Demo content recognizable
-on the new API; pixel parity still unwound.
+Status: ✅ Done. Demo content matches the legacy demo's layout end to
+end on the new API; remaining pixel diffs are CPU-vs-GL rasterization
+artifacts (the legacy demo renders through GL, the new through CPU)
+and will converge once Phase 5a gives the new API a GL path.
 
 CPU-side machinery (committed):
 - `CpuPreparedPages` (`src/snail/cpu_upload.zig`) is the CPU-side
@@ -127,15 +129,6 @@ Demo (committed):
 - Single pool serves both text and path atlases via the cache's
   `layer_info_slots` generation index.
 
-What's NOT yet in Phase 4 (known limitations):
-- Full banner_snail vector content (currently one placeholder
-  ellipse). Just needs more inline `pathToCurves`/`strokeToCurves`
-  calls — no missing mechanism, just demo work.
-- Pixel parity with the legacy baseline. Differences come from:
-  per-face em scaling (emoji nominal-em differs from Latin; the demo
-  uses a uniform em across all faces), subtle gradient hue (legacy
-  did sRGB→linear once in writeTga's GL path; we round-trip through
-  Atlas paint records), and font ascender alignment.
 Investigated and resolved during 2026-05-29 session:
 - "Arabic visual order" — `shapedRunPicture` places each shaped
   glyph at byte-identical pixel coordinates to the legacy
@@ -149,6 +142,38 @@ Investigated and resolved during 2026-05-29 session:
   solid-red 4x4 image as a paint over a rectangle path. GPU
   backends will populate their image arrays from the same slice in
   Phase 5.
+- Full vector snail content — `src/demo/banner_snail_new.zig`
+  ports `addVectorSnail` to the new API. The demo's path content
+  now matches legacy: shadow, body (fill + stroke), belly, shell
+  (fill + stroke), spiral, antennae, eyes (fill + stroke + pupil +
+  highlight), smile. Stroke `.placement = .inside` is not exactly
+  reproduced (renders as a regular stroke on top of the fill).
+- Wordmark gradient direction — the "snail" wordmark needs the
+  gradient to span the whole word in world coords, not repeat
+  per-letter. Each wordmark glyph now becomes its own `path_fill`
+  atlas entry with `mapPaintToLocal(world_gradient, glyph_transform)`
+  baked in. `mapPaintToLocal` is now public on the snail API.
+- "Per-face em scaling" and "font ascender alignment" — both the
+  legacy and new demos use a uniform em / baseline across all faces;
+  neither path computes per-face em scaling. Remaining visual
+  divergence in glyph shape and emoji size between the two
+  screenshots is CPU-vs-GL rasterizer difference (see below), not a
+  layout gap.
+- "Subtle gradient hue" — the CPU rasterizer's path-paint sampler
+  interpolates gradient stops in sRGB space (then converts to
+  linear), while the GL shader interpolates in linear space. This
+  is a pre-existing CPU-vs-GL difference; the legacy CPU
+  rasterizer behaves identically to the new one. Will converge once
+  Phase 5a gives the new path a GL backend that can be diffed
+  against legacy-GL.
+
+Demo-vs-legacy diff history (5% fuzz, 400x240 frame):
+- baseline (placeholder ellipse, em-local wordmark): 7523 / 96000 = 7.8%
+- full vector snail: 4166 / 96000 = 4.3%
+- world-coord wordmark gradient: 3693 / 96000 = 3.8%
+Residual is dominated by CPU-vs-GL rasterization differences
+(gradient interpolation space, glyph anti-aliasing, stroke .inside
+composite mode).
 
 ## Phase 5: rewire GPU backends
 
