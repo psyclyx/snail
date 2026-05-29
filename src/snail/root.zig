@@ -211,4 +211,6 @@ test {
     _ = @import("picture.zig");
     _ = @import("draw_records.zig");
     _ = @import("emit.zig");
+    _ = @import("cpu_upload.zig");
+    _ = @import("cpu_draw.zig");
 }
