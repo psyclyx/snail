@@ -107,6 +107,20 @@ pub const Font = struct {
     ) !curves_mod.GlyphCurves {
         return extractCurvesInner(self, allocator, cache, glyph_id);
     }
+
+    pub const ColrLayer = ttf.Font.ColrLayer;
+    pub const ColrLayerIterator = ttf.Font.ColrLayerIterator;
+
+    /// Iterator over a COLR base glyph's layers (`(layer_glyph_id, color)`
+    /// pairs). Returns an empty iterator for fonts without COLR or for
+    /// glyphs that aren't COLR base glyphs.
+    pub fn colrLayers(self: *const Font, base_glyph_id: u16) ColrLayerIterator {
+        return self.inner.colrLayers(base_glyph_id);
+    }
+
+    pub fn colrLayerCount(self: *const Font, base_glyph_id: u16) u16 {
+        return self.inner.colrLayerCount(base_glyph_id);
+    }
 };
 
 const CurveSegment = bezier.CurveSegment;

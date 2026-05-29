@@ -40,6 +40,7 @@ pub fn main() !void {
         .{ .data = assets_data.noto_sans_arabic, .fallback = true },
         .{ .data = assets_data.noto_sans_devanagari, .fallback = true },
         .{ .data = assets_data.noto_sans_thai, .fallback = true },
+        .{ .data = assets_data.twemoji_mozilla, .fallback = true },
     });
     defer text_atlas.deinit();
 
@@ -49,6 +50,7 @@ pub fn main() !void {
     const sample_arabic = "\xd9\x85\xd8\xb1\xd8\xad\xd8\xa8\xd8\xa7"; // مرحبا
     const sample_devanagari = "\xe0\xa4\xa8\xe0\xa4\xae\xe0\xa4\xb8\xe0\xa5\x8d\xe0\xa4\xa4\xe0\xa5\x87"; // नमस्ते
     const sample_thai = "\xe0\xb8\xaa\xe0\xb8\xa7\xe0\xb8\xb1\xe0\xb8\xaa\xe0\xb8\x94\xe0\xb8\xb5"; // สวัสดี
+    const sample_emoji = "\xe2\x9c\xa8\xf0\x9f\x8c\x8d"; // ✨🌍
 
     inline for (.{
         .{ .weight = .bold, .text = wordmark_text },
@@ -57,6 +59,7 @@ pub fn main() !void {
         .{ .weight = .regular, .text = sample_arabic },
         .{ .weight = .regular, .text = sample_devanagari },
         .{ .weight = .regular, .text = sample_thai },
+        .{ .weight = .regular, .text = sample_emoji },
         .{ .weight = .regular, .text = " \xc2\xb7 " }, // separator
     }) |entry| {
         const style: snail.FontStyle = .{ .weight = entry.weight };
@@ -72,7 +75,7 @@ pub fn main() !void {
     defer shaped_tagline.deinit();
 
     // Shape each multi-script sample.
-    const sample_texts = [_][]const u8{ sample_hello, sample_arabic, sample_devanagari, sample_thai };
+    const sample_texts = [_][]const u8{ sample_hello, sample_arabic, sample_devanagari, sample_thai, sample_emoji };
     var shaped_samples: [sample_texts.len]snail.ShapedText = undefined;
     var shaped_count: usize = 0;
     defer for (shaped_samples[0..shaped_count]) |*s| s.deinit();
@@ -100,8 +103,11 @@ pub fn main() !void {
     defer font_devanagari.deinit();
     var font_thai = try snail.Font.init(assets_data.noto_sans_thai);
     defer font_thai.deinit();
-    var fonts = [_]*snail.Font{ &font_regular, &font_bold, &font_arabic, &font_devanagari, &font_thai };
-    const face_to_font_id = [_]u32{ 0, 1, 2, 3, 4 };
+    var font_emoji = try snail.Font.init(assets_data.twemoji_mozilla);
+    defer font_emoji.deinit();
+    var fonts = [_]*snail.Font{ &font_regular, &font_bold, &font_arabic, &font_devanagari, &font_thai, &font_emoji };
+    const face_to_font_id = [_]u32{ 0, 1, 2, 3, 4, 5 };
+    const colr_fonts = [_]*const snail.Font{ &font_regular, &font_bold, &font_arabic, &font_devanagari, &font_thai, &font_emoji };
 
     var glyph_cache = snail.font.GlyphCache.init(allocator);
     defer glyph_cache.deinit();
@@ -141,26 +147,26 @@ pub fn main() !void {
         try owned_curves.append(allocator, curves);
         try text_entries.append(allocator, .{ .key = key, .curves = owned_curves.items[owned_curves.items.len - 1] });
     }
-    // Multi-script sample glyphs (plus the separator).
-    for (shaped_samples[0..shaped_count]) |shaped| {
-        for (shaped.glyphs) |g| {
+    // Multi-script sample + separator glyphs. COLR base glyphs (Twemoji)
+    // expand: extract one entry per layer glyph, not the base.
+    const sample_runs = [_]*const snail.ShapedText{
+        &shaped_samples[0], &shaped_samples[1], &shaped_samples[2],
+        &shaped_samples[3], &shaped_samples[4], &shaped_sep,
+    };
+    for (sample_runs) |shaped_ptr| {
+        for (shaped_ptr.glyphs) |g| {
             const fid: u32 = g.face_index;
             if (fid >= fonts.len) continue;
-            const key = snail.recordKey.unhintedGlyph(fid, g.glyph_id);
-            if (containsKey(text_entries.items, key)) continue;
-            const curves = try fonts[fid].extractCurves(allocator, &glyph_cache, g.glyph_id);
-            try owned_curves.append(allocator, curves);
-            try text_entries.append(allocator, .{ .key = key, .curves = owned_curves.items[owned_curves.items.len - 1] });
+            try ensureGlyphOrColrLayers(
+                allocator,
+                &glyph_cache,
+                fonts[fid],
+                fid,
+                g.glyph_id,
+                &owned_curves,
+                &text_entries,
+            );
         }
-    }
-    for (shaped_sep.glyphs) |g| {
-        const fid: u32 = g.face_index;
-        if (fid >= fonts.len) continue;
-        const key = snail.recordKey.unhintedGlyph(fid, g.glyph_id);
-        if (containsKey(text_entries.items, key)) continue;
-        const curves = try fonts[fid].extractCurves(allocator, &glyph_cache, g.glyph_id);
-        try owned_curves.append(allocator, curves);
-        try text_entries.append(allocator, .{ .key = key, .curves = owned_curves.items[owned_curves.items.len - 1] });
     }
 
     // -- Path content: build geometry directly with the Path API, convert
@@ -299,6 +305,7 @@ pub fn main() !void {
                 .em = sample_em,
                 .color = sep_color,
                 .face_to_font_id = &face_to_font_id,
+                .colr_fonts = &colr_fonts,
             }));
             sx += shaped_sep.advanceX() * sample_em;
         }
@@ -307,6 +314,7 @@ pub fn main() !void {
             .em = sample_em,
             .color = sample_color,
             .face_to_font_id = &face_to_font_id,
+            .colr_fonts = &colr_fonts,
         }));
         sx += shaped.advanceX() * sample_em;
     }
@@ -364,4 +372,31 @@ fn flipRowsInPlace(pixels: []u8) void {
 fn containsKey(entries: []const snail.AtlasEntry, key: snail.RecordKey) bool {
     for (entries) |e| if (e.key.eql(key)) return true;
     return false;
+}
+
+fn ensureGlyphOrColrLayers(
+    allocator: std.mem.Allocator,
+    cache: *snail.font.GlyphCache,
+    font: *snail.Font,
+    fid: u32,
+    glyph_id: u16,
+    owned_curves: *std.ArrayList(snail.GlyphCurves),
+    entries: *std.ArrayList(snail.AtlasEntry),
+) !void {
+    var iter = font.colrLayers(glyph_id);
+    if (iter.count() > 0) {
+        while (iter.next()) |layer| {
+            const key = snail.recordKey.unhintedGlyph(fid, layer.glyph_id);
+            if (containsKey(entries.items, key)) continue;
+            const curves = try font.extractCurves(allocator, cache, layer.glyph_id);
+            try owned_curves.append(allocator, curves);
+            try entries.append(allocator, .{ .key = key, .curves = owned_curves.items[owned_curves.items.len - 1] });
+        }
+        return;
+    }
+    const key = snail.recordKey.unhintedGlyph(fid, glyph_id);
+    if (containsKey(entries.items, key)) return;
+    const curves = try font.extractCurves(allocator, cache, glyph_id);
+    try owned_curves.append(allocator, curves);
+    try entries.append(allocator, .{ .key = key, .curves = owned_curves.items[owned_curves.items.len - 1] });
 }
