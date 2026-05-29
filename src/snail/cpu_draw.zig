@@ -61,9 +61,19 @@ pub fn drawCpu(
             return error.StaleBinding;
         }
 
+        var layer_info_buf: [1]cpu_resources.LayerInfoEntry = undefined;
+        var layer_infos_slice: []cpu_resources.LayerInfoEntry = &.{};
+        var layer_info_count: usize = 0;
+        if (cache.layer_info) |li| {
+            layer_info_buf[0] = li;
+            layer_infos_slice = layer_info_buf[0..1];
+            layer_info_count = 1;
+        }
         var prepared = cpu_resources.PreparedResources{
             .allocator = cache.allocator,
             .atlas_pages = cache.prepared,
+            .layer_infos = layer_infos_slice,
+            .layer_info_count = layer_info_count,
         };
         const seg_words = records.words[seg.words_offset..][0..seg.words_len];
 
@@ -395,6 +405,96 @@ test "drawCpu renders a small Picture into non-zero pixels" {
         break;
     };
     try testing.expect(any_drawn);
+}
+
+test "drawCpu renders gradient-painted glyph through special-layer path" {
+    if (!build_options.enable_cpu) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    const font_data = @import("assets").noto_sans_regular;
+
+    const W: u32 = 64;
+    const H: u32 = 48;
+    const STRIDE: u32 = W * 4;
+    const px = try allocator.alloc(u8, H * STRIDE);
+    defer allocator.free(px);
+    @memset(px, 0);
+
+    var font = try snail.Font.init(font_data);
+    defer font.deinit();
+    var glyph_cache = @import("font.zig").GlyphCache.init(allocator);
+    defer glyph_cache.deinit();
+
+    const gid = try font.glyphIndex('O');
+    var curves = try font.extractCurves(allocator, &glyph_cache, gid);
+    defer curves.deinit();
+
+    var pool = try @import("page_pool.zig").PagePool.init(allocator, .{
+        .max_layers = 2,
+        .curve_words_per_page = 1 << 16,
+        .band_words_per_page = 1 << 14,
+    });
+    defer pool.deinit();
+    const key = @import("record_key.zig").unhintedGlyph(0, gid);
+
+    // Linear gradient running across the glyph's local-em width.
+    const gradient = snail.LinearGradient{
+        .start = .{ .x = 0, .y = 0 },
+        .end = .{ .x = 1, .y = 0 },
+        .start_color = .{ 1, 0, 0, 1 },
+        .end_color = .{ 0, 0, 1, 1 },
+    };
+    var atlas = try @import("atlas.zig").Atlas.from(allocator, pool, &.{.{
+        .key = key,
+        .curves = curves,
+        .paint = .{ .linear_gradient = gradient },
+    }});
+    defer atlas.deinit();
+
+    try testing.expect(atlas.lookupPaintRecord(key) != null);
+
+    var cache = try CpuPreparedPages.init(allocator, pool);
+    defer cache.deinit();
+    const binding = try cache.upload(&atlas);
+
+    const px_size: f32 = 32.0;
+    const shape = @import("shape.zig").Shape{
+        .key = key,
+        .local_transform = .{ .xx = px_size, .yy = -px_size, .tx = 12, .ty = 40 },
+        .local_color = .{ 1, 1, 1, 1 },
+    };
+    var pic = try @import("picture.zig").Picture.from(allocator, &.{shape});
+    defer pic.deinit();
+
+    const emit_mod = @import("emit.zig");
+    const words = try allocator.alloc(u32, emit_mod.wordBudget(&pic, 0));
+    defer allocator.free(words);
+    var segs: [2]draw_records.DrawSegment = undefined;
+    var wlen: usize = 0;
+    var slen: usize = 0;
+    _ = try emit_mod.emit(words, segs[0..], &wlen, &slen, binding, &atlas, &pic, .identity, .{ 1, 1, 1, 1 });
+
+    var renderer = snail.CpuRenderer.init(px.ptr, W, H, STRIDE);
+    const state = makeIdentityState(W, H);
+    try drawCpu(&renderer, state, .{ .words = words[0..wlen], .segments = segs[0..slen] }, &.{&cache});
+
+    // Scan every drawn pixel; expect both red-dominant (left of the
+    // gradient) and blue-dominant (right) coverage somewhere in the
+    // rendered glyph. Coverage is partial near edges so any non-zero
+    // alpha pixel counts.
+    var has_red: bool = false;
+    var has_blue: bool = false;
+    var row: u32 = 0;
+    while (row < H) : (row += 1) {
+        var col: u32 = 0;
+        while (col < W) : (col += 1) {
+            const off = row * STRIDE + col * 4;
+            if (px[off + 3] < 16) continue;
+            if (@as(i32, px[off]) - @as(i32, px[off + 2]) > 24) has_red = true;
+            if (@as(i32, px[off + 2]) - @as(i32, px[off]) > 24) has_blue = true;
+        }
+    }
+    try testing.expect(has_red);
+    try testing.expect(has_blue);
 }
 
 fn makeIdentityState(w: u32, h: u32) snail.DrawState {

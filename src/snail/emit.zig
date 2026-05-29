@@ -89,24 +89,39 @@ pub fn emit(
 
         const final_transform = Transform2D.multiply(world_xform, shape.local_transform);
         const dst = words_buf[cursor..][0..WORDS_PER_INSTANCE];
-        const ok = vertex.generateGlyphVerticesTransformedTinted(
-            dst,
-            rec.bbox,
-            .{
-                .glyph_x = rec.bands.glyph_x,
-                .glyph_y = rec.bands.glyph_y,
-                .h_band_count = rec.bands.h_band_count,
-                .v_band_count = rec.bands.v_band_count,
-                .band_scale_x = rec.bands.band_scale_x,
-                .band_scale_y = rec.bands.band_scale_y,
-                .band_offset_x = rec.bands.band_offset_x,
-                .band_offset_y = rec.bands.band_offset_y,
-            },
-            shape.local_color,
-            world_tint,
-            atlas_layer,
-            final_transform,
-        );
+
+        const ok = if (atlas.lookupPaintRecord(shape.key)) |paint_info|
+            vertex.generatePathRecordVerticesTransformedTinted(
+                dst,
+                rec.bbox,
+                paint_info.info_x,
+                paint_info.info_y,
+                paint_info.layer_count,
+                shape.local_color,
+                world_tint,
+                atlas_layer,
+                final_transform,
+            )
+        else
+            vertex.generateGlyphVerticesTransformedTinted(
+                dst,
+                rec.bbox,
+                .{
+                    .glyph_x = rec.bands.glyph_x,
+                    .glyph_y = rec.bands.glyph_y,
+                    .h_band_count = rec.bands.h_band_count,
+                    .v_band_count = rec.bands.v_band_count,
+                    .band_scale_x = rec.bands.band_scale_x,
+                    .band_scale_y = rec.bands.band_scale_y,
+                    .band_offset_x = rec.bands.band_offset_x,
+                    .band_offset_y = rec.bands.band_offset_y,
+                },
+                shape.local_color,
+                world_tint,
+                atlas_layer,
+                final_transform,
+            );
+
         if (!ok) return error.InvalidTransform;
         cursor += WORDS_PER_INSTANCE;
         emitted += 1;

@@ -21,6 +21,7 @@ const page_pool_mod = @import("page_pool.zig");
 const curve_tex = @import("render/format/curve_texture.zig");
 const band_tex = @import("render/format/band_texture.zig");
 const cpu_resources = @import("render/backend/cpu/resources.zig");
+const cpu_path_paint = @import("render/backend/cpu/path_paint.zig");
 
 pub const Atlas = atlas_mod.Atlas;
 pub const AtlasPage = page_mod.AtlasPage;
@@ -63,7 +64,10 @@ const PageView = struct {
 /// CPU-side prepared cache for one `PagePool`. Holds at most one
 /// `PreparedAtlasPage` per pool layer, plus the source page's generation
 /// used to build it (so a stale cached entry can be detected after page
-/// recycling).
+/// recycling). When the bound atlas carries paint records, the cache
+/// also holds a single `LayerInfoEntry` mirroring the atlas's
+/// `layer_info_data` so the existing CPU special-layer dispatch can
+/// resolve `samplePathPaintAt` calls without modification.
 pub const CpuPreparedPages = struct {
     allocator: std.mem.Allocator,
     pool: *PagePool,
@@ -76,6 +80,10 @@ pub const CpuPreparedPages = struct {
     /// finds the page extended (`data_len` grew) must rebuild the cache.
     prepared_curve_words: []u32,
     prepared_band_words: []u32,
+    /// Per-cache layer_info entry built from the bound atlas's
+    /// `layer_info_data`. There is at most one because each CpuPreparedPages
+    /// covers a single pool and we currently rebuild on every upload.
+    layer_info: ?cpu_resources.LayerInfoEntry = null,
     /// Monotonically increases per upload; carried back to the caller via
     /// `Binding.generation` so segments referencing a stale upload can be
     /// detected.
@@ -109,6 +117,7 @@ pub const CpuPreparedPages = struct {
         for (self.prepared) |*slot| {
             if (slot.*) |*p| p.deinit(self.allocator);
         }
+        if (self.layer_info) |*li| li.deinit(self.allocator);
         self.allocator.free(self.prepared);
         self.allocator.free(self.prepared_generation);
         self.allocator.free(self.prepared_curve_words);
@@ -118,8 +127,10 @@ pub const CpuPreparedPages = struct {
 
     /// (Re)build prepared entries for each page the atlas references. Pages
     /// whose `(generation, used_words)` haven't changed since the last
-    /// upload are skipped. Returns a `Binding` carrying this upload's
-    /// generation; emit/draw use the binding to identify the cache state.
+    /// upload are skipped. Also rebuilds the cached layer_info entry from
+    /// the atlas's `layer_info_data`. Returns a `Binding` carrying this
+    /// upload's generation; emit/draw use the binding to identify the
+    /// cache state.
     pub fn upload(self: *CpuPreparedPages, atlas: *const Atlas) !Binding {
         self.upload_generation += 1;
         for (atlas.pages) |p| {
@@ -143,6 +154,41 @@ pub const CpuPreparedPages = struct {
             self.prepared_curve_words[layer] = cur_curve;
             self.prepared_band_words[layer] = cur_band;
         }
+
+        // Drop any previous layer_info; rebuild from the atlas's current
+        // layer_info_data slice. (Rebuilds are cheap relative to the
+        // per-page coverage prep; we can add staleness detection later.)
+        if (self.layer_info) |*li| {
+            li.deinit(self.allocator);
+            self.layer_info = null;
+        }
+        if (atlas.layer_info_data) |src_data| {
+            const owned = try self.allocator.dupe(f32, src_data);
+            errdefer self.allocator.free(owned);
+            const prepared_records = try cpu_path_paint.preparePathLayerInfoRecords(
+                self.allocator,
+                owned,
+                atlas.layer_info_width,
+                atlas.layer_info_height,
+                null,
+            );
+            errdefer {
+                self.allocator.free(prepared_records.records);
+                self.allocator.free(prepared_records.layers);
+            }
+            self.layer_info = .{
+                .data = owned,
+                .width = atlas.layer_info_width,
+                .height = atlas.layer_info_height,
+                .row_base = 0,
+                .path_records = prepared_records.records,
+                .path_layers = prepared_records.layers,
+                .owns_data = true,
+                .paint_image_records = null,
+                .owned_images = &.{},
+            };
+        }
+
         return .{ .pool = self.pool, .generation = self.upload_generation };
     }
 
