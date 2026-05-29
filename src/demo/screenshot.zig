@@ -179,7 +179,8 @@ fn renderCompactBanner(allocator: std.mem.Allocator) !void {
 
     if (screenshot.captureFramebuffer(allocator, SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT) catch null) |px| {
         defer allocator.free(px);
-        screenshot.writeTga(SCREENSHOT_PATH, px, SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT);
+        _ = std.c.mkdir("zig-out", 0o755);
+        try screenshot.writeTga(SCREENSHOT_PATH, px, SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT);
         std.debug.print("wrote {s}\n", .{SCREENSHOT_PATH});
     } else {
         return error.ScreenshotCaptureFailed;
@@ -284,7 +285,8 @@ fn renderRepro(allocator: std.mem.Allocator) !void {
     if (screenshot.captureFramebuffer(allocator, framebuffer_width, framebuffer_height) catch null) |px| {
         defer allocator.free(px);
         const path = outputPath(REPRO_SCREENSHOT_PATH);
-        screenshot.writeTga(path, px, framebuffer_width, framebuffer_height);
+        _ = std.c.mkdir("zig-out", 0o755);
+        try screenshot.writeTga(path, px, framebuffer_width, framebuffer_height);
         std.debug.print("wrote {s}\n", .{std.mem.span(path)});
     } else {
         return error.ScreenshotCaptureFailed;

@@ -272,7 +272,9 @@ pub const Driver = union(Kind) {
         const ih = fb_size[1];
         if (screenshot.captureFramebuffer(allocator, iw, ih) catch null) |px| {
             defer allocator.free(px);
-            screenshot.writeTga("zig-out/frame0.tga", px, iw, ih);
+            screenshot.writeTga("zig-out/frame0.tga", px, iw, ih) catch |err| {
+                std.debug.print("failed to write zig-out/frame0.tga: {s}\n", .{@errorName(err)});
+            };
         }
     }
 };

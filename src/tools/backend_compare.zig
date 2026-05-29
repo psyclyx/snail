@@ -746,7 +746,7 @@ fn writeTgaAlloc(allocator: std.mem.Allocator, name: []const u8, pixels: []const
     _ = std.c.mkdir(DUMP_DIR, 0o755);
     const path = try std.fmt.allocPrintSentinel(allocator, "{s}/{s}.tga", .{ DUMP_DIR, name }, 0);
     defer allocator.free(path);
-    screenshot.writeTga(path, pixels, WIDTH, HEIGHT);
+    try screenshot.writeTga(path, pixels, WIDTH, HEIGHT);
 }
 
 fn dumpFailure(

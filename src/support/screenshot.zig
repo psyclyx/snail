@@ -3,8 +3,8 @@ const gl = @import("gl.zig").gl;
 
 const png_signature = [_]u8{ 0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n' };
 
-pub fn writeTga(path: [*:0]const u8, pixels: []const u8, width: u32, height: u32) void {
-    const c_file = std.c.fopen(path, "wb") orelse return;
+pub fn writeTga(path: [*:0]const u8, pixels: []const u8, width: u32, height: u32) !void {
+    const c_file = std.c.fopen(path, "wb") orelse return error.FileOpenFailed;
     defer _ = std.c.fclose(c_file);
 
     var header: [18]u8 = .{0} ** 18;
@@ -16,7 +16,7 @@ pub fn writeTga(path: [*:0]const u8, pixels: []const u8, width: u32, height: u32
     header[16] = 32;
     header[17] = 0x28;
 
-    _ = std.c.fwrite(&header, 1, 18, c_file);
+    try fwriteAll(c_file, header[0..]);
 
     var row: u32 = 0;
     while (row < height) : (row += 1) {
@@ -27,7 +27,7 @@ pub fn writeTga(path: [*:0]const u8, pixels: []const u8, width: u32, height: u32
         while (col < width) : (col += 1) {
             const i = src_off + col * 4;
             const bgra = [4]u8{ pixels[i + 2], pixels[i + 1], pixels[i], pixels[i + 3] };
-            _ = std.c.fwrite(&bgra, 1, 4, c_file);
+            try fwriteAll(c_file, bgra[0..]);
         }
     }
 }
