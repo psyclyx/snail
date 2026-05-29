@@ -168,12 +168,23 @@ pub const CpuPreparedPages = struct {
         if (atlas.layer_info_data) |src_data| {
             const owned = try self.allocator.dupe(f32, src_data);
             errdefer self.allocator.free(owned);
+            // Borrow image pointers from the atlas (the Atlas guarantees
+            // images outlive the upload). LayerInfoEntry.deinit frees the
+            // slice but leaves images alone since `owned_images` is empty.
+            const records_copy: ?[]?atlas_mod.PaintImageRecord = blk: {
+                const src = atlas.paint_image_records orelse break :blk null;
+                if (src.len == 0) break :blk null;
+                const dst = try self.allocator.alloc(?atlas_mod.PaintImageRecord, src.len);
+                @memcpy(dst, src);
+                break :blk dst;
+            };
+            errdefer if (records_copy) |r| self.allocator.free(r);
             const prepared_records = try cpu_path_paint.preparePathLayerInfoRecords(
                 self.allocator,
                 owned,
                 atlas.layer_info_width,
                 atlas.layer_info_height,
-                null,
+                records_copy,
             );
             errdefer {
                 self.allocator.free(prepared_records.records);
@@ -187,7 +198,7 @@ pub const CpuPreparedPages = struct {
                 .path_records = prepared_records.records,
                 .path_layers = prepared_records.layers,
                 .owns_data = true,
-                .paint_image_records = null,
+                .paint_image_records = records_copy,
                 .owned_images = &.{},
             };
         }

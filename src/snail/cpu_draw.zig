@@ -497,6 +497,106 @@ test "drawCpu renders gradient-painted glyph through special-layer path" {
     try testing.expect(has_blue);
 }
 
+test "drawCpu renders image-painted shape through special-layer path" {
+    if (!build_options.enable_cpu) return error.SkipZigTest;
+    const allocator = testing.allocator;
+
+    const W: u32 = 32;
+    const H: u32 = 32;
+    const STRIDE: u32 = W * 4;
+    const px = try allocator.alloc(u8, H * STRIDE);
+    defer allocator.free(px);
+    @memset(px, 0);
+
+    // Solid-red 4x4 sRGBA8 source image — the rendered shape should
+    // pick up the red tint via the image paint sampling.
+    var image_pixels: [4 * 4 * 4]u8 = undefined;
+    var p: usize = 0;
+    while (p + 3 < image_pixels.len) : (p += 4) {
+        image_pixels[p + 0] = 255;
+        image_pixels[p + 1] = 0;
+        image_pixels[p + 2] = 0;
+        image_pixels[p + 3] = 255;
+    }
+    var image = try snail.Image.initSrgba8(allocator, 4, 4, image_pixels[0..]);
+    defer image.deinit();
+
+    var pool = try @import("page_pool.zig").PagePool.init(allocator, .{
+        .max_layers = 2,
+        .curve_words_per_page = 1 << 16,
+        .band_words_per_page = 1 << 14,
+    });
+    defer pool.deinit();
+
+    // Square-ish path covering [0..1, 0..1] in local coords; the local
+    // shape transform scales to pixel size.
+    var path = @import("paths.zig").Path.init(allocator);
+    defer path.deinit();
+    try path.addRect(.{ .x = 0, .y = 0, .w = 1, .h = 1 });
+    var path_curves = try @import("paths.zig").pathToCurves(allocator, &path);
+    defer path_curves.deinit();
+
+    const key = @import("record_key.zig").RecordKey{
+        .namespace = @import("record_key.zig").ns.path_fill,
+        .a = 0,
+    };
+    var atlas = try @import("atlas.zig").Atlas.from(allocator, pool, &.{.{
+        .key = key,
+        .curves = path_curves,
+        .paint = .{ .image = .{
+            .image = &image,
+            .uv_transform = .identity,
+            .tint = .{ 1, 1, 1, 1 },
+        } },
+    }});
+    defer atlas.deinit();
+
+    try testing.expect(atlas.paint_image_records != null);
+    try testing.expect(atlas.paint_image_records.?[0] != null);
+    try testing.expect(atlas.paint_image_records.?[0].?.image == &image);
+
+    var cache = try CpuPreparedPages.init(allocator, pool);
+    defer cache.deinit();
+    const binding = try cache.upload(&atlas);
+
+    const px_size: f32 = 20.0;
+    const shape = @import("shape.zig").Shape{
+        .key = key,
+        .local_transform = .{ .xx = px_size, .yy = px_size, .tx = 6, .ty = 6 },
+        .local_color = .{ 1, 1, 1, 1 },
+    };
+    var pic = try @import("picture.zig").Picture.from(allocator, &.{shape});
+    defer pic.deinit();
+
+    const emit_mod = @import("emit.zig");
+    const words = try allocator.alloc(u32, emit_mod.wordBudget(&pic, 0));
+    defer allocator.free(words);
+    var segs: [2]draw_records.DrawSegment = undefined;
+    var wlen: usize = 0;
+    var slen: usize = 0;
+    _ = try emit_mod.emit(words, segs[0..], &wlen, &slen, binding, &atlas, &pic, .identity, .{ 1, 1, 1, 1 });
+
+    var renderer = snail.CpuRenderer.init(px.ptr, W, H, STRIDE);
+    const state = makeIdentityState(W, H);
+    try drawCpu(&renderer, state, .{ .words = words[0..wlen], .segments = segs[0..slen] }, &.{&cache});
+
+    var has_red: bool = false;
+    var row: u32 = 0;
+    while (row < H) : (row += 1) {
+        var col: u32 = 0;
+        while (col < W) : (col += 1) {
+            const off = row * STRIDE + col * 4;
+            if (px[off + 3] < 16) continue;
+            if (px[off] > 200 and px[off + 1] < 32 and px[off + 2] < 32) {
+                has_red = true;
+                break;
+            }
+        }
+        if (has_red) break;
+    }
+    try testing.expect(has_red);
+}
+
 fn makeIdentityState(w: u32, h: u32) snail.DrawState {
     const wf: f32 = @floatFromInt(w);
     const hf: f32 = @floatFromInt(h);

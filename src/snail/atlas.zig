@@ -14,6 +14,7 @@ const curve_tex_format = @import("render/format/curve_texture.zig");
 const band_tex_format = @import("render/format/band_texture.zig");
 const paint_records = @import("paint_records.zig");
 const paint_mod = @import("paint.zig");
+const curve_atlas_mod = @import("render/format/atlas/curve.zig");
 
 pub const AtlasPage = page_mod.AtlasPage;
 pub const PagePool = page_pool_mod.PagePool;
@@ -22,6 +23,10 @@ pub const GlyphBandEntry = atlas_record_mod.GlyphBandEntry;
 pub const RecordKey = record_key_mod.RecordKey;
 pub const GlyphCurves = curves_mod.GlyphCurves;
 pub const Paint = paint_mod.Paint;
+/// Aliased to the legacy concrete type so the CPU renderer's
+/// `preparePathLayerInfoRecords` (which takes this type by reference)
+/// can be reused unchanged. Field shape is `{ image, texel_offset }`.
+pub const PaintImageRecord = curve_atlas_mod.CurveAtlas.PaintImageRecord;
 
 /// Lookup result for a key whose entry carries a paint. Holds the
 /// (info_x, info_y) texel coordinates pointing at the layer_info record
@@ -69,6 +74,13 @@ pub const Atlas = struct {
     layer_info_height: u32 = 0,
     /// Per-key (info_x, info_y) lookups for paint records.
     paint_lookup: std.AutoHashMapUnmanaged(RecordKey, PaintRecordInfo) = .{},
+    /// One slot per emitted paint record (in insertion order). The slot
+    /// is populated only for `.image` paints — gradient/solid records map
+    /// to `null`. The atlas's CPU consumer (`CpuPreparedPages.upload`)
+    /// hands this to `preparePathLayerInfoRecords`; the GPU upload path
+    /// patches the matching layer-info texel in place. Images themselves
+    /// are caller-owned references; the atlas only borrows.
+    paint_image_records: ?[]?PaintImageRecord = null,
 
     /// Identity atlas. Has no pool; usable as the neutral element of
     /// `combine` but not extensible on its own.
@@ -89,6 +101,7 @@ pub const Atlas = struct {
         }
         if (self.pages.len > 0) self.allocator.free(self.pages);
         if (self.layer_info_data) |d| self.allocator.free(d);
+        if (self.paint_image_records) |records| self.allocator.free(records);
         self.paint_lookup.deinit(self.allocator);
         self.lookup.deinit(self.allocator);
         self.* = undefined;
@@ -278,6 +291,9 @@ const Builder = struct {
     layer_info_buf: std.ArrayList(f32),
     layer_info_texels: u32,
     paint_lookup: std.AutoHashMapUnmanaged(RecordKey, PaintRecordInfo),
+    /// Per-record slot for image paints. Indexed in insertion order;
+    /// non-image paints land as `null`. Empty when no paints emitted.
+    paint_image_records: std.ArrayList(?PaintImageRecord),
 
     fn init(allocator: std.mem.Allocator, pool: *PagePool) Builder {
         return .{
@@ -288,6 +304,7 @@ const Builder = struct {
             .layer_info_buf = .empty,
             .layer_info_texels = 0,
             .paint_lookup = .{},
+            .paint_image_records = .empty,
         };
     }
 
@@ -319,6 +336,10 @@ const Builder = struct {
         try b.paint_lookup.ensureTotalCapacity(allocator, base.paint_lookup.count());
         var pit = base.paint_lookup.iterator();
         while (pit.next()) |kv| b.paint_lookup.putAssumeCapacity(kv.key_ptr.*, kv.value_ptr.*);
+
+        if (base.paint_image_records) |src| {
+            try b.paint_image_records.appendSlice(allocator, src);
+        }
         return b;
     }
 
@@ -328,6 +349,7 @@ const Builder = struct {
         self.lookup.deinit(self.allocator);
         self.layer_info_buf.deinit(self.allocator);
         self.paint_lookup.deinit(self.allocator);
+        self.paint_image_records.deinit(self.allocator);
     }
 
     fn finish(self: *Builder) std.mem.Allocator.Error!Atlas {
@@ -340,6 +362,21 @@ const Builder = struct {
         } else {
             self.layer_info_buf.deinit(self.allocator);
         }
+        // Only carry a paint_image_records slice if any image paints were
+        // emitted; otherwise drop it so consumers can shortcut on null.
+        var paint_image_records: ?[]?PaintImageRecord = null;
+        var has_image_paint = false;
+        for (self.paint_image_records.items) |rec| {
+            if (rec != null) {
+                has_image_paint = true;
+                break;
+            }
+        }
+        if (has_image_paint) {
+            paint_image_records = try self.paint_image_records.toOwnedSlice(self.allocator);
+        } else {
+            self.paint_image_records.deinit(self.allocator);
+        }
         return .{
             .allocator = self.allocator,
             .pool = self.pool,
@@ -349,6 +386,7 @@ const Builder = struct {
             .layer_info_width = if (layer_info_data != null) paint_records.info_width else 0,
             .layer_info_height = layer_info_height,
             .paint_lookup = self.paint_lookup,
+            .paint_image_records = paint_image_records,
         };
     }
 
@@ -377,6 +415,10 @@ const Builder = struct {
             .info_x = @intCast(texel_offset % paint_records.info_width),
             .info_y = @intCast(texel_offset / paint_records.info_width),
             .layer_count = 1,
+        });
+        try self.paint_image_records.append(self.allocator, switch (paint) {
+            .image => |img| .{ .image = img.image, .texel_offset = texel_offset },
+            else => null,
         });
         self.layer_info_texels = new_texels;
     }
