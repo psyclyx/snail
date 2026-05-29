@@ -12,6 +12,8 @@ const record_key_mod = @import("record_key.zig");
 const curves_mod = @import("curves.zig");
 const curve_tex_format = @import("render/format/curve_texture.zig");
 const band_tex_format = @import("render/format/band_texture.zig");
+const paint_records = @import("paint_records.zig");
+const paint_mod = @import("paint.zig");
 
 pub const AtlasPage = page_mod.AtlasPage;
 pub const PagePool = page_pool_mod.PagePool;
@@ -19,6 +21,16 @@ pub const AtlasRecord = atlas_record_mod.AtlasRecord;
 pub const GlyphBandEntry = atlas_record_mod.GlyphBandEntry;
 pub const RecordKey = record_key_mod.RecordKey;
 pub const GlyphCurves = curves_mod.GlyphCurves;
+pub const Paint = paint_mod.Paint;
+
+/// Lookup result for a key whose entry carries a paint. Holds the
+/// (info_x, info_y) texel coordinates pointing at the layer_info record
+/// in the atlas's `layer_info_data` buffer.
+pub const PaintRecordInfo = struct {
+    info_x: u16,
+    info_y: u16,
+    layer_count: u16 = 1,
+};
 
 const CURVE_TEX_WIDTH = curve_tex_format.TEX_WIDTH;
 const CURVE_SEGMENT_TEXELS = curve_tex_format.SEGMENT_TEXELS;
@@ -26,10 +38,14 @@ const CURVE_SEGMENT_WORDS: u32 = CURVE_SEGMENT_TEXELS * 4;
 const BAND_TEX_WIDTH = band_tex_format.TEX_WIDTH;
 const BAND_TEX_WIDTH_USIZE: usize = BAND_TEX_WIDTH;
 
-/// Pair handed to `from` / `extend` to insert one keyed shape.
+/// Pair handed to `from` / `extend` to insert one keyed shape. When
+/// `paint` is non-null the atlas also allocates a layer_info record
+/// for the entry and remembers (info_x, info_y) in `paint_lookup` so
+/// emit can encode a special-layer instance instead of a regular one.
 pub const Entry = struct {
     key: RecordKey,
     curves: GlyphCurves,
+    paint: ?Paint = null,
 };
 
 pub const InsertError = std.mem.Allocator.Error || PagePool.AcquireError || error{RecordTooLargeForPage};
@@ -44,6 +60,15 @@ pub const Atlas = struct {
     /// `AtlasRecord.page_index` refers to.
     pages: []*AtlasPage,
     lookup: std.AutoHashMapUnmanaged(RecordKey, AtlasRecord),
+    /// Optional layer_info f32 buffer holding 6-texel paint records, one
+    /// per entry whose `paint` was non-null. Format mirrors the legacy
+    /// `paint_records` module byte-for-byte so the existing CPU sampler
+    /// (`samplePathPaintAt`) consumes it unchanged.
+    layer_info_data: ?[]f32 = null,
+    layer_info_width: u32 = 0,
+    layer_info_height: u32 = 0,
+    /// Per-key (info_x, info_y) lookups for paint records.
+    paint_lookup: std.AutoHashMapUnmanaged(RecordKey, PaintRecordInfo) = .{},
 
     /// Identity atlas. Has no pool; usable as the neutral element of
     /// `combine` but not extensible on its own.
@@ -63,8 +88,17 @@ pub const Atlas = struct {
             std.debug.assert(self.pages.len == 0);
         }
         if (self.pages.len > 0) self.allocator.free(self.pages);
+        if (self.layer_info_data) |d| self.allocator.free(d);
+        self.paint_lookup.deinit(self.allocator);
         self.lookup.deinit(self.allocator);
         self.* = undefined;
+    }
+
+    /// Look up the paint record (if any) bound to `key`. Returns null
+    /// for keys whose entry had no paint, or for entries that came from
+    /// `empty()` / `combine` of atlases without paints.
+    pub fn lookupPaintRecord(self: *const Atlas, key: RecordKey) ?PaintRecordInfo {
+        return self.paint_lookup.get(key);
     }
 
     pub fn contains(self: *const Atlas, key: RecordKey) bool {
@@ -241,6 +275,9 @@ const Builder = struct {
     pool: *PagePool,
     pages: std.ArrayList(*AtlasPage),
     lookup: std.AutoHashMapUnmanaged(RecordKey, AtlasRecord),
+    layer_info_buf: std.ArrayList(f32),
+    layer_info_texels: u32,
+    paint_lookup: std.AutoHashMapUnmanaged(RecordKey, PaintRecordInfo),
 
     fn init(allocator: std.mem.Allocator, pool: *PagePool) Builder {
         return .{
@@ -248,6 +285,9 @@ const Builder = struct {
             .pool = pool,
             .pages = .empty,
             .lookup = .{},
+            .layer_info_buf = .empty,
+            .layer_info_texels = 0,
+            .paint_lookup = .{},
         };
     }
 
@@ -270,6 +310,15 @@ const Builder = struct {
         while (it.next()) |kv| {
             b.lookup.putAssumeCapacity(kv.key_ptr.*, kv.value_ptr.*);
         }
+
+        // Carry over any layer_info / paint records from the base.
+        if (base.layer_info_data) |src| {
+            try b.layer_info_buf.appendSlice(allocator, src);
+            b.layer_info_texels = @intCast(src.len / 4);
+        }
+        try b.paint_lookup.ensureTotalCapacity(allocator, base.paint_lookup.count());
+        var pit = base.paint_lookup.iterator();
+        while (pit.next()) |kv| b.paint_lookup.putAssumeCapacity(kv.key_ptr.*, kv.value_ptr.*);
         return b;
     }
 
@@ -277,16 +326,59 @@ const Builder = struct {
         for (self.pages.items) |p| self.pool.release(p);
         self.pages.deinit(self.allocator);
         self.lookup.deinit(self.allocator);
+        self.layer_info_buf.deinit(self.allocator);
+        self.paint_lookup.deinit(self.allocator);
     }
 
     fn finish(self: *Builder) std.mem.Allocator.Error!Atlas {
         const pages_slice = try self.pages.toOwnedSlice(self.allocator);
+        var layer_info_data: ?[]f32 = null;
+        var layer_info_height: u32 = 0;
+        if (self.layer_info_texels > 0) {
+            layer_info_data = try self.layer_info_buf.toOwnedSlice(self.allocator);
+            layer_info_height = (self.layer_info_texels + paint_records.info_width - 1) / paint_records.info_width;
+        } else {
+            self.layer_info_buf.deinit(self.allocator);
+        }
         return .{
             .allocator = self.allocator,
             .pool = self.pool,
             .pages = pages_slice,
             .lookup = self.lookup,
+            .layer_info_data = layer_info_data,
+            .layer_info_width = if (layer_info_data != null) paint_records.info_width else 0,
+            .layer_info_height = layer_info_height,
+            .paint_lookup = self.paint_lookup,
         };
+    }
+
+    fn insertPaintRecord(self: *Builder, key: RecordKey, paint: Paint, band_entry: GlyphBandEntry) std.mem.Allocator.Error!void {
+        const texel_offset = self.layer_info_texels;
+        const new_texels = texel_offset + paint_records.texels_per_record;
+        const need_floats = @as(usize, new_texels) * 4;
+        if (self.layer_info_buf.items.len < need_floats) {
+            try self.layer_info_buf.resize(self.allocator, need_floats);
+            @memset(self.layer_info_buf.items[texel_offset * 4 .. need_floats], 0);
+        }
+        // paint_records.write expects band_texture.GlyphBandEntry; copy the
+        // field-shape-identical local type across.
+        const band_tex_entry = band_tex_format.GlyphBandEntry{
+            .glyph_x = band_entry.glyph_x,
+            .glyph_y = band_entry.glyph_y,
+            .h_band_count = band_entry.h_band_count,
+            .v_band_count = band_entry.v_band_count,
+            .band_scale_x = band_entry.band_scale_x,
+            .band_scale_y = band_entry.band_scale_y,
+            .band_offset_x = band_entry.band_offset_x,
+            .band_offset_y = band_entry.band_offset_y,
+        };
+        paint_records.write(self.layer_info_buf.items, paint_records.info_width, texel_offset, band_tex_entry, paint);
+        try self.paint_lookup.put(self.allocator, key, .{
+            .info_x = @intCast(texel_offset % paint_records.info_width),
+            .info_y = @intCast(texel_offset / paint_records.info_width),
+            .layer_count = 1,
+        });
+        self.layer_info_texels = new_texels;
     }
 
     fn insert(self: *Builder, entry: Entry) InsertError!void {
@@ -385,6 +477,13 @@ const Builder = struct {
         };
 
         try self.lookup.put(self.allocator, entry.key, record);
+
+        // If the entry carries a paint, allocate a layer_info record now.
+        // The paint record embeds the band_entry so the rasterizer's
+        // special-layer path can sample the same curves through it.
+        if (entry.paint) |paint| {
+            try self.insertPaintRecord(entry.key, paint, record.bands);
+        }
     }
 };
 
