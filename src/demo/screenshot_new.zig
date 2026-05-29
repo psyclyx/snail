@@ -37,25 +37,51 @@ pub fn main() !void {
     var text_atlas = try snail.TextAtlas.init(allocator, &.{
         .{ .data = assets_data.noto_sans_regular },
         .{ .data = assets_data.noto_sans_bold, .weight = .bold },
+        .{ .data = assets_data.noto_sans_arabic, .fallback = true },
+        .{ .data = assets_data.noto_sans_devanagari, .fallback = true },
+        .{ .data = assets_data.noto_sans_thai, .fallback = true },
     });
     defer text_atlas.deinit();
 
     const wordmark_text = "snail";
     const tagline_text = "GPU text and vector rendering";
+    const sample_hello = "Hello";
+    const sample_arabic = "\xd9\x85\xd8\xb1\xd8\xad\xd8\xa8\xd8\xa7"; // مرحبا
+    const sample_devanagari = "\xe0\xa4\xa8\xe0\xa4\xae\xe0\xa4\xb8\xe0\xa5\x8d\xe0\xa4\xa4\xe0\xa5\x87"; // नमस्ते
+    const sample_thai = "\xe0\xb8\xaa\xe0\xb8\xa7\xe0\xb8\xb1\xe0\xb8\xaa\xe0\xb8\x94\xe0\xb8\xb5"; // สวัสดี
 
-    if (try text_atlas.ensureText(.{ .weight = .bold }, wordmark_text)) |next| {
-        text_atlas.deinit();
-        text_atlas = next;
-    }
-    if (try text_atlas.ensureText(.{}, tagline_text)) |next| {
-        text_atlas.deinit();
-        text_atlas = next;
+    inline for (.{
+        .{ .weight = .bold, .text = wordmark_text },
+        .{ .weight = .regular, .text = tagline_text },
+        .{ .weight = .regular, .text = sample_hello },
+        .{ .weight = .regular, .text = sample_arabic },
+        .{ .weight = .regular, .text = sample_devanagari },
+        .{ .weight = .regular, .text = sample_thai },
+        .{ .weight = .regular, .text = " \xc2\xb7 " }, // separator
+    }) |entry| {
+        const style: snail.FontStyle = .{ .weight = entry.weight };
+        if (try text_atlas.ensureText(style, entry.text)) |next| {
+            text_atlas.deinit();
+            text_atlas = next;
+        }
     }
 
     var shaped_wordmark = try text_atlas.shapeText(allocator, .{ .weight = .bold }, wordmark_text);
     defer shaped_wordmark.deinit();
     var shaped_tagline = try text_atlas.shapeText(allocator, .{}, tagline_text);
     defer shaped_tagline.deinit();
+
+    // Shape each multi-script sample.
+    const sample_texts = [_][]const u8{ sample_hello, sample_arabic, sample_devanagari, sample_thai };
+    var shaped_samples: [sample_texts.len]snail.ShapedText = undefined;
+    var shaped_count: usize = 0;
+    defer for (shaped_samples[0..shaped_count]) |*s| s.deinit();
+    for (sample_texts) |text| {
+        shaped_samples[shaped_count] = try text_atlas.shapeText(allocator, .{}, text);
+        shaped_count += 1;
+    }
+    var shaped_sep = try text_atlas.shapeText(allocator, .{}, " \xc2\xb7 ");
+    defer shaped_sep.deinit();
 
     var pool = try snail.PagePool.init(allocator, .{
         .max_layers = 8,
@@ -68,7 +94,14 @@ pub fn main() !void {
     defer font_regular.deinit();
     var font_bold = try snail.Font.init(assets_data.noto_sans_bold);
     defer font_bold.deinit();
-    var fonts = [_]*snail.Font{ &font_regular, &font_bold };
+    var font_arabic = try snail.Font.init(assets_data.noto_sans_arabic);
+    defer font_arabic.deinit();
+    var font_devanagari = try snail.Font.init(assets_data.noto_sans_devanagari);
+    defer font_devanagari.deinit();
+    var font_thai = try snail.Font.init(assets_data.noto_sans_thai);
+    defer font_thai.deinit();
+    var fonts = [_]*snail.Font{ &font_regular, &font_bold, &font_arabic, &font_devanagari, &font_thai };
+    const face_to_font_id = [_]u32{ 0, 1, 2, 3, 4 };
 
     var glyph_cache = snail.font.GlyphCache.init(allocator);
     defer glyph_cache.deinit();
@@ -102,6 +135,27 @@ pub fn main() !void {
     }
     for (shaped_tagline.glyphs) |g| {
         const fid: u32 = g.face_index;
+        const key = snail.recordKey.unhintedGlyph(fid, g.glyph_id);
+        if (containsKey(text_entries.items, key)) continue;
+        const curves = try fonts[fid].extractCurves(allocator, &glyph_cache, g.glyph_id);
+        try owned_curves.append(allocator, curves);
+        try text_entries.append(allocator, .{ .key = key, .curves = owned_curves.items[owned_curves.items.len - 1] });
+    }
+    // Multi-script sample glyphs (plus the separator).
+    for (shaped_samples[0..shaped_count]) |shaped| {
+        for (shaped.glyphs) |g| {
+            const fid: u32 = g.face_index;
+            if (fid >= fonts.len) continue;
+            const key = snail.recordKey.unhintedGlyph(fid, g.glyph_id);
+            if (containsKey(text_entries.items, key)) continue;
+            const curves = try fonts[fid].extractCurves(allocator, &glyph_cache, g.glyph_id);
+            try owned_curves.append(allocator, curves);
+            try text_entries.append(allocator, .{ .key = key, .curves = owned_curves.items[owned_curves.items.len - 1] });
+        }
+    }
+    for (shaped_sep.glyphs) |g| {
+        const fid: u32 = g.face_index;
+        if (fid >= fonts.len) continue;
         const key = snail.recordKey.unhintedGlyph(fid, g.glyph_id);
         if (containsKey(text_entries.items, key)) continue;
         const curves = try fonts[fid].extractCurves(allocator, &glyph_cache, g.glyph_id);
@@ -213,17 +267,57 @@ pub fn main() !void {
         .baseline = .{ .x = left_pad, .y = wordmark_baseline },
         .em = wordmark_em,
         .color = .{ 1, 1, 1, 1 },
-        .face_to_font_id = &.{ 0, 1 },
+        .face_to_font_id = &face_to_font_id,
     });
     defer wordmark_pic.deinit();
     var tagline_pic = try snail.shapedRunPicture(allocator, &shaped_tagline, .{
         .baseline = .{ .x = left_pad, .y = tagline_baseline },
         .em = tagline_em,
         .color = tagline_color,
-        .face_to_font_id = &.{ 0, 1 },
+        .face_to_font_id = &face_to_font_id,
     });
     defer tagline_pic.deinit();
-    var text_pic = try snail.Picture.concat(allocator, &.{ &wordmark_pic, &tagline_pic });
+
+    // Multi-script sample row. Lay each sample left-to-right with a
+    // middle-dot separator between them, accumulating x_advance to advance
+    // the pen.
+    const sample_baseline: f32 = 196.0;
+    const sample_em: f32 = 16.0;
+    const sample_color = [4]f32{ 0.15, 0.18, 0.24, 1.0 };
+    const sep_color = [4]f32{ 0.65, 0.70, 0.78, 1.0 };
+    var sample_pics: std.ArrayList(snail.Picture) = .empty;
+    defer {
+        for (sample_pics.items) |*p| p.deinit();
+        sample_pics.deinit(allocator);
+    }
+
+    var sx = left_pad;
+    for (shaped_samples[0..shaped_count], 0..) |shaped, sample_idx| {
+        if (sample_idx != 0) {
+            try sample_pics.append(allocator, try snail.shapedRunPicture(allocator, &shaped_sep, .{
+                .baseline = .{ .x = sx, .y = sample_baseline },
+                .em = sample_em,
+                .color = sep_color,
+                .face_to_font_id = &face_to_font_id,
+            }));
+            sx += shaped_sep.advanceX() * sample_em;
+        }
+        try sample_pics.append(allocator, try snail.shapedRunPicture(allocator, &shaped, .{
+            .baseline = .{ .x = sx, .y = sample_baseline },
+            .em = sample_em,
+            .color = sample_color,
+            .face_to_font_id = &face_to_font_id,
+        }));
+        sx += shaped.advanceX() * sample_em;
+    }
+
+    var combine_inputs: std.ArrayList(*const snail.Picture) = .empty;
+    defer combine_inputs.deinit(allocator);
+    try combine_inputs.append(allocator, &wordmark_pic);
+    try combine_inputs.append(allocator, &tagline_pic);
+    for (sample_pics.items) |*p| try combine_inputs.append(allocator, p);
+
+    var text_pic = try snail.Picture.concat(allocator, combine_inputs.items);
     defer text_pic.deinit();
 
     // -- Emit + draw. Paths first (under), then text (over).
