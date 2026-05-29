@@ -77,8 +77,8 @@ backend that consumes this lands in Phase 5.
 
 ## Phase 4: rewire one backend (CPU)
 
-Status: 🟡 Substantial CPU-side capability landed; demo migration
-partial.
+Status: 🟢 Substantially complete end-to-end. Demo content recognizable
+on the new API; pixel parity still unwound.
 
 CPU-side machinery (committed):
 - `CpuPreparedPages` (`src/snail/cpu_upload.zig`) is the CPU-side
@@ -103,28 +103,45 @@ CPU-side machinery (committed):
   `TextAtlas.shapeText` output to the new `Picture` model.
 - New public surface added to `root.zig` alongside the legacy types.
 
+Picture construction layer:
+- `shapedRunPicture` (`src/snail/text_picture.zig`) bridges
+  `TextAtlas.shapeText` output to the new `Picture`. COLR base
+  glyphs expand into N shapes when `colr_fonts` is supplied (per
+  Q5). Foreground sentinel falls back to the run color.
+- `Font.colrLayers` / `colrLayerCount` re-exported on the public
+  wrapper so callers can drive the corresponding curve extraction.
+- No PictureBuilder. Callers compose primitives directly:
+  build a `Path`, call `pathToCurves` / `strokeToCurves`, construct
+  `Atlas.Entry` + `Shape` inline. The screenshot demo demonstrates
+  this for a card + ellipse.
+
 Demo (committed):
 - `src/demo/screenshot_new.zig` + `zig build run-screenshot-new`
-  exercises the new path end-to-end: shaped text + gradient-painted
-  wordmark, no PathPicture / no COLR.
+  exercises the new path end-to-end:
+  - Rounded-rect card background (path fill + stroke)
+  - Wordmark with linear-gradient paint record
+  - Tagline with shaped text
+  - Multi-script row (Hello + Arabic + Devanagari + Thai + emoji)
+    including COLR-expanded color emoji glyphs
+  - Radial-gradient ellipse placeholder for the vector snail body
+- Single pool serves both text and path atlases via the cache's
+  `layer_info_slots` generation index.
 
-What's NOT yet done in Phase 4 for full "one demo green":
-- `PathPicture` → new-API Atlas conversion. The vector-snail logo
-  needs each PathShape's curves extracted from its source legacy
-  atlas page and re-packed as Atlas entries with the paint pulled
-  from layer_info. Composite (fill+stroke) shapes need multi-entry
-  fanout.
-- COLR / SVG color emoji. Per Q5, picture-construction expands COLR
-  glyphs into one shape per layer with its own `local_color`. No
-  implementation yet; emoji currently fall through as missing keys.
-- Multi-script samples (Arabic, Devanagari, Thai) work because
-  shaping is delegated to the existing `TextAtlas`; they just need
-  their fonts surfaced in the new demo's font list when re-enabled.
-- Pixel parity with `zig-out/demo-screenshot.tga`. The new demo
-  renders a recognizable scene but with subtle hue / coverage
-  differences vs the GL-rendered baseline; matching exactly needs
-  the PathPicture + COLR work above plus careful color-space
-  alignment.
+What's NOT yet in Phase 4 (known limitations):
+- Full banner_snail vector content (currently one placeholder
+  ellipse). Just needs more inline `pathToCurves`/`strokeToCurves`
+  calls — no missing mechanism, just demo work.
+- Pixel parity with the legacy baseline. Differences come from:
+  per-face em scaling (emoji nominal-em differs from Latin; the demo
+  uses a uniform em across all faces), subtle gradient hue (legacy
+  did sRGB→linear once in writeTga's GL path; we round-trip through
+  Atlas paint records), and font ascender alignment.
+- Arabic visual order looks subtly different from the legacy render;
+  likely a `shapedRunPicture` x_offset accumulation issue with
+  negative-advance shapings.
+- Image paints. Atlas supports the `.image` tag in the paint record
+  format but the atlas-side `paint_image_records` slot isn't
+  populated yet, and CpuPreparedPages doesn't carry images.
 
 ## Phase 5: rewire GPU backends
 
