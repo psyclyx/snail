@@ -188,7 +188,41 @@ descriptor sets).
 
 ### 5a. GL 3.3 + GL 4.4
 
-Status: 🟡 Not started. Plan and risk surface:
+Status: 🟢 Side-by-side path landed; refactor-in-place deferred.
+
+`src/snail/gl_upload.zig` and the new `GlTextState.drawNewApi` method
+in `src/snail/render/backend/gl/state.zig` provide a new-API GL
+upload+draw chain that coexists with the legacy
+`PreparedResources`/`drawTextPrepared` path. The legacy chain stays
+untouched until Phase 6 deletes it, so `run-screenshot` (legacy
+demo, GL) and the new `run-screenshot-new-gl` (new demo, GL) both
+work without disturbing each other.
+
+The new GL path renders the screenshot demo end to end (card,
+vector snail, wordmark with mapped gradients, tagline, multi-script
+sample row, COLR emoji). Validation:
+- new GL vs new CPU: 46 / 96000 pixels diff (5% fuzz) ≈ identical.
+- new GL vs legacy GL: 3705 / 96000 pixels diff — same envelope as
+  the CPU diff, dominated by the stroke `.placement = .inside`
+  composite the new path doesn't reproduce.
+
+The original plan called for refactoring `gl/resources.zig` and
+`gl/state.zig` in-place to take `Atlas` directly with a
+CurveAtlas→Atlas shim at the upload boundary. The side-by-side
+approach reaches the same eventual outcome without the
+refactor-in-place blast radius; Phase 6 deletes the legacy chain
+in one go.
+
+Not yet supported on the new GL path (additive when a consumer
+needs them):
+- Subpixel rendering — `chooseTextRenderMode` is bypassed; all
+  runs render `.grayscale`. screenshot_new uses `.none` subpixel.
+- Hinted text runs (the hinted_text program is bound when a
+  hinted glyph appears, but nothing in the new path emits them).
+- Image arrays for image paints — `paint_image_records` is
+  carried by `Atlas` (CPU-side) but the GL upload doesn't yet
+  populate an image-array texture or patch the `extra` texel.
+- Stroke `.placement = .inside` composite mode.
 
 The existing `gl/resources.zig` (~1150 LOC) and `gl/state.zig`
 (~840 LOC) are intricately woven through `CurveAtlas`-typed
