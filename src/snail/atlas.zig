@@ -357,8 +357,17 @@ const Builder = struct {
         var layer_info_data: ?[]f32 = null;
         var layer_info_height: u32 = 0;
         if (self.layer_info_texels > 0) {
-            layer_info_data = try self.layer_info_buf.toOwnedSlice(self.allocator);
             layer_info_height = (self.layer_info_texels + paint_records.info_width - 1) / paint_records.info_width;
+            // The buffer grew only up to `layer_info_texels * 4` floats,
+            // but consumers upload to a `info_width * height * 4` texture.
+            // Pad the tail with zeros so the slice can be uploaded directly.
+            const full_floats = @as(usize, paint_records.info_width) * @as(usize, layer_info_height) * 4;
+            if (self.layer_info_buf.items.len < full_floats) {
+                const old_len = self.layer_info_buf.items.len;
+                try self.layer_info_buf.resize(self.allocator, full_floats);
+                @memset(self.layer_info_buf.items[old_len..], 0);
+            }
+            layer_info_data = try self.layer_info_buf.toOwnedSlice(self.allocator);
         } else {
             self.layer_info_buf.deinit(self.allocator);
         }

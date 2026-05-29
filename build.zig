@@ -715,6 +715,25 @@ fn addScreenshotStep(
     const run_screenshot_new = b.addRunArtifact(screenshot_new_exe);
     const screenshot_new_step = b.step("run-screenshot-new", "Render the rewrite-API demo offscreen and write zig-out/demo-screenshot-new.tga");
     screenshot_new_step.dependOn(&run_screenshot_new.step);
+
+    // New-API GL demo. Same content as `screenshot_new` but rendered
+    // through the Phase 5a GL upload + draw path.
+    const screenshot_new_gl_module = b.createModule(.{
+        .root_source_file = b.path("src/demo/screenshot_new_gl.zig"),
+        .target = config.target,
+        .optimize = .ReleaseFast,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "assets", .module = modules.assets },
+            .{ .name = "snail", .module = release.snail },
+            .{ .name = "support", .module = release.support },
+        },
+    });
+    configureEglOffscreenModule(screenshot_new_gl_module, modules.options, config.core_options, modules.vk_shaders);
+    const screenshot_new_gl_exe = b.addExecutable(.{ .name = "snail-screenshot-new-gl", .root_module = screenshot_new_gl_module });
+    const run_screenshot_new_gl = b.addRunArtifact(screenshot_new_gl_exe);
+    const screenshot_new_gl_step = b.step("run-screenshot-new-gl", "Render the rewrite-API demo through GL backend and write zig-out/demo-screenshot-new-gl.tga");
+    screenshot_new_gl_step.dependOn(&run_screenshot_new_gl.step);
 }
 
 fn addAlgorithmScreenshotsStep(

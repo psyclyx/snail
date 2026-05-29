@@ -198,6 +198,8 @@ pub const emit = @import("emit.zig");
 pub const shapedRunPicture = @import("text_picture.zig").shapedRunPicture;
 pub const CpuPreparedPages = @import("cpu_upload.zig").CpuPreparedPages;
 pub const drawCpu = @import("cpu_draw.zig").drawCpu;
+pub const Gl33PreparedPages = @import("gl_upload.zig").Gl33PreparedPages;
+pub const Gl44PreparedPages = @import("gl_upload.zig").Gl44PreparedPages;
 pub const paths = @import("paths.zig");
 pub const ns = recordKey.ns;
 
@@ -238,6 +240,7 @@ test {
     _ = @import("emit.zig");
     _ = @import("cpu_upload.zig");
     _ = @import("cpu_draw.zig");
+    _ = @import("gl_upload.zig");
     _ = @import("text_picture.zig");
     _ = @import("paths.zig");
 }
