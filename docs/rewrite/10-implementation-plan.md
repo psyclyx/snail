@@ -136,12 +136,16 @@ What's NOT yet in Phase 4 (known limitations):
   uses a uniform em across all faces), subtle gradient hue (legacy
   did sRGB→linear once in writeTga's GL path; we round-trip through
   Atlas paint records), and font ascender alignment.
-- Arabic visual order looks subtly different from the legacy render;
-  likely a `shapedRunPicture` x_offset accumulation issue with
-  negative-advance shapings.
 - Image paints. Atlas supports the `.image` tag in the paint record
   format but the atlas-side `paint_image_records` slot isn't
   populated yet, and CpuPreparedPages doesn't carry images.
+
+Investigated and resolved during 2026-05-29 session:
+- "Arabic visual order" — `shapedRunPicture` places each shaped
+  glyph at byte-identical pixel coordinates to the legacy
+  `appendShapedSlice`; the prior cropped-screenshot observation was
+  dominated by `.rgb` subpixel fringing in the new demo vs `.none` in
+  the legacy demo. screenshot_new now uses `.none` to match.
 
 ## Phase 5: rewire GPU backends
 
