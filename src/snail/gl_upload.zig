@@ -23,6 +23,8 @@ const page_mod = @import("page.zig");
 const curve_tex = @import("render/format/curve_texture.zig");
 const band_tex = @import("render/format/band_texture.zig");
 const paint_records = @import("paint_records.zig");
+const upload_common = @import("render/format/upload_common.zig");
+const image_mod = @import("image.zig");
 const gl = @import("render/backend/gl/bindings.zig").gl;
 const gl_backend = @import("render/backend/gl/backend.zig");
 const gl_texture_params = @import("render/backend/gl/texture_params.zig");
@@ -32,6 +34,7 @@ pub const AtlasPage = page_mod.AtlasPage;
 pub const PagePool = page_pool_mod.PagePool;
 pub const Binding = draw_records.Binding;
 pub const Backend = gl_backend.Backend;
+pub const Image = image_mod.Image;
 
 const CURVE_TEX_WIDTH: u32 = curve_tex.TEX_WIDTH;
 const BAND_TEX_WIDTH: u32 = band_tex.TEX_WIDTH;
@@ -62,9 +65,10 @@ pub fn GlPreparedPagesFor(comptime backend: Backend) type {
         // `layer_info_slots[binding.generation - 1]` to find the right
         // texture for a given segment.
         layer_info_slots: std.ArrayList(gl.GLuint) = .empty,
-        // Image array is not yet populated on the GL new path; left as
-        // a single slot until per-binding image-array work lands.
-        image_array: gl.GLuint = 0,
+        // Per-upload image arrays (sRGBA8 TEXTURE_2D_ARRAY), built from
+        // the atlas's `paint_image_records`. Indexed by binding.generation
+        // like `layer_info_slots`. 0 when the upload had no image paints.
+        image_array_slots: std.ArrayList(gl.GLuint) = .empty,
 
         // Per-layer texture-array upload tracking (parallel to pool.pages).
         prepared_generation: []u16,
@@ -97,6 +101,7 @@ pub fn GlPreparedPagesFor(comptime backend: Backend) type {
         pub fn deinit(self: *Self) void {
             self.destroyTextures();
             self.layer_info_slots.deinit(self.allocator);
+            self.image_array_slots.deinit(self.allocator);
             self.allocator.free(self.prepared_generation);
             self.allocator.free(self.prepared_curve_words);
             self.allocator.free(self.prepared_band_words);
@@ -110,10 +115,12 @@ pub fn GlPreparedPagesFor(comptime backend: Backend) type {
                 if (tex != 0) gl.glDeleteTextures(1, &tex);
             }
             self.layer_info_slots.clearRetainingCapacity();
-            if (self.image_array != 0) gl.glDeleteTextures(1, &self.image_array);
+            for (self.image_array_slots.items) |tex| {
+                if (tex != 0) gl.glDeleteTextures(1, &tex);
+            }
+            self.image_array_slots.clearRetainingCapacity();
             self.curve_array = 0;
             self.band_array = 0;
-            self.image_array = 0;
         }
 
         /// Look up the layer-info texture for a binding's generation,
@@ -121,6 +128,13 @@ pub fn GlPreparedPagesFor(comptime backend: Backend) type {
         pub fn layerInfoFor(self: *const Self, generation: u32) gl.GLuint {
             if (generation == 0 or generation > self.layer_info_slots.items.len) return 0;
             return self.layer_info_slots.items[generation - 1];
+        }
+
+        /// Look up the image array texture for a binding's generation,
+        /// or 0 if the upload at that generation had no image paints.
+        pub fn imageArrayFor(self: *const Self, generation: u32) gl.GLuint {
+            if (generation == 0 or generation > self.image_array_slots.items.len) return 0;
+            return self.image_array_slots.items[generation - 1];
         }
 
         /// (Re)allocate the curve and band texture arrays sized to the pool.
@@ -272,10 +286,101 @@ pub fn GlPreparedPagesFor(comptime backend: Backend) type {
             self.prepared_band_words[layer] = p.band.usedWords();
         }
 
+        const UploadedImages = struct {
+            image_array: gl.GLuint = 0,
+            allocated_width: u32 = 0,
+            allocated_height: u32 = 0,
+            layer_count: u32 = 0,
+            /// Maps the index of a unique image in `unique_images` to its
+            /// allocated layer index in the GL array.
+            unique_images: std.ArrayList(*const Image) = .empty,
+
+            fn deinit(self: *UploadedImages, allocator: std.mem.Allocator) void {
+                self.unique_images.deinit(allocator);
+            }
+
+            fn layerForImage(self: *const UploadedImages, image: *const Image) ?u32 {
+                for (self.unique_images.items, 0..) |existing, i| {
+                    if (existing == image) return @intCast(i);
+                }
+                return null;
+            }
+        };
+
+        /// Allocate + upload an image array sized to fit every unique
+        /// image referenced by atlas.paint_image_records. Returns the
+        /// uploaded set (handle + dimensions + layer assignment) so the
+        /// caller can patch layer_info_data with per-record (layer,
+        /// uv_scale).
+        fn buildImageArray(self: *Self, scratch: std.mem.Allocator, atlas: *const Atlas) !UploadedImages {
+            const records = atlas.paint_image_records orelse return .{};
+            var result = UploadedImages{};
+            errdefer result.deinit(scratch);
+
+            for (records) |maybe_rec| {
+                const rec = maybe_rec orelse continue;
+                if (result.layerForImage(rec.image) != null) continue;
+                try result.unique_images.append(scratch, rec.image);
+            }
+            if (result.unique_images.items.len == 0) return result;
+
+            var max_w: u32 = 1;
+            var max_h: u32 = 1;
+            for (result.unique_images.items) |img| {
+                max_w = @max(max_w, img.width);
+                max_h = @max(max_h, img.height);
+            }
+            const alloc_w = upload_common.imageExtentCapacity(max_w);
+            const alloc_h = upload_common.imageExtentCapacity(max_h);
+            const layer_count: u32 = @intCast(result.unique_images.items.len);
+            result.allocated_width = alloc_w;
+            result.allocated_height = alloc_h;
+            result.layer_count = layer_count;
+
+            gl.glGenTextures(1, &result.image_array);
+            gl.glActiveTexture(gl.GL_TEXTURE3);
+            gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, result.image_array);
+            gl.glTexImage3D(
+                gl.GL_TEXTURE_2D_ARRAY,
+                0,
+                gl.GL_SRGB8_ALPHA8,
+                @intCast(alloc_w),
+                @intCast(alloc_h),
+                @intCast(layer_count),
+                0,
+                gl.GL_RGBA,
+                gl.GL_UNSIGNED_BYTE,
+                null,
+            );
+            gl_texture_params.setImageTexParams(gl.GL_TEXTURE_2D_ARRAY);
+
+            for (result.unique_images.items, 0..) |img, layer| {
+                gl.glTexSubImage3D(
+                    gl.GL_TEXTURE_2D_ARRAY,
+                    0,
+                    0,
+                    0,
+                    @intCast(layer),
+                    @intCast(img.width),
+                    @intCast(img.height),
+                    1,
+                    gl.GL_RGBA,
+                    gl.GL_UNSIGNED_BYTE,
+                    img.pixels.ptr,
+                );
+            }
+            self.unused();
+            return result;
+        }
+
+        fn unused(_: *Self) void {}
+
         /// Build a fresh layer-info texture for this upload (or 0 if the
-        /// atlas has no `layer_info_data`). Append it to layer_info_slots
-        /// so subsequent draws can index by binding.generation.
-        fn buildLayerInfoTexture(_: *Self, scratch: std.mem.Allocator, atlas: *const Atlas) !gl.GLuint {
+        /// atlas has no `layer_info_data`). Patches image-paint records
+        /// in-place with the layer / uv_scale view of each image in
+        /// `images`. Returns the GL texture handle, or 0 when there's
+        /// nothing to upload.
+        fn buildLayerInfoTexture(_: *Self, scratch: std.mem.Allocator, atlas: *const Atlas, images: *const UploadedImages) !gl.GLuint {
             const src = atlas.layer_info_data orelse return 0;
             const w = atlas.layer_info_width;
             const h = atlas.layer_info_height;
@@ -283,6 +388,26 @@ pub fn GlPreparedPagesFor(comptime backend: Backend) type {
 
             const data_copy = try scratch.dupe(f32, src);
             defer scratch.free(data_copy);
+
+            // Patch image-paint records with the (layer, uv_scale) for
+            // each known image. The GL shader reads the layer from texel
+            // 2.w and the uv_scale from texel 5.x/.y.
+            if (atlas.paint_image_records) |records| {
+                for (records) |maybe_rec| {
+                    const rec = maybe_rec orelse continue;
+                    const layer = images.layerForImage(rec.image) orelse continue;
+                    const uv_scale_x: f32 = if (images.allocated_width == 0) 1.0 else @as(f32, @floatFromInt(rec.image.width)) / @as(f32, @floatFromInt(images.allocated_width));
+                    const uv_scale_y: f32 = if (images.allocated_height == 0) 1.0 else @as(f32, @floatFromInt(rec.image.height)) / @as(f32, @floatFromInt(images.allocated_height));
+                    const View = struct {
+                        layer: u32,
+                        uv_scale: struct { x: f32, y: f32 },
+                    };
+                    upload_common.patchImagePaintRecord(data_copy, w, w, 0, rec.texel_offset, View{
+                        .layer = layer,
+                        .uv_scale = .{ .x = uv_scale_x, .y = uv_scale_y },
+                    });
+                }
+            }
 
             var tex: gl.GLuint = 0;
             gl.glGenTextures(1, &tex);
@@ -328,8 +453,13 @@ pub fn GlPreparedPagesFor(comptime backend: Backend) type {
                 self.uploadPageFull(p);
             }
 
-            const layer_info_tex = try self.buildLayerInfoTexture(scratch, atlas);
+            // Build the per-upload image array first, then patch the
+            // layer-info texture with each image's (layer, uv_scale).
+            var images = try self.buildImageArray(scratch, atlas);
+            defer images.deinit(scratch);
+            const layer_info_tex = try self.buildLayerInfoTexture(scratch, atlas, &images);
             try self.layer_info_slots.append(self.allocator, layer_info_tex);
+            try self.image_array_slots.append(self.allocator, images.image_array);
 
             return .{ .pool = self.pool, .generation = self.upload_generation };
         }

@@ -603,15 +603,16 @@ fn TextStateFor(comptime backend: Backend) type {
                 const cache = findNewApiCache(caches, seg.binding.pool) orelse return error.MissingBinding;
                 if (seg.binding.generation != 0 and cache.upload_generation < seg.binding.generation) return error.StaleBinding;
                 const layer_info_tex = cache.layerInfoFor(seg.binding.generation);
+                const image_array_tex = cache.imageArrayFor(seg.binding.generation);
                 const seg_words = records.words[seg.words_offset..][0..seg.words_len];
                 switch (seg.kind) {
-                    .heterogeneous => try self.drawHeterogeneousNewApi(cache, layer_info_tex, draw_state, seg_words),
-                    .replicated => try self.drawReplicatedNewApi(scratch, cache, layer_info_tex, draw_state, seg, seg_words),
+                    .heterogeneous => try self.drawHeterogeneousNewApi(cache, layer_info_tex, image_array_tex, draw_state, seg_words),
+                    .replicated => try self.drawReplicatedNewApi(scratch, cache, layer_info_tex, image_array_tex, draw_state, seg, seg_words),
                 }
             }
         }
 
-        fn drawHeterogeneousNewApi(self: *GlTextState, cache: *const GlPreparedPages, layer_info_tex: gl.GLuint, draw_state: DrawState, vertices: []const u32) NewDrawError!void {
+        fn drawHeterogeneousNewApi(self: *GlTextState, cache: *const GlPreparedPages, layer_info_tex: gl.GLuint, image_array_tex: gl.GLuint, draw_state: DrawState, vertices: []const u32) NewDrawError!void {
             const total_glyphs = vertices.len / vertex.WORDS_PER_INSTANCE;
             if (total_glyphs == 0) return;
 
@@ -643,7 +644,7 @@ fn TextStateFor(comptime backend: Backend) type {
                     .path => self.ensurePathProgram(),
                     .hinted_text => self.ensureHintedTextProgram(),
                 };
-                self.bindProgramStateNewApi(cache, layer_info_tex, prog_state, draw_state, run_mode);
+                self.bindProgramStateNewApi(cache, layer_info_tex, image_array_tex, prog_state, draw_state, run_mode);
                 self.drawGlyphRange(vertices, run_start, run_end - run_start);
                 run_start = run_end;
             }
@@ -654,6 +655,7 @@ fn TextStateFor(comptime backend: Backend) type {
             scratch: std.mem.Allocator,
             cache: *const GlPreparedPages,
             layer_info_tex: gl.GLuint,
+            image_array_tex: gl.GLuint,
             draw_state: DrawState,
             seg: draw_records_mod.DrawSegment,
             seg_words: []const u32,
@@ -684,7 +686,7 @@ fn TextStateFor(comptime backend: Backend) type {
                 }
             }
 
-            try self.drawHeterogeneousNewApi(cache, layer_info_tex, draw_state, composed);
+            try self.drawHeterogeneousNewApi(cache, layer_info_tex, image_array_tex, draw_state, composed);
         }
 
         /// Bind one GlPreparedPages' texture set + uniforms. Mirrors
@@ -692,7 +694,7 @@ fn TextStateFor(comptime backend: Backend) type {
         /// `layer_base` uniform is always 0 — the new model encodes the
         /// absolute texture-array layer in the per-instance `glyph` data,
         /// not via a bank-relative offset like the legacy path.
-        fn bindProgramStateNewApi(self: *GlTextState, cache: *const GlPreparedPages, layer_info_tex: gl.GLuint, prog_state: *const ProgramState, draw_state: DrawState, render_mode: subpixel_policy.TextRenderMode) void {
+        fn bindProgramStateNewApi(self: *GlTextState, cache: *const GlPreparedPages, layer_info_tex: gl.GLuint, image_array_tex: gl.GLuint, prog_state: *const ProgramState, draw_state: DrawState, render_mode: subpixel_policy.TextRenderMode) void {
             const program_changed = prog_state.handle != self.active_program or !self.frame_begun;
             if (program_changed) {
                 gl.glUseProgram(prog_state.handle);
@@ -706,7 +708,7 @@ fn TextStateFor(comptime backend: Backend) type {
                 gl.glBindTextureUnit(0, cache.curve_array);
                 gl.glBindTextureUnit(1, cache.band_array);
                 if (prog_state.layer_tex_loc >= 0 and layer_info_tex != 0) gl.glBindTextureUnit(2, layer_info_tex);
-                if (prog_state.image_tex_loc >= 0 and cache.image_array != 0) gl.glBindTextureUnit(3, cache.image_array);
+                if (prog_state.image_tex_loc >= 0 and image_array_tex != 0) gl.glBindTextureUnit(3, image_array_tex);
             } else {
                 gl.glActiveTexture(gl.GL_TEXTURE0);
                 gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, cache.curve_array);
@@ -716,9 +718,9 @@ fn TextStateFor(comptime backend: Backend) type {
                     gl.glActiveTexture(gl.GL_TEXTURE2);
                     gl.glBindTexture(gl.GL_TEXTURE_2D, layer_info_tex);
                 }
-                if (prog_state.image_tex_loc >= 0 and cache.image_array != 0) {
+                if (prog_state.image_tex_loc >= 0 and image_array_tex != 0) {
                     gl.glActiveTexture(gl.GL_TEXTURE3);
-                    gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, cache.image_array);
+                    gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, image_array_tex);
                 }
             }
 

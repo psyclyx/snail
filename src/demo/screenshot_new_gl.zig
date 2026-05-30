@@ -240,6 +240,54 @@ pub fn main() !void {
         try path_shapes.append(allocator, .{ .key = key, .local_transform = transform, .local_color = .{ 1, 1, 1, 1 } });
     }
 
+    // -- Image-painted square (4x4 checker pattern) to exercise the GL
+    // image-array upload + per-record image-paint patching.
+    var checker_pixels: [4 * 4 * 4]u8 = undefined;
+    var cy: usize = 0;
+    while (cy < 4) : (cy += 1) {
+        var cx: usize = 0;
+        while (cx < 4) : (cx += 1) {
+            const dark = (cx + cy) & 1 == 0;
+            const off = (cy * 4 + cx) * 4;
+            checker_pixels[off + 0] = if (dark) 80 else 240;
+            checker_pixels[off + 1] = if (dark) 60 else 200;
+            checker_pixels[off + 2] = if (dark) 40 else 120;
+            checker_pixels[off + 3] = 255;
+        }
+    }
+    var checker_image = try snail.Image.initSrgba8(allocator, 4, 4, checker_pixels[0..]);
+    defer checker_image.deinit();
+
+    const checker_size: f32 = 24.0;
+    const checker_x: f32 = @as(f32, @floatFromInt(W)) - 60.0;
+    const checker_y: f32 = 142.0;
+    {
+        var p = snail.paths.Path.init(allocator);
+        defer p.deinit();
+        try p.addRect(.{ .x = 0, .y = 0, .w = 1, .h = 1 });
+        try path_curves_owned.append(allocator, try snail.paths.pathToCurves(allocator, &p));
+        const key = snail.RecordKey{ .namespace = snail.ns.path_fill, .a = next_path_id };
+        next_path_id += 1;
+        try path_entries.append(allocator, .{
+            .key = key,
+            .curves = path_curves_owned.items[path_curves_owned.items.len - 1],
+            .paint = .{ .image = .{
+                .image = &checker_image,
+                .uv_transform = .identity,
+                .tint = .{ 1, 1, 1, 1 },
+                .filter = .nearest,
+            } },
+        });
+        try path_shapes.append(allocator, .{
+            .key = key,
+            .local_transform = .{
+                .xx = checker_size, .xy = 0, .tx = checker_x,
+                .yx = 0, .yy = checker_size, .ty = checker_y,
+            },
+            .local_color = .{ 1, 1, 1, 1 },
+        });
+    }
+
     var paths_atlas = try snail.Atlas.from(allocator, pool, path_entries.items);
     defer paths_atlas.deinit();
     var paths_picture = try snail.Picture.from(allocator, path_shapes.items);
