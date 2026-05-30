@@ -4,7 +4,6 @@ const band_tex = @import("../band_texture.zig");
 const bezier = @import("../../../math/bezier.zig");
 const build_options = @import("build_options");
 const font_mod = @import("../../../font.zig");
-const image_mod = @import("../../../image.zig");
 const opentype = @import("../../../font/opentype.zig");
 const page_mod = @import("page.zig");
 const ttf = @import("../../../font/ttf.zig");
@@ -13,7 +12,6 @@ const harfbuzz = if (build_options.enable_harfbuzz) @import("../../../font/harfb
 };
 
 const Font = font_mod.Font;
-const Image = image_mod.Image;
 const AtlasPage = page_mod.AtlasPage;
 
 /// Low-level immutable curve atlas snapshot. App text should normally use
@@ -65,10 +63,7 @@ pub const CurveAtlas = struct {
         page_index: u16,
     };
 
-    pub const PaintImageRecord = struct {
-        image: *const Image,
-        texel_offset: u32,
-    };
+    pub const PaintImageRecord = @import("../../../atlas.zig").PaintImageRecord;
 
     pub const BuildPageResult = struct {
         page: *AtlasPage,

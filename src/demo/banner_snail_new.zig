@@ -16,6 +16,10 @@ pub const Builder = struct {
     owned_curves: *std.ArrayList(snail.GlyphCurves),
     entries: *std.ArrayList(snail.AtlasEntry),
     shapes: *std.ArrayList(snail.Shape),
+    /// Heap-allocated slices backing each entry's `extra_layers`. The
+    /// caller is responsible for freeing each slice after the atlas is
+    /// built. Snail itself never owns this storage; entries borrow.
+    extra_layer_storage: *std.ArrayList([]snail.AtlasLayer),
     next_id: *u32,
 
     pub fn addFilledPath(
@@ -148,17 +152,21 @@ pub const Builder = struct {
         try self.owned_curves.append(self.allocator, fill_curves);
         try self.owned_curves.append(self.allocator, stroke_curves);
 
+        const extras = try self.allocator.alloc(snail.AtlasLayer, 1);
+        extras[0] = .{
+            .curves = self.owned_curves.items[self.owned_curves.items.len - 1],
+            .paint = stroke.paint,
+        };
+        try self.extra_layer_storage.append(self.allocator, extras);
+
         const key = snail.RecordKey{ .namespace = snail.ns.path_fill, .a = self.next_id.* };
         self.next_id.* += 1;
         try self.entries.append(self.allocator, .{
             .key = key,
             .curves = self.owned_curves.items[self.owned_curves.items.len - 2],
             .paint = fill,
-            .composite_stroke = .{
-                .curves = self.owned_curves.items[self.owned_curves.items.len - 1],
-                .paint = stroke.paint,
-                .composite_mode = .fill_stroke_inside,
-            },
+            .extra_layers = extras,
+            .composite_mode = .fill_stroke_inside,
         });
         try self.shapes.append(self.allocator, .{
             .key = key,
