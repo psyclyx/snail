@@ -213,16 +213,35 @@ approach reaches the same eventual outcome without the
 refactor-in-place blast radius; Phase 6 deletes the legacy chain
 in one go.
 
-Not yet supported on the new GL path (additive when a consumer
-needs them):
-- Subpixel rendering — `chooseTextRenderMode` is bypassed; all
-  runs render `.grayscale`. screenshot_new uses `.none` subpixel.
-- Hinted text runs (the hinted_text program is bound when a
-  hinted glyph appears, but nothing in the new path emits them).
-- Image arrays for image paints — `paint_image_records` is
-  carried by `Atlas` (CPU-side) but the GL upload doesn't yet
-  populate an image-array texture or patch the `extra` texel.
-- Stroke `.placement = .inside` composite mode.
+Closed during 2026-05-30:
+- Subpixel rendering — `drawHeterogeneousNewApi` mirrors the legacy
+  `chooseTextRenderModeRange` logic, picks the right text /
+  text-subpixel-dual program per run, and uses the dual-source blend
+  mode when subpixel + dual-source-blend is supported.
+- Image arrays for image paints — `GlPreparedPages` builds a
+  per-upload `SRGB8_ALPHA8` `TEXTURE_2D_ARRAY` from the atlas's
+  `paint_image_records` and patches the layer-info data with each
+  record's (layer, uv_scale). Indexed by binding.generation like
+  `layer_info_slots`. Demo renders a 4x4 checker via the new path.
+- Stroke `.placement = .inside` composite — new `Atlas.Entry.com-
+  posite_stroke` field emits a composite-group paint record (kind
+  -5) that the existing path shader's `compositePathGroup` handles.
+  banner_snail_new uses it for the snail body.
+- Hinted text — `Hinter.hint` returns standard `GlyphCurves`; the
+  caller inserts under `recordKey.hintedGlyph` keys and renders via
+  the regular text path (no new vertex format). `hintedShapedRun-
+  Picture` builds the matching Picture with a translate-only
+  transform since hinted curves are already in pixel space.
+
+Architectural fix during 2026-05-30:
+- `fill_rule` moved off `RasterOptions` to per-paint-record
+  encoding (bit 15 of texel 0.x in paint records). Fill rule is a
+  geometry property, not a per-frame raster knob. `AtlasEntry.fill-
+  _rule` is the new home; `FillStyle.fill_rule` for legacy
+  authors. `u_fill_rule` uniform removed from path / text / text-
+  coverage GL interfaces. Vulkan push-constant slot kept as
+  padding to preserve layout. CPU renderer reads from
+  `PreparedPathLayer.fill_rule`.
 
 The existing `gl/resources.zig` (~1150 LOC) and `gl/state.zig`
 (~840 LOC) are intricately woven through `CurveAtlas`-typed
