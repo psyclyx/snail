@@ -752,6 +752,27 @@ fn addScreenshotStep(
     const run_screenshot_new_gles30 = b.addRunArtifact(screenshot_new_gles30_exe);
     const screenshot_new_gles30_step = b.step("run-screenshot-new-gles30", "Render the rewrite-API demo through GLES3 backend and write zig-out/demo-screenshot-new-gles30.tga");
     screenshot_new_gles30_step.dependOn(&run_screenshot_new_gles30.step);
+
+    // New-API Vulkan demo (Phase 5c).
+    if (config.core_options.enable_vulkan) {
+        const screenshot_new_vulkan_vk_platform = createDemoVulkanPlatformModule(b, config.target, .ReleaseFast, modules.options, release.snail);
+        const screenshot_new_vulkan_module = b.createModule(.{
+            .root_source_file = b.path("src/demo/screenshot_new_vulkan.zig"),
+            .target = config.target,
+            .optimize = .ReleaseFast,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "assets", .module = modules.assets },
+                .{ .name = "snail", .module = release.snail },
+                .{ .name = "support", .module = release.support },
+                .{ .name = "demo_platform_vulkan", .module = screenshot_new_vulkan_vk_platform },
+            },
+        });
+        const screenshot_new_vulkan_exe = b.addExecutable(.{ .name = "snail-screenshot-new-vulkan", .root_module = screenshot_new_vulkan_module });
+        const run_screenshot_new_vulkan = b.addRunArtifact(screenshot_new_vulkan_exe);
+        const screenshot_new_vulkan_step = b.step("run-screenshot-new-vulkan", "Render the rewrite-API demo through Vulkan backend and write zig-out/demo-screenshot-new-vulkan.tga");
+        screenshot_new_vulkan_step.dependOn(&run_screenshot_new_vulkan.step);
+    }
 }
 
 fn addAlgorithmScreenshotsStep(

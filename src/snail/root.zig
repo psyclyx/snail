@@ -206,6 +206,8 @@ pub const drawCpu = @import("cpu_draw.zig").drawCpu;
 pub const Gl33PreparedPages = @import("gl_upload.zig").Gl33PreparedPages;
 pub const Gl44PreparedPages = @import("gl_upload.zig").Gl44PreparedPages;
 pub const Gles30PreparedPages = @import("gles30_upload.zig").Gles30PreparedPages;
+pub const VulkanPreparedPages = @import("vulkan_upload.zig").VulkanPreparedPages;
+pub const VulkanPreparedPagesPipelineShape = @import("vulkan_upload.zig").PipelineShape;
 pub const paths = @import("paths.zig");
 pub const ns = recordKey.ns;
 
@@ -248,6 +250,7 @@ test {
     _ = @import("cpu_draw.zig");
     _ = @import("gl_upload.zig");
     _ = @import("gles30_upload.zig");
+    _ = @import("vulkan_upload.zig");
     _ = @import("text_picture.zig");
     _ = @import("paths.zig");
 }
