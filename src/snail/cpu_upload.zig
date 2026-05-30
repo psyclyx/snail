@@ -1,16 +1,24 @@
-//! Phase 4: CPU-side preparation cache for `PagePool` pages.
+//! CPU-backend prepared-pages cache for the new API.
 //!
-//! The new `PagePool` owns the raw curve+band byte buffers; the CPU renderer
-//! needs them re-encoded into f32 plus per-band-texel `PreparedAxisCurve`
-//! arrays before its inner sampling loop can read them. That preparation is
-//! identical to what `cpu_resources.PreparedAtlasPage.init` does for the
-//! legacy `AtlasPage`; this module adapts the new page shape to that
-//! existing builder so the inner sampling loop is untouched.
+//! Holds resident CPU-side resources for one `PagePool` and exposes
+//! caller-controlled lifecycle primitives:
 //!
-//! `CpuPreparedPages` is owned by the caller, sized once to the pool's
-//! `max_layers`, and refreshed by `upload(atlas)` per frame (rebuilds the
-//! prepared cache for each layer the atlas references). Returns a `Binding`
-//! identifying the (pool, generation) pair the upload produced.
+//! - `init(allocator, pool, options)` allocates fixed-capacity storage
+//!   for `max_bindings`, `layer_info_height` rows of paint records, and
+//!   `max_images` image references. The caller decides how much is
+//!   enough; the cache never auto-grows.
+//! - `upload(scratch, atlases)` finds a free slot in the cache's
+//!   persistent storage, writes each atlas's curve/band into the
+//!   pool's prepared pages, and lays each atlas's layer-info into the
+//!   shared buffer. Returns one `Binding` per atlas. Errors with
+//!   `error.NoFreeBinding` / `error.NoFreeLayerInfoRows` /
+//!   `error.NoFreeImageLayers` if capacity is exceeded — the caller
+//!   handles by releasing retired bindings or calling `resize`.
+//! - `release(binding)` returns the slot's storage to the free list.
+//!   The next upload can reuse the same row_base / image_layer_base
+//!   range.
+//! - `resize(options)` reshapes the cache. Errors if there are active
+//!   bindings.
 
 const std = @import("std");
 
@@ -20,23 +28,561 @@ const page_mod = @import("page.zig");
 const page_pool_mod = @import("page_pool.zig");
 const curve_tex = @import("render/format/curve_texture.zig");
 const band_tex = @import("render/format/band_texture.zig");
+const paint_records = @import("paint_records.zig");
 const cpu_resources = @import("render/backend/cpu/resources.zig");
 const cpu_path_paint = @import("render/backend/cpu/path_paint.zig");
+const image_mod = @import("image.zig");
 
 pub const Atlas = atlas_mod.Atlas;
 pub const AtlasPage = page_mod.AtlasPage;
 pub const PagePool = page_pool_mod.PagePool;
 pub const Binding = draw_records.Binding;
 pub const PreparedAtlasPage = cpu_resources.PreparedAtlasPage;
+pub const PaintImageRecord = atlas_mod.PaintImageRecord;
+pub const Image = image_mod.Image;
 
-/// One row of the curve texture is `TEX_WIDTH * 4` u16 words (RGBA16F).
 const CURVE_WORDS_PER_ROW: u32 = curve_tex.TEX_WIDTH * 4;
-/// One row of the band texture is `TEX_WIDTH * 2` u16 words (RG16UI).
 const BAND_WORDS_PER_ROW: u32 = band_tex.TEX_WIDTH * 2;
+const INFO_WIDTH: u32 = paint_records.info_width;
 
-/// Adapter exposing a new-style `AtlasPage` through the field shape
-/// `PreparedAtlasPage.init` expects (legacy `AtlasPage` layout: `curve_data`,
-/// `band_data`, plus width/height pairs).
+pub const CacheOptions = struct {
+    /// Maximum number of concurrent live bindings the cache supports.
+    /// `upload` errors with `error.NoFreeBinding` when this many
+    /// bindings are already active.
+    max_bindings: u32 = 16,
+    /// Total rows in the cache's shared layer-info buffer.
+    layer_info_height: u32 = 64,
+    /// Total layers in the cache's shared image storage.
+    max_images: u32 = 16,
+};
+
+pub const UploadError = error{
+    NoFreeBinding,
+    NoFreeLayerInfoRows,
+    NoFreeImageLayers,
+    UnknownPool,
+    PageNotInPool,
+} || std.mem.Allocator.Error;
+
+pub const ResizeError = error{ActiveBindingsPreventResize} || std.mem.Allocator.Error;
+
+pub const CpuPreparedPages = struct {
+    allocator: std.mem.Allocator,
+    pool: *PagePool,
+    options: CacheOptions,
+
+    // Per-layer prepared atlas pages (one per pool layer, indexed by
+    // AtlasPage.layer_index).
+    prepared: []?PreparedAtlasPage,
+    prepared_generation: []u16,
+    prepared_curve_words: []u32,
+    prepared_band_words: []u32,
+
+    // Persistent layer-info buffer. Fixed-size at init. Slot ranges
+    // come and go via free_layer_info_ranges.
+    layer_info_buf: []f32,
+    layer_info_width: u32,
+    layer_info_capacity_rows: u32,
+    free_layer_info_ranges: std.ArrayList(LayerInfoRange),
+
+    // Persistent image storage (image pointers; caller owns lifetimes).
+    image_storage: []?*const Image,
+    image_capacity: u32,
+    free_image_ranges: std.ArrayList(ImageRange),
+
+    // Per-binding slots.
+    bindings: []BindingSlot,
+    active_bindings: u32 = 0,
+
+    upload_generation: u32 = 0,
+
+    pub const LayerInfoRange = struct { row_base: u32, height: u32 };
+    pub const ImageRange = struct { layer_base: u32, count: u32 };
+
+    pub const BindingSlot = struct {
+        active: bool = false,
+        generation: u32 = 0,
+        info_row_base: u32 = 0,
+        info_height: u32 = 0,
+        image_layer_base: u32 = 0,
+        image_count: u32 = 0,
+        // Prepared records (offsets ABSOLUTE within layer_info_buf).
+        path_records: []cpu_path_paint.PreparedPathRecord = &.{},
+        path_layers: []cpu_path_paint.PreparedPathLayer = &.{},
+        // Image records owned per-binding (small slice; caller-owned
+        // image pointers).
+        paint_image_records: ?[]?PaintImageRecord = null,
+    };
+
+    pub fn init(allocator: std.mem.Allocator, pool: *PagePool, options: CacheOptions) !CpuPreparedPages {
+        const max_layers = pool.options.max_layers;
+
+        const prepared = try allocator.alloc(?PreparedAtlasPage, max_layers);
+        errdefer allocator.free(prepared);
+        const gen = try allocator.alloc(u16, max_layers);
+        errdefer allocator.free(gen);
+        const curve_words = try allocator.alloc(u32, max_layers);
+        errdefer allocator.free(curve_words);
+        const band_words = try allocator.alloc(u32, max_layers);
+        errdefer allocator.free(band_words);
+        @memset(prepared, null);
+        @memset(gen, 0);
+        @memset(curve_words, 0);
+        @memset(band_words, 0);
+
+        const info_floats = @as(usize, INFO_WIDTH) * @as(usize, options.layer_info_height) * 4;
+        const layer_info_buf = try allocator.alloc(f32, info_floats);
+        errdefer allocator.free(layer_info_buf);
+        @memset(layer_info_buf, 0);
+
+        const image_storage = try allocator.alloc(?*const Image, options.max_images);
+        errdefer allocator.free(image_storage);
+        @memset(image_storage, null);
+
+        const bindings = try allocator.alloc(BindingSlot, options.max_bindings);
+        errdefer allocator.free(bindings);
+        for (bindings) |*b| b.* = .{};
+
+        var free_layer_info_ranges: std.ArrayList(LayerInfoRange) = .empty;
+        try free_layer_info_ranges.append(allocator, .{ .row_base = 0, .height = options.layer_info_height });
+        errdefer free_layer_info_ranges.deinit(allocator);
+
+        var free_image_ranges: std.ArrayList(ImageRange) = .empty;
+        if (options.max_images > 0) {
+            try free_image_ranges.append(allocator, .{ .layer_base = 0, .count = options.max_images });
+        }
+        errdefer free_image_ranges.deinit(allocator);
+
+        return .{
+            .allocator = allocator,
+            .pool = pool,
+            .options = options,
+            .prepared = prepared,
+            .prepared_generation = gen,
+            .prepared_curve_words = curve_words,
+            .prepared_band_words = band_words,
+            .layer_info_buf = layer_info_buf,
+            .layer_info_width = INFO_WIDTH,
+            .layer_info_capacity_rows = options.layer_info_height,
+            .free_layer_info_ranges = free_layer_info_ranges,
+            .image_storage = image_storage,
+            .image_capacity = options.max_images,
+            .free_image_ranges = free_image_ranges,
+            .bindings = bindings,
+        };
+    }
+
+    pub fn deinit(self: *CpuPreparedPages) void {
+        for (self.prepared) |*slot| {
+            if (slot.*) |*p| p.deinit(self.allocator);
+        }
+        self.allocator.free(self.prepared);
+        self.allocator.free(self.prepared_generation);
+        self.allocator.free(self.prepared_curve_words);
+        self.allocator.free(self.prepared_band_words);
+        self.allocator.free(self.layer_info_buf);
+        self.allocator.free(self.image_storage);
+        for (self.bindings) |*slot| self.freeBindingState(slot);
+        self.allocator.free(self.bindings);
+        self.free_layer_info_ranges.deinit(self.allocator);
+        self.free_image_ranges.deinit(self.allocator);
+        self.* = undefined;
+    }
+
+    fn freeBindingState(self: *CpuPreparedPages, slot: *BindingSlot) void {
+        if (slot.path_records.len > 0) self.allocator.free(slot.path_records);
+        if (slot.path_layers.len > 0) self.allocator.free(slot.path_layers);
+        if (slot.paint_image_records) |r| self.allocator.free(r);
+        slot.path_records = &.{};
+        slot.path_layers = &.{};
+        slot.paint_image_records = null;
+    }
+
+    /// Reshape the cache. Errors if any binding is active — caller must
+    /// release retired bindings first.
+    pub fn resize(self: *CpuPreparedPages, options: CacheOptions) ResizeError!void {
+        if (self.active_bindings > 0) return error.ActiveBindingsPreventResize;
+        self.options = options;
+
+        // Reallocate layer_info_buf.
+        const info_floats = @as(usize, INFO_WIDTH) * @as(usize, options.layer_info_height) * 4;
+        const new_buf = try self.allocator.realloc(self.layer_info_buf, info_floats);
+        @memset(new_buf, 0);
+        self.layer_info_buf = new_buf;
+        self.layer_info_capacity_rows = options.layer_info_height;
+
+        // Reallocate image storage.
+        const new_images = try self.allocator.realloc(self.image_storage, options.max_images);
+        @memset(new_images, null);
+        self.image_storage = new_images;
+        self.image_capacity = options.max_images;
+
+        // Reallocate bindings.
+        const new_bindings = try self.allocator.realloc(self.bindings, options.max_bindings);
+        for (new_bindings) |*b| b.* = .{};
+        self.bindings = new_bindings;
+
+        // Reset free lists.
+        self.free_layer_info_ranges.clearRetainingCapacity();
+        if (options.layer_info_height > 0) try self.free_layer_info_ranges.append(self.allocator, .{ .row_base = 0, .height = options.layer_info_height });
+        self.free_image_ranges.clearRetainingCapacity();
+        if (options.max_images > 0) try self.free_image_ranges.append(self.allocator, .{ .layer_base = 0, .count = options.max_images });
+    }
+
+    /// Upload one or more atlases into the cache and return one
+    /// `Binding` per atlas. Errors if capacity is exceeded.
+    pub fn upload(
+        self: *CpuPreparedPages,
+        scratch: std.mem.Allocator,
+        atlases: []const *const Atlas,
+        out_bindings: []Binding,
+    ) UploadError!void {
+        std.debug.assert(atlases.len == out_bindings.len);
+
+        // First pass: validate pool ownership and tally capacity.
+        for (atlases) |atlas| {
+            if (atlas.pool) |p| {
+                if (p != self.pool) return error.UnknownPool;
+            }
+        }
+
+        var allocated_layer_ranges = std.ArrayList(LayerInfoRange).empty;
+        defer allocated_layer_ranges.deinit(scratch);
+        var allocated_image_ranges = std.ArrayList(ImageRange).empty;
+        defer allocated_image_ranges.deinit(scratch);
+        var allocated_slot_indices = std.ArrayList(u32).empty;
+        defer allocated_slot_indices.deinit(scratch);
+
+        var success = false;
+        defer if (!success) {
+            // Roll back any allocations we made before the failure.
+            for (allocated_layer_ranges.items) |r| self.releaseLayerInfoRange(r) catch {};
+            for (allocated_image_ranges.items) |r| self.releaseImageRange(r) catch {};
+            for (allocated_slot_indices.items) |i| self.bindings[i] = .{};
+        };
+
+        for (atlases, 0..) |atlas, i| {
+            const info_height = if (atlas.layer_info_data != null) atlas.layer_info_height else 0;
+            const image_count = countUniqueImages(atlas);
+
+            // Reserve a slot.
+            const slot_index = self.findFreeBinding() orelse return error.NoFreeBinding;
+            try allocated_slot_indices.append(scratch, slot_index);
+
+            // Reserve layer-info rows.
+            const info_range: LayerInfoRange = if (info_height == 0)
+                .{ .row_base = 0, .height = 0 }
+            else
+                (try self.takeLayerInfoRows(info_height)) orelse return error.NoFreeLayerInfoRows;
+            try allocated_layer_ranges.append(scratch, info_range);
+
+            // Reserve image layers.
+            const image_range: ImageRange = if (image_count == 0)
+                .{ .layer_base = 0, .count = 0 }
+            else
+                (try self.takeImageLayers(image_count)) orelse return error.NoFreeImageLayers;
+            try allocated_image_ranges.append(scratch, image_range);
+
+            // Mark slot active (rolled back on failure).
+            self.upload_generation += 1;
+            const slot = &self.bindings[slot_index];
+            slot.* = .{
+                .active = true,
+                .generation = self.upload_generation,
+                .info_row_base = info_range.row_base,
+                .info_height = info_range.height,
+                .image_layer_base = image_range.layer_base,
+                .image_count = image_range.count,
+            };
+
+            try self.writeBindingData(atlas, slot);
+
+            out_bindings[i] = .{
+                .pool = self.pool,
+                .generation = slot.generation,
+                .info_row_base = slot.info_row_base,
+                .image_layer_base = slot.image_layer_base,
+            };
+        }
+
+        self.active_bindings += @intCast(atlases.len);
+        success = true;
+    }
+
+    /// Release a binding's storage. Idempotent: releasing the same
+    /// binding twice is a no-op after the first.
+    pub fn release(self: *CpuPreparedPages, binding: Binding) void {
+        const slot_index = self.findSlotByGeneration(binding.generation) orelse return;
+        const slot = &self.bindings[slot_index];
+        if (!slot.active) return;
+
+        if (slot.info_height > 0) {
+            self.releaseLayerInfoRange(.{ .row_base = slot.info_row_base, .height = slot.info_height }) catch {};
+        }
+        if (slot.image_count > 0) {
+            for (slot.image_layer_base..slot.image_layer_base + slot.image_count) |layer| {
+                self.image_storage[layer] = null;
+            }
+            self.releaseImageRange(.{ .layer_base = slot.image_layer_base, .count = slot.image_count }) catch {};
+        }
+        self.freeBindingState(slot);
+        slot.* = .{};
+        self.active_bindings -= 1;
+    }
+
+    /// Slice into the cache's persistent storage describing one live
+    /// binding. `layer_info_data` is the slot's window into the shared
+    /// buffer (row 0 of the slice is the slot's first row); `info_row_base`
+    /// is where this slot sits in the global info_y space and is the value
+    /// emit added to `Instance.info_y`. Path records' `texel_offset` is
+    /// already slot-relative (matches `layer_info_data`).
+    pub fn snapshotFor(self: *const CpuPreparedPages, generation: u32) ?Snapshot {
+        const slot_index = self.findSlotByGeneration(generation) orelse return null;
+        const slot = &self.bindings[slot_index];
+        if (!slot.active) return null;
+        const dst_start: usize = @as(usize, slot.info_row_base) * INFO_WIDTH * 4;
+        const dst_floats: usize = @as(usize, slot.info_height) * INFO_WIDTH * 4;
+        return .{
+            .layer_info_data = self.layer_info_buf[dst_start..][0..dst_floats],
+            .layer_info_width = self.layer_info_width,
+            .info_row_base = slot.info_row_base,
+            .info_height = slot.info_height,
+            .path_records = slot.path_records,
+            .path_layers = slot.path_layers,
+            .paint_image_records = slot.paint_image_records,
+        };
+    }
+
+    pub const Snapshot = struct {
+        layer_info_data: []const f32,
+        layer_info_width: u32,
+        info_row_base: u32,
+        info_height: u32,
+        path_records: []cpu_path_paint.PreparedPathRecord,
+        path_layers: []cpu_path_paint.PreparedPathLayer,
+        paint_image_records: ?[]const ?PaintImageRecord,
+    };
+
+    pub fn page(self: *const CpuPreparedPages, layer: u32) ?*const PreparedAtlasPage {
+        if (layer >= self.prepared.len) return null;
+        if (self.prepared[layer]) |*p| return p;
+        return null;
+    }
+
+    // ── Internal ──
+
+    fn findFreeBinding(self: *CpuPreparedPages) ?u32 {
+        for (self.bindings, 0..) |*slot, i| {
+            if (!slot.active) return @intCast(i);
+        }
+        return null;
+    }
+
+    fn findSlotByGeneration(self: *const CpuPreparedPages, generation: u32) ?u32 {
+        for (self.bindings, 0..) |*slot, i| {
+            if (slot.active and slot.generation == generation) return @intCast(i);
+        }
+        return null;
+    }
+
+    fn takeLayerInfoRows(self: *CpuPreparedPages, height: u32) UploadError!?LayerInfoRange {
+        // First-fit search through the free list.
+        var i: usize = 0;
+        while (i < self.free_layer_info_ranges.items.len) : (i += 1) {
+            const r = self.free_layer_info_ranges.items[i];
+            if (r.height >= height) {
+                if (r.height == height) {
+                    _ = self.free_layer_info_ranges.orderedRemove(i);
+                } else {
+                    self.free_layer_info_ranges.items[i] = .{ .row_base = r.row_base + height, .height = r.height - height };
+                }
+                return LayerInfoRange{ .row_base = r.row_base, .height = height };
+            }
+        }
+        return null;
+    }
+
+    fn releaseLayerInfoRange(self: *CpuPreparedPages, range: LayerInfoRange) !void {
+        if (range.height == 0) return;
+        // Coalesce with adjacent ranges to keep fragmentation in check.
+        try self.free_layer_info_ranges.append(self.allocator, range);
+        std.mem.sort(LayerInfoRange, self.free_layer_info_ranges.items, {}, struct {
+            fn lessThan(_: void, a: LayerInfoRange, b: LayerInfoRange) bool {
+                return a.row_base < b.row_base;
+            }
+        }.lessThan);
+        var write: usize = 0;
+        var read: usize = 0;
+        while (read < self.free_layer_info_ranges.items.len) {
+            var cur = self.free_layer_info_ranges.items[read];
+            read += 1;
+            while (read < self.free_layer_info_ranges.items.len) {
+                const nxt = self.free_layer_info_ranges.items[read];
+                if (cur.row_base + cur.height == nxt.row_base) {
+                    cur.height += nxt.height;
+                    read += 1;
+                } else break;
+            }
+            self.free_layer_info_ranges.items[write] = cur;
+            write += 1;
+        }
+        self.free_layer_info_ranges.shrinkRetainingCapacity(write);
+    }
+
+    fn takeImageLayers(self: *CpuPreparedPages, count: u32) UploadError!?ImageRange {
+        var i: usize = 0;
+        while (i < self.free_image_ranges.items.len) : (i += 1) {
+            const r = self.free_image_ranges.items[i];
+            if (r.count >= count) {
+                if (r.count == count) {
+                    _ = self.free_image_ranges.orderedRemove(i);
+                } else {
+                    self.free_image_ranges.items[i] = .{ .layer_base = r.layer_base + count, .count = r.count - count };
+                }
+                return ImageRange{ .layer_base = r.layer_base, .count = count };
+            }
+        }
+        return null;
+    }
+
+    fn releaseImageRange(self: *CpuPreparedPages, range: ImageRange) !void {
+        if (range.count == 0) return;
+        try self.free_image_ranges.append(self.allocator, range);
+        std.mem.sort(ImageRange, self.free_image_ranges.items, {}, struct {
+            fn lessThan(_: void, a: ImageRange, b: ImageRange) bool {
+                return a.layer_base < b.layer_base;
+            }
+        }.lessThan);
+        var write: usize = 0;
+        var read: usize = 0;
+        while (read < self.free_image_ranges.items.len) {
+            var cur = self.free_image_ranges.items[read];
+            read += 1;
+            while (read < self.free_image_ranges.items.len) {
+                const nxt = self.free_image_ranges.items[read];
+                if (cur.layer_base + cur.count == nxt.layer_base) {
+                    cur.count += nxt.count;
+                    read += 1;
+                } else break;
+            }
+            self.free_image_ranges.items[write] = cur;
+            write += 1;
+        }
+        self.free_image_ranges.shrinkRetainingCapacity(write);
+    }
+
+    fn writeBindingData(self: *CpuPreparedPages, atlas: *const Atlas, slot: *BindingSlot) UploadError!void {
+        // Push each page in the atlas into its layer (rebuild if stale).
+        for (atlas.pages) |p| {
+            const layer = p.layer_index;
+            if (layer >= self.prepared.len) return error.PageNotInPool;
+            const cur_gen = p.currentGeneration();
+            const cur_curve = p.curve.usedWords();
+            const cur_band = p.band.usedWords();
+            const stale = (self.prepared[layer] == null) or
+                self.prepared_generation[layer] != cur_gen or
+                self.prepared_curve_words[layer] != cur_curve or
+                self.prepared_band_words[layer] != cur_band;
+            if (!stale) continue;
+            if (self.prepared[layer]) |*existing| existing.deinit(self.allocator);
+            self.prepared[layer] = null;
+
+            const view = PageView.fromPage(p);
+            self.prepared[layer] = try PreparedAtlasPage.initFromView(self.allocator, view);
+            self.prepared_generation[layer] = cur_gen;
+            self.prepared_curve_words[layer] = cur_curve;
+            self.prepared_band_words[layer] = cur_band;
+        }
+
+        // Write atlas's layer_info_data into the persistent buffer at
+        // the slot's row_base. Patch image paint records with absolute
+        // image layer indices.
+        if (atlas.layer_info_data) |src_data| {
+            const dst_floats = src_data.len;
+            const dst_start: usize = @as(usize, slot.info_row_base) * INFO_WIDTH * 4;
+            std.debug.assert(dst_start + dst_floats <= self.layer_info_buf.len);
+            @memcpy(self.layer_info_buf[dst_start..][0..dst_floats], src_data);
+
+            // Patch image-paint records with the absolute image layer.
+            const image_layer_base = slot.image_layer_base;
+            if (atlas.paint_image_records) |records| {
+                var local_layer: u32 = 0;
+                var seen = std.AutoHashMap(*const Image, u32).init(self.allocator);
+                defer seen.deinit();
+                for (records) |maybe_rec| {
+                    const rec = maybe_rec orelse continue;
+                    const gop = try seen.getOrPut(rec.image);
+                    if (!gop.found_existing) {
+                        gop.value_ptr.* = local_layer;
+                        self.image_storage[image_layer_base + local_layer] = rec.image;
+                        local_layer += 1;
+                    }
+                    // Absolute layer in cache's image storage.
+                    const abs_layer = image_layer_base + gop.value_ptr.*;
+                    const View = struct { layer: u32, uv_scale: struct { x: f32, y: f32 } };
+                    const uv_scale_x: f32 = 1.0;
+                    const uv_scale_y: f32 = 1.0;
+                    @import("render/format/upload_common.zig").patchImagePaintRecord(
+                        self.layer_info_buf,
+                        INFO_WIDTH,
+                        INFO_WIDTH,
+                        slot.info_row_base,
+                        rec.texel_offset,
+                        View{ .layer = abs_layer, .uv_scale = .{ .x = uv_scale_x, .y = uv_scale_y } },
+                    );
+                }
+            }
+
+            // Copy image records to a per-binding slice (non-owning of
+            // the images themselves). Do this BEFORE preparing path
+            // layers — the prepared layers cache image-record pointers
+            // by texel match (see `findImageRecordByTexel`).
+            if (atlas.paint_image_records) |records| {
+                const owned = try self.allocator.alloc(?PaintImageRecord, records.len);
+                @memcpy(owned, records);
+                slot.paint_image_records = owned;
+            }
+
+            // Build prepared path records pointing into the persistent
+            // buffer (offsets stored as if the slot's region were
+            // a standalone buffer; the rasterizer pairs each
+            // LayerInfoEntry with its row_base to translate absolute
+            // info_y back to local coords).
+            const slot_data = self.layer_info_buf[dst_start..][0..dst_floats];
+            const prepared_records = try cpu_path_paint.preparePathLayerInfoRecords(
+                self.allocator,
+                slot_data,
+                INFO_WIDTH,
+                slot.info_height,
+                slot.paint_image_records,
+            );
+            slot.path_records = prepared_records.records;
+            slot.path_layers = prepared_records.layers;
+        }
+    }
+
+    fn countUniqueImages(atlas: *const Atlas) u32 {
+        const records = atlas.paint_image_records orelse return 0;
+        var seen_count: u32 = 0;
+        // Simple O(n^2) dedup against earlier entries — atlases have a
+        // handful of image records at most.
+        for (records, 0..) |maybe_rec, i| {
+            const rec = maybe_rec orelse continue;
+            var duplicate = false;
+            var j: usize = 0;
+            while (j < i) : (j += 1) {
+                const prev = records[j] orelse continue;
+                if (prev.image == rec.image) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (!duplicate) seen_count += 1;
+        }
+        return seen_count;
+    }
+};
+
 const PageView = struct {
     curve_data: []const u16,
     band_data: []const u16,
@@ -61,186 +607,40 @@ const PageView = struct {
     }
 };
 
-/// CPU-side prepared cache for one `PagePool`. Holds at most one
-/// `PreparedAtlasPage` per pool layer, plus the source page's generation
-/// used to build it (so a stale cached entry can be detected after page
-/// recycling). When the bound atlas carries paint records, the cache
-/// also holds a single `LayerInfoEntry` mirroring the atlas's
-/// `layer_info_data` so the existing CPU special-layer dispatch can
-/// resolve `samplePathPaintAt` calls without modification.
-pub const CpuPreparedPages = struct {
-    allocator: std.mem.Allocator,
-    pool: *PagePool,
-    /// Indexed by page `layer_index`. Null until first upload.
-    prepared: []?PreparedAtlasPage,
-    /// Generation of the underlying `AtlasPage` at the time the prepared
-    /// entry was built. Used to detect stale caches after page recycling.
-    prepared_generation: []u16,
-    /// Source `data_len` watermarks at upload time. A later upload that
-    /// finds the page extended (`data_len` grew) must rebuild the cache.
-    prepared_curve_words: []u32,
-    prepared_band_words: []u32,
-    /// Per-upload `LayerInfoEntry` slots, indexed by `binding.generation`.
-    /// Each call to `upload` appends one entry (or null when the atlas
-    /// had no `layer_info_data`); drawCpu looks up `slot[binding.generation - 1]`
-    /// to find the right paint-records buffer. This lets a single cache
-    /// serve multiple atlases over the same pool without clobbering each
-    /// other's layer_info.
-    layer_info_slots: std.ArrayList(?cpu_resources.LayerInfoEntry) = .empty,
-    /// Monotonically increases per upload; carried back to the caller via
-    /// `Binding.generation` so segments referencing a stale upload can be
-    /// detected.
-    upload_generation: u32 = 0,
-
-    pub fn init(allocator: std.mem.Allocator, pool: *PagePool) !CpuPreparedPages {
-        const layers = pool.options.max_layers;
-        const prepared = try allocator.alloc(?PreparedAtlasPage, layers);
-        errdefer allocator.free(prepared);
-        const gen = try allocator.alloc(u16, layers);
-        errdefer allocator.free(gen);
-        const curve_words = try allocator.alloc(u32, layers);
-        errdefer allocator.free(curve_words);
-        const band_words = try allocator.alloc(u32, layers);
-        errdefer allocator.free(band_words);
-        @memset(prepared, null);
-        @memset(gen, 0);
-        @memset(curve_words, 0);
-        @memset(band_words, 0);
-        return .{
-            .allocator = allocator,
-            .pool = pool,
-            .prepared = prepared,
-            .prepared_generation = gen,
-            .prepared_curve_words = curve_words,
-            .prepared_band_words = band_words,
-        };
-    }
-
-    pub fn deinit(self: *CpuPreparedPages) void {
-        for (self.prepared) |*slot| {
-            if (slot.*) |*p| p.deinit(self.allocator);
-        }
-        for (self.layer_info_slots.items) |*slot| {
-            if (slot.*) |*li| li.deinit(self.allocator);
-        }
-        self.layer_info_slots.deinit(self.allocator);
-        self.allocator.free(self.prepared);
-        self.allocator.free(self.prepared_generation);
-        self.allocator.free(self.prepared_curve_words);
-        self.allocator.free(self.prepared_band_words);
-        self.* = undefined;
-    }
-
-    /// (Re)build prepared entries for each page the atlas references. Pages
-    /// whose `(generation, used_words)` haven't changed since the last
-    /// upload are skipped. Also rebuilds the cached layer_info entry from
-    /// the atlas's `layer_info_data`. Returns a `Binding` carrying this
-    /// upload's generation; emit/draw use the binding to identify the
-    /// cache state.
-    pub fn upload(self: *CpuPreparedPages, atlas: *const Atlas) !Binding {
-        self.upload_generation += 1;
-        for (atlas.pages) |p| {
-            const layer = p.layer_index;
-            std.debug.assert(layer < self.prepared.len);
-            const cur_gen = p.currentGeneration();
-            const cur_curve = p.curve.usedWords();
-            const cur_band = p.band.usedWords();
-            const slot = &self.prepared[layer];
-            const stale = (slot.* == null) or
-                self.prepared_generation[layer] != cur_gen or
-                self.prepared_curve_words[layer] != cur_curve or
-                self.prepared_band_words[layer] != cur_band;
-            if (!stale) continue;
-            if (slot.*) |*existing| existing.deinit(self.allocator);
-            slot.* = null;
-
-            const view = PageView.fromPage(p);
-            slot.* = try PreparedAtlasPage.initFromView(self.allocator, view);
-            self.prepared_generation[layer] = cur_gen;
-            self.prepared_curve_words[layer] = cur_curve;
-            self.prepared_band_words[layer] = cur_band;
-        }
-
-        // Append (don't overwrite) a fresh LayerInfoEntry for this upload.
-        // drawCpu uses `binding.generation` to index back to the right
-        // slot when one cache serves multiple atlases.
-        var new_slot: ?cpu_resources.LayerInfoEntry = null;
-        if (atlas.layer_info_data) |src_data| {
-            const owned = try self.allocator.dupe(f32, src_data);
-            errdefer self.allocator.free(owned);
-            // Borrow image pointers from the atlas (the Atlas guarantees
-            // images outlive the upload). LayerInfoEntry.deinit frees the
-            // slice but leaves images alone since `owned_images` is empty.
-            const records_copy: ?[]?atlas_mod.PaintImageRecord = blk: {
-                const src = atlas.paint_image_records orelse break :blk null;
-                if (src.len == 0) break :blk null;
-                const dst = try self.allocator.alloc(?atlas_mod.PaintImageRecord, src.len);
-                @memcpy(dst, src);
-                break :blk dst;
-            };
-            errdefer if (records_copy) |r| self.allocator.free(r);
-            const prepared_records = try cpu_path_paint.preparePathLayerInfoRecords(
-                self.allocator,
-                owned,
-                atlas.layer_info_width,
-                atlas.layer_info_height,
-                records_copy,
-            );
-            errdefer {
-                self.allocator.free(prepared_records.records);
-                self.allocator.free(prepared_records.layers);
-            }
-            new_slot = .{
-                .data = owned,
-                .width = atlas.layer_info_width,
-                .height = atlas.layer_info_height,
-                .row_base = 0,
-                .path_records = prepared_records.records,
-                .path_layers = prepared_records.layers,
-                .owns_data = true,
-                .paint_image_records = records_copy,
-                .owned_images = &.{},
-            };
-        }
-        try self.layer_info_slots.append(self.allocator, new_slot);
-
-        return .{ .pool = self.pool, .generation = self.upload_generation };
-    }
-
-    /// Look up the layer_info entry for a given binding generation. Returns
-    /// null when the atlas behind that upload had no paint records.
-    pub fn layerInfoFor(self: *const CpuPreparedPages, generation: u32) ?*const cpu_resources.LayerInfoEntry {
-        if (generation == 0 or generation > self.layer_info_slots.items.len) return null;
-        const slot = &self.layer_info_slots.items[generation - 1];
-        if (slot.*) |*li| return li;
-        return null;
-    }
-
-    /// Look up the prepared page for a given pool layer. Returns null if the
-    /// layer hasn't been uploaded.
-    pub fn page(self: *const CpuPreparedPages, layer: u32) ?*const PreparedAtlasPage {
-        if (layer >= self.prepared.len) return null;
-        if (self.prepared[layer]) |*p| return p;
-        return null;
-    }
-};
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 const testing = std.testing;
-const record_key_mod = @import("record_key.zig");
-const curves_mod = @import("curves.zig");
 
-test "upload builds prepared entry per atlas-referenced layer" {
+test "cache init allocates fixed-capacity buffers" {
+    var pool = try PagePool.init(testing.allocator, .{
+        .max_layers = 2,
+        .curve_words_per_page = CURVE_WORDS_PER_ROW * 2,
+        .band_words_per_page = BAND_WORDS_PER_ROW * 2,
+    });
+    defer pool.deinit();
+
+    var cache = try CpuPreparedPages.init(testing.allocator, pool, .{
+        .max_bindings = 4,
+        .layer_info_height = 8,
+        .max_images = 2,
+    });
+    defer cache.deinit();
+
+    try testing.expectEqual(@as(usize, 4), cache.bindings.len);
+    try testing.expectEqual(@as(u32, 8), cache.layer_info_capacity_rows);
+    try testing.expectEqual(@as(u32, 2), cache.image_capacity);
+}
+
+test "release returns range to free list and allows reuse" {
+    const record_key_mod = @import("record_key.zig");
     const font_mod = @import("font.zig");
+
     const font_data = @import("assets").noto_sans_regular;
     var font = try font_mod.Font.init(font_data);
     defer font.deinit();
-
-    var cache = font_mod.GlyphCache.init(testing.allocator);
-    defer cache.deinit();
+    var glyph_cache = font_mod.GlyphCache.init(testing.allocator);
+    defer glyph_cache.deinit();
+    const gid = try font.glyphIndex('A');
+    var curves = try font.extractCurves(testing.allocator, &glyph_cache, gid);
+    defer curves.deinit();
 
     var pool = try PagePool.init(testing.allocator, .{
         .max_layers = 4,
@@ -249,33 +649,52 @@ test "upload builds prepared entry per atlas-referenced layer" {
     });
     defer pool.deinit();
 
-    var entries: std.ArrayList(atlas_mod.Entry) = .empty;
-    defer entries.deinit(testing.allocator);
-    var owned: std.ArrayList(curves_mod.GlyphCurves) = .empty;
-    defer {
-        for (owned.items) |*c| c.deinit();
-        owned.deinit(testing.allocator);
-    }
-    const gid_a = try font.glyphIndex('A');
-    const curves_a = try font.extractCurves(testing.allocator, &cache, gid_a);
-    try owned.append(testing.allocator, curves_a);
-    try entries.append(testing.allocator, .{
-        .key = record_key_mod.unhintedGlyph(0, gid_a),
-        .curves = owned.items[owned.items.len - 1],
+    var cache = try CpuPreparedPages.init(testing.allocator, pool, .{
+        .max_bindings = 4,
+        .layer_info_height = 2,
+        .max_images = 0,
     });
+    defer cache.deinit();
 
-    var atlas = try Atlas.from(testing.allocator, pool, entries.items);
-    defer atlas.deinit();
+    // Two atlases with one painted entry each — exhausts layer_info rows.
+    const key1 = record_key_mod.unhintedGlyph(0, gid);
+    var atlas1 = try Atlas.from(testing.allocator, pool, &.{.{
+        .key = key1,
+        .curves = curves,
+        .paint = .{ .solid = .{ 1, 1, 1, 1 } },
+    }});
+    defer atlas1.deinit();
+    const key2 = record_key_mod.unhintedGlyph(1, gid);
+    var atlas2 = try Atlas.from(testing.allocator, pool, &.{.{
+        .key = key2,
+        .curves = curves,
+        .paint = .{ .solid = .{ 1, 1, 1, 1 } },
+    }});
+    defer atlas2.deinit();
 
-    var prep = try CpuPreparedPages.init(testing.allocator, pool);
-    defer prep.deinit();
+    var b1: [1]Binding = undefined;
+    try cache.upload(testing.allocator, &.{&atlas1}, &b1);
+    try testing.expectEqual(@as(u32, 1), cache.active_bindings);
 
-    const b1 = try prep.upload(&atlas);
-    try testing.expect(b1.pool == pool);
-    try testing.expectEqual(@as(u32, 1), b1.generation);
-    try testing.expect(prep.page(atlas.pages[0].layer_index) != null);
+    var b2: [1]Binding = undefined;
+    try cache.upload(testing.allocator, &.{&atlas2}, &b2);
+    try testing.expectEqual(@as(u32, 2), cache.active_bindings);
 
-    // Second upload of an unchanged atlas bumps generation but skips rebuild.
-    const b2 = try prep.upload(&atlas);
-    try testing.expectEqual(@as(u32, 2), b2.generation);
+    // No more rows — third upload errors.
+    const key3 = record_key_mod.unhintedGlyph(2, gid);
+    var atlas3 = try Atlas.from(testing.allocator, pool, &.{.{
+        .key = key3,
+        .curves = curves,
+        .paint = .{ .solid = .{ 1, 1, 1, 1 } },
+    }});
+    defer atlas3.deinit();
+    var b3: [1]Binding = undefined;
+    try testing.expectError(error.NoFreeLayerInfoRows, cache.upload(testing.allocator, &.{&atlas3}, &b3));
+
+    cache.release(b1[0]);
+    try testing.expectEqual(@as(u32, 1), cache.active_bindings);
+
+    // Now the third upload succeeds.
+    try cache.upload(testing.allocator, &.{&atlas3}, &b3);
+    try testing.expectEqual(@as(u32, 2), cache.active_bindings);
 }

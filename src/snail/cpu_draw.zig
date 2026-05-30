@@ -64,8 +64,16 @@ pub fn drawCpu(
         var layer_info_buf: [1]cpu_resources.LayerInfoEntry = undefined;
         var layer_infos_slice: []cpu_resources.LayerInfoEntry = &.{};
         var layer_info_count: usize = 0;
-        if (cache.layerInfoFor(seg.binding.generation)) |li_ptr| {
-            layer_info_buf[0] = li_ptr.*;
+        if (cache.snapshotFor(seg.binding.generation)) |snap| {
+            layer_info_buf[0] = .{
+                .data = snap.layer_info_data,
+                .width = snap.layer_info_width,
+                .height = snap.info_height,
+                .row_base = snap.info_row_base,
+                .path_records = snap.path_records,
+                .path_layers = snap.path_layers,
+                .paint_image_records = snap.paint_image_records,
+            };
             layer_infos_slice = layer_info_buf[0..1];
             layer_info_count = 1;
         }
@@ -212,7 +220,7 @@ test "drawCpu MissingBinding when no cache covers the binding's pool" {
     });
     defer pool_b.deinit();
 
-    var cache_a = try CpuPreparedPages.init(allocator, pool_a);
+    var cache_a = try CpuPreparedPages.init(allocator, pool_a, .{ .max_bindings = 1, .layer_info_height = 4, .max_images = 0 });
     defer cache_a.deinit();
 
     var pixels: [16 * 16 * 4]u8 = .{0} ** (16 * 16 * 4);
@@ -265,9 +273,11 @@ test "drawCpu replicated produces same pixels as equivalent heterogeneous emit" 
     var atlas = try @import("atlas.zig").Atlas.from(allocator, pool, &.{.{ .key = key, .curves = curves }});
     defer atlas.deinit();
 
-    var cache = try CpuPreparedPages.init(allocator, pool);
+    var cache = try CpuPreparedPages.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
     defer cache.deinit();
-    const binding = try cache.upload(&atlas);
+    var bindings: [1]Binding = undefined;
+    try cache.upload(allocator, &.{&atlas}, &bindings);
+    const binding = bindings[0];
 
     const px_size: f32 = 16.0;
     const base_shape = @import("shape.zig").Shape{
@@ -361,9 +371,11 @@ test "drawCpu renders a small Picture into non-zero pixels" {
     var atlas = try @import("atlas.zig").Atlas.from(allocator, pool, &.{.{ .key = key, .curves = owned[0] }});
     defer atlas.deinit();
 
-    var cache = try CpuPreparedPages.init(allocator, pool);
+    var cache = try CpuPreparedPages.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
     defer cache.deinit();
-    const binding = try cache.upload(&atlas);
+    var bindings: [1]Binding = undefined;
+    try cache.upload(allocator, &.{&atlas}, &bindings);
+    const binding = bindings[0];
 
     // GlyphCurves.bbox lives in unit-em coordinates (max ~1.0), so the
     // shape's scale is just the requested px size.
@@ -452,9 +464,11 @@ test "drawCpu renders gradient-painted glyph through special-layer path" {
 
     try testing.expect(atlas.lookupPaintRecord(key) != null);
 
-    var cache = try CpuPreparedPages.init(allocator, pool);
+    var cache = try CpuPreparedPages.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
     defer cache.deinit();
-    const binding = try cache.upload(&atlas);
+    var bindings: [1]Binding = undefined;
+    try cache.upload(allocator, &.{&atlas}, &bindings);
+    const binding = bindings[0];
 
     const px_size: f32 = 32.0;
     const shape = @import("shape.zig").Shape{
@@ -555,9 +569,11 @@ test "drawCpu renders image-painted shape through special-layer path" {
     try testing.expect(atlas.paint_image_records.?[0] != null);
     try testing.expect(atlas.paint_image_records.?[0].?.image == &image);
 
-    var cache = try CpuPreparedPages.init(allocator, pool);
+    var cache = try CpuPreparedPages.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 4 });
     defer cache.deinit();
-    const binding = try cache.upload(&atlas);
+    var bindings: [1]Binding = undefined;
+    try cache.upload(allocator, &.{&atlas}, &bindings);
+    const binding = bindings[0];
 
     const px_size: f32 = 20.0;
     const shape = @import("shape.zig").Shape{
