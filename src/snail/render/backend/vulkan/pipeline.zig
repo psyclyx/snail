@@ -10,7 +10,7 @@ const SubpixelOrder = @import("../../format/subpixel_order.zig").SubpixelOrder;
 const DrawState = snail_mod.DrawState;
 const vulkan_types = @import("types.zig");
 const vulkan_resources = @import("resources.zig");
-const vulkan_upload_new = @import("../../../vulkan_upload.zig");
+const vulkan_upload_new = @import("prepared_pages.zig");
 const draw_records_mod = @import("../../../draw_records.zig");
 
 pub const vk = vulkan_types.vk;
@@ -591,7 +591,7 @@ pub const VulkanPipeline = struct {
     } || std.mem.Allocator.Error || anyerror;
 
     /// Walk `DrawRecords.segments` and dispatch via the new-API draw
-    /// module. The implementation lives in `draw_new_api.zig`; this
+    /// module. The implementation lives in `draw.zig`; this
     /// shim exists to keep the public surface on `VulkanPipeline`
     /// stable for callers that go through the snail adapter layer.
     pub fn drawNewApi(
@@ -601,7 +601,7 @@ pub const VulkanPipeline = struct {
         records: draw_records_mod.DrawRecords,
         caches: []const *const vulkan_upload_new.VulkanPreparedPages,
     ) NewDrawError!void {
-        return @import("draw_new_api.zig").drawNewApi(self, scratch, draw_state, records, caches);
+        return @import("draw.zig").drawNewApi(self, scratch, draw_state, records, caches);
     }
 
     pub fn newApiPipelineShape(self: *const VulkanPipeline) vulkan_upload_new.PipelineShape {

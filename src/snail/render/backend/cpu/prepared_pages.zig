@@ -22,16 +22,16 @@
 
 const std = @import("std");
 
-const atlas_mod = @import("atlas.zig");
-const draw_records = @import("draw_records.zig");
-const page_mod = @import("page.zig");
-const page_pool_mod = @import("page_pool.zig");
-const curve_tex = @import("render/format/curve_texture.zig");
-const band_tex = @import("render/format/band_texture.zig");
-const paint_records = @import("paint_records.zig");
-const cpu_resources = @import("render/backend/cpu/resources.zig");
-const cpu_path_paint = @import("render/backend/cpu/path_paint.zig");
-const image_mod = @import("image.zig");
+const atlas_mod = @import("../../../atlas.zig");
+const draw_records = @import("../../../draw_records.zig");
+const page_mod = @import("../../../page.zig");
+const page_pool_mod = @import("../../../page_pool.zig");
+const curve_tex = @import("../../format/curve_texture.zig");
+const band_tex = @import("../../format/band_texture.zig");
+const paint_records = @import("../../../paint_records.zig");
+const cpu_resources = @import("resources.zig");
+const cpu_path_paint = @import("path_paint.zig");
+const image_mod = @import("../../../image.zig");
 
 pub const Atlas = atlas_mod.Atlas;
 pub const AtlasPage = page_mod.AtlasPage;
@@ -522,7 +522,7 @@ pub const CpuPreparedPages = struct {
                     const View = struct { layer: u32, uv_scale: struct { x: f32, y: f32 } };
                     const uv_scale_x: f32 = 1.0;
                     const uv_scale_y: f32 = 1.0;
-                    @import("render/format/upload_common.zig").patchImagePaintRecord(
+                    @import("../../format/upload_common.zig").patchImagePaintRecord(
                         self.layer_info_buf,
                         INFO_WIDTH,
                         INFO_WIDTH,
@@ -630,8 +630,8 @@ test "cache init allocates fixed-capacity buffers" {
 }
 
 test "release returns range to free list and allows reuse" {
-    const record_key_mod = @import("record_key.zig");
-    const font_mod = @import("font.zig");
+    const record_key_mod = @import("../../../record_key.zig");
+    const font_mod = @import("../../../font.zig");
 
     const font_data = @import("assets").noto_sans_regular;
     var font = try font_mod.Font.init(font_data);

@@ -1,6 +1,6 @@
 //! Vulkan persistent prepared-pages cache for the new API.
 //!
-//! Mirrors `cpu_upload.CpuPreparedPages` and `gl_upload.GlPreparedPages`:
+//! Mirrors `CpuPreparedPages` and `GlPreparedPages`:
 //! caller-sized capacity, slot allocation via free-list, explicit
 //! `release(binding)`, no auto-grow.
 //!
@@ -27,17 +27,17 @@
 
 const std = @import("std");
 
-const atlas_mod = @import("atlas.zig");
-const draw_records = @import("draw_records.zig");
-const page_pool_mod = @import("page_pool.zig");
-const page_mod = @import("page.zig");
-const curve_tex = @import("render/format/curve_texture.zig");
-const band_tex = @import("render/format/band_texture.zig");
-const paint_records = @import("paint_records.zig");
-const upload_common = @import("render/format/upload_common.zig");
-const image_mod = @import("image.zig");
-const vk_types = @import("render/backend/vulkan/types.zig");
-const vk_device = @import("render/backend/vulkan/device.zig");
+const atlas_mod = @import("../../../atlas.zig");
+const draw_records = @import("../../../draw_records.zig");
+const page_pool_mod = @import("../../../page_pool.zig");
+const page_mod = @import("../../../page.zig");
+const curve_tex = @import("../../format/curve_texture.zig");
+const band_tex = @import("../../format/band_texture.zig");
+const paint_records = @import("../../../paint_records.zig");
+const upload_common = @import("../../format/upload_common.zig");
+const image_mod = @import("../../../image.zig");
+const vk_types = @import("types.zig");
+const vk_device = @import("device.zig");
 
 pub const vk = vk_types.vk;
 pub const VulkanContext = vk_types.VulkanContext;

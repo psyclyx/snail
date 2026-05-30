@@ -201,13 +201,13 @@ pub const shapedRunPicture = @import("text_picture.zig").shapedRunPicture;
 pub const hintedShapedRunPicture = @import("text_picture.zig").hintedShapedRunPicture;
 pub const Hinter = @import("hinter.zig").Hinter;
 pub const HintPpem = @import("hinter.zig").HintPpem;
-pub const CpuPreparedPages = @import("cpu_upload.zig").CpuPreparedPages;
-pub const drawCpu = @import("cpu_draw.zig").drawCpu;
-pub const Gl33PreparedPages = @import("gl_upload.zig").Gl33PreparedPages;
-pub const Gl44PreparedPages = @import("gl_upload.zig").Gl44PreparedPages;
-pub const Gles30PreparedPages = @import("gles30_upload.zig").Gles30PreparedPages;
-pub const VulkanPreparedPages = @import("vulkan_upload.zig").VulkanPreparedPages;
-pub const VulkanPreparedPagesPipelineShape = @import("vulkan_upload.zig").PipelineShape;
+pub const CpuPreparedPages = @import("render/backend/cpu/prepared_pages.zig").CpuPreparedPages;
+pub const drawCpu = @import("render/backend/cpu/draw.zig").drawCpu;
+pub const Gl33PreparedPages = @import("render/backend/gl/prepared_pages.zig").Gl33PreparedPages;
+pub const Gl44PreparedPages = @import("render/backend/gl/prepared_pages.zig").Gl44PreparedPages;
+pub const Gles30PreparedPages = @import("render/backend/gl/prepared_pages.zig").Gles30PreparedPages;
+pub const VulkanPreparedPages = @import("render/backend/vulkan/prepared_pages.zig").VulkanPreparedPages;
+pub const VulkanPreparedPagesPipelineShape = @import("render/backend/vulkan/prepared_pages.zig").PipelineShape;
 pub const paths = @import("paths.zig");
 pub const ns = recordKey.ns;
 
@@ -246,11 +246,10 @@ test {
     _ = @import("picture.zig");
     _ = @import("draw_records.zig");
     _ = @import("emit.zig");
-    _ = @import("cpu_upload.zig");
-    _ = @import("cpu_draw.zig");
-    _ = @import("gl_upload.zig");
-    _ = @import("gles30_upload.zig");
-    _ = @import("vulkan_upload.zig");
+    _ = @import("render/backend/cpu/prepared_pages.zig");
+    _ = @import("render/backend/cpu/draw.zig");
+    _ = @import("render/backend/gl/prepared_pages.zig");
+    _ = @import("render/backend/vulkan/prepared_pages.zig");
     _ = @import("text_picture.zig");
     _ = @import("paths.zig");
 }

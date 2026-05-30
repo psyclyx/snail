@@ -1,6 +1,6 @@
 //! GL / GLES3 persistent prepared-pages cache for the new API.
 //!
-//! Mirrors `cpu_upload.CpuPreparedPages`: caller-sized capacity, slot
+//! Mirrors `CpuPreparedPages`: caller-sized capacity, slot
 //! allocation via free-list, explicit `release(binding)`, no auto-grow.
 //!
 //! Per-cache resident state:
@@ -21,15 +21,15 @@
 
 const std = @import("std");
 
-const atlas_mod = @import("atlas.zig");
-const draw_records = @import("draw_records.zig");
-const page_pool_mod = @import("page_pool.zig");
-const page_mod = @import("page.zig");
-const curve_tex = @import("render/format/curve_texture.zig");
-const band_tex = @import("render/format/band_texture.zig");
-const paint_records = @import("paint_records.zig");
-const upload_common = @import("render/format/upload_common.zig");
-const image_mod = @import("image.zig");
+const atlas_mod = @import("../../../atlas.zig");
+const draw_records = @import("../../../draw_records.zig");
+const page_pool_mod = @import("../../../page_pool.zig");
+const page_mod = @import("../../../page.zig");
+const curve_tex = @import("../../format/curve_texture.zig");
+const band_tex = @import("../../format/band_texture.zig");
+const paint_records = @import("../../../paint_records.zig");
+const upload_common = @import("../../format/upload_common.zig");
+const image_mod = @import("../../../image.zig");
 
 pub const Variant = enum {
     gl33,
@@ -43,8 +43,8 @@ pub const Variant = enum {
 
 inline fn bindingsFor(comptime v: Variant) type {
     return switch (v) {
-        .gl33, .gl44 => @import("render/backend/gl/bindings.zig"),
-        .gles30 => @import("render/backend/gles30/bindings.zig"),
+        .gl33, .gl44 => @import("bindings.zig"),
+        .gles30 => @import("../gles30/bindings.zig"),
     };
 }
 
