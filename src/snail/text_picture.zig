@@ -19,6 +19,7 @@ const shape_mod = @import("shape.zig");
 const record_key_mod = @import("record_key.zig");
 const types = @import("text/types.zig");
 const font_mod = @import("font.zig");
+const hinter_mod = @import("hinter.zig");
 
 pub const ShapedText = types.ShapedText;
 pub const Picture = picture_mod.Picture;
@@ -26,6 +27,8 @@ pub const Shape = shape_mod.Shape;
 pub const Vec2 = math.Vec2;
 pub const Transform2D = math.Transform2D;
 pub const Font = font_mod.Font;
+pub const Hinter = hinter_mod.Hinter;
+pub const HintPpem = hinter_mod.HintPpem;
 
 pub const ShapedRunOptions = struct {
     /// Pen baseline in world coordinates.
@@ -112,6 +115,60 @@ pub fn shapedRunPicture(
     return Picture.from(allocator, shapes.items);
 }
 
+pub const HintedShapedRunOptions = struct {
+    /// Pen baseline in world coordinates (pixel-space).
+    baseline: Vec2,
+    /// Em size in pixels. Used to drive the hinter's ppem and to scale
+    /// the shaped glyph advance / offset (which come in em-relative
+    /// units from the shaper) into pixel-space pen positions.
+    em: f32,
+    color: [4]f32 = .{ 1, 1, 1, 1 },
+    /// Maps `ShapedText.Glyph.face_index` to the `font_id` used in
+    /// `RecordKey`s.
+    face_to_font_id: []const u32,
+};
+
+/// Build a Picture for hinted text. Caller is responsible for having
+/// already inserted hinted curves into the atlas under
+/// `recordKey.hintedGlyph(font_id, glyph_id, ppem_26_6)` keys.
+/// Hinted curves live in pixel-space (the hinter has already applied
+/// per-ppem hinting), so the per-glyph transform is a pure translate
+/// with a y-flip; no scaling is layered on top.
+pub fn hintedShapedRunPicture(
+    allocator: std.mem.Allocator,
+    shaped: *const ShapedText,
+    options: HintedShapedRunOptions,
+) ShapedRunError!Picture {
+    var shapes: std.ArrayList(Shape) = .empty;
+    defer shapes.deinit(allocator);
+
+    const ppem_26_6: u32 = @intFromFloat(@round(options.em * 64.0));
+
+    for (shaped.glyphs) |g| {
+        const face_index_int: usize = @intCast(g.face_index);
+        if (face_index_int >= options.face_to_font_id.len) return error.UnknownFaceIndex;
+        const font_id = options.face_to_font_id[face_index_int];
+
+        const pen_x = options.baseline.x + options.em * g.x_offset;
+        const pen_y = options.baseline.y + options.em * g.y_offset;
+        const transform: Transform2D = .{
+            .xx = 1,
+            .xy = 0,
+            .tx = pen_x,
+            .yx = 0,
+            .yy = -1,
+            .ty = pen_y,
+        };
+        try shapes.append(allocator, .{
+            .key = record_key_mod.hintedGlyph(font_id, g.glyph_id, ppem_26_6),
+            .local_transform = transform,
+            .local_color = options.color,
+        });
+    }
+
+    return Picture.from(allocator, shapes.items);
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -150,6 +207,119 @@ test "shapedRunPicture builds one shape per shaped glyph" {
     try testing.expectEqual(@as(f32, 24), pic.shapes[0].local_transform.xx);
     try testing.expectEqual(@as(f32, -24), pic.shapes[0].local_transform.yy);
     try testing.expect(pic.shapes[0].key.namespace == record_key_mod.ns.unhinted_glyph);
+}
+
+test "hintedShapedRunPicture builds shapes for hinted glyph keys" {
+    const allocator = testing.allocator;
+    const snail = @import("root.zig");
+    const font_data = @import("assets").noto_sans_regular;
+
+    var atlas = try snail.TextAtlas.init(allocator, &.{
+        .{ .data = font_data },
+    });
+    defer atlas.deinit();
+    if (try atlas.ensureText(.{}, "Hi")) |next| {
+        atlas.deinit();
+        atlas = next;
+    }
+    var shaped = try atlas.shapeText(allocator, .{}, "Hi");
+    defer shaped.deinit();
+    try testing.expect(shaped.glyphs.len == 2);
+
+    var pic = try hintedShapedRunPicture(allocator, &shaped, .{
+        .baseline = .{ .x = 5, .y = 32 },
+        .em = 14,
+        .color = .{ 1, 1, 1, 1 },
+        .face_to_font_id = &.{0},
+    });
+    defer pic.deinit();
+
+    try testing.expectEqual(@as(usize, 2), pic.shapes.len);
+    const expected_ppem: u32 = @intFromFloat(@round(14.0 * 64.0));
+    try testing.expectEqual(record_key_mod.ns.hinted_glyph, pic.shapes[0].key.namespace);
+    try testing.expectEqual(expected_ppem, pic.shapes[0].key.c);
+    try testing.expectApproxEqAbs(@as(f32, 1), pic.shapes[0].local_transform.xx, 1e-5);
+    try testing.expectApproxEqAbs(@as(f32, -1), pic.shapes[0].local_transform.yy, 1e-5);
+    try testing.expectApproxEqAbs(@as(f32, 5), pic.shapes[0].local_transform.tx, 1e-5);
+    try testing.expectApproxEqAbs(@as(f32, 32), pic.shapes[0].local_transform.ty, 1e-5);
+}
+
+test "hinted curves render through new API CPU draw" {
+    const build_options = @import("build_options");
+    if (!build_options.enable_cpu) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    const snail = @import("root.zig");
+    const font_data = @import("assets").noto_sans_regular;
+
+    var font = try Font.init(font_data);
+    defer font.deinit();
+    var hinter = Hinter.init(allocator, &font) catch return error.SkipZigTest;
+    defer hinter.deinit();
+
+    const ppem_26_6: u32 = @intFromFloat(@round(16.0 * 64.0));
+    const ppem = HintPpem.uniform(ppem_26_6);
+    const gid = try font.glyphIndex('A');
+
+    var hinted = hinter.hint(allocator, allocator, gid, ppem) catch return error.SkipZigTest;
+    defer hinted.deinit();
+    if (hinted.isEmpty()) return error.SkipZigTest;
+
+    var pool = try snail.PagePool.init(allocator, .{
+        .max_layers = 2,
+        .curve_words_per_page = 1 << 16,
+        .band_words_per_page = 1 << 14,
+    });
+    defer pool.deinit();
+
+    const key = record_key_mod.hintedGlyph(0, gid, ppem_26_6);
+    var atlas = try snail.Atlas.from(allocator, pool, &.{.{ .key = key, .curves = hinted }});
+    defer atlas.deinit();
+
+    var cache = try snail.CpuPreparedPages.init(allocator, pool);
+    defer cache.deinit();
+    const binding = try cache.upload(&atlas);
+
+    const W: u32 = 32;
+    const H: u32 = 32;
+    const STRIDE: u32 = W * 4;
+    const px = try allocator.alloc(u8, H * STRIDE);
+    defer allocator.free(px);
+    @memset(px, 0);
+
+    // Translate-only transform: hinted curves are already in pixel space.
+    const shape = @import("shape.zig").Shape{
+        .key = key,
+        .local_transform = .{ .xx = 1, .yy = -1, .tx = 6, .ty = 24 },
+        .local_color = .{ 1, 1, 1, 1 },
+    };
+    var picture = try Picture.from(allocator, &.{shape});
+    defer picture.deinit();
+
+    const emit_mod = @import("emit.zig");
+    const draw_records_mod = @import("draw_records.zig");
+    const words = try allocator.alloc(u32, emit_mod.wordBudget(&picture, 0));
+    defer allocator.free(words);
+    var segs: [2]draw_records_mod.DrawSegment = undefined;
+    var wlen: usize = 0;
+    var slen: usize = 0;
+    _ = try emit_mod.emit(words, segs[0..], &wlen, &slen, binding, &atlas, &picture, .identity, .{ 1, 1, 1, 1 });
+
+    var renderer = snail.CpuRenderer.init(px.ptr, W, H, STRIDE);
+    const wf: f32 = @floatFromInt(W);
+    const hf: f32 = @floatFromInt(H);
+    const state = snail.DrawState{
+        .surface = .{ .pixel_width = wf, .pixel_height = hf, .encoding = .srgb },
+        .raster = .{ .subpixel_order = .none, .coverage_transfer = .{ .exponent = 1.0 } },
+        .mvp = snail.Mat4.ortho(0, wf, hf, 0, -1, 1),
+    };
+    try snail.drawCpu(&renderer, state, .{ .words = words[0..wlen], .segments = segs[0..slen] }, &.{&cache});
+
+    var any_drawn = false;
+    for (px) |b| if (b != 0) {
+        any_drawn = true;
+        break;
+    };
+    try testing.expect(any_drawn);
 }
 
 test "shapedRunPicture rejects unknown face_index" {
