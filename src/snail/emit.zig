@@ -42,7 +42,17 @@ pub const EmitError = error{
     BufferTooSmall,
     /// A page index exceeded the vertex format's u8 `atlas_layer` slot.
     AtlasLayerOverflow,
+    /// `binding.info_row_base + paint_info.info_y` exceeded the
+    /// vertex format's u16 `info_y` slot. Caller's cache holds too
+    /// much layer-info; either release retired bindings or shrink.
+    InfoRowOverflow,
 };
+
+fn addRowBase(info_y: u16, row_base: u32) EmitError!u16 {
+    const sum = @as(u32, info_y) + row_base;
+    if (sum > std.math.maxInt(u16)) return error.InfoRowOverflow;
+    return @intCast(sum);
+}
 
 pub const EmitResult = struct {
     shape_count: u32,
@@ -95,7 +105,7 @@ pub fn emit(
                 dst,
                 rec.bbox,
                 paint_info.info_x,
-                paint_info.info_y,
+                try addRowBase(paint_info.info_y, binding.info_row_base),
                 paint_info.layer_count,
                 shape.local_color,
                 world_tint,
