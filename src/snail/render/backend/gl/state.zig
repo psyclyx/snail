@@ -615,23 +615,35 @@ fn TextStateFor(comptime backend: Backend) type {
             const total_glyphs = vertices.len / vertex.WORDS_PER_INSTANCE;
             if (total_glyphs == 0) return;
 
+            const allow_subpixel = true;
+
             var run_start: usize = 0;
             while (run_start < total_glyphs) {
                 const run_kind = subpixel_policy.glyphRunKind(vertices, run_start);
                 const run_end = subpixel_policy.glyphRunEnd(vertices, run_start, run_kind);
-                // The new API screenshot demo runs with `.none` subpixel;
-                // pick grayscale unconditionally for now. Subpixel support
-                // is additive (just switch programs per the legacy
-                // chooseTextRenderMode logic when needed).
-                const render_mode: subpixel_policy.TextRenderMode = .grayscale;
-                setTextBlendMode(run_kind != .regular, render_mode);
+                const run_mode: subpixel_policy.TextRenderMode = if (run_kind != .regular)
+                    .grayscale
+                else
+                    subpixel_policy.chooseTextRenderModeRange(
+                        vertices,
+                        run_start,
+                        run_end - run_start,
+                        draw_state.mvp,
+                        allow_subpixel,
+                        draw_state.raster.subpixel_order,
+                        self.supports_dual_source_blend,
+                    );
+                setTextBlendMode(run_kind != .regular, run_mode);
                 const prog_state = switch (run_kind) {
-                    .regular => &self.text_program,
+                    .regular => switch (run_mode) {
+                        .grayscale => &self.text_program,
+                        .subpixel_dual_source => &self.text_subpixel_dual_program,
+                    },
                     .colr => self.ensureColrProgram(),
                     .path => self.ensurePathProgram(),
                     .hinted_text => self.ensureHintedTextProgram(),
                 };
-                self.bindProgramStateNewApi(cache, layer_info_tex, prog_state, draw_state, render_mode);
+                self.bindProgramStateNewApi(cache, layer_info_tex, prog_state, draw_state, run_mode);
                 self.drawGlyphRange(vertices, run_start, run_end - run_start);
                 run_start = run_end;
             }
