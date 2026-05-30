@@ -734,6 +734,24 @@ fn addScreenshotStep(
     const run_screenshot_new_gl = b.addRunArtifact(screenshot_new_gl_exe);
     const screenshot_new_gl_step = b.step("run-screenshot-new-gl", "Render the rewrite-API demo through GL backend and write zig-out/demo-screenshot-new-gl.tga");
     screenshot_new_gl_step.dependOn(&run_screenshot_new_gl.step);
+
+    // New-API GLES30 demo (Phase 5b).
+    const screenshot_new_gles30_module = b.createModule(.{
+        .root_source_file = b.path("src/demo/screenshot_new_gles30.zig"),
+        .target = config.target,
+        .optimize = .ReleaseFast,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "assets", .module = modules.assets },
+            .{ .name = "snail", .module = release.snail },
+            .{ .name = "support", .module = release.support },
+        },
+    });
+    configureEglOffscreenModule(screenshot_new_gles30_module, modules.options, config.core_options, modules.vk_shaders);
+    const screenshot_new_gles30_exe = b.addExecutable(.{ .name = "snail-screenshot-new-gles30", .root_module = screenshot_new_gles30_module });
+    const run_screenshot_new_gles30 = b.addRunArtifact(screenshot_new_gles30_exe);
+    const screenshot_new_gles30_step = b.step("run-screenshot-new-gles30", "Render the rewrite-API demo through GLES3 backend and write zig-out/demo-screenshot-new-gles30.tga");
+    screenshot_new_gles30_step.dependOn(&run_screenshot_new_gles30.step);
 }
 
 fn addAlgorithmScreenshotsStep(

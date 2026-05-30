@@ -3,6 +3,8 @@ const gl = @import("bindings.zig").gl;
 const gl_backend = @import("backend.zig");
 const gl_programs = @import("programs.zig");
 const gl_resources = @import("resources.zig");
+const gles30_upload = @import("../../../gles30_upload.zig");
+const draw_records_mod = @import("../../../draw_records.zig");
 const shaders = @import("shaders.zig");
 const subpixel_policy = @import("../subpixel_policy.zig");
 const texture_layers = @import("../../format/texture_layers.zig");
@@ -502,6 +504,163 @@ pub const Gles30TextState = struct {
         self.drawGlyphRange(vertices, 0, vertices.len / vertex.WORDS_PER_INSTANCE);
     }
 
+    // ── New-API draw entry (Phase 5b) ──
+
+    pub const NewDrawError = error{
+        MissingBinding,
+        StaleBinding,
+        MalformedSegment,
+    } || std.mem.Allocator.Error;
+
+    /// Walk `DrawRecords.segments`, bind each segment's matching
+    /// `Gles30PreparedPages` cache, dispatch the encoded instances
+    /// through the existing program set. Mirrors `drawNewApi` on the
+    /// GL backend; the only differences are the GLES3 binding namespace
+    /// (no DSA, no persistent ring buffer) and that subpixel runs
+    /// without dual-source-blend support fall back to grayscale.
+    pub fn drawNewApi(
+        self: *Gles30TextState,
+        scratch: std.mem.Allocator,
+        draw_state: DrawState,
+        records: draw_records_mod.DrawRecords,
+        caches: []const *const gles30_upload.Gles30PreparedPages,
+    ) NewDrawError!void {
+        gl.glBindVertexArray(self.vao);
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vbo);
+
+        for (records.segments) |seg| {
+            const cache = findNewApiCache(caches, seg.binding.pool) orelse return error.MissingBinding;
+            if (seg.binding.generation != 0 and cache.upload_generation < seg.binding.generation) return error.StaleBinding;
+            const layer_info_tex = cache.layerInfoFor(seg.binding.generation);
+            const image_array_tex = cache.imageArrayFor(seg.binding.generation);
+            const seg_words = records.words[seg.words_offset..][0..seg.words_len];
+            switch (seg.kind) {
+                .heterogeneous => try self.drawHeterogeneousNewApi(cache, layer_info_tex, image_array_tex, draw_state, seg_words),
+                .replicated => try self.drawReplicatedNewApi(scratch, cache, layer_info_tex, image_array_tex, draw_state, seg, seg_words),
+            }
+        }
+    }
+
+    fn drawHeterogeneousNewApi(self: *Gles30TextState, cache: *const gles30_upload.Gles30PreparedPages, layer_info_tex: gl.GLuint, image_array_tex: gl.GLuint, draw_state: DrawState, vertices: []const u32) NewDrawError!void {
+        const total_glyphs = vertices.len / vertex.WORDS_PER_INSTANCE;
+        if (total_glyphs == 0) return;
+
+        // GLES3 has no dual-source blend → no LCD subpixel; force
+        // grayscale for regular runs.
+        const allow_subpixel = false;
+
+        var run_start: usize = 0;
+        while (run_start < total_glyphs) {
+            const run_kind = subpixel_policy.glyphRunKind(vertices, run_start);
+            const run_end = subpixel_policy.glyphRunEnd(vertices, run_start, run_kind);
+            const run_mode: subpixel_policy.TextRenderMode = if (run_kind != .regular)
+                .grayscale
+            else
+                subpixel_policy.chooseTextRenderModeRange(
+                    vertices,
+                    run_start,
+                    run_end - run_start,
+                    draw_state.mvp,
+                    allow_subpixel,
+                    draw_state.raster.subpixel_order,
+                    false,
+                );
+            setTextBlendMode(run_kind != .regular, run_mode);
+            const prog_state = switch (run_kind) {
+                .regular => &self.text_program,
+                .colr => self.ensureColrProgram(),
+                .path => self.ensurePathProgram(),
+                .hinted_text => self.ensureHintedTextProgram(),
+            };
+            self.bindProgramStateNewApi(cache, layer_info_tex, image_array_tex, prog_state, draw_state, run_mode);
+            self.drawGlyphRange(vertices, run_start, run_end - run_start);
+            run_start = run_end;
+        }
+    }
+
+    fn drawReplicatedNewApi(
+        self: *Gles30TextState,
+        scratch: std.mem.Allocator,
+        cache: *const gles30_upload.Gles30PreparedPages,
+        layer_info_tex: gl.GLuint,
+        image_array_tex: gl.GLuint,
+        draw_state: DrawState,
+        seg: draw_records_mod.DrawSegment,
+        seg_words: []const u32,
+    ) NewDrawError!void {
+        const n = seg.shape_count;
+        const m = seg.override_count;
+        if (n == 0 or m == 0) return;
+        const WORDS_PER_OVERRIDE: usize = 8;
+        const expected = @as(usize, n) * vertex.WORDS_PER_INSTANCE + @as(usize, m) * WORDS_PER_OVERRIDE;
+        if (seg_words.len != expected) return error.MalformedSegment;
+
+        const composed = try scratch.alloc(u32, @as(usize, n) * @as(usize, m) * vertex.WORDS_PER_INSTANCE);
+        defer scratch.free(composed);
+
+        const shape_words = seg_words[0 .. @as(usize, n) * vertex.WORDS_PER_INSTANCE];
+        const override_words = seg_words[@as(usize, n) * vertex.WORDS_PER_INSTANCE ..];
+
+        var out_cursor: usize = 0;
+        var i: u32 = 0;
+        while (i < n) : (i += 1) {
+            const shape_inst = shape_words[@as(usize, i) * vertex.WORDS_PER_INSTANCE ..][0..vertex.WORDS_PER_INSTANCE];
+            var j: u32 = 0;
+            while (j < m) : (j += 1) {
+                const override_block = override_words[@as(usize, j) * WORDS_PER_OVERRIDE ..][0..WORDS_PER_OVERRIDE];
+                const dst = composed[out_cursor..][0..vertex.WORDS_PER_INSTANCE];
+                composeShapeOverrideNewApi(dst, shape_inst, override_block);
+                out_cursor += vertex.WORDS_PER_INSTANCE;
+            }
+        }
+
+        try self.drawHeterogeneousNewApi(cache, layer_info_tex, image_array_tex, draw_state, composed);
+    }
+
+    fn bindProgramStateNewApi(self: *Gles30TextState, cache: *const gles30_upload.Gles30PreparedPages, layer_info_tex: gl.GLuint, image_array_tex: gl.GLuint, prog_state: *const ProgramState, draw_state: DrawState, render_mode: subpixel_policy.TextRenderMode) void {
+        const program_changed = prog_state.handle != self.active_program or !self.frame_begun;
+        if (program_changed) {
+            gl.glUseProgram(prog_state.handle);
+            self.active_program = prog_state.handle;
+            // Reset bank id so legacy/new paths don't conflict.
+            self.active_resource_bank_id = std.math.maxInt(u32);
+            self.frame_begun = true;
+        }
+
+        gl.glActiveTexture(gl.GL_TEXTURE0);
+        gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, cache.curve_array);
+        gl.glActiveTexture(gl.GL_TEXTURE1);
+        gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, cache.band_array);
+        if (prog_state.layer_tex_loc >= 0 and layer_info_tex != 0) {
+            gl.glActiveTexture(gl.GL_TEXTURE2);
+            gl.glBindTexture(gl.GL_TEXTURE_2D, layer_info_tex);
+        }
+        if (prog_state.image_tex_loc >= 0 and image_array_tex != 0) {
+            gl.glActiveTexture(gl.GL_TEXTURE3);
+            gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, image_array_tex);
+        }
+
+        if (prog_state.curve_tex_loc >= 0) gl.glUniform1i(prog_state.curve_tex_loc, 0);
+        if (prog_state.band_tex_loc >= 0) gl.glUniform1i(prog_state.band_tex_loc, 1);
+        if (prog_state.layer_tex_loc >= 0) gl.glUniform1i(prog_state.layer_tex_loc, 2);
+        if (prog_state.image_tex_loc >= 0) gl.glUniform1i(prog_state.image_tex_loc, 3);
+
+        gl.glUniformMatrix4fv(prog_state.mvp_loc, 1, gl.GL_FALSE, &draw_state.mvp.data);
+        gl.glUniform2f(prog_state.viewport_loc, draw_state.surface.pixel_width, draw_state.surface.pixel_height);
+        if (prog_state.layer_base_loc >= 0) gl.glUniform1i(prog_state.layer_base_loc, 0);
+        if (prog_state.subpixel_order_loc >= 0) {
+            const order = if (render_mode == .grayscale) SubpixelOrder.none else draw_state.raster.subpixel_order;
+            gl.glUniform1i(prog_state.subpixel_order_loc, @intFromEnum(order));
+        }
+        if (prog_state.output_srgb_loc >= 0) {
+            const output_srgb = draw_state.surface.encoding.shaderEncodesSrgb() and !self.linear_resolve_active;
+            gl.glUniform1i(prog_state.output_srgb_loc, @intFromBool(output_srgb));
+        }
+        if (prog_state.coverage_exponent_loc >= 0) {
+            gl.glUniform1f(prog_state.coverage_exponent_loc, draw_state.raster.coverage_transfer.shaderExponent());
+        }
+    }
+
     pub fn beginDraw(self: *Gles30TextState) void {
         self.frame_begun = false;
     }
@@ -705,4 +864,46 @@ fn setTextBlendMode(special: bool, render_mode: subpixel_policy.TextRenderMode) 
     _ = render_mode;
     gl.glEnable(gl.GL_BLEND);
     gl.glBlendFuncSeparate(gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA, gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA);
+}
+
+fn findNewApiCache(
+    caches: anytype,
+    pool: *snail_mod.PagePool,
+) ?@TypeOf(caches[0]) {
+    for (caches) |c| {
+        if (c.pool == pool) return c;
+    }
+    return null;
+}
+
+fn composeShapeOverrideNewApi(dst: []u32, shape: []const u32, override: []const u32) void {
+    std.debug.assert(dst.len == vertex.WORDS_PER_INSTANCE);
+    std.debug.assert(shape.len == vertex.WORDS_PER_INSTANCE);
+    std.debug.assert(override.len == 8);
+    @memcpy(dst, shape);
+    const Transform2D = snail_mod.Transform2D;
+    const shape_t = Transform2D{
+        .xx = @bitCast(shape[2]),
+        .xy = @bitCast(shape[3]),
+        .yx = @bitCast(shape[4]),
+        .yy = @bitCast(shape[5]),
+        .tx = @bitCast(shape[6]),
+        .ty = @bitCast(shape[7]),
+    };
+    const override_t = Transform2D{
+        .xx = @bitCast(override[0]),
+        .xy = @bitCast(override[1]),
+        .tx = @bitCast(override[2]),
+        .yx = @bitCast(override[3]),
+        .yy = @bitCast(override[4]),
+        .ty = @bitCast(override[5]),
+    };
+    const composed_t = Transform2D.multiply(override_t, shape_t);
+    dst[2] = @bitCast(composed_t.xx);
+    dst[3] = @bitCast(composed_t.xy);
+    dst[4] = @bitCast(composed_t.yx);
+    dst[5] = @bitCast(composed_t.yy);
+    dst[6] = @bitCast(composed_t.tx);
+    dst[7] = @bitCast(composed_t.ty);
+    dst[15] = override[6];
 }
