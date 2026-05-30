@@ -199,7 +199,9 @@ fn createInstanceOffscreen() !void {
     const app_info = std.mem.zeroInit(vk.VkApplicationInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_APPLICATION_INFO,
         .pApplicationName = "snail-bench",
-        .apiVersion = vk.VK_API_VERSION_1_0,
+        // Vulkan 1.1 is the minimum for VK_EXT_vertex_attribute_divisor
+        // promotion paths; we still enable the extension explicitly.
+        .apiVersion = vk.VK_API_VERSION_1_1,
     });
     const ci = std.mem.zeroInit(vk.VkInstanceCreateInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
@@ -251,11 +253,23 @@ fn createDeviceOffscreen() !void {
     supports_dual_source_blend = supported_features.dualSrcBlend == vk.VK_TRUE;
     var enabled_features = std.mem.zeroes(vk.VkPhysicalDeviceFeatures);
     if (supports_dual_source_blend) enabled_features.dualSrcBlend = vk.VK_TRUE;
+
+    // Enable VK_EXT_vertex_attribute_divisor for the replicated draw
+    // path's hardware instancing (shape divisor M, override divisor 1).
+    const divisor_ext_name: [*c]const u8 = "VK_EXT_vertex_attribute_divisor";
+    var divisor_features = std.mem.zeroInit(vk.VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT, .{
+        .sType = vk.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT,
+        .vertexAttributeInstanceRateDivisor = vk.VK_TRUE,
+        .vertexAttributeInstanceRateZeroDivisor = vk.VK_FALSE,
+    });
     const dev_ci = std.mem.zeroInit(vk.VkDeviceCreateInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+        .pNext = &divisor_features,
         .queueCreateInfoCount = 1,
         .pQueueCreateInfos = &queue_ci,
         .pEnabledFeatures = &enabled_features,
+        .enabledExtensionCount = 1,
+        .ppEnabledExtensionNames = &divisor_ext_name,
     });
     try checkVk(vk.vkCreateDevice(physical_device, &dev_ci, null, &device));
     vk.vkGetDeviceQueue(device, queue_family_index, 0, &graphics_queue);

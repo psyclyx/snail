@@ -5,6 +5,15 @@ layout(location = 3) in uvec2 a_glyph;  // gz, gw packed glyph data
 layout(location = 4) in vec4 a_bnd;     // band scale x, scale y, offset x, offset y
 layout(location = 5) in vec4 a_col;     // base color RGBA
 layout(location = 6) in vec4 a_tint;    // instance tint RGBA
+#ifdef SNAIL_REPLICATED
+// Override stream: drives gpu hardware instancing of N shapes × M overrides.
+// Sourced from a second vertex buffer with divisor 1 while the shape
+// stream (locations 0-6) uses divisor M. Layout matches `Override` emit:
+// b_xform_a = (xx, xy, tx, yx), b_xform_b = (yy, ty, _, _), b_tint = RGBA.
+layout(location = 7) in vec4 b_xform_a;
+layout(location = 8) in vec4 b_xform_b;
+layout(location = 9) in vec4 b_tint;
+#endif
 
 uniform mat4 u_mvp;
 uniform vec2 u_viewport;

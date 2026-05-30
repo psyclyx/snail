@@ -19,23 +19,50 @@ void main() {
     // Outward corner normal in local space (dilation direction).
     vec2 nd = t * 2.0 - 1.0;
 
+    // Effective instance transform. In replicated mode, compose
+    // override × shape (override applied to shape-transformed points)
+    // and let the override's tint replace the shape's identity tint.
+#ifdef SNAIL_REPLICATED
+    // override.xform: [oxx, oxy, otx, oyx] in b_xform_a; [oyy, oty] in
+    // b_xform_b. b_tint is the packed RGBA u8x4 unpacked to vec4.
+    float oxx = b_xform_a.x; float oxy = b_xform_a.y;
+    float otx = b_xform_a.z; float oyx = b_xform_a.w;
+    float oyy = b_xform_b.x; float oty = b_xform_b.y;
+    // shape.xform: a_xform = (xx, xy, yx, yy); shape origin = a_origin.
+    vec4 eff_xform = vec4(
+        oxx * a_xform.x + oxy * a_xform.z,  // combined xx
+        oxx * a_xform.y + oxy * a_xform.w,  // combined xy
+        oyx * a_xform.x + oyy * a_xform.z,  // combined yx
+        oyx * a_xform.y + oyy * a_xform.w   // combined yy
+    );
+    vec2 eff_origin = vec2(
+        oxx * a_origin.x + oxy * a_origin.y + otx,
+        oyx * a_origin.x + oyy * a_origin.y + oty
+    );
+    vec4 eff_tint = b_tint;
+#else
+    vec4 eff_xform = a_xform;
+    vec2 eff_origin = a_origin;
+    vec4 eff_tint = a_tint;
+#endif
+
     vec2 pos = vec2(
-        a_xform.x * em.x + a_xform.y * em.y + a_origin.x,
-        a_xform.z * em.x + a_xform.w * em.y + a_origin.y
+        eff_xform.x * em.x + eff_xform.y * em.y + eff_origin.x,
+        eff_xform.z * em.x + eff_xform.w * em.y + eff_origin.y
     );
 
     vec2 wn = vec2(
-        a_xform.x * nd.x + a_xform.y * nd.y,
-        a_xform.z * nd.x + a_xform.w * nd.y
+        eff_xform.x * nd.x + eff_xform.y * nd.y,
+        eff_xform.z * nd.x + eff_xform.w * nd.y
     );
 
-    float det = a_xform.x * a_xform.w - a_xform.y * a_xform.z;
+    float det = eff_xform.x * eff_xform.w - eff_xform.y * eff_xform.z;
     float inv_det = 1.0 / det;
     vec4 jac = vec4(
-        a_xform.w * inv_det,
-        -a_xform.y * inv_det,
-        -a_xform.z * inv_det,
-        a_xform.x * inv_det
+        eff_xform.w * inv_det,
+        -eff_xform.y * inv_det,
+        -eff_xform.z * inv_det,
+        eff_xform.x * inv_det
     );
 
     uint gz = a_glyph.x;
@@ -43,7 +70,7 @@ void main() {
     v_glyph = ivec4(gz & 0xFFFFu, gz >> 16u, gw & 0xFFFFu, gw >> 16u);
     v_banding = a_bnd;
     v_color = a_col;
-    v_tint = a_tint;
+    v_tint = eff_tint;
 
     // Slug dynamic dilation
     vec4 m0 = vec4(SNAIL_MVP[0].x, SNAIL_MVP[1].x, SNAIL_MVP[2].x, SNAIL_MVP[3].x);

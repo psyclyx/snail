@@ -8,11 +8,15 @@ layout(location = 3) in uvec2 a_glyph; // gz, gw packed
 layout(location = 4) in vec4 a_bnd;    // band scale x, scale y, offset x, offset y
 layout(location = 5) in vec4 a_col;    // base color RGBA
 layout(location = 6) in vec4 a_tint;   // instance tint RGBA
+#ifdef SNAIL_REPLICATED
+layout(location = 7) in vec4 b_xform_a;
+layout(location = 8) in vec4 b_xform_b;
+layout(location = 9) in vec4 b_tint;
+#endif
 
 layout(push_constant) uniform PushConstants {
     mat4 mvp;
     vec2 viewport;
-    int fill_rule;
     int subpixel_order;
 };
 

@@ -26,10 +26,6 @@ const check = vulkan_device.check;
 const PushConstants = extern struct {
     mvp: [16]f32, // mat4, column-major
     viewport: [2]f32,
-    /// Retained as a padding slot to keep the push constant offset stable
-    /// with the GLSL layout while we update the Vulkan shaders. fill_rule
-    /// itself moved to per-paint-record encoding (texel 0.x bit 15).
-    fill_rule_padding: i32 = 0,
     subpixel_order: i32 = 1, // 1=RGB, 2=BGR, 3=VRGB, 4=VBGR
     output_srgb: i32 = 0, // 0 = emit linear, 1 = sRGB-encode before write
     layer_base: i32 = 0,
@@ -37,7 +33,7 @@ const PushConstants = extern struct {
 };
 
 comptime {
-    if (@sizeOf(PushConstants) != 92) @compileError("PushConstants must be 92 bytes");
+    if (@sizeOf(PushConstants) != 88) @compileError("PushConstants must be 88 bytes");
 }
 
 pub const VulkanContext = vulkan_types.VulkanContext;
@@ -63,6 +59,20 @@ const atlasPagesInBank = vulkan_resources.atlasPagesInBank;
 const retainPage = vulkan_resources.retainPage;
 pub const PreparedResources = vulkan_resources.PreparedResources;
 
+pub const ReplicatedKind = enum(u8) {
+    text,
+    text_subpixel_dual,
+    colr,
+    path,
+    hinted_text,
+};
+
+const ReplicatedSlot = struct {
+    kind: ReplicatedKind = .text,
+    m: u32 = 0,
+    pipeline: vk.VkPipeline = null,
+};
+
 // ── Internal helpers ──
 
 pub const VulkanPipeline = struct {
@@ -77,6 +87,14 @@ pub const VulkanPipeline = struct {
     pipeline_cache: vk.VkPipelineCache = null,
     pipeline_layout: vk.VkPipelineLayout = null,
     desc_set_layout: vk.VkDescriptorSetLayout = null,
+
+    /// Replicated draw-path pipeline cache. Each entry pairs a (kind, M)
+    /// with a fully built `VkPipeline` that has shape stream binding 0
+    /// with hardware divisor M and override stream binding 1 with
+    /// divisor 1. Lazily populated on first replicated draw for each
+    /// unique M. 32 slots covers any sane workload.
+    replicated_pipelines: [32]ReplicatedSlot = .{ReplicatedSlot{}} ** 32,
+    replicated_pipeline_count: u8 = 0,
 
     vertex_buffer: vk.VkBuffer = null,
     vertex_memory: vk.VkDeviceMemory = null,
@@ -253,6 +271,10 @@ pub const VulkanPipeline = struct {
         if (self.pipeline_path != null) vk.vkDestroyPipeline(self.ctx.device, self.pipeline_path, null);
         if (self.pipeline_colr != null) vk.vkDestroyPipeline(self.ctx.device, self.pipeline_colr, null);
         if (self.pipeline_text != null) vk.vkDestroyPipeline(self.ctx.device, self.pipeline_text, null);
+        for (self.replicated_pipelines[0..self.replicated_pipeline_count]) |slot| {
+            if (slot.pipeline != null) vk.vkDestroyPipeline(self.ctx.device, slot.pipeline, null);
+        }
+        self.replicated_pipeline_count = 0;
         if (self.pipeline_cache != null) vk.vkDestroyPipelineCache(self.ctx.device, self.pipeline_cache, null);
         if (self.pipeline_layout != null) vk.vkDestroyPipelineLayout(self.ctx.device, self.pipeline_layout, null);
         if (self.desc_set_layout != null) vk.vkDestroyDescriptorSetLayout(self.ctx.device, self.desc_set_layout, null);
@@ -484,11 +506,10 @@ pub const VulkanPipeline = struct {
         }
     }
 
-    fn pushTextConstants(self: *VulkanPipeline, cmd: vk.VkCommandBuffer, state: DrawState, local_layer_base: u32, render_mode: subpixel_policy.TextRenderMode) void {
+    pub fn pushTextConstants(self: *VulkanPipeline, cmd: vk.VkCommandBuffer, state: DrawState, local_layer_base: u32, render_mode: subpixel_policy.TextRenderMode) void {
         const pc = PushConstants{
             .mvp = state.mvp.data,
             .viewport = .{ state.surface.pixel_width, state.surface.pixel_height },
-            .fill_rule_padding = 0,
             .subpixel_order = @intFromEnum(if (render_mode == .grayscale) SubpixelOrder.none else state.raster.subpixel_order),
             .output_srgb = if (state.surface.encoding.shaderEncodesSrgb()) 1 else 0,
             .layer_base = @intCast(local_layer_base),
@@ -546,7 +567,6 @@ pub const VulkanPipeline = struct {
         const pc = PushConstants{
             .mvp = state.mvp.data,
             .viewport = .{ state.surface.pixel_width, state.surface.pixel_height },
-            .fill_rule_padding = 0,
             .subpixel_order = @intFromEnum(if (render_mode == .grayscale) SubpixelOrder.none else state.raster.subpixel_order),
             .output_srgb = if (state.surface.encoding.shaderEncodesSrgb()) 1 else 0,
             .layer_base = @intCast(local_layer_base),
@@ -570,11 +590,10 @@ pub const VulkanPipeline = struct {
         MissingCommandBuffer,
     } || std.mem.Allocator.Error || anyerror;
 
-    /// Walk `DrawRecords.segments`, bind each segment's matching
-    /// `VulkanPreparedPages` cache, dispatch the encoded instances
-    /// through the existing pipeline + push-constant chain. Mirrors
-    /// the GL drawNewApi: subpixel runs use dual-source when available,
-    /// path / colr / hinted_text bind their respective pipelines.
+    /// Walk `DrawRecords.segments` and dispatch via the new-API draw
+    /// module. The implementation lives in `draw_new_api.zig`; this
+    /// shim exists to keep the public surface on `VulkanPipeline`
+    /// stable for callers that go through the snail adapter layer.
     pub fn drawNewApi(
         self: *VulkanPipeline,
         scratch: std.mem.Allocator,
@@ -582,105 +601,9 @@ pub const VulkanPipeline = struct {
         records: draw_records_mod.DrawRecords,
         caches: []const *const vulkan_upload_new.VulkanPreparedPages,
     ) NewDrawError!void {
-        const cmd = self.active_cmd orelse return error.MissingCommandBuffer;
-        vk.vkCmdBindIndexBuffer(cmd, self.index_buffer, 0, vk.VK_INDEX_TYPE_UINT32);
-        setViewportAndScissor(cmd, draw_state.surface.pixel_width, draw_state.surface.pixel_height);
-
-        for (records.segments) |seg| {
-            const cache = findNewApiCache(caches, seg.binding.pool) orelse return error.MissingBinding;
-            if (seg.binding.generation != 0 and cache.upload_generation < seg.binding.generation) return error.StaleBinding;
-            const desc_set = cache.descriptorSetFor(seg.binding.generation) orelse return error.MissingBinding;
-            const seg_words = records.words[seg.words_offset..][0..seg.words_len];
-            switch (seg.kind) {
-                .heterogeneous => try self.drawHeterogeneousNewApi(cmd, desc_set, draw_state, seg_words),
-                .replicated => try self.drawReplicatedNewApi(scratch, cmd, desc_set, draw_state, seg, seg_words),
-            }
-        }
+        return @import("draw_new_api.zig").drawNewApi(self, scratch, draw_state, records, caches);
     }
 
-    fn drawHeterogeneousNewApi(self: *VulkanPipeline, cmd: vk.VkCommandBuffer, desc_set: vk.VkDescriptorSet, draw_state: DrawState, vertices: []const u32) NewDrawError!void {
-        const total_glyphs = vertices.len / vertex.WORDS_PER_INSTANCE;
-        if (total_glyphs == 0) return;
-
-        vk.vkCmdBindDescriptorSets(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, self.pipeline_layout, 0, 1, @ptrCast(&desc_set), 0, null);
-
-        const allow_subpixel = true;
-
-        var run_start: usize = 0;
-        while (run_start < total_glyphs) {
-            const run_kind = subpixel_policy.glyphRunKind(vertices, run_start);
-            const run_end = subpixel_policy.glyphRunEnd(vertices, run_start, run_kind);
-            const run_mode: subpixel_policy.TextRenderMode = if (run_kind != .regular)
-                .grayscale
-            else
-                subpixel_policy.chooseTextRenderModeRange(
-                    vertices,
-                    run_start,
-                    run_end - run_start,
-                    draw_state.mvp,
-                    allow_subpixel,
-                    draw_state.raster.subpixel_order,
-                    self.ctx.supports_dual_source_blend,
-                );
-            const pip = switch (run_kind) {
-                .regular => switch (run_mode) {
-                    .grayscale => try self.ensureTextPipeline(),
-                    .subpixel_dual_source => try self.ensureTextSubpixelDualPipeline(),
-                },
-                .colr => try self.ensureColrPipeline(),
-                .path => try self.ensurePathPipeline(),
-                .hinted_text => try self.ensureHintedTextPipeline(),
-            };
-            vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pip);
-            // The new path stores absolute texture-array layer in the
-            // per-instance data; no bank-local offset is needed.
-            self.pushTextConstants(cmd, draw_state, 0, run_mode);
-            try self.drawGlyphRange(vertices, run_start, run_end - run_start);
-            run_start = run_end;
-        }
-    }
-
-    fn drawReplicatedNewApi(
-        self: *VulkanPipeline,
-        scratch: std.mem.Allocator,
-        cmd: vk.VkCommandBuffer,
-        desc_set: vk.VkDescriptorSet,
-        draw_state: DrawState,
-        seg: draw_records_mod.DrawSegment,
-        seg_words: []const u32,
-    ) NewDrawError!void {
-        const n = seg.shape_count;
-        const m = seg.override_count;
-        if (n == 0 or m == 0) return;
-        const WORDS_PER_OVERRIDE: usize = 8;
-        const expected = @as(usize, n) * vertex.WORDS_PER_INSTANCE + @as(usize, m) * WORDS_PER_OVERRIDE;
-        if (seg_words.len != expected) return error.MalformedSegment;
-
-        const composed = try scratch.alloc(u32, @as(usize, n) * @as(usize, m) * vertex.WORDS_PER_INSTANCE);
-        defer scratch.free(composed);
-
-        const shape_words = seg_words[0 .. @as(usize, n) * vertex.WORDS_PER_INSTANCE];
-        const override_words = seg_words[@as(usize, n) * vertex.WORDS_PER_INSTANCE ..];
-
-        var out_cursor: usize = 0;
-        var i: u32 = 0;
-        while (i < n) : (i += 1) {
-            const shape_inst = shape_words[@as(usize, i) * vertex.WORDS_PER_INSTANCE ..][0..vertex.WORDS_PER_INSTANCE];
-            var j: u32 = 0;
-            while (j < m) : (j += 1) {
-                const override_block = override_words[@as(usize, j) * WORDS_PER_OVERRIDE ..][0..WORDS_PER_OVERRIDE];
-                const dst = composed[out_cursor..][0..vertex.WORDS_PER_INSTANCE];
-                composeShapeOverrideNewApi(dst, shape_inst, override_block);
-                out_cursor += vertex.WORDS_PER_INSTANCE;
-            }
-        }
-
-        try self.drawHeterogeneousNewApi(cmd, desc_set, draw_state, composed);
-    }
-
-    /// Adapter accessor so the new-API `VulkanPreparedPages` can pull
-    /// the pieces it needs (context, pools, samplers, set layout)
-    /// without snail.* having to import the legacy pipeline type.
     pub fn newApiPipelineShape(self: *const VulkanPipeline) vulkan_upload_new.PipelineShape {
         return .{
             .ctx = self.ctx,
@@ -702,27 +625,27 @@ pub const VulkanPipeline = struct {
         try vulkan_graphics.warmGraphicsPipelines(self);
     }
 
-    fn ensureTextPipeline(self: *VulkanPipeline) !vk.VkPipeline {
+    pub fn ensureTextPipeline(self: *VulkanPipeline) !vk.VkPipeline {
         return vulkan_graphics.ensureTextPipeline(self);
     }
 
-    fn ensureColrPipeline(self: *VulkanPipeline) !vk.VkPipeline {
+    pub fn ensureColrPipeline(self: *VulkanPipeline) !vk.VkPipeline {
         return vulkan_graphics.ensureColrPipeline(self);
     }
 
-    fn ensurePathPipeline(self: *VulkanPipeline) !vk.VkPipeline {
+    pub fn ensurePathPipeline(self: *VulkanPipeline) !vk.VkPipeline {
         return vulkan_graphics.ensurePathPipeline(self);
     }
 
-    fn ensureHintedTextPipeline(self: *VulkanPipeline) !vk.VkPipeline {
+    pub fn ensureHintedTextPipeline(self: *VulkanPipeline) !vk.VkPipeline {
         return vulkan_graphics.ensureHintedTextPipeline(self);
     }
 
-    fn ensureTextSubpixelDualPipeline(self: *VulkanPipeline) !vk.VkPipeline {
+    pub fn ensureTextSubpixelDualPipeline(self: *VulkanPipeline) !vk.VkPipeline {
         return vulkan_graphics.ensureTextSubpixelDualPipeline(self);
     }
 
-    fn drawGlyphRange(self: *VulkanPipeline, vertices: []const u32, glyph_offset: usize, glyph_count: usize) !void {
+    pub fn drawGlyphRange(self: *VulkanPipeline, vertices: []const u32, glyph_offset: usize, glyph_count: usize) !void {
         try vulkan_graphics.drawGlyphRange(self, vertices, glyph_offset, glyph_count);
     }
 
@@ -753,44 +676,3 @@ fn setViewportAndScissor(cmd: vk.VkCommandBuffer, viewport_w: f32, viewport_h: f
     vk.vkCmdSetScissor(cmd, 0, 1, &scissor);
 }
 
-fn findNewApiCache(
-    caches: anytype,
-    pool: *snail_mod.PagePool,
-) ?@TypeOf(caches[0]) {
-    for (caches) |c| {
-        if (c.pool == pool) return c;
-    }
-    return null;
-}
-
-fn composeShapeOverrideNewApi(dst: []u32, shape: []const u32, override: []const u32) void {
-    std.debug.assert(dst.len == vertex.WORDS_PER_INSTANCE);
-    std.debug.assert(shape.len == vertex.WORDS_PER_INSTANCE);
-    std.debug.assert(override.len == 8);
-    @memcpy(dst, shape);
-    const Transform2D = snail_mod.Transform2D;
-    const shape_t = Transform2D{
-        .xx = @bitCast(shape[2]),
-        .xy = @bitCast(shape[3]),
-        .yx = @bitCast(shape[4]),
-        .yy = @bitCast(shape[5]),
-        .tx = @bitCast(shape[6]),
-        .ty = @bitCast(shape[7]),
-    };
-    const override_t = Transform2D{
-        .xx = @bitCast(override[0]),
-        .xy = @bitCast(override[1]),
-        .tx = @bitCast(override[2]),
-        .yx = @bitCast(override[3]),
-        .yy = @bitCast(override[4]),
-        .ty = @bitCast(override[5]),
-    };
-    const composed_t = Transform2D.multiply(override_t, shape_t);
-    dst[2] = @bitCast(composed_t.xx);
-    dst[3] = @bitCast(composed_t.xy);
-    dst[4] = @bitCast(composed_t.yx);
-    dst[5] = @bitCast(composed_t.yy);
-    dst[6] = @bitCast(composed_t.tx);
-    dst[7] = @bitCast(composed_t.ty);
-    dst[15] = override[6];
-}

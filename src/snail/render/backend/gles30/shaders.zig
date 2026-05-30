@@ -8,6 +8,8 @@ const glsl_300es_version =
     "precision highp sampler2DArray;\n" ++
     "precision highp usampler2DArray;\n\n";
 
+const glsl_300es_replicated = "#define SNAIL_REPLICATED 1\n\n";
+
 const gles30_vert_interface = @embedFile("../glsl/snail_vert.interface.glsl");
 const gles30_frag_interface = @embedFile("../glsl/snail_frag.interface.glsl");
 const gles30_text_subpixel_interface = @embedFile("../glsl/snail_text_subpixel.interface.glsl");
@@ -73,6 +75,13 @@ pub const text_sample_body = shared_text_sample_body;
 
 pub const vertex_shader =
     glsl_300es_version ++
+    gles30_vert_interface ++
+    "\n" ++
+    shared_vertex_body;
+
+pub const vertex_shader_replicated =
+    glsl_300es_version ++
+    glsl_300es_replicated ++
     gles30_vert_interface ++
     "\n" ++
     shared_vertex_body;

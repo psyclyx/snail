@@ -13,7 +13,6 @@ layout(set = 0, binding = 1) uniform usampler2DArray u_band_tex;
 layout(push_constant) uniform PushConstants {
     mat4 mvp;
     vec2 viewport;
-    int fill_rule;
     int subpixel_order;
     int output_srgb;
     int layer_base;
@@ -25,7 +24,6 @@ layout(location = 0) out vec4 frag_color;
 layout(location = 0, index = 1) out vec4 frag_blend;
 #endif
 
-#define SNAIL_FILL_RULE fill_rule
 #define SNAIL_SUBPIXEL_ORDER subpixel_order
 #define SNAIL_OUTPUT_SRGB output_srgb
 #define SNAIL_COVERAGE_EXPONENT coverage_exponent

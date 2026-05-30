@@ -64,6 +64,10 @@ pub const Gles30TextState = struct {
     colr_program: ProgramState = .{},
     path_program: ProgramState = .{},
     hinted_text_program: ProgramState = .{},
+    text_program_replicated: ProgramState = .{},
+    colr_program_replicated: ProgramState = .{},
+    path_program_replicated: ProgramState = .{},
+    hinted_text_program_replicated: ProgramState = .{},
     linear_resolve_program: gl.GLuint = 0,
     linear_resolve_tex_loc: gl.GLint = -1,
     linear_resolve_dst_tex_loc: gl.GLint = -1,
@@ -79,6 +83,9 @@ pub const Gles30TextState = struct {
     vao: gl.GLuint = 0,
     vbo: gl.GLuint = 0,
     ebo: gl.GLuint = 0,
+    vao_replicated: gl.GLuint = 0,
+    vbo_replicated: gl.GLuint = 0,
+    replicated_shape_divisor: u32 = 0,
     active_program: gl.GLuint = 0,
     active_resource_bank_id: u32 = std.math.maxInt(u32),
     frame_begun: bool = false,
@@ -94,6 +101,10 @@ pub const Gles30TextState = struct {
         self.colr_program = try loadProgramState("text-colr", shaders.vertex_shader, shaders.fragment_shader_colr, false);
         self.path_program = try loadProgramState("path", shaders.vertex_shader, shaders.fragment_shader_path, false);
         self.hinted_text_program = try loadProgramState("hinted-text", shaders.vertex_shader, shaders.fragment_shader_hinted_text, false);
+        self.text_program_replicated = try loadProgramState("text-replicated", shaders.vertex_shader_replicated, shaders.fragment_shader_text, false);
+        self.colr_program_replicated = try loadProgramState("text-colr-replicated", shaders.vertex_shader_replicated, shaders.fragment_shader_colr, false);
+        self.path_program_replicated = try loadProgramState("path-replicated", shaders.vertex_shader_replicated, shaders.fragment_shader_path, false);
+        self.hinted_text_program_replicated = try loadProgramState("hinted-text-replicated", shaders.vertex_shader_replicated, shaders.fragment_shader_hinted_text, false);
         self.linear_resolve_program = try linkProgram("linear-resolve", linear_resolve_vertex_shader, linear_resolve_fragment_shader, false);
         self.linear_resolve_tex_loc = gl.glGetUniformLocation(self.linear_resolve_program, "u_linear_tex");
         self.linear_resolve_dst_tex_loc = gl.glGetUniformLocation(self.linear_resolve_program, "u_dst_tex");
@@ -122,6 +133,14 @@ pub const Gles30TextState = struct {
         initEbo();
         setupVertexAttribs();
         setupInstanceDivisors();
+
+        // Replicated VAO: shares the EBO, override divisor pre-set;
+        // shape divisor + buffer offsets get updated per draw.
+        gl.glGenVertexArrays(1, &self.vao_replicated);
+        gl.glGenBuffers(1, &self.vbo_replicated);
+        gl.glBindVertexArray(self.vao_replicated);
+        gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self.ebo);
+        gl.glBindVertexArray(self.vao);
     }
 
     pub fn deinit(self: *Gles30TextState) void {
@@ -134,6 +153,12 @@ pub const Gles30TextState = struct {
         deleteProgramState(&self.colr_program);
         deleteProgramState(&self.path_program);
         deleteProgramState(&self.hinted_text_program);
+        deleteProgramState(&self.text_program_replicated);
+        deleteProgramState(&self.colr_program_replicated);
+        deleteProgramState(&self.path_program_replicated);
+        deleteProgramState(&self.hinted_text_program_replicated);
+        if (self.vao_replicated != 0) gl.glDeleteVertexArrays(1, &self.vao_replicated);
+        if (self.vbo_replicated != 0) gl.glDeleteBuffers(1, &self.vbo_replicated);
         if (self.linear_resolve_program != 0) gl.glDeleteProgram(self.linear_resolve_program);
         if (self.linear_resolve_vao != 0) gl.glDeleteVertexArrays(1, &self.linear_resolve_vao);
         if (self.linear_resolve_fbo != 0) gl.glDeleteFramebuffers(1, &self.linear_resolve_fbo);
@@ -531,17 +556,15 @@ pub const Gles30TextState = struct {
         for (records.segments) |seg| {
             const cache = findNewApiCache(caches, seg.binding.pool) orelse return error.MissingBinding;
             if (seg.binding.generation != 0 and cache.upload_generation < seg.binding.generation) return error.StaleBinding;
-            const layer_info_tex = cache.layerInfoFor(seg.binding.generation);
-            const image_array_tex = cache.imageArrayFor(seg.binding.generation);
             const seg_words = records.words[seg.words_offset..][0..seg.words_len];
             switch (seg.kind) {
-                .heterogeneous => try self.drawHeterogeneousNewApi(cache, layer_info_tex, image_array_tex, draw_state, seg_words),
-                .replicated => try self.drawReplicatedNewApi(scratch, cache, layer_info_tex, image_array_tex, draw_state, seg, seg_words),
+                .heterogeneous => try self.drawHeterogeneousNewApi(cache, draw_state, seg_words),
+                .replicated => try self.drawReplicatedNewApi(scratch, cache, draw_state, seg, seg_words),
             }
         }
     }
 
-    fn drawHeterogeneousNewApi(self: *Gles30TextState, cache: *const gles30_upload.Gles30PreparedPages, layer_info_tex: gl.GLuint, image_array_tex: gl.GLuint, draw_state: DrawState, vertices: []const u32) NewDrawError!void {
+    fn drawHeterogeneousNewApi(self: *Gles30TextState, cache: *const gles30_upload.Gles30PreparedPages, draw_state: DrawState, vertices: []const u32) NewDrawError!void {
         const total_glyphs = vertices.len / vertex.WORDS_PER_INSTANCE;
         if (total_glyphs == 0) return;
 
@@ -572,18 +595,20 @@ pub const Gles30TextState = struct {
                 .path => self.ensurePathProgram(),
                 .hinted_text => self.ensureHintedTextProgram(),
             };
-            self.bindProgramStateNewApi(cache, layer_info_tex, image_array_tex, prog_state, draw_state, run_mode);
+            self.bindProgramStateNewApi(cache, prog_state, draw_state, run_mode);
             self.drawGlyphRange(vertices, run_start, run_end - run_start);
             run_start = run_end;
         }
     }
 
+    /// Real hardware GPU instancing for the GLES3 replicated path. See
+    /// the GL state.zig counterpart for the design notes — one
+    /// instanced draw per shape, M instances each, shape attrs
+    /// at divisor M (constant within a draw) and overrides at divisor 1.
     fn drawReplicatedNewApi(
         self: *Gles30TextState,
-        scratch: std.mem.Allocator,
+        _: std.mem.Allocator,
         cache: *const gles30_upload.Gles30PreparedPages,
-        layer_info_tex: gl.GLuint,
-        image_array_tex: gl.GLuint,
         draw_state: DrawState,
         seg: draw_records_mod.DrawSegment,
         seg_words: []const u32,
@@ -595,29 +620,89 @@ pub const Gles30TextState = struct {
         const expected = @as(usize, n) * vertex.WORDS_PER_INSTANCE + @as(usize, m) * WORDS_PER_OVERRIDE;
         if (seg_words.len != expected) return error.MalformedSegment;
 
-        const composed = try scratch.alloc(u32, @as(usize, n) * @as(usize, m) * vertex.WORDS_PER_INSTANCE);
-        defer scratch.free(composed);
+        const shape_bytes: usize = @as(usize, n) * vertex.BYTES_PER_INSTANCE;
+        const override_bytes: usize = @as(usize, m) * 32;
+        const total_bytes: usize = shape_bytes + override_bytes;
+        const src_ptr: [*]const u8 = @ptrCast(seg_words.ptr);
 
-        const shape_words = seg_words[0 .. @as(usize, n) * vertex.WORDS_PER_INSTANCE];
-        const override_words = seg_words[@as(usize, n) * vertex.WORDS_PER_INSTANCE ..];
-
-        var out_cursor: usize = 0;
-        var i: u32 = 0;
-        while (i < n) : (i += 1) {
-            const shape_inst = shape_words[@as(usize, i) * vertex.WORDS_PER_INSTANCE ..][0..vertex.WORDS_PER_INSTANCE];
-            var j: u32 = 0;
-            while (j < m) : (j += 1) {
-                const override_block = override_words[@as(usize, j) * WORDS_PER_OVERRIDE ..][0..WORDS_PER_OVERRIDE];
-                const dst = composed[out_cursor..][0..vertex.WORDS_PER_INSTANCE];
-                composeShapeOverrideNewApi(dst, shape_inst, override_block);
-                out_cursor += vertex.WORDS_PER_INSTANCE;
-            }
+        gl.glBindVertexArray(self.vao_replicated);
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vbo_replicated);
+        gl.glBufferData(gl.GL_ARRAY_BUFFER, @intCast(total_bytes), src_ptr, gl.GL_STREAM_DRAW);
+        if (self.replicated_shape_divisor != m) {
+            inline for (0..7) |i| gl.glVertexAttribDivisor(@intCast(i), m);
+            inline for (7..10) |i| gl.glVertexAttribDivisor(@intCast(i), 1);
+            self.replicated_shape_divisor = m;
         }
 
-        try self.drawHeterogeneousNewApi(cache, layer_info_tex, image_array_tex, draw_state, composed);
+        const allow_subpixel = false; // GLES3 has no dual-source blend.
+        const shape_words_view = seg_words[0..@as(usize, n) * vertex.WORDS_PER_INSTANCE];
+
+        var run_start: usize = 0;
+        while (run_start < n) {
+            const run_kind = subpixel_policy.glyphRunKind(shape_words_view, run_start);
+            const run_end_in_shapes = subpixel_policy.glyphRunEnd(shape_words_view, run_start, run_kind);
+            const run_shape_count = run_end_in_shapes - run_start;
+            const run_mode: subpixel_policy.TextRenderMode = if (run_kind != .regular)
+                .grayscale
+            else
+                subpixel_policy.chooseTextRenderModeRange(
+                    shape_words_view,
+                    run_start,
+                    run_shape_count,
+                    draw_state.mvp,
+                    allow_subpixel,
+                    draw_state.raster.subpixel_order,
+                    false,
+                );
+            setTextBlendMode(run_kind != .regular, run_mode);
+            const prog_state = switch (run_kind) {
+                .regular => &self.text_program_replicated,
+                .colr => &self.colr_program_replicated,
+                .path => &self.path_program_replicated,
+                .hinted_text => &self.hinted_text_program_replicated,
+            };
+            self.bindProgramStateNewApi(cache, prog_state, draw_state, run_mode);
+            var s: usize = run_start;
+            while (s < run_end_in_shapes) : (s += 1) {
+                setupReplicatedVertexAttribsGles(s * vertex.BYTES_PER_INSTANCE, shape_bytes);
+                gl.glDrawElementsInstanced(gl.GL_TRIANGLES, 6, gl.GL_UNSIGNED_INT, null, @intCast(m));
+            }
+            run_start = run_end_in_shapes;
+        }
+
+        gl.glBindVertexArray(self.vao);
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vbo);
     }
 
-    fn bindProgramStateNewApi(self: *Gles30TextState, cache: *const gles30_upload.Gles30PreparedPages, layer_info_tex: gl.GLuint, image_array_tex: gl.GLuint, prog_state: *const ProgramState, draw_state: DrawState, render_mode: subpixel_policy.TextRenderMode) void {
+    /// Configure attribute pointers on the currently-bound VAO + VBO
+    /// for the replicated draw, with shape stream starting at
+    /// `shape_base` and override stream at `override_base`.
+    fn setupReplicatedVertexAttribsGles(shape_base: usize, override_base: usize) void {
+        const shape_stride: gl.GLsizei = vertex.BYTES_PER_INSTANCE;
+        const override_stride: gl.GLsizei = 32;
+        gl.glVertexAttribPointer(0, 4, gl.GL_HALF_FLOAT, gl.GL_FALSE, shape_stride, @ptrFromInt(shape_base + @offsetOf(vertex.Instance, "rect")));
+        gl.glEnableVertexAttribArray(0);
+        gl.glVertexAttribPointer(1, 4, gl.GL_FLOAT, gl.GL_FALSE, shape_stride, @ptrFromInt(shape_base + @offsetOf(vertex.Instance, "xform")));
+        gl.glEnableVertexAttribArray(1);
+        gl.glVertexAttribPointer(2, 2, gl.GL_FLOAT, gl.GL_FALSE, shape_stride, @ptrFromInt(shape_base + @offsetOf(vertex.Instance, "origin")));
+        gl.glEnableVertexAttribArray(2);
+        gl.glVertexAttribIPointer(3, 2, gl.GL_UNSIGNED_INT, shape_stride, @ptrFromInt(shape_base + @offsetOf(vertex.Instance, "glyph")));
+        gl.glEnableVertexAttribArray(3);
+        gl.glVertexAttribPointer(4, 4, gl.GL_FLOAT, gl.GL_FALSE, shape_stride, @ptrFromInt(shape_base + @offsetOf(vertex.Instance, "band")));
+        gl.glEnableVertexAttribArray(4);
+        gl.glVertexAttribPointer(5, 4, gl.GL_UNSIGNED_BYTE, gl.GL_TRUE, shape_stride, @ptrFromInt(shape_base + @offsetOf(vertex.Instance, "color")));
+        gl.glEnableVertexAttribArray(5);
+        gl.glVertexAttribPointer(6, 4, gl.GL_UNSIGNED_BYTE, gl.GL_TRUE, shape_stride, @ptrFromInt(shape_base + @offsetOf(vertex.Instance, "tint")));
+        gl.glEnableVertexAttribArray(6);
+        gl.glVertexAttribPointer(7, 4, gl.GL_FLOAT, gl.GL_FALSE, override_stride, @ptrFromInt(override_base + 0));
+        gl.glEnableVertexAttribArray(7);
+        gl.glVertexAttribPointer(8, 4, gl.GL_FLOAT, gl.GL_FALSE, override_stride, @ptrFromInt(override_base + 16));
+        gl.glEnableVertexAttribArray(8);
+        gl.glVertexAttribPointer(9, 4, gl.GL_UNSIGNED_BYTE, gl.GL_TRUE, override_stride, @ptrFromInt(override_base + 24));
+        gl.glEnableVertexAttribArray(9);
+    }
+
+    fn bindProgramStateNewApi(self: *Gles30TextState, cache: *const gles30_upload.Gles30PreparedPages, prog_state: *const ProgramState, draw_state: DrawState, render_mode: subpixel_policy.TextRenderMode) void {
         const program_changed = prog_state.handle != self.active_program or !self.frame_begun;
         if (program_changed) {
             gl.glUseProgram(prog_state.handle);
@@ -631,13 +716,13 @@ pub const Gles30TextState = struct {
         gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, cache.curve_array);
         gl.glActiveTexture(gl.GL_TEXTURE1);
         gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, cache.band_array);
-        if (prog_state.layer_tex_loc >= 0 and layer_info_tex != 0) {
+        if (prog_state.layer_tex_loc >= 0 and cache.layer_info_tex != 0) {
             gl.glActiveTexture(gl.GL_TEXTURE2);
-            gl.glBindTexture(gl.GL_TEXTURE_2D, layer_info_tex);
+            gl.glBindTexture(gl.GL_TEXTURE_2D, cache.layer_info_tex);
         }
-        if (prog_state.image_tex_loc >= 0 and image_array_tex != 0) {
+        if (prog_state.image_tex_loc >= 0 and cache.image_array_tex != 0) {
             gl.glActiveTexture(gl.GL_TEXTURE3);
-            gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, image_array_tex);
+            gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, cache.image_array_tex);
         }
 
         if (prog_state.curve_tex_loc >= 0) gl.glUniform1i(prog_state.curve_tex_loc, 0);

@@ -89,6 +89,16 @@ const shader_specs = [_]ShaderSpec{
         .output_name = "snail.vert.spv",
     },
     .{
+        .import_name = "snail_replicated.vert.spv",
+        .generated_source_path = "vulkan-generated/snail_replicated.vert",
+        .wrapper_path = "../src/snail/render/backend/vulkan_glsl/snail.vert",
+        .include_directive = "#include \"snail_vert_body.glsl\"",
+        .source_paths = &.{"../src/snail/render/backend/glsl/snail_vert_body.glsl"},
+        .stage_arg = "-fshader-stage=vert",
+        .output_name = "snail_replicated.vert.spv",
+        .extra_args = &.{"-DSNAIL_REPLICATED=1"},
+    },
+    .{
         .import_name = "snail_text.frag.spv",
         .generated_source_path = "vulkan-generated/snail_text.frag",
         .wrapper_path = "../src/snail/render/backend/vulkan_glsl/snail_text.frag",

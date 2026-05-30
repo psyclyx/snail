@@ -8,6 +8,7 @@ pub const vk = vulkan_types.vk;
 const vk_shaders = @import("vulkan_shaders");
 
 const vert_spv = vk_shaders.vert_spv;
+const vert_replicated_spv = vk_shaders.vert_replicated_spv;
 const frag_text_spv = vk_shaders.frag_text_spv;
 const frag_colr_spv = vk_shaders.frag_colr_spv;
 const frag_path_spv = vk_shaders.frag_path_spv;
@@ -17,7 +18,7 @@ const frag_text_subpixel_dual_spv = vk_shaders.frag_text_subpixel_dual_spv;
 const UPLOAD_SLOT_BYTES = constants.UPLOAD_SLOT_BYTES;
 const BYTES_PER_GLYPH = constants.BYTES_PER_GLYPH;
 
-const BlendMode = enum {
+pub const BlendMode = enum {
     premultiplied,
     dual_source,
 };
@@ -178,6 +179,86 @@ fn graphicsPipelineInfo(
         .renderPass = self.ctx.render_pass,
         .subpass = 0,
     });
+}
+
+fn replicatedVertexInputBindings() [2]vk.VkVertexInputBindingDescription {
+    return .{
+        // Binding 0: shape stream. Stride 64 = one Instance. The
+        // hardware-instance divisor M is filled in by the divisor state
+        // chain (see `replicatedDivisorState`).
+        .{ .binding = 0, .stride = vertex.BYTES_PER_INSTANCE, .inputRate = vk.VK_VERTEX_INPUT_RATE_INSTANCE },
+        // Binding 1: override stream. Stride 32 = one Override.
+        .{ .binding = 1, .stride = 32, .inputRate = vk.VK_VERTEX_INPUT_RATE_INSTANCE },
+    };
+}
+
+fn replicatedVertexInputAttributes() [10]vk.VkVertexInputAttributeDescription {
+    return .{
+        .{ .location = 0, .binding = 0, .format = vk.VK_FORMAT_R16G16B16A16_SFLOAT, .offset = @offsetOf(vertex.Instance, "rect") },
+        .{ .location = 1, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = @offsetOf(vertex.Instance, "xform") },
+        .{ .location = 2, .binding = 0, .format = vk.VK_FORMAT_R32G32_SFLOAT, .offset = @offsetOf(vertex.Instance, "origin") },
+        .{ .location = 3, .binding = 0, .format = vk.VK_FORMAT_R32G32_UINT, .offset = @offsetOf(vertex.Instance, "glyph") },
+        .{ .location = 4, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = @offsetOf(vertex.Instance, "band") },
+        .{ .location = 5, .binding = 0, .format = vk.VK_FORMAT_R8G8B8A8_UNORM, .offset = @offsetOf(vertex.Instance, "color") },
+        .{ .location = 6, .binding = 0, .format = vk.VK_FORMAT_R8G8B8A8_UNORM, .offset = @offsetOf(vertex.Instance, "tint") },
+        // Override stream attributes (binding 1).
+        .{ .location = 7, .binding = 1, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 0 },
+        .{ .location = 8, .binding = 1, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 16 },
+        .{ .location = 9, .binding = 1, .format = vk.VK_FORMAT_R8G8B8A8_UNORM, .offset = 24 },
+    };
+}
+
+fn replicatedDivisorState(divisor_descs: *const [1]vk.VkVertexInputBindingDivisorDescriptionEXT) vk.VkPipelineVertexInputDivisorStateCreateInfoEXT {
+    return std.mem.zeroInit(vk.VkPipelineVertexInputDivisorStateCreateInfoEXT, .{
+        .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_DIVISOR_STATE_CREATE_INFO_EXT,
+        .vertexBindingDivisorCount = divisor_descs.len,
+        .pVertexBindingDivisors = divisor_descs,
+    });
+}
+
+fn replicatedVertexInputState(
+    bindings: *const [2]vk.VkVertexInputBindingDescription,
+    attrs: *const [10]vk.VkVertexInputAttributeDescription,
+    divisor_state: *const vk.VkPipelineVertexInputDivisorStateCreateInfoEXT,
+) vk.VkPipelineVertexInputStateCreateInfo {
+    return std.mem.zeroInit(vk.VkPipelineVertexInputStateCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        .pNext = divisor_state,
+        .vertexBindingDescriptionCount = bindings.len,
+        .pVertexBindingDescriptions = bindings,
+        .vertexAttributeDescriptionCount = attrs.len,
+        .pVertexAttributeDescriptions = attrs,
+    });
+}
+
+pub fn createReplicatedPipeline(self: anytype, frag_code: []const u8, blend_mode: BlendMode, m: u32) !vk.VkPipeline {
+    const vert_module = try createShaderModule(self, vert_replicated_spv);
+    defer vk.vkDestroyShaderModule(self.ctx.device, vert_module, null);
+    const frag_module = try createShaderModule(self, frag_code);
+    defer vk.vkDestroyShaderModule(self.ctx.device, frag_module, null);
+
+    const stages = pipelineShaderStages(vert_module, frag_module);
+    const bindings = replicatedVertexInputBindings();
+    const attrs = replicatedVertexInputAttributes();
+    const divisor_descs = [1]vk.VkVertexInputBindingDivisorDescriptionEXT{
+        .{ .binding = 0, .divisor = m },
+    };
+    const divisor_state = replicatedDivisorState(&divisor_descs);
+    const vi_info = replicatedVertexInputState(&bindings, &attrs, &divisor_state);
+    const ia_info = inputAssemblyState();
+    const dyn_states = dynamicStates();
+    const dyn_info = dynamicStateInfo(&dyn_states);
+    const vp_info = viewportState();
+    const rast_info = rasterizationState();
+    const ms_info = multisampleState();
+    const blend_attach = colorBlendAttachment(blend_mode);
+    const blend_info = colorBlendState(&blend_attach);
+    const ds_info = depthStencilState();
+    const ci = graphicsPipelineInfo(self, &stages, &vi_info, &ia_info, &vp_info, &rast_info, &ms_info, &ds_info, &blend_info, &dyn_info);
+
+    var pip: vk.VkPipeline = null;
+    try device.check(vk.vkCreateGraphicsPipelines(self.ctx.device, self.pipeline_cache, 1, &ci, null, &pip));
+    return pip;
 }
 
 fn createGraphicsPipeline(self: anytype, frag_code: []const u8, blend_mode: BlendMode) !vk.VkPipeline {

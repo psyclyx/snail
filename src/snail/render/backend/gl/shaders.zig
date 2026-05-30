@@ -2,6 +2,7 @@
 
 const glsl_330_version = "#version 330 core\n\n";
 const glsl_330_dual_source = "#define SNAIL_DUAL_SOURCE 1\n\n";
+const glsl_330_replicated = "#define SNAIL_REPLICATED 1\n\n";
 
 const gl330_vert_interface = @embedFile("../glsl/snail_vert.interface.glsl");
 const gl330_frag_interface = @embedFile("../glsl/snail_frag.interface.glsl");
@@ -68,6 +69,13 @@ pub const text_sample_body = shared_text_sample_body;
 
 pub const vertex_shader =
     glsl_330_version ++
+    gl330_vert_interface ++
+    "\n" ++
+    shared_vertex_body;
+
+pub const vertex_shader_replicated =
+    glsl_330_version ++
+    glsl_330_replicated ++
     gl330_vert_interface ++
     "\n" ++
     shared_vertex_body;
