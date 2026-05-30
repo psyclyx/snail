@@ -232,7 +232,6 @@ test {
     _ = coverage;
     _ = target;
     _ = paint;
-    _ = @import("api_tests.zig");
     _ = @import("path_picture_tests.zig");
     _ = @import("record_key.zig");
     _ = @import("curves.zig");

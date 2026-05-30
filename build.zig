@@ -40,23 +40,6 @@ fn configureCoreModule(
     if (options.enable_harfbuzz) mod.linkSystemLibrary("harfbuzz", .{});
 }
 
-fn configureDemoModule(
-    mod: *std.Build.Module,
-    b: *std.Build,
-    build_options_mod: *std.Build.Module,
-    options: ModuleOptions,
-    vk_shaders: *std.Build.Module,
-) void {
-    configureCoreModule(mod, build_options_mod, options, vk_shaders);
-    mod.linkSystemLibrary("wayland-client", .{});
-    if (options.enable_gl33 or options.enable_gl44 or options.enable_gles30) {
-        mod.linkSystemLibrary("wayland-egl", .{});
-        mod.linkSystemLibrary("EGL", .{});
-    }
-    mod.addIncludePath(b.path("src/demo/platform"));
-    mod.addCSourceFile(.{ .file = b.path("src/demo/platform/xdg-shell-client-protocol.c") });
-}
-
 fn configureEglOffscreenModule(
     mod: *std.Build.Module,
     build_options_mod: *std.Build.Module,
@@ -80,23 +63,6 @@ fn configureValgrindTest(test_exe: *std.Build.Step.Compile) void {
         "--error-exitcode=99",
         null,
     });
-}
-
-fn createDemoOffscreenGlModule(
-    b: *std.Build,
-    target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
-    build_options_mod: *std.Build.Module,
-) *std.Build.Module {
-    const mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/platform/offscreen_gl.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-        .imports = &.{.{ .name = "build_options", .module = build_options_mod }},
-    });
-    mod.linkSystemLibrary("EGL", .{});
-    return mod;
 }
 
 fn createDemoVulkanPlatformModule(
@@ -201,15 +167,6 @@ const BuildConfig = struct {
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     core_options: ModuleOptions,
-    enable_c_api: bool,
-    enable_c_api_shared: bool,
-    enable_c_api_static: bool,
-};
-
-const CApiArtifacts = struct {
-    generated_header: std.Build.LazyPath,
-    generated_mod: *std.Build.Module,
-    generate_step: *std.Build.Step,
 };
 
 fn parseBuildConfig(b: *std.Build) BuildConfig {
@@ -220,9 +177,6 @@ fn parseBuildConfig(b: *std.Build) BuildConfig {
     const enable_cpu = b.option(bool, "cpu-renderer", "Enable CPU renderer backend") orelse true;
     const enable_vulkan = b.option(bool, "vulkan", "Enable Vulkan backend") orelse true;
     const enable_harfbuzz = b.option(bool, "harfbuzz", "Enable HarfBuzz text shaping") orelse true;
-    const enable_c_api = b.option(bool, "c-api", "Build the C API libraries") orelse true;
-    const c_api_shared_option = b.option(bool, "c-api-shared", "Build the C API shared library");
-    const c_api_static_option = b.option(bool, "c-api-static", "Build the C API static library");
     const core_options = ModuleOptions{
         .enable_profiling = enable_profiling,
         .enable_gl33 = enable_gl33,
@@ -233,123 +187,15 @@ fn parseBuildConfig(b: *std.Build) BuildConfig {
         .enable_harfbuzz = enable_harfbuzz,
     };
 
-    const enable_c_api_shared = c_api_shared_option orelse enable_c_api;
-    const enable_c_api_static = c_api_static_option orelse enable_c_api;
-
     if (!core_options.enable_gl33 and !core_options.enable_gl44 and !core_options.enable_gles30 and !core_options.enable_vulkan and !core_options.enable_cpu) {
         @panic("at least one renderer backend must be enabled");
-    }
-    if (!enable_c_api and ((c_api_shared_option orelse false) or (c_api_static_option orelse false))) {
-        @panic("-Dc-api=false conflicts with -Dc-api-shared=true or -Dc-api-static=true");
-    }
-    if (enable_c_api and !enable_c_api_shared and !enable_c_api_static) {
-        @panic("-Dc-api=true requires at least one of -Dc-api-shared=true or -Dc-api-static=true");
     }
 
     return .{
         .target = b.standardTargetOptions(.{}),
         .optimize = b.standardOptimizeOption(.{}),
         .core_options = core_options,
-        .enable_c_api = enable_c_api,
-        .enable_c_api_shared = enable_c_api_shared,
-        .enable_c_api_static = enable_c_api_static,
     };
-}
-
-fn addCApiArtifacts(b: *std.Build) CApiArtifacts {
-    const c_api_manifest_mod = b.createModule(.{
-        .root_source_file = b.path("src/snail/c_api/manifest.zig"),
-    });
-    const c_api_generator_mod = b.createModule(.{
-        .root_source_file = b.path("tools/gen_c_api.zig"),
-        .target = b.graph.host,
-        .optimize = .Debug,
-        .imports = &.{.{ .name = "manifest", .module = c_api_manifest_mod }},
-    });
-    const c_api_generator = b.addExecutable(.{
-        .name = "snail-gen-c-api",
-        .root_module = c_api_generator_mod,
-    });
-    const c_api_header_check_mod = b.createModule(.{
-        .root_source_file = b.path("tools/check_c_api_headers.zig"),
-        .target = b.graph.host,
-        .optimize = .Debug,
-    });
-    const c_api_header_check = b.addExecutable(.{
-        .name = "snail-check-c-api-headers",
-        .root_module = c_api_header_check_mod,
-    });
-
-    const gen_c_api_run = b.addRunArtifact(c_api_generator);
-    gen_c_api_run.addArg("--emit");
-    const generated_c_api_header = gen_c_api_run.addOutputFileArg("snail_generated.h");
-    const generated_c_api_zig = gen_c_api_run.addOutputFileArg("c_api_generated.zig");
-    const c_api_generated_mod = b.createModule(.{
-        .root_source_file = generated_c_api_zig,
-    });
-
-    const generate_c_api_step = b.step("generate-c-api", "Generate C API build artifacts into the Zig cache");
-    generate_c_api_step.dependOn(&gen_c_api_run.step);
-
-    const check_c_api_step = b.step("check-c-api", "Check generated C API artifacts and public declarations");
-    check_c_api_step.dependOn(&gen_c_api_run.step);
-    const check_c_api_headers_run = b.addRunArtifact(c_api_header_check);
-    check_c_api_step.dependOn(&check_c_api_headers_run.step);
-
-    return .{
-        .generated_header = generated_c_api_header,
-        .generated_mod = c_api_generated_mod,
-        .generate_step = generate_c_api_step,
-    };
-}
-
-fn installCApi(
-    b: *std.Build,
-    config: BuildConfig,
-    options_mod: *std.Build.Module,
-    vk_shaders_mod: *std.Build.Module,
-    c_api: CApiArtifacts,
-) void {
-    if (!config.enable_c_api) return;
-
-    b.getInstallStep().dependOn(c_api.generate_step);
-
-    const lib_module = b.createModule(.{
-        .root_source_file = b.path("src/snail/c_api.zig"),
-        .target = config.target,
-        .optimize = config.optimize,
-        .link_libc = true,
-    });
-    configureCoreModule(lib_module, options_mod, config.core_options, vk_shaders_mod);
-    lib_module.addImport("c_api_generated", c_api.generated_mod);
-
-    if (config.enable_c_api_shared) {
-        const shared_lib = b.addLibrary(.{ .name = "snail", .root_module = lib_module, .linkage = .dynamic });
-        b.installArtifact(shared_lib);
-    }
-
-    if (config.enable_c_api_static) {
-        const static_lib = b.addLibrary(.{ .name = "snail", .root_module = lib_module, .linkage = .static });
-        b.installArtifact(static_lib);
-    }
-
-    b.installFile("include/snail.h", "include/snail.h");
-    b.getInstallStep().dependOn(&b.addInstallFile(c_api.generated_header, "include/snail_generated.h").step);
-    if (config.core_options.enable_gl33) {
-        b.installFile("include/snail_gl33.h", "include/snail_gl33.h");
-    }
-    if (config.core_options.enable_gl44) {
-        b.installFile("include/snail_gl44.h", "include/snail_gl44.h");
-    }
-    if (config.core_options.enable_gles30) b.installFile("include/snail_gles30.h", "include/snail_gles30.h");
-    if (config.core_options.enable_vulkan) b.installFile("include/snail_vulkan.h", "include/snail_vulkan.h");
-    if (config.core_options.enable_cpu) b.installFile("include/snail_cpu.h", "include/snail_cpu.h");
-
-    const generated_pkg_config = b.addWriteFiles().add(
-        "snail.pc",
-        pkg_config.render(b, version, config.core_options.enable_gl33 or config.core_options.enable_gl44, config.core_options.enable_gles30, config.core_options.enable_vulkan, config.core_options.enable_harfbuzz),
-    );
-    b.getInstallStep().dependOn(&b.addInstallFile(generated_pkg_config, "lib/pkgconfig/snail.pc").step);
 }
 
 fn addSnailModule(
@@ -376,103 +222,10 @@ const ProjectModules = struct {
     snail: *std.Build.Module,
 };
 
-const ReleaseToolModules = struct {
-    snail: *std.Build.Module,
-    support: *std.Build.Module,
-    offscreen_gl: *std.Build.Module,
-    vulkan_platform: ?*std.Build.Module,
-};
-
-fn addInteractiveDemoSteps(
-    b: *std.Build,
-    config: BuildConfig,
-    modules: ProjectModules,
-) void {
-    const demo_module = b.createModule(.{
-        .root_source_file = b.path("src/demo/main.zig"),
-        .target = config.target,
-        .optimize = config.optimize,
-        .link_libc = true,
-        .imports = &.{
-            .{ .name = "assets", .module = modules.assets },
-            .{ .name = "snail", .module = modules.snail },
-            .{ .name = "support", .module = modules.support },
-        },
-    });
-    configureDemoModule(demo_module, b, modules.options, config.core_options, modules.vk_shaders);
-
-    const exe = b.addExecutable(.{ .name = "snail-demo", .root_module = demo_module });
-    const install_demo = b.addInstallArtifact(exe, .{});
-
-    const install_demo_step = b.step("install-demo", "Install the interactive demo executable");
-    install_demo_step.dependOn(&install_demo.step);
-    const demo_step = b.step("demo", "Install the interactive demo executable");
-    demo_step.dependOn(&install_demo.step);
-
-    const run_cmd = b.addRunArtifact(exe);
-    if (b.args) |args| run_cmd.addArgs(args);
-    const run_step = b.step("run", "Run the interactive demo");
-    run_step.dependOn(&run_cmd.step);
-    const run_demo_step = b.step("run-demo", "Run the interactive demo");
-    run_demo_step.dependOn(&run_cmd.step);
-}
-
-fn addGameDemoSteps(
-    b: *std.Build,
-    config: BuildConfig,
-    modules: ProjectModules,
-) void {
-    const game_demo_options = ModuleOptions{
-        .enable_profiling = config.core_options.enable_profiling,
-        .enable_gl33 = true,
-        .enable_gl44 = true,
-        .enable_gles30 = false,
-        .enable_vulkan = false,
-        .enable_cpu = false,
-        .enable_harfbuzz = config.core_options.enable_harfbuzz,
-    };
-    const game_demo_options_mod = createBuildOptionsModule(b, game_demo_options);
-    const game_snail_mod = createSnailModule(b, config.target, config.optimize, game_demo_options_mod, game_demo_options, modules.vk_shaders);
-
-    const game_demo_module = b.createModule(.{
-        .root_source_file = b.path("src/demo/game.zig"),
-        .target = config.target,
-        .optimize = config.optimize,
-        .link_libc = true,
-        .imports = &.{
-            .{ .name = "assets", .module = modules.assets },
-            .{ .name = "snail", .module = game_snail_mod },
-            .{ .name = "support", .module = modules.support },
-        },
-    });
-    configureDemoModule(game_demo_module, b, game_demo_options_mod, game_demo_options, modules.vk_shaders);
-
-    const game_demo_exe = b.addExecutable(.{ .name = "snail-game-demo", .root_module = game_demo_module });
-    const install_game_demo = b.addInstallArtifact(game_demo_exe, .{});
-
-    const install_game_demo_step = b.step("install-game-demo", "Install the GL game-style demo executable");
-    install_game_demo_step.dependOn(&install_game_demo.step);
-
-    const run_game_demo = b.addRunArtifact(game_demo_exe);
-    if (b.args) |args| run_game_demo.addArgs(args);
-    const run_game_demo_step = b.step("run-game-demo", "Run the GL game-style demo");
-    run_game_demo_step.dependOn(&run_game_demo.step);
-}
-
-fn addDemoSteps(
-    b: *std.Build,
-    config: BuildConfig,
-    modules: ProjectModules,
-) void {
-    addInteractiveDemoSteps(b, config, modules);
-    addGameDemoSteps(b, config, modules);
-}
-
 fn addTestSteps(
     b: *std.Build,
     config: BuildConfig,
     modules: ProjectModules,
-    c_api: CApiArtifacts,
 ) void {
     const test_module = createCoreTestModule(
         b,
@@ -489,7 +242,6 @@ fn addTestSteps(
     const unit_tests = b.addTest(.{ .root_module = test_module });
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(c_api.generate_step);
     test_step.dependOn(&run_unit_tests.step);
 
     const test_valgrind_step = b.step("test-valgrind", "Run unit tests under Valgrind");
@@ -508,352 +260,89 @@ fn addTestSteps(
     configureValgrindTest(valgrind_unit_tests);
     const run_valgrind_unit_tests = b.addRunArtifact(valgrind_unit_tests);
     test_valgrind_step.dependOn(&run_valgrind_unit_tests.step);
-
-    if (config.enable_c_api) {
-        const c_api_test_module = createCoreTestModule(
-            b,
-            b.path("src/snail/c_api.zig"),
-            config.target,
-            config.optimize,
-            modules.assets,
-            modules.options,
-            config.core_options,
-            modules.vk_shaders,
-            null,
-        );
-        c_api_test_module.addImport("c_api_generated", c_api.generated_mod);
-        const c_api_tests = b.addTest(.{ .root_module = c_api_test_module });
-        const run_c_api_tests = b.addRunArtifact(c_api_tests);
-        test_step.dependOn(&run_c_api_tests.step);
-
-        const valgrind_c_api_test_module = createCoreTestModule(
-            b,
-            b.path("src/snail/c_api.zig"),
-            config.target,
-            config.optimize,
-            modules.assets,
-            modules.options,
-            config.core_options,
-            modules.vk_shaders,
-            true,
-        );
-        valgrind_c_api_test_module.addImport("c_api_generated", c_api.generated_mod);
-        const valgrind_c_api_tests = b.addTest(.{ .root_module = valgrind_c_api_test_module });
-        configureValgrindTest(valgrind_c_api_tests);
-        const run_valgrind_c_api_tests = b.addRunArtifact(valgrind_c_api_tests);
-        test_valgrind_step.dependOn(&run_valgrind_c_api_tests.step);
-    }
 }
 
-fn createReleaseToolModules(
+fn addScreenshotSteps(
     b: *std.Build,
     config: BuildConfig,
-    release_support_mod: *std.Build.Module,
     modules: ProjectModules,
-) ReleaseToolModules {
+) void {
     const release_snail_mod = createSnailModule(b, config.target, .ReleaseFast, modules.options, config.core_options, modules.vk_shaders);
-    const release_offscreen_gl_mod = createDemoOffscreenGlModule(b, config.target, .ReleaseFast, modules.options);
-    const release_vulkan_platform_mod = if (config.core_options.enable_vulkan) createDemoVulkanPlatformModule(b, config.target, .ReleaseFast, modules.options, release_snail_mod) else null;
-    return .{
-        .snail = release_snail_mod,
-        .support = release_support_mod,
-        .offscreen_gl = release_offscreen_gl_mod,
-        .vulkan_platform = release_vulkan_platform_mod,
-    };
-}
+    const release_support_mod = createSupportModule(b, config.target, .ReleaseFast);
 
-fn addBenchStep(
-    b: *std.Build,
-    config: BuildConfig,
-    modules: ProjectModules,
-    release: ReleaseToolModules,
-) void {
-    const bench_module = b.createModule(.{
-        .root_source_file = b.path("src/tools/bench.zig"),
-        .target = config.target,
-        .optimize = .ReleaseFast,
-        .link_libc = true,
-        .imports = &.{
-            .{ .name = "assets", .module = modules.assets },
-            .{ .name = "snail", .module = release.snail },
-            .{ .name = "demo_platform_offscreen_gl", .module = release.offscreen_gl },
-            .{ .name = "demo_platform_vulkan", .module = release.vulkan_platform orelse release.offscreen_gl },
-            .{ .name = "support", .module = release.support },
-        },
-    });
-    configureEglOffscreenModule(bench_module, modules.options, config.core_options, modules.vk_shaders);
-    bench_module.linkSystemLibrary("freetype2", .{});
-
-    const bench_exe = b.addExecutable(.{ .name = "snail-bench", .root_module = bench_module });
-    const run_bench = b.addRunArtifact(bench_exe);
-    const bench_step = b.step("run-bench", "Run consolidated benchmarks");
-    bench_step.dependOn(&run_bench.step);
-    const bench_alias = b.step("bench", "Run consolidated benchmarks");
-    bench_alias.dependOn(&run_bench.step);
-}
-
-fn addProfileCpuTextStep(
-    b: *std.Build,
-    config: BuildConfig,
-    modules: ProjectModules,
-    release: ReleaseToolModules,
-) void {
-    const profile_text_module = b.createModule(.{
-        .root_source_file = b.path("src/tools/profile_cpu_text.zig"),
-        .target = config.target,
-        .optimize = .ReleaseFast,
-        .omit_frame_pointer = false,
-        .link_libc = true, // HarfBuzz cImport needs libc headers
-        .imports = &.{
-            .{ .name = "assets", .module = modules.assets },
-            .{ .name = "snail", .module = release.snail },
-        },
-    });
-    configureCoreModule(profile_text_module, modules.options, config.core_options, modules.vk_shaders);
-    const profile_text_exe = b.addExecutable(.{ .name = "snail-profile-cpu-text", .root_module = profile_text_module });
-    const install_profile_text = b.addInstallArtifact(profile_text_exe, .{});
-    const profile_text_step = b.step("install-profile-cpu-text", "Install CPU-text profile executable");
-    profile_text_step.dependOn(&install_profile_text.step);
-}
-
-fn addProfileCpuBannerStep(
-    b: *std.Build,
-    config: BuildConfig,
-    modules: ProjectModules,
-    release: ReleaseToolModules,
-) void {
-    const banner_module = b.createModule(.{
-        .root_source_file = b.path("src/demo/banner.zig"),
-        .target = config.target,
-        .optimize = .ReleaseFast,
-        .link_libc = true,
-        .imports = &.{
-            .{ .name = "snail", .module = release.snail },
-        },
-    });
-    const profile_banner_module = b.createModule(.{
-        .root_source_file = b.path("src/tools/profile_cpu_banner.zig"),
-        .target = config.target,
-        .optimize = .ReleaseFast,
-        .omit_frame_pointer = false,
-        .link_libc = true,
-        .imports = &.{
-            .{ .name = "assets", .module = modules.assets },
-            .{ .name = "snail", .module = release.snail },
-            .{ .name = "banner", .module = banner_module },
-        },
-    });
-    configureCoreModule(profile_banner_module, modules.options, config.core_options, modules.vk_shaders);
-    const profile_banner_exe = b.addExecutable(.{ .name = "snail-profile-cpu-banner", .root_module = profile_banner_module });
-    const install_profile_banner = b.addInstallArtifact(profile_banner_exe, .{});
-    const profile_banner_step = b.step("install-profile-cpu-banner", "Install CPU-banner profile executable");
-    profile_banner_step.dependOn(&install_profile_banner.step);
-}
-
-fn addProfileTtHintStep(
-    b: *std.Build,
-    config: BuildConfig,
-    modules: ProjectModules,
-    release: ReleaseToolModules,
-) void {
-    const profile_tt_module = b.createModule(.{
-        .root_source_file = b.path("src/tools/profile_tt_hint.zig"),
-        .target = config.target,
-        .optimize = .ReleaseFast,
-        .omit_frame_pointer = false,
-        .link_libc = true,
-        .imports = &.{
-            .{ .name = "assets", .module = modules.assets },
-            .{ .name = "snail", .module = release.snail },
-        },
-    });
-    configureCoreModule(profile_tt_module, modules.options, config.core_options, modules.vk_shaders);
-    const profile_tt_exe = b.addExecutable(.{ .name = "snail-profile-tt-hint", .root_module = profile_tt_module });
-    const install_profile_tt = b.addInstallArtifact(profile_tt_exe, .{});
-    const profile_tt_step = b.step("install-profile-tt-hint", "Install TrueType hint profile executable");
-    profile_tt_step.dependOn(&install_profile_tt.step);
-}
-
-fn addScreenshotStep(
-    b: *std.Build,
-    config: BuildConfig,
-    modules: ProjectModules,
-    release: ReleaseToolModules,
-) void {
-    const screenshot_module = b.createModule(.{
-        .root_source_file = b.path("src/demo/screenshot.zig"),
-        .target = config.target,
-        .optimize = .ReleaseFast,
-        .link_libc = true,
-        .imports = &.{
-            .{ .name = "assets", .module = modules.assets },
-            .{ .name = "snail", .module = release.snail },
-            .{ .name = "support", .module = release.support },
-        },
-    });
-    configureEglOffscreenModule(screenshot_module, modules.options, config.core_options, modules.vk_shaders);
-
-    const screenshot_exe = b.addExecutable(.{ .name = "snail-screenshot", .root_module = screenshot_module });
-    const run_screenshot = b.addRunArtifact(screenshot_exe);
-    const screenshot_step = b.step("run-screenshot", "Render the demo scene offscreen and write zig-out/demo-screenshot.tga");
-    screenshot_step.dependOn(&run_screenshot.step);
-
-    // New-API demo (rewrite). Renders a stripped-down screenshot through
-    // the new Picture/emit/drawCpu chain.
-    const screenshot_new_module = b.createModule(.{
+    // CPU screenshot.
+    const screenshot_cpu_mod = b.createModule(.{
         .root_source_file = b.path("src/demo/screenshot_new.zig"),
         .target = config.target,
         .optimize = .ReleaseFast,
         .link_libc = true,
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
-            .{ .name = "snail", .module = release.snail },
-            .{ .name = "support", .module = release.support },
+            .{ .name = "snail", .module = release_snail_mod },
+            .{ .name = "support", .module = release_support_mod },
         },
     });
-    const screenshot_new_exe = b.addExecutable(.{ .name = "snail-screenshot-new", .root_module = screenshot_new_module });
-    const run_screenshot_new = b.addRunArtifact(screenshot_new_exe);
-    const screenshot_new_step = b.step("run-screenshot-new", "Render the rewrite-API demo offscreen and write zig-out/demo-screenshot-new.tga");
-    screenshot_new_step.dependOn(&run_screenshot_new.step);
+    const screenshot_cpu_exe = b.addExecutable(.{ .name = "snail-screenshot-new", .root_module = screenshot_cpu_mod });
+    const run_screenshot_cpu = b.addRunArtifact(screenshot_cpu_exe);
+    const screenshot_cpu_step = b.step("run-screenshot-new", "Render the demo through the CPU backend and write zig-out/demo-screenshot-new.tga");
+    screenshot_cpu_step.dependOn(&run_screenshot_cpu.step);
 
-    // New-API GL demo. Same content as `screenshot_new` but rendered
-    // through the Phase 5a GL upload + draw path.
-    const screenshot_new_gl_module = b.createModule(.{
+    // GL screenshot.
+    const screenshot_gl_mod = b.createModule(.{
         .root_source_file = b.path("src/demo/screenshot_new_gl.zig"),
         .target = config.target,
         .optimize = .ReleaseFast,
         .link_libc = true,
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
-            .{ .name = "snail", .module = release.snail },
-            .{ .name = "support", .module = release.support },
+            .{ .name = "snail", .module = release_snail_mod },
+            .{ .name = "support", .module = release_support_mod },
         },
     });
-    configureEglOffscreenModule(screenshot_new_gl_module, modules.options, config.core_options, modules.vk_shaders);
-    const screenshot_new_gl_exe = b.addExecutable(.{ .name = "snail-screenshot-new-gl", .root_module = screenshot_new_gl_module });
-    const run_screenshot_new_gl = b.addRunArtifact(screenshot_new_gl_exe);
-    const screenshot_new_gl_step = b.step("run-screenshot-new-gl", "Render the rewrite-API demo through GL backend and write zig-out/demo-screenshot-new-gl.tga");
-    screenshot_new_gl_step.dependOn(&run_screenshot_new_gl.step);
+    configureEglOffscreenModule(screenshot_gl_mod, modules.options, config.core_options, modules.vk_shaders);
+    const screenshot_gl_exe = b.addExecutable(.{ .name = "snail-screenshot-new-gl", .root_module = screenshot_gl_mod });
+    const run_screenshot_gl = b.addRunArtifact(screenshot_gl_exe);
+    const screenshot_gl_step = b.step("run-screenshot-new-gl", "Render the demo through the GL backend and write zig-out/demo-screenshot-new-gl.tga");
+    screenshot_gl_step.dependOn(&run_screenshot_gl.step);
 
-    // New-API GLES30 demo (Phase 5b).
-    const screenshot_new_gles30_module = b.createModule(.{
+    // GLES screenshot.
+    const screenshot_gles30_mod = b.createModule(.{
         .root_source_file = b.path("src/demo/screenshot_new_gles30.zig"),
         .target = config.target,
         .optimize = .ReleaseFast,
         .link_libc = true,
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
-            .{ .name = "snail", .module = release.snail },
-            .{ .name = "support", .module = release.support },
+            .{ .name = "snail", .module = release_snail_mod },
+            .{ .name = "support", .module = release_support_mod },
         },
     });
-    configureEglOffscreenModule(screenshot_new_gles30_module, modules.options, config.core_options, modules.vk_shaders);
-    const screenshot_new_gles30_exe = b.addExecutable(.{ .name = "snail-screenshot-new-gles30", .root_module = screenshot_new_gles30_module });
-    const run_screenshot_new_gles30 = b.addRunArtifact(screenshot_new_gles30_exe);
-    const screenshot_new_gles30_step = b.step("run-screenshot-new-gles30", "Render the rewrite-API demo through GLES3 backend and write zig-out/demo-screenshot-new-gles30.tga");
-    screenshot_new_gles30_step.dependOn(&run_screenshot_new_gles30.step);
+    configureEglOffscreenModule(screenshot_gles30_mod, modules.options, config.core_options, modules.vk_shaders);
+    const screenshot_gles30_exe = b.addExecutable(.{ .name = "snail-screenshot-new-gles30", .root_module = screenshot_gles30_mod });
+    const run_screenshot_gles30 = b.addRunArtifact(screenshot_gles30_exe);
+    const screenshot_gles30_step = b.step("run-screenshot-new-gles30", "Render the demo through the GLES30 backend and write zig-out/demo-screenshot-new-gles30.tga");
+    screenshot_gles30_step.dependOn(&run_screenshot_gles30.step);
 
-    // New-API Vulkan demo (Phase 5c).
+    // Vulkan screenshot.
     if (config.core_options.enable_vulkan) {
-        const screenshot_new_vulkan_vk_platform = createDemoVulkanPlatformModule(b, config.target, .ReleaseFast, modules.options, release.snail);
-        const screenshot_new_vulkan_module = b.createModule(.{
+        const vk_platform_mod = createDemoVulkanPlatformModule(b, config.target, .ReleaseFast, modules.options, release_snail_mod);
+        const screenshot_vulkan_mod = b.createModule(.{
             .root_source_file = b.path("src/demo/screenshot_new_vulkan.zig"),
             .target = config.target,
             .optimize = .ReleaseFast,
             .link_libc = true,
             .imports = &.{
                 .{ .name = "assets", .module = modules.assets },
-                .{ .name = "snail", .module = release.snail },
-                .{ .name = "support", .module = release.support },
-                .{ .name = "demo_platform_vulkan", .module = screenshot_new_vulkan_vk_platform },
+                .{ .name = "snail", .module = release_snail_mod },
+                .{ .name = "support", .module = release_support_mod },
+                .{ .name = "demo_platform_vulkan", .module = vk_platform_mod },
             },
         });
-        const screenshot_new_vulkan_exe = b.addExecutable(.{ .name = "snail-screenshot-new-vulkan", .root_module = screenshot_new_vulkan_module });
-        const run_screenshot_new_vulkan = b.addRunArtifact(screenshot_new_vulkan_exe);
-        const screenshot_new_vulkan_step = b.step("run-screenshot-new-vulkan", "Render the rewrite-API demo through Vulkan backend and write zig-out/demo-screenshot-new-vulkan.tga");
-        screenshot_new_vulkan_step.dependOn(&run_screenshot_new_vulkan.step);
+        const screenshot_vulkan_exe = b.addExecutable(.{ .name = "snail-screenshot-new-vulkan", .root_module = screenshot_vulkan_mod });
+        const run_screenshot_vulkan = b.addRunArtifact(screenshot_vulkan_exe);
+        const screenshot_vulkan_step = b.step("run-screenshot-new-vulkan", "Render the demo through the Vulkan backend and write zig-out/demo-screenshot-new-vulkan.tga");
+        screenshot_vulkan_step.dependOn(&run_screenshot_vulkan.step);
     }
-}
-
-fn addAlgorithmScreenshotsStep(
-    b: *std.Build,
-    config: BuildConfig,
-    modules: ProjectModules,
-    release: ReleaseToolModules,
-) void {
-    const algorithm_screenshots_module = b.createModule(.{
-        .root_source_file = b.path("src/demo/algorithm_screenshots.zig"),
-        .target = config.target,
-        .optimize = .ReleaseFast,
-        .link_libc = true,
-        .imports = &.{
-            .{ .name = "assets", .module = modules.assets },
-            .{ .name = "snail", .module = release.snail },
-            .{ .name = "support", .module = release.support },
-        },
-    });
-    configureEglOffscreenModule(algorithm_screenshots_module, modules.options, config.core_options, modules.vk_shaders);
-
-    const algorithm_screenshots_exe = b.addExecutable(.{ .name = "snail-algorithm-screenshots", .root_module = algorithm_screenshots_module });
-    const run_algorithm_screenshots = b.addRunArtifact(algorithm_screenshots_exe);
-    const algorithm_screenshots_step = b.step("run-algorithm-screenshots", "Render README algorithm diagrams offscreen and write zig-out/algorithm-*.png");
-    algorithm_screenshots_step.dependOn(&run_algorithm_screenshots.step);
-}
-
-fn addBackendCompareStep(
-    b: *std.Build,
-    config: BuildConfig,
-    modules: ProjectModules,
-) void {
-    const compare_options = ModuleOptions{
-        .enable_profiling = false,
-        .enable_gl33 = config.core_options.enable_gl33,
-        .enable_gl44 = config.core_options.enable_gl44,
-        .enable_gles30 = config.core_options.enable_gles30,
-        .enable_vulkan = config.core_options.enable_vulkan,
-        .enable_cpu = true,
-        .enable_harfbuzz = config.core_options.enable_harfbuzz,
-    };
-    const compare_options_mod = createBuildOptionsModule(b, compare_options);
-    const backend_compare_snail_mod = createSnailModule(b, config.target, config.optimize, compare_options_mod, compare_options, modules.vk_shaders);
-    const compare_offscreen_gl_mod = createDemoOffscreenGlModule(b, config.target, config.optimize, compare_options_mod);
-    const compare_vulkan_platform_mod = if (compare_options.enable_vulkan) createDemoVulkanPlatformModule(b, config.target, config.optimize, compare_options_mod, backend_compare_snail_mod) else null;
-
-    const backend_compare_module = b.createModule(.{
-        .root_source_file = b.path("src/tools/backend_compare.zig"),
-        .target = config.target,
-        .optimize = config.optimize,
-        .link_libc = true,
-        .imports = &.{
-            .{ .name = "assets", .module = modules.assets },
-            .{ .name = "snail", .module = backend_compare_snail_mod },
-            .{ .name = "demo_platform_offscreen_gl", .module = compare_offscreen_gl_mod },
-            .{ .name = "demo_platform_vulkan", .module = compare_vulkan_platform_mod orelse compare_offscreen_gl_mod },
-            .{ .name = "support", .module = modules.support },
-        },
-    });
-    configureEglOffscreenModule(backend_compare_module, compare_options_mod, compare_options, modules.vk_shaders);
-
-    const backend_compare_exe = b.addExecutable(.{ .name = "snail-backend-compare", .root_module = backend_compare_module });
-    const run_backend_compare = b.addRunArtifact(backend_compare_exe);
-    const backend_compare_step = b.step("run-backend-compare", "Compare CPU/GL/GLES/Vulkan backend pixels offscreen");
-    backend_compare_step.dependOn(&run_backend_compare.step);
-}
-
-fn addToolSteps(
-    b: *std.Build,
-    config: BuildConfig,
-    modules: ProjectModules,
-    release_support_mod: *std.Build.Module,
-) void {
-    const release = createReleaseToolModules(b, config, release_support_mod, modules);
-    addBenchStep(b, config, modules, release);
-    addProfileCpuTextStep(b, config, modules, release);
-    addProfileCpuBannerStep(b, config, modules, release);
-    addProfileTtHintStep(b, config, modules, release);
-    addScreenshotStep(b, config, modules, release);
-    addAlgorithmScreenshotsStep(b, config, modules, release);
-    addBackendCompareStep(b, config, modules);
 }
 
 pub fn build(b: *std.Build) void {
@@ -861,11 +350,8 @@ pub fn build(b: *std.Build) void {
     const options_mod = createBuildOptionsModule(b, config.core_options);
     const assets_mod = b.createModule(.{ .root_source_file = b.path("assets/assets.zig") });
     const support_mod = createSupportModule(b, config.target, config.optimize);
-    const release_support_mod = createSupportModule(b, config.target, .ReleaseFast);
     const vk_shaders_mod = vulkan_shaders.createModule(b, config.core_options.enable_vulkan);
-    const c_api = addCApiArtifacts(b);
 
-    installCApi(b, config, options_mod, vk_shaders_mod, c_api);
     const snail_mod = addSnailModule(b, config, options_mod, vk_shaders_mod);
     const modules = ProjectModules{
         .assets = assets_mod,
@@ -875,7 +361,6 @@ pub fn build(b: *std.Build) void {
         .snail = snail_mod,
     };
 
-    addDemoSteps(b, config, modules);
-    addTestSteps(b, config, modules, c_api);
-    addToolSteps(b, config, modules, release_support_mod);
+    addTestSteps(b, config, modules);
+    addScreenshotSteps(b, config, modules);
 }
