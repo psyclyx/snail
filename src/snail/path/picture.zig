@@ -262,6 +262,7 @@ pub const PathPictureBuilder = struct {
         logical_curve_count: usize,
         paint: Paint,
         role: PathPicture.LayerRole,
+        fill_rule: @import("../target.zig").FillRule = .non_zero,
     };
 
     const PathRecord = struct {
@@ -314,6 +315,7 @@ pub const PathPictureBuilder = struct {
         paint: Paint,
         role: PathPicture.LayerRole,
         transform: Transform2D,
+        fill_rule: @import("../target.zig").FillRule,
     ) !void {
         try self.paths.append(self.allocator, .{
             .bbox = bbox,
@@ -327,6 +329,7 @@ pub const PathPictureBuilder = struct {
                     .logical_curve_count = logical_curve_count,
                     .paint = paint,
                     .role = role,
+                    .fill_rule = fill_rule,
                 },
                 undefined,
             },
@@ -675,11 +678,12 @@ pub const PathPictureBuilder = struct {
                 stroke_paint,
                 transform,
                 .fill_stroke_inside,
+                style.fill_rule,
             );
             return;
         }
 
-        try self.addSingleRecord(stroke_geom.curves, stroke_geom.bbox, stroke_geom.logical_curve_count, stroke_paint, .stroke, transform);
+        try self.addSingleRecord(stroke_geom.curves, stroke_geom.bbox, stroke_geom.logical_curve_count, stroke_paint, .stroke, transform, .non_zero);
     }
 
     fn addFillPathRecord(
@@ -707,12 +711,13 @@ pub const PathPictureBuilder = struct {
                     stroke_style.paint,
                     transform,
                     if (stroke_style.placement == .inside) .fill_stroke_inside else .source_over,
+                    fill.fill_rule,
                 );
                 return;
             }
         }
 
-        try self.addSingleRecord(fill_geom.curves, fill_geom.bbox, fill_geom.logical_curve_count, fill.paint, .fill, transform);
+        try self.addSingleRecord(fill_geom.curves, fill_geom.bbox, fill_geom.logical_curve_count, fill.paint, .fill, transform, fill.fill_rule);
     }
 
     fn addStrokePathRecord(
@@ -738,11 +743,12 @@ pub const PathPictureBuilder = struct {
                 stroke.paint,
                 transform,
                 .fill_stroke_inside,
+                .non_zero,
             );
             return;
         }
 
-        try self.addSingleRecord(stroke_geom.curves, stroke_geom.bbox, stroke_geom.logical_curve_count, stroke.paint, .stroke, transform);
+        try self.addSingleRecord(stroke_geom.curves, stroke_geom.bbox, stroke_geom.logical_curve_count, stroke.paint, .stroke, transform, .non_zero);
     }
 
     fn addCompositeRecord(
@@ -757,6 +763,7 @@ pub const PathPictureBuilder = struct {
         stroke_paint: Paint,
         transform: Transform2D,
         composite_mode: PathCompositeMode,
+        fill_rule: @import("../target.zig").FillRule,
     ) !void {
         try self.paths.append(self.allocator, .{
             .bbox = switch (composite_mode) {
@@ -773,6 +780,7 @@ pub const PathPictureBuilder = struct {
                     .logical_curve_count = fill_logical_curve_count,
                     .paint = fill_paint,
                     .role = .fill,
+                    .fill_rule = fill_rule,
                 },
                 .{
                     .curves = stroke_curves,
@@ -780,6 +788,8 @@ pub const PathPictureBuilder = struct {
                     .logical_curve_count = stroke_logical_curve_count,
                     .paint = stroke_paint,
                     .role = .stroke,
+                    // Strokes are always non-zero winding by construction.
+                    .fill_rule = .non_zero,
                 },
             },
         });

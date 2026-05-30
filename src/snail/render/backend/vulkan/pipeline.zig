@@ -24,7 +24,10 @@ const check = vulkan_device.check;
 const PushConstants = extern struct {
     mvp: [16]f32, // mat4, column-major
     viewport: [2]f32,
-    fill_rule: i32,
+    /// Retained as a padding slot to keep the push constant offset stable
+    /// with the GLSL layout while we update the Vulkan shaders. fill_rule
+    /// itself moved to per-paint-record encoding (texel 0.x bit 15).
+    fill_rule_padding: i32 = 0,
     subpixel_order: i32 = 1, // 1=RGB, 2=BGR, 3=VRGB, 4=VBGR
     output_srgb: i32 = 0, // 0 = emit linear, 1 = sRGB-encode before write
     layer_base: i32 = 0,
@@ -483,7 +486,7 @@ pub const VulkanPipeline = struct {
         const pc = PushConstants{
             .mvp = state.mvp.data,
             .viewport = .{ state.surface.pixel_width, state.surface.pixel_height },
-            .fill_rule = @intFromEnum(state.raster.fill_rule),
+            .fill_rule_padding = 0,
             .subpixel_order = @intFromEnum(if (render_mode == .grayscale) SubpixelOrder.none else state.raster.subpixel_order),
             .output_srgb = if (state.surface.encoding.shaderEncodesSrgb()) 1 else 0,
             .layer_base = @intCast(local_layer_base),
@@ -541,7 +544,7 @@ pub const VulkanPipeline = struct {
         const pc = PushConstants{
             .mvp = state.mvp.data,
             .viewport = .{ state.surface.pixel_width, state.surface.pixel_height },
-            .fill_rule = @intFromEnum(state.raster.fill_rule),
+            .fill_rule_padding = 0,
             .subpixel_order = @intFromEnum(if (render_mode == .grayscale) SubpixelOrder.none else state.raster.subpixel_order),
             .output_srgb = if (state.surface.encoding.shaderEncodesSrgb()) 1 else 0,
             .layer_base = @intCast(local_layer_base),

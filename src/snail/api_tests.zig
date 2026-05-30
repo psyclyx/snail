@@ -234,7 +234,6 @@ test "draw dispatch uses only prepared stamps and caller records" {
         words_seen: usize = 0,
         viewport_seen: [2]f32 = .{ 0, 0 },
         subpixel_order: SubpixelOrder = .none,
-        fill_rule: FillRule = .non_zero,
         target_encoding: TargetEncoding = .linear,
         coverage_transfer: CoverageTransfer = .identity,
         saw_backend_prepared: bool = true,
@@ -260,7 +259,6 @@ test "draw dispatch uses only prepared stamps and caller records" {
             s.words_seen += vertices.len;
             s.viewport_seen = .{ draw_state.surface.pixel_width, draw_state.surface.pixel_height };
             s.subpixel_order = draw_state.raster.subpixel_order;
-            s.fill_rule = draw_state.raster.fill_rule;
             s.target_encoding = draw_state.surface.encoding;
             s.coverage_transfer = draw_state.raster.coverage_transfer;
             s.saw_backend_prepared = backend_prepared != null;
@@ -271,7 +269,6 @@ test "draw dispatch uses only prepared stamps and caller records" {
             s.words_seen += vertices.len;
             s.viewport_seen = .{ draw_state.surface.pixel_width, draw_state.surface.pixel_height };
             s.subpixel_order = draw_state.raster.subpixel_order;
-            s.fill_rule = draw_state.raster.fill_rule;
             s.target_encoding = draw_state.surface.encoding;
             s.coverage_transfer = draw_state.raster.coverage_transfer;
             s.saw_backend_prepared = backend_prepared != null;
@@ -351,7 +348,6 @@ test "draw dispatch uses only prepared stamps and caller records" {
         },
         .raster = .{
             .subpixel_order = .rgb,
-            .fill_rule = .even_odd,
             .coverage_transfer = .{ .exponent = 0.875 },
         },
     };
@@ -376,7 +372,6 @@ test "draw dispatch uses only prepared stamps and caller records" {
     try std.testing.expectEqual(@as(u32, 0), state.path_count);
     try std.testing.expectEqual(words.len, state.words_seen);
     try std.testing.expectEqual(SubpixelOrder.rgb, state.subpixel_order);
-    try std.testing.expectEqual(FillRule.even_odd, state.fill_rule);
     try std.testing.expectEqual(TargetEncoding.srgb, state.target_encoding);
     try std.testing.expectEqual(@as(f32, 0.875), state.coverage_transfer.exponent);
     try std.testing.expectEqual(@as(f32, 8), state.viewport_seen[0]);

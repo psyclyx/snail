@@ -88,7 +88,6 @@ pub const CpuRenderer = struct {
     width: u32,
     height: u32,
     stride: u32, // bytes per row (usually width * 4)
-    fill_rule: FillRule,
     subpixel_order: SubpixelOrder,
     /// Encoding of the caller-owned pixel buffer. The unified `Renderer.draw`
     /// path sets this from `DrawState.surface.encoding` every frame.
@@ -118,7 +117,6 @@ pub const CpuRenderer = struct {
             .width = width,
             .height = height,
             .stride = stride,
-            .fill_rule = .non_zero,
             .subpixel_order = .none,
             // CPU's pixel-buffer contract is sRGB bytes (cf. the file-level
             // doc). The unified `Renderer.draw` path overrides this from
@@ -319,6 +317,10 @@ pub const CpuRenderer = struct {
                     const world = Vec2.new(@as(f32, @floatFromInt(col)) + 0.5, @as(f32, @floatFromInt(row)) + 0.5);
                     const local = inverse.applyPoint(world);
                     const paint = samplePathPaint(&picture.atlas, shape, shape.glyph_id, local);
+                    // Legacy PathPicture paint records were written without a
+                    // per-record fill rule (the rewrite encodes it into the
+                    // record); preserve the historical default of non-zero
+                    // winding for these draws.
                     const cov = self.applyCoverageTransfer(evalGlyphCoverageBandSpan(
                         page,
                         local.x,
@@ -330,7 +332,7 @@ pub const CpuRenderer = struct {
                         info.band_entry,
                         band_max_h,
                         band_max_v,
-                        self.fill_rule,
+                        .non_zero,
                     ));
                     if (cov < 1.0 / 255.0) continue;
                     self.blendPremultipliedPixel(row, col, premultiplyCoverage(paint.color, cov), paint.apply_dither);
@@ -340,7 +342,6 @@ pub const CpuRenderer = struct {
     }
 
     const DrawStateRestore = struct {
-        fill_rule: FillRule,
         subpixel_order: SubpixelOrder,
         target_encoding: snail.TargetEncoding,
         target_resolve: cpu_blend.ResolveMode,
@@ -349,13 +350,11 @@ pub const CpuRenderer = struct {
 
     fn applyDrawState(self: *CpuRenderer, state: snail.DrawState) DrawStateRestore {
         const restore = DrawStateRestore{
-            .fill_rule = self.fill_rule,
             .subpixel_order = self.subpixel_order,
             .target_encoding = self.target_encoding,
             .coverage_transfer = self.coverage_transfer,
             .target_resolve = self.target_resolve,
         };
-        self.fill_rule = state.raster.fill_rule;
         self.subpixel_order = state.raster.subpixel_order;
         self.target_encoding = state.surface.encoding;
         if (!self.linear_resolve_active) self.target_resolve = .{ .direct = {} };
@@ -364,7 +363,6 @@ pub const CpuRenderer = struct {
     }
 
     fn restoreDrawState(self: *CpuRenderer, restore: DrawStateRestore) void {
-        self.fill_rule = restore.fill_rule;
         self.subpixel_order = restore.subpixel_order;
         self.target_encoding = restore.target_encoding;
         self.target_resolve = restore.target_resolve;
@@ -755,7 +753,7 @@ pub const CpuRenderer = struct {
                 raster.subpixel_plan,
                 layer.band_entry,
                 layer.band_max_v,
-                self.fill_rule,
+                layer.fill_rule,
             ))
         else
             self.applySubpixelCoverageTransfer(evalGlyphCoverageSubpixel(
@@ -765,7 +763,7 @@ pub const CpuRenderer = struct {
                 layer.band_entry,
                 layer.band_max_h,
                 layer.band_max_v,
-                self.fill_rule,
+                layer.fill_rule,
             ));
 
         if (programs.outline and layer_index < 2) {
@@ -817,7 +815,7 @@ pub const CpuRenderer = struct {
             layer.band_entry,
             layer.band_max_h,
             layer.band_max_v,
-            self.fill_rule,
+            layer.fill_rule,
         ));
     }
 
@@ -848,7 +846,7 @@ pub const CpuRenderer = struct {
                     layer.band_entry,
                     layer.band_max_h,
                     layer.band_max_v,
-                    self.fill_rule,
+                    layer.fill_rule,
                 ));
             }
             break :blk self.applyCoverageTransfer(evalGlyphCoverageBandSpanRowH(
@@ -862,7 +860,7 @@ pub const CpuRenderer = struct {
                 layer.band_entry,
                 layer.band_max_h,
                 layer.band_max_v,
-                self.fill_rule,
+                layer.fill_rule,
             ));
         } else self.scalarPathLayerCoverage(page, raster, layer, local);
 
@@ -1029,7 +1027,7 @@ pub const CpuRenderer = struct {
                         fill_layer.band_entry,
                         fill_layer.band_max_h,
                         fill_layer.band_max_v,
-                        self.fill_rule,
+                        fill_layer.fill_rule,
                     ))
                 else if (row_state_ready)
                     self.applyCoverageTransfer(evalGlyphCoverageBandSpanRowH(
@@ -1043,7 +1041,7 @@ pub const CpuRenderer = struct {
                         fill_layer.band_entry,
                         fill_layer.band_max_h,
                         fill_layer.band_max_v,
-                        self.fill_rule,
+                        fill_layer.fill_rule,
                     ))
                 else
                     self.scalarPathLayerCoverage(page, raster, fill_layer, local);
@@ -1062,7 +1060,7 @@ pub const CpuRenderer = struct {
                         stroke_layer.band_entry,
                         stroke_layer.band_max_h,
                         stroke_layer.band_max_v,
-                        self.fill_rule,
+                        stroke_layer.fill_rule,
                     ))
                 else if (row_state_ready)
                     self.applyCoverageTransfer(evalGlyphCoverageBandSpanRowH(
@@ -1076,7 +1074,7 @@ pub const CpuRenderer = struct {
                         stroke_layer.band_entry,
                         stroke_layer.band_max_h,
                         stroke_layer.band_max_v,
-                        self.fill_rule,
+                        stroke_layer.fill_rule,
                     ))
                 else
                     self.scalarPathLayerCoverage(page, raster, stroke_layer, local);
@@ -1237,11 +1235,11 @@ pub const CpuRenderer = struct {
             while (col < raster.x1) : (advanceLocalPixel(&col, &local, raster.sample_dx)) {
                 if (!raster.use_subpixel) {
                     const raw_cov = if (sat_state_ready)
-                        evalGlyphCoverageSaturatedRowH(page, local.x, local.y, &row_state, &sat_state, raster.epp.x, raster.ppe.x, raster.ppe.y, be, band_max_h, band_max_v, self.fill_rule)
+                        evalGlyphCoverageSaturatedRowH(page, local.x, local.y, &row_state, &sat_state, raster.epp.x, raster.ppe.x, raster.ppe.y, be, band_max_h, band_max_v, layer.fill_rule)
                     else if (row_state_ready)
-                        evalGlyphCoverageBandSpanRowH(page, local.x, local.y, &row_state, raster.epp.x, raster.ppe.x, raster.ppe.y, be, band_max_h, band_max_v, self.fill_rule)
+                        evalGlyphCoverageBandSpanRowH(page, local.x, local.y, &row_state, raster.epp.x, raster.ppe.x, raster.ppe.y, be, band_max_h, band_max_v, layer.fill_rule)
                     else
-                        evalGlyphCoverageBandSpan(page, local.x, local.y, raster.epp.x, raster.epp.y, raster.ppe.x, raster.ppe.y, be, band_max_h, band_max_v, self.fill_rule);
+                        evalGlyphCoverageBandSpan(page, local.x, local.y, raster.epp.x, raster.epp.y, raster.ppe.x, raster.ppe.y, be, band_max_h, band_max_v, layer.fill_rule);
                     const cov = self.applyCoverageTransfer(raw_cov);
                     if (cov < 1.0 / 255.0) continue;
                     var paint = paint_program.sample(local);
@@ -1249,9 +1247,9 @@ pub const CpuRenderer = struct {
                     self.blendPremultipliedPixel(row, col, premultiplyCoverage(paint.color, cov), paint.apply_dither);
                 } else {
                     const raw_cov = if (row_state_ready)
-                        evalGlyphCoverageSubpixelRowH(page, local.x, local.y, &row_state, raster.subpixel_plan, be, band_max_v, self.fill_rule)
+                        evalGlyphCoverageSubpixelRowH(page, local.x, local.y, &row_state, raster.subpixel_plan, be, band_max_v, layer.fill_rule)
                     else
-                        evalGlyphCoverageSubpixel(page, local, raster.subpixel_plan, be, band_max_h, band_max_v, self.fill_rule);
+                        evalGlyphCoverageSubpixel(page, local, raster.subpixel_plan, be, band_max_h, band_max_v, layer.fill_rule);
                     const cov = self.applySubpixelCoverageTransfer(raw_cov);
                     if (max3(cov.rgb) < 1.0 / 255.0) continue;
                     var paint = paint_program.sample(local);
@@ -1362,12 +1360,13 @@ pub const CpuRenderer = struct {
 
             while (col < @as(u32, @intCast(px1))) : (advanceLocalPixel(&col, &display_local, sample_dx)) {
                 if (!allow_subpixel or self.subpixel_order == .none) {
+                    // Text/hinted glyphs from fonts use non-zero winding by convention.
                     const raw_cov = if (hint_record) |record|
-                        evalHintedTextCoverageBandSpan(page, record, display_local.x, display_local.y, epp.x, epp.y, ppe.x, ppe.y, be, band_max_h, band_max_v, self.fill_rule)
+                        evalHintedTextCoverageBandSpan(page, record, display_local.x, display_local.y, epp.x, epp.y, ppe.x, ppe.y, be, band_max_h, band_max_v, .non_zero)
                     else if (row_state_ready)
-                        evalGlyphCoverageRowH(page, display_local.x, display_local.y, &row_state, ppe.x, ppe.y, be, band_max_h, band_max_v, self.fill_rule)
+                        evalGlyphCoverageRowH(page, display_local.x, display_local.y, &row_state, ppe.x, ppe.y, be, band_max_h, band_max_v, .non_zero)
                     else
-                        evalGlyphCoverage(page, display_local.x, display_local.y, ppe.x, ppe.y, be, band_max_h, band_max_v, self.fill_rule);
+                        evalGlyphCoverage(page, display_local.x, display_local.y, ppe.x, ppe.y, be, band_max_h, band_max_v, .non_zero);
                     const cov = self.applyCoverageTransfer(raw_cov);
                     if (cov < 1.0 / 255.0) continue;
                     self.blendPremultipliedPixel(row, col, premultiplyCoverage(color, cov), false);
@@ -1380,7 +1379,7 @@ pub const CpuRenderer = struct {
                         subpixel_plan,
                         be,
                         band_max_v,
-                        self.fill_rule,
+                        .non_zero,
                     ));
                     if (max3(cov.rgb) < 1.0 / 255.0) continue;
                     self.blendSubpixelPixel(row, col, color, cov.rgb, cov.alpha);
@@ -1392,7 +1391,7 @@ pub const CpuRenderer = struct {
                         be,
                         band_max_h,
                         band_max_v,
-                        self.fill_rule,
+                        .non_zero,
                     ));
                     if (max3(cov.rgb) < 1.0 / 255.0) continue;
                     self.blendSubpixelPixel(row, col, color, cov.rgb, cov.alpha);
@@ -1523,7 +1522,7 @@ pub const CpuRenderer = struct {
                 be,
                 band_max_h,
                 band_max_v,
-                self.fill_rule,
+                .non_zero,
             ));
             if (cov < 1.0 / 255.0) return;
             self.blendPremultipliedPixel(row, col, premultiplyCoverage(color, cov), false);
@@ -1537,7 +1536,7 @@ pub const CpuRenderer = struct {
             be,
             band_max_h,
             band_max_v,
-            self.fill_rule,
+            .non_zero,
         ));
         if (max3(cov.rgb) < 1.0 / 255.0) return;
         self.blendSubpixelPixel(row, col, color, cov.rgb, cov.alpha);

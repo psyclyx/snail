@@ -92,6 +92,11 @@ pub fn mapToLocal(paint: Paint, local_to_paint: Transform2D) ?Paint {
 
 pub const FillStyle = struct {
     paint: Paint,
+    /// Winding rule for this fill. Property of the geometry author's
+    /// intent (not the frame's rasterization), so it lives here instead
+    /// of on `RasterOptions`. Defaults to non-zero, the convention used
+    /// by fonts and the majority of user-authored paths.
+    fill_rule: @import("target.zig").FillRule = .non_zero,
 };
 
 pub const StrokeCap = enum {

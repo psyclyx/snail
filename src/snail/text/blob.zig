@@ -663,7 +663,7 @@ fn finishLayerInfoRecords(
 
     for (pending.paint_records.items, 0..) |record, i| {
         const texel_offset: u32 = @intCast(i * paint_records.texels_per_record);
-        paint_records.write(data, width, texel_offset, record.band_entry, record.paint);
+        paint_records.write(data, width, texel_offset, record.band_entry, record.paint, 0);
         switch (record.paint) {
             .image => |image_paint| {
                 image_records[i] = .{

@@ -386,7 +386,6 @@ pub const QuadRenderer = struct {
             };
             backend.bindProgram(coverage_program) catch unreachable;
             backend.bindDrawState(coverage_program, .{
-                .fill_rule = .non_zero,
                 .subpixel_order = .none,
                 .coverage_transfer = .identity,
                 .layer_base = input.text.coverage.layerWindowBase(),

@@ -126,8 +126,10 @@ pub fn toOverride(override_value: SnailOverride) snail.Override {
 }
 
 pub fn fromCoverageDrawState(state: snail.coverage.DrawState) SnailCoverageDrawState {
+    // SnailCoverageDrawState still carries `fill_rule` for source compat
+    // (and zero-initializes it to non-zero); the new core ignores it.
     return .{
-        .fill_rule = @intFromEnum(state.fill_rule),
+        .fill_rule = 0,
         .subpixel_order = @intFromEnum(state.subpixel_order),
         .output_srgb = state.output_srgb,
         .coverage_exponent = state.coverage_transfer.exponent,
@@ -136,8 +138,8 @@ pub fn fromCoverageDrawState(state: snail.coverage.DrawState) SnailCoverageDrawS
 }
 
 pub fn toCoverageDrawState(state: SnailCoverageDrawState) !snail.coverage.DrawState {
+    _ = state.fill_rule;
     return .{
-        .fill_rule = try toFillRule(state.fill_rule),
         .subpixel_order = try toSubpixelOrder(state.subpixel_order),
         .output_srgb = state.output_srgb,
         .coverage_transfer = .{ .exponent = state.coverage_exponent },
@@ -414,9 +416,14 @@ pub fn toTargetSurface(surface: SnailTargetSurface) !snail.TargetSurface {
 }
 
 pub fn toRasterOptions(raster: SnailRasterOptions) !snail.RasterOptions {
+    // The C ABI's SnailRasterOptions still carries `fill_rule` for
+    // source-compat with v0.x consumers, but the new core ignores it —
+    // fill rule is now per-paint-record. The legacy paint-record-write
+    // paths in path/picture_compile.zig and text/blob.zig default the
+    // bit to 0 (non-zero) so existing renderings keep their behavior.
+    _ = raster.fill_rule;
     return .{
         .subpixel_order = try toSubpixelOrder(raster.subpixel_order),
-        .fill_rule = try toFillRule(raster.fill_rule),
         .coverage_transfer = .{ .exponent = raster.coverage_exponent },
     };
 }

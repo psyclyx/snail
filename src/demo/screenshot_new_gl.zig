@@ -323,7 +323,7 @@ pub fn main() !void {
     const hf: f32 = @floatFromInt(H);
     const draw_state = snail.DrawState{
         .surface = .{ .pixel_width = wf, .pixel_height = hf, .encoding = .srgb },
-        .raster = .{ .fill_rule = .non_zero, .subpixel_order = .none, .coverage_transfer = .{ .exponent = 1.0 } },
+        .raster = .{ .subpixel_order = .none, .coverage_transfer = .{ .exponent = 1.0 } },
         .mvp = snail.Mat4.ortho(0, wf, hf, 0, -1, 1),
     };
 

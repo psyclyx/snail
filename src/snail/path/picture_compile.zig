@@ -226,7 +226,8 @@ fn writePathPictureParts(
                 .page_index = 0,
             });
             parts.layer_roles[glyph_cursor] = layer.role;
-            paint_records.write(parts.layer_info_data, parts.layer_info_width, texel_cursor, band_entries[glyph_cursor], local_paint);
+            const fill_rule_bit: u16 = if (layer.fill_rule == .even_odd) paint_records.FILL_RULE_BIT else 0;
+            paint_records.write(parts.layer_info_data, parts.layer_info_width, texel_cursor, band_entries[glyph_cursor], local_paint, fill_rule_bit);
             switch (local_paint) {
                 .image => |image_paint| {
                     parts.paint_image_records[glyph_cursor] = .{

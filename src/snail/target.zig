@@ -101,7 +101,6 @@ pub const TargetSurface = struct {
 
 pub const RasterOptions = struct {
     subpixel_order: SubpixelOrder = .none,
-    fill_rule: FillRule = .non_zero,
     coverage_transfer: CoverageTransfer = .identity,
 };
 

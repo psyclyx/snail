@@ -62,8 +62,8 @@ pub fn GlPreparedPagesFor(comptime backend: Backend) type {
         // `layer_info_slots[binding.generation - 1]` to find the right
         // texture for a given segment.
         layer_info_slots: std.ArrayList(gl.GLuint) = .empty,
-        // Image array is not yet supported on the GL new path — image
-        // paints sample the default layer-0 slot for now.
+        // Image array is not yet populated on the GL new path; left as
+        // a single slot until per-binding image-array work lands.
         image_array: gl.GLuint = 0,
 
         // Per-layer texture-array upload tracking (parallel to pool.pages).

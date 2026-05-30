@@ -730,7 +730,6 @@ fn TextStateFor(comptime backend: Backend) type {
             gl.glUniformMatrix4fv(prog_state.mvp_loc, 1, gl.GL_FALSE, &draw_state.mvp.data);
             gl.glUniform2f(prog_state.viewport_loc, draw_state.surface.pixel_width, draw_state.surface.pixel_height);
             if (prog_state.layer_base_loc >= 0) gl.glUniform1i(prog_state.layer_base_loc, 0);
-            gl.glUniform1i(prog_state.fill_rule_loc, @intFromEnum(draw_state.raster.fill_rule));
             if (prog_state.subpixel_order_loc >= 0) {
                 const order = if (render_mode == .grayscale) SubpixelOrder.none else draw_state.raster.subpixel_order;
                 gl.glUniform1i(prog_state.subpixel_order_loc, @intFromEnum(order));
@@ -807,7 +806,6 @@ fn TextStateFor(comptime backend: Backend) type {
             gl.glUniformMatrix4fv(prog_state.mvp_loc, 1, gl.GL_FALSE, &draw_state.mvp.data);
             gl.glUniform2f(prog_state.viewport_loc, draw_state.surface.pixel_width, draw_state.surface.pixel_height);
             if (prog_state.layer_base_loc >= 0) gl.glUniform1i(prog_state.layer_base_loc, @intCast(texture_layers.bankLocal(texture_layer_base)));
-            gl.glUniform1i(prog_state.fill_rule_loc, @intFromEnum(draw_state.raster.fill_rule));
             if (prog_state.subpixel_order_loc >= 0) {
                 const order = if (render_mode == .grayscale) SubpixelOrder.none else draw_state.raster.subpixel_order;
                 gl.glUniform1i(prog_state.subpixel_order_loc, @intFromEnum(order));

@@ -22,11 +22,18 @@ uint calcRootCode(float y1, float y2, float y3) {
     return ((0x2E74u >> shift) & 0x0101u);
 }
 
-float applyFillRule(float winding) {
-    if (SNAIL_FILL_RULE == 1) {
+float applyFillRule(float winding, int fill_rule_mode) {
+    if (fill_rule_mode == 1) {
         return 1.0 - abs(fract(winding * 0.5) * 2.0 - 1.0);
     }
     return abs(winding);
+}
+
+// Backwards-compat overload: text / colr / hinted glyphs from fonts are
+// always non-zero winding. Callers that don't have a per-record rule
+// (i.e. anything that's not a path paint record) call this overload.
+float applyFillRule(float winding) {
+    return applyFillRule(winding, 0);
 }
 
 #ifndef SNAIL_COVERAGE_EXPONENT

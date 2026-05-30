@@ -56,14 +56,21 @@ pub fn tagFor(paint: anytype) f32 {
     });
 }
 
+/// Bit 15 of texel 0.x is used to encode the fill rule for this record:
+/// 0 = non-zero, 1 = even-odd. `glyph_x` is the curve atlas band-texture
+/// x coordinate and is bounded by `BAND_TEX_WIDTH` (4096), so the bit
+/// is structurally free.
+pub const FILL_RULE_BIT: u16 = 1 << 15;
+
 pub fn write(
     data: []f32,
     texel_width: u32,
     texel_offset: u32,
     band_entry: band_tex.GlyphBandEntry,
     paint: anytype,
+    fill_rule_bit: u16,
 ) void {
-    writeBandHeader(data, texel_width, texel_offset, band_entry, tagFor(paint));
+    writeBandHeader(data, texel_width, texel_offset, band_entry, tagFor(paint), fill_rule_bit);
     switch (paint) {
         .solid => |color| setTexel(data, texel_width, texel_offset + 2, color),
         .linear_gradient => |gradient| writeLinearGradient(data, texel_width, texel_offset, gradient),
@@ -72,10 +79,12 @@ pub fn write(
     }
 }
 
-fn writeBandHeader(data: []f32, texel_width: u32, texel_offset: u32, band_entry: band_tex.GlyphBandEntry, tag: f32) void {
+fn writeBandHeader(data: []f32, texel_width: u32, texel_offset: u32, band_entry: band_tex.GlyphBandEntry, tag: f32, fill_rule_bit: u16) void {
     const packed_bands = render_abi.packBandCounts(band_entry.h_band_count, band_entry.v_band_count);
+    std.debug.assert(band_entry.glyph_x < FILL_RULE_BIT);
+    const glyph_x_with_fill_rule: u16 = band_entry.glyph_x | fill_rule_bit;
     setTexel(data, texel_width, texel_offset + 0, .{
-        @floatFromInt(band_entry.glyph_x),
+        @floatFromInt(glyph_x_with_fill_rule),
         @floatFromInt(band_entry.glyph_y),
         @bitCast(packed_bands),
         tag,

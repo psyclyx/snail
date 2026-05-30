@@ -51,6 +51,11 @@ pub const Entry = struct {
     key: RecordKey,
     curves: GlyphCurves,
     paint: ?Paint = null,
+    /// Per-entry winding rule. Geometry property of the path/glyph itself
+    /// (a path author either intends non-zero or even-odd; fonts are
+    /// always non-zero). Carried into the paint record so the shader
+    /// picks it up per-fragment — there is no per-frame fill rule.
+    fill_rule: @import("target.zig").FillRule = .non_zero,
 };
 
 pub const InsertError = std.mem.Allocator.Error || PagePool.AcquireError || error{RecordTooLargeForPage};
@@ -399,7 +404,7 @@ const Builder = struct {
         };
     }
 
-    fn insertPaintRecord(self: *Builder, key: RecordKey, paint: Paint, band_entry: GlyphBandEntry) std.mem.Allocator.Error!void {
+    fn insertPaintRecord(self: *Builder, key: RecordKey, paint: Paint, band_entry: GlyphBandEntry, fill_rule: @import("target.zig").FillRule) std.mem.Allocator.Error!void {
         const texel_offset = self.layer_info_texels;
         const new_texels = texel_offset + paint_records.texels_per_record;
         const need_floats = @as(usize, new_texels) * 4;
@@ -419,7 +424,8 @@ const Builder = struct {
             .band_offset_x = band_entry.band_offset_x,
             .band_offset_y = band_entry.band_offset_y,
         };
-        paint_records.write(self.layer_info_buf.items, paint_records.info_width, texel_offset, band_tex_entry, paint);
+        const fill_rule_bit: u16 = if (fill_rule == .even_odd) paint_records.FILL_RULE_BIT else 0;
+        paint_records.write(self.layer_info_buf.items, paint_records.info_width, texel_offset, band_tex_entry, paint, fill_rule_bit);
         try self.paint_lookup.put(self.allocator, key, .{
             .info_x = @intCast(texel_offset % paint_records.info_width),
             .info_y = @intCast(texel_offset / paint_records.info_width),
@@ -533,7 +539,7 @@ const Builder = struct {
         // The paint record embeds the band_entry so the rasterizer's
         // special-layer path can sample the same curves through it.
         if (entry.paint) |paint| {
-            try self.insertPaintRecord(entry.key, paint, record.bands);
+            try self.insertPaintRecord(entry.key, paint, record.bands, entry.fill_rule);
         }
     }
 };

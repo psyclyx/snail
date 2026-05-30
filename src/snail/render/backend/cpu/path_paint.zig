@@ -18,6 +18,11 @@ pub const PreparedPathLayer = struct {
     band_max_h: i32,
     band_max_v: i32,
     paint: PreparedPathPaint,
+    /// Per-record winding rule, decoded from texel 0.x bit 15 (the
+    /// "fill rule bit" set by `paint_records.write`). The CPU
+    /// renderer threads this into evalGlyphCoverage* per record so
+    /// fill rule is a geometry property, not a per-frame uniform.
+    fill_rule: snail.FillRule = .non_zero,
 };
 
 pub const PreparedPathRecord = struct {
@@ -198,8 +203,11 @@ fn preparePathLayerFromLayerInfoOffset(
     const info = fetchLayerInfoTexelOffset(data, texel_offset);
     const band = fetchLayerInfoTexelOffset(data, texel_offset + 1);
     const band_counts = render_abi.unpackBandCounts(@bitCast(info[2]));
+    const packed_gx: u16 = @intFromFloat(info[0]);
+    const FILL_RULE_BIT: u16 = 1 << 15;
+    const fill_rule: snail.FillRule = if ((packed_gx & FILL_RULE_BIT) != 0) .even_odd else .non_zero;
     const be = GlyphBandEntry{
-        .glyph_x = @intFromFloat(info[0]),
+        .glyph_x = packed_gx & (FILL_RULE_BIT - 1),
         .glyph_y = @intFromFloat(info[1]),
         .h_band_count = band_counts.h,
         .v_band_count = band_counts.v,
@@ -213,6 +221,7 @@ fn preparePathLayerFromLayerInfoOffset(
         .band_max_h = @as(i32, @intCast(be.h_band_count)) - 1,
         .band_max_v = @as(i32, @intCast(be.v_band_count)) - 1,
         .paint = preparePathPaintFromLayerInfoOffset(data, texel_offset, paint_image_records),
+        .fill_rule = fill_rule,
     };
 }
 

@@ -603,7 +603,6 @@ fn makeIdentityState(w: u32, h: u32) snail.DrawState {
     return .{
         .surface = .{ .pixel_width = wf, .pixel_height = hf, .encoding = .srgb },
         .raster = .{
-            .fill_rule = .non_zero,
             .subpixel_order = .none,
             .coverage_transfer = .{ .exponent = 1.0 },
         },

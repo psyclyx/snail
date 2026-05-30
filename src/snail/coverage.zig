@@ -198,7 +198,6 @@ pub const Shader = struct {
 };
 
 pub const DrawState = struct {
-    fill_rule: FillRule = .non_zero,
     subpixel_order: SubpixelOrder = .none,
     output_srgb: bool = false,
     coverage_transfer: CoverageTransfer = .identity,
@@ -207,7 +206,6 @@ pub const DrawState = struct {
 
 pub fn drawStateFor(records: *const TextCoverageRecords, state: RenderDrawState) DrawState {
     return .{
-        .fill_rule = state.raster.fill_rule,
         .subpixel_order = state.raster.subpixel_order,
         .output_srgb = state.surface.encoding.shaderEncodesSrgb(),
         .coverage_transfer = state.raster.coverage_transfer,
@@ -362,7 +360,6 @@ fn GlBackendFor(comptime backend: BackendKind) type {
         pub fn bindDrawState(self: GlBackend, program: GlProgram, state: DrawState) !void {
             _ = self;
             GlPrepared.bindTextCoverageDrawState(program, .{
-                .fill_rule = state.fill_rule,
                 .subpixel_order = state.subpixel_order,
                 .output_srgb = state.output_srgb,
                 .coverage_transfer = state.coverage_transfer,
@@ -400,7 +397,6 @@ pub const Gles30Backend = if (build_options.enable_gles30) struct {
     pub fn bindDrawState(self: Gles30Backend, program: Gles30Program, state: DrawState) !void {
         _ = self;
         gles30_pipeline.PreparedResources.bindTextCoverageDrawState(program, .{
-            .fill_rule = state.fill_rule,
             .subpixel_order = state.subpixel_order,
             .output_srgb = state.output_srgb,
             .coverage_transfer = state.coverage_transfer,

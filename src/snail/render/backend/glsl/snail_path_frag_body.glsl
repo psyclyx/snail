@@ -450,15 +450,15 @@ BandSpan coverageBandSpan(float coord, float eppAxis, float bandScale, float ban
 }
 
 float evalGlyphCoverage(vec2 rc, vec2 epp, vec2 ppe,
-                        ivec2 gLoc, ivec2 bandMax, vec4 banding, int texLayer) {
+                        ivec2 gLoc, ivec2 bandMax, vec4 banding, int texLayer, int fill_rule) {
     BandSpan hSpan = coverageBandSpan(rc.y, epp.y, banding.y, banding.w, bandMax.y);
     BandSpan vSpan = coverageBandSpan(rc.x, epp.x, banding.x, banding.z, bandMax.x);
     vec2 horiz = evalAxisCoverageBands(rc, ppe.x, gLoc, 0, hSpan.first, hSpan.last, texLayer, true);
     vec2 vert = evalAxisCoverageBands(rc, ppe.y, gLoc, bandMax.y + 1, vSpan.first, vSpan.last, texLayer, false);
     float wsum = horiz.y + vert.y;
     float blended = horiz.x * horiz.y + vert.x * vert.y;
-    float cov = max(applyFillRule(blended / max(wsum, kCoordEps)),
-                    min(applyFillRule(horiz.x), applyFillRule(vert.x)));
+    float cov = max(applyFillRule(blended / max(wsum, kCoordEps), fill_rule),
+                    min(applyFillRule(horiz.x, fill_rule), applyFillRule(vert.x, fill_rule)));
     return applyCoverageTransfer(cov);
 }
 
@@ -571,10 +571,12 @@ PathCompositeSample compositePathGroup(vec2 rc, vec2 epp, vec2 ppe, ivec2 infoBa
         ivec2 loc = offsetLayerLoc(infoBase, 1 + l * SNAIL_PAINT_TEXELS_PER_RECORD);
         vec4 info = texelFetch(u_layer_tex, loc, 0);
         vec4 band = texelFetch(u_layer_tex, offsetLayerLoc(loc, 1), 0);
-        ivec2 gLoc = ivec2(info.xy);
+        int packed_gx = int(info.x);
+        ivec2 gLoc = ivec2(packed_gx & 0x7FFF, int(info.y));
+        int rec_fill_rule = (packed_gx >> 15) & 1;
         int bandMaxH = floatBitsToInt(info.z) & 0xFFFF;
         int bandMaxV = (floatBitsToInt(info.z) >> 16) & 0xFFFF;
-        float cov = evalGlyphCoverage(rc, epp, ppe, gLoc, ivec2(bandMaxV, bandMaxH), band, texLayer);
+        float cov = evalGlyphCoverage(rc, epp, ppe, gLoc, ivec2(bandMaxV, bandMaxH), band, texLayer, rec_fill_rule);
         PathPaintSample paint = samplePathPaint(rc, loc, info);
         paint.color *= tint;
 
@@ -633,10 +635,12 @@ void main() {
     }
 
     vec4 band = texelFetch(u_layer_tex, offsetLayerLoc(infoBase, 1), 0);
-    ivec2 gLoc = ivec2(firstInfo.xy);
+    int packed_gx = int(firstInfo.x);
+    ivec2 gLoc = ivec2(packed_gx & 0x7FFF, int(firstInfo.y));
+    int rec_fill_rule = (packed_gx >> 15) & 1;
     int bandMaxH = floatBitsToInt(firstInfo.z) & 0xFFFF;
     int bandMaxV = (floatBitsToInt(firstInfo.z) >> 16) & 0xFFFF;
-    float cov = evalGlyphCoverage(rc, epp, ppe, gLoc, ivec2(bandMaxV, bandMaxH), band, texLayer);
+    float cov = evalGlyphCoverage(rc, epp, ppe, gLoc, ivec2(bandMaxV, bandMaxH), band, texLayer, rec_fill_rule);
     if (cov < 1.0 / 255.0) discard;
     PathPaintSample paint = samplePathPaint(rc, infoBase, firstInfo);
     paint.color *= linear_tint;
