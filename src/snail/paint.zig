@@ -124,3 +124,13 @@ pub const StrokeStyle = struct {
     miter_limit: f32 = 4.0,
     placement: StrokePlacement = .center,
 };
+
+/// Composite mode for a fill+stroke atlas entry. `.source_over` draws the
+/// stroke straight over the fill (the legacy default). `.fill_stroke_inside`
+/// clips the stroke geometry to the fill interior, so the stroke renders
+/// only inside the fill bound — this is the visual you get from the legacy
+/// `StrokePlacement.inside` mode.
+pub const CompositeMode = enum {
+    source_over,
+    fill_stroke_inside,
+};

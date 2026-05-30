@@ -98,10 +98,11 @@ pub const Builder = struct {
         try self.addStrokedPath(&path, stroke, transform);
     }
 
-    /// Fill + stroke compound. The stroke's `.placement` is ignored —
-    /// new API doesn't expose the legacy `.fill_stroke_inside` composite
-    /// mode, so the stroke renders at its nominal width on top of the
-    /// fill. For the demo snail this is visually close enough.
+    /// Fill + stroke compound. When `stroke.placement == .inside`, this
+    /// emits a composite-group atlas entry so the GPU clips the stroke
+    /// to the fill interior (matching the legacy
+    /// `StrokePlacement.inside`). Other placements fall back to drawing
+    /// the fill and stroke as separate shapes.
     pub fn addPathFillAndStroke(
         self: Builder,
         path: *const snail.paths.Path,
@@ -109,8 +110,61 @@ pub const Builder = struct {
         stroke: snail.StrokeStyle,
         transform: snail.Transform2D,
     ) !void {
-        try self.addFilledPath(path, fill, transform);
-        try self.addStrokedPath(path, stroke, transform);
+        if (stroke.placement != .inside) {
+            try self.addFilledPath(path, fill, transform);
+            try self.addStrokedPath(path, stroke, transform);
+            return;
+        }
+
+        const fill_curves = try snail.paths.pathToCurves(self.allocator, path);
+        if (fill_curves.isEmpty()) {
+            var owned = fill_curves;
+            owned.deinit();
+            // Fill is empty — emit only the stroke.
+            try self.addStrokedPath(path, stroke, transform);
+            return;
+        }
+        const stroke_curves = try snail.paths.strokeToCurves(self.allocator, path, stroke);
+        if (stroke_curves.isEmpty()) {
+            // Stroke degenerate — emit fill only.
+            try self.owned_curves.append(self.allocator, fill_curves);
+            const key = snail.RecordKey{ .namespace = snail.ns.path_fill, .a = self.next_id.* };
+            self.next_id.* += 1;
+            try self.entries.append(self.allocator, .{
+                .key = key,
+                .curves = self.owned_curves.items[self.owned_curves.items.len - 1],
+                .paint = fill,
+            });
+            try self.shapes.append(self.allocator, .{
+                .key = key,
+                .local_transform = transform,
+                .local_color = .{ 1, 1, 1, 1 },
+            });
+            var owned_stroke = stroke_curves;
+            owned_stroke.deinit();
+            return;
+        }
+
+        try self.owned_curves.append(self.allocator, fill_curves);
+        try self.owned_curves.append(self.allocator, stroke_curves);
+
+        const key = snail.RecordKey{ .namespace = snail.ns.path_fill, .a = self.next_id.* };
+        self.next_id.* += 1;
+        try self.entries.append(self.allocator, .{
+            .key = key,
+            .curves = self.owned_curves.items[self.owned_curves.items.len - 2],
+            .paint = fill,
+            .composite_stroke = .{
+                .curves = self.owned_curves.items[self.owned_curves.items.len - 1],
+                .paint = stroke.paint,
+                .composite_mode = .fill_stroke_inside,
+            },
+        });
+        try self.shapes.append(self.allocator, .{
+            .key = key,
+            .local_transform = transform,
+            .local_color = .{ 1, 1, 1, 1 },
+        });
     }
 };
 

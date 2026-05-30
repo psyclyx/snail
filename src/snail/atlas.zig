@@ -56,6 +56,21 @@ pub const Entry = struct {
     /// always non-zero). Carried into the paint record so the shader
     /// picks it up per-fragment — there is no per-frame fill rule.
     fill_rule: @import("target.zig").FillRule = .non_zero,
+    /// Optional second-layer geometry composited with the entry's
+    /// (fill) `curves`. When set, this entry resolves to a
+    /// composite-group paint record: the shader renders fill + stroke
+    /// together using `composite_stroke.composite_mode`. Used to
+    /// reproduce the legacy `StrokePlacement.inside` behaviour.
+    composite_stroke: ?CompositeStroke = null,
+};
+
+pub const CompositeMode = paint_mod.CompositeMode;
+
+pub const CompositeStroke = struct {
+    curves: GlyphCurves,
+    paint: Paint,
+    fill_rule: @import("target.zig").FillRule = .non_zero,
+    composite_mode: CompositeMode = .source_over,
 };
 
 pub const InsertError = std.mem.Allocator.Error || PagePool.AcquireError || error{RecordTooLargeForPage};
@@ -404,6 +419,168 @@ const Builder = struct {
         };
     }
 
+    const Placement = struct {
+        page_index: u16,
+        page_generation: u16,
+        curve_texel: u32,
+        curve_count: u16,
+        bands: GlyphBandEntry,
+    };
+
+    /// Reserve curve+band space for one set of GlyphCurves on a page,
+    /// copying the bytes and rewriting band refs. Returns the placement
+    /// metadata (page index, curve texel, band entry) the caller can
+    /// stitch into AtlasRecord / paint records.
+    fn placeCurves(self: *Builder, curves: GlyphCurves) InsertError!Placement {
+        const curve_words: u32 = @intCast(curves.curve_bytes.len);
+        const band_words: u32 = @intCast(curves.band_bytes.len);
+        std.debug.assert(curve_words % CURVE_SEGMENT_WORDS == 0);
+        std.debug.assert(curve_words / CURVE_SEGMENT_WORDS == curves.curve_count);
+
+        if (curve_words > self.pool.options.curve_words_per_page or
+            band_words > self.pool.options.band_words_per_page)
+        {
+            return error.RecordTooLargeForPage;
+        }
+
+        var page: *AtlasPage = undefined;
+        var page_idx: u16 = undefined;
+        var reservation: AtlasPage.Reservation = undefined;
+        var placed = false;
+
+        if (self.pages.items.len > 0) {
+            const tail = self.pages.items[self.pages.items.len - 1];
+            if (tail.reserve(curve_words, band_words)) |r| {
+                page = tail;
+                page_idx = @intCast(self.pages.items.len - 1);
+                reservation = r;
+                placed = true;
+            }
+        }
+
+        if (!placed) {
+            const new_page = try self.pool.acquire();
+            errdefer self.pool.release(new_page);
+            try self.pages.append(self.allocator, new_page);
+            page = new_page;
+            page_idx = @intCast(self.pages.items.len - 1);
+            reservation = page.reserve(curve_words, band_words) orelse return error.RecordTooLargeForPage;
+        }
+
+        page.writeCurve(reservation.curve_word_offset, curves.curve_bytes);
+
+        std.debug.assert(reservation.curve_word_offset % 4 == 0);
+        const base_curve_texel = reservation.curve_word_offset / 4;
+
+        page.writeBand(reservation.band_word_offset, curves.band_bytes);
+        const band_slice = page.band.data[reservation.band_word_offset..][0..band_words];
+        rewriteBandRefs(band_slice, curves.h_band_count, curves.v_band_count, base_curve_texel);
+
+        std.debug.assert(reservation.band_word_offset % 2 == 0);
+        const band_texel = reservation.band_word_offset / 2;
+
+        return .{
+            .page_index = page_idx,
+            .page_generation = page.currentGeneration(),
+            .curve_texel = base_curve_texel,
+            .curve_count = curves.curve_count,
+            .bands = .{
+                .glyph_x = @intCast(band_texel % BAND_TEX_WIDTH),
+                .glyph_y = @intCast(band_texel / BAND_TEX_WIDTH),
+                .h_band_count = curves.h_band_count,
+                .v_band_count = curves.v_band_count,
+                .band_scale_x = curves.band_scale_x,
+                .band_scale_y = curves.band_scale_y,
+                .band_offset_x = curves.band_offset_x,
+                .band_offset_y = curves.band_offset_y,
+            },
+        };
+    }
+
+    /// Write a composite group paint record: header (texel 0) + N
+    /// regular paint records (6 texels each). The shader's
+    /// `compositePathGroup` walks layer_count layers and composites
+    /// them per `mode`. paint_lookup maps the key to the group header.
+    fn insertCompositeRecord(
+        self: *Builder,
+        key: RecordKey,
+        mode: paint_mod.CompositeMode,
+        fill_paint: Paint,
+        fill_bands: GlyphBandEntry,
+        fill_rule: @import("target.zig").FillRule,
+        stroke_paint: Paint,
+        stroke_bands: GlyphBandEntry,
+        stroke_rule: @import("target.zig").FillRule,
+    ) std.mem.Allocator.Error!void {
+        const header_offset = self.layer_info_texels;
+        const layer_count: u32 = 2;
+        const total_texels: u32 = 1 + layer_count * paint_records.texels_per_record;
+        const new_texels = header_offset + total_texels;
+        const need_floats = @as(usize, new_texels) * 4;
+        if (self.layer_info_buf.items.len < need_floats) {
+            try self.layer_info_buf.resize(self.allocator, need_floats);
+            @memset(self.layer_info_buf.items[header_offset * 4 .. need_floats], 0);
+        }
+
+        // Header texel: (layer_count, composite_mode, 0, tag_composite_group)
+        paint_records.setTexel(self.layer_info_buf.items, paint_records.info_width, header_offset, .{
+            @floatFromInt(layer_count),
+            @floatFromInt(@intFromEnum(toAbiCompositeMode(mode))),
+            0,
+            paint_records.tag_composite_group,
+        });
+
+        const fill_texel = header_offset + 1;
+        const stroke_texel = fill_texel + paint_records.texels_per_record;
+
+        const fill_band_tex = bandToTexFormat(fill_bands);
+        const stroke_band_tex = bandToTexFormat(stroke_bands);
+        const fill_rule_bit: u16 = if (fill_rule == .even_odd) paint_records.FILL_RULE_BIT else 0;
+        const stroke_rule_bit: u16 = if (stroke_rule == .even_odd) paint_records.FILL_RULE_BIT else 0;
+
+        paint_records.write(self.layer_info_buf.items, paint_records.info_width, fill_texel, fill_band_tex, fill_paint, fill_rule_bit);
+        paint_records.write(self.layer_info_buf.items, paint_records.info_width, stroke_texel, stroke_band_tex, stroke_paint, stroke_rule_bit);
+
+        try self.paint_lookup.put(self.allocator, key, .{
+            .info_x = @intCast(header_offset % paint_records.info_width),
+            .info_y = @intCast(header_offset / paint_records.info_width),
+            .layer_count = @intCast(layer_count),
+        });
+        // Image-paint records track each emitted record-texel separately;
+        // append slots that match the order of writes (header carries no
+        // image, both layers may).
+        try self.paint_image_records.append(self.allocator, null);
+        try self.paint_image_records.append(self.allocator, switch (fill_paint) {
+            .image => |img| .{ .image = img.image, .texel_offset = fill_texel },
+            else => null,
+        });
+        try self.paint_image_records.append(self.allocator, switch (stroke_paint) {
+            .image => |img| .{ .image = img.image, .texel_offset = stroke_texel },
+            else => null,
+        });
+        self.layer_info_texels = new_texels;
+    }
+
+    fn bandToTexFormat(b: GlyphBandEntry) band_tex_format.GlyphBandEntry {
+        return .{
+            .glyph_x = b.glyph_x,
+            .glyph_y = b.glyph_y,
+            .h_band_count = b.h_band_count,
+            .v_band_count = b.v_band_count,
+            .band_scale_x = b.band_scale_x,
+            .band_scale_y = b.band_scale_y,
+            .band_offset_x = b.band_offset_x,
+            .band_offset_y = b.band_offset_y,
+        };
+    }
+
+    fn toAbiCompositeMode(mode: paint_mod.CompositeMode) enum(u8) { source_over = 0, fill_stroke_inside = 1 } {
+        return switch (mode) {
+            .source_over => .source_over,
+            .fill_stroke_inside => .fill_stroke_inside,
+        };
+    }
+
     fn insertPaintRecord(self: *Builder, key: RecordKey, paint: Paint, band_entry: GlyphBandEntry, fill_rule: @import("target.zig").FillRule) std.mem.Allocator.Error!void {
         const texel_offset = self.layer_info_texels;
         const new_texels = texel_offset + paint_records.texels_per_record;
@@ -464,80 +641,51 @@ const Builder = struct {
             return;
         }
 
-        const curve_words: u32 = @intCast(curves.curve_bytes.len);
-        const band_words: u32 = @intCast(curves.band_bytes.len);
-        std.debug.assert(curve_words % CURVE_SEGMENT_WORDS == 0);
-        std.debug.assert(curve_words / CURVE_SEGMENT_WORDS == curves.curve_count);
+        const fill_placement = try self.placeCurves(curves);
 
-        if (curve_words > self.pool.options.curve_words_per_page or
-            band_words > self.pool.options.band_words_per_page)
-        {
-            return error.RecordTooLargeForPage;
-        }
-
-        // Try the tail page first; if it can't fit, acquire a fresh one.
-        var page: *AtlasPage = undefined;
-        var page_idx: u16 = undefined;
-        var reservation: AtlasPage.Reservation = undefined;
-        var placed = false;
-
-        if (self.pages.items.len > 0) {
-            const tail = self.pages.items[self.pages.items.len - 1];
-            if (tail.reserve(curve_words, band_words)) |r| {
-                page = tail;
-                page_idx = @intCast(self.pages.items.len - 1);
-                reservation = r;
-                placed = true;
+        var bbox = curves.bbox;
+        var stroke_placement: ?Placement = null;
+        if (entry.composite_stroke) |composite| {
+            if (!composite.curves.isEmpty()) {
+                stroke_placement = try self.placeCurves(composite.curves);
+                bbox = bbox.merge(composite.curves.bbox);
             }
         }
 
-        if (!placed) {
-            const new_page = try self.pool.acquire();
-            errdefer self.pool.release(new_page);
-            try self.pages.append(self.allocator, new_page);
-            page = new_page;
-            page_idx = @intCast(self.pages.items.len - 1);
-            reservation = page.reserve(curve_words, band_words) orelse return error.RecordTooLargeForPage;
-        }
-
-        // Curve buffer: copy verbatim.
-        page.writeCurve(reservation.curve_word_offset, curves.curve_bytes);
-
-        // Band buffer: copy with curve-ref rewrite to absolute page texels.
-        std.debug.assert(reservation.curve_word_offset % 4 == 0);
-        const base_curve_texel = reservation.curve_word_offset / 4;
-
-        // Scratch-write into the page directly, then patch in place.
-        page.writeBand(reservation.band_word_offset, curves.band_bytes);
-        const band_slice = page.band.data[reservation.band_word_offset..][0..band_words];
-        rewriteBandRefs(band_slice, curves.h_band_count, curves.v_band_count, base_curve_texel);
-
-        std.debug.assert(reservation.band_word_offset % 2 == 0);
-        const band_texel = reservation.band_word_offset / 2;
-
         const record = AtlasRecord{
-            .page_index = page_idx,
-            .page_generation = page.currentGeneration(),
-            .curve_texel = base_curve_texel,
-            .curve_count = curves.curve_count,
-            .bands = .{
-                .glyph_x = @intCast(band_texel % BAND_TEX_WIDTH),
-                .glyph_y = @intCast(band_texel / BAND_TEX_WIDTH),
-                .h_band_count = curves.h_band_count,
-                .v_band_count = curves.v_band_count,
-                .band_scale_x = curves.band_scale_x,
-                .band_scale_y = curves.band_scale_y,
-                .band_offset_x = curves.band_offset_x,
-                .band_offset_y = curves.band_offset_y,
-            },
-            .bbox = curves.bbox,
+            .page_index = fill_placement.page_index,
+            .page_generation = fill_placement.page_generation,
+            .curve_texel = fill_placement.curve_texel,
+            .curve_count = fill_placement.curve_count,
+            .bands = fill_placement.bands,
+            .bbox = bbox,
         };
 
         try self.lookup.put(self.allocator, entry.key, record);
 
-        // If the entry carries a paint, allocate a layer_info record now.
-        // The paint record embeds the band_entry so the rasterizer's
-        // special-layer path can sample the same curves through it.
+        if (entry.composite_stroke) |composite| {
+            const stroke_p = stroke_placement orelse {
+                // Stroke had empty curves — fall back to single-paint emit.
+                if (entry.paint) |paint| {
+                    try self.insertPaintRecord(entry.key, paint, record.bands, entry.fill_rule);
+                }
+                return;
+            };
+            const fill_paint = entry.paint orelse Paint{ .solid = .{ 0, 0, 0, 0 } };
+            try self.insertCompositeRecord(
+                entry.key,
+                composite.composite_mode,
+                fill_paint,
+                fill_placement.bands,
+                entry.fill_rule,
+                composite.paint,
+                stroke_p.bands,
+                composite.fill_rule,
+            );
+            return;
+        }
+
+        // Single-paint path.
         if (entry.paint) |paint| {
             try self.insertPaintRecord(entry.key, paint, record.bands, entry.fill_rule);
         }
