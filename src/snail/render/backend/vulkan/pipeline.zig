@@ -583,7 +583,7 @@ pub const VulkanPipeline = struct {
 
     // ── New-API draw entry (Phase 5c) ──
 
-    pub const NewDrawError = error{
+    pub const DrawError = error{
         MissingBinding,
         StaleBinding,
         MalformedSegment,
@@ -594,17 +594,17 @@ pub const VulkanPipeline = struct {
     /// module. The implementation lives in `draw.zig`; this
     /// shim exists to keep the public surface on `VulkanPipeline`
     /// stable for callers that go through the snail adapter layer.
-    pub fn drawNewApi(
+    pub fn draw(
         self: *VulkanPipeline,
         scratch: std.mem.Allocator,
         draw_state: DrawState,
         records: draw_records_mod.DrawRecords,
         caches: []const *const vulkan_upload_new.VulkanPreparedPages,
-    ) NewDrawError!void {
-        return @import("draw.zig").drawNewApi(self, scratch, draw_state, records, caches);
+    ) DrawError!void {
+        return @import("draw.zig").draw(self, scratch, draw_state, records, caches);
     }
 
-    pub fn newApiPipelineShape(self: *const VulkanPipeline) vulkan_upload_new.PipelineShape {
+    pub fn pipelineShape(self: *const VulkanPipeline) vulkan_upload_new.PipelineShape {
         return .{
             .ctx = self.ctx,
             .transfer_cmd_pool = self.transfer_cmd_pool,

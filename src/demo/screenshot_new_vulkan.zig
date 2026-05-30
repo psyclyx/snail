@@ -31,7 +31,7 @@ pub fn main() !void {
     var vk_renderer = try snail.VulkanRenderer.init(allocator, vk_ctx);
     defer vk_renderer.deinit();
 
-    var cache = try snail.VulkanPreparedPages.init(allocator, content.pool, vk_renderer.state.newApiPipelineShape(), .{
+    var cache = try snail.VulkanPreparedPages.init(allocator, content.pool, vk_renderer.state.pipelineShape(), .{
         .max_bindings = 4,
         .layer_info_height = 64,
         .max_images = 8,
@@ -73,7 +73,7 @@ pub fn main() !void {
     defer vk_renderer.state.clearCommandBuffer();
     vk_renderer.state.setFrameSlot(vulkan_platform.currentOffscreenFrameIndex());
 
-    try vk_renderer.state.drawNewApi(
+    try vk_renderer.state.draw(
         allocator,
         draw_state,
         .{ .words = words[0..wlen], .segments = segs[0..slen] },

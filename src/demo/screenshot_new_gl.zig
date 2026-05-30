@@ -97,7 +97,7 @@ pub fn main() !void {
     gl.glClear(gl.GL_COLOR_BUFFER_BIT);
 
     gl_renderer.state.beginDraw();
-    try gl_renderer.state.drawNewApi(
+    try gl_renderer.state.draw(
         allocator,
         draw_state,
         .{ .words = words[0..wlen], .segments = segs[0..slen] },

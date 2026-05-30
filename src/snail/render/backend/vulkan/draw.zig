@@ -26,20 +26,20 @@ const VulkanPipeline = pipeline_mod.VulkanPipeline;
 const ReplicatedKind = pipeline_mod.ReplicatedKind;
 const DrawState = snail_mod.DrawState;
 
-pub const NewDrawError = VulkanPipeline.NewDrawError;
+pub const DrawError = VulkanPipeline.DrawError;
 
 /// Walk `DrawRecords.segments`, bind each segment's matching
 /// `VulkanPreparedPages` cache, dispatch the encoded instances through
 /// the existing pipeline + push-constant chain. Mirrors the GL
-/// `drawNewApi`: subpixel runs use dual-source when available, path /
+/// `draw`: subpixel runs use dual-source when available, path /
 /// colr / hinted_text bind their respective pipelines.
-pub fn drawNewApi(
+pub fn draw(
     self: *VulkanPipeline,
     scratch: std.mem.Allocator,
     draw_state: DrawState,
     records: draw_records_mod.DrawRecords,
     caches: []const *const vulkan_upload_new.VulkanPreparedPages,
-) NewDrawError!void {
+) DrawError!void {
     const cmd = self.active_cmd orelse return error.MissingCommandBuffer;
     vk.vkCmdBindIndexBuffer(cmd, self.index_buffer, 0, vk.VK_INDEX_TYPE_UINT32);
     setViewportAndScissor(cmd, draw_state.surface.pixel_width, draw_state.surface.pixel_height);
@@ -51,19 +51,19 @@ pub fn drawNewApi(
         if (desc_set == null) return error.MissingBinding;
         const seg_words = records.words[seg.words_offset..][0..seg.words_len];
         switch (seg.kind) {
-            .heterogeneous => try drawHeterogeneousNewApi(self, cmd, desc_set, draw_state, seg_words),
-            .replicated => try drawReplicatedNewApi(self, scratch, cmd, desc_set, draw_state, seg, seg_words),
+            .heterogeneous => try drawHeterogeneous(self, cmd, desc_set, draw_state, seg_words),
+            .replicated => try drawReplicated(self, scratch, cmd, desc_set, draw_state, seg, seg_words),
         }
     }
 }
 
-fn drawHeterogeneousNewApi(
+fn drawHeterogeneous(
     self: *VulkanPipeline,
     cmd: vk.VkCommandBuffer,
     desc_set: vk.VkDescriptorSet,
     draw_state: DrawState,
     vertices: []const u32,
-) NewDrawError!void {
+) DrawError!void {
     const total_glyphs = vertices.len / vertex.WORDS_PER_INSTANCE;
     if (total_glyphs == 0) return;
 
@@ -111,7 +111,7 @@ fn drawHeterogeneousNewApi(
 /// constant within an M-instance draw while overrides cycle per
 /// instance. One inner instanced draw is issued per shape; for N
 /// shapes that's N draw calls of M instances each.
-fn drawReplicatedNewApi(
+fn drawReplicated(
     self: *VulkanPipeline,
     _: std.mem.Allocator,
     cmd: vk.VkCommandBuffer,
@@ -119,7 +119,7 @@ fn drawReplicatedNewApi(
     draw_state: DrawState,
     seg: draw_records_mod.DrawSegment,
     seg_words: []const u32,
-) NewDrawError!void {
+) DrawError!void {
     const n = seg.shape_count;
     const m = seg.override_count;
     if (n == 0 or m == 0) return;

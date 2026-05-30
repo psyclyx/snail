@@ -531,7 +531,7 @@ pub const Gles30TextState = struct {
 
     // ── New-API draw entry (Phase 5b) ──
 
-    pub const NewDrawError = error{
+    pub const DrawError = error{
         MissingBinding,
         StaleBinding,
         MalformedSegment,
@@ -539,17 +539,17 @@ pub const Gles30TextState = struct {
 
     /// Walk `DrawRecords.segments`, bind each segment's matching
     /// `Gles30PreparedPages` cache, dispatch the encoded instances
-    /// through the existing program set. Mirrors `drawNewApi` on the
+    /// through the existing program set. Mirrors `draw` on the
     /// GL backend; the only differences are the GLES3 binding namespace
     /// (no DSA, no persistent ring buffer) and that subpixel runs
     /// without dual-source-blend support fall back to grayscale.
-    pub fn drawNewApi(
+    pub fn draw(
         self: *Gles30TextState,
         scratch: std.mem.Allocator,
         draw_state: DrawState,
         records: draw_records_mod.DrawRecords,
         caches: []const *const gles30_upload.Gles30PreparedPages,
-    ) NewDrawError!void {
+    ) DrawError!void {
         gl.glBindVertexArray(self.vao);
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vbo);
 
@@ -558,13 +558,13 @@ pub const Gles30TextState = struct {
             if (seg.binding.generation != 0 and cache.upload_generation < seg.binding.generation) return error.StaleBinding;
             const seg_words = records.words[seg.words_offset..][0..seg.words_len];
             switch (seg.kind) {
-                .heterogeneous => try self.drawHeterogeneousNewApi(cache, draw_state, seg_words),
-                .replicated => try self.drawReplicatedNewApi(scratch, cache, draw_state, seg, seg_words),
+                .heterogeneous => try self.drawHeterogeneous(cache, draw_state, seg_words),
+                .replicated => try self.drawReplicated(scratch, cache, draw_state, seg, seg_words),
             }
         }
     }
 
-    fn drawHeterogeneousNewApi(self: *Gles30TextState, cache: *const gles30_upload.Gles30PreparedPages, draw_state: DrawState, vertices: []const u32) NewDrawError!void {
+    fn drawHeterogeneous(self: *Gles30TextState, cache: *const gles30_upload.Gles30PreparedPages, draw_state: DrawState, vertices: []const u32) DrawError!void {
         const total_glyphs = vertices.len / vertex.WORDS_PER_INSTANCE;
         if (total_glyphs == 0) return;
 
@@ -595,7 +595,7 @@ pub const Gles30TextState = struct {
                 .path => self.ensurePathProgram(),
                 .hinted_text => self.ensureHintedTextProgram(),
             };
-            self.bindProgramStateNewApi(cache, prog_state, draw_state, run_mode);
+            self.bindProgramState_(cache, prog_state, draw_state, run_mode);
             self.drawGlyphRange(vertices, run_start, run_end - run_start);
             run_start = run_end;
         }
@@ -605,14 +605,14 @@ pub const Gles30TextState = struct {
     /// the GL state.zig counterpart for the design notes — one
     /// instanced draw per shape, M instances each, shape attrs
     /// at divisor M (constant within a draw) and overrides at divisor 1.
-    fn drawReplicatedNewApi(
+    fn drawReplicated(
         self: *Gles30TextState,
         _: std.mem.Allocator,
         cache: *const gles30_upload.Gles30PreparedPages,
         draw_state: DrawState,
         seg: draw_records_mod.DrawSegment,
         seg_words: []const u32,
-    ) NewDrawError!void {
+    ) DrawError!void {
         const n = seg.shape_count;
         const m = seg.override_count;
         if (n == 0 or m == 0) return;
@@ -661,7 +661,7 @@ pub const Gles30TextState = struct {
                 .path => &self.path_program_replicated,
                 .hinted_text => &self.hinted_text_program_replicated,
             };
-            self.bindProgramStateNewApi(cache, prog_state, draw_state, run_mode);
+            self.bindProgramState_(cache, prog_state, draw_state, run_mode);
             var s: usize = run_start;
             while (s < run_end_in_shapes) : (s += 1) {
                 setupReplicatedVertexAttribsGles(s * vertex.BYTES_PER_INSTANCE, shape_bytes);
@@ -702,7 +702,7 @@ pub const Gles30TextState = struct {
         gl.glEnableVertexAttribArray(9);
     }
 
-    fn bindProgramStateNewApi(self: *Gles30TextState, cache: *const gles30_upload.Gles30PreparedPages, prog_state: *const ProgramState, draw_state: DrawState, render_mode: subpixel_policy.TextRenderMode) void {
+    fn bindProgramState_(self: *Gles30TextState, cache: *const gles30_upload.Gles30PreparedPages, prog_state: *const ProgramState, draw_state: DrawState, render_mode: subpixel_policy.TextRenderMode) void {
         const program_changed = prog_state.handle != self.active_program or !self.frame_begun;
         if (program_changed) {
             gl.glUseProgram(prog_state.handle);

@@ -185,7 +185,7 @@ fn TextStateFor(comptime backend: Backend) type {
             gl.glGenBuffers(1, &self.vbo_replicated);
             gl.glBindVertexArray(self.vao_replicated);
             gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self.ebo);
-            // Attributes are configured lazily in drawReplicatedNewApi
+            // Attributes are configured lazily in drawReplicated
             // when the actual buffer + offsets are known.
             gl.glBindVertexArray(self.vao);
         }
@@ -635,7 +635,7 @@ fn TextStateFor(comptime backend: Backend) type {
         };
         const GlPreparedPages = gl_upload.GlPreparedPagesFor(gl_upload_variant);
 
-        pub const NewDrawError = error{
+        pub const DrawError = error{
             MissingBinding,
             StaleBinding,
             MalformedSegment,
@@ -645,13 +645,13 @@ fn TextStateFor(comptime backend: Backend) type {
         /// `GlPreparedPages` cache, dispatch the encoded instances through
         /// the existing program set. Replicated segments materialize
         /// composed instances in a caller-supplied scratch allocator.
-        pub fn drawNewApi(
+        pub fn draw(
             self: *GlTextState,
             scratch: std.mem.Allocator,
             draw_state: DrawState,
             records: draw_records_mod.DrawRecords,
             caches: []const *const GlPreparedPages,
-        ) NewDrawError!void {
+        ) DrawError!void {
             gl.glBindVertexArray(self.vao);
             if (comptime backend == .gl33) gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vbo);
 
@@ -660,13 +660,13 @@ fn TextStateFor(comptime backend: Backend) type {
                 if (seg.binding.generation != 0 and cache.upload_generation < seg.binding.generation) return error.StaleBinding;
                 const seg_words = records.words[seg.words_offset..][0..seg.words_len];
                 switch (seg.kind) {
-                    .heterogeneous => try self.drawHeterogeneousNewApi(cache, draw_state, seg_words),
-                    .replicated => try self.drawReplicatedNewApi(scratch, cache, draw_state, seg, seg_words),
+                    .heterogeneous => try self.drawHeterogeneous(cache, draw_state, seg_words),
+                    .replicated => try self.drawReplicated(scratch, cache, draw_state, seg, seg_words),
                 }
             }
         }
 
-        fn drawHeterogeneousNewApi(self: *GlTextState, cache: *const GlPreparedPages, draw_state: DrawState, vertices: []const u32) NewDrawError!void {
+        fn drawHeterogeneous(self: *GlTextState, cache: *const GlPreparedPages, draw_state: DrawState, vertices: []const u32) DrawError!void {
             const total_glyphs = vertices.len / vertex.WORDS_PER_INSTANCE;
             if (total_glyphs == 0) return;
 
@@ -698,7 +698,7 @@ fn TextStateFor(comptime backend: Backend) type {
                     .path => self.ensurePathProgram(),
                     .hinted_text => self.ensureHintedTextProgram(),
                 };
-                self.bindProgramStateNewApi(cache, prog_state, draw_state, run_mode);
+                self.bindProgramState_(cache, prog_state, draw_state, run_mode);
                 self.drawGlyphRange(vertices, run_start, run_end - run_start);
                 run_start = run_end;
             }
@@ -717,14 +717,14 @@ fn TextStateFor(comptime backend: Backend) type {
         ///
         /// `scratch` is unused on this path — the whole point of GPU
         /// instancing is avoiding the N*M CPU-side composition.
-        fn drawReplicatedNewApi(
+        fn drawReplicated(
             self: *GlTextState,
             _: std.mem.Allocator,
             cache: *const GlPreparedPages,
             draw_state: DrawState,
             seg: draw_records_mod.DrawSegment,
             seg_words: []const u32,
-        ) NewDrawError!void {
+        ) DrawError!void {
             const n = seg.shape_count;
             const m = seg.override_count;
             if (n == 0 or m == 0) return;
@@ -790,7 +790,7 @@ fn TextStateFor(comptime backend: Backend) type {
                     .path => &self.path_program_replicated,
                     .hinted_text => &self.hinted_text_program_replicated,
                 };
-                self.bindProgramStateNewApi(cache, prog_state, draw_state, run_mode);
+                self.bindProgramState_(cache, prog_state, draw_state, run_mode);
                 var s: usize = run_start;
                 while (s < run_end_in_shapes) : (s += 1) {
                     const shape_base: usize = s * vertex.BYTES_PER_INSTANCE;
@@ -805,7 +805,7 @@ fn TextStateFor(comptime backend: Backend) type {
             }
 
             // Restore the main heterogeneous VAO for any subsequent
-            // segments in the same drawNewApi invocation.
+            // segments in the same draw invocation.
             gl.glBindVertexArray(self.vao);
             if (comptime backend == .gl33) gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vbo);
         }
@@ -815,7 +815,7 @@ fn TextStateFor(comptime backend: Backend) type {
         /// `layer_base` uniform is always 0 — the new model encodes the
         /// absolute texture-array layer in the per-instance `glyph` data,
         /// not via a bank-relative offset like the legacy path.
-        fn bindProgramStateNewApi(self: *GlTextState, cache: *const GlPreparedPages, prog_state: *const ProgramState, draw_state: DrawState, render_mode: subpixel_policy.TextRenderMode) void {
+        fn bindProgramState_(self: *GlTextState, cache: *const GlPreparedPages, prog_state: *const ProgramState, draw_state: DrawState, render_mode: subpixel_policy.TextRenderMode) void {
             const program_changed = prog_state.handle != self.active_program or !self.frame_begun;
             if (program_changed) {
                 gl.glUseProgram(prog_state.handle);
