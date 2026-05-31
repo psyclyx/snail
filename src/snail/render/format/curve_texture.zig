@@ -249,6 +249,45 @@ pub const GlyphCurveEntry = struct {
 /// Builds persistent curve texture data plus scratch glyph entries.
 /// `texture.data` is owned by `data_allocator`; `entries` is owned by
 /// `scratch_allocator` and is only needed while building dependent metadata.
+/// Write one curve into the direct-encoding texel block. `data` must
+/// be at least `SEGMENT_TEXELS * 4` u16s; only those words are touched.
+pub fn writeDirectCurveTexels(data: []u16, curve: CurveSegment) void {
+    data[0] = f32ToF16(curve.p0.x);
+    data[1] = f32ToF16(curve.p0.y);
+    data[2] = f32ToF16(curve.p1.x);
+    data[3] = f32ToF16(curve.p1.y);
+    data[4] = f32ToF16(curve.p2.x);
+    data[5] = f32ToF16(curve.p2.y);
+    data[6] = f32ToF16(curve.p3.x);
+    data[7] = f32ToF16(curve.p3.y);
+    data[8] = f32ToF16(curve.weights[1]);
+    data[9] = f32ToF16(curve.weights[2]);
+    data[10] = f32ToF16(DIRECT_ENCODING_KIND_BIAS + @as(f32, @floatFromInt(@intFromEnum(curve.kind))));
+    data[11] = f32ToF16(curve.weights[0]);
+    data[12] = f32ToF16(curve.weights[1]);
+    data[13] = f32ToF16(curve.weights[2]);
+    data[14] = 0;
+    data[15] = 0;
+}
+
+/// Allocate and direct-encode a single glyph's prepared curves into a
+/// `prepared.len * SEGMENT_TEXELS * 4` u16 buffer. Skips the
+/// `buildCurveTexture` TEX_WIDTH-row padding — for single-glyph callers
+/// (`font.extractCurves`, hinted snapshots), the padding is pure waste.
+pub fn encodeDirectSingleGlyphCurves(
+    allocator: std.mem.Allocator,
+    prepared: []const CurveSegment,
+) ![]u16 {
+    const total_words = prepared.len * SEGMENT_TEXELS * 4;
+    const buf = try allocator.alloc(u16, total_words);
+    var cursor: usize = 0;
+    for (prepared) |curve| {
+        writeDirectCurveTexels(buf[cursor..][0 .. SEGMENT_TEXELS * 4], curve);
+        cursor += SEGMENT_TEXELS * 4;
+    }
+    return buf;
+}
+
 pub fn buildCurveTexture(
     data_allocator: std.mem.Allocator,
     scratch_allocator: std.mem.Allocator,

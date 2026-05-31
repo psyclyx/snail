@@ -154,24 +154,12 @@ fn extractCurvesInner(
 
     const render_bbox = glyphRenderBBox(glyph.metrics.bbox, prepared);
 
-    // Pack the single glyph's curve segments into a contiguous u16 buffer
-    // matching the existing render/format/curve_texture.zig encoding. We
-    // reuse `buildCurveTexture` and dupe out only the words we actually
-    // touched (it pads to a full TEX_WIDTH-row buffer for the GPU).
-    const single = [_]curve_tex.GlyphCurves{.{
-        .curves = segs,
-        .bbox = render_bbox,
-        .logical_curve_count = segs.len,
-        .prefer_direct_encoding = true,
-        .prepared_curves = prepared,
-    }};
-    var ct = try curve_tex.buildCurveTexture(allocator, allocator, &single);
-    defer ct.texture.deinit();
-    defer allocator.free(ct.entries);
-
+    // Single-glyph direct encoding. Skip `buildCurveTexture`'s TEX_WIDTH
+    // padding (which would allocate ~32 KB per glyph just to drop most of
+    // it on the floor) — write the curve bytes directly into a tight
+    // buffer the atlas can consume verbatim.
     const curve_count: u16 = @intCast(prepared.len);
-    const curve_used_words: usize = @as(usize, curve_count) * curve_tex.SEGMENT_TEXELS * 4;
-    const curve_bytes = try allocator.dupe(u16, ct.texture.data[0..curve_used_words]);
+    const curve_bytes = try curve_tex.encodeDirectSingleGlyphCurves(allocator, prepared);
     errdefer allocator.free(curve_bytes);
 
     const entry = curve_tex.GlyphCurveEntry{
