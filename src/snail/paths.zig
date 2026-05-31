@@ -73,20 +73,11 @@ fn packCurves(
 
     const render_bbox = mergeBBoxWithCurves(fill_bbox, prepared);
 
-    const single = [_]curve_tex.GlyphCurves{.{
-        .curves = split,
-        .bbox = render_bbox,
-        .logical_curve_count = logical_curve_count,
-        .prefer_direct_encoding = true,
-        .prepared_curves = prepared,
-    }};
-    var ct = try curve_tex.buildCurveTexture(allocator, allocator, &single);
-    defer ct.texture.deinit();
-    defer allocator.free(ct.entries);
-
+    // Single-shape direct encoding: skip `buildCurveTexture`'s TEX_WIDTH
+    // padding (~32 KB per shape allocated to drop most of it on the
+    // floor). Same fix as the font extractor uses.
     const curve_count: u16 = @intCast(prepared.len);
-    const curve_used_words: usize = @as(usize, curve_count) * curve_tex.SEGMENT_TEXELS * 4;
-    const curve_bytes = try allocator.dupe(u16, ct.texture.data[0..curve_used_words]);
+    const curve_bytes = try curve_tex.encodeDirectSingleGlyphCurves(allocator, prepared);
     errdefer allocator.free(curve_bytes);
 
     const entry = curve_tex.GlyphCurveEntry{
