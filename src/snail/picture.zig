@@ -50,6 +50,19 @@ pub const Picture = struct {
         };
     }
 
+    /// Build a picture taking ownership of `shapes`. The caller must
+    /// have allocated `shapes` with `allocator`. The Picture's `deinit`
+    /// frees the slice. Avoids the alloc+memcpy that `from` does — use
+    /// this on the hot path when the caller already owns a freshly-allocated
+    /// buffer at exactly the right length.
+    pub fn fromOwnedSlice(allocator: std.mem.Allocator, shapes: []Shape) Picture {
+        return .{
+            .allocator = allocator,
+            .shapes = shapes,
+            .bbox = computeBBox(shapes),
+        };
+    }
+
     pub fn deinit(self: *Picture) void {
         if (self.shapes.len > 0) {
             self.allocator.free(@constCast(self.shapes));

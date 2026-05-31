@@ -55,58 +55,74 @@ pub fn shapedRunPicture(
     shaped: *const ShapedText,
     options: ShapedRunOptions,
 ) ShapedRunError!Picture {
+    // Fast path: when no COLR expansion is possible, every glyph becomes
+    // exactly one shape. Allocate the final buffer directly at the right
+    // size and hand it off to Picture — no ArrayList growth, no Picture.from
+    // alloc+memcpy.
+    if (options.colr_fonts == null) {
+        const buf = try allocator.alloc(Shape, shaped.glyphs.len);
+        errdefer allocator.free(buf);
+        for (shaped.glyphs, 0..) |g, i| {
+            const face_index_int: usize = @intCast(g.face_index);
+            if (face_index_int >= options.face_to_font_id.len) return error.UnknownFaceIndex;
+            buf[i] = makeShape(g, options, options.face_to_font_id[face_index_int], options.color);
+        }
+        return Picture.fromOwnedSlice(allocator, buf);
+    }
+
+    // COLR-capable slow path: shape count varies per glyph. Pre-size the
+    // ArrayList to at least `shaped.glyphs.len` to skip the early growth
+    // reallocs; let it grow if any glyph fans out.
     var shapes: std.ArrayList(Shape) = .empty;
     defer shapes.deinit(allocator);
+    try shapes.ensureTotalCapacity(allocator, shaped.glyphs.len);
 
     for (shaped.glyphs) |g| {
         const face_index_int: usize = @intCast(g.face_index);
         if (face_index_int >= options.face_to_font_id.len) return error.UnknownFaceIndex;
         const font_id = options.face_to_font_id[face_index_int];
 
-        const pen_x = options.baseline.x + options.em * g.x_offset;
-        const pen_y = options.baseline.y + options.em * g.y_offset;
-        const transform: Transform2D = .{
+        // COLR fanout. Each layer becomes its own Shape with the layer's
+        // CPAL color (or `options.color` for the "foreground" sentinel
+        // palette index 0xFFFF) and the same transform.
+        var emitted = false;
+        const fonts = options.colr_fonts.?;
+        if (face_index_int < fonts.len) {
+            var iter = fonts[face_index_int].colrLayers(g.glyph_id);
+            if (iter.count() > 0) {
+                while (iter.next()) |layer| {
+                    const layer_color: [4]f32 = if (layer.color[0] < 0)
+                        options.color
+                    else
+                        layer.color;
+                    try shapes.append(allocator, makeShape(g, options, font_id, layer_color));
+                }
+                emitted = true;
+            }
+        }
+        if (!emitted) {
+            try shapes.append(allocator, makeShape(g, options, font_id, options.color));
+        }
+    }
+
+    return Picture.from(allocator, shapes.items);
+}
+
+inline fn makeShape(g: anytype, options: ShapedRunOptions, font_id: u32, color: [4]f32) Shape {
+    const pen_x = options.baseline.x + options.em * g.x_offset;
+    const pen_y = options.baseline.y + options.em * g.y_offset;
+    return .{
+        .key = record_key_mod.unhintedGlyph(font_id, g.glyph_id),
+        .local_transform = .{
             .xx = options.em,
             .xy = 0,
             .tx = pen_x,
             .yx = 0,
             .yy = -options.em,
             .ty = pen_y,
-        };
-
-        // COLR fanout. Each layer becomes its own Shape with the layer's
-        // CPAL color (or `options.color` for the "foreground" sentinel
-        // palette index 0xFFFF) and the same transform.
-        var emitted = false;
-        if (options.colr_fonts) |fonts| {
-            if (face_index_int < fonts.len) {
-                var iter = fonts[face_index_int].colrLayers(g.glyph_id);
-                if (iter.count() > 0) {
-                    while (iter.next()) |layer| {
-                        const layer_color: [4]f32 = if (layer.color[0] < 0)
-                            options.color
-                        else
-                            layer.color;
-                        try shapes.append(allocator, .{
-                            .key = record_key_mod.unhintedGlyph(font_id, layer.glyph_id),
-                            .local_transform = transform,
-                            .local_color = layer_color,
-                        });
-                    }
-                    emitted = true;
-                }
-            }
-        }
-        if (!emitted) {
-            try shapes.append(allocator, .{
-                .key = record_key_mod.unhintedGlyph(font_id, g.glyph_id),
-                .local_transform = transform,
-                .local_color = options.color,
-            });
-        }
-    }
-
-    return Picture.from(allocator, shapes.items);
+        },
+        .local_color = color,
+    };
 }
 
 pub const HintedShapedRunOptions = struct {
@@ -144,36 +160,37 @@ pub fn hintedShapedRunPicture(
     shaped: *const ShapedText,
     options: HintedShapedRunOptions,
 ) ShapedRunError!Picture {
-    var shapes: std.ArrayList(Shape) = .empty;
-    defer shapes.deinit(allocator);
-
+    // Hinted text never fans out — one shape per glyph. Allocate the
+    // final buffer directly at the right size, same pattern as the
+    // non-COLR `shapedRunPicture` fast path.
     const ppem_26_6 = options.ppem_26_6;
     const ppem_px = @as(f32, @floatFromInt(ppem_26_6)) / 64.0;
     const scale: f32 = if (ppem_px > 0.0) options.em / ppem_px else 1.0;
 
-    for (shaped.glyphs) |g| {
+    const buf = try allocator.alloc(Shape, shaped.glyphs.len);
+    errdefer allocator.free(buf);
+
+    for (shaped.glyphs, 0..) |g, i| {
         const face_index_int: usize = @intCast(g.face_index);
         if (face_index_int >= options.face_to_font_id.len) return error.UnknownFaceIndex;
         const font_id = options.face_to_font_id[face_index_int];
-
         const pen_x = options.baseline.x + options.em * g.x_offset;
         const pen_y = options.baseline.y + options.em * g.y_offset;
-        const transform: Transform2D = .{
-            .xx = scale,
-            .xy = 0,
-            .tx = pen_x,
-            .yx = 0,
-            .yy = -scale,
-            .ty = pen_y,
-        };
-        try shapes.append(allocator, .{
+        buf[i] = .{
             .key = record_key_mod.hintedGlyph(font_id, g.glyph_id, ppem_26_6),
-            .local_transform = transform,
+            .local_transform = .{
+                .xx = scale,
+                .xy = 0,
+                .tx = pen_x,
+                .yx = 0,
+                .yy = -scale,
+                .ty = pen_y,
+            },
             .local_color = options.color,
-        });
+        };
     }
 
-    return Picture.from(allocator, shapes.items);
+    return Picture.fromOwnedSlice(allocator, buf);
 }
 
 // ---------------------------------------------------------------------------
