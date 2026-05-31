@@ -2,12 +2,10 @@ const std = @import("std");
 const gl = @import("bindings.zig").gl;
 const gl_backend = @import("backend.zig");
 const gl_programs = @import("programs.zig");
-const gl_resources = @import("resources.zig");
 const gl_upload = @import("prepared_pages.zig");
-const draw_records_mod = @import("../../../draw_records.zig");
+const draw_records_mod = @import("../../../picture/draw_records.zig");
 const shaders = @import("shaders.zig");
 const subpixel_policy = @import("../subpixel_policy.zig");
-const texture_layers = @import("../../format/texture_layers.zig");
 const vertex = @import("../../format/vertex.zig");
 const snail_mod = @import("../../../root.zig");
 const SubpixelOrder = @import("../../format/subpixel_order.zig").SubpixelOrder;
@@ -27,19 +25,6 @@ const ProgramState = gl_programs.ProgramState;
 const deleteProgramState = gl_programs.deleteProgramState;
 const linkProgram = gl_programs.linkProgram;
 const loadProgramState = gl_programs.loadProgramState;
-
-pub const TextCoverageProgram = gl_resources.TextCoverageProgram;
-pub const TextCoverageDrawState = gl_resources.TextCoverageDrawState;
-pub const Gl33PreparedResources = gl_resources.Gl33PreparedResources;
-pub const Gl44PreparedResources = gl_resources.Gl44PreparedResources;
-
-pub const text_vertex_interface = shaders.text_vertex_interface;
-pub const text_fragment_interface = shaders.text_fragment_interface;
-pub const text_coverage_fragment_interface = shaders.text_coverage_fragment_interface;
-pub const text_sample_interface = shaders.text_sample_interface;
-pub const text_fragment_body = shaders.text_fragment_body;
-pub const text_coverage_fragment_body = shaders.text_coverage_fragment_body;
-pub const text_sample_body = shaders.text_sample_body;
 
 // ── GL 4.4 persistent mapping constants ──
 
@@ -65,10 +50,6 @@ pub const LinearResolveRestore = struct {
 fn TextStateFor(comptime backend: Backend) type {
     return struct {
         const GlTextState = @This();
-        const PreparedResources = switch (backend) {
-            .gl33 => Gl33PreparedResources,
-            .gl44 => Gl44PreparedResources,
-        };
 
         text_program: ProgramState = .{},
         text_subpixel_dual_program: ProgramState = .{},
@@ -110,7 +91,6 @@ fn TextStateFor(comptime backend: Backend) type {
         /// successive replicated draws.
         replicated_shape_divisor: u32 = 0,
         active_program: gl.GLuint = 0,
-        active_resource_bank_id: u32 = std.math.maxInt(u32),
         frame_begun: bool = false,
         supports_dual_source_blend: bool = false,
         persistent_map: ?[*]u8 = null,
@@ -118,7 +98,6 @@ fn TextStateFor(comptime backend: Backend) type {
         ring_segment: u32 = 0,
         ring_offset: usize = 0,
         ring_segment_dirty: [RING_SEGMENTS]bool = .{false} ** RING_SEGMENTS,
-        resource_cache: ?PreparedResources = null,
 
         // ── Init / Deinit ──
 
@@ -232,10 +211,6 @@ fn TextStateFor(comptime backend: Backend) type {
         }
 
         pub fn deinit(self: *GlTextState) void {
-            if (self.resource_cache) |*cache| {
-                cache.deinit();
-                self.resource_cache = null;
-            }
             if (comptime backend == .gl44) {
                 for (&self.ring_fences) |*f| {
                     if (f.*) |fence| {
@@ -269,59 +244,6 @@ fn TextStateFor(comptime backend: Backend) type {
             if (self.vao != 0) gl.glDeleteVertexArrays(1, &self.vao);
             if (self.vbo != 0) gl.glDeleteBuffers(1, &self.vbo);
             if (self.ebo != 0) gl.glDeleteBuffers(1, &self.ebo);
-        }
-
-        pub fn resourceCache(self: *GlTextState, allocator: std.mem.Allocator) *PreparedResources {
-            if (self.resource_cache == null) {
-                self.resource_cache = PreparedResources{
-                    .allocator = allocator,
-                };
-            }
-            if (self.resource_cache) |*cache| {
-                return cache;
-            }
-            unreachable;
-        }
-
-        pub fn resetResourceCache(self: *GlTextState) void {
-            if (self.resource_cache) |*cache| {
-                const allocator = cache.allocator;
-                const generation = cache.generation +% 1;
-                cache.deinit();
-                cache.* = .{
-                    .allocator = allocator,
-                    .generation = generation,
-                };
-            }
-        }
-
-        pub fn resourceCacheStats(self: *const GlTextState) snail_mod.ResourceCacheStats {
-            if (self.resource_cache) |*cache| {
-                const active_atlas_pages = gl_resources.atlasPagesInBank(cache.atlas_slots[0..cache.atlas_slot_count], cache.active_atlas_bank_id);
-                const active_image_layers: u32 = @intCast(cache.image_slot_count);
-                var atlas_pages = active_atlas_pages;
-                var atlas_layers = cache.allocated_layer_count;
-                var image_layers_resident = active_image_layers;
-                var image_layers = cache.allocated_image_count;
-                for (cache.atlas_banks[0..cache.atlas_bank_count]) |bank| {
-                    atlas_pages += bank.resident_atlas_pages;
-                    atlas_layers += bank.allocated_layer_count;
-                    image_layers_resident += bank.resident_image_layers;
-                    image_layers += bank.allocated_image_count;
-                }
-                return .{
-                    .generation = cache.generation,
-                    .active_atlas_pages_resident = active_atlas_pages,
-                    .active_atlas_layers_allocated = cache.allocated_layer_count,
-                    .atlas_pages_resident = atlas_pages,
-                    .atlas_layers_allocated = atlas_layers,
-                    .active_image_layers_resident = active_image_layers,
-                    .active_image_layers_allocated = cache.allocated_image_count,
-                    .image_layers_resident = image_layers_resident,
-                    .image_layers_allocated = image_layers,
-                };
-            }
-            return .{};
         }
 
         pub fn backendName(_: *const GlTextState) [:0]const u8 {
@@ -538,96 +460,7 @@ fn TextStateFor(comptime backend: Backend) type {
             gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE);
         }
 
-        // ── Draw ──
-
-        fn drawTextInternal(self: *GlTextState, prepared: *const PreparedResources, vertices: []const u32, draw_state: DrawState, texture_layer_base: u32, allow_subpixel: bool) !void {
-            // VAO may have been unbound by other renderers in the same context.
-            gl.glBindVertexArray(self.vao);
-            if (comptime backend == .gl33) {
-                gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vbo);
-            }
-
-            const total_glyphs = vertices.len / vertex.WORDS_PER_INSTANCE;
-            const render_mode = subpixel_policy.chooseTextRenderMode(
-                vertices,
-                draw_state.mvp,
-                allow_subpixel,
-                draw_state.raster.subpixel_order,
-                self.supports_dual_source_blend,
-            );
-            if (!prepared.atlas_has_special_text_runs) {
-                setTextBlendMode(false, render_mode);
-                const prog_state = switch (render_mode) {
-                    .grayscale => &self.text_program,
-                    .subpixel_dual_source => &self.text_subpixel_dual_program,
-                };
-                try self.bindProgramState(prepared, prog_state, draw_state, texture_layer_base, render_mode);
-                self.drawGlyphRange(vertices, 0, total_glyphs);
-                return;
-            }
-
-            var run_start: usize = 0;
-            while (run_start < total_glyphs) {
-                const run_kind = subpixel_policy.glyphRunKind(vertices, run_start);
-                const run_end = subpixel_policy.glyphRunEnd(vertices, run_start, run_kind);
-
-                const run_mode: subpixel_policy.TextRenderMode = if (run_kind != .regular)
-                    .grayscale
-                else
-                    subpixel_policy.chooseTextRenderModeRange(
-                        vertices,
-                        run_start,
-                        run_end - run_start,
-                        draw_state.mvp,
-                        allow_subpixel,
-                        draw_state.raster.subpixel_order,
-                        self.supports_dual_source_blend,
-                    );
-                setTextBlendMode(run_kind != .regular, run_mode);
-                const prog_state = switch (run_kind) {
-                    .regular => switch (run_mode) {
-                        .grayscale => &self.text_program,
-                        .subpixel_dual_source => &self.text_subpixel_dual_program,
-                    },
-                    .colr => self.ensureColrProgram(),
-                    .path => self.ensurePathProgram(),
-                    .hinted_text => self.ensureHintedTextProgram(),
-                };
-                try self.bindProgramState(prepared, prog_state, draw_state, texture_layer_base, run_mode);
-                self.drawGlyphRange(vertices, run_start, run_end - run_start);
-                run_start = run_end;
-            }
-        }
-
-        pub fn drawTextPrepared(self: *GlTextState, prepared: *const PreparedResources, vertices: []const u32, draw_state: DrawState, texture_layer_base: u32) !void {
-            try self.drawTextInternal(prepared, vertices, draw_state, texture_layer_base, true);
-        }
-
-        pub fn drawPreparedText(self: *GlTextState, prepared: *const PreparedResources, vertices: []const u32) void {
-            _ = prepared;
-            if (vertices.len == 0) return;
-            gl.glBindVertexArray(self.vao);
-            if (comptime backend == .gl33) {
-                gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vbo);
-            }
-            self.drawGlyphRange(vertices, 0, vertices.len / vertex.WORDS_PER_INSTANCE);
-        }
-
-        pub fn drawPathsPrepared(self: *GlTextState, prepared: *const PreparedResources, vertices: []const u32, draw_state: DrawState, texture_layer_base: u32) !void {
-            const render_mode: subpixel_policy.TextRenderMode = .grayscale;
-            const prog_state = self.ensurePathProgram();
-            gl.glBindVertexArray(self.vao);
-            if (comptime backend == .gl33) {
-                gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vbo);
-            }
-
-            setTextBlendMode(false, render_mode);
-
-            try self.bindProgramState(prepared, prog_state, draw_state, texture_layer_base, render_mode);
-            self.drawGlyphRange(vertices, 0, vertices.len / vertex.WORDS_PER_INSTANCE);
-        }
-
-        // ── New-API draw entry (Phase 5a) ──
+        // ── New-API draw entry ──
 
         const gl_upload_variant: gl_upload.Variant = switch (backend) {
             .gl33 => .gl33,
@@ -656,7 +489,7 @@ fn TextStateFor(comptime backend: Backend) type {
             if (comptime backend == .gl33) gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vbo);
 
             for (records.segments) |seg| {
-                const cache = findNewApiCache(caches, seg.binding.pool) orelse return error.MissingBinding;
+                const cache = findCache(caches, seg.binding.pool) orelse return error.MissingBinding;
                 if (seg.binding.generation != 0 and cache.upload_generation < seg.binding.generation) return error.StaleBinding;
                 const seg_words = records.words[seg.words_offset..][0..seg.words_len];
                 switch (seg.kind) {
@@ -698,7 +531,7 @@ fn TextStateFor(comptime backend: Backend) type {
                     .path => self.ensurePathProgram(),
                     .hinted_text => self.ensureHintedTextProgram(),
                 };
-                self.bindProgramState_(cache, prog_state, draw_state, run_mode);
+                self.bindProgramState(cache, prog_state, draw_state, run_mode);
                 self.drawGlyphRange(vertices, run_start, run_end - run_start);
                 run_start = run_end;
             }
@@ -790,7 +623,7 @@ fn TextStateFor(comptime backend: Backend) type {
                     .path => &self.path_program_replicated,
                     .hinted_text => &self.hinted_text_program_replicated,
                 };
-                self.bindProgramState_(cache, prog_state, draw_state, run_mode);
+                self.bindProgramState(cache, prog_state, draw_state, run_mode);
                 var s: usize = run_start;
                 while (s < run_end_in_shapes) : (s += 1) {
                     const shape_base: usize = s * vertex.BYTES_PER_INSTANCE;
@@ -810,18 +643,14 @@ fn TextStateFor(comptime backend: Backend) type {
             if (comptime backend == .gl33) gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vbo);
         }
 
-        /// Bind one GlPreparedPages' texture set + uniforms. Mirrors
-        /// `bindProgramState` but reads from the new-API cache. The
+        /// Bind one GlPreparedPages' texture set + uniforms. The
         /// `layer_base` uniform is always 0 — the new model encodes the
-        /// absolute texture-array layer in the per-instance `glyph` data,
-        /// not via a bank-relative offset like the legacy path.
-        fn bindProgramState_(self: *GlTextState, cache: *const GlPreparedPages, prog_state: *const ProgramState, draw_state: DrawState, render_mode: subpixel_policy.TextRenderMode) void {
+        /// absolute texture-array layer in the per-instance `glyph` data.
+        fn bindProgramState(self: *GlTextState, cache: *const GlPreparedPages, prog_state: *const ProgramState, draw_state: DrawState, render_mode: subpixel_policy.TextRenderMode) void {
             const program_changed = prog_state.handle != self.active_program or !self.frame_begun;
             if (program_changed) {
                 gl.glUseProgram(prog_state.handle);
                 self.active_program = prog_state.handle;
-                // Force-reset the bank id so legacy/new paths don't conflict.
-                self.active_resource_bank_id = std.math.maxInt(u32);
                 self.frame_begun = true;
             }
 
@@ -891,57 +720,6 @@ fn TextStateFor(comptime backend: Backend) type {
             return &self.hinted_text_program;
         }
 
-        fn bindProgramState(self: *GlTextState, prepared: *const PreparedResources, prog_state: *const ProgramState, draw_state: DrawState, texture_layer_base: u32, render_mode: subpixel_policy.TextRenderMode) !void {
-            const bank_id = texture_layers.bank(texture_layer_base);
-            const bank = prepared.bankForId(bank_id) orelse return error.MissingPreparedResource;
-            if (prog_state.handle != self.active_program or !self.frame_begun or bank_id != self.active_resource_bank_id) {
-                gl.glUseProgram(prog_state.handle);
-                self.active_program = prog_state.handle;
-                self.active_resource_bank_id = bank_id;
-
-                if (comptime backend == .gl44) {
-                    gl.glBindTextureUnit(0, bank.curve_array);
-                    gl.glBindTextureUnit(1, bank.band_array);
-                    if (prog_state.layer_tex_loc >= 0 and bank.layer_info_tex != 0) gl.glBindTextureUnit(2, bank.layer_info_tex);
-                    if (prog_state.image_tex_loc >= 0 and bank.image_array != 0) gl.glBindTextureUnit(3, bank.image_array);
-                } else {
-                    gl.glActiveTexture(gl.GL_TEXTURE0);
-                    gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, bank.curve_array);
-                    gl.glActiveTexture(gl.GL_TEXTURE1);
-                    gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, bank.band_array);
-                    if (prog_state.layer_tex_loc >= 0 and bank.layer_info_tex != 0) {
-                        gl.glActiveTexture(gl.GL_TEXTURE2);
-                        gl.glBindTexture(gl.GL_TEXTURE_2D, bank.layer_info_tex);
-                    }
-                    if (prog_state.image_tex_loc >= 0 and bank.image_array != 0) {
-                        gl.glActiveTexture(gl.GL_TEXTURE3);
-                        gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, bank.image_array);
-                    }
-                }
-
-                if (prog_state.curve_tex_loc >= 0) gl.glUniform1i(prog_state.curve_tex_loc, 0);
-                if (prog_state.band_tex_loc >= 0) gl.glUniform1i(prog_state.band_tex_loc, 1);
-                if (prog_state.layer_tex_loc >= 0) gl.glUniform1i(prog_state.layer_tex_loc, 2);
-                if (prog_state.image_tex_loc >= 0) gl.glUniform1i(prog_state.image_tex_loc, 3);
-                self.frame_begun = true;
-            }
-
-            gl.glUniformMatrix4fv(prog_state.mvp_loc, 1, gl.GL_FALSE, &draw_state.mvp.data);
-            gl.glUniform2f(prog_state.viewport_loc, draw_state.surface.pixel_width, draw_state.surface.pixel_height);
-            if (prog_state.layer_base_loc >= 0) gl.glUniform1i(prog_state.layer_base_loc, @intCast(texture_layers.bankLocal(texture_layer_base)));
-            if (prog_state.subpixel_order_loc >= 0) {
-                const order = if (render_mode == .grayscale) SubpixelOrder.none else draw_state.raster.subpixel_order;
-                gl.glUniform1i(prog_state.subpixel_order_loc, @intFromEnum(order));
-            }
-            if (prog_state.output_srgb_loc >= 0) {
-                const output_srgb = draw_state.surface.encoding.shaderEncodesSrgb() and !self.linear_resolve_active;
-                gl.glUniform1i(prog_state.output_srgb_loc, @intFromBool(output_srgb));
-            }
-            if (prog_state.coverage_exponent_loc >= 0) {
-                gl.glUniform1f(prog_state.coverage_exponent_loc, draw_state.raster.coverage_transfer.shaderExponent());
-            }
-        }
-
         fn waitRingSegment(self: *GlTextState, segment: u32) void {
             if (self.ring_fences[segment]) |fence| {
                 const status = gl.glClientWaitSync(fence, 0, 0);
@@ -1009,6 +787,41 @@ fn TextStateFor(comptime backend: Backend) type {
 
 pub const Gl33TextState = TextStateFor(.gl33);
 pub const Gl44TextState = TextStateFor(.gl44);
+
+// ── Renderer wrappers ──
+//
+// The demos call `snail.Gl33Renderer.init(allocator)` and access
+// `.state` to drive draws. The allocator parameter is unused — text
+// state has no heap allocations of its own — but the signature keeps
+// the public API uniform across backends.
+
+pub const Gl33Renderer = struct {
+    state: Gl33TextState = .{},
+
+    pub fn init(_: std.mem.Allocator) !Gl33Renderer {
+        var self = Gl33Renderer{};
+        try self.state.init();
+        return self;
+    }
+
+    pub fn deinit(self: *Gl33Renderer) void {
+        self.state.deinit();
+    }
+};
+
+pub const Gl44Renderer = struct {
+    state: Gl44TextState = .{},
+
+    pub fn init(_: std.mem.Allocator) !Gl44Renderer {
+        var self = Gl44Renderer{};
+        try self.state.init();
+        return self;
+    }
+
+    pub fn deinit(self: *Gl44Renderer) void {
+        self.state.deinit();
+    }
+};
 
 // ── Pure utility functions (no mutable state access) ──
 
@@ -1185,7 +998,7 @@ fn detectDualSourceBlendSupport() bool {
     return max_draw_buffers >= 1;
 }
 
-fn findNewApiCache(
+fn findCache(
     caches: anytype,
     pool: *snail_mod.PagePool,
 ) ?@TypeOf(caches[0]) {
@@ -1193,36 +1006,4 @@ fn findNewApiCache(
         if (c.pool == pool) return c;
     }
     return null;
-}
-
-fn composeShapeOverrideNewApi(dst: []u32, shape: []const u32, override: []const u32) void {
-    std.debug.assert(dst.len == vertex.WORDS_PER_INSTANCE);
-    std.debug.assert(shape.len == vertex.WORDS_PER_INSTANCE);
-    std.debug.assert(override.len == 8);
-    @memcpy(dst, shape);
-    const Transform2D = snail_mod.Transform2D;
-    const shape_t = Transform2D{
-        .xx = @bitCast(shape[2]),
-        .xy = @bitCast(shape[3]),
-        .yx = @bitCast(shape[4]),
-        .yy = @bitCast(shape[5]),
-        .tx = @bitCast(shape[6]),
-        .ty = @bitCast(shape[7]),
-    };
-    const override_t = Transform2D{
-        .xx = @bitCast(override[0]),
-        .xy = @bitCast(override[1]),
-        .tx = @bitCast(override[2]),
-        .yx = @bitCast(override[3]),
-        .yy = @bitCast(override[4]),
-        .ty = @bitCast(override[5]),
-    };
-    const composed_t = Transform2D.multiply(override_t, shape_t);
-    dst[2] = @bitCast(composed_t.xx);
-    dst[3] = @bitCast(composed_t.xy);
-    dst[4] = @bitCast(composed_t.yx);
-    dst[5] = @bitCast(composed_t.yy);
-    dst[6] = @bitCast(composed_t.tx);
-    dst[7] = @bitCast(composed_t.ty);
-    dst[15] = override[6];
 }

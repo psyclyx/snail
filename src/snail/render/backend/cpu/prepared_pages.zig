@@ -1,4 +1,4 @@
-//! CPU-backend prepared-pages cache for the new API.
+//! CPU-backend prepared-pages cache for snail.
 //!
 //! Holds resident CPU-side resources for one `PagePool` and exposes
 //! caller-controlled lifecycle primitives:
@@ -23,12 +23,12 @@
 const std = @import("std");
 
 const atlas_mod = @import("../../../atlas.zig");
-const draw_records = @import("../../../draw_records.zig");
-const page_mod = @import("../../../page.zig");
-const page_pool_mod = @import("../../../page_pool.zig");
+const draw_records = @import("../../../picture/draw_records.zig");
+const page_mod = @import("../../../atlas/page.zig");
+const page_pool_mod = @import("../../../atlas/page_pool.zig");
 const curve_tex = @import("../../format/curve_texture.zig");
 const band_tex = @import("../../format/band_texture.zig");
-const paint_records = @import("../../../paint_records.zig");
+const paint_records = @import("../../../atlas/paint_records.zig");
 const cpu_resources = @import("resources.zig");
 const cpu_path_paint = @import("path_paint.zig");
 const image_mod = @import("../../../image.zig");
@@ -630,7 +630,7 @@ test "cache init allocates fixed-capacity buffers" {
 }
 
 test "release returns range to free list and allows reuse" {
-    const record_key_mod = @import("../../../record_key.zig");
+    const record_key_mod = @import("../../../atlas/record_key.zig");
     const font_mod = @import("../../../font.zig");
 
     const font_data = @import("assets").noto_sans_regular;

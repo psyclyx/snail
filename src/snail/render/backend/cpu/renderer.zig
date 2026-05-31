@@ -8,24 +8,17 @@
 //! float-op orderings between CPU code and the SPIR-V/GLSL pipeline.
 
 const std = @import("std");
-const builtin = @import("builtin");
 const snail = @import("../../../root.zig");
-const draw_mod = @import("../../../draw.zig");
-const cpu_adapter = @import("../../adapter/cpu.zig");
 const bezier = @import("../../../math/bezier.zig");
 const curve_tex = @import("../../format/curve_texture.zig");
-const atlas_curve_mod = @import("../../format/atlas/curve.zig");
-const atlas_page_mod = @import("../../format/atlas/page.zig");
+const band_tex = @import("../../format/band_texture.zig");
 const render_abi = @import("../../format/abi.zig");
 const text_hint_format = @import("../../format/text_hint.zig");
 const vertex = @import("../../format/vertex.zig");
 const CurveSegment = bezier.CurveSegment;
-const CurveAtlas = atlas_curve_mod.CurveAtlas;
-const AtlasPage = atlas_page_mod.AtlasPage;
-const GlyphBandEntry = std.meta.fieldInfo(CurveAtlas.GlyphInfo, .band_entry).type;
+const GlyphBandEntry = band_tex.GlyphBandEntry;
 const Vec2 = snail.Vec2;
 const Transform2D = snail.Transform2D;
-const DrawRecords = draw_mod.DrawRecords;
 const FillRule = snail.FillRule;
 const SubpixelOrder = snail.SubpixelOrder;
 const cpu_blend = @import("blend.zig");
@@ -35,7 +28,6 @@ const cpu_geometry = @import("geometry.zig");
 const cpu_path_paint = @import("path_paint.zig");
 const cpu_resources = @import("resources.zig");
 const cpu_texture = @import("texture.zig");
-const cpu_tile_frame = @import("tile_frame.zig");
 
 const SubpixelCoverage = cpu_coverage.SubpixelCoverage;
 const SubpixelCoveragePlan = cpu_coverage.SubpixelCoveragePlan;
@@ -287,60 +279,6 @@ pub const CpuRenderer = struct {
         }
     }
 
-    fn drawPathPicture(self: *CpuRenderer, picture: *const snail.PathPicture) void {
-        self.drawPathPictureTransformed(picture, .identity);
-    }
-
-    fn drawPathPictureTransformed(self: *CpuRenderer, picture: *const snail.PathPicture, transform: Transform2D) void {
-        for (picture.shapes) |shape| {
-            const info = picture.atlas.getGlyph(shape.glyph_id) orelse continue;
-            const final_transform = Transform2D.multiply(transform, shape.transform);
-            const inverse = inverseTransform(final_transform) orelse continue;
-            var bounds = transformedGlyphBounds(info.bbox, final_transform);
-            expandBoundsForCoverageSupport(&bounds, self.subpixel_order, false);
-            const px0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.x))), @as(i32, @intCast(self.col_clip_min)));
-            const py0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.y))), @as(i32, @intCast(self.row_clip_min)));
-            const px1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.x))), @as(i32, @intCast(self.col_clip_max)));
-            const py1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.y))), @as(i32, @intCast(self.row_clip_max)));
-            if (px0 >= px1 or py0 >= py1) continue;
-
-            const epp = glyphEdgePixelsPerPixel(inverse);
-            const ppe = Vec2.new(1.0 / epp.x, 1.0 / epp.y);
-            const band_max_h: i32 = @as(i32, @intCast(info.band_entry.h_band_count)) - 1;
-            const band_max_v: i32 = @as(i32, @intCast(info.band_entry.v_band_count)) - 1;
-            const page = picture.atlas.page(info.page_index);
-
-            var row: u32 = @intCast(py0);
-            while (row < @as(u32, @intCast(py1))) : (row += 1) {
-                var col: u32 = @intCast(px0);
-                while (col < @as(u32, @intCast(px1))) : (col += 1) {
-                    const world = Vec2.new(@as(f32, @floatFromInt(col)) + 0.5, @as(f32, @floatFromInt(row)) + 0.5);
-                    const local = inverse.applyPoint(world);
-                    const paint = samplePathPaint(&picture.atlas, shape, shape.glyph_id, local);
-                    // Legacy PathPicture paint records were written without a
-                    // per-record fill rule (the rewrite encodes it into the
-                    // record); preserve the historical default of non-zero
-                    // winding for these draws.
-                    const cov = self.applyCoverageTransfer(evalGlyphCoverageBandSpan(
-                        page,
-                        local.x,
-                        local.y,
-                        epp.x,
-                        epp.y,
-                        ppe.x,
-                        ppe.y,
-                        info.band_entry,
-                        band_max_h,
-                        band_max_v,
-                        .non_zero,
-                    ));
-                    if (cov < 1.0 / 255.0) continue;
-                    self.blendPremultipliedPixel(row, col, premultiplyCoverage(paint.color, cov), paint.apply_dither);
-                }
-            }
-        }
-    }
-
     const DrawStateRestore = struct {
         subpixel_order: SubpixelOrder,
         target_encoding: snail.TargetEncoding,
@@ -369,18 +307,11 @@ pub const CpuRenderer = struct {
         self.coverage_transfer = restore.coverage_transfer;
     }
 
-    pub fn drawTextPrepared(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const u32, state: snail.DrawState, texture_layer_base: u32) !void {
+    pub fn drawBatch(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const u32, state: snail.DrawState, texture_layer_base: u32) !void {
         const restore = self.applyDrawState(state);
         defer self.restoreDrawState(restore);
         const scene = sceneToPixelFromMvp(state.mvp, state.surface.pixel_width, state.surface.pixel_height);
-        self.drawTextBatchPrepared(prepared, vertices, scene, texture_layer_base, true);
-    }
-
-    pub fn drawPathsPrepared(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const u32, state: snail.DrawState, texture_layer_base: u32) !void {
-        const restore = self.applyDrawState(state);
-        defer self.restoreDrawState(restore);
-        const scene = sceneToPixelFromMvp(state.mvp, state.surface.pixel_width, state.surface.pixel_height);
-        self.drawTextBatchPrepared(prepared, vertices, scene, texture_layer_base, false);
+        self.drawBatchInstances(prepared, vertices, scene, texture_layer_base, true);
     }
 
     pub fn beginDraw(_: *CpuRenderer) void {}
@@ -389,59 +320,7 @@ pub const CpuRenderer = struct {
         return "CPU";
     }
 
-    pub fn asRenderer(self: *CpuRenderer) snail.Renderer {
-        return cpu_adapter.borrow(self);
-    }
-
-    pub fn uploadResourcesBlocking(self: *CpuRenderer, allocators: snail.UploadAllocators, set: *const snail.ResourceManifest) !snail.PreparedResources {
-        var renderer = self.asRenderer();
-        return renderer.uploadResourcesBlocking(allocators, set);
-    }
-
-    pub fn draw(self: *CpuRenderer, prepared: *const snail.PreparedResources, list: *const snail.DrawList, state: snail.DrawState) !void {
-        var renderer = self.asRenderer();
-        try renderer.draw(prepared, list, state);
-    }
-
-    pub fn drawPrepared(self: *CpuRenderer, prepared: *const snail.PreparedResources, scene: *const snail.PreparedScene, state: snail.DrawState) !void {
-        var renderer = self.asRenderer();
-        try renderer.drawPrepared(prepared, scene, state);
-    }
-
-    pub fn drawPass(self: *CpuRenderer, prepared: *const snail.PreparedResources, list: *const snail.DrawList, pass: snail.DrawPass) !void {
-        var renderer = self.asRenderer();
-        try renderer.drawPass(prepared, list, pass);
-    }
-
-    pub fn drawPreparedPass(self: *CpuRenderer, prepared: *const snail.PreparedResources, scene: *const snail.PreparedScene, pass: snail.DrawPass) !void {
-        var renderer = self.asRenderer();
-        try renderer.drawPreparedPass(prepared, scene, pass);
-    }
-
-    /// Frame-level fan-out invoked by the CPU vtable's `draw` entry when a
-    /// thread pool is attached. Caller has already validated records, so
-    /// each tile worker can call `iterateRecords` with no expected draw
-    /// errors. Fanning out once per frame (rather than per segment)
-    /// amortizes the wake-and-join cost across the whole scene.
-    pub fn dispatchTiledDraw(
-        self: *CpuRenderer,
-        pool: *snail.ThreadPool,
-        backend_prepared: ?*const anyopaque,
-        records: DrawRecords,
-        state: snail.DrawState,
-    ) void {
-        const span = self.row_clip_max - self.row_clip_min;
-        const tile_count = (span + TILE_ROWS - 1) / TILE_ROWS;
-        var ctx = cpu_tile_frame.Context(CpuRenderer){
-            .self = self,
-            .backend_prepared = backend_prepared,
-            .records = records,
-            .state = state,
-        };
-        pool.dispatch(tile_count, &ctx, cpu_tile_frame.callback(CpuRenderer, TILE_ROWS));
-    }
-
-    pub fn drawTextBatchPrepared(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const u32, scene_to_pixel: Transform2D, texture_layer_base: u32, allow_subpixel: bool) void {
+    fn drawBatchInstances(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const u32, scene_to_pixel: Transform2D, texture_layer_base: u32, allow_subpixel: bool) void {
         const WORDS = vertex.WORDS_PER_INSTANCE;
         // Always serial: parallelism is at the frame level via `drawPrepared`.
         // Per-instance bounds rejection inside the row loops handles tile
@@ -1400,148 +1279,6 @@ pub const CpuRenderer = struct {
         }
     }
 
-    fn drawGlyphId(
-        self: *CpuRenderer,
-        atlas: *const CurveAtlas,
-        glyph_id: u16,
-        x: f32,
-        y: f32,
-        font_size: f32,
-        color: [4]f32,
-    ) void {
-        self.drawGlyphIdLinear(atlas, glyph_id, x, y, font_size, srgbColorToLinear(color), true);
-    }
-
-    fn drawGlyphIdLinear(
-        self: *CpuRenderer,
-        atlas: *const CurveAtlas,
-        glyph_id: u16,
-        x: f32,
-        y: f32,
-        font_size: f32,
-        color: [4]f32,
-        allow_subpixel: bool,
-    ) void {
-        if (glyph_id == 0) return;
-        const info = atlas.getGlyph(glyph_id) orelse return;
-        self.drawGlyphInfoLinear(atlas, info, x, y, font_size, color, allow_subpixel);
-    }
-
-    fn drawGlyphInfoLinear(
-        self: *CpuRenderer,
-        atlas: *const CurveAtlas,
-        info: CurveAtlas.GlyphInfo,
-        x: f32,
-        y: f32,
-        font_size: f32,
-        color: [4]f32,
-        allow_subpixel: bool,
-    ) void {
-        if (info.band_entry.h_band_count == 0 or info.band_entry.v_band_count == 0) return;
-        self.renderGlyphInternal(atlas, info, x, y, font_size, color, allow_subpixel);
-    }
-
-    fn renderGlyphInternal(
-        self: *CpuRenderer,
-        atlas: *const CurveAtlas,
-        info: CurveAtlas.GlyphInfo,
-        x: f32,
-        y: f32,
-        font_size: f32,
-        color: [4]f32,
-        allow_subpixel: bool,
-    ) void {
-        const be = info.band_entry;
-        const bbox = info.bbox;
-        const page = atlas.page(info.page_index);
-
-        const scale = font_size;
-
-        // y parameter is the baseline (y-down). Em-space y goes up, screen y goes down.
-        const glyph_x0 = x + bbox.min.x * scale;
-        const glyph_x1 = x + bbox.max.x * scale;
-        const glyph_y0 = y - bbox.max.y * scale;
-        const glyph_y1 = y - bbox.min.y * scale;
-
-        var bounds = ScreenBounds{
-            .min = Vec2.new(glyph_x0, glyph_y0),
-            .max = Vec2.new(glyph_x1, glyph_y1),
-        };
-        expandBoundsForCoverageSupport(&bounds, self.subpixel_order, allow_subpixel);
-
-        const px0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.x))), @as(i32, @intCast(self.col_clip_min)));
-        const px1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.x))), @as(i32, @intCast(self.col_clip_max)));
-        const py0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.y))), @as(i32, @intCast(self.row_clip_min)));
-        const py1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.y))), @as(i32, @intCast(self.row_clip_max)));
-
-        if (px0 >= px1 or py0 >= py1) return;
-
-        const epp_x: f32 = 1.0 / scale;
-        const epp_y: f32 = 1.0 / scale;
-
-        const band_max_h: i32 = @as(i32, @intCast(be.h_band_count)) - 1;
-        const band_max_v: i32 = @as(i32, @intCast(be.v_band_count)) - 1;
-        const subpixel_plan = SubpixelCoveragePlan.init(Vec2.new(epp_x, 0.0), Vec2.new(0.0, -epp_y), self.subpixel_order);
-
-        var row: u32 = @intCast(py0);
-        while (row < @as(u32, @intCast(py1))) : (row += 1) {
-            var col: u32 = @intCast(px0);
-            while (col < @as(u32, @intCast(px1))) : (col += 1) {
-                self.renderGlyphPixel(page, row, col, x, y, scale, be, band_max_h, band_max_v, subpixel_plan, color, allow_subpixel);
-            }
-        }
-    }
-
-    fn renderGlyphPixel(
-        self: *CpuRenderer,
-        page: anytype,
-        row: u32,
-        col: u32,
-        x: f32,
-        y: f32,
-        scale: f32,
-        be: GlyphBandEntry,
-        band_max_h: i32,
-        band_max_v: i32,
-        subpixel_plan: SubpixelCoveragePlan,
-        color: [4]f32,
-        allow_subpixel: bool,
-    ) void {
-        const px_f = @as(f32, @floatFromInt(col)) + 0.5;
-        const py_f = @as(f32, @floatFromInt(row)) + 0.5;
-        const em_x = (px_f - x) / scale;
-        const em_y = (y - py_f) / scale;
-
-        if (!allow_subpixel or self.subpixel_order == .none) {
-            const cov = self.applyCoverageTransfer(evalGlyphCoverage(
-                page,
-                em_x,
-                em_y,
-                scale,
-                scale,
-                be,
-                band_max_h,
-                band_max_v,
-                .non_zero,
-            ));
-            if (cov < 1.0 / 255.0) return;
-            self.blendPremultipliedPixel(row, col, premultiplyCoverage(color, cov), false);
-            return;
-        }
-
-        const cov = self.applySubpixelCoverageTransfer(evalGlyphCoverageSubpixel(
-            page,
-            Vec2.new(em_x, em_y),
-            subpixel_plan,
-            be,
-            band_max_h,
-            band_max_v,
-            .non_zero,
-        ));
-        if (max3(cov.rgb) < 1.0 / 255.0) return;
-        self.blendSubpixelPixel(row, col, color, cov.rgb, cov.alpha);
-    }
-
     inline fn blendTarget(self: *CpuRenderer) cpu_blend.Target {
         return .{
             .pixels = self.pixels,
@@ -1568,10 +1305,3 @@ pub const CpuRenderer = struct {
     }
 };
 
-pub const test_api = if (builtin.is_test) struct {
-    pub const clear = CpuRenderer.clear;
-    pub const drawPathPicture = CpuRenderer.drawPathPicture;
-    pub const drawPathPictureTransformed = CpuRenderer.drawPathPictureTransformed;
-    pub const drawGlyphId = CpuRenderer.drawGlyphId;
-    pub const blendPremultipliedPixel = CpuRenderer.blendPremultipliedPixel;
-} else struct {};

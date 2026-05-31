@@ -1,13 +1,11 @@
-//! Vulkan new-API draw entry. Walks `DrawRecords.segments`, binds the
+//! Vulkan draw entry. Walks `DrawRecords.segments`, binds the
 //! matching `VulkanPreparedPages` cache's shared descriptor set, and
 //! dispatches each segment through either the heterogeneous draw path
 //! (one instanced draw per kind run) or the replicated path (real
 //! hardware GPU instancing via `VK_EXT_vertex_attribute_divisor`).
 //!
-//! Lives in its own module so `pipeline.zig` keeps focus on the legacy
-//! pipeline state machine — the new-API surface is mostly orthogonal,
-//! reaching into `VulkanPipeline` only for the persistent vertex
-//! buffer, push-constant helper, and pipeline cache.
+//! Reaches into `VulkanPipeline` only for the persistent vertex buffer,
+//! push-constant helper, and pipeline cache.
 
 const std = @import("std");
 
@@ -16,7 +14,7 @@ const subpixel_policy = @import("../subpixel_policy.zig");
 const vertex = @import("../../format/vertex.zig");
 const snail_mod = @import("../../../root.zig");
 const vulkan_upload_new = @import("prepared_pages.zig");
-const draw_records_mod = @import("../../../draw_records.zig");
+const draw_records_mod = @import("../../../picture/draw_records.zig");
 const pipeline_constants = @import("constants.zig");
 const vulkan_graphics = @import("graphics_pipeline.zig");
 const pipeline_mod = @import("pipeline.zig");
@@ -45,7 +43,7 @@ pub fn draw(
     setViewportAndScissor(cmd, draw_state.surface.pixel_width, draw_state.surface.pixel_height);
 
     for (records.segments) |seg| {
-        const cache = findNewApiCache(caches, seg.binding.pool) orelse return error.MissingBinding;
+        const cache = findCache(caches, seg.binding.pool) orelse return error.MissingBinding;
         if (seg.binding.generation != 0 and cache.upload_generation < seg.binding.generation) return error.StaleBinding;
         const desc_set = cache.descriptorSet();
         if (desc_set == null) return error.MissingBinding;
@@ -232,7 +230,7 @@ fn setViewportAndScissor(cmd: vk.VkCommandBuffer, viewport_w: f32, viewport_h: f
     vk.vkCmdSetScissor(cmd, 0, 1, &scissor);
 }
 
-fn findNewApiCache(
+fn findCache(
     caches: anytype,
     pool: *snail_mod.PagePool,
 ) ?@TypeOf(caches[0]) {

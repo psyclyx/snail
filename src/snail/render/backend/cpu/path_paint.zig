@@ -1,12 +1,12 @@
 const std = @import("std");
 const snail = @import("../../../root.zig");
 const color = @import("color.zig");
-const atlas_curve_mod = @import("../../format/atlas/curve.zig");
+const atlas_mod = @import("../../../atlas.zig");
+const band_tex = @import("../../format/band_texture.zig");
 const render_abi = @import("../../format/abi.zig");
 
-const CurveAtlas = atlas_curve_mod.CurveAtlas;
-const PaintImageRecord = CurveAtlas.PaintImageRecord;
-const GlyphBandEntry = std.meta.fieldInfo(CurveAtlas.GlyphInfo, .band_entry).type;
+const PaintImageRecord = atlas_mod.PaintImageRecord;
+const GlyphBandEntry = band_tex.GlyphBandEntry;
 const Vec2 = snail.Vec2;
 const clamp01 = color.clamp01;
 const linearColorToSrgb = color.linearColorToSrgb;
@@ -436,55 +436,6 @@ pub const PreparedPathPaint = struct {
     }
 };
 
-pub fn samplePathPaint(atlas: *const CurveAtlas, shape: snail.PathPicture.Shape, glyph_id: u16, local: Vec2) PathPaintSample {
-    return samplePathPaintAt(atlas, shape.info_x, shape.info_y, glyph_id, local);
-}
-
-pub fn samplePathPaintAt(atlas: *const CurveAtlas, info_x: u16, info_y: u16, glyph_id: u16, local: Vec2) PathPaintSample {
-    const data = atlas.layer_info_data orelse return .{ .color = .{ 1, 1, 1, 1 } };
-    const width = atlas.layer_info_width;
-    const info = fetchLayerInfoTexel(data, width, info_x, info_y, 0);
-    const tag: i32 = @intFromFloat(@round(-info[3]));
-    const data0 = fetchLayerInfoTexel(data, width, info_x, info_y, 2);
-    if (tag == @intFromEnum(render_abi.PaintRecordKind.composite_group)) {
-        const fill_info = fetchLayerInfoTexel(data, width, info_x, info_y, 1);
-        const fill_tag: i32 = @intFromFloat(@round(-fill_info[3]));
-        const fill_data0 = fetchLayerInfoTexel(data, width, info_x, info_y, 3);
-        return sampleLayerInfoPaint(atlas, glyph_id, data, width, info_x, info_y, fill_tag, 3, fill_data0, local);
-    }
-    return sampleLayerInfoPaint(atlas, glyph_id, data, width, info_x, info_y, tag, 2, data0, local);
-}
-
-fn sampleLayerInfoPaint(
-    atlas: *const CurveAtlas,
-    glyph_id: u16,
-    data: []const f32,
-    width: u32,
-    info_x: u16,
-    info_y: u16,
-    tag: i32,
-    data0_offset: u32,
-    data0: [4]f32,
-    local: Vec2,
-) PathPaintSample {
-    switch (tag) {
-        1 => return .{ .color = srgbColorToLinear(data0) },
-        2 => {
-            const color0 = fetchLayerInfoTexel(data, width, info_x, info_y, data0_offset + 1);
-            const color1 = fetchLayerInfoTexel(data, width, info_x, info_y, data0_offset + 2);
-            const extra = fetchLayerInfoTexel(data, width, info_x, info_y, data0_offset + 3);
-            return sampleLinearGradient(data0, color0, color1, extra, local);
-        },
-        3 => {
-            const color0 = fetchLayerInfoTexel(data, width, info_x, info_y, data0_offset + 1);
-            const color1 = fetchLayerInfoTexel(data, width, info_x, info_y, data0_offset + 2);
-            return sampleRadialGradient(data0, color0, color1, local);
-        },
-        4 => return sampleImagePaint(atlas, glyph_id, data, width, info_x, info_y, data0_offset, data0, local),
-        else => return .{ .color = .{ 1, 0, 1, 1 } },
-    }
-}
-
 fn sampleLinearGradient(data0: [4]f32, color0: [4]f32, color1: [4]f32, extra: [4]f32, local: Vec2) PathPaintSample {
     const start = Vec2.new(data0[0], data0[1]);
     const end = Vec2.new(data0[2], data0[3]);
@@ -506,27 +457,6 @@ fn sampleRadialGradient(data0: [4]f32, color0: [4]f32, color1: [4]f32, local: Ve
         .color = lerpGradientColor(color0, color1, wrapPaintT(t, paintExtendFromFloat(data0[3]))),
         .apply_dither = true,
     };
-}
-
-pub fn sampleImagePaint(
-    atlas: *const CurveAtlas,
-    glyph_id: u16,
-    data: []const f32,
-    width: u32,
-    info_x: u16,
-    info_y: u16,
-    data0_offset: u32,
-    data0: [4]f32,
-    local: Vec2,
-) PathPaintSample {
-    const records = atlas.paint_image_records orelse return .{ .color = .{ 1, 0, 1, 1 } };
-    // paint_image_records is indexed by glyph_cursor (= glyph_id - 1).
-    // The old texel-offset / 6 formula broke when composite group headers
-    // shifted the texel cursor out of alignment with the glyph cursor.
-    const record_index: usize = @as(usize, glyph_id) -| 1;
-    if (record_index >= records.len) return .{ .color = .{ 1, 0, 1, 1 } };
-    const record = records[record_index] orelse return .{ .color = .{ 1, 0, 1, 1 } };
-    return sampleImageWithRecord(record, data, width, info_x, info_y, data0_offset, data0, local);
 }
 
 pub fn sampleImageWithRecord(

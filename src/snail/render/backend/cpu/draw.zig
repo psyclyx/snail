@@ -1,21 +1,21 @@
-//! Phase 4: CPU-backend draw entry for the new `DrawRecords` API.
+//! CPU-backend draw entry for `DrawRecords`.
 //!
 //! Walks segments, resolves each segment's `Binding.pool` to a
 //! `CpuPreparedPages` cache (caller-supplied), validates the binding's
 //! generation against the cache's last upload, then dispatches per-instance
-//! into the existing CPU rasterizer via `CpuRenderer.drawTextPrepared`.
+//! into the CPU rasterizer via `CpuRenderer.drawBatch`.
 //!
 //! Supports both `.heterogeneous` and `.replicated` segments. The
 //! replicated path materializes N shape blocks × M override blocks into
 //! N*M composed instances in a scratch buffer, then hands those to the
-//! existing rasterizer (same Instance format, so no rasterizer surgery).
+//! rasterizer (same Instance format, so no rasterizer surgery).
 
 const std = @import("std");
 
 const build_options = @import("build_options");
 const snail = @import("../../../root.zig");
 const math = @import("../../../math/vec.zig");
-const draw_records = @import("../../../draw_records.zig");
+const draw_records = @import("../../../picture/draw_records.zig");
 const cpu_upload_mod = @import("prepared_pages.zig");
 const cpu_resources = @import("resources.zig");
 const vertex = @import("../../format/vertex.zig");
@@ -87,7 +87,7 @@ pub fn drawCpu(
 
         switch (seg.kind) {
             .heterogeneous => {
-                try renderer.drawTextPrepared(&prepared, seg_words, state, 0);
+                try renderer.drawBatch(&prepared, seg_words, state, 0);
             },
             .replicated => {
                 try drawReplicatedSegment(renderer, &prepared, state, seg, seg_words, cache.allocator);
@@ -132,7 +132,7 @@ fn drawReplicatedSegment(
         }
     }
 
-    try renderer.drawTextPrepared(prepared, composed, state, 0);
+    try renderer.drawBatch(prepared, composed, state, 0);
 }
 
 /// Compose one shape Instance with one Override block. The override's
@@ -198,7 +198,7 @@ fn findCache(
 // the CPU rasterizer's inner sampling loop identical for old and new paths
 // given the same source data. The remaining responsibility of these tests
 // is to verify the new draw entry walks segments, validates bindings, and
-// renders some non-empty pixels through `drawTextPrepared`.
+// renders some non-empty pixels through `drawBatch`.
 // ---------------------------------------------------------------------------
 
 const testing = std.testing;
@@ -207,13 +207,13 @@ test "drawCpu MissingBinding when no cache covers the binding's pool" {
     if (!build_options.enable_cpu) return error.SkipZigTest;
     const allocator = testing.allocator;
 
-    var pool_a = try @import("../../../page_pool.zig").PagePool.init(allocator, .{
+    var pool_a = try @import("../../../atlas/page_pool.zig").PagePool.init(allocator, .{
         .max_layers = 1,
         .curve_words_per_page = 64,
         .band_words_per_page = 32,
     });
     defer pool_a.deinit();
-    var pool_b = try @import("../../../page_pool.zig").PagePool.init(allocator, .{
+    var pool_b = try @import("../../../atlas/page_pool.zig").PagePool.init(allocator, .{
         .max_layers = 1,
         .curve_words_per_page = 64,
         .band_words_per_page = 32,
@@ -263,13 +263,13 @@ test "drawCpu replicated produces same pixels as equivalent heterogeneous emit" 
     var curves = try font.extractCurves(allocator, &glyph_cache, gid);
     defer curves.deinit();
 
-    var pool = try @import("../../../page_pool.zig").PagePool.init(allocator, .{
+    var pool = try @import("../../../atlas/page_pool.zig").PagePool.init(allocator, .{
         .max_layers = 2,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
     });
     defer pool.deinit();
-    const key = @import("../../../record_key.zig").unhintedGlyph(0, gid);
+    const key = @import("../../../atlas/record_key.zig").unhintedGlyph(0, gid);
     var atlas = try @import("../../../atlas.zig").Atlas.from(allocator, pool, &.{.{ .key = key, .curves = curves }});
     defer atlas.deinit();
 
@@ -280,13 +280,13 @@ test "drawCpu replicated produces same pixels as equivalent heterogeneous emit" 
     const binding = bindings[0];
 
     const px_size: f32 = 16.0;
-    const base_shape = @import("../../../shape.zig").Shape{
+    const base_shape = @import("../../../picture/shape.zig").Shape{
         .key = key,
         .local_transform = .{ .xx = px_size, .yy = -px_size, .tx = 16, .ty = 48 },
         .local_color = .{ 1, 1, 1, 1 },
     };
 
-    const overrides = [_]@import("../../../shape.zig").Override{
+    const overrides = [_]@import("../../../picture/shape.zig").Override{
         .{ .transform = .identity, .tint = .{ 1, 1, 1, 1 } },
         .{ .transform = Transform2D.translate(20, 0), .tint = .{ 1, 1, 1, 1 } },
         .{ .transform = Transform2D.translate(40, 0), .tint = .{ 1, 1, 1, 1 } },
@@ -295,7 +295,7 @@ test "drawCpu replicated produces same pixels as equivalent heterogeneous emit" 
     // Heterogeneous: emit the shape three times, one for each override
     // transform composed into the shape's local_transform.
     {
-        var shapes = std.ArrayList(@import("../../../shape.zig").Shape).empty;
+        var shapes = std.ArrayList(@import("../../../picture/shape.zig").Shape).empty;
         defer shapes.deinit(allocator);
         for (overrides) |ov| {
             var s = base_shape;
@@ -305,7 +305,7 @@ test "drawCpu replicated produces same pixels as equivalent heterogeneous emit" 
         var pic = try @import("../../../picture.zig").Picture.from(allocator, shapes.items);
         defer pic.deinit();
 
-        const emit_mod = @import("../../../emit.zig");
+        const emit_mod = @import("../../../picture/emit.zig");
         const words = try allocator.alloc(u32, emit_mod.wordBudget(&pic, 0));
         defer allocator.free(words);
         var segs: [4]draw_records.DrawSegment = undefined;
@@ -323,7 +323,7 @@ test "drawCpu replicated produces same pixels as equivalent heterogeneous emit" 
         var pic = try @import("../../../picture.zig").Picture.from(allocator, &.{base_shape});
         defer pic.deinit();
 
-        const emit_mod = @import("../../../emit.zig");
+        const emit_mod = @import("../../../picture/emit.zig");
         const words = try allocator.alloc(u32, emit_mod.wordBudget(&pic, overrides.len));
         defer allocator.free(words);
         var segs: [4]draw_records.DrawSegment = undefined;
@@ -358,16 +358,16 @@ test "drawCpu renders a small Picture into non-zero pixels" {
 
     const gid = try font.glyphIndex('A');
     const curves_a = try font.extractCurves(allocator, &glyph_cache, gid);
-    var owned: [1]@import("../../../curves.zig").GlyphCurves = .{curves_a};
+    var owned: [1]@import("../../../atlas/curves.zig").GlyphCurves = .{curves_a};
     defer for (&owned) |*c| c.deinit();
 
-    var pool = try @import("../../../page_pool.zig").PagePool.init(allocator, .{
+    var pool = try @import("../../../atlas/page_pool.zig").PagePool.init(allocator, .{
         .max_layers = 4,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
     });
     defer pool.deinit();
-    const key = @import("../../../record_key.zig").unhintedGlyph(0, gid);
+    const key = @import("../../../atlas/record_key.zig").unhintedGlyph(0, gid);
     var atlas = try @import("../../../atlas.zig").Atlas.from(allocator, pool, &.{.{ .key = key, .curves = owned[0] }});
     defer atlas.deinit();
 
@@ -381,7 +381,7 @@ test "drawCpu renders a small Picture into non-zero pixels" {
     // shape's scale is just the requested px size.
     const px_size: f32 = 24.0;
     const scale: f32 = px_size;
-    const shape = @import("../../../shape.zig").Shape{
+    const shape = @import("../../../picture/shape.zig").Shape{
         .key = key,
         .local_transform = .{
             .xx = scale,
@@ -396,7 +396,7 @@ test "drawCpu renders a small Picture into non-zero pixels" {
     var pic = try @import("../../../picture.zig").Picture.from(allocator, &.{shape});
     defer pic.deinit();
 
-    const emit_mod = @import("../../../emit.zig");
+    const emit_mod = @import("../../../picture/emit.zig");
     const word_need = emit_mod.wordBudget(&pic, 0);
     const words = try allocator.alloc(u32, word_need);
     defer allocator.free(words);
@@ -440,13 +440,13 @@ test "drawCpu renders gradient-painted glyph through special-layer path" {
     var curves = try font.extractCurves(allocator, &glyph_cache, gid);
     defer curves.deinit();
 
-    var pool = try @import("../../../page_pool.zig").PagePool.init(allocator, .{
+    var pool = try @import("../../../atlas/page_pool.zig").PagePool.init(allocator, .{
         .max_layers = 2,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
     });
     defer pool.deinit();
-    const key = @import("../../../record_key.zig").unhintedGlyph(0, gid);
+    const key = @import("../../../atlas/record_key.zig").unhintedGlyph(0, gid);
 
     // Linear gradient running across the glyph's local-em width.
     const gradient = snail.LinearGradient{
@@ -471,7 +471,7 @@ test "drawCpu renders gradient-painted glyph through special-layer path" {
     const binding = bindings[0];
 
     const px_size: f32 = 32.0;
-    const shape = @import("../../../shape.zig").Shape{
+    const shape = @import("../../../picture/shape.zig").Shape{
         .key = key,
         .local_transform = .{ .xx = px_size, .yy = -px_size, .tx = 12, .ty = 40 },
         .local_color = .{ 1, 1, 1, 1 },
@@ -479,7 +479,7 @@ test "drawCpu renders gradient-painted glyph through special-layer path" {
     var pic = try @import("../../../picture.zig").Picture.from(allocator, &.{shape});
     defer pic.deinit();
 
-    const emit_mod = @import("../../../emit.zig");
+    const emit_mod = @import("../../../picture/emit.zig");
     const words = try allocator.alloc(u32, emit_mod.wordBudget(&pic, 0));
     defer allocator.free(words);
     var segs: [2]draw_records.DrawSegment = undefined;
@@ -535,7 +535,7 @@ test "drawCpu renders image-painted shape through special-layer path" {
     var image = try snail.Image.initSrgba8(allocator, 4, 4, image_pixels[0..]);
     defer image.deinit();
 
-    var pool = try @import("../../../page_pool.zig").PagePool.init(allocator, .{
+    var pool = try @import("../../../atlas/page_pool.zig").PagePool.init(allocator, .{
         .max_layers = 2,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
@@ -550,8 +550,8 @@ test "drawCpu renders image-painted shape through special-layer path" {
     var path_curves = try @import("../../../paths.zig").pathToCurves(allocator, &path);
     defer path_curves.deinit();
 
-    const key = @import("../../../record_key.zig").RecordKey{
-        .namespace = @import("../../../record_key.zig").ns.path_fill,
+    const key = @import("../../../atlas/record_key.zig").RecordKey{
+        .namespace = @import("../../../atlas/record_key.zig").ns.path_fill,
         .a = 0,
     };
     var atlas = try @import("../../../atlas.zig").Atlas.from(allocator, pool, &.{.{
@@ -576,7 +576,7 @@ test "drawCpu renders image-painted shape through special-layer path" {
     const binding = bindings[0];
 
     const px_size: f32 = 20.0;
-    const shape = @import("../../../shape.zig").Shape{
+    const shape = @import("../../../picture/shape.zig").Shape{
         .key = key,
         .local_transform = .{ .xx = px_size, .yy = px_size, .tx = 6, .ty = 6 },
         .local_color = .{ 1, 1, 1, 1 },
@@ -584,7 +584,7 @@ test "drawCpu renders image-painted shape through special-layer path" {
     var pic = try @import("../../../picture.zig").Picture.from(allocator, &.{shape});
     defer pic.deinit();
 
-    const emit_mod = @import("../../../emit.zig");
+    const emit_mod = @import("../../../picture/emit.zig");
     const words = try allocator.alloc(u32, emit_mod.wordBudget(&pic, 0));
     defer allocator.free(words);
     var segs: [2]draw_records.DrawSegment = undefined;

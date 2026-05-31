@@ -1,9 +1,7 @@
 const std = @import("std");
 const vulkan_types = @import("types.zig");
-const vulkan_resources = @import("resources.zig");
 
 pub const vk = vulkan_types.vk;
-pub const PreparedResources = vulkan_resources.PreparedResources;
 
 pub const TransferCommand = struct {
     cmd: vk.VkCommandBuffer,
@@ -137,14 +135,6 @@ pub fn finishTransferCommand(self: anytype, transfer: TransferCommand) !void {
 pub fn destroyStagingBuffer(self: anytype, buffer: vk.VkBuffer, memory: vk.VkDeviceMemory) void {
     vk.vkDestroyBuffer(self.ctx.device, buffer, null);
     vk.vkFreeMemory(self.ctx.device, memory, null);
-}
-
-pub fn finishUploadStaging(self: anytype, prepared: *PreparedResources, buffer: vk.VkBuffer, memory: vk.VkDeviceMemory) !void {
-    if (self.scheduled_resource_upload_cmd != null) {
-        try prepared.retainUploadStaging(buffer, memory);
-    } else {
-        destroyStagingBuffer(self, buffer, memory);
-    }
 }
 
 fn submitTransferAndWait(self: anytype, cmd: vk.VkCommandBuffer) !void {

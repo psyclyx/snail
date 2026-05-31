@@ -1,4 +1,4 @@
-//! GL / GLES3 persistent prepared-pages cache for the new API.
+//! GL / GLES3 persistent prepared-pages cache for snail.
 //!
 //! Mirrors `CpuPreparedPages`: caller-sized capacity, slot
 //! allocation via free-list, explicit `release(binding)`, no auto-grow.
@@ -22,12 +22,12 @@
 const std = @import("std");
 
 const atlas_mod = @import("../../../atlas.zig");
-const draw_records = @import("../../../draw_records.zig");
-const page_pool_mod = @import("../../../page_pool.zig");
-const page_mod = @import("../../../page.zig");
+const draw_records = @import("../../../picture/draw_records.zig");
+const page_pool_mod = @import("../../../atlas/page_pool.zig");
+const page_mod = @import("../../../atlas/page.zig");
 const curve_tex = @import("../../format/curve_texture.zig");
 const band_tex = @import("../../format/band_texture.zig");
-const paint_records = @import("../../../paint_records.zig");
+const paint_records = @import("../../../atlas/paint_records.zig");
 const upload_common = @import("../../format/upload_common.zig");
 const image_mod = @import("../../../image.zig");
 
