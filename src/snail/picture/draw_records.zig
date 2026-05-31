@@ -15,7 +15,7 @@
 //! real instanced draw call.
 
 const std = @import("std");
-const page_pool_mod = @import("page_pool.zig");
+const page_pool_mod = @import("../atlas/page_pool.zig");
 
 pub const PagePool = page_pool_mod.PagePool;
 

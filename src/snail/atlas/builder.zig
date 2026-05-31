@@ -9,17 +9,17 @@
 
 const std = @import("std");
 
-const atlas_mod = @import("atlas.zig");
+const atlas_mod = @import("../atlas.zig");
 const page_mod = @import("page.zig");
 const page_pool_mod = @import("page_pool.zig");
-const atlas_record_mod = @import("atlas_record.zig");
+const atlas_record_mod = @import("record.zig");
 const record_key_mod = @import("record_key.zig");
 const curves_mod = @import("curves.zig");
-const curve_tex_format = @import("render/format/curve_texture.zig");
-const band_tex_format = @import("render/format/band_texture.zig");
+const curve_tex_format = @import("../render/format/curve_texture.zig");
+const band_tex_format = @import("../render/format/band_texture.zig");
 const paint_records = @import("paint_records.zig");
-const paint_mod = @import("paint.zig");
-const target_mod = @import("target.zig");
+const paint_mod = @import("../paint.zig");
+const target_mod = @import("../target.zig");
 
 const Atlas = atlas_mod.Atlas;
 const Entry = atlas_mod.Entry;

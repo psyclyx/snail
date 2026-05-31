@@ -1,27 +1,21 @@
-//! Build a `Picture` from a `ShapedText` run.
+//! Build a `Picture` from a `Shaper.shape` run.
 //!
-//! Bridges the existing shaping pipeline (`TextAtlas.shapeText`) to the new
-//! `Picture` model: each shaped glyph becomes one `Shape` with a transform
-//! placing it at its pen position in world coordinates.
-//!
-//! COLR / SVG / paint-bearing glyphs are out of scope here — those need
-//! Picture-construction-layer expansion (Q5) and paint records, which land
-//! in later phases. This function emits one `Shape` per shaped glyph with
-//! an unhinted-glyph key; emoji glyphs from a color font will resolve to
-//! their base outline if extracted, or fail at emit time if their key
-//! isn't in the atlas.
+//! Each shaped glyph becomes one `Shape` with a transform placing it at
+//! its pen position in world coordinates. COLR base glyphs expand into N
+//! shapes when `colr_fonts` is supplied; non-COLR glyphs fall back to the
+//! run color. Hinted variants use `hintedShapedRunPicture`.
 
 const std = @import("std");
 
-const math = @import("math/vec.zig");
-const picture_mod = @import("picture.zig");
+const math = @import("../math/vec.zig");
+const picture_mod = @import("../picture.zig");
 const shape_mod = @import("shape.zig");
-const record_key_mod = @import("record_key.zig");
-const types = @import("text/types.zig");
-const font_mod = @import("font.zig");
-const hinter_mod = @import("hinter.zig");
+const record_key_mod = @import("../atlas/record_key.zig");
+const text_mod = @import("../text.zig");
+const font_mod = @import("../font.zig");
+const hinter_mod = @import("../font/hinter.zig");
 
-pub const ShapedText = types.ShapedText;
+pub const ShapedText = text_mod.ShapedText;
 pub const Picture = picture_mod.Picture;
 pub const Shape = shape_mod.Shape;
 pub const Vec2 = math.Vec2;
@@ -118,10 +112,16 @@ pub fn shapedRunPicture(
 pub const HintedShapedRunOptions = struct {
     /// Pen baseline in world coordinates (pixel-space).
     baseline: Vec2,
-    /// Em size in pixels. Used to drive the hinter's ppem and to scale
-    /// the shaped glyph advance / offset (which come in em-relative
-    /// units from the shaper) into pixel-space pen positions.
+    /// Em size in pixels. Used to scale the shaper's em-relative glyph
+    /// offsets into pixel-space pen positions.
     em: f32,
+    /// 26.6 fixed-point ppem the glyphs were hinted at — the same value
+    /// passed to the `Hinter` and used to key atlas entries under
+    /// `recordKey.hintedGlyph(font_id, glyph_id, ppem_26_6)`. Callers must
+    /// pass exactly the ppem they hinted at, *not* `em * 64`: under zoom
+    /// the two differ because hinting scales by zoom, but per-glyph layout
+    /// still uses the unscaled em.
+    ppem_26_6: u32,
     color: [4]f32 = .{ 1, 1, 1, 1 },
     /// Maps `ShapedText.Glyph.face_index` to the `font_id` used in
     /// `RecordKey`s.
@@ -131,9 +131,14 @@ pub const HintedShapedRunOptions = struct {
 /// Build a Picture for hinted text. Caller is responsible for having
 /// already inserted hinted curves into the atlas under
 /// `recordKey.hintedGlyph(font_id, glyph_id, ppem_26_6)` keys.
-/// Hinted curves live in pixel-space (the hinter has already applied
-/// per-ppem hinting), so the per-glyph transform is a pure translate
-/// with a y-flip; no scaling is layered on top.
+///
+/// Hinted curves live in pixel-space at the hint-time ppem (= `ppem_26_6
+/// / 64`), which may differ from `em` when the world transform applies
+/// a non-identity scale (e.g. interactive zoom). The per-glyph transform
+/// scales by `em / ppem_px` so the glyph occupies `em` scene units along
+/// each axis regardless of the hint-time ppem; the subsequent MVP zoom
+/// brings it to its intended screen size with pixel-grid alignment baked
+/// in by the hinter.
 pub fn hintedShapedRunPicture(
     allocator: std.mem.Allocator,
     shaped: *const ShapedText,
@@ -142,7 +147,9 @@ pub fn hintedShapedRunPicture(
     var shapes: std.ArrayList(Shape) = .empty;
     defer shapes.deinit(allocator);
 
-    const ppem_26_6: u32 = @intFromFloat(@round(options.em * 64.0));
+    const ppem_26_6 = options.ppem_26_6;
+    const ppem_px = @as(f32, @floatFromInt(ppem_26_6)) / 64.0;
+    const scale: f32 = if (ppem_px > 0.0) options.em / ppem_px else 1.0;
 
     for (shaped.glyphs) |g| {
         const face_index_int: usize = @intCast(g.face_index);
@@ -152,11 +159,11 @@ pub fn hintedShapedRunPicture(
         const pen_x = options.baseline.x + options.em * g.x_offset;
         const pen_y = options.baseline.y + options.em * g.y_offset;
         const transform: Transform2D = .{
-            .xx = 1,
+            .xx = scale,
             .xy = 0,
             .tx = pen_x,
             .yx = 0,
-            .yy = -1,
+            .yy = -scale,
             .ty = pen_y,
         };
         try shapes.append(allocator, .{
@@ -177,19 +184,13 @@ const testing = std.testing;
 
 test "shapedRunPicture builds one shape per shaped glyph" {
     const allocator = testing.allocator;
-    const snail = @import("root.zig");
+    const snail = @import("../root.zig");
     const font_data = @import("assets").noto_sans_regular;
 
-    var atlas = try snail.TextAtlas.init(allocator, &.{
-        .{ .data = font_data },
-    });
-    defer atlas.deinit();
-    if (try atlas.ensureText(.{}, "Hi")) |next| {
-        atlas.deinit();
-        atlas = next;
-    }
+    var shaper = try snail.Shaper.init(allocator, &.{.{ .data = font_data }});
+    defer shaper.deinit();
 
-    var shaped = try atlas.shapeText(allocator, .{}, "Hi");
+    var shaped = try shaper.shape(allocator, .{}, "Hi");
     defer shaped.deinit();
     try testing.expect(shaped.glyphs.len == 2);
 
@@ -211,31 +212,26 @@ test "shapedRunPicture builds one shape per shaped glyph" {
 
 test "hintedShapedRunPicture builds shapes for hinted glyph keys" {
     const allocator = testing.allocator;
-    const snail = @import("root.zig");
+    const snail = @import("../root.zig");
     const font_data = @import("assets").noto_sans_regular;
 
-    var atlas = try snail.TextAtlas.init(allocator, &.{
-        .{ .data = font_data },
-    });
-    defer atlas.deinit();
-    if (try atlas.ensureText(.{}, "Hi")) |next| {
-        atlas.deinit();
-        atlas = next;
-    }
-    var shaped = try atlas.shapeText(allocator, .{}, "Hi");
+    var shaper = try snail.Shaper.init(allocator, &.{.{ .data = font_data }});
+    defer shaper.deinit();
+    var shaped = try shaper.shape(allocator, .{}, "Hi");
     defer shaped.deinit();
     try testing.expect(shaped.glyphs.len == 2);
 
+    const expected_ppem: u32 = @intFromFloat(@round(14.0 * 64.0));
     var pic = try hintedShapedRunPicture(allocator, &shaped, .{
         .baseline = .{ .x = 5, .y = 32 },
         .em = 14,
+        .ppem_26_6 = expected_ppem,
         .color = .{ 1, 1, 1, 1 },
         .face_to_font_id = &.{0},
     });
     defer pic.deinit();
 
     try testing.expectEqual(@as(usize, 2), pic.shapes.len);
-    const expected_ppem: u32 = @intFromFloat(@round(14.0 * 64.0));
     try testing.expectEqual(record_key_mod.ns.hinted_glyph, pic.shapes[0].key.namespace);
     try testing.expectEqual(expected_ppem, pic.shapes[0].key.c);
     try testing.expectApproxEqAbs(@as(f32, 1), pic.shapes[0].local_transform.xx, 1e-5);
@@ -248,7 +244,7 @@ test "hinted curves render through new API CPU draw" {
     const build_options = @import("build_options");
     if (!build_options.enable_cpu) return error.SkipZigTest;
     const allocator = testing.allocator;
-    const snail = @import("root.zig");
+    const snail = @import("../root.zig");
     const font_data = @import("assets").noto_sans_regular;
 
     var font = try Font.init(font_data);
@@ -338,7 +334,6 @@ test "shapedRunPicture rejects unknown face_index" {
     }};
     const shaped = ShapedText{
         .allocator = allocator,
-        .config = undefined,
         .glyphs = fake_glyphs[0..],
     };
     try testing.expectError(error.UnknownFaceIndex, shapedRunPicture(allocator, &shaped, .{

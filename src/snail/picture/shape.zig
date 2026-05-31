@@ -8,8 +8,8 @@
 //! Both types are pure data — no allocations, no hidden state.
 
 const std = @import("std");
-const math = @import("math/vec.zig");
-const record_key_mod = @import("record_key.zig");
+const math = @import("../math/vec.zig");
+const record_key_mod = @import("../atlas/record_key.zig");
 
 pub const Transform2D = math.Transform2D;
 pub const RecordKey = record_key_mod.RecordKey;

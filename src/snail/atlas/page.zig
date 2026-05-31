@@ -18,8 +18,8 @@
 //!   each `Atlas.deinit` releases.
 
 const std = @import("std");
-const curve_tex = @import("render/format/curve_texture.zig");
-const band_tex = @import("render/format/band_texture.zig");
+const curve_tex = @import("../render/format/curve_texture.zig");
+const band_tex = @import("../render/format/band_texture.zig");
 
 /// Half-word storage element. Both textures are u16 internally
 /// (RGBA16F for curves, RG16UI for bands).

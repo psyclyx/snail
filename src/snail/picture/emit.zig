@@ -14,11 +14,11 @@
 //! their segments (`draw_records.mergeIfAdjacent`).
 
 const std = @import("std");
-const math = @import("math/vec.zig");
-const vertex = @import("render/format/vertex.zig");
-const atlas_mod = @import("atlas.zig");
+const math = @import("../math/vec.zig");
+const vertex = @import("../render/format/vertex.zig");
+const atlas_mod = @import("../atlas.zig");
 const draw_records = @import("draw_records.zig");
-const picture_mod = @import("picture.zig");
+const picture_mod = @import("../picture.zig");
 const shape_mod = @import("shape.zig");
 
 pub const Transform2D = math.Transform2D;
@@ -308,10 +308,10 @@ fn unorm8(v: f32) u32 {
 // ---------------------------------------------------------------------------
 
 const testing = std.testing;
-const record_key_mod = @import("record_key.zig");
-const curves_mod = @import("curves.zig");
-const page_pool_mod = @import("page_pool.zig");
-const curve_tex_format = @import("render/format/curve_texture.zig");
+const record_key_mod = @import("../atlas/record_key.zig");
+const curves_mod = @import("../atlas/curves.zig");
+const page_pool_mod = @import("../atlas/page_pool.zig");
+const curve_tex_format = @import("../render/format/curve_texture.zig");
 
 const PagePool = page_pool_mod.PagePool;
 const GlyphCurves = curves_mod.GlyphCurves;

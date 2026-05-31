@@ -5,17 +5,15 @@
 //! See `docs/rewrite/02-atlas-and-pages.md` for the design rationale.
 
 const std = @import("std");
-const page_mod = @import("page.zig");
-const page_pool_mod = @import("page_pool.zig");
-const atlas_record_mod = @import("atlas_record.zig");
-const record_key_mod = @import("record_key.zig");
-const curves_mod = @import("curves.zig");
+const page_mod = @import("atlas/page.zig");
+const page_pool_mod = @import("atlas/page_pool.zig");
+const atlas_record_mod = @import("atlas/record.zig");
+const record_key_mod = @import("atlas/record_key.zig");
+const curves_mod = @import("atlas/curves.zig");
 const curve_tex_format = @import("render/format/curve_texture.zig");
 const band_tex_format = @import("render/format/band_texture.zig");
-const paint_records = @import("paint_records.zig");
 const paint_mod = @import("paint.zig");
-const curve_atlas_mod = @import("render/format/atlas/curve.zig");
-const atlas_builder = @import("atlas_builder.zig");
+const atlas_builder = @import("atlas/builder.zig");
 
 const Builder = atlas_builder.Builder;
 
@@ -59,9 +57,9 @@ const BAND_TEX_WIDTH_USIZE: usize = BAND_TEX_WIDTH;
 /// composite group. With `extra_layers.len > 0` the atlas emits a
 /// composite-group header followed by `1 + extra_layers.len` paint
 /// records; the shader walks them per fragment and composites under
-/// `composite_mode`. Use `.fill_stroke_inside` for the legacy
-/// inside-stroke trick (first two layers' coverages are AND'd);
-/// `.source_over` does standard back-to-front porter-duff.
+/// `composite_mode`. `.fill_stroke_inside` is the inside-stroke trick
+/// (first two layers' coverages are AND'd); `.source_over` does standard
+/// back-to-front porter-duff.
 pub const Entry = struct {
     key: RecordKey,
     curves: GlyphCurves,
@@ -96,9 +94,9 @@ pub const Atlas = struct {
     pages: []*AtlasPage,
     lookup: std.AutoHashMapUnmanaged(RecordKey, AtlasRecord),
     /// Optional layer_info f32 buffer holding 6-texel paint records, one
-    /// per entry whose `paint` was non-null. Format mirrors the legacy
-    /// `paint_records` module byte-for-byte so the existing CPU sampler
-    /// (`samplePathPaintAt`) consumes it unchanged.
+    /// per entry whose `paint` was non-null. Encoded by the `paint_records`
+    /// module so the CPU sampler and the GL/Vulkan path shaders consume
+    /// the same byte layout.
     layer_info_data: ?[]f32 = null,
     layer_info_width: u32 = 0,
     layer_info_height: u32 = 0,

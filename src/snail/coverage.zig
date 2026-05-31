@@ -1,183 +1,213 @@
+//! Caller-owned-shader text coverage API.
+//!
+//! Lets a third party shader sample snail glyph coverage directly. Typical
+//! use case: a 3D-shaded surface that paints text into world space (see the
+//! game demo's room walls). The caller provides their own program and a
+//! vertex buffer for the prepared text coverage geometry; snail provides the
+//! GLSL fragments to embed, plus the `Backend` plumbing that binds the
+//! atlas textures and uniform state behind the program.
+//!
+//! Workflow:
+//!   1. At program-build time, concatenate `Shader.<backend>.*` GLSL pieces
+//!      into your vertex and fragment shaders. Call your link/compile
+//!      pipeline as usual.
+//!   2. After linking, query `glGetUniformLocation` for the snail uniforms
+//!      and fill in a `<Backend>Program` struct with the locations + the
+//!      texture units you want snail to bind to.
+//!   3. Each frame: build a `Picture` of text glyphs, call `snail.emit.emit`,
+//!      then use the resulting words. The words may either feed a regular
+//!      draw via `Backend.drawVertices`, or be uploaded into a
+//!      `GL_TEXTURE_BUFFER` for random-access sampling from the caller's
+//!      surface fragment shader.
+//!   4. Per draw: call `Backend.bindProgram(program)` to bind snail textures,
+//!      then `Backend.bindDrawState(program, draw_state)` to set the snail
+//!      uniforms, then either `drawVertices(words)` or your own draw call.
+
 const std = @import("std");
 const build_options = @import("build_options");
+
 const backend_kind_mod = @import("backend_kind.zig");
-const resource_key_mod = @import("resource_key.zig");
-const prepared_mod = @import("resources/prepared.zig");
-const scene_mod = @import("scene.zig");
 const target_mod = @import("target.zig");
-const text_mod = @import("text.zig");
-const texture_layers = @import("render/format/texture_layers.zig");
-const vec = @import("math/vec.zig");
-const pipeline = if ((build_options.enable_gl33 or build_options.enable_gl44)) @import("render/backend/gl/state.zig") else struct {
-    pub const TextCoverageProgram = struct {};
-    pub const TextCoverageDrawState = struct {};
-    pub const Gl33TextState = void;
-    pub const Gl44TextState = void;
-    pub const Gl33PreparedResources = void;
-    pub const Gl44PreparedResources = void;
-    pub const text_vertex_interface = "";
-    pub const text_coverage_fragment_interface = "";
-    pub const text_coverage_fragment_body = "";
-    pub const text_sample_interface = "";
-    pub const text_sample_body = "";
+const vertex = @import("render/format/vertex.zig");
+
+const gl_shaders = if (build_options.enable_gl33 or build_options.enable_gl44)
+    @import("render/backend/gl/shaders.zig")
+else
+    struct {
+        pub const text_vertex_interface = "";
+        pub const text_coverage_fragment_interface = "";
+        pub const text_coverage_fragment_body = "";
+        pub const text_sample_interface = "";
+        pub const text_sample_body = "";
+    };
+
+const gles30_shaders = if (build_options.enable_gles30)
+    @import("render/backend/gles30/shaders.zig")
+else
+    struct {
+        pub const text_vertex_interface = "";
+        pub const text_coverage_fragment_interface = "";
+        pub const text_coverage_fragment_body = "";
+        pub const text_sample_interface = "";
+        pub const text_sample_body = "";
+    };
+
+const gl_prepared_pages = if (build_options.enable_gl33 or build_options.enable_gl44)
+    @import("render/backend/gl/prepared_pages.zig")
+else
+    struct {
+        pub const Gl33PreparedPages = void;
+        pub const Gl44PreparedPages = void;
+    };
+
+const gles30_prepared_pages = if (build_options.enable_gles30)
+    @import("render/backend/gl/prepared_pages.zig")
+else
+    struct {
+        pub const Gles30PreparedPages = void;
+    };
+
+const gl_state = if (build_options.enable_gl33 or build_options.enable_gl44)
+    @import("render/backend/gl/state.zig")
+else
+    struct {
+        pub const Gl33Renderer = void;
+        pub const Gl44Renderer = void;
+    };
+
+const gles30_state = if (build_options.enable_gles30)
+    @import("render/backend/gles30/state.zig")
+else
+    struct {
+        pub const Gles30Renderer = void;
+    };
+
+const gl_bindings = if (build_options.enable_gl33 or build_options.enable_gl44)
+    @import("render/backend/gl/bindings.zig")
+else
+    struct {
+        pub const gl = struct {
+            pub const GLuint = u32;
+            pub const GLint = i32;
+        };
+    };
+
+const gles30_bindings = if (build_options.enable_gles30)
+    @import("render/backend/gles30/bindings.zig")
+else
+    struct {
+        pub const gl = struct {
+            pub const GLuint = u32;
+            pub const GLint = i32;
+        };
+    };
+
+pub const BackendKind = backend_kind_mod.BackendKind;
+pub const SubpixelOrder = target_mod.SubpixelOrder;
+pub const CoverageTransfer = target_mod.CoverageTransfer;
+pub const FillRule = target_mod.FillRule;
+
+const WORDS_PER_INSTANCE: usize = vertex.WORDS_PER_INSTANCE;
+
+// ── DrawState ──
+
+/// The snail-side uniforms that change per draw. Filled by the caller from
+/// their `snail.DrawState` (or constructed by hand for non-snail draw paths).
+pub const DrawState = struct {
+    subpixel_order: SubpixelOrder = .none,
+    output_srgb: bool = false,
+    coverage_transfer: CoverageTransfer = .identity,
+    /// Added to the per-instance layer byte to compute the absolute atlas
+    /// texture-array layer. With the snail emit path this is always 0 (the
+    /// per-instance glyph data already encodes the absolute layer).
+    layer_base: u32 = 0,
 };
-const gles30_pipeline = if (build_options.enable_gles30) @import("render/backend/gles30/state.zig") else struct {
-    pub const TextCoverageProgram = struct {};
-    pub const TextCoverageDrawState = struct {};
-    pub const Gles30TextState = void;
-    pub const PreparedResources = void;
-    pub const text_vertex_interface = "";
-    pub const text_coverage_fragment_interface = "";
-    pub const text_coverage_fragment_body = "";
-    pub const text_sample_interface = "";
-    pub const text_sample_body = "";
-};
-const vulkan_pipeline = if (build_options.enable_vulkan) @import("render/backend/vulkan/pipeline.zig") else struct {
-    pub const TextCoverageProgram = struct {};
-    pub const PreparedResources = void;
-    pub const VulkanPipeline = void;
-};
 
-const BackendKind = backend_kind_mod.BackendKind;
-const Transform2D = vec.Transform2D;
-const CoverageTransfer = target_mod.CoverageTransfer;
-const FillRule = target_mod.FillRule;
-const RenderDrawState = target_mod.DrawState;
-const SubpixelOrder = target_mod.SubpixelOrder;
-const TextBlob = text_mod.TextBlob;
-const ResourceStamp = resource_key_mod.ResourceStamp;
-const PreparedResources = prepared_mod.PreparedResources;
-const Override = scene_mod.Override;
-const TextDraw = scene_mod.TextDraw;
-const TextResourceKeys = scene_mod.TextResourceKeys;
-const TextBatch = text_mod.TextBatch;
+// ── Shader sources ──
 
-const TEXT_WORDS_PER_GLYPH = text_mod.TEXT_WORDS_PER_GLYPH;
+const text_color_funcs =
+    \\vec4 snail_text_color_srgb() {
+    \\    return v_color;
+    \\}
+    \\
+    \\vec4 snail_text_color_linear() {
+    \\    return vec4(srgbDecode(v_color.r), srgbDecode(v_color.g), srgbDecode(v_color.b), v_color.a);
+    \\}
+    \\
+    \\float snail_text_coverage() {
+    \\    int layer_byte = (v_glyph.w >> 8) & 0xFF;
+    \\    if (layer_byte == SNAIL_SPECIAL_LAYER_SENTINEL) return 0.0;
+    \\    int atlas_layer = u_layer_base + layer_byte;
+    \\    vec2 rc = v_texcoord;
+    \\    vec2 dx = vec2(dFdx(rc.x), dFdy(rc.x));
+    \\    vec2 dy = vec2(dFdx(rc.y), dFdy(rc.y));
+    \\    vec2 ppe = vec2(1.0 / max(length(dx), 1.0 / 65536.0), 1.0 / max(length(dy), 1.0 / 65536.0));
+    \\    return evalGlyphCoverage(rc, ppe, v_glyph.xy,
+    \\                             ivec2(v_glyph.w & 0xFF, v_glyph.z),
+    \\                             v_banding, atlas_layer);
+    \\}
+    \\
+;
 
-pub const GlProgram = if ((build_options.enable_gl33 or build_options.enable_gl44)) pipeline.TextCoverageProgram else struct {};
-pub const Gles30Program = if (build_options.enable_gles30) gles30_pipeline.TextCoverageProgram else struct {};
-pub const VulkanProgram = if (build_options.enable_vulkan) vulkan_pipeline.TextCoverageProgram else struct {};
+const resource_interface_glsl =
+    \\uniform sampler2DArray u_curve_tex;
+    \\uniform usampler2DArray u_band_tex;
+    \\uniform int u_fill_rule;
+    \\uniform int u_layer_base;
+    \\
+    \\#define SNAIL_FILL_RULE u_fill_rule
+    \\
+;
 
-pub const Program = union(BackendKind) {
-    gl33: GlProgram,
-    gl44: GlProgram,
-    vulkan: VulkanProgram,
-    cpu: void,
-    gles30: Gles30Program,
-};
+const TEXT_WORDS_PER_GLYPH_PRELUDE = std.fmt.comptimePrint(
+    "#define SNAIL_TEXT_RECORD_WORDS_PER_GLYPH {d}\n",
+    .{WORDS_PER_INSTANCE},
+);
 
-/// GLSL 330 pieces for material shaders that consume Snail text coverage.
-///
-/// Include `snail.coverage.Shader.gl33.vertex_interface` or
-/// `snail.coverage.Shader.gl44.vertex_interface` in a vertex shader that draws
-/// prepared text coverage geometry, and the matching `fragment_interface`
-/// plus `fragment_body` in the fragment shader. The fragment body exposes
-/// `snail_text_coverage()`, `snail_text_color_srgb()`, and
-/// `snail_text_color_linear()` for use as material inputs. Material shaders
-/// that evaluate coverage without Snail's text varyings can instead include
-/// the matching `resource_interface` and `coverage_functions`.
-/// Shaders that need random access to `TextCoverageRecords` can also include
-/// `sample_interface` and `sample_functions`, upload `records.slice()` as a
-/// `GL_R32UI` texture buffer, set `u_layer_base` to
-/// `records.layerWindowBase()`, and call `snail_text_sample_premul_linear(scene_pos)`.
+/// Shader source fragments callers concatenate into their own shaders.
 pub const Shader = struct {
     const GlShaderSources = struct {
-        pub const vertex_interface = pipeline.text_vertex_interface;
-        pub const fragment_interface = pipeline.text_coverage_fragment_interface;
-        pub const resource_interface =
-            \\uniform sampler2DArray u_curve_tex;
-            \\uniform usampler2DArray u_band_tex;
-            \\uniform int u_fill_rule;
-            \\uniform int u_layer_base;
-            \\
-            \\#define SNAIL_FILL_RULE u_fill_rule
-            \\
-        ;
-        pub const coverage_functions = pipeline.text_coverage_fragment_body;
-        pub const sample_interface = pipeline.text_sample_interface;
+        /// Paste into a vertex shader that wants the standard snail per-
+        /// instance attributes (the same 64-byte Instance the snail draw
+        /// path uses).
+        pub const vertex_interface = gl_shaders.text_vertex_interface;
+        /// Paste into a fragment shader that draws the prepared coverage
+        /// geometry directly (per-fragment varyings from the vertex stage).
+        pub const fragment_interface = gl_shaders.text_coverage_fragment_interface;
+        /// Paste into a fragment shader that does NOT use snail varyings —
+        /// just samples coverage from arbitrary positions (typically when
+        /// snail text is "painted onto" some other geometry).
+        pub const resource_interface = resource_interface_glsl;
+        /// Shared coverage helpers (`evalGlyphCoverage`, fill-rule, sRGB).
+        pub const coverage_functions = gl_shaders.text_coverage_fragment_body;
+        /// Sample-buffer interface: declares `u_snail_text_records` and
+        /// `u_snail_text_glyph_count`.
+        pub const sample_interface = gl_shaders.text_sample_interface;
+        /// Function bodies for `snail_text_sample_premul_linear(vec2)` and
+        /// friends — random-access sampling of the records buffer.
         pub const sample_functions = if ((build_options.enable_gl33 or build_options.enable_gl44))
-            std.fmt.comptimePrint(
-                "#define SNAIL_TEXT_RECORD_WORDS_PER_GLYPH {d}\n",
-                .{TEXT_WORDS_PER_GLYPH},
-            ) ++ pipeline.text_sample_body
+            TEXT_WORDS_PER_GLYPH_PRELUDE ++ gl_shaders.text_sample_body
         else
             "";
-        pub const fragment_body =
-            coverage_functions ++
-            "\n" ++
-            \\float snail_text_coverage() {
-            \\    int layer_byte = (v_glyph.w >> 8) & 0xFF;
-            \\    if (layer_byte == SNAIL_SPECIAL_LAYER_SENTINEL) return 0.0;
-            \\    int atlas_layer = u_layer_base + layer_byte;
-            \\    vec2 rc = v_texcoord;
-            \\    vec2 dx = vec2(dFdx(rc.x), dFdy(rc.x));
-            \\    vec2 dy = vec2(dFdx(rc.y), dFdy(rc.y));
-            \\    vec2 ppe = vec2(1.0 / max(length(dx), 1.0 / 65536.0), 1.0 / max(length(dy), 1.0 / 65536.0));
-            \\    return evalGlyphCoverage(rc, ppe, v_glyph.xy,
-            \\                             ivec2(v_glyph.w & 0xFF, v_glyph.z),
-            \\                             v_banding, atlas_layer);
-            \\}
-            \\
-            \\vec4 snail_text_color_srgb() {
-            \\    return v_color;
-            \\}
-            \\
-            \\vec4 snail_text_color_linear() {
-            \\    return vec4(srgbDecode(v_color.r), srgbDecode(v_color.g), srgbDecode(v_color.b), v_color.a);
-            \\}
-            \\
-            ;
+        /// Full fragment body: coverage helpers + snail_text_coverage() +
+        /// snail_text_color_*(). Paste after `fragment_interface`.
+        pub const fragment_body = coverage_functions ++ "\n" ++ text_color_funcs;
     };
 
     pub const gl33 = GlShaderSources;
     pub const gl44 = GlShaderSources;
 
     pub const gles30 = struct {
-        pub const vertex_interface = gles30_pipeline.text_vertex_interface;
-        pub const fragment_interface = gles30_pipeline.text_coverage_fragment_interface;
-        pub const resource_interface =
-            \\uniform sampler2DArray u_curve_tex;
-            \\uniform usampler2DArray u_band_tex;
-            \\uniform int u_fill_rule;
-            \\uniform int u_layer_base;
-            \\
-            \\#define SNAIL_FILL_RULE u_fill_rule
-            \\
-        ;
-        pub const coverage_functions = gles30_pipeline.text_coverage_fragment_body;
-        pub const sample_interface = gles30_pipeline.text_sample_interface;
+        pub const vertex_interface = gles30_shaders.text_vertex_interface;
+        pub const fragment_interface = gles30_shaders.text_coverage_fragment_interface;
+        pub const resource_interface = resource_interface_glsl;
+        pub const coverage_functions = gles30_shaders.text_coverage_fragment_body;
+        pub const sample_interface = gles30_shaders.text_sample_interface;
         pub const sample_functions = if (build_options.enable_gles30)
-            std.fmt.comptimePrint(
-                "#define SNAIL_TEXT_RECORD_WORDS_PER_GLYPH {d}\n",
-                .{TEXT_WORDS_PER_GLYPH},
-            ) ++ gles30_pipeline.text_sample_body
+            TEXT_WORDS_PER_GLYPH_PRELUDE ++ gles30_shaders.text_sample_body
         else
             "";
-        pub const fragment_body =
-            coverage_functions ++
-            "\n" ++
-            \\float snail_text_coverage() {
-            \\    int layer_byte = (v_glyph.w >> 8) & 0xFF;
-            \\    if (layer_byte == SNAIL_SPECIAL_LAYER_SENTINEL) return 0.0;
-            \\    int atlas_layer = u_layer_base + layer_byte;
-            \\    vec2 rc = v_texcoord;
-            \\    vec2 dx = vec2(dFdx(rc.x), dFdy(rc.x));
-            \\    vec2 dy = vec2(dFdx(rc.y), dFdy(rc.y));
-            \\    vec2 ppe = vec2(1.0 / max(length(dx), 1.0 / 65536.0), 1.0 / max(length(dy), 1.0 / 65536.0));
-            \\    return evalGlyphCoverage(rc, ppe, v_glyph.xy,
-            \\                             ivec2(v_glyph.w & 0xFF, v_glyph.z),
-            \\                             v_banding, atlas_layer);
-            \\}
-            \\
-            \\vec4 snail_text_color_srgb() {
-            \\    return v_color;
-            \\}
-            \\
-            \\vec4 snail_text_color_linear() {
-            \\    return vec4(srgbDecode(v_color.r), srgbDecode(v_color.g), srgbDecode(v_color.b), v_color.a);
-            \\}
-            \\
-            ;
+        pub const fragment_body = coverage_functions ++ "\n" ++ text_color_funcs;
     };
 
     pub const vulkan = struct {
@@ -197,44 +227,237 @@ pub const Shader = struct {
     };
 };
 
-pub const DrawState = struct {
-    subpixel_order: SubpixelOrder = .none,
-    output_srgb: bool = false,
-    coverage_transfer: CoverageTransfer = .identity,
-    layer_base: u32 = 0,
+// ── Program descriptors ──
+
+const gl_GLuint = gl_bindings.gl.GLuint;
+const gl_GLint = gl_bindings.gl.GLint;
+
+/// Snail-side uniform locations + texture units inside the caller's GL
+/// program. Fill in from `glGetUniformLocation` after link and pass to
+/// `Backend.bindProgram` / `Backend.bindDrawState`. A `_loc` of `-1` (the
+/// default) skips the corresponding uniform write.
+pub const GlProgram = struct {
+    curve_tex_loc: gl_GLint = -1,
+    band_tex_loc: gl_GLint = -1,
+    layer_tex_loc: gl_GLint = -1,
+    image_tex_loc: gl_GLint = -1,
+    fill_rule_loc: gl_GLint = -1,
+    subpixel_order_loc: gl_GLint = -1,
+    output_srgb_loc: gl_GLint = -1,
+    coverage_exponent_loc: gl_GLint = -1,
+    layer_base_loc: gl_GLint = -1,
+    curve_tex_unit: gl_GLint = 0,
+    band_tex_unit: gl_GLint = 1,
+    layer_tex_unit: gl_GLint = 2,
+    image_tex_unit: gl_GLint = 3,
 };
 
-pub fn drawStateFor(records: *const TextCoverageRecords, state: RenderDrawState) DrawState {
-    return .{
-        .subpixel_order = state.raster.subpixel_order,
-        .output_srgb = state.surface.encoding.shaderEncodesSrgb(),
-        .coverage_transfer = state.raster.coverage_transfer,
-        .layer_base = records.layerWindowBase(),
+const gles30_GLuint = gles30_bindings.gl.GLuint;
+const gles30_GLint = gles30_bindings.gl.GLint;
+
+pub const Gles30Program = struct {
+    curve_tex_loc: gles30_GLint = -1,
+    band_tex_loc: gles30_GLint = -1,
+    layer_tex_loc: gles30_GLint = -1,
+    image_tex_loc: gles30_GLint = -1,
+    fill_rule_loc: gles30_GLint = -1,
+    subpixel_order_loc: gles30_GLint = -1,
+    output_srgb_loc: gles30_GLint = -1,
+    coverage_exponent_loc: gles30_GLint = -1,
+    layer_base_loc: gles30_GLint = -1,
+    curve_tex_unit: gles30_GLint = 0,
+    band_tex_unit: gles30_GLint = 1,
+    layer_tex_unit: gles30_GLint = 2,
+    image_tex_unit: gles30_GLint = 3,
+};
+
+pub const VulkanProgram = struct {
+    /// The descriptor set index where snail's atlas textures will be bound.
+    descriptor_set_index: u32 = Shader.vulkan.descriptor_set_index,
+};
+
+pub const Program = union(BackendKind) {
+    gl33: GlProgram,
+    gl44: GlProgram,
+    vulkan: VulkanProgram,
+    cpu: void,
+    gles30: Gles30Program,
+};
+
+// ── Backend (binding shim from the new PreparedPages caches) ──
+
+/// CPU backend is a no-op: caller-owned material shaders are inherently a
+/// GPU concept. The variant exists so cross-backend code can pattern-match
+/// on the same union as the rest of the renderer surface.
+pub const CpuBackend = struct {};
+
+fn GlBackendFor(comptime variant: gl_prepared_pages.Variant) type {
+    return struct {
+        const Self = @This();
+        const PreparedPages = switch (variant) {
+            .gl33 => gl_prepared_pages.Gl33PreparedPages,
+            .gl44 => gl_prepared_pages.Gl44PreparedPages,
+            .gles30 => unreachable, // covered by Gles30Backend below
+        };
+        const TextState = switch (variant) {
+            .gl33 => gl_state.Gl33TextState,
+            .gl44 => gl_state.Gl44TextState,
+            .gles30 => unreachable,
+        };
+        const dsa = (variant == .gl44);
+
+        cache: *const PreparedPages,
+        state: *TextState,
+
+        /// Build from a `Gl{33,44}Renderer` + matching `Gl{33,44}PreparedPages` cache.
+        pub fn from(renderer: anytype, cache: *const PreparedPages) Self {
+            return .{ .cache = cache, .state = &renderer.state };
+        }
+
+        /// Bind snail's atlas textures to the texture units named in `program`.
+        pub fn bindProgram(self: Self, program: GlProgram) !void {
+            const gl = gl_bindings.gl;
+            if (dsa) {
+                gl.glBindTextureUnit(@intCast(program.curve_tex_unit), self.cache.curve_array);
+                gl.glBindTextureUnit(@intCast(program.band_tex_unit), self.cache.band_array);
+                if (program.layer_tex_loc >= 0 and self.cache.layer_info_tex != 0)
+                    gl.glBindTextureUnit(@intCast(program.layer_tex_unit), self.cache.layer_info_tex);
+                if (program.image_tex_loc >= 0 and self.cache.image_array_tex != 0)
+                    gl.glBindTextureUnit(@intCast(program.image_tex_unit), self.cache.image_array_tex);
+            } else {
+                gl.glActiveTexture(textureUnitEnum(program.curve_tex_unit));
+                gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, self.cache.curve_array);
+                gl.glActiveTexture(textureUnitEnum(program.band_tex_unit));
+                gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, self.cache.band_array);
+                if (program.layer_tex_loc >= 0 and self.cache.layer_info_tex != 0) {
+                    gl.glActiveTexture(textureUnitEnum(program.layer_tex_unit));
+                    gl.glBindTexture(gl.GL_TEXTURE_2D, self.cache.layer_info_tex);
+                }
+                if (program.image_tex_loc >= 0 and self.cache.image_array_tex != 0) {
+                    gl.glActiveTexture(textureUnitEnum(program.image_tex_unit));
+                    gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, self.cache.image_array_tex);
+                }
+            }
+            if (program.curve_tex_loc >= 0) gl.glUniform1i(program.curve_tex_loc, program.curve_tex_unit);
+            if (program.band_tex_loc >= 0) gl.glUniform1i(program.band_tex_loc, program.band_tex_unit);
+            if (program.layer_tex_loc >= 0) gl.glUniform1i(program.layer_tex_loc, program.layer_tex_unit);
+            if (program.image_tex_loc >= 0) gl.glUniform1i(program.image_tex_loc, program.image_tex_unit);
+        }
+
+        /// Set the snail uniforms named in `program` from the caller's
+        /// `DrawState`. Fill rule for text is always non-zero (font convention);
+        /// callers using the same program to draw paths set it themselves.
+        pub fn bindDrawState(self: Self, program: GlProgram, state: DrawState) !void {
+            _ = self;
+            const gl = gl_bindings.gl;
+            if (program.fill_rule_loc >= 0) gl.glUniform1i(program.fill_rule_loc, @intFromEnum(FillRule.non_zero));
+            if (program.subpixel_order_loc >= 0) gl.glUniform1i(program.subpixel_order_loc, @intFromEnum(state.subpixel_order));
+            if (program.output_srgb_loc >= 0) gl.glUniform1i(program.output_srgb_loc, @intFromBool(state.output_srgb));
+            if (program.coverage_exponent_loc >= 0) gl.glUniform1f(program.coverage_exponent_loc, state.coverage_transfer.shaderExponent());
+            if (program.layer_base_loc >= 0) gl.glUniform1i(program.layer_base_loc, @intCast(state.layer_base));
+        }
     };
 }
 
-/// Resolve options used when preparing text coverage geometry for a custom
-/// material shader.
-pub const TextCoverageOptions = struct {
-    resources: TextResourceKeys,
-    transform: Transform2D = .identity,
+pub const Gl33Backend = if (build_options.enable_gl33) GlBackendFor(.gl33) else CpuBackend;
+pub const Gl44Backend = if (build_options.enable_gl44) GlBackendFor(.gl44) else CpuBackend;
+
+pub const Gles30Backend = if (build_options.enable_gles30) struct {
+    const Self = @This();
+
+    cache: *const gles30_prepared_pages.Gles30PreparedPages,
+    state: *gles30_state.Gles30TextState,
+
+    pub fn from(renderer: anytype, cache: *const gles30_prepared_pages.Gles30PreparedPages) Self {
+        return .{ .cache = cache, .state = &renderer.state };
+    }
+
+    pub fn bindProgram(self: Self, program: Gles30Program) !void {
+        const gl = gles30_bindings.gl;
+        gl.glActiveTexture(textureUnitEnumGles(program.curve_tex_unit));
+        gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, self.cache.curve_array);
+        gl.glActiveTexture(textureUnitEnumGles(program.band_tex_unit));
+        gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, self.cache.band_array);
+        if (program.layer_tex_loc >= 0 and self.cache.layer_info_tex != 0) {
+            gl.glActiveTexture(textureUnitEnumGles(program.layer_tex_unit));
+            gl.glBindTexture(gl.GL_TEXTURE_2D, self.cache.layer_info_tex);
+        }
+        if (program.image_tex_loc >= 0 and self.cache.image_array_tex != 0) {
+            gl.glActiveTexture(textureUnitEnumGles(program.image_tex_unit));
+            gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, self.cache.image_array_tex);
+        }
+        if (program.curve_tex_loc >= 0) gl.glUniform1i(program.curve_tex_loc, program.curve_tex_unit);
+        if (program.band_tex_loc >= 0) gl.glUniform1i(program.band_tex_loc, program.band_tex_unit);
+        if (program.layer_tex_loc >= 0) gl.glUniform1i(program.layer_tex_loc, program.layer_tex_unit);
+        if (program.image_tex_loc >= 0) gl.glUniform1i(program.image_tex_loc, program.image_tex_unit);
+    }
+
+    pub fn bindDrawState(self: Self, program: Gles30Program, state: DrawState) !void {
+        _ = self;
+        const gl = gles30_bindings.gl;
+        if (program.fill_rule_loc >= 0) gl.glUniform1i(program.fill_rule_loc, @intFromEnum(FillRule.non_zero));
+        if (program.subpixel_order_loc >= 0) gl.glUniform1i(program.subpixel_order_loc, @intFromEnum(state.subpixel_order));
+        if (program.output_srgb_loc >= 0) gl.glUniform1i(program.output_srgb_loc, @intFromBool(state.output_srgb));
+        if (program.coverage_exponent_loc >= 0) gl.glUniform1f(program.coverage_exponent_loc, state.coverage_transfer.shaderExponent());
+        if (program.layer_base_loc >= 0) gl.glUniform1i(program.layer_base_loc, @intCast(state.layer_base));
+    }
+
+    fn textureUnitEnumGles(unit: gles30_GLint) gles30_bindings.gl.GLenum {
+        return @intCast(@as(i64, @intCast(gles30_bindings.gl.GL_TEXTURE0)) + @as(i64, unit));
+    }
+} else CpuBackend;
+
+/// Vulkan backend stub. Real impl would expose the descriptor set so the
+/// caller's pipeline can bind snail's atlas textures.
+pub const VulkanBackend = struct {};
+
+pub const Backend = union(BackendKind) {
+    gl33: Gl33Backend,
+    gl44: Gl44Backend,
+    vulkan: VulkanBackend,
+    cpu: CpuBackend,
+    gles30: Gles30Backend,
+
+    pub fn bindProgram(self: Backend, program: Program) !void {
+        switch (self) {
+            .gl33 => |b| if (comptime build_options.enable_gl33) try b.bindProgram(program.gl33),
+            .gl44 => |b| if (comptime build_options.enable_gl44) try b.bindProgram(program.gl44),
+            .gles30 => |b| if (comptime build_options.enable_gles30) try b.bindProgram(program.gles30),
+            .vulkan, .cpu => {},
+        }
+    }
+
+    pub fn bindDrawState(self: Backend, program: Program, state: DrawState) !void {
+        switch (self) {
+            .gl33 => |b| if (comptime build_options.enable_gl33) try b.bindDrawState(program.gl33, state),
+            .gl44 => |b| if (comptime build_options.enable_gl44) try b.bindDrawState(program.gl44, state),
+            .gles30 => |b| if (comptime build_options.enable_gles30) try b.bindDrawState(program.gles30, state),
+            .vulkan, .cpu => {},
+        }
+    }
 };
 
-/// Prepared glyph coverage records for use by a custom material shader.
+fn textureUnitEnum(unit: gl_GLint) gl_bindings.gl.GLenum {
+    return @intCast(@as(i64, @intCast(gl_bindings.gl.GL_TEXTURE0)) + @as(i64, unit));
+}
+
+// ── TextCoverageRecords ──
+
+/// Prepared per-glyph coverage records for a caller-owned material shader.
 ///
-/// Wraps caller-owned per-glyph draw data. Snail atlas textures come from
-/// PreparedResources. Use `wordCapacityForBlob` to size `buffer`.
+/// In the snail rewrite, the records are just the `u32` words `snail.emit.emit`
+/// produces (the same 64-byte-per-glyph format the snail GPU draw consumes).
+/// This struct is a thin wrapper that owns / borrows the words slice and
+/// reports the implied glyph count for the caller's shader's
+/// `u_snail_text_glyph_count` uniform.
+///
+/// To sample the records randomly in a fragment shader, upload the words
+/// as a `GL_TEXTURE_BUFFER` of `GL_R32UI` and the shader's
+/// `snail_text_sample_premul_linear(scene_pos)` (from `Shader.<backend>.sample_functions`)
+/// will walk it. The caller is responsible for the buffer-object lifecycle.
 pub const TextCoverageRecords = struct {
     buffer: []u32,
     len: usize = 0,
-    resources: ?TextResourceKeys = null,
-    atlas_stamp: ResourceStamp = .{},
-    paint_stamp: ResourceStamp = .{},
-    layer_window_base: u32 = 0,
-
-    pub fn wordCapacityForBlob(blob: *const TextBlob) usize {
-        return blob.gpu_instance_budget * TEXT_WORDS_PER_GLYPH;
-    }
 
     pub fn init(buffer: []u32) TextCoverageRecords {
         return .{ .buffer = buffer };
@@ -242,265 +465,17 @@ pub const TextCoverageRecords = struct {
 
     pub fn reset(self: *TextCoverageRecords) void {
         self.len = 0;
-        self.resources = null;
-        self.atlas_stamp = .{};
-        self.paint_stamp = .{};
-        self.layer_window_base = 0;
     }
 
     pub fn glyphCount(self: *const TextCoverageRecords) usize {
-        return self.len / TEXT_WORDS_PER_GLYPH;
+        return self.len / WORDS_PER_INSTANCE;
     }
 
     pub fn slice(self: *const TextCoverageRecords) []const u32 {
         return self.buffer[0..self.len];
     }
-
-    pub fn layerWindowBase(self: *const TextCoverageRecords) u32 {
-        return self.layer_window_base;
-    }
-
-    pub fn buildLocal(
-        self: *TextCoverageRecords,
-        prepared: *const PreparedResources,
-        blob: *const TextBlob,
-        options: TextCoverageOptions,
-    ) !void {
-        self.reset();
-        var atlas_view = try prepared.textAtlasView(options.resources.atlas);
-        if (blob.hasPaintRecords()) {
-            const paint_key = options.resources.paint orelse return error.MissingPreparedResource;
-            const paint_view = try prepared.textPaintView(paint_key);
-            atlas_view.paint_info_row_base = paint_view.info_row_base;
-        }
-        if (blob.bundle.hasHintRecords()) {
-            const hint_key = options.resources.hint orelse return error.MissingPreparedResource;
-            const hint_view = try prepared.textHintView(hint_key);
-            atlas_view.hint_info_row_base = hint_view.info_row_base;
-        }
-
-        var batch = TextBatch.init(self.buffer);
-        const overrides = [_]Override{.{ .transform = options.transform }};
-        const draw = TextDraw{ .blob = blob, .resources = options.resources, .instances = &overrides };
-        const result = try batch.addDraw(atlas_view, draw, 0, 0);
-        self.layer_window_base = result.layer_window_base;
-        if (!result.completed) {
-            self.len = batch.slice().len;
-            return error.DrawListFull;
-        }
-
-        const stamp = try prepared.textStamp(options.resources.atlas);
-        self.len = batch.slice().len;
-        self.resources = options.resources;
-        self.atlas_stamp = stamp;
-        if (blob.hasPaintRecords()) {
-            const paint_key = options.resources.paint orelse return error.MissingPreparedResource;
-            self.paint_stamp = try prepared.textPaintStamp(paint_key);
-        }
-    }
-
-    pub fn validFor(self: *const TextCoverageRecords, prepared: *const PreparedResources) bool {
-        const resources = self.resources orelse return false;
-        const stamp = prepared.textStamp(resources.atlas) catch return false;
-        if (!self.atlas_stamp.eql(stamp)) return false;
-        const atlas_view = prepared.textAtlasView(resources.atlas) catch return false;
-        if (!self.layerWindowValidFor(atlas_view)) return false;
-        if (resources.paint) |paint_key| {
-            const paint_stamp = prepared.textPaintStamp(paint_key) catch return false;
-            if (!self.paint_stamp.eql(paint_stamp)) return false;
-        }
-        return true;
-    }
-
-    fn layerWindowValidFor(self: *const TextCoverageRecords, atlas_view: anytype) bool {
-        if (atlas_view.page_layers.len == 0) {
-            return texture_layers.windowBase(atlas_view.layer_base) == self.layer_window_base;
-        }
-        for (atlas_view.page_layers) |layer| {
-            if (texture_layers.windowBase(layer) == self.layer_window_base) return true;
-        }
-        return false;
-    }
 };
 
-fn GlStateFor(comptime backend: BackendKind) type {
-    return switch (backend) {
-        .gl33 => pipeline.Gl33TextState,
-        .gl44 => pipeline.Gl44TextState,
-        else => unreachable,
-    };
+test {
+    _ = WORDS_PER_INSTANCE;
 }
-
-fn GlPreparedFor(comptime backend: BackendKind) type {
-    return switch (backend) {
-        .gl33 => pipeline.Gl33PreparedResources,
-        .gl44 => pipeline.Gl44PreparedResources,
-        else => unreachable,
-    };
-}
-
-fn GlBackendFor(comptime backend: BackendKind) type {
-    return struct {
-        const GlBackend = @This();
-        const GlState = GlStateFor(backend);
-        const GlPrepared = GlPreparedFor(backend);
-
-        gl: *GlState,
-        gl_resources: *const GlPrepared,
-        prepared: *const PreparedResources,
-
-        fn glState(self: GlBackend) *GlState {
-            return self.gl;
-        }
-
-        pub fn bindProgram(self: GlBackend, program: GlProgram) !void {
-            self.gl_resources.bindTextCoverageProgram(program);
-        }
-
-        pub fn bindDrawState(self: GlBackend, program: GlProgram, state: DrawState) !void {
-            _ = self;
-            GlPrepared.bindTextCoverageDrawState(program, .{
-                .subpixel_order = state.subpixel_order,
-                .output_srgb = state.output_srgb,
-                .coverage_transfer = state.coverage_transfer,
-                .layer_base = state.layer_base,
-            });
-        }
-
-        pub fn drawCoverage(self: GlBackend, coverage: *const TextCoverageRecords) !void {
-            std.debug.assert(coverage.validFor(self.prepared));
-            try self.drawVertices(coverage.slice());
-        }
-
-        pub fn drawVertices(self: GlBackend, vertices: []const u32) !void {
-            self.glState().drawPreparedText(self.gl_resources, vertices);
-        }
-    };
-}
-
-pub const Gl33Backend = if (build_options.enable_gl33) GlBackendFor(.gl33) else struct {};
-pub const Gl44Backend = if (build_options.enable_gl44) GlBackendFor(.gl44) else struct {};
-
-pub const Gles30Backend = if (build_options.enable_gles30) struct {
-    gles30: *gles30_pipeline.Gles30TextState,
-    gles30_resources: *const gles30_pipeline.PreparedResources,
-    prepared: *const PreparedResources,
-
-    fn gles30State(self: Gles30Backend) *gles30_pipeline.Gles30TextState {
-        return self.gles30;
-    }
-
-    pub fn bindProgram(self: Gles30Backend, program: Gles30Program) !void {
-        self.gles30_resources.bindTextCoverageProgram(program);
-    }
-
-    pub fn bindDrawState(self: Gles30Backend, program: Gles30Program, state: DrawState) !void {
-        _ = self;
-        gles30_pipeline.PreparedResources.bindTextCoverageDrawState(program, .{
-            .subpixel_order = state.subpixel_order,
-            .output_srgb = state.output_srgb,
-            .coverage_transfer = state.coverage_transfer,
-            .layer_base = state.layer_base,
-        });
-    }
-
-    pub fn drawCoverage(self: Gles30Backend, coverage: *const TextCoverageRecords) !void {
-        std.debug.assert(coverage.validFor(self.prepared));
-        try self.drawVertices(coverage.slice());
-    }
-
-    pub fn drawVertices(self: Gles30Backend, vertices: []const u32) !void {
-        self.gles30State().drawPreparedText(self.gles30_resources, vertices);
-    }
-} else struct {};
-
-pub const VulkanBackend = if (build_options.enable_vulkan) struct {
-    vk: *vulkan_pipeline.VulkanPipeline,
-    vk_resources: *const vulkan_pipeline.PreparedResources,
-    prepared: *const PreparedResources,
-    cmd: vulkan_pipeline.vk.VkCommandBuffer,
-
-    pub fn descriptorSetLayout(self: VulkanBackend) vulkan_pipeline.vk.VkDescriptorSetLayout {
-        return self.vk.textCoverageDescriptorSetLayout();
-    }
-
-    pub fn pipelineLayout(self: VulkanBackend) vulkan_pipeline.vk.VkPipelineLayout {
-        return self.vk.textCoveragePipelineLayout();
-    }
-
-    pub fn bindProgram(self: VulkanBackend, program: VulkanProgram) !void {
-        self.vk.setCommandBuffer(self.cmd);
-        defer self.vk.clearCommandBuffer();
-        try self.vk.bindTextCoverageProgram(self.vk_resources, program);
-    }
-
-    pub fn bindDrawState(self: VulkanBackend, program: VulkanProgram, state: DrawState) !void {
-        _ = self;
-        _ = program;
-        _ = state;
-    }
-
-    pub fn drawCoverage(self: VulkanBackend, coverage: *const TextCoverageRecords) !void {
-        std.debug.assert(coverage.validFor(self.prepared));
-        try self.drawVertices(coverage.slice());
-    }
-
-    pub fn drawVertices(self: VulkanBackend, vertices: []const u32) !void {
-        self.vk.setCommandBuffer(self.cmd);
-        defer self.vk.clearCommandBuffer();
-        try self.vk.drawPreparedTextCoverage(vertices);
-    }
-} else struct {};
-
-/// Backend hook for evaluating Snail text coverage inside caller-owned shaders.
-pub const Backend = union(BackendKind) {
-    gl33: Gl33Backend,
-    gl44: Gl44Backend,
-    vulkan: VulkanBackend,
-    cpu: void,
-    gles30: Gles30Backend,
-
-    pub fn bindProgram(self: Backend, program: Program) !void {
-        switch (self) {
-            .gl33 => |backend| if (comptime build_options.enable_gl33) try backend.bindProgram(program.gl33),
-            .gl44 => |backend| if (comptime build_options.enable_gl44) try backend.bindProgram(program.gl44),
-            .vulkan => |backend| if (comptime build_options.enable_vulkan) {
-                try backend.bindProgram(program.vulkan);
-            },
-            .cpu => {},
-            .gles30 => |backend| if (comptime build_options.enable_gles30) try backend.bindProgram(program.gles30),
-        }
-    }
-
-    pub fn bindDrawState(self: Backend, program: Program, state: DrawState) !void {
-        switch (self) {
-            .gl33 => |backend| if (comptime build_options.enable_gl33) try backend.bindDrawState(program.gl33, state),
-            .gl44 => |backend| if (comptime build_options.enable_gl44) try backend.bindDrawState(program.gl44, state),
-            .vulkan => |backend| if (comptime build_options.enable_vulkan) {
-                try backend.bindDrawState(program.vulkan, state);
-            },
-            .cpu => {},
-            .gles30 => |backend| if (comptime build_options.enable_gles30) try backend.bindDrawState(program.gles30, state),
-        }
-    }
-
-    pub fn drawCoverage(self: Backend, coverage: *const TextCoverageRecords) !void {
-        switch (self) {
-            .gl33 => |backend| if (comptime build_options.enable_gl33) try backend.drawCoverage(coverage),
-            .gl44 => |backend| if (comptime build_options.enable_gl44) try backend.drawCoverage(coverage),
-            .vulkan => |backend| if (comptime build_options.enable_vulkan) try backend.drawCoverage(coverage),
-            .cpu => {},
-            .gles30 => |backend| if (comptime build_options.enable_gles30) try backend.drawCoverage(coverage),
-        }
-    }
-
-    pub fn drawVertices(self: Backend, vertices: []const u32) !void {
-        switch (self) {
-            .gl33 => |backend| if (comptime build_options.enable_gl33) try backend.drawVertices(vertices),
-            .gl44 => |backend| if (comptime build_options.enable_gl44) try backend.drawVertices(vertices),
-            .vulkan => |backend| if (comptime build_options.enable_vulkan) try backend.drawVertices(vertices),
-            .cpu => {},
-            .gles30 => |backend| if (comptime build_options.enable_gles30) try backend.drawVertices(vertices),
-        }
-    }
-};

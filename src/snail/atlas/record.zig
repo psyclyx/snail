@@ -13,7 +13,7 @@
 //! boundary).
 
 const std = @import("std");
-const bezier = @import("math/bezier.zig");
+const bezier = @import("../math/bezier.zig");
 
 pub const BBox = bezier.BBox;
 

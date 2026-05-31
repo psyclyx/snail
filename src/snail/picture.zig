@@ -18,7 +18,7 @@ const std = @import("std");
 
 const math = @import("math/vec.zig");
 const bezier = @import("math/bezier.zig");
-const shape_mod = @import("shape.zig");
+const shape_mod = @import("picture/shape.zig");
 
 pub const Transform2D = math.Transform2D;
 pub const Vec2 = math.Vec2;
@@ -151,7 +151,7 @@ fn computeBBox(shapes: []const Shape) BBox {
 // ---------------------------------------------------------------------------
 
 const testing = std.testing;
-const record_key = @import("record_key.zig");
+const record_key = @import("atlas/record_key.zig");
 
 fn keyAt(i: u16) record_key.RecordKey {
     return record_key.unhintedGlyph(0, i);

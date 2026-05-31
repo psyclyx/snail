@@ -4,13 +4,13 @@
 
 const std = @import("std");
 const bezier = @import("math/bezier.zig");
-const curves_mod = @import("curves.zig");
+const curves_mod = @import("atlas/curves.zig");
 const curve_tex = @import("render/format/curve_texture.zig");
 const band_tex = @import("render/format/band_texture.zig");
-const path_core = @import("path/core.zig");
+const path_mod = @import("path.zig");
 const paint = @import("paint.zig");
 
-pub const Path = path_core.Path;
+pub const Path = path_mod.Path;
 pub const StrokeStyle = paint.StrokeStyle;
 const CurveSegment = bezier.CurveSegment;
 const BBox = bezier.BBox;
@@ -51,10 +51,18 @@ fn packCurves(
     fill_bbox: BBox,
     logical_curve_count: usize,
 ) !curves_mod.GlyphCurves {
+    // The GL/Vulkan path shader assumes each uploaded cubic is monotonic
+    // along both sampling axes (see `solveMonotonicCubicRoot` in
+    // snail_path_frag_body.glsl). Split cubics at their x/y extrema before
+    // packing so the GPU coverage evaluator sees only monotonic pieces.
+    // Conics and quadratics are unaffected.
+    const split = try curve_tex.splitCubicsAtExtrema(allocator, segs);
+    defer allocator.free(split);
+
     // Paths use the packed encoding (not the direct-encoding path the font
     // producer takes). The packed path quantizes around an anchor and is
     // the format the GL/Vulkan path shaders consume.
-    const prepared = try curve_tex.prepareGlyphCurvesForPacking(allocator, segs, .zero);
+    const prepared = try curve_tex.prepareGlyphCurvesForPacking(allocator, split, .zero);
     defer allocator.free(prepared);
 
     const render_bbox = mergeBBoxWithCurves(fill_bbox, prepared);
@@ -63,7 +71,7 @@ fn packCurves(
     // to a full TEX_WIDTH-row buffer for GPU upload; we dupe out only the
     // touched words to keep the producer-shape tight.
     const single = [_]curve_tex.GlyphCurves{.{
-        .curves = segs,
+        .curves = split,
         .bbox = render_bbox,
         .logical_curve_count = logical_curve_count,
         .prefer_direct_encoding = false,
@@ -86,7 +94,7 @@ fn packCurves(
     };
     var bd = try band_tex.buildGlyphBandDataWithPreparedCurves(
         allocator,
-        segs,
+        split,
         logical_curve_count,
         render_bbox,
         entry,
@@ -181,7 +189,7 @@ test "strokeToCurves returns empty for zero-width stroke" {
 
 test "pathToCurves: round-trip into atlas" {
     const atlas_mod = @import("atlas.zig");
-    const record_key_mod = @import("record_key.zig");
+    const record_key_mod = @import("atlas/record_key.zig");
 
     var path = Path.init(testing.allocator);
     defer path.deinit();
