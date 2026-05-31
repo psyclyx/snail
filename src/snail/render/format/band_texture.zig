@@ -16,6 +16,15 @@ const BandGeometry = struct {
 const max_band_count = 12;
 const sentinel_band = std.math.maxInt(u16);
 
+/// Per-band curve index lists, backed by a single flat slab per axis
+/// instead of `max_band_count` separate `ArrayList`s. Each band's slot
+/// in the slab is fixed-size `curve_count`; the per-band length counter
+/// tracks how many slots are populated.
+///
+/// Old layout cost: `2 * band_count = 32` small allocations per glyph,
+/// plus 2 for `*_first_member`. New layout cost: 4 allocations per
+/// glyph regardless of band count (h_slab, v_slab, h_first_member,
+/// v_first_member).
 const BandLists = struct {
     h_band_count: u16,
     v_band_count: u16,
@@ -25,8 +34,14 @@ const BandLists = struct {
     v_band_max: [max_band_count]f32 = undefined,
     h_first_member: []u16,
     v_first_member: []u16,
-    h_lists: [max_band_count]std.ArrayList(u16) = undefined,
-    v_lists: [max_band_count]std.ArrayList(u16) = undefined,
+    /// Flat backing slab for h-band lists: band `bi` owns
+    /// `h_slab[bi * h_stride..][0..h_lens[bi]]`.
+    h_slab: []u16,
+    v_slab: []u16,
+    h_stride: usize,
+    v_stride: usize,
+    h_lens: [max_band_count]u16 = .{0} ** max_band_count,
+    v_lens: [max_band_count]u16 = .{0} ** max_band_count,
 
     fn init(allocator: std.mem.Allocator, curve_count: usize, geometry: BandGeometry, h_bands: u16, v_bands: u16) !BandLists {
         var out = BandLists{
@@ -34,39 +49,30 @@ const BandLists = struct {
             .v_band_count = v_bands,
             .h_first_member = try allocator.alloc(u16, curve_count),
             .v_first_member = undefined,
+            .h_slab = undefined,
+            .v_slab = undefined,
+            .h_stride = curve_count,
+            .v_stride = curve_count,
         };
         errdefer allocator.free(out.h_first_member);
         out.v_first_member = try allocator.alloc(u16, curve_count);
         errdefer allocator.free(out.v_first_member);
-
-        var h_inited: usize = 0;
-        var v_inited: usize = 0;
-        errdefer {
-            while (h_inited > 0) {
-                h_inited -= 1;
-                out.h_lists[h_inited].deinit(allocator);
-            }
-            while (v_inited > 0) {
-                v_inited -= 1;
-                out.v_lists[v_inited].deinit(allocator);
-            }
-        }
+        out.h_slab = try allocator.alloc(u16, curve_count * @as(usize, h_bands));
+        errdefer allocator.free(out.h_slab);
+        out.v_slab = try allocator.alloc(u16, curve_count * @as(usize, v_bands));
+        errdefer allocator.free(out.v_slab);
 
         for (0..h_bands) |bi| {
             const t0 = @as(f32, @floatFromInt(bi)) / @as(f32, @floatFromInt(h_bands));
             const t1 = @as(f32, @floatFromInt(bi + 1)) / @as(f32, @floatFromInt(h_bands));
             out.h_band_min[bi] = geometry.bbox.min.y + geometry.height * t0 - geometry.epsilon;
             out.h_band_max[bi] = geometry.bbox.min.y + geometry.height * t1 + geometry.epsilon;
-            out.h_lists[bi] = try std.ArrayList(u16).initCapacity(allocator, curve_count);
-            h_inited += 1;
         }
         for (0..v_bands) |bi| {
             const t0 = @as(f32, @floatFromInt(bi)) / @as(f32, @floatFromInt(v_bands));
             const t1 = @as(f32, @floatFromInt(bi + 1)) / @as(f32, @floatFromInt(v_bands));
             out.v_band_min[bi] = geometry.bbox.min.x + geometry.width * t0 - geometry.epsilon;
             out.v_band_max[bi] = geometry.bbox.min.x + geometry.width * t1 + geometry.epsilon;
-            out.v_lists[bi] = try std.ArrayList(u16).initCapacity(allocator, curve_count);
-            v_inited += 1;
         }
 
         @memset(out.h_first_member, sentinel_band);
@@ -75,10 +81,26 @@ const BandLists = struct {
     }
 
     fn deinit(self: *BandLists, allocator: std.mem.Allocator) void {
-        for (self.h_lists[0..@as(usize, self.h_band_count)]) |*band| band.deinit(allocator);
-        for (self.v_lists[0..@as(usize, self.v_band_count)]) |*band| band.deinit(allocator);
+        allocator.free(self.h_slab);
+        allocator.free(self.v_slab);
         allocator.free(self.h_first_member);
         allocator.free(self.v_first_member);
+    }
+
+    fn hBand(self: *const BandLists, bi: usize) []const u16 {
+        return self.h_slab[bi * self.h_stride ..][0..self.h_lens[bi]];
+    }
+
+    fn vBand(self: *const BandLists, bi: usize) []const u16 {
+        return self.v_slab[bi * self.v_stride ..][0..self.v_lens[bi]];
+    }
+
+    fn hBandMut(self: *BandLists, bi: usize) []u16 {
+        return self.h_slab[bi * self.h_stride ..][0..self.h_lens[bi]];
+    }
+
+    fn vBandMut(self: *BandLists, bi: usize) []u16 {
+        return self.v_slab[bi * self.v_stride ..][0..self.v_lens[bi]];
     }
 
     fn recordMembership(self: *BandLists, curve_bboxes: []const BBox) void {
@@ -87,24 +109,28 @@ const BandLists = struct {
             for (0..self.h_band_count) |bi| {
                 if (cb.max.y >= self.h_band_min[bi] and cb.min.y <= self.h_band_max[bi]) {
                     if (self.h_first_member[ci] == sentinel_band) self.h_first_member[ci] = @intCast(bi);
-                    self.h_lists[bi].appendAssumeCapacity(curve_idx);
+                    const slot = self.h_lens[bi];
+                    self.h_slab[bi * self.h_stride + slot] = curve_idx;
+                    self.h_lens[bi] = slot + 1;
                 }
             }
             for (0..self.v_band_count) |bi| {
                 if (cb.max.x >= self.v_band_min[bi] and cb.min.x <= self.v_band_max[bi]) {
                     if (self.v_first_member[ci] == sentinel_band) self.v_first_member[ci] = @intCast(bi);
-                    self.v_lists[bi].appendAssumeCapacity(curve_idx);
+                    const slot = self.v_lens[bi];
+                    self.v_slab[bi * self.v_stride + slot] = curve_idx;
+                    self.v_lens[bi] = slot + 1;
                 }
             }
         }
     }
 
     fn sortMembership(self: *BandLists, curve_sort_max_x: []const f32, curve_sort_max_y: []const f32) void {
-        for (self.h_lists[0..@as(usize, self.h_band_count)]) |band| {
-            sortCurveIndicesDescending(band.items, curve_sort_max_x);
+        for (0..@as(usize, self.h_band_count)) |bi| {
+            sortCurveIndicesDescending(self.hBandMut(bi), curve_sort_max_y);
         }
-        for (self.v_lists[0..@as(usize, self.v_band_count)]) |band| {
-            sortCurveIndicesDescending(band.items, curve_sort_max_y);
+        for (0..@as(usize, self.v_band_count)) |bi| {
+            sortCurveIndicesDescending(self.vBandMut(bi), curve_sort_max_x);
         }
     }
 };
@@ -295,8 +321,8 @@ fn packBandLists(
     const v_bands = @as(usize, lists.v_band_count);
     const header_count: u32 = @as(u32, lists.h_band_count) + @as(u32, lists.v_band_count);
     var total_indices: u32 = 0;
-    for (lists.h_lists[0..h_bands]) |band| total_indices += @intCast(band.items.len);
-    for (lists.v_lists[0..v_bands]) |band| total_indices += @intCast(band.items.len);
+    for (0..h_bands) |bi| total_indices += lists.h_lens[bi];
+    for (0..v_bands) |bi| total_indices += lists.v_lens[bi];
 
     const total_texels = header_count + total_indices;
     var data = try allocator.alloc(u16, total_texels * 2);
@@ -304,23 +330,23 @@ fn packBandLists(
 
     var index_offset: u32 = header_count;
     for (0..h_bands) |bi| {
-        const band = lists.h_lists[bi];
-        data[bi * 2 + 0] = @intCast(band.items.len);
+        const band_len = lists.h_lens[bi];
+        data[bi * 2 + 0] = band_len;
         data[bi * 2 + 1] = @intCast(index_offset);
-        index_offset += @intCast(band.items.len);
+        index_offset += band_len;
     }
 
     for (0..v_bands) |bi| {
         const off = (h_bands + bi) * 2;
-        const band = lists.v_lists[bi];
-        data[off + 0] = @intCast(band.items.len);
+        const band_len = lists.v_lens[bi];
+        data[off + 0] = band_len;
         data[off + 1] = @intCast(index_offset);
-        index_offset += @intCast(band.items.len);
+        index_offset += band_len;
     }
 
     var write_pos: u32 = header_count;
-    for (lists.h_lists[0..h_bands]) |band| {
-        for (band.items) |curve_idx| {
+    for (0..h_bands) |bi| {
+        for (lists.hBand(bi)) |curve_idx| {
             const curve_texel = @as(u32, curve_entry.offset) + @as(u32, curve_idx) * curve_tex.SEGMENT_TEXELS;
             const encoded = packBandCurveRef(curve_texel, lists.h_first_member[@intCast(curve_idx)]);
             data[write_pos * 2 + 0] = encoded[0];
@@ -329,8 +355,8 @@ fn packBandLists(
         }
     }
 
-    for (lists.v_lists[0..v_bands]) |band| {
-        for (band.items) |curve_idx| {
+    for (0..v_bands) |bi| {
+        for (lists.vBand(bi)) |curve_idx| {
             const curve_texel = @as(u32, curve_entry.offset) + @as(u32, curve_idx) * curve_tex.SEGMENT_TEXELS;
             const encoded = packBandCurveRef(curve_texel, lists.v_first_member[@intCast(curve_idx)]);
             data[write_pos * 2 + 0] = encoded[0];
