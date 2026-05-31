@@ -1,3 +1,17 @@
+//! 3D-room game demo, ported to the new snail API.
+//!
+//! Layout:
+//!   - World passes (rough wall, center panel, glass) and HUD passes (plain,
+//!     translucent, solid) each carry their own atlases + pictures (paths and
+//!     text). All atlases share the same `PagePool` owned by `Fonts`.
+//!   - A single `snail.Gl33Renderer` + `snail.Gl33PreparedPages` cache backs
+//!     every draw. Each pass gets two cache bindings (one per atlas) at
+//!     upload time, fetched again whenever the HUD is rebuilt on resize.
+//!   - The rough-wall and center-panel passes additionally route their text
+//!     picture through `SurfaceTextDraw`, which emits the snail GPU-instance
+//!     words into a `GL_TEXTURE_BUFFER` and feeds them to the material
+//!     fragment shader via `snail_text_sample_premul_linear`.
+
 const std = @import("std");
 const snail = @import("snail");
 const platform = @import("platform/gl.zig");
@@ -13,9 +27,13 @@ const PreparedPass = demo_passes.PreparedPass;
 const HudPasses = demo_passes.HudPasses;
 const PlanePass = demo_passes.PlanePass;
 const WorldPasses = demo_passes.WorldPasses;
+const Fonts = demo_passes.Fonts;
 const QuadRenderer = demo_quad.QuadRenderer;
 const RenderTarget = demo_quad.RenderTarget;
 const SurfaceTextDraw = demo_quad.SurfaceTextDraw;
+
+const CACHE_MAX_BINDINGS: u32 = 16;
+const CACHE_MAX_IMAGES: u32 = 16;
 
 fn toSnailEncoding(encoding: platform.presentation.ColorEncoding) snail.ColorEncoding {
     return switch (encoding) {
@@ -31,6 +49,58 @@ fn displayTargetEncoding(info: platform.presentation.Info) snail.TargetEncoding 
     };
 }
 
+// ── Pass bindings ──
+
+/// Snail-side bindings for one pass (path + text atlases), held inside the
+/// shared `Gl33PreparedPages` cache.
+const PassBindings = struct {
+    path: snail.Binding,
+    text: snail.Binding,
+};
+
+fn uploadPass(
+    allocator: std.mem.Allocator,
+    cache: *snail.Gl33PreparedPages,
+    pass: *const PreparedPass,
+) !PassBindings {
+    var bindings: [2]snail.Binding = undefined;
+    try cache.upload(allocator, &.{ &pass.path_atlas, &pass.text_atlas }, &bindings);
+    return .{ .path = bindings[0], .text = bindings[1] };
+}
+
+fn releasePass(cache: *snail.Gl33PreparedPages, bindings: PassBindings) void {
+    cache.release(bindings.path);
+    cache.release(bindings.text);
+}
+
+// ── Scratch buffer for per-frame emit ──
+
+const ScratchBuf = struct {
+    allocator: std.mem.Allocator,
+    words: []u32 = &.{},
+    segs: []snail.DrawSegment = &.{},
+
+    fn init(allocator: std.mem.Allocator) ScratchBuf {
+        return .{ .allocator = allocator };
+    }
+
+    fn deinit(self: *ScratchBuf) void {
+        if (self.words.len > 0) self.allocator.free(self.words);
+        if (self.segs.len > 0) self.allocator.free(self.segs);
+    }
+
+    fn ensure(self: *ScratchBuf, word_count: usize, seg_count: usize) !void {
+        if (self.words.len < word_count) {
+            if (self.words.len > 0) self.allocator.free(self.words);
+            self.words = try self.allocator.alloc(u32, word_count);
+        }
+        if (self.segs.len < seg_count) {
+            if (self.segs.len > 0) self.allocator.free(self.segs);
+            self.segs = try self.allocator.alloc(snail.DrawSegment, seg_count);
+        }
+    }
+};
+
 pub fn main() !void {
     var da: std.heap.DebugAllocator(.{}) = .init;
     defer _ = da.deinit();
@@ -44,26 +114,64 @@ pub fn main() !void {
 
     var gl_renderer = try snail.Gl33Renderer.init(allocator);
     defer gl_renderer.deinit();
-    var snail_renderer = gl_renderer.asRenderer();
 
     var quad_renderer = try QuadRenderer.init();
     defer quad_renderer.deinit();
 
+    var cache = try snail.Gl33PreparedPages.init(allocator, fonts.pool, .{
+        .max_bindings = CACHE_MAX_BINDINGS,
+        .layer_info_height = 256,
+        .max_images = CACHE_MAX_IMAGES,
+        .max_image_width = 64,
+        .max_image_height = 64,
+    });
+    defer cache.deinit();
+
     var world_passes = try demo_passes.buildWorldPasses(allocator, &fonts);
     defer world_passes.deinit();
+
     const initial_present = platform.presentationInfo();
     const initial_window = initial_present.logical_size;
     var hud_passes = try HudPasses.init(allocator, &fonts, initial_window[0], initial_window[1]);
     defer hud_passes.deinit();
-    var scene_resources = try uploadSceneResources(allocator, &snail_renderer, &world_passes, &hud_passes);
-    defer scene_resources.deinit();
-    var draw_buf: []u32 = &.{};
-    defer if (draw_buf.len > 0) allocator.free(draw_buf);
 
-    var rough_wall_text = try SurfaceTextDraw.init(allocator, &scene_resources, world_passes.rough_wall.prepared.text, world_passes.rough_wall.prepared.text_resources);
+    // Upload every pass into the shared cache.
+    const rough_wall_bindings = try uploadPass(allocator, &cache, &world_passes.rough_wall.prepared);
+    defer releasePass(&cache, rough_wall_bindings);
+    const center_panel_bindings = try uploadPass(allocator, &cache, &world_passes.center_panel.prepared);
+    defer releasePass(&cache, center_panel_bindings);
+    const glass_bindings = try uploadPass(allocator, &cache, &world_passes.glass.prepared);
+    defer releasePass(&cache, glass_bindings);
+
+    var hud_bindings = HudBindings{
+        .plain = try uploadPass(allocator, &cache, &hud_passes.plain),
+        .translucent = try uploadPass(allocator, &cache, &hud_passes.translucent),
+        .solid = try uploadPass(allocator, &cache, &hud_passes.solid),
+    };
+    defer hud_bindings.release(&cache);
+
+    var rough_wall_text = try SurfaceTextDraw.init(
+        allocator,
+        &gl_renderer,
+        &cache,
+        &world_passes.rough_wall.prepared.text_atlas,
+        &world_passes.rough_wall.prepared.text_picture,
+        rough_wall_bindings.text,
+    );
     defer rough_wall_text.deinit();
-    var center_panel_text = try SurfaceTextDraw.init(allocator, &scene_resources, world_passes.center_panel.prepared.text, world_passes.center_panel.prepared.text_resources);
+    var center_panel_text = try SurfaceTextDraw.init(
+        allocator,
+        &gl_renderer,
+        &cache,
+        &world_passes.center_panel.prepared.text_atlas,
+        &world_passes.center_panel.prepared.text_picture,
+        center_panel_bindings.text,
+    );
     defer center_panel_text.deinit();
+
+    var scratch = ScratchBuf.init(allocator);
+    defer scratch.deinit();
+
     var hud_window_size = initial_window;
 
     const initial_fb = initial_present.framebuffer_size;
@@ -113,12 +221,16 @@ pub fn main() !void {
         if (window_size[0] != hud_window_size[0] or window_size[1] != hud_window_size[1]) {
             var next_passes = try HudPasses.init(allocator, &fonts, window_size[0], window_size[1]);
             errdefer next_passes.deinit();
-            var next_resources = try planSceneResources(allocator, &snail_renderer, &scene_resources, &world_passes, &next_passes);
-            errdefer next_resources.deinit();
-            scene_resources.retireNow();
+
+            hud_bindings.release(&cache);
             hud_passes.deinit();
+
             hud_passes = next_passes;
-            scene_resources = next_resources;
+            hud_bindings = HudBindings{
+                .plain = try uploadPass(allocator, &cache, &hud_passes.plain),
+                .translucent = try uploadPass(allocator, &cache, &hud_passes.translucent),
+                .solid = try uploadPass(allocator, &cache, &hud_passes.solid),
+            };
             hud_window_size = window_size;
         }
 
@@ -137,12 +249,13 @@ pub fn main() !void {
 
         try renderWorld(
             &quad_renderer,
-            &snail_renderer,
+            &gl_renderer,
+            &cache,
             &world_passes,
             &rough_wall_text,
             &center_panel_text,
-            &scene_resources,
-            &draw_buf,
+            glass_bindings,
+            &scratch,
             allocator,
             world_buffer,
             view_proj,
@@ -179,89 +292,87 @@ pub fn main() !void {
             1.0,
         );
 
-        // Direct HUD text over the 3D scene lands on final pixels, but it does
-        // not have a guaranteed opaque backdrop, so LCD/subpixel stays off.
+        // HUD passes render over the 3D scene, on the swapchain. Subpixel
+        // ordering depends on whether the pass guarantees an opaque
+        // backdrop under its text.
         gl.glDisable(gl.GL_DEPTH_TEST);
-        try drawSnailScene(&snail_renderer, &scene_resources, &hud_passes.plain.scene, overlay_projection, demo_passes.hudTarget(window_size, fb_size, current_order, false, target_encoding, present.will_resample), &draw_buf, allocator);
-        // A translucent vector panel is still not LCD-safe.
-        try drawSnailScene(&snail_renderer, &scene_resources, &hud_passes.translucent.scene, overlay_projection, demo_passes.hudTarget(window_size, fb_size, current_order, false, target_encoding, present.will_resample), &draw_buf, allocator);
-        // This panel is fully opaque and rendered directly to the swapchain, so
-        // it is the reference case for LCD/subpixel HUD text.
-        try drawSnailScene(&snail_renderer, &scene_resources, &hud_passes.solid.scene, overlay_projection, demo_passes.hudTarget(window_size, fb_size, current_order, true, target_encoding, present.will_resample), &draw_buf, allocator);
+        try drawPassPair(
+            &gl_renderer,
+            &cache,
+            &scratch,
+            allocator,
+            &hud_passes.plain,
+            hud_bindings.plain,
+            overlay_projection,
+            demo_passes.hudTarget(window_size, fb_size, current_order, false, target_encoding, present.will_resample),
+        );
+        try drawPassPair(
+            &gl_renderer,
+            &cache,
+            &scratch,
+            allocator,
+            &hud_passes.translucent,
+            hud_bindings.translucent,
+            overlay_projection,
+            demo_passes.hudTarget(window_size, fb_size, current_order, false, target_encoding, present.will_resample),
+        );
+        try drawPassPair(
+            &gl_renderer,
+            &cache,
+            &scratch,
+            allocator,
+            &hud_passes.solid,
+            hud_bindings.solid,
+            overlay_projection,
+            demo_passes.hudTarget(window_size, fb_size, current_order, true, target_encoding, present.will_resample),
+        );
 
         platform.swapBuffers();
     }
 }
 
-fn addPassResources(set: *snail.ResourceManifest, pass: *const PreparedPass) !void {
-    try set.putTextBlob(pass.text_resources, pass.text);
-    if (pass.picture) |picture| try set.putPathPicture(pass.path_key.?, picture);
-}
+const HudBindings = struct {
+    plain: PassBindings,
+    translucent: PassBindings,
+    solid: PassBindings,
 
-fn buildSceneResourceManifest(
-    world_passes: *const WorldPasses,
-    hud_passes: *const HudPasses,
-    entries: []snail.ResourceManifest.Entry,
-) !snail.ResourceManifest {
-    var set = snail.ResourceManifest.init(entries);
-    try addPassResources(&set, &world_passes.rough_wall.prepared);
-    try addPassResources(&set, &world_passes.center_panel.prepared);
-    try addPassResources(&set, &world_passes.glass.prepared);
-    try addPassResources(&set, &hud_passes.plain);
-    try addPassResources(&set, &hud_passes.translucent);
-    try addPassResources(&set, &hud_passes.solid);
-    return set;
-}
+    fn release(self: HudBindings, cache: *snail.Gl33PreparedPages) void {
+        releasePass(cache, self.plain);
+        releasePass(cache, self.translucent);
+        releasePass(cache, self.solid);
+    }
+};
 
-fn uploadSceneResources(
+fn drawPassPair(
+    gl_renderer: *snail.Gl33Renderer,
+    cache: *const snail.Gl33PreparedPages,
+    scratch: *ScratchBuf,
     allocator: std.mem.Allocator,
-    renderer: *snail.Renderer,
-    world_passes: *const WorldPasses,
-    hud_passes: *const HudPasses,
-) !snail.PreparedResources {
-    var resource_entries: [16]snail.ResourceManifest.Entry = undefined;
-    var set = try buildSceneResourceManifest(world_passes, hud_passes, &resource_entries);
-    return renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &set);
-}
-
-fn planSceneResources(
-    allocator: std.mem.Allocator,
-    renderer: *snail.Renderer,
-    current: *const snail.PreparedResources,
-    world_passes: *const WorldPasses,
-    hud_passes: *const HudPasses,
-) !snail.PreparedResources {
-    var resource_entries: [16]snail.ResourceManifest.Entry = undefined;
-    var set = try buildSceneResourceManifest(world_passes, hud_passes, &resource_entries);
-    var plan = try renderer.planResourceUpload(allocator, current, &set);
-    defer plan.deinit();
-    var pending = try renderer.beginResourceUpload(.{ .persistent = allocator, .scratch = allocator }, &plan);
-    defer pending.deinit();
-    try pending.record(.{});
-    return pending.publish();
-}
-
-fn drawSnailScene(
-    renderer: *snail.Renderer,
-    prepared: *const snail.PreparedResources,
-    scene: *const snail.Scene,
+    pass: *const PreparedPass,
+    bindings: PassBindings,
     mvp: snail.Mat4,
     target: demo_passes.DrawTarget,
-    draw_buf: *[]u32,
-    allocator: std.mem.Allocator,
 ) !void {
-    const options = snail.DrawState{ .mvp = mvp, .surface = target.surface, .raster = target.raster };
-    const needed = snail.DrawList.estimate(scene);
-    const needed_segments = snail.DrawList.estimateSegments(scene);
-    if (draw_buf.*.len < needed) {
-        if (draw_buf.*.len > 0) allocator.free(draw_buf.*);
-        draw_buf.* = try allocator.alloc(u32, needed);
-    }
-    const draw_segments = try allocator.alloc(snail.DrawList.Segment, needed_segments);
-    defer allocator.free(draw_segments);
-    var draw = snail.DrawList.init(draw_buf.*[0..needed], draw_segments);
-    try draw.addScene(prepared, scene);
-    try renderer.draw(prepared, &draw, options);
+    const draw_state = snail.DrawState{
+        .mvp = mvp,
+        .surface = target.surface,
+        .raster = target.raster,
+    };
+
+    const needed_words = snail.emit.wordBudget(&pass.path_picture, 0) + snail.emit.wordBudget(&pass.text_picture, 0);
+    try scratch.ensure(needed_words, 4);
+    var wlen: usize = 0;
+    var slen: usize = 0;
+    _ = try snail.emit.emit(scratch.words, scratch.segs, &wlen, &slen, bindings.path, &pass.path_atlas, &pass.path_picture, .identity, .{ 1, 1, 1, 1 });
+    _ = try snail.emit.emit(scratch.words, scratch.segs, &wlen, &slen, bindings.text, &pass.text_atlas, &pass.text_picture, .identity, .{ 1, 1, 1, 1 });
+
+    gl_renderer.state.beginDraw();
+    try gl_renderer.state.draw(
+        allocator,
+        draw_state,
+        .{ .words = scratch.words[0..wlen], .segments = scratch.segs[0..slen] },
+        &.{cache},
+    );
 }
 
 fn updateCamera(camera: *Camera, dt: f32) void {
@@ -287,11 +398,12 @@ fn updateCamera(camera: *Camera, dt: f32) void {
 }
 
 fn renderPlanePass(
-    renderer: *snail.Renderer,
-    prepared: *const snail.PreparedResources,
-    draw_buf: *[]u32,
+    gl_renderer: *snail.Gl33Renderer,
+    cache: *const snail.Gl33PreparedPages,
+    scratch: *ScratchBuf,
     allocator: std.mem.Allocator,
     pass: *const PlanePass,
+    bindings: PassBindings,
     view_proj: snail.Mat4,
     fb_size: [2]u32,
     subpixel_order: snail.SubpixelOrder,
@@ -303,17 +415,27 @@ fn renderPlanePass(
     depth_bias: f32,
 ) !void {
     const mvp = common.planeMvp(view_proj, pass.scene_width, pass.scene_height, pos, rot_x, rot_y, world_width, world_height, depth_bias);
-    try drawSnailScene(renderer, prepared, &pass.prepared.scene, mvp, demo_passes.worldTarget(fb_size, subpixel_order, pass.opaque_backdrop), draw_buf, allocator);
+    try drawPassPair(
+        gl_renderer,
+        cache,
+        scratch,
+        allocator,
+        &pass.prepared,
+        bindings,
+        mvp,
+        demo_passes.worldTarget(fb_size, subpixel_order, pass.opaque_backdrop),
+    );
 }
 
 fn renderWorld(
     quad_renderer: *const QuadRenderer,
-    renderer: *snail.Renderer,
+    gl_renderer: *snail.Gl33Renderer,
+    cache: *const snail.Gl33PreparedPages,
     world_passes: *const WorldPasses,
     rough_wall_text: *const SurfaceTextDraw,
     center_panel_text: *const SurfaceTextDraw,
-    prepared: *const snail.PreparedResources,
-    draw_buf: *[]u32,
+    glass_bindings: PassBindings,
+    scratch: *ScratchBuf,
     allocator: std.mem.Allocator,
     world_buffer: RenderTarget,
     view_proj: snail.Mat4,
@@ -346,8 +468,6 @@ fn renderWorld(
         false,
         false,
         null,
-        null,
-        null,
         camera.pos,
         light_pos,
         light_color,
@@ -366,8 +486,6 @@ fn renderWorld(
         false,
         false,
         null,
-        null,
-        null,
         camera.pos,
         light_pos,
         light_color,
@@ -385,8 +503,6 @@ fn renderWorld(
         0.18,
         false,
         false,
-        null,
-        null,
         null,
         camera.pos,
         light_pos,
@@ -410,8 +526,6 @@ fn renderWorld(
             .scene_size = .{ world_passes.rough_wall.scene_width, world_passes.rough_wall.scene_height },
             .relief_strength = 0.18,
         },
-        prepared,
-        renderer,
         camera.pos,
         light_pos,
         light_color,
@@ -433,8 +547,6 @@ fn renderWorld(
             .text = center_panel_text,
             .scene_size = .{ world_passes.center_panel.scene_width, world_passes.center_panel.scene_height },
         },
-        prepared,
-        renderer,
         camera.pos,
         light_pos,
         light_color,
@@ -445,11 +557,12 @@ fn renderWorld(
     gl.glDepthMask(gl.GL_FALSE);
 
     try renderPlanePass(
-        renderer,
-        prepared,
-        draw_buf,
+        gl_renderer,
+        cache,
+        scratch,
         allocator,
         &world_passes.glass,
+        glass_bindings,
         view_proj,
         fb_size,
         subpixel_order,

@@ -83,7 +83,6 @@ fn createDemoVulkanPlatformModule(
         },
     });
     mod.linkSystemLibrary("vulkan", .{});
-    mod.linkSystemLibrary("wayland-client", .{});
     return mod;
 }
 
@@ -272,7 +271,7 @@ fn addScreenshotSteps(
 
     // CPU screenshot.
     const screenshot_cpu_mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/screenshot_new.zig"),
+        .root_source_file = b.path("src/demo/screenshot.zig"),
         .target = config.target,
         .optimize = .ReleaseFast,
         .link_libc = true,
@@ -282,14 +281,70 @@ fn addScreenshotSteps(
             .{ .name = "support", .module = release_support_mod },
         },
     });
-    const screenshot_cpu_exe = b.addExecutable(.{ .name = "snail-screenshot-new", .root_module = screenshot_cpu_mod });
+    const screenshot_cpu_exe = b.addExecutable(.{ .name = "snail-screenshot", .root_module = screenshot_cpu_mod });
     const run_screenshot_cpu = b.addRunArtifact(screenshot_cpu_exe);
-    const screenshot_cpu_step = b.step("run-screenshot-new", "Render the demo through the CPU backend and write zig-out/demo-screenshot-new.tga");
+    const screenshot_cpu_step = b.step("run-screenshot", "Render the demo through the CPU backend and write zig-out/demo-screenshot.tga");
     screenshot_cpu_step.dependOn(&run_screenshot_cpu.step);
+
+    // Banner screenshot — full interactive-demo scene through CPU backend.
+    const banner_screenshot_mod = b.createModule(.{
+        .root_source_file = b.path("src/demo/banner_screenshot.zig"),
+        .target = config.target,
+        .optimize = .ReleaseFast,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "assets", .module = modules.assets },
+            .{ .name = "snail", .module = release_snail_mod },
+            .{ .name = "support", .module = release_support_mod },
+        },
+    });
+    const banner_screenshot_exe = b.addExecutable(.{ .name = "snail-banner-screenshot", .root_module = banner_screenshot_mod });
+    const run_banner_screenshot = b.addRunArtifact(banner_screenshot_exe);
+    const banner_screenshot_step = b.step("run-banner-screenshot", "Render the full banner scene through the CPU backend and write zig-out/banner-screenshot.tga");
+    banner_screenshot_step.dependOn(&run_banner_screenshot.step);
+
+    // Banner screenshot — GL 3.3 offscreen.
+    const banner_screenshot_gl_mod = b.createModule(.{
+        .root_source_file = b.path("src/demo/banner_screenshot_gl.zig"),
+        .target = config.target,
+        .optimize = .ReleaseFast,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "assets", .module = modules.assets },
+            .{ .name = "snail", .module = release_snail_mod },
+            .{ .name = "support", .module = release_support_mod },
+        },
+    });
+    configureEglOffscreenModule(banner_screenshot_gl_mod, modules.options, config.core_options, modules.vk_shaders);
+    const banner_screenshot_gl_exe = b.addExecutable(.{ .name = "snail-banner-screenshot-gl", .root_module = banner_screenshot_gl_mod });
+    const run_banner_screenshot_gl = b.addRunArtifact(banner_screenshot_gl_exe);
+    const banner_screenshot_gl_step = b.step("run-banner-screenshot-gl", "Render the full banner scene through GL and write zig-out/banner-screenshot-gl.tga");
+    banner_screenshot_gl_step.dependOn(&run_banner_screenshot_gl.step);
+
+    // Banner screenshot — Vulkan offscreen.
+    if (config.core_options.enable_vulkan) {
+        const release_vk_platform_mod = createDemoVulkanPlatformModule(b, config.target, .ReleaseFast, modules.options, release_snail_mod);
+        const banner_screenshot_vk_mod = b.createModule(.{
+            .root_source_file = b.path("src/demo/banner_screenshot_vulkan.zig"),
+            .target = config.target,
+            .optimize = .ReleaseFast,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "assets", .module = modules.assets },
+                .{ .name = "snail", .module = release_snail_mod },
+                .{ .name = "support", .module = release_support_mod },
+                .{ .name = "demo_platform_vulkan", .module = release_vk_platform_mod },
+            },
+        });
+        const banner_screenshot_vk_exe = b.addExecutable(.{ .name = "snail-banner-screenshot-vulkan", .root_module = banner_screenshot_vk_mod });
+        const run_banner_screenshot_vk = b.addRunArtifact(banner_screenshot_vk_exe);
+        const banner_screenshot_vk_step = b.step("run-banner-screenshot-vulkan", "Render the full banner scene through Vulkan and write zig-out/banner-screenshot-vulkan.tga");
+        banner_screenshot_vk_step.dependOn(&run_banner_screenshot_vk.step);
+    }
 
     // GL screenshot.
     const screenshot_gl_mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/screenshot_new_gl.zig"),
+        .root_source_file = b.path("src/demo/screenshot_gl.zig"),
         .target = config.target,
         .optimize = .ReleaseFast,
         .link_libc = true,
@@ -300,14 +355,14 @@ fn addScreenshotSteps(
         },
     });
     configureEglOffscreenModule(screenshot_gl_mod, modules.options, config.core_options, modules.vk_shaders);
-    const screenshot_gl_exe = b.addExecutable(.{ .name = "snail-screenshot-new-gl", .root_module = screenshot_gl_mod });
+    const screenshot_gl_exe = b.addExecutable(.{ .name = "snail-screenshot-gl", .root_module = screenshot_gl_mod });
     const run_screenshot_gl = b.addRunArtifact(screenshot_gl_exe);
-    const screenshot_gl_step = b.step("run-screenshot-new-gl", "Render the demo through the GL backend and write zig-out/demo-screenshot-new-gl.tga");
+    const screenshot_gl_step = b.step("run-screenshot-gl", "Render the demo through the GL backend and write zig-out/demo-screenshot-gl.tga");
     screenshot_gl_step.dependOn(&run_screenshot_gl.step);
 
     // GLES screenshot.
     const screenshot_gles30_mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/screenshot_new_gles30.zig"),
+        .root_source_file = b.path("src/demo/screenshot_gles30.zig"),
         .target = config.target,
         .optimize = .ReleaseFast,
         .link_libc = true,
@@ -318,16 +373,16 @@ fn addScreenshotSteps(
         },
     });
     configureEglOffscreenModule(screenshot_gles30_mod, modules.options, config.core_options, modules.vk_shaders);
-    const screenshot_gles30_exe = b.addExecutable(.{ .name = "snail-screenshot-new-gles30", .root_module = screenshot_gles30_mod });
+    const screenshot_gles30_exe = b.addExecutable(.{ .name = "snail-screenshot-gles30", .root_module = screenshot_gles30_mod });
     const run_screenshot_gles30 = b.addRunArtifact(screenshot_gles30_exe);
-    const screenshot_gles30_step = b.step("run-screenshot-new-gles30", "Render the demo through the GLES30 backend and write zig-out/demo-screenshot-new-gles30.tga");
+    const screenshot_gles30_step = b.step("run-screenshot-gles30", "Render the demo through the GLES30 backend and write zig-out/demo-screenshot-gles30.tga");
     screenshot_gles30_step.dependOn(&run_screenshot_gles30.step);
 
     // Vulkan screenshot.
     if (config.core_options.enable_vulkan) {
         const vk_platform_mod = createDemoVulkanPlatformModule(b, config.target, .ReleaseFast, modules.options, release_snail_mod);
         const screenshot_vulkan_mod = b.createModule(.{
-            .root_source_file = b.path("src/demo/screenshot_new_vulkan.zig"),
+            .root_source_file = b.path("src/demo/screenshot_vulkan.zig"),
             .target = config.target,
             .optimize = .ReleaseFast,
             .link_libc = true,
@@ -338,11 +393,96 @@ fn addScreenshotSteps(
                 .{ .name = "demo_platform_vulkan", .module = vk_platform_mod },
             },
         });
-        const screenshot_vulkan_exe = b.addExecutable(.{ .name = "snail-screenshot-new-vulkan", .root_module = screenshot_vulkan_mod });
+        const screenshot_vulkan_exe = b.addExecutable(.{ .name = "snail-screenshot-vulkan", .root_module = screenshot_vulkan_mod });
         const run_screenshot_vulkan = b.addRunArtifact(screenshot_vulkan_exe);
-        const screenshot_vulkan_step = b.step("run-screenshot-new-vulkan", "Render the demo through the Vulkan backend and write zig-out/demo-screenshot-new-vulkan.tga");
+        const screenshot_vulkan_step = b.step("run-screenshot-vulkan", "Render the demo through the Vulkan backend and write zig-out/demo-screenshot-vulkan.tga");
         screenshot_vulkan_step.dependOn(&run_screenshot_vulkan.step);
     }
+}
+
+fn addInteractiveDemoStep(
+    b: *std.Build,
+    config: BuildConfig,
+    modules: ProjectModules,
+) void {
+    // Interactive demo: default to ReleaseFast unless the user explicitly
+    // overrides via -Doptimize. The demo is CPU-bound enough on the
+    // shape/emit path that a Debug build is visibly slower; explicit
+    // override (e.g. `-Doptimize=Debug` for debugging) still wins.
+    const demo_optimize = if (b.user_input_options.contains("optimize")) config.optimize else .ReleaseFast;
+    const demo_mod = b.createModule(.{
+        .root_source_file = b.path("src/demo/main.zig"),
+        .target = config.target,
+        .optimize = demo_optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "assets", .module = modules.assets },
+            .{ .name = "snail", .module = modules.snail },
+            .{ .name = "support", .module = modules.support },
+            .{ .name = "build_options", .module = modules.options },
+        },
+    });
+    // Interactive demo wraps every backend's platform layer: Wayland +
+    // EGL/OpenGL + Vulkan + libwayland-client. The platform sources live
+    // alongside the demo and reference snail's public types only.
+    demo_mod.linkSystemLibrary("wayland-client", .{});
+    demo_mod.addIncludePath(b.path("src/demo/platform"));
+    demo_mod.addCSourceFile(.{ .file = b.path("src/demo/platform/xdg-shell-client-protocol.c") });
+    if (config.core_options.enable_gl33 or config.core_options.enable_gl44 or config.core_options.enable_gles30) {
+        demo_mod.linkSystemLibrary("EGL", .{});
+        demo_mod.linkSystemLibrary("wayland-egl", .{});
+    }
+    if (config.core_options.enable_gl33 or config.core_options.enable_gl44) demo_mod.linkSystemLibrary("OpenGL", .{});
+    if (config.core_options.enable_gles30) demo_mod.linkSystemLibrary("GLESv2", .{});
+    if (config.core_options.enable_vulkan) demo_mod.linkSystemLibrary("vulkan", .{});
+    if (config.core_options.enable_harfbuzz) demo_mod.linkSystemLibrary("harfbuzz", .{});
+
+    const demo_exe = b.addExecutable(.{ .name = "snail-demo", .root_module = demo_mod });
+    b.installArtifact(demo_exe);
+    const run_demo = b.addRunArtifact(demo_exe);
+    if (b.args) |args| run_demo.addArgs(args);
+    const run_step = b.step("run", "Run the interactive Wayland banner demo");
+    run_step.dependOn(&run_demo.step);
+}
+
+fn addGameDemoStep(
+    b: *std.Build,
+    config: BuildConfig,
+    modules: ProjectModules,
+) void {
+    // The game demo is GL 3.3 only: a 3D room with HUD + world-space text
+    // sampled through `snail.coverage.Shader.gl33.sample_functions`. It does
+    // not exercise Vulkan / GLES30 / CPU backends, but it does need the
+    // Wayland-EGL platform layer and the xdg-shell C protocol.
+    if (!config.core_options.enable_gl33) return;
+
+    const game_optimize = if (b.user_input_options.contains("optimize")) config.optimize else .ReleaseFast;
+    const game_mod = b.createModule(.{
+        .root_source_file = b.path("src/demo/game.zig"),
+        .target = config.target,
+        .optimize = game_optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "assets", .module = modules.assets },
+            .{ .name = "snail", .module = modules.snail },
+            .{ .name = "support", .module = modules.support },
+            .{ .name = "build_options", .module = modules.options },
+        },
+    });
+    game_mod.linkSystemLibrary("wayland-client", .{});
+    game_mod.addIncludePath(b.path("src/demo/platform"));
+    game_mod.addCSourceFile(.{ .file = b.path("src/demo/platform/xdg-shell-client-protocol.c") });
+    game_mod.linkSystemLibrary("EGL", .{});
+    game_mod.linkSystemLibrary("wayland-egl", .{});
+    game_mod.linkSystemLibrary("OpenGL", .{});
+    if (config.core_options.enable_harfbuzz) game_mod.linkSystemLibrary("harfbuzz", .{});
+
+    const game_exe = b.addExecutable(.{ .name = "snail-game-demo", .root_module = game_mod });
+    b.installArtifact(game_exe);
+    const run_game = b.addRunArtifact(game_exe);
+    if (b.args) |args| run_game.addArgs(args);
+    const run_step = b.step("run-game", "Run the interactive Wayland 3D game demo (GL 3.3)");
+    run_step.dependOn(&run_game.step);
 }
 
 pub fn build(b: *std.Build) void {
@@ -363,4 +503,6 @@ pub fn build(b: *std.Build) void {
 
     addTestSteps(b, config, modules);
     addScreenshotSteps(b, config, modules);
+    addInteractiveDemoStep(b, config, modules);
+    addGameDemoStep(b, config, modules);
 }

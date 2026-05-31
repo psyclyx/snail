@@ -1,9 +1,20 @@
+//! Interactive demo entry point.
+//!
+//! Opens a Wayland window and renders the shared banner content
+//! (rounded-rect card + wordmark + tagline + vector snail + multi-script
+//! row) via the new snail API. Backed by `renderer_driver.zig`, which
+//! wraps each backend's `Renderer` + `PreparedPages` cache + emit/draw
+//! shim. Keys cycle backend (C), AA mode (B), and hinting (H); arrows
+//! pan; Z/X zoom; R toggles rotate; L dumps a brief repro frame; Esc
+//! quits.
+
 const std = @import("std");
 const snail = @import("snail");
 const build_options = @import("build_options");
-const demo_banner = @import("banner.zig");
-const demo_banner_scene = @import("scene.zig");
+const assets_data = @import("assets");
 const renderer_driver = @import("renderer_driver.zig");
+const demo_scene = @import("scene.zig");
+const demo_banner = @import("banner.zig");
 const subpixel_detect = @import("platform/subpixel.zig");
 const wayland = @import("platform/wayland.zig");
 const presentation = @import("platform/presentation.zig");
@@ -20,61 +31,6 @@ const KEY_LEFT = wayland.KEY_LEFT;
 const KEY_RIGHT = wayland.KEY_RIGHT;
 const KEY_UP = wayland.KEY_UP;
 const KEY_DOWN = wayland.KEY_DOWN;
-
-fn declareTextBlobResources(set: *snail.ResourceManifest, atlas_key: snail.ResourceKey, blob_key: snail.ResourceKey, blob: *const snail.TextBlob) !snail.TextResourceKeys {
-    const resources = blob.resourceKeys(atlas_key, blob_key);
-    try set.putTextBlob(resources, blob);
-    return resources;
-}
-
-pub fn main() !void {
-    var da: std.heap.DebugAllocator(.{}) = .init;
-    defer _ = da.deinit();
-    const allocator = da.allocator();
-
-    return mainLoop(allocator);
-}
-
-fn toSnailEncoding(encoding: presentation.ColorEncoding) snail.ColorEncoding {
-    return switch (encoding) {
-        .linear => .linear,
-        .srgb => .srgb,
-    };
-}
-
-fn displayTargetEncoding(info: presentation.Info) snail.TargetEncoding {
-    return .{
-        .attachment = toSnailEncoding(info.framebuffer_encoding),
-        .stored_pixels = .srgb,
-    };
-}
-
-fn displayLinearResolve(kind: renderer_driver.Kind, encoding: snail.TargetEncoding) ?snail.LinearResolve {
-    if (encoding.attachment == .linear and encoding.stored_pixels == .srgb and kind != .vulkan) {
-        return .{};
-    }
-    return null;
-}
-
-fn cycleSubpixelOrder(o: snail.SubpixelOrder) snail.SubpixelOrder {
-    return switch (o) {
-        .none => .rgb,
-        .rgb => .bgr,
-        .bgr => .vrgb,
-        .vrgb => .vbgr,
-        .vbgr => .none,
-    };
-}
-
-fn aaName(o: snail.SubpixelOrder) []const u8 {
-    return switch (o) {
-        .none => "grayscale",
-        .rgb => "subpixel-RGB",
-        .bgr => "subpixel-BGR",
-        .vrgb => "subpixel-VRGB",
-        .vbgr => "subpixel-VBGR",
-    };
-}
 
 const HintMode = enum {
     always,
@@ -106,97 +62,38 @@ const HintMode = enum {
     }
 };
 
-fn envU32(comptime name: [:0]const u8, default: u32) u32 {
-    const ptr = std.c.getenv(name.ptr) orelse return default;
-    const value = std.mem.span(ptr);
-    return std.fmt.parseInt(u32, value, 10) catch default;
-}
-
-fn f32Bits(value: f32) u32 {
-    return @as(u32, @bitCast(value));
-}
-
-fn colorEncodingInt(encoding: snail.ColorEncoding) u32 {
-    return switch (encoding) {
-        .linear => 0,
-        .srgb => 1,
+fn cycleSubpixelOrder(o: snail.SubpixelOrder) snail.SubpixelOrder {
+    return switch (o) {
+        .none => .rgb,
+        .rgb => .bgr,
+        .bgr => .vrgb,
+        .vrgb => .vbgr,
+        .vbgr => .none,
     };
 }
 
-fn hintPpemScale(zoom: f32, snap_step: snail.Vec2) f32 {
-    if (!std.math.isFinite(snap_step.y) or snap_step.y <= 0.0) return zoom;
-    return zoom / snap_step.y;
+fn aaName(o: snail.SubpixelOrder) []const u8 {
+    return switch (o) {
+        .none => "grayscale",
+        .rgb => "subpixel-RGB",
+        .bgr => "subpixel-BGR",
+        .vrgb => "subpixel-VRGB",
+        .vbgr => "subpixel-VBGR",
+    };
 }
 
-fn resolveLinearInt(resolve: ?snail.LinearResolve) u32 {
-    return if (resolve == null) 0 else 1;
+fn toSnailEncoding(encoding: presentation.ColorEncoding) snail.ColorEncoding {
+    return switch (encoding) {
+        .linear => .linear,
+        .srgb => .srgb,
+    };
 }
 
-fn printMat4Bits(name: []const u8, m: snail.Mat4) void {
-    std.debug.print("{s}=", .{name});
-    for (m.data, 0..) |value, i| {
-        if (i != 0) std.debug.print(",", .{});
-        std.debug.print("0x{x}", .{f32Bits(value)});
-    }
-    std.debug.print("\n", .{});
-}
-
-fn printMat4Env(name: []const u8, m: snail.Mat4) void {
-    std.debug.print(" {s}=", .{name});
-    for (m.data, 0..) |value, i| {
-        if (i != 0) std.debug.print(",", .{});
-        std.debug.print("0x{x}", .{f32Bits(value)});
-    }
-}
-
-fn dumpReproFrame(
-    frame_count: u32,
-    backend: []const u8,
-    current_order: snail.SubpixelOrder,
-    present: presentation.Info,
-    target_encoding: snail.TargetEncoding,
-    resolve: ?snail.LinearResolve,
-    pan_x: f32,
-    pan_y: f32,
-    zoom: f32,
-    angle: f32,
-    projection: snail.Mat4,
-    scene_transform: snail.Mat4,
-    mvp: snail.Mat4,
-) void {
-    std.debug.print("\n--- snail repro frame {} ---\n", .{frame_count});
-    std.debug.print("backend={s}\n", .{backend});
-    std.debug.print("logical_size={}x{}\n", .{ present.logical_size[0], present.logical_size[1] });
-    std.debug.print("framebuffer_size={}x{}\n", .{ present.framebuffer_size[0], present.framebuffer_size[1] });
-    std.debug.print("buffer_scale={}\n", .{present.buffer_scale});
-    std.debug.print("will_resample={}\n", .{@intFromBool(present.will_resample)});
-    std.debug.print("subpixel_order={}\n", .{@intFromEnum(current_order)});
-    std.debug.print("target_attachment={}\n", .{colorEncodingInt(target_encoding.attachment)});
-    std.debug.print("target_stored={}\n", .{colorEncodingInt(target_encoding.stored_pixels)});
-    std.debug.print("resolve_linear={}\n", .{resolveLinearInt(resolve)});
-    std.debug.print("controls_bits pan_x=0x{x} pan_y=0x{x} zoom=0x{x} angle=0x{x}\n", .{
-        f32Bits(pan_x),
-        f32Bits(pan_y),
-        f32Bits(zoom),
-        f32Bits(angle),
-    });
-    printMat4Bits("projection_bits", projection);
-    printMat4Bits("scene_transform_bits", scene_transform);
-    printMat4Bits("mvp_bits", mvp);
-    std.debug.print("repro_command: SNAIL_REPRO=1 SNAIL_REPRO_LOGICAL_W={} SNAIL_REPRO_LOGICAL_H={} SNAIL_REPRO_FB_W={} SNAIL_REPRO_FB_H={} SNAIL_REPRO_SUBPIXEL={} SNAIL_REPRO_WILL_RESAMPLE={} SNAIL_REPRO_ATTACHMENT={} SNAIL_REPRO_STORED={} SNAIL_REPRO_RESOLVE_LINEAR={} SNAIL_REPRO_OUTPUT=zig-out/repro-frame.tga", .{
-        present.logical_size[0],
-        present.logical_size[1],
-        present.framebuffer_size[0],
-        present.framebuffer_size[1],
-        @intFromEnum(current_order),
-        @intFromBool(present.will_resample),
-        colorEncodingInt(target_encoding.attachment),
-        colorEncodingInt(target_encoding.stored_pixels),
-        resolveLinearInt(resolve),
-    });
-    printMat4Env("SNAIL_REPRO_MVP", mvp);
-    std.debug.print(" zig build run-screenshot\n", .{});
-    std.debug.print("--- end snail repro frame ---\n", .{});
+fn displayTargetEncoding(info: presentation.Info) snail.TargetEncoding {
+    return .{
+        .attachment = toSnailEncoding(info.framebuffer_encoding),
+        .stored_pixels = .srgb,
+    };
 }
 
 fn logPresentationInfo(info: presentation.Info) void {
@@ -217,27 +114,109 @@ fn logPresentationInfo(info: presentation.Info) void {
     );
 }
 
-fn releasePrepared(prepared: *?snail.PreparedResources) void {
-    if (prepared.*) |*resources| {
-        resources.retireNow();
-        prepared.* = null;
-    }
+fn dumpReproFrame(
+    frame_count: u32,
+    backend: []const u8,
+    current_order: snail.SubpixelOrder,
+    hint_mode: HintMode,
+    hint_active: bool,
+    present: presentation.Info,
+    pan_x: f32,
+    pan_y: f32,
+    zoom: f32,
+    angle: f32,
+) void {
+    std.debug.print("\n--- snail repro frame {} ---\n", .{frame_count});
+    std.debug.print("backend={s} aa={s} hint={s}{s}\n", .{
+        backend,
+        aaName(current_order),
+        hint_mode.name(),
+        if (hint_active) "" else " (off)",
+    });
+    std.debug.print("logical_size={}x{} framebuffer={}x{}\n", .{
+        present.logical_size[0],   present.logical_size[1],
+        present.framebuffer_size[0], present.framebuffer_size[1],
+    });
+    std.debug.print("pan=({d:.2},{d:.2}) zoom={d:.4} angle={d:.4}\n", .{ pan_x, pan_y, zoom, angle });
+    std.debug.print("--- end snail repro frame ---\n", .{});
 }
 
-fn hintedGlyphCount(blob: *const snail.TextBlob) usize {
-    var count: usize = 0;
-    for (blob.glyphs) |glyph| {
-        if (glyph.hint_record_texel != null) count += 1;
+const ContentCache = struct {
+    allocator: std.mem.Allocator,
+    pool: *snail.PagePool,
+    assets: demo_banner.Assets,
+    content: ?demo_banner.Content = null,
+    last_size: [2]u32 = .{ 0, 0 },
+    last_hint_active: bool = false,
+    last_hint_ppem_bits: u32 = 0,
+
+    fn init(allocator: std.mem.Allocator) !ContentCache {
+        const pool = try snail.PagePool.init(allocator, .{
+            .max_layers = 24,
+            .curve_words_per_page = 1 << 18,
+            .band_words_per_page = 1 << 16,
+        });
+        errdefer pool.deinit();
+        const assets = try demo_banner.Assets.init(allocator);
+        return .{ .allocator = allocator, .pool = pool, .assets = assets };
     }
-    return count;
+
+    fn deinit(self: *ContentCache) void {
+        if (self.content) |*c| c.deinit();
+        self.assets.deinit();
+        self.pool.deinit();
+    }
+
+    /// Get or rebuild the full banner content. Atlases + pictures are torn
+    /// down on resize / hint-mode change; the long-lived `Assets` (fonts,
+    /// shaper, hinter) and the `PagePool` survive across rebuilds.
+    /// Returns `dirty=true` when the content was rebuilt this call.
+    fn get(
+        self: *ContentCache,
+        width: u32,
+        height: u32,
+        hint_active: bool,
+        hint_ppem_scale: f32,
+    ) !struct { content: *demo_banner.Content, dirty: bool } {
+        const ppem_bits: u32 = @bitCast(hint_ppem_scale);
+        const same = self.content != null and
+            self.last_size[0] == width and
+            self.last_size[1] == height and
+            self.last_hint_active == hint_active and
+            (!hint_active or self.last_hint_ppem_bits == ppem_bits);
+        if (same) return .{ .content = &self.content.?, .dirty = false };
+
+        if (self.content) |*old| old.deinit();
+        self.content = null;
+
+        const hint_opts: demo_banner.HintOptions = .{
+            .enabled = hint_active,
+            .ppem_scale = hint_ppem_scale,
+        };
+        self.content = try demo_scene.build(
+            self.allocator,
+            self.pool,
+            &self.assets,
+            @floatFromInt(width),
+            @floatFromInt(height),
+            .{ .x = 1, .y = 1 },
+            hint_opts,
+        );
+        self.last_size = .{ width, height };
+        self.last_hint_active = hint_active;
+        self.last_hint_ppem_bits = ppem_bits;
+        return .{ .content = &self.content.?, .dirty = true };
+    }
+};
+
+pub fn main() !void {
+    var da: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = da.deinit();
+    const allocator = da.allocator();
+    return mainLoop(allocator);
 }
 
 fn mainLoop(allocator: std.mem.Allocator) !void {
-    var scene_assets = try demo_banner_scene.Assets.init(allocator);
-    defer scene_assets.deinit();
-    var hint_context = snail.TrueTypeHintContext.init(allocator, &scene_assets.fonts);
-    defer hint_context.deinit();
-
     const window = try wayland.Window.init(1280, 720, "snail");
     defer window.deinit();
 
@@ -247,24 +226,14 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
 
     const sys_order = subpixel_detect.detect();
     const detected_order = window.currentSubpixelOrder(sys_order);
-    // Default to grayscale; press B to cycle into the detected subpixel mode.
     var current_order: snail.SubpixelOrder = .none;
-    std.debug.print("snail: detected subpixel order: system={s} monitor={s} (starting in {s})\n", .{ @tagName(sys_order), @tagName(detected_order), @tagName(current_order) });
+    std.debug.print(
+        "snail: detected subpixel order: system={s} monitor={s} (starting in {s})\n",
+        .{ @tagName(sys_order), @tagName(detected_order), @tagName(current_order) },
+    );
 
-    var path_picture: ?snail.PathPicture = null;
-    defer if (path_picture) |*picture| picture.deinit();
-    var text_bundle = snail.TextBlobBundle.init(allocator, &scene_assets.fonts);
-    defer text_bundle.deinit();
-    var text_blob: ?*const snail.TextBlob = null;
-    var scene = snail.Scene.init(allocator);
-    defer scene.deinit();
-    var prepared: ?snail.PreparedResources = null;
-    defer releasePrepared(&prepared);
-    var draw_buf: []u32 = &.{};
-    defer if (draw_buf.len > 0) allocator.free(draw_buf);
-    var draw_segments_buf: []snail.DrawList.Segment = &.{};
-    defer if (draw_segments_buf.len > 0) allocator.free(draw_segments_buf);
-    var uploaded_size = [4]u32{ 0, 0, 0, 0 };
+    var content_cache = try ContentCache.init(allocator);
+    defer content_cache.deinit();
 
     var angle: f32 = 0.0;
     var zoom: f32 = 1.0;
@@ -278,11 +247,6 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
     var fps_display: f32 = 0.0;
     var last_presentation: ?presentation.Info = null;
     var hint_mode: HintMode = .never;
-    var uploaded_hint_active = false;
-    var uploaded_hint_scale_bits: u32 = 0;
-    var uploaded_hint_glyphs: usize = 0;
-    var uploaded_total_glyphs: usize = 0;
-    const dump_every = envU32("SNAIL_DEMO_DUMP_EVERY", 0);
 
     std.debug.print("snail - GPU text & vector rendering\n", .{});
     std.debug.print("Backend: {s}, HarfBuzz: {s}\n", .{
@@ -290,7 +254,10 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
         if (build_options.enable_harfbuzz) "ON" else "OFF",
     });
     renderer_driver.warnIfDebugCpu(active.kind());
-    std.debug.print("Keys: arrows pan, Z/X zoom, R rotate, H TT hinting, B AA mode, C backend/threading, L dump repro, Esc quit\n", .{});
+    std.debug.print(
+        "Keys: arrows pan, Z/X zoom, R rotate, H TT hinting, B AA mode, C backend, L dump repro, Esc quit\n",
+        .{},
+    );
     std.debug.print("aa={s}\n", .{aaName(current_order)});
     std.debug.print("hinting={s}\n", .{hint_mode.name()});
 
@@ -306,8 +273,6 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
             fps_frames = 0;
         }
 
-        // Drop monitor-change auto-reset; the user owns the AA mode and can
-        // cycle with B if they want to track the current display.
         _ = window.consumeMonitorChanged();
 
         const dump_repro = window.isKeyPressed(KEY_L);
@@ -322,17 +287,18 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
             std.debug.print("\naa={s}\n", .{aaName(current_order)});
         }
         if (window.isKeyPressed(KEY_C)) {
-            const next = renderer_driver.nextKind(active.kind());
-            if (next != active.kind()) {
-                releasePrepared(&prepared);
+            const next_kind = renderer_driver.nextKind(active.kind());
+            if (next_kind != active.kind()) {
                 active.deinit();
                 active_valid = false;
-                active = try renderer_driver.Driver.init(allocator, window, next);
+                active = try renderer_driver.Driver.init(allocator, window, next_kind);
                 active_valid = true;
-                uploaded_size = .{ 0, 0, 0, 0 };
                 last_presentation = null;
                 last_time = wayland.getTime();
                 frame_count = 0;
+                // Force a content re-upload by invalidating the cache pool match
+                // on the new backend's first frame (we set dirty=true unconditionally
+                // when the backend was swapped; see below).
                 std.debug.print("\nBackend: {s}\n", .{active.backendName()});
                 renderer_driver.warnIfDebugCpu(active.kind());
                 continue;
@@ -363,79 +329,19 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
         const size = present.logical_size;
         const fb_size = present.framebuffer_size;
         const target_encoding = displayTargetEncoding(present);
-        const linear_resolve = displayLinearResolve(active.kind(), target_encoding);
         const w: f32 = @floatFromInt(size[0]);
         const h: f32 = @floatFromInt(size[1]);
         const viewport_w: f32 = @floatFromInt(fb_size[0]);
         const viewport_h: f32 = @floatFromInt(fb_size[1]);
         if (w < 1.0 or h < 1.0 or viewport_w < 1.0 or viewport_h < 1.0) continue;
 
-        const layout = demo_banner.buildLayout(w, h);
-        const snap_step = snail.pixelSteps(.{ w, h }, fb_size);
-        const size_key = [4]u32{ size[0], size[1], fb_size[0], fb_size[1] };
         const hint_active = hint_mode.active(moving);
-        const hint_scale = hintPpemScale(zoom, snap_step);
-        const hint_scale_bits = if (hint_active) f32Bits(hint_scale) else 0;
-        const hint_key_changed = hint_active != uploaded_hint_active or (hint_active and hint_scale_bits != uploaded_hint_scale_bits);
+        // Hint ppem scale: the banner sets the base ppem per glyph; this
+        // multiplier follows zoom so hinted glyphs hit pixel grids correctly
+        // when the world is scaled.
+        const hint_ppem_scale: f32 = zoom;
 
-        // On resize/backend switch: lay out text to collect decoration rects,
-        // rebuild path picture, and rebuild immutable scene resources.
-        const needs_resource_rebuild = prepared == null or path_picture == null or text_blob == null or !std.mem.eql(u32, size_key[0..], uploaded_size[0..]) or hint_key_changed;
-        if (needs_resource_rebuild) {
-            releasePrepared(&prepared);
-            if (path_picture) |*picture| {
-                picture.deinit();
-                path_picture = null;
-            }
-            if (text_blob != null) {
-                text_bundle.reset();
-                text_blob = null;
-            }
-
-            if (hint_active) try text_bundle.bindHintContext(&hint_context);
-            var bip = try text_bundle.startBlob();
-            errdefer bip.abort();
-            var dec_rects: [8]snail.Rect = undefined;
-            const text_result = demo_banner_scene.buildTextBlobWithHinting(bip, layout, snap_step, &scene_assets, &hint_context, &dec_rects, .{
-                .enabled = hint_active,
-                .ppem_scale = hint_scale,
-            });
-
-            text_blob = try bip.finish(snail.ResourceKey.named("banner_text"));
-            // Pack any auto-mode pending hints into the bundle's owned
-            // snapshot before manifest preparation. Explicit step — keeps
-            // the upload point honest (no hidden slab packing on read).
-            try text_bundle.materialiseHintSnapshot();
-            uploaded_total_glyphs = if (text_blob) |blob| blob.glyphCount() else 0;
-            uploaded_hint_glyphs = if (text_blob) |blob| hintedGlyphCount(blob) else 0;
-            path_picture = try demo_banner_scene.buildPathPicture(allocator, layout, &scene_assets, dec_rects[0..text_result.decoration_count]);
-            uploaded_size = size_key;
-            uploaded_hint_active = hint_active;
-            uploaded_hint_scale_bits = hint_scale_bits;
-            std.debug.print("\nhinting={s}{s} hinted={}/{}\n", .{
-                hint_mode.name(),
-                if (hint_active) "" else " (off)",
-                uploaded_hint_glyphs,
-                uploaded_total_glyphs,
-            });
-
-            var resource_entries: [8]snail.ResourceManifest.Entry = undefined;
-            var resources = snail.ResourceManifest.init(&resource_entries);
-            if (path_picture) |*picture| try resources.putPathPicture(snail.ResourceKey.named("banner_paths"), picture);
-            const text_keys = if (text_blob) |blob| keys: {
-                const keys = try declareTextBlobResources(&resources, snail.ResourceKey.named("banner_fonts"), snail.ResourceKey.named("banner_text"), blob);
-                break :keys keys;
-            } else null;
-
-            scene.reset();
-            if (path_picture) |*picture| try scene.addPath(.{ .picture = picture, .resource_key = snail.ResourceKey.named("banner_paths") });
-            if (text_blob) |blob| try scene.addText(.{ .blob = blob, .resources = text_keys.? });
-            var renderer = active.renderer();
-            prepared = try renderer.uploadResourcesBlocking(.{ .persistent = allocator, .scratch = allocator }, &resources);
-        }
-
-        const clear_srgb = demo_banner.clearColor();
-        if (!active.beginFrame(fb_size, clear_srgb, target_encoding)) continue;
+        const cached = try content_cache.get(size[0], size[1], hint_active, hint_ppem_scale);
 
         const projection = snail.Mat4.ortho(0, w, h, 0, -1, 1);
         const cx = w * 0.5;
@@ -444,16 +350,21 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
             snail.Mat4.translate(pan_x, pan_y, 0),
             snail.Mat4.multiply(
                 snail.Mat4.translate(cx, cy, 0),
-                snail.Mat4.multiply(snail.Mat4.scaleUniform(zoom), snail.Mat4.multiply(
-                    snail.Mat4.rotateZ(angle),
-                    snail.Mat4.translate(-cx, -cy, 0),
-                )),
+                snail.Mat4.multiply(
+                    snail.Mat4.scaleUniform(zoom),
+                    snail.Mat4.multiply(
+                        snail.Mat4.rotateZ(angle),
+                        snail.Mat4.translate(-cx, -cy, 0),
+                    ),
+                ),
             ),
         );
         const mvp = snail.Mat4.multiply(projection, scene_transform);
-        if (dump_repro or (dump_every != 0 and frame_count % dump_every == 0)) {
-            dumpReproFrame(frame_count, active.backendName(), current_order, present, target_encoding, linear_resolve, pan_x, pan_y, zoom, angle, projection, scene_transform, mvp);
+
+        if (dump_repro) {
+            dumpReproFrame(frame_count, active.backendName(), current_order, hint_mode, hint_active, present, pan_x, pan_y, zoom, angle);
         }
+
         const draw_state = snail.DrawState{
             .mvp = mvp,
             .surface = .{
@@ -461,42 +372,27 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
                 .pixel_height = viewport_h,
                 .encoding = target_encoding,
             },
-            .raster = .{ .subpixel_order = if (present.will_resample) .none else current_order },
+            .raster = .{
+                .subpixel_order = if (present.will_resample) .none else current_order,
+                .coverage_transfer = .{ .exponent = 1.0 },
+            },
         };
-        const needed = snail.DrawList.estimate(&scene);
-        const needed_segments = snail.DrawList.estimateSegments(&scene);
-        if (draw_buf.len < needed) {
-            if (draw_buf.len > 0) allocator.free(draw_buf);
-            draw_buf = try allocator.alloc(u32, needed);
-        }
-        if (draw_segments_buf.len < needed_segments) {
-            if (draw_segments_buf.len > 0) allocator.free(draw_segments_buf);
-            draw_segments_buf = try allocator.alloc(snail.DrawList.Segment, needed_segments);
-        }
-        var draw = snail.DrawList.init(draw_buf[0..needed], draw_segments_buf[0..needed_segments]);
-        try draw.addScene(&prepared.?, &scene);
-        const draw_pass = snail.DrawPass{
-            .state = draw_state,
-            .resolve = if (linear_resolve) |resolve| .{ .linear = resolve } else .direct,
-        };
-        try active.drawPass(&prepared.?, &draw, draw_pass);
 
-        if (frame_count == 2) {
-            active.captureDebugFrame(allocator, fb_size);
-        }
+        // Background color (light cream — the card sits on top).
+        const clear_srgb = [4]f32{ 245.0 / 255.0, 246.0 / 255.0, 249.0 / 255.0, 1.0 };
+
+        _ = try active.renderFrame(allocator, cached.content, draw_state, cached.dirty, clear_srgb);
+
         if (frame_count % 60 == 0 and fps_display > 0.0) {
-            std.debug.print("\rFPS: {d:.0}  Backend: {s}  Hint: {s}{s}  Hinted: {}/{}   ", .{
+            std.debug.print("\rFPS: {d:.0}  Backend: {s}  AA: {s}  Hint: {s}{s}   ", .{
                 fps_display,
                 active.backendName(),
+                aaName(current_order),
                 hint_mode.name(),
                 if (hint_active) "" else " (off)",
-                uploaded_hint_glyphs,
-                uploaded_total_glyphs,
             });
         }
         frame_count += 1;
-
-        active.endFrame();
     }
 }
 

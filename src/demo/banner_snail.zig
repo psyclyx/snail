@@ -1,11 +1,181 @@
+//! Builds the vector snail as a sequence of (path, paint, transform)
+//! shapes using `pathToCurves` / `strokeToCurves` and direct Atlas entries.
+
+const std = @import("std");
 const snail = @import("snail");
+
+const Allocator = std.mem.Allocator;
+
+pub const Builder = struct {
+    allocator: Allocator,
+    owned_curves: *std.ArrayList(snail.GlyphCurves),
+    entries: *std.ArrayList(snail.AtlasEntry),
+    shapes: *std.ArrayList(snail.Shape),
+    /// Heap-allocated slices backing each entry's `extra_layers`. The
+    /// caller is responsible for freeing each slice after the atlas is
+    /// built. Snail itself never owns this storage; entries borrow.
+    extra_layer_storage: *std.ArrayList([]snail.AtlasLayer),
+    next_id: *u32,
+
+    pub fn addFilledPath(
+        self: Builder,
+        path: *const snail.paths.Path,
+        paint: snail.Paint,
+        transform: snail.Transform2D,
+    ) !void {
+        const curves = try snail.paths.pathToCurves(self.allocator, path);
+        if (curves.isEmpty()) {
+            var owned = curves;
+            owned.deinit();
+            return;
+        }
+        try self.owned_curves.append(self.allocator, curves);
+        const key = snail.RecordKey{ .namespace = snail.ns.path_fill, .a = self.next_id.* };
+        self.next_id.* += 1;
+        try self.entries.append(self.allocator, .{
+            .key = key,
+            .curves = self.owned_curves.items[self.owned_curves.items.len - 1],
+            .paint = paint,
+        });
+        try self.shapes.append(self.allocator, .{
+            .key = key,
+            .local_transform = transform,
+            .local_color = .{ 1, 1, 1, 1 },
+        });
+    }
+
+    pub fn addStrokedPath(
+        self: Builder,
+        path: *const snail.paths.Path,
+        stroke: snail.StrokeStyle,
+        transform: snail.Transform2D,
+    ) !void {
+        const curves = try snail.paths.strokeToCurves(self.allocator, path, stroke);
+        if (curves.isEmpty()) {
+            var owned = curves;
+            owned.deinit();
+            return;
+        }
+        try self.owned_curves.append(self.allocator, curves);
+        const key = snail.RecordKey{ .namespace = snail.ns.path_stroke, .a = self.next_id.* };
+        self.next_id.* += 1;
+        try self.entries.append(self.allocator, .{
+            .key = key,
+            .curves = self.owned_curves.items[self.owned_curves.items.len - 1],
+            .paint = stroke.paint,
+        });
+        try self.shapes.append(self.allocator, .{
+            .key = key,
+            .local_transform = transform,
+            .local_color = .{ 1, 1, 1, 1 },
+        });
+    }
+
+    pub fn addFilledEllipse(
+        self: Builder,
+        rect: snail.Rect,
+        paint: snail.Paint,
+        transform: snail.Transform2D,
+    ) !void {
+        var path = snail.paths.Path.init(self.allocator);
+        defer path.deinit();
+        try path.addEllipse(rect);
+        try self.addFilledPath(&path, paint, transform);
+    }
+
+    pub fn addEllipse(
+        self: Builder,
+        rect: snail.Rect,
+        fill: snail.Paint,
+        stroke: snail.StrokeStyle,
+        transform: snail.Transform2D,
+    ) !void {
+        var path = snail.paths.Path.init(self.allocator);
+        defer path.deinit();
+        try path.addEllipse(rect);
+        try self.addFilledPath(&path, fill, transform);
+        try self.addStrokedPath(&path, stroke, transform);
+    }
+
+    /// Fill + stroke compound. When `stroke.placement == .inside`, this
+    /// emits a composite-group atlas entry so the GPU clips the stroke
+    /// to the fill interior. Other placements fall back to drawing the
+    /// fill and stroke as separate shapes.
+    pub fn addPathFillAndStroke(
+        self: Builder,
+        path: *const snail.paths.Path,
+        fill: snail.Paint,
+        stroke: snail.StrokeStyle,
+        transform: snail.Transform2D,
+    ) !void {
+        if (stroke.placement != .inside) {
+            try self.addFilledPath(path, fill, transform);
+            try self.addStrokedPath(path, stroke, transform);
+            return;
+        }
+
+        const fill_curves = try snail.paths.pathToCurves(self.allocator, path);
+        if (fill_curves.isEmpty()) {
+            var owned = fill_curves;
+            owned.deinit();
+            // Fill is empty — emit only the stroke.
+            try self.addStrokedPath(path, stroke, transform);
+            return;
+        }
+        const stroke_curves = try snail.paths.strokeToCurves(self.allocator, path, stroke);
+        if (stroke_curves.isEmpty()) {
+            // Stroke degenerate — emit fill only.
+            try self.owned_curves.append(self.allocator, fill_curves);
+            const key = snail.RecordKey{ .namespace = snail.ns.path_fill, .a = self.next_id.* };
+            self.next_id.* += 1;
+            try self.entries.append(self.allocator, .{
+                .key = key,
+                .curves = self.owned_curves.items[self.owned_curves.items.len - 1],
+                .paint = fill,
+            });
+            try self.shapes.append(self.allocator, .{
+                .key = key,
+                .local_transform = transform,
+                .local_color = .{ 1, 1, 1, 1 },
+            });
+            var owned_stroke = stroke_curves;
+            owned_stroke.deinit();
+            return;
+        }
+
+        try self.owned_curves.append(self.allocator, fill_curves);
+        try self.owned_curves.append(self.allocator, stroke_curves);
+
+        const extras = try self.allocator.alloc(snail.AtlasLayer, 1);
+        extras[0] = .{
+            .curves = self.owned_curves.items[self.owned_curves.items.len - 1],
+            .paint = stroke.paint,
+        };
+        try self.extra_layer_storage.append(self.allocator, extras);
+
+        const key = snail.RecordKey{ .namespace = snail.ns.path_fill, .a = self.next_id.* };
+        self.next_id.* += 1;
+        try self.entries.append(self.allocator, .{
+            .key = key,
+            .curves = self.owned_curves.items[self.owned_curves.items.len - 2],
+            .paint = fill,
+            .extra_layers = extras,
+            .composite_mode = .fill_stroke_inside,
+        });
+        try self.shapes.append(self.allocator, .{
+            .key = key,
+            .local_transform = transform,
+            .local_color = .{ 1, 1, 1, 1 },
+        });
+    }
+};
 
 fn perpLeft(v: snail.Vec2) snail.Vec2 {
     return .{ .x = -v.y, .y = v.x };
 }
 
 fn addFilledQuadraticRibbon(
-    builder: *snail.PathPictureBuilder,
+    builder: Builder,
     start: snail.Vec2,
     control: snail.Vec2,
     end: snail.Vec2,
@@ -26,17 +196,17 @@ fn addFilledQuadraticRibbon(
     const end_normal = snail.Vec2.scale(perpLeft(end_tangent), half_width);
     const tip_cap = snail.Vec2.scale(end_tangent, half_width * 0.9);
 
-    var ribbon = snail.Path.init(builder.allocator);
+    var ribbon = snail.paths.Path.init(builder.allocator);
     defer ribbon.deinit();
     try ribbon.moveTo(snail.Vec2.add(start, start_normal));
     try ribbon.quadTo(snail.Vec2.add(control, mid_normal), snail.Vec2.add(end, end_normal));
     try ribbon.quadTo(snail.Vec2.add(end, tip_cap), snail.Vec2.sub(end, end_normal));
     try ribbon.quadTo(snail.Vec2.sub(control, mid_normal), snail.Vec2.sub(start, start_normal));
     try ribbon.close();
-    try builder.addFilledPath(&ribbon, .{ .paint = .{ .solid = color } }, transform);
+    try builder.addFilledPath(&ribbon, .{ .solid = color }, transform);
 }
 
-pub fn addVectorSnail(builder: *snail.PathPictureBuilder, snail_stage: snail.Rect) !void {
+pub fn addVectorSnail(builder: Builder, snail_stage: snail.Rect) !void {
     const art_width = @min(snail_stage.w * 0.82, 440.0);
     const scale = art_width / 360.0;
     const art_height = 220.0 * scale;
@@ -52,14 +222,14 @@ pub fn addVectorSnail(builder: *snail.PathPictureBuilder, snail_stage: snail.Rec
         .y = 168.0,
         .w = 240.0,
         .h = 28.0,
-    }, .{ .paint = .{ .radial_gradient = .{
+    }, .{ .radial_gradient = .{
         .center = .{ .x = 182.0, .y = 182.0 },
         .radius = 125.0,
         .inner_color = .{ 0.0, 0.0, 0.0, 0.18 },
         .outer_color = .{ 0.0, 0.0, 0.0, 0.0 },
-    } } }, transform);
+    } }, transform);
 
-    var body = snail.Path.init(builder.allocator);
+    var body = snail.paths.Path.init(builder.allocator);
     defer body.deinit();
     try body.moveTo(.{ .x = 28.0, .y = 155.0 });
     try body.cubicTo(.{ .x = 62.0, .y = 132.0 }, .{ .x = 106.0, .y = 121.0 }, .{ .x = 142.0, .y = 127.0 });
@@ -72,19 +242,19 @@ pub fn addVectorSnail(builder: *snail.PathPictureBuilder, snail_stage: snail.Rec
     try body.cubicTo(.{ .x = 142.0, .y = 79.0 }, .{ .x = 106.0, .y = 84.0 }, .{ .x = 82.0, .y = 106.0 });
     try body.cubicTo(.{ .x = 58.0, .y = 127.0 }, .{ .x = 42.0, .y = 149.0 }, .{ .x = 28.0, .y = 155.0 });
     try body.close();
-    try builder.addPath(&body, .{ .paint = .{ .linear_gradient = .{
+    try builder.addPathFillAndStroke(&body, .{ .linear_gradient = .{
         .start = .{ .x = 48.0, .y = 102.0 },
         .end = .{ .x = 320.0, .y = 158.0 },
         .start_color = .{ 0.38, 0.48, 0.38, 0.95 },
         .end_color = .{ 0.68, 0.65, 0.52, 0.95 },
-    } } }, .{
+    } }, .{
         .paint = .{ .solid = .{ 0.45, 0.50, 0.38, 0.50 } },
         .width = 2.0,
         .join = .round,
         .placement = .inside,
     }, transform);
 
-    var belly = snail.Path.init(builder.allocator);
+    var belly = snail.paths.Path.init(builder.allocator);
     defer belly.deinit();
     try belly.moveTo(.{ .x = 92.0, .y = 140.0 });
     try belly.cubicTo(.{ .x = 138.0, .y = 132.0 }, .{ .x = 204.0, .y = 136.0 }, .{ .x = 274.0, .y = 142.0 });
@@ -100,18 +270,18 @@ pub fn addVectorSnail(builder: *snail.PathPictureBuilder, snail_stage: snail.Rec
         .y = 24.0,
         .w = 114.0,
         .h = 114.0,
-    }, .{ .paint = .{ .radial_gradient = .{
+    }, .{ .radial_gradient = .{
         .center = .{ .x = 208.0, .y = 68.0 },
         .radius = 72.0,
         .inner_color = .{ 0.62, 0.82, 0.92, 0.55 },
         .outer_color = .{ 0.25, 0.45, 0.62, 0.88 },
-    } } }, .{
+    } }, .{
         .paint = .{ .solid = .{ 0.35, 0.60, 0.78, 0.65 } },
         .width = 2.4,
         .join = .round,
     }, transform);
 
-    var spiral = snail.Path.init(builder.allocator);
+    var spiral = snail.paths.Path.init(builder.allocator);
     defer spiral.deinit();
     try spiral.moveTo(.{ .x = 254.0, .y = 78.0 });
     try spiral.cubicTo(.{ .x = 248.0, .y = 44.0 }, .{ .x = 196.0, .y = 41.0 }, .{ .x = 178.0, .y = 72.0 });
@@ -134,15 +304,19 @@ pub fn addVectorSnail(builder: *snail.PathPictureBuilder, snail_stage: snail.Rec
     try addFilledQuadraticRibbon(builder, .{ .x = 308.0, .y = 100.0 }, .{ .x = 316.0, .y = 76.0 }, .{ .x = 334.0, .y = 58.0 }, 2.0, .{ 0.58, 0.58, 0.52, 0.90 }, transform);
     try addFilledQuadraticRibbon(builder, .{ .x = 294.0, .y = 102.0 }, .{ .x = 298.0, .y = 80.0 }, .{ .x = 306.0, .y = 64.0 }, 2.0, .{ 0.58, 0.58, 0.52, 0.90 }, transform);
 
-    const eye_stroke = snail.StrokeStyle{ .paint = .{ .solid = .{ 0.30, 0.32, 0.28, 0.80 } }, .width = 1.2, .join = .round };
-    try builder.addEllipse(.{ .x = 330.0, .y = 54.0, .w = 9.0, .h = 9.0 }, .{ .paint = .{ .solid = .{ 0.98, 0.97, 0.94, 1.0 } } }, eye_stroke, transform);
-    try builder.addFilledEllipse(.{ .x = 332.0, .y = 56.0, .w = 5.0, .h = 5.0 }, .{ .paint = .{ .solid = .{ 0.18, 0.20, 0.22, 1.0 } } }, transform);
-    try builder.addFilledEllipse(.{ .x = 333.0, .y = 56.5, .w = 1.5, .h = 1.5 }, .{ .paint = .{ .solid = .{ 1.0, 1.0, 1.0, 0.90 } } }, transform);
-    try builder.addEllipse(.{ .x = 303.0, .y = 61.0, .w = 7.0, .h = 7.0 }, .{ .paint = .{ .solid = .{ 0.98, 0.97, 0.94, 1.0 } } }, eye_stroke, transform);
-    try builder.addFilledEllipse(.{ .x = 304.5, .y = 62.5, .w = 4.0, .h = 4.0 }, .{ .paint = .{ .solid = .{ 0.18, 0.20, 0.22, 1.0 } } }, transform);
-    try builder.addFilledEllipse(.{ .x = 305.2, .y = 63.0, .w = 1.2, .h = 1.2 }, .{ .paint = .{ .solid = .{ 1.0, 1.0, 1.0, 0.90 } } }, transform);
+    const eye_stroke = snail.StrokeStyle{
+        .paint = .{ .solid = .{ 0.30, 0.32, 0.28, 0.80 } },
+        .width = 1.2,
+        .join = .round,
+    };
+    try builder.addEllipse(.{ .x = 330.0, .y = 54.0, .w = 9.0, .h = 9.0 }, .{ .solid = .{ 0.98, 0.97, 0.94, 1.0 } }, eye_stroke, transform);
+    try builder.addFilledEllipse(.{ .x = 332.0, .y = 56.0, .w = 5.0, .h = 5.0 }, .{ .solid = .{ 0.18, 0.20, 0.22, 1.0 } }, transform);
+    try builder.addFilledEllipse(.{ .x = 333.0, .y = 56.5, .w = 1.5, .h = 1.5 }, .{ .solid = .{ 1.0, 1.0, 1.0, 0.90 } }, transform);
+    try builder.addEllipse(.{ .x = 303.0, .y = 61.0, .w = 7.0, .h = 7.0 }, .{ .solid = .{ 0.98, 0.97, 0.94, 1.0 } }, eye_stroke, transform);
+    try builder.addFilledEllipse(.{ .x = 304.5, .y = 62.5, .w = 4.0, .h = 4.0 }, .{ .solid = .{ 0.18, 0.20, 0.22, 1.0 } }, transform);
+    try builder.addFilledEllipse(.{ .x = 305.2, .y = 63.0, .w = 1.2, .h = 1.2 }, .{ .solid = .{ 1.0, 1.0, 1.0, 0.90 } }, transform);
 
-    var smile = snail.Path.init(builder.allocator);
+    var smile = snail.paths.Path.init(builder.allocator);
     defer smile.deinit();
     try smile.moveTo(.{ .x = 314.0, .y = 119.0 });
     try smile.quadTo(.{ .x = 321.0, .y = 123.0 }, .{ .x = 329.0, .y = 119.0 });
