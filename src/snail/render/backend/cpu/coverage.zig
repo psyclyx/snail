@@ -616,6 +616,22 @@ inline fn accumulateGlyphCoverageSegment(
     return .continue_scan;
 }
 
+// Snap a near-tangent discriminant in the cancellation-free quadratic
+// solver. When a curve mathematically grazes the sample line the true
+// discriminant is zero, but FP cancellation in `b^2 - a*c` leaves it tiny
+// and positive. The two roots then differ by `2*sqrt(disc)/a`, the two
+// along-coordinates differ, and the ±-signed `clamp(distance+0.5,0,1)`
+// contributions stop cancelling -- leaving a visible coverage residual on
+// pixels that should be fully outside (or fully inside) the shape and on
+// other pixels in the same scanline. Relative tolerance accommodates the
+// ~24 ULPs of FP noise in the disc subtraction without disturbing genuine
+// double-crossings (which carry disc well above the tolerance).
+inline fn snapNearTangentSqrt(disc: f32, b: f32, ac: f32) f32 {
+    const tol = @max(b * b, @abs(ac)) * 3.0e-6;
+    if (disc <= tol) return 0.0;
+    return @sqrt(disc);
+}
+
 inline fn solvePreparedAxisQuadratic(curve: *const PreparedAxisCurve, p0_along: f32, p0_root: f32, ppe: f32) [2]f32 {
     const ax = curve.a_along;
     const ay = curve.a_root;
@@ -630,7 +646,7 @@ inline fn solvePreparedAxisQuadratic(curve: *const PreparedAxisCurve, p0_along: 
         t1 = if (@abs(by) < eps) 0.0 else p0_root * 0.5 / by;
         t2 = t1;
     } else {
-        const sq = @sqrt(@max(by * by - ay * p0_root, 0.0));
+        const sq = snapNearTangentSqrt(by * by - ay * p0_root, by, ay * p0_root);
         if (by >= 0.0) {
             const q = by + sq;
             t2 = q / ay;
@@ -2096,7 +2112,7 @@ fn solveHorizPoly(p1x: f32, p1y: f32, p2x: f32, p2y: f32, p3x: f32, p3y: f32, pp
         t1 = if (@abs(by) < eps) 0.0 else p1y * 0.5 / by;
         t2 = t1;
     } else {
-        const sq = @sqrt(@max(by * by - ay * p1y, 0.0));
+        const sq = snapNearTangentSqrt(by * by - ay * p1y, by, ay * p1y);
         if (by >= 0.0) {
             const q = by + sq;
             t2 = q / ay;
@@ -2128,7 +2144,7 @@ fn solveVertPoly(p1x: f32, p1y: f32, p2x: f32, p2y: f32, p3x: f32, p3y: f32, ppe
         t1 = if (@abs(bx) < eps) 0.0 else p1x * 0.5 / bx;
         t2 = t1;
     } else {
-        const sq = @sqrt(@max(bx * bx - ax * p1x, 0.0));
+        const sq = snapNearTangentSqrt(bx * bx - ax * p1x, bx, ax * p1x);
         if (bx >= 0.0) {
             const q = bx + sq;
             t2 = q / ax;

@@ -13,6 +13,21 @@ float rootCodeCoord(float v) {
     return (abs(v) <= kRootCodeEps) ? 0.0 : v;
 }
 
+// Snap a near-tangent discriminant in the cancellation-free quadratic
+// solver. When a curve mathematically grazes the sample line the true
+// discriminant is zero, but FP cancellation in `b^2 - a*c` leaves it tiny
+// and positive. The two roots then differ by `2*sqrt(disc)/a`, the two
+// along-coordinates differ, and the ±-signed `clamp(distance + 0.5, 0, 1)`
+// contributions stop cancelling -- leaving a visible coverage residual on
+// pixels that should be fully outside (or fully inside) the shape and on
+// other pixels in the same scanline. The relative tolerance accommodates
+// the FP noise from the disc subtraction (~24 ULPs of the dominant
+// operand) without disturbing genuine double-crossings.
+float snapNearTangentSqrt(float disc, float b, float ac) {
+    float tol = max(b * b, abs(ac)) * 3.0e-6;
+    return (disc <= tol) ? 0.0 : sqrt(disc);
+}
+
 uint calcRootCode(float y1, float y2, float y3) {
     y1 = rootCodeCoord(y1);
     y2 = rootCodeCoord(y2);

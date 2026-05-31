@@ -50,7 +50,7 @@ vec2 solveHorizPoly(vec4 p12, vec2 p3) {
         t1 = (abs(b.y) < kCoordEps) ? 0.0 : p12.y * 0.5 / b.y;
         t2 = t1;
     } else {
-        float sq = sqrt(max(b.y * b.y - a.y * p12.y, 0.0));
+        float sq = snapNearTangentSqrt(b.y * b.y - a.y * p12.y, b.y, a.y * p12.y);
         if (b.y >= 0.0) {
             float q = b.y + sq;
             t2 = q / a.y;
@@ -73,7 +73,7 @@ vec2 solveVertPoly(vec4 p12, vec2 p3) {
         t1 = (abs(b.x) < kCoordEps) ? 0.0 : p12.x * 0.5 / b.x;
         t2 = t1;
     } else {
-        float sq = sqrt(max(b.x * b.x - a.x * p12.x, 0.0));
+        float sq = snapNearTangentSqrt(b.x * b.x - a.x * p12.x, b.x, a.x * p12.x);
         if (b.x >= 0.0) {
             float q = b.x + sq;
             t2 = q / a.x;

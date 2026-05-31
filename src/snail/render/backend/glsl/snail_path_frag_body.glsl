@@ -75,7 +75,7 @@ vec2 solveQuadraticHorizDistances(float p0x, float p0y, float p1x, float p1y, fl
         t1 = (abs(by) < kEps) ? 0.0 : p0y * 0.5 / by;
         t2 = t1;
     } else {
-        float sq = sqrt(max(by * by - ay * p0y, 0.0));
+        float sq = snapNearTangentSqrt(by * by - ay * p0y, by, ay * p0y);
         if (by >= 0.0) {
             float q = by + sq;
             t2 = q / ay;
@@ -104,7 +104,7 @@ vec2 solveQuadraticVertDistances(float p0x, float p0y, float p1x, float p1y, flo
         t1 = (abs(bx) < kEps) ? 0.0 : p0x * 0.5 / bx;
         t2 = t1;
     } else {
-        float sq = sqrt(max(bx * bx - ax * p0x, 0.0));
+        float sq = snapNearTangentSqrt(bx * bx - ax * p0x, bx, ax * p0x);
         if (bx >= 0.0) {
             float q = bx + sq;
             t2 = q / ax;
