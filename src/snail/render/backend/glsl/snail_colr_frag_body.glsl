@@ -1,8 +1,7 @@
 #define kDirectEncodingKindBias 4.0
-const uint kBandCurveLocXMask = 0x0FFFu;
 
 ivec2 decodeBandCurveLoc(uvec2 ref) {
-    return ivec2(int(ref.x & kBandCurveLocXMask), int(ref.y));
+    return decodeBandCurveLocCommon(ref);
 }
 
 ivec2 offsetLayerLoc(ivec2 base, int offset) {
@@ -59,30 +58,25 @@ vec2 solveVertPoly(vec4 p12, vec2 p3) {
                 (a.y * t2 - b.y * 2.0) * t2 + p12.y);
 }
 
-vec2 evalAxisCoverage(vec2 rc, float ppe, ivec2 bandLoc, int count, int layer, bool horizontal) {
-    float cov = 0.0;
-    float wgt = 0.0;
-    for (int i = 0; i < count; i++) {
-        ivec2 bLoc = calcBandLoc(bandLoc, uint(i));
-        ivec2 cLoc = decodeBandCurveLoc(texelFetch(u_band_tex, ivec3(bLoc, layer), 0).xy);
-        vec4 tex0 = texelFetch(u_curve_tex, ivec3(cLoc, layer), 0);
-        vec4 tex1 = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(cLoc, 1), layer), 0);
-        vec4 tex2 = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(cLoc, 2), layer), 0);
-        bool direct = tex2.z >= kDirectEncodingKindBias - 0.5;
-        vec4 p12;
-        vec2 p3;
-        if (direct) {
-            p12 = vec4(tex0.xy, tex0.zw) - vec4(rc, rc);
-            p3 = tex1.xy - rc;
-        } else {
-            vec2 anchor = tex0.xy * 256.0 + tex0.zw;
-            p12 = vec4(anchor, anchor + tex1.xy) - vec4(rc, rc);
-            p3 = anchor + tex1.zw - rc;
-        }
-        float maxCoord = horizontal ? max(max(p12.x, p12.z), p3.x) : max(max(p12.y, p12.w), p3.y);
-        if (maxCoord * ppe < -0.5) break;
-        uint code = horizontal ? calcRootCode(p12.y, p12.w, p3.y) : calcRootCode(p12.x, p12.z, p3.x);
-        if (code == 0u) continue;
+bool accumulateColrAxisContribution(inout float cov, inout float wgt, vec2 rc, float ppe, ivec2 cLoc, int layer, bool horizontal) {
+    vec4 tex0 = texelFetch(u_curve_tex, ivec3(cLoc, layer), 0);
+    vec4 tex1 = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(cLoc, 1), layer), 0);
+    vec4 tex2 = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(cLoc, 2), layer), 0);
+    bool direct = tex2.z >= kDirectEncodingKindBias - 0.5;
+    vec4 p12;
+    vec2 p3;
+    if (direct) {
+        p12 = vec4(tex0.xy, tex0.zw) - vec4(rc, rc);
+        p3 = tex1.xy - rc;
+    } else {
+        vec2 anchor = tex0.xy * 256.0 + tex0.zw;
+        p12 = vec4(anchor, anchor + tex1.xy) - vec4(rc, rc);
+        p3 = anchor + tex1.zw - rc;
+    }
+    float maxCoord = horizontal ? max(max(p12.x, p12.z), p3.x) : max(max(p12.y, p12.w), p3.y);
+    if (maxCoord * ppe < -0.5) return false;
+    uint code = horizontal ? calcRootCode(p12.y, p12.w, p3.y) : calcRootCode(p12.x, p12.z, p3.x);
+    if (code != 0u) {
         vec2 roots = horizontal ? solveHorizPoly(p12, p3) * ppe : solveVertPoly(p12, p3) * ppe;
         if ((code & 1u) != 0u) {
             cov += (horizontal ? 1.0 : -1.0) * clamp(roots.x + 0.5, 0.0, 1.0);
@@ -93,19 +87,33 @@ vec2 evalAxisCoverage(vec2 rc, float ppe, ivec2 bandLoc, int count, int layer, b
             wgt = max(wgt, clamp(1.0 - abs(roots.y) * 2.0, 0.0, 1.0));
         }
     }
+    return true;
+}
+
+vec2 evalAxisCoverageBandSpan(vec2 rc, float ppe, ivec2 gLoc, int headerBase, CoverageBandSpan span, int layer, bool horizontal) {
+    float cov = 0.0;
+    float wgt = 0.0;
+    bool dedup = span.first != span.last;
+    for (int band = span.first; band <= span.last; band++) {
+        uvec2 bd = texelFetch(u_band_tex, ivec3(gLoc.x + headerBase + band, gLoc.y, layer), 0).xy;
+        ivec2 bandLoc = calcBandLoc(gLoc, bd.y);
+        int count = int(bd.x);
+        for (int i = 0; i < count; i++) {
+            ivec2 bLoc = calcBandLoc(bandLoc, uint(i));
+            uvec2 ref = texelFetch(u_band_tex, ivec3(bLoc, layer), 0).xy;
+            if (dedup && !isCoverageBandSpanOwner(ref, band, span.first)) continue;
+            ivec2 cLoc = decodeBandCurveLoc(ref);
+            if (!accumulateColrAxisContribution(cov, wgt, rc, ppe, cLoc, layer, horizontal)) break;
+        }
+    }
     return vec2(cov, wgt);
 }
 
-float evalGlyphCoverage(vec2 rc, vec2 ppe, ivec2 gLoc, ivec2 bandMax, vec4 banding, int texLayer) {
-    ivec2 bandIdx = clamp(ivec2(rc * banding.xy + banding.zw), ivec2(0), bandMax);
-    uvec2 hbd = texelFetch(u_band_tex, ivec3(gLoc.x + bandIdx.y, gLoc.y, texLayer), 0).xy;
-    ivec2 hLoc = calcBandLoc(gLoc, hbd.y);
-    int hCount = int(hbd.x);
-    vec2 horiz = evalAxisCoverage(rc, ppe.x, hLoc, hCount, texLayer, true);
-    uvec2 vbd = texelFetch(u_band_tex, ivec3(gLoc.x + bandMax.y + 1 + bandIdx.x, gLoc.y, texLayer), 0).xy;
-    ivec2 vLoc = calcBandLoc(gLoc, vbd.y);
-    int vCount = int(vbd.x);
-    vec2 vert = evalAxisCoverage(rc, ppe.y, vLoc, vCount, texLayer, false);
+float evalGlyphCoverage(vec2 rc, vec2 epp, vec2 ppe, ivec2 gLoc, ivec2 bandMax, vec4 banding, int texLayer) {
+    CoverageBandSpan hSpan = computeCoverageBandSpan(rc.y, epp.y, banding.y, banding.w, bandMax.y);
+    CoverageBandSpan vSpan = computeCoverageBandSpan(rc.x, epp.x, banding.x, banding.z, bandMax.x);
+    vec2 horiz = evalAxisCoverageBandSpan(rc, ppe.x, gLoc, 0, hSpan, texLayer, true);
+    vec2 vert = evalAxisCoverageBandSpan(rc, ppe.y, gLoc, bandMax.y + 1, vSpan, texLayer, false);
     float wsum = horiz.y + vert.y;
     float blended = horiz.x * horiz.y + vert.x * vert.y;
     float cov = max(applyFillRule(blended / max(wsum, 1.0 / 65536.0)),
@@ -139,7 +147,7 @@ void main() {
         int bandMaxH = floatBitsToInt(info.z) & 0xFFFF;
         int bandMaxV = (floatBitsToInt(info.z) >> 16) & 0xFFFF;
         int texLayer = u_layer_base + int(v_banding.w);
-        float cov = evalGlyphCoverage(rc, ppe, gLoc, ivec2(bandMaxV, bandMaxH), band, texLayer);
+        float cov = evalGlyphCoverage(rc, epp, ppe, gLoc, ivec2(bandMaxV, bandMaxH), band, texLayer);
         vec4 premul = premultiplyColor(color, cov);
         result = premul + result * (1.0 - premul.a);
     }

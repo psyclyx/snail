@@ -3,14 +3,14 @@ const snail = @import("../../../root.zig");
 const color_mod = @import("color.zig");
 const subpixel = @import("coverage/subpixel.zig");
 const texture = @import("texture.zig");
-const atlas_curve_mod = @import("../../format/atlas/curve.zig");
+const band_tex = @import("../../format/band_texture.zig");
 const render_abi = @import("../../format/abi.zig");
 
 const bezier = @import("../../../math/bezier.zig");
 const curve_tex = @import("../../format/curve_texture.zig");
 const CurveSegment = bezier.CurveSegment;
 const FillRule = snail.FillRule;
-const GlyphBandEntry = std.meta.fieldInfo(atlas_curve_mod.CurveAtlas.GlyphInfo, .band_entry).type;
+const GlyphBandEntry = band_tex.GlyphBandEntry;
 const SubpixelOrder = snail.SubpixelOrder;
 const Vec2 = snail.Vec2;
 const clamp01 = color_mod.clamp01;
@@ -297,6 +297,16 @@ fn cbrtSigned(v: f32) f32 {
 }
 
 fn solveCubicRoots(a: f32, b: f32, c_val: f32, d: f32) CurveRoots {
+    // Cardano is numerically unstable when the cubic term is small relative
+    // to the lower-order terms — a t∈[0,1] root computed via the trig branch
+    // can drift by O(1) when |a| < ~1% of the dominant coefficient. The
+    // split-at-extrema pass occasionally produces such near-quadratic pieces
+    // (e.g. one half of the leaf primitive's right cubic, where the original
+    // y-coefficients nearly cancel), so fall back to the quadratic solver
+    // when the cubic term contributes less than ~0.01× the rest over t∈[0,1].
+    const cubic_scale = @abs(a);
+    const lower_scale = @abs(b) + @abs(c_val) + @abs(d);
+    if (cubic_scale < 1e-2 * @max(lower_scale, 1.0)) return solveQuadraticRoots(b, c_val, d);
     if (@abs(a) < 1e-10) return solveQuadraticRoots(b, c_val, d);
 
     var roots = CurveRoots{};
@@ -1170,11 +1180,9 @@ pub fn evalGlyphCoverageBandSpan(
     const sample_rc = Vec2.new(em_x, em_y);
     const h_span = coverageBandSpan(em_y, epp_y, be.band_scale_y, be.band_offset_y, band_max_h);
     const v_span = coverageBandSpan(em_x, epp_x, be.band_scale_x, be.band_offset_x, band_max_v);
-    return resolveCoverage(
-        evalGlyphCoverageAxisBandSpan(page, sample_rc, ppe_x, glyph_band_base, 0, h_span, true),
-        evalGlyphCoverageAxisBandSpan(page, sample_rc, ppe_y, glyph_band_base, band_max_h + 1, v_span, false),
-        fill_rule,
-    );
+    const h_pair = evalGlyphCoverageAxisBandSpan(page, sample_rc, ppe_x, glyph_band_base, 0, h_span, true);
+    const v_pair = evalGlyphCoverageAxisBandSpan(page, sample_rc, ppe_y, glyph_band_base, band_max_h + 1, v_span, false);
+    return resolveCoverage(h_pair, v_pair, fill_rule);
 }
 
 pub fn evalHintedTextCoverageBandSpan(
@@ -1687,7 +1695,9 @@ pub fn evalGlyphCoverageSaturatedRowH(
     applyRowHorizStateToScalar(row_state, em_x_pixel, ppe_x, &h_pair);
 
     var v_pair: CoveragePair = .{ .cov = 0, .wgt = 0 };
+    var was_transition: u8 = 0;
     if (pixelInVTransition(saturated_state, em_x_pixel)) {
+        was_transition = 1;
         const sample_rc = Vec2.new(em_x_pixel, em_y_row);
         const v_span = coverageBandSpan(em_x_pixel, epp_x, be.band_scale_x, be.band_offset_x, band_max_v);
         const glyph_band_base = @as(usize, be.glyph_y) * @as(usize, page.band_width) + @as(usize, be.glyph_x);

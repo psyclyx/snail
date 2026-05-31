@@ -6,10 +6,8 @@ vec3 applyCoverageTransfer(vec3 cov) {
     );
 }
 
-const uint kBandCurveLocXMask = 0x0FFFu;
-
 ivec2 decodeBandCurveLoc(uvec2 ref) {
-    return ivec2(int(ref.x & kBandCurveLocXMask), int(ref.y));
+    return decodeBandCurveLocCommon(ref);
 }
 
 vec2 solveHorizPoly(vec4 p12, vec2 p3) {
@@ -60,20 +58,14 @@ vec2 solveVertPoly(vec4 p12, vec2 p3) {
                 (a.y * t2 - b.y * 2.0) * t2 + p12.y);
 }
 
-vec2 evalHorizCoverage(vec2 rc, float x_offset, vec2 ppe, ivec2 band_loc, int count, int layer) {
-    float cov = 0.0;
-    float wgt = 0.0;
-    rc += vec2(x_offset, 0.0);
-    for (int i = 0; i < count; i++) {
-        ivec2 b_loc = calcBandLoc(band_loc, uint(i));
-        ivec2 c_loc = decodeBandCurveLoc(texelFetch(u_band_tex, ivec3(b_loc, layer), 0).xy);
-        vec4 tex0 = texelFetch(u_curve_tex, ivec3(c_loc, layer), 0);
-        vec4 tex1 = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(c_loc, 1), layer), 0);
-        vec4 p12 = vec4(tex0.xy, tex0.zw) - vec4(rc, rc);
-        vec2 p3 = tex1.xy - rc;
-        if (max(max(p12.x, p12.z), p3.x) * ppe.x < -0.5) break;
-        uint code = calcRootCode(p12.y, p12.w, p3.y);
-        if (code == 0u) continue;
+bool accumulateSubpixelHoriz(inout float cov, inout float wgt, vec2 rc, vec2 ppe, ivec2 c_loc, int layer) {
+    vec4 tex0 = texelFetch(u_curve_tex, ivec3(c_loc, layer), 0);
+    vec4 tex1 = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(c_loc, 1), layer), 0);
+    vec4 p12 = vec4(tex0.xy, tex0.zw) - vec4(rc, rc);
+    vec2 p3 = tex1.xy - rc;
+    if (max(max(p12.x, p12.z), p3.x) * ppe.x < -0.5) return false;
+    uint code = calcRootCode(p12.y, p12.w, p3.y);
+    if (code != 0u) {
         vec2 roots = solveHorizPoly(p12, p3) * ppe.x;
         if ((code & 1u) != 0u) {
             cov += clamp(roots.x + 0.5, 0.0, 1.0);
@@ -84,23 +76,17 @@ vec2 evalHorizCoverage(vec2 rc, float x_offset, vec2 ppe, ivec2 band_loc, int co
             wgt = max(wgt, clamp(1.0 - abs(roots.y) * 2.0, 0.0, 1.0));
         }
     }
-    return vec2(cov, wgt);
+    return true;
 }
 
-vec2 evalVertCoverage(vec2 rc, float y_offset, vec2 ppe, ivec2 band_loc, int count, int layer) {
-    float cov = 0.0;
-    float wgt = 0.0;
-    rc += vec2(0.0, y_offset);
-    for (int i = 0; i < count; i++) {
-        ivec2 b_loc = calcBandLoc(band_loc, uint(i));
-        ivec2 c_loc = decodeBandCurveLoc(texelFetch(u_band_tex, ivec3(b_loc, layer), 0).xy);
-        vec4 tex0 = texelFetch(u_curve_tex, ivec3(c_loc, layer), 0);
-        vec4 tex1 = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(c_loc, 1), layer), 0);
-        vec4 p12 = vec4(tex0.xy, tex0.zw) - vec4(rc, rc);
-        vec2 p3 = tex1.xy - rc;
-        if (max(max(p12.y, p12.w), p3.y) * ppe.y < -0.5) break;
-        uint code = calcRootCode(p12.x, p12.z, p3.x);
-        if (code == 0u) continue;
+bool accumulateSubpixelVert(inout float cov, inout float wgt, vec2 rc, vec2 ppe, ivec2 c_loc, int layer) {
+    vec4 tex0 = texelFetch(u_curve_tex, ivec3(c_loc, layer), 0);
+    vec4 tex1 = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(c_loc, 1), layer), 0);
+    vec4 p12 = vec4(tex0.xy, tex0.zw) - vec4(rc, rc);
+    vec2 p3 = tex1.xy - rc;
+    if (max(max(p12.y, p12.w), p3.y) * ppe.y < -0.5) return false;
+    uint code = calcRootCode(p12.x, p12.z, p3.x);
+    if (code != 0u) {
         vec2 roots = solveVertPoly(p12, p3) * ppe.y;
         if ((code & 1u) != 0u) {
             cov -= clamp(roots.x + 0.5, 0.0, 1.0);
@@ -111,26 +97,51 @@ vec2 evalVertCoverage(vec2 rc, float y_offset, vec2 ppe, ivec2 band_loc, int cou
             wgt = max(wgt, clamp(1.0 - abs(roots.y) * 2.0, 0.0, 1.0));
         }
     }
-    return vec2(cov, wgt);
+    return true;
 }
 
-float evalGlyphCoverage(vec2 rc, vec2 ppe, ivec2 glyph_loc, ivec2 band_max, vec4 banding, int layer) {
-    ivec2 band_idx = clamp(ivec2(rc * banding.xy + banding.zw), ivec2(0), band_max);
+float evalGlyphCoverage(vec2 rc, vec2 epp, vec2 ppe, ivec2 glyph_loc, ivec2 band_max, vec4 banding, int layer) {
+    CoverageBandSpan hSpan = computeCoverageBandSpan(rc.y, epp.y, banding.y, banding.w, band_max.y);
+    CoverageBandSpan vSpan = computeCoverageBandSpan(rc.x, epp.x, banding.x, banding.z, band_max.x);
 
-    uvec2 hbd = texelFetch(u_band_tex, ivec3(glyph_loc.x + band_idx.y, glyph_loc.y, layer), 0).xy;
-    ivec2 h_loc = calcBandLoc(glyph_loc, hbd.y);
-    int h_count = int(hbd.x);
-    vec2 horiz = evalHorizCoverage(rc, 0.0, ppe, h_loc, h_count, layer);
+    float xcov = 0.0, xwgt = 0.0;
+    {
+        bool dedup = hSpan.first != hSpan.last;
+        for (int band = hSpan.first; band <= hSpan.last; band++) {
+            uvec2 hbd = texelFetch(u_band_tex, ivec3(glyph_loc.x + band, glyph_loc.y, layer), 0).xy;
+            ivec2 h_loc = calcBandLoc(glyph_loc, hbd.y);
+            int h_count = int(hbd.x);
+            for (int i = 0; i < h_count; i++) {
+                ivec2 b_loc = calcBandLoc(h_loc, uint(i));
+                uvec2 ref = texelFetch(u_band_tex, ivec3(b_loc, layer), 0).xy;
+                if (dedup && !isCoverageBandSpanOwner(ref, band, hSpan.first)) continue;
+                ivec2 c_loc = decodeBandCurveLoc(ref);
+                if (!accumulateSubpixelHoriz(xcov, xwgt, rc, ppe, c_loc, layer)) break;
+            }
+        }
+    }
 
-    uvec2 vbd = texelFetch(u_band_tex, ivec3(glyph_loc.x + band_max.y + 1 + band_idx.x, glyph_loc.y, layer), 0).xy;
-    ivec2 v_loc = calcBandLoc(glyph_loc, vbd.y);
-    int v_count = int(vbd.x);
-    vec2 vert = evalVertCoverage(rc, 0.0, ppe, v_loc, v_count, layer);
+    float ycov = 0.0, ywgt = 0.0;
+    {
+        bool dedup = vSpan.first != vSpan.last;
+        for (int band = vSpan.first; band <= vSpan.last; band++) {
+            uvec2 vbd = texelFetch(u_band_tex, ivec3(glyph_loc.x + band_max.y + 1 + band, glyph_loc.y, layer), 0).xy;
+            ivec2 v_loc = calcBandLoc(glyph_loc, vbd.y);
+            int v_count = int(vbd.x);
+            for (int i = 0; i < v_count; i++) {
+                ivec2 b_loc = calcBandLoc(v_loc, uint(i));
+                uvec2 ref = texelFetch(u_band_tex, ivec3(b_loc, layer), 0).xy;
+                if (dedup && !isCoverageBandSpanOwner(ref, band, vSpan.first)) continue;
+                ivec2 c_loc = decodeBandCurveLoc(ref);
+                if (!accumulateSubpixelVert(ycov, ywgt, rc, ppe, c_loc, layer)) break;
+            }
+        }
+    }
 
-    float wsum = horiz.y + vert.y;
-    float blended = horiz.x * horiz.y + vert.x * vert.y;
+    float wsum = xwgt + ywgt;
+    float blended = xcov * xwgt + ycov * ywgt;
     return clamp(max(applyFillRule(blended / max(wsum, 1.0 / 65536.0)),
-                     min(applyFillRule(horiz.x), applyFillRule(vert.x))), 0.0, 1.0);
+                     min(applyFillRule(xcov), applyFillRule(ycov))), 0.0, 1.0);
 }
 
 float blendSubpixelSample(vec2 cw_s, vec2 cw_o) {
@@ -186,7 +197,7 @@ vec2 subpixelCoverageEdgePixels(vec2 display_dx, vec2 display_dy) {
 
 float evalGlyphSample(vec2 rc, vec2 display_epp, ivec2 glyph_loc, ivec2 band_max, vec4 banding, int layer) {
     vec2 ppe = vec2(1.0 / max(display_epp.x, 1.0 / 65536.0), 1.0 / max(display_epp.y, 1.0 / 65536.0));
-    return evalGlyphCoverage(rc, ppe, glyph_loc, band_max, banding, layer);
+    return evalGlyphCoverage(rc, display_epp, ppe, glyph_loc, band_max, banding, layer);
 }
 
 vec4 evalGlyphCoverageSubpixel(vec2 rc, ivec2 glyph_loc, ivec2 band_max, vec4 banding, int layer) {

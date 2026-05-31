@@ -3,6 +3,9 @@
 
 #define kLogBandTextureWidth 12
 #define kRootCodeEps (1.0 / 65536.0)
+#define kCoverageBandSpanParamEps (1.0 / 100000.0)
+#define kBandCurveLocXMaskCommon 0x0FFFu
+#define kBandCurveFirstMemberShiftCommon 12u
 
 // Treat exact-edge float drift as the mathematical contour sample. The
 // half-open segment convention still comes from the root ordering below.
@@ -58,6 +61,42 @@ ivec2 offsetCurveLoc(ivec2 base, int offset) {
     loc.y += loc.x >> kLogBandTextureWidth;
     loc.x &= (1 << kLogBandTextureWidth) - 1;
     return loc;
+}
+
+// ── Band span / dedup ──
+//
+// When a fragment's pixel footprint straddles a band boundary, the single
+// `bandIdx` view would either land in band N or band N+1 depending on
+// float truncation, and curves that overlap both bands would only be
+// counted in one of them. The path / hinted-text shaders evaluate every
+// touched band and de-duplicate curves that appear in more than one by
+// only counting them at their first-member band. Text / colr / subpixel
+// shaders use the same helpers below.
+
+struct CoverageBandSpan {
+    int first;
+    int last;
+};
+
+CoverageBandSpan computeCoverageBandSpan(float coord, float eppAxis, float bandScale, float bandOffset, int bandMax) {
+    float center = coord * bandScale + bandOffset;
+    float halfWidth = max(abs(eppAxis * bandScale) * 0.5, kCoverageBandSpanParamEps);
+    int first = clamp(int(center - halfWidth), 0, bandMax);
+    int last = clamp(int(center + halfWidth), 0, bandMax);
+    return CoverageBandSpan(first, max(first, last));
+}
+
+int decodeBandCurveFirstMemberCommon(uvec2 ref) {
+    return int(ref.x >> kBandCurveFirstMemberShiftCommon);
+}
+
+ivec2 decodeBandCurveLocCommon(uvec2 ref) {
+    return ivec2(int(ref.x & kBandCurveLocXMaskCommon), int(ref.y));
+}
+
+bool isCoverageBandSpanOwner(uvec2 ref, int band, int spanFirst) {
+    int firstMember = decodeBandCurveFirstMemberCommon(ref);
+    return band == max(firstMember, spanFirst);
 }
 
 #endif
