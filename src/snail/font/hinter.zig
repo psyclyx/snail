@@ -267,23 +267,11 @@ pub const Hinter = struct {
         }
 
         // The `GlyphHint`'s `prepared_curves` are already direct-encoded
-        // (origin-zero, quantized). Pack them into the standard curve and
-        // band textures the atlas consumes.
-        const single = [_]curve_tex.GlyphCurves{.{
-            .curves = hint_value.curves,
-            .bbox = hint_value.bbox,
-            .logical_curve_count = hint_value.curves.len,
-            .prefer_direct_encoding = true,
-            .prepared_curves = hint_value.prepared_curves,
-        }};
-
-        var ct = try curve_tex.buildCurveTexture(allocator, scratch, &single);
-        defer ct.texture.deinit();
-        defer scratch.free(ct.entries);
-
+        // (origin-zero, quantized). Pack them into the standard curve
+        // bytes the atlas consumes — single-shape encoder skips the
+        // `buildCurveTexture` TEX_WIDTH padding.
         const curve_count: u16 = @intCast(hint_value.prepared_curves.len);
-        const curve_used_words: usize = @as(usize, curve_count) * curve_tex.SEGMENT_TEXELS * 4;
-        const curve_bytes = try allocator.dupe(u16, ct.texture.data[0..curve_used_words]);
+        const curve_bytes = try curve_tex.encodeDirectSingleGlyphCurves(allocator, hint_value.prepared_curves);
         errdefer allocator.free(curve_bytes);
 
         const entry = curve_tex.GlyphCurveEntry{
@@ -309,7 +297,7 @@ pub const Hinter = struct {
 
         // Cache a hinter-owned copy so subsequent calls at the same
         // (ppem, glyph_id) hit the cache and skip the VM + texture build.
-        const cached_curve_bytes = self.allocator.dupe(u16, ct.texture.data[0..curve_used_words]) catch null;
+        const cached_curve_bytes = self.allocator.dupe(u16, curve_bytes) catch null;
         if (cached_curve_bytes) |c_bytes| {
             const cached_band_bytes = self.allocator.dupe(u16, bd.data) catch {
                 self.allocator.free(c_bytes);
