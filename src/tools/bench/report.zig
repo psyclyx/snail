@@ -103,8 +103,8 @@ pub fn printPreparationTables(snail_prep: anytype, vector_prep: anytype, ft: any
         \\| TT hint setup @ 12px | {d:.2} us | n/a | n/a |
         \\| TT hint execute, ASCII @ 12px | {d:.2} us | n/a | n/a |
         \\| TT hint plan, ASCII @ 12px | {d:.2} us | n/a | n/a |
-        \\| TT hinter cold, paragraph @ 12px | {d:.2} us | n/a | n/a |
-        \\| TT hinter warm, paragraph @ 12px | {d:.2} us | n/a | n/a |
+        \\| TT hinter cold (full pipeline), paragraph @ 12px | {d:.2} us | n/a | n/a |
+        \\| TT hinter warm (cache hit + clone), paragraph @ 12px | {d:.2} us | n/a | n/a |
         \\| Vector picture build, {d} shapes | {d:.2} us | n/a | n/a |
         \\
         \\## FreeType Bitmap Memory
@@ -143,7 +143,13 @@ pub fn printTextTable(rows: anytype) void {
     std.debug.print(
         \\## Text Creation And Layout
         \\
-        \\| Workload | Snail TextBlob | FreeType layout | FreeType / Snail |
+        \\Snail row measures per-frame picture build from pre-shaped input
+        \\(equivalent to the old `TextBlob` construction). HarfBuzz shaping
+        \\and glyph atlas insertion happen once outside the timed loop —
+        \\their costs appear in the Preparation table. FreeType row is full
+        \\layout (per-iteration shaping).
+        \\
+        \\| Workload | Snail picture build | FreeType layout | FreeType / Snail |
         \\|---|---:|---:|---:|
         \\
     , .{});

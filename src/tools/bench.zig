@@ -1093,85 +1093,182 @@ fn lineFor(workload: TextWorkload) TextLine {
     };
 }
 
-fn runTextWorkload(
+/// Lines for one workload iteration, shaped and atlas-resident.
+/// Time(picture build) is measured separately from shape/atlas-prep
+/// so the bench column matches the old README's "TextBlob" semantic:
+/// pre-shaped input → per-frame draw description. Shaping cost is
+/// reported separately in the "Preparation" table.
+const PreparedLines = struct {
+    items: std.ArrayListUnmanaged(PreparedLine) = .empty,
+    pool: *snail.PagePool,
+    fonts: *FontSet,
+    glyph_caches: [FONT_COUNT]snail.font.GlyphCache,
+    hinted: bool,
+
+    fn init(allocator: std.mem.Allocator, pool: *snail.PagePool, fonts: *FontSet, hinted: bool) PreparedLines {
+        var caches: [FONT_COUNT]snail.font.GlyphCache = undefined;
+        for (&caches) |*c| c.* = snail.font.GlyphCache.init(allocator);
+        return .{ .pool = pool, .fonts = fonts, .glyph_caches = caches, .hinted = hinted };
+    }
+
+    fn deinit(self: *PreparedLines, allocator: std.mem.Allocator) void {
+        for (self.items.items) |*it| it.deinit();
+        self.items.deinit(allocator);
+        for (&self.glyph_caches) |*c| c.deinit();
+    }
+
+    fn add(self: *PreparedLines, allocator: std.mem.Allocator, line: TextLine) !void {
+        const item = try prepareLine(allocator, self.pool, self.fonts, &self.glyph_caches, line, self.hinted);
+        try self.items.append(allocator, item);
+    }
+};
+
+const PreparedLine = struct {
+    shaped: snail.ShapedText,
+    line: TextLine,
+    hinted: bool,
+    ppem_26_6: u32 = 0, // only set when hinted == true and hinting succeeded
+
+    fn deinit(self: *PreparedLine) void {
+        self.shaped.deinit();
+    }
+};
+
+fn prepareLine(
     allocator: std.mem.Allocator,
     pool: *snail.PagePool,
     fonts: *FontSet,
-    workload: TextWorkload,
-) !void {
-    var build = SceneBuild.init(allocator, pool);
-    defer build.deinit();
-    var glyph_caches: [FONT_COUNT]snail.font.GlyphCache = undefined;
-    for (&glyph_caches) |*c| c.* = snail.font.GlyphCache.init(allocator);
-    defer for (&glyph_caches) |*c| c.deinit();
-
-    switch (workload) {
-        .short, .sentence, .paragraph => {
-            try addShapedLine(&build, fonts, &glyph_caches, lineFor(workload), false);
-        },
-        .paragraph_sizes => {
-            var y: f32 = 330;
-            for (SIZES) |sz| {
-                try addShapedLine(&build, fonts, &glyph_caches, .{
-                    .text = PARAGRAPH,
-                    .x = 0,
-                    .y = y,
-                    .size = @floatFromInt(sz),
-                }, false);
-                y -= @as(f32, @floatFromInt(sz)) * 1.4;
-            }
-        },
+    glyph_caches: *[FONT_COUNT]snail.font.GlyphCache,
+    line: TextLine,
+    hinted: bool,
+) !PreparedLine {
+    // Mirror addShapedLine's setup but stop short of the picture build,
+    // and stop short of releasing the shaped run — that's what the
+    // timed loop is going to consume.
+    if (hinted and fonts.has_hinter) {
+        const ppem_26_6 = hintPpem26_6(line.size) catch return prepareLineUnhinted(allocator, pool, fonts, glyph_caches, line);
+        var shaped = try fonts.shaper.shapeOpts(allocator, line.style, line.text, .{ .target_ppem = snail.HintPpem.uniform(ppem_26_6) });
+        errdefer shaped.deinit();
+        var build = SceneBuild.init(allocator, pool);
+        defer build.deinit();
+        const ok = ensureHintedRunCurves(&build, fonts, &shaped, ppem_26_6) catch false;
+        if (!ok) {
+            // Hinting failed (non-Latin fallback face etc) — fall through to unhinted.
+            shaped.deinit();
+            return prepareLineUnhinted(allocator, pool, fonts, glyph_caches, line);
+        }
+        return .{ .shaped = shaped, .line = line, .hinted = true, .ppem_26_6 = ppem_26_6 };
     }
-    std.mem.doNotOptimizeAway(build.shapes.items.len);
+    return prepareLineUnhinted(allocator, pool, fonts, glyph_caches, line);
 }
 
-fn runHintedTextWorkload(
+fn prepareLineUnhinted(
+    allocator: std.mem.Allocator,
+    pool: *snail.PagePool,
+    fonts: *FontSet,
+    glyph_caches: *[FONT_COUNT]snail.font.GlyphCache,
+    line: TextLine,
+) !PreparedLine {
+    var shaped = try fonts.shaper.shape(allocator, line.style, line.text);
+    errdefer shaped.deinit();
+    var build = SceneBuild.init(allocator, pool);
+    defer build.deinit();
+    try ensureUnhintedRunCurves(&build, fonts, glyph_caches, &shaped);
+    return .{ .shaped = shaped, .line = line, .hinted = false };
+}
+
+fn prepareLines(
     allocator: std.mem.Allocator,
     pool: *snail.PagePool,
     fonts: *FontSet,
     workload: TextWorkload,
-) !void {
-    var build = SceneBuild.init(allocator, pool);
-    defer build.deinit();
-    var glyph_caches: [FONT_COUNT]snail.font.GlyphCache = undefined;
-    for (&glyph_caches) |*c| c.* = snail.font.GlyphCache.init(allocator);
-    defer for (&glyph_caches) |*c| c.deinit();
-
+    hinted: bool,
+) !PreparedLines {
+    var prepared = PreparedLines.init(allocator, pool, fonts, hinted);
+    errdefer prepared.deinit(allocator);
     switch (workload) {
         .short, .sentence, .paragraph => {
-            try addShapedLine(&build, fonts, &glyph_caches, lineFor(workload), true);
+            try prepared.add(allocator, lineFor(workload));
         },
         .paragraph_sizes => {
             var y: f32 = 330;
             for (SIZES) |sz| {
-                try addShapedLine(&build, fonts, &glyph_caches, .{
+                try prepared.add(allocator, .{
                     .text = PARAGRAPH,
                     .x = 0,
                     .y = y,
                     .size = @floatFromInt(sz),
-                }, true);
+                });
                 y -= @as(f32, @floatFromInt(sz)) * 1.4;
             }
         },
     }
-    std.mem.doNotOptimizeAway(build.shapes.items.len);
+    return prepared;
+}
+
+fn buildPicturesForPreparedLines(
+    allocator: std.mem.Allocator,
+    prepared: *const PreparedLines,
+) !usize {
+    var shape_count: usize = 0;
+    for (prepared.items.items) |*it| {
+        if (it.hinted) {
+            var pic = try snail.hintedShapedRunPicture(allocator, &it.shaped, .{
+                .baseline = .{ .x = it.line.x, .y = it.line.y },
+                .em = it.line.size,
+                .ppem_26_6 = it.ppem_26_6,
+                .color = it.line.color,
+                .face_to_font_id = &FACE_TO_FONT_ID,
+            });
+            shape_count += pic.shapes.len;
+            pic.deinit();
+        } else {
+            var pic = try snail.shapedRunPicture(allocator, &it.shaped, .{
+                .baseline = .{ .x = it.line.x, .y = it.line.y },
+                .em = it.line.size,
+                .color = it.line.color,
+                .face_to_font_id = &FACE_TO_FONT_ID,
+            });
+            shape_count += pic.shapes.len;
+            pic.deinit();
+        }
+    }
+    return shape_count;
 }
 
 fn timeTextWorkload(allocator: std.mem.Allocator, fonts: *FontSet, workload: TextWorkload) !f64 {
     var pool = try snail.PagePool.init(allocator, .{ .max_layers = 4, .curve_words_per_page = 1 << 18, .band_words_per_page = 1 << 16 });
     defer pool.deinit();
-    for (0..TEXT_WARMUP) |_| try runTextWorkload(allocator, pool, fonts, workload);
+    var prepared = try prepareLines(allocator, pool, fonts, workload, false);
+    defer prepared.deinit(allocator);
+
+    for (0..TEXT_WARMUP) |_| {
+        const s = try buildPicturesForPreparedLines(allocator, &prepared);
+        std.mem.doNotOptimizeAway(s);
+    }
     const start = nowNs();
-    for (0..TEXT_ITERS) |_| try runTextWorkload(allocator, pool, fonts, workload);
+    for (0..TEXT_ITERS) |_| {
+        const s = try buildPicturesForPreparedLines(allocator, &prepared);
+        std.mem.doNotOptimizeAway(s);
+    }
     return usFrom(start) / TEXT_ITERS;
 }
 
 fn timeHintedTextWorkload(allocator: std.mem.Allocator, fonts: *FontSet, workload: TextWorkload) !f64 {
     var pool = try snail.PagePool.init(allocator, .{ .max_layers = 4, .curve_words_per_page = 1 << 18, .band_words_per_page = 1 << 16 });
     defer pool.deinit();
-    for (0..TEXT_WARMUP) |_| try runHintedTextWorkload(allocator, pool, fonts, workload);
+    var prepared = try prepareLines(allocator, pool, fonts, workload, true);
+    defer prepared.deinit(allocator);
+
+    for (0..TEXT_WARMUP) |_| {
+        const s = try buildPicturesForPreparedLines(allocator, &prepared);
+        std.mem.doNotOptimizeAway(s);
+    }
     const start = nowNs();
-    for (0..TEXT_ITERS) |_| try runHintedTextWorkload(allocator, pool, fonts, workload);
+    for (0..TEXT_ITERS) |_| {
+        const s = try buildPicturesForPreparedLines(allocator, &prepared);
+        std.mem.doNotOptimizeAway(s);
+    }
     return usFrom(start) / TEXT_ITERS;
 }
 
