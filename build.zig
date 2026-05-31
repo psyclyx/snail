@@ -505,4 +505,51 @@ pub fn build(b: *std.Build) void {
     addScreenshotSteps(b, config, modules);
     addInteractiveDemoStep(b, config, modules);
     addGameDemoStep(b, config, modules);
+    addBenchStep(b, config, modules);
+}
+
+fn addBenchStep(
+    b: *std.Build,
+    config: BuildConfig,
+    modules: ProjectModules,
+) void {
+    const release_snail_mod = createSnailModule(b, config.target, .ReleaseFast, modules.options, config.core_options, modules.vk_shaders);
+    const release_support_mod = createSupportModule(b, config.target, .ReleaseFast);
+
+    const offscreen_gl_mod = b.createModule(.{
+        .root_source_file = b.path("src/demo/platform/offscreen_gl.zig"),
+        .target = config.target,
+        .optimize = .ReleaseFast,
+        .link_libc = true,
+    });
+    offscreen_gl_mod.linkSystemLibrary("EGL", .{});
+
+    var bench_imports: std.ArrayListUnmanaged(std.Build.Module.Import) = .empty;
+    bench_imports.appendSlice(b.allocator, &.{
+        .{ .name = "assets", .module = modules.assets },
+        .{ .name = "snail", .module = release_snail_mod },
+        .{ .name = "support", .module = release_support_mod },
+        .{ .name = "build_options", .module = modules.options },
+        .{ .name = "demo_platform_offscreen_gl", .module = offscreen_gl_mod },
+    }) catch @panic("OOM");
+
+    if (config.core_options.enable_vulkan) {
+        const release_vk_platform_mod = createDemoVulkanPlatformModule(b, config.target, .ReleaseFast, modules.options, release_snail_mod);
+        bench_imports.append(b.allocator, .{ .name = "demo_platform_vulkan", .module = release_vk_platform_mod }) catch @panic("OOM");
+    }
+
+    const bench_mod = b.createModule(.{
+        .root_source_file = b.path("src/tools/bench.zig"),
+        .target = config.target,
+        .optimize = .ReleaseFast,
+        .link_libc = true,
+        .imports = bench_imports.items,
+    });
+    configureEglOffscreenModule(bench_mod, modules.options, config.core_options, modules.vk_shaders);
+    bench_mod.linkSystemLibrary("freetype2", .{});
+
+    const bench_exe = b.addExecutable(.{ .name = "snail-bench", .root_module = bench_mod });
+    const run_bench = b.addRunArtifact(bench_exe);
+    const bench_step = b.step("bench", "Run the snail benchmark harness (writes a markdown report to stdout)");
+    bench_step.dependOn(&run_bench.step);
 }
