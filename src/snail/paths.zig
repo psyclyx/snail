@@ -59,22 +59,25 @@ fn packCurves(
     const split = try curve_tex.splitCubicsAtExtrema(allocator, segs);
     defer allocator.free(split);
 
-    // Paths use the packed encoding (not the direct-encoding path the font
-    // producer takes). The packed path quantizes around an anchor and is
-    // the format the GL/Vulkan path shaders consume.
-    const prepared = try curve_tex.prepareGlyphCurvesForPacking(allocator, split, .zero);
+    // Direct-encoding (one f16 quantize per point) instead of packed
+    // (anchor chunk+frac decode + relative deltas). The packed encode
+    // path makes `p0` go through `decodeAnchor(quantize(chunk),
+    // quantize(frac))` while control points use `anchor + quantize(rel)`.
+    // For extremum-split cubic joins, the LEFT half's `p3` and the RIGHT
+    // half's `p0` then quantize asymmetrically — leaving ~1 ULP residual
+    // at the join that defeats `splitCubicsAtExtrema`'s zero-tangent
+    // snap. Direct encoding quantizes every point with the same
+    // `quantizeVec2F16`, so the join is bit-exact on both sides.
+    const prepared = try curve_tex.prepareGlyphCurvesForDirectEncoding(allocator, split, .zero);
     defer allocator.free(prepared);
 
     const render_bbox = mergeBBoxWithCurves(fill_bbox, prepared);
 
-    // Build the curve texture for a single shape. `buildCurveTexture` pads
-    // to a full TEX_WIDTH-row buffer for GPU upload; we dupe out only the
-    // touched words to keep the producer-shape tight.
     const single = [_]curve_tex.GlyphCurves{.{
         .curves = split,
         .bbox = render_bbox,
         .logical_curve_count = logical_curve_count,
-        .prefer_direct_encoding = false,
+        .prefer_direct_encoding = true,
         .prepared_curves = prepared,
     }};
     var ct = try curve_tex.buildCurveTexture(allocator, allocator, &single);
