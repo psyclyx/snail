@@ -92,21 +92,28 @@ fn appendCurveForPacking(
 
 const CUBIC_EXTREMA_SPLIT_EPS: f32 = 1e-5;
 
-fn appendCubicExtremumRoot(roots: *[4]f32, count: *usize, t: f32) void {
+const ExtremumAxis = enum(u2) { x = 1, y = 2, both = 3 };
+
+const ExtremumRoot = struct { t: f32, axis: ExtremumAxis };
+
+fn appendCubicExtremumRoot(roots: *[4]ExtremumRoot, count: *usize, t: f32, axis: ExtremumAxis) void {
     if (t <= CUBIC_EXTREMA_SPLIT_EPS or t >= 1.0 - CUBIC_EXTREMA_SPLIT_EPS) return;
-    for (roots[0..count.*]) |existing| {
-        if (@abs(existing - t) <= CUBIC_EXTREMA_SPLIT_EPS) return;
+    for (roots[0..count.*]) |*existing| {
+        if (@abs(existing.t - t) <= CUBIC_EXTREMA_SPLIT_EPS) {
+            existing.axis = @enumFromInt(@intFromEnum(existing.axis) | @intFromEnum(axis));
+            return;
+        }
     }
 
     var insert_at = count.*;
-    while (insert_at > 0 and roots[insert_at - 1] > t) : (insert_at -= 1) {}
+    while (insert_at > 0 and roots[insert_at - 1].t > t) : (insert_at -= 1) {}
     var i = count.*;
     while (i > insert_at) : (i -= 1) roots[i] = roots[i - 1];
-    roots[insert_at] = t;
+    roots[insert_at] = .{ .t = t, .axis = axis };
     count.* += 1;
 }
 
-fn appendCubicExtremaForAxis(curve: CurveSegment, comptime axis: []const u8, roots: *[4]f32, count: *usize) void {
+fn appendCubicExtremaForAxis(curve: CurveSegment, comptime axis: []const u8, axis_tag: ExtremumAxis, roots: *[4]ExtremumRoot, count: *usize) void {
     const p0 = @field(curve.p0, axis);
     const p1 = @field(curve.p1, axis);
     const p2 = @field(curve.p2, axis);
@@ -120,7 +127,7 @@ fn appendCubicExtremaForAxis(curve: CurveSegment, comptime axis: []const u8, roo
 
     if (@abs(qa) < 1e-10) {
         if (@abs(qb) < 1e-10) return;
-        appendCubicExtremumRoot(roots, count, -qc / qb);
+        appendCubicExtremumRoot(roots, count, -qc / qb, axis_tag);
         return;
     }
 
@@ -128,15 +135,39 @@ fn appendCubicExtremaForAxis(curve: CurveSegment, comptime axis: []const u8, roo
     if (disc < 0.0) return;
     const sqrt_disc = @sqrt(disc);
     const inv_2a = 0.5 / qa;
-    appendCubicExtremumRoot(roots, count, (-qb - sqrt_disc) * inv_2a);
-    appendCubicExtremumRoot(roots, count, (-qb + sqrt_disc) * inv_2a);
+    appendCubicExtremumRoot(roots, count, (-qb - sqrt_disc) * inv_2a, axis_tag);
+    appendCubicExtremumRoot(roots, count, (-qb + sqrt_disc) * inv_2a, axis_tag);
+}
+
+// At an extremum split, the parent cubic has zero derivative in the split
+// axis at t = tx. De Casteljau computes the join control points via
+// linear interpolation, which produces the exact zero-tangent geometry
+// up to FP precision but may not be bit-equal in the relevant axis.
+// Snap the join-adjacent control point to share the join coordinate in
+// the split axis, so the post-quantization derivative at the join is
+// bit-exactly zero. The coverage evaluator's existing `derivative_axis
+// <= 1e-5` skip then correctly excludes the grazing crossing at the
+// scanline aligned with the extremum (Slug's half-open semantic counts
+// the t=0 root, but at an extremum kiss the curve doesn't cross — both
+// halves must skip the join root).
+fn snapExtremumJoin(left: *CurveSegment, right: *CurveSegment, axis: ExtremumAxis) void {
+    const join_x = left.p3.x;
+    const join_y = left.p3.y;
+    if (@intFromEnum(axis) & @intFromEnum(ExtremumAxis.x) != 0) {
+        left.p2.x = join_x;
+        right.p1.x = join_x;
+    }
+    if (@intFromEnum(axis) & @intFromEnum(ExtremumAxis.y) != 0) {
+        left.p2.y = join_y;
+        right.p1.y = join_y;
+    }
 }
 
 fn appendCubicMonotonicSegments(allocator: std.mem.Allocator, out: *std.ArrayList(CurveSegment), curve: CurveSegment) !void {
-    var roots: [4]f32 = .{ 0, 0, 0, 0 };
+    var roots: [4]ExtremumRoot = .{ .{ .t = 0, .axis = .x }, .{ .t = 0, .axis = .x }, .{ .t = 0, .axis = .x }, .{ .t = 0, .axis = .x } };
     var count: usize = 0;
-    appendCubicExtremaForAxis(curve, "x", &roots, &count);
-    appendCubicExtremaForAxis(curve, "y", &roots, &count);
+    appendCubicExtremaForAxis(curve, "x", .x, &roots, &count);
+    appendCubicExtremaForAxis(curve, "y", .y, &roots, &count);
     if (count == 0) {
         try out.append(allocator, curve);
         return;
@@ -144,14 +175,15 @@ fn appendCubicMonotonicSegments(allocator: std.mem.Allocator, out: *std.ArrayLis
 
     var current = curve;
     var prev_t: f32 = 0.0;
-    for (roots[0..count]) |t| {
+    for (roots[0..count]) |root| {
         const remaining = 1.0 - prev_t;
         if (remaining <= CUBIC_EXTREMA_SPLIT_EPS) break;
-        const local_t = (t - prev_t) / remaining;
-        const halves = current.split(local_t);
+        const local_t = (root.t - prev_t) / remaining;
+        var halves = current.split(local_t);
+        snapExtremumJoin(&halves[0], &halves[1], root.axis);
         try out.append(allocator, halves[0]);
         current = halves[1];
-        prev_t = t;
+        prev_t = root.t;
     }
     try out.append(allocator, current);
 }

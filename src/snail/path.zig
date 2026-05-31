@@ -250,8 +250,21 @@ fn appendOffsetCurveApprox(
     }
 
     if (depth == 0 or offsetCurveApproxError(curve, offset) <= kPathStrokeOffsetTolerance) {
+        // The fitted quad's p0 comes from offsetCurvePoint(curve, 0.0, …),
+        // which is independently computed from `curve`'s t=0 tangent.
+        // For consecutive offset segments — whether across an
+        // input-curve join, across the join inserted by
+        // `appendStrokeJoinForSide`, or across a recursive midpoint
+        // split — the previous segment's end was computed from a
+        // *different* tangent and can drift by up to ~1 ULP. Force the
+        // fitted quad to start where the path currently is so the
+        // contour-continuity contract holds bit-exactly through
+        // f16 quantization.
+        var fitted = fitOffsetCurveQuad(curve, offset);
+        const contour = path.requireContour() orelse return error.PathMissingMoveTo;
+        fitted.p0 = contour.current_point;
         path.band_curve_count += 1;
-        try path.appendSegment(fitOffsetCurveQuad(curve, offset));
+        try path.appendSegment(fitted);
         return;
     }
 
