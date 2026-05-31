@@ -95,7 +95,8 @@ vec2 evalAxisCoverageBandSpan(vec2 rc, float ppe, ivec2 gLoc, int headerBase, Co
     float wgt = 0.0;
     bool dedup = span.first != span.last;
     for (int band = span.first; band <= span.last; band++) {
-        uvec2 bd = texelFetch(u_band_tex, ivec3(gLoc.x + headerBase + band, gLoc.y, layer), 0).xy;
+        ivec2 headerLoc = calcBandLoc(gLoc, uint(headerBase + band));
+        uvec2 bd = texelFetch(u_band_tex, ivec3(headerLoc, layer), 0).xy;
         ivec2 bandLoc = calcBandLoc(gLoc, bd.y);
         int count = int(bd.x);
         for (int i = 0; i < count; i++) {

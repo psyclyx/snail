@@ -99,7 +99,8 @@ float evalGlyphCoverage(vec2 rc, vec2 epp, vec2 ppe, ivec2 gLoc, ivec2 bandMax, 
     {
         bool dedup = hSpan.first != hSpan.last;
         for (int band = hSpan.first; band <= hSpan.last; band++) {
-            uvec2 hbd = texelFetch(u_band_tex, ivec3(gLoc.x + band, gLoc.y, texLayer), 0).xy;
+            ivec2 hHeaderLoc = calcBandLoc(gLoc, uint(band));
+            uvec2 hbd = texelFetch(u_band_tex, ivec3(hHeaderLoc, texLayer), 0).xy;
             ivec2 hLoc = calcBandLoc(gLoc, hbd.y);
             int hCount = int(hbd.x);
             for (int i = 0; i < hCount; i++) {
@@ -116,7 +117,8 @@ float evalGlyphCoverage(vec2 rc, vec2 epp, vec2 ppe, ivec2 gLoc, ivec2 bandMax, 
     {
         bool dedup = vSpan.first != vSpan.last;
         for (int band = vSpan.first; band <= vSpan.last; band++) {
-            uvec2 vbd = texelFetch(u_band_tex, ivec3(gLoc.x + bandMax.y + 1 + band, gLoc.y, texLayer), 0).xy;
+            ivec2 vHeaderLoc = calcBandLoc(gLoc, uint(bandMax.y + 1 + band));
+            uvec2 vbd = texelFetch(u_band_tex, ivec3(vHeaderLoc, texLayer), 0).xy;
             ivec2 vLoc = calcBandLoc(gLoc, vbd.y);
             int vCount = int(vbd.x);
             for (int i = 0; i < vCount; i++) {
