@@ -396,9 +396,26 @@ fn quantizedAnchorPoint(point: Vec2) Vec2 {
 
 fn quantizedPreparedLocalCurve(curve: CurveSegment, start_override: ?Vec2) CurveSegment {
     const p0 = start_override orelse quantizedAnchorPoint(curve.p0);
-    const p1_rel = quantizeVec2F16(Vec2.sub(curve.p1, p0));
-    const p2_rel = quantizeVec2F16(Vec2.sub(curve.p2, p0));
+    var p1_rel = quantizeVec2F16(Vec2.sub(curve.p1, p0));
+    var p2_rel = quantizeVec2F16(Vec2.sub(curve.p2, p0));
     const p3_rel = if (curve.kind == .cubic) quantizeVec2F16(Vec2.sub(curve.p3, p0)) else Vec2.zero;
+
+    // Preserve bit-exact zero start/end tangents through quantization.
+    // splitCubicsAtExtrema snaps control points to share the join
+    // coordinate in the split axis pre-quantization; without this
+    // preservation, start_override's quantized p0 differs from raw
+    // curve.p0 by ~1 ULP, and that residual leaks into p1_rel/p2_rel,
+    // breaking the coverage evaluator's zero-derivative skip at
+    // grazing scanlines (the snail's brick stripes).
+    if (curve.p1.x == curve.p0.x) p1_rel.x = 0;
+    if (curve.p1.y == curve.p0.y) p1_rel.y = 0;
+    if (curve.kind == .cubic) {
+        if (curve.p2.x == curve.p3.x) p2_rel.x = p3_rel.x;
+        if (curve.p2.y == curve.p3.y) p2_rel.y = p3_rel.y;
+    } else {
+        if (curve.p1.x == curve.p2.x) p1_rel.x = p2_rel.x;
+        if (curve.p1.y == curve.p2.y) p1_rel.y = p2_rel.y;
+    }
 
     return .{
         .kind = curve.kind,
@@ -429,12 +446,27 @@ pub fn quantizedLocalCurve(curve: CurveSegment, origin: Vec2) CurveSegment {
 
 fn quantizedPreparedDirectLocalCurve(curve: CurveSegment, start_override: ?Vec2) CurveSegment {
     const p0 = start_override orelse quantizeVec2F16(curve.p0);
+    var p1 = quantizeVec2F16(curve.p1);
+    var p2 = quantizeVec2F16(curve.p2);
+    const p3 = if (curve.kind == .cubic) quantizeVec2F16(curve.p3) else Vec2.zero;
+
+    // See quantizedPreparedLocalCurve: preserve bit-exact zero tangents.
+    if (curve.p1.x == curve.p0.x) p1.x = p0.x;
+    if (curve.p1.y == curve.p0.y) p1.y = p0.y;
+    if (curve.kind == .cubic) {
+        if (curve.p2.x == curve.p3.x) p2.x = p3.x;
+        if (curve.p2.y == curve.p3.y) p2.y = p3.y;
+    } else {
+        if (curve.p1.x == curve.p2.x) p1.x = p2.x;
+        if (curve.p1.y == curve.p2.y) p1.y = p2.y;
+    }
+
     return .{
         .kind = curve.kind,
         .p0 = p0,
-        .p1 = quantizeVec2F16(curve.p1),
-        .p2 = quantizeVec2F16(curve.p2),
-        .p3 = if (curve.kind == .cubic) quantizeVec2F16(curve.p3) else Vec2.zero,
+        .p1 = p1,
+        .p2 = p2,
+        .p3 = p3,
         .weights = .{
             quantizeF16(curve.weights[0]),
             quantizeF16(curve.weights[1]),
