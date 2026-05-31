@@ -1,9 +1,9 @@
 const std = @import("std");
 
-const bezier = @import("../math/bezier.zig");
-const tt_graphics = @import("tt_graphics.zig");
-const tt_outline = @import("tt_outline.zig");
-const vec = @import("../math/vec.zig");
+const bezier = @import("../../math/bezier.zig");
+const tt_graphics = @import("graphics.zig");
+const tt_outline = @import("outline.zig");
+const vec = @import("../../math/vec.zig");
 
 pub const QuadBezier = bezier.QuadBezier;
 const Vec2 = vec.Vec2;

@@ -1,10 +1,10 @@
 const std = @import("std");
 
-const tt_exec = @import("tt_exec.zig");
-const tt_graphics = @import("tt_graphics.zig");
-const tt_outline = @import("tt_outline.zig");
-const tt_points = @import("tt_points.zig");
-const tt_tables = @import("tt_tables.zig");
+const tt_exec = @import("exec.zig");
+const tt_graphics = @import("graphics.zig");
+const tt_outline = @import("outline.zig");
+const tt_points = @import("points.zig");
+const tt_tables = @import("tables.zig");
 
 pub const RenderMode = enum {
     grayscale,
@@ -483,7 +483,7 @@ test "scale FWORD handles signed values" {
 test "program loads raw glyph topology" {
     const assets = @import("assets");
     const program = try Program.init(assets.noto_sans_regular);
-    const font = try @import("ttf.zig").Font.init(assets.noto_sans_regular);
+    const font = try @import("../ttf.zig").Font.init(assets.noto_sans_regular);
     const glyph_id = try font.glyphIndex('A');
 
     var topology = try program.loadGlyphTopology(std.testing.allocator, glyph_id);
@@ -511,7 +511,7 @@ test "program exposes execution buffer sizing" {
 test "program exposes horizontal metrics for phantom points" {
     const assets = @import("assets");
     const program = try Program.init(assets.noto_sans_regular);
-    const font = try @import("ttf.zig").Font.init(assets.noto_sans_regular);
+    const font = try @import("../ttf.zig").Font.init(assets.noto_sans_regular);
     const glyph_id = try font.glyphIndex('A');
     const expected = try font.glyphMetrics(glyph_id);
     const metrics = try program.horizontalMetrics(glyph_id);
@@ -622,7 +622,7 @@ test "program executes bundled simple glyph instructions" {
     const allocator = std.testing.allocator;
     const assets = @import("assets");
     const program = try Program.init(assets.noto_sans_regular);
-    const font = try @import("ttf.zig").Font.init(assets.noto_sans_regular);
+    const font = try @import("../ttf.zig").Font.init(assets.noto_sans_regular);
     const sizes = program.executionBufferSizes();
     const glyph_id = try font.glyphIndex('A');
 
@@ -732,7 +732,7 @@ test "size state initializes simple glyph phantom points" {
     const allocator = std.testing.allocator;
     const assets = @import("assets");
     const program = try Program.init(assets.noto_sans_regular);
-    const font = try @import("ttf.zig").Font.init(assets.noto_sans_regular);
+    const font = try @import("../ttf.zig").Font.init(assets.noto_sans_regular);
     const glyph_id = try font.glyphIndex('A');
 
     var topology = try program.loadGlyphTopology(allocator, glyph_id);

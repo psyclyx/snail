@@ -1,5 +1,5 @@
 const std = @import("std");
-const tt_outline = @import("tt_outline.zig");
+const tt_outline = @import("truetype/outline.zig");
 const vec = @import("../math/vec.zig");
 const bezier_mod = @import("../math/bezier.zig");
 const Vec2 = vec.Vec2;

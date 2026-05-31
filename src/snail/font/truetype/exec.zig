@@ -1,8 +1,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const tt_graphics = @import("tt_graphics.zig");
-const tt_points = @import("tt_points.zig");
+const tt_graphics = @import("graphics.zig");
+const tt_points = @import("points.zig");
 
 /// LLVM (used in Release modes) supports `@call(.always_tail, ...)`; the
 /// stage2 x86_64 backend (used in Debug) does not. Gate the guaranteed
@@ -2123,7 +2123,7 @@ test "tt executor shifts contours by reference movement" {
         .{ .x = 30, .y = 0, .ox = 30, .oy = 0, .on_curve = true },
         .{ .x = 40, .y = 0, .ox = 40, .oy = 0, .on_curve = true },
     };
-    const contours = [_]@import("tt_outline.zig").ContourRange{
+    const contours = [_]@import("outline.zig").ContourRange{
         .{ .start = 0, .end = 2 },
         .{ .start = 2, .end = 4 },
     };
@@ -2154,7 +2154,7 @@ test "tt executor interpolates untouched glyph points" {
         .{ .x = 50, .y = 0, .ox = 50, .oy = 0, .orus_x = 50, .on_curve = true },
         .{ .x = 200, .y = 0, .ox = 100, .oy = 0, .orus_x = 100, .on_curve = true, .touched_x = true },
     };
-    const contours = [_]@import("tt_outline.zig").ContourRange{.{ .start = 0, .end = 3 }};
+    const contours = [_]@import("outline.zig").ContourRange{.{ .start = 0, .end = 3 }};
     var zones: PointZones = .{
         .twilight = PointZone.initTwilight(&twilight_points),
         .glyph = .{ .points = &glyph_points, .contours = &contours },

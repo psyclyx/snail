@@ -1,7 +1,7 @@
 const std = @import("std");
 const bezier = @import("math/bezier.zig");
 const ttf = @import("font/ttf.zig");
-const curves_mod = @import("curves.zig");
+const curves_mod = @import("atlas/curves.zig");
 const curve_tex = @import("render/format/curve_texture.zig");
 const band_tex = @import("render/format/band_texture.zig");
 
@@ -11,12 +11,12 @@ pub const DecorationMetrics = ttf.DecorationMetrics;
 pub const ScriptMetrics = ttf.ScriptMetrics;
 pub const GlyphCache = ttf.GlyphCache;
 pub const tt = struct {
-    pub const exec = @import("font/tt_exec.zig");
-    pub const graphics = @import("font/tt_graphics.zig");
-    pub const outline = @import("font/tt_outline.zig");
-    pub const points = @import("font/tt_points.zig");
-    pub const tables = @import("font/tt_tables.zig");
-    pub const vm = @import("font/tt_vm.zig");
+    pub const exec = @import("font/truetype/exec.zig");
+    pub const graphics = @import("font/truetype/graphics.zig");
+    pub const outline = @import("font/truetype/outline.zig");
+    pub const points = @import("font/truetype/points.zig");
+    pub const tables = @import("font/truetype/tables.zig");
+    pub const vm = @import("font/truetype/vm.zig");
 };
 
 test {

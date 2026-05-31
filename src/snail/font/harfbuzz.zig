@@ -1,8 +1,18 @@
 //! HarfBuzz text shaping integration.
 //! Provides full OpenType shaping (Arabic, Devanagari, etc.)
 //! via the HarfBuzz library. Compile with -Dharfbuzz=true.
+//!
+//! Each `HarfBuzzShaper` carries an em-scale font (`hb_font_em`, default OT
+//! funcs, scale = upem) used for normal shaping. When a TT bytecode hinter
+//! is attached via `attachHinter`, a lazily-created sub-font
+//! (`hb_font_hinted`) is given a single overridden font-func —
+//! `glyph_h_advance` — that routes through `Hinter.advanceX26Dot6`. Hinted
+//! shape calls set the sub-font's scale to `ppem_26_6` so HB's advances
+//! land in 26.6-pixel units; the caller divides them back to em-space and
+//! the round-trip preserves the hint-quantized positioning.
 
 const std = @import("std");
+const hinter_mod = @import("hinter.zig");
 const hb = @cImport({
     @cInclude("hb.h");
 });
@@ -11,16 +21,35 @@ pub const Feature = hb.hb_feature_t;
 pub const FEATURE_GLOBAL_START: c_uint = 0;
 pub const FEATURE_GLOBAL_END: c_uint = 0xFFFFFFFF;
 
+pub const Hinter = hinter_mod.Hinter;
+pub const HintPpem = hinter_mod.HintPpem;
+
 pub fn makeTag(tag: [4]u8) u32 {
     return (@as(u32, tag[0]) << 24) | (@as(u32, tag[1]) << 16) |
         (@as(u32, tag[2]) << 8) | @as(u32, tag[3]);
 }
 
+/// User-data passed to our custom HB font_funcs. Heap-allocated so the
+/// pointer stays valid across `HarfBuzzShaper` moves. `ppem_*_26_6` are
+/// updated by `setShapingPpem` before every hinted shape call.
+const HintHooks = struct {
+    hinter: *Hinter,
+    ppem_x_26_6: u32,
+    ppem_y_26_6: u32,
+};
+
 pub const HarfBuzzShaper = struct {
     hb_face: *hb.hb_face_t,
-    hb_font: *hb.hb_font_t,
+    hb_font_em: *hb.hb_font_t,
+    /// Sub-font of `hb_font_em` used for hinted shaping. Lazily created
+    /// by `attachHinter`. Inherits parent's OT defaults for everything
+    /// except `glyph_h_advance`, which routes through our hinter.
+    hb_font_hinted: ?*hb.hb_font_t,
+    hb_funcs_hinted: ?*hb.hb_font_funcs_t,
     hb_buffer: *hb.hb_buffer_t,
     units_per_em: u16,
+    hooks: ?*HintHooks,
+    hooks_allocator: ?std.mem.Allocator,
 
     pub fn init(font_data: []const u8, units_per_em: u16) !HarfBuzzShaper {
         const blob = hb.hb_blob_create(
@@ -53,43 +82,108 @@ pub const HarfBuzzShaper = struct {
 
         return .{
             .hb_face = face,
-            .hb_font = font,
+            .hb_font_em = font,
+            .hb_font_hinted = null,
+            .hb_funcs_hinted = null,
             .hb_buffer = buffer,
             .units_per_em = units_per_em,
+            .hooks = null,
+            .hooks_allocator = null,
         };
     }
 
     pub fn deinit(self: *HarfBuzzShaper) void {
         hb.hb_buffer_destroy(self.hb_buffer);
-        hb.hb_font_destroy(self.hb_font);
+        if (self.hb_font_hinted) |f| hb.hb_font_destroy(f);
+        if (self.hb_funcs_hinted) |f| hb.hb_font_funcs_destroy(f);
+        hb.hb_font_destroy(self.hb_font_em);
         hb.hb_face_destroy(self.hb_face);
+        if (self.hooks) |h| if (self.hooks_allocator) |a| a.destroy(h);
     }
 
-    /// Shape text into the reusable buffer. Returns glyph count, infos, and positions.
-    pub fn shapeText(self: *const HarfBuzzShaper, text: []const u8) struct {
-        count: c_uint,
-        infos: [*c]hb.hb_glyph_info_t,
-        positions: [*c]hb.hb_glyph_position_t,
-    } {
+    /// Bind a TT bytecode hinter to this shaper. Subsequent
+    /// `shapeTextHinted` calls will route `glyph_h_advance` queries
+    /// through `hinter.advanceX26Dot6`. The `Hinter` is borrowed —
+    /// callers must keep it alive at least as long as this shaper.
+    pub fn attachHinter(
+        self: *HarfBuzzShaper,
+        allocator: std.mem.Allocator,
+        hinter: *Hinter,
+    ) !void {
+        if (self.hooks != null) return; // already attached
+        const hooks = try allocator.create(HintHooks);
+        errdefer allocator.destroy(hooks);
+        hooks.* = .{
+            .hinter = hinter,
+            .ppem_x_26_6 = self.units_per_em,
+            .ppem_y_26_6 = self.units_per_em,
+        };
+
+        const sub_font = hb.hb_font_create_sub_font(self.hb_font_em) orelse return error.HarfBuzzInitFailed;
+        errdefer hb.hb_font_destroy(sub_font);
+
+        const funcs = hb.hb_font_funcs_create() orelse return error.HarfBuzzInitFailed;
+        errdefer hb.hb_font_funcs_destroy(funcs);
+
+        hb.hb_font_funcs_set_glyph_h_advance_func(funcs, hbGetGlyphHAdvance, hooks, null);
+        hb.hb_font_funcs_make_immutable(funcs);
+        hb.hb_font_set_funcs(sub_font, funcs, hooks, null);
+
+        self.hb_font_hinted = sub_font;
+        self.hb_funcs_hinted = funcs;
+        self.hooks = hooks;
+        self.hooks_allocator = allocator;
+    }
+
+    pub fn hasHinter(self: *const HarfBuzzShaper) bool {
+        return self.hb_font_hinted != null;
+    }
+
+    /// Shape `text` in em-space (HB scale = upem). Output advances/offsets
+    /// are font units; callers divide by upem to get em-space floats.
+    pub fn shapeText(self: *const HarfBuzzShaper, text: []const u8) ShapedRaw {
         return self.shapeTextWithFeatures(text, &.{});
     }
 
-    /// Shape text with explicit OpenType feature requests. `features` are in
-    /// the buffer's local coordinates (start/end indices into `text`).
     pub fn shapeTextWithFeatures(
         self: *const HarfBuzzShaper,
         text: []const u8,
         features: []const hb.hb_feature_t,
-    ) struct {
-        count: c_uint,
-        infos: [*c]hb.hb_glyph_info_t,
-        positions: [*c]hb.hb_glyph_position_t,
-    } {
+    ) ShapedRaw {
+        return self.shapeIntoBuffer(self.hb_font_em, text, features);
+    }
+
+    /// Shape `text` with hinted advances. Requires `attachHinter` to have
+    /// been called. HB scale is set to `ppem_26_6` so output advances are
+    /// 26.6 fixed-point pixels — divide by `ppem_26_6` to recover em-space.
+    /// If no hinter is attached, falls through to em-space shaping (caller
+    /// must then divide by upem instead).
+    pub fn shapeTextHinted(
+        self: *const HarfBuzzShaper,
+        text: []const u8,
+        features: []const hb.hb_feature_t,
+        ppem: HintPpem,
+    ) ShapedRaw {
+        const font = self.hb_font_hinted orelse return self.shapeTextWithFeatures(text, features);
+        if (self.hooks) |h| {
+            h.ppem_x_26_6 = ppem.x_26_6;
+            h.ppem_y_26_6 = ppem.y_26_6;
+        }
+        hb.hb_font_set_scale(font, @intCast(ppem.x_26_6), @intCast(ppem.y_26_6));
+        return self.shapeIntoBuffer(font, text, features);
+    }
+
+    fn shapeIntoBuffer(
+        self: *const HarfBuzzShaper,
+        font: *hb.hb_font_t,
+        text: []const u8,
+        features: []const hb.hb_feature_t,
+    ) ShapedRaw {
         hb.hb_buffer_clear_contents(self.hb_buffer);
         hb.hb_buffer_add_utf8(self.hb_buffer, text.ptr, @intCast(text.len), 0, @intCast(text.len));
         hb.hb_buffer_guess_segment_properties(self.hb_buffer);
         const features_ptr: [*c]const hb.hb_feature_t = if (features.len == 0) null else features.ptr;
-        hb.hb_shape(self.hb_font, self.hb_buffer, features_ptr, @intCast(features.len));
+        hb.hb_shape(font, self.hb_buffer, features_ptr, @intCast(features.len));
 
         var count: c_uint = 0;
         const infos = hb.hb_buffer_get_glyph_infos(self.hb_buffer, &count);
@@ -122,3 +216,24 @@ pub const HarfBuzzShaper = struct {
         return result;
     }
 };
+
+pub const ShapedRaw = struct {
+    count: c_uint,
+    infos: [*c]hb.hb_glyph_info_t,
+    positions: [*c]hb.hb_glyph_position_t,
+};
+
+fn hbGetGlyphHAdvance(
+    font: ?*hb.hb_font_t,
+    font_data: ?*anyopaque,
+    glyph: hb.hb_codepoint_t,
+    user_data: ?*anyopaque,
+) callconv(.c) hb.hb_position_t {
+    _ = font;
+    _ = font_data;
+    const hooks: *HintHooks = @ptrCast(@alignCast(user_data orelse return 0));
+    const gid: u16 = @intCast(glyph & 0xFFFF);
+    const ppem = HintPpem{ .x_26_6 = hooks.ppem_x_26_6, .y_26_6 = hooks.ppem_y_26_6 };
+    const adv = hooks.hinter.advanceX26Dot6(gid, ppem) catch return 0;
+    return @intCast(adv);
+}

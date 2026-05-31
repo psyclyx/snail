@@ -1,7 +1,7 @@
 const std = @import("std");
 
-const bezier = @import("../math/bezier.zig");
-const vec = @import("../math/vec.zig");
+const bezier = @import("../../math/bezier.zig");
+const vec = @import("../../math/vec.zig");
 
 const QuadBezier = bezier.QuadBezier;
 const Vec2 = vec.Vec2;
