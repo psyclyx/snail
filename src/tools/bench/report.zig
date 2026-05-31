@@ -103,18 +103,16 @@ pub fn printPreparationTables(snail_prep: anytype, vector_prep: anytype, ft: any
         \\| TT hint setup @ 12px | {d:.2} us | n/a | n/a |
         \\| TT hint execute, ASCII @ 12px | {d:.2} us | n/a | n/a |
         \\| TT hint plan, ASCII @ 12px | {d:.2} us | n/a | n/a |
-        \\| TT hint context cold, paragraph @ 12px | {d:.2} us | n/a | n/a |
-        \\| TT hint context warm, paragraph @ 12px | {d:.2} us | n/a | n/a |
-        \\| PathPicture freeze, {d} shapes | {d:.2} us | n/a | n/a |
+        \\| TT hinter cold, paragraph @ 12px | {d:.2} us | n/a | n/a |
+        \\| TT hinter warm, paragraph @ 12px | {d:.2} us | n/a | n/a |
+        \\| Vector picture build, {d} shapes | {d:.2} us | n/a | n/a |
         \\
-        \\## Prepared Resource Memory
+        \\## FreeType Bitmap Memory
         \\
-        \\| Resource | Used bytes | Allocated GPU bytes | Used KiB | Allocated KiB |
-        \\|---|---:|---:|---:|---:|
-        \\| Snail text textures | {d} | {d} | {d:.1} | {d:.1} |
-        \\| Snail vector textures | {d} | {d} | {d:.1} | {d:.1} |
-        \\| FreeType bitmaps, one size | {d} | {d} | {d:.1} | {d:.1} |
-        \\| FreeType bitmaps, seven sizes | {d} | {d} | {d:.1} | {d:.1} |
+        \\| Resource | Bytes | KiB |
+        \\|---|---:|---:|
+        \\| FreeType bitmaps, one size | {d} | {d:.1} |
+        \\| FreeType bitmaps, seven sizes | {d} | {d:.1} |
         \\
     , .{
         snail_prep.font_load_us,
@@ -133,21 +131,9 @@ pub fn printPreparationTables(snail_prep: anytype, vector_prep: anytype, ft: any
         snail_prep.paragraph_hint_context_warm_us,
         vector_prep.shapes,
         vector_prep.freeze_us,
-        snail_prep.footprint.usedBytes(),
-        snail_prep.footprint.allocatedBytes(),
-        kib(snail_prep.footprint.usedBytes()),
-        kib(snail_prep.footprint.allocatedBytes()),
-        vector_prep.footprint.usedBytes(),
-        vector_prep.footprint.allocatedBytes(),
-        kib(vector_prep.footprint.usedBytes()),
-        kib(vector_prep.footprint.allocatedBytes()),
-        ft.bitmap_bytes_single,
         ft.bitmap_bytes_single,
         kib(ft.bitmap_bytes_single),
-        kib(ft.bitmap_bytes_single),
         ft.bitmap_bytes_all,
-        ft.bitmap_bytes_all,
-        kib(ft.bitmap_bytes_all),
         kib(ft.bitmap_bytes_all),
     });
     std.debug.print("\n", .{});
@@ -186,7 +172,7 @@ pub fn printRecordTable(rows: anytype) void {
     std.debug.print(
         \\## Draw Record Creation
         \\
-        \\| Scene | Commands | Words | Segments | PreparedScene.initOwned |
+        \\| Scene | Shapes | Words | Segments | emit.emit |
         \\|---|---:|---:|---:|---:|
         \\
     , .{});
@@ -194,7 +180,7 @@ pub fn printRecordTable(rows: anytype) void {
         std.debug.print(
             \\| {s} | {d} | {d} | {d} | {d:.2} us |
             \\
-        , .{ row.scene.name(), row.commands, row.words, row.segments, row.us });
+        , .{ row.scene.name(), row.shapes, row.words, row.segments, row.us });
     }
     std.debug.print("\n", .{});
 }
@@ -235,7 +221,7 @@ pub fn printRenderTable(comptime width: u32, comptime height: u32, cpu_frames: u
         \\
         \\Target: {d}x{d}. Requested AA is grayscale. CPU uses {d} measured frames; GPU backends use {d} measured frames.
         \\
-        \\| Backend | Scene | Effective AA | Frames | Commands | Words | Segments | Instance bytes/frame | Draw prepared scene |
+        \\| Backend | Scene | Effective AA | Frames | Shapes | Words | Segments | Instance bytes/frame | Draw |
         \\|---|---|---|---:|---:|---:|---:|---:|---:|
         \\
     , .{ width, height, cpu_frames, gpu_frames });
@@ -248,7 +234,7 @@ pub fn printRenderTable(comptime width: u32, comptime height: u32, cpu_frames: u
             row.scene.name(),
             row.effective_aa,
             row.frames,
-            row.commands,
+            row.shapes,
             row.words,
             row.segments,
             row.instance_bytes,

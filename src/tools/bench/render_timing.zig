@@ -1,3 +1,10 @@
+//! Backend draw-timing wrappers used by the bench harness.
+//!
+//! Replaces the legacy `Renderer.drawPrepared` calls with the new
+//! prepared-pages + DrawRecords API. Each function takes a typed backend
+//! state and the relevant `*PreparedPages` cache, then loops `frames`
+//! times measuring wall-clock around a `state.draw(...)` invocation.
+
 const std = @import("std");
 const build_options = @import("build_options");
 const snail = @import("snail");
@@ -9,6 +16,11 @@ const GL_SRGB8_ALPHA8: gl.GLint = 0x8C43;
 pub const Framebuffer = struct {
     fbo: gl.GLuint,
     texture: gl.GLuint,
+};
+
+pub const DrawRecords = struct {
+    words: []const u32,
+    segments: []const snail.DrawSegment,
 };
 
 fn nowNs() u64 {
@@ -49,66 +61,122 @@ pub fn clearGlFrame() void {
 }
 
 pub fn timeCpuDraw(
-    renderer: *snail.Renderer,
-    prepared: *const snail.PreparedResources,
-    scene: *const snail.PreparedScene,
-    options: snail.DrawState,
+    renderer: *snail.CpuRenderer,
+    state: snail.DrawState,
+    records: DrawRecords,
+    caches: []const *const snail.CpuPreparedPages,
     pixels: []u8,
     warmup_frames: usize,
     frames: usize,
 ) !f64 {
     for (0..warmup_frames) |_| {
         @memset(pixels, 0);
-        try renderer.drawPrepared(prepared, scene, options);
+        try snail.drawCpu(renderer, state, .{ .words = records.words, .segments = records.segments }, caches);
     }
 
     const start = nowNs();
     for (0..frames) |_| {
         @memset(pixels, 0);
-        try renderer.drawPrepared(prepared, scene, options);
+        try snail.drawCpu(renderer, state, .{ .words = records.words, .segments = records.segments }, caches);
     }
     return usFrom(start) / @as(f64, @floatFromInt(frames));
 }
 
-pub fn timeGlDraw(
-    renderer: *snail.Renderer,
-    prepared: *const snail.PreparedResources,
-    scene: *const snail.PreparedScene,
-    options: snail.DrawState,
+pub fn timeGl33Draw(
+    allocator: std.mem.Allocator,
+    renderer: *snail.Gl33Renderer,
+    state: snail.DrawState,
+    records: DrawRecords,
+    caches: []const *const snail.Gl33PreparedPages,
     warmup_frames: usize,
     frames: usize,
 ) !f64 {
     for (0..warmup_frames) |_| {
         clearGlFrame();
-        try renderer.drawPrepared(prepared, scene, options);
+        renderer.state.beginDraw();
+        try renderer.state.draw(allocator, state, .{ .words = records.words, .segments = records.segments }, caches);
     }
     gl.glFinish();
 
     const start = nowNs();
     for (0..frames) |_| {
         clearGlFrame();
-        try renderer.drawPrepared(prepared, scene, options);
+        renderer.state.beginDraw();
+        try renderer.state.draw(allocator, state, .{ .words = records.words, .segments = records.segments }, caches);
+    }
+    gl.glFinish();
+    return usFrom(start) / @as(f64, @floatFromInt(frames));
+}
+
+pub fn timeGl44Draw(
+    allocator: std.mem.Allocator,
+    renderer: *snail.Gl44Renderer,
+    state: snail.DrawState,
+    records: DrawRecords,
+    caches: []const *const snail.Gl44PreparedPages,
+    warmup_frames: usize,
+    frames: usize,
+) !f64 {
+    for (0..warmup_frames) |_| {
+        clearGlFrame();
+        renderer.state.beginDraw();
+        try renderer.state.draw(allocator, state, .{ .words = records.words, .segments = records.segments }, caches);
+    }
+    gl.glFinish();
+
+    const start = nowNs();
+    for (0..frames) |_| {
+        clearGlFrame();
+        renderer.state.beginDraw();
+        try renderer.state.draw(allocator, state, .{ .words = records.words, .segments = records.segments }, caches);
+    }
+    gl.glFinish();
+    return usFrom(start) / @as(f64, @floatFromInt(frames));
+}
+
+pub fn timeGles30Draw(
+    allocator: std.mem.Allocator,
+    renderer: *snail.Gles30Renderer,
+    state: snail.DrawState,
+    records: DrawRecords,
+    caches: []const *const snail.Gles30PreparedPages,
+    warmup_frames: usize,
+    frames: usize,
+) !f64 {
+    for (0..warmup_frames) |_| {
+        clearGlFrame();
+        renderer.state.beginDraw();
+        try renderer.state.draw(allocator, state, .{ .words = records.words, .segments = records.segments }, caches);
+    }
+    gl.glFinish();
+
+    const start = nowNs();
+    for (0..frames) |_| {
+        clearGlFrame();
+        renderer.state.beginDraw();
+        try renderer.state.draw(allocator, state, .{ .words = records.words, .segments = records.segments }, caches);
     }
     gl.glFinish();
     return usFrom(start) / @as(f64, @floatFromInt(frames));
 }
 
 pub fn timeVulkanDraw(
+    allocator: std.mem.Allocator,
     vk_renderer: *snail.VulkanRenderer,
-    renderer: *snail.Renderer,
-    prepared: *const snail.PreparedResources,
-    scene: *const snail.PreparedScene,
-    options: snail.DrawState,
+    state: snail.DrawState,
+    records: DrawRecords,
+    caches: []const *const snail.VulkanPreparedPages,
     warmup_frames: usize,
     frames: usize,
 ) !f64 {
     if (comptime !build_options.enable_vulkan) unreachable;
-    _ = renderer;
 
     for (0..warmup_frames) |_| {
         const cmd = vulkan_platform.beginFrameOffscreen();
-        const frame = vk_renderer.frame(.{ .cmd = cmd, .slot = vulkan_platform.currentOffscreenFrameIndex() });
-        try frame.drawPrepared(prepared, scene, options);
+        vk_renderer.state.setCommandBuffer(cmd);
+        vk_renderer.state.setFrameSlot(vulkan_platform.currentOffscreenFrameIndex());
+        try vk_renderer.state.draw(allocator, state, .{ .words = records.words, .segments = records.segments }, caches);
+        vk_renderer.state.clearCommandBuffer();
         vulkan_platform.endFrameOffscreen();
     }
     vulkan_platform.queueWaitIdle();
@@ -116,8 +184,10 @@ pub fn timeVulkanDraw(
     const start = nowNs();
     for (0..frames) |_| {
         const cmd = vulkan_platform.beginFrameOffscreen();
-        const frame = vk_renderer.frame(.{ .cmd = cmd, .slot = vulkan_platform.currentOffscreenFrameIndex() });
-        try frame.drawPrepared(prepared, scene, options);
+        vk_renderer.state.setCommandBuffer(cmd);
+        vk_renderer.state.setFrameSlot(vulkan_platform.currentOffscreenFrameIndex());
+        try vk_renderer.state.draw(allocator, state, .{ .words = records.words, .segments = records.segments }, caches);
+        vk_renderer.state.clearCommandBuffer();
         vulkan_platform.endFrameOffscreen();
     }
     vulkan_platform.queueWaitIdle();
