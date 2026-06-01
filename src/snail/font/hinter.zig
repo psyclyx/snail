@@ -292,6 +292,7 @@ pub const Hinter = struct {
             .zero,
             true,
             hint_value.prepared_curves,
+            null,
         );
         errdefer band_tex.freeGlyphBandData(allocator, @constCast(&bd));
 

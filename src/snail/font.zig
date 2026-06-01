@@ -161,10 +161,14 @@ fn extractCurvesInner(
         }
     }
 
-    const prepared = try curve_tex.prepareGlyphCurvesForDirectEncoding(scratch, segs, .zero);
+    // Cache analytic bboxes during prepare so glyphRenderBBox and the
+    // band-build pass don't each recompute them.
+    const prepared_bboxes = try scratch.alloc(bezier.BBox, segs.len);
+    defer scratch.free(prepared_bboxes);
+    const prepared = try curve_tex.prepareGlyphCurvesForDirectEncodingWithBBoxes(scratch, segs, .zero, prepared_bboxes);
     defer scratch.free(prepared);
 
-    const render_bbox = glyphRenderBBox(glyph.metrics.bbox, prepared);
+    const render_bbox = glyphRenderBBoxFromBBoxes(glyph.metrics.bbox, prepared_bboxes);
 
     // Single-glyph direct encoding. Skip `buildCurveTexture`'s TEX_WIDTH
     // padding (which would allocate ~32 KB per glyph just to drop most of
@@ -193,6 +197,7 @@ fn extractCurvesInner(
         .zero,
         true,
         prepared,
+        prepared_bboxes,
     );
     errdefer band_tex.freeGlyphBandData(allocator, @constCast(&bd));
 
@@ -217,6 +222,13 @@ fn glyphRenderBBox(metrics_bbox: bezier.BBox, prepared: []const CurveSegment) be
     if (prepared.len == 0) return metrics_bbox;
     var prepared_bbox = prepared[0].boundingBox();
     for (prepared[1..]) |curve| prepared_bbox = prepared_bbox.merge(curve.boundingBox());
+    return metrics_bbox.merge(prepared_bbox);
+}
+
+fn glyphRenderBBoxFromBBoxes(metrics_bbox: bezier.BBox, bboxes: []const bezier.BBox) bezier.BBox {
+    if (bboxes.len == 0) return metrics_bbox;
+    var prepared_bbox = bboxes[0];
+    for (bboxes[1..]) |b| prepared_bbox = prepared_bbox.merge(b);
     return metrics_bbox.merge(prepared_bbox);
 }
 

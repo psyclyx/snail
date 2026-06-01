@@ -550,9 +550,11 @@ fn prepareGlyphCurves(
     curves: []const CurveSegment,
     origin: Vec2,
     comptime mode: PreparedCurveMode,
+    bboxes_out: ?[]bezier_mod.BBox,
 ) ![]CurveSegment {
     const out = try allocator.alloc(CurveSegment, curves.len);
     errdefer allocator.free(out);
+    if (bboxes_out) |bo| std.debug.assert(bo.len == curves.len);
 
     const delta = Vec2.new(-origin.x, -origin.y);
     var contour_start: usize = 0;
@@ -584,6 +586,13 @@ fn prepareGlyphCurves(
         contour_start = contour_end;
     }
 
+    // Cache per-curve analytic bboxes if the caller wants them. Downstream
+    // (mergeBBoxWithCurves + collectPreparedCurveMetrics) would otherwise
+    // recompute these twice per curve. One pass here amortises both.
+    if (bboxes_out) |bo| {
+        for (out, bo) |c, *b| b.* = c.boundingBox();
+    }
+
     return out;
 }
 
@@ -592,7 +601,7 @@ pub fn prepareGlyphCurvesForPacking(
     curves: []const CurveSegment,
     origin: Vec2,
 ) ![]CurveSegment {
-    return prepareGlyphCurves(allocator, curves, origin, .packing);
+    return prepareGlyphCurves(allocator, curves, origin, .packing, null);
 }
 
 pub fn prepareGlyphCurvesForDirectEncoding(
@@ -600,7 +609,20 @@ pub fn prepareGlyphCurvesForDirectEncoding(
     curves: []const CurveSegment,
     origin: Vec2,
 ) ![]CurveSegment {
-    return prepareGlyphCurves(allocator, curves, origin, .direct);
+    return prepareGlyphCurves(allocator, curves, origin, .direct, null);
+}
+
+/// Like `prepareGlyphCurvesForDirectEncoding`, but also writes each
+/// prepared curve's analytic bbox into `bboxes_out` (must match
+/// `curves.len`). Callers that need both can pre-allocate `bboxes_out`
+/// in scratch and avoid recomputing in downstream passes.
+pub fn prepareGlyphCurvesForDirectEncodingWithBBoxes(
+    allocator: std.mem.Allocator,
+    curves: []const CurveSegment,
+    origin: Vec2,
+    bboxes_out: []bezier_mod.BBox,
+) ![]CurveSegment {
+    return prepareGlyphCurves(allocator, curves, origin, .direct, bboxes_out);
 }
 
 pub fn decodeSegmentAt(data: []const u16, curve_texel: u32) ?CurveSegment {

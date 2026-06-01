@@ -78,10 +78,16 @@ fn packCurves(
     // at the join that defeats `splitCubicsAtExtrema`'s zero-tangent
     // snap. Direct encoding quantizes every point with the same
     // `quantizeVec2F16`, so the join is bit-exact on both sides.
-    const prepared = try curve_tex.prepareGlyphCurvesForDirectEncoding(scratch, split, .zero);
+    //
+    // We need each prepared curve's analytic bbox in two places below
+    // (render_bbox merge + band-build collect). Allocate the cache in
+    // scratch and have prepare populate it in one pass.
+    const prepared_bboxes = try scratch.alloc(BBox, split.len);
+    defer scratch.free(prepared_bboxes);
+    const prepared = try curve_tex.prepareGlyphCurvesForDirectEncodingWithBBoxes(scratch, split, .zero, prepared_bboxes);
     defer scratch.free(prepared);
 
-    const render_bbox = mergeBBoxWithCurves(fill_bbox, prepared);
+    const render_bbox = mergeBBoxes(fill_bbox, prepared_bboxes);
 
     // Single-shape direct encoding: skip `buildCurveTexture`'s TEX_WIDTH
     // padding (~32 KB per shape allocated to drop most of it on the
@@ -108,6 +114,7 @@ fn packCurves(
         .zero,
         false,
         prepared,
+        prepared_bboxes,
     );
     errdefer band_tex.freeGlyphBandData(allocator, @constCast(&bd));
 
@@ -128,10 +135,10 @@ fn packCurves(
     };
 }
 
-fn mergeBBoxWithCurves(base: BBox, curves: []const CurveSegment) BBox {
-    if (curves.len == 0) return base;
+fn mergeBBoxes(base: BBox, bboxes: []const BBox) BBox {
+    if (bboxes.len == 0) return base;
     var merged = base;
-    for (curves) |c| merged = merged.merge(c.boundingBox());
+    for (bboxes) |b| merged = merged.merge(b);
     return merged;
 }
 

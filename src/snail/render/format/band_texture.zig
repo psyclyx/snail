@@ -287,10 +287,24 @@ fn emptyGlyphBandData() GlyphBandData {
 
 fn collectPreparedCurveMetrics(
     prepared_curves: []const CurveSegment,
+    precomputed_bboxes: ?[]const BBox,
     curve_bboxes: []BBox,
     curve_sort_max_x: []f32,
     curve_sort_max_y: []f32,
 ) BBox {
+    if (precomputed_bboxes) |src| {
+        @memcpy(curve_bboxes, src);
+        var prepared_bbox = src[0];
+        curve_sort_max_x[0] = curveControlMaxX(prepared_curves[0]);
+        curve_sort_max_y[0] = curveControlMaxY(prepared_curves[0]);
+        for (prepared_curves[1..], src[1..], 1..) |curve, cb, ci| {
+            curve_sort_max_x[ci] = curveControlMaxX(curve);
+            curve_sort_max_y[ci] = curveControlMaxY(curve);
+            prepared_bbox = prepared_bbox.merge(cb);
+        }
+        return prepared_bbox;
+    }
+
     // The first curve was previously computed twice (once to seed
     // `prepared_bbox`, once inside the loop). Hoist the first-curve case
     // out so each curve's boundingBox runs exactly once.
@@ -315,12 +329,14 @@ fn collectBandGeometry(
     origin: Vec2,
     prefer_direct_encoding: bool,
     prepared_curves: []const CurveSegment,
+    precomputed_bboxes: ?[]const BBox,
     curve_bboxes: []BBox,
     curve_sort_max_x: []f32,
     curve_sort_max_y: []f32,
 ) BandGeometry {
     const prepared_bbox = collectPreparedCurveMetrics(
         prepared_curves,
+        precomputed_bboxes,
         curve_bboxes,
         curve_sort_max_x,
         curve_sort_max_y,
@@ -425,6 +441,7 @@ pub fn buildGlyphBandDataForGlyph(
             glyph.origin,
             glyph.prefer_direct_encoding,
             prepared_curves,
+            null,
         );
     }
     return buildGlyphBandData(
@@ -470,6 +487,7 @@ pub fn buildGlyphBandData(
         origin,
         prefer_direct_encoding,
         prepared_curves,
+        null,
     );
 }
 
@@ -483,12 +501,17 @@ pub fn buildGlyphBandDataWithPreparedCurves(
     origin: Vec2,
     prefer_direct_encoding: bool,
     prepared_curves: []const CurveSegment,
+    /// Optional pre-computed analytic bboxes for `prepared_curves`,
+    /// produced by `prepareGlyphCurvesForDirectEncodingWithBBoxes`. When
+    /// non-null, skips the in-loop boundingBox computation.
+    precomputed_bboxes: ?[]const BBox,
 ) !GlyphBandData {
     if (curves.len == 0) {
         std.debug.assert(prepared_curves.len == 0);
         return emptyGlyphBandData();
     }
     std.debug.assert(prepared_curves.len == curves.len);
+    if (precomputed_bboxes) |pb| std.debug.assert(pb.len == prepared_curves.len);
 
     const band_curve_count = if (logical_curve_count == 0) curves.len else logical_curve_count;
     const h_bands = bandCount(band_curve_count);
@@ -509,6 +532,7 @@ pub fn buildGlyphBandDataWithPreparedCurves(
         origin,
         prefer_direct_encoding,
         prepared_curves,
+        precomputed_bboxes,
         curve_bboxes,
         curve_sort_max_x,
         curve_sort_max_y,
