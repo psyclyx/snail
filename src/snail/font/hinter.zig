@@ -183,6 +183,22 @@ pub const Hinter = struct {
         for (metrics_to_remove.items) |k| _ = self.metrics_cache.remove(k);
     }
 
+    /// Drop the per-glyph and metrics caches while keeping every per-ppem
+    /// VM machine warm. The next `hint` / `advanceX26Dot6` call rebuilds
+    /// those entries from scratch — running the bytecode interpreter
+    /// again — but skips the fpgm/prep setup. Use this when you want to
+    /// reclaim memory between frames, or when a benchmark needs to
+    /// measure cold VM execute cost without paying for fpgm/prep on
+    /// every iteration.
+    pub fn clearGlyphCaches(self: *Hinter) void {
+        var git = self.glyph_cache.iterator();
+        while (git.next()) |entry| {
+            entry.value_ptr.deinit(self.allocator);
+        }
+        self.glyph_cache.clearRetainingCapacity();
+        self.metrics_cache.clearRetainingCapacity();
+    }
+
     /// Drop every cached ppem. Same lifecycle guarantee as `evictPpem`.
     pub fn clear(self: *Hinter) void {
         var it = self.machines.iterator();

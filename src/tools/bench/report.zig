@@ -111,6 +111,12 @@ pub fn printPreparationTables(snail_prep: anytype, vector_prep: anytype, ft: any
     std.debug.print(
         \\## Preparation
         \\
+        \\The Snail column for `Glyph prep, 7 sizes` shows the same timing as the
+        \\ASCII row because Snail's glyph prep is size-independent: it extracts
+        \\unhinted outlines once and scales them at render time. FreeType
+        \\re-rasterizes per size, so the FT column scales ~7x — and the speedup
+        \\column reports the resulting advantage at multiple sizes.
+        \\
         \\| Workload | Snail | FreeType | FreeType / Snail |
         \\|---|---:|---:|---:|
         \\
@@ -128,7 +134,7 @@ pub fn printPreparationTables(snail_prep: anytype, vector_prep: anytype, ft: any
     }
     if (snail_prep.ascii_hint_setup_us) |us| printPrepRow("TT hint setup @ 12px", us, null);
     if (snail_prep.ascii_hint_execute_us) |us| printPrepRow("TT hint execute, ASCII @ 12px", us, null);
-    if (snail_prep.ascii_hint_us) |us| printPrepRow("TT hint plan, ASCII @ 12px", us, null);
+    if (snail_prep.ascii_hint_us) |us| printPrepRow("TT hint full pipeline, ASCII @ 12px", us, null);
     if (snail_prep.paragraph_hint_context_cold_us) |us| printPrepRow("TT hinter cold (full pipeline), paragraph @ 12px", us, null);
     if (snail_prep.paragraph_hint_context_warm_us) |us| printPrepRow("TT hinter warm (cache hit + clone), paragraph @ 12px", us, null);
     if (vector_prep.freeze_us) |us| {

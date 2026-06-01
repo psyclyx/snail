@@ -1060,19 +1060,21 @@ fn timeHinterSetup(allocator: std.mem.Allocator, font: *const snail.Font, ppem_2
 }
 
 fn timeHinterExecute(allocator: std.mem.Allocator, font: *const snail.Font, ppem_26_6: u32) !f64 {
+    // VM execute: each iteration drops the glyph + metrics caches before
+    // running advance for every printable ASCII glyph. The HintMachine
+    // for this ppem is left intact (fpgm/prep already ran during the
+    // warmup advance), so the timed loop measures only per-glyph TT
+    // bytecode execution — not cache lookups, not fpgm/prep, not curve
+    // build.
     var h = snail.Hinter.init(allocator, font) catch return 0;
     defer h.deinit();
     const ppem = snail.HintPpem.uniform(ppem_26_6);
-    // Warmup machine for this ppem.
+    // Warmup machine for this ppem (runs fpgm + prep once).
     _ = h.advanceX26Dot6(0, ppem) catch 0;
 
     var total: f64 = 0;
     for (0..PREP_RUNS) |_| {
-        // Re-fresh per-run by clearing the glyph-cache only via a fresh
-        // run at a slightly different ppem? Simpler: just measure VM
-        // execute by reading advances for all ASCII glyphs in a hot
-        // metrics-cache. We approximate "execute" by the warm advance
-        // query loop, which still routes through the VM machine state.
+        h.clearGlyphCaches();
         const start = nowNs();
         for (PRINTABLE_ASCII) |ch| {
             const gid = font.glyphIndex(ch) catch continue;
