@@ -547,7 +547,7 @@ test "drawCpu renders image-painted shape through special-layer path" {
     var path = @import("../../../paths.zig").Path.init(allocator);
     defer path.deinit();
     try path.addRect(.{ .x = 0, .y = 0, .w = 1, .h = 1 });
-    var path_curves = try @import("../../../paths.zig").pathToCurves(allocator, &path);
+    var path_curves = try @import("../../../paths.zig").pathToCurves(allocator, allocator, &path);
     defer path_curves.deinit();
 
     const key = @import("../../../atlas/record_key.zig").RecordKey{

@@ -23,7 +23,7 @@ pub const Builder = struct {
         paint: snail.Paint,
         transform: snail.Transform2D,
     ) !void {
-        const curves = try snail.paths.pathToCurves(self.allocator, path);
+        const curves = try snail.paths.pathToCurves(self.allocator, self.allocator, path);
         if (curves.isEmpty()) {
             var owned = curves;
             owned.deinit();
@@ -50,7 +50,7 @@ pub const Builder = struct {
         stroke: snail.StrokeStyle,
         transform: snail.Transform2D,
     ) !void {
-        const curves = try snail.paths.strokeToCurves(self.allocator, path, stroke);
+        const curves = try snail.paths.strokeToCurves(self.allocator, self.allocator, path, stroke);
         if (curves.isEmpty()) {
             var owned = curves;
             owned.deinit();
@@ -114,7 +114,7 @@ pub const Builder = struct {
             return;
         }
 
-        const fill_curves = try snail.paths.pathToCurves(self.allocator, path);
+        const fill_curves = try snail.paths.pathToCurves(self.allocator, self.allocator, path);
         if (fill_curves.isEmpty()) {
             var owned = fill_curves;
             owned.deinit();
@@ -122,7 +122,7 @@ pub const Builder = struct {
             try self.addStrokedPath(path, stroke, transform);
             return;
         }
-        const stroke_curves = try snail.paths.strokeToCurves(self.allocator, path, stroke);
+        const stroke_curves = try snail.paths.strokeToCurves(self.allocator, self.allocator, path, stroke);
         if (stroke_curves.isEmpty()) {
             // Stroke degenerate — emit fill only.
             try self.owned_curves.append(self.allocator, fill_curves);

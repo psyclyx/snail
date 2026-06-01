@@ -17,36 +17,46 @@ const BBox = bezier.BBox;
 
 /// Pack a path's filled outline as `GlyphCurves`. Returns an empty value
 /// for paths with no curves or unbounded extent.
+///
+/// `allocator` owns the returned `GlyphCurves`. `scratch` holds the
+/// intermediate curve buffers (cloned segments, split-at-extrema,
+/// quantized, band scratch). For batched callers, pass an arena as
+/// `scratch` and reset it between calls; for one-shot callers, pass the
+/// same allocator twice — both have the same lifetime semantics.
 pub fn pathToCurves(
     allocator: std.mem.Allocator,
+    scratch: std.mem.Allocator,
     path: *const Path,
 ) !curves_mod.GlyphCurves {
     if (path.isEmpty()) return curves_mod.GlyphCurves.empty(allocator);
     const bb = path.bounds() orelse return curves_mod.GlyphCurves.empty(allocator);
 
-    const segs = try path.cloneFilledCurves(allocator);
-    defer allocator.free(segs);
+    const segs = try path.cloneFilledCurves(scratch);
+    defer scratch.free(segs);
     if (segs.len == 0) return curves_mod.GlyphCurves.empty(allocator);
 
-    return packCurves(allocator, segs, bb, path.filledBandCurveCount());
+    return packCurves(allocator, scratch, segs, bb, path.filledBandCurveCount());
 }
 
 /// Pack a path's stroked outline as `GlyphCurves`. Returns an empty value
-/// if the stroke is degenerate (zero width, no contours).
+/// if the stroke is degenerate (zero width, no contours). See `pathToCurves`
+/// for the `(allocator, scratch)` allocator convention.
 pub fn strokeToCurves(
     allocator: std.mem.Allocator,
+    scratch: std.mem.Allocator,
     path: *const Path,
     stroke: StrokeStyle,
 ) !curves_mod.GlyphCurves {
-    const result = (try path.cloneStrokedCurves(allocator, stroke)) orelse
+    const result = (try path.cloneStrokedCurves(scratch, stroke)) orelse
         return curves_mod.GlyphCurves.empty(allocator);
-    defer allocator.free(result.curves);
+    defer scratch.free(result.curves);
 
-    return packCurves(allocator, result.curves, result.bbox, result.logical_curve_count);
+    return packCurves(allocator, scratch, result.curves, result.bbox, result.logical_curve_count);
 }
 
 fn packCurves(
     allocator: std.mem.Allocator,
+    scratch: std.mem.Allocator,
     segs: []const CurveSegment,
     fill_bbox: BBox,
     logical_curve_count: usize,
@@ -56,8 +66,8 @@ fn packCurves(
     // snail_path_frag_body.glsl). Split cubics at their x/y extrema before
     // packing so the GPU coverage evaluator sees only monotonic pieces.
     // Conics and quadratics are unaffected.
-    const split = try curve_tex.splitCubicsAtExtrema(allocator, segs);
-    defer allocator.free(split);
+    const split = try curve_tex.splitCubicsAtExtrema(scratch, segs);
+    defer scratch.free(split);
 
     // Direct-encoding (one f16 quantize per point) instead of packed
     // (anchor chunk+frac decode + relative deltas). The packed encode
@@ -68,8 +78,8 @@ fn packCurves(
     // at the join that defeats `splitCubicsAtExtrema`'s zero-tangent
     // snap. Direct encoding quantizes every point with the same
     // `quantizeVec2F16`, so the join is bit-exact on both sides.
-    const prepared = try curve_tex.prepareGlyphCurvesForDirectEncoding(allocator, split, .zero);
-    defer allocator.free(prepared);
+    const prepared = try curve_tex.prepareGlyphCurvesForDirectEncoding(scratch, split, .zero);
+    defer scratch.free(prepared);
 
     const render_bbox = mergeBBoxWithCurves(fill_bbox, prepared);
 
@@ -86,8 +96,12 @@ fn packCurves(
         .count = curve_count,
         .offset = 0,
     };
+    // bd.data is intermediate — we dupe its used bytes into the output
+    // `band_bytes` below. Route both the working buffers and the
+    // band-data slab through scratch so they live and die with the
+    // caller's scratch arena.
     var bd = try band_tex.buildGlyphBandDataWithPreparedCurves(
-        allocator,
+        scratch,
         split,
         logical_curve_count,
         render_bbox,
@@ -96,7 +110,7 @@ fn packCurves(
         false,
         prepared,
     );
-    defer band_tex.freeGlyphBandData(allocator, &bd);
+    defer band_tex.freeGlyphBandData(scratch, &bd);
 
     const band_bytes = try allocator.dupe(u16, bd.data);
 
@@ -131,7 +145,7 @@ test "pathToCurves packs a rectangle fill" {
     defer path.deinit();
     try path.addRect(.{ .x = 0, .y = 0, .w = 100, .h = 50 });
 
-    var curves = try pathToCurves(testing.allocator, &path);
+    var curves = try pathToCurves(testing.allocator, testing.allocator, &path);
     defer curves.deinit();
 
     try testing.expect(curves.curve_count > 0);
@@ -145,7 +159,7 @@ test "pathToCurves returns empty for empty path" {
     var path = Path.init(testing.allocator);
     defer path.deinit();
 
-    var curves = try pathToCurves(testing.allocator, &path);
+    var curves = try pathToCurves(testing.allocator, testing.allocator, &path);
     defer curves.deinit();
 
     try testing.expect(curves.isEmpty());
@@ -156,7 +170,7 @@ test "strokeToCurves packs a stroked rectangle outline" {
     defer path.deinit();
     try path.addRect(.{ .x = 0, .y = 0, .w = 100, .h = 50 });
 
-    var curves = try strokeToCurves(testing.allocator, &path, .{
+    var curves = try strokeToCurves(testing.allocator, testing.allocator, &path, .{
         .paint = .{ .solid = .{ 1, 1, 1, 1 } },
         .width = 2.0,
     });
@@ -172,7 +186,7 @@ test "strokeToCurves returns empty for zero-width stroke" {
     defer path.deinit();
     try path.addRect(.{ .x = 0, .y = 0, .w = 100, .h = 50 });
 
-    var curves = try strokeToCurves(testing.allocator, &path, .{
+    var curves = try strokeToCurves(testing.allocator, testing.allocator, &path, .{
         .paint = .{ .solid = .{ 1, 1, 1, 1 } },
         .width = 0.0,
     });
@@ -189,7 +203,7 @@ test "pathToCurves: round-trip into atlas" {
     defer path.deinit();
     try path.addRoundedRect(.{ .x = 10, .y = 10, .w = 200, .h = 100 }, 8);
 
-    var curves = try pathToCurves(testing.allocator, &path);
+    var curves = try pathToCurves(testing.allocator, testing.allocator, &path);
     defer curves.deinit();
 
     var pool = try atlas_mod.PagePool.init(testing.allocator, .{

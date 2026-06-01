@@ -145,7 +145,7 @@ const PassBuilder = struct {
     }
 
     fn addFilledPath(self: *PassBuilder, path: *const snail.paths.Path, paint: snail.Paint) !void {
-        const curves = try snail.paths.pathToCurves(self.allocator, path);
+        const curves = try snail.paths.pathToCurves(self.allocator, self.allocator, path);
         if (curves.isEmpty()) {
             var owned = curves;
             owned.deinit();
@@ -167,7 +167,7 @@ const PassBuilder = struct {
     }
 
     fn addStrokedPath(self: *PassBuilder, path: *const snail.paths.Path, stroke: snail.StrokeStyle) !void {
-        const curves = try snail.paths.strokeToCurves(self.allocator, path, stroke);
+        const curves = try snail.paths.strokeToCurves(self.allocator, self.allocator, path, stroke);
         if (curves.isEmpty()) {
             var owned = curves;
             owned.deinit();
@@ -196,14 +196,14 @@ const PassBuilder = struct {
     ) !void {
         std.debug.assert(stroke.placement == .inside);
 
-        const fill_curves = try snail.paths.pathToCurves(self.allocator, path);
+        const fill_curves = try snail.paths.pathToCurves(self.allocator, self.allocator, path);
         if (fill_curves.isEmpty()) {
             var owned = fill_curves;
             owned.deinit();
             try self.addStrokedPath(path, stroke);
             return;
         }
-        const stroke_curves = try snail.paths.strokeToCurves(self.allocator, path, stroke);
+        const stroke_curves = try snail.paths.strokeToCurves(self.allocator, self.allocator, path, stroke);
         if (stroke_curves.isEmpty()) {
             try self.path_curves_owned.append(self.allocator, fill_curves);
             const key = snail.RecordKey{ .namespace = snail.ns.path_fill, .a = self.next_path_id };

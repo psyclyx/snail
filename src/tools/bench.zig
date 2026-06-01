@@ -421,7 +421,7 @@ fn addFilledPath(
     path: *const snail.paths.Path,
     paint: snail.Paint,
 ) !void {
-    const curves = try snail.paths.pathToCurves(self.allocator, path);
+    const curves = try snail.paths.pathToCurves(self.allocator, self.allocator, path);
     if (curves.isEmpty()) {
         var owned = curves;
         owned.deinit();
@@ -447,7 +447,7 @@ fn addStrokedPath(
     path: *const snail.paths.Path,
     stroke: snail.StrokeStyle,
 ) !void {
-    const curves = try snail.paths.strokeToCurves(self.allocator, path, stroke);
+    const curves = try snail.paths.strokeToCurves(self.allocator, self.allocator, path, stroke);
     if (curves.isEmpty()) {
         var owned = curves;
         owned.deinit();

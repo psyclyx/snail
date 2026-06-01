@@ -174,7 +174,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
         var p = snail.paths.Path.init(allocator);
         defer p.deinit();
         try p.addRoundedRect(card_rect, 12.0);
-        try path_curves_owned.append(allocator, try snail.paths.pathToCurves(allocator, &p));
+        try path_curves_owned.append(allocator, try snail.paths.pathToCurves(allocator, allocator, &p));
         const key = snail.RecordKey{ .namespace = snail.ns.path_fill, .a = next_path_id };
         next_path_id += 1;
         try path_entries.append(allocator, .{
@@ -189,7 +189,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
         var p = snail.paths.Path.init(allocator);
         defer p.deinit();
         try p.addRoundedRect(card_rect, 12.0);
-        try path_curves_owned.append(allocator, try snail.paths.strokeToCurves(allocator, &p, .{
+        try path_curves_owned.append(allocator, try snail.paths.strokeToCurves(allocator, allocator, &p, .{
             .paint = .{ .solid = .{ 0.78, 0.82, 0.88, 1.0 } },
             .width = 1.5,
         }));
