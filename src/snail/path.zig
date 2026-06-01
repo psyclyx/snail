@@ -189,7 +189,17 @@ fn reverseCurveSegment(curve: CurveSegment) CurveSegment {
 }
 
 fn curveUnitTangent(curve: CurveSegment, t: f32) Vec2 {
-    const deriv = curve.derivative(t);
+    return switch (curve.kind) {
+        inline else => |k| curveUnitTangentKind(k, curve, t),
+    };
+}
+
+/// Comptime-specialised tangent. Used on the stroke-offset hot path
+/// where the recursive descent stays on one curve kind throughout —
+/// the runtime switch in `derivative`/`evaluate` was the dominant
+/// inner-loop cost.
+inline fn curveUnitTangentKind(comptime kind: bezier.CurveKind, curve: CurveSegment, t: f32) Vec2 {
+    const deriv = curve.derivativeKind(kind, t);
     if (Vec2.length(deriv) > 1e-5) return Vec2.normalize(deriv);
 
     const fallback_deltas = [_]f32{ 1e-4, 1e-3, 1e-2, 5e-2 };
@@ -197,7 +207,7 @@ fn curveUnitTangent(curve: CurveSegment, t: f32) Vec2 {
         const t0 = std.math.clamp(t - delta, 0.0, 1.0);
         const t1 = std.math.clamp(t + delta, 0.0, 1.0);
         if (@abs(t1 - t0) <= 1e-6) continue;
-        const diff = Vec2.sub(curve.evaluate(t1), curve.evaluate(t0));
+        const diff = Vec2.sub(curve.evaluateKind(kind, t1), curve.evaluateKind(kind, t0));
         if (Vec2.length(diff) > 1e-5) return Vec2.normalize(diff);
     }
 
@@ -206,13 +216,19 @@ fn curveUnitTangent(curve: CurveSegment, t: f32) Vec2 {
     return .{ .x = 1.0, .y = 0.0 };
 }
 
-fn offsetPointAt(curve: CurveSegment, t: f32, tangent: Vec2, offset: f32) Vec2 {
+inline fn offsetPointAtKind(comptime kind: bezier.CurveKind, curve: CurveSegment, t: f32, tangent: Vec2, offset: f32) Vec2 {
     const normal = perpLeft(tangent);
-    return Vec2.add(curve.evaluate(t), Vec2.scale(normal, offset));
+    return Vec2.add(curve.evaluateKind(kind, t), Vec2.scale(normal, offset));
+}
+
+inline fn offsetCurvePointKind(comptime kind: bezier.CurveKind, curve: CurveSegment, t: f32, offset: f32) Vec2 {
+    return offsetPointAtKind(kind, curve, t, curveUnitTangentKind(kind, curve, t), offset);
 }
 
 fn offsetCurvePoint(curve: CurveSegment, t: f32, offset: f32) Vec2 {
-    return offsetPointAt(curve, t, curveUnitTangent(curve, t), offset);
+    return switch (curve.kind) {
+        inline else => |k| offsetCurvePointKind(k, curve, t, offset),
+    };
 }
 
 /// Build a quadratic that approximates the offset of `curve` between
@@ -234,13 +250,17 @@ fn fitOffsetCurveQuad(curve: CurveSegment, offset: f32) CurveSegment {
     return fitOffsetQuadFromPoints(p0, pm, p2);
 }
 
-/// Recurse into the offset-quad approximation with the endpoint unit
-/// tangents already computed. Each recursive level otherwise re-runs
-/// `curveUnitTangent` at the parent's t=0 and t=1 — the dominant cost
-/// in the vector-prep profile (~50% of total). Threading them down,
-/// and reusing the t=0.5 tangent across the split, cuts the
-/// curveUnitTangent count by ~60%.
-fn appendOffsetCurveApproxInner(
+/// Recursive offset-quad approximation, specialised on the curve kind
+/// at comptime. The runtime switches inside `curve.evaluate`,
+/// `curve.derivative`, `curve.flatness`, `curve.split` resolve to a
+/// single branch each, which the compiler then inlines into the
+/// recursive body. Removes the dominant inner-loop cost (~50% of
+/// vector-prep time was switch+dispatch on `CurveSegment.kind`).
+///
+/// The tangents at t=0 and t=1 are threaded from the parent so each
+/// recursive level avoids recomputing them.
+fn appendOffsetCurveApproxKind(
+    comptime kind: bezier.CurveKind,
     path: *Path,
     curve: CurveSegment,
     offset: f32,
@@ -248,15 +268,15 @@ fn appendOffsetCurveApproxInner(
     tangent0: Vec2,
     tangent1: Vec2,
 ) !void {
-    if (curve.flatness() <= 1e-6) {
-        try path.lineTo(offsetPointAt(curve, 1.0, tangent1, offset));
+    if (curve.flatnessKind(kind) <= 1e-6) {
+        try path.lineTo(offsetPointAtKind(kind, curve, 1.0, tangent1, offset));
         return;
     }
 
-    const tangent_mid = curveUnitTangent(curve, 0.5);
-    const p0 = offsetPointAt(curve, 0.0, tangent0, offset);
-    const pm = offsetPointAt(curve, 0.5, tangent_mid, offset);
-    const p2 = offsetPointAt(curve, 1.0, tangent1, offset);
+    const tangent_mid = curveUnitTangentKind(kind, curve, 0.5);
+    const p0 = offsetPointAtKind(kind, curve, 0.0, tangent0, offset);
+    const pm = offsetPointAtKind(kind, curve, 0.5, tangent_mid, offset);
+    const p2 = offsetPointAtKind(kind, curve, 1.0, tangent1, offset);
     const fitted_quad = fitOffsetQuadFromPoints(p0, pm, p2);
 
     var accept = depth == 0;
@@ -264,7 +284,7 @@ fn appendOffsetCurveApproxInner(
         const approx = fitted_quad.asQuad();
         var max_error: f32 = 0.0;
         inline for ([_]f32{ 0.25, 0.75 }) |t| {
-            const expected = offsetCurvePoint(curve, t, offset);
+            const expected = offsetCurvePointKind(kind, curve, t, offset);
             const actual = approx.evaluate(t);
             max_error = @max(max_error, Vec2.length(Vec2.sub(expected, actual)));
         }
@@ -288,9 +308,9 @@ fn appendOffsetCurveApproxInner(
         return;
     }
 
-    const halves = curve.split(0.5);
-    try appendOffsetCurveApproxInner(path, halves[0], offset, depth - 1, tangent0, tangent_mid);
-    try appendOffsetCurveApproxInner(path, halves[1], offset, depth - 1, tangent_mid, tangent1);
+    const halves = curve.splitKind(kind, 0.5);
+    try appendOffsetCurveApproxKind(kind, path, halves[0], offset, depth - 1, tangent0, tangent_mid);
+    try appendOffsetCurveApproxKind(kind, path, halves[1], offset, depth - 1, tangent_mid, tangent1);
 }
 
 fn appendOffsetCurveApprox(
@@ -301,7 +321,9 @@ fn appendOffsetCurveApprox(
 ) !void {
     const t0 = curveUnitTangent(curve, 0.0);
     const t1 = curveUnitTangent(curve, 1.0);
-    try appendOffsetCurveApproxInner(path, curve, offset, depth, t0, t1);
+    switch (curve.kind) {
+        inline else => |k| try appendOffsetCurveApproxKind(k, path, curve, offset, depth, t0, t1),
+    }
 }
 
 pub const Path = struct {

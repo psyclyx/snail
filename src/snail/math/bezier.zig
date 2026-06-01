@@ -348,6 +348,41 @@ pub const CurveSegment = struct {
 
     pub fn evaluate(self: CurveSegment, t: f32) Vec2 {
         return switch (self.kind) {
+            inline else => |k| self.evaluateKind(k, t),
+        };
+    }
+
+    pub fn derivative(self: CurveSegment, t: f32) Vec2 {
+        return switch (self.kind) {
+            inline else => |k| self.derivativeKind(k, t),
+        };
+    }
+
+    pub fn split(self: CurveSegment, t: f32) [2]CurveSegment {
+        return switch (self.kind) {
+            inline else => |k| self.splitKind(k, t),
+        };
+    }
+
+    pub fn boundingBox(self: CurveSegment) BBox {
+        return switch (self.kind) {
+            inline else => |k| self.boundingBoxKind(k),
+        };
+    }
+
+    pub fn flatness(self: CurveSegment) f32 {
+        return switch (self.kind) {
+            inline else => |k| self.flatnessKind(k),
+        };
+    }
+
+    /// Comptime-specialised versions of the dispatch helpers. Callers
+    /// that already know the curve kind at the call site (e.g. the
+    /// recursive offset-quad approximation, which descends with the
+    /// same kind throughout) pass the kind as a comptime argument and
+    /// the compiler skips the runtime switch entirely.
+    pub inline fn evaluateKind(self: CurveSegment, comptime kind: CurveKind, t: f32) Vec2 {
+        return switch (kind) {
             .quadratic => self.asQuad().evaluate(t),
             .conic => self.asConic().evaluate(t),
             .cubic => self.asCubic().evaluate(t),
@@ -355,8 +390,8 @@ pub const CurveSegment = struct {
         };
     }
 
-    pub fn derivative(self: CurveSegment, t: f32) Vec2 {
-        return switch (self.kind) {
+    pub inline fn derivativeKind(self: CurveSegment, comptime kind: CurveKind, t: f32) Vec2 {
+        return switch (kind) {
             .quadratic => blk: {
                 const mt = 1.0 - t;
                 break :blk .{
@@ -370,8 +405,8 @@ pub const CurveSegment = struct {
         };
     }
 
-    pub fn split(self: CurveSegment, t: f32) [2]CurveSegment {
-        return switch (self.kind) {
+    pub inline fn splitKind(self: CurveSegment, comptime kind: CurveKind, t: f32) [2]CurveSegment {
+        return switch (kind) {
             .quadratic => blk: {
                 const halves = self.asQuad().split(t);
                 break :blk .{ CurveSegment.fromQuad(halves[0]), CurveSegment.fromQuad(halves[1]) };
@@ -391,8 +426,8 @@ pub const CurveSegment = struct {
         };
     }
 
-    pub fn boundingBox(self: CurveSegment) BBox {
-        return switch (self.kind) {
+    pub inline fn boundingBoxKind(self: CurveSegment, comptime kind: CurveKind) BBox {
+        return switch (kind) {
             .quadratic => self.asQuad().boundingBox(),
             .conic => self.asConic().boundingBox(),
             .cubic => self.asCubic().boundingBox(),
@@ -400,8 +435,8 @@ pub const CurveSegment = struct {
         };
     }
 
-    pub fn flatness(self: CurveSegment) f32 {
-        return switch (self.kind) {
+    pub inline fn flatnessKind(self: CurveSegment, comptime kind: CurveKind) f32 {
+        return switch (kind) {
             .quadratic => self.asQuad().flatness(),
             .conic => self.asConic().flatness(),
             .cubic => self.asCubic().flatness(),
