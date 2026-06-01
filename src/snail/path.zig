@@ -537,7 +537,7 @@ pub const Path = struct {
         return &self.contours.items[self.contours.items.len - 1];
     }
 
-    fn appendSegment(self: *Path, curve: CurveSegment) !void {
+    inline fn appendSegment(self: *Path, curve: CurveSegment) !void {
         switch (curve.kind) {
             inline else => |k| try self.appendSegmentKind(k, curve),
         }
