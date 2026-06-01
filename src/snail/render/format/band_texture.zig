@@ -14,7 +14,6 @@ const BandGeometry = struct {
 };
 
 const max_band_count = 12;
-const sentinel_band = std.math.maxInt(u16);
 
 /// Per-band curve index lists, backed by a single flat slab per axis
 /// instead of `max_band_count` separate `ArrayList`s. Each band's slot
@@ -75,8 +74,9 @@ const BandLists = struct {
             out.v_band_max[bi] = geometry.bbox.min.x + geometry.width * t1 + geometry.epsilon;
         }
 
-        @memset(out.h_first_member, sentinel_band);
-        @memset(out.v_first_member, sentinel_band);
+        // `h_first_member` / `v_first_member` are written unconditionally
+        // once per curve in `recordMembership` before any read, so no
+        // sentinel pre-fill is needed.
         return out;
     }
 
@@ -128,7 +128,9 @@ const BandLists = struct {
             const hf_hi: f32 = (cb.max.y + eps - y_origin) * h_inv;
             const h_first = std.math.clamp(@as(i32, @intFromFloat(@floor(hf_lo))), 0, h_max_band);
             const h_last = std.math.clamp(@as(i32, @intFromFloat(@floor(hf_hi))), 0, h_max_band);
-            if (self.h_first_member[ci] == sentinel_band) self.h_first_member[ci] = @intCast(h_first);
+            // Each ci writes its `_first_member` slot exactly once; no
+            // pre-fill or sentinel guard required.
+            self.h_first_member[ci] = @intCast(h_first);
             var bi: i32 = h_first;
             while (bi <= h_last) : (bi += 1) {
                 const bu = @as(usize, @intCast(bi));
@@ -142,7 +144,7 @@ const BandLists = struct {
             const vf_hi: f32 = (cb.max.x + eps - x_origin) * v_inv;
             const v_first = std.math.clamp(@as(i32, @intFromFloat(@floor(vf_lo))), 0, v_max_band);
             const v_last = std.math.clamp(@as(i32, @intFromFloat(@floor(vf_hi))), 0, v_max_band);
-            if (self.v_first_member[ci] == sentinel_band) self.v_first_member[ci] = @intCast(v_first);
+            self.v_first_member[ci] = @intCast(v_first);
             bi = v_first;
             while (bi <= v_last) : (bi += 1) {
                 const bu = @as(usize, @intCast(bi));
