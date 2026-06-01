@@ -513,9 +513,10 @@ pub const Path = struct {
     }
 
     fn appendSegment(self: *Path, curve: CurveSegment) !void {
-        var contour = self.requireContour() orelse return error.PathMissingMoveTo;
+        // Append to `curves` doesn't move `contours`, so the contour
+        // pointer survives the append — no need to reacquire.
+        const contour = self.requireContour() orelse return error.PathMissingMoveTo;
         try self.curves.append(self.allocator, curve);
-        contour = self.requireContour().?;
         contour.curve_end = self.curves.items.len;
         contour.current_point = curve.endPoint();
         self.expandCurveBBox(curve);
