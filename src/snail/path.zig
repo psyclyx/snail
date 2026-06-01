@@ -532,7 +532,7 @@ pub const Path = struct {
         try self.close();
     }
 
-    fn requireContour(self: *Path) ?*Contour {
+    inline fn requireContour(self: *Path) ?*Contour {
         if (self.contours.items.len == 0) return null;
         return &self.contours.items[self.contours.items.len - 1];
     }
