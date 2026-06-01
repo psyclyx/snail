@@ -333,7 +333,9 @@ fn packBandLists(
 
     const total_texels = header_count + total_indices;
     var data = try allocator.alloc(u16, total_texels * 2);
-    @memset(data, 0);
+    // No @memset — the header + ref-list loops below write every word
+    // in the buffer. Sufficient texels are allocated for exactly
+    // header_count + total_indices texels (`total_texels * 2` words).
 
     var index_offset: u32 = header_count;
     for (0..h_bands) |bi| {
