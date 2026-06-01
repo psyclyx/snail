@@ -1595,9 +1595,11 @@ fn zoomBuildOneCold(allocator: std.mem.Allocator, ppem_px: u32) !ZoomBuild {
 // ── main ──
 
 pub fn main() !void {
-    var da: std.heap.DebugAllocator(.{}) = .init;
-    defer _ = da.deinit();
-    const allocator = da.allocator();
+    // Use the SMP allocator — same as the pre-rewrite bench. The
+    // DebugAllocator (default in demos) tracks every allocation for
+    // leak detection, which adds 5-10% per alloc/free on the prep
+    // hot path. Bench needs raw throughput numbers.
+    const allocator = std.heap.smp_allocator;
 
     var filter = try Filter.init(allocator);
     defer filter.deinit();
