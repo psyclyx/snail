@@ -103,24 +103,52 @@ const BandLists = struct {
         return self.v_slab[bi * self.v_stride ..][0..self.v_lens[bi]];
     }
 
-    fn recordMembership(self: *BandLists, curve_bboxes: []const BBox) void {
+    fn recordMembership(self: *BandLists, geometry: BandGeometry, curve_bboxes: []const BBox) void {
+        // Convert from `O(curves × total_bands)` membership tests to
+        // `O(curves × bands_curve_spans)`: compute the band range each
+        // curve overlaps directly from its bbox. Bands are uniform-
+        // spaced from `geometry.bbox.min` to `geometry.bbox.max`, with
+        // `epsilon` overlap on each end.
+        const h_count_f = @as(f32, @floatFromInt(self.h_band_count));
+        const v_count_f = @as(f32, @floatFromInt(self.v_band_count));
+        const h_inv = if (geometry.height > 0) h_count_f / geometry.height else 0;
+        const v_inv = if (geometry.width > 0) v_count_f / geometry.width else 0;
+        const eps = geometry.epsilon;
+        const h_max_band = @as(i32, @intCast(self.h_band_count)) - 1;
+        const v_max_band = @as(i32, @intCast(self.v_band_count)) - 1;
+        const y_origin = geometry.bbox.min.y;
+        const x_origin = geometry.bbox.min.x;
+
         for (curve_bboxes, 0..) |cb, ci| {
             const curve_idx: u16 = @intCast(ci);
-            for (0..self.h_band_count) |bi| {
-                if (cb.max.y >= self.h_band_min[bi] and cb.min.y <= self.h_band_max[bi]) {
-                    if (self.h_first_member[ci] == sentinel_band) self.h_first_member[ci] = @intCast(bi);
-                    const slot = self.h_lens[bi];
-                    self.h_slab[bi * self.h_stride + slot] = curve_idx;
-                    self.h_lens[bi] = slot + 1;
-                }
+
+            // H-band range: curves spanning y in [min.y - eps, max.y + eps]
+            // overlap bands where `bi * height/n` falls in that range.
+            const hf_lo: f32 = (cb.min.y - eps - y_origin) * h_inv;
+            const hf_hi: f32 = (cb.max.y + eps - y_origin) * h_inv;
+            const h_first = std.math.clamp(@as(i32, @intFromFloat(@floor(hf_lo))), 0, h_max_band);
+            const h_last = std.math.clamp(@as(i32, @intFromFloat(@floor(hf_hi))), 0, h_max_band);
+            if (self.h_first_member[ci] == sentinel_band) self.h_first_member[ci] = @intCast(h_first);
+            var bi: i32 = h_first;
+            while (bi <= h_last) : (bi += 1) {
+                const bu = @as(usize, @intCast(bi));
+                const slot = self.h_lens[bu];
+                self.h_slab[bu * self.h_stride + slot] = curve_idx;
+                self.h_lens[bu] = slot + 1;
             }
-            for (0..self.v_band_count) |bi| {
-                if (cb.max.x >= self.v_band_min[bi] and cb.min.x <= self.v_band_max[bi]) {
-                    if (self.v_first_member[ci] == sentinel_band) self.v_first_member[ci] = @intCast(bi);
-                    const slot = self.v_lens[bi];
-                    self.v_slab[bi * self.v_stride + slot] = curve_idx;
-                    self.v_lens[bi] = slot + 1;
-                }
+
+            // V-band range.
+            const vf_lo: f32 = (cb.min.x - eps - x_origin) * v_inv;
+            const vf_hi: f32 = (cb.max.x + eps - x_origin) * v_inv;
+            const v_first = std.math.clamp(@as(i32, @intFromFloat(@floor(vf_lo))), 0, v_max_band);
+            const v_last = std.math.clamp(@as(i32, @intFromFloat(@floor(vf_hi))), 0, v_max_band);
+            if (self.v_first_member[ci] == sentinel_band) self.v_first_member[ci] = @intCast(v_first);
+            bi = v_first;
+            while (bi <= v_last) : (bi += 1) {
+                const bu = @as(usize, @intCast(bi));
+                const slot = self.v_lens[bu];
+                self.v_slab[bu * self.v_stride + slot] = curve_idx;
+                self.v_lens[bu] = slot + 1;
             }
         }
     }
@@ -488,7 +516,7 @@ pub fn buildGlyphBandDataWithPreparedCurves(
 
     var lists = try BandLists.init(scratch, prepared_curves.len, geometry, h_bands, v_bands);
     defer lists.deinit(scratch);
-    lists.recordMembership(curve_bboxes);
+    lists.recordMembership(geometry, curve_bboxes);
     lists.sortMembership(curve_sort_max_x, curve_sort_max_y);
     // The packed band data is the returned output — owned by the
     // caller's `allocator`.
