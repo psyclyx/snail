@@ -378,6 +378,10 @@ fn hintPpem26_6(em: f32) !u32 {
 const SceneBuild = struct {
     allocator: std.mem.Allocator,
     pool: *snail.PagePool,
+    /// Reset between path/glyph producer calls so intermediate buffers
+    /// (split-at-extrema, prepared, band scratch) come from a bump
+    /// pointer instead of the gpa.
+    scratch_arena: std.heap.ArenaAllocator,
     owned_curves: std.ArrayList(snail.GlyphCurves),
     entries: std.ArrayList(snail.AtlasEntry),
     shapes: std.ArrayList(snail.Shape),
@@ -388,6 +392,7 @@ const SceneBuild = struct {
         return .{
             .allocator = allocator,
             .pool = pool,
+            .scratch_arena = std.heap.ArenaAllocator.init(allocator),
             .owned_curves = .empty,
             .entries = .empty,
             .shapes = .empty,
@@ -403,7 +408,18 @@ const SceneBuild = struct {
         self.shapes.deinit(self.allocator);
         for (self.extra_layer_storage.items) |s| self.allocator.free(s);
         self.extra_layer_storage.deinit(self.allocator);
+        self.scratch_arena.deinit();
         self.* = undefined;
+    }
+
+    fn scratch(self: *SceneBuild) std.mem.Allocator {
+        return self.scratch_arena.allocator();
+    }
+
+    /// Call after each producer call to drop the just-allocated
+    /// intermediates while keeping the arena's backing capacity.
+    fn resetScratch(self: *SceneBuild) void {
+        _ = self.scratch_arena.reset(.retain_capacity);
     }
 
     fn freezeAtlas(self: *SceneBuild) !snail.Atlas {
@@ -421,7 +437,8 @@ fn addFilledPath(
     path: *const snail.paths.Path,
     paint: snail.Paint,
 ) !void {
-    const curves = try snail.paths.pathToCurves(self.allocator, self.allocator, path);
+    const curves = try snail.paths.pathToCurves(self.allocator, self.scratch(), path);
+    self.resetScratch();
     if (curves.isEmpty()) {
         var owned = curves;
         owned.deinit();
@@ -447,7 +464,8 @@ fn addStrokedPath(
     path: *const snail.paths.Path,
     stroke: snail.StrokeStyle,
 ) !void {
-    const curves = try snail.paths.strokeToCurves(self.allocator, self.allocator, path, stroke);
+    const curves = try snail.paths.strokeToCurves(self.allocator, self.scratch(), path, stroke);
+    self.resetScratch();
     if (curves.isEmpty()) {
         var owned = curves;
         owned.deinit();
