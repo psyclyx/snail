@@ -389,6 +389,11 @@ const BannerBuilder = struct {
     decoration_rects: std.ArrayList(snail.Rect),
     missing: bool,
 
+    /// Per-build arena reused across `pathToCurves` / `strokeToCurves`
+    /// calls. Resets after each producer call so intermediate buffers
+    /// collapse to bump-pointer ops.
+    scratch_arena: std.heap.ArenaAllocator,
+
     fn init(
         allocator: Allocator,
         assets: *Assets,
@@ -417,6 +422,7 @@ const BannerBuilder = struct {
             .painted_text_shapes = .empty,
             .decoration_rects = .empty,
             .missing = false,
+            .scratch_arena = std.heap.ArenaAllocator.init(allocator),
         };
     }
 
@@ -437,11 +443,13 @@ const BannerBuilder = struct {
 
         self.decoration_rects.deinit(self.allocator);
         for (&self.glyph_caches) |*c| c.deinit();
+        self.scratch_arena.deinit();
     }
 
     fn snailBuilder(self: *BannerBuilder) banner_snail.Builder {
         return .{
             .allocator = self.allocator,
+            .scratch_arena = &self.scratch_arena,
             .owned_curves = &self.path_curves_owned,
             .entries = &self.path_entries,
             .shapes = &self.path_shapes,

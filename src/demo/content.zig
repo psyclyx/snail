@@ -210,8 +210,11 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
             .w = 140.0,
             .h = 122.0,
         };
+        var scratch_arena = std.heap.ArenaAllocator.init(allocator);
+        defer scratch_arena.deinit();
         const snail_builder = banner_snail.Builder{
             .allocator = allocator,
+            .scratch_arena = &scratch_arena,
             .owned_curves = &path_curves_owned,
             .entries = &path_entries,
             .shapes = &path_shapes,
