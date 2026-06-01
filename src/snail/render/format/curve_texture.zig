@@ -12,29 +12,11 @@ pub const PACKED_BAND_DILATION: f32 = 1.0;
 pub const DIRECT_ENCODING_KIND_BIAS: f32 = 4.0;
 const PACKED_CURVE_MAX_SPLIT_DEPTH: u8 = 24;
 
-/// Convert f32 to IEEE 754 binary16 (half-float).
+/// Convert f32 to IEEE 754 binary16 (half-float). Uses Zig's f16
+/// type which the backend lowers to F16C `vcvtps2ph` on x86 and to
+/// the equivalent FCVT on ARM — both are single-instruction.
 pub fn f32ToF16(val: f32) u16 {
-    const bits: u32 = @bitCast(val);
-    const sign: u16 = @intCast((bits >> 16) & 0x8000);
-    const exp_val = @as(i32, @intCast((bits >> 23) & 0xFF)) - 127;
-    const mantissa = bits & 0x7FFFFF;
-
-    if (exp_val >= 16) {
-        // Overflow → infinity
-        return sign | 0x7C00;
-    } else if (exp_val >= -14) {
-        // Normal
-        const e: u16 = @intCast(exp_val + 15);
-        const m: u16 = @intCast(mantissa >> 13);
-        return sign | (e << 10) | m;
-    } else if (exp_val >= -24) {
-        // Subnormal
-        const shift: u5 = @intCast(-exp_val - 14 + 10);
-        const m: u16 = @intCast((mantissa | 0x800000) >> shift);
-        return sign | m;
-    } else {
-        return sign; // zero
-    }
+    return @bitCast(@as(f16, @floatCast(val)));
 }
 
 const PackedAnchor = struct {
