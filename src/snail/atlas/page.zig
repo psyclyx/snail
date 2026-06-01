@@ -106,8 +106,9 @@ pub const AtlasPage = struct {
         errdefer allocator.free(curve_buf);
         const band_buf = try allocator.alloc(Word, band_capacity_words);
         errdefer allocator.free(band_buf);
-        @memset(curve_buf, 0);
-        @memset(band_buf, 0);
+        // No @memset: both buffers are written before read. Curve and
+        // band shaders fetch by explicit entry offsets that point only
+        // at written regions; unwritten words are never accessed.
         page.* = .{
             .allocator = allocator,
             .layer_index = layer_index,
