@@ -346,31 +346,31 @@ pub const CurveSegment = struct {
         };
     }
 
-    pub fn evaluate(self: CurveSegment, t: f32) Vec2 {
+    pub inline fn evaluate(self: CurveSegment, t: f32) Vec2 {
         return switch (self.kind) {
             inline else => |k| self.evaluateKind(k, t),
         };
     }
 
-    pub fn derivative(self: CurveSegment, t: f32) Vec2 {
+    pub inline fn derivative(self: CurveSegment, t: f32) Vec2 {
         return switch (self.kind) {
             inline else => |k| self.derivativeKind(k, t),
         };
     }
 
-    pub fn split(self: CurveSegment, t: f32) [2]CurveSegment {
+    pub inline fn split(self: CurveSegment, t: f32) [2]CurveSegment {
         return switch (self.kind) {
             inline else => |k| self.splitKind(k, t),
         };
     }
 
-    pub fn boundingBox(self: CurveSegment) BBox {
+    pub inline fn boundingBox(self: CurveSegment) BBox {
         return switch (self.kind) {
             inline else => |k| self.boundingBoxKind(k),
         };
     }
 
-    pub fn flatness(self: CurveSegment) f32 {
+    pub inline fn flatness(self: CurveSegment) f32 {
         return switch (self.kind) {
             inline else => |k| self.flatnessKind(k),
         };
