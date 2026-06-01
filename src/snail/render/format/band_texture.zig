@@ -373,12 +373,14 @@ fn packBandLists(
 
 pub fn buildGlyphBandDataForGlyph(
     allocator: std.mem.Allocator,
+    scratch: std.mem.Allocator,
     glyph: curve_tex.GlyphCurves,
     curve_entry: curve_tex.GlyphCurveEntry,
 ) !GlyphBandData {
     if (glyph.prepared_curves) |prepared_curves| {
         return buildGlyphBandDataWithPreparedCurves(
             allocator,
+            scratch,
             glyph.curves,
             glyph.logical_curve_count,
             glyph.bbox,
@@ -390,6 +392,7 @@ pub fn buildGlyphBandDataForGlyph(
     }
     return buildGlyphBandData(
         allocator,
+        scratch,
         glyph.curves,
         glyph.logical_curve_count,
         glyph.bbox,
@@ -400,8 +403,11 @@ pub fn buildGlyphBandDataForGlyph(
 }
 
 /// Build band data for a single glyph, referencing the curve texture.
+/// `allocator` owns the returned band data; `scratch` holds the
+/// intermediate prepared curves + working buffers.
 pub fn buildGlyphBandData(
     allocator: std.mem.Allocator,
+    scratch: std.mem.Allocator,
     curves: []const CurveSegment,
     logical_curve_count: usize,
     bbox: BBox,
@@ -412,13 +418,14 @@ pub fn buildGlyphBandData(
     if (curves.len == 0) return emptyGlyphBandData();
 
     const prepared_curves = if (prefer_direct_encoding)
-        try curve_tex.prepareGlyphCurvesForDirectEncoding(allocator, curves, origin)
+        try curve_tex.prepareGlyphCurvesForDirectEncoding(scratch, curves, origin)
     else
-        try curve_tex.prepareGlyphCurvesForPacking(allocator, curves, origin);
-    defer allocator.free(prepared_curves);
+        try curve_tex.prepareGlyphCurvesForPacking(scratch, curves, origin);
+    defer scratch.free(prepared_curves);
 
     return buildGlyphBandDataWithPreparedCurves(
         allocator,
+        scratch,
         curves,
         logical_curve_count,
         bbox,
@@ -431,6 +438,7 @@ pub fn buildGlyphBandData(
 
 pub fn buildGlyphBandDataWithPreparedCurves(
     allocator: std.mem.Allocator,
+    scratch: std.mem.Allocator,
     curves: []const CurveSegment,
     logical_curve_count: usize,
     bbox: BBox,
@@ -450,12 +458,14 @@ pub fn buildGlyphBandDataWithPreparedCurves(
     const v_bands = bandCount(band_curve_count);
     std.debug.assert(h_bands <= max_band_count and v_bands <= max_band_count);
 
-    const curve_bboxes = try allocator.alloc(BBox, prepared_curves.len);
-    defer allocator.free(curve_bboxes);
-    const curve_sort_max_x = try allocator.alloc(f32, prepared_curves.len);
-    defer allocator.free(curve_sort_max_x);
-    const curve_sort_max_y = try allocator.alloc(f32, prepared_curves.len);
-    defer allocator.free(curve_sort_max_y);
+    // Bounded-by-curve-count working arrays come off scratch — they
+    // die at function return or sooner.
+    const curve_bboxes = try scratch.alloc(BBox, prepared_curves.len);
+    defer scratch.free(curve_bboxes);
+    const curve_sort_max_x = try scratch.alloc(f32, prepared_curves.len);
+    defer scratch.free(curve_sort_max_x);
+    const curve_sort_max_y = try scratch.alloc(f32, prepared_curves.len);
+    defer scratch.free(curve_sort_max_y);
     const geometry = collectBandGeometry(
         curves,
         bbox,
@@ -467,10 +477,12 @@ pub fn buildGlyphBandDataWithPreparedCurves(
         curve_sort_max_y,
     );
 
-    var lists = try BandLists.init(allocator, prepared_curves.len, geometry, h_bands, v_bands);
-    defer lists.deinit(allocator);
+    var lists = try BandLists.init(scratch, prepared_curves.len, geometry, h_bands, v_bands);
+    defer lists.deinit(scratch);
     lists.recordMembership(curve_bboxes);
     lists.sortMembership(curve_sort_max_x, curve_sort_max_y);
+    // The packed band data is the returned output — owned by the
+    // caller's `allocator`.
     const packed_data = try packBandLists(allocator, curve_entry, &lists);
 
     // Band transform: maps em-space coords to band indices
@@ -608,7 +620,7 @@ test "buildGlyphBandData basic" {
     const bbox = BBox{ .min = Vec2.new(0, -0.5), .max = Vec2.new(1, 0.5) };
     const entry = curve_tex.GlyphCurveEntry{ .start_x = 0, .start_y = 0, .count = 2, .offset = 0 };
 
-    var bd = try buildGlyphBandData(std.testing.allocator, &curves, curves.len, bbox, entry, .zero, false);
+    var bd = try buildGlyphBandData(std.testing.allocator, std.testing.allocator, &curves, curves.len, bbox, entry, .zero, false);
     defer freeGlyphBandData(std.testing.allocator, &bd);
 
     try std.testing.expect(bd.h_band_count > 0);
@@ -631,7 +643,7 @@ test "buildGlyphBandData rebases curves by origin" {
     defer std.testing.allocator.free(prepared);
     const prepared_bbox = prepared[0].boundingBox();
 
-    var bd = try buildGlyphBandData(std.testing.allocator, &curves, curves.len, bbox, entry, Vec2.new(640, 960), false);
+    var bd = try buildGlyphBandData(std.testing.allocator, std.testing.allocator, &curves, curves.len, bbox, entry, Vec2.new(640, 960), false);
     defer freeGlyphBandData(std.testing.allocator, &bd);
 
     try std.testing.expectEqual(@as(u16, 1), bd.h_band_count);
@@ -660,6 +672,7 @@ test "buildGlyphBandData derives band transform from prepared curve bbox" {
 
     var bd = try buildGlyphBandData(
         std.testing.allocator,
+        std.testing.allocator,
         &curves,
         curves.len,
         .{ .min = Vec2.new(-100, -100), .max = Vec2.new(100, 100) },
@@ -687,6 +700,7 @@ test "buildGlyphBandData uses logical curve count for band count" {
     };
     const entry = curve_tex.GlyphCurveEntry{ .start_x = 0, .start_y = 0, .count = @intCast(curves.len), .offset = 0 };
     var bd = try buildGlyphBandData(
+        std.testing.allocator,
         std.testing.allocator,
         &curves,
         2,
@@ -729,6 +743,7 @@ test "buildGlyphBandData keeps direct encoded font bbox semantics" {
     };
 
     var bd = try buildGlyphBandData(
+        std.testing.allocator,
         std.testing.allocator,
         &curves,
         curves.len,
@@ -777,6 +792,7 @@ test "buildGlyphBandData sorts horizontal curves by shader max x" {
 
     var bd = try buildGlyphBandData(
         std.testing.allocator,
+        std.testing.allocator,
         &curves,
         curves.len,
         .{ .min = Vec2.new(0, 0), .max = Vec2.new(80, 20) },
@@ -817,6 +833,7 @@ test "buildGlyphBandData direct encoding preserves local bbox semantics" {
     const entry = curve_tex.GlyphCurveEntry{ .start_x = 0, .start_y = 0, .count = @intCast(curves.len), .offset = 0 };
 
     var bd = try buildGlyphBandData(
+        std.testing.allocator,
         std.testing.allocator,
         &curves,
         curves.len,

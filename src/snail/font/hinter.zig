@@ -280,7 +280,10 @@ pub const Hinter = struct {
             .count = curve_count,
             .offset = 0,
         };
-        var bd = try band_tex.buildGlyphBandDataWithPreparedCurves(
+        // Band data goes straight to the output allocator. The
+        // BandLists / sort-array intermediates stay on scratch.
+        const bd = try band_tex.buildGlyphBandDataWithPreparedCurves(
+            allocator,
             scratch,
             hint_value.curves,
             hint_value.curves.len,
@@ -290,16 +293,15 @@ pub const Hinter = struct {
             true,
             hint_value.prepared_curves,
         );
-        defer band_tex.freeGlyphBandData(scratch, &bd);
+        errdefer band_tex.freeGlyphBandData(allocator, @constCast(&bd));
 
-        const band_bytes = try allocator.dupe(u16, bd.data);
-        errdefer allocator.free(band_bytes);
+        const band_bytes = bd.data;
 
         // Cache a hinter-owned copy so subsequent calls at the same
         // (ppem, glyph_id) hit the cache and skip the VM + texture build.
         const cached_curve_bytes = self.allocator.dupe(u16, curve_bytes) catch null;
         if (cached_curve_bytes) |c_bytes| {
-            const cached_band_bytes = self.allocator.dupe(u16, bd.data) catch {
+            const cached_band_bytes = self.allocator.dupe(u16, band_bytes) catch {
                 self.allocator.free(c_bytes);
                 // Cache population failed; still return the freshly built
                 // curves to the caller.

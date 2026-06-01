@@ -96,11 +96,10 @@ fn packCurves(
         .count = curve_count,
         .offset = 0,
     };
-    // bd.data is intermediate — we dupe its used bytes into the output
-    // `band_bytes` below. Route both the working buffers and the
-    // band-data slab through scratch so they live and die with the
-    // caller's scratch arena.
-    var bd = try band_tex.buildGlyphBandDataWithPreparedCurves(
+    // Band data goes straight to the output allocator — no intermediate
+    // dupe. Internal working buffers come off scratch.
+    const bd = try band_tex.buildGlyphBandDataWithPreparedCurves(
+        allocator,
         scratch,
         split,
         logical_curve_count,
@@ -110,9 +109,9 @@ fn packCurves(
         false,
         prepared,
     );
-    defer band_tex.freeGlyphBandData(scratch, &bd);
+    errdefer band_tex.freeGlyphBandData(allocator, @constCast(&bd));
 
-    const band_bytes = try allocator.dupe(u16, bd.data);
+    const band_bytes = bd.data;
 
     return .{
         .allocator = allocator,

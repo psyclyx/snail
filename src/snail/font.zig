@@ -180,7 +180,11 @@ fn extractCurvesInner(
         .count = curve_count,
         .offset = 0,
     };
-    var bd = try band_tex.buildGlyphBandDataWithPreparedCurves(
+    // Band data goes straight to the output allocator — no intermediate
+    // dupe. Internal working buffers (curve_bboxes, sort arrays,
+    // BandLists slabs) use scratch.
+    const bd = try band_tex.buildGlyphBandDataWithPreparedCurves(
+        allocator,
         scratch,
         segs,
         segs.len,
@@ -190,9 +194,9 @@ fn extractCurvesInner(
         true,
         prepared,
     );
-    defer band_tex.freeGlyphBandData(scratch, &bd);
+    errdefer band_tex.freeGlyphBandData(allocator, @constCast(&bd));
 
-    const band_bytes = try allocator.dupe(u16, bd.data);
+    const band_bytes = bd.data;
 
     return .{
         .allocator = allocator,
