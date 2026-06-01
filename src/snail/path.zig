@@ -269,7 +269,10 @@ fn appendOffsetCurveApproxKind(
     tangent1: Vec2,
 ) !void {
     if (curve.flatnessKind(kind) <= 1e-6) {
-        try path.lineTo(offsetPointAtKind(kind, curve, 1.0, tangent1, offset));
+        const contour = path.requireContour() orelse return error.PathMissingMoveTo;
+        const target = offsetPointAtKind(kind, curve, 1.0, tangent1, offset);
+        path.band_curve_count += 1;
+        try path.appendSegmentKind(.line, makePathLineSegment(contour.current_point, target));
         return;
     }
 
@@ -304,7 +307,7 @@ fn appendOffsetCurveApproxKind(
         const contour = path.requireContour() orelse return error.PathMissingMoveTo;
         fitted.p0 = contour.current_point;
         path.band_curve_count += 1;
-        try path.appendSegment(fitted);
+        try path.appendSegmentKind(.quadratic, fitted);
         return;
     }
 
@@ -535,13 +538,26 @@ pub const Path = struct {
     }
 
     fn appendSegment(self: *Path, curve: CurveSegment) !void {
+        switch (curve.kind) {
+            inline else => |k| try self.appendSegmentKind(k, curve),
+        }
+    }
+
+    /// Comptime-kind-specialised append. Skips the runtime switches inside
+    /// `boundingBox` and `endPoint` when the caller already knows the
+    /// curve's kind at the call site (e.g. the recursive offset-quad
+    /// boundary builder).
+    inline fn appendSegmentKind(self: *Path, comptime kind: bezier.CurveKind, curve: CurveSegment) !void {
         // Append to `curves` doesn't move `contours`, so the contour
         // pointer survives the append — no need to reacquire.
         const contour = self.requireContour() orelse return error.PathMissingMoveTo;
         try self.curves.append(self.allocator, curve);
         contour.curve_end = self.curves.items.len;
-        contour.current_point = curve.endPoint();
-        self.expandCurveBBox(curve);
+        contour.current_point = switch (kind) {
+            .cubic => curve.p3,
+            .quadratic, .conic, .line => curve.p2,
+        };
+        self.expandCurveBBoxKind(kind, curve);
     }
 
     fn expandPointBBox(self: *Path, point: Vec2) void {
@@ -556,7 +572,13 @@ pub const Path = struct {
     }
 
     fn expandCurveBBox(self: *Path, curve: CurveSegment) void {
-        const cb = curve.boundingBox();
+        switch (curve.kind) {
+            inline else => |k| self.expandCurveBBoxKind(k, curve),
+        }
+    }
+
+    inline fn expandCurveBBoxKind(self: *Path, comptime kind: bezier.CurveKind, curve: CurveSegment) void {
+        const cb = curve.boundingBoxKind(kind);
         if (self.bbox) |bbox| {
             self.bbox = bbox.merge(cb);
         } else {
