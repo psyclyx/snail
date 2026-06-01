@@ -99,13 +99,21 @@ pub const Font = struct {
     /// not depend on the cache after the call returns.
     ///
     /// Glyphs with no contours (e.g. ASCII space) return `GlyphCurves.empty`.
+    ///
+    /// `allocator` owns the returned `GlyphCurves`. `scratch` holds the
+    /// intermediate buffers (glyph parse, prepared/quantized curves,
+    /// band scratch). For batched extraction (atlas warmup, prep
+    /// passes) pass an `ArenaAllocator.allocator()` as `scratch` and
+    /// reset it between glyphs; one-shot callers can pass the same
+    /// allocator twice.
     pub fn extractCurves(
         self: *const Font,
         allocator: std.mem.Allocator,
+        scratch: std.mem.Allocator,
         cache: *GlyphCache,
         glyph_id: u16,
     ) !curves_mod.GlyphCurves {
-        return extractCurvesInner(self, allocator, cache, glyph_id);
+        return extractCurvesInner(self, allocator, scratch, cache, glyph_id);
     }
 
     pub const ColrLayer = ttf.Font.ColrLayer;
@@ -128,9 +136,13 @@ const CurveSegment = bezier.CurveSegment;
 fn extractCurvesInner(
     font: *const Font,
     allocator: std.mem.Allocator,
+    scratch: std.mem.Allocator,
     cache: *GlyphCache,
     glyph_id: u16,
 ) !curves_mod.GlyphCurves {
+    // `parseGlyph` keeps results in `cache` keyed by glyph id (long-lived
+    // for batched extraction); using `scratch` here would be wrong since
+    // the cache assumes its allocator outlives the cache.
     const glyph = try font.inner.parseGlyph(allocator, cache, glyph_id);
     if (glyph.contours.len == 0) return curves_mod.GlyphCurves.empty(allocator);
 
@@ -138,8 +150,8 @@ fn extractCurvesInner(
     for (glyph.contours) |contour| total_curves += contour.curves.len;
     if (total_curves == 0) return curves_mod.GlyphCurves.empty(allocator);
 
-    const segs = try allocator.alloc(CurveSegment, total_curves);
-    defer allocator.free(segs);
+    const segs = try scratch.alloc(CurveSegment, total_curves);
+    defer scratch.free(segs);
 
     var write_idx: usize = 0;
     for (glyph.contours) |contour| {
@@ -149,8 +161,8 @@ fn extractCurvesInner(
         }
     }
 
-    const prepared = try curve_tex.prepareGlyphCurvesForDirectEncoding(allocator, segs, .zero);
-    defer allocator.free(prepared);
+    const prepared = try curve_tex.prepareGlyphCurvesForDirectEncoding(scratch, segs, .zero);
+    defer scratch.free(prepared);
 
     const render_bbox = glyphRenderBBox(glyph.metrics.bbox, prepared);
 
@@ -169,7 +181,7 @@ fn extractCurvesInner(
         .offset = 0,
     };
     var bd = try band_tex.buildGlyphBandDataWithPreparedCurves(
-        allocator,
+        scratch,
         segs,
         segs.len,
         render_bbox,
@@ -178,7 +190,7 @@ fn extractCurvesInner(
         true,
         prepared,
     );
-    defer band_tex.freeGlyphBandData(allocator, &bd);
+    defer band_tex.freeGlyphBandData(scratch, &bd);
 
     const band_bytes = try allocator.dupe(u16, bd.data);
 
@@ -213,7 +225,7 @@ test "extractCurves returns non-empty curves for printable glyph" {
     defer cache.deinit();
 
     const glyph_id = try font.glyphIndex('A');
-    var curves = try font.extractCurves(std.testing.allocator, &cache, glyph_id);
+    var curves = try font.extractCurves(std.testing.allocator, std.testing.allocator, &cache, glyph_id);
     defer curves.deinit();
 
     try std.testing.expect(curves.curve_count > 0);
@@ -232,7 +244,7 @@ test "extractCurves returns empty for whitespace glyph" {
     defer cache.deinit();
 
     const space_id = try font.glyphIndex(' ');
-    var curves = try font.extractCurves(std.testing.allocator, &cache, space_id);
+    var curves = try font.extractCurves(std.testing.allocator, std.testing.allocator, &cache, space_id);
     defer curves.deinit();
 
     try std.testing.expect(curves.isEmpty());
@@ -250,7 +262,7 @@ test "extractCurves matches existing curve packing path byte-for-byte" {
     defer cache.deinit();
 
     const glyph_id = try font.glyphIndex('M');
-    var curves = try font.extractCurves(std.testing.allocator, &cache, glyph_id);
+    var curves = try font.extractCurves(std.testing.allocator, std.testing.allocator, &cache, glyph_id);
     defer curves.deinit();
 
     // Re-run the same packing through the format helpers directly and

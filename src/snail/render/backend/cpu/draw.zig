@@ -260,7 +260,7 @@ test "drawCpu replicated produces same pixels as equivalent heterogeneous emit" 
     defer glyph_cache.deinit();
 
     const gid = try font.glyphIndex('o');
-    var curves = try font.extractCurves(allocator, &glyph_cache, gid);
+    var curves = try font.extractCurves(allocator, allocator, &glyph_cache, gid);
     defer curves.deinit();
 
     var pool = try @import("../../../atlas/page_pool.zig").PagePool.init(allocator, .{
@@ -357,7 +357,7 @@ test "drawCpu renders a small Picture into non-zero pixels" {
     defer glyph_cache.deinit();
 
     const gid = try font.glyphIndex('A');
-    const curves_a = try font.extractCurves(allocator, &glyph_cache, gid);
+    const curves_a = try font.extractCurves(allocator, allocator, &glyph_cache, gid);
     var owned: [1]@import("../../../atlas/curves.zig").GlyphCurves = .{curves_a};
     defer for (&owned) |*c| c.deinit();
 
@@ -437,7 +437,7 @@ test "drawCpu renders gradient-painted glyph through special-layer path" {
     defer glyph_cache.deinit();
 
     const gid = try font.glyphIndex('O');
-    var curves = try font.extractCurves(allocator, &glyph_cache, gid);
+    var curves = try font.extractCurves(allocator, allocator, &glyph_cache, gid);
     defer curves.deinit();
 
     var pool = try @import("../../../atlas/page_pool.zig").PagePool.init(allocator, .{

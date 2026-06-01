@@ -498,7 +498,7 @@ fn ensureUnhintedRunCurves(
         const fid = FACE_TO_FONT_ID[g.face_index];
         const key = snail.recordKey.unhintedGlyph(fid, g.glyph_id);
         if (containsKey(build.entries.items, key)) continue;
-        const curves = try fonts.fonts[fid].extractCurves(build.allocator, &glyph_caches[fid], g.glyph_id);
+        const curves = try fonts.fonts[fid].extractCurves(build.allocator, build.scratch(), &glyph_caches[fid], g.glyph_id);
         try build.owned_curves.append(build.allocator, curves);
         try build.entries.append(build.allocator, .{
             .key = key,
@@ -921,7 +921,7 @@ fn addRichRun(
                     .ty = pen_y,
                 };
                 const local_paint = snail.mapPaintToLocal(paint, transform) orelse continue;
-                const curves = try fonts.fonts[fid].extractCurves(allocator, &glyph_caches[fid], g.glyph_id);
+                const curves = try fonts.fonts[fid].extractCurves(allocator, allocator, &glyph_caches[fid], g.glyph_id);
                 try build.owned_curves.append(allocator, curves);
                 const key = snail.RecordKey{ .namespace = snail.ns.path_fill, .a = build.next_path_id };
                 build.next_path_id += 1;
@@ -952,7 +952,10 @@ fn benchSnailPrep(allocator: std.mem.Allocator) !SnailPrep {
         f.deinit();
     }
 
-    // ASCII glyph prep: extract curves into a fresh pool.
+    // ASCII glyph prep: extract curves into a fresh pool. Uses an
+    // ArenaAllocator as `scratch` for the per-glyph intermediate
+    // buffers; resets between glyphs so the allocations collapse to
+    // bump-pointer ops.
     var ascii_prep_total_us: f64 = 0;
     for (0..PREP_RUNS) |_| {
         var pool = try snail.PagePool.init(allocator, .{ .max_layers = 2, .curve_words_per_page = 1 << 16, .band_words_per_page = 1 << 14 });
@@ -961,6 +964,8 @@ fn benchSnailPrep(allocator: std.mem.Allocator) !SnailPrep {
         defer font.deinit();
         var cache = snail.font.GlyphCache.init(allocator);
         defer cache.deinit();
+        var scratch_arena = std.heap.ArenaAllocator.init(allocator);
+        defer scratch_arena.deinit();
 
         var entries: std.ArrayListUnmanaged(snail.AtlasEntry) = .empty;
         defer entries.deinit(allocator);
@@ -974,7 +979,8 @@ fn benchSnailPrep(allocator: std.mem.Allocator) !SnailPrep {
         for (PRINTABLE_ASCII) |ch| {
             const gid = try font.glyphIndex(ch);
             if (gid == 0) continue;
-            const curves = try font.extractCurves(allocator, &cache, gid);
+            const curves = try font.extractCurves(allocator, scratch_arena.allocator(), &cache, gid);
+            _ = scratch_arena.reset(.retain_capacity);
             try owned.append(allocator, curves);
             try entries.append(allocator, .{
                 .key = snail.recordKey.unhintedGlyph(0, gid),

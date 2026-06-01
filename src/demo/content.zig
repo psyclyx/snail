@@ -130,7 +130,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
         const fid: u32 = g.face_index;
         const key = snail.recordKey.unhintedGlyph(fid, g.glyph_id);
         if (containsKey(text_entries.items, key)) continue;
-        const curves = try fonts[fid].extractCurves(allocator, &glyph_caches[fid], g.glyph_id);
+        const curves = try fonts[fid].extractCurves(allocator, allocator, &glyph_caches[fid], g.glyph_id);
         try owned_curves.append(allocator, curves);
         try text_entries.append(allocator, .{ .key = key, .curves = owned_curves.items[owned_curves.items.len - 1] });
     }
@@ -250,7 +250,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
             .ty = pen_y,
         };
         const local_paint = snail.mapPaintToLocal(.{ .linear_gradient = wordmark_world_gradient }, transform) orelse continue;
-        const curves = try fonts[fid].extractCurves(allocator, &glyph_caches[fid], g.glyph_id);
+        const curves = try fonts[fid].extractCurves(allocator, allocator, &glyph_caches[fid], g.glyph_id);
         try path_curves_owned.append(allocator, curves);
         const key = snail.RecordKey{ .namespace = snail.ns.path_fill, .a = next_path_id };
         next_path_id += 1;
@@ -381,7 +381,7 @@ fn ensureGlyphOrColrLayers(
         while (iter.next()) |layer| {
             const key = snail.recordKey.unhintedGlyph(fid, layer.glyph_id);
             if (containsKey(entries.items, key)) continue;
-            const curves = try font.extractCurves(allocator, cache, layer.glyph_id);
+            const curves = try font.extractCurves(allocator, allocator, cache, layer.glyph_id);
             try owned_curves.append(allocator, curves);
             try entries.append(allocator, .{ .key = key, .curves = owned_curves.items[owned_curves.items.len - 1] });
         }
@@ -389,7 +389,7 @@ fn ensureGlyphOrColrLayers(
     }
     const key = snail.recordKey.unhintedGlyph(fid, glyph_id);
     if (containsKey(entries.items, key)) return;
-    const curves = try font.extractCurves(allocator, cache, glyph_id);
+    const curves = try font.extractCurves(allocator, allocator, cache, glyph_id);
     try owned_curves.append(allocator, curves);
     try entries.append(allocator, .{ .key = key, .curves = owned_curves.items[owned_curves.items.len - 1] });
 }

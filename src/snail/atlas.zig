@@ -611,7 +611,7 @@ test "atlas + font extract: end-to-end smoke test" {
     const codes = [_]u32{ 'A', 'B', 'C', 'M', 'a', 'g', 'o' };
     for (codes) |cp| {
         const gid = try font.glyphIndex(cp);
-        const curves = try font.extractCurves(testing.allocator, &cache, gid);
+        const curves = try font.extractCurves(testing.allocator, testing.allocator, &cache, gid);
         try owned.append(testing.allocator, curves);
         try entries.append(testing.allocator, .{
             .key = record_key_mod.unhintedGlyph(0, gid),

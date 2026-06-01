@@ -639,7 +639,7 @@ test "release returns range to free list and allows reuse" {
     var glyph_cache = font_mod.GlyphCache.init(testing.allocator);
     defer glyph_cache.deinit();
     const gid = try font.glyphIndex('A');
-    var curves = try font.extractCurves(testing.allocator, &glyph_cache, gid);
+    var curves = try font.extractCurves(testing.allocator, testing.allocator, &glyph_cache, gid);
     defer curves.deinit();
 
     var pool = try PagePool.init(testing.allocator, .{
