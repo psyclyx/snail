@@ -91,52 +91,78 @@ pub fn printHardwareTable(gl_rows: []const GlHardwareRow, vulkan_initialized: bo
     std.debug.print("\n", .{});
 }
 
+/// Each prep field is optional — skip the row if the workload didn't
+/// run. The FreeType comparison columns are also conditional: if `ft`
+/// is null, the row prints with `n/a` in the FT columns; if the snail
+/// row didn't run, the row is omitted entirely.
 pub fn printPreparationTables(snail_prep: anytype, vector_prep: anytype, ft: anytype) void {
+    const have_ft = ft != null;
+
+    var any_prep = false;
+    if (snail_prep.font_load_us != null or snail_prep.ascii_prep_us != null or
+        snail_prep.ascii_hint_setup_us != null or snail_prep.ascii_hint_execute_us != null or
+        snail_prep.ascii_hint_us != null or snail_prep.paragraph_hint_context_cold_us != null or
+        snail_prep.paragraph_hint_context_warm_us != null or vector_prep.freeze_us != null)
+    {
+        any_prep = true;
+    }
+    if (!any_prep and !have_ft) return;
+
     std.debug.print(
         \\## Preparation
         \\
         \\| Workload | Snail | FreeType | FreeType / Snail |
         \\|---|---:|---:|---:|
-        \\| Font load | {d:.2} us | {d:.2} us | {d:.2}x |
-        \\| Glyph prep, ASCII | {d:.2} us | {d:.2} us | {d:.2}x |
-        \\| Glyph prep, 7 sizes | {d:.2} us | {d:.2} us | {d:.2}x |
-        \\| TT hint setup @ 12px | {d:.2} us | n/a | n/a |
-        \\| TT hint execute, ASCII @ 12px | {d:.2} us | n/a | n/a |
-        \\| TT hint plan, ASCII @ 12px | {d:.2} us | n/a | n/a |
-        \\| TT hinter cold (full pipeline), paragraph @ 12px | {d:.2} us | n/a | n/a |
-        \\| TT hinter warm (cache hit + clone), paragraph @ 12px | {d:.2} us | n/a | n/a |
-        \\| Vector picture build, {d} shapes | {d:.2} us | n/a | n/a |
         \\
-        \\## FreeType Bitmap Memory
-        \\
-        \\| Resource | Bytes | KiB |
-        \\|---|---:|---:|
-        \\| FreeType bitmaps, one size | {d} | {d:.1} |
-        \\| FreeType bitmaps, seven sizes | {d} | {d:.1} |
-        \\
-    , .{
-        snail_prep.font_load_us,
-        ft.font_load_us,
-        ratio(ft.font_load_us, snail_prep.font_load_us),
-        snail_prep.ascii_prep_us,
-        ft.glyph_prep_us,
-        ratio(ft.glyph_prep_us, snail_prep.ascii_prep_us),
-        snail_prep.ascii_prep_us,
-        ft.glyph_prep_all_sizes_us,
-        ratio(ft.glyph_prep_all_sizes_us, snail_prep.ascii_prep_us),
-        snail_prep.ascii_hint_setup_us,
-        snail_prep.ascii_hint_execute_us,
-        snail_prep.ascii_hint_us,
-        snail_prep.paragraph_hint_context_cold_us,
-        snail_prep.paragraph_hint_context_warm_us,
-        vector_prep.shapes,
-        vector_prep.freeze_us,
-        ft.bitmap_bytes_single,
-        kib(ft.bitmap_bytes_single),
-        ft.bitmap_bytes_all,
-        kib(ft.bitmap_bytes_all),
-    });
+    , .{});
+
+    if (snail_prep.font_load_us) |us| {
+        const ft_us: ?f64 = if (have_ft) ft.?.font_load_us else null;
+        printPrepRow("Font load", us, ft_us);
+    }
+    if (snail_prep.ascii_prep_us) |us| {
+        const ft_us: ?f64 = if (have_ft) ft.?.glyph_prep_us else null;
+        const ft_us_all: ?f64 = if (have_ft) ft.?.glyph_prep_all_sizes_us else null;
+        printPrepRow("Glyph prep, ASCII", us, ft_us);
+        printPrepRow("Glyph prep, 7 sizes", us, ft_us_all);
+    }
+    if (snail_prep.ascii_hint_setup_us) |us| printPrepRow("TT hint setup @ 12px", us, null);
+    if (snail_prep.ascii_hint_execute_us) |us| printPrepRow("TT hint execute, ASCII @ 12px", us, null);
+    if (snail_prep.ascii_hint_us) |us| printPrepRow("TT hint plan, ASCII @ 12px", us, null);
+    if (snail_prep.paragraph_hint_context_cold_us) |us| printPrepRow("TT hinter cold (full pipeline), paragraph @ 12px", us, null);
+    if (snail_prep.paragraph_hint_context_warm_us) |us| printPrepRow("TT hinter warm (cache hit + clone), paragraph @ 12px", us, null);
+    if (vector_prep.freeze_us) |us| {
+        var label_buf: [64]u8 = undefined;
+        const label = std.fmt.bufPrint(&label_buf, "Vector picture build, {d} shapes", .{vector_prep.shapes}) catch "Vector picture build";
+        printPrepRow(label, us, null);
+    }
     std.debug.print("\n", .{});
+
+    if (have_ft) {
+        std.debug.print(
+            \\## FreeType Bitmap Memory
+            \\
+            \\| Resource | Bytes | KiB |
+            \\|---|---:|---:|
+            \\| FreeType bitmaps, one size | {d} | {d:.1} |
+            \\| FreeType bitmaps, seven sizes | {d} | {d:.1} |
+            \\
+            \\
+        , .{
+            ft.?.bitmap_bytes_single,
+            kib(ft.?.bitmap_bytes_single),
+            ft.?.bitmap_bytes_all,
+            kib(ft.?.bitmap_bytes_all),
+        });
+    }
+}
+
+fn printPrepRow(label: []const u8, snail_us: f64, ft_us: ?f64) void {
+    if (ft_us) |fu| {
+        std.debug.print("| {s} | {d:.2} us | {d:.2} us | {d:.2}x |\n", .{ label, snail_us, fu, ratio(fu, snail_us) });
+    } else {
+        std.debug.print("| {s} | {d:.2} us | n/a | n/a |\n", .{ label, snail_us });
+    }
 }
 
 pub fn printTextTable(rows: anytype) void {

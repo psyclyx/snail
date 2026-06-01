@@ -21,6 +21,50 @@ const freetype = @import("bench/freetype.zig");
 const render_timing = @import("bench/render_timing.zig");
 const report = @import("bench/report.zig");
 
+// ── Section filter ──
+//
+// `SNAIL_BENCH_ONLY` selects which timed workloads run. When set,
+// only the named sections run and only their rows print — useful for
+// focused `perf record` runs. Each section name corresponds to ONE
+// table row, not a category. Default (no env var) runs everything.
+//
+//   font-load        Font init
+//   glyph-extract    extractCurves over 95 ASCII glyphs
+//   hint-setup       Hinter.init at ppem
+//   hint-execute     warm advance loop, all ASCII
+//   hint-full        full Hinter.hint per ASCII glyph
+//   hinter-cold      fresh Hinter + paragraph hinted once
+//   hinter-warm      warm Hinter + paragraph hinted N times (cache hit)
+//   vector-build     pathToCurves over 50 rounded rects
+//   freetype         FreeType comparison rows (load, glyph prep, layout)
+//   picture-build    snail picture build per text workload (un-hinted)
+//   picture-build-hinted   same, hinted variant
+//   emit             emit.emit per scene
+//   cpu-draw         CPU and CPU(threaded) draw per scene
+//   gl33 gl44 gles30 vulkan   per-backend GPU draw per scene
+//   modes            per-backend per-mode (grayscale vs subpixel) draws
+//   zoom             per-ppem zoom-sweep rebuild + steady render
+const Filter = struct {
+    enabled_set: ?std.StringHashMap(void) = null,
+
+    fn init(allocator: std.mem.Allocator) !Filter {
+        const raw = std.c.getenv("SNAIL_BENCH_ONLY") orelse return .{};
+        var map = std.StringHashMap(void).init(allocator);
+        var it = std.mem.tokenizeAny(u8, std.mem.span(raw), ", ");
+        while (it.next()) |s| try map.put(s, {});
+        return .{ .enabled_set = map };
+    }
+
+    fn deinit(self: *Filter) void {
+        if (self.enabled_set) |*m| m.deinit();
+    }
+
+    fn run(self: *const Filter, name: []const u8) bool {
+        if (self.enabled_set) |s| return s.contains(name);
+        return true;
+    }
+};
+
 // ── Knobs ──
 
 const PREP_RUNS = 20;
@@ -225,18 +269,18 @@ const rich_text_strings = [_][]const u8{
 // ── Row types ──
 
 const SnailPrep = struct {
-    font_load_us: f64,
-    ascii_prep_us: f64,
-    ascii_hint_setup_us: f64,
-    ascii_hint_execute_us: f64,
-    ascii_hint_us: f64,
-    paragraph_hint_context_cold_us: f64,
-    paragraph_hint_context_warm_us: f64,
+    font_load_us: ?f64 = null,
+    ascii_prep_us: ?f64 = null,
+    ascii_hint_setup_us: ?f64 = null,
+    ascii_hint_execute_us: ?f64 = null,
+    ascii_hint_us: ?f64 = null,
+    paragraph_hint_context_cold_us: ?f64 = null,
+    paragraph_hint_context_warm_us: ?f64 = null,
 };
 
 const VectorPrep = struct {
-    freeze_us: f64,
-    shapes: usize,
+    freeze_us: ?f64 = null,
+    shapes: usize = 50,
 };
 
 const TextRow = struct {
@@ -942,21 +986,28 @@ fn addRichRun(
 }
 
 // ── Snail preparation timing ──
+//
+// Each function below times ONE row in the preparation table. Callers
+// gate each row independently via the `Filter`, so a focused
+// `perf record` of, say, `glyph-extract` shows only that workload.
 
-fn benchSnailPrep(allocator: std.mem.Allocator) !SnailPrep {
-    var font_load_total_us: f64 = 0;
+fn timeFontLoad() f64 {
+    var total: f64 = 0;
     for (0..PREP_RUNS) |_| {
         const start = nowNs();
-        var f = try snail.Font.init(assets.noto_sans_regular);
-        font_load_total_us += usFrom(start);
+        var f = snail.Font.init(assets.noto_sans_regular) catch return 0;
+        total += usFrom(start);
         f.deinit();
     }
+    return total / PREP_RUNS;
+}
 
+fn timeGlyphExtract(allocator: std.mem.Allocator) !f64 {
     // ASCII glyph prep: extract curves into a fresh pool. Uses an
     // ArenaAllocator as `scratch` for the per-glyph intermediate
     // buffers; resets between glyphs so the allocations collapse to
     // bump-pointer ops.
-    var ascii_prep_total_us: f64 = 0;
+    var total: f64 = 0;
     for (0..PREP_RUNS) |_| {
         var pool = try snail.PagePool.init(allocator, .{ .max_layers = 2, .curve_words_per_page = 1 << 16, .band_words_per_page = 1 << 14 });
         defer pool.deinit();
@@ -989,27 +1040,9 @@ fn benchSnailPrep(allocator: std.mem.Allocator) !SnailPrep {
         }
         var atlas = try snail.Atlas.from(allocator, pool, entries.items);
         defer atlas.deinit();
-        ascii_prep_total_us += usFrom(start);
+        total += usFrom(start);
     }
-
-    var font = try snail.Font.init(assets.noto_sans_regular);
-    defer font.deinit();
-
-    const ascii_hint_setup_us = try timeHinterSetup(allocator, &font, 12 * 64);
-    const ascii_hint_execute_us = try timeHinterExecute(allocator, &font, 12 * 64);
-    const ascii_hint_us = try timeHinterFull(allocator, &font, 12 * 64);
-    const paragraph_cold_us = try timeHinterParagraphCold(allocator, &font, 12 * 64);
-    const paragraph_warm_us = try timeHinterParagraphWarm(allocator, &font, 12 * 64);
-
-    return .{
-        .font_load_us = font_load_total_us / PREP_RUNS,
-        .ascii_prep_us = ascii_prep_total_us / PREP_RUNS,
-        .ascii_hint_setup_us = ascii_hint_setup_us,
-        .ascii_hint_execute_us = ascii_hint_execute_us,
-        .ascii_hint_us = ascii_hint_us,
-        .paragraph_hint_context_cold_us = paragraph_cold_us,
-        .paragraph_hint_context_warm_us = paragraph_warm_us,
-    };
+    return total / PREP_RUNS;
 }
 
 fn timeHinterSetup(allocator: std.mem.Allocator, font: *const snail.Font, ppem_26_6: u32) !f64 {
@@ -1566,20 +1599,47 @@ pub fn main() !void {
     defer _ = da.deinit();
     const allocator = da.allocator();
 
+    var filter = try Filter.init(allocator);
+    defer filter.deinit();
+
     const prepared_render_state = drawState(WIDTH, HEIGHT, .none);
 
     const font_data = assets.noto_sans_regular;
-    const snail_prep = try benchSnailPrep(allocator);
-    const vector_prep = try timeVectorBuild(allocator);
-    const ft = try freetype.bench(font_data, .{
-        .prep_runs = PREP_RUNS,
-        .text_iters = TEXT_ITERS,
-        .printable_ascii = PRINTABLE_ASCII[0..],
-        .sizes = SIZES[0..],
-        .short = SHORT,
-        .sentence = SENTENCE,
-        .paragraph = PARAGRAPH,
-    });
+
+    // ── Preparation rows (each gated independently) ──
+    var snail_prep = SnailPrep{};
+    if (filter.run("font-load")) snail_prep.font_load_us = timeFontLoad();
+    if (filter.run("glyph-extract")) snail_prep.ascii_prep_us = try timeGlyphExtract(allocator);
+    if (filter.run("hint-setup") or filter.run("hint-execute") or filter.run("hint-full") or
+        filter.run("hinter-cold") or filter.run("hinter-warm"))
+    {
+        var font = try snail.Font.init(assets.noto_sans_regular);
+        defer font.deinit();
+        if (filter.run("hint-setup")) snail_prep.ascii_hint_setup_us = try timeHinterSetup(allocator, &font, 12 * 64);
+        if (filter.run("hint-execute")) snail_prep.ascii_hint_execute_us = try timeHinterExecute(allocator, &font, 12 * 64);
+        if (filter.run("hint-full")) snail_prep.ascii_hint_us = try timeHinterFull(allocator, &font, 12 * 64);
+        if (filter.run("hinter-cold")) snail_prep.paragraph_hint_context_cold_us = try timeHinterParagraphCold(allocator, &font, 12 * 64);
+        if (filter.run("hinter-warm")) snail_prep.paragraph_hint_context_warm_us = try timeHinterParagraphWarm(allocator, &font, 12 * 64);
+    }
+
+    var vector_prep = VectorPrep{};
+    if (filter.run("vector-build")) {
+        const vb = try timeVectorBuild(allocator);
+        vector_prep = vb;
+    }
+
+    const ft = if (filter.run("freetype") or filter.run("picture-build"))
+        try freetype.bench(font_data, .{
+            .prep_runs = PREP_RUNS,
+            .text_iters = TEXT_ITERS,
+            .printable_ascii = PRINTABLE_ASCII[0..],
+            .sizes = SIZES[0..],
+            .short = SHORT,
+            .sentence = SENTENCE,
+            .paragraph = PARAGRAPH,
+        })
+    else
+        null;
 
     var fonts = try FontSet.init(allocator);
     defer fonts.deinit();
@@ -1587,22 +1647,34 @@ pub fn main() !void {
     // ── Text workload table ──
     var text_rows: std.ArrayList(TextRow) = .empty;
     defer text_rows.deinit(allocator);
-    for (text_workloads) |workload| {
-        try text_rows.append(allocator, .{
-            .label = workload.name(),
-            .snail_us = try timeTextWorkload(allocator, &fonts, workload),
-            .ft_us = ft.layout(workload),
-        });
+    if (filter.run("picture-build")) {
+        for (text_workloads) |workload| {
+            try text_rows.append(allocator, .{
+                .label = workload.name(),
+                .snail_us = try timeTextWorkload(allocator, &fonts, workload),
+                .ft_us = ft.?.layout(workload),
+            });
+        }
     }
-    for (hinted_text_workloads) |workload| {
-        try text_rows.append(allocator, .{
-            .label = hintedTextWorkloadName(workload),
-            .snail_us = try timeHintedTextWorkload(allocator, &fonts, workload),
-            .ft_us = null,
-        });
+    if (filter.run("picture-build-hinted")) {
+        for (hinted_text_workloads) |workload| {
+            try text_rows.append(allocator, .{
+                .label = hintedTextWorkloadName(workload),
+                .snail_us = try timeHintedTextWorkload(allocator, &fonts, workload),
+                .ft_us = null,
+            });
+        }
     }
 
     // ── Scene bundles ──
+    //
+    // Bundles + CPU upload + emit are needed by emit/cpu-draw/modes/
+    // gl*/vulkan rows. Skip the whole setup if none of those are
+    // enabled — saves several seconds and ~16% of the perf samples
+    // when running only a prep-side workload like `glyph-extract`.
+    const needs_bundles = filter.run("emit") or filter.run("cpu-draw") or filter.run("modes") or
+        filter.run("gl33") or filter.run("gl44") or filter.run("gles30") or filter.run("vulkan");
+
     var pool = try snail.PagePool.init(allocator, .{
         .max_layers = 24,
         .curve_words_per_page = 1 << 18,
@@ -1613,44 +1685,51 @@ pub fn main() !void {
     var bundles: [scene_kinds.len]SceneBundle = undefined;
     var bundle_count: usize = 0;
     defer for (bundles[0..bundle_count]) |*b| b.deinit();
-    for (scene_kinds) |kind| {
-        bundles[bundle_count] = try buildScene(allocator, pool, &fonts, kind);
-        bundle_count += 1;
-    }
 
-    // ── CPU prepared pages + per-scene emit ──
-    var cpu_cache = try snail.CpuPreparedPages.init(allocator, pool, .{
-        .max_bindings = 16,
-        .layer_info_height = 256,
-        .max_images = 8,
-    });
-    defer cpu_cache.deinit();
+    var cpu_cache_storage: ?snail.CpuPreparedPages = null;
+    defer if (cpu_cache_storage) |*c| c.deinit();
     var cpu_bindings: [scene_kinds.len]snail.Binding = undefined;
-    {
-        var atlas_ptrs: [scene_kinds.len]*const snail.Atlas = undefined;
-        for (bundles[0..bundle_count], 0..) |*b, i| atlas_ptrs[i] = &b.atlas;
-        try cpu_cache.upload(allocator, atlas_ptrs[0..bundle_count], cpu_bindings[0..bundle_count]);
-    }
 
     var emitted: [scene_kinds.len]EmittedRecords = undefined;
     var emitted_count: usize = 0;
     defer for (emitted[0..emitted_count]) |*e| e.deinit();
-    for (bundles[0..bundle_count], 0..) |*b, i| {
-        emitted[i] = try emitScene(allocator, cpu_bindings[i], &b.atlas, &b.picture);
-        emitted_count += 1;
+
+    if (needs_bundles) {
+        for (scene_kinds) |kind| {
+            bundles[bundle_count] = try buildScene(allocator, pool, &fonts, kind);
+            bundle_count += 1;
+        }
+
+        // ── CPU prepared pages + per-scene emit ──
+        cpu_cache_storage = try snail.CpuPreparedPages.init(allocator, pool, .{
+            .max_bindings = 16,
+            .layer_info_height = 256,
+            .max_images = 8,
+        });
+        var atlas_ptrs: [scene_kinds.len]*const snail.Atlas = undefined;
+        for (bundles[0..bundle_count], 0..) |*b, i| atlas_ptrs[i] = &b.atlas;
+        try cpu_cache_storage.?.upload(allocator, atlas_ptrs[0..bundle_count], cpu_bindings[0..bundle_count]);
+
+        for (bundles[0..bundle_count], 0..) |*b, i| {
+            emitted[i] = try emitScene(allocator, cpu_bindings[i], &b.atlas, &b.picture);
+            emitted_count += 1;
+        }
     }
 
     // ── Record build (emit.emit) timing ──
-    var record_rows: [scene_kinds.len]RecordRow = undefined;
-    for (scene_kinds, 0..) |kind, i| {
-        const r = try timeRecordEmit(allocator, cpu_bindings[i], &bundles[i].atlas, &bundles[i].picture);
-        record_rows[i] = .{
-            .scene = kind,
-            .us = r.us,
-            .shapes = bundles[i].picture.shapes.len,
-            .words = r.words,
-            .segments = r.segments,
-        };
+    var record_rows: std.ArrayList(RecordRow) = .empty;
+    defer record_rows.deinit(allocator);
+    if (filter.run("emit")) {
+        for (scene_kinds, 0..) |kind, i| {
+            const r = try timeRecordEmit(allocator, cpu_bindings[i], &bundles[i].atlas, &bundles[i].picture);
+            try record_rows.append(allocator, .{
+                .scene = kind,
+                .us = r.us,
+                .shapes = bundles[i].picture.shapes.len,
+                .words = r.words,
+                .segments = r.segments,
+            });
+        }
     }
 
     // ── CPU render rows ──
@@ -1669,49 +1748,53 @@ pub fn main() !void {
     var cpu_renderer_threaded = snail.CpuRenderer.init(cpu_pixels_threaded.ptr, WIDTH, HEIGHT, WIDTH * 4);
     cpu_renderer_threaded.setThreadPool(&cpu_pool);
 
-    for (scene_kinds, 0..) |kind, i| {
-        const records = render_timing.DrawRecords{
-            .words = emitted[i].words[0..emitted[i].word_len],
-            .segments = emitted[i].segments[0..emitted[i].segment_len],
-        };
-        const us = try render_timing.timeCpuDraw(&cpu_renderer, prepared_render_state, records, &.{&cpu_cache}, cpu_pixels, CPU_WARMUP, CPU_FRAMES);
-        try render_rows.append(allocator, .{
-            .backend = "CPU",
-            .scene = kind,
-            .effective_aa = effectiveAaLabel(prepared_render_state.raster.subpixel_order, true),
-            .frames = CPU_FRAMES,
-            .shapes = bundles[i].picture.shapes.len,
-            .words = emitted[i].word_len,
-            .segments = emitted[i].segment_len,
-            .instance_bytes = emitted[i].word_len * @sizeOf(u32),
-            .us = us,
-        });
-    }
+    if (filter.run("cpu-draw")) {
+        for (scene_kinds, 0..) |kind, i| {
+            const records = render_timing.DrawRecords{
+                .words = emitted[i].words[0..emitted[i].word_len],
+                .segments = emitted[i].segments[0..emitted[i].segment_len],
+            };
+            const us = try render_timing.timeCpuDraw(&cpu_renderer, prepared_render_state, records, &.{&cpu_cache_storage.?}, cpu_pixels, CPU_WARMUP, CPU_FRAMES);
+            try render_rows.append(allocator, .{
+                .backend = "CPU",
+                .scene = kind,
+                .effective_aa = effectiveAaLabel(prepared_render_state.raster.subpixel_order, true),
+                .frames = CPU_FRAMES,
+                .shapes = bundles[i].picture.shapes.len,
+                .words = emitted[i].word_len,
+                .segments = emitted[i].segment_len,
+                .instance_bytes = emitted[i].word_len * @sizeOf(u32),
+                .us = us,
+            });
+        }
 
-    for (scene_kinds, 0..) |kind, i| {
-        const records = render_timing.DrawRecords{
-            .words = emitted[i].words[0..emitted[i].word_len],
-            .segments = emitted[i].segments[0..emitted[i].segment_len],
-        };
-        const us = try render_timing.timeCpuDraw(&cpu_renderer_threaded, prepared_render_state, records, &.{&cpu_cache}, cpu_pixels_threaded, CPU_WARMUP, CPU_FRAMES);
-        try render_rows.append(allocator, .{
-            .backend = "CPU (threaded)",
-            .scene = kind,
-            .effective_aa = effectiveAaLabel(prepared_render_state.raster.subpixel_order, true),
-            .frames = CPU_FRAMES,
-            .shapes = bundles[i].picture.shapes.len,
-            .words = emitted[i].word_len,
-            .segments = emitted[i].segment_len,
-            .instance_bytes = emitted[i].word_len * @sizeOf(u32),
-            .us = us,
-        });
+        for (scene_kinds, 0..) |kind, i| {
+            const records = render_timing.DrawRecords{
+                .words = emitted[i].words[0..emitted[i].word_len],
+                .segments = emitted[i].segments[0..emitted[i].segment_len],
+            };
+            const us = try render_timing.timeCpuDraw(&cpu_renderer_threaded, prepared_render_state, records, &.{&cpu_cache_storage.?}, cpu_pixels_threaded, CPU_WARMUP, CPU_FRAMES);
+            try render_rows.append(allocator, .{
+                .backend = "CPU (threaded)",
+                .scene = kind,
+                .effective_aa = effectiveAaLabel(prepared_render_state.raster.subpixel_order, true),
+                .frames = CPU_FRAMES,
+                .shapes = bundles[i].picture.shapes.len,
+                .words = emitted[i].word_len,
+                .segments = emitted[i].segment_len,
+                .instance_bytes = emitted[i].word_len * @sizeOf(u32),
+                .us = us,
+            });
+        }
     }
 
     // ── Mode rows (CPU) ──
     var mode_rows: std.ArrayList(ModeRow) = .empty;
     defer mode_rows.deinit(allocator);
-    try benchCpuModes(allocator, &cpu_renderer, &cpu_cache, "CPU", &bundles, bundle_count, cpu_bindings[0..bundle_count], cpu_pixels, &mode_rows);
-    try benchCpuModes(allocator, &cpu_renderer_threaded, &cpu_cache, "CPU (threaded)", &bundles, bundle_count, cpu_bindings[0..bundle_count], cpu_pixels_threaded, &mode_rows);
+    if (filter.run("modes")) {
+        try benchCpuModes(allocator, &cpu_renderer, &cpu_cache_storage.?, "CPU", &bundles, bundle_count, cpu_bindings[0..bundle_count], cpu_pixels, &mode_rows);
+        try benchCpuModes(allocator, &cpu_renderer_threaded, &cpu_cache_storage.?, "CPU (threaded)", &bundles, bundle_count, cpu_bindings[0..bundle_count], cpu_pixels_threaded, &mode_rows);
+    }
 
     // ── GL hardware rows (collected as each GL backend stands up) ──
     var gl_hardware_rows: std.ArrayList(report.GlHardwareRow) = .empty;
@@ -1720,24 +1803,24 @@ pub fn main() !void {
         gl_hardware_rows.deinit(allocator);
     }
 
-    if (comptime build_options.enable_gl33) {
+    if (comptime build_options.enable_gl33) if (filter.run("gl33")) {
         try benchGl33(allocator, pool, &bundles, bundle_count, &render_rows, &mode_rows, &gl_hardware_rows);
-    }
-    if (comptime build_options.enable_gl44) {
+    };
+    if (comptime build_options.enable_gl44) if (filter.run("gl44")) {
         try benchGl44(allocator, pool, &bundles, bundle_count, &render_rows, &mode_rows, &gl_hardware_rows);
-    }
-    if (comptime build_options.enable_gles30) {
+    };
+    if (comptime build_options.enable_gles30) if (filter.run("gles30")) {
         try benchGles30(allocator, pool, &bundles, bundle_count, &render_rows, &mode_rows, &gl_hardware_rows);
-    }
+    };
 
-    if (comptime build_options.enable_vulkan) {
+    if (comptime build_options.enable_vulkan) if (filter.run("vulkan")) {
         try benchVulkan(allocator, pool, &bundles, bundle_count, &render_rows, &mode_rows);
-    }
+    };
 
     // ── Zoom sweep ──
     var zoom_rows: std.ArrayList(ZoomRow) = .empty;
     defer zoom_rows.deinit(allocator);
-    try benchZoomSweep(allocator, &zoom_rows);
+    if (filter.run("zoom")) try benchZoomSweep(allocator, &zoom_rows);
 
     // ── Output ──
     std.debug.print(
@@ -1762,11 +1845,11 @@ pub fn main() !void {
     });
     report.printHardwareTable(gl_hardware_rows.items, build_options.enable_vulkan);
     report.printPreparationTables(snail_prep, vector_prep, ft);
-    report.printTextTable(text_rows.items);
-    report.printRecordTable(&record_rows);
-    report.printRenderTable(WIDTH, HEIGHT, CPU_FRAMES, GPU_FRAMES, render_rows.items);
-    report.printModeTable(mode_rows.items);
-    printZoomTable(zoom_rows.items);
+    if (text_rows.items.len > 0) report.printTextTable(text_rows.items);
+    if (record_rows.items.len > 0) report.printRecordTable(record_rows.items);
+    if (render_rows.items.len > 0) report.printRenderTable(WIDTH, HEIGHT, CPU_FRAMES, GPU_FRAMES, render_rows.items);
+    if (mode_rows.items.len > 0) report.printModeTable(mode_rows.items);
+    if (zoom_rows.items.len > 0) printZoomTable(zoom_rows.items);
 }
 
 fn printZoomTable(rows: []const ZoomRow) void {

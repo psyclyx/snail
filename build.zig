@@ -565,27 +565,8 @@ fn addBenchStep(
     bench_mod.linkSystemLibrary("freetype2", .{});
 
     const bench_exe = b.addExecutable(.{ .name = "snail-bench", .root_module = bench_mod });
+    b.installArtifact(bench_exe);
     const run_bench = b.addRunArtifact(bench_exe);
-    const bench_step = b.step("bench", "Run the snail benchmark harness (writes a markdown report to stdout)");
+    const bench_step = b.step("bench", "Run the snail benchmark harness (writes a markdown report to stdout). Set SNAIL_BENCH_ONLY=<sections> to focus.");
     bench_step.dependOn(&run_bench.step);
-
-    // Prep-only profile harness. Runs glyph extract / hinter / path build /
-    // picture build in a tight loop with NO rendering, so `perf record`
-    // shows the prep-side hot path unambiguously.
-    const profile_prep_mod = b.createModule(.{
-        .root_source_file = b.path("src/tools/profile_prep.zig"),
-        .target = config.target,
-        .optimize = .ReleaseFast,
-        .link_libc = true,
-        .imports = &.{
-            .{ .name = "assets", .module = modules.assets },
-            .{ .name = "snail", .module = release_snail_mod },
-        },
-    });
-    const profile_prep_exe = b.addExecutable(.{ .name = "snail-profile-prep", .root_module = profile_prep_mod });
-    b.installArtifact(profile_prep_exe);
-    const run_profile_prep = b.addRunArtifact(profile_prep_exe);
-    if (b.args) |args| run_profile_prep.addArgs(args);
-    const profile_prep_step = b.step("profile-prep", "Run the prep-only profiling harness (no rendering; intended for perf record)");
-    profile_prep_step.dependOn(&run_profile_prep.step);
 }
