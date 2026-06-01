@@ -28,6 +28,12 @@ pub const GlyphCurves = struct {
     /// texture; the atlas rewrites them at insertion time to absolute
     /// page-local texel positions.
     band_bytes: []const u16,
+    /// When non-null, both `curve_bytes` and `band_bytes` are slice views
+    /// into this single combined allocation, and `deinit` frees only
+    /// `backing`. Used by hot paths that want to coalesce the two
+    /// allocations into one (eg. the Hinter's cached-glyph clone). When
+    /// null, `deinit` frees `curve_bytes` and `band_bytes` independently.
+    backing: ?[]u16 = null,
     /// Number of curve segments (each segment occupies `SEGMENT_TEXELS` texels).
     curve_count: u16,
     /// Horizontal and vertical band counts (used by the renderer to walk only
@@ -46,8 +52,12 @@ pub const GlyphCurves = struct {
     bbox: BBox,
 
     pub fn deinit(self: *GlyphCurves) void {
-        self.allocator.free(self.curve_bytes);
-        self.allocator.free(self.band_bytes);
+        if (self.backing) |b| {
+            self.allocator.free(b);
+        } else {
+            self.allocator.free(self.curve_bytes);
+            self.allocator.free(self.band_bytes);
+        }
         self.* = undefined;
     }
 

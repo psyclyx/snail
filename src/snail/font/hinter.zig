@@ -81,13 +81,17 @@ const CachedGlyph = struct {
     }
 
     fn cloneInto(self: *const CachedGlyph, allocator: std.mem.Allocator) !curves_mod.GlyphCurves {
-        const curve_bytes = try allocator.dupe(u16, self.curve_bytes);
-        errdefer allocator.free(curve_bytes);
-        const band_bytes = try allocator.dupe(u16, self.band_bytes);
+        // One alloc + two memcpys instead of two alloc+memcpy. The two
+        // halves are sized at the cache-write site and never resized,
+        // so a single backing buffer is safe.
+        const combined = try allocator.alloc(u16, self.curve_bytes.len + self.band_bytes.len);
+        @memcpy(combined[0..self.curve_bytes.len], self.curve_bytes);
+        @memcpy(combined[self.curve_bytes.len..], self.band_bytes);
         return .{
             .allocator = allocator,
-            .curve_bytes = curve_bytes,
-            .band_bytes = band_bytes,
+            .backing = combined,
+            .curve_bytes = combined[0..self.curve_bytes.len],
+            .band_bytes = combined[self.curve_bytes.len..],
             .curve_count = self.curve_count,
             .h_band_count = self.h_band_count,
             .v_band_count = self.v_band_count,
