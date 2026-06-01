@@ -231,9 +231,26 @@ pub const GlyphCurveEntry = struct {
 /// Builds persistent curve texture data plus scratch glyph entries.
 /// `texture.data` is owned by `data_allocator`; `entries` is owned by
 /// `scratch_allocator` and is only needed while building dependent metadata.
+/// Precomputed f16 values for `DIRECT_ENCODING_KIND_BIAS + kind`. The
+/// kind enum has at most 4 values; precompute the f16 at comptime to
+/// skip a per-write float-to-f16 conversion.
+const direct_kind_f16: [4]u16 = blk: {
+    var out: [4]u16 = undefined;
+    for (0..4) |i| {
+        out[i] = @bitCast(@as(f16, @floatCast(DIRECT_ENCODING_KIND_BIAS + @as(f32, @floatFromInt(i)))));
+    }
+    break :blk out;
+};
+
 /// Write one curve into the direct-encoding texel block. `data` must
 /// be at least `SEGMENT_TEXELS * 4` u16s; only those words are touched.
 pub fn writeDirectCurveTexels(data: []u16, curve: CurveSegment) void {
+    // Cache the f16'd weights once — the encoding repeats weights[1] and
+    // weights[2] (slots 8/9 and 12/13) so otherwise we'd do four
+    // duplicate conversions.
+    const w0 = f32ToF16(curve.weights[0]);
+    const w1 = f32ToF16(curve.weights[1]);
+    const w2 = f32ToF16(curve.weights[2]);
     data[0] = f32ToF16(curve.p0.x);
     data[1] = f32ToF16(curve.p0.y);
     data[2] = f32ToF16(curve.p1.x);
@@ -242,12 +259,12 @@ pub fn writeDirectCurveTexels(data: []u16, curve: CurveSegment) void {
     data[5] = f32ToF16(curve.p2.y);
     data[6] = f32ToF16(curve.p3.x);
     data[7] = f32ToF16(curve.p3.y);
-    data[8] = f32ToF16(curve.weights[1]);
-    data[9] = f32ToF16(curve.weights[2]);
-    data[10] = f32ToF16(DIRECT_ENCODING_KIND_BIAS + @as(f32, @floatFromInt(@intFromEnum(curve.kind))));
-    data[11] = f32ToF16(curve.weights[0]);
-    data[12] = f32ToF16(curve.weights[1]);
-    data[13] = f32ToF16(curve.weights[2]);
+    data[8] = w1;
+    data[9] = w2;
+    data[10] = direct_kind_f16[@intFromEnum(curve.kind)];
+    data[11] = w0;
+    data[12] = w1;
+    data[13] = w2;
     data[14] = 0;
     data[15] = 0;
 }
