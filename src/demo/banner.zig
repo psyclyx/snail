@@ -1151,7 +1151,8 @@ const BannerBuilder = struct {
             };
             const local_paint = snail.mapPaintToLocal(paint, transform) orelse continue;
 
-            const curves = try font_ref.extractCurves(self.allocator, self.allocator, &self.glyph_caches[fid], g.glyph_id);
+            const curves = try font_ref.extractCurves(self.allocator, self.scratch_arena.allocator(), &self.glyph_caches[fid], g.glyph_id);
+            _ = self.scratch_arena.reset(.retain_capacity);
             try self.path_curves_owned.append(self.allocator, curves);
 
             const key = snail.RecordKey{ .namespace = snail.ns.path_fill, .a = self.next_path_id };
@@ -1187,7 +1188,8 @@ const BannerBuilder = struct {
         for (shaped.glyphs) |g| {
             const key = snail.recordKey.hintedGlyph(0, g.glyph_id, ppem_26_6);
             if (containsKey(self.text_entries.items, key)) continue;
-            const curves = hinter.hint(self.allocator, self.allocator, g.glyph_id, ppem) catch return false;
+            const curves = hinter.hint(self.allocator, self.scratch_arena.allocator(), g.glyph_id, ppem) catch return false;
+            _ = self.scratch_arena.reset(.retain_capacity);
             try self.text_curves_owned.append(self.allocator, curves);
             try self.text_entries.append(self.allocator, .{
                 .key = key,
@@ -1218,7 +1220,8 @@ const BannerBuilder = struct {
                 while (iter.next()) |layer| {
                     const layer_key = snail.recordKey.unhintedGlyph(fid, layer.glyph_id);
                     if (containsKey(self.text_entries.items, layer_key)) continue;
-                    const curves = try font_ref.extractCurves(self.allocator, self.allocator, cache, layer.glyph_id);
+                    const curves = try font_ref.extractCurves(self.allocator, self.scratch_arena.allocator(), cache, layer.glyph_id);
+                    _ = self.scratch_arena.reset(.retain_capacity);
                     try self.text_curves_owned.append(self.allocator, curves);
                     try self.text_entries.append(self.allocator, .{
                         .key = layer_key,
@@ -1228,7 +1231,8 @@ const BannerBuilder = struct {
             }
             const key = snail.recordKey.unhintedGlyph(fid, g.glyph_id);
             if (containsKey(self.text_entries.items, key)) continue;
-            const curves = try font_ref.extractCurves(self.allocator, self.allocator, cache, g.glyph_id);
+            const curves = try font_ref.extractCurves(self.allocator, self.scratch_arena.allocator(), cache, g.glyph_id);
+            _ = self.scratch_arena.reset(.retain_capacity);
             try self.text_curves_owned.append(self.allocator, curves);
             try self.text_entries.append(self.allocator, .{
                 .key = key,
