@@ -611,11 +611,15 @@ pub const Path = struct {
         }
 
         if (outline.isEmpty()) return null;
-        const curves = try allocator.alloc(CurveSegment, outline.curves.items.len);
-        @memcpy(curves, outline.curves.items);
+        const bbox = outline.bounds() orelse return error.EmptyPath;
+        // Take ownership of the outline's curve buffer instead of allocating
+        // a final-sized slice and memcpying. Both the outline and the caller
+        // hold the same `allocator`, so lifetimes match — `outline.deinit`
+        // afterwards is a no-op on the now-empty curves list.
+        const curves = try outline.curves.toOwnedSlice(allocator);
         return .{
             .curves = curves,
-            .bbox = outline.bounds() orelse return error.EmptyPath,
+            .bbox = bbox,
             .logical_curve_count = self.filledBandCurveCount() * 2,
         };
     }
