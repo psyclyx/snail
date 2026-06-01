@@ -1056,10 +1056,13 @@ fn timeHinterFull(allocator: std.mem.Allocator, font: *const snail.Font, ppem_26
         var h = snail.Hinter.init(allocator, font) catch return 0;
         defer h.deinit();
         const ppem = snail.HintPpem.uniform(ppem_26_6);
+        var scratch_arena = std.heap.ArenaAllocator.init(allocator);
+        defer scratch_arena.deinit();
         const start = nowNs();
         for (PRINTABLE_ASCII) |ch| {
             const gid = font.glyphIndex(ch) catch continue;
-            var curves = h.hint(allocator, allocator, gid, ppem) catch continue;
+            var curves = h.hint(allocator, scratch_arena.allocator(), gid, ppem) catch continue;
+            _ = scratch_arena.reset(.retain_capacity);
             curves.deinit();
         }
         total += usFrom(start);
@@ -1073,9 +1076,11 @@ fn timeHinterParagraphCold(allocator: std.mem.Allocator, font: *const snail.Font
     for (0..PREP_RUNS) |_| {
         var h = snail.Hinter.init(allocator, font) catch return 0;
         defer h.deinit();
+        var scratch_arena = std.heap.ArenaAllocator.init(allocator);
+        defer scratch_arena.deinit();
         const ppem = snail.HintPpem.uniform(ppem_26_6);
         const start = nowNs();
-        try hintParagraph(&h, font, allocator, ppem);
+        try hintParagraph(&h, font, allocator, &scratch_arena, ppem);
         total += usFrom(start);
     }
     return total / PREP_RUNS;
@@ -1085,22 +1090,25 @@ fn timeHinterParagraphWarm(allocator: std.mem.Allocator, font: *const snail.Font
     var h = snail.Hinter.init(allocator, font) catch return 0;
     defer h.deinit();
     const ppem = snail.HintPpem.uniform(ppem_26_6);
+    var scratch_arena = std.heap.ArenaAllocator.init(allocator);
+    defer scratch_arena.deinit();
     // Warmup.
-    try hintParagraph(&h, font, allocator, ppem);
+    try hintParagraph(&h, font, allocator, &scratch_arena, ppem);
 
     var total: f64 = 0;
     for (0..TEXT_ITERS) |_| {
         const start = nowNs();
-        try hintParagraph(&h, font, allocator, ppem);
+        try hintParagraph(&h, font, allocator, &scratch_arena, ppem);
         total += usFrom(start);
     }
     return total / TEXT_ITERS;
 }
 
-fn hintParagraph(h: *snail.Hinter, font: *const snail.Font, allocator: std.mem.Allocator, ppem: snail.HintPpem) !void {
+fn hintParagraph(h: *snail.Hinter, font: *const snail.Font, allocator: std.mem.Allocator, scratch_arena: *std.heap.ArenaAllocator, ppem: snail.HintPpem) !void {
     for (PARAGRAPH) |ch| {
         const gid = font.glyphIndex(ch) catch continue;
-        var curves = h.hint(allocator, allocator, gid, ppem) catch continue;
+        var curves = h.hint(allocator, scratch_arena.allocator(), gid, ppem) catch continue;
+        _ = scratch_arena.reset(.retain_capacity);
         std.mem.doNotOptimizeAway(curves.curve_count);
         curves.deinit();
     }
