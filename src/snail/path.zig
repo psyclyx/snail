@@ -206,61 +206,81 @@ fn curveUnitTangent(curve: CurveSegment, t: f32) Vec2 {
     return .{ .x = 1.0, .y = 0.0 };
 }
 
-fn offsetCurvePoint(curve: CurveSegment, t: f32, offset: f32) Vec2 {
-    const tangent = curveUnitTangent(curve, t);
+fn offsetPointAt(curve: CurveSegment, t: f32, tangent: Vec2, offset: f32) Vec2 {
     const normal = perpLeft(tangent);
     return Vec2.add(curve.evaluate(t), Vec2.scale(normal, offset));
+}
+
+fn offsetCurvePoint(curve: CurveSegment, t: f32, offset: f32) Vec2 {
+    return offsetPointAt(curve, t, curveUnitTangent(curve, t), offset);
+}
+
+/// Build a quadratic that approximates the offset of `curve` between
+/// the three sample points already computed at t=0, 0.5, 1.0. Callers
+/// that already have the unit tangents thread them in via
+/// `appendOffsetCurveApprox` to avoid recomputing on the hot path.
+fn fitOffsetQuadFromPoints(p0: Vec2, pm: Vec2, p2: Vec2) CurveSegment {
+    const control = Vec2.new(
+        pm.x * 2.0 - (p0.x + p2.x) * 0.5,
+        pm.y * 2.0 - (p0.y + p2.y) * 0.5,
+    );
+    return CurveSegment.fromQuad(.{ .p0 = p0, .p1 = control, .p2 = p2 });
 }
 
 fn fitOffsetCurveQuad(curve: CurveSegment, offset: f32) CurveSegment {
     const p0 = offsetCurvePoint(curve, 0.0, offset);
     const pm = offsetCurvePoint(curve, 0.5, offset);
     const p2 = offsetCurvePoint(curve, 1.0, offset);
-    const control = Vec2.new(
-        pm.x * 2.0 - (p0.x + p2.x) * 0.5,
-        pm.y * 2.0 - (p0.y + p2.y) * 0.5,
-    );
-    return CurveSegment.fromQuad(.{
-        .p0 = p0,
-        .p1 = control,
-        .p2 = p2,
-    });
+    return fitOffsetQuadFromPoints(p0, pm, p2);
 }
 
-fn offsetCurveApproxError(curve: CurveSegment, offset: f32) f32 {
-    const approx = fitOffsetCurveQuad(curve, offset).asQuad();
-    var max_error: f32 = 0.0;
-    inline for ([_]f32{ 0.25, 0.75 }) |t| {
-        const expected = offsetCurvePoint(curve, t, offset);
-        const actual = approx.evaluate(t);
-        max_error = @max(max_error, Vec2.length(Vec2.sub(expected, actual)));
-    }
-    return max_error;
-}
-
-fn appendOffsetCurveApprox(
+/// Recurse into the offset-quad approximation with the endpoint unit
+/// tangents already computed. Each recursive level otherwise re-runs
+/// `curveUnitTangent` at the parent's t=0 and t=1 — the dominant cost
+/// in the vector-prep profile (~50% of total). Threading them down,
+/// and reusing the t=0.5 tangent across the split, cuts the
+/// curveUnitTangent count by ~60%.
+fn appendOffsetCurveApproxInner(
     path: *Path,
     curve: CurveSegment,
     offset: f32,
     depth: u8,
+    tangent0: Vec2,
+    tangent1: Vec2,
 ) !void {
     if (curve.flatness() <= 1e-6) {
-        try path.lineTo(offsetCurvePoint(curve, 1.0, offset));
+        try path.lineTo(offsetPointAt(curve, 1.0, tangent1, offset));
         return;
     }
 
-    if (depth == 0 or offsetCurveApproxError(curve, offset) <= kPathStrokeOffsetTolerance) {
-        // The fitted quad's p0 comes from offsetCurvePoint(curve, 0.0, …),
-        // which is independently computed from `curve`'s t=0 tangent.
-        // For consecutive offset segments — whether across an
-        // input-curve join, across the join inserted by
-        // `appendStrokeJoinForSide`, or across a recursive midpoint
-        // split — the previous segment's end was computed from a
-        // *different* tangent and can drift by up to ~1 ULP. Force the
-        // fitted quad to start where the path currently is so the
-        // contour-continuity contract holds bit-exactly through
-        // f16 quantization.
-        var fitted = fitOffsetCurveQuad(curve, offset);
+    const tangent_mid = curveUnitTangent(curve, 0.5);
+    const p0 = offsetPointAt(curve, 0.0, tangent0, offset);
+    const pm = offsetPointAt(curve, 0.5, tangent_mid, offset);
+    const p2 = offsetPointAt(curve, 1.0, tangent1, offset);
+    const fitted_quad = fitOffsetQuadFromPoints(p0, pm, p2);
+
+    var accept = depth == 0;
+    if (!accept) {
+        const approx = fitted_quad.asQuad();
+        var max_error: f32 = 0.0;
+        inline for ([_]f32{ 0.25, 0.75 }) |t| {
+            const expected = offsetCurvePoint(curve, t, offset);
+            const actual = approx.evaluate(t);
+            max_error = @max(max_error, Vec2.length(Vec2.sub(expected, actual)));
+        }
+        accept = max_error <= kPathStrokeOffsetTolerance;
+    }
+
+    if (accept) {
+        // The fitted quad's p0 was computed from `curve`'s t=0 tangent
+        // independently of any previous offset segment. For consecutive
+        // offset segments — whether across an input-curve join, across
+        // the join inserted by `appendStrokeJoinForSide`, or across a
+        // recursive midpoint split — that endpoint can drift by up to
+        // ~1 ULP. Force the fitted quad to start where the path
+        // currently is so the contour-continuity contract holds bit-
+        // exactly through f16 quantization.
+        var fitted = fitted_quad;
         const contour = path.requireContour() orelse return error.PathMissingMoveTo;
         fitted.p0 = contour.current_point;
         path.band_curve_count += 1;
@@ -269,8 +289,19 @@ fn appendOffsetCurveApprox(
     }
 
     const halves = curve.split(0.5);
-    try appendOffsetCurveApprox(path, halves[0], offset, depth - 1);
-    try appendOffsetCurveApprox(path, halves[1], offset, depth - 1);
+    try appendOffsetCurveApproxInner(path, halves[0], offset, depth - 1, tangent0, tangent_mid);
+    try appendOffsetCurveApproxInner(path, halves[1], offset, depth - 1, tangent_mid, tangent1);
+}
+
+fn appendOffsetCurveApprox(
+    path: *Path,
+    curve: CurveSegment,
+    offset: f32,
+    depth: u8,
+) !void {
+    const t0 = curveUnitTangent(curve, 0.0);
+    const t1 = curveUnitTangent(curve, 1.0);
+    try appendOffsetCurveApproxInner(path, curve, offset, depth, t0, t1);
 }
 
 pub const Path = struct {
