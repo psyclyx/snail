@@ -65,7 +65,7 @@ pub fn shapedRunPicture(
         for (shaped.glyphs, 0..) |g, i| {
             const face_index_int: usize = @intCast(g.face_index);
             if (face_index_int >= options.face_to_font_id.len) return error.UnknownFaceIndex;
-            buf[i] = makeShape(g, options, options.face_to_font_id[face_index_int], options.color);
+            buf[i] = makeShape(g, options, options.face_to_font_id[face_index_int], g.glyph_id, options.color);
         }
         return Picture.fromOwnedSlice(allocator, buf);
     }
@@ -82,9 +82,10 @@ pub fn shapedRunPicture(
         if (face_index_int >= options.face_to_font_id.len) return error.UnknownFaceIndex;
         const font_id = options.face_to_font_id[face_index_int];
 
-        // COLR fanout. Each layer becomes its own Shape with the layer's
-        // CPAL color (or `options.color` for the "foreground" sentinel
-        // palette index 0xFFFF) and the same transform.
+        // COLR fanout. Each layer becomes its own Shape keyed by the
+        // *layer* glyph id (not `g.glyph_id`) with the layer's CPAL
+        // color, or `options.color` for the foreground sentinel palette
+        // index 0xFFFF.
         var emitted = false;
         const fonts = options.colr_fonts.?;
         if (face_index_int < fonts.len) {
@@ -95,24 +96,24 @@ pub fn shapedRunPicture(
                         options.color
                     else
                         layer.color;
-                    try shapes.append(allocator, makeShape(g, options, font_id, layer_color));
+                    try shapes.append(allocator, makeShape(g, options, font_id, layer.glyph_id, layer_color));
                 }
                 emitted = true;
             }
         }
         if (!emitted) {
-            try shapes.append(allocator, makeShape(g, options, font_id, options.color));
+            try shapes.append(allocator, makeShape(g, options, font_id, g.glyph_id, options.color));
         }
     }
 
     return Picture.from(allocator, shapes.items);
 }
 
-inline fn makeShape(g: anytype, options: ShapedRunOptions, font_id: u32, color: [4]f32) Shape {
+inline fn makeShape(g: anytype, options: ShapedRunOptions, font_id: u32, glyph_id: u16, color: [4]f32) Shape {
     const pen_x = options.baseline.x + options.em * g.x_offset;
     const pen_y = options.baseline.y + options.em * g.y_offset;
     return .{
-        .key = record_key_mod.unhintedGlyph(font_id, g.glyph_id),
+        .key = record_key_mod.unhintedGlyph(font_id, glyph_id),
         .local_transform = .{
             .xx = options.em,
             .xy = 0,
