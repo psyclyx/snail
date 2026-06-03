@@ -123,8 +123,10 @@ pub const emit = @import("picture/emit.zig");
 
 pub const shapedRunPicture = @import("picture/text.zig").shapedRunPicture;
 pub const hintedShapedRunPicture = @import("picture/text.zig").hintedShapedRunPicture;
-pub const Hinter = @import("font/hinter.zig").Hinter;
-pub const HintPpem = @import("font/hinter.zig").HintPpem;
+pub const HintVm = @import("font/hint_vm.zig").HintVm;
+pub const HintPpem = @import("font/hint_vm.zig").HintPpem;
+pub const HintVmStats = @import("font/hint_vm.zig").HintVmStats;
+pub const HintError = @import("font/hint_vm.zig").HintError;
 
 pub const CpuBackendCache = @import("render/backend/cpu/backend_cache.zig").CpuBackendCache;
 pub const drawCpu = @import("render/backend/cpu/draw.zig").drawCpu;
@@ -158,7 +160,7 @@ test {
     _ = @import("atlas/page_pool.zig");
     _ = atlas_mod;
     _ = @import("paths.zig");
-    _ = @import("font/hinter.zig");
+    _ = @import("font/hint_vm.zig");
     _ = shape_mod;
     _ = @import("picture.zig");
     _ = @import("picture/draw_records.zig");

@@ -37,10 +37,10 @@ pub const Content = struct {
 pub const HintOptions = struct {
     /// When non-null, the tagline + sample row are placed under hinted-glyph
     /// keys (`recordKey.hintedGlyph(font_id, glyph_id, ppem_26_6)`) and the
-    /// hinted curves are inserted into `text_atlas`. The Hinter must outlive
+    /// hinted curves are inserted into `text_atlas`. The HintVm must outlive
     /// `Content`.
-    hinter: ?*snail.Hinter = null,
-    /// Hinter face index (face_to_font_id slot) the Hinter was built for.
+    hinter: ?*snail.HintVm = null,
+    /// HintVm face index (face_to_font_id slot) the HintVm was built for.
     /// Only one face is hinted; other glyphs in those runs fall back to
     /// unhinted entries.
     hint_face_index: u32 = 0,
@@ -278,7 +278,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
             if (g.face_index != hint_fid) continue;
             const key = snail.recordKey.hintedGlyph(hint_fid, g.glyph_id, ppem_26_6);
             if (containsKey(text_entries.items, key)) continue;
-            const curves = hinter_ptr.hint(allocator, allocator, g.glyph_id, hint_ppem) catch |err| switch (err) {
+            const curves = hinter_ptr.hintGlyph(allocator, allocator, g.glyph_id, hint_ppem) catch |err| switch (err) {
                 error.NoHinting, error.GlyphTopologyChanged => continue,
                 else => return err,
             };

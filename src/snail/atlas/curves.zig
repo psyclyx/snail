@@ -31,7 +31,7 @@ pub const GlyphCurves = struct {
     /// When non-null, both `curve_bytes` and `band_bytes` are slice views
     /// into this single combined allocation, and `deinit` frees only
     /// `backing`. Used by hot paths that want to coalesce the two
-    /// allocations into one (eg. the Hinter's cached-glyph clone). When
+    /// allocations into one (eg. the HintVm's cached-glyph clone). When
     /// null, `deinit` frees `curve_bytes` and `band_bytes` independently.
     backing: ?[]u16 = null,
     /// Number of curve segments (each segment occupies `SEGMENT_TEXELS` texels).

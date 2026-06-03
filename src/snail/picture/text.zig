@@ -13,7 +13,7 @@ const shape_mod = @import("shape.zig");
 const record_key_mod = @import("../atlas/record_key.zig");
 const text_mod = @import("../text.zig");
 const font_mod = @import("../font.zig");
-const hinter_mod = @import("../font/hinter.zig");
+const hinter_mod = @import("../font/hint_vm.zig");
 
 pub const ShapedText = text_mod.ShapedText;
 pub const Picture = picture_mod.Picture;
@@ -21,7 +21,7 @@ pub const Shape = shape_mod.Shape;
 pub const Vec2 = math.Vec2;
 pub const Transform2D = math.Transform2D;
 pub const Font = font_mod.Font;
-pub const Hinter = hinter_mod.Hinter;
+pub const HintVm = hinter_mod.HintVm;
 pub const HintPpem = hinter_mod.HintPpem;
 
 pub const ShapedRunOptions = struct {
@@ -133,7 +133,7 @@ pub const HintedShapedRunOptions = struct {
     /// offsets into pixel-space pen positions.
     em: f32,
     /// 26.6 fixed-point ppem the glyphs were hinted at — the same value
-    /// passed to the `Hinter` and used to key atlas entries under
+    /// passed to the `HintVm` and used to key atlas entries under
     /// `recordKey.hintedGlyph(font_id, glyph_id, ppem_26_6)`. Callers must
     /// pass exactly the ppem they hinted at, *not* `em * 64`: under zoom
     /// the two differ because hinting scales by zoom, but per-glyph layout
@@ -266,14 +266,14 @@ test "hinted curves render through new API CPU draw" {
     const font_data = @import("assets").noto_sans_regular;
 
     var font = try Font.init(font_data);
-    var hinter = Hinter.init(allocator, &font) catch return error.SkipZigTest;
+    var hinter = HintVm.init(allocator, &font) catch return error.SkipZigTest;
     defer hinter.deinit();
 
     const ppem_26_6: u32 = @intFromFloat(@round(16.0 * 64.0));
     const ppem = HintPpem.uniform(ppem_26_6);
     const gid = try font.glyphIndex('A');
 
-    var hinted = hinter.hint(allocator, allocator, gid, ppem) catch return error.SkipZigTest;
+    var hinted = hinter.hintGlyph(allocator, allocator, gid, ppem) catch return error.SkipZigTest;
     defer hinted.deinit();
     if (hinted.isEmpty()) return error.SkipZigTest;
 

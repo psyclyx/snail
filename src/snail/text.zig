@@ -11,13 +11,13 @@ const build_options = @import("build_options");
 
 const ttf = @import("font/ttf.zig");
 const opentype = @import("font/opentype.zig");
-const hinter_mod = @import("font/hinter.zig");
+const hinter_mod = @import("font/hint_vm.zig");
 const harfbuzz = if (build_options.enable_harfbuzz) @import("font/harfbuzz.zig") else struct {
     pub const HarfBuzzShaper = void;
 };
 const vec = @import("math/vec.zig");
 
-pub const Hinter = hinter_mod.Hinter;
+pub const HintVm = hinter_mod.HintVm;
 pub const HintPpem = hinter_mod.HintPpem;
 
 const Allocator = std.mem.Allocator;
@@ -47,7 +47,7 @@ pub const OpenTypeFeature = struct {
 
 pub const ShapeOptions = struct {
     features: []const OpenTypeFeature = &.{},
-    /// When set, faces with an attached `Hinter` (see `Shaper.attachHinter`)
+    /// When set, faces with an attached `HintVm` (see `Shaper.attachHinter`)
     /// route shaping through HarfBuzz's `glyph_h_advance` font_func that
     /// returns hint-quantized advances at this ppem. Faces without a
     /// hinter fall back to em-space shaping transparently. The returned
@@ -183,10 +183,10 @@ pub const Shaper = struct {
     allocator: Allocator,
     faces: []Face,
     /// One slot per face. Populated lazily by `attachHinter`. The
-    /// Hinter is owned heap-side so the pointer is stable across
+    /// HintVm is owned heap-side so the pointer is stable across
     /// `Face` value copies and gets shared between shape-time advance
     /// queries (via HB font_func) and render-time curve extraction.
-    hinters: []?*Hinter,
+    hinters: []?*HintVm,
     style_chains: std.AutoHashMapUnmanaged(u8, std.ArrayListUnmanaged(FaceIndex)),
     global_chain: []FaceIndex,
     primary_face: ?FaceIndex,
@@ -199,7 +199,7 @@ pub const Shaper = struct {
         var chains = try buildChains(allocator, specs);
         errdefer chains.deinit(allocator);
 
-        const hinters = try allocator.alloc(?*Hinter, faces.len);
+        const hinters = try allocator.alloc(?*HintVm, faces.len);
         @memset(hinters, null);
         errdefer allocator.free(hinters);
 
@@ -240,9 +240,9 @@ pub const Shaper = struct {
         if (self.hinters[face_index] != null) return;
         const fc = &self.faces[face_index];
         const wrapped = hinter_mod.Font{ .inner = fc.font };
-        const hinter_ptr = try self.allocator.create(Hinter);
+        const hinter_ptr = try self.allocator.create(HintVm);
         errdefer self.allocator.destroy(hinter_ptr);
-        hinter_ptr.* = try Hinter.init(self.allocator, &wrapped);
+        hinter_ptr.* = try HintVm.init(self.allocator, &wrapped);
         errdefer hinter_ptr.deinit();
         if (comptime build_options.enable_harfbuzz) {
             if (fc.hb_shaper) |*hbs| try hbs.attachHinter(self.allocator, hinter_ptr);
@@ -250,7 +250,7 @@ pub const Shaper = struct {
         self.hinters[face_index] = hinter_ptr;
     }
 
-    pub fn hinterForFace(self: *const Shaper, face_index: FaceIndex) ?*Hinter {
+    pub fn hinterForFace(self: *const Shaper, face_index: FaceIndex) ?*HintVm {
         return self.hinters[face_index];
     }
 

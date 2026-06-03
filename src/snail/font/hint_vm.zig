@@ -46,6 +46,11 @@ pub const HintPpem = struct {
     }
 };
 
+pub const HintVmStats = struct {
+    ppem_count: u32,
+    machine_bytes: usize,
+};
+
 pub const HintError = error{
     NoHinting,
     GlyphTopologyChanged,
@@ -63,7 +68,7 @@ const CachedGlyphKey = struct {
     glyph_id: u16,
 };
 
-/// Pre-packed `GlyphCurves` byte arrays owned by the Hinter. `hint()` clones
+/// Pre-packed `GlyphCurves` byte arrays owned by the HintVm. `hint()` clones
 /// these into the caller's allocator on cache hit so the caller still gets a
 /// fully-owned `GlyphCurves` value with consistent lifecycle semantics.
 const CachedGlyph = struct {
@@ -109,15 +114,15 @@ const CachedGlyph = struct {
 };
 
 /// Lightweight cached per-(ppem, glyph_id) metrics. Populated either by
-/// `Hinter.advanceX26Dot6` (which only runs the VM, skipping curve build)
-/// or as a side-effect of `Hinter.hint`. The HarfBuzz `glyph_h_advance`
+/// `HintVm.advanceX26Dot6` (which only runs the VM, skipping curve build)
+/// or as a side-effect of `HintVm.hint`. The HarfBuzz `glyph_h_advance`
 /// callback reads from this cache so per-shape advance queries don't
 /// re-execute the VM.
 const CachedMetrics = struct {
     advance_x_26_6: i32,
 };
 
-pub const Hinter = struct {
+pub const HintVm = struct {
     allocator: std.mem.Allocator,
     program: tt_vm.Program,
     machines: std.AutoHashMapUnmanaged(HintPpem, MachineSlot),
@@ -134,7 +139,7 @@ pub const Hinter = struct {
     /// Inspect a font for hinting support. Returns `error.NoHinting` if the
     /// font has no `fpgm`/`prep`/`cvt` bytecode tables — the caller falls
     /// back to `font.extractCurves`.
-    pub fn init(allocator: std.mem.Allocator, font: *const Font) !Hinter {
+    pub fn init(allocator: std.mem.Allocator, font: *const Font) !HintVm {
         const program = tt_vm.Program.init(font.inner.data) catch return error.NoHinting;
         return .{
             .allocator = allocator,
@@ -145,7 +150,7 @@ pub const Hinter = struct {
         };
     }
 
-    pub fn deinit(self: *Hinter) void {
+    pub fn deinit(self: *HintVm) void {
         self.clear();
         self.machines.deinit(self.allocator);
         self.glyph_cache.deinit(self.allocator);
@@ -156,7 +161,7 @@ pub const Hinter = struct {
     /// Drop the VM + glyph caches for one ppem. Curves already extracted
     /// into atlases keep working — the atlas owns its byte data, not the
     /// hinter.
-    pub fn evictPpem(self: *Hinter, ppem: HintPpem) void {
+    pub fn evictPpem(self: *HintVm, ppem: HintPpem) void {
         if (self.machines.fetchRemove(ppem)) |removed| {
             var slot = removed.value;
             deinitSlot(self.allocator, &slot);
@@ -194,7 +199,7 @@ pub const Hinter = struct {
     /// reclaim memory between frames, or when a benchmark needs to
     /// measure cold VM execute cost without paying for fpgm/prep on
     /// every iteration.
-    pub fn clearGlyphCaches(self: *Hinter) void {
+    pub fn clearGlyphCaches(self: *HintVm) void {
         var git = self.glyph_cache.iterator();
         while (git.next()) |entry| {
             entry.value_ptr.deinit(self.allocator);
@@ -204,7 +209,7 @@ pub const Hinter = struct {
     }
 
     /// Drop every cached ppem. Same lifecycle guarantee as `evictPpem`.
-    pub fn clear(self: *Hinter) void {
+    pub fn clear(self: *HintVm) void {
         var it = self.machines.iterator();
         while (it.next()) |entry| {
             var slot = entry.value_ptr.*;
@@ -223,8 +228,8 @@ pub const Hinter = struct {
     /// 26.6 fixed-point pixels. Runs the TT VM on first call per
     /// (ppem, glyph_id) and caches; subsequent calls are a hashmap hit.
     /// Used by the HarfBuzz `glyph_h_advance` font_func.
-    pub fn advanceX26Dot6(
-        self: *Hinter,
+    pub fn hintedAdvance(
+        self: *HintVm,
         glyph_id: u16,
         ppem: HintPpem,
     ) HintError!i32 {
@@ -246,8 +251,8 @@ pub const Hinter = struct {
     /// `scratch` is used for VM-internal scratch state that does not need
     /// to outlive the call. The returned `GlyphCurves` is allocated from
     /// `allocator`.
-    pub fn hint(
-        self: *Hinter,
+    pub fn hintGlyph(
+        self: *HintVm,
         allocator: std.mem.Allocator,
         scratch: std.mem.Allocator,
         glyph_id: u16,
@@ -376,7 +381,21 @@ pub const Hinter = struct {
         };
     }
 
-    fn machineFor(self: *Hinter, ppem: HintPpem) HintError!*MachineSlot {
+    /// Summary of the per-ppem machine cache (the one cache `HintVm`
+    /// keeps in core — see the rewrite plan's "one justified exception").
+    /// Useful for cache-pressure decisions: e.g. evict the oldest ppem
+    /// when `machine_bytes` crosses a budget.
+    pub fn stats(self: *const HintVm) HintVmStats {
+        var machine_bytes: usize = 0;
+        var it = self.machines.valueIterator();
+        while (it.next()) |slot| machine_bytes += slot.machine.byteSize();
+        return .{
+            .ppem_count = self.machines.count(),
+            .machine_bytes = machine_bytes,
+        };
+    }
+
+    fn machineFor(self: *HintVm, ppem: HintPpem) HintError!*MachineSlot {
         const gop = try self.machines.getOrPut(self.allocator, ppem);
         if (!gop.found_existing) {
             const machine_ptr = try self.allocator.create(tt_hint.HintMachine);
@@ -406,7 +425,7 @@ fn deinitSlot(allocator: std.mem.Allocator, slot: *MachineSlot) void {
 
 const testing = std.testing;
 
-test "Hinter init fails cleanly on fonts without hinting" {
+test "HintVm init fails cleanly on fonts without hinting" {
     // Use a font with no TT bytecode. Most CFF/OTF fonts qualify, but we
     // don't have one in assets; instead, build an empty buffer that
     // tt_vm.Program.init will reject.
@@ -414,21 +433,21 @@ test "Hinter init fails cleanly on fonts without hinting" {
         try testing.expect(e == error.InvalidFont or e == error.UnexpectedEof);
         return;
     };
-    const res = Hinter.init(testing.allocator, &font);
+    const res = HintVm.init(testing.allocator, &font);
     try testing.expectError(error.NoHinting, res);
 }
 
-test "Hinter produces GlyphCurves for a hinted glyph" {
+test "HintVm produces GlyphCurves for a hinted glyph" {
     const font_data = @import("assets").noto_sans_regular;
     var font = try Font.init(font_data);
 
-    var hinter = try Hinter.init(testing.allocator, &font);
+    var hinter = try HintVm.init(testing.allocator, &font);
     defer hinter.deinit();
 
     const ppem = HintPpem.uniform(16 * 64);
     const glyph_id = try font.glyphIndex('A');
 
-    var curves = try hinter.hint(testing.allocator, testing.allocator, glyph_id, ppem);
+    var curves = try hinter.hintGlyph(testing.allocator, testing.allocator, glyph_id, ppem);
     defer curves.deinit();
 
     try testing.expect(curves.curve_count > 0);
@@ -437,45 +456,45 @@ test "Hinter produces GlyphCurves for a hinted glyph" {
     try testing.expect(curves.h_band_count > 0);
 }
 
-test "Hinter caches per-ppem VM state across calls" {
+test "HintVm caches per-ppem VM state across calls" {
     const font_data = @import("assets").noto_sans_regular;
     var font = try Font.init(font_data);
 
-    var hinter = try Hinter.init(testing.allocator, &font);
+    var hinter = try HintVm.init(testing.allocator, &font);
     defer hinter.deinit();
 
     const ppem = HintPpem.uniform(12 * 64);
     const gid_a = try font.glyphIndex('A');
     const gid_b = try font.glyphIndex('B');
 
-    var c0 = try hinter.hint(testing.allocator, testing.allocator, gid_a, ppem);
+    var c0 = try hinter.hintGlyph(testing.allocator, testing.allocator, gid_a, ppem);
     defer c0.deinit();
     try testing.expectEqual(@as(u32, 1), hinter.machines.count());
 
-    var c1 = try hinter.hint(testing.allocator, testing.allocator, gid_b, ppem);
+    var c1 = try hinter.hintGlyph(testing.allocator, testing.allocator, gid_b, ppem);
     defer c1.deinit();
     try testing.expectEqual(@as(u32, 1), hinter.machines.count());
 
     const ppem_other = HintPpem.uniform(24 * 64);
-    var c2 = try hinter.hint(testing.allocator, testing.allocator, gid_a, ppem_other);
+    var c2 = try hinter.hintGlyph(testing.allocator, testing.allocator, gid_a, ppem_other);
     defer c2.deinit();
     try testing.expectEqual(@as(u32, 2), hinter.machines.count());
 }
 
-test "Hinter.evictPpem drops one cache entry without affecting others" {
+test "HintVm.evictPpem drops one cache entry without affecting others" {
     const font_data = @import("assets").noto_sans_regular;
     var font = try Font.init(font_data);
 
-    var hinter = try Hinter.init(testing.allocator, &font);
+    var hinter = try HintVm.init(testing.allocator, &font);
     defer hinter.deinit();
 
     const ppem_12 = HintPpem.uniform(12 * 64);
     const ppem_24 = HintPpem.uniform(24 * 64);
     const gid = try font.glyphIndex('A');
 
-    var c0 = try hinter.hint(testing.allocator, testing.allocator, gid, ppem_12);
+    var c0 = try hinter.hintGlyph(testing.allocator, testing.allocator, gid, ppem_12);
     c0.deinit();
-    var c1 = try hinter.hint(testing.allocator, testing.allocator, gid, ppem_24);
+    var c1 = try hinter.hintGlyph(testing.allocator, testing.allocator, gid, ppem_24);
     c1.deinit();
     try testing.expectEqual(@as(u32, 2), hinter.machines.count());
 
@@ -484,14 +503,14 @@ test "Hinter.evictPpem drops one cache entry without affecting others" {
     try testing.expect(hinter.machines.contains(ppem_24));
 }
 
-test "Hinter hint output round-trips through an atlas" {
+test "HintVm hint output round-trips through an atlas" {
     const atlas_mod = @import("../atlas.zig");
     const record_key_mod = @import("../atlas/record_key.zig");
 
     const font_data = @import("assets").noto_sans_regular;
     var font = try Font.init(font_data);
 
-    var hinter = try Hinter.init(testing.allocator, &font);
+    var hinter = try HintVm.init(testing.allocator, &font);
     defer hinter.deinit();
 
     var pool = try atlas_mod.PagePool.init(testing.allocator, .{
@@ -503,7 +522,7 @@ test "Hinter hint output round-trips through an atlas" {
 
     const ppem = HintPpem.uniform(18 * 64);
     const gid = try font.glyphIndex('M');
-    var curves = try hinter.hint(testing.allocator, testing.allocator, gid, ppem);
+    var curves = try hinter.hintGlyph(testing.allocator, testing.allocator, gid, ppem);
     defer curves.deinit();
 
     const key = record_key_mod.hintedGlyph(0, gid, ppem.packed26Dot6());

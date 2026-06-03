@@ -6,13 +6,13 @@
 //! funcs, scale = upem) used for normal shaping. When a TT bytecode hinter
 //! is attached via `attachHinter`, a lazily-created sub-font
 //! (`hb_font_hinted`) is given a single overridden font-func —
-//! `glyph_h_advance` — that routes through `Hinter.advanceX26Dot6`. Hinted
+//! `glyph_h_advance` — that routes through `HintVm.advanceX26Dot6`. Hinted
 //! shape calls set the sub-font's scale to `ppem_26_6` so HB's advances
 //! land in 26.6-pixel units; the caller divides them back to em-space and
 //! the round-trip preserves the hint-quantized positioning.
 
 const std = @import("std");
-const hinter_mod = @import("hinter.zig");
+const hinter_mod = @import("hint_vm.zig");
 const hb = @cImport({
     @cInclude("hb.h");
 });
@@ -21,7 +21,7 @@ pub const Feature = hb.hb_feature_t;
 pub const FEATURE_GLOBAL_START: c_uint = 0;
 pub const FEATURE_GLOBAL_END: c_uint = 0xFFFFFFFF;
 
-pub const Hinter = hinter_mod.Hinter;
+pub const HintVm = hinter_mod.HintVm;
 pub const HintPpem = hinter_mod.HintPpem;
 
 pub fn makeTag(tag: [4]u8) u32 {
@@ -33,7 +33,7 @@ pub fn makeTag(tag: [4]u8) u32 {
 /// pointer stays valid across `HarfBuzzShaper` moves. `ppem_*_26_6` are
 /// updated by `setShapingPpem` before every hinted shape call.
 const HintHooks = struct {
-    hinter: *Hinter,
+    hinter: *HintVm,
     ppem_x_26_6: u32,
     ppem_y_26_6: u32,
 };
@@ -103,12 +103,12 @@ pub const HarfBuzzShaper = struct {
 
     /// Bind a TT bytecode hinter to this shaper. Subsequent
     /// `shapeTextHinted` calls will route `glyph_h_advance` queries
-    /// through `hinter.advanceX26Dot6`. The `Hinter` is borrowed —
+    /// through `hinter.advanceX26Dot6`. The `HintVm` is borrowed —
     /// callers must keep it alive at least as long as this shaper.
     pub fn attachHinter(
         self: *HarfBuzzShaper,
         allocator: std.mem.Allocator,
-        hinter: *Hinter,
+        hinter: *HintVm,
     ) !void {
         if (self.hooks != null) return; // already attached
         const hooks = try allocator.create(HintHooks);
@@ -234,6 +234,6 @@ fn hbGetGlyphHAdvance(
     const hooks: *HintHooks = @ptrCast(@alignCast(user_data orelse return 0));
     const gid: u16 = @intCast(glyph & 0xFFFF);
     const ppem = HintPpem{ .x_26_6 = hooks.ppem_x_26_6, .y_26_6 = hooks.ppem_y_26_6 };
-    const adv = hooks.hinter.advanceX26Dot6(gid, ppem) catch return 0;
+    const adv = hooks.hinter.hintedAdvance(gid, ppem) catch return 0;
     return @intCast(adv);
 }

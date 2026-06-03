@@ -10,7 +10,7 @@
 //! Layout and palette are byte-identical to the legacy banner — the new
 //! pipeline is purely about how the entries/shapes are constructed.
 //! Hinting is opt-in via `HintOptions`: when enabled, every Latin run is
-//! ppem-scaled, hinted via `Hinter.hint`, and emitted under
+//! ppem-scaled, hinted via `HintVm.hint`, and emitted under
 //! `recordKey.hintedGlyph` keys; non-Latin runs fall back to unhinted
 //! glyphs. Per-glyph paint (gradient wordmarks, image-painted "image"
 //! word) goes through the path namespace with `mapPaintToLocal` baking
@@ -163,7 +163,7 @@ pub const Assets = struct {
     fonts: [font_count]snail.Font,
     paint_image: snail.Image,
     /// Whether face 0 has a hinter attached on `shaper`. The actual
-    /// `Hinter` lives inside the Shaper (so HB and the demo render path
+    /// `HintVm` lives inside the Shaper (so HB and the demo render path
     /// share one VM/cache). `false` means hinting wasn't available for
     /// this font and the build falls through to unhinted glyphs.
     has_regular_hinter: bool,
@@ -217,7 +217,7 @@ pub const Assets = struct {
         // Only the regular (italic-source) face gets a hinter today; the
         // other faces are either bold (no hint program differences worth
         // wiring in this demo) or fallback scripts. The Shaper now owns
-        // the Hinter so HB's `glyph_h_advance` font_func can route
+        // the HintVm so HB's `glyph_h_advance` font_func can route
         // through it during shape, and the render path picks the same
         // instance up via `shaper.hinterForFace(0)` for glyph extraction.
         var has_regular_hinter = false;
@@ -1184,7 +1184,7 @@ const BannerBuilder = struct {
         for (shaped.glyphs) |g| {
             const key = snail.recordKey.hintedGlyph(0, g.glyph_id, ppem_26_6);
             if (containsKey(self.text_entries.items, key)) continue;
-            const curves = hinter.hint(self.allocator, self.scratch_arena.allocator(), g.glyph_id, ppem) catch return false;
+            const curves = hinter.hintGlyph(self.allocator, self.scratch_arena.allocator(), g.glyph_id, ppem) catch return false;
             _ = self.scratch_arena.reset(.retain_capacity);
             try self.text_curves_owned.append(self.allocator, curves);
             try self.text_entries.append(self.allocator, .{
