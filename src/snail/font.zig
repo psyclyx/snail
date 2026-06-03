@@ -9,7 +9,6 @@ pub const GlyphMetrics = ttf.GlyphMetrics;
 pub const LineMetrics = ttf.LineMetrics;
 pub const DecorationMetrics = ttf.DecorationMetrics;
 pub const ScriptMetrics = ttf.ScriptMetrics;
-pub const GlyphCache = ttf.GlyphCache;
 pub const tt = struct {
     pub const exec = @import("font/truetype/exec.zig");
     pub const graphics = @import("font/truetype/graphics.zig");
@@ -88,27 +87,22 @@ pub const Font = struct {
     /// the atlas consumes. The caller owns the returned value and must
     /// call `deinit` when done.
     ///
-    /// `cache` is the compound-glyph component cache; pass a long-lived
-    /// one across many `extractCurves` calls on the same font to avoid
-    /// re-parsing referenced components. The returned `GlyphCurves` does
-    /// not depend on the cache after the call returns.
-    ///
     /// Glyphs with no contours (e.g. ASCII space) return `GlyphCurves.empty`.
     ///
     /// `allocator` owns the returned `GlyphCurves`. `scratch` holds the
-    /// intermediate buffers (glyph parse, prepared/quantized curves,
-    /// band scratch). For batched extraction (atlas warmup, prep
-    /// passes) pass an `ArenaAllocator.allocator()` as `scratch` and
-    /// reset it between glyphs; one-shot callers can pass the same
-    /// allocator twice.
+    /// intermediate buffers (glyph parse — including the in-call
+    /// compound-component cache — prepared/quantized curves, band
+    /// scratch). For batched extraction (atlas warmup, prep passes)
+    /// pass an `ArenaAllocator.allocator()` as `scratch` and reset it
+    /// between glyphs; one-shot callers can pass the same allocator
+    /// twice.
     pub fn extractCurves(
         self: *const Font,
         allocator: std.mem.Allocator,
         scratch: std.mem.Allocator,
-        cache: *GlyphCache,
         glyph_id: u16,
     ) !curves_mod.GlyphCurves {
-        return extractCurvesInner(self, allocator, scratch, cache, glyph_id);
+        return extractCurvesInner(self, allocator, scratch, glyph_id);
     }
 
     pub const ColrLayer = ttf.Font.ColrLayer;
@@ -132,13 +126,16 @@ fn extractCurvesInner(
     font: *const Font,
     allocator: std.mem.Allocator,
     scratch: std.mem.Allocator,
-    cache: *GlyphCache,
     glyph_id: u16,
 ) !curves_mod.GlyphCurves {
-    // `parseGlyph` keeps results in `cache` keyed by glyph id (long-lived
-    // for batched extraction); using `scratch` here would be wrong since
-    // the cache assumes its allocator outlives the cache.
-    const glyph = try font.inner.parseGlyph(allocator, cache, glyph_id);
+    // `parseGlyph` returns contours, sub-curves, and an internal
+    // component-cache hashmap all allocated on `scratch`; the data is
+    // read once below and then discarded. We wrap `scratch` in a
+    // per-call arena so callers can pass any allocator (one-shot or
+    // pooled) without leaking the intermediate parse buffers.
+    var parse_arena = std.heap.ArenaAllocator.init(scratch);
+    defer parse_arena.deinit();
+    const glyph = try font.inner.parseGlyph(parse_arena.allocator(), glyph_id);
     if (glyph.contours.len == 0) return curves_mod.GlyphCurves.empty(allocator);
 
     var total_curves: usize = 0;
@@ -231,11 +228,8 @@ test "extractCurves returns non-empty curves for printable glyph" {
     const font_data = @import("assets").noto_sans_regular;
     var font = try Font.init(font_data);
 
-    var cache = GlyphCache.init(std.testing.allocator);
-    defer cache.deinit();
-
     const glyph_id = try font.glyphIndex('A');
-    var curves = try font.extractCurves(std.testing.allocator, std.testing.allocator, &cache, glyph_id);
+    var curves = try font.extractCurves(std.testing.allocator, std.testing.allocator, glyph_id);
     defer curves.deinit();
 
     try std.testing.expect(curves.curve_count > 0);
@@ -249,11 +243,8 @@ test "extractCurves returns empty for whitespace glyph" {
     const font_data = @import("assets").noto_sans_regular;
     var font = try Font.init(font_data);
 
-    var cache = GlyphCache.init(std.testing.allocator);
-    defer cache.deinit();
-
     const space_id = try font.glyphIndex(' ');
-    var curves = try font.extractCurves(std.testing.allocator, std.testing.allocator, &cache, space_id);
+    var curves = try font.extractCurves(std.testing.allocator, std.testing.allocator, space_id);
     defer curves.deinit();
 
     try std.testing.expect(curves.isEmpty());
@@ -266,17 +257,16 @@ test "extractCurves matches existing curve packing path byte-for-byte" {
     const font_data = @import("assets").noto_sans_regular;
     var font = try Font.init(font_data);
 
-    var cache = GlyphCache.init(std.testing.allocator);
-    defer cache.deinit();
-
     const glyph_id = try font.glyphIndex('M');
-    var curves = try font.extractCurves(std.testing.allocator, std.testing.allocator, &cache, glyph_id);
+    var curves = try font.extractCurves(std.testing.allocator, std.testing.allocator, glyph_id);
     defer curves.deinit();
 
     // Re-run the same packing through the format helpers directly and
     // compare. (This guards against accidental schema drift in the
     // producer.)
-    const glyph = try font.inner.parseGlyph(std.testing.allocator, &cache, glyph_id);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const glyph = try font.inner.parseGlyph(arena.allocator(), glyph_id);
 
     var segs: std.ArrayList(CurveSegment) = .empty;
     defer segs.deinit(std.testing.allocator);

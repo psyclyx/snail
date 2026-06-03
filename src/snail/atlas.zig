@@ -592,9 +592,6 @@ test "atlas + font extract: end-to-end smoke test" {
     const font_data = @import("assets").noto_sans_regular;
     var font = try font_mod.Font.init(font_data);
 
-    var cache = font_mod.GlyphCache.init(testing.allocator);
-    defer cache.deinit();
-
     var pool = try PagePool.init(testing.allocator, .{
         .max_layers = 4,
         .curve_words_per_page = 1 << 16,
@@ -614,7 +611,7 @@ test "atlas + font extract: end-to-end smoke test" {
     const codes = [_]u32{ 'A', 'B', 'C', 'M', 'a', 'g', 'o' };
     for (codes) |cp| {
         const gid = try font.glyphIndex(cp);
-        const curves = try font.extractCurves(testing.allocator, testing.allocator, &cache, gid);
+        const curves = try font.extractCurves(testing.allocator, testing.allocator, gid);
         try owned.append(testing.allocator, curves);
         try entries.append(testing.allocator, .{
             .key = record_key_mod.unhintedGlyph(0, gid),

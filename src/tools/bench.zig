@@ -557,14 +557,13 @@ fn addStrokedPath(
 fn ensureUnhintedRunCurves(
     build: *SceneBuild,
     fonts: *FontSet,
-    glyph_caches: []snail.font.GlyphCache,
     shaped: *const snail.ShapedText,
 ) !void {
     for (shaped.glyphs) |g| {
         const fid = fonts.faces.face_to_font_id[g.face_index];
         const key = snail.recordKey.unhintedGlyph(fid, g.glyph_id);
         if (containsKey(build.entries.items, key)) continue;
-        const curves = try fonts.fonts[fid].extractCurves(build.allocator, build.scratch(), &glyph_caches[fid], g.glyph_id);
+        const curves = try fonts.fonts[fid].extractCurves(build.allocator, build.scratch(), g.glyph_id);
         try build.owned_curves.append(build.allocator, curves);
         try build.entries.append(build.allocator, .{
             .key = key,
@@ -704,14 +703,12 @@ const SceneBundle = struct {
     allocator: std.mem.Allocator,
     pool: *snail.PagePool,
     build: SceneBuild,
-    glyph_caches: [FONT_COUNT]snail.font.GlyphCache,
     atlas: snail.Atlas,
     picture: snail.Picture,
 
     fn deinit(self: *SceneBundle) void {
         self.picture.deinit();
         self.atlas.deinit();
-        for (&self.glyph_caches) |*c| c.deinit();
         self.build.deinit();
         self.* = undefined;
     }
@@ -726,18 +723,14 @@ fn buildScene(
     var build = SceneBuild.init(allocator, pool);
     errdefer build.deinit();
 
-    var glyph_caches: [FONT_COUNT]snail.font.GlyphCache = undefined;
-    for (&glyph_caches) |*c| c.* = snail.font.GlyphCache.init(allocator);
-    errdefer for (&glyph_caches) |*c| c.deinit();
-
     if (kind.needsVector()) try appendVectorPathsTo(&build);
 
     if (kind.isRich()) {
-        try buildRichText(&build, fonts, &glyph_caches);
+        try buildRichText(&build, fonts);
     } else if (kind.needsText()) {
         const lines: []const TextLine = if (kind.isMultiScript()) scene_multi_script_lines[0..] else scene_text_lines[0..];
         for (lines) |line| {
-            try addShapedLine(&build, fonts, &glyph_caches, line, kind.isHinted());
+            try addShapedLine(&build, fonts, line, kind.isHinted());
         }
     }
 
@@ -750,7 +743,6 @@ fn buildScene(
         .allocator = allocator,
         .pool = pool,
         .build = build,
-        .glyph_caches = glyph_caches,
         .atlas = atlas_owned,
         .picture = picture,
     };
@@ -831,13 +823,12 @@ fn appendVectorPathsTo(build: *SceneBuild) !void {
 fn addShapedLine(
     build: *SceneBuild,
     fonts: *FontSet,
-    glyph_caches: []snail.font.GlyphCache,
     line: TextLine,
     hinted: bool,
 ) !void {
     const allocator = build.allocator;
     if (hinted and fonts.has_hinter) {
-        const ppem_26_6 = hintPpem26_6(line.size) catch return addShapedLineUnhinted(build, fonts, glyph_caches, line);
+        const ppem_26_6 = hintPpem26_6(line.size) catch return addShapedLineUnhinted(build, fonts, line);
         var shaped = try snail.shape(allocator, &fonts.faces, line.text, .{ .style = line.style, .target_ppem = snail.HintPpem.uniform(ppem_26_6), .advance_provider = fonts.advanceProvider() });
         defer shaped.deinit();
         const ok = ensureHintedRunCurves(build, fonts, &shaped, ppem_26_6) catch false;
@@ -854,19 +845,18 @@ fn addShapedLine(
         }
         // Hinting failed (non-Latin fallback face etc) — fall through to unhinted.
     }
-    return addShapedLineUnhinted(build, fonts, glyph_caches, line);
+    return addShapedLineUnhinted(build, fonts, line);
 }
 
 fn addShapedLineUnhinted(
     build: *SceneBuild,
     fonts: *FontSet,
-    glyph_caches: []snail.font.GlyphCache,
     line: TextLine,
 ) !void {
     const allocator = build.allocator;
     var shaped = try snail.shape(allocator, &fonts.faces, line.text, .{ .style = line.style });
     defer shaped.deinit();
-    try ensureUnhintedRunCurves(build, fonts, glyph_caches, &shaped);
+    try ensureUnhintedRunCurves(build, fonts, &shaped);
     var pic = try snail.shapedRunPicture(allocator, &shaped, &fonts.faces, .{
         .baseline = .{ .x = line.x, .y = line.y },
         .em = line.size,
@@ -879,14 +869,13 @@ fn addShapedLineUnhinted(
 fn buildRichText(
     build: *SceneBuild,
     fonts: *FontSet,
-    glyph_caches: []snail.font.GlyphCache,
 ) !void {
     // Match the legacy rich-text layout: a wide variety of weights, sizes,
     // colors, and gradient paints across three lines.
     var x: f32 = 18.0;
     var y: f32 = 46.0;
 
-    x += try addRichRun(build, fonts, glyph_caches, .{ .weight = .bold }, "RICH ", x, y, 30.0, .{ .solid = .{ 0.95, 0.97, 1.0, 1.0 } });
+    x += try addRichRun(build, fonts, .{ .weight = .bold }, "RICH ", x, y, 30.0, .{ .solid = .{ 0.95, 0.97, 1.0, 1.0 } });
     {
         const grad = snail.Paint{ .linear_gradient = .{
             .start = .{ .x = x, .y = y - 30.0 },
@@ -894,16 +883,16 @@ fn buildRichText(
             .start_color = .{ 0.30, 0.65, 1.0, 1.0 },
             .end_color = .{ 1.0, 0.35, 0.58, 1.0 },
         } };
-        x += try addRichRun(build, fonts, glyph_caches, .{ .weight = .bold }, "gradient", x, y, 30.0, grad);
+        x += try addRichRun(build, fonts, .{ .weight = .bold }, "gradient", x, y, 30.0, grad);
     }
-    _ = try addRichRun(build, fonts, glyph_caches, .{}, " runs", x, y, 22.0, .{ .solid = .{ 0.72, 0.78, 0.86, 1.0 } });
+    _ = try addRichRun(build, fonts, .{}, " runs", x, y, 22.0, .{ .solid = .{ 0.72, 0.78, 0.86, 1.0 } });
 
     x = 18.0;
     y = 94.0;
-    x += try addRichRun(build, fonts, glyph_caches, .{}, "status  ", x, y, 18.0, .{ .solid = .{ 0.60, 0.68, 0.76, 1.0 } });
-    x += try addRichRun(build, fonts, glyph_caches, .{ .weight = .bold }, "HP ", x, y, 24.0, .{ .solid = .{ 0.80, 0.92, 0.86, 1.0 } });
-    x += try addRichRun(build, fonts, glyph_caches, .{ .weight = .bold }, "83", x, y, 28.0, .{ .solid = .{ 0.25, 0.92, 0.50, 1.0 } });
-    x += try addRichRun(build, fonts, glyph_caches, .{}, "   shield ", x, y, 18.0, .{ .solid = .{ 0.62, 0.72, 0.82, 1.0 } });
+    x += try addRichRun(build, fonts, .{}, "status  ", x, y, 18.0, .{ .solid = .{ 0.60, 0.68, 0.76, 1.0 } });
+    x += try addRichRun(build, fonts, .{ .weight = .bold }, "HP ", x, y, 24.0, .{ .solid = .{ 0.80, 0.92, 0.86, 1.0 } });
+    x += try addRichRun(build, fonts, .{ .weight = .bold }, "83", x, y, 28.0, .{ .solid = .{ 0.25, 0.92, 0.50, 1.0 } });
+    x += try addRichRun(build, fonts, .{}, "   shield ", x, y, 18.0, .{ .solid = .{ 0.62, 0.72, 0.82, 1.0 } });
     {
         const grad = snail.Paint{ .linear_gradient = .{
             .start = .{ .x = x, .y = y - 22.0 },
@@ -911,12 +900,12 @@ fn buildRichText(
             .start_color = .{ 0.20, 0.82, 0.92, 1.0 },
             .end_color = .{ 0.85, 0.96, 0.45, 1.0 },
         } };
-        _ = try addRichRun(build, fonts, glyph_caches, .{ .weight = .bold }, "online", x, y, 22.0, grad);
+        _ = try addRichRun(build, fonts, .{ .weight = .bold }, "online", x, y, 22.0, grad);
     }
 
     x = 18.0;
     y = 142.0;
-    x += try addRichRun(build, fonts, glyph_caches, .{}, "per-letter  ", x, y, 17.0, .{ .solid = .{ 0.56, 0.64, 0.74, 1.0 } });
+    x += try addRichRun(build, fonts, .{}, "per-letter  ", x, y, 17.0, .{ .solid = .{ 0.56, 0.64, 0.74, 1.0 } });
     const letters = "snail";
     const colors = [_][4]f32{
         .{ 0.28, 0.55, 0.96, 1.0 },
@@ -928,14 +917,14 @@ fn buildRichText(
     for (letters, 0..) |letter, i| {
         const one = [_]u8{letter};
         const sz = 24.0 + @as(f32, @floatFromInt(i % 3)) * 3.0;
-        x += try addRichRun(build, fonts, glyph_caches, .{ .weight = .bold }, &one, x, y, sz, .{ .solid = colors[i] });
+        x += try addRichRun(build, fonts, .{ .weight = .bold }, &one, x, y, sz, .{ .solid = colors[i] });
     }
-    x += try addRichRun(build, fonts, glyph_caches, .{}, "  alerts ", x, y, 17.0, .{ .solid = .{ 0.56, 0.64, 0.74, 1.0 } });
-    x += try addRichRun(build, fonts, glyph_caches, .{ .weight = .bold }, "OK", x, y, 20.0, .{ .solid = .{ 0.36, 0.92, 0.52, 1.0 } });
-    x += try addRichRun(build, fonts, glyph_caches, .{}, " / ", x, y, 17.0, .{ .solid = .{ 0.56, 0.64, 0.74, 1.0 } });
-    x += try addRichRun(build, fonts, glyph_caches, .{ .weight = .bold }, "WARN", x, y, 20.0, .{ .solid = .{ 0.98, 0.72, 0.32, 1.0 } });
-    x += try addRichRun(build, fonts, glyph_caches, .{}, " / ", x, y, 17.0, .{ .solid = .{ 0.56, 0.64, 0.74, 1.0 } });
-    _ = try addRichRun(build, fonts, glyph_caches, .{ .weight = .bold }, "CRIT", x, y, 20.0, .{ .solid = .{ 1.0, 0.40, 0.44, 1.0 } });
+    x += try addRichRun(build, fonts, .{}, "  alerts ", x, y, 17.0, .{ .solid = .{ 0.56, 0.64, 0.74, 1.0 } });
+    x += try addRichRun(build, fonts, .{ .weight = .bold }, "OK", x, y, 20.0, .{ .solid = .{ 0.36, 0.92, 0.52, 1.0 } });
+    x += try addRichRun(build, fonts, .{}, " / ", x, y, 17.0, .{ .solid = .{ 0.56, 0.64, 0.74, 1.0 } });
+    x += try addRichRun(build, fonts, .{ .weight = .bold }, "WARN", x, y, 20.0, .{ .solid = .{ 0.98, 0.72, 0.32, 1.0 } });
+    x += try addRichRun(build, fonts, .{}, " / ", x, y, 17.0, .{ .solid = .{ 0.56, 0.64, 0.74, 1.0 } });
+    _ = try addRichRun(build, fonts, .{ .weight = .bold }, "CRIT", x, y, 20.0, .{ .solid = .{ 1.0, 0.40, 0.44, 1.0 } });
 }
 
 /// Add a single run with a solid or gradient/image paint. Solid paints
@@ -946,7 +935,6 @@ fn buildRichText(
 fn addRichRun(
     build: *SceneBuild,
     fonts: *FontSet,
-    glyph_caches: []snail.font.GlyphCache,
     style: snail.FontStyle,
     text: []const u8,
     x: f32,
@@ -960,7 +948,7 @@ fn addRichRun(
     const advance = em * shaped.advanceX();
     switch (paint) {
         .solid => |color| {
-            try ensureUnhintedRunCurves(build, fonts, glyph_caches, &shaped);
+            try ensureUnhintedRunCurves(build, fonts, &shaped);
             var pic = try snail.shapedRunPicture(allocator, &shaped, &fonts.faces, .{
                 .baseline = .{ .x = x, .y = y },
                 .em = em,
@@ -984,7 +972,7 @@ fn addRichRun(
                     .ty = pen_y,
                 };
                 const local_paint = snail.mapPaintToLocal(paint, transform) orelse continue;
-                const curves = try fonts.fonts[fid].extractCurves(allocator, allocator, &glyph_caches[fid], g.glyph_id);
+                const curves = try fonts.fonts[fid].extractCurves(allocator, allocator, g.glyph_id);
                 try build.owned_curves.append(allocator, curves);
                 const key = snail.RecordKey{ .namespace = snail.ns.path_fill, .a = build.next_path_id };
                 build.next_path_id += 1;
@@ -1030,8 +1018,6 @@ fn timeGlyphExtract(allocator: std.mem.Allocator) !f64 {
         var pool = try snail.PagePool.init(allocator, .{ .max_layers = 2, .curve_words_per_page = 1 << 16, .band_words_per_page = 1 << 14 });
         defer pool.deinit();
         var font = try snail.Font.init(assets.noto_sans_regular);
-        var cache = snail.font.GlyphCache.init(allocator);
-        defer cache.deinit();
         var scratch_arena = std.heap.ArenaAllocator.init(allocator);
         defer scratch_arena.deinit();
 
@@ -1047,7 +1033,7 @@ fn timeGlyphExtract(allocator: std.mem.Allocator) !f64 {
         for (PRINTABLE_ASCII) |ch| {
             const gid = try font.glyphIndex(ch);
             if (gid == 0) continue;
-            const curves = try font.extractCurves(allocator, scratch_arena.allocator(), &cache, gid);
+            const curves = try font.extractCurves(allocator, scratch_arena.allocator(), gid);
             _ = scratch_arena.reset(.retain_capacity);
             try owned.append(allocator, curves);
             try entries.append(allocator, .{
@@ -1199,23 +1185,20 @@ const PreparedLines = struct {
     items: std.ArrayListUnmanaged(PreparedLine) = .empty,
     pool: *snail.PagePool,
     fonts: *FontSet,
-    glyph_caches: [FONT_COUNT]snail.font.GlyphCache,
     hinted: bool,
 
     fn init(allocator: std.mem.Allocator, pool: *snail.PagePool, fonts: *FontSet, hinted: bool) PreparedLines {
-        var caches: [FONT_COUNT]snail.font.GlyphCache = undefined;
-        for (&caches) |*c| c.* = snail.font.GlyphCache.init(allocator);
-        return .{ .pool = pool, .fonts = fonts, .glyph_caches = caches, .hinted = hinted };
+        _ = allocator;
+        return .{ .pool = pool, .fonts = fonts, .hinted = hinted };
     }
 
     fn deinit(self: *PreparedLines, allocator: std.mem.Allocator) void {
         for (self.items.items) |*it| it.deinit();
         self.items.deinit(allocator);
-        for (&self.glyph_caches) |*c| c.deinit();
     }
 
     fn add(self: *PreparedLines, allocator: std.mem.Allocator, line: TextLine) !void {
-        const item = try prepareLine(allocator, self.pool, self.fonts, &self.glyph_caches, line, self.hinted);
+        const item = try prepareLine(allocator, self.pool, self.fonts, line, self.hinted);
         try self.items.append(allocator, item);
     }
 };
@@ -1235,7 +1218,6 @@ fn prepareLine(
     allocator: std.mem.Allocator,
     pool: *snail.PagePool,
     fonts: *FontSet,
-    glyph_caches: *[FONT_COUNT]snail.font.GlyphCache,
     line: TextLine,
     hinted: bool,
 ) !PreparedLine {
@@ -1243,7 +1225,7 @@ fn prepareLine(
     // and stop short of releasing the shaped run — that's what the
     // timed loop is going to consume.
     if (hinted and fonts.has_hinter) {
-        const ppem_26_6 = hintPpem26_6(line.size) catch return prepareLineUnhinted(allocator, pool, fonts, glyph_caches, line);
+        const ppem_26_6 = hintPpem26_6(line.size) catch return prepareLineUnhinted(allocator, pool, fonts, line);
         var shaped = try snail.shape(allocator, &fonts.faces, line.text, .{ .style = line.style, .target_ppem = snail.HintPpem.uniform(ppem_26_6), .advance_provider = fonts.advanceProvider() });
         errdefer shaped.deinit();
         var build = SceneBuild.init(allocator, pool);
@@ -1252,25 +1234,24 @@ fn prepareLine(
         if (!ok) {
             // Hinting failed (non-Latin fallback face etc) — fall through to unhinted.
             shaped.deinit();
-            return prepareLineUnhinted(allocator, pool, fonts, glyph_caches, line);
+            return prepareLineUnhinted(allocator, pool, fonts, line);
         }
         return .{ .shaped = shaped, .line = line, .hinted = true, .ppem_26_6 = ppem_26_6 };
     }
-    return prepareLineUnhinted(allocator, pool, fonts, glyph_caches, line);
+    return prepareLineUnhinted(allocator, pool, fonts, line);
 }
 
 fn prepareLineUnhinted(
     allocator: std.mem.Allocator,
     pool: *snail.PagePool,
     fonts: *FontSet,
-    glyph_caches: *[FONT_COUNT]snail.font.GlyphCache,
     line: TextLine,
 ) !PreparedLine {
     var shaped = try snail.shape(allocator, &fonts.faces, line.text, .{ .style = line.style });
     errdefer shaped.deinit();
     var build = SceneBuild.init(allocator, pool);
     defer build.deinit();
-    try ensureUnhintedRunCurves(&build, fonts, glyph_caches, &shaped);
+    try ensureUnhintedRunCurves(&build, fonts, &shaped);
     return .{ .shaped = shaped, .line = line, .hinted = false };
 }
 

@@ -380,12 +380,6 @@ const BannerBuilder = struct {
     snap_step: snail.Vec2,
     hint_opts: HintOptions,
 
-    /// Per-font glyph caches. `snail.font.GlyphCache` is keyed by glyph_id
-    /// only and has no font identifier, so sharing a single cache across
-    /// fonts returns the wrong outline for any glyph_id that exists in
-    /// multiple fonts. Indexed by `Assets.fonts` index (i.e. font_id).
-    glyph_caches: [Assets.font_count]snail.font.GlyphCache,
-
     // Path-namespace entries (cards, decorations, primitives, snail).
     path_curves_owned: std.ArrayList(snail.GlyphCurves),
     path_entries: std.ArrayList(snail.AtlasEntry),
@@ -421,15 +415,12 @@ const BannerBuilder = struct {
         snap_step: snail.Vec2,
         hint_opts: HintOptions,
     ) !BannerBuilder {
-        var glyph_caches: [Assets.font_count]snail.font.GlyphCache = undefined;
-        for (&glyph_caches) |*c| c.* = snail.font.GlyphCache.init(allocator);
         return .{
             .allocator = allocator,
             .assets = assets,
             .layout = layout,
             .snap_step = snap_step,
             .hint_opts = hint_opts,
-            .glyph_caches = glyph_caches,
             .path_curves_owned = .empty,
             .path_entries = .empty,
             .path_shapes = .empty,
@@ -462,7 +453,6 @@ const BannerBuilder = struct {
         self.painted_text_shapes.deinit(self.allocator);
 
         self.decoration_rects.deinit(self.allocator);
-        for (&self.glyph_caches) |*c| c.deinit();
         self.scratch_arena.deinit();
     }
 
@@ -1172,7 +1162,7 @@ const BannerBuilder = struct {
             };
             const local_paint = snail.mapPaintToLocal(paint, transform) orelse continue;
 
-            const curves = try font_ref.extractCurves(self.allocator, self.scratch_arena.allocator(), &self.glyph_caches[fid], g.glyph_id);
+            const curves = try font_ref.extractCurves(self.allocator, self.scratch_arena.allocator(), g.glyph_id);
             _ = self.scratch_arena.reset(.retain_capacity);
             try self.path_curves_owned.append(self.allocator, curves);
 
@@ -1234,13 +1224,12 @@ const BannerBuilder = struct {
             const face_index: u32 = g.face_index;
             const fid: u32 = Assets.face_to_font_id[@as(usize, face_index)];
             const font_ref = &self.assets.fonts[fid];
-            const cache = &self.glyph_caches[fid];
             var iter = font_ref.colrLayers(g.glyph_id);
             if (iter.count() > 0) {
                 while (iter.next()) |layer| {
                     const layer_key = snail.recordKey.unhintedGlyph(fid, layer.glyph_id);
                     if (containsKey(self.text_entries.items, layer_key)) continue;
-                    const curves = try font_ref.extractCurves(self.allocator, self.scratch_arena.allocator(), cache, layer.glyph_id);
+                    const curves = try font_ref.extractCurves(self.allocator, self.scratch_arena.allocator(), layer.glyph_id);
                     _ = self.scratch_arena.reset(.retain_capacity);
                     try self.text_curves_owned.append(self.allocator, curves);
                     try self.text_entries.append(self.allocator, .{
@@ -1251,7 +1240,7 @@ const BannerBuilder = struct {
             }
             const key = snail.recordKey.unhintedGlyph(fid, g.glyph_id);
             if (containsKey(self.text_entries.items, key)) continue;
-            const curves = try font_ref.extractCurves(self.allocator, self.scratch_arena.allocator(), cache, g.glyph_id);
+            const curves = try font_ref.extractCurves(self.allocator, self.scratch_arena.allocator(), g.glyph_id);
             _ = self.scratch_arena.reset(.retain_capacity);
             try self.text_curves_owned.append(self.allocator, curves);
             try self.text_entries.append(self.allocator, .{

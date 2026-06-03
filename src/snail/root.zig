@@ -38,7 +38,6 @@ pub const MissingGlyphReplacement = text_mod.MissingGlyphReplacement;
 pub const isRenderableTextCodepoint = text_mod.isRenderableTextCodepoint;
 
 pub const Font = font.Font;
-pub const GlyphCache = font.GlyphCache;
 pub const tt = font.tt;
 
 // ── Paint ──

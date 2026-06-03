@@ -102,13 +102,8 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
     });
     errdefer pool.deinit();
 
-    // One GlyphCache per font: the cache is keyed by glyph_id only, so a
-    // single cache shared across fonts returns the wrong outline for any
-    // glyph_id that exists in multiple fonts (e.g. 'a' in both regular and
-    // bold). Index matches `fonts` / `face_to_font_id`.
-    var glyph_caches: [6]snail.font.GlyphCache = undefined;
-    for (&glyph_caches) |*c| c.* = snail.font.GlyphCache.init(allocator);
-    defer for (&glyph_caches) |*c| c.deinit();
+    var scratch_arena = std.heap.ArenaAllocator.init(allocator);
+    defer scratch_arena.deinit();
 
     var owned_curves: std.ArrayList(snail.GlyphCurves) = .empty;
     defer {
@@ -122,7 +117,8 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
         const fid = g.font_id;
         const key = snail.recordKey.unhintedGlyph(fid, g.glyph_id);
         if (containsKey(text_entries.items, key)) continue;
-        const curves = try fonts[fid].extractCurves(allocator, allocator, &glyph_caches[fid], g.glyph_id);
+        const curves = try fonts[fid].extractCurves(allocator, scratch_arena.allocator(), g.glyph_id);
+        _ = scratch_arena.reset(.retain_capacity);
         try owned_curves.append(allocator, curves);
         try text_entries.append(allocator, .{ .key = key, .curves = owned_curves.items[owned_curves.items.len - 1] });
     }
@@ -134,7 +130,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
         for (shaped_ptr.glyphs) |g| {
             const fid = g.font_id;
             if (fid >= fonts.len) continue;
-            try ensureGlyphOrColrLayers(allocator, &glyph_caches[fid], fonts[fid], fid, g.glyph_id, &owned_curves, &text_entries);
+            try ensureGlyphOrColrLayers(allocator, &scratch_arena, fonts[fid], fid, g.glyph_id, &owned_curves, &text_entries);
         }
     }
 
@@ -202,8 +198,6 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
             .w = 140.0,
             .h = 122.0,
         };
-        var scratch_arena = std.heap.ArenaAllocator.init(allocator);
-        defer scratch_arena.deinit();
         const snail_builder = banner_snail.Builder{
             .allocator = allocator,
             .scratch_arena = &scratch_arena,
@@ -245,7 +239,8 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
             .ty = pen_y,
         };
         const local_paint = snail.mapPaintToLocal(.{ .linear_gradient = wordmark_world_gradient }, transform) orelse continue;
-        const curves = try fonts[fid].extractCurves(allocator, allocator, &glyph_caches[fid], g.glyph_id);
+        const curves = try fonts[fid].extractCurves(allocator, scratch_arena.allocator(), g.glyph_id);
+        _ = scratch_arena.reset(.retain_capacity);
         try path_curves_owned.append(allocator, curves);
         const key = snail.RecordKey{ .namespace = snail.ns.path_fill, .a = next_path_id };
         next_path_id += 1;
@@ -360,7 +355,7 @@ fn containsKey(entries: []const snail.AtlasEntry, key: snail.RecordKey) bool {
 
 fn ensureGlyphOrColrLayers(
     allocator: Allocator,
-    cache: *snail.font.GlyphCache,
+    scratch_arena: *std.heap.ArenaAllocator,
     font: *snail.Font,
     fid: u32,
     glyph_id: u16,
@@ -372,7 +367,8 @@ fn ensureGlyphOrColrLayers(
         while (iter.next()) |layer| {
             const key = snail.recordKey.unhintedGlyph(fid, layer.glyph_id);
             if (containsKey(entries.items, key)) continue;
-            const curves = try font.extractCurves(allocator, allocator, cache, layer.glyph_id);
+            const curves = try font.extractCurves(allocator, scratch_arena.allocator(), layer.glyph_id);
+            _ = scratch_arena.reset(.retain_capacity);
             try owned_curves.append(allocator, curves);
             try entries.append(allocator, .{ .key = key, .curves = owned_curves.items[owned_curves.items.len - 1] });
         }
@@ -380,7 +376,8 @@ fn ensureGlyphOrColrLayers(
     }
     const key = snail.recordKey.unhintedGlyph(fid, glyph_id);
     if (containsKey(entries.items, key)) return;
-    const curves = try font.extractCurves(allocator, allocator, cache, glyph_id);
+    const curves = try font.extractCurves(allocator, scratch_arena.allocator(), glyph_id);
+    _ = scratch_arena.reset(.retain_capacity);
     try owned_curves.append(allocator, curves);
     try entries.append(allocator, .{ .key = key, .curves = owned_curves.items[owned_curves.items.len - 1] });
 }

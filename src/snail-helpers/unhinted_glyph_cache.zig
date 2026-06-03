@@ -15,12 +15,10 @@ const snail = @import("snail");
 const Allocator = std.mem.Allocator;
 const Font = snail.Font;
 const GlyphCurves = snail.GlyphCurves;
-const GlyphCache = snail.GlyphCache;
 
 pub const UnhintedGlyphCache = struct {
     allocator: Allocator,
     font: *const Font,
-    compound_cache: GlyphCache,
     curves: std.AutoHashMapUnmanaged(u16, GlyphCurves),
 
     pub const Stats = struct {
@@ -33,7 +31,6 @@ pub const UnhintedGlyphCache = struct {
         return .{
             .allocator = allocator,
             .font = font,
-            .compound_cache = GlyphCache.init(allocator),
             .curves = .{},
         };
     }
@@ -42,7 +39,6 @@ pub const UnhintedGlyphCache = struct {
         var it = self.curves.valueIterator();
         while (it.next()) |curves| curves.deinit();
         self.curves.deinit(self.allocator);
-        self.compound_cache.deinit();
         self.* = undefined;
     }
 
@@ -61,7 +57,6 @@ pub const UnhintedGlyphCache = struct {
             gop.value_ptr.* = try self.font.extractCurves(
                 allocator,
                 scratch,
-                &self.compound_cache,
                 glyph_id,
             );
         }

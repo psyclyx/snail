@@ -255,11 +255,9 @@ test "drawCpu replicated produces same pixels as equivalent heterogeneous emit" 
     @memset(px_repl, 0);
 
     var font = try snail.Font.init(font_data);
-    var glyph_cache = @import("../../../font.zig").GlyphCache.init(allocator);
-    defer glyph_cache.deinit();
 
     const gid = try font.glyphIndex('o');
-    var curves = try font.extractCurves(allocator, allocator, &glyph_cache, gid);
+    var curves = try font.extractCurves(allocator, allocator, gid);
     defer curves.deinit();
 
     var pool = try @import("../../../atlas/page_pool.zig").PagePool.init(allocator, .{
@@ -351,11 +349,9 @@ test "drawCpu renders a small Picture into non-zero pixels" {
     @memset(px, 0);
 
     var font = try snail.Font.init(font_data);
-    var glyph_cache = @import("../../../font.zig").GlyphCache.init(allocator);
-    defer glyph_cache.deinit();
 
     const gid = try font.glyphIndex('A');
-    const curves_a = try font.extractCurves(allocator, allocator, &glyph_cache, gid);
+    const curves_a = try font.extractCurves(allocator, allocator, gid);
     var owned: [1]@import("../../../atlas/curves.zig").GlyphCurves = .{curves_a};
     defer for (&owned) |*c| c.deinit();
 
@@ -430,11 +426,9 @@ test "drawCpu renders gradient-painted glyph through special-layer path" {
     @memset(px, 0);
 
     var font = try snail.Font.init(font_data);
-    var glyph_cache = @import("../../../font.zig").GlyphCache.init(allocator);
-    defer glyph_cache.deinit();
 
     const gid = try font.glyphIndex('O');
-    var curves = try font.extractCurves(allocator, allocator, &glyph_cache, gid);
+    var curves = try font.extractCurves(allocator, allocator, gid);
     defer curves.deinit();
 
     var pool = try @import("../../../atlas/page_pool.zig").PagePool.init(allocator, .{

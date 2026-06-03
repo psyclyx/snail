@@ -87,11 +87,6 @@ const PassBuilder = struct {
     allocator: std.mem.Allocator,
     fonts: *Fonts,
 
-    /// Per-font glyph caches: `GlyphCache` is keyed by glyph_id only, so a
-    /// shared cache returns the wrong outline for glyph_ids common to
-    /// multiple fonts (e.g. 'a' in regular vs bold).
-    glyph_caches: [Fonts.face_count]snail.font.GlyphCache,
-
     // Path namespace: vector paths + per-glyph painted text glyphs.
     path_curves_owned: std.ArrayList(snail.GlyphCurves),
     path_entries: std.ArrayList(snail.AtlasEntry),
@@ -105,12 +100,9 @@ const PassBuilder = struct {
     text_shapes: std.ArrayList(snail.Shape),
 
     fn init(allocator: std.mem.Allocator, fonts: *Fonts) PassBuilder {
-        var glyph_caches: [Fonts.face_count]snail.font.GlyphCache = undefined;
-        for (&glyph_caches) |*c| c.* = snail.font.GlyphCache.init(allocator);
         return .{
             .allocator = allocator,
             .fonts = fonts,
-            .glyph_caches = glyph_caches,
             .path_curves_owned = .empty,
             .path_entries = .empty,
             .path_shapes = .empty,
@@ -134,8 +126,6 @@ const PassBuilder = struct {
         self.text_curves_owned.deinit(self.allocator);
         self.text_entries.deinit(self.allocator);
         self.text_shapes.deinit(self.allocator);
-
-        for (&self.glyph_caches) |*c| c.deinit();
     }
 
     fn addFilledPath(self: *PassBuilder, path: *const snail.paths.Path, paint: snail.Paint) !void {
@@ -348,7 +338,7 @@ const PassBuilder = struct {
             };
             const local_paint = snail.mapPaintToLocal(paint, transform) orelse continue;
 
-            const curves = try font_ref.extractCurves(self.allocator, self.allocator, &self.glyph_caches[fid], g.glyph_id);
+            const curves = try font_ref.extractCurves(self.allocator, self.allocator, g.glyph_id);
             try self.path_curves_owned.append(self.allocator, curves);
 
             const key = snail.RecordKey{ .namespace = snail.ns.path_fill, .a = self.next_path_id };
@@ -374,7 +364,7 @@ const PassBuilder = struct {
             const font_ref = &self.fonts.fonts[fid];
             const key = snail.recordKey.unhintedGlyph(fid, g.glyph_id);
             if (containsKey(self.text_entries.items, key)) continue;
-            const curves = try font_ref.extractCurves(self.allocator, self.allocator, &self.glyph_caches[fid], g.glyph_id);
+            const curves = try font_ref.extractCurves(self.allocator, self.allocator, g.glyph_id);
             try self.text_curves_owned.append(self.allocator, curves);
             try self.text_entries.append(self.allocator, .{
                 .key = key,

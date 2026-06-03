@@ -49,30 +49,6 @@ pub const Glyph = struct {
     metrics: GlyphMetrics,
 };
 
-/// Glyph cache for parsed glyph outlines. Caller-owned, enabling thread-safe
-/// usage patterns: each thread (or Atlas) gets its own cache.
-pub const GlyphCache = struct {
-    map: std.AutoHashMap(u16, Glyph),
-    allocator: std.mem.Allocator,
-
-    pub fn init(allocator: std.mem.Allocator) GlyphCache {
-        return .{ .map = std.AutoHashMap(u16, Glyph).init(allocator), .allocator = allocator };
-    }
-
-    pub fn deinit(self: *GlyphCache) void {
-        var it = self.map.iterator();
-        while (it.next()) |entry| {
-            freeGlyphContours(self.allocator, entry.value_ptr.contours);
-        }
-        self.map.deinit();
-    }
-};
-
-fn freeGlyphContours(allocator: std.mem.Allocator, contours: []const Contour) void {
-    freeContourCurves(allocator, contours);
-    if (contours.len > 0) allocator.free(contours);
-}
-
 fn freeContourCurves(allocator: std.mem.Allocator, contours: []const Contour) void {
     for (contours) |contour| {
         if (contour.curves.len > 0) allocator.free(contour.curves);
@@ -81,7 +57,7 @@ fn freeContourCurves(allocator: std.mem.Allocator, contours: []const Contour) vo
 
 /// Parsed TrueType font. Immutable after init — all methods are const.
 /// Thread-safe for concurrent reads (glyphIndex, getKerning, parseGlyph
-/// with separate GlyphCache instances).
+/// with separate scratch allocators per thread).
 pub const Font = struct {
     data: []const u8,
     units_per_em: u16 = 1000,
@@ -416,17 +392,30 @@ pub const Font = struct {
         return (try self.glyphMetrics(glyph_id)).bbox;
     }
 
-    /// Parse a glyph's outlines. Uses cache for compound glyph component lookups.
-    /// Thread-safe when each caller uses a separate cache and allocator.
-    pub fn parseGlyph(self: *const Font, allocator: std.mem.Allocator, cache: *GlyphCache, glyph_id: u16) ParseError!Glyph {
-        if (cache.map.get(glyph_id)) |cached| return cached;
+    /// Parse a glyph's outlines on `scratch`. The returned glyph (and
+    /// every transitively-allocated contour/curve buffer) lives on
+    /// `scratch`; the caller is expected to read it and then drop the
+    /// scratch arena. Thread-safe given a per-thread scratch allocator.
+    ///
+    /// Compound glyphs use a `scratch`-backed component cache so
+    /// repeat references inside one compound (e.g. accent + base seen
+    /// multiple times) don't re-parse — but the cache is bounded to
+    /// this call: no state survives `parseGlyph`.
+    pub fn parseGlyph(self: *const Font, scratch: std.mem.Allocator, glyph_id: u16) ParseError!Glyph {
+        var cache = std.AutoHashMap(u16, Glyph).init(scratch);
+        defer cache.deinit();
+        return self.parseGlyphInner(scratch, &cache, glyph_id);
+    }
+
+    fn parseGlyphInner(self: *const Font, scratch: std.mem.Allocator, cache: *std.AutoHashMap(u16, Glyph), glyph_id: u16) ParseError!Glyph {
+        if (cache.get(glyph_id)) |cached| return cached;
 
         const metrics = try self.glyphMetrics(glyph_id);
         const glyph_len = try self.glyphLength(glyph_id);
 
         if (glyph_len == 0) {
             const glyph = Glyph{ .contours = &.{}, .metrics = metrics };
-            try cache.map.put(glyph_id, glyph);
+            try cache.put(glyph_id, glyph);
             return glyph;
         }
 
@@ -434,9 +423,9 @@ pub const Font = struct {
         const num_contours = try readI16(self.data, base);
 
         if (num_contours < 0) {
-            return self.parseCompoundGlyph(allocator, cache, glyph_id, base, metrics);
+            return self.parseCompoundGlyph(scratch, cache, glyph_id, base, metrics);
         }
-        return self.parseSimpleGlyph(allocator, cache, glyph_id, base, @intCast(num_contours), metrics);
+        return self.parseSimpleGlyph(scratch, cache, glyph_id, base, @intCast(num_contours), metrics);
     }
 
     fn buildSimpleGlyphContours(
@@ -465,42 +454,34 @@ pub const Font = struct {
         return contours.toOwnedSlice(allocator);
     }
 
-    fn cacheParsedGlyph(allocator: std.mem.Allocator, cache: *GlyphCache, glyph_id: u16, glyph: Glyph) ParseError!Glyph {
-        errdefer freeGlyphContours(allocator, glyph.contours);
-        try cache.map.put(glyph_id, glyph);
+    fn cacheParsedGlyph(cache: *std.AutoHashMap(u16, Glyph), glyph_id: u16, glyph: Glyph) ParseError!Glyph {
+        try cache.put(glyph_id, glyph);
         return glyph;
     }
 
-    fn parseSimpleGlyph(self: *const Font, allocator: std.mem.Allocator, cache: *GlyphCache, glyph_id: u16, base: u32, num_contours: u16, metrics: GlyphMetrics) ParseError!Glyph {
+    fn parseSimpleGlyph(self: *const Font, scratch: std.mem.Allocator, cache: *std.AutoHashMap(u16, Glyph), glyph_id: u16, base: u32, num_contours: u16, metrics: GlyphMetrics) ParseError!Glyph {
         if (num_contours == 0) {
-            return cacheParsedGlyph(allocator, cache, glyph_id, .{ .contours = &.{}, .metrics = metrics });
+            return cacheParsedGlyph(cache, glyph_id, .{ .contours = &.{}, .metrics = metrics });
         }
 
         const scale = 1.0 / @as(f32, @floatFromInt(self.units_per_em));
-        var outline = try tt_outline.parseSimpleGlyph(allocator, self.data, base, num_contours);
+        var outline = try tt_outline.parseSimpleGlyph(scratch, self.data, base, num_contours);
         defer outline.deinit();
-        const contours = try buildSimpleGlyphContours(allocator, &outline, scale);
-        return cacheParsedGlyph(allocator, cache, glyph_id, .{ .contours = contours, .metrics = metrics });
+        const contours = try buildSimpleGlyphContours(scratch, &outline, scale);
+        return cacheParsedGlyph(cache, glyph_id, .{ .contours = contours, .metrics = metrics });
     }
 
-    fn parseCompoundGlyph(self: *const Font, allocator: std.mem.Allocator, cache: *GlyphCache, glyph_id: u16, base: u32, metrics: GlyphMetrics) ParseError!Glyph {
+    fn parseCompoundGlyph(self: *const Font, scratch: std.mem.Allocator, cache: *std.AutoHashMap(u16, Glyph), glyph_id: u16, base: u32, metrics: GlyphMetrics) ParseError!Glyph {
         var all_contours: std.ArrayList(Contour) = .empty;
-        var contours_owned_by_list = true;
-        errdefer {
-            if (contours_owned_by_list) {
-                freeContourCurves(allocator, all_contours.items);
-                all_contours.deinit(allocator);
-            }
-        }
 
         const sf = 1.0 / @as(f32, @floatFromInt(self.units_per_em));
-        var compound = try tt_outline.parseCompoundGlyph(allocator, self.data, base, sf);
+        var compound = try tt_outline.parseCompoundGlyph(scratch, self.data, base, sf);
         defer compound.deinit();
 
         for (compound.components) |component_ref| {
-            const component = try self.parseGlyph(allocator, cache, component_ref.glyph_id);
+            const component = try self.parseGlyphInner(scratch, cache, component_ref.glyph_id);
             for (component.contours) |contour| {
-                var transformed = try allocator.alloc(QuadBezier, contour.curves.len);
+                var transformed = try scratch.alloc(QuadBezier, contour.curves.len);
                 const d = Vec2.new(component_ref.dx, component_ref.dy);
                 for (contour.curves, 0..) |curve, ci| {
                     transformed[ci] = .{
@@ -509,14 +490,13 @@ pub const Font = struct {
                         .p2 = transformComponentPoint(component_ref.transform, curve.p2, d),
                     };
                 }
-                try all_contours.append(allocator, .{ .curves = transformed });
+                try all_contours.append(scratch, .{ .curves = transformed });
             }
         }
 
-        const contours = try all_contours.toOwnedSlice(allocator);
-        contours_owned_by_list = false;
+        const contours = try all_contours.toOwnedSlice(scratch);
         const glyph = Glyph{ .contours = contours, .metrics = metrics };
-        return cacheParsedGlyph(allocator, cache, glyph_id, glyph);
+        return cacheParsedGlyph(cache, glyph_id, glyph);
     }
 
     fn transformComponentPoint(transform: tt_outline.ComponentTransform, point: Vec2, offset: Vec2) Vec2 {
@@ -691,9 +671,9 @@ test "parse real font" {
     const glyph_id = try font.glyphIndex('A');
     try std.testing.expect(glyph_id > 0);
 
-    var cache = GlyphCache.init(std.testing.allocator);
-    defer cache.deinit();
-    const glyph = try font.parseGlyph(std.testing.allocator, &cache, glyph_id);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const glyph = try font.parseGlyph(arena.allocator(), glyph_id);
     try std.testing.expect(glyph.contours.len > 0);
     try std.testing.expect(glyph.metrics.advance_width > 0);
 
@@ -719,24 +699,25 @@ test "COLR iterator exposes full layer count" {
 test "parse multiple glyphs" {
     const font_data = @import("assets").noto_sans_regular;
     const font = try Font.init(font_data);
-    var cache = GlyphCache.init(std.testing.allocator);
-    defer cache.deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
 
     const test_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     for (test_chars) |ch| {
         const glyph_id = try font.glyphIndex(ch);
-        _ = try font.parseGlyph(std.testing.allocator, &cache, glyph_id);
+        _ = try font.parseGlyph(arena.allocator(), glyph_id);
+        _ = arena.reset(.retain_capacity);
     }
 }
 
 test "space glyph has no contours" {
     const font_data = @import("assets").noto_sans_regular;
     const font = try Font.init(font_data);
-    var cache = GlyphCache.init(std.testing.allocator);
-    defer cache.deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
 
     const space_id = try font.glyphIndex(' ');
-    const glyph = try font.parseGlyph(std.testing.allocator, &cache, space_id);
+    const glyph = try font.parseGlyph(arena.allocator(), space_id);
     try std.testing.expectEqual(@as(usize, 0), glyph.contours.len);
     try std.testing.expect(glyph.metrics.advance_width > 0);
 }
@@ -744,12 +725,12 @@ test "space glyph has no contours" {
 test "direct glyph metrics match parsed glyph metrics" {
     const font_data = @import("assets").noto_sans_regular;
     const font = try Font.init(font_data);
-    var cache = GlyphCache.init(std.testing.allocator);
-    defer cache.deinit();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
 
     const glyph_id = try font.glyphIndex('M');
     const direct = try font.glyphMetrics(glyph_id);
-    const glyph = try font.parseGlyph(std.testing.allocator, &cache, glyph_id);
+    const glyph = try font.parseGlyph(arena.allocator(), glyph_id);
 
     try std.testing.expectEqual(direct.advance_width, glyph.metrics.advance_width);
     try std.testing.expectEqual(direct.lsb, glyph.metrics.lsb);

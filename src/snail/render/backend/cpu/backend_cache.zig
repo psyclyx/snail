@@ -635,10 +635,8 @@ test "release returns range to free list and allows reuse" {
 
     const font_data = @import("assets").noto_sans_regular;
     var font = try font_mod.Font.init(font_data);
-    var glyph_cache = font_mod.GlyphCache.init(testing.allocator);
-    defer glyph_cache.deinit();
     const gid = try font.glyphIndex('A');
-    var curves = try font.extractCurves(testing.allocator, testing.allocator, &glyph_cache, gid);
+    var curves = try font.extractCurves(testing.allocator, testing.allocator, gid);
     defer curves.deinit();
 
     var pool = try PagePool.init(testing.allocator, .{
