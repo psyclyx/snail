@@ -172,16 +172,6 @@ pub const AtlasPage = struct {
         band_word_offset: u32,
     };
 
-    pub fn writeCurve(self: *AtlasPage, word_offset: u32, src: []const Word) void {
-        std.debug.assert(word_offset + src.len <= self.curve.capacity_words);
-        @memcpy(self.curve.data[word_offset..][0..src.len], src);
-    }
-
-    pub fn writeBand(self: *AtlasPage, word_offset: u32, src: []const Word) void {
-        std.debug.assert(word_offset + src.len <= self.band.capacity_words);
-        @memcpy(self.band.data[word_offset..][0..src.len], src);
-    }
-
     /// Slice from offset 0 up to the current used watermark. The returned
     /// slice's bytes are immutable for the page's current generation.
     pub fn curveBytesUsed(self: *const AtlasPage) []const Word {

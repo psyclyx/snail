@@ -202,12 +202,14 @@ pub const Builder = struct {
             reservation = page.reserve(curve_words, band_words) orelse return error.RecordTooLargeForPage;
         }
 
-        page.writeCurve(reservation.curve_word_offset, curves.curve_bytes);
+        std.debug.assert(reservation.curve_word_offset + curves.curve_bytes.len <= page.curve.capacity_words);
+        @memcpy(page.curve.data[reservation.curve_word_offset..][0..curves.curve_bytes.len], curves.curve_bytes);
 
         std.debug.assert(reservation.curve_word_offset % 4 == 0);
         const base_curve_texel = reservation.curve_word_offset / 4;
 
-        page.writeBand(reservation.band_word_offset, curves.band_bytes);
+        std.debug.assert(reservation.band_word_offset + curves.band_bytes.len <= page.band.capacity_words);
+        @memcpy(page.band.data[reservation.band_word_offset..][0..curves.band_bytes.len], curves.band_bytes);
         const band_slice = page.band.data[reservation.band_word_offset..][0..band_words];
         rewriteBandRefs(band_slice, curves.h_band_count, curves.v_band_count, base_curve_texel);
 

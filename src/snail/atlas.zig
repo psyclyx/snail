@@ -81,7 +81,7 @@ pub const Layer = struct {
 
 pub const CompositeMode = paint_mod.CompositeMode;
 
-pub const InsertError = std.mem.Allocator.Error || PagePool.AcquireError || error{RecordTooLargeForPage};
+pub const InsertError = std.mem.Allocator.Error || PagePool.AcquireError || error{ RecordTooLargeForPage, NoPool };
 
 pub const Atlas = struct {
     allocator: std.mem.Allocator,
@@ -182,7 +182,7 @@ pub const Atlas = struct {
         allocator: std.mem.Allocator,
         entries: []const Entry,
     ) InsertError!Atlas {
-        const pool = self.pool orelse return error.RecordTooLargeForPage; // empty atlas, can't extend
+        const pool = self.pool orelse return error.NoPool; // empty atlas, no pool to allocate from
         var builder = try Builder.initFrom(allocator, pool, self);
         errdefer builder.abort();
 
@@ -197,9 +197,13 @@ pub const Atlas = struct {
     /// (each retained for the new atlas) and the union of lookups; on a key
     /// collision the first occurrence in the input order wins.
     ///
+    /// `allocator` owns the returned atlas; `scratch` holds the page-dedup
+    /// hashmap used during the merge and is freed before this returns.
+    ///
     /// Asserts all non-empty inputs share the same `PagePool`.
     pub fn combine(
         allocator: std.mem.Allocator,
+        scratch: std.mem.Allocator,
         atlases: []const *const Atlas,
     ) std.mem.Allocator.Error!Atlas {
         var pool: ?*PagePool = null;
@@ -216,14 +220,14 @@ pub const Atlas = struct {
         }
 
         var page_set = std.AutoHashMapUnmanaged(*AtlasPage, u16){};
-        defer page_set.deinit(allocator);
+        defer page_set.deinit(scratch);
 
         var pages: std.ArrayList(*AtlasPage) = .empty;
         errdefer pages.deinit(allocator);
 
         for (atlases) |a| {
             for (a.pages) |p| {
-                const gop = try page_set.getOrPut(allocator, p);
+                const gop = try page_set.getOrPut(scratch, p);
                 if (!gop.found_existing) {
                     gop.value_ptr.* = @intCast(pages.items.len);
                     try pages.append(allocator, p);
@@ -459,7 +463,7 @@ test "combine merges pages and lookups, first key wins" {
     });
     defer b.deinit();
 
-    var combined = try Atlas.combine(testing.allocator, &.{ &a, &b });
+    var combined = try Atlas.combine(testing.allocator, testing.allocator, &.{ &a, &b });
     defer combined.deinit();
 
     try testing.expectEqual(@as(u32, 3), combined.recordCount());
@@ -495,7 +499,7 @@ test "combine with empty atlas is identity" {
     var empty = Atlas.empty(testing.allocator);
     defer empty.deinit();
 
-    var combined = try Atlas.combine(testing.allocator, &.{ &a, &empty });
+    var combined = try Atlas.combine(testing.allocator, testing.allocator, &.{ &a, &empty });
     defer combined.deinit();
     try testing.expectEqual(@as(u32, 1), combined.recordCount());
     try testing.expect(combined.contains(k0));
