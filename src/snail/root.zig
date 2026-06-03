@@ -124,6 +124,21 @@ pub const DrawSegment = @import("picture/draw_records.zig").DrawSegment;
 pub const Binding = @import("picture/draw_records.zig").Binding;
 pub const emit = @import("picture/emit.zig");
 
+// ── Custom-shader primitives ──
+//
+// Symbolic decoders + texel-coord resolvers so callers can drive their
+// own shader pipeline off the same byte layout the built-in renderers
+// consume. Bind atlas pages via `Renderer.curveTexHandle()` etc.
+
+const vertex_mod = @import("render/format/vertex.zig");
+pub const Instance = vertex_mod.Instance;
+pub const DecodedInstance = vertex_mod.DecodedInstance;
+pub const decodeInstance = vertex_mod.decodeInstance;
+pub const BindingTexels = vertex_mod.BindingTexels;
+pub const bindingTexels = vertex_mod.bindingTexels;
+pub const WORDS_PER_INSTANCE = vertex_mod.WORDS_PER_INSTANCE;
+pub const WORDS_PER_OVERRIDE = vertex_mod.WORDS_PER_OVERRIDE;
+
 pub const shapedRunPicture = @import("picture/text.zig").shapedRunPicture;
 pub const hintedShapedRunPicture = @import("picture/text.zig").hintedShapedRunPicture;
 pub const HintVm = @import("font/hint_vm.zig").HintVm;

@@ -27,6 +27,9 @@ pub const Instance = extern struct {
 
 pub const BYTES_PER_INSTANCE: usize = @sizeOf(Instance);
 pub const WORDS_PER_INSTANCE: usize = @divExact(BYTES_PER_INSTANCE, @sizeOf(u32));
+/// One override block (used by `emitInstanced`): 6 f32 transform fields
+/// + a packed u8x4 tint + one reserved word, = 8 u32 words = 32 bytes.
+pub const WORDS_PER_OVERRIDE: usize = 8;
 
 /// One instance per glyph quad (instanced rendering).
 pub const INSTANCES_PER_GLYPH: usize = 1;
@@ -183,6 +186,53 @@ pub fn instanceAtMut(words: []u32, glyph_index: usize) *Instance {
 
 pub fn instanceBytes(words: []const u32) []const u8 {
     return std.mem.sliceAsBytes(words);
+}
+
+pub const BindingTexels = struct {
+    /// Texel column inside the layer-info texture.
+    info_x: u16,
+    /// Absolute texel row inside the layer-info texture
+    /// (i.e. `binding.info_row_base + record.info_y`).
+    info_y: u16,
+    /// Texture-array layer holding the record's page.
+    layer: u16,
+    /// Number of paint layers under this record (1 for unpainted /
+    /// solid; >1 for COLR/composite groups).
+    layer_count: u16,
+};
+
+/// Resolve `record_key`'s texel addresses against `binding` and the
+/// uploaded `atlas`. Returns `null` when the key isn't in the atlas.
+///
+/// Custom-shader users: this is the bridge from `RecordKey` →
+/// (layer-info texel, atlas-layer) you need to sample the per-record
+/// data inside your fragment shader. For records with no associated
+/// paint (default solid path), `info_x/info_y` are zero and
+/// `layer_count = 1`.
+pub fn bindingTexels(
+    binding: anytype,
+    atlas: anytype,
+    record_key: anytype,
+) ?BindingTexels {
+    const rec = atlas.lookupRecord(record_key) orelse return null;
+    const page = atlas.pages[rec.page_index];
+
+    var info_x: u16 = 0;
+    var info_y: u16 = 0;
+    var layer_count: u16 = 1;
+    if (atlas.lookupPaintRecord(record_key)) |paint_info| {
+        info_x = paint_info.info_x;
+        const sum = @as(u32, paint_info.info_y) + binding.info_row_base;
+        info_y = @intCast(sum);
+        layer_count = paint_info.layer_count;
+    }
+
+    return .{
+        .info_x = info_x,
+        .info_y = info_y,
+        .layer = @intCast(page.layer_index),
+        .layer_count = layer_count,
+    };
 }
 
 pub fn decodeInstance(words: []const u32) DecodedInstance {
