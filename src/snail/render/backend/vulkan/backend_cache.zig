@@ -212,6 +212,30 @@ pub const VulkanBackendCache = struct {
         self.* = undefined;
     }
 
+    // ── Custom-shader resource handles ──
+    //
+    // Vulkan backends expose the `VkImageView`s a custom shader needs
+    // to sample the cache's textures. They become non-null once the
+    // first `upload`/`uploadDelta` populates them; the caller is
+    // responsible for emitting the right image-layout transitions
+    // (see `prepareImageLayoutForSampling`) before sampling.
+
+    pub fn curveTexHandle(self: *const Self) vk.VkImageView {
+        return self.curve_view;
+    }
+
+    pub fn bandTexHandle(self: *const Self) vk.VkImageView {
+        return self.band_view;
+    }
+
+    pub fn layerInfoTexHandle(self: *const Self) vk.VkImageView {
+        return self.layer_info_view;
+    }
+
+    pub fn imageArrayHandle(self: *const Self) vk.VkImageView {
+        return self.image_array_view;
+    }
+
     fn destroyGpuResources(self: *Self) void {
         const dev = self.pipeline.ctx.device;
         if (dev == null) return;

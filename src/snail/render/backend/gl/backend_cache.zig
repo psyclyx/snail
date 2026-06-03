@@ -201,6 +201,29 @@ pub fn GlBackendCacheFor(comptime variant: Variant) type {
             self.* = undefined;
         }
 
+        // ── Custom-shader resource handles ──
+        //
+        // GL backends expose the underlying texture names (GLuint) so
+        // a caller running their own shader pipeline can bind them
+        // alongside `decodeInstance` + `bindingTexels`. Returns 0
+        // before `upload`/`uploadDelta` has populated the cache.
+
+        pub fn curveTexHandle(self: *const Self) gl.GLuint {
+            return self.curve_array;
+        }
+
+        pub fn bandTexHandle(self: *const Self) gl.GLuint {
+            return self.band_array;
+        }
+
+        pub fn layerInfoTexHandle(self: *const Self) gl.GLuint {
+            return self.layer_info_tex;
+        }
+
+        pub fn imageArrayHandle(self: *const Self) gl.GLuint {
+            return self.image_array_tex;
+        }
+
         fn destroyTextures(self: *Self) void {
             if (self.curve_array != 0) gl.glDeleteTextures(1, &self.curve_array);
             if (self.band_array != 0) gl.glDeleteTextures(1, &self.band_array);
