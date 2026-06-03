@@ -60,7 +60,9 @@ pub const UploadError = error{
     NoFreeBinding,
     NoFreeLayerInfoRows,
     NoFreeImageLayers,
+    NoLayerInfoRoomToGrow,
     UnknownPool,
+    UnknownBinding,
     PageNotInPool,
 } || std.mem.Allocator.Error;
 
@@ -307,6 +309,40 @@ pub const CpuBackendCache = struct {
 
         self.active_bindings += @intCast(atlases.len);
         success = true;
+    }
+
+    /// Incrementally update `prev_binding`'s slot with `atlas`'s
+    /// current state. See `GlBackendCache.uploadDelta` for the
+    /// contract; the CPU implementation re-runs `writeBindingData`
+    /// which natively walks per-page watermarks under the hood, so
+    /// pages whose contents haven't grown emit no copy traffic.
+    pub fn uploadDelta(
+        self: *CpuBackendCache,
+        scratch: std.mem.Allocator,
+        prev_binding: Binding,
+        atlas: *const Atlas,
+    ) UploadError!Binding {
+        _ = scratch;
+        if (atlas.pool) |p| {
+            if (p != self.pool) return error.UnknownPool;
+        }
+        const slot_index = self.findSlotByGeneration(prev_binding.generation) orelse return error.UnknownBinding;
+        const slot = &self.bindings[slot_index];
+        if (!slot.active) return error.UnknownBinding;
+
+        const need_info_height = if (atlas.layer_info_data != null) atlas.layer_info_height else 0;
+        if (need_info_height > slot.info_height) return error.NoLayerInfoRoomToGrow;
+        const need_image_count = countUniqueImages(atlas);
+        if (need_image_count > slot.image_count) return error.NoLayerInfoRoomToGrow;
+
+        try self.writeBindingData(atlas, slot);
+
+        return .{
+            .pool = self.pool,
+            .generation = slot.generation,
+            .info_row_base = slot.info_row_base,
+            .image_layer_base = slot.image_layer_base,
+        };
     }
 
     /// Release a binding's storage. Idempotent: releasing the same

@@ -66,7 +66,9 @@ pub const UploadError = error{
     NoFreeBinding,
     NoFreeLayerInfoRows,
     NoFreeImageLayers,
+    NoLayerInfoRoomToGrow,
     UnknownPool,
+    UnknownBinding,
     PageNotInPool,
     ImageTooLarge,
     MissingCommandBuffer,
@@ -380,6 +382,59 @@ pub const VulkanBackendCache = struct {
 
         self.active_bindings += @intCast(atlases.len);
         success = true;
+    }
+
+    /// Incrementally update `prev_binding`'s slot with `atlas`'s
+    /// current state. See `GlBackendCache.uploadDelta` for the
+    /// contract; this Vulkan implementation queues only the changed
+    /// curve / band / layer-info / image regions into a single
+    /// `UploadBatch` that's flushed before returning.
+    pub fn uploadDelta(
+        self: *Self,
+        scratch: std.mem.Allocator,
+        prev_binding: Binding,
+        atlas: *const Atlas,
+    ) UploadError!Binding {
+        if (atlas.pool) |p| {
+            if (p != self.pool) return error.UnknownPool;
+        }
+        const slot_index = self.findSlotByGeneration(prev_binding.generation) orelse return error.UnknownBinding;
+        const slot = &self.bindings[slot_index];
+        if (!slot.active) return error.UnknownBinding;
+
+        const need_info_height = if (atlas.layer_info_data != null) atlas.layer_info_height else 0;
+        if (need_info_height > slot.info_height) return error.NoLayerInfoRoomToGrow;
+        const need_image_count = countUniqueImages(atlas);
+        if (need_image_count > slot.image_count) return error.NoLayerInfoRoomToGrow;
+
+        if (atlas.paint_image_records) |records| {
+            for (records) |maybe_rec| {
+                const rec = maybe_rec orelse continue;
+                if (rec.image.width > self.options.max_image_width or rec.image.height > self.options.max_image_height) {
+                    return error.ImageTooLarge;
+                }
+            }
+        }
+
+        try self.ensureGpuResources();
+
+        var batch = UploadBatch{};
+        defer batch.deinit(scratch);
+        var layer_info_copies: std.ArrayList([]const f32) = .empty;
+        defer {
+            for (layer_info_copies.items) |c| scratch.free(c);
+            layer_info_copies.deinit(scratch);
+        }
+
+        try self.queueBindingData(scratch, &batch, &layer_info_copies, atlas, slot);
+        try self.flushBatch(scratch, &batch);
+
+        return .{
+            .pool = self.pool,
+            .generation = slot.generation,
+            .info_row_base = slot.info_row_base,
+            .image_layer_base = slot.image_layer_base,
+        };
     }
 
     pub fn release(self: *Self, binding: Binding) void {

@@ -83,7 +83,9 @@ pub const UploadError = error{
     NoFreeBinding,
     NoFreeLayerInfoRows,
     NoFreeImageLayers,
+    NoLayerInfoRoomToGrow,
     UnknownPool,
+    UnknownBinding,
     PageNotInPool,
     ImageTooLarge,
 } || std.mem.Allocator.Error;
@@ -341,6 +343,60 @@ pub fn GlBackendCacheFor(comptime variant: Variant) type {
 
             self.active_bindings += @intCast(atlases.len);
             success = true;
+        }
+
+        /// Incrementally update `prev_binding`'s slot with `atlas`'s
+        /// current state. Intended for the terminal hot path: the same
+        /// `Atlas` is grown via `Atlas.extend`, then the new pages /
+        /// layer-info rows / image layers are uploaded without
+        /// re-binding everything.
+        ///
+        /// `writeBindingData` already walks each page's
+        /// `usedWords` / `uploadedWords` watermarks under the hood, so
+        /// pages whose contents haven't grown emit no GL traffic; only
+        /// new bytes ship.
+        ///
+        /// Constraints (errors when violated):
+        /// - `prev_binding.generation` must still be active
+        ///   (`error.UnknownBinding` otherwise — usually means
+        ///   `release` ran first).
+        /// - The atlas's `layer_info_height` must fit inside the slot
+        ///   reserved at the original upload
+        ///   (`error.NoLayerInfoRoomToGrow` otherwise — caller must
+        ///   `release` and re-`upload`).
+        ///
+        /// Returns the (same-slot) binding so the caller can keep
+        /// using one variable.
+        pub fn uploadDelta(
+            self: *Self,
+            scratch: std.mem.Allocator,
+            prev_binding: Binding,
+            atlas: *const Atlas,
+        ) UploadError!Binding {
+            if (atlas.pool) |p| {
+                if (p != self.pool) return error.UnknownPool;
+            }
+            const slot_index = self.findSlotByGeneration(prev_binding.generation) orelse return error.UnknownBinding;
+            const slot = &self.bindings[slot_index];
+            if (!slot.active) return error.UnknownBinding;
+
+            const need_info_height = if (atlas.layer_info_data != null) atlas.layer_info_height else 0;
+            if (need_info_height > slot.info_height) return error.NoLayerInfoRoomToGrow;
+            const need_image_count = countUniqueImages(atlas);
+            if (need_image_count > slot.image_count) return error.NoLayerInfoRoomToGrow;
+
+            self.ensurePoolTextures();
+            self.ensureLayerInfoTexture();
+            try self.ensureImageArrayTexture(&.{atlas});
+
+            try self.writeBindingData(scratch, atlas, slot);
+
+            return .{
+                .pool = self.pool,
+                .generation = slot.generation,
+                .info_row_base = slot.info_row_base,
+                .image_layer_base = slot.image_layer_base,
+            };
         }
 
         pub fn release(self: *Self, binding: Binding) void {
