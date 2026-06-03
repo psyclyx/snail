@@ -213,12 +213,26 @@ fn addSnailModule(
     return snail_mod;
 }
 
+fn addSnailHelpersModule(
+    b: *std.Build,
+    config: BuildConfig,
+    snail_mod: *std.Build.Module,
+) *std.Build.Module {
+    return b.addModule("snail-helpers", .{
+        .root_source_file = b.path("src/snail-helpers/root.zig"),
+        .target = config.target,
+        .optimize = config.optimize,
+        .imports = &.{.{ .name = "snail", .module = snail_mod }},
+    });
+}
+
 const ProjectModules = struct {
     assets: *std.Build.Module,
     support: *std.Build.Module,
     options: *std.Build.Module,
     vk_shaders: *std.Build.Module,
     snail: *std.Build.Module,
+    snail_helpers: *std.Build.Module,
 };
 
 fn addTestSteps(
@@ -242,6 +256,20 @@ fn addTestSteps(
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
+
+    const helpers_test_module = b.createModule(.{
+        .root_source_file = b.path("src/snail-helpers/root.zig"),
+        .target = config.target,
+        .optimize = config.optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "snail", .module = modules.snail },
+            .{ .name = "assets", .module = modules.assets },
+        },
+    });
+    const helpers_unit_tests = b.addTest(.{ .root_module = helpers_test_module });
+    const run_helpers_unit_tests = b.addRunArtifact(helpers_unit_tests);
+    test_step.dependOn(&run_helpers_unit_tests.step);
 
     const test_valgrind_step = b.step("test-valgrind", "Run unit tests under Valgrind");
     const valgrind_test_module = createCoreTestModule(
@@ -493,12 +521,14 @@ pub fn build(b: *std.Build) void {
     const vk_shaders_mod = vulkan_shaders.createModule(b, config.core_options.enable_vulkan);
 
     const snail_mod = addSnailModule(b, config, options_mod, vk_shaders_mod);
+    const snail_helpers_mod = addSnailHelpersModule(b, config, snail_mod);
     const modules = ProjectModules{
         .assets = assets_mod,
         .support = support_mod,
         .options = options_mod,
         .vk_shaders = vk_shaders_mod,
         .snail = snail_mod,
+        .snail_helpers = snail_helpers_mod,
     };
 
     addTestSteps(b, config, modules);
