@@ -226,6 +226,19 @@ fn addSnailHelpersModule(
     });
 }
 
+fn createReleaseHelpersModule(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    snail_mod: *std.Build.Module,
+) *std.Build.Module {
+    return b.createModule(.{
+        .root_source_file = b.path("src/snail-helpers/root.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .imports = &.{.{ .name = "snail", .module = snail_mod }},
+    });
+}
+
 const ProjectModules = struct {
     assets: *std.Build.Module,
     support: *std.Build.Module,
@@ -314,6 +327,8 @@ fn addScreenshotSteps(
     const screenshot_cpu_step = b.step("run-screenshot", "Render the demo through the CPU backend and write zig-out/demo-screenshot.tga");
     screenshot_cpu_step.dependOn(&run_screenshot_cpu.step);
 
+    const release_helpers_mod = createReleaseHelpersModule(b, config.target, release_snail_mod);
+
     // Banner screenshot — full interactive-demo scene through CPU backend.
     const banner_screenshot_mod = b.createModule(.{
         .root_source_file = b.path("src/demo/banner_screenshot.zig"),
@@ -323,6 +338,7 @@ fn addScreenshotSteps(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = release_snail_mod },
+            .{ .name = "snail-helpers", .module = release_helpers_mod },
             .{ .name = "support", .module = release_support_mod },
         },
     });
@@ -340,6 +356,7 @@ fn addScreenshotSteps(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = release_snail_mod },
+            .{ .name = "snail-helpers", .module = release_helpers_mod },
             .{ .name = "support", .module = release_support_mod },
         },
     });
@@ -360,6 +377,7 @@ fn addScreenshotSteps(
             .imports = &.{
                 .{ .name = "assets", .module = modules.assets },
                 .{ .name = "snail", .module = release_snail_mod },
+                .{ .name = "snail-helpers", .module = release_helpers_mod },
                 .{ .name = "support", .module = release_support_mod },
                 .{ .name = "demo_platform_vulkan", .module = release_vk_platform_mod },
             },
@@ -446,6 +464,7 @@ fn addInteractiveDemoStep(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = modules.snail },
+            .{ .name = "snail-helpers", .module = modules.snail_helpers },
             .{ .name = "support", .module = modules.support },
             .{ .name = "build_options", .module = modules.options },
         },
@@ -545,12 +564,7 @@ fn addBenchStep(
 ) void {
     const release_snail_mod = createSnailModule(b, config.target, .ReleaseFast, modules.options, config.core_options, modules.vk_shaders);
     const release_support_mod = createSupportModule(b, config.target, .ReleaseFast);
-    const release_helpers_mod = b.createModule(.{
-        .root_source_file = b.path("src/snail-helpers/root.zig"),
-        .target = config.target,
-        .optimize = .ReleaseFast,
-        .imports = &.{.{ .name = "snail", .module = release_snail_mod }},
-    });
+    const release_helpers_mod = createReleaseHelpersModule(b, config.target, release_snail_mod);
 
     const offscreen_gl_mod = b.createModule(.{
         .root_source_file = b.path("src/demo/platform/offscreen_gl.zig"),
@@ -571,6 +585,7 @@ fn addBenchStep(
         .link_libc = true,
         .imports = &.{
             .{ .name = "snail", .module = release_snail_mod },
+            .{ .name = "snail-helpers", .module = release_helpers_mod },
             .{ .name = "assets", .module = modules.assets },
         },
     });

@@ -407,10 +407,15 @@ fn shapeWithHarfbuzz(
     // lazily and the provider routes through caller-owned state. The
     // provider is invoked at `opts.target_ppem`; absent that we use the
     // upem (a 1:1 em-space identity that still measures correctly).
+    // The `covers` predicate gates per-face: faces the provider doesn't
+    // cover shape em-space rather than getting wrong advances from the
+    // provider's underlying VM/cache.
     var use_provider = false;
     if (opts.advance_provider) |provider| {
-        try hbs.attachAdvanceProvider(hb_allocator, provider, font_id);
-        use_provider = true;
+        if (provider.covers(provider.context, font_id)) {
+            try hbs.attachAdvanceProvider(hb_allocator, provider, font_id);
+            use_provider = true;
+        }
     }
 
     const shaped = if (use_provider)

@@ -19,6 +19,7 @@
 
 const std = @import("std");
 const snail = @import("snail");
+const snail_helpers = @import("snail-helpers");
 const banner_snail = @import("banner_snail.zig");
 const assets_data = @import("assets");
 
@@ -159,19 +160,19 @@ pub const Content = struct {
 /// shutdown. The shaper allocator and font datas come from `assets`.
 pub const Assets = struct {
     allocator: Allocator,
-    shaper: snail.Shaper,
-    /// Mirrors `shaper`'s face list. Picture builders need a
-    /// `*const Faces` for font-id resolution and COLR fanout; the
-    /// shape calls in this demo still go through `shaper.shapeOpts`
-    /// for hinted-advance routing until phase 5d collapses the two
-    /// surfaces.
     faces: snail.Faces,
     fonts: [font_count]snail.Font,
     paint_image: snail.Image,
-    /// Whether face 0 has a hinter attached on `shaper`. The actual
-    /// `HintVm` lives inside the Shaper (so HB and the demo render path
-    /// share one VM/cache). `false` means hinting wasn't available for
-    /// this font and the build falls through to unhinted glyphs.
+    /// HintVm + cache for face 0 (the regular face). Heap-allocated so
+    /// the cache's stable `*HintVm` survives the `init` return-by-value.
+    /// `hinted_cache.asAdvanceProvider()` is the right provider to hand
+    /// `snail.shape` for hinted runs; the same VM produces curves for
+    /// the render path via `tryEmitHintedRun`.
+    hint_vm: ?*snail.HintVm,
+    hinted_cache: ?snail_helpers.HintedGlyphCache,
+    /// Whether face 0 has hinting available. `false` means the regular
+    /// font lacked `fpgm`/`prep`/`cvt` and shape() falls through to
+    /// em-space.
     has_regular_hinter: bool,
 
     pub const face_count: usize = 10;
@@ -186,20 +187,6 @@ pub const Assets = struct {
     pub const face_to_font_id = [face_count]u32{ 0, 1, 0, 1, 0, 2, 3, 4, 5, 6 };
 
     pub fn init(allocator: Allocator) !Assets {
-        var shaper = try snail.Shaper.init(allocator, &.{
-            .{ .data = assets_data.noto_sans_regular },
-            .{ .data = assets_data.noto_sans_bold, .weight = .bold },
-            .{ .data = assets_data.noto_sans_regular, .italic = true, .synthetic = .{ .skew_x = 0.2 } },
-            .{ .data = assets_data.noto_sans_bold, .weight = .bold, .italic = true, .synthetic = .{ .skew_x = 0.2 } },
-            .{ .data = assets_data.noto_sans_regular, .weight = .semi_bold, .synthetic = .{ .embolden = 0.5 } },
-            .{ .data = assets_data.noto_sans_arabic, .fallback = true },
-            .{ .data = assets_data.noto_sans_devanagari, .fallback = true },
-            .{ .data = assets_data.noto_sans_symbols, .fallback = true },
-            .{ .data = assets_data.noto_sans_thai, .fallback = true },
-            .{ .data = assets_data.twemoji_mozilla, .fallback = true },
-        });
-        errdefer shaper.deinit();
-
         var fonts: [font_count]snail.Font = undefined;
         const datas = [_][]const u8{
             assets_data.noto_sans_regular,
@@ -214,10 +201,6 @@ pub const Assets = struct {
             fonts[i] = try snail.Font.init(data);
         }
 
-        // Mirror the shaper's face order so face_index resolves to the
-        // same chain slot in either surface. `face_to_font_id` below
-        // already maps face -> font; build Faces directly from `fonts`
-        // by that table so font-id derivation matches one-for-one.
         var faces = try snail.Faces.build(allocator, &.{
             .{ .font = &fonts[0] },
             .{ .font = &fonts[1], .weight = .bold },
@@ -238,31 +221,46 @@ pub const Assets = struct {
             img.deinit();
         }
 
-        // Only the regular (italic-source) face gets a hinter today; the
-        // other faces are either bold (no hint program differences worth
-        // wiring in this demo) or fallback scripts. The Shaper now owns
-        // the HintVm so HB's `glyph_h_advance` font_func can route
-        // through it during shape, and the render path picks the same
-        // instance up via `shaper.hinterForFace(0)` for glyph extraction.
-        var has_regular_hinter = false;
-        shaper.attachHinter(0) catch {};
-        if (shaper.hinterForFace(0) != null) has_regular_hinter = true;
+        // Hint face 0 (regular). Heap-allocate the HintVm so
+        // hinted_cache's `*HintVm` stays valid across the move return.
+        const hint_vm: ?*snail.HintVm = blk: {
+            const vm_ptr = allocator.create(snail.HintVm) catch break :blk null;
+            vm_ptr.* = snail.HintVm.init(allocator, &fonts[0]) catch {
+                allocator.destroy(vm_ptr);
+                break :blk null;
+            };
+            break :blk vm_ptr;
+        };
+        const hinted_cache: ?snail_helpers.HintedGlyphCache = if (hint_vm) |vm_ptr|
+            snail_helpers.HintedGlyphCache.init(allocator, vm_ptr, faces.fontIdForFace(0))
+        else
+            null;
 
         return .{
             .allocator = allocator,
-            .shaper = shaper,
             .faces = faces,
             .fonts = fonts,
             .paint_image = paint_image,
-            .has_regular_hinter = has_regular_hinter,
+            .hint_vm = hint_vm,
+            .hinted_cache = hinted_cache,
+            .has_regular_hinter = hint_vm != null,
         };
     }
 
     pub fn deinit(self: *Assets) void {
+        if (self.hinted_cache) |*c| c.deinit();
+        if (self.hint_vm) |vm| {
+            vm.deinit();
+            self.allocator.destroy(vm);
+        }
         self.paint_image.deinit();
         self.faces.deinit();
-        self.shaper.deinit();
         self.* = undefined;
+    }
+
+    fn advanceProvider(self: *Assets) ?snail.AdvanceProvider {
+        if (self.hinted_cache) |*c| return c.asAdvanceProvider();
+        return null;
     }
 
     /// COLR fanout helper: the shaper's fallback faces (arabic..emoji)
@@ -983,8 +981,11 @@ const BannerBuilder = struct {
             const ppem_26_6 = hintPpem26_6(placement.size, self.hint_opts.ppem_scale) catch break :blk null;
             break :blk snail.HintPpem.uniform(ppem_26_6);
         } else null;
-        var shaped = try self.assets.shaper.shapeOpts(self.allocator, style, string, .{
+        const provider = if (target_ppem != null) self.assets.advanceProvider() else null;
+        var shaped = try snail.shape(self.allocator, &self.assets.faces, string, .{
+            .style = style,
             .target_ppem = target_ppem,
+            .advance_provider = provider,
         });
         defer shaped.deinit();
 
@@ -1199,7 +1200,7 @@ const BannerBuilder = struct {
         placement: Placement,
         color: [4]f32,
     ) !bool {
-        const hinter = self.assets.shaper.hinterForFace(0) orelse return false;
+        const hinter = self.assets.hint_vm orelse return false;
         const ppem_26_6 = hintPpem26_6(placement.size, self.hint_opts.ppem_scale) catch return false;
         const ppem = snail.HintPpem.uniform(ppem_26_6);
 

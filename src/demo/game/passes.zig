@@ -26,10 +26,6 @@ const MATERIAL_TEXTURE_SIZE: u32 = 1024;
 /// `Fonts` value is shared across the entire game scene.
 pub const Fonts = struct {
     allocator: std.mem.Allocator,
-    shaper: snail.Shaper,
-    /// Mirrors `shaper`'s face order. Picture builders take *const
-    /// Faces; the shape calls in this demo still go through
-    /// `shaper.shape` until phase 5d collapses the two surfaces.
     faces: snail.Faces,
     fonts: [face_count]snail.Font,
     pool: *snail.PagePool,
@@ -37,12 +33,6 @@ pub const Fonts = struct {
     pub const face_count: usize = 2;
 
     pub fn init(allocator: std.mem.Allocator) !Fonts {
-        var shaper = try snail.Shaper.init(allocator, &.{
-            .{ .data = assets.noto_sans_regular },
-            .{ .data = assets.noto_sans_bold, .weight = .bold },
-        });
-        errdefer shaper.deinit();
-
         var fonts: [face_count]snail.Font = undefined;
         const datas = [_][]const u8{ assets.noto_sans_regular, assets.noto_sans_bold };
         for (datas, 0..) |data, i| {
@@ -66,7 +56,6 @@ pub const Fonts = struct {
 
         return .{
             .allocator = allocator,
-            .shaper = shaper,
             .faces = faces,
             .fonts = fonts,
             .pool = pool,
@@ -76,12 +65,11 @@ pub const Fonts = struct {
     pub fn deinit(self: *Fonts) void {
         self.pool.deinit();
         self.faces.deinit();
-        self.shaper.deinit();
         self.* = undefined;
     }
 
     pub fn measureText(self: *Fonts, style: snail.FontStyle, text: []const u8, font_size: f32) !f32 {
-        var shaped = try self.shaper.shape(self.allocator, style, text);
+        var shaped = try snail.shape(self.allocator, &self.faces, text, .{ .style = style });
         defer shaped.deinit();
         return shaped.advanceX() * font_size;
     }
@@ -300,7 +288,7 @@ const PassBuilder = struct {
         em: f32,
         paint: snail.Paint,
     ) !TextResult {
-        var shaped = try self.fonts.shaper.shape(self.allocator, style, text);
+        var shaped = try snail.shape(self.allocator, &self.fonts.faces, text, .{ .style = style });
         defer shaped.deinit();
 
         const advance_x = em * shaped.advanceX();

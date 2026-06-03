@@ -36,6 +36,9 @@ inline fn keyFor(ppem: HintPpem, glyph_id: u16) Key {
 pub const HintedGlyphCache = struct {
     allocator: Allocator,
     vm: *HintVm,
+    /// The font_id this cache covers. AdvanceProvider's `covers`
+    /// callback uses it to gate per-face attach in shape().
+    font_id: u32,
     curves: std.AutoHashMapUnmanaged(Key, GlyphCurves),
     advances: std.AutoHashMapUnmanaged(Key, i32),
 
@@ -46,10 +49,11 @@ pub const HintedGlyphCache = struct {
         band_bytes: usize,
     };
 
-    pub fn init(allocator: Allocator, vm: *HintVm) HintedGlyphCache {
+    pub fn init(allocator: Allocator, vm: *HintVm, font_id: u32) HintedGlyphCache {
         return .{
             .allocator = allocator,
             .vm = vm,
+            .font_id = font_id,
             .curves = .{},
             .advances = .{},
         };
@@ -137,12 +141,15 @@ pub const HintedGlyphCache = struct {
     /// Closure adapter: returns an `AdvanceProvider` whose
     /// `get_advance` walks this cache, falling back to the underlying
     /// `HintVm.hintedAdvance` (and caching the result) on miss.
+    /// `covers` returns true only for the `font_id` this cache was
+    /// built for; shape() uses it to skip attach on other faces.
     ///
     /// The returned provider borrows `self`; both must outlive any
     /// shape call passed `opts.advance_provider = provider`.
     pub fn asAdvanceProvider(self: *HintedGlyphCache) snail.AdvanceProvider {
         return .{
             .context = @ptrCast(self),
+            .covers = advanceProviderCovers,
             .get_advance = advanceProviderTrampoline,
         };
     }
@@ -164,8 +171,13 @@ pub const HintedGlyphCache = struct {
     }
 };
 
+fn advanceProviderCovers(context: *anyopaque, font_id: u32) bool {
+    const self: *HintedGlyphCache = @ptrCast(@alignCast(context));
+    return font_id == self.font_id;
+}
+
 fn advanceProviderTrampoline(context: *anyopaque, font_id: u32, glyph_id: u16, ppem: HintPpem) i32 {
-    _ = font_id; // HintedGlyphCache is single-VM; font_id is implicit
+    _ = font_id;
     const self: *HintedGlyphCache = @ptrCast(@alignCast(context));
     return self.advance(glyph_id, ppem) catch 0;
 }
@@ -179,7 +191,7 @@ test "HintedGlyphCache memoizes curves across repeated lookups" {
     var vm = try HintVm.init(testing.allocator, &font);
     defer vm.deinit();
 
-    var cache = HintedGlyphCache.init(testing.allocator, &vm);
+    var cache = HintedGlyphCache.init(testing.allocator, &vm, 0);
     defer cache.deinit();
 
     const ppem = HintPpem.uniform(13 * 64);
@@ -200,7 +212,7 @@ test "HintedGlyphCache.advance caches hinted advance" {
     var vm = try HintVm.init(testing.allocator, &font);
     defer vm.deinit();
 
-    var cache = HintedGlyphCache.init(testing.allocator, &vm);
+    var cache = HintedGlyphCache.init(testing.allocator, &vm, 0);
     defer cache.deinit();
 
     const ppem = HintPpem.uniform(13 * 64);

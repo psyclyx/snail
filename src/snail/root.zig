@@ -20,9 +20,7 @@ pub const Rect = target.Rect;
 
 // ── Text shaping ──
 
-pub const Shaper = text_mod.Shaper;
 pub const ShapedText = text_mod.ShapedText;
-pub const FaceSpec = text_mod.FaceSpec;
 pub const FaceIndex = text_mod.FaceIndex;
 
 const faces_mod = @import("text/faces.zig");

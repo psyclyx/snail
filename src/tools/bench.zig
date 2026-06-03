@@ -362,25 +362,17 @@ const FONT_COUNT: usize = 5;
 
 const FontSet = struct {
     allocator: std.mem.Allocator,
-    shaper: snail.Shaper,
-    /// Mirrors `shaper`'s face order. Picture builders take *const
-    /// Faces; shape calls in bench still go through `shaper.shapeOpts`
-    /// for the hinted-advance routing path the warm/cold benches
-    /// measure.
     faces: snail.Faces,
     fonts: [FONT_COUNT]snail.Font,
+    /// HintVm + cache for face 0. Heap-allocated so the cache's
+    /// internal `*HintVm` stays stable when FontSet is moved by the
+    /// `init` return-by-value. `hinted_cache.asAdvanceProvider()` is
+    /// the right thing to hand to `ShapeOptions.advance_provider`.
+    hint_vm: ?*snail.HintVm,
+    hinted_cache: ?snail_helpers.HintedGlyphCache,
     has_hinter: bool,
 
     fn init(allocator: std.mem.Allocator) !FontSet {
-        var shaper = try snail.Shaper.init(allocator, &.{
-            .{ .data = assets.noto_sans_regular },
-            .{ .data = assets.noto_sans_bold, .weight = .bold },
-            .{ .data = assets.noto_sans_arabic, .fallback = true },
-            .{ .data = assets.noto_sans_devanagari, .fallback = true },
-            .{ .data = assets.noto_sans_thai, .fallback = true },
-        });
-        errdefer shaper.deinit();
-
         var fonts: [FONT_COUNT]snail.Font = undefined;
         const datas = [_][]const u8{
             assets.noto_sans_regular,
@@ -402,23 +394,42 @@ const FontSet = struct {
         });
         errdefer faces.deinit();
 
-        var has_hinter = false;
-        shaper.attachHinter(0) catch {};
-        if (shaper.hinterForFace(0) != null) has_hinter = true;
+        const hint_vm: ?*snail.HintVm = blk: {
+            const vm_ptr = allocator.create(snail.HintVm) catch break :blk null;
+            vm_ptr.* = snail.HintVm.init(allocator, &fonts[0]) catch {
+                allocator.destroy(vm_ptr);
+                break :blk null;
+            };
+            break :blk vm_ptr;
+        };
+        const hinted_cache: ?snail_helpers.HintedGlyphCache = if (hint_vm) |vm_ptr|
+            snail_helpers.HintedGlyphCache.init(allocator, vm_ptr, faces.fontIdForFace(0))
+        else
+            null;
 
         return .{
             .allocator = allocator,
-            .shaper = shaper,
             .faces = faces,
             .fonts = fonts,
-            .has_hinter = has_hinter,
+            .hint_vm = hint_vm,
+            .hinted_cache = hinted_cache,
+            .has_hinter = hint_vm != null,
         };
     }
 
     fn deinit(self: *FontSet) void {
+        if (self.hinted_cache) |*c| c.deinit();
+        if (self.hint_vm) |vm| {
+            vm.deinit();
+            self.allocator.destroy(vm);
+        }
         self.faces.deinit();
-        self.shaper.deinit();
         self.* = undefined;
+    }
+
+    fn advanceProvider(self: *FontSet) ?snail.AdvanceProvider {
+        if (self.hinted_cache) |*c| return c.asAdvanceProvider();
+        return null;
     }
 };
 
@@ -568,7 +579,7 @@ fn ensureHintedRunCurves(
     shaped: *const snail.ShapedText,
     ppem_26_6: u32,
 ) !bool {
-    const hinter = fonts.shaper.hinterForFace(0) orelse return false;
+    const hinter = fonts.hint_vm orelse return false;
     const ppem = snail.HintPpem.uniform(ppem_26_6);
     for (shaped.glyphs) |g| {
         if (g.face_index != 0) return false; // only face 0 is hintable
@@ -827,7 +838,7 @@ fn addShapedLine(
     const allocator = build.allocator;
     if (hinted and fonts.has_hinter) {
         const ppem_26_6 = hintPpem26_6(line.size) catch return addShapedLineUnhinted(build, fonts, glyph_caches, line);
-        var shaped = try fonts.shaper.shapeOpts(allocator, line.style, line.text, .{ .target_ppem = snail.HintPpem.uniform(ppem_26_6) });
+        var shaped = try snail.shape(allocator, &fonts.faces, line.text, .{ .style = line.style, .target_ppem = snail.HintPpem.uniform(ppem_26_6), .advance_provider = fonts.advanceProvider() });
         defer shaped.deinit();
         const ok = ensureHintedRunCurves(build, fonts, &shaped, ppem_26_6) catch false;
         if (ok) {
@@ -853,7 +864,7 @@ fn addShapedLineUnhinted(
     line: TextLine,
 ) !void {
     const allocator = build.allocator;
-    var shaped = try fonts.shaper.shape(allocator, line.style, line.text);
+    var shaped = try snail.shape(allocator, &fonts.faces, line.text, .{ .style = line.style });
     defer shaped.deinit();
     try ensureUnhintedRunCurves(build, fonts, glyph_caches, &shaped);
     var pic = try snail.shapedRunPicture(allocator, &shaped, &fonts.faces, .{
@@ -944,7 +955,7 @@ fn addRichRun(
     paint: snail.Paint,
 ) !f32 {
     const allocator = build.allocator;
-    var shaped = try fonts.shaper.shape(allocator, style, text);
+    var shaped = try snail.shape(allocator, &fonts.faces, text, .{ .style = style });
     defer shaped.deinit();
     const advance = em * shaped.advanceX();
     switch (paint) {
@@ -1132,7 +1143,7 @@ fn timeHinterParagraphWarm(allocator: std.mem.Allocator, font: *const snail.Font
     // production path.
     var h = snail.HintVm.init(allocator, font) catch return 0;
     defer h.deinit();
-    var cache = snail_helpers.HintedGlyphCache.init(allocator, &h);
+    var cache = snail_helpers.HintedGlyphCache.init(allocator, &h, 0);
     defer cache.deinit();
     const ppem = snail.HintPpem.uniform(ppem_26_6);
     var scratch_arena = std.heap.ArenaAllocator.init(allocator);
@@ -1233,7 +1244,7 @@ fn prepareLine(
     // timed loop is going to consume.
     if (hinted and fonts.has_hinter) {
         const ppem_26_6 = hintPpem26_6(line.size) catch return prepareLineUnhinted(allocator, pool, fonts, glyph_caches, line);
-        var shaped = try fonts.shaper.shapeOpts(allocator, line.style, line.text, .{ .target_ppem = snail.HintPpem.uniform(ppem_26_6) });
+        var shaped = try snail.shape(allocator, &fonts.faces, line.text, .{ .style = line.style, .target_ppem = snail.HintPpem.uniform(ppem_26_6), .advance_provider = fonts.advanceProvider() });
         errdefer shaped.deinit();
         var build = SceneBuild.init(allocator, pool);
         defer build.deinit();
@@ -1255,7 +1266,7 @@ fn prepareLineUnhinted(
     glyph_caches: *[FONT_COUNT]snail.font.GlyphCache,
     line: TextLine,
 ) !PreparedLine {
-    var shaped = try fonts.shaper.shape(allocator, line.style, line.text);
+    var shaped = try snail.shape(allocator, &fonts.faces, line.text, .{ .style = line.style });
     errdefer shaped.deinit();
     var build = SceneBuild.init(allocator, pool);
     defer build.deinit();
