@@ -204,11 +204,8 @@ pub const Assets = struct {
             assets_data.noto_sans_thai,
             assets_data.twemoji_mozilla,
         };
-        var inited: usize = 0;
-        errdefer for (fonts[0..inited]) |*f| f.deinit();
         for (datas, 0..) |data, i| {
             fonts[i] = try snail.Font.init(data);
-            inited = i + 1;
         }
 
         const paint_image = try initPaintImage(allocator);
@@ -238,7 +235,6 @@ pub const Assets = struct {
 
     pub fn deinit(self: *Assets) void {
         self.paint_image.deinit();
-        for (&self.fonts) |*f| f.deinit();
         self.shaper.deinit();
         self.* = undefined;
     }

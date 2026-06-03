@@ -95,17 +95,11 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
     errdefer pool.deinit();
 
     var font_regular = try snail.Font.init(assets_data.noto_sans_regular);
-    defer font_regular.deinit();
     var font_bold = try snail.Font.init(assets_data.noto_sans_bold);
-    defer font_bold.deinit();
     var font_arabic = try snail.Font.init(assets_data.noto_sans_arabic);
-    defer font_arabic.deinit();
     var font_devanagari = try snail.Font.init(assets_data.noto_sans_devanagari);
-    defer font_devanagari.deinit();
     var font_thai = try snail.Font.init(assets_data.noto_sans_thai);
-    defer font_thai.deinit();
     var font_emoji = try snail.Font.init(assets_data.twemoji_mozilla);
-    defer font_emoji.deinit();
     var fonts = [_]*snail.Font{ &font_regular, &font_bold, &font_arabic, &font_devanagari, &font_thai, &font_emoji };
     const face_to_font_id = [_]u32{ 0, 1, 2, 3, 4, 5 };
     const colr_fonts = [_]*const snail.Font{ &font_regular, &font_bold, &font_arabic, &font_devanagari, &font_thai, &font_emoji };

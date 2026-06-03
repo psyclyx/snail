@@ -587,7 +587,6 @@ test "atlas + font extract: end-to-end smoke test" {
     const font_mod = @import("font.zig");
     const font_data = @import("assets").noto_sans_regular;
     var font = try font_mod.Font.init(font_data);
-    defer font.deinit();
 
     var cache = font_mod.GlyphCache.init(testing.allocator);
     defer cache.deinit();

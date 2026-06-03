@@ -266,7 +266,6 @@ test "hinted curves render through new API CPU draw" {
     const font_data = @import("assets").noto_sans_regular;
 
     var font = try Font.init(font_data);
-    defer font.deinit();
     var hinter = Hinter.init(allocator, &font) catch return error.SkipZigTest;
     defer hinter.deinit();
 

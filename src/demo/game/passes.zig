@@ -43,11 +43,8 @@ pub const Fonts = struct {
 
         var fonts: [face_count]snail.Font = undefined;
         const datas = [_][]const u8{ assets.noto_sans_regular, assets.noto_sans_bold };
-        var inited: usize = 0;
-        errdefer for (fonts[0..inited]) |*f| f.deinit();
         for (datas, 0..) |data, i| {
             fonts[i] = try snail.Font.init(data);
-            inited = i + 1;
         }
 
         // 6 passes × 2 atlases (path + text) = 12 atlases at minimum, each
@@ -69,7 +66,6 @@ pub const Fonts = struct {
 
     pub fn deinit(self: *Fonts) void {
         self.pool.deinit();
-        for (&self.fonts) |*f| f.deinit();
         self.shaper.deinit();
         self.* = undefined;
     }

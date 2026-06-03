@@ -28,10 +28,9 @@ test {
     _ = tt.vm.Program;
 }
 
-/// A parsed TrueType font. Immutable after init.
+/// A parsed view over caller-owned bytes. Immutable after init.
 /// Thread-safe for concurrent reads (glyphIndex, getKerning).
-/// The init/deinit, unitsPerEm, glyphIndex, and advanceWidth methods are part
-/// of Snail's stable public API.
+/// No deinit — the struct holds no owned resources; let it go out of scope.
 pub const Font = struct {
     inner: ttf.Font,
 
@@ -39,10 +38,6 @@ pub const Font = struct {
     /// The data slice must outlive the Font.
     pub fn init(data: []const u8) !Font {
         return .{ .inner = try ttf.Font.init(data) };
-    }
-
-    pub fn deinit(self: *Font) void {
-        _ = self;
     }
 
     pub fn unitsPerEm(self: *const Font) u16 {
@@ -235,7 +230,6 @@ fn glyphRenderBBoxFromBBoxes(metrics_bbox: bezier.BBox, bboxes: []const bezier.B
 test "extractCurves returns non-empty curves for printable glyph" {
     const font_data = @import("assets").noto_sans_regular;
     var font = try Font.init(font_data);
-    defer font.deinit();
 
     var cache = GlyphCache.init(std.testing.allocator);
     defer cache.deinit();
@@ -254,7 +248,6 @@ test "extractCurves returns non-empty curves for printable glyph" {
 test "extractCurves returns empty for whitespace glyph" {
     const font_data = @import("assets").noto_sans_regular;
     var font = try Font.init(font_data);
-    defer font.deinit();
 
     var cache = GlyphCache.init(std.testing.allocator);
     defer cache.deinit();
@@ -272,7 +265,6 @@ test "extractCurves matches existing curve packing path byte-for-byte" {
     // must equal the prefix of the existing packed curve-texture data.
     const font_data = @import("assets").noto_sans_regular;
     var font = try Font.init(font_data);
-    defer font.deinit();
 
     var cache = GlyphCache.init(std.testing.allocator);
     defer cache.deinit();

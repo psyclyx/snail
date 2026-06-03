@@ -410,7 +410,6 @@ test "Hinter init fails cleanly on fonts without hinting" {
         try testing.expect(e == error.InvalidFont or e == error.UnexpectedEof);
         return;
     };
-    defer font.deinit();
     const res = Hinter.init(testing.allocator, &font);
     try testing.expectError(error.NoHinting, res);
 }
@@ -418,7 +417,6 @@ test "Hinter init fails cleanly on fonts without hinting" {
 test "Hinter produces GlyphCurves for a hinted glyph" {
     const font_data = @import("assets").noto_sans_regular;
     var font = try Font.init(font_data);
-    defer font.deinit();
 
     var hinter = try Hinter.init(testing.allocator, &font);
     defer hinter.deinit();
@@ -438,7 +436,6 @@ test "Hinter produces GlyphCurves for a hinted glyph" {
 test "Hinter caches per-ppem VM state across calls" {
     const font_data = @import("assets").noto_sans_regular;
     var font = try Font.init(font_data);
-    defer font.deinit();
 
     var hinter = try Hinter.init(testing.allocator, &font);
     defer hinter.deinit();
@@ -464,7 +461,6 @@ test "Hinter caches per-ppem VM state across calls" {
 test "Hinter.evictPpem drops one cache entry without affecting others" {
     const font_data = @import("assets").noto_sans_regular;
     var font = try Font.init(font_data);
-    defer font.deinit();
 
     var hinter = try Hinter.init(testing.allocator, &font);
     defer hinter.deinit();
@@ -490,7 +486,6 @@ test "Hinter hint output round-trips through an atlas" {
 
     const font_data = @import("assets").noto_sans_regular;
     var font = try Font.init(font_data);
-    defer font.deinit();
 
     var hinter = try Hinter.init(testing.allocator, &font);
     defer hinter.deinit();

@@ -255,7 +255,6 @@ test "drawCpu replicated produces same pixels as equivalent heterogeneous emit" 
     @memset(px_repl, 0);
 
     var font = try snail.Font.init(font_data);
-    defer font.deinit();
     var glyph_cache = @import("../../../font.zig").GlyphCache.init(allocator);
     defer glyph_cache.deinit();
 
@@ -352,7 +351,6 @@ test "drawCpu renders a small Picture into non-zero pixels" {
     @memset(px, 0);
 
     var font = try snail.Font.init(font_data);
-    defer font.deinit();
     var glyph_cache = @import("../../../font.zig").GlyphCache.init(allocator);
     defer glyph_cache.deinit();
 
@@ -432,7 +430,6 @@ test "drawCpu renders gradient-painted glyph through special-layer path" {
     @memset(px, 0);
 
     var font = try snail.Font.init(font_data);
-    defer font.deinit();
     var glyph_cache = @import("../../../font.zig").GlyphCache.init(allocator);
     defer glyph_cache.deinit();
 

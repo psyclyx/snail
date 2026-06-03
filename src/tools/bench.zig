@@ -385,11 +385,8 @@ const FontSet = struct {
             assets.noto_sans_devanagari,
             assets.noto_sans_thai,
         };
-        var inited: usize = 0;
-        errdefer for (fonts[0..inited]) |*f| f.deinit();
         for (datas, 0..) |data, i| {
             fonts[i] = try snail.Font.init(data);
-            inited = i + 1;
         }
 
         var has_hinter = false;
@@ -405,7 +402,6 @@ const FontSet = struct {
     }
 
     fn deinit(self: *FontSet) void {
-        for (&self.fonts) |*f| f.deinit();
         self.shaper.deinit();
         self.* = undefined;
     }
@@ -995,9 +991,8 @@ fn timeFontLoad() f64 {
     var total: f64 = 0;
     for (0..PREP_RUNS) |_| {
         const start = nowNs();
-        var f = snail.Font.init(assets.noto_sans_regular) catch return 0;
+        _ = snail.Font.init(assets.noto_sans_regular) catch return 0;
         total += usFrom(start);
-        f.deinit();
     }
     return total / PREP_RUNS;
 }
@@ -1012,7 +1007,6 @@ fn timeGlyphExtract(allocator: std.mem.Allocator) !f64 {
         var pool = try snail.PagePool.init(allocator, .{ .max_layers = 2, .curve_words_per_page = 1 << 16, .band_words_per_page = 1 << 14 });
         defer pool.deinit();
         var font = try snail.Font.init(assets.noto_sans_regular);
-        defer font.deinit();
         var cache = snail.font.GlyphCache.init(allocator);
         defer cache.deinit();
         var scratch_arena = std.heap.ArenaAllocator.init(allocator);
@@ -1618,7 +1612,6 @@ pub fn main() !void {
         filter.run("hinter-cold") or filter.run("hinter-warm"))
     {
         var font = try snail.Font.init(assets.noto_sans_regular);
-        defer font.deinit();
         if (filter.run("hint-setup")) snail_prep.ascii_hint_setup_us = try timeHinterSetup(allocator, &font, 12 * 64);
         if (filter.run("hint-execute")) snail_prep.ascii_hint_execute_us = try timeHinterExecute(allocator, &font, 12 * 64);
         if (filter.run("hint-full")) snail_prep.ascii_hint_us = try timeHinterFull(allocator, &font, 12 * 64);
