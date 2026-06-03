@@ -27,13 +27,16 @@ const MATERIAL_TEXTURE_SIZE: u32 = 1024;
 pub const Fonts = struct {
     allocator: std.mem.Allocator,
     faces: snail.Faces,
-    fonts: [face_count]snail.Font,
+    /// Heap-allocated so `Faces.face(i).font` (raw `*const Font`)
+    /// survives `Fonts` getting moved during `init`'s return-by-value.
+    fonts: []snail.Font,
     pool: *snail.PagePool,
 
     pub const face_count: usize = 2;
 
     pub fn init(allocator: std.mem.Allocator) !Fonts {
-        var fonts: [face_count]snail.Font = undefined;
+        const fonts = try allocator.alloc(snail.Font, face_count);
+        errdefer allocator.free(fonts);
         const datas = [_][]const u8{ assets.noto_sans_regular, assets.noto_sans_bold };
         for (datas, 0..) |data, i| {
             fonts[i] = try snail.Font.init(data);
@@ -65,6 +68,7 @@ pub const Fonts = struct {
     pub fn deinit(self: *Fonts) void {
         self.pool.deinit();
         self.faces.deinit();
+        self.allocator.free(self.fonts);
         self.* = undefined;
     }
 

@@ -363,7 +363,10 @@ const FONT_COUNT: usize = 5;
 const FontSet = struct {
     allocator: std.mem.Allocator,
     faces: snail.Faces,
-    fonts: [FONT_COUNT]snail.Font,
+    /// Heap-allocated so `Faces.face(i).font` (raw `*const Font`)
+    /// and the hint_vm's captured data slice survive FontSet getting
+    /// moved during `init`'s return-by-value.
+    fonts: []snail.Font,
     /// HintVm + cache for face 0. Heap-allocated so the cache's
     /// internal `*HintVm` stays stable when FontSet is moved by the
     /// `init` return-by-value. `hinted_cache.asAdvanceProvider()` is
@@ -373,7 +376,8 @@ const FontSet = struct {
     has_hinter: bool,
 
     fn init(allocator: std.mem.Allocator) !FontSet {
-        var fonts: [FONT_COUNT]snail.Font = undefined;
+        const fonts = try allocator.alloc(snail.Font, FONT_COUNT);
+        errdefer allocator.free(fonts);
         const datas = [_][]const u8{
             assets.noto_sans_regular,
             assets.noto_sans_bold,
@@ -424,6 +428,7 @@ const FontSet = struct {
             self.allocator.destroy(vm);
         }
         self.faces.deinit();
+        self.allocator.free(self.fonts);
         self.* = undefined;
     }
 

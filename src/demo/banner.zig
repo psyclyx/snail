@@ -161,7 +161,11 @@ pub const Content = struct {
 pub const Assets = struct {
     allocator: Allocator,
     faces: snail.Faces,
-    fonts: [font_count]snail.Font,
+    /// Heap-allocated so `Faces.face(i).font` (which holds raw
+    /// `*const Font` pointers) survives `Assets` getting moved
+    /// during `init`'s return-by-value. An in-struct `[N]Font`
+    /// would dangle the moment init returned.
+    fonts: []snail.Font,
     paint_image: snail.Image,
     /// HintVm + cache for face 0 (the regular face). Heap-allocated so
     /// the cache's stable `*HintVm` survives the `init` return-by-value.
@@ -187,7 +191,8 @@ pub const Assets = struct {
     pub const face_to_font_id = [face_count]u32{ 0, 1, 0, 1, 0, 2, 3, 4, 5, 6 };
 
     pub fn init(allocator: Allocator) !Assets {
-        var fonts: [font_count]snail.Font = undefined;
+        const fonts = try allocator.alloc(snail.Font, font_count);
+        errdefer allocator.free(fonts);
         const datas = [_][]const u8{
             assets_data.noto_sans_regular,
             assets_data.noto_sans_bold,
@@ -255,6 +260,7 @@ pub const Assets = struct {
         }
         self.paint_image.deinit();
         self.faces.deinit();
+        self.allocator.free(self.fonts);
         self.* = undefined;
     }
 
