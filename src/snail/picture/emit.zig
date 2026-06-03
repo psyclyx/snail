@@ -58,8 +58,6 @@ pub const EmitResult = struct {
     shape_count: u32,
     word_count: u32,
     segment_count: u32,
-    /// Index of the shape that caused the failure, when applicable.
-    failed_shape_index: ?u32 = null,
 };
 
 /// Heterogeneous emit. One pre-composed `Instance` per shape in the picture,
