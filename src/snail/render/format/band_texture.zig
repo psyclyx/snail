@@ -157,10 +157,10 @@ const BandLists = struct {
 
     fn sortMembership(self: *BandLists, curve_sort_max_x: []const f32, curve_sort_max_y: []const f32) void {
         for (0..@as(usize, self.h_band_count)) |bi| {
-            sortCurveIndicesDescending(self.hBandMut(bi), curve_sort_max_y);
+            sortCurveIndicesDescending(self.hBandMut(bi), curve_sort_max_x);
         }
         for (0..@as(usize, self.v_band_count)) |bi| {
-            sortCurveIndicesDescending(self.vBandMut(bi), curve_sort_max_x);
+            sortCurveIndicesDescending(self.vBandMut(bi), curve_sort_max_y);
         }
     }
 };
