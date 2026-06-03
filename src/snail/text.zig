@@ -47,14 +47,35 @@ pub const OpenTypeFeature = struct {
 
 pub const ShapeOptions = struct {
     features: []const OpenTypeFeature = &.{},
-    /// When set, faces with an attached `HintVm` (see `Shaper.attachHinter`)
-    /// route shaping through HarfBuzz's `glyph_h_advance` font_func that
-    /// returns hint-quantized advances at this ppem. Faces without a
-    /// hinter fall back to em-space shaping transparently. The returned
-    /// `ShapedText` is always em-space (the hinted advances are converted
-    /// via `1 / ppem_26_6` so that multiplying by `ppem_px` downstream
+    /// Style request for the new free `shape(faces, text, opts)`. Picks
+    /// which face chain runs through (regular/bold/italic). Ignored by
+    /// the legacy `Shaper.shape` path, which takes `style` positionally.
+    style: FontStyle = .{},
+    /// Closure invoked from HarfBuzz's `glyph_h_advance` font_func by
+    /// the new free `shape()`. Returns the advance in 26.6 fixed-point
+    /// pixels for `(font_id, glyph_id)`. Faces whose font is not the
+    /// target of any provider call fall back to em-space shaping; the
+    /// emitted advances are always em-space (the 26.6 values are
+    /// divided by `ppem_26_6` so multiplying by `ppem_px` downstream
     /// recovers the original 26.6 pixel positions exactly).
+    ///
+    /// A typical caller wires this to
+    /// `helpers.HintedGlyphCache.asAdvanceProvider()` so HB lookups hit
+    /// the cache, falling back to the underlying `HintVm` on miss.
+    advance_provider: ?AdvanceProvider = null,
+    /// When set, the legacy `Shaper.shapeOpts` path drives HB through
+    /// `Shaper.attachHinter`-bound hinters at this ppem. The new free
+    /// `shape()` ignores this and uses `advance_provider` instead.
     target_ppem: ?HintPpem = null,
+};
+
+/// Closure handed to `ShapeOptions.advance_provider` so the shaping
+/// callback can route through caller-owned state (a `HintedGlyphCache`,
+/// a debug hook, a synthetic-metric source — anything that yields a
+/// 26.6 advance for `(font_id, glyph_id)` and a ppem).
+pub const AdvanceProvider = struct {
+    context: *anyopaque,
+    get_advance: *const fn (context: *anyopaque, font_id: u32, glyph_id: u16, ppem: HintPpem) i32,
 };
 
 pub const FontWeight = enum(u4) {
@@ -108,6 +129,10 @@ pub const ShapedText = struct {
         y_advance: f32,
         source_start: u32,
         source_end: u32,
+        /// Resolved font id, set by the new `shape(faces, ...)` path.
+        /// The legacy `Shaper.shape` path leaves this at 0; callers on
+        /// that path index a `face_to_font_id[]` array themselves.
+        font_id: u32 = 0,
     };
 
     pub fn advanceX(self: *const ShapedText) f32 {

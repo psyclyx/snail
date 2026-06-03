@@ -34,6 +34,7 @@ pub const SyntheticStyle = text_mod.SyntheticStyle;
 pub const SourceRange = text_mod.SourceRange;
 pub const OpenTypeFeature = text_mod.OpenTypeFeature;
 pub const ShapeOptions = text_mod.ShapeOptions;
+pub const AdvanceProvider = text_mod.AdvanceProvider;
 pub const MissingGlyphReplacement = text_mod.MissingGlyphReplacement;
 pub const isRenderableTextCodepoint = text_mod.isRenderableTextCodepoint;
 
