@@ -134,6 +134,19 @@ pub const HintedGlyphCache = struct {
         self.advances.clearRetainingCapacity();
     }
 
+    /// Closure adapter: returns an `AdvanceProvider` whose
+    /// `get_advance` walks this cache, falling back to the underlying
+    /// `HintVm.hintedAdvance` (and caching the result) on miss.
+    ///
+    /// The returned provider borrows `self`; both must outlive any
+    /// shape call passed `opts.advance_provider = provider`.
+    pub fn asAdvanceProvider(self: *HintedGlyphCache) snail.AdvanceProvider {
+        return .{
+            .context = @ptrCast(self),
+            .get_advance = advanceProviderTrampoline,
+        };
+    }
+
     pub fn stats(self: *const HintedGlyphCache) Stats {
         var curve_bytes: usize = 0;
         var band_bytes: usize = 0;
@@ -150,6 +163,12 @@ pub const HintedGlyphCache = struct {
         };
     }
 };
+
+fn advanceProviderTrampoline(context: *anyopaque, font_id: u32, glyph_id: u16, ppem: HintPpem) i32 {
+    _ = font_id; // HintedGlyphCache is single-VM; font_id is implicit
+    const self: *HintedGlyphCache = @ptrCast(@alignCast(context));
+    return self.advance(glyph_id, ppem) catch 0;
+}
 
 const testing = std.testing;
 const assets = @import("assets");

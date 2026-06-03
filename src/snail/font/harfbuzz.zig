@@ -13,6 +13,7 @@
 
 const std = @import("std");
 const hinter_mod = @import("hint_vm.zig");
+const text_types = @import("../text.zig");
 const hb = @cImport({
     @cInclude("hb.h");
 });
@@ -23,17 +24,28 @@ pub const FEATURE_GLOBAL_END: c_uint = 0xFFFFFFFF;
 
 pub const HintVm = hinter_mod.HintVm;
 pub const HintPpem = hinter_mod.HintPpem;
+pub const AdvanceProvider = text_types.AdvanceProvider;
 
 pub fn makeTag(tag: [4]u8) u32 {
     return (@as(u32, tag[0]) << 24) | (@as(u32, tag[1]) << 16) |
         (@as(u32, tag[2]) << 8) | @as(u32, tag[3]);
 }
 
+/// What backs the `glyph_h_advance` font_func. The legacy `Shaper.shape`
+/// path attaches a `HintVm` directly; the new `shape(faces, ...)` path
+/// attaches a closure that typically routes into a
+/// `helpers.HintedGlyphCache`.
+const AdvanceSource = union(enum) {
+    none,
+    vm: *HintVm,
+    provider: struct { provider: AdvanceProvider, font_id: u32 },
+};
+
 /// User-data passed to our custom HB font_funcs. Heap-allocated so the
-/// pointer stays valid across `HarfBuzzShaper` moves. `ppem_*_26_6` are
-/// updated by `setShapingPpem` before every hinted shape call.
+/// pointer stays valid across `HarfBuzzShaper` moves. The fields are
+/// mutated in-place per shape call.
 const HintHooks = struct {
-    hinter: *HintVm,
+    source: AdvanceSource,
     ppem_x_26_6: u32,
     ppem_y_26_6: u32,
 };
@@ -103,18 +115,40 @@ pub const HarfBuzzShaper = struct {
 
     /// Bind a TT bytecode hinter to this shaper. Subsequent
     /// `shapeTextHinted` calls will route `glyph_h_advance` queries
-    /// through `hinter.advanceX26Dot6`. The `HintVm` is borrowed —
+    /// through `hinter.hintedAdvance`. The `HintVm` is borrowed —
     /// callers must keep it alive at least as long as this shaper.
     pub fn attachHinter(
         self: *HarfBuzzShaper,
         allocator: std.mem.Allocator,
         hinter: *HintVm,
     ) !void {
-        if (self.hooks != null) return; // already attached
+        try self.ensureHintFunnel(allocator);
+        self.hooks.?.source = .{ .vm = hinter };
+    }
+
+    /// Bind an advance-provider closure. Subsequent
+    /// `shapeTextWithProvider` calls route `glyph_h_advance` through it.
+    /// The provider closure (and its context) is borrowed; the caller
+    /// keeps it valid for the lifetime of subsequent shape calls.
+    pub fn attachAdvanceProvider(
+        self: *HarfBuzzShaper,
+        allocator: std.mem.Allocator,
+        provider: AdvanceProvider,
+        font_id: u32,
+    ) !void {
+        try self.ensureHintFunnel(allocator);
+        self.hooks.?.source = .{ .provider = .{ .provider = provider, .font_id = font_id } };
+    }
+
+    /// Idempotent allocation of the sub-font + funcs + hooks. Both
+    /// `attachHinter` and `attachAdvanceProvider` reuse it — they only
+    /// differ in what they write into `hooks.source`.
+    fn ensureHintFunnel(self: *HarfBuzzShaper, allocator: std.mem.Allocator) !void {
+        if (self.hooks != null) return;
         const hooks = try allocator.create(HintHooks);
         errdefer allocator.destroy(hooks);
         hooks.* = .{
-            .hinter = hinter,
+            .source = .none,
             .ppem_x_26_6 = self.units_per_em,
             .ppem_y_26_6 = self.units_per_em,
         };
@@ -136,7 +170,13 @@ pub const HarfBuzzShaper = struct {
     }
 
     pub fn hasHinter(self: *const HarfBuzzShaper) bool {
-        return self.hb_font_hinted != null;
+        if (self.hooks) |h| return h.source == .vm;
+        return false;
+    }
+
+    pub fn hasAdvanceProvider(self: *const HarfBuzzShaper) bool {
+        if (self.hooks) |h| return h.source == .provider;
+        return false;
     }
 
     /// Shape `text` in em-space (HB scale = upem). Output advances/offsets
@@ -168,6 +208,28 @@ pub const HarfBuzzShaper = struct {
         if (self.hooks) |h| {
             h.ppem_x_26_6 = ppem.x_26_6;
             h.ppem_y_26_6 = ppem.y_26_6;
+        }
+        hb.hb_font_set_scale(font, @intCast(ppem.x_26_6), @intCast(ppem.y_26_6));
+        return self.shapeIntoBuffer(font, text, features);
+    }
+
+    /// Shape `text` through HB with the attached `AdvanceProvider`
+    /// routing `glyph_h_advance`. Requires `attachAdvanceProvider` to
+    /// have been called. If none is attached the call falls through to
+    /// em-space shaping.
+    pub fn shapeTextWithProvider(
+        self: *const HarfBuzzShaper,
+        text: []const u8,
+        features: []const hb.hb_feature_t,
+        ppem: HintPpem,
+    ) ShapedRaw {
+        const font = self.hb_font_hinted orelse return self.shapeTextWithFeatures(text, features);
+        if (self.hooks) |h| {
+            if (h.source != .provider) return self.shapeTextWithFeatures(text, features);
+            h.ppem_x_26_6 = ppem.x_26_6;
+            h.ppem_y_26_6 = ppem.y_26_6;
+        } else {
+            return self.shapeTextWithFeatures(text, features);
         }
         hb.hb_font_set_scale(font, @intCast(ppem.x_26_6), @intCast(ppem.y_26_6));
         return self.shapeIntoBuffer(font, text, features);
@@ -234,6 +296,10 @@ fn hbGetGlyphHAdvance(
     const hooks: *HintHooks = @ptrCast(@alignCast(user_data orelse return 0));
     const gid: u16 = @intCast(glyph & 0xFFFF);
     const ppem = HintPpem{ .x_26_6 = hooks.ppem_x_26_6, .y_26_6 = hooks.ppem_y_26_6 };
-    const adv = hooks.hinter.hintedAdvance(gid, ppem) catch return 0;
+    const adv = switch (hooks.source) {
+        .none => return 0,
+        .vm => |vm| vm.hintedAdvance(gid, ppem) catch return 0,
+        .provider => |p| p.provider.get_advance(p.provider.context, p.font_id, gid, ppem),
+    };
     return @intCast(adv);
 }

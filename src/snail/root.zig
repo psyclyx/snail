@@ -28,6 +28,7 @@ pub const FaceIndex = text_mod.FaceIndex;
 const faces_mod = @import("text/faces.zig");
 pub const Face = faces_mod.Face;
 pub const Faces = faces_mod.Faces;
+pub const shape = faces_mod.shape;
 pub const FontWeight = text_mod.FontWeight;
 pub const FontStyle = text_mod.FontStyle;
 pub const SyntheticStyle = text_mod.SyntheticStyle;
