@@ -686,7 +686,7 @@ pub const SurfaceTextDraw = struct {
     atlas: *const snail.Atlas,
     picture: *const snail.Picture,
     gl_renderer: *snail.Gl33Renderer,
-    cache: *const snail.Gl33PreparedPages,
+    cache: *const snail.Gl33BackendCache,
     coverage_words: []u32 = &.{},
     coverage: snail.coverage.TextCoverageRecords,
     record_buffer: gl.GLuint = 0,
@@ -695,7 +695,7 @@ pub const SurfaceTextDraw = struct {
     pub fn init(
         allocator: std.mem.Allocator,
         gl_renderer: *snail.Gl33Renderer,
-        cache: *const snail.Gl33PreparedPages,
+        cache: *const snail.Gl33BackendCache,
         atlas: *const snail.Atlas,
         picture: *const snail.Picture,
         binding: snail.Binding,

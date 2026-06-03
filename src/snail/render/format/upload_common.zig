@@ -1,7 +1,7 @@
 //! Shared layer-info / paint-record patching for new-API prepared-page
 //! caches. Legacy atlas-slot decision logic lived here too; that surface
 //! was removed in the scorched-earth pass — only `patchImagePaintRecord`
-//! and its helpers remain, used by the GL/Vulkan/CPU `prepared_pages`
+//! and its helpers remain, used by the GL/Vulkan/CPU `backend_cache`
 //! modules to write live image-layer indices into the layer-info texture
 //! when uploading paint records.
 

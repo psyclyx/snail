@@ -52,19 +52,19 @@ else
         pub const text_sample_body = "";
     };
 
-const gl_prepared_pages = if (build_options.enable_gl33 or build_options.enable_gl44)
-    @import("render/backend/gl/prepared_pages.zig")
+const gl_backend_cache = if (build_options.enable_gl33 or build_options.enable_gl44)
+    @import("render/backend/gl/backend_cache.zig")
 else
     struct {
-        pub const Gl33PreparedPages = void;
-        pub const Gl44PreparedPages = void;
+        pub const Gl33BackendCache = void;
+        pub const Gl44BackendCache = void;
     };
 
-const gles30_prepared_pages = if (build_options.enable_gles30)
-    @import("render/backend/gl/prepared_pages.zig")
+const gles30_backend_cache = if (build_options.enable_gles30)
+    @import("render/backend/gl/backend_cache.zig")
 else
     struct {
-        pub const Gles30PreparedPages = void;
+        pub const Gles30BackendCache = void;
     };
 
 const gl_state = if (build_options.enable_gl33 or build_options.enable_gl44)
@@ -284,19 +284,19 @@ pub const Program = union(BackendKind) {
     gles30: Gles30Program,
 };
 
-// ── Backend (binding shim from the new PreparedPages caches) ──
+// ── Backend (binding shim from the new BackendCache caches) ──
 
 /// CPU backend is a no-op: caller-owned material shaders are inherently a
 /// GPU concept. The variant exists so cross-backend code can pattern-match
 /// on the same union as the rest of the renderer surface.
 pub const CpuBackend = struct {};
 
-fn GlBackendFor(comptime variant: gl_prepared_pages.Variant) type {
+fn GlBackendFor(comptime variant: gl_backend_cache.Variant) type {
     return struct {
         const Self = @This();
-        const PreparedPages = switch (variant) {
-            .gl33 => gl_prepared_pages.Gl33PreparedPages,
-            .gl44 => gl_prepared_pages.Gl44PreparedPages,
+        const BackendCache = switch (variant) {
+            .gl33 => gl_backend_cache.Gl33BackendCache,
+            .gl44 => gl_backend_cache.Gl44BackendCache,
             .gles30 => unreachable, // covered by Gles30Backend below
         };
         const TextState = switch (variant) {
@@ -306,11 +306,11 @@ fn GlBackendFor(comptime variant: gl_prepared_pages.Variant) type {
         };
         const dsa = (variant == .gl44);
 
-        cache: *const PreparedPages,
+        cache: *const BackendCache,
         state: *TextState,
 
-        /// Build from a `Gl{33,44}Renderer` + matching `Gl{33,44}PreparedPages` cache.
-        pub fn from(renderer: anytype, cache: *const PreparedPages) Self {
+        /// Build from a `Gl{33,44}Renderer` + matching `Gl{33,44}BackendCache` cache.
+        pub fn from(renderer: anytype, cache: *const BackendCache) Self {
             return .{ .cache = cache, .state = &renderer.state };
         }
 
@@ -365,10 +365,10 @@ pub const Gl44Backend = if (build_options.enable_gl44) GlBackendFor(.gl44) else 
 pub const Gles30Backend = if (build_options.enable_gles30) struct {
     const Self = @This();
 
-    cache: *const gles30_prepared_pages.Gles30PreparedPages,
+    cache: *const gles30_backend_cache.Gles30BackendCache,
     state: *gles30_state.Gles30TextState,
 
-    pub fn from(renderer: anytype, cache: *const gles30_prepared_pages.Gles30PreparedPages) Self {
+    pub fn from(renderer: anytype, cache: *const gles30_backend_cache.Gles30BackendCache) Self {
         return .{ .cache = cache, .state = &renderer.state };
     }
 

@@ -1,6 +1,6 @@
 //! Vulkan persistent prepared-pages cache for snail.
 //!
-//! Mirrors `CpuPreparedPages` and `GlPreparedPages`:
+//! Mirrors `CpuBackendCache` and `GlBackendCache`:
 //! caller-sized capacity, slot allocation via free-list, explicit
 //! `release(binding)`, no auto-grow.
 //!
@@ -88,7 +88,7 @@ pub const PipelineShape = struct {
     desc_set_layout: vk.VkDescriptorSetLayout,
 };
 
-pub const VulkanPreparedPages = struct {
+pub const VulkanBackendCache = struct {
     const Self = @This();
 
     allocator: std.mem.Allocator,
@@ -818,7 +818,7 @@ fn countUniqueImages(atlas: *const Atlas) u32 {
 
 const testing = std.testing;
 
-test "VulkanPreparedPages init allocates fixed-capacity slots" {
+test "VulkanBackendCache init allocates fixed-capacity slots" {
     var pool = try PagePool.init(testing.allocator, .{
         .max_layers = 4,
         .curve_words_per_page = CURVE_WORDS_PER_ROW * 4,
@@ -834,7 +834,7 @@ test "VulkanPreparedPages init allocates fixed-capacity slots" {
         .sampler_linear = null,
         .desc_set_layout = null,
     };
-    var cache = try VulkanPreparedPages.init(testing.allocator, pool, zero_pipeline, .{
+    var cache = try VulkanBackendCache.init(testing.allocator, pool, zero_pipeline, .{
         .max_bindings = 3,
         .layer_info_height = 8,
         .max_images = 2,

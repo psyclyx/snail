@@ -1,6 +1,6 @@
 //! GL / GLES3 persistent prepared-pages cache for snail.
 //!
-//! Mirrors `CpuPreparedPages`: caller-sized capacity, slot
+//! Mirrors `CpuBackendCache`: caller-sized capacity, slot
 //! allocation via free-list, explicit `release(binding)`, no auto-grow.
 //!
 //! Per-cache resident state:
@@ -90,7 +90,7 @@ pub const UploadError = error{
 
 pub const ResizeError = error{ActiveBindingsPreventResize} || std.mem.Allocator.Error;
 
-pub fn GlPreparedPagesFor(comptime variant: Variant) type {
+pub fn GlBackendCacheFor(comptime variant: Variant) type {
     const gl = bindingsFor(variant).gl;
     return struct {
         const Self = @This();
@@ -662,15 +662,15 @@ fn countUniqueImages(atlas: *const Atlas) u32 {
     return seen_count;
 }
 
-pub const Gl33PreparedPages = GlPreparedPagesFor(.gl33);
-pub const Gl44PreparedPages = GlPreparedPagesFor(.gl44);
-pub const Gles30PreparedPages = GlPreparedPagesFor(.gles30);
+pub const Gl33BackendCache = GlBackendCacheFor(.gl33);
+pub const Gl44BackendCache = GlBackendCacheFor(.gl44);
+pub const Gles30BackendCache = GlBackendCacheFor(.gles30);
 
 // ── Tests (data only — no GL calls) ──
 
 const testing = std.testing;
 
-test "GlPreparedPages init allocates fixed-capacity slots" {
+test "GlBackendCache init allocates fixed-capacity slots" {
     var pool = try PagePool.init(testing.allocator, .{
         .max_layers = 4,
         .curve_words_per_page = CURVE_WORDS_PER_ROW * 2,
@@ -678,7 +678,7 @@ test "GlPreparedPages init allocates fixed-capacity slots" {
     });
     defer pool.deinit();
 
-    var cache = try Gl33PreparedPages.init(testing.allocator, pool, .{
+    var cache = try Gl33BackendCache.init(testing.allocator, pool, .{
         .max_bindings = 3,
         .layer_info_height = 8,
         .max_images = 2,
@@ -695,7 +695,7 @@ test "GlPreparedPages init allocates fixed-capacity slots" {
     try testing.expectEqual(@as(u32, 2), cache.free_image_ranges.items[0].count);
 }
 
-test "GlPreparedPages release returns slot ranges to free list" {
+test "GlBackendCache release returns slot ranges to free list" {
     var pool = try PagePool.init(testing.allocator, .{
         .max_layers = 1,
         .curve_words_per_page = CURVE_WORDS_PER_ROW,
@@ -703,7 +703,7 @@ test "GlPreparedPages release returns slot ranges to free list" {
     });
     defer pool.deinit();
 
-    var cache = try Gl33PreparedPages.init(testing.allocator, pool, .{
+    var cache = try Gl33BackendCache.init(testing.allocator, pool, .{
         .max_bindings = 2,
         .layer_info_height = 4,
         .max_images = 0,

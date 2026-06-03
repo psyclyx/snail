@@ -104,7 +104,7 @@ pub const Atlas = struct {
     paint_lookup: std.AutoHashMapUnmanaged(RecordKey, PaintRecordInfo) = .{},
     /// One slot per emitted paint record (in insertion order). The slot
     /// is populated only for `.image` paints — gradient/solid records map
-    /// to `null`. The atlas's CPU consumer (`CpuPreparedPages.upload`)
+    /// to `null`. The atlas's CPU consumer (`CpuBackendCache.upload`)
     /// hands this to `preparePathLayerInfoRecords`; the GPU upload path
     /// patches the matching layer-info texel in place. Images themselves
     /// are caller-owned references; the atlas only borrows.

@@ -66,7 +66,7 @@ pub const UploadError = error{
 
 pub const ResizeError = error{ActiveBindingsPreventResize} || std.mem.Allocator.Error;
 
-pub const CpuPreparedPages = struct {
+pub const CpuBackendCache = struct {
     allocator: std.mem.Allocator,
     pool: *PagePool,
     options: CacheOptions,
@@ -114,7 +114,7 @@ pub const CpuPreparedPages = struct {
         paint_image_records: ?[]?PaintImageRecord = null,
     };
 
-    pub fn init(allocator: std.mem.Allocator, pool: *PagePool, options: CacheOptions) !CpuPreparedPages {
+    pub fn init(allocator: std.mem.Allocator, pool: *PagePool, options: CacheOptions) !CpuBackendCache {
         const max_layers = pool.options.max_layers;
 
         const prepared = try allocator.alloc(?PreparedAtlasPage, max_layers);
@@ -172,7 +172,7 @@ pub const CpuPreparedPages = struct {
         };
     }
 
-    pub fn deinit(self: *CpuPreparedPages) void {
+    pub fn deinit(self: *CpuBackendCache) void {
         for (self.prepared) |*slot| {
             if (slot.*) |*p| p.deinit(self.allocator);
         }
@@ -189,7 +189,7 @@ pub const CpuPreparedPages = struct {
         self.* = undefined;
     }
 
-    fn freeBindingState(self: *CpuPreparedPages, slot: *BindingSlot) void {
+    fn freeBindingState(self: *CpuBackendCache, slot: *BindingSlot) void {
         if (slot.path_records.len > 0) self.allocator.free(slot.path_records);
         if (slot.path_layers.len > 0) self.allocator.free(slot.path_layers);
         if (slot.paint_image_records) |r| self.allocator.free(r);
@@ -200,7 +200,7 @@ pub const CpuPreparedPages = struct {
 
     /// Reshape the cache. Errors if any binding is active — caller must
     /// release retired bindings first.
-    pub fn resize(self: *CpuPreparedPages, options: CacheOptions) ResizeError!void {
+    pub fn resize(self: *CpuBackendCache, options: CacheOptions) ResizeError!void {
         if (self.active_bindings > 0) return error.ActiveBindingsPreventResize;
         self.options = options;
 
@@ -232,7 +232,7 @@ pub const CpuPreparedPages = struct {
     /// Upload one or more atlases into the cache and return one
     /// `Binding` per atlas. Errors if capacity is exceeded.
     pub fn upload(
-        self: *CpuPreparedPages,
+        self: *CpuBackendCache,
         scratch: std.mem.Allocator,
         atlases: []const *const Atlas,
         out_bindings: []Binding,
@@ -311,7 +311,7 @@ pub const CpuPreparedPages = struct {
 
     /// Release a binding's storage. Idempotent: releasing the same
     /// binding twice is a no-op after the first.
-    pub fn release(self: *CpuPreparedPages, binding: Binding) void {
+    pub fn release(self: *CpuBackendCache, binding: Binding) void {
         const slot_index = self.findSlotByGeneration(binding.generation) orelse return;
         const slot = &self.bindings[slot_index];
         if (!slot.active) return;
@@ -336,7 +336,7 @@ pub const CpuPreparedPages = struct {
     /// is where this slot sits in the global info_y space and is the value
     /// emit added to `Instance.info_y`. Path records' `texel_offset` is
     /// already slot-relative (matches `layer_info_data`).
-    pub fn snapshotFor(self: *const CpuPreparedPages, generation: u32) ?Snapshot {
+    pub fn snapshotFor(self: *const CpuBackendCache, generation: u32) ?Snapshot {
         const slot_index = self.findSlotByGeneration(generation) orelse return null;
         const slot = &self.bindings[slot_index];
         if (!slot.active) return null;
@@ -363,7 +363,7 @@ pub const CpuPreparedPages = struct {
         paint_image_records: ?[]const ?PaintImageRecord,
     };
 
-    pub fn page(self: *const CpuPreparedPages, layer: u32) ?*const PreparedAtlasPage {
+    pub fn page(self: *const CpuBackendCache, layer: u32) ?*const PreparedAtlasPage {
         if (layer >= self.prepared.len) return null;
         if (self.prepared[layer]) |*p| return p;
         return null;
@@ -371,21 +371,21 @@ pub const CpuPreparedPages = struct {
 
     // ── Internal ──
 
-    fn findFreeBinding(self: *CpuPreparedPages) ?u32 {
+    fn findFreeBinding(self: *CpuBackendCache) ?u32 {
         for (self.bindings, 0..) |*slot, i| {
             if (!slot.active) return @intCast(i);
         }
         return null;
     }
 
-    fn findSlotByGeneration(self: *const CpuPreparedPages, generation: u32) ?u32 {
+    fn findSlotByGeneration(self: *const CpuBackendCache, generation: u32) ?u32 {
         for (self.bindings, 0..) |*slot, i| {
             if (slot.active and slot.generation == generation) return @intCast(i);
         }
         return null;
     }
 
-    fn takeLayerInfoRows(self: *CpuPreparedPages, height: u32) UploadError!?LayerInfoRange {
+    fn takeLayerInfoRows(self: *CpuBackendCache, height: u32) UploadError!?LayerInfoRange {
         // First-fit search through the free list.
         var i: usize = 0;
         while (i < self.free_layer_info_ranges.items.len) : (i += 1) {
@@ -402,7 +402,7 @@ pub const CpuPreparedPages = struct {
         return null;
     }
 
-    fn releaseLayerInfoRange(self: *CpuPreparedPages, range: LayerInfoRange) !void {
+    fn releaseLayerInfoRange(self: *CpuBackendCache, range: LayerInfoRange) !void {
         if (range.height == 0) return;
         // Coalesce with adjacent ranges to keep fragmentation in check.
         try self.free_layer_info_ranges.append(self.allocator, range);
@@ -429,7 +429,7 @@ pub const CpuPreparedPages = struct {
         self.free_layer_info_ranges.shrinkRetainingCapacity(write);
     }
 
-    fn takeImageLayers(self: *CpuPreparedPages, count: u32) UploadError!?ImageRange {
+    fn takeImageLayers(self: *CpuBackendCache, count: u32) UploadError!?ImageRange {
         var i: usize = 0;
         while (i < self.free_image_ranges.items.len) : (i += 1) {
             const r = self.free_image_ranges.items[i];
@@ -445,7 +445,7 @@ pub const CpuPreparedPages = struct {
         return null;
     }
 
-    fn releaseImageRange(self: *CpuPreparedPages, range: ImageRange) !void {
+    fn releaseImageRange(self: *CpuBackendCache, range: ImageRange) !void {
         if (range.count == 0) return;
         try self.free_image_ranges.append(self.allocator, range);
         std.mem.sort(ImageRange, self.free_image_ranges.items, {}, struct {
@@ -471,7 +471,7 @@ pub const CpuPreparedPages = struct {
         self.free_image_ranges.shrinkRetainingCapacity(write);
     }
 
-    fn writeBindingData(self: *CpuPreparedPages, atlas: *const Atlas, slot: *BindingSlot) UploadError!void {
+    fn writeBindingData(self: *CpuBackendCache, atlas: *const Atlas, slot: *BindingSlot) UploadError!void {
         // Push each page in the atlas into its layer (rebuild if stale).
         for (atlas.pages) |p| {
             const layer = p.layer_index;
@@ -617,7 +617,7 @@ test "cache init allocates fixed-capacity buffers" {
     });
     defer pool.deinit();
 
-    var cache = try CpuPreparedPages.init(testing.allocator, pool, .{
+    var cache = try CpuBackendCache.init(testing.allocator, pool, .{
         .max_bindings = 4,
         .layer_info_height = 8,
         .max_images = 2,
@@ -648,7 +648,7 @@ test "release returns range to free list and allows reuse" {
     });
     defer pool.deinit();
 
-    var cache = try CpuPreparedPages.init(testing.allocator, pool, .{
+    var cache = try CpuBackendCache.init(testing.allocator, pool, .{
         .max_bindings = 4,
         .layer_info_height = 2,
         .max_images = 0,

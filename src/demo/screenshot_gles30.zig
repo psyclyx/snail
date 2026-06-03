@@ -61,7 +61,7 @@ pub fn main() !void {
     var gl_renderer = try snail.Gles30Renderer.init(allocator);
     defer gl_renderer.deinit();
 
-    var cache = try snail.Gles30PreparedPages.init(allocator, content.pool, .{
+    var cache = try snail.Gles30BackendCache.init(allocator, content.pool, .{
         .max_bindings = 4,
         .layer_info_height = 64,
         .max_images = 8,

@@ -4,7 +4,7 @@
 //!   - World passes (rough wall, center panel, glass) and HUD passes (plain,
 //!     translucent, solid) each carry their own atlases + pictures (paths and
 //!     text). All atlases share the same `PagePool` owned by `Fonts`.
-//!   - A single `snail.Gl33Renderer` + `snail.Gl33PreparedPages` cache backs
+//!   - A single `snail.Gl33Renderer` + `snail.Gl33BackendCache` cache backs
 //!     every draw. Each pass gets two cache bindings (one per atlas) at
 //!     upload time, fetched again whenever the HUD is rebuilt on resize.
 //!   - The rough-wall and center-panel passes additionally route their text
@@ -52,7 +52,7 @@ fn displayTargetEncoding(info: platform.presentation.Info) snail.TargetEncoding 
 // ── Pass bindings ──
 
 /// Snail-side bindings for one pass (path + text atlases), held inside the
-/// shared `Gl33PreparedPages` cache.
+/// shared `Gl33BackendCache` cache.
 const PassBindings = struct {
     path: snail.Binding,
     text: snail.Binding,
@@ -60,7 +60,7 @@ const PassBindings = struct {
 
 fn uploadPass(
     allocator: std.mem.Allocator,
-    cache: *snail.Gl33PreparedPages,
+    cache: *snail.Gl33BackendCache,
     pass: *const PreparedPass,
 ) !PassBindings {
     var bindings: [2]snail.Binding = undefined;
@@ -68,7 +68,7 @@ fn uploadPass(
     return .{ .path = bindings[0], .text = bindings[1] };
 }
 
-fn releasePass(cache: *snail.Gl33PreparedPages, bindings: PassBindings) void {
+fn releasePass(cache: *snail.Gl33BackendCache, bindings: PassBindings) void {
     cache.release(bindings.path);
     cache.release(bindings.text);
 }
@@ -118,7 +118,7 @@ pub fn main() !void {
     var quad_renderer = try QuadRenderer.init();
     defer quad_renderer.deinit();
 
-    var cache = try snail.Gl33PreparedPages.init(allocator, fonts.pool, .{
+    var cache = try snail.Gl33BackendCache.init(allocator, fonts.pool, .{
         .max_bindings = CACHE_MAX_BINDINGS,
         .layer_info_height = 256,
         .max_images = CACHE_MAX_IMAGES,
@@ -336,7 +336,7 @@ const HudBindings = struct {
     translucent: PassBindings,
     solid: PassBindings,
 
-    fn release(self: HudBindings, cache: *snail.Gl33PreparedPages) void {
+    fn release(self: HudBindings, cache: *snail.Gl33BackendCache) void {
         releasePass(cache, self.plain);
         releasePass(cache, self.translucent);
         releasePass(cache, self.solid);
@@ -345,7 +345,7 @@ const HudBindings = struct {
 
 fn drawPassPair(
     gl_renderer: *snail.Gl33Renderer,
-    cache: *const snail.Gl33PreparedPages,
+    cache: *const snail.Gl33BackendCache,
     scratch: *ScratchBuf,
     allocator: std.mem.Allocator,
     pass: *const PreparedPass,
@@ -399,7 +399,7 @@ fn updateCamera(camera: *Camera, dt: f32) void {
 
 fn renderPlanePass(
     gl_renderer: *snail.Gl33Renderer,
-    cache: *const snail.Gl33PreparedPages,
+    cache: *const snail.Gl33BackendCache,
     scratch: *ScratchBuf,
     allocator: std.mem.Allocator,
     pass: *const PlanePass,
@@ -430,7 +430,7 @@ fn renderPlanePass(
 fn renderWorld(
     quad_renderer: *const QuadRenderer,
     gl_renderer: *snail.Gl33Renderer,
-    cache: *const snail.Gl33PreparedPages,
+    cache: *const snail.Gl33BackendCache,
     world_passes: *const WorldPasses,
     rough_wall_text: *const SurfaceTextDraw,
     center_panel_text: *const SurfaceTextDraw,

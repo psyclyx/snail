@@ -2,7 +2,7 @@ const std = @import("std");
 const gl = @import("bindings.zig").gl;
 const gl_backend = @import("backend.zig");
 const gl_programs = @import("programs.zig");
-const gl_upload = @import("prepared_pages.zig");
+const gl_upload = @import("backend_cache.zig");
 const draw_records_mod = @import("../../../picture/draw_records.zig");
 const shaders = @import("shaders.zig");
 const subpixel_policy = @import("../subpixel_policy.zig");
@@ -466,7 +466,7 @@ fn TextStateFor(comptime backend: Backend) type {
             .gl33 => .gl33,
             .gl44 => .gl44,
         };
-        const GlPreparedPages = gl_upload.GlPreparedPagesFor(gl_upload_variant);
+        const GlBackendCache = gl_upload.GlBackendCacheFor(gl_upload_variant);
 
         pub const DrawError = error{
             MissingBinding,
@@ -475,7 +475,7 @@ fn TextStateFor(comptime backend: Backend) type {
         } || std.mem.Allocator.Error;
 
         /// Walk `DrawRecords.segments`, bind each segment's matching
-        /// `GlPreparedPages` cache, dispatch the encoded instances through
+        /// `GlBackendCache` cache, dispatch the encoded instances through
         /// the existing program set. Replicated segments materialize
         /// composed instances in a caller-supplied scratch allocator.
         pub fn draw(
@@ -483,7 +483,7 @@ fn TextStateFor(comptime backend: Backend) type {
             scratch: std.mem.Allocator,
             draw_state: DrawState,
             records: draw_records_mod.DrawRecords,
-            caches: []const *const GlPreparedPages,
+            caches: []const *const GlBackendCache,
         ) DrawError!void {
             gl.glBindVertexArray(self.vao);
             if (comptime backend == .gl33) gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vbo);
@@ -499,7 +499,7 @@ fn TextStateFor(comptime backend: Backend) type {
             }
         }
 
-        fn drawHeterogeneous(self: *GlTextState, cache: *const GlPreparedPages, draw_state: DrawState, vertices: []const u32) DrawError!void {
+        fn drawHeterogeneous(self: *GlTextState, cache: *const GlBackendCache, draw_state: DrawState, vertices: []const u32) DrawError!void {
             const total_glyphs = vertices.len / vertex.WORDS_PER_INSTANCE;
             if (total_glyphs == 0) return;
 
@@ -553,7 +553,7 @@ fn TextStateFor(comptime backend: Backend) type {
         fn drawReplicated(
             self: *GlTextState,
             _: std.mem.Allocator,
-            cache: *const GlPreparedPages,
+            cache: *const GlBackendCache,
             draw_state: DrawState,
             seg: draw_records_mod.DrawSegment,
             seg_words: []const u32,
@@ -643,10 +643,10 @@ fn TextStateFor(comptime backend: Backend) type {
             if (comptime backend == .gl33) gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vbo);
         }
 
-        /// Bind one GlPreparedPages' texture set + uniforms. The
+        /// Bind one GlBackendCache' texture set + uniforms. The
         /// `layer_base` uniform is always 0 — the new model encodes the
         /// absolute texture-array layer in the per-instance `glyph` data.
-        fn bindProgramState(self: *GlTextState, cache: *const GlPreparedPages, prog_state: *const ProgramState, draw_state: DrawState, render_mode: subpixel_policy.TextRenderMode) void {
+        fn bindProgramState(self: *GlTextState, cache: *const GlBackendCache, prog_state: *const ProgramState, draw_state: DrawState, render_mode: subpixel_policy.TextRenderMode) void {
             const program_changed = prog_state.handle != self.active_program or !self.frame_begun;
             if (program_changed) {
                 gl.glUseProgram(prog_state.handle);

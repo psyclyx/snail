@@ -1,5 +1,5 @@
 //! Vulkan draw entry. Walks `DrawRecords.segments`, binds the
-//! matching `VulkanPreparedPages` cache's shared descriptor set, and
+//! matching `VulkanBackendCache` cache's shared descriptor set, and
 //! dispatches each segment through either the heterogeneous draw path
 //! (one instanced draw per kind run) or the replicated path (real
 //! hardware GPU instancing via `VK_EXT_vertex_attribute_divisor`).
@@ -13,7 +13,7 @@ const vulkan_types = @import("types.zig");
 const subpixel_policy = @import("../subpixel_policy.zig");
 const vertex = @import("../../format/vertex.zig");
 const snail_mod = @import("../../../root.zig");
-const vulkan_upload_new = @import("prepared_pages.zig");
+const vulkan_upload_new = @import("backend_cache.zig");
 const draw_records_mod = @import("../../../picture/draw_records.zig");
 const pipeline_constants = @import("constants.zig");
 const vulkan_graphics = @import("graphics_pipeline.zig");
@@ -27,7 +27,7 @@ const DrawState = snail_mod.DrawState;
 pub const DrawError = VulkanPipeline.DrawError;
 
 /// Walk `DrawRecords.segments`, bind each segment's matching
-/// `VulkanPreparedPages` cache, dispatch the encoded instances through
+/// `VulkanBackendCache` cache, dispatch the encoded instances through
 /// the existing pipeline + push-constant chain. Mirrors the GL
 /// `draw`: subpixel runs use dual-source when available, path /
 /// colr / hinted_text bind their respective pipelines.
@@ -36,7 +36,7 @@ pub fn draw(
     scratch: std.mem.Allocator,
     draw_state: DrawState,
     records: draw_records_mod.DrawRecords,
-    caches: []const *const vulkan_upload_new.VulkanPreparedPages,
+    caches: []const *const vulkan_upload_new.VulkanBackendCache,
 ) DrawError!void {
     const cmd = self.active_cmd orelse return error.MissingCommandBuffer;
     vk.vkCmdBindIndexBuffer(cmd, self.index_buffer, 0, vk.VK_INDEX_TYPE_UINT32);

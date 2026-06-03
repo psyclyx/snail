@@ -125,13 +125,13 @@ pub const hintedShapedRunPicture = @import("picture/text.zig").hintedShapedRunPi
 pub const Hinter = @import("font/hinter.zig").Hinter;
 pub const HintPpem = @import("font/hinter.zig").HintPpem;
 
-pub const CpuPreparedPages = @import("render/backend/cpu/prepared_pages.zig").CpuPreparedPages;
+pub const CpuBackendCache = @import("render/backend/cpu/backend_cache.zig").CpuBackendCache;
 pub const drawCpu = @import("render/backend/cpu/draw.zig").drawCpu;
-pub const Gl33PreparedPages = @import("render/backend/gl/prepared_pages.zig").Gl33PreparedPages;
-pub const Gl44PreparedPages = @import("render/backend/gl/prepared_pages.zig").Gl44PreparedPages;
-pub const Gles30PreparedPages = @import("render/backend/gl/prepared_pages.zig").Gles30PreparedPages;
-pub const VulkanPreparedPages = @import("render/backend/vulkan/prepared_pages.zig").VulkanPreparedPages;
-pub const VulkanPreparedPagesPipelineShape = @import("render/backend/vulkan/prepared_pages.zig").PipelineShape;
+pub const Gl33BackendCache = @import("render/backend/gl/backend_cache.zig").Gl33BackendCache;
+pub const Gl44BackendCache = @import("render/backend/gl/backend_cache.zig").Gl44BackendCache;
+pub const Gles30BackendCache = @import("render/backend/gl/backend_cache.zig").Gles30BackendCache;
+pub const VulkanBackendCache = @import("render/backend/vulkan/backend_cache.zig").VulkanBackendCache;
+pub const VulkanBackendCachePipelineShape = @import("render/backend/vulkan/backend_cache.zig").PipelineShape;
 
 pub const paths = @import("paths.zig");
 pub const coverage = @import("coverage.zig");
@@ -162,10 +162,10 @@ test {
     _ = @import("picture.zig");
     _ = @import("picture/draw_records.zig");
     _ = @import("picture/emit.zig");
-    _ = @import("render/backend/cpu/prepared_pages.zig");
+    _ = @import("render/backend/cpu/backend_cache.zig");
     _ = @import("render/backend/cpu/draw.zig");
-    _ = @import("render/backend/gl/prepared_pages.zig");
-    _ = @import("render/backend/vulkan/prepared_pages.zig");
+    _ = @import("render/backend/gl/backend_cache.zig");
+    _ = @import("render/backend/vulkan/backend_cache.zig");
     _ = @import("picture/text.zig");
     _ = @import("coverage.zig");
 }

@@ -2,7 +2,7 @@ const std = @import("std");
 const gl = @import("bindings.zig").gl;
 const gl_backend = @import("backend.zig");
 const gl_programs = @import("programs.zig");
-const gles30_upload = @import("../gl/prepared_pages.zig");
+const gles30_upload = @import("../gl/backend_cache.zig");
 const draw_records_mod = @import("../../../picture/draw_records.zig");
 const shaders = @import("shaders.zig");
 const subpixel_policy = @import("../subpixel_policy.zig");
@@ -378,7 +378,7 @@ pub const Gles30TextState = struct {
     } || std.mem.Allocator.Error;
 
     /// Walk `DrawRecords.segments`, bind each segment's matching
-    /// `Gles30PreparedPages` cache, dispatch the encoded instances
+    /// `Gles30BackendCache` cache, dispatch the encoded instances
     /// through the existing program set. GLES3 has no dual-source
     /// blend, so subpixel runs fall back to grayscale.
     pub fn draw(
@@ -386,7 +386,7 @@ pub const Gles30TextState = struct {
         scratch: std.mem.Allocator,
         draw_state: DrawState,
         records: draw_records_mod.DrawRecords,
-        caches: []const *const gles30_upload.Gles30PreparedPages,
+        caches: []const *const gles30_upload.Gles30BackendCache,
     ) DrawError!void {
         gl.glBindVertexArray(self.vao);
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vbo);
@@ -402,7 +402,7 @@ pub const Gles30TextState = struct {
         }
     }
 
-    fn drawHeterogeneous(self: *Gles30TextState, cache: *const gles30_upload.Gles30PreparedPages, draw_state: DrawState, vertices: []const u32) DrawError!void {
+    fn drawHeterogeneous(self: *Gles30TextState, cache: *const gles30_upload.Gles30BackendCache, draw_state: DrawState, vertices: []const u32) DrawError!void {
         const total_glyphs = vertices.len / vertex.WORDS_PER_INSTANCE;
         if (total_glyphs == 0) return;
 
@@ -446,7 +446,7 @@ pub const Gles30TextState = struct {
     fn drawReplicated(
         self: *Gles30TextState,
         _: std.mem.Allocator,
-        cache: *const gles30_upload.Gles30PreparedPages,
+        cache: *const gles30_upload.Gles30BackendCache,
         draw_state: DrawState,
         seg: draw_records_mod.DrawSegment,
         seg_words: []const u32,
@@ -540,7 +540,7 @@ pub const Gles30TextState = struct {
         gl.glEnableVertexAttribArray(9);
     }
 
-    fn bindProgramState(self: *Gles30TextState, cache: *const gles30_upload.Gles30PreparedPages, prog_state: *const ProgramState, draw_state: DrawState, render_mode: subpixel_policy.TextRenderMode) void {
+    fn bindProgramState(self: *Gles30TextState, cache: *const gles30_upload.Gles30BackendCache, prog_state: *const ProgramState, draw_state: DrawState, render_mode: subpixel_policy.TextRenderMode) void {
         const program_changed = prog_state.handle != self.active_program or !self.frame_begun;
         if (program_changed) {
             gl.glUseProgram(prog_state.handle);

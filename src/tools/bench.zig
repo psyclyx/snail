@@ -1427,7 +1427,7 @@ const ZoomBuild = struct {
     pool: *snail.PagePool,
     assets_owned: ?*demo_banner.Assets,
     content: demo_banner.Content,
-    cache: snail.CpuPreparedPages,
+    cache: snail.CpuBackendCache,
     bindings: [2]snail.Binding,
     words: []u32,
     segments: []snail.DrawSegment,
@@ -1551,7 +1551,7 @@ fn zoomBuildOneCold(allocator: std.mem.Allocator, ppem_px: u32) !ZoomBuild {
     );
     errdefer content.deinit();
 
-    var cache = try snail.CpuPreparedPages.init(allocator, content.pool, .{
+    var cache = try snail.CpuBackendCache.init(allocator, content.pool, .{
         .max_bindings = 4,
         .layer_info_height = 256,
         .max_images = 8,
@@ -1683,7 +1683,7 @@ pub fn main() !void {
     var bundle_count: usize = 0;
     defer for (bundles[0..bundle_count]) |*b| b.deinit();
 
-    var cpu_cache_storage: ?snail.CpuPreparedPages = null;
+    var cpu_cache_storage: ?snail.CpuBackendCache = null;
     defer if (cpu_cache_storage) |*c| c.deinit();
     var cpu_bindings: [scene_kinds.len]snail.Binding = undefined;
 
@@ -1698,7 +1698,7 @@ pub fn main() !void {
         }
 
         // ── CPU prepared pages + per-scene emit ──
-        cpu_cache_storage = try snail.CpuPreparedPages.init(allocator, pool, .{
+        cpu_cache_storage = try snail.CpuBackendCache.init(allocator, pool, .{
             .max_bindings = 16,
             .layer_info_height = 256,
             .max_images = 8,
@@ -1873,7 +1873,7 @@ fn printZoomTable(rows: []const ZoomRow) void {
 fn benchCpuModes(
     allocator: std.mem.Allocator,
     renderer: *snail.CpuRenderer,
-    cache: *const snail.CpuPreparedPages,
+    cache: *const snail.CpuBackendCache,
     backend_name: []const u8,
     bundles: *const [scene_kinds.len]SceneBundle,
     bundle_count: usize,
@@ -1936,7 +1936,7 @@ fn benchGl33(
     var renderer = try snail.Gl33Renderer.init(allocator);
     defer renderer.deinit();
 
-    var cache = try snail.Gl33PreparedPages.init(allocator, pool, .{
+    var cache = try snail.Gl33BackendCache.init(allocator, pool, .{
         .max_bindings = 16,
         .layer_info_height = 256,
         .max_images = 4,
@@ -2021,7 +2021,7 @@ fn benchGl44(
     var renderer = try snail.Gl44Renderer.init(allocator);
     defer renderer.deinit();
 
-    var cache = try snail.Gl44PreparedPages.init(allocator, pool, .{
+    var cache = try snail.Gl44BackendCache.init(allocator, pool, .{
         .max_bindings = 16,
         .layer_info_height = 256,
         .max_images = 4,
@@ -2106,7 +2106,7 @@ fn benchGles30(
     var renderer = try snail.Gles30Renderer.init(allocator);
     defer renderer.deinit();
 
-    var cache = try snail.Gles30PreparedPages.init(allocator, pool, .{
+    var cache = try snail.Gles30BackendCache.init(allocator, pool, .{
         .max_bindings = 16,
         .layer_info_height = 256,
         .max_images = 4,
@@ -2188,7 +2188,7 @@ fn benchVulkan(
     var renderer = try snail.VulkanRenderer.init(allocator, vk_ctx);
     defer renderer.deinit();
 
-    var cache = try snail.VulkanPreparedPages.init(allocator, pool, renderer.state.pipelineShape(), .{
+    var cache = try snail.VulkanBackendCache.init(allocator, pool, renderer.state.pipelineShape(), .{
         .max_bindings = 16,
         .layer_info_height = 256,
         .max_images = 4,

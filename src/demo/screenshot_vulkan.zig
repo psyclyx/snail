@@ -31,7 +31,7 @@ pub fn main() !void {
     var vk_renderer = try snail.VulkanRenderer.init(allocator, vk_ctx);
     defer vk_renderer.deinit();
 
-    var cache = try snail.VulkanPreparedPages.init(allocator, content.pool, vk_renderer.state.pipelineShape(), .{
+    var cache = try snail.VulkanBackendCache.init(allocator, content.pool, vk_renderer.state.pipelineShape(), .{
         .max_bindings = 4,
         .layer_info_height = 64,
         .max_images = 8,

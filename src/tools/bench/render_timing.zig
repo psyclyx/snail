@@ -2,7 +2,7 @@
 //!
 //! Replaces the legacy `Renderer.drawPrepared` calls with the new
 //! prepared-pages + DrawRecords API. Each function takes a typed backend
-//! state and the relevant `*PreparedPages` cache, then loops `frames`
+//! state and the relevant `*BackendCache` cache, then loops `frames`
 //! times measuring wall-clock around a `state.draw(...)` invocation.
 
 const std = @import("std");
@@ -64,7 +64,7 @@ pub fn timeCpuDraw(
     renderer: *snail.CpuRenderer,
     state: snail.DrawState,
     records: DrawRecords,
-    caches: []const *const snail.CpuPreparedPages,
+    caches: []const *const snail.CpuBackendCache,
     pixels: []u8,
     warmup_frames: usize,
     frames: usize,
@@ -87,7 +87,7 @@ pub fn timeGl33Draw(
     renderer: *snail.Gl33Renderer,
     state: snail.DrawState,
     records: DrawRecords,
-    caches: []const *const snail.Gl33PreparedPages,
+    caches: []const *const snail.Gl33BackendCache,
     warmup_frames: usize,
     frames: usize,
 ) !f64 {
@@ -113,7 +113,7 @@ pub fn timeGl44Draw(
     renderer: *snail.Gl44Renderer,
     state: snail.DrawState,
     records: DrawRecords,
-    caches: []const *const snail.Gl44PreparedPages,
+    caches: []const *const snail.Gl44BackendCache,
     warmup_frames: usize,
     frames: usize,
 ) !f64 {
@@ -139,7 +139,7 @@ pub fn timeGles30Draw(
     renderer: *snail.Gles30Renderer,
     state: snail.DrawState,
     records: DrawRecords,
-    caches: []const *const snail.Gles30PreparedPages,
+    caches: []const *const snail.Gles30BackendCache,
     warmup_frames: usize,
     frames: usize,
 ) !f64 {
@@ -165,7 +165,7 @@ pub fn timeVulkanDraw(
     vk_renderer: *snail.VulkanRenderer,
     state: snail.DrawState,
     records: DrawRecords,
-    caches: []const *const snail.VulkanPreparedPages,
+    caches: []const *const snail.VulkanBackendCache,
     warmup_frames: usize,
     frames: usize,
 ) !f64 {

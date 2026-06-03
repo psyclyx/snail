@@ -55,7 +55,7 @@ pub fn main() !void {
     defer content.deinit();
     if (hint) std.debug.print("[banner] hinting enabled, ppem_scale={d:.2}\n", .{ppem_scale});
 
-    var cache = try snail.CpuPreparedPages.init(allocator, content.pool, .{
+    var cache = try snail.CpuBackendCache.init(allocator, content.pool, .{
         .max_bindings = 4,
         .layer_info_height = 256,
         .max_images = 8,

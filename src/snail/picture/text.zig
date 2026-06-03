@@ -288,7 +288,7 @@ test "hinted curves render through new API CPU draw" {
     var atlas = try snail.Atlas.from(allocator, pool, &.{.{ .key = key, .curves = hinted }});
     defer atlas.deinit();
 
-    var cache = try snail.CpuPreparedPages.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
+    var cache = try snail.CpuBackendCache.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
     defer cache.deinit();
     var bindings: [1]snail.Binding = undefined;
     try cache.upload(allocator, &.{&atlas}, &bindings);

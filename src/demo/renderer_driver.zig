@@ -1,5 +1,5 @@
 //! Cross-backend driver for the interactive demo. Wraps each backend's
-//! `Renderer` + `PreparedPages` cache + new-API `emit`/`draw` shim into a
+//! `Renderer` + `BackendCache` cache + new-API `emit`/`draw` shim into a
 //! single tagged union so `main.zig` can cycle between backends with the
 //! 'C' key without knowing each backend's idiom.
 //!
@@ -7,7 +7,7 @@
 //! `cpu` uses the default pool (one worker per logical core minus one),
 //! `cpu_less_threaded` runs with a single worker, and `cpu_unthreaded`
 //! has zero workers so dispatch runs every tile on the calling thread.
-//! All three share the same `CpuRenderer` + `CpuPreparedPages` plumbing.
+//! All three share the same `CpuRenderer` + `CpuBackendCache` plumbing.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -282,7 +282,7 @@ fn emitBoth(
 const VulkanDriver = if (build_options.enable_vulkan) struct {
     allocator: std.mem.Allocator,
     renderer_state: snail.VulkanRenderer,
-    cache: ?snail.VulkanPreparedPages = null,
+    cache: ?snail.VulkanBackendCache = null,
     cache_pool: ?*const anyopaque = null, // PagePool pointer to detect content swap
     scratch: ScratchBuf,
     paths_binding: snail.Binding = undefined,
@@ -312,7 +312,7 @@ const VulkanDriver = if (build_options.enable_vulkan) struct {
         const pool_ptr: *const anyopaque = @ptrCast(content.pool);
         if (self.cache_pool == pool_ptr) return false;
         if (self.cache) |*c| c.deinit();
-        self.cache = try snail.VulkanPreparedPages.init(self.allocator, content.pool, self.renderer_state.state.pipelineShape(), .{
+        self.cache = try snail.VulkanBackendCache.init(self.allocator, content.pool, self.renderer_state.state.pipelineShape(), .{
             .max_bindings = 4,
             .layer_info_height = 64,
             .max_images = 8,
@@ -372,7 +372,7 @@ const VulkanDriver = if (build_options.enable_vulkan) struct {
 const Gl44Driver = if (build_options.enable_gl44) struct {
     allocator: std.mem.Allocator,
     renderer_state: snail.Gl44Renderer,
-    cache: ?snail.Gl44PreparedPages = null,
+    cache: ?snail.Gl44BackendCache = null,
     cache_pool: ?*const anyopaque = null,
     scratch: ScratchBuf,
     paths_binding: snail.Binding = undefined,
@@ -399,14 +399,14 @@ const Gl44Driver = if (build_options.enable_gl44) struct {
     }
 
     fn renderFrame(self: *Gl44Driver, allocator: std.mem.Allocator, content: *demo_scene.Content, draw_state: snail.DrawState, content_dirty: bool, clear_srgb: [4]f32) !bool {
-        return glRender(@TypeOf(self.*), self, snail.Gl44PreparedPages, allocator, content, draw_state, content_dirty, clear_srgb);
+        return glRender(@TypeOf(self.*), self, snail.Gl44BackendCache, allocator, content, draw_state, content_dirty, clear_srgb);
     }
 } else void;
 
 const Gl33Driver = if (build_options.enable_gl33) struct {
     allocator: std.mem.Allocator,
     renderer_state: snail.Gl33Renderer,
-    cache: ?snail.Gl33PreparedPages = null,
+    cache: ?snail.Gl33BackendCache = null,
     cache_pool: ?*const anyopaque = null,
     scratch: ScratchBuf,
     paths_binding: snail.Binding = undefined,
@@ -433,14 +433,14 @@ const Gl33Driver = if (build_options.enable_gl33) struct {
     }
 
     fn renderFrame(self: *Gl33Driver, allocator: std.mem.Allocator, content: *demo_scene.Content, draw_state: snail.DrawState, content_dirty: bool, clear_srgb: [4]f32) !bool {
-        return glRender(@TypeOf(self.*), self, snail.Gl33PreparedPages, allocator, content, draw_state, content_dirty, clear_srgb);
+        return glRender(@TypeOf(self.*), self, snail.Gl33BackendCache, allocator, content, draw_state, content_dirty, clear_srgb);
     }
 } else void;
 
 const Gles30Driver = if (build_options.enable_gles30) struct {
     allocator: std.mem.Allocator,
     renderer_state: snail.Gles30Renderer,
-    cache: ?snail.Gles30PreparedPages = null,
+    cache: ?snail.Gles30BackendCache = null,
     cache_pool: ?*const anyopaque = null,
     scratch: ScratchBuf,
     paths_binding: snail.Binding = undefined,
@@ -467,7 +467,7 @@ const Gles30Driver = if (build_options.enable_gles30) struct {
     }
 
     fn renderFrame(self: *Gles30Driver, allocator: std.mem.Allocator, content: *demo_scene.Content, draw_state: snail.DrawState, content_dirty: bool, clear_srgb: [4]f32) !bool {
-        return glRender(@TypeOf(self.*), self, snail.Gles30PreparedPages, allocator, content, draw_state, content_dirty, clear_srgb);
+        return glRender(@TypeOf(self.*), self, snail.Gles30BackendCache, allocator, content, draw_state, content_dirty, clear_srgb);
     }
 } else void;
 
@@ -530,7 +530,7 @@ const CpuDriver = if (build_options.enable_cpu) struct {
     allocator: std.mem.Allocator,
     renderer_state: snail.CpuRenderer,
     pool: ?*snail.ThreadPool = null,
-    cache: ?snail.CpuPreparedPages = null,
+    cache: ?snail.CpuBackendCache = null,
     cache_pool: ?*const anyopaque = null,
     scratch: ScratchBuf,
     paths_binding: snail.Binding = undefined,
@@ -621,7 +621,7 @@ const CpuDriver = if (build_options.enable_cpu) struct {
         var cache_fresh = false;
         if (self.cache_pool != pool_ptr) {
             if (self.cache) |*c| c.deinit();
-            self.cache = try snail.CpuPreparedPages.init(self.allocator, content.pool, .{
+            self.cache = try snail.CpuBackendCache.init(self.allocator, content.pool, .{
                 .max_bindings = 4,
                 .layer_info_height = 64,
                 .max_images = 8,

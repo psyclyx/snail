@@ -3,7 +3,7 @@
 //! Opens a Wayland window and renders the shared banner content
 //! (rounded-rect card + wordmark + tagline + vector snail + multi-script
 //! row) via the new snail API. Backed by `renderer_driver.zig`, which
-//! wraps each backend's `Renderer` + `PreparedPages` cache + emit/draw
+//! wraps each backend's `Renderer` + `BackendCache` cache + emit/draw
 //! shim. Keys cycle backend (C), AA mode (B), and hinting (H); arrows
 //! pan; Z/X zoom; R toggles rotate; L dumps a brief repro frame; Esc
 //! quits.

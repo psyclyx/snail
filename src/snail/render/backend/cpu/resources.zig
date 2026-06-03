@@ -15,7 +15,7 @@ const readBandCurveRef = texture.readBandCurveRef;
 ///
 /// Built from the page's raw curve/band byte data so the inner sampling
 /// loop has direct, prepared arrays to walk. Lifecycle is the calling
-/// `CpuPreparedPages`'s problem.
+/// `CpuBackendCache`'s problem.
 pub const PreparedAtlasPage = struct {
     curve_data: []const u16,
     band_data: []const u16,
@@ -94,7 +94,7 @@ pub const PreparedAtlasPage = struct {
 };
 
 /// Per-frame view the rasterizer reads from. `drawCpu` builds one of these
-/// for each segment from the segment's `CpuPreparedPages` cache.
+/// for each segment from the segment's `CpuBackendCache` cache.
 pub const PreparedResources = struct {
     allocator: std.mem.Allocator,
     atlas_pages: []?PreparedAtlasPage = &.{},

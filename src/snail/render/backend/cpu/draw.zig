@@ -1,7 +1,7 @@
 //! CPU-backend draw entry for `DrawRecords`.
 //!
 //! Walks segments, resolves each segment's `Binding.pool` to a
-//! `CpuPreparedPages` cache (caller-supplied), validates the binding's
+//! `CpuBackendCache` cache (caller-supplied), validates the binding's
 //! generation against the cache's last upload, then dispatches per-instance
 //! into the CPU rasterizer via `CpuRenderer.drawBatch`.
 //!
@@ -16,7 +16,7 @@ const build_options = @import("build_options");
 const snail = @import("../../../root.zig");
 const math = @import("../../../math/vec.zig");
 const draw_records = @import("../../../picture/draw_records.zig");
-const cpu_upload_mod = @import("prepared_pages.zig");
+const cpu_upload_mod = @import("backend_cache.zig");
 const cpu_resources = @import("resources.zig");
 const vertex = @import("../../format/vertex.zig");
 
@@ -25,7 +25,7 @@ pub const DrawRecords = struct {
     segments: []const draw_records.DrawSegment,
 };
 
-pub const CpuPreparedPages = cpu_upload_mod.CpuPreparedPages;
+pub const CpuBackendCache = cpu_upload_mod.CpuBackendCache;
 pub const Binding = draw_records.Binding;
 pub const Transform2D = math.Transform2D;
 
@@ -52,7 +52,7 @@ pub fn drawCpu(
     renderer: CpuRendererPtr,
     state: snail.DrawState,
     records: DrawRecords,
-    caches: []const *const CpuPreparedPages,
+    caches: []const *const CpuBackendCache,
 ) (DrawError || anyerror)!void {
     if (!build_options.enable_cpu) return error.MalformedSegment;
     for (records.segments) |seg| {
@@ -180,9 +180,9 @@ fn composeShapeOverride(
 }
 
 fn findCache(
-    caches: []const *const CpuPreparedPages,
+    caches: []const *const CpuBackendCache,
     pool: *cpu_upload_mod.PagePool,
-) ?*const CpuPreparedPages {
+) ?*const CpuBackendCache {
     for (caches) |c| {
         if (c.pool == pool) return c;
     }
@@ -220,7 +220,7 @@ test "drawCpu MissingBinding when no cache covers the binding's pool" {
     });
     defer pool_b.deinit();
 
-    var cache_a = try CpuPreparedPages.init(allocator, pool_a, .{ .max_bindings = 1, .layer_info_height = 4, .max_images = 0 });
+    var cache_a = try CpuBackendCache.init(allocator, pool_a, .{ .max_bindings = 1, .layer_info_height = 4, .max_images = 0 });
     defer cache_a.deinit();
 
     var pixels: [16 * 16 * 4]u8 = .{0} ** (16 * 16 * 4);
@@ -272,7 +272,7 @@ test "drawCpu replicated produces same pixels as equivalent heterogeneous emit" 
     var atlas = try @import("../../../atlas.zig").Atlas.from(allocator, pool, &.{.{ .key = key, .curves = curves }});
     defer atlas.deinit();
 
-    var cache = try CpuPreparedPages.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
+    var cache = try CpuBackendCache.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
     defer cache.deinit();
     var bindings: [1]Binding = undefined;
     try cache.upload(allocator, &.{&atlas}, &bindings);
@@ -369,7 +369,7 @@ test "drawCpu renders a small Picture into non-zero pixels" {
     var atlas = try @import("../../../atlas.zig").Atlas.from(allocator, pool, &.{.{ .key = key, .curves = owned[0] }});
     defer atlas.deinit();
 
-    var cache = try CpuPreparedPages.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
+    var cache = try CpuBackendCache.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
     defer cache.deinit();
     var bindings: [1]Binding = undefined;
     try cache.upload(allocator, &.{&atlas}, &bindings);
@@ -461,7 +461,7 @@ test "drawCpu renders gradient-painted glyph through special-layer path" {
 
     try testing.expect(atlas.lookupPaintRecord(key) != null);
 
-    var cache = try CpuPreparedPages.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
+    var cache = try CpuBackendCache.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
     defer cache.deinit();
     var bindings: [1]Binding = undefined;
     try cache.upload(allocator, &.{&atlas}, &bindings);
@@ -566,7 +566,7 @@ test "drawCpu renders image-painted shape through special-layer path" {
     try testing.expect(atlas.paint_image_records.?[0] != null);
     try testing.expect(atlas.paint_image_records.?[0].?.image == &image);
 
-    var cache = try CpuPreparedPages.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 4 });
+    var cache = try CpuBackendCache.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 4 });
     defer cache.deinit();
     var bindings: [1]Binding = undefined;
     try cache.upload(allocator, &.{&atlas}, &bindings);

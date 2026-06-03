@@ -34,7 +34,7 @@ pub fn main() !void {
     var content = try demo_content.build(allocator, W, H);
     defer content.deinit();
 
-    var cache = try snail.CpuPreparedPages.init(allocator, content.pool, .{
+    var cache = try snail.CpuBackendCache.init(allocator, content.pool, .{
         .max_bindings = 4,
         .layer_info_height = 64,
         .max_images = 8,

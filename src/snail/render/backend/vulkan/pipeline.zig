@@ -5,7 +5,7 @@ const snail_mod = @import("../../../root.zig");
 const SubpixelOrder = @import("../../format/subpixel_order.zig").SubpixelOrder;
 const DrawState = snail_mod.DrawState;
 const vulkan_types = @import("types.zig");
-const vulkan_upload_new = @import("prepared_pages.zig");
+const vulkan_upload_new = @import("backend_cache.zig");
 const draw_records_mod = @import("../../../picture/draw_records.zig");
 
 pub const vk = vulkan_types.vk;
@@ -325,7 +325,7 @@ pub const VulkanPipeline = struct {
         scratch: std.mem.Allocator,
         draw_state: DrawState,
         records: draw_records_mod.DrawRecords,
-        caches: []const *const vulkan_upload_new.VulkanPreparedPages,
+        caches: []const *const vulkan_upload_new.VulkanBackendCache,
     ) DrawError!void {
         return @import("draw.zig").draw(self, scratch, draw_state, records, caches);
     }
