@@ -27,12 +27,14 @@ const MATERIAL_TEXTURE_SIZE: u32 = 1024;
 pub const Fonts = struct {
     allocator: std.mem.Allocator,
     shaper: snail.Shaper,
+    /// Mirrors `shaper`'s face order. Picture builders take *const
+    /// Faces; the shape calls in this demo still go through
+    /// `shaper.shape` until phase 5d collapses the two surfaces.
+    faces: snail.Faces,
     fonts: [face_count]snail.Font,
     pool: *snail.PagePool,
 
     pub const face_count: usize = 2;
-    /// Maps `ShapedText.Glyph.face_index` to the underlying font index.
-    pub const face_to_font_id = [face_count]u32{ 0, 1 };
 
     pub fn init(allocator: std.mem.Allocator) !Fonts {
         var shaper = try snail.Shaper.init(allocator, &.{
@@ -47,6 +49,12 @@ pub const Fonts = struct {
             fonts[i] = try snail.Font.init(data);
         }
 
+        var faces = try snail.Faces.build(allocator, &.{
+            .{ .font = &fonts[0] },
+            .{ .font = &fonts[1], .weight = .bold },
+        });
+        errdefer faces.deinit();
+
         // 6 passes × 2 atlases (path + text) = 12 atlases at minimum, each
         // claiming at least one page. Headroom for resize / hint changes.
         const pool = try snail.PagePool.init(allocator, .{
@@ -59,6 +67,7 @@ pub const Fonts = struct {
         return .{
             .allocator = allocator,
             .shaper = shaper,
+            .faces = faces,
             .fonts = fonts,
             .pool = pool,
         };
@@ -66,6 +75,7 @@ pub const Fonts = struct {
 
     pub fn deinit(self: *Fonts) void {
         self.pool.deinit();
+        self.faces.deinit();
         self.shaper.deinit();
         self.* = undefined;
     }
@@ -312,11 +322,10 @@ const PassBuilder = struct {
         color: [4]f32,
     ) !void {
         try self.ensureUnhintedGlyphCurves(shaped);
-        var picture = try snail.shapedRunPicture(self.allocator, shaped, .{
+        var picture = try snail.shapedRunPicture(self.allocator, shaped, &self.fonts.faces, .{
             .baseline = .{ .x = x, .y = y },
             .em = em,
             .color = color,
-            .face_to_font_id = &Fonts.face_to_font_id,
         });
         defer picture.deinit();
         try self.text_shapes.appendSlice(self.allocator, picture.shapes);
@@ -335,8 +344,8 @@ const PassBuilder = struct {
         // namespace so each glyph carries its own paint.
         for (shaped.glyphs) |g| {
             const face_index_int: usize = @intCast(g.face_index);
-            if (face_index_int >= Fonts.face_to_font_id.len) continue;
-            const fid = Fonts.face_to_font_id[face_index_int];
+            if (face_index_int >= self.fonts.faces.faceCount()) continue;
+            const fid = self.fonts.faces.face_to_font_id[face_index_int];
             const font_ref = &self.fonts.fonts[fid];
 
             const pen_x = x + em * g.x_offset;
@@ -372,8 +381,8 @@ const PassBuilder = struct {
     fn ensureUnhintedGlyphCurves(self: *PassBuilder, shaped: *const snail.ShapedText) !void {
         for (shaped.glyphs) |g| {
             const face_index_int: usize = @intCast(g.face_index);
-            if (face_index_int >= Fonts.face_to_font_id.len) continue;
-            const fid = Fonts.face_to_font_id[face_index_int];
+            if (face_index_int >= self.fonts.faces.faceCount()) continue;
+            const fid = self.fonts.faces.face_to_font_id[face_index_int];
             const font_ref = &self.fonts.fonts[fid];
             const key = snail.recordKey.unhintedGlyph(fid, g.glyph_id);
             if (containsKey(self.text_entries.items, key)) continue;

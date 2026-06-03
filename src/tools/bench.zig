@@ -359,12 +359,15 @@ fn drawState(width: u32, height: u32, subpixel_order: snail.SubpixelOrder) snail
 
 const FACE_COUNT: usize = 5;
 const FONT_COUNT: usize = 5;
-// face_index → font_id; regular/bold/arabic/devanagari/thai (deduped via Shaper).
-const FACE_TO_FONT_ID = [FACE_COUNT]u32{ 0, 1, 2, 3, 4 };
 
 const FontSet = struct {
     allocator: std.mem.Allocator,
     shaper: snail.Shaper,
+    /// Mirrors `shaper`'s face order. Picture builders take *const
+    /// Faces; shape calls in bench still go through `shaper.shapeOpts`
+    /// for the hinted-advance routing path the warm/cold benches
+    /// measure.
+    faces: snail.Faces,
     fonts: [FONT_COUNT]snail.Font,
     has_hinter: bool,
 
@@ -390,6 +393,15 @@ const FontSet = struct {
             fonts[i] = try snail.Font.init(data);
         }
 
+        var faces = try snail.Faces.build(allocator, &.{
+            .{ .font = &fonts[0] },
+            .{ .font = &fonts[1], .weight = .bold },
+            .{ .font = &fonts[2], .fallback = true },
+            .{ .font = &fonts[3], .fallback = true },
+            .{ .font = &fonts[4], .fallback = true },
+        });
+        errdefer faces.deinit();
+
         var has_hinter = false;
         shaper.attachHinter(0) catch {};
         if (shaper.hinterForFace(0) != null) has_hinter = true;
@@ -397,12 +409,14 @@ const FontSet = struct {
         return .{
             .allocator = allocator,
             .shaper = shaper,
+            .faces = faces,
             .fonts = fonts,
             .has_hinter = has_hinter,
         };
     }
 
     fn deinit(self: *FontSet) void {
+        self.faces.deinit();
         self.shaper.deinit();
         self.* = undefined;
     }
@@ -536,7 +550,7 @@ fn ensureUnhintedRunCurves(
     shaped: *const snail.ShapedText,
 ) !void {
     for (shaped.glyphs) |g| {
-        const fid = FACE_TO_FONT_ID[g.face_index];
+        const fid = fonts.faces.face_to_font_id[g.face_index];
         const key = snail.recordKey.unhintedGlyph(fid, g.glyph_id);
         if (containsKey(build.entries.items, key)) continue;
         const curves = try fonts.fonts[fid].extractCurves(build.allocator, build.scratch(), &glyph_caches[fid], g.glyph_id);
@@ -817,12 +831,11 @@ fn addShapedLine(
         defer shaped.deinit();
         const ok = ensureHintedRunCurves(build, fonts, &shaped, ppem_26_6) catch false;
         if (ok) {
-            var pic = try snail.hintedShapedRunPicture(allocator, &shaped, .{
+            var pic = try snail.hintedShapedRunPicture(allocator, &shaped, &fonts.faces, .{
                 .baseline = .{ .x = line.x, .y = line.y },
                 .em = line.size,
                 .ppem_26_6 = ppem_26_6,
                 .color = line.color,
-                .face_to_font_id = &FACE_TO_FONT_ID,
             });
             defer pic.deinit();
             try build.shapes.appendSlice(allocator, pic.shapes);
@@ -843,11 +856,10 @@ fn addShapedLineUnhinted(
     var shaped = try fonts.shaper.shape(allocator, line.style, line.text);
     defer shaped.deinit();
     try ensureUnhintedRunCurves(build, fonts, glyph_caches, &shaped);
-    var pic = try snail.shapedRunPicture(allocator, &shaped, .{
+    var pic = try snail.shapedRunPicture(allocator, &shaped, &fonts.faces, .{
         .baseline = .{ .x = line.x, .y = line.y },
         .em = line.size,
         .color = line.color,
-        .face_to_font_id = &FACE_TO_FONT_ID,
     });
     defer pic.deinit();
     try build.shapes.appendSlice(allocator, pic.shapes);
@@ -938,11 +950,10 @@ fn addRichRun(
     switch (paint) {
         .solid => |color| {
             try ensureUnhintedRunCurves(build, fonts, glyph_caches, &shaped);
-            var pic = try snail.shapedRunPicture(allocator, &shaped, .{
+            var pic = try snail.shapedRunPicture(allocator, &shaped, &fonts.faces, .{
                 .baseline = .{ .x = x, .y = y },
                 .em = em,
                 .color = color,
-                .face_to_font_id = &FACE_TO_FONT_ID,
             });
             defer pic.deinit();
             try build.shapes.appendSlice(allocator, pic.shapes);
@@ -950,7 +961,7 @@ fn addRichRun(
         else => {
             // Per-glyph paint baked into glyph-local space.
             for (shaped.glyphs) |g| {
-                const fid = FACE_TO_FONT_ID[g.face_index];
+                const fid = fonts.faces.face_to_font_id[g.face_index];
                 const pen_x = x + em * g.x_offset;
                 const pen_y = y + em * g.y_offset;
                 const transform = snail.Transform2D{
@@ -1288,21 +1299,19 @@ fn buildPicturesForPreparedLines(
     var shape_count: usize = 0;
     for (prepared.items.items) |*it| {
         if (it.hinted) {
-            var pic = try snail.hintedShapedRunPicture(allocator, &it.shaped, .{
+            var pic = try snail.hintedShapedRunPicture(allocator, &it.shaped, &prepared.fonts.faces, .{
                 .baseline = .{ .x = it.line.x, .y = it.line.y },
                 .em = it.line.size,
                 .ppem_26_6 = it.ppem_26_6,
                 .color = it.line.color,
-                .face_to_font_id = &FACE_TO_FONT_ID,
             });
             shape_count += pic.shapes.len;
             pic.deinit();
         } else {
-            var pic = try snail.shapedRunPicture(allocator, &it.shaped, .{
+            var pic = try snail.shapedRunPicture(allocator, &it.shaped, &prepared.fonts.faces, .{
                 .baseline = .{ .x = it.line.x, .y = it.line.y },
                 .em = it.line.size,
                 .color = it.line.color,
-                .face_to_font_id = &FACE_TO_FONT_ID,
             });
             shape_count += pic.shapes.len;
             pic.deinit();

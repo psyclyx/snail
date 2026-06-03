@@ -53,15 +53,23 @@ pub fn build(allocator: Allocator, width: u32, height: u32) !Content {
 }
 
 pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts: HintOptions) !Content {
-    var shaper = try snail.Shaper.init(allocator, &.{
-        .{ .data = assets_data.noto_sans_regular },
-        .{ .data = assets_data.noto_sans_bold, .weight = .bold },
-        .{ .data = assets_data.noto_sans_arabic, .fallback = true },
-        .{ .data = assets_data.noto_sans_devanagari, .fallback = true },
-        .{ .data = assets_data.noto_sans_thai, .fallback = true },
-        .{ .data = assets_data.twemoji_mozilla, .fallback = true },
+    var font_regular = try snail.Font.init(assets_data.noto_sans_regular);
+    var font_bold = try snail.Font.init(assets_data.noto_sans_bold);
+    var font_arabic = try snail.Font.init(assets_data.noto_sans_arabic);
+    var font_devanagari = try snail.Font.init(assets_data.noto_sans_devanagari);
+    var font_thai = try snail.Font.init(assets_data.noto_sans_thai);
+    var font_emoji = try snail.Font.init(assets_data.twemoji_mozilla);
+    var fonts = [_]*snail.Font{ &font_regular, &font_bold, &font_arabic, &font_devanagari, &font_thai, &font_emoji };
+
+    var faces = try snail.Faces.build(allocator, &.{
+        .{ .font = &font_regular },
+        .{ .font = &font_bold, .weight = .bold },
+        .{ .font = &font_arabic, .fallback = true },
+        .{ .font = &font_devanagari, .fallback = true },
+        .{ .font = &font_thai, .fallback = true },
+        .{ .font = &font_emoji, .fallback = true },
     });
-    defer shaper.deinit();
+    defer faces.deinit();
 
     const wordmark_text = "snail";
     const tagline_text = "GPU text and vector rendering";
@@ -71,9 +79,9 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
     const sample_thai = "\xe0\xb8\xaa\xe0\xb8\xa7\xe0\xb8\xb1\xe0\xb8\xaa\xe0\xb8\x94\xe0\xb8\xb5"; // สวัสดี
     const sample_emoji = "\xe2\x9c\xa8\xf0\x9f\x8c\x8d"; // ✨🌍
 
-    var shaped_wordmark = try shaper.shape(allocator, .{ .weight = .bold }, wordmark_text);
+    var shaped_wordmark = try snail.shape(allocator, &faces, wordmark_text, .{ .style = .{ .weight = .bold } });
     defer shaped_wordmark.deinit();
-    var shaped_tagline = try shaper.shape(allocator, .{}, tagline_text);
+    var shaped_tagline = try snail.shape(allocator, &faces, tagline_text, .{});
     defer shaped_tagline.deinit();
 
     const sample_texts = [_][]const u8{ sample_hello, sample_arabic, sample_devanagari, sample_thai, sample_emoji };
@@ -81,10 +89,10 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
     var shaped_count: usize = 0;
     defer for (shaped_samples[0..shaped_count]) |*s| s.deinit();
     for (sample_texts) |text| {
-        shaped_samples[shaped_count] = try shaper.shape(allocator, .{}, text);
+        shaped_samples[shaped_count] = try snail.shape(allocator, &faces, text, .{});
         shaped_count += 1;
     }
-    var shaped_sep = try shaper.shape(allocator, .{}, " \xc2\xb7 ");
+    var shaped_sep = try snail.shape(allocator, &faces, " \xc2\xb7 ", .{});
     defer shaped_sep.deinit();
 
     const pool = try snail.PagePool.init(allocator, .{
@@ -93,16 +101,6 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
         .band_words_per_page = 1 << 14,
     });
     errdefer pool.deinit();
-
-    var font_regular = try snail.Font.init(assets_data.noto_sans_regular);
-    var font_bold = try snail.Font.init(assets_data.noto_sans_bold);
-    var font_arabic = try snail.Font.init(assets_data.noto_sans_arabic);
-    var font_devanagari = try snail.Font.init(assets_data.noto_sans_devanagari);
-    var font_thai = try snail.Font.init(assets_data.noto_sans_thai);
-    var font_emoji = try snail.Font.init(assets_data.twemoji_mozilla);
-    var fonts = [_]*snail.Font{ &font_regular, &font_bold, &font_arabic, &font_devanagari, &font_thai, &font_emoji };
-    const face_to_font_id = [_]u32{ 0, 1, 2, 3, 4, 5 };
-    const colr_fonts = [_]*const snail.Font{ &font_regular, &font_bold, &font_arabic, &font_devanagari, &font_thai, &font_emoji };
 
     // One GlyphCache per font: the cache is keyed by glyph_id only, so a
     // single cache shared across fonts returns the wrong outline for any
@@ -121,7 +119,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
     defer text_entries.deinit(allocator);
 
     for (shaped_tagline.glyphs) |g| {
-        const fid: u32 = g.face_index;
+        const fid = g.font_id;
         const key = snail.recordKey.unhintedGlyph(fid, g.glyph_id);
         if (containsKey(text_entries.items, key)) continue;
         const curves = try fonts[fid].extractCurves(allocator, allocator, &glyph_caches[fid], g.glyph_id);
@@ -134,7 +132,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
     };
     for (sample_runs) |shaped_ptr| {
         for (shaped_ptr.glyphs) |g| {
-            const fid: u32 = g.face_index;
+            const fid = g.font_id;
             if (fid >= fonts.len) continue;
             try ensureGlyphOrColrLayers(allocator, &glyph_caches[fid], fonts[fid], fid, g.glyph_id, &owned_curves, &text_entries);
         }
@@ -234,7 +232,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
         .end_color = .{ 0.10, 0.10, 0.14, 1.0 },
     };
     for (shaped_wordmark.glyphs) |g| {
-        const fid: u32 = g.face_index;
+        const fid = g.font_id;
         if (fid >= fonts.len) continue;
         const pen_x = left_pad + wordmark_em * g.x_offset;
         const pen_y = wordmark_baseline + wordmark_em * g.y_offset;
@@ -293,19 +291,17 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
 
     // Tagline + multi-script sample row.
     var tagline_pic = if (hinted_tagline_active)
-        try snail.hintedShapedRunPicture(allocator, &shaped_tagline, .{
+        try snail.hintedShapedRunPicture(allocator, &shaped_tagline, &faces, .{
             .baseline = .{ .x = left_pad, .y = tagline_baseline },
             .em = hint_opts.hint_ppem_px,
             .ppem_26_6 = @intFromFloat(@round(hint_opts.hint_ppem_px * 64.0)),
             .color = tagline_color,
-            .face_to_font_id = &face_to_font_id,
         })
     else
-        try snail.shapedRunPicture(allocator, &shaped_tagline, .{
+        try snail.shapedRunPicture(allocator, &shaped_tagline, &faces, .{
             .baseline = .{ .x = left_pad, .y = tagline_baseline },
             .em = tagline_em,
             .color = tagline_color,
-            .face_to_font_id = &face_to_font_id,
         });
     defer tagline_pic.deinit();
 
@@ -322,21 +318,19 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
     var sx = left_pad;
     for (shaped_samples[0..shaped_count], 0..) |shaped, sample_idx| {
         if (sample_idx != 0) {
-            try sample_pics.append(allocator, try snail.shapedRunPicture(allocator, &shaped_sep, .{
+            try sample_pics.append(allocator, try snail.shapedRunPicture(allocator, &shaped_sep, &faces, .{
                 .baseline = .{ .x = sx, .y = sample_baseline },
                 .em = sample_em,
                 .color = sep_color,
-                .face_to_font_id = &face_to_font_id,
-                .colr_fonts = &colr_fonts,
+                .colr = true,
             }));
             sx += shaped_sep.advanceX() * sample_em;
         }
-        try sample_pics.append(allocator, try snail.shapedRunPicture(allocator, &shaped, .{
+        try sample_pics.append(allocator, try snail.shapedRunPicture(allocator, &shaped, &faces, .{
             .baseline = .{ .x = sx, .y = sample_baseline },
             .em = sample_em,
             .color = sample_color,
-            .face_to_font_id = &face_to_font_id,
-            .colr_fonts = &colr_fonts,
+            .colr = true,
         }));
         sx += shaped.advanceX() * sample_em;
     }

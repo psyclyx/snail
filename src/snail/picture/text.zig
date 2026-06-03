@@ -14,6 +14,7 @@ const record_key_mod = @import("../atlas/record_key.zig");
 const text_mod = @import("../text.zig");
 const font_mod = @import("../font.zig");
 const hinter_mod = @import("../font/hint_vm.zig");
+const faces_mod = @import("../text/faces.zig");
 
 pub const ShapedText = text_mod.ShapedText;
 pub const Picture = picture_mod.Picture;
@@ -23,6 +24,7 @@ pub const Transform2D = math.Transform2D;
 pub const Font = font_mod.Font;
 pub const HintVm = hinter_mod.HintVm;
 pub const HintPpem = hinter_mod.HintPpem;
+pub const Faces = faces_mod.Faces;
 
 pub const ShapedRunOptions = struct {
     /// Pen baseline in world coordinates.
@@ -31,75 +33,69 @@ pub const ShapedRunOptions = struct {
     em: f32,
     /// Color applied uniformly to every glyph in the run.
     color: [4]f32 = .{ 1, 1, 1, 1 },
-    /// Maps `ShapedText.Glyph.face_index` to the `font_id` used in
-    /// `RecordKey`s. Caller provides this so the atlas knows which font
-    /// each key belongs to. Length must cover every face_index in the run.
-    face_to_font_id: []const u32,
-    /// Optional fonts array for COLR fanout. When provided, COLR base
-    /// glyphs expand into N shapes (one per layer) with the CPAL palette
-    /// color on each. Indexed by `face_index`. Glyphs whose face has no
-    /// matching font, or that aren't COLR base glyphs, render as a single
-    /// shape with `options.color` (the default outline path).
-    colr_fonts: ?[]const *const Font = null,
+    /// When `true`, COLR base glyphs expand into N shapes (one per
+    /// layer) using the CPAL palette color on each. The fonts come from
+    /// `faces` automatically. When `false`, the run renders one shape
+    /// per glyph with `options.color`.
+    colr: bool = false,
 };
 
 pub const ShapedRunError = error{
-    /// A glyph references a `face_index` outside `face_to_font_id`.
+    /// A glyph references a `face_index` outside the `Faces` value.
     UnknownFaceIndex,
 } || std.mem.Allocator.Error;
 
 /// Build a Picture by placing each shaped glyph at its pen position.
-/// COLR base glyphs expand into N shapes when `options.colr_fonts` is set.
+/// Font ids are read from `faces.fontIdForFace(g.face_index)`; COLR
+/// fanout (when `options.colr`) walks the layer table on the face's
+/// font.
 pub fn shapedRunPicture(
     allocator: std.mem.Allocator,
     shaped: *const ShapedText,
+    faces: *const Faces,
     options: ShapedRunOptions,
 ) ShapedRunError!Picture {
-    // Fast path: when no COLR expansion is possible, every glyph becomes
-    // exactly one shape. Allocate the final buffer directly at the right
-    // size and hand it off to Picture — no ArrayList growth, no Picture.from
+    // Fast path: no COLR expansion. Every glyph becomes exactly one
+    // shape. Allocate the final buffer directly at the right size and
+    // hand it off to Picture — no ArrayList growth, no Picture.from
     // alloc+memcpy.
-    if (options.colr_fonts == null) {
+    if (!options.colr) {
         const buf = try allocator.alloc(Shape, shaped.glyphs.len);
         errdefer allocator.free(buf);
         for (shaped.glyphs, 0..) |g, i| {
-            const face_index_int: usize = @intCast(g.face_index);
-            if (face_index_int >= options.face_to_font_id.len) return error.UnknownFaceIndex;
-            buf[i] = makeShape(g, options, options.face_to_font_id[face_index_int], g.glyph_id, options.color);
+            const fi: usize = @intCast(g.face_index);
+            if (fi >= faces.faceCount()) return error.UnknownFaceIndex;
+            buf[i] = makeShape(g, options, faces.face_to_font_id[fi], g.glyph_id, options.color);
         }
         return Picture.fromOwnedSlice(allocator, buf);
     }
 
-    // COLR-capable slow path: shape count varies per glyph. Pre-size the
-    // ArrayList to at least `shaped.glyphs.len` to skip the early growth
-    // reallocs; let it grow if any glyph fans out.
+    // COLR-capable slow path: shape count varies per glyph. Pre-size to
+    // glyph count and let it grow when a glyph fans out.
     var shapes: std.ArrayList(Shape) = .empty;
     defer shapes.deinit(allocator);
     try shapes.ensureTotalCapacity(allocator, shaped.glyphs.len);
 
     for (shaped.glyphs) |g| {
-        const face_index_int: usize = @intCast(g.face_index);
-        if (face_index_int >= options.face_to_font_id.len) return error.UnknownFaceIndex;
-        const font_id = options.face_to_font_id[face_index_int];
+        const fi: usize = @intCast(g.face_index);
+        if (fi >= faces.faceCount()) return error.UnknownFaceIndex;
+        const font_id = faces.face_to_font_id[fi];
 
         // COLR fanout. Each layer becomes its own Shape keyed by the
         // *layer* glyph id (not `g.glyph_id`) with the layer's CPAL
         // color, or `options.color` for the foreground sentinel palette
         // index 0xFFFF.
         var emitted = false;
-        const fonts = options.colr_fonts.?;
-        if (face_index_int < fonts.len) {
-            var iter = fonts[face_index_int].colrLayers(g.glyph_id);
-            if (iter.count() > 0) {
-                while (iter.next()) |layer| {
-                    const layer_color: [4]f32 = if (layer.color[0] < 0)
-                        options.color
-                    else
-                        layer.color;
-                    try shapes.append(allocator, makeShape(g, options, font_id, layer.glyph_id, layer_color));
-                }
-                emitted = true;
+        var iter = faces.face(g.face_index).font.colrLayers(g.glyph_id);
+        if (iter.count() > 0) {
+            while (iter.next()) |layer| {
+                const layer_color: [4]f32 = if (layer.color[0] < 0)
+                    options.color
+                else
+                    layer.color;
+                try shapes.append(allocator, makeShape(g, options, font_id, layer.glyph_id, layer_color));
             }
+            emitted = true;
         }
         if (!emitted) {
             try shapes.append(allocator, makeShape(g, options, font_id, g.glyph_id, options.color));
@@ -140,9 +136,6 @@ pub const HintedShapedRunOptions = struct {
     /// still uses the unscaled em.
     ppem_26_6: u32,
     color: [4]f32 = .{ 1, 1, 1, 1 },
-    /// Maps `ShapedText.Glyph.face_index` to the `font_id` used in
-    /// `RecordKey`s.
-    face_to_font_id: []const u32,
 };
 
 /// Build a Picture for hinted text. Caller is responsible for having
@@ -159,6 +152,7 @@ pub const HintedShapedRunOptions = struct {
 pub fn hintedShapedRunPicture(
     allocator: std.mem.Allocator,
     shaped: *const ShapedText,
+    faces: *const Faces,
     options: HintedShapedRunOptions,
 ) ShapedRunError!Picture {
     // Hinted text never fans out — one shape per glyph. Allocate the
@@ -172,9 +166,9 @@ pub fn hintedShapedRunPicture(
     errdefer allocator.free(buf);
 
     for (shaped.glyphs, 0..) |g, i| {
-        const face_index_int: usize = @intCast(g.face_index);
-        if (face_index_int >= options.face_to_font_id.len) return error.UnknownFaceIndex;
-        const font_id = options.face_to_font_id[face_index_int];
+        const fi: usize = @intCast(g.face_index);
+        if (fi >= faces.faceCount()) return error.UnknownFaceIndex;
+        const font_id = faces.face_to_font_id[fi];
         const pen_x = options.baseline.x + options.em * g.x_offset;
         const pen_y = options.baseline.y + options.em * g.y_offset;
         buf[i] = .{
@@ -205,18 +199,18 @@ test "shapedRunPicture builds one shape per shaped glyph" {
     const snail = @import("../root.zig");
     const font_data = @import("assets").noto_sans_regular;
 
-    var shaper = try snail.Shaper.init(allocator, &.{.{ .data = font_data }});
-    defer shaper.deinit();
+    var font = try Font.init(font_data);
+    var faces = try Faces.build(allocator, &.{.{ .font = &font }});
+    defer faces.deinit();
 
-    var shaped = try shaper.shape(allocator, .{}, "Hi");
+    var shaped = try snail.shape(allocator, &faces, "Hi", .{});
     defer shaped.deinit();
     try testing.expect(shaped.glyphs.len == 2);
 
-    var pic = try shapedRunPicture(allocator, &shaped, .{
+    var pic = try shapedRunPicture(allocator, &shaped, &faces, .{
         .baseline = .{ .x = 10, .y = 40 },
         .em = 24,
         .color = .{ 1, 1, 1, 1 },
-        .face_to_font_id = &.{0},
     });
     defer pic.deinit();
 
@@ -233,19 +227,20 @@ test "hintedShapedRunPicture builds shapes for hinted glyph keys" {
     const snail = @import("../root.zig");
     const font_data = @import("assets").noto_sans_regular;
 
-    var shaper = try snail.Shaper.init(allocator, &.{.{ .data = font_data }});
-    defer shaper.deinit();
-    var shaped = try shaper.shape(allocator, .{}, "Hi");
+    var font = try Font.init(font_data);
+    var faces = try Faces.build(allocator, &.{.{ .font = &font }});
+    defer faces.deinit();
+
+    var shaped = try snail.shape(allocator, &faces, "Hi", .{});
     defer shaped.deinit();
     try testing.expect(shaped.glyphs.len == 2);
 
     const expected_ppem: u32 = @intFromFloat(@round(14.0 * 64.0));
-    var pic = try hintedShapedRunPicture(allocator, &shaped, .{
+    var pic = try hintedShapedRunPicture(allocator, &shaped, &faces, .{
         .baseline = .{ .x = 5, .y = 32 },
         .em = 14,
         .ppem_26_6 = expected_ppem,
         .color = .{ 1, 1, 1, 1 },
-        .face_to_font_id = &.{0},
     });
     defer pic.deinit();
 
@@ -339,6 +334,11 @@ test "hinted curves render through new API CPU draw" {
 
 test "shapedRunPicture rejects unknown face_index" {
     const allocator = testing.allocator;
+    const font_data = @import("assets").noto_sans_regular;
+    var font = try Font.init(font_data);
+    var faces = try Faces.build(allocator, &.{.{ .font = &font }});
+    defer faces.deinit();
+
     var fake_glyphs = [_]ShapedText.Glyph{.{
         .face_index = 5,
         .glyph_id = 0,
@@ -353,9 +353,8 @@ test "shapedRunPicture rejects unknown face_index" {
         .allocator = allocator,
         .glyphs = fake_glyphs[0..],
     };
-    try testing.expectError(error.UnknownFaceIndex, shapedRunPicture(allocator, &shaped, .{
+    try testing.expectError(error.UnknownFaceIndex, shapedRunPicture(allocator, &shaped, &faces, .{
         .baseline = .{ .x = 0, .y = 0 },
         .em = 16,
-        .face_to_font_id = &.{0},
     }));
 }

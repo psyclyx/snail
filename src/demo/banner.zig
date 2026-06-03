@@ -160,6 +160,12 @@ pub const Content = struct {
 pub const Assets = struct {
     allocator: Allocator,
     shaper: snail.Shaper,
+    /// Mirrors `shaper`'s face list. Picture builders need a
+    /// `*const Faces` for font-id resolution and COLR fanout; the
+    /// shape calls in this demo still go through `shaper.shapeOpts`
+    /// for hinted-advance routing until phase 5d collapses the two
+    /// surfaces.
+    faces: snail.Faces,
     fonts: [font_count]snail.Font,
     paint_image: snail.Image,
     /// Whether face 0 has a hinter attached on `shaper`. The actual
@@ -208,6 +214,24 @@ pub const Assets = struct {
             fonts[i] = try snail.Font.init(data);
         }
 
+        // Mirror the shaper's face order so face_index resolves to the
+        // same chain slot in either surface. `face_to_font_id` below
+        // already maps face -> font; build Faces directly from `fonts`
+        // by that table so font-id derivation matches one-for-one.
+        var faces = try snail.Faces.build(allocator, &.{
+            .{ .font = &fonts[0] },
+            .{ .font = &fonts[1], .weight = .bold },
+            .{ .font = &fonts[0], .italic = true, .synthetic = .{ .skew_x = 0.2 } },
+            .{ .font = &fonts[1], .weight = .bold, .italic = true, .synthetic = .{ .skew_x = 0.2 } },
+            .{ .font = &fonts[0], .weight = .semi_bold, .synthetic = .{ .embolden = 0.5 } },
+            .{ .font = &fonts[2], .fallback = true },
+            .{ .font = &fonts[3], .fallback = true },
+            .{ .font = &fonts[4], .fallback = true },
+            .{ .font = &fonts[5], .fallback = true },
+            .{ .font = &fonts[6], .fallback = true },
+        });
+        errdefer faces.deinit();
+
         const paint_image = try initPaintImage(allocator);
         errdefer {
             var img = paint_image;
@@ -227,6 +251,7 @@ pub const Assets = struct {
         return .{
             .allocator = allocator,
             .shaper = shaper,
+            .faces = faces,
             .fonts = fonts,
             .paint_image = paint_image,
             .has_regular_hinter = has_regular_hinter,
@@ -235,6 +260,7 @@ pub const Assets = struct {
 
     pub fn deinit(self: *Assets) void {
         self.paint_image.deinit();
+        self.faces.deinit();
         self.shaper.deinit();
         self.* = undefined;
     }
@@ -1109,13 +1135,11 @@ const BannerBuilder = struct {
     ) !void {
         try self.ensureUnhintedGlyphCurves(shaped);
 
-        const colr_fonts = self.assets.colrFontsTable();
-        var picture = try snail.shapedRunPicture(self.allocator, shaped, .{
+        var picture = try snail.shapedRunPicture(self.allocator, shaped, &self.assets.faces, .{
             .baseline = .{ .x = placement.x, .y = placement.y },
             .em = placement.size,
             .color = color,
-            .face_to_font_id = &Assets.face_to_font_id,
-            .colr_fonts = &colr_fonts,
+            .colr = true,
         });
         defer picture.deinit();
         try self.text_shapes.appendSlice(self.allocator, picture.shapes);
@@ -1193,12 +1217,11 @@ const BannerBuilder = struct {
             });
         }
 
-        var picture = try snail.hintedShapedRunPicture(self.allocator, shaped, .{
+        var picture = try snail.hintedShapedRunPicture(self.allocator, shaped, &self.assets.faces, .{
             .baseline = .{ .x = placement.x, .y = placement.y },
             .em = placement.size,
             .ppem_26_6 = ppem_26_6,
             .color = color,
-            .face_to_font_id = &Assets.face_to_font_id,
         });
         defer picture.deinit();
         try self.text_shapes.appendSlice(self.allocator, picture.shapes);
