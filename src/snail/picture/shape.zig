@@ -2,8 +2,9 @@
 //! `RecordKey` and `AtlasRecord`.
 //!
 //! A `Shape` is one element of a `Picture`: a record key plus a local
-//! transform, local color, and optional paint record. An `Override` is a
-//! per-instance modifier applied to the whole picture during instanced emit.
+//! transform and a local color. Paint is looked up via `shape.key` from
+//! the atlas. An `Override` is a per-instance modifier applied to the
+//! whole picture during instanced emit.
 //!
 //! Both types are pure data — no allocations, no hidden state.
 
@@ -18,7 +19,6 @@ pub const Shape = struct {
     key: RecordKey,
     local_transform: Transform2D = .identity,
     local_color: [4]f32 = .{ 1, 1, 1, 1 },
-    local_paint: ?RecordKey = null,
 };
 
 pub const Override = struct {
@@ -36,7 +36,6 @@ test "Shape has identity defaults" {
     try std.testing.expect(s.local_transform.tx == 0);
     try std.testing.expect(s.local_color[0] == 1);
     try std.testing.expect(s.local_color[3] == 1);
-    try std.testing.expect(s.local_paint == null);
 }
 
 test "Override identity is no-op" {
