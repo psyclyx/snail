@@ -15,7 +15,9 @@ const std = @import("std");
 const snail = @import("snail");
 
 pub const UnhintedGlyphCache = @import("unhinted_glyph_cache.zig").UnhintedGlyphCache;
+pub const HintedGlyphCache = @import("hinted_glyph_cache.zig").HintedGlyphCache;
 
 test {
     _ = UnhintedGlyphCache;
+    _ = HintedGlyphCache;
 }

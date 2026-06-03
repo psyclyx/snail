@@ -545,6 +545,12 @@ fn addBenchStep(
 ) void {
     const release_snail_mod = createSnailModule(b, config.target, .ReleaseFast, modules.options, config.core_options, modules.vk_shaders);
     const release_support_mod = createSupportModule(b, config.target, .ReleaseFast);
+    const release_helpers_mod = b.createModule(.{
+        .root_source_file = b.path("src/snail-helpers/root.zig"),
+        .target = config.target,
+        .optimize = .ReleaseFast,
+        .imports = &.{.{ .name = "snail", .module = release_snail_mod }},
+    });
 
     const offscreen_gl_mod = b.createModule(.{
         .root_source_file = b.path("src/demo/platform/offscreen_gl.zig"),
@@ -573,6 +579,7 @@ fn addBenchStep(
     bench_imports.appendSlice(b.allocator, &.{
         .{ .name = "assets", .module = modules.assets },
         .{ .name = "snail", .module = release_snail_mod },
+        .{ .name = "snail-helpers", .module = release_helpers_mod },
         .{ .name = "support", .module = release_support_mod },
         .{ .name = "build_options", .module = modules.options },
         .{ .name = "demo_platform_offscreen_gl", .module = offscreen_gl_mod },

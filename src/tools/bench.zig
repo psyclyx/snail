@@ -15,6 +15,7 @@ const std = @import("std");
 const build_options = @import("build_options");
 const assets = @import("assets");
 const snail = @import("snail");
+const snail_helpers = @import("snail-helpers");
 const egl_offscreen = @import("demo_platform_offscreen_gl");
 const vulkan_platform = if (build_options.enable_vulkan) @import("demo_platform_vulkan") else struct {};
 const freetype = @import("bench/freetype.zig");
@@ -1054,12 +1055,11 @@ fn timeHinterSetup(allocator: std.mem.Allocator, font: *const snail.Font, ppem_2
 }
 
 fn timeHinterExecute(allocator: std.mem.Allocator, font: *const snail.Font, ppem_26_6: u32) !f64 {
-    // VM execute: each iteration drops the glyph + metrics caches before
-    // running advance for every printable ASCII glyph. The HintMachine
-    // for this ppem is left intact (fpgm/prep already ran during the
-    // warmup advance), so the timed loop measures only per-glyph TT
-    // bytecode execution — not cache lookups, not fpgm/prep, not curve
-    // build.
+    // VM execute: the HintMachine for this ppem is left intact across
+    // iterations (fpgm + prep already ran during warmup), so the timed
+    // loop measures only per-glyph TT bytecode execution — no fpgm/prep,
+    // no curve build. The output advance is uncached at this layer
+    // (helpers.HintedGlyphCache would memoize); each call re-runs the VM.
     var h = snail.HintVm.init(allocator, font) catch return 0;
     defer h.deinit();
     const ppem = snail.HintPpem.uniform(ppem_26_6);
@@ -1068,7 +1068,6 @@ fn timeHinterExecute(allocator: std.mem.Allocator, font: *const snail.Font, ppem
 
     var total: f64 = 0;
     for (0..PREP_RUNS) |_| {
-        h.clearGlyphCaches();
         const start = nowNs();
         for (PRINTABLE_ASCII) |ch| {
             const gid = font.glyphIndex(ch) catch continue;
@@ -1116,18 +1115,24 @@ fn timeHinterParagraphCold(allocator: std.mem.Allocator, font: *const snail.Font
 }
 
 fn timeHinterParagraphWarm(allocator: std.mem.Allocator, font: *const snail.Font, ppem_26_6: u32) !f64 {
+    // Warm: HintVm + helpers.HintedGlyphCache shared across iterations.
+    // The first pass populates the cache; subsequent passes hit it for
+    // every (ppem, glyph_id) → bytes lookup, exercising the recommended
+    // production path.
     var h = snail.HintVm.init(allocator, font) catch return 0;
     defer h.deinit();
+    var cache = snail_helpers.HintedGlyphCache.init(allocator, &h);
+    defer cache.deinit();
     const ppem = snail.HintPpem.uniform(ppem_26_6);
     var scratch_arena = std.heap.ArenaAllocator.init(allocator);
     defer scratch_arena.deinit();
-    // Warmup.
-    try hintParagraph(&h, font, allocator, &scratch_arena, ppem);
+    // Warmup the cache.
+    try cacheParagraph(&cache, font, allocator, &scratch_arena, ppem);
 
     var total: f64 = 0;
     for (0..TEXT_ITERS) |_| {
         const start = nowNs();
-        try hintParagraph(&h, font, allocator, &scratch_arena, ppem);
+        try cacheParagraph(&cache, font, allocator, &scratch_arena, ppem);
         total += usFrom(start);
     }
     return total / TEXT_ITERS;
@@ -1140,6 +1145,15 @@ fn hintParagraph(h: *snail.HintVm, font: *const snail.Font, allocator: std.mem.A
         _ = scratch_arena.reset(.retain_capacity);
         std.mem.doNotOptimizeAway(curves.curve_count);
         curves.deinit();
+    }
+}
+
+fn cacheParagraph(cache: *snail_helpers.HintedGlyphCache, font: *const snail.Font, allocator: std.mem.Allocator, scratch_arena: *std.heap.ArenaAllocator, ppem: snail.HintPpem) !void {
+    for (PARAGRAPH) |ch| {
+        const gid = font.glyphIndex(ch) catch continue;
+        const curves = cache.getOrInsertCurves(allocator, scratch_arena.allocator(), gid, ppem) catch continue;
+        _ = scratch_arena.reset(.retain_capacity);
+        std.mem.doNotOptimizeAway(curves.curve_count);
     }
 }
 
