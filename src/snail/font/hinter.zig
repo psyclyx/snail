@@ -16,6 +16,9 @@ const std = @import("std");
 const bezier = @import("../math/bezier.zig");
 const tt_vm = @import("truetype/vm.zig");
 const tt_hint = @import("truetype/hint.zig");
+const tt_exec = @import("truetype/exec.zig");
+const tt_tables = @import("truetype/tables.zig");
+const tt_points = @import("truetype/points.zig");
 const curves_mod = @import("../atlas/curves.zig");
 const font_mod = @import("../font.zig");
 const curve_tex = @import("../render/format/curve_texture.zig");
@@ -46,7 +49,8 @@ pub const HintPpem = struct {
 pub const HintError = error{
     NoHinting,
     GlyphTopologyChanged,
-} || std.mem.Allocator.Error || anyerror;
+    InvalidStorageSnapshot,
+} || std.mem.Allocator.Error || tt_exec.Error || tt_tables.ParseError || tt_points.Error;
 
 const MachineSlot = struct {
     machine: *tt_hint.HintMachine,
