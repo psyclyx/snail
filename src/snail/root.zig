@@ -24,6 +24,10 @@ pub const Shaper = text_mod.Shaper;
 pub const ShapedText = text_mod.ShapedText;
 pub const FaceSpec = text_mod.FaceSpec;
 pub const FaceIndex = text_mod.FaceIndex;
+
+const faces_mod = @import("text/faces.zig");
+pub const Face = faces_mod.Face;
+pub const Faces = faces_mod.Faces;
 pub const FontWeight = text_mod.FontWeight;
 pub const FontStyle = text_mod.FontStyle;
 pub const SyntheticStyle = text_mod.SyntheticStyle;
@@ -161,6 +165,7 @@ test {
     _ = atlas_mod;
     _ = @import("paths.zig");
     _ = @import("font/hint_vm.zig");
+    _ = @import("text/faces.zig");
     _ = shape_mod;
     _ = @import("picture.zig");
     _ = @import("picture/draw_records.zig");
