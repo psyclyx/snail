@@ -96,7 +96,7 @@ fn initForCurrentWindow(api: GlApi) !void {
         egl_window = null;
     }
 
-    const created_surface = createWindowSurface(egl_display, config, @as(egl.EGLNativeWindowType, @intCast(@intFromPtr(egl_window.?))), api) orelse return error.EglSurfaceCreateFailed;
+    const created_surface = createWindowSurface(egl_display, config, @as(egl.EGLNativeWindowType, @intCast(@intFromPtr(egl_window.?)))) orelse return error.EglSurfaceCreateFailed;
     egl_surface = created_surface.surface;
     window_surface_encoding = created_surface.encoding;
     errdefer {
@@ -112,15 +112,15 @@ fn initForCurrentWindow(api: GlApi) !void {
     _ = egl.eglSwapInterval(egl_display, 1);
 }
 
-// Desktop GL requests an sRGB window surface so GL_FRAMEBUFFER_SRGB can provide
-// fixed-function conversion. GLES uses a linear window surface intentionally:
-// default-framebuffer sRGB behavior on EGL window surfaces is too driver/window
-// system dependent, and Snail can explicitly encode into linear attachments.
-fn createWindowSurface(display: egl.EGLDisplay, config: egl.EGLConfig, native_window: egl.EGLNativeWindowType, api: GlApi) ?CreatedSurface {
-    return switch (api) {
-        .gl33, .gl44 => createSrgbWindowSurface(display, config, native_window) orelse createDefaultWindowSurface(display, config, native_window),
-        .gles30 => createLinearWindowSurface(display, config, native_window) orelse createDefaultWindowSurface(display, config, native_window),
-    };
+// Prefer an sRGB EGL window surface on every GL API so the fragment stage can
+// emit linear color and rely on fixed-function sRGB conversion on store. This
+// matches the Vulkan swapchain choice; without it, the renderer falls back to
+// shader-side sRGB encoding into a linear surface, which forces alpha blending
+// to happen in storage (gamma) space and renders translucent edges darker.
+fn createWindowSurface(display: egl.EGLDisplay, config: egl.EGLConfig, native_window: egl.EGLNativeWindowType) ?CreatedSurface {
+    return createSrgbWindowSurface(display, config, native_window) orelse
+        createLinearWindowSurface(display, config, native_window) orelse
+        createDefaultWindowSurface(display, config, native_window);
 }
 
 fn createSrgbWindowSurface(display: egl.EGLDisplay, config: egl.EGLConfig, native_window: egl.EGLNativeWindowType) ?CreatedSurface {
@@ -248,7 +248,13 @@ pub fn defaultFramebufferEncoding() presentation.ColorEncoding {
             if (window_surface_encoding == .srgb) return .srgb;
             return queryDefaultFramebufferEncoding() orelse .linear;
         },
-        .gles30 => window_surface_encoding,
+        // GLES has no GL_FRAMEBUFFER_SRGB toggle; sRGB conversion is governed
+        // by the actual attachment encoding. NVIDIA's Wayland EGL accepts the
+        // EGL_GL_COLORSPACE_SRGB_KHR request but delivers a linear default
+        // framebuffer, and the GL query honestly reports it. Trust the query.
+        // When it reports linear, the demo renderer falls back to the existing
+        // beginLinearResolve / endLinearResolve path.
+        .gles30 => queryDefaultFramebufferEncoding() orelse window_surface_encoding,
     };
 }
 
@@ -258,9 +264,14 @@ fn queryDefaultFramebufferEncoding() ?presentation.ColorEncoding {
     gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, 0);
     defer gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, @intCast(prev_draw_fb));
 
+    // Desktop GL exposes GL_BACK_LEFT; GLES 3.0's default fb is GL_BACK.
+    const attachment: gl.GLenum = switch (active_api) {
+        .gl33, .gl44 => @intCast(gl.GL_BACK_LEFT),
+        .gles30 => @intCast(gl.GL_BACK),
+    };
     while (gl.glGetError() != gl.GL_NO_ERROR) {}
     var encoding: gl.GLint = 0;
-    gl.glGetFramebufferAttachmentParameteriv(gl.GL_DRAW_FRAMEBUFFER, @intCast(gl.GL_BACK_LEFT), gl.GL_FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING, &encoding);
+    gl.glGetFramebufferAttachmentParameteriv(gl.GL_DRAW_FRAMEBUFFER, attachment, gl.GL_FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING, &encoding);
     if (gl.glGetError() != gl.GL_NO_ERROR) return null;
     if (encoding == gl.GL_SRGB) return .srgb;
     if (encoding == gl.GL_LINEAR) return .linear;

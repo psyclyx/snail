@@ -512,13 +512,30 @@ fn glRender(
         self.have_bindings = true;
     }
 
-    const clear = clearColorForShader(clear_srgb, draw_state.surface.encoding);
     gl.glViewport(0, 0, @intFromFloat(draw_state.surface.pixel_width), @intFromFloat(draw_state.surface.pixel_height));
-    gl_platform.clear(clear[0], clear[1], clear[2], clear[3]);
-    self.renderer_state.state.beginDraw();
 
     const emitted = try emitBoth(&self.scratch, content, self.paths_binding, self.text_binding);
-    try self.renderer_state.state.draw(allocator, draw_state, .{ .words = emitted.words, .segments = emitted.segs }, &.{&self.cache.?});
+
+    if (draw_state.surface.supportsLinearResolve()) {
+        // Driver gave us a linear default framebuffer (e.g. NVIDIA's GLES on
+        // Wayland silently downgrades EGL_GL_COLORSPACE_SRGB_KHR). Render
+        // into a linear fp16 intermediate so blending is linear-correct, then
+        // let endLinearResolve encode-pass it into the default framebuffer.
+        const restore = try self.renderer_state.state.beginLinearResolve(draw_state.surface, .{
+            .backdrop = .{ .clear = clear_srgb },
+            .region = .full_target,
+            .intermediate_format = .rgba16f,
+        });
+        errdefer self.renderer_state.state.endLinearResolve(restore);
+        self.renderer_state.state.beginDraw();
+        try self.renderer_state.state.draw(allocator, draw_state, .{ .words = emitted.words, .segments = emitted.segs }, &.{&self.cache.?});
+        self.renderer_state.state.endLinearResolve(restore);
+    } else {
+        const clear = clearColorForShader(clear_srgb, draw_state.surface.encoding);
+        gl_platform.clear(clear[0], clear[1], clear[2], clear[3]);
+        self.renderer_state.state.beginDraw();
+        try self.renderer_state.state.draw(allocator, draw_state, .{ .words = emitted.words, .segments = emitted.segs }, &.{&self.cache.?});
+    }
 
     gl_platform.swapBuffers();
     return true;

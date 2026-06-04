@@ -165,16 +165,19 @@ pub fn getFramebufferSize() [2]u32 {
 }
 
 pub fn presentationInfo() presentation.Info {
+    // wl_shm XRGB8888 is implicitly sRGB-encoded — report sRGB so the CPU
+    // renderer blends in linear space and sRGB-encodes on write, matching
+    // GL/Vulkan rather than naively blending in storage (gamma) space.
     if (app) |window| {
         return .{
             .logical_size = window.getWindowSize(),
             .framebuffer_size = window.getFramebufferSize(),
             .buffer_scale = window.getBufferScale(),
-            .framebuffer_encoding = .linear,
+            .framebuffer_encoding = .srgb,
             .will_resample = false,
         };
     }
-    return .{ .framebuffer_encoding = .linear };
+    return .{ .framebuffer_encoding = .srgb };
 }
 
 pub fn getTime() f64 {
