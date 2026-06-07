@@ -96,7 +96,7 @@ pub const CpuRenderer = struct {
     col_clip_min: u32,
     col_clip_max: u32,
 
-    pub const TILE_ROWS: u32 = 32;
+    pub const TILE_ROWS: u32 = 2;
 
     // Stack-allocated row-state array for composite paths. Most COLR / outline
     // groups have far fewer layers than this; spillover falls back to per-pixel
