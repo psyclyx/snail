@@ -107,6 +107,14 @@ pub const HintVm = struct {
         self.machines.clearRetainingCapacity();
     }
 
+    /// Ensure the per-ppem machine state exists for `ppem` (parses + executes
+    /// fpgm/prep at this ppem if not already cached). Idempotent. Useful for
+    /// preheating common ppems at startup so the first glyph at that size
+    /// doesn't pay the setup cost.
+    pub fn warmPpem(self: *HintVm, ppem: HintPpem) HintError!void {
+        _ = try self.machineFor(ppem);
+    }
+
     /// Return the hinted horizontal advance for `glyph_id` at `ppem`, in
     /// 26.6 fixed-point pixels. Runs the TT VM every call — output
     /// memoization is the caller's job (typically
