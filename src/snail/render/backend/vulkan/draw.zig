@@ -49,7 +49,7 @@ pub fn draw(
         if (desc_set == null) return error.MissingBinding;
         const seg_words = records.words[seg.words_offset..][0..seg.words_len];
         switch (seg.kind) {
-            .heterogeneous => try drawHeterogeneous(self, cmd, desc_set, draw_state, seg_words),
+            .heterogeneous => try drawHeterogeneous(self, cmd, desc_set, draw_state, seg_words, seg.kind_mask),
             .replicated => try drawReplicated(self, scratch, cmd, desc_set, draw_state, seg, seg_words),
         }
     }
@@ -61,6 +61,7 @@ fn drawHeterogeneous(
     desc_set: vk.VkDescriptorSet,
     draw_state: DrawState,
     vertices: []const u32,
+    seg_kind_mask: u8,
 ) DrawError!void {
     const total_glyphs = vertices.len / vertex.WORDS_PER_INSTANCE;
     if (total_glyphs == 0) return;
@@ -68,6 +69,40 @@ fn drawHeterogeneous(
     vk.vkCmdBindDescriptorSets(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, self.pipeline_layout, 0, 1, @ptrCast(&desc_set), 0, null);
 
     const allow_subpixel = true;
+
+    // See drawHeterogeneous in gl/state.zig: when emit tagged the
+    // segment as single-kind, skip the per-instance run walk.
+    if (seg_kind_mask != 0 and @popCount(seg_kind_mask) == 1) {
+        const run_kind: subpixel_policy.GlyphRunKind = switch (seg_kind_mask) {
+            draw_records_mod.KIND_BIT_REGULAR => .regular,
+            draw_records_mod.KIND_BIT_COLR => .colr,
+            draw_records_mod.KIND_BIT_PATH => .path,
+            draw_records_mod.KIND_BIT_HINTED_TEXT => .hinted_text,
+            else => unreachable,
+        };
+        const run_mode: subpixel_policy.TextRenderMode = if (run_kind != .regular)
+            .grayscale
+        else
+            subpixel_policy.chooseBaseTextRenderMode(
+                draw_state.mvp,
+                allow_subpixel,
+                draw_state.raster.subpixel_order,
+                self.ctx.supports_dual_source_blend,
+            );
+        const pip = switch (run_kind) {
+            .regular => switch (run_mode) {
+                .grayscale => try self.ensureTextPipeline(),
+                .subpixel_dual_source => try self.ensureTextSubpixelDualPipeline(),
+            },
+            .colr => try self.ensureColrPipeline(),
+            .path => try self.ensurePathPipeline(),
+            .hinted_text => try self.ensureHintedTextPipeline(),
+        };
+        vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pip);
+        self.pushTextConstants(cmd, draw_state, 0, run_mode);
+        try self.drawGlyphRange(vertices, 0, total_glyphs);
+        return;
+    }
 
     var run_start: usize = 0;
     while (run_start < total_glyphs) {
