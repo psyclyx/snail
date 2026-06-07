@@ -604,6 +604,103 @@ test "drawCpu renders image-painted shape through special-layer path" {
     try testing.expect(has_red);
 }
 
+test "drawCpu threaded matches single-threaded pixel-for-pixel" {
+    if (!build_options.enable_cpu) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    const font_data = @import("assets").noto_sans_regular;
+
+    // Tall enough that row_clip_max > row_clip_min + TILE_ROWS (32) so the
+    // parallel dispatch path actually triggers.
+    const W: u32 = 128;
+    const H: u32 = 96;
+    const STRIDE: u32 = W * 4;
+
+    var font = try snail.Font.init(font_data);
+
+    const glyphs = "Hello, world!";
+    const Owned = @import("../../../atlas/curves.zig").GlyphCurves;
+    var owned: std.ArrayList(Owned) = .empty;
+    defer {
+        for (owned.items) |*c| c.deinit();
+        owned.deinit(allocator);
+    }
+    var entries: std.ArrayList(@import("../../../atlas.zig").Entry) = .empty;
+    defer entries.deinit(allocator);
+
+    var pool = try @import("../../../atlas/page_pool.zig").PagePool.init(allocator, .{
+        .max_layers = 4,
+        .curve_words_per_page = 1 << 16,
+        .band_words_per_page = 1 << 14,
+    });
+    defer pool.deinit();
+
+    var shapes: std.ArrayList(@import("../../../picture/shape.zig").Shape) = .empty;
+    defer shapes.deinit(allocator);
+
+    const px_size: f32 = 18.0;
+    var pen_x: f32 = 4;
+    for (glyphs) |c| {
+        const gid = try font.glyphIndex(c);
+        const key = @import("../../../atlas/record_key.zig").unhintedGlyph(0, gid);
+        if (!containsEntryKey(entries.items, key)) {
+            const curves = try font.extractCurves(allocator, allocator, gid);
+            try owned.append(allocator, curves);
+            try entries.append(allocator, .{ .key = key, .curves = owned.items[owned.items.len - 1] });
+        }
+        try shapes.append(allocator, .{
+            .key = key,
+            .local_transform = .{ .xx = px_size, .yy = -px_size, .tx = pen_x, .ty = 64 },
+            .local_color = .{ 1, 1, 1, 1 },
+        });
+        pen_x += px_size * 0.55;
+    }
+
+    var atlas = try @import("../../../atlas.zig").Atlas.from(allocator, pool, entries.items);
+    defer atlas.deinit();
+    var cache = try CpuBackendCache.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
+    defer cache.deinit();
+    var bindings: [1]Binding = undefined;
+    try cache.upload(allocator, &.{&atlas}, &bindings);
+
+    var pic = try @import("../../../picture.zig").Picture.from(allocator, shapes.items);
+    defer pic.deinit();
+
+    const emit_mod = @import("../../../picture/emit.zig");
+    const words = try allocator.alloc(u32, emit_mod.wordBudget(&pic, 0));
+    defer allocator.free(words);
+    var segs: [2]draw_records.DrawSegment = undefined;
+    var wlen: usize = 0;
+    var slen: usize = 0;
+    _ = try emit_mod.emit(words, segs[0..], &wlen, &slen, bindings[0], &atlas, &pic, .identity, .{ 1, 1, 1, 1 });
+    const records = DrawRecords{ .words = words[0..wlen], .segments = segs[0..slen] };
+    const state = makeIdentityState(W, H);
+
+    const px_serial = try allocator.alloc(u8, H * STRIDE);
+    defer allocator.free(px_serial);
+    @memset(px_serial, 0);
+    var renderer_serial = snail.CpuRenderer.init(px_serial.ptr, W, H, STRIDE);
+    try drawCpu(&renderer_serial, state, records, &.{&cache});
+
+    const px_threaded = try allocator.alloc(u8, H * STRIDE);
+    defer allocator.free(px_threaded);
+    @memset(px_threaded, 0);
+
+    var thread_pool: snail.ThreadPool = undefined;
+    try thread_pool.init(allocator, .{ .threads = 3 });
+    defer thread_pool.deinit();
+
+    var renderer_threaded = snail.CpuRenderer.init(px_threaded.ptr, W, H, STRIDE);
+    renderer_threaded.setThreadPool(&thread_pool);
+    try drawCpu(&renderer_threaded, state, records, &.{&cache});
+
+    try testing.expectEqualSlices(u8, px_serial, px_threaded);
+}
+
+fn containsEntryKey(entries: []const @import("../../../atlas.zig").Entry, key: @import("../../../atlas/record_key.zig").RecordKey) bool {
+    for (entries) |e| if (e.key.eql(key)) return true;
+    return false;
+}
+
 fn makeIdentityState(w: u32, h: u32) snail.DrawState {
     const wf: f32 = @floatFromInt(w);
     const hf: f32 = @floatFromInt(h);

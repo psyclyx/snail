@@ -311,6 +311,12 @@ pub const CpuRenderer = struct {
         const restore = self.applyDrawState(state);
         defer self.restoreDrawState(restore);
         const scene = sceneToPixelFromMvp(state.mvp, state.surface.pixel_width, state.surface.pixel_height);
+        if (self.thread_pool) |pool| {
+            if (pool.threadCount() > 0 and self.row_clip_max > self.row_clip_min + TILE_ROWS) {
+                self.drawBatchInstancesParallel(pool, prepared, vertices, scene, texture_layer_base, true);
+                return;
+            }
+        }
         self.drawBatchInstances(prepared, vertices, scene, texture_layer_base, true);
     }
 
@@ -322,14 +328,63 @@ pub const CpuRenderer = struct {
 
     fn drawBatchInstances(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const u32, scene_to_pixel: Transform2D, texture_layer_base: u32, allow_subpixel: bool) void {
         const WORDS = vertex.WORDS_PER_INSTANCE;
-        // Always serial: parallelism is at the frame level via `drawPrepared`.
-        // Per-instance bounds rejection inside the row loops handles tile
-        // clipping when this is invoked from a tile worker.
         var i: usize = 0;
         while (i + WORDS <= vertices.len) : (i += WORDS) {
             const inst = vertices[i..][0..WORDS];
             self.renderBatchInstance(prepared, inst, scene_to_pixel, texture_layer_base, allow_subpixel);
         }
+    }
+
+    const TileCtx = struct {
+        base: *const CpuRenderer,
+        prepared: *const PreparedResources,
+        vertices: []const u32,
+        scene_to_pixel: Transform2D,
+        texture_layer_base: u32,
+        allow_subpixel: bool,
+        strip_rows: u32,
+        y0: u32,
+        y1: u32,
+    };
+
+    fn tileWorker(ctx_opaque: *anyopaque, idx: u32) void {
+        const ctx: *const TileCtx = @ptrCast(@alignCast(ctx_opaque));
+        const strip_y0 = ctx.y0 + idx * ctx.strip_rows;
+        if (strip_y0 >= ctx.y1) return;
+        const strip_y1 = @min(strip_y0 + ctx.strip_rows, ctx.y1);
+
+        var worker = ctx.base.*;
+        worker.row_clip_min = strip_y0;
+        worker.row_clip_max = strip_y1;
+        worker.thread_pool = null;
+        worker.drawBatchInstances(ctx.prepared, ctx.vertices, ctx.scene_to_pixel, ctx.texture_layer_base, ctx.allow_subpixel);
+    }
+
+    fn drawBatchInstancesParallel(
+        self: *CpuRenderer,
+        pool: *snail.ThreadPool,
+        prepared: *const PreparedResources,
+        vertices: []const u32,
+        scene_to_pixel: Transform2D,
+        texture_layer_base: u32,
+        allow_subpixel: bool,
+    ) void {
+        const y0 = self.row_clip_min;
+        const y1 = self.row_clip_max;
+        const rows = y1 - y0;
+        const strip_count: u32 = (rows + TILE_ROWS - 1) / TILE_ROWS;
+        var ctx = TileCtx{
+            .base = self,
+            .prepared = prepared,
+            .vertices = vertices,
+            .scene_to_pixel = scene_to_pixel,
+            .texture_layer_base = texture_layer_base,
+            .allow_subpixel = allow_subpixel,
+            .strip_rows = TILE_ROWS,
+            .y0 = y0,
+            .y1 = y1,
+        };
+        pool.dispatch(strip_count, @ptrCast(&ctx), tileWorker);
     }
 
     const BatchInstance = struct {
