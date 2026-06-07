@@ -574,22 +574,6 @@ fn addBenchStep(
     });
     offscreen_gl_mod.linkSystemLibrary("EGL", .{});
 
-    // Banner content module — the bench's zoom sweep needs the same scene
-    // the banner_screenshot demos render. `banner.zig` reaches its sibling
-    // `banner_snail.zig` via a filesystem-relative `@import`, so only the
-    // named-module imports (snail + assets) need to be wired in.
-    const banner_mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/banner.zig"),
-        .target = config.target,
-        .optimize = .ReleaseFast,
-        .link_libc = true,
-        .imports = &.{
-            .{ .name = "snail", .module = release_snail_mod },
-            .{ .name = "snail-helpers", .module = release_helpers_mod },
-            .{ .name = "assets", .module = modules.assets },
-        },
-    });
-
     var bench_imports: std.ArrayListUnmanaged(std.Build.Module.Import) = .empty;
     bench_imports.appendSlice(b.allocator, &.{
         .{ .name = "assets", .module = modules.assets },
@@ -598,7 +582,6 @@ fn addBenchStep(
         .{ .name = "support", .module = release_support_mod },
         .{ .name = "build_options", .module = modules.options },
         .{ .name = "demo_platform_offscreen_gl", .module = offscreen_gl_mod },
-        .{ .name = "demo_banner", .module = banner_mod },
     }) catch @panic("OOM");
 
     if (config.core_options.enable_vulkan) {

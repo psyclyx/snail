@@ -108,6 +108,65 @@ pub fn timeGl33Draw(
     return usFrom(start) / @as(f64, @floatFromInt(frames));
 }
 
+pub const Gl33Breakdown = struct {
+    clear_us: f64,
+    begin_us: f64,
+    draw_us: f64,
+    finish_us: f64,
+    total_us: f64,
+};
+
+/// Per-stage GL 3.3 timing for one scene. Includes a per-frame glFinish
+/// so each measurement reflects strict CPU submission cost — handy for
+/// pinpointing which stage is responsible for residual per-frame
+/// overhead, at the cost of losing the GPU pipelining the
+/// non-breakdown harness depends on.
+pub fn timeGl33DrawBreakdown(
+    allocator: std.mem.Allocator,
+    renderer: *snail.Gl33Renderer,
+    state: snail.DrawState,
+    records: DrawRecords,
+    caches: []const *const snail.Gl33BackendCache,
+    warmup_frames: usize,
+    frames: usize,
+) !Gl33Breakdown {
+    for (0..warmup_frames) |_| {
+        clearGlFrame();
+        renderer.state.beginDraw();
+        try renderer.state.draw(allocator, state, .{ .words = records.words, .segments = records.segments }, caches);
+    }
+    gl.glFinish();
+
+    var clear_ns: u64 = 0;
+    var begin_ns: u64 = 0;
+    var draw_ns: u64 = 0;
+    var finish_ns: u64 = 0;
+
+    for (0..frames) |_| {
+        const t0 = nowNs();
+        clearGlFrame();
+        const t1 = nowNs();
+        renderer.state.beginDraw();
+        const t2 = nowNs();
+        try renderer.state.draw(allocator, state, .{ .words = records.words, .segments = records.segments }, caches);
+        const t3 = nowNs();
+        gl.glFinish();
+        const t4 = nowNs();
+        clear_ns += t1 - t0;
+        begin_ns += t2 - t1;
+        draw_ns += t3 - t2;
+        finish_ns += t4 - t3;
+    }
+    const n: f64 = @floatFromInt(frames);
+    return .{
+        .clear_us = @as(f64, @floatFromInt(clear_ns)) / 1000.0 / n,
+        .begin_us = @as(f64, @floatFromInt(begin_ns)) / 1000.0 / n,
+        .draw_us = @as(f64, @floatFromInt(draw_ns)) / 1000.0 / n,
+        .finish_us = @as(f64, @floatFromInt(finish_ns)) / 1000.0 / n,
+        .total_us = @as(f64, @floatFromInt(clear_ns + begin_ns + draw_ns + finish_ns)) / 1000.0 / n,
+    };
+}
+
 pub fn timeGl44Draw(
     allocator: std.mem.Allocator,
     renderer: *snail.Gl44Renderer,

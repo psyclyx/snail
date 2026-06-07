@@ -4,12 +4,8 @@
 //! draw-record emit, and prepared rendering on each enabled CPU, GL,
 //! OpenGL ES, and Vulkan backend.
 //!
-//! Scenarios preserved from the legacy bench (8 scene kinds, 4 text
-//! workloads × hinted/un-hinted, two render modes, FreeType comparison).
-//! Adds one new scenario: a zoom-sweep that re-builds the banner at a
-//! sequence of ppems with hinting on, measuring per-ppem rebuild cost vs
-//! steady-state render. This is the data we want for the
-//! BandReuseProof keep/delete decision.
+//! 8 scene kinds, 4 text workloads × hinted/un-hinted, two render modes,
+//! FreeType comparison.
 
 const std = @import("std");
 const build_options = @import("build_options");
@@ -44,7 +40,7 @@ const report = @import("bench/report.zig");
 //   cpu-draw         CPU and CPU(threaded) draw per scene
 //   gl33 gl44 gles30 vulkan   per-backend GPU draw per scene
 //   modes            per-backend per-mode (grayscale vs subpixel) draws
-//   zoom             per-ppem zoom-sweep rebuild + steady render
+//   gl33-breakdown   one row per scene: per-stage GL 3.3 frame breakdown
 const Filter = struct {
     enabled_set: ?std.StringHashMap(void) = null,
 
@@ -79,13 +75,6 @@ const CPU_WARMUP = 5;
 const CPU_FRAMES = 20;
 const WIDTH: u32 = 640;
 const HEIGHT: u32 = 360;
-
-const ZOOM_WARMUP = 5;
-const ZOOM_REBUILD_RUNS = 20;
-const ZOOM_RENDER_FRAMES = 50;
-const ZOOM_W: u32 = 1280;
-const ZOOM_H: u32 = 720;
-const ZOOM_PPEMS = [_]u32{ 12, 14, 16, 18, 24, 32, 48 };
 
 // ── Corpora ──
 
@@ -298,6 +287,15 @@ const RecordRow = struct {
     segments: usize,
 };
 
+const Gl33BreakdownRow = struct {
+    scene: SceneKind,
+    clear_us: f64,
+    begin_us: f64,
+    draw_us: f64,
+    finish_us: f64,
+    total_us: f64,
+};
+
 const ModeRow = struct {
     backend: []const u8,
     scene: SceneKind,
@@ -319,14 +317,6 @@ const RenderRow = struct {
     segments: usize,
     instance_bytes: usize,
     us: f64,
-};
-
-const ZoomRow = struct {
-    ppem: u32,
-    rebuild_us: f64,
-    render_us: f64,
-    shapes: usize,
-    words: usize,
 };
 
 // ── Timing helpers ──
@@ -1112,16 +1102,23 @@ fn timeHinterFull(allocator: std.mem.Allocator, font: *const snail.Font, ppem_26
 }
 
 fn timeHinterParagraphCold(allocator: std.mem.Allocator, font: *const snail.Font, ppem_26_6: u32) !f64 {
-    // Cold: hinter constructed fresh, paragraph hinted once.
+    // Cold: fresh HintVm + HintedGlyphCache, paragraph hinted once
+    // through the cache. The "cold" axis is the cache state (every
+    // (glyph, ppem) is a miss on its first occurrence) — repeated
+    // glyphs within the paragraph hit the cache on the second use, the
+    // same way the in-VM cache used to behave before the cache split
+    // out into helpers (commit d7864b2).
     var total: f64 = 0;
     for (0..PREP_RUNS) |_| {
         var h = snail.HintVm.init(allocator, font) catch return 0;
         defer h.deinit();
+        var cache = snail_helpers.HintedGlyphCache.init(allocator, &h, 0);
+        defer cache.deinit();
         var scratch_arena = std.heap.ArenaAllocator.init(allocator);
         defer scratch_arena.deinit();
         const ppem = snail.HintPpem.uniform(ppem_26_6);
         const start = nowNs();
-        try hintParagraph(&h, font, allocator, &scratch_arena, ppem);
+        try cacheParagraph(&cache, font, allocator, &scratch_arena, ppem);
         total += usFrom(start);
     }
     return total / PREP_RUNS;
@@ -1438,176 +1435,6 @@ fn emitScene(
 
 // ── Backend driving ──
 
-// CPU prepared-pages capacity sized to cover all 8 scene atlases plus
-// some headroom for the zoom sweep's banner caches reused later.
-
-// ── Zoom sweep ──
-
-const ZoomBuild = struct {
-    pool: *snail.PagePool,
-    assets_owned: ?*demo_banner.Assets,
-    content: demo_banner.Content,
-    cache: snail.CpuBackendCache,
-    bindings: [2]snail.Binding,
-    words: []u32,
-    segments: []snail.DrawSegment,
-    word_len: usize,
-    segment_len: usize,
-
-    /// Tear down in reverse construction order. The cache and atlases
-    /// hold references into the pool, so release them before the pool;
-    /// pool owns the per-layer pages. The owned Assets carries the
-    /// paint_image whose pixel storage is heap-allocated.
-    fn deinit(self: *ZoomBuild, allocator: std.mem.Allocator) void {
-        allocator.free(self.words);
-        allocator.free(self.segments);
-        self.cache.deinit();
-        self.content.deinit();
-        self.pool.deinit();
-        if (self.assets_owned) |a| {
-            a.deinit();
-            allocator.destroy(a);
-        }
-        self.* = undefined;
-    }
-};
-
-const demo_banner = @import("demo_banner");
-
-fn benchZoomSweep(
-    allocator: std.mem.Allocator,
-    rows: *std.ArrayList(ZoomRow),
-) !void {
-    // Each ppem rebuilds the banner using a fresh Assets so the hinter
-    // cache starts cold. This matches "what does a zoom step actually
-    // cost" — the user changes scale, and snail rebuilds atlases/
-    // pictures for the new per-glyph ppem.
-    for (ZOOM_PPEMS) |ppem_px| {
-        // Build once to capture shapes/words so we can report them.
-        var preview = try zoomBuildOneCold(allocator, ppem_px);
-        const shapes = preview.content.paths_picture.shapes.len + preview.content.text_picture.shapes.len;
-        const words = preview.word_len;
-
-        // Rebuild timing: PREP_RUNS fresh rebuilds (Assets fresh too so
-        // the hinter cache is cold, which is what a zoom step needs).
-        var rebuild_total: f64 = 0;
-        for (0..ZOOM_REBUILD_RUNS) |_| {
-            const start = nowNs();
-            var tmp = try zoomBuildOneCold(allocator, ppem_px);
-            rebuild_total += usFrom(start);
-            tmp.deinit(allocator);
-        }
-        const rebuild_us = rebuild_total / ZOOM_REBUILD_RUNS;
-
-        // Steady-state render: reuse `preview` so the cache is warm.
-        const W: u32 = ZOOM_W;
-        const H: u32 = ZOOM_H;
-        const STRIDE: u32 = W * 4;
-        const px = try allocator.alloc(u8, H * STRIDE);
-        defer allocator.free(px);
-        var renderer = snail.CpuRenderer.init(px.ptr, W, H, STRIDE);
-        const state = drawState(W, H, .none);
-        for (0..ZOOM_WARMUP) |_| {
-            @memset(px, 0);
-            try snail.drawCpu(&renderer, state, .{ .words = preview.words[0..preview.word_len], .segments = preview.segments[0..preview.segment_len] }, &.{&preview.cache});
-        }
-        const r_start = nowNs();
-        for (0..ZOOM_RENDER_FRAMES) |_| {
-            @memset(px, 0);
-            try snail.drawCpu(&renderer, state, .{ .words = preview.words[0..preview.word_len], .segments = preview.segments[0..preview.segment_len] }, &.{&preview.cache});
-        }
-        const render_us = usFrom(r_start) / ZOOM_RENDER_FRAMES;
-
-        try rows.append(allocator, .{
-            .ppem = ppem_px,
-            .rebuild_us = rebuild_us,
-            .render_us = render_us,
-            .shapes = shapes,
-            .words = words,
-        });
-
-        preview.deinit(allocator);
-    }
-}
-
-/// Build a fresh banner + cache for the zoom sweep at the given ppem (in
-/// pixels). The hinter's per-ppem cache starts cold every call.
-///
-/// `banner_assets` must be heap-allocated by the caller so the paint_image
-/// pointer baked into atlas paint records stays valid. `Content`'s atlas
-/// records keep `*const Image` pointers into `assets_box.paint_image`; if
-/// `banner_assets` lived on the stack inside this function those pointers
-/// would dangle the moment the function returned.
-fn zoomBuildOneCold(allocator: std.mem.Allocator, ppem_px: u32) !ZoomBuild {
-    const assets_box = try allocator.create(demo_banner.Assets);
-    errdefer allocator.destroy(assets_box);
-    assets_box.* = try demo_banner.Assets.init(allocator);
-    errdefer assets_box.deinit();
-
-    var pool = try snail.PagePool.init(allocator, .{
-        .max_layers = 24,
-        .curve_words_per_page = 1 << 18,
-        .band_words_per_page = 1 << 16,
-    });
-    errdefer pool.deinit();
-
-    // To force a per-ppem rebuild, we scale the layout so that the
-    // banner's body text size lands at `ppem_px`. The reference body
-    // size in banner.zig is 22 (body_text_size). We pick a canvas size
-    // such that `scale = ppem_px / 22`.
-    const ref_body: f32 = 22.0;
-    const layout_scale: f32 = @as(f32, @floatFromInt(ppem_px)) / ref_body;
-    const W: f32 = 1680.0 * layout_scale;
-    const H: f32 = 874.0 * layout_scale;
-
-    var content = try demo_banner.build(
-        allocator,
-        pool,
-        assets_box,
-        W,
-        H,
-        .{ .x = 1, .y = 1 },
-        .{ .enabled = true, .ppem_scale = 1.0 },
-    );
-    errdefer content.deinit();
-
-    var cache = try snail.CpuBackendCache.init(allocator, content.pool, .{
-        .max_bindings = 4,
-        .layer_info_height = 256,
-        .max_images = 8,
-    });
-    errdefer cache.deinit();
-    var bindings: [2]snail.Binding = undefined;
-    try cache.upload(allocator, &.{ &content.paths_atlas, &content.text_atlas }, &bindings);
-    const paths_binding = bindings[0];
-    const text_binding = bindings[1];
-
-    const word_cap = snail.emit.wordBudget(&content.paths_picture, 0) + snail.emit.wordBudget(&content.text_picture, 0);
-    const words = try allocator.alloc(u32, word_cap);
-    errdefer allocator.free(words);
-    const seg_cap = @max(snail.emit.segmentBudget(&content.paths_picture, 0) + snail.emit.segmentBudget(&content.text_picture, 0), 4);
-    const segs = try allocator.alloc(snail.DrawSegment, seg_cap);
-    errdefer allocator.free(segs);
-
-    var wlen: usize = 0;
-    var slen: usize = 0;
-    _ = try snail.emit.emit(words, segs, &wlen, &slen, paths_binding, &content.paths_atlas, &content.paths_picture, .identity, .{ 1, 1, 1, 1 });
-    _ = try snail.emit.emit(words, segs, &wlen, &slen, text_binding, &content.text_atlas, &content.text_picture, .identity, .{ 1, 1, 1, 1 });
-
-    return .{
-        .pool = pool,
-        .assets_owned = assets_box,
-        .content = content,
-        .cache = cache,
-        .bindings = bindings,
-        .words = words,
-        .segments = segs,
-        .word_len = wlen,
-        .segment_len = slen,
-    };
-}
-
-
 // ── main ──
 
 pub fn main() !void {
@@ -1690,7 +1517,8 @@ pub fn main() !void {
     // enabled — saves several seconds and ~16% of the perf samples
     // when running only a prep-side workload like `glyph-extract`.
     const needs_bundles = filter.run("emit") or filter.run("cpu-draw") or filter.run("modes") or
-        filter.run("gl33") or filter.run("gl44") or filter.run("gles30") or filter.run("vulkan");
+        filter.run("gl33") or filter.run("gl44") or filter.run("gles30") or filter.run("vulkan") or
+        filter.run("gl33-breakdown");
 
     var pool = try snail.PagePool.init(allocator, .{
         .max_layers = 24,
@@ -1820,8 +1648,11 @@ pub fn main() !void {
         gl_hardware_rows.deinit(allocator);
     }
 
-    if (comptime build_options.enable_gl33) if (filter.run("gl33")) {
-        try benchGl33(allocator, pool, &bundles, bundle_count, &render_rows, &mode_rows, &gl_hardware_rows);
+    var gl33_breakdown_rows: std.ArrayList(Gl33BreakdownRow) = .empty;
+    defer gl33_breakdown_rows.deinit(allocator);
+    const want_gl33_breakdown = filter.run("gl33-breakdown");
+    if (comptime build_options.enable_gl33) if (filter.run("gl33") or want_gl33_breakdown) {
+        try benchGl33(allocator, pool, &bundles, bundle_count, &render_rows, &mode_rows, &gl_hardware_rows, &gl33_breakdown_rows, want_gl33_breakdown);
     };
     if (comptime build_options.enable_gl44) if (filter.run("gl44")) {
         try benchGl44(allocator, pool, &bundles, bundle_count, &render_rows, &mode_rows, &gl_hardware_rows);
@@ -1834,18 +1665,12 @@ pub fn main() !void {
         try benchVulkan(allocator, pool, &bundles, bundle_count, &render_rows, &mode_rows);
     };
 
-    // ── Zoom sweep ──
-    var zoom_rows: std.ArrayList(ZoomRow) = .empty;
-    defer zoom_rows.deinit(allocator);
-    if (filter.run("zoom")) try benchZoomSweep(allocator, &zoom_rows);
-
     // ── Output ──
     std.debug.print(
         \\# Snail Benchmarks
         \\
         \\NotoSans-Regular, {d} prep runs, {d} text iterations, {d} draw-record iterations.
-        \\Scenarios: {d} text workloads (un-hinted + hinted), {d} scene kinds, {d} render modes,
-        \\plus a {d}-ppem zoom-sweep on the demo banner content.
+        \\Scenarios: {d} text workloads (un-hinted + hinted), {d} scene kinds, {d} render modes.
         \\
         \\The vector workload contains filled and stroked rounded rectangles, ellipses,
         \\and custom cubic/quadratic paths. Backend rows follow the enabled build flags.
@@ -1858,7 +1683,6 @@ pub fn main() !void {
         text_workloads.len,
         scene_kinds.len,
         render_modes.len,
-        ZOOM_PPEMS.len,
     });
     report.printHardwareTable(gl_hardware_rows.items, build_options.enable_vulkan);
     report.printPreparationTables(snail_prep, vector_prep, ft);
@@ -1866,24 +1690,27 @@ pub fn main() !void {
     if (record_rows.items.len > 0) report.printRecordTable(record_rows.items);
     if (render_rows.items.len > 0) report.printRenderTable(WIDTH, HEIGHT, CPU_FRAMES, GPU_FRAMES, render_rows.items);
     if (mode_rows.items.len > 0) report.printModeTable(mode_rows.items);
-    if (zoom_rows.items.len > 0) printZoomTable(zoom_rows.items);
+    if (gl33_breakdown_rows.items.len > 0) printGl33BreakdownTable(gl33_breakdown_rows.items);
 }
 
-fn printZoomTable(rows: []const ZoomRow) void {
+fn printGl33BreakdownTable(rows: []const Gl33BreakdownRow) void {
     std.debug.print(
-        \\## Zoom Sweep
+        \\## GL 3.3 Per-Frame Breakdown
         \\
-        \\Per-ppem rebuild + steady-state render of the full demo banner ({d}x{d}, CPU backend, hinting on).
-        \\Rebuild starts from a cold HintVm cache (i.e. a zoom step that pushes through a previously-unseen ppem).
-        \\Render is averaged over {d} frames with cache warm. Use rebuild/render ratio to judge whether the dormant
-        \\BandReuseProof machinery in `src/snail/render/format/text_hint.zig` would meaningfully amortize the cost.
+        \\Each frame is `clearGlFrame -> beginDraw -> state.draw -> glFinish`. The
+        \\per-frame `glFinish` defeats GPU pipelining, so the totals here are
+        \\strictly larger than the standard table — what matters is which stage
+        \\dominates the residual ~7us text-scene gap vs the 0.12.1 baseline.
         \\
-        \\| ppem | Shapes | Words | Cold rebuild | Steady render |
-        \\|---:|---:|---:|---:|---:|
+        \\| Scene | Clear | beginDraw | state.draw | glFinish | Total |
+        \\|---|---:|---:|---:|---:|---:|
         \\
-    , .{ ZOOM_W, ZOOM_H, ZOOM_RENDER_FRAMES });
+    , .{});
     for (rows) |row| {
-        std.debug.print("| {d} | {d} | {d} | {d:.2} us | {d:.2} us |\n", .{ row.ppem, row.shapes, row.words, row.rebuild_us, row.render_us });
+        std.debug.print(
+            "| {s} | {d:.2} us | {d:.2} us | {d:.2} us | {d:.2} us | {d:.2} us |\n",
+            .{ row.scene.name(), row.clear_us, row.begin_us, row.draw_us, row.finish_us, row.total_us },
+        );
     }
     std.debug.print("\n", .{});
 }
@@ -1947,6 +1774,8 @@ fn benchGl33(
     render_rows: *std.ArrayList(RenderRow),
     mode_rows: *std.ArrayList(ModeRow),
     gl_hardware_rows: *std.ArrayList(report.GlHardwareRow),
+    breakdown_rows: *std.ArrayList(Gl33BreakdownRow),
+    capture_breakdown: bool,
 ) !void {
     var ctx = try egl_offscreen.Context.init(WIDTH, HEIGHT, .gl33);
     defer ctx.deinit();
@@ -1996,6 +1825,18 @@ fn benchGl33(
             .instance_bytes = records_emitted.word_len * @sizeOf(u32),
             .us = us,
         });
+
+        if (capture_breakdown) {
+            const bd = try render_timing.timeGl33DrawBreakdown(allocator, &renderer, prepared_state, records, &.{&cache}, GPU_WARMUP, GPU_FRAMES);
+            try breakdown_rows.append(allocator, .{
+                .scene = kind,
+                .clear_us = bd.clear_us,
+                .begin_us = bd.begin_us,
+                .draw_us = bd.draw_us,
+                .finish_us = bd.finish_us,
+                .total_us = bd.total_us,
+            });
+        }
     }
 
     for (mode_scene_kinds) |scene_kind| {
