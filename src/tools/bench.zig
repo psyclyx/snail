@@ -994,6 +994,9 @@ fn addRichRun(
 // `perf record` of, say, `glyph-extract` shows only that workload.
 
 fn timeFontLoad() f64 {
+    // Page in the embedded TTF .rodata once so the first measured
+    // iteration doesn't fold a one-shot mmap fault into the average.
+    _ = snail.Font.init(assets.noto_sans_regular) catch return 0;
     var total: f64 = 0;
     for (0..PREP_RUNS) |_| {
         const start = nowNs();
@@ -1048,9 +1051,8 @@ fn timeHinterSetup(allocator: std.mem.Allocator, font: *const snail.Font, ppem_2
     for (0..PREP_RUNS) |_| {
         const start = nowNs();
         var h = snail.HintVm.init(allocator, font) catch return 0;
-        // Trigger machine init at this ppem (setup cost).
         const ppem = snail.HintPpem.uniform(ppem_26_6);
-        _ = h.hintedAdvance(0, ppem) catch 0;
+        h.warmPpem(ppem) catch return 0;
         total += usFrom(start);
         h.deinit();
     }
