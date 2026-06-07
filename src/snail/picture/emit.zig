@@ -81,6 +81,7 @@ pub fn emit(
     const start_offset: u32 = @intCast(word_len.*);
     var cursor: usize = word_len.*;
     var emitted: u32 = 0;
+    var kind_mask: u8 = 0;
 
     for (shapes) |shape| {
         const rec = atlas.lookupRecord(shape.key) orelse {
@@ -98,8 +99,9 @@ pub fn emit(
         const final_transform = Transform2D.multiply(world_xform, shape.local_transform);
         const dst = words_buf[cursor..][0..WORDS_PER_INSTANCE];
 
-        const ok = if (atlas.lookupPaintRecord(shape.key)) |paint_info|
-            vertex.generatePathRecordVerticesTransformedTinted(
+        const ok = if (atlas.lookupPaintRecord(shape.key)) |paint_info| blk: {
+            kind_mask |= draw_records.KIND_BIT_PATH;
+            break :blk vertex.generatePathRecordVerticesTransformedTinted(
                 dst,
                 rec.bbox,
                 paint_info.info_x,
@@ -109,9 +111,10 @@ pub fn emit(
                 world_tint,
                 atlas_layer,
                 final_transform,
-            )
-        else
-            vertex.generateGlyphVerticesTransformedTinted(
+            );
+        } else blk: {
+            kind_mask |= draw_records.KIND_BIT_REGULAR;
+            break :blk vertex.generateGlyphVerticesTransformedTinted(
                 dst,
                 rec.bbox,
                 .{
@@ -129,6 +132,7 @@ pub fn emit(
                 atlas_layer,
                 final_transform,
             );
+        };
 
         if (!ok) return error.InvalidTransform;
         cursor += WORDS_PER_INSTANCE;
@@ -150,6 +154,7 @@ pub fn emit(
         .words_len = wrote_words,
         .shape_count = emitted,
         .override_count = 1,
+        .kind_mask = kind_mask,
     };
     if (!draw_records.mergeIfAdjacent(segs_buf, seg_len, seg)) {
         if (seg_len.* >= segs_buf.len) return error.BufferTooSmall;
@@ -248,6 +253,7 @@ pub fn emitInstanced(
         .words_len = wrote_words,
         .shape_count = shape_emitted,
         .override_count = @intCast(overrides.len),
+        .kind_mask = draw_records.KIND_BIT_REGULAR,
     };
     seg_len.* += 1;
 

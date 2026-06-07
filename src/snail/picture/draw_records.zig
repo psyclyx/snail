@@ -61,7 +61,20 @@ pub const DrawSegment = struct {
     /// Number of overrides. Always 1 for `.heterogeneous`; M for
     /// `.replicated`. Total instance count = `shape_count * override_count`.
     override_count: u32,
+    /// Bitmask of glyph kinds present in this segment. Bit positions
+    /// match `GlyphRunKind` (regular=0, colr=1, path=2, hinted_text=3).
+    /// A popcount of 1 means every shape in the segment uses the same
+    /// program — backends can skip the per-frame run-kind walk and
+    /// issue a single draw. mergeIfAdjacent unions the masks of the
+    /// segments it merges. `0` means "unknown" — emitted by paths that
+    /// haven't been updated; the backends fall back to walking.
+    kind_mask: u8 = 0,
 };
+
+pub const KIND_BIT_REGULAR: u8 = 1 << 0;
+pub const KIND_BIT_COLR: u8 = 1 << 1;
+pub const KIND_BIT_PATH: u8 = 1 << 2;
+pub const KIND_BIT_HINTED_TEXT: u8 = 1 << 3;
 
 pub const DrawRecords = struct {
     words: []const u32,
@@ -81,6 +94,7 @@ pub fn mergeIfAdjacent(segs: []DrawSegment, len: *usize, next: DrawSegment) bool
     if (last.kind == .replicated) return false;
     last.words_len += next.words_len;
     last.shape_count += next.shape_count;
+    last.kind_mask |= next.kind_mask;
     return true;
 }
 
