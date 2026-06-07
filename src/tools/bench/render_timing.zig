@@ -114,7 +114,55 @@ pub const Gl33Breakdown = struct {
     draw_us: f64,
     finish_us: f64,
     total_us: f64,
+    gpu_us: f64,
 };
+
+/// Pure GPU-side draw time using a `GL_TIME_ELAPSED` timer query — no
+/// CPU clock involved, no glFinish needed. Returns the minimum of
+/// `samples` repeated runs of `frames` queries each. Min is more
+/// robust than mean for an isolated GPU measurement: the true cost is
+/// what the hardware actually does; any larger sample is the result
+/// of an external disturbance (clock thrash, other contention) and
+/// should be filtered out.
+pub fn timeGl33DrawGpu(
+    allocator: std.mem.Allocator,
+    renderer: *snail.Gl33Renderer,
+    state: snail.DrawState,
+    records: DrawRecords,
+    caches: []const *const snail.Gl33BackendCache,
+    warmup_frames: usize,
+    frames: usize,
+    samples: usize,
+) !f64 {
+    var query: gl.GLuint = 0;
+    gl.glGenQueries(1, &query);
+    defer gl.glDeleteQueries(1, &query);
+
+    for (0..warmup_frames) |_| {
+        clearGlFrame();
+        renderer.state.beginDraw();
+        try renderer.state.draw(allocator, state, .{ .words = records.words, .segments = records.segments }, caches);
+    }
+    gl.glFinish();
+
+    var min_per_frame_us: f64 = std.math.inf(f64);
+    for (0..samples) |_| {
+        var total_ns: u64 = 0;
+        for (0..frames) |_| {
+            clearGlFrame();
+            renderer.state.beginDraw();
+            gl.glBeginQuery(gl.GL_TIME_ELAPSED, query);
+            try renderer.state.draw(allocator, state, .{ .words = records.words, .segments = records.segments }, caches);
+            gl.glEndQuery(gl.GL_TIME_ELAPSED);
+            var elapsed_ns: u64 = 0;
+            gl.glGetQueryObjectui64v(query, gl.GL_QUERY_RESULT, &elapsed_ns);
+            total_ns += elapsed_ns;
+        }
+        const per_frame_us = @as(f64, @floatFromInt(total_ns)) / 1000.0 / @as(f64, @floatFromInt(frames));
+        if (per_frame_us < min_per_frame_us) min_per_frame_us = per_frame_us;
+    }
+    return min_per_frame_us;
+}
 
 /// Per-stage GL 3.3 timing for one scene. Includes a per-frame glFinish
 /// so each measurement reflects strict CPU submission cost — handy for
@@ -158,12 +206,14 @@ pub fn timeGl33DrawBreakdown(
         finish_ns += t4 - t3;
     }
     const n: f64 = @floatFromInt(frames);
+    const gpu_us = try timeGl33DrawGpu(allocator, renderer, state, records, caches, 0, frames, 5);
     return .{
         .clear_us = @as(f64, @floatFromInt(clear_ns)) / 1000.0 / n,
         .begin_us = @as(f64, @floatFromInt(begin_ns)) / 1000.0 / n,
         .draw_us = @as(f64, @floatFromInt(draw_ns)) / 1000.0 / n,
         .finish_us = @as(f64, @floatFromInt(finish_ns)) / 1000.0 / n,
         .total_us = @as(f64, @floatFromInt(clear_ns + begin_ns + draw_ns + finish_ns)) / 1000.0 / n,
+        .gpu_us = gpu_us,
     };
 }
 

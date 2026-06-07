@@ -294,6 +294,7 @@ const Gl33BreakdownRow = struct {
     draw_us: f64,
     finish_us: f64,
     total_us: f64,
+    gpu_us: f64,
 };
 
 const ModeRow = struct {
@@ -1699,19 +1700,22 @@ fn printGl33BreakdownTable(rows: []const Gl33BreakdownRow) void {
     std.debug.print(
         \\## GL 3.3 Per-Frame Breakdown
         \\
-        \\Each frame is `clearGlFrame -> beginDraw -> state.draw -> glFinish`. The
-        \\per-frame `glFinish` defeats GPU pipelining, so the totals here are
-        \\strictly larger than the standard table — what matters is which stage
-        \\dominates the residual ~7us text-scene gap vs the 0.12.1 baseline.
+        \\Each CPU-stage column (Clear / beginDraw / state.draw / glFinish) is
+        \\measured around a per-frame `glFinish` so totals include CPU stall
+        \\waiting for the GPU. The `GPU` column is a `GL_TIME_ELAPSED` timer
+        \\query — pure on-GPU time, no CPU clock involved — reported as the
+        \\minimum of 5 samples × `GPU_FRAMES` queries each, to filter clock
+        \\thrash and external scheduling noise. Use the GPU column when
+        \\evaluating shader-side changes.
         \\
-        \\| Scene | Clear | beginDraw | state.draw | glFinish | Total |
-        \\|---|---:|---:|---:|---:|---:|
+        \\| Scene | Clear | beginDraw | state.draw | glFinish | Total | GPU |
+        \\|---|---:|---:|---:|---:|---:|---:|
         \\
     , .{});
     for (rows) |row| {
         std.debug.print(
-            "| {s} | {d:.2} us | {d:.2} us | {d:.2} us | {d:.2} us | {d:.2} us |\n",
-            .{ row.scene.name(), row.clear_us, row.begin_us, row.draw_us, row.finish_us, row.total_us },
+            "| {s} | {d:.2} us | {d:.2} us | {d:.2} us | {d:.2} us | {d:.2} us | {d:.2} us |\n",
+            .{ row.scene.name(), row.clear_us, row.begin_us, row.draw_us, row.finish_us, row.total_us, row.gpu_us },
         );
     }
     std.debug.print("\n", .{});
@@ -1837,6 +1841,7 @@ fn benchGl33(
                 .draw_us = bd.draw_us,
                 .finish_us = bd.finish_us,
                 .total_us = bd.total_us,
+                .gpu_us = bd.gpu_us,
             });
         }
     }
