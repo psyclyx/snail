@@ -99,6 +99,38 @@ fn TextStateFor(comptime backend: Backend) type {
         ring_offset: usize = 0,
         ring_segment_dirty: [RING_SEGMENTS]bool = .{false} ** RING_SEGMENTS,
 
+        // ── Per-program uniform shadow cache ──
+        //
+        // Bench scenes typically draw N glyphs with one program and a
+        // constant MVP/viewport/encoding/etc. The pre-cache version
+        // re-set every uniform on every `bindProgramState` call, which
+        // hit the driver 7+ times per draw. The shadow tracks
+        // last-uploaded values per program; `bindProgramState` skips
+        // glUniform* calls whose value matches what the program already
+        // holds. The shadow is invalidated on program creation/reload
+        // and (defensively) when the bound cache changes.
+        active_cache: ?*const GlBackendCache = null,
+        program_cache_count: usize = 0,
+        program_uniform_caches: [10]ProgramUniformCache = [_]ProgramUniformCache{.{}} ** 10,
+        // Per-draw GL state shadows.
+        cached_blend_mode: BlendMode = .uninitialized,
+        cached_replicated_vao_bound: bool = false,
+        cached_heterogeneous_vao_bound: bool = false,
+
+        const ProgramUniformCache = struct {
+            program: gl.GLuint = 0,
+            mvp_set: bool = false,
+            mvp_data: [16]f32 = undefined,
+            viewport_set: bool = false,
+            viewport: [2]f32 = .{ 0, 0 },
+            subpixel_order_set: bool = false,
+            subpixel_order: i32 = 0,
+            output_srgb_set: bool = false,
+            output_srgb: i32 = 0,
+            coverage_exponent_set: bool = false,
+            coverage_exponent: f32 = 0,
+        };
+
         // ── Init / Deinit ──
 
         pub fn init(self: *GlTextState) !void {
@@ -292,6 +324,10 @@ fn TextStateFor(comptime backend: Backend) type {
                 .dont_care => {},
             }
             self.linear_resolve_active = true;
+            // drawLinearResolveTriangle binds its own program / VAO /
+            // textures / blend state — our text-draw shadow caches no
+            // longer reflect the GL state machine, so drop them.
+            self.invalidateUniformShadows();
             return restore;
         }
 
@@ -323,6 +359,10 @@ fn TextStateFor(comptime backend: Backend) type {
             }
             gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, @intCast(restore.read_fbo));
             self.linear_resolve_active = false;
+            // Same reason as in beginLinearResolve: the encode-to-target
+            // draw mutates program / VAO / blend / etc. Force the next
+            // text-path bindProgramState call to re-issue every uniform.
+            self.invalidateUniformShadows();
             self.frame_begun = false;
         }
 
@@ -485,25 +525,76 @@ fn TextStateFor(comptime backend: Backend) type {
             records: draw_records_mod.DrawRecords,
             caches: []const *const GlBackendCache,
         ) DrawError!void {
-            gl.glBindVertexArray(self.vao);
-            if (comptime backend == .gl33) gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vbo);
-
             for (records.segments) |seg| {
                 const cache = findCache(caches, seg.binding.pool) orelse return error.MissingBinding;
                 if (seg.binding.generation != 0 and cache.upload_generation < seg.binding.generation) return error.StaleBinding;
                 const seg_words = records.words[seg.words_offset..][0..seg.words_len];
                 switch (seg.kind) {
-                    .heterogeneous => try self.drawHeterogeneous(cache, draw_state, seg_words),
+                    .heterogeneous => try self.drawHeterogeneous(cache, draw_state, seg_words, seg.kind_mask),
                     .replicated => try self.drawReplicated(scratch, cache, draw_state, seg, seg_words),
                 }
             }
         }
 
-        fn drawHeterogeneous(self: *GlTextState, cache: *const GlBackendCache, draw_state: DrawState, vertices: []const u32) DrawError!void {
+        fn ensureHeterogeneousVaoBound(self: *GlTextState) void {
+            if (self.cached_heterogeneous_vao_bound) return;
+            gl.glBindVertexArray(self.vao);
+            if (comptime backend == .gl33) gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vbo);
+            self.cached_heterogeneous_vao_bound = true;
+            self.cached_replicated_vao_bound = false;
+        }
+
+        fn ensureReplicatedVaoBound(self: *GlTextState) void {
+            if (self.cached_replicated_vao_bound) return;
+            gl.glBindVertexArray(self.vao_replicated);
+            self.cached_replicated_vao_bound = true;
+            self.cached_heterogeneous_vao_bound = false;
+        }
+
+        fn drawHeterogeneous(self: *GlTextState, cache: *const GlBackendCache, draw_state: DrawState, vertices: []const u32, seg_kind_mask: u8) DrawError!void {
             const total_glyphs = vertices.len / vertex.WORDS_PER_INSTANCE;
             if (total_glyphs == 0) return;
+            self.ensureHeterogeneousVaoBound();
 
             const allow_subpixel = true;
+
+            // emit tags every segment with a kind_mask bitset. When only
+            // one bit is set, every shape in the segment uses the same
+            // program — issue one dispatch and skip the per-instance
+            // run-kind walk. Multi-kind segments still go through the
+            // generic walk; segments with a missing/legacy zero mask
+            // also fall through for safety.
+            if (seg_kind_mask != 0 and @popCount(seg_kind_mask) == 1) {
+                const run_kind: subpixel_policy.GlyphRunKind = switch (seg_kind_mask) {
+                    draw_records_mod.KIND_BIT_REGULAR => .regular,
+                    draw_records_mod.KIND_BIT_COLR => .colr,
+                    draw_records_mod.KIND_BIT_PATH => .path,
+                    draw_records_mod.KIND_BIT_HINTED_TEXT => .hinted_text,
+                    else => unreachable,
+                };
+                const run_mode: subpixel_policy.TextRenderMode = if (run_kind != .regular)
+                    .grayscale
+                else
+                    subpixel_policy.chooseBaseTextRenderMode(
+                        draw_state.mvp,
+                        allow_subpixel,
+                        draw_state.raster.subpixel_order,
+                        self.supports_dual_source_blend,
+                    );
+                self.setBlendMode(textBlendMode(run_kind != .regular, run_mode));
+                const prog_state = switch (run_kind) {
+                    .regular => switch (run_mode) {
+                        .grayscale => &self.text_program,
+                        .subpixel_dual_source => &self.text_subpixel_dual_program,
+                    },
+                    .colr => self.ensureColrProgram(),
+                    .path => self.ensurePathProgram(),
+                    .hinted_text => self.ensureHintedTextProgram(),
+                };
+                self.bindProgramState(cache, prog_state, draw_state, run_mode);
+                self.drawGlyphRange(vertices, 0, total_glyphs);
+                return;
+            }
 
             var run_start: usize = 0;
             while (run_start < total_glyphs) {
@@ -521,7 +612,7 @@ fn TextStateFor(comptime backend: Backend) type {
                         draw_state.raster.subpixel_order,
                         self.supports_dual_source_blend,
                     );
-                setTextBlendMode(run_kind != .regular, run_mode);
+                self.setBlendMode(textBlendMode(run_kind != .regular, run_mode));
                 const prog_state = switch (run_kind) {
                     .regular => switch (run_mode) {
                         .grayscale => &self.text_program,
@@ -572,7 +663,7 @@ fn TextStateFor(comptime backend: Backend) type {
 
             // Upload shape + override data into the replicated VBO (laid
             // out contiguously by emit).
-            gl.glBindVertexArray(self.vao_replicated);
+            self.ensureReplicatedVaoBound();
             if (comptime backend == .gl44) {
                 gl.glNamedBufferData(self.vbo_replicated, @intCast(total_bytes), src_ptr, gl.GL_STREAM_DRAW);
                 gl.glVertexArrayVertexBuffer(self.vao_replicated, 1, self.vbo_replicated, @intCast(shape_bytes), 32);
@@ -613,7 +704,7 @@ fn TextStateFor(comptime backend: Backend) type {
                         draw_state.raster.subpixel_order,
                         self.supports_dual_source_blend,
                     );
-                setTextBlendMode(run_kind != .regular, run_mode);
+                self.setBlendMode(textBlendMode(run_kind != .regular, run_mode));
                 const prog_state = switch (run_kind) {
                     .regular => switch (run_mode) {
                         .grayscale => &self.text_program_replicated,
@@ -643,9 +734,12 @@ fn TextStateFor(comptime backend: Backend) type {
             if (comptime backend == .gl33) gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vbo);
         }
 
-        /// Bind one GlBackendCache' texture set + uniforms. The
-        /// `layer_base` uniform is always 0 — the new model encodes the
-        /// absolute texture-array layer in the per-instance `glyph` data.
+        /// Bind one GlBackendCache' texture set + uniforms. Texture-unit
+        /// sampler bindings and `u_layer_base` are set once at program
+        /// load (see programs.zig) and never need to be re-set here. The
+        /// per-call uniforms (mvp/viewport/subpixel_order/output_srgb/
+        /// coverage_exponent) are shadow-cached per program so steady-
+        /// state frames upload only what actually changed.
         fn bindProgramState(self: *GlTextState, cache: *const GlBackendCache, prog_state: *const ProgramState, draw_state: DrawState, render_mode: subpixel_policy.TextRenderMode) void {
             const program_changed = prog_state.handle != self.active_program or !self.frame_begun;
             if (program_changed) {
@@ -654,49 +748,121 @@ fn TextStateFor(comptime backend: Backend) type {
                 self.frame_begun = true;
             }
 
-            if (comptime backend == .gl44) {
-                gl.glBindTextureUnit(0, cache.curve_array);
-                gl.glBindTextureUnit(1, cache.band_array);
-                if (prog_state.layer_tex_loc >= 0 and cache.layer_info_tex != 0) gl.glBindTextureUnit(2, cache.layer_info_tex);
-                if (prog_state.image_tex_loc >= 0 and cache.image_array_tex != 0) gl.glBindTextureUnit(3, cache.image_array_tex);
-            } else {
-                gl.glActiveTexture(gl.GL_TEXTURE0);
-                gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, cache.curve_array);
-                gl.glActiveTexture(gl.GL_TEXTURE1);
-                gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, cache.band_array);
-                if (prog_state.layer_tex_loc >= 0 and cache.layer_info_tex != 0) {
-                    gl.glActiveTexture(gl.GL_TEXTURE2);
-                    gl.glBindTexture(gl.GL_TEXTURE_2D, cache.layer_info_tex);
-                }
-                if (prog_state.image_tex_loc >= 0 and cache.image_array_tex != 0) {
-                    gl.glActiveTexture(gl.GL_TEXTURE3);
-                    gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, cache.image_array_tex);
+            const cache_changed = self.active_cache != cache;
+            if (cache_changed) {
+                self.active_cache = cache;
+                if (comptime backend == .gl44) {
+                    gl.glBindTextureUnit(0, cache.curve_array);
+                    gl.glBindTextureUnit(1, cache.band_array);
+                    if (prog_state.layer_tex_loc >= 0 and cache.layer_info_tex != 0) gl.glBindTextureUnit(2, cache.layer_info_tex);
+                    if (prog_state.image_tex_loc >= 0 and cache.image_array_tex != 0) gl.glBindTextureUnit(3, cache.image_array_tex);
+                } else {
+                    gl.glActiveTexture(gl.GL_TEXTURE0);
+                    gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, cache.curve_array);
+                    gl.glActiveTexture(gl.GL_TEXTURE1);
+                    gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, cache.band_array);
+                    if (prog_state.layer_tex_loc >= 0 and cache.layer_info_tex != 0) {
+                        gl.glActiveTexture(gl.GL_TEXTURE2);
+                        gl.glBindTexture(gl.GL_TEXTURE_2D, cache.layer_info_tex);
+                    }
+                    if (prog_state.image_tex_loc >= 0 and cache.image_array_tex != 0) {
+                        gl.glActiveTexture(gl.GL_TEXTURE3);
+                        gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, cache.image_array_tex);
+                    }
                 }
             }
 
-            if (prog_state.curve_tex_loc >= 0) gl.glUniform1i(prog_state.curve_tex_loc, 0);
-            if (prog_state.band_tex_loc >= 0) gl.glUniform1i(prog_state.band_tex_loc, 1);
-            if (prog_state.layer_tex_loc >= 0) gl.glUniform1i(prog_state.layer_tex_loc, 2);
-            if (prog_state.image_tex_loc >= 0) gl.glUniform1i(prog_state.image_tex_loc, 3);
+            const cache_slot = self.programUniformCache(prog_state.handle);
 
-            gl.glUniformMatrix4fv(prog_state.mvp_loc, 1, gl.GL_FALSE, &draw_state.mvp.data);
-            gl.glUniform2f(prog_state.viewport_loc, draw_state.surface.pixel_width, draw_state.surface.pixel_height);
-            if (prog_state.layer_base_loc >= 0) gl.glUniform1i(prog_state.layer_base_loc, 0);
+            if (!cache_slot.mvp_set or !std.mem.eql(f32, &cache_slot.mvp_data, &draw_state.mvp.data)) {
+                gl.glUniformMatrix4fv(prog_state.mvp_loc, 1, gl.GL_FALSE, &draw_state.mvp.data);
+                cache_slot.mvp_data = draw_state.mvp.data;
+                cache_slot.mvp_set = true;
+            }
+            const vw = draw_state.surface.pixel_width;
+            const vh = draw_state.surface.pixel_height;
+            if (!cache_slot.viewport_set or cache_slot.viewport[0] != vw or cache_slot.viewport[1] != vh) {
+                gl.glUniform2f(prog_state.viewport_loc, vw, vh);
+                cache_slot.viewport = .{ vw, vh };
+                cache_slot.viewport_set = true;
+            }
             if (prog_state.subpixel_order_loc >= 0) {
-                const order = if (render_mode == .grayscale) SubpixelOrder.none else draw_state.raster.subpixel_order;
-                gl.glUniform1i(prog_state.subpixel_order_loc, @intFromEnum(order));
+                const order: i32 = @intFromEnum(if (render_mode == .grayscale) SubpixelOrder.none else draw_state.raster.subpixel_order);
+                if (!cache_slot.subpixel_order_set or cache_slot.subpixel_order != order) {
+                    gl.glUniform1i(prog_state.subpixel_order_loc, order);
+                    cache_slot.subpixel_order = order;
+                    cache_slot.subpixel_order_set = true;
+                }
             }
             if (prog_state.output_srgb_loc >= 0) {
-                const output_srgb = draw_state.surface.encoding.shaderEncodesSrgb() and !self.linear_resolve_active;
-                gl.glUniform1i(prog_state.output_srgb_loc, @intFromBool(output_srgb));
+                const output_srgb: i32 = @intFromBool(draw_state.surface.encoding.shaderEncodesSrgb() and !self.linear_resolve_active);
+                if (!cache_slot.output_srgb_set or cache_slot.output_srgb != output_srgb) {
+                    gl.glUniform1i(prog_state.output_srgb_loc, output_srgb);
+                    cache_slot.output_srgb = output_srgb;
+                    cache_slot.output_srgb_set = true;
+                }
             }
             if (prog_state.coverage_exponent_loc >= 0) {
-                gl.glUniform1f(prog_state.coverage_exponent_loc, draw_state.raster.coverage_transfer.shaderExponent());
+                const exp = draw_state.raster.coverage_transfer.shaderExponent();
+                if (!cache_slot.coverage_exponent_set or cache_slot.coverage_exponent != exp) {
+                    gl.glUniform1f(prog_state.coverage_exponent_loc, exp);
+                    cache_slot.coverage_exponent = exp;
+                    cache_slot.coverage_exponent_set = true;
+                }
             }
         }
 
+        /// Return the shadow-cache slot for `program`, allocating one
+        /// on first sighting. The slot array is small (10 entries —
+        /// regular + replicated × {text, text-subpixel, colr, path,
+        /// hinted_text}); a linear scan is faster than a hashmap at
+        /// this size and keeps `bindProgramState` allocation-free.
+        fn programUniformCache(self: *GlTextState, program: gl.GLuint) *ProgramUniformCache {
+            for (self.program_uniform_caches[0..self.program_cache_count]) |*slot| {
+                if (slot.program == program) return slot;
+            }
+            std.debug.assert(self.program_cache_count < self.program_uniform_caches.len);
+            const slot = &self.program_uniform_caches[self.program_cache_count];
+            self.program_cache_count += 1;
+            slot.* = .{ .program = program };
+            return slot;
+        }
+
+        /// Invalidate every shadow cache. Called when the renderer's
+        /// trust in driver-side uniform state is broken — i.e. after a
+        /// linear-resolve pass binds its own program + uniforms.
+        fn invalidateUniformShadows(self: *GlTextState) void {
+            for (self.program_uniform_caches[0..self.program_cache_count]) |*slot| {
+                slot.mvp_set = false;
+                slot.viewport_set = false;
+                slot.subpixel_order_set = false;
+                slot.output_srgb_set = false;
+                slot.coverage_exponent_set = false;
+            }
+            self.active_program = 0;
+            self.active_cache = null;
+            self.cached_blend_mode = .uninitialized;
+            self.cached_replicated_vao_bound = false;
+            self.cached_heterogeneous_vao_bound = false;
+        }
+
+        fn setBlendMode(self: *GlTextState, mode: BlendMode) void {
+            if (self.cached_blend_mode == mode) return;
+            applyBlendMode(mode);
+            self.cached_blend_mode = mode;
+        }
+
         pub fn beginDraw(self: *GlTextState) void {
+            // Force the next bindProgramState to re-issue glUseProgram and
+            // the next ensure*VaoBound to re-bind the VAO. This is the
+            // begin/end boundary where snail loses track of foreign GL
+            // mutations (clear, blit, app's own GL work); per-uniform
+            // shadow values stay live across the boundary because the
+            // values themselves don't change — only program/VAO bind
+            // identity might.
             self.frame_begun = false;
+            self.cached_heterogeneous_vao_bound = false;
+            self.cached_replicated_vao_bound = false;
             if (comptime backend == .gl44) {
                 if (!self.ring_segment_dirty[self.ring_segment]) return;
                 self.fenceRingSegment(self.ring_segment);
@@ -982,15 +1148,26 @@ const linear_resolve_fragment_shader: [:0]const u8 =
     \\}
 ;
 
-fn setTextBlendMode(special: bool, render_mode: subpixel_policy.TextRenderMode) void {
-    if (!special and render_mode == .subpixel_dual_source) {
-        gl.glEnable(gl.GL_BLEND);
-        gl.glBlendFuncSeparate(gl.GL_ONE, gl.GL_ONE_MINUS_SRC1_COLOR, gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA);
-        return;
+fn applyBlendMode(mode: BlendMode) void {
+    switch (mode) {
+        .uninitialized => unreachable,
+        .dual_source => {
+            gl.glEnable(gl.GL_BLEND);
+            gl.glBlendFuncSeparate(gl.GL_ONE, gl.GL_ONE_MINUS_SRC1_COLOR, gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA);
+        },
+        .normal => {
+            gl.glEnable(gl.GL_BLEND);
+            gl.glBlendFuncSeparate(gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA, gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA);
+        },
     }
-    gl.glEnable(gl.GL_BLEND);
-    gl.glBlendFuncSeparate(gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA, gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA);
 }
+
+fn textBlendMode(special: bool, render_mode: subpixel_policy.TextRenderMode) BlendMode {
+    if (!special and render_mode == .subpixel_dual_source) return .dual_source;
+    return .normal;
+}
+
+const BlendMode = enum { uninitialized, normal, dual_source };
 
 fn detectDualSourceBlendSupport() bool {
     var max_draw_buffers: gl.GLint = 0;
