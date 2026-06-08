@@ -191,4 +191,5 @@ test {
     _ = @import("render/backend/vulkan/backend_cache.zig");
     _ = @import("picture/text.zig");
     _ = @import("coverage.zig");
+    _ = @import("util/hamt.zig");
 }
