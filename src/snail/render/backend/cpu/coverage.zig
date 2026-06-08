@@ -193,7 +193,7 @@ fn applyFillRule(fill_rule: FillRule, winding: f32) f32 {
     return @abs(winding);
 }
 
-fn resolveCoverage(horiz: CoveragePair, vert: CoveragePair, fill_rule: FillRule) f32 {
+pub fn resolveCoverage(horiz: CoveragePair, vert: CoveragePair, fill_rule: FillRule) f32 {
     const wsum = horiz.wgt + vert.wgt;
     const blended = horiz.cov * horiz.wgt + vert.cov * vert.wgt;
     const cov = @max(
@@ -262,7 +262,7 @@ const segmentMaxY = cubic.segmentMaxY;
 const segmentMinX = cubic.segmentMinX;
 const segmentMinY = cubic.segmentMinY;
 
-fn appendCoverageContribution(result: *CoveragePair, distance: f32, sign: f32) void {
+pub fn appendCoverageContribution(result: *CoveragePair, distance: f32, sign: f32) void {
     result.cov += sign * clamp01(distance + 0.5);
     result.wgt = @max(result.wgt, clamp01(1.0 - @abs(distance) * 2.0));
 }
@@ -274,11 +274,11 @@ const calcRootCode = cubic.calcRootCode;
 const solveHorizPoly = cubic.solveHorizPoly;
 const solveVertPoly = cubic.solveVertPoly;
 
-inline fn isNearEndRoot(t: f32) bool {
+pub inline fn isNearEndRoot(t: f32) bool {
     return t >= 1.0 - 1e-5;
 }
 
-inline fn isEndpointRootDelta(end_root_delta: f32) bool {
+pub inline fn isEndpointRootDelta(end_root_delta: f32) bool {
     return @abs(end_root_delta) <= root_code_eps;
 }
 
@@ -450,7 +450,7 @@ inline fn accumulateGlyphCoverageSegment(
     return .continue_scan;
 }
 
-inline fn solvePreparedAxisQuadratic(curve: *const PreparedAxisCurve, p0_along: f32, p0_root: f32, ppe: f32) [2]f32 {
+pub inline fn solvePreparedAxisQuadratic(curve: *const PreparedAxisCurve, p0_along: f32, p0_root: f32, ppe: f32) [2]f32 {
     const ax = curve.a_along;
     const ay = curve.a_root;
     const bx = curve.b_along;
@@ -574,7 +574,7 @@ fn preparedCurveCold(curve: *const PreparedAxisCurve, cold_curves: []const Prepa
     return &cold_curves[curve.cold_index];
 }
 
-inline fn accumulatePreparedCurveCoverage(
+pub inline fn accumulatePreparedCurveCoverage(
     result: *CoveragePair,
     curve: *const PreparedAxisCurve,
     cold_curves: []const PreparedAxisCurveCold,
@@ -1051,7 +1051,7 @@ pub fn evalHintedTextCoverageBandSpan(
 // Subpixel rendering evaluates analytic coverage at seven colocated sample
 // points and then runs the result through `subpixel.filterCoverage`. Lane
 // count is fixed at 7; layout helpers above produce the offsets.
-const subpixel_lane_count: usize = 7;
+pub const subpixel_lane_count: usize = 7;
 
 // Per-curve solve cache for the row-batched H-axis path. One slot per H
 // curve in the row's band; populated once per row, used by every pixel.
@@ -1612,7 +1612,7 @@ pub fn evalGlyphCoverageSubpixelRowH(
     var v_pairs: [W]CoveragePair = @splat(CoveragePair{ .cov = 0, .wgt = 0 });
     const glyph_band_base = @as(usize, be.glyph_y) * @as(usize, page.band_width) + @as(usize, be.glyph_x);
     // V root varies (em_x changes per subpixel sample); pass root_shared=false.
-    evalPreparedSubpixelAxis(page, em_x, em_y, v_band_idx, glyph_band_base, @as(i32, @intCast(@as(u32, be.h_band_count))), plan.ppe.y, false, &v_pairs, false);
+    subpixel_eval.evalPreparedAxis(page, em_x, em_y, v_band_idx, glyph_band_base, @as(i32, @intCast(@as(u32, be.h_band_count))), plan.ppe.y, false, &v_pairs, false);
 
     var raw: [W]f32 = undefined;
     inline for (0..W) |i| {
@@ -1630,268 +1630,8 @@ pub fn evalGlyphCoverageSubpixelRowH(
     );
 }
 
-pub fn evalGlyphCoverageSubpixel(
-    page: anytype,
-    rc: Vec2,
-    plan: SubpixelCoveragePlan,
-    be: GlyphBandEntry,
-    band_max_h: i32,
-    band_max_v: i32,
-    fill_rule: FillRule,
-) SubpixelCoverage {
-    if (plan.order == .none) return .{ .rgb = .{ 0.0, 0.0, 0.0 }, .alpha = 0.0 };
-
-    const W = subpixel_lane_count;
-    var em_x: [W]f32 = undefined;
-    var em_y: [W]f32 = undefined;
-    inline for (0..W) |k| {
-        const offset: f32 = @as(f32, @floatFromInt(@as(i32, @intCast(k)) - 3));
-        em_x[k] = rc.x + plan.step.x * offset;
-        em_y[k] = rc.y + plan.step.y * offset;
-    }
-
-    var raw: [W]f32 = undefined;
-    const Page = switch (@typeInfo(@TypeOf(page))) {
-        .pointer => |ptr| ptr.child,
-        else => @TypeOf(page),
-    };
-    if (comptime @hasField(Page, "h_curves")) {
-        evalPreparedSubpixelSamples(page, em_x, em_y, plan, be, band_max_h, band_max_v, fill_rule, &raw);
-    } else {
-        inline for (0..W) |k| {
-            raw[k] = evalGlyphCoverage(page, em_x[k], em_y[k], plan.ppe.x, plan.ppe.y, be, band_max_h, band_max_v, fill_rule);
-        }
-    }
-
-    return subpixel.filterCoverage(
-        raw[0],
-        raw[1],
-        raw[2],
-        raw[3],
-        raw[4],
-        raw[5],
-        raw[6],
-        plan.reverse_order,
-    );
-}
-
-// Shared-state evaluation of the seven subpixel samples for a *prepared*
-// atlas page. Groups samples by the band cell they fall into, so curves
-// shared across lanes are walked once; for the axis whose root coordinate
-// is identical across all lanes (the LCD-stripe axis), the quadratic and
-// line solvers run a single time and the per-lane distance is just a fused
-// `(base - sample_along[i]) * ppe`.
-fn evalPreparedSubpixelSamples(
-    page: anytype,
-    em_x: [subpixel_lane_count]f32,
-    em_y: [subpixel_lane_count]f32,
-    plan: SubpixelCoveragePlan,
-    be: GlyphBandEntry,
-    band_max_h: i32,
-    band_max_v: i32,
-    fill_rule: FillRule,
-    out_cov: *[subpixel_lane_count]f32,
-) void {
-    const W = subpixel_lane_count;
-    var h_pairs: [W]CoveragePair = @splat(CoveragePair{ .cov = 0, .wgt = 0 });
-    var v_pairs: [W]CoveragePair = @splat(CoveragePair{ .cov = 0, .wgt = 0 });
-
-    const glyph_band_base = @as(usize, be.glyph_y) * @as(usize, page.band_width) + @as(usize, be.glyph_x);
-
-    var h_band_idx: [W]i32 = undefined;
-    var v_band_idx: [W]i32 = undefined;
-    inline for (0..W) |i| {
-        const bx_f = em_x[i] * be.band_scale_x + be.band_offset_x;
-        const by_f = em_y[i] * be.band_scale_y + be.band_offset_y;
-        v_band_idx[i] = clampInt(@as(i32, @intFromFloat(@floor(bx_f))), 0, band_max_v);
-        h_band_idx[i] = clampInt(@as(i32, @intFromFloat(@floor(by_f))), 0, band_max_h);
-    }
-
-    // RGB/BGR keep em_y constant across the 7 samples (stripes run vertical);
-    // VRGB/VBGR keep em_x constant. Either way, the constant axis is the
-    // "root-shared" axis of one of H/V.
-    const h_root_shared = plan.step.y == 0.0;
-    const v_root_shared = plan.step.x == 0.0;
-
-    evalPreparedSubpixelAxis(page, em_x, em_y, h_band_idx, glyph_band_base, 0, plan.ppe.x, h_root_shared, &h_pairs, true);
-    evalPreparedSubpixelAxis(page, em_x, em_y, v_band_idx, glyph_band_base, band_max_h + 1, plan.ppe.y, v_root_shared, &v_pairs, false);
-
-    inline for (0..W) |i| {
-        out_cov[i] = resolveCoverage(h_pairs[i], v_pairs[i], fill_rule);
-    }
-}
-
-fn evalPreparedSubpixelAxis(
-    page: anytype,
-    em_x: [subpixel_lane_count]f32,
-    em_y: [subpixel_lane_count]f32,
-    band_idx: [subpixel_lane_count]i32,
-    glyph_band_base: usize,
-    header_base: i32,
-    ppe: f32,
-    root_shared: bool,
-    results: *[subpixel_lane_count]CoveragePair,
-    comptime horizontal: bool,
-) void {
-    const W = subpixel_lane_count;
-
-    // Partition lanes by band cell. With W=7 the worst case is 7 distinct
-    // bands, but for typical text we see 1 (constant axis) or 2-3 (varying
-    // axis).
-    var unique_bands: [W]i32 = undefined;
-    var unique_masks: [W]u8 = .{0} ** W;
-    var unique_count: usize = 0;
-    inline for (0..W) |i| {
-        const b = band_idx[i];
-        var matched: ?usize = null;
-        for (unique_bands[0..unique_count], 0..) |u, j| {
-            if (u == b) {
-                matched = j;
-                break;
-            }
-        }
-        if (matched) |j| {
-            unique_masks[j] |= @as(u8, 1) << @intCast(i);
-        } else {
-            unique_bands[unique_count] = b;
-            unique_masks[unique_count] = @as(u8, 1) << @intCast(i);
-            unique_count += 1;
-        }
-    }
-
-    const curves = if (horizontal) page.h_curves else page.v_curves;
-    const cold_curves = if (horizontal) page.h_cold_curves else page.v_cold_curves;
-
-    var u: usize = 0;
-    while (u < unique_count) : (u += 1) {
-        const band = unique_bands[u];
-        const mask = unique_masks[u];
-        const header_idx: i32 = header_base + band;
-        if (header_idx < 0) continue;
-        const header = readBandTexelLinear(page, glyph_band_base + @as(usize, @intCast(header_idx)));
-        const band_base = glyph_band_base + header[1];
-        if (band_base >= curves.len) continue;
-        const band_count = @min(@as(usize, header[0]), curves.len - band_base);
-        const band_curves = curves[band_base..][0..band_count];
-
-        for (band_curves) |*curve| {
-            if (!curve.valid) continue;
-            accumulateSubpixelCurveMulti(curve, cold_curves, em_x, em_y, mask, ppe, root_shared, results, horizontal);
-        }
-    }
-}
-
-inline fn accumulateSubpixelCurveMulti(
-    curve: *const PreparedAxisCurve,
-    cold_curves: []const PreparedAxisCurveCold,
-    em_x: [subpixel_lane_count]f32,
-    em_y: [subpixel_lane_count]f32,
-    mask: u8,
-    ppe: f32,
-    root_shared: bool,
-    results: *[subpixel_lane_count]CoveragePair,
-    comptime horizontal: bool,
-) void {
-    if (root_shared and curve.kind == .quadratic) {
-        accumulateSubpixelQuadraticSharedRoot(curve, em_x, em_y, mask, ppe, results, horizontal);
-        return;
-    }
-    if (root_shared and curve.kind == .line) {
-        accumulateSubpixelLineSharedRoot(curve, em_x, em_y, mask, ppe, results, horizontal);
-        return;
-    }
-
-    // Varying root, or conic/cubic: scalar fan-out across active lanes. The
-    // grouped header read above still saves redundant band lookups.
-    const W = subpixel_lane_count;
-    inline for (0..W) |i| {
-        if ((mask & (@as(u8, 1) << @intCast(i))) != 0) {
-            const sample_rc = Vec2.new(em_x[i], em_y[i]);
-            _ = accumulatePreparedCurveCoverage(&results[i], curve, cold_curves, sample_rc, ppe, horizontal);
-        }
-    }
-}
-
-// Shared-root quadratic: sample_root is identical across active lanes, so
-// `calcRootCode` and `solvePreparedAxisQuadratic` produce one answer reused
-// for every lane. Only the per-lane distance shift remains.
-fn accumulateSubpixelQuadraticSharedRoot(
-    curve: *const PreparedAxisCurve,
-    em_x: [subpixel_lane_count]f32,
-    em_y: [subpixel_lane_count]f32,
-    mask: u8,
-    ppe: f32,
-    results: *[subpixel_lane_count]CoveragePair,
-    comptime horizontal: bool,
-) void {
-    if (mask == 0) return;
-    const W = subpixel_lane_count;
-    const first_lane: usize = @ctz(mask);
-    const sample_root = if (horizontal) em_y[first_lane] else em_x[first_lane];
-
-    const p0r = curve.p0_root - sample_root;
-    const p1r = curve.p1_root - sample_root;
-    const p2r = curve.p2_root - sample_root;
-    const code = calcRootCode(p0r, p1r, p2r);
-    if (code == 0) return;
-
-    const roots = solvePreparedAxisQuadratic(curve, curve.p0_along, p0r, 1.0);
-    const t1_along = roots[0];
-    const t2_along = roots[1];
-
-    if ((code & 1) != 0) {
-        const sign: f32 = if (horizontal) 1.0 else -1.0;
-        inline for (0..W) |i| {
-            if ((mask & (@as(u8, 1) << @intCast(i))) != 0) {
-                const sample_along = if (horizontal) em_x[i] else em_y[i];
-                appendCoverageContribution(&results[i], (t1_along - sample_along) * ppe, sign);
-            }
-        }
-    }
-    if (code > 1) {
-        const sign: f32 = if (horizontal) -1.0 else 1.0;
-        inline for (0..W) |i| {
-            if ((mask & (@as(u8, 1) << @intCast(i))) != 0) {
-                const sample_along = if (horizontal) em_x[i] else em_y[i];
-                appendCoverageContribution(&results[i], (t2_along - sample_along) * ppe, sign);
-            }
-        }
-    }
-}
-
-fn accumulateSubpixelLineSharedRoot(
-    curve: *const PreparedAxisCurve,
-    em_x: [subpixel_lane_count]f32,
-    em_y: [subpixel_lane_count]f32,
-    mask: u8,
-    ppe: f32,
-    results: *[subpixel_lane_count]CoveragePair,
-    comptime horizontal: bool,
-) void {
-    if (mask == 0) return;
-    const W = subpixel_lane_count;
-    const first_lane: usize = @ctz(mask);
-    const sample_root = if (horizontal) em_y[first_lane] else em_x[first_lane];
-
-    const denom = curve.a_root;
-    if (@abs(denom) < 1e-10) return;
-    const t_raw = -(curve.p0_root - sample_root) / denom;
-    if (t_raw < -1e-5 or t_raw > 1.0 + 1e-5) return;
-    const t = std.math.clamp(t_raw, 0.0, 1.0);
-    if (isNearEndRoot(t) and isEndpointRootDelta(curve.p0_root + curve.a_root - sample_root)) return;
-
-    const derivative_axis = if (horizontal) curve.a_root else -curve.a_root;
-    if (@abs(derivative_axis) <= 1e-5) return;
-    const sign: f32 = if (derivative_axis > 0.0) 1.0 else -1.0;
-    const along_at_t = curve.p0_along + curve.a_along * t;
-
-    inline for (0..W) |i| {
-        if ((mask & (@as(u8, 1) << @intCast(i))) != 0) {
-            const sample_along = if (horizontal) em_x[i] else em_y[i];
-            appendCoverageContribution(&results[i], (along_at_t - sample_along) * ppe, sign);
-        }
-    }
-}
+const subpixel_eval = @import("coverage/subpixel_eval.zig");
+pub const evalGlyphCoverageSubpixel = subpixel_eval.evalGlyphCoverageSubpixel;
 
 test "hinted segment decodes absolute layer-info control points" {
     // Snapshot layer-info slab holds absolute hinted positions directly;
@@ -1919,6 +1659,6 @@ test "hinted segment decodes absolute layer-info control points" {
     try std.testing.expectApproxEqAbs(@as(f32, 0.5), segment.p2.y, 0.001);
 }
 
-fn clampInt(v: i32, lo: i32, hi: i32) i32 {
+pub fn clampInt(v: i32, lo: i32, hi: i32) i32 {
     return @max(lo, @min(hi, v));
 }
