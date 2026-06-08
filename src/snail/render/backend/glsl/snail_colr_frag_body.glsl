@@ -59,20 +59,14 @@ vec2 solveVertPoly(vec4 p12, vec2 p3) {
 }
 
 bool accumulateColrAxisContribution(inout float cov, inout float wgt, vec2 rc, float ppe, ivec2 cLoc, int layer, bool horizontal) {
+    // COLR curves come from font glyph extraction (font.zig), which is
+    // always direct-encoded and always quadratic. The original code's
+    // tex2 fetch + direct/indirect dispatch is reachable only by
+    // workloads that don't exist in production — skip both.
     vec4 tex0 = texelFetch(u_curve_tex, ivec3(cLoc, layer), 0);
     vec4 tex1 = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(cLoc, 1), layer), 0);
-    vec4 tex2 = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(cLoc, 2), layer), 0);
-    bool direct = tex2.z >= kDirectEncodingKindBias - 0.5;
-    vec4 p12;
-    vec2 p3;
-    if (direct) {
-        p12 = vec4(tex0.xy, tex0.zw) - vec4(rc, rc);
-        p3 = tex1.xy - rc;
-    } else {
-        vec2 anchor = tex0.xy * 256.0 + tex0.zw;
-        p12 = vec4(anchor, anchor + tex1.xy) - vec4(rc, rc);
-        p3 = anchor + tex1.zw - rc;
-    }
+    vec4 p12 = vec4(tex0.xy, tex0.zw) - vec4(rc, rc);
+    vec2 p3 = tex1.xy - rc;
     float maxCoord = horizontal ? max(max(p12.x, p12.z), p3.x) : max(max(p12.y, p12.w), p3.y);
     if (maxCoord * ppe < -0.5) return false;
     uint code = horizontal ? calcRootCode(p12.y, p12.w, p3.y) : calcRootCode(p12.x, p12.z, p3.x);
