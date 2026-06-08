@@ -236,14 +236,16 @@ fn preparePathPaintFromLayerInfoOffset(
     switch (tag) {
         1 => return .{ .kind = .solid, .color0 = srgbColorToLinear(data0) },
         2 => {
+            // Endpoints are now stored in sRGB at upload time
+            // (paint_records.writeLinearGradient), so no conversion here.
             const color0 = fetchLayerInfoTexelOffset(data, texel_offset + 3);
             const color1 = fetchLayerInfoTexelOffset(data, texel_offset + 4);
             const extra = fetchLayerInfoTexelOffset(data, texel_offset + 5);
             return .{
                 .kind = .linear_gradient,
                 .data0 = data0,
-                .color0 = linearColorToSrgb(color0),
-                .color1 = linearColorToSrgb(color1),
+                .color0 = color0,
+                .color1 = color1,
                 .extra = extra,
             };
         },
@@ -253,8 +255,8 @@ fn preparePathPaintFromLayerInfoOffset(
             return .{
                 .kind = .radial_gradient,
                 .data0 = data0,
-                .color0 = linearColorToSrgb(color0),
-                .color1 = linearColorToSrgb(color1),
+                .color0 = color0,
+                .color1 = color1,
             };
         },
         4 => {

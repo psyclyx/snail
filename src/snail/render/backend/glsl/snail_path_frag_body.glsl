@@ -498,10 +498,12 @@ float interleavedGradientNoise(vec2 pixel) {
     return fract(52.9829189 * fract(dot(pixel, vec2(0.06711056, 0.00583715))));
 }
 
-vec4 mixGradient(vec4 c0, vec4 c1, float t) {
-    vec4 s0 = vec4(linearToSrgb(c0.rgb), c0.a);
-    vec4 s1 = vec4(linearToSrgb(c1.rgb), c1.a);
-    vec4 m = mix(s0, s1, t);
+// Gradient endpoints are uploaded as sRGB (paint_records.writeLinearGradient
+// / writeRadialGradient), so the per-fragment mix happens directly in sRGB
+// space and only the final result is converted to linear. Saves the two
+// `linearToSrgb(...)` calls (6 `pow`) that used to bracket the mix.
+vec4 mixGradient(vec4 c0_srgb, vec4 c1_srgb, float t) {
+    vec4 m = mix(c0_srgb, c1_srgb, t);
     return vec4(srgbToLinear(m.rgb), m.a);
 }
 

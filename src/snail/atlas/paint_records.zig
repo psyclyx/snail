@@ -104,8 +104,11 @@ fn writeLinearGradient(data: []f32, texel_width: u32, texel_offset: u32, gradien
         gradient.end.x,
         gradient.end.y,
     });
-    setTexel(data, texel_width, texel_offset + 3, srgbToLinearColor(gradient.start_color));
-    setTexel(data, texel_width, texel_offset + 4, srgbToLinearColor(gradient.end_color));
+    // Gradient endpoints stay in sRGB so the renderer can mix them in
+    // sRGB-space without a per-pixel `linearToSrgb` roundtrip. Final
+    // sRGB->linear conversion happens once after the mix.
+    setTexel(data, texel_width, texel_offset + 3, gradient.start_color);
+    setTexel(data, texel_width, texel_offset + 4, gradient.end_color);
     setTexel(data, texel_width, texel_offset + 5, .{
         @floatFromInt(@intFromEnum(gradient.extend)),
         0,
@@ -121,8 +124,9 @@ fn writeRadialGradient(data: []f32, texel_width: u32, texel_offset: u32, gradien
         gradient.radius,
         @floatFromInt(@intFromEnum(gradient.extend)),
     });
-    setTexel(data, texel_width, texel_offset + 3, srgbToLinearColor(gradient.inner_color));
-    setTexel(data, texel_width, texel_offset + 4, srgbToLinearColor(gradient.outer_color));
+    // sRGB-stored endpoints; see writeLinearGradient.
+    setTexel(data, texel_width, texel_offset + 3, gradient.inner_color);
+    setTexel(data, texel_width, texel_offset + 4, gradient.outer_color);
     setTexel(data, texel_width, texel_offset + 5, .{ 0, 0, 0, 0 });
 }
 
