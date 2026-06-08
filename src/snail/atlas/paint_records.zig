@@ -72,7 +72,10 @@ pub fn write(
 ) void {
     writeBandHeader(data, texel_width, texel_offset, band_entry, tagFor(paint), fill_rule_bit);
     switch (paint) {
-        .solid => |color| setTexel(data, texel_width, texel_offset + 2, color),
+        // Solid colors store linear in the layer-info texture so the
+        // path/colr fragment shaders skip a per-pixel `srgbDecode`.
+        // Matches the gradient endpoint convention.
+        .solid => |color| setTexel(data, texel_width, texel_offset + 2, srgbToLinearColor(color)),
         .linear_gradient => |gradient| writeLinearGradient(data, texel_width, texel_offset, gradient),
         .radial_gradient => |gradient| writeRadialGradient(data, texel_width, texel_offset, gradient),
         .image => |image| writeImagePaint(data, texel_width, texel_offset, image),

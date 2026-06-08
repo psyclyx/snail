@@ -522,7 +522,8 @@ PathPaintSample samplePathPaint(vec2 rc, ivec2 infoBase, vec4 info) {
     int paintKind = int(-info.w + 0.5);
     vec4 data0 = texelFetch(u_layer_tex, offsetLayerLoc(infoBase, 2), 0);
     if (paintKind == SNAIL_PAINT_KIND_SOLID) {
-        return PathPaintSample(vec4(srgbDecode(data0.r), srgbDecode(data0.g), srgbDecode(data0.b), data0.a), 0.0);
+        // Solid color stored linear at upload (paint_records.writePaint).
+        return PathPaintSample(data0, 0.0);
     }
 
     vec4 color0 = texelFetch(u_layer_tex, offsetLayerLoc(infoBase, 3), 0);

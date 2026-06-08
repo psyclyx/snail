@@ -234,7 +234,7 @@ fn preparePathPaintFromLayerInfoOffset(
     const tag = pathInfoTag(info);
     const data0 = fetchLayerInfoTexelOffset(data, texel_offset + 2);
     switch (tag) {
-        1 => return .{ .kind = .solid, .color0 = srgbColorToLinear(data0) },
+        1 => return .{ .kind = .solid, .color0 = data0 },
         2 => {
             // Endpoints are now stored in sRGB at upload time
             // (paint_records.writeLinearGradient), so no conversion here.
