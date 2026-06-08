@@ -14,8 +14,21 @@ const curve_tex_format = @import("render/format/curve_texture.zig");
 const band_tex_format = @import("render/format/band_texture.zig");
 const paint_mod = @import("paint.zig");
 const atlas_builder = @import("atlas/builder.zig");
+const hamt_mod = @import("util/hamt.zig");
 
 const Builder = atlas_builder.Builder;
+
+const RecordKeyContext = struct {
+    pub fn hash(_: RecordKeyContext, k: RecordKey) u64 {
+        return k.hash();
+    }
+    pub fn eql(_: RecordKeyContext, a: RecordKey, b: RecordKey) bool {
+        return a.eql(b);
+    }
+};
+
+pub const RecordLookup = hamt_mod.Hamt(RecordKey, AtlasRecord, RecordKeyContext);
+pub const PaintLookup = hamt_mod.Hamt(RecordKey, PaintRecordInfo, RecordKeyContext);
 
 pub const AtlasPage = page_mod.AtlasPage;
 pub const PagePool = page_pool_mod.PagePool;
@@ -92,7 +105,10 @@ pub const Atlas = struct {
     /// Refcounted page references. Index into this slice is what
     /// `AtlasRecord.page_index` refers to.
     pages: []*AtlasPage,
-    lookup: std.AutoHashMapUnmanaged(RecordKey, AtlasRecord),
+    /// Persistent map: `Atlas.extend` shares unchanged subtrees with the
+    /// parent atlas, so a 1-entry extension is O(log32 N) and copies
+    /// only the path-to-new-leaf.
+    lookup: RecordLookup,
     /// Optional layer_info f32 buffer holding 6-texel paint records, one
     /// per entry whose `paint` was non-null. Encoded by the `paint_records`
     /// module so the CPU sampler and the GL/Vulkan path shaders consume
@@ -100,8 +116,9 @@ pub const Atlas = struct {
     layer_info_data: ?[]f32 = null,
     layer_info_width: u32 = 0,
     layer_info_height: u32 = 0,
-    /// Per-key (info_x, info_y) lookups for paint records.
-    paint_lookup: std.AutoHashMapUnmanaged(RecordKey, PaintRecordInfo) = .{},
+    /// Per-key (info_x, info_y) lookups for paint records. Same
+    /// persistent-map shape as `lookup`.
+    paint_lookup: PaintLookup,
     /// One slot per emitted paint record (in insertion order). The slot
     /// is populated only for `.image` paints — gradient/solid records map
     /// to `null`. The atlas's CPU consumer (`CpuBackendCache.upload`)
@@ -117,7 +134,8 @@ pub const Atlas = struct {
             .allocator = allocator,
             .pool = null,
             .pages = &.{},
-            .lookup = .{},
+            .lookup = RecordLookup.init(allocator, .{}),
+            .paint_lookup = PaintLookup.init(allocator, .{}),
         };
     }
 
@@ -130,8 +148,8 @@ pub const Atlas = struct {
         if (self.pages.len > 0) self.allocator.free(self.pages);
         if (self.layer_info_data) |d| self.allocator.free(d);
         if (self.paint_image_records) |records| self.allocator.free(records);
-        self.paint_lookup.deinit(self.allocator);
-        self.lookup.deinit(self.allocator);
+        self.paint_lookup.deinit();
+        self.lookup.deinit();
         self.* = undefined;
     }
 
@@ -152,6 +170,10 @@ pub const Atlas = struct {
 
     pub fn recordCount(self: *const Atlas) u32 {
         return self.lookup.count();
+    }
+
+    pub fn paintRecordCount(self: *const Atlas) u32 {
+        return self.paint_lookup.count();
     }
 
     pub fn pageCount(self: *const Atlas) usize {
@@ -207,7 +229,6 @@ pub const Atlas = struct {
         atlases: []const *const Atlas,
     ) std.mem.Allocator.Error!Atlas {
         var pool: ?*PagePool = null;
-        var total_records: u32 = 0;
         for (atlases) |a| {
             if (a.pool) |p| {
                 if (pool == null) {
@@ -216,7 +237,6 @@ pub const Atlas = struct {
                     std.debug.assert(pool.? == p);
                 }
             }
-            total_records += a.recordCount();
         }
 
         var page_set = std.AutoHashMapUnmanaged(*AtlasPage, u16){};
@@ -235,9 +255,8 @@ pub const Atlas = struct {
             }
         }
 
-        var lookup: std.AutoHashMapUnmanaged(RecordKey, AtlasRecord) = .{};
-        errdefer lookup.deinit(allocator);
-        try lookup.ensureTotalCapacity(allocator, total_records);
+        var lookup = RecordLookup.init(allocator, .{});
+        errdefer lookup.deinit();
 
         for (atlases) |a| {
             var it = a.lookup.iterator();
@@ -247,7 +266,9 @@ pub const Atlas = struct {
                 const new_index = page_set.get(old_page).?;
                 var rec = kv.value_ptr.*;
                 rec.page_index = new_index;
-                lookup.putAssumeCapacity(kv.key_ptr.*, rec);
+                const next = try lookup.put(kv.key_ptr.*, rec);
+                lookup.deinit();
+                lookup = next;
             }
         }
 
@@ -259,6 +280,7 @@ pub const Atlas = struct {
             .pool = pool,
             .pages = try pages.toOwnedSlice(allocator),
             .lookup = lookup,
+            .paint_lookup = PaintLookup.init(allocator, .{}),
         };
     }
 

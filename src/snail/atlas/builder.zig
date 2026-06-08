@@ -34,6 +34,8 @@ const RecordKey = record_key_mod.RecordKey;
 const GlyphCurves = curves_mod.GlyphCurves;
 const PaintImageRecord = atlas_mod.PaintImageRecord;
 const PaintRecordInfo = atlas_mod.PaintRecordInfo;
+const RecordLookup = atlas_mod.RecordLookup;
+const PaintLookup = atlas_mod.PaintLookup;
 
 const CURVE_TEX_WIDTH = curve_tex_format.TEX_WIDTH;
 const CURVE_SEGMENT_TEXELS = curve_tex_format.SEGMENT_TEXELS;
@@ -45,10 +47,10 @@ pub const Builder = struct {
     allocator: std.mem.Allocator,
     pool: *PagePool,
     pages: std.ArrayList(*AtlasPage),
-    lookup: std.AutoHashMapUnmanaged(RecordKey, AtlasRecord),
+    lookup: RecordLookup,
     layer_info_buf: std.ArrayList(f32),
     layer_info_texels: u32,
-    paint_lookup: std.AutoHashMapUnmanaged(RecordKey, PaintRecordInfo),
+    paint_lookup: PaintLookup,
     /// Per-record slot for image paints. Indexed in insertion order;
     /// non-image paints land as `null`. Empty when no paints emitted.
     paint_image_records: std.ArrayList(?PaintImageRecord),
@@ -58,10 +60,10 @@ pub const Builder = struct {
             .allocator = allocator,
             .pool = pool,
             .pages = .empty,
-            .lookup = .{},
+            .lookup = RecordLookup.init(allocator, .{}),
             .layer_info_buf = .empty,
             .layer_info_texels = 0,
-            .paint_lookup = .{},
+            .paint_lookup = PaintLookup.init(allocator, .{}),
             .paint_image_records = .empty,
         };
     }
@@ -71,7 +73,19 @@ pub const Builder = struct {
         pool: *PagePool,
         base: *const Atlas,
     ) std.mem.Allocator.Error!Builder {
-        var b = Builder.init(allocator, pool);
+        var b = Builder{
+            .allocator = allocator,
+            .pool = pool,
+            .pages = .empty,
+            // Share base's lookup tree wholesale — every subsequent
+            // `put` path-copies just the new path and keeps the
+            // unchanged subtrees pointed at base's nodes.
+            .lookup = base.lookup.clone(),
+            .layer_info_buf = .empty,
+            .layer_info_texels = 0,
+            .paint_lookup = base.paint_lookup.clone(),
+            .paint_image_records = .empty,
+        };
         errdefer b.abort();
 
         try b.pages.ensureTotalCapacity(allocator, base.pages.len);
@@ -80,19 +94,10 @@ pub const Builder = struct {
             b.pages.appendAssumeCapacity(p);
         }
 
-        try b.lookup.ensureTotalCapacity(allocator, base.recordCount());
-        var it = base.lookup.iterator();
-        while (it.next()) |kv| {
-            b.lookup.putAssumeCapacity(kv.key_ptr.*, kv.value_ptr.*);
-        }
-
         if (base.layer_info_data) |src| {
             try b.layer_info_buf.appendSlice(allocator, src);
             b.layer_info_texels = @intCast(src.len / 4);
         }
-        try b.paint_lookup.ensureTotalCapacity(allocator, base.paint_lookup.count());
-        var pit = base.paint_lookup.iterator();
-        while (pit.next()) |kv| b.paint_lookup.putAssumeCapacity(kv.key_ptr.*, kv.value_ptr.*);
 
         if (base.paint_image_records) |src| {
             try b.paint_image_records.appendSlice(allocator, src);
@@ -103,10 +108,26 @@ pub const Builder = struct {
     pub fn abort(self: *Builder) void {
         for (self.pages.items) |p| self.pool.release(p);
         self.pages.deinit(self.allocator);
-        self.lookup.deinit(self.allocator);
+        self.lookup.deinit();
         self.layer_info_buf.deinit(self.allocator);
-        self.paint_lookup.deinit(self.allocator);
+        self.paint_lookup.deinit();
         self.paint_image_records.deinit(self.allocator);
+    }
+
+    /// In-place persistent put on `self.lookup`. The old map's last
+    /// reference is released; the new map shares structure with the
+    /// previous one through HAMT path-copy.
+    fn lookupPut(self: *Builder, key: RecordKey, value: AtlasRecord) !void {
+        const next = try self.lookup.put(key, value);
+        self.lookup.deinit();
+        self.lookup = next;
+    }
+
+    /// Same shape as `lookupPut` for the paint side.
+    fn paintLookupPut(self: *Builder, key: RecordKey, value: PaintRecordInfo) !void {
+        const next = try self.paint_lookup.put(key, value);
+        self.paint_lookup.deinit();
+        self.paint_lookup = next;
     }
 
     pub fn finish(self: *Builder) std.mem.Allocator.Error!Atlas {
@@ -285,7 +306,7 @@ pub const Builder = struct {
         }
         std.debug.assert(place_index == extra_placements.len);
 
-        try self.paint_lookup.put(self.allocator, key, .{
+        try self.paintLookupPut(key, .{
             .info_x = @intCast(header_offset % paint_records.info_width),
             .info_y = @intCast(header_offset / paint_records.info_width),
             .layer_count = @intCast(layer_count),
@@ -320,7 +341,7 @@ pub const Builder = struct {
         const band_tex_entry = bandToTexFormat(band_entry);
         const fill_rule_bit: u16 = if (fill_rule == .even_odd) paint_records.FILL_RULE_BIT else 0;
         paint_records.write(self.layer_info_buf.items, paint_records.info_width, texel_offset, band_tex_entry, paint, fill_rule_bit);
-        try self.paint_lookup.put(self.allocator, key, .{
+        try self.paintLookupPut(key, .{
             .info_x = @intCast(texel_offset % paint_records.info_width),
             .info_y = @intCast(texel_offset / paint_records.info_width),
             .layer_count = 1,
@@ -338,7 +359,7 @@ pub const Builder = struct {
         const curves = entry.curves;
 
         if (curves.isEmpty()) {
-            try self.lookup.put(self.allocator, entry.key, .{
+            try self.lookupPut(entry.key, .{
                 .page_index = 0,
                 .page_generation = 0,
                 .curve_texel = 0,
@@ -389,7 +410,7 @@ pub const Builder = struct {
             .bbox = bbox,
         };
 
-        try self.lookup.put(self.allocator, entry.key, record);
+        try self.lookupPut(entry.key, record);
 
         // Skip layer-info entirely if there's no paint at all.
         if (entry.paint == null and extra_count == 0) return;
