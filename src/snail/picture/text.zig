@@ -123,10 +123,10 @@ inline fn makeShape(g: anytype, options: ShapedRunOptions, font_id: u32, glyph_i
 }
 
 pub const HintedShapedRunOptions = struct {
-    /// Pen baseline in world coordinates (pixel-space).
+    /// Pen baseline in world coordinates.
     baseline: Vec2,
-    /// Em size in pixels. Used to scale the shaper's em-relative glyph
-    /// offsets into pixel-space pen positions.
+    /// Em size in world units. Used to scale the shaper's em-relative
+    /// glyph offsets into world-space pen positions.
     em: f32,
     /// 26.6 fixed-point ppem the glyphs were hinted at — the same value
     /// passed to the `HintVm` and used to key atlas entries under
@@ -136,6 +136,15 @@ pub const HintedShapedRunOptions = struct {
     /// still uses the unscaled em.
     ppem_26_6: u32,
     color: [4]f32 = .{ 1, 1, 1, 1 },
+    /// World→screen-pixel transform (typically `snail.mvpToScenePixel` of
+    /// the draw call's MVP). When non-null, the run's baseline is snapped
+    /// once to integer screen pixels before pen positions are computed,
+    /// so the hinter's pixel-grid alignment survives the projection.
+    /// Per-glyph advances (and any kerning carried in their em-relative
+    /// offsets) flow through unchanged — that's the difference vs. a
+    /// per-glyph snap, which would round kerning into noise. Pass `null`
+    /// for callers that prefer smooth sub-pixel motion.
+    world_to_pixel: ?Transform2D = null,
 };
 
 /// Build a Picture for hinted text. Caller is responsible for having
@@ -162,6 +171,12 @@ pub fn hintedShapedRunPicture(
     const ppem_px = @as(f32, @floatFromInt(ppem_26_6)) / 64.0;
     const scale: f32 = if (ppem_px > 0.0) options.em / ppem_px else 1.0;
 
+    // Baseline snap: round the *run's* origin once onto the screen pixel
+    // grid; per-glyph offsets ride along untouched. This is the same
+    // shape as DirectWrite Natural / Skia / Pango do — per-glyph snapping
+    // is what GDI Classic did, and it visibly quantizes kerning.
+    const baseline = snapBaseline(options.baseline, options.world_to_pixel);
+
     const buf = try allocator.alloc(Shape, shaped.glyphs.len);
     errdefer allocator.free(buf);
 
@@ -169,8 +184,8 @@ pub fn hintedShapedRunPicture(
         const fi: usize = @intCast(g.face_index);
         if (fi >= faces.faceCount()) return error.UnknownFaceIndex;
         const font_id = faces.face_to_font_id[fi];
-        const pen_x = options.baseline.x + options.em * g.x_offset;
-        const pen_y = options.baseline.y + options.em * g.y_offset;
+        const pen_x = baseline.x + options.em * g.x_offset;
+        const pen_y = baseline.y + options.em * g.y_offset;
         buf[i] = .{
             .key = record_key_mod.hintedGlyph(font_id, g.glyph_id, ppem_26_6),
             .local_transform = .{
@@ -186,6 +201,13 @@ pub fn hintedShapedRunPicture(
     }
 
     return Picture.fromOwnedSlice(allocator, buf);
+}
+
+fn snapBaseline(baseline: Vec2, world_to_pixel: ?Transform2D) Vec2 {
+    const w2p = world_to_pixel orelse return baseline;
+    const inv = w2p.inverse() orelse return baseline;
+    const screen = w2p.applyPoint(baseline);
+    return inv.applyPoint(.{ .x = @round(screen.x), .y = @round(screen.y) });
 }
 
 // ---------------------------------------------------------------------------
@@ -251,6 +273,45 @@ test "hintedShapedRunPicture builds shapes for hinted glyph keys" {
     try testing.expectApproxEqAbs(@as(f32, -1), pic.shapes[0].local_transform.yy, 1e-5);
     try testing.expectApproxEqAbs(@as(f32, 5), pic.shapes[0].local_transform.tx, 1e-5);
     try testing.expectApproxEqAbs(@as(f32, 32), pic.shapes[0].local_transform.ty, 1e-5);
+}
+
+test "hintedShapedRunPicture snaps run baseline once, preserves per-glyph offsets" {
+    const allocator = testing.allocator;
+    const snail = @import("../root.zig");
+    const font_data = @import("assets").noto_sans_regular;
+
+    var font = try Font.init(font_data);
+    var faces = try Faces.build(allocator, &.{.{ .font = &font }});
+    defer faces.deinit();
+
+    var shaped = try snail.shape(allocator, &faces, "AV", .{});
+    defer shaped.deinit();
+    try testing.expect(shaped.glyphs.len == 2);
+
+    // World→pixel: 0.5× scale with a fractional translation so a baseline
+    // world position of (10.0, 20.0) maps to screen (5.3, 10.7) — round
+    // to (5, 11), inverse back to a snapped world baseline of (9.4, 20.6).
+    const w2p = Transform2D{ .xx = 0.5, .yy = 0.5, .tx = 0.3, .ty = 0.7 };
+
+    const ppem: u32 = @intFromFloat(@round(14.0 * 64.0));
+    var pic = try hintedShapedRunPicture(allocator, &shaped, &faces, .{
+        .baseline = .{ .x = 10, .y = 20 },
+        .em = 14,
+        .ppem_26_6 = ppem,
+        .world_to_pixel = w2p,
+    });
+    defer pic.deinit();
+
+    // First glyph's pen lands on the snapped baseline.
+    try testing.expectApproxEqAbs(@as(f32, 9.4), pic.shapes[0].local_transform.tx, 1e-4);
+    try testing.expectApproxEqAbs(@as(f32, 20.6), pic.shapes[0].local_transform.ty, 1e-4);
+
+    // Second glyph's pen = snapped_baseline + em * x_offset. The
+    // em * x_offset delta must equal the unsnapped delta from baseline
+    // (i.e. snapping the baseline does not perturb intra-run advances).
+    const delta_x = pic.shapes[1].local_transform.tx - pic.shapes[0].local_transform.tx;
+    const expected_delta = 14.0 * shaped.glyphs[1].x_offset;
+    try testing.expectApproxEqAbs(expected_delta, delta_x, 1e-4);
 }
 
 test "hinted curves render through new API CPU draw" {
