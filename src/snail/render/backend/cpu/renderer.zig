@@ -278,37 +278,17 @@ pub const CpuRenderer = struct {
         }
     }
 
-    const DrawStateRestore = struct {
-        subpixel_order: SubpixelOrder,
-        target_encoding: snail.TargetEncoding,
-        target_resolve: cpu_blend.ResolveMode,
-        coverage_transfer: snail.CoverageTransfer,
-    };
-
-    fn applyDrawState(self: *CpuRenderer, state: snail.DrawState) DrawStateRestore {
-        const restore = DrawStateRestore{
-            .subpixel_order = self.subpixel_order,
-            .target_encoding = self.target_encoding,
-            .coverage_transfer = self.coverage_transfer,
-            .target_resolve = self.target_resolve,
-        };
+    pub fn drawBatch(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const u32, state: snail.DrawState, texture_layer_base: u32) !void {
+        // Drive the four fields the rendering helpers read off `self` from
+        // `state`. There's no save/restore: each `drawBatch` overwrites
+        // them from scratch, and `beginLinearResolve` owns `target_resolve`
+        // for the duration of a linear-resolve pass (so we leave it alone
+        // when one is active).
         self.subpixel_order = state.raster.subpixel_order;
         self.target_encoding = state.surface.encoding;
         if (!self.linear_resolve_active) self.target_resolve = .{ .direct = {} };
         self.coverage_transfer = state.raster.coverage_transfer;
-        return restore;
-    }
 
-    fn restoreDrawState(self: *CpuRenderer, restore: DrawStateRestore) void {
-        self.subpixel_order = restore.subpixel_order;
-        self.target_encoding = restore.target_encoding;
-        self.target_resolve = restore.target_resolve;
-        self.coverage_transfer = restore.coverage_transfer;
-    }
-
-    pub fn drawBatch(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const u32, state: snail.DrawState, texture_layer_base: u32) !void {
-        const restore = self.applyDrawState(state);
-        defer self.restoreDrawState(restore);
         // The CPU rasterizer doesn't do per-pixel 1/w, so a non-affine MVP
         // would silently disagree with the GPU backends. Refuse loudly.
         const scene = snail.mvpToScenePixel(state.mvp, state.surface.pixel_width, state.surface.pixel_height) orelse
