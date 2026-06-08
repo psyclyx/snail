@@ -3,6 +3,8 @@ const gl = @import("bindings.zig").gl;
 const gl_backend = @import("backend.zig");
 const gl_programs = @import("programs.zig");
 const gl_upload = @import("backend_cache.zig");
+const ring_buffer_mod = @import("ring_buffer.zig");
+const RingBuffer = ring_buffer_mod.RingBuffer;
 const gl_common = @import("../gl_common.zig");
 const linear_resolve = @import("../linear_resolve.zig");
 const draw_records_mod = @import("../../../picture/draw_records.zig");
@@ -35,14 +37,11 @@ const ProgramState = gl_programs.ProgramState;
 const deleteProgramState = gl_programs.deleteProgramState;
 const loadProgramState = gl_programs.loadProgramState;
 
-// ── GL 4.4 persistent mapping constants ──
+// ── Streaming constants ──
 
-const RING_SEGMENTS = 3;
-const RING_TOTAL_BYTES = 12 * 1024 * 1024; // 12 MB (4 MB per segment)
-const RING_SEGMENT_BYTES = RING_TOTAL_BYTES / RING_SEGMENTS;
-const GL33_STREAM_BYTES = RING_SEGMENT_BYTES;
+const GL33_STREAM_BYTES = ring_buffer_mod.SEGMENT_BYTES;
 const BYTES_PER_GLYPH = vertex.BYTES_PER_INSTANCE;
-const MAX_GLYPHS_PER_SEGMENT = RING_SEGMENT_BYTES / BYTES_PER_GLYPH;
+const MAX_GLYPHS_PER_SEGMENT = ring_buffer_mod.SEGMENT_BYTES / BYTES_PER_GLYPH;
 
 // ── GL text state ──
 
@@ -81,11 +80,7 @@ fn TextStateFor(comptime backend: Backend) type {
         active_program: gl.GLuint = 0,
         frame_begun: bool = false,
         supports_dual_source_blend: bool = false,
-        persistent_map: ?[*]u8 = null,
-        ring_fences: [RING_SEGMENTS]gl.GLsync = .{null} ** RING_SEGMENTS,
-        ring_segment: u32 = 0,
-        ring_offset: usize = 0,
-        ring_segment_dirty: [RING_SEGMENTS]bool = .{false} ** RING_SEGMENTS,
+        ring: RingBuffer = .{},
 
         // ── Per-program uniform shadow cache ──
         //
@@ -190,19 +185,15 @@ fn TextStateFor(comptime backend: Backend) type {
             gl.glCreateBuffers(1, &self.vbo);
             gl.glCreateBuffers(1, &self.ebo);
 
-            const flags: gl.GLbitfield = gl.GL_MAP_WRITE_BIT | gl.GL_MAP_PERSISTENT_BIT | gl.GL_MAP_COHERENT_BIT;
-            gl.glNamedBufferStorage(self.vbo, RING_TOTAL_BYTES, null, flags);
-            self.persistent_map = @ptrCast(gl.glMapNamedBufferRange(self.vbo, 0, RING_TOTAL_BYTES, flags));
-
-            if (self.persistent_map == null) {
+            self.ring.init(self.vbo) catch |err| {
                 gl.glDeleteVertexArrays(1, &self.vao);
                 gl.glDeleteBuffers(1, &self.vbo);
                 gl.glDeleteBuffers(1, &self.ebo);
                 self.vao = 0;
                 self.vbo = 0;
                 self.ebo = 0;
-                return error.UnsupportedOpenGlBackend;
-            }
+                return err;
+            };
 
             // All vertex attribs are per-instance (binding divisor = 1).
             const stride: gl.GLint = vertex.BYTES_PER_INSTANCE;
@@ -228,16 +219,7 @@ fn TextStateFor(comptime backend: Backend) type {
 
         pub fn deinit(self: *GlTextState) void {
             if (comptime backend == .gl44) {
-                for (&self.ring_fences) |*f| {
-                    if (f.*) |fence| {
-                        gl.glDeleteSync(fence);
-                        f.* = null;
-                    }
-                }
-                if (self.persistent_map != null) {
-                    _ = gl.glUnmapNamedBuffer(self.vbo);
-                    self.persistent_map = null;
-                }
+                self.ring.deinit(self.vbo);
             }
 
             deleteProgramState(&self.text_program);
@@ -646,12 +628,7 @@ fn TextStateFor(comptime backend: Backend) type {
             self.frame_begun = false;
             self.cached_heterogeneous_vao_bound = false;
             self.cached_replicated_vao_bound = false;
-            if (comptime backend == .gl44) {
-                if (!self.ring_segment_dirty[self.ring_segment]) return;
-                self.fenceRingSegment(self.ring_segment);
-                self.ring_segment = (self.ring_segment + 1) % RING_SEGMENTS;
-                self.ring_offset = 0;
-            }
+            if (comptime backend == .gl44) self.ring.beginFrame();
         }
 
         fn ensureColrProgram(self: *GlTextState) *const ProgramState {
@@ -669,64 +646,31 @@ fn TextStateFor(comptime backend: Backend) type {
             return &self.hinted_text_program;
         }
 
-        fn waitRingSegment(self: *GlTextState, segment: u32) void {
-            if (self.ring_fences[segment]) |fence| {
-                const status = gl.glClientWaitSync(fence, 0, 0);
-                if (status != gl.GL_ALREADY_SIGNALED and status != gl.GL_CONDITION_SATISFIED) {
-                    _ = gl.glClientWaitSync(fence, gl.GL_SYNC_FLUSH_COMMANDS_BIT, 1_000_000_000);
-                }
-                gl.glDeleteSync(fence);
-                self.ring_fences[segment] = null;
-            }
-        }
-
-        fn fenceRingSegment(self: *GlTextState, segment: u32) void {
-            if (!self.ring_segment_dirty[segment]) return;
-            self.ring_fences[segment] = gl.glFenceSync(gl.GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-            self.ring_segment_dirty[segment] = false;
-        }
-
-        fn advanceRingSegment(self: *GlTextState) void {
-            self.fenceRingSegment(self.ring_segment);
-            self.ring_segment = (self.ring_segment + 1) % RING_SEGMENTS;
-            self.ring_offset = 0;
-            self.waitRingSegment(self.ring_segment);
-        }
-
         fn drawGlyphRange(self: *GlTextState, vertices: []const u32, glyph_offset: usize, glyph_count: usize) void {
             var glyphs_drawn: usize = 0;
             while (glyphs_drawn < glyph_count) {
                 const word_offset = (glyph_offset + glyphs_drawn) * vertex.WORDS_PER_INSTANCE;
-                var chunk: usize = @min(glyph_count - glyphs_drawn, MAX_GLYPHS_PER_SEGMENT);
-                if (comptime backend == .gl44) {
-                    if (RING_SEGMENT_BYTES - self.ring_offset < BYTES_PER_GLYPH) {
-                        self.advanceRingSegment();
-                    } else {
-                        self.waitRingSegment(self.ring_segment);
-                    }
-                    const segment_capacity = (RING_SEGMENT_BYTES - self.ring_offset) / BYTES_PER_GLYPH;
-                    chunk = @min(chunk, segment_capacity);
-                }
-                const byte_size = chunk * BYTES_PER_GLYPH;
+                const remaining = glyph_count - glyphs_drawn;
+                const max_byte_size = @min(remaining, MAX_GLYPHS_PER_SEGMENT) * BYTES_PER_GLYPH;
+                const src: [*]const u8 = @ptrCast(vertices[word_offset..].ptr);
 
-                if (comptime backend == .gl33) {
-                    gl.glBufferSubData(gl.GL_ARRAY_BUFFER, 0, @intCast(byte_size), @ptrCast(vertices[word_offset..].ptr));
-                } else {
-                    const offset = @as(usize, self.ring_segment) * RING_SEGMENT_BYTES + self.ring_offset;
-                    const dst = self.persistent_map.?[offset..][0..byte_size];
-                    const src: [*]const u8 = @ptrCast(vertices[word_offset..].ptr);
+                var byte_size: usize = max_byte_size;
+                if (comptime backend == .gl44) {
+                    const grant = self.ring.reserve(max_byte_size, BYTES_PER_GLYPH);
+                    byte_size = grant.bytes;
+                    const dst = self.ring.map.?[grant.offset..][0..byte_size];
                     @memcpy(dst, src[0..byte_size]);
 
                     const stride: gl.GLint = vertex.BYTES_PER_INSTANCE;
-                    gl.glVertexArrayVertexBuffer(self.vao, 0, self.vbo, @intCast(offset), stride);
+                    gl.glVertexArrayVertexBuffer(self.vao, 0, self.vbo, @intCast(grant.offset), stride);
+                } else {
+                    gl.glBufferSubData(gl.GL_ARRAY_BUFFER, 0, @intCast(byte_size), src);
                 }
 
+                const chunk = byte_size / BYTES_PER_GLYPH;
                 gl.glDrawElementsInstanced(gl.GL_TRIANGLES, 6, gl.GL_UNSIGNED_INT, null, @intCast(chunk));
 
-                if (comptime backend == .gl44) {
-                    self.ring_offset += byte_size;
-                    self.ring_segment_dirty[self.ring_segment] = true;
-                }
+                if (comptime backend == .gl44) self.ring.commit(byte_size);
 
                 glyphs_drawn += chunk;
             }
