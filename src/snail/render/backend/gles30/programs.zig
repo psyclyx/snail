@@ -36,7 +36,7 @@ fn compileShader(shader_type: gl.GLenum, source: [*c]const u8) ?gl.GLuint {
 
 pub fn loadProgramState(cache_label: []const u8, vs_src: [*c]const u8, fs_src: [*c]const u8, dual_source: bool) !ProgramState {
     const handle = try linkProgram(cache_label, vs_src, fs_src, dual_source);
-    return .{
+    const ps = ProgramState{
         .handle = handle,
         .mvp_loc = gl.glGetUniformLocation(handle, "u_mvp"),
         .viewport_loc = gl.glGetUniformLocation(handle, "u_viewport"),
@@ -50,6 +50,21 @@ pub fn loadProgramState(cache_label: []const u8, vs_src: [*c]const u8, fs_src: [
         .layer_tex_loc = gl.glGetUniformLocation(handle, "u_layer_tex"),
         .layer_base_loc = gl.glGetUniformLocation(handle, "u_layer_base"),
     };
+
+    // Sampler bindings (units 0..3 → curve/band/layer/image) and
+    // `u_layer_base` never change at runtime, so set them once at link
+    // time to remove a half-dozen `glUniform1i` calls from every draw.
+    // Matches the GL 3.3/4.4 path in `gl/programs.zig`.
+    var prev_program: gl.GLint = 0;
+    gl.glGetIntegerv(gl.GL_CURRENT_PROGRAM, &prev_program);
+    gl.glUseProgram(handle);
+    if (ps.curve_tex_loc >= 0) gl.glUniform1i(ps.curve_tex_loc, 0);
+    if (ps.band_tex_loc >= 0) gl.glUniform1i(ps.band_tex_loc, 1);
+    if (ps.layer_tex_loc >= 0) gl.glUniform1i(ps.layer_tex_loc, 2);
+    if (ps.image_tex_loc >= 0) gl.glUniform1i(ps.image_tex_loc, 3);
+    if (ps.layer_base_loc >= 0) gl.glUniform1i(ps.layer_base_loc, 0);
+    gl.glUseProgram(@intCast(prev_program));
+    return ps;
 }
 
 pub fn deleteProgramState(prog_state: *ProgramState) void {

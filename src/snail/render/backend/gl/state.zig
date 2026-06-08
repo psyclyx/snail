@@ -3,6 +3,7 @@ const gl = @import("bindings.zig").gl;
 const gl_backend = @import("backend.zig");
 const gl_programs = @import("programs.zig");
 const gl_upload = @import("backend_cache.zig");
+const gl_common = @import("../gl_common.zig");
 const draw_records_mod = @import("../../../picture/draw_records.zig");
 const shaders = @import("shaders.zig");
 const subpixel_policy = @import("../subpixel_policy.zig");
@@ -14,6 +15,12 @@ const PixelRect = snail_mod.PixelRect;
 const IntermediateFormat = snail_mod.IntermediateFormat;
 const DrawState = snail_mod.DrawState;
 const TargetSurface = snail_mod.TargetSurface;
+
+pub const LinearResolveRestore = gl_common.LinearResolveRestore;
+const LinearResolvePass = gl_common.LinearResolvePass;
+const srgbFloatToLinear = gl_common.srgbFloatToLinear;
+const linearPremultipliedBackdropColor = gl_common.linearPremultipliedBackdropColor;
+const glRectY = gl_common.glRectY;
 
 // ── Backend selection ──
 
@@ -36,16 +43,6 @@ const BYTES_PER_GLYPH = vertex.BYTES_PER_INSTANCE;
 const MAX_GLYPHS_PER_SEGMENT = RING_SEGMENT_BYTES / BYTES_PER_GLYPH;
 
 // ── GL text state ──
-
-pub const LinearResolveRestore = struct {
-    draw_fbo: gl.GLint = 0,
-    read_fbo: gl.GLint = 0,
-    viewport: [4]gl.GLint = .{ 0, 0, 0, 0 },
-    resolve_rect: PixelRect = .{},
-    depth_test: bool = false,
-    scissor_test: bool = false,
-    blend: bool = false,
-};
 
 fn TextStateFor(comptime backend: Backend) type {
     return struct {
@@ -366,11 +363,6 @@ fn TextStateFor(comptime backend: Backend) type {
             self.frame_begun = false;
         }
 
-        const LinearResolvePass = enum(gl.GLint) {
-            seed_intermediate = 0,
-            encode_to_target = 1,
-        };
-
         fn snapshotResolveDestination(self: *GlTextState, restore: LinearResolveRestore, width: u32, height: u32) void {
             var prev_tex: gl.GLint = 0;
             gl.glGetIntegerv(gl.GL_TEXTURE_BINDING_2D, &prev_tex);
@@ -410,25 +402,6 @@ fn TextStateFor(comptime backend: Backend) type {
             const y = viewport_y + glRectY(rect, viewport_height);
             gl.glEnable(gl.GL_SCISSOR_TEST);
             gl.glScissor(rect.x, y, @intCast(rect.w), @intCast(rect.h));
-        }
-
-        fn glRectY(rect: PixelRect, height: u32) gl.GLint {
-            return @intCast(@as(i32, @intCast(height)) - rect.y - @as(i32, @intCast(rect.h)));
-        }
-
-        fn srgbFloatToLinear(v: f32) f32 {
-            const c = std.math.clamp(v, 0.0, 1.0);
-            return if (c <= 0.04045) c / 12.92 else std.math.pow(f32, (c + 0.055) / 1.055, 2.4);
-        }
-
-        fn linearPremultipliedBackdropColor(color_srgb: [4]f32) [4]f32 {
-            const alpha = std.math.clamp(color_srgb[3], 0.0, 1.0);
-            return .{
-                srgbFloatToLinear(color_srgb[0]) * alpha,
-                srgbFloatToLinear(color_srgb[1]) * alpha,
-                srgbFloatToLinear(color_srgb[2]) * alpha,
-                alpha,
-            };
         }
 
         fn ensureLinearResolve(self: *GlTextState, width: u32, height: u32, format: IntermediateFormat) !void {
