@@ -61,7 +61,10 @@ var current_frame: u32 = 0;
 var current_image_index: u32 = 0;
 var framebuffer_resized: bool = false;
 
-const DEMO_CLEAR_COLOR = [4]f32{ 0.04, 0.05, 0.07, 1.0 };
+/// Used when `beginFrame` is called with `null` (e.g. tests / tooling
+/// that doesn't care). The interactive demo passes the banner's cream
+/// background through `beginFrame(color)`.
+const DEFAULT_CLEAR_COLOR = [4]f32{ 0.04, 0.05, 0.07, 1.0 };
 
 // ── Frame timing ──
 fn nowNs() u64 {
@@ -232,7 +235,9 @@ fn destroyVulkanResources() void {
 
 /// Begin a new frame. Returns the command buffer to record into.
 /// Returns null if the swapchain needs recreation (caller should skip the frame).
-pub fn beginFrame() ?vk.VkCommandBuffer {
+/// `clear_color` is the RGBA value the render pass clears to; `null`
+/// uses `DEFAULT_CLEAR_COLOR`.
+pub fn beginFrame(clear_color: ?[4]f32) ?vk.VkCommandBuffer {
     frame_start_ns = nowNs();
 
     const t0 = nowNs();
@@ -263,7 +268,7 @@ pub fn beginFrame() ?vk.VkCommandBuffer {
     });
     _ = vk.vkBeginCommandBuffer(cmd, &begin_info);
 
-    const clear_value = vk.VkClearValue{ .color = .{ .float32 = DEMO_CLEAR_COLOR } };
+    const clear_value = vk.VkClearValue{ .color = .{ .float32 = clear_color orelse DEFAULT_CLEAR_COLOR } };
     const rp_info = std.mem.zeroInit(vk.VkRenderPassBeginInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
         .renderPass = render_pass,

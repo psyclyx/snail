@@ -393,10 +393,8 @@ const VulkanDriver = if (build_options.enable_vulkan) struct {
             }
         }
 
-        const cmd = vulkan_platform.beginFrame() orelse return false;
         const clear = clearColorForShader(clear_srgb, draw_state.surface.encoding);
-        _ = clear; // Vulkan platform clears with its own fixed colour; for the demo
-        // we accept the platform clear (the card fully covers the viewport anyway).
+        const cmd = vulkan_platform.beginFrame(clear) orelse return false;
 
         self.renderer_state.state.setCommandBuffer(cmd);
         defer self.renderer_state.state.clearCommandBuffer();

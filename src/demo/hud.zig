@@ -123,10 +123,10 @@ pub const Overlay = struct {
         };
 
         // Anchor the block to the top-right. line_h is body-of-text
-        // spacing; em is the per-glyph scale.
-        const em: f32 = 14.0;
-        const line_h: f32 = em * 1.4;
-        const padding: f32 = 16.0;
+        // spacing; em is the per-glyph scale (logical pixels).
+        const em: f32 = 20.0;
+        const line_h: f32 = em * 1.3;
+        const padding: f32 = 20.0;
         const right_edge: f32 = viewport_w - padding;
         const top_edge: f32 = padding + em; // baseline of first line
 
