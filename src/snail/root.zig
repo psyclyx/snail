@@ -124,6 +124,11 @@ pub const Picture = @import("picture.zig").Picture;
 pub const DrawSegment = @import("picture/draw_records.zig").DrawSegment;
 pub const Binding = @import("picture/draw_records.zig").Binding;
 pub const emit = @import("picture/emit.zig");
+pub const PictureFragment = @import("picture/fragment.zig").PictureFragment;
+pub const PictureMosaic = @import("picture/fragment.zig").PictureMosaic;
+pub const emitMosaic = @import("picture/fragment.zig").emitMosaic;
+pub const mosaicWordBudget = @import("picture/fragment.zig").mosaicWordBudget;
+pub const mosaicSegmentBudget = @import("picture/fragment.zig").mosaicSegmentBudget;
 
 // ── Custom-shader primitives ──
 //
@@ -185,6 +190,7 @@ test {
     _ = @import("picture.zig");
     _ = @import("picture/draw_records.zig");
     _ = @import("picture/emit.zig");
+    _ = @import("picture/fragment.zig");
     _ = @import("render/backend/cpu/backend_cache.zig");
     _ = @import("render/backend/cpu/draw.zig");
     _ = @import("render/backend/gl/backend_cache.zig");
