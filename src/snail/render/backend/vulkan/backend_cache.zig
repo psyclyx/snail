@@ -38,6 +38,7 @@ const upload_common = @import("../../format/upload_common.zig");
 const image_mod = @import("../../../image.zig");
 const vk_types = @import("types.zig");
 const vk_device = @import("device.zig");
+const cache_base = @import("../cache.zig");
 
 pub const vk = vk_types.vk;
 pub const VulkanContext = vk_types.VulkanContext;
@@ -54,30 +55,15 @@ const CURVE_WORDS_PER_ROW: u32 = CURVE_TEX_WIDTH * 4;
 const BAND_WORDS_PER_ROW: u32 = BAND_TEX_WIDTH * 2;
 const INFO_WIDTH: u32 = paint_records.info_width;
 
-pub const CacheOptions = struct {
-    max_bindings: u32 = 16,
-    layer_info_height: u32 = 64,
-    max_images: u32 = 16,
-    max_image_width: u32 = 1024,
-    max_image_height: u32 = 1024,
-};
-
-pub const UploadError = error{
-    NoFreeBinding,
-    NoFreeLayerInfoRows,
-    NoFreeImageLayers,
-    NoLayerInfoRoomToGrow,
-    UnknownPool,
-    UnknownBinding,
-    PageNotInPool,
+pub const CacheOptions = cache_base.GpuCacheOptions;
+pub const UploadError = cache_base.BaseUploadError || error{
     ImageTooLarge,
     MissingCommandBuffer,
     NoSuitableMemory,
     VulkanError,
     VulkanMapMemoryReturnedNull,
-} || std.mem.Allocator.Error;
-
-pub const ResizeError = error{ActiveBindingsPreventResize} || std.mem.Allocator.Error || error{VulkanError};
+};
+pub const ResizeError = cache_base.BaseResizeError || error{VulkanError};
 
 /// Minimal pipeline-shape adapter the cache talks to. The real
 /// `VulkanPipeline` satisfies this surface; tests can stub it.

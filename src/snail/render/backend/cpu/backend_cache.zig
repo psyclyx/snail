@@ -32,6 +32,7 @@ const paint_records = @import("../../../atlas/paint_records.zig");
 const cpu_resources = @import("resources.zig");
 const cpu_path_paint = @import("path_paint.zig");
 const image_mod = @import("../../../image.zig");
+const cache_base = @import("../cache.zig");
 
 pub const Atlas = atlas_mod.Atlas;
 pub const AtlasPage = page_mod.AtlasPage;
@@ -45,28 +46,9 @@ const CURVE_WORDS_PER_ROW: u32 = curve_tex.TEX_WIDTH * 4;
 const BAND_WORDS_PER_ROW: u32 = band_tex.TEX_WIDTH * 2;
 const INFO_WIDTH: u32 = paint_records.info_width;
 
-pub const CacheOptions = struct {
-    /// Maximum number of concurrent live bindings the cache supports.
-    /// `upload` errors with `error.NoFreeBinding` when this many
-    /// bindings are already active.
-    max_bindings: u32 = 16,
-    /// Total rows in the cache's shared layer-info buffer.
-    layer_info_height: u32 = 64,
-    /// Total layers in the cache's shared image storage.
-    max_images: u32 = 16,
-};
-
-pub const UploadError = error{
-    NoFreeBinding,
-    NoFreeLayerInfoRows,
-    NoFreeImageLayers,
-    NoLayerInfoRoomToGrow,
-    UnknownPool,
-    UnknownBinding,
-    PageNotInPool,
-} || std.mem.Allocator.Error;
-
-pub const ResizeError = error{ActiveBindingsPreventResize} || std.mem.Allocator.Error;
+pub const CacheOptions = cache_base.BaseCacheOptions;
+pub const UploadError = cache_base.BaseUploadError;
+pub const ResizeError = cache_base.BaseResizeError;
 
 pub const CpuBackendCache = struct {
     allocator: std.mem.Allocator,

@@ -30,6 +30,7 @@ const band_tex = @import("../../format/band_texture.zig");
 const paint_records = @import("../../../atlas/paint_records.zig");
 const upload_common = @import("../../format/upload_common.zig");
 const image_mod = @import("../../../image.zig");
+const cache_base = @import("../cache.zig");
 
 pub const Variant = enum {
     gl33,
@@ -62,35 +63,9 @@ const CURVE_WORDS_PER_ROW: u32 = CURVE_TEX_WIDTH * 4;
 const BAND_WORDS_PER_ROW: u32 = BAND_TEX_WIDTH * 2;
 const INFO_WIDTH: u32 = paint_records.info_width;
 
-pub const CacheOptions = struct {
-    /// Maximum number of concurrent live bindings.
-    max_bindings: u32 = 16,
-    /// Total rows in the persistent layer-info texture.
-    layer_info_height: u32 = 64,
-    /// Total layers in the persistent image array. `0` skips image-array
-    /// allocation entirely (callers with no image paints save the VRAM).
-    max_images: u32 = 16,
-    /// Maximum source-image width any single image-paint upload will use.
-    /// The image array is sized to this; smaller images are uploaded into
-    /// the lower-left corner and the layer_info `uv_scale` texel
-    /// compensates. Ignored when `max_images == 0`.
-    max_image_width: u32 = 1024,
-    /// Maximum source-image height. See `max_image_width`.
-    max_image_height: u32 = 1024,
-};
-
-pub const UploadError = error{
-    NoFreeBinding,
-    NoFreeLayerInfoRows,
-    NoFreeImageLayers,
-    NoLayerInfoRoomToGrow,
-    UnknownPool,
-    UnknownBinding,
-    PageNotInPool,
-    ImageTooLarge,
-} || std.mem.Allocator.Error;
-
-pub const ResizeError = error{ActiveBindingsPreventResize} || std.mem.Allocator.Error;
+pub const CacheOptions = cache_base.GpuCacheOptions;
+pub const UploadError = cache_base.BaseUploadError || error{ImageTooLarge};
+pub const ResizeError = cache_base.BaseResizeError;
 
 pub fn GlBackendCacheFor(comptime variant: Variant) type {
     const gl = bindingsFor(variant).gl;
