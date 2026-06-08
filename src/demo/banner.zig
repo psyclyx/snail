@@ -22,103 +22,30 @@ const snail = @import("snail");
 const snail_helpers = @import("snail-helpers");
 const banner_snail = @import("banner_snail.zig");
 const assets_data = @import("assets");
+const layout_mod = @import("banner/layout.zig");
 
 const Allocator = std.mem.Allocator;
 
 pub const addVectorSnail = banner_snail.addVectorSnail;
 
-// ── Reference canvas ──
+// Layout + palette + sizing constants live in banner/layout.zig.
+pub const Layout = layout_mod.Layout;
+pub const buildLayout = layout_mod.buildLayout;
+pub const clearColor = layout_mod.clearColor;
 
-const REF_W: f32 = 1680;
-const REF_H: f32 = 874;
-
-// ── Palette (light theme) ──
-
-const bg = [4]f32{ 0.96, 0.965, 0.975, 1.0 };
-const text_color = [4]f32{ 0.10, 0.10, 0.14, 1.0 };
-const muted = [4]f32{ 0.42, 0.46, 0.52, 1.0 };
-const accent = [4]f32{ 0.15, 0.38, 0.85, 1.0 };
-const surface = [4]f32{ 1.0, 1.0, 1.0, 1.0 };
-const border = [4]f32{ 0.84, 0.86, 0.89, 1.0 };
-
-// ── Layout ──
-
-pub const Layout = struct {
-    scale: f32,
-    canvas: snail.Rect,
-    title: snail.Rect,
-    styles: snail.Rect,
-    decorations: snail.Rect,
-    shaping: snail.Rect,
-    scripts: snail.Rect,
-    vectors: snail.Rect,
-    snail_stage: snail.Rect,
-};
-
-pub fn buildLayout(w: f32, h: f32) Layout {
-    const scale = @min(w / REF_W, h / REF_H);
-    const margin = 48 * scale;
-    const col_gap = 28 * scale;
-    const row_gap = 24 * scale;
-
-    const cx = (w - REF_W * scale) * 0.5;
-    const cy = (h - REF_H * scale) * 0.5;
-
-    // Title row
-    const title_h = 100 * scale;
-    const title = snail.Rect{ .x = cx + margin, .y = cy + margin, .w = REF_W * scale - margin * 2, .h = title_h };
-
-    // Content row: 4 columns
-    const content_top = title.y + title.h + row_gap;
-    const content_w = REF_W * scale - margin * 2;
-    const col_w = (content_w - col_gap * 3) / 4;
-    const content_h = 300 * scale;
-
-    const col_x = cx + margin;
-    const styles = snail.Rect{ .x = col_x, .y = content_top, .w = col_w, .h = content_h };
-    const decorations = snail.Rect{ .x = col_x + col_w + col_gap, .y = content_top, .w = col_w, .h = content_h };
-    const shaping = snail.Rect{ .x = col_x + (col_w + col_gap) * 2, .y = content_top, .w = col_w, .h = content_h };
-    const scripts = snail.Rect{ .x = col_x + (col_w + col_gap) * 3, .y = content_top, .w = col_w, .h = content_h };
-
-    // Vectors row
-    const vectors_top = content_top + content_h + row_gap;
-    const vectors_h = REF_H * scale - (vectors_top - cy) - margin;
-    const vectors_w = content_w * 0.55;
-    const vectors = snail.Rect{ .x = col_x, .y = vectors_top, .w = vectors_w, .h = vectors_h };
-
-    const snail_stage = snail.Rect{
-        .x = col_x + vectors_w + col_gap,
-        .y = vectors_top,
-        .w = content_w - vectors_w - col_gap,
-        .h = vectors_h,
-    };
-
-    return .{
-        .scale = scale,
-        .canvas = .{ .x = cx, .y = cy, .w = REF_W * scale, .h = REF_H * scale },
-        .title = title,
-        .styles = styles,
-        .decorations = decorations,
-        .shaping = shaping,
-        .scripts = scripts,
-        .vectors = vectors,
-        .snail_stage = snail_stage,
-    };
-}
-
-pub fn clearColor() [4]f32 {
-    return bg;
-}
-
-// ── Shared sizing constants (must match between text + vector helpers) ──
-
-const card_pad = 20;
-const heading_size = 15;
-const sub_heading_size = 13;
-const body_text_size = 22;
-const body_line_h = 28;
-const shape_sz = 56;
-const shape_gap = 14;
+const bg = layout_mod.bg;
+const text_color = layout_mod.text_color;
+const muted = layout_mod.muted;
+const accent = layout_mod.accent;
+const surface = layout_mod.surface;
+const border = layout_mod.border;
+const card_pad = layout_mod.card_pad;
+const heading_size = layout_mod.heading_size;
+const sub_heading_size = layout_mod.sub_heading_size;
+const body_text_size = layout_mod.body_text_size;
+const body_line_h = layout_mod.body_line_h;
+const shape_sz = layout_mod.shape_sz;
+const shape_gap = layout_mod.shape_gap;
 
 // ── Public API ──
 
