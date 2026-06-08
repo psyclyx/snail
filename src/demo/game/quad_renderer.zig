@@ -342,7 +342,7 @@ pub const QuadRenderer = struct {
         camera_pos: Vec3,
         light_pos: Vec3,
         light_color: [3]f32,
-    ) void {
+    ) !void {
         gl.glUseProgram(self.material.handle);
         gl.glBindVertexArray(self.material_vao);
         gl.glUniformMatrix4fv(self.material.view_proj_loc, 1, gl.GL_FALSE, &view_proj.data[0]);
@@ -389,14 +389,14 @@ pub const QuadRenderer = struct {
             };
             const backend = snail.coverage.Backend{ .gl33 = snail.coverage.Gl33Backend.from(input.text.gl_renderer, input.text.cache) };
             const coverage_program = snail.coverage.Program{ .gl33 = gl_program };
-            backend.bindProgram(coverage_program) catch unreachable;
+            try backend.bindProgram(coverage_program);
             // The snail emit path encodes the absolute atlas layer into each
             // per-instance glyph word, so `layer_base` is always 0.
-            backend.bindDrawState(coverage_program, .{
+            try backend.bindDrawState(coverage_program, .{
                 .subpixel_order = .none,
                 .coverage_transfer = .identity,
                 .layer_base = 0,
-            }) catch unreachable;
+            });
         } else {
             gl.glActiveTexture(textureUnitEnum(TEXT_RECORD_TEXTURE_UNIT));
             gl.glBindTexture(gl.GL_TEXTURE_BUFFER, 0);

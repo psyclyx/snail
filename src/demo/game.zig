@@ -454,7 +454,7 @@ fn renderWorld(
     gl.glClearColor(clear[0], clear[1], clear[2], clear[3]);
     gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT);
 
-    quad_renderer.drawMaterial(
+    try quad_renderer.drawMaterial(
         view_proj,
         common.composeModel(.{ .x = 0.0, .y = 0.0, .z = -6.3 }, -std.math.pi * 0.5, 0.0, .{ .x = 18.0, .y = 18.0, .z = 1.0 }),
         common.linearColor(34, 38, 46, 1.0),
@@ -472,7 +472,7 @@ fn renderWorld(
         light_pos,
         light_color,
     );
-    quad_renderer.drawMaterial(
+    try quad_renderer.drawMaterial(
         view_proj,
         common.composeModel(.{ .x = 0.0, .y = 3.8, .z = -6.3 }, std.math.pi * 0.5, 0.0, .{ .x = 18.0, .y = 18.0, .z = 1.0 }),
         common.linearColor(18, 22, 28, 1.0),
@@ -490,7 +490,7 @@ fn renderWorld(
         light_pos,
         light_color,
     );
-    quad_renderer.drawMaterial(
+    try quad_renderer.drawMaterial(
         view_proj,
         common.composeModel(.{ .x = 0.0, .y = 1.9, .z = -12.2 }, 0.0, 0.0, .{ .x = 18.0, .y = 3.8, .z = 1.0 }),
         common.linearColor(26, 31, 38, 1.0),
@@ -508,7 +508,7 @@ fn renderWorld(
         light_pos,
         light_color,
     );
-    quad_renderer.drawMaterial(
+    try quad_renderer.drawMaterial(
         view_proj,
         common.composeModel(.{ .x = -4.2, .y = 1.55, .z = -5.75 }, 0.0, 0.24, .{ .x = 3.8, .y = 2.55, .z = 1.0 }),
         common.linearColor(150, 145, 132, 1.0),
@@ -530,7 +530,7 @@ fn renderWorld(
         light_pos,
         light_color,
     );
-    quad_renderer.drawMaterial(
+    try quad_renderer.drawMaterial(
         view_proj,
         common.composeModel(.{ .x = 0.0, .y = 1.65, .z = -7.4 }, 0.0, 0.0, .{ .x = 2.65, .y = 1.45, .z = 1.0 }),
         common.linearColor(31, 35, 39, 1.0),
