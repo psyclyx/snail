@@ -54,9 +54,15 @@ pub const ShapeOptions = struct {
     /// `helpers.HintedGlyphCache.asAdvanceProvider()` so HB lookups hit
     /// the cache, falling back to the underlying `HintVm` on miss.
     advance_provider: ?AdvanceProvider = null,
-    /// The ppem the `advance_provider` is asked about and the scale HB
-    /// uses on the provider sub-font. Required whenever
-    /// `advance_provider` is non-null.
+    /// Ppem to shape at. Two roles, both shape-time:
+    ///   1. HB's sub-font scale is set to this so positions come back
+    ///      in 26.6 units of this ppem (the caller divides by ppem to
+    ///      recover em-space offsets).
+    ///   2. Passed to `advance_provider.get_advance` so the provider
+    ///      can look up the right hinted advance.
+    /// The provider does *not* carry its own ppem — it's a pure
+    /// `(font_id, glyph_id, ppem) → advance` function. Required
+    /// whenever `advance_provider` is non-null; ignored otherwise.
     target_ppem: ?HintPpem = null,
 };
 
