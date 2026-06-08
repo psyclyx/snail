@@ -6,6 +6,12 @@ const CurveSegment = bezier.CurveSegment;
 const Vec2 = snail.Vec2;
 const band_curve_loc_x_bits = 12;
 const band_curve_loc_x_mask: u32 = (1 << band_curve_loc_x_bits) - 1;
+// ref.y bits 0..13 are curve_loc_y; bits 14..15 are the curve kind (see
+// format/band_texture.zig::packBandCurveRef). The CPU coverage path
+// reads kind directly off the curve segment, so we only need to mask
+// the kind bits out of curve_loc_y here.
+const band_curve_loc_y_bits = 14;
+const band_curve_loc_y_mask: u32 = (1 << band_curve_loc_y_bits) - 1;
 
 pub const BandCurveRef = struct {
     base: usize,
@@ -37,9 +43,10 @@ pub fn readBandFirstMember(page: anytype, texel_idx: usize) u32 {
 pub fn readBandCurveRef(page: anytype, texel_idx: usize) ?BandCurveRef {
     const raw = readBandTexelLinear(page, texel_idx);
     const curve_x = raw[0] & band_curve_loc_x_mask;
-    if (curve_x >= page.curve_width or raw[1] >= page.curve_height) return null;
+    const curve_y = raw[1] & band_curve_loc_y_mask;
+    if (curve_x >= page.curve_width or curve_y >= page.curve_height) return null;
     return .{
-        .base = @as(usize, (raw[1] * page.curve_width + curve_x) * 4),
+        .base = @as(usize, (curve_y * page.curve_width + curve_x) * 4),
         .first_member_band = raw[0] >> band_curve_loc_x_bits,
     };
 }

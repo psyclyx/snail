@@ -5,7 +5,9 @@
 #define kRootCodeEps (1.0 / 65536.0)
 #define kCoverageBandSpanParamEps (1.0 / 100000.0)
 #define kBandCurveLocXMaskCommon 0x0FFFu
+#define kBandCurveLocYMaskCommon 0x3FFFu
 #define kBandCurveFirstMemberShiftCommon 12u
+#define kBandCurveKindShiftCommon 14u
 
 // Treat exact-edge float drift as the mathematical contour sample. The
 // half-open segment convention still comes from the root ordering below.
@@ -106,7 +108,11 @@ int decodeBandCurveFirstMemberCommon(uvec2 ref) {
 }
 
 ivec2 decodeBandCurveLocCommon(uvec2 ref) {
-    return ivec2(int(ref.x & kBandCurveLocXMaskCommon), int(ref.y));
+    return ivec2(int(ref.x & kBandCurveLocXMaskCommon), int(ref.y & kBandCurveLocYMaskCommon));
+}
+
+int decodeBandCurveKindCommon(uvec2 ref) {
+    return int(ref.y >> kBandCurveKindShiftCommon);
 }
 
 bool isCoverageBandSpanOwner(uvec2 ref, int band, int spanFirst) {

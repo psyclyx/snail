@@ -2,14 +2,20 @@
 const float kParamEps = 1e-5;
 const float kCoordEps = 1.0 / 65536.0;
 const uint kBandCurveLocXMask = 0x0FFFu;
+const uint kBandCurveLocYMask = 0x3FFFu;
 const uint kBandCurveFirstMemberShift = 12u;
+const uint kBandCurveKindShift = 14u;
 
 ivec2 decodeBandCurveLoc(uvec2 ref) {
-    return ivec2(int(ref.x & kBandCurveLocXMask), int(ref.y));
+    return ivec2(int(ref.x & kBandCurveLocXMask), int(ref.y & kBandCurveLocYMask));
 }
 
 int decodeBandCurveFirstMember(uvec2 ref) {
     return int(ref.x >> kBandCurveFirstMemberShift);
+}
+
+int decodeBandCurveKind(uvec2 ref) {
+    return int(ref.y >> kBandCurveKindShift);
 }
 
 ivec2 offsetLayerLoc(ivec2 base, int offset) {
@@ -121,31 +127,28 @@ vec2 solveQuadraticVertDistances(float p0x, float p0y, float p1x, float p1y, flo
     return vec2(y1 * ppeY, y2 * ppeY);
 }
 
-SegmentData fetchSegment(ivec2 loc, int layer) {
+// Kind is now packed into the band ref's top 2 bits (see
+// format/band_texture.zig::packBandCurveRef), so non-conic curves can
+// skip the third texelFetch entirely — the weights field is only
+// referenced by conic (kind=1). The indirect-encoding branch the
+// original code switched on `tex2.z` against `kDirectEncodingKindBias`
+// is no longer reachable from the path producer: every path glyph and
+// every freed vector picture goes through `encodeDirectSingleGlyphCurves`
+// / `prefer_direct_encoding = true`, so segments are always direct.
+SegmentData fetchSegment(ivec2 loc, int layer, int kind) {
     vec4 tex0 = texelFetch(u_curve_tex, ivec3(loc, layer), 0);
     vec4 tex1 = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(loc, 1), layer), 0);
-    vec4 tex2 = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(loc, 2), layer), 0);
     SegmentData seg;
-    bool direct = tex2.z >= kDirectEncodingKindBias - 0.5;
-    if (direct) {
-        seg.kind = int(tex2.z - kDirectEncodingKindBias + 0.5);
-        seg.p0 = tex0.xy;
-        seg.p1 = tex0.zw;
-        seg.p2 = tex1.xy;
-        seg.p3 = tex1.zw;
+    seg.kind = kind;
+    seg.p0 = tex0.xy;
+    seg.p1 = tex0.zw;
+    seg.p2 = tex1.xy;
+    seg.p3 = tex1.zw;
+    if (kind == 1) {
+        vec4 tex2 = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(loc, 2), layer), 0);
         seg.weights = vec3(tex2.w, tex2.x, tex2.y);
     } else {
-        vec2 anchor = tex0.xy * 256.0 + tex0.zw;
-        seg.kind = int(tex2.z + 0.5);
-        seg.p0 = anchor;
-        seg.p1 = anchor + tex1.xy;
-        seg.p2 = anchor + tex1.zw;
-        seg.p3 = anchor + tex2.xy;
         seg.weights = vec3(1.0);
-        if (seg.kind == 1) {
-            vec4 meta = texelFetch(u_curve_tex, ivec3(offsetCurveLoc(loc, 3), layer), 0);
-            seg.weights = vec3(tex2.w, meta.x, meta.y);
-        }
     }
     return seg;
 }
@@ -427,7 +430,8 @@ vec2 evalAxisCoverageBands(vec2 sampleRc, float ppe, ivec2 gLoc, int headerBase,
                 if (band != ownerBand) continue;
             }
             ivec2 cLoc = decodeBandCurveLoc(ref);
-            if (!accumulateAxisCoverageSegment(cov, wgt, sampleRc, ppe, fetchSegment(cLoc, layer), horizontal)) break;
+            int kind = decodeBandCurveKind(ref);
+            if (!accumulateAxisCoverageSegment(cov, wgt, sampleRc, ppe, fetchSegment(cLoc, layer, kind), horizontal)) break;
         }
     }
     return vec2(cov, wgt);

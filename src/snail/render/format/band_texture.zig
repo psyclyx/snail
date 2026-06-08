@@ -257,20 +257,29 @@ const curve_loc_x_bits = 12;
 const curve_loc_x_limit: u32 = 1 << curve_loc_x_bits;
 const curve_loc_x_mask: u16 = (1 << curve_loc_x_bits) - 1;
 
+// Curve kind packs into ref.y top 2 bits; curve_loc_y uses the low 14 bits.
+// Max curve_loc_y = 16383 rows × 4096 texels = 64K-curve layers, plenty.
+pub const curve_loc_y_bits = 14;
+pub const curve_loc_y_mask: u16 = (1 << curve_loc_y_bits) - 1;
+const curve_kind_shift = curve_loc_y_bits;
+
 comptime {
     if (TEX_WIDTH > curve_loc_x_limit) {
         @compileError("band curve refs pack curveLoc.x into 12 bits");
     }
 }
 
-fn packBandCurveRef(curve_texel: u32, first_member_band: u16) [2]u16 {
+fn packBandCurveRef(curve_texel: u32, first_member_band: u16, kind: bezier_mod.CurveKind) [2]u16 {
     const cx = curve_texel % TEX_WIDTH;
     const cy = curve_texel / TEX_WIDTH;
     std.debug.assert(cx <= curve_loc_x_mask);
+    std.debug.assert(cy <= curve_loc_y_mask);
     std.debug.assert(first_member_band < (1 << (16 - curve_loc_x_bits)));
+    const kind_bits: u16 = @intCast(@intFromEnum(kind));
+    std.debug.assert(kind_bits <= 3);
     return .{
         @as(u16, @intCast(cx)) | (first_member_band << curve_loc_x_bits),
-        @intCast(cy),
+        @as(u16, @intCast(cy)) | (kind_bits << curve_kind_shift),
     };
 }
 
@@ -369,6 +378,7 @@ fn packBandLists(
     allocator: std.mem.Allocator,
     curve_entry: curve_tex.GlyphCurveEntry,
     lists: *const BandLists,
+    prepared_curves: []const CurveSegment,
 ) !PackedBandData {
     const h_bands = @as(usize, lists.h_band_count);
     const v_bands = @as(usize, lists.v_band_count);
@@ -403,7 +413,8 @@ fn packBandLists(
     for (0..h_bands) |bi| {
         for (lists.hBand(bi)) |curve_idx| {
             const curve_texel = @as(u32, curve_entry.offset) + @as(u32, curve_idx) * curve_tex.SEGMENT_TEXELS;
-            const encoded = packBandCurveRef(curve_texel, lists.h_first_member[@intCast(curve_idx)]);
+            const kind = prepared_curves[@intCast(curve_idx)].kind;
+            const encoded = packBandCurveRef(curve_texel, lists.h_first_member[@intCast(curve_idx)], kind);
             data[write_pos * 2 + 0] = encoded[0];
             data[write_pos * 2 + 1] = encoded[1];
             write_pos += 1;
@@ -413,7 +424,8 @@ fn packBandLists(
     for (0..v_bands) |bi| {
         for (lists.vBand(bi)) |curve_idx| {
             const curve_texel = @as(u32, curve_entry.offset) + @as(u32, curve_idx) * curve_tex.SEGMENT_TEXELS;
-            const encoded = packBandCurveRef(curve_texel, lists.v_first_member[@intCast(curve_idx)]);
+            const kind = prepared_curves[@intCast(curve_idx)].kind;
+            const encoded = packBandCurveRef(curve_texel, lists.v_first_member[@intCast(curve_idx)], kind);
             data[write_pos * 2 + 0] = encoded[0];
             data[write_pos * 2 + 1] = encoded[1];
             write_pos += 1;
@@ -546,7 +558,7 @@ pub fn buildGlyphBandDataWithPreparedCurves(
     lists.sortMembership(curve_sort_max_x, curve_sort_max_y);
     // The packed band data is the returned output — owned by the
     // caller's `allocator`.
-    const packed_data = try packBandLists(allocator, curve_entry, &lists);
+    const packed_data = try packBandLists(allocator, curve_entry, &lists, prepared_curves);
 
     // Band transform: maps em-space coords to band indices
     const band_scale_x = @as(f32, @floatFromInt(v_bands)) / @max(geometry.width, 1e-10);
