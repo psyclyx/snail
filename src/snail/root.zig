@@ -78,6 +78,7 @@ pub const snapDeltaToStep = target.snapDeltaToStep;
 pub const snapLengthToStep = target.snapLengthToStep;
 pub const snapPointToStep = target.snapPointToStep;
 pub const snapRectToStep = target.snapRectToStep;
+pub const mvpToScenePixel = target.mvpToScenePixel;
 pub const TargetSurface = target.TargetSurface;
 pub const RasterOptions = target.RasterOptions;
 pub const DrawState = target.DrawState;

@@ -66,7 +66,6 @@ const PreparedPathLayer = cpu_path_paint.PreparedPathLayer;
 const PreparedPathRecord = cpu_path_paint.PreparedPathRecord;
 const PreparedAtlasPage = cpu_resources.PreparedAtlasPage;
 const samplePathPaint = cpu_path_paint.samplePathPaint;
-const sceneToPixelFromMvp = cpu_geometry.sceneToPixelFromMvp;
 const ScreenBounds = cpu_geometry.ScreenBounds;
 const srgbBytesToLinearColor = cpu_color.srgbBytesToLinearColor;
 const srgbColorToLinear = cpu_color.srgbColorToLinear;
@@ -310,7 +309,10 @@ pub const CpuRenderer = struct {
     pub fn drawBatch(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const u32, state: snail.DrawState, texture_layer_base: u32) !void {
         const restore = self.applyDrawState(state);
         defer self.restoreDrawState(restore);
-        const scene = sceneToPixelFromMvp(state.mvp, state.surface.pixel_width, state.surface.pixel_height);
+        // The CPU rasterizer doesn't do per-pixel 1/w, so a non-affine MVP
+        // would silently disagree with the GPU backends. Refuse loudly.
+        const scene = snail.mvpToScenePixel(state.mvp, state.surface.pixel_width, state.surface.pixel_height) orelse
+            std.debug.panic("CpuRenderer: MVP is non-affine (perspective) or degenerate", .{});
         if (self.thread_pool) |pool| {
             if (pool.threadCount() > 0 and self.row_clip_max > self.row_clip_min + TILE_ROWS) {
                 self.drawBatchInstancesParallel(pool, prepared, vertices, scene, texture_layer_base, true);

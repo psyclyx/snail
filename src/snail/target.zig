@@ -3,6 +3,7 @@ const vec = @import("math/vec.zig");
 
 const Mat4 = vec.Mat4;
 const Vec2 = vec.Vec2;
+const Transform2D = vec.Transform2D;
 
 pub const FillRule = enum(c_int) {
     non_zero = 0,
@@ -241,6 +242,50 @@ pub fn resolveRect(surface: TargetSurface, resolve: LinearResolve) PixelRect {
     return resolve.region.rect(width, height);
 }
 
+/// Project the z = 0 plane of `mvp` to viewport pixel coordinates and
+/// return the resulting world→pixel 2D affine. `viewport_w` / `viewport_h`
+/// are the framebuffer dimensions the MVP renders into (snail uses
+/// y-down screen space, so the returned `yy` for a typical ortho MVP is
+/// positive).
+///
+/// Returns `null` for non-affine (perspective) MVPs or degenerate
+/// (w ≈ 0) projections, in which case the caller has nothing meaningful
+/// to snap against.
+pub fn mvpToScenePixel(mvp: Mat4, viewport_w: f32, viewport_h: f32) ?Transform2D {
+    const m = mvp.data;
+
+    // Apply mvp to (0,0,0,1), (1,0,0,1), (0,1,0,1) — origin and basis
+    // vectors of the z = 0 plane. Affine projection of the plane
+    // requires constant w across the three; reject perspective.
+    const o_clip = [3]f32{ m[12], m[13], m[15] };
+    const x_clip = [3]f32{ m[0] + m[12], m[1] + m[13], m[3] + m[15] };
+    const y_clip = [3]f32{ m[4] + m[12], m[5] + m[13], m[7] + m[15] };
+
+    const eps_w: f32 = 1e-4;
+    if (@abs(o_clip[2] - x_clip[2]) > eps_w or @abs(o_clip[2] - y_clip[2]) > eps_w) return null;
+    if (@abs(o_clip[2]) < 1e-6) return null;
+
+    const inv_w = 1.0 / o_clip[2];
+    const half_w = viewport_w * 0.5;
+    const half_h = viewport_h * 0.5;
+
+    const o_x = (o_clip[0] * inv_w + 1.0) * half_w;
+    const o_y = (1.0 - o_clip[1] * inv_w) * half_h;
+    const x_x = (x_clip[0] * inv_w + 1.0) * half_w;
+    const x_y = (1.0 - x_clip[1] * inv_w) * half_h;
+    const y_x = (y_clip[0] * inv_w + 1.0) * half_w;
+    const y_y = (1.0 - y_clip[1] * inv_w) * half_h;
+
+    return .{
+        .xx = x_x - o_x,
+        .yx = x_y - o_y,
+        .xy = y_x - o_x,
+        .yy = y_y - o_y,
+        .tx = o_x,
+        .ty = o_y,
+    };
+}
+
 pub const Rect = struct {
     x: f32,
     y: f32,
@@ -251,4 +296,29 @@ pub const Rect = struct {
 test "pixel rect clips to target bounds" {
     try std.testing.expectEqual(PixelRect{ .x = 2, .y = 0, .w = 3, .h = 4 }, (PixelRect{ .x = 2, .y = -3, .w = 8, .h = 7 }).clipped(5, 4));
     try std.testing.expectEqual(PixelRect{}, (PixelRect{ .x = 9, .y = 1, .w = 2, .h = 2 }).clipped(5, 4));
+}
+
+test "mvpToScenePixel composes ortho + scene transform into world→pixel" {
+    const projection = Mat4.ortho(0, 100, 50, 0, -1, 1);
+    const scene = Mat4.multiply(
+        Mat4.translate(10, -5, 0),
+        Mat4.scaleUniform(0.5),
+    );
+    const mvp = Mat4.multiply(projection, scene);
+    const t = mvpToScenePixel(mvp, 200, 100) orelse return error.TestExpectedTransform;
+
+    // World (0,0) should map to (10*2 + 0*2, -5*2 + 0*2) = (20, -10) pixels.
+    const origin = t.applyPoint(.{ .x = 0, .y = 0 });
+    try std.testing.expectApproxEqAbs(@as(f32, 20), origin.x, 1e-4);
+    try std.testing.expectApproxEqAbs(@as(f32, -10), origin.y, 1e-4);
+
+    // World x basis (1,0): pixel delta = (0.5 * 2, 0) = (1, 0).
+    const basis_x = t.applyPoint(.{ .x = 1, .y = 0 });
+    try std.testing.expectApproxEqAbs(@as(f32, 21), basis_x.x, 1e-4);
+    try std.testing.expectApproxEqAbs(@as(f32, -10), basis_x.y, 1e-4);
+}
+
+test "mvpToScenePixel returns null on perspective MVPs" {
+    const persp = Mat4.perspective(std.math.pi * 0.5, 1.0, 0.1, 100);
+    try std.testing.expectEqual(@as(?Transform2D, null), mvpToScenePixel(persp, 100, 100));
 }

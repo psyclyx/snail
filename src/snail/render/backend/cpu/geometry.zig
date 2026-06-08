@@ -5,53 +5,6 @@ const Vec2 = snail.Vec2;
 const Transform2D = snail.Transform2D;
 const SubpixelOrder = snail.SubpixelOrder;
 
-pub fn sceneToPixelFromMvp(mvp: snail.Mat4, vw: f32, vh: f32) Transform2D {
-    const m = mvp.data;
-
-    // Apply mvp to (0, 0, 0, 1), (1, 0, 0, 1), (0, 1, 0, 1) — origin and
-    // basis vectors of the glyph-local z = 0 plane.
-    const o_clip = [3]f32{ m[12], m[13], m[15] };
-    const x_clip = [3]f32{ m[0] + m[12], m[1] + m[13], m[3] + m[15] };
-    const y_clip = [3]f32{ m[4] + m[12], m[5] + m[13], m[7] + m[15] };
-
-    // Affine projection of the plane requires constant w across reference
-    // points. A perspective MVP would violate this; the CPU rasterizer
-    // doesn't yet do per-pixel `1/w`, so refuse rather than produce output
-    // that disagrees with the GPU backends.
-    const eps_w: f32 = 1e-4;
-    if (@abs(o_clip[2] - x_clip[2]) > eps_w or @abs(o_clip[2] - y_clip[2]) > eps_w) {
-        std.debug.panic(
-            "CpuRenderer: MVP projects the z = 0 plane non-affinely (perspective). w(o)={d}, w(x)={d}, w(y)={d}",
-            .{ o_clip[2], x_clip[2], y_clip[2] },
-        );
-    }
-    if (@abs(o_clip[2]) < 1e-6) {
-        std.debug.panic("CpuRenderer: degenerate MVP — w == 0", .{});
-    }
-
-    const inv_w = 1.0 / o_clip[2];
-    const half_w = vw * 0.5;
-    const half_h = vh * 0.5;
-
-    // ndc = clip / w, then viewport remap (snail uses y-down screen space, so
-    // ndc_y is flipped).
-    const o_x = (o_clip[0] * inv_w + 1.0) * half_w;
-    const o_y = (1.0 - o_clip[1] * inv_w) * half_h;
-    const x_x = (x_clip[0] * inv_w + 1.0) * half_w;
-    const x_y = (1.0 - x_clip[1] * inv_w) * half_h;
-    const y_x = (y_clip[0] * inv_w + 1.0) * half_w;
-    const y_y = (1.0 - y_clip[1] * inv_w) * half_h;
-
-    return .{
-        .xx = x_x - o_x,
-        .yx = x_y - o_y,
-        .xy = y_x - o_x,
-        .yy = y_y - o_y,
-        .tx = o_x,
-        .ty = o_y,
-    };
-}
-
 pub fn inverseTransform(transform: Transform2D) ?Transform2D {
     const det = transform.xx * transform.yy - transform.xy * transform.yx;
     if (@abs(det) < 1.0 / 65536.0) return null;
