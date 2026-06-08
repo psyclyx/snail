@@ -813,6 +813,16 @@ const CpuDriver = if (build_options.enable_cpu) struct {
             var slen: usize = 0;
             _ = try snail.emit.emit(self.overlay_scratch.words, self.overlay_scratch.segs, &wlen, &slen, self.overlay_binding, ov.atlas, ov.picture, .identity, .{ 1, 1, 1, 1 });
             if (slen > 0) {
+                // The HUD draws a few hundred pixels' worth of glyphs.
+                // The CPU renderer dispatches one tile per 2 rows, so a
+                // threaded HUD draw would fire hundreds of thread-pool
+                // jobs for ~120 rows of actual work — the dispatch cost
+                // dwarfs the rasterization. Detach the pool for the
+                // HUD draw so it runs on the calling thread, then put
+                // the pool back for the next frame's main draw.
+                const saved_pool = self.pool;
+                self.renderer_state.setThreadPool(null);
+                defer self.renderer_state.setThreadPool(saved_pool);
                 try snail.drawCpu(&self.renderer_state, ov.draw_state, .{ .words = self.overlay_scratch.words[0..wlen], .segments = self.overlay_scratch.segs[0..slen] }, &.{&self.overlay_cache.?});
             }
         }
