@@ -149,6 +149,7 @@ const ContentCache = struct {
     last_size: [2]u32 = .{ 0, 0 },
     last_hint_active: bool = false,
     last_hint_ppem_bits: u32 = 0,
+    last_world_to_pixel: ?snail.Transform2D = null,
 
     fn init(allocator: std.mem.Allocator) !ContentCache {
         const pool = try snail.PagePool.init(allocator, .{
@@ -167,9 +168,12 @@ const ContentCache = struct {
         self.pool.deinit();
     }
 
-    /// Get or rebuild the full banner content. Atlases + pictures are torn
-    /// down on resize / hint-mode change; the long-lived `Assets` (fonts,
-    /// shaper, hinter) and the `PagePool` survive across rebuilds.
+    /// Get or rebuild the full banner content. Hinted runs snap their
+    /// baseline through `world_to_pixel`, so rebuilds happen whenever the
+    /// MVP-projected world→pixel transform changes — that's per pan as
+    /// well as per zoom while hinting is active. The long-lived `Assets`
+    /// (fonts, hinter, hinted-glyph cache) and `PagePool` survive across
+    /// rebuilds, so the TT VM only runs once per `(glyph_id, ppem)`.
     /// Returns `dirty=true` when the content was rebuilt this call.
     fn get(
         self: *ContentCache,
@@ -177,13 +181,15 @@ const ContentCache = struct {
         height: u32,
         hint_active: bool,
         hint_ppem_scale: f32,
+        world_to_pixel: ?snail.Transform2D,
     ) !struct { content: *demo_banner.Content, dirty: bool } {
         const ppem_bits: u32 = @bitCast(hint_ppem_scale);
+        const w2p_same = transform2DEql(self.last_world_to_pixel, world_to_pixel);
         const same = self.content != null and
             self.last_size[0] == width and
             self.last_size[1] == height and
             self.last_hint_active == hint_active and
-            (!hint_active or self.last_hint_ppem_bits == ppem_bits);
+            (!hint_active or (self.last_hint_ppem_bits == ppem_bits and w2p_same));
         if (same) return .{ .content = &self.content.?, .dirty = false };
 
         if (self.content) |*old| old.deinit();
@@ -192,6 +198,7 @@ const ContentCache = struct {
         const hint_opts: demo_banner.HintOptions = .{
             .enabled = hint_active,
             .ppem_scale = hint_ppem_scale,
+            .world_to_pixel = if (hint_active) world_to_pixel else null,
         };
         self.content = try demo_scene.build(
             self.allocator,
@@ -205,9 +212,18 @@ const ContentCache = struct {
         self.last_size = .{ width, height };
         self.last_hint_active = hint_active;
         self.last_hint_ppem_bits = ppem_bits;
+        self.last_world_to_pixel = world_to_pixel;
         return .{ .content = &self.content.?, .dirty = true };
     }
 };
+
+fn transform2DEql(a: ?snail.Transform2D, b: ?snail.Transform2D) bool {
+    if (a == null and b == null) return true;
+    if (a == null or b == null) return false;
+    const x = a.?;
+    const y = b.?;
+    return x.xx == y.xx and x.xy == y.xy and x.yx == y.yx and x.yy == y.yy and x.tx == y.tx and x.ty == y.ty;
+}
 
 pub fn main() !void {
     var da: std.heap.DebugAllocator(.{}) = .init;
@@ -336,13 +352,17 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
         if (w < 1.0 or h < 1.0 or viewport_w < 1.0 or viewport_h < 1.0) continue;
 
         const hint_active = hint_mode.active(moving);
-        // Hint ppem scale: the banner sets the base ppem per glyph; this
-        // multiplier follows zoom so hinted glyphs hit pixel grids correctly
-        // when the world is scaled.
-        const hint_ppem_scale: f32 = zoom;
+        // Hint at the *framebuffer* ppem the glyph will occupy, not the
+        // logical-pixel ppem. On a HiDPI display the framebuffer is wider
+        // than the logical size; hinting at logical ppem would render every
+        // hint pixel as a buffer_scale-sized block (i.e. half-resolution
+        // glyphs on a 2× display). Factor in framebuffer/logical so the
+        // hinter targets the real pixel grid the GPU writes to.
+        const hint_ppem_scale: f32 = zoom * (viewport_h / h);
 
-        const cached = try content_cache.get(size[0], size[1], hint_active, hint_ppem_scale);
-
+        // MVP first — the hinted-text picture builder needs the
+        // world→pixel transform to snap each shaped run's baseline onto
+        // the screen pixel grid (without quantizing per-glyph kerning).
         const projection = snail.Mat4.ortho(0, w, h, 0, -1, 1);
         const cx = w * 0.5;
         const cy = h * 0.5;
@@ -360,6 +380,9 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
             ),
         );
         const mvp = snail.Mat4.multiply(projection, scene_transform);
+        const world_to_pixel = snail.mvpToScenePixel(mvp, viewport_w, viewport_h);
+
+        const cached = try content_cache.get(size[0], size[1], hint_active, hint_ppem_scale, world_to_pixel);
 
         if (dump_repro) {
             dumpReproFrame(frame_count, active.backendName(), current_order, hint_mode, hint_active, present, pan_x, pan_y, zoom, angle);

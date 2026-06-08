@@ -127,6 +127,12 @@ pub const HintOptions = struct {
     /// Scales the font-size em to a hinter ppem. Legacy banner used 1.0;
     /// pass values >1.0 for super-sampled hinting.
     ppem_scale: f32 = 1.0,
+    /// World→screen-pixel transform handed to `hintedShapedRunPicture` so
+    /// each shaped run snaps its baseline once onto the screen pixel grid.
+    /// `null` leaves baselines exact (sub-pixel motion under pan, fuzzy
+    /// stems). Demos that animate should pass the current frame's MVP
+    /// world→pixel here.
+    world_to_pixel: ?snail.Transform2D = null,
 };
 
 /// Built banner ready for upload + emit. Atlases, pictures, and the
@@ -924,10 +930,13 @@ const BannerBuilder = struct {
     };
 
     fn place(self: *BannerBuilder, x: f32, y: f32, size: f32) Placement {
-        const point = snail.snapPointToStep(.{ .x = x, .y = y }, self.snap_step, .nearest);
+        // World baselines are left raw — `emit.EmitOptions.pixel_snap`
+        // snaps hinted runs onto the screen pixel grid at draw time, and
+        // unhinted runs antialias gracefully at any sub-pixel position.
+        // Size is still snapped to keep hint-ppem stable across rebuilds.
         return .{
-            .x = point.x,
-            .y = point.y,
+            .x = x,
+            .y = y,
             .size = snail.snapLengthToStep(size, self.snap_step.y, .nearest, 1.0),
         };
     }
@@ -1196,21 +1205,28 @@ const BannerBuilder = struct {
         placement: Placement,
         color: [4]f32,
     ) !bool {
-        const hinter = self.assets.hint_vm orelse return false;
+        const cache = if (self.assets.hinted_cache) |*c| c else return false;
         const ppem_26_6 = hintPpem26_6(placement.size, self.hint_opts.ppem_scale) catch return false;
         const ppem = snail.HintPpem.uniform(ppem_26_6);
 
-        // Hint and insert curves for every glyph in the run before emitting
-        // shapes, so a mid-run failure leaves the atlas state clean.
+        // Insert curves for every glyph in the run before emitting shapes,
+        // so a mid-run failure leaves the atlas state clean. Curves come
+        // from `HintedGlyphCache`, which memoizes per (glyph_id, ppem) —
+        // per-frame rebuilds at the same zoom hit the cache and skip the
+        // TT VM entirely.
         for (shaped.glyphs) |g| {
             const key = snail.recordKey.hintedGlyph(0, g.glyph_id, ppem_26_6);
             if (containsKey(self.text_entries.items, key)) continue;
-            const curves = hinter.hintGlyph(self.allocator, self.scratch_arena.allocator(), g.glyph_id, ppem) catch return false;
+            const curves_ptr = cache.getOrInsertCurves(
+                self.allocator,
+                self.scratch_arena.allocator(),
+                g.glyph_id,
+                ppem,
+            ) catch return false;
             _ = self.scratch_arena.reset(.retain_capacity);
-            try self.text_curves_owned.append(self.allocator, curves);
             try self.text_entries.append(self.allocator, .{
                 .key = key,
-                .curves = self.text_curves_owned.items[self.text_curves_owned.items.len - 1],
+                .curves = curves_ptr.*,
             });
         }
 
@@ -1219,6 +1235,7 @@ const BannerBuilder = struct {
             .em = placement.size,
             .ppem_26_6 = ppem_26_6,
             .color = color,
+            .world_to_pixel = self.hint_opts.world_to_pixel,
         });
         defer picture.deinit();
         try self.text_shapes.appendSlice(self.allocator, picture.shapes);
