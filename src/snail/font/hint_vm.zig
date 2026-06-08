@@ -53,11 +53,72 @@ pub const HintVmStats = struct {
     machine_bytes: usize,
 };
 
+/// Failures returned by `HintVm` operations. Spelled out explicitly so a
+/// new opcode or table-parse variant in the underlying TT VM doesn't
+/// silently widen the public surface.
 pub const HintError = error{
+    // HintVm-specific.
     NoHinting,
     GlyphTopologyChanged,
     InvalidStorageSnapshot,
-} || std.mem.Allocator.Error || tt_exec.Error || tt_tables.ParseError || tt_points.Error;
+    // Allocator (mirrors std.mem.Allocator.Error).
+    OutOfMemory,
+    // TT VM execution (mirrors truetype/exec.zig Error).
+    BufferTooSmall,
+    UnexpectedEof,
+    StackUnderflow,
+    StackOverflow,
+    InvalidOpcode,
+    InvalidStorageIndex,
+    InvalidCvtIndex,
+    InvalidPoint,
+    InvalidZone,
+    InvalidJump,
+    MissingZones,
+    UnsupportedVector,
+    MissingFunctions,
+    TooManyFunctions,
+    UnknownFunction,
+    CallDepthExceeded,
+    InvalidFunctionDefinition,
+    ExecutionLimitExceeded,
+    DivisionByZero,
+    // Font-table parse (mirrors truetype/tables.zig ParseError).
+    InvalidFont,
+    MissingRequiredTable,
+};
+
+comptime {
+    @setEvalBranchQuota(5000);
+    // Compile-time guard so adding a variant to one of the underlying
+    // error sets surfaces here instead of silently widening HintError.
+    const expected = error{
+        NoHinting,
+        GlyphTopologyChanged,
+        InvalidStorageSnapshot,
+    } || std.mem.Allocator.Error || tt_exec.Error || tt_tables.ParseError || tt_points.Error;
+    assertErrorSetsMatch(HintError, expected);
+}
+
+fn assertErrorSetsMatch(comptime A: type, comptime B: type) void {
+    for (@typeInfo(A).error_set.?) |e| {
+        if (!isInErrorSet(B, e.name)) {
+            @compileError("HintError has extra variant '" ++ e.name ++ "' not in underlying sets");
+        }
+    }
+    for (@typeInfo(B).error_set.?) |e| {
+        if (!isInErrorSet(A, e.name)) {
+            @compileError("HintError missing variant '" ++ e.name ++ "' from underlying sets");
+        }
+    }
+}
+
+fn isInErrorSet(comptime S: type, comptime name: []const u8) bool {
+    for (@typeInfo(S).error_set.?) |e| {
+        if (std.mem.eql(u8, e.name, name)) return true;
+    }
+    return false;
+}
 
 const MachineSlot = struct {
     machine: *tt_hint.HintMachine,
