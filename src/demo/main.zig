@@ -404,7 +404,7 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
         // Background color (light cream — the card sits on top).
         const clear_srgb = [4]f32{ 245.0 / 255.0, 246.0 / 255.0, 249.0 / 255.0, 1.0 };
 
-        _ = try active.renderFrame(allocator, cached.content, draw_state, cached.dirty, clear_srgb);
+        _ = try active.renderFrame(allocator, cached.content, draw_state, cached.dirty, clear_srgb, null);
 
         if (frame_count % 60 == 0 and fps_display > 0.0) {
             std.debug.print("\rFPS: {d:.0}  Backend: {s}  AA: {s}  Hint: {s}{s}   ", .{

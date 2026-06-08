@@ -100,6 +100,20 @@ fn cpuThreadCount(kind: Kind) ?usize {
     };
 }
 
+/// Optional second pass rendered with a different DrawState (typically a
+/// screen-space projection MVP, so the overlay doesn't pan/zoom with the
+/// world). The atlas is uploaded into the driver's overlay cache; on
+/// `atlas_dirty` the driver releases the previous binding and re-uploads.
+pub const OverlayPass = struct {
+    atlas: *const snail.Atlas,
+    picture: *const snail.Picture,
+    draw_state: snail.DrawState,
+    /// Set true when the overlay's atlas added entries since the last
+    /// successful upload. False frames are the steady state and skip
+    /// the upload entirely.
+    atlas_dirty: bool,
+};
+
 // Buffer for new-API draw words + segments. Owned by the driver, grown on
 // demand each frame. Two segments are enough (paths + text picture).
 const ScratchBuf = struct {
@@ -224,22 +238,23 @@ pub const Driver = union(Kind) {
         draw_state: snail.DrawState,
         content_dirty: bool,
         clear_srgb: [4]f32,
+        overlay: ?OverlayPass,
     ) !bool {
         switch (self.*) {
             .vulkan => |*d| if (comptime build_options.enable_vulkan) {
-                return d.renderFrame(allocator, content, draw_state, content_dirty, clear_srgb);
+                return d.renderFrame(allocator, content, draw_state, content_dirty, clear_srgb, overlay);
             } else unreachable,
             .gl44 => |*d| if (comptime build_options.enable_gl44) {
-                return d.renderFrame(allocator, content, draw_state, content_dirty, clear_srgb);
+                return d.renderFrame(allocator, content, draw_state, content_dirty, clear_srgb, overlay);
             } else unreachable,
             .gl33 => |*d| if (comptime build_options.enable_gl33) {
-                return d.renderFrame(allocator, content, draw_state, content_dirty, clear_srgb);
+                return d.renderFrame(allocator, content, draw_state, content_dirty, clear_srgb, overlay);
             } else unreachable,
             .gles30 => |*d| if (comptime build_options.enable_gles30) {
-                return d.renderFrame(allocator, content, draw_state, content_dirty, clear_srgb);
+                return d.renderFrame(allocator, content, draw_state, content_dirty, clear_srgb, overlay);
             } else unreachable,
             .cpu, .cpu_less_threaded, .cpu_unthreaded => |*d| if (comptime build_options.enable_cpu) {
-                return d.renderFrame(allocator, content, draw_state, content_dirty, clear_srgb);
+                return d.renderFrame(allocator, content, draw_state, content_dirty, clear_srgb, overlay);
             } else unreachable,
         }
     }
@@ -288,6 +303,10 @@ const VulkanDriver = if (build_options.enable_vulkan) struct {
     paths_binding: snail.Binding = undefined,
     text_binding: snail.Binding = undefined,
     have_bindings: bool = false,
+    overlay_cache: ?snail.VulkanBackendCache = null,
+    overlay_binding: snail.Binding = undefined,
+    have_overlay_binding: bool = false,
+    overlay_scratch: ScratchBuf,
 
     fn init(allocator: std.mem.Allocator, window: *wayland.Window) !VulkanDriver {
         const ctx = try vulkan_platform.initForWindow(window);
@@ -298,11 +317,14 @@ const VulkanDriver = if (build_options.enable_vulkan) struct {
             .allocator = allocator,
             .renderer_state = renderer_state,
             .scratch = ScratchBuf.init(allocator),
+            .overlay_scratch = ScratchBuf.init(allocator),
         };
     }
 
     fn deinit(self: *VulkanDriver) void {
+        if (self.overlay_cache) |*c| c.deinit();
         if (self.cache) |*c| c.deinit();
+        self.overlay_scratch.deinit();
         self.scratch.deinit();
         self.renderer_state.deinit();
         vulkan_platform.deinit();
@@ -330,6 +352,7 @@ const VulkanDriver = if (build_options.enable_vulkan) struct {
         draw_state: snail.DrawState,
         content_dirty: bool,
         clear_srgb: [4]f32,
+        overlay: ?OverlayPass,
     ) !bool {
         const cache_fresh = try self.ensureCache(content);
         if (content_dirty or cache_fresh) {
@@ -350,6 +373,26 @@ const VulkanDriver = if (build_options.enable_vulkan) struct {
             self.have_bindings = true;
         }
 
+        if (overlay) |ov| {
+            if (self.overlay_cache == null) {
+                self.overlay_cache = try snail.VulkanBackendCache.init(self.allocator, ov.atlas.pool.?, self.renderer_state.state.pipelineShape(), .{
+                    .max_bindings = 2,
+                    .layer_info_height = 16,
+                    .max_images = 0,
+                    .max_image_width = 16,
+                    .max_image_height = 16,
+                });
+            }
+            if (ov.atlas_dirty or !self.have_overlay_binding) {
+                if (self.have_overlay_binding) self.overlay_cache.?.release(self.overlay_binding);
+                self.have_overlay_binding = false;
+                var bindings: [1]snail.Binding = undefined;
+                try self.overlay_cache.?.upload(allocator, &.{ov.atlas}, &bindings);
+                self.overlay_binding = bindings[0];
+                self.have_overlay_binding = true;
+            }
+        }
+
         const cmd = vulkan_platform.beginFrame() orelse return false;
         const clear = clearColorForShader(clear_srgb, draw_state.surface.encoding);
         _ = clear; // Vulkan platform clears with its own fixed colour; for the demo
@@ -361,6 +404,17 @@ const VulkanDriver = if (build_options.enable_vulkan) struct {
 
         const emitted = try emitBoth(&self.scratch, content, self.paths_binding, self.text_binding);
         try self.renderer_state.state.draw(allocator, draw_state, .{ .words = emitted.words, .segments = emitted.segs }, &.{&self.cache.?});
+
+        if (overlay) |ov| {
+            const need = snail.emit.wordBudget(ov.picture, 0);
+            try self.overlay_scratch.ensure(need, 4);
+            var wlen: usize = 0;
+            var slen: usize = 0;
+            _ = try snail.emit.emit(self.overlay_scratch.words, self.overlay_scratch.segs, &wlen, &slen, self.overlay_binding, ov.atlas, ov.picture, .identity, .{ 1, 1, 1, 1 });
+            if (slen > 0) {
+                try self.renderer_state.state.draw(allocator, ov.draw_state, .{ .words = self.overlay_scratch.words[0..wlen], .segments = self.overlay_scratch.segs[0..slen] }, &.{&self.overlay_cache.?});
+            }
+        }
 
         vulkan_platform.endFrame();
         return true;
@@ -378,6 +432,10 @@ const Gl44Driver = if (build_options.enable_gl44) struct {
     paths_binding: snail.Binding = undefined,
     text_binding: snail.Binding = undefined,
     have_bindings: bool = false,
+    overlay_cache: ?snail.Gl44BackendCache = null,
+    overlay_binding: snail.Binding = undefined,
+    have_overlay_binding: bool = false,
+    overlay_scratch: ScratchBuf,
 
     fn init(allocator: std.mem.Allocator, window: *wayland.Window) !Gl44Driver {
         try gl_platform.initForWindow(window, .gl44);
@@ -388,18 +446,21 @@ const Gl44Driver = if (build_options.enable_gl44) struct {
             .allocator = allocator,
             .renderer_state = renderer_state,
             .scratch = ScratchBuf.init(allocator),
+            .overlay_scratch = ScratchBuf.init(allocator),
         };
     }
 
     fn deinit(self: *Gl44Driver) void {
+        if (self.overlay_cache) |*c| c.deinit();
         if (self.cache) |*c| c.deinit();
+        self.overlay_scratch.deinit();
         self.scratch.deinit();
         self.renderer_state.deinit();
         gl_platform.deinit();
     }
 
-    fn renderFrame(self: *Gl44Driver, allocator: std.mem.Allocator, content: *demo_banner.Content, draw_state: snail.DrawState, content_dirty: bool, clear_srgb: [4]f32) !bool {
-        return glRender(@TypeOf(self.*), self, snail.Gl44BackendCache, allocator, content, draw_state, content_dirty, clear_srgb);
+    fn renderFrame(self: *Gl44Driver, allocator: std.mem.Allocator, content: *demo_banner.Content, draw_state: snail.DrawState, content_dirty: bool, clear_srgb: [4]f32, overlay: ?OverlayPass) !bool {
+        return glRender(@TypeOf(self.*), self, snail.Gl44BackendCache, allocator, content, draw_state, content_dirty, clear_srgb, overlay);
     }
 } else void;
 
@@ -412,6 +473,10 @@ const Gl33Driver = if (build_options.enable_gl33) struct {
     paths_binding: snail.Binding = undefined,
     text_binding: snail.Binding = undefined,
     have_bindings: bool = false,
+    overlay_cache: ?snail.Gl33BackendCache = null,
+    overlay_binding: snail.Binding = undefined,
+    have_overlay_binding: bool = false,
+    overlay_scratch: ScratchBuf,
 
     fn init(allocator: std.mem.Allocator, window: *wayland.Window) !Gl33Driver {
         try gl_platform.initForWindow(window, .gl33);
@@ -422,18 +487,21 @@ const Gl33Driver = if (build_options.enable_gl33) struct {
             .allocator = allocator,
             .renderer_state = renderer_state,
             .scratch = ScratchBuf.init(allocator),
+            .overlay_scratch = ScratchBuf.init(allocator),
         };
     }
 
     fn deinit(self: *Gl33Driver) void {
+        if (self.overlay_cache) |*c| c.deinit();
         if (self.cache) |*c| c.deinit();
+        self.overlay_scratch.deinit();
         self.scratch.deinit();
         self.renderer_state.deinit();
         gl_platform.deinit();
     }
 
-    fn renderFrame(self: *Gl33Driver, allocator: std.mem.Allocator, content: *demo_banner.Content, draw_state: snail.DrawState, content_dirty: bool, clear_srgb: [4]f32) !bool {
-        return glRender(@TypeOf(self.*), self, snail.Gl33BackendCache, allocator, content, draw_state, content_dirty, clear_srgb);
+    fn renderFrame(self: *Gl33Driver, allocator: std.mem.Allocator, content: *demo_banner.Content, draw_state: snail.DrawState, content_dirty: bool, clear_srgb: [4]f32, overlay: ?OverlayPass) !bool {
+        return glRender(@TypeOf(self.*), self, snail.Gl33BackendCache, allocator, content, draw_state, content_dirty, clear_srgb, overlay);
     }
 } else void;
 
@@ -446,6 +514,10 @@ const Gles30Driver = if (build_options.enable_gles30) struct {
     paths_binding: snail.Binding = undefined,
     text_binding: snail.Binding = undefined,
     have_bindings: bool = false,
+    overlay_cache: ?snail.Gles30BackendCache = null,
+    overlay_binding: snail.Binding = undefined,
+    have_overlay_binding: bool = false,
+    overlay_scratch: ScratchBuf,
 
     fn init(allocator: std.mem.Allocator, window: *wayland.Window) !Gles30Driver {
         try gl_platform.initForWindow(window, .gles30);
@@ -456,18 +528,21 @@ const Gles30Driver = if (build_options.enable_gles30) struct {
             .allocator = allocator,
             .renderer_state = renderer_state,
             .scratch = ScratchBuf.init(allocator),
+            .overlay_scratch = ScratchBuf.init(allocator),
         };
     }
 
     fn deinit(self: *Gles30Driver) void {
+        if (self.overlay_cache) |*c| c.deinit();
         if (self.cache) |*c| c.deinit();
+        self.overlay_scratch.deinit();
         self.scratch.deinit();
         self.renderer_state.deinit();
         gl_platform.deinit();
     }
 
-    fn renderFrame(self: *Gles30Driver, allocator: std.mem.Allocator, content: *demo_banner.Content, draw_state: snail.DrawState, content_dirty: bool, clear_srgb: [4]f32) !bool {
-        return glRender(@TypeOf(self.*), self, snail.Gles30BackendCache, allocator, content, draw_state, content_dirty, clear_srgb);
+    fn renderFrame(self: *Gles30Driver, allocator: std.mem.Allocator, content: *demo_banner.Content, draw_state: snail.DrawState, content_dirty: bool, clear_srgb: [4]f32, overlay: ?OverlayPass) !bool {
+        return glRender(@TypeOf(self.*), self, snail.Gles30BackendCache, allocator, content, draw_state, content_dirty, clear_srgb, overlay);
     }
 } else void;
 
@@ -480,6 +555,7 @@ fn glRender(
     draw_state: snail.DrawState,
     content_dirty: bool,
     clear_srgb: [4]f32,
+    overlay: ?OverlayPass,
 ) !bool {
     // Ensure cache.
     const pool_ptr: *const anyopaque = @ptrCast(content.pool);
@@ -512,9 +588,45 @@ fn glRender(
         self.have_bindings = true;
     }
 
+    // Overlay cache: separate BackendCache for the HUD atlas so its
+    // upload lifecycle is independent of the content's. Same pool, so
+    // pages are shared at the GPU level.
+    if (overlay) |ov| {
+        if (self.overlay_cache == null) {
+            self.overlay_cache = try CacheType.init(self.allocator, ov.atlas.pool.?, .{
+                .max_bindings = 2,
+                .layer_info_height = 16,
+                .max_images = 0,
+                .max_image_width = 16,
+                .max_image_height = 16,
+            });
+        }
+        if (ov.atlas_dirty or !self.have_overlay_binding) {
+            if (self.have_overlay_binding) self.overlay_cache.?.release(self.overlay_binding);
+            self.have_overlay_binding = false;
+            var bindings: [1]snail.Binding = undefined;
+            try self.overlay_cache.?.upload(allocator, &.{ov.atlas}, &bindings);
+            self.overlay_binding = bindings[0];
+            self.have_overlay_binding = true;
+        }
+    }
+
     gl.glViewport(0, 0, @intFromFloat(draw_state.surface.pixel_width), @intFromFloat(draw_state.surface.pixel_height));
 
     const emitted = try emitBoth(&self.scratch, content, self.paths_binding, self.text_binding);
+
+    // Emit the overlay into a separate scratch so the main draw's
+    // DrawRecords stays intact (the two draws use different DrawStates
+    // so they must be issued separately anyway).
+    var overlay_records: ?struct { words: []const u32, segs: []const snail.DrawSegment } = null;
+    if (overlay) |ov| {
+        const need = snail.emit.wordBudget(ov.picture, 0);
+        try self.overlay_scratch.ensure(need, 4);
+        var wlen: usize = 0;
+        var slen: usize = 0;
+        _ = try snail.emit.emit(self.overlay_scratch.words, self.overlay_scratch.segs, &wlen, &slen, self.overlay_binding, ov.atlas, ov.picture, .identity, .{ 1, 1, 1, 1 });
+        overlay_records = .{ .words = self.overlay_scratch.words[0..wlen], .segs = self.overlay_scratch.segs[0..slen] };
+    }
 
     if (draw_state.surface.supportsLinearResolve()) {
         // Driver gave us a linear default framebuffer (e.g. NVIDIA's GLES on
@@ -529,12 +641,18 @@ fn glRender(
         errdefer self.renderer_state.state.endLinearResolve(restore);
         self.renderer_state.state.beginDraw();
         try self.renderer_state.state.draw(allocator, draw_state, .{ .words = emitted.words, .segments = emitted.segs }, &.{&self.cache.?});
+        if (overlay_records) |rec| {
+            try self.renderer_state.state.draw(allocator, overlay.?.draw_state, .{ .words = rec.words, .segments = rec.segs }, &.{&self.overlay_cache.?});
+        }
         self.renderer_state.state.endLinearResolve(restore);
     } else {
         const clear = clearColorForShader(clear_srgb, draw_state.surface.encoding);
         gl_platform.clear(clear[0], clear[1], clear[2], clear[3]);
         self.renderer_state.state.beginDraw();
         try self.renderer_state.state.draw(allocator, draw_state, .{ .words = emitted.words, .segments = emitted.segs }, &.{&self.cache.?});
+        if (overlay_records) |rec| {
+            try self.renderer_state.state.draw(allocator, overlay.?.draw_state, .{ .words = rec.words, .segments = rec.segs }, &.{&self.overlay_cache.?});
+        }
     }
 
     gl_platform.swapBuffers();
@@ -553,6 +671,10 @@ const CpuDriver = if (build_options.enable_cpu) struct {
     paths_binding: snail.Binding = undefined,
     text_binding: snail.Binding = undefined,
     have_bindings: bool = false,
+    overlay_cache: ?snail.CpuBackendCache = null,
+    overlay_binding: snail.Binding = undefined,
+    have_overlay_binding: bool = false,
+    overlay_scratch: ScratchBuf,
     buf_width: u32 = 0,
     buf_height: u32 = 0,
 
@@ -574,6 +696,7 @@ const CpuDriver = if (build_options.enable_cpu) struct {
             .renderer_state = renderer_state,
             .pool = pool_ptr,
             .scratch = ScratchBuf.init(allocator),
+            .overlay_scratch = ScratchBuf.init(allocator),
             .buf_width = bsz[0],
             .buf_height = bsz[1],
         };
@@ -585,7 +708,9 @@ const CpuDriver = if (build_options.enable_cpu) struct {
             p.deinit();
             self.allocator.destroy(p);
         }
+        if (self.overlay_cache) |*c| c.deinit();
         if (self.cache) |*c| c.deinit();
+        self.overlay_scratch.deinit();
         self.scratch.deinit();
         cpu_platform.deinit();
     }
@@ -601,6 +726,7 @@ const CpuDriver = if (build_options.enable_cpu) struct {
         draw_state: snail.DrawState,
         content_dirty: bool,
         clear_srgb: [4]f32,
+        overlay: ?OverlayPass,
     ) !bool {
         // Re-acquire pixel buffer if the platform resized.
         const bsz = cpu_platform.getBufferSize();
@@ -660,8 +786,38 @@ const CpuDriver = if (build_options.enable_cpu) struct {
             self.have_bindings = true;
         }
 
+        // Overlay cache + binding (shares the content's pool).
+        if (overlay) |ov| {
+            if (self.overlay_cache == null) {
+                self.overlay_cache = try snail.CpuBackendCache.init(self.allocator, ov.atlas.pool.?, .{
+                    .max_bindings = 2,
+                    .layer_info_height = 16,
+                    .max_images = 0,
+                });
+            }
+            if (ov.atlas_dirty or !self.have_overlay_binding) {
+                if (self.have_overlay_binding) self.overlay_cache.?.release(self.overlay_binding);
+                self.have_overlay_binding = false;
+                var bindings: [1]snail.Binding = undefined;
+                try self.overlay_cache.?.upload(allocator, &.{ov.atlas}, &bindings);
+                self.overlay_binding = bindings[0];
+                self.have_overlay_binding = true;
+            }
+        }
+
         const emitted = try emitBoth(&self.scratch, content, self.paths_binding, self.text_binding);
         try snail.drawCpu(&self.renderer_state, draw_state, .{ .words = emitted.words, .segments = emitted.segs }, &.{&self.cache.?});
+
+        if (overlay) |ov| {
+            const need = snail.emit.wordBudget(ov.picture, 0);
+            try self.overlay_scratch.ensure(need, 4);
+            var wlen: usize = 0;
+            var slen: usize = 0;
+            _ = try snail.emit.emit(self.overlay_scratch.words, self.overlay_scratch.segs, &wlen, &slen, self.overlay_binding, ov.atlas, ov.picture, .identity, .{ 1, 1, 1, 1 });
+            if (slen > 0) {
+                try snail.drawCpu(&self.renderer_state, ov.draw_state, .{ .words = self.overlay_scratch.words[0..wlen], .segments = self.overlay_scratch.segs[0..slen] }, &.{&self.overlay_cache.?});
+            }
+        }
 
         cpu_platform.swapBuffers();
         return true;
