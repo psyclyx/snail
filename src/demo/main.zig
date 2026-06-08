@@ -14,6 +14,7 @@ const build_options = @import("build_options");
 const assets_data = @import("assets");
 const renderer_driver = @import("renderer_driver.zig");
 const demo_banner = @import("banner.zig");
+const hud_mod = @import("hud.zig");
 const subpixel_detect = @import("platform/subpixel.zig");
 const wayland = @import("platform/wayland.zig");
 const presentation = @import("platform/presentation.zig");
