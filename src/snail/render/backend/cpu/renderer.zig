@@ -74,6 +74,11 @@ const transformedGlyphBounds = cpu_geometry.transformedGlyphBounds;
 
 pub const PreparedResources = cpu_resources.PreparedResources;
 
+/// Skip threshold for coverage/alpha values below one 8-bit LSB: anything
+/// smaller rounds to zero in the final sRGB8 output, so the composite would
+/// be a no-op.
+const one_lsb_8bit: f32 = 1.0 / 255.0;
+
 pub const CpuRenderer = struct {
     pixels: [*]u8, // RGBA8888 buffer, caller-owned
     width: u32,
@@ -1007,7 +1012,7 @@ pub const CpuRenderer = struct {
                     const stroke = stroke_program.sample(local);
                     combined = addColors(combined, premultiplyCoverage(multiplyLinearColor(stroke.color, tint), border_cov));
                 }
-                if (combined[3] < 1.0 / 255.0) continue;
+                if (combined[3] < one_lsb_8bit) continue;
                 self.blendPremultipliedPixel(row, col, combined, false);
             }
         }
@@ -1087,7 +1092,7 @@ pub const CpuRenderer = struct {
 
             while (col < raster.x1) : (advanceLocalPixel(&col, &local, raster.sample_dx)) {
                 const pixel = self.sampleCompositePathPixel(page, raster, layers, programs, local, tint, row_states, sat_states);
-                if (pixel.color[3] < 1.0 / 255.0) continue;
+                if (pixel.color[3] < one_lsb_8bit) continue;
                 if (raster.use_subpixel) {
                     self.blendSubpixelPremultipliedPixel(row, col, pixel.color, pixel.blend, pixel.has_gradient);
                 } else {
@@ -1157,7 +1162,7 @@ pub const CpuRenderer = struct {
                     else
                         evalGlyphCoverageBandSpan(page, local.x, local.y, raster.epp.x, raster.epp.y, raster.ppe.x, raster.ppe.y, be, band_max_h, band_max_v, layer.fill_rule);
                     const cov = self.applyCoverageTransfer(raw_cov);
-                    if (cov < 1.0 / 255.0) continue;
+                    if (cov < one_lsb_8bit) continue;
                     var paint = paint_program.sample(local);
                     paint.color = multiplyLinearColor(paint.color, tint);
                     self.blendPremultipliedPixel(row, col, premultiplyCoverage(paint.color, cov), paint.apply_dither);
@@ -1167,7 +1172,7 @@ pub const CpuRenderer = struct {
                     else
                         evalGlyphCoverageSubpixel(page, local, raster.subpixel_plan, be, band_max_h, band_max_v, layer.fill_rule);
                     const cov = self.applySubpixelCoverageTransfer(raw_cov);
-                    if (max3(cov.rgb) < 1.0 / 255.0) continue;
+                    if (max3(cov.rgb) < one_lsb_8bit) continue;
                     var paint = paint_program.sample(local);
                     paint.color = multiplyLinearColor(paint.color, tint);
                     self.blendSubpixelPremultipliedPixel(
@@ -1284,7 +1289,7 @@ pub const CpuRenderer = struct {
                     else
                         evalGlyphCoverage(page, display_local.x, display_local.y, ppe.x, ppe.y, be, band_max_h, band_max_v, .non_zero);
                     const cov = self.applyCoverageTransfer(raw_cov);
-                    if (cov < 1.0 / 255.0) continue;
+                    if (cov < one_lsb_8bit) continue;
                     self.blendPremultipliedPixel(row, col, premultiplyCoverage(color, cov), false);
                 } else if (row_state_ready) {
                     const cov = self.applySubpixelCoverageTransfer(evalGlyphCoverageSubpixelRowH(
@@ -1297,7 +1302,7 @@ pub const CpuRenderer = struct {
                         band_max_v,
                         .non_zero,
                     ));
-                    if (max3(cov.rgb) < 1.0 / 255.0) continue;
+                    if (max3(cov.rgb) < one_lsb_8bit) continue;
                     self.blendSubpixelPixel(row, col, color, cov.rgb, cov.alpha);
                 } else {
                     const cov = self.applySubpixelCoverageTransfer(evalGlyphCoverageSubpixel(
@@ -1309,7 +1314,7 @@ pub const CpuRenderer = struct {
                         band_max_v,
                         .non_zero,
                     ));
-                    if (max3(cov.rgb) < 1.0 / 255.0) continue;
+                    if (max3(cov.rgb) < one_lsb_8bit) continue;
                     self.blendSubpixelPixel(row, col, color, cov.rgb, cov.alpha);
                 }
             }
