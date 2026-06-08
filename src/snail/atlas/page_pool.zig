@@ -7,6 +7,13 @@
 //!
 //! The pool does *not* own GPU resources — that lives in the backend-side
 //! `Binding` returned by `upload`. This file is pure CPU-side bookkeeping.
+//!
+//! **Threading.** `acquire` / `release` / `stats` are MT-safe via a
+//! spinlock. The spinlock is designed for the expected workload —
+//! atlas/build-time acquire and frame-boundary release — where
+//! contention is rare and short. It is *not* a fit for a hot per-record
+//! call site: hold a page reference and append to it directly, don't
+//! re-acquire from the pool per record.
 
 const std = @import("std");
 const page_mod = @import("page.zig");
