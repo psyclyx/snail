@@ -11,9 +11,7 @@ void main() {
                                   ivec2(v_glyph.w & 0xFF, v_glyph.z),
                                   v_banding, atlas_layer);
     if (cov < 1.0 / 255.0) discard;
-    vec4 linear_color = vec4(srgbDecode(v_color.r), srgbDecode(v_color.g), srgbDecode(v_color.b), v_color.a);
-    vec4 linear_tint = vec4(srgbDecode(v_tint.r), srgbDecode(v_tint.g), srgbDecode(v_tint.b), v_tint.a);
-    linear_color *= linear_tint;
-    vec4 premul = premultiplyColor(linear_color, cov);
+    // v_color / v_tint are already sRGB-decoded in the vertex shader.
+    vec4 premul = premultiplyColor(v_color * v_tint, cov);
     frag_color = (SNAIL_OUTPUT_SRGB != 0) ? srgbEncodePremultiplied(premul) : premul;
 }

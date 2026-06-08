@@ -630,10 +630,10 @@ void main() {
     if (firstInfo.w >= 0.0) discard;
 
     int texLayer = u_layer_base + int(v_banding.w);
-    vec4 linear_tint = vec4(srgbDecode(v_tint.r), srgbDecode(v_tint.g), srgbDecode(v_tint.b), v_tint.a);
+    // v_tint is already sRGB-decoded in the vertex shader.
 
     if (int(-firstInfo.w + 0.5) == SNAIL_PAINT_KIND_COMPOSITE_GROUP) {
-        PathCompositeSample result = compositePathGroup(rc, epp, ppe, infoBase, firstInfo, texLayer, linear_tint);
+        PathCompositeSample result = compositePathGroup(rc, epp, ppe, infoBase, firstInfo, texLayer, v_tint);
         if (result.color.a < 1.0 / 255.0) discard;
         vec4 emit = (result.gradient > 0.5) ? ditherPremultipliedColor(result.color) : result.color;
         frag_color = (SNAIL_OUTPUT_SRGB != 0) ? srgbEncodePremultiplied(emit) : emit;
@@ -649,7 +649,7 @@ void main() {
     float cov = evalGlyphCoverage(rc, epp, ppe, gLoc, ivec2(bandMaxV, bandMaxH), band, texLayer, rec_fill_rule);
     if (cov < 1.0 / 255.0) discard;
     PathPaintSample paint = samplePathPaint(rc, infoBase, firstInfo);
-    paint.color *= linear_tint;
+    paint.color *= v_tint;
     vec4 result = premultiplyColor(paint.color, cov);
     vec4 emit = (paint.gradient > 0.5) ? ditherPremultipliedColor(result) : result;
     frag_color = (SNAIL_OUTPUT_SRGB != 0) ? srgbEncodePremultiplied(emit) : emit;

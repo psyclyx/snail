@@ -77,12 +77,16 @@ pub const vertex_shader =
     glsl_300es_version ++
     gles30_vert_interface ++
     "\n" ++
+    shared_color_common ++
+    "\n" ++
     shared_vertex_body;
 
 pub const vertex_shader_replicated =
     glsl_300es_version ++
     glsl_300es_replicated ++
     gles30_vert_interface ++
+    "\n" ++
+    shared_color_common ++
     "\n" ++
     shared_vertex_body;
 

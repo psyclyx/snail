@@ -71,12 +71,16 @@ pub const vertex_shader =
     glsl_330_version ++
     gl330_vert_interface ++
     "\n" ++
+    shared_color_common ++
+    "\n" ++
     shared_vertex_body;
 
 pub const vertex_shader_replicated =
     glsl_330_version ++
     glsl_330_replicated ++
     gl330_vert_interface ++
+    "\n" ++
+    shared_color_common ++
     "\n" ++
     shared_vertex_body;
 

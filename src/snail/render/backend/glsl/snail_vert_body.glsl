@@ -69,8 +69,14 @@ void main() {
     uint gw = a_glyph.y;
     v_glyph = ivec4(gz & 0xFFFFu, gz >> 16u, gw & 0xFFFFu, gw >> 16u);
     v_banding = a_bnd;
-    v_color = a_col;
-    v_tint = eff_tint;
+    // sRGB decode the per-instance color and tint at the vertex stage:
+    // these are constant across all four corners of the glyph quad
+    // (text uses one color per instance), so per-vertex conversion is
+    // 4 invocations vs the ~100+ fragments per glyph that previously
+    // each ran 6 `pow` calls. Fragment shaders now use `v_color` /
+    // `v_tint` as already-linear values.
+    v_color = vec4(srgbToLinear(a_col.rgb), a_col.a);
+    v_tint = vec4(srgbToLinear(eff_tint.rgb), eff_tint.a);
 
     // Slug dynamic dilation
     vec4 m0 = vec4(SNAIL_MVP[0].x, SNAIL_MVP[1].x, SNAIL_MVP[2].x, SNAIL_MVP[3].x);

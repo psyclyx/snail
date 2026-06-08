@@ -31,4 +31,5 @@ layout(location = 4) out vec4 v_tint;
 #define SNAIL_VIEWPORT viewport
 #define SNAIL_SUBPIXEL_ORDER subpixel_order
 
+#include "snail_color_common.glsl"
 #include "snail_vert_body.glsl"
