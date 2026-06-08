@@ -666,9 +666,9 @@ fn buildFontIdMap(allocator: Allocator, specs: []const Face) !FontIdMap {
 // ── Public free shape() ──
 
 /// Shape `text` against `faces` with `opts`. Each glyph in the returned
-/// `ShapedText` carries the resolved `font_id` (from
-/// `faces.fontIdForFace(...)`); picture builders use it directly to
-/// key atlas records.
+/// `ShapedText` carries its resolved `font_id` (looked up via
+/// `faces.fontIdForFace(face_index)`); picture builders read `g.font_id`
+/// directly to key atlas records.
 ///
 /// `opts.advance_provider`, if set, routes HarfBuzz's `glyph_h_advance`
 /// font_func through the provider — typically a

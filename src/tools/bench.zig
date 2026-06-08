@@ -556,7 +556,7 @@ fn ensureUnhintedRunCurves(
     shaped: *const snail.ShapedText,
 ) !void {
     for (shaped.glyphs) |g| {
-        const fid = fonts.faces.face_to_font_id[g.face_index];
+        const fid = g.font_id;
         const key = snail.recordKey.unhintedGlyph(fid, g.glyph_id);
         if (containsKey(build.entries.items, key)) continue;
         const curves = try fonts.fonts[fid].extractCurves(build.allocator, build.scratch(), g.glyph_id);
@@ -956,7 +956,7 @@ fn addRichRun(
         else => {
             // Per-glyph paint baked into glyph-local space.
             for (shaped.glyphs) |g| {
-                const fid = fonts.faces.face_to_font_id[g.face_index];
+                const fid = g.font_id;
                 const pen_x = x + em * g.x_offset;
                 const pen_y = y + em * g.y_offset;
                 const transform = snail.Transform2D{

@@ -46,9 +46,9 @@ pub const ShapedRunError = error{
 } || std.mem.Allocator.Error;
 
 /// Build a Picture by placing each shaped glyph at its pen position.
-/// Font ids are read from `faces.fontIdForFace(g.face_index)`; COLR
-/// fanout (when `options.colr`) walks the layer table on the face's
-/// font.
+/// Font ids come from `g.font_id` (populated by `shape()`); COLR fanout
+/// (when `options.colr`) walks the layer table on the face's font, so
+/// `faces` is consulted only on that path.
 pub fn shapedRunPicture(
     allocator: std.mem.Allocator,
     shaped: *const ShapedText,
@@ -65,7 +65,7 @@ pub fn shapedRunPicture(
         for (shaped.glyphs, 0..) |g, i| {
             const fi: usize = @intCast(g.face_index);
             if (fi >= faces.faceCount()) return error.UnknownFaceIndex;
-            buf[i] = makeShape(g, options, faces.face_to_font_id[fi], g.glyph_id, options.color);
+            buf[i] = makeShape(g, options, g.font_id, g.glyph_id, options.color);
         }
         return Picture.fromOwnedSlice(allocator, buf);
     }
@@ -79,7 +79,7 @@ pub fn shapedRunPicture(
     for (shaped.glyphs) |g| {
         const fi: usize = @intCast(g.face_index);
         if (fi >= faces.faceCount()) return error.UnknownFaceIndex;
-        const font_id = faces.face_to_font_id[fi];
+        const font_id = g.font_id;
 
         // COLR fanout. Each layer becomes its own Shape keyed by the
         // *layer* glyph id (not `g.glyph_id`) with the layer's CPAL
@@ -183,7 +183,7 @@ pub fn hintedShapedRunPicture(
     for (shaped.glyphs, 0..) |g, i| {
         const fi: usize = @intCast(g.face_index);
         if (fi >= faces.faceCount()) return error.UnknownFaceIndex;
-        const font_id = faces.face_to_font_id[fi];
+        const font_id = g.font_id;
         const pen_x = baseline.x + options.em * g.x_offset;
         const pen_y = baseline.y + options.em * g.y_offset;
         buf[i] = .{

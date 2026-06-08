@@ -327,7 +327,7 @@ const PassBuilder = struct {
         for (shaped.glyphs) |g| {
             const face_index_int: usize = @intCast(g.face_index);
             if (face_index_int >= self.fonts.faces.faceCount()) continue;
-            const fid = self.fonts.faces.face_to_font_id[face_index_int];
+            const fid = g.font_id;
             const font_ref = &self.fonts.fonts[fid];
 
             const pen_x = x + em * g.x_offset;
@@ -364,7 +364,7 @@ const PassBuilder = struct {
         for (shaped.glyphs) |g| {
             const face_index_int: usize = @intCast(g.face_index);
             if (face_index_int >= self.fonts.faces.faceCount()) continue;
-            const fid = self.fonts.faces.face_to_font_id[face_index_int];
+            const fid = g.font_id;
             const font_ref = &self.fonts.fonts[fid];
             const key = snail.recordKey.unhintedGlyph(fid, g.glyph_id);
             if (containsKey(self.text_entries.items, key)) continue;
