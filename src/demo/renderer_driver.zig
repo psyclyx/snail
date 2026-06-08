@@ -1,5 +1,5 @@
 //! Cross-backend driver for the interactive demo. Wraps each backend's
-//! `Renderer` + `BackendCache` cache + new-API `emit`/`draw` shim into a
+//! `Renderer` + `BackendCache` cache + new-API `emit`/`draw` glue into a
 //! single tagged union so `main.zig` can cycle between backends with the
 //! 'C' key without knowing each backend's idiom.
 //!
@@ -15,7 +15,7 @@ const snail = @import("snail");
 const build_options = @import("build_options");
 const presentation = @import("platform/presentation.zig");
 const wayland = @import("platform/wayland.zig");
-const demo_scene = @import("scene.zig");
+const demo_banner = @import("banner.zig");
 
 const gl_platform = if ((build_options.enable_gl33 or build_options.enable_gl44 or build_options.enable_gles30)) @import("platform/gl.zig") else struct {};
 const vulkan_platform = if (build_options.enable_vulkan) @import("platform/vulkan/windowed.zig") else struct {};
@@ -220,7 +220,7 @@ pub const Driver = union(Kind) {
     pub fn renderFrame(
         self: *Driver,
         allocator: std.mem.Allocator,
-        content: *demo_scene.Content,
+        content: *demo_banner.Content,
         draw_state: snail.DrawState,
         content_dirty: bool,
         clear_srgb: [4]f32,
@@ -264,7 +264,7 @@ fn clearColorForShader(color_srgb: [4]f32, encoding: snail.TargetEncoding) [4]f3
 
 fn emitBoth(
     scratch: *ScratchBuf,
-    content: *demo_scene.Content,
+    content: *demo_banner.Content,
     paths_binding: snail.Binding,
     text_binding: snail.Binding,
 ) !struct { words: []const u32, segs: []const snail.DrawSegment } {
@@ -308,7 +308,7 @@ const VulkanDriver = if (build_options.enable_vulkan) struct {
         vulkan_platform.deinit();
     }
 
-    fn ensureCache(self: *VulkanDriver, content: *demo_scene.Content) !bool {
+    fn ensureCache(self: *VulkanDriver, content: *demo_banner.Content) !bool {
         const pool_ptr: *const anyopaque = @ptrCast(content.pool);
         if (self.cache_pool == pool_ptr) return false;
         if (self.cache) |*c| c.deinit();
@@ -326,7 +326,7 @@ const VulkanDriver = if (build_options.enable_vulkan) struct {
     fn renderFrame(
         self: *VulkanDriver,
         allocator: std.mem.Allocator,
-        content: *demo_scene.Content,
+        content: *demo_banner.Content,
         draw_state: snail.DrawState,
         content_dirty: bool,
         clear_srgb: [4]f32,
@@ -398,7 +398,7 @@ const Gl44Driver = if (build_options.enable_gl44) struct {
         gl_platform.deinit();
     }
 
-    fn renderFrame(self: *Gl44Driver, allocator: std.mem.Allocator, content: *demo_scene.Content, draw_state: snail.DrawState, content_dirty: bool, clear_srgb: [4]f32) !bool {
+    fn renderFrame(self: *Gl44Driver, allocator: std.mem.Allocator, content: *demo_banner.Content, draw_state: snail.DrawState, content_dirty: bool, clear_srgb: [4]f32) !bool {
         return glRender(@TypeOf(self.*), self, snail.Gl44BackendCache, allocator, content, draw_state, content_dirty, clear_srgb);
     }
 } else void;
@@ -432,7 +432,7 @@ const Gl33Driver = if (build_options.enable_gl33) struct {
         gl_platform.deinit();
     }
 
-    fn renderFrame(self: *Gl33Driver, allocator: std.mem.Allocator, content: *demo_scene.Content, draw_state: snail.DrawState, content_dirty: bool, clear_srgb: [4]f32) !bool {
+    fn renderFrame(self: *Gl33Driver, allocator: std.mem.Allocator, content: *demo_banner.Content, draw_state: snail.DrawState, content_dirty: bool, clear_srgb: [4]f32) !bool {
         return glRender(@TypeOf(self.*), self, snail.Gl33BackendCache, allocator, content, draw_state, content_dirty, clear_srgb);
     }
 } else void;
@@ -466,7 +466,7 @@ const Gles30Driver = if (build_options.enable_gles30) struct {
         gl_platform.deinit();
     }
 
-    fn renderFrame(self: *Gles30Driver, allocator: std.mem.Allocator, content: *demo_scene.Content, draw_state: snail.DrawState, content_dirty: bool, clear_srgb: [4]f32) !bool {
+    fn renderFrame(self: *Gles30Driver, allocator: std.mem.Allocator, content: *demo_banner.Content, draw_state: snail.DrawState, content_dirty: bool, clear_srgb: [4]f32) !bool {
         return glRender(@TypeOf(self.*), self, snail.Gles30BackendCache, allocator, content, draw_state, content_dirty, clear_srgb);
     }
 } else void;
@@ -476,7 +476,7 @@ fn glRender(
     self: *Self,
     comptime CacheType: type,
     allocator: std.mem.Allocator,
-    content: *demo_scene.Content,
+    content: *demo_banner.Content,
     draw_state: snail.DrawState,
     content_dirty: bool,
     clear_srgb: [4]f32,
@@ -597,7 +597,7 @@ const CpuDriver = if (build_options.enable_cpu) struct {
     fn renderFrame(
         self: *CpuDriver,
         allocator: std.mem.Allocator,
-        content: *demo_scene.Content,
+        content: *demo_banner.Content,
         draw_state: snail.DrawState,
         content_dirty: bool,
         clear_srgb: [4]f32,

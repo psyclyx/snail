@@ -13,7 +13,6 @@ const snail = @import("snail");
 const build_options = @import("build_options");
 const assets_data = @import("assets");
 const renderer_driver = @import("renderer_driver.zig");
-const demo_scene = @import("scene.zig");
 const demo_banner = @import("banner.zig");
 const subpixel_detect = @import("platform/subpixel.zig");
 const wayland = @import("platform/wayland.zig");
@@ -200,7 +199,7 @@ const ContentCache = struct {
             .ppem_scale = hint_ppem_scale,
             .world_to_pixel = if (hint_active) world_to_pixel else null,
         };
-        self.content = try demo_scene.build(
+        self.content = try demo_banner.build(
             self.allocator,
             self.pool,
             &self.assets,

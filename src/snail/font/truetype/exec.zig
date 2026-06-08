@@ -1413,7 +1413,7 @@ fn handleNPushW(self: *Context, code: []const u8, pc: usize, steps: *u32) Error!
 const tail_dispatch: [256]TailHandler = blk: {
     var t: [256]TailHandler = @splat(handleDefault);
 
-    // The opcode ranges below mirror the legacy executeOp switch; any future
+    // The opcode ranges below mirror the executeOp switch; any future
     // additions there should be reflected here too.
 
     // Graphics: vector setters (SVTCA/SFVTCA/SPVTCA/SDPVTL), ref-point and
