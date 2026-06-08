@@ -251,6 +251,13 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
     var content_cache = try ContentCache.init(allocator);
     defer content_cache.deinit();
 
+    var hud = try hud_mod.Overlay.init(allocator, &content_cache.assets.faces, content_cache.pool, 0);
+    defer hud.deinit();
+    var hud_arena = std.heap.ArenaAllocator.init(allocator);
+    defer hud_arena.deinit();
+    var hud_scratch = std.heap.ArenaAllocator.init(allocator);
+    defer hud_scratch.deinit();
+
     var angle: f32 = 0.0;
     var zoom: f32 = 1.0;
     var pan_x: f32 = 0.0;
@@ -404,7 +411,45 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
         // Background color (light cream — the card sits on top).
         const clear_srgb = [4]f32{ 245.0 / 255.0, 246.0 / 255.0, 249.0 / 255.0, 1.0 };
 
-        _ = try active.renderFrame(allocator, cached.content, draw_state, cached.dirty, clear_srgb, null);
+        // HUD: build a fresh screen-space picture each frame. Atlas
+        // grows the first time each glyph is encountered; the
+        // recordCount delta tells the driver when to re-upload.
+        _ = hud_arena.reset(.retain_capacity);
+        _ = hud_scratch.reset(.retain_capacity);
+        const hud_before = hud.atlas.recordCount();
+        var hud_picture = try hud.buildPicture(
+            hud_arena.allocator(),
+            hud_scratch.allocator(),
+            .{
+                .fps = fps_display,
+                .backend = active.backendName(),
+                .aa = aaName(current_order),
+                .hint = if (hint_active) hint_mode.name() else "Hint: off",
+            },
+            w,
+            h,
+        );
+        defer hud_picture.deinit();
+        const hud_after = hud.atlas.recordCount();
+
+        // HUD MVP: projection only — no scene_transform, so the
+        // overlay doesn't pan/zoom/rotate with the world.
+        const hud_draw_state = snail.DrawState{
+            .mvp = projection,
+            .surface = draw_state.surface,
+            .raster = .{
+                .subpixel_order = if (present.will_resample) .none else current_order,
+                .coverage_transfer = .{ .exponent = 1.0 },
+            },
+        };
+        const overlay = renderer_driver.OverlayPass{
+            .atlas = &hud.atlas,
+            .picture = &hud_picture,
+            .draw_state = hud_draw_state,
+            .atlas_dirty = hud_after != hud_before,
+        };
+
+        _ = try active.renderFrame(allocator, cached.content, draw_state, cached.dirty, clear_srgb, overlay);
 
         if (frame_count % 60 == 0 and fps_display > 0.0) {
             std.debug.print("\rFPS: {d:.0}  Backend: {s}  AA: {s}  Hint: {s}{s}   ", .{

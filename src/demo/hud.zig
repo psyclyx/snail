@@ -136,8 +136,9 @@ pub const Overlay = struct {
         // shapedRunPicture call allocates a small Shape buffer in
         // `frame_alloc`; the concat allocates one final buffer; the
         // per-line pictures get freed before return.
-        var line_pictures: std.BoundedArray(snail.Picture, lines.len) = .{};
-        defer for (line_pictures.slice()) |*p| p.deinit();
+        var line_pictures: [lines.len]snail.Picture = undefined;
+        var line_count: usize = 0;
+        defer for (line_pictures[0..line_count]) |*p| p.deinit();
 
         for (lines) |line| {
             if (line.text.len == 0) continue;
@@ -152,28 +153,30 @@ pub const Overlay = struct {
             const baseline_x = right_edge - run_width;
             const baseline_y = top_edge + @as(f32, @floatFromInt(line.y)) * line_h;
 
-            const pic = try snail.shapedRunPicture(frame_alloc, shaped, self.faces, .{
+            line_pictures[line_count] = try snail.shapedRunPicture(frame_alloc, shaped, self.faces, .{
                 .baseline = .{ .x = baseline_x, .y = baseline_y },
                 .em = em,
                 .color = hud_color,
             });
-            try line_pictures.append(pic);
+            line_count += 1;
         }
 
         // One concat over all non-empty lines.
-        var refs: std.BoundedArray(*const snail.Picture, lines.len) = .{};
-        for (line_pictures.slice()) |*p| try refs.append(p);
-        return snail.Picture.concat(frame_alloc, refs.constSlice());
+        var refs: [lines.len]*const snail.Picture = undefined;
+        for (line_pictures[0..line_count], 0..) |*p, i| refs[i] = p;
+        return snail.Picture.concat(frame_alloc, refs[0..line_count]);
     }
 
     /// Walk `shaped`'s glyphs and add any missing keys to `self.atlas`.
     /// On exit, every `(font_id, glyph_id)` referenced by `shaped`
     /// resolves through `self.atlas.lookupRecord`.
     fn ensureAtlasContains(self: *Overlay, scratch_alloc: Allocator, shaped: *const snail.ShapedText) !void {
-        // Collect new entries on the stack; HUD strings are short so
-        // 32 is plenty.
-        var new_entries: std.BoundedArray(snail.AtlasEntry, 64) = .{};
-        var owned_curves: std.BoundedArray(snail.GlyphCurves, 64) = .{};
+        // HUD strings are short — a single call rarely introduces more
+        // than a handful of new glyphs; 64 is more than enough.
+        const max_new = 64;
+        var entries_buf: [max_new]snail.AtlasEntry = undefined;
+        var curves_buf: [max_new]snail.GlyphCurves = undefined;
+        var n: usize = 0;
 
         for (shaped.glyphs) |g| {
             // Only the HUD's chosen face is supported. If shape() picked
@@ -184,28 +187,28 @@ pub const Overlay = struct {
             const key = snail.recordKey.unhintedGlyph(g.font_id, g.glyph_id);
             if (self.atlas.contains(key)) continue;
             // Avoid duplicating within this same call.
-            if (containsKey(new_entries.constSlice(), key)) continue;
+            if (containsKey(entries_buf[0..n], key)) continue;
+            if (n >= max_new) break;
 
             const curves_cached = try self.glyph_cache.getOrInsert(self.allocator, scratch_alloc, g.glyph_id);
-            // Stash the cached curves alongside the entry so the slice
-            // stays live until we hand them to Atlas.extend.
-            try owned_curves.append(curves_cached.*);
-            try new_entries.append(.{ .key = key, .curves = owned_curves.constSlice()[owned_curves.len - 1] });
+            curves_buf[n] = curves_cached.*;
+            entries_buf[n] = .{ .key = key, .curves = curves_buf[n] };
+            n += 1;
         }
 
-        if (new_entries.len == 0) return;
+        if (n == 0) return;
 
         // Atlas.extend wants a non-null pool — empty atlases have no
         // pool. Construct from() on first growth, then extend()
         // afterwards.
         if (self.atlas.pool == null) {
-            const fresh = try snail.Atlas.from(self.allocator, self.pool, new_entries.constSlice());
+            const fresh = try snail.Atlas.from(self.allocator, self.pool, entries_buf[0..n]);
             self.atlas.deinit();
             self.atlas = fresh;
             return;
         }
 
-        const grown = try self.atlas.extend(self.allocator, new_entries.constSlice());
+        const grown = try self.atlas.extend(self.allocator, entries_buf[0..n]);
         self.atlas.deinit();
         self.atlas = grown;
     }
