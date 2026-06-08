@@ -6,11 +6,19 @@
 //! unhinted and path producers emit. The atlas then consumes them the same
 //! way it consumes anything else.
 //!
-//! `HintVm` owns one cache: per-ppem `HintMachine` state. fpgm/prep
-//! execution is genuinely expensive (thousands of cycles per ppem) and
-//! amortizing across glyphs at the same size is the only reason this
-//! cache lives in core rather than helpers. Callers retain control via
-//! `evictPpem` and `clear`.
+//! `HintVm` owns two collocated caches, both keyed by ppem and reset
+//! together by `evictPpem` / `clear`:
+//!
+//! 1. **`HintMachine` state.** fpgm/prep execution is expensive
+//!    (thousands of cycles per ppem); amortizing across glyphs at the
+//!    same size is the justified-exception cache the plan calls out.
+//! 2. **`GlyphTopologyCache`.** Holds parsed glyph outlines (the
+//!    `glyf`-table read; ppem-independent in content but stored per
+//!    ppem to share the slot's allocator / lifetime). Saves re-parsing
+//!    each glyph on every advance/render at the same size.
+//!
+//! Both caches surface in `HintVmStats` (`ppem_count`, `machine_bytes`,
+//! `topology_glyph_count`) so callers can budget memory and evict.
 //!
 //! Output memoization — packed `GlyphCurves` bytes and hinted advances
 //! keyed by `(ppem, glyph_id)` — is *not* in core. It lives in
@@ -49,8 +57,14 @@ pub const HintPpem = struct {
 };
 
 pub const HintVmStats = struct {
+    /// Number of distinct ppems with cached VM state.
     ppem_count: u32,
+    /// Bytes held by per-ppem `HintMachine` slots (the fpgm/prep amortization).
     machine_bytes: usize,
+    /// Total `(ppem, glyph_id)` topology entries across all ppem slots.
+    /// Grows with the per-ppem glyph working set; cleared by
+    /// `evictPpem` / `clear` together with `machine_bytes`.
+    topology_glyph_count: u32,
 };
 
 /// Failures returned by `HintVm` operations. Spelled out explicitly so a
@@ -260,11 +274,16 @@ pub const HintVm = struct {
     /// when `machine_bytes` crosses a budget.
     pub fn stats(self: *const HintVm) HintVmStats {
         var machine_bytes: usize = 0;
+        var topology_glyph_count: u32 = 0;
         var it = self.machines.valueIterator();
-        while (it.next()) |slot| machine_bytes += slot.machine.byteSize();
+        while (it.next()) |slot| {
+            machine_bytes += slot.machine.byteSize();
+            topology_glyph_count += @intCast(slot.topology.map.count());
+        }
         return .{
             .ppem_count = self.machines.count(),
             .machine_bytes = machine_bytes,
+            .topology_glyph_count = topology_glyph_count,
         };
     }
 
@@ -349,6 +368,36 @@ test "HintVm caches per-ppem VM state across calls" {
     var c2 = try hinter.hintGlyph(testing.allocator, testing.allocator, gid_a, ppem_other);
     defer c2.deinit();
     try testing.expectEqual(@as(u32, 2), hinter.machines.count());
+}
+
+test "HintVm.stats reports ppem, machine bytes, and topology growth" {
+    const font_data = @import("assets").noto_sans_regular;
+    var font = try Font.init(font_data);
+
+    var hinter = try HintVm.init(testing.allocator, &font);
+    defer hinter.deinit();
+
+    try testing.expectEqual(@as(u32, 0), hinter.stats().ppem_count);
+    try testing.expectEqual(@as(u32, 0), hinter.stats().topology_glyph_count);
+
+    const ppem = HintPpem.uniform(16 * 64);
+    var c0 = try hinter.hintGlyph(testing.allocator, testing.allocator, try font.glyphIndex('A'), ppem);
+    c0.deinit();
+    const after_a = hinter.stats();
+    try testing.expectEqual(@as(u32, 1), after_a.ppem_count);
+    try testing.expect(after_a.machine_bytes > 0);
+    try testing.expectEqual(@as(u32, 1), after_a.topology_glyph_count);
+
+    var c1 = try hinter.hintGlyph(testing.allocator, testing.allocator, try font.glyphIndex('B'), ppem);
+    c1.deinit();
+    const after_b = hinter.stats();
+    try testing.expectEqual(@as(u32, 1), after_b.ppem_count);
+    try testing.expectEqual(@as(u32, 2), after_b.topology_glyph_count);
+
+    hinter.evictPpem(ppem);
+    const after_evict = hinter.stats();
+    try testing.expectEqual(@as(u32, 0), after_evict.ppem_count);
+    try testing.expectEqual(@as(u32, 0), after_evict.topology_glyph_count);
 }
 
 test "HintVm.evictPpem drops one cache entry without affecting others" {
