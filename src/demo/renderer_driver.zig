@@ -286,7 +286,10 @@ fn clearColorForShader(color_srgb: [4]f32, encoding: snail.TargetEncoding) [4]f3
     };
 }
 
-/// Per-pass slice into the shared scratch buffer.
+/// Per-pass view onto the shared scratch buffer. `words` spans the
+/// full emitted range across every pass (segment `words_offset` values
+/// index it directly); `segs` is the pass's own sub-slice of segments.
+/// Each draw call gets the same `words` and only its own `segs`.
 const PassRecords = struct {
     words: []const u32,
     segs: []const snail.DrawSegment,
@@ -318,9 +321,10 @@ fn passesSegBudget(passes: []const Pass) usize {
     return total;
 }
 
-/// Emit every pass into a contiguous scratch run. Returns one
-/// PassRecords per pass; segment word_offsets stay valid because they
-/// all index the same scratch.
+/// Emit every pass into a contiguous scratch run. Every PassRecords
+/// shares the same `words` slice (the full emitted extent) so segment
+/// `words_offset` values keep their absolute meaning; each pass owns
+/// only its segment sub-slice.
 fn emitPasses(
     scratch: *ScratchBuf,
     passes: []const Pass,
@@ -334,16 +338,18 @@ fn emitPasses(
     for (passes, pass_states, 0..) |pass, state, i| {
         std.debug.assert(state.initialized);
         std.debug.assert(state.count == pass.atlases.len);
-        const word_start = wlen;
         const seg_start = slen;
         for (pass.atlases, pass.pictures, state.bindings[0..state.count]) |atlas, picture, binding| {
             _ = try snail.emit.emit(scratch.words, scratch.segs, &wlen, &slen, binding, atlas, picture, .identity, .{ 1, 1, 1, 1 });
         }
         out_records[i] = .{
-            .words = scratch.words[word_start..wlen],
+            // .words patched after the loop once `wlen` is final.
+            .words = scratch.words[0..0],
             .segs = scratch.segs[seg_start..slen],
         };
     }
+    const full_words = scratch.words[0..wlen];
+    for (out_records) |*rec| rec.words = full_words;
 }
 
 /// Ensure each pass's bindings are live in `cache`. Releases stale
