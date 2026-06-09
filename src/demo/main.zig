@@ -26,6 +26,8 @@ const KEY_X = wayland.KEY_X;
 const KEY_H = wayland.KEY_H;
 const KEY_B = wayland.KEY_B;
 const KEY_C = wayland.KEY_C;
+const KEY_T = wayland.KEY_T;
+const KEY_O = wayland.KEY_O;
 const KEY_ESCAPE = wayland.KEY_ESCAPE;
 const KEY_LEFT = wayland.KEY_LEFT;
 const KEY_RIGHT = wayland.KEY_RIGHT;
@@ -258,6 +260,14 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
     var hud_scratch = std.heap.ArenaAllocator.init(allocator);
     defer hud_scratch.deinit();
 
+    var timing_enabled = false;
+    var timing_frames: u32 = 0;
+    var timing_window_start: f64 = 0;
+    var timing_hud_build_us: f64 = 0;
+    var timing_pass_us: [renderer_driver.MAX_PASSES]f64 = [_]f64{0} ** renderer_driver.MAX_PASSES;
+    var timing_frame_us: f64 = 0;
+    var hud_enabled = true;
+
     var angle: f32 = 0.0;
     var zoom: f32 = 1.0;
     var pan_x: f32 = 0.0;
@@ -278,7 +288,7 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
     });
     renderer_driver.warnIfDebugCpu(active.kind());
     std.debug.print(
-        "Keys: arrows pan, Z/X zoom, R rotate, H TT hinting, B AA mode, C backend, L dump repro, Esc quit\n",
+        "Keys: arrows pan, Z/X zoom, R rotate, H TT hinting, B AA mode, C backend, O HUD on/off, T timing prints, L dump repro, Esc quit\n",
         .{},
     );
     std.debug.print("aa={s}\n", .{aaName(current_order)});
@@ -305,6 +315,19 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
             std.debug.print("\nhinting={s}\n", .{hint_mode.name()});
         }
         if (window.isKeyPressed(KEY_ESCAPE)) break;
+        if (window.isKeyPressed(KEY_O)) {
+            hud_enabled = !hud_enabled;
+            std.debug.print("\nhud={s}\n", .{if (hud_enabled) "on" else "off"});
+        }
+        if (window.isKeyPressed(KEY_T)) {
+            timing_enabled = !timing_enabled;
+            timing_frames = 0;
+            timing_hud_build_us = 0;
+            timing_pass_us = [_]f64{0} ** renderer_driver.MAX_PASSES;
+            timing_frame_us = 0;
+            timing_window_start = now;
+            std.debug.print("\ntiming={s}\n", .{if (timing_enabled) "on" else "off"});
+        }
         if (window.isKeyPressed(KEY_B)) {
             current_order = cycleSubpixelOrder(current_order);
             std.debug.print("\naa={s}\n", .{aaName(current_order)});
@@ -417,6 +440,7 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
         _ = hud_arena.reset(.retain_capacity);
         _ = hud_scratch.reset(.retain_capacity);
         const hud_before = hud.atlas.recordCount();
+        const hud_build_t0 = if (timing_enabled) wayland.getTime() else 0;
         var hud_picture = try hud.buildPicture(
             hud_arena.allocator(),
             hud_scratch.allocator(),
@@ -430,6 +454,7 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
             h,
         );
         defer hud_picture.deinit();
+        const hud_build_us = if (timing_enabled) (wayland.getTime() - hud_build_t0) * 1_000_000.0 else 0;
         const hud_after = hud.atlas.recordCount();
 
         // HUD MVP: projection only — no scene_transform, so the
@@ -446,7 +471,7 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
         const content_pictures = [_]*const snail.Picture{ &cached.content.paths_picture, &cached.content.text_picture };
         const hud_atlases = [_]*const snail.Atlas{&hud.atlas};
         const hud_pictures = [_]*const snail.Picture{&hud_picture};
-        const passes = [_]renderer_driver.Pass{
+        const all_passes = [_]renderer_driver.Pass{
             .{
                 .atlases = &content_atlases,
                 .pictures = &content_pictures,
@@ -460,7 +485,37 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
                 .dirty = hud_after != hud_before,
             },
         };
-        _ = try active.renderFrame(allocator, &passes, clear_srgb);
+        const passes: []const renderer_driver.Pass = if (hud_enabled) all_passes[0..2] else all_passes[0..1];
+        const frame_t0 = if (timing_enabled) wayland.getTime() else 0;
+        _ = try active.renderFrame(allocator, passes, clear_srgb);
+        if (timing_enabled) {
+            const frame_us = (wayland.getTime() - frame_t0) * 1_000_000.0;
+            timing_frames += 1;
+            timing_hud_build_us += hud_build_us;
+            timing_frame_us += frame_us;
+            const pass_us = active.lastPassUs();
+            for (&timing_pass_us, pass_us) |*acc, v| acc.* += v;
+            if (now - timing_window_start >= 1.0 and timing_frames > 0) {
+                const frames_f: f64 = @floatFromInt(timing_frames);
+                const fps_measured: f64 = frames_f / (now - timing_window_start);
+                std.debug.print(
+                    "\n[timing] {d} frames @ {d:.1} FPS | avg µs/frame: hud_build={d:.1} content_draw={d:.1} hud_draw={d:.1} renderFrame={d:.1}\n",
+                    .{
+                        timing_frames,
+                        fps_measured,
+                        timing_hud_build_us / frames_f,
+                        timing_pass_us[0] / frames_f,
+                        timing_pass_us[1] / frames_f,
+                        timing_frame_us / frames_f,
+                    },
+                );
+                timing_frames = 0;
+                timing_hud_build_us = 0;
+                timing_pass_us = [_]f64{0} ** renderer_driver.MAX_PASSES;
+                timing_frame_us = 0;
+                timing_window_start = now;
+            }
+        }
 
         if (frame_count % 60 == 0 and fps_display > 0.0) {
             std.debug.print("\rFPS: {d:.0}  Backend: {s}  AA: {s}  Hint: {s}{s}   ", .{

@@ -243,6 +243,20 @@ pub const Driver = union(Kind) {
         };
     }
 
+    /// Per-pass draw-call timings (µs) from the most recent frame.
+    /// Only the CPU backend populates these; GPU drivers report zeros
+    /// because their per-draw cost lives on the GPU timeline, not the
+    /// CPU clock.
+    pub fn lastPassUs(self: *Driver) [MAX_PASSES]f64 {
+        return switch (self.*) {
+            .cpu, .cpu_less_threaded, .cpu_unthreaded => |*d| if (comptime build_options.enable_cpu)
+                d.last_pass_us
+            else
+                [_]f64{0} ** MAX_PASSES,
+            else => [_]f64{0} ** MAX_PASSES,
+        };
+    }
+
     /// Render one frame as a sequence of passes. All passes share the
     /// surface size + clear color; each pass has its own DrawState
     /// (MVP, raster config) and its own (atlas, picture) pairs.
@@ -632,6 +646,10 @@ const CpuDriver = if (build_options.enable_cpu) struct {
     pass_states: [MAX_PASSES]PassState = [_]PassState{.{}} ** MAX_PASSES,
     buf_width: u32 = 0,
     buf_height: u32 = 0,
+    /// Microseconds spent inside each pass's drawCpu on the most
+    /// recent frame. Indexed 1:1 with the input `passes` slice;
+    /// trailing entries (beyond `passes.len`) stay zero.
+    last_pass_us: [MAX_PASSES]f64 = [_]f64{0} ** MAX_PASSES,
 
     fn init(allocator: std.mem.Allocator, window: *wayland.Window, thread_count: ?usize) !CpuDriver {
         try cpu_platform.initForWindow(window);
@@ -727,9 +745,12 @@ const CpuDriver = if (build_options.enable_cpu) struct {
         var records_buf: [MAX_PASSES]PassRecords = undefined;
         try emitPasses(&self.scratch, passes, self.pass_states[0..passes.len], records_buf[0..passes.len]);
 
-        for (passes, records_buf[0..passes.len]) |pass, rec| {
+        self.last_pass_us = [_]f64{0} ** MAX_PASSES;
+        for (passes, records_buf[0..passes.len], 0..) |pass, rec, i| {
             const dispatch_pool: ?*snail.ThreadPool = if (pass.cpu_parallel) self.pool else null;
+            const t0 = wayland.getTime();
             try snail.drawCpu(&self.renderer_state, pass.draw_state, .{ .words = rec.words, .segments = rec.segs }, &.{&self.cache.?}, dispatch_pool);
+            self.last_pass_us[i] = (wayland.getTime() - t0) * 1_000_000.0;
         }
 
         cpu_platform.swapBuffers();
