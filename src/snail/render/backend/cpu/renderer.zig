@@ -91,7 +91,6 @@ pub const CpuRenderer = struct {
     target_resolve: cpu_blend.ResolveMode,
     linear_resolve_active: bool,
     coverage_transfer: snail.CoverageTransfer,
-    thread_pool: ?*snail.ThreadPool,
     // Half-open row window [row_clip_min, row_clip_max). Pixel writes outside
     // this range are skipped. Used by tile workers to claim disjoint scanline
     // bands; defaults to the full image for single-threaded callers.
@@ -121,20 +120,11 @@ pub const CpuRenderer = struct {
             .target_resolve = .{ .direct = {} },
             .linear_resolve_active = false,
             .coverage_transfer = .identity,
-            .thread_pool = null,
             .row_clip_min = 0,
             .row_clip_max = height,
             .col_clip_min = 0,
             .col_clip_max = width,
         };
-    }
-
-    /// Convenience initializer for callers that already own a thread pool.
-    /// Does not allocate and does not take ownership of `pool`.
-    pub fn initWithThreadPool(pixels: [*]u8, width: u32, height: u32, stride: u32, pool: ?*snail.ThreadPool) CpuRenderer {
-        var renderer = init(pixels, width, height, stride);
-        renderer.setThreadPool(pool);
-        return renderer;
     }
 
     /// Update the pixel buffer and dimensions without clearing atlas state.
@@ -147,15 +137,6 @@ pub const CpuRenderer = struct {
         self.row_clip_max = height;
         self.col_clip_min = 0;
         self.col_clip_max = width;
-    }
-
-    /// Attach a caller-owned `snail.ThreadPool` to fan tile work out across
-    /// scanline strips during draw. Pass `null` to revert to single-threaded
-    /// rendering. Output is byte-identical to the single-threaded path; the
-    /// draw path remains allocation-free (the pool's task slot lives in
-    /// pre-allocated state). The pool must outlive the renderer.
-    pub fn setThreadPool(self: *CpuRenderer, pool: ?*snail.ThreadPool) void {
-        self.thread_pool = pool;
     }
 
     pub const LinearResolveRestore = struct {
@@ -283,7 +264,7 @@ pub const CpuRenderer = struct {
         }
     }
 
-    pub fn drawBatch(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const u32, state: snail.DrawState, texture_layer_base: u32) !void {
+    pub fn drawBatch(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const u32, state: snail.DrawState, texture_layer_base: u32, thread_pool: ?*snail.ThreadPool) !void {
         // Drive the four fields the rendering helpers read off `self` from
         // `state`. There's no save/restore: each `drawBatch` overwrites
         // them from scratch, and `beginLinearResolve` owns `target_resolve`
@@ -298,7 +279,7 @@ pub const CpuRenderer = struct {
         // would silently disagree with the GPU backends. Refuse loudly.
         const scene = snail.mvpToScenePixel(state.mvp, state.surface.pixel_width, state.surface.pixel_height) orelse
             std.debug.panic("CpuRenderer: MVP is non-affine (perspective) or degenerate", .{});
-        if (self.thread_pool) |pool| {
+        if (thread_pool) |pool| {
             if (pool.threadCount() > 0 and self.row_clip_max > self.row_clip_min + TILE_ROWS) {
                 self.drawBatchInstancesParallel(pool, prepared, vertices, scene, texture_layer_base, true);
                 return;
@@ -343,7 +324,6 @@ pub const CpuRenderer = struct {
         var worker = ctx.base.*;
         worker.row_clip_min = strip_y0;
         worker.row_clip_max = strip_y1;
-        worker.thread_pool = null;
         worker.drawBatchInstances(ctx.prepared, ctx.vertices, ctx.scene_to_pixel, ctx.texture_layer_base, ctx.allow_subpixel);
     }
 

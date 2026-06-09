@@ -68,16 +68,17 @@ pub fn timeCpuDraw(
     pixels: []u8,
     warmup_frames: usize,
     frames: usize,
+    thread_pool: ?*snail.ThreadPool,
 ) !f64 {
     for (0..warmup_frames) |_| {
         @memset(pixels, 0);
-        try snail.drawCpu(renderer, state, .{ .words = records.words, .segments = records.segments }, caches);
+        try snail.drawCpu(renderer, state, .{ .words = records.words, .segments = records.segments }, caches, thread_pool);
     }
 
     const start = nowNs();
     for (0..frames) |_| {
         @memset(pixels, 0);
-        try snail.drawCpu(renderer, state, .{ .words = records.words, .segments = records.segments }, caches);
+        try snail.drawCpu(renderer, state, .{ .words = records.words, .segments = records.segments }, caches, thread_pool);
     }
     return usFrom(start) / @as(f64, @floatFromInt(frames));
 }

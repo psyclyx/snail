@@ -1440,7 +1440,6 @@ pub fn main() !void {
     const cpu_pixels_threaded = try allocator.alloc(u8, WIDTH * HEIGHT * 4);
     defer allocator.free(cpu_pixels_threaded);
     var cpu_renderer_threaded = snail.CpuRenderer.init(cpu_pixels_threaded.ptr, WIDTH, HEIGHT, WIDTH * 4);
-    cpu_renderer_threaded.setThreadPool(&cpu_pool);
 
     if (filter.run("cpu-draw")) {
         for (scene_kinds, 0..) |kind, i| {
@@ -1448,7 +1447,7 @@ pub fn main() !void {
                 .words = emitted[i].words[0..emitted[i].word_len],
                 .segments = emitted[i].segments[0..emitted[i].segment_len],
             };
-            const us = try render_timing.timeCpuDraw(&cpu_renderer, prepared_render_state, records, &.{&cpu_cache_storage.?}, cpu_pixels, CPU_WARMUP, CPU_FRAMES);
+            const us = try render_timing.timeCpuDraw(&cpu_renderer, prepared_render_state, records, &.{&cpu_cache_storage.?}, cpu_pixels, CPU_WARMUP, CPU_FRAMES, null);
             try render_rows.append(allocator, .{
                 .backend = "CPU",
                 .scene = kind,
@@ -1467,7 +1466,7 @@ pub fn main() !void {
                 .words = emitted[i].words[0..emitted[i].word_len],
                 .segments = emitted[i].segments[0..emitted[i].segment_len],
             };
-            const us = try render_timing.timeCpuDraw(&cpu_renderer_threaded, prepared_render_state, records, &.{&cpu_cache_storage.?}, cpu_pixels_threaded, CPU_WARMUP, CPU_FRAMES);
+            const us = try render_timing.timeCpuDraw(&cpu_renderer_threaded, prepared_render_state, records, &.{&cpu_cache_storage.?}, cpu_pixels_threaded, CPU_WARMUP, CPU_FRAMES, &cpu_pool);
             try render_rows.append(allocator, .{
                 .backend = "CPU (threaded)",
                 .scene = kind,
@@ -1486,8 +1485,8 @@ pub fn main() !void {
     var mode_rows: std.ArrayList(ModeRow) = .empty;
     defer mode_rows.deinit(allocator);
     if (filter.run("modes")) {
-        try benchCpuModes(allocator, &cpu_renderer, &cpu_cache_storage.?, "CPU", &bundles, bundle_count, cpu_bindings[0..bundle_count], cpu_pixels, &mode_rows);
-        try benchCpuModes(allocator, &cpu_renderer_threaded, &cpu_cache_storage.?, "CPU (threaded)", &bundles, bundle_count, cpu_bindings[0..bundle_count], cpu_pixels_threaded, &mode_rows);
+        try benchCpuModes(allocator, &cpu_renderer, &cpu_cache_storage.?, "CPU", &bundles, bundle_count, cpu_bindings[0..bundle_count], cpu_pixels, &mode_rows, null);
+        try benchCpuModes(allocator, &cpu_renderer_threaded, &cpu_cache_storage.?, "CPU (threaded)", &bundles, bundle_count, cpu_bindings[0..bundle_count], cpu_pixels_threaded, &mode_rows, &cpu_pool);
     }
 
     // ── GL hardware rows (collected as each GL backend stands up) ──
@@ -1579,6 +1578,7 @@ fn benchCpuModes(
     bindings: []const snail.Binding,
     pixels: []u8,
     rows: *std.ArrayList(ModeRow),
+    thread_pool: ?*snail.ThreadPool,
 ) !void {
     _ = bundle_count;
     for (mode_scene_kinds) |scene_kind| {
@@ -1596,7 +1596,7 @@ fn benchCpuModes(
             };
             const state = drawState(WIDTH, HEIGHT, mode.aa);
             const record_us = (try timeRecordEmit(allocator, bindings[idx], &b.atlas, &b.picture)).us;
-            const draw_us = try render_timing.timeCpuDraw(renderer, state, records, &.{cache}, pixels, CPU_WARMUP, CPU_FRAMES);
+            const draw_us = try render_timing.timeCpuDraw(renderer, state, records, &.{cache}, pixels, CPU_WARMUP, CPU_FRAMES, thread_pool);
             try rows.append(allocator, .{
                 .backend = backend_name,
                 .scene = scene_kind,

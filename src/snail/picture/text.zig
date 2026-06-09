@@ -383,7 +383,7 @@ test "hinted curves render through new API CPU draw" {
         .raster = .{ .subpixel_order = .none, .coverage_transfer = .{ .exponent = 1.0 } },
         .mvp = snail.Mat4.ortho(0, wf, hf, 0, -1, 1),
     };
-    try snail.drawCpu(&renderer, state, .{ .words = words[0..wlen], .segments = segs[0..slen] }, &.{&cache});
+    try snail.drawCpu(&renderer, state, .{ .words = words[0..wlen], .segments = segs[0..slen] }, &.{&cache}, null);
 
     var any_drawn = false;
     for (px) |b| if (b != 0) {

@@ -143,6 +143,7 @@ pub fn renderCpu(
         drawState(width, height),
         .{ .words = words[0..e.words_len], .segments = segs[0..e.segs_len] },
         &.{&cache},
+        null,
     );
 
     try flipRowsInPlace(allocator, pixels, width, height);

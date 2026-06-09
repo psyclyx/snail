@@ -115,6 +115,12 @@ pub const Pass = struct {
     pictures: []const *const snail.Picture,
     draw_state: snail.DrawState,
     dirty: bool,
+    /// CPU-backend hint: when true, fan tile work across the driver's
+    /// thread pool; when false, rasterize on the calling thread. Small
+    /// overlays (HUD-style) should set this to false — the per-strip
+    /// dispatch + barrier cost outweighs the rasterization work for
+    /// tiny batches. GPU backends ignore this field.
+    cpu_parallel: bool = true,
 };
 
 /// Cap on the number of passes a single frame can run. Picked so the
@@ -632,13 +638,12 @@ const CpuDriver = if (build_options.enable_cpu) struct {
         errdefer cpu_platform.deinit();
         const px = cpu_platform.getPixelBuffer() orelse return error.NoPixelBuffer;
         const bsz = cpu_platform.getBufferSize();
-        var renderer_state = snail.CpuRenderer.init(px, bsz[0], bsz[1], bsz[0] * 4);
+        const renderer_state = snail.CpuRenderer.init(px, bsz[0], bsz[1], bsz[0] * 4);
 
         const pool_ptr = try allocator.create(snail.ThreadPool);
         errdefer allocator.destroy(pool_ptr);
         try pool_ptr.init(allocator, .{ .threads = thread_count });
         errdefer pool_ptr.deinit();
-        renderer_state.setThreadPool(pool_ptr);
 
         return .{
             .allocator = allocator,
@@ -651,7 +656,6 @@ const CpuDriver = if (build_options.enable_cpu) struct {
     }
 
     fn deinit(self: *CpuDriver) void {
-        self.renderer_state.setThreadPool(null);
         if (self.pool) |p| {
             p.deinit();
             self.allocator.destroy(p);
@@ -724,7 +728,8 @@ const CpuDriver = if (build_options.enable_cpu) struct {
         try emitPasses(&self.scratch, passes, self.pass_states[0..passes.len], records_buf[0..passes.len]);
 
         for (passes, records_buf[0..passes.len]) |pass, rec| {
-            try snail.drawCpu(&self.renderer_state, pass.draw_state, .{ .words = rec.words, .segments = rec.segs }, &.{&self.cache.?});
+            const dispatch_pool: ?*snail.ThreadPool = if (pass.cpu_parallel) self.pool else null;
+            try snail.drawCpu(&self.renderer_state, pass.draw_state, .{ .words = rec.words, .segments = rec.segs }, &.{&self.cache.?}, dispatch_pool);
         }
 
         cpu_platform.swapBuffers();

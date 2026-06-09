@@ -48,11 +48,18 @@ else
 
 /// Render `records` into `renderer`'s pixel buffer. `caches` provides the
 /// CPU-side prepared data for the pools referenced by `records.segments`.
+///
+/// `thread_pool` is the per-call work-distribution policy: pass a non-null
+/// pool to fan tile work across its workers, or `null` to rasterize on the
+/// calling thread. Output is byte-identical either way. A pool wins on
+/// large batches and loses on small ones (dispatch overhead > work), so
+/// the caller decides per draw rather than configuring the renderer once.
 pub fn drawCpu(
     renderer: CpuRendererPtr,
     state: snail.DrawState,
     records: DrawRecords,
     caches: []const *const CpuBackendCache,
+    thread_pool: ?*snail.ThreadPool,
 ) (DrawError || anyerror)!void {
     if (!build_options.enable_cpu) return error.MalformedSegment;
     for (records.segments) |seg| {
@@ -87,10 +94,10 @@ pub fn drawCpu(
 
         switch (seg.kind) {
             .heterogeneous => {
-                try renderer.drawBatch(&prepared, seg_words, state, 0);
+                try renderer.drawBatch(&prepared, seg_words, state, 0, thread_pool);
             },
             .replicated => {
-                try drawReplicatedSegment(renderer, &prepared, state, seg, seg_words, cache.allocator);
+                try drawReplicatedSegment(renderer, &prepared, state, seg, seg_words, cache.allocator, thread_pool);
             },
         }
     }
@@ -106,6 +113,7 @@ fn drawReplicatedSegment(
     seg: draw_records.DrawSegment,
     seg_words: []const u32,
     allocator: std.mem.Allocator,
+    thread_pool: ?*snail.ThreadPool,
 ) !void {
     const n = seg.shape_count;
     const m = seg.override_count;
@@ -132,7 +140,7 @@ fn drawReplicatedSegment(
         }
     }
 
-    try renderer.drawBatch(prepared, composed, state, 0);
+    try renderer.drawBatch(prepared, composed, state, 0, thread_pool);
 }
 
 /// Compose one shape Instance with one Override block. The override's
@@ -236,7 +244,7 @@ test "drawCpu MissingBinding when no cache covers the binding's pool" {
         .override_count = 1,
     }};
     const records = DrawRecords{ .words = &.{}, .segments = &segments };
-    try testing.expectError(error.MissingBinding, drawCpu(&renderer, state, records, &.{&cache_a}));
+    try testing.expectError(error.MissingBinding, drawCpu(&renderer, state, records, &.{&cache_a}, null));
 }
 
 test "drawCpu replicated produces same pixels as equivalent heterogeneous emit" {
@@ -312,7 +320,7 @@ test "drawCpu replicated produces same pixels as equivalent heterogeneous emit" 
 
         var renderer = snail.CpuRenderer.init(px_hetero.ptr, W, H, STRIDE);
         const state = makeIdentityState(W, H);
-        try drawCpu(&renderer, state, .{ .words = words[0..wlen], .segments = segs[0..slen] }, &.{&cache});
+        try drawCpu(&renderer, state, .{ .words = words[0..wlen], .segments = segs[0..slen] }, &.{&cache}, null);
     }
 
     // Replicated: one base shape, three overrides via emitInstanced.
@@ -330,7 +338,7 @@ test "drawCpu replicated produces same pixels as equivalent heterogeneous emit" 
 
         var renderer = snail.CpuRenderer.init(px_repl.ptr, W, H, STRIDE);
         const state = makeIdentityState(W, H);
-        try drawCpu(&renderer, state, .{ .words = words[0..wlen], .segments = segs[0..slen] }, &.{&cache});
+        try drawCpu(&renderer, state, .{ .words = words[0..wlen], .segments = segs[0..slen] }, &.{&cache}, null);
     }
 
     try testing.expectEqualSlices(u8, px_hetero, px_repl);
@@ -402,7 +410,7 @@ test "drawCpu renders a small Picture into non-zero pixels" {
     var renderer = snail.CpuRenderer.init(px.ptr, W, H, STRIDE);
     const state = makeIdentityState(W, H);
     const records = DrawRecords{ .words = words[0..wlen], .segments = segs[0..slen] };
-    try drawCpu(&renderer, state, records, &.{&cache});
+    try drawCpu(&renderer, state, records, &.{&cache}, null);
 
     // Expect some non-zero pixel coverage from the glyph.
     var any_drawn = false;
@@ -480,7 +488,7 @@ test "drawCpu renders gradient-painted glyph through special-layer path" {
 
     var renderer = snail.CpuRenderer.init(px.ptr, W, H, STRIDE);
     const state = makeIdentityState(W, H);
-    try drawCpu(&renderer, state, .{ .words = words[0..wlen], .segments = segs[0..slen] }, &.{&cache});
+    try drawCpu(&renderer, state, .{ .words = words[0..wlen], .segments = segs[0..slen] }, &.{&cache}, null);
 
     // Scan every drawn pixel; expect both red-dominant (left of the
     // gradient) and blue-dominant (right) coverage somewhere in the
@@ -585,7 +593,7 @@ test "drawCpu renders image-painted shape through special-layer path" {
 
     var renderer = snail.CpuRenderer.init(px.ptr, W, H, STRIDE);
     const state = makeIdentityState(W, H);
-    try drawCpu(&renderer, state, .{ .words = words[0..wlen], .segments = segs[0..slen] }, &.{&cache});
+    try drawCpu(&renderer, state, .{ .words = words[0..wlen], .segments = segs[0..slen] }, &.{&cache}, null);
 
     var has_red: bool = false;
     var row: u32 = 0;
@@ -679,7 +687,7 @@ test "drawCpu threaded matches single-threaded pixel-for-pixel" {
     defer allocator.free(px_serial);
     @memset(px_serial, 0);
     var renderer_serial = snail.CpuRenderer.init(px_serial.ptr, W, H, STRIDE);
-    try drawCpu(&renderer_serial, state, records, &.{&cache});
+    try drawCpu(&renderer_serial, state, records, &.{&cache}, null);
 
     const px_threaded = try allocator.alloc(u8, H * STRIDE);
     defer allocator.free(px_threaded);
@@ -690,8 +698,7 @@ test "drawCpu threaded matches single-threaded pixel-for-pixel" {
     defer thread_pool.deinit();
 
     var renderer_threaded = snail.CpuRenderer.init(px_threaded.ptr, W, H, STRIDE);
-    renderer_threaded.setThreadPool(&thread_pool);
-    try drawCpu(&renderer_threaded, state, records, &.{&cache});
+    try drawCpu(&renderer_threaded, state, records, &.{&cache}, &thread_pool);
 
     try testing.expectEqualSlices(u8, px_serial, px_threaded);
 }
