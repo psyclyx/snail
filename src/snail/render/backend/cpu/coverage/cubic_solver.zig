@@ -32,7 +32,7 @@ pub inline fn rootCodeCoord(v: f32) f32 {
 
 /// Insert `t` into `roots` if it's in [0, 1] and not already present,
 /// preserving ascending order.
-pub fn appendCurveRoot(roots: *CurveRoots, t: f32) void {
+pub inline fn appendCurveRoot(roots: *CurveRoots, t: f32) void {
     if (t < -1e-5 or t > 1.0 + 1e-5) return;
     const clamped = std.math.clamp(t, 0.0, 1.0);
     for (roots.t[0..roots.count]) |existing| {
@@ -46,7 +46,7 @@ pub fn appendCurveRoot(roots: *CurveRoots, t: f32) void {
     roots.count += 1;
 }
 
-pub fn solveQuadraticRoots(a: f32, b: f32, c_val: f32) CurveRoots {
+pub inline fn solveQuadraticRoots(a: f32, b: f32, c_val: f32) CurveRoots {
     var roots = CurveRoots{};
     if (@abs(a) < 1e-10) {
         if (@abs(b) < 1e-10) return roots;
@@ -69,9 +69,8 @@ pub fn solveQuadraticRoots(a: f32, b: f32, c_val: f32) CurveRoots {
     return roots;
 }
 
-fn cbrtSigned(v: f32) f32 {
-    if (v == 0.0) return 0.0;
-    return std.math.sign(v) * std.math.pow(f32, @abs(v), 1.0 / 3.0);
+inline fn cbrtSigned(v: f32) f32 {
+    return std.math.cbrt(v);
 }
 
 pub fn solveCubicRoots(a: f32, b: f32, c_val: f32, d: f32) CurveRoots {
@@ -124,7 +123,7 @@ pub fn solveCubicRoots(a: f32, b: f32, c_val: f32, d: f32) CurveRoots {
     return roots;
 }
 
-pub fn solveSegmentHorizontalRoots(segment: CurveSegment, py: f32) CurveRoots {
+pub inline fn solveSegmentHorizontalRoots(segment: CurveSegment, py: f32) CurveRoots {
     return switch (segment.kind) {
         .line => solveQuadraticRoots(0.0, segment.p2.y - segment.p0.y, segment.p0.y - py),
         .quadratic => blk: {
@@ -148,7 +147,7 @@ pub fn solveSegmentHorizontalRoots(segment: CurveSegment, py: f32) CurveRoots {
     };
 }
 
-pub fn solveSegmentVerticalRoots(segment: CurveSegment, px: f32) CurveRoots {
+pub inline fn solveSegmentVerticalRoots(segment: CurveSegment, px: f32) CurveRoots {
     return switch (segment.kind) {
         .line => solveQuadraticRoots(0.0, segment.p2.x - segment.p0.x, segment.p0.x - px),
         .quadratic => blk: {
@@ -175,28 +174,28 @@ pub fn solveSegmentVerticalRoots(segment: CurveSegment, px: f32) CurveRoots {
 /// Tight upper bound on the curve's x-coordinate over t ∈ [0, 1].
 /// For a Bezier the curve lies inside its convex hull, so the max of
 /// the control points is a safe bound.
-pub fn segmentMaxX(segment: CurveSegment) f32 {
+pub inline fn segmentMaxX(segment: CurveSegment) f32 {
     if (segment.kind == .line) return @max(segment.p0.x, segment.p2.x);
     var result = @max(@max(segment.p0.x, segment.p1.x), segment.p2.x);
     if (segment.kind == .cubic) result = @max(result, segment.p3.x);
     return result;
 }
 
-pub fn segmentMaxY(segment: CurveSegment) f32 {
+pub inline fn segmentMaxY(segment: CurveSegment) f32 {
     if (segment.kind == .line) return @max(segment.p0.y, segment.p2.y);
     var result = @max(@max(segment.p0.y, segment.p1.y), segment.p2.y);
     if (segment.kind == .cubic) result = @max(result, segment.p3.y);
     return result;
 }
 
-pub fn segmentMinX(segment: CurveSegment) f32 {
+pub inline fn segmentMinX(segment: CurveSegment) f32 {
     if (segment.kind == .line) return @min(segment.p0.x, segment.p2.x);
     var result = @min(@min(segment.p0.x, segment.p1.x), segment.p2.x);
     if (segment.kind == .cubic) result = @min(result, segment.p3.x);
     return result;
 }
 
-pub fn segmentMinY(segment: CurveSegment) f32 {
+pub inline fn segmentMinY(segment: CurveSegment) f32 {
     if (segment.kind == .line) return @min(segment.p0.y, segment.p2.y);
     var result = @min(@min(segment.p0.y, segment.p1.y), segment.p2.y);
     if (segment.kind == .cubic) result = @min(result, segment.p3.y);
@@ -216,7 +215,7 @@ pub inline fn snapNearTangentSqrt(disc: f32, b: f32, ac: f32) f32 {
 /// Root code from sign bits of the three y-coordinates (relative to ray).
 /// Encodes whether 0, 1, or 2 roots contribute to coverage.
 /// Returns: 0 = no roots, 1 = first root only, 0x0100 = second root only, 0x0101 = both.
-pub fn calcRootCode(y1: f32, y2: f32, y3: f32) u16 {
+pub inline fn calcRootCode(y1: f32, y2: f32, y3: f32) u16 {
     const s1: u32 = @as(u32, @bitCast(rootCodeCoord(y1))) >> 31;
     const s2: u32 = @as(u32, @bitCast(rootCodeCoord(y2))) >> 30;
     const s3: u32 = @as(u32, @bitCast(rootCodeCoord(y3))) >> 29;
@@ -231,7 +230,7 @@ pub fn calcRootCode(y1: f32, y2: f32, y3: f32) u16 {
 /// Solve horizontal polynomial: find x-intersections for a horizontal ray.
 /// p12 = (p1.x, p1.y, p2.x, p2.y), p3 = (p3.x, p3.y), all relative to pixel.
 /// Returns two x-distances scaled by ppe_x.
-pub fn solveHorizPoly(p1x: f32, p1y: f32, p2x: f32, p2y: f32, p3x: f32, p3y: f32, ppe_x: f32) [2]f32 {
+pub inline fn solveHorizPoly(p1x: f32, p1y: f32, p2x: f32, p2y: f32, p3x: f32, p3y: f32, ppe_x: f32) [2]f32 {
     const ax = p1x - p2x * 2.0 + p3x;
     const ay = p1y - p2y * 2.0 + p3y;
     const bx = p1x - p2x;
@@ -263,7 +262,7 @@ pub fn solveHorizPoly(p1x: f32, p1y: f32, p2x: f32, p2y: f32, p3x: f32, p3y: f32
 }
 
 /// Solve vertical polynomial: find y-intersections for a vertical ray.
-pub fn solveVertPoly(p1x: f32, p1y: f32, p2x: f32, p2y: f32, p3x: f32, p3y: f32, ppe_y: f32) [2]f32 {
+pub inline fn solveVertPoly(p1x: f32, p1y: f32, p2x: f32, p2y: f32, p3x: f32, p3y: f32, ppe_y: f32) [2]f32 {
     const ax = p1x - p2x * 2.0 + p3x;
     const ay = p1y - p2y * 2.0 + p3y;
     const bx = p1x - p2x;
