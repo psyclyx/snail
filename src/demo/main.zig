@@ -442,14 +442,25 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
                 .coverage_transfer = .{ .exponent = 1.0 },
             },
         };
-        const overlay = renderer_driver.OverlayPass{
-            .atlas = &hud.atlas,
-            .picture = &hud_picture,
-            .draw_state = hud_draw_state,
-            .atlas_dirty = hud_after != hud_before,
+        const content_atlases = [_]*const snail.Atlas{ &cached.content.paths_atlas, &cached.content.text_atlas };
+        const content_pictures = [_]*const snail.Picture{ &cached.content.paths_picture, &cached.content.text_picture };
+        const hud_atlases = [_]*const snail.Atlas{&hud.atlas};
+        const hud_pictures = [_]*const snail.Picture{&hud_picture};
+        const passes = [_]renderer_driver.Pass{
+            .{
+                .atlases = &content_atlases,
+                .pictures = &content_pictures,
+                .draw_state = draw_state,
+                .dirty = cached.dirty,
+            },
+            .{
+                .atlases = &hud_atlases,
+                .pictures = &hud_pictures,
+                .draw_state = hud_draw_state,
+                .dirty = hud_after != hud_before,
+            },
         };
-
-        _ = try active.renderFrame(allocator, cached.content, draw_state, cached.dirty, clear_srgb, overlay);
+        _ = try active.renderFrame(allocator, &passes, clear_srgb);
 
         if (frame_count % 60 == 0 and fps_display > 0.0) {
             std.debug.print("\rFPS: {d:.0}  Backend: {s}  AA: {s}  Hint: {s}{s}   ", .{
