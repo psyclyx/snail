@@ -356,8 +356,16 @@ pub const CpuRenderer = struct {
         texture_layer_base: u32,
         allow_subpixel: bool,
     ) void {
-        const y0 = self.row_clip_min;
-        const y1 = self.row_clip_max;
+        // Tighten the dispatch range to the union pixel-Y bounds of the
+        // actual instances. Without this we fan out one tile per
+        // TILE_ROWS rows across the full row_clip range; a HUD-style
+        // batch that only covers the top 100 rows would otherwise spawn
+        // hundreds of empty tiles and let thread-pool barrier overhead
+        // dominate the real rasterization.
+        const dispatch_range = batchPixelRowRange(vertices, scene_to_pixel, self.subpixel_order, allow_subpixel);
+        const y0 = @max(self.row_clip_min, dispatch_range.min);
+        const y1 = @min(self.row_clip_max, dispatch_range.max);
+        if (y1 <= y0) return;
         const rows = y1 - y0;
         const strip_count: u32 = (rows + TILE_ROWS - 1) / TILE_ROWS;
         var ctx = TileCtx{
@@ -372,6 +380,32 @@ pub const CpuRenderer = struct {
             .y1 = y1,
         };
         pool.dispatch(strip_count, @ptrCast(&ctx), tileWorker);
+    }
+
+    /// Union of every instance's pixel-Y bounds, clamped to u32 row
+    /// indices. Returns the full possible range on an empty batch so
+    /// the caller's row_clip intersection short-circuits naturally.
+    fn batchPixelRowRange(vertices: []const u32, scene_to_pixel: Transform2D, subpixel_order: SubpixelOrder, allow_subpixel: bool) struct { min: u32, max: u32 } {
+        const WORDS = vertex.WORDS_PER_INSTANCE;
+        if (vertices.len < WORDS) return .{ .min = 0, .max = 0 };
+
+        var min_y: f32 = std.math.floatMax(f32);
+        var max_y: f32 = -std.math.floatMax(f32);
+
+        var i: usize = 0;
+        while (i + WORDS <= vertices.len) : (i += WORDS) {
+            const decoded = decodeBatchInstance(vertices[i..][0..WORDS], scene_to_pixel);
+            var bounds = cpu_geometry.transformedGlyphBounds(decoded.bbox, decoded.transform);
+            cpu_geometry.expandBoundsForCoverageSupport(&bounds, subpixel_order, allow_subpixel);
+            if (bounds.min.y < min_y) min_y = bounds.min.y;
+            if (bounds.max.y > max_y) max_y = bounds.max.y;
+        }
+
+        if (min_y > max_y) return .{ .min = 0, .max = 0 };
+        const lo: u32 = if (min_y <= 0) 0 else @intFromFloat(@floor(min_y));
+        const hi_f = @ceil(max_y);
+        const hi: u32 = if (hi_f <= 0) 0 else @intFromFloat(hi_f);
+        return .{ .min = lo, .max = hi };
     }
 
     const BatchInstance = struct {
