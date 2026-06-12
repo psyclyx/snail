@@ -5,6 +5,13 @@
 //! without an atlas it's still a valid value (comparable, shareable), but
 //! emit-time resolution will fail.
 //!
+//! Lives in `snail-helpers` because Picture is *one* organizational choice
+//! out of many. Power callers can build their own shape arrays from the
+//! primitives `snail` exposes (Shape, ShapedText, snap helpers, emit) and
+//! skip Picture entirely. Picture exists for the common case where a
+//! caller wants a single owner-managed slice with composition sugar
+//! (`concat`, `transformed`, `tinted`, etc.).
+//!
 //! Construction functions (`from`, `concat`, `append`, `transformed`,
 //! `tinted`) return new pictures that own their own shape array. The
 //! original picture is not mutated.
@@ -15,15 +22,12 @@
 //! at emit time using `Atlas.lookupRecord`.
 
 const std = @import("std");
+const snail = @import("snail");
 
-const math = @import("math/vec.zig");
-const bezier = @import("math/bezier.zig");
-const shape_mod = @import("picture/shape.zig");
-
-pub const Transform2D = math.Transform2D;
-pub const Vec2 = math.Vec2;
-pub const BBox = bezier.BBox;
-pub const Shape = shape_mod.Shape;
+pub const Transform2D = snail.Transform2D;
+pub const Vec2 = snail.Vec2;
+pub const BBox = snail.BBox;
+pub const Shape = snail.Shape;
 
 pub const Picture = struct {
     allocator: std.mem.Allocator,
@@ -141,7 +145,7 @@ pub const Picture = struct {
 /// BBox of the local_transform translation points. Treats each shape's
 /// origin as a zero-extent point; emit-time atlas resolution can produce
 /// a tighter geometric bbox per shape, but that requires atlas access.
-fn computeBBox(shapes: []const Shape) BBox {
+pub fn computeBBox(shapes: []const Shape) BBox {
     if (shapes.len == 0) return .{ .min = .zero, .max = .zero };
     var min_x: f32 = shapes[0].local_transform.tx;
     var min_y: f32 = shapes[0].local_transform.ty;
@@ -164,10 +168,9 @@ fn computeBBox(shapes: []const Shape) BBox {
 // ---------------------------------------------------------------------------
 
 const testing = std.testing;
-const record_key = @import("atlas/record_key.zig");
 
-fn keyAt(i: u16) record_key.RecordKey {
-    return record_key.unhintedGlyph(0, i);
+fn keyAt(i: u16) snail.RecordKey {
+    return snail.recordKey.unhintedGlyph(0, i);
 }
 
 test "empty picture has no shapes" {

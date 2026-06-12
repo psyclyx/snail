@@ -1061,7 +1061,7 @@ pub const RowHorizCurveSolve = struct {
     sign: [3]f32 = .{ 0, 0, 0 }, // 0 => no contribution from this slot
 };
 
-const max_row_horiz_curves: usize = 32;
+const max_row_horiz_curves: usize = 128;
 
 pub const RowHorizState = struct {
     curves: [max_row_horiz_curves]RowHorizCurveSolve,

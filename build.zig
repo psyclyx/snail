@@ -512,6 +512,7 @@ fn addGameDemoStep(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = modules.snail },
+            .{ .name = "snail-helpers", .module = modules.snail_helpers },
             .{ .name = "support", .module = modules.support },
             .{ .name = "build_options", .module = modules.options },
         },

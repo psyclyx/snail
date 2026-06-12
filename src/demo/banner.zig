@@ -72,8 +72,8 @@ pub const Content = struct {
     pool: *snail.PagePool,
     paths_atlas: snail.Atlas,
     text_atlas: snail.Atlas,
-    paths_picture: snail.Picture,
-    text_picture: snail.Picture,
+    paths_picture: snail_helpers.Picture,
+    text_picture: snail_helpers.Picture,
     layout: Layout,
     decoration_rects: []snail.Rect,
     missing: bool,
@@ -290,9 +290,9 @@ pub fn build(
     errdefer text_atlas.deinit();
 
     // ── Combine pictures ──
-    var paths_picture = try snail.Picture.from(allocator, builder.path_shapes.items);
+    var paths_picture = try snail_helpers.Picture.from(allocator, builder.path_shapes.items);
     errdefer paths_picture.deinit();
-    var text_picture = try snail.Picture.from(allocator, builder.text_shapes.items);
+    var text_picture = try snail_helpers.Picture.from(allocator, builder.text_shapes.items);
     errdefer text_picture.deinit();
 
     const decoration_rects = try builder.takeDecorationRects();
@@ -1068,7 +1068,7 @@ const BannerBuilder = struct {
     ) !void {
         try self.ensureUnhintedGlyphCurves(shaped);
 
-        var picture = try snail.shapedRunPicture(self.allocator, shaped, &self.assets.faces, .{
+        var picture = try snail_helpers.shapedRunPicture(self.allocator, shaped, &self.assets.faces, .{
             .baseline = .{ .x = placement.x, .y = placement.y },
             .em = placement.size,
             .color = color,
@@ -1157,12 +1157,15 @@ const BannerBuilder = struct {
             });
         }
 
-        var picture = try snail.hintedShapedRunPicture(self.allocator, shaped, &self.assets.faces, .{
-            .baseline = .{ .x = placement.x, .y = placement.y },
+        const baseline = if (self.hint_opts.world_to_pixel) |w2p|
+            snail.snap.baseline(.{ .x = placement.x, .y = placement.y }, w2p)
+        else
+            snail.Vec2{ .x = placement.x, .y = placement.y };
+        var picture = try snail_helpers.hintedShapedRunPicture(self.allocator, shaped, &self.assets.faces, .{
+            .baseline = baseline,
             .em = placement.size,
             .ppem_26_6 = ppem_26_6,
             .color = color,
-            .world_to_pixel = self.hint_opts.world_to_pixel,
         });
         defer picture.deinit();
         try self.text_shapes.appendSlice(self.allocator, picture.shapes);

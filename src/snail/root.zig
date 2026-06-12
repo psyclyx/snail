@@ -120,7 +120,6 @@ const shape_mod = @import("picture/shape.zig");
 pub const Shape = shape_mod.Shape;
 pub const Override = shape_mod.Override;
 
-pub const Picture = @import("picture.zig").Picture;
 pub const DrawSegment = @import("picture/draw_records.zig").DrawSegment;
 pub const Binding = @import("picture/draw_records.zig").Binding;
 pub const emit = @import("picture/emit.zig");
@@ -140,8 +139,6 @@ pub const bindingTexels = vertex_mod.bindingTexels;
 pub const WORDS_PER_INSTANCE = vertex_mod.WORDS_PER_INSTANCE;
 pub const WORDS_PER_OVERRIDE = vertex_mod.WORDS_PER_OVERRIDE;
 
-pub const shapedRunPicture = @import("picture/text.zig").shapedRunPicture;
-pub const hintedShapedRunPicture = @import("picture/text.zig").hintedShapedRunPicture;
 pub const HintVm = @import("font/hint_vm.zig").HintVm;
 pub const HintPpem = @import("font/hint_vm.zig").HintPpem;
 pub const HintVmStats = @import("font/hint_vm.zig").HintVmStats;
@@ -157,6 +154,7 @@ pub const VulkanBackendCachePipelineShape = @import("render/backend/vulkan/backe
 
 pub const paths = @import("paths.zig");
 pub const coverage = @import("coverage.zig");
+pub const snap = @import("snap.zig");
 
 /// Default ASCII printable character set (space through tilde).
 pub const ASCII_PRINTABLE = blk: {
@@ -182,14 +180,13 @@ test {
     _ = @import("font/hint_vm.zig");
     _ = @import("text/faces.zig");
     _ = shape_mod;
-    _ = @import("picture.zig");
     _ = @import("picture/draw_records.zig");
     _ = @import("picture/emit.zig");
     _ = @import("render/backend/cpu/backend_cache.zig");
     _ = @import("render/backend/cpu/draw.zig");
     _ = @import("render/backend/gl/backend_cache.zig");
     _ = @import("render/backend/vulkan/backend_cache.zig");
-    _ = @import("picture/text.zig");
     _ = @import("coverage.zig");
+    _ = @import("snap.zig");
     _ = @import("util/hamt.zig");
 }

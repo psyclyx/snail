@@ -334,8 +334,8 @@ const SceneBuild = struct {
         return snail.Atlas.from(self.allocator, self.pool, self.entries.items);
     }
 
-    fn freezePicture(self: *SceneBuild) !snail.Picture {
-        return snail.Picture.from(self.allocator, self.shapes.items);
+    fn freezePicture(self: *SceneBuild) !snail_helpers.Picture {
+        return snail_helpers.Picture.from(self.allocator, self.shapes.items);
     }
 };
 
@@ -546,7 +546,7 @@ const SceneBundle = struct {
     pool: *snail.PagePool,
     build: SceneBuild,
     atlas: snail.Atlas,
-    picture: snail.Picture,
+    picture: snail_helpers.Picture,
 
     fn deinit(self: *SceneBundle) void {
         self.picture.deinit();
@@ -675,7 +675,7 @@ fn addShapedLine(
         defer shaped.deinit();
         const ok = ensureHintedRunCurves(build, fonts, &shaped, ppem_26_6) catch false;
         if (ok) {
-            var pic = try snail.hintedShapedRunPicture(allocator, &shaped, &fonts.faces, .{
+            var pic = try snail_helpers.hintedShapedRunPicture(allocator, &shaped, &fonts.faces, .{
                 .baseline = .{ .x = line.x, .y = line.y },
                 .em = line.size,
                 .ppem_26_6 = ppem_26_6,
@@ -699,7 +699,7 @@ fn addShapedLineUnhinted(
     var shaped = try snail.shape(allocator, &fonts.faces, line.text, .{ .style = line.style });
     defer shaped.deinit();
     try ensureUnhintedRunCurves(build, fonts, &shaped);
-    var pic = try snail.shapedRunPicture(allocator, &shaped, &fonts.faces, .{
+    var pic = try snail_helpers.shapedRunPicture(allocator, &shaped, &fonts.faces, .{
         .baseline = .{ .x = line.x, .y = line.y },
         .em = line.size,
         .color = line.color,
@@ -791,7 +791,7 @@ fn addRichRun(
     switch (paint) {
         .solid => |color| {
             try ensureUnhintedRunCurves(build, fonts, &shaped);
-            var pic = try snail.shapedRunPicture(allocator, &shaped, &fonts.faces, .{
+            var pic = try snail_helpers.shapedRunPicture(allocator, &shaped, &fonts.faces, .{
                 .baseline = .{ .x = x, .y = y },
                 .em = em,
                 .color = color,
@@ -1142,7 +1142,7 @@ fn buildPicturesForPreparedLines(
     var shape_count: usize = 0;
     for (prepared.items.items) |*it| {
         if (it.hinted) {
-            var pic = try snail.hintedShapedRunPicture(allocator, &it.shaped, &prepared.fonts.faces, .{
+            var pic = try snail_helpers.hintedShapedRunPicture(allocator, &it.shaped, &prepared.fonts.faces, .{
                 .baseline = .{ .x = it.line.x, .y = it.line.y },
                 .em = it.line.size,
                 .ppem_26_6 = it.ppem_26_6,
@@ -1151,7 +1151,7 @@ fn buildPicturesForPreparedLines(
             shape_count += pic.shapes.len;
             pic.deinit();
         } else {
-            var pic = try snail.shapedRunPicture(allocator, &it.shaped, &prepared.fonts.faces, .{
+            var pic = try snail_helpers.shapedRunPicture(allocator, &it.shaped, &prepared.fonts.faces, .{
                 .baseline = .{ .x = it.line.x, .y = it.line.y },
                 .em = it.line.size,
                 .color = it.line.color,
@@ -1214,12 +1214,12 @@ fn timeRecordEmit(
     allocator: std.mem.Allocator,
     binding: snail.Binding,
     atlas: *const snail.Atlas,
-    picture: *const snail.Picture,
+    picture: *const snail_helpers.Picture,
 ) !struct { us: f64, words: usize, segments: usize } {
-    const word_cap = snail.emit.wordBudget(picture, 0);
+    const word_cap = snail.emit.wordBudget(picture.shapes.len, 0);
     const words = try allocator.alloc(u32, word_cap);
     defer allocator.free(words);
-    const segs = try allocator.alloc(snail.DrawSegment, snail.emit.segmentBudget(picture, 0));
+    const segs = try allocator.alloc(snail.DrawSegment, snail.emit.segmentBudget(picture.shapes.len, 0));
     defer allocator.free(segs);
 
     var wlen: usize = 0;
@@ -1228,13 +1228,13 @@ fn timeRecordEmit(
     for (0..RECORD_WARMUP) |_| {
         wlen = 0;
         slen = 0;
-        _ = try snail.emit.emit(words, segs, &wlen, &slen, binding, atlas, picture, .identity, .{ 1, 1, 1, 1 });
+        _ = try snail.emit.emit(words, segs, &wlen, &slen, binding, atlas, picture.shapes, .identity, .{ 1, 1, 1, 1 });
     }
     const start = nowNs();
     for (0..RECORD_ITERS) |_| {
         wlen = 0;
         slen = 0;
-        _ = try snail.emit.emit(words, segs, &wlen, &slen, binding, atlas, picture, .identity, .{ 1, 1, 1, 1 });
+        _ = try snail.emit.emit(words, segs, &wlen, &slen, binding, atlas, picture.shapes, .identity, .{ 1, 1, 1, 1 });
     }
     const us = usFrom(start) / RECORD_ITERS;
     return .{ .us = us, .words = wlen, .segments = slen };
@@ -1261,17 +1261,17 @@ fn emitScene(
     allocator: std.mem.Allocator,
     binding: snail.Binding,
     atlas: *const snail.Atlas,
-    picture: *const snail.Picture,
+    picture: *const snail_helpers.Picture,
 ) !EmittedRecords {
-    const word_cap = snail.emit.wordBudget(picture, 0);
+    const word_cap = snail.emit.wordBudget(picture.shapes.len, 0);
     const words = try allocator.alloc(u32, word_cap);
     errdefer allocator.free(words);
-    const seg_cap = @max(snail.emit.segmentBudget(picture, 0), 1);
+    const seg_cap = @max(snail.emit.segmentBudget(picture.shapes.len, 0), 1);
     const segs = try allocator.alloc(snail.DrawSegment, seg_cap);
     errdefer allocator.free(segs);
     var wlen: usize = 0;
     var slen: usize = 0;
-    _ = try snail.emit.emit(words, segs, &wlen, &slen, binding, atlas, picture, .identity, .{ 1, 1, 1, 1 });
+    _ = try snail.emit.emit(words, segs, &wlen, &slen, binding, atlas, picture.shapes, .identity, .{ 1, 1, 1, 1 });
     return .{
         .allocator = allocator,
         .words = words,

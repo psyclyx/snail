@@ -10,6 +10,7 @@
 
 const std = @import("std");
 const snail = @import("snail");
+const snail_helpers = @import("snail-helpers");
 const build_options = @import("build_options");
 const assets_data = @import("assets");
 const renderer_driver = @import("renderer_driver.zig");
@@ -170,13 +171,16 @@ const ContentCache = struct {
         self.pool.deinit();
     }
 
-    /// Get or rebuild the full banner content. Hinted runs snap their
-    /// baseline through `world_to_pixel`, so rebuilds happen whenever the
-    /// MVP-projected world→pixel transform changes — that's per pan as
-    /// well as per zoom while hinting is active. The long-lived `Assets`
-    /// (fonts, hinter, hinted-glyph cache) and `PagePool` survive across
-    /// rebuilds, so the TT VM only runs once per `(glyph_id, ppem)`.
-    /// Returns `dirty=true` when the content was rebuilt this call.
+    /// Get or rebuild the full banner content. Cache key is
+    /// (size, hint_active, hint_ppem). `world_to_pixel` is *not* part of
+    /// the key: panning during hinted rendering doesn't rebuild, though
+    /// the hinted text's baked baseline can drift sub-pixel during pan
+    /// (next dirty rebuild picks up whatever transform is current then).
+    ///
+    /// The long-lived `Assets` (fonts, hinter, hinted-glyph cache) and
+    /// `PagePool` survive across rebuilds, so the TT VM only runs once
+    /// per `(glyph_id, ppem)`. Returns `dirty=true` when content was
+    /// rebuilt.
     fn get(
         self: *ContentCache,
         width: u32,
@@ -186,12 +190,11 @@ const ContentCache = struct {
         world_to_pixel: ?snail.Transform2D,
     ) !struct { content: *demo_banner.Content, dirty: bool } {
         const ppem_bits: u32 = @bitCast(hint_ppem_scale);
-        const w2p_same = transform2DEql(self.last_world_to_pixel, world_to_pixel);
         const same = self.content != null and
             self.last_size[0] == width and
             self.last_size[1] == height and
             self.last_hint_active == hint_active and
-            (!hint_active or (self.last_hint_ppem_bits == ppem_bits and w2p_same));
+            (!hint_active or self.last_hint_ppem_bits == ppem_bits);
         if (same) return .{ .content = &self.content.?, .dirty = false };
 
         if (self.content) |*old| old.deinit();
@@ -468,9 +471,9 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
             },
         };
         const content_atlases = [_]*const snail.Atlas{ &cached.content.paths_atlas, &cached.content.text_atlas };
-        const content_pictures = [_]*const snail.Picture{ &cached.content.paths_picture, &cached.content.text_picture };
+        const content_pictures = [_]*const snail_helpers.Picture{ &cached.content.paths_picture, &cached.content.text_picture };
         const hud_atlases = [_]*const snail.Atlas{&hud.atlas};
-        const hud_pictures = [_]*const snail.Picture{&hud_picture};
+        const hud_pictures = [_]*const snail_helpers.Picture{&hud_picture};
         const all_passes = [_]renderer_driver.Pass{
             .{
                 .atlases = &content_atlases,

@@ -112,7 +112,7 @@ pub const Overlay = struct {
         state: State,
         viewport_w: f32,
         viewport_h: f32,
-    ) !snail.Picture {
+    ) !helpers.Picture {
         const fps_text = std.fmt.bufPrint(&self.fps_buf, "FPS: {d:.0}", .{state.fps}) catch "FPS: ?";
 
         const lines = [_]Line{
@@ -136,7 +136,7 @@ pub const Overlay = struct {
         // shapedRunPicture call allocates a small Shape buffer in
         // `frame_alloc`; the concat allocates one final buffer; the
         // per-line pictures get freed before return.
-        var line_pictures: [lines.len]snail.Picture = undefined;
+        var line_pictures: [lines.len]helpers.Picture = undefined;
         var line_count: usize = 0;
         defer for (line_pictures[0..line_count]) |*p| p.deinit();
 
@@ -153,7 +153,7 @@ pub const Overlay = struct {
             const baseline_x = right_edge - run_width;
             const baseline_y = top_edge + @as(f32, @floatFromInt(line.y)) * line_h;
 
-            line_pictures[line_count] = try snail.shapedRunPicture(frame_alloc, shaped, self.faces, .{
+            line_pictures[line_count] = try helpers.shapedRunPicture(frame_alloc, shaped, self.faces, .{
                 .baseline = .{ .x = baseline_x, .y = baseline_y },
                 .em = em,
                 .color = hud_color,
@@ -162,9 +162,9 @@ pub const Overlay = struct {
         }
 
         // One concat over all non-empty lines.
-        var refs: [lines.len]*const snail.Picture = undefined;
+        var refs: [lines.len]*const helpers.Picture = undefined;
         for (line_pictures[0..line_count], 0..) |*p, i| refs[i] = p;
-        return snail.Picture.concat(frame_alloc, refs[0..line_count]);
+        return helpers.Picture.concat(frame_alloc, refs[0..line_count]);
     }
 
     /// Walk `shaped`'s glyphs and add any missing keys to `self.atlas`.

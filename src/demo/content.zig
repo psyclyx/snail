@@ -12,6 +12,7 @@
 
 const std = @import("std");
 const snail = @import("snail");
+const snail_helpers = @import("snail-helpers");
 const assets_data = @import("assets");
 const banner_snail = @import("banner_snail.zig");
 
@@ -22,8 +23,8 @@ pub const Content = struct {
     pool: *snail.PagePool,
     paths_atlas: snail.Atlas,
     text_atlas: snail.Atlas,
-    paths_picture: snail.Picture,
-    text_picture: snail.Picture,
+    paths_picture: snail_helpers.Picture,
+    text_picture: snail_helpers.Picture,
 
     pub fn deinit(self: *Content) void {
         self.text_picture.deinit();
@@ -258,7 +259,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
 
     var paths_atlas = try snail.Atlas.from(allocator, pool, path_entries.items);
     errdefer paths_atlas.deinit();
-    var paths_picture = try snail.Picture.from(allocator, path_shapes.items);
+    var paths_picture = try snail_helpers.Picture.from(allocator, path_shapes.items);
     errdefer paths_picture.deinit();
 
     // When hinting is requested, push hinted-glyph entries for the tagline
@@ -286,14 +287,14 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
 
     // Tagline + multi-script sample row.
     var tagline_pic = if (hinted_tagline_active)
-        try snail.hintedShapedRunPicture(allocator, &shaped_tagline, &faces, .{
+        try snail_helpers.hintedShapedRunPicture(allocator, &shaped_tagline, &faces, .{
             .baseline = .{ .x = left_pad, .y = tagline_baseline },
             .em = hint_opts.hint_ppem_px,
             .ppem_26_6 = @intFromFloat(@round(hint_opts.hint_ppem_px * 64.0)),
             .color = tagline_color,
         })
     else
-        try snail.shapedRunPicture(allocator, &shaped_tagline, &faces, .{
+        try snail_helpers.shapedRunPicture(allocator, &shaped_tagline, &faces, .{
             .baseline = .{ .x = left_pad, .y = tagline_baseline },
             .em = tagline_em,
             .color = tagline_color,
@@ -304,7 +305,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
     const sample_em: f32 = 16.0;
     const sample_color = [4]f32{ 0.15, 0.18, 0.24, 1.0 };
     const sep_color = [4]f32{ 0.65, 0.70, 0.78, 1.0 };
-    var sample_pics: std.ArrayList(snail.Picture) = .empty;
+    var sample_pics: std.ArrayList(snail_helpers.Picture) = .empty;
     defer {
         for (sample_pics.items) |*p| p.deinit();
         sample_pics.deinit(allocator);
@@ -313,7 +314,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
     var sx = left_pad;
     for (shaped_samples[0..shaped_count], 0..) |shaped, sample_idx| {
         if (sample_idx != 0) {
-            try sample_pics.append(allocator, try snail.shapedRunPicture(allocator, &shaped_sep, &faces, .{
+            try sample_pics.append(allocator, try snail_helpers.shapedRunPicture(allocator, &shaped_sep, &faces, .{
                 .baseline = .{ .x = sx, .y = sample_baseline },
                 .em = sample_em,
                 .color = sep_color,
@@ -321,7 +322,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
             }));
             sx += shaped_sep.advanceX() * sample_em;
         }
-        try sample_pics.append(allocator, try snail.shapedRunPicture(allocator, &shaped, &faces, .{
+        try sample_pics.append(allocator, try snail_helpers.shapedRunPicture(allocator, &shaped, &faces, .{
             .baseline = .{ .x = sx, .y = sample_baseline },
             .em = sample_em,
             .color = sample_color,
@@ -330,12 +331,12 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
         sx += shaped.advanceX() * sample_em;
     }
 
-    var combine_inputs: std.ArrayList(*const snail.Picture) = .empty;
+    var combine_inputs: std.ArrayList(*const snail_helpers.Picture) = .empty;
     defer combine_inputs.deinit(allocator);
     try combine_inputs.append(allocator, &tagline_pic);
     for (sample_pics.items) |*p| try combine_inputs.append(allocator, p);
 
-    var text_picture = try snail.Picture.concat(allocator, combine_inputs.items);
+    var text_picture = try snail_helpers.Picture.concat(allocator, combine_inputs.items);
     errdefer text_picture.deinit();
 
     return .{

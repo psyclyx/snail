@@ -359,12 +359,12 @@ fn drawPassPair(
         .raster = target.raster,
     };
 
-    const needed_words = snail.emit.wordBudget(&pass.path_picture, 0) + snail.emit.wordBudget(&pass.text_picture, 0);
+    const needed_words = snail.emit.wordBudget(pass.path_picture.shapes.len, 0) + snail.emit.wordBudget(pass.text_picture.shapes.len, 0);
     try scratch.ensure(needed_words, 4);
     var wlen: usize = 0;
     var slen: usize = 0;
-    _ = try snail.emit.emit(scratch.words, scratch.segs, &wlen, &slen, bindings.path, &pass.path_atlas, &pass.path_picture, .identity, .{ 1, 1, 1, 1 });
-    _ = try snail.emit.emit(scratch.words, scratch.segs, &wlen, &slen, bindings.text, &pass.text_atlas, &pass.text_picture, .identity, .{ 1, 1, 1, 1 });
+    _ = try snail.emit.emit(scratch.words, scratch.segs, &wlen, &slen, bindings.path, &pass.path_atlas, pass.path_picture.shapes, .identity, .{ 1, 1, 1, 1 });
+    _ = try snail.emit.emit(scratch.words, scratch.segs, &wlen, &slen, bindings.text, &pass.text_atlas, pass.text_picture.shapes, .identity, .{ 1, 1, 1, 1 });
 
     gl_renderer.state.beginDraw();
     try gl_renderer.state.draw(

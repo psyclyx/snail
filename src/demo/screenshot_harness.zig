@@ -13,6 +13,7 @@
 
 const std = @import("std");
 const snail = @import("snail");
+const snail_helpers = @import("snail-helpers");
 const support = @import("support");
 const gl = support.gl;
 
@@ -20,8 +21,8 @@ pub const Scene = struct {
     pool: *snail.PagePool,
     paths_atlas: *const snail.Atlas,
     text_atlas: *const snail.Atlas,
-    paths_picture: *const snail.Picture,
-    text_picture: *const snail.Picture,
+    paths_picture: *const snail_helpers.Picture,
+    text_picture: *const snail_helpers.Picture,
 };
 
 /// Shared off-white background (sRGB).
@@ -72,7 +73,7 @@ pub fn drawState(width: u32, height: u32) snail.DrawState {
 
 /// Sum of the word budgets for both pictures in the scene.
 pub fn wordBudget(scene: Scene) usize {
-    return snail.emit.wordBudget(scene.paths_picture, 0) + snail.emit.wordBudget(scene.text_picture, 0);
+    return snail.emit.wordBudget(scene.paths_picture.shapes.len, 0) + snail.emit.wordBudget(scene.text_picture.shapes.len, 0);
 }
 
 pub const EmitOut = struct { words_len: usize, segs_len: usize };
@@ -88,8 +89,8 @@ pub fn emitScene(
 ) !EmitOut {
     var wlen: usize = 0;
     var slen: usize = 0;
-    _ = try snail.emit.emit(words, segs, &wlen, &slen, paths_binding, scene.paths_atlas, scene.paths_picture, .identity, .{ 1, 1, 1, 1 });
-    _ = try snail.emit.emit(words, segs, &wlen, &slen, text_binding, scene.text_atlas, scene.text_picture, .identity, .{ 1, 1, 1, 1 });
+    _ = try snail.emit.emit(words, segs, &wlen, &slen, paths_binding, scene.paths_atlas, scene.paths_picture.shapes, .identity, .{ 1, 1, 1, 1 });
+    _ = try snail.emit.emit(words, segs, &wlen, &slen, text_binding, scene.text_atlas, scene.text_picture.shapes, .identity, .{ 1, 1, 1, 1 });
     return .{ .words_len = wlen, .segs_len = slen };
 }
 

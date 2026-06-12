@@ -12,6 +12,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const snail = @import("snail");
+const snail_helpers = @import("snail-helpers");
 const build_options = @import("build_options");
 const presentation = @import("platform/presentation.zig");
 const wayland = @import("platform/wayland.zig");
@@ -112,7 +113,7 @@ fn cpuThreadCount(kind: Kind) ?usize {
 /// bindings.
 pub const Pass = struct {
     atlases: []const *const snail.Atlas,
-    pictures: []const *const snail.Picture,
+    pictures: []const *const snail_helpers.Picture,
     draw_state: snail.DrawState,
     dirty: bool,
     /// CPU-backend hint: when true, fan tile work across the driver's
@@ -328,7 +329,7 @@ const PassState = struct {
 fn passesWordBudget(passes: []const Pass) usize {
     var total: usize = 0;
     for (passes) |pass| {
-        for (pass.pictures) |picture| total += snail.emit.wordBudget(picture, 0);
+        for (pass.pictures) |picture| total += snail.emit.wordBudget(picture.shapes.len, 0);
     }
     return total;
 }
@@ -360,7 +361,7 @@ fn emitPasses(
         std.debug.assert(state.count == pass.atlases.len);
         const seg_start = slen;
         for (pass.atlases, pass.pictures, state.bindings[0..state.count]) |atlas, picture, binding| {
-            _ = try snail.emit.emit(scratch.words, scratch.segs, &wlen, &slen, binding, atlas, picture, .identity, .{ 1, 1, 1, 1 });
+            _ = try snail.emit.emit(scratch.words, scratch.segs, &wlen, &slen, binding, atlas, picture.shapes, .identity, .{ 1, 1, 1, 1 });
         }
         out_records[i] = .{
             // .words patched after the loop once `wlen` is final.

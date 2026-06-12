@@ -10,6 +10,7 @@
 
 const std = @import("std");
 const snail = @import("snail");
+const snail_helpers = @import("snail-helpers");
 const gl = @import("support").gl;
 const common = @import("common.zig");
 
@@ -684,7 +685,7 @@ const material_fragment_shader: [:0]const u8 =
 pub const SurfaceTextDraw = struct {
     allocator: std.mem.Allocator,
     atlas: *const snail.Atlas,
-    picture: *const snail.Picture,
+    picture: *const snail_helpers.Picture,
     gl_renderer: *snail.Gl33Renderer,
     cache: *const snail.Gl33BackendCache,
     coverage_words: []u32 = &.{},
@@ -697,10 +698,10 @@ pub const SurfaceTextDraw = struct {
         gl_renderer: *snail.Gl33Renderer,
         cache: *const snail.Gl33BackendCache,
         atlas: *const snail.Atlas,
-        picture: *const snail.Picture,
+        picture: *const snail_helpers.Picture,
         binding: snail.Binding,
     ) !SurfaceTextDraw {
-        const word_budget = snail.emit.wordBudget(picture, 0);
+        const word_budget = snail.emit.wordBudget(picture.shapes.len, 0);
         const coverage_words: []u32 = if (word_budget == 0)
             &[_]u32{}
         else
@@ -720,7 +721,7 @@ pub const SurfaceTextDraw = struct {
                 &slen,
                 binding,
                 atlas,
-                picture,
+                picture.shapes,
                 .identity,
                 .{ 1, 1, 1, 1 },
             );

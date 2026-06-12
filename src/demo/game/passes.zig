@@ -14,6 +14,7 @@
 
 const std = @import("std");
 const snail = @import("snail");
+const snail_helpers = @import("snail-helpers");
 const assets = @import("assets");
 const gl = @import("support").gl;
 const common = @import("common.zig");
@@ -307,7 +308,7 @@ const PassBuilder = struct {
         color: [4]f32,
     ) !void {
         try self.ensureUnhintedGlyphCurves(shaped);
-        var picture = try snail.shapedRunPicture(self.allocator, shaped, &self.fonts.faces, .{
+        var picture = try snail_helpers.shapedRunPicture(self.allocator, shaped, &self.fonts.faces, .{
             .baseline = .{ .x = x, .y = y },
             .em = em,
             .color = color,
@@ -385,9 +386,9 @@ const PassBuilder = struct {
         errdefer path_atlas.deinit();
         var text_atlas = try snail.Atlas.from(self.allocator, pool, self.text_entries.items);
         errdefer text_atlas.deinit();
-        var path_picture = try snail.Picture.from(self.allocator, self.path_shapes.items);
+        var path_picture = try snail_helpers.Picture.from(self.allocator, self.path_shapes.items);
         errdefer path_picture.deinit();
-        var text_picture = try snail.Picture.from(self.allocator, self.text_shapes.items);
+        var text_picture = try snail_helpers.Picture.from(self.allocator, self.text_shapes.items);
         errdefer text_picture.deinit();
 
         // Ownership of the curve / extra-layer storage moves to PreparedPass.
@@ -419,8 +420,8 @@ pub const PreparedPass = struct {
     allocator: std.mem.Allocator,
     path_atlas: snail.Atlas,
     text_atlas: snail.Atlas,
-    path_picture: snail.Picture,
-    text_picture: snail.Picture,
+    path_picture: snail_helpers.Picture,
+    text_picture: snail_helpers.Picture,
     path_curves_owned: []snail.GlyphCurves,
     text_curves_owned: []snail.GlyphCurves,
     extra_layer_storage: [][]snail.AtlasLayer,

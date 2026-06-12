@@ -1,24 +1,28 @@
-//! `emit`: write GPU-ready vertex bytes for a `Picture` resolved against an
-//! `Atlas`, plus a `DrawSegment` describing how the renderer should bind and
-//! dispatch them.
+//! `emit`: write GPU-ready vertex bytes for a flat shape slice resolved
+//! against an `Atlas`, plus a `DrawSegment` describing how the renderer
+//! should bind and dispatch them.
 //!
 //! Two primitives:
 //!   - `emit` walks heterogeneous shape lists (one transform/color per shape).
 //!     Writes one 16-word `Instance` per shape.
-//!   - `emitInstanced` walks a picture replicated under M overrides. Writes
-//!     N shape blocks (16 words each) + M override blocks (8 words each); the
-//!     backend materializes N*M instances at dispatch.
+//!   - `emitInstanced` walks a shape list replicated under M overrides.
+//!     Writes N shape blocks (16 words each) + M override blocks
+//!     (8 words each); the backend materializes N*M instances at dispatch.
 //!
 //! Both primitives write into caller-provided buffers and return word/segment
 //! counts. Consecutive calls that share a binding/kind/contiguity coalesce
 //! their segments (`draw_records.mergeIfAdjacent`).
+//!
+//! These functions operate on a raw `[]const Shape` directly; whatever
+//! container the caller uses to organize their scene (a `snail-helpers.Picture`,
+//! an arena-bumped buffer, a borrowed slice from a custom scene-graph) feeds
+//! its shapes through unchanged.
 
 const std = @import("std");
 const math = @import("../math/vec.zig");
 const vertex = @import("../render/format/vertex.zig");
 const atlas_mod = @import("../atlas.zig");
 const draw_records = @import("draw_records.zig");
-const picture_mod = @import("../picture.zig");
 const shape_mod = @import("shape.zig");
 
 pub const Transform2D = math.Transform2D;
@@ -26,7 +30,6 @@ pub const Atlas = atlas_mod.Atlas;
 pub const Binding = draw_records.Binding;
 pub const Kind = draw_records.Kind;
 pub const DrawSegment = draw_records.DrawSegment;
-pub const Picture = picture_mod.Picture;
 pub const Shape = shape_mod.Shape;
 pub const Override = shape_mod.Override;
 
@@ -60,7 +63,7 @@ pub const EmitResult = struct {
     segment_count: u32,
 };
 
-/// Heterogeneous emit. One pre-composed `Instance` per shape in the picture,
+/// Heterogeneous emit. One pre-composed `Instance` per shape in `shapes`,
 /// transform composed as `world_xform * shape.local_transform`, color as
 /// `shape.local_color`, tint as `world_tint`.
 pub fn emit(
@@ -70,11 +73,10 @@ pub fn emit(
     seg_len: *usize,
     binding: Binding,
     atlas: *const Atlas,
-    picture: *const Picture,
+    shapes: []const Shape,
     world_xform: Transform2D,
     world_tint: [4]f32,
 ) EmitError!EmitResult {
-    const shapes = picture.shapes;
     const need_words = shapes.len * WORDS_PER_INSTANCE;
     if (words_buf.len - word_len.* < need_words) return error.BufferTooSmall;
 
@@ -186,10 +188,9 @@ pub fn emitInstanced(
     seg_len: *usize,
     binding: Binding,
     atlas: *const Atlas,
-    picture: *const Picture,
+    shapes: []const Shape,
     overrides: []const Override,
 ) EmitError!EmitResult {
-    const shapes = picture.shapes;
     const need_words = shapes.len * WORDS_PER_INSTANCE + overrides.len * WORDS_PER_OVERRIDE;
     if (words_buf.len - word_len.* < need_words) return error.BufferTooSmall;
     if (seg_len.* >= segs_buf.len) return error.BufferTooSmall;
@@ -265,19 +266,18 @@ pub fn emitInstanced(
 }
 
 /// Conservative upper bound on words written for an emit/emitInstanced call.
-pub fn wordBudget(picture: *const Picture, override_count: usize) usize {
-    const shapes = picture.shapes.len;
+pub fn wordBudget(shape_count: usize, override_count: usize) usize {
     if (override_count == 0) {
         // Heterogeneous: one Instance per shape.
-        return shapes * WORDS_PER_INSTANCE;
+        return shape_count * WORDS_PER_INSTANCE;
     }
     // Replicated: shape blocks + override blocks.
-    return shapes * WORDS_PER_INSTANCE + override_count * WORDS_PER_OVERRIDE;
+    return shape_count * WORDS_PER_INSTANCE + override_count * WORDS_PER_OVERRIDE;
 }
 
 /// Conservative upper bound on segments written for one emit call.
-pub fn segmentBudget(picture: *const Picture, override_count: usize) usize {
-    _ = picture;
+pub fn segmentBudget(shape_count: usize, override_count: usize) usize {
+    _ = shape_count;
     _ = override_count;
     return 1;
 }
@@ -386,10 +386,7 @@ test "emit writes one instance per shape" {
         .{ .key = record_key_mod.unhintedGlyph(0, 1), .local_transform = .translate(10, 20) },
         .{ .key = record_key_mod.unhintedGlyph(0, 2), .local_transform = .translate(30, 40) },
     };
-    var pic = try Picture.from(testing.allocator, &shapes);
-    defer pic.deinit();
-
-    const need = wordBudget(&pic, 0);
+    const need = wordBudget(shapes.len, 0);
     const words = try testing.allocator.alloc(u32, need);
     defer testing.allocator.free(words);
     var segs: [4]DrawSegment = undefined;
@@ -397,7 +394,7 @@ test "emit writes one instance per shape" {
     var slen: usize = 0;
 
     const binding = Binding{ .pool = pool };
-    const result = try emit(words, segs[0..], &wlen, &slen, binding, &atlas, &pic, .identity, .{ 1, 1, 1, 1 });
+    const result = try emit(words, segs[0..], &wlen, &slen, binding, &atlas, &shapes, .identity, .{ 1, 1, 1, 1 });
 
     try testing.expectEqual(@as(u32, 2), result.shape_count);
     try testing.expectEqual(@as(u32, 2 * WORDS_PER_INSTANCE), result.word_count);
@@ -432,15 +429,13 @@ test "emit matches generateGlyphVerticesTransformedTinted byte-for-byte" {
     const world_tint = [4]f32{ 1.0, 1.0, 1.0, 1.0 };
 
     const shapes = [_]Shape{.{ .key = key, .local_transform = local_t, .local_color = local_color }};
-    var pic = try Picture.from(testing.allocator, &shapes);
-    defer pic.deinit();
 
     var words = [_]u32{0} ** (WORDS_PER_INSTANCE);
     var segs: [1]DrawSegment = undefined;
     var wlen: usize = 0;
     var slen: usize = 0;
     const binding = Binding{ .pool = pool };
-    _ = try emit(&words, segs[0..], &wlen, &slen, binding, &atlas, &pic, world_t, world_tint);
+    _ = try emit(&words, segs[0..], &wlen, &slen, binding, &atlas, &shapes, world_t, world_tint);
 
     // Now produce the same instance through the existing vertex helper.
     const rec = atlas.lookupRecord(key).?;
@@ -480,8 +475,6 @@ test "emit reports MissingRecord on unknown key" {
     defer atlas.deinit();
 
     const shapes = [_]Shape{.{ .key = record_key_mod.unhintedGlyph(0, 99) }};
-    var pic = try Picture.from(testing.allocator, &shapes);
-    defer pic.deinit();
 
     var buf: [WORDS_PER_INSTANCE]u32 = undefined;
     var segs: [1]DrawSegment = undefined;
@@ -489,7 +482,7 @@ test "emit reports MissingRecord on unknown key" {
     var slen: usize = 0;
 
     const binding = Binding{ .pool = pool };
-    try testing.expectError(EmitError.MissingRecord, emit(&buf, segs[0..], &wlen, &slen, binding, &atlas, &pic, .identity, .{ 1, 1, 1, 1 }));
+    try testing.expectError(EmitError.MissingRecord, emit(&buf, segs[0..], &wlen, &slen, binding, &atlas, &shapes, .identity, .{ 1, 1, 1, 1 }));
 }
 
 test "emit coalesces adjacent same-binding calls" {
@@ -504,10 +497,6 @@ test "emit coalesces adjacent same-binding calls" {
 
     const shapes_a = [_]Shape{.{ .key = record_key_mod.unhintedGlyph(0, 1) }};
     const shapes_b = [_]Shape{.{ .key = record_key_mod.unhintedGlyph(0, 2) }};
-    var pa = try Picture.from(testing.allocator, &shapes_a);
-    defer pa.deinit();
-    var pb = try Picture.from(testing.allocator, &shapes_b);
-    defer pb.deinit();
 
     var words: [4 * WORDS_PER_INSTANCE]u32 = undefined;
     var segs: [4]DrawSegment = undefined;
@@ -515,8 +504,8 @@ test "emit coalesces adjacent same-binding calls" {
     var slen: usize = 0;
     const binding = Binding{ .pool = pool };
 
-    _ = try emit(&words, segs[0..], &wlen, &slen, binding, &atlas, &pa, .identity, .{ 1, 1, 1, 1 });
-    _ = try emit(&words, segs[0..], &wlen, &slen, binding, &atlas, &pb, .identity, .{ 1, 1, 1, 1 });
+    _ = try emit(&words, segs[0..], &wlen, &slen, binding, &atlas, &shapes_a, .identity, .{ 1, 1, 1, 1 });
+    _ = try emit(&words, segs[0..], &wlen, &slen, binding, &atlas, &shapes_b, .identity, .{ 1, 1, 1, 1 });
 
     try testing.expectEqual(@as(usize, 1), slen);
     try testing.expectEqual(@as(u32, 2), segs[0].shape_count);
@@ -544,18 +533,14 @@ test "emit produces separate segments for different bindings" {
 
     const shapes_a = [_]Shape{.{ .key = record_key_mod.unhintedGlyph(0, 1) }};
     const shapes_b = [_]Shape{.{ .key = record_key_mod.unhintedGlyph(0, 2) }};
-    var pa = try Picture.from(testing.allocator, &shapes_a);
-    defer pa.deinit();
-    var pb = try Picture.from(testing.allocator, &shapes_b);
-    defer pb.deinit();
 
     var words: [4 * WORDS_PER_INSTANCE]u32 = undefined;
     var segs: [4]DrawSegment = undefined;
     var wlen: usize = 0;
     var slen: usize = 0;
 
-    _ = try emit(&words, segs[0..], &wlen, &slen, .{ .pool = pool_a }, &atlas_a, &pa, .identity, .{ 1, 1, 1, 1 });
-    _ = try emit(&words, segs[0..], &wlen, &slen, .{ .pool = pool_b }, &atlas_b, &pb, .identity, .{ 1, 1, 1, 1 });
+    _ = try emit(&words, segs[0..], &wlen, &slen, .{ .pool = pool_a }, &atlas_a, &shapes_a, .identity, .{ 1, 1, 1, 1 });
+    _ = try emit(&words, segs[0..], &wlen, &slen, .{ .pool = pool_b }, &atlas_b, &shapes_b, .identity, .{ 1, 1, 1, 1 });
 
     try testing.expectEqual(@as(usize, 2), slen);
     try testing.expect(segs[0].binding.pool == pool_a);
@@ -576,8 +561,6 @@ test "emitInstanced writes shape and override blocks" {
         .{ .key = record_key_mod.unhintedGlyph(0, 1) },
         .{ .key = record_key_mod.unhintedGlyph(0, 2) },
     };
-    var pic = try Picture.from(testing.allocator, &shapes);
-    defer pic.deinit();
 
     const overrides = [_]Override{
         .{ .transform = .translate(100, 0) },
@@ -585,14 +568,14 @@ test "emitInstanced writes shape and override blocks" {
         .{ .transform = .translate(50, 50) },
     };
 
-    const need = wordBudget(&pic, overrides.len);
+    const need = wordBudget(shapes.len, overrides.len);
     const words = try testing.allocator.alloc(u32, need);
     defer testing.allocator.free(words);
     var segs: [1]DrawSegment = undefined;
     var wlen: usize = 0;
     var slen: usize = 0;
 
-    const result = try emitInstanced(words, segs[0..], &wlen, &slen, .{ .pool = pool }, &atlas, &pic, &overrides);
+    const result = try emitInstanced(words, segs[0..], &wlen, &slen, .{ .pool = pool }, &atlas, &shapes, &overrides);
     try testing.expectEqual(@as(u32, 2), result.shape_count);
     try testing.expectEqual(@as(u32, 1), result.segment_count);
     try testing.expectEqual(Kind.replicated, segs[0].kind);
@@ -602,24 +585,8 @@ test "emitInstanced writes shape and override blocks" {
 }
 
 test "wordBudget bounds match actual emit output" {
-    var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 1,
-        .curve_words_per_page = 1024,
-        .band_words_per_page = 256,
-    });
-    defer pool.deinit();
-    var atlas = try buildTestAtlas(pool, &.{ 1, 2, 3 });
-    defer atlas.deinit();
-
-    const shapes = [_]Shape{
-        .{ .key = record_key_mod.unhintedGlyph(0, 1) },
-        .{ .key = record_key_mod.unhintedGlyph(0, 2) },
-        .{ .key = record_key_mod.unhintedGlyph(0, 3) },
-    };
-    var pic = try Picture.from(testing.allocator, &shapes);
-    defer pic.deinit();
-
+    const shape_count: usize = 3;
     const overrides = [_]Override{ .{}, .{} };
-    try testing.expectEqual(@as(usize, 3 * WORDS_PER_INSTANCE), wordBudget(&pic, 0));
-    try testing.expectEqual(@as(usize, 3 * WORDS_PER_INSTANCE + 2 * WORDS_PER_OVERRIDE), wordBudget(&pic, overrides.len));
+    try testing.expectEqual(@as(usize, 3 * WORDS_PER_INSTANCE), wordBudget(shape_count, 0));
+    try testing.expectEqual(@as(usize, 3 * WORDS_PER_INSTANCE + 2 * WORDS_PER_OVERRIDE), wordBudget(shape_count, overrides.len));
 }

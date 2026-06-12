@@ -307,16 +307,14 @@ test "drawCpu replicated produces same pixels as equivalent heterogeneous emit" 
             s.local_transform = Transform2D.multiply(ov.transform, base_shape.local_transform);
             try shapes.append(allocator, s);
         }
-        var pic = try @import("../../../picture.zig").Picture.from(allocator, shapes.items);
-        defer pic.deinit();
 
         const emit_mod = @import("../../../picture/emit.zig");
-        const words = try allocator.alloc(u32, emit_mod.wordBudget(&pic, 0));
+        const words = try allocator.alloc(u32, emit_mod.wordBudget(shapes.items.len, 0));
         defer allocator.free(words);
         var segs: [4]draw_records.DrawSegment = undefined;
         var wlen: usize = 0;
         var slen: usize = 0;
-        _ = try emit_mod.emit(words, segs[0..], &wlen, &slen, binding, &atlas, &pic, .identity, .{ 1, 1, 1, 1 });
+        _ = try emit_mod.emit(words, segs[0..], &wlen, &slen, binding, &atlas, shapes.items, .identity, .{ 1, 1, 1, 1 });
 
         var renderer = snail.CpuRenderer.init(px_hetero.ptr, W, H, STRIDE);
         const state = makeIdentityState(W, H);
@@ -325,16 +323,15 @@ test "drawCpu replicated produces same pixels as equivalent heterogeneous emit" 
 
     // Replicated: one base shape, three overrides via emitInstanced.
     {
-        var pic = try @import("../../../picture.zig").Picture.from(allocator, &.{base_shape});
-        defer pic.deinit();
+        const shapes = [_]@import("../../../picture/shape.zig").Shape{base_shape};
 
         const emit_mod = @import("../../../picture/emit.zig");
-        const words = try allocator.alloc(u32, emit_mod.wordBudget(&pic, overrides.len));
+        const words = try allocator.alloc(u32, emit_mod.wordBudget(shapes.len, overrides.len));
         defer allocator.free(words);
         var segs: [4]draw_records.DrawSegment = undefined;
         var wlen: usize = 0;
         var slen: usize = 0;
-        _ = try emit_mod.emitInstanced(words, segs[0..], &wlen, &slen, binding, &atlas, &pic, &overrides);
+        _ = try emit_mod.emitInstanced(words, segs[0..], &wlen, &slen, binding, &atlas, &shapes, &overrides);
 
         var renderer = snail.CpuRenderer.init(px_repl.ptr, W, H, STRIDE);
         const state = makeIdentityState(W, H);
@@ -395,17 +392,16 @@ test "drawCpu renders a small Picture into non-zero pixels" {
         },
         .local_color = .{ 1, 1, 1, 1 },
     };
-    var pic = try @import("../../../picture.zig").Picture.from(allocator, &.{shape});
-    defer pic.deinit();
+    const shapes = [_]@import("../../../picture/shape.zig").Shape{shape};
 
     const emit_mod = @import("../../../picture/emit.zig");
-    const word_need = emit_mod.wordBudget(&pic, 0);
+    const word_need = emit_mod.wordBudget(shapes.len, 0);
     const words = try allocator.alloc(u32, word_need);
     defer allocator.free(words);
     var segs: [2]draw_records.DrawSegment = undefined;
     var wlen: usize = 0;
     var slen: usize = 0;
-    _ = try emit_mod.emit(words, segs[0..], &wlen, &slen, binding, &atlas, &pic, .identity, .{ 1, 1, 1, 1 });
+    _ = try emit_mod.emit(words, segs[0..], &wlen, &slen, binding, &atlas, &shapes, .identity, .{ 1, 1, 1, 1 });
 
     var renderer = snail.CpuRenderer.init(px.ptr, W, H, STRIDE);
     const state = makeIdentityState(W, H);
@@ -475,16 +471,15 @@ test "drawCpu renders gradient-painted glyph through special-layer path" {
         .local_transform = .{ .xx = px_size, .yy = -px_size, .tx = 12, .ty = 40 },
         .local_color = .{ 1, 1, 1, 1 },
     };
-    var pic = try @import("../../../picture.zig").Picture.from(allocator, &.{shape});
-    defer pic.deinit();
+    const shapes = [_]@import("../../../picture/shape.zig").Shape{shape};
 
     const emit_mod = @import("../../../picture/emit.zig");
-    const words = try allocator.alloc(u32, emit_mod.wordBudget(&pic, 0));
+    const words = try allocator.alloc(u32, emit_mod.wordBudget(shapes.len, 0));
     defer allocator.free(words);
     var segs: [2]draw_records.DrawSegment = undefined;
     var wlen: usize = 0;
     var slen: usize = 0;
-    _ = try emit_mod.emit(words, segs[0..], &wlen, &slen, binding, &atlas, &pic, .identity, .{ 1, 1, 1, 1 });
+    _ = try emit_mod.emit(words, segs[0..], &wlen, &slen, binding, &atlas, &shapes, .identity, .{ 1, 1, 1, 1 });
 
     var renderer = snail.CpuRenderer.init(px.ptr, W, H, STRIDE);
     const state = makeIdentityState(W, H);
@@ -580,16 +575,15 @@ test "drawCpu renders image-painted shape through special-layer path" {
         .local_transform = .{ .xx = px_size, .yy = px_size, .tx = 6, .ty = 6 },
         .local_color = .{ 1, 1, 1, 1 },
     };
-    var pic = try @import("../../../picture.zig").Picture.from(allocator, &.{shape});
-    defer pic.deinit();
+    const shapes = [_]@import("../../../picture/shape.zig").Shape{shape};
 
     const emit_mod = @import("../../../picture/emit.zig");
-    const words = try allocator.alloc(u32, emit_mod.wordBudget(&pic, 0));
+    const words = try allocator.alloc(u32, emit_mod.wordBudget(shapes.len, 0));
     defer allocator.free(words);
     var segs: [2]draw_records.DrawSegment = undefined;
     var wlen: usize = 0;
     var slen: usize = 0;
-    _ = try emit_mod.emit(words, segs[0..], &wlen, &slen, binding, &atlas, &pic, .identity, .{ 1, 1, 1, 1 });
+    _ = try emit_mod.emit(words, segs[0..], &wlen, &slen, binding, &atlas, &shapes, .identity, .{ 1, 1, 1, 1 });
 
     var renderer = snail.CpuRenderer.init(px.ptr, W, H, STRIDE);
     const state = makeIdentityState(W, H);
@@ -670,16 +664,13 @@ test "drawCpu threaded matches single-threaded pixel-for-pixel" {
     var bindings: [1]Binding = undefined;
     try cache.upload(allocator, &.{&atlas}, &bindings);
 
-    var pic = try @import("../../../picture.zig").Picture.from(allocator, shapes.items);
-    defer pic.deinit();
-
     const emit_mod = @import("../../../picture/emit.zig");
-    const words = try allocator.alloc(u32, emit_mod.wordBudget(&pic, 0));
+    const words = try allocator.alloc(u32, emit_mod.wordBudget(shapes.items.len, 0));
     defer allocator.free(words);
     var segs: [2]draw_records.DrawSegment = undefined;
     var wlen: usize = 0;
     var slen: usize = 0;
-    _ = try emit_mod.emit(words, segs[0..], &wlen, &slen, bindings[0], &atlas, &pic, .identity, .{ 1, 1, 1, 1 });
+    _ = try emit_mod.emit(words, segs[0..], &wlen, &slen, bindings[0], &atlas, shapes.items, .identity, .{ 1, 1, 1, 1 });
     const records = DrawRecords{ .words = words[0..wlen], .segments = segs[0..slen] };
     const state = makeIdentityState(W, H);
 
