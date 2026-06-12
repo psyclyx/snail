@@ -152,7 +152,6 @@ const ContentCache = struct {
     last_size: [2]u32 = .{ 0, 0 },
     last_hint_active: bool = false,
     last_hint_ppem_bits: u32 = 0,
-    last_world_to_pixel: ?snail.Transform2D = null,
 
     fn init(allocator: std.mem.Allocator) !ContentCache {
         const pool = try snail.PagePool.init(allocator, .{
@@ -171,23 +170,21 @@ const ContentCache = struct {
         self.pool.deinit();
     }
 
-    /// Get or rebuild the full banner content. Cache key is
+    /// Get or rebuild the full banner content. Cache key is just
     /// (size, hint_active, hint_ppem). `world_to_pixel` is *not* part of
-    /// the key: panning during hinted rendering doesn't rebuild, though
-    /// the hinted text's baked baseline can drift sub-pixel during pan
-    /// (next dirty rebuild picks up whatever transform is current then).
+    /// the key: pan/zoom/rotation never invalidates content. Hinted runs
+    /// stored on `Content.hinted_runs` get re-snapped per frame against
+    /// the current `world_to_pixel` via `Content.composeTextPicture`.
     ///
     /// The long-lived `Assets` (fonts, hinter, hinted-glyph cache) and
-    /// `PagePool` survive across rebuilds, so the TT VM only runs once
-    /// per `(glyph_id, ppem)`. Returns `dirty=true` when content was
-    /// rebuilt.
+    /// `PagePool` survive across rebuilds, so the TT VM only runs once per
+    /// `(glyph_id, ppem)`. Returns `dirty=true` when content was rebuilt.
     fn get(
         self: *ContentCache,
         width: u32,
         height: u32,
         hint_active: bool,
         hint_ppem_scale: f32,
-        world_to_pixel: ?snail.Transform2D,
     ) !struct { content: *demo_banner.Content, dirty: bool } {
         const ppem_bits: u32 = @bitCast(hint_ppem_scale);
         const same = self.content != null and
@@ -203,7 +200,6 @@ const ContentCache = struct {
         const hint_opts: demo_banner.HintOptions = .{
             .enabled = hint_active,
             .ppem_scale = hint_ppem_scale,
-            .world_to_pixel = if (hint_active) world_to_pixel else null,
         };
         self.content = try demo_banner.build(
             self.allocator,
@@ -217,7 +213,6 @@ const ContentCache = struct {
         self.last_size = .{ width, height };
         self.last_hint_active = hint_active;
         self.last_hint_ppem_bits = ppem_bits;
-        self.last_world_to_pixel = world_to_pixel;
         return .{ .content = &self.content.?, .dirty = true };
     }
 };
@@ -262,6 +257,11 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
     defer hud_arena.deinit();
     var hud_scratch = std.heap.ArenaAllocator.init(allocator);
     defer hud_scratch.deinit();
+    // Per-frame arena for re-snapping hinted text runs into a fresh
+    // text Picture. retain_capacity means we pay one allocation on the
+    // first frame and bump-pointer thereafter.
+    var content_arena = std.heap.ArenaAllocator.init(allocator);
+    defer content_arena.deinit();
 
     var timing_enabled = false;
     var timing_frames: u32 = 0;
@@ -415,7 +415,7 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
         const mvp = snail.Mat4.multiply(projection, scene_transform);
         const world_to_pixel = snail.mvpToScenePixel(mvp, viewport_w, viewport_h);
 
-        const cached = try content_cache.get(size[0], size[1], hint_active, hint_ppem_scale, world_to_pixel);
+        const cached = try content_cache.get(size[0], size[1], hint_active, hint_ppem_scale);
 
         if (dump_repro) {
             dumpReproFrame(frame_count, active.backendName(), current_order, hint_mode, hint_active, present, pan_x, pan_y, zoom, angle);
@@ -470,8 +470,18 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
                 .coverage_transfer = .{ .exponent = 1.0 },
             },
         };
+        // Compose the cached unhinted text shapes with per-frame hinted
+        // shapes (baseline-snapped against the current world→pixel) into
+        // a fresh Picture in `content_arena`. Pan with hinting on no
+        // longer rebuilds the whole content; just this picture changes
+        // each frame.
+        _ = content_arena.reset(.retain_capacity);
+        var frame_text_picture = try cached.content.composeTextPicture(
+            content_arena.allocator(),
+            if (hint_active) world_to_pixel else null,
+        );
         const content_atlases = [_]*const snail.Atlas{ &cached.content.paths_atlas, &cached.content.text_atlas };
-        const content_pictures = [_]*const snail_helpers.Picture{ &cached.content.paths_picture, &cached.content.text_picture };
+        const content_pictures = [_]*const snail_helpers.Picture{ &cached.content.paths_picture, &frame_text_picture };
         const hud_atlases = [_]*const snail.Atlas{&hud.atlas};
         const hud_pictures = [_]*const snail_helpers.Picture{&hud_picture};
         const all_passes = [_]renderer_driver.Pass{

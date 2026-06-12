@@ -54,12 +54,18 @@ pub const HintOptions = struct {
     /// Scales the font-size em to a hinter ppem. Legacy banner used 1.0;
     /// pass values >1.0 for super-sampled hinting.
     ppem_scale: f32 = 1.0,
-    /// World→screen-pixel transform handed to `hintedShapedRunPicture` so
-    /// each shaped run snaps its baseline once onto the screen pixel grid.
-    /// `null` leaves baselines exact (sub-pixel motion under pan, fuzzy
-    /// stems). Demos that animate should pass the current frame's MVP
-    /// world→pixel here.
-    world_to_pixel: ?snail.Transform2D = null,
+};
+
+pub const Placement = struct { x: f32, y: f32, size: f32 };
+
+/// One shaped run that wants per-frame baseline snapping. Holds just the
+/// data needed to rebuild the run's shapes against a fresh `world_to_pixel`:
+/// a cloned glyph slice plus the run's placement, ppem, and color.
+pub const HintedRunDescriptor = struct {
+    glyphs: []const snail.ShapedText.Glyph,
+    placement: Placement,
+    ppem_26_6: u32,
+    color: [4]f32,
 };
 
 /// Built banner ready for upload + emit. Atlases, pictures, and the
@@ -73,18 +79,76 @@ pub const Content = struct {
     paths_atlas: snail.Atlas,
     text_atlas: snail.Atlas,
     paths_picture: snail_helpers.Picture,
+    /// Unhinted-only text shapes. Hinted runs are stored on `hinted_runs`
+    /// and rebuilt per frame via `composeTextPicture` so their baseline
+    /// snap tracks the current `world_to_pixel`.
     text_picture: snail_helpers.Picture,
+    hinted_runs: []HintedRunDescriptor,
     layout: Layout,
     decoration_rects: []snail.Rect,
     missing: bool,
 
     pub fn deinit(self: *Content) void {
+        for (self.hinted_runs) |run| {
+            if (run.glyphs.len > 0) self.allocator.free(run.glyphs);
+        }
+        if (self.hinted_runs.len > 0) self.allocator.free(self.hinted_runs);
         self.text_picture.deinit();
         self.paths_picture.deinit();
         self.text_atlas.deinit();
         self.paths_atlas.deinit();
         if (self.decoration_rects.len > 0) self.allocator.free(self.decoration_rects);
         self.* = undefined;
+    }
+
+    /// Compose the cached unhinted text shapes with per-frame hinted shapes
+    /// (baseline-snapped against `world_to_pixel`) into a fresh Picture in
+    /// `arena`. Callers should `arena.reset(.retain_capacity)` first; the
+    /// returned Picture borrows from `arena` and must not outlive it.
+    /// Pass `null` for `world_to_pixel` to skip snap (hinted runs use their
+    /// raw world baseline). Use this every frame on the interactive demo so
+    /// pan with hinting on doesn't drift sub-pixel until the next rebuild.
+    pub fn composeTextPicture(
+        self: *const Content,
+        arena: std.mem.Allocator,
+        world_to_pixel: ?snail.Transform2D,
+    ) !snail_helpers.Picture {
+        var total_hinted: usize = 0;
+        for (self.hinted_runs) |run| total_hinted += run.glyphs.len;
+        if (total_hinted == 0) return snail_helpers.Picture.from(arena, self.text_picture.shapes);
+
+        const buf = try arena.alloc(snail.Shape, self.text_picture.shapes.len + total_hinted);
+        @memcpy(buf[0..self.text_picture.shapes.len], self.text_picture.shapes);
+
+        var cursor: usize = self.text_picture.shapes.len;
+        for (self.hinted_runs) |run| {
+            const ppem_px = @as(f32, @floatFromInt(run.ppem_26_6)) / 64.0;
+            const scale: f32 = if (ppem_px > 0.0) run.placement.size / ppem_px else 1.0;
+            const baseline_world = snail.Vec2{ .x = run.placement.x, .y = run.placement.y };
+            const baseline = if (world_to_pixel) |w2p|
+                snail.snap.baseline(baseline_world, w2p)
+            else
+                baseline_world;
+            for (run.glyphs) |g| {
+                const pen_x = baseline.x + run.placement.size * g.x_offset;
+                const pen_y = baseline.y + run.placement.size * g.y_offset;
+                buf[cursor] = .{
+                    .key = snail.recordKey.hintedGlyph(g.font_id, g.glyph_id, run.ppem_26_6),
+                    .local_transform = .{
+                        .xx = scale,
+                        .xy = 0,
+                        .tx = pen_x,
+                        .yx = 0,
+                        .yy = -scale,
+                        .ty = pen_y,
+                    },
+                    .local_color = run.color,
+                };
+                cursor += 1;
+            }
+        }
+
+        return snail_helpers.Picture.fromOwnedSlice(arena, buf);
     }
 };
 
@@ -297,6 +361,16 @@ pub fn build(
 
     const decoration_rects = try builder.takeDecorationRects();
 
+    // Transfer ownership of the hinted-run descriptors from the builder
+    // (which is about to deinit) into the Content.
+    const hinted_runs = try builder.hinted_runs.toOwnedSlice(builder.allocator);
+    errdefer {
+        for (hinted_runs) |run| {
+            if (run.glyphs.len > 0) allocator.free(run.glyphs);
+        }
+        if (hinted_runs.len > 0) allocator.free(hinted_runs);
+    }
+
     return .{
         .allocator = allocator,
         .pool = pool,
@@ -304,6 +378,7 @@ pub fn build(
         .text_atlas = text_atlas,
         .paths_picture = paths_picture,
         .text_picture = text_picture,
+        .hinted_runs = hinted_runs,
         .layout = layout,
         .decoration_rects = decoration_rects,
         .missing = builder.missing,
@@ -337,6 +412,12 @@ const BannerBuilder = struct {
     text_entries: std.ArrayList(snail.AtlasEntry),
     text_shapes: std.ArrayList(snail.Shape),
 
+    // Hinted runs are collected as descriptors instead of baked into
+    // `text_shapes` so the demo can re-snap their baselines per frame
+    // without rebuilding the whole content. Ownership transfers to
+    // Content on `build()`.
+    hinted_runs: std.ArrayList(HintedRunDescriptor),
+
     // Decoration underlines / strikethroughs, collected during text pass
     // and emitted as filled rects in the path pass.
     decoration_rects: std.ArrayList(snail.Rect),
@@ -368,6 +449,7 @@ const BannerBuilder = struct {
             .text_curves_owned = .empty,
             .text_entries = .empty,
             .text_shapes = .empty,
+            .hinted_runs = .empty,
             .painted_text_entries = .empty,
             .painted_text_shapes = .empty,
             .decoration_rects = .empty,
@@ -388,6 +470,13 @@ const BannerBuilder = struct {
         self.text_curves_owned.deinit(self.allocator);
         self.text_entries.deinit(self.allocator);
         self.text_shapes.deinit(self.allocator);
+        // Hinted run descriptors transfer to Content on success; if the
+        // builder is being torn down without a successful `build()` we
+        // free each cloned glyph slice plus the descriptor backing.
+        for (self.hinted_runs.items) |run| {
+            if (run.glyphs.len > 0) self.allocator.free(run.glyphs);
+        }
+        self.hinted_runs.deinit(self.allocator);
         self.painted_text_entries.deinit(self.allocator);
         self.painted_text_shapes.deinit(self.allocator);
 
@@ -849,8 +938,6 @@ const BannerBuilder = struct {
 
     // ── Text placement helpers ──
 
-    const Placement = struct { x: f32, y: f32, size: f32 };
-
     const RunResult = struct {
         advance_x: f32,
         missing: bool,
@@ -1157,18 +1244,18 @@ const BannerBuilder = struct {
             });
         }
 
-        const baseline = if (self.hint_opts.world_to_pixel) |w2p|
-            snail.snap.baseline(.{ .x = placement.x, .y = placement.y }, w2p)
-        else
-            snail.Vec2{ .x = placement.x, .y = placement.y };
-        var picture = try snail_helpers.hintedShapedRunPicture(self.allocator, shaped, &self.assets.faces, .{
-            .baseline = baseline,
-            .em = placement.size,
+        // Clone the run's glyphs so the descriptor outlives the caller's
+        // ShapedText. Per-glyph layout (x_offset/y_offset/face_index/font_id)
+        // is what Content.composeTextPicture needs to rebuild shapes against
+        // a fresh baseline snap each frame.
+        const glyphs_clone = try self.allocator.alloc(snail.ShapedText.Glyph, shaped.glyphs.len);
+        @memcpy(glyphs_clone, shaped.glyphs);
+        try self.hinted_runs.append(self.allocator, .{
+            .glyphs = glyphs_clone,
+            .placement = placement,
             .ppem_26_6 = ppem_26_6,
             .color = color,
         });
-        defer picture.deinit();
-        try self.text_shapes.appendSlice(self.allocator, picture.shapes);
         return true;
     }
 

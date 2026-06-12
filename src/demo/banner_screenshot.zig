@@ -43,11 +43,18 @@ pub fn main() !void {
     defer content.deinit();
     if (hint) std.debug.print("[banner] hinting enabled, ppem_scale={d:.2}\n", .{ppem_scale});
 
+    // Compose the text picture (unhinted shapes + per-frame hinted runs).
+    // Screenshot MVP is a 1:1 ortho so passing `null` for `world_to_pixel`
+    // matches the legacy behavior (no snap); use `harness.drawStateW2p`
+    // if pixel-grid hinted-text alignment is wanted for the static image.
+    var text_picture = try content.composeTextPicture(allocator, null);
+    defer text_picture.deinit();
+
     try harness.renderCpu(allocator, .{
         .pool = content.pool,
         .paths_atlas = &content.paths_atlas,
         .text_atlas = &content.text_atlas,
         .paths_picture = &content.paths_picture,
-        .text_picture = &content.text_picture,
+        .text_picture = &text_picture,
     }, W, H, OUT_PATH, .{ .layer_info_height = 256 });
 }

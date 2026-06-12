@@ -40,12 +40,16 @@ pub fn main() !void {
         .{},
     );
     defer content.deinit();
+
+    var text_picture = try content.composeTextPicture(allocator, null);
+    defer text_picture.deinit();
+
     const scene = harness.Scene{
         .pool = content.pool,
         .paths_atlas = &content.paths_atlas,
         .text_atlas = &content.text_atlas,
         .paths_picture = &content.paths_picture,
-        .text_picture = &content.text_picture,
+        .text_picture = &text_picture,
     };
 
     var vk_renderer = try snail.VulkanRenderer.init(allocator, vk_ctx);
