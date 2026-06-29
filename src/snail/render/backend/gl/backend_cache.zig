@@ -320,28 +320,44 @@ pub fn GlBackendCacheFor(comptime variant: Variant) type {
             success = true;
         }
 
-        /// Incrementally update `prev_binding`'s slot with `atlas`'s
-        /// current state. Intended for the terminal hot path: the same
-        /// `Atlas` is grown via `Atlas.extend`, then the new pages /
-        /// layer-info rows / image layers are uploaded without
-        /// re-binding everything.
+        /// Incrementally upload `atlas` into the existing slot held by
+        /// `prev_binding`. The slot's `info_row_base` and
+        /// `image_layer_base` reservations are reused; the atlas's
+        /// per-page curve / band watermarks decide which bytes actually
+        /// ship. Intended for the terminal hot path: the same `Atlas` is
+        /// grown via `Atlas.extend`, and only the new bytes get
+        /// uploaded.
         ///
-        /// `writeBindingData` already walks each page's
-        /// `usedWords` / `uploadedWords` watermarks under the hood, so
-        /// pages whose contents haven't grown emit no GL traffic; only
-        /// new bytes ship.
-        ///
-        /// Constraints (errors when violated):
-        /// - `prev_binding.generation` must still be active
-        ///   (`error.UnknownBinding` otherwise — usually means
-        ///   `release` ran first).
-        /// - The atlas's `layer_info_height` must fit inside the slot
-        ///   reserved at the original upload
-        ///   (`error.NoLayerInfoRoomToGrow` otherwise — caller must
-        ///   `release` and re-`upload`).
+        /// Semantics across `atlas` shapes:
+        /// - **Extension of the prior atlas** (the design target). Pages
+        ///   share identity with the prior upload; only pages whose
+        ///   `usedWords` advanced past the cache's recorded watermark
+        ///   ship new bytes. Layer-info rows are fully rewritten in the
+        ///   slot's reserved row band (cheap — this is one
+        ///   `TexSubImage2D` over a small region).
+        /// - **Different atlas on the same pool**. Permitted. The
+        ///   cache's per-layer page tracking notices the `currentGeneration()`
+        ///   change and re-uploads each affected page in full. Layer-info
+        ///   rows and images are overwritten in the slot's reservation
+        ///   the same way. This is `upload(scratch, &.{atlas})` in
+        ///   essence — same correctness, more bytes than a pure
+        ///   extension would have shipped.
+        /// - **Different pool**. `error.UnknownPool`.
+        /// - **Slot already released** (or never minted by this
+        ///   cache). `error.UnknownBinding` — caller must call `upload`
+        ///   to mint a fresh binding.
+        /// - **`atlas` outgrew the slot's `info_height` /
+        ///   `image_count` reservation**. `error.NoLayerInfoRoomToGrow`
+        ///   — caller must `release(prev_binding)` and call `upload`
+        ///   to obtain a slot sized for the new atlas. (The reservation
+        ///   is fixed at first upload; growing it would invalidate
+        ///   in-flight `info_row_base` offsets baked into emitted
+        ///   draw words.)
         ///
         /// Returns the (same-slot) binding so the caller can keep
-        /// using one variable.
+        /// using one variable. The returned binding's `generation`
+        /// matches `prev_binding.generation` — the slot identity is
+        /// stable across `uploadDelta` calls.
         pub fn uploadDelta(
             self: *Self,
             scratch: std.mem.Allocator,

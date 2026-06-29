@@ -713,3 +713,115 @@ test "release returns range to free list and allows reuse" {
     try cache.upload(testing.allocator, &.{&atlas3}, &b3);
     try testing.expectEqual(@as(u32, 2), cache.active_bindings);
 }
+
+test "uploadDelta errors for unknown pool" {
+    const record_key_mod = @import("../../../atlas/record_key.zig");
+    const font_mod = @import("../../../font.zig");
+
+    const font_data = @import("assets").noto_sans_regular;
+    var font = try font_mod.Font.init(font_data);
+    const gid = try font.glyphIndex('A');
+    var curves = try font.extractCurves(testing.allocator, testing.allocator, gid);
+    defer curves.deinit();
+    var curves2 = try font.extractCurves(testing.allocator, testing.allocator, gid);
+    defer curves2.deinit();
+
+    var pool_a = try PagePool.init(testing.allocator, .{
+        .max_layers = 2,
+        .curve_words_per_page = 1 << 16,
+        .band_words_per_page = 1 << 14,
+    });
+    defer pool_a.deinit();
+    var pool_b = try PagePool.init(testing.allocator, .{
+        .max_layers = 2,
+        .curve_words_per_page = 1 << 16,
+        .band_words_per_page = 1 << 14,
+    });
+    defer pool_b.deinit();
+
+    const key = record_key_mod.unhintedGlyph(0, gid);
+    var atlas_a = try Atlas.from(testing.allocator, pool_a, &.{.{ .key = key, .curves = curves }});
+    defer atlas_a.deinit();
+    var atlas_b = try Atlas.from(testing.allocator, pool_b, &.{.{ .key = key, .curves = curves2 }});
+    defer atlas_b.deinit();
+
+    var cache = try CpuBackendCache.init(testing.allocator, pool_a, .{ .max_bindings = 1, .layer_info_height = 4, .max_images = 0 });
+    defer cache.deinit();
+    var binding: [1]Binding = undefined;
+    try cache.upload(testing.allocator, &.{&atlas_a}, &binding);
+
+    try testing.expectError(error.UnknownPool, cache.uploadDelta(testing.allocator, binding[0], &atlas_b));
+}
+
+test "uploadDelta errors for released binding" {
+    const record_key_mod = @import("../../../atlas/record_key.zig");
+    const font_mod = @import("../../../font.zig");
+
+    const font_data = @import("assets").noto_sans_regular;
+    var font = try font_mod.Font.init(font_data);
+    const gid = try font.glyphIndex('A');
+    var curves = try font.extractCurves(testing.allocator, testing.allocator, gid);
+    defer curves.deinit();
+
+    var pool = try PagePool.init(testing.allocator, .{
+        .max_layers = 2,
+        .curve_words_per_page = 1 << 16,
+        .band_words_per_page = 1 << 14,
+    });
+    defer pool.deinit();
+
+    const key = record_key_mod.unhintedGlyph(0, gid);
+    var atlas = try Atlas.from(testing.allocator, pool, &.{.{ .key = key, .curves = curves }});
+    defer atlas.deinit();
+
+    var cache = try CpuBackendCache.init(testing.allocator, pool, .{ .max_bindings = 1, .layer_info_height = 4, .max_images = 0 });
+    defer cache.deinit();
+    var binding: [1]Binding = undefined;
+    try cache.upload(testing.allocator, &.{&atlas}, &binding);
+    cache.release(binding[0]);
+
+    try testing.expectError(error.UnknownBinding, cache.uploadDelta(testing.allocator, binding[0], &atlas));
+}
+
+test "uploadDelta accepts a different atlas on the same pool" {
+    // Per the contract docstring on GlBackendCache.uploadDelta: a
+    // different atlas on the same pool is permitted — the cache's
+    // per-layer page tracking notices the change and re-uploads
+    // affected pages. This is correct, just less efficient than a
+    // true extension would be. Lock that in so future "tighten the
+    // contract" rewrites don't accidentally make it an error.
+    const record_key_mod = @import("../../../atlas/record_key.zig");
+    const font_mod = @import("../../../font.zig");
+
+    const font_data = @import("assets").noto_sans_regular;
+    var font = try font_mod.Font.init(font_data);
+    const gid_a = try font.glyphIndex('A');
+    const gid_b = try font.glyphIndex('B');
+    var curves_a = try font.extractCurves(testing.allocator, testing.allocator, gid_a);
+    defer curves_a.deinit();
+    var curves_b = try font.extractCurves(testing.allocator, testing.allocator, gid_b);
+    defer curves_b.deinit();
+
+    var pool = try PagePool.init(testing.allocator, .{
+        .max_layers = 4,
+        .curve_words_per_page = 1 << 16,
+        .band_words_per_page = 1 << 14,
+    });
+    defer pool.deinit();
+
+    const key_a = record_key_mod.unhintedGlyph(0, gid_a);
+    var atlas_a = try Atlas.from(testing.allocator, pool, &.{.{ .key = key_a, .curves = curves_a }});
+    defer atlas_a.deinit();
+    const key_b = record_key_mod.unhintedGlyph(0, gid_b);
+    var atlas_b = try Atlas.from(testing.allocator, pool, &.{.{ .key = key_b, .curves = curves_b }});
+    defer atlas_b.deinit();
+
+    var cache = try CpuBackendCache.init(testing.allocator, pool, .{ .max_bindings = 1, .layer_info_height = 4, .max_images = 0 });
+    defer cache.deinit();
+    var binding: [1]Binding = undefined;
+    try cache.upload(testing.allocator, &.{&atlas_a}, &binding);
+
+    const new_binding = try cache.uploadDelta(testing.allocator, binding[0], &atlas_b);
+    try testing.expectEqual(binding[0].generation, new_binding.generation);
+    try testing.expectEqual(binding[0].info_row_base, new_binding.info_row_base);
+}
