@@ -40,7 +40,7 @@ pub fn draw(
 ) DrawError!void {
     const cmd = self.active_cmd orelse return error.MissingCommandBuffer;
     vk.vkCmdBindIndexBuffer(cmd, self.index_buffer, 0, vk.VK_INDEX_TYPE_UINT32);
-    setViewportAndScissor(cmd, draw_state.surface.pixel_width, draw_state.surface.pixel_height);
+    setViewportAndScissor(cmd, draw_state.surface.pixel_width, draw_state.surface.pixel_height, draw_state.scissor_rect);
 
     for (records.segments) |seg| {
         const cache = findCache(caches, seg.binding.pool) orelse return error.MissingBinding;
@@ -247,7 +247,7 @@ fn ensureReplicatedPipeline(self: *VulkanPipeline, kind: ReplicatedKind, m: u32)
     return pip;
 }
 
-fn setViewportAndScissor(cmd: vk.VkCommandBuffer, viewport_w: f32, viewport_h: f32) void {
+fn setViewportAndScissor(cmd: vk.VkCommandBuffer, viewport_w: f32, viewport_h: f32, user_scissor: ?snail_mod.PixelRect) void {
     const vp = vk.VkViewport{
         .x = 0,
         .y = viewport_h,
@@ -258,9 +258,12 @@ fn setViewportAndScissor(cmd: vk.VkCommandBuffer, viewport_w: f32, viewport_h: f
     };
     vk.vkCmdSetViewport(cmd, 0, 1, &vp);
 
+    const fb_w: u32 = @intFromFloat(@max(viewport_w, 0.0));
+    const fb_h: u32 = @intFromFloat(@max(viewport_h, 0.0));
+    const rect: snail_mod.PixelRect = if (user_scissor) |s| s.clipped(fb_w, fb_h) else snail_mod.PixelRect.full(fb_w, fb_h);
     const scissor = vk.VkRect2D{
-        .offset = .{ .x = 0, .y = 0 },
-        .extent = .{ .width = @intFromFloat(viewport_w), .height = @intFromFloat(viewport_h) },
+        .offset = .{ .x = rect.x, .y = rect.y },
+        .extent = .{ .width = rect.w, .height = rect.h },
     };
     vk.vkCmdSetScissor(cmd, 0, 1, &scissor);
 }

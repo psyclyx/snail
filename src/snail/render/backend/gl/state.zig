@@ -290,6 +290,18 @@ fn TextStateFor(comptime backend: Backend) type {
             records: draw_records_mod.DrawRecords,
             caches: []const *const GlBackendCache,
         ) DrawError!void {
+            // Apply `draw_state.scissor_rect` via `GL_SCISSOR_TEST`. We
+            // save / restore both the enable flag and the rect so a
+            // surrounding linear-resolve pass (which uses scissor too)
+            // is undisturbed. The scissor coordinate system is GL's
+            // y-up framebuffer space, so we flip from snail's y-down
+            // `PixelRect`.
+            const scissor_restore: ?ScissorRestore = if (draw_state.scissor_rect) |rect|
+                applyScissor(rect, draw_state.surface.pixel_height)
+            else
+                null;
+            defer if (scissor_restore) |r| r.restore();
+
             for (records.segments) |seg| {
                 const cache = findCache(caches, seg.binding.pool) orelse return error.MissingBinding;
                 if (seg.binding.generation != 0 and cache.upload_generation < seg.binding.generation) return error.StaleBinding;
@@ -299,6 +311,27 @@ fn TextStateFor(comptime backend: Backend) type {
                     .replicated => try self.drawReplicated(scratch, cache, draw_state, seg, seg_words),
                 }
             }
+        }
+
+        const ScissorRestore = struct {
+            was_enabled: bool,
+            prev_box: [4]gl.GLint,
+
+            fn restore(self: ScissorRestore) void {
+                gl.glScissor(self.prev_box[0], self.prev_box[1], self.prev_box[2], self.prev_box[3]);
+                if (!self.was_enabled) gl.glDisable(gl.GL_SCISSOR_TEST);
+            }
+        };
+
+        fn applyScissor(rect: snail_mod.PixelRect, surface_height: f32) ScissorRestore {
+            var prev_box: [4]gl.GLint = .{ 0, 0, 0, 0 };
+            gl.glGetIntegerv(gl.GL_SCISSOR_BOX, &prev_box[0]);
+            const was_enabled = gl.glIsEnabled(gl.GL_SCISSOR_TEST) == gl.GL_TRUE;
+            gl.glEnable(gl.GL_SCISSOR_TEST);
+            const h_i: gl.GLint = @intFromFloat(@max(surface_height, 0.0));
+            const gl_y: gl.GLint = h_i - rect.y - @as(gl.GLint, @intCast(rect.h));
+            gl.glScissor(rect.x, gl_y, @intCast(rect.w), @intCast(rect.h));
+            return .{ .was_enabled = was_enabled, .prev_box = prev_box };
         }
 
         fn ensureHeterogeneousVaoBound(self: *GlTextState) void {

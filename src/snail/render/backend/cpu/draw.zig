@@ -538,10 +538,10 @@ test "drawCpu renders image-painted shape through special-layer path" {
 
     // Square-ish path covering [0..1, 0..1] in local coords; the local
     // shape transform scales to pixel size.
-    var path = @import("../../../paths.zig").Path.init(allocator);
+    var path = @import("../../../path.zig").Path.init(allocator);
     defer path.deinit();
     try path.addRect(.{ .x = 0, .y = 0, .w = 1, .h = 1 });
-    var path_curves = try @import("../../../paths.zig").pathToCurves(allocator, allocator, &path);
+    var path_curves = try path.toCurves(allocator, allocator);
     defer path_curves.deinit();
 
     const key = @import("../../../atlas/record_key.zig").RecordKey{
@@ -710,4 +710,98 @@ fn makeIdentityState(w: u32, h: u32) snail.DrawState {
         },
         .mvp = snail.Mat4.ortho(0, wf, hf, 0, -1, 1),
     };
+}
+
+test "drawCpu scissor_rect clips writes to the rect" {
+    if (!build_options.enable_cpu) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    const font_data = @import("assets").noto_sans_regular;
+
+    const W: u32 = 64;
+    const H: u32 = 48;
+    const STRIDE: u32 = W * 4;
+
+    var font = try snail.Font.init(font_data);
+    const gid = try font.glyphIndex('M');
+    var curves = try font.extractCurves(allocator, allocator, gid);
+    defer curves.deinit();
+
+    var pool = try @import("../../../atlas/page_pool.zig").PagePool.init(allocator, .{
+        .max_layers = 2,
+        .curve_words_per_page = 1 << 16,
+        .band_words_per_page = 1 << 14,
+    });
+    defer pool.deinit();
+    const key = @import("../../../atlas/record_key.zig").unhintedGlyph(0, gid);
+    var atlas = try @import("../../../atlas.zig").Atlas.from(allocator, pool, &.{.{ .key = key, .curves = curves }});
+    defer atlas.deinit();
+
+    var cache = try CpuBackendCache.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
+    defer cache.deinit();
+    var bindings: [1]Binding = undefined;
+    try cache.upload(allocator, &.{&atlas}, &bindings);
+
+    const px_size: f32 = 36.0;
+    const shape = @import("../../../picture/shape.zig").Shape{
+        .key = key,
+        .local_transform = .{ .xx = px_size, .yy = -px_size, .tx = 8, .ty = 40 },
+        .local_color = .{ 1, 1, 1, 1 },
+    };
+    const shapes = [_]@import("../../../picture/shape.zig").Shape{shape};
+
+    const emit_mod = @import("../../../picture/emit.zig");
+    const words = try allocator.alloc(u32, emit_mod.wordBudget(shapes.len, 0));
+    defer allocator.free(words);
+    var segs: [2]draw_records.DrawSegment = undefined;
+    var wlen: usize = 0;
+    var slen: usize = 0;
+    _ = try emit_mod.emit(words, segs[0..], &wlen, &slen, bindings[0], &atlas, &shapes, .identity, .{ 1, 1, 1, 1 });
+    const records = DrawRecords{ .words = words[0..wlen], .segments = segs[0..slen] };
+
+    // Render once without scissor — the glyph should populate the
+    // left half of the buffer.
+    const px_full = try allocator.alloc(u8, H * STRIDE);
+    defer allocator.free(px_full);
+    @memset(px_full, 0);
+    var ren_full = snail.CpuRenderer.init(px_full.ptr, W, H, STRIDE);
+    const state_full = makeIdentityState(W, H);
+    try drawCpu(&ren_full, state_full, records, &.{&cache}, null);
+
+    // Render again with a scissor that omits the left half of the
+    // glyph. Every pixel inside the scissor should match the unclipped
+    // render; every pixel outside should be zero.
+    const px_clip = try allocator.alloc(u8, H * STRIDE);
+    defer allocator.free(px_clip);
+    @memset(px_clip, 0);
+    var ren_clip = snail.CpuRenderer.init(px_clip.ptr, W, H, STRIDE);
+    var state_clip = makeIdentityState(W, H);
+    state_clip.scissor_rect = .{ .x = 24, .y = 0, .w = 24, .h = H };
+    try drawCpu(&ren_clip, state_clip, records, &.{&cache}, null);
+
+    var row: u32 = 0;
+    while (row < H) : (row += 1) {
+        var col: u32 = 0;
+        while (col < W) : (col += 1) {
+            const off = row * STRIDE + col * 4;
+            const in_scissor = col >= 24 and col < 48;
+            if (in_scissor) {
+                try testing.expectEqual(px_full[off + 0], px_clip[off + 0]);
+                try testing.expectEqual(px_full[off + 3], px_clip[off + 3]);
+            } else {
+                try testing.expectEqual(@as(u8, 0), px_clip[off + 3]);
+            }
+        }
+    }
+
+    // Spot check: at least one pixel inside the scissor is non-zero
+    // (otherwise the test would pass trivially).
+    var any_drawn = false;
+    var i: usize = 0;
+    while (i < px_clip.len) : (i += 4) {
+        if (px_clip[i + 3] != 0) {
+            any_drawn = true;
+            break;
+        }
+    }
+    try testing.expect(any_drawn);
 }

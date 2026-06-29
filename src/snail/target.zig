@@ -109,6 +109,17 @@ pub const DrawState = struct {
     mvp: Mat4,
     surface: TargetSurface,
     raster: RasterOptions = .{},
+    /// Optional pixel-space clip restricting where this draw writes.
+    /// `null` means full surface (the default). The rect is intersected
+    /// with the surface bounds; if the intersection is empty the draw
+    /// is a no-op. The rect is interpreted in the surface's framebuffer
+    /// coordinate system (y-down, same as `PixelRect.full(w, h)`).
+    ///
+    /// Per-draw, not per-shape: callers wanting per-shape clipping
+    /// split into multiple draws with different `scissor_rect`s. The
+    /// caller's draw order (and therefore z-order) is preserved across
+    /// the split.
+    scissor_rect: ?PixelRect = null,
 };
 
 pub const DrawPass = struct {

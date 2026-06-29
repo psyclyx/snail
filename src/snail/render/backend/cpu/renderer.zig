@@ -275,6 +275,23 @@ pub const CpuRenderer = struct {
         if (!self.linear_resolve_active) self.target_resolve = .{ .direct = {} };
         self.coverage_transfer = state.raster.coverage_transfer;
 
+        // Apply `state.scissor_rect` by intersecting with the current
+        // clip window. Restore unconditionally — works inside or outside
+        // a linear-resolve pass, since the resolve has already set the
+        // outer clip to the resolve region. A non-overlapping scissor
+        // collapses to a no-op (clip min == max), which the per-pixel
+        // writes skip anyway, so an empty intersection is cheap.
+        const clip_save = if (state.scissor_rect != null) ClipSave{
+            .row_clip_min = self.row_clip_min,
+            .row_clip_max = self.row_clip_max,
+            .col_clip_min = self.col_clip_min,
+            .col_clip_max = self.col_clip_max,
+        } else null;
+        defer if (clip_save) |s| s.restore(self);
+        if (state.scissor_rect) |sr| {
+            self.intersectClip(sr);
+        }
+
         // The CPU rasterizer doesn't do per-pixel 1/w, so a non-affine MVP
         // would silently disagree with the GPU backends. Refuse loudly.
         const scene = snail.mvpToScenePixel(state.mvp, state.surface.pixel_width, state.surface.pixel_height) orelse
@@ -286,6 +303,42 @@ pub const CpuRenderer = struct {
             }
         }
         self.drawBatchInstances(prepared, vertices, scene, texture_layer_base, true);
+    }
+
+    const ClipSave = struct {
+        row_clip_min: u32,
+        row_clip_max: u32,
+        col_clip_min: u32,
+        col_clip_max: u32,
+
+        fn restore(self: ClipSave, r: *CpuRenderer) void {
+            r.row_clip_min = self.row_clip_min;
+            r.row_clip_max = self.row_clip_max;
+            r.col_clip_min = self.col_clip_min;
+            r.col_clip_max = self.col_clip_max;
+        }
+    };
+
+    fn intersectClip(self: *CpuRenderer, rect: snail.PixelRect) void {
+        const cur = snail.PixelRect{
+            .x = @intCast(self.col_clip_min),
+            .y = @intCast(self.row_clip_min),
+            .w = self.col_clip_max - self.col_clip_min,
+            .h = self.row_clip_max - self.row_clip_min,
+        };
+        const sx0 = @max(@as(i64, rect.x), @as(i64, cur.x));
+        const sy0 = @max(@as(i64, rect.y), @as(i64, cur.y));
+        const sx1 = @min(@as(i64, rect.x) + @as(i64, rect.w), @as(i64, cur.x) + @as(i64, cur.w));
+        const sy1 = @min(@as(i64, rect.y) + @as(i64, rect.h), @as(i64, cur.y) + @as(i64, cur.h));
+        if (sx0 >= sx1 or sy0 >= sy1) {
+            self.col_clip_min = self.col_clip_max;
+            self.row_clip_min = self.row_clip_max;
+            return;
+        }
+        self.col_clip_min = @intCast(sx0);
+        self.row_clip_min = @intCast(sy0);
+        self.col_clip_max = @intCast(sx1);
+        self.row_clip_max = @intCast(sy1);
     }
 
     pub fn beginDraw(_: *CpuRenderer) void {}
