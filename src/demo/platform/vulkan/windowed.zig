@@ -61,6 +61,39 @@ var current_frame: u32 = 0;
 var current_image_index: u32 = 0;
 var framebuffer_resized: bool = false;
 
+// ── GPU timestamp queries ──
+//
+// One `VkQueryPool` of timestamps, partitioned into MAX_FRAMES_IN_FLIGHT
+// slices of `MAX_TIMED_PASSES * 2` queries each (begin/end per pass).
+// `beginPassTimestamp` writes a top-of-pipe timestamp into the current
+// slice; `endPassTimestamp` writes bottom-of-pipe. Results are read at
+// the START of the next time we reuse the same frame slot
+// (MAX_FRAMES_IN_FLIGHT frames later), at which point the GPU has long
+// since finished that frame's work, so the read is non-blocking.
+//
+// Resulting per-pass µs are stashed in `last_gpu_pass_us` for the
+// renderer driver to query after `endFrame`.
+pub const MAX_TIMED_PASSES: usize = 4;
+const QUERIES_PER_FRAME = MAX_TIMED_PASSES * 2;
+const TOTAL_TIMESTAMP_QUERIES = QUERIES_PER_FRAME * MAX_FRAMES_IN_FLIGHT;
+var timestamp_pool: vk.VkQueryPool = null;
+/// Nanoseconds per timestamp tick — multiplied into the raw timestamp
+/// deltas to convert to time. Read from `VkPhysicalDeviceLimits`; 1.0
+/// on most modern GPUs (NVIDIA / AMD reports 1.0; Intel reports
+/// fractional).
+var timestamp_period_ns: f64 = 0;
+/// Set when the device's queue family supports timestamps. Falls back
+/// to a no-op API when false (pre-Vulkan-1.2 or device-specific).
+var timestamps_supported: bool = false;
+/// True when the queries for `current_frame`'s slice were issued at
+/// least once and the results are ready to be read at the next
+/// reuse of this slot. One bit per slot.
+var slot_has_pending_timestamps: [MAX_FRAMES_IN_FLIGHT]bool = .{false} ** MAX_FRAMES_IN_FLIGHT;
+/// Per-pass µs from the most recent COMPLETED frame whose slot we just
+/// reused. Lags real-time by MAX_FRAMES_IN_FLIGHT frames; fine for the
+/// HUD which averages over 500 ms.
+var last_gpu_pass_us: [MAX_TIMED_PASSES]f64 = .{0} ** MAX_TIMED_PASSES;
+
 /// Used when `beginFrame` is called with `null` (e.g. tests / tooling
 /// that doesn't care). The interactive demo passes the banner's cream
 /// background through `beginFrame(color)`.
@@ -156,6 +189,7 @@ fn initForCurrentWindow() !snail.VulkanContext {
     try createFramebuffers();
     try createCommandResources();
     try createSyncObjects();
+    try createTimestampPool();
 
     return .{
         .physical_device = @ptrCast(physical_device),
@@ -198,6 +232,7 @@ fn destroyVulkanResources() void {
         if (image_available_sems[i] != null) vk.vkDestroySemaphore(device, image_available_sems[i], null);
         if (in_flight_fences[i] != null) vk.vkDestroyFence(device, in_flight_fences[i], null);
     }
+    destroyTimestampPool();
     if (command_pool != null) vk.vkDestroyCommandPool(device, command_pool, null);
     cleanupSwapchain();
     if (render_pass != null) vk.vkDestroyRenderPass(device, render_pass, null);
@@ -243,6 +278,10 @@ pub fn beginFrame(clear_color: ?[4]f32) ?vk.VkCommandBuffer {
     const t0 = nowNs();
     _ = vk.vkWaitForFences(device, 1, &in_flight_fences[current_frame], vk.VK_TRUE, std.math.maxInt(u64));
     const t1 = nowNs();
+    // Slot's fence is signaled — its GPU work (from
+    // MAX_FRAMES_IN_FLIGHT frames ago) is done, so its timestamp
+    // queries are safe to read without stalling.
+    readTimestampsForSlot(current_frame);
 
     const result = vk.vkAcquireNextImageKHR(device, swapchain, std.math.maxInt(u64), image_available_sems[current_frame], null, &current_image_index);
     const t2 = nowNs();
@@ -267,6 +306,9 @@ pub fn beginFrame(clear_color: ?[4]f32) ?vk.VkCommandBuffer {
         .sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
     });
     _ = vk.vkBeginCommandBuffer(cmd, &begin_info);
+    // Reset this slot's timestamp queries before issuing new ones in
+    // the per-pass loop.
+    resetTimestampsForSlot(cmd, current_frame);
 
     const clear_value = vk.VkClearValue{ .color = .{ .float32 = clear_color orelse DEFAULT_CLEAR_COLOR } };
     const rp_info = std.mem.zeroInit(vk.VkRenderPassBeginInfo, .{
@@ -322,6 +364,12 @@ pub fn endFrame() void {
         .pSwapchains = &swapchain,
         .pImageIndices = &current_image_index,
     });
+    // Register a wp_presentation_feedback for the upcoming commit.
+    // vkQueuePresentKHR internally calls wl_surface_commit on the
+    // swapchain's surface — the same surface bound on the Window — so
+    // requesting feedback against `window.surface` here ties to the
+    // very next commit. No-op when wp_presentation isn't bound.
+    if (window) |w| w.requestPresentationFeedback();
     const result = vk.vkQueuePresentKHR(present_queue, &present_info);
     const ts2 = nowNs();
 
@@ -685,6 +733,126 @@ fn createCommandResources() !void {
         .commandBufferCount = MAX_FRAMES_IN_FLIGHT,
     });
     try checkVk(vk.vkAllocateCommandBuffers(device, &cb_ai, &command_buffers));
+}
+
+fn createTimestampPool() !void {
+    // Query timestamp support and the period (ns per tick).
+    var props: vk.VkPhysicalDeviceProperties = undefined;
+    vk.vkGetPhysicalDeviceProperties(physical_device, &props);
+    timestamp_period_ns = @floatCast(props.limits.timestampPeriod);
+    // Per-queue support: bit set on the chosen queue family's
+    // `timestampValidBits`. Looking that up is more work; instead check
+    // whether `timestampPeriod` is non-zero, which is the cheap
+    // device-level proxy — if zero, timestamps are unsupported.
+    if (timestamp_period_ns <= 0.0) {
+        timestamps_supported = false;
+        return;
+    }
+
+    const qp_ci = std.mem.zeroInit(vk.VkQueryPoolCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+        .queryType = vk.VK_QUERY_TYPE_TIMESTAMP,
+        .queryCount = TOTAL_TIMESTAMP_QUERIES,
+    });
+    const result = vk.vkCreateQueryPool(device, &qp_ci, null, &timestamp_pool);
+    if (result != vk.VK_SUCCESS) {
+        timestamps_supported = false;
+        timestamp_pool = null;
+        return;
+    }
+    timestamps_supported = true;
+    // No initial reset needed: `slot_has_pending_timestamps[]` starts
+    // false everywhere, so the first read for each slot is skipped.
+    // Subsequent frames record `vkCmdResetQueryPool` into the command
+    // buffer before issuing new timestamps (see
+    // `resetTimestampsForSlot`), so the pool stays in a valid state
+    // without a host-side reset.
+}
+
+fn destroyTimestampPool() void {
+    if (timestamp_pool != null) {
+        vk.vkDestroyQueryPool(device, timestamp_pool, null);
+        timestamp_pool = null;
+    }
+    timestamps_supported = false;
+    timestamp_period_ns = 0;
+    slot_has_pending_timestamps = .{false} ** MAX_FRAMES_IN_FLIGHT;
+    last_gpu_pass_us = .{0} ** MAX_TIMED_PASSES;
+}
+
+/// First query index for a frame slot's begin/end timestamp pair.
+inline fn timestampSliceBase(slot: u32) u32 {
+    return slot * @as(u32, QUERIES_PER_FRAME);
+}
+
+/// Read the timestamp results for `slot` (which was issued
+/// MAX_FRAMES_IN_FLIGHT frames ago — its GPU work is done), convert to
+/// µs per pass, and clear the slot's pending-timestamps bit. Called at
+/// the start of `beginFrame` for `current_frame`, just after the
+/// fence wait makes the GPU side safe to read.
+fn readTimestampsForSlot(slot: u32) void {
+    if (!timestamps_supported) return;
+    if (!slot_has_pending_timestamps[slot]) return;
+    const base = timestampSliceBase(slot);
+    var values: [QUERIES_PER_FRAME]u64 = undefined;
+    const res = vk.vkGetQueryPoolResults(
+        device,
+        timestamp_pool,
+        base,
+        QUERIES_PER_FRAME,
+        @sizeOf(@TypeOf(values)),
+        &values,
+        @sizeOf(u64),
+        vk.VK_QUERY_RESULT_64_BIT | vk.VK_QUERY_RESULT_WAIT_BIT,
+    );
+    slot_has_pending_timestamps[slot] = false;
+    if (res != vk.VK_SUCCESS) return;
+    inline for (0..MAX_TIMED_PASSES) |i| {
+        const begin = values[i * 2];
+        const end = values[i * 2 + 1];
+        if (end > begin) {
+            const ns = @as(f64, @floatFromInt(end - begin)) * timestamp_period_ns;
+            last_gpu_pass_us[i] = ns / 1000.0;
+        } else {
+            last_gpu_pass_us[i] = 0;
+        }
+    }
+}
+
+/// Reset this frame slot's timestamps so the next pass writes go into
+/// known-empty queries. Recorded into the command buffer (works on
+/// Vulkan 1.0+) instead of using vkResetQueryPool.
+fn resetTimestampsForSlot(cmd: vk.VkCommandBuffer, slot: u32) void {
+    if (!timestamps_supported) return;
+    vk.vkCmdResetQueryPool(cmd, timestamp_pool, timestampSliceBase(slot), QUERIES_PER_FRAME);
+}
+
+/// Public hooks the renderer driver calls inside the per-pass loop.
+
+pub fn beginPassTimestamp(cmd: vk.VkCommandBuffer, pass_index: u32) void {
+    if (!timestamps_supported or pass_index >= MAX_TIMED_PASSES) return;
+    const base = timestampSliceBase(current_frame);
+    vk.vkCmdWriteTimestamp(cmd, vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestamp_pool, base + pass_index * 2);
+    slot_has_pending_timestamps[current_frame] = true;
+}
+
+pub fn endPassTimestamp(cmd: vk.VkCommandBuffer, pass_index: u32) void {
+    if (!timestamps_supported or pass_index >= MAX_TIMED_PASSES) return;
+    const base = timestampSliceBase(current_frame);
+    vk.vkCmdWriteTimestamp(cmd, vk.VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timestamp_pool, base + pass_index * 2 + 1);
+}
+
+/// Copy the most recent COMPLETED frame's per-pass µs into `out`.
+/// Values reflect the frame that was just retired by
+/// `vkAcquireNextImageKHR` (= `MAX_FRAMES_IN_FLIGHT` frames behind real
+/// time). Pass slots beyond what the renderer drives stay at their
+/// previous value; the driver overwrites with its own zeros.
+pub fn lastGpuPassUs(out: *[MAX_TIMED_PASSES]f64) void {
+    if (!timestamps_supported) {
+        out.* = .{0} ** MAX_TIMED_PASSES;
+        return;
+    }
+    out.* = last_gpu_pass_us;
 }
 
 fn createSyncObjects() !void {

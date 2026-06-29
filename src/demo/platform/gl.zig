@@ -216,6 +216,11 @@ pub fn clear(r: f32, g: f32, b: f32, a: f32) void {
 }
 
 pub fn swapBuffers() void {
+    // Register a wp_presentation_feedback for the upcoming commit.
+    // eglSwapBuffers internally drives wl_surface_commit on the
+    // window's surface; requesting feedback against `app.surface` here
+    // pairs with that commit. No-op when wp_presentation isn't bound.
+    if (app) |w| w.requestPresentationFeedback();
     _ = egl.eglSwapBuffers(egl_display, egl_surface);
 }
 

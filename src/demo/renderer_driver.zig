@@ -130,6 +130,23 @@ pub const MAX_PASSES: usize = 4;
 /// Per-pass max binding count, mirroring max_bindings on the cache.
 pub const MAX_BINDINGS_PER_PASS: usize = 4;
 
+/// Per-frame stage timings (µs) for the CPU backend. GPU drivers report
+/// zero for every field except `swap_us` (their per-stage cost lives on
+/// the GPU timeline, not the CPU clock).
+///
+/// Stages in execution order:
+///   clear → sync → emit → pass[0..N] → swap
+/// `pass_us` is indexed 1:1 with the input passes; trailing entries stay
+/// zero. The sum across all fields is the wall-clock the backend spent
+/// inside `renderFrame`.
+pub const FrameTimings = struct {
+    clear_us: f64 = 0,
+    sync_us: f64 = 0,
+    emit_us: f64 = 0,
+    pass_us: [MAX_PASSES]f64 = [_]f64{0} ** MAX_PASSES,
+    swap_us: f64 = 0,
+};
+
 // Buffer for new-API draw words + segments. Owned by the driver, grown on
 // demand each frame. Two segments are enough (paths + text picture).
 const ScratchBuf = struct {
@@ -244,17 +261,30 @@ pub const Driver = union(Kind) {
         };
     }
 
-    /// Per-pass draw-call timings (µs) from the most recent frame.
-    /// Only the CPU backend populates these; GPU drivers report zeros
-    /// because their per-draw cost lives on the GPU timeline, not the
-    /// CPU clock.
-    pub fn lastPassUs(self: *Driver) [MAX_PASSES]f64 {
+    /// Per-frame stage timings (µs) from the most recent frame.
+    /// CPU side of every backend: `clear / sync / emit / pass[] / swap`
+    /// are measured by wrapping each stage in CPU clock samples. The
+    /// meaning of each field differs by backend:
+    ///   CPU       — `pass_us` is the rasterization work itself; `clear`
+    ///               is the framebuffer fill; `swap` is just shm attach
+    ///               + commit (the vsync wait is at the top of the loop).
+    ///   Vulkan    — `clear` includes `vkWaitForFences` +
+    ///               `vkAcquireNextImageKHR` (the real vsync-wait time
+    ///               on this backend); `pass_us` is just CPU-side draw
+    ///               command recording; `swap` is queue submit + present.
+    ///   GL / GLES — `clear` is `glClear`; `pass_us` is command recording;
+    ///               `swap` is `eglSwapBuffers`, which usually blocks
+    ///               until the next vsync so the wait shows up here.
+    /// Anything spent on the GPU timeline itself (actual rasterization)
+    /// is not measured — that would require GPU timer queries, which we
+    /// haven't wired up.
+    pub fn lastFrameTimings(self: *Driver) FrameTimings {
         return switch (self.*) {
-            .cpu, .cpu_less_threaded, .cpu_unthreaded => |*d| if (comptime build_options.enable_cpu)
-                d.last_pass_us
-            else
-                [_]f64{0} ** MAX_PASSES,
-            else => [_]f64{0} ** MAX_PASSES,
+            .cpu, .cpu_less_threaded, .cpu_unthreaded => |*d| if (comptime build_options.enable_cpu) d.last_timings else .{},
+            .vulkan => |*d| if (comptime build_options.enable_vulkan) d.last_timings else .{},
+            .gl44 => |*d| if (comptime build_options.enable_gl44) d.last_timings else .{},
+            .gl33 => |*d| if (comptime build_options.enable_gl33) d.last_timings else .{},
+            .gles30 => |*d| if (comptime build_options.enable_gles30) d.last_timings else .{},
         };
     }
 
@@ -397,6 +427,85 @@ fn syncPassBindings(
     }
 }
 
+// ── GL timer-query ring ───────────────────────────────────────────────────
+//
+// Wraps `GL_ARB_timer_query` (core in OpenGL 3.3+) so the GL driver
+// path can report actual GPU rasterization time per pass instead of
+// the CPU-side draw-record time. The driver queues up to 2-3 frames'
+// worth of commands; reading a query's result before the GPU completes
+// it would stall the CPU. To avoid the stall we keep a ring of 3 slots
+// of begin/end queries and read each slot's results 3 frames later,
+// after the GPU has long since retired them.
+const GlTimer = if (build_options.enable_gl33 or build_options.enable_gl44) struct {
+    const RING: usize = 3;
+    const SLOT_QUERIES: usize = MAX_PASSES * 2;
+    const TOTAL_QUERIES: usize = SLOT_QUERIES * RING;
+
+    queries: [TOTAL_QUERIES]gl.GLuint = .{0} ** TOTAL_QUERIES,
+    /// Current ring slot — the one we're about to write into.
+    slot: u32 = 0,
+    /// `true` once a slot has been written to and its results are
+    /// pending. Read & cleared before reuse.
+    slot_pending: [RING]bool = .{false} ** RING,
+    /// Most recent COMPLETED frame's per-pass µs.
+    last_pass_us: [MAX_PASSES]f64 = .{0} ** MAX_PASSES,
+    initialized: bool = false,
+
+    fn ensureInit(self: *GlTimer) void {
+        if (self.initialized) return;
+        gl.glGenQueries(TOTAL_QUERIES, &self.queries);
+        self.initialized = true;
+    }
+
+    fn deinit(self: *GlTimer) void {
+        if (!self.initialized) return;
+        gl.glDeleteQueries(TOTAL_QUERIES, &self.queries);
+        self.initialized = false;
+    }
+
+    inline fn slotBase(slot: u32) usize {
+        return @as(usize, slot) * SLOT_QUERIES;
+    }
+
+    /// Call at the START of each frame. If `slot` has pending results
+    /// from RING frames ago, drain them into `last_pass_us`.
+    fn beginFrame(self: *GlTimer) void {
+        if (!self.initialized) return;
+        if (!self.slot_pending[self.slot]) return;
+        const base = slotBase(self.slot);
+        for (0..MAX_PASSES) |i| {
+            const q_begin = self.queries[base + i * 2];
+            const q_end = self.queries[base + i * 2 + 1];
+            var begin_ns: gl.GLuint64 = 0;
+            var end_ns: gl.GLuint64 = 0;
+            gl.glGetQueryObjectui64v(q_begin, gl.GL_QUERY_RESULT, &begin_ns);
+            gl.glGetQueryObjectui64v(q_end, gl.GL_QUERY_RESULT, &end_ns);
+            self.last_pass_us[i] = if (end_ns > begin_ns)
+                @as(f64, @floatFromInt(end_ns - begin_ns)) / 1000.0
+            else
+                0;
+        }
+        self.slot_pending[self.slot] = false;
+    }
+
+    fn beginPass(self: *GlTimer, pass_index: usize) void {
+        if (!self.initialized or pass_index >= MAX_PASSES) return;
+        const base = slotBase(self.slot);
+        gl.glQueryCounter(self.queries[base + pass_index * 2], gl.GL_TIMESTAMP);
+    }
+
+    fn endPass(self: *GlTimer, pass_index: usize) void {
+        if (!self.initialized or pass_index >= MAX_PASSES) return;
+        const base = slotBase(self.slot);
+        gl.glQueryCounter(self.queries[base + pass_index * 2 + 1], gl.GL_TIMESTAMP);
+        self.slot_pending[self.slot] = true;
+    }
+
+    fn endFrame(self: *GlTimer) void {
+        self.slot = (self.slot + 1) % @as(u32, @intCast(RING));
+    }
+} else void;
+
 // ── Vulkan ────────────────────────────────────────────────────────────────
 
 const VulkanDriver = if (build_options.enable_vulkan) struct {
@@ -406,6 +515,7 @@ const VulkanDriver = if (build_options.enable_vulkan) struct {
     cache_pool: ?*const anyopaque = null, // PagePool pointer to detect content swap
     scratch: ScratchBuf,
     pass_states: [MAX_PASSES]PassState = [_]PassState{.{}} ** MAX_PASSES,
+    last_timings: FrameTimings = .{},
 
     fn init(allocator: std.mem.Allocator, window: *wayland.Window) !VulkanDriver {
         const ctx = try vulkan_platform.initForWindow(window);
@@ -432,6 +542,7 @@ const VulkanDriver = if (build_options.enable_vulkan) struct {
         passes: []const Pass,
         clear_srgb: [4]f32,
     ) !bool {
+        self.last_timings = .{};
         const pool = passes[0].atlases[0].pool.?;
         const pool_ptr: *const anyopaque = @ptrCast(pool);
         var cache_fresh = false;
@@ -449,24 +560,58 @@ const VulkanDriver = if (build_options.enable_vulkan) struct {
             cache_fresh = true;
         }
 
+        const sync_t0 = wayland.getTime();
         try syncPassBindings(snail.VulkanBackendCache, &self.cache.?, allocator, passes, self.pass_states[0..passes.len], cache_fresh);
+        self.last_timings.sync_us = (wayland.getTime() - sync_t0) * 1_000_000.0;
 
         var records_buf: [MAX_PASSES]PassRecords = undefined;
+        const emit_t0 = wayland.getTime();
         try emitPasses(&self.scratch, passes, self.pass_states[0..passes.len], records_buf[0..passes.len]);
+        self.last_timings.emit_us = (wayland.getTime() - emit_t0) * 1_000_000.0;
 
         const surface = passes[0].draw_state.surface;
         const clear = clearColorForShader(clear_srgb, surface.encoding);
-        const cmd = vulkan_platform.beginFrame(clear) orelse return false;
+        // beginFrame's body is dominated by `vkWaitForFences` +
+        // `vkAcquireNextImageKHR` — i.e. the actual vsync-wait time on
+        // this backend. Lumping it into `clear_us` means the HUD's
+        // "clear" column shows the right number for Vulkan (it'll be
+        // the dominant time on a vsync-bound frame), instead of pretending
+        // there's no wait happening at all.
+        const clear_t0 = wayland.getTime();
+        const cmd = vulkan_platform.beginFrame(clear) orelse {
+            self.last_timings.clear_us = (wayland.getTime() - clear_t0) * 1_000_000.0;
+            return false;
+        };
+        self.last_timings.clear_us = (wayland.getTime() - clear_t0) * 1_000_000.0;
 
         self.renderer_state.state.setCommandBuffer(cmd);
         defer self.renderer_state.state.clearCommandBuffer();
         self.renderer_state.state.setFrameSlot(vulkan_platform.currentFrameIndex());
 
-        for (passes, records_buf[0..passes.len]) |pass, rec| {
+        for (passes, records_buf[0..passes.len], 0..) |pass, rec, i| {
+            // CPU-side draw command recording. Issue GPU timestamps
+            // around it; the actual GPU rasterization time gets
+            // attributed to `last_timings.pass_us` once the platform
+            // reads the timestamp results (= MAX_FRAMES_IN_FLIGHT
+            // frames later, when this slot is reused).
+            vulkan_platform.beginPassTimestamp(cmd, @intCast(i));
             try self.renderer_state.state.draw(allocator, pass.draw_state, .{ .words = rec.words, .segments = rec.segs }, &.{&self.cache.?});
+            vulkan_platform.endPassTimestamp(cmd, @intCast(i));
         }
 
+        const swap_t0 = wayland.getTime();
         vulkan_platform.endFrame();
+        self.last_timings.swap_us = (wayland.getTime() - swap_t0) * 1_000_000.0;
+
+        // Replace per-pass times with the GPU-side measurements from
+        // the slot we just reused. These are MAX_FRAMES_IN_FLIGHT
+        // frames behind real time but reflect actual GPU rasterization
+        // cost, not CPU command-record time.
+        var gpu_pass_us: [@import("platform/vulkan/windowed.zig").MAX_TIMED_PASSES]f64 = undefined;
+        vulkan_platform.lastGpuPassUs(&gpu_pass_us);
+        for (0..@min(passes.len, gpu_pass_us.len)) |i| {
+            self.last_timings.pass_us[i] = gpu_pass_us[i];
+        }
         return true;
     }
 } else void;
@@ -480,6 +625,8 @@ const Gl44Driver = if (build_options.enable_gl44) struct {
     cache_pool: ?*const anyopaque = null,
     scratch: ScratchBuf,
     pass_states: [MAX_PASSES]PassState = [_]PassState{.{}} ** MAX_PASSES,
+    last_timings: FrameTimings = .{},
+    gl_timer: GlTimer = .{},
 
     fn init(allocator: std.mem.Allocator, window: *wayland.Window) !Gl44Driver {
         try gl_platform.initForWindow(window, .gl44);
@@ -494,6 +641,7 @@ const Gl44Driver = if (build_options.enable_gl44) struct {
     }
 
     fn deinit(self: *Gl44Driver) void {
+        self.gl_timer.deinit();
         if (self.cache) |*c| c.deinit();
         self.scratch.deinit();
         self.renderer_state.deinit();
@@ -501,7 +649,7 @@ const Gl44Driver = if (build_options.enable_gl44) struct {
     }
 
     fn renderFrame(self: *Gl44Driver, allocator: std.mem.Allocator, passes: []const Pass, clear_srgb: [4]f32) !bool {
-        return glRender(@TypeOf(self.*), self, snail.Gl44BackendCache, allocator, passes, clear_srgb);
+        return glRender(@TypeOf(self.*), self, snail.Gl44BackendCache, allocator, passes, clear_srgb, &self.last_timings);
     }
 } else void;
 
@@ -512,6 +660,8 @@ const Gl33Driver = if (build_options.enable_gl33) struct {
     cache_pool: ?*const anyopaque = null,
     scratch: ScratchBuf,
     pass_states: [MAX_PASSES]PassState = [_]PassState{.{}} ** MAX_PASSES,
+    last_timings: FrameTimings = .{},
+    gl_timer: GlTimer = .{},
 
     fn init(allocator: std.mem.Allocator, window: *wayland.Window) !Gl33Driver {
         try gl_platform.initForWindow(window, .gl33);
@@ -526,6 +676,7 @@ const Gl33Driver = if (build_options.enable_gl33) struct {
     }
 
     fn deinit(self: *Gl33Driver) void {
+        self.gl_timer.deinit();
         if (self.cache) |*c| c.deinit();
         self.scratch.deinit();
         self.renderer_state.deinit();
@@ -533,7 +684,7 @@ const Gl33Driver = if (build_options.enable_gl33) struct {
     }
 
     fn renderFrame(self: *Gl33Driver, allocator: std.mem.Allocator, passes: []const Pass, clear_srgb: [4]f32) !bool {
-        return glRender(@TypeOf(self.*), self, snail.Gl33BackendCache, allocator, passes, clear_srgb);
+        return glRender(@TypeOf(self.*), self, snail.Gl33BackendCache, allocator, passes, clear_srgb, &self.last_timings);
     }
 } else void;
 
@@ -544,6 +695,7 @@ const Gles30Driver = if (build_options.enable_gles30) struct {
     cache_pool: ?*const anyopaque = null,
     scratch: ScratchBuf,
     pass_states: [MAX_PASSES]PassState = [_]PassState{.{}} ** MAX_PASSES,
+    last_timings: FrameTimings = .{},
 
     fn init(allocator: std.mem.Allocator, window: *wayland.Window) !Gles30Driver {
         try gl_platform.initForWindow(window, .gles30);
@@ -565,7 +717,7 @@ const Gles30Driver = if (build_options.enable_gles30) struct {
     }
 
     fn renderFrame(self: *Gles30Driver, allocator: std.mem.Allocator, passes: []const Pass, clear_srgb: [4]f32) !bool {
-        return glRender(@TypeOf(self.*), self, snail.Gles30BackendCache, allocator, passes, clear_srgb);
+        return glRender(@TypeOf(self.*), self, snail.Gles30BackendCache, allocator, passes, clear_srgb, &self.last_timings);
     }
 } else void;
 
@@ -576,7 +728,18 @@ fn glRender(
     allocator: std.mem.Allocator,
     passes: []const Pass,
     clear_srgb: [4]f32,
+    timings: *FrameTimings,
 ) !bool {
+    timings.* = .{};
+    // When the driver carries a `gl_timer` (GL 3.3 / 4.4 — GLES30
+    // skipped because `GL_EXT_disjoke_timer_query` isn't universal),
+    // pass times come from GPU timestamps; otherwise we fall back to
+    // CPU-side draw-record time.
+    const has_timer = comptime @hasField(Self, "gl_timer");
+    if (has_timer) {
+        self.gl_timer.ensureInit();
+        self.gl_timer.beginFrame();
+    }
     // All passes draw to the same surface and share the PagePool (each
     // pass's atlases come from the same pool). Pull the pool off the
     // first pass for cache pinning.
@@ -597,41 +760,68 @@ fn glRender(
         cache_fresh = true;
     }
 
+    const sync_t0 = wayland.getTime();
     try syncPassBindings(CacheType, &self.cache.?, allocator, passes, self.pass_states[0..passes.len], cache_fresh);
+    timings.sync_us = (wayland.getTime() - sync_t0) * 1_000_000.0;
 
     var records_buf: [MAX_PASSES]PassRecords = undefined;
+    const emit_t0 = wayland.getTime();
     try emitPasses(&self.scratch, passes, self.pass_states[0..passes.len], records_buf[0..passes.len]);
+    timings.emit_us = (wayland.getTime() - emit_t0) * 1_000_000.0;
 
     // Surface dims are uniform across passes (one window).
     const surface = passes[0].draw_state.surface;
     gl.glViewport(0, 0, @intFromFloat(surface.pixel_width), @intFromFloat(surface.pixel_height));
 
+    const clear_t0 = wayland.getTime();
+    var resolve_restore: ?@TypeOf(try self.renderer_state.state.beginLinearResolve(surface, .{
+        .backdrop = .{ .clear = clear_srgb },
+        .region = .full_target,
+        .intermediate_format = .rgba16f,
+    })) = null;
     if (surface.supportsLinearResolve()) {
         // Driver gave us a linear default framebuffer (e.g. NVIDIA's GLES on
         // Wayland silently downgrades EGL_GL_COLORSPACE_SRGB_KHR). Render
         // into a linear fp16 intermediate so blending is linear-correct, then
         // let endLinearResolve encode-pass it into the default framebuffer.
-        const restore = try self.renderer_state.state.beginLinearResolve(surface, .{
+        resolve_restore = try self.renderer_state.state.beginLinearResolve(surface, .{
             .backdrop = .{ .clear = clear_srgb },
             .region = .full_target,
             .intermediate_format = .rgba16f,
         });
-        errdefer self.renderer_state.state.endLinearResolve(restore);
-        self.renderer_state.state.beginDraw();
-        for (passes, records_buf[0..passes.len]) |pass, rec| {
-            try self.renderer_state.state.draw(allocator, pass.draw_state, .{ .words = rec.words, .segments = rec.segs }, &.{&self.cache.?});
-        }
-        self.renderer_state.state.endLinearResolve(restore);
     } else {
         const clear = clearColorForShader(clear_srgb, surface.encoding);
         gl_platform.clear(clear[0], clear[1], clear[2], clear[3]);
-        self.renderer_state.state.beginDraw();
-        for (passes, records_buf[0..passes.len]) |pass, rec| {
-            try self.renderer_state.state.draw(allocator, pass.draw_state, .{ .words = rec.words, .segments = rec.segs }, &.{&self.cache.?});
+    }
+    timings.clear_us = (wayland.getTime() - clear_t0) * 1_000_000.0;
+
+    errdefer if (resolve_restore) |r| self.renderer_state.state.endLinearResolve(r);
+    self.renderer_state.state.beginDraw();
+    for (passes, records_buf[0..passes.len], 0..) |pass, rec, i| {
+        if (has_timer) self.gl_timer.beginPass(i);
+        const t0 = wayland.getTime();
+        try self.renderer_state.state.draw(allocator, pass.draw_state, .{ .words = rec.words, .segments = rec.segs }, &.{&self.cache.?});
+        timings.pass_us[i] = (wayland.getTime() - t0) * 1_000_000.0;
+        if (has_timer) self.gl_timer.endPass(i);
+    }
+    if (resolve_restore) |r| self.renderer_state.state.endLinearResolve(r);
+
+    // eglSwapBuffers normally blocks until the next vsync (interval=1),
+    // so on GL/GLES this is where the vsync-wait time accumulates.
+    const swap_t0 = wayland.getTime();
+    gl_platform.swapBuffers();
+    timings.swap_us = (wayland.getTime() - swap_t0) * 1_000_000.0;
+
+    if (has_timer) {
+        self.gl_timer.endFrame();
+        // Overwrite the CPU-side pass times with the GPU timestamps
+        // from RING frames ago. These reflect actual rasterization
+        // cost on the GPU; the CPU-side fallback above (now masked)
+        // would only have shown command-record time.
+        for (0..@min(passes.len, MAX_PASSES)) |i| {
+            timings.pass_us[i] = self.gl_timer.last_pass_us[i];
         }
     }
-
-    gl_platform.swapBuffers();
     return true;
 }
 
@@ -647,10 +837,8 @@ const CpuDriver = if (build_options.enable_cpu) struct {
     pass_states: [MAX_PASSES]PassState = [_]PassState{.{}} ** MAX_PASSES,
     buf_width: u32 = 0,
     buf_height: u32 = 0,
-    /// Microseconds spent inside each pass's drawCpu on the most
-    /// recent frame. Indexed 1:1 with the input `passes` slice;
-    /// trailing entries (beyond `passes.len`) stay zero.
-    last_pass_us: [MAX_PASSES]f64 = [_]f64{0} ** MAX_PASSES,
+    /// Per-stage µs from the most recent frame. See `FrameTimings`.
+    last_timings: FrameTimings = .{},
 
     fn init(allocator: std.mem.Allocator, window: *wayland.Window, thread_count: ?usize) !CpuDriver {
         try cpu_platform.initForWindow(window);
@@ -694,37 +882,46 @@ const CpuDriver = if (build_options.enable_cpu) struct {
         passes: []const Pass,
         clear_srgb: [4]f32,
     ) !bool {
-        // Re-acquire pixel buffer if the platform resized.
+        self.last_timings = .{};
+
+        // Acquire the next shm buffer up front. The CPU renderer
+        // rasterizes directly into the compositor's buffer (ABGR8888 in
+        // memory matches what CpuRenderer writes); `swapBuffers` then
+        // just attaches it with no per-pixel copy. `beginFrame` blocks
+        // dispatching Wayland events when both buffers are still busy.
+        const fb_ptr = cpu_platform.beginFrame() orelse return false;
         const bsz = cpu_platform.getBufferSize();
-        if (bsz[0] != self.buf_width or bsz[1] != self.buf_height) {
-            if (cpu_platform.getPixelBuffer()) |px| {
-                self.buf_width = bsz[0];
-                self.buf_height = bsz[1];
-                self.renderer_state.reinitBuffer(px, bsz[0], bsz[1], bsz[0] * 4);
-            }
-        }
+        // Always point the renderer at this frame's buffer — the shm
+        // buffer rotates between the two presentation slots, so the
+        // pointer changes most frames even when size doesn't.
+        self.buf_width = bsz[0];
+        self.buf_height = bsz[1];
+        self.renderer_state.reinitBuffer(fb_ptr, bsz[0], bsz[1], bsz[0] * 4);
+
         // Clear the framebuffer in the storage encoding (shared by all passes).
+        // Splat the RGBA bytes into a single u32 word and `@memset` it across
+        // the whole buffer — much faster than a byte-at-a-time row/col loop,
+        // and lets the kernel page-fault cold shm-buffer pages in bulk
+        // instead of taking a per-page TLB miss on each store. The shm mmap
+        // is page-aligned, so the `alignCast` is safe.
         const surface = passes[0].draw_state.surface;
-        if (cpu_platform.getPixelBuffer()) |px| {
+        const clear_t0 = wayland.getTime();
+        {
             const stored = switch (surface.encoding.stored_pixels) {
                 .linear => [4]f32{ srgbToLinear(clear_srgb[0]), srgbToLinear(clear_srgb[1]), srgbToLinear(clear_srgb[2]), clear_srgb[3] },
                 .srgb => clear_srgb,
             };
-            const r = unitToU8(stored[0]);
-            const g = unitToU8(stored[1]);
-            const b = unitToU8(stored[2]);
-            const a = unitToU8(stored[3]);
-            for (0..bsz[1]) |row| {
-                const row_start = row * bsz[0] * 4;
-                for (0..bsz[0]) |col| {
-                    const off = row_start + col * 4;
-                    px[off + 0] = r;
-                    px[off + 1] = g;
-                    px[off + 2] = b;
-                    px[off + 3] = a;
-                }
-            }
+            const r: u32 = unitToU8(stored[0]);
+            const g: u32 = unitToU8(stored[1]);
+            const b: u32 = unitToU8(stored[2]);
+            const a: u32 = unitToU8(stored[3]);
+            // Host is little-endian: byte 0 = R sits in the u32's low byte,
+            // matching the ABGR8888 wl_shm format we render straight into.
+            const word: u32 = r | (g << 8) | (b << 16) | (a << 24);
+            const px_u32: [*]u32 = @ptrCast(@alignCast(fb_ptr));
+            @memset(px_u32[0 .. @as(usize, bsz[0]) * bsz[1]], word);
         }
+        self.last_timings.clear_us = (wayland.getTime() - clear_t0) * 1_000_000.0;
 
         const pool = passes[0].atlases[0].pool.?;
         const pool_ptr: *const anyopaque = @ptrCast(pool);
@@ -741,20 +938,25 @@ const CpuDriver = if (build_options.enable_cpu) struct {
             cache_fresh = true;
         }
 
+        const sync_t0 = wayland.getTime();
         try syncPassBindings(snail.CpuBackendCache, &self.cache.?, allocator, passes, self.pass_states[0..passes.len], cache_fresh);
+        self.last_timings.sync_us = (wayland.getTime() - sync_t0) * 1_000_000.0;
 
         var records_buf: [MAX_PASSES]PassRecords = undefined;
+        const emit_t0 = wayland.getTime();
         try emitPasses(&self.scratch, passes, self.pass_states[0..passes.len], records_buf[0..passes.len]);
+        self.last_timings.emit_us = (wayland.getTime() - emit_t0) * 1_000_000.0;
 
-        self.last_pass_us = [_]f64{0} ** MAX_PASSES;
         for (passes, records_buf[0..passes.len], 0..) |pass, rec, i| {
             const dispatch_pool: ?*snail.ThreadPool = if (pass.cpu_parallel) self.pool else null;
             const t0 = wayland.getTime();
             try snail.drawCpu(&self.renderer_state, pass.draw_state, .{ .words = rec.words, .segments = rec.segs }, &.{&self.cache.?}, dispatch_pool);
-            self.last_pass_us[i] = (wayland.getTime() - t0) * 1_000_000.0;
+            self.last_timings.pass_us[i] = (wayland.getTime() - t0) * 1_000_000.0;
         }
 
+        const swap_t0 = wayland.getTime();
         cpu_platform.swapBuffers();
+        self.last_timings.swap_us = (wayland.getTime() - swap_t0) * 1_000_000.0;
         return true;
     }
 } else void;

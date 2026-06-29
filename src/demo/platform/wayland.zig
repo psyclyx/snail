@@ -6,7 +6,18 @@ pub const c = @cImport({
     @cInclude("wayland-client.h");
     @cInclude("linux/input-event-codes.h");
     @cInclude("xdg-shell-client-protocol.h");
+    @cInclude("presentation-time-client-protocol.h");
 });
+
+/// Receives the wall-clock interval (microseconds) between two
+/// consecutive successful surface presentations, as reported by the
+/// compositor via `wp_presentation`. This is the true display cadence:
+/// it doesn't care about which backend produced the frame, doesn't
+/// depend on where the application chooses to wait (`shouldClose`,
+/// `vkAcquireNextImageKHR`, `eglSwapBuffers`, etc.), and isn't subject
+/// to the CPU-side render-loop jitter that biases naive
+/// top-of-loop dt measurements.
+pub const PresentationCallback = *const fn (ctx: *anyopaque, interval_us: u32) void;
 
 pub const KEY_R = c.KEY_R;
 pub const KEY_L = c.KEY_L;
@@ -50,6 +61,25 @@ pub const Window = struct {
     toplevel: *c.xdg_toplevel,
     seat: ?*c.wl_seat = null,
     keyboard: ?*c.wl_keyboard = null,
+
+    // ── Presentation feedback (wp_presentation) ──
+    // Bound from the registry if the compositor advertises it. When
+    // non-null we can request per-commit feedback objects that fire
+    // with an actual presentation timestamp; deltas between successive
+    // timestamps give the real display interval, identical across
+    // CPU/GL/Vulkan backends.
+    wp_presentation: ?*c.struct_wp_presentation = null,
+    /// Clock domain the compositor reports timestamps in. CLOCK_MONOTONIC
+    /// on every Linux compositor in practice, but we honor whatever the
+    /// `clock_id` event reports.
+    presentation_clock_id: u32 = 1, // CLOCK_MONOTONIC
+    /// Timestamp (nanoseconds) of the most recent successful
+    /// presentation, used to compute the interval handed to
+    /// `presentation_callback`. Zero until the first `presented` event
+    /// arrives.
+    last_presented_ns: u64 = 0,
+    presentation_callback: ?PresentationCallback = null,
+    presentation_ctx: ?*anyopaque = null,
 
     width: u32,
     height: u32,
@@ -136,6 +166,7 @@ pub const Window = struct {
         c.xdg_toplevel_destroy(self.toplevel);
         c.xdg_surface_destroy(self.xdg_surface);
         c.wl_surface_destroy(self.surface);
+        if (self.wp_presentation) |pres| c.wp_presentation_destroy(pres);
         if (self.wm_base) |wm_base| c.xdg_wm_base_destroy(wm_base);
         if (self.shm) |shm| c.wl_shm_destroy(shm);
         if (self.compositor) |compositor| c.wl_compositor_destroy(compositor);
@@ -255,6 +286,36 @@ pub const Window = struct {
         return pressed;
     }
 
+    /// Wire a callback that will be invoked whenever the compositor
+    /// reports a successful presentation, with the wall-clock interval
+    /// (in microseconds) from the previous successful presentation. Pass
+    /// `null` to detach. The window holds `ctx` opaquely; the caller
+    /// owns its lifetime and is responsible for ensuring it outlives the
+    /// window (or for clearing the callback before destroying it).
+    pub fn setPresentationCallback(self: *Window, cb: ?PresentationCallback, ctx: ?*anyopaque) void {
+        self.presentation_callback = cb;
+        self.presentation_ctx = ctx;
+    }
+
+    /// Returns true if the compositor exposed `wp_presentation`; calls
+    /// `requestPresentationFeedback` are no-ops otherwise.
+    pub fn hasPresentationFeedback(self: *const Window) bool {
+        return self.wp_presentation != null;
+    }
+
+    /// Create a `wp_presentation_feedback` for the *next* commit on this
+    /// surface. Each backend's swap function calls this immediately
+    /// before its commit (CPU: before `wl_surface_commit`; Vulkan/GL:
+    /// before the present/swap call that performs the commit
+    /// internally). The compositor will deliver a `presented` or
+    /// `discarded` event asynchronously some time after the commit; the
+    /// proxy auto-destroys after firing, so we don't track it.
+    pub fn requestPresentationFeedback(self: *Window) void {
+        const pres = self.wp_presentation orelse return;
+        const fb = c.wp_presentation_feedback(pres, self.surface) orelse return;
+        _ = c.wp_presentation_feedback_add_listener(fb, &presentation_feedback_listener, self);
+    }
+
     fn allocOutputInfo(self: *Window) ?*OutputInfo {
         for (&self.outputs) |*info| {
             if (info.wl_output == null) return info;
@@ -317,6 +378,11 @@ fn registryGlobal(
         if (self.seat) |seat| {
             _ = c.wl_seat_add_listener(seat, &seat_listener, self);
         }
+    } else if (std.mem.eql(u8, iface, "wp_presentation")) {
+        self.wp_presentation = @ptrCast(c.wl_registry_bind(reg, name, &c.wp_presentation_interface, 1));
+        if (self.wp_presentation) |pres| {
+            _ = c.wp_presentation_add_listener(pres, &presentation_listener, self);
+        }
     } else if (std.mem.eql(u8, iface, "wl_output")) {
         const slot = self.allocOutputInfo() orelse return;
         slot.* = .{
@@ -353,6 +419,81 @@ fn registryGlobalRemove(data: ?*anyopaque, _: ?*c.wl_registry, name: u32) callco
 const registry_listener = c.wl_registry_listener{
     .global = registryGlobal,
     .global_remove = registryGlobalRemove,
+};
+
+// ── wp_presentation listeners ──
+//
+// `clock_id` arrives once after binding. We honor whatever the
+// compositor reports; in practice every Linux compositor uses
+// CLOCK_MONOTONIC (= 1), which is also what the rest of the demo's
+// timing code uses, so deltas are directly comparable.
+//
+// `presentation_feedback` events fire asynchronously after each
+// commit's corresponding present (or discard). We extract the
+// timestamp, compute the interval since the last successful present,
+// and hand it to the registered callback. Discards are recorded as
+// "no successful present this commit"; we leave `last_presented_ns`
+// alone so the next successful present's interval reflects however
+// many vsyncs elapsed (this naturally surfaces as a "2×" or "3×" bucket
+// downstream, which is the correct interpretation: the user did wait
+// that long for the next frame to appear).
+
+fn presentationClockId(
+    data: ?*anyopaque,
+    _: ?*c.struct_wp_presentation,
+    clk_id: u32,
+) callconv(.c) void {
+    selfFrom(data).presentation_clock_id = clk_id;
+}
+
+const presentation_listener = c.wp_presentation_listener{
+    .clock_id = presentationClockId,
+};
+
+fn presentationFeedbackSyncOutput(
+    _: ?*anyopaque,
+    _: ?*c.struct_wp_presentation_feedback,
+    _: ?*c.wl_output,
+) callconv(.c) void {}
+
+fn presentationFeedbackPresented(
+    data: ?*anyopaque,
+    _: ?*c.struct_wp_presentation_feedback,
+    tv_sec_hi: u32,
+    tv_sec_lo: u32,
+    tv_nsec: u32,
+    _: u32, // refresh
+    _: u32, // seq_hi
+    _: u32, // seq_lo
+    _: u32, // flags
+) callconv(.c) void {
+    const self = selfFrom(data);
+    const sec: u64 = (@as(u64, tv_sec_hi) << 32) | @as(u64, tv_sec_lo);
+    const now_ns: u64 = sec * 1_000_000_000 + @as(u64, tv_nsec);
+    if (self.last_presented_ns != 0 and now_ns > self.last_presented_ns) {
+        const delta_ns = now_ns - self.last_presented_ns;
+        const delta_us_u64 = delta_ns / 1000;
+        const delta_us: u32 = @intCast(@min(delta_us_u64, @as(u64, std.math.maxInt(u32))));
+        if (self.presentation_callback) |cb| {
+            cb(self.presentation_ctx.?, delta_us);
+        }
+    }
+    self.last_presented_ns = now_ns;
+}
+
+fn presentationFeedbackDiscarded(
+    _: ?*anyopaque,
+    _: ?*c.struct_wp_presentation_feedback,
+) callconv(.c) void {
+    // No timestamp; nothing to record. We deliberately don't reset
+    // `last_presented_ns` — the next successful presented event then
+    // measures a multi-vsync interval, which is honest.
+}
+
+const presentation_feedback_listener = c.wp_presentation_feedback_listener{
+    .sync_output = presentationFeedbackSyncOutput,
+    .presented = presentationFeedbackPresented,
+    .discarded = presentationFeedbackDiscarded,
 };
 
 fn wmBasePing(data: ?*anyopaque, wm_base: ?*c.xdg_wm_base, serial: u32) callconv(.c) void {

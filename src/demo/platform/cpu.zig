@@ -34,10 +34,26 @@ var next_presentation_buffer: usize = 0;
 var frame_callback: ?*c.wl_callback = null;
 var frame_pending: bool = false;
 var presentation_failed: bool = false;
+/// Pointer into the currently-acquired shm buffer's mmap region. The
+/// CPU renderer rasterizes directly into this — there is no intermediate
+/// staging buffer. Rotates between `presentation_buffers[0..N]` as the
+/// compositor releases each one.
 var pixel_ptr: ?[*]u8 = null;
-var render_buf: ?[]u8 = null; // separate RGBA buffer for CpuRenderer
+/// Buffer `pixel_ptr` currently points into. Set by `beginFrame()`,
+/// cleared by `swapBuffers()` after commit so the next `beginFrame()`
+/// picks the next free buffer.
+var current_buffer: ?*PresentationBuffer = null;
 var buf_width: u32 = 0;
 var buf_height: u32 = 0;
+
+// wl_shm well-known format codes are 0/1; everything else uses the DRM
+// fourcc. DRM_FORMAT_ABGR8888 = fourcc('A','B','2','4') describes a
+// 32-bit word `A:B:G:R` MSB→LSB, which on little-endian memory is bytes
+// R, G, B, A — exactly the byte order CpuRenderer writes. Picking this
+// format lets us render straight into the shm buffer with no per-pixel
+// swizzle on present (the previous WL_SHM_FORMAT_XRGB8888 = B,G,R,A in
+// memory needed a ~3 ms per-frame conversion loop on the main thread).
+const WL_SHM_FORMAT_ABGR8888: u32 = 0x34324241;
 
 pub fn init(width: u32, height: u32, title: [*:0]const u8) !void {
     const window = try wayland.Window.init(width, height, title);
@@ -103,6 +119,7 @@ pub fn shouldClose() bool {
 }
 
 /// Returns a pointer to the RGBA8888 pixel buffer for CPU rendering.
+/// Valid between `beginFrame()` and `swapBuffers()`; null otherwise.
 pub fn getPixelBuffer() ?[*]u8 {
     return pixel_ptr;
 }
@@ -111,40 +128,55 @@ pub fn getBufferSize() [2]u32 {
     return .{ buf_width, buf_height };
 }
 
-/// Commit the current pixel buffer to the Wayland surface.
-pub fn swapBuffers() void {
-    if (app) |window| {
-        if (acquirePresentationBuffer(window)) |present| {
-            // Convert RGBA (CpuRenderer) → BGRA (ARGB8888 little-endian) into shm buffer
-            if (render_buf) |src| {
-                if (present.map) |dst_slice| {
-                    const dst = dst_slice.ptr;
-                    const total = @as(usize, buf_width) * buf_height;
-                    var i: usize = 0;
-                    while (i < total) : (i += 1) {
-                        const off = i * 4;
-                        dst[off + 0] = src[off + 2]; // B
-                        dst[off + 1] = src[off + 1]; // G
-                        dst[off + 2] = src[off + 0]; // R
-                        dst[off + 3] = src[off + 3]; // A
-                    }
-                }
-            }
-            const callback = c.wl_surface_frame(window.surface);
-            if (callback) |cb| {
-                if (frame_callback) |old| c.wl_callback_destroy(old);
-                frame_callback = cb;
-                frame_pending = true;
-                _ = c.wl_callback_add_listener(cb, &frame_listener, null);
-            }
-            const buf = present.wl_buffer orelse return;
-            present.busy = true;
-            c.wl_surface_attach(window.surface, buf, 0, 0);
-            c.wl_surface_damage_buffer(window.surface, 0, 0, @intCast(buf_width), @intCast(buf_height));
-            c.wl_surface_commit(window.surface);
-            _ = c.wl_display_flush(window.display);
-        }
+/// Acquire the next free shm buffer for this frame. Blocks dispatching
+/// Wayland events until the compositor releases one (back-pressure when
+/// both buffers are still attached). Idempotent within a frame: if a
+/// buffer is already acquired, returns its pointer without blocking.
+///
+/// The renderer writes into the returned RGBA buffer directly; `swapBuffers`
+/// then attaches it without any per-pixel copy.
+pub fn beginFrame() ?[*]u8 {
+    if (current_buffer != null) return pixel_ptr;
+    const window = app orelse return null;
+    const buf = acquirePresentationBuffer(window) orelse return null;
+    current_buffer = buf;
+    if (buf.map) |m| {
+        pixel_ptr = m.ptr;
+        return m.ptr;
     }
+    pixel_ptr = null;
+    return null;
+}
+
+/// Commit the currently-acquired buffer to the Wayland surface. With
+/// ABGR8888 the in-memory layout already matches what the CPU renderer
+/// wrote, so this is just attach + damage + commit — no per-pixel copy
+/// or format swizzle. After commit, `pixel_ptr` is cleared and the next
+/// `beginFrame()` rotates to the other buffer in the pair.
+pub fn swapBuffers() void {
+    const window = app orelse return;
+    const present = current_buffer orelse return;
+    const buf = present.wl_buffer orelse return;
+    const callback = c.wl_surface_frame(window.surface);
+    if (callback) |cb| {
+        if (frame_callback) |old| c.wl_callback_destroy(old);
+        frame_callback = cb;
+        frame_pending = true;
+        _ = c.wl_callback_add_listener(cb, &frame_listener, null);
+    }
+    // Register a wp_presentation_feedback for the upcoming commit.
+    // The compositor will fire `presented` (or `discarded`) when this
+    // surface state is actually shown; that timestamp is what the HUD
+    // cadence histogram is bucketed against. No-op when the compositor
+    // doesn't advertise wp_presentation.
+    window.requestPresentationFeedback();
+    present.busy = true;
+    c.wl_surface_attach(window.surface, buf, 0, 0);
+    c.wl_surface_damage_buffer(window.surface, 0, 0, @intCast(buf_width), @intCast(buf_height));
+    c.wl_surface_commit(window.surface);
+    _ = c.wl_display_flush(window.display);
+    current_buffer = null;
+    pixel_ptr = null;
 }
 
 pub fn clear(r: f32, g: f32, b: f32, a: f32) void {
@@ -235,20 +267,18 @@ fn createShmBuffer(width: u32, height: u32) !void {
     const stride = width * 4;
     const size = @as(usize, stride) * height;
 
-    // CpuRenderer writes RGBA; we convert to BGRA in swapBuffers
-    render_buf = try std.heap.c_allocator.alloc(u8, size);
-    errdefer {
-        std.heap.c_allocator.free(render_buf.?);
-        render_buf = null;
-    }
     errdefer for (&presentation_buffers) |*buffer| destroyPresentationBuffer(buffer);
     for (&presentation_buffers) |*buffer| {
         try createPresentationBuffer(window, buffer, width, height, stride, size);
     }
-    pixel_ptr = render_buf.?.ptr;
     buf_width = width;
     buf_height = height;
     next_presentation_buffer = 0;
+    // Eagerly own the first buffer so `getPixelBuffer()` returns a valid
+    // pointer between window init and the first frame's `beginFrame`.
+    // `presentation_buffers[0]` was just created and is not yet busy.
+    current_buffer = &presentation_buffers[0];
+    pixel_ptr = if (presentation_buffers[0].map) |m| m.ptr else null;
 }
 
 fn createPresentationBuffer(window: *wayland.Window, out: *PresentationBuffer, width: u32, height: u32, stride: u32, size: usize) !void {
@@ -274,14 +304,13 @@ fn createPresentationBuffer(window: *wayland.Window, out: *PresentationBuffer, w
         out.pool = null;
     }
 
-    const WL_SHM_FORMAT_XRGB8888 = 1;
     out.wl_buffer = c.wl_shm_pool_create_buffer(
         out.pool.?,
         0,
         @intCast(width),
         @intCast(height),
         @intCast(stride),
-        WL_SHM_FORMAT_XRGB8888,
+        WL_SHM_FORMAT_ABGR8888,
     ) orelse return error.BufferCreateFailed;
     out.busy = false;
     _ = c.wl_buffer_add_listener(out.wl_buffer.?, &buffer_listener, out);
@@ -294,10 +323,7 @@ fn destroyShmBuffer() void {
         frame_pending = false;
     }
     for (&presentation_buffers) |*buffer| destroyPresentationBuffer(buffer);
-    if (render_buf) |rb| {
-        std.heap.c_allocator.free(rb);
-        render_buf = null;
-    }
+    current_buffer = null;
     pixel_ptr = null;
     buf_width = 0;
     buf_height = 0;

@@ -38,11 +38,26 @@ const UnhintedGlyphCache = helpers.UnhintedGlyphCache;
 /// has (backend name, AA label, hint label) come through by slice;
 /// the HUD borrows them for the call's duration and copies whatever
 /// it needs to cache.
+///
+/// The optional `frame_ms` / `cadence` slices carry caller-owned
+/// strings that the HUD renders in two extra lines above Backend.
+/// Pass empty slices to omit them. Caller throttles updates (the
+/// shape cache holds one entry per unique string, so updating every
+/// frame would bloat the cache; the demo regenerates these every
+/// ~0.5 s).
 pub const State = struct {
     fps: f32,
     backend: []const u8,
     aa: []const u8,
     hint: []const u8,
+    frame_ms: []const u8 = "",
+    cadence: []const u8 = "",
+    /// Pre-pass driver stages: clear / sync / emit. Empty to omit.
+    stage_pre: []const u8 = "",
+    /// Per-pass + swap: pass0 / pass1 / swap. Empty to omit.
+    stage_pass: []const u8 = "",
+    /// Main-loop top stages: wait / hud / compose. Empty to omit.
+    stage_loop: []const u8 = "",
 };
 
 /// Long-lived HUD-side resources. The `BackendCache` (per-backend GPU
@@ -115,11 +130,22 @@ pub const Overlay = struct {
     ) !helpers.Picture {
         const fps_text = std.fmt.bufPrint(&self.fps_buf, "FPS: {d:.0}", .{state.fps}) catch "FPS: ?";
 
-        const lines = [_]Line{
-            .{ .text = fps_text, .y = 0 },
-            .{ .text = state.backend, .y = 1 },
-            .{ .text = state.aa, .y = 2 },
-            .{ .text = state.hint, .y = 3 },
+        // Lines render in this order, top to bottom. Empty entries are
+        // skipped AND the rendered rows collapse upward — so the HUD
+        // shrinks to just the core readout when `T` is off, and grows
+        // when the per-stage breakdown is requested. The y on each Line
+        // is now ignored; the rendered baseline comes from the
+        // accumulated `emitted` count below.
+        const lines = [_][]const u8{
+            fps_text,
+            state.frame_ms,
+            state.cadence,
+            state.stage_pre,
+            state.stage_pass,
+            state.stage_loop,
+            state.backend,
+            state.aa,
+            state.hint,
         };
 
         // Anchor the block to the top-right. line_h is body-of-text
@@ -140,18 +166,22 @@ pub const Overlay = struct {
         var line_count: usize = 0;
         defer for (line_pictures[0..line_count]) |*p| p.deinit();
 
-        for (lines) |line| {
-            if (line.text.len == 0) continue;
+        for (lines) |text| {
+            if (text.len == 0) continue;
             const shaped = try self.shape_cache.shape(
                 self.faces,
-                line.text,
+                text,
                 .{ .style = .{ .weight = .regular } },
             );
             try self.ensureAtlasContains(scratch_alloc, shaped);
 
             const run_width = em * shaped.advanceX();
             const baseline_x = right_edge - run_width;
-            const baseline_y = top_edge + @as(f32, @floatFromInt(line.y)) * line_h;
+            // Collapse-on-empty layout: each emitted (non-empty) line
+            // gets the next slot in vertical order, so when `T` is off
+            // the breakdown rows disappear AND Backend slides up to
+            // take their place — no stale gap above it.
+            const baseline_y = top_edge + @as(f32, @floatFromInt(line_count)) * line_h;
 
             line_pictures[line_count] = try helpers.shapedRunPicture(frame_alloc, shaped, self.faces, .{
                 .baseline = .{ .x = baseline_x, .y = baseline_y },
@@ -212,11 +242,6 @@ pub const Overlay = struct {
         self.atlas.deinit();
         self.atlas = grown;
     }
-};
-
-const Line = struct {
-    text: []const u8,
-    y: u8,
 };
 
 /// Off-white at ~85% opacity. Sits cleanly on the banner's cream

@@ -121,6 +121,20 @@ pub const emit = @import("picture/emit.zig");
 // Symbolic decoders + texel-coord resolvers so callers can drive their
 // own shader pipeline off the same byte layout the built-in renderers
 // consume. Bind atlas pages via `Renderer.curveTexHandle()` etc.
+//
+// Worked example: `src/demo/game/quad_renderer.zig`. The game's
+// `SurfaceTextDraw` builds a `Picture`, calls `emit.emit` into a
+// `GL_TEXTURE_BUFFER`, and samples coverage from a custom material
+// fragment shader via `snail_text_sample_premul_linear(vec2)` —
+// snail's GLSL is pulled in through `snail.coverage.Shader.gl33`.
+//
+// `snail.coverage` is the higher-level integration surface (drop-in
+// GLSL pieces, `Backend.bindProgram` / `bindDrawState` plumbing). The
+// raw primitives below — `decodeInstance`, `bindingTexels`, the
+// `*TexHandle` accessors — sit one layer beneath that, for callers
+// who want to walk emit's byte stream symbolically without taking
+// snail's shader chunks. They're stable, but most consumers should
+// reach for `snail.coverage` first.
 
 const vertex_mod = @import("render/format/vertex.zig");
 pub const Instance = vertex_mod.Instance;

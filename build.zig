@@ -475,6 +475,7 @@ fn addInteractiveDemoStep(
     demo_mod.linkSystemLibrary("wayland-client", .{});
     demo_mod.addIncludePath(b.path("src/demo/platform"));
     demo_mod.addCSourceFile(.{ .file = b.path("src/demo/platform/xdg-shell-client-protocol.c") });
+    demo_mod.addCSourceFile(.{ .file = b.path("src/demo/platform/presentation-time-client-protocol.c") });
     if (config.core_options.enable_gl33 or config.core_options.enable_gl44 or config.core_options.enable_gles30) {
         demo_mod.linkSystemLibrary("EGL", .{});
         demo_mod.linkSystemLibrary("wayland-egl", .{});
@@ -520,6 +521,7 @@ fn addGameDemoStep(
     game_mod.linkSystemLibrary("wayland-client", .{});
     game_mod.addIncludePath(b.path("src/demo/platform"));
     game_mod.addCSourceFile(.{ .file = b.path("src/demo/platform/xdg-shell-client-protocol.c") });
+    game_mod.addCSourceFile(.{ .file = b.path("src/demo/platform/presentation-time-client-protocol.c") });
     game_mod.linkSystemLibrary("EGL", .{});
     game_mod.linkSystemLibrary("wayland-egl", .{});
     game_mod.linkSystemLibrary("OpenGL", .{});
