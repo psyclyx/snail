@@ -74,6 +74,50 @@ const transformedGlyphBounds = cpu_geometry.transformedGlyphBounds;
 
 pub const PreparedResources = cpu_resources.PreparedResources;
 
+// ── Per-instance profiling (diagnostic) ──
+//
+// When `instance_profile` is non-null, the SERIAL `drawBatchInstances`
+// path times each instance individually and appends an entry. The
+// threaded path (`drawBatchInstancesParallel` → `tileWorker`) skips the
+// hook — per-instance timing in a tiled-parallel dispatch would be
+// misleading (each strip processes every instance over a fraction of
+// the surface, so per-strip-per-instance numbers don't compose into
+// "how much did this instance cost"). Force the `cpu_unthreaded`
+// backend to get a meaningful breakdown.
+
+pub const InstanceProfileEntry = struct {
+    /// Position in this drawBatch's vertex stream.
+    index: u32,
+    us: f64,
+    /// Screen-space bbox extents after the scene-to-pixel transform,
+    /// for distinguishing "this is a huge fill" from "this is a glyph".
+    pixel_w: u32,
+    pixel_h: u32,
+};
+
+pub const InstanceProfileBuf = struct {
+    entries: []InstanceProfileEntry,
+    count: usize = 0,
+
+    pub fn reset(self: *InstanceProfileBuf) void {
+        self.count = 0;
+    }
+};
+
+/// Wire a buffer in to start collecting per-instance timings; clear to
+/// stop. Caller owns the buffer's storage and lifetime.
+pub var instance_profile: ?*InstanceProfileBuf = null;
+
+/// CLOCK_MONOTONIC in nanoseconds. Used by the per-instance profiler
+/// to time each `renderBatchInstance` call. Zig 0.16 dropped
+/// `std.time.Instant`/`Timer`; this drops to `std.c.clock_gettime`
+/// directly, same as the demo's wayland platform.
+fn monotonicNanos() u64 {
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(.MONOTONIC, &ts);
+    return @as(u64, @intCast(ts.sec)) * 1_000_000_000 + @as(u64, @intCast(ts.nsec));
+}
+
 /// Skip threshold for coverage/alpha values below one 8-bit LSB: anything
 /// smaller rounds to zero in the final sRGB8 output, so the composite would
 /// be a no-op.
@@ -302,7 +346,10 @@ pub const CpuRenderer = struct {
                 return;
             }
         }
-        self.drawBatchInstances(prepared, vertices, scene, texture_layer_base, true);
+        // Serial path: enable the profile hook if the caller has wired
+        // up `instance_profile`. The threaded path above skips it
+        // intentionally — see `instance_profile` docs.
+        self.drawBatchInstances(prepared, vertices, scene, texture_layer_base, true, true);
     }
 
     const ClipSave = struct {
@@ -347,12 +394,35 @@ pub const CpuRenderer = struct {
         return "CPU";
     }
 
-    fn drawBatchInstances(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const u32, scene_to_pixel: Transform2D, texture_layer_base: u32, allow_subpixel: bool) void {
+    fn drawBatchInstances(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const u32, scene_to_pixel: Transform2D, texture_layer_base: u32, allow_subpixel: bool, profile_enabled: bool) void {
         const WORDS = vertex.WORDS_PER_INSTANCE;
+        const profile = if (profile_enabled) instance_profile else null;
         var i: usize = 0;
+        var idx: u32 = 0;
         while (i + WORDS <= vertices.len) : (i += WORDS) {
             const inst = vertices[i..][0..WORDS];
-            self.renderBatchInstance(prepared, inst, scene_to_pixel, texture_layer_base, allow_subpixel);
+            if (profile) |p| {
+                const start_ns = monotonicNanos();
+                self.renderBatchInstance(prepared, inst, scene_to_pixel, texture_layer_base, allow_subpixel);
+                const end_ns = monotonicNanos();
+                if (p.count < p.entries.len) {
+                    const decoded = decodeBatchInstance(inst, scene_to_pixel);
+                    var bounds = cpu_geometry.transformedGlyphBounds(decoded.bbox, decoded.transform);
+                    cpu_geometry.expandBoundsForCoverageSupport(&bounds, self.subpixel_order, allow_subpixel);
+                    const w_f = @max(0.0, bounds.max.x - bounds.min.x);
+                    const h_f = @max(0.0, bounds.max.y - bounds.min.y);
+                    p.entries[p.count] = .{
+                        .index = idx,
+                        .us = @as(f64, @floatFromInt(end_ns -% start_ns)) / 1000.0,
+                        .pixel_w = @intFromFloat(@ceil(w_f)),
+                        .pixel_h = @intFromFloat(@ceil(h_f)),
+                    };
+                    p.count += 1;
+                }
+            } else {
+                self.renderBatchInstance(prepared, inst, scene_to_pixel, texture_layer_base, allow_subpixel);
+            }
+            idx += 1;
         }
     }
 
@@ -377,7 +447,7 @@ pub const CpuRenderer = struct {
         var worker = ctx.base.*;
         worker.row_clip_min = strip_y0;
         worker.row_clip_max = strip_y1;
-        worker.drawBatchInstances(ctx.prepared, ctx.vertices, ctx.scene_to_pixel, ctx.texture_layer_base, ctx.allow_subpixel);
+        worker.drawBatchInstances(ctx.prepared, ctx.vertices, ctx.scene_to_pixel, ctx.texture_layer_base, ctx.allow_subpixel, false);
     }
 
     fn drawBatchInstancesParallel(
