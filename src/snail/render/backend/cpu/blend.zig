@@ -80,6 +80,27 @@ pub const Target = struct {
     }
 };
 
+/// Precompute the target bytes for an opaque, alpha-premultiplied solid
+/// source (i.e. `(color[0..3], 1.0)` in target-color-space). The bytes
+/// match exactly what `blendPremultipliedPixel` would write for the
+/// `src_a >= 1.0` branch — but computed once instead of per pixel so
+/// the caller can `@memset` an entire row.
+///
+/// `color` is in linear space (the same space the rasterizer's
+/// per-pixel path uses just before `blendPremultipliedPixel`). Dither
+/// is intentionally not supported here: dithered paints aren't solid
+/// (the paint sampler returns `apply_dither = true` only for
+/// gradients/images), so the fast path skips them upstream.
+pub inline fn opaqueLinearBytesForTarget(target: Target, color: [3]f32) [4]u8 {
+    const target_src = target.srcPremultipliedForTarget(.{ color[0], color[1], color[2], 1.0 });
+    return .{
+        target.writeChannel(target_src[0], 0.0),
+        target.writeChannel(target_src[1], 0.0),
+        target.writeChannel(target_src[2], 0.0),
+        255,
+    };
+}
+
 pub fn colorBytesForEncoding(encoding: snail.TargetEncoding, color_srgb: [4]f32) [4]u8 {
     const alpha = clamp01(color_srgb[3]);
     const linear = srgbColorToLinear(color_srgb);

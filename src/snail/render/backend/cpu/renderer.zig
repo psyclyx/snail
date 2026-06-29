@@ -1001,7 +1001,181 @@ pub const CpuRenderer = struct {
                 break :blk stroke_sat.valid;
             };
 
+            // Inside-stroke composite fast path.
+            //
+            // For axis-aligned rounded-rect cards the body rows have a
+            // predictable "stroke at edges, fill in middle" pattern:
+            //   stroke_cov = 1   in [edge_left, edge_left + w)
+            //   stroke_cov = 0   in the interior
+            //   stroke_cov = 1   in [edge_right - w, edge_right)
+            // With both fill_state and stroke_state h_uniform (their
+            // H-band carries only vertical-line curves), the only X
+            // transitions in coverage are at the path's left/right
+            // extents — exactly the two stroke band edges. So a probe at
+            // 8 evenly spaced columns can identify:
+            //   * which probes sit in the interior (stroke = 0, fill = 1),
+            //   * which probes sit in a stroke border (stroke = 1).
+            // The range from the first interior probe to the last
+            // interior probe is safe to fast-path with the fill paint;
+            // the per-pixel loop handles the leftmost / rightmost stroke
+            // borders (and the AA transition pixel) normally.
+            //
+            // Targets the six card body rows (each contributing ~20-80 ms
+            // unthreaded at 4K). A 1-2 px stroke leaves 6/8 probes in the
+            // interior, so the fast path covers ~75% of each row's pixels.
+            // Gate on contribution counts (see the equivalent comment in
+            // `renderSinglePathBatchLayer`). For an axis-aligned
+            // rounded-rect card body row, the FILL has 2 contributing
+            // curves (left + right verticals) and the STROKE has 4
+            // (the four vertical edges of the inside-stroke band:
+            // outer-left, inner-left, inner-right, outer-right). Glyph
+            // / complex shape rows easily exceed both bounds, where the
+            // probe-based pattern detection becomes unsafe.
+            // The fill contrib bound (4) matches the relaxed bound in
+            // `renderSinglePathBatchLayer` — a fractionally-positioned
+            // axis-aligned rect can span two H-bands per pixel
+            // footprint, doubling the contribution count even though
+            // the underlying shape is still 2 vertical edges. The
+            // stroke bound (8) is the same doubling applied to the
+            // canonical 4-edge inside-stroke band. Glyph / complex
+            // shape rows easily exceed both. The 8-probe pattern check
+            // (all fills full + run_clean) still gates correctness.
+            const fp_fill_contrib = if (row_state_ready) rowStateSignedContributionCount(fill_state) else 0;
+            const fp_stroke_contrib = if (row_state_ready) rowStateSignedContributionCount(stroke_state) else 0;
+            var fp_active = false;
+            var fp_start: u32 = 0;
+            var fp_end_excl: u32 = 0;
+            no_fp: {
+                if (!(row_state_ready and fp_fill_contrib <= 4 and fp_stroke_contrib <= 8 and raster.x1 > raster.x0 + 8)) break :no_fp;
+                const ProbeFn = struct {
+                    fn cov(
+                        s_self: *CpuRenderer,
+                        p: *const PreparedAtlasPage,
+                        loc: Vec2,
+                        row_st: *const RowHorizState,
+                        sat_st: *const SaturatedRowState,
+                        r: PathRasterState,
+                        layer: PreparedPathLayer,
+                        sat_ready: bool,
+                    ) f32 {
+                        if (sat_ready) return s_self.applyCoverageTransfer(evalGlyphCoverageSaturatedRowH(
+                            p,
+                            loc.x,
+                            loc.y,
+                            row_st,
+                            sat_st,
+                            r.epp.x,
+                            r.ppe.x,
+                            r.ppe.y,
+                            layer.band_entry,
+                            layer.band_max_h,
+                            layer.band_max_v,
+                            layer.fill_rule,
+                        ));
+                        return s_self.applyCoverageTransfer(evalGlyphCoverageBandSpanRowH(
+                            p,
+                            loc.x,
+                            loc.y,
+                            row_st,
+                            r.epp.x,
+                            r.ppe.x,
+                            r.ppe.y,
+                            layer.band_entry,
+                            layer.band_max_h,
+                            layer.band_max_v,
+                            layer.fill_rule,
+                        ));
+                    }
+                };
+                const n_probes: u32 = 8;
+                var probe_col: [n_probes]u32 = undefined;
+                var probe_loc: [n_probes]Vec2 = undefined;
+                var probe_fill: [n_probes]f32 = undefined;
+                var probe_stroke: [n_probes]f32 = undefined;
+                // Inset probes by 2 pixels: at the bbox's first / last
+                // pixel the fill itself has partial AA (rect's left /
+                // right edge), so probing there fails `all_fills_full`
+                // even on a clean axis-aligned card. The per-pixel loop
+                // still handles those edge pixels correctly.
+                const inset: u32 = 2;
+                if (raster.x1 < raster.x0 + 2 * inset + n_probes) break :no_fp;
+                const inset_start = raster.x0 + inset;
+                const span = raster.x1 - raster.x0 - 1 - 2 * inset;
+                inline for (0..n_probes) |i| {
+                    const col_off: u32 = @intCast((@as(u64, span) * i) / (n_probes - 1));
+                    probe_col[i] = inset_start + col_off;
+                    probe_loc[i] = raster.inverse.applyPoint(.{
+                        .x = @as(f32, @floatFromInt(probe_col[i])) + 0.5,
+                        .y = @as(f32, @floatFromInt(row)) + 0.5,
+                    });
+                    probe_fill[i] = ProbeFn.cov(self, page, probe_loc[i], &fill_state, &fill_sat, raster, fill_layer, sat_state_ready);
+                    probe_stroke[i] = ProbeFn.cov(self, page, probe_loc[i], &stroke_state, &stroke_sat, raster, stroke_layer, sat_state_ready);
+                }
+                const full_thresh: f32 = 1.0 - 1.0e-4;
+                const empty_thresh: f32 = 1.0e-4;
+                var all_fills_full = true;
+                for (probe_fill) |f| {
+                    if (f < full_thresh) {
+                        all_fills_full = false;
+                        break;
+                    }
+                }
+                if (all_fills_full) {
+                    // Find the first and last probes with stroke ~ 0.
+                    var first_zero: ?u32 = null;
+                    var last_zero: ?u32 = null;
+                    for (probe_stroke, 0..) |s, i| {
+                        if (s <= empty_thresh) {
+                            if (first_zero == null) first_zero = @intCast(i);
+                            last_zero = @intCast(i);
+                        }
+                    }
+                    if (first_zero != null and last_zero != null and first_zero.? < last_zero.?) {
+                        // Verify the run between first_zero and last_zero is
+                        // all stroke≈0; if any probe in that interval has
+                        // stroke>0, the pattern doesn't match the simple
+                        // "stroke at edges" model and falling through to
+                        // per-pixel is safer.
+                        var run_clean = true;
+                        var k: usize = first_zero.?;
+                        while (k <= last_zero.?) : (k += 1) {
+                            if (probe_stroke[k] > empty_thresh) {
+                                run_clean = false;
+                                break;
+                            }
+                        }
+                        if (run_clean) {
+                            fp_active = true;
+                            fp_start = probe_col[first_zero.?];
+                            fp_end_excl = probe_col[last_zero.?] + 1;
+                        }
+                    }
+                }
+            }
+
+            // If a fast-path range was detected for this row, handle it
+            // up front as a single batch (memset for solid+opaque, a
+            // tight per-pixel blend loop for gradients/images). The
+            // per-pixel loop below then `continue`s over those columns.
+            if (fp_active) {
+                const cov = self.applyCoverageTransfer(1.0);
+                if (cov >= one_lsb_8bit) {
+                    if (!self.tryFillRowSolidOpaque(row, fp_start, fp_end_excl, fill_program, tint)) {
+                        var c: u32 = fp_start;
+                        var local_at = raster.inverse.applyPoint(.{
+                            .x = @as(f32, @floatFromInt(c)) + 0.5,
+                            .y = @as(f32, @floatFromInt(row)) + 0.5,
+                        });
+                        while (c < fp_end_excl) : (advanceLocalPixel(&c, &local_at, raster.sample_dx)) {
+                            const fill = fill_program.sample(local_at);
+                            self.blendPremultipliedPixel(row, c, premultiplyCoverage(multiplyLinearColor(fill.color, tint), cov), false);
+                        }
+                    }
+                }
+            }
+
             while (col < raster.x1) : (advanceLocalPixel(&col, &local, raster.sample_dx)) {
+                if (fp_active and col >= fp_start and col < fp_end_excl) continue;
                 const fill_cov = if (sat_state_ready)
                     self.applyCoverageTransfer(evalGlyphCoverageSaturatedRowH(
                         page,
@@ -1187,6 +1361,7 @@ pub const CpuRenderer = struct {
         const band_max_v = layer.band_max_v;
         const paint_program = layer.paint;
 
+
         const axis_aligned = @abs(raster.sample_dx.y) < 1e-9;
         const subpixel_rgb = raster.use_subpixel and (self.subpixel_order == .rgb or self.subpixel_order == .bgr) and raster.subpixel_plan.step.y == 0.0;
         // Subpixel path uses single-band evalGlyphCoverageSubpixel internally,
@@ -1220,7 +1395,111 @@ pub const CpuRenderer = struct {
                 break :blk sat_state.valid;
             };
 
+            // Row-uniformity fast path — same shape as the one in
+            // `renderTransformedGlyphMaybeHinted`, see that comment for the
+            // h_uniform/three-probe argument. Targets the banner background
+            // fill (single-layer rect, ~30% of pass0 at 4K): interior rows
+            // have only vertical-line H-band curves, all of which carry
+            // zero signed contribution at any Y, so probing first/mid/last
+            // is enough to confirm a fully-covered row and skip the
+            // per-pixel coverage evaluation.
+            // Gate on "≤ 2 H-band curves contribute signed coverage":
+            // matches axis-aligned rect / rounded-rect interior rows
+            // (their two vertical edges, opposite signs), excludes
+            // glyph / curved-path rows (typically 5+ contributing
+            // curves, where the 3-sample probe is unsafe — disjoint
+            // strokes can land all three probes in solid sections while
+            // skipping a hole between them). A naive
+            // `rowStateHasNoSignedContribution` gate ("verticals don't
+            // contribute") was inverted: vertical lines have a_root =
+            // dy ≠ 0 so they DO produce signed crossings, which is
+            // exactly what makes the rect's coverage well-defined.
+            const fp_contrib = if (row_state_ready) rowStateSignedContributionCount(row_state) else 0;
+            // Both gates required:
+            //   state.count <= 3 excludes complex shapes (glyphs with
+            //     6-30 curves per band, snail-illustration body rows
+            //     with multiple disjoint inside regions);
+            //   contributing <= 2 confirms the row has at most one
+            //     "outside → inside" and one "inside → outside"
+            //     transition along X — the rect/rounded-rect interior
+            //     pattern the probes are designed for.
+            // For axis-aligned rects at fractional scene-Y the band-span
+            // walk and the `isBandSpanOwner` dedup still give
+            // count == 2, so this gate covers both pan'd and stationary
+            // rects.
+            const fast_eligible = !raster.use_subpixel and row_state_ready and
+                row_state.count <= 3 and fp_contrib <= 2;
+            // Insert a 2-pixel safety margin: at the row's first / last
+            // pixel the rect's vertical edge sits within the pixel
+            // footprint, so AA gives partial coverage there. Probing one
+            // pixel deeper guarantees deep-interior pixels for any
+            // axis-aligned shape, while leaving the edge pixels for the
+            // per-pixel loop to handle correctly.
+            const inset: u32 = 2;
+            var fp_start: u32 = raster.x1; // default: no fast-path range
+            var fp_end_excl: u32 = raster.x1;
+            if (fast_eligible and raster.x1 >= raster.x0 + 2 * inset + 2) {
+                const probe_first: u32 = raster.x0 + inset;
+                const probe_last: u32 = raster.x1 - 1 - inset;
+                const probe_mid: u32 = probe_first + (probe_last - probe_first) / 2;
+                const loc_pf = raster.inverse.applyPoint(.{
+                    .x = @as(f32, @floatFromInt(probe_first)) + 0.5,
+                    .y = @as(f32, @floatFromInt(row)) + 0.5,
+                });
+                const loc_pm = raster.inverse.applyPoint(.{
+                    .x = @as(f32, @floatFromInt(probe_mid)) + 0.5,
+                    .y = @as(f32, @floatFromInt(row)) + 0.5,
+                });
+                const loc_pl = raster.inverse.applyPoint(.{
+                    .x = @as(f32, @floatFromInt(probe_last)) + 0.5,
+                    .y = @as(f32, @floatFromInt(row)) + 0.5,
+                });
+                const probe = struct {
+                    fn cov(
+                        p: anytype,
+                        loc: Vec2,
+                        row_st: *const RowHorizState,
+                        sat_st: *const SaturatedRowState,
+                        r: PathRasterState,
+                        b_e: GlyphBandEntry,
+                        bmh: i32,
+                        bmv: i32,
+                        fill_rule: FillRule,
+                        sat_ready: bool,
+                        row_ready: bool,
+                    ) f32 {
+                        if (sat_ready) return evalGlyphCoverageSaturatedRowH(p, loc.x, loc.y, row_st, sat_st, r.epp.x, r.ppe.x, r.ppe.y, b_e, bmh, bmv, fill_rule);
+                        if (row_ready) return evalGlyphCoverageBandSpanRowH(p, loc.x, loc.y, row_st, r.epp.x, r.ppe.x, r.ppe.y, b_e, bmh, bmv, fill_rule);
+                        return evalGlyphCoverageBandSpan(p, loc.x, loc.y, r.epp.x, r.epp.y, r.ppe.x, r.ppe.y, b_e, bmh, bmv, fill_rule);
+                    }
+                }.cov;
+                const cov_first = probe(page, loc_pf, &row_state, &sat_state, raster, be, band_max_h, band_max_v, layer.fill_rule, sat_state_ready, row_state_ready);
+                const cov_mid = probe(page, loc_pm, &row_state, &sat_state, raster, be, band_max_h, band_max_v, layer.fill_rule, sat_state_ready, row_state_ready);
+                const cov_last = probe(page, loc_pl, &row_state, &sat_state, raster, be, band_max_h, band_max_v, layer.fill_rule, sat_state_ready, row_state_ready);
+                const full_thresh: f32 = 1.0 - 1.0e-4;
+                if (cov_first >= full_thresh and cov_mid >= full_thresh and cov_last >= full_thresh) {
+                    const cov = self.applyCoverageTransfer(1.0);
+                    if (cov >= one_lsb_8bit) {
+                        fp_start = probe_first;
+                        fp_end_excl = probe_last + 1;
+                        if (self.tryFillRowSolidOpaque(row, fp_start, fp_end_excl, paint_program, tint)) {
+                            // Fast-path-of-the-fast-path: solid + opaque +
+                            // cov == 1 collapses the blend to a u32 memset.
+                        } else {
+                            var c: u32 = fp_start;
+                            var local_at = loc_pf;
+                            while (c < fp_end_excl) : (advanceLocalPixel(&c, &local_at, raster.sample_dx)) {
+                                var paint = paint_program.sample(local_at);
+                                paint.color = multiplyLinearColor(paint.color, tint);
+                                self.blendPremultipliedPixel(row, c, premultiplyCoverage(paint.color, cov), paint.apply_dither);
+                            }
+                        }
+                    }
+                }
+            }
+
             while (col < raster.x1) : (advanceLocalPixel(&col, &local, raster.sample_dx)) {
+                if (col >= fp_start and col < fp_end_excl) continue;
                 if (!raster.use_subpixel) {
                     const raw_cov = if (sat_state_ready)
                         evalGlyphCoverageSaturatedRowH(page, local.x, local.y, &row_state, &sat_state, raster.epp.x, raster.ppe.x, raster.ppe.y, be, band_max_h, band_max_v, layer.fill_rule)
@@ -1346,6 +1625,83 @@ pub const CpuRenderer = struct {
                 break :blk row_state.valid;
             };
 
+            // Row-uniformity fast path.
+            //
+            // Slug coverage = resolveCoverage(H, V). When every curve in
+            // this row's H-band has zero signed contribution at this row
+            // (vertical lines, or curves whose root-hull misses the row
+            // entirely), the H half is constant across the row's X. Any
+            // remaining per-pixel variation comes only from the V-band —
+            // which for axis-aligned fills changes only at the path's
+            // left/right extent. So three probes at the row's first /
+            // middle / last pixel suffice:
+            //
+            //   * all ~1.0  → row's interior is fully covered. Fill with
+            //                 the premultiplied color, skipping the
+            //                 ~30 ns/px of curve solves the per-pixel
+            //                 loop would otherwise spend.
+            //   * all ~0.0  → row is entirely outside the path. Skip it.
+            //   * mixed     → fall through to the per-pixel loop.
+            //
+            // The `h_uniform` gate is what makes three samples safe:
+            // without it, a glyph with holes (O, P, R) could land all
+            // three probes on "inside" pixels with the hole between them
+            // staying uncovered. With the H-band carrying no per-X
+            // variation, that ambiguity can't happen — any X-variation
+            // in coverage comes from the V-band, which for the targets
+            // of this fast path (big axis-aligned fills) has at most one
+            // left→inside and one inside→right transition across the
+            // row's X-extent.
+            //
+            // Targets the seven big offenders on the banner: background
+            // fill + six card fills are axis-aligned rect / rounded-rect
+            // paths whose interior rows have only vertical-line curves
+            // in the H-band — those contribute nothing to row-level H.
+            const h_uniform = row_state_ready and rowStateHasNoSignedContribution(row_state);
+            const fast_row_eligible =
+                grayscale_path and
+                h_uniform and
+                hint_record == null and
+                @as(u32, @intCast(px1)) > @as(u32, @intCast(px0)) + 2;
+            if (fast_row_eligible) {
+                const px_first: u32 = @intCast(px0);
+                const px_last: u32 = @as(u32, @intCast(px1)) - 1;
+                const px_mid: u32 = px_first + (px_last - px_first) / 2;
+                const loc_first = display_local;
+                const loc_mid = inverse.applyPoint(.{
+                    .x = @as(f32, @floatFromInt(px_mid)) + 0.5,
+                    .y = @as(f32, @floatFromInt(row)) + 0.5,
+                });
+                const loc_last = inverse.applyPoint(.{
+                    .x = @as(f32, @floatFromInt(px_last)) + 0.5,
+                    .y = @as(f32, @floatFromInt(row)) + 0.5,
+                });
+                const cov_first = evalGlyphCoverageRowH(page, loc_first.x, loc_first.y, &row_state, ppe.x, ppe.y, be, band_max_h, band_max_v, .non_zero);
+                const cov_mid = evalGlyphCoverageRowH(page, loc_mid.x, loc_mid.y, &row_state, ppe.x, ppe.y, be, band_max_h, band_max_v, .non_zero);
+                const cov_last = evalGlyphCoverageRowH(page, loc_last.x, loc_last.y, &row_state, ppe.x, ppe.y, be, band_max_h, band_max_v, .non_zero);
+                // Only the all-full branch is safe under `h_uniform`
+                // alone. An all-empty branch would mis-classify rows
+                // whose three probes coincidentally land in
+                // outside-stroke gaps (e.g. between the verticals of
+                // "H" or "N") even though pixels between the probes
+                // sit inside a stroke. The per-pixel loop's existing
+                // `cov < one_lsb_8bit` check still skips empty pixels
+                // individually, so dropping the row-skip costs nothing
+                // beyond a missed micro-optimization.
+                const full_thresh: f32 = 1.0 - 1.0e-4;
+                if (cov_first >= full_thresh and cov_mid >= full_thresh and cov_last >= full_thresh) {
+                    const cov = self.applyCoverageTransfer(1.0);
+                    if (cov >= one_lsb_8bit) {
+                        const premul = premultiplyCoverage(color, cov);
+                        var c: u32 = px_first;
+                        while (c <= px_last) : (c += 1) {
+                            self.blendPremultipliedPixel(row, c, premul, false);
+                        }
+                    }
+                    continue;
+                }
+            }
+
             while (col < @as(u32, @intCast(px1))) : (advanceLocalPixel(&col, &display_local, sample_dx)) {
                 if (!allow_subpixel or self.subpixel_order == .none) {
                     // Text/hinted glyphs from fonts use non-zero winding by convention.
@@ -1386,6 +1742,90 @@ pub const CpuRenderer = struct {
                 }
             }
         }
+    }
+
+    /// Helper for the row-uniformity fast paths: returns true when no
+    /// curve in this row's H-band contributes signed X-axis coverage at
+    /// the row's Y (e.g. all entries are vertical lines, or all curves
+    /// in the band miss the row entirely). When true, per-pixel
+    /// variation in the row's coverage can come only from the V-band,
+    /// which for axis-aligned fills changes only at the path's left /
+    /// right extents — so a small set of probes is enough to confirm
+    /// uniformity. See `renderTransformedGlyphMaybeHinted` for the call
+    /// site (the path-namespace renderers use the contribution-count
+    /// helper below instead, since axis-aligned rects DO have signed
+    /// vertical-edge contributions).
+    inline fn rowStateHasNoSignedContribution(state: RowHorizState) bool {
+        var c: usize = 0;
+        while (c < state.count) : (c += 1) {
+            const e = state.curves[c];
+            if (e.sign[0] != 0.0 or e.sign[1] != 0.0 or e.sign[2] != 0.0) return false;
+        }
+        return true;
+    }
+
+    /// Helper for the path-namespace row-uniformity fast paths: counts
+    /// curves in this row's H-band that contribute *any* signed X-axis
+    /// crossing. An axis-aligned rect interior row has exactly 2 (its
+    /// two vertical edges, sloping in opposite directions); a
+    /// rounded-rect interior row between corners has the same; a corner
+    /// row adds the corner curves; a glyph row easily has 5+ contributing
+    /// curves. Gating on `count <= 2` lets through the axis-aligned
+    /// rect / rounded-rect shapes the fast path targets while excluding
+    /// the complex / glyph paths whose interior pixels can't be inferred
+    /// from a small probe.
+    inline fn rowStateSignedContributionCount(state: RowHorizState) usize {
+        var n: usize = 0;
+        var c: usize = 0;
+        while (c < state.count) : (c += 1) {
+            const e = state.curves[c];
+            if (e.sign[0] != 0.0 or e.sign[1] != 0.0 or e.sign[2] != 0.0) n += 1;
+        }
+        return n;
+    }
+
+    /// Fill row pixels `[col_start, col_end_excl)` with `paint`'s solid
+    /// color via `@memset`, IF the inputs collapse to "write the same
+    /// 4 bytes everywhere":
+    ///   * `paint.kind == .solid` (paint sample is constant across X)
+    ///   * `linear_resolve_active == false` (the resolve pass writes
+    ///     fp16, not u8 — the memset would corrupt it)
+    ///   * the source after tint multiply has alpha ≈ 1 (opaque, so
+    ///     blendPremultipliedPixel's fast path is just "write src")
+    /// Returns true when the memset ran; false when the caller must
+    /// fall back to per-pixel blending (gradient/image paints; partial
+    /// alpha; linear-resolve mode).
+    ///
+    /// Targets the demo's banner background + card fills, which are
+    /// the dominant cost in `pass0` even after the row-uniformity
+    /// fast path skipped their coverage solves: each remaining pixel
+    /// was still doing a linear→sRGB conversion + byte writes. This
+    /// collapses the loop to a u32 memset — same shape as the
+    /// framebuffer clear, which runs at memory bandwidth.
+    fn tryFillRowSolidOpaque(
+        self: *CpuRenderer,
+        row: u32,
+        col_start: u32,
+        col_end_excl: u32,
+        paint: PreparedPathPaint,
+        tint: [4]f32,
+    ) bool {
+        if (paint.kind != .solid) return false;
+        if (self.linear_resolve_active) return false;
+        const linear = multiplyLinearColor(paint.color0, tint);
+        if (linear[3] < 1.0 - 1.0e-4) return false;
+        const bytes = cpu_blend.opaqueLinearBytesForTarget(
+            self.blendTarget(),
+            .{ linear[0], linear[1], linear[2] },
+        );
+        const word: u32 = @as(u32, bytes[0])
+            | (@as(u32, bytes[1]) << 8)
+            | (@as(u32, bytes[2]) << 16)
+            | (@as(u32, bytes[3]) << 24);
+        const offset = @as(usize, row) * self.stride + @as(usize, col_start) * 4;
+        const dst_u32: [*]u32 = @ptrCast(@alignCast(self.pixels + offset));
+        @memset(dst_u32[0..(col_end_excl - col_start)], word);
+        return true;
     }
 
     inline fn blendTarget(self: *CpuRenderer) cpu_blend.Target {
