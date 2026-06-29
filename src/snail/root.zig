@@ -64,20 +64,9 @@ pub const SubpixelOrder = target.SubpixelOrder;
 pub const ColorEncoding = target.ColorEncoding;
 pub const TargetEncoding = target.TargetEncoding;
 pub const PixelRect = target.PixelRect;
-pub const ResolveRegion = target.ResolveRegion;
-pub const ResolveBackdrop = target.ResolveBackdrop;
-pub const IntermediateFormat = target.IntermediateFormat;
 pub const LinearResolve = target.LinearResolve;
 pub const DrawResolve = target.DrawResolve;
 pub const CoverageTransfer = target.CoverageTransfer;
-pub const SnapRule = target.SnapRule;
-pub const pixelStep = target.pixelStep;
-pub const pixelSteps = target.pixelSteps;
-pub const snapToStep = target.snapToStep;
-pub const snapDeltaToStep = target.snapDeltaToStep;
-pub const snapLengthToStep = target.snapLengthToStep;
-pub const snapPointToStep = target.snapPointToStep;
-pub const snapRectToStep = target.snapRectToStep;
 pub const mvpToScenePixel = target.mvpToScenePixel;
 pub const TargetSurface = target.TargetSurface;
 pub const RasterOptions = target.RasterOptions;
@@ -152,7 +141,7 @@ pub const Gles30BackendCache = @import("render/backend/gl/backend_cache.zig").Gl
 pub const VulkanBackendCache = @import("render/backend/vulkan/backend_cache.zig").VulkanBackendCache;
 pub const VulkanBackendCachePipelineShape = @import("render/backend/vulkan/backend_cache.zig").PipelineShape;
 
-pub const paths = @import("paths.zig");
+pub const Path = @import("path.zig").Path;
 pub const coverage = @import("coverage.zig");
 pub const snap = @import("snap.zig");
 
@@ -176,6 +165,7 @@ test {
     _ = @import("atlas/page.zig");
     _ = @import("atlas/page_pool.zig");
     _ = atlas_mod;
+    _ = @import("path.zig");
     _ = @import("paths.zig");
     _ = @import("font/hint_vm.zig");
     _ = @import("text/faces.zig");

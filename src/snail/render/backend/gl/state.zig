@@ -14,7 +14,7 @@ const vertex = @import("../../format/vertex.zig");
 const snail_mod = @import("../../../root.zig");
 const SubpixelOrder = @import("../../format/subpixel_order.zig").SubpixelOrder;
 const LinearResolve = snail_mod.LinearResolve;
-const IntermediateFormat = snail_mod.IntermediateFormat;
+const IntermediateFormat = LinearResolve.Format;
 const DrawState = snail_mod.DrawState;
 const TargetSurface = snail_mod.TargetSurface;
 

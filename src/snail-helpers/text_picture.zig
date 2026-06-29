@@ -41,6 +41,9 @@ pub const ShapedRunOptions = struct {
 
 pub const ShapedRunError = error{
     /// A glyph references a `face_index` outside the `Faces` value.
+    /// Only the COLR-fanout path can raise this — the non-COLR and
+    /// hinted paths read `g.font_id` and never dereference `face_index`,
+    /// so a forged index passes through them harmlessly.
     UnknownFaceIndex,
 } || std.mem.Allocator.Error;
 
@@ -57,20 +60,21 @@ pub fn shapedRunPicture(
     // Fast path: no COLR expansion. Every glyph becomes exactly one
     // shape. Allocate the final buffer directly at the right size and
     // hand it off to Picture — no ArrayList growth, no Picture.from
-    // alloc+memcpy.
+    // alloc+memcpy. `face_index` is not read here; only `font_id`
+    // (already resolved by `shape()`) and `glyph_id` matter.
     if (!options.colr) {
         const buf = try allocator.alloc(Shape, shaped.glyphs.len);
         errdefer allocator.free(buf);
         for (shaped.glyphs, 0..) |g, i| {
-            const fi: usize = @intCast(g.face_index);
-            if (fi >= faces.faceCount()) return error.UnknownFaceIndex;
             buf[i] = makeShape(g, options, g.font_id, g.glyph_id, options.color);
         }
         return Picture.fromOwnedSlice(allocator, buf);
     }
 
     // COLR-capable slow path: shape count varies per glyph. Pre-size to
-    // glyph count and let it grow when a glyph fans out.
+    // glyph count and let it grow when a glyph fans out. `face_index`
+    // is dereferenced here to find the COLR layer table, so an
+    // out-of-range value is caught explicitly.
     var shapes: std.ArrayList(Shape) = .empty;
     defer shapes.deinit(allocator);
     try shapes.ensureTotalCapacity(allocator, shaped.glyphs.len);
@@ -155,12 +159,13 @@ pub const HintedShapedRunOptions = struct {
 pub fn hintedShapedRunPicture(
     allocator: std.mem.Allocator,
     shaped: *const ShapedText,
-    faces: *const Faces,
     options: HintedShapedRunOptions,
-) ShapedRunError!Picture {
+) std.mem.Allocator.Error!Picture {
     // Hinted text never fans out — one shape per glyph. Allocate the
     // final buffer directly at the right size, same pattern as the
-    // non-COLR `shapedRunPicture` fast path.
+    // non-COLR `shapedRunPicture` fast path. No `Faces` is needed:
+    // hinted runs key off `(g.font_id, g.glyph_id, ppem)` and never
+    // dereference `face_index`.
     const ppem_26_6 = options.ppem_26_6;
     const ppem_px = @as(f32, @floatFromInt(ppem_26_6)) / 64.0;
     const scale: f32 = if (ppem_px > 0.0) options.em / ppem_px else 1.0;
@@ -169,8 +174,6 @@ pub fn hintedShapedRunPicture(
     errdefer allocator.free(buf);
 
     for (shaped.glyphs, 0..) |g, i| {
-        const fi: usize = @intCast(g.face_index);
-        if (fi >= faces.faceCount()) return error.UnknownFaceIndex;
         const font_id = g.font_id;
         const pen_x = options.baseline.x + options.em * g.x_offset;
         const pen_y = options.baseline.y + options.em * g.y_offset;
@@ -240,7 +243,7 @@ test "hintedShapedRunPicture builds shapes for hinted glyph keys" {
     try testing.expect(shaped.glyphs.len == 2);
 
     const expected_ppem: u32 = @intFromFloat(@round(14.0 * 64.0));
-    var pic = try hintedShapedRunPicture(allocator, &shaped, &faces, .{
+    var pic = try hintedShapedRunPicture(allocator, &shaped, .{
         .baseline = .{ .x = 5, .y = 32 },
         .em = 14,
         .ppem_26_6 = expected_ppem,
@@ -277,7 +280,7 @@ test "caller-snapped baseline propagates through hintedShapedRunPicture" {
     const snapped = snail.snap.baseline(.{ .x = 10, .y = 20 }, w2p);
 
     const ppem: u32 = @intFromFloat(@round(14.0 * 64.0));
-    var pic = try hintedShapedRunPicture(allocator, &shaped, &faces, .{
+    var pic = try hintedShapedRunPicture(allocator, &shaped, .{
         .baseline = snapped,
         .em = 14,
         .ppem_26_6 = ppem,
@@ -296,13 +299,16 @@ test "caller-snapped baseline propagates through hintedShapedRunPicture" {
     try testing.expectApproxEqAbs(expected_delta, delta_x, 1e-4);
 }
 
-test "shapedRunPicture rejects unknown face_index" {
+test "shapedRunPicture rejects unknown face_index on COLR fanout" {
     const allocator = testing.allocator;
     const font_data = @import("assets").noto_sans_regular;
     var font = try Font.init(font_data);
     var faces = try Faces.build(allocator, &.{.{ .font = &font }});
     defer faces.deinit();
 
+    // COLR is the only path that dereferences face_index; the
+    // non-COLR fast path and `hintedShapedRunPicture` read only
+    // `font_id` + `glyph_id` and let forged indices pass through.
     var fake_glyphs = [_]ShapedText.Glyph{.{
         .face_index = 5,
         .glyph_id = 0,
@@ -320,5 +326,6 @@ test "shapedRunPicture rejects unknown face_index" {
     try testing.expectError(error.UnknownFaceIndex, shapedRunPicture(allocator, &shaped, &faces, .{
         .baseline = .{ .x = 0, .y = 0 },
         .em = 16,
+        .colr = true,
     }));
 }

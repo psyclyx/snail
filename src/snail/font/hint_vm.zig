@@ -24,6 +24,13 @@
 //! keyed by `(ppem, glyph_id)` — is *not* in core. It lives in
 //! `helpers.HintedGlyphCache`, which wraps `HintVm` and supplies the
 //! `AdvanceProvider` closure for shape-time advance lookups.
+//!
+//! Thread safety: not thread-safe. `hintGlyph` / `hintedAdvance` /
+//! `warmPpem` mutate the per-ppem machine cache on the read path, and
+//! `evictPpem` / `clear` / `deinit` drop slots concurrent callers may
+//! still be inside. Construct one `HintVm` per thread that needs hinting;
+//! immutable snapshots between threads are not supported. The TT VM
+//! itself does not block on I/O, so per-thread instances scale linearly.
 
 const std = @import("std");
 const tt_vm = @import("truetype/vm.zig");

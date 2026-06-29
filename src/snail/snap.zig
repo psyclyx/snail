@@ -20,6 +20,75 @@ const math = @import("math/vec.zig");
 
 const Transform2D = math.Transform2D;
 const Vec2 = math.Vec2;
+const Rect = @import("target.zig").Rect;
+
+/// Rounding rule for scalar pixel-grid snaps. Used by `snapToStep`.
+pub const Rule = enum {
+    floor,
+    nearest,
+    ceil,
+};
+
+/// Logical-units per pixel along one axis: `logical_size / pixel_size`.
+/// Returns 1.0 if either input is zero, so callers can plumb this
+/// through degenerate frames without branching.
+pub fn pixelStep(logical_size: f32, pixel_size: u32) f32 {
+    if (logical_size <= 0.0 or pixel_size == 0) return 1.0;
+    return logical_size / @as(f32, @floatFromInt(pixel_size));
+}
+
+/// Per-axis `pixelStep` over a 2-vector of logical/pixel dims.
+pub fn pixelSteps(logical_size: [2]f32, pixel_size: [2]u32) Vec2 {
+    return .{
+        .x = pixelStep(logical_size[0], pixel_size[0]),
+        .y = pixelStep(logical_size[1], pixel_size[1]),
+    };
+}
+
+/// Snap `value` to the nearest multiple of `step` under `rule`. NaN /
+/// infinite / non-positive `step` round-trips `value` unchanged.
+pub fn snapToStep(value: f32, step: f32, rule: Rule) f32 {
+    if (!std.math.isFinite(value) or !std.math.isFinite(step) or step <= 0.0) return value;
+    const scaled = value / step;
+    const snapped = switch (rule) {
+        .floor => @floor(scaled),
+        .nearest => @round(scaled),
+        .ceil => @ceil(scaled),
+    };
+    return snapped * step;
+}
+
+/// Delta added to `value` by `snapToStep(value, step, rule)`.
+pub fn snapDeltaToStep(value: f32, step: f32, rule: Rule) f32 {
+    return snapToStep(value, step, rule) - value;
+}
+
+/// Snap `value` and clamp the result to at least `min_steps * step`.
+/// Useful for stroke widths / row heights where shrinking past a minimum
+/// reads as "disappear."
+pub fn snapLengthToStep(value: f32, step: f32, rule: Rule, min_steps: f32) f32 {
+    const snapped = snapToStep(value, step, rule);
+    if (!std.math.isFinite(step) or step <= 0.0) return snapped;
+    return @max(snapped, @max(min_steps, 0.0) * step);
+}
+
+pub fn snapPointToStep(point: Vec2, step: Vec2, rule: Rule) Vec2 {
+    return .{
+        .x = snapToStep(point.x, step.x, rule),
+        .y = snapToStep(point.y, step.y, rule),
+    };
+}
+
+pub fn snapRectToStep(rect: Rect, step: Vec2, rule: Rule) Rect {
+    const min = snapPointToStep(.{ .x = rect.x, .y = rect.y }, step, rule);
+    const max = snapPointToStep(.{ .x = rect.x + rect.w, .y = rect.y + rect.h }, step, rule);
+    return .{
+        .x = min.x,
+        .y = min.y,
+        .w = @max(max.x - min.x, 0.0),
+        .h = @max(max.y - min.y, 0.0),
+    };
+}
 
 /// Round `point` so that its screen-space Y lands on an integer pixel,
 /// preserving the screen-space X. Use this for shaped-text run baselines

@@ -136,8 +136,8 @@ const PassBuilder = struct {
         self.text_shapes.deinit(self.allocator);
     }
 
-    fn addFilledPath(self: *PassBuilder, path: *const snail.paths.Path, paint: snail.Paint) !void {
-        const curves = try snail.paths.pathToCurves(self.allocator, self.allocator, path);
+    fn addFilledPath(self: *PassBuilder, path: *const snail.Path, paint: snail.Paint) !void {
+        const curves = try path.toCurves(self.allocator, self.allocator);
         if (curves.isEmpty()) {
             var owned = curves;
             owned.deinit();
@@ -158,8 +158,8 @@ const PassBuilder = struct {
         });
     }
 
-    fn addStrokedPath(self: *PassBuilder, path: *const snail.paths.Path, stroke: snail.StrokeStyle) !void {
-        const curves = try snail.paths.strokeToCurves(self.allocator, self.allocator, path, stroke);
+    fn addStrokedPath(self: *PassBuilder, path: *const snail.Path, stroke: snail.StrokeStyle) !void {
+        const curves = try path.strokeToCurves(self.allocator, self.allocator, stroke);
         if (curves.isEmpty()) {
             var owned = curves;
             owned.deinit();
@@ -182,20 +182,20 @@ const PassBuilder = struct {
 
     fn addPathFillAndInsideStroke(
         self: *PassBuilder,
-        path: *const snail.paths.Path,
+        path: *const snail.Path,
         fill: snail.Paint,
         stroke: snail.StrokeStyle,
     ) !void {
         std.debug.assert(stroke.placement == .inside);
 
-        const fill_curves = try snail.paths.pathToCurves(self.allocator, self.allocator, path);
+        const fill_curves = try path.toCurves(self.allocator, self.allocator);
         if (fill_curves.isEmpty()) {
             var owned = fill_curves;
             owned.deinit();
             try self.addStrokedPath(path, stroke);
             return;
         }
-        const stroke_curves = try snail.paths.strokeToCurves(self.allocator, self.allocator, path, stroke);
+        const stroke_curves = try path.strokeToCurves(self.allocator, self.allocator, stroke);
         if (stroke_curves.isEmpty()) {
             try self.path_curves_owned.append(self.allocator, fill_curves);
             const key = snail.RecordKey{ .namespace = snail.ns.path_fill, .a = self.next_path_id };
@@ -248,14 +248,14 @@ const PassBuilder = struct {
         stroke: snail.StrokeStyle,
         radius: f32,
     ) !void {
-        var p = snail.paths.Path.init(self.allocator);
+        var p = snail.Path.init(self.allocator);
         defer p.deinit();
         try p.addRoundedRect(rect, radius);
         try self.addPathFillAndInsideStroke(&p, fill, stroke);
     }
 
     fn addFilledRect(self: *PassBuilder, rect: snail.Rect, paint: snail.Paint) !void {
-        var p = snail.paths.Path.init(self.allocator);
+        var p = snail.Path.init(self.allocator);
         defer p.deinit();
         try p.addRect(rect);
         try self.addFilledPath(&p, paint);

@@ -342,10 +342,10 @@ const SceneBuild = struct {
 /// Add a stroked + filled rounded rect or ellipse to a SceneBuild.
 fn addFilledPath(
     self: *SceneBuild,
-    path: *const snail.paths.Path,
+    path: *const snail.Path,
     paint: snail.Paint,
 ) !void {
-    const curves = try snail.paths.pathToCurves(self.allocator, self.scratch(), path);
+    const curves = try path.toCurves(self.allocator, self.scratch());
     self.resetScratch();
     if (curves.isEmpty()) {
         var owned = curves;
@@ -369,10 +369,10 @@ fn addFilledPath(
 
 fn addStrokedPath(
     self: *SceneBuild,
-    path: *const snail.paths.Path,
+    path: *const snail.Path,
     stroke: snail.StrokeStyle,
 ) !void {
-    const curves = try snail.paths.strokeToCurves(self.allocator, self.scratch(), path, stroke);
+    const curves = try path.strokeToCurves(self.allocator, self.scratch(), stroke);
     self.resetScratch();
     if (curves.isEmpty()) {
         var owned = curves;
@@ -471,21 +471,21 @@ fn buildVectorBuild(allocator: std.mem.Allocator, pool: *snail.PagePool) !SceneB
 
             switch ((row + col) % 3) {
                 0 => {
-                    var p = snail.paths.Path.init(allocator);
+                    var p = snail.Path.init(allocator);
                     defer p.deinit();
                     try p.addRoundedRect(.{ .x = x, .y = y, .w = 72, .h = 44 }, 10);
                     try addFilledPath(&build, &p, fill);
                     try addStrokedPath(&build, &p, stroke);
                 },
                 1 => {
-                    var p = snail.paths.Path.init(allocator);
+                    var p = snail.Path.init(allocator);
                     defer p.deinit();
                     try p.addEllipse(.{ .x = x, .y = y, .w = 72, .h = 44 });
                     try addFilledPath(&build, &p, fill);
                     try addStrokedPath(&build, &p, stroke);
                 },
                 else => {
-                    var p = snail.paths.Path.init(allocator);
+                    var p = snail.Path.init(allocator);
                     defer p.deinit();
                     const scale: f32 = 0.8;
                     try p.moveTo(.{ .x = x + 0 * scale, .y = y + 32 * scale });
@@ -509,7 +509,7 @@ fn buildVectorBuild(allocator: std.mem.Allocator, pool: *snail.PagePool) !SceneB
     }
 
     {
-        var p = snail.paths.Path.init(allocator);
+        var p = snail.Path.init(allocator);
         defer p.deinit();
         try p.addRoundedRect(.{ .x = 18, .y = 314, .w = 580, .h = 28 }, 8);
         try addFilledPath(&build, &p, .{ .solid = .{ 0.08, 0.10, 0.13, 0.82 } });
@@ -614,21 +614,21 @@ fn appendVectorPathsTo(build: *SceneBuild) !void {
             };
             switch ((row + col) % 3) {
                 0 => {
-                    var p = snail.paths.Path.init(allocator);
+                    var p = snail.Path.init(allocator);
                     defer p.deinit();
                     try p.addRoundedRect(.{ .x = x, .y = y, .w = 72, .h = 44 }, 10);
                     try addFilledPath(build, &p, fill);
                     try addStrokedPath(build, &p, stroke);
                 },
                 1 => {
-                    var p = snail.paths.Path.init(allocator);
+                    var p = snail.Path.init(allocator);
                     defer p.deinit();
                     try p.addEllipse(.{ .x = x, .y = y, .w = 72, .h = 44 });
                     try addFilledPath(build, &p, fill);
                     try addStrokedPath(build, &p, stroke);
                 },
                 else => {
-                    var p = snail.paths.Path.init(allocator);
+                    var p = snail.Path.init(allocator);
                     defer p.deinit();
                     const scale: f32 = 0.8;
                     try p.moveTo(.{ .x = x + 0 * scale, .y = y + 32 * scale });
@@ -650,7 +650,7 @@ fn appendVectorPathsTo(build: *SceneBuild) !void {
             }
         }
     }
-    var p = snail.paths.Path.init(allocator);
+    var p = snail.Path.init(allocator);
     defer p.deinit();
     try p.addRoundedRect(.{ .x = 18, .y = 314, .w = 580, .h = 28 }, 8);
     try addFilledPath(build, &p, .{ .solid = .{ 0.08, 0.10, 0.13, 0.82 } });
@@ -675,7 +675,7 @@ fn addShapedLine(
         defer shaped.deinit();
         const ok = ensureHintedRunCurves(build, fonts, &shaped, ppem_26_6) catch false;
         if (ok) {
-            var pic = try snail_helpers.hintedShapedRunPicture(allocator, &shaped, &fonts.faces, .{
+            var pic = try snail_helpers.hintedShapedRunPicture(allocator, &shaped, .{
                 .baseline = .{ .x = line.x, .y = line.y },
                 .em = line.size,
                 .ppem_26_6 = ppem_26_6,
@@ -1142,7 +1142,7 @@ fn buildPicturesForPreparedLines(
     var shape_count: usize = 0;
     for (prepared.items.items) |*it| {
         if (it.hinted) {
-            var pic = try snail_helpers.hintedShapedRunPicture(allocator, &it.shaped, &prepared.fonts.faces, .{
+            var pic = try snail_helpers.hintedShapedRunPicture(allocator, &it.shaped, .{
                 .baseline = .{ .x = it.line.x, .y = it.line.y },
                 .em = it.line.size,
                 .ppem_26_6 = it.ppem_26_6,

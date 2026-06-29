@@ -185,7 +185,7 @@ pub const CpuRenderer = struct {
         self.linear_resolve_active = restore.linear_resolve_active;
     }
 
-    fn seedLinearResolveBackdrop(self: *CpuRenderer, encoding: snail.TargetEncoding, rect: snail.PixelRect, backdrop: snail.ResolveBackdrop) void {
+    fn seedLinearResolveBackdrop(self: *CpuRenderer, encoding: snail.TargetEncoding, rect: snail.PixelRect, backdrop: snail.LinearResolve.Backdrop) void {
         switch (backdrop) {
             .target, .dont_care => return,
             .transparent => self.fillResolveRect(rect, .{ 0, 0, 0, 0 }),

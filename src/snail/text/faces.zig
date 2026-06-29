@@ -14,6 +14,12 @@
 //! Per-face HB and OpenType shapers are still parsed once at `build`
 //! time and reused across `shape()` calls — that's the "owns" part of
 //! `Faces`.
+//!
+//! Thread safety: not thread-safe. The per-face HarfBuzz shapers carry
+//! HB-internal mutable state, and `shape()` configures the active
+//! sub-font per call. Construct one `Faces` per thread that calls
+//! `shape()`. The `*const Font` pointers each `Faces` borrows are
+//! parse-only and freely shareable between threads.
 
 const std = @import("std");
 const build_options = @import("build_options");

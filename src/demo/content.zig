@@ -160,10 +160,10 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
 
     // Card fill (white rounded rect).
     {
-        var p = snail.paths.Path.init(allocator);
+        var p = snail.Path.init(allocator);
         defer p.deinit();
         try p.addRoundedRect(card_rect, 12.0);
-        try path_curves_owned.append(allocator, try snail.paths.pathToCurves(allocator, allocator, &p));
+        try path_curves_owned.append(allocator, try p.toCurves(allocator, allocator));
         const key = snail.RecordKey{ .namespace = snail.ns.path_fill, .a = next_path_id };
         next_path_id += 1;
         try path_entries.append(allocator, .{
@@ -175,10 +175,10 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
     }
     // Card stroke.
     {
-        var p = snail.paths.Path.init(allocator);
+        var p = snail.Path.init(allocator);
         defer p.deinit();
         try p.addRoundedRect(card_rect, 12.0);
-        try path_curves_owned.append(allocator, try snail.paths.strokeToCurves(allocator, allocator, &p, .{
+        try path_curves_owned.append(allocator, try p.strokeToCurves(allocator, allocator, .{
             .paint = .{ .solid = .{ 0.78, 0.82, 0.88, 1.0 } },
             .width = 1.5,
         }));
@@ -287,7 +287,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
 
     // Tagline + multi-script sample row.
     var tagline_pic = if (hinted_tagline_active)
-        try snail_helpers.hintedShapedRunPicture(allocator, &shaped_tagline, &faces, .{
+        try snail_helpers.hintedShapedRunPicture(allocator, &shaped_tagline, .{
             .baseline = .{ .x = left_pad, .y = tagline_baseline },
             .em = hint_opts.hint_ppem_px,
             .ppem_26_6 = @intFromFloat(@round(hint_opts.hint_ppem_px * 64.0)),

@@ -17,8 +17,8 @@ const std = @import("std");
 const snail_mod = @import("../../root.zig");
 const gl_common = @import("gl_common.zig");
 
-const IntermediateFormat = snail_mod.IntermediateFormat;
 const LinearResolve = snail_mod.LinearResolve;
+const IntermediateFormat = LinearResolve.Format;
 const PixelRect = snail_mod.PixelRect;
 const TargetSurface = snail_mod.TargetSurface;
 const LinearResolveRestore = gl_common.LinearResolveRestore;

@@ -645,6 +645,35 @@ pub const Path = struct {
             .logical_curve_count = self.filledBandCurveCount() * 2,
         };
     }
+
+    /// Pack this path's filled outline as `GlyphCurves`. Returns an
+    /// empty value for paths with no curves or unbounded extent.
+    ///
+    /// `allocator` owns the returned `GlyphCurves`. `scratch` holds the
+    /// intermediate curve buffers (cloned segments, split-at-extrema,
+    /// quantized, band scratch). For batched callers, pass an arena as
+    /// `scratch` and reset it between calls; for one-shot callers, pass
+    /// the same allocator twice — both have the same lifetime semantics.
+    pub fn toCurves(
+        self: *const Path,
+        allocator: std.mem.Allocator,
+        scratch: std.mem.Allocator,
+    ) !@import("atlas/curves.zig").GlyphCurves {
+        return @import("paths.zig").pathToCurves(allocator, scratch, self);
+    }
+
+    /// Pack this path's stroked outline as `GlyphCurves`. Returns an
+    /// empty value if the stroke is degenerate (zero width, no
+    /// contours). See `toCurves` for the `(allocator, scratch)`
+    /// allocator convention.
+    pub fn strokeToCurves(
+        self: *const Path,
+        allocator: std.mem.Allocator,
+        scratch: std.mem.Allocator,
+        stroke: StrokeStyle,
+    ) !@import("atlas/curves.zig").GlyphCurves {
+        return @import("paths.zig").strokeToCurves(allocator, scratch, self, stroke);
+    }
 };
 
 fn appendArcSeries(path: *Path, center: Vec2, radius: f32, start_angle: f32, end_angle: f32) !void {

@@ -1,6 +1,8 @@
-//! Path-based curves producers. `pathToCurves` packs a fill; `strokeToCurves`
-//! packs the offset outline of a stroke. Both return the unified `GlyphCurves`
-//! the atlas consumes, in the same format as `Font.extractCurves`.
+//! Internal packing for `Path.toCurves` / `Path.strokeToCurves`. Not
+//! re-exported — callers reach this through the methods on `Path`, which
+//! is the public entry point. Kept in its own file so the curve/band
+//! texture format imports don't bleed into `path.zig`'s geometric
+//! surface.
 
 const std = @import("std");
 const bezier = @import("math/bezier.zig");

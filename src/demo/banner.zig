@@ -516,7 +516,7 @@ const BannerBuilder = struct {
 
         // Background
         {
-            var p = snail.paths.Path.init(sb.allocator);
+            var p = snail.Path.init(sb.allocator);
             defer p.deinit();
             try p.addRect(self.layout.canvas);
             try sb.addFilledPath(&p, .{ .solid = bg }, .identity);
@@ -532,7 +532,7 @@ const BannerBuilder = struct {
 
         // Decoration rects (underline / strikethrough) collected by text pass.
         for (self.decoration_rects.items) |rect| {
-            var p = snail.paths.Path.init(sb.allocator);
+            var p = snail.Path.init(sb.allocator);
             defer p.deinit();
             try p.addRect(rect);
             try sb.addFilledPath(&p, .{ .solid = text_color }, .identity);
@@ -561,7 +561,7 @@ const BannerBuilder = struct {
 
         // Rect
         {
-            var p = snail.paths.Path.init(sb.allocator);
+            var p = snail.Path.init(sb.allocator);
             defer p.deinit();
             try p.addRect(.{ .x = x0, .y = shapes_y, .w = sz, .h = sz });
             try sb.addPathFillAndStroke(&p, .{ .solid = .{ 0.22, 0.50, 0.88, 1.0 } }, .{
@@ -575,7 +575,7 @@ const BannerBuilder = struct {
         // Rounded rect
         const rrx = x0 + sz + gap;
         {
-            var p = snail.paths.Path.init(sb.allocator);
+            var p = snail.Path.init(sb.allocator);
             defer p.deinit();
             try p.addRoundedRect(.{ .x = rrx, .y = shapes_y, .w = sz, .h = sz }, 12 * s);
             try sb.addPathFillAndStroke(&p, .{ .solid = .{ 0.92, 0.82, 0.48, 1.0 } }, .{
@@ -598,7 +598,7 @@ const BannerBuilder = struct {
         // Custom path (leaf/diamond shape)
         const plx = x0 + (sz + gap) * 3;
         {
-            var path = snail.paths.Path.init(sb.allocator);
+            var path = snail.Path.init(sb.allocator);
             defer path.deinit();
             try path.moveTo(.{ .x = plx + sz * 0.5, .y = shapes_y });
             try path.cubicTo(
@@ -625,7 +625,7 @@ const BannerBuilder = struct {
 
         // Solid fill
         {
-            var p = snail.paths.Path.init(sb.allocator);
+            var p = snail.Path.init(sb.allocator);
             defer p.deinit();
             try p.addRoundedRect(.{ .x = x0, .y = fills_y, .w = sz, .h = sz }, 6 * s);
             try sb.addFilledPath(&p, .{ .solid = .{ 0.35, 0.72, 0.55, 1.0 } }, .identity);
@@ -634,7 +634,7 @@ const BannerBuilder = struct {
         // Linear gradient
         const lgx = x0 + sz + gap;
         {
-            var p = snail.paths.Path.init(sb.allocator);
+            var p = snail.Path.init(sb.allocator);
             defer p.deinit();
             try p.addRoundedRect(.{ .x = lgx, .y = fills_y, .w = sz, .h = sz }, 6 * s);
             try sb.addFilledPath(&p, .{ .linear_gradient = .{
@@ -648,7 +648,7 @@ const BannerBuilder = struct {
         // Radial gradient
         const rgx = x0 + (sz + gap) * 2;
         {
-            var p = snail.paths.Path.init(sb.allocator);
+            var p = snail.Path.init(sb.allocator);
             defer p.deinit();
             try p.addRoundedRect(.{ .x = rgx, .y = fills_y, .w = sz, .h = sz }, 6 * s);
             try sb.addFilledPath(&p, .{ .radial_gradient = .{
@@ -663,7 +663,7 @@ const BannerBuilder = struct {
         const imx = x0 + (sz + gap) * 3;
         const image_period = sz;
         {
-            var p = snail.paths.Path.init(sb.allocator);
+            var p = snail.Path.init(sb.allocator);
             defer p.deinit();
             try p.addRoundedRect(.{ .x = imx, .y = fills_y, .w = sz, .h = sz }, 6 * s);
             try sb.addFilledPath(&p, .{ .image = .{
@@ -681,7 +681,7 @@ const BannerBuilder = struct {
         // Stroke-only path (in shapes row, last cell)
         const stx = x0 + (sz + gap) * 4;
         {
-            var stroke_path = snail.paths.Path.init(sb.allocator);
+            var stroke_path = snail.Path.init(sb.allocator);
             defer stroke_path.deinit();
             try stroke_path.moveTo(.{ .x = stx + 4 * s, .y = shapes_y + sz * 0.7 });
             try stroke_path.cubicTo(
@@ -951,7 +951,7 @@ const BannerBuilder = struct {
         return .{
             .x = x,
             .y = y,
-            .size = snail.snapLengthToStep(size, self.snap_step.y, .nearest, 1.0),
+            .size = snail.snap.snapLengthToStep(size, self.snap_step.y, .nearest, 1.0),
         };
     }
 
@@ -1300,7 +1300,7 @@ fn addRoundedCard(
     stroke: snail.StrokeStyle,
     radius: f32,
 ) !void {
-    var p = snail.paths.Path.init(builder.allocator);
+    var p = snail.Path.init(builder.allocator);
     defer p.deinit();
     try p.addRoundedRect(rect, radius);
     try builder.addPathFillAndStroke(&p, fill, stroke, .identity);

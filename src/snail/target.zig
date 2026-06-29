@@ -42,40 +42,40 @@ pub const PixelRect = struct {
     }
 };
 
-pub const ResolveRegion = union(enum) {
-    full_target,
-    pixel_rect: PixelRect,
-
-    pub fn rect(self: ResolveRegion, width: u32, height: u32) PixelRect {
-        return switch (self) {
-            .full_target => PixelRect.full(width, height),
-            .pixel_rect => |r| r.clipped(width, height),
-        };
-    }
-};
-
-pub const ResolveBackdrop = union(enum) {
-    /// Decode the current target contents into the linear intermediate before
-    /// drawing Snail content. This is the fully general, most expensive path.
-    target,
-    /// Seed the intermediate with an sRGB straight-alpha color.
-    clear: [4]f32,
-    /// Seed the intermediate with transparent black.
-    transparent,
-    /// Leave the intermediate contents unspecified. The caller promises Snail
-    /// fully covers the resolve region.
-    dont_care,
-};
-
-pub const IntermediateFormat = enum(c_int) {
-    rgba16f = 0,
-    rgba32f = 1,
-};
-
 pub const LinearResolve = struct {
-    backdrop: ResolveBackdrop = .target,
-    region: ResolveRegion = .full_target,
-    intermediate_format: IntermediateFormat = .rgba16f,
+    backdrop: Backdrop = .target,
+    region: Region = .full_target,
+    intermediate_format: Format = .rgba16f,
+
+    pub const Region = union(enum) {
+        full_target,
+        pixel_rect: PixelRect,
+
+        pub fn rect(self: Region, width: u32, height: u32) PixelRect {
+            return switch (self) {
+                .full_target => PixelRect.full(width, height),
+                .pixel_rect => |r| r.clipped(width, height),
+            };
+        }
+    };
+
+    pub const Backdrop = union(enum) {
+        /// Decode the current target contents into the linear intermediate before
+        /// drawing Snail content. This is the fully general, most expensive path.
+        target,
+        /// Seed the intermediate with an sRGB straight-alpha color.
+        clear: [4]f32,
+        /// Seed the intermediate with transparent black.
+        transparent,
+        /// Leave the intermediate contents unspecified. The caller promises Snail
+        /// fully covers the resolve region.
+        dont_care,
+    };
+
+    pub const Format = enum(c_int) {
+        rgba16f = 0,
+        rgba32f = 1,
+    };
 };
 
 pub const DrawResolve = union(enum) {
@@ -178,63 +178,6 @@ pub const CoverageTransfer = struct {
         return std.math.pow(f32, cov, exponent);
     }
 };
-
-pub const SnapRule = enum {
-    floor,
-    nearest,
-    ceil,
-};
-
-pub fn pixelStep(logical_size: f32, pixel_size: u32) f32 {
-    if (logical_size <= 0.0 or pixel_size == 0) return 1.0;
-    return logical_size / @as(f32, @floatFromInt(pixel_size));
-}
-
-pub fn pixelSteps(logical_size: [2]f32, pixel_size: [2]u32) Vec2 {
-    return .{
-        .x = pixelStep(logical_size[0], pixel_size[0]),
-        .y = pixelStep(logical_size[1], pixel_size[1]),
-    };
-}
-
-pub fn snapToStep(value: f32, step: f32, rule: SnapRule) f32 {
-    if (!std.math.isFinite(value) or !std.math.isFinite(step) or step <= 0.0) return value;
-    const scaled = value / step;
-    const snapped = switch (rule) {
-        .floor => @floor(scaled),
-        .nearest => @round(scaled),
-        .ceil => @ceil(scaled),
-    };
-    return snapped * step;
-}
-
-pub fn snapDeltaToStep(value: f32, step: f32, rule: SnapRule) f32 {
-    return snapToStep(value, step, rule) - value;
-}
-
-pub fn snapLengthToStep(value: f32, step: f32, rule: SnapRule, min_steps: f32) f32 {
-    const snapped = snapToStep(value, step, rule);
-    if (!std.math.isFinite(step) or step <= 0.0) return snapped;
-    return @max(snapped, @max(min_steps, 0.0) * step);
-}
-
-pub fn snapPointToStep(point: Vec2, step: Vec2, rule: SnapRule) Vec2 {
-    return .{
-        .x = snapToStep(point.x, step.x, rule),
-        .y = snapToStep(point.y, step.y, rule),
-    };
-}
-
-pub fn snapRectToStep(rect: Rect, step: Vec2, rule: SnapRule) Rect {
-    const min = snapPointToStep(.{ .x = rect.x, .y = rect.y }, step, rule);
-    const max = snapPointToStep(.{ .x = rect.x + rect.w, .y = rect.y + rect.h }, step, rule);
-    return .{
-        .x = min.x,
-        .y = min.y,
-        .w = @max(max.x - min.x, 0.0),
-        .h = @max(max.y - min.y, 0.0),
-    };
-}
 
 pub fn resolveRect(surface: TargetSurface, resolve: LinearResolve) PixelRect {
     const width: u32 = @intFromFloat(@max(surface.pixel_width, 0.0));
