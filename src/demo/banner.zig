@@ -1305,10 +1305,15 @@ fn addRoundedCard(
     stroke: snail.StrokeStyle,
     radius: f32,
 ) !void {
-    var p = snail.Path.init(builder.allocator);
+    // Author the card in a unit frame (aspect-preserving) and place it with
+    // a uniform transform, so its rounded corners stay crisp regardless of
+    // where the card sits on screen. Fill/stroke here are solid, so no paint
+    // remapping is needed. The stroke width moves into unit-frame units.
+    var p = try snail_helpers.unitRoundedRectPathFor(builder.allocator, rect, radius);
     defer p.deinit();
-    try p.addRoundedRect(rect, radius);
-    try builder.addPathFillAndStroke(&p, fill, stroke, .identity);
+    var unit_stroke = stroke;
+    unit_stroke.width = snail_helpers.unitStrokeWidth(rect, stroke.width);
+    try builder.addPathFillAndStroke(&p, fill, unit_stroke, snail_helpers.placeRectUniform(rect));
 }
 
 fn containsKey(entries: []const snail.AtlasEntry, key: snail.RecordKey) bool {

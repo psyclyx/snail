@@ -33,9 +33,12 @@ pub const ShapedRunError = text_picture_mod.ShapedRunError;
 const path_shape_mod = @import("path_shape.zig");
 pub const PathShapeCache = path_shape_mod.PathShapeCache;
 pub const placeRect = path_shape_mod.placeRect;
+pub const placeRectUniform = path_shape_mod.placeRectUniform;
 pub const unitEllipsePath = path_shape_mod.unitEllipsePath;
 pub const unitRectPath = path_shape_mod.unitRectPath;
 pub const unitRoundedRectPath = path_shape_mod.unitRoundedRectPath;
+pub const unitRoundedRectPathFor = path_shape_mod.unitRoundedRectPathFor;
+pub const unitStrokeWidth = path_shape_mod.unitStrokeWidth;
 pub const pathShapeKey = path_shape_mod.key;
 
 test {

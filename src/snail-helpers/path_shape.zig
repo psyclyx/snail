@@ -41,6 +41,15 @@ pub fn placeRect(rect: Rect) Transform2D {
     return .{ .xx = rect.w, .yy = rect.h, .tx = rect.x, .ty = rect.y };
 }
 
+/// Uniform placement: scales both axes by `rect.w` and translates to
+/// `rect.{x,y}`. Unlike `placeRect` (independent per-axis scale), this keeps
+/// circular corners circular, so it is the right choice for rounded rects or
+/// any shape with a corner radius on a non-square rect. Pair it with a unit
+/// path authored at the rect's aspect (see `unitRoundedRectPathFor`).
+pub fn placeRectUniform(rect: Rect) Transform2D {
+    return .{ .xx = rect.w, .yy = rect.w, .tx = rect.x, .ty = rect.y };
+}
+
 /// A unit circle inscribed in `[0,1]²`. Every ellipse in a scene can reuse
 /// this single record, placed with a different `placeRect`.
 pub fn unitEllipsePath(allocator: Allocator) !Path {
@@ -66,6 +75,25 @@ pub fn unitRoundedRectPath(allocator: Allocator, r_rel: f32) !Path {
     errdefer p.deinit();
     try p.addRoundedRect(.{ .x = 0, .y = 0, .w = 1, .h = 1 }, r_rel);
     return p;
+}
+
+/// A rounded rect authored at `rect`'s aspect ratio: width 1, height
+/// `rect.h/rect.w`, corner radius `radius/rect.w` — so under uniform
+/// placement (`placeRectUniform(rect)`) it fills `rect` with circular
+/// corners. Use for non-square rounded rects (cards, panels) where
+/// `unitRoundedRectPath` + `placeRect` would shear the corners.
+pub fn unitRoundedRectPathFor(allocator: Allocator, rect: Rect, radius: f32) !Path {
+    const w = if (rect.w != 0) rect.w else 1;
+    var p = Path.init(allocator);
+    errdefer p.deinit();
+    try p.addRoundedRect(.{ .x = 0, .y = 0, .w = 1, .h = rect.h / w }, radius / w);
+    return p;
+}
+
+/// Rescale an absolute (screen-space) stroke width into the unit frame used
+/// by `placeRectUniform(rect)`.
+pub fn unitStrokeWidth(rect: Rect, width: f32) f32 {
+    return if (rect.w != 0) width / rect.w else width;
 }
 
 /// Stable identities for the parametric unit shapes, so identical shapes
@@ -181,6 +209,25 @@ test "placeRect maps the unit frame onto a world rectangle" {
     const o = t.applyPoint(.{ .x = 0, .y = 0 });
     try testing.expectApproxEqAbs(@as(f32, 600), o.x, 1e-4);
     try testing.expectApproxEqAbs(@as(f32, 400), o.y, 1e-4);
+}
+
+test "placeRectUniform keeps a non-square rounded rect's corners circular" {
+    // A 200×100 card: authored at aspect (height 0.5) and placed uniformly,
+    // the unit corner radius maps to the same world radius on both axes.
+    const rect = Rect{ .x = 900, .y = 300, .w = 200, .h = 100 };
+    var p = try unitRoundedRectPathFor(testing.allocator, rect, 20);
+    defer p.deinit();
+    const bb = p.bounds().?;
+    try testing.expectApproxEqAbs(@as(f32, 1.0), bb.max.x, 1e-4); // unit width
+    try testing.expectApproxEqAbs(@as(f32, 0.5), bb.max.y, 1e-4); // aspect height
+
+    const t = placeRectUniform(rect);
+    const corner = t.applyPoint(.{ .x = 1, .y = 0.5 });
+    try testing.expectApproxEqAbs(@as(f32, 1100), corner.x, 1e-3); // 900 + 200
+    try testing.expectApproxEqAbs(@as(f32, 400), corner.y, 1e-3); //  300 + 100
+    // Uniform scale ⇒ world corner radius equal on both axes (20/200 × 200).
+    try testing.expectApproxEqAbs(@as(f32, 20), t.xx * (20.0 / rect.w), 1e-3);
+    try testing.expectApproxEqAbs(@as(f32, 20), t.yy * (20.0 / rect.w), 1e-3);
 }
 
 test "unit shapes are authored inside the unit frame" {
