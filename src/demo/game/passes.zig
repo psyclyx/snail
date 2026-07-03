@@ -185,6 +185,7 @@ const PassBuilder = struct {
         path: *const snail.Path,
         fill: snail.Paint,
         stroke: snail.StrokeStyle,
+        place: snail.Transform2D,
     ) !void {
         std.debug.assert(stroke.placement == .inside);
 
@@ -207,7 +208,7 @@ const PassBuilder = struct {
             });
             try self.path_shapes.append(self.allocator, .{
                 .key = key,
-                .local_transform = .identity,
+                .local_transform = place,
                 .local_color = .{ 1, 1, 1, 1 },
             });
             var owned_stroke = stroke_curves;
@@ -236,11 +237,14 @@ const PassBuilder = struct {
         });
         try self.path_shapes.append(self.allocator, .{
             .key = key,
-            .local_transform = .identity,
+            .local_transform = place,
             .local_color = .{ 1, 1, 1, 1 },
         });
     }
 
+    // HUD panels: author the rounded rect in a unit frame (aspect-preserving)
+    // and place it uniformly, so corners stay crisp at the panel's screen
+    // offset. Paints are remapped into unit space (solid passes through).
     fn addRoundedRectWithInsideStroke(
         self: *PassBuilder,
         rect: snail.Rect,
@@ -248,10 +252,14 @@ const PassBuilder = struct {
         stroke: snail.StrokeStyle,
         radius: f32,
     ) !void {
-        var p = snail.Path.init(self.allocator);
+        var p = try snail_helpers.unitRoundedRectPathFor(self.allocator, rect, radius);
         defer p.deinit();
-        try p.addRoundedRect(rect, radius);
-        try self.addPathFillAndInsideStroke(&p, fill, stroke);
+        const to_paint = snail_helpers.placeRectUniform(rect);
+        var unit_stroke = stroke;
+        unit_stroke.width = snail_helpers.unitStrokeWidth(rect, stroke.width);
+        unit_stroke.paint = snail.mapPaintToLocal(stroke.paint, to_paint) orelse stroke.paint;
+        const local_fill = snail.mapPaintToLocal(fill, to_paint) orelse fill;
+        try self.addPathFillAndInsideStroke(&p, local_fill, unit_stroke, to_paint);
     }
 
     fn addFilledRect(self: *PassBuilder, rect: snail.Rect, paint: snail.Paint) !void {
