@@ -557,144 +557,149 @@ const BannerBuilder = struct {
         // Y positions must match drawText's Vectors label layout.
         const shapes_y = self.layout.vectors.y + pad + heading_size * s + 14 * s + sub_heading_size * s + 6 * s;
 
+        // Shapes are authored in the unit design frame [0,1]² and placed
+        // with `placeRect`, so screen position never enters the f16 curve
+        // texture (see snail-helpers/path_shape.zig). Stroke widths and
+        // corner radii are expressed as fractions of the frame — they scale
+        // with the shape, exactly as glyph stems scale with the em.
+        const usw = stroke_w / sz; // unit-frame stroke width
+        const uedge = 4 * s / sz; // unit-frame inset
+
         // ── Row 1: Shapes ──
 
         // Rect
         {
-            var p = snail.Path.init(sb.allocator);
+            var p = try snail_helpers.unitRectPath(sb.allocator);
             defer p.deinit();
-            try p.addRect(.{ .x = x0, .y = shapes_y, .w = sz, .h = sz });
             try sb.addPathFillAndStroke(&p, .{ .solid = .{ 0.22, 0.50, 0.88, 1.0 } }, .{
                 .paint = .{ .solid = .{ 0.15, 0.38, 0.72, 1.0 } },
-                .width = stroke_w,
+                .width = usw,
                 .join = .miter,
                 .placement = .inside,
-            }, .identity);
+            }, snail_helpers.placeRect(.{ .x = x0, .y = shapes_y, .w = sz, .h = sz }));
         }
 
         // Rounded rect
         const rrx = x0 + sz + gap;
         {
-            var p = snail.Path.init(sb.allocator);
+            var p = try snail_helpers.unitRoundedRectPath(sb.allocator, 12 * s / sz);
             defer p.deinit();
-            try p.addRoundedRect(.{ .x = rrx, .y = shapes_y, .w = sz, .h = sz }, 12 * s);
             try sb.addPathFillAndStroke(&p, .{ .solid = .{ 0.92, 0.82, 0.48, 1.0 } }, .{
                 .paint = .{ .solid = .{ 0.78, 0.62, 0.22, 1.0 } },
-                .width = stroke_w,
+                .width = usw,
                 .join = .round,
                 .placement = .inside,
-            }, .identity);
+            }, snail_helpers.placeRect(.{ .x = rrx, .y = shapes_y, .w = sz, .h = sz }));
         }
 
-        // Ellipse
+        // Ellipse (fill + separate inside stroke, mirroring addEllipse)
         const elx = x0 + (sz + gap) * 2;
-        try sb.addEllipse(.{ .x = elx, .y = shapes_y, .w = sz, .h = sz }, .{ .solid = .{ 0.85, 0.52, 0.35, 1.0 } }, .{
-            .paint = .{ .solid = .{ 0.72, 0.38, 0.22, 1.0 } },
-            .width = stroke_w,
-            .join = .round,
-            .placement = .inside,
-        }, .identity);
+        {
+            var p = try snail_helpers.unitEllipsePath(sb.allocator);
+            defer p.deinit();
+            const el_place = snail_helpers.placeRect(.{ .x = elx, .y = shapes_y, .w = sz, .h = sz });
+            try sb.addFilledPath(&p, .{ .solid = .{ 0.85, 0.52, 0.35, 1.0 } }, el_place);
+            try sb.addStrokedPath(&p, .{
+                .paint = .{ .solid = .{ 0.72, 0.38, 0.22, 1.0 } },
+                .width = usw,
+                .join = .round,
+            }, el_place);
+        }
 
-        // Custom path (leaf/diamond shape)
+        // Custom path (leaf/diamond shape), authored in the unit frame.
         const plx = x0 + (sz + gap) * 3;
         {
             var path = snail.Path.init(sb.allocator);
             defer path.deinit();
-            try path.moveTo(.{ .x = plx + sz * 0.5, .y = shapes_y });
+            try path.moveTo(.{ .x = 0.5, .y = 0 });
             try path.cubicTo(
-                .{ .x = plx + sz * 0.95, .y = shapes_y + sz * 0.2 },
-                .{ .x = plx + sz * 0.95, .y = shapes_y + sz * 0.8 },
-                .{ .x = plx + sz * 0.5, .y = shapes_y + sz },
+                .{ .x = 0.95, .y = 0.2 },
+                .{ .x = 0.95, .y = 0.8 },
+                .{ .x = 0.5, .y = 1 },
             );
             try path.cubicTo(
-                .{ .x = plx + sz * 0.05, .y = shapes_y + sz * 0.8 },
-                .{ .x = plx + sz * 0.05, .y = shapes_y + sz * 0.2 },
-                .{ .x = plx + sz * 0.5, .y = shapes_y },
+                .{ .x = 0.05, .y = 0.8 },
+                .{ .x = 0.05, .y = 0.2 },
+                .{ .x = 0.5, .y = 0 },
             );
             try path.close();
             try sb.addPathFillAndStroke(&path, .{ .solid = .{ 0.58, 0.48, 0.82, 1.0 } }, .{
                 .paint = .{ .solid = .{ 0.42, 0.32, 0.68, 1.0 } },
-                .width = stroke_w,
+                .width = usw,
                 .join = .round,
                 .placement = .inside,
-            }, .identity);
+            }, snail_helpers.placeRect(.{ .x = plx, .y = shapes_y, .w = sz, .h = sz }));
         }
 
         // ── Row 2: Fills ──
+        // Paints are sampled in the shape's local (unit) space, so gradient
+        // and image coordinates are expressed in [0,1]² too.
         const fills_y = shapes_y + sz + 11 * s + 6 * s + sub_heading_size * s + 6 * s;
+        const fill_r = 6 * s / sz;
 
         // Solid fill
         {
-            var p = snail.Path.init(sb.allocator);
+            var p = try snail_helpers.unitRoundedRectPath(sb.allocator, fill_r);
             defer p.deinit();
-            try p.addRoundedRect(.{ .x = x0, .y = fills_y, .w = sz, .h = sz }, 6 * s);
-            try sb.addFilledPath(&p, .{ .solid = .{ 0.35, 0.72, 0.55, 1.0 } }, .identity);
+            try sb.addFilledPath(&p, .{ .solid = .{ 0.35, 0.72, 0.55, 1.0 } }, snail_helpers.placeRect(.{ .x = x0, .y = fills_y, .w = sz, .h = sz }));
         }
 
         // Linear gradient
         const lgx = x0 + sz + gap;
         {
-            var p = snail.Path.init(sb.allocator);
+            var p = try snail_helpers.unitRoundedRectPath(sb.allocator, fill_r);
             defer p.deinit();
-            try p.addRoundedRect(.{ .x = lgx, .y = fills_y, .w = sz, .h = sz }, 6 * s);
             try sb.addFilledPath(&p, .{ .linear_gradient = .{
-                .start = .{ .x = lgx, .y = fills_y },
-                .end = .{ .x = lgx + sz, .y = fills_y + sz },
+                .start = .{ .x = 0, .y = 0 },
+                .end = .{ .x = 1, .y = 1 },
                 .start_color = .{ 0.25, 0.55, 0.95, 1.0 },
                 .end_color = .{ 0.85, 0.30, 0.55, 1.0 },
-            } }, .identity);
+            } }, snail_helpers.placeRect(.{ .x = lgx, .y = fills_y, .w = sz, .h = sz }));
         }
 
         // Radial gradient
         const rgx = x0 + (sz + gap) * 2;
         {
-            var p = snail.Path.init(sb.allocator);
+            var p = try snail_helpers.unitRoundedRectPath(sb.allocator, fill_r);
             defer p.deinit();
-            try p.addRoundedRect(.{ .x = rgx, .y = fills_y, .w = sz, .h = sz }, 6 * s);
             try sb.addFilledPath(&p, .{ .radial_gradient = .{
-                .center = .{ .x = rgx + sz * 0.45, .y = fills_y + sz * 0.4 },
-                .radius = sz * 0.55,
+                .center = .{ .x = 0.45, .y = 0.4 },
+                .radius = 0.55,
                 .inner_color = .{ 0.98, 0.90, 0.55, 1.0 },
                 .outer_color = .{ 0.88, 0.42, 0.18, 1.0 },
-            } }, .identity);
+            } }, snail_helpers.placeRect(.{ .x = rgx, .y = fills_y, .w = sz, .h = sz }));
         }
 
-        // Image fill
+        // Image fill. The image tiled with world period `sz`; in unit space
+        // one tile spans the whole shape, so the uv transform is identity.
         const imx = x0 + (sz + gap) * 3;
-        const image_period = sz;
         {
-            var p = snail.Path.init(sb.allocator);
+            var p = try snail_helpers.unitRoundedRectPath(sb.allocator, fill_r);
             defer p.deinit();
-            try p.addRoundedRect(.{ .x = imx, .y = fills_y, .w = sz, .h = sz }, 6 * s);
             try sb.addFilledPath(&p, .{ .image = .{
                 .image = paint_image,
-                .uv_transform = .{
-                    .xx = 1.0 / image_period,
-                    .yy = 1.0 / image_period,
-                    .tx = -imx / image_period,
-                    .ty = -fills_y / image_period,
-                },
+                .uv_transform = .{ .xx = 1.0, .yy = 1.0, .tx = 0.0, .ty = 0.0 },
                 .filter = .nearest,
-            } }, .identity);
+            } }, snail_helpers.placeRect(.{ .x = imx, .y = fills_y, .w = sz, .h = sz }));
         }
 
-        // Stroke-only path (in shapes row, last cell)
+        // Stroke-only path (in shapes row, last cell), authored in the unit frame.
         const stx = x0 + (sz + gap) * 4;
         {
             var stroke_path = snail.Path.init(sb.allocator);
             defer stroke_path.deinit();
-            try stroke_path.moveTo(.{ .x = stx + 4 * s, .y = shapes_y + sz * 0.7 });
+            try stroke_path.moveTo(.{ .x = uedge, .y = 0.7 });
             try stroke_path.cubicTo(
-                .{ .x = stx + sz * 0.3, .y = shapes_y - sz * 0.1 },
-                .{ .x = stx + sz * 0.7, .y = shapes_y + sz * 1.1 },
-                .{ .x = stx + sz - 4 * s, .y = shapes_y + sz * 0.3 },
+                .{ .x = 0.3, .y = -0.1 },
+                .{ .x = 0.7, .y = 1.1 },
+                .{ .x = 1.0 - uedge, .y = 0.3 },
             );
             try sb.addStrokedPath(&stroke_path, .{
                 .paint = .{ .solid = .{ 0.22, 0.55, 0.80, 1.0 } },
-                .width = 4 * s,
+                .width = uedge, // 4*s/sz in unit terms
                 .cap = .round,
                 .join = .round,
-            }, .identity);
+            }, snail_helpers.placeRect(.{ .x = stx, .y = shapes_y, .w = sz, .h = sz }));
         }
     }
 
