@@ -158,11 +158,12 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
         .h = @as(f32, @floatFromInt(height)) - 24,
     };
 
-    // Card fill (white rounded rect).
+    // Card fill (white rounded rect), authored in a unit frame and placed
+    // uniformly so its corners stay crisp at the card's large screen offset.
+    const card_place = snail_helpers.placeRectUniform(card_rect);
     {
-        var p = snail.Path.init(allocator);
+        var p = try snail_helpers.unitRoundedRectPathFor(allocator, card_rect, 12.0);
         defer p.deinit();
-        try p.addRoundedRect(card_rect, 12.0);
         try path_curves_owned.append(allocator, try p.toCurves(allocator, allocator));
         const key = snail.RecordKey{ .namespace = snail.ns.path_fill, .a = next_path_id };
         next_path_id += 1;
@@ -171,16 +172,15 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
             .curves = path_curves_owned.items[path_curves_owned.items.len - 1],
             .paint = .{ .solid = .{ 1.0, 1.0, 1.0, 1.0 } },
         });
-        try path_shapes.append(allocator, .{ .key = key, .local_transform = .identity, .local_color = .{ 1, 1, 1, 1 } });
+        try path_shapes.append(allocator, .{ .key = key, .local_transform = card_place, .local_color = .{ 1, 1, 1, 1 } });
     }
     // Card stroke.
     {
-        var p = snail.Path.init(allocator);
+        var p = try snail_helpers.unitRoundedRectPathFor(allocator, card_rect, 12.0);
         defer p.deinit();
-        try p.addRoundedRect(card_rect, 12.0);
         try path_curves_owned.append(allocator, try p.strokeToCurves(allocator, allocator, .{
             .paint = .{ .solid = .{ 0.78, 0.82, 0.88, 1.0 } },
-            .width = 1.5,
+            .width = snail_helpers.unitStrokeWidth(card_rect, 1.5),
         }));
         const key = snail.RecordKey{ .namespace = snail.ns.path_stroke, .a = next_path_id };
         next_path_id += 1;
@@ -189,7 +189,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
             .curves = path_curves_owned.items[path_curves_owned.items.len - 1],
             .paint = .{ .solid = .{ 0.78, 0.82, 0.88, 1.0 } },
         });
-        try path_shapes.append(allocator, .{ .key = key, .local_transform = .identity, .local_color = .{ 1, 1, 1, 1 } });
+        try path_shapes.append(allocator, .{ .key = key, .local_transform = card_place, .local_color = .{ 1, 1, 1, 1 } });
     }
     // Vector snail.
     {
