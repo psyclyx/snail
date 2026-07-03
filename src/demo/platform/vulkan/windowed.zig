@@ -85,10 +85,15 @@ var timestamp_period_ns: f64 = 0;
 /// Set when the device's queue family supports timestamps. Falls back
 /// to a no-op API when false (pre-Vulkan-1.2 or device-specific).
 var timestamps_supported: bool = false;
-/// True when the queries for `current_frame`'s slice were issued at
-/// least once and the results are ready to be read at the next
-/// reuse of this slot. One bit per slot.
-var slot_has_pending_timestamps: [MAX_FRAMES_IN_FLIGHT]bool = .{false} ** MAX_FRAMES_IN_FLIGHT;
+/// Number of contiguous passes (from index 0) that wrote begin/end
+/// timestamps into `current_frame`'s slice this frame, i.e. how many
+/// query pairs are pending a read at the next reuse of this slot. Zero
+/// means nothing was issued (skip the read). Only this many pairs may
+/// be read back: `resetTimestampsForSlot` clears the full slice, so
+/// query pairs beyond `slot_timed_passes` were reset but never written
+/// and would never become available — reading them with
+/// `VK_QUERY_RESULT_WAIT_BIT` would block forever.
+var slot_timed_passes: [MAX_FRAMES_IN_FLIGHT]u32 = .{0} ** MAX_FRAMES_IN_FLIGHT;
 /// Per-pass µs from the most recent COMPLETED frame whose slot we just
 /// reused. Lags real-time by MAX_FRAMES_IN_FLIGHT frames; fine for the
 /// HUD which averages over 500 ms.
@@ -776,7 +781,7 @@ fn destroyTimestampPool() void {
     }
     timestamps_supported = false;
     timestamp_period_ns = 0;
-    slot_has_pending_timestamps = .{false} ** MAX_FRAMES_IN_FLIGHT;
+    slot_timed_passes = .{0} ** MAX_FRAMES_IN_FLIGHT;
     last_gpu_pass_us = .{0} ** MAX_TIMED_PASSES;
 }
 
@@ -792,22 +797,30 @@ inline fn timestampSliceBase(slot: u32) u32 {
 /// fence wait makes the GPU side safe to read.
 fn readTimestampsForSlot(slot: u32) void {
     if (!timestamps_supported) return;
-    if (!slot_has_pending_timestamps[slot]) return;
+    const timed_passes = slot_timed_passes[slot];
+    if (timed_passes == 0) return;
+    slot_timed_passes[slot] = 0;
+    // Only read the query pairs that were actually written this frame.
+    // The full slice was reset in the command buffer, so pairs beyond
+    // `timed_passes` are unavailable and WAIT_BIT would deadlock on them.
     const base = timestampSliceBase(slot);
+    const query_count = timed_passes * 2;
     var values: [QUERIES_PER_FRAME]u64 = undefined;
     const res = vk.vkGetQueryPoolResults(
         device,
         timestamp_pool,
         base,
-        QUERIES_PER_FRAME,
+        query_count,
         @sizeOf(@TypeOf(values)),
         &values,
         @sizeOf(u64),
         vk.VK_QUERY_RESULT_64_BIT | vk.VK_QUERY_RESULT_WAIT_BIT,
     );
-    slot_has_pending_timestamps[slot] = false;
-    if (res != vk.VK_SUCCESS) return;
-    inline for (0..MAX_TIMED_PASSES) |i| {
+    for (0..MAX_TIMED_PASSES) |i| {
+        if (i >= timed_passes or res != vk.VK_SUCCESS) {
+            last_gpu_pass_us[i] = 0;
+            continue;
+        }
         const begin = values[i * 2];
         const end = values[i * 2 + 1];
         if (end > begin) {
@@ -833,7 +846,9 @@ pub fn beginPassTimestamp(cmd: vk.VkCommandBuffer, pass_index: u32) void {
     if (!timestamps_supported or pass_index >= MAX_TIMED_PASSES) return;
     const base = timestampSliceBase(current_frame);
     vk.vkCmdWriteTimestamp(cmd, vk.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestamp_pool, base + pass_index * 2);
-    slot_has_pending_timestamps[current_frame] = true;
+    // Passes are driven contiguously from index 0, so the highest
+    // pass_index + 1 seen this frame is the count of written query pairs.
+    slot_timed_passes[current_frame] = @max(slot_timed_passes[current_frame], pass_index + 1);
 }
 
 pub fn endPassTimestamp(cmd: vk.VkCommandBuffer, pass_index: u32) void {
