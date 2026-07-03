@@ -309,6 +309,7 @@ fn addScreenshotSteps(
 ) void {
     const release_snail_mod = createSnailModule(b, config.target, .ReleaseFast, modules.options, config.core_options, modules.vk_shaders);
     const release_support_mod = createSupportModule(b, config.target, .ReleaseFast);
+    const release_helpers_mod = createReleaseHelpersModule(b, config.target, release_snail_mod);
 
     // CPU screenshot.
     const screenshot_cpu_mod = b.createModule(.{
@@ -319,6 +320,7 @@ fn addScreenshotSteps(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = release_snail_mod },
+            .{ .name = "snail-helpers", .module = release_helpers_mod },
             .{ .name = "support", .module = release_support_mod },
         },
     });
@@ -326,8 +328,6 @@ fn addScreenshotSteps(
     const run_screenshot_cpu = b.addRunArtifact(screenshot_cpu_exe);
     const screenshot_cpu_step = b.step("run-screenshot", "Render the demo through the CPU backend and write zig-out/demo-screenshot.tga");
     screenshot_cpu_step.dependOn(&run_screenshot_cpu.step);
-
-    const release_helpers_mod = createReleaseHelpersModule(b, config.target, release_snail_mod);
 
     // Banner screenshot — full interactive-demo scene through CPU backend.
     const banner_screenshot_mod = b.createModule(.{
@@ -397,6 +397,7 @@ fn addScreenshotSteps(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = release_snail_mod },
+            .{ .name = "snail-helpers", .module = release_helpers_mod },
             .{ .name = "support", .module = release_support_mod },
         },
     });
@@ -415,6 +416,7 @@ fn addScreenshotSteps(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = release_snail_mod },
+            .{ .name = "snail-helpers", .module = release_helpers_mod },
             .{ .name = "support", .module = release_support_mod },
         },
     });
@@ -435,6 +437,7 @@ fn addScreenshotSteps(
             .imports = &.{
                 .{ .name = "assets", .module = modules.assets },
                 .{ .name = "snail", .module = release_snail_mod },
+                .{ .name = "snail-helpers", .module = release_helpers_mod },
                 .{ .name = "support", .module = release_support_mod },
                 .{ .name = "demo_platform_vulkan", .module = vk_platform_mod },
             },
