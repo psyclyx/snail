@@ -78,16 +78,22 @@ pub const Builder = struct {
         });
     }
 
+    // Ellipses are authored as a unit circle placed via
+    // `transform ∘ placeRect(rect)`, so their outlines stay f16-precise
+    // regardless of design-space offset (crucial for the small, high-offset
+    // eyes). Paints are re-expressed into the unit sample space with
+    // `mapPaintToLocal` — solid passes through; gradients/images are remapped.
     pub fn addFilledEllipse(
         self: Builder,
         rect: snail.Rect,
         paint: snail.Paint,
         transform: snail.Transform2D,
     ) !void {
-        var path = snail.Path.init(self.allocator);
+        var path = try snail_helpers.unitEllipsePath(self.allocator);
         defer path.deinit();
-        try path.addEllipse(rect);
-        try self.addFilledPath(&path, paint, transform);
+        const to_paint = snail_helpers.placeRect(rect);
+        const local_paint = snail.mapPaintToLocal(paint, to_paint) orelse paint;
+        try self.addFilledPath(&path, local_paint, snail.Transform2D.multiply(transform, to_paint));
     }
 
     pub fn addEllipse(
@@ -97,44 +103,14 @@ pub const Builder = struct {
         stroke: snail.StrokeStyle,
         transform: snail.Transform2D,
     ) !void {
-        var path = snail.Path.init(self.allocator);
-        defer path.deinit();
-        try path.addEllipse(rect);
-        try self.addFilledPath(&path, fill, transform);
-        try self.addStrokedPath(&path, stroke, transform);
-    }
-
-    /// Solid-fill ellipse authored in the unit frame and placed via
-    /// `transform ∘ placeRect(rect)`, so small offset features (eyes,
-    /// highlights) keep f16 precision instead of wobbling at their large
-    /// design-space offset. Solid paint only — the fill is position-free.
-    pub fn addFilledEllipseUnit(
-        self: Builder,
-        rect: snail.Rect,
-        paint: snail.Paint,
-        transform: snail.Transform2D,
-    ) !void {
         var path = try snail_helpers.unitEllipsePath(self.allocator);
         defer path.deinit();
-        const place = snail.Transform2D.multiply(transform, snail_helpers.placeRect(rect));
-        try self.addFilledPath(&path, paint, place);
-    }
-
-    /// Solid fill + solid stroke ellipse in the unit frame. Stroke width is
-    /// rescaled into unit-frame units (uniform for square `rect`).
-    pub fn addEllipseUnit(
-        self: Builder,
-        rect: snail.Rect,
-        fill: snail.Paint,
-        stroke: snail.StrokeStyle,
-        transform: snail.Transform2D,
-    ) !void {
-        var path = try snail_helpers.unitEllipsePath(self.allocator);
-        defer path.deinit();
-        const place = snail.Transform2D.multiply(transform, snail_helpers.placeRect(rect));
-        try self.addFilledPath(&path, fill, place);
+        const to_paint = snail_helpers.placeRect(rect);
+        const place = snail.Transform2D.multiply(transform, to_paint);
+        try self.addFilledPath(&path, snail.mapPaintToLocal(fill, to_paint) orelse fill, place);
         var unit_stroke = stroke;
         unit_stroke.width = snail_helpers.unitStrokeWidth(rect, stroke.width);
+        unit_stroke.paint = snail.mapPaintToLocal(stroke.paint, to_paint) orelse stroke.paint;
         try self.addStrokedPath(&path, unit_stroke, place);
     }
 
@@ -352,14 +328,12 @@ pub fn addVectorSnail(builder: Builder, snail_stage: snail.Rect) !void {
         .width = 1.2,
         .join = .round,
     };
-    // Eyes: small, high-offset solid ellipses — the snail's worst f16 case.
-    // Author them in the unit frame so their outlines stay round.
-    try builder.addEllipseUnit(.{ .x = 330.0, .y = 54.0, .w = 9.0, .h = 9.0 }, .{ .solid = .{ 0.98, 0.97, 0.94, 1.0 } }, eye_stroke, transform);
-    try builder.addFilledEllipseUnit(.{ .x = 332.0, .y = 56.0, .w = 5.0, .h = 5.0 }, .{ .solid = .{ 0.18, 0.20, 0.22, 1.0 } }, transform);
-    try builder.addFilledEllipseUnit(.{ .x = 333.0, .y = 56.5, .w = 1.5, .h = 1.5 }, .{ .solid = .{ 1.0, 1.0, 1.0, 0.90 } }, transform);
-    try builder.addEllipseUnit(.{ .x = 303.0, .y = 61.0, .w = 7.0, .h = 7.0 }, .{ .solid = .{ 0.98, 0.97, 0.94, 1.0 } }, eye_stroke, transform);
-    try builder.addFilledEllipseUnit(.{ .x = 304.5, .y = 62.5, .w = 4.0, .h = 4.0 }, .{ .solid = .{ 0.18, 0.20, 0.22, 1.0 } }, transform);
-    try builder.addFilledEllipseUnit(.{ .x = 305.2, .y = 63.0, .w = 1.2, .h = 1.2 }, .{ .solid = .{ 1.0, 1.0, 1.0, 0.90 } }, transform);
+    try builder.addEllipse(.{ .x = 330.0, .y = 54.0, .w = 9.0, .h = 9.0 }, .{ .solid = .{ 0.98, 0.97, 0.94, 1.0 } }, eye_stroke, transform);
+    try builder.addFilledEllipse(.{ .x = 332.0, .y = 56.0, .w = 5.0, .h = 5.0 }, .{ .solid = .{ 0.18, 0.20, 0.22, 1.0 } }, transform);
+    try builder.addFilledEllipse(.{ .x = 333.0, .y = 56.5, .w = 1.5, .h = 1.5 }, .{ .solid = .{ 1.0, 1.0, 1.0, 0.90 } }, transform);
+    try builder.addEllipse(.{ .x = 303.0, .y = 61.0, .w = 7.0, .h = 7.0 }, .{ .solid = .{ 0.98, 0.97, 0.94, 1.0 } }, eye_stroke, transform);
+    try builder.addFilledEllipse(.{ .x = 304.5, .y = 62.5, .w = 4.0, .h = 4.0 }, .{ .solid = .{ 0.18, 0.20, 0.22, 1.0 } }, transform);
+    try builder.addFilledEllipse(.{ .x = 305.2, .y = 63.0, .w = 1.2, .h = 1.2 }, .{ .solid = .{ 1.0, 1.0, 1.0, 0.90 } }, transform);
 
     var smile = snail.Path.init(builder.allocator);
     defer smile.deinit();
