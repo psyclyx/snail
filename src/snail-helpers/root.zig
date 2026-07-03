@@ -30,10 +30,19 @@ pub const ShapedRunOptions = text_picture_mod.ShapedRunOptions;
 pub const HintedShapedRunOptions = text_picture_mod.HintedShapedRunOptions;
 pub const ShapedRunError = text_picture_mod.ShapedRunError;
 
+const path_shape_mod = @import("path_shape.zig");
+pub const PathShapeCache = path_shape_mod.PathShapeCache;
+pub const placeRect = path_shape_mod.placeRect;
+pub const unitEllipsePath = path_shape_mod.unitEllipsePath;
+pub const unitRectPath = path_shape_mod.unitRectPath;
+pub const unitRoundedRectPath = path_shape_mod.unitRoundedRectPath;
+pub const pathShapeKey = path_shape_mod.key;
+
 test {
     _ = UnhintedGlyphCache;
     _ = HintedGlyphCache;
     _ = ShapedRunCache;
     _ = @import("picture.zig");
     _ = text_picture_mod;
+    _ = path_shape_mod;
 }
