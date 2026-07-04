@@ -9,8 +9,6 @@ const PaintImageRecord = atlas_mod.PaintImageRecord;
 const GlyphBandEntry = band_tex.GlyphBandEntry;
 const Vec2 = snail.Vec2;
 const clamp01 = color.clamp01;
-const linearColorToSrgb = color.linearColorToSrgb;
-const srgbColorToLinear = color.srgbColorToLinear;
 const srgbToLinear = color.srgbToLinear;
 
 pub const PreparedPathLayer = struct {
@@ -236,8 +234,8 @@ fn preparePathPaintFromLayerInfoOffset(
     switch (tag) {
         1 => return .{ .kind = .solid, .color0 = data0 },
         2 => {
-            // Endpoints are now stored in sRGB at upload time
-            // (paint_records.writeLinearGradient), so no conversion here.
+            // Endpoints are stored linear at upload (paint_records writes them
+            // via srgbToLinearColor), so the sampler interpolates them directly.
             const color0 = fetchLayerInfoTexelOffset(data, texel_offset + 3);
             const color1 = fetchLayerInfoTexelOffset(data, texel_offset + 4);
             const extra = fetchLayerInfoTexelOffset(data, texel_offset + 5);
@@ -357,9 +355,6 @@ fn lerpColor(a: [4]f32, b: [4]f32, t: f32) [4]f32 {
     };
 }
 
-fn lerpGradientColorFromSrgb(a_srgb: [4]f32, b_srgb: [4]f32, t: f32) [4]f32 {
-    return srgbColorToLinear(lerpColor(a_srgb, b_srgb, t));
-}
 
 fn sampleImageLinear(image: *const snail.Image, uv: Vec2, filter: snail.ImageFilter) [4]f32 {
     if (image.width == 0 or image.height == 0) return .{ 0, 0, 0, 0 };
@@ -421,7 +416,7 @@ pub const PreparedPathPaint = struct {
                 var t: f32 = 0.0;
                 if (len_sq > 1e-10) t = Vec2.dot(Vec2.sub(local, start), delta) / len_sq;
                 break :blk .{
-                    .color = lerpGradientColorFromSrgb(self.color0, self.color1, wrapPaintT(t, paintExtendFromFloat(self.extra[0]))),
+                    .color = lerpColor(self.color0, self.color1, wrapPaintT(t, paintExtendFromFloat(self.extra[0]))),
                     .apply_dither = true,
                 };
             },
@@ -430,7 +425,7 @@ pub const PreparedPathPaint = struct {
                 const radius = @max(@abs(self.data0[2]), 1.0 / 65536.0);
                 const t = Vec2.length(Vec2.sub(local, center)) / radius;
                 break :blk .{
-                    .color = lerpGradientColorFromSrgb(self.color0, self.color1, wrapPaintT(t, paintExtendFromFloat(self.data0[3]))),
+                    .color = lerpColor(self.color0, self.color1, wrapPaintT(t, paintExtendFromFloat(self.data0[3]))),
                     .apply_dither = true,
                 };
             },
@@ -440,7 +435,7 @@ pub const PreparedPathPaint = struct {
                 const d = Vec2.sub(local, center);
                 const t = (std.math.atan2(d.y, d.x) - self.data0[2]) * (1.0 / (2.0 * std.math.pi));
                 break :blk .{
-                    .color = lerpGradientColorFromSrgb(self.color0, self.color1, wrapPaintT(t, paintExtendFromFloat(self.data0[3]))),
+                    .color = lerpColor(self.color0, self.color1, wrapPaintT(t, paintExtendFromFloat(self.data0[3]))),
                     .apply_dither = true,
                 };
             },
@@ -479,16 +474,10 @@ pub fn samplePreparedImageWithRecord(
 // These pin the CPU paint semantics kind-by-kind. They are the source of
 // truth the GLSL evaluator (`snail_path_frag_body.glsl`) must match — the two
 // are hand-synced, so a drift here or there shows up as a CPU/GPU mismatch.
-// Gradients mix in sRGB space then convert to linear, so a 0→1 ramp sampled
-// at t maps to `srgbToLinear(t)`; endpoints 0 and 1 are sRGB fixed points.
+// Gradients interpolate their (linear-stored) endpoints in linear light, so a
+// 0→1 ramp sampled at t lands on t.
 
 const testing = std.testing;
-
-/// Scalar sRGB→linear for expected gradient values (a 0→1 ramp mixed in
-/// sRGB and sampled at t lands on `s2l(t)`).
-fn s2l(v: f32) f32 {
-    return srgbColorToLinear(.{ v, v, v, 1 })[0];
-}
 
 test "solid paint samples its stored linear color, position-independent" {
     const p = PreparedPathPaint{ .kind = .solid, .color0 = .{ 0.25, 0.5, 0.75, 1.0 } };
@@ -497,7 +486,7 @@ test "solid paint samples its stored linear color, position-independent" {
     try testing.expect(!p.sample(Vec2.new(0, 0)).apply_dither);
 }
 
-test "linear gradient projects position onto the axis and mixes in sRGB" {
+test "linear gradient projects position onto the axis and mixes in linear light" {
     const p = PreparedPathPaint{
         .kind = .linear_gradient,
         .data0 = .{ 0, 0, 10, 0 }, // start (0,0) → end (10,0)
@@ -507,9 +496,9 @@ test "linear gradient projects position onto the axis and mixes in sRGB" {
     };
     try testing.expectApproxEqAbs(@as(f32, 0), p.sample(Vec2.new(0, 0)).color[0], 1e-4);
     try testing.expectApproxEqAbs(@as(f32, 1), p.sample(Vec2.new(10, 0)).color[0], 1e-4);
-    try testing.expectApproxEqAbs(s2l(0.5), p.sample(Vec2.new(5, 0)).color[0], 1e-4);
+    try testing.expectApproxEqAbs(@as(f32, 0.5), p.sample(Vec2.new(5, 0)).color[0], 1e-4);
     // Off-axis position projects onto the axis (y is ignored here).
-    try testing.expectApproxEqAbs(s2l(0.5), p.sample(Vec2.new(5, 99)).color[0], 1e-4);
+    try testing.expectApproxEqAbs(@as(f32, 0.5), p.sample(Vec2.new(5, 99)).color[0], 1e-4);
     try testing.expect(p.sample(Vec2.new(5, 0)).apply_dither);
 }
 
@@ -525,9 +514,9 @@ test "linear gradient extend modes past the endpoints" {
     p.extra[0] = 0; // clamp → 1.0 → white
     try testing.expectApproxEqAbs(@as(f32, 1), p.sample(Vec2.new(15, 0)).color[0], 1e-4);
     p.extra[0] = 1; // repeat → fract(1.5) = 0.5
-    try testing.expectApproxEqAbs(s2l(0.5), p.sample(Vec2.new(15, 0)).color[0], 1e-4);
+    try testing.expectApproxEqAbs(@as(f32, 0.5), p.sample(Vec2.new(15, 0)).color[0], 1e-4);
     p.extra[0] = 2; // reflect → 0.5
-    try testing.expectApproxEqAbs(s2l(0.5), p.sample(Vec2.new(15, 0)).color[0], 1e-4);
+    try testing.expectApproxEqAbs(@as(f32, 0.5), p.sample(Vec2.new(15, 0)).color[0], 1e-4);
 }
 
 test "radial gradient maps distance/radius to t" {
@@ -540,7 +529,7 @@ test "radial gradient maps distance/radius to t" {
     try testing.expectApproxEqAbs(@as(f32, 0), p.sample(Vec2.new(0, 0)).color[0], 1e-4);
     try testing.expectApproxEqAbs(@as(f32, 1), p.sample(Vec2.new(10, 0)).color[0], 1e-4);
     try testing.expectApproxEqAbs(@as(f32, 1), p.sample(Vec2.new(0, 10)).color[0], 1e-4);
-    try testing.expectApproxEqAbs(s2l(0.5), p.sample(Vec2.new(5, 0)).color[0], 1e-4);
+    try testing.expectApproxEqAbs(@as(f32, 0.5), p.sample(Vec2.new(5, 0)).color[0], 1e-4);
 }
 
 test "conic gradient sweeps angle to t" {
@@ -551,9 +540,9 @@ test "conic gradient sweeps angle to t" {
         .color1 = .{ 1, 1, 1, 1 },
     };
     try testing.expectApproxEqAbs(@as(f32, 0), p.sample(Vec2.new(1, 0)).color[0], 1e-4); // angle 0 → t 0
-    try testing.expectApproxEqAbs(s2l(0.25), p.sample(Vec2.new(0, 1)).color[0], 1e-4); // π/2 → t .25
-    try testing.expectApproxEqAbs(s2l(0.5), p.sample(Vec2.new(-1, 0)).color[0], 1e-4); // π → t .5
-    try testing.expectApproxEqAbs(s2l(0.75), p.sample(Vec2.new(0, -1)).color[0], 1e-4); // -π/2 → t .75
+    try testing.expectApproxEqAbs(@as(f32, 0.25), p.sample(Vec2.new(0, 1)).color[0], 1e-4); // π/2 → t .25
+    try testing.expectApproxEqAbs(@as(f32, 0.5), p.sample(Vec2.new(-1, 0)).color[0], 1e-4); // π → t .5
+    try testing.expectApproxEqAbs(@as(f32, 0.75), p.sample(Vec2.new(0, -1)).color[0], 1e-4); // -π/2 → t .75
 }
 
 test "paint record round-trips: Paint → encode → decode → sample" {
@@ -588,5 +577,5 @@ test "paint record round-trips: Paint → encode → decode → sample" {
     paint_records.write(&buf, w, 0, be, conic, 0);
     const decoded = preparePathPaintFromLayerInfoOffset(&buf, 0, null);
     try testing.expectEqual(PreparedPathPaint.Kind.conic_gradient, decoded.kind);
-    try testing.expectApproxEqAbs(s2l(0.5), decoded.sample(Vec2.new(-1, 0)).color[0], 1e-4);
+    try testing.expectApproxEqAbs(@as(f32, 0.5), decoded.sample(Vec2.new(-1, 0)).color[0], 1e-4);
 }
