@@ -109,18 +109,19 @@ pub const CpuOptions = struct {
     max_images: u32 = 8,
 };
 
-/// CPU end-to-end: allocate pixels, fill bg, upload, emit, draw, flip, write.
-pub fn renderCpu(
+/// CPU end-to-end into a caller-owned RGBA8 top-down buffer (the returned
+/// slice is owned by `allocator`). `renderCpu` wraps this to write a TGA;
+/// `backend_compare` uses it to diff against GL.
+pub fn renderCpuToPixels(
     allocator: std.mem.Allocator,
     scene: Scene,
     width: u32,
     height: u32,
-    out_path: [*:0]const u8,
     opts: CpuOptions,
-) !void {
+) ![]u8 {
     const stride: u32 = width * 4;
     const pixels = try allocator.alloc(u8, @as(usize, height) * stride);
-    defer allocator.free(pixels);
+    errdefer allocator.free(pixels);
     fillBgRgba8(pixels);
 
     var cache = try snail.CpuBackendCache.init(allocator, scene.pool, .{
@@ -148,6 +149,20 @@ pub fn renderCpu(
     );
 
     try flipRowsInPlace(allocator, pixels, width, height);
+    return pixels;
+}
+
+/// CPU end-to-end: render and write a TGA.
+pub fn renderCpu(
+    allocator: std.mem.Allocator,
+    scene: Scene,
+    width: u32,
+    height: u32,
+    out_path: [*:0]const u8,
+    opts: CpuOptions,
+) !void {
+    const pixels = try renderCpuToPixels(allocator, scene, width, height, opts);
+    defer allocator.free(pixels);
     try writeOutput(out_path, pixels, width, height);
 }
 
@@ -206,15 +221,14 @@ pub const GlBackend = enum { gl33, gles30 };
 /// GL/GLES30 end-to-end: assumes an EGL/EGL-ES context is current and an
 /// `OffscreenGlTarget` is bound. Sets up the backend renderer + cache,
 /// emits, draws, captures, writes.
-pub fn renderGl(
+pub fn renderGlToPixels(
     comptime backend: GlBackend,
     allocator: std.mem.Allocator,
     scene: Scene,
     width: u32,
     height: u32,
-    out_path: [*:0]const u8,
     opts: GlOptions,
-) !void {
+) ![]u8 {
     const RendererT = switch (backend) {
         .gl33 => snail.Gl33Renderer,
         .gles30 => snail.Gles30Renderer,
@@ -253,7 +267,19 @@ pub fn renderGl(
         &.{&cache},
     );
 
-    const pixels = try support.screenshot.captureFramebuffer(allocator, width, height);
+    return support.screenshot.captureFramebuffer(allocator, width, height);
+}
+
+pub fn renderGl(
+    comptime backend: GlBackend,
+    allocator: std.mem.Allocator,
+    scene: Scene,
+    width: u32,
+    height: u32,
+    out_path: [*:0]const u8,
+    opts: GlOptions,
+) !void {
+    const pixels = try renderGlToPixels(backend, allocator, scene, width, height, opts);
     defer allocator.free(pixels);
     try writeOutput(out_path, pixels, width, height);
 }

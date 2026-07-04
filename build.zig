@@ -407,6 +407,25 @@ fn addScreenshotSteps(
     const screenshot_gl_step = b.step("run-screenshot-gl", "Render the demo through the GL backend and write zig-out/demo-screenshot-gl.tga");
     screenshot_gl_step.dependOn(&run_screenshot_gl.step);
 
+    // CPU-vs-GL pixel parity gate over the shared content scene.
+    const backend_compare_mod = b.createModule(.{
+        .root_source_file = b.path("src/demo/backend_compare.zig"),
+        .target = config.target,
+        .optimize = .ReleaseFast,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "assets", .module = modules.assets },
+            .{ .name = "snail", .module = release_snail_mod },
+            .{ .name = "snail-helpers", .module = release_helpers_mod },
+            .{ .name = "support", .module = release_support_mod },
+        },
+    });
+    configureEglOffscreenModule(backend_compare_mod, modules.options, config.core_options, modules.vk_shaders);
+    const backend_compare_exe = b.addExecutable(.{ .name = "snail-backend-compare", .root_module = backend_compare_mod });
+    const run_backend_compare = b.addRunArtifact(backend_compare_exe);
+    const backend_compare_step = b.step("run-backend-compare", "Render the content scene through CPU and GL and fail if they diverge beyond the AA tolerance");
+    backend_compare_step.dependOn(&run_backend_compare.step);
+
     // GLES screenshot.
     const screenshot_gles30_mod = b.createModule(.{
         .root_source_file = b.path("src/demo/screenshot_gles30.zig"),
