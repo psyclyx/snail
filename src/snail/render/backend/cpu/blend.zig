@@ -2,6 +2,10 @@ const snail = @import("../../../root.zig");
 const cpu_color = @import("color.zig");
 const cpu_coverage = @import("coverage.zig");
 
+test {
+    _ = @import("pixel_pack.zig");
+}
+
 const clamp01 = cpu_color.clamp01;
 const interleavedGradientNoise = cpu_color.interleavedGradientNoise;
 const linearColorToSrgb = cpu_color.linearColorToSrgb;

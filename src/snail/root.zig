@@ -63,6 +63,7 @@ pub const FillRule = target.FillRule;
 pub const SubpixelOrder = target.SubpixelOrder;
 pub const ColorEncoding = target.ColorEncoding;
 pub const TargetEncoding = target.TargetEncoding;
+pub const PixelFormat = target.PixelFormat;
 pub const PixelRect = target.PixelRect;
 pub const LinearResolve = target.LinearResolve;
 pub const DrawResolve = target.DrawResolve;

@@ -165,6 +165,58 @@ pub const TargetEncoding = struct {
     }
 };
 
+/// Byte layout of a render target. Orthogonal to `TargetEncoding` (which
+/// decides sRGB-vs-linear semantics): this decides channel order, bit depth,
+/// and packing. The CPU backend comptime-specializes its pixel pack over it;
+/// GPU backends map it to a GL internalformat / VK format.
+pub const PixelFormat = enum {
+    /// 8-bit RGBA, R at byte 0. The default.
+    rgba8_unorm,
+    /// 8-bit BGRA, B at byte 0 — matches many platform swapchains (Vulkan,
+    /// D3D). Same as `rgba8_unorm` but with R/B swapped in storage.
+    bgra8_unorm,
+    /// 10-bit R/G/B + 2-bit A packed little-endian into one u32.
+    rgb10a2_unorm,
+    /// 16-bit half-float RGBA (8 bytes). Stores linear values directly — no
+    /// sRGB encode, no dither.
+    rgba16f,
+    /// Single 8-bit channel carrying painted alpha (coverage × paint.alpha).
+    /// `r8_unorm` and `a8_unorm` are the same mask, differing only in which
+    /// channel slot the API exposes; both elide all RGB paint/blend work.
+    r8_unorm,
+    a8_unorm,
+
+    pub fn bytesPerPixel(fmt: PixelFormat) u32 {
+        return switch (fmt) {
+            .rgba8_unorm, .bgra8_unorm, .rgb10a2_unorm => 4,
+            .rgba16f => 8,
+            .r8_unorm, .a8_unorm => 1,
+        };
+    }
+
+    /// Whether the format stores color (RGB). False for the single-channel
+    /// masks, whose pipeline elides RGB paint sampling and RGB blend.
+    pub fn hasColor(fmt: PixelFormat) bool {
+        return fmt != .r8_unorm and fmt != .a8_unorm;
+    }
+
+    /// Float targets store linear values directly (no sRGB encode, no dither).
+    pub fn isFloat(fmt: PixelFormat) bool {
+        return fmt == .rgba16f;
+    }
+
+    /// Dither amplitude that suppresses banding for this format's bit depth,
+    /// in normalized units: 1/255 for 8-bit, 1/1023 for 10-bit RGB, 0 for
+    /// float (no quantization). Callers scale their noise by this before pack.
+    pub fn ditherAmplitude(fmt: PixelFormat) f32 {
+        return switch (fmt) {
+            .rgba8_unorm, .bgra8_unorm, .r8_unorm, .a8_unorm => 1.0 / 255.0,
+            .rgb10a2_unorm => 1.0 / 1023.0,
+            .rgba16f => 0.0,
+        };
+    }
+};
+
 pub const CoverageTransfer = struct {
     /// Exponent applied to analytic coverage after edge evaluation. `1.0` is
     /// identity; values below `1.0` increase edge coverage and values above
