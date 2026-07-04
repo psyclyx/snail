@@ -554,7 +554,6 @@ test "drawCpu renders image-painted shape through special-layer path" {
         .paint = .{ .image = .{
             .image = &image,
             .uv_transform = .identity,
-            .tint = .{ 1, 1, 1, 1 },
         } },
     }});
     defer atlas.deinit();

@@ -9,6 +9,7 @@ pub const texels_per_record: u32 = render_abi.paint_texels_per_record;
 pub const tag_solid: f32 = render_abi.paintRecordTag(.solid);
 pub const tag_linear_gradient: f32 = render_abi.paintRecordTag(.linear_gradient);
 pub const tag_radial_gradient: f32 = render_abi.paintRecordTag(.radial_gradient);
+pub const tag_conic_gradient: f32 = render_abi.paintRecordTag(.conic_gradient);
 pub const tag_image: f32 = render_abi.paintRecordTag(.image);
 pub const tag_composite_group: f32 = render_abi.paintRecordTag(.composite_group);
 
@@ -52,6 +53,7 @@ pub fn tagFor(paint: anytype) f32 {
         .solid => .solid,
         .linear_gradient => .linear_gradient,
         .radial_gradient => .radial_gradient,
+        .conic_gradient => .conic_gradient,
         .image => .image,
     });
 }
@@ -78,6 +80,7 @@ pub fn write(
         .solid => |color| setTexel(data, texel_width, texel_offset + 2, srgbToLinearColor(color)),
         .linear_gradient => |gradient| writeLinearGradient(data, texel_width, texel_offset, gradient),
         .radial_gradient => |gradient| writeRadialGradient(data, texel_width, texel_offset, gradient),
+        .conic_gradient => |gradient| writeConicGradient(data, texel_width, texel_offset, gradient),
         .image => |image| writeImagePaint(data, texel_width, texel_offset, image),
     }
 }
@@ -133,6 +136,19 @@ fn writeRadialGradient(data: []f32, texel_width: u32, texel_offset: u32, gradien
     setTexel(data, texel_width, texel_offset + 5, .{ 0, 0, 0, 0 });
 }
 
+fn writeConicGradient(data: []f32, texel_width: u32, texel_offset: u32, gradient: anytype) void {
+    setTexel(data, texel_width, texel_offset + 2, .{
+        gradient.center.x,
+        gradient.center.y,
+        gradient.start_angle,
+        @floatFromInt(@intFromEnum(gradient.extend)),
+    });
+    // sRGB-stored endpoints; see writeLinearGradient.
+    setTexel(data, texel_width, texel_offset + 3, gradient.start_color);
+    setTexel(data, texel_width, texel_offset + 4, gradient.end_color);
+    setTexel(data, texel_width, texel_offset + 5, .{ 0, 0, 0, 0 });
+}
+
 fn writeImagePaint(data: []f32, texel_width: u32, texel_offset: u32, image: anytype) void {
     setTexel(data, texel_width, texel_offset + 2, .{
         image.uv_transform.xx,
@@ -146,7 +162,9 @@ fn writeImagePaint(data: []f32, texel_width: u32, texel_offset: u32, image: anyt
         image.uv_transform.ty,
         @floatFromInt(@intFromEnum(image.filter)),
     });
-    setTexel(data, texel_width, texel_offset + 4, srgbToLinearColor(image.tint));
+    // texel+4 is unused (image color modulation is per-instance tint, not a
+    // per-paint field). Kept zero to preserve the fixed 6-texel record.
+    setTexel(data, texel_width, texel_offset + 4, .{ 0, 0, 0, 0 });
     setTexel(data, texel_width, texel_offset + 5, .{
         0,
         0,

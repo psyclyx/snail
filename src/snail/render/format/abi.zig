@@ -14,6 +14,7 @@ pub const PaintRecordKind = enum(u8) {
     radial_gradient = 3,
     image = 4,
     composite_group = 5,
+    conic_gradient = 6,
 };
 
 pub const paint_info_width: u32 = 4096;
@@ -103,6 +104,7 @@ pub fn paintRecordKindFromTag(tag: f32) ?PaintRecordKind {
         @intFromEnum(PaintRecordKind.radial_gradient) => .radial_gradient,
         @intFromEnum(PaintRecordKind.image) => .image,
         @intFromEnum(PaintRecordKind.composite_group) => .composite_group,
+        @intFromEnum(PaintRecordKind.conic_gradient) => .conic_gradient,
         else => null,
     };
 }
@@ -118,6 +120,7 @@ test "GLSL render ABI constants match Zig constants" {
     try expectGlslConst(glsl, "SNAIL_PAINT_KIND_RADIAL_GRADIENT", @intFromEnum(PaintRecordKind.radial_gradient));
     try expectGlslConst(glsl, "SNAIL_PAINT_KIND_IMAGE", @intFromEnum(PaintRecordKind.image));
     try expectGlslConst(glsl, "SNAIL_PAINT_KIND_COMPOSITE_GROUP", @intFromEnum(PaintRecordKind.composite_group));
+    try expectGlslConst(glsl, "SNAIL_PAINT_KIND_CONIC_GRADIENT", @intFromEnum(PaintRecordKind.conic_gradient));
     try expectGlslConst(glsl, "SNAIL_PAINT_TEXELS_PER_RECORD", paint_texels_per_record);
     try expectGlslConst(glsl, "SNAIL_PATH_COMPOSITE_MODE_FILL_STROKE_INSIDE", composite_mode_fill_stroke_inside);
     try expectGlslConst(glsl, "SNAIL_HINT_RECORD_FLAG_EXPANDED_BANDS", hint_record_flag_expanded_bands);

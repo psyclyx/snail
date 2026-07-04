@@ -546,9 +546,17 @@ PathPaintSample samplePathPaint(vec2 rc, ivec2 infoBase, vec4 info) {
         return PathPaintSample(mixGradient(color0, color1, wrapPaintT(t, data0.w)), 1.0);
     }
 
+    if (paintKind == SNAIL_PAINT_KIND_CONIC_GRADIENT) {
+        // data0.xy = center, data0.z = start angle, data0.w = extend.
+        // t sweeps the full turn; extend wraps it (repeat = standard conic,
+        // reflect = seamless mirror). atan() here is atan2.
+        vec2 d = rc - data0.xy;
+        float t = (atan(d.y, d.x) - data0.z) * (1.0 / 6.28318530718);
+        return PathPaintSample(mixGradient(color0, color1, wrapPaintT(t, data0.w)), 1.0);
+    }
+
     if (paintKind == SNAIL_PAINT_KIND_IMAGE) {
         vec4 data1 = texelFetch(u_layer_tex, offsetLayerLoc(infoBase, 3), 0);
-        vec4 tint = texelFetch(u_layer_tex, offsetLayerLoc(infoBase, 4), 0);
         vec4 extra = texelFetch(u_layer_tex, offsetLayerLoc(infoBase, 5), 0);
         vec2 rawUv = vec2(
             dot(vec3(rc, 1.0), vec3(data0.x, data0.y, data0.z)),
@@ -558,7 +566,9 @@ PathPaintSample samplePathPaint(vec2 rc, ivec2 infoBase, vec4 info) {
             wrapPaintT(rawUv.x, extra.z) * extra.x,
             wrapPaintT(rawUv.y, extra.w) * extra.y
         );
-        return PathPaintSample(sampleImagePaintTex(wrappedUv, int(data0.w + 0.5), int(data1.w + 0.5)) * tint, 0.0);
+        // Image color modulation is per-instance tint (applied by the
+        // caller in compositePathGroup / main), not a per-paint field.
+        return PathPaintSample(sampleImagePaintTex(wrappedUv, int(data0.w + 0.5), int(data1.w + 0.5)), 0.0);
     }
 
     return PathPaintSample(vec4(1.0, 0.0, 1.0, 1.0), 0.0);

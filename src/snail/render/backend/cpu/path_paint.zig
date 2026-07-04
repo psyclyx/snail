@@ -121,7 +121,7 @@ fn countPreparedPathLayerInfo(data: []const f32, width: u32, height: u32) Prepar
         const info = fetchLayerInfoTexelOffset(data, texel);
         const tag = pathInfoTag(info);
         switch (tag) {
-            1, 2, 3, 4 => {
+            1, 2, 3, 4, 6 => {
                 counts.records += 1;
                 counts.layers += 1;
                 texel += 6;
@@ -159,7 +159,7 @@ pub fn preparePathLayerInfoRecords(
         const info = fetchLayerInfoTexelOffset(data, texel);
         const tag = pathInfoTag(info);
         switch (tag) {
-            1, 2, 3, 4 => {
+            1, 2, 3, 4, 6 => {
                 records[record_index] = .{
                     .texel_offset = texel,
                     .tag = tag,
@@ -259,6 +259,16 @@ fn preparePathPaintFromLayerInfoOffset(
                 .color1 = color1,
             };
         },
+        6 => {
+            const color0 = fetchLayerInfoTexelOffset(data, texel_offset + 3);
+            const color1 = fetchLayerInfoTexelOffset(data, texel_offset + 4);
+            return .{
+                .kind = .conic_gradient,
+                .data0 = data0,
+                .color0 = color0,
+                .color1 = color1,
+            };
+        },
         4 => {
             // Image paint. The atlas-side `paint_image_records` stores each
             // record's `texel_offset` as the flat layer-info texel address
@@ -269,13 +279,11 @@ fn preparePathPaintFromLayerInfoOffset(
             // the image slot directly out of layer-info.)
             const records = paint_image_records orelse return .{};
             const data1 = fetchLayerInfoTexelOffset(data, texel_offset + 3);
-            const tint = fetchLayerInfoTexelOffset(data, texel_offset + 4);
             const extra = fetchLayerInfoTexelOffset(data, texel_offset + 5);
             return .{
                 .kind = .image,
                 .data0 = data0,
                 .data1 = data1,
-                .color0 = tint,
                 .extra = extra,
                 .image_record = findImageRecordByTexel(records, texel_offset),
             };
@@ -349,10 +357,6 @@ fn lerpColor(a: [4]f32, b: [4]f32, t: f32) [4]f32 {
     };
 }
 
-fn lerpGradientColor(a_linear: [4]f32, b_linear: [4]f32, t: f32) [4]f32 {
-    return lerpGradientColorFromSrgb(linearColorToSrgb(a_linear), linearColorToSrgb(b_linear), t);
-}
-
 fn lerpGradientColorFromSrgb(a_srgb: [4]f32, b_srgb: [4]f32, t: f32) [4]f32 {
     return srgbColorToLinear(lerpColor(a_srgb, b_srgb, t));
 }
@@ -394,6 +398,7 @@ pub const PreparedPathPaint = struct {
         solid,
         linear_gradient,
         radial_gradient,
+        conic_gradient,
         image,
     };
 
@@ -429,77 +434,29 @@ pub const PreparedPathPaint = struct {
                     .apply_dither = true,
                 };
             },
+            .conic_gradient => blk: {
+                // data0.xy = center, data0.z = start angle, data0.w = extend.
+                const center = Vec2.new(self.data0[0], self.data0[1]);
+                const d = Vec2.sub(local, center);
+                const t = (std.math.atan2(d.y, d.x) - self.data0[2]) * (1.0 / (2.0 * std.math.pi));
+                break :blk .{
+                    .color = lerpGradientColorFromSrgb(self.color0, self.color1, wrapPaintT(t, paintExtendFromFloat(self.data0[3]))),
+                    .apply_dither = true,
+                };
+            },
             .image => blk: {
                 const record = self.image_record orelse break :blk .{ .color = .{ 1, 0, 1, 1 } };
-                break :blk samplePreparedImageWithRecord(record, self.data0, self.data1, self.color0, self.extra, local);
+                break :blk samplePreparedImageWithRecord(record, self.data0, self.data1, self.extra, local);
             },
             .invalid => .{ .color = .{ 1, 0, 1, 1 } },
         };
     }
 };
 
-fn sampleLinearGradient(data0: [4]f32, color0: [4]f32, color1: [4]f32, extra: [4]f32, local: Vec2) PathPaintSample {
-    const start = Vec2.new(data0[0], data0[1]);
-    const end = Vec2.new(data0[2], data0[3]);
-    const delta = Vec2.sub(end, start);
-    const len_sq = Vec2.dot(delta, delta);
-    var t: f32 = 0.0;
-    if (len_sq > 1e-10) t = Vec2.dot(Vec2.sub(local, start), delta) / len_sq;
-    return .{
-        .color = lerpGradientColor(color0, color1, wrapPaintT(t, paintExtendFromFloat(extra[0]))),
-        .apply_dither = true,
-    };
-}
-
-fn sampleRadialGradient(data0: [4]f32, color0: [4]f32, color1: [4]f32, local: Vec2) PathPaintSample {
-    const center = Vec2.new(data0[0], data0[1]);
-    const radius = @max(@abs(data0[2]), 1.0 / 65536.0);
-    const t = Vec2.length(Vec2.sub(local, center)) / radius;
-    return .{
-        .color = lerpGradientColor(color0, color1, wrapPaintT(t, paintExtendFromFloat(data0[3]))),
-        .apply_dither = true,
-    };
-}
-
-pub fn sampleImageWithRecord(
-    record: PaintImageRecord,
-    data: []const f32,
-    width: u32,
-    info_x: u16,
-    info_y: u16,
-    data0_offset: u32,
-    data0: [4]f32,
-    local: Vec2,
-) PathPaintSample {
-    const data1 = fetchLayerInfoTexel(data, width, info_x, info_y, data0_offset + 1);
-    const tint = fetchLayerInfoTexel(data, width, info_x, info_y, data0_offset + 2);
-    const extra = fetchLayerInfoTexel(data, width, info_x, info_y, data0_offset + 3);
-    const raw_uv = Vec2.new(
-        data0[0] * local.x + data0[1] * local.y + data0[2],
-        data1[0] * local.x + data1[1] * local.y + data1[2],
-    );
-    // extra[0..1] are UV scale factors patched by the GPU upload path.
-    // The CPU samples images directly (not via a texture array), so
-    // unpatched zeros are correct to treat as 1.0 (full image range).
-    const uv = Vec2.new(
-        wrapPaintT(raw_uv.x, paintExtendFromFloat(extra[2])),
-        wrapPaintT(raw_uv.y, paintExtendFromFloat(extra[3])),
-    );
-    const filter: snail.ImageFilter = if (@as(i32, @intFromFloat(@round(data1[3]))) == 1) .nearest else .linear;
-    const sample = sampleImageLinear(record.image, uv, filter);
-    return .{ .color = .{
-        sample[0] * tint[0],
-        sample[1] * tint[1],
-        sample[2] * tint[2],
-        sample[3] * tint[3],
-    } };
-}
-
 pub fn samplePreparedImageWithRecord(
     record: PaintImageRecord,
     data0: [4]f32,
     data1: [4]f32,
-    tint: [4]f32,
     extra: [4]f32,
     local: Vec2,
 ) PathPaintSample {
@@ -512,11 +469,124 @@ pub fn samplePreparedImageWithRecord(
         wrapPaintT(raw_uv.y, paintExtendFromFloat(extra[3])),
     );
     const filter: snail.ImageFilter = if (@as(i32, @intFromFloat(@round(data1[3]))) == 1) .nearest else .linear;
-    const sample = sampleImageLinear(record.image, uv, filter);
-    return .{ .color = .{
-        sample[0] * tint[0],
-        sample[1] * tint[1],
-        sample[2] * tint[2],
-        sample[3] * tint[3],
+    // Image color modulation is per-instance tint, applied by the renderer
+    // after sampling — not a per-paint field.
+    return .{ .color = sampleImageLinear(record.image, uv, filter) };
+}
+
+// ── paint evaluator vector tests ───────────────────────────────────────────
+//
+// These pin the CPU paint semantics kind-by-kind. They are the source of
+// truth the GLSL evaluator (`snail_path_frag_body.glsl`) must match — the two
+// are hand-synced, so a drift here or there shows up as a CPU/GPU mismatch.
+// Gradients mix in sRGB space then convert to linear, so a 0→1 ramp sampled
+// at t maps to `srgbToLinear(t)`; endpoints 0 and 1 are sRGB fixed points.
+
+const testing = std.testing;
+
+/// Scalar sRGB→linear for expected gradient values (a 0→1 ramp mixed in
+/// sRGB and sampled at t lands on `s2l(t)`).
+fn s2l(v: f32) f32 {
+    return srgbColorToLinear(.{ v, v, v, 1 })[0];
+}
+
+test "solid paint samples its stored linear color, position-independent" {
+    const p = PreparedPathPaint{ .kind = .solid, .color0 = .{ 0.25, 0.5, 0.75, 1.0 } };
+    try testing.expectEqual([4]f32{ 0.25, 0.5, 0.75, 1.0 }, p.sample(Vec2.new(3, 7)).color);
+    try testing.expectEqual([4]f32{ 0.25, 0.5, 0.75, 1.0 }, p.sample(Vec2.new(-9, 2)).color);
+    try testing.expect(!p.sample(Vec2.new(0, 0)).apply_dither);
+}
+
+test "linear gradient projects position onto the axis and mixes in sRGB" {
+    const p = PreparedPathPaint{
+        .kind = .linear_gradient,
+        .data0 = .{ 0, 0, 10, 0 }, // start (0,0) → end (10,0)
+        .color0 = .{ 0, 0, 0, 1 },
+        .color1 = .{ 1, 1, 1, 1 },
+        .extra = .{ 0, 0, 0, 0 }, // clamp
+    };
+    try testing.expectApproxEqAbs(@as(f32, 0), p.sample(Vec2.new(0, 0)).color[0], 1e-4);
+    try testing.expectApproxEqAbs(@as(f32, 1), p.sample(Vec2.new(10, 0)).color[0], 1e-4);
+    try testing.expectApproxEqAbs(s2l(0.5), p.sample(Vec2.new(5, 0)).color[0], 1e-4);
+    // Off-axis position projects onto the axis (y is ignored here).
+    try testing.expectApproxEqAbs(s2l(0.5), p.sample(Vec2.new(5, 99)).color[0], 1e-4);
+    try testing.expect(p.sample(Vec2.new(5, 0)).apply_dither);
+}
+
+test "linear gradient extend modes past the endpoints" {
+    var p = PreparedPathPaint{
+        .kind = .linear_gradient,
+        .data0 = .{ 0, 0, 10, 0 },
+        .color0 = .{ 0, 0, 0, 1 },
+        .color1 = .{ 1, 1, 1, 1 },
+        .extra = .{ 0, 0, 0, 0 },
+    };
+    // x = 15 → t = 1.5
+    p.extra[0] = 0; // clamp → 1.0 → white
+    try testing.expectApproxEqAbs(@as(f32, 1), p.sample(Vec2.new(15, 0)).color[0], 1e-4);
+    p.extra[0] = 1; // repeat → fract(1.5) = 0.5
+    try testing.expectApproxEqAbs(s2l(0.5), p.sample(Vec2.new(15, 0)).color[0], 1e-4);
+    p.extra[0] = 2; // reflect → 0.5
+    try testing.expectApproxEqAbs(s2l(0.5), p.sample(Vec2.new(15, 0)).color[0], 1e-4);
+}
+
+test "radial gradient maps distance/radius to t" {
+    const p = PreparedPathPaint{
+        .kind = .radial_gradient,
+        .data0 = .{ 0, 0, 10, 0 }, // center (0,0), radius 10, clamp
+        .color0 = .{ 0, 0, 0, 1 },
+        .color1 = .{ 1, 1, 1, 1 },
+    };
+    try testing.expectApproxEqAbs(@as(f32, 0), p.sample(Vec2.new(0, 0)).color[0], 1e-4);
+    try testing.expectApproxEqAbs(@as(f32, 1), p.sample(Vec2.new(10, 0)).color[0], 1e-4);
+    try testing.expectApproxEqAbs(@as(f32, 1), p.sample(Vec2.new(0, 10)).color[0], 1e-4);
+    try testing.expectApproxEqAbs(s2l(0.5), p.sample(Vec2.new(5, 0)).color[0], 1e-4);
+}
+
+test "conic gradient sweeps angle to t" {
+    const p = PreparedPathPaint{
+        .kind = .conic_gradient,
+        .data0 = .{ 0, 0, 0, 1 }, // center (0,0), start angle 0, repeat
+        .color0 = .{ 0, 0, 0, 1 },
+        .color1 = .{ 1, 1, 1, 1 },
+    };
+    try testing.expectApproxEqAbs(@as(f32, 0), p.sample(Vec2.new(1, 0)).color[0], 1e-4); // angle 0 → t 0
+    try testing.expectApproxEqAbs(s2l(0.25), p.sample(Vec2.new(0, 1)).color[0], 1e-4); // π/2 → t .25
+    try testing.expectApproxEqAbs(s2l(0.5), p.sample(Vec2.new(-1, 0)).color[0], 1e-4); // π → t .5
+    try testing.expectApproxEqAbs(s2l(0.75), p.sample(Vec2.new(0, -1)).color[0], 1e-4); // -π/2 → t .75
+}
+
+test "paint record round-trips: Paint → encode → decode → sample" {
+    const paint_records = @import("../../../atlas/paint_records.zig");
+    const be = band_tex.GlyphBandEntry{
+        .glyph_x = 0,
+        .glyph_y = 0,
+        .h_band_count = 1,
+        .v_band_count = 1,
+        .band_scale_x = 1,
+        .band_scale_y = 1,
+        .band_offset_x = 0,
+        .band_offset_y = 0,
+    };
+    const w = render_abi.paint_texels_per_record;
+    var buf: [render_abi.paint_texels_per_record * 4]f32 = [_]f32{0} ** (render_abi.paint_texels_per_record * 4);
+
+    // Solid stores linear; sRGB fixed points survive exactly.
+    paint_records.write(&buf, w, 0, be, snail.Paint{ .solid = .{ 1, 0, 0, 1 } }, 0);
+    const solid = preparePathPaintFromLayerInfoOffset(&buf, 0, null);
+    try testing.expectEqual(PreparedPathPaint.Kind.solid, solid.kind);
+    try testing.expectEqual([4]f32{ 1, 0, 0, 1 }, solid.sample(Vec2.new(0, 0)).color);
+
+    // Conic through the real texel layout: π → midpoint.
+    const conic = snail.Paint{ .conic_gradient = .{
+        .center = .{ .x = 0, .y = 0 },
+        .start_angle = 0,
+        .start_color = .{ 0, 0, 0, 1 },
+        .end_color = .{ 1, 1, 1, 1 },
+        .extend = .repeat,
     } };
+    paint_records.write(&buf, w, 0, be, conic, 0);
+    const decoded = preparePathPaintFromLayerInfoOffset(&buf, 0, null);
+    try testing.expectEqual(PreparedPathPaint.Kind.conic_gradient, decoded.kind);
+    try testing.expectApproxEqAbs(s2l(0.5), decoded.sample(Vec2.new(-1, 0)).color[0], 1e-4);
 }

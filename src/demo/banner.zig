@@ -683,6 +683,18 @@ const BannerBuilder = struct {
             } }, snail_helpers.placeRect(.{ .x = imx, .y = fills_y, .w = sz, .h = sz }));
         }
 
+        // Conic gradient — sweep two colors around the shape center.
+        const cgx = x0 + (sz + gap) * 4;
+        {
+            var p = try snail_helpers.unitRoundedRectPath(sb.allocator, fill_r);
+            defer p.deinit();
+            try sb.addFilledPath(&p, .{ .conic_gradient = .{
+                .center = .{ .x = 0.5, .y = 0.5 },
+                .start_color = .{ 0.95, 0.75, 0.25, 1.0 },
+                .end_color = .{ 0.30, 0.45, 0.85, 1.0 },
+            } }, snail_helpers.placeRect(.{ .x = cgx, .y = fills_y, .w = sz, .h = sz }));
+        }
+
         // Stroke-only path (in shapes row, last cell), authored in the unit frame.
         const stx = x0 + (sz + gap) * 4;
         {
@@ -906,7 +918,7 @@ const BannerBuilder = struct {
             const fill_shapes_y = fills_label_y + sub_label_size + 6 * s;
             const fill_label_y = fill_shapes_y + sz + 2 * s;
             lx = x;
-            const fill_labels = [_][]const u8{ "solid", "linear", "radial", "image" };
+            const fill_labels = [_][]const u8{ "solid", "linear", "radial", "image", "conic" };
             for (fill_labels) |lbl| {
                 _ = try self.addText(.{}, lbl, lx, fill_label_y + item_label, item_label, muted);
                 lx += sz + gap;
