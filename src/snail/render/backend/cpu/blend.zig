@@ -1,3 +1,4 @@
+const std = @import("std");
 const snail = @import("../../../root.zig");
 const cpu_color = @import("color.zig");
 const cpu_coverage = @import("coverage.zig");
@@ -217,4 +218,55 @@ pub inline fn blendSubpixelPixel(target: Target, row: u32, col: u32, color: [4]f
     const target_color = target.srcColorForSubpixelTarget(color);
     const src_blend = subpixelBlendCoverage(color, cov);
     blendSubpixelPremultipliedPixel(target, row, col, premultiplySubpixelCoverage(target_color, cov, alpha_cov), src_blend, false);
+}
+
+// ── gamma probes ───────────────────────────────────────────────────────────
+//
+// Gamma correctness is a full-coverage property, so these test the blend at a
+// single known pixel with an analytic expected value — no AA, no cross-backend
+// tolerance. The blend math here is *identical* to what an AA edge runs
+// (`src·coverage over dst` vs `src·alpha over dst`), so pinning it at alpha=0.5
+// gives confidence about edge gamma without comparing untestable AA edges.
+//
+// The signature regression: 50%-white over black. Blended in **linear light**
+// → linear 0.5 → sRGB **188**. Blended in **gamma space** (the bug) → **128**.
+
+const testing = std.testing;
+
+fn blendProbe(encoding: snail.TargetEncoding, resolve: ResolveMode, bg: [4]u8, src: [4]f32) [4]u8 {
+    var px = bg;
+    const target = Target{
+        .pixels = &px,
+        .stride = 4,
+        .height = 1,
+        .target_encoding = encoding,
+        .target_resolve = resolve,
+    };
+    blendPremultipliedPixel(target, 0, 0, src, false);
+    return px;
+}
+
+test "gamma: 50% white over black blends in linear light on an sRGB target" {
+    // src = white premultiplied by 0.5 coverage; bg = opaque black.
+    const out = blendProbe(.srgb, .{ .direct = {} }, .{ 0, 0, 0, 255 }, .{ 0.5, 0.5, 0.5, 0.5 });
+    // Linear-correct → 188. A gamma-space regression lands near 128.
+    try testing.expectApproxEqAbs(@as(f32, 188), @as(f32, @floatFromInt(out[0])), 1.0);
+    try testing.expectEqual(@as(u8, 255), out[3]);
+}
+
+test "gamma: linear target stores the linear 0.5 result unencoded (128)" {
+    // On a fully-linear target the same blend stores linear 0.5 = 128; that is
+    // correct for linear storage (no sRGB encode). Pins that we don't
+    // accidentally sRGB-encode a linear target.
+    const out = blendProbe(.linear, .{ .direct = {} }, .{ 0, 0, 0, 255 }, .{ 0.5, 0.5, 0.5, 0.5 });
+    try testing.expectApproxEqAbs(@as(f32, 128), @as(f32, @floatFromInt(out[0])), 1.0);
+}
+
+test "gamma: opaque src writes its exact encoded color (encode probe)" {
+    // Fully-opaque mid-gray (linear 0.5) over anything → sRGB 188 on an sRGB
+    // target, 128 on a linear target. Catches a missing/double encode.
+    const srgb_out = blendProbe(.srgb, .{ .direct = {} }, .{ 9, 9, 9, 255 }, .{ 0.5, 0.5, 0.5, 1.0 });
+    try testing.expectApproxEqAbs(@as(f32, 188), @as(f32, @floatFromInt(srgb_out[0])), 1.0);
+    const linear_out = blendProbe(.linear, .{ .direct = {} }, .{ 9, 9, 9, 255 }, .{ 0.5, 0.5, 0.5, 1.0 });
+    try testing.expectApproxEqAbs(@as(f32, 128), @as(f32, @floatFromInt(linear_out[0])), 1.0);
 }
