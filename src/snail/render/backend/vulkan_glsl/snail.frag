@@ -19,12 +19,14 @@ layout(push_constant) uniform PushConstants {
     int output_srgb;
     int layer_base;
     float coverage_exponent;
+    float dither_scale;
 };
 
 layout(location = 0) out vec4 frag_color;
 
 #define SNAIL_OUTPUT_SRGB output_srgb
 #define SNAIL_COVERAGE_EXPONENT coverage_exponent
+#define SNAIL_DITHER_SCALE dither_scale
 #define u_layer_base layer_base
 
 #include "snail_render_abi.glsl"

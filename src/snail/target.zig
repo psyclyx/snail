@@ -87,6 +87,10 @@ pub const TargetSurface = struct {
     pixel_width: f32,
     pixel_height: f32,
     encoding: TargetEncoding,
+    /// Byte layout of the attachment. GPU backends pack in hardware regardless,
+    /// but use it to set the per-format dither amplitude (0 for float, 1/1023
+    /// for 10-bit, 1/255 for 8-bit). Defaults to rgba8.
+    format: PixelFormat = .rgba8_unorm,
 
     pub fn pixelRect(self: TargetSurface) PixelRect {
         return PixelRect.full(

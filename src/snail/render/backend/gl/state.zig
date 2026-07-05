@@ -608,6 +608,9 @@ fn TextStateFor(comptime backend: Backend) type {
                     cache_slot.coverage_exponent_set = true;
                 }
             }
+            if (prog_state.dither_scale_loc >= 0) {
+                gl.glUniform1f(prog_state.dither_scale_loc, draw_state.surface.format.ditherAmplitude());
+            }
         }
 
         /// Return the shadow-cache slot for `program`, allocating one

@@ -511,8 +511,8 @@ vec4 mixGradient(vec4 c0, vec4 c1, float t) {
 }
 
 vec4 ditherPremultipliedColor(vec4 color) {
-    if (color.a <= 0.0) return color;
-    float dither = (interleavedGradientNoise(gl_FragCoord.xy) - 0.5) * (clamp(color.a, 0.0, 1.0) / 255.0);
+    if (color.a <= 0.0 || SNAIL_DITHER_SCALE <= 0.0) return color; // float targets: no dither
+    float dither = (interleavedGradientNoise(gl_FragCoord.xy) - 0.5) * (clamp(color.a, 0.0, 1.0) * SNAIL_DITHER_SCALE);
     vec3 srgb = clamp(linearToSrgb(color.rgb) + vec3(dither), 0.0, 1.0);
     return vec4(srgbToLinear(srgb), color.a);
 }

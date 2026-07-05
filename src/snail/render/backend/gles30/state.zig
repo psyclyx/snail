@@ -348,6 +348,9 @@ pub const Gles30TextState = struct {
         if (prog_state.coverage_exponent_loc >= 0) {
             gl.glUniform1f(prog_state.coverage_exponent_loc, draw_state.raster.coverage_transfer.shaderExponent());
         }
+        if (prog_state.dither_scale_loc >= 0) {
+            gl.glUniform1f(prog_state.dither_scale_loc, draw_state.surface.format.ditherAmplitude());
+        }
     }
 
     pub fn beginDraw(self: *Gles30TextState) void {
