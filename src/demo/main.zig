@@ -868,7 +868,7 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
             profile_snap_render_us = 0;
             // Wire / unwire the per-instance profile hook. When off, the
             // renderer's tight inner loop pays nothing for the hook.
-            snail.cpu_instance_profile.* = if (timing_enabled) &profile_live else null;
+            active.setInstanceProfile(if (timing_enabled) &profile_live else null);
             std.debug.print("\ntiming={s}\n", .{if (timing_enabled) "on" else "off"});
             if (timing_enabled and !renderer_driver.isCpuKind(active.kind())) {
                 std.debug.print("[timing] per-instance profile requires a CPU backend\n", .{});
@@ -887,6 +887,8 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
                 active_valid = false;
                 active = try renderer_driver.Driver.init(allocator, window, next_kind);
                 active_valid = true;
+                // The profile hook is per-renderer now; re-wire it on the new driver.
+                active.setInstanceProfile(if (timing_enabled) &profile_live else null);
                 last_presentation = null;
                 last_time = wayland.getTime();
                 frame_count = 0;

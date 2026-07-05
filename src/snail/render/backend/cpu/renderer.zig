@@ -104,10 +104,6 @@ pub const InstanceProfileBuf = struct {
     }
 };
 
-/// Wire a buffer in to start collecting per-instance timings; clear to
-/// stop. Caller owns the buffer's storage and lifetime.
-pub var instance_profile: ?*InstanceProfileBuf = null;
-
 /// CLOCK_MONOTONIC in nanoseconds. Used by the per-instance profiler
 /// to time each `renderBatchInstance` call. Zig 0.16 dropped
 /// `std.time.Instant`/`Timer`; this drops to `std.c.clock_gettime`
@@ -142,6 +138,11 @@ pub const CpuRenderer = struct {
     row_clip_max: u32,
     col_clip_min: u32,
     col_clip_max: u32,
+    /// Optional per-instance timing sink. Per-renderer (not a process global)
+    /// so independent renderers on separate threads profile independently.
+    /// Only the serial `drawBatchInstances` path records; wire a buffer in to
+    /// start, clear to stop. The caller owns the buffer's storage/lifetime.
+    instance_profile: ?*InstanceProfileBuf = null,
 
     pub const TILE_ROWS: u32 = 2;
 
@@ -337,9 +338,11 @@ pub const CpuRenderer = struct {
         }
 
         // The CPU rasterizer doesn't do per-pixel 1/w, so a non-affine MVP
-        // would silently disagree with the GPU backends. Refuse loudly.
+        // would silently disagree with the GPU backends. Refuse — but as a
+        // returned error, not a process abort: an embedder feeding matrices
+        // from its own camera code shouldn't be able to crash the host.
         const scene = snail.mvpToScenePixel(state.mvp, state.surface.pixel_width, state.surface.pixel_height) orelse
-            std.debug.panic("CpuRenderer: MVP is non-affine (perspective) or degenerate", .{});
+            return error.NonAffineMvp;
         if (thread_pool) |pool| {
             if (pool.threadCount() > 0 and self.row_clip_max > self.row_clip_min + TILE_ROWS) {
                 self.drawBatchInstancesParallel(pool, prepared, vertices, scene, texture_layer_base, true);
@@ -396,7 +399,7 @@ pub const CpuRenderer = struct {
 
     fn drawBatchInstances(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const u32, scene_to_pixel: Transform2D, texture_layer_base: u32, allow_subpixel: bool, profile_enabled: bool) void {
         const WORDS = vertex.WORDS_PER_INSTANCE;
-        const profile = if (profile_enabled) instance_profile else null;
+        const profile = if (profile_enabled) self.instance_profile else null;
         var i: usize = 0;
         var idx: u32 = 0;
         while (i + WORDS <= vertices.len) : (i += WORDS) {

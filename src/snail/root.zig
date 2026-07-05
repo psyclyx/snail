@@ -82,7 +82,6 @@ pub const BackendKind = backend_kind.BackendKind;
 pub const CpuRenderer = @import("render/backend/cpu/renderer.zig").CpuRenderer;
 pub const InstanceProfileEntry = @import("render/backend/cpu/renderer.zig").InstanceProfileEntry;
 pub const InstanceProfileBuf = @import("render/backend/cpu/renderer.zig").InstanceProfileBuf;
-pub const cpu_instance_profile = &@import("render/backend/cpu/renderer.zig").instance_profile;
 pub const ThreadPool = @import("thread_pool.zig").ThreadPool;
 pub const Gl33Renderer = @import("render/backend/gl/state.zig").Gl33Renderer;
 pub const Gl44Renderer = @import("render/backend/gl/state.zig").Gl44Renderer;

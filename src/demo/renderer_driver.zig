@@ -241,6 +241,17 @@ pub const Driver = union(Kind) {
         };
     }
 
+    /// Wire the per-instance timing sink on the CPU renderer (no-op for GPU
+    /// backends, which don't run the serial CPU instance loop).
+    pub fn setInstanceProfile(self: *Driver, profile: ?*snail.InstanceProfileBuf) void {
+        switch (self.*) {
+            .cpu, .cpu_less_threaded, .cpu_unthreaded => |*d| if (comptime build_options.enable_cpu) {
+                d.renderer_state.instance_profile = profile;
+            },
+            else => {},
+        }
+    }
+
     pub fn shouldClose(self: *Driver) bool {
         return switch (self.*) {
             .vulkan => if (comptime build_options.enable_vulkan) vulkan_platform.shouldClose() else true,
