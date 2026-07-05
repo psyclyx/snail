@@ -24,10 +24,11 @@ const PushConstants = extern struct {
     layer_base: i32 = 0,
     coverage_exponent: f32 = 1.0,
     dither_scale: f32 = 1.0 / 255.0, // gradient dither amplitude; 0 for float targets
+    mask_output: i32 = 0, // 1 = single-channel mask target: emit painted alpha
 };
 
 comptime {
-    if (@sizeOf(PushConstants) != 92) @compileError("PushConstants must be 92 bytes");
+    if (@sizeOf(PushConstants) != 96) @compileError("PushConstants must be 96 bytes");
 }
 
 pub const VulkanContext = vulkan_types.VulkanContext;
@@ -302,6 +303,7 @@ pub const VulkanPipeline = struct {
             .layer_base = @intCast(local_layer_base),
             .coverage_exponent = state.raster.coverage_transfer.shaderExponent(),
             .dither_scale = state.surface.format.ditherAmplitude(),
+            .mask_output = if (state.surface.format.hasColor()) 0 else 1,
         };
         vk.vkCmdPushConstants(cmd, self.pipeline_layout, vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(PushConstants), &pc);
     }

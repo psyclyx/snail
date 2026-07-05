@@ -146,5 +146,5 @@ void main() {
         result = premul + result * (1.0 - premul.a);
     }
     if (result.a < 1.0 / 255.0) discard;
-    frag_color = (SNAIL_OUTPUT_SRGB != 0) ? srgbEncodePremultiplied(result) : result;
+    frag_color = (SNAIL_MASK_OUTPUT != 0) ? vec4(result.a) : ((SNAIL_OUTPUT_SRGB != 0) ? srgbEncodePremultiplied(result) : result);
 }

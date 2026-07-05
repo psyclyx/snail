@@ -646,7 +646,7 @@ void main() {
         PathCompositeSample result = compositePathGroup(rc, epp, ppe, infoBase, firstInfo, texLayer, v_tint);
         if (result.color.a < 1.0 / 255.0) discard;
         vec4 emit = (result.gradient > 0.5) ? ditherPremultipliedColor(result.color) : result.color;
-        frag_color = (SNAIL_OUTPUT_SRGB != 0) ? srgbEncodePremultiplied(emit) : emit;
+        frag_color = (SNAIL_MASK_OUTPUT != 0) ? vec4(emit.a) : ((SNAIL_OUTPUT_SRGB != 0) ? srgbEncodePremultiplied(emit) : emit);
         return;
     }
 
@@ -662,5 +662,5 @@ void main() {
     paint.color *= v_tint;
     vec4 result = premultiplyColor(paint.color, cov);
     vec4 emit = (paint.gradient > 0.5) ? ditherPremultipliedColor(result) : result;
-    frag_color = (SNAIL_OUTPUT_SRGB != 0) ? srgbEncodePremultiplied(emit) : emit;
+    frag_color = (SNAIL_MASK_OUTPUT != 0) ? vec4(emit.a) : ((SNAIL_OUTPUT_SRGB != 0) ? srgbEncodePremultiplied(emit) : emit);
 }

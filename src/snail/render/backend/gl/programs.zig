@@ -13,6 +13,7 @@ pub const ProgramState = struct {
     output_srgb_loc: gl.GLint = -1,
     coverage_exponent_loc: gl.GLint = -1,
     dither_scale_loc: gl.GLint = -1,
+    mask_output_loc: gl.GLint = -1,
     layer_tex_loc: gl.GLint = -1,
     layer_base_loc: gl.GLint = -1,
 };
@@ -49,6 +50,7 @@ pub fn loadProgramState(cache_label: []const u8, vs_src: [*c]const u8, fs_src: [
         .output_srgb_loc = gl.glGetUniformLocation(handle, "u_output_srgb"),
         .coverage_exponent_loc = gl.glGetUniformLocation(handle, "u_coverage_exponent"),
         .dither_scale_loc = gl.glGetUniformLocation(handle, "u_dither_scale"),
+        .mask_output_loc = gl.glGetUniformLocation(handle, "u_mask_output"),
         .layer_tex_loc = gl.glGetUniformLocation(handle, "u_layer_tex"),
         .layer_base_loc = gl.glGetUniformLocation(handle, "u_layer_base"),
     };

@@ -13,5 +13,5 @@ void main() {
     if (cov < 1.0 / 255.0) discard;
     // v_color / v_tint are already sRGB-decoded in the vertex shader.
     vec4 premul = premultiplyColor(v_color * v_tint, cov);
-    frag_color = (SNAIL_OUTPUT_SRGB != 0) ? srgbEncodePremultiplied(premul) : premul;
+    frag_color = (SNAIL_MASK_OUTPUT != 0) ? vec4(premul.a) : ((SNAIL_OUTPUT_SRGB != 0) ? srgbEncodePremultiplied(premul) : premul);
 }

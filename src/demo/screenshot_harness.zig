@@ -226,12 +226,24 @@ pub const OffscreenGlTarget = struct {
     fbo: gl.GLuint = 0,
     fbo_tex: gl.GLuint = 0,
 
+    const GL_R8: gl.GLint = 0x8229;
+    const GL_RED: gl.GLenum = 0x1903;
+
     pub fn init(width: u32, height: u32) !OffscreenGlTarget {
+        return initFormat(width, height, GL_SRGB8_ALPHA8, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE);
+    }
+
+    /// Single-channel R8 target, for verifying GPU masks.
+    pub fn initR8(width: u32, height: u32) !OffscreenGlTarget {
+        return initFormat(width, height, GL_R8, GL_RED, gl.GL_UNSIGNED_BYTE);
+    }
+
+    pub fn initFormat(width: u32, height: u32, internal_format: gl.GLint, data_format: gl.GLenum, data_type: gl.GLenum) !OffscreenGlTarget {
         var self = OffscreenGlTarget{};
         gl.glGenFramebuffers(1, &self.fbo);
         gl.glGenTextures(1, &self.fbo_tex);
         gl.glBindTexture(gl.GL_TEXTURE_2D, self.fbo_tex);
-        gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, GL_SRGB8_ALPHA8, @intCast(width), @intCast(height), 0, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, null);
+        gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, internal_format, @intCast(width), @intCast(height), 0, data_format, data_type, null);
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR);
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR);
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self.fbo);
@@ -311,6 +323,47 @@ pub fn renderGlToPixels(
     );
 
     return support.screenshot.captureFramebuffer(allocator, width, height);
+}
+
+/// Render the scene into a bound R8 target with `surface.format = .r8_unorm`
+/// (so the shader emits painted alpha to `.r`) and read the single channel
+/// back. Verifies GPU masks. GL 3.3 only.
+pub fn renderGlR8Mask(allocator: std.mem.Allocator, scene: Scene, width: u32, height: u32, opts: GlOptions) ![]u8 {
+    var renderer = try snail.Gl33Renderer.init(allocator);
+    defer renderer.deinit();
+    var cache = try snail.Gl33BackendCache.init(allocator, scene.pool, .{
+        .max_bindings = opts.max_bindings,
+        .layer_info_height = opts.layer_info_height,
+        .max_images = opts.max_images,
+        .max_image_width = opts.max_image_width,
+        .max_image_height = opts.max_image_height,
+    });
+    defer cache.deinit();
+    var bindings: [2]snail.Binding = undefined;
+    try cache.upload(allocator, &.{ scene.paths_atlas, scene.text_atlas }, &bindings);
+
+    const words = try allocator.alloc(u32, wordBudget(scene));
+    defer allocator.free(words);
+    const segs = try allocator.alloc(snail.DrawSegment, 4);
+    defer allocator.free(segs);
+    const e = try emitScene(words, segs, scene, bindings[0], bindings[1]);
+
+    gl.glClearColor(0, 0, 0, 0);
+    gl.glClear(gl.GL_COLOR_BUFFER_BIT);
+    const wf: f32 = @floatFromInt(width);
+    const hf: f32 = @floatFromInt(height);
+    const ds = snail.DrawState{
+        .surface = .{ .pixel_width = wf, .pixel_height = hf, .encoding = .linear, .format = .r8_unorm },
+        .raster = .{ .subpixel_order = .none, .coverage_transfer = .{ .exponent = 1.0 } },
+        .mvp = snail.Mat4.ortho(0, wf, hf, 0, -1, 1),
+    };
+    renderer.state.beginDraw();
+    try renderer.state.draw(allocator, ds, .{ .words = words[0..e.words_len], .segments = segs[0..e.segs_len] }, &.{&cache});
+
+    const px = try allocator.alloc(u8, @as(usize, width) * height);
+    errdefer allocator.free(px);
+    gl.glReadPixels(0, 0, @intCast(width), @intCast(height), OffscreenGlTarget.GL_RED, gl.GL_UNSIGNED_BYTE, px.ptr);
+    return px;
 }
 
 pub fn renderGl(

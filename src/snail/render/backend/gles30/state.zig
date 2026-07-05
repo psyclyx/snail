@@ -351,6 +351,9 @@ pub const Gles30TextState = struct {
         if (prog_state.dither_scale_loc >= 0) {
             gl.glUniform1f(prog_state.dither_scale_loc, draw_state.surface.format.ditherAmplitude());
         }
+        if (prog_state.mask_output_loc >= 0) {
+            gl.glUniform1i(prog_state.mask_output_loc, if (draw_state.surface.format.hasColor()) 0 else 1);
+        }
     }
 
     pub fn beginDraw(self: *Gles30TextState) void {

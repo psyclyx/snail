@@ -197,6 +197,20 @@ pub fn main() !void {
         if (@abs(v - 255) > tolerance) failed = true;
     }
 
+    // GPU mask: render the opaque bands into a GL R8 target. The shader routes
+    // painted alpha (coverage × paint.alpha = 1 for opaque interior) to .r.
+    {
+        var ctx = try egl_offscreen.Context.init(W, H, .gl33);
+        defer ctx.deinit();
+        var target = try harness.OffscreenGlTarget.initR8(W, H);
+        defer target.deinit();
+        const p = try harness.renderGlR8Mask(allocator, s, W, H, .{});
+        defer allocator.free(p);
+        const v: i32 = p[px_index]; // R8: 1 byte/pixel
+        std.debug.print("  gl33 R8 mask band1 ~255: {d}\n", .{v});
+        if (@abs(v - 255) > tolerance) failed = true;
+    }
+
     if (failed) return error.GammaMismatch;
     std.debug.print("gamma-probe: PASS\n", .{});
 }

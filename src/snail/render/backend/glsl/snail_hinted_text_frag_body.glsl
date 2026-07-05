@@ -251,5 +251,5 @@ void main() {
 
     // v_color / v_tint are already sRGB-decoded in the vertex shader.
     vec4 result = premultiplyColor(v_color * v_tint, cov);
-    frag_color = (SNAIL_OUTPUT_SRGB != 0) ? srgbEncodePremultiplied(result) : result;
+    frag_color = (SNAIL_MASK_OUTPUT != 0) ? vec4(result.a) : ((SNAIL_OUTPUT_SRGB != 0) ? srgbEncodePremultiplied(result) : result);
 }
