@@ -426,6 +426,27 @@ fn addScreenshotSteps(
     const backend_compare_step = b.step("run-backend-compare", "Render the content scene through CPU and GL and fail if they diverge beyond the AA tolerance");
     backend_compare_step.dependOn(&run_backend_compare.step);
 
+    // Gamma conformance gate: interior (full-coverage) pixels of a controlled
+    // solid scene, CPU vs GL33 vs GLES30, checked exactly against the analytic
+    // encode. Immune to AA-edge differences that backend-compare tolerates.
+    const gamma_probe_mod = b.createModule(.{
+        .root_source_file = b.path("src/demo/gamma_probe.zig"),
+        .target = config.target,
+        .optimize = .ReleaseFast,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "assets", .module = modules.assets },
+            .{ .name = "snail", .module = release_snail_mod },
+            .{ .name = "snail-helpers", .module = release_helpers_mod },
+            .{ .name = "support", .module = release_support_mod },
+        },
+    });
+    configureEglOffscreenModule(gamma_probe_mod, modules.options, config.core_options, modules.vk_shaders);
+    const gamma_probe_exe = b.addExecutable(.{ .name = "snail-gamma-probe", .root_module = gamma_probe_mod });
+    const run_gamma_probe = b.addRunArtifact(gamma_probe_exe);
+    const gamma_probe_step = b.step("run-gamma-probe", "Check interior-pixel gamma (encode round-trip) across CPU/GL33/GLES30");
+    gamma_probe_step.dependOn(&run_gamma_probe.step);
+
     // GLES screenshot.
     const screenshot_gles30_mod = b.createModule(.{
         .root_source_file = b.path("src/demo/screenshot_gles30.zig"),
