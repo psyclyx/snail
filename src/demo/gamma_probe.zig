@@ -151,6 +151,52 @@ pub fn main() !void {
             }
         }
     }
+    // ── per-format end-to-end round-trip (CPU) ──
+    // Band 1 is sRGB 0.5. Render the scene into each non-rgba8 format and
+    // decode band 1's center to confirm the full emit→draw→write pipeline
+    // threads the format and sizes the buffer correctly.
+    const band1 = 1;
+    const band_w = W / bands.len;
+    const cx = @as(u32, band1) * band_w + band_w / 2;
+    const cy = H / 2;
+    const px_index = cy * W + cx;
+
+    // BGRA8: gray, so any color byte ≈ 128 (swizzle is unit-tested separately).
+    {
+        const p = try harness.renderCpuToPixelsFmt(allocator, s, W, H, .bgra8_unorm, .{});
+        defer allocator.free(p);
+        const v: i32 = p[px_index * 4];
+        std.debug.print("  bgra8   band1 ~128: {d}\n", .{v});
+        if (@abs(v - 128) > tolerance) failed = true;
+    }
+    // RGB10A2: 10-bit R ≈ 0.5 × 1023 = 512.
+    {
+        const p = try harness.renderCpuToPixelsFmt(allocator, s, W, H, .rgb10a2_unorm, .{});
+        defer allocator.free(p);
+        const word = std.mem.readInt(u32, p[px_index * 4 ..][0..4], .little);
+        const r10: i32 = @intCast(word & 0x3FF);
+        std.debug.print("  rgb10a2 band1 ~512: {d}\n", .{r10});
+        if (@abs(r10 - 512) > 8) failed = true;
+    }
+    // RGBA16F: float targets store linear, so band 1 holds srgbToLinear(0.5).
+    {
+        const p = try harness.renderCpuToPixelsFmt(allocator, s, W, H, .rgba16f, .{});
+        defer allocator.free(p);
+        const h = std.mem.readInt(u16, p[px_index * 8 ..][0..2], .little);
+        const f: f32 = @floatCast(@as(f16, @bitCast(h)));
+        const expected = harness.srgbToLinear(0.5);
+        std.debug.print("  rgba16f band1 ~{d:.3} (linear): {d:.3}\n", .{ expected, f });
+        if (@abs(f - expected) > 0.02) failed = true;
+    }
+    // A8/R8 mask: the bands are opaque, so painted alpha = 1 → 255.
+    inline for (.{ snail.PixelFormat.a8_unorm, snail.PixelFormat.r8_unorm }) |fmt| {
+        const p = try harness.renderCpuToPixelsFmt(allocator, s, W, H, fmt, .{});
+        defer allocator.free(p);
+        const v: i32 = p[px_index];
+        std.debug.print("  {s} band1 ~255: {d}\n", .{ @tagName(fmt), v });
+        if (@abs(v - 255) > tolerance) failed = true;
+    }
+
     if (failed) return error.GammaMismatch;
     std.debug.print("gamma-probe: PASS\n", .{});
 }

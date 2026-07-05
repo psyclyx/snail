@@ -109,6 +109,49 @@ pub const CpuOptions = struct {
     max_images: u32 = 8,
 };
 
+/// CPU end-to-end into a caller-owned buffer of the given `format` (stride =
+/// width × bytesPerPixel). Not row-flipped — callers that sample full-height
+/// content are orientation-independent. Used to verify non-rgba8 formats.
+pub fn renderCpuToPixelsFmt(
+    allocator: std.mem.Allocator,
+    scene: Scene,
+    width: u32,
+    height: u32,
+    format: snail.PixelFormat,
+    opts: CpuOptions,
+) ![]u8 {
+    const stride: u32 = width * format.bytesPerPixel();
+    const pixels = try allocator.alloc(u8, @as(usize, height) * stride);
+    errdefer allocator.free(pixels);
+    @memset(pixels, 0);
+
+    var cache = try snail.CpuBackendCache.init(allocator, scene.pool, .{
+        .max_bindings = opts.max_bindings,
+        .layer_info_height = opts.layer_info_height,
+        .max_images = opts.max_images,
+    });
+    defer cache.deinit();
+    var bindings: [2]snail.Binding = undefined;
+    try cache.upload(allocator, &.{ scene.paths_atlas, scene.text_atlas }, &bindings);
+
+    const words = try allocator.alloc(u32, wordBudget(scene));
+    defer allocator.free(words);
+    const segs = try allocator.alloc(snail.DrawSegment, 4);
+    defer allocator.free(segs);
+    const e = try emitScene(words, segs, scene, bindings[0], bindings[1]);
+
+    var renderer = snail.CpuRenderer.init(pixels.ptr, width, height, stride);
+    renderer.format = format;
+    try snail.drawCpu(
+        &renderer,
+        drawState(width, height),
+        .{ .words = words[0..e.words_len], .segments = segs[0..e.segs_len] },
+        &.{&cache},
+        null,
+    );
+    return pixels;
+}
+
 /// CPU end-to-end into a caller-owned RGBA8 top-down buffer (the returned
 /// slice is owned by `allocator`). `renderCpu` wraps this to write a TGA;
 /// `backend_compare` uses it to diff against GL.
