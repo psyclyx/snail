@@ -128,6 +128,10 @@ pub const CpuRenderer = struct {
     /// Encoding of the caller-owned pixel buffer. The unified `Renderer.draw`
     /// path sets this from `DrawState.surface.encoding` every frame.
     target_encoding: snail.TargetEncoding,
+    /// Byte layout of the caller's pixel buffer. Defaults to rgba8; the caller
+    /// sets it (and a matching `stride` = width × bytesPerPixel) for other
+    /// formats. The blend path comptime-specializes on it once per draw.
+    format: snail.PixelFormat = .rgba8_unorm,
     target_resolve: cpu_blend.ResolveMode,
     linear_resolve_active: bool,
     coverage_transfer: snail.CoverageTransfer,
@@ -1887,18 +1891,20 @@ pub const CpuRenderer = struct {
         if (self.linear_resolve_active) return false;
         const linear = multiplyLinearColor(paint.color0, tint);
         if (linear[3] < 1.0 - 1.0e-4) return false;
-        const bytes = cpu_blend.opaqueLinearBytesForTarget(
-            self.blendTarget(),
-            .{ linear[0], linear[1], linear[2] },
-        );
-        const word: u32 = @as(u32, bytes[0])
-            | (@as(u32, bytes[1]) << 8)
-            | (@as(u32, bytes[2]) << 16)
-            | (@as(u32, bytes[3]) << 24);
-        const offset = @as(usize, row) * self.stride + @as(usize, col_start) * 4;
-        const dst_u32: [*]u32 = @ptrCast(@alignCast(self.pixels + offset));
-        @memset(dst_u32[0..(col_end_excl - col_start)], word);
-        return true;
+        switch (self.format) {
+            inline else => |fmt| {
+                // The u32 memset only applies to 4-byte formats (rgba8/bgra8/
+                // rgb10a2, whose packed pixel is one word). Others fall back to
+                // the per-pixel path.
+                if (comptime fmt.bytesPerPixel() != 4) return false;
+                const bytes = cpu_blend.opaqueBytesForTarget(fmt, self.blendTarget(), .{ linear[0], linear[1], linear[2] });
+                const word: u32 = @as(u32, bytes[0]) | (@as(u32, bytes[1]) << 8) | (@as(u32, bytes[2]) << 16) | (@as(u32, bytes[3]) << 24);
+                const offset = @as(usize, row) * self.stride + @as(usize, col_start) * 4;
+                const dst_u32: [*]u32 = @ptrCast(@alignCast(self.pixels + offset));
+                @memset(dst_u32[0..(col_end_excl - col_start)], word);
+                return true;
+            },
+        }
     }
 
     inline fn blendTarget(self: *CpuRenderer) cpu_blend.Target {
@@ -1911,19 +1917,28 @@ pub const CpuRenderer = struct {
         };
     }
 
+    // The three pixel-write wrappers dispatch on the runtime format once here;
+    // `inline else` gives each format a comptime-specialized (branch-free)
+    // blend body. The format is constant per draw, so the branch predicts.
     inline fn blendPremultipliedPixel(self: *CpuRenderer, row: u32, col: u32, src: [4]f32, apply_dither: bool) void {
-        cpu_blend.blendPremultipliedPixel(self.blendTarget(), row, col, src, apply_dither);
+        switch (self.format) {
+            inline else => |fmt| cpu_blend.blendPremultipliedPixel(fmt, self.blendTarget(), row, col, src, apply_dither),
+        }
     }
 
     inline fn blendSubpixelPremultipliedPixel(self: *CpuRenderer, row: u32, col: u32, src: [4]f32, src_blend: [3]f32, apply_dither: bool) void {
-        cpu_blend.blendSubpixelPremultipliedPixel(self.blendTarget(), row, col, src, src_blend, apply_dither);
+        switch (self.format) {
+            inline else => |fmt| cpu_blend.blendSubpixelPremultipliedPixel(fmt, self.blendTarget(), row, col, src, src_blend, apply_dither),
+        }
     }
 
     /// Per-channel subpixel blend (equivalent to GPU dual-source blending).
     /// Each RGB channel has its own coverage, so the destination attenuation
     /// is per-channel: out.r = src.r * alpha_r + dst.r * (1 - alpha_r), etc.
     inline fn blendSubpixelPixel(self: *CpuRenderer, row: u32, col: u32, color: [4]f32, cov: [3]f32, alpha_cov: f32) void {
-        cpu_blend.blendSubpixelPixel(self.blendTarget(), row, col, color, cov, alpha_cov);
+        switch (self.format) {
+            inline else => |fmt| cpu_blend.blendSubpixelPixel(fmt, self.blendTarget(), row, col, color, cov, alpha_cov),
+        }
     }
 };
 

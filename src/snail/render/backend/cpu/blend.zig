@@ -14,6 +14,7 @@ const linearToSrgb = cpu_color.linearToSrgb;
 const linearToSrgbApprox = cpu_color.linearToSrgbApprox;
 const linearToSrgbByte = cpu_color.linearToSrgbByte;
 const srgbColorToLinear = cpu_color.srgbColorToLinear;
+const srgbFloatToLinear = cpu_color.srgbFloatToLinear;
 const srgbToByte = cpu_color.srgbToByte;
 const srgbToLinear = cpu_color.srgbToLinear;
 const premultiplySubpixelCoverage = cpu_coverage.premultiplySubpixelCoverage;
@@ -62,6 +63,23 @@ pub const Target = struct {
         };
     }
 
+    /// Float form of `writeChannel`'s encode: the normalized [0,1] value a
+    /// unorm channel would quantize (sRGB-encoded or linear, + dither), before
+    /// the bit-depth round. Used for >8-bit unorm formats; the 8-bit path
+    /// keeps `writeChannel` verbatim so RGBA8 stays byte-exact.
+    inline fn encodeChannelF(self: Target, value: f32, dither: f32) f32 {
+        if (self.storageSpaceSrgbBlend()) return clamp01(value + dither);
+        if (self.target_encoding.cpuOutputSrgb()) return clamp01(linearToSrgbApprox(value) + dither);
+        return clamp01(value + dither);
+    }
+
+    /// Float form of `readDstChannel` for >8-bit formats: a normalized stored
+    /// value → storage-space (linear for sRGB targets, raw otherwise).
+    inline fn decodeStored(self: Target, v: f32) f32 {
+        if (self.storageSpaceSrgbBlend()) return v;
+        return if (self.target_encoding.cpuOutputSrgb()) srgbFloatToLinear(v) else v;
+    }
+
     inline fn srcPremultipliedForTarget(self: Target, src: [4]f32) [4]f32 {
         if (!self.storageSpaceSrgbBlend()) return src;
         if (src[3] <= 0.0) return .{ 0, 0, 0, 0 };
@@ -85,6 +103,68 @@ pub const Target = struct {
     }
 };
 
+const pixel_pack = @import("pixel_pack.zig");
+const PixelFormat = snail.PixelFormat;
+
+/// Byte offset of pixel (row, col) for `fmt`.
+inline fn pixelOffset(comptime fmt: PixelFormat, target: Target, row: u32, col: u32) usize {
+    return @as(usize, row) * target.stride + @as(usize, col) * fmt.bytesPerPixel();
+}
+
+/// Read the destination pixel back into storage-space RGBA for blending.
+/// Mask formats return `{0,0,0, alpha}` (their RGB is never read).
+inline fn readStorage(comptime fmt: PixelFormat, target: Target, off: usize) [4]f32 {
+    const p = target.pixels;
+    return switch (fmt) {
+        .rgba8_unorm => .{ target.readDstChannel(p[off + 0]), target.readDstChannel(p[off + 1]), target.readDstChannel(p[off + 2]), @as(f32, @floatFromInt(p[off + 3])) / 255.0 },
+        .bgra8_unorm => .{ target.readDstChannel(p[off + 2]), target.readDstChannel(p[off + 1]), target.readDstChannel(p[off + 0]), @as(f32, @floatFromInt(p[off + 3])) / 255.0 },
+        .r8_unorm, .a8_unorm => .{ 0, 0, 0, @as(f32, @floatFromInt(p[off + 0])) / 255.0 },
+        .rgb10a2_unorm => blk: {
+            const n = pixel_pack.unpack(.rgb10a2_unorm, p[off..][0..4]);
+            break :blk .{ target.decodeStored(n[0]), target.decodeStored(n[1]), target.decodeStored(n[2]), n[3] };
+        },
+        // Float targets store linear directly — no decode.
+        .rgba16f => pixel_pack.unpack(.rgba16f, p[off..][0..8]),
+    };
+}
+
+/// Write storage-space RGBA to the destination pixel for `fmt`. `noise` is the
+/// raw dither value in [0,1); `dither` gates it. Alpha is never sRGB-encoded.
+inline fn writePixel(comptime fmt: PixelFormat, target: Target, off: usize, storage: [4]f32, noise: f32, dither: bool) void {
+    const p = target.pixels;
+    const d: f32 = if (dither) (noise - 0.5) * clamp01(storage[3]) * fmt.ditherAmplitude() else 0.0;
+    switch (fmt) {
+        .rgba8_unorm => {
+            p[off + 0] = target.writeChannel(storage[0], d);
+            p[off + 1] = target.writeChannel(storage[1], d);
+            p[off + 2] = target.writeChannel(storage[2], d);
+            p[off + 3] = srgbToByte(clamp01(storage[3]));
+        },
+        .bgra8_unorm => {
+            p[off + 0] = target.writeChannel(storage[2], d);
+            p[off + 1] = target.writeChannel(storage[1], d);
+            p[off + 2] = target.writeChannel(storage[0], d);
+            p[off + 3] = srgbToByte(clamp01(storage[3]));
+        },
+        .r8_unorm, .a8_unorm => {
+            p[off + 0] = srgbToByte(clamp01(storage[3]) + d);
+        },
+        .rgb10a2_unorm => {
+            const bytes = pixel_pack.pack(.rgb10a2_unorm, .{
+                target.encodeChannelF(storage[0], d),
+                target.encodeChannelF(storage[1], d),
+                target.encodeChannelF(storage[2], d),
+                clamp01(storage[3]),
+            });
+            @memcpy(p[off..][0..4], &bytes);
+        },
+        .rgba16f => {
+            const bytes = pixel_pack.pack(.rgba16f, storage);
+            @memcpy(p[off..][0..8], &bytes);
+        },
+    }
+}
+
 /// Precompute the target bytes for an opaque, alpha-premultiplied solid
 /// source (i.e. `(color[0..3], 1.0)` in target-color-space). The bytes
 /// match exactly what `blendPremultipliedPixel` would write for the
@@ -96,14 +176,13 @@ pub const Target = struct {
 /// is intentionally not supported here: dithered paints aren't solid
 /// (the paint sampler returns `apply_dither = true` only for
 /// gradients/images), so the fast path skips them upstream.
-pub inline fn opaqueLinearBytesForTarget(target: Target, color: [3]f32) [4]u8 {
+pub inline fn opaqueBytesForTarget(comptime fmt: PixelFormat, target: Target, color: [3]f32) [fmt.bytesPerPixel()]u8 {
     const target_src = target.srcPremultipliedForTarget(.{ color[0], color[1], color[2], 1.0 });
-    return .{
-        target.writeChannel(target_src[0], 0.0),
-        target.writeChannel(target_src[1], 0.0),
-        target.writeChannel(target_src[2], 0.0),
-        255,
-    };
+    var buf: [fmt.bytesPerPixel()]u8 = undefined;
+    var t = target;
+    t.pixels = &buf;
+    writePixel(fmt, t, 0, .{ target_src[0], target_src[1], target_src[2], 1.0 }, 0.0, false);
+    return buf;
 }
 
 pub fn colorBytesForEncoding(encoding: snail.TargetEncoding, color_srgb: [4]f32) [4]u8 {
@@ -130,94 +209,58 @@ pub fn colorBytesForEncoding(encoding: snail.TargetEncoding, color_srgb: [4]f32)
     };
 }
 
-pub inline fn blendPremultipliedPixel(target: Target, row: u32, col: u32, src: [4]f32, apply_dither: bool) void {
-    const off = row * target.stride + col * 4;
+pub inline fn blendPremultipliedPixel(comptime fmt: PixelFormat, target: Target, row: u32, col: u32, src: [4]f32, apply_dither: bool) void {
+    const off = pixelOffset(fmt, target, row, col);
     const target_src = target.srcPremultipliedForTarget(src);
     const src_a = clamp01(target_src[3]);
+    const noise = if (apply_dither) interleavedGradientNoise(target.ditherRow(row), col) else 0.0;
 
-    // Fully-opaque src: dst contribution is exactly zero (multiplied by 1 -
-    // src_a == 0), so the dst read and sRGB-decode would be discarded. Bit-
-    // identical to the slow path; hits the dense interior of solid-color text.
+    // Fully-opaque src: dst contribution is exactly zero (× (1 - src_a) == 0),
+    // so the dst read and decode are pointless. Hits solid-color interiors.
     if (src_a >= 1.0) {
-        const dither = if (apply_dither)
-            (interleavedGradientNoise(target.ditherRow(row), col) - 0.5) * (1.0 / 255.0)
-        else
-            0.0;
-        target.pixels[off + 0] = target.writeChannel(target_src[0], dither);
-        target.pixels[off + 1] = target.writeChannel(target_src[1], dither);
-        target.pixels[off + 2] = target.writeChannel(target_src[2], dither);
-        target.pixels[off + 3] = 255;
+        writePixel(fmt, target, off, .{ target_src[0], target_src[1], target_src[2], 1.0 }, noise, apply_dither);
         return;
     }
 
-    const dst_r = target.readDstChannel(target.pixels[off + 0]);
-    const dst_g = target.readDstChannel(target.pixels[off + 1]);
-    const dst_b = target.readDstChannel(target.pixels[off + 2]);
-    const dst_a = @as(f32, @floatFromInt(target.pixels[off + 3])) / 255.0;
-
-    // 4-wide blend: `out = target_src + dst * (1 - src_a)` fuses to one vmadd.
-    // target_src[3] == src_a (alpha preserved through srcPremultipliedForTarget),
-    // so `target_src[3] + dst_a * (1 - src_a) == src_a + dst_a * (1 - src_a)`,
-    // which is exactly the alpha composite formula.
-    const V = @Vector(4, f32);
-    const src_v: V = target_src;
-    const dst_v: V = .{ dst_r, dst_g, dst_b, dst_a };
-    const inv_alpha_v: V = @splat(1.0 - src_a);
-    const out_v = src_v + dst_v * inv_alpha_v;
-
-    const dither = if (apply_dither)
-        (interleavedGradientNoise(target.ditherRow(row), col) - 0.5) * (clamp01(out_v[3]) / 255.0)
-    else
-        0.0;
-    target.pixels[off + 0] = target.writeChannel(out_v[0], dither);
-    target.pixels[off + 1] = target.writeChannel(out_v[1], dither);
-    target.pixels[off + 2] = target.writeChannel(out_v[2], dither);
-    target.pixels[off + 3] = srgbToByte(out_v[3]);
+    const dst = readStorage(fmt, target, off);
+    var out: [4]f32 = undefined;
+    if (comptime fmt.hasColor()) {
+        // 4-wide `out = target_src + dst * (1 - src_a)` (target_src[3] == src_a,
+        // so the alpha lane is the standard composite).
+        const V = @Vector(4, f32);
+        out = @as(V, target_src) + @as(V, dst) * @as(V, @splat(1.0 - src_a));
+    } else {
+        // Mask: only alpha; RGB paint/blend is elided for this format.
+        out = .{ 0, 0, 0, target_src[3] + dst[3] * (1.0 - src_a) };
+    }
+    writePixel(fmt, target, off, out, noise, apply_dither);
 }
 
-pub inline fn blendSubpixelPremultipliedPixel(target: Target, row: u32, col: u32, src: [4]f32, src_blend: [3]f32, apply_dither: bool) void {
-    const off = row * target.stride + col * 4;
+pub inline fn blendSubpixelPremultipliedPixel(comptime fmt: PixelFormat, target: Target, row: u32, col: u32, src: [4]f32, src_blend: [3]f32, apply_dither: bool) void {
+    const off = pixelOffset(fmt, target, row, col);
     const src_a = clamp01(src[3]);
+    const noise = if (apply_dither) interleavedGradientNoise(target.ditherRow(row), col) else 0.0;
 
-    // Per-channel fully-opaque src: each dst lane is annihilated by
-    // `1 - src_blend[i] == 0`, and the alpha lane by `1 - src_a == 0`.
-    // Bit-exact with the slow path, common in solid-color text interiors.
+    // Per-channel fully-opaque src: every dst lane is annihilated.
     if (src_a >= 1.0 and src_blend[0] >= 1.0 and src_blend[1] >= 1.0 and src_blend[2] >= 1.0) {
-        const dither = if (apply_dither)
-            (interleavedGradientNoise(target.ditherRow(row), col) - 0.5) * (1.0 / 255.0)
-        else
-            0.0;
-        target.pixels[off + 0] = target.writeChannel(src[0], dither);
-        target.pixels[off + 1] = target.writeChannel(src[1], dither);
-        target.pixels[off + 2] = target.writeChannel(src[2], dither);
-        target.pixels[off + 3] = 255;
+        writePixel(fmt, target, off, .{ src[0], src[1], src[2], 1.0 }, noise, apply_dither);
         return;
     }
 
-    const dst_r = target.readDstChannel(target.pixels[off + 0]);
-    const dst_g = target.readDstChannel(target.pixels[off + 1]);
-    const dst_b = target.readDstChannel(target.pixels[off + 2]);
-    const dst_a = @as(f32, @floatFromInt(target.pixels[off + 3])) / 255.0;
-
-    const out_r = src[0] + dst_r * (1.0 - clamp01(src_blend[0]));
-    const out_g = src[1] + dst_g * (1.0 - clamp01(src_blend[1]));
-    const out_b = src[2] + dst_b * (1.0 - clamp01(src_blend[2]));
-    const out_a = src_a + dst_a * (1.0 - src_a);
-
-    const dither = if (apply_dither)
-        (interleavedGradientNoise(target.ditherRow(row), col) - 0.5) * (clamp01(out_a) / 255.0)
-    else
-        0.0;
-    target.pixels[off + 0] = target.writeChannel(out_r, dither);
-    target.pixels[off + 1] = target.writeChannel(out_g, dither);
-    target.pixels[off + 2] = target.writeChannel(out_b, dither);
-    target.pixels[off + 3] = srgbToByte(out_a);
+    const dst = readStorage(fmt, target, off);
+    const out = [4]f32{
+        src[0] + dst[0] * (1.0 - clamp01(src_blend[0])),
+        src[1] + dst[1] * (1.0 - clamp01(src_blend[1])),
+        src[2] + dst[2] * (1.0 - clamp01(src_blend[2])),
+        src_a + dst[3] * (1.0 - src_a),
+    };
+    writePixel(fmt, target, off, out, noise, apply_dither);
 }
 
-pub inline fn blendSubpixelPixel(target: Target, row: u32, col: u32, color: [4]f32, cov: [3]f32, alpha_cov: f32) void {
+pub inline fn blendSubpixelPixel(comptime fmt: PixelFormat, target: Target, row: u32, col: u32, color: [4]f32, cov: [3]f32, alpha_cov: f32) void {
     const target_color = target.srcColorForSubpixelTarget(color);
     const src_blend = subpixelBlendCoverage(color, cov);
-    blendSubpixelPremultipliedPixel(target, row, col, premultiplySubpixelCoverage(target_color, cov, alpha_cov), src_blend, false);
+    blendSubpixelPremultipliedPixel(fmt, target, row, col, premultiplySubpixelCoverage(target_color, cov, alpha_cov), src_blend, false);
 }
 
 // ── gamma probes ───────────────────────────────────────────────────────────
@@ -242,8 +285,34 @@ fn blendProbe(encoding: snail.TargetEncoding, resolve: ResolveMode, bg: [4]u8, s
         .target_encoding = encoding,
         .target_resolve = resolve,
     };
-    blendPremultipliedPixel(target, 0, 0, src, false);
+    blendPremultipliedPixel(.rgba8_unorm, target, 0, 0, src, false);
     return px;
+}
+
+test "format: bgra8 stores the same blend as rgba8 with R/B swapped" {
+    var rgba = [4]u8{ 0, 0, 0, 255 };
+    var bgra = [4]u8{ 0, 0, 0, 255 };
+    const t_rgba = Target{ .pixels = &rgba, .stride = 4, .height = 1, .target_encoding = .srgb, .target_resolve = .{ .direct = {} } };
+    const t_bgra = Target{ .pixels = &bgra, .stride = 4, .height = 1, .target_encoding = .srgb, .target_resolve = .{ .direct = {} } };
+    // Opaque orange-ish (distinct R/B) over black.
+    const src = [4]f32{ 0.6, 0.3, 0.1, 1.0 };
+    blendPremultipliedPixel(.rgba8_unorm, t_rgba, 0, 0, src, false);
+    blendPremultipliedPixel(.bgra8_unorm, t_bgra, 0, 0, src, false);
+    try testing.expectEqual(rgba[0], bgra[2]); // R
+    try testing.expectEqual(rgba[1], bgra[1]); // G
+    try testing.expectEqual(rgba[2], bgra[0]); // B
+    try testing.expectEqual(rgba[3], bgra[3]); // A
+    try testing.expect(rgba[0] != rgba[2]); // genuinely distinct R vs B
+}
+
+test "format: a8/r8 mask stores painted alpha, elides RGB" {
+    inline for (.{ PixelFormat.r8_unorm, PixelFormat.a8_unorm }) |fmt| {
+        var px = [1]u8{0};
+        const t = Target{ .pixels = &px, .stride = 1, .height = 1, .target_encoding = .linear, .target_resolve = .{ .direct = {} } };
+        // 50% coverage of an opaque color over empty (alpha 0) dst.
+        blendPremultipliedPixel(fmt, t, 0, 0, .{ 0.6, 0.3, 0.1, 0.5 }, false);
+        try testing.expectApproxEqAbs(@as(f32, 128), @as(f32, @floatFromInt(px[0])), 1.0); // alpha 0.5 → 128
+    }
 }
 
 test "gamma: 50% white over black blends in linear light on an sRGB target" {
