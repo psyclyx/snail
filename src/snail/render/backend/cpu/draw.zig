@@ -698,6 +698,86 @@ fn containsEntryKey(entries: []const @import("../../../atlas.zig").Entry, key: @
     return false;
 }
 
+test "shared-endpoint interior coverage stays solid (no centre seam)" {
+    // Regression for the 1px white seam down shapes whose halves meet on the
+    // sampling axis. The banner "custom path" leaf is two cubics sharing the
+    // endpoints (0.5,0) and (0.5,1); both sit on the vertical centre line, so
+    // the vertical-ray winding is evaluated right at a curve endpoint there.
+    // The old Cardano/quadratic cubic solver dropped that near-endpoint root in
+    // a hair-thin column, collapsing V-coverage to 0 and painting a white line
+    // down the shape on the CPU (the GPU's monotonic solver stayed correct).
+    if (!build_options.enable_cpu) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    const coverage = @import("coverage.zig");
+    const geometry = @import("geometry.zig");
+    const Vec2 = math.Vec2;
+
+    var path = @import("../../../path.zig").Path.init(allocator);
+    defer path.deinit();
+    try path.moveTo(.{ .x = 0.5, .y = 0 });
+    try path.cubicTo(.{ .x = 0.95, .y = 0.2 }, .{ .x = 0.95, .y = 0.8 }, .{ .x = 0.5, .y = 1 });
+    try path.cubicTo(.{ .x = 0.05, .y = 0.8 }, .{ .x = 0.05, .y = 0.2 }, .{ .x = 0.5, .y = 0 });
+    try path.close();
+    var curves = try path.toCurves(allocator, allocator);
+    defer curves.deinit();
+
+    var pool = try @import("../../../atlas/page_pool.zig").PagePool.init(allocator, .{
+        .max_layers = 2,
+        .curve_words_per_page = 1 << 16,
+        .band_words_per_page = 1 << 14,
+    });
+    defer pool.deinit();
+    const key = @import("../../../atlas/record_key.zig").RecordKey{
+        .namespace = @import("../../../atlas/record_key.zig").ns.path_fill,
+        .a = 0,
+    };
+    var atlas = try @import("../../../atlas.zig").Atlas.from(allocator, pool, &.{.{
+        .key = key,
+        .curves = curves,
+        .paint = .{ .solid = .{ 1, 1, 1, 1 } },
+    }});
+    defer atlas.deinit();
+
+    var cache = try CpuBackendCache.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
+    defer cache.deinit();
+    var bindings: [1]Binding = undefined;
+    try cache.upload(allocator, &.{&atlas}, &bindings);
+    const page = &cache.prepared[0].?;
+    const layer = cache.snapshotFor(bindings[0].generation).?.path_layers[0];
+    const be = layer.band_entry;
+
+    // Sweep scales and sub-pixel offsets; every deep-interior pixel of the leaf
+    // must stay fully covered. Before the fix a specific alignment left the
+    // column at x≈0.5 uncovered (coverage 0).
+    const scales = [_]f32{ 40, 63.3, 128.7, 200, 288 };
+    const offsets = [_]f32{ 0.0, 0.13, 0.37, 0.5, 0.61, 0.83 };
+    var worst: f32 = 0;
+    for (scales) |scale| {
+        for (offsets) |ox| {
+            for (offsets) |oy| {
+                const inv = (Transform2D{ .xx = scale, .xy = 0, .yx = 0, .yy = scale, .tx = ox, .ty = oy }).inverse().?;
+                const epp = geometry.glyphEdgePixelsPerPixel(inv);
+                const ppe = Vec2.new(1.0 / epp.x, 1.0 / epp.y);
+                var py: i32 = @intFromFloat(@floor(oy));
+                const py_hi: i32 = @intFromFloat(@ceil(scale + oy));
+                while (py < py_hi) : (py += 1) {
+                    const ly = (@as(f32, @floatFromInt(py)) + 0.5 - oy) / scale;
+                    if (ly < 0.35 or ly > 0.65) continue; // leaf is widest mid-height
+                    var px: i32 = @intFromFloat(@floor(ox));
+                    const px_hi: i32 = @intFromFloat(@ceil(scale + ox));
+                    while (px < px_hi) : (px += 1) {
+                        const lx = (@as(f32, @floatFromInt(px)) + 0.5 - ox) / scale;
+                        if (@abs(lx - 0.5) > 0.2) continue; // deep interior, straddles the centre
+                        const cov = coverage.evalGlyphCoverageBandSpan(page, lx, ly, epp.x, epp.y, ppe.x, ppe.y, be, layer.band_max_h, layer.band_max_v, layer.fill_rule);
+                        worst = @max(worst, 1.0 - cov);
+                    }
+                }
+            }
+        }
+    }
+    try testing.expect(worst < 0.01);
+}
+
 fn makeIdentityState(w: u32, h: u32) snail.DrawState {
     const wf: f32 = @floatFromInt(w);
     const hf: f32 = @floatFromInt(h);

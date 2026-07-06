@@ -69,57 +69,54 @@ pub inline fn solveQuadraticRoots(a: f32, b: f32, c_val: f32) CurveRoots {
     return roots;
 }
 
-inline fn cbrtSigned(v: f32) f32 {
-    return std.math.cbrt(v);
-}
-
 pub fn solveCubicRoots(a: f32, b: f32, c_val: f32, d: f32) CurveRoots {
-    // Cardano is numerically unstable when the cubic term is small relative
-    // to the lower-order terms — a t∈[0,1] root computed via the trig branch
-    // can drift by O(1) when |a| < ~1% of the dominant coefficient. The
-    // split-at-extrema pass occasionally produces such near-quadratic pieces
-    // (e.g. one half of the leaf primitive's right cubic, where the original
-    // y-coefficients nearly cancel), so fall back to the quadratic solver
-    // when the cubic term contributes less than ~0.01× the rest over t∈[0,1].
-    const cubic_scale = @abs(a);
-    const lower_scale = @abs(b) + @abs(c_val) + @abs(d);
-    if (cubic_scale < 1e-2 * @max(lower_scale, 1.0)) return solveQuadraticRoots(b, c_val, d);
-    if (@abs(a) < 1e-10) return solveQuadraticRoots(b, c_val, d);
-
+    // `splitCubicsAtExtrema` (paths.zig) makes every uploaded cubic monotonic
+    // on both sampling axes, so along either axis a cubic piece contributes at
+    // most one root in [0, 1]. Solve it the same way the GPU does
+    // (`solveMonotonicCubicRoot` in snail_path_frag_body.glsl): a fixed 16-step
+    // Newton-bracketed-by-bisection from the endpoint sign bracket.
+    //
+    // The previous analytic (Cardano) solve drifted for the near-quadratic
+    // pieces the split produces, and its quadratic fallback returned *no* roots
+    // when the sample sat within ~ε of a piece's endpoint x/y (a near-tangent
+    // whose discriminant goes slightly negative). That dropped the crossing in
+    // a hair-thin band next to any endpoint two halves share on the sampling
+    // axis — e.g. the leaf primitive, whose cubics meet at (0.5, 0)/(0.5, 1) —
+    // collapsing one axis's winding to 0 and painting a 1px seam straight down
+    // the shape on the CPU while the GPU stayed correct.
+    //
+    // The loop is a flat 16 iterations, matching the GPU bit-for-bit. Newton
+    // converges in ~11 here, but a data-dependent early-exit measured *slower*
+    // than the unrolled fixed loop (branch mispredict > the few cheap
+    // iterations saved), so the count stays fixed.
     var roots = CurveRoots{};
-    const inv_a = 1.0 / a;
-    const aa = b * inv_a;
-    const bb = c_val * inv_a;
-    const cc = d * inv_a;
-    const third = 1.0 / 3.0;
-    const p = bb - aa * aa * third;
-    const q = (2.0 * aa * aa * aa) / 27.0 - (aa * bb) * third + cc;
-    const half_q = q * 0.5;
-    const third_p = p * third;
-    const disc = half_q * half_q + third_p * third_p * third_p;
-    const offset = aa * third;
+    const f0 = d; // f(0) = curve_root(0) - sample
+    const f1 = ((a + b) + c_val) + d; // f(1) = curve_root(1) - sample
+    // No sign change across [0,1] (both strictly outside the ±ε contour band)
+    // means the monotonic curve never reaches the sample line here.
+    if ((f0 < -root_code_eps and f1 < -root_code_eps) or (f0 > root_code_eps and f1 > root_code_eps)) return roots;
 
-    if (disc > 1e-8) {
-        const sqrt_disc = @sqrt(disc);
-        const u = cbrtSigned(-half_q + sqrt_disc);
-        const v = cbrtSigned(-half_q - sqrt_disc);
-        appendCurveRoot(&roots, u + v - offset);
-        return roots;
+    var lo: f32 = 0.0;
+    var hi: f32 = 1.0;
+    var t: f32 = 0.5;
+    const increasing = f1 >= f0;
+    var i: usize = 0;
+    while (i < 16) : (i += 1) {
+        const f = ((a * t + b) * t + c_val) * t + d;
+        if ((increasing and f < 0.0) or (!increasing and f > 0.0)) {
+            lo = t;
+        } else {
+            hi = t;
+        }
+        const deriv = (3.0 * a * t + 2.0 * b) * t + c_val;
+        var next = (lo + hi) * 0.5;
+        if (@abs(deriv) >= 1e-6) {
+            const newton = t - f / deriv;
+            if (newton > lo and newton < hi) next = newton;
+        }
+        t = next;
     }
-
-    if (disc >= -1e-8) {
-        const u = cbrtSigned(-half_q);
-        appendCurveRoot(&roots, 2.0 * u - offset);
-        appendCurveRoot(&roots, -u - offset);
-        return roots;
-    }
-
-    const r = @sqrt(-third_p);
-    const phi = std.math.acos(std.math.clamp(-half_q / (r * r * r), -1.0, 1.0));
-    const two_r = 2.0 * r;
-    appendCurveRoot(&roots, two_r * @cos(phi * third) - offset);
-    appendCurveRoot(&roots, two_r * @cos((phi + 2.0 * std.math.pi) * third) - offset);
-    appendCurveRoot(&roots, two_r * @cos((phi + 4.0 * std.math.pi) * third) - offset);
+    appendCurveRoot(&roots, t);
     return roots;
 }
 
