@@ -14,7 +14,17 @@ const curve_tex = @import("../../format/curve_texture.zig");
 const band_tex = @import("../../format/band_texture.zig");
 const render_abi = @import("../../format/abi.zig");
 const text_hint_format = @import("../../format/text_hint.zig");
+const autohint_record = @import("../../format/autohint_record.zig");
+const autohint_warp = @import("../../../font/autohint/warp.zig");
 const vertex = @import("../../format/vertex.zig");
+
+/// The two packed warp-knot runs (from an autohint slab record) that drive a
+/// resolution-independent glyph render: the sample coordinate is warped back
+/// into base-outline space before ordinary coverage runs.
+pub const AutohintWarp = struct {
+    x_run: []const f32,
+    y_run: []const f32,
+};
 const CurveSegment = bezier.CurveSegment;
 const GlyphBandEntry = band_tex.GlyphBandEntry;
 const Vec2 = snail.Vec2;
@@ -603,6 +613,10 @@ pub const CpuRenderer = struct {
             self.renderHintedTextBatchInstance(prepared, decoded, atlas_layer, entry, info_x, resolved.local_y);
             return;
         }
+        if (special_kind == .autohint) {
+            self.renderAutohintBatchInstance(prepared, decoded, atlas_layer, entry, info_x, resolved.local_y);
+            return;
+        }
 
         const first_tag = fetchLayerInfoTexel(entry.data, entry.width, info_x, resolved.local_y, 0)[3];
         if (special_kind == .path and first_tag < 0.0) {
@@ -654,6 +668,42 @@ pub const CpuRenderer = struct {
                 .flags = @intFromFloat(meta[2]),
                 .h_band_pad = band_pad.h,
                 .v_band_pad = band_pad.v,
+            },
+        );
+    }
+
+    fn renderAutohintBatchInstance(
+        self: *CpuRenderer,
+        prepared: *const PreparedResources,
+        decoded: BatchInstance,
+        atlas_layer: u32,
+        entry: *const LayerInfoEntry,
+        info_x: u16,
+        info_y: u16,
+    ) void {
+        const page = (if (atlas_layer < prepared.atlas_pages.len) prepared.atlas_pages[atlas_layer] else null) orelse return;
+        const off = (@as(usize, info_y) * entry.width + @as(usize, info_x)) * 4;
+        if (off + autohint_record.header_floats >= entry.data.len) return;
+        const rec = autohint_record.readBandEntry(entry.data, off);
+        const be = GlyphBandEntry{
+            .glyph_x = rec.glyph_x,
+            .glyph_y = rec.glyph_y,
+            .h_band_count = rec.h_band_count,
+            .v_band_count = rec.v_band_count,
+            .band_scale_x = rec.band_scale_x,
+            .band_scale_y = rec.band_scale_y,
+            .band_offset_x = rec.band_offset_x,
+            .band_offset_y = rec.band_offset_y,
+        };
+        self.renderTransformedAutohintGlyph(
+            page,
+            decoded.bbox,
+            be,
+            decoded.transform,
+            multiplyLinearColor(decoded.color, decoded.tint),
+            .{
+                .x_run = autohint_record.xRun(entry.data, off),
+                .y_run = autohint_record.yRun(entry.data, off),
             },
         );
     }
@@ -1619,7 +1669,7 @@ pub const CpuRenderer = struct {
         color: [4]f32,
         allow_subpixel: bool,
     ) void {
-        self.renderTransformedGlyphMaybeHinted(page, bbox, be, transform, color, allow_subpixel, null);
+        self.renderTransformedGlyphMaybeHinted(page, bbox, be, transform, color, allow_subpixel, null, null);
     }
 
     fn renderTransformedHintedGlyph(
@@ -1631,7 +1681,22 @@ pub const CpuRenderer = struct {
         color: [4]f32,
         record: HintedTextRecord,
     ) void {
-        self.renderTransformedGlyphMaybeHinted(page, bbox, be, transform, color, false, record);
+        self.renderTransformedGlyphMaybeHinted(page, bbox, be, transform, color, false, record, null);
+    }
+
+    /// Render the shared base glyph `be` with a resolution-independent warp:
+    /// the sample coordinate is mapped back into base-outline space per pixel
+    /// so no per-ppem curves are baked. Grayscale only for now.
+    fn renderTransformedAutohintGlyph(
+        self: *CpuRenderer,
+        page: anytype,
+        bbox: bezier.BBox,
+        be: GlyphBandEntry,
+        transform: Transform2D,
+        color: [4]f32,
+        warp: AutohintWarp,
+    ) void {
+        self.renderTransformedGlyphMaybeHinted(page, bbox, be, transform, color, false, null, warp);
     }
 
     fn renderTransformedGlyphMaybeHinted(
@@ -1643,6 +1708,7 @@ pub const CpuRenderer = struct {
         color: [4]f32,
         allow_subpixel: bool,
         hint_record: ?HintedTextRecord,
+        warp: ?AutohintWarp,
     ) void {
         const inverse = inverseTransform(transform) orelse return;
         var bounds = transformedGlyphBounds(bbox, transform);
@@ -1684,8 +1750,8 @@ pub const CpuRenderer = struct {
         const axis_aligned = @abs(sample_dx.y) < 1e-9;
         const subpixel_rgb = allow_subpixel and (self.subpixel_order == .rgb or self.subpixel_order == .bgr) and subpixel_plan.step.y == 0.0;
         const grayscale_path = !allow_subpixel or self.subpixel_order == .none;
-        const use_row_h_subpixel = prepared_page and axis_aligned and subpixel_rgb and hint_record == null;
-        const use_row_h_grayscale = prepared_page and axis_aligned and grayscale_path and hint_record == null;
+        const use_row_h_subpixel = prepared_page and axis_aligned and subpixel_rgb and hint_record == null and warp == null;
+        const use_row_h_grayscale = prepared_page and axis_aligned and grayscale_path and hint_record == null and warp == null;
         const use_row_h = use_row_h_subpixel or use_row_h_grayscale;
 
         var row: u32 = @intCast(py0);
@@ -1739,6 +1805,7 @@ pub const CpuRenderer = struct {
                 grayscale_path and
                 h_uniform and
                 hint_record == null and
+                warp == null and
                 @as(u32, @intCast(px1)) > @as(u32, @intCast(px0)) + 2;
             if (fast_row_eligible) {
                 const px_first: u32 = @intCast(px0);
@@ -1780,14 +1847,25 @@ pub const CpuRenderer = struct {
             }
 
             while (col < @as(u32, @intCast(px1))) : (advanceLocalPixel(&col, &display_local, sample_dx)) {
-                if (!allow_subpixel or self.subpixel_order == .none) {
+                // Warp the sample coordinate back into base-outline space and
+                // rescale the AA footprint by the local inverse slope (ppe_base
+                // = ppe_screen / inv_slope). Identity when there's no warp.
+                var sample = display_local;
+                var sppe = ppe;
+                if (warp) |w| {
+                    const sx = autohint_warp.inverseWarpPacked(w.x_run, display_local.x);
+                    const sy = autohint_warp.inverseWarpPacked(w.y_run, display_local.y);
+                    sample = .{ .x = sx.base, .y = sy.base };
+                    sppe = .{ .x = ppe.x / sx.inv_slope, .y = ppe.y / sy.inv_slope };
+                }
+                if (!allow_subpixel or self.subpixel_order == .none or warp != null) {
                     // Text/hinted glyphs from fonts use non-zero winding by convention.
                     const raw_cov = if (hint_record) |record|
-                        evalHintedTextCoverageBandSpan(page, record, display_local.x, display_local.y, epp.x, epp.y, ppe.x, ppe.y, be, band_max_h, band_max_v, .non_zero)
+                        evalHintedTextCoverageBandSpan(page, record, sample.x, sample.y, epp.x, epp.y, sppe.x, sppe.y, be, band_max_h, band_max_v, .non_zero)
                     else if (row_state_ready)
-                        evalGlyphCoverageRowH(page, display_local.x, display_local.y, &row_state, ppe.x, ppe.y, be, band_max_h, band_max_v, .non_zero)
+                        evalGlyphCoverageRowH(page, sample.x, sample.y, &row_state, sppe.x, sppe.y, be, band_max_h, band_max_v, .non_zero)
                     else
-                        evalGlyphCoverage(page, display_local.x, display_local.y, ppe.x, ppe.y, be, band_max_h, band_max_v, .non_zero);
+                        evalGlyphCoverage(page, sample.x, sample.y, sppe.x, sppe.y, be, band_max_h, band_max_v, .non_zero);
                     const cov = self.applyCoverageTransfer(raw_cov);
                     if (cov < one_lsb_8bit) continue;
                     self.blendPremultipliedPixel(row, col, premultiplyCoverage(color, cov), false);
