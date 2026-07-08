@@ -1,13 +1,11 @@
-//! Screen-space overlay comparing unhinted vs. `auto_light` text at an
-//! adjustable ppem, for eyeballing hinting quality in the interactive demo.
+//! All-in-one hinting validation overlay for the interactive demo.
 //!
-//! Two rows of the same sample string in DejaVu Sans Mono: the top row is
-//! plain unhinted glyphs; the bottom row is the resolution-independent light
-//! autohint (CPU-baked through the existing hinted pipeline — same warp math
-//! the shader path will use, see font/autohint/). Toggle with V; grow/shrink
-//! the ppem with G / F. Drawn as its own projection-only pass so it stays put
-//! while the world pans/zooms. Modeled on hud.zig, which calls itself the
-//! template for exactly this. See [[project_snail]].
+//! Renders the same sample string in three hinting modes — unhinted,
+//! `auto_light` (this project's resolution-independent warp), and the font's
+//! built-in TrueType hinting — stacked across a spread of ppems. Lets you
+//! eyeball auto_light against the TrueType gold standard and the unhinted
+//! baseline at every size in one glance. Toggle with V. Drawn as a
+//! projection-only pass so it stays put while the world pans/zooms.
 
 const std = @import("std");
 const snail = @import("snail");
@@ -19,12 +17,23 @@ const ShapedRunCache = helpers.ShapedRunCache;
 const UnhintedGlyphCache = helpers.UnhintedGlyphCache;
 const warp = snail.autohint.warp;
 
-const sample_text = "Words Слова Λέξεις 0123";
+const sample_text = "Hamburg Λέξεις 0123";
+const grid_ppems = [_]f32{ 9, 10, 11, 12, 13, 14, 16, 18, 22, 28 };
 
-/// ppems shown, top to bottom, by the headless comparison screenshots.
-pub const preview_ppems = [_]f32{ 12, 18, 28, 52 };
-pub const preview_w: u32 = 1040;
-pub const preview_h: u32 = 440;
+/// Distinguishes the auto-light record key from the TrueType key (both use
+/// the hinted-glyph namespace, so auto flips this high bit).
+const auto_key_bit: u32 = 0x4000_0000;
+
+const Mode = enum { unhinted, auto, tt };
+const modes = [_]Mode{ .unhinted, .auto, .tt };
+
+fn modeTag(m: Mode) []const u8 {
+    return switch (m) {
+        .unhinted => "un",
+        .auto => "au",
+        .tt => "tt",
+    };
+}
 
 pub const Compare = struct {
     allocator: Allocator,
@@ -33,6 +42,8 @@ pub const Compare = struct {
     faces: snail.Faces,
     font_id: u32,
     auto: snail.autohint.AutoLight,
+    /// The font's own TrueType hinting, if it has any (DejaVu does).
+    tt: ?snail.HintVm,
 
     shape_cache: ShapedRunCache,
     glyph_cache: UnhintedGlyphCache,
@@ -48,6 +59,7 @@ pub const Compare = struct {
         const font_id = faces.fontIdForFace(0);
 
         const auto = try snail.autohint.AutoLight.init(allocator, assets.dejavu_sans_mono);
+        const tt = snail.HintVm.init(allocator, font) catch null;
 
         return .{
             .allocator = allocator,
@@ -56,6 +68,7 @@ pub const Compare = struct {
             .faces = faces,
             .font_id = font_id,
             .auto = auto,
+            .tt = tt,
             .shape_cache = ShapedRunCache.init(allocator),
             .glyph_cache = UnhintedGlyphCache.init(allocator, font),
             .atlas = snail.Atlas.empty(allocator),
@@ -64,6 +77,7 @@ pub const Compare = struct {
 
     pub fn deinit(self: *Compare) void {
         self.atlas.deinit();
+        if (self.tt) |*vm| vm.deinit();
         self.glyph_cache.deinit();
         self.shape_cache.deinit();
         self.auto.deinit();
@@ -72,118 +86,170 @@ pub const Compare = struct {
         self.* = undefined;
     }
 
-    /// Build the two-row comparison picture for one frame at `ppem_px`
-    /// (logical pixels). Extends `self.atlas` with any newly needed glyphs.
-    pub fn buildPicture(
-        self: *Compare,
-        frame_alloc: Allocator,
-        scratch_alloc: Allocator,
-        ppem_px: f32,
-        top_y: f32,
-    ) !helpers.Picture {
-        const em: f32 = @round(@max(ppem_px, 4.0));
-        const ppem_26_6: u32 = @intFromFloat(em * 64.0);
-
+    /// Build the full validation grid. `scratch` must outlive the atlas build
+    /// (the builder copies knots/curves in). Returns the picture; `self.atlas`
+    /// is extended with everything it references.
+    pub fn buildGrid(self: *Compare, frame_alloc: Allocator, scratch: Allocator) !helpers.Picture {
         const shaped = try self.shape_cache.shape(&self.faces, sample_text, .{});
-        try self.ensureAtlas(scratch_alloc, shaped, ppem_26_6);
 
-        const left: f32 = 24.0;
-        // Both rows sit on integer pixel baselines: light hinting only lands
-        // features on the grid if the baseline itself is grid-aligned.
-        const base_unhinted = @round(top_y);
-        const base_auto = @round(top_y + em * 1.6);
+        // Tag glyphs render unhinted at a fixed size; sample glyphs render per
+        // (ppem, mode). Ensure everything the grid references in one pass.
+        const tags = try self.shape_cache.shape(&self.faces, "unautt", .{});
+        try self.ensureAll(scratch, shaped, tags);
 
-        var unhinted = try helpers.shapedRunPicture(frame_alloc, shaped, &self.faces, .{
-            .baseline = .{ .x = left, .y = base_unhinted },
-            .em = em,
-            .color = text_color,
-        });
-        defer unhinted.deinit();
+        var refs: std.ArrayList(*const helpers.Picture) = .empty;
+        const left_tag: f32 = 8;
+        const left_sample: f32 = 52;
+        const tag_em: f32 = 12;
 
-        // Auto-light row: place each glyph's origin on a whole pixel — x-stems
-        // are grid-fit relative to the origin, so a fractional origin throws
-        // the sharpening away (the x-axis analogue of baseline snapping).
-        //
-        // Monospace → one uniform rounded advance, so columns stay aligned
-        // (terminal-style). Proportional → snap each glyph's cumulative,
-        // KERNING-INCLUDED shaped position (`x_offset` already carries
-        // HarfBuzz's kerning); rounding the position rather than each advance
-        // means errors don't accumulate down the line.
-        const mono_adv = monoAdvancePx(shaped, em);
-        const origin_left = @round(left);
-        const buf = try frame_alloc.alloc(snail.Shape, shaped.glyphs.len);
-        for (shaped.glyphs, 0..) |g, i| {
-            const origin_x = if (mono_adv) |adv|
-                origin_left + @as(f32, @floatFromInt(i)) * adv
-            else
-                @round(left + em * g.x_offset);
-            buf[i] = .{
-                .key = snail.recordKey.hintedGlyph(g.font_id, g.glyph_id, ppem_26_6),
-                // Base curves are em-normalised, so scale by em (like the
-                // unhinted row); the warp — carried by the atlas record — does
-                // the grid-fit at sample time.
-                .local_transform = .{ .xx = em, .xy = 0, .tx = origin_x, .yx = 0, .yy = -em, .ty = base_auto },
-                .local_color = text_color,
-            };
+        var y: f32 = 26;
+        for (grid_ppems) |ppem| {
+            const em: f32 = @round(ppem);
+            const ppem_26_6: u32 = @intFromFloat(em * 64.0);
+            for (modes) |mode| {
+                const baseline = @round(y) + em;
+                // Mode tag (fixed-size, unhinted).
+                const tag_shaped = try self.shape_cache.shape(&self.faces, modeTag(mode), .{});
+                const tag = try frame_alloc.create(helpers.Picture);
+                tag.* = try helpers.shapedRunPicture(frame_alloc, tag_shaped, &self.faces, .{
+                    .baseline = .{ .x = left_tag, .y = @round(y) + tag_em },
+                    .em = tag_em,
+                    .color = tag_color,
+                });
+                try refs.append(frame_alloc, tag);
+                // The sample in this mode.
+                const row = try frame_alloc.create(helpers.Picture);
+                row.* = try self.renderRow(frame_alloc, shaped, mode, ppem_26_6, em, left_sample, baseline);
+                try refs.append(frame_alloc, row);
+                y += em * 1.32 + 3;
+            }
+            y += 9;
         }
-        var auto = helpers.Picture.fromOwnedSlice(frame_alloc, buf);
-        defer auto.deinit();
-
-        return helpers.Picture.concat(frame_alloc, &.{ &unhinted, &auto });
+        return helpers.Picture.concat(frame_alloc, refs.items);
     }
 
-    fn ensureAtlas(self: *Compare, scratch: Allocator, shaped: *const snail.ShapedText, ppem_26_6: u32) !void {
-        const cap = 128;
-        var entries: [cap]snail.AtlasEntry = undefined;
-        var n: usize = 0;
+    fn renderRow(
+        self: *Compare,
+        frame_alloc: Allocator,
+        shaped: *const snail.ShapedText,
+        mode: Mode,
+        ppem_26_6: u32,
+        em: f32,
+        left: f32,
+        baseline: f32,
+    ) !helpers.Picture {
+        switch (mode) {
+            .unhinted => return helpers.shapedRunPicture(frame_alloc, shaped, &self.faces, .{
+                .baseline = .{ .x = left, .y = baseline },
+                .em = em,
+                .color = text_color,
+            }),
+            .tt => return helpers.hintedShapedRunPicture(frame_alloc, shaped, .{
+                .baseline = .{ .x = left, .y = baseline },
+                .em = em,
+                .ppem_26_6 = ppem_26_6,
+                .color = text_color,
+            }),
+            .auto => {
+                // Base curves are em-space + a warp record; place at integer
+                // pens (mono → uniform advance) so x-stems land on the grid.
+                const mono_adv = monoAdvancePx(shaped, em);
+                const origin_left = @round(left);
+                const buf = try frame_alloc.alloc(snail.Shape, shaped.glyphs.len);
+                for (shaped.glyphs, 0..) |g, i| {
+                    const origin_x = if (mono_adv) |adv|
+                        origin_left + @as(f32, @floatFromInt(i)) * adv
+                    else
+                        @round(left + em * g.x_offset);
+                    buf[i] = .{
+                        .key = autoKey(g.font_id, g.glyph_id, ppem_26_6),
+                        .local_transform = .{ .xx = em, .xy = 0, .tx = origin_x, .yx = 0, .yy = -em, .ty = baseline },
+                        .local_color = text_color,
+                    };
+                }
+                return helpers.Picture.fromOwnedSlice(frame_alloc, buf);
+            },
+        }
+    }
 
-        for (shaped.glyphs) |g| {
-            if (g.font_id != self.font_id) continue;
+    /// Ensure the atlas holds: unhinted curves for the tag + sample glyphs
+    /// (ppem-independent), plus auto-light records and TrueType-baked curves
+    /// for every (sample glyph, ppem). Knots/TT curves live on `scratch`; the
+    /// atlas copies them during `extend`.
+    fn ensureAll(self: *Compare, scratch: Allocator, shaped: *const snail.ShapedText, tags: *const snail.ShapedText) !void {
+        var entries: std.ArrayList(snail.AtlasEntry) = .empty;
+        defer entries.deinit(scratch);
 
-            // Shared unhinted base curves (em-space) — both rows sample these.
-            const c = try self.glyph_cache.getOrInsert(self.allocator, scratch, g.glyph_id);
-
-            const key_u = snail.recordKey.unhintedGlyph(g.font_id, g.glyph_id);
-            if (n < cap and !self.atlas.contains(key_u) and !hasKey(entries[0..n], key_u)) {
-                entries[n] = .{ .key = key_u, .curves = c.* };
-                n += 1;
-            }
-
-            // Auto-light key: same base curves + per-ppem warp knots. The
-            // knots live on `scratch`, which outlives the atlas build below
-            // (the builder copies them into the layer-info slab).
-            const key_a = snail.recordKey.hintedGlyph(g.font_id, g.glyph_id, ppem_26_6);
-            if (n < cap and !self.atlas.contains(key_a) and !hasKey(entries[0..n], key_a)) {
-                const xk = try scratch.alloc(warp.Knot, warp.max_knots);
-                const yk = try scratch.alloc(warp.Knot, warp.max_knots);
-                const knots = try self.auto.glyphKnots(scratch, g.glyph_id, ppem_26_6, xk, yk);
-                entries[n] = .{
-                    .key = key_a,
-                    .curves = c.*,
-                    .autohint = .{ .x = knots.x, .y = knots.y },
-                };
-                n += 1;
+        // Unhinted (shared) — sample + tag glyphs.
+        for ([_]*const snail.ShapedText{ shaped, tags }) |run| {
+            for (run.glyphs) |g| {
+                if (g.font_id != self.font_id) continue;
+                const key = snail.recordKey.unhintedGlyph(g.font_id, g.glyph_id);
+                if (self.atlas.contains(key) or hasKey(entries.items, key)) continue;
+                const c = try self.glyph_cache.getOrInsert(self.allocator, scratch, g.glyph_id);
+                try entries.append(scratch, .{ .key = key, .curves = c.* });
             }
         }
 
-        if (n == 0) return;
+        // Per-ppem auto + TrueType.
+        for (grid_ppems) |ppem| {
+            const ppem_26_6: u32 = @intFromFloat(@round(ppem) * 64.0);
+            for (shaped.glyphs) |g| {
+                if (g.font_id != self.font_id) continue;
+
+                const key_a = autoKey(g.font_id, g.glyph_id, ppem_26_6);
+                if (!self.atlas.contains(key_a) and !hasKey(entries.items, key_a)) {
+                    const base = try self.glyph_cache.getOrInsert(self.allocator, scratch, g.glyph_id);
+                    const xk = try scratch.alloc(warp.Knot, warp.max_knots);
+                    const yk = try scratch.alloc(warp.Knot, warp.max_knots);
+                    const knots = try self.auto.glyphKnots(scratch, g.glyph_id, ppem_26_6, xk, yk);
+                    try entries.append(scratch, .{ .key = key_a, .curves = base.*, .autohint = .{ .x = knots.x, .y = knots.y } });
+                }
+
+                if (self.tt) |*vm| {
+                    const key_t = snail.recordKey.hintedGlyph(g.font_id, g.glyph_id, ppem_26_6);
+                    if (!self.atlas.contains(key_t) and !hasKey(entries.items, key_t)) {
+                        // Output on `scratch` (persists to the atlas build); VM
+                        // internals on a dedicated temp arena so they can't
+                        // alias the output. On failure, register an empty record
+                        // so the TT row still resolves rather than MissingRecord.
+                        var tmp = std.heap.ArenaAllocator.init(self.allocator);
+                        defer tmp.deinit();
+                        const hint_ppem = snail.HintPpem.uniform(ppem_26_6);
+                        const curves = vm.hintGlyph(scratch, tmp.allocator(), g.glyph_id, hint_ppem) catch blk: {
+                            // snail's TT VM can throw mid-execution on some
+                            // glyphs (e.g. DejaVu '2' -> StackUnderflow), which
+                            // leaves the per-ppem machine corrupted. Evict it so
+                            // later glyphs at this size get a fresh machine.
+                            vm.evictPpem(hint_ppem);
+                            break :blk snail.GlyphCurves.empty(scratch);
+                        };
+                        try entries.append(scratch, .{ .key = key_t, .curves = curves });
+                    }
+                }
+            }
+        }
+
+        if (entries.items.len == 0) return;
         if (self.atlas.pool == null) {
-            const fresh = try snail.Atlas.from(self.allocator, self.pool, entries[0..n]);
+            const fresh = try snail.Atlas.from(self.allocator, self.pool, entries.items);
             self.atlas.deinit();
             self.atlas = fresh;
-            return;
+        } else {
+            const grown = try self.atlas.extend(self.allocator, entries.items);
+            self.atlas.deinit();
+            self.atlas = grown;
         }
-        const grown = try self.atlas.extend(self.allocator, entries[0..n]);
-        self.atlas.deinit();
-        self.atlas = grown;
     }
 };
 
-const text_color = [4]f32{ 0.06, 0.07, 0.09, 1.0 };
+fn autoKey(font_id: u32, glyph_id: u16, ppem_26_6: u32) snail.RecordKey {
+    return snail.recordKey.hintedGlyph(font_id, glyph_id, ppem_26_6 | auto_key_bit);
+}
 
-/// If every glyph shares one advance (a monospace run), return that advance
-/// in whole pixels; else null. Mono fonts don't kern, so a uniform rounded
-/// advance keeps columns aligned.
+const text_color = [4]f32{ 0.06, 0.07, 0.09, 1.0 };
+const tag_color = [4]f32{ 0.45, 0.48, 0.55, 1.0 };
+
 fn monoAdvancePx(shaped: *const snail.ShapedText, em: f32) ?f32 {
     if (shaped.glyphs.len == 0) return null;
     const first = shaped.glyphs[0].x_advance;

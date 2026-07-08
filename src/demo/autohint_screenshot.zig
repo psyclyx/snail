@@ -1,7 +1,7 @@
-//! Headless CPU render of the auto-light comparison overlay, for verifying
+//! Headless CPU+GL render of the hinting-validation grid, for verifying
 //! hinting quality without the interactive Wayland loop. Writes
-//! zig-out/autohint-screenshot.tga. Each ppem shows two rows: unhinted (top)
-//! then auto_light (bottom).
+//! zig-out/autohint-screenshot{,-gl}.tga. Each ppem shows three rows:
+//! unhinted (un), auto_light (au), then the font's TrueType hinting (tt).
 
 const std = @import("std");
 const snail = @import("snail");
@@ -10,11 +10,9 @@ const compare_mod = @import("autohint_compare.zig");
 const harness = @import("screenshot_harness.zig");
 const egl_offscreen = @import("platform/offscreen_gl.zig");
 
-const W: u32 = 1040;
-const H: u32 = 440;
+const W: u32 = 640;
+const H: u32 = 720;
 const OUT_PATH = "zig-out/autohint-screenshot.tga";
-
-const ppems = [_]f32{ 12, 18, 28, 52 };
 
 pub fn main() !void {
     var da: std.heap.DebugAllocator(.{}) = .init;
@@ -36,24 +34,7 @@ pub fn main() !void {
     var scratch = std.heap.ArenaAllocator.init(allocator);
     defer scratch.deinit();
 
-    // One 2-row picture per ppem, stacked, concatenated into a single picture.
-    var pictures: std.ArrayList(helpers.Picture) = .empty;
-    defer {
-        for (pictures.items) |*p| p.deinit();
-        pictures.deinit(allocator);
-    }
-
-    var y: f32 = 40;
-    for (ppems) |ppem| {
-        const pic = try compare.buildPicture(arena.allocator(), scratch.allocator(), ppem, y);
-        try pictures.append(allocator, pic);
-        y += ppem * 3.4 + 16;
-    }
-
-    var refs: std.ArrayList(*const helpers.Picture) = .empty;
-    defer refs.deinit(allocator);
-    for (pictures.items) |*p| try refs.append(allocator, p);
-    var text_picture = try helpers.Picture.concat(allocator, refs.items);
+    var text_picture = try compare.buildGrid(arena.allocator(), scratch.allocator());
     defer text_picture.deinit();
 
     var empty_atlas = snail.Atlas.empty(allocator);
@@ -69,7 +50,7 @@ pub fn main() !void {
         .text_picture = &text_picture,
     };
     try harness.renderCpu(allocator, scene, W, H, OUT_PATH, .{});
-    std.debug.print("autohint-screenshot: wrote {s} ({d}x{d}); ppems {any}\n", .{ OUT_PATH, W, H, ppems });
+    std.debug.print("autohint-screenshot: wrote {s} ({d}x{d})\n", .{ OUT_PATH, W, H });
 
     // Also render through GL to verify the shader-side warp matches the CPU.
     var gl_ctx = egl_offscreen.Context.init(W, H, .gl33) catch |e| {

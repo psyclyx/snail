@@ -666,7 +666,6 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
     var compare_scratch = std.heap.ArenaAllocator.init(allocator);
     defer compare_scratch.deinit();
     var compare_on = false;
-    var compare_ppem: f32 = 14.0;
     // Per-frame arena for re-snapping hinted text runs into a fresh
     // text Picture. retain_capacity means we pay one allocation on the
     // first frame and bump-pointer thereafter.
@@ -876,10 +875,8 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
         }
         if (window.isKeyPressed(KEY_V)) {
             compare_on = !compare_on;
-            std.debug.print("\nautohint-compare={s} (top=unhinted, bottom=auto_light)\n", .{if (compare_on) "on" else "off"});
+            std.debug.print("\nautohint-validation={s} (rows per size: un=unhinted, au=auto_light, tt=truetype)\n", .{if (compare_on) "on" else "off"});
         }
-        if (window.isKeyDown(KEY_G)) compare_ppem = @min(compare_ppem + dt * 12.0, 96.0);
-        if (window.isKeyDown(KEY_F)) compare_ppem = @max(compare_ppem - dt * 12.0, 6.0);
         if (window.isKeyPressed(KEY_T)) {
             timing_enabled = !timing_enabled;
             timing.reset(now);
@@ -1061,7 +1058,7 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
         _ = compare_scratch.reset(.retain_capacity);
         const compare_before = compare.atlas.recordCount();
         var compare_picture = if (compare_on)
-            try compare.buildPicture(compare_arena.allocator(), compare_scratch.allocator(), compare_ppem, 120.0)
+            try compare.buildGrid(compare_arena.allocator(), compare_scratch.allocator())
         else
             try snail_helpers.Picture.from(compare_arena.allocator(), &.{});
         defer compare_picture.deinit();
