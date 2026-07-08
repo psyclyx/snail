@@ -67,6 +67,7 @@ pub const VulkanPipeline = struct {
     pipeline_colr: vk.VkPipeline = null,
     pipeline_path: vk.VkPipeline = null,
     pipeline_hinted_text: vk.VkPipeline = null,
+    pipeline_autohint: vk.VkPipeline = null,
     pipeline_text_subpixel_dual: vk.VkPipeline = null,
     pipeline_cache: vk.VkPipelineCache = null,
     pipeline_layout: vk.VkPipelineLayout = null,
@@ -247,6 +248,7 @@ pub const VulkanPipeline = struct {
         self.persistent_map = null;
         if (self.pipeline_text_subpixel_dual != null) vk.vkDestroyPipeline(self.ctx.device, self.pipeline_text_subpixel_dual, null);
         if (self.pipeline_hinted_text != null) vk.vkDestroyPipeline(self.ctx.device, self.pipeline_hinted_text, null);
+        if (self.pipeline_autohint != null) vk.vkDestroyPipeline(self.ctx.device, self.pipeline_autohint, null);
         if (self.pipeline_path != null) vk.vkDestroyPipeline(self.ctx.device, self.pipeline_path, null);
         if (self.pipeline_colr != null) vk.vkDestroyPipeline(self.ctx.device, self.pipeline_colr, null);
         if (self.pipeline_text != null) vk.vkDestroyPipeline(self.ctx.device, self.pipeline_text, null);
@@ -262,6 +264,7 @@ pub const VulkanPipeline = struct {
 
         self.pipeline_text_subpixel_dual = null;
         self.pipeline_hinted_text = null;
+        self.pipeline_autohint = null;
         self.pipeline_path = null;
         self.pipeline_colr = null;
         self.pipeline_text = null;
@@ -369,6 +372,10 @@ pub const VulkanPipeline = struct {
 
     pub fn ensureHintedTextPipeline(self: *VulkanPipeline) !vk.VkPipeline {
         return vulkan_graphics.ensureHintedTextPipeline(self);
+    }
+
+    pub fn ensureAutohintPipeline(self: *VulkanPipeline) !vk.VkPipeline {
+        return vulkan_graphics.ensureAutohintPipeline(self);
     }
 
     pub fn ensureTextSubpixelDualPipeline(self: *VulkanPipeline) !vk.VkPipeline {

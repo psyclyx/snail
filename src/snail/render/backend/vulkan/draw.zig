@@ -97,10 +97,7 @@ fn drawHeterogeneous(
             .colr => try self.ensureColrPipeline(),
             .path => try self.ensurePathPipeline(),
             .hinted_text => try self.ensureHintedTextPipeline(),
-            // TODO(autohint-vulkan): compile snail_autohint.frag to SPIR-V.
-            // Until then route to the text pipeline, which discards special
-            // instances (blank) rather than misreading the slab.
-            .autohint => try self.ensureTextPipeline(),
+            .autohint => try self.ensureAutohintPipeline(),
         };
         vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pip);
         self.pushTextConstants(cmd, draw_state, 0, run_mode);
@@ -132,10 +129,7 @@ fn drawHeterogeneous(
             .colr => try self.ensureColrPipeline(),
             .path => try self.ensurePathPipeline(),
             .hinted_text => try self.ensureHintedTextPipeline(),
-            // TODO(autohint-vulkan): compile snail_autohint.frag to SPIR-V.
-            // Until then route to the text pipeline, which discards special
-            // instances (blank) rather than misreading the slab.
-            .autohint => try self.ensureTextPipeline(),
+            .autohint => try self.ensureAutohintPipeline(),
         };
         vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pip);
         // The new path stores absolute texture-array layer in the

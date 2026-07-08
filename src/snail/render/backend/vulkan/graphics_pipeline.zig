@@ -13,6 +13,7 @@ const frag_text_spv = vk_shaders.frag_text_spv;
 const frag_colr_spv = vk_shaders.frag_colr_spv;
 const frag_path_spv = vk_shaders.frag_path_spv;
 const frag_hinted_text_spv = vk_shaders.frag_hinted_text_spv;
+const frag_autohint_spv = vk_shaders.frag_autohint_spv;
 const frag_text_subpixel_dual_spv = vk_shaders.frag_text_subpixel_dual_spv;
 
 const UPLOAD_SLOT_BYTES = constants.UPLOAD_SLOT_BYTES;
@@ -292,6 +293,7 @@ pub fn warmGraphicsPipelines(self: anytype) !void {
     self.pipeline_colr = try createGraphicsPipeline(self, frag_colr_spv, .premultiplied);
     self.pipeline_path = try createGraphicsPipeline(self, frag_path_spv, .premultiplied);
     self.pipeline_hinted_text = try createGraphicsPipeline(self, frag_hinted_text_spv, .premultiplied);
+    self.pipeline_autohint = try createGraphicsPipeline(self, frag_autohint_spv, .premultiplied);
     if (self.ctx.supports_dual_source_blend) {
         self.pipeline_text_subpixel_dual = try createGraphicsPipeline(self, frag_text_subpixel_dual_spv, .dual_source);
     }
@@ -311,6 +313,10 @@ pub fn ensurePathPipeline(self: anytype) !vk.VkPipeline {
 
 pub fn ensureHintedTextPipeline(self: anytype) !vk.VkPipeline {
     return self.pipeline_hinted_text orelse error.PipelineUnavailable;
+}
+
+pub fn ensureAutohintPipeline(self: anytype) !vk.VkPipeline {
+    return self.pipeline_autohint orelse error.PipelineUnavailable;
 }
 
 pub fn ensureTextSubpixelDualPipeline(self: anytype) !vk.VkPipeline {
