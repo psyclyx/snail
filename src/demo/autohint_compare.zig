@@ -17,6 +17,7 @@ const assets = @import("assets");
 const Allocator = std.mem.Allocator;
 const ShapedRunCache = helpers.ShapedRunCache;
 const UnhintedGlyphCache = helpers.UnhintedGlyphCache;
+const warp = snail.autohint.warp;
 
 const sample_text = "Words Слова Λέξεις 0123";
 
@@ -31,9 +32,6 @@ pub const Compare = struct {
     shape_cache: ShapedRunCache,
     glyph_cache: UnhintedGlyphCache,
     atlas: snail.Atlas,
-    /// Auto-light curves are referenced (not copied) by the atlas, so they
-    /// must outlive it. Sticky, alongside the sticky atlas.
-    owned_curves: std.ArrayList(snail.GlyphCurves),
 
     pub fn init(allocator: Allocator, pool: *snail.PagePool) !Compare {
         const font = try allocator.create(snail.Font);
@@ -56,14 +54,11 @@ pub const Compare = struct {
             .shape_cache = ShapedRunCache.init(allocator),
             .glyph_cache = UnhintedGlyphCache.init(allocator, font),
             .atlas = snail.Atlas.empty(allocator),
-            .owned_curves = .empty,
         };
     }
 
     pub fn deinit(self: *Compare) void {
         self.atlas.deinit();
-        for (self.owned_curves.items) |*c| c.deinit();
-        self.owned_curves.deinit(self.allocator);
         self.glyph_cache.deinit();
         self.shape_cache.deinit();
         self.auto.deinit();
@@ -119,7 +114,10 @@ pub const Compare = struct {
                 @round(left + em * g.x_offset);
             buf[i] = .{
                 .key = snail.recordKey.hintedGlyph(g.font_id, g.glyph_id, ppem_26_6),
-                .local_transform = .{ .xx = 1, .xy = 0, .tx = origin_x, .yx = 0, .yy = -1, .ty = base_auto },
+                // Base curves are em-normalised, so scale by em (like the
+                // unhinted row); the warp — carried by the atlas record — does
+                // the grid-fit at sample time.
+                .local_transform = .{ .xx = em, .xy = 0, .tx = origin_x, .yx = 0, .yy = -em, .ty = base_auto },
                 .local_color = text_color,
             };
         }
@@ -137,18 +135,28 @@ pub const Compare = struct {
         for (shaped.glyphs) |g| {
             if (g.font_id != self.font_id) continue;
 
+            // Shared unhinted base curves (em-space) — both rows sample these.
+            const c = try self.glyph_cache.getOrInsert(self.allocator, scratch, g.glyph_id);
+
             const key_u = snail.recordKey.unhintedGlyph(g.font_id, g.glyph_id);
             if (n < cap and !self.atlas.contains(key_u) and !hasKey(entries[0..n], key_u)) {
-                const c = try self.glyph_cache.getOrInsert(self.allocator, scratch, g.glyph_id);
                 entries[n] = .{ .key = key_u, .curves = c.* };
                 n += 1;
             }
 
+            // Auto-light key: same base curves + per-ppem warp knots. The
+            // knots live on `scratch`, which outlives the atlas build below
+            // (the builder copies them into the layer-info slab).
             const key_a = snail.recordKey.hintedGlyph(g.font_id, g.glyph_id, ppem_26_6);
             if (n < cap and !self.atlas.contains(key_a) and !hasKey(entries[0..n], key_a)) {
-                const curves = try self.auto.produce(self.allocator, scratch, g.glyph_id, ppem_26_6);
-                try self.owned_curves.append(self.allocator, curves);
-                entries[n] = .{ .key = key_a, .curves = self.owned_curves.items[self.owned_curves.items.len - 1] };
+                const xk = try scratch.alloc(warp.Knot, warp.max_knots);
+                const yk = try scratch.alloc(warp.Knot, warp.max_knots);
+                const knots = try self.auto.glyphKnots(scratch, g.glyph_id, ppem_26_6, xk, yk);
+                entries[n] = .{
+                    .key = key_a,
+                    .curves = c.*,
+                    .autohint = .{ .x = knots.x, .y = knots.y },
+                };
                 n += 1;
             }
         }

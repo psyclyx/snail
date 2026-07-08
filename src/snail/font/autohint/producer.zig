@@ -117,26 +117,15 @@ pub const AutoLight = struct {
         try flattenGlyph(scratch, &self.program, glyph_id, &pts, &contours, 0);
         if (pts.items.len == 0) return GlyphCurves.empty(allocator);
 
-        // Build the warp knots for both axes. y latches horizontal features
-        // onto blue zones; x snaps vertical stems to the grid (no blues — x
-        // has no reference heights).
+        // Build the warp knots for both axes (FUnits).
         var y_buf: [warp.max_knots]warp.Knot = undefined;
         var x_buf: [warp.max_knots]warp.Knot = undefined;
         var y_knots: ?[]const warp.Knot = null;
         var x_knots: ?[]const warp.Knot = null;
         {
-            var ay = try analysis.analyzeGlyph(scratch, pts.items, contours.items, self.font.units_per_em, self.params, .y);
-            defer ay.deinit();
-            self.blues.assignEdges(ay.edges, self.blue_tol_em);
-            var zbuf: [warp.max_knots]warp.BlueZone = undefined;
-            const zones = self.blues.warpZones(&zbuf);
-            const ny = warp.buildKnots(ay.edges, zones, px_per_unit, self.std_y, &y_buf);
-            if (ny > 0) y_knots = y_buf[0..ny];
-
-            var ax = try analysis.analyzeGlyph(scratch, pts.items, contours.items, self.font.units_per_em, self.params, .x);
-            defer ax.deinit();
-            const nx = warp.buildKnots(ax.edges, &.{}, px_per_unit, self.std_x, &x_buf);
-            if (nx > 0) x_knots = x_buf[0..nx];
+            const counts = try self.fillKnots(scratch, pts.items, contours.items, px_per_unit, &x_buf, &y_buf);
+            if (counts.ny > 0) y_knots = y_buf[0..counts.ny];
+            if (counts.nx > 0) x_knots = x_buf[0..counts.nx];
         }
 
         // Flatten every contour to pixel-space segments, warping first.
@@ -197,6 +186,70 @@ pub const AutoLight = struct {
             .bbox = bbox,
         };
     }
+
+    /// Analyse both axes of a flattened outline and fill the caller's knot
+    /// buffers (FUnits). Shared by `produce` (baked) and `glyphKnots` (runtime).
+    fn fillKnots(
+        self: *AutoLight,
+        scratch: Allocator,
+        pts: []const outline.Point,
+        contours: []const outline.ContourRange,
+        px_per_unit: f32,
+        x_buf: []warp.Knot,
+        y_buf: []warp.Knot,
+    ) !struct { nx: usize, ny: usize } {
+        var ay = try analysis.analyzeGlyph(scratch, pts, contours, self.font.units_per_em, self.params, .y);
+        defer ay.deinit();
+        self.blues.assignEdges(ay.edges, self.blue_tol_em);
+        var zbuf: [warp.max_knots]warp.BlueZone = undefined;
+        const zones = self.blues.warpZones(&zbuf);
+        const ny = warp.buildKnots(ay.edges, zones, px_per_unit, self.std_y, y_buf);
+
+        var ax = try analysis.analyzeGlyph(scratch, pts, contours, self.font.units_per_em, self.params, .x);
+        defer ax.deinit();
+        const nx = warp.buildKnots(ax.edges, &.{}, px_per_unit, self.std_x, x_buf);
+        return .{ .nx = nx, .ny = ny };
+    }
+
+    /// Em-normalised (÷upm) warp knots for the runtime warp path — the base
+    /// atlas glyph is in em space, so the FUnit knots are rescaled to match.
+    /// Fills `x_buf`/`y_buf` (each ≥ `warp.max_knots`) and returns the used
+    /// slices; empty when the glyph has no usable features.
+    pub fn glyphKnots(
+        self: *AutoLight,
+        scratch: Allocator,
+        glyph_id: u16,
+        ppem_26_6: u32,
+        x_buf: []warp.Knot,
+        y_buf: []warp.Knot,
+    ) !AxisKnots {
+        const ppem_px = @as(f32, @floatFromInt(ppem_26_6)) / 64.0;
+        const upm: f32 = @floatFromInt(self.font.units_per_em);
+        const px_per_unit = if (upm > 0) ppem_px / upm else 0;
+
+        var pts: std.ArrayList(outline.Point) = .empty;
+        defer pts.deinit(scratch);
+        var contours: std.ArrayList(outline.ContourRange) = .empty;
+        defer contours.deinit(scratch);
+        try flattenGlyph(scratch, &self.program, glyph_id, &pts, &contours, 0);
+        if (pts.items.len == 0 or upm <= 0) return .{ .x = x_buf[0..0], .y = y_buf[0..0] };
+
+        const counts = try self.fillKnots(scratch, pts.items, contours.items, px_per_unit, x_buf, y_buf);
+        for (x_buf[0..counts.nx]) |*k| {
+            k.base /= upm;
+            k.target /= upm;
+        }
+        for (y_buf[0..counts.ny]) |*k| {
+            k.base /= upm;
+            k.target /= upm;
+        }
+        return .{ .x = x_buf[0..counts.nx], .y = y_buf[0..counts.ny] };
+    }
+};
+
+pub const AxisKnots = struct {
+    x: []const warp.Knot,
+    y: []const warp.Knot,
 };
 
 /// Resolve `glyph_id` (simple or compound) into a single flat point/contour
