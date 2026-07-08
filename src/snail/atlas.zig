@@ -15,6 +15,7 @@ const band_tex_format = @import("render/format/band_texture.zig");
 const paint_mod = @import("paint.zig");
 const atlas_builder = @import("atlas/builder.zig");
 const hamt_mod = @import("util/hamt.zig");
+const autohint_warp = @import("font/autohint/warp.zig");
 
 const Builder = atlas_builder.Builder;
 
@@ -55,6 +56,14 @@ pub const PaintRecordInfo = struct {
     layer_count: u16 = 1,
 };
 
+/// Per-axis warp knots for an autohint entry. Borrowed by `from`/`extend`;
+/// the builder copies them into the layer-info slab, so they need only
+/// outlive the build call.
+pub const AutohintKnots = struct {
+    x: []const autohint_warp.Knot,
+    y: []const autohint_warp.Knot,
+};
+
 const CURVE_TEX_WIDTH = curve_tex_format.TEX_WIDTH;
 const CURVE_SEGMENT_TEXELS = curve_tex_format.SEGMENT_TEXELS;
 const CURVE_SEGMENT_WORDS: u32 = CURVE_SEGMENT_TEXELS * 4;
@@ -84,6 +93,11 @@ pub const Entry = struct {
     fill_rule: @import("target.zig").FillRule = .non_zero,
     extra_layers: []const Layer = &.{},
     composite_mode: CompositeMode = .source_over,
+    /// When set, the atlas also writes an autohint slab record (this entry's
+    /// base band entry + these knots) and remembers it in `autohint_lookup`,
+    /// so emit encodes a resolution-independent warped instance. `curves`
+    /// stays the shared unhinted base glyph. Mutually usable with `paint`.
+    autohint: ?AutohintKnots = null,
 };
 
 pub const Layer = struct {
@@ -119,6 +133,9 @@ pub const Atlas = struct {
     /// Per-key (info_x, info_y) lookups for paint records. Same
     /// persistent-map shape as `lookup`.
     paint_lookup: PaintLookup,
+    /// Per-key (info_x, info_y) into `layer_info_data` for autohint records.
+    /// Same persistent-map shape as `paint_lookup`.
+    autohint_lookup: PaintLookup,
     /// One slot per emitted paint record (in insertion order). The slot
     /// is populated only for `.image` paints — gradient/solid records map
     /// to `null`. The atlas's CPU consumer (`CpuBackendCache.upload`)
@@ -136,6 +153,7 @@ pub const Atlas = struct {
             .pages = &.{},
             .lookup = RecordLookup.init(allocator, .{}),
             .paint_lookup = PaintLookup.init(allocator, .{}),
+            .autohint_lookup = PaintLookup.init(allocator, .{}),
         };
     }
 
@@ -149,6 +167,7 @@ pub const Atlas = struct {
         if (self.layer_info_data) |d| self.allocator.free(d);
         if (self.paint_image_records) |records| self.allocator.free(records);
         self.paint_lookup.deinit();
+        self.autohint_lookup.deinit();
         self.lookup.deinit();
         self.* = undefined;
     }
@@ -158,6 +177,11 @@ pub const Atlas = struct {
     /// `empty()` / `combine` of atlases without paints.
     pub fn lookupPaintRecord(self: *const Atlas, key: RecordKey) ?PaintRecordInfo {
         return self.paint_lookup.get(key);
+    }
+
+    /// Look up the autohint slab record (if any) bound to `key`.
+    pub fn lookupAutohintRecord(self: *const Atlas, key: RecordKey) ?PaintRecordInfo {
+        return self.autohint_lookup.get(key);
     }
 
     pub fn contains(self: *const Atlas, key: RecordKey) bool {
@@ -281,6 +305,7 @@ pub const Atlas = struct {
             .pages = try pages.toOwnedSlice(allocator),
             .lookup = lookup,
             .paint_lookup = PaintLookup.init(allocator, .{}),
+            .autohint_lookup = PaintLookup.init(allocator, .{}),
         };
     }
 

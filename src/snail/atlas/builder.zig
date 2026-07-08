@@ -18,6 +18,7 @@ const curves_mod = @import("curves.zig");
 const curve_tex_format = @import("../render/format/curve_texture.zig");
 const band_tex_format = @import("../render/format/band_texture.zig");
 const paint_records = @import("paint_records.zig");
+const autohint_format = @import("../render/format/autohint_record.zig");
 const paint_mod = @import("../paint.zig");
 const target_mod = @import("../target.zig");
 
@@ -51,6 +52,7 @@ pub const Builder = struct {
     layer_info_buf: std.ArrayList(f32),
     layer_info_texels: u32,
     paint_lookup: PaintLookup,
+    autohint_lookup: PaintLookup,
     /// Per-record slot for image paints. Indexed in insertion order;
     /// non-image paints land as `null`. Empty when no paints emitted.
     paint_image_records: std.ArrayList(?PaintImageRecord),
@@ -64,6 +66,7 @@ pub const Builder = struct {
             .layer_info_buf = .empty,
             .layer_info_texels = 0,
             .paint_lookup = PaintLookup.init(allocator, .{}),
+            .autohint_lookup = PaintLookup.init(allocator, .{}),
             .paint_image_records = .empty,
         };
     }
@@ -84,6 +87,7 @@ pub const Builder = struct {
             .layer_info_buf = .empty,
             .layer_info_texels = 0,
             .paint_lookup = base.paint_lookup.clone(),
+            .autohint_lookup = base.autohint_lookup.clone(),
             .paint_image_records = .empty,
         };
         errdefer b.abort();
@@ -111,6 +115,7 @@ pub const Builder = struct {
         self.lookup.deinit();
         self.layer_info_buf.deinit(self.allocator);
         self.paint_lookup.deinit();
+        self.autohint_lookup.deinit();
         self.paint_image_records.deinit(self.allocator);
     }
 
@@ -128,6 +133,48 @@ pub const Builder = struct {
         const next = try self.paint_lookup.put(key, value);
         self.paint_lookup.deinit();
         self.paint_lookup = next;
+    }
+
+    fn autohintLookupPut(self: *Builder, key: RecordKey, value: PaintRecordInfo) !void {
+        const next = try self.autohint_lookup.put(key, value);
+        self.autohint_lookup.deinit();
+        self.autohint_lookup = next;
+    }
+
+    /// Append an autohint slab record (base band entry + both packed knot
+    /// runs) after the base glyph's normal record, and remember its slab
+    /// position. Shares `layer_info_buf` with paint records.
+    fn insertAutohintRecord(
+        self: *Builder,
+        key: RecordKey,
+        bands: GlyphBandEntry,
+        knots: atlas_mod.AutohintKnots,
+    ) std.mem.Allocator.Error!void {
+        const record_floats = autohint_format.recordFloatCount(knots.x.len, knots.y.len);
+        const record_texels: u32 = @intCast((record_floats + 3) / 4);
+        const texel_offset = self.layer_info_texels;
+        const new_texels = texel_offset + record_texels;
+        const need_floats = @as(usize, new_texels) * 4;
+        if (self.layer_info_buf.items.len < need_floats) {
+            try self.layer_info_buf.resize(self.allocator, need_floats);
+            @memset(self.layer_info_buf.items[@as(usize, texel_offset) * 4 .. need_floats], 0);
+        }
+        autohint_format.writeRecord(self.layer_info_buf.items, @as(usize, texel_offset) * 4, .{
+            .glyph_x = bands.glyph_x,
+            .glyph_y = bands.glyph_y,
+            .h_band_count = bands.h_band_count,
+            .v_band_count = bands.v_band_count,
+            .band_scale_x = bands.band_scale_x,
+            .band_scale_y = bands.band_scale_y,
+            .band_offset_x = bands.band_offset_x,
+            .band_offset_y = bands.band_offset_y,
+        }, knots.x, knots.y);
+        try self.autohintLookupPut(key, .{
+            .info_x = @intCast(texel_offset % paint_records.info_width),
+            .info_y = @intCast(texel_offset / paint_records.info_width),
+            .layer_count = 1,
+        });
+        self.layer_info_texels = new_texels;
     }
 
     pub fn finish(self: *Builder) std.mem.Allocator.Error!Atlas {
@@ -172,6 +219,7 @@ pub const Builder = struct {
             .layer_info_width = if (layer_info_data != null) paint_records.info_width else 0,
             .layer_info_height = layer_info_height,
             .paint_lookup = self.paint_lookup,
+            .autohint_lookup = self.autohint_lookup,
             .paint_image_records = paint_image_records_out,
         };
     }
@@ -411,6 +459,11 @@ pub const Builder = struct {
         };
 
         try self.lookupPut(entry.key, record);
+
+        // Autohint: warped instance over the shared base glyph.
+        if (entry.autohint) |knots| {
+            try self.insertAutohintRecord(entry.key, base_placement.bands, knots);
+        }
 
         // Skip layer-info entirely if there's no paint at all.
         if (entry.paint == null and extra_count == 0) return;

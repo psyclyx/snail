@@ -487,6 +487,20 @@ pub fn generateHintedTextVerticesTransformedTinted(
     return generateSpecialLayerVerticesTransformedTinted(buf, bbox, info_x, info_y, layer_count, color, tint, atlas_layer, transform, .hinted_text);
 }
 
+pub fn generateAutohintVerticesTransformedTinted(
+    buf: []u32,
+    bbox: BBox,
+    info_x: u16,
+    info_y: u16,
+    layer_count: u16,
+    color: [4]f32,
+    tint: [4]f32,
+    atlas_layer: u8,
+    transform: vec.Transform2D,
+) bool {
+    return generateSpecialLayerVerticesTransformedTinted(buf, bbox, info_x, info_y, layer_count, color, tint, atlas_layer, transform, .autohint);
+}
+
 fn generateSpecialLayerVerticesTransformedTinted(
     buf: []u32,
     bbox: BBox,

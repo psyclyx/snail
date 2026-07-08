@@ -101,7 +101,23 @@ pub fn emit(
         const final_transform = Transform2D.multiply(world_xform, shape.local_transform);
         const dst = words_buf[cursor..][0..WORDS_PER_INSTANCE];
 
-        const ok = if (atlas.lookupPaintRecord(shape.key)) |paint_info| blk: {
+        const ok = if (atlas.lookupAutohintRecord(shape.key)) |ah_info| blk: {
+            // Warped instance over the shared base glyph. Reuse the hinted-text
+            // kind bit for the GPU fast-path mask (GPU warp isn't wired yet;
+            // the CPU dispatches per instance). See subpixel_policy TODO.
+            kind_mask |= draw_records.KIND_BIT_HINTED_TEXT;
+            break :blk vertex.generateAutohintVerticesTransformedTinted(
+                dst,
+                rec.bbox,
+                ah_info.info_x,
+                try addRowBase(ah_info.info_y, binding.info_row_base),
+                ah_info.layer_count,
+                shape.local_color,
+                world_tint,
+                atlas_layer,
+                final_transform,
+            );
+        } else if (atlas.lookupPaintRecord(shape.key)) |paint_info| blk: {
             kind_mask |= draw_records.KIND_BIT_PATH;
             break :blk vertex.generatePathRecordVerticesTransformedTinted(
                 dst,
