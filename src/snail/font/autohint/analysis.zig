@@ -35,9 +35,16 @@ const Vec2 = vec.Vec2;
 /// text but are exposed rather than baked in — pick explicitly per the
 /// project's no-magic-thresholds rule. See [[feedback_no_magic_thresholds]].
 pub const Params = struct {
-    /// A flattened polyline segment is "horizontal" (a candidate y-edge)
-    /// when |dy| <= flat_ratio * |dx|.
+    /// A segment is a candidate y-edge when |dy| <= flat_ratio * |dx|. Kept
+    /// loose because crossbars/arms legitimately slant a little.
     flat_ratio: f32 = 0.30,
+    /// A segment is a candidate x-edge (vertical stem side) when
+    /// |dx| <= flat_ratio_x * |dy|. MUCH tighter than the y ratio: a real
+    /// stem is near-vertical, whereas diagonal strokes (W, V, A, Λ, ξ, and
+    /// many Cyrillic/Greek forms) are ~15-25° off vertical. A loose ratio
+    /// mis-reads those diagonals as stems and x-warps them, distorting and
+    /// widening the glyph. ~7° keeps genuine stems, drops diagonals.
+    flat_ratio_x: f32 = 0.12,
     /// Number of line segments each quadratic is flattened into. Higher
     /// resolves round apexes (overshoots) more precisely at more cost.
     curve_steps: u32 = 8,
@@ -202,8 +209,9 @@ fn collectContourSegments(
     for (curves) |q| {
         const mid = Vec2.lerp(q.p0, q.p2, 0.5);
         const straight = Vec2.length(Vec2.sub(q.p1, mid)) <= straight_eps;
+        const flat_ratio = if (axis == .x) params.flat_ratio_x else params.flat_ratio;
         if (straight) {
-            if (segmentFor(q.p0, q.p2, axis, params.flat_ratio, min_len, false)) |seg| try out.append(arena, seg);
+            if (segmentFor(q.p0, q.p2, axis, flat_ratio, min_len, false)) |seg| try out.append(arena, seg);
         } else if (axis == .y) {
             var prev = q.p0;
             var step: u32 = 1;

@@ -21,6 +21,11 @@ const warp = snail.autohint.warp;
 
 const sample_text = "Words Слова Λέξεις 0123";
 
+/// ppems shown, top to bottom, by the headless comparison screenshots.
+pub const preview_ppems = [_]f32{ 12, 18, 28, 52 };
+pub const preview_w: u32 = 1040;
+pub const preview_h: u32 = 440;
+
 pub const Compare = struct {
     allocator: Allocator,
     pool: *snail.PagePool,
