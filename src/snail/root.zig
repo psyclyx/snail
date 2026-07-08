@@ -197,6 +197,8 @@ test {
     _ = @import("font/autohint/warp.zig");
     _ = @import("font/autohint/blue.zig");
     _ = @import("font/autohint/producer.zig");
+    _ = @import("render/format/autohint_record.zig");
+    _ = @import("render/format/abi.zig");
     _ = @import("text/faces.zig");
     _ = shape_mod;
     _ = @import("picture/draw_records.zig");

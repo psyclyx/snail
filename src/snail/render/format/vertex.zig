@@ -120,6 +120,7 @@ fn specialRectHalf4(kind: SpecialLayerKind, values: [4]f32) [4]u16 {
     return switch (kind) {
         .path => rectHalf4(values),
         .hinted_text => rectHalf4(values),
+        .autohint => rectHalf4(values),
         .colr => half4(values),
     };
 }
