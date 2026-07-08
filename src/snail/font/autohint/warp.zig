@@ -1,0 +1,415 @@
+//! The `auto_light` coordinate warp: turns ppem-independent edge analysis
+//! into a per-ppem, separable, monotone piecewise-linear map along the
+//! y-axis, and inverts it for shader-side sampling.
+//!
+//! This is the single source of truth for the grid-fit math. The CPU
+//! renderer calls it directly; the GLSL shader ports `inverseWarp` verbatim
+//! (parity is asserted by tests). Everything is expressed in the caller's
+//! position unit (FUnits in practice) with `px_per_unit` carrying the ppem —
+//! so the module itself is scale-agnostic and has no per-ppem state.
+//!
+//! Forward warp f: base_y -> hinted_y snaps edges to the pixel grid and
+//! quantises stem widths to whole pixels (min 1). The renderer needs the
+//! INVERSE: given a hinted-space sample it recovers the base-outline
+//! coordinate to query, plus the local inverse slope used to rescale the
+//! anti-aliasing footprint (epp_base = epp_screen * inv_slope). Because the
+//! map is monotone the inverse is well defined; because it's separable it
+//! composes with the existing base-space coverage evaluator untouched.
+//! See [[project_snail]].
+
+const std = @import("std");
+
+const analysis = @import("analysis.zig");
+const Edge = analysis.Edge;
+
+/// Upper bound on edges fed to the warp. Glyphs with more horizontal
+/// features than this (dense CJK, ornate display faces) fall back to the
+/// identity warp — they render exactly as they do unhinted, which is the
+/// "don't break non-Latin" guarantee. Kept in lockstep with the shader's
+/// fixed array size.
+pub const max_knots: usize = 32;
+
+/// One (base, target) control point of the warp, in the caller's unit.
+pub const Knot = struct {
+    /// Position on the base outline.
+    base: f32,
+    /// Grid-fitted position it maps to.
+    target: f32,
+};
+
+/// A font-global reference height (baseline, x-height, cap-height, …) that
+/// edges latch onto so the same feature lands identically across glyphs.
+pub const BlueZone = struct {
+    /// Flat reference position (FUnits) — where flat features (x/z/H) sit.
+    ref: f32,
+    /// Overshoot position (FUnits) — where round features (o/e/O) reach.
+    /// Equal to `ref` when the zone has no round samples.
+    shoot: f32,
+};
+
+/// Result of an inverse-warp query at one hinted-space coordinate.
+pub const Sample = struct {
+    /// Coordinate to sample on the base outline.
+    base: f32,
+    /// d(base)/d(hinted) local slope — multiply the screen AA footprint by
+    /// this to get the footprint in base space. <1 near a snapped edge
+    /// (space compresses -> sharper), which is the mechanism of crispness.
+    inv_slope: f32,
+};
+
+fn snap(v: f32, px_per_unit: f32) f32 {
+    if (px_per_unit <= 0) return v;
+    return @round(v * px_per_unit) / px_per_unit;
+}
+
+/// Fraction of the standard width within which a stem is considered "the same
+/// weight" and pulled to it. Wide enough to unify normal-weight stems, tight
+/// enough to leave genuinely bold/thin strokes on their own measured width.
+const std_snap_ratio: f32 = 0.4;
+
+fn standardizeWidth(raw: f32, std_width: f32) f32 {
+    if (std_width > 0 and @abs(raw - std_width) <= std_snap_ratio * std_width) return std_width;
+    return raw;
+}
+
+/// Below this scaled overshoot, round apexes collapse onto the flat reference
+/// — at small ppem a fractional-pixel overshoot just blurs the line and makes
+/// round glyphs look mis-aligned, so it's suppressed. Above it the overshoot
+/// is kept (optically correct at larger sizes).
+const overshoot_min_px: f32 = 0.5;
+
+/// Grid-fitted target for one edge: its own snapped position, or — when
+/// blue-linked — the shared fitted reference, plus the overshoot when the
+/// edge is a round apex and the overshoot survives the small-size cut-off.
+fn blueTarget(e: Edge, blues: []const BlueZone, px_per_unit: f32) f32 {
+    if (e.blue < 0 or @as(usize, @intCast(e.blue)) >= blues.len) return snap(e.pos, px_per_unit);
+    const b = blues[@intCast(e.blue)];
+    const ref_fit = snap(b.ref, px_per_unit);
+    const overshoot = b.shoot - b.ref; // signed FUnits (tops +, bottoms -)
+    if (e.round and @abs(overshoot * px_per_unit) >= overshoot_min_px) {
+        return ref_fit + overshoot;
+    }
+    return ref_fit;
+}
+
+/// Build the forward-warp knots for a glyph at a given size. Returns the
+/// knot count (0 if the glyph has no usable edges or exceeds `max_knots`,
+/// signalling "render unwarped"). `out` must hold at least `max_knots`.
+///
+/// Knots come out sorted ascending in both `base` and `target` (the map is
+/// monotone), which is what `inverseWarp` relies on.
+pub fn buildKnots(
+    edges: []const Edge,
+    blues: []const BlueZone,
+    px_per_unit: f32,
+    /// Font's dominant stem width for this axis (FUnits, 0 = disabled). Stems
+    /// within `std_snap_ratio` of it snap to a single shared pixel width so
+    /// the whole run reads as one even weight instead of some stems rounding
+    /// to 1px and others to 2px.
+    std_width: f32,
+    out: []Knot,
+) usize {
+    const n = edges.len;
+    if (n == 0 or n > max_knots or n > out.len) return 0;
+
+    const grid = if (px_per_unit > 0) 1.0 / px_per_unit else 1.0;
+
+    // Pass 1 — target per edge. Blue-linked edges snap to the SHARED rounded
+    // reference (so every glyph's baseline/x-height agree), with overshoot for
+    // round apexes; everything else snaps to its own grid line.
+    var target: [max_knots]f32 = undefined;
+    for (edges, 0..) |e, i| target[i] = blueTarget(e, blues, px_per_unit);
+
+    // Pass 2 — stems. Anchor one side (a blue-linked side wins so the stem
+    // hangs off the reference; otherwise the lower side), then place the
+    // partner a whole (standardised) number of pixels away, min one.
+    for (edges, 0..) |e, i| {
+        if (!e.isStem()) continue;
+        const j: usize = @intCast(e.stem);
+        if (j <= i) continue; // process each pair once, from its lower edge
+        const nominal = standardizeWidth(e.width, std_width);
+        const width_px = @max(@round(nominal * px_per_unit), 1.0);
+        const width_units = width_px * grid;
+        const lower_blue = edges[i].blue >= 0;
+        const upper_blue = edges[j].blue >= 0;
+        if (upper_blue and !lower_blue) {
+            target[i] = target[j] - width_units;
+        } else {
+            target[j] = target[i] + width_units;
+        }
+    }
+
+    // Pass 3 — keep only genuine features as knots: stem edges and blue-linked
+    // edges. Interior curve apexes and stray edges are NOT snapped — they just
+    // interpolate between the real knots (the same idea as TrueType's
+    // interpolate-untouched-points instruction). Snapping every detected edge
+    // adds noise that mangles small glyphs (the middle of `3`).
+    var count: usize = 0;
+    for (edges, 0..) |e, i| {
+        if (!e.isStem() and e.blue < 0) continue;
+        out[count] = .{ .base = e.pos, .target = target[i] };
+        count += 1;
+    }
+
+    // Pass 4 — strict monotonicity over the kept knots, so the map stays
+    // invertible when small-ppem snapping would otherwise cross them.
+    var i: usize = 1;
+    while (i < count) : (i += 1) {
+        if (out[i].target <= out[i - 1].target) {
+            out[i].target = out[i - 1].target + grid;
+        }
+    }
+
+    return count;
+}
+
+/// Forward warp f: base -> hinted. Piecewise-linear through the knots,
+/// identity (shifted to stay continuous) outside the edge range. Used to
+/// grid-fit an outline directly (e.g. the CPU preview / any point-warp
+/// caller); the renderer uses `inverseWarp` instead.
+pub fn forwardWarp(knots: []const Knot, base: f32) f32 {
+    const n = knots.len;
+    if (n == 0) return base;
+    if (base <= knots[0].base) return knots[0].target + (base - knots[0].base);
+    if (base >= knots[n - 1].base) return knots[n - 1].target + (base - knots[n - 1].base);
+
+    var i: usize = 0;
+    while (i + 1 < n and knots[i + 1].base < base) : (i += 1) {}
+    const lo = knots[i];
+    const hi = knots[i + 1];
+    const db = hi.base - lo.base;
+    const slope = if (@abs(db) > 1e-6) (hi.target - lo.target) / db else 1.0;
+    return lo.target + (base - lo.base) * slope;
+}
+
+/// Invert the warp at `hinted`: recover the base-space coordinate and the
+/// local slope. Outside the edge range the map is identity (slope 1) shifted
+/// to stay continuous at the end knots, so glyph interiors past the last
+/// feature aren't distorted. This is the function the fragment shader mirrors.
+pub fn inverseWarp(knots: []const Knot, hinted: f32) Sample {
+    const n = knots.len;
+    if (n == 0) return .{ .base = hinted, .inv_slope = 1.0 };
+
+    if (hinted <= knots[0].target) {
+        return .{ .base = knots[0].base + (hinted - knots[0].target), .inv_slope = 1.0 };
+    }
+    if (hinted >= knots[n - 1].target) {
+        return .{ .base = knots[n - 1].base + (hinted - knots[n - 1].target), .inv_slope = 1.0 };
+    }
+
+    var i: usize = 0;
+    while (i + 1 < n and knots[i + 1].target < hinted) : (i += 1) {}
+    const lo = knots[i];
+    const hi = knots[i + 1];
+    const dt = hi.target - lo.target;
+    const db = hi.base - lo.base;
+    const inv_slope = if (@abs(dt) > 1e-6) db / dt else 1.0;
+    return .{ .base = lo.base + (hinted - lo.target) * inv_slope, .inv_slope = inv_slope };
+}
+
+// ── shader-facing packed form ──────────────────────────────────────────────
+//
+// The GPU needs the knots as a flat float run it can `texelFetch`. Layout per
+// axis: [count, base0, target0, base1, target1, …]. `snail_autohint_warp.glsl`
+// reads exactly this and mirrors `inverseWarpPacked` — the parity test below
+// pins the two together so the shader can't silently drift from the CPU math.
+
+/// Serialise `knots` into `out` as `[count, (base,target)×count]`. Returns the
+/// number of floats written (`1 + 2*len`). `out` must hold that many.
+pub fn packAxis(knots: []const Knot, out: []f32) usize {
+    out[0] = @floatFromInt(knots.len);
+    for (knots, 0..) |k, i| {
+        out[1 + 2 * i] = k.base;
+        out[2 + 2 * i] = k.target;
+    }
+    return 1 + 2 * knots.len;
+}
+
+/// Inverse warp reading the packed layout. Byte-for-byte the same arithmetic
+/// as `inverseWarp`, but over the flat float run the shader sees — so this is
+/// the exact reference `snail_autohint_warp.glsl` must reproduce.
+pub fn inverseWarpPacked(data: []const f32, hinted: f32) Sample {
+    const n: usize = @intFromFloat(data[0]);
+    if (n == 0) return .{ .base = hinted, .inv_slope = 1.0 };
+
+    const first_base = data[1];
+    const first_target = data[2];
+    if (hinted <= first_target) {
+        return .{ .base = first_base + (hinted - first_target), .inv_slope = 1.0 };
+    }
+    const last_base = data[1 + 2 * (n - 1)];
+    const last_target = data[2 + 2 * (n - 1)];
+    if (hinted >= last_target) {
+        return .{ .base = last_base + (hinted - last_target), .inv_slope = 1.0 };
+    }
+
+    var i: usize = 0;
+    while (i + 1 < n and data[2 + 2 * (i + 1)] < hinted) : (i += 1) {}
+    const lo_base = data[1 + 2 * i];
+    const lo_target = data[2 + 2 * i];
+    const hi_base = data[1 + 2 * (i + 1)];
+    const hi_target = data[2 + 2 * (i + 1)];
+    const dt = hi_target - lo_target;
+    const db = hi_base - lo_base;
+    const inv_slope = if (@abs(dt) > 1e-6) db / dt else 1.0;
+    return .{ .base = lo_base + (hinted - lo_target) * inv_slope, .inv_slope = inv_slope };
+}
+
+// ── tests ────────────────────────────────────────────────────────────────
+
+const testing = std.testing;
+
+fn edge(pos: f32, dir: i8) Edge {
+    return .{ .pos = pos, .min = 0, .max = 500, .dir = dir };
+}
+
+fn stemPair(lower: *Edge, upper: *Edge, li: usize, ui: usize, width: f32) void {
+    lower.stem = @intCast(ui);
+    lower.width = width;
+    upper.stem = @intCast(li);
+    upper.width = width;
+}
+
+test "knots snap edges to the pixel grid and stay monotone" {
+    // em=1000, ppem=12 -> 0.012 px/funit, grid ~= 83.3 funits.
+    const px_per_unit: f32 = 12.0 / 1000.0;
+    var edges = [_]Edge{
+        edge(0, -1), // baseline foot (blue-linked)
+        edge(300, -1), // stem bottom
+        edge(380, 1), // stem top
+        edge(700, 1), // cap top (blue-linked)
+    };
+    edges[0].blue = 0;
+    edges[3].blue = 1;
+    stemPair(&edges[1], &edges[2], 1, 2, 80);
+    const blues = [_]BlueZone{ .{ .ref = 0, .shoot = 0 }, .{ .ref = 700, .shoot = 700 } };
+
+    var buf: [max_knots]Knot = undefined;
+    // baseline + cap kept via blue link, stem pair kept as stems -> 4 knots.
+    const count = buildKnots(&edges, &blues, px_per_unit, 0, &buf);
+    try testing.expectEqual(@as(usize, 4), count);
+
+    const knots = buf[0..count];
+    // Each target lands on a pixel boundary.
+    for (knots) |k| {
+        const px = k.target * px_per_unit;
+        try testing.expectApproxEqAbs(px, @round(px), 1e-4);
+    }
+    // Strictly increasing.
+    for (1..count) |i| try testing.expect(knots[i].target > knots[i - 1].target);
+}
+
+test "stem width quantises to a whole pixel, minimum one" {
+    const px_per_unit: f32 = 12.0 / 1000.0; // ~0.96px raw stem -> snaps to 1px
+    var edges = [_]Edge{ edge(300, -1), edge(380, 1) };
+    stemPair(&edges[0], &edges[1], 0, 1, 80);
+
+    var buf: [max_knots]Knot = undefined;
+    _ = buildKnots(&edges, &.{}, px_per_unit, 0, &buf);
+    const width_px = (buf[1].target - buf[0].target) * px_per_unit;
+    try testing.expectApproxEqAbs(@as(f32, 1.0), width_px, 1e-4);
+}
+
+test "blue-linked edges snap to the shared rounded blue position" {
+    const px_per_unit: f32 = 13.0 / 1000.0;
+    var a = edge(512, 1); // slightly off the blue
+    a.blue = 0;
+    var b = edge(505, 1);
+    b.blue = 0;
+    const blues = [_]BlueZone{.{ .ref = 500, .shoot = 500 }};
+
+    var buf: [max_knots]Knot = undefined;
+    var edges = [_]Edge{ a, b };
+    // sort by pos so monotonic pass is well-defined (505 < 512)
+    std.mem.sort(Edge, &edges, {}, struct {
+        fn lt(_: void, x: Edge, y: Edge) bool {
+            return x.pos < y.pos;
+        }
+    }.lt);
+    _ = buildKnots(&edges, &blues, px_per_unit, 0, &buf);
+    const shared = snap(500, px_per_unit);
+    // Both latch onto the same rounded reference (monotonic pass may lift the
+    // second by one grid step, so check the lower one hit it exactly).
+    try testing.expectApproxEqAbs(shared, buf[0].target, 1e-4);
+}
+
+test "round apex overshoots at large ppem and flattens at small" {
+    // x-height reference 500, round apex reaches 520 (20-FUnit overshoot).
+    const blues = [_]BlueZone{.{ .ref = 500, .shoot = 520 }};
+    var apex = edge(518, 1);
+    apex.blue = 0;
+    apex.round = true;
+
+    var buf: [max_knots]Knot = undefined;
+
+    // ppem 100 (em 1000): overshoot 20 * 0.1 = 2px >= cutoff -> kept at ref+20.
+    var big = [_]Edge{apex};
+    _ = buildKnots(&big, &blues, 100.0 / 1000.0, 0, &buf);
+    try testing.expectApproxEqAbs(@as(f32, 520), buf[0].target, 1.0);
+
+    // ppem 11: overshoot 20 * 0.011 = 0.22px < cutoff -> collapses to ref.
+    var small = [_]Edge{apex};
+    _ = buildKnots(&small, &blues, 11.0 / 1000.0, 0, &buf);
+    const ref_fit = @round(500.0 * (11.0 / 1000.0)) / (11.0 / 1000.0);
+    try testing.expectApproxEqAbs(ref_fit, buf[0].target, 0.5);
+}
+
+test "inverse warp round-trips knot targets to their bases" {
+    const px_per_unit: f32 = 11.0 / 1000.0;
+    var edges = [_]Edge{ edge(0, -1), edge(300, -1), edge(380, 1), edge(700, 1) };
+    stemPair(&edges[1], &edges[2], 1, 2, 80);
+    var buf: [max_knots]Knot = undefined;
+    const count = buildKnots(&edges, &.{}, px_per_unit, 0, &buf);
+    const knots = buf[0..count];
+
+    for (knots) |k| {
+        const s = inverseWarp(knots, k.target);
+        try testing.expectApproxEqAbs(k.base, s.base, 1e-3);
+    }
+}
+
+test "packed inverse warp matches the reference across the range" {
+    const px_per_unit: f32 = 13.0 / 1000.0;
+    var edges = [_]Edge{ edge(0, -1), edge(300, -1), edge(380, 1), edge(700, 1) };
+    edges[0].blue = 0;
+    edges[3].blue = 1;
+    stemPair(&edges[1], &edges[2], 1, 2, 80);
+    const blues = [_]BlueZone{ .{ .ref = 0, .shoot = 0 }, .{ .ref = 700, .shoot = 700 } };
+    var buf: [max_knots]Knot = undefined;
+    const count = buildKnots(&edges, &blues, px_per_unit, 0, &buf);
+    const knots = buf[0..count];
+
+    var packed_buf: [1 + 2 * max_knots]f32 = undefined;
+    const n = packAxis(knots, &packed_buf);
+    const data = packed_buf[0..n];
+
+    // Sweep well past both ends (identity extrapolation) and through the knots.
+    var h: f32 = -200;
+    while (h <= 900) : (h += 7.3) {
+        const a = inverseWarp(knots, h);
+        const b = inverseWarpPacked(data, h);
+        try testing.expectApproxEqAbs(a.base, b.base, 1e-3);
+        try testing.expectApproxEqAbs(a.inv_slope, b.inv_slope, 1e-3);
+    }
+}
+
+test "inverse warp is identity outside the edge range" {
+    var buf = [_]Knot{
+        .{ .base = 100, .target = 120 },
+        .{ .base = 700, .target = 680 },
+    };
+    const below = inverseWarp(&buf, 0);
+    try testing.expectApproxEqAbs(@as(f32, -20), below.base, 1e-4); // 100 + (0-120)
+    try testing.expectApproxEqAbs(@as(f32, 1.0), below.inv_slope, 1e-4);
+    const above = inverseWarp(&buf, 800);
+    try testing.expectApproxEqAbs(@as(f32, 820), above.base, 1e-4); // 700 + (800-680)
+    try testing.expectApproxEqAbs(@as(f32, 1.0), above.inv_slope, 1e-4);
+}
+
+test "empty edge set yields identity" {
+    var buf: [max_knots]Knot = undefined;
+    try testing.expectEqual(@as(usize, 0), buildKnots(&.{}, &.{}, 0.012, 0, &buf));
+    const s = inverseWarp(&.{}, 123.0);
+    try testing.expectApproxEqAbs(@as(f32, 123.0), s.base, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 1.0), s.inv_slope, 1e-6);
+}

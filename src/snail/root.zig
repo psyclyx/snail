@@ -145,6 +145,14 @@ pub const bindingTexels = vertex_mod.bindingTexels;
 pub const WORDS_PER_INSTANCE = vertex_mod.WORDS_PER_INSTANCE;
 pub const WORDS_PER_OVERRIDE = vertex_mod.WORDS_PER_OVERRIDE;
 
+pub const autohint = struct {
+    pub const analysis = @import("font/autohint/analysis.zig");
+    pub const warp = @import("font/autohint/warp.zig");
+    pub const blue = @import("font/autohint/blue.zig");
+    pub const producer = @import("font/autohint/producer.zig");
+    pub const AutoLight = @import("font/autohint/producer.zig").AutoLight;
+};
+
 pub const HintVm = @import("font/hint_vm.zig").HintVm;
 pub const HintPpem = @import("font/hint_vm.zig").HintPpem;
 pub const HintVmStats = @import("font/hint_vm.zig").HintVmStats;
@@ -185,6 +193,10 @@ test {
     _ = @import("path.zig");
     _ = @import("paths.zig");
     _ = @import("font/hint_vm.zig");
+    _ = @import("font/autohint/analysis.zig");
+    _ = @import("font/autohint/warp.zig");
+    _ = @import("font/autohint/blue.zig");
+    _ = @import("font/autohint/producer.zig");
     _ = @import("text/faces.zig");
     _ = shape_mod;
     _ = @import("picture/draw_records.zig");
