@@ -78,6 +78,13 @@ fn standardizeWidth(raw: f32, std_width: f32) f32 {
 /// is kept (optically correct at larger sizes).
 const overshoot_min_px: f32 = 0.5;
 
+/// A stem is width-hinted (snapped to a whole pixel) only while its natural
+/// width is below this many pixels. Below ~here a 1px snap sharpens thin stems
+/// where AA can't; above it, snapping just over/under-thickens the stem
+/// relative to the glyph's curves, so we leave it natural. This is what makes
+/// hinting a small-size tool — it tapers off as the glyph grows.
+const stem_hint_max_px: f32 = 1.6;
+
 /// Grid-fitted target for one edge: its own snapped position, or — when
 /// blue-linked — the shared fitted reference, plus the overshoot when the
 /// edge is a round apex and the overshoot survives the small-size cut-off.
@@ -120,14 +127,18 @@ pub fn buildKnots(
     var target: [max_knots]f32 = undefined;
     for (edges, 0..) |e, i| target[i] = blueTarget(e, blues, px_per_unit);
 
-    // Pass 2 — stems. Anchor one side (a blue-linked side wins so the stem
-    // hangs off the reference; otherwise the lower side), then place the
-    // partner a whole (standardised) number of pixels away, min one.
+    // Pass 2 — stems. A stem is width-hinted only when it's thin enough that
+    // a whole-pixel snap is a legibility win (small ppem). Above that, snapping
+    // would quantise a thick stem to an integer pixel width that no longer
+    // matches the (unhinted) curve weight, so the stems "pop" heavier than the
+    // rest of the glyph — leave those natural. `hinted` marks the survivors.
+    var hinted = [_]bool{false} ** max_knots;
     for (edges, 0..) |e, i| {
         if (!e.isStem()) continue;
         const j: usize = @intCast(e.stem);
         if (j <= i) continue; // process each pair once, from its lower edge
         const nominal = standardizeWidth(e.width, std_width);
+        if (nominal * px_per_unit >= stem_hint_max_px) continue; // too thick — natural
         const width_px = @max(@round(nominal * px_per_unit), 1.0);
         const width_units = width_px * grid;
         const lower_blue = edges[i].blue >= 0;
@@ -137,16 +148,20 @@ pub fn buildKnots(
         } else {
             target[j] = target[i] + width_units;
         }
+        hinted[i] = true;
+        hinted[j] = true;
     }
 
-    // Pass 3 — keep only genuine features as knots: stem edges and blue-linked
-    // edges. Interior curve apexes and stray edges are NOT snapped — they just
-    // interpolate between the real knots (the same idea as TrueType's
-    // interpolate-untouched-points instruction). Snapping every detected edge
-    // adds noise that mangles small glyphs (the middle of `3`).
+    // Pass 3 — keep only genuine features as knots: WIDTH-HINTED stem edges and
+    // blue-linked edges. Un-hinted thick stems, interior curve apexes, and stray
+    // edges are NOT snapped — they interpolate between the real knots (the same
+    // idea as TrueType's interpolate-untouched-points). This keeps baseline/
+    // x-height alignment at every size while stem-width crispness fades out as
+    // the glyph grows and AA already renders stems cleanly.
     var count: usize = 0;
     for (edges, 0..) |e, i| {
-        if (!e.isStem() and e.blue < 0) continue;
+        const keep = (e.isStem() and hinted[i]) or e.blue >= 0;
+        if (!keep) continue;
         out[count] = .{ .base = e.pos, .target = target[i] };
         count += 1;
     }
