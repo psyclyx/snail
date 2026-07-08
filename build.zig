@@ -329,6 +329,24 @@ fn addScreenshotSteps(
     const screenshot_cpu_step = b.step("run-screenshot", "Render the demo through the CPU backend and write zig-out/demo-screenshot.tga");
     screenshot_cpu_step.dependOn(&run_screenshot_cpu.step);
 
+    // Auto-light autohint comparison — CPU backend.
+    const autohint_shot_mod = b.createModule(.{
+        .root_source_file = b.path("src/demo/autohint_screenshot.zig"),
+        .target = config.target,
+        .optimize = .ReleaseFast,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "assets", .module = modules.assets },
+            .{ .name = "snail", .module = release_snail_mod },
+            .{ .name = "snail-helpers", .module = release_helpers_mod },
+            .{ .name = "support", .module = release_support_mod },
+        },
+    });
+    const autohint_shot_exe = b.addExecutable(.{ .name = "snail-autohint-screenshot", .root_module = autohint_shot_mod });
+    const run_autohint_shot = b.addRunArtifact(autohint_shot_exe);
+    const autohint_shot_step = b.step("run-autohint-screenshot", "Render the auto-light autohint comparison through the CPU backend and write zig-out/autohint-screenshot.tga");
+    autohint_shot_step.dependOn(&run_autohint_shot.step);
+
     // Banner screenshot — full interactive-demo scene through CPU backend.
     const banner_screenshot_mod = b.createModule(.{
         .root_source_file = b.path("src/demo/banner_screenshot.zig"),

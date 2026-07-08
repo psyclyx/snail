@@ -16,6 +16,7 @@ const assets_data = @import("assets");
 const renderer_driver = @import("renderer_driver.zig");
 const demo_banner = @import("banner.zig");
 const hud_mod = @import("hud.zig");
+const autohint_compare = @import("autohint_compare.zig");
 const subpixel_detect = @import("platform/subpixel.zig");
 const wayland = @import("platform/wayland.zig");
 const presentation = @import("platform/presentation.zig");
@@ -29,6 +30,9 @@ const KEY_B = wayland.KEY_B;
 const KEY_C = wayland.KEY_C;
 const KEY_T = wayland.KEY_T;
 const KEY_O = wayland.KEY_O;
+const KEY_V = wayland.KEY_V;
+const KEY_G = wayland.KEY_G;
+const KEY_F = wayland.KEY_F;
 const KEY_ESCAPE = wayland.KEY_ESCAPE;
 const KEY_LEFT = wayland.KEY_LEFT;
 const KEY_RIGHT = wayland.KEY_RIGHT;
@@ -653,6 +657,16 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
     defer hud_arena.deinit();
     var hud_scratch = std.heap.ArenaAllocator.init(allocator);
     defer hud_scratch.deinit();
+
+    // Autohint comparison overlay (V toggles; G / F change ppem).
+    var compare = try autohint_compare.Compare.init(allocator, content_cache.pool);
+    defer compare.deinit();
+    var compare_arena = std.heap.ArenaAllocator.init(allocator);
+    defer compare_arena.deinit();
+    var compare_scratch = std.heap.ArenaAllocator.init(allocator);
+    defer compare_scratch.deinit();
+    var compare_on = false;
+    var compare_ppem: f32 = 14.0;
     // Per-frame arena for re-snapping hinted text runs into a fresh
     // text Picture. retain_capacity means we pay one allocation on the
     // first frame and bump-pointer thereafter.
@@ -860,6 +874,12 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
             hud_enabled = !hud_enabled;
             std.debug.print("\nhud={s}\n", .{if (hud_enabled) "on" else "off"});
         }
+        if (window.isKeyPressed(KEY_V)) {
+            compare_on = !compare_on;
+            std.debug.print("\nautohint-compare={s} (top=unhinted, bottom=auto_light)\n", .{if (compare_on) "on" else "off"});
+        }
+        if (window.isKeyDown(KEY_G)) compare_ppem = @min(compare_ppem + dt * 12.0, 96.0);
+        if (window.isKeyDown(KEY_F)) compare_ppem = @max(compare_ppem - dt * 12.0, 6.0);
         if (window.isKeyPressed(KEY_T)) {
             timing_enabled = !timing_enabled;
             timing.reset(now);
@@ -1034,25 +1054,54 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
             if (hint_active) world_to_pixel else null,
         );
         const compose_us = (wayland.getTime() - compose_t0) * 1_000_000.0;
+        // Autohint comparison overlay (screen-space, projection-only like the
+        // HUD). Built only when toggled on; the atlas grows per new (glyph,
+        // ppem) so a `dirty` on growth triggers re-upload.
+        _ = compare_arena.reset(.retain_capacity);
+        _ = compare_scratch.reset(.retain_capacity);
+        const compare_before = compare.atlas.recordCount();
+        var compare_picture = if (compare_on)
+            try compare.buildPicture(compare_arena.allocator(), compare_scratch.allocator(), compare_ppem, 120.0)
+        else
+            try snail_helpers.Picture.from(compare_arena.allocator(), &.{});
+        defer compare_picture.deinit();
+        const compare_dirty = compare.atlas.recordCount() != compare_before;
+
         const content_atlases = [_]*const snail.Atlas{ &cached.content.paths_atlas, &cached.content.text_atlas };
         const content_pictures = [_]*const snail_helpers.Picture{ &cached.content.paths_picture, &frame_text_picture };
         const hud_atlases = [_]*const snail.Atlas{&hud.atlas};
         const hud_pictures = [_]*const snail_helpers.Picture{&hud_picture};
-        const all_passes = [_]renderer_driver.Pass{
-            .{
-                .atlases = &content_atlases,
-                .pictures = &content_pictures,
-                .draw_state = draw_state,
-                .dirty = cached.dirty,
-            },
-            .{
+        const compare_atlases = [_]*const snail.Atlas{&compare.atlas};
+        const compare_pictures = [_]*const snail_helpers.Picture{&compare_picture};
+
+        var passes_buf: [3]renderer_driver.Pass = undefined;
+        var pass_count: usize = 0;
+        passes_buf[pass_count] = .{
+            .atlases = &content_atlases,
+            .pictures = &content_pictures,
+            .draw_state = draw_state,
+            .dirty = cached.dirty,
+        };
+        pass_count += 1;
+        if (hud_enabled) {
+            passes_buf[pass_count] = .{
                 .atlases = &hud_atlases,
                 .pictures = &hud_pictures,
                 .draw_state = hud_draw_state,
                 .dirty = hud_after != hud_before,
-            },
-        };
-        const passes: []const renderer_driver.Pass = if (hud_enabled) all_passes[0..2] else all_passes[0..1];
+            };
+            pass_count += 1;
+        }
+        if (compare_on) {
+            passes_buf[pass_count] = .{
+                .atlases = &compare_atlases,
+                .pictures = &compare_pictures,
+                .draw_state = hud_draw_state,
+                .dirty = compare_dirty,
+            };
+            pass_count += 1;
+        }
+        const passes: []const renderer_driver.Pass = passes_buf[0..pass_count];
         if (timing_enabled) profile_live.reset();
         const frame_t0 = wayland.getTime();
         _ = try active.renderFrame(allocator, passes, clear_srgb);
