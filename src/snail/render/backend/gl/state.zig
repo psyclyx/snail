@@ -54,6 +54,7 @@ fn TextStateFor(comptime backend: Backend) type {
         colr_program: ProgramState = .{},
         path_program: ProgramState = .{},
         hinted_text_program: ProgramState = .{},
+        autohint_program: ProgramState = .{},
         // Replicated variants: same fragment, vertex shader composes
         // shape × override via per-attribute divisor. Used by the new-API
         // replicated DrawSegment to issue N*M hardware-instanced draws.
@@ -62,6 +63,7 @@ fn TextStateFor(comptime backend: Backend) type {
         colr_program_replicated: ProgramState = .{},
         path_program_replicated: ProgramState = .{},
         hinted_text_program_replicated: ProgramState = .{},
+        autohint_program_replicated: ProgramState = .{},
         linear_resolve: LinearResolveState = .{},
         vao: gl.GLuint = 0,
         vbo: gl.GLuint = 0,
@@ -128,6 +130,7 @@ fn TextStateFor(comptime backend: Backend) type {
             self.colr_program = try loadProgramState("text-colr", shaders.vertex_shader, shaders.fragment_shader_colr, false);
             self.path_program = try loadProgramState("path", shaders.vertex_shader, shaders.fragment_shader_path, false);
             self.hinted_text_program = try loadProgramState("hinted-text", shaders.vertex_shader, shaders.fragment_shader_hinted_text, false);
+            self.autohint_program = try loadProgramState("autohint", shaders.vertex_shader, shaders.fragment_shader_autohint, false);
             if (self.supports_dual_source_blend) {
                 self.text_subpixel_dual_program = try loadProgramState("text-subpixel-dual", shaders.vertex_shader, shaders.fragment_shader_text_subpixel_dual, true);
             }
@@ -135,6 +138,7 @@ fn TextStateFor(comptime backend: Backend) type {
             self.colr_program_replicated = try loadProgramState("text-colr-replicated", shaders.vertex_shader_replicated, shaders.fragment_shader_colr, false);
             self.path_program_replicated = try loadProgramState("path-replicated", shaders.vertex_shader_replicated, shaders.fragment_shader_path, false);
             self.hinted_text_program_replicated = try loadProgramState("hinted-text-replicated", shaders.vertex_shader_replicated, shaders.fragment_shader_hinted_text, false);
+            self.autohint_program_replicated = try loadProgramState("autohint-replicated", shaders.vertex_shader_replicated, shaders.fragment_shader_autohint, false);
             if (self.supports_dual_source_blend) {
                 self.text_subpixel_dual_program_replicated = try loadProgramState("text-subpixel-dual-replicated", shaders.vertex_shader_replicated, shaders.fragment_shader_text_subpixel_dual, true);
             }
@@ -227,11 +231,13 @@ fn TextStateFor(comptime backend: Backend) type {
             deleteProgramState(&self.colr_program);
             deleteProgramState(&self.path_program);
             deleteProgramState(&self.hinted_text_program);
+            deleteProgramState(&self.autohint_program);
             deleteProgramState(&self.text_program_replicated);
             deleteProgramState(&self.text_subpixel_dual_program_replicated);
             deleteProgramState(&self.colr_program_replicated);
             deleteProgramState(&self.path_program_replicated);
             deleteProgramState(&self.hinted_text_program_replicated);
+            deleteProgramState(&self.autohint_program_replicated);
             if (self.vao_replicated != 0) gl.glDeleteVertexArrays(1, &self.vao_replicated);
             if (self.vbo_replicated != 0) gl.glDeleteBuffers(1, &self.vbo_replicated);
             self.linear_resolve.deinit();
@@ -368,6 +374,7 @@ fn TextStateFor(comptime backend: Backend) type {
                     draw_records_mod.KIND_BIT_COLR => .colr,
                     draw_records_mod.KIND_BIT_PATH => .path,
                     draw_records_mod.KIND_BIT_HINTED_TEXT => .hinted_text,
+                    draw_records_mod.KIND_BIT_AUTOHINT => .autohint,
                     else => unreachable,
                 };
                 const run_mode: subpixel_policy.TextRenderMode = if (run_kind != .regular)
@@ -388,6 +395,7 @@ fn TextStateFor(comptime backend: Backend) type {
                     .colr => self.ensureColrProgram(),
                     .path => self.ensurePathProgram(),
                     .hinted_text => self.ensureHintedTextProgram(),
+                    .autohint => self.ensureAutohintProgram(),
                 };
                 self.bindProgramState(cache, prog_state, draw_state, run_mode);
                 self.drawGlyphRange(vertices, 0, total_glyphs);
@@ -419,6 +427,7 @@ fn TextStateFor(comptime backend: Backend) type {
                     .colr => self.ensureColrProgram(),
                     .path => self.ensurePathProgram(),
                     .hinted_text => self.ensureHintedTextProgram(),
+                    .autohint => self.ensureAutohintProgram(),
                 };
                 self.bindProgramState(cache, prog_state, draw_state, run_mode);
                 self.drawGlyphRange(vertices, run_start, run_end - run_start);
@@ -511,6 +520,7 @@ fn TextStateFor(comptime backend: Backend) type {
                     .colr => &self.colr_program_replicated,
                     .path => &self.path_program_replicated,
                     .hinted_text => &self.hinted_text_program_replicated,
+                    .autohint => &self.autohint_program_replicated,
                 };
                 self.bindProgramState(cache, prog_state, draw_state, run_mode);
                 var s: usize = run_start;
@@ -683,6 +693,11 @@ fn TextStateFor(comptime backend: Backend) type {
         fn ensureHintedTextProgram(self: *GlTextState) *const ProgramState {
             std.debug.assert(self.hinted_text_program.handle != 0);
             return &self.hinted_text_program;
+        }
+
+        fn ensureAutohintProgram(self: *GlTextState) *const ProgramState {
+            std.debug.assert(self.autohint_program.handle != 0);
+            return &self.autohint_program;
         }
 
         fn drawGlyphRange(self: *GlTextState, vertices: []const u32, glyph_offset: usize, glyph_count: usize) void {

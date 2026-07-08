@@ -75,6 +75,7 @@ pub const KIND_BIT_REGULAR: u8 = 1 << 0;
 pub const KIND_BIT_COLR: u8 = 1 << 1;
 pub const KIND_BIT_PATH: u8 = 1 << 2;
 pub const KIND_BIT_HINTED_TEXT: u8 = 1 << 3;
+pub const KIND_BIT_AUTOHINT: u8 = 1 << 4;
 
 pub const DrawRecords = struct {
     words: []const u32,

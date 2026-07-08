@@ -102,10 +102,8 @@ pub fn emit(
         const dst = words_buf[cursor..][0..WORDS_PER_INSTANCE];
 
         const ok = if (atlas.lookupAutohintRecord(shape.key)) |ah_info| blk: {
-            // Warped instance over the shared base glyph. Reuse the hinted-text
-            // kind bit for the GPU fast-path mask (GPU warp isn't wired yet;
-            // the CPU dispatches per instance). See subpixel_policy TODO.
-            kind_mask |= draw_records.KIND_BIT_HINTED_TEXT;
+            // Warped instance over the shared base glyph.
+            kind_mask |= draw_records.KIND_BIT_AUTOHINT;
             break :blk vertex.generateAutohintVerticesTransformedTinted(
                 dst,
                 rec.bbox,

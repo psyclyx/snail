@@ -13,6 +13,9 @@
 //
 // `block` is the run's start index; index 0 is `count`, then pairs follow.
 
+// Prototype — the host shader's main defines the body (it knows the buffer).
+float snailWarpF(int block, int i);
+
 // Inverse warp along one axis. Returns the base-space coordinate; writes the
 // local d(base)/d(hinted) slope used to rescale the AA footprint.
 float snailInverseWarpAxis(int block, float hinted, out float invSlope) {

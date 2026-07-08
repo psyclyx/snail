@@ -342,6 +342,7 @@ fn addScreenshotSteps(
             .{ .name = "support", .module = release_support_mod },
         },
     });
+    configureEglOffscreenModule(autohint_shot_mod, modules.options, config.core_options, modules.vk_shaders);
     const autohint_shot_exe = b.addExecutable(.{ .name = "snail-autohint-screenshot", .root_module = autohint_shot_mod });
     const run_autohint_shot = b.addRunArtifact(autohint_shot_exe);
     const autohint_shot_step = b.step("run-autohint-screenshot", "Render the auto-light autohint comparison through the CPU backend and write zig-out/autohint-screenshot.tga");

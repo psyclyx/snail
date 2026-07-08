@@ -48,10 +48,12 @@ pub const Gles30TextState = struct {
     colr_program: ProgramState = .{},
     path_program: ProgramState = .{},
     hinted_text_program: ProgramState = .{},
+    autohint_program: ProgramState = .{},
     text_program_replicated: ProgramState = .{},
     colr_program_replicated: ProgramState = .{},
     path_program_replicated: ProgramState = .{},
     hinted_text_program_replicated: ProgramState = .{},
+    autohint_program_replicated: ProgramState = .{},
     linear_resolve: LinearResolveState = .{},
     vao: gl.GLuint = 0,
     vbo: gl.GLuint = 0,
@@ -72,10 +74,12 @@ pub const Gles30TextState = struct {
         self.colr_program = try loadProgramState("text-colr", shaders.vertex_shader, shaders.fragment_shader_colr, false);
         self.path_program = try loadProgramState("path", shaders.vertex_shader, shaders.fragment_shader_path, false);
         self.hinted_text_program = try loadProgramState("hinted-text", shaders.vertex_shader, shaders.fragment_shader_hinted_text, false);
+        self.autohint_program = try loadProgramState("autohint", shaders.vertex_shader, shaders.fragment_shader_autohint, false);
         self.text_program_replicated = try loadProgramState("text-replicated", shaders.vertex_shader_replicated, shaders.fragment_shader_text, false);
         self.colr_program_replicated = try loadProgramState("text-colr-replicated", shaders.vertex_shader_replicated, shaders.fragment_shader_colr, false);
         self.path_program_replicated = try loadProgramState("path-replicated", shaders.vertex_shader_replicated, shaders.fragment_shader_path, false);
         self.hinted_text_program_replicated = try loadProgramState("hinted-text-replicated", shaders.vertex_shader_replicated, shaders.fragment_shader_hinted_text, false);
+        self.autohint_program_replicated = try loadProgramState("autohint-replicated", shaders.vertex_shader_replicated, shaders.fragment_shader_autohint, false);
         try self.linear_resolve.init();
 
         self.initGles30();
@@ -115,10 +119,12 @@ pub const Gles30TextState = struct {
         deleteProgramState(&self.colr_program);
         deleteProgramState(&self.path_program);
         deleteProgramState(&self.hinted_text_program);
+        deleteProgramState(&self.autohint_program);
         deleteProgramState(&self.text_program_replicated);
         deleteProgramState(&self.colr_program_replicated);
         deleteProgramState(&self.path_program_replicated);
         deleteProgramState(&self.hinted_text_program_replicated);
+        deleteProgramState(&self.autohint_program_replicated);
         if (self.vao_replicated != 0) gl.glDeleteVertexArrays(1, &self.vao_replicated);
         if (self.vbo_replicated != 0) gl.glDeleteBuffers(1, &self.vbo_replicated);
         self.linear_resolve.deinit();
@@ -204,6 +210,7 @@ pub const Gles30TextState = struct {
                 .colr => self.ensureColrProgram(),
                 .path => self.ensurePathProgram(),
                 .hinted_text => self.ensureHintedTextProgram(),
+                .autohint => self.ensureAutohintProgram(),
             };
             self.bindProgramState(cache, prog_state, draw_state, run_mode);
             self.drawGlyphRange(vertices, run_start, run_end - run_start);
@@ -270,6 +277,7 @@ pub const Gles30TextState = struct {
                 .colr => &self.colr_program_replicated,
                 .path => &self.path_program_replicated,
                 .hinted_text => &self.hinted_text_program_replicated,
+                .autohint => &self.autohint_program_replicated,
             };
             self.bindProgramState(cache, prog_state, draw_state, run_mode);
             var s: usize = run_start;
@@ -373,6 +381,11 @@ pub const Gles30TextState = struct {
     fn ensureHintedTextProgram(self: *Gles30TextState) *const ProgramState {
         std.debug.assert(self.hinted_text_program.handle != 0);
         return &self.hinted_text_program;
+    }
+
+    fn ensureAutohintProgram(self: *Gles30TextState) *const ProgramState {
+        std.debug.assert(self.autohint_program.handle != 0);
+        return &self.autohint_program;
     }
 
     fn drawGlyphRange(self: *Gles30TextState, vertices: []const u32, glyph_offset: usize, glyph_count: usize) void {

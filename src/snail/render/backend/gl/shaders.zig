@@ -48,6 +48,12 @@ const shared_hinted_text_fragment_body =
     shared_color_common ++
     "\n" ++
     @embedFile("../glsl/snail_hinted_text_frag_body.glsl");
+const shared_autohint_fragment_body =
+    shared_text_coverage_fragment_body ++
+    "\n" ++
+    @embedFile("../glsl/snail_autohint_warp.glsl") ++
+    "\n" ++
+    @embedFile("../glsl/snail_autohint_main.glsl");
 const shared_text_subpixel_body =
     shared_render_abi ++
     "\n" ++
@@ -107,6 +113,12 @@ pub const fragment_shader_hinted_text =
     gl330_frag_interface ++
     "\n" ++
     shared_hinted_text_fragment_body;
+
+pub const fragment_shader_autohint =
+    glsl_330_version ++
+    gl330_frag_interface ++
+    "\n" ++
+    shared_autohint_fragment_body;
 
 pub const fragment_shader_text_subpixel_dual =
     glsl_330_version ++
