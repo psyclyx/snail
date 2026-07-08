@@ -70,6 +70,11 @@ pub fn glyphRunKind(vertices: []const u32, glyph_index: usize) GlyphRunKind {
     return switch (render_abi.specialGlyphWordKind(packed_word) orelse .colr) {
         .path => .path,
         .hinted_text => .hinted_text,
+        // TODO(autohint-gpu): the GPU warp path isn't wired yet, so no backend
+        // emits autohint runs. Route to the hinted-text program as a
+        // placeholder to keep GPU program selection exhaustive; the CPU
+        // backend dispatches autohint directly and never consults this.
+        .autohint => .hinted_text,
         .colr => .colr,
     };
 }
