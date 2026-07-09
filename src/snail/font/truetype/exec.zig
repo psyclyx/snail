@@ -296,33 +296,6 @@ pub const Context = struct {
         }
     }
 
-    fn executeOp(self: *Context, code: []const u8, pc: *usize, op_pc: usize, op: u8, steps: *u32) Error!void {
-        if (op >= 0xB0 and op <= 0xB7) {
-            return self.pushBytes(code, pc, @as(usize, op - 0xB0) + 1);
-        }
-        if (op >= 0xB8 and op <= 0xBF) {
-            return self.pushWords(code, pc, @as(usize, op - 0xB8) + 1);
-        }
-
-        switch (op) {
-            0x00...0x0E, 0x10...0x1A, 0x1D...0x1F, 0x86...0x87 => try self.executeGraphicsOp(op),
-            0x20...0x26 => try self.executeStackOp(op),
-            0x27, 0x29, 0x2E...0x3C, 0x3E...0x3F, 0x46...0x4A, 0xC0...0xFF => try self.executePointOp(op),
-            0x2A...0x2C => try self.executeFunctionOp(code, pc, op, steps),
-            0x2D => return Error.InvalidOpcode,
-            0x3D => self.graphics.round_mode = .double_grid, // RTDG
-            0x40 => try self.pushBytes(code, pc, try readU8(code, pc)),
-            0x41 => try self.pushWords(code, pc, try readU8(code, pc)),
-            0x42...0x45, 0x70 => try self.executeMemoryOp(op),
-            0x4B...0x4E, 0x56, 0x57, 0x5E, 0x5F, 0x68...0x6F, 0x76...0x77, 0x7A, 0x7C, 0x7D, 0x85, 0x88, 0x8A, 0x8D, 0x8E => try self.executeStateOp(op),
-            0x50...0x55, 0x5A...0x5C => try self.executeLogicOp(op),
-            0x5D, 0x71...0x75 => try self.executeDeltaOp(op),
-            0x60...0x67, 0x8B, 0x8C => try self.executeMathOp(op),
-            0x1B, 0x1C, 0x58, 0x59, 0x78, 0x79 => try self.executeFlowOp(code, pc, op_pc, op),
-            else => return Error.InvalidOpcode,
-        }
-    }
-
     inline fn executeFunctionOp(self: *Context, code: []const u8, pc: *usize, op: u8, steps: *u32) Error!void {
         switch (op) {
             0x2A => {
@@ -699,28 +672,6 @@ pub const Context = struct {
         self.stack[self.sp - 3] = self.stack[self.sp - 2];
         self.stack[self.sp - 2] = self.stack[self.sp - 1];
         self.stack[self.sp - 1] = a;
-    }
-
-    fn pushBytes(self: *Context, code: []const u8, pc: *usize, count: usize) Error!void {
-        if (pc.* + count > code.len) return Error.UnexpectedEof;
-        if (self.sp + count > self.stack.len) return Error.StackOverflow;
-        for (code[pc.*..][0..count]) |value| {
-            self.stack[self.sp] = value;
-            self.sp += 1;
-        }
-        pc.* += count;
-    }
-
-    fn pushWords(self: *Context, code: []const u8, pc: *usize, count: usize) Error!void {
-        const byte_count = count * 2;
-        if (pc.* + byte_count > code.len) return Error.UnexpectedEof;
-        if (self.sp + count > self.stack.len) return Error.StackOverflow;
-        var i: usize = 0;
-        while (i < count) : (i += 1) {
-            self.stack[self.sp] = readI16AssumeInBounds(code, pc.* + i * 2);
-            self.sp += 1;
-        }
-        pc.* += byte_count;
     }
 
     fn compare(self: *Context, op: CompareOp) Error!void {
@@ -1414,20 +1365,20 @@ inline fn dispatchNext(
     self.next_pc = pc;
 }
 
-/// Fallback for reserved/invalid opcodes. Routes through `executeOp` so
-/// any future-defined opcode still picks up the legacy switch's coverage,
-/// and currently-undefined opcodes surface `Error.InvalidOpcode`.
+/// Slow-path handler for the two opcodes `tail_dispatch` deliberately leaves
+/// unspecialized: RTDG (0x3D, sitting mid-range in the point-op block) and
+/// every reserved/undefined byte (incl. ENDF outside FDEF) → `InvalidOpcode`.
 fn handleDefault(
     self: *Context,
     code: []const u8,
     pc: usize,
     steps: *u32,
 ) Error!void {
-    var local_pc = pc;
-    const op_pc = pc - 1;
-    const op = code[op_pc];
-    try self.executeOp(code, &local_pc, op_pc, op, steps);
-    return dispatchNext(self, code, local_pc, steps);
+    switch (code[pc - 1]) {
+        0x3D => self.graphics.round_mode = .double_grid, // RTDG
+        else => return Error.InvalidOpcode,
+    }
+    return dispatchNext(self, code, pc, steps);
 }
 
 /// Handler factory for ops that don't touch pc beyond the op byte itself.
@@ -1526,8 +1477,9 @@ fn handleNPushW(self: *Context, code: []const u8, pc: usize, steps: *u32) Error!
 const tail_dispatch: [256]TailHandler = blk: {
     var t: [256]TailHandler = @splat(handleDefault);
 
-    // The opcode ranges below mirror the executeOp switch; any future
-    // additions there should be reflected here too.
+    // This table is the single source of truth for opcode dispatch. Every real
+    // opcode is wired to a specialized handler below; anything left defaults to
+    // `handleDefault` (RTDG + invalid bytes).
 
     // Graphics: vector setters (SVTCA/SFVTCA/SPVTCA/SDPVTL), ref-point and
     // zone setters, loop count, round mode bases, cut-in values.
@@ -1599,8 +1551,8 @@ const tail_dispatch: [256]TailHandler = blk: {
         t[op] = handleFunction(op);
 
     // Anything left (notably 0x2D ENDF outside FDEF, plus reserved slots)
-    // falls through to handleDefault → executeOp, which produces
-    // Error.InvalidOpcode for unknown bytes.
+    // falls through to handleDefault, which produces Error.InvalidOpcode for
+    // unknown bytes.
 
     break :blk t;
 };
