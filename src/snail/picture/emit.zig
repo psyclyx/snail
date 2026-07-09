@@ -21,9 +21,12 @@
 const std = @import("std");
 const math = @import("../math/vec.zig");
 const vertex = @import("../render/format/vertex.zig");
+const instance_emit = @import("../render/format/instance_emit.zig");
 const atlas_mod = @import("../atlas.zig");
 const draw_records = @import("draw_records.zig");
 const shape_mod = @import("shape.zig");
+
+const InstanceCursor = instance_emit.Cursor;
 
 pub const Transform2D = math.Transform2D;
 pub const Atlas = atlas_mod.Atlas;
@@ -34,7 +37,7 @@ pub const Shape = shape_mod.Shape;
 pub const Override = shape_mod.Override;
 
 const WORDS_PER_INSTANCE = vertex.WORDS_PER_INSTANCE;
-const WORDS_PER_OVERRIDE: usize = 8;
+const WORDS_PER_OVERRIDE = vertex.WORDS_PER_OVERRIDE;
 
 pub const EmitError = error{
     /// Picture references a key not present in the atlas.
@@ -82,6 +85,7 @@ pub fn emit(
 
     const start_offset: u32 = @intCast(word_len.*);
     var cursor: usize = word_len.*;
+    const cur = InstanceCursor{ .buf = words_buf, .len = &cursor };
     var emitted: u32 = 0;
     var kind_mask: u8 = 0;
 
@@ -99,13 +103,11 @@ pub fn emit(
         const atlas_layer: u8 = @intCast(page.layer_index);
 
         const final_transform = Transform2D.multiply(world_xform, shape.local_transform);
-        const dst = words_buf[cursor..][0..WORDS_PER_INSTANCE];
 
-        const ok = if (atlas.lookupAutohintRecord(shape.key)) |ah_info| blk: {
+        if (atlas.lookupAutohintRecord(shape.key)) |ah_info| {
             // Warped instance over the shared base glyph.
             kind_mask |= draw_records.KIND_BIT_AUTOHINT;
-            break :blk vertex.generateAutohintVerticesTransformedTinted(
-                dst,
+            try cur.appendAutohintTransformedTinted(
                 rec.bbox,
                 ah_info.info_x,
                 try addRowBase(ah_info.info_y, binding.info_row_base),
@@ -115,10 +117,9 @@ pub fn emit(
                 atlas_layer,
                 final_transform,
             );
-        } else if (atlas.lookupPaintRecord(shape.key)) |paint_info| blk: {
+        } else if (atlas.lookupPaintRecord(shape.key)) |paint_info| {
             kind_mask |= draw_records.KIND_BIT_PATH;
-            break :blk vertex.generatePathRecordVerticesTransformedTinted(
-                dst,
+            try cur.appendPathRecordTransformedTinted(
                 rec.bbox,
                 paint_info.info_x,
                 try addRowBase(paint_info.info_y, binding.info_row_base),
@@ -128,10 +129,9 @@ pub fn emit(
                 atlas_layer,
                 final_transform,
             );
-        } else blk: {
+        } else {
             kind_mask |= draw_records.KIND_BIT_REGULAR;
-            break :blk vertex.generateGlyphVerticesTransformedTinted(
-                dst,
+            try cur.appendGlyphTransformedTinted(
                 rec.bbox,
                 .{
                     .glyph_x = rec.bands.glyph_x,
@@ -148,10 +148,7 @@ pub fn emit(
                 atlas_layer,
                 final_transform,
             );
-        };
-
-        if (!ok) return error.InvalidTransform;
-        cursor += WORDS_PER_INSTANCE;
+        }
         emitted += 1;
     }
 
@@ -211,6 +208,7 @@ pub fn emitInstanced(
 
     const start_offset: u32 = @intCast(word_len.*);
     var cursor: usize = word_len.*;
+    const cur = InstanceCursor{ .buf = words_buf, .len = &cursor };
     var shape_emitted: u32 = 0;
 
     for (shapes) |shape| {
@@ -225,9 +223,7 @@ pub fn emitInstanced(
         if (page.layer_index > std.math.maxInt(u8)) return error.AtlasLayerOverflow;
         const atlas_layer: u8 = @intCast(page.layer_index);
 
-        const dst = words_buf[cursor..][0..WORDS_PER_INSTANCE];
-        const ok = vertex.generateGlyphVerticesTransformedTinted(
-            dst,
+        try cur.appendGlyphTransformedTinted(
             rec.bbox,
             .{
                 .glyph_x = rec.bands.glyph_x,
@@ -244,8 +240,6 @@ pub fn emitInstanced(
             atlas_layer,
             shape.local_transform,
         );
-        if (!ok) return error.InvalidTransform;
-        cursor += WORDS_PER_INSTANCE;
         shape_emitted += 1;
     }
 
