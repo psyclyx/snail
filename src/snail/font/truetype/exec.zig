@@ -1262,7 +1262,7 @@ pub const Context = struct {
     /// per-projection on read, matching FreeType's Write_CVT_Stretched.
     fn scaleFUnitsBase(self: *const Context, value: i32) i32 {
         const base = self.environment.basePpem26Dot6();
-        return scaleFUnitsAtPpem(value, base, self.environment.units_per_em);
+        return tt_graphics.scaleFUnits(value, base, self.environment.units_per_em);
     }
 
     /// MPPEM (0x4B). Per spec/FreeType: returns the ppem along the current
@@ -1283,17 +1283,6 @@ pub const Context = struct {
     }
 };
 
-fn scaleFUnitsAtPpem(value: i32, ppem_26_6: u32, units_per_em: u16) i32 {
-    if (units_per_em == 0) return 0;
-    const numerator = @as(i64, value) * @as(i64, ppem_26_6);
-    const denominator = @as(i64, units_per_em);
-    const half = @divTrunc(denominator, 2);
-    const rounded = if (numerator >= 0)
-        @divTrunc(numerator + half, denominator)
-    else
-        @divTrunc(numerator - half, denominator);
-    return @truncate(rounded);
-}
 
 const Pair = struct {
     lhs: i32,
@@ -1629,13 +1618,8 @@ fn deltaQuantum(delta_shift: i32) i32 {
     return @as(i32, 64) >> @intCast(delta_shift);
 }
 
-fn addWrap(lhs: i32, rhs: i32) i32 {
-    return @truncate(@as(i64, lhs) + @as(i64, rhs));
-}
-
-fn subWrap(lhs: i32, rhs: i32) i32 {
-    return @truncate(@as(i64, lhs) - @as(i64, rhs));
-}
+const addWrap = tt_graphics.addWrap;
+const subWrap = tt_graphics.subWrap;
 
 fn interpolateReferenceCoord(org: i32, org1: i32, org2: i32, cur1: i32, cur2: i32) i32 {
     if (org1 == org2) return addWrap(org, subWrap(cur1, org1));
@@ -1669,13 +1653,8 @@ fn mul26Dot6(lhs: i32, rhs: i32) i32 {
     return @truncate(@divTrunc(@as(i64, lhs) * @as(i64, rhs), 64));
 }
 
-fn floor26Dot6(value: i32) i32 {
-    return value & ~@as(i32, 63);
-}
-
-fn ceil26Dot6(value: i32) i32 {
-    return floor26Dot6(@truncate(@as(i64, value) + 63));
-}
+const floor26Dot6 = tt_graphics.floor26Dot6;
+const ceil26Dot6 = tt_graphics.ceil26Dot6;
 
 fn zonePointer(value: i32) Error!tt_graphics.ZonePointer {
     return switch (value) {

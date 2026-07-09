@@ -3,6 +3,7 @@ const std = @import("std");
 const bezier = @import("../../math/bezier.zig");
 const curve_tex = @import("../../render/format/curve_texture.zig");
 const tt_exec = @import("exec.zig");
+const tt_graphics = @import("graphics.zig");
 const tt_outline = @import("outline.zig");
 const tt_points = @import("points.zig");
 const tt_vm = @import("vm.zig");
@@ -770,13 +771,8 @@ fn round26Dot6(value: i32) i32 {
     return @intCast(-@divTrunc(@as(i64, -value) + 32, 64) * 64);
 }
 
-fn addWrap(lhs: i32, rhs: i32) i32 {
-    return @truncate(@as(i64, lhs) + @as(i64, rhs));
-}
-
-fn subWrap(lhs: i32, rhs: i32) i32 {
-    return @truncate(@as(i64, lhs) - @as(i64, rhs));
-}
+const addWrap = tt_graphics.addWrap;
+const subWrap = tt_graphics.subWrap;
 
 fn hintedCurves(allocator: Allocator, hinted: tt_vm.HintedSimpleGlyph, scale_x: f32, scale_y: f32) ![]CurveSegment {
     const quads = try hinted.curvesXY(allocator, scale_x, scale_y);

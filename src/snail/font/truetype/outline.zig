@@ -374,7 +374,9 @@ fn readF2Dot14(data: []const u8, offset: usize) ParseError!f32 {
     return @as(f32, @floatFromInt(try readI16(data, offset))) / 16384.0;
 }
 
-const CurvePoint = struct {
+/// One outline point tagged on/off-curve, in curve space. Shared with
+/// `points.zig`'s zone-space contour expansion.
+pub const CurvePoint = struct {
     pos: Vec2,
     on_curve: bool,
 };
@@ -414,7 +416,10 @@ pub fn contourToCurves(
     return expandedContourToCurves(allocator, expanded.items);
 }
 
-fn expandedContourToCurves(allocator: std.mem.Allocator, points: []const CurvePoint) ![]QuadBezier {
+/// Convert a contour of on/off-curve points (off-curve midpoints already
+/// implied) into quadratic Béziers. Shared by `contourToCurves` and
+/// `points.zig`'s zone-space equivalent.
+pub fn expandedContourToCurves(allocator: std.mem.Allocator, points: []const CurvePoint) ![]QuadBezier {
     if (points.len < 2) return &.{};
 
     var curves: std.ArrayList(QuadBezier) = .empty;
@@ -456,7 +461,7 @@ fn expandedContourToCurves(allocator: std.mem.Allocator, points: []const CurvePo
     return curves.toOwnedSlice(allocator);
 }
 
-fn firstOnCurvePoint(points: []const CurvePoint) usize {
+pub fn firstOnCurvePoint(points: []const CurvePoint) usize {
     for (points, 0..) |point, i| {
         if (point.on_curve) return i;
     }

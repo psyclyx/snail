@@ -395,14 +395,10 @@ pub fn directionFromVector(vector: tt_graphics.Vector) ?Direction {
     return null;
 }
 
-const CurvePoint = struct {
-    pos: Vec2,
-    on_curve: bool,
-};
-
 fn pointsToCurves(allocator: std.mem.Allocator, points: []const Point, scale_x: f32, scale_y: f32) ![]QuadBezier {
     if (points.len < 2) return &.{};
 
+    const CurvePoint = tt_outline.CurvePoint;
     var scaled: std.ArrayList(CurvePoint) = .empty;
     defer scaled.deinit(allocator);
     for (points) |point| {
@@ -431,56 +427,7 @@ fn pointsToCurves(allocator: std.mem.Allocator, points: []const Point, scale_x: 
         }
     }
 
-    return expandedContourToCurves(allocator, expanded.items);
-}
-
-fn expandedContourToCurves(allocator: std.mem.Allocator, points: []const CurvePoint) ![]QuadBezier {
-    if (points.len < 2) return &.{};
-
-    var curves: std.ArrayList(QuadBezier) = .empty;
-    errdefer curves.deinit(allocator);
-
-    const start_idx = firstOnCurvePoint(points);
-    var idx = start_idx;
-    var iterations: usize = 0;
-    while (iterations < points.len + 1) {
-        const p0 = points[idx % points.len];
-        if (!p0.on_curve) {
-            idx += 1;
-            iterations += 1;
-            continue;
-        }
-
-        const next1 = points[(idx + 1) % points.len];
-        if (next1.on_curve) {
-            try curves.append(allocator, .{
-                .p0 = p0.pos,
-                .p1 = Vec2.lerp(p0.pos, next1.pos, 0.5),
-                .p2 = next1.pos,
-            });
-            idx += 1;
-        } else {
-            const next2 = points[(idx + 2) % points.len];
-            try curves.append(allocator, .{
-                .p0 = p0.pos,
-                .p1 = next1.pos,
-                .p2 = next2.pos,
-            });
-            idx += 2;
-        }
-
-        iterations += 1;
-        if (idx % points.len == start_idx) break;
-    }
-
-    return curves.toOwnedSlice(allocator);
-}
-
-fn firstOnCurvePoint(points: []const CurvePoint) usize {
-    for (points, 0..) |point, i| {
-        if (point.on_curve) return i;
-    }
-    return 0;
+    return tt_outline.expandedContourToCurves(allocator, expanded.items);
 }
 
 fn touchPoint(point: *Point, axis: tt_graphics.Axis) void {
@@ -615,13 +562,8 @@ fn absI64(value: i64) i64 {
     return if (value < 0) -value else value;
 }
 
-fn addWrap(lhs: i32, rhs: i32) i32 {
-    return @truncate(@as(i64, lhs) + @as(i64, rhs));
-}
-
-fn subWrap(lhs: i32, rhs: i32) i32 {
-    return @truncate(@as(i64, lhs) - @as(i64, rhs));
-}
+const addWrap = tt_graphics.addWrap;
+const subWrap = tt_graphics.subWrap;
 
 test "point zone scales glyph points without allocation" {
     const raw = [_]tt_outline.Point{

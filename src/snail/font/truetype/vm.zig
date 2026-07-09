@@ -403,16 +403,7 @@ fn readI16(data: []const u8, offset: usize) !i16 {
 }
 
 fn scaleFWordTo26Dot6(value: i16, ppem_26_6: u32, units_per_em: u16) i32 {
-    if (units_per_em == 0) return 0;
-
-    const numerator = @as(i64, value) * @as(i64, ppem_26_6);
-    const denominator = @as(i64, units_per_em);
-    const half = @divTrunc(denominator, 2);
-    const rounded = if (numerator >= 0)
-        @divTrunc(numerator + half, denominator)
-    else
-        @divTrunc(numerator - half, denominator);
-    return @intCast(rounded);
+    return tt_graphics.scaleFUnits(value, ppem_26_6, units_per_em);
 }
 
 test "size state scales cvt values in 26.6 pixels at base ppem" {

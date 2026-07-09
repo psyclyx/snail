@@ -270,6 +270,15 @@ pub fn ceil26Dot6(value: i32) i32 {
     return floor26Dot6(@truncate(@as(i64, value) + 63));
 }
 
+/// i32 add/sub with TrueType's wrapping (widen to i64, truncate back).
+pub fn addWrap(lhs: i32, rhs: i32) i32 {
+    return @truncate(@as(i64, lhs) + @as(i64, rhs));
+}
+
+pub fn subWrap(lhs: i32, rhs: i32) i32 {
+    return @truncate(@as(i64, lhs) - @as(i64, rhs));
+}
+
 fn roundPeriod(value: i32, period: i32, phase: i32, threshold: i32, compensation: i32) i32 {
     // FreeType-style: branch on the input's sign (not its relationship to
     // phase) so the clamp at the end keeps positive inputs >= +phase and
@@ -327,7 +336,10 @@ fn roundNone(value: i32, compensation: i32) i32 {
     return @intCast(v);
 }
 
-fn scaleFUnits(value: i32, ppem_26_6: u32, units_per_em: u16) i32 {
+/// FUnit → 26.6 pixel scaling with round-to-nearest, truncated to i32. The
+/// single implementation shared by the graphics-state scalers, the exec
+/// context (`scaleFUnitsBase`), and vm's `scaleFWordTo26Dot6`.
+pub fn scaleFUnits(value: i32, ppem_26_6: u32, units_per_em: u16) i32 {
     if (units_per_em == 0) return 0;
 
     const numerator = @as(i64, value) * @as(i64, ppem_26_6);
