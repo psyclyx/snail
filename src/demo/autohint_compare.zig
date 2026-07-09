@@ -20,10 +20,6 @@ const warp = snail.autohint.warp;
 const sample_text = "Hamburg Λέξεις 0123";
 const grid_ppems = [_]f32{ 9, 10, 11, 12, 13, 14, 16, 18, 22, 28 };
 
-/// Distinguishes the auto-light record key from the TrueType key (both use
-/// the hinted-glyph namespace, so auto flips this high bit).
-const auto_key_bit: u32 = 0x4000_0000;
-
 const Mode = enum { unhinted, auto, tt };
 const modes = [_]Mode{ .unhinted, .auto, .tt };
 
@@ -290,7 +286,7 @@ pub const Compare = struct {
 };
 
 fn autoKey(font_id: u32, glyph_id: u16, ppem_26_6: u32) snail.RecordKey {
-    return snail.recordKey.hintedGlyph(font_id, glyph_id, ppem_26_6 | auto_key_bit);
+    return snail.recordKey.autohintGlyph(font_id, glyph_id, ppem_26_6);
 }
 
 const text_color = [4]f32{ 0.06, 0.07, 0.09, 1.0 };

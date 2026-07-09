@@ -453,7 +453,7 @@ test "GlyphAtlasCache protects an autohint base from eviction" {
         var xb: [snail.autohint.warp.max_knots]snail.autohint.warp.Knot = undefined;
         var yb: [snail.autohint.warp.max_knots]snail.autohint.warp.Knot = undefined;
         const knots = try auto.glyphKnots(testing.allocator, gid, px * 64, &xb, &yb);
-        const warp_key = recordKey.hintedGlyph(0, gid, px * 64 | 0x4000_0000);
+        const warp_key = recordKey.autohintGlyph(0, gid, px * 64);
         cache.touch(base_key);
         try cache.ensure(.{
             .key = warp_key,
