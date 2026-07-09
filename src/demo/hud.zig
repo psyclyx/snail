@@ -159,7 +159,7 @@ pub const Overlay = struct {
         _ = viewport_h;
 
         // Build one Picture per non-empty line, then concat. Each
-        // shapedRunPicture call allocates a small Shape buffer in
+        // placeRun call allocates a small Shape buffer in
         // `frame_alloc`; the concat allocates one final buffer; the
         // per-line pictures get freed before return.
         var line_pictures: [lines.len]helpers.Picture = undefined;
@@ -183,7 +183,7 @@ pub const Overlay = struct {
             // take their place — no stale gap above it.
             const baseline_y = top_edge + @as(f32, @floatFromInt(line_count)) * line_h;
 
-            line_pictures[line_count] = try helpers.shapedRunPicture(frame_alloc, shaped, self.faces, .{
+            line_pictures[line_count] = try helpers.placeRun(frame_alloc, shaped, self.faces, .{
                 .baseline = .{ .x = baseline_x, .y = baseline_y },
                 .em = em,
                 .color = hud_color,

@@ -121,7 +121,7 @@ pub const Compare = struct {
                 // Mode tag (fixed-size, unhinted).
                 const tag_shaped = try self.shape_cache.shape(&self.faces, modeTag(mode), .{});
                 const tag = try frame_alloc.create(helpers.Picture);
-                tag.* = try helpers.shapedRunPicture(frame_alloc, tag_shaped, &self.faces, .{
+                tag.* = try helpers.placeRun(frame_alloc, tag_shaped, &self.faces, .{
                     .baseline = .{ .x = left_tag, .y = @round(y) + tag_em },
                     .em = tag_em,
                     .color = tag_color,

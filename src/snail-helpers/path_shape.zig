@@ -19,8 +19,6 @@
 //! Reuse falls out for free: identical unit geometry keyed the same collapses
 //! to one atlas record (the atlas dedups on `RecordKey`), so the same shape
 //! at any size/position is one record, N instances — exactly like a glyph.
-//! `PathShapeCache` memoizes the packed `GlyphCurves` per identity so the
-//! expensive pack runs once.
 
 const std = @import("std");
 const snail = @import("snail");
@@ -29,8 +27,6 @@ const Allocator = std.mem.Allocator;
 const Path = snail.Path;
 const Rect = snail.Rect;
 const Transform2D = snail.Transform2D;
-const StrokeStyle = snail.StrokeStyle;
-const GlyphCurves = snail.GlyphCurves;
 
 /// Transform mapping the unit design frame `[0,1]²` onto a world-space
 /// rectangle. Compose it with a scene/world transform to place a
@@ -96,87 +92,6 @@ pub fn unitStrokeWidth(rect: Rect, width: f32) f32 {
     return if (rect.w != 0) width / rect.w else width;
 }
 
-/// Stable identities for the parametric unit shapes, so identical shapes
-/// dedup without hashing geometry. Caller-authored arbitrary paths pick
-/// their own ids in the `custom` range.
-pub const key = struct {
-    pub const ellipse: u64 = 0x0001_0000_0000_0000;
-    pub const rect: u64 = 0x0002_0000_0000_0000;
-    /// Rounded rect keyed by quantized relative radius (12.12-ish fixed
-    /// point), so equal radii share a record and differ otherwise.
-    pub fn roundedRect(r_rel: f32) u64 {
-        const q: u64 = @intFromFloat(@round(std.math.clamp(r_rel, 0, 0.5) * 65536.0));
-        return 0x0003_0000_0000_0000 | q;
-    }
-    /// Namespace for caller-authored arbitrary unit paths. `id` is the
-    /// caller's stable per-shape identity (reused ⇒ shared record).
-    pub fn custom(id: u32) u64 {
-        return 0x0004_0000_0000_0000 | @as(u64, id);
-    }
-};
-
-/// Memoizes packed unit-frame `GlyphCurves` by shape identity, mirroring
-/// `UnhintedGlyphCache`. The first `getOrInsert*` for an identity packs the
-/// curves; later calls return the same pointer. The cache owns the curves.
-pub const PathShapeCache = struct {
-    allocator: Allocator,
-    curves: std.AutoHashMapUnmanaged(u64, GlyphCurves) = .{},
-
-    pub fn init(allocator: Allocator) PathShapeCache {
-        return .{ .allocator = allocator };
-    }
-
-    pub fn deinit(self: *PathShapeCache) void {
-        var it = self.curves.valueIterator();
-        while (it.next()) |c| c.deinit();
-        self.curves.deinit(self.allocator);
-        self.* = undefined;
-    }
-
-    /// Packed fill curves for a unit-authored `path`, packing on first use.
-    /// `unit_path` MUST be authored in the unit frame; `identity` MUST be
-    /// stable and unique per distinct unit geometry.
-    pub fn getOrInsertFill(
-        self: *PathShapeCache,
-        scratch: Allocator,
-        identity: u64,
-        unit_path: *const Path,
-    ) !*const GlyphCurves {
-        const gop = try self.curves.getOrPut(self.allocator, identity);
-        if (!gop.found_existing) {
-            errdefer _ = self.curves.remove(identity);
-            gop.value_ptr.* = try unit_path.toCurves(self.allocator, scratch);
-        }
-        return gop.value_ptr;
-    }
-
-    /// Packed stroke curves for a unit-authored `path`. `stroke.width` is in
-    /// unit-frame units and scales with placement.
-    pub fn getOrInsertStroke(
-        self: *PathShapeCache,
-        scratch: Allocator,
-        identity: u64,
-        unit_path: *const Path,
-        stroke: StrokeStyle,
-    ) !*const GlyphCurves {
-        const gop = try self.curves.getOrPut(self.allocator, identity);
-        if (!gop.found_existing) {
-            errdefer _ = self.curves.remove(identity);
-            gop.value_ptr.* = try unit_path.strokeToCurves(self.allocator, scratch, stroke);
-        }
-        return gop.value_ptr;
-    }
-
-    pub fn count(self: *const PathShapeCache) u32 {
-        return self.curves.count();
-    }
-
-    pub fn clear(self: *PathShapeCache) void {
-        var it = self.curves.valueIterator();
-        while (it.next()) |c| c.deinit();
-        self.curves.clearRetainingCapacity();
-    }
-};
 
 // ── tests ────────────────────────────────────────────────────────────────
 
@@ -290,28 +205,4 @@ test "unit authoring keeps f16 precision that screen authoring loses" {
     try testing.expect(unit_err_screen < 0.05);
     try testing.expect(screen_err > 1.0);
     try testing.expect(screen_err > unit_err_screen * 10.0);
-}
-
-test "PathShapeCache memoizes by identity" {
-    var cache = PathShapeCache.init(testing.allocator);
-    defer cache.deinit();
-
-    var p = try unitEllipsePath(testing.allocator);
-    defer p.deinit();
-
-    const first = try cache.getOrInsertFill(testing.allocator, key.ellipse, &p);
-    const second = try cache.getOrInsertFill(testing.allocator, key.ellipse, &p);
-    try testing.expectEqual(first, second);
-    try testing.expectEqual(@as(u32, 1), cache.count());
-
-    var rr = try unitRoundedRectPath(testing.allocator, 0.1);
-    defer rr.deinit();
-    _ = try cache.getOrInsertFill(testing.allocator, key.roundedRect(0.1), &rr);
-    try testing.expectEqual(@as(u32, 2), cache.count());
-}
-
-test "distinct rounded-rect radii get distinct identities" {
-    try testing.expect(key.roundedRect(0.1) != key.roundedRect(0.2));
-    try testing.expect(key.roundedRect(0.1) == key.roundedRect(0.1));
-    try testing.expect(key.ellipse != key.rect);
 }

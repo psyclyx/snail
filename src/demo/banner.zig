@@ -1167,7 +1167,7 @@ const BannerBuilder = struct {
 
     /// Solid-color shaped run: insert each glyph's curves under
     /// `unhintedGlyph(font_id, glyph_id)` keys (with COLR fanout for color
-    /// fonts) and emit one shape per glyph via `shapedRunPicture`.
+    /// fonts) and emit one shape per glyph via `placeRun`.
     fn emitShapedRunSolid(
         self: *BannerBuilder,
         shaped: *const snail.ShapedText,
@@ -1176,7 +1176,7 @@ const BannerBuilder = struct {
     ) !void {
         try self.ensureUnhintedGlyphCurves(shaped);
 
-        var picture = try snail_helpers.shapedRunPicture(self.allocator, shaped, &self.assets.faces, .{
+        var picture = try snail_helpers.placeRun(self.allocator, shaped, &self.assets.faces, .{
             .baseline = .{ .x = placement.x, .y = placement.y },
             .em = placement.size,
             .color = color,

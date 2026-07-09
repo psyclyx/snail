@@ -677,11 +677,11 @@ fn addShapedLine(
         defer shaped.deinit();
         const ok = ensureHintedRunCurves(build, fonts, &shaped, ppem_26_6) catch false;
         if (ok) {
-            var pic = try snail_helpers.hintedShapedRunPicture(allocator, &shaped, .{
+            var pic = try snail_helpers.placeRun(allocator, &shaped, null, .{
                 .baseline = .{ .x = line.x, .y = line.y },
                 .em = line.size,
-                .ppem_26_6 = ppem_26_6,
                 .color = line.color,
+                .mode = .{ .truetype = .{ .ppem_26_6 = ppem_26_6 } },
             });
             defer pic.deinit();
             try build.shapes.appendSlice(allocator, pic.shapes);
@@ -701,7 +701,7 @@ fn addShapedLineUnhinted(
     var shaped = try snail.shape(allocator, &fonts.faces, line.text, .{ .style = line.style });
     defer shaped.deinit();
     try ensureUnhintedRunCurves(build, fonts, &shaped);
-    var pic = try snail_helpers.shapedRunPicture(allocator, &shaped, &fonts.faces, .{
+    var pic = try snail_helpers.placeRun(allocator, &shaped, &fonts.faces, .{
         .baseline = .{ .x = line.x, .y = line.y },
         .em = line.size,
         .color = line.color,
@@ -793,7 +793,7 @@ fn addRichRun(
     switch (paint) {
         .solid => |color| {
             try ensureUnhintedRunCurves(build, fonts, &shaped);
-            var pic = try snail_helpers.shapedRunPicture(allocator, &shaped, &fonts.faces, .{
+            var pic = try snail_helpers.placeRun(allocator, &shaped, &fonts.faces, .{
                 .baseline = .{ .x = x, .y = y },
                 .em = em,
                 .color = color,
@@ -1148,16 +1148,16 @@ fn buildPicturesForPreparedLines(
     var shape_count: usize = 0;
     for (prepared.items.items) |*it| {
         if (it.hinted) {
-            var pic = try snail_helpers.hintedShapedRunPicture(allocator, &it.shaped, .{
+            var pic = try snail_helpers.placeRun(allocator, &it.shaped, null, .{
                 .baseline = .{ .x = it.line.x, .y = it.line.y },
                 .em = it.line.size,
-                .ppem_26_6 = it.ppem_26_6,
                 .color = it.line.color,
+                .mode = .{ .truetype = .{ .ppem_26_6 = it.ppem_26_6 } },
             });
             shape_count += pic.shapes.len;
             pic.deinit();
         } else {
-            var pic = try snail_helpers.shapedRunPicture(allocator, &it.shaped, &prepared.fonts.faces, .{
+            var pic = try snail_helpers.placeRun(allocator, &it.shaped, &prepared.fonts.faces, .{
                 .baseline = .{ .x = it.line.x, .y = it.line.y },
                 .em = it.line.size,
                 .color = it.line.color,

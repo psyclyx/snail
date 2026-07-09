@@ -307,14 +307,14 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
 
     // Tagline + multi-script sample row.
     var tagline_pic = if (hinted_tagline_active)
-        try snail_helpers.hintedShapedRunPicture(allocator, &shaped_tagline, .{
+        try snail_helpers.placeRun(allocator, &shaped_tagline, null, .{
             .baseline = .{ .x = left_pad, .y = tagline_baseline },
             .em = hint_opts.hint_ppem_px,
-            .ppem_26_6 = @intFromFloat(@round(hint_opts.hint_ppem_px * 64.0)),
             .color = tagline_color,
+            .mode = .{ .truetype = .{ .ppem_26_6 = @intFromFloat(@round(hint_opts.hint_ppem_px * 64.0)) } },
         })
     else
-        try snail_helpers.shapedRunPicture(allocator, &shaped_tagline, &faces, .{
+        try snail_helpers.placeRun(allocator, &shaped_tagline, &faces, .{
             .baseline = .{ .x = left_pad, .y = tagline_baseline },
             .em = tagline_em,
             .color = tagline_color,
@@ -334,7 +334,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
     var sx = left_pad;
     for (shaped_samples[0..shaped_count], 0..) |shaped, sample_idx| {
         if (sample_idx != 0) {
-            try sample_pics.append(allocator, try snail_helpers.shapedRunPicture(allocator, &shaped_sep, &faces, .{
+            try sample_pics.append(allocator, try snail_helpers.placeRun(allocator, &shaped_sep, &faces, .{
                 .baseline = .{ .x = sx, .y = sample_baseline },
                 .em = sample_em,
                 .color = sep_color,
@@ -342,7 +342,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
             }));
             sx += shaped_sep.advanceX() * sample_em;
         }
-        try sample_pics.append(allocator, try snail_helpers.shapedRunPicture(allocator, &shaped, &faces, .{
+        try sample_pics.append(allocator, try snail_helpers.placeRun(allocator, &shaped, &faces, .{
             .baseline = .{ .x = sx, .y = sample_baseline },
             .em = sample_em,
             .color = sample_color,

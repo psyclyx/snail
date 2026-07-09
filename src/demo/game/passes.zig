@@ -316,7 +316,7 @@ const PassBuilder = struct {
         color: [4]f32,
     ) !void {
         try self.ensureUnhintedGlyphCurves(shaped);
-        var picture = try snail_helpers.shapedRunPicture(self.allocator, shaped, &self.fonts.faces, .{
+        var picture = try snail_helpers.placeRun(self.allocator, shaped, &self.fonts.faces, .{
             .baseline = .{ .x = x, .y = y },
             .em = em,
             .color = color,
