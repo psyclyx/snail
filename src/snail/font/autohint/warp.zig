@@ -152,15 +152,46 @@ pub fn buildKnots(
         hinted[j] = true;
     }
 
-    // Pass 3 — keep only genuine features as knots: WIDTH-HINTED stem edges and
-    // blue-linked edges. Un-hinted thick stems, interior curve apexes, and stray
-    // edges are NOT snapped — they interpolate between the real knots (the same
-    // idea as TrueType's interpolate-untouched-points). This keeps baseline/
-    // x-height alignment at every size while stem-width crispness fades out as
-    // the glyph grows and AA already renders stems cleanly.
+    // Pass 2.5 — preserve the weight of a thin stroke that terminates on a
+    // blue zone as a ROUND apex (the top of 'a'/'n'/'o', the bottom of 'o').
+    // The blue edge snaps to the reference, but its inner companion is a round
+    // apex that `linkStems` doesn't pair, so without help it just interpolates
+    // against the nearest stem knot below and the stroke COMPRESSES — the "top
+    // of a looks thinner than the bowl". Anchor the companion a whole pixel off
+    // the blue target so the whole stroke translates at full weight instead.
+    // Same small-size-only taper as stems: thin strokes get help, thick ones
+    // (already clean under AA) stay natural.
+    for (edges, 0..) |e, i| {
+        if (e.blue < 0 or !e.round or hinted[i]) continue;
+        const top = e.dir > 0;
+        var best: isize = -1;
+        var best_gap: f32 = std.math.floatMax(f32);
+        for (edges, 0..) |c, k| {
+            if (k == i or c.dir == e.dir) continue; // need the opposite face
+            const gap = if (top) e.pos - c.pos else c.pos - e.pos;
+            if (gap <= 0 or gap >= best_gap) continue; // interior side, nearest
+            best_gap = gap;
+            best = @intCast(k);
+        }
+        if (best < 0) continue;
+        const j: usize = @intCast(best);
+        if (hinted[j] or edges[j].blue >= 0) continue; // already an anchored knot
+        if (best_gap * px_per_unit >= stem_hint_max_px) continue; // thick — leave natural
+        const width_units = @max(@round(best_gap * px_per_unit), 1.0) * grid;
+        target[j] = if (top) target[i] - width_units else target[i] + width_units;
+        hinted[j] = true;
+    }
+
+    // Pass 3 — keep only genuine features as knots: WIDTH-HINTED stem edges,
+    // blue-linked edges, and the weight-preserving companions from pass 2.5.
+    // Un-hinted thick stems, interior curve apexes, and stray edges are NOT
+    // snapped — they interpolate between the real knots (the same idea as
+    // TrueType's interpolate-untouched-points). This keeps baseline/x-height
+    // alignment at every size while stem-width crispness fades out as the
+    // glyph grows and AA already renders stems cleanly.
     var count: usize = 0;
     for (edges, 0..) |e, i| {
-        const keep = (e.isStem() and hinted[i]) or e.blue >= 0;
+        const keep = hinted[i] or e.blue >= 0;
         if (!keep) continue;
         out[count] = .{ .base = e.pos, .target = target[i] };
         count += 1;
@@ -367,6 +398,37 @@ test "round apex overshoots at large ppem and flattens at small" {
     _ = buildKnots(&small, &blues, 11.0 / 1000.0, 0, &buf);
     const ref_fit = @round(500.0 * (11.0 / 1000.0)) / (11.0 / 1000.0);
     try testing.expectApproxEqAbs(ref_fit, buf[0].target, 0.5);
+}
+
+test "round apex on a blue keeps its stroke weight instead of compressing" {
+    // Mimics the top arch of 'a': a crossbar stem low in the glyph, then a
+    // round apex latched to the x-height blue with an inner companion edge
+    // that analysis does NOT pair as a stem. Without weight preservation the
+    // companion interpolates against the crossbar knot and the arch stroke
+    // compresses to well under a pixel ("thin top of a"); with it the stroke
+    // translates at a whole-pixel weight.
+    const px_per_unit: f32 = 13.0 / 1000.0;
+    var edges = [_]Edge{
+        edge(274, -1), // crossbar lower
+        edge(343, 1), // crossbar upper
+        edge(483, -1), // arch inner (round apex, unpaired)
+        edge(560, 1), // arch top (round apex, on the blue)
+    };
+    stemPair(&edges[0], &edges[1], 0, 1, 69);
+    edges[2].round = true;
+    edges[3].round = true;
+    edges[3].blue = 0;
+    const blues = [_]BlueZone{.{ .ref = 548, .shoot = 560 }};
+
+    var buf: [max_knots]Knot = undefined;
+    const n = buildKnots(&edges, &blues, px_per_unit, 0, &buf);
+
+    // The companion (arch inner) is kept as its own knot ...
+    try testing.expectEqual(@as(usize, 4), n);
+    try testing.expectApproxEqAbs(@as(f32, 483), buf[2].base, 1e-4);
+    // ... and the arch stroke lands on a whole pixel, not a compressed sliver.
+    const stroke_px = (buf[3].target - buf[2].target) * px_per_unit;
+    try testing.expectApproxEqAbs(@as(f32, 1.0), stroke_px, 1e-3);
 }
 
 test "inverse warp round-trips knot targets to their bases" {
