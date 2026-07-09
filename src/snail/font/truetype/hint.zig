@@ -136,6 +136,11 @@ pub const HintMachine = struct {
     stack: []i32,
     storage_work: []i32,
     cvt_work: []i32,
+    /// COW targets for a glyph-level FDEF: the function table is copied here
+    /// before the write so the shared `Prepared` is never mutated. Sized once
+    /// from the program's maxp (function counts don't vary by ppem).
+    function_entries_work: []tt_exec.Function,
+    function_lookup_work: []?[]const u8,
     skip_cache: tt_exec.SkipCache,
     twilight_points: []tt_exec.Point,
     glyph_points: []tt_exec.Point,
@@ -152,6 +157,8 @@ pub const HintMachine = struct {
         self.allocator.free(self.stack);
         self.allocator.free(self.storage_work);
         self.allocator.free(self.cvt_work);
+        self.allocator.free(self.function_entries_work);
+        self.allocator.free(self.function_lookup_work);
         self.allocator.free(self.twilight_points);
         self.allocator.free(self.glyph_points);
         self.allocator.free(self.compound_contours);
@@ -320,6 +327,9 @@ pub const HintMachine = struct {
         context.cvt_work = self.cvt_work[0..p.size.cvt.len];
         context.storage_pristine = p.storage;
         context.storage_work = self.storage_work[0..p.storage.len];
+        context.functions_pristine = p.function_entries;
+        context.functions_entries_work = self.function_entries_work[0..p.function_entries.len];
+        context.functions_lookup_work = self.function_lookup_work[0..p.function_lookup.len];
         context.setEnvironment(p.size.environment());
         context.graphics = p.graphics;
         context.resetGraphicsForGlyph();
@@ -532,6 +542,10 @@ fn allocateMachine(allocator: Allocator, program: *const Program) !HintMachine {
     errdefer allocator.free(storage_work);
     const cvt_work = try allocator.alloc(i32, 0);
     errdefer allocator.free(cvt_work);
+    const function_entries_work = try allocator.alloc(tt_exec.Function, @max(sizes.functions, 1));
+    errdefer allocator.free(function_entries_work);
+    const function_lookup_work = try allocator.alloc(?[]const u8, functionLookupCapacity(sizes.functions));
+    errdefer allocator.free(function_lookup_work);
     const twilight_points = try allocator.alloc(tt_exec.Point, @max(sizes.twilight_points, 1));
     errdefer allocator.free(twilight_points);
     const glyph_points = try allocator.alloc(tt_exec.Point, @max(sizes.glyph_points, 1));
@@ -545,6 +559,8 @@ fn allocateMachine(allocator: Allocator, program: *const Program) !HintMachine {
         .stack = stack,
         .storage_work = storage_work,
         .cvt_work = cvt_work,
+        .function_entries_work = function_entries_work,
+        .function_lookup_work = function_lookup_work,
         .skip_cache = tt_exec.SkipCache.init(allocator),
         .twilight_points = twilight_points,
         .glyph_points = glyph_points,

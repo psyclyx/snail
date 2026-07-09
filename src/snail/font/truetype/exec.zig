@@ -159,6 +159,15 @@ pub const Context = struct {
     cvt_work: []i32 = &.{},
     storage_pristine: []const i32 = &.{},
     storage_work: []i32 = &.{},
+    /// COW source + work buffers for the fpgm function table. A glyph-level
+    /// FDEF (rare, but spec-legal) writes into the shared table backing;
+    /// without COW that poisons the cached `Prepared` for every later glyph.
+    /// The first such write copies the table into `functions_*_work` and
+    /// repoints. Empty `functions_pristine` (the default) disables COW so a
+    /// caller building the table (fpgm/prep) writes through directly.
+    functions_pristine: []const Function = &.{},
+    functions_entries_work: []Function = &.{},
+    functions_lookup_work: []?[]const u8 = &.{},
     limits: Limits,
     graphics: GraphicsState = .{},
     environment: Environment = .{},
@@ -312,6 +321,7 @@ pub const Context = struct {
                 const body_start = pc.*;
                 const body_end = try findEndf(code, body_start);
                 const defs = try self.functionDefs();
+                self.cowFunctions();
                 try defs.put(function_id, code[body_start..body_end]);
                 pc.* = body_end + 1;
             },
@@ -442,6 +452,20 @@ pub const Context = struct {
         const n = self.storage.len;
         @memcpy(self.storage_work[0..n], self.storage);
         self.storage = self.storage_work[0..n];
+    }
+
+    /// Copy-on-write the function table before an FDEF mutation, if it still
+    /// aliases the pristine `Prepared`-owned backing. No-op once owned or when
+    /// COW is disabled (`functions_pristine` empty). Repoints the live
+    /// `FunctionDefs`' `entries`/`lookup` at the work buffers so `put` writes
+    /// stay scoped to this glyph run.
+    inline fn cowFunctions(self: *Context) void {
+        const f = self.functions orelse return;
+        if (self.functions_pristine.len == 0 or f.entries.ptr != self.functions_pristine.ptr) return;
+        @memcpy(self.functions_entries_work[0..f.entries.len], f.entries);
+        @memcpy(self.functions_lookup_work[0..f.lookup.len], f.lookup);
+        f.entries = self.functions_entries_work[0..f.entries.len];
+        f.lookup = self.functions_lookup_work[0..f.lookup.len];
     }
 
     /// Write to CVT bypassing the projection-ratio rescale. Used by WCVTF
@@ -1884,6 +1908,47 @@ test "cvt/storage writes copy-on-write over a pristine source" {
     // ... while the pristine sources are untouched — safe to cache and reuse.
     try std.testing.expectEqual(@as(i32, 3), pristine_storage[2]);
     try std.testing.expectEqual(@as(i32, 20), pristine_cvt[1]);
+}
+
+test "glyph-level FDEF copies-on-write over a pristine function table" {
+    var stack: [16]i32 = undefined;
+    var storage: [1]i32 = .{0};
+    var cvt: [1]i32 = .{0};
+
+    // A pristine function table as a cached Prepared would hold it: one fpgm
+    // function (id 5) already defined, the rest untouched sentinels.
+    const fn5 = [_]u8{0x2D}; // ENDF-only body
+    var pristine_entries = [_]Function{.{ .id = -1, .code = &fn5 }} ** 4;
+    pristine_entries[0] = .{ .id = 5, .code = &fn5 };
+    var pristine_lookup = [_]?[]const u8{null} ** 8;
+    pristine_lookup[5] = &fn5;
+    var funcs = FunctionDefs{ .entries = &pristine_entries, .lookup = &pristine_lookup, .len = 1 };
+
+    var entries_work: [4]Function = undefined;
+    var lookup_work = [_]?[]const u8{null} ** 8;
+
+    // The live table aliases the pristine backing; COW is armed by the markers.
+    var ctx = Context.init(.{ .stack = &stack, .storage = &storage, .cvt = &cvt }, .{});
+    ctx.setFunctions(&funcs);
+    ctx.functions_pristine = &pristine_entries;
+    ctx.functions_entries_work = &entries_work;
+    ctx.functions_lookup_work = &lookup_work;
+
+    // A glyph program that defines function id 7 — the rare, spec-legal
+    // glyph-level FDEF that must NOT poison the shared table:
+    //   PUSHB1 7 ; FDEF ; <body: 0x00 SVTCA> ; ENDF
+    try ctx.execute(&.{ 0xB0, 7, 0x2C, 0x00, 0x2D });
+
+    // The new function is visible through the live table, and the write landed
+    // in the work buffers (COW copied the table first) ...
+    try std.testing.expect(funcs.get(7) != null);
+    try std.testing.expectEqual(@as(usize, 2), funcs.len);
+    try std.testing.expectEqual(@as(i32, 7), entries_work[1].id);
+    // ... while the pristine table is byte-for-byte untouched — safe to keep
+    // hinting later glyphs from the same cached Prepared.
+    try std.testing.expectEqual(@as(i32, -1), pristine_entries[1].id);
+    try std.testing.expectEqual(@as(usize, 1), (FunctionDefs{ .entries = &pristine_entries, .lookup = &pristine_lookup, .len = 1 }).len);
+    try std.testing.expect(pristine_lookup[7] == null);
 }
 
 test "tt executor tolerates out-of-bounds CVT reads and writes" {
