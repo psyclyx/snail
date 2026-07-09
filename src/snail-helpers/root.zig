@@ -31,9 +31,6 @@ pub const RunPlacement = text_picture_mod.RunPlacement;
 pub const HintMode = text_picture_mod.HintMode;
 pub const RunSnap = text_picture_mod.RunSnap;
 
-/// Batteries-included facade: producers + one GlyphAtlasCache + placeRun.
-pub const TextAtlas = @import("text_atlas.zig").TextAtlas;
-
 const path_shape_mod = @import("path_shape.zig");
 pub const placeRect = path_shape_mod.placeRect;
 pub const placeRectUniform = path_shape_mod.placeRectUniform;
@@ -48,7 +45,6 @@ test {
     _ = HintedGlyphCache;
     _ = ShapedRunCache;
     _ = GlyphAtlasCache;
-    _ = TextAtlas;
     _ = @import("picture.zig");
     _ = text_picture_mod;
     _ = path_shape_mod;

@@ -145,8 +145,8 @@ const Placer = struct {
 
 /// Build a `Picture` for a shaped run in any hinting mode with any origin-snap
 /// policy. `faces` is needed only for COLR fanout (`p.colr`); pass `null`
-/// otherwise. The caller (or the `TextAtlas` facade) is responsible for having
-/// made the referenced glyph records resident in the atlas.
+/// otherwise. The caller is responsible for having made the referenced glyph
+/// records resident in the atlas.
 pub fn placeRun(
     allocator: std.mem.Allocator,
     shaped: *const ShapedText,
