@@ -203,11 +203,11 @@ pub const AutoLight = struct {
         self.blues.assignEdges(ay.edges, self.blue_tol_em);
         var zbuf: [warp.max_knots]warp.BlueZone = undefined;
         const zones = self.blues.warpZones(&zbuf);
-        const ny = warp.buildKnots(ay.edges, zones, px_per_unit, self.std_y, false, y_buf);
+        const ny = warp.buildKnots(ay.edges, zones, px_per_unit, self.std_y, y_buf);
 
         var ax = try analysis.analyzeGlyph(scratch, pts, contours, self.font.units_per_em, self.params, .x);
         defer ax.deinit();
-        const nx = warp.buildKnots(ax.edges, &.{}, px_per_unit, self.std_x, true, x_buf);
+        const nx = warp.buildKnots(ax.edges, &.{}, px_per_unit, self.std_x, x_buf);
         return .{ .nx = nx, .ny = ny };
     }
 
